@@ -1,0 +1,7 @@
+node_modules
+dist
+.vite
+.playwright-cli
+output/playwright
+.env
+server/.data

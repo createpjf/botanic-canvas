@@ -1,0 +1,282 @@
+import type { Edge, Node, Viewport } from '@xyflow/react'
+
+export type AssetRole = '商品' | '模特' | '场景' | '调性' | '首图'
+export type AssetSource = 'brand' | 'upload' | 'generated'
+export type GenerationKind = 'generation' | 'refinement'
+export type DeliveryPresetId = 'taobao' | 'xiaohongshu' | 'douyin'
+export type GenerationAspectRatio = '1:1' | '3:4' | '4:5' | '9:16'
+// 模型列表由服务端健康检查下发；画布快照必须保留提交时实际使用的模型 ID。
+export type GenerationModelId = string
+export type GenerationResolution = '1K' | '2K'
+export type GenerationTaskStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+
+export type GenerationModelOption = {
+  id: GenerationModelId
+  label: string
+}
+
+export const defaultGenerationModels: GenerationModelOption[] = [
+  { id: 'gpt-image-2', label: 'GPT Image 2' },
+]
+
+export type GenerationSettings = {
+  model: GenerationModelId
+  aspectRatio: GenerationAspectRatio
+  resolution: GenerationResolution
+}
+
+export type GenerationReference = {
+  nodeId: string
+  assetId: string
+  name: string
+  image: string
+  role: AssetRole
+  source?: AssetSource
+  primary?: boolean
+  priority?: number
+}
+
+export type GenerationRecipe = {
+  primaryReferenceNodeId?: string
+  references: GenerationReference[]
+  prompt: string
+  batchCount: number
+  settings: GenerationSettings
+}
+
+export type AssetRecord = {
+  id: string
+  role: AssetRole
+  name: string
+  image: string
+  imageWidth?: number
+  imageHeight?: number
+  source: AssetSource
+  tags: string[]
+}
+
+/**
+ * 全局素材库只保存内置/品牌素材。上传和生成资产始终归属创建它们的项目，
+ * 从而避免不同项目的工作内容、历史和可删除资产相互污染。
+ */
+export const globalAssetLibraryId = 'global-brand-assets'
+
+export type GlobalAssetLibrary = {
+  id: typeof globalAssetLibraryId
+  schemaVersion: 1
+  assets: AssetRecord[]
+  updatedAt: number
+}
+
+export type UploadedAssetInput = {
+  name: string
+  image: string
+  imageWidth?: number
+  imageHeight?: number
+  role: Exclude<AssetRole, '首图'>
+  tags: string[]
+}
+
+export type AssetNodeData = {
+  kind: 'asset'
+  assetId: string
+  role: AssetRole
+  name: string
+  image: string
+  imageWidth?: number
+  imageHeight?: number
+  source?: AssetSource
+  locked?: boolean
+  referenceEnabled?: boolean
+  primary?: boolean
+  referencePriority?: number
+  deleted?: boolean
+}
+
+export type PromptNodeData = {
+  kind: 'prompt'
+  jobId?: string
+  status: GenerationTaskStatus | 'uploading'
+  generationKind: GenerationKind
+  prompt: string
+  batchCount: number
+  settings: GenerationSettings
+  label: string
+  error?: string
+}
+
+export type ReferenceGroupNodeData = {
+  kind: 'reference'
+  jobId?: string
+  status: GenerationTaskStatus | 'uploading'
+  recipe: GenerationRecipe
+  label: string
+  error?: string
+}
+
+export type TextNodeData = {
+  kind: 'text'
+  label: string
+  content: string
+}
+
+export type GenerateNodeData = {
+  kind: 'generate'
+  label: string
+  prompt: string
+  batchCount: number
+  settings: GenerationSettings
+  /** 输入连线的展示与提交顺序；生成节点是唯一的配方拥有者。 */
+  inputOrder?: string[]
+  /** 当前生成节点中被锁定为主体的商品素材节点。 */
+  primaryInputId?: string
+  jobId?: string
+  status?: GenerationTaskStatus | 'uploading'
+  generationKind?: GenerationKind
+  error?: string
+}
+
+export type ResultNodeData = {
+  kind: 'result'
+  /** 自动写入这张输出图片的生成节点；仅用于溯源与展示。 */
+  outputOf?: string
+  image?: string
+  selected?: boolean
+  status: 'ready' | 'generating' | 'failed' | 'cancelled'
+  /** 真实任务状态；结果节点据此展示可解释的生成反馈，不伪造百分比。 */
+  taskStatus?: GenerationTaskStatus | 'uploading'
+  /** 本次任务写入画布的时间，用于提示等待时长。 */
+  submittedAt?: number
+  label?: string
+  jobId?: string
+  taskNodeId?: string
+  error?: string
+  candidateId?: string
+  versionId?: string
+  parentVersionId?: string
+  generationKind?: GenerationKind
+  refinementInstruction?: string
+  generationSettings?: GenerationSettings
+  /** 首次首图任务的不可变配方；精修结果仍用它来“原配方重做”。 */
+  rootRecipe?: GenerationRecipe
+  generationRecipe?: GenerationRecipe
+  variant?: number
+}
+
+export type CanvasNode = Node<
+  AssetNodeData | PromptNodeData | ReferenceGroupNodeData | ResultNodeData | TextNodeData | GenerateNodeData,
+  'asset' | 'prompt' | 'reference' | 'result' | 'text' | 'generate'
+>
+
+export type CanvasSnapshot = {
+  name: string
+  nodes: CanvasNode[]
+  edges: Edge[]
+  viewport: Viewport
+}
+
+export type CanvasTemplate = {
+  id: string
+  name: string
+  image: string
+  createdAt: number
+  sourceHistoryId?: string
+  snapshot: CanvasSnapshot
+}
+
+export type CanvasHistoryEntry = {
+  id: string
+  name: string
+  image: string
+  createdAt: number
+  kind: 'generation' | 'template' | 'refinement'
+  parentVersionId?: string
+  sourceTemplateId?: string
+  sourceNodeId?: string
+  refinementInstruction?: string
+  generationRecipe?: GenerationRecipe
+  rootRecipe?: GenerationRecipe
+  snapshot: CanvasSnapshot
+}
+
+export type GenerationCandidate = {
+  id: string
+  name: string
+  image: string
+  variant: number
+  prompt: string
+  createdAt: number
+  kind: GenerationKind
+  parentVersionId?: string
+  parentNodeId?: string
+  parentImage?: string
+  parentLabel?: string
+  sourceAssetNames?: string[]
+  refinementInstruction?: string
+  settings: GenerationSettings
+  recipe: GenerationRecipe
+  rootRecipe?: GenerationRecipe
+  jobId?: string
+  resultNodeId?: string
+  provider?: string
+  revisedPrompt?: string
+  selected?: boolean
+}
+
+export type GenerationOutput = {
+  id: string
+  image: string
+  revisedPrompt?: string
+}
+
+export type GenerationJob = {
+  id: string
+  status: GenerationTaskStatus
+  kind: GenerationKind
+  createdAt: number
+  updatedAt: number
+  batchCount: number
+  outputCount: number
+  provider: string
+  model: GenerationModelId
+  error?: string
+  outputs?: GenerationOutput[]
+  /** 用户从画布移除的候选，服务端任务记录保留，但不应在下次恢复时复活。 */
+  dismissedOutputIds?: string[]
+  /** 统一图谱中的生成节点；旧字段仅用于迁移历史快照。 */
+  generateNodeId?: string
+  promptNodeId?: string
+  referenceNodeId?: string
+  resultNodeId?: string
+}
+
+export type DeliveryArtifact = {
+  id: string
+  targetNodeId: string
+  targetVersionId?: string
+  targetLabel: string
+  image: string
+  presetId: DeliveryPresetId
+  title: string
+  subtitle: string
+  safeZone: boolean
+  createdAt: number
+}
+
+export type CanvasDocument = {
+  schemaVersion: 18
+  id: string
+  name: string
+  nodes: CanvasNode[]
+  edges: Edge[]
+  viewport: Viewport
+  /** 当前项目私有的上传/生成素材；全局品牌素材位于 GlobalAssetLibrary。 */
+  assets: AssetRecord[]
+  templates: CanvasTemplate[]
+  history: CanvasHistoryEntry[]
+  deliveries: DeliveryArtifact[]
+  generationJobs: GenerationJob[]
+  activeTemplateId?: string
+  activeVersionId?: string
+  updatedAt: number
+}

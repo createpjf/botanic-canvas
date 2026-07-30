@@ -1,0 +1,71 @@
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    environment:
+      NODE_ENV: production
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?请在 .env 配置 OPENAI_API_KEY}
+      OPENAI_IMAGE_MODELS: ${OPENAI_IMAGE_MODELS:-gpt-image-2}
+      SUPABASE_URL: ${SUPABASE_URL:?请在 .env 配置 SUPABASE_URL}
+      SUPABASE_SECRET_KEY: ${SUPABASE_SECRET_KEY:?请在 .env 配置仅服务端可用的 SUPABASE_SECRET_KEY}
+      SUPABASE_STORAGE_BUCKET: ${SUPABASE_STORAGE_BUCKET:-botanic-media}
+      SUPABASE_BOOTSTRAP_OWNER_EMAIL: ${SUPABASE_BOOTSTRAP_OWNER_EMAIL:?请在 .env 配置首位所有者邮箱}
+      SUPABASE_INVITE_REDIRECT_TO: ${SUPABASE_INVITE_REDIRECT_TO:-}
+      REDIS_URL: redis://redis:6379
+      MAX_GENERATION_BATCH: ${MAX_GENERATION_BATCH:-8}
+      GENERATION_WORKER_CONCURRENCY: ${GENERATION_WORKER_CONCURRENCY:-1}
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    command: ["node", "server/worker.mjs"]
+    environment:
+      NODE_ENV: production
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?请在 .env 配置 OPENAI_API_KEY}
+      OPENAI_IMAGE_MODELS: ${OPENAI_IMAGE_MODELS:-gpt-image-2}
+      SUPABASE_URL: ${SUPABASE_URL:?请在 .env 配置 SUPABASE_URL}
+      SUPABASE_SECRET_KEY: ${SUPABASE_SECRET_KEY:?请在 .env 配置仅服务端可用的 SUPABASE_SECRET_KEY}
+      SUPABASE_STORAGE_BUCKET: ${SUPABASE_STORAGE_BUCKET:-botanic-media}
+      SUPABASE_BOOTSTRAP_OWNER_EMAIL: ${SUPABASE_BOOTSTRAP_OWNER_EMAIL:?请在 .env 配置首位所有者邮箱}
+      REDIS_URL: redis://redis:6379
+      MAX_GENERATION_BATCH: ${MAX_GENERATION_BATCH:-8}
+      GENERATION_WORKER_CONCURRENCY: ${GENERATION_WORKER_CONCURRENCY:-1}
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+      args:
+        VITE_PERSISTENCE_MODE: server
+        VITE_SUPABASE_URL: ${SUPABASE_URL:?请在 .env 配置 SUPABASE_URL}
+        VITE_SUPABASE_PUBLISHABLE_KEY: ${SUPABASE_PUBLISHABLE_KEY:?请在 .env 配置 SUPABASE_PUBLISHABLE_KEY}
+    depends_on:
+      - api
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+volumes:
+  redis-data:
