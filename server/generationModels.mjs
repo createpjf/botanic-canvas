@@ -8,7 +8,7 @@ function labelForModel(model) {
   if (model === 'gpt-image-2') return 'GPT Image 2'
   if (model === 'image-01') return 'MiniMax Image 01'
   if (model === 'image-01-live') return 'MiniMax Image 01 Live'
-  if (model === 'MiniMax-H3') return 'MiniMax H3 · 视频'
+  if (model === 'MiniMax-H3') return 'MiniMax H3'
   return model
 }
 

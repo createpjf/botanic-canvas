@@ -21,6 +21,7 @@ test('模型目录只公开已配置供应商，并声明每个模型的媒体�
   ])
   assert.deepEqual(catalog[1].resolutions, ['2K'])
   assert.deepEqual(catalog[1].durations, [5, 10, 15])
+  assert.equal(catalog[1].label, 'MiniMax H3')
   assert.equal(providerForModel(catalog, 'MiniMax-H3').provider, 'minimax')
   assert.equal(generationTimeoutForModel(catalog, 'MiniMax-H3', {
     imageTimeoutMs: 300_000,

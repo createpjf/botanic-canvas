@@ -1,5 +1,5 @@
-import { lazy, Suspense, type CSSProperties, type DragEvent, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
-import { flushSync } from 'react-dom'
+import { lazy, Suspense, type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { createPortal, flushSync } from 'react-dom'
 import {
   addEdge,
   applyEdgeChanges,
@@ -8,6 +8,7 @@ import {
   BackgroundVariant,
   ConnectionLineType,
   Handle,
+  MiniMap,
   PanOnScrollMode,
   Panel,
   Position,
@@ -25,8 +26,11 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { defaultGenerationModels } from './domain/canvas'
+import { canvasZoomMode, planResultGroupPresentation, traceCanvasLineage, type ResultGroupPresentation } from './domain/canvasPresentation'
+import { buildDeliveryPreviewArtifacts, canUseForImageDelivery, resolveDeliveryDraft, type DeliveryPanelTarget } from './domain/deliveryPresentation'
 import { mediaFileExtension, reducedAspectRatio } from './domain/mediaPresentation'
 import { videoAspectRatioPolicy } from './domain/videoGeneration'
+import { summarizeWorkflowTemplate, type WorkflowTemplateSummary } from './domain/workflowTemplates'
 import type {
   AssetRecord,
   AssetRole,
@@ -53,12 +57,12 @@ import type {
 import { deliveryPresets, downloadDeliveryPackage } from './lib/deliveryExport'
 import { getGenerationServiceHealth } from './lib/generationApi'
 import { refinePrompt } from './lib/promptRefinementApi'
-import { deleteCanvasDocument, flushPendingCanvasDocumentWrites, readCanvasProjectSummaries, renameCanvasProject, syncPendingCanvasDrafts } from './lib/db'
+import { createCanvasProject, deleteCanvasDocument, flushPendingCanvasDocumentWrites, readCanvasProjectSummaries, renameCanvasProject, syncPendingCanvasDrafts } from './lib/db'
 import { ProductApiError, createProductSession, readProductSession, serverPersistenceEnabled, supabaseAuthEnabled, type ProductUser } from './lib/productSession'
 import { createEmptyCanvasDocument } from './data/seed'
 import { useCanvasStore } from './store/canvasStore'
 import type { WorkspaceProject } from './components/WorkspaceViews'
-import { ArrowDownIcon, ArrowUpIcon, ArrowUpRightIcon, CloseIcon, DeleteIcon, DownloadIcon, FolderOutlineIcon, HomeIcon, MoreIcon, PlusSquareIcon, SparkleIcon, UploadIcon } from './components/BotanicIcons'
+import { ArrowDownIcon, ArrowUpIcon, ArrowUpRightIcon, CloseIcon, DeleteIcon, DownloadIcon, FocusIcon, FolderOutlineIcon, HomeIcon, MapIcon, MoreIcon, PlusSquareIcon, SparkleIcon, UploadIcon } from './components/BotanicIcons'
 import plusIcon from './assets/figma/icon-plus.svg'
 import folderIcon from './assets/figma/icon-folder.svg'
 import templatesIcon from './assets/figma/icon-templates.svg'
@@ -68,6 +72,8 @@ import sidebarIcon from './assets/figma/icon-sidebar.svg'
 import sendIcon from './assets/figma/icon-send.svg'
 import sceneImage from './assets/figma/scene.webp'
 import resultImage from './assets/figma/result.webp'
+import openAIProviderLogo from './assets/providers/openai.png'
+import miniMaxProviderLogo from './assets/providers/minimax.png'
 
 const creativeAssistantEnabled = false
 
@@ -162,6 +168,129 @@ function FigmaIcon({ src, alt = '' }: { src: string; alt?: string }) {
   return <img src={src} alt={alt} aria-hidden={alt === ''} />
 }
 
+type ComposerOptionPopoverProps = {
+  label: string
+  value: string
+  valueIcon?: string
+  disabled?: boolean
+  width?: number
+  className?: string
+  children: (close: () => void) => ReactNode
+}
+
+function ComposerOptionPopover({ label, value, valueIcon, disabled = false, width = 180, className = '', children }: ComposerOptionPopoverProps) {
+  const menuId = useId()
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const [open, setOpen] = useState(false)
+  const [anchor, setAnchor] = useState<{ left: number; bottom: number } | null>(null)
+
+  const updateAnchor = useCallback(() => {
+    const rect = triggerRef.current?.getBoundingClientRect()
+    if (!rect) return
+    setAnchor({
+      left: Math.max(12, Math.min(window.innerWidth - width - 12, rect.left)),
+      bottom: Math.max(12, window.innerHeight - rect.top + 7),
+    })
+  }, [width])
+
+  useEffect(() => {
+    if (!open) return
+    updateAnchor()
+    const closeOnOutsidePress = (event: PointerEvent) => {
+      const target = event.target as Node
+      if (triggerRef.current?.contains(target) || menuRef.current?.contains(target)) return
+      setOpen(false)
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setOpen(false)
+      triggerRef.current?.focus()
+    }
+    window.addEventListener('resize', updateAnchor)
+    window.addEventListener('scroll', updateAnchor, true)
+    document.addEventListener('pointerdown', closeOnOutsidePress)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      window.removeEventListener('resize', updateAnchor)
+      window.removeEventListener('scroll', updateAnchor, true)
+      document.removeEventListener('pointerdown', closeOnOutsidePress)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [open, updateAnchor])
+
+  useEffect(() => {
+    if (!open || !anchor) return
+    const frame = window.requestAnimationFrame(() => {
+      menuRef.current?.querySelector<HTMLElement>('[aria-selected="true"], [aria-checked="true"], button')?.focus()
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [anchor, open])
+
+  const moveMenuFocus = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!['ArrowDown', 'ArrowRight', 'ArrowUp', 'ArrowLeft', 'Home', 'End'].includes(event.key)) return
+    const options = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')]
+    if (!options.length) return
+    const currentIndex = options.indexOf(document.activeElement as HTMLButtonElement)
+    const nextIndex = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? options.length - 1
+        : event.key === 'ArrowDown' || event.key === 'ArrowRight'
+          ? (currentIndex + 1 + options.length) % options.length
+          : (currentIndex - 1 + options.length) % options.length
+    event.preventDefault()
+    options[nextIndex]?.focus()
+  }
+
+  return <div className={`composer-option-field ${className}`.trim()}>
+    <span>{label}</span>
+    <button
+      ref={triggerRef}
+      type="button"
+      className={open ? 'composer-option-trigger is-open' : 'composer-option-trigger'}
+      disabled={disabled}
+      aria-haspopup="dialog"
+      aria-expanded={open}
+      aria-controls={open ? menuId : undefined}
+      onClick={() => {
+        if (!open) updateAnchor()
+        setOpen((current) => !current)
+      }}
+    >
+      {valueIcon ? <img className="composer-option-trigger__provider" src={valueIcon} alt="" /> : null}
+      <strong>{value}</strong>
+    </button>
+    {open && anchor && typeof document !== 'undefined' ? createPortal(
+      <div
+        ref={menuRef}
+        id={menuId}
+        className={`composer-option-menu ${className}`.trim()}
+        style={{ left: anchor.left, bottom: anchor.bottom, width }}
+        role="dialog"
+        aria-label={`${label}选项`}
+        onKeyDown={moveMenuFocus}
+      >{children(() => setOpen(false))}</div>,
+      document.body,
+    ) : null}
+  </div>
+}
+
+function modelProviderLogo(model?: GenerationModelOption) {
+  const provider = model?.provider ?? (/minimax/i.test(model?.id ?? '') ? 'minimax' : 'openai')
+  return provider === 'minimax' ? miniMaxProviderLogo : openAIProviderLogo
+}
+
+function modelDisplayLabel(model?: GenerationModelOption) {
+  return (model?.label ?? model?.id ?? '').replace(/\s*·\s*(?:图像|视频).*$/u, '').trim()
+}
+
+function AspectRatioGlyph({ ratio }: { ratio: string }) {
+  const [width = 1, height = 1] = ratio.split(':').map(Number)
+  const scale = 17 / Math.max(width, height, 1)
+  return <i className="composer-aspect-glyph" style={{ width: `${Math.max(7, width * scale)}px`, height: `${Math.max(7, height * scale)}px` }} aria-hidden="true" />
+}
+
 function visibleAssetTags(tags: string[], fallback?: string) {
   const values = tags.filter((tag) => !/mock/i.test(tag))
   return values.length ? values : fallback ? [fallback] : []
@@ -236,8 +365,9 @@ function AssetNode({ data, id, selected }: NodeProps) {
         '--asset-image-ratio': `${imageWidth} / ${imageHeight}`,
       } as CSSProperties
     : undefined
+  const mediaKind = asset.mediaKind ?? 'image'
   return (
-    <div className={['asset-node', asset.deleted ? 'is-deleted' : '', selected ? 'is-selected' : ''].filter(Boolean).join(' ')} style={nodeStyle}>
+    <div className={['asset-node', mediaKind === 'video' ? 'asset-node--video' : '', asset.deleted ? 'is-deleted' : '', selected ? 'is-selected' : ''].filter(Boolean).join(' ')} style={nodeStyle}>
       <ImageNodeTitle nodeId={id} name={asset.name} />
       <button
         className="asset-node__remove nodrag"
@@ -252,19 +382,37 @@ function AssetNode({ data, id, selected }: NodeProps) {
         <DeleteIcon />
       </button>
       <div className="asset-node__image-wrap">
-        <img
-          src={asset.image}
-          alt={asset.name}
-          className="asset-node__image"
-          decoding="async"
-          draggable={false}
-          onLoad={(event) => {
-            if (asset.imageWidth && asset.imageHeight) return
-            const { naturalWidth, naturalHeight } = event.currentTarget
-            if (naturalWidth && naturalHeight) setLoadedImageSize({ width: naturalWidth, height: naturalHeight })
-          }}
-          onDragStart={(event) => event.preventDefault()}
-        />
+        {mediaKind === 'video' ? (
+          <video
+            src={asset.image}
+            aria-label={asset.name}
+            className="asset-node__image asset-node__video"
+            muted
+            playsInline
+            preload="metadata"
+            draggable={false}
+            onLoadedMetadata={(event) => {
+              if (asset.imageWidth && asset.imageHeight) return
+              const { videoWidth, videoHeight } = event.currentTarget
+              if (videoWidth && videoHeight) setLoadedImageSize({ width: videoWidth, height: videoHeight })
+            }}
+            onDragStart={(event) => event.preventDefault()}
+          />
+        ) : (
+          <img
+            src={asset.image}
+            alt={asset.name}
+            className="asset-node__image"
+            decoding="async"
+            draggable={false}
+            onLoad={(event) => {
+              if (asset.imageWidth && asset.imageHeight) return
+              const { naturalWidth, naturalHeight } = event.currentTarget
+              if (naturalWidth && naturalHeight) setLoadedImageSize({ width: naturalWidth, height: naturalHeight })
+            }}
+            onDragStart={(event) => event.preventDefault()}
+          />
+        )}
       </div>
       <Handle
         className="flow-handle flow-handle--source flow-handle--image"
@@ -339,7 +487,7 @@ function GenerateNode({ data, id, selected }: NodeProps) {
   const references = connectedInputs.flatMap((node) => {
     if (node.type === 'asset') {
       const asset = node.data as AssetNodeData
-      return [{ id: node.id, image: asset.image, name: asset.name, mediaKind: 'image' as const }]
+      return [{ id: node.id, image: asset.image, name: asset.name, mediaKind: asset.mediaKind ?? 'image' }]
     }
     if (node.type === 'result') {
       const result = node.data as ResultNodeData
@@ -427,6 +575,9 @@ type GeneratedHistoryItem = {
   mediaKind: GenerationMediaKind
   name: string
   createdAt: number
+  aspectRatio?: string
+  resolution?: string
+  duration?: number
   nodeId?: string
   versionId?: string
 }
@@ -505,6 +656,18 @@ function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount, maximu
     : videoInputMode === 'first_last'
       ? { title: '首尾帧', detail: '补间两张图片，比例跟随素材' }
       : { title: '扩展画面', detail: '按所选比例智能补全，画面可能略有变化' }
+  const videoInputHint = !canGenerate && isVideoModel
+    ? videoInputMode === 'first_last'
+      ? references.length === 1 ? '请添加尾帧' : '请添加首帧和尾帧'
+      : videoInputMode === 'first_frame'
+        ? '请添加首帧'
+        : '请添加参考素材'
+    : ''
+  const videoReferenceBadge = (index: number) => !isVideoModel
+    ? undefined
+    : videoInputMode === 'first_last'
+      ? index === 0 ? '首' : index === 1 ? '尾' : undefined
+      : videoInputMode === 'first_frame' && index === 0 ? '首' : undefined
   const updateSettings = (patch: Partial<GenerationSettings>) => onSettingsChange({ ...settings, ...patch })
   const composerRef = useRef<HTMLElement>(null)
   const dragStateRef = useRef<{ pointerId: number; startClientX: number; startClientY: number; x: number; y: number; started: boolean } | null>(null)
@@ -677,9 +840,15 @@ function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount, maximu
               title="管理参考"
             >
               <span className="canvas-composer__reference-strip">
-                {references.slice(0, 4).map((reference) => reference.mediaKind === 'video'
-                  ? <video key={reference.id} src={reference.image} aria-label={reference.name} className={reference.primary ? 'is-primary' : ''} muted playsInline preload="metadata" />
-                  : <img key={reference.id} src={reference.image} alt="" className={reference.primary ? 'is-primary' : ''} />)}
+                {references.slice(0, 4).map((reference, index) => {
+                  const badge = videoReferenceBadge(index)
+                  return <span key={reference.id} className="canvas-composer__reference-thumb">
+                    {reference.mediaKind === 'video'
+                      ? <video src={reference.image} aria-label={reference.name} className={reference.primary ? 'is-primary' : ''} muted playsInline preload="metadata" />
+                      : <img src={reference.image} alt="" className={reference.primary ? 'is-primary' : ''} />}
+                    {badge ? <i aria-hidden="true">{badge}</i> : null}
+                  </span>
+                })}
               </span>
               <span className="canvas-composer__reference-count">{references.length}</span>
             </button>
@@ -734,16 +903,13 @@ function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount, maximu
             ) : null}
             {isVideoModel ? (
               <section className="canvas-composer__video-input" aria-label="视频输入模式">
-                <header>
-                  <div><strong>输入方式</strong><span>{videoModeCopy.detail}</span></div>
-                  <small>{videoRatioPolicy.controlLabel} · 2K · {settings.duration ?? selectedModel.defaultDuration ?? 5} 秒</small>
-                </header>
+                <strong className="canvas-composer__video-input-label">视频输入</strong>
                 <div className="canvas-composer__video-modes" role="radiogroup" aria-label="选择视频输入方式">
                   {([
-                    ['first_frame', '保持首帧', '1 图'],
-                    ['first_last', '首尾帧', '2 图'],
-                    ['reference', '扩展画面', '可选比例'],
-                  ] as const).map(([value, label, meta]) => (
+                    ['first_frame', '首帧'],
+                    ['first_last', '首尾帧'],
+                    ['reference', '参考素材'],
+                  ] as const).map(([value, label]) => (
                     <button
                       key={value}
                       type="button"
@@ -753,41 +919,16 @@ function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount, maximu
                       disabled={interactionLocked}
                       onClick={() => onVideoInputModeChange?.(value)}
                     >
-                      <strong>{label}</strong><small>{meta}</small>
+                      <strong>{label}</strong>
                     </button>
                   ))}
                 </div>
-                <div className="canvas-composer__video-map">
-                  {videoInputMode === 'first_last' ? (
-                    <>
-                      <button type="button" disabled={interactionLocked || !onOpenAssets} onClick={onOpenAssets} aria-label="从素材库或本地添加首帧">
-                        <i>{references[0] ? '✓' : '1'}</i><span><strong>首帧</strong><small>{references[0]?.name ?? '点击添加'}</small></span>
-                      </button>
-                      <b>→</b>
-                      <button type="button" disabled={interactionLocked || !onOpenAssets} onClick={onOpenAssets} aria-label="从素材库或本地添加尾帧">
-                        <i>{references[1] ? '✓' : '2'}</i><span><strong>尾帧</strong><small>{references[1]?.name ?? '点击添加'}</small></span>
-                      </button>
-                    </>
-                  ) : videoInputMode === 'first_frame' ? (
-                    <button type="button" disabled={interactionLocked || !onOpenAssets} onClick={onOpenAssets} aria-label="从素材库或本地添加首帧图片">
-                      <i>{references[0] ? '✓' : '1'}</i><span><strong>首帧图片</strong><small>{references[0]?.name ?? '点击添加'}</small></span>
-                    </button>
-                  ) : (
-                    <button type="button" disabled={interactionLocked || !onOpenAssets} onClick={onOpenAssets} aria-label="从素材库或本地添加参考素材">
-                      <i>{references.length || '+'}</i><span><strong>参考素材</strong><small>{references.length ? `已连接 ${references.length} 个` : '点击添加图片或视频'}</small></span>
-                    </button>
-                  )}
-                </div>
-                <p className={canGenerate ? 'is-ready' : ''} aria-live="polite">
-                  {canGenerate
-                    ? videoInputMode === 'reference'
-                      ? `将智能补全至 ${settings.aspectRatio}，起始画面可能略有变化`
-                      : '将保持输入画面，输出比例跟随素材'
-                    : videoInputMode === 'first_last'
-                      ? '请按连线顺序连接 2 张图片'
-                      : videoInputMode === 'first_frame'
-                        ? '请只连接 1 张图片'
-                        : '请连接至少 1 个图片或视频参考'}
+                <p
+                  className={`canvas-composer__video-input-hint${videoInputHint ? '' : ' is-empty'}`}
+                  aria-live="polite"
+                  aria-hidden={!videoInputHint}
+                >
+                  {videoInputHint || '\u00a0'}
                 </p>
               </section>
             ) : null}
@@ -806,44 +947,67 @@ function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount, maximu
         </div>
 
         <footer className="canvas-composer__footer">
-          <div className={`canvas-composer__settings${isVideoModel ? ' is-video' : ''}`} aria-label="生成参数">
-            <label>
-              <span>模型</span>
-              <select aria-label="生成模型" value={settings.model} disabled={interactionLocked} onChange={(event) => {
-                const model = modelOptions.find((option) => option.id === event.target.value)
-                if (model) onSettingsChange(settingsForModel(settings, model))
-              }}>
-                {modelOptions.map((model) => <option value={model.id} key={model.id}>{model.label}</option>)}
-              </select>
-            </label>
-            <label>
-              <span>比例</span>
-              {isVideoModel && !videoRatioPolicy.ratioSelectable ? (
-                <select aria-label="画面比例跟随素材" value="adaptive" disabled>
-                  <option value="adaptive">跟随素材</option>
-                </select>
-              ) : (
-                <select aria-label="画面比例" value={settings.aspectRatio} disabled={interactionLocked} onChange={(event) => updateSettings({ aspectRatio: event.target.value as GenerationSettings['aspectRatio'] })}>
-                  {(selectedModel?.aspectRatios ?? ['1:1', '3:4', '4:5', '9:16']).map((ratio) => <option value={ratio} key={ratio}>{ratio}</option>)}
-                </select>
-              )}
-            </label>
-            {!isVideoModel ? <label>
-              <span>分辨率</span>
-              <select aria-label="输出规格" value={settings.resolution} disabled={interactionLocked} onChange={(event) => updateSettings({ resolution: event.target.value as GenerationSettings['resolution'] })}>
-                {(selectedModel?.resolutions ?? ['1K', '2K']).map((resolution) => <option value={resolution} key={resolution}>{resolution}</option>)}
-              </select>
-            </label> : null}
-            {isVideoModel ? <label>
-              <span>时长</span>
-              <select aria-label="视频时长" value={settings.duration ?? selectedModel.defaultDuration ?? 5} disabled={interactionLocked} onChange={(event) => updateSettings({ duration: Number(event.target.value) })}>
-                {(selectedModel.durations ?? [5]).map((duration) => <option value={duration} key={duration}>{duration} 秒</option>)}
-              </select>
-            </label> : null}
-            <label>
-              <span>候选数</span>
-              <input aria-label="候选数量" type="number" min="1" max={maximumBatchCount} value={batchCount} disabled={interactionLocked} onChange={(event) => onBatchCountChange(Number(event.target.value))} />
-            </label>
+          <div className="canvas-composer__settings-stack">
+            <div className={`canvas-composer__settings canvas-composer__settings--primary${isVideoModel ? ' is-video' : ''}`} aria-label="常用生成参数">
+              <ComposerOptionPopover label="模型" value={modelDisplayLabel(selectedModel) || settings.model} valueIcon={modelProviderLogo(selectedModel)} disabled={interactionLocked} width={240} className="is-model">
+                {(close) => <div className="composer-model-menu" role="listbox" aria-label="选择生成模型">
+                  {modelOptions.map((model) => {
+                    const selected = model.id === settings.model
+                    return <button key={model.id} type="button" role="option" aria-selected={selected} className={selected ? 'is-selected' : ''} onClick={() => {
+                      onSettingsChange(settingsForModel(settings, model))
+                      close()
+                    }}>
+                      <img src={modelProviderLogo(model)} alt="" />
+                      <strong>{modelDisplayLabel(model)}</strong>
+                      {selected ? <b>✓</b> : null}
+                    </button>
+                  })}
+                </div>}
+              </ComposerOptionPopover>
+              {isVideoModel ? <ComposerOptionPopover label="时长" value={`${settings.duration ?? selectedModel.defaultDuration ?? 5} 秒`} disabled={interactionLocked} width={112} className="is-compact">
+                {(close) => <div className="composer-compact-menu" role="listbox" aria-label="选择视频时长">
+                  {(selectedModel.durations ?? [5]).filter((duration) => [5, 10, 15].includes(duration)).map((duration) => <button key={duration} type="button" role="option" aria-selected={(settings.duration ?? selectedModel.defaultDuration ?? 5) === duration} className={(settings.duration ?? selectedModel.defaultDuration ?? 5) === duration ? 'is-selected' : ''} onClick={() => {
+                    updateSettings({ duration })
+                    close()
+                  }}>{duration} 秒</button>)}
+                </div>}
+              </ComposerOptionPopover> : null}
+              <ComposerOptionPopover label="候选数" value={String(batchCount)} disabled={interactionLocked} width={96} className="is-compact">
+                {(close) => <div className="composer-compact-menu" role="listbox" aria-label="选择候选数量">
+                  {Array.from({ length: maximumBatchCount }, (_, index) => index + 1).map((count) => <button key={count} type="button" role="option" aria-selected={batchCount === count} className={batchCount === count ? 'is-selected' : ''} onClick={() => {
+                    onBatchCountChange(count)
+                    close()
+                  }}>{count}</button>)}
+                </div>}
+              </ComposerOptionPopover>
+              <ComposerOptionPopover
+                label="输出"
+                value={`${isVideoModel && !videoRatioPolicy.ratioSelectable ? '跟随素材' : settings.aspectRatio} · ${settings.resolution}`}
+                disabled={interactionLocked}
+                width={300}
+                className="is-output"
+              >
+                {(close) => <div className="composer-output-menu">
+                  <section>
+                    <header><strong>画幅</strong>{isVideoModel && !videoRatioPolicy.ratioSelectable ? <small>由输入素材决定</small> : null}</header>
+                    {isVideoModel && !videoRatioPolicy.ratioSelectable ? <div className="composer-output-adaptive"><AspectRatioGlyph ratio="1:1" /><span>跟随素材</span></div> : <div className="composer-aspect-grid" role="radiogroup" aria-label="选择画面比例">
+                      {(selectedModel?.aspectRatios ?? ['1:1', '3:4', '4:5', '9:16']).map((ratio) => <button key={ratio} type="button" role="radio" aria-checked={settings.aspectRatio === ratio} className={settings.aspectRatio === ratio ? 'is-selected' : ''} onClick={() => updateSettings({ aspectRatio: ratio as GenerationSettings['aspectRatio'] })}>
+                        <AspectRatioGlyph ratio={ratio} /><span>{ratio}</span>
+                      </button>)}
+                    </div>}
+                  </section>
+                  <section>
+                    <header><strong>清晰度</strong></header>
+                    <div className="composer-resolution-grid" role="radiogroup" aria-label="选择输出清晰度">
+                      {(selectedModel?.resolutions ?? ['1K', '2K']).map((resolution) => <button key={resolution} type="button" role="radio" aria-checked={settings.resolution === resolution} className={settings.resolution === resolution ? 'is-selected' : ''} onClick={() => {
+                        updateSettings({ resolution: resolution as GenerationSettings['resolution'] })
+                        close()
+                      }}>{resolution}</button>)}
+                    </div>
+                  </section>
+                </div>}
+              </ComposerOptionPopover>
+            </div>
           </div>
           <div className={error ? 'canvas-composer__feedback is-error' : 'canvas-composer__feedback'} role={error ? 'alert' : 'status'}>
             {error ?? (isGenerating
@@ -925,8 +1089,32 @@ function ReferenceGroupNode({ data, selected }: NodeProps) {
   )
 }
 
+type ResultGroupCandidateUi = {
+  id: string
+  name: string
+  image?: string
+  mediaKind: GenerationMediaKind
+  active: boolean
+  promoted: boolean
+}
+
+type ResultNodeUiData = ResultNodeData & {
+  __ui?: {
+    group?: ResultGroupPresentation
+    targetNodeId?: string
+    groupCandidates?: ResultGroupCandidateUi[]
+    onToggleGroup?: (groupId: string) => void
+    onChooseCandidate?: (groupId: string, candidateId: string, promoted: boolean) => void
+    onOpenAddMenu?: (resultNodeId: string, screen: { x: number; y: number }) => void
+  }
+}
+
 function ResultNode({ data, id, selected }: NodeProps) {
-  const result = data as ResultNodeData
+  const result = data as ResultNodeUiData
+  const presentation = result.__ui
+  const resultGroup = presentation?.group
+  const targetNodeId = presentation?.targetNodeId ?? id
+  const groupCandidates = presentation?.groupCandidates ?? []
   const isSelected = selected || Boolean(result.selected)
   const [imageFailed, setImageFailed] = useState(false)
   const [videoDimensions, setVideoDimensions] = useState<{ width: number; height: number } | null>(null)
@@ -993,7 +1181,7 @@ function ResultNode({ data, id, selected }: NodeProps) {
         title={mediaKind === 'video' ? '连接到 H3 节点作为参考视频' : hasDisplayableImage ? '将这张生成结果连到下一生成节点' : '任务完成后可将生成结果连到下一节点'}
       />
       <header className="result-node__header">
-        <ImageNodeTitle nodeId={id} name={resultName} />
+        <ImageNodeTitle nodeId={targetNodeId} name={resultName} />
         {settings ? <span className="result-node__metadata">{displayedAspectRatio} · {settings.resolution}{settings.duration ? ` · ${settings.duration}秒` : ''}</span> : null}
         {hasDisplayableImage ? <button
           className="result-node__header-remove nodrag nowheel"
@@ -1003,7 +1191,7 @@ function ResultNode({ data, id, selected }: NodeProps) {
           onPointerDown={(event) => event.stopPropagation()}
           onClick={(event) => {
             event.stopPropagation()
-            removeNodeFromCanvas(id)
+            removeNodeFromCanvas(targetNodeId)
           }}
         ><DeleteIcon /></button> : null}
       </header>
@@ -1033,7 +1221,7 @@ function ResultNode({ data, id, selected }: NodeProps) {
           onPointerDown={(event) => event.stopPropagation()}
           onClick={(event) => {
             event.stopPropagation()
-            saveGeneratedImageToLibrary({ image: result.image!, name: resultName })
+            saveGeneratedImageToLibrary({ image: result.image!, name: resultName, mediaKind: result.mediaKind ?? 'image' })
           }}
         >{isSavedToLibrary ? '已入库' : '入库'}</button> : null}
         {hasDisplayableImage
@@ -1060,17 +1248,51 @@ function ResultNode({ data, id, selected }: NodeProps) {
             {result.status === 'generating' ? <button className="result-node__task-action nodrag nowheel" type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); cancelGeneration() }}>取消</button> : null}
             {result.status === 'failed' ? <div className="result-node__task-actions nodrag nowheel" onPointerDown={(event) => event.stopPropagation()}>
               <button className="result-node__task-action" type="button" onClick={(event) => { event.stopPropagation(); void retryGeneration() }}>原配方重试</button>
-              <button className="result-node__task-action is-danger" type="button" onClick={(event) => { event.stopPropagation(); removeNodeFromCanvas(id) }}>删除任务</button>
+              <button className="result-node__task-action is-danger" type="button" onClick={(event) => { event.stopPropagation(); removeNodeFromCanvas(targetNodeId) }}>删除任务</button>
             </div> : null}
-            {result.status === 'cancelled' ? <button className="result-node__task-action nodrag nowheel is-danger" type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); removeNodeFromCanvas(id) }}>删除任务</button> : null}
+            {result.status === 'cancelled' ? <button className="result-node__task-action nodrag nowheel is-danger" type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); removeNodeFromCanvas(targetNodeId) }}>删除任务</button> : null}
           </div>
         )}
         {missingOutputCount ? <div className="result-node__partial nodrag nowheel" onPointerDown={(event) => event.stopPropagation()}>
           <span>{requestedOutputCount - missingOutputCount}/{requestedOutputCount}</span>
           <button type="button" onClick={(event) => { event.stopPropagation(); if (result.jobId) void retryMissingGeneration(result.jobId) }}>补 {missingOutputCount} 张</button>
         </div> : null}
+        {resultGroup?.representative ? <button
+          className="result-node__candidate-toggle nodrag nowheel"
+          type="button"
+          aria-label={resultGroup.expanded ? '收起候选' : `查看 ${resultGroup.total} 个候选`}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => { event.stopPropagation(); presentation?.onToggleGroup?.(resultGroup.groupId) }}
+        >{resultGroup.index}/{resultGroup.total} 候选 <span>{resultGroup.expanded ? '⌃' : '⌄'}</span></button> : null}
         {isSelected ? <span className="result-node__check">✓</span> : null}
       </div>
+      {resultGroup?.representative && resultGroup.expanded && groupCandidates.length ? <section className="result-node__candidate-popover nodrag nowheel" aria-label={`${resultGroup.total} 个候选`} onPointerDown={(event) => event.stopPropagation()}>
+        <header><strong>本次候选</strong><span>选择后在当前节点查看</span><button type="button" aria-label="收起候选" onClick={(event) => { event.stopPropagation(); presentation?.onToggleGroup?.(resultGroup.groupId) }}><CloseIcon /></button></header>
+        <div className="result-node__candidate-grid">
+          {groupCandidates.map((candidate, index) => <button
+            key={candidate.id}
+            className={candidate.active ? 'is-active' : candidate.promoted ? 'is-promoted' : ''}
+            type="button"
+            onClick={(event) => { event.stopPropagation(); presentation?.onChooseCandidate?.(resultGroup.groupId, candidate.id, candidate.promoted) }}
+          >
+            <span className="result-node__candidate-media">{candidate.image
+              ? candidate.mediaKind === 'video'
+                ? <video src={candidate.image} muted playsInline preload="metadata" />
+                : <img src={candidate.image} alt="" draggable={false} />
+              : <i>等待结果</i>}<em>{String(index + 1).padStart(2, '0')}</em></span>
+            <span className="result-node__candidate-name">{candidate.name}<small>{candidate.promoted ? '已形成分支' : candidate.active ? '当前' : '查看'}</small></span>
+          </button>)}
+        </div>
+      </section> : null}
+      {isSelected && hasDisplayableImage && presentation?.onOpenAddMenu ? <button
+        className="result-node__add-from nodrag nowheel"
+        type="button"
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => {
+          event.stopPropagation()
+          presentation.onOpenAddMenu?.(targetNodeId, { x: event.clientX, y: event.clientY })
+        }}
+      >基于此图添加 <ArrowUpRightIcon /></button> : null}
     </div>
   )
 }
@@ -1252,56 +1474,115 @@ function focusTaskFlow(setCenter: SetCenter, nodes: CanvasNode[]) {
   return setCenter((left + right) / 2, (top + bottom) / 2 + composerSafeOffset, { zoom: canvasMinZoom, duration: 220 })
 }
 
+function miniMapNodeColor(node: CanvasNode) {
+  if (node.type === 'asset') return '#b9cdbb'
+  if (node.type === 'text') return '#d8cda8'
+  if (node.type === 'generate') {
+    return (node.data as GenerateNodeData).settings.duration === undefined ? '#5f9570' : '#5f83ab'
+  }
+  if (node.type === 'result') {
+    return ((node.data as ResultNodeData).mediaKind ?? 'image') === 'video' ? '#8aa7c4' : '#91b79a'
+  }
+  return '#809a84'
+}
+
 function CanvasNavigation({
   taskNodes,
+  selectedNodes,
+  miniMapOpen,
+  canShowMiniMap,
   marqueeMode,
+  onToggleMiniMap,
   onToggleMarqueeMode,
   onAutoLayout,
   onViewportChange,
 }: {
   taskNodes: CanvasNode[]
+  selectedNodes: CanvasNode[]
+  miniMapOpen: boolean
+  canShowMiniMap: boolean
   marqueeMode: boolean
+  onToggleMiniMap: () => void
   onToggleMarqueeMode: () => void
   onAutoLayout: () => void
   onViewportChange: (viewport: { x: number; y: number; zoom: number }) => void
 }) {
-  const { getViewport, zoomIn, zoomOut, zoomTo, fitView, setCenter } = useReactFlow()
+  const { getViewport, zoomTo, fitView, setCenter } = useReactFlow()
   const { zoom } = useViewport()
   const zoomPercent = Math.round(zoom * 100)
   const zoomFill = `${Math.round(((zoom - canvasMinZoom) / (canvasMaxZoom - canvasMinZoom)) * 100)}%`
-  const atMinimumZoom = zoom <= canvasMinZoom + 0.005
-  const atMaximumZoom = zoom >= canvasMaxZoom - 0.005
   const commitViewport = (operation: Promise<boolean>) => {
     void operation.then(() => onViewportChange(getViewport()))
     window.setTimeout(() => onViewportChange(getViewport()), 260)
   }
+  const smartFocusLabel = selectedNodes.length
+    ? '聚焦选中节点'
+    : taskNodes.length
+      ? '聚焦本次任务'
+      : '适配全部节点'
+  const focusCanvas = () => {
+    if (selectedNodes.length) {
+      commitViewport(fitView({ nodes: selectedNodes, duration: 180, padding: 0.32, minZoom: canvasMinZoom, maxZoom: 1.2 }))
+      return
+    }
+    if (taskNodes.length) {
+      commitViewport(focusTaskFlow(setCenter, taskNodes))
+      return
+    }
+    commitViewport(fitView({ duration: 180, padding: 0.16, minZoom: canvasMinZoom, maxZoom: 1 }))
+  }
+  const closeMoreMenu = (event: ReactMouseEvent<HTMLButtonElement>) => {
+    event.currentTarget.closest('details')?.removeAttribute('open')
+  }
   return (
     <Panel position="bottom-left" className="zoom-panel nopan nowheel">
-      <div className="zoom-panel__controls" aria-label="画布缩放">
-        <button onClick={() => commitViewport(zoomOut({ duration: 120 }))} disabled={atMinimumZoom} aria-label="缩小画布" title="缩小画布">−</button>
-        <input
-          className="zoom-track"
-          aria-label="画布缩放级别"
-          type="range"
-          min={canvasMinZoom}
-          max={canvasMaxZoom}
-          step="0.01"
-          value={zoom}
-          style={{ '--zoom-fill': zoomFill } as CSSProperties}
-          onChange={(event) => commitViewport(zoomTo(Number(event.target.value), { duration: 90 }))}
-        />
-        <strong aria-live="polite">{zoomPercent}%</strong>
-        <button onClick={() => commitViewport(zoomIn({ duration: 120 }))} disabled={atMaximumZoom} aria-label="放大画布" title="放大画布">＋</button>
-        <span className="zoom-panel__divider" aria-hidden="true" />
-        <button className={marqueeMode ? 'zoom-panel__action is-active' : 'zoom-panel__action'} onClick={onToggleMarqueeMode} aria-pressed={marqueeMode} aria-label={marqueeMode ? '退出框选模式' : '进入框选模式'}>{marqueeMode ? '框选中' : '框选'}</button>
-        <button className="zoom-panel__action" onClick={() => {
-          onAutoLayout()
-          window.requestAnimationFrame(() => commitViewport(fitView({ duration: 220, padding: 0.16, minZoom: canvasMinZoom, maxZoom: 1 })))
-        }} aria-label="按任务整理布局" title="按生成血缘整理节点">按任务整理</button>
-        <button className="zoom-panel__action" onClick={() => commitViewport(fitView({ duration: 180, padding: 0.16, minZoom: canvasMinZoom, maxZoom: 1 }))} aria-label="适配画布">适配</button>
-        {taskNodes.length ? <button className="zoom-panel__action" onClick={() => commitViewport(focusTaskFlow(setCenter, taskNodes))} aria-label="聚焦本次任务">本次任务</button> : null}
+      <div className="zoom-panel__controls" aria-label="画布导航">
+        <button
+          className={miniMapOpen ? 'zoom-panel__icon-button is-active' : 'zoom-panel__icon-button'}
+          type="button"
+          onClick={onToggleMiniMap}
+          disabled={!canShowMiniMap}
+          aria-label={miniMapOpen ? '关闭小地图' : '打开小地图'}
+          aria-expanded={miniMapOpen}
+          aria-controls="canvas-minimap"
+          title={canShowMiniMap ? (miniMapOpen ? '关闭小地图' : '打开小地图') : '节点较少，暂不需要小地图'}
+        ><MapIcon /></button>
+        <button className="zoom-panel__icon-button" type="button" onClick={focusCanvas} aria-label={smartFocusLabel} title={smartFocusLabel}><FocusIcon /></button>
+        <div className="zoom-panel__slider">
+          <input
+            className="zoom-track"
+            aria-label="画布缩放级别"
+            type="range"
+            min={canvasMinZoom}
+            max={canvasMaxZoom}
+            step="0.01"
+            value={zoom}
+            style={{ '--zoom-fill': zoomFill } as CSSProperties}
+            onChange={(event) => commitViewport(zoomTo(Number(event.target.value), { duration: 90 }))}
+          />
+          <output aria-live="polite">{zoomPercent}%</output>
+        </div>
+        <details className="zoom-panel__more">
+          <summary className="zoom-panel__icon-button" role="button" aria-label="更多画布工具" title="更多画布工具"><MoreIcon /></summary>
+          <div className="zoom-panel__menu" role="menu">
+            <button
+              className={marqueeMode ? 'is-active' : ''}
+              type="button"
+              role="menuitem"
+              onClick={(event) => { onToggleMarqueeMode(); closeMoreMenu(event) }}
+            >{marqueeMode ? '退出框选' : '框选节点'}<span>Shift</span></button>
+            <button type="button" role="menuitem" onClick={(event) => {
+              onAutoLayout()
+              window.requestAnimationFrame(() => commitViewport(fitView({ duration: 220, padding: 0.16, minZoom: canvasMinZoom, maxZoom: 1 })))
+              closeMoreMenu(event)
+            }}>自动整理</button>
+            <button type="button" role="menuitem" onClick={(event) => {
+              commitViewport(fitView({ duration: 180, padding: 0.16, minZoom: canvasMinZoom, maxZoom: 1 }))
+              closeMoreMenu(event)
+            }}>显示全部</button>
+          </div>
+        </details>
       </div>
-      <span className="zoom-panel__hint">{marqueeMode ? '拖拽空白处框选 · 空格/中键平移' : '绿色实心点 → 空心点连线 · Shift 框选'}</span>
     </Panel>
   )
 }
@@ -1408,6 +1689,7 @@ type NodePalettePosition = {
   screen: { x: number; y: number }
   flow: { x: number; y: number }
   parentResultId?: string
+  inputNodeId?: string
 }
 
 function CanvasDropBridge({ onReady }: { onReady: (mapper: ScreenToFlowPosition) => void }) {
@@ -1734,9 +2016,23 @@ function TaskFlowFocus({ taskKey, nodes }: { taskKey?: string; nodes: CanvasNode
 
     const timer = window.setTimeout(() => {
       void focusTaskFlow(setCenter, nodes)
-    }, 180)
+    }, 260)
     return () => window.clearTimeout(timer)
   }, [nodes, setCenter, taskKey])
+
+  return null
+}
+
+function FocusCanvasNode({ node, requestId }: { node?: CanvasNode; requestId: number }) {
+  const { fitView } = useReactFlow()
+
+  useEffect(() => {
+    if (!node) return
+    const frame = window.requestAnimationFrame(() => {
+      void fitView({ nodes: [node], duration: 220, padding: 0.48, minZoom: canvasMinZoom, maxZoom: 1.05 })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [fitView, node, requestId])
 
   return null
 }
@@ -1823,8 +2119,8 @@ function CanvasWorkspace() {
   const deleteAsset = useCanvasStore((state) => state.deleteAsset)
   const saveCurrentAsTemplate = useCanvasStore((state) => state.saveCurrentAsTemplate)
   const saveCurrentAsSharedTemplate = useCanvasStore((state) => state.saveCurrentAsSharedTemplate)
-  const createCanvasFromTemplate = useCanvasStore((state) => state.createCanvasFromTemplate)
-  const createCanvasFromSharedTemplate = useCanvasStore((state) => state.createCanvasFromSharedTemplate)
+  const createDocumentFromTemplate = useCanvasStore((state) => state.createDocumentFromTemplate)
+  const refreshSharedTemplates = useCanvasStore((state) => state.refreshSharedTemplates)
   const assistantMessage = useCanvasStore((state) => state.assistantMessage)
   const generationStatus = useCanvasStore((state) => state.generationStatus)
   const generationError = useCanvasStore((state) => state.generationError)
@@ -1850,6 +2146,7 @@ function CanvasWorkspace() {
   const [composerOpen, setComposerOpen] = useState(false)
   const [resultComposerDraft, setResultComposerDraft] = useState<ResultComposerDraft | null>(null)
   const [imagePreview, setImagePreview] = useState<{ image: string; name: string; mediaKind: GenerationMediaKind } | null>(null)
+  const [historyFocusRequest, setHistoryFocusRequest] = useState<{ nodeId: string; requestId: number } | null>(null)
   const [renamingProjectTabId, setRenamingProjectTabId] = useState<string | null>(null)
   const [projectTabNameDraft, setProjectTabNameDraft] = useState('')
   const [assetToDelete, setAssetToDelete] = useState<AssetRecord | null>(null)
@@ -1861,6 +2158,10 @@ function CanvasWorkspace() {
   const [revealingResultNodeIds, setRevealingResultNodeIds] = useState<Map<string, number>>(() => new Map())
   const [canvasUploadMessage, setCanvasUploadMessage] = useState('')
   const [marqueeMode, setMarqueeMode] = useState(false)
+  const [miniMapOpen, setMiniMapOpen] = useState(false)
+  const [zoomMode, setZoomMode] = useState(() => canvasZoomMode(document.viewport.zoom))
+  const [expandedResultGroupIds, setExpandedResultGroupIds] = useState<Set<string>>(() => new Set())
+  const [activeResultByGroupId, setActiveResultByGroupId] = useState<Map<string, string>>(() => new Map())
   const [isConnecting, setIsConnecting] = useState(false)
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
   const [edgeActionPosition, setEdgeActionPosition] = useState<{ x: number; y: number } | null>(null)
@@ -1891,6 +2192,14 @@ function CanvasWorkspace() {
       return true
     })
   }, [document.assets, globalAssets])
+  const projectTemplateSaveSummary = useMemo(
+    () => summarizeWorkflowTemplate(document.nodes, document.edges),
+    [document.edges, document.nodes],
+  )
+  const sharedTemplateSaveSummary = useMemo(
+    () => summarizeWorkflowTemplate(document.nodes, document.edges, true),
+    [document.edges, document.nodes],
+  )
   const screenToFlowPositionRef = useRef<ScreenToFlowPosition | null>(null)
   const canvasPaneRef = useRef<HTMLElement | null>(null)
   const nodeFileInputRef = useRef<HTMLInputElement>(null)
@@ -1912,6 +2221,13 @@ function CanvasWorkspace() {
     () => readCachedCanvasViewport(document.id) ?? document.viewport,
     [document.id, document.viewport],
   )
+  useEffect(() => {
+    setZoomMode(canvasZoomMode(restoredViewport.zoom))
+  }, [document.id, restoredViewport.zoom])
+  useEffect(() => {
+    setExpandedResultGroupIds(new Set())
+    setActiveResultByGroupId(new Map())
+  }, [document.id])
   const completeViewportRestore = useCallback(() => {
     // 忽略 React Flow 挂载时补发的默认视角事件，避免写坏已保存的画布位置。
     window.requestAnimationFrame(() => {
@@ -2186,6 +2502,26 @@ function CanvasWorkspace() {
     return true
   }, [openNewDocument, setWorkspaceView, workspaceProjects])
 
+  const createWorkspaceProjectFromTemplate = useCallback(async (templateId: string, shared: boolean) => {
+    const project = createDocumentFromTemplate(templateId, shared)
+    if (!project) return false
+    try {
+      const saved = await createCanvasProject(project)
+      openNewDocument(saved)
+      setWorkspaceProjects((current) => [{
+        id: saved.id,
+        name: saved.name,
+        updatedAt: saved.updatedAt,
+        cover: saved.history[0]?.image || undefined,
+        summary: `模板项目 · ${saved.nodes.length} 个节点`,
+      }, ...current.filter((item) => item.id !== saved.id)])
+      setWorkspaceView('canvas', saved.id)
+      return true
+    } catch {
+      return false
+    }
+  }, [createDocumentFromTemplate, openNewDocument, setWorkspaceView])
+
   const renameWorkspaceProject = useCallback(async (projectId: string, name: string) => {
     const nextName = name.trim()
     if (!nextName) return false
@@ -2333,18 +2669,164 @@ function CanvasWorkspace() {
     resultRevealTimersRef.current.forEach((timer) => window.clearTimeout(timer))
   }, [])
 
+  const toggleResultGroup = useCallback((groupId: string) => {
+    setExpandedResultGroupIds((current) => {
+      const next = new Set(current)
+      if (next.has(groupId)) next.delete(groupId)
+      else next.add(groupId)
+      return next
+    })
+  }, [])
+
+  const chooseResultCandidate = useCallback((groupId: string, candidateId: string, promoted: boolean) => {
+    setActiveResultByGroupId((current) => new Map(current).set(groupId, candidateId))
+    selectNode(candidateId)
+    if (promoted) {
+      setExpandedResultGroupIds((current) => {
+        const next = new Set(current)
+        next.delete(groupId)
+        return next
+      })
+    }
+  }, [selectNode])
+
+  const openAddMenuFromResult = useCallback((resultNodeId: string, screen: { x: number; y: number }) => {
+    const mapper = screenToFlowPositionRef.current
+    const paneRect = canvasPaneRef.current?.getBoundingClientRect()
+    if (!mapper || !paneRect) return
+    const screenPoint = {
+      x: Math.max(paneRect.left + 94, Math.min(paneRect.right - 176, screen.x)),
+      y: Math.max(paneRect.top + 92, Math.min(paneRect.bottom - 158, screen.y)),
+    }
+    setAssetsOpen(false)
+    setAssetLibraryTargetGenerateId(null)
+    setTemplatesOpen(false)
+    setHistoryOpen(false)
+    setNodeReferencesOpen(false)
+    setCandidatesOpen(false)
+    setNodeInspectorOpen(false)
+    setDeliveryOpen(false)
+    setResultComposerDraft(null)
+    setExpandedResultGroupIds((current) => {
+      const next = new Set(current)
+      const result = document.nodes.find((node) => node.id === resultNodeId && node.type === 'result')
+      const resultData = result?.type === 'result' ? result.data as ResultNodeData : undefined
+      const groupId = resultData?.jobId ?? resultData?.taskGroupId
+      if (groupId) next.delete(groupId)
+      return next
+    })
+    setNodePalette({
+      flow: mapper(screenPoint),
+      screen: {
+        x: Math.max(94, Math.min(paneRect.width - 262, screenPoint.x - paneRect.left + 8)),
+        y: Math.max(70, Math.min(paneRect.height - 268, screenPoint.y - paneRect.top + 8)),
+      },
+      parentResultId: resultNodeId,
+    })
+  }, [document.nodes])
+
+  const selectedFocusNodeIds = useMemo(() => {
+    const selectedIds = document.nodes.filter((node) => node.selected).map((node) => node.id)
+    if (selectedIds.length) return selectedIds
+    return selectedNodeId ? [selectedNodeId] : []
+  }, [document.nodes, selectedNodeId])
+  const focusedLineage = useMemo(
+    () => traceCanvasLineage(selectedFocusNodeIds, document.edges),
+    [document.edges, selectedFocusNodeIds],
+  )
+  const hasLineageFocus = selectedFocusNodeIds.length > 0
+  const resultNodesById = useMemo(() => new Map(document.nodes
+    .filter((node) => node.type === 'result')
+    .map((node) => [node.id, node] as const)), [document.nodes])
+  const resultNodesWithDownstream = useMemo(() => new Set(document.edges
+    .filter((edge) => resultNodesById.has(edge.source))
+    .map((edge) => edge.source)), [document.edges, resultNodesById])
+  const resultGroupPresentation = useMemo(() => planResultGroupPresentation(
+    document.nodes.flatMap((node) => {
+      if (node.type !== 'result') return []
+      const result = node.data as ResultNodeData
+      return [{
+        id: node.id,
+        groupId: result.jobId ?? result.taskGroupId,
+        selected: Boolean(node.selected || node.id === selectedNodeId || result.selected),
+        active: activeResultByGroupId.get(result.jobId ?? result.taskGroupId ?? '') === node.id,
+        hasDownstream: resultNodesWithDownstream.has(node.id),
+        variant: result.variant,
+      }]
+    }),
+    expandedResultGroupIds,
+  ), [activeResultByGroupId, document.nodes, expandedResultGroupIds, resultNodesWithDownstream, selectedNodeId])
+  const resultGroupCandidates = useMemo(() => {
+    const groups = new Map<string, ResultGroupCandidateUi[]>()
+    for (const node of resultNodesById.values()) {
+      const group = resultGroupPresentation.get(node.id)
+      if (!group) continue
+      const result = node.data as ResultNodeData
+      const candidates = groups.get(group.groupId) ?? []
+      candidates.push({
+        id: node.id,
+        name: result.label ?? `候选 ${(result.variant ?? candidates.length) + 1}`,
+        image: result.image,
+        mediaKind: result.mediaKind ?? 'image',
+        active: group.activeId === node.id,
+        promoted: group.promoted,
+      })
+      groups.set(group.groupId, candidates)
+    }
+    for (const candidates of groups.values()) {
+      candidates.sort((left, right) => {
+        const leftNode = resultNodesById.get(left.id)
+        const rightNode = resultNodesById.get(right.id)
+        const leftVariant = leftNode?.type === 'result' ? (leftNode.data as ResultNodeData).variant : undefined
+        const rightVariant = rightNode?.type === 'result' ? (rightNode.data as ResultNodeData).variant : undefined
+        return (leftVariant ?? Number.MAX_SAFE_INTEGER) - (rightVariant ?? Number.MAX_SAFE_INTEGER)
+          || left.id.localeCompare(right.id)
+      })
+    }
+    return groups
+  }, [resultGroupPresentation, resultNodesById])
+  const hiddenResultNodeIds = useMemo(() => new Set([...resultGroupPresentation]
+    .filter(([, presentation]) => presentation.hidden)
+    .map(([nodeId]) => nodeId)), [resultGroupPresentation])
+
   const renderedNodes = useMemo(() => document.nodes.map((node) => {
     const entryIndex = revealingResultNodeIds.get(node.id)
-    if (node.type !== 'result' || entryIndex === undefined) return node
+    const group = resultGroupPresentation.get(node.id)
+    const focusNodeId = group?.representative ? group.activeId : node.id
+    const focusClass = hasLineageFocus
+      ? focusedLineage.nodeIds.has(focusNodeId) ? 'is-lineage' : 'is-lineage-muted'
+      : ''
+    const revealClass = node.type === 'result' && entryIndex !== undefined ? 'result-node--arriving' : ''
+    const isResult = node.type === 'result'
+    const activeResultNode = isResult && group?.representative ? resultNodesById.get(group.activeId) : undefined
+    const displayedData = activeResultNode?.data ?? node.data
+    if (!focusClass && !revealClass && !isResult) return node
     return {
       ...node,
-      className: `${node.className ?? ''} result-node--arriving`.trim(),
-      style: {
-        ...node.style,
-        '--result-entry-delay': `${entryIndex * 45}ms`,
-      } as CSSProperties,
+      className: `${node.className ?? ''} ${focusClass} ${revealClass}`.trim(),
+      selected: Boolean(node.selected || (group?.representative && group.activeId === selectedNodeId)),
+      hidden: Boolean(node.hidden || group?.hidden),
+      ...(isResult ? {
+        data: {
+          ...displayedData,
+          __ui: {
+            group,
+            targetNodeId: group?.representative ? group.activeId : node.id,
+            groupCandidates: group?.representative ? resultGroupCandidates.get(group.groupId) : undefined,
+            onToggleGroup: toggleResultGroup,
+            onChooseCandidate: chooseResultCandidate,
+            onOpenAddMenu: openAddMenuFromResult,
+          },
+        } as ResultNodeUiData,
+      } : {}),
+      ...(entryIndex === undefined ? {} : {
+        style: {
+          ...node.style,
+          '--result-entry-delay': `${entryIndex * 45}ms`,
+        } as CSSProperties,
+      }),
     }
-  }), [document.nodes, revealingResultNodeIds])
+  }), [chooseResultCandidate, document.nodes, focusedLineage.nodeIds, hasLineageFocus, openAddMenuFromResult, resultGroupCandidates, resultGroupPresentation, resultNodesById, revealingResultNodeIds, selectedNodeId, toggleResultGroup])
 
   const refreshGenerationService = useCallback(async () => {
     setGenerationService(initialGenerationServiceState)
@@ -2444,6 +2926,11 @@ function CanvasWorkspace() {
     persistViewport(viewport)
   }, [hydrated, persistViewport])
 
+  const onCanvasMove = useCallback((_event: unknown, viewport: typeof document.viewport) => {
+    const nextMode = canvasZoomMode(viewport.zoom)
+    setZoomMode((current) => current === nextMode ? current : nextMode)
+  }, [])
+
   const autoLayoutCanvas = useCallback(() => {
     if (!document.nodes.length) return
     setNodes(layoutCanvasNodes(document.nodes, document.edges))
@@ -2514,26 +3001,6 @@ function CanvasWorkspace() {
     showComposer()
     closeWorkbenchPanels()
   }, [clearGenerationError, closeWorkbenchPanels, document.nodes, maximumBatchCount, selectedNodeId, showComposer, updateGenerateNode])
-
-  const openResultComposer = useCallback((resultNodeId: string) => {
-    const resultNode = document.nodes.find((node) => node.id === resultNodeId && node.type === 'result')
-    if (!resultNode || resultNode.type !== 'result') return
-    const result = resultNode.data as ResultNodeData
-    if (!result.image) return
-    const recipe = result.generationRecipe
-    const inheritedPrompt = recipe?.prompt.trim()
-    closeWorkbenchPanels()
-    clearGenerationError()
-    setComposerOpen(false)
-    selectNode(resultNodeId)
-    setResultComposerDraft({
-      resultNodeId,
-      prompt: inheritedPrompt || '保持当前商品与主体，基于当前图片做一版新的视觉迭代。',
-      batchCount: Math.min(maximumBatchCount, Math.max(1, recipe?.batchCount ?? 1)),
-      settings: { ...(recipe?.settings ?? result.generationSettings ?? defaultGenerationSettings) },
-      refinementMode: 'faithful',
-    })
-  }, [clearGenerationError, closeWorkbenchPanels, document.nodes, maximumBatchCount, selectNode])
 
   const rebuildHeroFromResult = useCallback((resultNodeId: string) => {
     const draftId = createGenerateFromResultRecipe(resultNodeId)
@@ -2607,9 +3074,13 @@ function CanvasWorkspace() {
     const mapper = screenToFlowPositionRef.current
     const paneRect = canvasPaneRef.current?.getBoundingClientRect()
     if (!mapper || !paneRect) return
-    const selectedResult = document.nodes.find((node) => node.id === selectedNodeId && node.type === 'result')
+    const selectedNode = document.nodes.find((node) => node.id === selectedNodeId)
+    const selectedResult = selectedNode?.type === 'result' ? selectedNode : undefined
     const selectedResultData = selectedResult?.type === 'result' ? selectedResult.data as ResultNodeData : undefined
     const contextualResultId = parentResultId ?? (selectedResultData?.image ? selectedResult?.id : undefined)
+    const contextualInputNodeId = !contextualResultId && (selectedNode?.type === 'asset' || selectedNode?.type === 'text')
+      ? selectedNode.id
+      : undefined
     const screenPoint = {
       x: fromDock
         ? Math.max(paneRect.left + 172, Math.min(paneRect.right - 176, event.clientX + 132))
@@ -2624,6 +3095,7 @@ function CanvasWorkspace() {
         y: Math.max(70, Math.min(paneRect.height - 268, screenPoint.y - paneRect.top + 8)),
       },
       parentResultId: contextualResultId,
+      inputNodeId: contextualInputNodeId,
     })
   }, [closeWorkbenchPanels, document.nodes, selectedNodeId])
 
@@ -2687,9 +3159,14 @@ function CanvasWorkspace() {
 
   const renderedEdges = useMemo(() => document.edges.map((edge) => ({
     ...edge,
-    className: `${edge.className ?? ''}${isVideoConnection(edge) ? ' media-edge--video' : ''}`.trim(),
+    hidden: Boolean(edge.hidden || hiddenResultNodeIds.has(edge.source) || hiddenResultNodeIds.has(edge.target)),
+    className: [
+      edge.className ?? '',
+      isVideoConnection(edge) ? 'media-edge--video' : '',
+      hasLineageFocus ? focusedLineage.edgeIds.has(edge.id) ? 'is-lineage' : 'is-lineage-muted' : '',
+    ].filter(Boolean).join(' '),
     style: { ...edge.style, ...graphEdgeStyle(edge) },
-  })), [document.edges, graphEdgeStyle, isVideoConnection])
+  })), [document.edges, focusedLineage.edgeIds, graphEdgeStyle, hasLineageFocus, hiddenResultNodeIds, isVideoConnection])
 
   const onConnect = useCallback((connection: Connection) => {
     if (!isGraphConnectionValid(connection)) return
@@ -2802,6 +3279,7 @@ function CanvasWorkspace() {
       if (node.type !== 'result') return []
       const result = node.data as ResultNodeData
       if (!result.image) return []
+      const settings = result.generationSettings ?? result.generationRecipe?.settings
       return [{
         id: node.id,
         nodeId: node.id,
@@ -2810,6 +3288,9 @@ function CanvasWorkspace() {
         mediaKind: result.mediaKind ?? 'image',
         name: result.label ?? (result.generationKind === 'refinement' ? '精修版本' : '生成图片'),
         createdAt: result.submittedAt ?? 0,
+        aspectRatio: settings?.aspectRatio,
+        resolution: settings?.resolution,
+        duration: settings?.duration,
       }]
     })
     const resultVersionIds = new Set(results.map((item) => item.versionId).filter((id): id is string => Boolean(id)))
@@ -2824,6 +3305,11 @@ function CanvasWorkspace() {
       }))
     return [...results, ...legacyHistory].sort((left, right) => right.createdAt - left.createdAt)
   }, [document.history, document.nodes])
+  const deliveryTargets = useMemo<DeliveryPanelTarget[]>(() => generatedHistoryItems.flatMap((item) => (
+    item.nodeId && canUseForImageDelivery(item.mediaKind)
+      ? [{ nodeId: item.nodeId, versionId: item.versionId, image: item.image, label: item.name }]
+      : []
+  )), [generatedHistoryItems])
   const selectedCanvasNode = document.nodes.find((node) => node.id === selectedNodeId)
   const selectedEdge = selectedEdgeId ? document.edges.find((edge) => edge.id === selectedEdgeId) : undefined
   const selectedResult = selectedCanvasNode?.type === 'result' ? selectedCanvasNode : undefined
@@ -2852,6 +3338,7 @@ function CanvasWorkspace() {
     ? {
         nodeId: resultComposerNode.id,
         image: resultComposerData.image,
+        mediaKind: resultComposerData.mediaKind ?? 'image',
         label: resultComposerData.label ?? (resultComposerData.generationKind === 'refinement' ? '精修版本' : '首图版本'),
         recipe: resultComposerData.generationRecipe,
       }
@@ -2916,7 +3403,7 @@ function CanvasWorkspace() {
       role: asset.role,
       source: asset.source,
       primary: node.id === selectedGenerateData?.primaryInputId,
-      mediaKind: 'image' as const,
+      mediaKind: asset.mediaKind ?? 'image',
     }]
   })
   const selectedGenerateTextCount = selectedGenerateInputs.filter((node) => node.type === 'text').length
@@ -3185,7 +3672,7 @@ function CanvasWorkspace() {
             setImagePreview({
               image: imageNode.image,
               name: (imageNode as AssetNodeData).name,
-              mediaKind: 'image',
+              mediaKind: (imageNode as AssetNodeData).mediaKind ?? 'image',
             })
           }}
           onPaneClick={() => {
@@ -3201,11 +3688,27 @@ function CanvasWorkspace() {
           onDoubleClick={(event) => {
             if ((event.target as Element).closest('.react-flow__pane')) openNodePalette(event)
           }}
+          onMove={onCanvasMove}
           onMoveEnd={onMoveEnd}
           proOptions={{ hideAttribution: true }}
-          className="botanic-flow"
+          className={`botanic-flow semantic-zoom--${zoomMode}${hasLineageFocus ? ' has-lineage-focus' : ''}`}
         >
           <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="#d7ddd3" />
+          {miniMapOpen && document.nodes.length > 2 ? <MiniMap<CanvasNode>
+            id="canvas-minimap"
+            className="canvas-minimap nopan nowheel"
+            nodeColor={miniMapNodeColor}
+            nodeStrokeColor={(node) => node.selected ? '#1f5d38' : 'rgba(255, 255, 255, 0.84)'}
+            nodeStrokeWidth={3}
+            nodeBorderRadius={5}
+            bgColor="rgba(250, 252, 249, 0.96)"
+            maskColor="rgba(234, 241, 234, 0.58)"
+            maskStrokeColor="#3f7650"
+            maskStrokeWidth={1.5}
+            pannable
+            zoomable
+            ariaLabel="画布导航地图"
+          /> : null}
           {!document.nodes.length ? (
             <Panel position="top-left" className="empty-canvas-guide-panel">
               <EmptyCanvasGuide
@@ -3227,6 +3730,10 @@ function CanvasWorkspace() {
           ) : null}
           <CanvasDropBridge onReady={setScreenToFlowPosition} />
           <Panel position="top-left" className="task-flow-focus-panel"><TaskFlowFocus taskKey={latestTaskKey} nodes={latestTaskNodes} /></Panel>
+          {historyFocusRequest ? <FocusCanvasNode
+            node={renderedNodes.find((node) => node.id === historyFocusRequest.nodeId)}
+            requestId={historyFocusRequest.requestId}
+          /> : null}
 
           {selectedCanvasNodes.length > 1 ? <MultiSelectionToolbar count={selectedCanvasNodes.length} onClear={() => { selectNode(null); setComposerOpen(false) }} /> : null}
           {isConnecting ? <ConnectionGuide /> : null}
@@ -3235,7 +3742,7 @@ function CanvasWorkspace() {
             <nav className="dock" aria-label="画布工具">
               <button className="dock__add" onClick={(event) => openNodePalette(event, true)} aria-label="新增节点"><FigmaIcon src={plusIcon} /></button>
               <button className={assetsOpen ? 'dock__button is-active' : 'dock__button'} onClick={() => { closeWorkbenchPanels(); setAssetsOpen(true) }} aria-label="打开素材库"><FigmaIcon src={folderIcon} /></button>
-              <button className={templatesOpen ? 'dock__button is-active' : 'dock__button'} onClick={() => { closeWorkbenchPanels(); setTemplatesOpen(true) }} aria-label="视觉目标与模板"><FigmaIcon src={templatesIcon} /></button>
+              <button className={templatesOpen ? 'dock__button is-active' : 'dock__button'} onClick={() => { closeWorkbenchPanels(); setTemplatesOpen(true) }} aria-label="模板"><FigmaIcon src={templatesIcon} /></button>
               <button className={historyOpen ? 'dock__button is-active' : 'dock__button'} onClick={() => { closeWorkbenchPanels(); setHistoryOpen(true) }} aria-label="画布历史"><FigmaIcon src={historyIcon} /></button>
               <button className={deliveryOpen ? 'dock__button dock__button--delivery is-active' : 'dock__button dock__button--delivery'} onClick={() => { closeWorkbenchPanels(); setDeliveryOpen(true) }} aria-label="投放交付"><ArrowUpRightIcon /></button>
               <button className="dock__account" aria-label="账户">
@@ -3246,7 +3753,11 @@ function CanvasWorkspace() {
 
           <CanvasNavigation
             taskNodes={latestTaskNodes}
+            selectedNodes={selectedCanvasNodes}
+            miniMapOpen={miniMapOpen && document.nodes.length > 2}
+            canShowMiniMap={document.nodes.length > 2}
             marqueeMode={marqueeMode}
+            onToggleMiniMap={() => setMiniMapOpen((open) => !open)}
             onToggleMarqueeMode={() => setMarqueeMode((active) => !active)}
             onAutoLayout={autoLayoutCanvas}
             onViewportChange={persistViewport}
@@ -3336,6 +3847,7 @@ function CanvasWorkspace() {
               role: '首图',
               source: 'generated',
               primary: true,
+              mediaKind: resultComposerTarget.mediaKind,
             }]}
             status={generationStatus}
             error={generationError ?? undefined}
@@ -3416,15 +3928,27 @@ function CanvasWorkspace() {
         {canvasUploadMessage ? <div className="canvas-upload-message" role="status">{canvasUploadMessage}</div> : null}
         {nodePalette ? (
           <div className="node-palette" style={{ left: nodePalette.screen.x, top: nodePalette.screen.y }} role="dialog" aria-label="添加画布节点" onPointerDown={(event) => event.stopPropagation()}>
-            <div className="node-palette__title"><span>{nodePalette.parentResultId ? '基于此图添加' : '添加节点'}</span><button onClick={() => setNodePalette(null)} aria-label="关闭添加节点"><CloseIcon /></button></div>
+            <div className="node-palette__title"><span>{nodePalette.parentResultId ? '基于此图添加' : nodePalette.inputNodeId ? '连接所选节点' : '添加节点'}</span><button onClick={() => setNodePalette(null)} aria-label="关闭添加节点"><CloseIcon /></button></div>
             <button onClick={() => { addTextNode(nodePalette.flow); setNodePalette(null) }}>
               <b>T</b><span><strong>描述</strong><small>补充画面、卖点或构图</small></span>
             </button>
             <button onClick={() => {
+              const parentNode = nodePalette.parentResultId
+                ? document.nodes.find((node) => node.id === nodePalette.parentResultId && node.type === 'result')
+                : undefined
+              const parentMediaKind = parentNode?.type === 'result' ? (parentNode.data as ResultNodeData).mediaKind ?? 'image' : 'image'
+              const imageModel = availableModels.find((model) => (model.mediaKind ?? 'image') === 'image')
+              const imageSettings = parentMediaKind === 'video' && imageModel
+                ? settingsForModel({
+                    model: imageModel.id,
+                    aspectRatio: '3:4',
+                    resolution: '2K',
+                  }, imageModel)
+                : undefined
               const branchId = nodePalette.parentResultId
-                ? createGenerateBranchFromResult(nodePalette.parentResultId)
+                ? createGenerateBranchFromResult(nodePalette.parentResultId, imageSettings ? { settings: imageSettings } : undefined)
                 : null
-              if (!nodePalette.parentResultId) addGenerateNode(nodePalette.flow, 'image')
+              if (!nodePalette.parentResultId) addGenerateNode(nodePalette.flow, 'image', nodePalette.inputNodeId ? [nodePalette.inputNodeId] : undefined)
               if (!nodePalette.parentResultId || branchId) showComposer()
               setNodePalette(null)
             }}>
@@ -3451,12 +3975,11 @@ function CanvasWorkspace() {
               if (branchId) {
                 const parentMediaKind = parentNode?.type === 'result' ? (parentNode.data as ResultNodeData).mediaKind ?? 'image' : 'image'
                 updateGenerateNode(branchId, {
-                  label: '视频生成',
                   settings: videoSettings,
                   videoInputMode: parentMediaKind === 'video' ? 'reference' : 'first_frame',
                 })
               } else if (!nodePalette.parentResultId) {
-                addGenerateNode(nodePalette.flow, 'video')
+                addGenerateNode(nodePalette.flow, 'video', nodePalette.inputNodeId ? [nodePalette.inputNodeId] : undefined)
               }
               if (!nodePalette.parentResultId || branchId) showComposer()
               setNodePalette(null)
@@ -3502,33 +4025,34 @@ function CanvasWorkspace() {
             templates={document.templates}
             sharedTemplates={sharedTemplates}
             currentName={document.name}
-            canSave={document.nodes.length > 0}
+            projectSaveSummary={projectTemplateSaveSummary}
+            sharedSaveSummary={sharedTemplateSaveSummary}
             onSave={saveCurrentAsTemplate}
             onSaveShared={saveCurrentAsSharedTemplate}
-            onUse={(id) => {
-              createCanvasFromTemplate(id)
-              setTemplatesOpen(false)
-            }}
-            onUseShared={(id) => {
-              createCanvasFromSharedTemplate(id)
-              setTemplatesOpen(false)
-            }}
+            onCreateProject={createWorkspaceProjectFromTemplate}
+            onRefresh={refreshSharedTemplates}
             onClose={() => setTemplatesOpen(false)}
           />
         </CanvasPanelPresence>
         <CanvasPanelPresence open={historyOpen} side="right">
           <HistoryPanel
             results={generatedHistoryItems}
-            onOpen={(item) => {
-              if (item.nodeId) {
-                selectNode(item.nodeId)
-                openResultComposer(item.nodeId)
-                setHistoryOpen(false)
-                return
-              }
+            onPreview={(item) => {
               setImagePreview({ image: item.image, name: item.name, mediaKind: item.mediaKind })
             }}
-            onSaveToLibrary={(item) => saveGeneratedImageToLibrary({ image: item.image, name: item.name })}
+            onLocate={(item) => {
+              if (!item.nodeId) return
+              const group = resultGroupPresentation.get(item.nodeId)
+              const representativeNodeId = group
+                ? [...resultGroupPresentation].find(([, presentation]) => presentation.groupId === group.groupId && presentation.representative)?.[0]
+                : undefined
+              selectNode(item.nodeId)
+              setComposerOpen(false)
+              setResultComposerDraft(null)
+              setHistoryFocusRequest({ nodeId: representativeNodeId ?? item.nodeId, requestId: Date.now() })
+              setHistoryOpen(false)
+            }}
+            onSaveToLibrary={(item) => saveGeneratedImageToLibrary({ image: item.image, name: item.name, mediaKind: item.mediaKind })}
             isSaved={(item) => document.assets.some((asset) => asset.source === 'generated' && asset.image === item.image)}
             onClose={() => setHistoryOpen(false)}
           />
@@ -3569,14 +4093,17 @@ function CanvasWorkspace() {
         ) : null}
         <CanvasPanelPresence open={deliveryOpen} side="right">
           <DeliveryPanel
-            target={selectedReadyResultData && selectedResult ? {
+            target={selectedReadyResultData && selectedResult && canUseForImageDelivery(selectedReadyResultData.mediaKind) ? {
               nodeId: selectedResult.id,
               versionId: selectedReadyResultData.versionId,
               image: selectedReadyResultData.image!,
               label: selectedReadyResultData.label ?? '已选首图',
             } : undefined}
+            targets={deliveryTargets}
+            blockedVideo={Boolean(selectedReadyResultData && !canUseForImageDelivery(selectedReadyResultData.mediaKind))}
             deliveries={document.deliveries}
             onCreate={createLocalDeliveries}
+            onSelectTarget={selectNode}
             onClose={() => setDeliveryOpen(false)}
           />
         </CanvasPanelPresence>
@@ -3663,13 +4190,18 @@ async function readUploadedAssetInput(
 ): Promise<UploadedAssetInput> {
   const image = await readFileAsDataUrl(file)
   const { width: imageWidth, height: imageHeight } = await readImageDimensions(image)
+  const pathSegments = file.webkitRelativePath.split('/').filter(Boolean)
+  const folderName = pathSegments[0]
+  const collection = pathSegments.length > 1 ? pathSegments.slice(0, -1).join(' / ') : undefined
   return {
     name: file.name.replace(/\.[^.]+$/, ''),
     image,
     imageWidth,
     imageHeight,
     role,
-    tags: ['上传素材'],
+    mediaKind: 'image',
+    collection,
+    tags: folderName ? ['上传素材', folderName] : ['上传素材'],
   }
 }
 
@@ -3718,14 +4250,20 @@ async function downloadMedia(image: string, name: string, mediaKind: GenerationM
 }
 
 function AssetLibrary({ assets, onAdd, onUpload, onMoveToRole, onDelete, onClose }: AssetLibraryProps) {
+  const [mediaKind, setMediaKind] = useState<GenerationMediaKind>('image')
   const [role, setRole] = useState<'全部' | AssetRole>('全部')
   const [source, setSource] = useState<'全部' | AssetSource>('全部')
+  const [collection, setCollection] = useState('全部')
   const [query, setQuery] = useState('')
+  const [selectedAssetIds, setSelectedAssetIds] = useState<Set<string>>(() => new Set())
   const [pendingUploads, setPendingUploads] = useState<PendingUpload[]>([])
   const [isDraggingFiles, setIsDraggingFiles] = useState(false)
   const [uploadMessage, setUploadMessage] = useState('')
   const [assetMenuId, setAssetMenuId] = useState<string | null>(null)
+  const [previewAssetId, setPreviewAssetId] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const folderInputRef = useRef<HTMLInputElement>(null)
+  const previewTimerRef = useRef<number | null>(null)
   const roles: Array<'全部' | AssetRole> = ['全部', '商品', '模特', '场景', '调性']
   const stageFiles = async (files: File[]) => {
     const { accepted: imageFiles, message } = validateUploadFiles(files)
@@ -3735,28 +4273,38 @@ function AssetLibrary({ assets, onAdd, onUpload, onMoveToRole, onDelete, onClose
       return
     }
 
-    const loaded = await Promise.allSettled(allowed.map(async (file, index): Promise<PendingUpload> => ({
-      ...await readUploadedAssetInput(file, '商品'),
-      id: `pending-${Date.now()}-${index}-${file.name}`,
-      tagsText: '上传素材',
-    })))
+    const loaded = await Promise.allSettled(allowed.map(async (file, index): Promise<PendingUpload> => {
+      const upload = await readUploadedAssetInput(file, '商品')
+      return {
+        ...upload,
+        id: `pending-${Date.now()}-${index}-${file.webkitRelativePath || file.name}`,
+        tagsText: upload.tags.join(', '),
+      }
+    }))
     const staged = loaded
       .filter((result): result is PromiseFulfilledResult<PendingUpload> => result.status === 'fulfilled')
       .map((result) => result.value)
     setPendingUploads((items) => [...items, ...staged])
-    setUploadMessage(message || (imageFiles.length > allowed.length ? `已暂存 ${staged.length} 张，单次最多 ${maxUploadAssets} 张` : ''))
+    const notices = [
+      message,
+      imageFiles.length > allowed.length ? `已暂存 ${staged.length} 张，单次最多 ${maxUploadAssets} 张。` : '',
+      loaded.length > staged.length ? `${loaded.length - staged.length} 张图片读取失败。` : '',
+    ].filter(Boolean)
+    setUploadMessage(notices.join(' '))
   }
   const updatePending = (id: string, patch: Partial<PendingUpload>) => {
     setPendingUploads((items) => items.map((item) => item.id === id ? { ...item, ...patch } : item))
   }
   const savePendingUploads = () => {
     if (!pendingUploads.length) return
-    onUpload(pendingUploads.map(({ name, image, imageWidth, imageHeight, role: itemRole, tagsText }) => ({
+    onUpload(pendingUploads.map(({ name, image, imageWidth, imageHeight, role: itemRole, mediaKind, collection, tagsText }) => ({
       name,
       image,
       imageWidth,
       imageHeight,
       role: itemRole,
+      mediaKind,
+      collection,
       tags: tagsText.split(/[，,]/).map((tag) => tag.trim()).filter(Boolean),
     })))
     setPendingUploads([])
@@ -3765,21 +4313,98 @@ function AssetLibrary({ assets, onAdd, onUpload, onMoveToRole, onDelete, onClose
     setUploadMessage('已存入本地素材库')
   }
   const deferredQuery = useDeferredValue(query)
+  const mediaCounts = useMemo(() => ({
+    image: assets.filter((item) => (item.mediaKind ?? 'image') === 'image').length,
+    video: assets.filter((item) => item.mediaKind === 'video').length,
+  }), [assets])
+  const collections = useMemo(() => [...new Set(assets
+    .filter((item) => (item.mediaKind ?? 'image') === mediaKind)
+    .map((item) => item.collection)
+    .filter((item): item is string => Boolean(item)))].sort((left, right) => left.localeCompare(right, 'zh-Hans-CN')), [assets, mediaKind])
   const visibleItems = useMemo(() => assets.filter((item) => {
+    const matchesMediaKind = (item.mediaKind ?? 'image') === mediaKind
     const matchesRole = role === '全部' || item.role === role
     const matchesSource = source === '全部' || item.source === source
+    const matchesCollection = collection === '全部' || item.collection === collection
     const keyword = deferredQuery.trim().toLowerCase()
-    const matchesQuery = !keyword || [item.name, item.role, item.source, ...item.tags].join(' ').toLowerCase().includes(keyword)
-    return matchesRole && matchesSource && matchesQuery
-  }), [assets, deferredQuery, role, source])
+    const matchesQuery = !keyword || [item.name, item.role, item.source, item.collection ?? '', ...item.tags].join(' ').toLowerCase().includes(keyword)
+    return matchesMediaKind && matchesRole && matchesSource && matchesCollection && matchesQuery
+  }), [assets, collection, deferredQuery, mediaKind, role, source])
+  const previewAsset = assets.find((item) => item.id === previewAssetId) ?? null
+  const activeFilterCount = Number(role !== '全部') + Number(source !== '全部') + Number(collection !== '全部')
+  const sourceLabel = (itemSource: AssetSource) => itemSource === 'brand' ? '共享品牌' : itemSource === 'upload' ? '本地上传' : '生成入库'
+
+  useEffect(() => () => {
+    if (previewTimerRef.current !== null) window.clearTimeout(previewTimerRef.current)
+  }, [])
+
+  useEffect(() => {
+    if (!previewAsset) return
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setPreviewAssetId(null)
+    }
+    document.addEventListener('keydown', closeOnEscape)
+    return () => document.removeEventListener('keydown', closeOnEscape)
+  }, [previewAsset])
+
+  const openPreviewAfterClick = (assetId: string) => {
+    if (previewTimerRef.current !== null) window.clearTimeout(previewTimerRef.current)
+    previewTimerRef.current = window.setTimeout(() => {
+      setPreviewAssetId(assetId)
+      previewTimerRef.current = null
+    }, 180)
+  }
+
+  const addFromDoubleClick = (assetId: string) => {
+    if (previewTimerRef.current !== null) window.clearTimeout(previewTimerRef.current)
+    previewTimerRef.current = null
+    onAdd(assetId)
+  }
 
   return (
-    <aside className={pendingUploads.length ? 'asset-library has-pending-uploads' : 'asset-library'} aria-label="素材库">
+    <aside
+      className={`${pendingUploads.length ? 'asset-library has-pending-uploads' : 'asset-library'}${isDraggingFiles ? ' is-dragging-files' : ''}`}
+      aria-label="素材库"
+      onDragOver={(event) => {
+        if (!Array.from(event.dataTransfer.types).includes('Files')) return
+        event.preventDefault()
+        setIsDraggingFiles(true)
+      }}
+      onDragLeave={(event) => {
+        if (event.currentTarget.contains(event.relatedTarget as Node | null)) return
+        setIsDraggingFiles(false)
+      }}
+      onDrop={(event) => {
+        if (!Array.from(event.dataTransfer.types).includes('Files')) return
+        event.preventDefault()
+        setIsDraggingFiles(false)
+        void stageFiles(Array.from(event.dataTransfer.files))
+      }}
+    >
       <div className="asset-library__header">
         <div>
           <h2>素材库</h2>
         </div>
         <div className="asset-library__header-actions">
+          <details className="asset-upload-menu">
+            <summary aria-label="上传素材"><UploadIcon />上传</summary>
+            <div>
+              <button type="button" onClick={(event) => {
+                fileInputRef.current?.click()
+                event.currentTarget.closest('details')?.removeAttribute('open')
+              }}>
+                <strong>上传图片</strong>
+                <span>最多 {maxUploadAssets} 张</span>
+              </button>
+              <button type="button" onClick={(event) => {
+                folderInputRef.current?.click()
+                event.currentTarget.closest('details')?.removeAttribute('open')
+              }}>
+                <strong>上传文件夹</strong>
+                <span>递归读取图片</span>
+              </button>
+            </div>
+          </details>
           <button className="close-panel" onClick={onClose} aria-label="关闭素材库"><CloseIcon /></button>
         </div>
       </div>
@@ -3796,28 +4421,21 @@ function AssetLibrary({ assets, onAdd, onUpload, onMoveToRole, onDelete, onClose
           void stageFiles(files)
         }}
       />
-      <div
-        className={isDraggingFiles ? 'asset-dropzone is-dragging' : 'asset-dropzone'}
-        onDragOver={(event) => {
-          event.preventDefault()
-          setIsDraggingFiles(true)
+      <input
+        ref={folderInputRef}
+        className="asset-file-input"
+        type="file"
+        accept="image/png,image/jpeg,image/webp"
+        multiple
+        {...({ webkitdirectory: '', directory: '' } as Record<string, string>)}
+        aria-label="批量上传图片文件夹"
+        onChange={(event) => {
+          const files = Array.from(event.currentTarget.files ?? [])
+          event.currentTarget.value = ''
+          void stageFiles(files)
         }}
-        onDragLeave={() => setIsDraggingFiles(false)}
-        onDrop={(event) => {
-          event.preventDefault()
-          setIsDraggingFiles(false)
-          void stageFiles(Array.from(event.dataTransfer.files))
-        }}
-      >
-        <span>拖入图片，或</span>
-        <button
-          className="asset-dropzone__choose"
-          type="button"
-          data-tooltip={`PNG / JPEG / WebP，单张不超过 8MB，单次最多 ${maxUploadAssets} 张`}
-          aria-label={`选择文件。PNG / JPEG / WebP，单张不超过 8MB，单次最多 ${maxUploadAssets} 张`}
-          onClick={() => fileInputRef.current?.click()}
-        >选择文件</button>
-      </div>
+      />
+      {isDraggingFiles ? <div className="asset-drop-overlay"><UploadIcon /><strong>松开以上传</strong><span>PNG、JPEG、WebP</span></div> : null}
       {uploadMessage ? <p className="upload-message">{uploadMessage}</p> : null}
       {pendingUploads.length ? (
         <section className="upload-staging" aria-label="待入库素材">
@@ -3848,89 +4466,184 @@ function AssetLibrary({ assets, onAdd, onUpload, onMoveToRole, onDelete, onClose
           </div>
         </section>
       ) : null}
-      <input className="asset-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索素材或标签" aria-label="搜索素材" />
-      <div className="asset-filter-group">
-        <span className="asset-filter-group__label">类型</span>
-        <div className="asset-tabs" role="group" aria-label="素材类型">
-          {roles.map((item) => (
-            <button type="button" key={item} className={role === item ? 'is-active' : ''} aria-pressed={role === item} onClick={() => setRole(item)}>{item}</button>
-          ))}
-        </div>
+      <div className="asset-library__media-tabs" role="tablist" aria-label="素材媒体类型">
+        {(['image', 'video'] as const).map((kind) => (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mediaKind === kind}
+            className={mediaKind === kind ? 'is-active' : ''}
+            key={kind}
+            onClick={() => {
+              setMediaKind(kind)
+              setCollection('全部')
+              setSelectedAssetIds(new Set())
+            }}
+          >{kind === 'image' ? '图片' : '视频'} <span>{mediaCounts[kind]}</span></button>
+        ))}
       </div>
-      <div className="asset-filter-group">
-        <div className="asset-source-tabs" role="group" aria-label="素材来源">
-          {(['全部', 'brand', 'upload', 'generated'] as const).map((item) => (
-            <button type="button" key={item} className={source === item ? 'is-active' : ''} aria-pressed={source === item} onClick={() => setSource(item)}>
-              {item === '全部' ? '全部' : item === 'brand' ? '共享品牌' : item === 'upload' ? '本地上传' : '生成入库'}
-            </button>
-          ))}
-        </div>
+      <div className="asset-library__toolbar">
+        <input className="asset-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索素材或标签" aria-label="搜索素材" />
+        <details className="asset-filter-popover">
+          <summary aria-label={`筛选素材${activeFilterCount ? `，已启用 ${activeFilterCount} 项` : ''}`}>
+            筛选{activeFilterCount ? <i>{activeFilterCount}</i> : null}
+          </summary>
+          <div className="asset-filter-popover__panel">
+            <section>
+              <span>类型</span>
+              <div className="asset-filter-options" role="group" aria-label="素材类型">
+                {roles.map((item) => (
+                  <button type="button" key={item} className={role === item ? 'is-active' : ''} aria-pressed={role === item} onClick={() => setRole(item)}>{item}</button>
+                ))}
+              </div>
+            </section>
+            <section>
+              <span>来源</span>
+              <div className="asset-filter-options asset-filter-options--source" role="group" aria-label="素材来源">
+                {(['全部', 'brand', 'upload', 'generated'] as const).map((item) => (
+                  <button type="button" key={item} className={source === item ? 'is-active' : ''} aria-pressed={source === item} onClick={() => setSource(item)}>
+                    {item === '全部' ? '全部' : sourceLabel(item)}
+                  </button>
+                ))}
+              </div>
+            </section>
+            {activeFilterCount ? <button className="asset-filter-popover__reset" type="button" onClick={() => { setRole('全部'); setSource('全部'); setCollection('全部') }}>清除筛选</button> : null}
+          </div>
+        </details>
       </div>
-      <p className="asset-library__count">{visibleItems.length} 项</p>
+      {collections.length ? (
+        <div className="asset-library__collections" aria-label="素材合集">
+          {['全部', ...collections].map((item) => <button type="button" key={item} className={collection === item ? 'is-active' : ''} onClick={() => setCollection(item)}>{item}</button>)}
+        </div>
+      ) : null}
+      <div className="asset-library__results"><strong>{activeFilterCount || query ? '筛选结果' : '全部素材'}</strong><span>{visibleItems.length} 项</span></div>
       <div className="asset-grid">
         {visibleItems.length ? visibleItems.map((item) => (
           <article
-            className={assetMenuId === item.id ? 'asset-card is-menu-open' : 'asset-card'}
+            className={['asset-card', assetMenuId === item.id ? 'is-menu-open' : '', selectedAssetIds.has(item.id) ? 'is-selected' : '', item.mediaKind === 'video' ? 'asset-card--video' : ''].filter(Boolean).join(' ')}
             key={item.id}
             draggable
+            tabIndex={0}
             title="可直接拖拽到画布"
+            onClick={() => openPreviewAfterClick(item.id)}
+            onDoubleClick={() => addFromDoubleClick(item.id)}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter') return
+              event.preventDefault()
+              setPreviewAssetId(item.id)
+            }}
             onDragStart={(event) => {
               event.dataTransfer.setData('text/plain', item.id)
               event.dataTransfer.setData('application/x-botanic-asset-id', item.id)
               event.dataTransfer.effectAllowed = 'copy'
             }}
           >
-            <img src={item.image} alt={item.name} loading="lazy" decoding="async" />
-            {source === '全部' ? <span className={`asset-card__source asset-card__source--${item.source}`}>{item.source === 'brand' ? '共享品牌' : item.source === 'upload' ? '本地上传' : '生成入库'}</span> : null}
+            <div className="asset-card__visual">
+              {item.mediaKind === 'video'
+                ? <video src={item.image} aria-label={item.name} muted playsInline preload="metadata" />
+                : <img src={item.image} alt={item.name} loading="lazy" decoding="async" />}
+              <button
+                type="button"
+                className="asset-card__select"
+                aria-label={`${selectedAssetIds.has(item.id) ? '取消选择' : '选择'} ${item.name}`}
+                aria-pressed={selectedAssetIds.has(item.id)}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  setSelectedAssetIds((current) => {
+                    const next = new Set(current)
+                    if (next.has(item.id)) next.delete(item.id)
+                    else next.add(item.id)
+                    return next
+                  })
+                }}
+              >{selectedAssetIds.has(item.id) ? '✓' : ''}</button>
+              {source === '全部' ? <span className={`asset-card__source asset-card__source--${item.source}`}>{sourceLabel(item.source)}</span> : null}
+              <div className="asset-card__quick-actions">
+                <button type="button" className="asset-card__add" aria-label={`将 ${item.name} 加入画布`} title="加入画布" onClick={(event) => { event.stopPropagation(); onAdd(item.id) }}><PlusSquareIcon /></button>
+                <div className="asset-card__more-wrap">
+                  <button
+                    className="asset-card__more"
+                    type="button"
+                    aria-label={`更多操作：${item.name}`}
+                    aria-expanded={assetMenuId === item.id}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      setAssetMenuId((activeId) => activeId === item.id ? null : item.id)
+                    }}
+                  ><MoreIcon /></button>
+                  {assetMenuId === item.id ? (
+                    <div className="asset-card__menu" role="menu" aria-label={`${item.name} 的更多操作`} onClick={(event) => event.stopPropagation()}>
+                      <label className="asset-card__group-select">
+                        <span>移动到分组</span>
+                        <select
+                          value={item.role}
+                          aria-label={`移动 ${item.name} 到分组`}
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onChange={(event) => {
+                            onMoveToRole(item.id, event.target.value as AssetRole)
+                            setAssetMenuId(null)
+                          }}
+                        >
+                          {uploadRoles.map((itemRole) => <option value={itemRole} key={itemRole}>{itemRole}</option>)}
+                        </select>
+                      </label>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setAssetMenuId(null)
+                          onDelete(item)
+                        }}
+                      >删除素材</button>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            </div>
             <div className="asset-card__copy">
               <strong>{item.name}</strong>
               <span>{visibleAssetTags(item.tags).filter((tag) => item.source !== 'generated' || !/^(生成|真实生成|已入库|生成入库)$/i.test(tag)).slice(0, 2).join(' · ')}</span>
             </div>
-            <div className="asset-card__actions">
-              <button className="asset-card__add" onClick={() => onAdd(item.id)}>加入画布</button>
-              <div className="asset-card__more-wrap">
-                <button
-                  className="asset-card__more"
-                  type="button"
-                  aria-label={`更多操作：${item.name}`}
-                  aria-expanded={assetMenuId === item.id}
-                  onPointerDown={(event) => event.stopPropagation()}
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    setAssetMenuId((activeId) => activeId === item.id ? null : item.id)
-                  }}
-                ><MoreIcon /></button>
-                {assetMenuId === item.id ? (
-                  <div className="asset-card__menu" role="menu" aria-label={`${item.name} 的更多操作`}>
-                    <label className="asset-card__group-select">
-                      <span>移动到分组</span>
-                      <select
-                        value={item.role}
-                        aria-label={`移动 ${item.name} 到分组`}
-                        onPointerDown={(event) => event.stopPropagation()}
-                        onChange={(event) => {
-                          onMoveToRole(item.id, event.target.value as AssetRole)
-                          setAssetMenuId(null)
-                        }}
-                      >
-                        {uploadRoles.map((itemRole) => <option value={itemRole} key={itemRole}>{itemRole}</option>)}
-                      </select>
-                    </label>
-                    <button
-                      type="button"
-                      role="menuitem"
-                      onClick={() => {
-                        setAssetMenuId(null)
-                        onDelete(item)
-                      }}
-                    >删除素材</button>
-                  </div>
-                ) : null}
-              </div>
-            </div>
           </article>
         )) : <p className="asset-empty">没有匹配的素材</p>}
       </div>
+      {previewAsset && typeof document !== 'undefined' ? createPortal(
+        <div className="asset-preview-backdrop" role="presentation" onPointerDown={(event) => {
+          if (event.target === event.currentTarget) setPreviewAssetId(null)
+        }}>
+          <section className="asset-preview" role="dialog" aria-modal="true" aria-label={`预览素材 ${previewAsset.name}`}>
+            <header>
+              <div><span>{sourceLabel(previewAsset.source)} · {previewAsset.role}</span><h3>{previewAsset.name}</h3></div>
+              <button type="button" autoFocus onClick={() => setPreviewAssetId(null)} aria-label="关闭素材预览"><CloseIcon /></button>
+            </header>
+            <div className="asset-preview__image">{previewAsset.mediaKind === 'video'
+              ? <video src={previewAsset.image} aria-label={previewAsset.name} controls playsInline preload="metadata" />
+              : <img src={previewAsset.image} alt={previewAsset.name} />}</div>
+            <footer>
+              <div>
+                <span>{previewAsset.imageWidth && previewAsset.imageHeight ? `${previewAsset.imageWidth} × ${previewAsset.imageHeight}` : previewAsset.mediaKind === 'video' ? '视频素材' : '图片素材'}{previewAsset.collection ? ` · ${previewAsset.collection}` : ''}</span>
+                <p>{visibleAssetTags(previewAsset.tags).slice(0, 4).join(' · ') || '暂无标签'}</p>
+              </div>
+              <div className="asset-preview__actions">
+                <button type="button" className="asset-preview__download" onClick={() => void downloadMedia(previewAsset.image, previewAsset.name, previewAsset.mediaKind ?? 'image')}><DownloadIcon />下载</button>
+                <button type="button" className="asset-preview__add" onClick={() => { onAdd(previewAsset.id); setPreviewAssetId(null) }}><PlusSquareIcon />加入画布</button>
+              </div>
+            </footer>
+          </section>
+        </div>,
+        document.body,
+      ) : null}
+      {selectedAssetIds.size ? (
+        <div className="asset-library__batch-bar" role="toolbar" aria-label="批量素材操作">
+          <strong>已选 {selectedAssetIds.size} 项</strong>
+          <button type="button" onClick={() => {
+            selectedAssetIds.forEach((id) => onAdd(id))
+            setSelectedAssetIds(new Set())
+          }}><PlusSquareIcon />加入画布</button>
+          <button type="button" onClick={() => setSelectedAssetIds(new Set())}>取消</button>
+        </div>
+      ) : null}
     </aside>
   )
 }
@@ -3939,121 +4652,243 @@ function TemplatePanel({
   templates,
   sharedTemplates,
   currentName,
-  canSave,
+  projectSaveSummary,
+  sharedSaveSummary,
   onSave,
   onSaveShared,
-  onUse,
-  onUseShared,
+  onCreateProject,
+  onRefresh,
   onClose,
 }: {
   templates: CanvasTemplate[]
   sharedTemplates: CanvasTemplate[]
   currentName: string
-  canSave: boolean
+  projectSaveSummary: WorkflowTemplateSummary
+  sharedSaveSummary: WorkflowTemplateSummary
   onSave: (name: string) => void
   onSaveShared: (name: string) => Promise<boolean>
-  onUse: (id: string) => void
-  onUseShared: (id: string) => void
+  onCreateProject: (id: string, shared: boolean) => Promise<boolean>
+  onRefresh: () => Promise<void>
   onClose: () => void
 }) {
-  const [name, setName] = useState(`${currentName} · 视觉目标`)
-  const [sharing, setSharing] = useState(false)
-  const shareTemplate = async () => {
-    if (!canSave || sharing) return
-    setSharing(true)
+  const [activeTab, setActiveTab] = useState<'shared' | 'project'>(sharedTemplates.length ? 'shared' : 'project')
+  const [name, setName] = useState(`${currentName} · 模板`)
+  const [saveOpen, setSaveOpen] = useState(false)
+  const [scope, setScope] = useState<'project' | 'shared'>('project')
+  const [saving, setSaving] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+  const [refreshError, setRefreshError] = useState('')
+  const [creatingTemplateId, setCreatingTemplateId] = useState<string | null>(null)
+  const [createError, setCreateError] = useState('')
+  const saveSummary = scope === 'shared' ? sharedSaveSummary : projectSaveSummary
+  const visibleTemplates = activeTab === 'shared' ? sharedTemplates : templates
+
+  useEffect(() => {
+    let active = true
+    setRefreshing(true)
+    setRefreshError('')
+    void onRefresh()
+      .catch(() => { if (active) setRefreshError('团队模板暂时无法更新，当前显示上次同步结果。') })
+      .finally(() => { if (active) setRefreshing(false) })
+    return () => { active = false }
+  }, [onRefresh])
+
+  const openSaveDialog = () => {
+    setName(`${currentName} · 模板`)
+    setScope('project')
+    setSaveOpen(true)
+  }
+  const saveTemplate = async () => {
+    if (!name.trim() || !saveSummary.canSave || saving) return
+    setSaving(true)
     try {
-      await onSaveShared(name)
+      if (scope === 'shared') {
+        if (!await onSaveShared(name)) return
+        setActiveTab('shared')
+      } else {
+        onSave(name)
+        setActiveTab('project')
+      }
+      setSaveOpen(false)
     } finally {
-      setSharing(false)
+      setSaving(false)
     }
   }
+  const createFromTemplate = async (templateId: string) => {
+    if (creatingTemplateId) return
+    setCreateError('')
+    setCreatingTemplateId(templateId)
+    const created = await onCreateProject(templateId, activeTab === 'shared')
+    setCreatingTemplateId(null)
+    if (created) onClose()
+    else setCreateError('项目未创建，请检查网络后重试。')
+  }
+
   return (
-    <aside className="workbench-panel template-panel" aria-label="工作流模板">
-      <PanelHeader eyebrow="WORKFLOW TEMPLATE" title="工作流模板" onClose={onClose} />
-      <form className="template-save" onSubmit={(event) => { event.preventDefault(); if (canSave) onSave(name) }}>
-        <label htmlFor="template-name">保存当前节点结构</label>
-        <div>
-          <input id="template-name" value={name} onChange={(event) => setName(event.target.value)} disabled={!canSave} />
-          <button type="submit" disabled={!canSave}>项目内</button>
-          <button type="button" className="template-save__share" disabled={!canSave || sharing} onClick={() => void shareTemplate()}>{sharing ? '发布中' : '共享'}</button>
-        </div>
-      </form>
-      <p className="panel-note">{canSave ? '共享模板仅保留品牌素材、文本、节点与参数；项目私有上传和生成图不会带出项目。' : '添加素材、描述或生成节点后，可保存为模板。'}</p>
-      {sharedTemplates.length ? <section className="template-section" aria-label="共享工作流模板">
-        <h3>共享工作流</h3>
+    <aside className="workbench-panel template-panel" aria-label="模板">
+      <PanelHeader eyebrow="TEMPLATES" title="模板" onClose={onClose} />
+      <button type="button" className="template-save-trigger" disabled={!projectSaveSummary.canSave} onClick={openSaveDialog}>
+        <PlusSquareIcon />保存当前画布为模板
+      </button>
+      {!projectSaveSummary.canSave ? <p className="panel-note">添加素材、文本或生成节点后，即可保存完整工作流设置。</p> : null}
+      <div className="template-tabs" role="tablist" aria-label="模板范围">
+        <button type="button" role="tab" aria-selected={activeTab === 'shared'} className={activeTab === 'shared' ? 'is-active' : ''} onClick={() => setActiveTab('shared')}>团队模板 <span>{sharedTemplates.length}</span></button>
+        <button type="button" role="tab" aria-selected={activeTab === 'project'} className={activeTab === 'project' ? 'is-active' : ''} onClick={() => setActiveTab('project')}>本项目 <span>{templates.length}</span></button>
+      </div>
+      {refreshing && activeTab === 'shared' ? <p className="template-sync-state" role="status">正在更新团队模板…</p> : null}
+      {refreshError && activeTab === 'shared' ? <p className="template-sync-state is-error">{refreshError}</p> : null}
+      {createError ? <p className="template-sync-state is-error" role="alert">{createError}</p> : null}
+      <section className="template-section" aria-label={activeTab === 'shared' ? '团队模板' : '本项目模板'}>
         <div className="template-list">
-          {sharedTemplates.map((template) => (
-            <article className="template-card" key={template.id}>
-              {template.image ? <img src={template.image} alt="" /> : <div className="template-card__placeholder" aria-hidden="true">工作流</div>}
-              <div>
-                <strong>{template.name}</strong>
-                <span>共享工作流</span>
-                <button onClick={() => onUseShared(template.id)}>使用模板</button>
-              </div>
-            </article>
-          ))}
-        </div>
-      </section> : null}
-      <section className="template-section" aria-label="当前项目模板">
-        <h3>本项目模板</h3>
-        <div className="template-list">
-        {templates.map((template) => (
-          <article className="template-card" key={template.id}>
-            {template.image ? <img src={template.image} alt="" /> : <div className="template-card__placeholder" aria-hidden="true">工作流</div>}
-            <div>
-              <strong>{template.name}</strong>
-              <span>{template.sourceHistoryId ? '源自画布历史' : '当前画布模板'}</span>
-              <button onClick={() => onUse(template.id)}>使用模板</button>
-            </div>
-          </article>
-        ))}
-        {!templates.length ? <p className="panel-note">暂无项目内模板</p> : null}
+          {visibleTemplates.map((template) => {
+            const summary = summarizeWorkflowTemplate(template.snapshot.nodes, template.snapshot.edges)
+            const workflowKind = summary.videoWorkflowCount && summary.imageWorkflowCount
+              ? '图片 + 视频'
+              : summary.videoWorkflowCount ? '视频工作流' : '图片工作流'
+            return (
+              <article className="template-card" key={template.id}>
+                {template.image ? <img src={template.image} alt="" /> : <div className="template-card__placeholder" aria-hidden="true">模板</div>}
+                <div>
+                  <strong>{template.name}</strong>
+                  <span>{workflowKind} · {summary.nodeCount} 个节点 · {summary.promptCount} 条 Prompt</span>
+                  {summary.settings[0] ? <small>{summary.settings[0]}</small> : null}
+                  <button type="button" onClick={() => void createFromTemplate(template.id)} disabled={Boolean(creatingTemplateId)}>{creatingTemplateId === template.id ? '创建中…' : '从模板创建'}</button>
+                </div>
+              </article>
+            )
+          })}
+          {!visibleTemplates.length && !refreshing ? <div className="template-empty"><strong>{activeTab === 'shared' ? '还没有团队模板' : '本项目还没有模板'}</strong><span>{activeTab === 'shared' ? '将稳定的工作流保存为团队模板，其他项目即可复用。' : '保存当前画布后，可随时从相同 Prompt 和参数开始。'}</span></div> : null}
         </div>
       </section>
+      {saveOpen && typeof document !== 'undefined' ? createPortal(
+        <div className="template-dialog-backdrop" role="presentation" onMouseDown={() => !saving && setSaveOpen(false)}>
+          <form className="template-dialog" role="dialog" aria-modal="true" aria-labelledby="save-template-title" onMouseDown={(event) => event.stopPropagation()} onSubmit={(event) => { event.preventDefault(); void saveTemplate() }}>
+            <header><div><span className="panel-eyebrow">SAVE TEMPLATE</span><h2 id="save-template-title">保存为模板</h2></div><button type="button" onClick={() => setSaveOpen(false)} disabled={saving} aria-label="关闭"><CloseIcon /></button></header>
+            <label htmlFor="template-name">模板名称</label>
+            <input id="template-name" autoFocus value={name} maxLength={60} onChange={(event) => setName(event.target.value)} />
+            <fieldset>
+              <legend>保存范围</legend>
+              <div className="template-dialog__scope">
+                <button type="button" className={scope === 'project' ? 'is-active' : ''} aria-pressed={scope === 'project'} onClick={() => setScope('project')}><strong>仅本项目</strong><span>保留当前素材与完整设置</span></button>
+                <button type="button" className={scope === 'shared' ? 'is-active' : ''} aria-pressed={scope === 'shared'} onClick={() => setScope('shared')}><strong>团队共享</strong><span>其他项目也可以使用</span></button>
+              </div>
+            </fieldset>
+            <section className="template-dialog__summary" aria-label="模板保存内容">
+              <strong>将保存</strong>
+              <p>{saveSummary.nodeCount} 个节点 · {saveSummary.edgeCount} 条连线 · {saveSummary.promptCount} 条 Prompt</p>
+              {saveSummary.settings.length ? <small>{saveSummary.settings.slice(0, 2).join(' / ')}</small> : null}
+              {scope === 'shared' && sharedSaveSummary.privateAssetCount ? <em>{sharedSaveSummary.privateAssetCount} 个项目私有素材不会包含，Prompt 和生成参数仍会保留。</em> : null}
+            </section>
+            <footer><button type="button" onClick={() => setSaveOpen(false)} disabled={saving}>取消</button><button type="submit" className="is-primary" disabled={saving || !name.trim() || !saveSummary.canSave}>{saving ? '保存中…' : '保存模板'}</button></footer>
+          </form>
+        </div>,
+        document.body,
+      ) : null}
     </aside>
   )
 }
 
+function historyItemMeta(item: GeneratedHistoryItem) {
+  return [
+    item.aspectRatio,
+    item.resolution,
+    item.mediaKind === 'video' && item.duration ? `${item.duration}秒` : undefined,
+  ].filter(Boolean).join(' · ')
+}
+
+function historyItemTime(createdAt: number) {
+  if (!createdAt) return ''
+  const date = new Date(createdAt)
+  const today = new Date()
+  if (date.toDateString() === today.toDateString()) {
+    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
+  }
+  return `${date.getMonth() + 1}/${date.getDate()}`
+}
+
+type HistoryTimeGroup = 'today' | 'yesterday' | 'earlier' | 'archive'
+
+function historyTimeGroup(createdAt: number): HistoryTimeGroup {
+  if (!createdAt) return 'archive'
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const yesterday = new Date(today)
+  yesterday.setDate(today.getDate() - 1)
+  if (createdAt >= today.getTime()) return 'today'
+  if (createdAt >= yesterday.getTime()) return 'yesterday'
+  return 'earlier'
+}
+
+const historyTimeGroupLabels: Record<HistoryTimeGroup, string> = {
+  today: '今天',
+  yesterday: '昨天',
+  earlier: '更早',
+  archive: '历史记录',
+}
+
 function HistoryPanel({
   results,
-  onOpen,
+  onPreview,
+  onLocate,
   onSaveToLibrary,
   isSaved,
   onClose,
 }: {
   results: GeneratedHistoryItem[]
-  onOpen: (item: GeneratedHistoryItem) => void
+  onPreview: (item: GeneratedHistoryItem) => void
+  onLocate: (item: GeneratedHistoryItem) => void
   onSaveToLibrary: (item: GeneratedHistoryItem) => void
   isSaved: (item: GeneratedHistoryItem) => boolean
   onClose: () => void
 }) {
+  const [filter, setFilter] = useState<'all' | GenerationMediaKind>('all')
+  const imageCount = results.filter((item) => item.mediaKind === 'image').length
+  const videoCount = results.length - imageCount
+  const visibleResults = filter === 'all' ? results : results.filter((item) => item.mediaKind === filter)
+  const latestVisibleId = visibleResults[0]?.id
+  const groupedResults = (['today', 'yesterday', 'earlier', 'archive'] as HistoryTimeGroup[]).flatMap((group) => {
+    const items = visibleResults.filter((item) => historyTimeGroup(item.createdAt) === group)
+    return items.length ? [{ group, items }] : []
+  })
+
   return (
     <aside className="workbench-panel history-panel" aria-label="画布历史">
       <PanelHeader title="画布历史" onClose={onClose} />
-      {results.length ? <div className="history-gallery">
-        {results.map((item) => <article className="history-gallery__item" key={item.id}>
-          <button type="button" className="history-gallery__open" onClick={() => onOpen(item)} aria-label={`打开 ${item.name}`} title={item.name}>
-            {item.mediaKind === 'video'
-              ? <video src={item.image} aria-label={item.name} muted playsInline preload="metadata" />
-              : <img src={item.image} alt={item.name} />}
-          </button>
-          <button
-            type="button"
-            className="history-gallery__download"
-            aria-label={`下载 ${item.name}`}
-            title="下载原媒体"
-            onClick={() => void downloadMedia(item.image, item.name, item.mediaKind)}
-          ><DownloadIcon /></button>
-          <button
-            type="button"
-            className="history-gallery__save"
-            disabled={isSaved(item)}
-            aria-label={isSaved(item) ? `${item.name} 已入库` : `将 ${item.name} 入库`}
-            title={isSaved(item) ? '已入库' : '存入素材库'}
-            onClick={() => onSaveToLibrary(item)}
-          >{isSaved(item) ? '已入库' : '入库'}</button>
-        </article>)}
-      </div> : <p className="panel-note">暂无生成图片</p>}
+      <div className="history-filters" role="tablist" aria-label="筛选历史类型">
+        <button type="button" role="tab" aria-selected={filter === 'all'} className={filter === 'all' ? 'is-active' : ''} onClick={() => setFilter('all')}>全部 <span>{results.length}</span></button>
+        <button type="button" role="tab" aria-selected={filter === 'image'} className={filter === 'image' ? 'is-active' : ''} onClick={() => setFilter('image')}>图片 <span>{imageCount}</span></button>
+        <button type="button" role="tab" aria-selected={filter === 'video'} className={filter === 'video' ? 'is-active' : ''} onClick={() => setFilter('video')}>视频 <span>{videoCount}</span></button>
+      </div>
+      {visibleResults.length ? <div className="history-groups">
+        {groupedResults.map(({ group, items }) => <section className="history-group" key={group} aria-labelledby={`history-group-${group}`}>
+          <header><strong id={`history-group-${group}`}>{historyTimeGroupLabels[group]}</strong><span>{items.length}</span></header>
+          <div className="history-gallery">
+        {items.map((item) => {
+          const saved = isSaved(item)
+          const metadata = historyItemMeta(item)
+          const timestamp = historyItemTime(item.createdAt)
+          return <article className={`history-gallery__item history-gallery__item--${item.mediaKind}`} key={item.id}>
+            <button type="button" className="history-gallery__open" onClick={() => onPreview(item)} aria-label={`预览 ${item.name}`} title={`预览 ${item.name}`}>
+              {item.mediaKind === 'video'
+                ? <video src={item.image} aria-hidden="true" muted playsInline preload="metadata" />
+                : <img src={item.image} alt="" />}
+              {item.mediaKind === 'video' ? <><span className="history-gallery__type">视频</span><span className="history-gallery__play" aria-hidden="true">▶</span>{item.duration ? <span className="history-gallery__duration">{item.duration}秒</span> : null}</> : null}
+              {item.id === latestVisibleId ? <span className={`history-gallery__latest${item.mediaKind === 'video' ? ' is-video' : ''}`}>最新</span> : null}
+            </button>
+            <div className="history-gallery__copy">
+              <strong title={item.name}>{item.name}</strong>
+              <span>{metadata || (item.mediaKind === 'video' ? '视频' : '图片')}{timestamp ? ` · ${timestamp}` : ''}</span>
+            </div>
+            <footer className="history-gallery__actions">
+              {item.nodeId ? <button type="button" onClick={() => onLocate(item)} aria-label={`在画布定位 ${item.name}`} title="在画布定位"><FocusIcon /><span>定位</span></button> : <span />}
+              <button type="button" aria-label={`下载 ${item.name}`} title="下载原媒体" onClick={() => void downloadMedia(item.image, item.name, item.mediaKind)}><DownloadIcon /></button>
+              <button type="button" className={saved ? 'is-saved' : ''} disabled={saved} aria-label={saved ? `${item.name} 已入库` : `将 ${item.name} 入库`} title={saved ? '已入库' : '存入素材库'} onClick={() => onSaveToLibrary(item)}>{saved ? '已入库' : '入库'}</button>
+            </footer>
+          </article>
+        })}
+          </div>
+        </section>)}
+      </div> : <div className="template-empty history-empty"><strong>{results.length ? `暂无${filter === 'video' ? '视频' : '图片'}` : '暂无生成内容'}</strong><span>{results.length ? '切换类型查看其他历史内容。' : '完成图片或视频生成后，结果会出现在这里。'}</span></div>}
     </aside>
   )
 }
@@ -4591,20 +5426,18 @@ function GenerationPanel({
   )
 }
 
-type DeliveryPanelTarget = {
-  nodeId: string
-  versionId?: string
-  image: string
-  label: string
-}
-
 function DeliveryPanel({
   target,
+  targets,
+  blockedVideo,
   deliveries,
   onCreate,
+  onSelectTarget,
   onClose,
 }: {
   target?: DeliveryPanelTarget
+  targets: DeliveryPanelTarget[]
+  blockedVideo: boolean
   deliveries: DeliveryArtifact[]
   onCreate: (input: {
     targetNodeId: string
@@ -4613,56 +5446,75 @@ function DeliveryPanel({
     subtitle: string
     safeZone: boolean
   }) => void
+  onSelectTarget: (nodeId: string) => void
   onClose: () => void
 }) {
   const [selectedPresets, setSelectedPresets] = useState<DeliveryPresetId[]>(() => deliveryPresets.map((preset) => preset.id))
-  const [title, setTitle] = useState('夏日香氛 · 清透留白')
-  const [subtitle, setSubtitle] = useState('自然植萃，轻盈入夏')
+  const [activePreviewPreset, setActivePreviewPreset] = useState<DeliveryPresetId>('taobao')
+  const [title, setTitle] = useState('')
+  const [subtitle, setSubtitle] = useState('')
   const [safeZone, setSafeZone] = useState(true)
+  const [targetPickerOpen, setTargetPickerOpen] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [exportMessage, setExportMessage] = useState('')
 
-  const targetDeliveries = useMemo(() => {
-    if (!target) return []
-    return deliveryPresets.flatMap((preset) => {
-      const artifact = deliveries.find((item) => item.targetNodeId === target.nodeId && item.presetId === preset.id)
-      return artifact ? [artifact] : []
-    })
-  }, [deliveries, target])
+  const previewArtifacts = useMemo(() => target
+    ? buildDeliveryPreviewArtifacts({
+        target,
+        presets: selectedPresets,
+        draft: { title, subtitle, safeZone },
+      })
+    : [], [safeZone, selectedPresets, subtitle, target, title])
+  const activePreview = previewArtifacts.find((item) => item.presetId === activePreviewPreset) ?? previewArtifacts[0]
+  const activePreviewDefinition = activePreview
+    ? deliveryPresets.find((item) => item.id === activePreview.presetId)
+    : undefined
+  const persistedDraft = useMemo(() => target ? resolveDeliveryDraft(target.nodeId, deliveries) : undefined, [deliveries, target?.nodeId])
 
   useEffect(() => {
-    if (!target) return
-    const existing = deliveries.find((item) => item.targetNodeId === target.nodeId)
-    if (!existing) return
-    setTitle(existing.title)
-    setSubtitle(existing.subtitle)
-    setSafeZone(existing.safeZone)
-  }, [deliveries, target])
+    setTargetPickerOpen(false)
+    setExportMessage('')
+    if (!target) {
+      setTitle('')
+      setSubtitle('')
+      setSafeZone(true)
+      return
+    }
+    setTitle(persistedDraft?.title ?? '')
+    setSubtitle(persistedDraft?.subtitle ?? '')
+    setSafeZone(persistedDraft?.safeZone ?? true)
+  }, [persistedDraft?.safeZone, persistedDraft?.subtitle, persistedDraft?.title, target?.nodeId])
 
   const togglePreset = (presetId: DeliveryPresetId) => {
-    setSelectedPresets((items) => items.includes(presetId)
-      ? items.filter((item) => item !== presetId)
-      : [...items, presetId])
+    if (selectedPresets.includes(presetId)) {
+      const next = selectedPresets.filter((item) => item !== presetId)
+      setSelectedPresets(next)
+      if (activePreviewPreset === presetId && next[0]) setActivePreviewPreset(next[0])
+      return
+    }
+    setSelectedPresets([...selectedPresets, presetId])
+    setActivePreviewPreset(presetId)
   }
 
-  const handleCreate = () => {
-    if (!target || !selectedPresets.length) return
+  const selectTarget = (nodeId: string) => {
+    onSelectTarget(nodeId)
+    setTargetPickerOpen(false)
     setExportMessage('')
-    onCreate({
-      targetNodeId: target.nodeId,
-      presets: selectedPresets,
-      title,
-      subtitle,
-      safeZone,
-    })
   }
 
   const handleExport = async () => {
-    if (!targetDeliveries.length || exporting) return
+    if (!target || !previewArtifacts.length || exporting) return
     setExporting(true)
     setExportMessage('')
     try {
-      const result = await downloadDeliveryPackage(targetDeliveries)
+      const result = await downloadDeliveryPackage(previewArtifacts)
+      onCreate({
+        targetNodeId: target.nodeId,
+        presets: selectedPresets,
+        title,
+        subtitle,
+        safeZone,
+      })
       setExportMessage(`已下载 ZIP：${result.fileCount} 个文件（含 manifest）`)
     } catch (error) {
       setExportMessage(error instanceof Error ? error.message : '导出失败，请重试')
@@ -4680,13 +5532,46 @@ function DeliveryPanel({
           <div>
             <span>当前首图</span>
             <strong>{target.label}</strong>
-            <small>{target.versionId ? '已关联画布版本' : '未写入版本的当前首图'}</small>
+            <small>{target.versionId ? '已保存的画布版本' : '来自当前画布'}</small>
           </div>
+          <button type="button" className="delivery-target__change" onClick={() => setTargetPickerOpen((open) => !open)}>更换</button>
+        </div>
+      ) : blockedVideo ? (
+        <div className="delivery-blocked">
+          <strong>视频暂不支持图片投放交付</strong>
+          <span>请选择一张生成图片，视频交付将在独立流程中处理。</span>
+          <button type="button" onClick={() => setTargetPickerOpen(true)}>选择图片</button>
         </div>
       ) : (
-        <p className="delivery-empty">请先在画布中选中一张生成首图，再派生投放规格。</p>
+        <div className="delivery-empty">
+          <span>请选择一张生成图片开始投放交付。</span>
+          <button type="button" onClick={() => setTargetPickerOpen(true)}>选择图片</button>
+        </div>
       )}
 
+      {targetPickerOpen ? (
+        <section className="delivery-target-picker" aria-label="选择交付素材">
+          <div className="delivery-section__title"><strong>最近生成图片</strong><span>{targets.length} 张</span></div>
+          {targets.length ? (
+            <div className="delivery-target-picker__list">
+              {targets.map((item) => (
+                <button
+                  type="button"
+                  className={target?.nodeId === item.nodeId ? 'is-active' : ''}
+                  key={item.nodeId}
+                  onClick={() => selectTarget(item.nodeId)}
+                  aria-pressed={target?.nodeId === item.nodeId}
+                >
+                  <img src={item.image} alt="" />
+                  <span>{item.label}</span>
+                </button>
+              ))}
+            </div>
+          ) : <p>暂无可用于交付的生成图片。</p>}
+        </section>
+      ) : null}
+
+      {target ? <>
       <section className="delivery-section" aria-label="投放规格">
         <div className="delivery-section__title">
           <strong>投放规格</strong>
@@ -4712,51 +5597,54 @@ function DeliveryPanel({
         </div>
       </section>
 
-      <section className="delivery-copy" aria-label="文案与安全区">
-        <div className="delivery-section__title"><strong>文案与安全区</strong><span>可选</span></div>
+      <section className="delivery-live-preview" aria-label="实时预览">
+          <div className="delivery-section__title"><strong>实时预览</strong><span>边调边看</span></div>
+          {selectedPresets.length ? (
+            <>
+              <div className="delivery-preview-tabs" role="tablist" aria-label="预览渠道">
+                {selectedPresets.map((presetId) => {
+                  const preset = deliveryPresets.find((item) => item.id === presetId)
+                  if (!preset) return null
+                  const active = activePreview?.presetId === presetId
+                  return <button type="button" role="tab" aria-selected={active} className={active ? 'is-active' : ''} key={presetId} onClick={() => setActivePreviewPreset(presetId)}>{preset.channel}</button>
+                })}
+              </div>
+              {activePreview && activePreviewDefinition ? (
+                <div className="delivery-live-preview__stage">
+                  <div className={`delivery-preview delivery-preview--${activePreview.presetId}`}>
+                    <img src={activePreview.image} alt={`${activePreview.targetLabel} · ${activePreviewDefinition.channel}`} />
+                    {activePreview.title || activePreview.subtitle ? (
+                      <div className="delivery-preview__copy">
+                        {activePreview.title ? <strong>{activePreview.title}</strong> : null}
+                        {activePreview.subtitle ? <small>{activePreview.subtitle}</small> : null}
+                      </div>
+                    ) : null}
+                    {activePreview.safeZone ? <span className="delivery-preview__safe">安全区</span> : null}
+                  </div>
+                  <p><strong>{activePreviewDefinition.channel}</strong><span>{activePreviewDefinition.ratio} · {activePreviewDefinition.width}×{activePreviewDefinition.height}</span></p>
+                </div>
+              ) : null}
+            </>
+          ) : <p className="delivery-live-preview__empty">至少选择一个投放规格。</p>}
+      </section>
+
+      <section className="delivery-copy" aria-label="文案与版式">
+        <div className="delivery-section__title"><strong>文案与版式</strong><span>可选</span></div>
         <label htmlFor="delivery-title">主标题</label>
         <input id="delivery-title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="输入投放主标题" />
         <label htmlFor="delivery-subtitle">副标题</label>
         <input id="delivery-subtitle" value={subtitle} onChange={(event) => setSubtitle(event.target.value)} placeholder="输入补充卖点" />
         <label className="delivery-safe-toggle">
           <input type="checkbox" checked={safeZone} onChange={(event) => setSafeZone(event.target.checked)} />
-          <span><strong>显示文案安全区</strong><small>预览中标注，导出图会将文案放入该区域</small></span>
+          <span><strong>显示安全区辅助线</strong><small>仅用于预览定位，导出文件不包含辅助线</small></span>
           <i aria-hidden="true" />
         </label>
       </section>
 
-      <button className="delivery-create" onClick={handleCreate} disabled={!target || !selectedPresets.length}>派生 {selectedPresets.length || ''} 个规格</button>
-      <p className="delivery-note">仅做本地等比例裁切与文案合成；尚未调用真实投放或生成 API。</p>
-
-      {targetDeliveries.length ? (
-        <section className="delivery-results" aria-label="投放预览">
-          <div className="delivery-section__title"><strong>投放预览</strong><span>{targetDeliveries.length} 个</span></div>
-          <div className="delivery-preview-list">
-            {targetDeliveries.map((artifact) => {
-              const preset = deliveryPresets.find((item) => item.id === artifact.presetId)
-              if (!preset) return null
-              return (
-                <article className="delivery-preview-card" key={artifact.id}>
-                  <div className={`delivery-preview delivery-preview--${artifact.presetId}`}>
-                    <img src={artifact.image} alt={`${artifact.targetLabel} · ${preset.channel}`} />
-                    {artifact.title || artifact.subtitle ? (
-                      <div className="delivery-preview__copy">
-                        {artifact.title ? <strong>{artifact.title}</strong> : null}
-                        {artifact.subtitle ? <small>{artifact.subtitle}</small> : null}
-                      </div>
-                    ) : null}
-                    {artifact.safeZone ? <span className="delivery-preview__safe">安全区</span> : null}
-                  </div>
-                  <strong>{preset.channel}</strong>
-                  <span>{preset.ratio} · {preset.width}×{preset.height}</span>
-                </article>
-              )
-            })}
-          </div>
-          <button className="delivery-export" onClick={() => void handleExport()} disabled={exporting}>{exporting ? '正在打包…' : '导出 ZIP 交付包'}</button>
-          {exportMessage ? <p className="delivery-export-message" role="status">{exportMessage}</p> : null}
-        </section>
-      ) : null}
+      <button className="delivery-export" onClick={() => void handleExport()} disabled={!target || !selectedPresets.length || exporting}>{exporting ? '正在打包…' : `导出 ${selectedPresets.length || ''} 个规格`}</button>
+      <p className="delivery-note">本地裁切并打包，不会直接发布到平台。</p>
+      {exportMessage ? <p className="delivery-export-message" role="status">{exportMessage}</p> : null}
+      </> : null}
     </aside>
   )
 }
