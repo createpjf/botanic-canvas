@@ -1,4 +1,4 @@
-const h3Durations = Array.from({ length: 12 }, (_, index) => index + 4)
+const h3Durations = [5, 10, 15]
 
 function unique(values) {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))]

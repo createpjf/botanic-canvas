@@ -319,6 +319,7 @@ function TextNode({ data, id, selected }: NodeProps) {
 
 function GenerateNode({ data, id, selected }: NodeProps) {
   const generate = data as GenerateNodeData
+  const generateLabel = generate.settings.duration !== undefined && generate.label === '图像生成' ? '视频生成' : generate.label
   const document = useCanvasStore((state) => state.document)
   const availableModels = useCanvasStore((state) => state.availableModels)
   const removeNodeFromCanvas = useCanvasStore((state) => state.removeNodeFromCanvas)
@@ -358,7 +359,7 @@ function GenerateNode({ data, id, selected }: NodeProps) {
         id="input"
         type="target"
         position={Position.Left}
-        aria-label={`${generate.label} 输入端`}
+        aria-label={`${generateLabel} 输入端`}
         title="将图片、文本或已选首图连到这里"
       />
       <Handle
@@ -367,16 +368,16 @@ function GenerateNode({ data, id, selected }: NodeProps) {
         type="source"
         position={Position.Right}
         isConnectable={false}
-        aria-label={`${generate.label} 自动输出端`}
+        aria-label={`${generateLabel} 自动输出端`}
         title="任务完成后，系统会自动创建输出图片"
       />
       <header className="graph-node__header">
-        <strong>{generate.label}</strong>
+        <strong>{generateLabel}</strong>
         <small>{references.length} 参考 · {modelLabel} · {generate.settings.aspectRatio} · {generate.settings.resolution}{generate.settings.duration ? ` · ${generate.settings.duration}秒` : ''}</small>
         <button
           className="graph-node__remove nodrag"
           type="button"
-          aria-label={`从画布移除 ${generate.label}`}
+          aria-label={`从画布移除 ${generateLabel}`}
           onPointerDown={(event) => event.stopPropagation()}
           onClick={(event) => {
             event.stopPropagation()
@@ -478,11 +479,20 @@ function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount, maximu
   promptRef.current = prompt
   const isRefining = refinement.status === 'loading'
   const interactionLocked = isGenerating || isRefining
-  const modelOptions = models.some((model) => model.id === settings.model)
-    ? models
-    : [{ id: settings.model, label: settings.model }, ...models]
+  const activeMediaKind = models.find((model) => model.id === settings.model)?.mediaKind
+    ?? (settings.duration === undefined ? 'image' : 'video')
+  const compatibleModels = models.filter((model) => (model.mediaKind ?? 'image') === activeMediaKind)
+  const modelOptions = compatibleModels.some((model) => model.id === settings.model)
+    ? compatibleModels
+    : [{ id: settings.model, label: settings.model, mediaKind: activeMediaKind }, ...compatibleModels]
   const selectedModel = modelOptions.find((model) => model.id === settings.model)
+  const isVideoModel = selectedModel?.mediaKind === 'video'
   const primaryReference = references.find((reference) => reference.primary)
+  const videoModeCopy = videoInputMode === 'first_frame'
+    ? { title: '首帧', detail: '1 张图片作为起始画面' }
+    : videoInputMode === 'first_last'
+      ? { title: '首尾帧', detail: '按连线顺序补间两张图片' }
+      : { title: '参考素材', detail: '使用图片或视频参考风格与运动' }
   const updateSettings = (patch: Partial<GenerationSettings>) => onSettingsChange({ ...settings, ...patch })
   const composerRef = useRef<HTMLElement>(null)
   const dragStateRef = useRef<{ pointerId: number; startClientX: number; startClientY: number; x: number; y: number; started: boolean } | null>(null)
@@ -686,7 +696,7 @@ function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount, maximu
                 autoFocus={expanded}
                 aria-label={`${nodeLabel}描述`}
                 aria-busy={isRefining}
-                placeholder="描述商品、场景、构图、光线与留白要求"
+                placeholder={isVideoModel ? '描述主体动作、镜头运动、节奏与场景变化' : '描述商品、场景、构图、光线与留白要求'}
                 readOnly={isRefining}
                 onChange={(event) => handlePromptChange(event.target.value)}
               />
@@ -694,7 +704,7 @@ function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount, maximu
                 type="button"
                 className={`canvas-composer__refine${refinement.status === 'loading' ? ' is-loading' : ''}${refinementSuccessVisible ? ' is-complete' : ''}`}
                 disabled={!prompt.trim() || interactionLocked}
-                aria-label={refinementSuccessVisible ? 'Botanic 结构润色已应用' : '润色图像生成描述'}
+                aria-label={refinementSuccessVisible ? 'Botanic 结构润色已应用' : `润色${isVideoModel ? '视频' : '图像'}生成描述`}
                 title="润色描述"
                 onClick={() => void handleRefinePrompt()}
               >
@@ -709,6 +719,51 @@ function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount, maximu
               <div className="canvas-composer__refinement-status is-error" role="alert">
                 <span>{refinement.message ?? '润色失败，原文未修改。'}</span>
               </div>
+            ) : null}
+            {isVideoModel ? (
+              <section className="canvas-composer__video-input" aria-label="视频输入模式">
+                <header>
+                  <div><strong>输入方式</strong><span>{videoModeCopy.detail}</span></div>
+                  <small>2K · {settings.duration ?? selectedModel.defaultDuration ?? 5} 秒</small>
+                </header>
+                <div className="canvas-composer__video-modes" role="radiogroup" aria-label="选择视频输入方式">
+                  {([
+                    ['first_frame', '首帧', '1 图'],
+                    ['first_last', '首尾帧', '2 图'],
+                    ['reference', '参考素材', '图 / 视频'],
+                  ] as const).map(([value, label, meta]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      role="radio"
+                      aria-checked={videoInputMode === value}
+                      className={videoInputMode === value ? 'is-active' : ''}
+                      disabled={interactionLocked}
+                      onClick={() => onVideoInputModeChange?.(value)}
+                    >
+                      <strong>{label}</strong><small>{meta}</small>
+                    </button>
+                  ))}
+                </div>
+                <div className="canvas-composer__video-map">
+                  {videoInputMode === 'first_last' ? (
+                    <><span><i>1</i>首帧</span><b>→</b><span><i>2</i>尾帧</span></>
+                  ) : videoInputMode === 'first_frame' ? (
+                    <span><i>1</i>首帧图片</span>
+                  ) : (
+                    <span><i>{references.length}</i>{references.length ? `已连接 ${references.length} 个参考` : '连接图片或视频'}</span>
+                  )}
+                </div>
+                <p className={canGenerate ? 'is-ready' : ''} aria-live="polite">
+                  {canGenerate
+                    ? '输入已就绪'
+                    : videoInputMode === 'first_last'
+                      ? '请按连线顺序连接 2 张图片'
+                      : videoInputMode === 'first_frame'
+                        ? '请只连接 1 张图片'
+                        : '请连接至少 1 个图片或视频参考'}
+                </p>
+              </section>
             ) : null}
             {mode === 'result' ? (
               <div className="canvas-composer__refinement-mode" role="group" aria-label="继续生成方式">
@@ -725,7 +780,7 @@ function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount, maximu
         </div>
 
         <footer className="canvas-composer__footer">
-          <div className="canvas-composer__settings" aria-label="生成参数">
+          <div className={`canvas-composer__settings${isVideoModel ? ' is-video' : ''}`} aria-label="生成参数">
             <label>
               <span>模型</span>
               <select aria-label="生成模型" value={settings.model} disabled={interactionLocked} onChange={(event) => {
@@ -741,21 +796,13 @@ function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount, maximu
                 {(selectedModel?.aspectRatios ?? ['1:1', '3:4', '4:5', '9:16']).map((ratio) => <option value={ratio} key={ratio}>{ratio}</option>)}
               </select>
             </label>
-            <label>
+            {!isVideoModel ? <label>
               <span>分辨率</span>
               <select aria-label="输出规格" value={settings.resolution} disabled={interactionLocked} onChange={(event) => updateSettings({ resolution: event.target.value as GenerationSettings['resolution'] })}>
                 {(selectedModel?.resolutions ?? ['1K', '2K']).map((resolution) => <option value={resolution} key={resolution}>{resolution}</option>)}
               </select>
-            </label>
-            {selectedModel?.mediaKind === 'video' ? <label>
-              <span>输入</span>
-              <select aria-label="视频输入方式" value={videoInputMode} disabled={interactionLocked} onChange={(event) => onVideoInputModeChange?.(event.target.value as VideoInputMode)}>
-                <option value="first_frame">首帧</option>
-                <option value="first_last">首尾帧</option>
-                <option value="reference">参考素材</option>
-              </select>
             </label> : null}
-            {selectedModel?.mediaKind === 'video' ? <label>
+            {isVideoModel ? <label>
               <span>时长</span>
               <select aria-label="视频时长" value={settings.duration ?? selectedModel.defaultDuration ?? 5} disabled={interactionLocked} onChange={(event) => updateSettings({ duration: Number(event.target.value) })}>
                 {(selectedModel.durations ?? [5]).map((duration) => <option value={duration} key={duration}>{duration} 秒</option>)}
@@ -769,7 +816,11 @@ function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount, maximu
           <div className={error ? 'canvas-composer__feedback is-error' : 'canvas-composer__feedback'} role={error ? 'alert' : 'status'}>
             {error ?? (isGenerating
               ? (status === 'uploading' ? '正在上传参考素材…' : status === 'queued' ? '任务已入队…' : `${selectedModel?.mediaKind === 'video' ? '视频' : '图像'}服务正在生成…`)
-              : canGenerate ? (primaryReference ? `主参考 · ${primaryReference.name}` : '参数已准备好，提交后会在画布中创建新的结果节点。') : '连接并设置主商品后即可生成。')}
+              : canGenerate
+                ? (primaryReference ? `主参考 · ${primaryReference.name}` : '参数已准备好，提交后会在画布中创建新的结果节点。')
+                : isVideoModel
+                  ? `${videoModeCopy.title}模式需要${videoInputMode === 'first_last' ? '按顺序连接 2 张图片' : videoInputMode === 'first_frame' ? '连接 1 张图片' : '连接至少 1 个图片或视频参考'}`
+                  : '连接并设置主商品后即可生成。')}
           </div>
           <button type="button" className="canvas-composer__submit" disabled={interactionLocked || !canGenerate || !prompt.trim()} onClick={onGenerate}>
             {isGenerating ? '生成中…' : '生成'}
@@ -1661,10 +1712,12 @@ function EdgeActions({ edge, position, onDelete, onClose }: {
 
 function EmptyCanvasGuide({
   onOpenAssets,
-  onAddGenerate,
+  onAddImage,
+  onAddVideo,
 }: {
   onOpenAssets: () => void
-  onAddGenerate: () => void
+  onAddImage: () => void
+  onAddVideo: () => void
 }) {
   return (
     <section className="empty-canvas-guide" aria-label="空画布引导">
@@ -1673,7 +1726,8 @@ function EmptyCanvasGuide({
       <p>拖入商品、场景或灵感图；也可以先添加一个生成节点，逐步搭建这次项目的创作路径。</p>
       <div>
         <button type="button" onClick={onOpenAssets}>添加素材</button>
-        <button type="button" className="is-primary" onClick={onAddGenerate}>新建生成节点</button>
+        <button type="button" className="is-primary" onClick={onAddImage}>图片生成</button>
+        <button type="button" onClick={onAddVideo}>视频生成</button>
       </div>
     </section>
   )
@@ -2818,6 +2872,16 @@ function CanvasWorkspace() {
   ]
   const selectedGenerateModel = availableModels.find((model) => model.id === selectedGenerateData?.settings.model)
   const selectedGenerateIsVideo = selectedGenerateModel?.mediaKind === 'video'
+  const selectedGenerateLabel = selectedGenerateIsVideo && selectedGenerateData?.label === '图像生成'
+    ? '视频生成'
+    : selectedGenerateData?.label
+  const selectedVideoInputMode: VideoInputMode = selectedGenerateData?.videoInputMode
+    ?? (composerReferences.some((reference) => reference.mediaKind === 'video') ? 'reference' : composerReferences.length === 2 ? 'first_last' : 'first_frame')
+  const selectedVideoInputsValid = selectedVideoInputMode === 'reference'
+    ? composerReferences.length > 0
+    : selectedVideoInputMode === 'first_frame'
+      ? composerReferences.length === 1 && composerReferences[0]?.mediaKind !== 'video'
+      : composerReferences.length === 2 && composerReferences.every((reference) => reference.mediaKind !== 'video')
   const composerReferenceCount = composerReferences.length
   const composerPrimaryReferenceName = selectedGenerateParent?.type === 'result'
     ? ((selectedGenerateParent.data as ResultNodeData).label ?? '上游输出')
@@ -2825,15 +2889,15 @@ function CanvasWorkspace() {
   const composerContext: ComposerContext | undefined = selectedGenerateData
     ? {
         kind: 'generate',
-        label: `节点 · ${selectedGenerateData.label}`,
+        label: `节点 · ${selectedGenerateLabel}`,
         detail: `已连 ${composerReferences.length} 图 · ${selectedGenerateTextCount} 文${selectedGenerateParent ? ' · 继承上游输出' : ''}`,
       }
     : undefined
   const composerHint = generationError
     ?? (selectedGenerateData
       ? (composerReferences.length
-        ? `正在编辑「${selectedGenerateData.label}」；已连 ${composerReferences.length} 张图片、${selectedGenerateTextCount} 条描述。`
-        : `正在编辑「${selectedGenerateData.label}」；请把图片或文本连到左侧输入端。`)
+        ? `正在编辑「${selectedGenerateLabel}」；已连 ${composerReferences.length} 个素材、${selectedGenerateTextCount} 条描述。`
+        : `正在编辑「${selectedGenerateLabel}」；请把素材或文本连到左侧输入端。`)
       : '选择一个生成节点以编辑本次任务。')
 
   if (canvasHydrationFailed) {
@@ -3067,8 +3131,16 @@ function CanvasWorkspace() {
             <Panel position="top-left" className="empty-canvas-guide-panel">
               <EmptyCanvasGuide
                 onOpenAssets={() => { closeWorkbenchPanels(); setAssetsOpen(true) }}
-                onAddGenerate={() => {
-                  addGenerateNode({ x: 460, y: 330 })
+                onAddImage={() => {
+                  addGenerateNode({ x: 460, y: 330 }, 'image')
+                  showComposer()
+                }}
+                onAddVideo={() => {
+                  if (!availableModels.some((model) => model.mediaKind === 'video')) {
+                    useCanvasStore.setState({ assistantMessage: '视频模型尚未配置，请先检查 MiniMax H3。' })
+                    return
+                  }
+                  addGenerateNode({ x: 460, y: 330 }, 'video')
                   showComposer()
                 }}
               />
@@ -3113,7 +3185,7 @@ function CanvasWorkspace() {
             key={`generate-${selectedGenerate.id}`}
             projectId={document.id}
             mode="generate"
-            nodeLabel={selectedGenerateData.label}
+            nodeLabel={selectedGenerateLabel ?? selectedGenerateData.label}
             prompt={selectedGenerateData.prompt}
             batchCount={selectedGenerateData.batchCount}
             maximumBatchCount={maximumBatchCount}
@@ -3122,8 +3194,8 @@ function CanvasWorkspace() {
             references={composerReferences}
             status={generationStatus}
             error={generationError ?? undefined}
-            canGenerate={selectedGenerateIsVideo ? composerReferences.length > 0 : Boolean(composerPrimaryReferenceName)}
-            videoInputMode={selectedGenerateData.videoInputMode ?? (composerReferences.some((reference) => reference.mediaKind === 'video') ? 'reference' : composerReferences.length === 2 ? 'first_last' : 'first_frame')}
+            canGenerate={selectedGenerateIsVideo ? selectedVideoInputsValid : Boolean(composerPrimaryReferenceName)}
+            videoInputMode={selectedVideoInputMode}
             layout={composerLayout}
             onLayoutChange={setComposerLayout}
             onNodeLabelChange={(label) => updateGenerateNode(selectedGenerate.id, { label })}
@@ -3273,11 +3345,44 @@ function CanvasWorkspace() {
               const branchId = nodePalette.parentResultId
                 ? createGenerateBranchFromResult(nodePalette.parentResultId)
                 : null
-              if (!nodePalette.parentResultId) addGenerateNode(nodePalette.flow)
+              if (!nodePalette.parentResultId) addGenerateNode(nodePalette.flow, 'image')
               if (!nodePalette.parentResultId || branchId) showComposer()
               setNodePalette(null)
             }}>
-              <b><SparkleIcon /></b><span><strong>{nodePalette.parentResultId ? '继续生成' : '生成'}</strong><small>{nodePalette.parentResultId ? '以当前图片为参考' : '连接素材与描述后生成'}</small></span>
+              <b><SparkleIcon /></b><span><strong>图片生成</strong><small>{nodePalette.parentResultId ? '基于当前图片继续创作' : '连接素材与描述生成图片'}</small></span>
+            </button>
+            <button onClick={() => {
+              const videoModel = availableModels.find((model) => model.mediaKind === 'video')
+              if (!videoModel) {
+                setNodePalette(null)
+                useCanvasStore.setState({ assistantMessage: '视频模型尚未配置，请先检查 MiniMax H3。' })
+                return
+              }
+              const videoSettings = settingsForModel({
+                model: videoModel.id,
+                aspectRatio: '3:4',
+                resolution: '2K',
+              }, videoModel)
+              const parentNode = nodePalette.parentResultId
+                ? document.nodes.find((node) => node.id === nodePalette.parentResultId && node.type === 'result')
+                : undefined
+              const branchId = nodePalette.parentResultId
+                ? createGenerateBranchFromResult(nodePalette.parentResultId, { settings: videoSettings })
+                : null
+              if (branchId) {
+                const parentMediaKind = parentNode?.type === 'result' ? (parentNode.data as ResultNodeData).mediaKind ?? 'image' : 'image'
+                updateGenerateNode(branchId, {
+                  label: '视频生成',
+                  settings: videoSettings,
+                  videoInputMode: parentMediaKind === 'video' ? 'reference' : 'first_frame',
+                })
+              } else if (!nodePalette.parentResultId) {
+                addGenerateNode(nodePalette.flow, 'video')
+              }
+              if (!nodePalette.parentResultId || branchId) showComposer()
+              setNodePalette(null)
+            }}>
+              <b className="node-palette__video-icon">▶</b><span><strong>视频生成</strong><small>{nodePalette.parentResultId ? '以当前画面或视频继续生成' : '连接首帧、首尾帧或参考素材'}</small></span>
             </button>
             <button onClick={() => { setNodePalette(null); setAssetsOpen(true) }}>
               <b><FolderOutlineIcon /></b><span><strong>素材</strong><small>添加商品、场景或调性图</small></span>

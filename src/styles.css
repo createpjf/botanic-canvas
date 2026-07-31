@@ -1485,6 +1485,7 @@ select:focus-visible { outline: 2px solid #7ca58a; outline-offset: 2px; }
 .node-palette > button:hover { background: #f1f7f1; }
 .node-palette > button > b { display: grid; width: 32px; height: 32px; flex: 0 0 auto; place-items: center; border: 1px solid #d7e4d7; border-radius: 8px; background: #f7faf6; color: #3d714a; font-size: 15px; font-weight: 700; }
 .node-palette > button > b svg { width: 16px; height: 16px; }
+.node-palette > button > b.node-palette__video-icon { font-size: 11px; letter-spacing: -1px; }
 .node-palette > button > span { display: grid; gap: 1px; min-width: 0; }
 .node-palette > button strong { color: #304035; font-size: 11px; line-height: 15px; }
 .node-palette > button small { color: #7c877d; font-size: 8px; line-height: 12px; }
@@ -1954,6 +1955,25 @@ select:focus-visible { outline: 2px solid #7ca58a; outline-offset: 2px; }
 .canvas-composer__refinement-mode button.is-active { border-color: #497b57; background: #edf5ee; color: #285e38; }
 .canvas-composer__refinement-mode button:disabled { opacity: .55; cursor: not-allowed; }
 .canvas-composer__refinement-mode small { flex-basis: 100%; color: #819084; font-size: 10px; line-height: 15px; }
+.canvas-composer__video-input { display: grid; gap: 7px; margin-top: 8px; padding: 9px; border: 1px solid #dbe7dc; border-radius: 11px; background: #f7faf6; }
+.canvas-composer__video-input > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.canvas-composer__video-input > header div { display: grid; gap: 1px; }
+.canvas-composer__video-input > header strong { color: #35513c; font-size: 10px; line-height: 14px; }
+.canvas-composer__video-input > header span { color: #7b897e; font-size: 9px; line-height: 13px; }
+.canvas-composer__video-input > header small { flex: 0 0 auto; padding: 3px 6px; border-radius: 999px; background: #eaf2e9; color: #55715c; font-size: 8px; font-weight: 800; }
+.canvas-composer__video-modes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
+.canvas-composer__video-modes button { display: flex; min-width: 0; min-height: 34px; align-items: center; justify-content: space-between; gap: 4px; padding: 0 8px; border: 1px solid #dce7dc; border-radius: 8px; background: #fff; color: #637368; text-align: left; }
+.canvas-composer__video-modes button strong { overflow: hidden; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.canvas-composer__video-modes button small { color: #97a299; font-size: 7px; white-space: nowrap; }
+.canvas-composer__video-modes button:hover:not(:disabled) { border-color: #9ebca4; background: #f2f8f2; }
+.canvas-composer__video-modes button.is-active { border-color: #477753; background: #eaf3ea; color: #285d36; box-shadow: inset 0 0 0 1px rgba(71, 119, 83, .08); }
+.canvas-composer__video-modes button.is-active small { color: #5d7e65; }
+.canvas-composer__video-map { display: flex; min-height: 24px; align-items: center; gap: 6px; color: #6d7d71; font-size: 8px; }
+.canvas-composer__video-map span { display: inline-flex; min-width: 0; align-items: center; gap: 5px; padding: 3px 7px 3px 4px; border: 1px dashed #c7d9c9; border-radius: 999px; background: #fff; }
+.canvas-composer__video-map i { display: grid; width: 16px; height: 16px; place-items: center; border-radius: 50%; background: #dfece0; color: #356342; font-style: normal; font-size: 7px; font-weight: 850; }
+.canvas-composer__video-map b { color: #96a398; font-size: 10px; font-weight: 600; }
+.canvas-composer__video-input > p { margin: -2px 0 0; color: #9a695f; font-size: 8px; line-height: 12px; }
+.canvas-composer__video-input > p.is-ready { color: #568062; }
 .canvas-composer__comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; margin-top: 8px; }
 .canvas-composer__comparison section { min-width: 0; padding: 10px 11px; border: 1px solid #dde8dd; border-radius: 9px; background: #f8fbf7; }
 .canvas-composer__comparison span { color: #728176; font-size: 10px; font-weight: 800; letter-spacing: 0.3px; }
@@ -1979,6 +1999,7 @@ select:focus-visible { outline: 2px solid #7ca58a; outline-offset: 2px; }
 .canvas-composer__settings select,
 .canvas-composer__settings input { width: 100%; height: 32px; min-width: 58px; padding: 0 8px; border: 1px solid #d5e2d6; border-radius: 7px; background: #fff; color: #3e5544; font: inherit; font-size: 10px; font-weight: 700; }
 .canvas-composer__settings label:first-child select { min-width: 142px; }
+.canvas-composer__settings.is-video label:first-child select { min-width: 132px; }
 .canvas-composer__settings input { width: 58px; }
 .canvas-composer__settings select:focus,
 .canvas-composer__settings input:focus { outline: 2px solid rgba(94, 145, 105, 0.18); border-color: #78a184; }

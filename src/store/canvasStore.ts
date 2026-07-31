@@ -131,7 +131,7 @@ type CanvasStore = {
   saveGeneratedImageToLibrary: (input: { image: string; name: string }) => void
   moveAssetToRole: (assetId: string, role: AssetRole) => void
   addTextNode: (position?: XYPosition) => void
-  addGenerateNode: (position?: XYPosition) => void
+  addGenerateNode: (position?: XYPosition, mediaKind?: 'image' | 'video') => void
   createGenerateBranchFromResult: (resultNodeId: string, draft?: GenerateBranchDraft) => string | null
   createGenerateFromResultRecipe: (resultNodeId: string) => string | null
   renameCanvasNode: (nodeId: string, label: string) => void
@@ -3066,11 +3066,16 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     })
   },
 
-  addGenerateNode: (position) => {
+  addGenerateNode: (position, mediaKind = 'image') => {
     const document = get().document
     const timestamp = Date.now()
     const nodeId = `generate-${timestamp}`
-    const defaultSettings = defaultSettingsForModel(get().availableModels[0])
+    const matchingModel = get().availableModels.find((model) => (model.mediaKind ?? 'image') === mediaKind)
+    if (!matchingModel && mediaKind === 'video') {
+      set({ assistantMessage: '视频模型尚未配置，请先检查 MiniMax H3。' })
+      return
+    }
+    const defaultSettings = defaultSettingsForModel(matchingModel)
     const node: CanvasNode = {
       id: nodeId,
       type: 'generate',
@@ -3079,7 +3084,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
       selected: true,
       data: {
         kind: 'generate',
-        label: '图像生成',
+        label: mediaKind === 'video' ? '视频生成' : '图像生成',
         prompt: '',
         batchCount: 1,
         settings: defaultSettings,
@@ -3090,7 +3095,9 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
       nodes: [...document.nodes.map((item) => ({ ...item, selected: false })), node] as CanvasNode[],
     }, {
       selectedNodeId: nodeId,
-      assistantMessage: '已创建生成节点；连接商品图片与文本描述后，可直接在节点内发起生成。',
+      assistantMessage: mediaKind === 'video'
+        ? '已创建视频生成节点；连接首帧、首尾帧或参考素材后即可生成。'
+        : '已创建图像生成节点；连接商品图片与文本描述后，可直接在节点内发起生成。',
     })
   },
 
