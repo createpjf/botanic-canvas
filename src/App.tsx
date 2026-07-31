@@ -970,20 +970,20 @@ function ResultNode({ data, id, selected }: NodeProps) {
         aria-label="从结果连线"
         title={mediaKind === 'video' ? '连接到 H3 节点作为参考视频' : hasDisplayableImage ? '将这张生成结果连到下一生成节点' : '任务完成后可将生成结果连到下一节点'}
       />
-      {hasDisplayableImage ? <button
-        className="result-node-shell__remove nodrag nowheel"
-        type="button"
-        aria-label={`删除 ${resultName}`}
-        title="删除这个结果节点"
-        onPointerDown={(event) => event.stopPropagation()}
-        onClick={(event) => {
-          event.stopPropagation()
-          removeNodeFromCanvas(id)
-        }}
-      ><DeleteIcon /></button> : null}
       <header className="result-node__header">
         <ImageNodeTitle nodeId={id} name={resultName} />
         {settings ? <span className="result-node__metadata">{settings.aspectRatio} · {settings.resolution}{settings.duration ? ` · ${settings.duration}秒` : ''}</span> : null}
+        {hasDisplayableImage ? <button
+          className="result-node__header-remove nodrag nowheel"
+          type="button"
+          aria-label={`删除 ${resultName}`}
+          title="删除这个结果节点"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation()
+            removeNodeFromCanvas(id)
+          }}
+        ><DeleteIcon /></button> : null}
       </header>
       <div className={['result-node', ratioClass, isGenerating ? 'result-node--generating' : '', isSelected ? 'is-selected' : ''].filter(Boolean).join(' ')}>
         {hasDisplayableImage ? <button
@@ -2618,9 +2618,25 @@ function CanvasWorkspace() {
     return true
   }, [document.edges, document.nodes])
 
+  const isVideoConnection = useCallback((connection: Connection | Edge) => {
+    const source = document.nodes.find((node) => node.id === connection.source)
+    const target = document.nodes.find((node) => node.id === connection.target)
+    const isVideoNode = (node?: CanvasNode) => node?.type === 'generate'
+      ? (node.data as GenerateNodeData).settings.duration !== undefined
+      : node?.type === 'result' && ((node.data as ResultNodeData).mediaKind ?? 'image') === 'video'
+    return isVideoNode(source) || isVideoNode(target)
+  }, [document.nodes])
+
   const graphEdgeStyle = useCallback((connection: Connection | Edge) => {
     const source = document.nodes.find((node) => node.id === connection.source)
     const target = document.nodes.find((node) => node.id === connection.target)
+    if (isVideoConnection(connection)) {
+      return {
+        stroke: '#4b7c84',
+        strokeWidth: 1.6,
+        ...(source?.type === 'result' && target?.type === 'generate' ? { strokeDasharray: '4 3' } : {}),
+      }
+    }
     if (source?.type === 'result' && target?.type === 'generate') {
       return { stroke: '#7e9785', strokeWidth: 1.25, strokeDasharray: '4 3' }
     }
@@ -2628,7 +2644,13 @@ function CanvasWorkspace() {
       return { stroke: '#2a5238', strokeWidth: 1.7 }
     }
     return { stroke: '#4f805b', strokeWidth: 1.6 }
-  }, [document.nodes])
+  }, [document.nodes, isVideoConnection])
+
+  const renderedEdges = useMemo(() => document.edges.map((edge) => ({
+    ...edge,
+    className: `${edge.className ?? ''}${isVideoConnection(edge) ? ' media-edge--video' : ''}`.trim(),
+    style: { ...edge.style, ...graphEdgeStyle(edge) },
+  })), [document.edges, graphEdgeStyle, isVideoConnection])
 
   const onConnect = useCallback((connection: Connection) => {
     if (!isGraphConnectionValid(connection)) return
@@ -3043,7 +3065,7 @@ function CanvasWorkspace() {
 
         <ReactFlow
           nodes={renderedNodes}
-          edges={document.edges}
+          edges={renderedEdges}
           nodeTypes={nodeTypes}
           defaultViewport={document.viewport}
           minZoom={canvasMinZoom}
