@@ -7,6 +7,7 @@ import {
   type GlobalAssetLibrary,
   type GlobalWorkflowTemplateLibrary,
 } from '../domain/canvas'
+import { normalizeAssetRecord } from '../domain/assets'
 import { ProductApiError, productRequest, serverPersistenceEnabled } from './productSession'
 
 type CanvasDocumentBackup = {
@@ -674,7 +675,7 @@ export async function readCanvasProjectSummaries(): Promise<CanvasProjectSummary
 }
 
 function cloneAsset(asset: AssetRecord): AssetRecord {
-  return { ...asset, tags: Array.isArray(asset.tags) ? [...asset.tags] : [] }
+  return normalizeAssetRecord(asset)
 }
 
 function normalizeGlobalBrandAssets(assets: AssetRecord[]) {

@@ -17,6 +17,22 @@ export function MoreIcon({ className }: BotanicIconProps) {
   </svg>
 }
 
+/** 画布导航地图 */
+export function MapIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="m3.25 5.5 5.5-2.25 6.5 2.5 5.5-2.25v15l-5.5 2.25-6.5-2.5-5.5 2.25v-15Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+    <path d="M8.75 3.25v15m6.5-12.5v15" stroke="currentColor" strokeWidth="1.5" />
+  </svg>
+}
+
+/** 适配当前画布上下文 */
+export function FocusIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="M8 3.25H5.25a2 2 0 0 0-2 2V8m12.75-4.75h2.75a2 2 0 0 1 2 2V8M8 20.75H5.25a2 2 0 0 1-2-2V16m12.75 4.75h2.75a2 2 0 0 0 2-2V16" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    <circle cx="12" cy="12" r="2.25" stroke="currentColor" strokeWidth="1.5" />
+  </svg>
+}
+
 /** 植物学 Figma · Iconly/Sharp/Delete（1228:230946） */
 export function DeleteIcon({ className }: BotanicIconProps) {
   return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">

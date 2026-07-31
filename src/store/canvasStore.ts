@@ -2,8 +2,11 @@ import { create } from 'zustand'
 import type { Edge, Viewport, XYPosition } from '@xyflow/react'
 import { createEmptyCanvasDocument, seedDocument, seedGlobalAssets } from '../data/seed'
 import { defaultGenerationModels } from '../domain/canvas'
+import { normalizeAssetCollection, normalizeAssetRecord } from '../domain/assets'
+import { findOpenGeneratePosition, planGenerateNodeCreation } from '../domain/generateNodeCreation'
 import { planGenerationOutputPlacement } from '../domain/generationOutputPlacement'
 import { assignVideoInputRoles } from '../domain/videoGeneration'
+import { summarizeWorkflowTemplate } from '../domain/workflowTemplates'
 import type {
   AssetRecord,
   AssetRole,
@@ -19,6 +22,7 @@ import type {
   GenerationCandidate,
   GenerationJob,
   GenerationModelOption,
+  GenerationMediaKind,
   GenerationRecipe,
   GenerationReference,
   GenerationSettings,
@@ -128,10 +132,10 @@ type CanvasStore = {
   addAssetToCanvas: (assetId: string, position?: XYPosition, connectToGenerateId?: string) => void
   addUploadedAssets: (assets: UploadedAssetInput[]) => void
   addUploadedAssetsToCanvas: (assets: UploadedAssetInput[], position?: XYPosition) => void
-  saveGeneratedImageToLibrary: (input: { image: string; name: string }) => void
+  saveGeneratedImageToLibrary: (input: { image: string; name: string; mediaKind?: GenerationMediaKind }) => void
   moveAssetToRole: (assetId: string, role: AssetRole) => void
   addTextNode: (position?: XYPosition) => void
-  addGenerateNode: (position?: XYPosition, mediaKind?: 'image' | 'video') => void
+  addGenerateNode: (position?: XYPosition, mediaKind?: 'image' | 'video', inputNodeIds?: string[]) => string | null
   createGenerateBranchFromResult: (resultNodeId: string, draft?: GenerateBranchDraft) => string | null
   createGenerateFromResultRecipe: (resultNodeId: string) => string | null
   renameCanvasNode: (nodeId: string, label: string) => void
@@ -152,6 +156,7 @@ type CanvasStore = {
   saveCurrentAsSharedTemplate: (name: string) => Promise<boolean>
   createCanvasFromTemplate: (templateId: string) => void
   createCanvasFromSharedTemplate: (templateId: string) => void
+  createDocumentFromTemplate: (templateId: string, shared: boolean) => CanvasDocument | null
   refreshSharedTemplates: () => Promise<void>
   createCanvasFromHistory: (historyId: string) => void
   restoreHistoryVersion: (historyId: string) => void
@@ -676,7 +681,7 @@ function canvasGenerationReferences(document: CanvasDocument): CanvasGenerationR
         image: asset.image,
         role: asset.role,
         source: asset.source,
-        mediaKind: 'image',
+        mediaKind: asset.mediaKind ?? 'image',
         enabled,
         primary: enabled && asset.role === '商品' && Boolean(asset.primary),
         priority: Number.isInteger(asset.referencePriority) && asset.referencePriority! > 0 ? asset.referencePriority! : index + 1,
@@ -711,6 +716,7 @@ function buildGenerationRecipe(
       image: reference.image,
       role: reference.role,
       source: reference.source,
+      mediaKind: reference.mediaKind ?? 'image',
       primary: reference.nodeId === primary?.nodeId,
       priority: reference.priority,
     })),
@@ -739,6 +745,7 @@ function buildGraphGenerationRecipe(document: CanvasDocument, generateNodeId: st
         image: asset.image,
         role: asset.role,
         source: asset.source,
+        mediaKind: asset.mediaKind ?? 'image',
         primary: false,
         priority: index + 1,
       }]
@@ -850,6 +857,7 @@ function normalizeAssetReferenceNodes(nodes: CanvasNode[]): CanvasNode[] {
       ...node,
       data: {
         ...asset,
+        mediaKind: asset.mediaKind ?? 'image',
         referenceEnabled: enabled,
         primary,
         referencePriority: Number.isInteger(asset.referencePriority) && asset.referencePriority! > 0
@@ -1350,17 +1358,22 @@ function normalizeDocument(stored: CanvasDocument | undefined): CanvasDocument {
   const document: CanvasDocument = {
     ...seedDocument,
     ...legacy,
-    schemaVersion: 20,
+    schemaVersion: 21,
     name: cleanDisplayName(legacy.name, seedDocument.name),
     viewport: rootSnapshot.viewport,
     nodes: reconciledResultNodes,
     edges: rootSnapshot.edges,
     // V16 起品牌素材存在全局库，CanvasDocument 仅保留项目上传/生成资产。
-    assets: (legacy.assets ?? seedDocument.assets).filter((asset) => asset.source !== 'brand').map((asset) => ({
-      ...asset,
-      name: cleanDisplayName(asset.name, '未命名素材'),
-      tags: cleanAssetTags(asset.tags),
-    })),
+    assets: (legacy.assets ?? seedDocument.assets).filter((asset) => asset.source !== 'brand').map((asset) => {
+      const matchingResult = reconciledResultNodes.find((node) => node.type === 'result'
+        && (node.data as ResultNodeData).image === asset.image)
+      return normalizeAssetRecord({
+        ...asset,
+        name: cleanDisplayName(asset.name, '未命名素材'),
+        collection: normalizeAssetCollection(asset.collection),
+        tags: cleanAssetTags(asset.tags),
+      }, (matchingResult?.data as ResultNodeData | undefined)?.mediaKind)
+    }),
     templates,
     history,
     deliveries: (legacy.deliveries ?? seedDocument.deliveries).map((delivery) => ({
@@ -2409,6 +2422,40 @@ function cloneSnapshotAsCanvas(snapshotValue: CanvasSnapshot, prefix: string) {
   return { nodes, edges }
 }
 
+function instantiateWorkflowTemplateDocument(current: CanvasDocument, template: CanvasTemplate, shared: boolean) {
+  const timestamp = Date.now()
+  const cloned = cloneSnapshotAsCanvas(template.snapshot, shared ? 'shared-template' : 'template')
+  const referencedAssetIds = new Set(cloned.nodes.flatMap((node) => node.type === 'asset'
+    ? [(node.data as AssetNodeData).assetId]
+    : []))
+  const name = `${template.name} · 项目`
+  const project = createEmptyCanvasDocument(`project-${timestamp}`, name)
+  const historyEntry: CanvasHistoryEntry = {
+    id: `history-template-${timestamp}`,
+    name: `${template.name} · 初始模板`,
+    image: template.image,
+    createdAt: timestamp,
+    kind: 'template',
+    sourceTemplateId: template.id,
+    snapshot: {
+      name,
+      nodes: cloneNodes(cloned.nodes),
+      edges: cloneEdges(cloned.edges),
+      viewport: { x: 0, y: 0, zoom: 1 },
+    },
+  }
+  return {
+    ...project,
+    nodes: cloned.nodes,
+    edges: cloned.edges,
+    viewport: { x: 0, y: 0, zoom: 1 },
+    assets: shared ? [] : current.assets.filter((asset) => referencedAssetIds.has(asset.id)).map((asset) => ({ ...asset, tags: [...asset.tags] })),
+    history: [historyEntry],
+    activeTemplateId: template.id,
+    activeVersionId: historyEntry.id,
+  }
+}
+
 function historyName(count: number, kind: GenerationCandidate['kind'] = 'generation') {
   const prefix = kind === 'refinement' ? '精修分支' : '首图分支'
   return `${prefix} · v${String(count + 3).padStart(2, '0')}`
@@ -2802,6 +2849,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
           imageWidth: asset.imageWidth,
           imageHeight: asset.imageHeight,
           source: asset.source,
+          mediaKind: asset.mediaKind ?? 'image',
           referenceEnabled: true,
           primary: Boolean(reference.primary || reference.nodeId === recipe.primaryReferenceNodeId),
           referencePriority: reference.priority,
@@ -2849,6 +2897,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
         imageWidth: asset.imageWidth,
         imageHeight: asset.imageHeight,
         source: asset.source,
+        mediaKind: asset.mediaKind ?? 'image',
         referenceEnabled: true,
         primary: asset.role === '商品' && !hasPrimaryProduct,
         referencePriority: assetNodes.length + 1,
@@ -2899,6 +2948,8 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
       imageWidth: upload.imageWidth,
       imageHeight: upload.imageHeight,
       source: 'upload',
+      mediaKind: upload.mediaKind ?? 'image',
+      collection: normalizeAssetCollection(upload.collection),
       tags: upload.tags.length ? [...new Set(upload.tags)] : ['上传素材'],
     }))
 
@@ -2923,6 +2974,8 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
       imageWidth: upload.imageWidth,
       imageHeight: upload.imageHeight,
       source: 'upload',
+      mediaKind: upload.mediaKind ?? 'image',
+      collection: normalizeAssetCollection(upload.collection),
       tags: upload.tags.length ? [...new Set(upload.tags)] : ['上传素材'],
     }))
     const existingAssetNodes = document.nodes.filter((node) => node.type === 'asset')
@@ -2955,6 +3008,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
           imageWidth: asset.imageWidth,
           imageHeight: asset.imageHeight,
           source: 'upload' as const,
+          mediaKind: asset.mediaKind ?? 'image',
           referenceEnabled: true,
           primary: shouldBePrimary,
           referencePriority: existingAssetNodes.length + index + 1,
@@ -2972,7 +3026,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     })
   },
 
-  saveGeneratedImageToLibrary: ({ image, name }) => {
+  saveGeneratedImageToLibrary: ({ image, name, mediaKind = 'image' }) => {
     const document = get().document
     if (document.assets.some((asset) => asset.source === 'generated' && asset.image === image)) {
       set({ assistantMessage: `「${name}」已在当前项目素材库中。` })
@@ -2982,10 +3036,12 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     const asset: AssetRecord = {
       id: `generated-library-${Date.now()}`,
       role: '首图',
-      name: name.trim() || '生成图片',
+      name: name.trim() || (mediaKind === 'video' ? '生成视频' : '生成图片'),
       image,
       source: 'generated',
-      tags: ['首图', '画布入库'],
+      mediaKind,
+      collection: '生成结果',
+      tags: [mediaKind === 'video' ? '视频' : '首图', '画布入库'],
     }
     commit(set, { ...document, assets: [asset, ...document.assets] }, {
       assistantMessage: `已将「${asset.name}」存入当前项目素材库。`,
@@ -3066,39 +3122,37 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     })
   },
 
-  addGenerateNode: (position, mediaKind = 'image') => {
+  addGenerateNode: (position, mediaKind = 'image', inputNodeIds) => {
     const document = get().document
     const timestamp = Date.now()
     const nodeId = `generate-${timestamp}`
     const matchingModel = get().availableModels.find((model) => (model.mediaKind ?? 'image') === mediaKind)
     if (!matchingModel && mediaKind === 'video') {
       set({ assistantMessage: '视频模型尚未配置，请先检查 MiniMax H3。' })
-      return
+      return null
     }
     const defaultSettings = defaultSettingsForModel(matchingModel)
-    const node: CanvasNode = {
-      id: nodeId,
-      type: 'generate',
+    const planned = planGenerateNodeCreation({
+      nodes: document.nodes,
+      nodeId,
       position: position ?? { x: 470, y: 240 },
-      draggable: true,
-      selected: true,
-      data: {
-        kind: 'generate',
-        label: mediaKind === 'video' ? '视频生成' : '图像生成',
-        prompt: '',
-        batchCount: 1,
-        settings: defaultSettings,
-      },
-    }
+      mediaKind,
+      settings: defaultSettings,
+      inputNodeIds,
+    })
     commit(set, {
       ...document,
-      nodes: [...document.nodes.map((item) => ({ ...item, selected: false })), node] as CanvasNode[],
+      nodes: [...document.nodes.map((item) => ({ ...item, selected: false })), planned.node] as CanvasNode[],
+      edges: [...document.edges, ...planned.edges],
     }, {
       selectedNodeId: nodeId,
-      assistantMessage: mediaKind === 'video'
-        ? '已创建视频生成节点；连接首帧、首尾帧或参考素材后即可生成。'
-        : '已创建图像生成节点；连接商品图片与文本描述后，可直接在节点内发起生成。',
+      assistantMessage: planned.edges.length
+        ? `已创建「${planned.node.data.label}」并连接所选输入。`
+        : mediaKind === 'video'
+          ? '已创建视频生成节点；连接首帧、首尾帧或参考素材后即可生成。'
+          : '已创建图像生成节点；连接商品图片与文本描述后，可直接在节点内发起生成。',
     })
+    return nodeId
   },
 
   createGenerateBranchFromResult: (resultNodeId, draft) => {
@@ -3113,34 +3167,33 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     const defaultSettings = recipe?.settings ?? result.generationSettings
     const siblingBranchCount = document.edges.filter((edge) => edge.source === resultNodeId
       && document.nodes.some((node) => node.id === edge.target && node.type === 'generate')).length
+    const branchSettings = cloneGenerationSettings({ ...defaultSettings, ...draft?.settings })
+    const branchModel = get().availableModels.find((model) => model.id === branchSettings.model)
+    const branchMediaKind = branchModel?.mediaKind ?? (branchSettings.duration === undefined ? 'image' : 'video')
+    const branchPosition = findOpenGeneratePosition(document.nodes, {
+      x: parent.position.x + 372,
+      y: parent.position.y + 38 + siblingBranchCount * 238,
+    })
+    const planned = planGenerateNodeCreation({
+      nodes: document.nodes,
+      nodeId,
+      // 只为新分支寻找右侧空位；用户已经排好的节点不发生位移。
+      position: branchPosition,
+      mediaKind: branchMediaKind,
+      settings: branchSettings,
+      inputNodeIds: [resultNodeId],
+    })
     const node: CanvasNode = {
-      id: nodeId,
-      type: 'generate',
-      // 同一张图继续扩展时，分支依次向下排列；不再叠在同一个位置。
-      position: { x: parent.position.x + 372, y: parent.position.y + 38 + siblingBranchCount * 320 },
-      draggable: true,
-      selected: true,
+      ...planned.node,
       data: {
-        kind: 'generate',
-        label: '精修生成',
+        ...planned.node.data,
         prompt: draft?.prompt ?? '',
         batchCount: Math.min(get().maximumBatchCount, clampBatchCount(draft?.batchCount ?? recipe?.batchCount ?? 1)),
-        settings: cloneGenerationSettings({ ...defaultSettings, ...draft?.settings }),
         refinementMode: draft?.refinementMode ?? 'faithful',
-        inputOrder: [resultNodeId],
       },
     }
-    const edge: Edge = {
-      id: `branch-input-${timestamp}`,
-      source: resultNodeId,
-      sourceHandle: 'output',
-      target: nodeId,
-      targetHandle: 'input',
-      type: 'default',
-      style: { stroke: '#7e9785', strokeWidth: 1.2, strokeDasharray: '4 3' },
-    }
     const nodes = [...document.nodes.map((item) => ({ ...item, selected: false, data: item.type === 'result' ? { ...item.data, selected: false } : { ...item.data } })), node] as CanvasNode[]
-    commit(set, { ...document, nodes, edges: [...document.edges, edge] }, {
+    commit(set, { ...document, nodes, edges: [...document.edges, ...planned.edges] }, {
       selectedNodeId: nodeId,
       assistantMessage: `已基于「${result.label ?? '已选输出'}」创建下一版本生成节点。`,
     })
@@ -3560,11 +3613,11 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
 
   saveCurrentAsTemplate: (name) => {
     const document = get().document
-    if (!document.nodes.length) {
+    if (!summarizeWorkflowTemplate(document.nodes, document.edges).canSave) {
       set({ assistantMessage: '请先添加素材、描述或生成节点，再保存为模板。' })
       return
     }
-    const cleanedName = name.trim() || `${document.name} · 视觉目标`
+    const cleanedName = name.trim() || `${document.name} · 模板`
     const template: CanvasTemplate = {
       id: `template-${Date.now()}`,
       name: cleanedName,
@@ -3574,7 +3627,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
       snapshot: workflowTemplateSnapshot(document, cleanedName),
     }
     commit(set, { ...document, templates: [template, ...document.templates] }, {
-      assistantMessage: `已将当前画布沉淀为视觉目标「${cleanedName}」。`,
+      assistantMessage: `已将当前画布保存为模板「${cleanedName}」。`,
     })
   },
 
@@ -3585,11 +3638,11 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
 
   saveCurrentAsSharedTemplate: async (name) => {
     const document = get().document
-    if (!document.nodes.length) {
+    if (!summarizeWorkflowTemplate(document.nodes, document.edges, true).canSave) {
       set({ assistantMessage: '请先添加素材、描述或生成节点，再保存为共享模板。' })
       return false
     }
-    const cleanedName = name.trim() || `${document.name} · 工作流`
+    const cleanedName = name.trim() || `${document.name} · 模板`
     let existingTemplates = get().sharedTemplates
     try {
       // 写入前重新读取，避免用尚未加载的本地空数组覆盖其他人已发布的模板。
@@ -3707,6 +3760,13 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     })
   },
 
+  createDocumentFromTemplate: (templateId, shared) => {
+    const template = shared
+      ? get().sharedTemplates.find((item) => item.id === templateId)
+      : get().document.templates.find((item) => item.id === templateId)
+    return template ? instantiateWorkflowTemplateDocument(get().document, template, shared) : null
+  },
+
   createCanvasFromHistory: (historyId) => {
     const document = get().document
     const source = document.history.find((item) => item.id === historyId)
@@ -3779,14 +3839,14 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
 
     const template: CanvasTemplate = {
       id: `template-history-${Date.now()}`,
-      name: `${source.name} · 视觉目标`,
+      name: `${source.name} · 模板`,
       image: source.image,
       createdAt: Date.now(),
       sourceHistoryId: source.id,
-      snapshot: workflowTemplateSnapshotFromSnapshot(source.snapshot, `${source.name} · 视觉目标`),
+      snapshot: workflowTemplateSnapshotFromSnapshot(source.snapshot, `${source.name} · 模板`),
     }
     commit(set, { ...document, templates: [template, ...document.templates] }, {
-      assistantMessage: `已将历史画布「${source.name}」沉淀为可复用视觉目标。`,
+      assistantMessage: `已将历史画布「${source.name}」保存为可复用模板。`,
     })
   },
 
@@ -4149,8 +4209,10 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
       name: candidate.name,
       image: candidate.image,
       source: 'generated',
+      mediaKind: candidate.mediaKind ?? 'image',
+      collection: '生成结果',
       tags: [
-        '首图',
+        candidate.mediaKind === 'video' ? '视频' : '首图',
         '真实生成',
         candidate.provider ?? 'openai-images',
         `${candidate.settings.aspectRatio}`,

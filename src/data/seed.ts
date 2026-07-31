@@ -7,16 +7,16 @@ import resultImage from '../assets/figma/result.webp'
 
 /** 新建项目共享的内置品牌素材；不写入任何 CanvasDocument。 */
 export const seedGlobalAssets: AssetRecord[] = [
-  { id: 'santal-01', role: '商品', name: 'Santal 01 香薰', image: productImage, source: 'brand', tags: ['香氛', '白瓷', '主推'] },
-  { id: 'fig-scent', role: '商品', name: '无花果香氛', image: sceneImage, source: 'brand', tags: ['香氛', '无花果'] },
-  { id: 'mia-portrait', role: '模特', name: 'Mia 氛围肖像', image: modelImage, source: 'brand', tags: ['人物', '自然光'] },
-  { id: 'summer-window', role: '场景', name: '夏日窗台', image: sceneImage, source: 'brand', tags: ['植物', '窗台'] },
-  { id: 'airy-whitespace', role: '调性', name: '清透留白', image: toneImage, source: 'brand', tags: ['留白', '柔光'] },
+  { id: 'santal-01', role: '商品', name: 'Santal 01 香薰', image: productImage, source: 'brand', mediaKind: 'image', collection: '品牌素材', tags: ['香氛', '白瓷', '主推'] },
+  { id: 'fig-scent', role: '商品', name: '无花果香氛', image: sceneImage, source: 'brand', mediaKind: 'image', collection: '品牌素材', tags: ['香氛', '无花果'] },
+  { id: 'mia-portrait', role: '模特', name: 'Mia 氛围肖像', image: modelImage, source: 'brand', mediaKind: 'image', collection: '品牌素材', tags: ['人物', '自然光'] },
+  { id: 'summer-window', role: '场景', name: '夏日窗台', image: sceneImage, source: 'brand', mediaKind: 'image', collection: '品牌素材', tags: ['植物', '窗台'] },
+  { id: 'airy-whitespace', role: '调性', name: '清透留白', image: toneImage, source: 'brand', mediaKind: 'image', collection: '品牌素材', tags: ['留白', '柔光'] },
 ]
 
 /** 示例项目自有的历史生成结果，不会出现在其他项目的素材库中。 */
 const initialProjectAssets: AssetRecord[] = [
-  { id: 'hero-v03', role: '首图', name: '夏日香氛 · 示例首图 v03', image: resultImage, source: 'generated', tags: ['首图', '示例资产'] },
+  { id: 'hero-v03', role: '首图', name: '夏日香氛 · 示例首图 v03', image: resultImage, source: 'generated', mediaKind: 'image', collection: '生成结果', tags: ['首图', '示例资产'] },
 ]
 
 const initialNodes: CanvasNode[] = [
@@ -156,7 +156,7 @@ function cloneWorkflowSnapshot(name: string): CanvasSnapshot {
 }
 
 export const seedDocument: CanvasDocument = {
-  schemaVersion: 20,
+  schemaVersion: 21,
   id: 'summer-fragrance-visual-lab',
   name: '夏日香氛视觉实验',
   updatedAt: Date.now(),
@@ -191,7 +191,7 @@ export const seedDocument: CanvasDocument = {
 
 export function createEmptyCanvasDocument(id: string, name: string): CanvasDocument {
   return {
-    schemaVersion: 20,
+    schemaVersion: 21,
     id,
     name,
     updatedAt: Date.now(),

@@ -27,7 +27,7 @@ export type GenerationModelOption = {
 }
 
 export const defaultGenerationModels: GenerationModelOption[] = [
-  { id: 'gpt-image-2', label: 'GPT Image 2' },
+  { id: 'gpt-image-2', label: 'GPT Image 2', provider: 'openai', mediaKind: 'image' },
 ]
 
 export type GenerationSettings = {
@@ -71,6 +71,10 @@ export type AssetRecord = {
   imageWidth?: number
   imageHeight?: number
   source: AssetSource
+  /** 历史素材缺省时按 image 处理。 */
+  mediaKind?: GenerationMediaKind
+  /** 文件夹上传保留的相对合集路径，例如「夏季 / 模特」。 */
+  collection?: string
   tags: string[]
 }
 
@@ -94,6 +98,8 @@ export type UploadedAssetInput = {
   imageWidth?: number
   imageHeight?: number
   role: Exclude<AssetRole, '首图'>
+  mediaKind?: GenerationMediaKind
+  collection?: string
   tags: string[]
 }
 
@@ -106,6 +112,8 @@ export type AssetNodeData = {
   imageWidth?: number
   imageHeight?: number
   source?: AssetSource
+  /** 历史画布节点缺省时按 image 处理。 */
+  mediaKind?: GenerationMediaKind
   locked?: boolean
   referenceEnabled?: boolean
   primary?: boolean
@@ -309,7 +317,7 @@ export type DeliveryArtifact = {
 }
 
 export type CanvasDocument = {
-  schemaVersion: 20
+  schemaVersion: 21
   id: string
   name: string
   nodes: CanvasNode[]
