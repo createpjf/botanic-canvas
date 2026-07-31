@@ -26,6 +26,11 @@ UI（App / components）
 | 生成处理器 | `server/generationProcessor.mjs` | `processGenerationJob(jobId)` | 注入的 ProductStore、Media 与 Provider |
 | Adapter | `server/*Store.mjs`、`server/objectStore.mjs` 等 | 产品存储、媒体、队列、第三方图像能力 | 各自外部系统；由 `server/runtime.mjs` 选择并组装 |
 
+模型能力由 `server/generationModels.mjs` 统一声明，Worker 只能经
+`server/generationService.mjs` 路由到 OpenAI、MiniMax Image 或 MiniMax H3。
+所有供应商输出都先转成 `{ mediaKind, mimeType, buffer }`，再由媒体服务持久化；
+H3 的 MP4 与历史图片共用授权 URL，但历史缺少 `mediaKind` 时始终按图片兼容读取。
+
 `src/components/` 是纯 UI 模块，不得直接导入 `src/lib/`、`src/store/` 或 `server/`。`src/App.tsx` 是当前应用组合外壳，可以把 Store 与高层浏览器接口组合后通过属性传给 UI。
 
 ## 受保护的稳定接口

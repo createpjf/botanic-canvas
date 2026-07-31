@@ -1,4 +1,6 @@
-import { GenerationError, generateImages, persistedGenerationJob, resolveGenerationInputMedia, validateGenerationInput } from './generationProvider.mjs'
+import { GenerationError, persistedGenerationJob, resolveGenerationInputMedia, validateGenerationInput } from './generationProvider.mjs'
+import { generationTimeoutForModel } from './generationModels.mjs'
+import { generateMedia } from './generationService.mjs'
 
 export function createGenerationProcessor({ productStore, mediaService, config }) {
   return async function processGenerationJob(jobId) {
@@ -8,13 +10,16 @@ export function createGenerationProcessor({ productStore, mediaService, config }
     const running = { ...stored, status: 'running', error: undefined, updatedAt: Date.now() }
     await productStore.putGenerationJob(running.ownerId, persistedGenerationJob(running))
     try {
-      const maximumTaskDurationMs = Math.min(5 * 60_000, Math.max(10_000, config.generationTimeoutMs ?? 5 * 60_000))
+      const maximumTaskDurationMs = generationTimeoutForModel(config.modelOptions ?? [], running.settings?.model, {
+        imageTimeoutMs: config.generationTimeoutMs ?? 5 * 60_000,
+        videoTimeoutMs: config.videoGenerationTimeoutMs ?? 20 * 60_000,
+      })
       const remainingTaskDurationMs = maximumTaskDurationMs - (Date.now() - running.createdAt)
       if (remainingTaskDurationMs <= 0) {
-        throw new GenerationError(504, 'PROVIDER_TIMEOUT', '生成任务超过 5 分钟，已停止，请稍后重试。')
+        throw new GenerationError(504, 'PROVIDER_TIMEOUT', '生成任务超过模型等待时限，已停止，请稍后重试。')
       }
       const validatedInput = validateGenerationInput(running.rawInput, {
-        models: config.models,
+        models: config.modelOptions?.length ? config.modelOptions : config.models,
         maximumBatchCount: config.maximumBatchCount,
         maximumReferenceBytes: config.maximumReferenceBytes,
       })
@@ -22,7 +27,7 @@ export function createGenerationProcessor({ productStore, mediaService, config }
       console.info(`[generation] ${jobId} references ready`)
       const remainingGenerationMs = maximumTaskDurationMs - (Date.now() - running.createdAt)
       if (remainingGenerationMs <= 0) {
-        throw new GenerationError(504, 'PROVIDER_TIMEOUT', '生成任务超过 5 分钟，已停止，请稍后重试。')
+        throw new GenerationError(504, 'PROVIDER_TIMEOUT', '生成任务超过模型等待时限，已停止，请稍后重试。')
       }
       const controller = new AbortController()
       // 从任务创建开始计时，而非从 Worker 取到任务后重新计时，排队不会无限延长用户等待。
@@ -31,15 +36,15 @@ export function createGenerationProcessor({ productStore, mediaService, config }
       let result
       try {
         console.info(`[generation] ${jobId} requesting provider`)
-        result = await generateImages(input, {
-          apiBaseUrl: config.apiBaseUrl,
-          apiKey: config.apiKey,
+        result = await generateMedia(input, {
+          config,
           jobId,
           signal: controller.signal,
           persistImage: (image) => mediaService.persistProviderImage({ ownerId: running.ownerId, projectId: running.projectId, image }),
+          persistMedia: (media) => mediaService.persistProviderMedia({ ownerId: running.ownerId, projectId: running.projectId, media }),
         })
       } catch (caught) {
-        if (controller.signal.aborted) throw new GenerationError(504, 'PROVIDER_TIMEOUT', '图像服务响应超时，任务已停止，请稍后重试。')
+        if (controller.signal.aborted) throw new GenerationError(504, 'PROVIDER_TIMEOUT', '生成服务响应超时，任务已停止，请稍后重试。')
         throw caught
       } finally {
         clearTimeout(timeoutId)

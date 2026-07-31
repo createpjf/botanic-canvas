@@ -75,11 +75,11 @@ async function readObjectBuffer(objectStore, storageKey) {
 export function createMediaService({ productStore, objectStore }) {
   const enabled = Boolean(objectStore)
 
-  async function persistDataUrl({ ownerId, projectId, dataUrl }) {
-    if (!enabled) return dataUrl
-    const image = parseImageDataUrl(dataUrl)
-    if (!image) throw new Error('仅支持 PNG、JPEG 或 WebP 图片存入对象存储。')
-    const object = await retryMediaOperation(() => objectStore.putImage({ projectId, ...image }))
+  async function persistBytes({ ownerId, projectId, bytes, contentType }) {
+    if (!enabled) return `data:${contentType};base64,${Buffer.from(bytes).toString('base64')}`
+    const putMedia = objectStore.putMedia?.bind(objectStore) ?? objectStore.putImage?.bind(objectStore)
+    if (!putMedia) throw new Error('对象存储未实现媒体写入。')
+    const object = await retryMediaOperation(() => putMedia({ projectId, bytes, contentType }))
     try {
       // 先复用同一个对象 ID 重试元数据写入。避免网络在数据库已成功提交后中断，
       // 又生成第二个媒体对象，进而把真实生图结果误判为失败。
@@ -93,8 +93,21 @@ export function createMediaService({ productStore, objectStore }) {
     return `/api/media/${encodeURIComponent(object.id)}`
   }
 
+  async function persistDataUrl({ ownerId, projectId, dataUrl }) {
+    const image = parseImageDataUrl(dataUrl)
+    if (!image) throw new Error('仅支持 PNG、JPEG 或 WebP 图片存入对象存储。')
+    return persistBytes({ ownerId, projectId, bytes: image.bytes, contentType: image.contentType })
+  }
+
   async function persistProviderImage({ ownerId, projectId, image }) {
     return persistDataUrl({ ownerId, projectId, dataUrl: image.dataUrl })
+  }
+
+  async function persistProviderMedia({ ownerId, projectId, media }) {
+    if (!Buffer.isBuffer(media?.buffer) || !media.buffer.length || !['image/png', 'image/jpeg', 'image/webp', 'video/mp4'].includes(media.mimeType)) {
+      throw new Error('供应商返回了不支持的媒体文件。')
+    }
+    return persistBytes({ ownerId, projectId, bytes: media.buffer, contentType: media.mimeType })
   }
 
   async function normalizeDocument(document, { ownerId, projectId }) {
@@ -137,5 +150,5 @@ export function createMediaService({ productStore, objectStore }) {
     return objectStore.createSignedUrl(media.storageKey, expiresIn)
   }
 
-  return { enabled, persistDataUrl, persistProviderImage, normalizeDocument, read, readGenerationInput, signedUrl, close: () => objectStore?.close() }
+  return { enabled, persistDataUrl, persistProviderImage, persistProviderMedia, normalizeDocument, read, readGenerationInput, signedUrl, close: () => objectStore?.close() }
 }

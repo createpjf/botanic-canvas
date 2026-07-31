@@ -15,6 +15,7 @@ function required(value, name) {
 function extension(contentType) {
   if (contentType === 'image/jpeg') return 'jpg'
   if (contentType === 'image/webp') return 'webp'
+  if (contentType === 'video/mp4') return 'mp4'
   return 'png'
 }
 
@@ -38,8 +39,7 @@ export async function createObjectStore({ endpoint, region, bucket, accessKeyId,
     }
   }
 
-  return {
-    async putImage({ projectId, bytes, contentType }) {
+  async function putMedia({ projectId, bytes, contentType }) {
       const id = `media_${randomUUID()}`
       const storageKey = `projects/${projectId}/media/${id}.${extension(contentType)}`
       await client.send(new PutObjectCommand({
@@ -50,8 +50,11 @@ export async function createObjectStore({ endpoint, region, bucket, accessKeyId,
         CacheControl: 'private, max-age=31536000, immutable',
       }))
       return { id, storageKey, contentType, byteSize: bytes.byteLength }
-    },
+  }
 
+  return {
+    putMedia,
+    putImage: putMedia,
     async get(storageKey, { signal } = {}) {
       const response = await client.send(new GetObjectCommand({ Bucket: bucketName, Key: storageKey }), { abortSignal: signal })
       if (!response.Body) throw new Error('对象存储未返回媒体文件。')

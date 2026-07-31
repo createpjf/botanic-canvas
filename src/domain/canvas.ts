@@ -5,8 +5,11 @@ export type AssetSource = 'brand' | 'upload' | 'generated'
 export type GenerationKind = 'generation' | 'refinement'
 /** 精修意图必须显式保存，避免“重跑”和“探索变体”在历史中失去语义。 */
 export type RefinementMode = 'faithful' | 'explore'
+export type GenerationMediaKind = 'image' | 'video'
+export type VideoInputMode = 'first_frame' | 'first_last' | 'reference'
+export type GenerationInputRole = 'first_frame' | 'last_frame' | 'reference_image' | 'reference_video'
 export type DeliveryPresetId = 'taobao' | 'xiaohongshu' | 'douyin'
-export type GenerationAspectRatio = '1:1' | '3:4' | '4:5' | '9:16'
+export type GenerationAspectRatio = '1:1' | '16:9' | '4:3' | '3:4' | '4:5' | '9:16'
 // 模型列表由服务端健康检查下发；画布快照必须保留提交时实际使用的模型 ID。
 export type GenerationModelId = string
 export type GenerationResolution = '1K' | '2K'
@@ -15,6 +18,12 @@ export type GenerationTaskStatus = 'queued' | 'running' | 'succeeded' | 'failed'
 export type GenerationModelOption = {
   id: GenerationModelId
   label: string
+  provider?: 'openai' | 'minimax'
+  mediaKind?: GenerationMediaKind
+  aspectRatios?: GenerationAspectRatio[]
+  resolutions?: GenerationResolution[]
+  durations?: number[]
+  defaultDuration?: number
 }
 
 export const defaultGenerationModels: GenerationModelOption[] = [
@@ -25,6 +34,8 @@ export type GenerationSettings = {
   model: GenerationModelId
   aspectRatio: GenerationAspectRatio
   resolution: GenerationResolution
+  /** 仅视频模型使用；历史图片任务缺省该字段。 */
+  duration?: number
 }
 
 export type GenerationReference = {
@@ -33,6 +44,10 @@ export type GenerationReference = {
   name: string
   image: string
   role: AssetRole
+  /** 视频模型专用；图片模型忽略。 */
+  inputRole?: GenerationInputRole
+  /** 历史素材缺省时按 image 处理。 */
+  mediaKind?: GenerationMediaKind
   source?: AssetSource
   primary?: boolean
   priority?: number
@@ -44,6 +59,8 @@ export type GenerationRecipe = {
   prompt: string
   batchCount: number
   settings: GenerationSettings
+  /** 仅视频生成节点使用；旧配方缺省时按输入数量推导。 */
+  videoInputMode?: VideoInputMode
 }
 
 export type AssetRecord = {
@@ -137,6 +154,7 @@ export type GenerateNodeData = {
   status?: GenerationTaskStatus | 'uploading'
   generationKind?: GenerationKind
   refinementMode?: RefinementMode
+  videoInputMode?: VideoInputMode
   error?: string
 }
 
@@ -145,6 +163,8 @@ export type ResultNodeData = {
   /** 自动写入这张输出图片的生成节点；仅用于溯源与展示。 */
   outputOf?: string
   image?: string
+  /** 历史项目缺省时按 image 处理。 */
+  mediaKind?: GenerationMediaKind
   selected?: boolean
   status: 'ready' | 'generating' | 'failed' | 'cancelled'
   /** 真实任务状态；结果节点据此展示可解释的生成反馈，不伪造百分比。 */
@@ -221,6 +241,7 @@ export type GenerationCandidate = {
   id: string
   name: string
   image: string
+  mediaKind?: GenerationMediaKind
   variant: number
   prompt: string
   createdAt: number
@@ -245,6 +266,7 @@ export type GenerationCandidate = {
 export type GenerationOutput = {
   id: string
   image: string
+  mediaKind?: GenerationMediaKind
   revisedPrompt?: string
 }
 

@@ -7,6 +7,7 @@ import { createMediaService } from './mediaService.mjs'
 import { createSupabaseProductStore } from './supabaseProductStore.mjs'
 import { createSupabaseObjectStore } from './supabaseObjectStore.mjs'
 import { createSupabaseAuthPostgresStore } from './supabaseAuthPostgresStore.mjs'
+import { createGenerationModelCatalog } from './generationModels.mjs'
 
 export function loadLocalEnv(rootDir = process.cwd()) {
   const envPath = resolve(rootDir, '.env')
@@ -21,8 +22,19 @@ export function loadLocalEnv(rootDir = process.cwd()) {
 }
 
 export function runtimeConfig(rootDir = process.cwd()) {
-  const models = [...new Set((process.env.OPENAI_IMAGE_MODELS ?? process.env.OPENAI_IMAGE_MODEL ?? 'gpt-image-2')
+  const openAIModels = [...new Set((process.env.OPENAI_IMAGE_MODELS ?? process.env.OPENAI_IMAGE_MODEL ?? 'gpt-image-2')
     .split(',').map((model) => model.trim()).filter(Boolean))]
+  const miniMaxImageModels = [...new Set((process.env.MINIMAX_IMAGE_MODELS ?? 'image-01')
+    .split(',').map((model) => model.trim()).filter(Boolean))]
+  const miniMaxVideoModels = [...new Set((process.env.MINIMAX_VIDEO_MODELS ?? 'MiniMax-H3')
+    .split(',').map((model) => model.trim()).filter(Boolean))]
+  const modelOptions = createGenerationModelCatalog({
+    openAIApiKey: process.env.OPENAI_API_KEY,
+    openAIModels,
+    miniMaxApiKey: process.env.MINIMAX_API_KEY,
+    miniMaxImageModels,
+    miniMaxVideoModels,
+  })
   return {
     rootDir,
     port: Number(process.env.PORT ?? 8787),
@@ -39,7 +51,10 @@ export function runtimeConfig(rootDir = process.cwd()) {
     },
     apiBaseUrl: (process.env.IMAGE_API_BASE_URL ?? 'https://api.openai.com').replace(/\/$/, ''),
     apiKey: process.env.OPENAI_API_KEY,
-    models: models.length ? models : ['gpt-image-2'],
+    miniMaxApiBaseUrl: (process.env.MINIMAX_API_BASE_URL ?? 'https://api.minimax.io').replace(/\/$/, ''),
+    miniMaxApiKey: process.env.MINIMAX_API_KEY,
+    modelOptions,
+    models: modelOptions.length ? modelOptions.map((model) => model.id) : openAIModels,
     flockApiBaseUrl: (process.env.FLOCK_API_BASE_URL ?? 'https://api.flock.io/v1').replace(/\/$/, ''),
     flockApiKey: process.env.FLOCK_API_KEY,
     flockTextModel: process.env.FLOCK_TEXT_MODEL,
@@ -48,8 +63,9 @@ export function runtimeConfig(rootDir = process.cwd()) {
     maximumReferenceBytes: 8 * 1024 * 1024,
     maximumRequestBytes: 32 * 1024 * 1024,
     maximumPromptRefinementRequestBytes: 64 * 1024,
-    // 提供商耗时不可无限等待；前端、API 与 Worker 统一以 5 分钟为最大任务时限。
+    // 图片任务保持 5 分钟上限；H3 是异步视频任务，官方耗时明显更长，独立使用 20 分钟上限。
     generationTimeoutMs: Math.min(5 * 60_000, Math.max(10_000, Number(process.env.GENERATION_TIMEOUT_MS ?? 5 * 60_000))),
+    videoGenerationTimeoutMs: Math.min(30 * 60_000, Math.max(60_000, Number(process.env.VIDEO_GENERATION_TIMEOUT_MS ?? 20 * 60_000))),
     workerConcurrency: Number(process.env.GENERATION_WORKER_CONCURRENCY ?? 1),
     bootstrapAccessToken: process.env.BOTANIC_BOOTSTRAP_ACCESS_TOKEN ?? (process.env.NODE_ENV === 'production' ? '' : 'botanic-local-dev'),
     bootstrapEmail: process.env.SUPABASE_BOOTSTRAP_OWNER_EMAIL ?? process.env.BOTANIC_BOOTSTRAP_EMAIL,

@@ -3,6 +3,7 @@ import type { Edge, Viewport, XYPosition } from '@xyflow/react'
 import { createEmptyCanvasDocument, seedDocument, seedGlobalAssets } from '../data/seed'
 import { defaultGenerationModels } from '../domain/canvas'
 import { planGenerationOutputPlacement } from '../domain/generationOutputPlacement'
+import { assignVideoInputRoles } from '../domain/videoGeneration'
 import type {
   AssetRecord,
   AssetRole,
@@ -130,12 +131,12 @@ type CanvasStore = {
   saveGeneratedImageToLibrary: (input: { image: string; name: string }) => void
   moveAssetToRole: (assetId: string, role: AssetRole) => void
   addTextNode: (position?: XYPosition) => void
-  addGenerateNode: (position?: XYPosition) => void
+  addGenerateNode: (position?: XYPosition, mediaKind?: 'image' | 'video') => void
   createGenerateBranchFromResult: (resultNodeId: string, draft?: GenerateBranchDraft) => string | null
   createGenerateFromResultRecipe: (resultNodeId: string) => string | null
   renameCanvasNode: (nodeId: string, label: string) => void
   updateTextNode: (nodeId: string, content: string) => void
-  updateGenerateNode: (nodeId: string, patch: Partial<Pick<GenerateNodeData, 'label' | 'prompt' | 'batchCount' | 'settings' | 'refinementMode'>>) => void
+  updateGenerateNode: (nodeId: string, patch: Partial<Pick<GenerateNodeData, 'label' | 'prompt' | 'batchCount' | 'settings' | 'refinementMode' | 'videoInputMode'>>) => void
   setGenerateNodePrimaryInput: (nodeId: string, assetNodeId: string) => void
   moveGenerateNodeInput: (nodeId: string, inputNodeId: string, direction: 'earlier' | 'later') => void
   setAvailableModels: (models: GenerationModelOption[]) => void
@@ -264,12 +265,26 @@ function clampBatchCount(value: number) {
 function cloneGenerationSettings(settings: Partial<GenerationSettings> | undefined): GenerationSettings {
   return {
     model: typeof settings?.model === 'string' && settings.model.trim() ? settings.model : 'gpt-image-2',
-    aspectRatio: settings?.aspectRatio === '1:1' || settings?.aspectRatio === '3:4' || settings?.aspectRatio === '4:5' || settings?.aspectRatio === '9:16'
+    aspectRatio: settings?.aspectRatio === '1:1' || settings?.aspectRatio === '16:9' || settings?.aspectRatio === '4:3' || settings?.aspectRatio === '3:4' || settings?.aspectRatio === '4:5' || settings?.aspectRatio === '9:16'
       ? settings.aspectRatio
       : '3:4',
     resolution: settings?.resolution === '1K' || settings?.resolution === '2K'
       ? settings.resolution
       : '2K',
+    ...(Number.isInteger(settings?.duration) && Number(settings?.duration) >= 4 && Number(settings?.duration) <= 15
+      ? { duration: Number(settings?.duration) }
+      : {}),
+  }
+}
+
+function defaultSettingsForModel(model: GenerationModelOption | undefined): GenerationSettings {
+  return {
+    model: model?.id ?? 'gpt-image-2',
+    aspectRatio: model?.aspectRatios?.includes('3:4') ? '3:4' : model?.aspectRatios?.[0] ?? '3:4',
+    resolution: model?.resolutions?.includes('2K') ? '2K' : model?.resolutions?.[0] ?? '2K',
+    ...(model?.mediaKind === 'video'
+      ? { duration: model.defaultDuration ?? model.durations?.[0] ?? 5 }
+      : {}),
   }
 }
 
@@ -661,6 +676,7 @@ function canvasGenerationReferences(document: CanvasDocument): CanvasGenerationR
         image: asset.image,
         role: asset.role,
         source: asset.source,
+        mediaKind: 'image',
         enabled,
         primary: enabled && asset.role === '商品' && Boolean(asset.primary),
         priority: Number.isInteger(asset.referencePriority) && asset.referencePriority! > 0 ? asset.referencePriority! : index + 1,
@@ -709,6 +725,7 @@ function buildGraphGenerationRecipe(document: CanvasDocument, generateNodeId: st
   if (!generateNode || generateNode.type !== 'generate') return null
 
   const generate = generateNode.data as GenerateNodeData
+  const isVideoGeneration = generate.settings.duration !== undefined
   const connectedNodes = connectedGenerateInputs(document, generateNodeId)
 
   const directReferences = connectedNodes
@@ -733,12 +750,47 @@ function buildGraphGenerationRecipe(document: CanvasDocument, generateNodeId: st
   if (generate.prompt.trim()) promptParts.push(generate.prompt.trim())
 
   const resultInputs = connectedNodes.filter((node) => node.type === 'result') as CanvasNode[]
-  const parentResult = resultInputs.find((node) => Boolean((node.data as ResultNodeData).image))
+  const parentResult = isVideoGeneration ? undefined : resultInputs.find((node) => {
+    const data = node.data as ResultNodeData
+    return Boolean(data.image) && (data.mediaKind ?? 'image') === 'image'
+  })
   const parentData = parentResult?.type === 'result' ? parentResult.data as ResultNodeData : undefined
   const inheritedReferences = parentData?.generationRecipe?.references ?? []
+  const imageResultReferences = isVideoGeneration ? resultInputs.flatMap((node, index): GenerationReference[] => {
+    const data = node.data as ResultNodeData
+    if (!data.image || data.mediaKind === 'video') return []
+    return [{
+      nodeId: node.id,
+      assetId: `result:${node.id}`,
+      name: data.label ?? '上游画面',
+      image: data.image,
+      role: '首图',
+      source: 'generated',
+      mediaKind: 'image',
+      primary: false,
+      priority: directReferences.length + index + 1,
+    }]
+  }) : []
+  const videoReferences = resultInputs.flatMap((node, index): GenerationReference[] => {
+    const data = node.data as ResultNodeData
+    if (!data.image || data.mediaKind !== 'video') return []
+    return [{
+      nodeId: node.id,
+      assetId: `result:${node.id}`,
+      name: data.label ?? '上游视频',
+      image: data.image,
+      role: '调性',
+      source: 'generated',
+      mediaKind: 'video',
+      primary: false,
+      priority: directReferences.length + index + 1,
+    }]
+  })
   const references = [
     ...directReferences,
-    ...inheritedReferences.filter((reference) => !directReferences.some((direct) => direct.assetId === reference.assetId)),
+    ...imageResultReferences,
+    ...videoReferences,
+    ...(isVideoGeneration ? [] : inheritedReferences.filter((reference) => !directReferences.some((direct) => direct.assetId === reference.assetId))),
   ]
   const primary = references.find((reference) => reference.nodeId === generate.primaryInputId)
     ?? references.find((reference) => reference.primary)
@@ -746,7 +798,7 @@ function buildGraphGenerationRecipe(document: CanvasDocument, generateNodeId: st
 
   return {
     prompt: promptParts.join('\n'),
-    hasUnselectedResultInput: Boolean(resultInputs.length && !parentResult),
+    hasUnselectedResultInput: Boolean(resultInputs.some((node) => !(node.data as ResultNodeData).image)),
     parent: parentResult && parentData?.image
       ? {
           nodeId: parentResult.id,
@@ -764,6 +816,7 @@ function buildGraphGenerationRecipe(document: CanvasDocument, generateNodeId: st
       prompt: promptParts.join('\n'),
       batchCount: clampBatchCount(generate.batchCount),
       settings: cloneGenerationSettings(generate.settings),
+      videoInputMode: generate.videoInputMode,
     } satisfies GenerationRecipe,
   }
 }
@@ -1975,6 +2028,7 @@ function candidatesFromJob(job: GenerationJob, request: GenerationRequest): Gene
     id: output.id,
     name: generationCandidateName(request, index),
     image: output.image,
+    mediaKind: output.mediaKind ?? 'image',
     variant: index,
     prompt: request.prompt,
     createdAt: job.updatedAt,
@@ -1997,7 +2051,11 @@ function candidatesFromJob(job: GenerationJob, request: GenerationRequest): Gene
 }
 
 function resultNodeBlockHeight(settings: GenerationSettings) {
-  return settings.aspectRatio === '9:16'
+  return settings.aspectRatio === '16:9'
+    ? 207
+    : settings.aspectRatio === '4:3'
+      ? 263
+      : settings.aspectRatio === '9:16'
     ? 570
     : settings.aspectRatio === '4:5'
       ? 412
@@ -2070,6 +2128,7 @@ function materializeGenerationOutputs(document: CanvasDocument, job: GenerationJ
       kind: 'result',
       outputOf,
       image: candidate.image,
+      mediaKind: candidate.mediaKind ?? 'image',
       selected: false,
       status: 'ready',
       taskStatus: 'succeeded',
@@ -2152,7 +2211,7 @@ function persistedGenerationState(document: CanvasDocument, fallbackMessage: str
         lastGenerationRequest: request,
         generationStatus: latestJob.status,
         expectedCandidateCount: latestJob.batchCount,
-        assistantMessage: '已恢复真实生成任务，正在同步图像服务状态。',
+        assistantMessage: '已恢复真实生成任务，正在同步生成服务状态。',
       },
       pollJobId: latestJob.id,
     }
@@ -2163,13 +2222,13 @@ function persistedGenerationState(document: CanvasDocument, fallbackMessage: str
       state: {
         ...idleState,
         lastGenerationRequest: { ...request, jobId: latestJob.id },
-        assistantMessage: `已恢复 ${latestJob.outputs.length} 张生成结果；每张图都保留在画布中。`,
+        assistantMessage: `已恢复 ${latestJob.outputs.length} 个生成结果；每个结果都保留在画布中。`,
       },
     }
   }
 
   if (latestJob.status === 'failed') {
-    const message = latestJob.error ?? '真实生图任务失败，请重试。'
+    const message = latestJob.error ?? '真实生成任务失败，请重试。'
     return {
       state: {
         ...idleState,
@@ -2209,18 +2268,18 @@ function syncGenerationJob(
     const candidates = candidatesFromJob(recordedJob, request)
     const document = candidates.length
       ? materializeGenerationOutputs(recordedDocument, recordedJob, request)
-      : updateTaskNodes(recordedDocument, request.taskNodeIds, 'failed', job.id, '图像服务没有返回结果，请重试。')
+      : updateTaskNodes(recordedDocument, request.taskNodeIds, 'failed', job.id, '生成服务没有返回结果，请重试。')
     commit(set, document, {
       generationStatus: 'idle',
       generationProgress: 0,
-      generationError: candidates.length ? null : '真实生图未返回候选图，请重试。',
+      generationError: candidates.length ? null : '真实生成未返回候选结果，请重试。',
       expectedCandidateCount: job.missingOutputCount ? job.batchCount : 0,
       generationCandidates: job.missingOutputCount ? candidates : [],
       assistantMessage: candidates.length
         ? job.missingOutputCount
-          ? `真实生成已完成 ${candidates.length}/${job.batchCount} 张；缺少的 ${job.missingOutputCount} 张可单独补生成。`
-          : `真实生成已完成：${candidates.length} 张图片已作为独立节点写入画布；不需要的可直接删除。`
-        : '真实生图没有返回候选图，请重试。',
+          ? `真实生成已完成 ${candidates.length}/${job.batchCount} 个；缺少的 ${job.missingOutputCount} 个可单独补生成。`
+          : `真实生成已完成：${candidates.length} 个结果已作为独立节点写入画布；不需要的可直接删除。`
+        : '真实生成没有返回候选结果，请重试。',
     }, { immediate: true })
     return
   }
@@ -2229,10 +2288,10 @@ function syncGenerationJob(
     commit(set, recordedDocument, {
       generationStatus: 'error',
       generationProgress: 0,
-      generationError: job.error ?? '真实生图任务失败，请重试。',
+      generationError: job.error ?? '真实生成任务失败，请重试。',
       expectedCandidateCount: 0,
       generationCandidates: [],
-      assistantMessage: job.error ?? '真实生图任务失败，请重试。',
+      assistantMessage: job.error ?? '真实生成任务失败，请重试。',
     }, { immediate: true })
     return
   }
@@ -2256,7 +2315,7 @@ function syncGenerationJob(
     generationProgress: 0,
     generationError: null,
     expectedCandidateCount: job.batchCount,
-    assistantMessage: job.status === 'queued' ? '真实生成任务已入队，等待图像服务处理。' : '图像服务正在生成，请保留此页面或稍后返回查看结果。',
+    assistantMessage: job.status === 'queued' ? '真实生成任务已入队，等待生成服务处理。' : '生成服务正在处理，请保留此页面或稍后返回查看结果。',
   }
   if (!existingJob || existingJob.status !== job.status) {
     // 首次拿到服务端 jobId、以及生命周期状态切换时都属于刷新恢复锚点，不能等
@@ -2287,9 +2346,8 @@ function pollGenerationJob(
       }
       const nextDelay = window.document.hidden ? 10_000 : retryDelay
       retryDelay = Math.min(5_000, Math.round(retryDelay * 1.5))
-      // 服务端以创建时间为准封顶 5 分钟；轮询必须准时触发那次状态结算。
-      const remainingTaskMs = Math.max(0, job.createdAt + generationSubmissionTimeoutMs - Date.now())
-      generationPollTimerId = window.setTimeout(() => void poll(), Math.min(nextDelay, remainingTaskMs))
+      // 不在 UI 推断任务超时：图片与 H3 的等待上限不同，持久化服务端任务才是权威状态。
+      generationPollTimerId = window.setTimeout(() => void poll(), nextDelay)
     } catch (error) {
       if (runId !== generationPollRunId) return
       if (error instanceof GenerationApiError && error.code === 'JOB_NOT_FOUND') {
@@ -3008,10 +3066,16 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     })
   },
 
-  addGenerateNode: (position) => {
+  addGenerateNode: (position, mediaKind = 'image') => {
     const document = get().document
     const timestamp = Date.now()
     const nodeId = `generate-${timestamp}`
+    const matchingModel = get().availableModels.find((model) => (model.mediaKind ?? 'image') === mediaKind)
+    if (!matchingModel && mediaKind === 'video') {
+      set({ assistantMessage: '视频模型尚未配置，请先检查 MiniMax H3。' })
+      return
+    }
+    const defaultSettings = defaultSettingsForModel(matchingModel)
     const node: CanvasNode = {
       id: nodeId,
       type: 'generate',
@@ -3020,14 +3084,10 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
       selected: true,
       data: {
         kind: 'generate',
-        label: '图像生成',
+        label: mediaKind === 'video' ? '视频生成' : '图像生成',
         prompt: '',
         batchCount: 1,
-        settings: {
-          model: get().availableModels[0]?.id ?? 'gpt-image-2',
-          aspectRatio: '3:4',
-          resolution: '2K',
-        },
+        settings: defaultSettings,
       },
     }
     commit(set, {
@@ -3035,7 +3095,9 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
       nodes: [...document.nodes.map((item) => ({ ...item, selected: false })), node] as CanvasNode[],
     }, {
       selectedNodeId: nodeId,
-      assistantMessage: '已创建生成节点；连接商品图片与文本描述后，可直接在节点内发起生成。',
+      assistantMessage: mediaKind === 'video'
+        ? '已创建视频生成节点；连接首帧、首尾帧或参考素材后即可生成。'
+        : '已创建图像生成节点；连接商品图片与文本描述后，可直接在节点内发起生成。',
     })
   },
 
@@ -3278,7 +3340,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
         seen.add(model.id)
         return true
       })
-      .map((model) => ({ id: model.id, label: model.label?.trim() || model.id }))
+      .map((model) => ({ ...model, id: model.id, label: model.label?.trim() || model.id }))
     set({ availableModels: availableModels.length ? availableModels : defaultGenerationModels.map((model) => ({ ...model })) })
   },
 
@@ -3303,25 +3365,42 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     if (!graphRecipe.prompt.trim()) return setGenerationError(set, '请填写生成描述，或连接一个文本节点。')
     if (graphRecipe.hasUnselectedResultInput) return setGenerationError(set, '上游结果尚未选图；请先在候选中选中一张首图，再继续生成。')
     if (!graphRecipe.recipe.references.length && !graphRecipe.parent) return setGenerationError(set, '请至少连接一张商品图片、参考素材或已选首图。')
-    if (graphRecipe.recipe.references.length > 8) return setGenerationError(set, '单个生成节点最多连接 8 张图片参考。')
-    if (!primaryGenerationReference(graphRecipe.recipe) && !graphRecipe.parent) return setGenerationError(set, '请在当前生成节点至少连接一张图片作为主参考。')
+    if (graphRecipe.recipe.references.length > 8) return setGenerationError(set, '单个生成节点最多连接 8 个参考素材。')
+    const selectedModel = get().availableModels.find((model) => model.id === graphRecipe.recipe.settings.model)
+    const isVideoModel = selectedModel?.mediaKind === 'video'
+    let preparedRecipe: GenerationRecipe = graphRecipe.recipe
+    if (isVideoModel) {
+      const defaultMode = preparedRecipe.references.some((reference) => reference.mediaKind === 'video')
+        ? 'reference'
+        : preparedRecipe.references.length === 2 ? 'first_last' : 'first_frame'
+      const assignment = assignVideoInputRoles(preparedRecipe.references, preparedRecipe.videoInputMode ?? defaultMode)
+      if (assignment.error) return setGenerationError(set, assignment.error)
+      preparedRecipe = {
+        ...preparedRecipe,
+        videoInputMode: preparedRecipe.videoInputMode ?? defaultMode,
+        references: assignment.references,
+      }
+    } else if (preparedRecipe.references.some((reference) => reference.mediaKind === 'video')) {
+      return setGenerationError(set, '视频素材只能连接到视频生成模型。')
+    }
+    if (!isVideoModel && !primaryGenerationReference(preparedRecipe) && !graphRecipe.parent) return setGenerationError(set, '请在当前生成节点至少连接一张图片作为主参考。')
     if (graphRecipe.parent) {
       const refinementMode = (get().document.nodes.find((node) => node.id === nodeId && node.type === 'generate')?.data as GenerateNodeData | undefined)?.refinementMode ?? 'faithful'
       return get().runRefinement({
         targetNodeId: graphRecipe.parent.nodeId,
         prompt: graphRecipe.prompt,
-        batchCount: graphRecipe.recipe.batchCount,
-        settings: graphRecipe.recipe.settings,
-        recipe: graphRecipe.recipe,
+        batchCount: preparedRecipe.batchCount,
+        settings: preparedRecipe.settings,
+        recipe: preparedRecipe,
         sourceGraphNodeId: nodeId,
         refinementMode,
       })
     }
     return get().runGeneration({
       prompt: graphRecipe.prompt,
-      batchCount: graphRecipe.recipe.batchCount,
-      settings: graphRecipe.recipe.settings,
-      recipe: graphRecipe.recipe,
+      batchCount: preparedRecipe.batchCount,
+      settings: preparedRecipe.settings,
+      recipe: preparedRecipe,
       sourceGraphNodeId: nodeId,
     })
   },
@@ -4033,6 +4112,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
         kind: 'result',
         outputOf,
         image: candidate.image,
+        mediaKind: candidate.mediaKind ?? 'image',
         selected: true,
         status: 'ready',
         label: candidate.name,

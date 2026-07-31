@@ -34,10 +34,17 @@ Supabase 的 Edge Functions 适合短请求编排；图像生成属于长耗时�
    SUPABASE_SECRET_KEY=sb_secret_...
    SUPABASE_BOOTSTRAP_OWNER_EMAIL=owner@company.com
    OPENAI_API_KEY=...
+   MINIMAX_API_KEY=...
+   MINIMAX_IMAGE_MODELS=image-01
+   MINIMAX_VIDEO_MODELS=MiniMax-H3
    FLOCK_API_BASE_URL=https://api.flock.io/v1
    FLOCK_API_KEY=...
    FLOCK_TEXT_MODEL=<从 FLock Models / Playground 复制的 DeepSeek V4 Pro ID>
    ```
+
+   `MINIMAX_API_KEY` 同时写入 API 与 Worker 后，模型列表会增加
+   **MiniMax Image 01** 和 **MiniMax H3 · 视频**。H3 固定输出 2K，
+   可选 4–15 秒；视频完成后会立即保存为项目私有 MP4，避免上游临时地址过期。
 
    `SUPABASE_SECRET_KEY`（或旧的 `SUPABASE_SERVICE_ROLE_KEY`）只能用于 API 与 Worker。它会绕过 RLS，绝不能写入 `VITE_*`、前端构建产物或浏览器环境。[官方密钥说明](https://supabase.com/docs/guides/getting-started/api-keys)
 

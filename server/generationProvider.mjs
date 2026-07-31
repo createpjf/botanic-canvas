@@ -17,10 +17,15 @@ function assertEnum(value, allowed, name) {
   return value
 }
 
-function imageDataUrl(value, maximumReferenceBytes) {
-  if (typeof value !== 'string') throw new GenerationError(400, 'INVALID_REFERENCE', '参考素材必须是图片。')
-  const match = value.match(/^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=\s]+)$/i)
-  if (!match) throw new GenerationError(400, 'INVALID_REFERENCE', '仅支持 PNG、JPEG 或 WebP 参考素材。')
+function mediaDataUrl(value, maximumReferenceBytes, mediaKind = 'image') {
+  if (typeof value !== 'string') throw new GenerationError(400, 'INVALID_REFERENCE', '参考素材格式无效。')
+  const mimePattern = mediaKind === 'video' ? 'video\\/mp4' : 'image\\/(?:png|jpeg|webp)'
+  const match = value.match(new RegExp(`^data:(${mimePattern});base64,([A-Za-z0-9+/=\\s]+)$`, 'i'))
+  if (!match) {
+    throw new GenerationError(400, 'INVALID_REFERENCE', mediaKind === 'video'
+      ? '视频参考仅支持 MP4。'
+      : '仅支持 PNG、JPEG 或 WebP 参考素材。')
+  }
   const buffer = Buffer.from(match[2], 'base64')
   if (!buffer.length || buffer.length > maximumReferenceBytes) {
     throw new GenerationError(413, 'REFERENCE_TOO_LARGE', '单张参考素材不能超过 8MB。')
@@ -28,17 +33,17 @@ function imageDataUrl(value, maximumReferenceBytes) {
   return { mimeType: match[1].toLowerCase(), buffer }
 }
 
-function mediaReference(value) {
+function mediaReference(value, mediaKind) {
   if (typeof value !== 'string' || !/^media_[A-Za-z0-9_-]+$/.test(value)) {
     throw new GenerationError(400, 'INVALID_REFERENCE', '参考素材标识无效。')
   }
-  return { mediaId: value }
+  return { mediaId: value, mediaKind }
 }
 
-function inputImage(value, maximumReferenceBytes) {
-  if (value?.mediaId) return mediaReference(value.mediaId)
-  const { mimeType, buffer } = imageDataUrl(value?.dataUrl, maximumReferenceBytes)
-  return { mimeType, buffer }
+function inputMedia(value, maximumReferenceBytes, mediaKind = 'image') {
+  if (value?.mediaId) return mediaReference(value.mediaId, mediaKind)
+  const { mimeType, buffer } = mediaDataUrl(value?.dataUrl, maximumReferenceBytes, mediaKind)
+  return { mimeType, buffer, mediaKind }
 }
 
 export function validateGenerationInput(body, { models, maximumBatchCount, maximumReferenceBytes }) {
@@ -56,9 +61,20 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
 
   const settings = body.settings
   if (!settings || typeof settings !== 'object') throw new GenerationError(400, 'INVALID_REQUEST', '生成参数无效。')
-  assertEnum(settings.model, models, '图像模型')
-  assertEnum(settings.aspectRatio, ['1:1', '3:4', '4:5', '9:16'], '画面比例')
-  assertEnum(settings.resolution, ['1K', '2K'], '输出规格')
+  const modelOptions = models.map((model) => typeof model === 'string' ? { id: model } : model)
+  const model = modelOptions.find((option) => option?.id === settings.model)
+  if (!model) throw new GenerationError(400, 'INVALID_REQUEST', '生成模型不支持。')
+  if (model.maximumPromptLength && prompt.length > model.maximumPromptLength) {
+    throw new GenerationError(400, 'INVALID_REQUEST', `该模型的创意描述不能超过 ${model.maximumPromptLength} 字符。`)
+  }
+  assertEnum(settings.aspectRatio, model.aspectRatios ?? ['1:1', '3:4', '4:5', '9:16'], '画面比例')
+  assertEnum(settings.resolution, model.resolutions ?? ['1K', '2K'], '输出规格')
+  const duration = model.durations
+    ? Number(settings.duration)
+    : undefined
+  if (model.durations && (!Number.isInteger(duration) || !model.durations.includes(duration))) {
+    throw new GenerationError(400, 'INVALID_REQUEST', '视频时长不支持。')
+  }
 
   const recipe = body.recipe
   if (!recipe || typeof recipe !== 'object' || !Array.isArray(recipe.references)) {
@@ -68,19 +84,29 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
 
   const references = recipe.references.map((reference, index) => {
     if (!reference || typeof reference !== 'object') throw new GenerationError(400, 'INVALID_REFERENCE', `第 ${index + 1} 张参考素材无效。`)
-    const image = inputImage(reference, maximumReferenceBytes)
+    const mediaKind = reference.mediaKind === 'video' ? 'video' : 'image'
+    if (mediaKind === 'video' && model.mediaKind !== 'video') {
+      throw new GenerationError(400, 'INVALID_REFERENCE', '视频素材只能连接到视频生成模型。')
+    }
+    const inputRole = reference.inputRole === undefined
+      ? undefined
+      : assertEnum(reference.inputRole, mediaKind === 'video'
+        ? ['reference_video']
+        : ['first_frame', 'last_frame', 'reference_image'], '视频输入角色')
+    const media = inputMedia(reference, maximumReferenceBytes, mediaKind)
     return {
       name: assertText(reference.name ?? `参考素材 ${index + 1}`, '参考素材名称', 160),
       role: typeof reference.role === 'string' ? reference.role : '参考',
       primary: Boolean(reference.primary),
       priority: Number.isFinite(Number(reference.priority)) ? Number(reference.priority) : index + 1,
-      ...image,
+      ...(inputRole ? { inputRole } : {}),
+      ...media,
     }
   })
 
   const parent = body.parent
     ? (() => {
-        return { name: assertText(body.parent.name ?? '父版本', '父版本名称', 160), ...inputImage(body.parent, maximumReferenceBytes) }
+        return { name: assertText(body.parent.name ?? '父版本', '父版本名称', 160), ...inputMedia(body.parent, maximumReferenceBytes, 'image') }
       })()
     : undefined
 
@@ -93,7 +119,12 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
     refinementMode,
     prompt,
     batchCount,
-    settings: { model: settings.model, aspectRatio: settings.aspectRatio, resolution: settings.resolution },
+    settings: {
+      model: settings.model,
+      aspectRatio: settings.aspectRatio,
+      resolution: settings.resolution,
+      ...(duration === undefined ? {} : { duration }),
+    },
     references,
     parent,
   }
@@ -110,6 +141,12 @@ export async function resolveGenerationInputMedia(input, resolveMedia) {
     const resolved = await resolveMedia(reference.mediaId)
     if (!resolved?.buffer?.length || typeof resolved.mimeType !== 'string') {
       throw new GenerationError(404, 'MEDIA_NOT_FOUND', '生成参考素材已不存在或没有访问权限。')
+    }
+    if (reference.mediaKind === 'video' && resolved.mimeType !== 'video/mp4') {
+      throw new GenerationError(400, 'INVALID_REFERENCE', '视频参考素材必须是 MP4。')
+    }
+    if (reference.mediaKind !== 'video' && !/^image\/(?:png|jpeg|webp)$/i.test(resolved.mimeType)) {
+      throw new GenerationError(400, 'INVALID_REFERENCE', '图片参考素材格式无效。')
     }
     return { ...reference, mimeType: resolved.mimeType, buffer: resolved.buffer }
   }
@@ -130,7 +167,7 @@ export function publicGenerationJob(job) {
     updatedAt: job.updatedAt,
     batchCount: job.batchCount,
     outputCount: job.outputs?.length ?? 0,
-    provider: 'openai-images',
+    provider: job.provider ?? 'openai-images',
     model: job.settings?.model,
     error: job.error,
     missingOutputCount: job.missingOutputCount ?? 0,
@@ -155,6 +192,7 @@ export function persistedGenerationJob(job) {
     missingOutputCount: job.missingOutputCount ?? 0,
     partialError: job.partialError,
     settings: job.settings,
+    provider: job.provider,
     rawInput: job.rawInput,
   }
 }
@@ -254,6 +292,7 @@ export async function generateImages(job, { apiBaseUrl, apiKey, signal, persistI
     return {
       id: `${jobId}-output-${index + 1}`,
       image: await persistImage(image),
+      mediaKind: 'image',
       revisedPrompt: typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined,
     }
   }))
