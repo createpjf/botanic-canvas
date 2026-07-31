@@ -36,8 +36,10 @@ import type {
   DeliveryPresetId,
   GenerationCandidate,
   GenerationModelOption,
+  GenerationMediaKind,
   GenerationRecipe,
   GenerationSettings,
+  VideoInputMode,
   RefinementMode,
   GenerateNodeData,
   PromptNodeData,
@@ -333,11 +335,11 @@ function GenerateNode({ data, id, selected }: NodeProps) {
   const references = connectedInputs.flatMap((node) => {
     if (node.type === 'asset') {
       const asset = node.data as AssetNodeData
-      return [{ id: node.id, image: asset.image, name: asset.name }]
+      return [{ id: node.id, image: asset.image, name: asset.name, mediaKind: 'image' as const }]
     }
     if (node.type === 'result') {
       const result = node.data as ResultNodeData
-      return result.image ? [{ id: node.id, image: result.image, name: result.label ?? '上游输出' }] : []
+      return result.image ? [{ id: node.id, image: result.image, name: result.label ?? '上游输出', mediaKind: result.mediaKind ?? 'image' }] : []
     }
     return []
   })
@@ -370,7 +372,7 @@ function GenerateNode({ data, id, selected }: NodeProps) {
       />
       <header className="graph-node__header">
         <strong>{generate.label}</strong>
-        <small>{references.length} 参考 · {modelLabel} · {generate.settings.aspectRatio} · {generate.settings.resolution}</small>
+        <small>{references.length} 参考 · {modelLabel} · {generate.settings.aspectRatio} · {generate.settings.resolution}{generate.settings.duration ? ` · ${generate.settings.duration}秒` : ''}</small>
         <button
           className="graph-node__remove nodrag"
           type="button"
@@ -385,7 +387,9 @@ function GenerateNode({ data, id, selected }: NodeProps) {
       <div className="generate-node__summary">
         {references.length ? (
           <div className="generate-node__reference-stack" aria-label={`已连接 ${references.length} 个参考`}>
-            {references.slice(0, 4).map((reference) => <img key={reference.id} src={reference.image} alt={reference.name} title={reference.name} />)}
+            {references.slice(0, 4).map((reference) => reference.mediaKind === 'video'
+              ? <video key={reference.id} src={reference.image} aria-label={reference.name} title={reference.name} muted playsInline preload="metadata" />
+              : <img key={reference.id} src={reference.image} alt={reference.name} title={reference.name} />)}
             {references.length > 4 ? <span>+{references.length - 4}</span> : null}
           </div>
         ) : <span className="generate-node__empty-input">连接图片或文本作为输入</span>}
@@ -403,6 +407,7 @@ type ComposerFocusReference = {
   role: AssetRole
   source?: AssetSource
   primary: boolean
+  mediaKind?: GenerationMediaKind
 }
 
 type GeneratedHistoryItem = {
@@ -431,6 +436,8 @@ type CanvasComposerProps = {
   onPromptChange: (prompt: string) => void
   onBatchCountChange: (batchCount: number) => void
   onSettingsChange: (settings: GenerationSettings) => void
+  videoInputMode?: VideoInputMode
+  onVideoInputModeChange?: (mode: VideoInputMode) => void
   refinementMode?: RefinementMode
   onRefinementModeChange?: (mode: RefinementMode) => void
   onOpenReferences?: () => void
@@ -461,7 +468,7 @@ function settingsForModel(settings: GenerationSettings, model: GenerationModelOp
   return { model: model.id, aspectRatio, resolution, ...(duration === undefined ? {} : { duration }) }
 }
 
-function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount, maximumBatchCount, settings, models, references, status, error, canGenerate, onNodeLabelChange, onPromptChange, onBatchCountChange, onSettingsChange, refinementMode = 'faithful', onRefinementModeChange, onOpenReferences, onOpenAssets, onGenerate, onClose, layout, onLayoutChange }: CanvasComposerProps) {
+function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount, maximumBatchCount, settings, models, references, status, error, canGenerate, onNodeLabelChange, onPromptChange, onBatchCountChange, onSettingsChange, videoInputMode = 'first_frame', onVideoInputModeChange, refinementMode = 'faithful', onRefinementModeChange, onOpenReferences, onOpenAssets, onGenerate, onClose, layout, onLayoutChange }: CanvasComposerProps) {
   const isGenerating = status === 'uploading' || status === 'queued' || status === 'running'
   const [refinement, setRefinement] = useState<PromptRefinementState>({ status: 'idle' })
   const refinementRequestRef = useRef<{ id: number; controller?: AbortController }>({ id: 0 })
@@ -648,7 +655,9 @@ function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount, maximu
               title="管理参考"
             >
               <span className="canvas-composer__reference-strip">
-                {references.slice(0, 4).map((reference) => <img key={reference.id} src={reference.image} alt="" className={reference.primary ? 'is-primary' : ''} />)}
+                {references.slice(0, 4).map((reference) => reference.mediaKind === 'video'
+                  ? <video key={reference.id} src={reference.image} aria-label={reference.name} className={reference.primary ? 'is-primary' : ''} muted playsInline preload="metadata" />
+                  : <img key={reference.id} src={reference.image} alt="" className={reference.primary ? 'is-primary' : ''} />)}
               </span>
               <span className="canvas-composer__reference-count">{references.length}</span>
             </button>
@@ -738,6 +747,14 @@ function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount, maximu
                 {(selectedModel?.resolutions ?? ['1K', '2K']).map((resolution) => <option value={resolution} key={resolution}>{resolution}</option>)}
               </select>
             </label>
+            {selectedModel?.mediaKind === 'video' ? <label>
+              <span>输入</span>
+              <select aria-label="视频输入方式" value={videoInputMode} disabled={interactionLocked} onChange={(event) => onVideoInputModeChange?.(event.target.value as VideoInputMode)}>
+                <option value="first_frame">首帧</option>
+                <option value="first_last">首尾帧</option>
+                <option value="reference">参考素材</option>
+              </select>
+            </label> : null}
             {selectedModel?.mediaKind === 'video' ? <label>
               <span>时长</span>
               <select aria-label="视频时长" value={settings.duration ?? selectedModel.defaultDuration ?? 5} disabled={interactionLocked} onChange={(event) => updateSettings({ duration: Number(event.target.value) })}>
@@ -883,13 +900,13 @@ function ResultNode({ data, id, selected }: NodeProps) {
         id="output"
         type="source"
         position={Position.Right}
-        isConnectable={mediaKind !== 'video'}
+        isConnectable
         aria-label="从结果连线"
-        title={mediaKind === 'video' ? '当前版本暂不将视频作为下一任务输入' : hasDisplayableImage ? '将这张生成结果连到下一生成节点' : '任务完成后可将生成结果连到下一节点'}
+        title={mediaKind === 'video' ? '连接到 H3 节点作为参考视频' : hasDisplayableImage ? '将这张生成结果连到下一生成节点' : '任务完成后可将生成结果连到下一节点'}
       />
       <header className="result-node__header">
         <ImageNodeTitle nodeId={id} name={resultName} />
-        {settings ? <span className="result-node__metadata">{settings.aspectRatio} · {settings.resolution}</span> : null}
+        {settings ? <span className="result-node__metadata">{settings.aspectRatio} · {settings.resolution}{settings.duration ? ` · ${settings.duration}秒` : ''}</span> : null}
       </header>
       <div className={['result-node', ratioClass, isGenerating ? 'result-node--generating' : '', isSelected ? 'is-selected' : ''].filter(Boolean).join(' ')}>
         {hasDisplayableImage && mediaKind === 'image' ? <button
@@ -2767,10 +2784,29 @@ function CanvasWorkspace() {
       role: asset.role,
       source: asset.source,
       primary: node.id === selectedGenerateData?.primaryInputId,
+      mediaKind: 'image' as const,
     }]
   })
   const selectedGenerateTextCount = selectedGenerateInputs.filter((node) => node.type === 'text').length
-  const selectedGenerateParent = selectedGenerateInputs.find((node) => node.type === 'result' && Boolean((node.data as ResultNodeData).image))
+  const selectedGenerateParent = selectedGenerateInputs.find((node) => {
+    if (node.type !== 'result') return false
+    const result = node.data as ResultNodeData
+    return Boolean(result.image) && (result.mediaKind ?? 'image') === 'image'
+  })
+  const selectedGenerateResultReferences = selectedGenerateInputs.flatMap((node) => {
+    if (node.type !== 'result') return []
+    const result = node.data as ResultNodeData
+    if (!result.image) return []
+    return [{
+      id: node.id,
+      image: result.image,
+      name: result.label ?? '上游输出',
+      role: (result.mediaKind === 'video' ? '调性' : '首图') as AssetRole,
+      source: 'generated' as const,
+      primary: result.mediaKind !== 'video',
+      mediaKind: result.mediaKind ?? 'image',
+    }]
+  })
   const selectedGeneratePrimaryReference = selectedGenerateReferences.find((asset) => asset.primary) ?? selectedGenerateReferences[0]
   const selectedGenerateParentReference = selectedGenerateInputs
     .filter((node) => node.type === 'result')
@@ -2778,17 +2814,10 @@ function CanvasWorkspace() {
     .find(Boolean)
   const composerReferences = [
     ...selectedGenerateReferences,
-    ...(selectedGenerateParent?.type === 'result' && (selectedGenerateParent.data as ResultNodeData).image
-      ? [{
-          id: selectedGenerateParent.id,
-          image: (selectedGenerateParent.data as ResultNodeData).image!,
-          name: (selectedGenerateParent.data as ResultNodeData).label ?? '上游输出',
-          role: '首图' as const,
-          source: 'generated' as const,
-          primary: true,
-        }]
-      : []),
+    ...selectedGenerateResultReferences,
   ]
+  const selectedGenerateModel = availableModels.find((model) => model.id === selectedGenerateData?.settings.model)
+  const selectedGenerateIsVideo = selectedGenerateModel?.mediaKind === 'video'
   const composerReferenceCount = composerReferences.length
   const composerPrimaryReferenceName = selectedGenerateParent?.type === 'result'
     ? ((selectedGenerateParent.data as ResultNodeData).label ?? '上游输出')
@@ -3093,7 +3122,8 @@ function CanvasWorkspace() {
             references={composerReferences}
             status={generationStatus}
             error={generationError ?? undefined}
-            canGenerate={Boolean(composerPrimaryReferenceName)}
+            canGenerate={selectedGenerateIsVideo ? composerReferences.length > 0 : Boolean(composerPrimaryReferenceName)}
+            videoInputMode={selectedGenerateData.videoInputMode ?? (composerReferences.some((reference) => reference.mediaKind === 'video') ? 'reference' : composerReferences.length === 2 ? 'first_last' : 'first_frame')}
             layout={composerLayout}
             onLayoutChange={setComposerLayout}
             onNodeLabelChange={(label) => updateGenerateNode(selectedGenerate.id, { label })}
@@ -3107,6 +3137,10 @@ function CanvasWorkspace() {
             }}
             onSettingsChange={(settings) => {
               updateGenerateNode(selectedGenerate.id, { settings })
+              clearGenerationError()
+            }}
+            onVideoInputModeChange={(videoInputMode) => {
+              updateGenerateNode(selectedGenerate.id, { videoInputMode })
               clearGenerationError()
             }}
             onOpenReferences={() => {

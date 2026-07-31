@@ -170,3 +170,48 @@ test('MiniMax H3 的上游失败状态会结束轮询并返回可操作错误', 
     persistMedia: async () => '/api/media/unexpected',
   }), (error) => error.code === 'PROVIDER_REJECTED' && /生成失败/.test(error.message))
 })
+
+test('MiniMax H3 把首尾帧与参考视频转换为官方 content 对象', async () => {
+  const submittedPayloads = []
+  const run = (references, jobId) => generateMiniMaxVideos({
+    kind: 'generation',
+    prompt: '镜头自然过渡',
+    batchCount: 1,
+    settings: { model: 'MiniMax-H3', aspectRatio: '16:9', resolution: '2K', duration: 6 },
+    references,
+  }, {
+    apiBaseUrl: 'https://api.minimax.io',
+    apiKey: 'test-key',
+    jobId,
+    sleep: async () => undefined,
+    fetchImpl: async (url, init = {}) => {
+      if (url.endsWith('/v2/video_generation')) {
+        submittedPayloads.push(JSON.parse(init.body))
+        return new Response(JSON.stringify({ task_id: `${jobId}-task` }), { status: 200 })
+      }
+      if (url.includes('/v2/query/video_generation/')) {
+        return new Response(JSON.stringify({ task: { status: 'succeeded', content: { url: 'https://cdn.example/result.mp4' } } }), { status: 200 })
+      }
+      return new Response(Buffer.from('video'), { status: 200, headers: { 'content-type': 'video/mp4' } })
+    },
+    persistMedia: async () => `/api/media/${jobId}`,
+  })
+
+  await run([
+    { name: '首帧', role: '场景', inputRole: 'first_frame', mediaKind: 'image', mimeType: 'image/png', buffer: Buffer.from('start') },
+    { name: '尾帧', role: '场景', inputRole: 'last_frame', mediaKind: 'image', mimeType: 'image/png', buffer: Buffer.from('end') },
+  ], 'frames')
+  await run([
+    { name: '上游视频', role: '首图', inputRole: 'reference_video', mediaKind: 'video', mimeType: 'video/mp4', buffer: Buffer.from('clip') },
+  ], 'video-ref')
+
+  assert.deepEqual(submittedPayloads[0].content.slice(1).map((item) => [item.type, item.role]), [
+    ['image_url', 'first_frame'],
+    ['image_url', 'last_frame'],
+  ])
+  assert.equal(submittedPayloads[0].ratio, 'adaptive')
+  assert.deepEqual(submittedPayloads[1].content.slice(1).map((item) => [item.type, item.role]), [
+    ['video_url', 'reference_video'],
+  ])
+  assert.match(submittedPayloads[1].content[1].video_url.url, /^data:video\/mp4;base64,/)
+})

@@ -115,14 +115,22 @@ function videoContent(job) {
     ? [job.parent, ...job.references.filter((reference) => !reference.buffer.equals(job.parent.buffer))]
     : job.references
   const content = [{ type: 'text', text: job.prompt }]
-  if (references.length === 1) {
+  const hasExplicitRoles = references.some((reference) => reference.inputRole)
+  if (!hasExplicitRoles && references.length === 1) {
     content.push({ type: 'image_url', image_url: { url: dataUrl(references[0]) }, role: 'first_frame' })
     return { content, ratio: 'adaptive' }
   }
   for (const reference of references.slice(0, 9)) {
-    content.push({ type: 'image_url', image_url: { url: dataUrl(reference) }, role: 'reference_image' })
+    const mediaKind = reference.mediaKind ?? (reference.mimeType === 'video/mp4' ? 'video' : 'image')
+    const role = reference.inputRole ?? (mediaKind === 'video' ? 'reference_video' : 'reference_image')
+    if (mediaKind === 'video') {
+      content.push({ type: 'video_url', video_url: { url: dataUrl(reference) }, role })
+    } else {
+      content.push({ type: 'image_url', image_url: { url: dataUrl(reference) }, role })
+    }
   }
-  return { content, ratio: references.length ? job.settings.aspectRatio : job.settings.aspectRatio }
+  const frameMode = references.some((reference) => reference.inputRole === 'first_frame' || reference.inputRole === 'last_frame')
+  return { content, ratio: frameMode ? 'adaptive' : job.settings.aspectRatio }
 }
 
 async function requestJson(url, init, { fetchImpl, mediaLabel }) {

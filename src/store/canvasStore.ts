@@ -3,6 +3,7 @@ import type { Edge, Viewport, XYPosition } from '@xyflow/react'
 import { createEmptyCanvasDocument, seedDocument, seedGlobalAssets } from '../data/seed'
 import { defaultGenerationModels } from '../domain/canvas'
 import { planGenerationOutputPlacement } from '../domain/generationOutputPlacement'
+import { assignVideoInputRoles } from '../domain/videoGeneration'
 import type {
   AssetRecord,
   AssetRole,
@@ -135,7 +136,7 @@ type CanvasStore = {
   createGenerateFromResultRecipe: (resultNodeId: string) => string | null
   renameCanvasNode: (nodeId: string, label: string) => void
   updateTextNode: (nodeId: string, content: string) => void
-  updateGenerateNode: (nodeId: string, patch: Partial<Pick<GenerateNodeData, 'label' | 'prompt' | 'batchCount' | 'settings' | 'refinementMode'>>) => void
+  updateGenerateNode: (nodeId: string, patch: Partial<Pick<GenerateNodeData, 'label' | 'prompt' | 'batchCount' | 'settings' | 'refinementMode' | 'videoInputMode'>>) => void
   setGenerateNodePrimaryInput: (nodeId: string, assetNodeId: string) => void
   moveGenerateNodeInput: (nodeId: string, inputNodeId: string, direction: 'earlier' | 'later') => void
   setAvailableModels: (models: GenerationModelOption[]) => void
@@ -675,6 +676,7 @@ function canvasGenerationReferences(document: CanvasDocument): CanvasGenerationR
         image: asset.image,
         role: asset.role,
         source: asset.source,
+        mediaKind: 'image',
         enabled,
         primary: enabled && asset.role === '商品' && Boolean(asset.primary),
         priority: Number.isInteger(asset.referencePriority) && asset.referencePriority! > 0 ? asset.referencePriority! : index + 1,
@@ -723,6 +725,7 @@ function buildGraphGenerationRecipe(document: CanvasDocument, generateNodeId: st
   if (!generateNode || generateNode.type !== 'generate') return null
 
   const generate = generateNode.data as GenerateNodeData
+  const isVideoGeneration = generate.settings.duration !== undefined
   const connectedNodes = connectedGenerateInputs(document, generateNodeId)
 
   const directReferences = connectedNodes
@@ -747,12 +750,47 @@ function buildGraphGenerationRecipe(document: CanvasDocument, generateNodeId: st
   if (generate.prompt.trim()) promptParts.push(generate.prompt.trim())
 
   const resultInputs = connectedNodes.filter((node) => node.type === 'result') as CanvasNode[]
-  const parentResult = resultInputs.find((node) => Boolean((node.data as ResultNodeData).image))
+  const parentResult = isVideoGeneration ? undefined : resultInputs.find((node) => {
+    const data = node.data as ResultNodeData
+    return Boolean(data.image) && (data.mediaKind ?? 'image') === 'image'
+  })
   const parentData = parentResult?.type === 'result' ? parentResult.data as ResultNodeData : undefined
   const inheritedReferences = parentData?.generationRecipe?.references ?? []
+  const imageResultReferences = isVideoGeneration ? resultInputs.flatMap((node, index): GenerationReference[] => {
+    const data = node.data as ResultNodeData
+    if (!data.image || data.mediaKind === 'video') return []
+    return [{
+      nodeId: node.id,
+      assetId: `result:${node.id}`,
+      name: data.label ?? '上游画面',
+      image: data.image,
+      role: '首图',
+      source: 'generated',
+      mediaKind: 'image',
+      primary: false,
+      priority: directReferences.length + index + 1,
+    }]
+  }) : []
+  const videoReferences = resultInputs.flatMap((node, index): GenerationReference[] => {
+    const data = node.data as ResultNodeData
+    if (!data.image || data.mediaKind !== 'video') return []
+    return [{
+      nodeId: node.id,
+      assetId: `result:${node.id}`,
+      name: data.label ?? '上游视频',
+      image: data.image,
+      role: '调性',
+      source: 'generated',
+      mediaKind: 'video',
+      primary: false,
+      priority: directReferences.length + index + 1,
+    }]
+  })
   const references = [
     ...directReferences,
-    ...inheritedReferences.filter((reference) => !directReferences.some((direct) => direct.assetId === reference.assetId)),
+    ...imageResultReferences,
+    ...videoReferences,
+    ...(isVideoGeneration ? [] : inheritedReferences.filter((reference) => !directReferences.some((direct) => direct.assetId === reference.assetId))),
   ]
   const primary = references.find((reference) => reference.nodeId === generate.primaryInputId)
     ?? references.find((reference) => reference.primary)
@@ -760,7 +798,7 @@ function buildGraphGenerationRecipe(document: CanvasDocument, generateNodeId: st
 
   return {
     prompt: promptParts.join('\n'),
-    hasUnselectedResultInput: Boolean(resultInputs.length && !parentResult),
+    hasUnselectedResultInput: Boolean(resultInputs.some((node) => !(node.data as ResultNodeData).image)),
     parent: parentResult && parentData?.image
       ? {
           nodeId: parentResult.id,
@@ -778,6 +816,7 @@ function buildGraphGenerationRecipe(document: CanvasDocument, generateNodeId: st
       prompt: promptParts.join('\n'),
       batchCount: clampBatchCount(generate.batchCount),
       settings: cloneGenerationSettings(generate.settings),
+      videoInputMode: generate.videoInputMode,
     } satisfies GenerationRecipe,
   }
 }
@@ -3319,25 +3358,42 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     if (!graphRecipe.prompt.trim()) return setGenerationError(set, '请填写生成描述，或连接一个文本节点。')
     if (graphRecipe.hasUnselectedResultInput) return setGenerationError(set, '上游结果尚未选图；请先在候选中选中一张首图，再继续生成。')
     if (!graphRecipe.recipe.references.length && !graphRecipe.parent) return setGenerationError(set, '请至少连接一张商品图片、参考素材或已选首图。')
-    if (graphRecipe.recipe.references.length > 8) return setGenerationError(set, '单个生成节点最多连接 8 张图片参考。')
-    if (!primaryGenerationReference(graphRecipe.recipe) && !graphRecipe.parent) return setGenerationError(set, '请在当前生成节点至少连接一张图片作为主参考。')
+    if (graphRecipe.recipe.references.length > 8) return setGenerationError(set, '单个生成节点最多连接 8 个参考素材。')
+    const selectedModel = get().availableModels.find((model) => model.id === graphRecipe.recipe.settings.model)
+    const isVideoModel = selectedModel?.mediaKind === 'video'
+    let preparedRecipe: GenerationRecipe = graphRecipe.recipe
+    if (isVideoModel) {
+      const defaultMode = preparedRecipe.references.some((reference) => reference.mediaKind === 'video')
+        ? 'reference'
+        : preparedRecipe.references.length === 2 ? 'first_last' : 'first_frame'
+      const assignment = assignVideoInputRoles(preparedRecipe.references, preparedRecipe.videoInputMode ?? defaultMode)
+      if (assignment.error) return setGenerationError(set, assignment.error)
+      preparedRecipe = {
+        ...preparedRecipe,
+        videoInputMode: preparedRecipe.videoInputMode ?? defaultMode,
+        references: assignment.references,
+      }
+    } else if (preparedRecipe.references.some((reference) => reference.mediaKind === 'video')) {
+      return setGenerationError(set, '视频素材只能连接到视频生成模型。')
+    }
+    if (!isVideoModel && !primaryGenerationReference(preparedRecipe) && !graphRecipe.parent) return setGenerationError(set, '请在当前生成节点至少连接一张图片作为主参考。')
     if (graphRecipe.parent) {
       const refinementMode = (get().document.nodes.find((node) => node.id === nodeId && node.type === 'generate')?.data as GenerateNodeData | undefined)?.refinementMode ?? 'faithful'
       return get().runRefinement({
         targetNodeId: graphRecipe.parent.nodeId,
         prompt: graphRecipe.prompt,
-        batchCount: graphRecipe.recipe.batchCount,
-        settings: graphRecipe.recipe.settings,
-        recipe: graphRecipe.recipe,
+        batchCount: preparedRecipe.batchCount,
+        settings: preparedRecipe.settings,
+        recipe: preparedRecipe,
         sourceGraphNodeId: nodeId,
         refinementMode,
       })
     }
     return get().runGeneration({
       prompt: graphRecipe.prompt,
-      batchCount: graphRecipe.recipe.batchCount,
-      settings: graphRecipe.recipe.settings,
-      recipe: graphRecipe.recipe,
+      batchCount: preparedRecipe.batchCount,
+      settings: preparedRecipe.settings,
+      recipe: preparedRecipe,
       sourceGraphNodeId: nodeId,
     })
   },

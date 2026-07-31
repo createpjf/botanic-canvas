@@ -8,13 +8,15 @@ import type {
 } from '../domain/canvas'
 import { productAuthorizationHeader } from './productSession'
 
-type ImageReferencePayload = {
+type MediaReferencePayload = {
   nodeId: string
   assetId: string
   name: string
   role: string
   primary?: boolean
   priority?: number
+  mediaKind?: 'image' | 'video'
+  inputRole?: 'first_frame' | 'last_frame' | 'reference_image' | 'reference_video'
   dataUrl?: string
   mediaId?: string
 }
@@ -36,7 +38,7 @@ export type SubmitGenerationInput = {
 
 type SubmitGenerationPayload = Omit<SubmitGenerationInput, 'recipe' | 'parent'> & {
   recipe: Omit<GenerationRecipe, 'references'> & {
-    references: ImageReferencePayload[]
+    references: MediaReferencePayload[]
   }
   parent?: {
     nodeId: string
@@ -164,8 +166,8 @@ function readBlobAsDataUrl(blob: Blob) {
   })
 }
 
-async function imageToDataUrl(image: string) {
-  if (image.startsWith('data:image/')) return image
+async function mediaToDataUrl(source: string, mediaKind: 'image' | 'video') {
+  if (source.startsWith(`data:${mediaKind}/`)) return source
 
   const controller = new AbortController()
   let timedOut = false
@@ -174,10 +176,12 @@ async function imageToDataUrl(image: string) {
     controller.abort()
   }, generationRequestTimeoutMs)
   try {
-    const response = await fetch(image, { signal: controller.signal })
+    const response = await fetch(source, { signal: controller.signal })
     if (!response.ok) throw new Error('无法读取画布参考素材，请重新加入后再生成。')
     const blob = await response.blob()
-    if (!blob.type.startsWith('image/')) throw new Error('仅支持图片作为真实生成参考。')
+    if (mediaKind === 'video' ? blob.type !== 'video/mp4' : !blob.type.startsWith('image/')) {
+      throw new Error(mediaKind === 'video' ? '视频参考仅支持 MP4。' : '仅支持图片作为真实生成参考。')
+    }
     return readBlobAsDataUrl(blob)
   } catch (error) {
     if (timedOut) throw new Error('参考素材读取超过 5 分钟，请重新加入后重试。')
@@ -187,9 +191,9 @@ async function imageToDataUrl(image: string) {
   }
 }
 
-function mediaIdFromImage(image: string) {
+function mediaIdFromSource(source: string) {
   try {
-    const pathname = new URL(image, window.location.origin).pathname
+    const pathname = new URL(source, window.location.origin).pathname
     const match = pathname.match(/^\/api\/media\/([^/]+)$/)
     return match ? decodeURIComponent(match[1]) : undefined
   } catch {
@@ -197,9 +201,9 @@ function mediaIdFromImage(image: string) {
   }
 }
 
-async function imageInputPayload(image: string) {
-  const mediaId = mediaIdFromImage(image)
-  return mediaId ? { mediaId } : { dataUrl: await imageToDataUrl(image) }
+async function mediaInputPayload(source: string, mediaKind: 'image' | 'video' = 'image') {
+  const mediaId = mediaIdFromSource(source)
+  return mediaId ? { mediaId } : { dataUrl: await mediaToDataUrl(source, mediaKind) }
 }
 
 async function buildPayload(input: SubmitGenerationInput): Promise<SubmitGenerationPayload> {
@@ -210,7 +214,9 @@ async function buildPayload(input: SubmitGenerationInput): Promise<SubmitGenerat
     role: reference.role,
     primary: reference.primary,
     priority: reference.priority,
-    ...(await imageInputPayload(reference.image)),
+    mediaKind: reference.mediaKind ?? 'image',
+    inputRole: reference.inputRole,
+    ...(await mediaInputPayload(reference.image, reference.mediaKind ?? 'image')),
   })))
 
   return {
@@ -227,7 +233,7 @@ async function buildPayload(input: SubmitGenerationInput): Promise<SubmitGenerat
       ? {
           nodeId: input.parent.nodeId,
           name: input.parent.name,
-          ...(await imageInputPayload(input.parent.image)),
+          ...(await mediaInputPayload(input.parent.image)),
         }
       : undefined,
   }
