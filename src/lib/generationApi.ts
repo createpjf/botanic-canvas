@@ -4,6 +4,7 @@ import type {
   GenerationRecipe,
   RefinementMode,
   GenerationSettings,
+  GenerationModelOption,
 } from '../domain/canvas'
 import { productAuthorizationHeader } from './productSession'
 
@@ -70,6 +71,7 @@ export type GenerationServiceHealth = {
   configured: boolean
   maxBatchCount?: number
   models?: string[]
+  modelOptions?: GenerationModelOption[]
   promptRefinement?: {
     provider: 'flock-api'
     configured: boolean
@@ -146,7 +148,7 @@ export async function getGenerationServiceHealth(): Promise<GenerationServiceHea
 export async function assertGenerationServiceReady(): Promise<GenerationServiceHealth> {
   const health = await getGenerationServiceHealth()
   if (!health.configured) {
-    throw new Error('真实生图服务已启动，但尚未配置 OPENAI_API_KEY。请填写 .env 后重启 npm run server。')
+    throw new Error('真实生成服务已启动，但尚未配置 OPENAI_API_KEY 或 MINIMAX_API_KEY。')
   }
   return health
 }

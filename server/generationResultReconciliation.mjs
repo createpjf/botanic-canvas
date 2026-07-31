@@ -3,7 +3,7 @@ function clone(value) {
 }
 
 function candidateLabel(kind, index) {
-  return `${kind === 'refinement' ? '精修候选' : '首图候选'} ${index + 1}`
+  return `${kind === 'refinement' ? '精修候选' : '生成候选'} ${index + 1}`
 }
 
 function matchingJob({ result, generate, jobs, usedJobIds }) {
@@ -26,7 +26,7 @@ function persistedJob(job, generateNodeId, resultNodeId) {
     updatedAt: job.updatedAt,
     batchCount: job.batchCount,
     outputCount: job.outputs?.length ?? 0,
-    provider: 'openai-images',
+    provider: job.provider ?? 'openai-images',
     model: job.settings?.model,
     error: job.error,
     missingOutputCount: job.missingOutputCount ?? 0,
@@ -52,7 +52,8 @@ export function reconcileGenerationResults(document, jobs) {
     && (!node.data?.taskGroupId || node.id === node.data.taskGroupId)
     // 曾被旧客户端误标为“图像服务没有返回结果”的任务，也应允许权威任务表纠正。
     && (node.data?.taskStatus === 'succeeded' || node.data?.status === 'ready'
-      || node.data?.error === '图像服务没有返回结果，请重试。'))
+      || node.data?.error === '图像服务没有返回结果，请重试。'
+      || node.data?.error === '生成服务没有返回结果，请重试。'))
   let changed = false
 
   for (const root of groups) {
@@ -72,6 +73,7 @@ export function reconcileGenerationResults(document, jobs) {
       const data = {
         ...base,
         image: output.image,
+        mediaKind: output.mediaKind ?? 'image',
         candidateId: output.id,
         taskNodeId: target?.id ?? `result-${output.id}`,
         label: candidateLabel(job.kind, index),

@@ -9,6 +9,7 @@ import { PromptRefinementError, refinePrompt, validatePromptRefinementInput } fr
 import { applyCanvasDocumentPatch } from './canvasDocumentPatch.mjs'
 import { generationIdempotencyKey, generationJobIdForIdempotency } from './generationIdempotency.mjs'
 import { createProductRuntime, loadLocalEnv, runtimeConfig } from './runtime.mjs'
+import { generationTimeoutForModel, providerForModel } from './generationModels.mjs'
 
 loadLocalEnv()
 const config = runtimeConfig()
@@ -143,8 +144,8 @@ const server = createServer(async (request, response) => {
 
     if (request.method === 'GET' && url.pathname === '/api/health') {
       return json(response, 200, {
-        status: 'ok', provider: 'openai-images', configured: Boolean(config.apiKey),
-        maxBatchCount: config.maximumBatchCount, models: config.models,
+        status: 'ok', provider: 'multi-provider', configured: Boolean(config.modelOptions?.length),
+        maxBatchCount: config.maximumBatchCount, models: config.models, modelOptions: config.modelOptions,
         persistence: runtime.persistence, auth: runtime.authProvider, queue: redisQueue ? 'redis' : 'local-prototype', media: mediaService.enabled ? 'storage' : 'inline-prototype',
         promptRefinement: {
           provider: 'flock-api',
@@ -395,11 +396,16 @@ const server = createServer(async (request, response) => {
 
     if (request.method === 'POST' && url.pathname === '/api/generation-jobs') {
       const user = await requireUser(request)
-      if (!config.apiKey) return error(response, 503, 'PROVIDER_NOT_CONFIGURED', '真实生图尚未配置：请设置 OPENAI_API_KEY。')
       const idempotencyKey = generationIdempotencyKey(request.headers['idempotency-key'])
       if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', '任务提交标识无效，请刷新页面后重试。')
       const rawInput = await readJson(request)
-      const input = validateGenerationInput(rawInput, { models: config.models, maximumBatchCount: config.maximumBatchCount, maximumReferenceBytes: config.maximumReferenceBytes })
+      const input = validateGenerationInput(rawInput, {
+        models: config.modelOptions?.length ? config.modelOptions : config.models,
+        maximumBatchCount: config.maximumBatchCount,
+        maximumReferenceBytes: config.maximumReferenceBytes,
+      })
+      const selectedModel = providerForModel(config.modelOptions ?? [], input.settings.model)
+      if (!selectedModel) return error(response, 503, 'PROVIDER_NOT_CONFIGURED', '所选生成模型尚未配置，请检查对应供应商 API Key。')
       if (!await productStore.canEditProject(user.id, input.projectId)) return error(response, 403, 'PROJECT_GENERATION_FORBIDDEN', '你没有在该项目中发起生成的权限。')
       const id = generationJobIdForIdempotency(user.id, idempotencyKey)
       const existing = await productStore.readGenerationJob(user.id, id)
@@ -408,6 +414,9 @@ const server = createServer(async (request, response) => {
       const job = {
         id, ownerId: user.id, projectId: input.projectId, status: 'queued', kind: input.kind,
         createdAt: timestamp, updatedAt: timestamp, batchCount: input.batchCount, settings: input.settings,
+        provider: selectedModel.provider === 'minimax'
+          ? selectedModel.mediaKind === 'video' ? 'minimax-video' : 'minimax-image'
+          : 'openai-images',
         refinementMode: input.refinementMode,
         idempotencyKey,
         outputs: [], error: undefined, rawInput,
@@ -426,12 +435,15 @@ const server = createServer(async (request, response) => {
       const user = await requireUser(request)
       const job = await productStore.readGenerationJob(user.id, decodeURIComponent(jobMatch[1]))
       if (!job) return error(response, 404, 'JOB_NOT_FOUND', '未找到该真实生成任务。')
-      const maximumTaskDurationMs = Math.min(5 * 60_000, Math.max(10_000, config.generationTimeoutMs ?? 5 * 60_000))
+      const maximumTaskDurationMs = generationTimeoutForModel(config.modelOptions ?? [], job.settings?.model, {
+        imageTimeoutMs: config.generationTimeoutMs ?? 5 * 60_000,
+        videoTimeoutMs: config.videoGenerationTimeoutMs ?? 20 * 60_000,
+      })
       if ((job.status === 'queued' || job.status === 'running') && Date.now() - job.createdAt >= maximumTaskDurationMs) {
         const failed = {
           ...job,
           status: 'failed',
-          error: '生成任务超过 5 分钟，已停止，请稍后重试。',
+          error: '生成任务超过模型等待时限，已停止，请稍后重试。',
           updatedAt: Date.now(),
         }
         await productStore.putGenerationJob(user.id, persistedGenerationJob(failed))

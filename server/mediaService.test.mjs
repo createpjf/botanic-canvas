@@ -105,3 +105,38 @@ test('参考图片读取超时时重试，不会让生成任务无限等待', as
   })
   assert.equal(reads, 2)
 })
+
+test('H3 的 MP4 输出通过同一媒体授权契约持久化', async () => {
+  let written
+  const media = createMediaService({
+    productStore: {
+      async createMediaObject(ownerId, projectId, object) {
+        written = { ownerId, projectId, ...object }
+      },
+      async readMediaObject() {
+        return written
+      },
+    },
+    objectStore: {
+      async putMedia(input) {
+        assert.equal(input.contentType, 'video/mp4')
+        assert.equal(input.bytes.toString(), 'video-bytes')
+        return {
+          id: 'media_video',
+          storageKey: 'project-a/media/media_video.mp4',
+          contentType: input.contentType,
+          byteSize: input.bytes.byteLength,
+        }
+      },
+    },
+  })
+
+  const url = await media.persistProviderMedia({
+    ownerId: 'owner',
+    projectId: 'project-a',
+    media: { mediaKind: 'video', mimeType: 'video/mp4', buffer: Buffer.from('video-bytes') },
+  })
+
+  assert.equal(url, '/api/media/media_video')
+  assert.equal(written.contentType, 'video/mp4')
+})

@@ -34,6 +34,36 @@ test('已入库的私有参考图只保存 mediaId，Worker 执行时才读取�
   assert.equal(resolved.references[0].buffer.toString(), 'media_example-1')
 })
 
+test('模型能力约束会阻止 H3 使用错误分辨率或时长', () => {
+  const modelOptions = [{
+    id: 'MiniMax-H3',
+    mediaKind: 'video',
+    aspectRatios: ['1:1', '3:4', '9:16', '16:9'],
+    resolutions: ['2K'],
+    durations: [4, 5, 6],
+  }]
+  const rawInput = {
+    projectId: 'project-a', kind: 'generation', prompt: '人物手持商品缓慢转身', batchCount: 1,
+    settings: { model: 'MiniMax-H3', aspectRatio: '3:4', resolution: '2K', duration: 5 },
+    recipe: { references: [{ name: '首帧', role: '首图', primary: true, dataUrl: image }] },
+  }
+  const input = validateGenerationInput(rawInput, {
+    models: modelOptions,
+    maximumBatchCount: 8,
+    maximumReferenceBytes: 1024,
+  })
+  assert.equal(input.settings.duration, 5)
+
+  assert.throws(() => validateGenerationInput({
+    ...rawInput,
+    settings: { ...rawInput.settings, duration: 3 },
+  }, {
+    models: modelOptions,
+    maximumBatchCount: 8,
+    maximumReferenceBytes: 1024,
+  }), (error) => error instanceof GenerationError && error.code === 'INVALID_REQUEST')
+})
+
 test('多张候选拆成独立请求，确保每张都有对应输出', async () => {
   const originalFetch = globalThis.fetch
   let requestCount = 0

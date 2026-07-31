@@ -264,12 +264,26 @@ function clampBatchCount(value: number) {
 function cloneGenerationSettings(settings: Partial<GenerationSettings> | undefined): GenerationSettings {
   return {
     model: typeof settings?.model === 'string' && settings.model.trim() ? settings.model : 'gpt-image-2',
-    aspectRatio: settings?.aspectRatio === '1:1' || settings?.aspectRatio === '3:4' || settings?.aspectRatio === '4:5' || settings?.aspectRatio === '9:16'
+    aspectRatio: settings?.aspectRatio === '1:1' || settings?.aspectRatio === '16:9' || settings?.aspectRatio === '4:3' || settings?.aspectRatio === '3:4' || settings?.aspectRatio === '4:5' || settings?.aspectRatio === '9:16'
       ? settings.aspectRatio
       : '3:4',
     resolution: settings?.resolution === '1K' || settings?.resolution === '2K'
       ? settings.resolution
       : '2K',
+    ...(Number.isInteger(settings?.duration) && Number(settings?.duration) >= 4 && Number(settings?.duration) <= 15
+      ? { duration: Number(settings?.duration) }
+      : {}),
+  }
+}
+
+function defaultSettingsForModel(model: GenerationModelOption | undefined): GenerationSettings {
+  return {
+    model: model?.id ?? 'gpt-image-2',
+    aspectRatio: model?.aspectRatios?.includes('3:4') ? '3:4' : model?.aspectRatios?.[0] ?? '3:4',
+    resolution: model?.resolutions?.includes('2K') ? '2K' : model?.resolutions?.[0] ?? '2K',
+    ...(model?.mediaKind === 'video'
+      ? { duration: model.defaultDuration ?? model.durations?.[0] ?? 5 }
+      : {}),
   }
 }
 
@@ -1975,6 +1989,7 @@ function candidatesFromJob(job: GenerationJob, request: GenerationRequest): Gene
     id: output.id,
     name: generationCandidateName(request, index),
     image: output.image,
+    mediaKind: output.mediaKind ?? 'image',
     variant: index,
     prompt: request.prompt,
     createdAt: job.updatedAt,
@@ -1997,7 +2012,11 @@ function candidatesFromJob(job: GenerationJob, request: GenerationRequest): Gene
 }
 
 function resultNodeBlockHeight(settings: GenerationSettings) {
-  return settings.aspectRatio === '9:16'
+  return settings.aspectRatio === '16:9'
+    ? 207
+    : settings.aspectRatio === '4:3'
+      ? 263
+      : settings.aspectRatio === '9:16'
     ? 570
     : settings.aspectRatio === '4:5'
       ? 412
@@ -2070,6 +2089,7 @@ function materializeGenerationOutputs(document: CanvasDocument, job: GenerationJ
       kind: 'result',
       outputOf,
       image: candidate.image,
+      mediaKind: candidate.mediaKind ?? 'image',
       selected: false,
       status: 'ready',
       taskStatus: 'succeeded',
@@ -2152,7 +2172,7 @@ function persistedGenerationState(document: CanvasDocument, fallbackMessage: str
         lastGenerationRequest: request,
         generationStatus: latestJob.status,
         expectedCandidateCount: latestJob.batchCount,
-        assistantMessage: '已恢复真实生成任务，正在同步图像服务状态。',
+        assistantMessage: '已恢复真实生成任务，正在同步生成服务状态。',
       },
       pollJobId: latestJob.id,
     }
@@ -2163,13 +2183,13 @@ function persistedGenerationState(document: CanvasDocument, fallbackMessage: str
       state: {
         ...idleState,
         lastGenerationRequest: { ...request, jobId: latestJob.id },
-        assistantMessage: `已恢复 ${latestJob.outputs.length} 张生成结果；每张图都保留在画布中。`,
+        assistantMessage: `已恢复 ${latestJob.outputs.length} 个生成结果；每个结果都保留在画布中。`,
       },
     }
   }
 
   if (latestJob.status === 'failed') {
-    const message = latestJob.error ?? '真实生图任务失败，请重试。'
+    const message = latestJob.error ?? '真实生成任务失败，请重试。'
     return {
       state: {
         ...idleState,
@@ -2209,18 +2229,18 @@ function syncGenerationJob(
     const candidates = candidatesFromJob(recordedJob, request)
     const document = candidates.length
       ? materializeGenerationOutputs(recordedDocument, recordedJob, request)
-      : updateTaskNodes(recordedDocument, request.taskNodeIds, 'failed', job.id, '图像服务没有返回结果，请重试。')
+      : updateTaskNodes(recordedDocument, request.taskNodeIds, 'failed', job.id, '生成服务没有返回结果，请重试。')
     commit(set, document, {
       generationStatus: 'idle',
       generationProgress: 0,
-      generationError: candidates.length ? null : '真实生图未返回候选图，请重试。',
+      generationError: candidates.length ? null : '真实生成未返回候选结果，请重试。',
       expectedCandidateCount: job.missingOutputCount ? job.batchCount : 0,
       generationCandidates: job.missingOutputCount ? candidates : [],
       assistantMessage: candidates.length
         ? job.missingOutputCount
-          ? `真实生成已完成 ${candidates.length}/${job.batchCount} 张；缺少的 ${job.missingOutputCount} 张可单独补生成。`
-          : `真实生成已完成：${candidates.length} 张图片已作为独立节点写入画布；不需要的可直接删除。`
-        : '真实生图没有返回候选图，请重试。',
+          ? `真实生成已完成 ${candidates.length}/${job.batchCount} 个；缺少的 ${job.missingOutputCount} 个可单独补生成。`
+          : `真实生成已完成：${candidates.length} 个结果已作为独立节点写入画布；不需要的可直接删除。`
+        : '真实生成没有返回候选结果，请重试。',
     }, { immediate: true })
     return
   }
@@ -2229,10 +2249,10 @@ function syncGenerationJob(
     commit(set, recordedDocument, {
       generationStatus: 'error',
       generationProgress: 0,
-      generationError: job.error ?? '真实生图任务失败，请重试。',
+      generationError: job.error ?? '真实生成任务失败，请重试。',
       expectedCandidateCount: 0,
       generationCandidates: [],
-      assistantMessage: job.error ?? '真实生图任务失败，请重试。',
+      assistantMessage: job.error ?? '真实生成任务失败，请重试。',
     }, { immediate: true })
     return
   }
@@ -2256,7 +2276,7 @@ function syncGenerationJob(
     generationProgress: 0,
     generationError: null,
     expectedCandidateCount: job.batchCount,
-    assistantMessage: job.status === 'queued' ? '真实生成任务已入队，等待图像服务处理。' : '图像服务正在生成，请保留此页面或稍后返回查看结果。',
+    assistantMessage: job.status === 'queued' ? '真实生成任务已入队，等待生成服务处理。' : '生成服务正在处理，请保留此页面或稍后返回查看结果。',
   }
   if (!existingJob || existingJob.status !== job.status) {
     // 首次拿到服务端 jobId、以及生命周期状态切换时都属于刷新恢复锚点，不能等
@@ -2287,9 +2307,8 @@ function pollGenerationJob(
       }
       const nextDelay = window.document.hidden ? 10_000 : retryDelay
       retryDelay = Math.min(5_000, Math.round(retryDelay * 1.5))
-      // 服务端以创建时间为准封顶 5 分钟；轮询必须准时触发那次状态结算。
-      const remainingTaskMs = Math.max(0, job.createdAt + generationSubmissionTimeoutMs - Date.now())
-      generationPollTimerId = window.setTimeout(() => void poll(), Math.min(nextDelay, remainingTaskMs))
+      // 不在 UI 推断任务超时：图片与 H3 的等待上限不同，持久化服务端任务才是权威状态。
+      generationPollTimerId = window.setTimeout(() => void poll(), nextDelay)
     } catch (error) {
       if (runId !== generationPollRunId) return
       if (error instanceof GenerationApiError && error.code === 'JOB_NOT_FOUND') {
@@ -3012,6 +3031,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     const document = get().document
     const timestamp = Date.now()
     const nodeId = `generate-${timestamp}`
+    const defaultSettings = defaultSettingsForModel(get().availableModels[0])
     const node: CanvasNode = {
       id: nodeId,
       type: 'generate',
@@ -3023,11 +3043,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
         label: '图像生成',
         prompt: '',
         batchCount: 1,
-        settings: {
-          model: get().availableModels[0]?.id ?? 'gpt-image-2',
-          aspectRatio: '3:4',
-          resolution: '2K',
-        },
+        settings: defaultSettings,
       },
     }
     commit(set, {
@@ -3278,7 +3294,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
         seen.add(model.id)
         return true
       })
-      .map((model) => ({ id: model.id, label: model.label?.trim() || model.id }))
+      .map((model) => ({ ...model, id: model.id, label: model.label?.trim() || model.id }))
     set({ availableModels: availableModels.length ? availableModels : defaultGenerationModels.map((model) => ({ ...model })) })
   },
 
@@ -4033,6 +4049,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
         kind: 'result',
         outputOf,
         image: candidate.image,
+        mediaKind: candidate.mediaKind ?? 'image',
         selected: true,
         status: 'ready',
         label: candidate.name,

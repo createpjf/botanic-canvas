@@ -68,3 +68,40 @@ test('已有候选标识但图片为空时在原节点回填，不创建重复�
   assert.equal(reconciled.nodes[1].id, 'result-c')
   assert.equal(reconciled.nodes[1].data.image, '/api/media/c')
 })
+
+test('浏览器断开后完成的 H3 任务会回填视频节点并保留供应商类型', () => {
+  const document = {
+    id: 'project-video', nodes: [
+      { id: 'generate-video', type: 'generate', position: { x: 0, y: 0 }, data: { jobId: 'job-video', generationKind: 'generation' } },
+      {
+        id: 'result-video',
+        type: 'result',
+        position: { x: 400, y: 0 },
+        data: {
+          outputOf: 'generate-video',
+          taskGroupId: 'result-video',
+          taskStatus: 'failed',
+          status: 'failed',
+          error: '生成服务没有返回结果，请重试。',
+          generationKind: 'generation',
+        },
+      },
+    ], edges: [], generationJobs: [], updatedAt: 1,
+  }
+  const { document: reconciled, changed } = reconcileGenerationResults(document, [{
+    id: 'job-video',
+    status: 'succeeded',
+    kind: 'generation',
+    provider: 'minimax-video',
+    batchCount: 1,
+    createdAt: 1,
+    updatedAt: 2,
+    settings: { model: 'MiniMax-H3' },
+    outputs: [{ id: 'video-output', image: '/api/media/video', mediaKind: 'video' }],
+  }])
+
+  assert.equal(changed, true)
+  assert.equal(reconciled.nodes[1].data.image, '/api/media/video')
+  assert.equal(reconciled.nodes[1].data.mediaKind, 'video')
+  assert.equal(reconciled.generationJobs[0].provider, 'minimax-video')
+})

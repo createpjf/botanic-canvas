@@ -56,9 +56,20 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
 
   const settings = body.settings
   if (!settings || typeof settings !== 'object') throw new GenerationError(400, 'INVALID_REQUEST', '生成参数无效。')
-  assertEnum(settings.model, models, '图像模型')
-  assertEnum(settings.aspectRatio, ['1:1', '3:4', '4:5', '9:16'], '画面比例')
-  assertEnum(settings.resolution, ['1K', '2K'], '输出规格')
+  const modelOptions = models.map((model) => typeof model === 'string' ? { id: model } : model)
+  const model = modelOptions.find((option) => option?.id === settings.model)
+  if (!model) throw new GenerationError(400, 'INVALID_REQUEST', '生成模型不支持。')
+  if (model.maximumPromptLength && prompt.length > model.maximumPromptLength) {
+    throw new GenerationError(400, 'INVALID_REQUEST', `该模型的创意描述不能超过 ${model.maximumPromptLength} 字符。`)
+  }
+  assertEnum(settings.aspectRatio, model.aspectRatios ?? ['1:1', '3:4', '4:5', '9:16'], '画面比例')
+  assertEnum(settings.resolution, model.resolutions ?? ['1K', '2K'], '输出规格')
+  const duration = model.durations
+    ? Number(settings.duration)
+    : undefined
+  if (model.durations && (!Number.isInteger(duration) || !model.durations.includes(duration))) {
+    throw new GenerationError(400, 'INVALID_REQUEST', '视频时长不支持。')
+  }
 
   const recipe = body.recipe
   if (!recipe || typeof recipe !== 'object' || !Array.isArray(recipe.references)) {
@@ -93,7 +104,12 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
     refinementMode,
     prompt,
     batchCount,
-    settings: { model: settings.model, aspectRatio: settings.aspectRatio, resolution: settings.resolution },
+    settings: {
+      model: settings.model,
+      aspectRatio: settings.aspectRatio,
+      resolution: settings.resolution,
+      ...(duration === undefined ? {} : { duration }),
+    },
     references,
     parent,
   }
@@ -130,7 +146,7 @@ export function publicGenerationJob(job) {
     updatedAt: job.updatedAt,
     batchCount: job.batchCount,
     outputCount: job.outputs?.length ?? 0,
-    provider: 'openai-images',
+    provider: job.provider ?? 'openai-images',
     model: job.settings?.model,
     error: job.error,
     missingOutputCount: job.missingOutputCount ?? 0,
@@ -155,6 +171,7 @@ export function persistedGenerationJob(job) {
     missingOutputCount: job.missingOutputCount ?? 0,
     partialError: job.partialError,
     settings: job.settings,
+    provider: job.provider,
     rawInput: job.rawInput,
   }
 }
@@ -254,6 +271,7 @@ export async function generateImages(job, { apiBaseUrl, apiKey, signal, persistI
     return {
       id: `${jobId}-output-${index + 1}`,
       image: await persistImage(image),
+      mediaKind: 'image',
       revisedPrompt: typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined,
     }
   }))

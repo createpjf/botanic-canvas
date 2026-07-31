@@ -4,6 +4,7 @@ import { createClient } from '@supabase/supabase-js'
 function extension(contentType) {
   if (contentType === 'image/jpeg') return 'jpg'
   if (contentType === 'image/webp') return 'webp'
+  if (contentType === 'video/mp4') return 'mp4'
   return 'png'
 }
 
@@ -13,14 +14,16 @@ export function createSupabaseObjectStore({ url, secretKey, bucket = 'botanic-me
   const supabase = createClient(url, secretKey, {
     auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
   })
-  return {
-    async putImage({ projectId, bytes, contentType }) {
+  async function putMedia({ projectId, bytes, contentType }) {
       const id = `media_${randomUUID()}`
       const storageKey = `projects/${projectId}/media/${id}.${extension(contentType)}`
       const { error } = await supabase.storage.from(bucket).upload(storageKey, bytes, { contentType, upsert: false })
       if (error) throw new Error(error.message)
       return { id, storageKey, contentType, byteSize: bytes.byteLength }
-    },
+  }
+  return {
+    putMedia,
+    putImage: putMedia,
     async get(storageKey) {
       const { data, error } = await supabase.storage.from(bucket).download(storageKey)
       if (error || !data) throw new Error(error?.message ?? 'Supabase Storage 未返回媒体文件。')
