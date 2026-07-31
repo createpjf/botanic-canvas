@@ -52,8 +52,8 @@ export async function createObjectStore({ endpoint, region, bucket, accessKeyId,
       return { id, storageKey, contentType, byteSize: bytes.byteLength }
     },
 
-    async get(storageKey) {
-      const response = await client.send(new GetObjectCommand({ Bucket: bucketName, Key: storageKey }))
+    async get(storageKey, { signal } = {}) {
+      const response = await client.send(new GetObjectCommand({ Bucket: bucketName, Key: storageKey }), { abortSignal: signal })
       if (!response.Body) throw new Error('对象存储未返回媒体文件。')
       return { body: response.Body, contentType: response.ContentType }
     },

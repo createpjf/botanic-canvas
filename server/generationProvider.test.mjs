@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { GenerationError, validateGenerationInput } from './generationProvider.mjs'
+import { generateImages, GenerationError, resolveGenerationInputMedia, validateGenerationInput } from './generationProvider.mjs'
 
 const image = 'data:image/png;base64,iVBORw0KGgo='
 
@@ -17,4 +17,54 @@ test('生成配方在进入 Redis 队列前完成模型、尺寸和图片约束�
     settings: { model: 'other-model', aspectRatio: '1:1', resolution: '1K' },
     recipe: { references: [{ dataUrl: image }] },
   }, { models: ['gpt-image-2'], maximumBatchCount: 8, maximumReferenceBytes: 1024 }), (error) => error instanceof GenerationError && error.code === 'INVALID_REQUEST')
+})
+
+test('已入库的私有参考图只保存 mediaId，Worker 执行时才读取图片字节', async () => {
+  const input = validateGenerationInput({
+    projectId: 'project-a', kind: 'generation', prompt: '香氛商品主图', batchCount: 1,
+    settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '1K' },
+    recipe: { references: [{ name: '主商品', role: '商品', primary: true, mediaId: 'media_example-1' }] },
+  }, { models: ['gpt-image-2'], maximumBatchCount: 8, maximumReferenceBytes: 1024 })
+  assert.equal(input.references[0].mediaId, 'media_example-1')
+  assert.equal(input.references[0].buffer, undefined)
+
+  const resolved = await resolveGenerationInputMedia(input, async (mediaId) => ({
+    mimeType: 'image/png', buffer: Buffer.from(mediaId),
+  }))
+  assert.equal(resolved.references[0].buffer.toString(), 'media_example-1')
+})
+
+test('多张候选拆成独立请求，确保每张都有对应输出', async () => {
+  const originalFetch = globalThis.fetch
+  let requestCount = 0
+  globalThis.fetch = async () => {
+    requestCount += 1
+    return new Response(JSON.stringify({
+      data: [{ b64_json: 'iVBORw0KGgo=' }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }
+  try {
+    const result = await generateImages({
+      id: 'job-a',
+      kind: 'refinement',
+      refinementMode: 'faithful',
+      batchCount: 2,
+      prompt: '保持商品主体，探索不同构图',
+      settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '1K' },
+      references: [{ name: '主商品', role: '商品', primary: true, mimeType: 'image/png', buffer: Buffer.from('reference') }],
+      parent: { name: '父版本', mimeType: 'image/png', buffer: Buffer.from('parent') },
+    }, {
+      apiBaseUrl: 'https://example.test',
+      apiKey: 'test-key',
+      jobId: 'job-a',
+      persistImage: async (value) => value.dataUrl,
+    })
+    assert.equal(result.outputs.length, 2)
+    assert.deepEqual(result.outputs.map((output) => output.id), ['job-a-output-1', 'job-a-output-2'])
+    assert.equal(requestCount, 2)
+    assert.equal(result.missingOutputCount, 0)
+    assert.equal(result.partialError, undefined)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
 })

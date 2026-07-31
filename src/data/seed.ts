@@ -1,9 +1,9 @@
 import type { AssetRecord, CanvasDocument, CanvasNode, CanvasSnapshot } from '../domain/canvas'
-import productImage from '../assets/figma/product.png'
-import modelImage from '../assets/figma/model.png'
-import sceneImage from '../assets/figma/scene.png'
-import toneImage from '../assets/figma/tone.png'
-import resultImage from '../assets/figma/result.png'
+import productImage from '../assets/figma/product.webp'
+import modelImage from '../assets/figma/model.webp'
+import sceneImage from '../assets/figma/scene.webp'
+import toneImage from '../assets/figma/tone.webp'
+import resultImage from '../assets/figma/result.webp'
 
 /** 新建项目共享的内置品牌素材；不写入任何 CanvasDocument。 */
 export const seedGlobalAssets: AssetRecord[] = [
@@ -66,7 +66,7 @@ const initialNodes: CanvasNode[] = [
     draggable: true,
     data: {
       kind: 'generate',
-      label: '首图生成',
+      label: '图像生成',
       prompt: '保持香氛商品主体清晰，适合电商首图投放。',
       batchCount: 1,
       settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
@@ -156,7 +156,7 @@ function cloneWorkflowSnapshot(name: string): CanvasSnapshot {
 }
 
 export const seedDocument: CanvasDocument = {
-  schemaVersion: 18,
+  schemaVersion: 20,
   id: 'summer-fragrance-visual-lab',
   name: '夏日香氛视觉实验',
   updatedAt: Date.now(),
@@ -191,7 +191,7 @@ export const seedDocument: CanvasDocument = {
 
 export function createEmptyCanvasDocument(id: string, name: string): CanvasDocument {
   return {
-    schemaVersion: 18,
+    schemaVersion: 20,
     id,
     name,
     updatedAt: Date.now(),

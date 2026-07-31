@@ -1,0 +1,4 @@
+interface:
+  display_name: "Botanic 服装提示词"
+  short_description: "在不发明细节的前提下润色 Botanic 服装图像提示词"
+  default_prompt: "使用 $botanic-fashion-prompt 润色这段服装图像提示词，并保留原始意图。"

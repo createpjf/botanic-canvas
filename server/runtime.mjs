@@ -6,6 +6,7 @@ import { createObjectStore } from './objectStore.mjs'
 import { createMediaService } from './mediaService.mjs'
 import { createSupabaseProductStore } from './supabaseProductStore.mjs'
 import { createSupabaseObjectStore } from './supabaseObjectStore.mjs'
+import { createSupabaseAuthPostgresStore } from './supabaseAuthPostgresStore.mjs'
 
 export function loadLocalEnv(rootDir = process.cwd()) {
   const envPath = resolve(rootDir, '.env')
@@ -28,6 +29,8 @@ export function runtimeConfig(rootDir = process.cwd()) {
     production: process.env.NODE_ENV === 'production',
     databaseUrl: process.env.DATABASE_URL,
     redisUrl: process.env.REDIS_URL,
+    authProvider: process.env.BOTANIC_AUTH_PROVIDER === 'access-token' ? 'access-token' : 'supabase',
+    storageProvider: process.env.BOTANIC_STORAGE_PROVIDER === 's3' ? 's3' : 'supabase',
     supabase: {
       url: process.env.SUPABASE_URL,
       secretKey: process.env.SUPABASE_SECRET_KEY ?? process.env.SUPABASE_SERVICE_ROLE_KEY,
@@ -37,9 +40,16 @@ export function runtimeConfig(rootDir = process.cwd()) {
     apiBaseUrl: (process.env.IMAGE_API_BASE_URL ?? 'https://api.openai.com').replace(/\/$/, ''),
     apiKey: process.env.OPENAI_API_KEY,
     models: models.length ? models : ['gpt-image-2'],
+    flockApiBaseUrl: (process.env.FLOCK_API_BASE_URL ?? 'https://api.flock.io/v1').replace(/\/$/, ''),
+    flockApiKey: process.env.FLOCK_API_KEY,
+    flockTextModel: process.env.FLOCK_TEXT_MODEL,
+    promptRefinementTimeoutMs: Number(process.env.PROMPT_REFINEMENT_TIMEOUT_MS ?? 30000),
     maximumBatchCount: Number(process.env.MAX_GENERATION_BATCH ?? 8),
     maximumReferenceBytes: 8 * 1024 * 1024,
     maximumRequestBytes: 32 * 1024 * 1024,
+    maximumPromptRefinementRequestBytes: 64 * 1024,
+    // 提供商耗时不可无限等待；前端、API 与 Worker 统一以 5 分钟为最大任务时限。
+    generationTimeoutMs: Math.min(5 * 60_000, Math.max(10_000, Number(process.env.GENERATION_TIMEOUT_MS ?? 5 * 60_000))),
     workerConcurrency: Number(process.env.GENERATION_WORKER_CONCURRENCY ?? 1),
     bootstrapAccessToken: process.env.BOTANIC_BOOTSTRAP_ACCESS_TOKEN ?? (process.env.NODE_ENV === 'production' ? '' : 'botanic-local-dev'),
     bootstrapEmail: process.env.SUPABASE_BOOTSTRAP_OWNER_EMAIL ?? process.env.BOTANIC_BOOTSTRAP_EMAIL,
@@ -57,29 +67,53 @@ export function runtimeConfig(rootDir = process.cwd()) {
 
 export async function createProductRuntime(config = runtimeConfig()) {
   const useSupabase = Boolean(config.supabase.url && config.supabase.secretKey)
-  if (config.production && !useSupabase) throw new Error('生产环境必须配置 SUPABASE_URL 与 SUPABASE_SECRET_KEY；文件和直连数据库仅用于本地迁移。')
-  const productStore = useSupabase
-    ? createSupabaseProductStore({
+  const useAccessTokenAuth = config.authProvider === 'access-token'
+  const useS3Storage = config.storageProvider === 's3'
+  const usePostgres = Boolean(config.databaseUrl)
+  if (config.production && !usePostgres) throw new Error('生产环境必须配置 DATABASE_URL。')
+  if (config.production && !useAccessTokenAuth && !useSupabase) throw new Error('Supabase 登录模式必须配置 SUPABASE_URL 与 SUPABASE_SECRET_KEY。')
+  const productStore = usePostgres
+    ? await createPostgresProductStore({
+        databaseUrl: config.databaseUrl,
+        bootstrapAccessToken: useAccessTokenAuth ? config.bootstrapAccessToken : undefined,
+        bootstrapEmail: config.bootstrapEmail,
+      })
+    : useSupabase
+      ? createSupabaseProductStore({
         url: config.supabase.url,
         secretKey: config.supabase.secretKey,
         bootstrapEmail: config.bootstrapEmail,
         inviteRedirectTo: config.supabase.inviteRedirectTo,
       })
-    : config.databaseUrl
-      ? await createPostgresProductStore({ databaseUrl: config.databaseUrl, bootstrapAccessToken: config.bootstrapAccessToken, bootstrapEmail: config.bootstrapEmail })
       : createProductStore({ dataPath: config.localDataPath, bootstrapAccessToken: config.bootstrapAccessToken, bootstrapEmail: config.bootstrapEmail })
 
-  if (useSupabase) {
+  const authenticatedStore = usePostgres && useSupabase && !useAccessTokenAuth
+    ? createSupabaseAuthPostgresStore({
+        productStore,
+        url: config.supabase.url,
+        secretKey: config.supabase.secretKey,
+        bootstrapEmail: config.bootstrapEmail,
+        inviteRedirectTo: config.supabase.inviteRedirectTo,
+      })
+    : productStore
+
+  if (!useS3Storage && useSupabase) {
     const objectStore = createSupabaseObjectStore({
       url: config.supabase.url,
       secretKey: config.supabase.secretKey,
       bucket: config.supabase.bucket,
     })
-    return { config, productStore, mediaService: createMediaService({ productStore, objectStore }), persistence: 'supabase', authProvider: 'supabase' }
+    return {
+      config,
+      productStore: authenticatedStore,
+      mediaService: createMediaService({ productStore: authenticatedStore, objectStore }),
+      persistence: usePostgres ? 'postgres' : 'supabase',
+      authProvider: 'supabase',
+    }
   }
   const configuredObjectStore = [config.s3.endpoint, config.s3.bucket, config.s3.accessKeyId, config.s3.secretAccessKey].every(Boolean)
-  if (config.production && !configuredObjectStore) throw new Error('生产环境必须配置 S3_ENDPOINT、S3_BUCKET 与对象存储凭据。')
+  if (config.production && !configuredObjectStore) throw new Error('Railway 媒体存储未配置：请设置 S3_ENDPOINT、S3_BUCKET 与对象存储凭据。')
   const objectStore = configuredObjectStore ? await createObjectStore(config.s3) : undefined
-  const mediaService = createMediaService({ productStore, objectStore })
-  return { config, productStore, mediaService, persistence: config.databaseUrl ? 'postgres' : 'file', authProvider: 'access-token' }
+  const mediaService = createMediaService({ productStore: authenticatedStore, objectStore })
+  return { config, productStore: authenticatedStore, mediaService, persistence: usePostgres ? 'postgres' : 'file', authProvider: useAccessTokenAuth ? 'access-token' : 'supabase' }
 }

@@ -20,6 +20,21 @@ function generationApiOrigin() {
 
 export default defineConfig({
   plugins: [react()],
+  build: {
+    rollupOptions: {
+      output: {
+        // 稳定的基础依赖单独缓存；画布依赖升级或业务代码更新时，不必让浏览器重下全部首屏脚本。
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return undefined
+          if (id.includes('@xyflow/react')) return 'canvas-flow'
+          if (id.includes('@supabase/')) return 'supabase-client'
+          if (id.includes('react-dom') || id.includes('/react/')) return 'react-vendor'
+          if (id.includes('dexie') || id.includes('zustand')) return 'workspace-data'
+          return undefined
+        },
+      },
+    },
+  },
   server: {
     host: '0.0.0.0',
     port: 4173,

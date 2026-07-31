@@ -28,10 +28,26 @@ function imageDataUrl(value, maximumReferenceBytes) {
   return { mimeType: match[1].toLowerCase(), buffer }
 }
 
+function mediaReference(value) {
+  if (typeof value !== 'string' || !/^media_[A-Za-z0-9_-]+$/.test(value)) {
+    throw new GenerationError(400, 'INVALID_REFERENCE', '参考素材标识无效。')
+  }
+  return { mediaId: value }
+}
+
+function inputImage(value, maximumReferenceBytes) {
+  if (value?.mediaId) return mediaReference(value.mediaId)
+  const { mimeType, buffer } = imageDataUrl(value?.dataUrl, maximumReferenceBytes)
+  return { mimeType, buffer }
+}
+
 export function validateGenerationInput(body, { models, maximumBatchCount, maximumReferenceBytes }) {
   if (!body || typeof body !== 'object') throw new GenerationError(400, 'INVALID_REQUEST', '生成任务不能为空。')
   const projectId = assertText(body.projectId, '项目', 160)
   const kind = assertEnum(body.kind, ['generation', 'refinement'], '任务类型')
+  const refinementMode = body.refinementMode === undefined
+    ? 'faithful'
+    : assertEnum(body.refinementMode, ['faithful', 'explore'], '精修方式')
   const prompt = assertText(body.prompt, '创意描述')
   const batchCount = Number(body.batchCount)
   if (!Number.isInteger(batchCount) || batchCount < 1 || batchCount > maximumBatchCount) {
@@ -52,21 +68,19 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
 
   const references = recipe.references.map((reference, index) => {
     if (!reference || typeof reference !== 'object') throw new GenerationError(400, 'INVALID_REFERENCE', `第 ${index + 1} 张参考素材无效。`)
-    const { mimeType, buffer } = imageDataUrl(reference.dataUrl, maximumReferenceBytes)
+    const image = inputImage(reference, maximumReferenceBytes)
     return {
       name: assertText(reference.name ?? `参考素材 ${index + 1}`, '参考素材名称', 160),
       role: typeof reference.role === 'string' ? reference.role : '参考',
       primary: Boolean(reference.primary),
       priority: Number.isFinite(Number(reference.priority)) ? Number(reference.priority) : index + 1,
-      mimeType,
-      buffer,
+      ...image,
     }
   })
 
   const parent = body.parent
     ? (() => {
-        const { mimeType, buffer } = imageDataUrl(body.parent.dataUrl, maximumReferenceBytes)
-        return { name: assertText(body.parent.name ?? '父版本', '父版本名称', 160), mimeType, buffer }
+        return { name: assertText(body.parent.name ?? '父版本', '父版本名称', 160), ...inputImage(body.parent, maximumReferenceBytes) }
       })()
     : undefined
 
@@ -76,6 +90,7 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
   return {
     projectId,
     kind,
+    refinementMode,
     prompt,
     batchCount,
     settings: { model: settings.model, aspectRatio: settings.aspectRatio, resolution: settings.resolution },
@@ -84,11 +99,33 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
   }
 }
 
+/**
+ * 任务请求可只保存私有媒体 ID；Worker 执行时才在已校验的用户上下文中读取图片字节。
+ * 这样轮询与任务状态写入不会重复携带 Base64 原图。
+ */
+export async function resolveGenerationInputMedia(input, resolveMedia) {
+  const resolve = async (reference) => {
+    if (reference.buffer) return reference
+    if (!reference.mediaId) throw new GenerationError(400, 'INVALID_REFERENCE', '参考素材缺少图片数据。')
+    const resolved = await resolveMedia(reference.mediaId)
+    if (!resolved?.buffer?.length || typeof resolved.mimeType !== 'string') {
+      throw new GenerationError(404, 'MEDIA_NOT_FOUND', '生成参考素材已不存在或没有访问权限。')
+    }
+    return { ...reference, mimeType: resolved.mimeType, buffer: resolved.buffer }
+  }
+  return {
+    ...input,
+    references: await Promise.all(input.references.map(resolve)),
+    parent: input.parent ? await resolve(input.parent) : undefined,
+  }
+}
+
 export function publicGenerationJob(job) {
   return {
     id: job.id,
     status: job.status,
     kind: job.kind,
+    refinementMode: job.refinementMode,
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
     batchCount: job.batchCount,
@@ -96,6 +133,8 @@ export function publicGenerationJob(job) {
     provider: 'openai-images',
     model: job.settings?.model,
     error: job.error,
+    missingOutputCount: job.missingOutputCount ?? 0,
+    partialError: job.partialError,
     outputs: job.outputs ?? [],
   }
 }
@@ -107,11 +146,14 @@ export function persistedGenerationJob(job) {
     projectId: job.projectId,
     status: job.status,
     kind: job.kind,
+    refinementMode: job.refinementMode,
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
     batchCount: job.batchCount,
     outputs: job.outputs ?? [],
     error: job.error,
+    missingOutputCount: job.missingOutputCount ?? 0,
+    partialError: job.partialError,
     settings: job.settings,
     rawInput: job.rawInput,
   }
@@ -130,11 +172,13 @@ function fileExtension(mimeType) {
   return 'png'
 }
 
-function buildProviderPrompt(job) {
+function buildProviderPrompt(job, variationIndex) {
   const primary = job.references.find((reference) => reference.primary)
   const roles = job.references.map((reference) => `${reference.role}：${reference.name}`).join('；')
-  const intent = job.kind === 'refinement'
-    ? '基于首图父版本进行定向精修；保留产品识别度，按本次要求调整。'
+  const intent = job.kind === 'refinement' && job.refinementMode === 'explore'
+    ? '基于首图父版本生成探索型视觉变体；保持商品主体、人物身份与产品识别度，但主动探索不同构图、机位、光影或环境，不要只输出近似复制图。'
+    : job.kind === 'refinement'
+      ? '基于首图父版本进行忠实精修；保留构图、主体和产品识别度，仅按本次要求调整。'
     : '生成电商品牌首图；产品主体必须清晰、可识别、适合作为投放视觉。'
   return [
     intent,
@@ -142,6 +186,7 @@ function buildProviderPrompt(job) {
     roles ? `画布参考顺序：${roles}。` : '输入：当前选中的父版本图片。',
     `画面比例：${job.settings.aspectRatio}；输出规格：${job.settings.resolution}。`,
     `创意目标：${job.prompt}`,
+    variationIndex === undefined ? '' : `本张为同批候选 ${variationIndex + 1}；请与同批其他候选形成可见差异，同时保持主体一致。`,
     '不要添加未被要求的品牌标识、价格、二维码或水印。',
   ].filter(Boolean).join('\n')
 }
@@ -172,34 +217,60 @@ function providerImage(value) {
 }
 
 /** 在 Worker 中调用图像供应商；所有图片字节都由调用方决定如何持久化。 */
-export async function generateImages(job, { apiBaseUrl, apiKey, signal, persistImage }) {
+export async function generateImages(job, { apiBaseUrl, apiKey, signal, persistImage, jobId }) {
   if (!apiKey) throw new GenerationError(503, 'PROVIDER_NOT_CONFIGURED', '真实生图尚未配置：请设置 OPENAI_API_KEY。')
-  const form = new FormData()
-  form.set('model', job.settings.model)
-  form.set('prompt', buildProviderPrompt(job))
-  form.set('n', String(job.batchCount))
-  form.set('size', outputSize(job.settings))
-  form.set('quality', job.settings.resolution === '1K' ? 'low' : 'medium')
-  form.set('output_format', 'png')
-  form.set('moderation', 'auto')
+  if (typeof jobId !== 'string' || !jobId) throw new GenerationError(500, 'INVALID_JOB_ID', '生成任务缺少唯一标识。')
   const inputImages = job.parent ? [job.parent, ...job.references.filter((reference) => !reference.buffer.equals(job.parent.buffer))] : job.references
-  inputImages.forEach((reference, index) => {
-    form.append('image[]', new Blob([reference.buffer], { type: reference.mimeType }), `reference-${index + 1}.${fileExtension(reference.mimeType)}`)
-  })
-  const response = await fetch(`${apiBaseUrl}/v1/images/edits`, {
-    method: 'POST', headers: { Authorization: `Bearer ${apiKey}` }, body: form, signal,
-  })
-  const body = await response.json().catch(() => null)
-  if (!response.ok) throw providerError(response, body)
-  const data = Array.isArray(body?.data) ? body.data : []
-  const outputs = await Promise.all(data.map(async (item, index) => {
+  const submit = async (count, variationIndex) => {
+    const form = new FormData()
+    form.set('model', job.settings.model)
+    form.set('prompt', buildProviderPrompt(job, variationIndex))
+    form.set('n', String(count))
+    form.set('size', outputSize(job.settings))
+    form.set('quality', job.settings.resolution === '1K' ? 'low' : 'medium')
+    form.set('output_format', 'png')
+    form.set('moderation', 'auto')
+    inputImages.forEach((reference, index) => {
+      form.append('image[]', new Blob([reference.buffer], { type: reference.mimeType }), `reference-${index + 1}.${fileExtension(reference.mimeType)}`)
+    })
+    const response = await fetch(`${apiBaseUrl}/v1/images/edits`, {
+      method: 'POST', headers: { Authorization: `Bearer ${apiKey}` }, body: form, signal,
+    })
+    const body = await response.json().catch(() => null)
+    if (!response.ok) throw providerError(response, body)
+    return Array.isArray(body?.data) ? body.data : []
+  }
+
+  // 每张候选各占一个供应商请求。部分兼容 OpenAI Images 的网关会忽略 n>1，
+  // 造成用户明明选择两张却只得到一个结果节点；按顺序发送还能避免网关并发限流。
+  const requests = []
+  for (let index = 0; index < job.batchCount; index += 1) {
+    requests.push(...await Promise.allSettled([submit(1, index)]))
+  }
+  const providerItems = requests.flatMap((result) => result.status === 'fulfilled' ? result.value : [])
+  const failedRequests = requests.filter((result) => result.status === 'rejected')
+  const persisted = await Promise.allSettled(providerItems.map(async (item, index) => {
     const image = providerImage(item?.b64_json)
     return {
-      id: `${job.id}-output-${index + 1}`,
+      id: `${jobId}-output-${index + 1}`,
       image: await persistImage(image),
       revisedPrompt: typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined,
     }
   }))
-  if (!outputs.length) throw new GenerationError(502, 'EMPTY_PROVIDER_RESPONSE', '图像服务没有返回候选图，请重试。')
-  return outputs
+  const outputs = persisted.flatMap((result) => result.status === 'fulfilled' ? [result.value] : [])
+  if (!outputs.length) {
+    const firstFailure = failedRequests[0]
+    if (firstFailure?.status === 'rejected') throw firstFailure.reason
+    const firstPersistFailure = persisted.find((result) => result.status === 'rejected')
+    if (firstPersistFailure?.status === 'rejected') throw firstPersistFailure.reason
+    throw new GenerationError(502, 'EMPTY_PROVIDER_RESPONSE', '图像服务没有返回候选图，请重试。')
+  }
+  const missingOutputCount = Math.max(0, job.batchCount - outputs.length)
+  return {
+    outputs,
+    missingOutputCount,
+    partialError: missingOutputCount
+      ? `图像服务仅返回 ${outputs.length}/${job.batchCount} 张候选，可补生成缺少的 ${missingOutputCount} 张。`
+      : undefined,
+  }
 }

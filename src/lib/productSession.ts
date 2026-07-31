@@ -27,7 +27,9 @@ export const serverPersistenceEnabled = import.meta.env.VITE_PERSISTENCE_MODE ==
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
 const supabasePublishableKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ?? import.meta.env.VITE_SUPABASE_ANON_KEY
-export const supabaseAuthEnabled = serverPersistenceEnabled && Boolean(supabaseUrl && supabasePublishableKey)
+// Railway 全量部署时，访问码只发给同源 API，浏览器不再连接 Supabase。
+const localAccessTokenAuth = import.meta.env.VITE_AUTH_PROVIDER === 'access-token'
+export const supabaseAuthEnabled = !localAccessTokenAuth && serverPersistenceEnabled && Boolean(supabaseUrl && supabasePublishableKey)
 
 const supabase: SupabaseClient | undefined = supabaseAuthEnabled
   ? createClient(supabaseUrl, supabasePublishableKey, {
@@ -35,10 +37,132 @@ const supabase: SupabaseClient | undefined = supabaseAuthEnabled
     })
   : undefined
 
+const mediaSessionSyncs = new Map<string, Promise<ProductUser | undefined>>()
+const productRequestTimeoutMs = 15_000
+const authSessionTimeoutMs = 6_000
+const mediaSessionAttemptTimeoutMs = 10_000
+const mediaSessionRetryDelayMs = 700
+const mediaSessionMaxAttempts = 3
+
+function withAuthTimeout<T>(request: Promise<T>, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const timeoutId = window.setTimeout(() => {
+      if (settled) return
+      settled = true
+      reject(new ProductApiError(message, 0, 'REQUEST_TIMEOUT'))
+    }, authSessionTimeoutMs)
+
+    void request.then(
+      (value) => {
+        if (settled) return
+        settled = true
+        window.clearTimeout(timeoutId)
+        resolve(value)
+      },
+      (error) => {
+        if (settled) return
+        settled = true
+        window.clearTimeout(timeoutId)
+        reject(error)
+      },
+    )
+  })
+}
+
+/**
+ * Supabase 会话已经证明用户身份；媒体 Cookie 仅用于 <img> 同源鉴权。
+ * 绝不能因为这项便利同步暂时失败而阻断用户进入工作台，真实权限仍由每个 API
+ * 请求携带的 Bearer Token 在服务端校验。
+ */
+function sessionUserFallback(user: { id: string; email?: string; user_metadata?: Record<string, unknown> }): ProductUser {
+  const email = user.email ?? ''
+  const displayName = typeof user.user_metadata?.display_name === 'string' && user.user_metadata.display_name.trim()
+    ? user.user_metadata.display_name.trim()
+    : email.split('@')[0] || 'Botanic Member'
+  return { id: user.id, email, name: displayName, role: 'member' }
+}
+
 async function authorizationHeader() {
   if (!supabase) return {}
-  const { data } = await supabase.auth.getSession()
+  const { data } = await withAuthTimeout(
+    supabase.auth.getSession(),
+    '登录状态读取超时，请重新登录。',
+  )
   return data.session ? { Authorization: `Bearer ${data.session.access_token}` } : {}
+}
+
+/**
+ * 业务 API 使用 Bearer Token；但浏览器加载 <img> 时不能附带该请求头。
+ * 将当前 Supabase 会话同步为同源 HttpOnly Cookie，媒体仍由服务端按项目权限校验。
+ */
+async function syncMediaSessionCookie(accessToken?: string): Promise<ProductUser | undefined> {
+  if (!supabase) return undefined
+  const headers = accessToken ? { Authorization: `Bearer ${accessToken}` } : await authorizationHeader()
+  const token = headers.Authorization?.slice('Bearer '.length)
+  if (!token) return undefined
+
+  const inFlight = mediaSessionSyncs.get(token)
+  if (inFlight) return inFlight
+
+  const sync = (async () => {
+    const requestHeaders = new Headers({ Accept: 'application/json' })
+    if (headers.Authorization) requestHeaders.set('Authorization', headers.Authorization)
+    let lastError: ProductApiError | undefined
+    for (let attempt = 1; attempt <= mediaSessionMaxAttempts; attempt += 1) {
+      const controller = new AbortController()
+      const timeoutId = window.setTimeout(() => controller.abort(), mediaSessionAttemptTimeoutMs)
+      try {
+        const response = await fetch('/api/session', {
+          method: 'POST',
+          credentials: 'include',
+          headers: requestHeaders,
+          signal: controller.signal,
+        })
+        const payload = await response.json().catch(() => null) as { user?: ProductUser | null } | ApiErrorPayload | null
+        if (response.ok) return (payload as { user?: ProductUser | null } | null)?.user ?? undefined
+        const error = payload as ApiErrorPayload | null
+        // 前端先于 API 发布时，旧服务会拒绝 Supabase 的 Cookie 同步；
+        // 此时仍可继续使用 Bearer 登录，不应阻断进入工作台。
+        if (response.status === 410 && error?.error?.code === 'SUPABASE_AUTH_REQUIRED') return undefined
+        lastError = new ProductApiError(error?.error?.message ?? '媒体登录状态同步失败。', response.status, error?.error?.code)
+      } catch {
+        lastError = new ProductApiError(
+          controller.signal.aborted ? '工作区数据库响应超时，请稍后重试。' : '无法连接工作区服务，请稍后重试。',
+          0,
+          controller.signal.aborted ? 'REQUEST_TIMEOUT' : undefined,
+        )
+      } finally {
+        window.clearTimeout(timeoutId)
+      }
+
+      // 只重试部署切换、连接抖动与 Supabase 的临时 5xx；账号或权限错误应立即提示。
+      const retryable = lastError.status === 0 || lastError.status >= 500
+      if (!retryable || attempt === mediaSessionMaxAttempts) throw lastError
+      await new Promise<void>((resolve) => window.setTimeout(resolve, mediaSessionRetryDelayMs * attempt))
+    }
+    throw lastError ?? new ProductApiError('媒体登录状态同步失败。', 0)
+  })()
+
+  mediaSessionSyncs.set(token, sync)
+  void sync.finally(() => {
+    if (mediaSessionSyncs.get(token) === sync) mediaSessionSyncs.delete(token)
+  }).catch(() => undefined)
+  return sync
+}
+
+async function clearMediaSessionCookie() {
+  await fetch('/api/session', { method: 'DELETE', credentials: 'include' }).catch(() => undefined)
+}
+
+if (supabase) {
+  supabase.auth.onAuthStateChange((_event, session) => {
+    if (session?.access_token) {
+      void syncMediaSessionCookie(session.access_token).catch(() => undefined)
+      return
+    }
+    void clearMediaSessionCookie()
+  })
 }
 
 export async function productAuthorizationHeader() {
@@ -47,6 +171,11 @@ export async function productAuthorizationHeader() {
 
 export async function productRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
   let response: Response
+  const controller = new AbortController()
+  const abortFromCaller = () => controller.abort()
+  if (init.signal?.aborted) controller.abort()
+  else init.signal?.addEventListener('abort', abortFromCaller, { once: true })
+  const timeoutId = window.setTimeout(() => controller.abort(), productRequestTimeoutMs)
   try {
     const headers = new Headers(init.headers)
     headers.set('Accept', 'application/json')
@@ -55,9 +184,16 @@ export async function productRequest<T>(path: string, init: RequestInit = {}): P
       ...init,
       credentials: 'include',
       headers,
+      signal: controller.signal,
     })
   } catch {
-    throw new ProductApiError('无法连接工作区服务，请检查网络或稍后重试。', 0)
+    const message = !init.signal?.aborted && controller.signal.aborted
+      ? '工作区服务响应超时，请稍后重试。'
+      : '无法连接工作区服务，请检查网络或稍后重试。'
+    throw new ProductApiError(message, 0, controller.signal.aborted ? 'REQUEST_TIMEOUT' : undefined)
+  } finally {
+    window.clearTimeout(timeoutId)
+    init.signal?.removeEventListener('abort', abortFromCaller)
   }
   const payload = await response.json().catch(() => null) as T | ApiErrorPayload | null
   if (!response.ok) {
@@ -70,8 +206,15 @@ export async function productRequest<T>(path: string, init: RequestInit = {}): P
 export async function readProductSession() {
   if (!serverPersistenceEnabled) return undefined
   if (supabase) {
-    const { data } = await supabase.auth.getSession()
+    const { data } = await withAuthTimeout(
+      supabase.auth.getSession(),
+      '登录恢复超时，请重新登录。',
+    )
     if (!data.session) return undefined
+    // POST 只负责补齐 <img> 的同源 Cookie；失败时不应把已登录用户踢回登录页。
+    const fallbackUser = sessionUserFallback(data.session.user)
+    void syncMediaSessionCookie(data.session.access_token).catch(() => undefined)
+    return fallbackUser
   }
   try {
     const response = await productRequest<{ user: ProductUser | null }>('/api/session')
@@ -85,11 +228,12 @@ export async function readProductSession() {
 export async function createProductSession(input: string | { email: string; password: string }) {
   if (supabase) {
     if (typeof input === 'string') throw new ProductApiError('请使用邮箱和密码登录。', 400, 'SUPABASE_AUTH_REQUIRED')
-    const { error } = await supabase.auth.signInWithPassword({ email: input.email, password: input.password })
+    const { data, error } = await supabase.auth.signInWithPassword({ email: input.email, password: input.password })
     if (error) throw new ProductApiError(error.message, 401, 'SUPABASE_SIGN_IN_FAILED')
-    const user = await readProductSession()
-    if (!user) throw new ProductApiError('登录成功，但无法初始化工作区身份。', 401, 'PROFILE_UNAVAILABLE')
-    return user
+    const user = data.user
+    if (!user) throw new ProductApiError('登录成功，但未返回工作区身份。', 401, 'PROFILE_UNAVAILABLE')
+    if (data.session?.access_token) void syncMediaSessionCookie(data.session.access_token).catch(() => undefined)
+    return sessionUserFallback(user)
   }
   const response = await productRequest<{ user: ProductUser }>('/api/session', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accessToken: input }),
@@ -101,6 +245,7 @@ export async function clearProductSession() {
   if (!serverPersistenceEnabled) return
   if (supabase) {
     const { error } = await supabase.auth.signOut()
+    await clearMediaSessionCookie()
     if (error) throw new ProductApiError(error.message, 500, 'SUPABASE_SIGN_OUT_FAILED')
     return
   }

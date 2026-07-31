@@ -2,14 +2,17 @@ import { create } from 'zustand'
 import type { Edge, Viewport, XYPosition } from '@xyflow/react'
 import { createEmptyCanvasDocument, seedDocument, seedGlobalAssets } from '../data/seed'
 import { defaultGenerationModels } from '../domain/canvas'
+import { planGenerationOutputPlacement } from '../domain/generationOutputPlacement'
 import type {
   AssetRecord,
+  AssetRole,
   AssetNodeData,
   CanvasDocument,
   CanvasHistoryEntry,
   CanvasNode,
   CanvasSnapshot,
   CanvasTemplate,
+  GlobalWorkflowTemplateLibrary,
   DeliveryArtifact,
   DeliveryPresetId,
   GenerationCandidate,
@@ -18,6 +21,7 @@ import type {
   GenerationRecipe,
   GenerationReference,
   GenerationSettings,
+  RefinementMode,
   GenerateNodeData,
   PromptNodeData,
   ReferenceGroupNodeData,
@@ -28,17 +32,24 @@ import type {
 import {
   deleteGlobalAssetAndScrubDocuments,
   ensureGlobalAssetLibrary,
+  readGlobalWorkflowTemplateLibrary,
   readCanvasDocument,
+  refreshCanvasDocumentFromRemote,
+  renameCanvasProject,
+  writeGlobalAssetLibrary,
+  writeGlobalWorkflowTemplateLibrary,
   writeCanvasDocument,
 } from '../lib/db'
-import { assertGenerationServiceReady, cancelGenerationJob, GenerationApiError, getGenerationJob, submitGenerationJob } from '../lib/generationApi'
+import { ProductApiError } from '../lib/productSession'
+import { assertGenerationServiceReady, cancelGenerationJob, GenerationApiError, getGenerationJob, listProjectGenerationJobs, reconcileProjectGenerationResults, submitGenerationJob } from '../lib/generationApi'
 
 type GenerationStatus = 'idle' | 'uploading' | 'queued' | 'running' | 'error'
-type PersistenceStatus = 'saved' | 'saving' | 'error'
+type PersistenceStatus = 'saved' | 'saving' | 'offline' | 'conflict' | 'error'
 
 type TaskNodeIds = {
   generateNodeId: string
   resultNodeId: string
+  resultNodeIds?: string[]
 }
 
 type TaskFlowLayout = {
@@ -61,12 +72,14 @@ type GenerationRequest = {
   taskNodeIds?: TaskNodeIds
   taskLayout?: TaskFlowLayout
   sourceGraphNodeId?: string
+  refinementMode?: RefinementMode
 }
 
 type GenerateBranchDraft = {
   prompt?: string
   batchCount?: number
   settings?: Partial<GenerationSettings>
+  refinementMode?: RefinementMode
 }
 
 type UndoAction = {
@@ -86,6 +99,8 @@ type CanvasStore = {
   document: CanvasDocument
   /** 跨项目共享的内置/品牌素材；项目上传与生成资产只保存在 document.assets。 */
   globalAssets: AssetRecord[]
+  /** 账号级共享工作流；只包含可跨项目复用的品牌素材引用。 */
+  sharedTemplates: CanvasTemplate[]
   hydrated: boolean
   persistenceStatus: PersistenceStatus
   selectedNodeId: string | null
@@ -102,21 +117,25 @@ type CanvasStore = {
   undoSnapshot: CanvasDocument | null
   hydrate: () => Promise<void>
   openDocument: (documentId: string) => Promise<boolean>
-  renameDocument: (name: string) => void
+  openNewDocument: (document: CanvasDocument) => void
+  renameDocument: (name: string) => Promise<void>
   setNodes: (nodes: CanvasNode[]) => void
+  setNodesTransient: (nodes: CanvasNode[]) => void
   setEdges: (edges: Edge[]) => void
   setViewport: (viewport: Viewport) => void
   selectNode: (nodeId: string | null) => void
-  addAssetToCanvas: (assetId: string, position?: XYPosition) => void
+  addAssetToCanvas: (assetId: string, position?: XYPosition, connectToGenerateId?: string) => void
   addUploadedAssets: (assets: UploadedAssetInput[]) => void
   addUploadedAssetsToCanvas: (assets: UploadedAssetInput[], position?: XYPosition) => void
+  saveGeneratedImageToLibrary: (input: { image: string; name: string }) => void
+  moveAssetToRole: (assetId: string, role: AssetRole) => void
   addTextNode: (position?: XYPosition) => void
   addGenerateNode: (position?: XYPosition) => void
   createGenerateBranchFromResult: (resultNodeId: string, draft?: GenerateBranchDraft) => string | null
   createGenerateFromResultRecipe: (resultNodeId: string) => string | null
   renameCanvasNode: (nodeId: string, label: string) => void
   updateTextNode: (nodeId: string, content: string) => void
-  updateGenerateNode: (nodeId: string, patch: Partial<Pick<GenerateNodeData, 'label' | 'prompt' | 'batchCount' | 'settings'>>) => void
+  updateGenerateNode: (nodeId: string, patch: Partial<Pick<GenerateNodeData, 'label' | 'prompt' | 'batchCount' | 'settings' | 'refinementMode'>>) => void
   setGenerateNodePrimaryInput: (nodeId: string, assetNodeId: string) => void
   moveGenerateNodeInput: (nodeId: string, inputNodeId: string, direction: 'earlier' | 'later') => void
   setAvailableModels: (models: GenerationModelOption[]) => void
@@ -129,14 +148,18 @@ type CanvasStore = {
   removeNodeFromCanvas: (nodeId: string) => void
   deleteAsset: (assetId: string) => void
   saveCurrentAsTemplate: (name: string) => void
+  saveCurrentAsSharedTemplate: (name: string) => Promise<boolean>
   createCanvasFromTemplate: (templateId: string) => void
+  createCanvasFromSharedTemplate: (templateId: string) => void
+  refreshSharedTemplates: () => Promise<void>
   createCanvasFromHistory: (historyId: string) => void
   restoreHistoryVersion: (historyId: string) => void
   saveHistoryAsTemplate: (historyId: string) => void
   runGeneration: (input: { prompt: string; batchCount: number; settings: GenerationSettings; recipe?: GenerationRecipe; rootRecipe?: GenerationRecipe; taskLayout?: TaskFlowLayout; sourceGraphNodeId?: string }) => Promise<boolean>
-  runRefinement: (input: { targetNodeId: string; prompt: string; batchCount: number; settings: GenerationSettings; recipe?: GenerationRecipe; rootRecipe?: GenerationRecipe; taskLayout?: TaskFlowLayout; sourceGraphNodeId?: string }) => Promise<boolean>
+  runRefinement: (input: { targetNodeId: string; prompt: string; batchCount: number; settings: GenerationSettings; recipe?: GenerationRecipe; rootRecipe?: GenerationRecipe; taskLayout?: TaskFlowLayout; sourceGraphNodeId?: string; refinementMode?: RefinementMode }) => Promise<boolean>
   cancelGeneration: () => void
   retryGeneration: () => Promise<boolean>
+  retryMissingGeneration: (jobId: string) => Promise<boolean>
   clearGenerationError: () => void
   selectGenerationCandidate: (candidateId: string) => void
   undoLastAction: () => void
@@ -468,6 +491,42 @@ function workflowTemplateSnapshot(document: CanvasDocument, name: string): Canva
   return workflowTemplateSnapshotFromSnapshot(snapshot(document, name), name)
 }
 
+/**
+ * 共享模板只能引用工作区品牌素材。项目上传和已生成图片都归项目所有，发布时
+ * 必须移除对应节点、连线和生成器输入，避免跨项目暴露私有素材。
+ */
+function sharedWorkflowTemplateSnapshot(document: CanvasDocument, name: string): { snapshot: CanvasSnapshot; omittedPrivateAssetCount: number } {
+  const base = workflowTemplateSnapshot(document, name)
+  const privateAssetNodeIds = new Set(base.nodes.flatMap((node) => {
+    if (node.type !== 'asset') return []
+    return (node.data as AssetNodeData).source === 'brand' ? [] : [node.id]
+  }))
+  const nodes = base.nodes
+    .filter((node) => !privateAssetNodeIds.has(node.id))
+    .map((node) => {
+      if (node.type !== 'generate') return node
+      const data = node.data as GenerateNodeData
+      const inputOrder = data.inputOrder?.filter((nodeId) => !privateAssetNodeIds.has(nodeId))
+      return {
+        ...node,
+        data: {
+          ...data,
+          inputOrder,
+          primaryInputId: data.primaryInputId && !privateAssetNodeIds.has(data.primaryInputId) ? data.primaryInputId : undefined,
+        },
+      }
+    }) as CanvasNode[]
+  const nodeIds = new Set(nodes.map((node) => node.id))
+  return {
+    snapshot: {
+      ...base,
+      nodes,
+      edges: cloneEdges(base.edges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target))),
+    },
+    omittedPrivateAssetCount: privateAssetNodeIds.size,
+  }
+}
+
 /** 清理旧版演示状态遗留的 “Mock 生成” 等展示文案，避免再次写回本地画布。 */
 function removeLegacyMockCopy(value: string | undefined) {
   if (!value) return value
@@ -481,6 +540,12 @@ function removeLegacyMockCopy(value: string | undefined) {
 
 function cleanDisplayName(value: string | undefined, fallback: string) {
   return removeLegacyMockCopy(value) || fallback
+}
+
+function cleanGenerateNodeLabel(value: string | undefined) {
+  const label = cleanDisplayName(value, '图像生成')
+  // 将旧版本的通用名称统一迁移，避免分支与独立生成都被误称为“首图”。
+  return label === '首图生成' ? '图像生成' : label
 }
 
 function canvasNodeDisplayName(node: CanvasNode) {
@@ -524,7 +589,7 @@ function normalizeLegacyCopyNodes(nodes: CanvasNode[]): CanvasNode[] {
     }
     if (node.type === 'generate') {
       const data = node.data as GenerateNodeData
-      return { ...node, data: { ...data, label: cleanDisplayName(data.label, '首图生成') } }
+      return { ...node, data: { ...data, label: cleanGenerateNodeLabel(data.label) } }
     }
     if (node.type === 'prompt') {
       const data = node.data as PromptNodeData
@@ -998,7 +1063,7 @@ function migrateLegacyWorkflowSnapshot(snapshotValue: CanvasSnapshot): CanvasSna
         draggable: true,
         data: {
           kind: 'generate',
-          label: prompt.generationKind === 'refinement' ? '定向精修' : '首图生成',
+          label: prompt.generationKind === 'refinement' ? '定向精修' : '图像生成',
           prompt: '',
           batchCount: recipe.batchCount,
           settings: cloneGenerationSettings(recipe.settings),
@@ -1087,7 +1152,7 @@ function migrateLegacyWorkflowSnapshot(snapshotValue: CanvasSnapshot): CanvasSna
       draggable: true,
       data: {
         kind: 'generate',
-        label: result.generationKind === 'refinement' ? '定向精修' : '首图生成',
+        label: result.generationKind === 'refinement' ? '定向精修' : '图像生成',
         prompt: '',
         batchCount: recipe.batchCount,
         settings: cloneGenerationSettings(recipe.settings),
@@ -1223,15 +1288,19 @@ function normalizeDocument(stored: CanvasDocument | undefined): CanvasDocument {
         nodes: layoutStarterV03Nodes(normalizedRootSnapshot.nodes),
         // 同步清除旧画布的默认 100% 视角，让首次打开按完整图谱适配。
         viewport: { x: 0, y: 0, zoom: 1 },
-      }
+    }
     : normalizedRootSnapshot
+  // 任务的输出以服务端 generation_jobs 为准。不能因本地快照暂时缺 outputs
+  // 就把成功任务改为失败，否则会抢在历史/实时回填前永久遮住真实图片。
+  const reconciledResultNodes = rootSnapshot.nodes
+  const generationJobs = migrateGenerationJobs(legacy.generationJobs ?? [])
   const document: CanvasDocument = {
     ...seedDocument,
     ...legacy,
-    schemaVersion: 18,
+    schemaVersion: 20,
     name: cleanDisplayName(legacy.name, seedDocument.name),
     viewport: rootSnapshot.viewport,
-    nodes: rootSnapshot.nodes,
+    nodes: reconciledResultNodes,
     edges: rootSnapshot.edges,
     // V16 起品牌素材存在全局库，CanvasDocument 仅保留项目上传/生成资产。
     assets: (legacy.assets ?? seedDocument.assets).filter((asset) => asset.source !== 'brand').map((asset) => ({
@@ -1247,21 +1316,123 @@ function normalizeDocument(stored: CanvasDocument | undefined): CanvasDocument {
       title: removeLegacyMockCopy(delivery.title) ?? delivery.title,
       subtitle: removeLegacyMockCopy(delivery.subtitle) ?? delivery.subtitle,
     })),
-    generationJobs: migrateGenerationJobs(legacy.generationJobs ?? []),
+    generationJobs,
     activeVersionId: legacy.activeVersionId ?? seedDocument.activeVersionId,
   }
   // V18 起，同一次任务的每张输出都是画布上的独立结果节点；旧任务在首次打开时补齐。
   return document.generationJobs.reduce((nextDocument, job) => {
-    if (job.status !== 'succeeded' || !job.outputs?.length) return nextDocument
-    const request = requestFromPersistedJob(nextDocument, job)
-    return request ? materializeGenerationOutputs(nextDocument, job, request) : nextDocument
+    if (job.status === 'succeeded' && job.outputs?.length) {
+      const request = requestFromPersistedJob(nextDocument, job)
+      return request ? materializeGenerationOutputs(nextDocument, job, request) : nextDocument
+    }
+    if (job.status === 'failed' && job.error === '图像服务没有返回结果，请重试。' && job.generateNodeId && job.resultNodeId) {
+      return updateTaskNodes(nextDocument, {
+        generateNodeId: job.generateNodeId,
+        resultNodeId: job.resultNodeId,
+      }, 'failed', job.id, job.error)
+    }
+    return nextDocument
   }, document)
+}
+
+/**
+ * 服务端回填可能与 React Flow 的节点测量、选中态更新同时返回。
+ * 这里只合并权威任务记录，再基于当前画布展开图片，避免用打开时的旧快照
+ * 覆盖用户刚发生的布局或新一轮生成。
+ */
+function mergeRecoveredGenerationJobs(current: CanvasDocument, recovered: CanvasDocument) {
+  const jobsById = new Map(current.generationJobs.map((job) => [job.id, job]))
+  for (const job of recovered.generationJobs) {
+    const existing = jobsById.get(job.id)
+    if (!existing
+      || job.updatedAt > existing.updatedAt
+      || (job.outputs?.length ?? 0) > (existing.outputs?.length ?? 0)) {
+      jobsById.set(job.id, job)
+    }
+  }
+  return normalizeDocument({
+    ...current,
+    generationJobs: [...jobsById.values()]
+      .sort((left, right) => right.updatedAt - left.updatedAt)
+      .slice(0, 60),
+  })
+}
+
+function resultImageCount(document: CanvasDocument) {
+  return document.nodes.filter((node) => node.type === 'result' && Boolean((node.data as ResultNodeData).image)).length
+}
+
+/** 用当前全局素材库修复画布内已失效的内置素材 Hash 路径。 */
+function reconcileBrandAssetImages(document: CanvasDocument, globalAssets: AssetRecord[]) {
+  const imageByAssetId = new Map(globalAssets.map((asset) => [asset.id, asset.image]))
+  let changed = false
+
+  const reconcileRecipe = (recipe: GenerationRecipe | undefined) => {
+    if (!recipe) return recipe
+    const references = recipe.references.map((reference) => {
+      const image = imageByAssetId.get(reference.assetId)
+      if (!image || image === reference.image) return reference
+      changed = true
+      return { ...reference, image }
+    })
+    return references.some((reference, index) => reference !== recipe.references[index]) ? { ...recipe, references } : recipe
+  }
+
+  const reconcileSnapshot = (snapshot: CanvasSnapshot) => {
+    const nodes = snapshot.nodes.map((node) => {
+      if (node.type === 'asset') {
+        const data = node.data as AssetNodeData
+        const image = imageByAssetId.get(data.assetId)
+        if (!image || image === data.image) return node
+        changed = true
+        return { ...node, data: { ...data, image } } as CanvasNode
+      }
+      if (node.type === 'reference') {
+        const data = node.data as ReferenceGroupNodeData
+        const recipe = reconcileRecipe(data.recipe)
+        return recipe === data.recipe ? node : { ...node, data: { ...data, recipe } } as CanvasNode
+      }
+      if (node.type === 'result') {
+        const data = node.data as ResultNodeData
+        const generationRecipe = reconcileRecipe(data.generationRecipe)
+        const rootRecipe = reconcileRecipe(data.rootRecipe)
+        return generationRecipe === data.generationRecipe && rootRecipe === data.rootRecipe
+          ? node
+          : { ...node, data: { ...data, generationRecipe, rootRecipe } } as CanvasNode
+      }
+      return node
+    })
+    return nodes.some((node, index) => node !== snapshot.nodes[index]) ? { ...snapshot, nodes } : snapshot
+  }
+
+  const rootSnapshot = reconcileSnapshot({ name: document.name, nodes: document.nodes, edges: document.edges, viewport: document.viewport })
+  const templates = document.templates.map((template) => {
+    const snapshot = reconcileSnapshot(template.snapshot)
+    return snapshot === template.snapshot ? template : { ...template, snapshot }
+  })
+  const history = document.history.map((entry) => {
+    const snapshot = reconcileSnapshot(entry.snapshot)
+    const generationRecipe = reconcileRecipe(entry.generationRecipe)
+    const rootRecipe = reconcileRecipe(entry.rootRecipe)
+    return snapshot === entry.snapshot && generationRecipe === entry.generationRecipe && rootRecipe === entry.rootRecipe
+      ? entry
+      : { ...entry, snapshot, generationRecipe, rootRecipe }
+  })
+
+  if (!changed) return document
+  return {
+    ...document,
+    nodes: rootSnapshot.nodes,
+    templates,
+    history,
+  }
 }
 
 function commit(
   set: (next: Partial<CanvasStore>) => void,
   document: CanvasDocument,
   extra: Partial<CanvasStore> = {},
+  options: { immediate?: boolean } = {},
 ) {
   const sanitizedDocument = [...revokedGlobalAssetIds].reduce(
     (current, assetId) => scrubAssetFromDocument(current, assetId),
@@ -1270,17 +1441,39 @@ function commit(
   const nextDocument = { ...sanitizedDocument, updatedAt: Date.now() }
   const runId = ++persistenceRunId
   set({ document: nextDocument, persistenceStatus: 'saving', ...scrubRevokedStoreExtra(extra) })
-  void writeCanvasDocument(nextDocument)
-    .then(() => {
-      if (runId === persistenceRunId) set({ persistenceStatus: 'saved' })
+  const persistence = writeCanvasDocument(nextDocument, { immediate: options.immediate })
+    .then((savedDocument) => {
+      if (runId === persistenceRunId) {
+        set({ document: savedDocument ?? nextDocument, persistenceStatus: 'saved' })
+      }
     })
-    .catch(() => {
+    .catch((error) => {
       if (runId !== persistenceRunId) return
+      if (error instanceof ProductApiError && error.code === 'PROJECT_CONFLICT') {
+        set({ persistenceStatus: 'saving', assistantMessage: '正在同步最新画布…' })
+        void refreshCanvasDocumentFromRemote(nextDocument.id)
+          .then((remote) => {
+            if (!remote || runId !== persistenceRunId) return
+            set({ document: remote, persistenceStatus: 'saved', assistantMessage: '画布已同步。' })
+          })
+          .catch(() => {
+            if (runId === persistenceRunId) set({ persistenceStatus: 'error', assistantMessage: '最新画布暂时不可用，请稍后重试。' })
+          })
+        return
+      }
+      if (error instanceof ProductApiError && error.status === 0) {
+        set({
+          persistenceStatus: 'offline',
+          assistantMessage: '云端暂时不可用，已保存到本地草稿；恢复网络后会自动同步。',
+        })
+        return
+      }
       set({
         persistenceStatus: 'error',
-        assistantMessage: '项目保存失败：请先不要刷新，稍后重试或导出当前结果。',
+        assistantMessage: '云端保存暂时失败，本地草稿已保留；请稍后重试。',
       })
     })
+  return persistence
 }
 
 function setGenerationError(set: (next: Partial<CanvasStore>) => void, message: string, preserveLastRequest = false) {
@@ -1303,7 +1496,26 @@ function taskResultStatus(status: GenerationJob['status'] | 'uploading'): Result
 }
 
 function taskFlowLabel(kind: GenerationRequest['kind']) {
-  return kind === 'refinement' ? '定向精修' : '首图生成'
+  return kind === 'refinement' ? '定向精修' : '图像生成'
+}
+
+function concisePromptName(prompt: string) {
+  const compact = prompt
+    .replace(/\s+/g, ' ')
+    .replace(/[，,；;、]+/g, ' ')
+    .trim()
+    .replace(/[。！？!?.：:]+$/, '')
+  const characters = Array.from(compact)
+  return characters.length > 14 ? `${characters.slice(0, 14).join('')}…` : compact || '创意图'
+}
+
+/** 输出名保持可读且稳定：精修沿用父节点，首图取提示词短摘要。 */
+function generationCandidateName(request: GenerationRequest, variant: number) {
+  if (request.kind === 'refinement' && request.parentLabel?.trim()) {
+    return `${request.parentLabel.trim()} +${variant + 1}`
+  }
+  const base = concisePromptName(request.prompt)
+  return request.batchCount > 1 ? `${base} ${String(variant + 1).padStart(2, '0')}` : base
 }
 
 function createTaskFlow(
@@ -1318,16 +1530,23 @@ function createTaskFlow(
   const taskNodeIds: TaskNodeIds = {
     generateNodeId: sourceGenerateNode?.id ?? `generate-task-${timestamp}`,
     resultNodeId: `result-task-${timestamp}`,
+    resultNodeIds: Array.from({ length: request.batchCount }, (_, index) => index
+      ? `result-task-${timestamp}-${index + 1}`
+      : `result-task-${timestamp}`),
   }
   const x = nextTaskFlowStartX(document.nodes)
   const y = 160
   const existingOutputCount = sourceGenerateNode
-    ? document.edges.filter((edge) => edge.source === sourceGenerateNode.id && document.nodes.some((node) => node.id === edge.target && node.type === 'result')).length
+    ? document.edges
+      .filter((edge) => edge.source === sourceGenerateNode.id)
+      .map((edge) => document.nodes.find((node) => node.id === edge.target && node.type === 'result'))
+      .filter((node): node is CanvasNode => Boolean(node))
+      .reduce((offset, node) => offset + resultNodeBlockHeight((node.data as ResultNodeData).generationSettings ?? request.settings) + 32, 0)
     : 0
   const layout = request.taskLayout ?? (sourceGenerateNode
     ? {
         generate: { ...sourceGenerateNode.position },
-        result: { x: sourceGenerateNode.position.x + 372, y: sourceGenerateNode.position.y + 28 + existingOutputCount * 254 },
+        result: { x: sourceGenerateNode.position.x + 372, y: sourceGenerateNode.position.y + 28 + existingOutputCount },
       }
     : {
         generate: { x, y },
@@ -1359,6 +1578,7 @@ function createTaskFlow(
           ...(sourceGenerateNode.data as GenerateNodeData),
           status: 'uploading',
           generationKind: request.kind,
+          refinementMode: request.refinementMode,
           jobId: undefined,
           error: undefined,
         },
@@ -1378,10 +1598,10 @@ function createTaskFlow(
           generationKind: request.kind,
         },
       }
-  const resultNode: CanvasNode = {
-    id: taskNodeIds.resultNodeId,
+  const resultNodes: CanvasNode[] = (taskNodeIds.resultNodeIds ?? [taskNodeIds.resultNodeId]).map((resultNodeId, variant) => ({
+    id: resultNodeId,
     type: 'result',
-    position: { ...layout.result },
+    position: resultGridPosition(layout.result, { variant, settings: request.settings }),
     draggable: true,
     data: {
       kind: 'result',
@@ -1389,13 +1609,17 @@ function createTaskFlow(
       status: 'generating',
       taskStatus: 'uploading',
       submittedAt: timestamp,
-      label: `${request.kind === 'refinement' ? '精修' : '首图'}候选 · 等待任务`,
+      label: generationCandidateName(request, variant),
       generationKind: request.kind,
+      refinementMode: request.refinementMode,
       generationSettings: cloneGenerationSettings(request.settings),
       generationRecipe: recipe,
       rootRecipe,
+      variant,
+      taskGroupId: taskNodeIds.resultNodeId,
+      taskNodeId: taskNodeIds.resultNodeId,
     },
-  }
+  }))
   const taskEdges: Edge[] = []
   const nodeIds = new Set(document.nodes.map((node) => node.id))
   if (!sourceGenerateNode) {
@@ -1426,17 +1650,19 @@ function createTaskFlow(
     })
   }
 
-  taskEdges.push({
-    id: `task-generate-result-${timestamp}`,
-    source: taskNodeIds.generateNodeId,
-    sourceHandle: 'output',
-    target: taskNodeIds.resultNodeId,
-    type: 'default',
-    style: { stroke: '#2a5238', strokeWidth: 1.7 },
-    className: 'task-edge task-edge--active',
-    data: { system: true, role: 'output' },
-    reconnectable: false,
-  })
+  for (const resultNode of resultNodes) {
+    taskEdges.push({
+      id: `task-generate-result-${timestamp}-${resultNode.id}`,
+      source: taskNodeIds.generateNodeId,
+      sourceHandle: 'output',
+      target: resultNode.id,
+      type: 'default',
+      style: { stroke: '#2a5238', strokeWidth: 1.7 },
+      className: 'task-edge task-edge--active',
+      data: { system: true, role: 'output' },
+      reconnectable: false,
+    })
+  }
 
   const baseNodes = document.nodes
     .map((node) => node.id === taskNodeIds.generateNodeId
@@ -1444,7 +1670,7 @@ function createTaskFlow(
       : { ...node, selected: false }) as CanvasNode[]
   if (!sourceGenerateNode) baseNodes.push(generateNode)
   if (textNode) baseNodes.push(textNode)
-  baseNodes.push(resultNode)
+  baseNodes.push(...resultNodes)
 
   return {
     document: {
@@ -1470,8 +1696,12 @@ function updateTaskNodes(
         data: { ...(node.data as GenerateNodeData), status, jobId, error },
       }
     }
-    if (node.id === taskNodeIds.resultNodeId && node.type === 'result') {
+    if (node.type === 'result') {
       const result = node.data as ResultNodeData
+      const belongsToTask = node.id === taskNodeIds.resultNodeId
+        || result.taskGroupId === taskNodeIds.resultNodeId
+        || result.taskNodeId === taskNodeIds.resultNodeId
+      if (!belongsToTask) return node
       return {
         ...node,
         data: {
@@ -1479,23 +1709,62 @@ function updateTaskNodes(
           status: taskResultStatus(status),
           taskStatus: status,
           jobId,
+          taskGroupId: taskNodeIds.resultNodeId,
           taskNodeId: taskNodeIds.resultNodeId,
           error,
           label: status === 'succeeded'
             ? `${result.generationKind === 'refinement' ? '精修' : '首图'}候选 · 等待选择`
+            : status === 'failed' && result.taskStatus === 'uploading'
+              ? `${result.generationKind === 'refinement' ? '精修' : '首图'}候选 · 提交超时`
             : result.label,
         },
       }
     }
     return node
   }) as CanvasNode[]
+  const taskResultNodeIds = new Set(nodes
+    .filter((node) => node.type === 'result' && ((node.data as ResultNodeData).taskGroupId === taskNodeIds.resultNodeId || node.id === taskNodeIds.resultNodeId))
+    .map((node) => node.id))
   const isActive = status === 'uploading' || status === 'queued' || status === 'running'
   const edges = document.edges.map((edge) => {
-    const belongsToTask = edge.target === taskNodeIds.generateNodeId || edge.source === taskNodeIds.generateNodeId || edge.target === taskNodeIds.resultNodeId
+    const belongsToTask = edge.target === taskNodeIds.generateNodeId || edge.source === taskNodeIds.generateNodeId || taskResultNodeIds.has(edge.target)
     if (!belongsToTask || !edge.className?.includes('task-edge')) return edge
     return { ...edge, className: isActive ? 'task-edge task-edge--active' : 'task-edge' }
   })
   return { ...document, nodes, edges }
+}
+
+const generationSubmissionTimeoutMs = 5 * 60_000
+
+/**
+ * 提交请求在写入服务端 jobId 前中断时，旧版本会把占位结果永久恢复为 uploading。
+ * 打开画布时把超过时限的占位任务变为可重试失败状态。
+ */
+function settleExpiredGenerationSubmissions(document: CanvasDocument) {
+  const now = Date.now()
+  let nextDocument = document
+  let changed = false
+  for (const node of document.nodes) {
+    if (node.type !== 'result') continue
+    const result = node.data as ResultNodeData
+    if (result.taskGroupId && result.taskGroupId !== node.id) continue
+    if (
+      result.taskStatus !== 'uploading'
+      || result.jobId
+      || !result.outputOf
+      || !result.submittedAt
+      || now - result.submittedAt < generationSubmissionTimeoutMs
+    ) continue
+    nextDocument = updateTaskNodes(
+      nextDocument,
+      { generateNodeId: result.outputOf, resultNodeId: node.id },
+      'failed',
+      undefined,
+      '任务提交超过 5 分钟，未进入生成队列。请重试。',
+    )
+    changed = true
+  }
+  return { document: nextDocument, changed }
 }
 
 function jobForDocument(job: GenerationJob, taskNodeIds: TaskNodeIds, dismissedOutputIds: string[] = []): GenerationJob {
@@ -1564,7 +1833,139 @@ function requestFromPersistedJob(document: CanvasDocument, job: GenerationJob): 
       generateNodeId: generateNode.id,
       resultNodeId: job.resultNodeId,
     },
+    refinementMode: generate.refinementMode,
   }
+}
+
+/**
+ * 任务提交后，浏览器可能在结果返回前切换项目、刷新，或因网络抖动只留下本地占位节点。
+ * 不依赖 generationJobs 的本地快照：从任务节点上的 jobId 重建请求，再向服务端取回最终结果。
+ */
+function requestFromTaskNode(document: CanvasDocument, taskResultNode: CanvasNode): GenerationRequest | null {
+  if (taskResultNode.type !== 'result') return null
+  const result = taskResultNode.data as ResultNodeData
+  const jobId = result.jobId
+  const generateNodeId = result.outputOf
+  if (!jobId || !generateNodeId) return null
+  const generateNode = document.nodes.find((node) => node.id === generateNodeId && node.type === 'generate')
+  if (!generateNode || generateNode.type !== 'generate') return null
+  const generate = generateNode.data as GenerateNodeData
+  const recipe = result.generationRecipe
+    ? cloneGenerationRecipe(result.generationRecipe)
+    : buildGraphGenerationRecipe(document, generateNode.id)?.recipe
+  if (!recipe) return null
+
+  const kind = result.generationKind ?? generate.generationKind ?? 'generation'
+  const parentNodeId = kind === 'refinement'
+    ? document.edges.find((edge) => edge.target === generateNode.id && document.nodes.some((node) => node.id === edge.source && node.type === 'result'))?.source
+    : undefined
+  const parentNode = parentNodeId
+    ? document.nodes.find((node) => node.id === parentNodeId && node.type === 'result')
+    : undefined
+  const parent = parentNode?.type === 'result' ? parentNode.data as ResultNodeData : undefined
+  const resultNodeId = result.taskGroupId ?? taskResultNode.id
+
+  return {
+    kind,
+    prompt: recipe.prompt || generate.prompt,
+    batchCount: recipe.batchCount,
+    settings: cloneGenerationSettings(recipe.settings),
+    recipe,
+    rootRecipe: result.rootRecipe ? cloneGenerationRecipe(result.rootRecipe) : cloneGenerationRecipe(recipe),
+    targetNodeId: parentNodeId,
+    parentVersionId: parent?.versionId,
+    parentImage: parent?.image,
+    parentLabel: parent?.label,
+    jobId,
+    taskNodeIds: { generateNodeId: generateNode.id, resultNodeId },
+    refinementMode: result.refinementMode ?? generate.refinementMode,
+  }
+}
+
+function recoverTaskNodeJobs(
+  set: (next: Partial<CanvasStore>) => void,
+  get: () => CanvasStore,
+  documentId: string,
+) {
+  const document = get().document
+  const requests = new Map<string, GenerationRequest>()
+  for (const node of document.nodes) {
+    if (node.type !== 'result') continue
+    const result = node.data as ResultNodeData
+    // 只恢复尚未落图的任务组首节点；批量任务的其他占位节点共用同一 jobId。
+    if (result.image || !result.jobId || (result.taskGroupId && node.id !== result.taskGroupId)) continue
+    const request = requestFromTaskNode(document, node)
+    if (request?.jobId) requests.set(request.jobId, request)
+  }
+
+  // 兼容旧任务：早期版本只把 jobId 写在生成节点，结果占位节点没有 jobId。
+  // 这正是“已完成但仍等待结果”的典型遗留状态。
+  for (const node of document.nodes) {
+    if (node.type !== 'generate') continue
+    const generate = node.data as GenerateNodeData
+    if (!generate.jobId || requests.has(generate.jobId)) continue
+    const taskResultNode = document.nodes.find((candidate) => {
+      if (candidate.type !== 'result') return false
+      const result = candidate.data as ResultNodeData
+      return result.outputOf === node.id
+        && !result.image
+        && (!result.taskGroupId || candidate.id === result.taskGroupId)
+    })
+    if (!taskResultNode || taskResultNode.type !== 'result') continue
+    const request = requestFromTaskNode(document, {
+      ...taskResultNode,
+      data: { ...(taskResultNode.data as ResultNodeData), jobId: generate.jobId },
+    } as CanvasNode)
+    if (request?.jobId) requests.set(request.jobId, request)
+  }
+
+  for (const request of requests.values()) {
+    void getGenerationJob(request.jobId!)
+      .then((job) => {
+        if (get().document.id !== documentId) return
+        // 同一页面已有更晚一次任务时，仍只回收对应 jobId，不覆盖用户正在编辑的任务。
+        set({ lastGenerationRequest: request })
+        syncGenerationJob(set, get, job)
+        if (job.status === 'queued' || job.status === 'running') pollGenerationJob(set, get, job.id)
+      })
+      // 恢复失败不把可继续编辑的画布变成错误页；轮询或下次打开会再次尝试。
+      .catch(() => undefined)
+  }
+
+  // 再兜底一次：极早期或异常中断的前端既没有把 jobId 写入结果节点，也没有写入生成节点。
+  // 服务端任务表是权威来源；按任务类型与提交时间一一对应，且只回填尚无图片的任务组首节点。
+  const unresolvedTaskNodes = document.nodes.filter((node) => {
+    if (node.type !== 'result') return false
+    const result = node.data as ResultNodeData
+    return !result.image && (!result.taskGroupId || node.id === result.taskGroupId)
+  })
+  if (!unresolvedTaskNodes.length) return
+
+  void listProjectGenerationJobs(documentId)
+    .then((jobs) => {
+      if (get().document.id !== documentId) return
+      const usedJobIds = new Set(requests.keys())
+      const candidates = jobs
+        .filter((job) => !usedJobIds.has(job.id) && job.status === 'succeeded' && Boolean(job.outputs?.length))
+        .sort((left, right) => left.createdAt - right.createdAt)
+      for (const taskResultNode of unresolvedTaskNodes) {
+        const result = taskResultNode.data as ResultNodeData
+        const kind = result.generationKind ?? 'generation'
+        const matching = candidates
+          .filter((job) => !usedJobIds.has(job.id) && job.kind === kind)
+          .sort((left, right) => Math.abs(left.createdAt - (result.submittedAt ?? left.createdAt)) - Math.abs(right.createdAt - (result.submittedAt ?? right.createdAt)))[0]
+        if (!matching) continue
+        const request = requestFromTaskNode(get().document, {
+          ...taskResultNode,
+          data: { ...result, jobId: matching.id },
+        } as CanvasNode)
+        if (!request?.jobId) continue
+        usedJobIds.add(matching.id)
+        set({ lastGenerationRequest: request })
+        syncGenerationJob(set, get, matching)
+      }
+    })
+    .catch(() => undefined)
 }
 
 function candidatesFromJob(job: GenerationJob, request: GenerationRequest): GenerationCandidate[] {
@@ -1572,7 +1973,7 @@ function candidatesFromJob(job: GenerationJob, request: GenerationRequest): Gene
   if (!recipe) return []
   return (job.outputs ?? []).map((output, index) => ({
     id: output.id,
-    name: `${request.kind === 'refinement' ? '精修' : '首图'}候选 ${String(index + 1).padStart(2, '0')}`,
+    name: generationCandidateName(request, index),
     image: output.image,
     variant: index,
     prompt: request.prompt,
@@ -1584,6 +1985,7 @@ function candidatesFromJob(job: GenerationJob, request: GenerationRequest): Gene
     parentLabel: request.parentLabel,
     sourceAssetNames: recipe.references.map((reference) => reference.name),
     refinementInstruction: request.kind === 'refinement' ? request.prompt : undefined,
+    refinementMode: request.refinementMode,
     settings: cloneGenerationSettings(request.settings),
     recipe: cloneGenerationRecipe(recipe),
     rootRecipe: request.rootRecipe ? cloneGenerationRecipe(request.rootRecipe) : cloneGenerationRecipe(recipe),
@@ -1594,18 +1996,22 @@ function candidatesFromJob(job: GenerationJob, request: GenerationRequest): Gene
   }))
 }
 
-function resultGridPosition(origin: XYPosition, candidate: GenerationCandidate) {
-  const row = Math.floor(candidate.variant / 2)
-  const height = candidate.settings.aspectRatio === '9:16'
+function resultNodeBlockHeight(settings: GenerationSettings) {
+  return settings.aspectRatio === '9:16'
     ? 570
-    : candidate.settings.aspectRatio === '4:5'
+    : settings.aspectRatio === '4:5'
       ? 412
-      : candidate.settings.aspectRatio === '1:1'
+      : settings.aspectRatio === '1:1'
         ? 338
         : 436
+}
+
+function resultGridPosition(origin: XYPosition, candidate: Pick<GenerationCandidate, 'variant' | 'settings'>) {
+  const height = resultNodeBlockHeight(candidate.settings)
   return {
-    x: origin.x + (candidate.variant % 2) * 320,
-    y: origin.y + row * (height + 24),
+    // 同一次生成的多张结果沿同一输出列纵向展开，避免节点边框与端口挤在一起。
+    x: origin.x,
+    y: origin.y + candidate.variant * (height + 32),
   }
 }
 
@@ -1625,14 +2031,33 @@ function materializeGenerationOutputs(document: CanvasDocument, job: GenerationJ
     : undefined
   const origin = taskResultNode?.position
     ?? (outputGenerator ? { x: outputGenerator.position.x + 372, y: outputGenerator.position.y + 28 } : { x: 770, y: 155 })
-  const existingCandidateIds = new Set(document.nodes
+  const reusableTaskNodeIds = document.nodes
     .filter((node) => node.type === 'result')
-    .map((node) => (node.data as ResultNodeData).candidateId)
-    .filter((candidateId): candidateId is string => Boolean(candidateId)))
-  const reusableTaskNode = taskResultNode && !taskResult?.image && !taskResult?.candidateId
-    ? taskResultNode
-    : undefined
-  let taskNodeUsed = false
+    .filter((node) => {
+      const result = node.data as ResultNodeData
+      return !result.image
+        && !result.candidateId
+        && (node.id === taskResultNodeId || result.taskGroupId === taskResultNodeId || result.taskNodeId === taskResultNodeId)
+    })
+    .sort((left, right) => ((left.data as ResultNodeData).variant ?? 0) - ((right.data as ResultNodeData).variant ?? 0))
+    .map((node) => node.id)
+  const placements = planGenerationOutputPlacement({
+    jobId: job.id,
+    outputIds: candidates.map((candidate) => candidate.id),
+    resultNodes: document.nodes
+      .filter((node) => node.type === 'result')
+      .map((node) => {
+        const result = node.data as ResultNodeData
+        return {
+          id: node.id,
+          jobId: result.jobId,
+          candidateId: result.candidateId,
+          hasImage: Boolean(result.image),
+        }
+      }),
+    reusableTaskNodeIds,
+  })
+  const placementByOutputId = new Map(placements.map((placement) => [placement.outputId, placement]))
 
   const createResultNode = (candidate: GenerationCandidate, nodeId: string, position: XYPosition): CanvasNode => ({
     id: nodeId,
@@ -1651,12 +2076,14 @@ function materializeGenerationOutputs(document: CanvasDocument, job: GenerationJ
       submittedAt: taskResult?.submittedAt ?? job.createdAt,
       label: candidate.name,
       jobId: job.id,
+      taskGroupId: taskResultNodeId,
       taskNodeId: nodeId,
       error: undefined,
       candidateId: candidate.id,
       versionId: undefined,
       parentVersionId: candidate.parentVersionId,
       generationKind: candidate.kind,
+      refinementMode: candidate.refinementMode,
       refinementInstruction: candidate.refinementInstruction,
       generationSettings: cloneGenerationSettings(candidate.settings),
       generationRecipe: cloneGenerationRecipe(candidate.recipe),
@@ -1665,20 +2092,22 @@ function materializeGenerationOutputs(document: CanvasDocument, job: GenerationJ
     },
   })
 
+  const reusableCandidateByNodeId = new Map<string, GenerationCandidate>()
+  for (const candidate of candidates) {
+    const placement = placementByOutputId.get(candidate.id)
+    if (placement?.action === 'replace' && placement.nodeId) {
+      reusableCandidateByNodeId.set(placement.nodeId, candidate)
+    }
+  }
   const nodes = document.nodes.map((node) => {
-    if (!reusableTaskNode || node.id !== reusableTaskNode.id || taskNodeUsed) return node
-    const candidate = candidates.find((item) => !existingCandidateIds.has(item.id))
-    if (!candidate) return node
-    taskNodeUsed = true
-    existingCandidateIds.add(candidate.id)
-    return createResultNode(candidate, node.id, resultGridPosition(origin, candidate))
+    const candidate = reusableCandidateByNodeId.get(node.id)
+    return candidate ? createResultNode(candidate, node.id, node.position) : node
   }) as CanvasNode[]
   const extraNodes: CanvasNode[] = []
   const extraEdges: Edge[] = []
   for (const candidate of candidates) {
-    if (existingCandidateIds.has(candidate.id)) continue
-    const nodeId = `result-${candidate.id}`
-    existingCandidateIds.add(candidate.id)
+    if (placementByOutputId.get(candidate.id)?.action !== 'create') continue
+    const nodeId = `result-${job.id}-${candidate.id}`
     extraNodes.push(createResultNode(candidate, nodeId, resultGridPosition(origin, candidate)))
     if (outputOf && !document.edges.some((edge) => edge.source === outputOf && edge.target === nodeId)) {
       extraEdges.push({
@@ -1694,7 +2123,7 @@ function materializeGenerationOutputs(document: CanvasDocument, job: GenerationJ
       })
     }
   }
-  if (!taskNodeUsed && !extraNodes.length) return document
+  if (!reusableCandidateByNodeId.size && !extraNodes.length) return document
   return { ...document, nodes: [...nodes, ...extraNodes], edges: [...document.edges, ...extraEdges] }
 }
 
@@ -1774,20 +2203,25 @@ function syncGenerationJob(
   if (!request?.taskNodeIds || request.jobId !== job.id) return
 
   const recordedDocument = recordGenerationJob(get().document, job, request.taskNodeIds)
+  const existingJob = get().document.generationJobs.find((item) => item.id === job.id)
   if (job.status === 'succeeded') {
     const recordedJob = recordedDocument.generationJobs.find((item) => item.id === job.id) ?? job
     const candidates = candidatesFromJob(recordedJob, request)
-    const document = materializeGenerationOutputs(recordedDocument, recordedJob, request)
+    const document = candidates.length
+      ? materializeGenerationOutputs(recordedDocument, recordedJob, request)
+      : updateTaskNodes(recordedDocument, request.taskNodeIds, 'failed', job.id, '图像服务没有返回结果，请重试。')
     commit(set, document, {
       generationStatus: 'idle',
       generationProgress: 0,
       generationError: candidates.length ? null : '真实生图未返回候选图，请重试。',
-      expectedCandidateCount: 0,
-      generationCandidates: [],
+      expectedCandidateCount: job.missingOutputCount ? job.batchCount : 0,
+      generationCandidates: job.missingOutputCount ? candidates : [],
       assistantMessage: candidates.length
-        ? `真实生成已完成：${candidates.length} 张图片已作为独立节点写入画布；不需要的可直接删除。`
+        ? job.missingOutputCount
+          ? `真实生成已完成 ${candidates.length}/${job.batchCount} 张；缺少的 ${job.missingOutputCount} 张可单独补生成。`
+          : `真实生成已完成：${candidates.length} 张图片已作为独立节点写入画布；不需要的可直接删除。`
         : '真实生图没有返回候选图，请重试。',
-    })
+    }, { immediate: true })
     return
   }
 
@@ -1799,7 +2233,7 @@ function syncGenerationJob(
       expectedCandidateCount: 0,
       generationCandidates: [],
       assistantMessage: job.error ?? '真实生图任务失败，请重试。',
-    })
+    }, { immediate: true })
     return
   }
 
@@ -1811,17 +2245,26 @@ function syncGenerationJob(
       expectedCandidateCount: 0,
       generationCandidates: [],
       assistantMessage: '已取消真实生成任务；画布保留本次的提示词、参考组与任务记录。',
-    })
+    }, { immediate: true })
     return
   }
 
-  commit(set, recordedDocument, {
+  // queued / running 的每一次轮询只更新临时 UI；仅状态转换才保存项目，
+  // 避免一个长任务持续重写整份画布。
+  const transientState = {
     generationStatus: job.status,
     generationProgress: 0,
     generationError: null,
     expectedCandidateCount: job.batchCount,
     assistantMessage: job.status === 'queued' ? '真实生成任务已入队，等待图像服务处理。' : '图像服务正在生成，请保留此页面或稍后返回查看结果。',
-  })
+  }
+  if (!existingJob || existingJob.status !== job.status) {
+    // 首次拿到服务端 jobId、以及生命周期状态切换时都属于刷新恢复锚点，不能等
+    // 普通交互的 debounce，否则完成中的任务会变成无法关联的孤立结果。
+    commit(set, recordedDocument, transientState, { immediate: true })
+    return
+  }
+  set(transientState)
 }
 
 function pollGenerationJob(
@@ -1831,6 +2274,7 @@ function pollGenerationJob(
 ) {
   stopGenerationPolling()
   const runId = generationPollRunId
+  let retryDelay = 1_500
   const poll = async () => {
     if (runId !== generationPollRunId) return
     try {
@@ -1841,7 +2285,11 @@ function pollGenerationJob(
         generationPollTimerId = null
         return
       }
-      generationPollTimerId = window.setTimeout(() => void poll(), 1_250)
+      const nextDelay = window.document.hidden ? 10_000 : retryDelay
+      retryDelay = Math.min(5_000, Math.round(retryDelay * 1.5))
+      // 服务端以创建时间为准封顶 5 分钟；轮询必须准时触发那次状态结算。
+      const remainingTaskMs = Math.max(0, job.createdAt + generationSubmissionTimeoutMs - Date.now())
+      generationPollTimerId = window.setTimeout(() => void poll(), Math.min(nextDelay, remainingTaskMs))
     } catch (error) {
       if (runId !== generationPollRunId) return
       if (error instanceof GenerationApiError && error.code === 'JOB_NOT_FOUND') {
@@ -1867,7 +2315,8 @@ function pollGenerationJob(
         return
       }
       set({ assistantMessage: error instanceof Error ? `${error.message} 任务仍可能在服务端执行。` : '任务状态同步失败，任务仍可能在服务端执行。' })
-      generationPollTimerId = window.setTimeout(() => void poll(), 2_000)
+      retryDelay = Math.min(10_000, Math.max(2_000, Math.round(retryDelay * 2)))
+      generationPollTimerId = window.setTimeout(() => void poll(), window.document.hidden ? 15_000 : retryDelay)
     }
   }
   void poll()
@@ -1910,6 +2359,7 @@ function historyName(count: number, kind: GenerationCandidate['kind'] = 'generat
 export const useCanvasStore = create<CanvasStore>((set, get) => ({
   document: seedDocument,
   globalAssets: [],
+  sharedTemplates: [],
   hydrated: false,
   persistenceStatus: 'saved',
   selectedNodeId: 'result-hero',
@@ -1926,41 +2376,32 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
   undoSnapshot: null,
 
   hydrate: async () => {
-    const globalLibrary = await ensureGlobalAssetLibrary(seedGlobalAssets)
-    const stored = await readCanvasDocument(seedDocument.id)
-    // 示例项目可被删除；没有存档时仅创建内存占位，刷新后不会复活旧 Demo。
-    const document = stored
-      ? normalizeDocument(stored)
-      : createEmptyCanvasDocument('workspace-placeholder', '未命名画布')
+    // 首页与项目列表不读取素材库或示例画布；具体项目打开时再并行加载。
+    // 这让鉴权恢复后的项目首屏不再被全局素材库请求阻塞。
+    const document = createEmptyCanvasDocument('workspace-placeholder', '未命名画布')
     const selectedNode = [...document.nodes].reverse().find((node) => node.selected || (node.type === 'result' && Boolean((node.data as ResultNodeData).selected)))
     const recoveredGeneration = persistedGenerationState(document, document.nodes.length ? `已打开「${document.name}」。` : `「${document.name}」已创建，可以从素材或一句话开始。`)
     set({
       document,
-      globalAssets: globalLibrary.assets,
+      globalAssets: [],
+      sharedTemplates: [],
       hydrated: true,
       persistenceStatus: 'saved',
       selectedNodeId: selectedNode?.id ?? null,
       ...recoveredGeneration.state,
     })
-    const hasLegacyMockCopy = Boolean(stored && /mock/i.test(JSON.stringify(stored)))
-    if (stored && (document.schemaVersion !== stored.schemaVersion || hasLegacyMockCopy || hasCrampedStarterV03Layout(stored.nodes))) {
-      try {
-        await writeCanvasDocument(document)
-        set({ persistenceStatus: 'saved' })
-      } catch {
-        set({ persistenceStatus: 'error', assistantMessage: '本地初始化保存失败：请先不要刷新。' })
-      }
-    }
-    if (recoveredGeneration.pollJobId) pollGenerationJob(set, get, recoveredGeneration.pollJobId)
   },
 
   openDocument: async (documentId) => {
-    const globalLibrary = await ensureGlobalAssetLibrary(seedGlobalAssets)
+    // 画布本身是打开项目的关键路径；共享素材库仅服务素材面板，不能让它的
+    // 网络故障阻塞整个画布恢复。
     const stored = await readCanvasDocument(documentId)
     if (!stored) return false
 
     stopGenerationPolling()
-    const document = normalizeDocument(stored)
+    const normalizedDocument = normalizeDocument(stored)
+    const settledSubmission = settleExpiredGenerationSubmissions(normalizedDocument)
+    const document = settledSubmission.document
     const selectedNode = [...document.nodes].reverse().find((node) => node.selected || (node.type === 'result' && Boolean((node.data as ResultNodeData).selected)))
     const recoveredGeneration = persistedGenerationState(
       document,
@@ -1968,7 +2409,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     )
     set({
       document,
-      globalAssets: globalLibrary.assets,
+      globalAssets: get().globalAssets,
       hydrated: true,
       persistenceStatus: 'saved',
       selectedNodeId: selectedNode?.id ?? null,
@@ -1976,7 +2417,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
       undoAction: null,
       undoSnapshot: null,
     })
-    if (document.schemaVersion !== stored.schemaVersion || hasCrampedStarterV03Layout(stored.nodes)) {
+    if (settledSubmission.changed || document.schemaVersion !== stored.schemaVersion || hasCrampedStarterV03Layout(stored.nodes)) {
       try {
         await writeCanvasDocument(document)
         set({ persistenceStatus: 'saved' })
@@ -1984,14 +2425,84 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
         set({ persistenceStatus: 'error', assistantMessage: '项目迁移保存失败：请先不要刷新。' })
       }
     }
+    // 素材库在后台补齐；失败不影响当前项目打开，用户稍后可在素材库重试。
+    void ensureGlobalAssetLibrary(seedGlobalAssets)
+      .then((library) => {
+        if (get().document.id === documentId) set({ globalAssets: library.assets })
+      })
+      .catch(() => undefined)
+    void readGlobalWorkflowTemplateLibrary()
+      .then((library) => set({ sharedTemplates: library?.templates ?? [] }))
+      .catch(() => undefined)
     if (recoveredGeneration.pollJobId) pollGenerationJob(set, get, recoveredGeneration.pollJobId)
+    // 历史任务可能在浏览器断开时完成，根本没有写入画布。服务端一次性回填，
+    // 同时修复其他设备或旧版本留下的空占位节点。
+    void reconcileProjectGenerationResults(documentId)
+      .then((recovered) => {
+        const current = get().document
+        if (current.id !== documentId) return
+        const reconciledDocument = mergeRecoveredGenerationJobs(current, recovered.document)
+        if (resultImageCount(reconciledDocument) <= resultImageCount(current)) {
+          // 服务端没有补回新图片时，仍保留客户端的旧任务兼容恢复作为降级路径。
+          recoverTaskNodeJobs(set, get, documentId)
+          return
+        }
+        const selected = [...reconciledDocument.nodes].reverse().find((node) => node.selected || (node.type === 'result' && Boolean((node.data as ResultNodeData).selected)))
+        const state = persistedGenerationState(reconciledDocument, '已从服务端补回历史生成结果。')
+        set({
+          document: reconciledDocument,
+          persistenceStatus: 'saved',
+          selectedNodeId: selected?.id ?? null,
+          ...state.state,
+        })
+        // 服务端已完成回填；立刻覆盖本机旧草稿，避免下一次打开又读回空占位。
+        void writeCanvasDocument(reconciledDocument, { immediate: true }).catch(() => undefined)
+      })
+      .catch(() => recoverTaskNodeJobs(set, get, documentId))
     return true
+  },
+
+  openNewDocument: (document) => {
+    stopGenerationPolling()
+    document = settleExpiredGenerationSubmissions(document).document
+    const selectedNode = [...document.nodes].reverse().find((node) => node.selected || (node.type === 'result' && Boolean((node.data as ResultNodeData).selected)))
+    const recoveredGeneration = persistedGenerationState(
+      document,
+      document.nodes.length ? `已打开「${document.name}」。` : `「${document.name}」已创建，可以从素材或一句话开始。`,
+    )
+    set({
+      document,
+      hydrated: true,
+      persistenceStatus: 'saved',
+      selectedNodeId: selectedNode?.id ?? null,
+      ...recoveredGeneration.state,
+      undoAction: null,
+      undoSnapshot: null,
+    })
+    // 新建空项目无需等待共享素材库。素材在后台就绪，首次打开素材库前会自动补齐。
+    void ensureGlobalAssetLibrary(seedGlobalAssets)
+      .then((library) => set({ globalAssets: library.assets }))
+      .catch(() => undefined)
+    void readGlobalWorkflowTemplateLibrary()
+      .then((library) => set({ sharedTemplates: library?.templates ?? [] }))
+      .catch(() => undefined)
   },
 
   renameDocument: (name) => {
     const nextName = cleanDisplayName(name, '')
-    if (!nextName || nextName === get().document.name) return
-    commit(set, { ...get().document, name: nextName }, { assistantMessage: `项目已重命名为「${nextName}」。` })
+    if (!nextName || nextName === get().document.name) return Promise.resolve()
+    const current = get().document
+    set({
+      document: { ...current, name: nextName },
+      persistenceStatus: 'saving',
+      assistantMessage: `正在重命名为「${nextName}」。`,
+    })
+    return renameCanvasProject(current.id, nextName)
+      .then((saved) => set({ document: saved, persistenceStatus: 'saved', assistantMessage: `项目已重命名为「${nextName}」。` }))
+      .catch((error) => {
+        set({ document: current, persistenceStatus: 'error', assistantMessage: '项目重命名失败，请检查网络后重试。' })
+        throw error
+      })
   },
 
   setNodes: (nodes) => {
@@ -2005,6 +2516,20 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     const selected = synchronizedNodes.filter((node) => node.selected)
     const document = { ...get().document, nodes: synchronizedNodes }
     commit(set, document, { selectedNodeId: selected.length === 1 ? selected[0].id : null })
+  },
+
+  setNodesTransient: (nodes) => {
+    const synchronizedNodes = nodes.map((node) => ({
+      ...node,
+      data: node.type === 'result'
+        ? { ...node.data, selected: Boolean(node.selected) }
+        : { ...node.data },
+    })) as CanvasNode[]
+    const selected = synchronizedNodes.filter((node) => node.selected)
+    set({
+      document: { ...get().document, nodes: synchronizedNodes },
+      selectedNodeId: selected.length === 1 ? selected[0].id : null,
+    })
   },
 
   setEdges: (edges) => {
@@ -2029,7 +2554,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
         selected: false,
         data: node.type === 'result' ? { ...node.data, selected: false } : { ...node.data },
       })) as CanvasNode[]
-      commit(set, { ...get().document, nodes }, { selectedNodeId: null })
+      set({ document: { ...get().document, nodes }, selectedNodeId: null })
       return
     }
 
@@ -2040,7 +2565,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
         ? { ...node.data, selected: node.id === selectedNodeId }
         : { ...node.data },
     })) as CanvasNode[]
-    commit(set, { ...get().document, nodes }, { selectedNodeId })
+    set({ document: { ...get().document, nodes }, selectedNodeId })
   },
 
   setAssetReferenceEnabled: (nodeId, referenceEnabled) => {
@@ -2236,7 +2761,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     })
   },
 
-  addAssetToCanvas: (assetId, dropPosition) => {
+  addAssetToCanvas: (assetId, dropPosition, connectToGenerateId) => {
     const document = get().document
     const asset = findAvailableAsset(document, get().globalAssets, assetId)
     if (!asset) return
@@ -2272,10 +2797,34 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
       },
     }
 
-    const nodes = [...document.nodes.map((item) => ({ ...item, selected: false })), node] as CanvasNode[]
-    commit(set, { ...document, nodes }, {
-      selectedNodeId: nodeId,
-      assistantMessage: `已将「${asset.name}」加入画布，可拖拽调整位置。`,
+    const target = connectToGenerateId ? document.nodes.find((item) => item.id === connectToGenerateId && item.type === 'generate') : undefined
+    const connectedAssetCount = target
+      ? document.edges.filter((edge) => edge.target === target.id && document.nodes.some((item) => item.id === edge.source && item.type === 'asset')).length
+      : 0
+    const canConnect = Boolean(target && connectedAssetCount < 8)
+    const edges = canConnect && target
+      ? [...document.edges, {
+          id: `graph-edge-${nodeId}-${target.id}-${Date.now()}`,
+          source: nodeId,
+          sourceHandle: 'asset-output',
+          target: target.id,
+          targetHandle: 'input',
+          type: 'default',
+          style: { stroke: '#4f805b', strokeWidth: 1.6 },
+          reconnectable: true,
+        }]
+      : document.edges
+    const nodes = normalizeGenerateNodeInputs([
+      ...document.nodes.map((item) => ({ ...item, selected: target ? item.id === target.id : false })),
+      { ...node, selected: !target },
+    ] as CanvasNode[], edges)
+    commit(set, { ...document, nodes, edges }, {
+      selectedNodeId: target?.id ?? nodeId,
+      assistantMessage: canConnect
+        ? `已将「${asset.name}」加入画布，并连接到「${(target!.data as GenerateNodeData).label}」。`
+        : target
+          ? `已将「${asset.name}」加入画布；「${(target.data as GenerateNodeData).label}」最多可连接 8 张图片。`
+          : `已将「${asset.name}」加入画布，可拖拽调整位置。`,
     })
   },
 
@@ -2365,6 +2914,75 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     })
   },
 
+  saveGeneratedImageToLibrary: ({ image, name }) => {
+    const document = get().document
+    if (document.assets.some((asset) => asset.source === 'generated' && asset.image === image)) {
+      set({ assistantMessage: `「${name}」已在当前项目素材库中。` })
+      return
+    }
+
+    const asset: AssetRecord = {
+      id: `generated-library-${Date.now()}`,
+      role: '首图',
+      name: name.trim() || '生成图片',
+      image,
+      source: 'generated',
+      tags: ['首图', '画布入库'],
+    }
+    commit(set, { ...document, assets: [asset, ...document.assets] }, {
+      assistantMessage: `已将「${asset.name}」存入当前项目素材库。`,
+    })
+  },
+
+  moveAssetToRole: (assetId, role) => {
+    const document = get().document
+    const globalAsset = get().globalAssets.find((asset) => asset.id === assetId)
+    const localAsset = document.assets.find((asset) => asset.id === assetId)
+    const target = globalAsset ?? localAsset
+    if (!target || target.role === role) return
+
+    const updateNodeRoles = (nodes: CanvasNode[]) => normalizeAssetReferenceNodes(nodes.map((node) => {
+      if (node.type !== 'asset' || (node.data as AssetNodeData).assetId !== assetId) return node
+      const assetNode = node.data as AssetNodeData
+      return { ...node, data: { ...assetNode, role, primary: role === '商品' ? assetNode.primary : false } }
+    }) as CanvasNode[])
+    const nodes = updateNodeRoles(document.nodes)
+
+    if (globalAsset) {
+      const previousGlobalAssets = get().globalAssets
+      const globalAssets = previousGlobalAssets.map((asset) => asset.id === assetId ? { ...asset, role } : asset)
+      commit(set, { ...document, nodes }, {
+        globalAssets,
+        assistantMessage: `已将「${target.name}」移动到「${role}」分组。`,
+      })
+      void writeGlobalAssetLibrary({ id: 'global-brand-assets', schemaVersion: 1, assets: globalAssets, updatedAt: Date.now() })
+        .catch(() => {
+          const activeDocument = get().document
+          const activeGlobalAsset = get().globalAssets.find((asset) => asset.id === assetId)
+          if (activeGlobalAsset?.role !== role) return
+          const revertedNodes = activeDocument.id === document.id
+            ? normalizeAssetReferenceNodes(activeDocument.nodes.map((node) => {
+              if (node.type !== 'asset' || (node.data as AssetNodeData).assetId !== assetId) return node
+              return { ...node, data: { ...(node.data as AssetNodeData), role: target.role } }
+            }) as CanvasNode[])
+            : activeDocument.nodes
+          commit(set, { ...activeDocument, nodes: revertedNodes }, {
+            globalAssets: previousGlobalAssets,
+            assistantMessage: `「${target.name}」的分组未能保存，请重试。`,
+          })
+        })
+      return
+    }
+
+    commit(set, {
+      ...document,
+      nodes,
+      assets: document.assets.map((asset) => asset.id === assetId ? { ...asset, role } : asset),
+    }, {
+      assistantMessage: `已将「${target.name}」移动到「${role}」分组。`,
+    })
+  },
+
   addTextNode: (position) => {
     const document = get().document
     const timestamp = Date.now()
@@ -2402,7 +3020,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
       selected: true,
       data: {
         kind: 'generate',
-        label: '首图生成',
+        label: '图像生成',
         prompt: '',
         batchCount: 1,
         settings: {
@@ -2431,18 +3049,22 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     const nodeId = `generate-branch-${timestamp}`
     const recipe = result.generationRecipe
     const defaultSettings = recipe?.settings ?? result.generationSettings
+    const siblingBranchCount = document.edges.filter((edge) => edge.source === resultNodeId
+      && document.nodes.some((node) => node.id === edge.target && node.type === 'generate')).length
     const node: CanvasNode = {
       id: nodeId,
       type: 'generate',
-      position: { x: parent.position.x + 372, y: parent.position.y + 38 },
+      // 同一张图继续扩展时，分支依次向下排列；不再叠在同一个位置。
+      position: { x: parent.position.x + 372, y: parent.position.y + 38 + siblingBranchCount * 320 },
       draggable: true,
       selected: true,
       data: {
         kind: 'generate',
-        label: '基于此图继续生成',
+        label: '精修生成',
         prompt: draft?.prompt ?? '',
         batchCount: Math.min(get().maximumBatchCount, clampBatchCount(draft?.batchCount ?? recipe?.batchCount ?? 1)),
         settings: cloneGenerationSettings({ ...defaultSettings, ...draft?.settings }),
+        refinementMode: draft?.refinementMode ?? 'faithful',
         inputOrder: [resultNodeId],
       },
     }
@@ -2684,6 +3306,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     if (graphRecipe.recipe.references.length > 8) return setGenerationError(set, '单个生成节点最多连接 8 张图片参考。')
     if (!primaryGenerationReference(graphRecipe.recipe) && !graphRecipe.parent) return setGenerationError(set, '请在当前生成节点至少连接一张图片作为主参考。')
     if (graphRecipe.parent) {
+      const refinementMode = (get().document.nodes.find((node) => node.id === nodeId && node.type === 'generate')?.data as GenerateNodeData | undefined)?.refinementMode ?? 'faithful'
       return get().runRefinement({
         targetNodeId: graphRecipe.parent.nodeId,
         prompt: graphRecipe.prompt,
@@ -2691,6 +3314,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
         settings: graphRecipe.recipe.settings,
         recipe: graphRecipe.recipe,
         sourceGraphNodeId: nodeId,
+        refinementMode,
       })
     }
     return get().runGeneration({
@@ -2875,6 +3499,59 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     })
   },
 
+  refreshSharedTemplates: async () => {
+    const library = await readGlobalWorkflowTemplateLibrary()
+    set({ sharedTemplates: library?.templates ?? [] })
+  },
+
+  saveCurrentAsSharedTemplate: async (name) => {
+    const document = get().document
+    if (!document.nodes.length) {
+      set({ assistantMessage: '请先添加素材、描述或生成节点，再保存为共享模板。' })
+      return false
+    }
+    const cleanedName = name.trim() || `${document.name} · 工作流`
+    let existingTemplates = get().sharedTemplates
+    try {
+      // 写入前重新读取，避免用尚未加载的本地空数组覆盖其他人已发布的模板。
+      const library = await readGlobalWorkflowTemplateLibrary()
+      existingTemplates = library?.templates ?? []
+    } catch {
+      set({ assistantMessage: '共享模板库暂时不可用，请检查网络后重试。' })
+      return false
+    }
+    const { snapshot, omittedPrivateAssetCount } = sharedWorkflowTemplateSnapshot(document, cleanedName)
+    const image = snapshot.nodes.find((node) => node.type === 'asset' && (node.data as AssetNodeData).source === 'brand')
+    const template: CanvasTemplate = {
+      id: `shared-template-${Date.now()}`,
+      name: cleanedName,
+      image: image ? (image.data as AssetNodeData).image : '',
+      createdAt: Date.now(),
+      sourceHistoryId: document.activeVersionId,
+      snapshot,
+    }
+    const nextTemplates = [template, ...existingTemplates]
+    const library: GlobalWorkflowTemplateLibrary = {
+      id: 'global-workflow-templates',
+      schemaVersion: 1,
+      templates: nextTemplates,
+      updatedAt: Date.now(),
+    }
+    try {
+      await writeGlobalWorkflowTemplateLibrary(library)
+      set({
+        sharedTemplates: nextTemplates,
+        assistantMessage: omittedPrivateAssetCount
+          ? `已发布共享工作流「${cleanedName}」，已移除 ${omittedPrivateAssetCount} 个项目私有素材。`
+          : `已发布共享工作流「${cleanedName}」。`,
+      })
+      return true
+    } catch {
+      set({ sharedTemplates: existingTemplates, assistantMessage: '共享模板保存失败，请检查网络后重试。' })
+      return false
+    }
+  },
+
   createCanvasFromTemplate: (templateId) => {
     const document = get().document
     const template = document.templates.find((item) => item.id === templateId)
@@ -2910,6 +3587,44 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     }, {
       selectedNodeId: null,
       assistantMessage: `已从工作流模板「${template.name}」新建画布，可继续补充素材并生成。`,
+    })
+  },
+
+  createCanvasFromSharedTemplate: (templateId) => {
+    const document = get().document
+    const template = get().sharedTemplates.find((item) => item.id === templateId)
+    if (!template) return
+
+    const nextName = `${template.name} · 新画布`
+    const cloned = cloneSnapshotAsCanvas(template.snapshot, 'shared-template')
+    const historyEntry: CanvasHistoryEntry = {
+      id: `history-shared-template-${Date.now()}`,
+      name: nextName,
+      image: template.image,
+      createdAt: Date.now(),
+      kind: 'template',
+      parentVersionId: document.activeVersionId,
+      sourceTemplateId: template.id,
+      snapshot: {
+        name: nextName,
+        nodes: cloneNodes(cloned.nodes),
+        edges: cloneEdges(cloned.edges),
+        viewport: { x: 0, y: 0, zoom: 1 },
+      },
+    }
+
+    commit(set, {
+      ...document,
+      name: nextName,
+      nodes: cloned.nodes,
+      edges: cloned.edges,
+      viewport: { x: 0, y: 0, zoom: 1 },
+      activeTemplateId: template.id,
+      activeVersionId: historyEntry.id,
+      history: [...document.history, historyEntry],
+    }, {
+      selectedNodeId: null,
+      assistantMessage: `已从共享工作流「${template.name}」新建画布，可补充项目素材后生成。`,
     })
   },
 
@@ -3035,7 +3750,9 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     const flow = createTaskFlow(document, request)
     const preparedRequest = { ...request, taskNodeIds: flow.taskNodeIds }
     const submissionRunId = ++generationSubmissionRunId
-    commit(set, flow.document, {
+    // 先将任务节点与可恢复配方落库，再提交真实任务。这样即使用户随后刷新，
+    // 也能用已保存的 jobId / 节点关系把服务端结果补回画布。
+    await commit(set, flow.document, {
       generationStatus: 'uploading',
       generationProgress: 0,
       generationError: null,
@@ -3043,7 +3760,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
       generationCandidates: [],
       lastGenerationRequest: preparedRequest,
       assistantMessage: `正在提交真实任务：主商品「${primaryProduct.name}」与 ${recipe.references.length} 个画布参考。`,
-    })
+    }, { immediate: true })
 
     try {
       const job = await submitGenerationJob({
@@ -3079,7 +3796,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     }
   },
 
-  runRefinement: async ({ targetNodeId, prompt, batchCount, settings, recipe: inputRecipe, rootRecipe: inputRootRecipe, taskLayout, sourceGraphNodeId }) => {
+  runRefinement: async ({ targetNodeId, prompt, batchCount, settings, recipe: inputRecipe, rootRecipe: inputRootRecipe, taskLayout, sourceGraphNodeId, refinementMode = 'faithful' }) => {
     if (get().generationStatus !== 'idle' && get().generationStatus !== 'error') return false
 
     const cleanPrompt = prompt.trim()
@@ -3131,11 +3848,13 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
       parentLabel,
       taskLayout,
       sourceGraphNodeId,
+      refinementMode,
     }
     const flow = createTaskFlow(document, request, target)
     const preparedRequest = { ...request, taskNodeIds: flow.taskNodeIds }
     const submissionRunId = ++generationSubmissionRunId
-    commit(set, flow.document, {
+    // 精修同样先写入父图与任务节点关系，刷新后才能准确恢复为该图的子版本。
+    await commit(set, flow.document, {
       generationStatus: 'uploading',
       generationProgress: 0,
       generationError: null,
@@ -3143,7 +3862,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
       generationCandidates: [],
       lastGenerationRequest: preparedRequest,
       assistantMessage: `正在提交「${parentLabel}」的真实精修任务。`,
-    })
+    }, { immediate: true })
 
     try {
       const job = await submitGenerationJob({
@@ -3154,6 +3873,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
         settings: request.settings,
         recipe,
         parent: { nodeId: targetNodeId, name: parentLabel, image: parentImage },
+        refinementMode,
       })
       if (submissionRunId !== generationSubmissionRunId) {
         void cancelGenerationJob(job.id)
@@ -3205,26 +3925,57 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
   retryGeneration: async () => {
     const request = get().lastGenerationRequest
     if (!request) return setGenerationError(set, '没有可重试的真实生成任务。')
+    const job = request.jobId ? get().document.generationJobs.find((item) => item.id === request.jobId) : undefined
+    const retryBatchCount = job?.missingOutputCount || request.batchCount
     if (request.kind === 'refinement' && request.targetNodeId) {
       return get().runRefinement({
         targetNodeId: request.targetNodeId,
         prompt: request.prompt,
-        batchCount: request.batchCount,
+        batchCount: retryBatchCount,
         settings: request.settings,
         recipe: request.recipe,
         rootRecipe: request.rootRecipe,
         taskLayout: request.taskLayout,
         sourceGraphNodeId: request.sourceGraphNodeId ?? request.taskNodeIds?.generateNodeId,
+        refinementMode: request.refinementMode,
       })
     }
     return get().runGeneration({
       prompt: request.prompt,
-      batchCount: request.batchCount,
+      batchCount: retryBatchCount,
       settings: request.settings,
       recipe: request.recipe,
       rootRecipe: request.rootRecipe,
       taskLayout: request.taskLayout,
       sourceGraphNodeId: request.taskNodeIds?.generateNodeId,
+    })
+  },
+
+  retryMissingGeneration: async (jobId) => {
+    const document = get().document
+    const job = document.generationJobs.find((item) => item.id === jobId)
+    if (!job?.missingOutputCount) return setGenerationError(set, '本任务没有待补生成的候选。')
+    const request = requestFromPersistedJob(document, job)
+    if (!request?.recipe) return setGenerationError(set, '无法恢复本次生成配方，请基于任一候选继续生成。')
+    if (request.kind === 'refinement' && request.targetNodeId) {
+      return get().runRefinement({
+        targetNodeId: request.targetNodeId,
+        prompt: request.prompt,
+        batchCount: job.missingOutputCount,
+        settings: request.settings,
+        recipe: request.recipe,
+        rootRecipe: request.rootRecipe,
+        sourceGraphNodeId: request.sourceGraphNodeId,
+        refinementMode: request.refinementMode,
+      })
+    }
+    return get().runGeneration({
+      prompt: request.prompt,
+      batchCount: job.missingOutputCount,
+      settings: request.settings,
+      recipe: request.recipe,
+      rootRecipe: request.rootRecipe,
+      sourceGraphNodeId: request.sourceGraphNodeId,
     })
   },
 

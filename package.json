@@ -7,7 +7,8 @@
     "dev": "vite --host 0.0.0.0",
     "server": "node server/index.mjs",
     "worker": "node server/worker.mjs",
-    "test": "node --test server/*.test.mjs",
+    "test": "node --test server/*.test.mjs scripts/*.test.mjs && node --experimental-strip-types --test src/domain/*.test.ts",
+    "check:architecture": "node scripts/architectureBoundaries.mjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview"
   },

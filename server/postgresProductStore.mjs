@@ -30,6 +30,14 @@ function asPayload(row) {
   return row ? asJson(row.payload) : undefined
 }
 
+function projectDocumentSummary(document) {
+  const nodes = Array.isArray(document?.nodes) ? document.nodes : []
+  const images = nodes
+    .filter((node) => node?.type === 'result' && typeof node?.data?.image === 'string')
+    .map((node) => node.data.image)
+  return { nodeCount: nodes.length, resultCount: images.length, coverImage: images.at(-1) }
+}
+
 async function insertAudit(sql, { actorId, action, projectId, targetId, detail = {} }) {
   await sql`
     insert into audit_events (id, actor_id, action, project_id, target_id, detail, created_at)
@@ -43,12 +51,16 @@ async function insertAudit(sql, { actorId, action, projectId, targetId, detail =
  */
 export async function createPostgresProductStore({ databaseUrl, bootstrapAccessToken, bootstrapEmail = 'owner@botanic.local' }) {
   if (!databaseUrl) throw new Error('DATABASE_URL 未配置，无法启动生产数据存储。')
-  if (!bootstrapAccessToken) throw new Error('BOTANIC_BOOTSTRAP_ACCESS_TOKEN 未配置，拒绝启动受保护的产品服务。')
 
   const sql = postgres(databaseUrl, {
-    max: Number(process.env.POSTGRES_POOL_MAX ?? 10),
+    max: Number(process.env.POSTGRES_POOL_MAX ?? 4),
     idle_timeout: 20,
     connect_timeout: 10,
+    connection: {
+      application_name: 'botanic-worker-api',
+      statement_timeout: Number(process.env.POSTGRES_STATEMENT_TIMEOUT_MS ?? 15_000),
+      lock_timeout: Number(process.env.POSTGRES_LOCK_TIMEOUT_MS ?? 5_000),
+    },
   })
 
   await sql.begin(async (tx) => {
@@ -125,18 +137,22 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     `)
   })
 
-  const bootstrapHash = hashAccessToken(bootstrapAccessToken)
-  await sql.begin(async (tx) => {
-    await tx`select pg_advisory_xact_lock(72695838)`
-    const [token] = await tx`select id from access_tokens where token_hash = ${bootstrapHash} and revoked_at is null`
-    if (token) return
-    let [owner] = await tx`select id from app_users where role = 'owner' order by created_at asc limit 1`
-    if (!owner) {
-      owner = { id: `usr_${randomUUID()}` }
-      await tx`insert into app_users (id, email, name, role, created_at) values (${owner.id}, ${bootstrapEmail}, 'Botanic Owner', 'owner', ${now()})`
-    }
-    await tx`insert into access_tokens (id, user_id, token_hash, created_at) values (${`token_${randomUUID()}`}, ${owner.id}, ${bootstrapHash}, ${now()})`
-  })
+  // 本地访问令牌模式才需要预置 token。生产迁移期由 Supabase Auth 校验身份，
+  // 因而不能要求一个额外的共享启动令牌。
+  if (bootstrapAccessToken) {
+    const bootstrapHash = hashAccessToken(bootstrapAccessToken)
+    await sql.begin(async (tx) => {
+      await tx`select pg_advisory_xact_lock(72695838)`
+      const [token] = await tx`select id from access_tokens where token_hash = ${bootstrapHash} and revoked_at is null`
+      if (token) return
+      let [owner] = await tx`select id from app_users where role = 'owner' order by created_at asc limit 1`
+      if (!owner) {
+        owner = { id: `usr_${randomUUID()}` }
+        await tx`insert into app_users (id, email, name, role, created_at) values (${owner.id}, ${bootstrapEmail}, 'Botanic Owner', 'owner', ${now()})`
+      }
+      await tx`insert into access_tokens (id, user_id, token_hash, created_at) values (${`token_${randomUUID()}`}, ${owner.id}, ${bootstrapHash}, ${now()})`
+    })
+  }
 
   async function memberRole(projectId, userId) {
     const [row] = await sql`select role from project_members where project_id = ${projectId} and user_id = ${userId}`
@@ -151,6 +167,35 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
         from access_tokens t join app_users u on u.id = t.user_id
         where t.token_hash = ${hashAccessToken(accessToken)} and t.revoked_at is null
       `
+      return asUser(row)
+    },
+
+    // 迁移期用 Supabase user.id 作为 PostgreSQL 主键：同一登录用户无须重新注册，
+    // 但业务数据从此不再经过 Supabase PostgREST。
+    async ensureAuthenticatedUser({ id, email, name, roleHint }) {
+      if (!id) throw productError('登录用户缺少标识。', 'AUTH_USER_INVALID')
+      const normalizedEmail = (email || `${id}@auth.botanic.local`).trim().toLowerCase()
+      const normalizedName = name?.trim() || normalizedEmail.split('@')[0] || 'Botanic Member'
+      return sql.begin(async (tx) => {
+        await tx`select pg_advisory_xact_lock(72695839)`
+        const [existing] = await tx`select id, email, name, role from app_users where id = ${id} for update`
+        if (existing) {
+          if (existing.email !== normalizedEmail || existing.name !== normalizedName) {
+            await tx`update app_users set email = ${normalizedEmail}, name = ${normalizedName} where id = ${id}`
+          }
+          return asUser({ ...existing, email: normalizedEmail, name: normalizedName })
+        }
+        const [owner] = await tx`select id from app_users where role = 'owner' limit 1`
+        const role = roleHint === 'owner' || !owner ? 'owner' : 'member'
+        const [emailOwner] = await tx`select id from app_users where lower(email) = lower(${normalizedEmail}) limit 1`
+        if (emailOwner) throw productError('该邮箱已绑定其他工作区成员。', 'AUTH_EMAIL_CONFLICT')
+        await tx`insert into app_users (id, email, name, role, created_at) values (${id}, ${normalizedEmail}, ${normalizedName}, ${role}, ${now()})`
+        return { id, email: normalizedEmail, name: normalizedName, role }
+      })
+    },
+
+    async readUser(userId) {
+      const [row] = await sql`select id, email, name, role from app_users where id = ${userId}`
       return asUser(row)
     },
 
@@ -170,12 +215,18 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
 
     async listProjects(userId) {
       const rows = await sql`
-        select p.id, p.name, p.updated_at as "updatedAt", p.revision, m.role
+        select p.id, p.name, p.updated_at as "updatedAt", p.revision, p.document, m.role
         from projects p join project_members m on m.project_id = p.id
         where m.user_id = ${userId}
         order by p.updated_at desc
       `
-      return rows.map((row) => ({ ...row, updatedAt: Number(row.updatedAt), revision: Number(row.revision) }))
+      return rows.map((row) => ({
+        ...row,
+        ...projectDocumentSummary(asJson(row.document)),
+        updatedAt: Number(row.updatedAt),
+        revision: Number(row.revision),
+        document: undefined,
+      }))
     },
 
     async readProject(userId, projectId) {
@@ -306,16 +357,35 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       return asPayload(row)
     },
 
+    async listGenerationJobsForProject(userId, projectId, limit = 60) {
+      const rows = await sql`
+        select g.payload
+        from generation_jobs g join project_members m on m.project_id = g.project_id
+        where g.project_id = ${projectId} and g.owner_id = ${userId} and m.user_id = ${userId}
+        order by g.updated_at desc
+        limit ${Math.max(1, Math.min(limit, 120))}
+      `
+      return rows.map(asPayload)
+    },
+
     async readGenerationJobForWorker(jobId) {
       const [row] = await sql`select payload from generation_jobs where id = ${jobId}`
       return asPayload(row)
     },
 
     async recoverGenerationJobs() {
-      // BullMQ 会负责识别并重新投递中断的 active job。API 进程重启时不应
-      // 擅自把仍在其他 Worker 中运行的任务判失败。
       const queued = await sql`select payload from generation_jobs where status = 'queued' order by updated_at asc`
       return queued.map(asPayload)
+    },
+
+    async recoverStaleGenerationJobs(staleAfterMs = 90_000) {
+      const staleBefore = now() - Math.max(30_000, staleAfterMs)
+      const running = await sql`
+        select payload from generation_jobs
+        where status = 'running' and updated_at <= ${staleBefore}
+        order by updated_at asc
+      `
+      return running.map(asPayload)
     },
 
     async createMediaObject(ownerId, projectId, { id = `media_${randomUUID()}`, storageKey, contentType, byteSize }) {
@@ -325,7 +395,7 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
 
     async readMediaObject(userId, mediaId) {
       const [row] = await sql`
-        select o.id, o.storage_key as "storageKey", o.content_type as "contentType", o.byte_size as "byteSize"
+        select o.id, o.project_id as "projectId", o.storage_key as "storageKey", o.content_type as "contentType", o.byte_size as "byteSize"
         from media_objects o join project_members m on m.project_id = o.project_id
         where o.id = ${mediaId} and m.user_id = ${userId}
       `

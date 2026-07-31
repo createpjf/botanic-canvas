@@ -9,4 +9,4 @@ ENV NODE_ENV=production
 ENV PORT=8787
 
 EXPOSE 8787
-CMD ["node", "server/index.mjs"]
+CMD ["sh", "-c", "node server/${BOTANIC_PROCESS:-index}.mjs"]

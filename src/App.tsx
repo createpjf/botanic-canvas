@@ -1,4 +1,4 @@
-import { type CSSProperties, type DragEvent, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, type CSSProperties, type DragEvent, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import {
   addEdge,
@@ -8,7 +8,6 @@ import {
   BackgroundVariant,
   ConnectionLineType,
   Handle,
-  NodeToolbar,
   PanOnScrollMode,
   Panel,
   Position,
@@ -22,6 +21,7 @@ import {
   type OnEdgesChange,
   type OnNodesChange,
   type SetCenter,
+  type XYPosition,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { defaultGenerationModels } from './domain/canvas'
@@ -38,6 +38,7 @@ import type {
   GenerationModelOption,
   GenerationRecipe,
   GenerationSettings,
+  RefinementMode,
   GenerateNodeData,
   PromptNodeData,
   ReferenceGroupNodeData,
@@ -47,12 +48,13 @@ import type {
 } from './domain/canvas'
 import { deliveryPresets, downloadDeliveryPackage } from './lib/deliveryExport'
 import { getGenerationServiceHealth } from './lib/generationApi'
-import { deleteCanvasDocument, readCanvasDocument, readCanvasDocuments, writeCanvasDocument } from './lib/db'
+import { refinePrompt } from './lib/promptRefinementApi'
+import { deleteCanvasDocument, flushPendingCanvasDocumentWrites, readCanvasProjectSummaries, renameCanvasProject, syncPendingCanvasDrafts } from './lib/db'
 import { ProductApiError, createProductSession, readProductSession, serverPersistenceEnabled, supabaseAuthEnabled, type ProductUser } from './lib/productSession'
 import { createEmptyCanvasDocument } from './data/seed'
 import { useCanvasStore } from './store/canvasStore'
-import { OperatingDashboard, ProjectLibrary, type WorkspaceProject } from './components/WorkspaceViews'
-import closeIcon from './assets/figma/icon-close.svg'
+import type { WorkspaceProject } from './components/WorkspaceViews'
+import { ArrowDownIcon, ArrowUpIcon, ArrowUpRightIcon, CloseIcon, DeleteIcon, DownloadIcon, FolderOutlineIcon, HomeIcon, MoreIcon, PlusSquareIcon, SparkleIcon, UploadIcon } from './components/BotanicIcons'
 import plusIcon from './assets/figma/icon-plus.svg'
 import folderIcon from './assets/figma/icon-folder.svg'
 import templatesIcon from './assets/figma/icon-templates.svg'
@@ -60,10 +62,35 @@ import historyIcon from './assets/figma/icon-history.svg'
 import chevronIcon from './assets/figma/icon-chevron.svg'
 import sidebarIcon from './assets/figma/icon-sidebar.svg'
 import sendIcon from './assets/figma/icon-send.svg'
-import sceneImage from './assets/figma/scene.png'
-import resultImage from './assets/figma/result.png'
+import sceneImage from './assets/figma/scene.webp'
+import resultImage from './assets/figma/result.webp'
 
 const creativeAssistantEnabled = false
+
+// 项目库与经营驾驶舱不参与画布编辑。按路由加载，避免直接打开画布时额外解析首页内容。
+const OperatingDashboard = lazy(() => import('./components/WorkspaceViews').then((module) => ({ default: module.OperatingDashboard })))
+const ProjectLibrary = lazy(() => import('./components/WorkspaceViews').then((module) => ({ default: module.ProjectLibrary })))
+
+function DeferredWorkspaceIndicator() {
+  const [visible, setVisible] = useState(false)
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setVisible(true), 500)
+    return () => window.clearTimeout(timer)
+  }, [])
+
+  if (!visible) return null
+  return (
+    <div className="workspace-loading-indicator" role="status" aria-label="正在载入项目">
+      <span aria-hidden="true"><i /><i /><i /></span>
+      <small>载入项目</small>
+    </div>
+  )
+}
+
+function WorkspaceViewLoading() {
+  return <main className="workspace-shell workspace-view-loading" aria-live="polite"><DeferredWorkspaceIndicator /></main>
+}
 
 type WorkspaceView = 'dashboard' | 'projects' | 'canvas'
 
@@ -129,15 +156,6 @@ function cacheCanvasViewport(documentId: string, viewport: { x: number; y: numbe
 
 function FigmaIcon({ src, alt = '' }: { src: string; alt?: string }) {
   return <img src={src} alt={alt} aria-hidden={alt === ''} />
-}
-
-/** 植物学 Figma · Iconly/Sharp/Download（1228:231097） */
-function DownloadIcon() {
-  return <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-    <path d="M12 15.935V3.157" stroke="currentColor" strokeWidth="1.5" strokeLinecap="square" />
-    <path d="m8.727 13.395 3.275 3.29 3.276-3.29" stroke="currentColor" strokeWidth="1.5" strokeLinecap="square" />
-    <path d="M16.625 9.414H21.25v11.429H2.75V9.414h4.625" stroke="currentColor" strokeWidth="1.5" strokeLinecap="square" />
-  </svg>
 }
 
 function visibleAssetTags(tags: string[], fallback?: string) {
@@ -226,13 +244,14 @@ function AssetNode({ data, id, selected }: NodeProps) {
         }}
         aria-label={`从画布移除 ${asset.name}`}
       >
-        ×
+        <DeleteIcon />
       </button>
       <div className="asset-node__image-wrap">
         <img
           src={asset.image}
           alt={asset.name}
           className="asset-node__image"
+          decoding="async"
           draggable={false}
           onLoad={(event) => {
             if (asset.imageWidth && asset.imageHeight) return
@@ -281,7 +300,7 @@ function TextNode({ data, id, selected }: NodeProps) {
             event.stopPropagation()
             removeNodeFromCanvas(id)
           }}
-        >×</button>
+        ><DeleteIcon /></button>
       </header>
       <textarea
         className="nodrag nowheel"
@@ -361,7 +380,7 @@ function GenerateNode({ data, id, selected }: NodeProps) {
             event.stopPropagation()
             removeNodeFromCanvas(id)
           }}
-        >×</button>
+        ><DeleteIcon /></button>
       </header>
       <div className="generate-node__summary">
         {references.length ? (
@@ -396,6 +415,7 @@ type GeneratedHistoryItem = {
 }
 
 type CanvasComposerProps = {
+  projectId: string
   mode: 'generate' | 'result'
   nodeLabel: string
   prompt: string
@@ -404,7 +424,6 @@ type CanvasComposerProps = {
   settings: GenerationSettings
   models: GenerationModelOption[]
   references: ComposerFocusReference[]
-  textCount: number
   status: 'idle' | 'uploading' | 'queued' | 'running' | 'error'
   error?: string
   canGenerate: boolean
@@ -412,6 +431,8 @@ type CanvasComposerProps = {
   onPromptChange: (prompt: string) => void
   onBatchCountChange: (batchCount: number) => void
   onSettingsChange: (settings: GenerationSettings) => void
+  refinementMode?: RefinementMode
+  onRefinementModeChange?: (mode: RefinementMode) => void
   onOpenReferences?: () => void
   onOpenAssets?: () => void
   onGenerate: () => void
@@ -420,8 +441,21 @@ type CanvasComposerProps = {
   onLayoutChange: (layout: ComposerLayout) => void
 }
 
-function CanvasComposer({ mode, nodeLabel, prompt, batchCount, maximumBatchCount, settings, models, references, textCount, status, error, canGenerate, onNodeLabelChange, onPromptChange, onBatchCountChange, onSettingsChange, onOpenReferences, onOpenAssets, onGenerate, onClose, layout, onLayoutChange }: CanvasComposerProps) {
+type PromptRefinementState = {
+  status: 'idle' | 'loading' | 'error'
+  message?: string
+}
+
+function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount, maximumBatchCount, settings, models, references, status, error, canGenerate, onNodeLabelChange, onPromptChange, onBatchCountChange, onSettingsChange, refinementMode = 'faithful', onRefinementModeChange, onOpenReferences, onOpenAssets, onGenerate, onClose, layout, onLayoutChange }: CanvasComposerProps) {
   const isGenerating = status === 'uploading' || status === 'queued' || status === 'running'
+  const [refinement, setRefinement] = useState<PromptRefinementState>({ status: 'idle' })
+  const refinementRequestRef = useRef<{ id: number; controller?: AbortController }>({ id: 0 })
+  const refinementFeedbackTimerRef = useRef<number | null>(null)
+  const [refinementSuccessVisible, setRefinementSuccessVisible] = useState(false)
+  const promptRef = useRef(prompt)
+  promptRef.current = prompt
+  const isRefining = refinement.status === 'loading'
+  const interactionLocked = isGenerating || isRefining
   const modelOptions = models.some((model) => model.id === settings.model)
     ? models
     : [{ id: settings.model, label: settings.model }, ...models]
@@ -502,11 +536,74 @@ function CanvasComposer({ mode, nodeLabel, prompt, batchCount, maximumBatchCount
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
+      if (event.key !== 'Escape') return
+      onClose()
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [onClose])
+
+  useEffect(() => () => {
+    refinementRequestRef.current.id += 1
+    refinementRequestRef.current.controller?.abort()
+    if (refinementFeedbackTimerRef.current !== null) window.clearTimeout(refinementFeedbackTimerRef.current)
+  }, [])
+
+  const handlePromptChange = (nextPrompt: string) => {
+    if (refinement.status === 'error') {
+      setRefinement({ status: 'idle' })
+    }
+    onPromptChange(nextPrompt)
+  }
+
+  const handleRefinePrompt = async () => {
+    const originalPrompt = prompt
+    const requestPrompt = originalPrompt.trim()
+    if (!requestPrompt || isGenerating || isRefining) return
+
+    refinementRequestRef.current.controller?.abort()
+    if (refinementFeedbackTimerRef.current !== null) window.clearTimeout(refinementFeedbackTimerRef.current)
+    setRefinementSuccessVisible(false)
+    const controller = new AbortController()
+    const requestId = refinementRequestRef.current.id + 1
+    refinementRequestRef.current = { id: requestId, controller }
+    setRefinement({ status: 'loading' })
+
+    try {
+      const result = await refinePrompt({
+        projectId,
+        mode: mode === 'generate' ? 'generation' : 'refinement',
+        prompt: requestPrompt,
+        aspectRatio: settings.aspectRatio,
+        references: references.map(({ name, role, primary }) => ({ name, role, primary })),
+      }, controller.signal)
+      if (refinementRequestRef.current.id !== requestId) return
+      if (promptRef.current !== originalPrompt) {
+        setRefinement({ status: 'idle' })
+        return
+      }
+
+      if (result.status === 'unchanged' || result.prompt === requestPrompt) {
+        setRefinement({ status: 'idle' })
+        return
+      }
+
+      onPromptChange(result.prompt)
+      setRefinementSuccessVisible(true)
+      refinementFeedbackTimerRef.current = window.setTimeout(() => {
+        setRefinementSuccessVisible(false)
+        refinementFeedbackTimerRef.current = null
+      }, 1400)
+      setRefinement({ status: 'idle' })
+    } catch (caught) {
+      if (controller.signal.aborted || refinementRequestRef.current.id !== requestId) return
+      const detail = caught instanceof Error ? caught.message : '润色失败。'
+      setRefinement({
+        status: 'error',
+        message: `${detail.replace(/[。！!?]+$/, '')}，原文未修改。`,
+      })
+    }
+  }
 
   return (
     <section
@@ -525,15 +622,22 @@ function CanvasComposer({ mode, nodeLabel, prompt, batchCount, maximumBatchCount
         onPointerCancel={stopDragging}
       >
         <div className="canvas-composer__drag-title" id="canvas-composer-title">
-          <span className="canvas-composer__magic" aria-hidden="true">✦</span>
-          <div className="canvas-composer__reference-strip" aria-label={`本次 ${references.length} 个参考`}>
-            {references.slice(0, 4).map((reference) => <img key={reference.id} src={reference.image} alt={reference.name} className={reference.primary ? 'is-primary' : ''} />)}
-            {references.length > 4 ? <span className="canvas-composer__reference-overflow">+{references.length - 4}</span> : null}
-          </div>
-          <strong>{references.length ? `${mode === 'result' ? '基于此图' : '本次参考'} · ${references.length}${textCount ? ` 图 ${textCount} 文` : ' 图'}` : '添加参考素材'}</strong>
-          {onOpenAssets ? <button type="button" className="canvas-composer__add-reference" onClick={onOpenAssets}>＋ 素材</button> : null}
-          {onOpenReferences && references.length ? <button type="button" className="canvas-composer__manage-reference" onClick={onOpenReferences}>管理</button> : null}
-          {!expanded ? <small>已收起</small> : null}
+          {references.length ? (
+            <button
+              type="button"
+              className="canvas-composer__reference-summary"
+              onClick={onOpenReferences}
+              disabled={!onOpenReferences}
+              aria-label={`管理本次 ${references.length} 个参考`}
+              title="管理参考"
+            >
+              <span className="canvas-composer__reference-strip">
+                {references.slice(0, 4).map((reference) => <img key={reference.id} src={reference.image} alt="" className={reference.primary ? 'is-primary' : ''} />)}
+              </span>
+              <span className="canvas-composer__reference-count">{references.length}</span>
+            </button>
+          ) : null}
+          {onOpenAssets ? <button type="button" className={references.length ? 'canvas-composer__add-reference' : 'canvas-composer__add-reference is-empty'} onClick={onOpenAssets} aria-label="添加参考素材" title="添加参考素材"><PlusSquareIcon />{references.length ? null : <span>添加参考</span>}</button> : null}
         </div>
         <div className="canvas-composer__header-actions">
           <button
@@ -544,22 +648,54 @@ function CanvasComposer({ mode, nodeLabel, prompt, batchCount, maximumBatchCount
             aria-label={expanded ? '折叠生成器' : '展开生成器'}
             title={expanded ? '折叠' : '展开'}
           >{expanded ? '−' : '＋'}</button>
-          <button type="button" className="canvas-composer__close" onClick={onClose} aria-label="关闭生成器" title="关闭">×</button>
+          <button type="button" className="canvas-composer__close" onClick={onClose} aria-label="关闭生成器" title="关闭"><CloseIcon /></button>
         </div>
       </header>
 
       <div className="canvas-composer__expanded-content" aria-hidden={!expanded} inert={expanded ? undefined : true}>
         <div className="canvas-composer__body">
           <main className="canvas-composer__editor">
-            <label className="canvas-composer__field canvas-composer__prompt">
+            <div className={`canvas-composer__field canvas-composer__prompt${refinementSuccessVisible ? ' is-refinement-success' : ''}`}>
               <textarea
                 value={prompt}
                 autoFocus={expanded}
                 aria-label={`${nodeLabel}描述`}
+                aria-busy={isRefining}
                 placeholder="描述商品、场景、构图、光线与留白要求"
-                onChange={(event) => onPromptChange(event.target.value)}
+                readOnly={isRefining}
+                onChange={(event) => handlePromptChange(event.target.value)}
               />
-            </label>
+              <button
+                type="button"
+                className={`canvas-composer__refine${refinement.status === 'loading' ? ' is-loading' : ''}${refinementSuccessVisible ? ' is-complete' : ''}`}
+                disabled={!prompt.trim() || interactionLocked}
+                aria-label={refinementSuccessVisible ? 'Botanic 结构润色已应用' : '润色图像生成描述'}
+                title="润色描述"
+                onClick={() => void handleRefinePrompt()}
+              >
+                <SparkleIcon />
+              </button>
+            </div>
+            {refinement.status === 'loading' ? (
+              <div className="canvas-composer__refinement-status" role="status" aria-live="polite">
+                <span>正在按 Botanic 结构润色…</span>
+              </div>
+            ) : refinement.status === 'error' ? (
+              <div className="canvas-composer__refinement-status is-error" role="alert">
+                <span>{refinement.message ?? '润色失败，原文未修改。'}</span>
+              </div>
+            ) : null}
+            {mode === 'result' ? (
+              <div className="canvas-composer__refinement-mode" role="group" aria-label="继续生成方式">
+                <button type="button" className={refinementMode === 'faithful' ? 'is-active' : ''} disabled={interactionLocked} onClick={() => onRefinementModeChange?.('faithful')}>
+                  忠实精修
+                </button>
+                <button type="button" className={refinementMode === 'explore' ? 'is-active' : ''} disabled={interactionLocked} onClick={() => onRefinementModeChange?.('explore')}>
+                  探索变体
+                </button>
+                <small>{refinementMode === 'explore' ? '保留主体，主动探索构图、机位与光影。' : '保留构图与主体，仅执行描述中的改动。'}</small>
+              </div>
+            ) : null}
           </main>
         </div>
 
@@ -567,25 +703,25 @@ function CanvasComposer({ mode, nodeLabel, prompt, batchCount, maximumBatchCount
           <div className="canvas-composer__settings" aria-label="生成参数">
             <label>
               <span>模型</span>
-              <select aria-label="图像模型" value={settings.model} disabled={isGenerating} onChange={(event) => updateSettings({ model: event.target.value })}>
+              <select aria-label="图像模型" value={settings.model} disabled={interactionLocked} onChange={(event) => updateSettings({ model: event.target.value })}>
                 {modelOptions.map((model) => <option value={model.id} key={model.id}>{model.label}</option>)}
               </select>
             </label>
             <label>
               <span>比例</span>
-              <select aria-label="画面比例" value={settings.aspectRatio} disabled={isGenerating} onChange={(event) => updateSettings({ aspectRatio: event.target.value as GenerationSettings['aspectRatio'] })}>
+              <select aria-label="画面比例" value={settings.aspectRatio} disabled={interactionLocked} onChange={(event) => updateSettings({ aspectRatio: event.target.value as GenerationSettings['aspectRatio'] })}>
                 <option value="1:1">1:1 方图</option><option value="3:4">3:4 竖图</option><option value="4:5">4:5 竖图</option><option value="9:16">9:16 长图</option>
               </select>
             </label>
             <label>
               <span>分辨率</span>
-              <select aria-label="输出规格" value={settings.resolution} disabled={isGenerating} onChange={(event) => updateSettings({ resolution: event.target.value as GenerationSettings['resolution'] })}>
+              <select aria-label="输出规格" value={settings.resolution} disabled={interactionLocked} onChange={(event) => updateSettings({ resolution: event.target.value as GenerationSettings['resolution'] })}>
                 <option value="1K">1K</option><option value="2K">2K</option>
               </select>
             </label>
             <label>
               <span>候选数</span>
-              <input aria-label="候选数量" type="number" min="1" max={maximumBatchCount} value={batchCount} disabled={isGenerating} onChange={(event) => onBatchCountChange(Number(event.target.value))} />
+              <input aria-label="候选数量" type="number" min="1" max={maximumBatchCount} value={batchCount} disabled={interactionLocked} onChange={(event) => onBatchCountChange(Number(event.target.value))} />
             </label>
           </div>
           <div className={error ? 'canvas-composer__feedback is-error' : 'canvas-composer__feedback'} role={error ? 'alert' : 'status'}>
@@ -593,8 +729,8 @@ function CanvasComposer({ mode, nodeLabel, prompt, batchCount, maximumBatchCount
               ? (status === 'uploading' ? '正在上传参考素材…' : status === 'queued' ? '任务已入队…' : '图像服务正在生成…')
               : canGenerate ? (primaryReference ? `主参考 · ${primaryReference.name}` : '参数已准备好，提交后会在画布中创建新的结果节点。') : '连接并设置主商品后即可生成。')}
           </div>
-          <button type="button" className="canvas-composer__submit" disabled={isGenerating || !canGenerate || !prompt.trim()} onClick={onGenerate}>
-            {isGenerating ? '生成中…' : `生成 ${batchCount} 张候选`}
+          <button type="button" className="canvas-composer__submit" disabled={interactionLocked || !canGenerate || !prompt.trim()} onClick={onGenerate}>
+            {isGenerating ? '生成中…' : '生成'}
           </button>
         </footer>
       </div>
@@ -616,12 +752,12 @@ function taskStatusLabel(status: 'uploading' | 'queued' | 'running' | 'succeeded
 
 function resultTaskFeedback(status: ResultNodeData['taskStatus']) {
   if (status === 'uploading') {
-    return { title: '正在整理参考素材', detail: '已锁定本次参考与画面描述' }
+    return { title: '准备生成', detail: '正在锁定参考' }
   }
   if (status === 'queued') {
-    return { title: '已进入生成队列', detail: '任务已提交，正在等待图像服务处理' }
+    return { title: '正在生成', detail: '已进入队列' }
   }
-  return { title: '正在构建画面', detail: '正在合成参考中的主体、场景与光线' }
+  return { title: '正在生成', detail: '可继续编辑画布' }
 }
 
 function elapsedTaskLabel(seconds: number) {
@@ -656,7 +792,7 @@ function ReferenceGroupNode({ data, selected }: NodeProps) {
       <span className="task-node__eyebrow">02 · REFERENCES</span>
       <strong>{reference.label}</strong>
       <div className="task-node__reference-strip">
-        {reference.recipe.references.slice(0, 4).map((item) => <img key={item.nodeId} src={item.image} alt={item.name} title={`${item.role} · ${item.name}`} />)}
+        {reference.recipe.references.slice(0, 4).map((item) => <img key={item.nodeId} src={item.image} alt={item.name} title={`${item.role} · ${item.name}`} decoding="async" />)}
       </div>
       <footer><span>{primary ? `主商品 · ${primary.name}` : '未锁定主商品'}</span><i>{taskStatusLabel(reference.status)}</i></footer>
       {reference.error ? <small title={reference.error}>任务需要处理</small> : null}
@@ -671,7 +807,18 @@ function ResultNode({ data, id, selected }: NodeProps) {
   const [currentTime, setCurrentTime] = useState(() => Date.now())
   const cancelGeneration = useCanvasStore((state) => state.cancelGeneration)
   const retryGeneration = useCanvasStore((state) => state.retryGeneration)
+  const retryMissingGeneration = useCanvasStore((state) => state.retryMissingGeneration)
   const removeNodeFromCanvas = useCanvasStore((state) => state.removeNodeFromCanvas)
+  const saveGeneratedImageToLibrary = useCanvasStore((state) => state.saveGeneratedImageToLibrary)
+  const isSavedToLibrary = useCanvasStore((state) => result.image
+    ? state.document.assets.some((asset) => asset.source === 'generated' && asset.image === result.image)
+    : false)
+  const missingOutputCount = useCanvasStore((state) => result.jobId
+    ? state.document.generationJobs.find((job) => job.id === result.jobId)?.missingOutputCount ?? 0
+    : 0)
+  const requestedOutputCount = useCanvasStore((state) => result.jobId
+    ? state.document.generationJobs.find((job) => job.id === result.jobId)?.batchCount ?? 0
+    : 0)
   const settings = result.generationSettings
   const ratioClass = settings ? `result-node--ratio-${settings.aspectRatio.replace(':', '-')}` : ''
   const resultName = result.label ?? (result.generationKind === 'refinement' ? '精修版本' : '首图版本')
@@ -728,7 +875,7 @@ function ResultNode({ data, id, selected }: NodeProps) {
             event.stopPropagation()
           removeNodeFromCanvas(id)
         }}
-        >×</button> : null}
+        ><DeleteIcon /></button> : null}
         {hasDisplayableImage ? <button
           className="result-node__download nodrag nowheel"
           type="button"
@@ -740,19 +887,35 @@ function ResultNode({ data, id, selected }: NodeProps) {
             void downloadImage(result.image!, resultName)
           }}
         ><DownloadIcon /></button> : null}
-        {hasDisplayableImage ? <img src={result.image} alt={resultName} className="result-node__image" draggable={false} onError={() => setImageFailed(true)} /> : (
+        {hasDisplayableImage ? <button
+          className="result-node__save nodrag nowheel"
+          type="button"
+          disabled={isSavedToLibrary}
+          aria-label={isSavedToLibrary ? `${resultName} 已入库` : `将 ${resultName} 入库`}
+          title={isSavedToLibrary ? '已入库' : '存入素材库'}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation()
+            saveGeneratedImageToLibrary({ image: result.image!, name: resultName })
+          }}
+        >{isSavedToLibrary ? '已入库' : '入库'}</button> : null}
+        {hasDisplayableImage ? <img src={result.image} alt={resultName} className="result-node__image" draggable={false} decoding="async" onError={() => setImageFailed(true)} /> : (
           <div className={`result-node__task-state result-node__task-state--${result.status}`}>
-            <span>03 · RESULT</span>
             {isGenerating ? <i className="result-node__task-pulse" aria-hidden="true" /> : null}
             <strong aria-live="polite">{imageFailed ? '图片无法显示' : isGenerating ? taskFeedback.title : result.status === 'failed' ? '任务未完成' : result.status === 'cancelled' ? '任务已取消' : '等待生成结果'}</strong>
-            <small>{imageFailed ? '图片数据异常或本地保存未完成，请重新生成。' : isGenerating ? taskFeedback.detail : result.error ?? (result.status === 'ready' ? '任务完成后，每张图片会作为独立节点写入画布。' : '图像服务的真实状态会在此同步。')}</small>
-            {isGenerating ? <em>{isSlowTask ? `${elapsedTaskLabel(elapsedSeconds)} · 可继续编辑画布` : '参考已锁定 · 可继续编辑画布'}</em> : null}
+            <small>{imageFailed ? '图片数据异常或本地保存未完成，请重新生成。' : isGenerating ? (isSlowTask ? elapsedTaskLabel(elapsedSeconds) : taskFeedback.detail) : result.error ?? (result.status === 'ready' ? '等待图像服务返回结果。' : '图像服务的真实状态会在此同步。')}</small>
             {result.status === 'generating' ? <button className="result-node__task-action nodrag nowheel" type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); cancelGeneration() }}>取消</button> : null}
-            {result.status === 'failed' ? <button className="result-node__task-action nodrag nowheel" type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void retryGeneration() }}>原配方重试</button> : null}
+            {result.status === 'failed' ? <div className="result-node__task-actions nodrag nowheel" onPointerDown={(event) => event.stopPropagation()}>
+              <button className="result-node__task-action" type="button" onClick={(event) => { event.stopPropagation(); void retryGeneration() }}>原配方重试</button>
+              <button className="result-node__task-action is-danger" type="button" onClick={(event) => { event.stopPropagation(); removeNodeFromCanvas(id) }}>删除任务</button>
+            </div> : null}
+            {result.status === 'cancelled' ? <button className="result-node__task-action nodrag nowheel is-danger" type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); removeNodeFromCanvas(id) }}>删除任务</button> : null}
           </div>
         )}
-        {result.generationKind === 'refinement' ? <span className="result-node__refinement">基于上版</span> : null}
-        {result.status === 'generating' ? <div className="result-node__loading">处理中</div> : null}
+        {missingOutputCount ? <div className="result-node__partial nodrag nowheel" onPointerDown={(event) => event.stopPropagation()}>
+          <span>{requestedOutputCount - missingOutputCount}/{requestedOutputCount}</span>
+          <button type="button" onClick={(event) => { event.stopPropagation(); if (result.jobId) void retryMissingGeneration(result.jobId) }}>补 {missingOutputCount} 张</button>
+        </div> : null}
         {isSelected ? <span className="result-node__check">✓</span> : null}
       </div>
     </div>
@@ -806,6 +969,7 @@ type ResultComposerDraft = {
   prompt: string
   batchCount: number
   settings: GenerationSettings
+  refinementMode: RefinementMode
 }
 
 const defaultComposerLayout: ComposerLayout = { dock: 'bottom', collapsed: false }
@@ -980,7 +1144,7 @@ function CanvasNavigation({
         <button className="zoom-panel__action" onClick={() => {
           onAutoLayout()
           window.requestAnimationFrame(() => commitViewport(fitView({ duration: 220, padding: 0.16, minZoom: canvasMinZoom, maxZoom: 1 })))
-        }} aria-label="自动整理布局" title="按流程自动整理节点">整理</button>
+        }} aria-label="按任务整理布局" title="按生成血缘整理节点">按任务整理</button>
         <button className="zoom-panel__action" onClick={() => commitViewport(fitView({ duration: 180, padding: 0.16, minZoom: canvasMinZoom, maxZoom: 1 }))} aria-label="适配画布">适配</button>
         {taskNodes.length ? <button className="zoom-panel__action" onClick={() => commitViewport(focusTaskFlow(setCenter, taskNodes))} aria-label="聚焦本次任务">本次任务</button> : null}
       </div>
@@ -1090,6 +1254,7 @@ type ScreenToFlowPosition = (position: { x: number; y: number }) => { x: number;
 type NodePalettePosition = {
   screen: { x: number; y: number }
   flow: { x: number; y: number }
+  parentResultId?: string
 }
 
 function CanvasDropBridge({ onReady }: { onReady: (mapper: ScreenToFlowPosition) => void }) {
@@ -1221,8 +1386,9 @@ function canvasNodeBaseLevel(node: CanvasNode) {
 }
 
 /**
- * 按“一个生成节点 + 它实际连接的输入素材”分组整理。
- * 不再把所有商品、场景按角色堆到同一列，避免不同任务的素材混在一起。
+ * 按生成血缘整理画布：一个首图任务和从任意候选图延展出的精修分支共享同一条泳道。
+ * 这不是通用图算法：素材、生成器、候选图在 Botanic 中有明确语义，需要优先保证
+ * “同一任务的输入和输出在一起”，再考虑全局的紧凑程度。
  */
 function layoutCanvasNodes(nodes: CanvasNode[], edges: Edge[]): CanvasNode[] {
   const cloned = nodes.map((node) => ({
@@ -1232,80 +1398,165 @@ function layoutCanvasNodes(nodes: CanvasNode[], edges: Edge[]): CanvasNode[] {
   })) as CanvasNode[]
   const nodeById = new Map(cloned.map((node) => [node.id, node]))
   const generateNodes = cloned.filter((node) => node.type === 'generate').sort(canvasNodeSort)
-  const positions = new Map<string, { x: number; y: number }>()
-  const assigned = new Set<string>()
-  const generatedResultIds = new Set(edges
-    .filter((edge) => nodeById.get(edge.source)?.type === 'generate' && nodeById.get(edge.target)?.type === 'result')
-    .map((edge) => edge.target))
+  const positions = new Map<string, XYPosition>()
+  const inputGap = 68
+  const laneGap = 240
+  const columnGap = 172
 
-  // 一个素材若被多个任务共享，仍只摆放一次：归到最靠前的生成组，连线保留其共享关系。
-  const inputOwner = new Map<string, string>()
-  for (const generate of generateNodes) {
-    edges
-      .filter((edge) => edge.target === generate.id)
-      .map((edge) => nodeById.get(edge.source))
-      .filter((node): node is CanvasNode => Boolean(node) && !generatedResultIds.has(node!.id))
-      .forEach((node) => {
-        if (!inputOwner.has(node.id)) inputOwner.set(node.id, generate.id)
-      })
+  const uniqueIds = (ids: string[]) => [...new Set(ids)].filter((id) => nodeById.has(id))
+  const sortIds = (ids: string[]) => uniqueIds(ids)
+    .map((id) => nodeById.get(id)!)
+    .sort(canvasNodeSort)
+    .map((node) => node.id)
+
+  const resultOutputOf = new Map<string, string>()
+  for (const result of cloned.filter((node) => node.type === 'result')) {
+    const outputOf = (result.data as ResultNodeData).outputOf
+    if (outputOf && nodeById.get(outputOf)?.type === 'generate') resultOutputOf.set(result.id, outputOf)
+  }
+  for (const edge of edges) {
+    if (nodeById.get(edge.source)?.type === 'generate' && nodeById.get(edge.target)?.type === 'result') {
+      resultOutputOf.set(edge.target, edge.source)
+    }
   }
 
-  let groupX = 96
+  const inputIdsByGenerate = new Map<string, string[]>()
   for (const generate of generateNodes) {
-    const inputs = cloned
-      .filter((node) => inputOwner.get(node.id) === generate.id)
-      .sort(canvasNodeSort)
-    const outputs = edges
-      .filter((edge) => edge.source === generate.id && nodeById.get(edge.target)?.type === 'result')
-      .map((edge) => nodeById.get(edge.target)!)
-      .filter((node, index, all) => all.findIndex((item) => item.id === node.id) === index)
-      .sort(canvasNodeSort)
-    const inputColumns = inputs.length > 3 ? 2 : 1
-    const inputWidth = inputs.length ? Math.max(...inputs.map((node) => taskNodeBounds(node).width)) : 0
-    const inputGap = 56
-    let inputY = 96
+    const ordered = (generate.data as GenerateNodeData).inputOrder ?? []
+    const connected = edges
+      .filter((edge) => edge.target === generate.id)
+      .map((edge) => edge.source)
+    inputIdsByGenerate.set(generate.id, uniqueIds([...ordered, ...connected]))
+  }
 
-    for (let start = 0; start < inputs.length; start += inputColumns) {
-      const row = inputs.slice(start, start + inputColumns)
-      const rowHeight = Math.max(...row.map((node) => taskNodeBounds(node).height))
-      row.forEach((node, column) => {
-        positions.set(node.id, { x: groupX + column * (inputWidth + inputGap), y: inputY })
-        assigned.add(node.id)
-      })
-      inputY += rowHeight + 68
+  const parentResultByGenerate = new Map<string, string>()
+  for (const generate of generateNodes) {
+    const resultInput = inputIdsByGenerate.get(generate.id)?.find((id) => nodeById.get(id)?.type === 'result')
+    if (resultInput) parentResultByGenerate.set(generate.id, resultInput)
+  }
+
+  const rootByGenerate = new Map<string, string>()
+  const resolvingRoots = new Set<string>()
+  const rootOfGenerate = (generateId: string): string => {
+    const cached = rootByGenerate.get(generateId)
+    if (cached) return cached
+    if (resolvingRoots.has(generateId)) return generateId
+    resolvingRoots.add(generateId)
+    const parentResultId = parentResultByGenerate.get(generateId)
+    const parentGenerateId = parentResultId ? resultOutputOf.get(parentResultId) : undefined
+    const root = parentGenerateId && parentGenerateId !== generateId
+      ? rootOfGenerate(parentGenerateId)
+      : generateId
+    resolvingRoots.delete(generateId)
+    rootByGenerate.set(generateId, root)
+    return root
+  }
+  generateNodes.forEach((node) => rootOfGenerate(node.id))
+
+  const rankByGenerate = new Map<string, number>()
+  const resolvingRanks = new Set<string>()
+  const rankOfGenerate = (generateId: string): number => {
+    const cached = rankByGenerate.get(generateId)
+    if (typeof cached === 'number') return cached
+    if (resolvingRanks.has(generateId)) return 1
+    resolvingRanks.add(generateId)
+    const parentResultId = parentResultByGenerate.get(generateId)
+    const parentGenerateId = parentResultId ? resultOutputOf.get(parentResultId) : undefined
+    const rank = parentGenerateId && parentGenerateId !== generateId
+      ? rankOfGenerate(parentGenerateId) + 2
+      : 1
+    resolvingRanks.delete(generateId)
+    rankByGenerate.set(generateId, rank)
+    return rank
+  }
+  generateNodes.forEach((node) => rankOfGenerate(node.id))
+
+  const targetGeneratesByInput = new Map<string, string[]>()
+  inputIdsByGenerate.forEach((inputIds, generateId) => {
+    inputIds.forEach((inputId) => {
+      targetGeneratesByInput.set(inputId, [...(targetGeneratesByInput.get(inputId) ?? []), generateId])
+    })
+  })
+
+  const rootNodes = new Map<string, string[]>()
+  const ranks = new Map<string, number>()
+  const assignToRoot = (nodeId: string, rootId: string, rank: number) => {
+    rootNodes.set(rootId, [...(rootNodes.get(rootId) ?? []), nodeId])
+    ranks.set(nodeId, rank)
+  }
+
+  for (const generate of generateNodes) {
+    assignToRoot(generate.id, rootOfGenerate(generate.id), rankOfGenerate(generate.id))
+  }
+  for (const [resultId, generateId] of resultOutputOf) {
+    assignToRoot(resultId, rootOfGenerate(generateId), rankOfGenerate(generateId) + 1)
+  }
+
+  const leftovers: string[] = []
+  for (const node of cloned) {
+    if (ranks.has(node.id)) continue
+    const targets = (targetGeneratesByInput.get(node.id) ?? []).slice().sort((left, right) => {
+      const rankDifference = rankOfGenerate(left) - rankOfGenerate(right)
+      if (rankDifference) return rankDifference
+      return canvasNodeSort(nodeById.get(left)!, nodeById.get(right)!)
+    })
+    if (!targets.length) {
+      leftovers.push(node.id)
+      continue
     }
+    const owner = targets[0]
+    assignToRoot(node.id, rootOfGenerate(owner), Math.max(0, rankOfGenerate(owner) - 1))
+  }
 
-    const inputHeight = Math.max(0, inputY - 96 - (inputs.length ? 68 : 0))
-    const generateBounds = taskNodeBounds(generate)
-    const generateX = groupX + (inputs.length ? inputColumns * inputWidth + (inputColumns - 1) * inputGap + 172 : 0)
-    const generateY = Math.max(96, 96 + (inputHeight - generateBounds.height) / 2)
-    positions.set(generate.id, { x: generateX, y: generateY })
-    assigned.add(generate.id)
+  const rootIds = [...rootNodes.keys()]
+    .sort((left, right) => canvasNodeSort(nodeById.get(left)!, nodeById.get(right)!))
+  const columnWidths = new Map<number, number>()
+  ranks.forEach((rank, nodeId) => {
+    const width = taskNodeBounds(nodeById.get(nodeId)!).width
+    columnWidths.set(rank, Math.max(columnWidths.get(rank) ?? 0, width))
+  })
+  const maxRank = Math.max(0, ...columnWidths.keys())
+  const columnX = new Map<number, number>()
+  let nextColumnX = 96
+  for (let rank = 0; rank <= maxRank; rank += 1) {
+    columnX.set(rank, nextColumnX)
+    nextColumnX += (columnWidths.get(rank) ?? 0) + columnGap
+  }
 
-    const outputX = generateX + generateBounds.width + 188
-    let outputY = Math.max(96, generateY)
-    let outputWidth = 0
-    outputs.forEach((node) => {
-      const bounds = taskNodeBounds(node)
-      positions.set(node.id, { x: outputX, y: outputY })
-      assigned.add(node.id)
-      outputY += bounds.height + 68
-      outputWidth = Math.max(outputWidth, bounds.width)
+  let laneTop = 96
+  for (const rootId of rootIds) {
+    const nodeIds = uniqueIds(rootNodes.get(rootId) ?? [])
+    const nodeIdsByRank = new Map<number, string[]>()
+    nodeIds.forEach((nodeId) => {
+      const rank = ranks.get(nodeId) ?? 0
+      nodeIdsByRank.set(rank, [...(nodeIdsByRank.get(rank) ?? []), nodeId])
     })
 
-    const inputsWidth = inputs.length ? inputColumns * inputWidth + (inputColumns - 1) * inputGap : 0
-    groupX += Math.max(
-      inputsWidth + generateBounds.width + (outputs.length ? outputWidth + 360 : 180),
-      760,
-    ) + 180
+    const columnHeights = new Map<number, number>()
+    nodeIdsByRank.forEach((ids, rank) => {
+      const sorted = sortIds(ids)
+      nodeIdsByRank.set(rank, sorted)
+      const height = sorted.reduce((total, nodeId) => total + taskNodeBounds(nodeById.get(nodeId)!).height, 0)
+        + Math.max(0, sorted.length - 1) * inputGap
+      columnHeights.set(rank, height)
+    })
+    const laneHeight = Math.max(260, ...columnHeights.values())
+
+    nodeIdsByRank.forEach((ids, rank) => {
+      let y = laneTop + (laneHeight - (columnHeights.get(rank) ?? 0)) / 2
+      ids.forEach((nodeId) => {
+        positions.set(nodeId, { x: columnX.get(rank) ?? 96, y })
+        y += taskNodeBounds(nodeById.get(nodeId)!).height + inputGap
+      })
+    })
+    laneTop += laneHeight + laneGap
   }
 
-  // 未接入任何生成组的节点仍会被整理到最后，且不会挤入某个任务的素材区。
-  const leftovers = cloned.filter((node) => !assigned.has(node.id)).sort(canvasNodeSort)
-  let leftoverY = 96
-  leftovers.forEach((node) => {
-    positions.set(node.id, { x: groupX, y: leftoverY })
-    leftoverY += taskNodeBounds(node).height + 68
+  // 未连接节点不伪装成某个任务的输入，统一收在所有任务之后的左侧素材区。
+  let leftoverY = laneTop + 36
+  sortIds(leftovers).forEach((nodeId) => {
+    positions.set(nodeId, { x: 96, y: leftoverY })
+    leftoverY += taskNodeBounds(nodeById.get(nodeId)!).height + inputGap
   })
 
   return cloned.map((node) => ({ ...node, position: positions.get(node.id) ?? { ...node.position } })) as CanvasNode[]
@@ -1355,7 +1606,7 @@ function EdgeActions({ edge, position, onDelete, onClose }: {
       <span>{isSystemEdge ? '系统输出连线' : '连线已选中'}</span>
       <small>{isSystemEdge ? '用于保留生成血缘，不可删除或重连' : '拖动端点可重连'}</small>
       {!isSystemEdge ? <button type="button" onClick={onDelete}>删除</button> : null}
-      <button type="button" className="edge-actions__close" onClick={onClose} aria-label="关闭连线操作">×</button>
+      <button type="button" className="edge-actions__close" onClick={onClose} aria-label="关闭连线操作"><CloseIcon /></button>
     </div>
   )
 }
@@ -1383,12 +1634,16 @@ function EmptyCanvasGuide({
 function CanvasWorkspace() {
   const document = useCanvasStore((state) => state.document)
   const globalAssets = useCanvasStore((state) => state.globalAssets)
+  const sharedTemplates = useCanvasStore((state) => state.sharedTemplates)
   const hydrated = useCanvasStore((state) => state.hydrated)
+  const persistenceStatus = useCanvasStore((state) => state.persistenceStatus)
   const selectedNodeId = useCanvasStore((state) => state.selectedNodeId)
   const hydrate = useCanvasStore((state) => state.hydrate)
   const openDocument = useCanvasStore((state) => state.openDocument)
+  const openNewDocument = useCanvasStore((state) => state.openNewDocument)
   const renameDocument = useCanvasStore((state) => state.renameDocument)
   const setNodes = useCanvasStore((state) => state.setNodes)
+  const setNodesTransient = useCanvasStore((state) => state.setNodesTransient)
   const setEdges = useCanvasStore((state) => state.setEdges)
   const setViewport = useCanvasStore((state) => state.setViewport)
   const selectNode = useCanvasStore((state) => state.selectNode)
@@ -1396,6 +1651,8 @@ function CanvasWorkspace() {
   const addAssetToCanvas = useCanvasStore((state) => state.addAssetToCanvas)
   const addUploadedAssets = useCanvasStore((state) => state.addUploadedAssets)
   const addUploadedAssetsToCanvas = useCanvasStore((state) => state.addUploadedAssetsToCanvas)
+  const saveGeneratedImageToLibrary = useCanvasStore((state) => state.saveGeneratedImageToLibrary)
+  const moveAssetToRole = useCanvasStore((state) => state.moveAssetToRole)
   const addTextNode = useCanvasStore((state) => state.addTextNode)
   const addGenerateNode = useCanvasStore((state) => state.addGenerateNode)
   const renameCanvasNode = useCanvasStore((state) => state.renameCanvasNode)
@@ -1409,7 +1666,9 @@ function CanvasWorkspace() {
   const createGenerateFromResultRecipe = useCanvasStore((state) => state.createGenerateFromResultRecipe)
   const deleteAsset = useCanvasStore((state) => state.deleteAsset)
   const saveCurrentAsTemplate = useCanvasStore((state) => state.saveCurrentAsTemplate)
+  const saveCurrentAsSharedTemplate = useCanvasStore((state) => state.saveCurrentAsSharedTemplate)
   const createCanvasFromTemplate = useCanvasStore((state) => state.createCanvasFromTemplate)
+  const createCanvasFromSharedTemplate = useCanvasStore((state) => state.createCanvasFromSharedTemplate)
   const assistantMessage = useCanvasStore((state) => state.assistantMessage)
   const generationStatus = useCanvasStore((state) => state.generationStatus)
   const generationError = useCanvasStore((state) => state.generationError)
@@ -1424,6 +1683,7 @@ function CanvasWorkspace() {
   const undoAction = useCanvasStore((state) => state.undoAction)
   const undoLastAction = useCanvasStore((state) => state.undoLastAction)
   const [assetsOpen, setAssetsOpen] = useState(false)
+  const [assetLibraryTargetGenerateId, setAssetLibraryTargetGenerateId] = useState<string | null>(null)
   const [templatesOpen, setTemplatesOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [nodeReferencesOpen, setNodeReferencesOpen] = useState(false)
@@ -1434,7 +1694,8 @@ function CanvasWorkspace() {
   const [composerOpen, setComposerOpen] = useState(false)
   const [resultComposerDraft, setResultComposerDraft] = useState<ResultComposerDraft | null>(null)
   const [imagePreview, setImagePreview] = useState<{ image: string; name: string } | null>(null)
-  const [projectMenuOpen, setProjectMenuOpen] = useState(false)
+  const [renamingProjectTabId, setRenamingProjectTabId] = useState<string | null>(null)
+  const [projectTabNameDraft, setProjectTabNameDraft] = useState('')
   const [assetToDelete, setAssetToDelete] = useState<AssetRecord | null>(null)
   const [maximumBatchCount, setMaximumBatchCount] = useState(8)
   const [generationService, setGenerationService] = useState<GenerationServiceState>(initialGenerationServiceState)
@@ -1456,12 +1717,16 @@ function CanvasWorkspace() {
   })
   const [workspaceRestoring, setWorkspaceRestoring] = useState(initialWorkspaceLocation.view === 'canvas')
   const [workspaceRestored, setWorkspaceRestored] = useState(false)
+  const [closingWorkspaceTabId, setClosingWorkspaceTabId] = useState<string | null>(null)
   const [viewportRestoring, setViewportRestoring] = useState(initialWorkspaceLocation.view === 'canvas')
+  const [canvasHydrationFailed, setCanvasHydrationFailed] = useState(false)
   const workspaceView = workspaceLocation.view
   const workspaceDocumentMismatch = workspaceView === 'canvas'
     && Boolean(workspaceLocation.projectId)
     && document.id !== workspaceLocation.projectId
   const [workspaceProjects, setWorkspaceProjects] = useState<WorkspaceProject[]>([])
+  const [workspaceProjectsLoading, setWorkspaceProjectsLoading] = useState(false)
+  const [workspaceProjectsError, setWorkspaceProjectsError] = useState<string | null>(null)
   const assetLibraryAssets = useMemo(() => {
     const seen = new Set<string>()
     return [...globalAssets, ...document.assets].filter((asset) => {
@@ -1480,12 +1745,28 @@ function CanvasWorkspace() {
   const resultComposerSubmissionRef = useRef(false)
   const renderedResultNodeStateRef = useRef<Map<string, { candidateId?: string; hasImage: boolean }> | null>(null)
   const resultRevealTimersRef = useRef<Map<string, number>>(new Map())
+  const pendingNodePositionSaveRef = useRef(false)
   const viewportReadyRef = useRef(false)
   const viewportDocumentIdRef = useRef(document.id)
   if (viewportDocumentIdRef.current !== document.id) {
     viewportDocumentIdRef.current = document.id
     viewportReadyRef.current = false
   }
+  const restoredViewport = useMemo(
+    () => readCachedCanvasViewport(document.id) ?? document.viewport,
+    [document.id, document.viewport],
+  )
+  const completeViewportRestore = useCallback(() => {
+    // 忽略 React Flow 挂载时补发的默认视角事件，避免写坏已保存的画布位置。
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        if (viewportDocumentIdRef.current === document.id) {
+          viewportReadyRef.current = true
+          setViewportRestoring(false)
+        }
+      })
+    })
+  }, [document.id])
 
   const setWorkspaceView = useCallback((view: WorkspaceView, projectId?: string, historyMode: WorkspaceHistoryMode = 'push') => {
     const location: WorkspaceLocation = view === 'canvas'
@@ -1506,6 +1787,20 @@ function CanvasWorkspace() {
       flushSync(updateLocation)
     })
   }, [workspaceLocation, workspaceRestored, workspaceRestoring])
+
+  const returnToProjectLibrary = useCallback(() => {
+    // 关闭最后一个标签必须走浏览器真实导航。history.replaceState 不会触发 hashchange，
+    // 会让地址栏已经是 /projects 但 React 仍停在旧画布。
+    const location: WorkspaceLocation = { view: 'projects' }
+    setWorkspaceRestoring(false)
+    writeWorkspaceLocationFallback(location)
+    const targetHash = workspaceHash(location)
+    if (window.location.hash === targetHash) {
+      setWorkspaceLocation(location)
+      return
+    }
+    window.location.assign(targetHash)
+  }, [])
 
   useEffect(() => {
     writeWorkspaceTabs(workspaceTabIds)
@@ -1533,37 +1828,75 @@ function CanvasWorkspace() {
     showComposer()
   }, [addGenerateNode, document.nodes, selectNode, selectedNodeId, showComposer])
 
-  useEffect(() => {
-    void hydrate()
+  const hydrateCanvas = useCallback(() => {
+    setCanvasHydrationFailed(false)
+    void hydrate().catch(() => setCanvasHydrationFailed(true))
   }, [hydrate])
+
+  const synchronizeLocalDrafts = useCallback(async () => {
+    const result = await syncPendingCanvasDrafts()
+    const current = useCanvasStore.getState()
+    if (result.conflictIds.includes(current.document.id)) {
+      await openDocument(current.document.id)
+      useCanvasStore.setState({ persistenceStatus: 'saved', assistantMessage: '画布已同步。' })
+      return result
+    }
+    if (result.pending === 0 && (current.persistenceStatus === 'offline' || current.persistenceStatus === 'error')) {
+      useCanvasStore.setState({ persistenceStatus: 'saved', assistantMessage: '本地草稿已同步。' })
+    }
+    return result
+  }, [])
+
+  useEffect(() => {
+    hydrateCanvas()
+  }, [hydrateCanvas])
+
+  useEffect(() => {
+    const flushPendingWrites = () => { void flushPendingCanvasDocumentWrites().catch(() => undefined) }
+    window.addEventListener('pagehide', flushPendingWrites)
+    return () => window.removeEventListener('pagehide', flushPendingWrites)
+  }, [])
+
+  useEffect(() => {
+    if (!hydrated || !serverPersistenceEnabled) return
+    const syncDrafts = () => { void synchronizeLocalDrafts().catch(() => undefined) }
+    syncDrafts()
+    window.addEventListener('online', syncDrafts)
+    return () => window.removeEventListener('online', syncDrafts)
+  }, [hydrated, synchronizeLocalDrafts])
 
   useEffect(() => {
     if (!hydrated || workspaceRestored) return
 
     let active = true
+    let finished = false
+    const finishRestore = (view: WorkspaceView, projectId?: string) => {
+      if (!active || finished) return
+      finished = true
+      window.clearTimeout(restoreTimeout)
+      setWorkspaceRestoring(false)
+      setWorkspaceRestored(true)
+      setWorkspaceView(view, projectId, 'replace')
+    }
+    // 无论浏览器存储或第三方请求处于何种异常状态，首次路由恢复都必须可退出。
+    const restoreTimeout = window.setTimeout(() => finishRestore('projects'), 10_000)
     const restoreWorkspaceLocation = async () => {
       let location = workspaceLocationFromHash(window.location.hash) ?? initialWorkspaceLocation
 
       while (active) {
         if (location.view !== 'canvas') {
-          setWorkspaceView(location.view, undefined, 'replace')
-          break
+          finishRestore(location.view)
+          return
         }
 
-        const stored = location.projectId ? await readCanvasDocument(location.projectId) : undefined
-        if (!active) return
-        const hashLocation = workspaceLocationFromHash(window.location.hash) ?? initialWorkspaceLocation
-        if (!sameWorkspaceLocation(location, hashLocation)) {
-          location = hashLocation
-          continue
+        let opened = false
+        try {
+          opened = await openDocument(location.projectId!)
+        } catch {
+          // 项目读取失败时不能一直保留“正在恢复”遮罩；退回项目页，由列表提供重试入口。
+          finishRestore('projects')
+          return
         }
-
-        if (!stored) {
-          setWorkspaceView('projects', undefined, 'replace')
-          break
-        }
-
-        const opened = await openDocument(location.projectId!)
         if (!active) return
         const latestHashLocation = workspaceLocationFromHash(window.location.hash) ?? initialWorkspaceLocation
         if (!sameWorkspaceLocation(location, latestHashLocation)) {
@@ -1571,18 +1904,15 @@ function CanvasWorkspace() {
           continue
         }
 
-        setWorkspaceView(opened ? 'canvas' : 'projects', opened ? location.projectId : undefined, 'replace')
-        break
+        finishRestore(opened ? 'canvas' : 'projects', opened ? location.projectId : undefined)
+        return
       }
-
-      if (!active) return
-      setWorkspaceRestoring(false)
-      setWorkspaceRestored(true)
     }
 
     void restoreWorkspaceLocation()
     return () => {
       active = false
+      window.clearTimeout(restoreTimeout)
     }
   }, [hydrated, initialWorkspaceLocation, openDocument, setWorkspaceView, workspaceRestored])
 
@@ -1618,22 +1948,16 @@ function CanvasWorkspace() {
           continue
         }
 
-        const stored = location.projectId ? await readCanvasDocument(location.projectId) : undefined
-        if (!active) break
-
-        const hashLocation = workspaceLocationFromHash(window.location.hash)
-        if (pendingLocation || !sameWorkspaceLocation(location, hashLocation)) {
-          pendingLocation ??= hashLocation
+        let opened = false
+        try {
+          opened = await openDocument(location.projectId!)
+        } catch {
+          if (sameWorkspaceLocation(location, workspaceLocationFromHash(window.location.hash))) {
+            setWorkspaceView('projects', undefined, 'replace')
+            setWorkspaceRestoring(false)
+          }
           continue
         }
-
-        if (!stored) {
-          setWorkspaceView('projects', undefined, 'replace')
-          setWorkspaceRestoring(false)
-          continue
-        }
-
-        const opened = await openDocument(location.projectId!)
         if (!active) break
 
         const latestHashLocation = workspaceLocationFromHash(window.location.hash)
@@ -1663,79 +1987,147 @@ function CanvasWorkspace() {
   }, [hydrated, openDocument, setWorkspaceView, workspaceRestored])
 
   const refreshWorkspaceProjects = useCallback(async () => {
-    const documents = await readCanvasDocuments()
-    const projects = documents.map((item): WorkspaceProject => ({
-      id: item.id,
-      name: item.name,
-      updatedAt: item.updatedAt,
-      cover: item.id.includes('fig') ? sceneImage : resultImage,
-      summary: item.nodes.length ? `已搭建 ${item.nodes.length} 个节点` : '空白画布 · 等待开始',
-      isSeed: item.id === 'summer-fragrance-visual-lab',
-    }))
-    setWorkspaceProjects(projects)
+    setWorkspaceProjectsLoading(true)
+    setWorkspaceProjectsError(null)
+    try {
+      const summaries = await readCanvasProjectSummaries()
+      const projects = summaries
+        // 空白草稿没有独立项目价值：不在项目库展示，也不计入项目数。
+        .filter((item) => (item.nodeCount ?? 0) > 0 || (item.resultCount ?? 0) > 0)
+        .map((item): WorkspaceProject => ({
+        id: item.id,
+        name: item.name,
+        updatedAt: item.updatedAt,
+        cover: item.coverImage,
+        summary: item.resultCount
+          ? `已生成 ${item.resultCount} 张图 · ${item.nodeCount ?? 0} 个节点`
+          : item.nodeCount ? `已搭建 ${item.nodeCount} 个节点` : '空白画布',
+        isSeed: item.id === 'summer-fragrance-visual-lab',
+      }))
+      setWorkspaceProjects(projects)
+    } catch {
+      setWorkspaceProjectsError('请检查网络或稍后重试。')
+    } finally {
+      setWorkspaceProjectsLoading(false)
+    }
   }, [])
 
   const openWorkspaceProject = useCallback(async (projectId: string) => {
-    const stored = await readCanvasDocument(projectId)
-    if (!stored) return
-    if (await openDocument(projectId)) {
+    const opened = await openDocument(projectId)
+    if (opened) {
       setWorkspaceView('canvas', projectId)
-      void refreshWorkspaceProjects()
     }
-  }, [openDocument, refreshWorkspaceProjects, setWorkspaceView])
+    return opened
+  }, [openDocument, setWorkspaceView])
 
   const createWorkspaceProject = useCallback(async () => {
-    const documents = await readCanvasDocuments()
-    const ordinal = documents.filter((item) => item.id.startsWith('project-')).length + 1
+    const ordinal = workspaceProjects.filter((item) => item.id.startsWith('project-')).length + 1
     const project = createEmptyCanvasDocument(`project-${Date.now()}`, `创意项目 ${ordinal}`)
-    await writeCanvasDocument(project)
-    await openDocument(project.id)
+    // 先进入本地空白画布；首次添加素材/节点时才会持久化并创建项目。
+    // 这样不会制造无法进入创作流程的空项目卡片。
+    openNewDocument(project)
     setWorkspaceView('canvas', project.id)
-    void refreshWorkspaceProjects()
-  }, [openDocument, refreshWorkspaceProjects, setWorkspaceView])
+    return true
+  }, [openNewDocument, setWorkspaceView, workspaceProjects])
 
   const renameWorkspaceProject = useCallback(async (projectId: string, name: string) => {
     const nextName = name.trim()
     if (!nextName) return false
     if (projectId === document.id) {
-      renameDocument(nextName)
+      try {
+        await renameDocument(nextName)
+      } catch {
+        return false
+      }
       setWorkspaceProjects((current) => current.map((project) => project.id === projectId
         ? { ...project, name: nextName, updatedAt: Date.now() }
         : project))
       return true
     } else {
-      const project = await readCanvasDocument(projectId)
-      if (!project) return false
-      await writeCanvasDocument({ ...project, name: nextName, updatedAt: Date.now() })
+      try {
+        await renameCanvasProject(projectId, nextName)
+      } catch {
+        return false
+      }
     }
-    await refreshWorkspaceProjects()
+    setWorkspaceProjects((current) => current.map((project) => project.id === projectId
+      ? { ...project, name: nextName, updatedAt: Date.now() }
+      : project))
     return true
-  }, [document.id, refreshWorkspaceProjects, renameDocument])
+  }, [document.id, renameDocument])
+
+  const beginProjectTabRename = useCallback((project: WorkspaceProject) => {
+    setProjectTabNameDraft(project.name)
+    setRenamingProjectTabId(project.id)
+  }, [])
+
+  const commitProjectTabRename = useCallback(async (project: WorkspaceProject) => {
+    const nextName = projectTabNameDraft.trim()
+    setRenamingProjectTabId(null)
+    if (!nextName || nextName === project.name) return
+    const saved = await renameWorkspaceProject(project.id, nextName)
+    if (!saved) {
+      setProjectTabNameDraft(nextName)
+      setRenamingProjectTabId(project.id)
+    }
+  }, [projectTabNameDraft, renameWorkspaceProject])
 
   const deleteWorkspaceProject = useCallback(async (projectId: string) => {
-    await deleteCanvasDocument(projectId)
+    const previousProjects = workspaceProjects
+    // 删除操作可能涉及远端素材与任务清理。先从当前列表移除，避免界面被网络往返卡住。
+    setWorkspaceProjects((current) => current.filter((project) => project.id !== projectId))
     setWorkspaceTabIds((current) => current.filter((id) => id !== projectId))
-    await refreshWorkspaceProjects()
     if (workspaceLocation.view === 'canvas' && workspaceLocation.projectId === projectId) {
       setWorkspaceView('projects', undefined, 'replace')
     }
-  }, [refreshWorkspaceProjects, setWorkspaceView, workspaceLocation])
+    try {
+      await deleteCanvasDocument(projectId)
+    } catch (error) {
+      setWorkspaceProjects(previousProjects)
+      throw error
+    }
+    // 后台校准列表，不阻塞弹窗关闭或用户继续操作。
+    void refreshWorkspaceProjects()
+  }, [refreshWorkspaceProjects, setWorkspaceView, workspaceLocation, workspaceProjects])
 
   const closeWorkspaceTab = useCallback((projectId: string) => {
-    const remaining = workspaceTabIds.filter((id) => id !== projectId)
-    setWorkspaceTabIds(remaining)
-    if (workspaceLocation.view !== 'canvas' || workspaceLocation.projectId !== projectId) return
-    const nextProjectId = remaining.at(-1)
-    if (nextProjectId) {
-      void openWorkspaceProject(nextProjectId)
+    if (closingWorkspaceTabId) return
+    // 本地曾保存过已删除或无权访问的标签 ID；它们不会渲染，却会让“最后一个
+    // 可见标签”被误判为仍有下一个项目。关闭时只保留当前确实可打开的项目。
+    const knownProjectIds = new Set([document.id, ...workspaceProjects.map((project) => project.id)])
+    const remaining = workspaceTabIds.filter((id) => id !== projectId && knownProjectIds.has(id))
+    // 标签的“当前”视觉与画布内容都由 document.id 决定。路由 ID 在异步切换时可能
+    // 仍是上一个项目，不能再用它判断，否则关闭当前标签会被误当作关闭后台标签。
+    if (projectId !== document.id) {
+      setWorkspaceTabIds(remaining)
       return
     }
-    setWorkspaceView('projects')
-  }, [openWorkspaceProject, setWorkspaceView, workspaceLocation, workspaceTabIds])
+    const nextProjectId = remaining.at(-1)
+    setClosingWorkspaceTabId(projectId)
+    setWorkspaceTabIds(remaining)
+    if (nextProjectId) {
+      void openWorkspaceProject(nextProjectId)
+        .then((opened) => {
+          // 目标项目打不开时，恢复被关闭的当前标签，避免用户失去入口。
+          if (!opened) setWorkspaceTabIds((current) => current.includes(projectId) ? current : [...current, projectId])
+        })
+        .finally(() => setClosingWorkspaceTabId(null))
+      return
+    }
+    returnToProjectLibrary()
+    setClosingWorkspaceTabId(null)
+  }, [closingWorkspaceTabId, document.id, openWorkspaceProject, returnToProjectLibrary, workspaceProjects, workspaceTabIds])
 
   useEffect(() => {
-    if (hydrated) void refreshWorkspaceProjects()
-  }, [document.id, document.updatedAt, hydrated, refreshWorkspaceProjects])
+    if (hydrated && workspaceView === 'projects') void refreshWorkspaceProjects()
+  }, [hydrated, refreshWorkspaceProjects, workspaceView])
+
+  useEffect(() => {
+    if (!hydrated || workspaceView !== 'canvas') return
+    // 顶部标签只保存项目 ID；直接在画布中新建或刷新时也要补齐项目元数据，
+    // 否则旧标签会因找不到名称而被临时过滤，看起来像被新项目替换。
+    void refreshWorkspaceProjects()
+  }, [hydrated, refreshWorkspaceProjects, workspaceLocation.projectId, workspaceView])
 
   useEffect(() => {
     selectedNodeIdsRef.current = new Set(document.nodes.filter((node) => node.selected).map((node) => node.id))
@@ -1842,10 +2234,32 @@ function CanvasWorkspace() {
   const onNodesChange: OnNodesChange<CanvasNode> = useCallback(
     (changes) => {
       if (!hydrated) return
-      setNodes(applyNodeChanges(changes, useCanvasStore.getState().document.nodes))
+      const nextNodes = applyNodeChanges(changes, useCanvasStore.getState().document.nodes)
+      // 框选、单选只是即时 UI 状态，不应触发整份画布远端保存。
+      if (changes.every((change) => change.type === 'select')) {
+        setNodesTransient(nextNodes)
+        return
+      }
+      // 拖动期间只更新画布，直到鼠标松开时才持久化最终坐标。
+      // 键盘等非拖动的位置变更仍立即保存，避免遗漏可访问性操作。
+      const positionOnly = changes.length > 0 && changes.every((change) => change.type === 'position')
+      const dragging = positionOnly && changes.some((change) => change.type === 'position' && change.dragging === true)
+      if (dragging) {
+        pendingNodePositionSaveRef.current = true
+        setNodesTransient(nextNodes)
+        return
+      }
+      if (positionOnly) pendingNodePositionSaveRef.current = false
+      setNodes(nextNodes)
     },
-    [hydrated, setNodes],
+    [hydrated, setNodes, setNodesTransient],
   )
+
+  const persistDraggedNodes = useCallback(() => {
+    if (!hydrated || !pendingNodePositionSaveRef.current) return
+    pendingNodePositionSaveRef.current = false
+    setNodes(useCanvasStore.getState().document.nodes)
+  }, [hydrated, setNodes])
 
   const onEdgesChange: OnEdgesChange = useCallback(
     (changes) => {
@@ -1892,6 +2306,7 @@ function CanvasWorkspace() {
 
   const closeWorkbenchPanels = useCallback(() => {
     setAssetsOpen(false)
+    setAssetLibraryTargetGenerateId(null)
     setTemplatesOpen(false)
     setHistoryOpen(false)
     setNodeReferencesOpen(false)
@@ -1958,6 +2373,7 @@ function CanvasWorkspace() {
       prompt: inheritedPrompt || '保持当前商品与主体，基于当前图片做一版新的视觉迭代。',
       batchCount: Math.min(maximumBatchCount, Math.max(1, recipe?.batchCount ?? 1)),
       settings: { ...(recipe?.settings ?? result.generationSettings ?? defaultGenerationSettings) },
+      refinementMode: 'faithful',
     })
   }, [clearGenerationError, closeWorkbenchPanels, document.nodes, maximumBatchCount, selectNode])
 
@@ -1989,12 +2405,13 @@ function CanvasWorkspace() {
     }
   }, [addUploadedAssetsToCanvas, document.nodes])
 
-  const onCanvasDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
+  const onCanvasDragOver = useCallback((event: DragEvent<HTMLElement>) => {
     event.preventDefault()
-    event.dataTransfer.dropEffect = Array.from(event.dataTransfer.types).includes('Files') ? 'copy' : 'move'
+    // 素材库中的卡片仍然保留在原处，拖入画布本质上是一次“添加”。
+    event.dataTransfer.dropEffect = 'copy'
   }, [])
 
-  const onCanvasDrop = useCallback((event: DragEvent<HTMLDivElement>) => {
+  const onCanvasDrop = useCallback((event: DragEvent<HTMLElement>) => {
     event.preventDefault()
     canvasFileDragDepthRef.current = 0
     setIsCanvasFileDragging(false)
@@ -2006,9 +2423,15 @@ function CanvasWorkspace() {
       void addDroppedFilesToCanvas(files, position)
       return
     }
+    // Safari / 部分内嵌浏览器会在 drop 阶段丢弃自定义 MIME，只保留 text/plain。
     const assetId = event.dataTransfer.getData('application/x-botanic-asset-id')
-    if (assetId) addAssetToCanvas(assetId, position)
-  }, [addAssetToCanvas, addDroppedFilesToCanvas])
+      || event.dataTransfer.getData('text/plain')
+    if (assetId && assetLibraryAssets.some((asset) => asset.id === assetId)) addAssetToCanvas(assetId, position)
+  }, [addAssetToCanvas, addDroppedFilesToCanvas, assetLibraryAssets])
+
+  const isFlowDropTarget = useCallback((target: EventTarget | null) => (
+    target instanceof Element && Boolean(target.closest('.react-flow'))
+  ), [])
 
   const onCanvasFileDragEnter = useCallback((event: DragEvent<HTMLElement>) => {
     if (!Array.from(event.dataTransfer.types).includes('Files')) return
@@ -2022,10 +2445,13 @@ function CanvasWorkspace() {
     if (!canvasFileDragDepthRef.current) setIsCanvasFileDragging(false)
   }, [])
 
-  const openNodePalette = useCallback((event: ReactMouseEvent, fromDock = false) => {
+  const openNodePalette = useCallback((event: ReactMouseEvent, fromDock = false, parentResultId?: string) => {
     const mapper = screenToFlowPositionRef.current
     const paneRect = canvasPaneRef.current?.getBoundingClientRect()
     if (!mapper || !paneRect) return
+    const selectedResult = document.nodes.find((node) => node.id === selectedNodeId && node.type === 'result')
+    const selectedResultData = selectedResult?.type === 'result' ? selectedResult.data as ResultNodeData : undefined
+    const contextualResultId = parentResultId ?? (selectedResultData?.image ? selectedResult?.id : undefined)
     const screenPoint = {
       x: fromDock
         ? Math.max(paneRect.left + 172, Math.min(paneRect.right - 176, event.clientX + 132))
@@ -2039,8 +2465,9 @@ function CanvasWorkspace() {
         x: Math.max(94, Math.min(paneRect.width - 262, screenPoint.x - paneRect.left + 8)),
         y: Math.max(70, Math.min(paneRect.height - 268, screenPoint.y - paneRect.top + 8)),
       },
+      parentResultId: contextualResultId,
     })
-  }, [closeWorkbenchPanels])
+  }, [closeWorkbenchPanels, document.nodes, selectedNodeId])
 
   const isGraphConnectionValid = useCallback((connection: Connection | Edge, ignoredEdgeId?: string) => {
     const sourceId = connection.source
@@ -2158,6 +2585,13 @@ function CanvasWorkspace() {
     }, document.edges))
   }, [document.edges, graphEdgeStyle, isGraphConnectionValid, setEdges])
 
+  const addAssetFromLibrary = useCallback((assetId: string) => {
+    const target = assetLibraryTargetGenerateId
+      ? document.nodes.find((node) => node.id === assetLibraryTargetGenerateId && node.type === 'generate')
+      : undefined
+    addAssetToCanvas(assetId, undefined, target?.id)
+  }, [addAssetToCanvas, assetLibraryTargetGenerateId, document.nodes])
+
   const canvasClassName = useMemo(
     () => (creativeAssistantEnabled && agentOpen ? 'app-shell' : 'app-shell app-shell--agent-closed'),
     [agentOpen],
@@ -2173,14 +2607,16 @@ function CanvasWorkspace() {
         summary: document.nodes.length ? `已搭建 ${document.nodes.length} 个节点` : '空白画布 · 等待开始',
       })
     }
-    const ids = workspaceTabIds.includes(document.id) ? workspaceTabIds : [...workspaceTabIds, document.id]
+    // 正在关闭的当前项目不能再被旧画布状态兜底补回，否则会出现“点击关闭但标签还在”。
+    const ids = workspaceTabIds.includes(document.id) || closingWorkspaceTabId === document.id
+      ? workspaceTabIds
+      : [...workspaceTabIds, document.id]
     return ids.flatMap((id) => {
       const project = projectsById.get(id)
       return project ? [project] : []
     })
-  }, [document.id, document.name, document.nodes.length, document.updatedAt, workspaceProjects, workspaceTabIds])
+  }, [closingWorkspaceTabId, document.id, document.name, document.nodes.length, document.updatedAt, workspaceProjects, workspaceTabIds])
 
-  const activeHistory = document.history.find((item) => item.id === document.activeVersionId)
   const generatedHistoryItems = useMemo<GeneratedHistoryItem[]>(() => {
     const results = document.nodes.flatMap((node) => {
       if (node.type !== 'result') return []
@@ -2338,30 +2774,48 @@ function CanvasWorkspace() {
         : `正在编辑「${selectedGenerateData.label}」；请把图片或文本连到左侧输入端。`)
       : '选择一个生成节点以编辑本次任务。')
 
+  if (canvasHydrationFailed) {
+    return (
+      <main className={canvasClassName}>
+        <section className="canvas-pane canvas-loading" aria-label="画布初始化失败">
+          <div>
+            <span className="panel-eyebrow">BOTANIC CANVAS</span>
+            <strong>画布初始化失败</strong>
+            <p>请重试；若仍失败，请退出后重新登录。</p>
+            <button type="button" onClick={hydrateCanvas}>重试</button>
+          </div>
+        </section>
+      </main>
+    )
+  }
+
   if (!hydrated || workspaceRestoring || workspaceDocumentMismatch) {
     return (
       <main className={canvasClassName}>
-        <section className="canvas-pane canvas-loading" aria-label="正在加载画布">
-          <div><span className="panel-eyebrow">BOTANIC CANVAS</span><strong>正在恢复本地画布…</strong></div>
+        <section className="canvas-pane canvas-loading canvas-loading--restoring" aria-label="正在加载画布">
+          <DeferredWorkspaceIndicator />
         </section>
       </main>
     )
   }
 
   if (workspaceView === 'dashboard') {
-    return <OperatingDashboard onOpenProjects={() => setWorkspaceView('projects')} />
+    return <Suspense fallback={<WorkspaceViewLoading />}><OperatingDashboard onOpenProjects={() => setWorkspaceView('projects')} /></Suspense>
   }
 
   if (workspaceView === 'projects') {
     return (
-      <ProjectLibrary
+      <Suspense fallback={<WorkspaceViewLoading />}><ProjectLibrary
         projects={workspaceProjects}
+        loading={workspaceProjectsLoading}
+        loadError={workspaceProjectsError}
         onBack={() => setWorkspaceView('dashboard')}
         onOpenProject={openWorkspaceProject}
         onCreateProject={createWorkspaceProject}
         onRenameProject={renameWorkspaceProject}
         onDeleteProject={deleteWorkspaceProject}
-      />
+        onRetry={() => void refreshWorkspaceProjects()}
+      /></Suspense>
     )
   }
 
@@ -2373,33 +2827,65 @@ function CanvasWorkspace() {
         aria-label={document.name.endsWith('画布') ? document.name : `${document.name}画布`}
         onDragEnter={onCanvasFileDragEnter}
         onDragLeave={onCanvasFileDragLeave}
+        onDragOverCapture={(event) => {
+          if (!isFlowDropTarget(event.target)) return
+          onCanvasDragOver(event)
+        }}
+        onDropCapture={(event) => {
+          if (!isFlowDropTarget(event.target)) return
+          event.stopPropagation()
+          onCanvasDrop(event)
+        }}
       >
         <header className="tab-bar" data-node-id="894:230346">
-          <div className="brand-mark">B</div>
-          <button className="home-tab" onClick={() => { void refreshWorkspaceProjects(); setWorkspaceView('projects') }} aria-label="返回项目">⌂ <span>项目</span></button>
+          <div className="brand-mark" aria-label="Botanique">
+            <img src="/botanique-logo.png" alt="Botanique" />
+          </div>
+          <button className="home-tab" onClick={() => { void refreshWorkspaceProjects(); setWorkspaceView('projects') }} aria-label="返回项目"><HomeIcon /> <span>项目</span></button>
           <span className="tab-divider" />
           <nav className="project-tabs" aria-label="已打开项目">
             {workspaceTabs.map((project) => {
               const active = project.id === document.id
               return (
                 <div className={active ? 'project-tab is-active' : 'project-tab'} key={project.id}>
-                  <button
-                    type="button"
-                    aria-current={active ? 'page' : undefined}
-                    aria-label={`打开${project.name}`}
-                    onClick={() => { if (!active) void openWorkspaceProject(project.id) }}
-                  >
-                    <i />
-                    <strong>{project.name}</strong>
-                  </button>
+                  {renamingProjectTabId === project.id ? (
+                    <div className="project-tab__main project-tab__main--editing">
+                      <i />
+                      <input
+                        autoFocus
+                        value={projectTabNameDraft}
+                        aria-label="项目名称"
+                        onChange={(event) => setProjectTabNameDraft(event.target.value)}
+                        onBlur={() => { void commitProjectTabRename(project) }}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') event.currentTarget.blur()
+                          if (event.key === 'Escape') setRenamingProjectTabId(null)
+                        }}
+                      />
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className="project-tab__main"
+                      aria-current={active ? 'page' : undefined}
+                      aria-label={`打开${project.name}`}
+                      title={active ? '双击重命名' : undefined}
+                      onClick={() => { if (!active) void openWorkspaceProject(project.id) }}
+                      onDoubleClick={() => { if (active) beginProjectTabRename(project) }}
+                    >
+                      <i />
+                      <strong>{project.name}</strong>
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="project-tab__close"
                     onClick={() => closeWorkspaceTab(project.id)}
+                    disabled={Boolean(closingWorkspaceTabId)}
                     aria-label={`关闭${project.name}`}
                     title="关闭标签"
                   >
-                    <FigmaIcon src={closeIcon} />
+                    <CloseIcon />
                   </button>
                 </div>
               )
@@ -2444,6 +2930,7 @@ function CanvasWorkspace() {
           zoomOnDoubleClick={false}
           panActivationKeyCode="Space"
           onNodesChange={onNodesChange}
+          onNodeDragStop={persistDraggedNodes}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
           onReconnect={onReconnect}
@@ -2467,8 +2954,6 @@ function CanvasWorkspace() {
               setNodePalette(null)
               return
             }
-            const opensResultComposer = node.type === 'result'
-              && Boolean((node.data as ResultNodeData).image)
             const opensResultCandidates = node.type === 'result'
               && generationCandidates.some((candidate) => candidate.resultNodeId === node.id)
             selectNode(node.id)
@@ -2481,14 +2966,22 @@ function CanvasWorkspace() {
             setNodePalette(null)
             setNodeInspectorOpen(node.type !== 'asset' && node.type !== 'result' && node.type !== 'generate')
             if (opensResultCandidates) setCandidatesOpen(true)
-            if (opensResultComposer) openResultComposer(node.id)
           }}
           onNodeDoubleClick={(event, node) => {
-            if (node.type !== 'result') return
-            const result = node.data as ResultNodeData
-            if (!result.image) return
+            const isResult = node.type === 'result'
+            const isAsset = node.type === 'asset'
+            if (!isResult && !isAsset) return
+            const imageNode = node.data as ResultNodeData | AssetNodeData
+            if (!imageNode.image) return
             event.preventDefault()
-            setImagePreview({ image: result.image, name: result.label ?? '生成图片' })
+            if (isResult) {
+              // 结果图仅负责选中；由“+”统一决定新增节点，避免双击产生隐式创建。
+              return
+            }
+            setImagePreview({
+              image: imageNode.image,
+              name: (imageNode as AssetNodeData).name,
+            })
           }}
           onPaneClick={() => {
             selectNode(null)
@@ -2503,8 +2996,6 @@ function CanvasWorkspace() {
           onDoubleClick={(event) => {
             if ((event.target as Element).closest('.react-flow__pane')) openNodePalette(event)
           }}
-          onDragOver={onCanvasDragOver}
-          onDrop={onCanvasDrop}
           onMoveEnd={onMoveEnd}
           proOptions={{ hideAttribution: true }}
           className="botanic-flow"
@@ -2522,49 +3013,10 @@ function CanvasWorkspace() {
             </Panel>
           ) : null}
           <CanvasDropBridge onReady={setScreenToFlowPosition} />
-          {selectedReadyResultData && selectedResult && !resultComposerDraft ? (
-            <NodeToolbar
-              nodeId={selectedResult.id}
-              isVisible
-              position={Position.Bottom}
-              offset={12}
-              className="result-branch-toolbar"
-            >
-              <div className="result-branch-actions nodrag nowheel" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
-                <button type="button" className="result-branch-actions__continue" onClick={() => openResultComposer(selectedResult.id)}>
-                  基于此图继续生成 <span aria-hidden="true">↗</span>
-                </button>
-                <button
-                  type="button"
-                  className="result-branch-actions__restart"
-                  onClick={() => rebuildHeroFromResult(selectedResult.id)}
-                  title="恢复原始素材、提示词与参数，不使用当前成图"
-                >复用原始参考重做首图</button>
-              </div>
-            </NodeToolbar>
-          ) : null}
           <Panel position="top-left" className="task-flow-focus-panel"><TaskFlowFocus taskKey={latestTaskKey} nodes={latestTaskNodes} /></Panel>
 
           {selectedCanvasNodes.length > 1 ? <MultiSelectionToolbar count={selectedCanvasNodes.length} onClear={() => { selectNode(null); setComposerOpen(false) }} /> : null}
           {isConnecting ? <ConnectionGuide /> : null}
-
-          <Panel position="top-left" className="project-title-panel">
-            <button className="project-title" onClick={() => setProjectMenuOpen((open) => !open)} aria-expanded={projectMenuOpen}>
-              <strong>{document.name}</strong>
-              <FigmaIcon src={chevronIcon} />
-            </button>
-            {projectMenuOpen ? (
-              <div className="project-menu">
-                <span>当前分支</span>
-                <button onClick={() => { setProjectMenuOpen(false); setHistoryOpen(true) }}>
-                  {activeHistory?.name ?? '首图主版本'}
-                </button>
-                <button onClick={() => { setProjectMenuOpen(false); setTemplatesOpen(true) }}>
-                  从当前画布沉淀视觉目标
-                </button>
-              </div>
-            ) : null}
-          </Panel>
 
           <Panel position="top-left" className="dock-panel">
             <nav className="dock" aria-label="画布工具">
@@ -2572,8 +3024,10 @@ function CanvasWorkspace() {
               <button className={assetsOpen ? 'dock__button is-active' : 'dock__button'} onClick={() => { closeWorkbenchPanels(); setAssetsOpen(true) }} aria-label="打开素材库"><FigmaIcon src={folderIcon} /></button>
               <button className={templatesOpen ? 'dock__button is-active' : 'dock__button'} onClick={() => { closeWorkbenchPanels(); setTemplatesOpen(true) }} aria-label="视觉目标与模板"><FigmaIcon src={templatesIcon} /></button>
               <button className={historyOpen ? 'dock__button is-active' : 'dock__button'} onClick={() => { closeWorkbenchPanels(); setHistoryOpen(true) }} aria-label="画布历史"><FigmaIcon src={historyIcon} /></button>
-              <button className={deliveryOpen ? 'dock__button dock__button--delivery is-active' : 'dock__button dock__button--delivery'} onClick={() => { closeWorkbenchPanels(); setDeliveryOpen(true) }} aria-label="投放交付">↗</button>
-              <button className="dock__account" aria-label="账户">L</button>
+              <button className={deliveryOpen ? 'dock__button dock__button--delivery is-active' : 'dock__button dock__button--delivery'} onClick={() => { closeWorkbenchPanels(); setDeliveryOpen(true) }} aria-label="投放交付"><ArrowUpRightIcon /></button>
+              <button className="dock__account" aria-label="账户">
+                <img src="/botanique-logo.png" alt="" />
+              </button>
             </nav>
           </Panel>
 
@@ -2587,24 +3041,15 @@ function CanvasWorkspace() {
           <RestoreCanvasViewport
             enabled={hydrated}
             canvasKey={document.id}
-            viewport={readCachedCanvasViewport(document.id) ?? document.viewport}
-            onRestored={() => {
-              // 忽略 React Flow 挂载时补发的默认视角事件，避免写坏已保存的画布位置。
-              window.requestAnimationFrame(() => {
-                window.requestAnimationFrame(() => {
-                  if (viewportDocumentIdRef.current === document.id) {
-                    viewportReadyRef.current = true
-                    setViewportRestoring(false)
-                  }
-                })
-              })
-            }}
+            viewport={restoredViewport}
+            onRestored={completeViewportRestore}
           />
         </ReactFlow>
 
         {composerOpen && selectedGenerate && selectedGenerateData && !resultComposerDraft ? (
           <CanvasComposer
             key={`generate-${selectedGenerate.id}`}
+            projectId={document.id}
             mode="generate"
             nodeLabel={selectedGenerateData.label}
             prompt={selectedGenerateData.prompt}
@@ -2613,7 +3058,6 @@ function CanvasWorkspace() {
             settings={selectedGenerateData.settings}
             models={availableModels}
             references={composerReferences}
-            textCount={selectedGenerateTextCount}
             status={generationStatus}
             error={generationError ?? undefined}
             canGenerate={Boolean(composerPrimaryReferenceName)}
@@ -2633,25 +3077,33 @@ function CanvasWorkspace() {
               clearGenerationError()
             }}
             onOpenReferences={() => {
-              setComposerOpen(false)
-              setNodeReferencesOpen(true)
+              setNodeReferencesOpen(false)
+              setAssetLibraryTargetGenerateId(selectedGenerate.id)
+              setAssetsOpen(true)
             }}
             onOpenAssets={() => {
-              setComposerOpen(false)
+              setAssetLibraryTargetGenerateId(selectedGenerate.id)
               setAssetsOpen(true)
             }}
             onGenerate={() => {
               void runGraphGeneration(selectedGenerate.id).then((started) => {
-                if (started) setComposerOpen(false)
+                if (started) {
+                  setComposerOpen(false)
+                  setAssetLibraryTargetGenerateId(null)
+                }
               })
             }}
-            onClose={() => setComposerOpen(false)}
+            onClose={() => {
+              setComposerOpen(false)
+              setAssetLibraryTargetGenerateId(null)
+            }}
           />
         ) : null}
 
         {resultComposerDraft && resultComposerTarget ? (
           <CanvasComposer
             key={`result-${resultComposerTarget.nodeId}`}
+            projectId={document.id}
             mode="result"
             nodeLabel={resultComposerTarget.label}
             prompt={resultComposerDraft.prompt}
@@ -2667,7 +3119,6 @@ function CanvasWorkspace() {
               source: 'generated',
               primary: true,
             }]}
-            textCount={0}
             status={generationStatus}
             error={generationError ?? undefined}
             canGenerate
@@ -2686,6 +3137,10 @@ function CanvasWorkspace() {
               setResultComposerDraft((current) => current ? { ...current, settings } : current)
               clearGenerationError()
             }}
+            refinementMode={resultComposerDraft.refinementMode}
+            onRefinementModeChange={(refinementMode) => {
+              setResultComposerDraft((current) => current ? { ...current, refinementMode } : current)
+            }}
             onGenerate={() => {
               const draft = resultComposerDraft
               if (resultComposerSubmissionRef.current || !draft || !draft.prompt.trim()) return
@@ -2694,6 +3149,7 @@ function CanvasWorkspace() {
                 prompt: draft.prompt.trim(),
                 batchCount: draft.batchCount,
                 settings: draft.settings,
+                refinementMode: draft.refinementMode,
               })
               if (!branchId) {
                 resultComposerSubmissionRef.current = false
@@ -2742,17 +3198,24 @@ function CanvasWorkspace() {
         {canvasUploadMessage ? <div className="canvas-upload-message" role="status">{canvasUploadMessage}</div> : null}
         {nodePalette ? (
           <div className="node-palette" style={{ left: nodePalette.screen.x, top: nodePalette.screen.y }} role="dialog" aria-label="添加画布节点" onPointerDown={(event) => event.stopPropagation()}>
-            <div className="node-palette__title"><span>添加节点</span><button onClick={() => setNodePalette(null)} aria-label="关闭添加节点">×</button></div>
+            <div className="node-palette__title"><span>{nodePalette.parentResultId ? '基于此图添加' : '添加节点'}</span><button onClick={() => setNodePalette(null)} aria-label="关闭添加节点"><CloseIcon /></button></div>
             <button onClick={() => { addTextNode(nodePalette.flow); setNodePalette(null) }}>
-              <b>T</b><span><strong>文本</strong><small>视觉描述、卖点与构图要求</small></span>
+              <b>T</b><span><strong>描述</strong><small>补充画面、卖点或构图</small></span>
             </button>
-            <button onClick={() => { addGenerateNode(nodePalette.flow); showComposer(); setNodePalette(null) }}>
-              <b>✦</b><span><strong>生成</strong><small>连接素材与文本后生成首图</small></span>
+            <button onClick={() => {
+              const branchId = nodePalette.parentResultId
+                ? createGenerateBranchFromResult(nodePalette.parentResultId)
+                : null
+              if (!nodePalette.parentResultId) addGenerateNode(nodePalette.flow)
+              if (!nodePalette.parentResultId || branchId) showComposer()
+              setNodePalette(null)
+            }}>
+              <b><SparkleIcon /></b><span><strong>{nodePalette.parentResultId ? '继续生成' : '生成'}</strong><small>{nodePalette.parentResultId ? '以当前图片为参考' : '连接素材与描述后生成'}</small></span>
             </button>
             <button onClick={() => { setNodePalette(null); setAssetsOpen(true) }}>
-              <b>▧</b><span><strong>素材库</strong><small>选择已有商品、场景或调性图</small></span>
+              <b><FolderOutlineIcon /></b><span><strong>素材</strong><small>添加商品、场景或调性图</small></span>
             </button>
-            <div className="node-palette__upload"><span>添加资源</span><button onClick={() => nodeFileInputRef.current?.click()}>↑ 上传图片</button></div>
+            <div className="node-palette__upload"><span>本地图片</span><button onClick={() => nodeFileInputRef.current?.click()}><UploadIcon />上传图片</button></div>
           </div>
         ) : null}
         <input
@@ -2773,20 +3236,30 @@ function CanvasWorkspace() {
         <CanvasPanelPresence open={assetsOpen} side="left">
           <AssetLibrary
             assets={assetLibraryAssets}
-            onAdd={addAssetToCanvas}
+            onAdd={addAssetFromLibrary}
             onUpload={addUploadedAssets}
+            onMoveToRole={moveAssetToRole}
             onDelete={setAssetToDelete}
-            onClose={() => setAssetsOpen(false)}
+            onClose={() => {
+              setAssetsOpen(false)
+              setAssetLibraryTargetGenerateId(null)
+            }}
           />
         </CanvasPanelPresence>
         <CanvasPanelPresence open={templatesOpen} side="right">
           <TemplatePanel
             templates={document.templates}
+            sharedTemplates={sharedTemplates}
             currentName={document.name}
             canSave={document.nodes.length > 0}
             onSave={saveCurrentAsTemplate}
+            onSaveShared={saveCurrentAsSharedTemplate}
             onUse={(id) => {
               createCanvasFromTemplate(id)
+              setTemplatesOpen(false)
+            }}
+            onUseShared={(id) => {
+              createCanvasFromSharedTemplate(id)
               setTemplatesOpen(false)
             }}
             onClose={() => setTemplatesOpen(false)}
@@ -2804,6 +3277,8 @@ function CanvasWorkspace() {
               }
               setImagePreview({ image: item.image, name: item.name })
             }}
+            onSaveToLibrary={(item) => saveGeneratedImageToLibrary({ image: item.image, name: item.name })}
+            isSaved={(item) => document.assets.some((asset) => asset.source === 'generated' && asset.image === item.image)}
             onClose={() => setHistoryOpen(false)}
           />
         </CanvasPanelPresence>
@@ -2868,7 +3343,7 @@ function CanvasWorkspace() {
           <div className="image-preview-backdrop" role="presentation" onMouseDown={() => setImagePreview(null)}>
             <section className="image-preview-dialog" role="dialog" aria-modal="true" aria-label={`${imagePreview.name}预览`} onMouseDown={(event) => event.stopPropagation()}>
               <button className="image-preview-dialog__download" type="button" aria-label="下载原图" title="下载原图" onClick={() => void downloadImage(imagePreview.image, imagePreview.name)}><DownloadIcon /></button>
-              <button className="image-preview-dialog__close" type="button" onClick={() => setImagePreview(null)} aria-label="关闭图片预览">×</button>
+              <button className="image-preview-dialog__close" type="button" onClick={() => setImagePreview(null)} aria-label="关闭图片预览"><CloseIcon /></button>
               <img src={imagePreview.image} alt={imagePreview.name} />
             </section>
           </div>
@@ -2887,6 +3362,7 @@ type AssetLibraryProps = {
   assets: AssetRecord[]
   onAdd: (id: string) => void
   onUpload: (assets: UploadedAssetInput[]) => void
+  onMoveToRole: (id: string, role: AssetRole) => void
   onDelete: (asset: AssetRecord) => void
   onClose: () => void
 }
@@ -2979,7 +3455,7 @@ async function downloadImage(image: string, name: string) {
   }
 }
 
-function AssetLibrary({ assets, onAdd, onUpload, onDelete, onClose }: AssetLibraryProps) {
+function AssetLibrary({ assets, onAdd, onUpload, onMoveToRole, onDelete, onClose }: AssetLibraryProps) {
   const [role, setRole] = useState<'全部' | AssetRole>('全部')
   const [source, setSource] = useState<'全部' | AssetSource>('全部')
   const [query, setQuery] = useState('')
@@ -3026,13 +3502,14 @@ function AssetLibrary({ assets, onAdd, onUpload, onDelete, onClose }: AssetLibra
     setQuery('')
     setUploadMessage('已存入本地素材库')
   }
-  const visibleItems = assets.filter((item) => {
+  const deferredQuery = useDeferredValue(query)
+  const visibleItems = useMemo(() => assets.filter((item) => {
     const matchesRole = role === '全部' || item.role === role
     const matchesSource = source === '全部' || item.source === source
-    const keyword = query.trim().toLowerCase()
+    const keyword = deferredQuery.trim().toLowerCase()
     const matchesQuery = !keyword || [item.name, item.role, item.source, ...item.tags].join(' ').toLowerCase().includes(keyword)
     return matchesRole && matchesSource && matchesQuery
-  })
+  }), [assets, deferredQuery, role, source])
 
   return (
     <aside className={pendingUploads.length ? 'asset-library has-pending-uploads' : 'asset-library'} aria-label="素材库">
@@ -3041,7 +3518,7 @@ function AssetLibrary({ assets, onAdd, onUpload, onDelete, onClose }: AssetLibra
           <h2>素材库</h2>
         </div>
         <div className="asset-library__header-actions">
-          <button className="close-panel" onClick={onClose} aria-label="关闭素材库">×</button>
+          <button className="close-panel" onClick={onClose} aria-label="关闭素材库"><CloseIcon /></button>
         </div>
       </div>
       <input
@@ -3071,8 +3548,13 @@ function AssetLibrary({ assets, onAdd, onUpload, onDelete, onClose }: AssetLibra
         }}
       >
         <span>拖入图片，或</span>
-        <button onClick={() => fileInputRef.current?.click()}>选择文件</button>
-        <small>PNG / JPEG / WebP，单张不超过 8MB，单次最多 {maxUploadAssets} 张</small>
+        <button
+          className="asset-dropzone__choose"
+          type="button"
+          data-tooltip={`PNG / JPEG / WebP，单张不超过 8MB，单次最多 ${maxUploadAssets} 张`}
+          aria-label={`选择文件。PNG / JPEG / WebP，单张不超过 8MB，单次最多 ${maxUploadAssets} 张`}
+          onClick={() => fileInputRef.current?.click()}
+        >选择文件</button>
       </div>
       {uploadMessage ? <p className="upload-message">{uploadMessage}</p> : null}
       {pendingUploads.length ? (
@@ -3094,7 +3576,7 @@ function AssetLibrary({ assets, onAdd, onUpload, onDelete, onClose }: AssetLibra
                     <input value={item.tagsText} onChange={(event) => updatePending(item.id, { tagsText: event.target.value })} placeholder="标签，用逗号分隔" aria-label={`${item.name} 的标签`} />
                   </div>
                 </div>
-                <button className="upload-staging__remove" onClick={() => setPendingUploads((items) => items.filter((pending) => pending.id !== item.id))} aria-label={`移除待上传素材 ${item.name}`}>×</button>
+                <button className="upload-staging__remove" onClick={() => setPendingUploads((items) => items.filter((pending) => pending.id !== item.id))} aria-label={`移除待上传素材 ${item.name}`}><DeleteIcon /></button>
               </article>
             ))}
           </div>
@@ -3114,7 +3596,6 @@ function AssetLibrary({ assets, onAdd, onUpload, onDelete, onClose }: AssetLibra
         </div>
       </div>
       <div className="asset-filter-group">
-        <span className="asset-filter-group__label">来源</span>
         <div className="asset-source-tabs" role="group" aria-label="素材来源">
           {(['全部', 'brand', 'upload', 'generated'] as const).map((item) => (
             <button type="button" key={item} className={source === item ? 'is-active' : ''} aria-pressed={source === item} onClick={() => setSource(item)}>
@@ -3123,7 +3604,7 @@ function AssetLibrary({ assets, onAdd, onUpload, onDelete, onClose }: AssetLibra
           ))}
         </div>
       </div>
-      <p className="asset-library__count">{role === '全部' && source === '全部' ? '全部素材' : `${role === '全部' ? '' : `${role} · `}${source === '全部' ? '' : source === 'brand' ? '共享品牌' : source === 'upload' ? '本地上传' : '生成入库'}`} · {visibleItems.length} 个素材</p>
+      <p className="asset-library__count">{visibleItems.length} 项</p>
       <div className="asset-grid">
         {visibleItems.length ? visibleItems.map((item) => (
           <article
@@ -3132,12 +3613,12 @@ function AssetLibrary({ assets, onAdd, onUpload, onDelete, onClose }: AssetLibra
             draggable
             title="可直接拖拽到画布"
             onDragStart={(event) => {
-              event.dataTransfer.effectAllowed = 'move'
-              event.dataTransfer.setData('application/x-botanic-asset-id', item.id)
               event.dataTransfer.setData('text/plain', item.id)
+              event.dataTransfer.setData('application/x-botanic-asset-id', item.id)
+              event.dataTransfer.effectAllowed = 'copy'
             }}
           >
-            <img src={item.image} alt={item.name} />
+            <img src={item.image} alt={item.name} loading="lazy" decoding="async" />
             {source === '全部' ? <span className={`asset-card__source asset-card__source--${item.source}`}>{item.source === 'brand' ? '共享品牌' : item.source === 'upload' ? '本地上传' : '生成入库'}</span> : null}
             <div className="asset-card__copy">
               <strong>{item.name}</strong>
@@ -3156,9 +3637,23 @@ function AssetLibrary({ assets, onAdd, onUpload, onDelete, onClose }: AssetLibra
                     event.stopPropagation()
                     setAssetMenuId((activeId) => activeId === item.id ? null : item.id)
                   }}
-                >⋯</button>
+                ><MoreIcon /></button>
                 {assetMenuId === item.id ? (
                   <div className="asset-card__menu" role="menu" aria-label={`${item.name} 的更多操作`}>
+                    <label className="asset-card__group-select">
+                      <span>移动到分组</span>
+                      <select
+                        value={item.role}
+                        aria-label={`移动 ${item.name} 到分组`}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onChange={(event) => {
+                          onMoveToRole(item.id, event.target.value as AssetRole)
+                          setAssetMenuId(null)
+                        }}
+                      >
+                        {uploadRoles.map((itemRole) => <option value={itemRole} key={itemRole}>{itemRole}</option>)}
+                      </select>
+                    </label>
                     <button
                       type="button"
                       role="menuitem"
@@ -3180,35 +3675,69 @@ function AssetLibrary({ assets, onAdd, onUpload, onDelete, onClose }: AssetLibra
 
 function TemplatePanel({
   templates,
+  sharedTemplates,
   currentName,
   canSave,
   onSave,
+  onSaveShared,
   onUse,
+  onUseShared,
   onClose,
 }: {
   templates: CanvasTemplate[]
+  sharedTemplates: CanvasTemplate[]
   currentName: string
   canSave: boolean
   onSave: (name: string) => void
+  onSaveShared: (name: string) => Promise<boolean>
   onUse: (id: string) => void
+  onUseShared: (id: string) => void
   onClose: () => void
 }) {
   const [name, setName] = useState(`${currentName} · 视觉目标`)
+  const [sharing, setSharing] = useState(false)
+  const shareTemplate = async () => {
+    if (!canSave || sharing) return
+    setSharing(true)
+    try {
+      await onSaveShared(name)
+    } finally {
+      setSharing(false)
+    }
+  }
   return (
     <aside className="workbench-panel template-panel" aria-label="工作流模板">
       <PanelHeader eyebrow="WORKFLOW TEMPLATE" title="工作流模板" onClose={onClose} />
       <form className="template-save" onSubmit={(event) => { event.preventDefault(); if (canSave) onSave(name) }}>
-        <label htmlFor="template-name">将当前节点结构保存为模板</label>
+        <label htmlFor="template-name">保存当前节点结构</label>
         <div>
           <input id="template-name" value={name} onChange={(event) => setName(event.target.value)} disabled={!canSave} />
-          <button type="submit" disabled={!canSave}>保存</button>
+          <button type="submit" disabled={!canSave}>项目内</button>
+          <button type="button" className="template-save__share" disabled={!canSave || sharing} onClick={() => void shareTemplate()}>{sharing ? '发布中' : '共享'}</button>
         </div>
       </form>
-      <p className="panel-note">{canSave ? '仅保留素材、文本、生成节点和参数；不会复制已执行任务、候选或旧输出。' : '添加素材、描述或生成节点后，可保存为模板。'}</p>
-      <div className="template-list">
+      <p className="panel-note">{canSave ? '共享模板仅保留品牌素材、文本、节点与参数；项目私有上传和生成图不会带出项目。' : '添加素材、描述或生成节点后，可保存为模板。'}</p>
+      {sharedTemplates.length ? <section className="template-section" aria-label="共享工作流模板">
+        <h3>共享工作流</h3>
+        <div className="template-list">
+          {sharedTemplates.map((template) => (
+            <article className="template-card" key={template.id}>
+              {template.image ? <img src={template.image} alt="" /> : <div className="template-card__placeholder" aria-hidden="true">工作流</div>}
+              <div>
+                <strong>{template.name}</strong>
+                <span>共享工作流</span>
+                <button onClick={() => onUseShared(template.id)}>使用模板</button>
+              </div>
+            </article>
+          ))}
+        </div>
+      </section> : null}
+      <section className="template-section" aria-label="当前项目模板">
+        <h3>本项目模板</h3>
+        <div className="template-list">
         {templates.map((template) => (
           <article className="template-card" key={template.id}>
-            <img src={template.image} alt={template.name} />
+            {template.image ? <img src={template.image} alt="" /> : <div className="template-card__placeholder" aria-hidden="true">工作流</div>}
             <div>
               <strong>{template.name}</strong>
               <span>{template.sourceHistoryId ? '源自画布历史' : '当前画布模板'}</span>
@@ -3216,7 +3745,9 @@ function TemplatePanel({
             </div>
           </article>
         ))}
-      </div>
+        {!templates.length ? <p className="panel-note">暂无项目内模板</p> : null}
+        </div>
+      </section>
     </aside>
   )
 }
@@ -3224,10 +3755,14 @@ function TemplatePanel({
 function HistoryPanel({
   results,
   onOpen,
+  onSaveToLibrary,
+  isSaved,
   onClose,
 }: {
   results: GeneratedHistoryItem[]
   onOpen: (item: GeneratedHistoryItem) => void
+  onSaveToLibrary: (item: GeneratedHistoryItem) => void
+  isSaved: (item: GeneratedHistoryItem) => boolean
   onClose: () => void
 }) {
   return (
@@ -3245,6 +3780,14 @@ function HistoryPanel({
             title="下载原图"
             onClick={() => void downloadImage(item.image, item.name)}
           ><DownloadIcon /></button>
+          <button
+            type="button"
+            className="history-gallery__save"
+            disabled={isSaved(item)}
+            aria-label={isSaved(item) ? `${item.name} 已入库` : `将 ${item.name} 入库`}
+            title={isSaved(item) ? '已入库' : '存入素材库'}
+            onClick={() => onSaveToLibrary(item)}
+          >{isSaved(item) ? '已入库' : '入库'}</button>
         </article>)}
       </div> : <p className="panel-note">暂无生成图片</p>}
     </aside>
@@ -3355,8 +3898,8 @@ function ReferenceRecipePanel({
                 ) : <span className="reference-role">辅助参考</span>}
                 {reference.referenceEnabled && !reference.primary && !readOnly ? (
                   <div className="reference-order-actions" aria-label={`调整 ${reference.name} 的参考顺序`}>
-                    <button disabled={disabled} onClick={() => onMoveReference(reference.nodeId, 'earlier')} aria-label={`提升 ${reference.name} 的参考优先级`}>↑</button>
-                    <button disabled={disabled} onClick={() => onMoveReference(reference.nodeId, 'later')} aria-label={`降低 ${reference.name} 的参考优先级`}>↓</button>
+                    <button disabled={disabled} onClick={() => onMoveReference(reference.nodeId, 'earlier')} aria-label={`提升 ${reference.name} 的参考优先级`}><ArrowUpIcon /></button>
+                    <button disabled={disabled} onClick={() => onMoveReference(reference.nodeId, 'later')} aria-label={`降低 ${reference.name} 的参考优先级`}><ArrowDownIcon /></button>
                   </div>
                 ) : null}
               </div>
@@ -3679,7 +4222,7 @@ function NodeInspector({
       <section className="node-inspector__section">
         {data.image ? <img className="node-inspector__result-image" src={data.image} alt={data.label ?? '结果版本'} /> : null}
         <div className="node-inspector__section-title"><span>状态</span><strong>{resultStatus}</strong></div>
-        <p>{data.label ?? (data.generationKind === 'refinement' ? '定向精修结果' : '首图生成结果')}</p>
+        <p>{data.label ?? (data.generationKind === 'refinement' ? '定向精修结果' : '图像生成结果')}</p>
         {data.generationRecipe ? <div className="node-inspector__metadata"><span>{recipeSummary(data.generationRecipe)}</span></div> : null}
         {data.error ? <p className="node-inspector__error">{data.error}</p> : null}
         <div className="node-inspector__actions">
@@ -3723,9 +4266,10 @@ function GenerationPanel({
   const sourceAssetNames = candidates[0]?.sourceAssetNames ?? []
   const recipe = candidates[0]?.recipe
   const primaryReference = primaryReferenceFromRecipe(recipe)
+  const isPartial = status === 'idle' && pendingCount > candidates.length
   return (
     <aside className="workbench-panel generation-panel" aria-label="真实生成候选">
-      <PanelHeader eyebrow={isRefinement ? 'REAL REFINEMENT' : 'REAL GENERATION'} title={isInFlight ? statusMessage : status === 'error' ? '生成需要处理' : `${isRefinement ? '精修' : '首图'}候选 · ${candidates.length}`} onClose={onClose} />
+      <PanelHeader eyebrow={isRefinement ? 'REAL REFINEMENT' : 'REAL GENERATION'} title={isInFlight ? statusMessage : status === 'error' ? '生成需要处理' : `${isRefinement ? '精修' : '首图'}候选 · ${isPartial ? `${candidates.length}/${pendingCount}` : candidates.length}`} onClose={onClose} />
       <p className="panel-note">{isRefinement ? '候选会继承父版本配方；选择后写入同一条“素材/文本 → 生成 → 结果”图谱，并可在历史中一键回退。' : sourceAssetNames.length ? `真实任务以已选参考「${sourceAssetNames.join('、')}」为依据，并固定主商品。` : '选择一张首图会写入结果节点、生成版本分支，并进入素材库的“生成入库”。'}</p>
       {recipe ? <div className="candidate-recipe" aria-label="候选生成配方"><strong>{primaryReference ? `主商品 · ${primaryReference.name}` : '继承父版本'}</strong><span>{recipe.references.length} 个参考 · {recipe.settings.aspectRatio} / {recipe.settings.resolution}</span></div> : null}
       {isInFlight ? (
@@ -3739,6 +4283,12 @@ function GenerationPanel({
         <div className="generation-error" role="alert">
           <span>{error ?? '生成失败，请重试。'}</span>
           <button onClick={onRetry}>重试</button>
+        </div>
+      ) : null}
+      {isPartial ? (
+        <div className="generation-partial" role="status">
+          <span>已有 {candidates.length} 张可用，缺少 {pendingCount - candidates.length} 张。</span>
+          <button onClick={onRetry}>补生成 {pendingCount - candidates.length} 张</button>
         </div>
       ) : null}
       {parent ? (
@@ -3943,7 +4493,7 @@ function PanelHeader({ eyebrow, title, onClose }: { eyebrow?: string; title: str
         {eyebrow ? <span className="panel-eyebrow">{eyebrow}</span> : null}
         <h2>{title}</h2>
       </div>
-      <button className="close-panel" onClick={onClose} aria-label={`关闭${title}`}>×</button>
+      <button className="close-panel" onClick={onClose} aria-label={`关闭${title}`}><CloseIcon /></button>
     </div>
   )
 }
@@ -4138,7 +4688,7 @@ function NodeComposer({ prompt, batchCount, maximumBatchCount, settings, models,
             </span>
           ))}
           <button className="node-composer__reference-button" onClick={onOpenReferences} aria-label={isNodeBound ? '查看当前节点已连参考' : '配置本次生成参考'}>{isNodeBound ? '已连参考' : '本次参考'} · {referenceCount}</button>
-          <button onClick={onOpenAssets} aria-label="添加参考素材">＋</button>
+          <button onClick={onOpenAssets} aria-label="添加参考素材"><PlusSquareIcon /></button>
         </div>
       )}
       <textarea value={prompt} onChange={(event) => onPromptChange(event.target.value)} aria-invalid={status === 'error'} aria-label={target ? `${isResultAnchor ? '基于' : '精修'} ${target.label} 的描述` : '图像生成描述'} placeholder={target ? '描述这张图要如何调整' : '描述商品、场景、构图与留白要求'} />
@@ -4202,7 +4752,7 @@ function AgentPanel({ message, onClose }: { message: string; onClose: () => void
         <div className="agent-panel__composer">
           <p>输入 / 调整姿势、光影或构图；@ 可引用节点、素材与版本。</p>
           <div>
-            <button>＋ 手动输入</button>
+            <button><PlusSquareIcon />手动输入</button>
             <button>模型 A <FigmaIcon src={chevronIcon} /></button>
             <span />
             <button className="agent-panel__send" aria-label="发送"><FigmaIcon src={sendIcon} /></button>
@@ -4223,9 +4773,19 @@ function App() {
   useEffect(() => {
     if (!serverPersistenceEnabled) return
     let active = true
+    let settled = false
+    // Supabase 本地会话或 Cookie 同步异常时，不能让整个应用永久停在“正在进入”。
+    const restoreTimeout = window.setTimeout(() => {
+      if (!active || settled) return
+      settled = true
+      setMessage('登录恢复超时，请重新登录。')
+      setState('sign-in')
+    }, 32_000)
     void readProductSession()
       .then((session) => {
-        if (!active) return
+        if (!active || settled) return
+        settled = true
+        window.clearTimeout(restoreTimeout)
         if (session) {
           setUser(session)
           setState('ready')
@@ -4234,11 +4794,16 @@ function App() {
         }
       })
       .catch((error) => {
-        if (!active) return
+        if (!active || settled) return
+        settled = true
+        window.clearTimeout(restoreTimeout)
         setMessage(error instanceof Error ? error.message : '无法连接工作区服务。')
         setState('error')
       })
-    return () => { active = false }
+    return () => {
+      active = false
+      window.clearTimeout(restoreTimeout)
+    }
   }, [])
 
   const signIn = async (event: FormEvent<HTMLFormElement>) => {
@@ -4265,11 +4830,11 @@ function App() {
   return (
     <main className="product-access" aria-live="polite">
       <section>
-        <span>BOTANIC WORKSPACE</span>
-        <h1>{state === 'checking' ? '正在验证工作区访问' : '进入创意工作台'}</h1>
-        {state === 'checking' ? <p>正在连接受保护的项目与素材服务…</p> : (
+        <span>BOTANIC</span>
+        <h1>{state === 'checking' ? '正在进入…' : '登录工作台'}</h1>
+        {state === 'checking' ? <p>正在同步你的工作区。</p> : (
           <form onSubmit={signIn}>
-            <p>{state === 'error' ? '服务暂时不可用。' : supabaseAuthEnabled ? '请输入受邀请的工作区邮箱与密码。' : '请输入管理员为你创建的工作区访问令牌。'}</p>
+            <p>{supabaseAuthEnabled ? '使用工作区账号登录。' : '输入管理员提供的访问令牌。'}</p>
             <label>
               <span>{supabaseAuthEnabled ? '邮箱' : '访问令牌'}</span>
               <input autoComplete={supabaseAuthEnabled ? 'email' : 'current-password'} type={supabaseAuthEnabled ? 'email' : 'password'} value={accessToken} onChange={(event) => setAccessToken(event.target.value)} placeholder={supabaseAuthEnabled ? 'name@company.com' : '粘贴访问令牌'} />

@@ -2,6 +2,8 @@
 
 Botanic 是以生成节点为中心的创意工作台：画布连线决定参考输入，生成配方、候选图与分支均归属当前节点。
 
+开发前请先阅读 [模块接口与依赖方向](docs/ARCHITECTURE.md) 和 [版本与 PR 流程](docs/DEVELOPMENT_WORKFLOW.md)。`npm test` 会同时检查核心行为与依赖方向，避免 UI 改动越过生图、队列和存储 seam。
+
 ## 生产架构
 
 - **Supabase Auth**：邮箱/密码登录与成员邀请；浏览器仅持有 publishable key 与用户 JWT。
@@ -32,9 +34,14 @@ Supabase 的 Edge Functions 适合短请求编排；图像生成属于长耗时�
    SUPABASE_SECRET_KEY=sb_secret_...
    SUPABASE_BOOTSTRAP_OWNER_EMAIL=owner@company.com
    OPENAI_API_KEY=...
+   FLOCK_API_BASE_URL=https://api.flock.io/v1
+   FLOCK_API_KEY=...
+   FLOCK_TEXT_MODEL=<从 FLock Models / Playground 复制的 DeepSeek V4 Pro ID>
    ```
 
    `SUPABASE_SECRET_KEY`（或旧的 `SUPABASE_SERVICE_ROLE_KEY`）只能用于 API 与 Worker。它会绕过 RLS，绝不能写入 `VITE_*`、前端构建产物或浏览器环境。[官方密钥说明](https://supabase.com/docs/guides/getting-started/api-keys)
+
+   Composer 的提示词润色由 API 服务端调用 Flock；默认地址遵循 [FLock API Endpoint](https://docs.flock.io/flock-products/api-platform/api-endpoint)，模型别名以你的 Flock 控制台为准，密钥不会进入浏览器或 Worker。
 
 4. 首位使用 `SUPABASE_BOOTSTRAP_OWNER_EMAIL` 登录的用户会成为工作区 owner；之后 owner 通过 `POST /api/users` 发起 Supabase 邮件邀请，并分配项目 owner / editor / viewer。
 

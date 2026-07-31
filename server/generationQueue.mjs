@@ -11,11 +11,28 @@ export function createGenerationQueue(redisUrl) {
   const queue = new Queue(queueName, { connection: { url: redisUrl }, defaultJobOptions })
   return {
     async enqueue(jobId) {
+      // 数据库短暂不可用时，Worker 可能先把 BullMQ 任务标记失败而业务任务仍是 queued。
+      // 恢复后需移除该陈旧队列项，才能按原 jobId 重新投递。
+      const existing = await queue.getJob(jobId)
+      if (existing) {
+        const state = await existing.getState()
+        if (state === 'failed' || state === 'completed') await existing.remove()
+        else return
+      }
       await queue.add('generate', { jobId }, { jobId })
     },
     async cancel(jobId) {
       const job = await queue.getJob(jobId)
       if (job) await job.remove().catch(() => undefined)
+    },
+    // 仅用于 Worker 重启后的 stale-running 恢复。
+    async reclaimStaleActive(jobId) {
+      const job = await queue.getJob(jobId)
+      if (!job || await job.getState() !== 'active') return false
+      const removed = await queue.clean(0, 1, 'active')
+      if (!removed.includes(jobId)) return false
+      await queue.add('generate', { jobId }, { jobId })
+      return true
     },
     async close() {
       await queue.close()

@@ -2,7 +2,7 @@ export type WorkspaceProject = {
   id: string
   name: string
   updatedAt: number
-  cover: string
+  cover?: string
   summary: string
   isSeed?: boolean
 }
@@ -93,7 +93,7 @@ export function OperatingDashboard({ onOpenProjects }: { onOpenProjects: () => v
           <span>尽管问，或描述一个经营任务…</span>
           <small>📎 可拖入图片、文档</small>
           <b>经营 Main</b>
-          <i>↗</i>
+          <i><ArrowUpRightIcon /></i>
         </button>
       </section>
     </main>
@@ -102,23 +102,31 @@ export function OperatingDashboard({ onOpenProjects }: { onOpenProjects: () => v
 
 export function ProjectLibrary({
   projects,
+  loading,
+  loadError,
   onBack,
   onOpenProject,
   onCreateProject,
   onRenameProject,
   onDeleteProject,
+  onRetry,
 }: {
   projects: WorkspaceProject[]
+  loading: boolean
+  loadError: string | null
   onBack: () => void
   onOpenProject: (projectId: string) => void
-  onCreateProject: () => void
+  onCreateProject: () => Promise<boolean>
   onRenameProject: (projectId: string, name: string) => Promise<boolean>
   onDeleteProject: (projectId: string) => Promise<void>
+  onRetry: () => void
 }) {
   const [editingProject, setEditingProject] = useState<WorkspaceProject | null>(null)
   const [projectName, setProjectName] = useState('')
   const [deletingProject, setDeletingProject] = useState<WorkspaceProject | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [operationError, setOperationError] = useState('')
 
   useEffect(() => {
     setProjectName(editingProject?.name ?? '')
@@ -127,9 +135,13 @@ export function ProjectLibrary({
   const submitRename = async () => {
     if (!editingProject || !projectName.trim()) return
     setSubmitting(true)
+    setOperationError('')
     try {
       const renamed = await onRenameProject(editingProject.id, projectName)
       if (renamed) setEditingProject(null)
+      else setOperationError('项目名称未保存，请检查网络后重试。')
+    } catch {
+      setOperationError('项目名称未保存，请检查网络后重试。')
     } finally {
       setSubmitting(false)
     }
@@ -137,12 +149,30 @@ export function ProjectLibrary({
 
   const confirmDelete = async () => {
     if (!deletingProject) return
+    const target = deletingProject
     setSubmitting(true)
+    setOperationError('')
+    // 父层会同步乐观移除卡片；这里立即关闭确认框，不让删除请求阻塞项目页。
+    setDeletingProject(null)
     try {
-      await onDeleteProject(deletingProject.id)
-      setDeletingProject(null)
+      await onDeleteProject(target.id)
+    } catch {
+      setOperationError('删除未完成，请稍后重试。')
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  const createProject = async () => {
+    if (creating) return
+    setCreating(true)
+    setOperationError('')
+    try {
+      if (!await onCreateProject()) setOperationError('新建项目失败，请检查网络后重试。')
+    } catch {
+      setOperationError('新建项目失败，请检查网络后重试。')
+    } finally {
+      setCreating(false)
     }
   }
 
@@ -155,10 +185,16 @@ export function ProjectLibrary({
       <section className="project-library-page__content">
         <header>
           <div><span className="workspace-eyebrow"><i />CREATIVE PROJECTS</span><h1>创意项目</h1><p>从不同的商品与创作目标，进入各自独立的画布。</p></div>
-          <strong><b>{projects.length}</b> 个项目</strong>
+          <strong><b>{projects.length}</b> 个项目{loading && projects.length > 0 ? <em role="status">正在更新…</em> : null}</strong>
         </header>
-        <div className="project-library-page__grid">
-          <button type="button" className="project-card project-card--new" onClick={onCreateProject}>
+        {loadError ? <section className="project-library-state project-library-state--error" role="alert">
+          <div><strong>项目列表暂时无法加载</strong><span>{loadError}</span></div>
+          <button type="button" onClick={onRetry} disabled={loading}>重试</button>
+        </section> : null}
+        {loading && projects.length === 0 ? <div className="project-library-page__grid project-library-page__grid--loading" role="status" aria-label="正在加载项目">
+          {[0, 1, 2].map((index) => <div className="project-card project-card--skeleton" key={index} />)}
+        </div> : <div className="project-library-page__grid">
+          <button type="button" className="project-card project-card--new" onClick={() => void createProject()} disabled={creating}>
             <i>＋</i><strong>新建项目</strong><span>从空白画布开始</span>
           </button>
           {projects.map((project) => (
@@ -171,20 +207,24 @@ export function ProjectLibrary({
                 onOpenProject(project.id)
               }}
             >
-              <img src={project.cover} alt="" />
+              {project.cover
+                ? <img src={project.cover} alt="" loading="lazy" decoding="async" />
+                : <div className="project-card__cover-placeholder" aria-hidden="true"><span>尚未生成封面</span></div>}
               <button type="button" className="project-card__open" onClick={() => onOpenProject(project.id)} aria-label={`打开项目 ${project.name}`}>
                 <strong>{project.name}</strong><span>{projectUpdatedLabel(project.updatedAt)}</span><small>{project.summary}</small>
               </button>
-              <button type="button" className="project-card__menu" onClick={() => setEditingProject(project)} aria-label={`重命名 ${project.name}`} title="重命名项目">⋯</button>
-              <button type="button" className="project-card__delete" onClick={() => setDeletingProject(project)} aria-label={`删除 ${project.name}`} title="删除项目">⌫</button>
+              <button type="button" className="project-card__menu" onClick={() => setEditingProject(project)} aria-label={`重命名 ${project.name}`} title="重命名项目"><MoreIcon /></button>
+              <button type="button" className="project-card__delete" onClick={() => setDeletingProject(project)} aria-label={`删除 ${project.name}`} title="删除项目"><DeleteIcon /></button>
             </article>
           ))}
-        </div>
+        </div>}
+        {operationError && !editingProject && !deletingProject ? <p className="project-library-operation-error" role="alert">{operationError}</p> : null}
       </section>
       {editingProject ? <div className="project-dialog-backdrop" role="presentation" onMouseDown={() => !submitting && setEditingProject(null)}>
         <form className="project-dialog" aria-labelledby="rename-project-title" onMouseDown={(event) => event.stopPropagation()} onSubmit={(event) => { event.preventDefault(); void submitRename() }}>
           <span className="workspace-eyebrow">PROJECT SETTINGS</span><h2 id="rename-project-title">重命名项目</h2>
           <input autoFocus value={projectName} maxLength={60} onChange={(event) => setProjectName(event.target.value)} aria-label="项目名称" />
+          {operationError ? <p className="project-dialog__error" role="alert">{operationError}</p> : null}
           <div><button type="button" onClick={() => setEditingProject(null)} disabled={submitting}>取消</button><button type="submit" className="is-primary" disabled={submitting || !projectName.trim()}>保存</button></div>
         </form>
       </div> : null}
@@ -192,6 +232,7 @@ export function ProjectLibrary({
         <section className="project-dialog project-dialog--danger" role="alertdialog" aria-modal="true" aria-labelledby="delete-project-title" onMouseDown={(event) => event.stopPropagation()}>
           <span className="workspace-eyebrow">DELETE PROJECT</span><h2 id="delete-project-title">删除「{deletingProject.name}」？</h2>
           <p>项目画布、生成结果和项目私有素材会被永久删除，无法恢复。</p>
+          {operationError ? <p className="project-dialog__error" role="alert">{operationError}</p> : null}
           <div><button type="button" onClick={() => setDeletingProject(null)} disabled={submitting}>取消</button><button type="button" className="is-danger" onClick={() => void confirmDelete()} disabled={submitting}>确认删除</button></div>
         </section>
       </div> : null}
@@ -199,3 +240,4 @@ export function ProjectLibrary({
   )
 }
 import { useEffect, useState } from 'react'
+import { ArrowUpRightIcon, DeleteIcon, MoreIcon } from './BotanicIcons'

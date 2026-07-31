@@ -2,6 +2,7 @@ import type {
   GenerationJob,
   GenerationKind,
   GenerationRecipe,
+  RefinementMode,
   GenerationSettings,
 } from '../domain/canvas'
 import { productAuthorizationHeader } from './productSession'
@@ -13,7 +14,8 @@ type ImageReferencePayload = {
   role: string
   primary?: boolean
   priority?: number
-  dataUrl: string
+  dataUrl?: string
+  mediaId?: string
 }
 
 export type SubmitGenerationInput = {
@@ -28,6 +30,7 @@ export type SubmitGenerationInput = {
     name: string
     image: string
   }
+  refinementMode?: RefinementMode
 }
 
 type SubmitGenerationPayload = Omit<SubmitGenerationInput, 'recipe' | 'parent'> & {
@@ -37,7 +40,8 @@ type SubmitGenerationPayload = Omit<SubmitGenerationInput, 'recipe' | 'parent'> 
   parent?: {
     nodeId: string
     name: string
-    dataUrl: string
+    dataUrl?: string
+    mediaId?: string
   }
 }
 
@@ -66,14 +70,39 @@ export type GenerationServiceHealth = {
   configured: boolean
   maxBatchCount?: number
   models?: string[]
+  promptRefinement?: {
+    provider: 'flock-api'
+    configured: boolean
+    model?: string
+  }
 }
 
 function readableApiError(payload: ApiErrorPayload | null, fallback: string) {
   return payload?.error?.message || fallback
 }
 
-async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+// 任务提交、轮询与读取旧参考素材共用同一上限，避免画布永久停在“正在整理参考素材”。
+const generationRequestTimeoutMs = 5 * 60_000
+
+function submissionIdempotencyKey() {
+  return globalThis.crypto?.randomUUID?.().replaceAll('-', '') ?? `${Date.now()}${Math.random().toString(36).slice(2)}`
+}
+
+function shouldRetrySubmission(error: unknown) {
+  return error instanceof GenerationApiError && (error.status === 0 || error.status >= 500 || error.code === 'WORKSPACE_STORE_TIMEOUT')
+}
+
+async function requestJson<T>(path: string, init?: RequestInit, timeoutMs = generationRequestTimeoutMs): Promise<T> {
   let response: Response
+  const controller = new AbortController()
+  let timedOut = false
+  const onCallerAbort = () => controller.abort()
+  if (init?.signal?.aborted) controller.abort()
+  else init?.signal?.addEventListener('abort', onCallerAbort, { once: true })
+  const timeoutId = window.setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, timeoutMs)
   try {
     const headers = new Headers(init?.headers)
     headers.set('Accept', 'application/json')
@@ -81,9 +110,16 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
     response = await fetch(path, {
       ...init,
       headers,
+      signal: controller.signal,
     })
   } catch {
-    throw new GenerationApiError('真实生图服务不可用：请先启动 npm run server。', { status: 0 })
+    if (timedOut) {
+      throw new GenerationApiError('任务等待超过 5 分钟，已停止等待。请重试。', { code: 'REQUEST_TIMEOUT', status: 0 })
+    }
+    throw new GenerationApiError('真实生图服务不可用，请稍后重试。', { status: 0 })
+  } finally {
+    window.clearTimeout(timeoutId)
+    init?.signal?.removeEventListener('abort', onCallerAbort)
   }
 
   const payload = await response.json().catch(() => null) as T | ApiErrorPayload | null
@@ -129,11 +165,39 @@ function readBlobAsDataUrl(blob: Blob) {
 async function imageToDataUrl(image: string) {
   if (image.startsWith('data:image/')) return image
 
-  const response = await fetch(image)
-  if (!response.ok) throw new Error('无法读取画布参考素材，请重新加入后再生成。')
-  const blob = await response.blob()
-  if (!blob.type.startsWith('image/')) throw new Error('仅支持图片作为真实生成参考。')
-  return readBlobAsDataUrl(blob)
+  const controller = new AbortController()
+  let timedOut = false
+  const timeoutId = window.setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, generationRequestTimeoutMs)
+  try {
+    const response = await fetch(image, { signal: controller.signal })
+    if (!response.ok) throw new Error('无法读取画布参考素材，请重新加入后再生成。')
+    const blob = await response.blob()
+    if (!blob.type.startsWith('image/')) throw new Error('仅支持图片作为真实生成参考。')
+    return readBlobAsDataUrl(blob)
+  } catch (error) {
+    if (timedOut) throw new Error('参考素材读取超过 5 分钟，请重新加入后重试。')
+    throw error
+  } finally {
+    window.clearTimeout(timeoutId)
+  }
+}
+
+function mediaIdFromImage(image: string) {
+  try {
+    const pathname = new URL(image, window.location.origin).pathname
+    const match = pathname.match(/^\/api\/media\/([^/]+)$/)
+    return match ? decodeURIComponent(match[1]) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function imageInputPayload(image: string) {
+  const mediaId = mediaIdFromImage(image)
+  return mediaId ? { mediaId } : { dataUrl: await imageToDataUrl(image) }
 }
 
 async function buildPayload(input: SubmitGenerationInput): Promise<SubmitGenerationPayload> {
@@ -144,7 +208,7 @@ async function buildPayload(input: SubmitGenerationInput): Promise<SubmitGenerat
     role: reference.role,
     primary: reference.primary,
     priority: reference.priority,
-    dataUrl: await imageToDataUrl(reference.image),
+    ...(await imageInputPayload(reference.image)),
   })))
 
   return {
@@ -161,7 +225,7 @@ async function buildPayload(input: SubmitGenerationInput): Promise<SubmitGenerat
       ? {
           nodeId: input.parent.nodeId,
           name: input.parent.name,
-          dataUrl: await imageToDataUrl(input.parent.image),
+          ...(await imageInputPayload(input.parent.image)),
         }
       : undefined,
   }
@@ -169,15 +233,38 @@ async function buildPayload(input: SubmitGenerationInput): Promise<SubmitGenerat
 
 export async function submitGenerationJob(input: SubmitGenerationInput) {
   const payload = await buildPayload(input)
-  return requestJson<GenerationJob>('/api/generation-jobs', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
+  const idempotencyKey = submissionIdempotencyKey()
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      return await requestJson<GenerationJob>('/api/generation-jobs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
+        body: JSON.stringify(payload),
+      })
+    } catch (error) {
+      if (!shouldRetrySubmission(error) || attempt === 2) throw error
+      await new Promise((resolve) => window.setTimeout(resolve, 500))
+    }
+  }
+  throw new GenerationApiError('真实生图任务提交失败，请重试。', { status: 0 })
 }
 
 export function getGenerationJob(jobId: string) {
-  return requestJson<GenerationJob>(`/api/generation-jobs/${encodeURIComponent(jobId)}`)
+  // 状态轮询不是实际生图请求；数据库暂时抖动时，15 秒即可交还 UI，而不是空转 5 分钟。
+  return requestJson<GenerationJob>(`/api/generation-jobs/${encodeURIComponent(jobId)}`, undefined, 15_000)
+}
+
+export async function listProjectGenerationJobs(projectId: string) {
+  const response = await requestJson<{ jobs: GenerationJob[] }>(`/api/projects/${encodeURIComponent(projectId)}/generation-jobs`, undefined, 15_000)
+  return response.jobs
+}
+
+export async function reconcileProjectGenerationResults(projectId: string) {
+  return requestJson<{ document: import('../domain/canvas').CanvasDocument; revision: number; changed: boolean }>(
+    `/api/projects/${encodeURIComponent(projectId)}/reconcile-generation-results`,
+    { method: 'POST' },
+    30_000,
+  )
 }
 
 export function cancelGenerationJob(jobId: string) {

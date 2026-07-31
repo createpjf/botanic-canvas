@@ -16,6 +16,14 @@ function clone(value) {
   return structuredClone(value)
 }
 
+function projectDocumentSummary(document) {
+  const nodes = Array.isArray(document?.nodes) ? document.nodes : []
+  const images = nodes
+    .filter((node) => node?.type === 'result' && typeof node?.data?.image === 'string')
+    .map((node) => node.data.image)
+  return { nodeCount: nodes.length, resultCount: images.length, coverImage: images.at(-1) }
+}
+
 function initialState() {
   return {
     schemaVersion,
@@ -77,11 +85,13 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
   }
 
   function publicProject(project) {
+    const summary = projectDocumentSummary(project.document)
     return {
       id: project.id,
       name: project.name,
       updatedAt: project.updatedAt,
       revision: project.revision,
+      ...summary,
       role: project.members.find((item) => item.userId === project.lastAccessedBy)?.role,
     }
   }
@@ -110,10 +120,7 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
         .filter((project) => canAccess(project, userId))
         .sort((left, right) => right.updatedAt - left.updatedAt)
         .map((project) => ({
-          id: project.id,
-          name: project.name,
-          updatedAt: project.updatedAt,
-          revision: project.revision,
+          ...publicProject(project),
           role: canAccess(project, userId)?.role,
         }))
     },
@@ -240,6 +247,16 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       return job && job.ownerId === userId ? clone(job) : undefined
     },
 
+    listGenerationJobsForProject(userId, projectId, limit = 60) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project || !canAccess(project, userId)) return undefined
+      return state.generationJobs
+        .filter((job) => job.ownerId === userId && job.projectId === projectId)
+        .sort((left, right) => right.updatedAt - left.updatedAt)
+        .slice(0, Math.max(1, Math.min(limit, 120)))
+        .map(clone)
+    },
+
     // 仅显式本地原型队列使用；生产 Worker 使用 PostgreSQL Adapter 的同名方法。
     readGenerationJobForWorker(jobId) {
       const job = state.generationJobs.find((item) => item.id === jobId)
@@ -259,6 +276,10 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       }
       save()
       return recovered
+    },
+
+    recoverStaleGenerationJobs() {
+      return []
     },
 
     listAuditEvents(userId, projectId, limit = 100) {

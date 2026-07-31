@@ -3,6 +3,8 @@ import type { Edge, Node, Viewport } from '@xyflow/react'
 export type AssetRole = '商品' | '模特' | '场景' | '调性' | '首图'
 export type AssetSource = 'brand' | 'upload' | 'generated'
 export type GenerationKind = 'generation' | 'refinement'
+/** 精修意图必须显式保存，避免“重跑”和“探索变体”在历史中失去语义。 */
+export type RefinementMode = 'faithful' | 'explore'
 export type DeliveryPresetId = 'taobao' | 'xiaohongshu' | 'douyin'
 export type GenerationAspectRatio = '1:1' | '3:4' | '4:5' | '9:16'
 // 模型列表由服务端健康检查下发；画布快照必须保留提交时实际使用的模型 ID。
@@ -60,6 +62,7 @@ export type AssetRecord = {
  * 从而避免不同项目的工作内容、历史和可删除资产相互污染。
  */
 export const globalAssetLibraryId = 'global-brand-assets'
+export const globalWorkflowTemplateLibraryId = 'global-workflow-templates'
 
 export type GlobalAssetLibrary = {
   id: typeof globalAssetLibraryId
@@ -133,6 +136,7 @@ export type GenerateNodeData = {
   jobId?: string
   status?: GenerationTaskStatus | 'uploading'
   generationKind?: GenerationKind
+  refinementMode?: RefinementMode
   error?: string
 }
 
@@ -149,12 +153,15 @@ export type ResultNodeData = {
   submittedAt?: number
   label?: string
   jobId?: string
+  /** 同一批生成的占位结果共用该任务锚点，完成后各自替换为独立输出。 */
+  taskGroupId?: string
   taskNodeId?: string
   error?: string
   candidateId?: string
   versionId?: string
   parentVersionId?: string
   generationKind?: GenerationKind
+  refinementMode?: RefinementMode
   refinementInstruction?: string
   generationSettings?: GenerationSettings
   /** 首次首图任务的不可变配方；精修结果仍用它来“原配方重做”。 */
@@ -182,6 +189,17 @@ export type CanvasTemplate = {
   createdAt: number
   sourceHistoryId?: string
   snapshot: CanvasSnapshot
+}
+
+/**
+ * 工作流模板属于整个工作区。模板只应引用共享品牌素材；项目私有上传和生成图
+ * 会在发布到共享库前被移除，避免跨项目泄露或失效引用。
+ */
+export type GlobalWorkflowTemplateLibrary = {
+  id: typeof globalWorkflowTemplateLibraryId
+  schemaVersion: 1
+  templates: CanvasTemplate[]
+  updatedAt: number
 }
 
 export type CanvasHistoryEntry = {
@@ -213,6 +231,7 @@ export type GenerationCandidate = {
   parentLabel?: string
   sourceAssetNames?: string[]
   refinementInstruction?: string
+  refinementMode?: RefinementMode
   settings: GenerationSettings
   recipe: GenerationRecipe
   rootRecipe?: GenerationRecipe
@@ -233,6 +252,7 @@ export type GenerationJob = {
   id: string
   status: GenerationTaskStatus
   kind: GenerationKind
+  refinementMode?: RefinementMode
   createdAt: number
   updatedAt: number
   batchCount: number
@@ -240,6 +260,9 @@ export type GenerationJob = {
   provider: string
   model: GenerationModelId
   error?: string
+  /** 供应商返回不足时任务仍可部分完成；缺口可单独补生成。 */
+  missingOutputCount?: number
+  partialError?: string
   outputs?: GenerationOutput[]
   /** 用户从画布移除的候选，服务端任务记录保留，但不应在下次恢复时复活。 */
   dismissedOutputIds?: string[]
@@ -264,7 +287,7 @@ export type DeliveryArtifact = {
 }
 
 export type CanvasDocument = {
-  schemaVersion: 18
+  schemaVersion: 20
   id: string
   name: string
   nodes: CanvasNode[]

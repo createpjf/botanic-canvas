@@ -58,6 +58,35 @@ test('项目、成员授权和审计会持久化到服务端数据文件', () =>
   assert.ok(reloaded.listAuditEvents(owner.id, 'project-a').some((event) => event.action === 'project.updated'))
 })
 
+test('项目列表返回真实结果封面与画布摘要', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  assert.ok(owner)
+  store.writeProject(owner.id, {
+    ...document('project-summary', '有封面项目'),
+    nodes: [
+      { id: 'asset-1', type: 'asset', data: {} },
+      { id: 'result-1', type: 'result', data: { image: 'https://example.com/first.png' } },
+      { id: 'result-2', type: 'result', data: { image: 'https://example.com/latest.png' } },
+    ],
+  }, undefined)
+
+  const [summary] = store.listProjects(owner.id)
+  assert.deepEqual({
+    id: summary.id,
+    name: summary.name,
+    nodeCount: summary.nodeCount,
+    resultCount: summary.resultCount,
+    coverImage: summary.coverImage,
+  }, {
+    id: 'project-summary',
+    name: '有封面项目',
+    nodeCount: 3,
+    resultCount: 2,
+    coverImage: 'https://example.com/latest.png',
+  })
+})
+
 test('仅项目所有者可以永久删除项目及其任务', () => {
   const { store } = createStore()
   const owner = store.authenticate('owner-token')
@@ -71,6 +100,27 @@ test('仅项目所有者可以永久删除项目及其任务', () => {
   assert.equal(store.deleteProject(owner.id, 'project-remove'), true)
   assert.equal(store.readProject(owner.id, 'project-remove'), undefined)
   assert.equal(store.readGenerationJob(owner.id, 'remove-job'), undefined)
+})
+
+test('项目任务清单仅返回当前用户在当前项目的真实任务', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  assert.ok(owner)
+  store.writeProject(owner.id, document('project-jobs'), undefined)
+  store.writeProject(owner.id, document('project-other'), undefined)
+  store.putGenerationJob(owner.id, {
+    id: 'job-current', projectId: 'project-jobs', status: 'succeeded', kind: 'generation', batchCount: 1,
+    settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' }, rawInput: { projectId: 'project-jobs' },
+    outputs: [{ id: 'output-current', image: '/api/media/current' }], createdAt: Date.now(),
+  })
+  store.putGenerationJob(owner.id, {
+    id: 'job-other', projectId: 'project-other', status: 'succeeded', kind: 'generation', batchCount: 1,
+    settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' }, rawInput: { projectId: 'project-other' },
+    outputs: [{ id: 'output-other', image: '/api/media/other' }], createdAt: Date.now(),
+  })
+
+  assert.deepEqual(store.listGenerationJobsForProject(owner.id, 'project-jobs')?.map((job) => job.id), ['job-current'])
+  assert.equal(store.listGenerationJobsForProject(owner.id, 'missing-project'), undefined)
 })
 
 test('服务重启保留排队任务，并把执行中的任务标记为可重试失败', () => {

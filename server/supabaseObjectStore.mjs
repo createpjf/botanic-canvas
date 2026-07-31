@@ -26,6 +26,11 @@ export function createSupabaseObjectStore({ url, secretKey, bucket = 'botanic-me
       if (error || !data) throw new Error(error?.message ?? 'Supabase Storage 未返回媒体文件。')
       return { body: Buffer.from(await data.arrayBuffer()), contentType: data.type }
     },
+    async createSignedUrl(storageKey, expiresIn) {
+      const { data, error } = await supabase.storage.from(bucket).createSignedUrl(storageKey, expiresIn)
+      if (error || !data?.signedUrl) throw new Error(error?.message ?? 'Supabase Storage 未返回签名媒体地址。')
+      return data.signedUrl
+    },
     async close() {},
   }
 }
