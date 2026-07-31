@@ -239,6 +239,7 @@ function AssetNode({ data, id, selected }: NodeProps) {
       <ImageNodeTitle nodeId={id} name={asset.name} />
       <button
         className="asset-node__remove nodrag"
+        type="button"
         onPointerDown={(event) => event.stopPropagation()}
         onClick={(event) => {
           event.stopPropagation()
@@ -351,9 +352,11 @@ function GenerateNode({ data, id, selected }: NodeProps) {
     ? availableModels
     : [{ id: generate.settings.model, label: generate.settings.model }, ...availableModels]
   const modelLabel = modelOptions.find((model) => model.id === generate.settings.model)?.label ?? generate.settings.model
+  const mediaKind = modelOptions.find((model) => model.id === generate.settings.model)?.mediaKind
+    ?? (generate.settings.duration === undefined ? 'image' : 'video')
 
   return (
-    <div className={`graph-node generate-node${selected ? ' is-selected' : ''}${hasVisualInput ? '' : ' is-missing-input'}`}>
+    <div className={`graph-node generate-node generate-node--${mediaKind}${selected ? ' is-selected' : ''}${hasVisualInput ? '' : ' is-missing-input'}`}>
       <Handle
         className="flow-handle flow-handle--graph flow-handle--target"
         id="input"
@@ -747,11 +750,23 @@ function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount, maximu
                 </div>
                 <div className="canvas-composer__video-map">
                   {videoInputMode === 'first_last' ? (
-                    <><span><i>1</i>首帧</span><b>→</b><span><i>2</i>尾帧</span></>
+                    <>
+                      <button type="button" disabled={interactionLocked || !onOpenAssets} onClick={onOpenAssets} aria-label="从素材库或本地添加首帧">
+                        <i>{references[0] ? '✓' : '1'}</i><span><strong>首帧</strong><small>{references[0]?.name ?? '点击添加'}</small></span>
+                      </button>
+                      <b>→</b>
+                      <button type="button" disabled={interactionLocked || !onOpenAssets} onClick={onOpenAssets} aria-label="从素材库或本地添加尾帧">
+                        <i>{references[1] ? '✓' : '2'}</i><span><strong>尾帧</strong><small>{references[1]?.name ?? '点击添加'}</small></span>
+                      </button>
+                    </>
                   ) : videoInputMode === 'first_frame' ? (
-                    <span><i>1</i>首帧图片</span>
+                    <button type="button" disabled={interactionLocked || !onOpenAssets} onClick={onOpenAssets} aria-label="从素材库或本地添加首帧图片">
+                      <i>{references[0] ? '✓' : '1'}</i><span><strong>首帧图片</strong><small>{references[0]?.name ?? '点击添加'}</small></span>
+                    </button>
                   ) : (
-                    <span><i>{references.length}</i>{references.length ? `已连接 ${references.length} 个参考` : '连接图片或视频'}</span>
+                    <button type="button" disabled={interactionLocked || !onOpenAssets} onClick={onOpenAssets} aria-label="从素材库或本地添加参考素材">
+                      <i>{references.length || '+'}</i><span><strong>参考素材</strong><small>{references.length ? `已连接 ${references.length} 个` : '点击添加图片或视频'}</small></span>
+                    </button>
                   )}
                 </div>
                 <p className={canGenerate ? 'is-ready' : ''} aria-live="polite">
@@ -936,7 +951,7 @@ function ResultNode({ data, id, selected }: NodeProps) {
   }, [isGenerating, result.submittedAt])
 
   return (
-    <div className={['result-node-shell', isSelected ? 'is-selected' : ''].filter(Boolean).join(' ')}>
+    <div className={['result-node-shell', `result-node-shell--${mediaKind}`, isSelected ? 'is-selected' : ''].filter(Boolean).join(' ')}>
       <Handle
         className="flow-handle flow-handle--target flow-handle--image"
         id="input"
@@ -955,22 +970,22 @@ function ResultNode({ data, id, selected }: NodeProps) {
         aria-label="从结果连线"
         title={mediaKind === 'video' ? '连接到 H3 节点作为参考视频' : hasDisplayableImage ? '将这张生成结果连到下一生成节点' : '任务完成后可将生成结果连到下一节点'}
       />
+      {hasDisplayableImage ? <button
+        className="result-node-shell__remove nodrag nowheel"
+        type="button"
+        aria-label={`删除 ${resultName}`}
+        title="删除这个结果节点"
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => {
+          event.stopPropagation()
+          removeNodeFromCanvas(id)
+        }}
+      ><DeleteIcon /></button> : null}
       <header className="result-node__header">
         <ImageNodeTitle nodeId={id} name={resultName} />
         {settings ? <span className="result-node__metadata">{settings.aspectRatio} · {settings.resolution}{settings.duration ? ` · ${settings.duration}秒` : ''}</span> : null}
       </header>
       <div className={['result-node', ratioClass, isGenerating ? 'result-node--generating' : '', isSelected ? 'is-selected' : ''].filter(Boolean).join(' ')}>
-        {hasDisplayableImage && mediaKind === 'image' ? <button
-          className="result-node__remove nodrag nowheel"
-          type="button"
-          aria-label={`删除 ${resultName}`}
-          title="删除这张生成结果"
-          onPointerDown={(event) => event.stopPropagation()}
-          onClick={(event) => {
-            event.stopPropagation()
-          removeNodeFromCanvas(id)
-        }}
-        ><DeleteIcon /></button> : null}
         {hasDisplayableImage ? <button
           className="result-node__download nodrag nowheel"
           type="button"
