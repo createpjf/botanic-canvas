@@ -2632,8 +2632,8 @@ function CanvasWorkspace() {
     const target = document.nodes.find((node) => node.id === connection.target)
     if (isVideoConnection(connection)) {
       return {
-        stroke: '#4b7c84',
-        strokeWidth: 1.6,
+        stroke: '#3f6f9d',
+        strokeWidth: 1.8,
         ...(source?.type === 'result' && target?.type === 'generate' ? { strokeDasharray: '4 3' } : {}),
       }
     }
