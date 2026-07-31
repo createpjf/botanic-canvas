@@ -215,3 +215,42 @@ test('MiniMax H3 把首尾帧与参考视频转换为官方 content 对象', asy
   ])
   assert.match(submittedPayloads[1].content[1].video_url.url, /^data:video\/mp4;base64,/)
 })
+
+test('MiniMax H3 扩展画面使用 reference_image 并保留 4:3 输出比例', async () => {
+  let submittedPayload
+  await generateMiniMaxVideos({
+    kind: 'generation',
+    prompt: '在不拉伸人物的前提下补全左右环境',
+    batchCount: 1,
+    settings: { model: 'MiniMax-H3', aspectRatio: '4:3', resolution: '2K', duration: 5 },
+    references: [{
+      name: '方形参考图',
+      role: '首图',
+      inputRole: 'reference_image',
+      mediaKind: 'image',
+      mimeType: 'image/png',
+      buffer: Buffer.from('square-image'),
+    }],
+  }, {
+    apiBaseUrl: 'https://api.minimax.io',
+    apiKey: 'test-key',
+    jobId: 'expand-to-4-3',
+    sleep: async () => undefined,
+    fetchImpl: async (url, init = {}) => {
+      if (url.endsWith('/v2/video_generation')) {
+        submittedPayload = JSON.parse(init.body)
+        return new Response(JSON.stringify({ task_id: 'expand-task' }), { status: 200 })
+      }
+      if (url.includes('/v2/query/video_generation/')) {
+        return new Response(JSON.stringify({ task: { status: 'succeeded', content: { url: 'https://cdn.example/expanded.mp4' } } }), { status: 200 })
+      }
+      return new Response(Buffer.from('video'), { status: 200, headers: { 'content-type': 'video/mp4' } })
+    },
+    persistMedia: async () => '/api/media/expanded-video',
+  })
+
+  assert.equal(submittedPayload.ratio, '4:3')
+  assert.deepEqual(submittedPayload.content.slice(1).map((item) => [item.type, item.role]), [
+    ['image_url', 'reference_image'],
+  ])
+})

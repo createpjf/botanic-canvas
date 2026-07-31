@@ -25,6 +25,8 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { defaultGenerationModels } from './domain/canvas'
+import { mediaFileExtension, reducedAspectRatio } from './domain/mediaPresentation'
+import { videoAspectRatioPolicy } from './domain/videoGeneration'
 import type {
   AssetRecord,
   AssetRole,
@@ -354,6 +356,11 @@ function GenerateNode({ data, id, selected }: NodeProps) {
   const modelLabel = modelOptions.find((model) => model.id === generate.settings.model)?.label ?? generate.settings.model
   const mediaKind = modelOptions.find((model) => model.id === generate.settings.model)?.mediaKind
     ?? (generate.settings.duration === undefined ? 'image' : 'video')
+  const inferredVideoInputMode: VideoInputMode = generate.videoInputMode
+    ?? (references.some((reference) => reference.mediaKind === 'video') ? 'reference' : references.length === 2 ? 'first_last' : 'first_frame')
+  const displayedAspectRatio = mediaKind === 'video'
+    ? videoAspectRatioPolicy(inferredVideoInputMode, generate.settings.aspectRatio).controlLabel
+    : generate.settings.aspectRatio
 
   return (
     <div className={`graph-node generate-node generate-node--${mediaKind}${selected ? ' is-selected' : ''}${hasVisualInput ? '' : ' is-missing-input'}`}>
@@ -376,7 +383,7 @@ function GenerateNode({ data, id, selected }: NodeProps) {
       />
       <header className="graph-node__header">
         <strong>{generateLabel}</strong>
-        <small>{references.length} 参考 · {modelLabel} · {generate.settings.aspectRatio} · {generate.settings.resolution}{generate.settings.duration ? ` · ${generate.settings.duration}秒` : ''}</small>
+        <small>{references.length} 参考 · {modelLabel} · {displayedAspectRatio} · {generate.settings.resolution}{generate.settings.duration ? ` · ${generate.settings.duration}秒` : ''}</small>
         <button
           className="graph-node__remove nodrag"
           type="button"
@@ -417,6 +424,7 @@ type ComposerFocusReference = {
 type GeneratedHistoryItem = {
   id: string
   image: string
+  mediaKind: GenerationMediaKind
   name: string
   createdAt: number
   nodeId?: string
@@ -491,11 +499,12 @@ function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount, maximu
   const selectedModel = modelOptions.find((model) => model.id === settings.model)
   const isVideoModel = selectedModel?.mediaKind === 'video'
   const primaryReference = references.find((reference) => reference.primary)
+  const videoRatioPolicy = videoAspectRatioPolicy(videoInputMode, settings.aspectRatio)
   const videoModeCopy = videoInputMode === 'first_frame'
-    ? { title: '首帧', detail: '1 张图片作为起始画面' }
+    ? { title: '保持首帧', detail: '保持起始画面，比例跟随素材' }
     : videoInputMode === 'first_last'
-      ? { title: '首尾帧', detail: '按连线顺序补间两张图片' }
-      : { title: '参考素材', detail: '使用图片或视频参考风格与运动' }
+      ? { title: '首尾帧', detail: '补间两张图片，比例跟随素材' }
+      : { title: '扩展画面', detail: '按所选比例智能补全，画面可能略有变化' }
   const updateSettings = (patch: Partial<GenerationSettings>) => onSettingsChange({ ...settings, ...patch })
   const composerRef = useRef<HTMLElement>(null)
   const dragStateRef = useRef<{ pointerId: number; startClientX: number; startClientY: number; x: number; y: number; started: boolean } | null>(null)
@@ -727,13 +736,13 @@ function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount, maximu
               <section className="canvas-composer__video-input" aria-label="视频输入模式">
                 <header>
                   <div><strong>输入方式</strong><span>{videoModeCopy.detail}</span></div>
-                  <small>2K · {settings.duration ?? selectedModel.defaultDuration ?? 5} 秒</small>
+                  <small>{videoRatioPolicy.controlLabel} · 2K · {settings.duration ?? selectedModel.defaultDuration ?? 5} 秒</small>
                 </header>
                 <div className="canvas-composer__video-modes" role="radiogroup" aria-label="选择视频输入方式">
                   {([
-                    ['first_frame', '首帧', '1 图'],
+                    ['first_frame', '保持首帧', '1 图'],
                     ['first_last', '首尾帧', '2 图'],
-                    ['reference', '参考素材', '图 / 视频'],
+                    ['reference', '扩展画面', '可选比例'],
                   ] as const).map(([value, label, meta]) => (
                     <button
                       key={value}
@@ -771,7 +780,9 @@ function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount, maximu
                 </div>
                 <p className={canGenerate ? 'is-ready' : ''} aria-live="polite">
                   {canGenerate
-                    ? '输入已就绪'
+                    ? videoInputMode === 'reference'
+                      ? `将智能补全至 ${settings.aspectRatio}，起始画面可能略有变化`
+                      : '将保持输入画面，输出比例跟随素材'
                     : videoInputMode === 'first_last'
                       ? '请按连线顺序连接 2 张图片'
                       : videoInputMode === 'first_frame'
@@ -807,9 +818,15 @@ function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount, maximu
             </label>
             <label>
               <span>比例</span>
-              <select aria-label="画面比例" value={settings.aspectRatio} disabled={interactionLocked} onChange={(event) => updateSettings({ aspectRatio: event.target.value as GenerationSettings['aspectRatio'] })}>
-                {(selectedModel?.aspectRatios ?? ['1:1', '3:4', '4:5', '9:16']).map((ratio) => <option value={ratio} key={ratio}>{ratio}</option>)}
-              </select>
+              {isVideoModel && !videoRatioPolicy.ratioSelectable ? (
+                <select aria-label="画面比例跟随素材" value="adaptive" disabled>
+                  <option value="adaptive">跟随素材</option>
+                </select>
+              ) : (
+                <select aria-label="画面比例" value={settings.aspectRatio} disabled={interactionLocked} onChange={(event) => updateSettings({ aspectRatio: event.target.value as GenerationSettings['aspectRatio'] })}>
+                  {(selectedModel?.aspectRatios ?? ['1:1', '3:4', '4:5', '9:16']).map((ratio) => <option value={ratio} key={ratio}>{ratio}</option>)}
+                </select>
+              )}
             </label>
             {!isVideoModel ? <label>
               <span>分辨率</span>
@@ -912,6 +929,7 @@ function ResultNode({ data, id, selected }: NodeProps) {
   const result = data as ResultNodeData
   const isSelected = selected || Boolean(result.selected)
   const [imageFailed, setImageFailed] = useState(false)
+  const [videoDimensions, setVideoDimensions] = useState<{ width: number; height: number } | null>(null)
   const [currentTime, setCurrentTime] = useState(() => Date.now())
   const cancelGeneration = useCanvasStore((state) => state.cancelGeneration)
   const retryGeneration = useCanvasStore((state) => state.retryGeneration)
@@ -929,6 +947,9 @@ function ResultNode({ data, id, selected }: NodeProps) {
     : 0)
   const settings = result.generationSettings
   const mediaKind = result.mediaKind ?? 'image'
+  const displayedAspectRatio = mediaKind === 'video' && videoDimensions
+    ? reducedAspectRatio(videoDimensions.width, videoDimensions.height)
+    : settings?.aspectRatio
   const ratioClass = settings ? `result-node--ratio-${settings.aspectRatio.replace(':', '-')}` : ''
   const resultName = result.label ?? (result.generationKind === 'refinement' ? '精修版本' : '生成版本')
   const hasDisplayableImage = Boolean(result.image) && !imageFailed
@@ -941,6 +962,7 @@ function ResultNode({ data, id, selected }: NodeProps) {
 
   useEffect(() => {
     setImageFailed(false)
+    setVideoDimensions(null)
   }, [result.image])
 
   useEffect(() => {
@@ -972,7 +994,7 @@ function ResultNode({ data, id, selected }: NodeProps) {
       />
       <header className="result-node__header">
         <ImageNodeTitle nodeId={id} name={resultName} />
-        {settings ? <span className="result-node__metadata">{settings.aspectRatio} · {settings.resolution}{settings.duration ? ` · ${settings.duration}秒` : ''}</span> : null}
+        {settings ? <span className="result-node__metadata">{displayedAspectRatio} · {settings.resolution}{settings.duration ? ` · ${settings.duration}秒` : ''}</span> : null}
         {hasDisplayableImage ? <button
           className="result-node__header-remove nodrag nowheel"
           type="button"
@@ -985,7 +1007,12 @@ function ResultNode({ data, id, selected }: NodeProps) {
           }}
         ><DeleteIcon /></button> : null}
       </header>
-      <div className={['result-node', ratioClass, isGenerating ? 'result-node--generating' : '', isSelected ? 'is-selected' : ''].filter(Boolean).join(' ')}>
+      <div
+        className={['result-node', ratioClass, isGenerating ? 'result-node--generating' : '', isSelected ? 'is-selected' : ''].filter(Boolean).join(' ')}
+        style={mediaKind === 'video' && videoDimensions
+          ? { height: 'auto', aspectRatio: `${videoDimensions.width} / ${videoDimensions.height}` }
+          : undefined}
+      >
         {hasDisplayableImage ? <button
           className="result-node__download nodrag nowheel"
           type="button"
@@ -994,7 +1021,7 @@ function ResultNode({ data, id, selected }: NodeProps) {
           onPointerDown={(event) => event.stopPropagation()}
           onClick={(event) => {
             event.stopPropagation()
-            void downloadImage(result.image!, resultName)
+            void downloadMedia(result.image!, resultName, mediaKind)
           }}
         ><DownloadIcon /></button> : null}
         {hasDisplayableImage ? <button
@@ -1011,7 +1038,19 @@ function ResultNode({ data, id, selected }: NodeProps) {
         >{isSavedToLibrary ? '已入库' : '入库'}</button> : null}
         {hasDisplayableImage
           ? mediaKind === 'video'
-            ? <video src={result.image} aria-label={resultName} className="result-node__video nodrag nowheel" controls playsInline preload="metadata" onError={() => setImageFailed(true)} />
+            ? <video
+                src={result.image}
+                aria-label={resultName}
+                className="result-node__video nodrag nowheel"
+                controls
+                playsInline
+                preload="metadata"
+                onLoadedMetadata={(event) => {
+                  const { videoWidth: width, videoHeight: height } = event.currentTarget
+                  if (width > 0 && height > 0) setVideoDimensions({ width, height })
+                }}
+                onError={() => setImageFailed(true)}
+              />
             : <img src={result.image} alt={resultName} className="result-node__image" draggable={false} decoding="async" onError={() => setImageFailed(true)} />
           : (
           <div className={`result-node__task-state result-node__task-state--${result.status}`}>
@@ -1810,7 +1849,7 @@ function CanvasWorkspace() {
   const [agentOpen, setAgentOpen] = useState(true)
   const [composerOpen, setComposerOpen] = useState(false)
   const [resultComposerDraft, setResultComposerDraft] = useState<ResultComposerDraft | null>(null)
-  const [imagePreview, setImagePreview] = useState<{ image: string; name: string } | null>(null)
+  const [imagePreview, setImagePreview] = useState<{ image: string; name: string; mediaKind: GenerationMediaKind } | null>(null)
   const [renamingProjectTabId, setRenamingProjectTabId] = useState<string | null>(null)
   const [projectTabNameDraft, setProjectTabNameDraft] = useState('')
   const [assetToDelete, setAssetToDelete] = useState<AssetRecord | null>(null)
@@ -2768,6 +2807,7 @@ function CanvasWorkspace() {
         nodeId: node.id,
         versionId: result.versionId,
         image: result.image,
+        mediaKind: result.mediaKind ?? 'image',
         name: result.label ?? (result.generationKind === 'refinement' ? '精修版本' : '生成图片'),
         createdAt: result.submittedAt ?? 0,
       }]
@@ -2778,6 +2818,7 @@ function CanvasWorkspace() {
       .map((entry) => ({
         id: `history-${entry.id}`,
         image: entry.image,
+        mediaKind: 'image' as const,
         name: entry.name,
         createdAt: entry.createdAt,
       }))
@@ -3144,6 +3185,7 @@ function CanvasWorkspace() {
             setImagePreview({
               image: imageNode.image,
               name: (imageNode as AssetNodeData).name,
+              mediaKind: 'image',
             })
           }}
           onPaneClick={() => {
@@ -3484,7 +3526,7 @@ function CanvasWorkspace() {
                 setHistoryOpen(false)
                 return
               }
-              setImagePreview({ image: item.image, name: item.name })
+              setImagePreview({ image: item.image, name: item.name, mediaKind: item.mediaKind })
             }}
             onSaveToLibrary={(item) => saveGeneratedImageToLibrary({ image: item.image, name: item.name })}
             isSaved={(item) => document.assets.some((asset) => asset.source === 'generated' && asset.image === item.image)}
@@ -3551,9 +3593,11 @@ function CanvasWorkspace() {
         {imagePreview ? (
           <div className="image-preview-backdrop" role="presentation" onMouseDown={() => setImagePreview(null)}>
             <section className="image-preview-dialog" role="dialog" aria-modal="true" aria-label={`${imagePreview.name}预览`} onMouseDown={(event) => event.stopPropagation()}>
-              <button className="image-preview-dialog__download" type="button" aria-label="下载原图" title="下载原图" onClick={() => void downloadImage(imagePreview.image, imagePreview.name)}><DownloadIcon /></button>
-              <button className="image-preview-dialog__close" type="button" onClick={() => setImagePreview(null)} aria-label="关闭图片预览"><CloseIcon /></button>
-              <img src={imagePreview.image} alt={imagePreview.name} />
+              <button className="image-preview-dialog__download" type="button" aria-label="下载原媒体" title="下载原媒体" onClick={() => void downloadMedia(imagePreview.image, imagePreview.name, imagePreview.mediaKind)}><DownloadIcon /></button>
+              <button className="image-preview-dialog__close" type="button" onClick={() => setImagePreview(null)} aria-label="关闭媒体预览"><CloseIcon /></button>
+              {imagePreview.mediaKind === 'video'
+                ? <video src={imagePreview.image} aria-label={imagePreview.name} controls playsInline preload="metadata" />
+                : <img src={imagePreview.image} alt={imagePreview.name} />}
             </section>
           </div>
         ) : null}
@@ -3637,20 +3681,29 @@ function imagePreviewSize(imageWidth: number, imageHeight: number) {
   }
 }
 
-async function downloadImage(image: string, name: string) {
-  const safeName = name.trim().replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, '-').slice(0, 80) || 'botanic-image'
+function triggerDownload(source: string, filename: string) {
+  const anchor = document.createElement('a')
+  anchor.href = source
+  anchor.download = filename
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+}
+
+async function downloadMedia(image: string, name: string, mediaKind: GenerationMediaKind = 'image') {
+  const safeName = name.trim().replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, '-').slice(0, 80) || `botanic-${mediaKind}`
+  if (mediaKind === 'video') {
+    // 视频直接交给浏览器流式下载，避免先把完整 MP4 读入内存后丢失用户手势。
+    triggerDownload(image, `${safeName}.${mediaFileExtension(mediaKind)}`)
+    return
+  }
   try {
     const response = await fetch(image)
     if (!response.ok) throw new Error('图片下载失败')
     const blob = await response.blob()
-    const extension = blob.type === 'video/mp4' ? 'mp4' : blob.type === 'image/jpeg' ? 'jpg' : blob.type === 'image/webp' ? 'webp' : 'png'
+    const extension = mediaFileExtension(mediaKind, blob.type)
     const objectUrl = URL.createObjectURL(blob)
-    const anchor = document.createElement('a')
-    anchor.href = objectUrl
-    anchor.download = `${safeName}.${extension}`
-    document.body.appendChild(anchor)
-    anchor.click()
-    anchor.remove()
+    triggerDownload(objectUrl, `${safeName}.${extension}`)
     window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000)
   } catch {
     const anchor = document.createElement('a')
@@ -3980,14 +4033,16 @@ function HistoryPanel({
       {results.length ? <div className="history-gallery">
         {results.map((item) => <article className="history-gallery__item" key={item.id}>
           <button type="button" className="history-gallery__open" onClick={() => onOpen(item)} aria-label={`打开 ${item.name}`} title={item.name}>
-            <img src={item.image} alt={item.name} />
+            {item.mediaKind === 'video'
+              ? <video src={item.image} aria-label={item.name} muted playsInline preload="metadata" />
+              : <img src={item.image} alt={item.name} />}
           </button>
           <button
             type="button"
             className="history-gallery__download"
             aria-label={`下载 ${item.name}`}
-            title="下载原图"
-            onClick={() => void downloadImage(item.image, item.name)}
+            title="下载原媒体"
+            onClick={() => void downloadMedia(item.image, item.name, item.mediaKind)}
           ><DownloadIcon /></button>
           <button
             type="button"

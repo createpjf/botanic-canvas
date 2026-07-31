@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { assignVideoInputRoles } from './videoGeneration.ts'
+import { assignVideoInputRoles, videoAspectRatioPolicy } from './videoGeneration.ts'
 
 const image = (nodeId: string) => ({
   nodeId,
@@ -31,4 +31,22 @@ test('参考模式区分参考图片与上游视频', () => {
 test('首尾帧模式拒绝视频或超过两张图片，避免提交互斥的 H3 输入', () => {
   assert.match(assignVideoInputRoles([{ ...image('clip'), mediaKind: 'video' }], 'first_frame').error ?? '', /图片/)
   assert.match(assignVideoInputRoles([image('a'), image('b'), image('c')], 'first_last').error ?? '', /两张/)
+})
+
+test('H3 首帧模式明确跟随素材，扩展画面模式保留用户选择的比例', () => {
+  assert.deepEqual(videoAspectRatioPolicy('first_frame', '4:3'), {
+    providerRatio: 'adaptive',
+    controlLabel: '跟随素材',
+    ratioSelectable: false,
+  })
+  assert.deepEqual(videoAspectRatioPolicy('first_last', '16:9'), {
+    providerRatio: 'adaptive',
+    controlLabel: '跟随素材',
+    ratioSelectable: false,
+  })
+  assert.deepEqual(videoAspectRatioPolicy('reference', '4:3'), {
+    providerRatio: '4:3',
+    controlLabel: '4:3',
+    ratioSelectable: true,
+  })
 })

@@ -1,8 +1,28 @@
-import type { GenerationReference, VideoInputMode } from './canvas.ts'
+import type { GenerationAspectRatio, GenerationReference, VideoInputMode } from './canvas.ts'
 
 export type AssignedVideoReferences = {
   references: GenerationReference[]
   error?: string
+}
+
+export type VideoAspectRatioPolicy = {
+  providerRatio: GenerationAspectRatio | 'adaptive'
+  controlLabel: GenerationAspectRatio | '跟随素材'
+  ratioSelectable: boolean
+}
+
+/**
+ * H3 的首帧/首尾帧接口会忽略具体比例并跟随输入素材；只有参考素材模式
+ * 才能按用户选择的比例生成画面外区域。把这条 Provider 规则显式暴露给 UI，
+ * 避免界面显示 4:3、实际却提交 adaptive。
+ */
+export function videoAspectRatioPolicy(
+  mode: VideoInputMode,
+  requestedRatio: GenerationAspectRatio,
+): VideoAspectRatioPolicy {
+  return mode === 'reference'
+    ? { providerRatio: requestedRatio, controlLabel: requestedRatio, ratioSelectable: true }
+    : { providerRatio: 'adaptive', controlLabel: '跟随素材', ratioSelectable: false }
 }
 
 /**
