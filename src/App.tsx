@@ -25,6 +25,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { defaultGenerationModels } from './domain/canvas'
+import { imageNodeDoubleClickIntent } from './domain/imageNodeDoubleClick'
 import type {
   AssetRecord,
   AssetRole,
@@ -2972,15 +2973,26 @@ function CanvasWorkspace() {
             const isAsset = node.type === 'asset'
             if (!isResult && !isAsset) return
             const imageNode = node.data as ResultNodeData | AssetNodeData
-            if (!imageNode.image) return
+            const intent = imageNodeDoubleClickIntent({
+              id: node.id,
+              type: isResult ? 'result' : 'asset',
+              image: imageNode.image,
+              label: isResult
+                ? (imageNode as ResultNodeData).label
+                : (imageNode as AssetNodeData).name,
+            })
+            if (!intent) return
             event.preventDefault()
-            if (isResult) {
-              // 结果图仅负责选中；由“+”统一决定新增节点，避免双击产生隐式创建。
+            event.stopPropagation()
+            if (intent.kind === 'open-generation-menu') {
+              selectNode(node.id)
+              setImagePreview(null)
+              openNodePalette(event, false, intent.resultNodeId)
               return
             }
             setImagePreview({
-              image: imageNode.image,
-              name: (imageNode as AssetNodeData).name,
+              image: intent.image,
+              name: intent.name,
             })
           }}
           onPaneClick={() => {

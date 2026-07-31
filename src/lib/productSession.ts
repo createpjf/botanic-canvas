@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
+import { productRequestTimeoutFor } from './productRequestPolicy'
 
 export type ProductUser = {
   id: string
@@ -38,7 +39,6 @@ const supabase: SupabaseClient | undefined = supabaseAuthEnabled
   : undefined
 
 const mediaSessionSyncs = new Map<string, Promise<ProductUser | undefined>>()
-const productRequestTimeoutMs = 15_000
 const authSessionTimeoutMs = 6_000
 const mediaSessionAttemptTimeoutMs = 10_000
 const mediaSessionRetryDelayMs = 700
@@ -175,7 +175,7 @@ export async function productRequest<T>(path: string, init: RequestInit = {}): P
   const abortFromCaller = () => controller.abort()
   if (init.signal?.aborted) controller.abort()
   else init.signal?.addEventListener('abort', abortFromCaller, { once: true })
-  const timeoutId = window.setTimeout(() => controller.abort(), productRequestTimeoutMs)
+  const timeoutId = window.setTimeout(() => controller.abort(), productRequestTimeoutFor(path))
   try {
     const headers = new Headers(init.headers)
     headers.set('Accept', 'application/json')
