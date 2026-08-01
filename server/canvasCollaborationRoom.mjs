@@ -33,10 +33,6 @@ function replaceRecords(records, values) {
   values.forEach((value, order) => records.set(value.id, { order, value: clone(value) }))
 }
 
-function sameGraph(left, right) {
-  return JSON.stringify(left) === JSON.stringify(right)
-}
-
 function materializeRecords(current, records, changedIds, { preserveMedia = false } = {}) {
   const byId = new Map(current.map((item) => [item.id, clone(item)]))
   const orderById = new Map(current.map((item, index) => [item.id, index]))
@@ -81,6 +77,11 @@ export function createCanvasCollaborationRoom({ state, append, compact, compactE
   const document = new Y.Doc()
   if (state.snapshot) Y.applyUpdate(document, updateFromBase64(state.snapshot))
   for (const update of state.updates ?? []) Y.applyUpdate(document, updateFromBase64(update))
+  const authoritative = collaborativeGraph(state.graph)
+  document.transact(() => {
+    replaceRecords(document.getMap('nodes'), authoritative.nodes)
+    replaceRecords(document.getMap('edges'), authoritative.edges)
+  }, 'materialized-authoritative-graph')
   let graph = clone(state.graph)
   let applyChain = Promise.resolve()
 
@@ -118,7 +119,7 @@ export function createCanvasCollaborationRoom({ state, append, compact, compactE
     replaceBaseGraph(nextGraph, actorId) {
       if (!Array.isArray(nextGraph?.nodes) || !Array.isArray(nextGraph?.edges)) throw new TypeError('画布图谱格式无效。')
       const run = applyChain.then(async () => {
-        if (sameGraph(graph, nextGraph)) return { changed: false, graph: clone(graph) }
+        const changed = JSON.stringify(graph) !== JSON.stringify(nextGraph)
         graph = clone(nextGraph)
         const synchronized = collaborativeGraph(nextGraph)
         document.transact(() => {
@@ -129,7 +130,7 @@ export function createCanvasCollaborationRoom({ state, append, compact, compactE
           snapshot: updateToBase64(Y.encodeStateAsUpdate(document)),
           graph: clone(graph),
         }, actorId)
-        return { changed: true, graph: clone(graph) }
+        return { changed, graph: clone(graph) }
       })
       applyChain = run.catch(() => undefined)
       return run
@@ -140,7 +141,9 @@ export function createCanvasCollaborationRoom({ state, append, compact, compactE
       return run
     },
     destroy() {
-      document.destroy()
+      const run = applyChain.then(() => { document.destroy() })
+      applyChain = run.catch(() => undefined)
+      return run
     },
   }
 }

@@ -69,11 +69,7 @@ export function runtimeConfig(rootDir = process.cwd()) {
     workerConcurrency: Number(process.env.GENERATION_WORKER_CONCURRENCY ?? 1),
     bootstrapAccessToken: process.env.BOTANIC_BOOTSTRAP_ACCESS_TOKEN ?? (process.env.NODE_ENV === 'production' ? '' : 'botanic-local-dev'),
     bootstrapEmail: process.env.SUPABASE_BOOTSTRAP_OWNER_EMAIL ?? process.env.BOTANIC_BOOTSTRAP_EMAIL,
-    realtimeTicketSecret: process.env.REALTIME_TICKET_SECRET
-      ?? process.env.SUPABASE_SECRET_KEY
-      ?? process.env.SUPABASE_SERVICE_ROLE_KEY
-      ?? process.env.BOTANIC_BOOTSTRAP_ACCESS_TOKEN
-      ?? (process.env.NODE_ENV === 'production' ? '' : 'botanic-local-realtime'),
+    realtimeTicketSecret: process.env.REALTIME_TICKET_SECRET,
     realtimePublicUrl: process.env.REALTIME_PUBLIC_URL,
     localDataPath: resolve(rootDir, process.env.BOTANIC_DATA_PATH ?? 'server/.data/product.json'),
     s3: {

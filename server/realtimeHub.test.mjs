@@ -21,6 +21,17 @@ function nextMessage(socket) {
   })
 }
 
+function closed(socket) {
+  return new Promise((resolve) => socket.once('close', resolve))
+}
+
+function nextMessageWithin(socket, timeoutMs = 300) {
+  return Promise.race([
+    nextMessage(socket),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('等待实时消息超时')), timeoutMs)),
+  ])
+}
+
 function nextMessages(socket, count) {
   return new Promise((resolve, reject) => {
     const messages = []
@@ -160,4 +171,112 @@ test('API 重启后向新连接补发已持久化的 Yjs 状态', async () => {
   recoveredSocket.close()
   await second.hub.close()
   await new Promise((resolve) => second.server.close(resolve))
+})
+
+test('没有在线房间时，HTTP 权威保存仍重写旧 Yjs 历史', async (context) => {
+  const server = createServer((_request, response) => response.end())
+  const authoritativeNode = {
+    id: 'node-a', type: 'text', position: { x: 400, y: 20 }, data: { kind: 'text', label: 'new', content: 'new' },
+  }
+  const persisted = {
+    graph: { nodes: [authoritativeNode], edges: [] },
+    graphRevision: 3,
+    updates: [validCrdtUpdate('node-a')],
+  }
+  let compactCount = 0
+  const productStore = {
+    async loadCanvasCollaboration() { return structuredClone(persisted) },
+    async compactCanvasGraphUpdates(_userId, _projectId, payload) {
+      compactCount += 1
+      persisted.snapshot = payload.snapshot
+      persisted.graph = structuredClone(payload.graph)
+      persisted.updates = []
+    },
+    async readProject() {
+      return { document: { nodes: [authoritativeNode], edges: [] }, revision: 2, graphRevision: 3 }
+    },
+    async canEditProject() { return true },
+  }
+  const hub = createProjectRealtimeHub({ server, ticketSecret: 'test-secret', productStore })
+  context.after(async () => {
+    await hub.close()
+    await new Promise((resolve) => server.close(resolve))
+  })
+  await listen(server)
+
+  await hub.publishProjectUpdated({
+    projectId: 'project-1', revision: 2, graphRevision: 3, updatedAt: 300,
+    graph: { nodes: [authoritativeNode], edges: [] }, actorId: 'user-1',
+  })
+
+  assert.equal(compactCount, 1)
+  assert.deepEqual(persisted.updates, [])
+  const recovered = new Y.Doc()
+  Y.applyUpdate(recovered, Buffer.from(persisted.snapshot, 'base64'))
+  assert.equal(recovered.getMap('nodes').get('node-a').value.position.x, 400)
+})
+
+test('房间初始化暂时失败后，下一次连接会重新加载', async (context) => {
+  const server = createServer((_request, response) => response.end())
+  let loadCount = 0
+  const productStore = {
+    async readProject() { return { document: { nodes: [], edges: [] }, revision: 1 } },
+    async canEditProject() { return true },
+    async loadCanvasCollaboration() {
+      loadCount += 1
+      if (loadCount === 1) throw new Error('temporary database failure')
+      return { graph: { nodes: [], edges: [] }, graphRevision: 1, updates: [] }
+    },
+  }
+  const hub = createProjectRealtimeHub({ server, ticketSecret: 'test-secret', productStore })
+  await listen(server)
+  const address = server.address()
+  const connect = () => new WebSocket(
+    `ws://127.0.0.1:${address.port}/api/realtime?projectId=project-1&ticket=${encodeURIComponent(issueRealtimeTicket({ userId: 'user-1', projectId: 'project-1', secret: 'test-secret' }))}`,
+  )
+  context.after(async () => {
+    await hub.close()
+    await new Promise((resolve) => server.close(resolve))
+  })
+
+  const failed = connect()
+  failed.on('error', () => undefined)
+  await closed(failed)
+  const retried = connect()
+  assert.deepEqual(await nextMessageWithin(retried), { type: 'realtime.ready', projectId: 'project-1' })
+  assert.equal(loadCount, 2)
+  retried.close()
+})
+
+test('最后一个客户端离开后释放空闲房间', async (context) => {
+  const server = createServer((_request, response) => response.end())
+  let loadCount = 0
+  const productStore = {
+    async readProject() { return { document: { nodes: [], edges: [] }, revision: 1 } },
+    async canEditProject() { return true },
+    async loadCanvasCollaboration() {
+      loadCount += 1
+      return { graph: { nodes: [], edges: [] }, graphRevision: 1, updates: [] }
+    },
+  }
+  const hub = createProjectRealtimeHub({ server, ticketSecret: 'test-secret', productStore, roomIdleMs: 10 })
+  await listen(server)
+  const address = server.address()
+  const connect = () => new WebSocket(
+    `ws://127.0.0.1:${address.port}/api/realtime?projectId=project-1&ticket=${encodeURIComponent(issueRealtimeTicket({ userId: 'user-1', projectId: 'project-1', secret: 'test-secret' }))}`,
+  )
+  context.after(async () => {
+    await hub.close()
+    await new Promise((resolve) => server.close(resolve))
+  })
+
+  const first = connect()
+  await nextMessage(first)
+  first.close()
+  await closed(first)
+  await new Promise((resolve) => setTimeout(resolve, 25))
+  const second = connect()
+  assert.deepEqual(await nextMessage(second), { type: 'realtime.ready', projectId: 'project-1' })
+  assert.equal(loadCount, 2)
+  second.close()
 })

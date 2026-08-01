@@ -9,6 +9,7 @@ import {
 } from '../domain/canvas'
 import { normalizeAssetRecord } from '../domain/assets'
 import { ProductApiError, productRequest, serverPersistenceEnabled } from './productSession'
+import { persistAcceptedRemoteRefresh } from './remoteDocumentRefresh'
 
 type CanvasDocumentBackup = {
   id: string
@@ -118,7 +119,7 @@ export type RemoteCanvasDocumentRefresh = {
 }
 
 type ReadCanvasDocumentOptions = {
-  onRemoteDocument?: (refresh: RemoteCanvasDocumentRefresh) => boolean | void
+  onRemoteDocument?: (refresh: RemoteCanvasDocumentRefresh) => boolean
 }
 
 type RemoteWriteWaiter = {
@@ -445,8 +446,11 @@ function refreshRemoteCanvasDocumentInBackground(
   void readLatestCanvasDocument(id)
     .then(({ document: remote, hasPendingDraft }) => {
       if (!remote || hasPendingDraft) return
-      const applied = onRemoteDocument?.({ cachedDocument, remoteDocument: remote })
-      if (applied) return persistLocalDocument(remote)
+      return persistAcceptedRemoteRefresh(
+        { cachedDocument, remoteDocument: remote },
+        onRemoteDocument,
+        persistLocalDocument,
+      )
     })
     .catch(() => undefined)
 }

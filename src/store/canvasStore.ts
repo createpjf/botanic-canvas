@@ -3,6 +3,7 @@ import type { Edge, Viewport, XYPosition } from '@xyflow/react'
 import { createEmptyCanvasDocument, seedDocument, seedGlobalAssets } from '../data/seed'
 import { defaultGenerationModels } from '../domain/canvas'
 import { normalizeAssetCollection, normalizeAssetRecord } from '../domain/assets'
+import { mergeCollaborativeCanvasGraph } from '../domain/collaborativeGraph'
 import { findOpenGeneratePosition, planGenerateNodeCreation } from '../domain/generateNodeCreation'
 import { planGenerationOutputPlacement } from '../domain/generationOutputPlacement'
 import { resolveRemoteCanvasRefresh } from '../domain/remoteDocumentSync'
@@ -2542,9 +2543,9 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     // 画布本身是打开项目的关键路径；共享素材库仅服务素材面板，不能让它的
     // 网络故障阻塞整个画布恢复。
     const stored = await readCanvasDocument(documentId, {
-      onRemoteDocument: ({ cachedDocument, remoteDocument }) => {
+      onRemoteDocument: ({ cachedDocument, remoteDocument }) => (
         applyRemoteDocumentRefresh(set, get, remoteDocument, cachedDocument.updatedAt)
-      },
+      ),
     })
     if (!stored) return false
 
@@ -2719,33 +2720,15 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
 
   applyCollaborativeGraph: ({ nodes, edges }) => {
     const current = get().document
-    const currentById = new Map(current.nodes.map((node) => [node.id, node]))
-    const synchronizedNodes = nodes.flatMap((node) => {
-      const local = currentById.get(node.id)
-      if ((node.type === 'asset' || node.type === 'result') && !local) {
-        // CRDT 不携带媒体字节；新媒体节点等待紧随其后的权威项目版本回填。
-        return []
-      }
-      const selected = Boolean(local?.selected)
-      const localImage = local?.type === 'asset'
-        ? (local.data as AssetNodeData).image
-        : local?.type === 'result'
-          ? (local.data as ResultNodeData).image
-          : undefined
-      return [{
-        ...node,
-        selected,
-        data: node.type === 'result'
-          ? { ...node.data, ...(localImage ? { image: localImage } : {}), selected }
-          : node.type === 'asset'
-            ? { ...node.data, ...(localImage ? { image: localImage } : {}) }
-          : { ...node.data },
-      } as CanvasNode]
-    }) as CanvasNode[]
+    const synchronized = mergeCollaborativeCanvasGraph(
+      { nodes: current.nodes, edges: current.edges },
+      { nodes, edges },
+    )
+    const synchronizedNodes = synchronized.nodes
     const synchronizedNodeIds = new Set(synchronizedNodes.map((node) => node.id))
     const normalizedEdges = normalizeSystemOutputEdges(
       synchronizedNodes,
-      edges.filter((edge) => synchronizedNodeIds.has(edge.source) && synchronizedNodeIds.has(edge.target)),
+      synchronized.edges.filter((edge) => synchronizedNodeIds.has(edge.source) && synchronizedNodeIds.has(edge.target)),
     )
     const normalizedNodes = normalizeGenerateNodeInputs(synchronizedNodes, normalizedEdges)
     const selected = normalizedNodes.filter((node) => node.selected)

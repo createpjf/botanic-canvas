@@ -43,3 +43,26 @@ test('实时票据被篡改或过期后失效', () => {
     now: 31_001,
   }), undefined)
 })
+
+test('浏览器实时票据只能从签发时的 Origin 建立连接', () => {
+  const ticket = issueRealtimeTicket({
+    userId: 'user-1',
+    projectId: 'project-1',
+    origin: 'https://botanic-canvas.vercel.app',
+    secret: 'test-secret',
+    now: 1_000,
+  })
+
+  assert.deepEqual(verifyRealtimeTicket(ticket, {
+    projectId: 'project-1',
+    origin: 'https://botanic-canvas.vercel.app',
+    secret: 'test-secret',
+    now: 2_000,
+  }), { userId: 'user-1', projectId: 'project-1' })
+  assert.equal(verifyRealtimeTicket(ticket, {
+    projectId: 'project-1',
+    origin: 'https://attacker.example',
+    secret: 'test-secret',
+    now: 2_000,
+  }), undefined)
+})

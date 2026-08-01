@@ -88,3 +88,25 @@ test('HTTP 权威图谱替换会同步 Yjs 快照，旧增量不会在重连后�
   room.destroy()
   recovered.destroy()
 })
+
+test('房间重建时以物化图谱覆盖过期的 Yjs 增量', () => {
+  const room = createCanvasCollaborationRoom({
+    state: {
+      graph: {
+        nodes: [
+          { id: 'node-a', type: 'text', position: { x: 400, y: 20 }, data: { kind: 'text', label: 'new', content: 'new' } },
+        ],
+        edges: [],
+      },
+      graphRevision: 3,
+      updates: [encodedNodeUpdate('node-a', 120)],
+    },
+    append: async () => ({ graphRevision: 3, updatedAt: 300, updateCount: 1 }),
+    compact: async () => undefined,
+  })
+
+  const recovered = new Y.Doc()
+  Y.applyUpdate(recovered, Buffer.from(room.stateUpdate(), 'base64'))
+  assert.equal(recovered.getMap('nodes').get('node-a').value.position.x, 400)
+  room.destroy()
+})

@@ -11,6 +11,7 @@ import { generationIdempotencyKey, generationJobIdForIdempotency } from './gener
 import { createProductRuntime, loadLocalEnv, runtimeConfig } from './runtime.mjs'
 import { generationTimeoutForModel, providerForModel } from './generationModels.mjs'
 import { createProjectRealtimeHub } from './realtimeHub.mjs'
+import { publishProjectUpdatedSafely } from './projectUpdatePublisher.mjs'
 import { issueRealtimeTicket } from './realtimeTicket.mjs'
 
 loadLocalEnv()
@@ -134,14 +135,7 @@ try {
 
 let realtimeHub
 async function publishProjectUpdated(saved, actorId) {
-  await realtimeHub?.publishProjectUpdated({
-    projectId: saved.document.id,
-    revision: saved.revision,
-    graphRevision: saved.graphRevision,
-    updatedAt: saved.document.updatedAt,
-    graph: { nodes: saved.document.nodes ?? [], edges: saved.document.edges ?? [] },
-    actorId,
-  })
+  await publishProjectUpdatedSafely(realtimeHub, saved, actorId)
 }
 
 function expectedGraphRevision(request, fallback) {
@@ -195,7 +189,12 @@ const server = createServer(async (request, response) => {
       const protocol = forwardedProtocol || (request.socket.encrypted ? 'https' : 'http')
       const realtimeOrigin = config.realtimePublicUrl || `${protocol}://${request.headers.host}`
       return json(response, 201, {
-        ticket: issueRealtimeTicket({ userId: user.id, projectId, secret: config.realtimeTicketSecret }),
+        ticket: issueRealtimeTicket({
+          userId: user.id,
+          projectId,
+          origin: request.headers.origin,
+          secret: config.realtimeTicketSecret,
+        }),
         expiresIn: 30,
         websocketUrl: new URL('/api/realtime', realtimeOrigin).toString(),
       })

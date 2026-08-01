@@ -46,6 +46,39 @@ function normalizedGraph(graph: CollaborativeGraph): CollaborativeGraph {
   }
 }
 
+/**
+ * 将远端 CRDT 图谱应用到本机画布时，只保留本机私有的选择态与媒体引用。
+ * 远端新增的媒体节点即使图片尚未通过权威文档回填，也必须作为占位节点保留，
+ * 否则下一次本地 diff 会把它误广播成删除操作。
+ */
+export function mergeCollaborativeCanvasGraph(
+  current: CollaborativeGraph,
+  remote: CollaborativeGraph,
+): CollaborativeGraph {
+  const currentById = new Map(current.nodes.map((node) => [node.id, node]))
+  return {
+    nodes: remote.nodes.map((node) => {
+      const local = currentById.get(node.id)
+      const selected = Boolean(local?.selected)
+      const localImage = local?.type === 'asset'
+        ? (local.data as AssetNodeData).image
+        : local?.type === 'result'
+          ? (local.data as ResultNodeData).image
+          : undefined
+      return {
+        ...clone(node),
+        selected,
+        data: node.type === 'result'
+          ? { ...clone(node.data), ...(localImage ? { image: localImage } : {}), selected }
+          : node.type === 'asset'
+            ? { ...clone(node.data), ...(localImage ? { image: localImage } : {}) }
+            : clone(node.data),
+      } as CanvasNode
+    }),
+    edges: remote.edges.map((edge) => clone(edge)),
+  }
+}
+
 function equal(left: unknown, right: unknown) {
   return JSON.stringify(left) === JSON.stringify(right)
 }
