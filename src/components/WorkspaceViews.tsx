@@ -117,6 +117,7 @@ export function ProjectLibrary({
   onRemoveMfa,
   onSignOutOtherSessions,
   onListMembers,
+  onListAuditEvents,
   onInviteMember,
   onUpdateMember,
   onOpenProject,
@@ -138,6 +139,7 @@ export function ProjectLibrary({
   onRemoveMfa?: (factorId: string) => Promise<void>
   onSignOutOtherSessions?: () => Promise<void>
   onListMembers?: () => Promise<WorkspaceMember[]>
+  onListAuditEvents?: () => Promise<WorkspaceAuditEvent[]>
   onInviteMember?: (input: { email: string; name?: string; role: 'owner' | 'member' }) => Promise<WorkspaceMember>
   onUpdateMember?: (userId: string, updates: { role?: 'owner' | 'member'; status?: 'active' | 'disabled' }) => Promise<WorkspaceMember>
   onOpenProject: (projectId: string) => void
@@ -153,7 +155,7 @@ export function ProjectLibrary({
   const [creating, setCreating] = useState(false)
   const [operationError, setOperationError] = useState('')
   const [accountMenuAnchor, setAccountMenuAnchor] = useState<AccountMenuAnchor | null>(null)
-  const [accountDialog, setAccountDialog] = useState<'profile' | 'security' | 'members' | null>(null)
+  const [accountDialog, setAccountDialog] = useState<'profile' | 'security' | 'members' | 'audit' | null>(null)
   const editingPresence = useMotionPresence(Boolean(editingProject), 140)
   const visibleEditingProject = useRetainedValue(editingProject)
   const deletingPresence = useMotionPresence(Boolean(deletingProject), 140)
@@ -304,15 +306,18 @@ export function ProjectLibrary({
         onOpenProfile={() => { setAccountMenuAnchor(null); if (currentUser) setAccountDialog('profile') }}
         onOpenSecurity={() => { setAccountMenuAnchor(null); if (currentUser && onChangePassword) setAccountDialog('security') }}
         onOpenMembers={() => { setAccountMenuAnchor(null); setAccountDialog('members') }}
+        onOpenAudit={() => { setAccountMenuAnchor(null); setAccountDialog('audit') }}
         onSignOut={onSignOut}
         onClose={() => setAccountMenuAnchor(null)}
       /> : null}
       {currentUser && onChangePassword && onReadMfaStatus && onEnrollMfa && onVerifyMfa && onRemoveMfa && onSignOutOtherSessions && (accountDialog === 'profile' || accountDialog === 'security') ? <AccountDetailsDialog mode={accountDialog} user={currentUser} onChangePassword={onChangePassword} onReadMfaStatus={onReadMfaStatus} onEnrollMfa={onEnrollMfa} onVerifyMfa={onVerifyMfa} onRemoveMfa={onRemoveMfa} onSignOutOtherSessions={onSignOutOtherSessions} onClose={() => setAccountDialog(null)} /> : null}
       {accountDialog === 'members' && currentUser?.role === 'owner' && onListMembers && onInviteMember && onUpdateMember ? <WorkspaceMembersDialog currentUser={currentUser} onListMembers={onListMembers} onInviteMember={onInviteMember} onUpdateMember={onUpdateMember} onClose={() => setAccountDialog(null)} /> : null}
+      {accountDialog === 'audit' && currentUser?.role === 'owner' && onListAuditEvents && onListMembers ? <WorkspaceAuditDialog onListEvents={onListAuditEvents} onListMembers={onListMembers} onClose={() => setAccountDialog(null)} /> : null}
     </main>
   )
 }
 import { useEffect, useState } from 'react'
 import { ArrowUpRightIcon, DeleteIcon, MoreIcon } from './BotanicIcons'
-import { AccountDetailsDialog, AccountMenu, WorkspaceMembersDialog, type AccountMenuAnchor, type AccountMfaEnrollment, type AccountMfaStatus, type AccountUser, type WorkspaceMember as AccountWorkspaceMember } from './AccountCenter'
+import { AccountDetailsDialog, AccountMenu, WorkspaceAuditDialog, WorkspaceMembersDialog, type AccountMenuAnchor, type AccountMfaEnrollment, type AccountMfaStatus, type AccountUser, type WorkspaceMember as AccountWorkspaceMember } from './AccountCenter'
+import type { WorkspaceAuditEvent } from '../domain/auditEvents'
 import { useMotionPresence, useRestoreFocus, useRetainedValue } from './motionPresence'

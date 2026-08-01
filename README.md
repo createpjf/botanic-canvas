@@ -117,8 +117,11 @@ API 与 Worker 必须使用相同的图像 / 视频 Provider 配置。H3 当前�
 - 账户安全支持 TOTP 二步验证与“退出其他设备”。Owner 完成 TOTP 设置后，再把 Railway API 的 `SECURITY_REQUIRE_OWNER_MFA` 改为 `true`，即可强制邀请成员、修改权限和删除项目使用 AAL2 会话。
 - 对象级授权由统一权限矩阵决定：工作区 Owner 管理成员、共享素材和工作区审计；项目 Owner / Editor / Viewer 分别对应管理、编辑和只读权限。实时票据、画布、润色和生成入口使用同一授权入口。
 - 成员、项目、共享素材与账户安全变更写入持久化审计日志；工作区完整审计仅 Owner 可通过 `GET /api/audit` 读取。
+- Owner 可从账户菜单打开“安全日志”，按账户、成员、项目和生成类型查看只读记录。
 
 具体阈值见 [.env.example](.env.example)。安全拒绝、限流与服务端异常会输出结构化事件和 `X-Request-ID`，可由 Railway 日志或后续 Sentry 接收。
+
+上线验收、告警阈值、备份恢复和发布门禁见 [安全运营与恢复](docs/SECURITY_OPERATIONS.md)。
 
 ## 验证
 

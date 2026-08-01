@@ -33,7 +33,7 @@ import { shouldRefreshFromRealtimeEvent } from './domain/realtimeSync'
 import { videoAspectRatioPolicy } from './domain/videoGeneration'
 import { summarizeWorkflowTemplate, type WorkflowTemplateSummary } from './domain/workflowTemplates'
 import { useMotionPresence, useRestoreFocus, useRetainedValue, type MotionPhase } from './components/motionPresence'
-import { AccountDetailsDialog, AccountMenu, WorkspaceMembersDialog, type AccountMenuAnchor } from './components/AccountCenter'
+import { AccountDetailsDialog, AccountMenu, WorkspaceAuditDialog, WorkspaceMembersDialog, type AccountMenuAnchor } from './components/AccountCenter'
 import type {
   AssetRecord,
   AssetGroup,
@@ -63,7 +63,7 @@ import { getGenerationServiceHealth } from './lib/generationApi'
 import { refinePrompt } from './lib/promptRefinementApi'
 import { connectCanvasCollaboration, type CanvasCollaboration } from './lib/projectCollaboration'
 import { createCanvasProject, deleteCanvasDocument, flushPendingCanvasDocumentWrites, readCanvasProjectSummaries, renameCanvasProject, syncPendingCanvasDrafts } from './lib/db'
-import { ProductApiError, clearProductSession, completeProductPasswordSetup, createProductSession, enrollProductMfa, inviteWorkspaceMember, listWorkspaceMembers, productPasswordSetupRequired, readProductMfaStatus, readProductSession, removeProductMfa, serverPersistenceEnabled, signOutOtherProductSessions, supabaseAuthEnabled, updateProductPassword, updateWorkspaceMember, verifyProductMfa, type ProductUser } from './lib/productSession'
+import { ProductApiError, clearProductSession, completeProductPasswordSetup, createProductSession, enrollProductMfa, inviteWorkspaceMember, listWorkspaceAuditEvents, listWorkspaceMembers, productPasswordSetupRequired, readProductMfaStatus, readProductSession, removeProductMfa, serverPersistenceEnabled, signOutOtherProductSessions, supabaseAuthEnabled, updateProductPassword, updateWorkspaceMember, verifyProductMfa, type ProductUser } from './lib/productSession'
 import { createEmptyCanvasDocument } from './data/seed'
 import { useCanvasStore } from './store/canvasStore'
 import type { WorkspaceProject } from './components/WorkspaceViews'
@@ -2320,7 +2320,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
   const [marqueeMode, setMarqueeMode] = useState(false)
   const [miniMapOpen, setMiniMapOpen] = useState(false)
   const [accountMenuAnchor, setAccountMenuAnchor] = useState<AccountMenuAnchor | null>(null)
-  const [accountDialog, setAccountDialog] = useState<'profile' | 'security' | 'members' | null>(null)
+  const [accountDialog, setAccountDialog] = useState<'profile' | 'security' | 'members' | 'audit' | null>(null)
   const [isTouchTablet, setIsTouchTablet] = useState(false)
   const [zoomMode, setZoomMode] = useState(() => canvasZoomMode(document.viewport.zoom))
   const [expandedResultGroupIds, setExpandedResultGroupIds] = useState<Set<string>>(() => new Set())
@@ -3778,6 +3778,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
         onRemoveMfa={removeProductMfa}
         onSignOutOtherSessions={signOutOtherProductSessions}
         onListMembers={listWorkspaceMembers}
+        onListAuditEvents={listWorkspaceAuditEvents}
         onInviteMember={inviteWorkspaceMember}
         onUpdateMember={updateWorkspaceMember}
         onOpenProject={openWorkspaceProject}
@@ -4467,6 +4468,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
         onOpenProfile={() => { setAccountMenuAnchor(null); if (currentUser) setAccountDialog('profile') }}
         onOpenSecurity={() => { setAccountMenuAnchor(null); if (currentUser) setAccountDialog('security') }}
         onOpenMembers={() => { setAccountMenuAnchor(null); if (currentUser?.role === 'owner') setAccountDialog('members') }}
+        onOpenAudit={() => { setAccountMenuAnchor(null); if (currentUser?.role === 'owner') setAccountDialog('audit') }}
         onSignOut={onSignOut ? async () => { setAccountMenuAnchor(null); await onSignOut() } : undefined}
         onClose={() => setAccountMenuAnchor(null)}
       /> : null}
@@ -4486,6 +4488,11 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
         onListMembers={listWorkspaceMembers}
         onInviteMember={inviteWorkspaceMember}
         onUpdateMember={updateWorkspaceMember}
+        onClose={() => setAccountDialog(null)}
+      /> : null}
+      {currentUser?.role === 'owner' && accountDialog === 'audit' ? <WorkspaceAuditDialog
+        onListEvents={listWorkspaceAuditEvents}
+        onListMembers={listWorkspaceMembers}
         onClose={() => setAccountDialog(null)}
       /> : null}
 
