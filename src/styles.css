@@ -2721,6 +2721,8 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .product-access input:focus { outline: 2px solid rgba(74, 127, 87, 0.28); border-color: #5c9368; }
 .product-access button { min-height: 42px; margin-top: 4px; border: 0; border-radius: 9px; background: #2e6a3e; color: #fff; font-size: 13px; font-weight: 800; }
 .product-access button:disabled { cursor: not-allowed; opacity: .45; }
+.product-access .product-access__alternate { min-height: 32px; margin-top: -3px; background: transparent; color: #5d8066; font-size: 11px; font-weight: 700; }
+.product-access .product-access__alternate:hover { background: #f2f6f1; }
 .product-access small { color: #a05449; font-size: 11px; line-height: 16px; }
 
 @media (prefers-reduced-motion: reduce) {
