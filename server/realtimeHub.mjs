@@ -51,7 +51,14 @@ export function createProjectRealtimeHub({ server, productStore, ticketSecret, r
           graphRevision: 1,
           updates: [],
         }
-        const entry = { hasState: Boolean(state.snapshot || state.updates?.length) }
+        const entry = {
+          hasState: Boolean(
+            state.snapshot
+            || state.updates?.length
+            || state.graph.nodes.length
+            || state.graph.edges.length
+          ),
+        }
         entry.room = createCanvasCollaborationRoom({
           state,
           append: async (payload, actorId) => {

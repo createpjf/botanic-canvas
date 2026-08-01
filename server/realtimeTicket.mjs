@@ -12,11 +12,11 @@ function normalizedOrigin(value) {
 export function issueRealtimeTicket({ userId, projectId, origin, secret, now = Date.now(), lifetimeMs = 30_000 }) {
   if (!userId || !projectId || !secret) throw new TypeError('实时票据参数不完整。')
   const boundOrigin = normalizedOrigin(origin)
-  if (origin && !boundOrigin) throw new TypeError('实时票据 Origin 无效。')
+  if (!boundOrigin || boundOrigin === 'null') throw new TypeError('实时票据 Origin 无效。')
   const payload = Buffer.from(JSON.stringify({
     userId,
     projectId,
-    ...(boundOrigin ? { origin: boundOrigin } : {}),
+    origin: boundOrigin,
     expiresAt: now + lifetimeMs,
     nonce: randomUUID(),
   })).toString('base64url')

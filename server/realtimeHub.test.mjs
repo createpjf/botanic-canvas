@@ -10,6 +10,8 @@ import { createProductStore } from './productStore.mjs'
 import { createProjectRealtimeHub } from './realtimeHub.mjs'
 import { issueRealtimeTicket } from './realtimeTicket.mjs'
 
+const testOrigin = 'http://localhost'
+
 function listen(server) {
   return new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
 }
@@ -72,8 +74,8 @@ test('已授权客户端只接收当前项目的实时更新', async (context) =
   })
   await listen(server)
   const address = server.address()
-  const ticket = issueRealtimeTicket({ userId: 'user-1', projectId: 'project-1', secret: 'test-secret' })
-  const socket = new WebSocket(`ws://127.0.0.1:${address.port}/api/realtime?projectId=project-1&ticket=${encodeURIComponent(ticket)}`)
+  const ticket = issueRealtimeTicket({ userId: 'user-1', projectId: 'project-1', origin: testOrigin, secret: 'test-secret' })
+  const socket = new WebSocket(`ws://127.0.0.1:${address.port}/api/realtime?projectId=project-1&ticket=${encodeURIComponent(ticket)}`, { origin: testOrigin })
   context.after(async () => {
     socket.close()
     await hub.close()
@@ -91,6 +93,38 @@ test('已授权客户端只接收当前项目的实时更新', async (context) =
   })
 })
 
+test('只有 HTTP 物化图谱的项目在连接时也会下发 Yjs 初始状态', async (context) => {
+  const server = createServer((_request, response) => response.end())
+  const graph = {
+    nodes: [{ id: 'node-http', type: 'text', position: { x: 40, y: 20 }, data: { kind: 'text', label: 'HTTP', content: 'HTTP' } }],
+    edges: [],
+  }
+  const productStore = {
+    async readProject() { return { document: graph, revision: 1 } },
+    async canEditProject() { return true },
+    async loadCanvasCollaboration() { return { graph, graphRevision: 1, updates: [] } },
+  }
+  const hub = createProjectRealtimeHub({ server, ticketSecret: 'test-secret', productStore })
+  await listen(server)
+  const address = server.address()
+  const ticket = issueRealtimeTicket({ userId: 'user-1', projectId: 'project-1', origin: testOrigin, secret: 'test-secret' })
+  const socket = new WebSocket(
+    `ws://127.0.0.1:${address.port}/api/realtime?projectId=project-1&ticket=${encodeURIComponent(ticket)}`,
+    { origin: testOrigin },
+  )
+  context.after(async () => {
+    socket.close()
+    await hub.close()
+    await new Promise((resolve) => server.close(resolve))
+  })
+
+  const [ready, initialState] = await nextMessages(socket, 2)
+  assert.deepEqual(ready, { type: 'realtime.ready', projectId: 'project-1' })
+  const document = new Y.Doc()
+  Y.applyUpdate(document, Buffer.from(initialState.update, 'base64'))
+  assert.equal(document.getMap('nodes').get('node-http').value.position.x, 40)
+})
+
 test('编辑者的 CRDT 增量只转发给同项目的其他连接', async (context) => {
   const server = createServer((_request, response) => response.end())
   const productStore = {
@@ -105,7 +139,8 @@ test('编辑者的 CRDT 增量只转发给同项目的其他连接', async (cont
   await listen(server)
   const address = server.address()
   const connect = (userId) => new WebSocket(
-    `ws://127.0.0.1:${address.port}/api/realtime?projectId=project-1&ticket=${encodeURIComponent(issueRealtimeTicket({ userId, projectId: 'project-1', secret: 'test-secret' }))}`,
+    `ws://127.0.0.1:${address.port}/api/realtime?projectId=project-1&ticket=${encodeURIComponent(issueRealtimeTicket({ userId, projectId: 'project-1', origin: testOrigin, secret: 'test-secret' }))}`,
+    { origin: testOrigin },
   )
   const sender = connect('editor-1')
   const receiver = connect('editor-2')
@@ -145,7 +180,8 @@ test('API 重启后向新连接补发已持久化的 Yjs 状态', async () => {
     return { server, hub, port: server.address().port }
   }
   const connect = (port) => new WebSocket(
-    `ws://127.0.0.1:${port}/api/realtime?projectId=project-restart&ticket=${encodeURIComponent(issueRealtimeTicket({ userId: owner.id, projectId: 'project-restart', secret: 'test-secret' }))}`,
+    `ws://127.0.0.1:${port}/api/realtime?projectId=project-restart&ticket=${encodeURIComponent(issueRealtimeTicket({ userId: owner.id, projectId: 'project-restart', origin: testOrigin, secret: 'test-secret' }))}`,
+    { origin: testOrigin },
   )
 
   const first = await createRunningHub(store)
@@ -232,7 +268,8 @@ test('房间初始化暂时失败后，下一次连接会重新加载', async (c
   await listen(server)
   const address = server.address()
   const connect = () => new WebSocket(
-    `ws://127.0.0.1:${address.port}/api/realtime?projectId=project-1&ticket=${encodeURIComponent(issueRealtimeTicket({ userId: 'user-1', projectId: 'project-1', secret: 'test-secret' }))}`,
+    `ws://127.0.0.1:${address.port}/api/realtime?projectId=project-1&ticket=${encodeURIComponent(issueRealtimeTicket({ userId: 'user-1', projectId: 'project-1', origin: testOrigin, secret: 'test-secret' }))}`,
+    { origin: testOrigin },
   )
   context.after(async () => {
     await hub.close()
@@ -263,7 +300,8 @@ test('最后一个客户端离开后释放空闲房间', async (context) => {
   await listen(server)
   const address = server.address()
   const connect = () => new WebSocket(
-    `ws://127.0.0.1:${address.port}/api/realtime?projectId=project-1&ticket=${encodeURIComponent(issueRealtimeTicket({ userId: 'user-1', projectId: 'project-1', secret: 'test-secret' }))}`,
+    `ws://127.0.0.1:${address.port}/api/realtime?projectId=project-1&ticket=${encodeURIComponent(issueRealtimeTicket({ userId: 'user-1', projectId: 'project-1', origin: testOrigin, secret: 'test-secret' }))}`,
+    { origin: testOrigin },
   )
   context.after(async () => {
     await hub.close()

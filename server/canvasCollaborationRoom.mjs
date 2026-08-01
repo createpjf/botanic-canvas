@@ -33,6 +33,20 @@ function replaceRecords(records, values) {
   values.forEach((value, order) => records.set(value.id, { order, value: clone(value) }))
 }
 
+function valuesFromRecords(records) {
+  return [...records.values()]
+    .filter((record) => record && !record.deleted && record.value)
+    .sort((left, right) => (
+      (Number.isInteger(left.order) ? left.order : Number.MAX_SAFE_INTEGER)
+      - (Number.isInteger(right.order) ? right.order : Number.MAX_SAFE_INTEGER)
+    ))
+    .map((record) => clone(record.value))
+}
+
+function sameGraph(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
 function materializeRecords(current, records, changedIds, { preserveMedia = false } = {}) {
   const byId = new Map(current.map((item) => [item.id, clone(item)]))
   const orderById = new Map(current.map((item, index) => [item.id, index]))
@@ -78,6 +92,11 @@ export function createCanvasCollaborationRoom({ state, append, compact, compactE
   if (state.snapshot) Y.applyUpdate(document, updateFromBase64(state.snapshot))
   for (const update of state.updates ?? []) Y.applyUpdate(document, updateFromBase64(update))
   const authoritative = collaborativeGraph(state.graph)
+  const restored = {
+    nodes: valuesFromRecords(document.getMap('nodes')),
+    edges: valuesFromRecords(document.getMap('edges')),
+  }
+  let needsCompaction = Boolean(state.snapshot || state.updates?.length) && !sameGraph(restored, authoritative)
   document.transact(() => {
     replaceRecords(document.getMap('nodes'), authoritative.nodes)
     replaceRecords(document.getMap('edges'), authoritative.edges)
@@ -119,7 +138,8 @@ export function createCanvasCollaborationRoom({ state, append, compact, compactE
     replaceBaseGraph(nextGraph, actorId) {
       if (!Array.isArray(nextGraph?.nodes) || !Array.isArray(nextGraph?.edges)) throw new TypeError('画布图谱格式无效。')
       const run = applyChain.then(async () => {
-        const changed = JSON.stringify(graph) !== JSON.stringify(nextGraph)
+        const changed = !sameGraph(graph, nextGraph)
+        if (!changed && !needsCompaction) return { changed: false, graph: clone(graph) }
         graph = clone(nextGraph)
         const synchronized = collaborativeGraph(nextGraph)
         document.transact(() => {
@@ -130,6 +150,7 @@ export function createCanvasCollaborationRoom({ state, append, compact, compactE
           snapshot: updateToBase64(Y.encodeStateAsUpdate(document)),
           graph: clone(graph),
         }, actorId)
+        needsCompaction = false
         return { changed, graph: clone(graph) }
       })
       applyChain = run.catch(() => undefined)

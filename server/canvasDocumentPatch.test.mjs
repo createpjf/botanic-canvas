@@ -39,3 +39,24 @@ test('画布补丁可删除边，且不会影响节点', () => {
   assert.deepEqual(next.edges, [])
   assert.deepEqual(next.nodes, document.nodes)
 })
+
+test('协作占位节点缺少媒体引用时保留服务端已有图片', () => {
+  const current = {
+    ...document,
+    nodes: [{
+      id: 'result-1', type: 'result', position: { x: 10, y: 20 },
+      data: { kind: 'result', label: '候选', image: '/api/media/media-1' },
+    }],
+  }
+  const next = applyCanvasDocumentPatch(current, {
+    nodes: {
+      upsert: [{
+        id: 'result-1', type: 'result', position: { x: 80, y: 120 },
+        data: { kind: 'result', label: '候选' },
+      }],
+    },
+  })
+
+  assert.equal(next.nodes[0].position.x, 80)
+  assert.equal(next.nodes[0].data.image, '/api/media/media-1')
+})
