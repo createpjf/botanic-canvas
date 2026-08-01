@@ -38,7 +38,9 @@ export const serverPersistenceEnabled = import.meta.env.VITE_PERSISTENCE_MODE ==
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
 const supabasePublishableKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ?? import.meta.env.VITE_SUPABASE_ANON_KEY
 // Railway 全量部署时，访问码只发给同源 API，浏览器不再连接 Supabase。
-const localAccessTokenAuth = import.meta.env.VITE_AUTH_PROVIDER === 'access-token'
+const configuredAuthProvider = import.meta.env.VITE_AUTH_PROVIDER
+const localAccessTokenAuth = configuredAuthProvider === 'access-token'
+export const hybridAuthEnabled = configuredAuthProvider === 'hybrid'
 export const supabaseAuthEnabled = !localAccessTokenAuth && serverPersistenceEnabled && Boolean(supabaseUrl && supabasePublishableKey)
 const initialAuthFlowType = typeof window === 'undefined'
   ? null
@@ -233,7 +235,16 @@ export async function readProductSession() {
       supabase.auth.getSession(),
       '登录恢复超时，请重新登录。',
     )
-    if (!data.session) return undefined
+    if (!data.session) {
+      if (!hybridAuthEnabled) return undefined
+      try {
+        const response = await productRequest<{ user: ProductUser | null }>('/api/session')
+        return response.user ?? undefined
+      } catch (error) {
+        if (error instanceof ProductApiError && error.status === 401) return undefined
+        throw error
+      }
+    }
     // POST 只负责补齐 <img> 的同源 Cookie；失败时不应把已登录用户踢回登录页。
     const fallbackUser = sessionUserFallback(data.session.user)
     void syncMediaSessionCookie(data.session.access_token).catch(() => undefined)
@@ -258,7 +269,15 @@ export async function readProductSession() {
   }
 }
 
-export async function createProductSession(input: string | { email: string; password: string }) {
+export async function createProductSession(input: string | { email: string; password: string } | { accessToken: string }) {
+  if (typeof input === 'object' && 'accessToken' in input) {
+    if (!hybridAuthEnabled) throw new ProductApiError('当前环境未启用迁移登录。', 400, 'HYBRID_AUTH_REQUIRED')
+    await supabase?.auth.signOut().catch(() => undefined)
+    const response = await productRequest<{ user: ProductUser }>('/api/session', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accessToken: input.accessToken }),
+    })
+    return response.user
+  }
   if (supabase) {
     if (typeof input === 'string') throw new ProductApiError('请使用邮箱和密码登录。', 400, 'SUPABASE_AUTH_REQUIRED')
     const { data, error } = await supabase.auth.signInWithPassword({ email: input.email, password: input.password })

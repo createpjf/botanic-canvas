@@ -63,7 +63,7 @@ import { getGenerationServiceHealth } from './lib/generationApi'
 import { refinePrompt } from './lib/promptRefinementApi'
 import { connectCanvasCollaboration, type CanvasCollaboration } from './lib/projectCollaboration'
 import { createCanvasProject, deleteCanvasDocument, flushPendingCanvasDocumentWrites, readCanvasProjectSummaries, renameCanvasProject, syncPendingCanvasDrafts } from './lib/db'
-import { ProductApiError, clearProductSession, completeProductPasswordSetup, createProductSession, enrollProductMfa, inviteWorkspaceMember, listWorkspaceAuditEvents, listWorkspaceMembers, productPasswordSetupRequired, readProductMfaStatus, readProductSession, removeProductMfa, serverPersistenceEnabled, signOutOtherProductSessions, supabaseAuthEnabled, updateProductPassword, updateWorkspaceMember, verifyProductMfa, type ProductUser } from './lib/productSession'
+import { ProductApiError, clearProductSession, completeProductPasswordSetup, createProductSession, enrollProductMfa, hybridAuthEnabled, inviteWorkspaceMember, listWorkspaceAuditEvents, listWorkspaceMembers, productPasswordSetupRequired, readProductMfaStatus, readProductSession, removeProductMfa, serverPersistenceEnabled, signOutOtherProductSessions, supabaseAuthEnabled, updateProductPassword, updateWorkspaceMember, verifyProductMfa, type ProductUser } from './lib/productSession'
 import { createEmptyCanvasDocument } from './data/seed'
 import { useCanvasStore } from './store/canvasStore'
 import type { WorkspaceProject } from './components/WorkspaceViews'
@@ -6559,8 +6559,10 @@ function App() {
   const [accessToken, setAccessToken] = useState('')
   const [password, setPassword] = useState('')
   const [passwordConfirmation, setPasswordConfirmation] = useState('')
+  const [authMethod, setAuthMethod] = useState<'account' | 'legacy'>('account')
   const [needsPasswordSetup] = useState(() => productPasswordSetupRequired())
   const [message, setMessage] = useState('')
+  const useLegacyToken = hybridAuthEnabled && authMethod === 'legacy'
 
   useEffect(() => {
     if (!serverPersistenceEnabled) return
@@ -6600,11 +6602,13 @@ function App() {
 
   const signIn = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (!accessToken.trim() || (supabaseAuthEnabled && !password)) return
+    if (!accessToken.trim() || (!useLegacyToken && supabaseAuthEnabled && !password)) return
     setState('checking')
     setMessage('')
     try {
-      const session = await createProductSession(supabaseAuthEnabled
+      const session = await createProductSession(useLegacyToken
+        ? { accessToken: accessToken.trim() }
+        : supabaseAuthEnabled
         ? { email: accessToken.trim(), password }
         : accessToken.trim())
       setUser(session)
@@ -6660,17 +6664,23 @@ function App() {
             {passwordConfirmation && password !== passwordConfirmation ? <small role="alert">两次输入的密码不一致。</small> : message ? <small role="alert">{message}</small> : null}
             <button type="submit" disabled={password.length < 8 || password !== passwordConfirmation}>保存并进入工作台</button>
           </form> : <form onSubmit={signIn}>
-            <p>{supabaseAuthEnabled ? '使用工作区账号登录。' : '输入管理员提供的访问令牌。'}</p>
+            <p>{useLegacyToken ? '迁移期间仍可使用原访问令牌。' : supabaseAuthEnabled ? '使用工作区账号登录。' : '输入管理员提供的访问令牌。'}</p>
             <label>
-              <span>{supabaseAuthEnabled ? '邮箱' : '访问令牌'}</span>
-              <input autoComplete={supabaseAuthEnabled ? 'email' : 'current-password'} type={supabaseAuthEnabled ? 'email' : 'password'} value={accessToken} onChange={(event) => setAccessToken(event.target.value)} placeholder={supabaseAuthEnabled ? 'name@company.com' : '粘贴访问令牌'} />
+              <span>{useLegacyToken ? '访问令牌' : supabaseAuthEnabled ? '邮箱' : '访问令牌'}</span>
+              <input autoComplete={useLegacyToken || !supabaseAuthEnabled ? 'current-password' : 'email'} type={useLegacyToken || !supabaseAuthEnabled ? 'password' : 'email'} value={accessToken} onChange={(event) => setAccessToken(event.target.value)} placeholder={useLegacyToken || !supabaseAuthEnabled ? '粘贴访问令牌' : 'name@company.com'} />
             </label>
-            {supabaseAuthEnabled ? <label>
+            {supabaseAuthEnabled && !useLegacyToken ? <label>
               <span>密码</span>
               <input autoComplete="current-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="输入密码" />
             </label> : null}
             {message ? <small role="alert">{message}</small> : null}
             <button type="submit">进入工作台</button>
+            {hybridAuthEnabled ? <button className="product-access__alternate" type="button" onClick={() => {
+              setAuthMethod(useLegacyToken ? 'account' : 'legacy')
+              setAccessToken('')
+              setPassword('')
+              setMessage('')
+            }}>{useLegacyToken ? '返回邮箱登录' : '使用旧访问令牌'}</button> : null}
           </form>
         )}
         {user ? <small>{user.name}</small> : null}
