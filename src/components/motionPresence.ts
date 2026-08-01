@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 export type MotionPhase = 'enter' | 'open' | 'exit'
 
@@ -34,21 +34,21 @@ export function useRetainedValue<T>(value: T | null | undefined) {
   return value ?? retained.current
 }
 
-export function useRestoreFocus(open: boolean) {
+export function useRestoreFocus(open: boolean, fallbackTarget: HTMLElement | null = null) {
   const returnFocus = useRef<HTMLElement | null>(null)
   const wasOpen = useRef(false)
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     let frame = 0
     if (open && !wasOpen.current) {
       returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
     } else if (!open && wasOpen.current) {
-      const target = returnFocus.current
+      const target = fallbackTarget?.isConnected ? fallbackTarget : returnFocus.current
       frame = window.requestAnimationFrame(() => {
         if (target?.isConnected) target.focus({ preventScroll: true })
       })
     }
     wasOpen.current = open
     return () => window.cancelAnimationFrame(frame)
-  }, [open])
+  }, [fallbackTarget, open])
 }

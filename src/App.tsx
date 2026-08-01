@@ -2321,6 +2321,11 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
   const [miniMapOpen, setMiniMapOpen] = useState(false)
   const [accountMenuAnchor, setAccountMenuAnchor] = useState<AccountMenuAnchor | null>(null)
   const [accountDialog, setAccountDialog] = useState<'profile' | 'security' | 'members' | 'audit' | null>(null)
+  const accountTriggerRef = useRef<HTMLButtonElement>(null)
+  const accountMenuPresence = useMotionPresence(Boolean(accountMenuAnchor), 180)
+  const visibleAccountMenuAnchor = useRetainedValue(accountMenuAnchor)
+  const accountDialogPresence = useMotionPresence(Boolean(accountDialog), 220)
+  const visibleAccountDialog = useRetainedValue(accountDialog)
   const [isTouchTablet, setIsTouchTablet] = useState(false)
   const [zoomMode, setZoomMode] = useState(() => canvasZoomMode(document.viewport.zoom))
   const [expandedResultGroupIds, setExpandedResultGroupIds] = useState<Set<string>>(() => new Set())
@@ -4035,7 +4040,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
               <button className={templatesOpen ? 'dock__button is-active' : 'dock__button'} onClick={() => { closeWorkbenchPanels(); setTemplatesOpen(true) }} aria-label="模板"><FigmaIcon src={templatesIcon} /></button>
               <button className={historyOpen ? 'dock__button is-active' : 'dock__button'} onClick={() => { closeWorkbenchPanels(); setHistoryOpen(true) }} aria-label="画布历史"><FigmaIcon src={historyIcon} /></button>
               <button className={deliveryOpen ? 'dock__button dock__button--delivery is-active' : 'dock__button dock__button--delivery'} onClick={() => { closeWorkbenchPanels(); setDeliveryOpen(true) }} aria-label="投放交付"><ArrowUpRightIcon /></button>
-              <button className={accountMenuAnchor ? 'dock__account is-active' : 'dock__account'} aria-label="打开账户设置" aria-expanded={Boolean(accountMenuAnchor)} onClick={(event) => {
+              <button ref={accountTriggerRef} className={accountMenuAnchor ? 'dock__account is-active' : 'dock__account'} aria-label="打开账户设置" aria-expanded={Boolean(accountMenuAnchor)} onClick={(event) => {
                 if (accountMenuAnchor) {
                   setAccountMenuAnchor(null)
                   return
@@ -4462,9 +4467,10 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
         {undoPresence.present && visibleUndoAction ? <UndoToast label={visibleUndoAction.label} phase={undoPresence.phase} onUndo={undoLastAction} /> : null}
       </section>
 
-      {accountMenuAnchor ? <AccountMenu
+      {accountMenuPresence.present && visibleAccountMenuAnchor ? <AccountMenu
         user={currentUser}
-        anchor={accountMenuAnchor}
+        anchor={visibleAccountMenuAnchor}
+        phase={accountMenuPresence.phase}
         onOpenProfile={() => { setAccountMenuAnchor(null); if (currentUser) setAccountDialog('profile') }}
         onOpenSecurity={() => { setAccountMenuAnchor(null); if (currentUser) setAccountDialog('security') }}
         onOpenMembers={() => { setAccountMenuAnchor(null); if (currentUser?.role === 'owner') setAccountDialog('members') }}
@@ -4472,28 +4478,35 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
         onSignOut={onSignOut ? async () => { setAccountMenuAnchor(null); await onSignOut() } : undefined}
         onClose={() => setAccountMenuAnchor(null)}
       /> : null}
-      {currentUser && (accountDialog === 'profile' || accountDialog === 'security') ? <AccountDetailsDialog
-        mode={accountDialog}
+      {currentUser && accountDialogPresence.present && (visibleAccountDialog === 'profile' || visibleAccountDialog === 'security') ? <AccountDetailsDialog
+        mode={visibleAccountDialog}
         user={currentUser}
+        phase={accountDialogPresence.phase}
+        returnFocusTarget={accountTriggerRef.current}
         onChangePassword={updateProductPassword}
         onReadMfaStatus={readProductMfaStatus}
         onEnrollMfa={enrollProductMfa}
         onVerifyMfa={verifyProductMfa}
         onRemoveMfa={removeProductMfa}
         onSignOutOtherSessions={signOutOtherProductSessions}
-        onClose={() => setAccountDialog(null)}
+        onModeChange={setAccountDialog}
+        onClose={() => { setAccountDialog(null); window.setTimeout(() => window.document.querySelector<HTMLButtonElement>('button[aria-label="打开账户设置"]')?.focus({ preventScroll: true }), 240) }}
       /> : null}
-      {currentUser?.role === 'owner' && accountDialog === 'members' ? <WorkspaceMembersDialog
+      {currentUser?.role === 'owner' && accountDialogPresence.present && visibleAccountDialog === 'members' ? <WorkspaceMembersDialog
         currentUser={currentUser}
+        phase={accountDialogPresence.phase}
+        returnFocusTarget={accountTriggerRef.current}
         onListMembers={listWorkspaceMembers}
         onInviteMember={inviteWorkspaceMember}
         onUpdateMember={updateWorkspaceMember}
-        onClose={() => setAccountDialog(null)}
+        onClose={() => { setAccountDialog(null); window.setTimeout(() => window.document.querySelector<HTMLButtonElement>('button[aria-label="打开账户设置"]')?.focus({ preventScroll: true }), 240) }}
       /> : null}
-      {currentUser?.role === 'owner' && accountDialog === 'audit' ? <WorkspaceAuditDialog
+      {currentUser?.role === 'owner' && accountDialogPresence.present && visibleAccountDialog === 'audit' ? <WorkspaceAuditDialog
+        phase={accountDialogPresence.phase}
+        returnFocusTarget={accountTriggerRef.current}
         onListEvents={listWorkspaceAuditEvents}
         onListMembers={listWorkspaceMembers}
-        onClose={() => setAccountDialog(null)}
+        onClose={() => { setAccountDialog(null); window.setTimeout(() => window.document.querySelector<HTMLButtonElement>('button[aria-label="打开账户设置"]')?.focus({ preventScroll: true }), 240) }}
       /> : null}
 
       {creativeAssistantEnabled && agentOpen ? <AgentPanel message={assistantMessage} onClose={() => setAgentOpen(false)} /> : null}
