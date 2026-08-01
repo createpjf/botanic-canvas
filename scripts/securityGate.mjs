@@ -16,7 +16,8 @@ const allowedEnvironmentFiles = new Set(['.env.example'])
 export function securityGateFindings(files, readText) {
   const findings = []
   for (const file of files) {
-    if ((file === '.env' || file.startsWith('.env.')) && !allowedEnvironmentFiles.has(file)) {
+    const basename = file.split('/').pop() ?? file
+    if ((basename === '.env' || basename.startsWith('.env.')) && !allowedEnvironmentFiles.has(basename)) {
       findings.push(`${file}: 环境密钥文件不应提交`)
       continue
     }
