@@ -22,7 +22,7 @@ UI（App / components）
 | 画布应用模块 | `src/store/` | 画布命令、状态与任务生命周期 | `domain`、`lib`、种子数据 |
 | 领域契约 | `src/domain/` | 画布数据、生成结果放置等纯规则 | 类型依赖与纯计算，不依赖 UI、Store、网络或存储 |
 | 浏览器基础设施 | `src/lib/` | 会话、生成请求、项目文档与离线草稿接口 | `domain`、浏览器/网络 Adapter，不依赖 UI 或 Store |
-| Node API | `server/index.mjs` | 鉴权后的 HTTP 接口 | 队列、处理器、运行时组合根 |
+| Node API | `server/index.mjs` | 鉴权后的 HTTP 与 WebSocket 接口 | 队列、处理器、运行时组合根 |
 | 生成处理器 | `server/generationProcessor.mjs` | `processGenerationJob(jobId)` | 注入的 ProductStore、Media 与 Provider |
 | Adapter | `server/*Store.mjs`、`server/objectStore.mjs` 等 | 产品存储、媒体、队列、第三方图像能力 | 各自外部系统；由 `server/runtime.mjs` 选择并组装 |
 
@@ -44,6 +44,28 @@ H3 的 MP4 与历史图片共用授权 URL，但历史缺少 `mediaKind` 时始�
 - 远端成功输出可以纠正本地空节点或旧失败状态。
 - 本地草稿不能覆盖更新的远端任务结果；合并任务结果时保留当前画布布局。
 - 媒体通过稳定的同源引用进入画布，组件不接触对象存储凭据。
+- WebSocket 推送 `{ projectId, revision, graphRevision, updatedAt }` 失效通知，并转发节点/连线的 Yjs 增量；浏览器仍通过项目文档接口读取项目元数据与兼容视图。
+- WebSocket 使用短期、项目级签名票据鉴权；Supabase JWT、访问码与媒体凭据都不能出现在连接 URL 中。
+- Yjs 不同步图片/视频字节、本机选择态或视角，也不决定生成任务、历史版本与同 Prompt 的产品冲突。
+
+## 实时同步
+
+`src/lib/projectCollaboration.ts` 是协作图谱的单一入口，组合 `src/lib/projectRealtime.ts` 的连接重试
+与 `src/domain/collaborativeGraph.ts` 的 Yjs 增量。CRDT 只拥有节点、连线的即时协作；视角与选择态归本机 UI，
+媒体与任务结果归原有持久化模块。`server/realtimeHub.mjs` 只允许 owner/editor 发布增量，先经
+`server/canvasCollaborationRoom.mjs` 持久化成功，再按项目转发。项目元数据使用 `revision`，独立画布图谱使用
+`graphRevision`；HTTP 写入只有在图谱确实变化时才校验后者，避免重命名等元数据操作误伤实时协作。
+写入成功后才发布 `project.updated`。本地存在未同步草稿时，
+`src/lib/db.ts` 会拒绝远端整份覆盖，网络恢复或页面重新聚焦仍作为 WebSocket 之外的降级路径。
+
+`canvas_graphs` 保存可直接读取的节点/连线物化视图与压缩快照，`canvas_graph_updates` 按顺序保存 Yjs 增量。
+API 重启后用快照与增量重建房间；累计 64 条后压缩，避免日志无限增长。旧项目首次读取或服务启动时会从
+`projects.document.nodes/edges` 自动建立图谱，读取接口再把独立图谱覆盖进兼容项目文档，因此历史项目和旧客户端
+不需要一次性迁移。生成任务、媒体输出与历史回填仍以 ProductStore/Worker 的持久化结果为权威，Yjs 不参与
+任务状态判断，也不能用缺少媒体字段的临时节点覆盖已有图片或视频。
+
+当前房间在单个 API 实例内广播，持久化状态支持重启恢复。若未来横向扩容多个 API 实例，需要在相同 seam 后
+增加 Redis Pub/Sub 或等价跨实例广播；不应让 UI 感知实例拓扑。
 
 ## 自动护栏
 

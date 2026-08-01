@@ -21,6 +21,8 @@
     "postgres": "^3.4.9",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
+    "ws": "^8.21.1",
+    "yjs": "^13.6.31",
     "zustand": "^5.0.6"
   },
   "devDependencies": {

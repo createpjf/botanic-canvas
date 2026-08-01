@@ -1,0 +1,153 @@
+import type { Edge } from '@xyflow/react'
+import * as Y from 'yjs'
+import type { AssetNodeData, CanvasNode, ResultNodeData } from './canvas.ts'
+
+export type CollaborativeGraph = {
+  nodes: CanvasNode[]
+  edges: Edge[]
+}
+
+type GraphRecord<T> = {
+  deleted?: boolean
+  order: number
+  value?: T
+}
+
+type CollaborativeGraphOptions = {
+  initialGraph: CollaborativeGraph
+  onUpdate: (update: Uint8Array) => void
+  onRemoteGraph: (graph: CollaborativeGraph) => void
+}
+
+const localOrigin = Symbol('canvas-local')
+const remoteOrigin = Symbol('canvas-remote')
+
+function clone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T
+}
+
+function collaborativeNode(node: CanvasNode): CanvasNode {
+  const normalized = clone(node)
+  delete normalized.selected
+  if (normalized.type === 'result' && 'selected' in normalized.data) {
+    delete normalized.data.selected
+  }
+  if (normalized.type === 'asset' || normalized.type === 'result') {
+    const { image: _mediaReference, ...data } = normalized.data as AssetNodeData | ResultNodeData
+    return { ...normalized, data } as CanvasNode
+  }
+  return normalized
+}
+
+function normalizedGraph(graph: CollaborativeGraph): CollaborativeGraph {
+  return {
+    nodes: graph.nodes.map(collaborativeNode),
+    edges: graph.edges.map((edge) => clone(edge)),
+  }
+}
+
+function equal(left: unknown, right: unknown) {
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
+function updateRecords<T extends { id: string }>(
+  records: Y.Map<GraphRecord<T>>,
+  current: T[],
+  next: T[],
+) {
+  const currentById = new Map(current.map((item) => [item.id, item]))
+  const nextById = new Map(next.map((item) => [item.id, item]))
+  for (const item of current) {
+    if (!nextById.has(item.id)) records.set(item.id, { deleted: true, order: -1 })
+  }
+  next.forEach((item, order) => {
+    const previous = currentById.get(item.id)
+    if (!previous || !equal(previous, item) || current.indexOf(previous) !== order) {
+      records.set(item.id, { order, value: clone(item) })
+    }
+  })
+}
+
+function applyRecords<T extends { id: string }>(
+  current: T[],
+  records: Y.Map<GraphRecord<T>>,
+  changedIds: Set<string>,
+) {
+  const byId = new Map(current.map((item) => [item.id, item]))
+  const orderById = new Map(current.map((item, order) => [item.id, order]))
+  for (const id of changedIds) {
+    const record = records.get(id)
+    if (!record || record.deleted || !record.value) {
+      byId.delete(id)
+      orderById.delete(id)
+      continue
+    }
+    byId.set(id, clone(record.value))
+    orderById.set(id, record.order)
+  }
+  return [...byId.values()].sort((left, right) => (
+    (orderById.get(left.id) ?? Number.MAX_SAFE_INTEGER)
+    - (orderById.get(right.id) ?? Number.MAX_SAFE_INTEGER)
+    || left.id.localeCompare(right.id)
+  ))
+}
+
+/**
+ * 节点与连线的会话级 CRDT 模块。
+ *
+ * 只发布当前会话实际发生的图谱增量，不把 HTTP 恢复的整份项目文档写进 Y.Doc。
+ * 因此任务、媒体、历史和本机选择态仍由原有权威模块负责。
+ */
+export function createCollaborativeGraph({
+  initialGraph,
+  onUpdate,
+  onRemoteGraph,
+}: CollaborativeGraphOptions) {
+  const document = new Y.Doc()
+  const nodes = document.getMap<GraphRecord<CanvasNode>>('nodes')
+  const edges = document.getMap<GraphRecord<Edge>>('edges')
+  let graph = normalizedGraph(initialGraph)
+  const changedNodeIds = new Set<string>()
+  const changedEdgeIds = new Set<string>()
+
+  nodes.observe((event) => {
+    for (const id of event.keysChanged) changedNodeIds.add(id)
+  })
+  edges.observe((event) => {
+    for (const id of event.keysChanged) changedEdgeIds.add(id)
+  })
+  document.on('update', (update, origin) => {
+    if (origin === localOrigin) onUpdate(update)
+  })
+  document.on('afterTransaction', (transaction) => {
+    if (transaction.origin !== remoteOrigin) {
+      changedNodeIds.clear()
+      changedEdgeIds.clear()
+      return
+    }
+    graph = {
+      nodes: applyRecords(graph.nodes, nodes, changedNodeIds),
+      edges: applyRecords(graph.edges, edges, changedEdgeIds),
+    }
+    changedNodeIds.clear()
+    changedEdgeIds.clear()
+    onRemoteGraph(clone(graph))
+  })
+
+  return {
+    replaceLocalGraph(nextGraph: CollaborativeGraph) {
+      const next = normalizedGraph(nextGraph)
+      document.transact(() => {
+        updateRecords(nodes, graph.nodes, next.nodes)
+        updateRecords(edges, graph.edges, next.edges)
+      }, localOrigin)
+      graph = next
+    },
+    applyRemoteUpdate(update: Uint8Array) {
+      Y.applyUpdate(document, update, remoteOrigin)
+    },
+    destroy() {
+      document.destroy()
+    },
+  }
+}

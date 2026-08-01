@@ -5,6 +5,7 @@ import { defaultGenerationModels } from '../domain/canvas'
 import { normalizeAssetCollection, normalizeAssetRecord } from '../domain/assets'
 import { findOpenGeneratePosition, planGenerateNodeCreation } from '../domain/generateNodeCreation'
 import { planGenerationOutputPlacement } from '../domain/generationOutputPlacement'
+import { resolveRemoteCanvasRefresh } from '../domain/remoteDocumentSync'
 import { assignVideoInputRoles } from '../domain/videoGeneration'
 import { summarizeWorkflowTemplate } from '../domain/workflowTemplates'
 import type {
@@ -39,6 +40,8 @@ import {
   ensureGlobalAssetLibrary,
   readGlobalWorkflowTemplateLibrary,
   readCanvasDocument,
+  readLatestCanvasDocument,
+  persistAcceptedRemoteCanvasDocument,
   refreshCanvasDocumentFromRemote,
   renameCanvasProject,
   writeGlobalAssetLibrary,
@@ -122,12 +125,14 @@ type CanvasStore = {
   undoSnapshot: CanvasDocument | null
   hydrate: () => Promise<void>
   openDocument: (documentId: string) => Promise<boolean>
+  refreshDocumentFromRemote: () => Promise<boolean>
   openNewDocument: (document: CanvasDocument) => void
   renameDocument: (name: string) => Promise<void>
   setNodes: (nodes: CanvasNode[]) => void
   setNodesTransient: (nodes: CanvasNode[]) => void
   setEdges: (edges: Edge[]) => void
   setViewport: (viewport: Viewport) => void
+  applyCollaborativeGraph: (graph: { nodes: CanvasNode[]; edges: Edge[] }) => void
   selectNode: (nodeId: string | null) => void
   addAssetToCanvas: (assetId: string, position?: XYPosition, connectToGenerateId?: string) => void
   addUploadedAssets: (assets: UploadedAssetInput[]) => void
@@ -2461,6 +2466,42 @@ function historyName(count: number, kind: GenerationCandidate['kind'] = 'generat
   return `${prefix} · v${String(count + 3).padStart(2, '0')}`
 }
 
+function applyRemoteDocumentRefresh(
+  set: (next: Partial<CanvasStore>) => void,
+  get: () => CanvasStore,
+  remoteDocument: CanvasDocument,
+  baselineUpdatedAt: number,
+  hasPendingDraft = false,
+) {
+  const current = get().document
+  const normalizedRemote = settleExpiredGenerationSubmissions(normalizeDocument(remoteDocument)).document
+  const resolved = resolveRemoteCanvasRefresh({
+    current,
+    remote: normalizedRemote,
+    baselineUpdatedAt,
+    hasPendingDraft,
+  })
+  if (!resolved.applied) return false
+
+  stopGenerationPolling()
+  const document = resolved.document
+  const selectedNode = [...document.nodes].reverse().find(
+    (node) => node.selected || (node.type === 'result' && Boolean((node.data as ResultNodeData).selected)),
+  )
+  const recoveredGeneration = persistedGenerationState(document, '已同步其他设备的更新。')
+  set({
+    document,
+    persistenceStatus: 'saved',
+    selectedNodeId: selectedNode?.id ?? null,
+    ...recoveredGeneration.state,
+    assistantMessage: '已同步其他设备的更新。',
+    undoAction: null,
+    undoSnapshot: null,
+  })
+  if (recoveredGeneration.pollJobId) pollGenerationJob(set, get, recoveredGeneration.pollJobId)
+  return true
+}
+
 export const useCanvasStore = create<CanvasStore>((set, get) => ({
   document: seedDocument,
   globalAssets: [],
@@ -2500,7 +2541,11 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
   openDocument: async (documentId) => {
     // 画布本身是打开项目的关键路径；共享素材库仅服务素材面板，不能让它的
     // 网络故障阻塞整个画布恢复。
-    const stored = await readCanvasDocument(documentId)
+    const stored = await readCanvasDocument(documentId, {
+      onRemoteDocument: ({ cachedDocument, remoteDocument }) => {
+        applyRemoteDocumentRefresh(set, get, remoteDocument, cachedDocument.updatedAt)
+      },
+    })
     if (!stored) return false
 
     stopGenerationPolling()
@@ -2565,6 +2610,26 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
       })
       .catch(() => recoverTaskNodeJobs(set, get, documentId))
     return true
+  },
+
+  refreshDocumentFromRemote: async () => {
+    const baseline = get().document
+    if (baseline.id === 'workspace-placeholder') return false
+    try {
+      const latest = await readLatestCanvasDocument(baseline.id)
+      if (!latest.document) return false
+      const applied = applyRemoteDocumentRefresh(
+        set,
+        get,
+        latest.document,
+        baseline.updatedAt,
+        latest.hasPendingDraft,
+      )
+      if (applied) await persistAcceptedRemoteCanvasDocument(latest.document)
+      return applied
+    } catch {
+      return false
+    }
   },
 
   openNewDocument: (document) => {
@@ -2650,6 +2715,44 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
   setViewport: (viewport) => {
     const document = { ...get().document, viewport }
     commit(set, document)
+  },
+
+  applyCollaborativeGraph: ({ nodes, edges }) => {
+    const current = get().document
+    const currentById = new Map(current.nodes.map((node) => [node.id, node]))
+    const synchronizedNodes = nodes.flatMap((node) => {
+      const local = currentById.get(node.id)
+      if ((node.type === 'asset' || node.type === 'result') && !local) {
+        // CRDT 不携带媒体字节；新媒体节点等待紧随其后的权威项目版本回填。
+        return []
+      }
+      const selected = Boolean(local?.selected)
+      const localImage = local?.type === 'asset'
+        ? (local.data as AssetNodeData).image
+        : local?.type === 'result'
+          ? (local.data as ResultNodeData).image
+          : undefined
+      return [{
+        ...node,
+        selected,
+        data: node.type === 'result'
+          ? { ...node.data, ...(localImage ? { image: localImage } : {}), selected }
+          : node.type === 'asset'
+            ? { ...node.data, ...(localImage ? { image: localImage } : {}) }
+          : { ...node.data },
+      } as CanvasNode]
+    }) as CanvasNode[]
+    const synchronizedNodeIds = new Set(synchronizedNodes.map((node) => node.id))
+    const normalizedEdges = normalizeSystemOutputEdges(
+      synchronizedNodes,
+      edges.filter((edge) => synchronizedNodeIds.has(edge.source) && synchronizedNodeIds.has(edge.target)),
+    )
+    const normalizedNodes = normalizeGenerateNodeInputs(synchronizedNodes, normalizedEdges)
+    const selected = normalizedNodes.filter((node) => node.selected)
+    set({
+      document: { ...current, nodes: normalizedNodes, edges: normalizedEdges },
+      selectedNodeId: selected.length === 1 ? selected[0].id : null,
+    })
   },
 
   selectNode: (selectedNodeId) => {

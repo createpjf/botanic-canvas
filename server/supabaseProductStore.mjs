@@ -32,6 +32,13 @@ function projectDocumentSummary(document) {
   return { nodeCount: nodes.length, resultCount: images.length, coverImage: images.at(-1) }
 }
 
+function canvasGraph(document) {
+  return {
+    nodes: Array.isArray(document?.nodes) ? clone(document.nodes) : [],
+    edges: Array.isArray(document?.edges) ? clone(document.edges) : [],
+  }
+}
+
 /**
  * Supabase ProductStore。Auth 由 Supabase 管理；所有服务端数据写入使用 secret
  * key，浏览器凭 JWT 访问时仍受数据库与 Storage RLS 保护。
@@ -157,22 +164,51 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
         .select('role, projects!inner(id, name, updated_at, revision, document)')
         .eq('user_id', userId)
       fail(error)
-      return (data ?? []).map((row) => ({
-        id: row.projects.id,
-        name: row.projects.name,
-        updatedAt: new Date(row.projects.updated_at).getTime(),
-        revision: row.projects.revision,
-        ...projectDocumentSummary(row.projects.document),
-        role: row.role,
-      })).sort((a, b) => b.updatedAt - a.updatedAt)
+      const projectIds = (data ?? []).map((row) => row.projects.id)
+      const graphResult = projectIds.length
+        ? await supabase.from('canvas_graphs').select('project_id, graph, revision, updated_at').in('project_id', projectIds)
+        : { data: [], error: null }
+      fail(graphResult.error)
+      const graphByProject = new Map((graphResult.data ?? []).map((entry) => [entry.project_id, entry]))
+      return (data ?? []).map((row) => {
+        const entry = graphByProject.get(row.projects.id)
+        const document = { ...row.projects.document, ...(entry?.graph ?? canvasGraph(row.projects.document)) }
+        return {
+          id: row.projects.id,
+          name: row.projects.name,
+          updatedAt: Math.max(
+            new Date(row.projects.updated_at).getTime(),
+            entry?.updated_at ? new Date(entry.updated_at).getTime() : 0,
+          ),
+          revision: row.projects.revision,
+          graphRevision: entry?.revision ?? 1,
+          ...projectDocumentSummary(document),
+          role: row.role,
+        }
+      }).sort((a, b) => b.updatedAt - a.updatedAt)
     },
 
     async readProject(userId, projectId) {
       const role = await memberRole(projectId, userId)
       if (!role) return undefined
-      const { data, error } = await supabase.from('projects').select('document, revision').eq('id', projectId).maybeSingle()
+      const [{ data, error }, graphResult] = await Promise.all([
+        supabase.from('projects').select('document, revision, updated_at').eq('id', projectId).maybeSingle(),
+        supabase.from('canvas_graphs').select('graph, revision, updated_at').eq('project_id', projectId).maybeSingle(),
+      ])
       fail(error)
-      return data ? { document: clone(data.document), revision: data.revision } : undefined
+      fail(graphResult.error)
+      if (!data) return undefined
+      const graph = graphResult.data?.graph ?? canvasGraph(data.document)
+      const updatedAt = Math.max(
+        Number(data.document.updatedAt ?? 0),
+        data.updated_at ? new Date(data.updated_at).getTime() : 0,
+        graphResult.data?.updated_at ? new Date(graphResult.data.updated_at).getTime() : 0,
+      )
+      return {
+        document: { ...clone(data.document), ...clone(graph), updatedAt },
+        revision: data.revision,
+        graphRevision: graphResult.data?.revision ?? 1,
+      }
     },
 
     async canEditProject(userId, projectId) {
@@ -180,16 +216,18 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       return role === 'owner' || role === 'editor'
     },
 
-    async writeProject(userId, document, expectedRevision) {
+    async writeProject(userId, document, expectedRevision, expectedGraphRevision) {
       const { data, error } = await supabase.rpc('botanic_write_project_document', {
         p_actor: userId,
         p_document: document,
         p_expected_revision: Number.isInteger(expectedRevision) ? expectedRevision : null,
+        p_expected_graph_revision: Number.isInteger(expectedGraphRevision) ? expectedGraphRevision : null,
       }).single()
       if (error?.code === '40001') throw productError('项目已被其他成员更新，请刷新后再保存。', 'PROJECT_CONFLICT')
+      if (error?.code === 'BG001') throw productError('画布已被其他成员更新，请刷新后再保存。', 'CANVAS_GRAPH_CONFLICT')
       if (error?.code === '42501') throw productError('你没有编辑该项目的权限。', 'PROJECT_WRITE_FORBIDDEN')
       fail(error, '项目保存失败。')
-      return { document: clone(data.document), revision: data.revision, created: data.created }
+      return { document: clone(data.document), revision: data.revision, graphRevision: data.graph_revision, created: data.created }
     },
 
     async deleteProject(userId, projectId) {
@@ -215,6 +253,58 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       const { error: updateError } = await supabase.from('projects').update({ updated_at: new Date().toISOString() }).eq('id', projectId)
       fail(updateError)
       await insertAudit({ actorId, action: 'project.member.upserted', projectId, targetId: userId, detail: { role } })
+    },
+
+    async loadCanvasCollaboration(userId, projectId) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const [{ data: graphEntry, error: graphError }, { data: updates, error: updatesError }] = await Promise.all([
+        supabase.from('canvas_graphs').select('graph, revision, yjs_snapshot, updated_at').eq('project_id', projectId).maybeSingle(),
+        supabase.from('canvas_graph_updates').select('update_base64').eq('project_id', projectId).order('id', { ascending: true }),
+      ])
+      fail(graphError)
+      fail(updatesError)
+      if (!graphEntry) return undefined
+      return {
+        graph: clone(graphEntry.graph),
+        graphRevision: graphEntry.revision,
+        snapshot: graphEntry.yjs_snapshot ?? undefined,
+        updates: (updates ?? []).map((entry) => entry.update_base64),
+        updatedAt: new Date(graphEntry.updated_at).getTime(),
+      }
+    },
+
+    async appendCanvasGraphUpdate(userId, projectId, { update, graph }) {
+      if (typeof update !== 'string' || !update || !Array.isArray(graph?.nodes) || !Array.isArray(graph?.edges)) {
+        throw new TypeError('画布协作更新格式无效。')
+      }
+      const { data, error } = await supabase.rpc('botanic_append_canvas_graph_update', {
+        p_actor: userId,
+        p_project_id: projectId,
+        p_update_base64: update,
+        p_graph: graph,
+      }).single()
+      if (error?.code === '42501') throw productError('你没有编辑该项目的权限。', 'PROJECT_WRITE_FORBIDDEN')
+      fail(error, '画布协作更新保存失败。')
+      return {
+        graphRevision: data.graph_revision,
+        updateCount: data.update_count,
+        updatedAt: new Date(data.updated_at).getTime(),
+      }
+    },
+
+    async compactCanvasGraphUpdates(userId, projectId, { snapshot, graph }) {
+      if (typeof snapshot !== 'string' || !snapshot || !Array.isArray(graph?.nodes) || !Array.isArray(graph?.edges)) {
+        throw new TypeError('画布协作快照格式无效。')
+      }
+      const { data, error } = await supabase.rpc('botanic_compact_canvas_graph_updates', {
+        p_actor: userId,
+        p_project_id: projectId,
+        p_snapshot: snapshot,
+        p_graph: graph,
+      }).single()
+      if (error?.code === '42501') throw productError('你没有编辑该项目的权限。', 'PROJECT_WRITE_FORBIDDEN')
+      fail(error, '画布协作快照保存失败。')
+      return { graphRevision: data.graph_revision, updatedAt: new Date(data.updated_at).getTime() }
     },
 
     async readGlobalAssetLibrary(_userId, id) {
