@@ -1,9 +1,26 @@
-function parseImageDataUrl(dataUrl) {
+function matchesImageSignature(contentType, bytes) {
+  if (contentType === 'image/png') return bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+  if (contentType === 'image/jpeg') return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
+  if (contentType === 'image/webp') return bytes.length >= 12 && bytes.subarray(0, 4).toString('ascii') === 'RIFF' && bytes.subarray(8, 12).toString('ascii') === 'WEBP'
+  return false
+}
+
+function mediaValidationError(message) {
+  const error = new Error(message)
+  error.code = 'MEDIA_VALIDATION_FAILED'
+  return error
+}
+
+function parseImageDataUrl(dataUrl, maximumUploadBytes) {
   if (typeof dataUrl !== 'string') return undefined
   const match = dataUrl.match(/^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=\s]+)$/i)
   if (!match) return undefined
   const bytes = Buffer.from(match[2], 'base64')
-  return bytes.length ? { contentType: match[1].toLowerCase(), bytes } : undefined
+  if (!bytes.length) return undefined
+  if (bytes.length > maximumUploadBytes) throw mediaValidationError(`单个素材不能超过 ${Math.ceil(maximumUploadBytes / 1024 / 1024)}MB。`)
+  const contentType = match[1].toLowerCase()
+  if (!matchesImageSignature(contentType, bytes)) throw mediaValidationError('图片内容与文件类型不匹配。')
+  return { contentType, bytes }
 }
 
 function isRecord(value) {
@@ -72,7 +89,7 @@ async function readObjectBuffer(objectStore, storageKey) {
  * 媒体服务将二进制存 S3、元数据及授权关系存 ProductStore；文档只保存同源媒体 URL。
  * 无对象存储时明确退回 data URL，供本地原型运行，不作为 production 路径。
  */
-export function createMediaService({ productStore, objectStore }) {
+export function createMediaService({ productStore, objectStore, maximumUploadBytes = 8 * 1024 * 1024 }) {
   const enabled = Boolean(objectStore)
 
   async function persistBytes({ ownerId, projectId, bytes, contentType }) {
@@ -94,7 +111,7 @@ export function createMediaService({ productStore, objectStore }) {
   }
 
   async function persistDataUrl({ ownerId, projectId, dataUrl }) {
-    const image = parseImageDataUrl(dataUrl)
+    const image = parseImageDataUrl(dataUrl, maximumUploadBytes)
     if (!image) throw new Error('仅支持 PNG、JPEG 或 WebP 图片存入对象存储。')
     return persistBytes({ ownerId, projectId, bytes: image.bytes, contentType: image.contentType })
   }

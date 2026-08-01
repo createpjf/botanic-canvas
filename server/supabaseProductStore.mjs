@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { createClient } from '@supabase/supabase-js'
 import { isRetryableSupabaseError, retrySupabaseOperation } from './supabaseRetry.mjs'
+import { decodeAuthAssurance } from './authAssurance.mjs'
+import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from './authorization.mjs'
 
 const now = () => Date.now()
 const clone = (value) => structuredClone(value)
@@ -138,10 +140,17 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       return userFromProfile(await profileForAuthUser(data.user))
     },
 
+    async authAssurance(accessToken) {
+      if (!accessToken) return undefined
+      const { data, error } = await supabaseRequest(() => supabase.auth.getUser(accessToken))
+      if (error || !data?.user) return undefined
+      return decodeAuthAssurance(accessToken)
+    },
+
     async createUser(actorId, { email, name, role = 'member' }) {
       const { data: actor, error: actorError } = await supabase.from('profiles').select('workspace_role').eq('id', actorId).maybeSingle()
       fail(actorError)
-      if (actor?.workspace_role !== 'owner') throw productError('只有工作区所有者可以邀请成员。', 'USER_CREATE_FORBIDDEN')
+      assertWorkspacePermission({ role: actor?.workspace_role, status: 'active' }, 'manage-members', 'USER_CREATE_FORBIDDEN')
       const { data, error } = await supabase.auth.admin.inviteUserByEmail(email, {
         data: { display_name: name || email },
         ...(inviteRedirectTo ? { redirectTo: inviteRedirectTo } : {}),
@@ -211,9 +220,18 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       }
     },
 
+    async projectAccess(userId, projectId) {
+      const [{ data: project, error: projectError }, role] = await Promise.all([
+        supabase.from('projects').select('id').eq('id', projectId).maybeSingle(),
+        memberRole(projectId, userId),
+      ])
+      fail(projectError)
+      return { exists: Boolean(project), role }
+    },
+
     async canEditProject(userId, projectId) {
       const role = await memberRole(projectId, userId)
-      return role === 'owner' || role === 'editor'
+      return projectPermissionDecision(role, 'edit') === 'allow'
     },
 
     async writeProject(userId, document, expectedRevision, expectedGraphRevision) {
@@ -231,7 +249,7 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
     },
 
     async deleteProject(userId, projectId) {
-      if (await memberRole(projectId, userId) !== 'owner') throw productError('只有项目所有者可以删除项目。', 'PROJECT_DELETE_FORBIDDEN')
+      assertProjectPermission(await memberRole(projectId, userId), 'delete', 'PROJECT_DELETE_FORBIDDEN')
       const { data: project, error: projectError } = await supabase.from('projects').select('name').eq('id', projectId).maybeSingle()
       fail(projectError)
       if (!project) return false
@@ -244,7 +262,7 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
     },
 
     async addProjectMember(actorId, projectId, userId, role) {
-      if (await memberRole(projectId, actorId) !== 'owner') throw productError('只有项目所有者可以管理成员。', 'PROJECT_MEMBER_FORBIDDEN')
+      assertProjectPermission(await memberRole(projectId, actorId), 'manage-members', 'PROJECT_MEMBER_FORBIDDEN')
       const { data: profile, error: profileError } = await supabase.from('profiles').select('id').eq('id', userId).maybeSingle()
       fail(profileError)
       if (!profile) throw productError('未找到成员。', 'USER_NOT_FOUND')
@@ -316,12 +334,9 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
     },
 
     async writeGlobalAssetLibrary(userId, library) {
-      const { data: membership, error: membershipError } = await supabase
-        .from('project_members').select('role').eq('user_id', userId).in('role', ['owner', 'editor']).limit(1)
-      fail(membershipError)
-      const { count, error: countError } = await supabase.from('projects').select('*', { count: 'exact', head: true })
-      fail(countError)
-      if (!membership?.length && Number(count)) throw productError('你没有编辑品牌素材库的权限。', 'LIBRARY_WRITE_FORBIDDEN')
+      const { data: profile, error: profileError } = await supabase.from('profiles').select('workspace_role').eq('id', userId).maybeSingle()
+      fail(profileError)
+      assertWorkspacePermission({ role: profile?.workspace_role, status: 'active' }, 'manage-library', 'LIBRARY_WRITE_FORBIDDEN')
       const { error } = await supabase.from('global_asset_libraries').upsert({ id: library.id, library, updated_at: new Date().toISOString() }, { onConflict: 'id' })
       fail(error)
       await insertAudit({ actorId: userId, action: 'brand-library.updated', targetId: library.id })
@@ -329,10 +344,9 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
     },
 
     async deleteGlobalAsset(userId, assetId) {
-      const { data: membership, error: membershipError } = await supabase
-        .from('project_members').select('role').eq('user_id', userId).in('role', ['owner', 'editor']).limit(1)
-      fail(membershipError)
-      if (!membership?.length) throw productError('你没有编辑品牌素材库的权限。', 'LIBRARY_WRITE_FORBIDDEN')
+      const { data: profile, error: profileError } = await supabase.from('profiles').select('workspace_role').eq('id', userId).maybeSingle()
+      fail(profileError)
+      assertWorkspacePermission({ role: profile?.workspace_role, status: 'active' }, 'manage-library', 'LIBRARY_WRITE_FORBIDDEN')
       const { data, error } = await supabase.from('global_asset_libraries').select('library').eq('id', 'global-brand-assets').maybeSingle()
       fail(error)
       if (!data) return { deleted: false, library: undefined }
@@ -421,7 +435,13 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
     },
 
     async listAuditEvents(userId, projectId, limit = 100) {
-      if (!await memberRole(projectId, userId)) return undefined
+      const [{ data: project, error: projectError }, role] = await Promise.all([
+        supabase.from('projects').select('id').eq('id', projectId).maybeSingle(),
+        memberRole(projectId, userId),
+      ])
+      fail(projectError)
+      if (!project) return undefined
+      assertProjectPermission(role, 'read-audit', 'PROJECT_AUDIT_FORBIDDEN')
       const { data, error } = await supabase
         .from('audit_events').select('*').eq('project_id', projectId).order('created_at', { ascending: false }).limit(Math.max(1, Math.min(limit, 500)))
       fail(error)
@@ -429,6 +449,27 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
         id: row.id, actorId: row.actor_id, action: row.action, projectId: row.project_id,
         targetId: row.target_id, detail: clone(row.detail), createdAt: new Date(row.created_at).getTime(),
       }))
+    },
+
+    async listWorkspaceAuditEvents(userId, limit = 100) {
+      const { data: profile, error: profileError } = await supabase.from('profiles').select('workspace_role').eq('id', userId).maybeSingle()
+      fail(profileError)
+      assertWorkspacePermission({ role: profile?.workspace_role, status: 'active' }, 'read-audit', 'WORKSPACE_AUDIT_FORBIDDEN')
+      const { data, error } = await supabase
+        .from('audit_events').select('*').order('created_at', { ascending: false }).limit(Math.max(1, Math.min(limit, 500)))
+      fail(error)
+      return (data ?? []).map((row) => ({
+        id: row.id, actorId: row.actor_id, action: row.action, projectId: row.project_id,
+        targetId: row.target_id, detail: clone(row.detail), createdAt: new Date(row.created_at).getTime(),
+      }))
+    },
+
+    async recordSecurityAuditEvent(userId, action, detail = {}) {
+      const { data: profile, error } = await supabase.from('profiles').select('id').eq('id', userId).maybeSingle()
+      fail(error)
+      if (!profile) throw productError('登录状态无效。', 'AUTH_REQUIRED')
+      await insertAudit({ actorId: userId, action, detail })
+      return { action }
     },
 
     async close() {},

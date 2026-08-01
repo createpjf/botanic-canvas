@@ -1,4 +1,6 @@
 import { createClient } from '@supabase/supabase-js'
+import { decodeAuthAssurance } from './authAssurance.mjs'
+import { assertWorkspacePermission } from './authorization.mjs'
 
 function displayName(user) {
   const candidate = user?.user_metadata?.display_name
@@ -31,21 +33,29 @@ export function createSupabaseAuthPostgresStore({ productStore, url, secretKey, 
       if (!accessToken) return undefined
       const { data, error } = await supabase.auth.getUser(accessToken)
       if (error || !data?.user) return undefined
+      const existing = await productStore.readUser(data.user.id)
+      // Supabase 只证明身份，不代表已获得 Botanic 工作区权限。
+      // 除首位 Bootstrap Owner 外，新用户必须先由 Owner 邀请并写入成员表。
+      if (!existing && !isBootstrapOwner(data.user.email)) return undefined
       return productStore.ensureAuthenticatedUser({
         id: data.user.id,
         email: data.user.email,
         name: displayName(data.user),
         roleHint: isBootstrapOwner(data.user.email) ? 'owner' : 'member',
+        statusHint: 'active',
       })
+    },
+
+    async authAssurance(accessToken) {
+      if (!accessToken) return undefined
+      const { data, error } = await supabase.auth.getUser(accessToken)
+      if (error || !data?.user) return undefined
+      return decodeAuthAssurance(accessToken)
     },
 
     async createUser(actorId, { email, name, role = 'member' }) {
       const actor = await productStore.readUser(actorId)
-      if (actor?.role !== 'owner') {
-        const error = new Error('只有工作区所有者可以邀请成员。')
-        error.code = 'USER_CREATE_FORBIDDEN'
-        throw error
-      }
+      assertWorkspacePermission(actor, 'manage-members', 'USER_CREATE_FORBIDDEN')
       const { data, error } = await supabase.auth.admin.inviteUserByEmail(email, {
         data: { display_name: name || email },
         ...(inviteRedirectTo ? { redirectTo: inviteRedirectTo } : {}),
@@ -56,7 +66,19 @@ export function createSupabaseAuthPostgresStore({ productStore, url, secretKey, 
         email,
         name: name || email,
         roleHint: role,
+        statusHint: 'invited',
       })
+    },
+
+    async updateUser(actorId, userId, updates) {
+      const saved = await productStore.updateUser(actorId, userId, updates)
+      if (updates?.status) {
+        const { error } = await supabase.auth.admin.updateUserById(userId, {
+          ban_duration: updates.status === 'disabled' ? '876000h' : 'none',
+        })
+        if (error) throw error
+      }
+      return saved
     },
   }
 }

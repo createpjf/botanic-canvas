@@ -9,6 +9,12 @@ import { createSupabaseObjectStore } from './supabaseObjectStore.mjs'
 import { createSupabaseAuthPostgresStore } from './supabaseAuthPostgresStore.mjs'
 import { createGenerationModelCatalog } from './generationModels.mjs'
 
+function boundedInteger(value, fallback, minimum, maximum) {
+  const parsed = Number(value)
+  if (!Number.isInteger(parsed)) return fallback
+  return Math.min(maximum, Math.max(minimum, parsed))
+}
+
 export function loadLocalEnv(rootDir = process.cwd()) {
   const envPath = resolve(rootDir, '.env')
   if (!existsSync(envPath)) return
@@ -71,6 +77,14 @@ export function runtimeConfig(rootDir = process.cwd()) {
     bootstrapEmail: process.env.SUPABASE_BOOTSTRAP_OWNER_EMAIL ?? process.env.BOTANIC_BOOTSTRAP_EMAIL,
     realtimeTicketSecret: process.env.REALTIME_TICKET_SECRET,
     realtimePublicUrl: process.env.REALTIME_PUBLIC_URL,
+    security: {
+      apiRequestsPerMinute: boundedInteger(process.env.SECURITY_API_REQUESTS_PER_MINUTE, 600, 60, 10_000),
+      generationOutputsPerDay: boundedInteger(process.env.SECURITY_GENERATION_OUTPUTS_PER_DAY, 100, 1, 10_000),
+      memberMutationsPerHour: boundedInteger(process.env.SECURITY_MEMBER_MUTATIONS_PER_HOUR, 20, 1, 1_000),
+      promptRefinementsPerFiveMinutes: boundedInteger(process.env.SECURITY_PROMPT_REFINEMENTS_PER_5_MINUTES, 30, 1, 1_000),
+      realtimeTicketsPerMinute: boundedInteger(process.env.SECURITY_REALTIME_TICKETS_PER_MINUTE, 60, 1, 1_000),
+      requireOwnerMfa: process.env.SECURITY_REQUIRE_OWNER_MFA === 'true',
+    },
     localDataPath: resolve(rootDir, process.env.BOTANIC_DATA_PATH ?? 'server/.data/product.json'),
     s3: {
       endpoint: process.env.S3_ENDPOINT,
@@ -124,7 +138,7 @@ export async function createProductRuntime(config = runtimeConfig()) {
     return {
       config,
       productStore: authenticatedStore,
-      mediaService: createMediaService({ productStore: authenticatedStore, objectStore }),
+      mediaService: createMediaService({ productStore: authenticatedStore, objectStore, maximumUploadBytes: config.maximumReferenceBytes }),
       persistence: usePostgres ? 'postgres' : 'supabase',
       authProvider: 'supabase',
     }
@@ -132,6 +146,6 @@ export async function createProductRuntime(config = runtimeConfig()) {
   const configuredObjectStore = [config.s3.endpoint, config.s3.bucket, config.s3.accessKeyId, config.s3.secretAccessKey].every(Boolean)
   if (config.production && !configuredObjectStore) throw new Error('Railway 媒体存储未配置：请设置 S3_ENDPOINT、S3_BUCKET 与对象存储凭据。')
   const objectStore = configuredObjectStore ? await createObjectStore(config.s3) : undefined
-  const mediaService = createMediaService({ productStore: authenticatedStore, objectStore })
+  const mediaService = createMediaService({ productStore: authenticatedStore, objectStore, maximumUploadBytes: config.maximumReferenceBytes })
   return { config, productStore: authenticatedStore, mediaService, persistence: usePostgres ? 'postgres' : 'file', authProvider: useAccessTokenAuth ? 'access-token' : 'supabase' }
 }

@@ -33,8 +33,10 @@ import { shouldRefreshFromRealtimeEvent } from './domain/realtimeSync'
 import { videoAspectRatioPolicy } from './domain/videoGeneration'
 import { summarizeWorkflowTemplate, type WorkflowTemplateSummary } from './domain/workflowTemplates'
 import { useMotionPresence, useRestoreFocus, useRetainedValue, type MotionPhase } from './components/motionPresence'
+import { AccountDetailsDialog, AccountMenu, WorkspaceMembersDialog, type AccountMenuAnchor } from './components/AccountCenter'
 import type {
   AssetRecord,
+  AssetGroup,
   AssetRole,
   AssetSource,
   AssetNodeData,
@@ -61,7 +63,7 @@ import { getGenerationServiceHealth } from './lib/generationApi'
 import { refinePrompt } from './lib/promptRefinementApi'
 import { connectCanvasCollaboration, type CanvasCollaboration } from './lib/projectCollaboration'
 import { createCanvasProject, deleteCanvasDocument, flushPendingCanvasDocumentWrites, readCanvasProjectSummaries, renameCanvasProject, syncPendingCanvasDrafts } from './lib/db'
-import { ProductApiError, createProductSession, readProductSession, serverPersistenceEnabled, supabaseAuthEnabled, type ProductUser } from './lib/productSession'
+import { ProductApiError, clearProductSession, completeProductPasswordSetup, createProductSession, enrollProductMfa, inviteWorkspaceMember, listWorkspaceMembers, productPasswordSetupRequired, readProductMfaStatus, readProductSession, removeProductMfa, serverPersistenceEnabled, signOutOtherProductSessions, supabaseAuthEnabled, updateProductPassword, updateWorkspaceMember, verifyProductMfa, type ProductUser } from './lib/productSession'
 import { createEmptyCanvasDocument } from './data/seed'
 import { useCanvasStore } from './store/canvasStore'
 import type { WorkspaceProject } from './components/WorkspaceViews'
@@ -283,6 +285,139 @@ function ComposerOptionPopover({ label, value, valueIcon, disabled = false, widt
       document.body,
     ) : null}
   </div>
+}
+
+type BotanicSelectOption = { value: string; label: string }
+
+function BotanicSelect({
+  value,
+  options,
+  onChange,
+  ariaLabel,
+  disabled = false,
+  className = '',
+  menuWidth,
+  placeholder,
+}: {
+  value: string | number
+  options: BotanicSelectOption[]
+  onChange: (value: string) => void
+  ariaLabel: string
+  disabled?: boolean
+  className?: string
+  menuWidth?: number
+  placeholder?: string
+}) {
+  const menuId = useId()
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const [open, setOpen] = useState(false)
+  const [anchor, setAnchor] = useState<{ left: number; top: number; width: number } | null>(null)
+  const menuPresence = useMotionPresence(open, 110)
+  const normalizedValue = String(value)
+  const selected = options.find((option) => option.value === normalizedValue)
+
+  const updateAnchor = useCallback(() => {
+    const rect = triggerRef.current?.getBoundingClientRect()
+    if (!rect) return
+    const width = Math.min(window.innerWidth - 24, Math.max(menuWidth ?? 0, rect.width, 116))
+    const estimatedHeight = Math.min(280, options.length * 32 + 12)
+    const opensAbove = window.innerHeight - rect.bottom < estimatedHeight + 12 && rect.top > estimatedHeight
+    setAnchor({
+      left: Math.max(12, Math.min(window.innerWidth - width - 12, rect.left)),
+      top: opensAbove ? Math.max(12, rect.top - estimatedHeight - 6) : Math.min(window.innerHeight - 48, rect.bottom + 6),
+      width,
+    })
+  }, [menuWidth, options.length])
+
+  useEffect(() => {
+    if (!open) return
+    updateAnchor()
+    const closeOnOutsidePress = (event: PointerEvent) => {
+      const target = event.target as Node
+      if (triggerRef.current?.contains(target) || menuRef.current?.contains(target)) return
+      setOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setOpen(false)
+      triggerRef.current?.focus()
+    }
+    window.addEventListener('resize', updateAnchor)
+    window.addEventListener('scroll', updateAnchor, true)
+    document.addEventListener('pointerdown', closeOnOutsidePress)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      window.removeEventListener('resize', updateAnchor)
+      window.removeEventListener('scroll', updateAnchor, true)
+      document.removeEventListener('pointerdown', closeOnOutsidePress)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [open, updateAnchor])
+
+  useEffect(() => {
+    if (!open || !anchor) return
+    const frame = window.requestAnimationFrame(() => menuRef.current?.querySelector<HTMLButtonElement>('[aria-selected="true"]')?.focus())
+    return () => window.cancelAnimationFrame(frame)
+  }, [anchor, open])
+
+  const moveFocus = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+    const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')]
+    if (!buttons.length) return
+    const current = buttons.indexOf(document.activeElement as HTMLButtonElement)
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : event.key === 'ArrowDown'
+      ? (current + 1 + buttons.length) % buttons.length
+      : (current - 1 + buttons.length) % buttons.length
+    event.preventDefault()
+    buttons[next]?.focus()
+  }
+
+  return <span className={`botanic-select ${className}${open ? ' is-open' : ''}`.trim()}>
+    <button
+      ref={triggerRef}
+      type="button"
+      className="botanic-select__trigger"
+      disabled={disabled || !options.length}
+      aria-label={ariaLabel}
+      aria-haspopup="listbox"
+      aria-expanded={open}
+      aria-controls={open ? menuId : undefined}
+      onClick={() => {
+        if (!open) updateAnchor()
+        setOpen((current) => !current)
+      }}
+    >
+      <span>{selected?.label ?? placeholder ?? '请选择'}</span>
+      <img src={chevronIcon} alt="" />
+    </button>
+    {menuPresence.present && anchor && typeof document !== 'undefined' ? createPortal(
+      <div
+        ref={menuRef}
+        id={menuId}
+        className={`botanic-select__menu is-${menuPresence.phase}`}
+        style={anchor}
+        role="listbox"
+        aria-label={ariaLabel}
+        aria-hidden={menuPresence.phase === 'exit' ? true : undefined}
+        onKeyDown={moveFocus}
+      >
+        {options.map((option) => <button
+          type="button"
+          role="option"
+          aria-selected={option.value === normalizedValue}
+          className={option.value === normalizedValue ? 'is-selected' : ''}
+          key={option.value}
+          onClick={() => {
+            onChange(option.value)
+            setOpen(false)
+            triggerRef.current?.focus()
+          }}
+        >{option.label}{option.value === normalizedValue ? <b>✓</b> : null}</button>)}
+      </div>,
+      document.body,
+    ) : null}
+  </span>
 }
 
 function modelProviderLogo(model?: GenerationModelOption) {
@@ -825,7 +960,7 @@ function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount, maximu
   return (
     <section
       ref={composerRef}
-      className={`canvas-composer${expanded ? ' is-expanded' : ' is-collapsed'}`}
+      className={`canvas-composer${expanded ? ' is-expanded' : ' is-collapsed'}${layout.dock === 'free' ? ' is-free' : ' is-docked'}`}
       role="region"
       aria-label={`${mode === 'result' ? '基于此图继续生成' : '生成器'}：${nodeLabel}`}
       style={composerStyle}
@@ -981,7 +1116,7 @@ function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount, maximu
                   }}>{duration} 秒</button>)}
                 </div>}
               </ComposerOptionPopover> : null}
-              <ComposerOptionPopover label="候选数" value={String(batchCount)} disabled={interactionLocked} width={96} className="is-compact">
+              <ComposerOptionPopover label="候选数" value={String(batchCount)} disabled={interactionLocked} width={132} className="is-count">
                 {(close) => <div className="composer-compact-menu" role="listbox" aria-label="选择候选数量">
                   {Array.from({ length: maximumBatchCount }, (_, index) => index + 1).map((count) => <button key={count} type="button" role="option" aria-selected={batchCount === count} className={batchCount === count ? 'is-selected' : ''} onClick={() => {
                     onBatchCountChange(count)
@@ -1355,6 +1490,13 @@ type ResultComposerDraft = {
   refinementMode: RefinementMode
 }
 
+type BatchVariationRequest = {
+  groupId: string
+  prompt: string
+  candidatesPerAsset: number
+  settings: GenerationSettings
+}
+
 const defaultComposerLayout: ComposerLayout = { dock: 'bottom', collapsed: false }
 const defaultWorkspaceLocation: WorkspaceLocation = { view: 'dashboard' }
 const initialGenerationServiceState: GenerationServiceState = {
@@ -1500,6 +1642,7 @@ function CanvasNavigation({
   miniMapOpen,
   canShowMiniMap,
   marqueeMode,
+  touchInput,
   onToggleMiniMap,
   onToggleMarqueeMode,
   onAutoLayout,
@@ -1510,6 +1653,7 @@ function CanvasNavigation({
   miniMapOpen: boolean
   canShowMiniMap: boolean
   marqueeMode: boolean
+  touchInput: boolean
   onToggleMiniMap: () => void
   onToggleMarqueeMode: () => void
   onAutoLayout: () => void
@@ -1589,7 +1733,7 @@ function CanvasNavigation({
               type="button"
               role="menuitem"
               onClick={(event) => { onToggleMarqueeMode(); closeMoreMenu(event) }}
-            >{marqueeMode ? '退出框选' : '框选节点'}<span>Shift</span></button>
+            >{marqueeMode ? '退出框选' : '框选节点'}<span>{touchInput ? '拖动' : 'Shift'}</span></button>
             <button type="button" role="menuitem" onClick={(event) => {
               onAutoLayout()
               window.requestAnimationFrame(() => commitViewport(fitView({ duration: viewportMotionDuration(220), padding: 0.16, minZoom: canvasMinZoom, maxZoom: 1 })))
@@ -2091,7 +2235,7 @@ function EmptyCanvasGuide({
   )
 }
 
-function CanvasWorkspace() {
+function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser; onSignOut?: () => Promise<void> }) {
   const document = useCanvasStore((state) => state.document)
   const globalAssets = useCanvasStore((state) => state.globalAssets)
   const sharedTemplates = useCanvasStore((state) => state.sharedTemplates)
@@ -2115,11 +2259,16 @@ function CanvasWorkspace() {
   const addUploadedAssetsToCanvas = useCanvasStore((state) => state.addUploadedAssetsToCanvas)
   const saveGeneratedImageToLibrary = useCanvasStore((state) => state.saveGeneratedImageToLibrary)
   const moveAssetToRole = useCanvasStore((state) => state.moveAssetToRole)
+  const createAssetGroup = useCanvasStore((state) => state.createAssetGroup)
+  const renameAssetGroup = useCanvasStore((state) => state.renameAssetGroup)
+  const deleteAssetGroup = useCanvasStore((state) => state.deleteAssetGroup)
+  const addAssetsToGroup = useCanvasStore((state) => state.addAssetsToGroup)
   const addTextNode = useCanvasStore((state) => state.addTextNode)
   const addGenerateNode = useCanvasStore((state) => state.addGenerateNode)
   const renameCanvasNode = useCanvasStore((state) => state.renameCanvasNode)
   const updateGenerateNode = useCanvasStore((state) => state.updateGenerateNode)
   const runGraphGeneration = useCanvasStore((state) => state.runGraphGeneration)
+  const runBatchVariation = useCanvasStore((state) => state.runBatchVariation)
   const availableModels = useCanvasStore((state) => state.availableModels)
   const setAvailableModels = useCanvasStore((state) => state.setAvailableModels)
   const setGenerateNodePrimaryInput = useCanvasStore((state) => state.setGenerateNodePrimaryInput)
@@ -2155,6 +2304,7 @@ function CanvasWorkspace() {
   const [agentOpen, setAgentOpen] = useState(true)
   const [composerOpen, setComposerOpen] = useState(false)
   const [resultComposerDraft, setResultComposerDraft] = useState<ResultComposerDraft | null>(null)
+  const [batchComposerTargetId, setBatchComposerTargetId] = useState<string | null>(null)
   const [imagePreview, setImagePreview] = useState<{ image: string; name: string; mediaKind: GenerationMediaKind } | null>(null)
   const [historyFocusRequest, setHistoryFocusRequest] = useState<{ nodeId: string; requestId: number } | null>(null)
   const [renamingProjectTabId, setRenamingProjectTabId] = useState<string | null>(null)
@@ -2169,6 +2319,9 @@ function CanvasWorkspace() {
   const [canvasUploadMessage, setCanvasUploadMessage] = useState('')
   const [marqueeMode, setMarqueeMode] = useState(false)
   const [miniMapOpen, setMiniMapOpen] = useState(false)
+  const [accountMenuAnchor, setAccountMenuAnchor] = useState<AccountMenuAnchor | null>(null)
+  const [accountDialog, setAccountDialog] = useState<'profile' | 'security' | 'members' | null>(null)
+  const [isTouchTablet, setIsTouchTablet] = useState(false)
   const [zoomMode, setZoomMode] = useState(() => canvasZoomMode(document.viewport.zoom))
   const [expandedResultGroupIds, setExpandedResultGroupIds] = useState<Set<string>>(() => new Set())
   const [activeResultByGroupId, setActiveResultByGroupId] = useState<Map<string, string>>(() => new Map())
@@ -2176,6 +2329,21 @@ function CanvasWorkspace() {
   const [connectionFeedback, setConnectionFeedback] = useState<'connected' | 'invalid' | 'cancelled' | null>(null)
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
   const [edgeActionPosition, setEdgeActionPosition] = useState<{ x: number; y: number } | null>(null)
+
+  useEffect(() => {
+    const coarsePointer = window.matchMedia('(pointer: coarse)')
+    const updateTouchTablet = () => {
+      const hasTouch = navigator.maxTouchPoints > 0 || coarsePointer.matches
+      setIsTouchTablet(hasTouch && window.innerWidth >= 701 && window.innerWidth <= 1440)
+    }
+    updateTouchTablet()
+    coarsePointer.addEventListener?.('change', updateTouchTablet)
+    window.addEventListener('resize', updateTouchTablet)
+    return () => {
+      coarsePointer.removeEventListener?.('change', updateTouchTablet)
+      window.removeEventListener('resize', updateTouchTablet)
+    }
+  }, [])
   const imagePreviewPresence = useMotionPresence(Boolean(imagePreview), 140)
   const visibleImagePreview = useRetainedValue(imagePreview)
   const assetDeletePresence = useMotionPresence(Boolean(assetToDelete), 140)
@@ -2228,6 +2396,19 @@ function CanvasWorkspace() {
       return true
     })
   }, [document.assets, globalAssets])
+  const batchComposerTarget = useMemo(() => {
+    if (!batchComposerTargetId) return null
+    const node = document.nodes.find((item) => item.id === batchComposerTargetId && item.type === 'result')
+    if (!node || node.type !== 'result') return null
+    const result = node.data as ResultNodeData
+    if (!result.image) return null
+    return {
+      id: node.id,
+      name: result.label ?? '已选结果',
+      image: result.image,
+      settings: result.generationSettings ?? defaultGenerationSettings,
+    }
+  }, [batchComposerTargetId, document.nodes])
   const projectTemplateSaveSummary = useMemo(
     () => summarizeWorkflowTemplate(document.nodes, document.edges),
     [document.edges, document.nodes],
@@ -2790,6 +2971,7 @@ function CanvasWorkspace() {
     setNodeInspectorOpen(false)
     setDeliveryOpen(false)
     setResultComposerDraft(null)
+    setBatchComposerTargetId(null)
     setExpandedResultGroupIds((current) => {
       const next = new Set(current)
       const result = document.nodes.find((node) => node.id === resultNodeId && node.type === 'result')
@@ -3042,6 +3224,7 @@ function CanvasWorkspace() {
     setNodeInspectorOpen(false)
     setDeliveryOpen(false)
     setResultComposerDraft(null)
+    setBatchComposerTargetId(null)
   }, [])
 
   const setScreenToFlowPosition = useCallback((mapper: ScreenToFlowPosition) => {
@@ -3583,9 +3766,20 @@ function CanvasWorkspace() {
     return (
       <Suspense fallback={<WorkspaceViewLoading />}><ProjectLibrary
         projects={workspaceProjects}
+        currentUser={currentUser}
         loading={workspaceProjectsLoading}
         loadError={workspaceProjectsError}
         onBack={() => setWorkspaceView('dashboard')}
+        onSignOut={onSignOut}
+        onChangePassword={updateProductPassword}
+        onReadMfaStatus={readProductMfaStatus}
+        onEnrollMfa={enrollProductMfa}
+        onVerifyMfa={verifyProductMfa}
+        onRemoveMfa={removeProductMfa}
+        onSignOutOtherSessions={signOutOtherProductSessions}
+        onListMembers={listWorkspaceMembers}
+        onInviteMember={inviteWorkspaceMember}
+        onUpdateMember={updateWorkspaceMember}
         onOpenProject={openWorkspaceProject}
         onCreateProject={createWorkspaceProject}
         onRenameProject={renameWorkspaceProject}
@@ -3599,7 +3793,14 @@ function CanvasWorkspace() {
     <main className={canvasClassName}>
       <section
         ref={canvasPaneRef}
-        className={['canvas-pane', isCanvasFileDragging ? 'is-file-dragging' : '', viewportRestoring ? 'is-restoring-viewport' : ''].filter(Boolean).join(' ')}
+        className={[
+          'canvas-pane',
+          isCanvasFileDragging ? 'is-file-dragging' : '',
+          viewportRestoring ? 'is-restoring-viewport' : '',
+          isTouchTablet ? 'is-touch-tablet' : '',
+          assetsOpen ? 'has-asset-library' : '',
+          composerOpen || resultComposerDraft || batchComposerTargetId ? 'has-open-composer' : '',
+        ].filter(Boolean).join(' ')}
         aria-label={document.name.endsWith('画布') ? document.name : `${document.name}画布`}
         onDragEnter={onCanvasFileDragEnter}
         onDragLeave={onCanvasFileDragLeave}
@@ -3770,6 +3971,7 @@ function CanvasWorkspace() {
             setNodeInspectorOpen(false)
             setComposerOpen(false)
             setResultComposerDraft(null)
+            setBatchComposerTargetId(null)
             setNodePalette(null)
           }}
           onDoubleClick={(event) => {
@@ -3832,7 +4034,14 @@ function CanvasWorkspace() {
               <button className={templatesOpen ? 'dock__button is-active' : 'dock__button'} onClick={() => { closeWorkbenchPanels(); setTemplatesOpen(true) }} aria-label="模板"><FigmaIcon src={templatesIcon} /></button>
               <button className={historyOpen ? 'dock__button is-active' : 'dock__button'} onClick={() => { closeWorkbenchPanels(); setHistoryOpen(true) }} aria-label="画布历史"><FigmaIcon src={historyIcon} /></button>
               <button className={deliveryOpen ? 'dock__button dock__button--delivery is-active' : 'dock__button dock__button--delivery'} onClick={() => { closeWorkbenchPanels(); setDeliveryOpen(true) }} aria-label="投放交付"><ArrowUpRightIcon /></button>
-              <button className="dock__account" aria-label="账户">
+              <button className={accountMenuAnchor ? 'dock__account is-active' : 'dock__account'} aria-label="打开账户设置" aria-expanded={Boolean(accountMenuAnchor)} onClick={(event) => {
+                if (accountMenuAnchor) {
+                  setAccountMenuAnchor(null)
+                  return
+                }
+                const rect = event.currentTarget.getBoundingClientRect()
+                setAccountMenuAnchor({ left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom })
+              }}>
                 <img src="/botanique-logo.png" alt="" />
               </button>
             </nav>
@@ -3844,6 +4053,7 @@ function CanvasWorkspace() {
             miniMapOpen={miniMapOpen && document.nodes.length > 2}
             canShowMiniMap={document.nodes.length > 2}
             marqueeMode={marqueeMode}
+            touchInput={isTouchTablet}
             onToggleMiniMap={() => setMiniMapOpen((open) => !open)}
             onToggleMarqueeMode={() => setMarqueeMode((active) => !active)}
             onAutoLayout={autoLayoutCanvas}
@@ -3993,6 +4203,26 @@ function CanvasWorkspace() {
           />
         ) : null}
 
+        {batchComposerTarget ? <BatchVariationComposer
+          key={batchComposerTarget.id}
+          target={batchComposerTarget}
+          groups={document.assetGroups}
+          assets={assetLibraryAssets}
+          models={availableModels}
+          maximumCandidates={maximumBatchCount}
+          busy={generationStatus === 'uploading' || generationStatus === 'queued' || generationStatus === 'running'}
+          onOpenAssets={() => {
+            setBatchComposerTargetId(null)
+            setAssetsOpen(true)
+          }}
+          onSubmit={(request) => {
+            void runBatchVariation({ sourceResultNodeId: batchComposerTarget.id, ...request }).then((started) => {
+              if (started) setBatchComposerTargetId(null)
+            })
+          }}
+          onClose={() => setBatchComposerTargetId(null)}
+        /> : null}
+
         {selectedEdge && edgeActionPosition ? (
           <EdgeActions
             edge={selectedEdge}
@@ -4041,6 +4271,12 @@ function CanvasWorkspace() {
             }}>
               <b><SparkleIcon /></b><span><strong>图片生成</strong><small>{visibleNodePalette.parentResultId ? '基于当前图片继续创作' : '连接素材与描述生成图片'}</small></span>
             </button>
+            {visibleNodePalette.parentResultId ? <button onClick={() => {
+              setBatchComposerTargetId(visibleNodePalette.parentResultId ?? null)
+              setNodePalette(null)
+            }}>
+              <b>×N</b><span><strong>批量变体</strong><small>用一个素材组逐项生成</small></span>
+            </button> : null}
             <button onClick={() => {
               const videoModel = availableModels.find((model) => model.mediaKind === 'video')
               if (!videoModel) {
@@ -4097,9 +4333,14 @@ function CanvasWorkspace() {
         <CanvasPanelPresence open={assetsOpen} side="left">
           <AssetLibrary
             assets={assetLibraryAssets}
+            groups={document.assetGroups}
             onAdd={addAssetFromLibrary}
             onUpload={addUploadedAssets}
             onMoveToRole={moveAssetToRole}
+            onCreateGroup={createAssetGroup}
+            onRenameGroup={renameAssetGroup}
+            onDeleteGroup={deleteAssetGroup}
+            onAddAssetsToGroup={addAssetsToGroup}
             onDelete={setAssetToDelete}
             onClose={() => {
               setAssetsOpen(false)
@@ -4220,6 +4461,34 @@ function CanvasWorkspace() {
         {undoPresence.present && visibleUndoAction ? <UndoToast label={visibleUndoAction.label} phase={undoPresence.phase} onUndo={undoLastAction} /> : null}
       </section>
 
+      {accountMenuAnchor ? <AccountMenu
+        user={currentUser}
+        anchor={accountMenuAnchor}
+        onOpenProfile={() => { setAccountMenuAnchor(null); if (currentUser) setAccountDialog('profile') }}
+        onOpenSecurity={() => { setAccountMenuAnchor(null); if (currentUser) setAccountDialog('security') }}
+        onOpenMembers={() => { setAccountMenuAnchor(null); if (currentUser?.role === 'owner') setAccountDialog('members') }}
+        onSignOut={onSignOut ? async () => { setAccountMenuAnchor(null); await onSignOut() } : undefined}
+        onClose={() => setAccountMenuAnchor(null)}
+      /> : null}
+      {currentUser && (accountDialog === 'profile' || accountDialog === 'security') ? <AccountDetailsDialog
+        mode={accountDialog}
+        user={currentUser}
+        onChangePassword={updateProductPassword}
+        onReadMfaStatus={readProductMfaStatus}
+        onEnrollMfa={enrollProductMfa}
+        onVerifyMfa={verifyProductMfa}
+        onRemoveMfa={removeProductMfa}
+        onSignOutOtherSessions={signOutOtherProductSessions}
+        onClose={() => setAccountDialog(null)}
+      /> : null}
+      {currentUser?.role === 'owner' && accountDialog === 'members' ? <WorkspaceMembersDialog
+        currentUser={currentUser}
+        onListMembers={listWorkspaceMembers}
+        onInviteMember={inviteWorkspaceMember}
+        onUpdateMember={updateWorkspaceMember}
+        onClose={() => setAccountDialog(null)}
+      /> : null}
+
       {creativeAssistantEnabled && agentOpen ? <AgentPanel message={assistantMessage} onClose={() => setAgentOpen(false)} /> : null}
       {creativeAssistantEnabled && !agentOpen ? <button className="reopen-agent" onClick={() => setAgentOpen(true)}>打开创作助手</button> : null}
     </main>
@@ -4228,9 +4497,14 @@ function CanvasWorkspace() {
 
 type AssetLibraryProps = {
   assets: AssetRecord[]
+  groups: AssetGroup[]
   onAdd: (id: string) => void
   onUpload: (assets: UploadedAssetInput[]) => void
   onMoveToRole: (id: string, role: AssetRole) => void
+  onCreateGroup: (name: string, role: AssetGroup['role'], assetIds?: string[]) => string | null
+  onRenameGroup: (groupId: string, name: string) => void
+  onDeleteGroup: (groupId: string) => void
+  onAddAssetsToGroup: (groupId: string, assetIds: string[]) => void
   onDelete: (asset: AssetRecord) => void
   onClose: () => void
 }
@@ -4337,21 +4611,126 @@ async function downloadMedia(image: string, name: string, mediaKind: GenerationM
   }
 }
 
-function AssetLibrary({ assets, onAdd, onUpload, onMoveToRole, onDelete, onClose }: AssetLibraryProps) {
+function batchVariationDefaultPrompt(role: AssetGroup['role']) {
+  if (role === '场景') return '保持父图中的人物、服装与商品主体一致，分别替换为素材组中的场景，并让光线、透视与接触关系自然融合。'
+  if (role === '调性') return '保持父图中的人物、服装、商品与构图一致，分别参考素材组中的视觉风格调整色彩、光线与质感。'
+  if (role === '模特') return '保持父图中的服装、商品、场景与整体构图，分别替换为素材组中的模特，并自然适配姿势与光线。'
+  return '保持父图中的人物、场景与视觉风格，分别替换为素材组中的商品或服装，并保持商品结构、图案与标识清晰。'
+}
+
+function BatchVariationComposer({
+  target,
+  groups,
+  assets,
+  models,
+  maximumCandidates,
+  busy,
+  onOpenAssets,
+  onSubmit,
+  onClose,
+}: {
+  target: { id: string; name: string; image: string; settings: GenerationSettings }
+  groups: AssetGroup[]
+  assets: AssetRecord[]
+  models: GenerationModelOption[]
+  maximumCandidates: number
+  busy: boolean
+  onOpenAssets: () => void
+  onSubmit: (request: BatchVariationRequest) => void
+  onClose: () => void
+}) {
+  const imageAssetIds = useMemo(() => new Set(assets.filter((asset) => (asset.mediaKind ?? 'image') === 'image').map((asset) => asset.id)), [assets])
+  const availableGroups = useMemo(() => groups.map((group) => ({
+    ...group,
+    assetIds: group.assetIds.filter((assetId) => imageAssetIds.has(assetId)),
+  })).filter((group) => group.assetIds.length), [groups, imageAssetIds])
+  const [groupId, setGroupId] = useState(availableGroups[0]?.id ?? '')
+  const activeGroup = availableGroups.find((group) => group.id === groupId) ?? availableGroups[0]
+  const [prompt, setPrompt] = useState(() => batchVariationDefaultPrompt(availableGroups[0]?.role ?? '场景'))
+  const [candidatesPerAsset, setCandidatesPerAsset] = useState(1)
+  const [settings, setSettings] = useState(() => {
+    const imageModel = models.find((model) => model.id === target.settings.model && (model.mediaKind ?? 'image') === 'image')
+      ?? models.find((model) => (model.mediaKind ?? 'image') === 'image')
+    return imageModel ? settingsForModel(target.settings, imageModel) : target.settings
+  })
+  const selectedModel = models.find((model) => model.id === settings.model)
+  const total = (activeGroup?.assetIds.length ?? 0) * candidatesPerAsset
+  const overLimit = total > 20
+
+  useEffect(() => {
+    if (groupId || !availableGroups[0]) return
+    setGroupId(availableGroups[0].id)
+  }, [availableGroups, groupId])
+
+  return createPortal(
+    <div className="batch-variation-backdrop" role="presentation" onPointerDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+      <section className="batch-variation-composer" role="dialog" aria-modal="true" aria-label="批量变体">
+        <header>
+          <div><span>BATCH VARIATION</span><h2>批量变体</h2></div>
+          <button type="button" onClick={onClose} aria-label="关闭批量变体"><CloseIcon /></button>
+        </header>
+        <div className="batch-variation-source"><img src={target.image} alt="" /><div><span>父图</span><strong>{target.name}</strong><small>新结果会形成子分支，不覆盖父图</small></div></div>
+        {availableGroups.length ? <>
+          <label className="batch-variation-field"><span>可变素材组</span><BotanicSelect value={activeGroup?.id ?? ''} ariaLabel="选择可变素材组" options={availableGroups.map((group) => ({ value: group.id, label: `${group.name} · ${group.assetIds.length} 个${group.role}` }))} onChange={(value) => {
+            const next = availableGroups.find((group) => group.id === value)
+            setGroupId(value)
+            if (next) setPrompt(batchVariationDefaultPrompt(next.role))
+          }} /></label>
+          <div className="batch-variation-locks"><span>父图主参考</span><strong>锁定核心主体</strong><i>可变：{activeGroup?.role}</i></div>
+          <label className="batch-variation-field"><span>变化说明</span><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={4} /></label>
+          <div className="batch-variation-parameters">
+            <label><span>模型</span><BotanicSelect value={settings.model} ariaLabel="选择批量生成模型" menuWidth={180} options={models.filter((model) => (model.mediaKind ?? 'image') === 'image').map((model) => ({ value: model.id, label: model.label }))} onChange={(value) => {
+              const model = models.find((item) => item.id === value)
+              if (model) setSettings((current) => settingsForModel(current, model))
+            }} /></label>
+            <label><span>比例</span><BotanicSelect value={settings.aspectRatio} ariaLabel="选择批量画面比例" options={(selectedModel?.aspectRatios ?? ['1:1', '3:4', '4:5', '9:16']).map((ratio) => ({ value: ratio, label: ratio }))} onChange={(value) => setSettings((current) => ({ ...current, aspectRatio: value as GenerationSettings['aspectRatio'] }))} /></label>
+            <label><span>分辨率</span><BotanicSelect value={settings.resolution} ariaLabel="选择批量输出分辨率" options={(selectedModel?.resolutions ?? ['1K', '2K']).map((resolution) => ({ value: resolution, label: resolution }))} onChange={(value) => setSettings((current) => ({ ...current, resolution: value as GenerationSettings['resolution'] }))} /></label>
+            <label><span>每项候选</span><input type="number" min={1} max={maximumCandidates} value={candidatesPerAsset} onChange={(event) => setCandidatesPerAsset(Math.min(maximumCandidates, Math.max(1, Math.round(Number(event.target.value)) || 1)))} /></label>
+          </div>
+          <footer><span className={overLimit ? 'is-error' : ''}>{activeGroup?.assetIds.length ?? 0} 个素材 × {candidatesPerAsset} = {total} 张{overLimit ? '（最多 20 张）' : ''}</span><button type="button" disabled={busy || overLimit || !prompt.trim()} onClick={() => activeGroup && onSubmit({ groupId: activeGroup.id, prompt, candidatesPerAsset, settings })}>{busy ? '已有任务运行中' : `生成 ${total} 张`}</button></footer>
+        </> : <div className="batch-variation-empty"><strong>先创建一个素材组</strong><p>可在素材库上传整个文件夹，系统会自动形成素材组。</p><button type="button" onClick={onOpenAssets}>打开素材库</button></div>}
+      </section>
+    </div>,
+    document.body,
+  )
+}
+
+function AssetLibrary({
+  assets,
+  groups,
+  onAdd,
+  onUpload,
+  onMoveToRole,
+  onCreateGroup,
+  onRenameGroup,
+  onDeleteGroup,
+  onAddAssetsToGroup,
+  onDelete,
+  onClose,
+}: AssetLibraryProps) {
   const [mediaKind, setMediaKind] = useState<GenerationMediaKind>('image')
   const [role, setRole] = useState<'全部' | AssetRole>('全部')
   const [source, setSource] = useState<'全部' | AssetSource>('全部')
-  const [collection, setCollection] = useState('全部')
+  const [groupId, setGroupId] = useState('全部')
   const [query, setQuery] = useState('')
   const [selectedAssetIds, setSelectedAssetIds] = useState<Set<string>>(() => new Set())
   const [pendingUploads, setPendingUploads] = useState<PendingUpload[]>([])
   const [isDraggingFiles, setIsDraggingFiles] = useState(false)
   const [uploadMessage, setUploadMessage] = useState('')
   const [assetMenuId, setAssetMenuId] = useState<string | null>(null)
+  const [assetMenuAnchor, setAssetMenuAnchor] = useState<{ left: number; top: number; placement: 'above' | 'below' } | null>(null)
   const [previewAssetId, setPreviewAssetId] = useState<string | null>(null)
+  const [creatingGroup, setCreatingGroup] = useState(false)
+  const [groupNameDraft, setGroupNameDraft] = useState('')
+  const [groupRoleDraft, setGroupRoleDraft] = useState<AssetGroup['role']>('场景')
+  const [renamingGroupId, setRenamingGroupId] = useState<string | null>(null)
+  const [groupRenameDraft, setGroupRenameDraft] = useState('')
+  const [deleteGroupId, setDeleteGroupId] = useState<string | null>(null)
+  const [batchGroupId, setBatchGroupId] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
   const folderInputRef = useRef<HTMLInputElement>(null)
-  const previewTimerRef = useRef<number | null>(null)
+  const assetMenuRef = useRef<HTMLDivElement>(null)
+  const assetMenuTriggerRef = useRef<HTMLButtonElement | null>(null)
   const assetDropPresence = useMotionPresence(isDraggingFiles, 100)
   useRestoreFocus(Boolean(previewAssetId || assetMenuId))
   const roles: Array<'全部' | AssetRole> = ['全部', '商品', '模特', '场景', '调性']
@@ -4407,28 +4786,40 @@ function AssetLibrary({ assets, onAdd, onUpload, onMoveToRole, onDelete, onClose
     image: assets.filter((item) => (item.mediaKind ?? 'image') === 'image').length,
     video: assets.filter((item) => item.mediaKind === 'video').length,
   }), [assets])
-  const collections = useMemo(() => [...new Set(assets
-    .filter((item) => (item.mediaKind ?? 'image') === mediaKind)
-    .map((item) => item.collection)
-    .filter((item): item is string => Boolean(item)))].sort((left, right) => left.localeCompare(right, 'zh-Hans-CN')), [assets, mediaKind])
+  const visibleGroups = useMemo(() => groups.filter((group) => group.assetIds.some((assetId) => {
+    const asset = assets.find((item) => item.id === assetId)
+    return asset && (asset.mediaKind ?? 'image') === mediaKind
+  })), [assets, groups, mediaKind])
+  const activeGroup = groups.find((group) => group.id === groupId)
   const visibleItems = useMemo(() => assets.filter((item) => {
     const matchesMediaKind = (item.mediaKind ?? 'image') === mediaKind
     const matchesRole = role === '全部' || item.role === role
     const matchesSource = source === '全部' || item.source === source
-    const matchesCollection = collection === '全部' || item.collection === collection
+    const matchesGroup = !activeGroup || activeGroup.assetIds.includes(item.id)
     const keyword = deferredQuery.trim().toLowerCase()
     const matchesQuery = !keyword || [item.name, item.role, item.source, item.collection ?? '', ...item.tags].join(' ').toLowerCase().includes(keyword)
-    return matchesMediaKind && matchesRole && matchesSource && matchesCollection && matchesQuery
-  }), [assets, collection, deferredQuery, mediaKind, role, source])
+    return matchesMediaKind && matchesRole && matchesSource && matchesGroup && matchesQuery
+  }), [activeGroup, assets, deferredQuery, mediaKind, role, source])
   const previewAsset = assets.find((item) => item.id === previewAssetId) ?? null
+  const assetMenuAsset = assets.find((item) => item.id === assetMenuId) ?? null
   const previewPresence = useMotionPresence(Boolean(previewAsset), 140)
   const visiblePreviewAsset = useRetainedValue(previewAsset)
-  const activeFilterCount = Number(role !== '全部') + Number(source !== '全部') + Number(collection !== '全部')
+  const activeFilterCount = Number(role !== '全部') + Number(source !== '全部') + Number(groupId !== '全部')
+  const advancedFilterCount = Number(source !== '全部')
   const sourceLabel = (itemSource: AssetSource) => itemSource === 'brand' ? '共享品牌' : itemSource === 'upload' ? '本地上传' : '生成入库'
-
-  useEffect(() => () => {
-    if (previewTimerRef.current !== null) window.clearTimeout(previewTimerRef.current)
-  }, [])
+  const assetMenuPosition = (trigger: HTMLButtonElement) => {
+    const rect = trigger.getBoundingClientRect()
+    const width = 260
+    const estimatedHeight = Math.min(360, 190 + groups.length * 36)
+    const opensAbove = window.innerHeight - rect.bottom < estimatedHeight + 16 && rect.top > estimatedHeight
+    return {
+      left: Math.max(12, Math.min(window.innerWidth - width - 12, rect.right - width)),
+      top: opensAbove
+        ? Math.max(12, rect.top - estimatedHeight - 8)
+        : Math.max(12, Math.min(window.innerHeight - estimatedHeight - 12, rect.bottom + 8)),
+      placement: opensAbove ? 'above' as const : 'below' as const,
+    }
+  }
 
   useEffect(() => {
     if (!previewAsset) return
@@ -4439,18 +4830,55 @@ function AssetLibrary({ assets, onAdd, onUpload, onMoveToRole, onDelete, onClose
     return () => document.removeEventListener('keydown', closeOnEscape)
   }, [previewAsset])
 
-  const openPreviewAfterClick = (assetId: string) => {
-    if (previewTimerRef.current !== null) window.clearTimeout(previewTimerRef.current)
-    previewTimerRef.current = window.setTimeout(() => {
-      setPreviewAssetId(assetId)
-      previewTimerRef.current = null
-    }, 180)
-  }
+  useEffect(() => {
+    if (!assetMenuId) return
+    let positionFrame = 0
+    const closeMenu = (event: PointerEvent) => {
+      const target = event.target as Node
+      if (assetMenuRef.current?.contains(target) || assetMenuTriggerRef.current?.contains(target)) return
+      setAssetMenuId(null)
+      setAssetMenuAnchor(null)
+    }
+    const closeOnKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setAssetMenuId(null)
+      setAssetMenuAnchor(null)
+      assetMenuTriggerRef.current?.focus()
+    }
+    const syncMenuPosition = () => {
+      window.cancelAnimationFrame(positionFrame)
+      positionFrame = window.requestAnimationFrame(() => {
+        const trigger = assetMenuTriggerRef.current
+        if (!trigger?.isConnected) {
+          setAssetMenuId(null)
+          setAssetMenuAnchor(null)
+          return
+        }
+        setAssetMenuAnchor(assetMenuPosition(trigger))
+      })
+    }
+    document.addEventListener('pointerdown', closeMenu)
+    document.addEventListener('keydown', closeOnKey)
+    window.addEventListener('resize', syncMenuPosition)
+    window.addEventListener('scroll', syncMenuPosition, true)
+    return () => {
+      window.cancelAnimationFrame(positionFrame)
+      document.removeEventListener('pointerdown', closeMenu)
+      document.removeEventListener('keydown', closeOnKey)
+      window.removeEventListener('resize', syncMenuPosition)
+      window.removeEventListener('scroll', syncMenuPosition, true)
+    }
+  }, [assetMenuId, groups.length])
 
-  const addFromDoubleClick = (assetId: string) => {
-    if (previewTimerRef.current !== null) window.clearTimeout(previewTimerRef.current)
-    previewTimerRef.current = null
-    onAdd(assetId)
+  const openAssetMenu = (assetId: string, trigger: HTMLButtonElement) => {
+    if (assetMenuId === assetId) {
+      setAssetMenuId(null)
+      setAssetMenuAnchor(null)
+      return
+    }
+    assetMenuTriggerRef.current = trigger
+    setAssetMenuAnchor(assetMenuPosition(trigger))
+    setAssetMenuId(assetId)
   }
 
   return (
@@ -4542,9 +4970,7 @@ function AssetLibrary({ assets, onAdd, onUpload, onMoveToRole, onDelete, onClose
                 <div>
                   <input value={item.name} onChange={(event) => updatePending(item.id, { name: event.target.value })} aria-label={`素材名称 ${item.name}`} />
                   <div className="upload-staging__fields">
-                    <select value={item.role} onChange={(event) => updatePending(item.id, { role: event.target.value as UploadedAssetInput['role'] })} aria-label={`${item.name} 的角色`}>
-                      {uploadRoles.map((itemRole) => <option value={itemRole} key={itemRole}>{itemRole}</option>)}
-                    </select>
+                    <BotanicSelect value={item.role} onChange={(value) => updatePending(item.id, { role: value as UploadedAssetInput['role'] })} ariaLabel={`${item.name} 的角色`} options={uploadRoles.map((itemRole) => ({ value: itemRole, label: itemRole }))} />
                     <input value={item.tagsText} onChange={(event) => updatePending(item.id, { tagsText: event.target.value })} placeholder="标签，用逗号分隔" aria-label={`${item.name} 的标签`} />
                   </div>
                 </div>
@@ -4568,7 +4994,7 @@ function AssetLibrary({ assets, onAdd, onUpload, onMoveToRole, onDelete, onClose
             key={kind}
             onClick={() => {
               setMediaKind(kind)
-              setCollection('全部')
+              setGroupId('全部')
               setSelectedAssetIds(new Set())
             }}
           >{kind === 'image' ? '图片' : '视频'} <span>{mediaCounts[kind]}</span></button>
@@ -4577,20 +5003,12 @@ function AssetLibrary({ assets, onAdd, onUpload, onMoveToRole, onDelete, onClose
       <div className="asset-library__toolbar">
         <input className="asset-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索素材或标签" aria-label="搜索素材" />
         <details className="asset-filter-popover">
-          <summary aria-label={`筛选素材${activeFilterCount ? `，已启用 ${activeFilterCount} 项` : ''}`}>
-            筛选{activeFilterCount ? <i>{activeFilterCount}</i> : null}
+          <summary aria-label={`筛选素材来源${advancedFilterCount ? `，已启用 ${advancedFilterCount} 项` : ''}`}>
+            来源{advancedFilterCount ? <i>{advancedFilterCount}</i> : null}
           </summary>
           <div className="asset-filter-popover__panel">
             <section>
-              <span>类型</span>
-              <div className="asset-filter-options" role="group" aria-label="素材类型">
-                {roles.map((item) => (
-                  <button type="button" key={item} className={role === item ? 'is-active' : ''} aria-pressed={role === item} onClick={() => setRole(item)}>{item}</button>
-                ))}
-              </div>
-            </section>
-            <section>
-              <span>来源</span>
+              <span>素材来源</span>
               <div className="asset-filter-options asset-filter-options--source" role="group" aria-label="素材来源">
                 {(['全部', 'brand', 'upload', 'generated'] as const).map((item) => (
                   <button type="button" key={item} className={source === item ? 'is-active' : ''} aria-pressed={source === item} onClick={() => setSource(item)}>
@@ -4599,13 +5017,84 @@ function AssetLibrary({ assets, onAdd, onUpload, onMoveToRole, onDelete, onClose
                 ))}
               </div>
             </section>
-            {activeFilterCount ? <button className="asset-filter-popover__reset" type="button" onClick={() => { setRole('全部'); setSource('全部'); setCollection('全部') }}>清除筛选</button> : null}
+            {advancedFilterCount ? <button className="asset-filter-popover__reset" type="button" onClick={() => setSource('全部')}>清除来源筛选</button> : null}
           </div>
         </details>
       </div>
-      {collections.length ? (
-        <div className="asset-library__collections" aria-label="素材合集">
-          {['全部', ...collections].map((item) => <button type="button" key={item} className={collection === item ? 'is-active' : ''} onClick={() => setCollection(item)}>{item}</button>)}
+      <section className="asset-library__facet" aria-labelledby="asset-role-heading">
+        <div className="asset-library__section-heading"><strong id="asset-role-heading">素材类型</strong></div>
+        <div className="asset-library__role-tabs" role="group" aria-label="素材类型">
+          {roles.map((item) => (
+            <button type="button" key={item} className={role === item ? 'is-active' : ''} aria-pressed={role === item} onClick={() => setRole(item)}>{item}</button>
+          ))}
+        </div>
+      </section>
+      <section className="asset-library__facet asset-library__groups" aria-labelledby="asset-group-heading">
+        <div className="asset-library__section-heading">
+          <strong id="asset-group-heading">素材组</strong>
+          <button className="asset-group-create-button" type="button" onClick={() => {
+            setGroupRoleDraft(role === '全部' || role === '首图' ? '场景' : role)
+            setCreatingGroup(true)
+          }}><PlusSquareIcon />新建</button>
+        </div>
+        <div className="asset-library__collections" aria-label="素材组">
+          <button type="button" className={groupId === '全部' ? 'is-active' : ''} onClick={() => setGroupId('全部')}>全部</button>
+          {visibleGroups.map((group) => <button type="button" key={group.id} className={groupId === group.id ? 'is-active' : ''} onClick={() => setGroupId(group.id)}>{group.name} · {group.assetIds.length}</button>)}
+          {!visibleGroups.length ? <span>暂无素材组</span> : null}
+        </div>
+        {creatingGroup ? (
+          <form className="asset-group-create" onSubmit={(event) => {
+            event.preventDefault()
+            const createdId = onCreateGroup(groupNameDraft, groupRoleDraft, [...selectedAssetIds])
+            if (!createdId) return
+            setGroupId(createdId)
+            setBatchGroupId(createdId)
+            setGroupNameDraft('')
+            setCreatingGroup(false)
+            setSelectedAssetIds(new Set())
+          }}>
+            <input autoFocus value={groupNameDraft} onChange={(event) => setGroupNameDraft(event.target.value)} placeholder="素材组名称" aria-label="素材组名称" />
+            <BotanicSelect value={groupRoleDraft} onChange={(value) => setGroupRoleDraft(value as AssetGroup['role'])} ariaLabel="素材组类型" options={uploadRoles.map((itemRole) => ({ value: itemRole, label: itemRole }))} />
+            <div className="asset-group-create__actions">
+              <button type="button" onClick={() => { setCreatingGroup(false); setGroupNameDraft('') }}>取消</button>
+              <button type="submit" disabled={!groupNameDraft.trim()}>创建{selectedAssetIds.size ? `并加入 ${selectedAssetIds.size} 项` : ''}</button>
+            </div>
+          </form>
+        ) : null}
+      </section>
+      {activeGroup ? (
+        <div className="asset-group-toolbar">
+          {renamingGroupId === activeGroup.id ? (
+            <form onSubmit={(event) => {
+              event.preventDefault()
+              if (!groupRenameDraft.trim()) return
+              onRenameGroup(activeGroup.id, groupRenameDraft)
+              setRenamingGroupId(null)
+            }}>
+              <input autoFocus value={groupRenameDraft} onChange={(event) => setGroupRenameDraft(event.target.value)} aria-label="重命名素材组" />
+              <div className="asset-group-toolbar__actions">
+                <button type="button" onClick={() => setRenamingGroupId(null)}>取消</button>
+                <button type="submit">保存</button>
+              </div>
+            </form>
+          ) : deleteGroupId === activeGroup.id ? (
+            <>
+              <strong>{activeGroup.name}</strong>
+              <span>素材仍会保留</span>
+              <div className="asset-group-toolbar__actions">
+                <button type="button" onClick={() => setDeleteGroupId(null)}>取消</button>
+                <button type="button" className="is-danger" onClick={() => { onDeleteGroup(activeGroup.id); setGroupId('全部'); setDeleteGroupId(null) }}>确认删除</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <strong>{activeGroup.name}</strong>
+              <div className="asset-group-toolbar__actions">
+                <button type="button" onClick={() => { setRenamingGroupId(activeGroup.id); setGroupRenameDraft(activeGroup.name) }}>重命名</button>
+                <button type="button" className="is-danger" onClick={() => setDeleteGroupId(activeGroup.id)}>删除组</button>
+              </div>
+            </>
+          )}
         </div>
       ) : null}
       <div className="asset-library__results"><strong>{activeFilterCount || query ? '筛选结果' : '全部素材'}</strong><span>{visibleItems.length} 项</span></div>
@@ -4616,9 +5105,8 @@ function AssetLibrary({ assets, onAdd, onUpload, onMoveToRole, onDelete, onClose
             key={item.id}
             draggable
             tabIndex={0}
-            title="可直接拖拽到画布"
-            onClick={() => openPreviewAfterClick(item.id)}
-            onDoubleClick={() => addFromDoubleClick(item.id)}
+            title="点击预览，或拖拽到画布"
+            onClick={() => setPreviewAssetId(item.id)}
             onKeyDown={(event) => {
               if (event.key !== 'Enter') return
               event.preventDefault()
@@ -4661,35 +5149,9 @@ function AssetLibrary({ assets, onAdd, onUpload, onMoveToRole, onDelete, onClose
                     onPointerDown={(event) => event.stopPropagation()}
                     onClick={(event) => {
                       event.stopPropagation()
-                      setAssetMenuId((activeId) => activeId === item.id ? null : item.id)
+                      openAssetMenu(item.id, event.currentTarget)
                     }}
                   ><MoreIcon /></button>
-                  {assetMenuId === item.id ? (
-                    <div className="asset-card__menu" role="menu" aria-label={`${item.name} 的更多操作`} onClick={(event) => event.stopPropagation()}>
-                      <label className="asset-card__group-select">
-                        <span>移动到分组</span>
-                        <select
-                          value={item.role}
-                          aria-label={`移动 ${item.name} 到分组`}
-                          onPointerDown={(event) => event.stopPropagation()}
-                          onChange={(event) => {
-                            onMoveToRole(item.id, event.target.value as AssetRole)
-                            setAssetMenuId(null)
-                          }}
-                        >
-                          {uploadRoles.map((itemRole) => <option value={itemRole} key={itemRole}>{itemRole}</option>)}
-                        </select>
-                      </label>
-                      <button
-                        type="button"
-                        role="menuitem"
-                        onClick={() => {
-                          setAssetMenuId(null)
-                          onDelete(item)
-                        }}
-                      >删除素材</button>
-                    </div>
-                  ) : null}
                 </div>
               </div>
             </div>
@@ -4700,6 +5162,39 @@ function AssetLibrary({ assets, onAdd, onUpload, onMoveToRole, onDelete, onClose
           </article>
         )) : <p className="asset-empty">没有匹配的素材</p>}
       </div>
+      {assetMenuAsset && assetMenuAnchor && typeof document !== 'undefined' ? createPortal(
+        <div
+          ref={assetMenuRef}
+          className={`asset-card__menu is-${assetMenuAnchor.placement}`}
+          role="menu"
+          aria-label={`${assetMenuAsset.name} 的更多操作`}
+          style={{ left: assetMenuAnchor.left, top: assetMenuAnchor.top }}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <section className="asset-card__role-section" aria-label={`设置 ${assetMenuAsset.name} 的素材类型`}>
+            <div><span>素材类型</span></div>
+            <div className="asset-card__role-options">
+              {uploadRoles.map((itemRole) => <button
+                type="button"
+                key={itemRole}
+                aria-pressed={assetMenuAsset.role === itemRole}
+                onClick={() => onMoveToRole(assetMenuAsset.id, itemRole)}
+              >{itemRole}</button>)}
+            </div>
+          </section>
+          <button
+            className="asset-card__delete"
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setAssetMenuId(null)
+              setAssetMenuAnchor(null)
+              onDelete(assetMenuAsset)
+            }}
+          >删除素材</button>
+        </div>,
+        document.body,
+      ) : null}
       {previewPresence.present && visiblePreviewAsset && typeof document !== 'undefined' ? createPortal(
         <div className={`asset-preview-backdrop motion-overlay is-${previewPresence.phase}`} role="presentation" aria-hidden={previewPresence.phase === 'exit' ? true : undefined} onPointerDown={(event) => {
           if (event.target === event.currentTarget) setPreviewAssetId(null)
@@ -4733,6 +5228,23 @@ function AssetLibrary({ assets, onAdd, onUpload, onMoveToRole, onDelete, onClose
             selectedAssetIds.forEach((id) => onAdd(id))
             setSelectedAssetIds(new Set())
           }}><PlusSquareIcon />加入画布</button>
+          <BotanicSelect className="asset-batch-group-select" value={batchGroupId} placeholder="加入素材组" ariaLabel="将所选素材加入素材组" options={[
+            ...groups.map((group) => ({ value: group.id, label: group.name })),
+            { value: '__create_asset_group__', label: '＋ 新建素材组' },
+          ]} onChange={(nextGroupId) => {
+            if (nextGroupId === '__create_asset_group__') {
+              setBatchGroupId('')
+              setGroupRoleDraft(role === '全部' || role === '首图' ? '场景' : role)
+              setGroupNameDraft('')
+              setCreatingGroup(true)
+              return
+            }
+            if (!nextGroupId) return
+            onAddAssetsToGroup(nextGroupId, [...selectedAssetIds])
+            setSelectedAssetIds(new Set())
+            setGroupId(nextGroupId)
+            setBatchGroupId('')
+          }} />
           <button type="button" onClick={() => setSelectedAssetIds(new Set())}>取消</button>
         </div>
       ) : null}
@@ -5209,13 +5721,13 @@ function RecipeDraftEditor({
       <div className="node-inspector__draft-title"><span>下一次任务草稿</span><small>原任务不会被改写</small></div>
       <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} aria-label="编辑生成描述" placeholder="描述下一次要生成的画面" />
       <div className="node-inspector__draft-settings">
-        <label><span>模型</span><select aria-label="草稿生成模型" value={settings.model} onChange={(event) => {
-          const model = modelOptions.find((option) => option.id === event.target.value)
+        <label><span>模型</span><BotanicSelect ariaLabel="草稿生成模型" value={settings.model} menuWidth={180} options={modelOptions.map((model) => ({ value: model.id, label: model.label }))} onChange={(value) => {
+          const model = modelOptions.find((option) => option.id === value)
           if (model) setSettings((current) => settingsForModel(current, model))
-        }}>{modelOptions.map((model) => <option value={model.id} key={model.id}>{model.label}</option>)}</select></label>
-        <label><span>比例</span><select aria-label="草稿画面比例" value={settings.aspectRatio} onChange={(event) => updateSettings({ aspectRatio: event.target.value as GenerationSettings['aspectRatio'] })}>{(selectedModel?.aspectRatios ?? ['1:1', '3:4', '4:5', '9:16']).map((ratio) => <option value={ratio} key={ratio}>{ratio}</option>)}</select></label>
-        <label><span>规格</span><select aria-label="草稿输出规格" value={settings.resolution} onChange={(event) => updateSettings({ resolution: event.target.value as GenerationSettings['resolution'] })}>{(selectedModel?.resolutions ?? ['1K', '2K']).map((resolution) => <option value={resolution} key={resolution}>{resolution}</option>)}</select></label>
-        {selectedModel?.mediaKind === 'video' ? <label><span>时长</span><select aria-label="草稿视频时长" value={settings.duration ?? selectedModel.defaultDuration ?? 5} onChange={(event) => updateSettings({ duration: Number(event.target.value) })}>{(selectedModel.durations ?? [5]).map((duration) => <option value={duration} key={duration}>{duration} 秒</option>)}</select></label> : null}
+        }} /></label>
+        <label><span>比例</span><BotanicSelect ariaLabel="草稿画面比例" value={settings.aspectRatio} options={(selectedModel?.aspectRatios ?? ['1:1', '3:4', '4:5', '9:16']).map((ratio) => ({ value: ratio, label: ratio }))} onChange={(value) => updateSettings({ aspectRatio: value as GenerationSettings['aspectRatio'] })} /></label>
+        <label><span>规格</span><BotanicSelect ariaLabel="草稿输出规格" value={settings.resolution} options={(selectedModel?.resolutions ?? ['1K', '2K']).map((resolution) => ({ value: resolution, label: resolution }))} onChange={(value) => updateSettings({ resolution: value as GenerationSettings['resolution'] })} /></label>
+        {selectedModel?.mediaKind === 'video' ? <label><span>时长</span><BotanicSelect ariaLabel="草稿视频时长" value={settings.duration ?? selectedModel.defaultDuration ?? 5} options={(selectedModel.durations ?? [5]).map((duration) => ({ value: String(duration), label: `${duration} 秒` }))} onChange={(value) => updateSettings({ duration: Number(value) })} /></label> : null}
         <label><span>候选</span><input aria-label="草稿候选数量" type="number" min="1" max={maximumBatchCount} value={batchCount} onChange={(event) => setBatchCount(Number(event.target.value))} /></label>
       </div>
       <div className="node-inspector__actions">
@@ -5969,13 +6481,13 @@ function NodeComposer({ prompt, batchCount, maximumBatchCount, settings, models,
       ) : null}
       <div className="node-composer__footer">
         <div className="parameter-chips">
-          <label className="parameter-select composer-model-select"><span className="visually-hidden">生成模型</span><select aria-label="生成模型" value={settings.model} disabled={isGenerating} onChange={(event) => {
-            const model = modelOptions.find((option) => option.id === event.target.value)
+          <label className="parameter-select composer-model-select"><span className="visually-hidden">生成模型</span><BotanicSelect ariaLabel="生成模型" value={settings.model} disabled={isGenerating} menuWidth={180} options={modelOptions.map((model) => ({ value: model.id, label: model.label }))} onChange={(value) => {
+            const model = modelOptions.find((option) => option.id === value)
             if (model) onSettingsChange(settingsForModel(settings, model))
-          }}>{modelOptions.map((model) => <option value={model.id} key={model.id}>{model.label}</option>)}</select></label>
-          <label className="parameter-select"><span className="visually-hidden">画面比例</span><select aria-label="画面比例" value={settings.aspectRatio} disabled={isGenerating} onChange={(event) => updateSettings({ aspectRatio: event.target.value as GenerationSettings['aspectRatio'] })}>{(selectedModel?.aspectRatios ?? ['1:1', '3:4', '4:5', '9:16']).map((ratio) => <option value={ratio} key={ratio}>{ratio}</option>)}</select></label>
-          <label className="parameter-select"><span className="visually-hidden">输出规格</span><select aria-label="输出规格" value={settings.resolution} disabled={isGenerating} onChange={(event) => updateSettings({ resolution: event.target.value as GenerationSettings['resolution'] })}>{(selectedModel?.resolutions ?? ['1K', '2K']).map((resolution) => <option value={resolution} key={resolution}>{resolution}</option>)}</select></label>
-          {selectedModel?.mediaKind === 'video' ? <label className="parameter-select"><span className="visually-hidden">视频时长</span><select aria-label="视频时长" value={settings.duration ?? selectedModel.defaultDuration ?? 5} disabled={isGenerating} onChange={(event) => updateSettings({ duration: Number(event.target.value) })}>{(selectedModel.durations ?? [5]).map((duration) => <option value={duration} key={duration}>{duration} 秒</option>)}</select></label> : null}
+          }} /></label>
+          <label className="parameter-select"><span className="visually-hidden">画面比例</span><BotanicSelect ariaLabel="画面比例" value={settings.aspectRatio} disabled={isGenerating} options={(selectedModel?.aspectRatios ?? ['1:1', '3:4', '4:5', '9:16']).map((ratio) => ({ value: ratio, label: ratio }))} onChange={(value) => updateSettings({ aspectRatio: value as GenerationSettings['aspectRatio'] })} /></label>
+          <label className="parameter-select"><span className="visually-hidden">输出规格</span><BotanicSelect ariaLabel="输出规格" value={settings.resolution} disabled={isGenerating} options={(selectedModel?.resolutions ?? ['1K', '2K']).map((resolution) => ({ value: resolution, label: resolution }))} onChange={(value) => updateSettings({ resolution: value as GenerationSettings['resolution'] })} /></label>
+          {selectedModel?.mediaKind === 'video' ? <label className="parameter-select"><span className="visually-hidden">视频时长</span><BotanicSelect ariaLabel="视频时长" value={settings.duration ?? selectedModel.defaultDuration ?? 5} disabled={isGenerating} options={(selectedModel.durations ?? [5]).map((duration) => ({ value: String(duration), label: `${duration} 秒` }))} onChange={(value) => updateSettings({ duration: Number(value) })} /></label> : null}
           <label>×<input aria-label="候选数量" type="number" min="1" max={maximumBatchCount} value={batchCount} disabled={isGenerating} onChange={(event) => onBatchCountChange(Number(event.target.value))} /></label>
         </div>
         <div className="node-composer__generate">
@@ -6035,10 +6547,12 @@ function AgentPanel({ message, onClose }: { message: string; onClose: () => void
 }
 
 function App() {
-  const [state, setState] = useState<'checking' | 'sign-in' | 'ready' | 'error'>(() => serverPersistenceEnabled ? 'checking' : 'ready')
+  const [state, setState] = useState<'checking' | 'sign-in' | 'password-setup' | 'ready' | 'error'>(() => serverPersistenceEnabled ? 'checking' : 'ready')
   const [user, setUser] = useState<ProductUser | null>(null)
   const [accessToken, setAccessToken] = useState('')
   const [password, setPassword] = useState('')
+  const [passwordConfirmation, setPasswordConfirmation] = useState('')
+  const [needsPasswordSetup] = useState(() => productPasswordSetupRequired())
   const [message, setMessage] = useState('')
 
   useEffect(() => {
@@ -6059,7 +6573,7 @@ function App() {
         window.clearTimeout(restoreTimeout)
         if (session) {
           setUser(session)
-          setState('ready')
+          setState(needsPasswordSetup ? 'password-setup' : 'ready')
         } else {
           setState('sign-in')
         }
@@ -6075,7 +6589,7 @@ function App() {
       active = false
       window.clearTimeout(restoreTimeout)
     }
-  }, [])
+  }, [needsPasswordSetup])
 
   const signIn = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -6096,15 +6610,49 @@ function App() {
     }
   }
 
-  if (state === 'ready') return <CanvasWorkspace />
+  const signOut = async () => {
+    setMessage('')
+    try {
+      await clearProductSession()
+    } catch (error) {
+      setMessage(error instanceof ProductApiError ? error.message : '退出失败，请稍后重试。')
+    } finally {
+      setUser(null)
+      setState('sign-in')
+    }
+  }
+
+  const completePasswordSetup = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (password.length < 8 || password !== passwordConfirmation) return
+    setState('checking')
+    setMessage('')
+    try {
+      await completeProductPasswordSetup(password)
+      setPassword('')
+      setPasswordConfirmation('')
+      setState('ready')
+    } catch (error) {
+      setMessage(error instanceof ProductApiError ? error.message : '密码未保存，请稍后重试。')
+      setState('password-setup')
+    }
+  }
+
+  if (state === 'ready') return <CanvasWorkspace currentUser={user ?? undefined} onSignOut={serverPersistenceEnabled ? signOut : undefined} />
 
   return (
     <main className="product-access" aria-live="polite">
       <section>
         <span>BOTANIC</span>
-        <h1>{state === 'checking' ? '正在进入…' : '登录工作台'}</h1>
+        <h1>{state === 'checking' ? '正在进入…' : state === 'password-setup' ? '设置登录密码' : '登录工作台'}</h1>
         {state === 'checking' ? <p>正在同步你的工作区。</p> : (
-          <form onSubmit={signIn}>
+          state === 'password-setup' ? <form onSubmit={completePasswordSetup}>
+            <p>邀请已确认。设置密码后，下次可直接使用邮箱登录。</p>
+            <label><span>新密码</span><input autoComplete="new-password" type="password" minLength={8} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="至少 8 个字符" /></label>
+            <label><span>确认密码</span><input autoComplete="new-password" type="password" minLength={8} value={passwordConfirmation} onChange={(event) => setPasswordConfirmation(event.target.value)} placeholder="再输入一次" /></label>
+            {passwordConfirmation && password !== passwordConfirmation ? <small role="alert">两次输入的密码不一致。</small> : message ? <small role="alert">{message}</small> : null}
+            <button type="submit" disabled={password.length < 8 || password !== passwordConfirmation}>保存并进入工作台</button>
+          </form> : <form onSubmit={signIn}>
             <p>{supabaseAuthEnabled ? '使用工作区账号登录。' : '输入管理员提供的访问令牌。'}</p>
             <label>
               <span>{supabaseAuthEnabled ? '邮箱' : '访问令牌'}</span>

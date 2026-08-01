@@ -23,6 +23,7 @@ UI（App / components）
 | 领域契约 | `src/domain/` | 画布数据、生成结果放置等纯规则 | 类型依赖与纯计算，不依赖 UI、Store、网络或存储 |
 | 浏览器基础设施 | `src/lib/` | 会话、生成请求、项目文档与离线草稿接口 | `domain`、浏览器/网络 Adapter，不依赖 UI 或 Store |
 | Node API | `server/index.mjs` | 鉴权后的 HTTP 与 WebSocket 接口 | 队列、处理器、运行时组合根 |
+| 授权 | `server/authorization.mjs`、`server/projectAuthorization.mjs` | 工作区/项目权限决策与 403/404 语义 | ProductStore 的用户与项目成员关系，不依赖 UI |
 | 生成处理器 | `server/generationProcessor.mjs` | `processGenerationJob(jobId)` | 注入的 ProductStore、Media 与 Provider |
 | Adapter | `server/*Store.mjs`、`server/objectStore.mjs` 等 | 产品存储、媒体、队列、第三方图像能力 | 各自外部系统；由 `server/runtime.mjs` 选择并组装 |
 
@@ -46,6 +47,8 @@ H3 的 MP4 与历史图片共用授权 URL，但历史缺少 `mediaKind` 时始�
 - 媒体通过稳定的同源引用进入画布，组件不接触对象存储凭据。
 - WebSocket 推送 `{ projectId, revision, graphRevision, updatedAt }` 失效通知，并转发节点/连线的 Yjs 增量；浏览器仍通过项目文档接口读取项目元数据与兼容视图。
 - WebSocket 使用独立 `REALTIME_TICKET_SECRET` 签发短期、项目级且绑定浏览器 Origin 的票据；不得回退复用 Supabase、访问码或媒体凭据。
+- 所有项目 ID 入口先经 `requireProjectPermission`：对已存在但越权的对象返回 403，对真实缺失对象返回 404；Adapter 仍保留第二层权限校验。
+- 工作区敏感审计只能经 `listWorkspaceAuditEvents` 读取，项目审计必须同时指定项目并具备 Owner 权限；审计上报失败不回滚已成功的账户安全操作。
 - Yjs 不同步图片/视频字节、本机选择态或视角，也不决定生成任务、历史版本与同 Prompt 的产品冲突。
 
 ## 实时同步

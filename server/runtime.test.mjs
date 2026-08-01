@@ -28,3 +28,27 @@ test('实时票据只使用独立签名密钥，不复用数据库或工作区�
     }
   }
 })
+
+test('安全策略支持独立配置 MFA、API 限流与每日生成输出配额', () => {
+  const keys = ['SECURITY_REQUIRE_OWNER_MFA', 'SECURITY_API_REQUESTS_PER_MINUTE', 'SECURITY_GENERATION_OUTPUTS_PER_DAY']
+  const original = new Map(keys.map((key) => [key, process.env[key]]))
+  try {
+    process.env.SECURITY_REQUIRE_OWNER_MFA = 'true'
+    process.env.SECURITY_API_REQUESTS_PER_MINUTE = '900'
+    process.env.SECURITY_GENERATION_OUTPUTS_PER_DAY = '120'
+
+    assert.deepEqual(runtimeConfig('/tmp/botanic-runtime-test').security, {
+      apiRequestsPerMinute: 900,
+      generationOutputsPerDay: 120,
+      memberMutationsPerHour: 20,
+      promptRefinementsPerFiveMinutes: 30,
+      realtimeTicketsPerMinute: 60,
+      requireOwnerMfa: true,
+    })
+  } finally {
+    for (const [key, value] of original) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+})

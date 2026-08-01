@@ -7,6 +7,9 @@ export type WorkspaceProject = {
   isSeed?: boolean
 }
 
+export type WorkspaceCurrentUser = AccountUser
+export type WorkspaceMember = AccountWorkspaceMember
+
 function projectUpdatedLabel(updatedAt: number) {
   const elapsed = Math.max(0, Date.now() - updatedAt)
   const hours = Math.floor(elapsed / 3_600_000)
@@ -102,9 +105,20 @@ export function OperatingDashboard({ onOpenProjects }: { onOpenProjects: () => v
 
 export function ProjectLibrary({
   projects,
+  currentUser,
   loading,
   loadError,
   onBack,
+  onSignOut,
+  onChangePassword,
+  onReadMfaStatus,
+  onEnrollMfa,
+  onVerifyMfa,
+  onRemoveMfa,
+  onSignOutOtherSessions,
+  onListMembers,
+  onInviteMember,
+  onUpdateMember,
   onOpenProject,
   onCreateProject,
   onRenameProject,
@@ -112,9 +126,20 @@ export function ProjectLibrary({
   onRetry,
 }: {
   projects: WorkspaceProject[]
+  currentUser?: WorkspaceCurrentUser
   loading: boolean
   loadError: string | null
   onBack: () => void
+  onSignOut?: () => Promise<void>
+  onChangePassword?: (password: string) => Promise<void>
+  onReadMfaStatus?: () => Promise<AccountMfaStatus>
+  onEnrollMfa?: () => Promise<AccountMfaEnrollment>
+  onVerifyMfa?: (factorId: string, code: string) => Promise<void>
+  onRemoveMfa?: (factorId: string) => Promise<void>
+  onSignOutOtherSessions?: () => Promise<void>
+  onListMembers?: () => Promise<WorkspaceMember[]>
+  onInviteMember?: (input: { email: string; name?: string; role: 'owner' | 'member' }) => Promise<WorkspaceMember>
+  onUpdateMember?: (userId: string, updates: { role?: 'owner' | 'member'; status?: 'active' | 'disabled' }) => Promise<WorkspaceMember>
   onOpenProject: (projectId: string) => void
   onCreateProject: () => Promise<boolean>
   onRenameProject: (projectId: string, name: string) => Promise<boolean>
@@ -127,6 +152,8 @@ export function ProjectLibrary({
   const [submitting, setSubmitting] = useState(false)
   const [creating, setCreating] = useState(false)
   const [operationError, setOperationError] = useState('')
+  const [accountMenuAnchor, setAccountMenuAnchor] = useState<AccountMenuAnchor | null>(null)
+  const [accountDialog, setAccountDialog] = useState<'profile' | 'security' | 'members' | null>(null)
   const editingPresence = useMotionPresence(Boolean(editingProject), 140)
   const visibleEditingProject = useRetainedValue(editingProject)
   const deletingPresence = useMotionPresence(Boolean(deletingProject), 140)
@@ -196,7 +223,26 @@ export function ProjectLibrary({
     <main className="project-library-page" aria-label="创意项目">
       <header className="project-library-page__header">
         <button type="button" className="project-library-page__brand" onClick={onBack}><strong>Botanic</strong><span>创意工作室</span></button>
-        <button type="button" className="project-library-page__back" onClick={onBack}>← 返回经营驾驶舱</button>
+        <div className="project-library-page__account-actions">
+          <button
+            type="button"
+            className="project-library-page__account"
+            aria-label="打开账户设置"
+            aria-expanded={Boolean(accountMenuAnchor)}
+            onClick={(event) => {
+              if (accountMenuAnchor) {
+                setAccountMenuAnchor(null)
+                return
+              }
+              const rect = event.currentTarget.getBoundingClientRect()
+              setAccountMenuAnchor({ left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom })
+            }}
+          >
+            <span>{currentUser?.name?.slice(0, 1).toUpperCase() || 'B'}</span>
+            <strong>{currentUser?.name || '本地工作区'}</strong>
+          </button>
+          <button type="button" className="project-library-page__back" onClick={onBack}>← 返回经营驾驶舱</button>
+        </div>
       </header>
       <section className="project-library-page__content">
         <header>
@@ -252,9 +298,21 @@ export function ProjectLibrary({
           <div><button type="button" onClick={() => setDeletingProject(null)} disabled={submitting}>取消</button><button type="button" className="is-danger" onClick={() => void confirmDelete()} disabled={submitting}>确认删除</button></div>
         </section>
       </div> : null}
+      {accountMenuAnchor ? <AccountMenu
+        user={currentUser}
+        anchor={accountMenuAnchor}
+        onOpenProfile={() => { setAccountMenuAnchor(null); if (currentUser) setAccountDialog('profile') }}
+        onOpenSecurity={() => { setAccountMenuAnchor(null); if (currentUser && onChangePassword) setAccountDialog('security') }}
+        onOpenMembers={() => { setAccountMenuAnchor(null); setAccountDialog('members') }}
+        onSignOut={onSignOut}
+        onClose={() => setAccountMenuAnchor(null)}
+      /> : null}
+      {currentUser && onChangePassword && onReadMfaStatus && onEnrollMfa && onVerifyMfa && onRemoveMfa && onSignOutOtherSessions && (accountDialog === 'profile' || accountDialog === 'security') ? <AccountDetailsDialog mode={accountDialog} user={currentUser} onChangePassword={onChangePassword} onReadMfaStatus={onReadMfaStatus} onEnrollMfa={onEnrollMfa} onVerifyMfa={onVerifyMfa} onRemoveMfa={onRemoveMfa} onSignOutOtherSessions={onSignOutOtherSessions} onClose={() => setAccountDialog(null)} /> : null}
+      {accountDialog === 'members' && currentUser?.role === 'owner' && onListMembers && onInviteMember && onUpdateMember ? <WorkspaceMembersDialog currentUser={currentUser} onListMembers={onListMembers} onInviteMember={onInviteMember} onUpdateMember={onUpdateMember} onClose={() => setAccountDialog(null)} /> : null}
     </main>
   )
 }
 import { useEffect, useState } from 'react'
 import { ArrowUpRightIcon, DeleteIcon, MoreIcon } from './BotanicIcons'
+import { AccountDetailsDialog, AccountMenu, WorkspaceMembersDialog, type AccountMenuAnchor, type AccountMfaEnrollment, type AccountMfaStatus, type AccountUser, type WorkspaceMember as AccountWorkspaceMember } from './AccountCenter'
 import { useMotionPresence, useRestoreFocus, useRetainedValue } from './motionPresence'

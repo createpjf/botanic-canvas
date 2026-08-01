@@ -1,10 +1,19 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
+import { createAccountSecurityService, type AccountMfaEnrollment, type AccountMfaStatus } from './accountSecurity'
+import { createSecurityAuditReporter } from './securityAudit'
 
 export type ProductUser = {
   id: string
   email: string
   name: string
   role: 'owner' | 'member'
+  status?: 'invited' | 'active' | 'disabled'
+  createdAt?: number
+}
+
+export type WorkspaceMember = ProductUser & {
+  status: 'invited' | 'active' | 'disabled'
+  createdAt?: number
 }
 
 type ApiErrorPayload = { error?: { code?: string; message?: string } }
@@ -30,12 +39,17 @@ const supabasePublishableKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ?? 
 // Railway 全量部署时，访问码只发给同源 API，浏览器不再连接 Supabase。
 const localAccessTokenAuth = import.meta.env.VITE_AUTH_PROVIDER === 'access-token'
 export const supabaseAuthEnabled = !localAccessTokenAuth && serverPersistenceEnabled && Boolean(supabaseUrl && supabasePublishableKey)
+const initialAuthFlowType = typeof window === 'undefined'
+  ? null
+  : new URLSearchParams(window.location.hash.replace(/^#/, '')).get('type')
+    ?? new URLSearchParams(window.location.search).get('type')
 
 const supabase: SupabaseClient | undefined = supabaseAuthEnabled
   ? createClient(supabaseUrl, supabasePublishableKey, {
       auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
     })
   : undefined
+const accountSecurity = supabase ? createAccountSecurityService(supabase.auth) : undefined
 
 const mediaSessionSyncs = new Map<string, Promise<ProductUser | undefined>>()
 const productRequestTimeoutMs = 15_000
@@ -203,6 +217,14 @@ export async function productRequest<T>(path: string, init: RequestInit = {}): P
   return payload as T
 }
 
+const reportAccountSecurityEvent = createSecurityAuditReporter(async (action) => {
+  await productRequest<void>('/api/account/security-events', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action }),
+  })
+})
+
 export async function readProductSession() {
   if (!serverPersistenceEnabled) return undefined
   if (supabase) {
@@ -214,7 +236,17 @@ export async function readProductSession() {
     // POST 只负责补齐 <img> 的同源 Cookie；失败时不应把已登录用户踢回登录页。
     const fallbackUser = sessionUserFallback(data.session.user)
     void syncMediaSessionCookie(data.session.access_token).catch(() => undefined)
-    return fallbackUser
+    try {
+      const profile = await withAuthTimeout(
+        productRequest<{ user: ProductUser | null }>('/api/session'),
+        '工作区身份读取超时。',
+      )
+      return profile.user ?? fallbackUser
+    } catch (error) {
+      // 服务端用户状态是工作区访问的权威来源；被停用时不能回退到本地 Supabase 资料。
+      if (error instanceof ProductApiError && (error.status === 401 || error.status === 403)) return undefined
+      return fallbackUser
+    }
   }
   try {
     const response = await productRequest<{ user: ProductUser | null }>('/api/session')
@@ -232,8 +264,10 @@ export async function createProductSession(input: string | { email: string; pass
     if (error) throw new ProductApiError(error.message, 401, 'SUPABASE_SIGN_IN_FAILED')
     const user = data.user
     if (!user) throw new ProductApiError('登录成功，但未返回工作区身份。', 401, 'PROFILE_UNAVAILABLE')
+    const profile = await productRequest<{ user: ProductUser | null }>('/api/session')
+    if (!profile.user) throw new ProductApiError('该账号尚未加入 Botanic 工作区。', 403, 'WORKSPACE_ACCESS_REQUIRED')
     if (data.session?.access_token) void syncMediaSessionCookie(data.session.access_token).catch(() => undefined)
-    return sessionUserFallback(user)
+    return profile.user
   }
   const response = await productRequest<{ user: ProductUser }>('/api/session', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accessToken: input }),
@@ -250,4 +284,73 @@ export async function clearProductSession() {
     return
   }
   await productRequest<void>('/api/session', { method: 'DELETE' })
+}
+
+export function productPasswordSetupRequired() {
+  return supabaseAuthEnabled && (initialAuthFlowType === 'invite' || initialAuthFlowType === 'recovery')
+}
+
+export async function completeProductPasswordSetup(password: string) {
+  await updateProductPassword(password)
+  // 移除邀请 / 恢复链接中的敏感会话片段，然后回到工作区默认入口。
+  window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`)
+}
+
+export async function updateProductPassword(password: string) {
+  if (!supabase) throw new ProductApiError('当前环境未启用账号密码。', 400, 'SUPABASE_AUTH_REQUIRED')
+  if (password.length < 8) throw new ProductApiError('密码至少需要 8 个字符。', 400, 'PASSWORD_TOO_SHORT')
+  const { error } = await supabase.auth.updateUser({ password })
+  if (error) throw new ProductApiError(error.message, 400, 'PASSWORD_SETUP_FAILED')
+  await reportAccountSecurityEvent('security.password.changed')
+}
+
+function requireAccountSecurity() {
+  if (!accountSecurity) throw new ProductApiError('当前环境未启用正式账户安全。', 400, 'SUPABASE_AUTH_REQUIRED')
+  return accountSecurity
+}
+
+export async function readProductMfaStatus(): Promise<AccountMfaStatus> {
+  return requireAccountSecurity().status()
+}
+
+export async function enrollProductMfa(): Promise<AccountMfaEnrollment> {
+  return requireAccountSecurity().enroll()
+}
+
+export async function verifyProductMfa(factorId: string, code: string, enabling = false) {
+  await requireAccountSecurity().verify(factorId, code)
+  if (enabling) await reportAccountSecurityEvent('security.mfa.enabled')
+}
+
+export async function removeProductMfa(factorId: string) {
+  await requireAccountSecurity().remove(factorId)
+  await reportAccountSecurityEvent('security.mfa.disabled')
+}
+
+export async function signOutOtherProductSessions() {
+  await requireAccountSecurity().signOutOtherSessions()
+  await reportAccountSecurityEvent('security.sessions.revoked')
+}
+
+export async function listWorkspaceMembers() {
+  const response = await productRequest<{ users: WorkspaceMember[] }>('/api/users')
+  return response.users
+}
+
+export async function inviteWorkspaceMember(input: { email: string; name?: string; role: 'owner' | 'member' }) {
+  const response = await productRequest<{ user: WorkspaceMember }>('/api/users', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  return response.user
+}
+
+export async function updateWorkspaceMember(userId: string, updates: { role?: 'owner' | 'member'; status?: 'active' | 'disabled' }) {
+  const response = await productRequest<{ user: WorkspaceMember }>(`/api/users/${encodeURIComponent(userId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  })
+  return response.user
 }

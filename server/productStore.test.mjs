@@ -58,6 +58,114 @@ test('项目、成员授权和审计会持久化到服务端数据文件', () =>
   assert.ok(reloaded.listAuditEvents(owner.id, 'project-a').some((event) => event.action === 'project.updated'))
 })
 
+test('工作区所有者可管理成员，停用后会话立即失效但项目保留', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  assert.ok(owner)
+  store.writeProject(owner.id, document('project-members'), undefined)
+  const member = store.createUser(owner.id, {
+    email: 'member@example.com',
+    name: 'Member',
+    accessToken: 'member-token',
+  })
+  store.addProjectMember(owner.id, 'project-members', member.id, 'editor')
+
+  assert.deepEqual(
+    store.listUsers(owner.id).map((user) => ({ email: user.email, role: user.role, status: user.status })),
+    [
+      { email: owner.email, role: 'owner', status: 'active' },
+      { email: 'member@example.com', role: 'member', status: 'active' },
+    ],
+  )
+  assert.throws(() => store.listUsers(member.id), (error) => error?.code === 'USER_MANAGE_FORBIDDEN')
+
+  const disabled = store.updateUser(owner.id, member.id, { status: 'disabled' })
+  assert.equal(disabled.status, 'disabled')
+  assert.equal(store.authenticate('member-token'), undefined)
+  assert.equal(store.readProject(owner.id, 'project-members')?.document.id, 'project-members')
+})
+
+test('工作区必须保留至少一名启用的所有者', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  assert.ok(owner)
+
+  assert.throws(
+    () => store.updateUser(owner.id, owner.id, { status: 'disabled' }),
+    (error) => error?.code === 'LAST_OWNER_REQUIRED',
+  )
+  assert.throws(
+    () => store.updateUser(owner.id, owner.id, { role: 'member' }),
+    (error) => error?.code === 'LAST_OWNER_REQUIRED',
+  )
+})
+
+test('对象级授权能区分项目不存在与跨账号访问', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, document('project-private'), undefined)
+  const outsider = store.createUser(owner.id, {
+    email: 'outsider@example.com',
+    name: 'Outsider',
+    accessToken: 'outsider-token',
+  })
+
+  assert.deepEqual(store.projectAccess(outsider.id, 'project-private'), { exists: true, role: undefined })
+  assert.deepEqual(store.projectAccess(outsider.id, 'missing-project'), { exists: false, role: undefined })
+  assert.throws(
+    () => store.writeProject(outsider.id, { ...document('project-private'), name: '越权修改' }, 1),
+    (error) => error?.code === 'PROJECT_WRITE_FORBIDDEN',
+  )
+})
+
+test('Viewer 只能读取，Editor 可编辑但不能管理成员或读取敏感审计', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, document('project-rbac'), undefined)
+  const editor = store.createUser(owner.id, { email: 'editor@example.com', accessToken: 'editor-token' })
+  const viewer = store.createUser(owner.id, { email: 'viewer@example.com', accessToken: 'viewer-token' })
+  store.addProjectMember(owner.id, 'project-rbac', editor.id, 'editor')
+  store.addProjectMember(owner.id, 'project-rbac', viewer.id, 'viewer')
+
+  assert.equal(store.readProject(viewer.id, 'project-rbac')?.document.id, 'project-rbac')
+  assert.equal(store.canEditProject(viewer.id, 'project-rbac'), false)
+  assert.equal(store.canEditProject(editor.id, 'project-rbac'), true)
+  assert.throws(
+    () => store.addProjectMember(editor.id, 'project-rbac', viewer.id, 'editor'),
+    (error) => error?.code === 'PROJECT_MEMBER_FORBIDDEN',
+  )
+  assert.throws(
+    () => store.listAuditEvents(editor.id, 'project-rbac'),
+    (error) => error?.code === 'PROJECT_AUDIT_FORBIDDEN',
+  )
+  assert.ok(store.listAuditEvents(owner.id, 'project-rbac').length > 0)
+})
+
+test('工作区成员不能修改全局素材库，Owner 可查看敏感操作审计', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, document('project-workspace'), undefined)
+  const member = store.createUser(owner.id, { email: 'member-library@example.com', accessToken: 'member-library-token' })
+  store.addProjectMember(owner.id, 'project-workspace', member.id, 'editor')
+  const library = { id: 'global-brand-assets', assets: [{ id: 'asset-a' }], updatedAt: Date.now() }
+
+  assert.throws(
+    () => store.writeGlobalAssetLibrary(member.id, library),
+    (error) => error?.code === 'LIBRARY_WRITE_FORBIDDEN',
+  )
+  store.writeGlobalAssetLibrary(owner.id, library)
+  store.deleteGlobalAsset(owner.id, 'asset-a')
+  store.recordSecurityAuditEvent(owner.id, 'security.mfa.enabled')
+
+  const actions = store.listWorkspaceAuditEvents(owner.id).map((event) => event.action)
+  assert.ok(actions.includes('brand-asset.deleted'))
+  assert.ok(actions.includes('security.mfa.enabled'))
+  assert.throws(
+    () => store.listWorkspaceAuditEvents(member.id),
+    (error) => error?.code === 'WORKSPACE_AUDIT_FORBIDDEN',
+  )
+})
+
 test('项目列表返回真实结果封面与画布摘要', () => {
   const { store } = createStore()
   const owner = store.authenticate('owner-token')

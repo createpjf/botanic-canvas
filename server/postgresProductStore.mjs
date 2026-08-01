@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import postgres from 'postgres'
+import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from './authorization.mjs'
 
 const now = () => Date.now()
 const hashAccessToken = (token) => createHash('sha256').update(token).digest('hex')
@@ -12,7 +13,14 @@ function productError(message, code = 'PRODUCT_STORE_ERROR') {
 }
 
 function asUser(row) {
-  return row ? { id: row.id, email: row.email, name: row.name, role: row.role } : undefined
+  return row ? {
+    id: row.id,
+    email: row.email,
+    name: row.name,
+    role: row.role,
+    status: row.status ?? 'active',
+    createdAt: row.createdAt === undefined ? undefined : Number(row.createdAt),
+  } : undefined
 }
 
 function asJson(value) {
@@ -83,6 +91,7 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       email text not null unique,
       name text not null,
       role text not null check (role in ('owner', 'member')),
+      status text not null default 'active',
       created_at bigint not null
     );
     create table if not exists access_tokens (
@@ -152,10 +161,13 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       created_at bigint not null
     );
     create index if not exists projects_updated_at_idx on projects (updated_at desc);
+    alter table app_users add column if not exists status text not null default 'active';
+    create index if not exists app_users_status_idx on app_users (status, created_at);
     create index if not exists canvas_graph_updates_project_idx on canvas_graph_updates (project_id, id);
     create index if not exists jobs_status_updated_at_idx on generation_jobs (status, updated_at);
     create index if not exists media_project_idx on media_objects (project_id);
     create index if not exists audit_project_created_idx on audit_events (project_id, created_at desc);
+    create index if not exists audit_created_idx on audit_events (created_at desc);
     -- 对象先上传、再原子写入新项目文档时，项目行尚未存在。媒体可短暂成为
     -- 不可访问孤儿对象；读取授权仍通过 project_members join 约束，生命周期规则负责清理。
     alter table media_objects drop constraint if exists media_objects_project_id_fkey;
@@ -214,53 +226,92 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     async authenticate(accessToken) {
       if (!accessToken) return undefined
       const [row] = await sql`
-        select u.id, u.email, u.name, u.role
+        select u.id, u.email, u.name, u.role, u.status, u.created_at as "createdAt"
         from access_tokens t join app_users u on u.id = t.user_id
-        where t.token_hash = ${hashAccessToken(accessToken)} and t.revoked_at is null
+        where t.token_hash = ${hashAccessToken(accessToken)} and t.revoked_at is null and u.status = 'active'
       `
       return asUser(row)
     },
 
     // 迁移期用 Supabase user.id 作为 PostgreSQL 主键：同一登录用户无须重新注册，
     // 但业务数据从此不再经过 Supabase PostgREST。
-    async ensureAuthenticatedUser({ id, email, name, roleHint }) {
+    async ensureAuthenticatedUser({ id, email, name, roleHint, statusHint = 'active' }) {
       if (!id) throw productError('登录用户缺少标识。', 'AUTH_USER_INVALID')
       const normalizedEmail = (email || `${id}@auth.botanic.local`).trim().toLowerCase()
       const normalizedName = name?.trim() || normalizedEmail.split('@')[0] || 'Botanic Member'
       return sql.begin(async (tx) => {
         await tx`select pg_advisory_xact_lock(72695839)`
-        const [existing] = await tx`select id, email, name, role from app_users where id = ${id} for update`
+        const [existing] = await tx`select id, email, name, role, status, created_at as "createdAt" from app_users where id = ${id} for update`
         if (existing) {
-          if (existing.email !== normalizedEmail || existing.name !== normalizedName) {
-            await tx`update app_users set email = ${normalizedEmail}, name = ${normalizedName} where id = ${id}`
+          if (existing.status === 'disabled') return undefined
+          const status = existing.status === 'invited' && statusHint === 'active' ? 'active' : existing.status
+          if (existing.email !== normalizedEmail || existing.name !== normalizedName || existing.status !== status) {
+            await tx`update app_users set email = ${normalizedEmail}, name = ${normalizedName}, status = ${status} where id = ${id}`
           }
-          return asUser({ ...existing, email: normalizedEmail, name: normalizedName })
+          return asUser({ ...existing, email: normalizedEmail, name: normalizedName, status })
         }
         const [owner] = await tx`select id from app_users where role = 'owner' limit 1`
         const role = roleHint === 'owner' || !owner ? 'owner' : 'member'
         const [emailOwner] = await tx`select id from app_users where lower(email) = lower(${normalizedEmail}) limit 1`
         if (emailOwner) throw productError('该邮箱已绑定其他工作区成员。', 'AUTH_EMAIL_CONFLICT')
-        await tx`insert into app_users (id, email, name, role, created_at) values (${id}, ${normalizedEmail}, ${normalizedName}, ${role}, ${now()})`
-        return { id, email: normalizedEmail, name: normalizedName, role }
+        const status = statusHint === 'invited' ? 'invited' : 'active'
+        const createdAt = now()
+        await tx`insert into app_users (id, email, name, role, status, created_at) values (${id}, ${normalizedEmail}, ${normalizedName}, ${role}, ${status}, ${createdAt})`
+        return { id, email: normalizedEmail, name: normalizedName, role, status, createdAt }
       })
     },
 
     async readUser(userId) {
-      const [row] = await sql`select id, email, name, role from app_users where id = ${userId}`
+      const [row] = await sql`select id, email, name, role, status, created_at as "createdAt" from app_users where id = ${userId}`
       return asUser(row)
     },
 
     async createUser(actorId, { email, name, role = 'member', accessToken }) {
       return sql.begin(async (tx) => {
-        const [actor] = await tx`select role from app_users where id = ${actorId}`
-        if (actor?.role !== 'owner') throw productError('只有工作区所有者可以创建成员。', 'USER_CREATE_FORBIDDEN')
+        const [actor] = await tx`select role, status from app_users where id = ${actorId}`
+        assertWorkspacePermission(actor, 'manage-members', 'USER_CREATE_FORBIDDEN')
         const [existing] = await tx`select id from app_users where lower(email) = lower(${email})`
         if (existing) throw productError('该成员已存在。', 'USER_EXISTS')
-        const user = { id: `usr_${randomUUID()}`, email, name: name || email, role }
-        await tx`insert into app_users (id, email, name, role, created_at) values (${user.id}, ${user.email}, ${user.name}, ${user.role}, ${now()})`
+        const user = { id: `usr_${randomUUID()}`, email, name: name || email, role, status: 'active', createdAt: now() }
+        await tx`insert into app_users (id, email, name, role, status, created_at) values (${user.id}, ${user.email}, ${user.name}, ${user.role}, ${user.status}, ${user.createdAt})`
         await tx`insert into access_tokens (id, user_id, token_hash, created_at) values (${`token_${randomUUID()}`}, ${user.id}, ${hashAccessToken(accessToken)}, ${now()})`
         await insertAudit(tx, { actorId, action: 'member.created', targetId: user.id, detail: { email: user.email, role: user.role } })
         return user
+      })
+    },
+
+    async listUsers(actorId) {
+      const [actor] = await sql`select role, status from app_users where id = ${actorId}`
+      assertWorkspacePermission(actor, 'manage-members', 'USER_MANAGE_FORBIDDEN')
+      const rows = await sql`
+        select id, email, name, role, status, created_at as "createdAt"
+        from app_users order by created_at asc
+      `
+      return rows.map(asUser)
+    },
+
+    async updateUser(actorId, targetId, updates) {
+      return sql.begin(async (tx) => {
+        const [actor] = await tx`select role, status from app_users where id = ${actorId} for update`
+        assertWorkspacePermission(actor, 'manage-members', 'USER_MANAGE_FORBIDDEN')
+        const [target] = await tx`
+          select id, email, name, role, status, created_at as "createdAt"
+          from app_users where id = ${targetId} for update
+        `
+        if (!target) throw productError('未找到该工作区成员。', 'USER_NOT_FOUND')
+        const role = updates?.role ?? target.role
+        const status = updates?.status ?? target.status
+        if (!['owner', 'member'].includes(role) || !['invited', 'active', 'disabled'].includes(status)) {
+          throw productError('成员更新参数无效。', 'USER_UPDATE_INVALID')
+        }
+        if (target.role === 'owner' && target.status === 'active' && (role !== 'owner' || status !== 'active')) {
+          const [{ count }] = await tx`select count(*)::int as count from app_users where role = 'owner' and status = 'active'`
+          if (Number(count) <= 1) throw productError('工作区必须保留至少一名启用的所有者。', 'LAST_OWNER_REQUIRED')
+        }
+        await tx`update app_users set role = ${role}, status = ${status} where id = ${targetId}`
+        if (status === 'disabled') await tx`update access_tokens set revoked_at = ${now()} where user_id = ${targetId} and revoked_at is null`
+        await insertAudit(tx, { actorId, action: 'member.updated', targetId, detail: { role, status } })
+        return asUser({ ...target, role, status })
       })
     },
 
@@ -311,9 +362,18 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       }
     },
 
+    async projectAccess(userId, projectId) {
+      const [row] = await sql`
+        select p.id, m.role
+        from projects p left join project_members m on m.project_id = p.id and m.user_id = ${userId}
+        where p.id = ${projectId}
+      `
+      return { exists: Boolean(row), role: row?.role }
+    },
+
     async canEditProject(userId, projectId) {
       const role = await memberRole(projectId, userId)
-      return role === 'owner' || role === 'editor'
+      return projectPermissionDecision(role, 'edit') === 'allow'
     },
 
     async writeProject(userId, document, expectedRevision, expectedGraphRevision) {
@@ -326,7 +386,7 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
         `
         const timestamp = now()
         if (existing) {
-          if (!['owner', 'editor'].includes(existing.role)) throw productError('你没有编辑该项目的权限。', 'PROJECT_WRITE_FORBIDDEN')
+          assertProjectPermission(existing.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
           if (Number.isInteger(expectedRevision) && expectedRevision !== Number(existing.revision)) {
             throw productError('项目已被其他成员更新，请刷新后再保存。', 'PROJECT_CONFLICT')
           }
@@ -371,7 +431,7 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       return sql.begin(async (tx) => {
         const [member] = await tx`select role from project_members where project_id = ${projectId} and user_id = ${userId} for update`
         if (!member) return false
-        if (member.role !== 'owner') throw productError('只有项目所有者可以删除项目。', 'PROJECT_DELETE_FORBIDDEN')
+        assertProjectPermission(member.role, 'delete', 'PROJECT_DELETE_FORBIDDEN')
         const [project] = await tx`select name from projects where id = ${projectId} for update`
         if (!project) return false
         await tx`delete from media_objects where project_id = ${projectId}`
@@ -384,7 +444,7 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     async addProjectMember(actorId, projectId, userId, role) {
       return sql.begin(async (tx) => {
         const [member] = await tx`select role from project_members where project_id = ${projectId} and user_id = ${actorId} for update`
-        if (member?.role !== 'owner') throw productError('只有项目所有者可以管理成员。', 'PROJECT_MEMBER_FORBIDDEN')
+        assertProjectPermission(member?.role, 'manage-members', 'PROJECT_MEMBER_FORBIDDEN')
         const [user] = await tx`select id from app_users where id = ${userId}`
         if (!user) throw productError('未找到成员。', 'USER_NOT_FOUND')
         await tx`
@@ -426,7 +486,7 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       }
       return sql.begin(async (tx) => {
         const [member] = await tx`select role from project_members where project_id = ${projectId} and user_id = ${userId}`
-        if (!['owner', 'editor'].includes(member?.role)) throw productError('你没有编辑该项目的权限。', 'PROJECT_WRITE_FORBIDDEN')
+        assertProjectPermission(member?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
         await ensureCanvasGraph(tx, projectId)
         const timestamp = now()
         const [entry] = await tx`
@@ -450,7 +510,7 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       }
       return sql.begin(async (tx) => {
         const [member] = await tx`select role from project_members where project_id = ${projectId} and user_id = ${userId}`
-        if (!['owner', 'editor'].includes(member?.role)) throw productError('你没有编辑该项目的权限。', 'PROJECT_WRITE_FORBIDDEN')
+        assertProjectPermission(member?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
         await ensureCanvasGraph(tx, projectId)
         const timestamp = now()
         const [entry] = await tx`
@@ -465,18 +525,15 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     },
 
     async readGlobalAssetLibrary(userId, id) {
-      const [access] = await sql`select 1 from project_members where user_id = ${userId} limit 1`
+      const [access] = await sql`select 1 from app_users where id = ${userId} and status <> 'disabled'`
       if (!access) return undefined
       const [row] = await sql`select library from global_asset_libraries where id = ${id}`
       return row ? asJson(row.library) : undefined
     },
 
     async writeGlobalAssetLibrary(userId, library) {
-      const [workspace] = await sql`
-        select 1 from project_members where user_id = ${userId} and role in ('owner', 'editor') limit 1
-      `
-      const [{ count }] = await sql`select count(*)::int as count from projects`
-      if (!workspace && Number(count)) throw productError('你没有编辑品牌素材库的权限。', 'LIBRARY_WRITE_FORBIDDEN')
+      const [user] = await sql`select role, status from app_users where id = ${userId}`
+      assertWorkspacePermission(user, 'manage-library', 'LIBRARY_WRITE_FORBIDDEN')
       await sql`
         insert into global_asset_libraries (id, library, updated_at)
         values (${library.id}, ${sql.json(library)}::jsonb, ${now()})
@@ -487,10 +544,8 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     },
 
     async deleteGlobalAsset(userId, assetId) {
-      const [workspace] = await sql`
-        select 1 from project_members where user_id = ${userId} and role in ('owner', 'editor') limit 1
-      `
-      if (!workspace) throw productError('你没有编辑品牌素材库的权限。', 'LIBRARY_WRITE_FORBIDDEN')
+      const [user] = await sql`select role, status from app_users where id = ${userId}`
+      assertWorkspacePermission(user, 'manage-library', 'LIBRARY_WRITE_FORBIDDEN')
       return sql.begin(async (tx) => {
         const [row] = await tx`select library from global_asset_libraries where id = 'global-brand-assets' for update`
         if (!row) return { deleted: false, library: undefined }
@@ -568,12 +623,31 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
 
     async listAuditEvents(userId, projectId, limit = 100) {
       const role = await memberRole(projectId, userId)
-      if (!role) return undefined
+      const [project] = await sql`select id from projects where id = ${projectId}`
+      if (!project) return undefined
+      assertProjectPermission(role, 'read-audit', 'PROJECT_AUDIT_FORBIDDEN')
       const rows = await sql`
         select id, actor_id as "actorId", action, project_id as "projectId", target_id as "targetId", detail, created_at as "createdAt"
         from audit_events where project_id = ${projectId} order by created_at desc limit ${Math.max(1, Math.min(limit, 500))}
       `
       return rows.map((row) => ({ ...row, createdAt: Number(row.createdAt), detail: asJson(row.detail) }))
+    },
+
+    async listWorkspaceAuditEvents(userId, limit = 100) {
+      const [user] = await sql`select role, status from app_users where id = ${userId}`
+      assertWorkspacePermission(user, 'read-audit', 'WORKSPACE_AUDIT_FORBIDDEN')
+      const rows = await sql`
+        select id, actor_id as "actorId", action, project_id as "projectId", target_id as "targetId", detail, created_at as "createdAt"
+        from audit_events order by created_at desc limit ${Math.max(1, Math.min(limit, 500))}
+      `
+      return rows.map((row) => ({ ...row, createdAt: Number(row.createdAt), detail: asJson(row.detail) }))
+    },
+
+    async recordSecurityAuditEvent(userId, action, detail = {}) {
+      const [user] = await sql`select id, status from app_users where id = ${userId}`
+      if (!user || user.status === 'disabled') throw productError('登录状态无效。', 'AUTH_REQUIRED')
+      await insertAudit(sql, { actorId: userId, action, detail })
+      return { action }
     },
 
     async close() {

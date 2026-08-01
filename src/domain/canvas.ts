@@ -79,6 +79,20 @@ export type AssetRecord = {
 }
 
 /**
+ * 素材组属于单个项目：可以同时引用共享品牌素材和本项目私有素材，
+ * 但不会把项目私有素材泄露到其他项目。上传文件夹会自动成为素材组。
+ */
+export type AssetGroup = {
+  id: string
+  name: string
+  role: Exclude<AssetRole, '首图'>
+  assetIds: string[]
+  coverAssetId?: string
+  createdAt: number
+  updatedAt: number
+}
+
+/**
  * 全局素材库只保存内置/品牌素材。上传和生成资产始终归属创建它们的项目，
  * 从而避免不同项目的工作内容、历史和可删除资产相互污染。
  */
@@ -303,6 +317,34 @@ export type GenerationJob = {
   resultNodeId?: string
 }
 
+export type BatchVariationItemStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+
+export type BatchVariationItem = {
+  id: string
+  assetId: string
+  assetName: string
+  status: BatchVariationItemStatus
+  generateNodeId?: string
+  jobId?: string
+  error?: string
+}
+
+/** 一次素材组批量变体会拆成可独立恢复、重试和追溯的子任务。 */
+export type BatchVariationRun = {
+  id: string
+  sourceResultNodeId: string
+  groupId: string
+  groupName: string
+  variableRole: AssetGroup['role']
+  prompt: string
+  candidatesPerAsset: number
+  settings: GenerationSettings
+  status: 'queued' | 'running' | 'succeeded' | 'partial' | 'failed' | 'cancelled'
+  items: BatchVariationItem[]
+  createdAt: number
+  updatedAt: number
+}
+
 export type DeliveryArtifact = {
   id: string
   targetNodeId: string
@@ -317,7 +359,7 @@ export type DeliveryArtifact = {
 }
 
 export type CanvasDocument = {
-  schemaVersion: 21
+  schemaVersion: 22
   id: string
   name: string
   nodes: CanvasNode[]
@@ -325,10 +367,12 @@ export type CanvasDocument = {
   viewport: Viewport
   /** 当前项目私有的上传/生成素材；全局品牌素材位于 GlobalAssetLibrary。 */
   assets: AssetRecord[]
+  assetGroups: AssetGroup[]
   templates: CanvasTemplate[]
   history: CanvasHistoryEntry[]
   deliveries: DeliveryArtifact[]
   generationJobs: GenerationJob[]
+  batchVariationRuns: BatchVariationRun[]
   activeTemplateId?: string
   activeVersionId?: string
   updatedAt: number
