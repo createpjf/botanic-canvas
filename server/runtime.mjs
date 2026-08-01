@@ -28,6 +28,10 @@ export function loadLocalEnv(rootDir = process.cwd()) {
 }
 
 export function runtimeConfig(rootDir = process.cwd()) {
+  const requestedAuthProvider = process.env.BOTANIC_AUTH_PROVIDER
+  const authProvider = ['access-token', 'hybrid', 'supabase'].includes(requestedAuthProvider)
+    ? requestedAuthProvider
+    : 'supabase'
   const openAIModels = [...new Set((process.env.OPENAI_IMAGE_MODELS ?? process.env.OPENAI_IMAGE_MODEL ?? 'gpt-image-2')
     .split(',').map((model) => model.trim()).filter(Boolean))]
   const miniMaxImageModels = [...new Set((process.env.MINIMAX_IMAGE_MODELS ?? 'image-01')
@@ -47,7 +51,7 @@ export function runtimeConfig(rootDir = process.cwd()) {
     production: process.env.NODE_ENV === 'production',
     databaseUrl: process.env.DATABASE_URL,
     redisUrl: process.env.REDIS_URL,
-    authProvider: process.env.BOTANIC_AUTH_PROVIDER === 'access-token' ? 'access-token' : 'supabase',
+    authProvider,
     storageProvider: process.env.BOTANIC_STORAGE_PROVIDER === 's3' ? 's3' : 'supabase',
     supabase: {
       url: process.env.SUPABASE_URL,
@@ -100,14 +104,16 @@ export function runtimeConfig(rootDir = process.cwd()) {
 export async function createProductRuntime(config = runtimeConfig()) {
   const useSupabase = Boolean(config.supabase.url && config.supabase.secretKey)
   const useAccessTokenAuth = config.authProvider === 'access-token'
+  const useHybridAuth = config.authProvider === 'hybrid'
+  const useSupabaseAuth = config.authProvider === 'supabase' || useHybridAuth
   const useS3Storage = config.storageProvider === 's3'
   const usePostgres = Boolean(config.databaseUrl)
   if (config.production && !usePostgres) throw new Error('生产环境必须配置 DATABASE_URL。')
-  if (config.production && !useAccessTokenAuth && !useSupabase) throw new Error('Supabase 登录模式必须配置 SUPABASE_URL 与 SUPABASE_SECRET_KEY。')
+  if (config.production && useSupabaseAuth && !useSupabase) throw new Error('Supabase 登录模式必须配置 SUPABASE_URL 与 SUPABASE_SECRET_KEY。')
   const productStore = usePostgres
     ? await createPostgresProductStore({
         databaseUrl: config.databaseUrl,
-        bootstrapAccessToken: useAccessTokenAuth ? config.bootstrapAccessToken : undefined,
+        bootstrapAccessToken: useAccessTokenAuth || useHybridAuth ? config.bootstrapAccessToken : undefined,
         bootstrapEmail: config.bootstrapEmail,
       })
     : useSupabase
@@ -119,13 +125,14 @@ export async function createProductRuntime(config = runtimeConfig()) {
       })
       : createProductStore({ dataPath: config.localDataPath, bootstrapAccessToken: config.bootstrapAccessToken, bootstrapEmail: config.bootstrapEmail })
 
-  const authenticatedStore = usePostgres && useSupabase && !useAccessTokenAuth
+  const authenticatedStore = usePostgres && useSupabase && useSupabaseAuth
     ? createSupabaseAuthPostgresStore({
         productStore,
         url: config.supabase.url,
         secretKey: config.supabase.secretKey,
         bootstrapEmail: config.bootstrapEmail,
         inviteRedirectTo: config.supabase.inviteRedirectTo,
+        allowLegacyTokens: useHybridAuth,
       })
     : productStore
 
@@ -140,12 +147,12 @@ export async function createProductRuntime(config = runtimeConfig()) {
       productStore: authenticatedStore,
       mediaService: createMediaService({ productStore: authenticatedStore, objectStore, maximumUploadBytes: config.maximumReferenceBytes }),
       persistence: usePostgres ? 'postgres' : 'supabase',
-      authProvider: 'supabase',
+      authProvider: config.authProvider,
     }
   }
   const configuredObjectStore = [config.s3.endpoint, config.s3.bucket, config.s3.accessKeyId, config.s3.secretAccessKey].every(Boolean)
   if (config.production && !configuredObjectStore) throw new Error('Railway 媒体存储未配置：请设置 S3_ENDPOINT、S3_BUCKET 与对象存储凭据。')
   const objectStore = configuredObjectStore ? await createObjectStore(config.s3) : undefined
   const mediaService = createMediaService({ productStore: authenticatedStore, objectStore, maximumUploadBytes: config.maximumReferenceBytes })
-  return { config, productStore: authenticatedStore, mediaService, persistence: usePostgres ? 'postgres' : 'file', authProvider: useAccessTokenAuth ? 'access-token' : 'supabase' }
+  return { config, productStore: authenticatedStore, mediaService, persistence: usePostgres ? 'postgres' : 'file', authProvider: config.authProvider }
 }

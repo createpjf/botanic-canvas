@@ -249,10 +249,11 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === 'POST' && url.pathname === '/api/session') {
-      if (runtime.authProvider === 'supabase') {
+      const bearerToken = accessTokenFromRequest(request)
+      if (runtime.authProvider === 'supabase' || (runtime.authProvider === 'hybrid' && bearerToken)) {
         // Supabase 的访问令牌只存在于前端存储；图片标签无法携带 Bearer Header。
         // 登录后同步一份同源 HttpOnly Cookie，供 /api/media 的 <img> 请求鉴权。
-        const accessToken = accessTokenFromRequest(request)
+        const accessToken = bearerToken
         const user = await productStore.authenticate(accessToken)
         if (!user) return error(response, 401, 'INVALID_ACCESS_TOKEN', '登录状态无效，请重新登录。')
         return json(response, 200, { user }, { 'Set-Cookie': sessionCookie(accessToken, request, 60 * 60) })
@@ -290,7 +291,7 @@ const server = createServer(async (request, response) => {
         const member = await productStore.createUser(user.id, {
           email: text(body?.email, '成员邮箱', 320), name: typeof body?.name === 'string' ? body.name.trim() : undefined,
           role: enumValue(body?.role ?? 'member', ['owner', 'member'], '成员角色'),
-          ...(runtime.authProvider === 'supabase' ? {} : { accessToken: text(body?.accessToken, '成员访问令牌', 512) }),
+          ...(runtime.authProvider === 'access-token' ? { accessToken: text(body?.accessToken, '成员访问令牌', 512) } : {}),
         })
         return json(response, 201, { user: member })
       } catch (caught) {
