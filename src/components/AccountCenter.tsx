@@ -156,7 +156,7 @@ function auditTimeLabel(createdAt: number) {
   }).format(date)
 }
 
-export function WorkspaceAuditDialog({ onListEvents, onListMembers, onClose, phase = 'open', returnFocusTarget = null }: {
+export function WorkspaceAuditDialog({ onListEvents, onListMembers, onClose, phase = 'open', returnFocusTarget }: {
   onListEvents: () => Promise<WorkspaceAuditEvent[]>
   onListMembers: () => Promise<WorkspaceMember[]>
   onClose: () => void
@@ -168,7 +168,7 @@ export function WorkspaceAuditDialog({ onListEvents, onListMembers, onClose, pha
   const [category, setCategory] = useState<AuditEventCategory>('all')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  useRestoreFocus(phase !== 'exit', returnFocusTarget ?? document.querySelector<HTMLButtonElement>('button[aria-label="打开账户设置"]'))
+  useRestoreFocus(phase !== 'exit', returnFocusTarget === undefined ? document.querySelector<HTMLButtonElement>('button[aria-label="打开账户设置"]') : returnFocusTarget)
   const dialogRef = useDialogFocusTrap(phase !== 'exit')
 
   const load = async () => {
@@ -193,7 +193,7 @@ export function WorkspaceAuditDialog({ onListEvents, onListMembers, onClose, pha
 
   return createPortal(<div className={`workspace-audit-backdrop account-overlay is-${phase}`} role="presentation" inert={phase === 'exit' || undefined} onMouseDown={onClose}>
     <section ref={dialogRef} className="workspace-audit-dialog account-surface" role="dialog" aria-modal="true" aria-labelledby="workspace-audit-title" onMouseDown={(event) => event.stopPropagation()}>
-      <header><div><span className="workspace-eyebrow">SECURITY ACTIVITY</span><h2 id="workspace-audit-title">安全日志</h2><p>Owner 可查看工作区内的成员、项目和生成操作。</p></div><button type="button" onClick={onClose} aria-label="关闭安全日志">×</button></header>
+      <header><div><span className="workspace-eyebrow">SECURITY ACTIVITY</span><h2 id="workspace-audit-title">安全日志</h2><p>Owner 可查看工作区内的成员、项目和生成操作。</p></div><button type="button" onClick={onClose} aria-label="返回账户菜单">←</button></header>
       <div className="workspace-audit-dialog__toolbar">
         <div role="tablist" aria-label="日志类型">{auditCategories.map((item) => <button key={item.id} type="button" role="tab" aria-selected={category === item.id} className={category === item.id ? 'is-active' : ''} onClick={() => setCategory(item.id)}>{item.label}</button>)}</div>
         <button type="button" onClick={() => void load()} disabled={loading}>{loading ? '刷新中…' : '刷新'}</button>
@@ -226,7 +226,7 @@ export function AccountDetailsDialog({
   onModeChange,
   onClose,
   phase = 'open',
-  returnFocusTarget = null,
+  returnFocusTarget,
 }: {
   mode: 'profile' | 'security'
   user: AccountUser
@@ -252,7 +252,7 @@ export function AccountDetailsDialog({
   const [passwordEditorOpen, setPasswordEditorOpen] = useState(false)
   const [confirmingMfaRemoval, setConfirmingMfaRemoval] = useState(false)
   const [confirmingOtherSessions, setConfirmingOtherSessions] = useState(false)
-  useRestoreFocus(phase !== 'exit', returnFocusTarget ?? document.querySelector<HTMLButtonElement>('button[aria-label="打开账户设置"]'))
+  useRestoreFocus(phase !== 'exit', returnFocusTarget === undefined ? document.querySelector<HTMLButtonElement>('button[aria-label="打开账户设置"]') : returnFocusTarget)
   const dialogRef = useDialogFocusTrap(phase !== 'exit')
 
   useEffect(() => {
@@ -341,7 +341,7 @@ export function AccountDetailsDialog({
       <section ref={dialogRef} className="account-dialog account-surface" role="dialog" aria-modal="true" aria-labelledby="account-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
         <header>
           <div><span>BOTANIC ACCOUNT</span><h2 id="account-dialog-title">账户设置</h2><p>{user.email}</p></div>
-          <button type="button" onClick={onClose} aria-label="关闭账户设置">×</button>
+          <button type="button" onClick={onClose} aria-label="返回账户菜单">←</button>
         </header>
         <div className="account-dialog__layout">
           <nav aria-label="账户设置分类">
@@ -392,7 +392,7 @@ export function AccountDetailsDialog({
   )
 }
 
-export function WorkspaceMembersDialog({ currentUser, onListMembers, onInviteMember, onUpdateMember, onClose, phase = 'open', returnFocusTarget = null }: {
+export function WorkspaceMembersDialog({ currentUser, onListMembers, onInviteMember, onUpdateMember, onClose, phase = 'open', returnFocusTarget }: {
   currentUser: AccountUser
   onListMembers: () => Promise<WorkspaceMember[]>
   onInviteMember: (input: { email: string; name?: string; role: 'owner' | 'member' }) => Promise<WorkspaceMember>
@@ -408,7 +408,7 @@ export function WorkspaceMembersDialog({ currentUser, onListMembers, onInviteMem
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
   const [error, setError] = useState('')
-  useRestoreFocus(phase !== 'exit', returnFocusTarget ?? document.querySelector<HTMLButtonElement>('button[aria-label="打开账户设置"]'))
+  useRestoreFocus(phase !== 'exit', returnFocusTarget === undefined ? document.querySelector<HTMLButtonElement>('button[aria-label="打开账户设置"]') : returnFocusTarget)
   const dialogRef = useDialogFocusTrap(phase !== 'exit')
 
   useEffect(() => {
@@ -447,7 +447,7 @@ export function WorkspaceMembersDialog({ currentUser, onListMembers, onInviteMem
 
   return createPortal(<div className={`workspace-members-backdrop account-overlay is-${phase}`} role="presentation" inert={phase === 'exit' || undefined} onMouseDown={() => !busyId && onClose()}>
     <section ref={dialogRef} className="workspace-members-dialog account-surface" role="dialog" aria-modal="true" aria-labelledby="workspace-members-title" onMouseDown={(event) => event.stopPropagation()}>
-      <header><div><span className="workspace-eyebrow">WORKSPACE ACCESS</span><h2 id="workspace-members-title">成员与权限</h2><p>邀请成员，并管理他们的工作区访问。</p></div><button type="button" onClick={onClose} aria-label="关闭成员管理">×</button></header>
+      <header><div><span className="workspace-eyebrow">WORKSPACE ACCESS</span><h2 id="workspace-members-title">成员与权限</h2><p>邀请成员，并管理他们的工作区访问。</p></div><button type="button" onClick={onClose} aria-label="返回账户菜单">←</button></header>
       <form className="workspace-members-dialog__invite" onSubmit={(event) => void invite(event)}>
         <label><span>邮箱</span><input type="email" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@company.com" /></label>
         <label><span>姓名</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="选填" /></label>
