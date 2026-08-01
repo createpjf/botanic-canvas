@@ -127,10 +127,26 @@ export function ProjectLibrary({
   const [submitting, setSubmitting] = useState(false)
   const [creating, setCreating] = useState(false)
   const [operationError, setOperationError] = useState('')
+  const editingPresence = useMotionPresence(Boolean(editingProject), 140)
+  const visibleEditingProject = useRetainedValue(editingProject)
+  const deletingPresence = useMotionPresence(Boolean(deletingProject), 140)
+  const visibleDeletingProject = useRetainedValue(deletingProject)
+  useRestoreFocus(Boolean(editingProject || deletingProject))
 
   useEffect(() => {
     setProjectName(editingProject?.name ?? '')
   }, [editingProject])
+
+  useEffect(() => {
+    if (!editingProject && !deletingProject) return
+    const closeDialog = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || submitting) return
+      setEditingProject(null)
+      setDeletingProject(null)
+    }
+    document.addEventListener('keydown', closeDialog)
+    return () => document.removeEventListener('keydown', closeDialog)
+  }, [deletingProject, editingProject, submitting])
 
   const submitRename = async () => {
     if (!editingProject || !projectName.trim()) return
@@ -220,7 +236,7 @@ export function ProjectLibrary({
         </div>}
         {operationError && !editingProject && !deletingProject ? <p className="project-library-operation-error" role="alert">{operationError}</p> : null}
       </section>
-      {editingProject ? <div className="project-dialog-backdrop" role="presentation" onMouseDown={() => !submitting && setEditingProject(null)}>
+      {editingPresence.present && visibleEditingProject ? <div className={`project-dialog-backdrop motion-overlay is-${editingPresence.phase}`} role="presentation" aria-hidden={editingPresence.phase === 'exit' ? true : undefined} onMouseDown={() => !submitting && setEditingProject(null)}>
         <form className="project-dialog" aria-labelledby="rename-project-title" onMouseDown={(event) => event.stopPropagation()} onSubmit={(event) => { event.preventDefault(); void submitRename() }}>
           <span className="workspace-eyebrow">PROJECT SETTINGS</span><h2 id="rename-project-title">重命名项目</h2>
           <input autoFocus value={projectName} maxLength={60} onChange={(event) => setProjectName(event.target.value)} aria-label="项目名称" />
@@ -228,9 +244,9 @@ export function ProjectLibrary({
           <div><button type="button" onClick={() => setEditingProject(null)} disabled={submitting}>取消</button><button type="submit" className="is-primary" disabled={submitting || !projectName.trim()}>保存</button></div>
         </form>
       </div> : null}
-      {deletingProject ? <div className="project-dialog-backdrop" role="presentation" onMouseDown={() => !submitting && setDeletingProject(null)}>
+      {deletingPresence.present && visibleDeletingProject ? <div className={`project-dialog-backdrop motion-overlay is-${deletingPresence.phase}`} role="presentation" aria-hidden={deletingPresence.phase === 'exit' ? true : undefined} onMouseDown={() => !submitting && setDeletingProject(null)}>
         <section className="project-dialog project-dialog--danger" role="alertdialog" aria-modal="true" aria-labelledby="delete-project-title" onMouseDown={(event) => event.stopPropagation()}>
-          <span className="workspace-eyebrow">DELETE PROJECT</span><h2 id="delete-project-title">删除「{deletingProject.name}」？</h2>
+          <span className="workspace-eyebrow">DELETE PROJECT</span><h2 id="delete-project-title">删除「{visibleDeletingProject.name}」？</h2>
           <p>项目画布、生成结果和项目私有素材会被永久删除，无法恢复。</p>
           {operationError ? <p className="project-dialog__error" role="alert">{operationError}</p> : null}
           <div><button type="button" onClick={() => setDeletingProject(null)} disabled={submitting}>取消</button><button type="button" className="is-danger" onClick={() => void confirmDelete()} disabled={submitting}>确认删除</button></div>
@@ -241,3 +257,4 @@ export function ProjectLibrary({
 }
 import { useEffect, useState } from 'react'
 import { ArrowUpRightIcon, DeleteIcon, MoreIcon } from './BotanicIcons'
+import { useMotionPresence, useRestoreFocus, useRetainedValue } from './motionPresence'

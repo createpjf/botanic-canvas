@@ -29,8 +29,10 @@ import { defaultGenerationModels } from './domain/canvas'
 import { canvasZoomMode, planResultGroupPresentation, traceCanvasLineage, type ResultGroupPresentation } from './domain/canvasPresentation'
 import { buildDeliveryPreviewArtifacts, canUseForImageDelivery, resolveDeliveryDraft, type DeliveryPanelTarget } from './domain/deliveryPresentation'
 import { mediaFileExtension, reducedAspectRatio } from './domain/mediaPresentation'
+import { shouldRefreshFromRealtimeEvent } from './domain/realtimeSync'
 import { videoAspectRatioPolicy } from './domain/videoGeneration'
 import { summarizeWorkflowTemplate, type WorkflowTemplateSummary } from './domain/workflowTemplates'
+import { useMotionPresence, useRestoreFocus, useRetainedValue, type MotionPhase } from './components/motionPresence'
 import type {
   AssetRecord,
   AssetRole,
@@ -57,6 +59,7 @@ import type {
 import { deliveryPresets, downloadDeliveryPackage } from './lib/deliveryExport'
 import { getGenerationServiceHealth } from './lib/generationApi'
 import { refinePrompt } from './lib/promptRefinementApi'
+import { connectCanvasCollaboration, type CanvasCollaboration } from './lib/projectCollaboration'
 import { createCanvasProject, deleteCanvasDocument, flushPendingCanvasDocumentWrites, readCanvasProjectSummaries, renameCanvasProject, syncPendingCanvasDrafts } from './lib/db'
 import { ProductApiError, createProductSession, readProductSession, serverPersistenceEnabled, supabaseAuthEnabled, type ProductUser } from './lib/productSession'
 import { createEmptyCanvasDocument } from './data/seed'
@@ -118,6 +121,10 @@ function workspaceTransitionDirection(from: WorkspaceView, to: WorkspaceView): W
 
 function reducedMotionRequested() {
   return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+}
+
+function viewportMotionDuration(duration: number) {
+  return reducedMotionRequested() ? 0 : duration
 }
 
 let workspaceTransitionSequence = 0
@@ -184,6 +191,7 @@ function ComposerOptionPopover({ label, value, valueIcon, disabled = false, widt
   const menuRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
   const [anchor, setAnchor] = useState<{ left: number; bottom: number } | null>(null)
+  const menuPresence = useMotionPresence(open, 110)
 
   const updateAnchor = useCallback(() => {
     const rect = triggerRef.current?.getBoundingClientRect()
@@ -261,14 +269,15 @@ function ComposerOptionPopover({ label, value, valueIcon, disabled = false, widt
       {valueIcon ? <img className="composer-option-trigger__provider" src={valueIcon} alt="" /> : null}
       <strong>{value}</strong>
     </button>
-    {open && anchor && typeof document !== 'undefined' ? createPortal(
+    {menuPresence.present && anchor && typeof document !== 'undefined' ? createPortal(
       <div
         ref={menuRef}
         id={menuId}
-        className={`composer-option-menu ${className}`.trim()}
+        className={`composer-option-menu ${className} is-${menuPresence.phase}`.trim()}
         style={{ left: anchor.left, bottom: anchor.bottom, width }}
         role="dialog"
         aria-label={`${label}选项`}
+        aria-hidden={menuPresence.phase === 'exit' ? true : undefined}
         onKeyDown={moveMenuFocus}
       >{children(() => setOpen(false))}</div>,
       document.body,
@@ -1264,7 +1273,6 @@ function ResultNode({ data, id, selected }: NodeProps) {
           onPointerDown={(event) => event.stopPropagation()}
           onClick={(event) => { event.stopPropagation(); presentation?.onToggleGroup?.(resultGroup.groupId) }}
         >{resultGroup.index}/{resultGroup.total} 候选 <span>{resultGroup.expanded ? '⌃' : '⌄'}</span></button> : null}
-        {isSelected ? <span className="result-node__check">✓</span> : null}
       </div>
       {resultGroup?.representative && resultGroup.expanded && groupCandidates.length ? <section className="result-node__candidate-popover nodrag nowheel" aria-label={`${resultGroup.total} 个候选`} onPointerDown={(event) => event.stopPropagation()}>
         <header><strong>本次候选</strong><span>选择后在当前节点查看</span><button type="button" aria-label="收起候选" onClick={(event) => { event.stopPropagation(); presentation?.onToggleGroup?.(resultGroup.groupId) }}><CloseIcon /></button></header>
@@ -1471,7 +1479,7 @@ function focusTaskFlow(setCenter: SetCenter, nodes: CanvasNode[]) {
   const right = Math.max(...nodes.map((node) => node.position.x + taskNodeBounds(node).width))
   const bottom = Math.max(...nodes.map((node) => node.position.y + taskNodeBounds(node).height))
   const composerSafeOffset = Math.max(72, Math.min(148, (bottom - top) * 0.2))
-  return setCenter((left + right) / 2, (top + bottom) / 2 + composerSafeOffset, { zoom: canvasMinZoom, duration: 220 })
+  return setCenter((left + right) / 2, (top + bottom) / 2 + composerSafeOffset, { zoom: canvasMinZoom, duration: viewportMotionDuration(220) })
 }
 
 function miniMapNodeColor(node: CanvasNode) {
@@ -1509,11 +1517,22 @@ function CanvasNavigation({
 }) {
   const { getViewport, zoomTo, fitView, setCenter } = useReactFlow()
   const { zoom } = useViewport()
+  const directViewportFrame = useRef(0)
   const zoomPercent = Math.round(zoom * 100)
   const zoomFill = `${Math.round(((zoom - canvasMinZoom) / (canvasMaxZoom - canvasMinZoom)) * 100)}%`
+  useEffect(() => () => window.cancelAnimationFrame(directViewportFrame.current), [])
   const commitViewport = (operation: Promise<boolean>) => {
     void operation.then(() => onViewportChange(getViewport()))
     window.setTimeout(() => onViewportChange(getViewport()), 260)
+  }
+  const commitDirectViewport = (operation: Promise<boolean>) => {
+    void operation.then(() => {
+      window.cancelAnimationFrame(directViewportFrame.current)
+      directViewportFrame.current = window.requestAnimationFrame(() => {
+        directViewportFrame.current = 0
+        onViewportChange(getViewport())
+      })
+    })
   }
   const smartFocusLabel = selectedNodes.length
     ? '聚焦选中节点'
@@ -1522,14 +1541,14 @@ function CanvasNavigation({
       : '适配全部节点'
   const focusCanvas = () => {
     if (selectedNodes.length) {
-      commitViewport(fitView({ nodes: selectedNodes, duration: 180, padding: 0.32, minZoom: canvasMinZoom, maxZoom: 1.2 }))
+      commitViewport(fitView({ nodes: selectedNodes, duration: viewportMotionDuration(180), padding: 0.32, minZoom: canvasMinZoom, maxZoom: 1.2 }))
       return
     }
     if (taskNodes.length) {
       commitViewport(focusTaskFlow(setCenter, taskNodes))
       return
     }
-    commitViewport(fitView({ duration: 180, padding: 0.16, minZoom: canvasMinZoom, maxZoom: 1 }))
+    commitViewport(fitView({ duration: viewportMotionDuration(180), padding: 0.16, minZoom: canvasMinZoom, maxZoom: 1 }))
   }
   const closeMoreMenu = (event: ReactMouseEvent<HTMLButtonElement>) => {
     event.currentTarget.closest('details')?.removeAttribute('open')
@@ -1558,7 +1577,7 @@ function CanvasNavigation({
             step="0.01"
             value={zoom}
             style={{ '--zoom-fill': zoomFill } as CSSProperties}
-            onChange={(event) => commitViewport(zoomTo(Number(event.target.value), { duration: 90 }))}
+            onChange={(event) => commitDirectViewport(zoomTo(Number(event.target.value), { duration: 0 }))}
           />
           <output aria-live="polite">{zoomPercent}%</output>
         </div>
@@ -1573,11 +1592,11 @@ function CanvasNavigation({
             >{marqueeMode ? '退出框选' : '框选节点'}<span>Shift</span></button>
             <button type="button" role="menuitem" onClick={(event) => {
               onAutoLayout()
-              window.requestAnimationFrame(() => commitViewport(fitView({ duration: 220, padding: 0.16, minZoom: canvasMinZoom, maxZoom: 1 })))
+              window.requestAnimationFrame(() => commitViewport(fitView({ duration: viewportMotionDuration(220), padding: 0.16, minZoom: canvasMinZoom, maxZoom: 1 })))
               closeMoreMenu(event)
             }}>自动整理</button>
             <button type="button" role="menuitem" onClick={(event) => {
-              commitViewport(fitView({ duration: 180, padding: 0.16, minZoom: canvasMinZoom, maxZoom: 1 }))
+              commitViewport(fitView({ duration: viewportMotionDuration(180), padding: 0.16, minZoom: canvasMinZoom, maxZoom: 1 }))
               closeMoreMenu(event)
             }}>显示全部</button>
           </div>
@@ -1587,10 +1606,10 @@ function CanvasNavigation({
   )
 }
 
-function MultiSelectionToolbar({ count, onClear }: { count: number; onClear: () => void }) {
+function MultiSelectionToolbar({ count, onClear, phase }: { count: number; onClear: () => void; phase: MotionPhase }) {
   return (
     <Panel position="top-center" className="multi-selection-panel">
-      <div className="multi-selection-toolbar" role="status" aria-live="polite">
+      <div className={`multi-selection-toolbar is-${phase}`} role="status" aria-live="polite">
         <span><strong>{count}</strong> 个节点已选中</span>
         <i>拖动任意节点可整体移动</i>
         <button type="button" onClick={onClear}>取消选择</button>
@@ -1599,7 +1618,15 @@ function MultiSelectionToolbar({ count, onClear }: { count: number; onClear: () 
   )
 }
 
-function ConnectionGuide() {
+function ConnectionGuide({ feedback }: { feedback?: 'connected' | 'invalid' | 'cancelled' | null }) {
+  if (feedback) {
+    const message = feedback === 'connected' ? '已连接' : feedback === 'invalid' ? '无法连接到这里' : '已取消连线'
+    return (
+      <Panel position="top-center" className="connection-guide-panel">
+        <div className={`connection-feedback is-${feedback}`} role="status" aria-live="polite">{message}</div>
+      </Panel>
+    )
+  }
   return (
     <Panel position="top-center" className="connection-guide-panel">
       <div className="connection-guide" role="status" aria-live="polite">
@@ -1717,7 +1744,7 @@ function KeepResultComposerVisible({ nodeId }: { nodeId: string }) {
       const bottomOverflow = toolbarRect.bottom - (flowRect.bottom - 18)
       if (bottomOverflow <= 0) return
       const viewport = getViewport()
-      void setViewport({ ...viewport, y: viewport.y - bottomOverflow - 18 }, { duration: 180 })
+      void setViewport({ ...viewport, y: viewport.y - bottomOverflow - 18 }, { duration: viewportMotionDuration(180) })
     }
     frame = window.requestAnimationFrame(() => {
       followUpFrame = window.requestAnimationFrame(revealComposer)
@@ -1740,26 +1767,7 @@ function CanvasPanelPresence({
   side: 'left' | 'right'
   children: ReactNode
 }) {
-  const [present, setPresent] = useState(open)
-  const [phase, setPhase] = useState<'enter' | 'open' | 'exit'>(open ? 'enter' : 'exit')
-
-  useEffect(() => {
-    let frame = 0
-    let closeTimer = 0
-    if (open) {
-      setPresent(true)
-      setPhase('enter')
-      frame = window.requestAnimationFrame(() => setPhase('open'))
-    } else if (present) {
-      setPhase('exit')
-      closeTimer = window.setTimeout(() => setPresent(false), 190)
-    }
-
-    return () => {
-      window.cancelAnimationFrame(frame)
-      window.clearTimeout(closeTimer)
-    }
-  }, [open, present])
+  const { present, phase } = useMotionPresence(open, 160)
 
   if (!present) return null
   return (
@@ -2029,7 +2037,7 @@ function FocusCanvasNode({ node, requestId }: { node?: CanvasNode; requestId: nu
   useEffect(() => {
     if (!node) return
     const frame = window.requestAnimationFrame(() => {
-      void fitView({ nodes: [node], duration: 220, padding: 0.48, minZoom: canvasMinZoom, maxZoom: 1.05 })
+      void fitView({ nodes: [node], duration: viewportMotionDuration(220), padding: 0.48, minZoom: canvasMinZoom, maxZoom: 1.05 })
     })
     return () => window.cancelAnimationFrame(frame)
   }, [fitView, node, requestId])
@@ -2092,12 +2100,14 @@ function CanvasWorkspace() {
   const selectedNodeId = useCanvasStore((state) => state.selectedNodeId)
   const hydrate = useCanvasStore((state) => state.hydrate)
   const openDocument = useCanvasStore((state) => state.openDocument)
+  const refreshDocumentFromRemote = useCanvasStore((state) => state.refreshDocumentFromRemote)
   const openNewDocument = useCanvasStore((state) => state.openNewDocument)
   const renameDocument = useCanvasStore((state) => state.renameDocument)
   const setNodes = useCanvasStore((state) => state.setNodes)
   const setNodesTransient = useCanvasStore((state) => state.setNodesTransient)
   const setEdges = useCanvasStore((state) => state.setEdges)
   const setViewport = useCanvasStore((state) => state.setViewport)
+  const applyCollaborativeGraph = useCanvasStore((state) => state.applyCollaborativeGraph)
   const selectNode = useCanvasStore((state) => state.selectNode)
   const removeNodeFromCanvas = useCanvasStore((state) => state.removeNodeFromCanvas)
   const addAssetToCanvas = useCanvasStore((state) => state.addAssetToCanvas)
@@ -2163,8 +2173,34 @@ function CanvasWorkspace() {
   const [expandedResultGroupIds, setExpandedResultGroupIds] = useState<Set<string>>(() => new Set())
   const [activeResultByGroupId, setActiveResultByGroupId] = useState<Map<string, string>>(() => new Map())
   const [isConnecting, setIsConnecting] = useState(false)
+  const [connectionFeedback, setConnectionFeedback] = useState<'connected' | 'invalid' | 'cancelled' | null>(null)
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
   const [edgeActionPosition, setEdgeActionPosition] = useState<{ x: number; y: number } | null>(null)
+  const imagePreviewPresence = useMotionPresence(Boolean(imagePreview), 140)
+  const visibleImagePreview = useRetainedValue(imagePreview)
+  const assetDeletePresence = useMotionPresence(Boolean(assetToDelete), 140)
+  const visibleAssetToDelete = useRetainedValue(assetToDelete)
+  const nodePalettePresence = useMotionPresence(Boolean(nodePalette), 110)
+  const visibleNodePalette = useRetainedValue(nodePalette)
+  const undoPresence = useMotionPresence(Boolean(undoAction), 120)
+  const visibleUndoAction = useRetainedValue(undoAction)
+  const canvasDropPresence = useMotionPresence(isCanvasFileDragging, 100)
+  useRestoreFocus(Boolean(imagePreview || assetToDelete || nodePalette))
+
+  useEffect(() => {
+    if (!connectionFeedback) return
+    const timer = window.setTimeout(() => setConnectionFeedback(null), 1_100)
+    return () => window.clearTimeout(timer)
+  }, [connectionFeedback])
+
+  useEffect(() => {
+    if (!imagePreview) return
+    const closePreview = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setImagePreview(null)
+    }
+    window.addEventListener('keydown', closePreview)
+    return () => window.removeEventListener('keydown', closePreview)
+  }, [imagePreview])
   const [initialWorkspaceLocation] = useState<WorkspaceLocation>(readWorkspaceLocation)
   const [workspaceLocation, setWorkspaceLocation] = useState<WorkspaceLocation>(initialWorkspaceLocation)
   const [workspaceTabIds, setWorkspaceTabIds] = useState<string[]>(() => {
@@ -2211,6 +2247,7 @@ function CanvasWorkspace() {
   const renderedResultNodeStateRef = useRef<Map<string, { candidateId?: string; hasImage: boolean }> | null>(null)
   const resultRevealTimersRef = useRef<Map<string, number>>(new Map())
   const pendingNodePositionSaveRef = useRef(false)
+  const collaborationRef = useRef<CanvasCollaboration | null>(null)
   const viewportReadyRef = useRef(false)
   const viewportDocumentIdRef = useRef(document.id)
   if (viewportDocumentIdRef.current !== document.id) {
@@ -2331,11 +2368,57 @@ function CanvasWorkspace() {
 
   useEffect(() => {
     if (!hydrated || !serverPersistenceEnabled) return
-    const syncDrafts = () => { void synchronizeLocalDrafts().catch(() => undefined) }
+    const syncDrafts = () => {
+      void synchronizeLocalDrafts()
+        .then(() => refreshDocumentFromRemote())
+        .catch(() => undefined)
+    }
     syncDrafts()
     window.addEventListener('online', syncDrafts)
     return () => window.removeEventListener('online', syncDrafts)
-  }, [hydrated, synchronizeLocalDrafts])
+  }, [hydrated, refreshDocumentFromRemote, synchronizeLocalDrafts])
+
+  useEffect(() => {
+    if (!hydrated || !workspaceRestored || workspaceView !== 'canvas' || !serverPersistenceEnabled) return
+    const refresh = () => { void refreshDocumentFromRemote().catch(() => undefined) }
+    const refreshWhenVisible = () => {
+      if (window.document.visibilityState === 'visible') refresh()
+    }
+    window.addEventListener('focus', refresh)
+    window.document.addEventListener('visibilitychange', refreshWhenVisible)
+    return () => {
+      window.removeEventListener('focus', refresh)
+      window.document.removeEventListener('visibilitychange', refreshWhenVisible)
+    }
+  }, [hydrated, refreshDocumentFromRemote, workspaceRestored, workspaceView])
+
+  useEffect(() => {
+    if (!hydrated || !workspaceRestored || workspaceView !== 'canvas' || !serverPersistenceEnabled) return
+    const current = useCanvasStore.getState().document
+    const collaboration = connectCanvasCollaboration({
+      projectId: current.id,
+      initialGraph: { nodes: current.nodes, edges: current.edges },
+      onRemoteGraph: applyCollaborativeGraph,
+      onProjectUpdated: (event) => {
+        const latest = useCanvasStore.getState().document
+        if (!shouldRefreshFromRealtimeEvent({
+          event,
+          currentProjectId: latest.id,
+          currentUpdatedAt: latest.updatedAt,
+        })) return
+        void refreshDocumentFromRemote().catch(() => undefined)
+      },
+    })
+    collaborationRef.current = collaboration
+    return () => {
+      if (collaborationRef.current === collaboration) collaborationRef.current = null
+      collaboration.close()
+    }
+  }, [applyCollaborativeGraph, document.id, hydrated, refreshDocumentFromRemote, workspaceRestored, workspaceView])
+
+  useEffect(() => {
+    collaborationRef.current?.replaceLocalGraph({ nodes: document.nodes, edges: document.edges })
+  }, [document.edges, document.nodes])
 
   useEffect(() => {
     if (!hydrated || workspaceRestored) return
@@ -3317,6 +3400,8 @@ function CanvasWorkspace() {
   const selectedGenerate = selectedCanvasNode?.type === 'generate' ? selectedCanvasNode : undefined
   const selectedGenerateData = selectedGenerate?.type === 'generate' ? selectedGenerate.data as GenerateNodeData : undefined
   const selectedCanvasNodes = document.nodes.filter((node) => Boolean(node.selected))
+  const multiSelectionPresence = useMotionPresence(selectedCanvasNodes.length > 1, 120)
+  const visibleMultiSelectionCount = useRetainedValue(selectedCanvasNodes.length > 1 ? selectedCanvasNodes.length : null)
   const latestTaskResult = [...document.nodes].reverse().find((node) => node.type === 'result' && node.id.startsWith('result-task-'))
   const latestTaskKey = latestTaskResult?.id.replace('result-task-', '')
   const latestTaskGenerateId = latestTaskResult
@@ -3529,9 +3614,6 @@ function CanvasWorkspace() {
         }}
       >
         <header className="tab-bar" data-node-id="894:230346">
-          <div className="brand-mark" aria-label="Botanique">
-            <img src="/botanique-logo.png" alt="Botanique" />
-          </div>
           <button className="home-tab" onClick={() => { void refreshWorkspaceProjects(); setWorkspaceView('projects') }} aria-label="返回项目"><HomeIcon /> <span>项目</span></button>
           <span className="tab-divider" />
           <nav className="project-tabs" aria-label="已打开项目">
@@ -3626,8 +3708,14 @@ function CanvasWorkspace() {
           onConnect={onConnect}
           onReconnect={onReconnect}
           onEdgeClick={selectEdgeActions}
-          onConnectStart={() => setIsConnecting(true)}
-          onConnectEnd={() => setIsConnecting(false)}
+          onConnectStart={() => {
+            setConnectionFeedback(null)
+            setIsConnecting(true)
+          }}
+          onConnectEnd={(_, connectionState) => {
+            setIsConnecting(false)
+            setConnectionFeedback(connectionState.isValid ? 'connected' : connectionState.toNode ? 'invalid' : 'cancelled')
+          }}
           isValidConnection={isGraphConnectionValid}
           onSelectionChange={onSelectionChange}
           onNodeClick={(event, node) => {
@@ -3665,14 +3753,13 @@ function CanvasWorkspace() {
             const imageNode = node.data as ResultNodeData | AssetNodeData
             if (!imageNode.image) return
             event.preventDefault()
-            if (isResult) {
-              // 结果图仅负责选中；由“+”统一决定新增节点，避免双击产生隐式创建。
-              return
-            }
+            event.stopPropagation()
             setImagePreview({
               image: imageNode.image,
-              name: (imageNode as AssetNodeData).name,
-              mediaKind: (imageNode as AssetNodeData).mediaKind ?? 'image',
+              name: isResult
+                ? (imageNode as ResultNodeData).label ?? '生成结果'
+                : (imageNode as AssetNodeData).name,
+              mediaKind: imageNode.mediaKind ?? 'image',
             })
           }}
           onPaneClick={() => {
@@ -3691,7 +3778,7 @@ function CanvasWorkspace() {
           onMove={onCanvasMove}
           onMoveEnd={onMoveEnd}
           proOptions={{ hideAttribution: true }}
-          className={`botanic-flow semantic-zoom--${zoomMode}${hasLineageFocus ? ' has-lineage-focus' : ''}`}
+          className={`botanic-flow semantic-zoom--${zoomMode}${hasLineageFocus ? ' has-lineage-focus' : ''}${isConnecting ? ' is-connecting' : ''}${selectedCanvasNodes.length > 1 ? ' has-multi-selection' : ''}`}
         >
           <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="#d7ddd3" />
           {miniMapOpen && document.nodes.length > 2 ? <MiniMap<CanvasNode>
@@ -3735,8 +3822,8 @@ function CanvasWorkspace() {
             requestId={historyFocusRequest.requestId}
           /> : null}
 
-          {selectedCanvasNodes.length > 1 ? <MultiSelectionToolbar count={selectedCanvasNodes.length} onClear={() => { selectNode(null); setComposerOpen(false) }} /> : null}
-          {isConnecting ? <ConnectionGuide /> : null}
+          {multiSelectionPresence.present && visibleMultiSelectionCount ? <MultiSelectionToolbar count={visibleMultiSelectionCount} phase={multiSelectionPresence.phase} onClear={() => { selectNode(null); setComposerOpen(false) }} /> : null}
+          {isConnecting || connectionFeedback ? <ConnectionGuide feedback={isConnecting ? null : connectionFeedback} /> : null}
 
           <Panel position="top-left" className="dock-panel">
             <nav className="dock" aria-label="画布工具">
@@ -3918,23 +4005,23 @@ function CanvasWorkspace() {
           />
         ) : null}
 
-        {isCanvasFileDragging ? (
-          <div className="canvas-file-drop" aria-hidden="true">
+        {canvasDropPresence.present ? (
+          <div className={`canvas-file-drop is-${canvasDropPresence.phase}`} aria-hidden="true">
             <span>图片素材</span>
             <strong>松开即可加入画布</strong>
             <small>PNG / JPEG / WebP，单张不超过 8MB</small>
           </div>
         ) : null}
         {canvasUploadMessage ? <div className="canvas-upload-message" role="status">{canvasUploadMessage}</div> : null}
-        {nodePalette ? (
-          <div className="node-palette" style={{ left: nodePalette.screen.x, top: nodePalette.screen.y }} role="dialog" aria-label="添加画布节点" onPointerDown={(event) => event.stopPropagation()}>
-            <div className="node-palette__title"><span>{nodePalette.parentResultId ? '基于此图添加' : nodePalette.inputNodeId ? '连接所选节点' : '添加节点'}</span><button onClick={() => setNodePalette(null)} aria-label="关闭添加节点"><CloseIcon /></button></div>
-            <button onClick={() => { addTextNode(nodePalette.flow); setNodePalette(null) }}>
+        {nodePalettePresence.present && visibleNodePalette ? (
+          <div className={`node-palette is-${nodePalettePresence.phase}`} style={{ left: visibleNodePalette.screen.x, top: visibleNodePalette.screen.y }} role="dialog" aria-label="添加画布节点" aria-hidden={nodePalettePresence.phase === 'exit' ? true : undefined} onPointerDown={(event) => event.stopPropagation()}>
+            <div className="node-palette__title"><span>{visibleNodePalette.parentResultId ? '基于此图添加' : visibleNodePalette.inputNodeId ? '连接所选节点' : '添加节点'}</span><button onClick={() => setNodePalette(null)} aria-label="关闭添加节点"><CloseIcon /></button></div>
+            <button onClick={() => { addTextNode(visibleNodePalette.flow); setNodePalette(null) }}>
               <b>T</b><span><strong>描述</strong><small>补充画面、卖点或构图</small></span>
             </button>
             <button onClick={() => {
-              const parentNode = nodePalette.parentResultId
-                ? document.nodes.find((node) => node.id === nodePalette.parentResultId && node.type === 'result')
+              const parentNode = visibleNodePalette.parentResultId
+                ? document.nodes.find((node) => node.id === visibleNodePalette.parentResultId && node.type === 'result')
                 : undefined
               const parentMediaKind = parentNode?.type === 'result' ? (parentNode.data as ResultNodeData).mediaKind ?? 'image' : 'image'
               const imageModel = availableModels.find((model) => (model.mediaKind ?? 'image') === 'image')
@@ -3945,14 +4032,14 @@ function CanvasWorkspace() {
                     resolution: '2K',
                   }, imageModel)
                 : undefined
-              const branchId = nodePalette.parentResultId
-                ? createGenerateBranchFromResult(nodePalette.parentResultId, imageSettings ? { settings: imageSettings } : undefined)
+              const branchId = visibleNodePalette.parentResultId
+                ? createGenerateBranchFromResult(visibleNodePalette.parentResultId, imageSettings ? { settings: imageSettings } : undefined)
                 : null
-              if (!nodePalette.parentResultId) addGenerateNode(nodePalette.flow, 'image', nodePalette.inputNodeId ? [nodePalette.inputNodeId] : undefined)
-              if (!nodePalette.parentResultId || branchId) showComposer()
+              if (!visibleNodePalette.parentResultId) addGenerateNode(visibleNodePalette.flow, 'image', visibleNodePalette.inputNodeId ? [visibleNodePalette.inputNodeId] : undefined)
+              if (!visibleNodePalette.parentResultId || branchId) showComposer()
               setNodePalette(null)
             }}>
-              <b><SparkleIcon /></b><span><strong>图片生成</strong><small>{nodePalette.parentResultId ? '基于当前图片继续创作' : '连接素材与描述生成图片'}</small></span>
+              <b><SparkleIcon /></b><span><strong>图片生成</strong><small>{visibleNodePalette.parentResultId ? '基于当前图片继续创作' : '连接素材与描述生成图片'}</small></span>
             </button>
             <button onClick={() => {
               const videoModel = availableModels.find((model) => model.mediaKind === 'video')
@@ -3966,11 +4053,11 @@ function CanvasWorkspace() {
                 aspectRatio: '3:4',
                 resolution: '2K',
               }, videoModel)
-              const parentNode = nodePalette.parentResultId
-                ? document.nodes.find((node) => node.id === nodePalette.parentResultId && node.type === 'result')
+              const parentNode = visibleNodePalette.parentResultId
+                ? document.nodes.find((node) => node.id === visibleNodePalette.parentResultId && node.type === 'result')
                 : undefined
-              const branchId = nodePalette.parentResultId
-                ? createGenerateBranchFromResult(nodePalette.parentResultId, { settings: videoSettings })
+              const branchId = visibleNodePalette.parentResultId
+                ? createGenerateBranchFromResult(visibleNodePalette.parentResultId, { settings: videoSettings })
                 : null
               if (branchId) {
                 const parentMediaKind = parentNode?.type === 'result' ? (parentNode.data as ResultNodeData).mediaKind ?? 'image' : 'image'
@@ -3978,13 +4065,13 @@ function CanvasWorkspace() {
                   settings: videoSettings,
                   videoInputMode: parentMediaKind === 'video' ? 'reference' : 'first_frame',
                 })
-              } else if (!nodePalette.parentResultId) {
-                addGenerateNode(nodePalette.flow, 'video', nodePalette.inputNodeId ? [nodePalette.inputNodeId] : undefined)
+              } else if (!visibleNodePalette.parentResultId) {
+                addGenerateNode(visibleNodePalette.flow, 'video', visibleNodePalette.inputNodeId ? [visibleNodePalette.inputNodeId] : undefined)
               }
-              if (!nodePalette.parentResultId || branchId) showComposer()
+              if (!visibleNodePalette.parentResultId || branchId) showComposer()
               setNodePalette(null)
             }}>
-              <b className="node-palette__video-icon">▶</b><span><strong>视频生成</strong><small>{nodePalette.parentResultId ? '以当前画面或视频继续生成' : '连接首帧、首尾帧或参考素材'}</small></span>
+              <b className="node-palette__video-icon">▶</b><span><strong>视频生成</strong><small>{visibleNodePalette.parentResultId ? '以当前画面或视频继续生成' : '连接首帧、首尾帧或参考素材'}</small></span>
             </button>
             <button onClick={() => { setNodePalette(null); setAssetsOpen(true) }}>
               <b><FolderOutlineIcon /></b><span><strong>素材</strong><small>添加商品、场景或调性图</small></span>
@@ -4107,29 +4194,30 @@ function CanvasWorkspace() {
             onClose={() => setDeliveryOpen(false)}
           />
         </CanvasPanelPresence>
-        {assetToDelete ? (
+        {assetDeletePresence.present && visibleAssetToDelete ? (
           <ConfirmationDialog
-            asset={assetToDelete}
+            asset={visibleAssetToDelete}
+            phase={assetDeletePresence.phase}
             onConfirm={() => {
-              deleteAsset(assetToDelete.id)
+              deleteAsset(visibleAssetToDelete.id)
               setAssetToDelete(null)
             }}
             onCancel={() => setAssetToDelete(null)}
           />
         ) : null}
-        {imagePreview ? (
-          <div className="image-preview-backdrop" role="presentation" onMouseDown={() => setImagePreview(null)}>
-            <section className="image-preview-dialog" role="dialog" aria-modal="true" aria-label={`${imagePreview.name}预览`} onMouseDown={(event) => event.stopPropagation()}>
-              <button className="image-preview-dialog__download" type="button" aria-label="下载原媒体" title="下载原媒体" onClick={() => void downloadMedia(imagePreview.image, imagePreview.name, imagePreview.mediaKind)}><DownloadIcon /></button>
+        {imagePreviewPresence.present && visibleImagePreview ? (
+          <div className={`image-preview-backdrop motion-overlay is-${imagePreviewPresence.phase}`} role="presentation" aria-hidden={imagePreviewPresence.phase === 'exit' ? true : undefined} onMouseDown={() => setImagePreview(null)}>
+            <section className="image-preview-dialog" role="dialog" aria-modal="true" aria-label={`${visibleImagePreview.name}预览`} onMouseDown={(event) => event.stopPropagation()}>
+              <button className="image-preview-dialog__download" type="button" aria-label="下载原媒体" title="下载原媒体" onClick={() => void downloadMedia(visibleImagePreview.image, visibleImagePreview.name, visibleImagePreview.mediaKind)}><DownloadIcon /></button>
               <button className="image-preview-dialog__close" type="button" onClick={() => setImagePreview(null)} aria-label="关闭媒体预览"><CloseIcon /></button>
-              {imagePreview.mediaKind === 'video'
-                ? <video src={imagePreview.image} aria-label={imagePreview.name} controls playsInline preload="metadata" />
-                : <img src={imagePreview.image} alt={imagePreview.name} />}
+              {visibleImagePreview.mediaKind === 'video'
+                ? <video src={visibleImagePreview.image} aria-label={visibleImagePreview.name} controls playsInline preload="metadata" />
+                : <img src={visibleImagePreview.image} alt={visibleImagePreview.name} />}
             </section>
           </div>
         ) : null}
 
-        {undoAction ? <UndoToast label={undoAction.label} onUndo={undoLastAction} /> : null}
+        {undoPresence.present && visibleUndoAction ? <UndoToast label={visibleUndoAction.label} phase={undoPresence.phase} onUndo={undoLastAction} /> : null}
       </section>
 
       {creativeAssistantEnabled && agentOpen ? <AgentPanel message={assistantMessage} onClose={() => setAgentOpen(false)} /> : null}
@@ -4264,6 +4352,8 @@ function AssetLibrary({ assets, onAdd, onUpload, onMoveToRole, onDelete, onClose
   const fileInputRef = useRef<HTMLInputElement>(null)
   const folderInputRef = useRef<HTMLInputElement>(null)
   const previewTimerRef = useRef<number | null>(null)
+  const assetDropPresence = useMotionPresence(isDraggingFiles, 100)
+  useRestoreFocus(Boolean(previewAssetId || assetMenuId))
   const roles: Array<'全部' | AssetRole> = ['全部', '商品', '模特', '场景', '调性']
   const stageFiles = async (files: File[]) => {
     const { accepted: imageFiles, message } = validateUploadFiles(files)
@@ -4331,6 +4421,8 @@ function AssetLibrary({ assets, onAdd, onUpload, onMoveToRole, onDelete, onClose
     return matchesMediaKind && matchesRole && matchesSource && matchesCollection && matchesQuery
   }), [assets, collection, deferredQuery, mediaKind, role, source])
   const previewAsset = assets.find((item) => item.id === previewAssetId) ?? null
+  const previewPresence = useMotionPresence(Boolean(previewAsset), 140)
+  const visiblePreviewAsset = useRetainedValue(previewAsset)
   const activeFilterCount = Number(role !== '全部') + Number(source !== '全部') + Number(collection !== '全部')
   const sourceLabel = (itemSource: AssetSource) => itemSource === 'brand' ? '共享品牌' : itemSource === 'upload' ? '本地上传' : '生成入库'
 
@@ -4435,7 +4527,7 @@ function AssetLibrary({ assets, onAdd, onUpload, onMoveToRole, onDelete, onClose
           void stageFiles(files)
         }}
       />
-      {isDraggingFiles ? <div className="asset-drop-overlay"><UploadIcon /><strong>松开以上传</strong><span>PNG、JPEG、WebP</span></div> : null}
+      {assetDropPresence.present ? <div className={`asset-drop-overlay is-${assetDropPresence.phase}`}><UploadIcon /><strong>松开以上传</strong><span>PNG、JPEG、WebP</span></div> : null}
       {uploadMessage ? <p className="upload-message">{uploadMessage}</p> : null}
       {pendingUploads.length ? (
         <section className="upload-staging" aria-label="待入库素材">
@@ -4608,26 +4700,26 @@ function AssetLibrary({ assets, onAdd, onUpload, onMoveToRole, onDelete, onClose
           </article>
         )) : <p className="asset-empty">没有匹配的素材</p>}
       </div>
-      {previewAsset && typeof document !== 'undefined' ? createPortal(
-        <div className="asset-preview-backdrop" role="presentation" onPointerDown={(event) => {
+      {previewPresence.present && visiblePreviewAsset && typeof document !== 'undefined' ? createPortal(
+        <div className={`asset-preview-backdrop motion-overlay is-${previewPresence.phase}`} role="presentation" aria-hidden={previewPresence.phase === 'exit' ? true : undefined} onPointerDown={(event) => {
           if (event.target === event.currentTarget) setPreviewAssetId(null)
         }}>
-          <section className="asset-preview" role="dialog" aria-modal="true" aria-label={`预览素材 ${previewAsset.name}`}>
+          <section className="asset-preview" role="dialog" aria-modal="true" aria-label={`预览素材 ${visiblePreviewAsset.name}`}>
             <header>
-              <div><span>{sourceLabel(previewAsset.source)} · {previewAsset.role}</span><h3>{previewAsset.name}</h3></div>
+              <div><span>{sourceLabel(visiblePreviewAsset.source)} · {visiblePreviewAsset.role}</span><h3>{visiblePreviewAsset.name}</h3></div>
               <button type="button" autoFocus onClick={() => setPreviewAssetId(null)} aria-label="关闭素材预览"><CloseIcon /></button>
             </header>
-            <div className="asset-preview__image">{previewAsset.mediaKind === 'video'
-              ? <video src={previewAsset.image} aria-label={previewAsset.name} controls playsInline preload="metadata" />
-              : <img src={previewAsset.image} alt={previewAsset.name} />}</div>
+            <div className="asset-preview__image">{visiblePreviewAsset.mediaKind === 'video'
+              ? <video src={visiblePreviewAsset.image} aria-label={visiblePreviewAsset.name} controls playsInline preload="metadata" />
+              : <img src={visiblePreviewAsset.image} alt={visiblePreviewAsset.name} />}</div>
             <footer>
               <div>
-                <span>{previewAsset.imageWidth && previewAsset.imageHeight ? `${previewAsset.imageWidth} × ${previewAsset.imageHeight}` : previewAsset.mediaKind === 'video' ? '视频素材' : '图片素材'}{previewAsset.collection ? ` · ${previewAsset.collection}` : ''}</span>
-                <p>{visibleAssetTags(previewAsset.tags).slice(0, 4).join(' · ') || '暂无标签'}</p>
+                <span>{visiblePreviewAsset.imageWidth && visiblePreviewAsset.imageHeight ? `${visiblePreviewAsset.imageWidth} × ${visiblePreviewAsset.imageHeight}` : visiblePreviewAsset.mediaKind === 'video' ? '视频素材' : '图片素材'}{visiblePreviewAsset.collection ? ` · ${visiblePreviewAsset.collection}` : ''}</span>
+                <p>{visibleAssetTags(visiblePreviewAsset.tags).slice(0, 4).join(' · ') || '暂无标签'}</p>
               </div>
               <div className="asset-preview__actions">
-                <button type="button" className="asset-preview__download" onClick={() => void downloadMedia(previewAsset.image, previewAsset.name, previewAsset.mediaKind ?? 'image')}><DownloadIcon />下载</button>
-                <button type="button" className="asset-preview__add" onClick={() => { onAdd(previewAsset.id); setPreviewAssetId(null) }}><PlusSquareIcon />加入画布</button>
+                <button type="button" className="asset-preview__download" onClick={() => void downloadMedia(visiblePreviewAsset.image, visiblePreviewAsset.name, visiblePreviewAsset.mediaKind ?? 'image')}><DownloadIcon />下载</button>
+                <button type="button" className="asset-preview__add" onClick={() => { onAdd(visiblePreviewAsset.id); setPreviewAssetId(null) }}><PlusSquareIcon />加入画布</button>
               </div>
             </footer>
           </section>
@@ -4680,6 +4772,8 @@ function TemplatePanel({
   const [refreshError, setRefreshError] = useState('')
   const [creatingTemplateId, setCreatingTemplateId] = useState<string | null>(null)
   const [createError, setCreateError] = useState('')
+  const saveDialogPresence = useMotionPresence(saveOpen, 140)
+  useRestoreFocus(saveOpen)
   const saveSummary = scope === 'shared' ? sharedSaveSummary : projectSaveSummary
   const visibleTemplates = activeTab === 'shared' ? sharedTemplates : templates
 
@@ -4692,6 +4786,15 @@ function TemplatePanel({
       .finally(() => { if (active) setRefreshing(false) })
     return () => { active = false }
   }, [onRefresh])
+
+  useEffect(() => {
+    if (!saveOpen) return
+    const closeDialog = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !saving) setSaveOpen(false)
+    }
+    document.addEventListener('keydown', closeDialog)
+    return () => document.removeEventListener('keydown', closeDialog)
+  }, [saveOpen, saving])
 
   const openSaveDialog = () => {
     setName(`${currentName} · 模板`)
@@ -4760,8 +4863,8 @@ function TemplatePanel({
           {!visibleTemplates.length && !refreshing ? <div className="template-empty"><strong>{activeTab === 'shared' ? '还没有团队模板' : '本项目还没有模板'}</strong><span>{activeTab === 'shared' ? '将稳定的工作流保存为团队模板，其他项目即可复用。' : '保存当前画布后，可随时从相同 Prompt 和参数开始。'}</span></div> : null}
         </div>
       </section>
-      {saveOpen && typeof document !== 'undefined' ? createPortal(
-        <div className="template-dialog-backdrop" role="presentation" onMouseDown={() => !saving && setSaveOpen(false)}>
+      {saveDialogPresence.present && typeof document !== 'undefined' ? createPortal(
+        <div className={`template-dialog-backdrop motion-overlay is-${saveDialogPresence.phase}`} role="presentation" aria-hidden={saveDialogPresence.phase === 'exit' ? true : undefined} onMouseDown={() => !saving && setSaveOpen(false)}>
           <form className="template-dialog" role="dialog" aria-modal="true" aria-labelledby="save-template-title" onMouseDown={(event) => event.stopPropagation()} onSubmit={(event) => { event.preventDefault(); void saveTemplate() }}>
             <header><div><span className="panel-eyebrow">SAVE TEMPLATE</span><h2 id="save-template-title">保存为模板</h2></div><button type="button" onClick={() => setSaveOpen(false)} disabled={saving} aria-label="关闭"><CloseIcon /></button></header>
             <label htmlFor="template-name">模板名称</label>
@@ -5661,10 +5764,10 @@ function PanelHeader({ eyebrow, title, onClose }: { eyebrow?: string; title: str
   )
 }
 
-function ConfirmationDialog({ asset, onConfirm, onCancel }: { asset: AssetRecord; onConfirm: () => void; onCancel: () => void }) {
+function ConfirmationDialog({ asset, phase, onConfirm, onCancel }: { asset: AssetRecord; phase: MotionPhase; onConfirm: () => void; onCancel: () => void }) {
   const isSharedBrandAsset = asset.source === 'brand'
   return (
-    <div className="confirm-backdrop">
+    <div className={`confirm-backdrop motion-overlay is-${phase}`} aria-hidden={phase === 'exit' ? true : undefined}>
       <section className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-asset-title">
         <span className="panel-eyebrow">REMOVE ASSET</span>
         <h2 id="delete-asset-title">删除「{asset.name}」？</h2>
@@ -5896,9 +5999,9 @@ function NodeComposer({ prompt, batchCount, maximumBatchCount, settings, models,
   )
 }
 
-function UndoToast({ label, onUndo }: { label: string; onUndo: () => void }) {
+function UndoToast({ label, phase, onUndo }: { label: string; phase: MotionPhase; onUndo: () => void }) {
   return (
-    <div className="undo-toast" role="status">
+    <div className={`undo-toast is-${phase}`} role="status" aria-hidden={phase === 'exit' ? true : undefined}>
       <span>{label}</span>
       <button onClick={onUndo}>撤销</button>
     </div>
