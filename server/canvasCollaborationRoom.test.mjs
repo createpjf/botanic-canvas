@@ -88,3 +88,63 @@ test('HTTP 权威图谱替换会同步 Yjs 快照，旧增量不会在重连后�
   room.destroy()
   recovered.destroy()
 })
+
+test('房间重建时以物化图谱覆盖过期的 Yjs 增量', () => {
+  const room = createCanvasCollaborationRoom({
+    state: {
+      graph: {
+        nodes: [
+          { id: 'node-a', type: 'text', position: { x: 400, y: 20 }, data: { kind: 'text', label: 'new', content: 'new' } },
+        ],
+        edges: [],
+      },
+      graphRevision: 3,
+      updates: [encodedNodeUpdate('node-a', 120)],
+    },
+    append: async () => ({ graphRevision: 3, updatedAt: 300, updateCount: 1 }),
+    compact: async () => undefined,
+  })
+
+  const recovered = new Y.Doc()
+  Y.applyUpdate(recovered, Buffer.from(room.stateUpdate(), 'base64'))
+  assert.equal(recovered.getMap('nodes').get('node-a').value.position.x, 400)
+  room.destroy()
+})
+
+test('相同 HTTP 图谱且没有待校准 Yjs 历史时不重复压缩快照', async () => {
+  const graph = {
+    nodes: [{ id: 'node-a', type: 'text', position: { x: 400, y: 20 }, data: { kind: 'text', label: 'A', content: 'A' } }],
+    edges: [],
+  }
+  let compactCount = 0
+  const room = createCanvasCollaborationRoom({
+    state: { graph, graphRevision: 3, updates: [] },
+    append: async () => ({ graphRevision: 3, updatedAt: 300, updateCount: 0 }),
+    compact: async () => { compactCount += 1 },
+  })
+
+  const result = await room.replaceBaseGraph(graph, 'editor-1')
+  assert.equal(result.changed, false)
+  assert.equal(compactCount, 0)
+  await room.destroy()
+})
+
+test('物化图谱与旧 Yjs 历史不一致时即使图谱未变也执行一次校准', async () => {
+  const graph = {
+    nodes: [{ id: 'node-a', type: 'text', position: { x: 400, y: 20 }, data: { kind: 'text', label: 'A', content: 'A' } }],
+    edges: [],
+  }
+  let compactCount = 0
+  const room = createCanvasCollaborationRoom({
+    state: { graph, graphRevision: 3, updates: [encodedNodeUpdate('node-a', 120)] },
+    append: async () => ({ graphRevision: 3, updatedAt: 300, updateCount: 1 }),
+    compact: async () => { compactCount += 1 },
+  })
+
+  const result = await room.replaceBaseGraph(graph, 'editor-1')
+  assert.equal(result.changed, false)
+  assert.equal(compactCount, 1)
+  await room.replaceBaseGraph(graph, 'editor-1')
+  assert.equal(compactCount, 1)
+  await room.destroy()
+})

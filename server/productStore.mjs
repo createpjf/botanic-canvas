@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
+import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from './authorization.mjs'
 
 const schemaVersion = 1
 
@@ -14,6 +15,23 @@ function hashAccessToken(token) {
 
 function clone(value) {
   return structuredClone(value)
+}
+
+function productError(message, code) {
+  const error = new Error(message)
+  error.code = code
+  return error
+}
+
+function publicUser(user) {
+  return user ? {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    role: user.role,
+    status: user.status ?? 'active',
+    createdAt: user.createdAt,
+  } : undefined
 }
 
 function canvasGraph(document) {
@@ -88,7 +106,7 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
     if (!accessToken) return undefined
     const token = state.accessTokens.find((item) => item.tokenHash === hashAccessToken(accessToken) && !item.revokedAt)
     if (!token) return undefined
-    return state.users.find((item) => item.id === token.userId)
+    return state.users.find((item) => item.id === token.userId && item.status !== 'disabled')
   }
 
   function canAccess(project, userId, allowedRoles = ['owner', 'editor', 'viewer']) {
@@ -131,20 +149,55 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
   return {
     authenticate(accessToken) {
       const user = authenticatedUser(accessToken)
-      return user ? { id: user.id, email: user.email, name: user.name, role: user.role } : undefined
+      return publicUser(user)
     },
 
     createUser(actorId, { email, name, role = 'member', accessToken }) {
       const actor = state.users.find((item) => item.id === actorId)
-      if (!actor || actor.role !== 'owner') throw new Error('只有工作区所有者可以创建成员。')
+      assertWorkspacePermission(actor, 'manage-members', 'USER_CREATE_FORBIDDEN')
       if (!email || !accessToken) throw new Error('成员邮箱与访问令牌不能为空。')
       if (state.users.some((item) => item.email.toLowerCase() === email.toLowerCase())) throw new Error('该成员已存在。')
-      const user = { id: `usr_${randomUUID()}`, email, name: name || email, role, createdAt: now() }
+      const user = { id: `usr_${randomUUID()}`, email, name: name || email, role, status: 'active', createdAt: now() }
       state.users.push(user)
       state.accessTokens.push({ id: `token_${randomUUID()}`, userId: user.id, tokenHash: hashAccessToken(accessToken), createdAt: now() })
       audit({ actorId, action: 'member.created', targetId: user.id, detail: { email: user.email, role } })
       save()
-      return { id: user.id, email: user.email, name: user.name, role: user.role }
+      return publicUser(user)
+    },
+
+    listUsers(actorId) {
+      const actor = state.users.find((item) => item.id === actorId)
+      assertWorkspacePermission(actor, 'manage-members', 'USER_MANAGE_FORBIDDEN')
+      return state.users
+        .slice()
+        .sort((left, right) => Number(left.createdAt ?? 0) - Number(right.createdAt ?? 0))
+        .map(publicUser)
+    },
+
+    updateUser(actorId, targetId, updates) {
+      const actor = state.users.find((item) => item.id === actorId)
+      assertWorkspacePermission(actor, 'manage-members', 'USER_MANAGE_FORBIDDEN')
+      const target = state.users.find((item) => item.id === targetId)
+      if (!target) throw productError('未找到该工作区成员。', 'USER_NOT_FOUND')
+      const nextRole = updates?.role ?? target.role
+      const nextStatus = updates?.status ?? target.status ?? 'active'
+      if (!['owner', 'member'].includes(nextRole) || !['active', 'disabled'].includes(nextStatus)) {
+        throw productError('成员更新参数无效。', 'USER_UPDATE_INVALID')
+      }
+      if (target.role === 'owner' && (nextRole !== 'owner' || nextStatus === 'disabled')) {
+        const activeOwners = state.users.filter((item) => item.role === 'owner' && item.status !== 'disabled')
+        if (activeOwners.length <= 1) throw productError('工作区必须保留至少一名启用的所有者。', 'LAST_OWNER_REQUIRED')
+      }
+      target.role = nextRole
+      target.status = nextStatus
+      if (nextStatus === 'disabled') {
+        for (const token of state.accessTokens) {
+          if (token.userId === target.id && !token.revokedAt) token.revokedAt = now()
+        }
+      }
+      audit({ actorId, action: 'member.updated', targetId, detail: { role: nextRole, status: nextStatus } })
+      save()
+      return publicUser(target)
     },
 
     listProjects(userId) {
@@ -173,16 +226,25 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       }
     },
 
+    projectAccess(userId, projectId) {
+      const project = state.projects.find((item) => item.id === projectId)
+      return {
+        exists: Boolean(project),
+        role: project?.members.find((item) => item.userId === userId)?.role,
+      }
+    },
+
     canEditProject(userId, projectId) {
       const project = state.projects.find((item) => item.id === projectId)
-      return Boolean(project && canAccess(project, userId, ['owner', 'editor']))
+      const role = project?.members.find((item) => item.userId === userId)?.role
+      return projectPermissionDecision(role, 'edit') === 'allow'
     },
 
     writeProject(userId, document, expectedRevision, expectedGraphRevision) {
       const existing = state.projects.find((item) => item.id === document.id)
       if (existing) {
-        const member = canAccess(existing, userId, ['owner', 'editor'])
-        if (!member) throw new Error('你没有编辑该项目的权限。')
+        const member = existing.members.find((item) => item.userId === userId)
+        assertProjectPermission(member?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
         if (Number.isInteger(expectedRevision) && expectedRevision !== existing.revision) {
           const conflict = new Error('项目已被其他成员更新，请刷新后再保存。')
           conflict.code = 'PROJECT_CONFLICT'
@@ -240,7 +302,7 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
     deleteProject(userId, projectId) {
       const project = state.projects.find((item) => item.id === projectId)
       if (!project) return false
-      if (!canAccess(project, userId, ['owner'])) throw new Error('只有项目所有者可以删除项目。')
+      assertProjectPermission(project.members.find((item) => item.userId === userId)?.role, 'delete', 'PROJECT_DELETE_FORBIDDEN')
       state.projects = state.projects.filter((item) => item.id !== projectId)
       state.canvasGraphs = state.canvasGraphs.filter((item) => item.projectId !== projectId)
       state.generationJobs = state.generationJobs.filter((item) => item.projectId !== projectId)
@@ -251,7 +313,8 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
 
     addProjectMember(actorId, projectId, userId, role) {
       const project = state.projects.find((item) => item.id === projectId)
-      if (!project || !canAccess(project, actorId, ['owner'])) throw new Error('只有项目所有者可以管理成员。')
+      if (!project) throw productError('未找到项目。', 'PROJECT_NOT_FOUND')
+      assertProjectPermission(project.members.find((item) => item.userId === actorId)?.role, 'manage-members', 'PROJECT_MEMBER_FORBIDDEN')
       const user = state.users.find((item) => item.id === userId)
       if (!user) throw new Error('未找到成员。')
       const member = project.members.find((item) => item.userId === userId)
@@ -278,7 +341,8 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
 
     appendCanvasGraphUpdate(userId, projectId, { update, graph }) {
       const project = state.projects.find((item) => item.id === projectId)
-      if (!project || !canAccess(project, userId, ['owner', 'editor'])) throw new Error('你没有编辑该项目的权限。')
+      if (!project) throw productError('未找到项目。', 'PROJECT_NOT_FOUND')
+      assertProjectPermission(project.members.find((item) => item.userId === userId)?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
       if (typeof update !== 'string' || !update || !Array.isArray(graph?.nodes) || !Array.isArray(graph?.edges)) {
         throw new TypeError('画布协作更新格式无效。')
       }
@@ -293,7 +357,8 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
 
     compactCanvasGraphUpdates(userId, projectId, { snapshot, graph }) {
       const project = state.projects.find((item) => item.id === projectId)
-      if (!project || !canAccess(project, userId, ['owner', 'editor'])) throw new Error('你没有编辑该项目的权限。')
+      if (!project) throw productError('未找到项目。', 'PROJECT_NOT_FOUND')
+      assertProjectPermission(project.members.find((item) => item.userId === userId)?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
       if (typeof snapshot !== 'string' || !snapshot || !Array.isArray(graph?.nodes) || !Array.isArray(graph?.edges)) {
         throw new TypeError('画布协作快照格式无效。')
       }
@@ -307,15 +372,15 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
     },
 
     readGlobalAssetLibrary(userId, id) {
-      // 访问过任何项目的成员均可读取工作区品牌素材库。
-      if (!state.projects.some((project) => canAccess(project, userId))) return undefined
+      const user = state.users.find((item) => item.id === userId)
+      if (!user || user.status === 'disabled') return undefined
       const library = state.globalAssetLibraries.find((item) => item.id === id)
       return library ? clone(library.library) : undefined
     },
 
     writeGlobalAssetLibrary(userId, library) {
-      const hasWorkspaceAccess = state.projects.some((project) => canAccess(project, userId, ['owner', 'editor']))
-      if (!hasWorkspaceAccess && state.projects.length) throw new Error('你没有编辑品牌素材库的权限。')
+      const user = state.users.find((item) => item.id === userId)
+      assertWorkspacePermission(user, 'manage-library', 'LIBRARY_WRITE_FORBIDDEN')
       const existing = state.globalAssetLibraries.find((item) => item.id === library.id)
       if (existing) {
         existing.library = clone(library)
@@ -331,8 +396,8 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
     deleteGlobalAsset(userId, assetId) {
       const libraryEntry = state.globalAssetLibraries.find((item) => item.id === 'global-brand-assets')
       if (!libraryEntry) return { deleted: false, library: undefined }
-      const canEdit = state.projects.some((project) => canAccess(project, userId, ['owner', 'editor']))
-      if (!canEdit) throw new Error('你没有编辑品牌素材库的权限。')
+      const user = state.users.find((item) => item.id === userId)
+      assertWorkspacePermission(user, 'manage-library', 'LIBRARY_WRITE_FORBIDDEN')
       const assets = libraryEntry.library.assets.filter((asset) => asset.id !== assetId)
       const deleted = assets.length !== libraryEntry.library.assets.length
       if (deleted) {
@@ -393,13 +458,32 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
     },
 
     listAuditEvents(userId, projectId, limit = 100) {
-      const project = projectId ? state.projects.find((item) => item.id === projectId) : undefined
-      if (projectId && (!project || !canAccess(project, userId))) return undefined
+      if (!projectId) throw productError('项目审计必须指定项目。', 'PROJECT_AUDIT_FORBIDDEN')
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project) return undefined
+      assertProjectPermission(project.members.find((item) => item.userId === userId)?.role, 'read-audit', 'PROJECT_AUDIT_FORBIDDEN')
       return state.auditEvents
         .filter((event) => !projectId || event.projectId === projectId)
         .slice(-Math.max(1, Math.min(limit, 500)))
         .reverse()
         .map(clone)
+    },
+
+    listWorkspaceAuditEvents(userId, limit = 100) {
+      const user = state.users.find((item) => item.id === userId)
+      assertWorkspacePermission(user, 'read-audit', 'WORKSPACE_AUDIT_FORBIDDEN')
+      return state.auditEvents
+        .slice(-Math.max(1, Math.min(limit, 500)))
+        .reverse()
+        .map(clone)
+    },
+
+    recordSecurityAuditEvent(userId, action, detail = {}) {
+      const user = state.users.find((item) => item.id === userId)
+      if (!user || user.status === 'disabled') throw productError('登录状态无效。', 'AUTH_REQUIRED')
+      const event = audit({ actorId: userId, action, detail })
+      save()
+      return clone(event)
     },
   }
 }
@@ -409,7 +493,13 @@ function loadState(path) {
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8'))
     if (!parsed || parsed.schemaVersion !== schemaVersion) throw new Error('schema mismatch')
-    return { ...initialState(), ...parsed }
+    return {
+      ...initialState(),
+      ...parsed,
+      users: Array.isArray(parsed.users)
+        ? parsed.users.map((user) => ({ ...user, status: user.status ?? 'active' }))
+        : [],
+    }
   } catch {
     throw new Error(`无法读取产品数据文件：${path}`)
   }
@@ -426,7 +516,7 @@ function ensureBootstrapUser(state, accessToken, email) {
   if (state.accessTokens.some((item) => item.tokenHash === tokenHash && !item.revokedAt)) return
   let owner = state.users.find((item) => item.role === 'owner')
   if (!owner) {
-    owner = { id: `usr_${randomUUID()}`, email, name: 'Botanic Owner', role: 'owner', createdAt: now() }
+    owner = { id: `usr_${randomUUID()}`, email, name: 'Botanic Owner', role: 'owner', status: 'active', createdAt: now() }
     state.users.push(owner)
   }
   state.accessTokens.push({ id: `token_${randomUUID()}`, userId: owner.id, tokenHash, createdAt: now() })

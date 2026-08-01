@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Edge } from '@xyflow/react'
 import type { CanvasNode } from './canvas.ts'
-import { createCollaborativeGraph } from './collaborativeGraph.ts'
+import { createCollaborativeGraph, mergeCollaborativeCanvasGraph } from './collaborativeGraph.ts'
 
 function node(id: string, x: number, selected = false): CanvasNode {
   return {
@@ -87,4 +87,22 @@ test('协作增量不携带图片字节', () => {
   assert.equal(updates.length, 1)
   assert.ok(updates[0].byteLength < 2_000)
   collaboration.destroy()
+})
+
+test('远端新增媒体节点尚未回填图片时仍保留节点与连线', () => {
+  const remoteResult = {
+    id: 'result-remote',
+    type: 'result',
+    position: { x: 320, y: 20 },
+    data: { kind: 'result', label: '远端候选', mediaKind: 'image' },
+  } as CanvasNode
+  const remoteEdge = { id: 'edge-remote', source: 'node-a', target: 'result-remote' }
+
+  const merged = mergeCollaborativeCanvasGraph(
+    { nodes: [node('node-a', 10)], edges: [] },
+    { nodes: [node('node-a', 10), remoteResult], edges: [remoteEdge] },
+  )
+
+  assert.deepEqual(merged.nodes.map((item) => item.id), ['node-a', 'result-remote'])
+  assert.deepEqual(merged.edges, [remoteEdge])
 })

@@ -23,7 +23,7 @@ Botanic 是面向品牌视觉生产的无限画布工作台。图片、文本和
 
 ```text
 Vercel Web
-   │ /api 同源转发 + WebSocket 实时通道
+   │ Supabase Auth 会话 + /api 同源转发 + WebSocket 实时通道
    ▼
 Railway API ── PostgreSQL（项目、画布图谱、Yjs 日志、任务、媒体元数据）
    │
@@ -36,7 +36,7 @@ Railway API ── PostgreSQL（项目、画布图谱、Yjs 日志、任务、�
 - API 负责鉴权、项目文档、实时协作、幂等任务提交、结果查询与媒体授权。
 - Worker 执行长耗时生成，统一将 Provider 输出转换为媒体对象后持久化。
 - Redis 只负责调度；PostgreSQL 中的任务与输出记录负责恢复与回填。
-- 运行时仍保留 Supabase Auth / Storage Adapter，便于兼容旧环境；当前全 Railway 模式使用访问令牌鉴权、PostgreSQL 与 S3 Adapter。
+- 正式用户鉴权使用 Supabase Auth；用户角色、状态、项目、任务与媒体数据保存在 Railway PostgreSQL / S3。
 
 详细依赖方向见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
@@ -74,8 +74,7 @@ npm run worker
 ```dotenv
 DATABASE_URL=postgresql://...
 REDIS_URL=redis://...
-BOTANIC_AUTH_PROVIDER=access-token
-BOTANIC_BOOTSTRAP_ACCESS_TOKEN=...
+BOTANIC_AUTH_PROVIDER=supabase
 BOTANIC_STORAGE_PROVIDER=s3
 REALTIME_TICKET_SECRET=...
 REALTIME_PUBLIC_URL=https://<railway-api-domain>
@@ -85,7 +84,7 @@ S3_ACCESS_KEY_ID=...
 S3_SECRET_ACCESS_KEY=...
 ```
 
-`BOTANIC_BOOTSTRAP_ACCESS_TOKEN`、`REALTIME_TICKET_SECRET` 以及数据库、S3 凭据只能写入 API / Worker，不能使用 `VITE_*` 前缀。`REALTIME_PUBLIC_URL` 指向公开的 Railway API 域名，浏览器会自动转换为 `wss://`。
+Vercel 需配置 `VITE_SUPABASE_URL` 和 `VITE_SUPABASE_PUBLISHABLE_KEY`；Railway API 需配置对应的 `SUPABASE_URL`、`SUPABASE_PUBLISHABLE_KEY` 与仅服务端可见的 `SUPABASE_SECRET_KEY`。`REALTIME_TICKET_SECRET` 以及数据库、S3 凭据不能使用 `VITE_*` 前缀。`REALTIME_PUBLIC_URL` 指向公开的 Railway API 域名，浏览器会自动转换为 `wss://`。访问码鉴权仅作本地应急调试，不用于正式用户。
 
 ### 生成与润色
 
@@ -108,6 +107,18 @@ API 与 Worker 必须使用相同的图像 / 视频 Provider 配置。H3 当前�
 ### 兼容 Supabase 的部署
 
 需要保留 Supabase 登录或 Storage 时，再配置 `SUPABASE_URL`、`SUPABASE_PUBLISHABLE_KEY`、`SUPABASE_SECRET_KEY` 与 `SUPABASE_STORAGE_BUCKET`。服务端 secret key 绝不能下发到浏览器。
+
+### 安全策略
+
+- Redis 同时承载跨 API 实例的请求限流；用户级润色、实时票据、成员变更与每日生成候选配额相互独立。
+- 同一生成任务的幂等重试先读取已有任务，不重复消耗生成配额。
+- 上传素材校验单文件大小、MIME 与 PNG / JPEG / WebP 文件签名；媒体 Cookie 只能读取媒体，不能执行写操作。
+- Vercel 与 Nginx 配置 CSP、HSTS、禁止 iframe 嵌入、权限策略和内容嗅探防护。
+- 账户安全支持 TOTP 二步验证与“退出其他设备”。Owner 完成 TOTP 设置后，再把 Railway API 的 `SECURITY_REQUIRE_OWNER_MFA` 改为 `true`，即可强制邀请成员、修改权限和删除项目使用 AAL2 会话。
+- 对象级授权由统一权限矩阵决定：工作区 Owner 管理成员、共享素材和工作区审计；项目 Owner / Editor / Viewer 分别对应管理、编辑和只读权限。实时票据、画布、润色和生成入口使用同一授权入口。
+- 成员、项目、共享素材与账户安全变更写入持久化审计日志；工作区完整审计仅 Owner 可通过 `GET /api/audit` 读取。
+
+具体阈值见 [.env.example](.env.example)。安全拒绝、限流与服务端异常会输出结构化事件和 `X-Request-ID`，可由 Railway 日志或后续 Sentry 接收。
 
 ## 验证
 

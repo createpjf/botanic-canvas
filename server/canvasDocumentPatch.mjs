@@ -13,13 +13,23 @@ function mergeCollection(current, change, label) {
   if (!remove.every((id) => typeof id === 'string' && id)) throw new TypeError(`${label} 补丁包含无效删除项。`)
 
   const removed = new Set(remove)
-  const replacements = new Map(upsert.map((item) => [item.id, item]))
+  const currentById = new Map(current.map((item) => [item.id, item]))
+  const preserveMedia = (item) => {
+    const existing = currentById.get(item.id)
+    if ((item.type === 'asset' || item.type === 'result')
+      && existing?.data?.image
+      && !item.data?.image) {
+      return { ...item, data: { ...item.data, image: existing.data.image } }
+    }
+    return item
+  }
+  const replacements = new Map(upsert.map((item) => [item.id, preserveMedia(item)]))
   const merged = current
     .filter((item) => !removed.has(item.id))
     .map((item) => replacements.get(item.id) ?? item)
   const existing = new Set(current.map((item) => item.id))
   for (const item of upsert) {
-    if (!existing.has(item.id) && !removed.has(item.id)) merged.push(item)
+    if (!existing.has(item.id) && !removed.has(item.id)) merged.push(preserveMedia(item))
   }
   return merged
 }

@@ -4,18 +4,26 @@ function signature(payload, secret) {
   return createHmac('sha256', secret).update(payload).digest('base64url')
 }
 
-export function issueRealtimeTicket({ userId, projectId, secret, now = Date.now(), lifetimeMs = 30_000 }) {
+function normalizedOrigin(value) {
+  if (!value) return undefined
+  try { return new URL(value).origin } catch { return undefined }
+}
+
+export function issueRealtimeTicket({ userId, projectId, origin, secret, now = Date.now(), lifetimeMs = 30_000 }) {
   if (!userId || !projectId || !secret) throw new TypeError('实时票据参数不完整。')
+  const boundOrigin = normalizedOrigin(origin)
+  if (!boundOrigin || boundOrigin === 'null') throw new TypeError('实时票据 Origin 无效。')
   const payload = Buffer.from(JSON.stringify({
     userId,
     projectId,
+    origin: boundOrigin,
     expiresAt: now + lifetimeMs,
     nonce: randomUUID(),
   })).toString('base64url')
   return `${payload}.${signature(payload, secret)}`
 }
 
-export function verifyRealtimeTicket(ticket, { projectId, secret, now = Date.now() }) {
+export function verifyRealtimeTicket(ticket, { projectId, origin, secret, now = Date.now() }) {
   try {
     if (!ticket || !projectId || !secret) return undefined
     const [payload, suppliedSignature, extra] = ticket.split('.')
@@ -27,6 +35,7 @@ export function verifyRealtimeTicket(ticket, { projectId, secret, now = Date.now
     const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'))
     if (typeof parsed?.userId !== 'string'
       || parsed.projectId !== projectId
+      || parsed.origin !== normalizedOrigin(origin)
       || typeof parsed.expiresAt !== 'number'
       || parsed.expiresAt < now) return undefined
     return { userId: parsed.userId, projectId: parsed.projectId }

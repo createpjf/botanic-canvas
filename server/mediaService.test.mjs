@@ -140,3 +140,33 @@ test('H3 的 MP4 输出通过同一媒体授权契约持久化', async () => {
   assert.equal(url, '/api/media/media_video')
   assert.equal(written.contentType, 'video/mp4')
 })
+
+test('上传图片必须同时通过 MIME 与真实文件签名校验', async () => {
+  const media = createMediaService({
+    productStore: {},
+    objectStore: { async putMedia() { throw new Error('不应写入伪装文件') } },
+  })
+  const disguised = `data:image/png;base64,${Buffer.from('<script>alert(1)</script>').toString('base64')}`
+
+  await assert.rejects(
+    media.normalizeDocument({ image: disguised }, { ownerId: 'owner', projectId: 'project-a' }),
+    /图片内容与文件类型不匹配/,
+  )
+})
+
+test('单个上传素材超过配置上限时在对象存储写入前拒绝', async () => {
+  const media = createMediaService({
+    productStore: {},
+    objectStore: { async putMedia() { throw new Error('不应写入超限文件') } },
+    maximumUploadBytes: 8,
+  })
+  const oversizedPng = `data:image/png;base64,${Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.alloc(1),
+  ]).toString('base64')}`
+
+  await assert.rejects(
+    media.normalizeDocument({ image: oversizedPng }, { ownerId: 'owner', projectId: 'project-a' }),
+    /单个素材不能超过/,
+  )
+})

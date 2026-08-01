@@ -7,16 +7,18 @@ function document(id: string, updatedAt: number, name: string): CanvasDocument {
   return {
     id,
     name,
-    schemaVersion: 21,
+    schemaVersion: 22,
     updatedAt,
     nodes: [],
     edges: [],
     viewport: { x: 0, y: 0, zoom: 1 },
     assets: [],
+    assetGroups: [],
     templates: [],
     history: [],
     deliveries: [],
     generationJobs: [],
+    batchVariationRuns: [],
   }
 }
 

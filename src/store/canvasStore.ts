@@ -3,6 +3,8 @@ import type { Edge, Viewport, XYPosition } from '@xyflow/react'
 import { createEmptyCanvasDocument, seedDocument, seedGlobalAssets } from '../data/seed'
 import { defaultGenerationModels } from '../domain/canvas'
 import { normalizeAssetCollection, normalizeAssetRecord } from '../domain/assets'
+import { normalizeAssetGroupName, normalizeAssetGroups, removeAssetFromGroups, upsertCollectionGroups } from '../domain/assetGroups'
+import { mergeCollaborativeCanvasGraph } from '../domain/collaborativeGraph'
 import { findOpenGeneratePosition, planGenerateNodeCreation } from '../domain/generateNodeCreation'
 import { planGenerationOutputPlacement } from '../domain/generationOutputPlacement'
 import { resolveRemoteCanvasRefresh } from '../domain/remoteDocumentSync'
@@ -10,6 +12,8 @@ import { assignVideoInputRoles } from '../domain/videoGeneration'
 import { summarizeWorkflowTemplate } from '../domain/workflowTemplates'
 import type {
   AssetRecord,
+  AssetGroup,
+  BatchVariationRun,
   AssetRole,
   AssetNodeData,
   CanvasDocument,
@@ -100,6 +104,7 @@ let generationPollRunId = 0
 let generationSubmissionRunId = 0
 let undoTimerId: number | null = null
 let persistenceRunId = 0
+const activeBatchVariationRuns = new Set<string>()
 /** 当前会话中正在删除或已删除的全局品牌素材，阻止异步任务用旧快照回写引用。 */
 const revokedGlobalAssetIds = new Set<string>()
 
@@ -139,6 +144,11 @@ type CanvasStore = {
   addUploadedAssetsToCanvas: (assets: UploadedAssetInput[], position?: XYPosition) => void
   saveGeneratedImageToLibrary: (input: { image: string; name: string; mediaKind?: GenerationMediaKind }) => void
   moveAssetToRole: (assetId: string, role: AssetRole) => void
+  createAssetGroup: (name: string, role: AssetGroup['role'], assetIds?: string[]) => string | null
+  renameAssetGroup: (groupId: string, name: string) => void
+  deleteAssetGroup: (groupId: string) => void
+  addAssetsToGroup: (groupId: string, assetIds: string[]) => void
+  removeAssetFromGroup: (groupId: string, assetId: string) => void
   addTextNode: (position?: XYPosition) => void
   addGenerateNode: (position?: XYPosition, mediaKind?: 'image' | 'video', inputNodeIds?: string[]) => string | null
   createGenerateBranchFromResult: (resultNodeId: string, draft?: GenerateBranchDraft) => string | null
@@ -151,6 +161,14 @@ type CanvasStore = {
   setAvailableModels: (models: GenerationModelOption[]) => void
   setMaximumBatchCount: (count: number) => void
   runGraphGeneration: (nodeId: string) => Promise<boolean>
+  runBatchVariation: (input: {
+    sourceResultNodeId: string
+    groupId: string
+    prompt: string
+    candidatesPerAsset: number
+    settings: GenerationSettings
+  }) => Promise<boolean>
+  resumeBatchVariations: () => void
   setAssetReferenceEnabled: (nodeId: string, referenceEnabled: boolean) => void
   setPrimaryProductReference: (nodeId: string) => void
   moveGenerationReference: (nodeId: string, direction: 'earlier' | 'later') => void
@@ -441,6 +459,7 @@ function scrubAssetFromDocument(document: CanvasDocument, assetId: string): Canv
   return {
     ...document,
     assets: document.assets.filter((item) => item.id !== assetId),
+    assetGroups: removeAssetFromGroups(document.assetGroups, assetId),
     nodes,
     edges,
     templates,
@@ -1363,7 +1382,7 @@ function normalizeDocument(stored: CanvasDocument | undefined): CanvasDocument {
   const document: CanvasDocument = {
     ...seedDocument,
     ...legacy,
-    schemaVersion: 21,
+    schemaVersion: 22,
     name: cleanDisplayName(legacy.name, seedDocument.name),
     viewport: rootSnapshot.viewport,
     nodes: reconciledResultNodes,
@@ -1379,6 +1398,7 @@ function normalizeDocument(stored: CanvasDocument | undefined): CanvasDocument {
         tags: cleanAssetTags(asset.tags),
       }, (matchingResult?.data as ResultNodeData | undefined)?.mediaKind)
     }),
+    assetGroups: normalizeAssetGroups(legacy.assetGroups),
     templates,
     history,
     deliveries: (legacy.deliveries ?? seedDocument.deliveries).map((delivery) => ({
@@ -1388,6 +1408,11 @@ function normalizeDocument(stored: CanvasDocument | undefined): CanvasDocument {
       subtitle: removeLegacyMockCopy(delivery.subtitle) ?? delivery.subtitle,
     })),
     generationJobs,
+    batchVariationRuns: (legacy.batchVariationRuns ?? []).map((run) => ({
+      ...run,
+      settings: cloneGenerationSettings(run.settings),
+      items: Array.isArray(run.items) ? run.items.map((item) => ({ ...item })) : [],
+    })),
     activeVersionId: legacy.activeVersionId ?? seedDocument.activeVersionId,
   }
   // V18 起，同一次任务的每张输出都是画布上的独立结果节点；旧任务在首次打开时补齐。
@@ -2398,6 +2423,176 @@ function pollGenerationJob(
   void poll()
 }
 
+function updateBatchVariationRun(
+  set: (next: Partial<CanvasStore>) => void,
+  get: () => CanvasStore,
+  runId: string,
+  updater: (run: BatchVariationRun) => BatchVariationRun,
+  assistantMessage?: string,
+) {
+  const document = get().document
+  if (!document.batchVariationRuns.some((run) => run.id === runId)) return
+  commit(set, {
+    ...document,
+    batchVariationRuns: document.batchVariationRuns.map((run) => run.id === runId ? updater(run) : run),
+  }, assistantMessage ? { assistantMessage } : {}, { immediate: true })
+}
+
+async function waitForBatchGenerationJob(jobId: string, timeoutMs = 300_000) {
+  const deadline = Date.now() + timeoutMs
+  let delay = 1_500
+  while (Date.now() < deadline) {
+    const job = await getGenerationJob(jobId)
+    if (job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled') return job
+    await new Promise((resolve) => window.setTimeout(resolve, window.document.hidden ? 8_000 : delay))
+    delay = Math.min(5_000, Math.round(delay * 1.45))
+  }
+  throw new Error('子任务仍在服务端处理，稍后返回画布会自动继续恢复。')
+}
+
+async function executeBatchVariationRun(
+  set: (next: Partial<CanvasStore>) => void,
+  get: () => CanvasStore,
+  runId: string,
+) {
+  if (activeBatchVariationRuns.has(runId)) return
+  activeBatchVariationRuns.add(runId)
+  try {
+    stopGenerationPolling()
+    updateBatchVariationRun(set, get, runId, (run) => ({ ...run, status: 'running', updatedAt: Date.now() }))
+    while (true) {
+      const run = get().document.batchVariationRuns.find((item) => item.id === runId)
+      if (!run || run.status === 'cancelled') return
+      const item = run.items.find((candidate) => candidate.status === 'running' || candidate.status === 'queued')
+      if (!item) break
+
+      let jobId = item.jobId
+      let request: GenerationRequest | undefined
+      if (item.status === 'running' && jobId) {
+        const recordedJob = get().document.generationJobs.find((job) => job.id === jobId)
+        request = recordedJob ? requestFromPersistedJob(get().document, recordedJob) ?? undefined : undefined
+        if (request) set({ lastGenerationRequest: { ...request, jobId } })
+      } else {
+        const asset = findAvailableAsset(get().document, get().globalAssets, item.assetId)
+        if (!asset) {
+          updateBatchVariationRun(set, get, runId, (current) => ({
+            ...current,
+            items: current.items.map((candidate) => candidate.id === item.id
+              ? { ...candidate, status: 'failed', error: '素材已不存在。' }
+              : candidate),
+            updatedAt: Date.now(),
+          }))
+          continue
+        }
+        const branchPrompt = `${run.prompt.trim()}\n本次${run.variableRole}参考：${asset.name}。父图作为主体保持参考，不覆盖父图。`
+        const branchId = get().createGenerateBranchFromResult(run.sourceResultNodeId, {
+          prompt: branchPrompt,
+          batchCount: run.candidatesPerAsset,
+          settings: run.settings,
+          refinementMode: 'faithful',
+        })
+        if (!branchId) {
+          updateBatchVariationRun(set, get, runId, (current) => ({
+            ...current,
+            items: current.items.map((candidate) => candidate.id === item.id
+              ? { ...candidate, status: 'failed', error: '无法创建批量变体节点。' }
+              : candidate),
+            updatedAt: Date.now(),
+          }))
+          continue
+        }
+        const branch = get().document.nodes.find((node) => node.id === branchId)
+        get().addAssetToCanvas(asset.id, branch
+          ? { x: Math.max(20, branch.position.x - 236), y: branch.position.y + 16 }
+          : undefined, branchId)
+        updateBatchVariationRun(set, get, runId, (current) => ({
+          ...current,
+          items: current.items.map((candidate) => candidate.id === item.id
+            ? { ...candidate, status: 'running', generateNodeId: branchId, error: undefined }
+            : candidate),
+          updatedAt: Date.now(),
+        }), `批量变体 ${currentBatchCompletedCount(run) + 1}/${run.items.length}：正在提交「${asset.name}」。`)
+        const started = await get().runGraphGeneration(branchId)
+        if (!started) {
+          const message = get().generationError ?? '子任务提交失败。'
+          updateBatchVariationRun(set, get, runId, (current) => ({
+            ...current,
+            items: current.items.map((candidate) => candidate.id === item.id
+              ? { ...candidate, status: 'failed', generateNodeId: branchId, error: message }
+              : candidate),
+            updatedAt: Date.now(),
+          }))
+          continue
+        }
+        stopGenerationPolling()
+        request = get().lastGenerationRequest ?? undefined
+        jobId = request?.jobId
+        if (!jobId) {
+          updateBatchVariationRun(set, get, runId, (current) => ({
+            ...current,
+            items: current.items.map((candidate) => candidate.id === item.id
+              ? { ...candidate, status: 'failed', generateNodeId: branchId, error: '任务编号未写入画布。' }
+              : candidate),
+            updatedAt: Date.now(),
+          }))
+          continue
+        }
+        updateBatchVariationRun(set, get, runId, (current) => ({
+          ...current,
+          items: current.items.map((candidate) => candidate.id === item.id
+            ? { ...candidate, jobId }
+            : candidate),
+          updatedAt: Date.now(),
+        }))
+      }
+
+      if (!jobId || !request) {
+        updateBatchVariationRun(set, get, runId, (current) => ({
+          ...current,
+          items: current.items.map((candidate) => candidate.id === item.id
+            ? { ...candidate, status: 'failed', error: '无法恢复子任务配方。' }
+            : candidate),
+          updatedAt: Date.now(),
+        }))
+        continue
+      }
+
+      try {
+        const job = await waitForBatchGenerationJob(jobId)
+        set({ lastGenerationRequest: { ...request, jobId } })
+        syncGenerationJob(set, get, job)
+        const status = job.status === 'succeeded' ? 'succeeded' : job.status === 'cancelled' ? 'cancelled' : 'failed'
+        updateBatchVariationRun(set, get, runId, (current) => ({
+          ...current,
+          items: current.items.map((candidate) => candidate.id === item.id
+            ? { ...candidate, status, jobId, error: job.error }
+            : candidate),
+          updatedAt: Date.now(),
+        }))
+      } catch (error) {
+        updateBatchVariationRun(set, get, runId, (current) => ({ ...current, updatedAt: Date.now() }), error instanceof Error ? error.message : '批量任务状态同步中断。')
+        window.setTimeout(() => get().resumeBatchVariations(), 10_000)
+        return
+      }
+    }
+
+    const completed = get().document.batchVariationRuns.find((item) => item.id === runId)
+    if (!completed) return
+    const succeeded = completed.items.filter((item) => item.status === 'succeeded').length
+    const failed = completed.items.filter((item) => item.status === 'failed' || item.status === 'cancelled').length
+    const status = succeeded === completed.items.length ? 'succeeded' : succeeded ? 'partial' : 'failed'
+    updateBatchVariationRun(set, get, runId, (run) => ({ ...run, status, updatedAt: Date.now() }),
+      failed ? `批量变体完成 ${succeeded}/${completed.items.length} 项；失败项可保留节点后单独重试。` : `批量变体已完成 ${succeeded} 项。`)
+  } finally {
+    activeBatchVariationRuns.delete(runId)
+    window.setTimeout(() => get().resumeBatchVariations(), 0)
+  }
+}
+
+function currentBatchCompletedCount(run: BatchVariationRun) {
+  return run.items.filter((item) => item.status === 'succeeded' || item.status === 'failed' || item.status === 'cancelled').length
+}
+
 function cloneSnapshotAsCanvas(snapshotValue: CanvasSnapshot, prefix: string) {
   const timestamp = Date.now()
   const idMap = new Map<string, string>()
@@ -2542,9 +2737,9 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     // 画布本身是打开项目的关键路径；共享素材库仅服务素材面板，不能让它的
     // 网络故障阻塞整个画布恢复。
     const stored = await readCanvasDocument(documentId, {
-      onRemoteDocument: ({ cachedDocument, remoteDocument }) => {
+      onRemoteDocument: ({ cachedDocument, remoteDocument }) => (
         applyRemoteDocumentRefresh(set, get, remoteDocument, cachedDocument.updatedAt)
-      },
+      ),
     })
     if (!stored) return false
 
@@ -2578,13 +2773,18 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     // 素材库在后台补齐；失败不影响当前项目打开，用户稍后可在素材库重试。
     void ensureGlobalAssetLibrary(seedGlobalAssets)
       .then((library) => {
-        if (get().document.id === documentId) set({ globalAssets: library.assets })
+        if (get().document.id !== documentId) return
+        set({ globalAssets: library.assets })
+        get().resumeBatchVariations()
       })
       .catch(() => undefined)
     void readGlobalWorkflowTemplateLibrary()
       .then((library) => set({ sharedTemplates: library?.templates ?? [] }))
       .catch(() => undefined)
     if (recoveredGeneration.pollJobId) pollGenerationJob(set, get, recoveredGeneration.pollJobId)
+    // 仅在共享素材已就绪时恢复批量任务；否则由素材库加载完成后继续，
+    // 避免把共享品牌素材误判为“已不存在”。
+    if (get().globalAssets.length) window.setTimeout(() => get().resumeBatchVariations(), 0)
     // 历史任务可能在浏览器断开时完成，根本没有写入画布。服务端一次性回填，
     // 同时修复其他设备或旧版本留下的空占位节点。
     void reconcileProjectGenerationResults(documentId)
@@ -2656,6 +2856,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     void readGlobalWorkflowTemplateLibrary()
       .then((library) => set({ sharedTemplates: library?.templates ?? [] }))
       .catch(() => undefined)
+    window.setTimeout(() => get().resumeBatchVariations(), 0)
   },
 
   renameDocument: (name) => {
@@ -2719,33 +2920,15 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
 
   applyCollaborativeGraph: ({ nodes, edges }) => {
     const current = get().document
-    const currentById = new Map(current.nodes.map((node) => [node.id, node]))
-    const synchronizedNodes = nodes.flatMap((node) => {
-      const local = currentById.get(node.id)
-      if ((node.type === 'asset' || node.type === 'result') && !local) {
-        // CRDT 不携带媒体字节；新媒体节点等待紧随其后的权威项目版本回填。
-        return []
-      }
-      const selected = Boolean(local?.selected)
-      const localImage = local?.type === 'asset'
-        ? (local.data as AssetNodeData).image
-        : local?.type === 'result'
-          ? (local.data as ResultNodeData).image
-          : undefined
-      return [{
-        ...node,
-        selected,
-        data: node.type === 'result'
-          ? { ...node.data, ...(localImage ? { image: localImage } : {}), selected }
-          : node.type === 'asset'
-            ? { ...node.data, ...(localImage ? { image: localImage } : {}) }
-          : { ...node.data },
-      } as CanvasNode]
-    }) as CanvasNode[]
+    const synchronized = mergeCollaborativeCanvasGraph(
+      { nodes: current.nodes, edges: current.edges },
+      { nodes, edges },
+    )
+    const synchronizedNodes = synchronized.nodes
     const synchronizedNodeIds = new Set(synchronizedNodes.map((node) => node.id))
     const normalizedEdges = normalizeSystemOutputEdges(
       synchronizedNodes,
-      edges.filter((edge) => synchronizedNodeIds.has(edge.source) && synchronizedNodeIds.has(edge.target)),
+      synchronized.edges.filter((edge) => synchronizedNodeIds.has(edge.source) && synchronizedNodeIds.has(edge.target)),
     )
     const normalizedNodes = normalizeGenerateNodeInputs(synchronizedNodes, normalizedEdges)
     const selected = normalizedNodes.filter((node) => node.selected)
@@ -3059,6 +3242,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     commit(set, {
       ...document,
       assets: [...assets, ...document.assets],
+      assetGroups: upsertCollectionGroups(document.assetGroups, assets, timestamp),
     }, {
       assistantMessage: `已将 ${assets.length} 张本地素材存入当前项目素材库。拖入画布后，可将它们作为真实生成参考。`,
     })
@@ -3122,6 +3306,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     commit(set, {
       ...document,
       assets: [...assets, ...document.assets],
+      assetGroups: upsertCollectionGroups(document.assetGroups, assets, timestamp),
       nodes: [...document.nodes.map((node) => ({ ...node, selected: false })), ...nodes] as CanvasNode[],
     }, {
       selectedNodeId: nodes[0]?.id ?? null,
@@ -3198,6 +3383,81 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     }, {
       assistantMessage: `已将「${target.name}」移动到「${role}」分组。`,
     })
+  },
+
+  createAssetGroup: (name, role, assetIds = []) => {
+    const cleanName = normalizeAssetGroupName(name)
+    if (!cleanName) return null
+    const document = get().document
+    const availableIds = new Set(availableAssets(document, get().globalAssets).map((asset) => asset.id))
+    const normalizedAssetIds = [...new Set(assetIds)].filter((assetId) => availableIds.has(assetId))
+    const timestamp = Date.now()
+    const group: AssetGroup = {
+      id: `asset-group-${timestamp}`,
+      name: cleanName,
+      role,
+      assetIds: normalizedAssetIds,
+      coverAssetId: normalizedAssetIds[0],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }
+    commit(set, { ...document, assetGroups: [group, ...document.assetGroups] }, {
+      assistantMessage: normalizedAssetIds.length
+        ? `已创建素材组「${cleanName}」，并加入 ${normalizedAssetIds.length} 项素材。`
+        : `已创建素材组「${cleanName}」。`,
+    })
+    return group.id
+  },
+
+  renameAssetGroup: (groupId, name) => {
+    const cleanName = normalizeAssetGroupName(name)
+    if (!cleanName) return
+    const document = get().document
+    if (!document.assetGroups.some((group) => group.id === groupId)) return
+    commit(set, {
+      ...document,
+      assetGroups: document.assetGroups.map((group) => group.id === groupId
+        ? { ...group, name: cleanName, updatedAt: Date.now() }
+        : group),
+    }, { assistantMessage: `素材组已重命名为「${cleanName}」。` })
+  },
+
+  deleteAssetGroup: (groupId) => {
+    const document = get().document
+    const group = document.assetGroups.find((item) => item.id === groupId)
+    if (!group) return
+    commit(set, { ...document, assetGroups: document.assetGroups.filter((item) => item.id !== groupId) }, {
+      assistantMessage: `已删除素材组「${group.name}」，组内素材仍保留在素材库。`,
+    })
+  },
+
+  addAssetsToGroup: (groupId, assetIds) => {
+    const document = get().document
+    const availableIds = new Set(availableAssets(document, get().globalAssets).map((asset) => asset.id))
+    const additions = [...new Set(assetIds)].filter((assetId) => availableIds.has(assetId))
+    if (!additions.length || !document.assetGroups.some((group) => group.id === groupId)) return
+    const timestamp = Date.now()
+    commit(set, {
+      ...document,
+      assetGroups: document.assetGroups.map((group) => {
+        if (group.id !== groupId) return group
+        const nextAssetIds = [...new Set([...group.assetIds, ...additions])]
+        return { ...group, assetIds: nextAssetIds, coverAssetId: group.coverAssetId ?? nextAssetIds[0], updatedAt: timestamp }
+      }),
+    }, { assistantMessage: `已将 ${additions.length} 项素材加入素材组。` })
+  },
+
+  removeAssetFromGroup: (groupId, assetId) => {
+    const document = get().document
+    const group = document.assetGroups.find((item) => item.id === groupId)
+    if (!group?.assetIds.includes(assetId)) return
+    const assetIds = group.assetIds.filter((id) => id !== assetId)
+    commit(set, {
+      ...document,
+      assetGroups: document.assetGroups.map((item) => item.id === groupId
+        ? { ...item, assetIds, coverAssetId: item.coverAssetId === assetId ? assetIds[0] : item.coverAssetId, updatedAt: Date.now() }
+        : item),
+    }, { assistantMessage: '已将素材移出当前素材组；素材原件仍保留。' })
   },
 
   addTextNode: (position) => {
@@ -3559,6 +3819,62 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
       recipe: preparedRecipe,
       sourceGraphNodeId: nodeId,
     })
+  },
+
+  runBatchVariation: async ({ sourceResultNodeId, groupId, prompt, candidatesPerAsset, settings }) => {
+    const cleanPrompt = prompt.trim()
+    if (!cleanPrompt) return setGenerationError(set, '请先描述这批图片要如何变化。')
+    if (get().generationStatus !== 'idle' && get().generationStatus !== 'error') {
+      return setGenerationError(set, '当前已有生成任务，请等待完成后再发起批量变体。')
+    }
+    const document = get().document
+    if (document.batchVariationRuns.some((run) => run.status === 'queued' || run.status === 'running')) {
+      return setGenerationError(set, '当前已有一组批量变体正在执行。')
+    }
+    const source = document.nodes.find((node) => node.id === sourceResultNodeId && node.type === 'result')
+    const sourceData = source?.type === 'result' ? source.data as ResultNodeData : undefined
+    if (!sourceData?.image) return setGenerationError(set, '请选择一张已完成的结果图作为批量变体父图。')
+    const group = document.assetGroups.find((item) => item.id === groupId)
+    if (!group) return setGenerationError(set, '请选择一个素材组。')
+    const availableIds = new Set(availableAssets(document, get().globalAssets).filter((asset) => (asset.mediaKind ?? 'image') === 'image').map((asset) => asset.id))
+    const assetIds = group.assetIds.filter((assetId) => availableIds.has(assetId))
+    if (!assetIds.length) return setGenerationError(set, '这个素材组暂无可用图片。')
+    const normalizedCandidates = Math.min(get().maximumBatchCount, clampBatchCount(candidatesPerAsset))
+    if (assetIds.length * normalizedCandidates > 20) {
+      return setGenerationError(set, `单次批量最多创建 20 张结果；当前为 ${assetIds.length} × ${normalizedCandidates}。`)
+    }
+    const timestamp = Date.now()
+    const run: BatchVariationRun = {
+      id: `batch-variation-${timestamp}`,
+      sourceResultNodeId,
+      groupId,
+      groupName: group.name,
+      variableRole: group.role,
+      prompt: cleanPrompt,
+      candidatesPerAsset: normalizedCandidates,
+      settings: cloneGenerationSettings(settings),
+      status: 'queued',
+      items: assetIds.map((assetId, index) => ({
+        id: `batch-item-${timestamp}-${index}`,
+        assetId,
+        assetName: findAvailableAsset(document, get().globalAssets, assetId)?.name ?? `素材 ${index + 1}`,
+        status: 'queued',
+      })),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }
+    await commit(set, { ...document, batchVariationRuns: [run, ...document.batchVariationRuns] }, {
+      generationError: null,
+      assistantMessage: `已创建批量变体：${assetIds.length} 个${group.role} × ${normalizedCandidates} 张候选。`,
+    }, { immediate: true })
+    void executeBatchVariationRun(set, get, run.id)
+    return true
+  },
+
+  resumeBatchVariations: () => {
+    if (activeBatchVariationRuns.size) return
+    const pendingRun = get().document.batchVariationRuns.find((run) => run.status === 'queued' || run.status === 'running')
+    if (pendingRun) void executeBatchVariationRun(set, get, pendingRun.id)
   },
 
   removeNodeFromCanvas: (nodeId) => {
