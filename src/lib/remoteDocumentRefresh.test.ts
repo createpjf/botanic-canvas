@@ -20,3 +20,15 @@ test('后台接受服务器新版后刷新本地缓存，拒绝的版本不落�
   ), false)
   assert.deepEqual(persisted, ['remote'])
 })
+
+test('未提供接受回调时保持本地缓存，不默认覆盖离线副本', async () => {
+  const persisted: string[] = []
+  const accepted = await persistAcceptedRemoteRefresh(
+    { cachedDocument: 'cached', remoteDocument: 'remote' },
+    undefined,
+    async (document) => { persisted.push(document) },
+  )
+
+  assert.equal(accepted, false)
+  assert.deepEqual(persisted, [])
+})
