@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { useRestoreFocus } from './motionPresence'
+import { auditEventCategory, auditEventDetail, auditEventLabel, filterAuditEvents, type AuditEventCategory, type WorkspaceAuditEvent } from '../domain/auditEvents'
 
 export type AccountUser = {
   id: string
@@ -24,6 +25,7 @@ export function AccountMenu({
   onOpenProfile,
   onOpenSecurity,
   onOpenMembers,
+  onOpenAudit,
   onSignOut,
   onClose,
 }: {
@@ -32,6 +34,7 @@ export function AccountMenu({
   onOpenProfile: () => void
   onOpenSecurity: () => void
   onOpenMembers: () => void
+  onOpenAudit: () => void
   onSignOut?: () => Promise<void>
   onClose: () => void
 }) {
@@ -65,11 +68,83 @@ export function AccountMenu({
         <button type="button" onClick={onOpenProfile} disabled={!user}><span>个人资料</span><small>姓名、邮箱与角色</small><b>›</b></button>
         <button type="button" onClick={onOpenSecurity} disabled={!user}><span>账户安全</span><small>更新登录密码</small><b>›</b></button>
         {user?.role === 'owner' ? <button type="button" onClick={onOpenMembers}><span>成员与权限</span><small>邀请、停用与角色管理</small><b>›</b></button> : null}
+        {user?.role === 'owner' ? <button type="button" onClick={onOpenAudit}><span>安全日志</span><small>查看成员、项目与生成操作</small><b>›</b></button> : null}
       </div>
       {onSignOut ? <button className="account-menu__sign-out" type="button" onClick={() => void onSignOut()}>退出登录</button> : null}
     </aside>,
     document.body,
   )
+}
+
+const auditCategories: Array<{ id: AuditEventCategory; label: string }> = [
+  { id: 'all', label: '全部' },
+  { id: 'account', label: '账户' },
+  { id: 'member', label: '成员' },
+  { id: 'project', label: '项目' },
+  { id: 'generation', label: '生成' },
+]
+
+function auditTimeLabel(createdAt: number) {
+  const date = new Date(createdAt)
+  if (Number.isNaN(date.getTime())) return '时间未知'
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(date)
+}
+
+export function WorkspaceAuditDialog({ onListEvents, onListMembers, onClose }: {
+  onListEvents: () => Promise<WorkspaceAuditEvent[]>
+  onListMembers: () => Promise<WorkspaceMember[]>
+  onClose: () => void
+}) {
+  const [events, setEvents] = useState<WorkspaceAuditEvent[]>([])
+  const [members, setMembers] = useState<WorkspaceMember[]>([])
+  const [category, setCategory] = useState<AuditEventCategory>('all')
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  useRestoreFocus(true)
+
+  const load = async () => {
+    setLoading(true); setError('')
+    try {
+      const [nextEvents, nextMembers] = await Promise.all([onListEvents(), onListMembers()])
+      setEvents(nextEvents); setMembers(nextMembers)
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '安全日志加载失败。')
+    } finally { setLoading(false) }
+  }
+
+  useEffect(() => { void load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const close = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
+    document.addEventListener('keydown', close)
+    return () => document.removeEventListener('keydown', close)
+  }, [onClose])
+
+  const memberById = new Map(members.map((member) => [member.id, member]))
+  const visibleEvents = filterAuditEvents(events, category)
+
+  return createPortal(<div className="workspace-audit-backdrop" role="presentation" onMouseDown={onClose}>
+    <section className="workspace-audit-dialog" role="dialog" aria-modal="true" aria-labelledby="workspace-audit-title" onMouseDown={(event) => event.stopPropagation()}>
+      <header><div><span className="workspace-eyebrow">SECURITY ACTIVITY</span><h2 id="workspace-audit-title">安全日志</h2><p>Owner 可查看工作区内的成员、项目和生成操作。</p></div><button type="button" onClick={onClose} aria-label="关闭安全日志">×</button></header>
+      <div className="workspace-audit-dialog__toolbar">
+        <div role="tablist" aria-label="日志类型">{auditCategories.map((item) => <button key={item.id} type="button" role="tab" aria-selected={category === item.id} className={category === item.id ? 'is-active' : ''} onClick={() => setCategory(item.id)}>{item.label}</button>)}</div>
+        <button type="button" onClick={() => void load()} disabled={loading}>{loading ? '刷新中…' : '刷新'}</button>
+      </div>
+      {error ? <div className="workspace-audit-dialog__state is-error" role="alert"><span>{error}</span><button type="button" onClick={() => void load()}>重试</button></div> : loading ? <div className="workspace-audit-dialog__state" role="status">正在读取安全日志…</div> : visibleEvents.length === 0 ? <div className="workspace-audit-dialog__state">当前分类暂无记录。</div> : <ol className="workspace-audit-dialog__list">
+        {visibleEvents.map((event) => {
+          const actor = memberById.get(event.actorId)
+          const eventCategory = auditEventCategory(event.action)
+          return <li key={event.id}>
+            <i className={`is-${eventCategory}`} aria-hidden="true" />
+            <div><strong>{auditEventLabel(event.action)}</strong><span>{actor?.name || actor?.email || `成员 ${event.actorId}`}</span><small>{auditEventDetail(event)}</small></div>
+            <time dateTime={Number.isFinite(event.createdAt) ? new Date(event.createdAt).toISOString() : undefined}>{auditTimeLabel(event.createdAt)}</time>
+          </li>
+        })}
+      </ol>}
+      <footer>日志为只读记录，不会修改项目或生成任务。</footer>
+    </section>
+  </div>, document.body)
 }
 
 export function AccountDetailsDialog({

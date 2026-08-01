@@ -1,6 +1,7 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { createAccountSecurityService, type AccountMfaEnrollment, type AccountMfaStatus } from './accountSecurity'
 import { createSecurityAuditReporter } from './securityAudit'
+import type { WorkspaceAuditEvent } from '../domain/auditEvents'
 
 export type ProductUser = {
   id: string
@@ -335,6 +336,11 @@ export async function signOutOtherProductSessions() {
 export async function listWorkspaceMembers() {
   const response = await productRequest<{ users: WorkspaceMember[] }>('/api/users')
   return response.users
+}
+
+export async function listWorkspaceAuditEvents(limit = 100) {
+  const response = await productRequest<{ events: WorkspaceAuditEvent[] }>(`/api/audit?limit=${Math.max(1, Math.min(limit, 500))}`)
+  return response.events
 }
 
 export async function inviteWorkspaceMember(input: { email: string; name?: string; role: 'owner' | 'member' }) {

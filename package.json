@@ -9,6 +9,7 @@
     "worker": "node server/worker.mjs",
     "test": "node --test server/*.test.mjs scripts/*.test.mjs && node --experimental-strip-types --test src/domain/*.test.ts src/lib/*.test.ts",
     "check:architecture": "node scripts/architectureBoundaries.mjs",
+    "check:security": "node scripts/securityGate.mjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview"
   },
