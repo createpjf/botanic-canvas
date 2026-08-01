@@ -155,3 +155,47 @@ test('服务重启保留排队任务，并把执行中的任务标记为可重�
   assert.deepEqual(store.recoverGenerationJobs().map((job) => job.id), ['queued-job'])
   assert.equal(store.readGenerationJob(owner.id, 'running-job')?.status, 'failed')
 })
+
+test('独立画布图谱与 Yjs 更新日志可跨服务重启恢复并压缩', () => {
+  const { path, store } = createStore()
+  const owner = store.authenticate('owner-token')
+  assert.ok(owner)
+  store.writeProject(owner.id, {
+    ...document('project-collaboration'),
+    nodes: [{ id: 'node-a', type: 'text', position: { x: 10, y: 20 }, data: { kind: 'text', label: 'A', content: 'A' } }],
+  }, undefined)
+
+  const initial = store.loadCanvasCollaboration(owner.id, 'project-collaboration')
+  assert.equal(initial.graphRevision, 1)
+  assert.deepEqual(initial.graph.nodes.map((node) => node.id), ['node-a'])
+  assert.deepEqual(initial.updates, [])
+
+  store.appendCanvasGraphUpdate(owner.id, 'project-collaboration', {
+    update: 'AQID',
+    graph: {
+      nodes: [{ id: 'node-a', type: 'text', position: { x: 180, y: 20 }, data: { kind: 'text', label: 'A', content: 'A' } }],
+      edges: [],
+    },
+  })
+
+  const reloaded = createProductStore({ dataPath: path, bootstrapAccessToken: 'owner-token' })
+  const recovered = reloaded.loadCanvasCollaboration(owner.id, 'project-collaboration')
+  assert.equal(recovered.graphRevision, 2)
+  assert.equal(recovered.graph.nodes[0].position.x, 180)
+  assert.deepEqual(recovered.updates, ['AQID'])
+  assert.equal(reloaded.readProject(owner.id, 'project-collaboration').document.nodes[0].position.x, 180)
+
+  assert.throws(() => reloaded.writeProject(owner.id, {
+    ...document('project-collaboration', '离线旧版本'),
+    nodes: [{ id: 'node-a', type: 'text', position: { x: 30, y: 20 }, data: { kind: 'text', label: 'A', content: 'A' } }],
+  }, 1, 1), (error) => error?.code === 'CANVAS_GRAPH_CONFLICT')
+
+  reloaded.compactCanvasGraphUpdates(owner.id, 'project-collaboration', {
+    snapshot: 'BAUG',
+    graph: recovered.graph,
+  })
+  const compacted = reloaded.loadCanvasCollaboration(owner.id, 'project-collaboration')
+  assert.equal(compacted.snapshot, 'BAUG')
+  assert.deepEqual(compacted.updates, [])
+  assert.equal(compacted.graph.nodes[0].position.x, 180)
+})

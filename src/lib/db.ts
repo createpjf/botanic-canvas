@@ -92,8 +92,14 @@ export const canvasDb = new BotanicCanvasDatabase()
  */
 let persistenceTail: Promise<void> = Promise.resolve()
 const remoteRevisions = new Map<string, number>()
+const remoteGraphRevisions = new Map<string, number>()
 const remoteDocuments = new Map<string, CanvasDocument>()
 const remoteWriteDebounceMs = 500
+
+function rememberRemoteRevisions(id: string, response: { revision: number; graphRevision?: number }) {
+  remoteRevisions.set(id, response.revision)
+  if (Number.isInteger(response.graphRevision)) remoteGraphRevisions.set(id, response.graphRevision!)
+}
 
 type CollectionPatch<T extends { id: string }> = {
   upsert?: T[]
@@ -104,6 +110,15 @@ type CanvasDocumentPatch = {
   fields?: Record<string, unknown>
   nodes?: CollectionPatch<CanvasDocument['nodes'][number]>
   edges?: CollectionPatch<CanvasDocument['edges'][number]>
+}
+
+export type RemoteCanvasDocumentRefresh = {
+  cachedDocument: CanvasDocument
+  remoteDocument: CanvasDocument
+}
+
+type ReadCanvasDocumentOptions = {
+  onRemoteDocument?: (refresh: RemoteCanvasDocumentRefresh) => boolean | void
 }
 
 type RemoteWriteWaiter = {
@@ -407,13 +422,14 @@ async function serializeRemoteMediaValue(value: unknown): Promise<unknown> {
 
 async function readRemoteCanvasDocument(id: string) {
   try {
-    const response = await productRequest<{ document: CanvasDocument; revision: number }>(`/api/projects/${encodeURIComponent(id)}/document`)
-    remoteRevisions.set(id, response.revision)
+    const response = await productRequest<{ document: CanvasDocument; revision: number; graphRevision: number }>(`/api/projects/${encodeURIComponent(id)}/document`)
+    rememberRemoteRevisions(id, response)
     remoteDocuments.set(id, response.document)
     return response.document
   } catch (error) {
     if (error instanceof ProductApiError && error.status === 404) {
       remoteRevisions.delete(id)
+      remoteGraphRevisions.delete(id)
       remoteDocuments.delete(id)
       return undefined
     }
@@ -421,14 +437,16 @@ async function readRemoteCanvasDocument(id: string) {
   }
 }
 
-function refreshRemoteCanvasDocumentInBackground(id: string, cachedDocument: CanvasDocument, hasPendingDraft: boolean) {
-  void readRemoteCanvasDocument(id)
-    .then(async (remote) => {
-      // 本地草稿尚未同步时绝不能用远端版本覆盖缓存；仅更新 revision 即可。
+function refreshRemoteCanvasDocumentInBackground(
+  id: string,
+  cachedDocument: CanvasDocument,
+  onRemoteDocument?: ReadCanvasDocumentOptions['onRemoteDocument'],
+) {
+  void readLatestCanvasDocument(id)
+    .then(({ document: remote, hasPendingDraft }) => {
       if (!remote || hasPendingDraft) return
-      const pending = await readPendingSyncDocument(id)
-      if (pending || remote.updatedAt < cachedDocument.updatedAt) return
-      await persistLocalDocument(remote)
+      const applied = onRemoteDocument?.({ cachedDocument, remoteDocument: remote })
+      if (applied) return persistLocalDocument(remote)
     })
     .catch(() => undefined)
 }
@@ -477,11 +495,12 @@ async function writeRemoteCanvasDocument(document: CanvasDocument) {
   const patch = previous ? createCanvasDocumentPatch(previous, document) : undefined
   const send = async (payload: CanvasDocumentPatch | CanvasDocument, method: 'PATCH' | 'PUT', expectedRevision?: number) => {
     const prepared = await serializeRemoteMediaValue(payload)
-    return productRequest<{ document: CanvasDocument; revision: number }>(`/api/projects/${encodeURIComponent(document.id)}/document`, {
+    return productRequest<{ document: CanvasDocument; revision: number; graphRevision: number }>(`/api/projects/${encodeURIComponent(document.id)}/document`, {
       method,
       headers: {
         'Content-Type': 'application/json',
         ...(expectedRevision === undefined ? {} : { 'If-Match': String(expectedRevision) }),
+        ...(remoteGraphRevisions.has(document.id) ? { 'X-Canvas-Graph-Revision': String(remoteGraphRevisions.get(document.id)) } : {}),
       },
       body: JSON.stringify(prepared),
     })
@@ -491,13 +510,15 @@ async function writeRemoteCanvasDocument(document: CanvasDocument) {
   try {
     response = await send(patch ?? document, patch ? 'PATCH' : 'PUT', revision)
   } catch (error) {
-    if (!(error instanceof ProductApiError) || error.code !== 'PROJECT_CONFLICT' || !patch) throw error
+    if (!(error instanceof ProductApiError)
+      || (error.code !== 'PROJECT_CONFLICT' && error.code !== 'CANVAS_GRAPH_CONFLICT')
+      || !patch) throw error
     // 同一用户的即时保存与离线草稿刚好交错时，仅重放“相对旧快照的增量”。
     // 不重发整份文档，避免把 Worker 已写入的输出节点从远端删掉。
     await readRemoteCanvasDocument(document.id)
     response = await send(patch, 'PATCH', remoteRevisions.get(document.id))
   }
-  remoteRevisions.set(document.id, response.revision)
+  rememberRemoteRevisions(document.id, response)
   remoteDocuments.set(document.id, response.document)
   await persistLocalDocument(response.document)
   return response.document
@@ -509,12 +530,12 @@ export async function createCanvasProject(document: CanvasDocument) {
     return document
   }
   const prepared = await serializeRemoteMediaValue(document) as CanvasDocument
-  const response = await productRequest<{ document: CanvasDocument; revision: number }>('/api/projects', {
+  const response = await productRequest<{ document: CanvasDocument; revision: number; graphRevision: number }>('/api/projects', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ document: prepared }),
   })
-  remoteRevisions.set(document.id, response.revision)
+  rememberRemoteRevisions(document.id, response)
   remoteDocuments.set(document.id, response.document)
   await persistLocalDocument(response.document)
   return response.document
@@ -532,11 +553,12 @@ export async function renameCanvasProject(id: string, name: string) {
   // 重命名是一个独立的 PATCH。先清空该项目已有的延迟画布写入，避免旧快照在
   // PATCH 成功后才携带新 revision 写回，把刚保存的名称覆盖成旧名称。
   await flushPendingCanvasDocumentWrites()
-  const send = (revision?: number) => productRequest<{ document: CanvasDocument; revision: number }>(`/api/projects/${encodeURIComponent(id)}`, {
+  const send = (revision?: number) => productRequest<{ document: CanvasDocument; revision: number; graphRevision: number }>(`/api/projects/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     headers: {
       'Content-Type': 'application/json',
       ...(revision === undefined ? {} : { 'If-Match': String(revision) }),
+      ...(remoteGraphRevisions.has(id) ? { 'X-Canvas-Graph-Revision': String(remoteGraphRevisions.get(id)) } : {}),
     },
     body: JSON.stringify({ name }),
   })
@@ -544,17 +566,18 @@ export async function renameCanvasProject(id: string, name: string) {
   try {
     response = await send(remoteRevisions.get(id))
   } catch (error) {
-    if (!(error instanceof ProductApiError) || error.code !== 'PROJECT_CONFLICT') throw error
+    if (!(error instanceof ProductApiError)
+      || (error.code !== 'PROJECT_CONFLICT' && error.code !== 'CANVAS_GRAPH_CONFLICT')) throw error
     // 画布保存刚好抢先提交时，名称 PATCH 不需要覆盖整份文档；刷新 revision 后仅重放名称即可。
     await readRemoteCanvasDocument(id)
     response = await send(remoteRevisions.get(id))
   }
-  remoteRevisions.set(id, response.revision)
+  rememberRemoteRevisions(id, response)
   remoteDocuments.set(id, response.document)
   return response.document
 }
 
-export async function readCanvasDocument(id: string) {
+export async function readCanvasDocument(id: string, options: ReadCanvasDocumentOptions = {}) {
   const readLocal = () => enqueuePersistence(async () => {
     const stored = await canvasDb.documents.get(id)
     const backup = stored ? undefined : await canvasDb.documentBackups.get(id)
@@ -567,7 +590,7 @@ export async function readCanvasDocument(id: string) {
   if (cached) {
     // 已打开过的项目优先使用本机快照，项目切换不再等待 Railway 往返。
     // 后台仍会读取远端，更新 revision 与下一次打开可用的缓存。
-    refreshRemoteCanvasDocumentInBackground(id, cached, Boolean(pending))
+    refreshRemoteCanvasDocumentInBackground(id, cached, options.onRemoteDocument)
     return cached
   }
   try {
@@ -579,6 +602,25 @@ export async function readCanvasDocument(id: string) {
     if (error instanceof ProductApiError && (error.status === 0 || error.status === 404)) return undefined
     throw error
   }
+}
+
+/**
+ * 当前项目重新获得焦点时读取服务器权威版本。读取前后都检查 pending draft，
+ * 防止请求飞行期间产生的新编辑被远端整份快照覆盖。
+ */
+export async function readLatestCanvasDocument(id: string) {
+  if (!serverPersistenceEnabled) {
+    return { document: await readCanvasDocument(id), hasPendingDraft: false }
+  }
+  if (await readPendingSyncDocument(id)) return { document: undefined, hasPendingDraft: true }
+  const remote = await readRemoteCanvasDocument(id)
+  if (!remote) return { document: undefined, hasPendingDraft: false }
+  if (await readPendingSyncDocument(id)) return { document: undefined, hasPendingDraft: true }
+  return { document: remote, hasPendingDraft: false }
+}
+
+export async function persistAcceptedRemoteCanvasDocument(document: CanvasDocument) {
+  await persistLocalDocument(document)
 }
 
 export async function writeCanvasDocument(document: CanvasDocument, options: { immediate?: boolean } = {}) {
@@ -604,6 +646,7 @@ export async function deleteCanvasDocument(id: string) {
   try {
     await productRequest<void>(`/api/projects/${encodeURIComponent(id)}`, { method: 'DELETE' })
     remoteRevisions.delete(id)
+    remoteGraphRevisions.delete(id)
     remoteDocuments.delete(id)
   } catch (error) {
     if (!(error instanceof ProductApiError && error.status === 404)) throw error

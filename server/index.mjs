@@ -10,6 +10,8 @@ import { applyCanvasDocumentPatch } from './canvasDocumentPatch.mjs'
 import { generationIdempotencyKey, generationJobIdForIdempotency } from './generationIdempotency.mjs'
 import { createProductRuntime, loadLocalEnv, runtimeConfig } from './runtime.mjs'
 import { generationTimeoutForModel, providerForModel } from './generationModels.mjs'
+import { createProjectRealtimeHub } from './realtimeHub.mjs'
+import { issueRealtimeTicket } from './realtimeTicket.mjs'
 
 loadLocalEnv()
 const config = runtimeConfig()
@@ -21,6 +23,7 @@ const localProcessor = !redisQueue && !config.production
   : undefined
 
 if (config.production && !redisQueue) throw new Error('生产环境必须配置 REDIS_URL；内存任务队列只用于本地原型。')
+if (!config.realtimeTicketSecret) throw new Error('实时服务必须配置 REALTIME_TICKET_SECRET。')
 
 class HttpError extends Error {
   constructor(statusCode, code, message) {
@@ -129,6 +132,32 @@ try {
   console.error(`[generation] queue recovery deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
 }
 
+let realtimeHub
+async function publishProjectUpdated(saved, actorId) {
+  await realtimeHub?.publishProjectUpdated({
+    projectId: saved.document.id,
+    revision: saved.revision,
+    graphRevision: saved.graphRevision,
+    updatedAt: saved.document.updatedAt,
+    graph: { nodes: saved.document.nodes ?? [], edges: saved.document.edges ?? [] },
+    actorId,
+  })
+}
+
+function expectedGraphRevision(request, fallback) {
+  const header = Array.isArray(request.headers['x-canvas-graph-revision'])
+    ? request.headers['x-canvas-graph-revision'][0]
+    : request.headers['x-canvas-graph-revision']
+  return typeof header === 'string' && /^\d+$/.test(header) ? Number(header) : fallback
+}
+
+function projectResponseHeaders(saved) {
+  return {
+    ETag: `"${saved.revision}"`,
+    'X-Canvas-Graph-Revision': String(saved.graphRevision ?? 1),
+  }
+}
+
 const server = createServer(async (request, response) => {
   try {
     const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`)
@@ -152,6 +181,23 @@ const server = createServer(async (request, response) => {
           configured: Boolean(config.flockApiBaseUrl && config.flockApiKey && config.flockTextModel),
           model: config.flockTextModel || undefined,
         },
+      })
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/realtime/ticket') {
+      const user = await requireUser(request)
+      const body = await readJson(request, 16 * 1024, '实时订阅请求过大。')
+      const projectId = text(body?.projectId, '项目', 160)
+      if (!await productStore.readProject(user.id, projectId)) {
+        return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
+      }
+      const forwardedProtocol = request.headers['x-forwarded-proto']?.split(',')[0]?.trim()
+      const protocol = forwardedProtocol || (request.socket.encrypted ? 'https' : 'http')
+      const realtimeOrigin = config.realtimePublicUrl || `${protocol}://${request.headers.host}`
+      return json(response, 201, {
+        ticket: issueRealtimeTicket({ userId: user.id, projectId, secret: config.realtimeTicketSecret }),
+        expiresIn: 30,
+        websocketUrl: new URL('/api/realtime', realtimeOrigin).toString(),
       })
     }
 
@@ -206,9 +252,10 @@ const server = createServer(async (request, response) => {
       try {
         const normalized = await mediaService.normalizeDocument(document, { ownerId: user.id, projectId: document.id })
         const saved = await productStore.writeProject(user.id, normalized)
-        return json(response, saved.created ? 201 : 200, saved, { ETag: `"${saved.revision}"` })
+        await publishProjectUpdated(saved, user.id)
+        return json(response, saved.created ? 201 : 200, saved, projectResponseHeaders(saved))
       } catch (caught) {
-        if (caught?.code === 'PROJECT_CONFLICT') return error(response, 409, 'PROJECT_CONFLICT', caught.message)
+        if (caught?.code === 'PROJECT_CONFLICT' || caught?.code === 'CANVAS_GRAPH_CONFLICT') return error(response, 409, caught.code, caught.message)
         return error(response, 403, 'PROJECT_CREATE_FORBIDDEN', caught instanceof Error ? caught.message : '无法新建项目。')
       }
     }
@@ -226,12 +273,13 @@ const server = createServer(async (request, response) => {
       if (!project) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
       const jobs = await productStore.listGenerationJobsForProject(user.id, projectId, 120)
       const reconciled = reconcileGenerationResults(project.document, jobs ?? [])
-      if (!reconciled.changed) return json(response, 200, { ...project, changed: false }, { ETag: `"${project.revision}"` })
+      if (!reconciled.changed) return json(response, 200, { ...project, changed: false }, projectResponseHeaders(project))
       try {
-        const saved = await productStore.writeProject(user.id, reconciled.document, project.revision)
-        return json(response, 200, { ...saved, changed: true }, { ETag: `"${saved.revision}"` })
+        const saved = await productStore.writeProject(user.id, reconciled.document, project.revision, project.graphRevision)
+        await publishProjectUpdated(saved, user.id)
+        return json(response, 200, { ...saved, changed: true }, projectResponseHeaders(saved))
       } catch (caught) {
-        if (caught?.code === 'PROJECT_CONFLICT') return error(response, 409, 'PROJECT_CONFLICT', caught.message)
+        if (caught?.code === 'PROJECT_CONFLICT' || caught?.code === 'CANVAS_GRAPH_CONFLICT') return error(response, 409, caught.code, caught.message)
         return error(response, 403, 'PROJECT_WRITE_FORBIDDEN', caught instanceof Error ? caught.message : '历史结果回填失败。')
       }
     }
@@ -249,10 +297,11 @@ const server = createServer(async (request, response) => {
           ...current.document,
           name,
           updatedAt: Date.now(),
-        }, expectedRevision)
-        return json(response, 200, saved, { ETag: `"${saved.revision}"` })
+        }, expectedRevision, current.graphRevision)
+        await publishProjectUpdated(saved, user.id)
+        return json(response, 200, saved, projectResponseHeaders(saved))
       } catch (caught) {
-        if (caught?.code === 'PROJECT_CONFLICT') return error(response, 409, 'PROJECT_CONFLICT', caught.message)
+        if (caught?.code === 'PROJECT_CONFLICT' || caught?.code === 'CANVAS_GRAPH_CONFLICT') return error(response, 409, caught.code, caught.message)
         return error(response, 403, 'PROJECT_RENAME_FORBIDDEN', caught instanceof Error ? caught.message : '无法重命名项目。')
       }
     }
@@ -270,7 +319,7 @@ const server = createServer(async (request, response) => {
       const user = await requireUser(request)
       const project = await productStore.readProject(user.id, decodeURIComponent(documentMatch[1]))
       if (!project) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
-      return json(response, 200, project, { ETag: `"${project.revision}"` })
+      return json(response, 200, project, projectResponseHeaders(project))
     }
     if (documentMatch && request.method === 'PUT') {
       const user = await requireUser(request)
@@ -279,12 +328,14 @@ const server = createServer(async (request, response) => {
       if (!document || document.id !== projectId || typeof document.name !== 'string') return error(response, 400, 'INVALID_DOCUMENT', '项目文档格式无效。')
       const expected = request.headers['if-match']?.replaceAll('"', '')
       const expectedRevision = expected && /^\d+$/.test(expected) ? Number(expected) : undefined
+      const graphRevision = expectedGraphRevision(request, undefined)
       try {
         const normalized = await mediaService.normalizeDocument(document, { ownerId: user.id, projectId })
-        const saved = await productStore.writeProject(user.id, normalized, expectedRevision)
-        return json(response, saved.created ? 201 : 200, saved, { ETag: `"${saved.revision}"` })
+        const saved = await productStore.writeProject(user.id, normalized, expectedRevision, graphRevision)
+        await publishProjectUpdated(saved, user.id)
+        return json(response, saved.created ? 201 : 200, saved, projectResponseHeaders(saved))
       } catch (caught) {
-        if (caught?.code === 'PROJECT_CONFLICT') return error(response, 409, 'PROJECT_CONFLICT', caught.message)
+        if (caught?.code === 'PROJECT_CONFLICT' || caught?.code === 'CANVAS_GRAPH_CONFLICT') return error(response, 409, caught.code, caught.message)
         return error(response, 403, 'PROJECT_WRITE_FORBIDDEN', caught instanceof Error ? caught.message : '没有编辑项目的权限。')
       }
     }
@@ -293,16 +344,18 @@ const server = createServer(async (request, response) => {
       const projectId = decodeURIComponent(documentMatch[1])
       const expected = request.headers['if-match']?.replaceAll('"', '')
       const expectedRevision = expected && /^\d+$/.test(expected) ? Number(expected) : undefined
+      const graphRevision = expectedGraphRevision(request, undefined)
       try {
         const current = await productStore.readProject(user.id, projectId)
         if (!current) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
         const patch = await readJson(request)
         const document = applyCanvasDocumentPatch(current.document, patch)
         const normalized = await mediaService.normalizeDocument(document, { ownerId: user.id, projectId })
-        const saved = await productStore.writeProject(user.id, normalized, expectedRevision)
-        return json(response, 200, saved, { ETag: `"${saved.revision}"` })
+        const saved = await productStore.writeProject(user.id, normalized, expectedRevision, graphRevision)
+        await publishProjectUpdated(saved, user.id)
+        return json(response, 200, saved, projectResponseHeaders(saved))
       } catch (caught) {
-        if (caught?.code === 'PROJECT_CONFLICT') return error(response, 409, 'PROJECT_CONFLICT', caught.message)
+        if (caught?.code === 'PROJECT_CONFLICT' || caught?.code === 'CANVAS_GRAPH_CONFLICT') return error(response, 409, caught.code, caught.message)
         if (caught instanceof TypeError) return error(response, 400, 'INVALID_DOCUMENT_PATCH', caught.message)
         return error(response, 403, 'PROJECT_WRITE_FORBIDDEN', caught instanceof Error ? caught.message : '没有编辑项目的权限。')
       }
@@ -493,10 +546,17 @@ const server = createServer(async (request, response) => {
   }
 })
 
+realtimeHub = createProjectRealtimeHub({
+  server,
+  productStore,
+  ticketSecret: config.realtimeTicketSecret,
+})
+
 server.listen(config.port, '0.0.0.0', () => console.log(`Botanic service listening on http://0.0.0.0:${config.port}`))
 
 async function shutdown() {
   server.close()
+  await realtimeHub.close()
   await redisQueue?.close()
   await mediaService.close()
   await productStore.close?.()

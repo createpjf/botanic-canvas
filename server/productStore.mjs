@@ -16,6 +16,17 @@ function clone(value) {
   return structuredClone(value)
 }
 
+function canvasGraph(document) {
+  return {
+    nodes: clone(Array.isArray(document?.nodes) ? document.nodes : []),
+    edges: clone(Array.isArray(document?.edges) ? document.edges : []),
+  }
+}
+
+function sameGraph(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
 function projectDocumentSummary(document) {
   const nodes = Array.isArray(document?.nodes) ? document.nodes : []
   const images = nodes
@@ -30,6 +41,7 @@ function initialState() {
     users: [],
     accessTokens: [],
     projects: [],
+    canvasGraphs: [],
     globalAssetLibraries: [],
     generationJobs: [],
     auditEvents: [],
@@ -85,15 +97,35 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
   }
 
   function publicProject(project) {
-    const summary = projectDocumentSummary(project.document)
+    const graphEntry = state.canvasGraphs.find((item) => item.projectId === project.id)
+    const summary = projectDocumentSummary(graphEntry ? { ...project.document, ...graphEntry.graph } : project.document)
     return {
       id: project.id,
       name: project.name,
-      updatedAt: project.updatedAt,
+      updatedAt: Math.max(project.updatedAt, graphEntry?.updatedAt ?? 0),
       revision: project.revision,
+      graphRevision: graphEntry?.graphRevision ?? 1,
       ...summary,
       role: project.members.find((item) => item.userId === project.lastAccessedBy)?.role,
     }
+  }
+
+  function ensureCanvasGraph(project) {
+    let entry = state.canvasGraphs.find((item) => item.projectId === project.id)
+    if (!entry) {
+      entry = {
+        projectId: project.id,
+        graph: {
+          ...canvasGraph(project.document),
+        },
+        graphRevision: 1,
+        updates: [],
+        updatedAt: project.updatedAt,
+      }
+      state.canvasGraphs.push(entry)
+      save()
+    }
+    return entry
   }
 
   return {
@@ -129,7 +161,16 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       const project = state.projects.find((item) => item.id === projectId)
       if (!project || !canAccess(project, userId)) return undefined
       project.lastAccessedBy = userId
-      return { document: clone(project.document), revision: project.revision }
+      const graph = ensureCanvasGraph(project)
+      return {
+        document: {
+          ...clone(project.document),
+          ...clone(graph.graph),
+          updatedAt: Math.max(project.document.updatedAt ?? 0, project.updatedAt, graph.updatedAt ?? 0),
+        },
+        revision: project.revision,
+        graphRevision: graph.graphRevision,
+      }
     },
 
     canEditProject(userId, projectId) {
@@ -137,7 +178,7 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       return Boolean(project && canAccess(project, userId, ['owner', 'editor']))
     },
 
-    writeProject(userId, document, expectedRevision) {
+    writeProject(userId, document, expectedRevision, expectedGraphRevision) {
       const existing = state.projects.find((item) => item.id === document.id)
       if (existing) {
         const member = canAccess(existing, userId, ['owner', 'editor'])
@@ -147,13 +188,31 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
           conflict.code = 'PROJECT_CONFLICT'
           throw conflict
         }
+        const graph = ensureCanvasGraph(existing)
+        const nextGraph = canvasGraph(document)
+        const graphChanged = !sameGraph(graph.graph, nextGraph)
+        if (graphChanged && Number.isInteger(expectedGraphRevision) && expectedGraphRevision !== graph.graphRevision) {
+          const conflict = new Error('画布图谱已被其他成员更新，请刷新后再保存。')
+          conflict.code = 'CANVAS_GRAPH_CONFLICT'
+          throw conflict
+        }
+        if (graphChanged) {
+          graph.graph = nextGraph
+          graph.graphRevision += 1
+          graph.updatedAt = now()
+        }
         existing.document = clone(document)
         existing.name = document.name
         existing.updatedAt = now()
         existing.revision += 1
         audit({ actorId: userId, action: 'project.updated', projectId: existing.id, detail: { revision: existing.revision } })
         save()
-        return { document: clone(existing.document), revision: existing.revision, created: false }
+        return {
+          document: { ...clone(existing.document), ...clone(graph.graph) },
+          revision: existing.revision,
+          graphRevision: graph.graphRevision,
+          created: false,
+        }
       }
 
       const project = {
@@ -166,9 +225,16 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
         updatedAt: now(),
       }
       state.projects.push(project)
+      state.canvasGraphs.push({
+        projectId: project.id,
+        graph: canvasGraph(document),
+        graphRevision: 1,
+        updates: [],
+        updatedAt: project.updatedAt,
+      })
       audit({ actorId: userId, action: 'project.created', projectId: project.id })
       save()
-      return { document: clone(project.document), revision: project.revision, created: true }
+      return { document: clone(project.document), revision: project.revision, graphRevision: 1, created: true }
     },
 
     deleteProject(userId, projectId) {
@@ -176,6 +242,7 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       if (!project) return false
       if (!canAccess(project, userId, ['owner'])) throw new Error('只有项目所有者可以删除项目。')
       state.projects = state.projects.filter((item) => item.id !== projectId)
+      state.canvasGraphs = state.canvasGraphs.filter((item) => item.projectId !== projectId)
       state.generationJobs = state.generationJobs.filter((item) => item.projectId !== projectId)
       audit({ actorId: userId, action: 'project.deleted', targetId: projectId, detail: { name: project.name } })
       save()
@@ -194,6 +261,49 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       project.revision += 1
       audit({ actorId, action: 'project.member.upserted', projectId, targetId: userId, detail: { role } })
       save()
+    },
+
+    loadCanvasCollaboration(userId, projectId) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project || !canAccess(project, userId)) return undefined
+      const entry = ensureCanvasGraph(project)
+      return clone({
+        graph: entry.graph,
+        graphRevision: entry.graphRevision,
+        snapshot: entry.snapshot,
+        updates: entry.updates,
+        updatedAt: entry.updatedAt,
+      })
+    },
+
+    appendCanvasGraphUpdate(userId, projectId, { update, graph }) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project || !canAccess(project, userId, ['owner', 'editor'])) throw new Error('你没有编辑该项目的权限。')
+      if (typeof update !== 'string' || !update || !Array.isArray(graph?.nodes) || !Array.isArray(graph?.edges)) {
+        throw new TypeError('画布协作更新格式无效。')
+      }
+      const entry = ensureCanvasGraph(project)
+      entry.graph = clone(graph)
+      entry.graphRevision += 1
+      entry.updates.push(update)
+      entry.updatedAt = now()
+      save()
+      return { graphRevision: entry.graphRevision, updatedAt: entry.updatedAt, updateCount: entry.updates.length }
+    },
+
+    compactCanvasGraphUpdates(userId, projectId, { snapshot, graph }) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project || !canAccess(project, userId, ['owner', 'editor'])) throw new Error('你没有编辑该项目的权限。')
+      if (typeof snapshot !== 'string' || !snapshot || !Array.isArray(graph?.nodes) || !Array.isArray(graph?.edges)) {
+        throw new TypeError('画布协作快照格式无效。')
+      }
+      const entry = ensureCanvasGraph(project)
+      entry.graph = clone(graph)
+      entry.snapshot = snapshot
+      entry.updates = []
+      entry.updatedAt = now()
+      save()
+      return { graphRevision: entry.graphRevision, updatedAt: entry.updatedAt }
     },
 
     readGlobalAssetLibrary(userId, id) {

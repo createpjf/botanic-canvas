@@ -38,6 +38,17 @@ function projectDocumentSummary(document) {
   return { nodeCount: nodes.length, resultCount: images.length, coverImage: images.at(-1) }
 }
 
+function canvasGraph(document) {
+  return {
+    nodes: Array.isArray(document?.nodes) ? clone(document.nodes) : [],
+    edges: Array.isArray(document?.edges) ? clone(document.edges) : [],
+  }
+}
+
+function sameGraph(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
 async function insertAudit(sql, { actorId, action, projectId, targetId, detail = {} }) {
   await sql`
     insert into audit_events (id, actor_id, action, project_id, target_id, detail, created_at)
@@ -96,6 +107,19 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       added_at bigint not null,
       primary key (project_id, user_id)
     );
+    create table if not exists canvas_graphs (
+      project_id text primary key references projects(id) on delete cascade,
+      graph jsonb not null,
+      revision integer not null default 1,
+      yjs_snapshot text,
+      updated_at bigint not null
+    );
+    create table if not exists canvas_graph_updates (
+      id bigserial primary key,
+      project_id text not null references canvas_graphs(project_id) on delete cascade,
+      update_base64 text not null,
+      created_at bigint not null
+    );
     create table if not exists global_asset_libraries (
       id text primary key,
       library jsonb not null,
@@ -128,12 +152,23 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       created_at bigint not null
     );
     create index if not exists projects_updated_at_idx on projects (updated_at desc);
+    create index if not exists canvas_graph_updates_project_idx on canvas_graph_updates (project_id, id);
     create index if not exists jobs_status_updated_at_idx on generation_jobs (status, updated_at);
     create index if not exists media_project_idx on media_objects (project_id);
     create index if not exists audit_project_created_idx on audit_events (project_id, created_at desc);
     -- 对象先上传、再原子写入新项目文档时，项目行尚未存在。媒体可短暂成为
     -- 不可访问孤儿对象；读取授权仍通过 project_members join 约束，生命周期规则负责清理。
     alter table media_objects drop constraint if exists media_objects_project_id_fkey;
+    insert into canvas_graphs (project_id, graph, revision, updated_at)
+    select id,
+      jsonb_build_object(
+        'nodes', coalesce(document->'nodes', '[]'::jsonb),
+        'edges', coalesce(document->'edges', '[]'::jsonb)
+      ),
+      1,
+      updated_at
+    from projects
+    on conflict (project_id) do nothing;
     `)
   })
 
@@ -157,6 +192,22 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
   async function memberRole(projectId, userId) {
     const [row] = await sql`select role from project_members where project_id = ${projectId} and user_id = ${userId}`
     return row?.role
+  }
+
+  async function ensureCanvasGraph(tx, projectId) {
+    await tx`
+      insert into canvas_graphs (project_id, graph, revision, updated_at)
+      select p.id,
+        jsonb_build_object(
+          'nodes', coalesce(p.document->'nodes', '[]'::jsonb),
+          'edges', coalesce(p.document->'edges', '[]'::jsonb)
+        ),
+        1,
+        p.updated_at
+      from projects p
+      where p.id = ${projectId}
+      on conflict (project_id) do nothing
+    `
   }
 
   const store = {
@@ -215,27 +266,49 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
 
     async listProjects(userId) {
       const rows = await sql`
-        select p.id, p.name, p.updated_at as "updatedAt", p.revision, p.document, m.role
+        select p.id, p.name, greatest(p.updated_at, coalesce(c.updated_at, p.updated_at)) as "updatedAt",
+          p.revision, p.document, m.role, c.graph, c.revision as "graphRevision"
         from projects p join project_members m on m.project_id = p.id
+        left join canvas_graphs c on c.project_id = p.id
         where m.user_id = ${userId}
-        order by p.updated_at desc
+        order by greatest(p.updated_at, coalesce(c.updated_at, p.updated_at)) desc
       `
-      return rows.map((row) => ({
-        ...row,
-        ...projectDocumentSummary(asJson(row.document)),
-        updatedAt: Number(row.updatedAt),
-        revision: Number(row.revision),
-        document: undefined,
-      }))
+      return rows.map((row) => {
+        const document = asJson(row.document)
+        const graph = row.graph ? asJson(row.graph) : canvasGraph(document)
+        return {
+          ...row,
+          ...projectDocumentSummary({ ...document, ...graph }),
+          updatedAt: Number(row.updatedAt),
+          revision: Number(row.revision),
+          graphRevision: Number(row.graphRevision ?? 1),
+          document: undefined,
+          graph: undefined,
+        }
+      })
     },
 
     async readProject(userId, projectId) {
       const [row] = await sql`
-        select p.document, p.revision
+        select p.document, p.revision, p.updated_at as "projectUpdatedAt", c.graph,
+          c.revision as "graphRevision", c.updated_at as "graphUpdatedAt"
         from projects p join project_members m on m.project_id = p.id
+        left join canvas_graphs c on c.project_id = p.id
         where p.id = ${projectId} and m.user_id = ${userId}
       `
-      return row ? { document: asJson(row.document), revision: Number(row.revision) } : undefined
+      if (!row) return undefined
+      const document = asJson(row.document)
+      const graph = row.graph ? asJson(row.graph) : canvasGraph(document)
+      const updatedAt = Math.max(
+        Number(document.updatedAt ?? 0),
+        Number(row.projectUpdatedAt ?? 0),
+        Number(row.graphUpdatedAt ?? 0),
+      )
+      return {
+        document: { ...document, ...graph, updatedAt },
+        revision: Number(row.revision),
+        graphRevision: Number(row.graphRevision ?? 1),
+      }
     },
 
     async canEditProject(userId, projectId) {
@@ -243,7 +316,7 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       return role === 'owner' || role === 'editor'
     },
 
-    async writeProject(userId, document, expectedRevision) {
+    async writeProject(userId, document, expectedRevision, expectedGraphRevision) {
       return sql.begin(async (tx) => {
         const [existing] = await tx`
           select p.id, p.revision, m.role
@@ -257,16 +330,40 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
           if (Number.isInteger(expectedRevision) && expectedRevision !== Number(existing.revision)) {
             throw productError('项目已被其他成员更新，请刷新后再保存。', 'PROJECT_CONFLICT')
           }
+          await ensureCanvasGraph(tx, document.id)
+          const [currentGraphEntry] = await tx`
+            select graph, revision from canvas_graphs where project_id = ${document.id} for update
+          `
+          const currentGraph = asJson(currentGraphEntry.graph)
+          const nextGraph = canvasGraph(document)
+          const graphChanged = !sameGraph(currentGraph, nextGraph)
+          if (graphChanged && Number.isInteger(expectedGraphRevision) && expectedGraphRevision !== Number(currentGraphEntry.revision)) {
+            throw productError('画布已被其他成员更新，请刷新后再保存。', 'CANVAS_GRAPH_CONFLICT')
+          }
           const revision = Number(existing.revision) + 1
           await tx`update projects set name = ${document.name}, document = ${tx.json(document)}::jsonb, revision = ${revision}, updated_at = ${timestamp} where id = ${document.id}`
+          let graphRevision = Number(currentGraphEntry.revision)
+          if (graphChanged) {
+            const [savedGraph] = await tx`
+              update canvas_graphs
+              set graph = ${tx.json(nextGraph)}::jsonb, revision = revision + 1, updated_at = ${timestamp}
+              where project_id = ${document.id}
+              returning revision
+            `
+            graphRevision = Number(savedGraph.revision)
+          }
           await insertAudit(tx, { actorId: userId, action: 'project.updated', projectId: document.id, detail: { revision } })
-          return { document: clone(document), revision, created: false }
+          return { document: { ...clone(document), ...(graphChanged ? nextGraph : currentGraph) }, revision, graphRevision, created: false }
         }
 
         await tx`insert into projects (id, name, document, revision, created_at, updated_at) values (${document.id}, ${document.name}, ${tx.json(document)}::jsonb, 1, ${timestamp}, ${timestamp})`
         await tx`insert into project_members (project_id, user_id, role, added_at) values (${document.id}, ${userId}, 'owner', ${timestamp})`
+        await tx`
+          insert into canvas_graphs (project_id, graph, revision, updated_at)
+          values (${document.id}, ${tx.json(canvasGraph(document))}::jsonb, 1, ${timestamp})
+        `
         await insertAudit(tx, { actorId: userId, action: 'project.created', projectId: document.id })
-        return { document: clone(document), revision: 1, created: true }
+        return { document: clone(document), revision: 1, graphRevision: 1, created: true }
       })
     },
 
@@ -297,6 +394,73 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
         `
         await tx`update projects set revision = revision + 1, updated_at = ${now()} where id = ${projectId}`
         await insertAudit(tx, { actorId, action: 'project.member.upserted', projectId, targetId: userId, detail: { role } })
+      })
+    },
+
+    async loadCanvasCollaboration(userId, projectId) {
+      return sql.begin(async (tx) => {
+        const [member] = await tx`select role from project_members where project_id = ${projectId} and user_id = ${userId}`
+        if (!member) return undefined
+        await ensureCanvasGraph(tx, projectId)
+        const [entry] = await tx`
+          select graph, revision as "graphRevision", yjs_snapshot as snapshot, updated_at as "updatedAt"
+          from canvas_graphs where project_id = ${projectId}
+        `
+        if (!entry) return undefined
+        const updates = await tx`
+          select update_base64 as update from canvas_graph_updates where project_id = ${projectId} order by id asc
+        `
+        return {
+          graph: asJson(entry.graph),
+          graphRevision: Number(entry.graphRevision),
+          snapshot: entry.snapshot ?? undefined,
+          updates: updates.map((item) => item.update),
+          updatedAt: Number(entry.updatedAt),
+        }
+      })
+    },
+
+    async appendCanvasGraphUpdate(userId, projectId, { update, graph }) {
+      if (typeof update !== 'string' || !update || !Array.isArray(graph?.nodes) || !Array.isArray(graph?.edges)) {
+        throw new TypeError('画布协作更新格式无效。')
+      }
+      return sql.begin(async (tx) => {
+        const [member] = await tx`select role from project_members where project_id = ${projectId} and user_id = ${userId}`
+        if (!['owner', 'editor'].includes(member?.role)) throw productError('你没有编辑该项目的权限。', 'PROJECT_WRITE_FORBIDDEN')
+        await ensureCanvasGraph(tx, projectId)
+        const timestamp = now()
+        const [entry] = await tx`
+          update canvas_graphs
+          set graph = ${tx.json(graph)}::jsonb, revision = revision + 1, updated_at = ${timestamp}
+          where project_id = ${projectId}
+          returning revision as "graphRevision"
+        `
+        await tx`
+          insert into canvas_graph_updates (project_id, update_base64, created_at)
+          values (${projectId}, ${update}, ${timestamp})
+        `
+        const [{ count }] = await tx`select count(*)::int as count from canvas_graph_updates where project_id = ${projectId}`
+        return { graphRevision: Number(entry.graphRevision), updatedAt: timestamp, updateCount: Number(count) }
+      })
+    },
+
+    async compactCanvasGraphUpdates(userId, projectId, { snapshot, graph }) {
+      if (typeof snapshot !== 'string' || !snapshot || !Array.isArray(graph?.nodes) || !Array.isArray(graph?.edges)) {
+        throw new TypeError('画布协作快照格式无效。')
+      }
+      return sql.begin(async (tx) => {
+        const [member] = await tx`select role from project_members where project_id = ${projectId} and user_id = ${userId}`
+        if (!['owner', 'editor'].includes(member?.role)) throw productError('你没有编辑该项目的权限。', 'PROJECT_WRITE_FORBIDDEN')
+        await ensureCanvasGraph(tx, projectId)
+        const timestamp = now()
+        const [entry] = await tx`
+          update canvas_graphs
+          set graph = ${tx.json(graph)}::jsonb, yjs_snapshot = ${snapshot}, updated_at = ${timestamp}
+          where project_id = ${projectId}
+          returning revision as "graphRevision"
+        `
+        await tx`delete from canvas_graph_updates where project_id = ${projectId}`
+        return { graphRevision: Number(entry.graphRevision), updatedAt: timestamp }
       })
     },
 

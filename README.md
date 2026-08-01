@@ -16,15 +16,16 @@ Botanic 是面向品牌视觉生产的无限画布工作台。图片、文本和
 - 素材库：本地批量上传、文件夹上传、合集路径、搜索筛选与批量操作。
 - 工作流模板：保存可编辑节点、连线、Prompt 与当前生成设置，不保存任务和生成结果。
 - 离线与同步：IndexedDB 本地草稿、远端版本冲突保护、历史任务结果回填。
+- 实时协作：项目级 WebSocket 推送与 Yjs 节点/连线增量；独立图谱和更新日志可跨 API 重启恢复。
 - 投放交付：图片素材更换、单张实时预览、安全区与多规格 ZIP 导出；视频暂不进入图片投放模板。
 
 ## 生产架构
 
 ```text
 Vercel Web
-   │ /api 同源转发
+   │ /api 同源转发 + WebSocket 实时通道
    ▼
-Railway API ── PostgreSQL（项目、版本、任务、媒体元数据）
+Railway API ── PostgreSQL（项目、画布图谱、Yjs 日志、任务、媒体元数据）
    │
    ├── Redis / BullMQ ── Railway Worker ── OpenAI / MiniMax
    │
@@ -32,7 +33,7 @@ Railway API ── PostgreSQL（项目、版本、任务、媒体元数据）
 ```
 
 - Web 通过 [vercel.json](vercel.json) 将 `/api/*` 转发到 Railway API。
-- API 负责鉴权、项目文档、幂等任务提交、结果查询与媒体授权。
+- API 负责鉴权、项目文档、实时协作、幂等任务提交、结果查询与媒体授权。
 - Worker 执行长耗时生成，统一将 Provider 输出转换为媒体对象后持久化。
 - Redis 只负责调度；PostgreSQL 中的任务与输出记录负责恢复与回填。
 - 运行时仍保留 Supabase Auth / Storage Adapter，便于兼容旧环境；当前全 Railway 模式使用访问令牌鉴权、PostgreSQL 与 S3 Adapter。
@@ -76,13 +77,15 @@ REDIS_URL=redis://...
 BOTANIC_AUTH_PROVIDER=access-token
 BOTANIC_BOOTSTRAP_ACCESS_TOKEN=...
 BOTANIC_STORAGE_PROVIDER=s3
+REALTIME_TICKET_SECRET=...
+REALTIME_PUBLIC_URL=https://<railway-api-domain>
 S3_ENDPOINT=...
 S3_BUCKET=botanic-media
 S3_ACCESS_KEY_ID=...
 S3_SECRET_ACCESS_KEY=...
 ```
 
-`BOTANIC_BOOTSTRAP_ACCESS_TOKEN` 以及数据库、S3 凭据只能写入 API / Worker，不能使用 `VITE_*` 前缀。
+`BOTANIC_BOOTSTRAP_ACCESS_TOKEN`、`REALTIME_TICKET_SECRET` 以及数据库、S3 凭据只能写入 API / Worker，不能使用 `VITE_*` 前缀。`REALTIME_PUBLIC_URL` 指向公开的 Railway API 域名，浏览器会自动转换为 `wss://`。
 
 ### 生成与润色
 
@@ -115,7 +118,7 @@ npm run build
 git diff --check
 ```
 
-`npm test` 覆盖生成模型目录、任务幂等与恢复、媒体持久化、历史结果回填，以及画布、素材、模板和投放交付的纯领域规则。`check:architecture` 阻止 UI 直接依赖数据库、队列、Worker 或 Provider。
+`npm test` 覆盖生成模型目录、任务幂等与恢复、媒体持久化、历史结果回填、WebSocket 鉴权、Yjs 增量和重启恢复，以及画布、素材、模板和投放交付的纯领域规则。`check:architecture` 阻止 UI 直接依赖数据库、队列、Worker 或 Provider。
 
 普通 UI 变更不得调用真实生图服务；真实 Provider 冒烟测试需要单独授权并明确允许消耗额度。
 
