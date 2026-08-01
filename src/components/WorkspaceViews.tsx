@@ -161,6 +161,11 @@ export function ProjectLibrary({
   const visibleAccountMenuAnchor = useRetainedValue(accountMenuAnchor)
   const accountDialogPresence = useMotionPresence(Boolean(accountDialog), 220)
   const visibleAccountDialog = useRetainedValue(accountDialog)
+  const returnToAccountMenu = useCallback(() => {
+    setAccountDialog(null)
+    const rect = accountTriggerRef.current?.getBoundingClientRect()
+    if (rect) setAccountMenuAnchor({ left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom })
+  }, [])
   const editingPresence = useMotionPresence(Boolean(editingProject), 140)
   const visibleEditingProject = useRetainedValue(editingProject)
   const deletingPresence = useMotionPresence(Boolean(deletingProject), 140)
@@ -317,13 +322,13 @@ export function ProjectLibrary({
         onSignOut={onSignOut}
         onClose={() => setAccountMenuAnchor(null)}
       /> : null}
-      {currentUser && onChangePassword && onReadMfaStatus && onEnrollMfa && onVerifyMfa && onRemoveMfa && onSignOutOtherSessions && accountDialogPresence.present && (visibleAccountDialog === 'profile' || visibleAccountDialog === 'security') ? <AccountDetailsDialog mode={visibleAccountDialog} user={currentUser} phase={accountDialogPresence.phase} returnFocusTarget={accountTriggerRef.current} onChangePassword={onChangePassword} onReadMfaStatus={onReadMfaStatus} onEnrollMfa={onEnrollMfa} onVerifyMfa={onVerifyMfa} onRemoveMfa={onRemoveMfa} onSignOutOtherSessions={onSignOutOtherSessions} onModeChange={setAccountDialog} onClose={() => { setAccountDialog(null); window.setTimeout(() => document.querySelector<HTMLButtonElement>('button[aria-label="打开账户设置"]')?.focus({ preventScroll: true }), 240) }} /> : null}
-      {accountDialogPresence.present && visibleAccountDialog === 'members' && currentUser?.role === 'owner' && onListMembers && onInviteMember && onUpdateMember ? <WorkspaceMembersDialog currentUser={currentUser} phase={accountDialogPresence.phase} returnFocusTarget={accountTriggerRef.current} onListMembers={onListMembers} onInviteMember={onInviteMember} onUpdateMember={onUpdateMember} onClose={() => { setAccountDialog(null); window.setTimeout(() => document.querySelector<HTMLButtonElement>('button[aria-label="打开账户设置"]')?.focus({ preventScroll: true }), 240) }} /> : null}
-      {accountDialogPresence.present && visibleAccountDialog === 'audit' && currentUser?.role === 'owner' && onListAuditEvents && onListMembers ? <WorkspaceAuditDialog phase={accountDialogPresence.phase} returnFocusTarget={accountTriggerRef.current} onListEvents={onListAuditEvents} onListMembers={onListMembers} onClose={() => { setAccountDialog(null); window.setTimeout(() => document.querySelector<HTMLButtonElement>('button[aria-label="打开账户设置"]')?.focus({ preventScroll: true }), 240) }} /> : null}
+      {currentUser && onChangePassword && onReadMfaStatus && onEnrollMfa && onVerifyMfa && onRemoveMfa && onSignOutOtherSessions && accountDialogPresence.present && (visibleAccountDialog === 'profile' || visibleAccountDialog === 'security') ? <AccountDetailsDialog mode={visibleAccountDialog} user={currentUser} phase={accountDialogPresence.phase} returnFocusTarget={null} onChangePassword={onChangePassword} onReadMfaStatus={onReadMfaStatus} onEnrollMfa={onEnrollMfa} onVerifyMfa={onVerifyMfa} onRemoveMfa={onRemoveMfa} onSignOutOtherSessions={onSignOutOtherSessions} onModeChange={setAccountDialog} onClose={returnToAccountMenu} /> : null}
+      {accountDialogPresence.present && visibleAccountDialog === 'members' && currentUser?.role === 'owner' && onListMembers && onInviteMember && onUpdateMember ? <WorkspaceMembersDialog currentUser={currentUser} phase={accountDialogPresence.phase} returnFocusTarget={null} onListMembers={onListMembers} onInviteMember={onInviteMember} onUpdateMember={onUpdateMember} onClose={returnToAccountMenu} /> : null}
+      {accountDialogPresence.present && visibleAccountDialog === 'audit' && currentUser?.role === 'owner' && onListAuditEvents && onListMembers ? <WorkspaceAuditDialog phase={accountDialogPresence.phase} returnFocusTarget={null} onListEvents={onListAuditEvents} onListMembers={onListMembers} onClose={returnToAccountMenu} /> : null}
     </main>
   )
 }
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowUpRightIcon, DeleteIcon, MoreIcon } from './BotanicIcons'
 import { AccountDetailsDialog, AccountMenu, WorkspaceAuditDialog, WorkspaceMembersDialog, type AccountMenuAnchor, type AccountMfaEnrollment, type AccountMfaStatus, type AccountUser, type WorkspaceMember as AccountWorkspaceMember } from './AccountCenter'
 import type { WorkspaceAuditEvent } from '../domain/auditEvents'
