@@ -52,3 +52,18 @@ test('安全策略支持独立配置 MFA、API 限流与每日生成输出配额
     }
   }
 })
+
+test('认证提供方显式支持无停机 Hybrid 迁移模式', () => {
+  const original = process.env.BOTANIC_AUTH_PROVIDER
+  try {
+    process.env.BOTANIC_AUTH_PROVIDER = 'hybrid'
+    assert.equal(runtimeConfig('/tmp/botanic-runtime-test').authProvider, 'hybrid')
+    process.env.BOTANIC_AUTH_PROVIDER = 'access-token'
+    assert.equal(runtimeConfig('/tmp/botanic-runtime-test').authProvider, 'access-token')
+    process.env.BOTANIC_AUTH_PROVIDER = 'invalid'
+    assert.equal(runtimeConfig('/tmp/botanic-runtime-test').authProvider, 'supabase')
+  } finally {
+    if (original === undefined) delete process.env.BOTANIC_AUTH_PROVIDER
+    else process.env.BOTANIC_AUTH_PROVIDER = original
+  }
+})

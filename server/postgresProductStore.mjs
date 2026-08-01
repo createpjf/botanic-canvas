@@ -101,6 +101,14 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       created_at bigint not null,
       revoked_at bigint
     );
+    create table if not exists auth_identities (
+      provider text not null,
+      subject text not null,
+      user_id text not null references app_users(id) on delete cascade,
+      created_at bigint not null,
+      primary key (provider, subject),
+      unique (provider, user_id)
+    );
     create table if not exists projects (
       id text primary key,
       name text not null,
@@ -163,6 +171,7 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     create index if not exists projects_updated_at_idx on projects (updated_at desc);
     alter table app_users add column if not exists status text not null default 'active';
     create index if not exists app_users_status_idx on app_users (status, created_at);
+    create index if not exists auth_identities_user_idx on auth_identities (user_id);
     create index if not exists canvas_graph_updates_project_idx on canvas_graph_updates (project_id, id);
     create index if not exists jobs_status_updated_at_idx on generation_jobs (status, updated_at);
     create index if not exists media_project_idx on media_objects (project_id);
@@ -233,30 +242,43 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       return asUser(row)
     },
 
-    // 迁移期用 Supabase user.id 作为 PostgreSQL 主键：同一登录用户无须重新注册，
-    // 但业务数据从此不再经过 Supabase PostgREST。
-    async ensureAuthenticatedUser({ id, email, name, roleHint, statusHint = 'active' }) {
+    // Auth 身份通过 auth_identities 绑定既有工作区用户，绝不改写用户主键、
+    // 项目成员关系或历史数据；业务数据也不经过 Supabase PostgREST。
+    async ensureAuthenticatedUser({ id, email, name, roleHint, statusHint = 'active', createIfMissing = true }) {
       if (!id) throw productError('登录用户缺少标识。', 'AUTH_USER_INVALID')
       const normalizedEmail = (email || `${id}@auth.botanic.local`).trim().toLowerCase()
       const normalizedName = name?.trim() || normalizedEmail.split('@')[0] || 'Botanic Member'
       return sql.begin(async (tx) => {
         await tx`select pg_advisory_xact_lock(72695839)`
-        const [existing] = await tx`select id, email, name, role, status, created_at as "createdAt" from app_users where id = ${id} for update`
+        const [identity] = await tx`
+          select u.id, u.email, u.name, u.role, u.status, u.created_at as "createdAt"
+          from auth_identities i join app_users u on u.id = i.user_id
+          where i.provider = 'supabase' and i.subject = ${id}
+          for update of u
+        `
+        const [sameId] = identity ? [] : await tx`select id, email, name, role, status, created_at as "createdAt" from app_users where id = ${id} for update`
+        const [sameEmail] = identity || sameId ? [] : await tx`select id, email, name, role, status, created_at as "createdAt" from app_users where lower(email) = lower(${normalizedEmail}) for update`
+        const existing = identity ?? sameId ?? sameEmail
         if (existing) {
           if (existing.status === 'disabled') return undefined
           const status = existing.status === 'invited' && statusHint === 'active' ? 'active' : existing.status
           if (existing.email !== normalizedEmail || existing.name !== normalizedName || existing.status !== status) {
-            await tx`update app_users set email = ${normalizedEmail}, name = ${normalizedName}, status = ${status} where id = ${id}`
+            await tx`update app_users set email = ${normalizedEmail}, name = ${normalizedName}, status = ${status} where id = ${existing.id}`
           }
+          await tx`
+            insert into auth_identities (provider, subject, user_id, created_at)
+            values ('supabase', ${id}, ${existing.id}, ${now()})
+            on conflict (provider, subject) do update set user_id = excluded.user_id
+          `
           return asUser({ ...existing, email: normalizedEmail, name: normalizedName, status })
         }
+        if (!createIfMissing) return undefined
         const [owner] = await tx`select id from app_users where role = 'owner' limit 1`
         const role = roleHint === 'owner' || !owner ? 'owner' : 'member'
-        const [emailOwner] = await tx`select id from app_users where lower(email) = lower(${normalizedEmail}) limit 1`
-        if (emailOwner) throw productError('该邮箱已绑定其他工作区成员。', 'AUTH_EMAIL_CONFLICT')
         const status = statusHint === 'invited' ? 'invited' : 'active'
         const createdAt = now()
         await tx`insert into app_users (id, email, name, role, status, created_at) values (${id}, ${normalizedEmail}, ${normalizedName}, ${role}, ${status}, ${createdAt})`
+        await tx`insert into auth_identities (provider, subject, user_id, created_at) values ('supabase', ${id}, ${id}, ${createdAt})`
         return { id, email: normalizedEmail, name: normalizedName, role, status, createdAt }
       })
     },

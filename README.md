@@ -86,6 +86,8 @@ S3_SECRET_ACCESS_KEY=...
 
 Vercel 需配置 `VITE_SUPABASE_URL` 和 `VITE_SUPABASE_PUBLISHABLE_KEY`；Railway API 需配置对应的 `SUPABASE_URL`、`SUPABASE_PUBLISHABLE_KEY` 与仅服务端可见的 `SUPABASE_SECRET_KEY`。`REALTIME_TICKET_SECRET` 以及数据库、S3 凭据不能使用 `VITE_*` 前缀。`REALTIME_PUBLIC_URL` 指向公开的 Railway API 域名，浏览器会自动转换为 `wss://`。访问码鉴权仅作本地应急调试，不用于正式用户。
 
+认证无停机迁移时，Railway 可暂设 `BOTANIC_AUTH_PROVIDER=hybrid`，同时接受旧访问令牌与 Supabase JWT；前端切换并验收后再改为 `supabase`。Supabase 身份通过独立映射绑定既有 Railway 用户，不改写历史项目、任务与媒体归属。
+
 ### 生成与润色
 
 ```dotenv

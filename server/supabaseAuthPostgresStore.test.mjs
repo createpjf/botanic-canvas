@@ -17,7 +17,7 @@ test('Supabase 登录仅校验 Auth，并把用户同步到 PostgreSQL 存储', 
   })
 
   const user = await store.authenticate('jwt-token')
-  assert.deepEqual(calls, [{ id: 'user-1', email: 'owner@botanic.test', name: 'Leo', roleHint: 'owner', statusHint: 'active' }])
+  assert.deepEqual(calls, [{ id: 'user-1', email: 'owner@botanic.test', name: 'Leo', roleHint: 'owner', statusHint: 'active', createIfMissing: true }])
   assert.equal(user?.id, 'user-1')
 })
 
@@ -31,12 +31,48 @@ test('无效登录不会写入 PostgreSQL', async () => {
   assert.equal(writes, 0)
 })
 
+test('Hybrid 模式在 Supabase 无法识别令牌时兼容旧访问令牌', async () => {
+  const store = createSupabaseAuthPostgresStore({
+    productStore: {
+      async ensureAuthenticatedUser() { throw new Error('不应同步用户') },
+      async authenticate(token) { return token === 'legacy-token' ? { id: 'legacy-owner', role: 'owner' } : undefined },
+    },
+    allowLegacyTokens: true,
+    client: { auth: { async getUser() { return { data: { user: null }, error: new Error('not a Supabase JWT') } } } },
+  })
+
+  assert.deepEqual(await store.authenticate('legacy-token'), { id: 'legacy-owner', role: 'owner' })
+})
+
+test('Hybrid 模式优先采用有效 Supabase 身份，不把未授权账号降级为旧令牌', async () => {
+  let legacyAttempts = 0
+  const store = createSupabaseAuthPostgresStore({
+    productStore: {
+      async ensureAuthenticatedUser(input) {
+        assert.equal(input.createIfMissing, false)
+        return undefined
+      },
+      async authenticate() { legacyAttempts += 1; return { id: 'unexpected' } },
+    },
+    allowLegacyTokens: true,
+    bootstrapEmail: 'owner@botanic.test',
+    client: { auth: { async getUser() {
+      return { data: { user: { id: 'stranger', email: 'stranger@example.com', user_metadata: {} } }, error: null }
+    } } },
+  })
+
+  assert.equal(await store.authenticate('valid-supabase-jwt'), undefined)
+  assert.equal(legacyAttempts, 0)
+})
+
 test('未邀请的 Supabase 用户不会自动加入工作区', async () => {
   let writes = 0
   const store = createSupabaseAuthPostgresStore({
     productStore: {
-      async ensureAuthenticatedUser() { writes += 1 },
-      async readUser() { return undefined },
+      async ensureAuthenticatedUser(input) {
+        assert.equal(input.createIfMissing, false)
+        return undefined
+      },
     },
     bootstrapEmail: 'owner@botanic.test',
     client: { auth: { async getUser() {
