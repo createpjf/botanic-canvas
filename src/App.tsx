@@ -7319,7 +7319,16 @@ function AgentWorkspace({
   }
 
   const yieldRuntimeFrame = () => new Promise<void>((resolve) => {
-    window.requestAnimationFrame(() => resolve())
+    let settled = false
+    const finish = () => {
+      if (settled) return
+      settled = true
+      window.clearTimeout(timeoutId)
+      window.cancelAnimationFrame(frameId)
+      resolve()
+    }
+    const frameId = window.requestAnimationFrame(finish)
+    const timeoutId = window.setTimeout(finish, 50)
   })
 
   const completeRuntimeContextReads = async (steps: BotanicAgentRuntimeStep[]) => {
