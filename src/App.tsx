@@ -26,9 +26,9 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { defaultGenerationModels } from './domain/canvas'
-import { buildBotanicAgentPlan, collectBotanicAgentResults, creativeDimensionLabel, insertBotanicAgentMention, readBotanicAgentMentionQuery, recordBotanicAgentCanvasWritebacks, resolveBotanicAgentCanvasCommands, resolveBotanicAgentResultSelection, type BotanicAgentActionProposal, type BotanicAgentActionResult, type BotanicAgentArtifact, type BotanicAgentCanvasWriteback, type BotanicAgentExecutionMode, type BotanicAgentIntent, type BotanicAgentMemoryItem, type BotanicAgentMemoryKind, type BotanicAgentMentionQuery, type BotanicAgentMessage, type BotanicAgentPlan, type BotanicAgentRun, type BotanicAgentSession, type BotanicAgentSkill } from './domain/agent'
+import { buildBotanicAgentPlan, collectBotanicAgentResults, createBotanicAgentRuntimeSteps, creativeDimensionLabel, insertBotanicAgentMention, readBotanicAgentMentionQuery, recordBotanicAgentCanvasWritebacks, resolveBotanicAgentCanvasCommands, resolveBotanicAgentResultSelection, updateBotanicAgentRuntimeStep, type BotanicAgentActionProposal, type BotanicAgentActionResult, type BotanicAgentArtifact, type BotanicAgentCanvasWriteback, type BotanicAgentExecutionMode, type BotanicAgentIntent, type BotanicAgentMemoryItem, type BotanicAgentMemoryKind, type BotanicAgentMentionQuery, type BotanicAgentMessage, type BotanicAgentPlan, type BotanicAgentRun, type BotanicAgentRuntimeStep, type BotanicAgentSession, type BotanicAgentSkill } from './domain/agent'
 import { collectAgentMediaSources, prepareAgentMediaSources } from './domain/agentMedia'
-import { canvasZoomMode, planResultGroupPresentation, traceCanvasLineage, type ResultGroupPresentation } from './domain/canvasPresentation'
+import { canvasZoomMode, generationTaskErrorMessage, planResultGroupPresentation, traceCanvasLineage, type ResultGroupPresentation } from './domain/canvasPresentation'
 import { buildDeliveryPreviewArtifacts, canUseForImageDelivery, resolveDeliveryDraft, type DeliveryPanelTarget } from './domain/deliveryPresentation'
 import { mediaFileExtension, reducedAspectRatio } from './domain/mediaPresentation'
 import { mediaRetryUrl } from './domain/mediaRecovery'
@@ -72,7 +72,7 @@ import { subscribeProductSessionInvalidated } from './lib/productSessionInvalida
 import { createEmptyCanvasDocument } from './data/seed'
 import { useCanvasStore } from './store/canvasStore'
 import type { WorkspaceProject } from './components/WorkspaceViews'
-import { ArrowDownIcon, ArrowUpIcon, ArrowUpRightIcon, CloseIcon, DeleteIcon, DownloadIcon, FocusIcon, FolderOutlineIcon, HomeIcon, MapIcon, MoreIcon, PlusSquareIcon, SparkleIcon, UploadIcon } from './components/BotanicIcons'
+import { ArrowDownIcon, ArrowUpIcon, ArrowUpRightIcon, BookmarkIcon, ChecklistIcon, CloseIcon, CopyIcon, DeleteIcon, DownloadIcon, EditIcon, FocusIcon, FolderOutlineIcon, GalleryIcon, HomeIcon, MapIcon, MoreIcon, PlusSquareIcon, RefreshIcon, SparkleIcon, ThumbDownIcon, ThumbUpIcon, UploadIcon } from './components/BotanicIcons'
 import plusIcon from './assets/figma/icon-plus.svg'
 import folderIcon from './assets/figma/icon-folder.svg'
 import templatesIcon from './assets/figma/icon-templates.svg'
@@ -1418,7 +1418,7 @@ function ResultNode({ data, id, selected }: NodeProps) {
           <div className={`result-node__task-state result-node__task-state--${result.status}`}>
             {isGenerating ? <i className="result-node__task-pulse" aria-hidden="true" /> : null}
             <strong aria-live="polite">{imageFailed ? '媒体无法显示' : isGenerating ? taskFeedback.title : result.status === 'failed' ? '任务未完成' : result.status === 'cancelled' ? '任务已取消' : '等待生成结果'}</strong>
-            <small>{imageFailed ? '媒体读取失败，可能是登录状态或网络中断。' : isGenerating ? (isSlowTask ? elapsedTaskLabel(elapsedSeconds) : taskFeedback.detail) : result.error ?? (result.status === 'ready' ? '等待生成服务返回结果。' : '生成服务的真实状态会在此同步。')}</small>
+            <small>{imageFailed ? '媒体读取失败，可能是登录状态或网络中断。' : isGenerating ? (isSlowTask ? elapsedTaskLabel(elapsedSeconds) : taskFeedback.detail) : generationTaskErrorMessage(result.error) ?? (result.status === 'ready' ? '等待生成服务返回结果。' : '生成服务的真实状态会在此同步。')}</small>
             {imageFailed ? <button className="result-node__task-action nodrag nowheel" type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void recoverMedia() }}>重新加载</button> : null}
             {result.status === 'generating' ? <button className="result-node__task-action nodrag nowheel" type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); cancelGeneration() }}>取消</button> : null}
             {result.status === 'failed' ? <div className="result-node__task-actions nodrag nowheel" onPointerDown={(event) => event.stopPropagation()}>
@@ -3715,7 +3715,8 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
   const multiSelectionPresence = useMotionPresence(selectedCanvasNodes.length > 1, 120)
   const visibleMultiSelectionCount = useRetainedValue(selectedCanvasNodes.length > 1 ? selectedCanvasNodes.length : null)
   const latestTaskResult = [...document.nodes].reverse().find((node) => node.type === 'result' && node.id.startsWith('result-task-'))
-  const latestTaskKey = latestTaskResult?.id.replace('result-task-', '')
+  const latestTaskResultData = latestTaskResult?.type === 'result' ? latestTaskResult.data as ResultNodeData : undefined
+  const latestTaskJobId = latestTaskResultData?.jobId
   const latestTaskGenerateId = latestTaskResult
     ? document.edges.find((edge) => edge.target === latestTaskResult.id && document.nodes.some((node) => node.id === edge.source && node.type === 'generate'))?.source
     : undefined
@@ -3724,7 +3725,17 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
       .filter((edge) => edge.target === latestTaskGenerateId)
       .map((edge) => edge.source)
     : []
-  const latestTaskNodeIds = new Set([latestTaskResult?.id, latestTaskGenerateId, ...latestTaskInputIds].filter(Boolean))
+  // 一次任务的额外输出节点不会再使用 result-task-* 前缀；聚焦时必须把同一 job
+  // 的所有结果一起纳入，否则视角会停留在左侧占位节点，用户看不到刚回填的图片。
+  const latestTaskOutputIds = latestTaskJobId
+    ? document.nodes
+      .filter((node) => node.type === 'result' && (node.data as ResultNodeData).jobId === latestTaskJobId)
+      .map((node) => node.id)
+    : []
+  const latestTaskKey = latestTaskResult
+    ? `${latestTaskResult.id}:${latestTaskJobId ?? ''}:${latestTaskOutputIds.length}:${latestTaskResultData?.status ?? ''}`
+    : undefined
+  const latestTaskNodeIds = new Set([latestTaskResult?.id, latestTaskGenerateId, ...latestTaskInputIds, ...latestTaskOutputIds].filter(Boolean))
   const latestTaskNodes = document.nodes.filter((node) => latestTaskNodeIds.has(node.id))
   const selectedReadyResultData = selectedResultData?.image ? selectedResultData : undefined
   const resultComposerNode = resultComposerDraft
@@ -6948,6 +6959,22 @@ function agentToolStatusLabel(status: NonNullable<BotanicAgentPlan['toolCalls']>
   return '待执行'
 }
 
+function agentRuntimeStepStatusLabel(status: BotanicAgentRuntimeStep['status']) {
+  if (status === 'succeeded') return '已完成'
+  if (status === 'failed') return '失败'
+  if (status === 'running') return '执行中'
+  return '待执行'
+}
+
+function agentRuntimeStepMarker(step: BotanicAgentRuntimeStep) {
+  if (step.status === 'succeeded') return '✓'
+  if (step.status === 'failed') return '!'
+  if (step.status === 'running') return '·'
+  if (step.kind === 'search') return '⌕'
+  if (step.kind === 'write') return '↗'
+  return '○'
+}
+
 function agentMemoryKindLabel(kind: BotanicAgentMemoryKind) {
   if (kind === 'approved') return '已确认方向'
   if (kind === 'avoid') return '避免事项'
@@ -7030,6 +7057,8 @@ function AgentWorkspace({
   const [plannerModel, setPlannerModel] = useState(plannerModels[0] ?? defaultAgentPlannerModels[0])
   const [error, setError] = useState('')
   const [planning, setPlanning] = useState(false)
+  const [runtimeSteps, setRuntimeSteps] = useState<BotanicAgentRuntimeStep[]>([])
+  const [runtimeDetailsOpen, setRuntimeDetailsOpen] = useState(true)
   const [submittingMessageId, setSubmittingMessageId] = useState('')
   const [executingActionId, setExecutingActionId] = useState('')
   const [retryingBranchId, setRetryingBranchId] = useState('')
@@ -7098,6 +7127,8 @@ function AgentWorkspace({
     return contextOptions.filter((item) => !query || `${item.label} ${item.kind}`.toLocaleLowerCase().includes(query)).slice(0, 6)
   }, [contextOptions, mentionQuery])
   const utilityPanelOpen = taskPanelOpen || skillPanelOpen || resultPanelOpen || memoryPanelOpen
+  const runtimeFailed = runtimeSteps.some((step) => step.status === 'failed')
+  const runtimeComplete = Boolean(runtimeSteps.length) && runtimeSteps.every((step) => step.status === 'succeeded')
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => composerTextareaRef.current?.focus())
@@ -7151,6 +7182,8 @@ function AgentWorkspace({
     setMemoryPanelOpen(false)
     setMentionQuery(undefined)
     setSkillConfirming(false)
+    setRuntimeSteps([])
+    setRuntimeDetailsOpen(true)
     plannerControllerRef.current?.abort()
   }, [session?.id])
 
@@ -7175,7 +7208,7 @@ function AgentWorkspace({
   useEffect(() => {
     const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
     messageEndRef.current?.scrollIntoView({ block: 'end', behavior })
-  }, [session?.messages.length, latestRun?.updatedAt, planning])
+  }, [session?.messages.length, latestRun?.updatedAt, planning, runtimeSteps.length, runtimeSteps[runtimeSteps.length - 1]?.status])
 
   useEffect(() => {
     if (!compatibleGroups.some((group) => group.id === groupId)) setGroupId('')
@@ -7252,6 +7285,79 @@ function AgentWorkspace({
     })
   }
 
+  const beginRuntimeTrace = (input: {
+    hasTarget: boolean
+    referenceCount: number
+    memoryCount: number
+    assetGroupCount: number
+  }) => {
+    const steps = createBotanicAgentRuntimeSteps({
+      ...input,
+      plannerLabel: agentPlannerModelLabel(plannerModel),
+    })
+    const firstStep = steps[0]
+    const started = firstStep ? updateBotanicAgentRuntimeStep(steps, firstStep.id, 'running') : steps
+    setRuntimeSteps(started)
+    setRuntimeDetailsOpen(true)
+    return started
+  }
+
+  const updateRuntimeStep = (
+    stepId: string,
+    status: BotanicAgentRuntimeStep['status'],
+    errorMessage?: string,
+  ) => {
+    setRuntimeSteps((steps) => updateBotanicAgentRuntimeStep(steps, stepId, status, Date.now(), errorMessage))
+  }
+
+  const attachPlannerToolTrace = (plan?: BotanicAgentPlan) => {
+    const labels = plan?.toolCalls?.map((call) => call.label).filter(Boolean) ?? []
+    if (!labels.length) return
+    setRuntimeSteps((steps) => steps.map((step) => step.id === 'call-planner'
+      ? { ...step, detail: `已调用：${[...new Set(labels)].join('、')}` }
+      : step))
+  }
+
+  const yieldRuntimeFrame = () => new Promise<void>((resolve) => {
+    let settled = false
+    const finish = () => {
+      if (settled) return
+      settled = true
+      window.clearTimeout(timeoutId)
+      window.cancelAnimationFrame(frameId)
+      resolve()
+    }
+    const frameId = window.requestAnimationFrame(finish)
+    const timeoutId = window.setTimeout(finish, 50)
+  })
+
+  const completeRuntimeContextReads = async (steps: BotanicAgentRuntimeStep[]) => {
+    const contextSteps = steps.filter((step) => step.id !== 'call-planner' && step.id !== 'finalize-plan' && step.id !== 'create-workflow')
+    for (const step of contextSteps) {
+      updateRuntimeStep(step.id, 'running')
+      await yieldRuntimeFrame()
+      updateRuntimeStep(step.id, 'succeeded')
+    }
+  }
+
+  const completeRuntimeTrace = async (hasTarget: boolean) => {
+    updateRuntimeStep('call-planner', 'succeeded')
+    const finalStepId = hasTarget ? 'finalize-plan' : 'create-workflow'
+    updateRuntimeStep(finalStepId, 'running')
+    await yieldRuntimeFrame()
+    updateRuntimeStep(finalStepId, 'succeeded')
+    setRuntimeDetailsOpen(false)
+  }
+
+  const failRuntimeTrace = (message: string) => {
+    setRuntimeSteps((steps) => {
+      const active = steps.find((step) => step.status === 'running')
+      return active
+        ? updateBotanicAgentRuntimeStep(steps, active.id, 'failed', Date.now(), message)
+        : steps
+    })
+  }
+
   const preparePlan = async (cleanInstruction: string) => {
     if (!target) return null
     const assetGroup = compatibleGroups.find((group) => group.id === groupId)
@@ -7272,9 +7378,13 @@ function AgentWorkspace({
     plannerControllerRef.current = controller
     setPlanning(true)
     setError('')
+    updateRuntimeStep('call-planner', 'running')
     try {
       const nextPlan = await requestBotanicAgentPlan(input, controller.signal)
       if (controller.signal.aborted) return
+      attachPlannerToolTrace(nextPlan)
+      updateRuntimeStep('call-planner', 'succeeded')
+      await completeRuntimeTrace(true)
       return nextPlan
     } catch (planError) {
       if (controller.signal.aborted) return
@@ -7282,7 +7392,7 @@ function AgentWorkspace({
         && (planError.status === 0 || planError.status === 404 || planError.status >= 500)
       if (canUseLocalFallback) {
         try {
-          return { ...buildBotanicAgentPlan({
+          const fallbackPlan = { ...buildBotanicAgentPlan({
             instruction: cleanInstruction,
             intent,
             selectedResultNodeId: target.id,
@@ -7290,12 +7400,17 @@ function AgentWorkspace({
             rootRecipe: target.rootRecipe,
             assetGroup,
           }), plannerModel }
+          attachPlannerToolTrace(fallbackPlan)
+          updateRuntimeStep('call-planner', 'succeeded')
+          await completeRuntimeTrace(true)
+          return fallbackPlan
         } catch (fallbackError) {
           setError(fallbackError instanceof Error ? fallbackError.message : '暂时无法生成计划。')
         }
       } else {
         setError(planError instanceof Error ? planError.message : '暂时无法生成计划。')
       }
+      failRuntimeTrace(planError instanceof Error ? planError.message : '暂时无法生成计划。')
     } finally {
       if (plannerControllerRef.current === controller) plannerControllerRef.current = null
       setPlanning(false)
@@ -7356,6 +7471,14 @@ function AgentWorkspace({
     setMentionQuery(undefined)
     setError('')
     setPlanning(true)
+    const runtimeTrace = beginRuntimeTrace({
+      hasTarget: Boolean(target),
+      referenceCount: target?.rootRecipe.references.length ?? contextItems.length,
+      memoryCount: memory.length,
+      assetGroupCount: compatibleGroups.length,
+    })
+    await completeRuntimeContextReads(runtimeTrace)
+    updateRuntimeStep('call-planner', 'running')
     if (!target) {
       try {
         const result = await onCreateDraft(cleanInstruction, session.contextNodeIds, session.executionMode === 'auto')
@@ -7363,11 +7486,18 @@ function AgentWorkspace({
           ? '已根据画布上下文创建工作流并提交生成，结果会出现在画布中。'
           : result.needsReference
             ? '已在画布创建文字与生成节点。再添加一张商品图或参考图，我就可以继续执行。'
-            : result.created
-              ? '已在画布创建可编辑的生成工作流，你可以检查节点后手动生成。'
-              : '暂时无法创建工作流，请检查画布状态后重试。'
+              : result.created
+                ? '已在画布创建可编辑的生成工作流，你可以检查节点后手动生成。'
+                : '暂时无法创建工作流，请检查画布状态后重试。'
+        if (result.created) {
+          await completeRuntimeTrace(false)
+        } else {
+          updateRuntimeStep('call-planner', 'succeeded')
+          updateRuntimeStep('create-workflow', 'failed', content)
+        }
         appendMessage({ role: 'assistant', kind: result.created ? 'notice' : 'text', content })
       } catch (caught) {
+        failRuntimeTrace(caught instanceof Error ? caught.message : '暂时无法创建工作流。')
         setError(caught instanceof Error ? caught.message : '暂时无法创建工作流。')
       } finally {
         setPlanning(false)
@@ -7418,14 +7548,14 @@ function AgentWorkspace({
     <aside className="agent-workspace nopan nowheel" aria-label="Botanic 生图 Agent">
       <header className="agent-workspace__header">
         <div className="agent-workspace__title">
-          <button type="button" className="agent-workspace__history-button" onClick={(event) => { historyTriggerRef.current = event.currentTarget; setHistoryOpen((open) => !open) }} aria-controls={historyMenuId} aria-expanded={historyOpen} aria-label="对话历史"><span aria-hidden="true">☷</span></button>
+          <button type="button" className="agent-workspace__history-button" onClick={(event) => { historyTriggerRef.current = event.currentTarget; setHistoryOpen((open) => !open) }} aria-controls={historyMenuId} aria-expanded={historyOpen} aria-label="对话历史" title="对话历史"><FigmaIcon src={historyIcon} /></button>
           <button type="button" className="agent-workspace__title-button" onClick={(event) => { historyTriggerRef.current = event.currentTarget; setHistoryOpen((open) => !open) }} aria-controls={historyMenuId} aria-expanded={historyOpen}>{session?.title ?? '新建对话'} <span aria-hidden="true">⌄</span></button>
         </div>
         <div className="agent-workspace__header-actions">
-          <button type="button" className={`agent-workspace__skill-button${resultPanelOpen ? ' is-active' : ''}`} aria-pressed={resultPanelOpen} onClick={(event) => { utilityButtonRef.current = event.currentTarget; setResultPanelOpen((open) => !open); setTaskPanelOpen(false); setSkillPanelOpen(false); setMemoryPanelOpen(false); setHistoryOpen(false) }}>结果</button>
-          <button type="button" className={`agent-workspace__skill-button${taskPanelOpen ? ' is-active' : ''}`} aria-pressed={taskPanelOpen} onClick={(event) => { utilityButtonRef.current = event.currentTarget; setTaskPanelOpen((open) => !open); setResultPanelOpen(false); setSkillPanelOpen(false); setMemoryPanelOpen(false); setHistoryOpen(false) }}>任务</button>
-          <button type="button" className={`agent-workspace__skill-button${memoryPanelOpen ? ' is-active' : ''}`} aria-pressed={memoryPanelOpen} onClick={(event) => { utilityButtonRef.current = event.currentTarget; setMemoryPanelOpen((open) => !open); setResultPanelOpen(false); setTaskPanelOpen(false); setSkillPanelOpen(false); setHistoryOpen(false) }}>记忆</button>
-          <button type="button" className={`agent-workspace__skill-button${skillPanelOpen ? ' is-active' : ''}`} aria-pressed={skillPanelOpen} onClick={(event) => { utilityButtonRef.current = event.currentTarget; setSkillPanelOpen((open) => !open); setResultPanelOpen(false); setTaskPanelOpen(false); setMemoryPanelOpen(false); setHistoryOpen(false) }}>技能</button>
+          <button type="button" className={`agent-workspace__skill-button${resultPanelOpen ? ' is-active' : ''}`} aria-pressed={resultPanelOpen} aria-label="结果与文件" title="结果与文件" onClick={(event) => { utilityButtonRef.current = event.currentTarget; setResultPanelOpen((open) => !open); setTaskPanelOpen(false); setSkillPanelOpen(false); setMemoryPanelOpen(false); setHistoryOpen(false) }}><GalleryIcon /><span className="visually-hidden">结果</span></button>
+          <button type="button" className={`agent-workspace__skill-button${taskPanelOpen ? ' is-active' : ''}`} aria-pressed={taskPanelOpen} aria-label="生成任务" title="生成任务" onClick={(event) => { utilityButtonRef.current = event.currentTarget; setTaskPanelOpen((open) => !open); setResultPanelOpen(false); setSkillPanelOpen(false); setMemoryPanelOpen(false); setHistoryOpen(false) }}><ChecklistIcon /><span className="visually-hidden">任务</span></button>
+          <button type="button" className={`agent-workspace__skill-button${memoryPanelOpen ? ' is-active' : ''}`} aria-pressed={memoryPanelOpen} aria-label="项目记忆" title="项目记忆" onClick={(event) => { utilityButtonRef.current = event.currentTarget; setMemoryPanelOpen((open) => !open); setResultPanelOpen(false); setTaskPanelOpen(false); setSkillPanelOpen(false); setHistoryOpen(false) }}><BookmarkIcon /><span className="visually-hidden">记忆</span></button>
+          <button type="button" className={`agent-workspace__skill-button${skillPanelOpen ? ' is-active' : ''}`} aria-pressed={skillPanelOpen} aria-label="创作技能" title="创作技能" onClick={(event) => { utilityButtonRef.current = event.currentTarget; setSkillPanelOpen((open) => !open); setResultPanelOpen(false); setTaskPanelOpen(false); setMemoryPanelOpen(false); setHistoryOpen(false) }}><SparkleIcon /><span className="visually-hidden">技能</span></button>
           <button type="button" className="agent-workspace__close" onClick={onClose} aria-label="收起生图 Agent"><CloseIcon /></button>
         </div>
         {historyOpen ? <div id={historyMenuId} className="agent-workspace__history" aria-label="对话历史">
@@ -7467,9 +7597,9 @@ function AgentWorkspace({
                     {artifact.kind === 'image' ? <img src={artifact.url} alt="" /> : <video src={artifact.url} muted playsInline />}
                   </div> : <div className="agent-result-panel__document"><span>{artifact.kind === 'workflow' ? '⌘' : 'Aa'}</span><p>{artifact.content ?? artifact.label}</p></div>}
                   <div className="agent-result-panel__meta"><span><strong>{artifact.label}</strong><small>{agentArtifactKindLabel(artifact)} · {artifact.provenance.toolName}</small></span><div>
-                    {artifact.provenance.sourceNodeIds?.[0] ? <button type="button" onClick={() => onLocateNode(artifact.provenance.sourceNodeIds![0])}>定位</button> : null}
-                    {artifact.url && (artifact.kind === 'image' || artifact.kind === 'video') ? <button type="button" onClick={() => void downloadMedia(artifact.url!, artifact.label, artifact.kind === 'video' ? 'video' : 'image')}>下载</button> : artifact.url ? <a href={artifact.url} target="_blank" rel="noreferrer">打开</a> : null}
-                    {artifact.url && (artifact.kind === 'image' || artifact.kind === 'video') ? <button type="button" disabled={artifact.metadata?.savedToLibrary === true} onClick={() => onSaveArtifact(artifact)}>{artifact.metadata?.savedToLibrary === true ? '已入库' : '入库'}</button> : null}
+                    {artifact.provenance.sourceNodeIds?.[0] ? <button type="button" aria-label={`在画布定位 ${artifact.label}`} title="在画布定位" onClick={() => onLocateNode(artifact.provenance.sourceNodeIds![0])}><FocusIcon /></button> : null}
+                    {artifact.url && (artifact.kind === 'image' || artifact.kind === 'video') ? <button type="button" aria-label={`下载 ${artifact.label}`} title="下载" onClick={() => void downloadMedia(artifact.url!, artifact.label, artifact.kind === 'video' ? 'video' : 'image')}><DownloadIcon /></button> : artifact.url ? <a href={artifact.url} target="_blank" rel="noreferrer" aria-label={`打开 ${artifact.label}`} title="打开"><ArrowUpRightIcon /></a> : null}
+                    {artifact.url && (artifact.kind === 'image' || artifact.kind === 'video') ? <button type="button" aria-label={artifact.metadata?.savedToLibrary === true ? `${artifact.label} 已入库` : `将 ${artifact.label} 入库`} title={artifact.metadata?.savedToLibrary === true ? '已入库' : '存入素材库'} disabled={artifact.metadata?.savedToLibrary === true} onClick={() => onSaveArtifact(artifact)}><FolderOutlineIcon /></button> : null}
                   </div></div>
                 </article>)}
               </div>
@@ -7490,7 +7620,7 @@ function AgentWorkspace({
             <button type="button" disabled={!memoryDraft.trim()} onClick={saveMemory}>保存记忆</button>
           </div>
           <div className="agent-memory-panel__list">
-            {memory.map((item) => <article key={item.id} className={`is-${item.kind}`}><span><small>{agentMemoryKindLabel(item.kind)}</small><p>{item.content}</p></span><div>{item.sourceNodeIds[0] ? <button type="button" onClick={() => onLocateNode(item.sourceNodeIds[0])}>定位</button> : null}<button type="button" className="is-delete" onClick={() => onRemoveMemory(item.id)}>删除</button></div></article>)}
+            {memory.map((item) => <article key={item.id} className={`is-${item.kind}`}><span><small>{agentMemoryKindLabel(item.kind)}</small><p>{item.content}</p></span><div>{item.sourceNodeIds[0] ? <button type="button" aria-label={`在画布定位记忆 ${item.content}`} title="在画布定位" onClick={() => onLocateNode(item.sourceNodeIds[0])}><FocusIcon /></button> : null}<button type="button" className="is-delete" aria-label={`删除记忆 ${item.content}`} title="删除记忆" onClick={() => onRemoveMemory(item.id)}><DeleteIcon /></button></div></article>)}
             {!memory.length ? <div className="agent-skill-panel__empty">还没有项目记忆。</div> : null}
           </div>
         </section> : null}
@@ -7499,11 +7629,11 @@ function AgentWorkspace({
           <p>查看所有分支状态；失败分支可单独重试，不会覆盖已完成结果。</p>
           <div className="agent-task-panel__list">
             {runs.map((run) => <article key={run.id} className={`is-${run.status}`}>
-              <header><span><strong>{run.plan.summary}</strong><small>{run.status === 'completed' ? '已完成' : run.status === 'partial' ? '部分完成' : run.status === 'failed' ? '失败' : run.status === 'cancelled' ? '已取消' : '处理中'}</small></span><div>{run.status === 'queued' || run.status === 'running' || run.status === 'executing' ? <button type="button" disabled={cancellingRunId === run.id} onClick={() => { setCancellingRunId(run.id); void onCancelRun(run.id).finally(() => setCancellingRunId('')) }}>{cancellingRunId === run.id ? '取消中…' : '取消任务'}</button> : null}<b>{run.completedBranchCount}/{run.branches.length}</b></div></header>
+              <header><span><strong>{run.plan.summary}</strong><small>{run.status === 'completed' ? '已完成' : run.status === 'partial' ? '部分完成' : run.status === 'failed' ? '失败' : run.status === 'cancelled' ? '已取消' : '处理中'}</small></span><div>{run.status === 'queued' || run.status === 'running' || run.status === 'executing' ? <button type="button" className="agent-icon-button agent-icon-button--danger" aria-label="取消任务" title="取消任务" disabled={cancellingRunId === run.id} onClick={() => { setCancellingRunId(run.id); void onCancelRun(run.id).finally(() => setCancellingRunId('')) }}>{cancellingRunId === run.id ? <span className="agent-workspace__mini-spinner" /> : <CloseIcon />}</button> : null}<b>{run.completedBranchCount}/{run.branches.length}</b></div></header>
               <div className="agent-run-card__track" aria-hidden="true"><i style={{ width: `${run.branches.length ? Math.round(run.completedBranchCount / run.branches.length * 100) : 0}%` }} /></div>
               <div className="agent-task-panel__summary" aria-label="分支状态汇总"><span><b>{run.branches.filter((branch) => branch.status === 'succeeded').length}</b>完成</span><span><b>{run.branches.filter((branch) => branch.status === 'running').length}</b>生成中</span><span><b>{run.branches.filter((branch) => branch.status === 'queued').length}</b>排队</span><span><b>{run.branches.filter((branch) => branch.status === 'failed' || branch.status === 'cancelled').length}</b>失败</span></div>
               <div className="agent-task-panel__matrix" aria-label="批量分支矩阵">{run.branches.map((branch, index) => <div key={branch.id} className={`is-${branch.status}`} title={`${branch.label} · ${branch.status}`}><span>{index + 1}</span><small>{branch.label}</small></div>)}</div>
-              {run.branches.filter((branch) => branch.status === 'failed' || branch.status === 'cancelled').map((branch) => <div className="agent-task-panel__branch" key={branch.id}><span><strong>{branch.label}</strong><small>{branch.error ?? '该分支未完成'}</small></span><button type="button" disabled={retryingBranchId === branch.id} onClick={() => { setRetryingBranchId(branch.id); void onRetryBranch(run.id, branch.id).finally(() => setRetryingBranchId('')) }}>{retryingBranchId === branch.id ? '重试中…' : '重试'}</button></div>)}
+              {run.branches.filter((branch) => branch.status === 'failed' || branch.status === 'cancelled').map((branch) => <div className="agent-task-panel__branch" key={branch.id}><span><strong>{branch.label}</strong><small>{branch.error ?? '该分支未完成'}</small></span><button type="button" className="agent-icon-button" aria-label={`重试 ${branch.label}`} title="重试" disabled={retryingBranchId === branch.id} onClick={() => { setRetryingBranchId(branch.id); void onRetryBranch(run.id, branch.id).finally(() => setRetryingBranchId('')) }}>{retryingBranchId === branch.id ? <span className="agent-workspace__mini-spinner" /> : <RefreshIcon />}</button></div>)}
             </article>)}
             {!runs.length ? <div className="agent-skill-panel__empty">还没有 Agent 任务。</div> : null}
           </div>
@@ -7539,12 +7669,12 @@ function AgentWorkspace({
           <div className="agent-message__body">
             <p>{message.content}</p>
             <div className="agent-message__utilities">
-              {message.role === 'user' ? <button type="button" onClick={() => { setInstruction(message.content); requestAnimationFrame(() => composerTextareaRef.current?.focus()) }}>编辑</button> : null}
+              {message.role === 'user' ? <button type="button" aria-label="编辑消息" title="编辑消息" onClick={() => { setInstruction(message.content); requestAnimationFrame(() => composerTextareaRef.current?.focus()) }}><EditIcon /></button> : null}
               {message.role === 'assistant' && session ? <>
-                <button type="button" className={message.feedback === 'positive' ? 'is-selected' : ''} aria-label="这个回答有帮助" title="有帮助" onClick={() => onUpdateMessage(session.id, message.id, { feedback: message.feedback === 'positive' ? undefined : 'positive' })}>赞</button>
-                <button type="button" className={message.feedback === 'negative' ? 'is-selected' : ''} aria-label="这个回答需要改进" title="需改进" onClick={() => onUpdateMessage(session.id, message.id, { feedback: message.feedback === 'negative' ? undefined : 'negative' })}>踩</button>
+                <button type="button" className={message.feedback === 'positive' ? 'is-selected' : ''} aria-label="这个回答有帮助" title="有帮助" onClick={() => onUpdateMessage(session.id, message.id, { feedback: message.feedback === 'positive' ? undefined : 'positive' })}><ThumbUpIcon /></button>
+                <button type="button" className={message.feedback === 'negative' ? 'is-selected' : ''} aria-label="这个回答需要改进" title="需改进" onClick={() => onUpdateMessage(session.id, message.id, { feedback: message.feedback === 'negative' ? undefined : 'negative' })}><ThumbDownIcon /></button>
               </> : null}
-              <button type="button" onClick={() => void navigator.clipboard.writeText(message.content)}>复制</button>
+              <button type="button" aria-label="复制消息" title="复制消息" onClick={() => void navigator.clipboard.writeText(message.content)}><CopyIcon /></button>
             </div>
             {message.plan ? <div className="agent-message__plan">
               {message.plan.toolCalls?.length ? <div className="agent-message__tools" aria-label="Agent 工具调用">
@@ -7560,7 +7690,7 @@ function AgentWorkspace({
                   <div className="agent-action-card__impact"><span>输入</span><b>{action.toolName === 'mcp_call' ? `${String(action.arguments.server)}.${String(action.arguments.tool)}` : action.toolName === 'skill_create' ? '新项目 Skill' : '当前项目 Skill'}</b><span>输出</span><b>{action.toolName === 'mcp_call' ? '文件 / 画布节点' : action.toolName === 'skill_create' ? '可复用 Skill' : '工作流规则节点'}</b></div>
                   <details className="agent-action-card__details"><summary>查看执行内容</summary><pre>{JSON.stringify(action.arguments, null, 2)}</pre></details>
                   {action.error ? <small className="agent-action-card__error">{action.error}</small> : null}
-                  {action.status === 'succeeded' ? <div className="agent-action-card__result"><span>已执行</span>{action.result?.canvasNodeIds?.length ? <small>已创建 {action.result.canvasNodeIds.length} 个画布节点</small> : action.result?.artifacts?.length ? <small>已产出 {action.result.artifacts.length} 项</small> : null}{action.result?.canvasNodeId ? <button type="button" onClick={() => onLocateNode(action.result!.canvasNodeId!)}>定位</button> : null}</div> : null}
+                  {action.status === 'succeeded' ? <div className="agent-action-card__result"><span>已执行</span>{action.result?.canvasNodeIds?.length ? <small>已创建 {action.result.canvasNodeIds.length} 个画布节点</small> : action.result?.artifacts?.length ? <small>已产出 {action.result.artifacts.length} 项</small> : null}{action.result?.canvasNodeId ? <button type="button" className="agent-icon-button" aria-label="在画布定位结果" title="在画布定位" onClick={() => onLocateNode(action.result!.canvasNodeId!)}><FocusIcon /></button> : null}</div> : null}
                   {action.status === 'dismissed' ? <span className="agent-action-card__dismissed">已跳过</span> : null}
                   {action.status === 'running' ? <span className="agent-action-card__running">执行中…</span> : null}
                   {action.status === 'awaiting_confirmation' || action.status === 'failed' ? <div className="agent-action-card__buttons">
@@ -7578,20 +7708,42 @@ function AgentWorkspace({
             </div> : null}
           </div>
         </article>) : null}
-        {!utilityPanelOpen && planning ? <section className="agent-planning-card" role="status" aria-live="polite">
-          <span className="agent-planning-card__mark"><span className="agent-composer__spinner" /></span>
-          <div><strong>Agent 正在制定方案</strong><small>正在读取画布、参考素材与项目规则</small></div>
-          <ol>
-            <li className="is-complete">理解创作要求</li>
-            <li className="is-complete">读取画布上下文</li>
-            <li className="is-active">调用 {agentPlannerModelLabel(plannerModel)} 生成执行计划</li>
-          </ol>
-        </section> : null}
+        {!utilityPanelOpen && runtimeSteps.length ? (() => {
+          const activeStep = runtimeSteps.find((step) => step.status === 'running')
+          const completedCount = runtimeSteps.filter((step) => step.status === 'succeeded').length
+          const statusLabel = planning
+            ? activeStep ? `正在${activeStep.label}` : 'Agent 正在工作'
+            : runtimeFailed ? 'Agent 运行未完成' : 'Agent 已完成'
+          const summary = planning
+            ? `${completedCount}/${runtimeSteps.length} 项已完成`
+            : runtimeFailed ? '已保留失败位置，可修改要求后重试' : `${runtimeSteps.length} 项操作已记录`
+          return <section className={`agent-runtime-feed${runtimeFailed ? ' is-failed' : runtimeComplete ? ' is-complete' : ''}`} role="status" aria-live={planning ? 'polite' : undefined} aria-label="Agent 运行记录">
+            <header className="agent-runtime-feed__header">
+              <span className="agent-runtime-feed__status">
+                <span className="agent-runtime-feed__mark" aria-hidden="true">
+                  {planning && !runtimeFailed ? <span className="agent-composer__spinner" /> : runtimeFailed ? '!' : '✓'}
+                </span>
+                <strong>{statusLabel}</strong>
+              </span>
+              <button type="button" className="agent-runtime-feed__toggle" aria-expanded={runtimeDetailsOpen} onClick={() => setRuntimeDetailsOpen((open) => !open)}>
+                {runtimeDetailsOpen ? '收起' : '查看记录'}
+              </button>
+            </header>
+            <p className="agent-runtime-feed__summary">{activeStep?.detail ?? summary}</p>
+            {runtimeDetailsOpen ? <ol aria-label="运行步骤">
+              {runtimeSteps.map((step) => <li key={step.id} className={`is-${step.status}`}>
+                <span className="agent-runtime-feed__step-marker" aria-hidden="true">{agentRuntimeStepMarker(step)}</span>
+                <span className="agent-runtime-feed__step-copy"><strong>{step.status === 'running' ? `正在${step.label}` : step.label}</strong><small>{step.error ?? step.detail}</small></span>
+                <em>{agentRuntimeStepStatusLabel(step.status)}</em>
+              </li>)}
+            </ol> : null}
+          </section>
+        })() : null}
         {!utilityPanelOpen && latestRun?.branches.length ? <section className="agent-run-card" aria-label="Agent Run 实时进度">
-          <header><span><strong>生成任务</strong><small>{latestRun.status === 'completed' ? '已完成' : latestRun.status === 'partial' ? '部分完成' : latestRun.status === 'failed' ? '失败' : latestRun.status === 'cancelled' ? '已取消' : '处理中'}</small></span><div>{latestRun.status === 'queued' || latestRun.status === 'running' || latestRun.status === 'executing' ? <button type="button" disabled={cancellingRunId === latestRun.id} onClick={() => { setCancellingRunId(latestRun.id); setError(''); void onCancelRun(latestRun.id).then((ok) => { if (!ok) setError('任务取消失败，请稍后重试。') }).finally(() => setCancellingRunId('')) }}>{cancellingRunId === latestRun.id ? '取消中…' : '取消'}</button> : null}<b>{latestRun.completedBranchCount}/{latestRun.branches.length}</b></div></header>
+          <header><span><strong>生成任务</strong><small>{latestRun.status === 'completed' ? '已完成' : latestRun.status === 'partial' ? '部分完成' : latestRun.status === 'failed' ? '失败' : latestRun.status === 'cancelled' ? '已取消' : '处理中'}</small></span><div>{latestRun.status === 'queued' || latestRun.status === 'running' || latestRun.status === 'executing' ? <button type="button" className="agent-icon-button agent-icon-button--danger" aria-label="取消任务" title="取消任务" disabled={cancellingRunId === latestRun.id} onClick={() => { setCancellingRunId(latestRun.id); setError(''); void onCancelRun(latestRun.id).then((ok) => { if (!ok) setError('任务取消失败，请稍后重试。') }).finally(() => setCancellingRunId('')) }}>{cancellingRunId === latestRun.id ? <span className="agent-workspace__mini-spinner" /> : <CloseIcon />}</button> : null}<b>{latestRun.completedBranchCount}/{latestRun.branches.length}</b></div></header>
           <div className="agent-run-card__track" aria-hidden="true"><i style={{ width: `${Math.round(latestRun.completedBranchCount / latestRun.branches.length * 100)}%` }} /></div>
           <div className="agent-run-card__branches">
-            {latestRun.branches.map((branch) => <div key={branch.id}><span><strong>{branch.label}</strong><small>{branch.status === 'succeeded' ? '已完成' : branch.status === 'running' ? '生成中' : branch.status === 'queued' ? '排队中' : branch.status === 'cancelled' ? '已取消' : '失败'}</small></span>{branch.status === 'failed' || branch.status === 'cancelled' ? <button type="button" disabled={retryingBranchId === branch.id} onClick={() => { setRetryingBranchId(branch.id); setError(''); void onRetryBranch(latestRun.id, branch.id).then((ok) => { if (!ok) setError(`「${branch.label}」重试失败，请稍后再试。`) }).finally(() => setRetryingBranchId('')) }}>{retryingBranchId === branch.id ? '重试中…' : '重试'}</button> : null}</div>)}
+            {latestRun.branches.map((branch) => <div key={branch.id}><span><strong>{branch.label}</strong><small>{branch.status === 'succeeded' ? '已完成' : branch.status === 'running' ? '生成中' : branch.status === 'queued' ? '排队中' : branch.status === 'cancelled' ? '已取消' : '失败'}</small></span>{branch.status === 'failed' || branch.status === 'cancelled' ? <button type="button" className="agent-icon-button" aria-label={`重试 ${branch.label}`} title="重试" disabled={retryingBranchId === branch.id} onClick={() => { setRetryingBranchId(branch.id); setError(''); void onRetryBranch(latestRun.id, branch.id).then((ok) => { if (!ok) setError(`「${branch.label}」重试失败，请稍后再试。`) }).finally(() => setRetryingBranchId('')) }}>{retryingBranchId === branch.id ? <span className="agent-workspace__mini-spinner" /> : <RefreshIcon />}</button> : null}</div>)}
           </div>
         </section> : null}
         <div ref={messageEndRef} />

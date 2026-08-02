@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Edge } from '@xyflow/react'
-import { canvasZoomMode, generationTaskResultLabel, planResultGroupPresentation, traceCanvasLineage } from './canvasPresentation.ts'
+import { canvasZoomMode, generationTaskErrorMessage, generationTaskResultLabel, planResultGroupPresentation, traceCanvasLineage } from './canvasPresentation.ts'
 
 test('canvasZoomMode applies stable semantic zoom bands', () => {
   assert.equal(canvasZoomMode(1), 'detail')
@@ -27,6 +27,12 @@ test('generationTaskResultLabel distinguishes expired login from a real submissi
     error: '任务提交超过 5 分钟，未进入生成队列。请重试。',
     currentLabel: '首图候选 01',
   }), '首图候选 · 提交超时')
+})
+
+test('generationTaskErrorMessage hides raw network errors while preserving actionable provider messages', () => {
+  assert.equal(generationTaskErrorMessage('Failed to fetch'), '生成服务连接中断，请重试。')
+  assert.equal(generationTaskErrorMessage('fetch failed'), '生成服务连接中断，请重试。')
+  assert.equal(generationTaskErrorMessage('图像服务当前限流，请稍后重试。'), '图像服务当前限流，请稍后重试。')
 })
 
 test('traceCanvasLineage keeps the selected branch and excludes sibling branches', () => {

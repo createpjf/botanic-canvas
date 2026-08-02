@@ -273,9 +273,15 @@ export async function generateImages(job, { apiBaseUrl, apiKey, signal, persistI
     inputImages.forEach((reference, index) => {
       form.append('image[]', new Blob([reference.buffer], { type: reference.mimeType }), `reference-${index + 1}.${fileExtension(reference.mimeType)}`)
     })
-    const response = await fetch(`${apiBaseUrl}/v1/images/edits`, {
-      method: 'POST', headers: { Authorization: `Bearer ${apiKey}` }, body: form, signal,
-    })
+    let response
+    try {
+      response = await fetch(`${apiBaseUrl}/v1/images/edits`, {
+        method: 'POST', headers: { Authorization: `Bearer ${apiKey}` }, body: form, signal,
+      })
+    } catch (error) {
+      if (signal?.aborted) throw error
+      throw new GenerationError(502, 'PROVIDER_UNAVAILABLE', '图像服务连接中断，请稍后重试。')
+    }
     const body = await response.json().catch(() => null)
     if (!response.ok) throw providerError(response, body)
     return Array.isArray(body?.data) ? body.data : []

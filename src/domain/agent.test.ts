@@ -21,6 +21,8 @@ import {
   updateBotanicAgentMessage,
   updateBotanicAgentAction,
   updateBotanicAgentRun,
+  createBotanicAgentRuntimeSteps,
+  updateBotanicAgentRuntimeStep,
 } from './agent.ts'
 
 const rootRecipe: GenerationRecipe = {
@@ -42,6 +44,27 @@ const sceneGroup: AssetGroup = {
   createdAt: 1,
   updatedAt: 1,
 }
+
+test('Agent 运行记录按可验证的上下文来源生成步骤', () => {
+  const steps = createBotanicAgentRuntimeSteps({
+    hasTarget: true, referenceCount: 2, memoryCount: 1, assetGroupCount: 3, plannerLabel: 'DeepSeek V4',
+  })
+  assert.deepEqual(steps.map((step) => step.id), [
+    'read-canvas', 'read-references', 'read-memory', 'search-assets', 'call-planner', 'finalize-plan',
+  ])
+  assert.equal(steps[1].detail, '2 个已连接参考')
+  assert.equal(steps[4].detail, 'DeepSeek V4 · 生成执行计划')
+})
+
+test('Agent 运行记录按状态更新时间，不改变其他步骤', () => {
+  const steps = createBotanicAgentRuntimeSteps({ hasTarget: false })
+  const running = updateBotanicAgentRuntimeStep(steps, 'read-canvas', 'running', 100)
+  assert.equal(running[0].status, 'running')
+  assert.equal(running[0].startedAt, 100)
+  const done = updateBotanicAgentRuntimeStep(running, 'read-canvas', 'succeeded', 120)
+  assert.equal(done[0].completedAt, 120)
+  assert.equal(done[1].status, 'pending')
+})
 
 test('Botanic Agent 能从自然语言识别高频生图意图', () => {
   assert.equal(inferBotanicAgentIntent('保持衣服不变，换十个海边场景'), 'replace_scene')

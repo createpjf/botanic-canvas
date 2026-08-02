@@ -1,5 +1,66 @@
 type BotanicIconProps = { className?: string }
 
+/** Agent 面板 · 结果画廊 */
+export function GalleryIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <rect x="3" y="4" width="18" height="16" rx="2" stroke="currentColor" strokeWidth="1.5" />
+    <circle cx="8" cy="9" r="1.25" stroke="currentColor" strokeWidth="1.5" />
+    <path d="m4.5 17 4.25-4.25 3.25 3 2.25-2.25L19.5 17" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+}
+
+/** Agent 面板 · 生成任务清单 */
+export function ChecklistIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="M8.5 5.5h11M8.5 12h11M8.5 18.5h11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    <path d="m3.5 5.5 1.25 1.25L7 4.5M3.5 12l1.25 1.25L7 11M3.5 18.5l1.25 1.25L7 17.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+}
+
+/** Agent 面板 · 项目记忆 */
+export function BookmarkIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="M6 4.25A1.75 1.75 0 0 1 7.75 2.5h8.5A1.75 1.75 0 0 1 18 4.25v17.1l-6-3.8-6 3.8V4.25Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+  </svg>
+}
+
+/** 通用编辑动作 */
+export function EditIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="m4 16.75-.75 3.5 3.5-.75L18.2 8.05a2.3 2.3 0 0 0-3.25-3.25L4 16.75Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+    <path d="m13.75 6.25 4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+  </svg>
+}
+
+/** 通用复制动作 */
+export function CopyIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <rect x="8" y="8" width="12" height="12" rx="2" stroke="currentColor" strokeWidth="1.5" />
+    <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" stroke="currentColor" strokeWidth="1.5" />
+  </svg>
+}
+
+/** 通用正向反馈 */
+export function ThumbUpIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="M8.5 10.5v9.25h-3A1.75 1.75 0 0 1 3.75 18v-5.75A1.75 1.75 0 0 1 5.5 10.5h3Zm0 0 4.35-6.8a1.4 1.4 0 0 1 2.58.93l-.55 3.37h4.37a1.75 1.75 0 0 1 1.72 2.05l-1.2 7.15a3 3 0 0 1-2.96 2.5H8.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+}
+
+/** 通用负向反馈 */
+export function ThumbDownIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="M8.5 13.5V4.25h-3A1.75 1.75 0 0 0 3.75 6v5.75A1.75 1.75 0 0 0 5.5 13.5h3Zm0 0 4.35 6.8a1.4 1.4 0 0 0 2.58-.93l-.55-3.37h4.37a1.75 1.75 0 0 0 1.72-2.05l-1.2-7.15a3 3 0 0 0-2.96-2.5H8.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+}
+
+/** 通用重试动作 */
+export function RefreshIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="M20 11a8 8 0 0 0-14.85-3.9L3 10m0 0V5.5M3 10h4.5M4 13a8 8 0 0 0 14.85 3.9L21 14m0 0v4.5M21 14h-4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+}
+
 /** 植物学 Figma · Iconly/Sharp/Close Square（1228:231093） */
 export function CloseIcon({ className }: BotanicIconProps) {
   return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
