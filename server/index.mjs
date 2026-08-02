@@ -306,6 +306,7 @@ const server = createServer(async (request, response) => {
     const projectGenerationReconcileMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/reconcile-generation-results$/)
     const projectAgentRunsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/agent-runs$/)
     const projectAgentSkillsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/agent-skills$/)
+    const projectMediaMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/media$/)
     const agentRunMatch = url.pathname.match(/^\/api\/agent-runs\/([^/]+)$/)
     const agentRunCancelMatch = url.pathname.match(/^\/api\/agent-runs\/([^/]+)\/cancel$/)
     const agentBranchRetryMatch = url.pathname.match(/^\/api\/agent-runs\/([^/]+)\/branches\/([^/]+)\/retry$/)
@@ -1022,6 +1023,31 @@ const server = createServer(async (request, response) => {
         return json(response, 200, publicGenerationJob(cancelled))
       }
       return json(response, 200, publicGenerationJob(job))
+    }
+    if (projectMediaMatch && request.method === 'POST') {
+      const user = await requireUser(request)
+      if (!await enforceRateLimit(response, {
+        scope: 'media-upload',
+        subject: user.id,
+        limit: config.security.mediaUploadsPerMinute,
+        windowMs: 60_000,
+      })) return
+      const projectId = decodeURIComponent(projectMediaMatch[1])
+      await requireProjectPermission(productStore, user.id, projectId, 'edit')
+      const body = await readJson(request, config.maximumRequestBytes, '参考图片过大，请压缩到 8MB 以内。')
+      try {
+        const image = await mediaService.persistDataUrl({
+          ownerId: user.id,
+          projectId,
+          dataUrl: text(body?.dataUrl, '参考图片', config.maximumRequestBytes),
+        })
+        return json(response, 201, { image })
+      } catch (caught) {
+        if (caught?.code === 'MEDIA_VALIDATION_FAILED') {
+          throw new HttpError(400, 'AGENT_REFERENCE_INVALID', caught.message)
+        }
+        throw caught
+      }
     }
     if (mediaMatch && request.method === 'GET') {
       const user = await requireUser(request, { allowMediaCookie: true })

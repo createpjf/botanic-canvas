@@ -112,7 +112,7 @@ export function createMediaService({ productStore, objectStore, maximumUploadByt
 
   async function persistDataUrl({ ownerId, projectId, dataUrl }) {
     const image = parseImageDataUrl(dataUrl, maximumUploadBytes)
-    if (!image) throw new Error('仅支持 PNG、JPEG 或 WebP 图片存入对象存储。')
+    if (!image) throw mediaValidationError('仅支持 PNG、JPEG 或 WebP 图片存入对象存储。')
     return persistBytes({ ownerId, projectId, bytes: image.bytes, contentType: image.contentType })
   }
 

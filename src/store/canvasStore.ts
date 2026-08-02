@@ -11,6 +11,7 @@ import { generationTaskResultLabel } from '../domain/canvasPresentation'
 import { resolveRemoteCanvasRefresh } from '../domain/remoteDocumentSync'
 import { assignVideoInputRoles } from '../domain/videoGeneration'
 import { summarizeWorkflowTemplate } from '../domain/workflowTemplates'
+import { replaceMediaSources as replaceDocumentMediaSources } from '../domain/agentMedia'
 import { appendBotanicAgentMessage, createBotanicAgentMemoryItem, createBotanicAgentRun, createBotanicAgentSession, replaceBotanicAgentSessionContext, updateBotanicAgentAction, updateBotanicAgentMessage, updateBotanicAgentRun, upsertBotanicAgentRunSnapshot } from '../domain/agent'
 import type { BotanicAgentActionProposal, BotanicAgentExecutionMode, BotanicAgentMemoryKind, BotanicAgentMessage, BotanicAgentPlan, BotanicAgentRun, BotanicAgentRunBranch, BotanicAgentRunSnapshot, BotanicAgentRunStatus } from '../domain/agent'
 import type {
@@ -139,6 +140,7 @@ type CanvasStore = {
   openNewDocument: (document: CanvasDocument) => void
   renameDocument: (name: string) => Promise<void>
   setNodes: (nodes: CanvasNode[]) => void
+  replaceMediaSources: (replacements: Record<string, string>) => Promise<void>
   setNodesTransient: (nodes: CanvasNode[]) => void
   setEdges: (edges: Edge[]) => void
   setViewport: (viewport: Viewport) => void
@@ -1580,7 +1582,7 @@ function commit(
   set: (next: Partial<CanvasStore>) => void,
   document: CanvasDocument,
   extra: Partial<CanvasStore> = {},
-  options: { immediate?: boolean } = {},
+  options: { immediate?: boolean; rejectOnFailure?: boolean } = {},
 ) {
   const sanitizedDocument = [...revokedGlobalAssetIds].reduce(
     (current, assetId) => scrubAssetFromDocument(current, assetId),
@@ -1595,11 +1597,14 @@ function commit(
         set({ document: savedDocument ?? nextDocument, persistenceStatus: 'saved' })
       }
     })
-    .catch((error) => {
-      if (runId !== persistenceRunId) return
+    .catch(async (error) => {
+      if (runId !== persistenceRunId) {
+        if (options.rejectOnFailure) throw new Error('画布已发生新的编辑，请重新提交 Agent。')
+        return
+      }
       if (error instanceof ProductApiError && error.code === 'PROJECT_CONFLICT') {
         set({ persistenceStatus: 'saving', assistantMessage: '正在同步最新画布…' })
-        void refreshCanvasDocumentFromRemote(nextDocument.id)
+        const refresh = refreshCanvasDocumentFromRemote(nextDocument.id)
           .then((remote) => {
             if (!remote || runId !== persistenceRunId) return
             set({ document: remote, persistenceStatus: 'saved', assistantMessage: '画布已同步。' })
@@ -1607,6 +1612,11 @@ function commit(
           .catch(() => {
             if (runId === persistenceRunId) set({ persistenceStatus: 'error', assistantMessage: '最新画布暂时不可用，请稍后重试。' })
           })
+        if (options.rejectOnFailure) {
+          await refresh
+          throw new Error('画布版本已更新，请重新提交 Agent。')
+        }
+        void refresh
         return
       }
       if (error instanceof ProductApiError && error.status === 0) {
@@ -1614,12 +1624,14 @@ function commit(
           persistenceStatus: 'offline',
           assistantMessage: '云端暂时不可用，已保存到本地草稿；恢复网络后会自动同步。',
         })
+        if (options.rejectOnFailure) throw new Error('参考图片已上传，但画布尚未同步到云端，请恢复网络后重试。')
         return
       }
       set({
         persistenceStatus: 'error',
         assistantMessage: '云端保存暂时失败，本地草稿已保留；请稍后重试。',
       })
+      if (options.rejectOnFailure) throw new Error('参考图片已上传，但画布保存失败，请稍后重试。')
     })
   return persistence
 }
@@ -2377,7 +2389,7 @@ function syncGenerationJob(
           ? `真实生成已完成 ${candidates.length}/${job.batchCount} 个；缺少的 ${job.missingOutputCount} 个可单独补生成。`
           : `真实生成已完成：${candidates.length} 个结果已作为独立节点写入画布；不需要的可直接删除。`
         : '真实生成没有返回候选结果，请重试。',
-    }, { immediate: true })
+    }, { immediate: true, rejectOnFailure: true })
     return
   }
 
@@ -2943,6 +2955,16 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     const selected = synchronizedNodes.filter((node) => node.selected)
     const document = { ...get().document, nodes: synchronizedNodes }
     commit(set, document, { selectedNodeId: selected.length === 1 ? selected[0].id : null })
+  },
+
+  replaceMediaSources: async (replacements) => {
+    if (!Object.keys(replacements).length) return
+    const document = get().document
+    const nextDocument = replaceDocumentMediaSources(document, replacements)
+    if (nextDocument === document) return
+    await commit(set, nextDocument, {
+      assistantMessage: '参考图片已准备完成。',
+    }, { immediate: true })
   },
 
   setNodesTransient: (nodes) => {

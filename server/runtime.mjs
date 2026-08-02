@@ -90,6 +90,7 @@ export function runtimeConfig(rootDir = process.cwd()) {
     realtimePublicUrl: process.env.REALTIME_PUBLIC_URL,
     security: {
       apiRequestsPerMinute: boundedInteger(process.env.SECURITY_API_REQUESTS_PER_MINUTE, 600, 60, 10_000),
+      mediaUploadsPerMinute: boundedInteger(process.env.SECURITY_MEDIA_UPLOADS_PER_MINUTE, 30, 1, 1_000),
       agentPlansPerFiveMinutes: boundedInteger(process.env.SECURITY_AGENT_PLANS_PER_5_MINUTES, 20, 1, 1_000),
       generationOutputsPerDay: boundedInteger(process.env.SECURITY_GENERATION_OUTPUTS_PER_DAY, 100, 1, 10_000),
       memberMutationsPerHour: boundedInteger(process.env.SECURITY_MEMBER_MUTATIONS_PER_HOUR, 20, 1, 1_000),
