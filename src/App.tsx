@@ -30,6 +30,7 @@ import { buildBotanicAgentPlan, collectBotanicAgentResults, creativeDimensionLab
 import { canvasZoomMode, planResultGroupPresentation, traceCanvasLineage, type ResultGroupPresentation } from './domain/canvasPresentation'
 import { buildDeliveryPreviewArtifacts, canUseForImageDelivery, resolveDeliveryDraft, type DeliveryPanelTarget } from './domain/deliveryPresentation'
 import { mediaFileExtension, reducedAspectRatio } from './domain/mediaPresentation'
+import { mediaRetryUrl } from './domain/mediaRecovery'
 import { shouldRefreshFromRealtimeEvent } from './domain/realtimeSync'
 import { videoAspectRatioPolicy } from './domain/videoGeneration'
 import { summarizeWorkflowTemplate, type WorkflowTemplateSummary } from './domain/workflowTemplates'
@@ -65,7 +66,7 @@ import { getGenerationServiceHealth } from './lib/generationApi'
 import { refinePrompt } from './lib/promptRefinementApi'
 import { connectCanvasCollaboration, type CanvasCollaboration } from './lib/projectCollaboration'
 import { createCanvasProject, deleteCanvasDocument, flushPendingCanvasDocumentWrites, readCanvasProjectSummaries, renameCanvasProject, syncPendingCanvasDrafts } from './lib/db'
-import { ProductApiError, clearProductSession, completeProductPasswordSetup, createProductSession, enrollProductMfa, hybridAuthEnabled, inviteWorkspaceMember, listWorkspaceAuditEvents, listWorkspaceMembers, productPasswordSetupRequired, readProductMfaStatus, readProductSession, removeProductMfa, serverPersistenceEnabled, signOutOtherProductSessions, supabaseAuthEnabled, updateProductPassword, updateWorkspaceMember, verifyProductMfa, type ProductUser } from './lib/productSession'
+import { ProductApiError, clearProductSession, completeProductPasswordSetup, createProductSession, enrollProductMfa, hybridAuthEnabled, inviteWorkspaceMember, listWorkspaceAuditEvents, listWorkspaceMembers, productPasswordSetupRequired, readProductMfaStatus, readProductSession, refreshProductMediaSession, removeProductMfa, serverPersistenceEnabled, signOutOtherProductSessions, supabaseAuthEnabled, updateProductPassword, updateWorkspaceMember, verifyProductMfa, type ProductUser } from './lib/productSession'
 import { createEmptyCanvasDocument } from './data/seed'
 import { useCanvasStore } from './store/canvasStore'
 import type { WorkspaceProject } from './components/WorkspaceViews'
@@ -1261,6 +1262,8 @@ function ResultNode({ data, id, selected }: NodeProps) {
   const groupCandidates = presentation?.groupCandidates ?? []
   const isSelected = selected || Boolean(result.selected)
   const [imageFailed, setImageFailed] = useState(false)
+  const [mediaRetryAttempt, setMediaRetryAttempt] = useState(0)
+  const [mediaRecoveryPending, setMediaRecoveryPending] = useState(false)
   const [videoDimensions, setVideoDimensions] = useState<{ width: number; height: number } | null>(null)
   const [currentTime, setCurrentTime] = useState(() => Date.now())
   const cancelGeneration = useCanvasStore((state) => state.cancelGeneration)
@@ -1291,9 +1294,34 @@ function ResultNode({ data, id, selected }: NodeProps) {
     ? Math.max(0, Math.floor((currentTime - result.submittedAt) / 1_000))
     : 0
   const isSlowTask = elapsedSeconds >= 12
+  const mediaSource = result.image ? mediaRetryUrl(result.image, mediaRetryAttempt) : undefined
+
+  const recoverMedia = useCallback(async () => {
+    if (!result.image || mediaRecoveryPending) return
+    setMediaRecoveryPending(true)
+    setImageFailed(false)
+    try {
+      await refreshProductMediaSession()
+      setMediaRetryAttempt((attempt) => attempt + 1)
+    } catch {
+      setImageFailed(true)
+    } finally {
+      setMediaRecoveryPending(false)
+    }
+  }, [mediaRecoveryPending, result.image])
+
+  const handleMediaError = useCallback(() => {
+    if (mediaRetryAttempt === 0) {
+      void recoverMedia()
+      return
+    }
+    setImageFailed(true)
+  }, [mediaRetryAttempt, recoverMedia])
 
   useEffect(() => {
     setImageFailed(false)
+    setMediaRetryAttempt(0)
+    setMediaRecoveryPending(false)
     setVideoDimensions(null)
   }, [result.image])
 
@@ -1371,7 +1399,7 @@ function ResultNode({ data, id, selected }: NodeProps) {
         {hasDisplayableImage
           ? mediaKind === 'video'
             ? <video
-                src={result.image}
+                src={mediaSource}
                 aria-label={resultName}
                 className="result-node__video nodrag nowheel"
                 controls
@@ -1381,14 +1409,15 @@ function ResultNode({ data, id, selected }: NodeProps) {
                   const { videoWidth: width, videoHeight: height } = event.currentTarget
                   if (width > 0 && height > 0) setVideoDimensions({ width, height })
                 }}
-                onError={() => setImageFailed(true)}
+                onError={handleMediaError}
               />
-            : <img src={result.image} alt={resultName} className="result-node__image" draggable={false} decoding="async" onError={() => setImageFailed(true)} />
+            : <img src={mediaSource} alt={resultName} className="result-node__image" draggable={false} decoding="async" onError={handleMediaError} />
           : (
           <div className={`result-node__task-state result-node__task-state--${result.status}`}>
             {isGenerating ? <i className="result-node__task-pulse" aria-hidden="true" /> : null}
             <strong aria-live="polite">{imageFailed ? '媒体无法显示' : isGenerating ? taskFeedback.title : result.status === 'failed' ? '任务未完成' : result.status === 'cancelled' ? '任务已取消' : '等待生成结果'}</strong>
-            <small>{imageFailed ? '媒体数据异常或保存未完成，请重新生成。' : isGenerating ? (isSlowTask ? elapsedTaskLabel(elapsedSeconds) : taskFeedback.detail) : result.error ?? (result.status === 'ready' ? '等待生成服务返回结果。' : '生成服务的真实状态会在此同步。')}</small>
+            <small>{imageFailed ? '媒体读取失败，可能是登录状态或网络中断。' : isGenerating ? (isSlowTask ? elapsedTaskLabel(elapsedSeconds) : taskFeedback.detail) : result.error ?? (result.status === 'ready' ? '等待生成服务返回结果。' : '生成服务的真实状态会在此同步。')}</small>
+            {imageFailed ? <button className="result-node__task-action nodrag nowheel" type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void recoverMedia() }}>重新加载</button> : null}
             {result.status === 'generating' ? <button className="result-node__task-action nodrag nowheel" type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); cancelGeneration() }}>取消</button> : null}
             {result.status === 'failed' ? <div className="result-node__task-actions nodrag nowheel" onPointerDown={(event) => event.stopPropagation()}>
               <button className="result-node__task-action" type="button" onClick={(event) => { event.stopPropagation(); void retryGeneration() }}>原配方重试</button>

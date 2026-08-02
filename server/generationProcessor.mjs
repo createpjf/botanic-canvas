@@ -22,11 +22,10 @@ export function createGenerationProcessor({ productStore, mediaService, config, 
   }
 
   async function writeJobToProjectSafely(job) {
-    if (!job.agentRun) return
     try {
       await writeJobToProject(job)
     } catch (caught) {
-      console.error(`[agent-run] project writeback deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
+      console.error(`[generation] project writeback deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
     }
   }
 

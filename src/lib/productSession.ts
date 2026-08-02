@@ -168,6 +168,17 @@ async function syncMediaSessionCookie(accessToken?: string): Promise<ProductUser
   return sync
 }
 
+/** 媒体标签读取失败时，重新同步当前登录态后再加载原媒体。 */
+export async function refreshProductMediaSession() {
+  if (!supabase) return
+  const { data } = await withAuthTimeout(
+    supabase.auth.getSession(),
+    '媒体登录状态读取超时，请重新登录。',
+  )
+  if (!data.session?.access_token) throw new ProductApiError('登录状态已失效，请重新登录。', 401, 'AUTH_REQUIRED')
+  await syncMediaSessionCookie(data.session.access_token)
+}
+
 async function clearMediaSessionCookie() {
   await fetch('/api/session', { method: 'DELETE', credentials: 'include' }).catch(() => undefined)
 }
