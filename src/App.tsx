@@ -27,6 +27,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import { defaultGenerationModels } from './domain/canvas'
 import { buildBotanicAgentPlan, collectBotanicAgentResults, creativeDimensionLabel, insertBotanicAgentMention, readBotanicAgentMentionQuery, recordBotanicAgentCanvasWritebacks, resolveBotanicAgentCanvasCommands, resolveBotanicAgentResultSelection, type BotanicAgentActionProposal, type BotanicAgentActionResult, type BotanicAgentArtifact, type BotanicAgentCanvasWriteback, type BotanicAgentExecutionMode, type BotanicAgentIntent, type BotanicAgentMemoryItem, type BotanicAgentMemoryKind, type BotanicAgentMentionQuery, type BotanicAgentMessage, type BotanicAgentPlan, type BotanicAgentRun, type BotanicAgentSession, type BotanicAgentSkill } from './domain/agent'
+import { collectAgentMediaSources, prepareAgentMediaSources } from './domain/agentMedia'
 import { canvasZoomMode, planResultGroupPresentation, traceCanvasLineage, type ResultGroupPresentation } from './domain/canvasPresentation'
 import { buildDeliveryPreviewArtifacts, canUseForImageDelivery, resolveDeliveryDraft, type DeliveryPanelTarget } from './domain/deliveryPresentation'
 import { mediaFileExtension, reducedAspectRatio } from './domain/mediaPresentation'
@@ -61,7 +62,7 @@ import type {
   UploadedAssetInput,
 } from './domain/canvas'
 import { deliveryPresets, downloadDeliveryPackage } from './lib/deliveryExport'
-import { createPersistentBotanicAgentRun, createProjectAgentSkill, executePersistentBotanicAgentRun, executeProjectAgentAction, listPersistentBotanicAgentRuns, listProjectAgentSkills, requestBotanicAgentPlan } from './lib/agentApi'
+import { createPersistentBotanicAgentRun, createProjectAgentSkill, executePersistentBotanicAgentRun, executeProjectAgentAction, listPersistentBotanicAgentRuns, listProjectAgentSkills, persistAgentReferenceMedia, requestBotanicAgentPlan } from './lib/agentApi'
 import { getGenerationServiceHealth } from './lib/generationApi'
 import { refinePrompt } from './lib/promptRefinementApi'
 import { connectCanvasCollaboration, type CanvasCollaboration } from './lib/projectCollaboration'
@@ -2291,6 +2292,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
   const openNewDocument = useCanvasStore((state) => state.openNewDocument)
   const renameDocument = useCanvasStore((state) => state.renameDocument)
   const setNodes = useCanvasStore((state) => state.setNodes)
+  const replaceMediaSources = useCanvasStore((state) => state.replaceMediaSources)
   const setNodesTransient = useCanvasStore((state) => state.setNodesTransient)
   const setEdges = useCanvasStore((state) => state.setEdges)
   const setViewport = useCanvasStore((state) => state.setViewport)
@@ -3857,6 +3859,13 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
     let runId: string
     if (serverPersistenceEnabled) {
       try {
+        const activeDocument = useCanvasStore.getState().document
+        const sources = collectAgentMediaSources(activeDocument, plan.selectedResultNodeId, plan.assetGroupId)
+        const replacements = await prepareAgentMediaSources(
+          sources,
+          (source) => persistAgentReferenceMedia(activeDocument.id, source),
+        )
+        await replaceMediaSources(replacements)
         const snapshot = await createPersistentBotanicAgentRun({
           projectId: document.id,
           plan,
@@ -3910,7 +3919,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
       return { started: false, runId }
     }
     return { started: true, runId }
-  }, [applyAgentRunSnapshot, createGenerateBranchFromResult, createGenerateFromResultRecipe, document.assetGroups, document.id, refreshDocumentFromRemote, runBatchVariation, runGraphGeneration, saveAgentPlan, updateAgentRunStatus, updateGenerateNode])
+  }, [applyAgentRunSnapshot, createGenerateBranchFromResult, createGenerateFromResultRecipe, document.assetGroups, document.id, refreshDocumentFromRemote, replaceMediaSources, runBatchVariation, runGraphGeneration, saveAgentPlan, updateAgentRunStatus, updateGenerateNode])
 
   useEffect(() => {
     if (!hydrated) return
@@ -7166,7 +7175,7 @@ function AgentWorkspace({
   useEffect(() => {
     const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
     messageEndRef.current?.scrollIntoView({ block: 'end', behavior })
-  }, [session?.messages.length, latestRun?.updatedAt])
+  }, [session?.messages.length, latestRun?.updatedAt, planning])
 
   useEffect(() => {
     if (!compatibleGroups.some((group) => group.id === groupId)) setGroupId('')
@@ -7569,6 +7578,15 @@ function AgentWorkspace({
             </div> : null}
           </div>
         </article>) : null}
+        {!utilityPanelOpen && planning ? <section className="agent-planning-card" role="status" aria-live="polite">
+          <span className="agent-planning-card__mark"><span className="agent-composer__spinner" /></span>
+          <div><strong>Agent 正在制定方案</strong><small>正在读取画布、参考素材与项目规则</small></div>
+          <ol>
+            <li className="is-complete">理解创作要求</li>
+            <li className="is-complete">读取画布上下文</li>
+            <li className="is-active">调用 {agentPlannerModelLabel(plannerModel)} 生成执行计划</li>
+          </ol>
+        </section> : null}
         {!utilityPanelOpen && latestRun?.branches.length ? <section className="agent-run-card" aria-label="Agent Run 实时进度">
           <header><span><strong>生成任务</strong><small>{latestRun.status === 'completed' ? '已完成' : latestRun.status === 'partial' ? '部分完成' : latestRun.status === 'failed' ? '失败' : latestRun.status === 'cancelled' ? '已取消' : '处理中'}</small></span><div>{latestRun.status === 'queued' || latestRun.status === 'running' || latestRun.status === 'executing' ? <button type="button" disabled={cancellingRunId === latestRun.id} onClick={() => { setCancellingRunId(latestRun.id); setError(''); void onCancelRun(latestRun.id).then((ok) => { if (!ok) setError('任务取消失败，请稍后重试。') }).finally(() => setCancellingRunId('')) }}>{cancellingRunId === latestRun.id ? '取消中…' : '取消'}</button> : null}<b>{latestRun.completedBranchCount}/{latestRun.branches.length}</b></div></header>
           <div className="agent-run-card__track" aria-hidden="true"><i style={{ width: `${Math.round(latestRun.completedBranchCount / latestRun.branches.length * 100)}%` }} /></div>

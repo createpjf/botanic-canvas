@@ -11,6 +11,7 @@ import { generationTaskResultLabel } from '../domain/canvasPresentation'
 import { resolveRemoteCanvasRefresh } from '../domain/remoteDocumentSync'
 import { assignVideoInputRoles } from '../domain/videoGeneration'
 import { summarizeWorkflowTemplate } from '../domain/workflowTemplates'
+import { replaceMediaSources as replaceDocumentMediaSources } from '../domain/agentMedia'
 import { appendBotanicAgentMessage, createBotanicAgentMemoryItem, createBotanicAgentRun, createBotanicAgentSession, replaceBotanicAgentSessionContext, updateBotanicAgentAction, updateBotanicAgentMessage, updateBotanicAgentRun, upsertBotanicAgentRunSnapshot } from '../domain/agent'
 import type { BotanicAgentActionProposal, BotanicAgentExecutionMode, BotanicAgentMemoryKind, BotanicAgentMessage, BotanicAgentPlan, BotanicAgentRun, BotanicAgentRunBranch, BotanicAgentRunSnapshot, BotanicAgentRunStatus } from '../domain/agent'
 import type {
@@ -139,6 +140,7 @@ type CanvasStore = {
   openNewDocument: (document: CanvasDocument) => void
   renameDocument: (name: string) => Promise<void>
   setNodes: (nodes: CanvasNode[]) => void
+  replaceMediaSources: (replacements: Record<string, string>) => Promise<void>
   setNodesTransient: (nodes: CanvasNode[]) => void
   setEdges: (edges: Edge[]) => void
   setViewport: (viewport: Viewport) => void
@@ -2943,6 +2945,16 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     const selected = synchronizedNodes.filter((node) => node.selected)
     const document = { ...get().document, nodes: synchronizedNodes }
     commit(set, document, { selectedNodeId: selected.length === 1 ? selected[0].id : null })
+  },
+
+  replaceMediaSources: async (replacements) => {
+    if (!Object.keys(replacements).length) return
+    const document = get().document
+    const nextDocument = replaceDocumentMediaSources(document, replacements)
+    if (nextDocument === document) return
+    await commit(set, nextDocument, {
+      assistantMessage: '参考图片已准备完成。',
+    }, { immediate: true })
   },
 
   setNodesTransient: (nodes) => {

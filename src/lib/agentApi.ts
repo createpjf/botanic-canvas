@@ -4,6 +4,36 @@ import type { AgentToolCallTrace, BotanicAgentActionProposal, BotanicAgentAction
 
 export type AgentRunCreationBranch = { id: string; label: string; assetId?: string }
 
+function blobAsDataUrl(blob: Blob) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(new Error('参考图片读取失败，请重新添加该图片。'))
+    reader.onload = () => typeof reader.result === 'string'
+      ? resolve(reader.result)
+      : reject(new Error('参考图片读取失败，请重新添加该图片。'))
+    reader.readAsDataURL(blob)
+  })
+}
+
+export async function persistAgentReferenceMedia(projectId: string, source: string) {
+  let dataUrl = source
+  if (!source.startsWith('data:image/')) {
+    const response = await fetch(source, { credentials: 'include' })
+    if (!response.ok) throw new Error('参考图片暂时无法读取，请重新添加后再试。')
+    const blob = await response.blob()
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(blob.type)) {
+      throw new Error('Agent 参考图仅支持 PNG、JPEG 或 WebP。')
+    }
+    dataUrl = await blobAsDataUrl(blob)
+  }
+  const response = await productRequest<{ image: string }>(`/api/projects/${encodeURIComponent(projectId)}/media`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dataUrl }),
+  })
+  return response.image
+}
+
 function idempotencyKey(prefix: string) {
   return `${prefix}-${crypto.randomUUID()}`
 }
