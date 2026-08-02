@@ -2,6 +2,7 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { createAccountSecurityService, type AccountMfaEnrollment, type AccountMfaStatus } from './accountSecurity'
 import { createSecurityAuditReporter } from './securityAudit'
 import type { WorkspaceAuditEvent } from '../domain/auditEvents'
+import { invalidateProductSessionIfRequired, subscribeProductSessionInvalidated } from './productSessionInvalidation'
 
 export type ProductUser = {
   id: string
@@ -53,6 +54,17 @@ const supabase: SupabaseClient | undefined = supabaseAuthEnabled
     })
   : undefined
 const accountSecurity = supabase ? createAccountSecurityService(supabase.auth) : undefined
+
+let invalidatedSessionCleanup: Promise<void> | undefined
+subscribeProductSessionInvalidated(() => {
+  if (!supabase || invalidatedSessionCleanup) return
+  invalidatedSessionCleanup = (async () => {
+    await supabase.auth.signOut({ scope: 'local' }).catch(() => undefined)
+    await clearMediaSessionCookie()
+  })().finally(() => {
+    invalidatedSessionCleanup = undefined
+  })
+})
 
 const mediaSessionSyncs = new Map<string, Promise<ProductUser | undefined>>()
 const productRequestTimeoutMs = 15_000
@@ -226,6 +238,7 @@ export async function productRequest<T>(path: string, init: RequestInit = {}): P
   const payload = await response.json().catch(() => null) as T | ApiErrorPayload | null
   if (!response.ok) {
     const error = payload as ApiErrorPayload | null
+    invalidateProductSessionIfRequired({ status: response.status, code: error?.error?.code })
     throw new ProductApiError(error?.error?.message ?? '工作区服务返回异常。', response.status, error?.error?.code)
   }
   return payload as T

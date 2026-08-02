@@ -7,6 +7,7 @@ import { normalizeAssetGroupName, normalizeAssetGroups, removeAssetFromGroups, u
 import { mergeCollaborativeCanvasGraph } from '../domain/collaborativeGraph'
 import { findOpenGeneratePosition, planGenerateNodeCreation } from '../domain/generateNodeCreation'
 import { planGenerationOutputPlacement } from '../domain/generationOutputPlacement'
+import { generationTaskResultLabel } from '../domain/canvasPresentation'
 import { resolveRemoteCanvasRefresh } from '../domain/remoteDocumentSync'
 import { assignVideoInputRoles } from '../domain/videoGeneration'
 import { summarizeWorkflowTemplate } from '../domain/workflowTemplates'
@@ -1859,11 +1860,13 @@ function updateTaskNodes(
           taskGroupId: taskNodeIds.resultNodeId,
           taskNodeId: taskNodeIds.resultNodeId,
           error,
-          label: status === 'succeeded'
-            ? `${result.generationKind === 'refinement' ? '精修' : '首图'}候选 · 等待选择`
-            : status === 'failed' && result.taskStatus === 'uploading'
-              ? `${result.generationKind === 'refinement' ? '精修' : '首图'}候选 · 提交超时`
-            : result.label,
+          label: generationTaskResultLabel({
+            generationKind: result.generationKind,
+            status,
+            previousTaskStatus: result.taskStatus,
+            error,
+            currentLabel: result.label,
+          }),
         },
       }
     }

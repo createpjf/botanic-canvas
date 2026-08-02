@@ -2,6 +2,29 @@ import type { Edge } from '@xyflow/react'
 
 export type CanvasZoomMode = 'detail' | 'compact' | 'overview'
 
+type GenerationTaskResultLabelInput = {
+  generationKind?: 'generation' | 'refinement'
+  status: 'uploading' | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+  previousTaskStatus?: 'uploading' | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+  error?: string
+  currentLabel?: string
+}
+
+export function generationTaskResultLabel(input: GenerationTaskResultLabelInput) {
+  const prefix = input.generationKind === 'refinement' ? '精修' : '首图'
+  if (input.status === 'succeeded') return `${prefix}候选 · 等待选择`
+  if (input.status !== 'failed') return input.currentLabel ?? `${prefix}候选`
+
+  const error = input.error?.trim() ?? ''
+  if (/请先登录|登录状态.*失效|重新登录/.test(error)) {
+    return `${prefix}候选 · 登录已失效`
+  }
+  if (input.previousTaskStatus === 'uploading' && /(提交|等待).*(超时|超过.*分钟|停止等待)/.test(error)) {
+    return `${prefix}候选 · 提交超时`
+  }
+  return input.currentLabel ?? `${prefix}候选`
+}
+
 export function canvasZoomMode(zoom: number): CanvasZoomMode {
   if (zoom < 0.36) return 'overview'
   if (zoom < 0.62) return 'compact'

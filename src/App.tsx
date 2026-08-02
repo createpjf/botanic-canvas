@@ -67,6 +67,7 @@ import { refinePrompt } from './lib/promptRefinementApi'
 import { connectCanvasCollaboration, type CanvasCollaboration } from './lib/projectCollaboration'
 import { createCanvasProject, deleteCanvasDocument, flushPendingCanvasDocumentWrites, readCanvasProjectSummaries, renameCanvasProject, syncPendingCanvasDrafts } from './lib/db'
 import { ProductApiError, clearProductSession, completeProductPasswordSetup, createProductSession, enrollProductMfa, hybridAuthEnabled, inviteWorkspaceMember, listWorkspaceAuditEvents, listWorkspaceMembers, productPasswordSetupRequired, readProductMfaStatus, readProductSession, refreshProductMediaSession, removeProductMfa, serverPersistenceEnabled, signOutOtherProductSessions, supabaseAuthEnabled, updateProductPassword, updateWorkspaceMember, verifyProductMfa, type ProductUser } from './lib/productSession'
+import { subscribeProductSessionInvalidated } from './lib/productSessionInvalidation'
 import { createEmptyCanvasDocument } from './data/seed'
 import { useCanvasStore } from './store/canvasStore'
 import type { WorkspaceProject } from './components/WorkspaceViews'
@@ -7621,6 +7622,12 @@ function App() {
   const [needsPasswordSetup] = useState(() => productPasswordSetupRequired())
   const [message, setMessage] = useState('')
   const useLegacyToken = hybridAuthEnabled && authMethod === 'legacy'
+
+  useEffect(() => subscribeProductSessionInvalidated((invalidationMessage) => {
+    setUser(null)
+    setMessage(invalidationMessage)
+    setState('sign-in')
+  }), [])
 
   useEffect(() => {
     if (!serverPersistenceEnabled) return

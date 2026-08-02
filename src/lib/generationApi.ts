@@ -7,6 +7,7 @@ import type {
   GenerationModelOption,
 } from '../domain/canvas'
 import { productAuthorizationHeader } from './productSession'
+import { invalidateProductSessionIfRequired } from './productSessionInvalidation'
 
 type MediaReferencePayload = {
   nodeId: string
@@ -136,6 +137,7 @@ async function requestJson<T>(path: string, init?: RequestInit, timeoutMs = gene
   const payload = await response.json().catch(() => null) as T | ApiErrorPayload | null
   if (!response.ok) {
     const error = payload as ApiErrorPayload | null
+    invalidateProductSessionIfRequired({ status: response.status, code: error?.error?.code })
     throw new GenerationApiError(readableApiError(error, '真实生图服务返回异常，请稍后重试。'), {
       code: error?.error?.code,
       status: response.status,

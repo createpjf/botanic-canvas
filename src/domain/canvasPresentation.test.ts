@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Edge } from '@xyflow/react'
-import { canvasZoomMode, planResultGroupPresentation, traceCanvasLineage } from './canvasPresentation.ts'
+import { canvasZoomMode, generationTaskResultLabel, planResultGroupPresentation, traceCanvasLineage } from './canvasPresentation.ts'
 
 test('canvasZoomMode applies stable semantic zoom bands', () => {
   assert.equal(canvasZoomMode(1), 'detail')
@@ -9,6 +9,24 @@ test('canvasZoomMode applies stable semantic zoom bands', () => {
   assert.equal(canvasZoomMode(0.61), 'compact')
   assert.equal(canvasZoomMode(0.36), 'compact')
   assert.equal(canvasZoomMode(0.35), 'overview')
+})
+
+test('generationTaskResultLabel distinguishes expired login from a real submission timeout', () => {
+  assert.equal(generationTaskResultLabel({
+    generationKind: 'generation',
+    status: 'failed',
+    previousTaskStatus: 'uploading',
+    error: '请先登录 Botanic 工作区。',
+    currentLabel: '首图候选 01',
+  }), '首图候选 · 登录已失效')
+
+  assert.equal(generationTaskResultLabel({
+    generationKind: 'generation',
+    status: 'failed',
+    previousTaskStatus: 'uploading',
+    error: '任务提交超过 5 分钟，未进入生成队列。请重试。',
+    currentLabel: '首图候选 01',
+  }), '首图候选 · 提交超时')
 })
 
 test('traceCanvasLineage keeps the selected branch and excludes sibling branches', () => {
