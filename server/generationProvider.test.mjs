@@ -149,3 +149,27 @@ test('多张候选拆成独立请求，确保每张都有对应输出', async ()
     globalThis.fetch = originalFetch
   }
 })
+
+test('供应商网络中断会返回可操作的中文错误，而不是暴露 Failed to fetch', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => { throw new TypeError('Failed to fetch') }
+  try {
+    await assert.rejects(generateImages({
+      id: 'job-network-error',
+      kind: 'generation',
+      batchCount: 1,
+      prompt: '香氛商品主图',
+      settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '1K' },
+      references: [{ name: '主商品', role: '商品', primary: true, mimeType: 'image/png', buffer: Buffer.from('reference') }],
+    }, {
+      apiBaseUrl: 'https://example.test',
+      apiKey: 'test-key',
+      jobId: 'job-network-error',
+      persistImage: async (value) => value.dataUrl,
+    }), (error) => error instanceof GenerationError
+      && error.code === 'PROVIDER_UNAVAILABLE'
+      && error.message === '图像服务连接中断，请稍后重试。')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})

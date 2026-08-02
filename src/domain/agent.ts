@@ -45,6 +45,88 @@ export type AgentToolCallTrace = {
   error?: string
 }
 
+/**
+ * Agent 运行记录只描述可验证的产品操作，不承载模型内部思考内容。
+ * 该读模型供 Composer 展示，也可以在后续接入服务端事件流时复用。
+ */
+export type BotanicAgentRuntimeStep = {
+  id: string
+  kind: 'read' | 'search' | 'plan' | 'write'
+  label: string
+  detail: string
+  status: 'pending' | 'running' | 'succeeded' | 'failed'
+  startedAt?: number
+  completedAt?: number
+  error?: string
+}
+
+export function createBotanicAgentRuntimeSteps(input: {
+  hasTarget: boolean
+  referenceCount?: number
+  memoryCount?: number
+  assetGroupCount?: number
+  plannerLabel?: string
+}): BotanicAgentRuntimeStep[] {
+  const steps: BotanicAgentRuntimeStep[] = [
+    {
+      id: 'read-canvas', kind: 'read', label: '读取画布上下文',
+      detail: input.hasTarget ? '当前结果、生成参数与节点关系' : '当前画布与可用节点', status: 'pending',
+    },
+  ]
+  if ((input.referenceCount ?? 0) > 0) {
+    steps.push({
+      id: 'read-references', kind: 'read', label: '读取参考素材',
+      detail: `${input.referenceCount} 个已连接参考`, status: 'pending',
+    })
+  }
+  if ((input.memoryCount ?? 0) > 0) {
+    steps.push({
+      id: 'read-memory', kind: 'read', label: '读取项目记忆',
+      detail: `${input.memoryCount} 条已保存规则`, status: 'pending',
+    })
+  }
+  if ((input.assetGroupCount ?? 0) > 0) {
+    steps.push({
+      id: 'search-assets', kind: 'search', label: '搜索素材组',
+      detail: `${input.assetGroupCount} 个可用素材组`, status: 'pending',
+    })
+  }
+  steps.push({
+    id: 'call-planner', kind: 'plan', label: input.hasTarget ? '调用规划模型' : '解析创作要求',
+    detail: input.hasTarget
+      ? (input.plannerLabel ? `${input.plannerLabel} · 生成执行计划` : '生成执行计划')
+      : '整理创作要求与节点关系',
+    status: 'pending',
+  })
+  steps.push({
+    id: input.hasTarget ? 'finalize-plan' : 'create-workflow',
+    kind: input.hasTarget ? 'plan' : 'write',
+    label: input.hasTarget ? '整理执行计划' : '创建画布工作流',
+    detail: input.hasTarget ? '锁定项、变化项与输出分支' : '把要求写入可编辑节点',
+    status: 'pending',
+  })
+  return steps
+}
+
+export function updateBotanicAgentRuntimeStep(
+  steps: BotanicAgentRuntimeStep[],
+  stepId: string,
+  status: BotanicAgentRuntimeStep['status'],
+  now = Date.now(),
+  error?: string,
+): BotanicAgentRuntimeStep[] {
+  return steps.map((step) => {
+    if (step.id !== stepId) return step
+    return {
+      ...step,
+      status,
+      ...(status === 'running' ? { startedAt: step.startedAt ?? now, error: undefined } : {}),
+      ...(status === 'succeeded' || status === 'failed' ? { completedAt: now } : {}),
+      ...(error ? { error } : {}),
+    }
+  })
+}
+
 export type BotanicAgentArtifactKind = 'image' | 'video' | 'text' | 'workflow' | 'asset_group' | 'file'
 
 export type BotanicAgentArtifact = {

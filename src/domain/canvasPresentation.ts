@@ -25,6 +25,15 @@ export function generationTaskResultLabel(input: GenerationTaskResultLabelInput)
   return input.currentLabel ?? `${prefix}候选`
 }
 
+export function generationTaskErrorMessage(error?: string) {
+  const message = error?.trim()
+  if (!message) return undefined
+  if (/^(failed to fetch|fetch failed|networkerror when attempting to fetch resource\.?)$/i.test(message)) {
+    return '生成服务连接中断，请重试。'
+  }
+  return message
+}
+
 export function canvasZoomMode(zoom: number): CanvasZoomMode {
   if (zoom < 0.36) return 'overview'
   if (zoom < 0.62) return 'compact'
