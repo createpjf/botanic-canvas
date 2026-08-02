@@ -300,6 +300,8 @@ function BotanicSelect({
   className = '',
   menuWidth,
   placeholder,
+  renderTrigger,
+  renderOption,
 }: {
   value: string | number
   options: BotanicSelectOption[]
@@ -309,6 +311,8 @@ function BotanicSelect({
   className?: string
   menuWidth?: number
   placeholder?: string
+  renderTrigger?: (selected: BotanicSelectOption | undefined) => ReactNode
+  renderOption?: (option: BotanicSelectOption, selected: boolean) => ReactNode
 }) {
   const menuId = useId()
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -390,7 +394,7 @@ function BotanicSelect({
         setOpen((current) => !current)
       }}
     >
-      <span>{selected?.label ?? placeholder ?? '请选择'}</span>
+      {renderTrigger ? renderTrigger(selected) : <span>{selected?.label ?? placeholder ?? '请选择'}</span>}
       <img src={chevronIcon} alt="" />
     </button>
     {menuPresence.present && anchor && typeof document !== 'undefined' ? createPortal(
@@ -402,6 +406,7 @@ function BotanicSelect({
         role="listbox"
         aria-label={ariaLabel}
         aria-hidden={menuPresence.phase === 'exit' ? true : undefined}
+        onPointerDown={(event) => event.stopPropagation()}
         onKeyDown={moveFocus}
       >
         {options.map((option) => <button
@@ -415,7 +420,7 @@ function BotanicSelect({
             setOpen(false)
             triggerRef.current?.focus()
           }}
-        >{option.label}{option.value === normalizedValue ? <b>✓</b> : null}</button>)}
+        >{renderOption ? renderOption(option, option.value === normalizedValue) : <>{option.label}{option.value === normalizedValue ? <b>✓</b> : null}</>}</button>)}
       </div>,
       document.body,
     ) : null}
@@ -1517,6 +1522,26 @@ function agentPlannerModelLabel(model: string) {
   if (model === 'deepseek-v4-flash') return 'DeepSeek V4 Flash'
   if (model === 'kimi-k3') return 'Kimi K3'
   return model
+}
+
+type AgentPlannerProvider = 'deepseek' | 'kimi' | 'minimax' | 'other'
+
+function agentPlannerProvider(model: string): AgentPlannerProvider {
+  if (/deepseek/i.test(model)) return 'deepseek'
+  if (/kimi/i.test(model)) return 'kimi'
+  if (/minimax/i.test(model)) return 'minimax'
+  return 'other'
+}
+
+/** 规划模型的轻量厂商标识；收起时只显示它，展开后再显示完整模型名。 */
+function AgentPlannerProviderIcon({ model }: { model: string }) {
+  const provider = agentPlannerProvider(model)
+  return <span className={`agent-provider-icon is-${provider}`} aria-hidden="true">
+    {provider === 'deepseek' ? <svg viewBox="0 0 24 24"><path d="M4.5 14.8c2.2 3.1 6.1 4.9 10 3.8 3.4-.9 5.2-3.3 5-6.1-.2-2.5-2-4.7-4.4-5.3-2.5-.6-4.7.5-5.8 2.3-1.2-1.2-2.9-1.6-4.4-.9-1.7.8-2.4 2.8-1.5 4.3.3.6.7 1.2 1.1 1.9Z" /><path d="M12.7 12.1c1.3-.5 2.5-.2 3.3.6" /></svg>
+      : provider === 'kimi' ? <svg viewBox="0 0 24 24"><path d="M7.1 4.1a7.7 7.7 0 1 0 8.8 12.8A7.5 7.5 0 0 1 7.1 4.1Z" /><path d="M15.5 5.3v4.2m-2.1-2.1h4.2" /></svg>
+        : provider === 'minimax' ? <span className="agent-provider-icon__letter">M</span>
+          : <span className="agent-provider-icon__letter">AI</span>}
+  </span>
 }
 
 type ComposerLayout = {
@@ -7750,8 +7775,8 @@ function AgentWorkspace({
       </div>
       {!utilityPanelOpen ? <div className="agent-composer">
         {contextItems.length ? <div className="agent-composer__context">{contextItems.map((item) => <button key={item.id} type="button" aria-label={`移除 ${item.label}`} onClick={() => session && onContextChange(session.id, session.contextNodeIds.filter((id) => id !== item.id))}>{item.image ? <img src={item.image} alt="" /> : <span>{item.kind.slice(0, 1)}</span>}<b>{item.label}</b><i aria-hidden="true">×</i></button>)}</div> : null}
-        {mentionQuery ? <div className="agent-composer__mention-menu" role="group" aria-label="引用画布内容">
-          {mentionOptions.map((item) => <button key={item.id} type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => selectMention(item)}>{item.image ? <img src={item.image} alt="" /> : <span>{item.kind.slice(0, 1)}</span>}<b>{item.label}</b><small>{item.kind}</small></button>)}
+        {mentionQuery ? <div className="agent-composer__mention-menu" role="group" aria-label="引用画布内容" onPointerDown={(event) => event.stopPropagation()}>
+          {mentionOptions.map((item) => <button key={item.id} type="button" onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); selectMention(item) }}>{item.image ? <img src={item.image} alt="" /> : <span>{item.kind.slice(0, 1)}</span>}<b>{item.label}</b><small>{item.kind}</small></button>)}
           {!mentionOptions.length ? <p>没有匹配的画布内容</p> : null}
         </div> : null}
         <textarea ref={composerTextareaRef} value={instruction} onChange={(event) => { const value = event.target.value; setInstruction(value); setMentionQuery(readBotanicAgentMentionQuery(value, event.target.selectionStart ?? value.length)); setError('') }} onClick={(event) => setMentionQuery(readBotanicAgentMentionQuery(instruction, event.currentTarget.selectionStart ?? instruction.length))} onKeyDown={(event) => {
@@ -7764,14 +7789,23 @@ function AgentWorkspace({
           <div>
             <button ref={contextMenuButtonRef} type="button" className="agent-composer__add" onClick={() => setContextMenuOpen((open) => !open)} aria-controls={contextMenuId} aria-expanded={contextMenuOpen} aria-label="添加画布内容"><PlusSquareIcon /></button>
             <button ref={modeMenuButtonRef} type="button" className="agent-composer__mode" onClick={() => setModeMenuOpen((open) => !open)} aria-controls={modeMenuId} aria-expanded={modeMenuOpen}>{session?.executionMode === 'auto' ? '自动执行' : '手动确认'} <span aria-hidden="true">⌄</span></button>
-            <BotanicSelect className="agent-composer__model-select" value={plannerModel} ariaLabel="Agent 规划模型" menuWidth={220} options={plannerModels.map((model) => ({ value: model, label: agentPlannerModelLabel(model) }))} onChange={setPlannerModel} />
+            <BotanicSelect
+              className="agent-composer__model-select"
+              value={plannerModel}
+              ariaLabel={`Agent 规划模型：${agentPlannerModelLabel(plannerModel)}`}
+              menuWidth={220}
+              options={plannerModels.map((model) => ({ value: model, label: agentPlannerModelLabel(model) }))}
+              onChange={setPlannerModel}
+              renderTrigger={(selected) => <span className="agent-model-trigger" title={selected?.label ?? '规划模型'}><AgentPlannerProviderIcon model={selected?.value ?? plannerModel} /><span className="visually-hidden">{selected?.label ?? '规划模型'}</span></span>}
+              renderOption={(option, selected) => <span className="agent-model-option"><span className="agent-model-option__main"><AgentPlannerProviderIcon model={option.value} /><span>{option.label}</span></span>{selected ? <b aria-hidden="true">✓</b> : null}</span>}
+            />
             {compatibleGroups.length ? <BotanicSelect className="agent-composer__group-select" value={groupId} placeholder="素材组" ariaLabel="批量素材组" options={[{ value: '', label: '单张' }, ...compatibleGroups.map((group) => ({ value: group.id, label: `${group.name} · ${group.assetIds.length}` }))]} onChange={setGroupId} /> : null}
           </div>
           <button type="button" className="agent-composer__send" disabled={!instruction.trim() || planning || !session} onClick={() => void sendInstruction()} aria-label="发送给 Agent">{planning ? <span className="agent-composer__spinner" /> : <ArrowUpIcon />}</button>
         </div>
-        {contextMenuOpen ? <div id={contextMenuId} className="agent-composer__context-menu" role="group" aria-label="添加画布内容">
+        {contextMenuOpen ? <div id={contextMenuId} className="agent-composer__context-menu" role="group" aria-label="添加画布内容" onPointerDown={(event) => event.stopPropagation()}>
           <header><strong>添加画布内容</strong><button type="button" aria-label="关闭添加画布内容" onClick={() => { setContextMenuOpen(false); requestAnimationFrame(() => contextMenuButtonRef.current?.focus()) }}><CloseIcon /></button></header>
-          {contextOptions.length ? contextOptions.map((item) => { const selected = session?.contextNodeIds.includes(item.id); return <button key={item.id} type="button" className={selected ? 'is-selected' : ''} onClick={() => { if (!session) return; onContextChange(session.id, selected ? session.contextNodeIds.filter((id) => id !== item.id) : [...session.contextNodeIds, item.id]) }}>{item.image ? <img src={item.image} alt="" /> : <span>{item.kind.slice(0, 1)}</span>}<b>{item.label}</b><small>{item.kind}</small></button> }) : <p>画布还没有可引用的内容。</p>}
+          {contextOptions.length ? contextOptions.map((item) => { const selected = session?.contextNodeIds.includes(item.id) ?? false; return <button key={item.id} type="button" className={selected ? 'is-selected' : ''} aria-pressed={selected} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); if (!session) return; onContextChange(session.id, selected ? session.contextNodeIds.filter((id) => id !== item.id) : [...session.contextNodeIds, item.id]) }}>{item.image ? <img src={item.image} alt="" /> : <span>{item.kind.slice(0, 1)}</span>}<b>{item.label}</b><small>{item.kind}</small>{selected ? <i aria-hidden="true">✓</i> : null}</button> }) : <p>画布还没有可引用的内容。</p>}
         </div> : null}
         {modeMenuOpen ? <div id={modeMenuId} className="agent-composer__mode-menu" role="group" aria-label="执行模式">
           <button type="button" className={session?.executionMode === 'manual' ? 'is-selected' : ''} onClick={() => { if (session) onExecutionModeChange(session.id, 'manual'); setModeMenuOpen(false); requestAnimationFrame(() => modeMenuButtonRef.current?.focus()) }}><strong>手动确认</strong><small>执行生成前先确认锁定项</small></button>
