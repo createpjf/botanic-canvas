@@ -1026,6 +1026,12 @@ const server = createServer(async (request, response) => {
     }
     if (projectMediaMatch && request.method === 'POST') {
       const user = await requireUser(request)
+      if (!await enforceRateLimit(response, {
+        scope: 'media-upload',
+        subject: user.id,
+        limit: config.security.mediaUploadsPerMinute,
+        windowMs: 60_000,
+      })) return
       const projectId = decodeURIComponent(projectMediaMatch[1])
       await requireProjectPermission(productStore, user.id, projectId, 'edit')
       const body = await readJson(request, config.maximumRequestBytes, '参考图片过大，请压缩到 8MB 以内。')
