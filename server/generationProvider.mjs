@@ -173,6 +173,7 @@ export function publicGenerationJob(job) {
     missingOutputCount: job.missingOutputCount ?? 0,
     partialError: job.partialError,
     outputs: job.outputs ?? [],
+    agentRun: job.agentRun,
   }
 }
 
@@ -194,6 +195,7 @@ export function persistedGenerationJob(job) {
     settings: job.settings,
     provider: job.provider,
     rawInput: job.rawInput,
+    agentRun: job.agentRun,
   }
 }
 

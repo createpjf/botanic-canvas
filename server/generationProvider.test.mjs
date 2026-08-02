@@ -1,8 +1,18 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { generateImages, GenerationError, resolveGenerationInputMedia, validateGenerationInput } from './generationProvider.mjs'
+import { generateImages, GenerationError, persistedGenerationJob, publicGenerationJob, resolveGenerationInputMedia, validateGenerationInput } from './generationProvider.mjs'
 
 const image = 'data:image/png;base64,iVBORw0KGgo='
+
+test('生成任务持久化与公开状态保留 Agent Run 分支关联', () => {
+  const job = {
+    id: 'job-agent', ownerId: 'user-a', projectId: 'project-a', status: 'queued', kind: 'generation',
+    createdAt: 1, updatedAt: 1, batchCount: 1, settings: { model: 'gpt-image-2' }, outputs: [],
+    rawInput: { projectId: 'project-a' }, agentRun: { runId: 'run-a', branchId: 'branch-a' },
+  }
+  assert.deepEqual(persistedGenerationJob(job).agentRun, job.agentRun)
+  assert.deepEqual(publicGenerationJob(job).agentRun, job.agentRun)
+})
 
 test('生成配方在进入 Redis 队列前完成模型、尺寸和图片约束校验', () => {
   const input = validateGenerationInput({

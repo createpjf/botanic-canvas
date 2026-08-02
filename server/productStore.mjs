@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from './authorization.mjs'
+import { applyGenerationJobToAgentRun } from './botanicAgentRun.mjs'
 
 const schemaVersion = 1
 
@@ -62,6 +63,9 @@ function initialState() {
     canvasGraphs: [],
     globalAssetLibraries: [],
     generationJobs: [],
+    agentRuns: [],
+    agentSkills: [],
+    agentActionReceipts: [],
     auditEvents: [],
   }
 }
@@ -306,6 +310,9 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       state.projects = state.projects.filter((item) => item.id !== projectId)
       state.canvasGraphs = state.canvasGraphs.filter((item) => item.projectId !== projectId)
       state.generationJobs = state.generationJobs.filter((item) => item.projectId !== projectId)
+      state.agentRuns = state.agentRuns.filter((item) => item.projectId !== projectId)
+      state.agentSkills = state.agentSkills.filter((item) => item.projectId !== projectId)
+      state.agentActionReceipts = state.agentActionReceipts.filter((item) => item.projectId !== projectId)
       audit({ actorId: userId, action: 'project.deleted', targetId: projectId, detail: { name: project.name } })
       save()
       return true
@@ -409,12 +416,104 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       return { deleted, library: clone(libraryEntry.library) }
     },
 
+    putAgentSkill(userId, skill) {
+      const project = state.projects.find((item) => item.id === skill.projectId)
+      if (!project) throw productError('未找到项目。', 'PROJECT_NOT_FOUND')
+      assertProjectPermission(project.members.find((item) => item.userId === userId)?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      const timestamp = now()
+      const existing = state.agentSkills.find((item) => item.id === skill.id)
+      if (existing && existing.projectId !== skill.projectId) throw productError('Skill 标识已被其他项目使用。', 'AGENT_SKILL_ID_CONFLICT')
+      const payload = {
+        ...clone(skill),
+        ownerId: userId,
+        createdAt: Number(existing?.createdAt ?? skill.createdAt) || timestamp,
+        updatedAt: timestamp,
+      }
+      if (existing) Object.assign(existing, payload)
+      else state.agentSkills.push(payload)
+      audit({ actorId: userId, action: existing ? 'agent-skill.updated' : 'agent-skill.created', projectId: skill.projectId, targetId: skill.id })
+      save()
+      return clone(payload)
+    },
+
+    listAgentSkills(userId, projectId) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project || !canAccess(project, userId)) return undefined
+      return state.agentSkills
+        .filter((skill) => skill.projectId === projectId && skill.status !== 'archived')
+        .sort((left, right) => right.updatedAt - left.updatedAt)
+        .map(clone)
+    },
+
+    putAgentActionReceipt(userId, receipt) {
+      const project = state.projects.find((item) => item.id === receipt.projectId)
+      if (!project) throw productError('未找到项目。', 'PROJECT_NOT_FOUND')
+      assertProjectPermission(project.members.find((item) => item.userId === userId)?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      const existing = state.agentActionReceipts.find((item) => item.id === receipt.id)
+      if (existing && (existing.ownerId !== userId || existing.projectId !== receipt.projectId)) {
+        throw productError('Agent 行动回执冲突。', 'AGENT_ACTION_RECEIPT_CONFLICT')
+      }
+      const payload = { ...clone(receipt), ownerId: userId }
+      if (existing) Object.assign(existing, payload)
+      else state.agentActionReceipts.push(payload)
+      audit({ actorId: userId, action: 'agent-action.succeeded', projectId: receipt.projectId, targetId: receipt.id, detail: { toolCallId: receipt.toolCallId } })
+      save()
+      return clone(payload)
+    },
+
+    readAgentActionReceipt(userId, receiptId) {
+      const receipt = state.agentActionReceipts.find((item) => item.id === receiptId && item.ownerId === userId)
+      if (!receipt) return undefined
+      const project = state.projects.find((item) => item.id === receipt.projectId)
+      return project && canAccess(project, userId) ? clone(receipt) : undefined
+    },
+
     putGenerationJob(userId, job) {
+      const persistedJob = { ...clone(job), ownerId: userId, updatedAt: now() }
       const existing = state.generationJobs.find((item) => item.id === job.id)
-      if (existing) Object.assign(existing, clone(job), { updatedAt: now() })
-      else state.generationJobs.push({ ...clone(job), ownerId: userId, updatedAt: now() })
+      if (existing) Object.assign(existing, persistedJob)
+      else state.generationJobs.push(persistedJob)
+      if (persistedJob.agentRun?.runId) {
+        const runIndex = state.agentRuns.findIndex((item) => item.id === persistedJob.agentRun.runId && item.ownerId === userId)
+        if (runIndex >= 0) state.agentRuns[runIndex] = applyGenerationJobToAgentRun(state.agentRuns[runIndex], persistedJob)
+      }
       audit({ actorId: userId, action: `generation.${job.status}`, projectId: job.projectId, targetId: job.id, detail: { model: job.settings?.model, batchCount: job.batchCount } })
       save()
+    },
+
+    putAgentRun(userId, run) {
+      const project = state.projects.find((item) => item.id === run.projectId)
+      if (!project) throw productError('未找到项目。', 'PROJECT_NOT_FOUND')
+      assertProjectPermission(project.members.find((item) => item.userId === userId)?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      const payload = { ...clone(run), ownerId: userId, updatedAt: Number(run.updatedAt) || now() }
+      const existing = state.agentRuns.find((item) => item.id === run.id)
+      if (existing) Object.assign(existing, payload)
+      else state.agentRuns.push(payload)
+      audit({ actorId: userId, action: `agent-run.${run.status}`, projectId: run.projectId, targetId: run.id })
+      save()
+      return clone(payload)
+    },
+
+    readAgentRun(userId, runId) {
+      const run = state.agentRuns.find((item) => item.id === runId)
+      if (!run || run.ownerId !== userId) return undefined
+      const project = state.projects.find((item) => item.id === run.projectId)
+      return project && canAccess(project, userId) ? clone(run) : undefined
+    },
+
+    readAgentRunForWorker(runId) {
+      const run = state.agentRuns.find((item) => item.id === runId)
+      return run ? clone(run) : undefined
+    },
+
+    listAgentRunsForProject(userId, projectId, limit = 30) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project || !canAccess(project, userId)) return undefined
+      return state.agentRuns
+        .filter((run) => run.ownerId === userId && run.projectId === projectId)
+        .sort((left, right) => right.updatedAt - left.updatedAt)
+        .slice(0, Math.max(1, Math.min(limit, 60)))
+        .map(clone)
     },
 
     readGenerationJob(userId, jobId) {

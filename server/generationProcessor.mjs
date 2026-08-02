@@ -1,14 +1,53 @@
 import { GenerationError, persistedGenerationJob, resolveGenerationInputMedia, validateGenerationInput } from './generationProvider.mjs'
 import { generationTimeoutForModel } from './generationModels.mjs'
 import { generateMedia } from './generationService.mjs'
+import { publicAgentRun } from './botanicAgentRun.mjs'
+import { reconcileAgentGenerationJobToProject } from './botanicAgentExecution.mjs'
 
-export function createGenerationProcessor({ productStore, mediaService, config }) {
+export function createGenerationProcessor({ productStore, mediaService, config, publishAgentRunUpdated }) {
+  async function writeJobToProject(job) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const project = await productStore.readProject(job.ownerId, job.projectId)
+      if (!project) return
+      const reconciled = reconcileAgentGenerationJobToProject(project.document, job)
+      if (!reconciled.changed) return
+      try {
+        await productStore.writeProject(job.ownerId, reconciled.document, project.revision, project.graphRevision)
+        return
+      } catch (caught) {
+        if (caught?.code !== 'PROJECT_CONFLICT' && caught?.code !== 'CANVAS_GRAPH_CONFLICT') throw caught
+      }
+    }
+    throw new Error('Agent 结果回写连续发生画布冲突。')
+  }
+
+  async function writeJobToProjectSafely(job) {
+    if (!job.agentRun) return
+    try {
+      await writeJobToProject(job)
+    } catch (caught) {
+      console.error(`[agent-run] project writeback deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
+    }
+  }
+
+  async function publishRun(job) {
+    if (!job.agentRun || !publishAgentRunUpdated) return
+    try {
+      const run = await productStore.readAgentRunForWorker(job.agentRun.runId)
+      if (run) await publishAgentRunUpdated({ projectId: run.projectId, run: publicAgentRun(run) })
+    } catch (caught) {
+      console.error(`[agent-run] progress publish deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
+    }
+  }
+
   return async function processGenerationJob(jobId) {
     const stored = await productStore.readGenerationJobForWorker(jobId)
     if (!stored || ['cancelled', 'succeeded', 'failed'].includes(stored.status)) return
     console.info(`[generation] ${jobId} started`)
     const running = { ...stored, status: 'running', error: undefined, updatedAt: Date.now() }
     await productStore.putGenerationJob(running.ownerId, persistedGenerationJob(running))
+    await writeJobToProjectSafely(running)
+    await publishRun(running)
     try {
       const maximumTaskDurationMs = generationTimeoutForModel(config.modelOptions ?? [], running.settings?.model, {
         imageTimeoutMs: config.generationTimeoutMs ?? 5 * 60_000,
@@ -62,6 +101,8 @@ export function createGenerationProcessor({ productStore, mediaService, config }
         updatedAt: Date.now(),
       }
       await productStore.putGenerationJob(completed.ownerId, persistedGenerationJob(completed))
+      await writeJobToProjectSafely(completed)
+      await publishRun(completed)
     } catch (caught) {
       const latest = await productStore.readGenerationJobForWorker(jobId)
       if (!latest || latest.status === 'cancelled') return
@@ -72,6 +113,8 @@ export function createGenerationProcessor({ productStore, mediaService, config }
       console.error(`[generation] ${jobId} failed (${failure.code}): ${detail}`)
       const failed = { ...latest, status: 'failed', error: failure.message, updatedAt: Date.now() }
       await productStore.putGenerationJob(failed.ownerId, persistedGenerationJob(failed))
+      await writeJobToProjectSafely(failed)
+      await publishRun(failed)
     }
   }
 }

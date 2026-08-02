@@ -58,6 +58,50 @@ test('项目、成员授权和审计会持久化到服务端数据文件', () =>
   assert.ok(reloaded.listAuditEvents(owner.id, 'project-a').some((event) => event.action === 'project.updated'))
 })
 
+test('项目 Skill 创建后可跨重启恢复且不会泄露到其他项目', () => {
+  const { path, store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, document('project-skill-a'), undefined)
+  store.writeProject(owner.id, document('project-skill-b'), undefined)
+
+  const created = store.putAgentSkill(owner.id, {
+    id: 'skill-scene-campaign',
+    projectId: 'project-skill-a',
+    name: '夏日场景系列',
+    instructions: '锁定人物和服装，只替换场景与环境光线。',
+    status: 'active',
+    createdAt: 100,
+    updatedAt: 100,
+  })
+
+  assert.equal(created.name, '夏日场景系列')
+  assert.deepEqual(store.listAgentSkills(owner.id, 'project-skill-a').map((skill) => skill.id), ['skill-scene-campaign'])
+  assert.deepEqual(store.listAgentSkills(owner.id, 'project-skill-b'), [])
+
+  const reloaded = createProductStore({ dataPath: path, bootstrapAccessToken: 'owner-token' })
+  assert.equal(reloaded.listAgentSkills(owner.id, 'project-skill-a')[0]?.instructions, '锁定人物和服装，只替换场景与环境光线。')
+  assert.ok(reloaded.listAuditEvents(owner.id, 'project-skill-a').some((event) => event.action === 'agent-skill.created'))
+})
+
+test('Agent 行动回执按用户和项目持久化，重试可直接复用已完成结果', () => {
+  const { path, store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, document('project-action'), undefined)
+  const receipt = {
+    id: 'agent_action_receipt_1', projectId: 'project-action', toolCallId: 'call-mcp-1',
+    output: { message: '已完成', artifacts: [] },
+    toolCall: { id: 'call-mcp-1', name: 'mcp_call', status: 'succeeded' },
+    createdAt: 100,
+  }
+
+  assert.equal(store.readAgentActionReceipt(owner.id, receipt.id), undefined)
+  store.putAgentActionReceipt(owner.id, receipt)
+  assert.deepEqual(store.readAgentActionReceipt(owner.id, receipt.id), { ...receipt, ownerId: owner.id })
+
+  const reloaded = createProductStore({ dataPath: path, bootstrapAccessToken: 'owner-token' })
+  assert.equal(reloaded.readAgentActionReceipt(owner.id, receipt.id)?.output.message, '已完成')
+})
+
 test('工作区所有者可管理成员，停用后会话立即失效但项目保留', () => {
   const { store } = createStore()
   const owner = store.authenticate('owner-token')
@@ -229,6 +273,29 @@ test('项目任务清单仅返回当前用户在当前项目的真实任务', ()
 
   assert.deepEqual(store.listGenerationJobsForProject(owner.id, 'project-jobs')?.map((job) => job.id), ['job-current'])
   assert.equal(store.listGenerationJobsForProject(owner.id, 'missing-project'), undefined)
+})
+
+test('Agent Run 独立于画布文档持久化并由生成 Job 推进', () => {
+  const { path, store } = createStore()
+  const owner = store.authenticate('owner-token')
+  assert.ok(owner)
+  store.writeProject(owner.id, document('project-agent'), undefined)
+  store.putAgentRun(owner.id, {
+    id: 'run-agent', ownerId: owner.id, projectId: 'project-agent', status: 'queued',
+    plan: { intent: 'replace_scene', instruction: '换场景', summary: '换场景', selectedResultNodeId: 'result-1', output: { mode: 'single', count: 1, candidatesPerItem: 1 } },
+    branches: [{ id: 'branch-1', label: '新场景', status: 'queued', attempt: 0, jobIds: [], outputCount: 0, updatedAt: 10 }],
+    completedBranchCount: 0, failedBranchCount: 0, createdAt: 10, updatedAt: 10,
+  })
+  store.putGenerationJob(owner.id, {
+    id: 'job-agent', projectId: 'project-agent', status: 'succeeded', kind: 'refinement', batchCount: 1,
+    settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' }, rawInput: { projectId: 'project-agent' },
+    agentRun: { runId: 'run-agent', branchId: 'branch-1' }, outputs: [{ id: 'output-1' }], createdAt: 20, updatedAt: 30,
+  })
+
+  assert.equal(store.readAgentRun(owner.id, 'run-agent')?.status, 'completed')
+  assert.equal(store.listAgentRunsForProject(owner.id, 'project-agent')?.[0].branches[0].activeJobId, 'job-agent')
+  const reloaded = createProductStore({ dataPath: path, bootstrapAccessToken: 'owner-token' })
+  assert.equal(reloaded.readAgentRun(owner.id, 'run-agent')?.completedBranchCount, 1)
 })
 
 test('服务重启保留排队任务，并把执行中的任务标记为可重试失败', () => {

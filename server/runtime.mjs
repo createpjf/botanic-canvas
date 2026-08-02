@@ -8,6 +8,7 @@ import { createSupabaseProductStore } from './supabaseProductStore.mjs'
 import { createSupabaseObjectStore } from './supabaseObjectStore.mjs'
 import { createSupabaseAuthPostgresStore } from './supabaseAuthPostgresStore.mjs'
 import { createGenerationModelCatalog } from './generationModels.mjs'
+import { parseMcpToolConfigurations } from './mcpClient.mjs'
 
 function boundedInteger(value, fallback, minimum, maximum) {
   const parsed = Number(value)
@@ -38,6 +39,9 @@ export function runtimeConfig(rootDir = process.cwd()) {
     .split(',').map((model) => model.trim()).filter(Boolean))]
   const miniMaxVideoModels = [...new Set((process.env.MINIMAX_VIDEO_MODELS ?? 'MiniMax-H3')
     .split(',').map((model) => model.trim()).filter(Boolean))]
+  const flockAgentModels = [...new Set((process.env.FLOCK_AGENT_MODELS ?? 'deepseek-v4-pro,deepseek-v4-flash,kimi-k3')
+    .split(',').map((model) => model.trim()).filter(Boolean))]
+  const flockTextModel = (process.env.FLOCK_TEXT_MODEL ?? flockAgentModels[0] ?? '').trim()
   const modelOptions = createGenerationModelCatalog({
     openAIApiKey: process.env.OPENAI_API_KEY,
     openAIModels,
@@ -67,8 +71,11 @@ export function runtimeConfig(rootDir = process.cwd()) {
     models: modelOptions.length ? modelOptions.map((model) => model.id) : openAIModels,
     flockApiBaseUrl: (process.env.FLOCK_API_BASE_URL ?? 'https://api.flock.io/v1').replace(/\/$/, ''),
     flockApiKey: process.env.FLOCK_API_KEY,
-    flockTextModel: process.env.FLOCK_TEXT_MODEL,
+    flockTextModel,
+    flockAgentModels,
     promptRefinementTimeoutMs: Number(process.env.PROMPT_REFINEMENT_TIMEOUT_MS ?? 30000),
+    agentPlannerTimeoutMs: Number(process.env.AGENT_PLANNER_TIMEOUT_MS ?? 30000),
+    agentMcpTools: parseMcpToolConfigurations(process.env.BOTANIC_MCP_TOOLS_JSON),
     maximumBatchCount: Number(process.env.MAX_GENERATION_BATCH ?? 8),
     maximumReferenceBytes: 8 * 1024 * 1024,
     maximumRequestBytes: 32 * 1024 * 1024,
@@ -83,6 +90,7 @@ export function runtimeConfig(rootDir = process.cwd()) {
     realtimePublicUrl: process.env.REALTIME_PUBLIC_URL,
     security: {
       apiRequestsPerMinute: boundedInteger(process.env.SECURITY_API_REQUESTS_PER_MINUTE, 600, 60, 10_000),
+      agentPlansPerFiveMinutes: boundedInteger(process.env.SECURITY_AGENT_PLANS_PER_5_MINUTES, 20, 1, 1_000),
       generationOutputsPerDay: boundedInteger(process.env.SECURITY_GENERATION_OUTPUTS_PER_DAY, 100, 1, 10_000),
       memberMutationsPerHour: boundedInteger(process.env.SECURITY_MEMBER_MUTATIONS_PER_HOUR, 20, 1, 1_000),
       promptRefinementsPerFiveMinutes: boundedInteger(process.env.SECURITY_PROMPT_REFINEMENTS_PER_5_MINUTES, 30, 1, 1_000),

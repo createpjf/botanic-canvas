@@ -34,6 +34,7 @@ export type SubmitGenerationInput = {
     image: string
   }
   refinementMode?: RefinementMode
+  agentRun?: { runId: string; branchId: string }
 }
 
 type SubmitGenerationPayload = Omit<SubmitGenerationInput, 'recipe' | 'parent'> & {
@@ -78,6 +79,12 @@ export type GenerationServiceHealth = {
     provider: 'flock-api'
     configured: boolean
     model?: string
+  }
+  agentPlanner?: {
+    provider: 'flock-api'
+    configured: boolean
+    model?: string
+    models?: string[]
   }
 }
 
@@ -236,6 +243,8 @@ async function buildPayload(input: SubmitGenerationInput): Promise<SubmitGenerat
           ...(await mediaInputPayload(input.parent.image)),
         }
       : undefined,
+    refinementMode: input.refinementMode,
+    agentRun: input.agentRun,
   }
 }
 

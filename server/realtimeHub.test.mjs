@@ -93,6 +93,38 @@ test('已授权客户端只接收当前项目的实时更新', async (context) =
   })
 })
 
+test('Agent Run 进度只推送给当前项目连接', async (context) => {
+  const server = createServer((_request, response) => response.end())
+  const hub = createProjectRealtimeHub({
+    server,
+    ticketSecret: 'test-secret',
+    productStore: {
+      async readProject(userId, projectId) {
+        return userId === 'user-1' && projectId === 'project-1' ? { document: {}, revision: 1 } : undefined
+      },
+      async canEditProject() { return true },
+    },
+  })
+  await listen(server)
+  const address = server.address()
+  const ticket = issueRealtimeTicket({ userId: 'user-1', projectId: 'project-1', origin: testOrigin, secret: 'test-secret' })
+  const socket = new WebSocket(`ws://127.0.0.1:${address.port}/api/realtime?projectId=project-1&ticket=${encodeURIComponent(ticket)}`, { origin: testOrigin })
+  context.after(async () => {
+    socket.close()
+    await hub.close()
+    await new Promise((resolve) => server.close(resolve))
+  })
+  await nextMessage(socket)
+
+  const received = nextMessage(socket)
+  hub.publishAgentRunUpdated({ projectId: 'project-1', run: { id: 'run-1', status: 'running', completedBranchCount: 1, failedBranchCount: 0, branches: [] } })
+  assert.deepEqual(await received, {
+    type: 'agent.run.updated',
+    projectId: 'project-1',
+    run: { id: 'run-1', status: 'running', completedBranchCount: 1, failedBranchCount: 0, branches: [] },
+  })
+})
+
 test('只有 HTTP 物化图谱的项目在连接时也会下发 Yjs 初始状态', async (context) => {
   const server = createServer((_request, response) => response.end())
   const graph = {

@@ -10,6 +10,8 @@ import { planGenerationOutputPlacement } from '../domain/generationOutputPlaceme
 import { resolveRemoteCanvasRefresh } from '../domain/remoteDocumentSync'
 import { assignVideoInputRoles } from '../domain/videoGeneration'
 import { summarizeWorkflowTemplate } from '../domain/workflowTemplates'
+import { appendBotanicAgentMessage, createBotanicAgentMemoryItem, createBotanicAgentRun, createBotanicAgentSession, replaceBotanicAgentSessionContext, updateBotanicAgentAction, updateBotanicAgentMessage, updateBotanicAgentRun, upsertBotanicAgentRunSnapshot } from '../domain/agent'
+import type { BotanicAgentActionProposal, BotanicAgentExecutionMode, BotanicAgentMemoryKind, BotanicAgentMessage, BotanicAgentPlan, BotanicAgentRun, BotanicAgentRunBranch, BotanicAgentRunSnapshot, BotanicAgentRunStatus } from '../domain/agent'
 import type {
   AssetRecord,
   AssetGroup,
@@ -54,6 +56,7 @@ import {
 } from '../lib/db'
 import { ProductApiError } from '../lib/productSession'
 import { assertGenerationServiceReady, cancelGenerationJob, GenerationApiError, getGenerationJob, listProjectGenerationJobs, reconcileProjectGenerationResults, submitGenerationJob } from '../lib/generationApi'
+import { cancelPersistentBotanicAgentRun, retryPersistentBotanicAgentBranch } from '../lib/agentApi'
 
 type GenerationStatus = 'idle' | 'uploading' | 'queued' | 'running' | 'error'
 type PersistenceStatus = 'saved' | 'saving' | 'offline' | 'conflict' | 'error'
@@ -85,6 +88,7 @@ type GenerationRequest = {
   taskLayout?: TaskFlowLayout
   sourceGraphNodeId?: string
   refinementMode?: RefinementMode
+  agentRun?: { runId: string; branchId: string }
 }
 
 type GenerateBranchDraft = {
@@ -160,14 +164,31 @@ type CanvasStore = {
   moveGenerateNodeInput: (nodeId: string, inputNodeId: string, direction: 'earlier' | 'later') => void
   setAvailableModels: (models: GenerationModelOption[]) => void
   setMaximumBatchCount: (count: number) => void
-  runGraphGeneration: (nodeId: string) => Promise<boolean>
+  runGraphGeneration: (nodeId: string, agentRun?: { runId: string; branchId: string }) => Promise<boolean>
   runBatchVariation: (input: {
     sourceResultNodeId: string
     groupId: string
     prompt: string
     candidatesPerAsset: number
     settings: GenerationSettings
+    agentRunId?: string
+    agentBranches?: Array<{ assetId: string; branchId: string }>
   }) => Promise<boolean>
+  saveAgentPlan: (plan: BotanicAgentPlan, options?: { id?: string; branches?: BotanicAgentRunBranch[] }) => string
+  applyAgentRunSnapshot: (snapshot: BotanicAgentRunSnapshot) => void
+  retryAgentBranch: (runId: string, branchId: string) => Promise<boolean>
+  cancelAgentRun: (runId: string) => Promise<boolean>
+  updateAgentRunStatus: (runId: string, status: BotanicAgentRunStatus, error?: string) => void
+  ensureAgentSession: (contextNodeIds?: string[]) => string
+  startNewAgentSession: (contextNodeIds?: string[]) => string
+  appendAgentMessage: (sessionId: string, message: BotanicAgentMessage) => void
+  updateAgentMessage: (sessionId: string, messageId: string, patch: Partial<Pick<BotanicAgentMessage, 'content' | 'runId' | 'status' | 'feedback'>>) => void
+  updateAgentAction: (sessionId: string, messageId: string, actionId: string, patch: Partial<Pick<BotanicAgentActionProposal, 'status' | 'error' | 'result'>>) => void
+  setAgentSessionContext: (sessionId: string, contextNodeIds: string[]) => void
+  setAgentSessionExecutionMode: (sessionId: string, mode: BotanicAgentExecutionMode) => void
+  setActiveAgentSession: (sessionId: string) => void
+  addAgentMemory: (kind: BotanicAgentMemoryKind, content: string, sourceNodeIds?: string[]) => string | null
+  removeAgentMemory: (memoryId: string) => void
   resumeBatchVariations: () => void
   setAssetReferenceEnabled: (nodeId: string, referenceEnabled: boolean) => void
   setPrimaryProductReference: (nodeId: string) => void
@@ -184,8 +205,8 @@ type CanvasStore = {
   createCanvasFromHistory: (historyId: string) => void
   restoreHistoryVersion: (historyId: string) => void
   saveHistoryAsTemplate: (historyId: string) => void
-  runGeneration: (input: { prompt: string; batchCount: number; settings: GenerationSettings; recipe?: GenerationRecipe; rootRecipe?: GenerationRecipe; taskLayout?: TaskFlowLayout; sourceGraphNodeId?: string }) => Promise<boolean>
-  runRefinement: (input: { targetNodeId: string; prompt: string; batchCount: number; settings: GenerationSettings; recipe?: GenerationRecipe; rootRecipe?: GenerationRecipe; taskLayout?: TaskFlowLayout; sourceGraphNodeId?: string; refinementMode?: RefinementMode }) => Promise<boolean>
+  runGeneration: (input: { prompt: string; batchCount: number; settings: GenerationSettings; recipe?: GenerationRecipe; rootRecipe?: GenerationRecipe; taskLayout?: TaskFlowLayout; sourceGraphNodeId?: string; agentRun?: { runId: string; branchId: string } }) => Promise<boolean>
+  runRefinement: (input: { targetNodeId: string; prompt: string; batchCount: number; settings: GenerationSettings; recipe?: GenerationRecipe; rootRecipe?: GenerationRecipe; taskLayout?: TaskFlowLayout; sourceGraphNodeId?: string; refinementMode?: RefinementMode; agentRun?: { runId: string; branchId: string } }) => Promise<boolean>
   cancelGeneration: () => void
   retryGeneration: () => Promise<boolean>
   retryMissingGeneration: (jobId: string) => Promise<boolean>
@@ -1382,7 +1403,7 @@ function normalizeDocument(stored: CanvasDocument | undefined): CanvasDocument {
   const document: CanvasDocument = {
     ...seedDocument,
     ...legacy,
-    schemaVersion: 22,
+    schemaVersion: 25,
     name: cleanDisplayName(legacy.name, seedDocument.name),
     viewport: rootSnapshot.viewport,
     nodes: reconciledResultNodes,
@@ -1413,6 +1434,36 @@ function normalizeDocument(stored: CanvasDocument | undefined): CanvasDocument {
       settings: cloneGenerationSettings(run.settings),
       items: Array.isArray(run.items) ? run.items.map((item) => ({ ...item })) : [],
     })),
+    agentRuns: (legacy.agentRuns ?? []).map((run: BotanicAgentRun) => ({
+      ...run,
+      branches: Array.isArray(run.branches) ? run.branches.map((branch) => ({ ...branch, jobIds: [...(branch.jobIds ?? [])] })) : [],
+      completedBranchCount: run.completedBranchCount ?? 0,
+      failedBranchCount: run.failedBranchCount ?? 0,
+      plan: {
+        ...run.plan,
+        references: run.plan.references.map((reference) => ({ ...reference })),
+        constraints: run.plan.constraints.map((constraint) => ({ ...constraint })),
+        settings: cloneGenerationSettings(run.plan.settings),
+        rootRecipe: cloneGenerationRecipe(run.plan.rootRecipe),
+      },
+    })),
+    agentSessions: (legacy.agentSessions ?? []).map((session) => ({
+      ...session,
+      contextNodeIds: [...new Set(Array.isArray(session.contextNodeIds) ? session.contextNodeIds.filter(Boolean) : [])],
+      messages: Array.isArray(session.messages) ? session.messages.map((message) => ({ ...message })) : [],
+    })),
+    agentMemory: (legacy.agentMemory ?? []).flatMap((memory) => {
+      try {
+        return [createBotanicAgentMemoryItem({
+          id: memory.id,
+          now: memory.updatedAt ?? memory.createdAt,
+          kind: memory.kind,
+          content: memory.content,
+          sourceNodeIds: memory.sourceNodeIds,
+        })]
+      } catch { return [] }
+    }),
+    activeAgentSessionId: legacy.activeAgentSessionId,
     activeVersionId: legacy.activeVersionId ?? seedDocument.activeVersionId,
   }
   // V18 起，同一次任务的每张输出都是画布上的独立结果节点；旧任务在首次打开时补齐。
@@ -2512,7 +2563,9 @@ async function executeBatchVariationRun(
             : candidate),
           updatedAt: Date.now(),
         }), `批量变体 ${currentBatchCompletedCount(run) + 1}/${run.items.length}：正在提交「${asset.name}」。`)
-        const started = await get().runGraphGeneration(branchId)
+        const started = await get().runGraphGeneration(branchId, run.agentRunId && item.agentBranchId
+          ? { runId: run.agentRunId, branchId: item.agentBranchId }
+          : undefined)
         if (!started) {
           const message = get().generationError ?? '子任务提交失败。'
           updateBatchVariationRun(set, get, runId, (current) => ({
@@ -3775,7 +3828,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     commit(set, { ...document, nodes }, { maximumBatchCount })
   },
 
-  runGraphGeneration: async (nodeId) => {
+  runGraphGeneration: async (nodeId, agentRun) => {
     const graphRecipe = buildGraphGenerationRecipe(get().document, nodeId)
     if (!graphRecipe) return setGenerationError(set, '未找到要执行的生成节点。')
     if (!graphRecipe.prompt.trim()) return setGenerationError(set, '请填写生成描述，或连接一个文本节点。')
@@ -3810,6 +3863,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
         recipe: preparedRecipe,
         sourceGraphNodeId: nodeId,
         refinementMode,
+        agentRun,
       })
     }
     return get().runGeneration({
@@ -3818,10 +3872,174 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
       settings: preparedRecipe.settings,
       recipe: preparedRecipe,
       sourceGraphNodeId: nodeId,
+      agentRun,
     })
   },
 
-  runBatchVariation: async ({ sourceResultNodeId, groupId, prompt, candidatesPerAsset, settings }) => {
+  saveAgentPlan: (plan, options) => {
+    const run = createBotanicAgentRun(plan, options)
+    const document = get().document
+    commit(set, { ...document, agentRuns: [run, ...document.agentRuns] }, {
+      assistantMessage: plan.summary,
+    })
+    return run.id
+  },
+
+  applyAgentRunSnapshot: (snapshot) => {
+    const document = get().document
+    const sourceResult = snapshot.plan ? document.nodes.find((node) => node.id === snapshot.plan?.selectedResultNodeId && node.type === 'result') : undefined
+    const sourceData = sourceResult?.data as ResultNodeData | undefined
+    const rootRecipe = sourceData?.rootRecipe ?? sourceData?.generationRecipe
+    commit(set, {
+      ...document,
+      agentRuns: upsertBotanicAgentRunSnapshot(document.agentRuns, snapshot, rootRecipe),
+    }, {}, { immediate: true })
+  },
+
+  retryAgentBranch: async (runId, branchId) => {
+    try {
+      const snapshot = await retryPersistentBotanicAgentBranch(runId, branchId)
+      get().applyAgentRunSnapshot(snapshot)
+      await get().refreshDocumentFromRemote().catch(() => false)
+      return true
+    } catch (caught) {
+      set({ assistantMessage: caught instanceof Error ? caught.message : '分支重试失败，请稍后重试。' })
+      return false
+    }
+  },
+
+  cancelAgentRun: async (runId) => {
+    try {
+      const snapshot = await cancelPersistentBotanicAgentRun(runId)
+      get().applyAgentRunSnapshot(snapshot)
+      await get().refreshDocumentFromRemote().catch(() => false)
+      return true
+    } catch (caught) {
+      set({ assistantMessage: caught instanceof Error ? caught.message : '任务取消失败，请稍后重试。' })
+      return false
+    }
+  },
+
+  updateAgentRunStatus: (runId, status, error) => {
+    const document = get().document
+    if (!document.agentRuns.some((run) => run.id === runId)) return
+    commit(set, {
+      ...document,
+      agentRuns: document.agentRuns.map((run) => run.id === runId
+        ? updateBotanicAgentRun(run, status, undefined, error)
+        : run),
+    })
+  },
+
+  ensureAgentSession: (contextNodeIds = []) => {
+    const document = get().document
+    const active = document.agentSessions.find((session) => session.id === document.activeAgentSessionId)
+    if (active) return active.id
+    return get().startNewAgentSession(contextNodeIds)
+  },
+
+  startNewAgentSession: (contextNodeIds = []) => {
+    const document = get().document
+    const session = createBotanicAgentSession({
+      id: `agent-session-${crypto.randomUUID()}`,
+      contextNodeIds,
+    })
+    commit(set, {
+      ...document,
+      agentSessions: [session, ...document.agentSessions],
+      activeAgentSessionId: session.id,
+    })
+    return session.id
+  },
+
+  appendAgentMessage: (sessionId, message) => {
+    const document = get().document
+    if (!document.agentSessions.some((session) => session.id === sessionId)) return
+    commit(set, {
+      ...document,
+      agentSessions: document.agentSessions.map((session) => session.id === sessionId
+        ? appendBotanicAgentMessage(session, message)
+        : session),
+      activeAgentSessionId: sessionId,
+    })
+  },
+
+  updateAgentMessage: (sessionId, messageId, patch) => {
+    const document = get().document
+    if (!document.agentSessions.some((session) => session.id === sessionId)) return
+    commit(set, {
+      ...document,
+      agentSessions: document.agentSessions.map((session) => session.id === sessionId
+        ? updateBotanicAgentMessage(session, messageId, patch)
+        : session),
+      activeAgentSessionId: sessionId,
+    })
+  },
+
+  updateAgentAction: (sessionId, messageId, actionId, patch) => {
+    const document = get().document
+    if (!document.agentSessions.some((session) => session.id === sessionId)) return
+    commit(set, {
+      ...document,
+      agentSessions: document.agentSessions.map((session) => session.id === sessionId
+        ? updateBotanicAgentAction(session, messageId, actionId, patch)
+        : session),
+      activeAgentSessionId: sessionId,
+    })
+  },
+
+  setAgentSessionContext: (sessionId, contextNodeIds) => {
+    const document = get().document
+    if (!document.agentSessions.some((session) => session.id === sessionId)) return
+    commit(set, {
+      ...document,
+      agentSessions: document.agentSessions.map((session) => session.id === sessionId
+        ? replaceBotanicAgentSessionContext(session, contextNodeIds)
+        : session),
+      activeAgentSessionId: sessionId,
+    })
+  },
+
+  setAgentSessionExecutionMode: (sessionId, mode) => {
+    const document = get().document
+    if (!document.agentSessions.some((session) => session.id === sessionId)) return
+    commit(set, {
+      ...document,
+      agentSessions: document.agentSessions.map((session) => session.id === sessionId
+        ? { ...session, executionMode: mode, updatedAt: Date.now() }
+        : session),
+      activeAgentSessionId: sessionId,
+    })
+  },
+
+  setActiveAgentSession: (sessionId) => {
+    const document = get().document
+    if (!document.agentSessions.some((session) => session.id === sessionId)) return
+    commit(set, { ...document, activeAgentSessionId: sessionId })
+  },
+
+  addAgentMemory: (kind, content, sourceNodeIds = []) => {
+    const document = get().document
+    let memory
+    try {
+      memory = createBotanicAgentMemoryItem({ kind, content, sourceNodeIds })
+    } catch (caught) {
+      set({ assistantMessage: caught instanceof Error ? caught.message : '项目记忆无法保存。' })
+      return null
+    }
+    const duplicate = document.agentMemory.find((item) => item.kind === memory.kind && item.content === memory.content)
+    if (duplicate) return duplicate.id
+    commit(set, { ...document, agentMemory: [memory, ...document.agentMemory].slice(0, 30) })
+    return memory.id
+  },
+
+  removeAgentMemory: (memoryId) => {
+    const document = get().document
+    if (!document.agentMemory.some((memory) => memory.id === memoryId)) return
+    commit(set, { ...document, agentMemory: document.agentMemory.filter((memory) => memory.id !== memoryId) })
+  },
+
+  runBatchVariation: async ({ sourceResultNodeId, groupId, prompt, candidatesPerAsset, settings, agentRunId, agentBranches }) => {
     const cleanPrompt = prompt.trim()
     if (!cleanPrompt) return setGenerationError(set, '请先描述这批图片要如何变化。')
     if (get().generationStatus !== 'idle' && get().generationStatus !== 'error') {
@@ -3859,9 +4077,11 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
         assetId,
         assetName: findAvailableAsset(document, get().globalAssets, assetId)?.name ?? `素材 ${index + 1}`,
         status: 'queued',
+        agentBranchId: agentBranches?.find((branch) => branch.assetId === assetId)?.branchId,
       })),
       createdAt: timestamp,
       updatedAt: timestamp,
+      agentRunId,
     }
     await commit(set, { ...document, batchVariationRuns: [run, ...document.batchVariationRuns] }, {
       generationError: null,
@@ -4269,7 +4489,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     })
   },
 
-  runGeneration: async ({ prompt, batchCount, settings, recipe: inputRecipe, rootRecipe: inputRootRecipe, taskLayout, sourceGraphNodeId }) => {
+  runGeneration: async ({ prompt, batchCount, settings, recipe: inputRecipe, rootRecipe: inputRootRecipe, taskLayout, sourceGraphNodeId, agentRun }) => {
     if (get().generationStatus !== 'idle' && get().generationStatus !== 'error') return false
 
     const cleanPrompt = prompt.trim()
@@ -4304,6 +4524,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
       parentVersionId: document.activeVersionId,
       taskLayout,
       sourceGraphNodeId,
+      agentRun,
     }
     const flow = createTaskFlow(document, request)
     const preparedRequest = { ...request, taskNodeIds: flow.taskNodeIds }
@@ -4328,6 +4549,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
         batchCount: request.batchCount,
         settings: request.settings,
         recipe,
+        agentRun,
       })
       if (submissionRunId !== generationSubmissionRunId) {
         void cancelGenerationJob(job.id)
@@ -4354,7 +4576,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     }
   },
 
-  runRefinement: async ({ targetNodeId, prompt, batchCount, settings, recipe: inputRecipe, rootRecipe: inputRootRecipe, taskLayout, sourceGraphNodeId, refinementMode = 'faithful' }) => {
+  runRefinement: async ({ targetNodeId, prompt, batchCount, settings, recipe: inputRecipe, rootRecipe: inputRootRecipe, taskLayout, sourceGraphNodeId, refinementMode = 'faithful', agentRun }) => {
     if (get().generationStatus !== 'idle' && get().generationStatus !== 'error') return false
 
     const cleanPrompt = prompt.trim()
@@ -4407,6 +4629,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
       taskLayout,
       sourceGraphNodeId,
       refinementMode,
+      agentRun,
     }
     const flow = createTaskFlow(document, request, target)
     const preparedRequest = { ...request, taskNodeIds: flow.taskNodeIds }
@@ -4432,6 +4655,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
         recipe,
         parent: { nodeId: targetNodeId, name: parentLabel, image: parentImage },
         refinementMode,
+        agentRun,
       })
       if (submissionRunId !== generationSubmissionRunId) {
         void cancelGenerationJob(job.id)

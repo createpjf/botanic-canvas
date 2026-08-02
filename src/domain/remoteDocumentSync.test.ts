@@ -7,7 +7,7 @@ function document(id: string, updatedAt: number, name: string): CanvasDocument {
   return {
     id,
     name,
-    schemaVersion: 22,
+    schemaVersion: 25,
     updatedAt,
     nodes: [],
     edges: [],
@@ -18,6 +18,9 @@ function document(id: string, updatedAt: number, name: string): CanvasDocument {
     history: [],
     deliveries: [],
     generationJobs: [],
+    agentRuns: [],
+    agentSessions: [],
+    agentMemory: [],
     batchVariationRuns: [],
   }
 }

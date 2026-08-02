@@ -177,6 +177,12 @@ export function createProjectRealtimeHub({ server, productStore, ticketSecret, r
         if (socket.readyState === WebSocket.OPEN) socket.send(payload)
       }
     },
+    publishAgentRunUpdated({ projectId, run }) {
+      const payload = JSON.stringify({ type: 'agent.run.updated', projectId, run })
+      for (const socket of clientsByProject.get(projectId) ?? []) {
+        if (socket.readyState === WebSocket.OPEN) socket.send(payload)
+      }
+    },
     async close() {
       closing = true
       clearInterval(heartbeat)

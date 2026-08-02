@@ -37,6 +37,35 @@ function persistedJob(job, generateNodeId, resultNodeId) {
   }
 }
 
+export function retargetGenerationJobForRetry(document, previousJobId, nextJobId, now = Date.now()) {
+  let changed = false
+  const next = clone(document)
+  next.nodes = (next.nodes ?? []).map((node) => {
+    if (node.data?.jobId !== previousJobId) return node
+    changed = true
+    if (node.type === 'result') return {
+      ...node,
+      data: { ...node.data, jobId: nextJobId, status: 'generating', taskStatus: 'queued', submittedAt: now, error: undefined },
+    }
+    if (node.type === 'generate') return {
+      ...node,
+      data: { ...node.data, jobId: nextJobId, status: 'queued', error: undefined },
+    }
+    return node
+  })
+  next.generationJobs = (next.generationJobs ?? []).map((job) => job.id !== previousJobId ? job : {
+    ...job,
+    id: nextJobId,
+    status: 'queued',
+    createdAt: now,
+    updatedAt: now,
+    outputCount: 0,
+    outputs: [],
+    error: undefined,
+  })
+  return { document: changed ? { ...next, updatedAt: now } : document, changed }
+}
+
 /** 将已成功、但未被浏览器写回的历史任务结果补入画布。 */
 export function reconcileGenerationResults(document, jobs) {
   const next = clone(document)
@@ -51,7 +80,7 @@ export function reconcileGenerationResults(document, jobs) {
     && node.data?.outputOf
     && (!node.data?.taskGroupId || node.id === node.data.taskGroupId)
     // 曾被旧客户端误标为“图像服务没有返回结果”的任务，也应允许权威任务表纠正。
-    && (node.data?.taskStatus === 'succeeded' || node.data?.status === 'ready'
+    && (['queued', 'running', 'succeeded', 'failed', 'cancelled'].includes(node.data?.taskStatus) || node.data?.status === 'ready'
       || node.data?.error === '图像服务没有返回结果，请重试。'
       || node.data?.error === '生成服务没有返回结果，请重试。'))
   let changed = false

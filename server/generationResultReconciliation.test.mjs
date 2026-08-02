@@ -1,6 +1,27 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { reconcileGenerationResults } from './generationResultReconciliation.mjs'
+import { reconcileGenerationResults, retargetGenerationJobForRetry } from './generationResultReconciliation.mjs'
+
+test('单分支重试把原失败占位节点切换到新 Job，不创建平行任务节点', () => {
+  const document = {
+    nodes: [
+      { id: 'generate-a', type: 'generate', data: { jobId: 'job-old', status: 'failed', error: '失败' } },
+      { id: 'result-a', type: 'result', data: { outputOf: 'generate-a', jobId: 'job-old', status: 'failed', taskStatus: 'failed', error: '失败' } },
+    ],
+    generationJobs: [{ id: 'job-old', status: 'failed' }],
+  }
+  const next = retargetGenerationJobForRetry(document, 'job-old', 'job-new', 100)
+  assert.equal(next.changed, true)
+  assert.equal(next.document.nodes[0].data.jobId, 'job-new')
+  assert.equal(next.document.nodes[1].data.status, 'generating')
+  assert.equal(next.document.generationJobs[0].id, 'job-new')
+  const reconciled = reconcileGenerationResults(next.document, [{
+    id: 'job-new', status: 'succeeded', kind: 'generation', batchCount: 1, createdAt: 100, updatedAt: 120,
+    settings: { model: 'gpt-image-2' }, outputs: [{ id: 'output-new', image: '/api/media/new' }],
+  }])
+  assert.equal(reconciled.changed, true)
+  assert.equal(reconciled.document.nodes[1].data.image, '/api/media/new')
+})
 
 test('历史成功任务会把空结果节点回填为独立图片节点', () => {
   const document = {

@@ -1,6 +1,7 @@
 import { createGenerationProcessor } from './generationProcessor.mjs'
 import { createGenerationQueue, createGenerationWorker } from './generationQueue.mjs'
 import { createProductRuntime, loadLocalEnv, runtimeConfig } from './runtime.mjs'
+import { createAgentRunEventPublisher } from './agentRunEventBus.mjs'
 
 loadLocalEnv()
 const config = runtimeConfig()
@@ -8,10 +9,11 @@ if (!config.production) console.warn('Botanic Worker 正在以本地配置运行
 const runtime = await createProductRuntime(config)
 if (!config.redisUrl) throw new Error('REDIS_URL 未配置，Worker 拒绝启动。')
 const queue = createGenerationQueue(config.redisUrl)
+const agentRunEvents = createAgentRunEventPublisher(config.redisUrl)
 const worker = createGenerationWorker({
   redisUrl: config.redisUrl,
   concurrency: config.workerConcurrency,
-  processJob: createGenerationProcessor({ ...runtime, config }),
+  processJob: createGenerationProcessor({ ...runtime, config, publishAgentRunUpdated: agentRunEvents.publish }),
 })
 
 worker.on('failed', (job, caught) => console.error(`[generation] BullMQ job ${job?.id ?? 'unknown'} failed: ${caught.message}`))
@@ -52,6 +54,7 @@ async function shutdown() {
   // stalled 回收，配合 90 秒 stale-running 恢复逻辑重新执行。
   await worker.close(true)
   await queue.close()
+  await agentRunEvents.close()
   await runtime.mediaService.close()
   await runtime.productStore.close?.()
 }

@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import postgres from 'postgres'
 import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from './authorization.mjs'
+import { applyGenerationJobToAgentRun } from './botanicAgentRun.mjs'
 
 const now = () => Date.now()
 const hashAccessToken = (token) => createHash('sha256').update(token).digest('hex')
@@ -150,6 +151,29 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       updated_at bigint not null,
       payload jsonb not null
     );
+    create table if not exists agent_runs (
+      id text primary key,
+      owner_id text not null references app_users(id) on delete cascade,
+      project_id text not null references projects(id) on delete cascade,
+      status text not null check (status in ('queued', 'running', 'completed', 'partial', 'failed', 'cancelled')),
+      updated_at bigint not null,
+      payload jsonb not null
+    );
+    create table if not exists agent_skills (
+      id text primary key,
+      owner_id text not null references app_users(id) on delete cascade,
+      project_id text not null references projects(id) on delete cascade,
+      status text not null check (status in ('active', 'archived')),
+      updated_at bigint not null,
+      payload jsonb not null
+    );
+    create table if not exists agent_action_receipts (
+      id text primary key,
+      owner_id text not null references app_users(id) on delete cascade,
+      project_id text not null references projects(id) on delete cascade,
+      created_at bigint not null,
+      payload jsonb not null
+    );
     create table if not exists media_objects (
       id text primary key,
       project_id text not null,
@@ -174,6 +198,9 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     create index if not exists auth_identities_user_idx on auth_identities (user_id);
     create index if not exists canvas_graph_updates_project_idx on canvas_graph_updates (project_id, id);
     create index if not exists jobs_status_updated_at_idx on generation_jobs (status, updated_at);
+    create index if not exists agent_runs_project_updated_idx on agent_runs (project_id, updated_at desc);
+    create index if not exists agent_skills_project_updated_idx on agent_skills (project_id, updated_at desc);
+    create index if not exists agent_action_receipts_project_created_idx on agent_action_receipts (project_id, created_at desc);
     create index if not exists media_project_idx on media_objects (project_id);
     create index if not exists audit_project_created_idx on audit_events (project_id, created_at desc);
     create index if not exists audit_created_idx on audit_events (created_at desc);
@@ -583,14 +610,119 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       })
     },
 
-    async putGenerationJob(userId, job) {
-      const payload = { ...clone(job), ownerId: userId, updatedAt: now() }
+    async putAgentSkill(userId, skill) {
+      const role = await memberRole(skill.projectId, userId)
+      assertProjectPermission(role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      const timestamp = now()
+      const [existing] = await sql`select project_id as "projectId", payload from agent_skills where id = ${skill.id}`
+      if (existing && existing.projectId !== skill.projectId) throw productError('Skill 标识已被其他项目使用。', 'AGENT_SKILL_ID_CONFLICT')
+      const previous = asPayload(existing)
+      const payload = {
+        ...clone(skill), ownerId: userId,
+        createdAt: Number(previous?.createdAt ?? skill.createdAt) || timestamp,
+        updatedAt: timestamp,
+      }
       await sql`
-        insert into generation_jobs (id, owner_id, project_id, status, updated_at, payload)
-        values (${job.id}, ${userId}, ${job.projectId}, ${job.status}, ${payload.updatedAt}, ${sql.json(payload)}::jsonb)
+        insert into agent_skills (id, owner_id, project_id, status, updated_at, payload)
+        values (${skill.id}, ${userId}, ${skill.projectId}, ${payload.status}, ${timestamp}, ${sql.json(payload)}::jsonb)
         on conflict (id) do update set status = excluded.status, updated_at = excluded.updated_at, payload = excluded.payload
       `
+      await insertAudit(sql, { actorId: userId, action: existing ? 'agent-skill.updated' : 'agent-skill.created', projectId: skill.projectId, targetId: skill.id })
+      return clone(payload)
+    },
+
+    async listAgentSkills(userId, projectId) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const rows = await sql`
+        select s.payload from agent_skills s join project_members m on m.project_id = s.project_id
+        where s.project_id = ${projectId} and s.status = 'active' and m.user_id = ${userId}
+        order by s.updated_at desc
+      `
+      return rows.map(asPayload)
+    },
+
+    async putAgentActionReceipt(userId, receipt) {
+      const role = await memberRole(receipt.projectId, userId)
+      assertProjectPermission(role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      const [existing] = await sql`select owner_id as "ownerId", project_id as "projectId" from agent_action_receipts where id = ${receipt.id}`
+      if (existing && (existing.ownerId !== userId || existing.projectId !== receipt.projectId)) {
+        throw productError('Agent 行动回执冲突。', 'AGENT_ACTION_RECEIPT_CONFLICT')
+      }
+      const payload = { ...clone(receipt), ownerId: userId }
+      await sql`
+        insert into agent_action_receipts (id, owner_id, project_id, created_at, payload)
+        values (${receipt.id}, ${userId}, ${receipt.projectId}, ${receipt.createdAt}, ${sql.json(payload)}::jsonb)
+        on conflict (id) do update set payload = excluded.payload
+      `
+      try {
+        await insertAudit(sql, { actorId: userId, action: 'agent-action.succeeded', projectId: receipt.projectId, targetId: receipt.id, detail: { toolCallId: receipt.toolCallId } })
+      } catch (error) {
+        console.warn(`[agent-action] audit deferred for ${receipt.id}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+      return clone(payload)
+    },
+
+    async readAgentActionReceipt(userId, receiptId) {
+      const [row] = await sql`
+        select receipt.payload from agent_action_receipts receipt
+        join project_members member on member.project_id = receipt.project_id
+        where receipt.id = ${receiptId} and receipt.owner_id = ${userId} and member.user_id = ${userId}
+      `
+      return asPayload(row)
+    },
+
+    async putGenerationJob(userId, job) {
+      const payload = { ...clone(job), ownerId: userId, updatedAt: now() }
+      await sql.begin(async (tx) => {
+        await tx`
+          insert into generation_jobs (id, owner_id, project_id, status, updated_at, payload)
+          values (${job.id}, ${userId}, ${job.projectId}, ${job.status}, ${payload.updatedAt}, ${tx.json(payload)}::jsonb)
+          on conflict (id) do update set status = excluded.status, updated_at = excluded.updated_at, payload = excluded.payload
+        `
+        if (payload.agentRun?.runId) {
+          const [row] = await tx`select payload from agent_runs where id = ${payload.agentRun.runId} and owner_id = ${userId} for update`
+          if (row) {
+            const run = applyGenerationJobToAgentRun(asPayload(row), payload)
+            await tx`update agent_runs set status = ${run.status}, updated_at = ${run.updatedAt}, payload = ${tx.json(run)}::jsonb where id = ${run.id}`
+          }
+        }
+      })
       await insertAudit(sql, { actorId: userId, action: `generation.${job.status}`, projectId: job.projectId, targetId: job.id, detail: { model: job.settings?.model, batchCount: job.batchCount } })
+    },
+
+    async putAgentRun(userId, run) {
+      const role = await memberRole(run.projectId, userId)
+      assertProjectPermission(role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      const payload = { ...clone(run), ownerId: userId, updatedAt: Number(run.updatedAt) || now() }
+      await sql`
+        insert into agent_runs (id, owner_id, project_id, status, updated_at, payload)
+        values (${run.id}, ${userId}, ${run.projectId}, ${run.status}, ${payload.updatedAt}, ${sql.json(payload)}::jsonb)
+        on conflict (id) do update set status = excluded.status, updated_at = excluded.updated_at, payload = excluded.payload
+      `
+      await insertAudit(sql, { actorId: userId, action: `agent-run.${run.status}`, projectId: run.projectId, targetId: run.id })
+      return clone(payload)
+    },
+
+    async readAgentRun(userId, runId) {
+      const [row] = await sql`
+        select r.payload from agent_runs r join project_members m on m.project_id = r.project_id
+        where r.id = ${runId} and r.owner_id = ${userId} and m.user_id = ${userId}
+      `
+      return asPayload(row)
+    },
+
+    async readAgentRunForWorker(runId) {
+      const [row] = await sql`select payload from agent_runs where id = ${runId}`
+      return asPayload(row)
+    },
+
+    async listAgentRunsForProject(userId, projectId, limit = 30) {
+      const rows = await sql`
+        select r.payload from agent_runs r join project_members m on m.project_id = r.project_id
+        where r.project_id = ${projectId} and r.owner_id = ${userId} and m.user_id = ${userId}
+        order by r.updated_at desc limit ${Math.max(1, Math.min(limit, 60))}
+      `
+      return rows.map(asPayload)
     },
 
     async readGenerationJob(userId, jobId) {

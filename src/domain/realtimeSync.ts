@@ -1,3 +1,5 @@
+import type { BotanicAgentRunSnapshot } from './agent'
+
 export type ProjectUpdatedRealtimeEvent = {
   type: 'project.updated'
   projectId: string
@@ -12,7 +14,13 @@ export type CanvasCrdtRealtimeEvent = {
   update: string
 }
 
-export type ProjectRealtimeEvent = ProjectUpdatedRealtimeEvent | CanvasCrdtRealtimeEvent
+export type AgentRunUpdatedRealtimeEvent = {
+  type: 'agent.run.updated'
+  projectId: string
+  run: BotanicAgentRunSnapshot
+}
+
+export type ProjectRealtimeEvent = ProjectUpdatedRealtimeEvent | CanvasCrdtRealtimeEvent | AgentRunUpdatedRealtimeEvent
 
 export function parseProjectRealtimeEvent(event: unknown, currentProjectId: string): ProjectRealtimeEvent | undefined {
   if (!event || typeof event !== 'object') return undefined
@@ -23,6 +31,7 @@ export function parseProjectRealtimeEvent(event: unknown, currentProjectId: stri
     graphRevision?: unknown
     updatedAt?: unknown
     update?: unknown
+    run?: unknown
   }
   if (candidate.projectId !== currentProjectId) return undefined
   if (candidate.type === 'project.updated'
@@ -37,6 +46,19 @@ export function parseProjectRealtimeEvent(event: unknown, currentProjectId: stri
     && candidate.update.length <= 700_000
     && /^[A-Za-z0-9+/]*={0,2}$/.test(candidate.update)) {
     return candidate as CanvasCrdtRealtimeEvent
+  }
+  if (candidate.type === 'agent.run.updated' && candidate.run && typeof candidate.run === 'object') {
+    const run = candidate.run as Partial<BotanicAgentRunSnapshot>
+    if (typeof run.id === 'string'
+      && run.projectId === currentProjectId
+      && typeof run.status === 'string'
+      && Array.isArray(run.branches)
+      && typeof run.completedBranchCount === 'number'
+      && typeof run.failedBranchCount === 'number'
+      && typeof run.createdAt === 'number'
+      && typeof run.updatedAt === 'number') {
+      return candidate as AgentRunUpdatedRealtimeEvent
+    }
   }
   return undefined
 }

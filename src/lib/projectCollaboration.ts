@@ -1,7 +1,7 @@
 import type { Edge } from '@xyflow/react'
 import type { CanvasNode } from '../domain/canvas'
 import { createCollaborativeGraph, type CollaborativeGraph } from '../domain/collaborativeGraph'
-import type { ProjectUpdatedRealtimeEvent } from '../domain/realtimeSync'
+import type { AgentRunUpdatedRealtimeEvent, ProjectUpdatedRealtimeEvent } from '../domain/realtimeSync'
 import { openProjectRealtimeChannel } from './projectRealtime'
 
 function updateToBase64(update: Uint8Array) {
@@ -29,11 +29,13 @@ export function connectCanvasCollaboration({
   initialGraph,
   onRemoteGraph,
   onProjectUpdated,
+  onAgentRunUpdated,
 }: {
   projectId: string
   initialGraph: CollaborativeGraph
   onRemoteGraph: (graph: CollaborativeGraph) => void
   onProjectUpdated: (event: ProjectUpdatedRealtimeEvent) => void
+  onAgentRunUpdated: (event: AgentRunUpdatedRealtimeEvent) => void
 }): CanvasCollaboration {
   let channel: ReturnType<typeof openProjectRealtimeChannel> | undefined
   const graph = createCollaborativeGraph({
@@ -50,6 +52,10 @@ export function connectCanvasCollaboration({
   channel = openProjectRealtimeChannel(projectId, (event) => {
     if (event.type === 'project.updated') {
       onProjectUpdated(event)
+      return
+    }
+    if (event.type === 'agent.run.updated') {
+      onAgentRunUpdated(event)
       return
     }
     try {

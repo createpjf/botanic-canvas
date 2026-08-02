@@ -156,7 +156,7 @@ function cloneWorkflowSnapshot(name: string): CanvasSnapshot {
 }
 
 export const seedDocument: CanvasDocument = {
-  schemaVersion: 22,
+  schemaVersion: 25,
   id: 'summer-fragrance-visual-lab',
   name: '夏日香氛视觉实验',
   updatedAt: Date.now(),
@@ -186,6 +186,9 @@ export const seedDocument: CanvasDocument = {
   deliveries: [],
   generationJobs: [],
   batchVariationRuns: [],
+  agentRuns: [],
+  agentSessions: [],
+  agentMemory: [],
   activeVersionId: 'history-summer-v03',
   nodes: initialNodes,
   edges: initialEdges,
@@ -193,7 +196,7 @@ export const seedDocument: CanvasDocument = {
 
 export function createEmptyCanvasDocument(id: string, name: string): CanvasDocument {
   return {
-    schemaVersion: 22,
+    schemaVersion: 25,
     id,
     name,
     updatedAt: Date.now(),
@@ -205,6 +208,9 @@ export function createEmptyCanvasDocument(id: string, name: string): CanvasDocum
     deliveries: [],
     generationJobs: [],
     batchVariationRuns: [],
+    agentRuns: [],
+    agentSessions: [],
+    agentMemory: [],
     nodes: [],
     edges: [],
   }

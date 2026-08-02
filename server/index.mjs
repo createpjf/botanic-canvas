@@ -4,8 +4,16 @@ import { randomUUID } from 'node:crypto'
 import { createGenerationProcessor } from './generationProcessor.mjs'
 import { createGenerationQueue } from './generationQueue.mjs'
 import { GenerationError, persistedGenerationJob, publicGenerationJob, validateGenerationInput } from './generationProvider.mjs'
-import { reconcileGenerationResults } from './generationResultReconciliation.mjs'
+import { reconcileGenerationResults, retargetGenerationJobForRetry } from './generationResultReconciliation.mjs'
 import { PromptRefinementError, refinePrompt, validatePromptRefinementInput } from './promptRefinementProvider.mjs'
+import { BotanicAgentPlannerError, planBotanicGeneration, validateBotanicAgentPlanInput } from './botanicAgentPlanner.mjs'
+import { BotanicAgentSkillError, createAgentSkill, publicAgentSkill, validateAgentSkillCreation } from './botanicAgentSkill.mjs'
+import { BotanicAgentRunError, cancelPersistentAgentRun, createPersistentAgentRun, prepareAgentBranchRetry, publicAgentRun, validateAgentRunCreation } from './botanicAgentRun.mjs'
+import { prepareAgentRunExecution, reconcileAgentGenerationJobToProject } from './botanicAgentExecution.mjs'
+import { AgentToolRuntimeError, executeConfirmedAgentAction } from './agentToolRuntime.mjs'
+import { botanicAgentBuiltInSkill, createBotanicAgentActionToolRegistry } from './botanicAgentTools.mjs'
+import { createConfiguredMcpTools, McpClientError } from './mcpClient.mjs'
+import { createAgentRunEventPublisher, createAgentRunEventSubscriber } from './agentRunEventBus.mjs'
 import { applyCanvasDocumentPatch } from './canvasDocumentPatch.mjs'
 import { generationIdempotencyKey, generationJobIdForIdempotency } from './generationIdempotency.mjs'
 import { createProductRuntime, loadLocalEnv, runtimeConfig } from './runtime.mjs'
@@ -21,13 +29,22 @@ loadLocalEnv()
 const config = runtimeConfig()
 const runtime = await createProductRuntime(config)
 const { productStore, mediaService } = runtime
+const configuredMcpTools = createConfiguredMcpTools(config.agentMcpTools ?? [])
 const redisQueue = createGenerationQueue(config.redisUrl)
+const agentRunEvents = createAgentRunEventPublisher(config.redisUrl)
 const securityControls = createSecurityControls({
   redisUrl: config.redisUrl,
   onFallback: (caught) => console.error(`[security] Redis limiter fallback: ${caught instanceof Error ? caught.message : String(caught)}`),
 })
+let realtimeHub
+let agentRunEventSubscriber
+const agentActionExecutions = new Map()
+async function publishAgentRunUpdated(event) {
+  if (config.redisUrl) return agentRunEvents.publish(event)
+  realtimeHub?.publishAgentRunUpdated(event)
+}
 const localProcessor = !redisQueue && !config.production
-  ? createGenerationProcessor({ productStore, mediaService, config })
+  ? createGenerationProcessor({ productStore, mediaService, config, publishAgentRunUpdated })
   : undefined
 const accountSecurityAuditActions = new Set([
   'security.password.changed',
@@ -159,9 +176,103 @@ try {
   console.error(`[generation] queue recovery deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
 }
 
-let realtimeHub
 async function publishProjectUpdated(saved, actorId) {
   await publishProjectUpdatedSafely(realtimeHub, saved, actorId)
+}
+
+async function prepareAgentRunProjectExecution(userId, projectId, runId, { submission }) {
+  const run = await productStore.readAgentRun(userId, runId)
+  if (!run || run.projectId !== projectId) {
+    throw new AgentToolRuntimeError('AGENT_RUN_NOT_FOUND', '未找到当前项目的 Agent Run。', 404)
+  }
+  const project = await productStore.readProject(userId, projectId)
+  if (!project) throw new AgentToolRuntimeError('PROJECT_NOT_FOUND', '未找到当前项目。', 404)
+  const prepared = prepareAgentRunExecution({
+    run,
+    document: project.document,
+    submission,
+    models: config.modelOptions?.length ? config.modelOptions : config.models,
+    maximumBatchCount: config.maximumBatchCount,
+    maximumReferenceBytes: config.maximumReferenceBytes,
+    jobIdForBranch: (branch) => generationJobIdForIdempotency(
+      userId,
+      `${run.id}:${branch.id}:attempt-${branch.attempt ?? 0}`,
+    ),
+  })
+  return { run, project, prepared }
+}
+
+async function persistAgentRunWorkflow(userId, project, prepared) {
+  try {
+    const saved = await productStore.writeProject(
+      userId,
+      prepared.document,
+      project.revision,
+      project.graphRevision,
+    )
+    await publishProjectUpdated(saved, userId)
+    return saved
+  } catch (caught) {
+    if (caught?.code === 'PROJECT_CONFLICT' || caught?.code === 'CANVAS_GRAPH_CONFLICT') {
+      throw new AgentToolRuntimeError(caught.code, '画布刚刚发生变化，请刷新后重新执行 Agent 计划。', 409)
+    }
+    throw caught
+  }
+}
+
+async function persistAgentJobStateToProject(userId, projectId, job) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const project = await productStore.readProject(userId, projectId)
+    if (!project) return
+    const reconciled = reconcileAgentGenerationJobToProject(project.document, job)
+    if (!reconciled.changed) return
+    try {
+      const saved = await productStore.writeProject(
+        userId,
+        reconciled.document,
+        project.revision,
+        project.graphRevision,
+      )
+      await publishProjectUpdated(saved, userId)
+      return
+    } catch (caught) {
+      if (caught?.code !== 'PROJECT_CONFLICT' && caught?.code !== 'CANVAS_GRAPH_CONFLICT') throw caught
+    }
+  }
+  throw new AgentToolRuntimeError('AGENT_WRITEBACK_CONFLICT', '任务状态回写连续冲突，请刷新画布后重试。', 409)
+}
+
+async function submitAgentRunGeneration(userId, projectId, runId) {
+  const { run, project, prepared } = await prepareAgentRunProjectExecution(userId, projectId, runId, { submission: true })
+  const existingJobs = new Map()
+  for (const job of prepared.jobs) existingJobs.set(job.id, await productStore.readGenerationJob(userId, job.id))
+  const pendingJobs = prepared.jobs.filter((job) => !existingJobs.get(job.id))
+  const outputCost = pendingJobs.reduce((total, job) => total + job.batchCount, 0)
+  if (outputCost) {
+    const quota = await securityControls.consume({
+      scope: 'generation-output', subject: userId,
+      limit: config.security.generationOutputsPerDay, windowMs: 24 * 60 * 60_000,
+      cost: outputCost,
+    })
+    if (!quota.allowed) throw new AgentToolRuntimeError('RATE_LIMITED', '今日生成额度已用完，请稍后重试。', 429)
+  }
+  await persistAgentRunWorkflow(userId, project, prepared)
+  const queueFailures = []
+  for (const job of pendingJobs) {
+    await productStore.putGenerationJob(userId, persistedGenerationJob(job))
+    try {
+      await enqueue(job.id)
+    } catch {
+      const failed = { ...job, status: 'failed', error: '生成任务无法进入队列，请检查 Redis Worker 后重试。', updatedAt: Date.now() }
+      await productStore.putGenerationJob(userId, persistedGenerationJob(failed))
+      await persistAgentJobStateToProject(userId, projectId, failed)
+      queueFailures.push(failed)
+    }
+  }
+  const latestRun = await productStore.readAgentRun(userId, run.id) ?? run
+  await publishAgentRunUpdated({ projectId, run: publicAgentRun(latestRun) })
+  if (queueFailures.length) throw new AgentToolRuntimeError('QUEUE_UNAVAILABLE', queueFailures[0].error, 503)
+  return { run: latestRun, jobs: prepared.jobs, workflows: prepared.workflows }
 }
 
 function expectedGraphRevision(request, fallback) {
@@ -193,6 +304,11 @@ const server = createServer(async (request, response) => {
     const auditMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/audit$/)
     const projectGenerationJobsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/generation-jobs$/)
     const projectGenerationReconcileMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/reconcile-generation-results$/)
+    const projectAgentRunsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/agent-runs$/)
+    const projectAgentSkillsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/agent-skills$/)
+    const agentRunMatch = url.pathname.match(/^\/api\/agent-runs\/([^/]+)$/)
+    const agentRunCancelMatch = url.pathname.match(/^\/api\/agent-runs\/([^/]+)\/cancel$/)
+    const agentBranchRetryMatch = url.pathname.match(/^\/api\/agent-runs\/([^/]+)\/branches\/([^/]+)\/retry$/)
     const assetMatch = url.pathname.match(/^\/api\/global-assets\/([^/]+)$/)
     const jobMatch = url.pathname.match(/^\/api\/generation-jobs\/([^/]+)(?:\/(cancel))?$/)
     const mediaMatch = url.pathname.match(/^\/api\/media\/([^/]+)$/)
@@ -214,6 +330,16 @@ const server = createServer(async (request, response) => {
           provider: 'flock-api',
           configured: Boolean(config.flockApiBaseUrl && config.flockApiKey && config.flockTextModel),
           model: config.flockTextModel || undefined,
+        },
+        agentPlanner: {
+          provider: 'flock-api',
+          configured: Boolean(config.flockApiBaseUrl && config.flockApiKey && config.flockTextModel),
+          model: config.flockTextModel || undefined,
+          models: config.flockAgentModels,
+        },
+        agentMcp: {
+          configured: Object.keys(configuredMcpTools).length > 0,
+          toolCount: Object.keys(configuredMcpTools).length,
         },
       })
     }
@@ -538,6 +664,247 @@ const server = createServer(async (request, response) => {
       }
     }
 
+    if (request.method === 'POST' && url.pathname === '/api/agent-plans') {
+      const user = await requireUser(request)
+      if (!await enforceRateLimit(response, {
+        scope: 'agent-plan', subject: user.id,
+        limit: config.security.agentPlansPerFiveMinutes, windowMs: 5 * 60_000,
+      })) return
+      if (!config.flockApiBaseUrl || !config.flockApiKey || !config.flockTextModel) {
+        return error(response, 503, 'PROVIDER_NOT_CONFIGURED', '生图 Agent 规划服务尚未配置。')
+      }
+      const rawInput = await readJson(request, config.maximumPromptRefinementRequestBytes, 'Agent 规划请求过大，请精简后重试。')
+      const validatedInput = validateBotanicAgentPlanInput(rawInput)
+      await requireProjectPermission(productStore, user.id, validatedInput.projectId, 'edit')
+      const projectSkills = await productStore.listAgentSkills(user.id, validatedInput.projectId) ?? []
+      const input = {
+        ...validatedInput,
+        availableMcpTools: (config.agentMcpTools ?? []).map(({ server, tool }) => ({ server, tool })),
+        projectSkills: projectSkills.map((skill) => ({
+          id: skill.id, name: skill.name, instructions: skill.instructions, status: skill.status,
+        })),
+      }
+      const plannerController = new AbortController()
+      const cancelPlanner = () => plannerController.abort()
+      const cancelOnClosedResponse = () => {
+        if (!response.writableEnded) cancelPlanner()
+      }
+      request.once('aborted', cancelPlanner)
+      response.once('close', cancelOnClosedResponse)
+      if (request.aborted || response.destroyed) cancelPlanner()
+      try {
+        const plan = await planBotanicGeneration(input, config, { signal: plannerController.signal })
+        if (plannerController.signal.aborted || response.destroyed) return
+        return json(response, 200, { plan })
+      } catch (caught) {
+        if (plannerController.signal.aborted || response.destroyed) return
+        throw caught
+      } finally {
+        request.off('aborted', cancelPlanner)
+        response.off('close', cancelOnClosedResponse)
+      }
+    }
+
+    if (projectAgentSkillsMatch && request.method === 'GET') {
+      const user = await requireUser(request)
+      const projectId = decodeURIComponent(projectAgentSkillsMatch[1])
+      await requireProjectPermission(productStore, user.id, projectId, 'read')
+      const skills = await productStore.listAgentSkills(user.id, projectId) ?? []
+      return json(response, 200, { skills: skills.map(publicAgentSkill) })
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/agent-actions') {
+      const user = await requireUser(request)
+      const idempotencyKey = generationIdempotencyKey(request.headers['idempotency-key'])
+      if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', 'Agent 行动提交标识无效，请重试。')
+      const body = await readJson(request, 16 * 1024, 'Agent 行动请求过大。')
+      const projectId = text(body?.projectId, '项目', 160)
+      await requireProjectPermission(productStore, user.id, projectId, 'edit')
+      const receiptId = `agent_action_${generationJobIdForIdempotency(user.id, `${projectId}:${idempotencyKey}`).slice(4)}`
+      const persistedReceipt = await productStore.readAgentActionReceipt(user.id, receiptId)
+      if (persistedReceipt) return json(response, 200, persistedReceipt.result)
+      const execute = async () => {
+        const registry = createBotanicAgentActionToolRegistry({
+          createWorkflow: async ({ planId }) => {
+            const { project, prepared } = await prepareAgentRunProjectExecution(user.id, projectId, planId, { submission: false })
+            await persistAgentRunWorkflow(user.id, project, prepared)
+            return {
+              message: `已创建 ${prepared.workflows.length} 条画布工作流。`,
+              canvasNodeIds: prepared.workflows.flatMap((workflow) => [workflow.generateNodeId, workflow.resultNodeId]),
+            }
+          },
+          submitGeneration: async ({ planId }) => {
+            const execution = await submitAgentRunGeneration(user.id, projectId, planId)
+            return {
+              message: `已提交 ${execution.jobs.length} 个 Agent 生成分支。`,
+              run: publicAgentRun(execution.run),
+              jobIds: execution.jobs.map((job) => job.id),
+              canvasNodeIds: execution.workflows.flatMap((workflow) => [workflow.generateNodeId, workflow.resultNodeId]),
+            }
+          },
+          applySkill: async ({ skillId }) => {
+            const builtIn = botanicAgentBuiltInSkill(skillId)
+            if (builtIn) return { skill: builtIn }
+            const skills = await productStore.listAgentSkills(user.id, projectId) ?? []
+            const skill = skills.find((candidate) => candidate.id === skillId && candidate.status === 'active')
+            if (!skill) throw new AgentToolRuntimeError('SKILL_NOT_ALLOWED', 'Skill 不在当前项目的允许列表。', 403)
+            return { skill: { id: skill.id, name: skill.name, instructions: skill.instructions } }
+          },
+          createSkill: async (argumentsValue) => {
+            const input = validateAgentSkillCreation({ projectId, ...argumentsValue })
+            const skill = createAgentSkill(input, { ownerId: user.id })
+            return { skill: publicAgentSkill(await productStore.putAgentSkill(user.id, skill)) }
+          },
+          mcpTools: configuredMcpTools,
+        })
+        const result = await executeConfirmedAgentAction({
+          registry,
+          name: text(body?.name, '工具名称', 80),
+          arguments: body?.arguments,
+          toolCallId: text(body?.toolCallId, '工具调用标识', 160),
+          confirmed: body?.confirmed,
+          context: { projectId, userId: user.id, requestId },
+        })
+        await productStore.putAgentActionReceipt(user.id, {
+          id: receiptId, projectId, toolCallId: result.toolCall.id,
+          result, createdAt: Date.now(),
+        })
+        return result
+      }
+      let execution = agentActionExecutions.get(receiptId)
+      if (!execution) {
+        execution = execute().finally(() => agentActionExecutions.delete(receiptId))
+        agentActionExecutions.set(receiptId, execution)
+      }
+      const result = await execution
+      return json(response, 200, result)
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/agent-runs') {
+      const user = await requireUser(request)
+      const idempotencyKey = generationIdempotencyKey(request.headers['idempotency-key'])
+      if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', 'Agent Run 提交标识无效，请重试。')
+      const input = validateAgentRunCreation(await readJson(request, 64 * 1024, 'Agent Run 请求过大。'))
+      await requireProjectPermission(productStore, user.id, input.projectId, 'edit')
+      const id = `agent_run_${generationJobIdForIdempotency(user.id, idempotencyKey).slice(4)}`
+      const existing = await productStore.readAgentRun(user.id, id)
+      if (existing) return json(response, 200, { run: publicAgentRun(existing) })
+      const run = createPersistentAgentRun(input, { id, ownerId: user.id })
+      await productStore.putAgentRun(user.id, run)
+      await publishAgentRunUpdated({ projectId: run.projectId, run: publicAgentRun(run) })
+      return json(response, 201, { run: publicAgentRun(run) })
+    }
+
+    if (projectAgentRunsMatch && request.method === 'GET') {
+      const user = await requireUser(request)
+      const projectId = decodeURIComponent(projectAgentRunsMatch[1])
+      await requireProjectPermission(productStore, user.id, projectId, 'read')
+      const runs = await productStore.listAgentRunsForProject(user.id, projectId)
+      return json(response, 200, { runs: runs.map(publicAgentRun) })
+    }
+
+    if (agentRunMatch && request.method === 'GET') {
+      const user = await requireUser(request)
+      const run = await productStore.readAgentRun(user.id, decodeURIComponent(agentRunMatch[1]))
+      if (!run) return error(response, 404, 'AGENT_RUN_NOT_FOUND', '未找到该 Agent Run。')
+      await requireProjectPermission(productStore, user.id, run.projectId, 'read')
+      return json(response, 200, { run: publicAgentRun(run) })
+    }
+
+    if (agentRunCancelMatch && request.method === 'POST') {
+      const user = await requireUser(request)
+      const runId = decodeURIComponent(agentRunCancelMatch[1])
+      const run = await productStore.readAgentRun(user.id, runId)
+      if (!run) return error(response, 404, 'AGENT_RUN_NOT_FOUND', '未找到该 Agent Run。')
+      await requireProjectPermission(productStore, user.id, run.projectId, 'edit')
+      const activeJobIds = [...new Set(run.branches
+        .filter((branch) => branch.status === 'queued' || branch.status === 'running')
+        .map((branch) => branch.activeJobId)
+        .filter(Boolean))]
+      for (const jobId of activeJobIds) {
+        const job = await productStore.readGenerationJob(user.id, jobId)
+        if (job?.status === 'queued' || job?.status === 'running') {
+          const cancelledJob = {
+            ...job, status: 'cancelled', error: undefined, updatedAt: Date.now(),
+          }
+          await productStore.putGenerationJob(user.id, persistedGenerationJob(cancelledJob))
+          await persistAgentJobStateToProject(user.id, run.projectId, cancelledJob)
+          await redisQueue?.cancel(jobId)
+        }
+      }
+      const latestRun = await productStore.readAgentRun(user.id, runId) ?? run
+      const cancelledRun = cancelPersistentAgentRun(latestRun)
+      if (cancelledRun !== latestRun) await productStore.putAgentRun(user.id, cancelledRun)
+      await publishAgentRunUpdated({ projectId: run.projectId, run: publicAgentRun(cancelledRun) })
+      return json(response, 200, { run: publicAgentRun(cancelledRun) })
+    }
+
+    if (agentBranchRetryMatch && request.method === 'POST') {
+      const user = await requireUser(request)
+      const runId = decodeURIComponent(agentBranchRetryMatch[1])
+      const branchId = decodeURIComponent(agentBranchRetryMatch[2])
+      const idempotencyKey = generationIdempotencyKey(request.headers['idempotency-key'])
+      if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', '分支重试标识无效，请重试。')
+      const run = await productStore.readAgentRun(user.id, runId)
+      if (!run) return error(response, 404, 'AGENT_RUN_NOT_FOUND', '未找到该 Agent Run。')
+      await requireProjectPermission(productStore, user.id, run.projectId, 'edit')
+      const branch = run.branches.find((candidate) => candidate.id === branchId)
+      if (!branch) return error(response, 404, 'AGENT_BRANCH_NOT_FOUND', '未找到 Agent 分支。')
+      const previousJob = branch.activeJobId ? await productStore.readGenerationJob(user.id, branch.activeJobId) : undefined
+      if (!previousJob?.rawInput) return error(response, 409, 'AGENT_BRANCH_RETRY_SOURCE_MISSING', '该分支缺少可重试的原始生成配方。')
+      const jobId = generationJobIdForIdempotency(user.id, idempotencyKey)
+      const existingJob = await productStore.readGenerationJob(user.id, jobId)
+      if (existingJob) return json(response, 202, { run: publicAgentRun(await productStore.readAgentRun(user.id, runId)), job: publicGenerationJob(existingJob) })
+      if (!await enforceRateLimit(response, {
+        scope: 'generation-output', subject: user.id,
+        limit: config.security.generationOutputsPerDay, windowMs: 24 * 60 * 60_000,
+        cost: previousJob.batchCount,
+      })) return
+      const timestamp = Date.now()
+      const retriedRun = prepareAgentBranchRetry(run, branchId, { jobId, now: timestamp })
+      const job = {
+        ...previousJob,
+        id: jobId,
+        status: 'queued',
+        idempotencyKey,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        outputs: [],
+        error: undefined,
+        missingOutputCount: 0,
+        partialError: undefined,
+        agentRun: { runId, branchId },
+      }
+      const project = await productStore.readProject(user.id, run.projectId)
+      const retargeted = project ? retargetGenerationJobForRetry(project.document, previousJob.id, jobId, timestamp) : { changed: false }
+      if (project && retargeted.changed) {
+        try {
+          const saved = await productStore.writeProject(user.id, retargeted.document, project.revision, project.graphRevision)
+          await publishProjectUpdated(saved, user.id)
+        } catch (caught) {
+          if (caught?.code === 'PROJECT_CONFLICT' || caught?.code === 'CANVAS_GRAPH_CONFLICT') {
+            return error(response, 409, caught.code, '画布刚刚发生变化，请刷新后重试该分支。')
+          }
+          throw caught
+        }
+      }
+      await productStore.putAgentRun(user.id, retriedRun)
+      await productStore.putGenerationJob(user.id, persistedGenerationJob(job))
+      try {
+        await enqueue(job.id)
+      } catch {
+        const failed = { ...job, status: 'failed', error: '生成任务无法进入队列，请检查 Redis Worker 后重试。', updatedAt: Date.now() }
+        await productStore.putGenerationJob(user.id, persistedGenerationJob(failed))
+        await persistAgentJobStateToProject(user.id, run.projectId, failed)
+        const failedRun = await productStore.readAgentRun(user.id, runId)
+        await publishAgentRunUpdated({ projectId: run.projectId, run: publicAgentRun(failedRun) })
+        return error(response, 503, 'QUEUE_UNAVAILABLE', failed.error)
+      }
+      const queuedRun = await productStore.readAgentRun(user.id, runId)
+      await publishAgentRunUpdated({ projectId: run.projectId, run: publicAgentRun(queuedRun) })
+      return json(response, 202, { run: publicAgentRun(queuedRun), job: publicGenerationJob(job) })
+    }
+
     if (request.method === 'POST' && url.pathname === '/api/prompt-refinements') {
       const user = await requireUser(request)
       if (!await enforceRateLimit(response, {
@@ -584,6 +951,15 @@ const server = createServer(async (request, response) => {
       const selectedModel = providerForModel(config.modelOptions ?? [], input.settings.model)
       if (!selectedModel) return error(response, 503, 'PROVIDER_NOT_CONFIGURED', '所选生成模型尚未配置，请检查对应供应商 API Key。')
       await requireProjectPermission(productStore, user.id, input.projectId, 'edit')
+      let agentRun
+      if (rawInput.agentRun !== undefined) {
+        const runId = text(rawInput.agentRun?.runId, 'Agent Run', 160)
+        const branchId = text(rawInput.agentRun?.branchId, 'Agent 分支', 160)
+        const run = await productStore.readAgentRun(user.id, runId)
+        if (!run || run.projectId !== input.projectId) return error(response, 404, 'AGENT_RUN_NOT_FOUND', '未找到当前项目的 Agent Run。')
+        if (!run.branches.some((branch) => branch.id === branchId)) return error(response, 404, 'AGENT_BRANCH_NOT_FOUND', '未找到 Agent 分支。')
+        agentRun = { runId, branchId }
+      }
       const id = generationJobIdForIdempotency(user.id, idempotencyKey)
       const existing = await productStore.readGenerationJob(user.id, id)
       if (existing) return json(response, 202, publicGenerationJob(existing))
@@ -601,7 +977,7 @@ const server = createServer(async (request, response) => {
           : 'openai-images',
         refinementMode: input.refinementMode,
         idempotencyKey,
-        outputs: [], error: undefined, rawInput,
+        outputs: [], error: undefined, rawInput, agentRun,
       }
       await productStore.putGenerationJob(user.id, persistedGenerationJob(job))
       try {
@@ -666,7 +1042,7 @@ const server = createServer(async (request, response) => {
     }
     return error(response, 404, 'NOT_FOUND', '接口不存在。')
   } catch (caught) {
-    const failure = caught instanceof HttpError || caught instanceof ProjectAuthorizationError || caught instanceof GenerationError || caught instanceof PromptRefinementError
+    const failure = caught instanceof HttpError || caught instanceof ProjectAuthorizationError || caught instanceof GenerationError || caught instanceof PromptRefinementError || caught instanceof BotanicAgentPlannerError || caught instanceof BotanicAgentRunError || caught instanceof BotanicAgentSkillError || caught instanceof AgentToolRuntimeError || caught instanceof McpClientError
       ? caught
       : caught?.code === 'WORKSPACE_STORE_TIMEOUT'
         ? new HttpError(503, 'WORKSPACE_STORE_TIMEOUT', caught.message)
@@ -686,12 +1062,15 @@ realtimeHub = createProjectRealtimeHub({
   productStore,
   ticketSecret: config.realtimeTicketSecret,
 })
+agentRunEventSubscriber = await createAgentRunEventSubscriber(config.redisUrl, (event) => realtimeHub.publishAgentRunUpdated(event))
 
 server.listen(config.port, '0.0.0.0', () => console.log(`Botanic service listening on http://0.0.0.0:${config.port}`))
 
 async function shutdown() {
   server.close()
   await realtimeHub.close()
+  await agentRunEventSubscriber?.close()
+  await agentRunEvents.close()
   await redisQueue?.close()
   await securityControls.close()
   await mediaService.close()

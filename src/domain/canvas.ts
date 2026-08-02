@@ -1,4 +1,5 @@
 import type { Edge, Node, Viewport } from '@xyflow/react'
+import type { BotanicAgentMemoryItem, BotanicAgentRun, BotanicAgentSession } from './agent'
 
 export type AssetRole = '商品' | '模特' | '场景' | '调性' | '首图'
 export type AssetSource = 'brand' | 'upload' | 'generated'
@@ -315,6 +316,7 @@ export type GenerationJob = {
   promptNodeId?: string
   referenceNodeId?: string
   resultNodeId?: string
+  agentRun?: { runId: string; branchId: string }
 }
 
 export type BatchVariationItemStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
@@ -327,6 +329,7 @@ export type BatchVariationItem = {
   generateNodeId?: string
   jobId?: string
   error?: string
+  agentBranchId?: string
 }
 
 /** 一次素材组批量变体会拆成可独立恢复、重试和追溯的子任务。 */
@@ -343,6 +346,7 @@ export type BatchVariationRun = {
   items: BatchVariationItem[]
   createdAt: number
   updatedAt: number
+  agentRunId?: string
 }
 
 export type DeliveryArtifact = {
@@ -359,7 +363,7 @@ export type DeliveryArtifact = {
 }
 
 export type CanvasDocument = {
-  schemaVersion: 22
+  schemaVersion: 25
   id: string
   name: string
   nodes: CanvasNode[]
@@ -373,6 +377,13 @@ export type CanvasDocument = {
   deliveries: DeliveryArtifact[]
   generationJobs: GenerationJob[]
   batchVariationRuns: BatchVariationRun[]
+  /** 已确认或执行中的 Agent 计划；随项目画布恢复，避免刷新丢失上下文。 */
+  agentRuns: BotanicAgentRun[]
+  /** Agent 对话与引用的画布上下文；与项目隔离并随画布文档持久化。 */
+  agentSessions: BotanicAgentSession[]
+  /** 当前项目批准的创作规则、视觉方向与禁用项；不会跨项目自动共享。 */
+  agentMemory: BotanicAgentMemoryItem[]
+  activeAgentSessionId?: string
   activeTemplateId?: string
   activeVersionId?: string
   updatedAt: number

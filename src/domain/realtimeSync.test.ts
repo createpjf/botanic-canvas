@@ -49,3 +49,17 @@ test('只接受当前项目且格式有效的 CRDT 增量', () => {
     update: 'not base64!',
   }, 'project-1'), undefined)
 })
+
+test('只接受当前项目且格式完整的 Agent Run 进度', () => {
+  const event = {
+    type: 'agent.run.updated', projectId: 'project-1',
+    run: {
+      id: 'run-1', projectId: 'project-1', status: 'running', completedBranchCount: 0, failedBranchCount: 0,
+      branches: [{ id: 'branch-1', label: '海边', status: 'running', attempt: 0, jobIds: ['job-1'], outputCount: 0, updatedAt: 20 }],
+      createdAt: 10, updatedAt: 20,
+    },
+  }
+  assert.deepEqual(parseProjectRealtimeEvent(event, 'project-1'), event)
+  assert.equal(parseProjectRealtimeEvent({ ...event, projectId: 'project-2' }, 'project-1'), undefined)
+  assert.equal(parseProjectRealtimeEvent({ ...event, run: { id: 'run-1' } }, 'project-1'), undefined)
+})

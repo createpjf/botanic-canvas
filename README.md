@@ -18,6 +18,7 @@ Botanic 是面向品牌视觉生产的无限画布工作台。图片、文本和
 - 离线与同步：IndexedDB 本地草稿、远端版本冲突保护、历史任务结果回填。
 - 实时协作：项目级 WebSocket 推送与 Yjs 节点/连线增量；独立图谱和更新日志可跨 API 重启恢复。
 - 投放交付：图片素材更换、单张实时预览、安全区与多规格 ZIP 导出；视频暂不进入图片投放模板。
+- Botanic Agent：项目级对话、画布 `@` 引用、创作记忆、Skill / MCP 确认卡、批量分支进度与失败重试、集中结果区和执行路由说明。
 
 ## 生产架构
 
@@ -101,8 +102,13 @@ VIDEO_GENERATION_TIMEOUT_MS=1200000
 
 FLOCK_API_BASE_URL=https://api.flock.io/v1
 FLOCK_API_KEY=...
-FLOCK_TEXT_MODEL=<控制台中的模型 ID>
+FLOCK_TEXT_MODEL=deepseek-v4-pro
+FLOCK_AGENT_MODELS=deepseek-v4-pro,deepseek-v4-flash,kimi-k3
+AGENT_PLANNER_TIMEOUT_MS=30000
+BOTANIC_MCP_TOOLS_JSON=[]
 ```
+
+`BOTANIC_MCP_TOOLS_JSON` 是服务端精确白名单。每项必须包含 `server`、`tool` 与 HTTPS `url`，可选 `authToken` 和 `timeoutMs`；浏览器不会收到 MCP 地址或凭据。外部工具调用仍需用户确认。
 
 API 与 Worker 必须使用相同的图像 / 视频 Provider 配置。H3 当前目录固定为 2K，画幅支持 `16:9`、`4:3`、`1:1`、`3:4` 与 `9:16`。
 

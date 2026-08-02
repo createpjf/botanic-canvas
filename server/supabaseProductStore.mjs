@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js'
 import { isRetryableSupabaseError, retrySupabaseOperation } from './supabaseRetry.mjs'
 import { decodeAuthAssurance } from './authAssurance.mjs'
 import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from './authorization.mjs'
+import { applyGenerationJobToAgentRun } from './botanicAgentRun.mjs'
 
 const now = () => Date.now()
 const clone = (value) => structuredClone(value)
@@ -361,6 +362,69 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       return { deleted, library: clone(library) }
     },
 
+    async putAgentSkill(userId, skill) {
+      const role = await memberRole(skill.projectId, userId)
+      assertProjectPermission(role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      const { data: existing, error: readError } = await supabaseRequest(() => supabase.from('agent_skills').select('project_id,payload').eq('id', skill.id).maybeSingle())
+      fail(readError)
+      if (existing && existing.project_id !== skill.projectId) throw productError('Skill 标识已被其他项目使用。', 'AGENT_SKILL_ID_CONFLICT')
+      const timestamp = now()
+      const payload = {
+        ...clone(skill), ownerId: userId,
+        createdAt: Number(existing?.payload?.createdAt ?? skill.createdAt) || timestamp,
+        updatedAt: timestamp,
+      }
+      const { error } = await supabaseRequest(() => supabase.from('agent_skills').upsert({
+        id: skill.id, owner_id: userId, project_id: skill.projectId, status: payload.status,
+        updated_at: new Date(timestamp).toISOString(), payload,
+      }, { onConflict: 'id' }))
+      fail(error)
+      await insertAudit({ actorId: userId, action: existing ? 'agent-skill.updated' : 'agent-skill.created', projectId: skill.projectId, targetId: skill.id })
+      return clone(payload)
+    },
+
+    async listAgentSkills(userId, projectId) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const { data, error } = await supabaseRequest(() => supabase.from('agent_skills').select('payload')
+        .eq('project_id', projectId).eq('status', 'active').order('updated_at', { ascending: false }))
+      fail(error)
+      return (data ?? []).map((row) => clone(row.payload))
+    },
+
+    async putAgentActionReceipt(userId, receipt) {
+      const role = await memberRole(receipt.projectId, userId)
+      assertProjectPermission(role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      const { data: existing, error: readError } = await supabaseRequest(() => supabase.from('agent_action_receipts')
+        .select('owner_id,project_id').eq('id', receipt.id).maybeSingle())
+      fail(readError)
+      if (existing && (existing.owner_id !== userId || existing.project_id !== receipt.projectId)) {
+        throw productError('Agent 行动回执冲突。', 'AGENT_ACTION_RECEIPT_CONFLICT')
+      }
+      const payload = { ...clone(receipt), ownerId: userId }
+      const { error } = await supabaseRequest(() => supabase.from('agent_action_receipts').upsert({
+        id: receipt.id,
+        owner_id: userId,
+        project_id: receipt.projectId,
+        created_at: new Date(receipt.createdAt).toISOString(),
+        payload,
+      }, { onConflict: 'id' }))
+      fail(error)
+      try {
+        await insertAudit({ actorId: userId, action: 'agent-action.succeeded', projectId: receipt.projectId, targetId: receipt.id, detail: { toolCallId: receipt.toolCallId } })
+      } catch (caught) {
+        console.warn(`[agent-action] audit deferred for ${receipt.id}: ${caught instanceof Error ? caught.message : String(caught)}`)
+      }
+      return clone(payload)
+    },
+
+    async readAgentActionReceipt(userId, receiptId) {
+      const { data, error } = await supabaseRequest(() => supabase.from('agent_action_receipts')
+        .select('payload').eq('id', receiptId).eq('owner_id', userId).maybeSingle())
+      fail(error)
+      if (!data || !await memberRole(data.payload.projectId, userId)) return undefined
+      return clone(data.payload)
+    },
+
     async putGenerationJob(userId, job) {
       const payload = { ...clone(job), ownerId: userId, updatedAt: now() }
       const { error } = await supabaseRequest(() => supabase.from('generation_jobs').upsert({
@@ -368,12 +432,68 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
         updated_at: new Date(payload.updatedAt).toISOString(), payload,
       }, { onConflict: 'id' }))
       fail(error)
+      if (payload.agentRun?.runId) {
+        const { data: runRow, error: runReadError } = await supabaseRequest(() => supabase.from('agent_runs').select('payload').eq('id', payload.agentRun.runId).eq('owner_id', userId).maybeSingle())
+        fail(runReadError)
+        if (runRow) {
+          const run = applyGenerationJobToAgentRun(clone(runRow.payload), payload)
+          const { error: runWriteError } = await supabaseRequest(() => supabase.from('agent_runs').update({
+            status: run.status,
+            updated_at: new Date(run.updatedAt).toISOString(),
+            payload: run,
+          }).eq('id', run.id).eq('owner_id', userId))
+          fail(runWriteError)
+        }
+      }
       // 审计不可用不能让已成功幂等写入的生成任务在客户端表现为失败。
       try {
         await insertAudit({ actorId: userId, action: `generation.${job.status}`, projectId: job.projectId, targetId: job.id, detail: { model: job.settings?.model, batchCount: job.batchCount } })
       } catch (error) {
         console.warn(`[generation] audit deferred for ${job.id}: ${error instanceof Error ? error.message : String(error)}`)
       }
+    },
+
+    async putAgentRun(userId, run) {
+      const role = await memberRole(run.projectId, userId)
+      assertProjectPermission(role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      const payload = { ...clone(run), ownerId: userId, updatedAt: Number(run.updatedAt) || now() }
+      const { error } = await supabaseRequest(() => supabase.from('agent_runs').upsert({
+        id: run.id,
+        owner_id: userId,
+        project_id: run.projectId,
+        status: run.status,
+        updated_at: new Date(payload.updatedAt).toISOString(),
+        payload,
+      }, { onConflict: 'id' }))
+      fail(error)
+      try {
+        await insertAudit({ actorId: userId, action: `agent-run.${run.status}`, projectId: run.projectId, targetId: run.id })
+      } catch (caught) {
+        console.warn(`[agent-run] audit deferred for ${run.id}: ${caught instanceof Error ? caught.message : String(caught)}`)
+      }
+      return clone(payload)
+    },
+
+    async readAgentRun(userId, runId) {
+      const { data, error } = await supabaseRequest(() => supabase.from('agent_runs').select('payload').eq('id', runId).eq('owner_id', userId).maybeSingle())
+      fail(error)
+      if (!data || !await memberRole(data.payload.projectId, userId)) return undefined
+      return clone(data.payload)
+    },
+
+    async readAgentRunForWorker(runId) {
+      const { data, error } = await supabaseRequest(() => supabase.from('agent_runs').select('payload').eq('id', runId).maybeSingle())
+      fail(error)
+      return data ? clone(data.payload) : undefined
+    },
+
+    async listAgentRunsForProject(userId, projectId, limit = 30) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const { data, error } = await supabaseRequest(() => supabase.from('agent_runs').select('payload')
+        .eq('project_id', projectId).eq('owner_id', userId)
+        .order('updated_at', { ascending: false }).limit(Math.max(1, Math.min(limit, 60))))
+      fail(error)
+      return (data ?? []).map((row) => clone(row.payload))
     },
 
     async readGenerationJob(userId, jobId) {
