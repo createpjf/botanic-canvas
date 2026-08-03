@@ -74,6 +74,26 @@ test('认证提供方显式支持无停机 Hybrid 迁移模式', () => {
   }
 })
 
+test('生产 Web 回跳地址会让 Railway API 进入生产邀请保护', () => {
+  const keys = ['NODE_ENV', 'RAILWAY_ENVIRONMENT_NAME', 'RAILWAY_PROJECT_ID', 'BOTANIC_WEB_URL', 'SUPABASE_INVITE_REDIRECT_TO']
+  const original = new Map(keys.map((key) => [key, process.env[key]]))
+  try {
+    delete process.env.NODE_ENV
+    delete process.env.RAILWAY_ENVIRONMENT_NAME
+    delete process.env.RAILWAY_PROJECT_ID
+    process.env.BOTANIC_WEB_URL = 'https://botanic-canvas.vercel.app/'
+    process.env.SUPABASE_INVITE_REDIRECT_TO = 'http://localhost:8080'
+    const config = runtimeConfig('/tmp/botanic-runtime-test')
+    assert.equal(config.production, true)
+    assert.equal(config.supabase.inviteRedirectTo, 'https://botanic-canvas.vercel.app/')
+  } finally {
+    for (const [key, value] of original) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+})
+
 test('Agent Planner 默认只暴露三种已确认的 Flock 模型', () => {
   const keys = ['FLOCK_TEXT_MODEL', 'FLOCK_AGENT_MODELS']
   const original = new Map(keys.map((key) => [key, process.env[key]]))

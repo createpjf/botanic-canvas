@@ -3,6 +3,7 @@ import { createAccountSecurityService, type AccountMfaEnrollment, type AccountMf
 import { createSecurityAuditReporter } from './securityAudit'
 import type { WorkspaceAuditEvent } from '../domain/auditEvents'
 import { invalidateProductSessionIfRequired, subscribeProductSessionInvalidated } from './productSessionInvalidation'
+import { cleanProductAuthUrl, detectProductAuthFlow } from './authFlow'
 
 export type ProductUser = {
   id: string
@@ -43,11 +44,6 @@ const configuredAuthProvider = import.meta.env.VITE_AUTH_PROVIDER
 const localAccessTokenAuth = configuredAuthProvider === 'access-token'
 export const hybridAuthEnabled = configuredAuthProvider === 'hybrid'
 export const supabaseAuthEnabled = !localAccessTokenAuth && serverPersistenceEnabled && Boolean(supabaseUrl && supabasePublishableKey)
-const initialAuthFlowType = typeof window === 'undefined'
-  ? null
-  : new URLSearchParams(window.location.hash.replace(/^#/, '')).get('type')
-    ?? new URLSearchParams(window.location.search).get('type')
-
 const supabase: SupabaseClient | undefined = supabaseAuthEnabled
   ? createClient(supabaseUrl, supabasePublishableKey, {
       auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
@@ -340,13 +336,15 @@ export async function clearProductSession() {
 }
 
 export function productPasswordSetupRequired() {
-  return supabaseAuthEnabled && (initialAuthFlowType === 'invite' || initialAuthFlowType === 'recovery')
+  return supabaseAuthEnabled
+    && typeof window !== 'undefined'
+    && detectProductAuthFlow(window.location) !== null
 }
 
 export async function completeProductPasswordSetup(password: string) {
   await updateProductPassword(password)
-  // 移除邀请 / 恢复链接中的敏感会话片段，然后回到工作区默认入口。
-  window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`)
+  // 移除邀请 / 恢复链接中的敏感片段；否则 PKCE 的 ?code 会在刷新后再次触发设置密码页。
+  window.history.replaceState(null, '', cleanProductAuthUrl(window.location.href))
 }
 
 export async function updateProductPassword(password: string) {

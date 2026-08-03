@@ -1525,6 +1525,10 @@ function agentPlannerModelLabel(model: string) {
   return model
 }
 
+function agentPlannerModelShortLabel(model: string) {
+  return agentPlannerModelLabel(model).replace(/^(DeepSeek|Kimi|MiniMax)\s+/i, '')
+}
+
 type AgentPlannerProvider = 'deepseek' | 'kimi' | 'minimax' | 'other'
 
 function agentPlannerProvider(model: string): AgentPlannerProvider {
@@ -7176,23 +7180,23 @@ function AgentContextBar({
 }) {
   const model = generationModels.find((item) => item.id === settings.model)
   const references = items.filter((item) => item.id !== target?.id)
+  const hasContext = Boolean(target || references.length)
   return (
-    <section className="agent-context-bar" aria-label="当前创作上下文">
+    <section className={`agent-context-bar${hasContext ? '' : ' is-empty'}`} aria-label="当前创作上下文">
       <header>
-        <span><strong>当前上下文</strong><small>{target ? '目标与参考已就绪' : '可添加画布内容'}</small></span>
+        <span><strong>当前上下文</strong><small>{target ? '目标与参考已就绪' : '未添加参考内容'}</small></span>
         <button type="button" onClick={onAdd} aria-label="添加图像素材">+ 添加素材</button>
       </header>
-      <div className="agent-context-bar__items">
-        {target ? <span className="agent-context-bar__item is-target">
-          <img src={target.image} alt="" />
-          <span><small>目标</small><b>{target.label}</b></span>
-        </span> : null}
-        {references.map((item) => <button key={item.id} type="button" className="agent-context-bar__item" onClick={() => onRemove(item.id)} aria-label={`移除参考 ${item.label}`} title="移除参考">
-          {item.image ? <img src={item.image} alt="" /> : <i aria-hidden="true">{item.kind.slice(0, 1)}</i>}
-          <span><small>{item.kind}</small><b>{item.label}</b></span><em aria-hidden="true">×</em>
-        </button>)}
-        {!target && !references.length ? <span className="agent-context-bar__empty">还没有参考内容</span> : null}
-      </div>
+      {hasContext ? <div className="agent-context-bar__items">
+          {target ? <span className="agent-context-bar__item is-target">
+            <img src={target.image} alt="" />
+            <span><small>目标</small><b>{target.label}</b></span>
+          </span> : null}
+          {references.map((item) => <button key={item.id} type="button" className="agent-context-bar__item" onClick={() => onRemove(item.id)} aria-label={`移除参考 ${item.label}`} title="移除参考">
+            {item.image ? <img src={item.image} alt="" /> : <i aria-hidden="true">{item.kind.slice(0, 1)}</i>}
+            <span><small>{item.kind}</small><b>{item.label}</b></span><em aria-hidden="true">×</em>
+          </button>)}
+        </div> : null}
       <div className="agent-context-bar__settings" aria-label="当前输出设置">
         <span><small>模型</small><b>{model?.label ?? settings.model}</b></span>
         <span><small>比例</small><b>{settings.aspectRatio}</b></span>
@@ -7354,6 +7358,7 @@ function AgentWorkspace({
   const [contextMenuOpen, setContextMenuOpen] = useState(false)
   const [isImageDropActive, setIsImageDropActive] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
+  const [utilityMenuOpen, setUtilityMenuOpen] = useState(false)
   const [modeMenuOpen, setModeMenuOpen] = useState(false)
   const [skillPanelOpen, setSkillPanelOpen] = useState(false)
   const [taskPanelOpen, setTaskPanelOpen] = useState(false)
@@ -7381,11 +7386,14 @@ function AgentWorkspace({
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const agentFileInputRef = useRef<HTMLInputElement | null>(null)
   const historyTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const utilityMenuButtonRef = useRef<HTMLButtonElement | null>(null)
+  const utilityMenuRef = useRef<HTMLDivElement | null>(null)
   const contextMenuButtonRef = useRef<HTMLButtonElement | null>(null)
   const modeMenuButtonRef = useRef<HTMLButtonElement | null>(null)
   const utilityButtonRef = useRef<HTMLButtonElement | null>(null)
   const skillCreateButtonRef = useRef<HTMLButtonElement | null>(null)
   const historyMenuId = useId()
+  const utilityMenuId = useId()
   const contextMenuId = useId()
   const modeMenuId = useId()
   const compatibleGroups = groups.filter((group) => group.role === agentGroupRole(intent) && group.assetIds.length)
@@ -7496,6 +7504,16 @@ function AgentWorkspace({
   }, [instruction])
 
   useEffect(() => {
+    if (!utilityMenuOpen) return
+    const closeOnOutsidePress = (event: PointerEvent) => {
+      if (utilityMenuRef.current?.contains(event.target as Node)) return
+      setUtilityMenuOpen(false)
+    }
+    document.addEventListener('pointerdown', closeOnOutsidePress)
+    return () => document.removeEventListener('pointerdown', closeOnOutsidePress)
+  }, [utilityMenuOpen])
+
+  useEffect(() => {
     const closeLayerOnEscape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
       if (mentionQuery) {
@@ -7510,6 +7528,9 @@ function AgentWorkspace({
       } else if (historyOpen) {
         setHistoryOpen(false)
         requestAnimationFrame(() => historyTriggerRef.current?.focus())
+      } else if (utilityMenuOpen) {
+        setUtilityMenuOpen(false)
+        requestAnimationFrame(() => utilityMenuButtonRef.current?.focus())
       } else if (skillConfirming) {
         setSkillConfirming(false)
         requestAnimationFrame(() => skillCreateButtonRef.current?.focus())
@@ -7528,7 +7549,7 @@ function AgentWorkspace({
     }
     window.addEventListener('keydown', closeLayerOnEscape)
     return () => window.removeEventListener('keydown', closeLayerOnEscape)
-  }, [contextMenuOpen, historyOpen, mentionQuery, modeMenuOpen, recoveryModelMenuKey, skillConfirming, utilityPanelOpen])
+  }, [contextMenuOpen, historyOpen, mentionQuery, modeMenuOpen, recoveryModelMenuKey, skillConfirming, utilityMenuOpen, utilityPanelOpen])
 
   useEffect(() => {
     setError('')
@@ -7536,6 +7557,7 @@ function AgentWorkspace({
     setInstruction('')
     setContextMenuOpen(false)
     setHistoryOpen(false)
+    setUtilityMenuOpen(false)
     setModeMenuOpen(false)
     setSkillPanelOpen(false)
     setTaskPanelOpen(false)
@@ -7588,6 +7610,16 @@ function AgentWorkspace({
     const messageId = `agent-message-${crypto.randomUUID()}`
     onAppendMessage(session.id, { ...message, id: messageId, createdAt: Date.now() })
     return messageId
+  }
+
+  const toggleUtilityPanel = (panel: 'result' | 'task' | 'memory' | 'skill') => {
+    utilityButtonRef.current = utilityMenuButtonRef.current
+    setResultPanelOpen((open) => panel === 'result' ? !open : false)
+    setTaskPanelOpen((open) => panel === 'task' ? !open : false)
+    setMemoryPanelOpen((open) => panel === 'memory' ? !open : false)
+    setSkillPanelOpen((open) => panel === 'skill' ? !open : false)
+    setUtilityMenuOpen(false)
+    setHistoryOpen(false)
   }
 
   useEffect(() => {
@@ -8083,15 +8115,20 @@ function AgentWorkspace({
       {isImageDropActive ? <div className="agent-workspace__drop-hint" aria-hidden="true"><UploadIcon /><strong>松开即可添加图片素材</strong><small>PNG / JPEG / WebP，单张不超过 8MB</small></div> : null}
       <header className="agent-workspace__header">
         <div className="agent-workspace__title">
-          <button type="button" className="agent-workspace__history-button" onClick={(event) => { historyTriggerRef.current = event.currentTarget; setHistoryOpen((open) => !open) }} aria-controls={historyMenuId} aria-expanded={historyOpen} aria-label="对话历史" title="对话历史"><FigmaIcon src={historyIcon} /></button>
-          <button type="button" className="agent-workspace__title-button" onClick={(event) => { historyTriggerRef.current = event.currentTarget; setHistoryOpen((open) => !open) }} aria-controls={historyMenuId} aria-expanded={historyOpen}>{session?.title ?? '新建对话'} <span aria-hidden="true">⌄</span></button>
+          <button type="button" className="agent-workspace__history-button" onClick={(event) => { historyTriggerRef.current = event.currentTarget; setUtilityMenuOpen(false); setHistoryOpen((open) => !open) }} aria-controls={historyMenuId} aria-expanded={historyOpen} aria-label="对话历史" title="对话历史"><FigmaIcon src={historyIcon} /></button>
+          <button type="button" className="agent-workspace__title-button" onClick={(event) => { historyTriggerRef.current = event.currentTarget; setUtilityMenuOpen(false); setHistoryOpen((open) => !open) }} aria-controls={historyMenuId} aria-expanded={historyOpen}>{session?.title ?? '新建对话'} <span aria-hidden="true">⌄</span></button>
         </div>
         <div className="agent-workspace__header-actions">
-          <button type="button" className={`agent-workspace__skill-button${resultPanelOpen ? ' is-active' : ''}`} aria-pressed={resultPanelOpen} aria-label="结果与文件" title="结果与文件" onClick={(event) => { utilityButtonRef.current = event.currentTarget; setResultPanelOpen((open) => !open); setTaskPanelOpen(false); setSkillPanelOpen(false); setMemoryPanelOpen(false); setHistoryOpen(false) }}><GalleryIcon /><span className="visually-hidden">结果</span></button>
-          <button type="button" className={`agent-workspace__skill-button${taskPanelOpen ? ' is-active' : ''}`} aria-pressed={taskPanelOpen} aria-label="生成任务" title="生成任务" onClick={(event) => { utilityButtonRef.current = event.currentTarget; setTaskPanelOpen((open) => !open); setResultPanelOpen(false); setSkillPanelOpen(false); setMemoryPanelOpen(false); setHistoryOpen(false) }}><ChecklistIcon /><span className="visually-hidden">任务</span></button>
-          <button type="button" className={`agent-workspace__skill-button${memoryPanelOpen ? ' is-active' : ''}`} aria-pressed={memoryPanelOpen} aria-label="项目记忆" title="项目记忆" onClick={(event) => { utilityButtonRef.current = event.currentTarget; setMemoryPanelOpen((open) => !open); setResultPanelOpen(false); setTaskPanelOpen(false); setSkillPanelOpen(false); setHistoryOpen(false) }}><BookmarkIcon /><span className="visually-hidden">记忆</span></button>
-          <button type="button" className={`agent-workspace__skill-button${skillPanelOpen ? ' is-active' : ''}`} aria-pressed={skillPanelOpen} aria-label="创作技能" title="创作技能" onClick={(event) => { utilityButtonRef.current = event.currentTarget; setSkillPanelOpen((open) => !open); setResultPanelOpen(false); setTaskPanelOpen(false); setMemoryPanelOpen(false); setHistoryOpen(false) }}><SparkleIcon /><span className="visually-hidden">技能</span></button>
-          <button type="button" className="agent-workspace__close" onClick={onClose} aria-label="收起 Agent"><CloseIcon /></button>
+          <div ref={utilityMenuRef} className="agent-workspace__utility-menu-wrap">
+            <button ref={utilityMenuButtonRef} type="button" className={`agent-workspace__utility-menu-button${utilityPanelOpen ? ' is-active' : ''}`} aria-haspopup="menu" aria-expanded={utilityMenuOpen} aria-controls={utilityMenuId} aria-label="Agent 工具" title="Agent 工具" onClick={() => { setUtilityMenuOpen((open) => !open); setHistoryOpen(false) }}><ChecklistIcon /></button>
+            {utilityMenuOpen ? <div id={utilityMenuId} className="agent-workspace__utility-menu" role="menu" aria-label="Agent 工具">
+              <button type="button" role="menuitem" className={resultPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('result')}><GalleryIcon /><span>结果与文件</span></button>
+              <button type="button" role="menuitem" className={taskPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('task')}><ChecklistIcon /><span>生成任务</span></button>
+              <button type="button" role="menuitem" className={memoryPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('memory')}><BookmarkIcon /><span>项目记忆</span></button>
+              <button type="button" role="menuitem" className={skillPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('skill')}><SparkleIcon /><span>创作技能</span></button>
+              <button type="button" role="menuitem" className="is-danger" onClick={() => { setUtilityMenuOpen(false); onClose() }}><CloseIcon /><span>关闭 Agent</span></button>
+            </div> : null}
+          </div>
         </div>
         {historyOpen ? <div id={historyMenuId} className="agent-workspace__history" aria-label="对话历史">
           <button type="button" onClick={() => { onNewSession(); setHistoryOpen(false) }}><PlusSquareIcon /> 新建对话</button>
@@ -8244,14 +8281,6 @@ function AgentWorkspace({
                 <button type="button" onClick={() => onFocusNodes(outputNodeIds)}>定位画布</button>
               </div> : null
             })() : null}
-            <div className="agent-message__utilities">
-              {message.role === 'user' ? <button type="button" aria-label="编辑消息" title="编辑消息" onClick={() => { setInstruction(message.content); requestAnimationFrame(() => composerTextareaRef.current?.focus()) }}><EditIcon /></button> : null}
-              {message.role === 'assistant' && session ? <>
-                <button type="button" className={message.feedback === 'positive' ? 'is-selected' : ''} aria-label="这个回答有帮助" title="有帮助" onClick={() => onUpdateMessage(session.id, message.id, { feedback: message.feedback === 'positive' ? undefined : 'positive' })}><ThumbUpIcon /></button>
-                <button type="button" className={message.feedback === 'negative' ? 'is-selected' : ''} aria-label="这个回答需要改进" title="需改进" onClick={() => onUpdateMessage(session.id, message.id, { feedback: message.feedback === 'negative' ? undefined : 'negative' })}><ThumbDownIcon /></button>
-              </> : null}
-              <button type="button" aria-label="复制消息" title="复制消息" onClick={() => void navigator.clipboard.writeText(message.content)}><CopyIcon /></button>
-            </div>
             {message.question ? <AgentClarificationCard
               clarification={message.question}
               generationModels={generationModels}
@@ -8304,6 +8333,14 @@ function AgentWorkspace({
               <details className="agent-message__route"><summary>执行路由</summary><div><span>规划</span><b>{agentPlannerModelLabel(message.plan.plannerModel ?? plannerModel)}</b><span>生成</span><b>{message.plan.settings.model}</b><span>外部行动</span><b>{message.plan.actions?.length ? `${message.plan.actions.length} 项，确认后执行` : '无'}</b></div></details>
               {message.status !== 'submitted' ? <button type="button" disabled={submittingMessageId === message.id || message.plan.actions?.some((action) => action.status === 'awaiting_confirmation' || action.status === 'running')} onClick={() => void confirmMessagePlan(message)}>{submittingMessageId === message.id ? '正在提交…' : message.plan.actions?.some((action) => action.status === 'awaiting_confirmation' || action.status === 'running') ? '先处理行动卡' : message.status === 'failed' ? '重新执行' : '确认生成'}</button> : <span className="agent-message__submitted">已提交</span>}
             </div> : null}
+          </div>
+          <div className="agent-message__utilities">
+            {message.role === 'user' ? <button type="button" aria-label="编辑消息" title="编辑消息" onClick={() => { setInstruction(message.content); requestAnimationFrame(() => composerTextareaRef.current?.focus()) }}><EditIcon /></button> : null}
+            {message.role === 'assistant' && session ? <>
+              <button type="button" className={message.feedback === 'positive' ? 'is-selected' : ''} aria-label="这个回答有帮助" title="有帮助" onClick={() => onUpdateMessage(session.id, message.id, { feedback: message.feedback === 'positive' ? undefined : 'positive' })}><ThumbUpIcon /></button>
+              <button type="button" className={message.feedback === 'negative' ? 'is-selected' : ''} aria-label="这个回答需要改进" title="需改进" onClick={() => onUpdateMessage(session.id, message.id, { feedback: message.feedback === 'negative' ? undefined : 'negative' })}><ThumbDownIcon /></button>
+            </> : null}
+            <button type="button" aria-label="复制消息" title="复制消息" onClick={() => void navigator.clipboard.writeText(message.content)}><CopyIcon /></button>
           </div>
         </article>) : null}
         {!utilityPanelOpen && runtimeSteps.length ? (() => {
@@ -8392,10 +8429,10 @@ function AgentWorkspace({
               menuWidth={220}
               options={plannerModels.map((model) => ({ value: model, label: agentPlannerModelLabel(model) }))}
               onChange={setPlannerModel}
-              renderTrigger={(selected) => <span className="agent-model-trigger" title={selected?.label ?? '规划模型'}><AgentPlannerProviderIcon model={selected?.value ?? plannerModel} /><span className="agent-model-trigger__label">{selected?.label ?? '规划模型'}</span></span>}
+              renderTrigger={(selected) => <span className="agent-model-trigger" title={agentPlannerModelShortLabel(selected?.value ?? plannerModel)}><AgentPlannerProviderIcon model={selected?.value ?? plannerModel} /><span className="agent-model-trigger__label">{agentPlannerModelShortLabel(selected?.value ?? plannerModel)}</span></span>}
               renderOption={(option, selected) => <span className="agent-model-option"><span className="agent-model-option__main"><AgentPlannerProviderIcon model={option.value} /><span>{option.label}</span></span>{selected ? <b aria-hidden="true">✓</b> : null}</span>}
             />
-            {compatibleGroups.length ? <BotanicSelect className="agent-composer__group-select" value={groupId} placeholder="素材组" ariaLabel="批量素材组" options={[{ value: '', label: '单张' }, ...compatibleGroups.map((group) => ({ value: group.id, label: `${group.name} · ${group.assetIds.length}` }))]} onChange={setGroupId} /> : null}
+            {compatibleGroups.length ? <BotanicSelect className="agent-composer__group-select" value={groupId} placeholder="素材组" ariaLabel="批量素材组" options={[{ value: '', label: '单张' }, ...compatibleGroups.map((group) => ({ value: group.id, label: `${group.name} · ${group.assetIds.length}` }))]} onChange={setGroupId} renderTrigger={(selected) => <span className="agent-group-trigger" title={selected?.label ?? '单张'}><strong>{selected?.value ? '组' : '1'}</strong></span>} /> : null}
           </div>
           <button type="button" className="agent-composer__send" disabled={!instruction.trim() || planning || !session} onClick={() => void sendInstruction()} aria-label="发送给 Agent">{planning ? <span className="agent-composer__spinner" /> : <ArrowUpIcon />}</button>
         </div>
@@ -8452,6 +8489,7 @@ function App() {
           setUser(session)
           setState(needsPasswordSetup ? 'password-setup' : 'ready')
         } else {
+          if (needsPasswordSetup) setMessage('邀请链接已失效或已被使用，请让管理员重新发送邀请。')
           setState('sign-in')
         }
       })

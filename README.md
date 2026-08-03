@@ -89,6 +89,8 @@ Vercel 需配置 `VITE_SUPABASE_URL` 和 `VITE_SUPABASE_PUBLISHABLE_KEY`；Railw
 
 认证无停机迁移时，Railway 可暂设 `BOTANIC_AUTH_PROVIDER=hybrid`，同时接受旧访问令牌与 Supabase JWT；前端切换并验收后再改为 `supabase`。Supabase 身份通过独立映射绑定既有 Railway 用户，不改写历史项目、任务与媒体归属。
 
+邀请成员时，Supabase Dashboard 的 **Authentication → URL Configuration → Redirect URLs** 需要加入生产首页和 `/auth/callback`（例如 `https://botanic-canvas.vercel.app/`、`https://botanic-canvas.vercel.app/auth/callback`）。Railway 建议设置 `BOTANIC_WEB_URL` 为生产 Web 地址，并将 `SUPABASE_INVITE_REDIRECT_TO` 设为该地址的 `/auth/callback`；未配置时服务端会回退到 Botanic 生产首页，避免把邀请链接发到 localhost。用户打开邀请链接后会进入“设置登录密码”，保存后才用邮箱 + 新密码登录。
+
 ### 生成与润色
 
 ```dotenv
