@@ -6924,6 +6924,29 @@ function agentArtifactKindLabel(artifact: BotanicAgentArtifact) {
   return '文本'
 }
 
+function agentRunStatusLabel(run: BotanicAgentRun) {
+  if (run.status === 'completed') return '已完成'
+  if (run.status === 'partial') return '部分完成'
+  if (run.status === 'failed') return '任务未完成'
+  if (run.status === 'cancelled') return '已取消'
+  if (run.status === 'queued') return '等待生成服务'
+  return '正在生成'
+}
+
+function agentRunElapsedLabel(createdAt: number, now: number) {
+  const seconds = Math.max(0, Math.floor((now - createdAt) / 1000))
+  if (seconds < 60) return `${seconds} 秒`
+  return `${Math.floor(seconds / 60)} 分 ${String(seconds % 60).padStart(2, '0')} 秒`
+}
+
+function agentRunBranchStatusLabel(status: BotanicAgentRun['branches'][number]['status']) {
+  if (status === 'succeeded') return '已完成'
+  if (status === 'running') return '生成中'
+  if (status === 'queued') return '排队中'
+  if (status === 'cancelled') return '已取消'
+  return '失败'
+}
+
 function AgentWorkspace({
   projectId,
   target,
@@ -6995,6 +7018,7 @@ function AgentWorkspace({
   const [executingActionId, setExecutingActionId] = useState('')
   const [retryingBranchId, setRetryingBranchId] = useState('')
   const [cancellingRunId, setCancellingRunId] = useState('')
+  const [expandedRunId, setExpandedRunId] = useState('')
   const [contextMenuOpen, setContextMenuOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [modeMenuOpen, setModeMenuOpen] = useState(false)
@@ -7014,7 +7038,6 @@ function AgentWorkspace({
   const [skillSaving, setSkillSaving] = useState(false)
   const [skillError, setSkillError] = useState('')
   const plannerControllerRef = useRef<AbortController | null>(null)
-  const reportedRunIdsRef = useRef(new Set<string>())
   const messageEndRef = useRef<HTMLDivElement | null>(null)
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const historyTriggerRef = useRef<HTMLButtonElement | null>(null)
@@ -7059,6 +7082,41 @@ function AgentWorkspace({
     return contextOptions.filter((item) => !query || `${item.label} ${item.kind}`.toLocaleLowerCase().includes(query)).slice(0, 6)
   }, [contextOptions, mentionQuery])
   const utilityPanelOpen = taskPanelOpen || skillPanelOpen || resultPanelOpen || memoryPanelOpen
+  const [runClock, setRunClock] = useState(() => Date.now())
+  const activeLatestRun = latestRun?.status === 'queued' || latestRun?.status === 'running' || latestRun?.status === 'executing'
+  const executingAction = useMemo(() => session?.messages
+    .flatMap((message) => message.plan?.actions ?? [])
+    .find((action) => action.id === executingActionId), [executingActionId, session?.messages])
+  const activeRunBranch = activeLatestRun ? latestRun?.branches.find((branch) => branch.status === 'running') : undefined
+  const agentActivity = useMemo(() => {
+    if (planning) return {
+      kind: 'planning',
+      title: target ? '正在理解创作要求' : '正在组织画布工作流',
+      detail: target
+        ? `已读取 ${new Set([...(session?.contextNodeIds ?? []), target.id]).size} 项画布上下文，正在整理锁定项与可变项。`
+        : `已读取 ${session?.contextNodeIds.length ?? 0} 项画布上下文，正在准备可编辑节点。`,
+      activeStep: 0,
+    }
+    if (executingActionId) return {
+      kind: 'tool',
+      title: executingAction ? `正在执行「${executingAction.label}」` : '正在执行工具行动',
+      detail: executingAction?.kind === 'mcp' ? 'MCP 返回后会把产物回写到对话与画布。' : 'Skill 执行完成后会保留可追溯结果。',
+      activeStep: 1,
+    }
+    if (activeLatestRun && latestRun) return {
+      kind: 'generating',
+      title: activeRunBranch ? `正在生成「${activeRunBranch.label}」` : '生成任务正在排队',
+      detail: `已用时 ${agentRunElapsedLabel(latestRun.createdAt, runClock)} · ${latestRun.completedBranchCount}/${latestRun.branches.length} 个分支完成`,
+      activeStep: 2,
+    }
+    return null
+  }, [activeLatestRun, activeRunBranch, executingAction, executingActionId, latestRun, planning, runClock, session?.contextNodeIds, target])
+  const linkedRunIds = useMemo(() => new Set(runs.map((run) => run.id)), [runs])
+  const visibleMessages = useMemo(() => session?.messages.filter((message) => !(
+    message.runId
+    && linkedRunIds.has(message.runId)
+    && (message.kind === 'notice' || message.kind === 'run')
+  )) ?? [], [linkedRunIds, session?.messages])
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => composerTextareaRef.current?.focus())
@@ -7136,7 +7194,18 @@ function AgentWorkspace({
   useEffect(() => {
     const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
     messageEndRef.current?.scrollIntoView({ block: 'end', behavior })
-  }, [session?.messages.length, latestRun?.updatedAt])
+  }, [visibleMessages.length, latestRun?.updatedAt])
+
+  useEffect(() => {
+    setRunClock(Date.now())
+    if (!activeLatestRun) return
+    const timer = window.setInterval(() => setRunClock(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [activeLatestRun, latestRun?.id])
+
+  useEffect(() => {
+    if (latestRun?.status === 'failed' || latestRun?.status === 'partial') setExpandedRunId(latestRun.id)
+  }, [latestRun?.id, latestRun?.status])
 
   useEffect(() => {
     if (!compatibleGroups.some((group) => group.id === groupId)) setGroupId('')
@@ -7152,26 +7221,6 @@ function AgentWorkspace({
     onAppendMessage(session.id, { ...message, id: messageId, createdAt: Date.now() })
     return messageId
   }
-
-  useEffect(() => {
-    if (!session) return
-    for (const message of session.messages) {
-      if (message.kind === 'run' && message.runId) reportedRunIdsRef.current.add(message.runId)
-    }
-    const linkedRunIds = new Set(session.messages.flatMap((message) => message.runId ? [message.runId] : []))
-    for (const run of runs) {
-      if (!linkedRunIds.has(run.id) || reportedRunIdsRef.current.has(run.id)) continue
-      if (run.status !== 'completed' && run.status !== 'partial' && run.status !== 'failed' && run.status !== 'cancelled') continue
-      reportedRunIdsRef.current.add(run.id)
-      const outputCount = artifacts.filter((artifact) => artifact.provenance.runId === run.id).length
-      const content = run.status === 'completed'
-        ? `任务已完成，生成 ${outputCount} 项结果。可在「结果」中批量查看、下载或入库。`
-        : run.status === 'partial'
-          ? `任务部分完成，已产出 ${outputCount} 项结果；失败分支可在「任务」中单独重试。`
-          : `任务未完成。请在「任务」中查看失败原因并重试分支。`
-      appendMessage({ role: 'assistant', kind: 'run', runId: run.id, content })
-    }
-  }, [artifacts, runs, session])
 
   const confirmSkillCreation = async () => {
     if (!skillName.trim() || !skillInstructions.trim() || skillSaving) return
@@ -7275,9 +7324,9 @@ function AgentWorkspace({
     try {
       const submission = await onConfirm(message.plan)
       onUpdateMessage(session.id, message.id, { status: submission.started ? 'submitted' : 'failed', runId: submission.runId })
-      appendMessage({
-        role: 'assistant', kind: submission.started ? 'notice' : 'text', runId: submission.runId,
-        content: submission.started ? '任务已提交。结果会直接出现在画布中，你可以继续告诉我下一步要改什么。' : '任务没有启动，请检查参考素材与生成服务后重试。',
+      if (!submission.started) appendMessage({
+        role: 'assistant', kind: 'text', runId: submission.runId,
+        content: '任务没有启动，请检查参考素材与生成服务后重试。',
       })
     } catch (caught) {
       onUpdateMessage(session.id, message.id, { status: 'failed' })
@@ -7320,14 +7369,12 @@ function AgentWorkspace({
     if (!target) {
       try {
         const result = await onCreateDraft(cleanInstruction, session.contextNodeIds, session.executionMode === 'auto')
-        const content = result.started
-          ? '已根据画布上下文创建工作流并提交生成，结果会出现在画布中。'
-          : result.needsReference
+        const content = result.needsReference
             ? '已在画布创建文字与生成节点。再添加一张商品图或参考图，我就可以继续执行。'
             : result.created
               ? '已在画布创建可编辑的生成工作流，你可以检查节点后手动生成。'
               : '暂时无法创建工作流，请检查画布状态后重试。'
-        appendMessage({ role: 'assistant', kind: result.created ? 'notice' : 'text', content })
+        if (!result.started) appendMessage({ role: 'assistant', kind: result.created ? 'notice' : 'text', content })
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : '暂时无法创建工作流。')
       } finally {
@@ -7394,6 +7441,13 @@ function AgentWorkspace({
           {sessions.map((item) => <button key={item.id} type="button" className={item.id === session?.id ? 'is-active' : ''} onClick={() => { onSelectSession(item.id); setHistoryOpen(false) }}><span>{item.title}</span><small>{item.messages.length} 条</small></button>)}
         </div> : null}
       </header>
+      {agentActivity ? <section className={`agent-workspace__activity is-${agentActivity.kind}`} role="status" aria-live="polite" aria-atomic="true">
+        <span className="agent-workspace__activity-mark" aria-hidden="true"><SparkleIcon /></span>
+        <div className="agent-workspace__activity-copy"><strong>{agentActivity.title}</strong><small>{agentActivity.detail}</small></div>
+        <div className="agent-workspace__activity-steps" aria-label="Agent 执行阶段">
+          {['理解需求', '准备执行', '产出结果'].map((label, index) => <span key={label} className={index < agentActivity.activeStep ? 'is-done' : index === agentActivity.activeStep ? 'is-active' : ''}><i aria-hidden="true">{index < agentActivity.activeStep ? '✓' : index + 1}</i>{label}</span>)}
+        </div>
+      </section> : null}
       <div className="agent-workspace__messages" role="log" aria-live="polite" aria-relevant="additions text">
         {resultPanelOpen ? <section className="agent-result-panel" aria-label="Agent 结果与文件">
           <header><div><small>AGENT OUTPUTS</small><h2>结果与文件</h2></div><span>{artifacts.length} 项</span></header>
@@ -7495,7 +7549,7 @@ function AgentWorkspace({
             {agentQuickActions.slice(0, 3).map((action) => <button key={action.intent} type="button" onClick={() => { setIntent(action.intent); setInstruction(action.instruction) }}><strong>{action.label}</strong><span>{action.instruction}</span></button>)}
           </div>
         </section> : null}
-        {!utilityPanelOpen ? session?.messages.map((message) => <article key={message.id} className={`agent-message is-${message.role} is-${message.kind}`}>
+        {!utilityPanelOpen ? visibleMessages.map((message) => <article key={message.id} className={`agent-message is-${message.role} is-${message.kind}`}>
           <div className="agent-message__role">{message.role === 'assistant' ? <SparkleIcon /> : <span>你</span>}</div>
           <div className="agent-message__body">
             <p>{message.content}</p>
@@ -7539,12 +7593,22 @@ function AgentWorkspace({
             </div> : null}
           </div>
         </article>) : null}
-        {!utilityPanelOpen && latestRun?.branches.length ? <section className="agent-run-card" aria-label="Agent Run 实时进度">
-          <header><span><strong>生成任务</strong><small>{latestRun.status === 'completed' ? '已完成' : latestRun.status === 'partial' ? '部分完成' : latestRun.status === 'failed' ? '失败' : latestRun.status === 'cancelled' ? '已取消' : '处理中'}</small></span><div>{latestRun.status === 'queued' || latestRun.status === 'running' || latestRun.status === 'executing' ? <button type="button" disabled={cancellingRunId === latestRun.id} onClick={() => { setCancellingRunId(latestRun.id); setError(''); void onCancelRun(latestRun.id).then((ok) => { if (!ok) setError('任务取消失败，请稍后重试。') }).finally(() => setCancellingRunId('')) }}>{cancellingRunId === latestRun.id ? '取消中…' : '取消'}</button> : null}<b>{latestRun.completedBranchCount}/{latestRun.branches.length}</b></div></header>
-          <div className="agent-run-card__track" aria-hidden="true"><i style={{ width: `${Math.round(latestRun.completedBranchCount / latestRun.branches.length * 100)}%` }} /></div>
-          <div className="agent-run-card__branches">
-            {latestRun.branches.map((branch) => <div key={branch.id}><span><strong>{branch.label}</strong><small>{branch.status === 'succeeded' ? '已完成' : branch.status === 'running' ? '生成中' : branch.status === 'queued' ? '排队中' : branch.status === 'cancelled' ? '已取消' : '失败'}</small></span>{branch.status === 'failed' || branch.status === 'cancelled' ? <button type="button" disabled={retryingBranchId === branch.id} onClick={() => { setRetryingBranchId(branch.id); setError(''); void onRetryBranch(latestRun.id, branch.id).then((ok) => { if (!ok) setError(`「${branch.label}」重试失败，请稍后再试。`) }).finally(() => setRetryingBranchId('')) }}>{retryingBranchId === branch.id ? '重试中…' : '重试'}</button> : null}</div>)}
+        {!utilityPanelOpen && latestRun?.branches.length ? <section className={`agent-run-card is-${latestRun.status}`} aria-label="Agent Run 实时进度" aria-live="polite">
+          <header>
+            <span className="agent-run-card__heading"><i className="agent-run-card__status" aria-hidden="true" /><span><strong>{agentRunStatusLabel(latestRun)}</strong><small>{latestRun.plan.summary}</small></span></span>
+            <div>{activeLatestRun ? <button type="button" disabled={cancellingRunId === latestRun.id} onClick={() => { setCancellingRunId(latestRun.id); setError(''); void onCancelRun(latestRun.id).then((ok) => { if (!ok) setError('任务取消失败，请稍后重试。') }).finally(() => setCancellingRunId('')) }}>{cancellingRunId === latestRun.id ? '取消中…' : '取消'}</button> : null}<b>{latestRun.completedBranchCount}/{latestRun.branches.length}</b></div>
+          </header>
+          <div className="agent-run-card__track" aria-label={`已完成 ${latestRun.completedBranchCount} / ${latestRun.branches.length}`}><i style={{ width: `${Math.round(latestRun.completedBranchCount / latestRun.branches.length * 100)}%` }} /></div>
+          <div className="agent-run-card__current">
+            <span aria-hidden="true">{activeLatestRun ? '↳' : latestRun.status === 'completed' ? '✓' : '!'}</span>
+            <div><strong>{latestRun.branches.find((branch) => branch.status === 'running')?.label ?? (latestRun.status === 'queued' ? '等待任务开始' : latestRun.status === 'completed' ? '结果已写入画布' : latestRun.status === 'partial' ? '部分结果已写入画布' : latestRun.error ?? '可查看分支并重试')}</strong><small>{activeLatestRun ? `已用时 ${agentRunElapsedLabel(latestRun.createdAt, runClock)} · ${latestRun.plan.references.length} 个参考` : `${latestRun.completedBranchCount} 个分支完成`}</small></div>
           </div>
+          <details className="agent-run-card__details" open={expandedRunId === latestRun.id} onToggle={(event) => setExpandedRunId(event.currentTarget.open ? latestRun.id : '')}>
+            <summary>查看 {latestRun.branches.length} 个生成分支</summary>
+            <div className="agent-run-card__branches">
+              {latestRun.branches.map((branch) => <div key={branch.id} className={`is-${branch.status}`}><span><strong>{branch.label}</strong><small>{agentRunBranchStatusLabel(branch.status)}{branch.attempt > 1 ? ` · 第 ${branch.attempt} 次` : ''}</small></span>{branch.status === 'failed' || branch.status === 'cancelled' ? <button type="button" disabled={retryingBranchId === branch.id} onClick={() => { setRetryingBranchId(branch.id); setError(''); void onRetryBranch(latestRun.id, branch.id).then((ok) => { if (!ok) setError(`「${branch.label}」重试失败，请稍后再试。`) }).finally(() => setRetryingBranchId('')) }}>{retryingBranchId === branch.id ? '重试中…' : '重试'}</button> : null}</div>)}
+            </div>
+          </details>
         </section> : null}
         <div ref={messageEndRef} />
       </div>
