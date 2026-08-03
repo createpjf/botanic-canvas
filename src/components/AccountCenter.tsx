@@ -392,10 +392,11 @@ export function AccountDetailsDialog({
   )
 }
 
-export function WorkspaceMembersDialog({ currentUser, onListMembers, onInviteMember, onUpdateMember, onClose, phase = 'open', returnFocusTarget }: {
+export function WorkspaceMembersDialog({ currentUser, onListMembers, onInviteMember, onResendInvite, onUpdateMember, onClose, phase = 'open', returnFocusTarget }: {
   currentUser: AccountUser
   onListMembers: () => Promise<WorkspaceMember[]>
   onInviteMember: (input: { email: string; name?: string; role: 'owner' | 'member' }) => Promise<WorkspaceMember>
+  onResendInvite: (userId: string) => Promise<WorkspaceMember>
   onUpdateMember: (userId: string, updates: { role?: 'owner' | 'member'; status?: 'active' | 'disabled' }) => Promise<WorkspaceMember>
   onClose: () => void
   phase?: MotionPhase
@@ -408,6 +409,7 @@ export function WorkspaceMembersDialog({ currentUser, onListMembers, onInviteMem
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
   const [error, setError] = useState('')
+  const [message, setMessage] = useState('')
   useRestoreFocus(phase !== 'exit', returnFocusTarget === undefined ? document.querySelector<HTMLButtonElement>('button[aria-label="打开账户设置"]') : returnFocusTarget)
   const dialogRef = useDialogFocusTrap(phase !== 'exit')
 
@@ -426,7 +428,7 @@ export function WorkspaceMembersDialog({ currentUser, onListMembers, onInviteMem
   const invite = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (!email.trim() || busyId) return
-    setBusyId('invite'); setError('')
+    setBusyId('invite'); setError(''); setMessage('')
     try {
       const invited = await onInviteMember({ email: email.trim(), name: name.trim() || undefined, role })
       setMembers((current) => [...current.filter((member) => member.id !== invited.id), invited])
@@ -434,9 +436,18 @@ export function WorkspaceMembersDialog({ currentUser, onListMembers, onInviteMem
     } catch (caught) { setError(caught instanceof Error ? caught.message : '邀请未发送。') } finally { setBusyId(null) }
   }
 
+  const resendInvite = async (member: WorkspaceMember) => {
+    if (busyId || member.status !== 'invited') return
+    setBusyId(member.id); setError(''); setMessage('')
+    try {
+      await onResendInvite(member.id)
+      setMessage(`已向 ${member.email} 重新发送邀请。`)
+    } catch (caught) { setError(caught instanceof Error ? caught.message : '重新发送邀请失败。') } finally { setBusyId(null) }
+  }
+
   const updateMember = async (member: WorkspaceMember, updates: { role?: 'owner' | 'member'; status?: 'active' | 'disabled' }) => {
     if (busyId) return
-    setBusyId(member.id); setError('')
+    setBusyId(member.id); setError(''); setMessage('')
     try {
       const updated = await onUpdateMember(member.id, updates)
       setMembers((current) => current.map((item) => item.id === updated.id ? updated : item))
@@ -455,12 +466,13 @@ export function WorkspaceMembersDialog({ currentUser, onListMembers, onInviteMem
         <button type="submit" disabled={busyId === 'invite' || !email.trim()}>{busyId === 'invite' ? '发送中…' : '发送邀请'}</button>
       </form>
       {error ? <p className="workspace-members-dialog__error" role="alert">{error}</p> : null}
+      {message ? <p className="workspace-members-dialog__notice" role="status">{message}</p> : null}
       <div className="workspace-members-dialog__list" aria-busy={loading}>
         {loading ? <p role="status">正在加载成员…</p> : members.map((member) => <article key={member.id}>
           <div className="workspace-members-dialog__identity"><b>{member.name?.slice(0, 1).toUpperCase() || member.email.slice(0, 1).toUpperCase()}</b><span><strong>{member.name || member.email}</strong><small>{member.email}{member.id === currentUser.id ? ' · 你' : ''}</small></span></div>
           <span className={`workspace-members-dialog__status is-${member.status}`}>{statusLabel(member.status)}</span>
           <select aria-label={`设置 ${member.name || member.email} 的角色`} value={member.role} disabled={busyId === member.id || member.status === 'disabled'} onChange={(event) => void updateMember(member, { role: event.target.value as 'owner' | 'member' })}><option value="member">成员</option><option value="owner">所有者</option></select>
-          <button type="button" disabled={busyId === member.id || member.id === currentUser.id} onClick={() => void updateMember(member, { status: member.status === 'disabled' ? 'active' : 'disabled' })}>{busyId === member.id ? '处理中…' : member.status === 'disabled' ? '恢复' : '停用'}</button>
+          <button type="button" disabled={busyId === member.id || member.id === currentUser.id} onClick={() => member.status === 'invited' ? void resendInvite(member) : void updateMember(member, { status: member.status === 'disabled' ? 'active' : 'disabled' })}>{busyId === member.id ? '处理中…' : member.status === 'invited' ? '重发邀请' : member.status === 'disabled' ? '恢复' : '停用'}</button>
         </article>)}
       </div>
       <footer>停用不会删除该成员的项目、任务或媒体。</footer>

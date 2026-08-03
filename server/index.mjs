@@ -315,6 +315,7 @@ const server = createServer(async (request, response) => {
     const jobMatch = url.pathname.match(/^\/api\/generation-jobs\/([^/]+)(?:\/(cancel))?$/)
     const mediaMatch = url.pathname.match(/^\/api\/media\/([^/]+)$/)
     const userMatch = url.pathname.match(/^\/api\/users\/([^/]+)$/)
+    const userInviteResendMatch = url.pathname.match(/^\/api\/users\/([^/]+)\/resend-invite$/)
 
     if (url.pathname !== '/api/health' && url.pathname.startsWith('/api/') && !await enforceRateLimit(response, {
       scope: 'api',
@@ -424,6 +425,24 @@ const server = createServer(async (request, response) => {
         return json(response, 201, { user: member })
       } catch (caught) {
         return error(response, 403, 'USER_CREATE_FORBIDDEN', caught instanceof Error ? caught.message : '成员创建失败。')
+      }
+    }
+    if (userInviteResendMatch && request.method === 'POST') {
+      const user = await requireUser(request)
+      await requireSensitiveSession(request)
+      if (!await enforceRateLimit(response, {
+        scope: 'member-mutation', subject: user.id,
+        limit: config.security.memberMutationsPerHour, windowMs: 60 * 60_000,
+      })) return
+      if (typeof productStore.resendUserInvite !== 'function') {
+        return error(response, 503, 'USER_INVITE_RESEND_UNAVAILABLE', '当前登录模式不支持重新发送邀请。')
+      }
+      try {
+        const member = await productStore.resendUserInvite(user.id, decodeURIComponent(userInviteResendMatch[1]))
+        return json(response, 200, { user: member })
+      } catch (caught) {
+        const statusCode = caught?.code === 'USER_NOT_FOUND' ? 404 : caught?.code === 'USER_INVITE_NOT_PENDING' ? 409 : 403
+        return error(response, statusCode, caught?.code ?? 'USER_INVITE_RESEND_FAILED', caught instanceof Error ? caught.message : '重新发送邀请失败。')
       }
     }
     if (userMatch && request.method === 'PATCH') {

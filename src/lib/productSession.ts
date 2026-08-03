@@ -402,6 +402,13 @@ export async function inviteWorkspaceMember(input: { email: string; name?: strin
   return response.user
 }
 
+export async function resendWorkspaceMemberInvite(userId: string) {
+  const response = await productRequest<{ user: WorkspaceMember }>(`/api/users/${encodeURIComponent(userId)}/resend-invite`, {
+    method: 'POST',
+  })
+  return response.user
+}
+
 export async function updateWorkspaceMember(userId: string, updates: { role?: 'owner' | 'member'; status?: 'active' | 'disabled' }) {
   const response = await productRequest<{ user: WorkspaceMember }>(`/api/users/${encodeURIComponent(userId)}`, {
     method: 'PATCH',

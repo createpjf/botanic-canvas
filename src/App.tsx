@@ -68,7 +68,7 @@ import { getGenerationServiceHealth } from './lib/generationApi'
 import { refinePrompt } from './lib/promptRefinementApi'
 import { connectCanvasCollaboration, type CanvasCollaboration } from './lib/projectCollaboration'
 import { createCanvasProject, deleteCanvasDocument, flushPendingCanvasDocumentWrites, readCanvasProjectSummaries, renameCanvasProject, syncPendingCanvasDrafts } from './lib/db'
-import { ProductApiError, clearProductSession, completeProductPasswordSetup, createProductSession, enrollProductMfa, hybridAuthEnabled, inviteWorkspaceMember, listWorkspaceAuditEvents, listWorkspaceMembers, productPasswordSetupRequired, readProductMfaStatus, readProductSession, refreshProductMediaSession, removeProductMfa, serverPersistenceEnabled, signOutOtherProductSessions, supabaseAuthEnabled, updateProductPassword, updateWorkspaceMember, verifyProductMfa, type ProductUser } from './lib/productSession'
+import { ProductApiError, clearProductSession, completeProductPasswordSetup, createProductSession, enrollProductMfa, hybridAuthEnabled, inviteWorkspaceMember, listWorkspaceAuditEvents, listWorkspaceMembers, productPasswordSetupRequired, readProductMfaStatus, readProductSession, refreshProductMediaSession, removeProductMfa, resendWorkspaceMemberInvite, serverPersistenceEnabled, signOutOtherProductSessions, supabaseAuthEnabled, updateProductPassword, updateWorkspaceMember, verifyProductMfa, type ProductUser } from './lib/productSession'
 import { subscribeProductSessionInvalidated } from './lib/productSessionInvalidation'
 import { createEmptyCanvasDocument } from './data/seed'
 import { useCanvasStore } from './store/canvasStore'
@@ -4195,6 +4195,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
         onListMembers={listWorkspaceMembers}
         onListAuditEvents={listWorkspaceAuditEvents}
         onInviteMember={inviteWorkspaceMember}
+        onResendInvite={resendWorkspaceMemberInvite}
         onUpdateMember={updateWorkspaceMember}
         onOpenProject={openWorkspaceProject}
         onCreateProject={createWorkspaceProject}
@@ -4985,6 +4986,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
         returnFocusTarget={null}
         onListMembers={listWorkspaceMembers}
         onInviteMember={inviteWorkspaceMember}
+        onResendInvite={resendWorkspaceMemberInvite}
         onUpdateMember={updateWorkspaceMember}
         onClose={returnToAccountMenu}
       /> : null}

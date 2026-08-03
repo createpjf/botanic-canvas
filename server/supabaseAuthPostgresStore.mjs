@@ -2,6 +2,12 @@ import { createClient } from '@supabase/supabase-js'
 import { decodeAuthAssurance } from './authAssurance.mjs'
 import { assertWorkspacePermission } from './authorization.mjs'
 
+function productError(message, code = 'PRODUCT_STORE_ERROR') {
+  const error = new Error(message)
+  error.code = code
+  return error
+}
+
 function displayName(user) {
   const candidate = user?.user_metadata?.display_name
   if (typeof candidate === 'string' && candidate.trim()) return candidate.trim()
@@ -69,6 +75,21 @@ export function createSupabaseAuthPostgresStore({ productStore, url, secretKey, 
         roleHint: role,
         statusHint: 'invited',
       })
+    },
+
+    async resendUserInvite(actorId, userId) {
+      const actor = await productStore.readUser(actorId)
+      assertWorkspacePermission(actor, 'manage-members', 'USER_MANAGE_FORBIDDEN')
+      const target = await productStore.readUser(userId)
+      if (!target) throw productError('未找到该工作区成员。', 'USER_NOT_FOUND')
+      if (target.status !== 'invited') throw productError('只有待接受成员可以重新发送邀请。', 'USER_INVITE_NOT_PENDING')
+
+      const { data, error } = await supabase.auth.admin.inviteUserByEmail(target.email, {
+        data: { display_name: target.name || target.email },
+        ...(inviteRedirectTo ? { redirectTo: inviteRedirectTo } : {}),
+      })
+      if (error || !data?.user) throw error ?? productError('重新发送邀请失败。', 'USER_INVITE_RESEND_FAILED')
+      return target
     },
 
     async updateUser(actorId, userId, updates) {

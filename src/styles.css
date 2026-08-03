@@ -2264,6 +2264,7 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .workspace-members-dialog__invite > button { height: 40px; padding: 0 15px; border: 1px solid #2e663d; border-radius: 9px; background: #2e663d; color: #fff; font: inherit; font-size: 12px; font-weight: 750; white-space: nowrap; }
 .workspace-members-dialog__invite > button:disabled { opacity: .5; }
 .workspace-members-dialog__error { margin: 12px 0 0; color: #a05045; font-size: 12px; }
+.workspace-members-dialog__notice { margin: 12px 0 0; color: #376746; font-size: 12px; }
 .workspace-members-dialog__list { display: grid; min-height: 0; flex: 1 1 auto; align-content: start; margin-top: 18px; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; border-top: 1px solid #e0e7df; }
 .workspace-members-dialog__list > p { padding: 24px 0; color: #718076; font-size: 12px; text-align: center; }
 .workspace-members-dialog__list article { display: grid; grid-template-columns: minmax(240px, 1fr) 72px 116px 72px; gap: 12px; align-items: center; min-height: 70px; border-bottom: 1px solid #e5eae4; }

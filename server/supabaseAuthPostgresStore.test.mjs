@@ -104,6 +104,49 @@ test('Owner 邀请成员时在 Auth 发送邮件，并以待接受状态写入 P
   assert.deepEqual(ensured, [{ id: 'user-2', email: 'member@botanic.test', name: 'Member', roleHint: 'member', statusHint: 'invited' }])
 })
 
+test('Owner 可为待接受成员重新发送邀请且保留原用户身份', async () => {
+  const invites = []
+  const target = { id: 'user-2', email: 'member@botanic.test', name: 'Member', role: 'member', status: 'invited' }
+  const store = createSupabaseAuthPostgresStore({
+    productStore: {
+      async ensureAuthenticatedUser() { return target },
+      async readUser(userId) {
+        if (userId === 'owner-1') return { id: 'owner-1', role: 'owner', status: 'active' }
+        if (userId === target.id) return target
+        return undefined
+      },
+    },
+    inviteRedirectTo: 'https://botanic.test/auth/callback',
+    client: { auth: { admin: { async inviteUserByEmail(email, options) {
+      invites.push({ email, options })
+      return { data: { user: { id: target.id } }, error: null }
+    } } } },
+  })
+
+  const resent = await store.resendUserInvite('owner-1', target.id)
+  assert.equal(resent.id, target.id)
+  assert.deepEqual(invites, [{
+    email: target.email,
+    options: { data: { display_name: target.name }, redirectTo: 'https://botanic.test/auth/callback' },
+  }])
+})
+
+test('已启用成员不能走重新发送邀请流程', async () => {
+  const store = createSupabaseAuthPostgresStore({
+    productStore: {
+      async ensureAuthenticatedUser() { return undefined },
+      async readUser(userId) {
+        return userId === 'owner-1'
+          ? { id: 'owner-1', role: 'owner', status: 'active' }
+          : { id: userId, email: 'active@botanic.test', name: 'Active', role: 'member', status: 'active' }
+      },
+    },
+    client: { auth: { admin: { async inviteUserByEmail() { throw new Error('不应发送') } } } },
+  })
+
+  await assert.rejects(() => store.resendUserInvite('owner-1', 'user-2'), (error) => error?.code === 'USER_INVITE_NOT_PENDING')
+})
+
 test('Owner 停用成员时同时禁用 Auth 身份与工作区权限', async () => {
   const calls = []
   const store = createSupabaseAuthPostgresStore({
