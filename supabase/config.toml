@@ -160,7 +160,7 @@ site_url = "https://botanic-canvas.vercel.app/"
 # The public URL that Auth serves on. Defaults to the API external URL with `/auth/v1` appended.
 # external_url = ""
 # A list of *exact* URLs that auth providers are permitted to redirect to post authentication.
-additional_redirect_urls = ["https://botanic-canvas.vercel.app/", "http://localhost:4173/"]
+additional_redirect_urls = ["https://botanic-canvas.vercel.app/", "https://botanic-canvas.vercel.app/auth/callback", "http://localhost:4173/", "http://localhost:4173/auth/callback"]
 # How long tokens are valid for, in seconds. Defaults to 3600 (1 hour), maximum 604,800 (1 week).
 jwt_expiry = 3600
 # JWT issuer URL. If not set, defaults to auth.external_url.

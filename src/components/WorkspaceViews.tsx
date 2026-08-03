@@ -119,6 +119,7 @@ export function ProjectLibrary({
   onListMembers,
   onListAuditEvents,
   onInviteMember,
+  onResendInvite,
   onUpdateMember,
   onOpenProject,
   onCreateProject,
@@ -141,6 +142,7 @@ export function ProjectLibrary({
   onListMembers?: () => Promise<WorkspaceMember[]>
   onListAuditEvents?: () => Promise<WorkspaceAuditEvent[]>
   onInviteMember?: (input: { email: string; name?: string; role: 'owner' | 'member' }) => Promise<WorkspaceMember>
+  onResendInvite?: (userId: string) => Promise<WorkspaceMember>
   onUpdateMember?: (userId: string, updates: { role?: 'owner' | 'member'; status?: 'active' | 'disabled' }) => Promise<WorkspaceMember>
   onOpenProject: (projectId: string) => void
   onCreateProject: () => Promise<boolean>
@@ -323,7 +325,7 @@ export function ProjectLibrary({
         onClose={() => setAccountMenuAnchor(null)}
       /> : null}
       {currentUser && onChangePassword && onReadMfaStatus && onEnrollMfa && onVerifyMfa && onRemoveMfa && onSignOutOtherSessions && accountDialogPresence.present && (visibleAccountDialog === 'profile' || visibleAccountDialog === 'security') ? <AccountDetailsDialog mode={visibleAccountDialog} user={currentUser} phase={accountDialogPresence.phase} returnFocusTarget={null} onChangePassword={onChangePassword} onReadMfaStatus={onReadMfaStatus} onEnrollMfa={onEnrollMfa} onVerifyMfa={onVerifyMfa} onRemoveMfa={onRemoveMfa} onSignOutOtherSessions={onSignOutOtherSessions} onModeChange={setAccountDialog} onClose={returnToAccountMenu} /> : null}
-      {accountDialogPresence.present && visibleAccountDialog === 'members' && currentUser?.role === 'owner' && onListMembers && onInviteMember && onUpdateMember ? <WorkspaceMembersDialog currentUser={currentUser} phase={accountDialogPresence.phase} returnFocusTarget={null} onListMembers={onListMembers} onInviteMember={onInviteMember} onUpdateMember={onUpdateMember} onClose={returnToAccountMenu} /> : null}
+      {accountDialogPresence.present && visibleAccountDialog === 'members' && currentUser?.role === 'owner' && onListMembers && onInviteMember && onResendInvite && onUpdateMember ? <WorkspaceMembersDialog currentUser={currentUser} phase={accountDialogPresence.phase} returnFocusTarget={null} onListMembers={onListMembers} onInviteMember={onInviteMember} onResendInvite={onResendInvite} onUpdateMember={onUpdateMember} onClose={returnToAccountMenu} /> : null}
       {accountDialogPresence.present && visibleAccountDialog === 'audit' && currentUser?.role === 'owner' && onListAuditEvents && onListMembers ? <WorkspaceAuditDialog phase={accountDialogPresence.phase} returnFocusTarget={null} onListEvents={onListAuditEvents} onListMembers={onListMembers} onClose={returnToAccountMenu} /> : null}
     </main>
   )

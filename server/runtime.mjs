@@ -9,6 +9,7 @@ import { createSupabaseObjectStore } from './supabaseObjectStore.mjs'
 import { createSupabaseAuthPostgresStore } from './supabaseAuthPostgresStore.mjs'
 import { createGenerationModelCatalog } from './generationModels.mjs'
 import { parseMcpToolConfigurations } from './mcpClient.mjs'
+import { resolveInviteRedirectTo } from './inviteRedirect.mjs'
 
 function boundedInteger(value, fallback, minimum, maximum) {
   const parsed = Number(value)
@@ -42,6 +43,11 @@ export function runtimeConfig(rootDir = process.cwd()) {
   const flockAgentModels = [...new Set((process.env.FLOCK_AGENT_MODELS ?? 'deepseek-v4-pro,deepseek-v4-flash,kimi-k3')
     .split(',').map((model) => model.trim()).filter(Boolean))]
   const flockTextModel = (process.env.FLOCK_TEXT_MODEL ?? flockAgentModels[0] ?? '').trim()
+  const publicAppUrl = process.env.BOTANIC_WEB_URL ?? process.env.PUBLIC_APP_URL
+  // Railway 不一定自动注入 NODE_ENV；正式 Web 回跳地址也应将 API 视为生产环境。
+  const production = process.env.NODE_ENV === 'production'
+    || Boolean(process.env.RAILWAY_ENVIRONMENT_NAME || process.env.RAILWAY_PROJECT_ID)
+    || /^https:\/\//i.test(publicAppUrl ?? '')
   const modelOptions = createGenerationModelCatalog({
     openAIApiKey: process.env.OPENAI_API_KEY,
     openAIModels,
@@ -52,7 +58,7 @@ export function runtimeConfig(rootDir = process.cwd()) {
   return {
     rootDir,
     port: Number(process.env.PORT ?? 8787),
-    production: process.env.NODE_ENV === 'production',
+    production,
     databaseUrl: process.env.DATABASE_URL,
     redisUrl: process.env.REDIS_URL,
     authProvider,
@@ -61,7 +67,11 @@ export function runtimeConfig(rootDir = process.cwd()) {
       url: process.env.SUPABASE_URL,
       secretKey: process.env.SUPABASE_SECRET_KEY ?? process.env.SUPABASE_SERVICE_ROLE_KEY,
       bucket: process.env.SUPABASE_STORAGE_BUCKET ?? 'botanic-media',
-      inviteRedirectTo: process.env.SUPABASE_INVITE_REDIRECT_TO,
+      inviteRedirectTo: resolveInviteRedirectTo({
+        configured: process.env.SUPABASE_INVITE_REDIRECT_TO,
+        publicAppUrl,
+        production,
+      }),
     },
     apiBaseUrl: (process.env.IMAGE_API_BASE_URL ?? 'https://api.openai.com').replace(/\/$/, ''),
     apiKey: process.env.OPENAI_API_KEY,
