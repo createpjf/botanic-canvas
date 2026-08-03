@@ -92,6 +92,7 @@ export function runtimeConfig(rootDir = process.cwd()) {
       apiRequestsPerMinute: boundedInteger(process.env.SECURITY_API_REQUESTS_PER_MINUTE, 600, 60, 10_000),
       mediaUploadsPerMinute: boundedInteger(process.env.SECURITY_MEDIA_UPLOADS_PER_MINUTE, 30, 1, 1_000),
       agentPlansPerFiveMinutes: boundedInteger(process.env.SECURITY_AGENT_PLANS_PER_5_MINUTES, 20, 1, 1_000),
+      agentChatsPerFiveMinutes: boundedInteger(process.env.SECURITY_AGENT_CHATS_PER_5_MINUTES, 40, 1, 1_000),
       generationOutputsPerDay: boundedInteger(process.env.SECURITY_GENERATION_OUTPUTS_PER_DAY, 100, 1, 10_000),
       memberMutationsPerHour: boundedInteger(process.env.SECURITY_MEMBER_MUTATIONS_PER_HOUR, 20, 1, 1_000),
       promptRefinementsPerFiveMinutes: boundedInteger(process.env.SECURITY_PROMPT_REFINEMENTS_PER_5_MINUTES, 30, 1, 1_000),

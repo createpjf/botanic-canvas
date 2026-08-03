@@ -3318,8 +3318,8 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-task-panel__matrix > div.is-running > span { background: #d7a74d; color: #fff; }
 .agent-task-panel__matrix > div.is-failed, .agent-task-panel__matrix > div.is-cancelled { border-color: #e3beb7; background: #fff3f0; }
 .agent-task-panel__matrix > div.is-failed > span, .agent-task-panel__matrix > div.is-cancelled > span { background: #b66559; color: #fff; }
-.agent-composer { position: relative; display: grid; gap: 8px; margin: 0 12px 12px; padding: 10px; border: 1px solid #c7d9c9; border-radius: 11px; background: #fff; box-shadow: 0 8px 28px rgba(35, 66, 42, .09); }
-.agent-composer:focus-within { border-color: #6f9c77; box-shadow: 0 0 0 3px rgba(79, 133, 91, .11); }
+.agent-composer { position: relative; display: grid; gap: 8px; margin: 0 12px 12px; padding: 12px 14px 11px; border: 1px solid #d1dfd2; border-radius: 14px; background: rgba(255, 255, 255, .96); box-shadow: 0 8px 28px rgba(35, 66, 42, .08); }
+.agent-composer:focus-within { border-color: #8daf94; box-shadow: 0 0 0 3px rgba(79, 133, 91, .1); }
 .agent-composer__context { display: flex; gap: 5px; overflow-x: auto; padding-bottom: 1px; scrollbar-width: none; }
 .agent-composer__context button { display: flex; height: 32px; max-width: 160px; align-items: center; gap: 6px; padding: 3px 7px 3px 3px; border: 1px solid #d5e2d6; border-radius: 7px; background: #f5f8f4; color: #45604c; cursor: pointer; }
 .agent-composer__context img, .agent-composer__context button > span { width: 24px; height: 24px; border-radius: 5px; object-fit: cover; }
@@ -3337,25 +3337,34 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-composer__mention-menu small { color: #849087; font-size: 10px; }
 .agent-composer__mention-menu > p { margin: 0; padding: 14px; color: #7b887f; font-size: 10px; text-align: center; }
 .agent-composer__error { margin: 0; color: #a44e43; font-size: 10px; }
-.agent-composer__toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.agent-composer__toolbar > div { display: flex; min-width: 0; align-items: center; gap: 6px; }
-.agent-composer__add, .agent-composer__send { display: grid; width: 34px; height: 34px; flex: none; place-items: center; padding: 0; border: 1px solid #d2dfd3; border-radius: 8px; background: #f7f9f6; color: #315d3b; cursor: pointer; }
-.agent-composer__add svg { width: 16px; height: 16px; }
-.agent-composer__send { border-color: #2d633b; background: #2d633b; color: #fff; }
-.agent-composer__send svg { width: 16px; height: 16px; }
+.agent-composer__toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 5px; }
+.agent-composer__toolbar > div { display: flex; min-width: 0; align-items: center; gap: 8px; }
+.agent-composer__add, .agent-composer__send { display: grid; width: 38px; height: 38px; flex: none; place-items: center; padding: 0; border: 0; border-radius: 50%; background: #edf3ed; color: #315d3b; cursor: pointer; transition: background 140ms ease, transform 140ms ease; }
+.agent-composer__add:hover, .agent-composer__add[aria-expanded="true"] { background: #e1eee2; }
+.agent-composer__add:active, .agent-composer__send:not(:disabled):active { transform: scale(.96); }
+.agent-composer__add svg { width: 18px; height: 18px; }
+.agent-composer__send { background: #a9bbae; color: #fff; }
+.agent-composer__send:not(:disabled) { background: #315f3b; }
+.agent-composer__send svg { width: 18px; height: 18px; }
 .agent-composer__send:disabled { cursor: default; opacity: .42; }
-.agent-composer__mode { position: relative; display: grid; width: 34px; height: 34px; place-items: center; padding: 0; border: 0; border-radius: 7px; background: #eef4ee; color: #3a5941; cursor: pointer; }
+.agent-composer__mode { display: inline-flex; height: 38px; min-width: 112px; align-items: center; gap: 8px; padding: 0 10px; border: 0; border-radius: 20px; background: #edf3ed; color: #355d3e; cursor: pointer; transition: background 140ms ease, color 140ms ease; }
 .agent-composer__mode:hover, .agent-composer__mode[aria-expanded="true"] { background: #e2eee3; color: #285d37; }
-.agent-composer__mode > svg { width: 17px; height: 17px; }
-.agent-composer__mode > span:last-child { position: absolute; right: 3px; bottom: 2px; margin: 0; color: #7a897e; font-size: 9px; line-height: 1; }
-.agent-composer__model-select { width: 46px; flex: 0 0 46px; }
-.agent-composer__model-select .botanic-select__trigger { justify-content: center; gap: 4px; padding: 0 5px; }
-.agent-composer__model-select .botanic-select__trigger > img { width: 9px; height: 9px; }
-.agent-model-trigger { display: inline-flex; min-width: 0; align-items: center; justify-content: center; }
+.agent-composer__mode > svg { width: 18px; height: 18px; flex: 0 0 auto; }
+.agent-composer__mode-label { overflow: hidden; font-size: 12px; font-weight: 750; line-height: 1; text-overflow: ellipsis; white-space: nowrap; }
+.agent-composer__mode-chevron { margin-left: auto; color: #76867a; font-size: 16px; line-height: 1; transform: translateY(-1px); }
+.agent-composer__model-select { width: 146px; flex: 0 1 146px; margin-left: 2px; padding-left: 8px; border-left: 1px solid #e2e9e2; }
+.agent-composer__model-select .botanic-select__trigger { height: 38px; justify-content: space-between; gap: 7px; padding: 0 7px; border-color: transparent; border-radius: 19px; background: transparent; }
+.agent-composer__model-select .botanic-select__trigger:hover:not(:disabled), .agent-composer__model-select.is-open .botanic-select__trigger { border-color: transparent; background: #f0f5ef; box-shadow: none; }
+.agent-composer__model-select .botanic-select__trigger > img { width: 11px; height: 11px; }
+.agent-model-trigger { display: inline-flex; min-width: 0; align-items: center; gap: 8px; }
+.agent-model-trigger__label { min-width: 0; overflow: hidden; color: #435b49; font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .agent-model-option { display: flex; width: 100%; min-width: 0; align-items: center; justify-content: space-between; gap: 8px; }
 .agent-model-option__main { display: flex; min-width: 0; align-items: center; gap: 8px; }
 .agent-model-option__main > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-model-option > b { flex: 0 0 auto; color: #2f6d3e; font-size: 11px; }
+.agent-composer__group-select { width: auto; min-width: 0; flex: 0 1 150px; }
+.agent-composer__group-select .botanic-select__trigger { height: 32px; padding: 0 9px; border-color: #dbe6dc; border-radius: 16px; background: #f6f9f5; font-size: 10px; }
+.agent-composer__group-select .botanic-select__trigger:hover:not(:disabled), .agent-composer__group-select.is-open .botanic-select__trigger { border-color: #a9c5ad; background: #eef5ed; box-shadow: none; }
 .agent-provider-icon { display: inline-grid; width: 24px; height: 24px; flex: 0 0 24px; place-items: center; border-radius: 7px; background: #e7f0e7; color: #356b42; }
 .agent-provider-icon svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.45; }
 .agent-provider-icon img { width: 18px; height: 18px; object-fit: contain; }
@@ -3406,13 +3415,21 @@ button.project-tab__main { border: 0; cursor: pointer; }
 @media (max-width: 440px) {
   .agent-memory-panel__form { grid-template-columns: minmax(0, 1fr) auto; }
   .agent-memory-panel__form > .botanic-select { grid-column: 1 / -1; }
-  .agent-composer__toolbar { display: grid; grid-template-columns: minmax(0, 1fr) 34px; }
-  .agent-composer__group-select { min-width: 0; flex: 1 1 96px; }
+  .agent-composer__toolbar { display: flex; }
+  .agent-composer__toolbar > div { gap: 5px; }
+  .agent-composer__mode { min-width: 96px; padding: 0 9px; }
+  .agent-composer__mode-label { font-size: 11px; }
+  .agent-composer__model-select { width: 114px; flex-basis: 114px; padding-left: 4px; }
+  .agent-model-trigger__label { font-size: 11px; }
+  .agent-composer__group-select { max-width: 108px; flex: 1 1 96px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .agent-workspace { animation: none; }
   .agent-composer__spinner { animation: none; }
+  .agent-composer__add,
+  .agent-composer__send,
+  .agent-composer__mode { transition: none; }
 }
 
 @media (forced-colors: active) {

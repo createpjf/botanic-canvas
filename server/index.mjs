@@ -7,6 +7,7 @@ import { GenerationError, persistedGenerationJob, publicGenerationJob, validateG
 import { reconcileGenerationResults, retargetGenerationJobForRetry } from './generationResultReconciliation.mjs'
 import { PromptRefinementError, refinePrompt, validatePromptRefinementInput } from './promptRefinementProvider.mjs'
 import { BotanicAgentPlannerError, planBotanicGeneration, validateBotanicAgentPlanInput } from './botanicAgentPlanner.mjs'
+import { BotanicAgentChatError, chatWithBotanicAgent, validateBotanicAgentChatInput } from './botanicAgentChat.mjs'
 import { BotanicAgentSkillError, createAgentSkill, publicAgentSkill, validateAgentSkillCreation } from './botanicAgentSkill.mjs'
 import { BotanicAgentRunError, cancelPersistentAgentRun, createPersistentAgentRun, prepareAgentBranchRetry, publicAgentRun, validateAgentRunCreation } from './botanicAgentRun.mjs'
 import { prepareAgentRunExecution, reconcileAgentGenerationJobToProject } from './botanicAgentExecution.mjs'
@@ -707,6 +708,52 @@ const server = createServer(async (request, response) => {
       }
     }
 
+    if (request.method === 'POST' && url.pathname === '/api/agent-chat') {
+      const user = await requireUser(request)
+      if (!await enforceRateLimit(response, {
+        scope: 'agent-chat', subject: user.id,
+        limit: config.security.agentChatsPerFiveMinutes, windowMs: 5 * 60_000,
+      })) return
+      if (!config.flockApiBaseUrl || !config.flockApiKey || !config.flockTextModel) {
+        return error(response, 503, 'PROVIDER_NOT_CONFIGURED', 'Agent 对话服务尚未配置。')
+      }
+      const rawInput = await readJson(request, config.maximumPromptRefinementRequestBytes, 'Agent 对话请求过大，请精简后重试。')
+      const validatedInput = validateBotanicAgentChatInput(rawInput)
+      await requireProjectPermission(productStore, user.id, validatedInput.projectId, 'read')
+      const project = await productStore.readProject(user.id, validatedInput.projectId)
+      if (!project?.document) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
+      const projectSkills = await productStore.listAgentSkills(user.id, validatedInput.projectId) ?? []
+      const input = {
+        ...validatedInput,
+        projectSkills: projectSkills.map((skill) => ({
+          id: skill.id, name: skill.name, instructions: skill.instructions, status: skill.status,
+        })),
+      }
+      const chatController = new AbortController()
+      const cancelChat = () => chatController.abort()
+      const cancelOnClosedResponse = () => {
+        if (!response.writableEnded) cancelChat()
+      }
+      request.once('aborted', cancelChat)
+      response.once('close', cancelOnClosedResponse)
+      if (request.aborted || response.destroyed) cancelChat()
+      try {
+        const result = await chatWithBotanicAgent(input, config, {
+          document: project.document,
+          projectSkills,
+          signal: chatController.signal,
+        })
+        if (chatController.signal.aborted || response.destroyed) return
+        return json(response, 200, { response: result })
+      } catch (caught) {
+        if (chatController.signal.aborted || response.destroyed) return
+        throw caught
+      } finally {
+        request.off('aborted', cancelChat)
+        response.off('close', cancelOnClosedResponse)
+      }
+    }
+
     if (projectAgentSkillsMatch && request.method === 'GET') {
       const user = await requireUser(request)
       const projectId = decodeURIComponent(projectAgentSkillsMatch[1])
@@ -1069,7 +1116,7 @@ const server = createServer(async (request, response) => {
     }
     return error(response, 404, 'NOT_FOUND', '接口不存在。')
   } catch (caught) {
-    const failure = caught instanceof HttpError || caught instanceof ProjectAuthorizationError || caught instanceof GenerationError || caught instanceof PromptRefinementError || caught instanceof BotanicAgentPlannerError || caught instanceof BotanicAgentRunError || caught instanceof BotanicAgentSkillError || caught instanceof AgentToolRuntimeError || caught instanceof McpClientError
+    const failure = caught instanceof HttpError || caught instanceof ProjectAuthorizationError || caught instanceof GenerationError || caught instanceof PromptRefinementError || caught instanceof BotanicAgentPlannerError || caught instanceof BotanicAgentChatError || caught instanceof BotanicAgentRunError || caught instanceof BotanicAgentSkillError || caught instanceof AgentToolRuntimeError || caught instanceof McpClientError
       ? caught
       : caught?.code === 'WORKSPACE_STORE_TIMEOUT'
         ? new HttpError(503, 'WORKSPACE_STORE_TIMEOUT', caught.message)

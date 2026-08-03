@@ -144,6 +144,13 @@ export function PlusSquareIcon({ className }: BotanicIconProps) {
   </svg>
 }
 
+/** Agent composer · plain plus action */
+export function PlusIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="M12 4.5v15M4.5 12h15" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+  </svg>
+}
+
 /** Agent 执行模式 · 自动执行 */
 export function AutoRunIcon({ className }: BotanicIconProps) {
   return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">

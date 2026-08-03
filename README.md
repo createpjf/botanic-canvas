@@ -110,6 +110,8 @@ BOTANIC_MCP_TOOLS_JSON=[]
 
 `BOTANIC_MCP_TOOLS_JSON` 是服务端精确白名单。每项必须包含 `server`、`tool` 与 HTTPS `url`，可选 `authToken` 和 `timeoutMs`；浏览器不会收到 MCP 地址或凭据。外部工具调用仍需用户确认。
 
+Agent 对话支持日常问答、Prompt 生成和项目内受控检索。项目本体、画布关系、素材组、项目记忆与已启用 Skill 由服务端按当前项目权限读取；未配置 MCP 时不会声称已联网检索。
+
 API 与 Worker 必须使用相同的图像 / 视频 Provider 配置。H3 当前目录固定为 2K，画幅支持 `16:9`、`4:3`、`1:1`、`3:4` 与 `9:16`。
 
 ### 兼容 Supabase 的部署

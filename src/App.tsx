@@ -62,7 +62,8 @@ import type {
   UploadedAssetInput,
 } from './domain/canvas'
 import { deliveryPresets, downloadDeliveryPackage } from './lib/deliveryExport'
-import { createPersistentBotanicAgentRun, createProjectAgentSkill, executePersistentBotanicAgentRun, executeProjectAgentAction, listPersistentBotanicAgentRuns, listProjectAgentSkills, persistAgentReferenceMedia, requestBotanicAgentPlan } from './lib/agentApi'
+import { createPersistentBotanicAgentRun, createProjectAgentSkill, executePersistentBotanicAgentRun, executeProjectAgentAction, listPersistentBotanicAgentRuns, listProjectAgentSkills, persistAgentReferenceMedia, requestBotanicAgentChat, requestBotanicAgentPlan } from './lib/agentApi'
+import { classifyBotanicAgentRequest } from './domain/agentChatContract'
 import { getGenerationServiceHealth } from './lib/generationApi'
 import { refinePrompt } from './lib/promptRefinementApi'
 import { connectCanvasCollaboration, type CanvasCollaboration } from './lib/projectCollaboration'
@@ -72,7 +73,7 @@ import { subscribeProductSessionInvalidated } from './lib/productSessionInvalida
 import { createEmptyCanvasDocument } from './data/seed'
 import { useCanvasStore } from './store/canvasStore'
 import type { WorkspaceProject } from './components/WorkspaceViews'
-import { ArrowDownIcon, ArrowUpIcon, ArrowUpRightIcon, AutoRunIcon, BookmarkIcon, ChecklistIcon, CloseIcon, CopyIcon, DeleteIcon, DownloadIcon, EditIcon, FocusIcon, FolderOutlineIcon, GalleryIcon, HomeIcon, MapIcon, MoreIcon, PlusSquareIcon, RefreshIcon, SparkleIcon, ThumbDownIcon, ThumbUpIcon, UploadIcon } from './components/BotanicIcons'
+import { ArrowDownIcon, ArrowUpIcon, ArrowUpRightIcon, AutoRunIcon, BookmarkIcon, ChecklistIcon, CloseIcon, CopyIcon, DeleteIcon, DownloadIcon, EditIcon, FocusIcon, FolderOutlineIcon, GalleryIcon, HomeIcon, MapIcon, MoreIcon, PlusIcon, PlusSquareIcon, RefreshIcon, SparkleIcon, ThumbDownIcon, ThumbUpIcon, UploadIcon } from './components/BotanicIcons'
 import plusIcon from './assets/figma/icon-plus.svg'
 import folderIcon from './assets/figma/icon-folder.svg'
 import templatesIcon from './assets/figma/icon-templates.svg'
@@ -4491,7 +4492,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
           if (selectedFocusNodeIds.length) setAgentSessionContext(sessionId, [...(session?.contextNodeIds ?? []), ...selectedFocusNodeIds])
           setAgentTargetResultId(selectedReadyResultData ? selectedResult!.id : null)
           setAgentOpen(true)
-        }} aria-label="打开生图 Agent" title="Agent"><SparkleIcon /></button> : null}
+        }} aria-label="打开 Agent" title="Agent"><SparkleIcon /></button> : null}
 
         {agentOpen ? <AgentWorkspace
           projectId={document.id}
@@ -7873,6 +7874,41 @@ function AgentWorkspace({
     if (!session || planning) return
     if (options.appendUser) appendMessage({ role: 'user', kind: 'text', content: options.appendUser })
     setError('')
+
+    const route = classifyBotanicAgentRequest(cleanInstruction, Boolean(target))
+    if (route !== 'generation') {
+      plannerControllerRef.current?.abort()
+      const controller = new AbortController()
+      plannerControllerRef.current = controller
+      setPlanning(true)
+      setRuntimeSteps([])
+      setRuntimeDetailsOpen(false)
+      const chatMessages = [
+        ...session.messages.map((message) => ({ role: message.role, content: message.content })),
+        { role: 'user' as const, content: options.appendUser ?? cleanInstruction },
+      ].slice(-16)
+      try {
+        const response = await requestBotanicAgentChat({
+          projectId,
+          plannerModel,
+          mode: route,
+          messages: chatMessages,
+          contextNodeIds: session.contextNodeIds,
+        }, controller.signal)
+        if (controller.signal.aborted) return
+        const sourceNote = route === 'research'
+          ? `\n\n来源：${response.sources?.length ? response.sources.join('、') : '当前没有命中项目受控检索来源。'}`
+          : ''
+        appendMessage({ role: 'assistant', kind: 'text', content: `${response.answer}${sourceNote}` })
+      } catch (caught) {
+        if (controller.signal.aborted) return
+        setError(caught instanceof Error ? caught.message : 'Agent 暂时无法回答，请稍后重试。')
+      } finally {
+        if (plannerControllerRef.current === controller) plannerControllerRef.current = null
+        setPlanning(false)
+      }
+      return
+    }
     setPlanning(true)
     const runtimeTrace = beginRuntimeTrace({
       hasTarget: Boolean(target),
@@ -8010,7 +8046,7 @@ function AgentWorkspace({
   return (
     <aside
       className="agent-workspace nopan nowheel"
-      aria-label="Botanic 生图 Agent"
+      aria-label="Botanic Agent"
       onDragOver={handleImageDragOver}
       onDragLeave={handleImageDragLeave}
       onDrop={handleImageDrop}
@@ -8026,7 +8062,7 @@ function AgentWorkspace({
           <button type="button" className={`agent-workspace__skill-button${taskPanelOpen ? ' is-active' : ''}`} aria-pressed={taskPanelOpen} aria-label="生成任务" title="生成任务" onClick={(event) => { utilityButtonRef.current = event.currentTarget; setTaskPanelOpen((open) => !open); setResultPanelOpen(false); setSkillPanelOpen(false); setMemoryPanelOpen(false); setHistoryOpen(false) }}><ChecklistIcon /><span className="visually-hidden">任务</span></button>
           <button type="button" className={`agent-workspace__skill-button${memoryPanelOpen ? ' is-active' : ''}`} aria-pressed={memoryPanelOpen} aria-label="项目记忆" title="项目记忆" onClick={(event) => { utilityButtonRef.current = event.currentTarget; setMemoryPanelOpen((open) => !open); setResultPanelOpen(false); setTaskPanelOpen(false); setSkillPanelOpen(false); setHistoryOpen(false) }}><BookmarkIcon /><span className="visually-hidden">记忆</span></button>
           <button type="button" className={`agent-workspace__skill-button${skillPanelOpen ? ' is-active' : ''}`} aria-pressed={skillPanelOpen} aria-label="创作技能" title="创作技能" onClick={(event) => { utilityButtonRef.current = event.currentTarget; setSkillPanelOpen((open) => !open); setResultPanelOpen(false); setTaskPanelOpen(false); setMemoryPanelOpen(false); setHistoryOpen(false) }}><SparkleIcon /><span className="visually-hidden">技能</span></button>
-          <button type="button" className="agent-workspace__close" onClick={onClose} aria-label="收起生图 Agent"><CloseIcon /></button>
+          <button type="button" className="agent-workspace__close" onClick={onClose} aria-label="收起 Agent"><CloseIcon /></button>
         </div>
         {historyOpen ? <div id={historyMenuId} className="agent-workspace__history" aria-label="对话历史">
           <button type="button" onClick={() => { onNewSession(); setHistoryOpen(false) }}><PlusSquareIcon /> 新建对话</button>
@@ -8150,7 +8186,7 @@ function AgentWorkspace({
           <span className="agent-workspace__mark"><SparkleIcon /></span>
           <small>BOTANIC AGENT</small>
           <h2>{target ? `继续优化「${target.label}」` : '今天一起创作什么？'}</h2>
-          <p>{target ? '我会继承当前图片与原始配方，只改变你明确提出的内容。' : '描述目标，或先把画布上的商品、模特和场景加入上下文。'}</p>
+          <p>{target ? '我会继承当前图片与原始配方，只改变你明确提出的内容。' : '可以日常对话、生成 Prompt、检索项目，也可以直接描述生图目标。'}</p>
           <div className="agent-workspace__starters">
             {agentQuickActions.slice(0, 3).map((action) => <button key={action.intent} type="button" onClick={() => { setIntent(action.intent); setInstruction(action.instruction) }}><strong>{action.label}</strong><span>{action.instruction}</span></button>)}
           </div>
@@ -8299,7 +8335,7 @@ function AgentWorkspace({
           if (event.key === 'Escape' && mentionQuery) { event.preventDefault(); setMentionQuery(undefined); return }
           if (event.key === 'Enter' && mentionQuery && mentionOptions[0]) { event.preventDefault(); selectMention(mentionOptions[0]); return }
           if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendInstruction() }
-        }} placeholder="描述创意或需求，@ 引用画布内容" aria-label="Agent 创作要求" />
+        }} placeholder="和 Agent 聊天、生成 Prompt 或描述创作需求，@ 引用画布内容" aria-label="Agent 消息" />
         {error ? <p className="agent-composer__error" role="alert">{error}</p> : null}
         <input
           ref={agentFileInputRef}
@@ -8316,18 +8352,18 @@ function AgentWorkspace({
         />
         <div className="agent-composer__toolbar">
           <div>
-            <button ref={contextMenuButtonRef} type="button" className="agent-composer__add" onClick={() => setContextMenuOpen((open) => !open)} aria-controls={contextMenuId} aria-expanded={contextMenuOpen} aria-label="添加图像素材" title="添加图像素材"><PlusSquareIcon /></button>
+            <button ref={contextMenuButtonRef} type="button" className="agent-composer__add" onClick={() => setContextMenuOpen((open) => !open)} aria-controls={contextMenuId} aria-expanded={contextMenuOpen} aria-label="添加图像素材" title="添加图像素材"><PlusIcon /></button>
             <button ref={modeMenuButtonRef} type="button" className="agent-composer__mode" onClick={() => setModeMenuOpen((open) => !open)} aria-controls={modeMenuId} aria-expanded={modeMenuOpen} aria-label={session?.executionMode === 'auto' ? '自动执行' : '手动确认'} title={session?.executionMode === 'auto' ? '自动执行' : '手动确认'}>
-              {session?.executionMode === 'auto' ? <AutoRunIcon /> : <ChecklistIcon />}<span className="visually-hidden">{session?.executionMode === 'auto' ? '自动执行' : '手动确认'}</span><span aria-hidden="true">⌄</span>
+              {session?.executionMode === 'auto' ? <AutoRunIcon /> : <ChecklistIcon />}<span className="agent-composer__mode-label" aria-hidden="true">{session?.executionMode === 'auto' ? '自动生成' : '手动确认'}</span><span className="agent-composer__mode-chevron" aria-hidden="true">⌄</span>
             </button>
             <BotanicSelect
               className="agent-composer__model-select"
               value={plannerModel}
-              ariaLabel={`Agent 规划模型：${agentPlannerModelLabel(plannerModel)}`}
+              ariaLabel={`Agent 模型：${agentPlannerModelLabel(plannerModel)}`}
               menuWidth={220}
               options={plannerModels.map((model) => ({ value: model, label: agentPlannerModelLabel(model) }))}
               onChange={setPlannerModel}
-              renderTrigger={(selected) => <span className="agent-model-trigger" title={selected?.label ?? '规划模型'}><AgentPlannerProviderIcon model={selected?.value ?? plannerModel} /><span className="visually-hidden">{selected?.label ?? '规划模型'}</span></span>}
+              renderTrigger={(selected) => <span className="agent-model-trigger" title={selected?.label ?? '规划模型'}><AgentPlannerProviderIcon model={selected?.value ?? plannerModel} /><span className="agent-model-trigger__label">{selected?.label ?? '规划模型'}</span></span>}
               renderOption={(option, selected) => <span className="agent-model-option"><span className="agent-model-option__main"><AgentPlannerProviderIcon model={option.value} /><span>{option.label}</span></span>{selected ? <b aria-hidden="true">✓</b> : null}</span>}
             />
             {compatibleGroups.length ? <BotanicSelect className="agent-composer__group-select" value={groupId} placeholder="素材组" ariaLabel="批量素材组" options={[{ value: '', label: '单张' }, ...compatibleGroups.map((group) => ({ value: group.id, label: `${group.name} · ${group.assetIds.length}` }))]} onChange={setGroupId} /> : null}

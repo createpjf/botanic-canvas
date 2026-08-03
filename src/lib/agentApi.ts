@@ -1,4 +1,5 @@
 import { buildBotanicAgentPlanRequest, completeBotanicAgentPlan, type BotanicAgentPlanRequestInput, type BotanicAgentPlanResponse } from '../domain/agentPlanContract'
+import { buildBotanicAgentChatRequest, type BotanicAgentChatRequestInput, type BotanicAgentChatResponse } from '../domain/agentChatContract'
 import { productRequest } from './productSession'
 import type { AgentToolCallTrace, BotanicAgentActionProposal, BotanicAgentActionResult, BotanicAgentClarificationResponse, BotanicAgentPlan, BotanicAgentRunSnapshot, BotanicAgentSkill } from '../domain/agent'
 
@@ -49,6 +50,16 @@ export async function requestBotanicAgentPlan(input: BotanicAgentPlanRequestInpu
     return { kind: 'clarification', clarification: response.clarification } satisfies BotanicAgentClarificationResponse
   }
   return completeBotanicAgentPlan(response.plan, input)
+}
+
+export async function requestBotanicAgentChat(input: BotanicAgentChatRequestInput, signal?: AbortSignal) {
+  const response = await productRequest<{ response: BotanicAgentChatResponse }>('/api/agent-chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(buildBotanicAgentChatRequest(input)),
+    signal,
+  })
+  return response.response
 }
 
 export async function createPersistentBotanicAgentRun(input: {
