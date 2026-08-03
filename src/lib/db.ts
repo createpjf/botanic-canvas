@@ -8,6 +8,7 @@ import {
   type GlobalWorkflowTemplateLibrary,
 } from '../domain/canvas'
 import { normalizeAssetRecord } from '../domain/assets'
+import { isRemoteDocumentConflict } from '../domain/remoteDocumentSync'
 import { ProductApiError, productRequest, serverPersistenceEnabled } from './productSession'
 import { persistAcceptedRemoteRefresh } from './remoteDocumentRefresh'
 
@@ -98,8 +99,21 @@ const remoteDocuments = new Map<string, CanvasDocument>()
 const remoteWriteDebounceMs = 500
 
 function rememberRemoteRevisions(id: string, response: { revision: number; graphRevision?: number }) {
+  const currentRevision = remoteRevisions.get(id)
+  if (currentRevision !== undefined && response.revision < currentRevision) return false
   remoteRevisions.set(id, response.revision)
-  if (Number.isInteger(response.graphRevision)) remoteGraphRevisions.set(id, response.graphRevision!)
+  const currentGraphRevision = remoteGraphRevisions.get(id)
+  if (Number.isInteger(response.graphRevision)
+    && (currentGraphRevision === undefined || response.graphRevision! >= currentGraphRevision)) {
+    remoteGraphRevisions.set(id, response.graphRevision!)
+  }
+  return true
+}
+
+function rememberRemoteDocument(id: string, response: { document: CanvasDocument; revision: number; graphRevision?: number }) {
+  if (!rememberRemoteRevisions(id, response)) return false
+  remoteDocuments.set(id, response.document)
+  return true
 }
 
 type CollectionPatch<T extends { id: string }> = {
@@ -251,7 +265,7 @@ export async function syncPendingCanvasDrafts() {
       const current = await readPendingSyncDocument(draft.id)
       if (epoch !== (discardedDraftEpochs.get(draft.id) ?? 0) || !current || current.updatedAt !== draft.updatedAt) continue
       if (error instanceof ProductApiError && error.status === 0) break
-      if (error instanceof ProductApiError && error.code === 'PROJECT_CONFLICT') {
+      if (isRemoteDocumentConflict(error)) {
         conflicts += 1
         conflictIds.push(draft.id)
       }
@@ -424,9 +438,8 @@ async function serializeRemoteMediaValue(value: unknown): Promise<unknown> {
 async function readRemoteCanvasDocument(id: string) {
   try {
     const response = await productRequest<{ document: CanvasDocument; revision: number; graphRevision: number }>(`/api/projects/${encodeURIComponent(id)}/document`)
-    rememberRemoteRevisions(id, response)
-    remoteDocuments.set(id, response.document)
-    return response.document
+    rememberRemoteDocument(id, response)
+    return remoteDocuments.get(id) ?? response.document
   } catch (error) {
     if (error instanceof ProductApiError && error.status === 404) {
       remoteRevisions.delete(id)
@@ -511,19 +524,20 @@ async function writeRemoteCanvasDocument(document: CanvasDocument) {
   }
 
   let response
-  try {
-    response = await send(patch ?? document, patch ? 'PATCH' : 'PUT', revision)
-  } catch (error) {
-    if (!(error instanceof ProductApiError)
-      || (error.code !== 'PROJECT_CONFLICT' && error.code !== 'CANVAS_GRAPH_CONFLICT')
-      || !patch) throw error
-    // 同一用户的即时保存与离线草稿刚好交错时，仅重放“相对旧快照的增量”。
-    // 不重发整份文档，避免把 Worker 已写入的输出节点从远端删掉。
-    await readRemoteCanvasDocument(document.id)
-    response = await send(patch, 'PATCH', remoteRevisions.get(document.id))
+  let conflictAttempts = 0
+  while (true) {
+    try {
+      response = await send(patch ?? document, patch ? 'PATCH' : 'PUT', conflictAttempts ? remoteRevisions.get(document.id) : revision)
+      break
+    } catch (error) {
+      if (!isRemoteDocumentConflict(error) || !patch || conflictAttempts >= 3) throw error
+      conflictAttempts += 1
+      // 同一用户的即时保存与离线草稿刚好交错时，仅重放“相对旧快照的增量”。
+      // 不重发整份文档，避免把 Worker 已写入的输出节点从远端删掉。
+      await readRemoteCanvasDocument(document.id)
+    }
   }
-  rememberRemoteRevisions(document.id, response)
-  remoteDocuments.set(document.id, response.document)
+  rememberRemoteDocument(document.id, response)
   await persistLocalDocument(response.document)
   return response.document
 }
@@ -539,8 +553,7 @@ export async function createCanvasProject(document: CanvasDocument) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ document: prepared }),
   })
-  rememberRemoteRevisions(document.id, response)
-  remoteDocuments.set(document.id, response.document)
+  rememberRemoteDocument(document.id, response)
   await persistLocalDocument(response.document)
   return response.document
 }
@@ -567,17 +580,19 @@ export async function renameCanvasProject(id: string, name: string) {
     body: JSON.stringify({ name }),
   })
   let response
-  try {
-    response = await send(remoteRevisions.get(id))
-  } catch (error) {
-    if (!(error instanceof ProductApiError)
-      || (error.code !== 'PROJECT_CONFLICT' && error.code !== 'CANVAS_GRAPH_CONFLICT')) throw error
-    // 画布保存刚好抢先提交时，名称 PATCH 不需要覆盖整份文档；刷新 revision 后仅重放名称即可。
-    await readRemoteCanvasDocument(id)
-    response = await send(remoteRevisions.get(id))
+  let conflictAttempts = 0
+  while (true) {
+    try {
+      response = await send(remoteRevisions.get(id))
+      break
+    } catch (error) {
+      if (!isRemoteDocumentConflict(error) || conflictAttempts >= 3) throw error
+      conflictAttempts += 1
+      // 画布保存刚好抢先提交时，名称 PATCH 不需要覆盖整份文档；刷新 revision 后仅重放名称即可。
+      await readRemoteCanvasDocument(id)
+    }
   }
-  rememberRemoteRevisions(id, response)
-  remoteDocuments.set(id, response.document)
+  rememberRemoteDocument(id, response)
   return response.document
 }
 

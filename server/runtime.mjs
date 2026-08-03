@@ -74,7 +74,9 @@ export function runtimeConfig(rootDir = process.cwd()) {
     flockTextModel,
     flockAgentModels,
     promptRefinementTimeoutMs: Number(process.env.PROMPT_REFINEMENT_TIMEOUT_MS ?? 30000),
-    agentPlannerTimeoutMs: Number(process.env.AGENT_PLANNER_TIMEOUT_MS ?? 30000),
+    // Agent 规划与对话包含受控上下文读取和多轮工具调用；给它足够时间，
+    // 避免浏览器先于 Provider 报“工作区超时”。客户端仍有独立的 60 秒上限。
+    agentPlannerTimeoutMs: Number(process.env.AGENT_PLANNER_TIMEOUT_MS ?? 55000),
     agentMcpTools: parseMcpToolConfigurations(process.env.BOTANIC_MCP_TOOLS_JSON),
     maximumBatchCount: Number(process.env.MAX_GENERATION_BATCH ?? 8),
     maximumReferenceBytes: 8 * 1024 * 1024,

@@ -3326,7 +3326,7 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-composer__context button > span { display: grid; place-items: center; background: #e5eee5; font-size: 9px; }
 .agent-composer__context b { overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .agent-composer__context i { color: #8c988f; font-style: normal; }
-.agent-composer textarea { width: 100%; min-height: 76px; max-height: 180px; resize: none; border: 0; outline: 0; color: #263f2d; font-size: 12px; line-height: 1.6; box-sizing: border-box; }
+.agent-composer textarea { width: 100%; min-height: 56px; max-height: 180px; resize: none; border: 0; outline: 0; color: #263f2d; font-size: 12px; line-height: 1.6; box-sizing: border-box; overflow-y: auto; }
 .agent-composer textarea::placeholder { color: #94a097; }
 .agent-composer__mention-menu { position: absolute; z-index: 5; right: 10px; bottom: 112px; left: 10px; display: grid; max-height: 260px; gap: 3px; overflow-y: auto; padding: 7px; border: 1px solid #cdddcf; border-radius: 9px; background: #fff; box-shadow: 0 16px 38px rgba(28, 58, 35, .2); }
 .agent-composer__mention-menu button { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; min-height: 40px; align-items: center; gap: 8px; padding: 4px 7px; border: 0; border-radius: 6px; background: transparent; color: #344f3b; cursor: pointer; text-align: left; }

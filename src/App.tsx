@@ -7374,6 +7374,7 @@ function AgentWorkspace({
   const [recoveryModelMenuKey, setRecoveryModelMenuKey] = useState('')
   const [pendingGenerationOverrides, setPendingGenerationOverrides] = useState<Partial<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution'>>>({})
   const plannerControllerRef = useRef<AbortController | null>(null)
+  const sendingInstructionRef = useRef(false)
   const reportedRunIdsRef = useRef(new Set<string>())
   const focusedRunIdsRef = useRef(new Set<string>())
   const messageEndRef = useRef<HTMLDivElement | null>(null)
@@ -7484,6 +7485,15 @@ function AgentWorkspace({
     const frame = requestAnimationFrame(() => composerTextareaRef.current?.focus())
     return () => cancelAnimationFrame(frame)
   }, [])
+
+  // Composer 随内容增长，但空输入时只保留一行半的呼吸空间，避免发送框出现大块空白。
+  useEffect(() => {
+    const textarea = composerTextareaRef.current
+    if (!textarea) return
+    textarea.style.height = 'auto'
+    const nextHeight = Math.min(180, Math.max(56, textarea.scrollHeight))
+    textarea.style.height = `${nextHeight}px`
+  }, [instruction])
 
   useEffect(() => {
     const closeLayerOnEscape = (event: KeyboardEvent) => {
@@ -7654,6 +7664,7 @@ function AgentWorkspace({
     referenceCount: number
     memoryCount: number
     assetGroupCount: number
+    mode?: 'generation' | 'conversation' | 'prompt' | 'research'
   }) => {
     const steps = createBotanicAgentRuntimeSteps({
       ...input,
@@ -7696,7 +7707,7 @@ function AgentWorkspace({
   })
 
   const completeRuntimeContextReads = async (steps: BotanicAgentRuntimeStep[]) => {
-    const contextSteps = steps.filter((step) => step.id !== 'call-planner' && step.id !== 'finalize-plan' && step.id !== 'create-workflow')
+    const contextSteps = steps.filter((step) => step.id !== 'call-planner' && step.id !== 'finalize-plan' && step.id !== 'create-workflow' && step.id !== 'respond')
     for (const step of contextSteps) {
       updateRuntimeStep(step.id, 'running')
       await yieldRuntimeFrame()
@@ -7881,8 +7892,15 @@ function AgentWorkspace({
       const controller = new AbortController()
       plannerControllerRef.current = controller
       setPlanning(true)
-      setRuntimeSteps([])
-      setRuntimeDetailsOpen(false)
+      const runtimeTrace = beginRuntimeTrace({
+        hasTarget: Boolean(target),
+        referenceCount: target?.rootRecipe.references.length ?? contextItems.length,
+        memoryCount: memory.length,
+        assetGroupCount: compatibleGroups.length,
+        mode: route,
+      })
+      await completeRuntimeContextReads(runtimeTrace)
+      updateRuntimeStep('call-planner', 'running')
       const chatMessages = [
         ...session.messages.map((message) => ({ role: message.role, content: message.content })),
         { role: 'user' as const, content: options.appendUser ?? cleanInstruction },
@@ -7896,12 +7914,18 @@ function AgentWorkspace({
           contextNodeIds: session.contextNodeIds,
         }, controller.signal)
         if (controller.signal.aborted) return
+        updateRuntimeStep('call-planner', 'succeeded')
+        updateRuntimeStep('respond', 'running')
+        await yieldRuntimeFrame()
+        updateRuntimeStep('respond', 'succeeded')
+        setRuntimeDetailsOpen(false)
         const sourceNote = route === 'research'
           ? `\n\n来源：${response.sources?.length ? response.sources.join('、') : '当前没有命中项目受控检索来源。'}`
           : ''
         appendMessage({ role: 'assistant', kind: 'text', content: `${response.answer}${sourceNote}` })
       } catch (caught) {
         if (controller.signal.aborted) return
+        failRuntimeTrace(caught instanceof Error ? caught.message : 'Agent 暂时无法回答。')
         setError(caught instanceof Error ? caught.message : 'Agent 暂时无法回答，请稍后重试。')
       } finally {
         if (plannerControllerRef.current === controller) plannerControllerRef.current = null
@@ -7982,14 +8006,19 @@ function AgentWorkspace({
   }
 
   const sendInstruction = async () => {
-    if (!session || planning) return
-    const cleanInstruction = instruction.trim()
+    if (!session || planning || sendingInstructionRef.current) return
+    const cleanInstruction = instruction.replace(/\u00a0/g, ' ').trim()
     if (!cleanInstruction) return
+    sendingInstructionRef.current = true
     setInstruction('')
     setMentionQuery(undefined)
     const generationOverrides = pendingGenerationOverrides
     setPendingGenerationOverrides({})
-    await runInstruction(cleanInstruction, { appendUser: cleanInstruction, generationOverrides })
+    try {
+      await runInstruction(cleanInstruction, { appendUser: cleanInstruction, generationOverrides })
+    } finally {
+      sendingInstructionRef.current = false
+    }
   }
 
   const answerClarification = async (message: BotanicAgentMessage, answers: Record<string, string>) => {

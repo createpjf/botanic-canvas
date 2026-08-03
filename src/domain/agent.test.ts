@@ -67,6 +67,22 @@ test('Agent 运行记录按状态更新时间，不改变其他步骤', () => {
   assert.equal(done[1].status, 'pending')
 })
 
+test('对话与检索也展示可理解的运行阶段，而不是静默等待', () => {
+  const steps = createBotanicAgentRuntimeSteps({ hasTarget: false, mode: 'research' })
+  assert.deepEqual(steps.map((step) => step.id), ['read-canvas', 'call-planner', 'respond'])
+  assert.equal(steps[1].detail, '检索项目资料并核对来源')
+  assert.equal(steps[2].label, '整理检索结果')
+})
+
+test('重复收到同一 Agent 消息 ID 时保持单条时间线', () => {
+  const session = createBotanicAgentSession({ id: 'session-1', now: 1 })
+  const message = { id: 'message-1', role: 'user' as const, kind: 'text' as const, content: '生成一张图', createdAt: 2 }
+  const once = appendBotanicAgentMessage(session, message)
+  const twice = appendBotanicAgentMessage(once, message)
+  assert.equal(twice, once)
+  assert.equal(twice.messages.length, 1)
+})
+
 test('Agent 提示词差异突出新增、删除与保留内容', () => {
   assert.deepEqual(buildBotanicAgentPromptDiff(
     '人物保持不变，替换为海边场景。',

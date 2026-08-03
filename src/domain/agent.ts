@@ -66,11 +66,16 @@ export function createBotanicAgentRuntimeSteps(input: {
   memoryCount?: number
   assetGroupCount?: number
   plannerLabel?: string
+  mode?: 'generation' | 'conversation' | 'prompt' | 'research'
 }): BotanicAgentRuntimeStep[] {
+  const mode = input.mode ?? 'generation'
+  const isGeneration = mode === 'generation'
   const steps: BotanicAgentRuntimeStep[] = [
     {
       id: 'read-canvas', kind: 'read', label: '读取画布上下文',
-      detail: input.hasTarget ? '当前结果、生成参数与节点关系' : '当前画布与可用节点', status: 'pending',
+      detail: mode === 'research'
+        ? '读取当前项目可验证资料'
+        : input.hasTarget ? '当前结果、生成参数与节点关系' : '当前画布与可用节点', status: 'pending',
     },
   ]
   if ((input.referenceCount ?? 0) > 0) {
@@ -93,16 +98,26 @@ export function createBotanicAgentRuntimeSteps(input: {
   }
   steps.push({
     id: 'call-planner', kind: 'plan', label: input.hasTarget ? '调用规划模型' : '解析创作要求',
-    detail: input.hasTarget
+    detail: mode === 'conversation'
+      ? '理解问题与对话上下文'
+      : mode === 'prompt'
+        ? '整理为可直接使用的 Prompt'
+        : mode === 'research'
+          ? '检索项目资料并核对来源'
+          : input.hasTarget
       ? (input.plannerLabel ? `${input.plannerLabel} · 生成执行计划` : '生成执行计划')
       : '整理创作要求与节点关系',
     status: 'pending',
   })
   steps.push({
-    id: input.hasTarget ? 'finalize-plan' : 'create-workflow',
-    kind: input.hasTarget ? 'plan' : 'write',
-    label: input.hasTarget ? '整理执行计划' : '创建画布工作流',
-    detail: input.hasTarget ? '锁定项、变化项与输出分支' : '把要求写入可编辑节点',
+    id: isGeneration ? (input.hasTarget ? 'finalize-plan' : 'create-workflow') : 'respond',
+    kind: isGeneration ? (input.hasTarget ? 'plan' : 'write') : 'plan',
+    label: isGeneration
+      ? input.hasTarget ? '整理执行计划' : '创建画布工作流'
+      : mode === 'research' ? '整理检索结果' : mode === 'prompt' ? '生成 Prompt 草稿' : '组织回答',
+    detail: isGeneration
+      ? input.hasTarget ? '锁定项、变化项与输出分支' : '把要求写入可编辑节点'
+      : mode === 'research' ? '区分项目事实、推断与来源' : '准备清晰的下一步回复',
     status: 'pending',
   })
   return steps
@@ -557,6 +572,7 @@ export function createBotanicAgentSession(input: {
 }
 
 export function appendBotanicAgentMessage(session: BotanicAgentSession, message: BotanicAgentMessage): BotanicAgentSession {
+  if (session.messages.some((item) => item.id === message.id)) return session
   return {
     ...session,
     title: session.messages.length === 0 && message.role === 'user'
@@ -771,6 +787,9 @@ export function mergeBotanicAgentRunSnapshot(
   snapshot: BotanicAgentRunSnapshot,
 ): BotanicAgentRun {
   if (run.id !== snapshot.id) return run
+  // Realtime 与 4 秒恢复轮询可能同时返回同一快照；旧快照也不能回退
+  // 已显示的进度。返回原对象让 Store 跳过无意义的持久化写入。
+  if (snapshot.updatedAt <= run.updatedAt) return run
   return {
     ...run,
     status: snapshot.status,
@@ -791,7 +810,9 @@ export function upsertBotanicAgentRunSnapshot(
 ): BotanicAgentRun[] {
   const existing = runs.find((run) => run.id === snapshot.id)
   if (existing) {
-    return runs.map((run) => run.id === snapshot.id ? mergeBotanicAgentRunSnapshot(run, snapshot) : run)
+    const merged = mergeBotanicAgentRunSnapshot(existing, snapshot)
+    if (merged === existing) return runs
+    return runs.map((run) => run.id === snapshot.id ? merged : run)
       .sort((a, b) => b.updatedAt - a.updatedAt)
   }
   if (!snapshot.plan) return runs

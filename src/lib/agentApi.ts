@@ -45,6 +45,8 @@ export async function requestBotanicAgentPlan(input: BotanicAgentPlanRequestInpu
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(buildBotanicAgentPlanRequest(input)),
     signal,
+    timeoutMs: 60_000,
+    timeoutMessage: 'Agent 规划响应较慢，请稍后重试；当前画布内容未被修改。',
   })
   if ('clarification' in response) {
     return { kind: 'clarification', clarification: response.clarification } satisfies BotanicAgentClarificationResponse
@@ -58,6 +60,8 @@ export async function requestBotanicAgentChat(input: BotanicAgentChatRequestInpu
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(buildBotanicAgentChatRequest(input)),
     signal,
+    timeoutMs: 60_000,
+    timeoutMessage: 'Agent 正在整理上下文，响应较慢，请稍后重试；当前画布内容未被修改。',
   })
   return response.response
 }
