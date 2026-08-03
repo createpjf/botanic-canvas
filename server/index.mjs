@@ -696,6 +696,7 @@ const server = createServer(async (request, response) => {
       try {
         const plan = await planBotanicGeneration(input, config, { signal: plannerController.signal })
         if (plannerController.signal.aborted || response.destroyed) return
+        if (plan?.kind === 'clarification') return json(response, 200, { clarification: plan.clarification })
         return json(response, 200, { plan })
       } catch (caught) {
         if (plannerController.signal.aborted || response.destroyed) return

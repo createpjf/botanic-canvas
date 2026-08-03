@@ -55,6 +55,30 @@ test('浏览器只向 Agent Planner 发送参考元数据，不发送图片与�
   assert.doesNotMatch(JSON.stringify(request), /base64|private-model|media/i)
 })
 
+test('浏览器把追问答案和模型目录回填到 Agent 请求，但仍只发送安全元数据', () => {
+  const request = buildBotanicAgentPlanRequest({
+    projectId: 'project-agent',
+    instruction: '把场景换成海边。',
+    selectedResultNodeId: 'result-v03',
+    selectedResultLabel: '首图候选 01',
+    rootRecipe: recipe,
+    generationOverrides: { model: 'minimax-h3', aspectRatio: '16:9', resolution: '2K' },
+    clarificationAnswers: { model: 'minimax-h3', aspect_ratio: '16:9', resolution: '2K' },
+    availableGenerationModels: [
+      { id: 'gpt-image-2', label: 'GPT Image 2', provider: 'openai', mediaKind: 'image', aspectRatios: ['1:1', '3:4'], resolutions: ['1K', '2K'] },
+      { id: 'minimax-h3', label: 'MiniMax H3', provider: 'minimax', mediaKind: 'video', aspectRatios: ['16:9'], resolutions: ['2K'] },
+    ],
+  })
+
+  assert.deepEqual(request.settings, { model: 'minimax-h3', aspectRatio: '16:9', resolution: '2K' })
+  assert.deepEqual(request.clarificationAnswers, { model: 'minimax-h3', aspect_ratio: '16:9', resolution: '2K' })
+  assert.deepEqual(request.generationModels, [
+    { id: 'gpt-image-2', label: 'GPT Image 2', provider: 'openai', mediaKind: 'image', aspectRatios: ['1:1', '3:4'], resolutions: ['1K', '2K'] },
+    { id: 'minimax-h3', label: 'MiniMax H3', provider: 'minimax', mediaKind: 'video', aspectRatios: ['16:9'], resolutions: ['2K'] },
+  ])
+  assert.doesNotMatch(JSON.stringify(request), /data:image|private-model/i)
+})
+
 test('浏览器把可信计划草稿与本地原配方合成可执行计划', () => {
   const input = {
     projectId: 'project-agent', instruction: '换场景', requestedIntent: 'replace_scene' as const,
@@ -84,6 +108,22 @@ test('浏览器把可信计划草稿与本地原配方合成可执行计划', ()
   assert.equal(plan.references[0].id, 'result-v03')
   assert.equal(plan.references[3].id, 'group-scenes')
   assert.equal(plan.toolCalls?.[0].name, 'generation_create_plan')
+})
+
+test('浏览器合成计划时保留追问后的生成参数，而不是被旧根配方覆盖', () => {
+  const input = {
+    projectId: 'project-agent', instruction: '生成视频', requestedIntent: 'continue_generation' as const,
+    selectedResultNodeId: 'result-v03', selectedResultLabel: '首图候选 01', rootRecipe: recipe,
+    generationOverrides: { model: 'minimax-h3', aspectRatio: '16:9' as const, resolution: '2K' as const },
+  }
+  const plan = completeBotanicAgentPlan({
+    intent: 'continue_generation', instruction: input.instruction, summary: '生成视频。',
+    selectedResultNodeId: input.selectedResultNodeId,
+    constraints: [{ dimension: 'scene', mode: 'vary' }],
+    prompt: '让画面动起来。', settings: recipe.settings,
+    output: { mode: 'single', count: 1, candidatesPerItem: 1 },
+  }, input)
+  assert.deepEqual(plan.settings, { model: 'minimax-h3', aspectRatio: '16:9', resolution: '2K' })
 })
 
 test('Agent 自动选择素材组后，浏览器仍能恢复对应素材组引用', () => {

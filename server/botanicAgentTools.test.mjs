@@ -22,10 +22,11 @@ test('Agent 规划工具可以读取画布上下文、搜索素材并调用白�
   const registry = createBotanicAgentPlanningToolRegistry({
     input,
     finalizePlan: (raw) => ({ ...raw, trusted: true }),
+    finalizeClarification: (raw) => raw,
   })
 
   assert.deepEqual(registry.openAITools().map((item) => item.function.name), [
-    'canvas_read', 'asset_search', 'skill_run', 'skill_create_propose', 'generation_create_plan',
+    'canvas_read', 'asset_search', 'skill_run', 'skill_create_propose', 'generation_ask_clarification', 'generation_create_plan',
   ])
   const canvas = await registry.execute('canvas_read', {}, {})
   assert.deepEqual(canvas, {
@@ -50,6 +51,7 @@ test('Agent 规划工具可调用当前项目已审核 Skill，但不能跨项�
   const registry = createBotanicAgentPlanningToolRegistry({
     input: { ...input, projectSkills: [projectSkill] },
     finalizePlan: (raw) => raw,
+    finalizeClarification: (raw) => raw,
   })
 
   const schema = registry.openAITools().find((tool) => tool.function.name === 'skill_run')?.function.parameters
@@ -74,6 +76,7 @@ test('Planner 把 Skill 与 MCP 转换为待确认行动提议，不在规划阶
       availableMcpTools: [{ server: 'asset-catalog', tool: 'search' }],
     },
     finalizePlan: (raw) => raw,
+    finalizeClarification: (raw) => raw,
     onProposeAction: (proposal) => proposals.push(proposal),
   })
 
@@ -107,6 +110,7 @@ test('Planner 可以提议创建可复用项目 Skill，但不会在规划阶段
   const registry = createBotanicAgentPlanningToolRegistry({
     input,
     finalizePlan: (raw) => raw,
+    finalizeClarification: (raw) => raw,
     onProposeAction: (proposal) => proposals.push(proposal),
   })
 

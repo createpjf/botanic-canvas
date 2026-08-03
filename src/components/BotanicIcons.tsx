@@ -144,6 +144,14 @@ export function PlusSquareIcon({ className }: BotanicIconProps) {
   </svg>
 }
 
+/** Agent 执行模式 · 自动执行 */
+export function AutoRunIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <circle cx="12" cy="12" r="8.75" stroke="currentColor" strokeWidth="1.5" />
+    <path d="m10 8.75 5 3.25-5 3.25V8.75Z" fill="currentColor" />
+  </svg>
+}
+
 /** 植物学 Figma · arrow-right-top（1228:230741） */
 export function ArrowUpRightIcon({ className }: BotanicIconProps) {
   return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">

@@ -140,8 +140,31 @@ function planParameters() {
   }
 }
 
-export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, onProposeAction }) {
-  if (!input || typeof finalizePlan !== 'function') throw new TypeError('Agent 规划工具缺少可信上下文。')
+function clarificationParameters() {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      question: { type: 'string', maxLength: 240 },
+      helper: { type: 'string', maxLength: 240 },
+      fields: {
+        type: 'array', minItems: 1, maxItems: 3,
+        items: {
+          type: 'object', additionalProperties: false,
+          properties: {
+            id: { type: 'string', enum: ['model', 'aspect_ratio', 'resolution'] },
+            label: { type: 'string', maxLength: 80 },
+          },
+          required: ['id', 'label'],
+        },
+      },
+    },
+    required: ['question', 'fields'],
+  }
+}
+
+export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, finalizeClarification, onProposeAction }) {
+  if (!input || typeof finalizePlan !== 'function' || typeof finalizeClarification !== 'function') throw new TypeError('Agent 规划工具缺少可信上下文。')
   const projectSkills = Object.fromEntries((input.projectSkills ?? [])
     .filter((skill) => skill?.status === 'active' && typeof skill.id === 'string' && typeof skill.name === 'string' && typeof skill.instructions === 'string')
     .filter((skill) => !skillCatalog[skill.id])
@@ -288,6 +311,31 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, on
         return { proposed: true, actionId: proposal.id, tool: `${server}.${tool}` }
       },
     }] : []),
+    {
+      name: 'generation_ask_clarification',
+      label: '确认生成参数',
+      description: '当用户目标或输出规格确实不清晰时，提出最多三个简短的参数选择问题；只返回问题卡，不执行生成。优先询问模型、比例和分辨率，不要重复询问上下文中已有且未要求改变的设置。',
+      risk: 'read',
+      terminal: true,
+      parameters: clarificationParameters(),
+      validate: (raw) => {
+        const value = object(raw, '参数确认')
+        const fields = Array.isArray(value.fields) ? value.fields : []
+        if (!fields.length || fields.length > 3) throw new AgentToolRuntimeError('INVALID_TOOL_ARGUMENTS', '参数确认字段无效。')
+        return finalizeClarification({
+          question: requiredText(value.question, '确认问题', 240),
+          ...(value.helper !== undefined ? { helper: optionalText(value.helper, '确认说明', 240) } : {}),
+          fields: fields.map((field, index) => {
+            const item = object(field, `第 ${index + 1} 个确认字段`)
+            return {
+              id: requiredText(item.id, `第 ${index + 1} 个确认字段 ID`, 40),
+              label: requiredText(item.label, `第 ${index + 1} 个确认字段名称`, 80),
+            }
+          }),
+        })
+      },
+      execute: async (clarification) => clarification,
+    },
     {
       name: 'generation_create_plan',
       label: '生成执行计划',

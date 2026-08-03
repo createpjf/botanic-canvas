@@ -1,6 +1,6 @@
-import { buildBotanicAgentPlanRequest, completeBotanicAgentPlan, type BotanicAgentPlanDraft, type BotanicAgentPlanRequestInput } from '../domain/agentPlanContract'
+import { buildBotanicAgentPlanRequest, completeBotanicAgentPlan, type BotanicAgentPlanRequestInput, type BotanicAgentPlanResponse } from '../domain/agentPlanContract'
 import { productRequest } from './productSession'
-import type { AgentToolCallTrace, BotanicAgentActionProposal, BotanicAgentActionResult, BotanicAgentPlan, BotanicAgentRunSnapshot, BotanicAgentSkill } from '../domain/agent'
+import type { AgentToolCallTrace, BotanicAgentActionProposal, BotanicAgentActionResult, BotanicAgentClarificationResponse, BotanicAgentPlan, BotanicAgentRunSnapshot, BotanicAgentSkill } from '../domain/agent'
 
 export type AgentRunCreationBranch = { id: string; label: string; assetId?: string }
 
@@ -39,12 +39,15 @@ function idempotencyKey(prefix: string) {
 }
 
 export async function requestBotanicAgentPlan(input: BotanicAgentPlanRequestInput, signal?: AbortSignal) {
-  const response = await productRequest<{ plan: BotanicAgentPlanDraft }>('/api/agent-plans', {
+  const response = await productRequest<BotanicAgentPlanResponse>('/api/agent-plans', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(buildBotanicAgentPlanRequest(input)),
     signal,
   })
+  if ('clarification' in response) {
+    return { kind: 'clarification', clarification: response.clarification } satisfies BotanicAgentClarificationResponse
+  }
   return completeBotanicAgentPlan(response.plan, input)
 }
 

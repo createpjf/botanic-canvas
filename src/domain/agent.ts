@@ -270,6 +270,41 @@ export type BotanicAgentPlan = {
   actions?: BotanicAgentActionProposal[]
 }
 
+/**
+ * 规划信息不足时，Agent 只提出最少的可选问题，不直接猜测生成参数。
+ * 选项是服务端从可信模型目录与画布能力中裁剪后的安全元数据。
+ */
+export type BotanicAgentClarificationFieldId = 'model' | 'aspect_ratio' | 'resolution'
+
+export type BotanicAgentClarificationOption = {
+  value: string
+  label: string
+  description?: string
+}
+
+export type BotanicAgentClarificationField = {
+  id: BotanicAgentClarificationFieldId
+  label: string
+  required: boolean
+  defaultValue?: string
+  options: BotanicAgentClarificationOption[]
+}
+
+export type BotanicAgentClarification = {
+  id: string
+  question: string
+  helper?: string
+  originalInstruction: string
+  fields: BotanicAgentClarificationField[]
+}
+
+export type BotanicAgentClarificationResponse = {
+  kind: 'clarification'
+  clarification: BotanicAgentClarification
+  plannerModel?: string
+  toolCalls?: AgentToolCallTrace[]
+}
+
 export type BotanicAgentRunStatus = 'awaiting_confirmation' | 'queued' | 'executing' | 'running' | 'completed' | 'partial' | 'failed' | 'cancelled'
 
 export type BotanicAgentBranchStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
@@ -337,12 +372,13 @@ export type BotanicAgentSkill = {
 export type BotanicAgentMessage = {
   id: string
   role: 'user' | 'assistant'
-  kind: 'text' | 'plan' | 'run' | 'notice'
+  kind: 'text' | 'question' | 'plan' | 'run' | 'notice'
   content: string
   createdAt: number
   plan?: BotanicAgentPlan
+  question?: BotanicAgentClarification
   runId?: string
-  status?: 'pending' | 'submitted' | 'failed'
+  status?: 'pending' | 'answered' | 'submitted' | 'failed'
   feedback?: 'positive' | 'negative'
 }
 
@@ -542,7 +578,7 @@ export function replaceBotanicAgentSessionContext(
 export function updateBotanicAgentMessage(
   session: BotanicAgentSession,
   messageId: string,
-  patch: Partial<Pick<BotanicAgentMessage, 'content' | 'runId' | 'status' | 'feedback'>>,
+  patch: Partial<Pick<BotanicAgentMessage, 'content' | 'runId' | 'status' | 'feedback' | 'plan' | 'question'>>,
   now = Date.now(),
 ): BotanicAgentSession {
   if (!session.messages.some((message) => message.id === messageId)) return session
@@ -805,4 +841,79 @@ export function updateBotanicAgentRun(
     updatedAt: now,
     ...(error ? { error } : { error: undefined }),
   }
+}
+
+export type BotanicAgentPromptDiffSegment = {
+  kind: 'same' | 'added' | 'removed'
+  text: string
+}
+
+/**
+ * 以词和标点为单位生成提示词差异，供确认卡展示；不改变真正提交给模型的提示词。
+ * 对超长提示词使用中间段折叠，避免确认卡因为 O(n²) 比对阻塞界面。
+ */
+export function buildBotanicAgentPromptDiff(
+  original: string,
+  revised: string,
+): BotanicAgentPromptDiffSegment[] {
+  if (original === revised) return original ? [{ kind: 'same', text: original }] : []
+
+  const tokenize = (value: string) => value.match(/\s+|[，。！？、；：,.!?;:\n]+|[\p{Script=Han}]|[^\s，。！？、；：,.!?;:\n\p{Script=Han}]+/gu) ?? []
+  const before = tokenize(original)
+  const after = tokenize(revised)
+  const merge = (segments: BotanicAgentPromptDiffSegment[]) => segments.reduce<BotanicAgentPromptDiffSegment[]>((merged, segment) => {
+    if (!segment.text) return merged
+    const previous = merged.at(-1)
+    if (previous?.kind === segment.kind) previous.text += segment.text
+    else merged.push({ ...segment })
+    return merged
+  }, [])
+
+  // 长文本只保留公共首尾，既能表达主要变化，也避免大提示词的矩阵分配。
+  if (before.length * after.length > 65_000) {
+    let prefix = 0
+    while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) prefix += 1
+    let suffix = 0
+    while (
+      suffix < before.length - prefix
+      && suffix < after.length - prefix
+      && before[before.length - suffix - 1] === after[after.length - suffix - 1]
+    ) suffix += 1
+    return merge([
+      { kind: 'same', text: before.slice(0, prefix).join('') },
+      { kind: 'removed', text: before.slice(prefix, before.length - suffix).join('') },
+      { kind: 'added', text: after.slice(prefix, after.length - suffix).join('') },
+      { kind: 'same', text: before.slice(before.length - suffix).join('') },
+    ])
+  }
+
+  const width = after.length + 1
+  const table = Array.from({ length: before.length + 1 }, () => new Uint16Array(width))
+  for (let row = before.length - 1; row >= 0; row -= 1) {
+    for (let column = after.length - 1; column >= 0; column -= 1) {
+      table[row][column] = before[row] === after[column]
+        ? table[row + 1][column + 1] + 1
+        : Math.max(table[row + 1][column], table[row][column + 1])
+    }
+  }
+
+  const segments: BotanicAgentPromptDiffSegment[] = []
+  let row = 0
+  let column = 0
+  while (row < before.length && column < after.length) {
+    if (before[row] === after[column]) {
+      segments.push({ kind: 'same', text: before[row] })
+      row += 1
+      column += 1
+    } else if (table[row + 1][column] >= table[row][column + 1]) {
+      segments.push({ kind: 'removed', text: before[row] })
+      row += 1
+    } else {
+      segments.push({ kind: 'added', text: after[column] })
+      column += 1
+    }
+  }
+  while (row < before.length) segments.push({ kind: 'removed', text: before[row++] })
+  while (column < after.length) segments.push({ kind: 'added', text: after[column++] })
+  return merge(segments)
 }
