@@ -78,6 +78,61 @@ test('Agent Planner 只允许服务端目录中的 Flock 模型，并按请求�
   )
 })
 
+test('Agent 在规格缺失时返回受控追问卡，并从可信模型目录回填选项', async () => {
+  const generationModels = [
+    { id: 'gpt-image-2', label: 'GPT Image 2', provider: 'openai', mediaKind: 'image', aspectRatios: ['1:1', '3:4'], resolutions: ['1K', '2K'] },
+    { id: 'minimax-h3', label: 'MiniMax H3', provider: 'minimax', mediaKind: 'video', aspectRatios: ['16:9'], resolutions: ['2K'] },
+  ]
+  const result = await planBotanicGeneration({ ...validInput, generationModels }, {
+    flockApiKey: 'flock-secret', flockTextModel: 'deepseek-v4-pro',
+  }, {
+    fetchImpl: async (_url, init) => {
+      const request = JSON.parse(init.body)
+      assert.ok(request.tools.some((tool) => tool.function.name === 'generation_ask_clarification'))
+      return new Response(JSON.stringify({ choices: [{ message: {
+        content: null,
+        tool_calls: [{ id: 'call-clarify-1', type: 'function', function: {
+          name: 'generation_ask_clarification', arguments: JSON.stringify({
+            question: '这次输出更偏图片还是视频？', helper: '先确认输出规格，之后仍可在节点里调整。',
+            fields: [
+              { id: 'model', label: '生成类型' },
+              { id: 'aspect_ratio', label: '画面比例' },
+              { id: 'resolution', label: '清晰度' },
+            ],
+          }),
+        } }],
+      } }] }), { status: 200 })
+    },
+  })
+
+  assert.equal(result.kind, 'clarification')
+  assert.equal(result.clarification.originalInstruction, validInput.instruction)
+  assert.deepEqual(result.clarification.fields.map((field) => field.id), ['model', 'aspect_ratio', 'resolution'])
+  assert.deepEqual(result.clarification.fields[0].options.map((option) => option.value), ['gpt-image-2', 'minimax-h3'])
+  assert.deepEqual(result.clarification.fields[1].options.map((option) => option.value), ['1:1', '3:4'])
+  assert.deepEqual(result.clarification.fields[2].options.map((option) => option.value), ['1K', '2K'])
+  assert.equal(result.clarification.fields[0].defaultValue, validInput.settings.model)
+})
+
+test('Agent 参数回填只接受可信目录中的模型、比例和分辨率', () => {
+  const input = validateBotanicAgentPlanInput({
+    ...validInput,
+    generationModels: [
+      { id: 'gpt-image-2', label: 'GPT Image 2', aspectRatios: ['1:1', '3:4'], resolutions: ['1K', '2K'] },
+      { id: 'minimax-h3', label: 'MiniMax H3', aspectRatios: ['16:9'], resolutions: ['2K'] },
+    ],
+    generationOverrides: { model: 'minimax-h3', aspectRatio: '16:9', resolution: '2K' },
+    clarificationAnswers: { model: 'minimax-h3', aspect_ratio: '16:9', resolution: '2K' },
+  })
+  assert.deepEqual(input.settings, { model: 'minimax-h3', aspectRatio: '16:9', resolution: '2K' })
+  assert.deepEqual(input.clarificationAnswers, { model: 'minimax-h3', aspect_ratio: '16:9', resolution: '2K' })
+  assert.throws(() => validateBotanicAgentPlanInput({
+    ...validInput,
+    generationModels: [{ id: 'gpt-image-2', label: 'GPT Image 2' }],
+    generationOverrides: { model: 'attacker-model' },
+  }), /覆盖模型不在可用目录中/)
+})
+
 test('Kimi K3 使用服务商要求的 temperature=1，其余规划模型保持低温度', async () => {
   const requests = []
   const fetchImpl = async (_url, init) => {
@@ -172,7 +227,7 @@ test('服务端 Agent 只让模型解释意图与约束，节点、参数和批�
   assert.match(firstRequest.messages[0].content, /受控上下文/)
   assert.deepEqual(JSON.parse(firstRequest.messages[1].content), validInput)
   assert.deepEqual(firstRequest.tools.map((item) => item.function.name), [
-    'canvas_read', 'asset_search', 'skill_run', 'skill_create_propose', 'generation_create_plan',
+    'canvas_read', 'asset_search', 'skill_run', 'skill_create_propose', 'generation_ask_clarification', 'generation_create_plan',
   ])
   assert.equal(firstRequest.tool_choice, 'auto')
   assert.deepEqual(finalRequest.messages.filter((message) => message.role === 'tool').map((message) => message.tool_call_id), [

@@ -23,6 +23,7 @@ import {
   updateBotanicAgentRun,
   createBotanicAgentRuntimeSteps,
   updateBotanicAgentRuntimeStep,
+  buildBotanicAgentPromptDiff,
 } from './agent.ts'
 
 const rootRecipe: GenerationRecipe = {
@@ -64,6 +65,42 @@ test('Agent 运行记录按状态更新时间，不改变其他步骤', () => {
   const done = updateBotanicAgentRuntimeStep(running, 'read-canvas', 'succeeded', 120)
   assert.equal(done[0].completedAt, 120)
   assert.equal(done[1].status, 'pending')
+})
+
+test('对话与检索也展示可理解的运行阶段，而不是静默等待', () => {
+  const steps = createBotanicAgentRuntimeSteps({ hasTarget: false, mode: 'research' })
+  assert.deepEqual(steps.map((step) => step.id), ['read-canvas', 'call-planner', 'respond'])
+  assert.equal(steps[1].detail, '检索项目资料并核对来源')
+  assert.equal(steps[2].label, '整理检索结果')
+})
+
+test('重复收到同一 Agent 消息 ID 时保持单条时间线', () => {
+  const session = createBotanicAgentSession({ id: 'session-1', now: 1 })
+  const message = { id: 'message-1', role: 'user' as const, kind: 'text' as const, content: '生成一张图', createdAt: 2 }
+  const once = appendBotanicAgentMessage(session, message)
+  const twice = appendBotanicAgentMessage(once, message)
+  assert.equal(twice, once)
+  assert.equal(twice.messages.length, 1)
+})
+
+test('Agent 提示词差异突出新增、删除与保留内容', () => {
+  assert.deepEqual(buildBotanicAgentPromptDiff(
+    '人物保持不变，替换为海边场景。',
+    '人物保持不变，替换为日落海边场景，柔和暖光。',
+  ), [
+    { kind: 'same', text: '人物保持不变，替换为' },
+    { kind: 'added', text: '日落' },
+    { kind: 'same', text: '海边场景' },
+    { kind: 'added', text: '，柔和暖光' },
+    { kind: 'same', text: '。' },
+  ])
+})
+
+test('相同提示词的差异结果保持为单一同文段', () => {
+  assert.deepEqual(buildBotanicAgentPromptDiff('保持商品不变。', '保持商品不变。'), [
+    { kind: 'same', text: '保持商品不变。' },
+  ])
+  assert.deepEqual(buildBotanicAgentPromptDiff('', ''), [])
 })
 
 test('Botanic Agent 能从自然语言识别高频生图意图', () => {
@@ -209,6 +246,34 @@ test('Agent 会话保存执行模式、画布上下文与可恢复的消息时�
   const rated = updateBotanicAgentMessage(submitted, 'message-1', { feedback: 'positive' }, 140)
   assert.equal(rated.messages[0].feedback, 'positive')
   assert.equal(rated.updatedAt, 140)
+})
+
+test('Agent 追问卡可持久化答案状态，润色后的计划也可回填到同一消息', () => {
+  const question = {
+    id: 'clarification-1',
+    question: '请确认输出设置。',
+    originalInstruction: '换成海边场景。',
+    fields: [{
+      id: 'aspect_ratio' as const, label: '画面比例', required: true, defaultValue: '3:4',
+      options: [{ value: '3:4', label: '3:4' }, { value: '16:9', label: '16:9' }],
+    }],
+  }
+  const session = appendBotanicAgentMessage(createBotanicAgentSession({ id: 'session-question', now: 100 }), {
+    id: 'question-1', role: 'assistant', kind: 'question', content: question.question,
+    question, status: 'pending', createdAt: 110,
+  })
+  const answered = updateBotanicAgentMessage(session, 'question-1', { status: 'answered' }, 120)
+  assert.equal(answered.messages[0].question?.fields[0].options[1].value, '16:9')
+  assert.equal(answered.messages[0].status, 'answered')
+
+  const plan = buildBotanicAgentPlan({
+    instruction: '换成海边场景。', intent: 'replace_scene', selectedResultNodeId: 'result-v03', rootRecipe,
+  })
+  const withPlan = appendBotanicAgentMessage(answered, {
+    id: 'plan-1', role: 'assistant', kind: 'plan', content: plan.summary, plan, status: 'pending', createdAt: 130,
+  })
+  const polished = updateBotanicAgentMessage(withPlan, 'plan-1', { plan: { ...plan, prompt: '锁定人物与服装，替换为海边场景。' } }, 140)
+  assert.equal(polished.messages.at(-1)?.plan?.prompt, '锁定人物与服装，替换为海边场景。')
 })
 
 test('Agent 行动卡状态可在对话计划内恢复，并记录画布回写节点', () => {

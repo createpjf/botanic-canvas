@@ -1,6 +1,7 @@
-import { buildBotanicAgentPlanRequest, completeBotanicAgentPlan, type BotanicAgentPlanDraft, type BotanicAgentPlanRequestInput } from '../domain/agentPlanContract'
+import { buildBotanicAgentPlanRequest, completeBotanicAgentPlan, type BotanicAgentPlanRequestInput, type BotanicAgentPlanResponse } from '../domain/agentPlanContract'
+import { buildBotanicAgentChatRequest, type BotanicAgentChatRequestInput, type BotanicAgentChatResponse } from '../domain/agentChatContract'
 import { productRequest } from './productSession'
-import type { AgentToolCallTrace, BotanicAgentActionProposal, BotanicAgentActionResult, BotanicAgentPlan, BotanicAgentRunSnapshot, BotanicAgentSkill } from '../domain/agent'
+import type { AgentToolCallTrace, BotanicAgentActionProposal, BotanicAgentActionResult, BotanicAgentClarificationResponse, BotanicAgentPlan, BotanicAgentRunSnapshot, BotanicAgentSkill } from '../domain/agent'
 
 export type AgentRunCreationBranch = { id: string; label: string; assetId?: string }
 
@@ -39,13 +40,30 @@ function idempotencyKey(prefix: string) {
 }
 
 export async function requestBotanicAgentPlan(input: BotanicAgentPlanRequestInput, signal?: AbortSignal) {
-  const response = await productRequest<{ plan: BotanicAgentPlanDraft }>('/api/agent-plans', {
+  const response = await productRequest<BotanicAgentPlanResponse>('/api/agent-plans', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(buildBotanicAgentPlanRequest(input)),
     signal,
+    timeoutMs: 60_000,
+    timeoutMessage: 'Agent 规划响应较慢，请稍后重试；当前画布内容未被修改。',
   })
+  if ('clarification' in response) {
+    return { kind: 'clarification', clarification: response.clarification } satisfies BotanicAgentClarificationResponse
+  }
   return completeBotanicAgentPlan(response.plan, input)
+}
+
+export async function requestBotanicAgentChat(input: BotanicAgentChatRequestInput, signal?: AbortSignal) {
+  const response = await productRequest<{ response: BotanicAgentChatResponse }>('/api/agent-chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(buildBotanicAgentChatRequest(input)),
+    signal,
+    timeoutMs: 60_000,
+    timeoutMessage: 'Agent 正在整理上下文，响应较慢，请稍后重试；当前画布内容未被修改。',
+  })
+  return response.response
 }
 
 export async function createPersistentBotanicAgentRun(input: {

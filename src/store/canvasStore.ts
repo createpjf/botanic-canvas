@@ -8,7 +8,7 @@ import { mergeCollaborativeCanvasGraph } from '../domain/collaborativeGraph'
 import { findOpenGeneratePosition, planGenerateNodeCreation } from '../domain/generateNodeCreation'
 import { planGenerationOutputPlacement } from '../domain/generationOutputPlacement'
 import { generationTaskResultLabel } from '../domain/canvasPresentation'
-import { resolveRemoteCanvasRefresh } from '../domain/remoteDocumentSync'
+import { isRemoteDocumentConflict, resolveRemoteCanvasRefresh } from '../domain/remoteDocumentSync'
 import { assignVideoInputRoles } from '../domain/videoGeneration'
 import { summarizeWorkflowTemplate } from '../domain/workflowTemplates'
 import { replaceMediaSources as replaceDocumentMediaSources } from '../domain/agentMedia'
@@ -185,7 +185,7 @@ type CanvasStore = {
   ensureAgentSession: (contextNodeIds?: string[]) => string
   startNewAgentSession: (contextNodeIds?: string[]) => string
   appendAgentMessage: (sessionId: string, message: BotanicAgentMessage) => void
-  updateAgentMessage: (sessionId: string, messageId: string, patch: Partial<Pick<BotanicAgentMessage, 'content' | 'runId' | 'status' | 'feedback'>>) => void
+  updateAgentMessage: (sessionId: string, messageId: string, patch: Partial<Pick<BotanicAgentMessage, 'content' | 'runId' | 'status' | 'feedback' | 'plan' | 'question'>>) => void
   updateAgentAction: (sessionId: string, messageId: string, actionId: string, patch: Partial<Pick<BotanicAgentActionProposal, 'status' | 'error' | 'result'>>) => void
   setAgentSessionContext: (sessionId: string, contextNodeIds: string[]) => void
   setAgentSessionExecutionMode: (sessionId: string, mode: BotanicAgentExecutionMode) => void
@@ -1599,24 +1599,18 @@ function commit(
     })
     .catch(async (error) => {
       if (runId !== persistenceRunId) {
-        if (options.rejectOnFailure) throw new Error('画布已发生新的编辑，请重新提交 Agent。')
+        // 这是正常的写入合并：较新的本地快照已经接管当前项目，旧写入
+        // 即使失败也不能冒泡成“请重新提交 Agent”的未捕获 Promise 错误。
         return
       }
-      if (error instanceof ProductApiError && error.code === 'PROJECT_CONFLICT') {
-        set({ persistenceStatus: 'saving', assistantMessage: '正在同步最新画布…' })
-        const refresh = refreshCanvasDocumentFromRemote(nextDocument.id)
-          .then((remote) => {
-            if (!remote || runId !== persistenceRunId) return
-            set({ document: remote, persistenceStatus: 'saved', assistantMessage: '画布已同步。' })
-          })
-          .catch(() => {
-            if (runId === persistenceRunId) set({ persistenceStatus: 'error', assistantMessage: '最新画布暂时不可用，请稍后重试。' })
-          })
-        if (options.rejectOnFailure) {
-          await refresh
-          throw new Error('画布版本已更新，请重新提交 Agent。')
-        }
-        void refresh
+      if (isRemoteDocumentConflict(error)) {
+        // db 层已经以增量重试并保护 Worker 输出；仍冲突时保留本地草稿，
+        // 不再整份刷新远端（那会丢掉当前编辑），让用户明确看到可恢复状态。
+        set({
+          persistenceStatus: 'conflict',
+          assistantMessage: '云端已有新的画布编辑，本地草稿已保留；请稍后重试同步。',
+        })
+        if (options.rejectOnFailure) throw new Error('云端已有新的画布编辑，本地草稿已保留，请稍后重试同步。')
         return
       }
       if (error instanceof ProductApiError && error.status === 0) {
@@ -2389,7 +2383,7 @@ function syncGenerationJob(
           ? `真实生成已完成 ${candidates.length}/${job.batchCount} 个；缺少的 ${job.missingOutputCount} 个可单独补生成。`
           : `真实生成已完成：${candidates.length} 个结果已作为独立节点写入画布；不需要的可直接删除。`
         : '真实生成没有返回候选结果，请重试。',
-    }, { immediate: true, rejectOnFailure: true })
+    }, { immediate: true })
     return
   }
 
@@ -3915,9 +3909,11 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     const sourceResult = snapshot.plan ? document.nodes.find((node) => node.id === snapshot.plan?.selectedResultNodeId && node.type === 'result') : undefined
     const sourceData = sourceResult?.data as ResultNodeData | undefined
     const rootRecipe = sourceData?.rootRecipe ?? sourceData?.generationRecipe
+    const agentRuns = upsertBotanicAgentRunSnapshot(document.agentRuns, snapshot, rootRecipe)
+    if (agentRuns === document.agentRuns) return
     commit(set, {
       ...document,
-      agentRuns: upsertBotanicAgentRunSnapshot(document.agentRuns, snapshot, rootRecipe),
+      agentRuns,
     }, {}, { immediate: true })
   },
 
@@ -3979,7 +3975,10 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
 
   appendAgentMessage: (sessionId, message) => {
     const document = get().document
-    if (!document.agentSessions.some((session) => session.id === sessionId)) return
+    const session = document.agentSessions.find((item) => item.id === sessionId)
+    // Realtime 恢复、重试或双击提交可能重复送达同一个消息；不提交相同快照，
+    // 否则会把无意义的更新时间写入画布并放大 409/412 冲突。
+    if (!session || session.messages.some((item) => item.id === message.id)) return
     commit(set, {
       ...document,
       agentSessions: document.agentSessions.map((session) => session.id === sessionId

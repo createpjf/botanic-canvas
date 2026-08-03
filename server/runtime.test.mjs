@@ -29,20 +29,22 @@ test('实时票据只使用独立签名密钥，不复用数据库或工作区�
   }
 })
 
-test('安全策略支持独立配置 MFA、API 与媒体限流、Agent 规划及每日生成输出配额', () => {
-  const keys = ['SECURITY_REQUIRE_OWNER_MFA', 'SECURITY_API_REQUESTS_PER_MINUTE', 'SECURITY_MEDIA_UPLOADS_PER_MINUTE', 'SECURITY_AGENT_PLANS_PER_5_MINUTES', 'SECURITY_GENERATION_OUTPUTS_PER_DAY']
+test('安全策略支持独立配置 MFA、API 与 Agent 对话/规划限流及每日生成输出配额', () => {
+  const keys = ['SECURITY_REQUIRE_OWNER_MFA', 'SECURITY_API_REQUESTS_PER_MINUTE', 'SECURITY_MEDIA_UPLOADS_PER_MINUTE', 'SECURITY_AGENT_PLANS_PER_5_MINUTES', 'SECURITY_AGENT_CHATS_PER_5_MINUTES', 'SECURITY_GENERATION_OUTPUTS_PER_DAY']
   const original = new Map(keys.map((key) => [key, process.env[key]]))
   try {
     process.env.SECURITY_REQUIRE_OWNER_MFA = 'true'
     process.env.SECURITY_API_REQUESTS_PER_MINUTE = '900'
     process.env.SECURITY_MEDIA_UPLOADS_PER_MINUTE = '24'
     process.env.SECURITY_AGENT_PLANS_PER_5_MINUTES = '18'
+    process.env.SECURITY_AGENT_CHATS_PER_5_MINUTES = '36'
     process.env.SECURITY_GENERATION_OUTPUTS_PER_DAY = '120'
 
     assert.deepEqual(runtimeConfig('/tmp/botanic-runtime-test').security, {
       apiRequestsPerMinute: 900,
       mediaUploadsPerMinute: 24,
       agentPlansPerFiveMinutes: 18,
+      agentChatsPerFiveMinutes: 36,
       generationOutputsPerDay: 120,
       memberMutationsPerHour: 20,
       promptRefinementsPerFiveMinutes: 30,

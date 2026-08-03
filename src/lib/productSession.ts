@@ -72,6 +72,11 @@ const authSessionTimeoutMs = 6_000
 const mediaSessionAttemptTimeoutMs = 10_000
 const mediaSessionRetryDelayMs = 700
 const mediaSessionMaxAttempts = 3
+type ProductRequestInit = RequestInit & {
+  /** 长链路（Agent 规划 / 对话）可覆盖普通工作区请求的 15 秒超时。 */
+  timeoutMs?: number
+  timeoutMessage?: string
+}
 
 function withAuthTimeout<T>(request: Promise<T>, message: string): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -209,31 +214,35 @@ export async function productAuthorizationHeader() {
   return authorizationHeader()
 }
 
-export async function productRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
+export async function productRequest<T>(path: string, init: ProductRequestInit = {}): Promise<T> {
+  const { timeoutMs: requestedTimeoutMs, timeoutMessage, ...requestInit } = init
+  const requestTimeoutMs = Number.isFinite(requestedTimeoutMs)
+    ? Math.min(120_000, Math.max(1_000, requestedTimeoutMs!))
+    : productRequestTimeoutMs
   let response: Response
   const controller = new AbortController()
   const abortFromCaller = () => controller.abort()
-  if (init.signal?.aborted) controller.abort()
-  else init.signal?.addEventListener('abort', abortFromCaller, { once: true })
-  const timeoutId = window.setTimeout(() => controller.abort(), productRequestTimeoutMs)
+  if (requestInit.signal?.aborted) controller.abort()
+  else requestInit.signal?.addEventListener('abort', abortFromCaller, { once: true })
+  const timeoutId = window.setTimeout(() => controller.abort(), requestTimeoutMs)
   try {
-    const headers = new Headers(init.headers)
+    const headers = new Headers(requestInit.headers)
     headers.set('Accept', 'application/json')
     for (const [key, value] of Object.entries(await authorizationHeader())) headers.set(key, value)
     response = await fetch(path, {
-      ...init,
+      ...requestInit,
       credentials: 'include',
       headers,
       signal: controller.signal,
     })
   } catch {
-    const message = !init.signal?.aborted && controller.signal.aborted
-      ? '工作区服务响应超时，请稍后重试。'
+    const message = !requestInit.signal?.aborted && controller.signal.aborted
+      ? (timeoutMessage ?? '工作区服务响应超时，请稍后重试。')
       : '无法连接工作区服务，请检查网络或稍后重试。'
     throw new ProductApiError(message, 0, controller.signal.aborted ? 'REQUEST_TIMEOUT' : undefined)
   } finally {
     window.clearTimeout(timeoutId)
-    init.signal?.removeEventListener('abort', abortFromCaller)
+    requestInit.signal?.removeEventListener('abort', abortFromCaller)
   }
   const payload = await response.json().catch(() => null) as T | ApiErrorPayload | null
   if (!response.ok) {
