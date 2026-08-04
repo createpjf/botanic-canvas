@@ -32,15 +32,18 @@ function AccountGlyph({ kind }: { kind: 'profile' | 'security' | 'members' | 'au
   return <svg viewBox="0 0 24 24" aria-hidden="true">{paths[kind]}</svg>
 }
 
-function useDialogFocusTrap(active: boolean) {
+export function useDialogFocusTrap(active: boolean) {
   const dialogRef = useRef<HTMLElement>(null)
   useEffect(() => {
     if (!active) return
     const dialog = dialogRef.current
     if (!dialog) return
-    const selector = 'button:not(:disabled), input:not(:disabled), select:not(:disabled), [href], [tabindex]:not([tabindex="-1"])'
+    const selector = 'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [href], [contenteditable="true"], [tabindex]:not([tabindex="-1"])'
     const focusables = () => Array.from(dialog.querySelectorAll<HTMLElement>(selector)).filter((element) => !element.hidden)
-    const frame = window.requestAnimationFrame(() => focusables()[0]?.focus({ preventScroll: true }))
+    const frame = window.requestAnimationFrame(() => {
+      const preferred = dialog.querySelector<HTMLElement>('[autofocus]') ?? focusables()[0]
+      preferred?.focus({ preventScroll: true })
+    })
     const trap = (event: KeyboardEvent) => {
       if (event.key !== 'Tab') return
       const items = focusables()
@@ -84,6 +87,10 @@ export function AccountMenu({
     const close = (event: PointerEvent | KeyboardEvent) => {
       if (event instanceof KeyboardEvent && event.key !== 'Escape') return
       if (event instanceof PointerEvent && event.target instanceof Element && event.target.closest('.account-menu')) return
+      if (event instanceof KeyboardEvent) {
+        event.preventDefault()
+        event.stopPropagation()
+      }
       onClose()
     }
     document.addEventListener('pointerdown', close)
@@ -183,7 +190,12 @@ export function WorkspaceAuditDialog({ onListEvents, onListMembers, onClose, pha
 
   useEffect(() => { void load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
-    const close = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
+    const close = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      onClose()
+    }
     document.addEventListener('keydown', close)
     return () => document.removeEventListener('keydown', close)
   }, [onClose])
@@ -257,7 +269,10 @@ export function AccountDetailsDialog({
 
   useEffect(() => {
     const close = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !busy && phase !== 'exit') onClose()
+      if (event.key !== 'Escape' || busy || phase === 'exit') return
+      event.preventDefault()
+      event.stopPropagation()
+      onClose()
     }
     document.addEventListener('keydown', close)
     return () => document.removeEventListener('keydown', close)
@@ -338,15 +353,15 @@ export function AccountDetailsDialog({
 
   return createPortal(
     <div className={`account-dialog-backdrop account-overlay is-${phase}`} role="presentation" inert={phase === 'exit' || undefined} onMouseDown={() => !busy && onClose()}>
-      <section ref={dialogRef} className="account-dialog account-surface" role="dialog" aria-modal="true" aria-labelledby="account-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
+      <section ref={dialogRef} className="account-dialog account-surface" role="dialog" aria-modal="true" aria-labelledby="account-dialog-title" aria-busy={busy} onMouseDown={(event) => event.stopPropagation()}>
         <header>
           <div><span>BOTANIC ACCOUNT</span><h2 id="account-dialog-title">账户设置</h2><p>{user.email}</p></div>
-          <button type="button" onClick={onClose} aria-label="返回账户菜单">←</button>
+          <button type="button" onClick={onClose} disabled={busy} aria-label="返回账户菜单">←</button>
         </header>
         <div className="account-dialog__layout">
           <nav aria-label="账户设置分类">
-            <button type="button" className={mode === 'profile' ? 'is-active' : ''} aria-current={mode === 'profile' ? 'page' : undefined} onClick={() => onModeChange?.('profile')}><AccountGlyph kind="profile" /><span><strong>个人资料</strong><small>身份与角色</small></span></button>
-            <button type="button" className={mode === 'security' ? 'is-active' : ''} aria-current={mode === 'security' ? 'page' : undefined} onClick={() => onModeChange?.('security')}><AccountGlyph kind="security" /><span><strong>登录与安全</strong><small>密码与验证</small></span></button>
+            <button type="button" disabled={busy} className={mode === 'profile' ? 'is-active' : ''} aria-current={mode === 'profile' ? 'page' : undefined} onClick={() => onModeChange?.('profile')}><AccountGlyph kind="profile" /><span><strong>个人资料</strong><small>身份与角色</small></span></button>
+            <button type="button" disabled={busy} className={mode === 'security' ? 'is-active' : ''} aria-current={mode === 'security' ? 'page' : undefined} onClick={() => onModeChange?.('security')}><AccountGlyph kind="security" /><span><strong>登录与安全</strong><small>密码与验证</small></span></button>
           </nav>
           <div className="account-dialog__content" key={mode}>
             {mode === 'profile' ? <section className="account-profile" aria-labelledby="account-profile-heading">
@@ -355,13 +370,13 @@ export function AccountDetailsDialog({
               <p className="account-profile__note">邮箱与角色由工作区统一管理，修改账户设置不会影响已有项目和生成结果。</p>
             </section> : <div className="account-security">
               <section className={`account-security__card account-security__password${passwordEditorOpen ? ' is-expanded' : ''}`}>
-                <div className="account-security__summary"><span><h3>登录密码</h3><p>使用独立密码登录 Botanic。</p></span><button type="button" aria-expanded={passwordEditorOpen} onClick={() => { setPasswordEditorOpen((open) => !open); setMessage('') }}>{passwordEditorOpen ? '收起' : '修改'}</button></div>
+                <div className="account-security__summary"><span><h3>登录密码</h3><p>使用独立密码登录 Botanic。</p></span><button type="button" disabled={busy} aria-expanded={passwordEditorOpen} onClick={() => { setPasswordEditorOpen((open) => !open); setMessage('') }}>{passwordEditorOpen ? '收起' : '修改'}</button></div>
                 {passwordEditorOpen ? <form className="account-security__editor" onSubmit={(event) => void submitPassword(event)}>
                   <input className="visually-hidden" type="email" autoComplete="username" value={user.email} readOnly tabIndex={-1} aria-hidden="true" />
-                  <label><span>新密码</span><input type="password" autoComplete="new-password" minLength={8} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="至少 8 个字符" /></label>
-                  <label><span>确认密码</span><input type="password" autoComplete="new-password" minLength={8} value={confirmation} onChange={(event) => setConfirmation(event.target.value)} placeholder="再次输入新密码" /></label>
+                  <label><span>新密码</span><input type="password" autoComplete="new-password" minLength={8} disabled={busy} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="至少 8 个字符" /></label>
+                  <label><span>确认密码</span><input type="password" autoComplete="new-password" minLength={8} disabled={busy} value={confirmation} onChange={(event) => setConfirmation(event.target.value)} placeholder="再次输入新密码" /></label>
                   {confirmation && password !== confirmation ? <small role="alert">两次输入的密码不一致。</small> : null}
-                  <div><button type="button" onClick={() => { setPasswordEditorOpen(false); setPassword(''); setConfirmation(''); setMessage('') }}>取消</button><button type="submit" className="is-primary" disabled={busy || password.length < 8 || password !== confirmation}>{busy ? '正在保存…' : '保存密码'}</button></div>
+                  <div><button type="button" disabled={busy} onClick={() => { setPasswordEditorOpen(false); setPassword(''); setConfirmation(''); setMessage('') }}>取消</button><button type="submit" className="is-primary" disabled={busy || password.length < 8 || password !== confirmation}>{busy ? '正在保存…' : '保存密码'}</button></div>
                 </form> : null}
                 {message ? <small className={message.includes('已更新') ? 'is-success' : ''} role="status">{message}</small> : null}
               </section>
@@ -371,17 +386,17 @@ export function AccountDetailsDialog({
                   <img src={mfaEnrollment.qrCode} alt="二步验证二维码" />
                   <p>扫描二维码后，输入身份验证器中的 6 位验证码。</p>
                   <code>{mfaEnrollment.secret}</code>
-                  <div><input inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={mfaCode} onChange={(event) => setMfaCode(event.target.value.replace(/\D/g, '').slice(0, 6))} aria-label="二步验证码" placeholder="000000" /><button type="button" className="is-primary" disabled={busy || mfaCode.length !== 6} onClick={() => void verifyMfa(mfaEnrollment.factorId)}>验证并启用</button></div>
+                  <div><input inputMode="numeric" autoComplete="one-time-code" maxLength={6} disabled={busy} value={mfaCode} onChange={(event) => setMfaCode(event.target.value.replace(/\D/g, '').slice(0, 6))} aria-label="二步验证码" placeholder="000000" /><button type="button" className="is-primary" disabled={busy || mfaCode.length !== 6} onClick={() => void verifyMfa(mfaEnrollment.factorId)}>验证并启用</button></div>
                 </div> : mfaStatus?.enabled && activeFactor ? <div className="account-security__factor">
                   <strong>{activeFactor.name || '身份验证器'}</strong>
-                  {mfaStatus.currentLevel !== 'aal2' ? <div><input inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={mfaCode} onChange={(event) => setMfaCode(event.target.value.replace(/\D/g, '').slice(0, 6))} aria-label="二步验证码" placeholder="输入 6 位验证码" /><button type="button" className="is-primary" disabled={busy || mfaCode.length !== 6} onClick={() => void verifyMfa(activeFactor.id)}>验证本次会话</button></div> : null}
-                  {confirmingMfaRemoval ? <div className="account-security__confirm" role="alert"><span>确认移除二步验证？账户保护会降低。</span><div><button type="button" onClick={() => setConfirmingMfaRemoval(false)}>取消</button><button type="button" className="is-danger" disabled={busy} onClick={() => void removeMfa(activeFactor.id)}>确认移除</button></div></div> : <button type="button" className="is-danger is-quiet" disabled={busy} onClick={() => setConfirmingMfaRemoval(true)}>移除二步验证</button>}
+                  {mfaStatus.currentLevel !== 'aal2' ? <div><input inputMode="numeric" autoComplete="one-time-code" maxLength={6} disabled={busy} value={mfaCode} onChange={(event) => setMfaCode(event.target.value.replace(/\D/g, '').slice(0, 6))} aria-label="二步验证码" placeholder="输入 6 位验证码" /><button type="button" className="is-primary" disabled={busy || mfaCode.length !== 6} onClick={() => void verifyMfa(activeFactor.id)}>验证本次会话</button></div> : null}
+                  {confirmingMfaRemoval ? <div className="account-security__confirm" role="alert"><span>确认移除二步验证？账户保护会降低。</span><div><button type="button" disabled={busy} onClick={() => setConfirmingMfaRemoval(false)}>取消</button><button type="button" className="is-danger" disabled={busy} onClick={() => void removeMfa(activeFactor.id)}>确认移除</button></div></div> : <button type="button" className="is-danger is-quiet" disabled={busy} onClick={() => setConfirmingMfaRemoval(true)}>移除二步验证</button>}
                 </div> : mfaStatus ? <button type="button" className="account-security__enable is-primary" disabled={busy} onClick={() => void beginMfaEnrollment()}>启用二步验证</button> : <p className="account-security__loading" role="status">正在读取安全状态…</p>}
                 {mfaMessage ? <small className={mfaMessage.includes('已') ? 'is-success' : ''} role="status">{mfaMessage}</small> : null}
               </section>
               <section className="account-security__card account-security__sessions">
                 <div className="account-security__summary"><span><h3>登录设备</h3><p>保留当前设备，退出其他浏览器中的登录。</p></span>{!confirmingOtherSessions ? <button type="button" disabled={busy} onClick={() => setConfirmingOtherSessions(true)}>管理</button> : null}</div>
-                {confirmingOtherSessions ? <div className="account-security__confirm" role="alert"><span>其他设备需要重新登录，当前设备不会退出。</span><div><button type="button" onClick={() => setConfirmingOtherSessions(false)}>取消</button><button type="button" className="is-danger" disabled={busy} onClick={() => void signOutOthers()}>{busy ? '正在退出…' : '退出其他设备'}</button></div></div> : null}
+                {confirmingOtherSessions ? <div className="account-security__confirm" role="alert"><span>其他设备需要重新登录，当前设备不会退出。</span><div><button type="button" disabled={busy} onClick={() => setConfirmingOtherSessions(false)}>取消</button><button type="button" className="is-danger" disabled={busy} onClick={() => void signOutOthers()}>{busy ? '正在退出…' : '退出其他设备'}</button></div></div> : null}
               </section>
             </div>}
           </div>
@@ -420,7 +435,12 @@ export function WorkspaceMembersDialog({ currentUser, onListMembers, onInviteMem
   }, [onListMembers])
 
   useEffect(() => {
-    const close = (event: KeyboardEvent) => { if (event.key === 'Escape' && !busyId) onClose() }
+    const close = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || busyId) return
+      event.preventDefault()
+      event.stopPropagation()
+      onClose()
+    }
     document.addEventListener('keydown', close)
     return () => document.removeEventListener('keydown', close)
   }, [busyId, onClose])
@@ -458,21 +478,21 @@ export function WorkspaceMembersDialog({ currentUser, onListMembers, onInviteMem
 
   return createPortal(<div className={`workspace-members-backdrop account-overlay is-${phase}`} role="presentation" inert={phase === 'exit' || undefined} onMouseDown={() => !busyId && onClose()}>
     <section ref={dialogRef} className="workspace-members-dialog account-surface" role="dialog" aria-modal="true" aria-labelledby="workspace-members-title" onMouseDown={(event) => event.stopPropagation()}>
-      <header><div><span className="workspace-eyebrow">WORKSPACE ACCESS</span><h2 id="workspace-members-title">成员与权限</h2><p>邀请成员，并管理他们的工作区访问。</p></div><button type="button" onClick={onClose} aria-label="返回账户菜单">←</button></header>
+      <header><div><span className="workspace-eyebrow">WORKSPACE ACCESS</span><h2 id="workspace-members-title">成员与权限</h2><p>邀请成员，并管理他们的工作区访问。</p></div><button type="button" onClick={onClose} disabled={Boolean(busyId)} aria-label="返回账户菜单">←</button></header>
       <form className="workspace-members-dialog__invite" onSubmit={(event) => void invite(event)}>
-        <label><span>邮箱</span><input type="email" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@company.com" /></label>
-        <label><span>姓名</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="选填" /></label>
-        <label><span>角色</span><select value={role} onChange={(event) => setRole(event.target.value as 'owner' | 'member')}><option value="member">成员</option><option value="owner">所有者</option></select></label>
-        <button type="submit" disabled={busyId === 'invite' || !email.trim()}>{busyId === 'invite' ? '发送中…' : '发送邀请'}</button>
+        <label><span>邮箱</span><input type="email" required disabled={Boolean(busyId)} value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@company.com" /></label>
+        <label><span>姓名</span><input disabled={Boolean(busyId)} value={name} onChange={(event) => setName(event.target.value)} placeholder="选填" /></label>
+        <label><span>角色</span><select disabled={Boolean(busyId)} value={role} onChange={(event) => setRole(event.target.value as 'owner' | 'member')}><option value="member">成员</option><option value="owner">所有者</option></select></label>
+        <button type="submit" disabled={Boolean(busyId) || !email.trim()}>{busyId === 'invite' ? '发送中…' : '发送邀请'}</button>
       </form>
       {error ? <p className="workspace-members-dialog__error" role="alert">{error}</p> : null}
       {message ? <p className="workspace-members-dialog__notice" role="status">{message}</p> : null}
-      <div className="workspace-members-dialog__list" aria-busy={loading}>
+      <div className="workspace-members-dialog__list" aria-busy={loading || Boolean(busyId)}>
         {loading ? <p role="status">正在加载成员…</p> : members.map((member) => <article key={member.id}>
           <div className="workspace-members-dialog__identity"><b>{member.name?.slice(0, 1).toUpperCase() || member.email.slice(0, 1).toUpperCase()}</b><span><strong>{member.name || member.email}</strong><small>{member.email}{member.id === currentUser.id ? ' · 你' : ''}</small></span></div>
           <span className={`workspace-members-dialog__status is-${member.status}`}>{statusLabel(member.status)}</span>
-          <select aria-label={`设置 ${member.name || member.email} 的角色`} value={member.role} disabled={busyId === member.id || member.status === 'disabled'} onChange={(event) => void updateMember(member, { role: event.target.value as 'owner' | 'member' })}><option value="member">成员</option><option value="owner">所有者</option></select>
-          <button type="button" disabled={busyId === member.id || member.id === currentUser.id} onClick={() => member.status === 'invited' ? void resendInvite(member) : void updateMember(member, { status: member.status === 'disabled' ? 'active' : 'disabled' })}>{busyId === member.id ? '处理中…' : member.status === 'invited' ? '重发邀请' : member.status === 'disabled' ? '恢复' : '停用'}</button>
+          <select aria-label={`设置 ${member.name || member.email} 的角色`} value={member.role} disabled={Boolean(busyId) || member.status === 'disabled'} onChange={(event) => void updateMember(member, { role: event.target.value as 'owner' | 'member' })}><option value="member">成员</option><option value="owner">所有者</option></select>
+          <button type="button" disabled={Boolean(busyId) || member.id === currentUser.id} onClick={() => member.status === 'invited' ? void resendInvite(member) : void updateMember(member, { status: member.status === 'disabled' ? 'active' : 'disabled' })}>{busyId === member.id ? '处理中…' : member.status === 'invited' ? '重发邀请' : member.status === 'disabled' ? '恢复' : '停用'}</button>
         </article>)}
       </div>
       <footer>停用不会删除该成员的项目、任务或媒体。</footer>

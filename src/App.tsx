@@ -36,9 +36,10 @@ import { shouldRefreshFromRealtimeEvent } from './domain/realtimeSync'
 import { videoAspectRatioPolicy } from './domain/videoGeneration'
 import { beginCanvasFileDrag, endCanvasFileDrag, hasFileDragPayload } from './domain/canvasFileDrag'
 import { nextExclusiveSurface, type ExclusiveSurfaceAction } from './domain/exclusiveSurface'
+import { topOverlayLayer } from './domain/overlayPriority'
 import { summarizeWorkflowTemplate, type WorkflowTemplateSummary } from './domain/workflowTemplates'
 import { useMotionPresence, useRestoreFocus, useRetainedValue, type MotionPhase } from './components/motionPresence'
-import { AccountDetailsDialog, AccountMenu, WorkspaceAuditDialog, WorkspaceMembersDialog, type AccountMenuAnchor } from './components/AccountCenter'
+import { AccountDetailsDialog, AccountMenu, WorkspaceAuditDialog, WorkspaceMembersDialog, useDialogFocusTrap, type AccountMenuAnchor } from './components/AccountCenter'
 import type {
   AssetRecord,
   AssetGroup,
@@ -500,6 +501,8 @@ function ImageNodeTitle({ nodeId, name }: { nodeId: string; name: string }) {
             event.currentTarget.blur()
           }
           if (event.key === 'Escape') {
+            event.preventDefault()
+            event.stopPropagation()
             discardPendingRename.current = true
             setDraft(name)
             event.currentTarget.blur()
@@ -2498,6 +2501,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
   const visibleUndoAction = useRetainedValue(undoAction)
   const canvasDropPresence = useMotionPresence(isCanvasFileDragging, 100)
   useRestoreFocus(Boolean(imagePreview || assetToDelete || nodePalette))
+  const imagePreviewDialogRef = useDialogFocusTrap(Boolean(imagePreview))
 
   useEffect(() => {
     if (!connectionFeedback) return
@@ -2508,11 +2512,26 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
   useEffect(() => {
     if (!imagePreview) return
     const closePreview = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setImagePreview(null)
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      setImagePreview(null)
     }
     window.addEventListener('keydown', closePreview)
     return () => window.removeEventListener('keydown', closePreview)
   }, [imagePreview])
+
+  useEffect(() => {
+    if (!assetToDelete) return
+    const closeConfirmation = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      setAssetToDelete(null)
+    }
+    window.addEventListener('keydown', closeConfirmation)
+    return () => window.removeEventListener('keydown', closeConfirmation)
+  }, [assetToDelete])
   const [initialWorkspaceLocation] = useState<WorkspaceLocation>(readWorkspaceLocation)
   const [workspaceLocation, setWorkspaceLocation] = useState<WorkspaceLocation>(initialWorkspaceLocation)
   const [workspaceTabIds, setWorkspaceTabIds] = useState<string[]>(() => {
@@ -2532,6 +2551,11 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
   const [workspaceProjects, setWorkspaceProjects] = useState<WorkspaceProject[]>([])
   const [workspaceProjectsLoading, setWorkspaceProjectsLoading] = useState(false)
   const [workspaceProjectsError, setWorkspaceProjectsError] = useState<string | null>(null)
+  const workspaceProjectsRequestRef = useRef(0)
+  const invalidateWorkspaceProjectRequests = useCallback(() => {
+    workspaceProjectsRequestRef.current += 1
+    setWorkspaceProjectsLoading(false)
+  }, [])
   const assetLibraryAssets = useMemo(() => {
     const seen = new Set<string>()
     return [...globalAssets, ...document.assets].filter((asset) => {
@@ -2589,6 +2613,13 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
   useEffect(() => {
     setExpandedResultGroupIds(new Set())
     setActiveResultByGroupId(new Map())
+    resultComposerSubmissionRef.current = false
+    skipAutoComposerNodeIdRef.current = null
+    setImagePreview(null)
+    setAssetToDelete(null)
+    setResultComposerDraft(null)
+    setBatchComposerTargetId(null)
+    setNodePalette(null)
   }, [document.id])
   const completeViewportRestore = useCallback(() => {
     // 忽略 React Flow 挂载时补发的默认视角事件，避免写坏已保存的画布位置。
@@ -2602,7 +2633,9 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
     })
   }, [document.id])
 
+  const workspaceNavigationRunRef = useRef(0)
   const setWorkspaceView = useCallback((view: WorkspaceView, projectId?: string, historyMode: WorkspaceHistoryMode = 'push') => {
+    workspaceNavigationRunRef.current += 1
     const location: WorkspaceLocation = view === 'canvas'
       ? { view, projectId: projectId ?? useCanvasStore.getState().document.id }
       : { view }
@@ -2626,6 +2659,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
     // 关闭最后一个标签必须走浏览器真实导航。history.replaceState 不会触发 hashchange，
     // 会让地址栏已经是 /projects 但 React 仍停在旧画布。
     const location: WorkspaceLocation = { view: 'projects' }
+    workspaceNavigationRunRef.current += 1
     setWorkspaceRestoring(false)
     writeWorkspaceLocationFallback(location)
     const targetHash = workspaceHash(location)
@@ -2672,8 +2706,11 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
     const result = await syncPendingCanvasDrafts()
     const current = useCanvasStore.getState()
     if (result.conflictIds.includes(current.document.id)) {
-      await openDocument(current.document.id)
-      useCanvasStore.setState({ persistenceStatus: 'saved', assistantMessage: '画布已同步。' })
+      const projectId = current.document.id
+      const opened = await openDocument(projectId)
+      if (opened && useCanvasStore.getState().document.id === projectId) {
+        useCanvasStore.setState({ persistenceStatus: 'saved', assistantMessage: '画布已同步。' })
+      }
       return result
     }
     if (result.pending === 0 && (current.persistenceStatus === 'offline' || current.persistenceStatus === 'error')) {
@@ -2683,10 +2720,11 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
   }, [])
 
   const retryAgentCanvasPersistence = useCallback(async () => {
+    const projectId = useCanvasStore.getState().document.id
     try {
       const result = await syncPendingCanvasDrafts()
       const current = useCanvasStore.getState()
-      if (result.conflictIds.includes(current.document.id)) return false
+      if (current.document.id !== projectId || result.conflictIds.includes(projectId)) return false
       if (result.pending === 0 && (current.persistenceStatus === 'offline' || current.persistenceStatus === 'error')) {
         useCanvasStore.setState({ persistenceStatus: 'saved', assistantMessage: '本地草稿已同步。' })
       }
@@ -2700,9 +2738,11 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
     const projectId = useCanvasStore.getState().document.id
     if (projectId === 'workspace-placeholder') return false
     const remote = await refreshCanvasDocumentFromRemote(projectId)
-    if (!remote) return false
+    if (!remote || useCanvasStore.getState().document.id !== projectId) return false
     const opened = await openDocument(projectId)
-    if (opened) useCanvasStore.setState({ persistenceStatus: 'saved', assistantMessage: '已切换到云端版本。' })
+    if (opened && useCanvasStore.getState().document.id === projectId) {
+      useCanvasStore.setState({ persistenceStatus: 'saved', assistantMessage: '已切换到云端版本。' })
+    }
     return opened
   }, [openDocument])
 
@@ -2898,6 +2938,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
     const queueLatestHashLocation = () => {
       const location = workspaceLocationFromHash(window.location.hash)
       if (!location) return
+      workspaceNavigationRunRef.current += 1
       pendingLocation = location
       setWorkspaceLocation(location)
       setWorkspaceRestoring(location.view === 'canvas')
@@ -2959,10 +3000,12 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
   }, [hydrated, openDocument, setWorkspaceView, workspaceRestored])
 
   const refreshWorkspaceProjects = useCallback(async () => {
+    const requestId = ++workspaceProjectsRequestRef.current
     setWorkspaceProjectsLoading(true)
     setWorkspaceProjectsError(null)
     try {
       const summaries = await readCanvasProjectSummaries()
+      if (requestId !== workspaceProjectsRequestRef.current) return
       const projects = summaries
         // 空白草稿没有独立项目价值：不在项目库展示，也不计入项目数。
         .filter((item) => (item.nodeCount ?? 0) > 0 || (item.resultCount ?? 0) > 0)
@@ -2978,15 +3021,16 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
       }))
       setWorkspaceProjects(projects)
     } catch {
-      setWorkspaceProjectsError('请检查网络或稍后重试。')
+      if (requestId === workspaceProjectsRequestRef.current) setWorkspaceProjectsError('请检查网络或稍后重试。')
     } finally {
-      setWorkspaceProjectsLoading(false)
+      if (requestId === workspaceProjectsRequestRef.current) setWorkspaceProjectsLoading(false)
     }
   }, [])
 
   const openWorkspaceProject = useCallback(async (projectId: string) => {
+    const navigationRunId = workspaceNavigationRunRef.current
     const opened = await openDocument(projectId)
-    if (opened) {
+    if (opened && navigationRunId === workspaceNavigationRunRef.current) {
       setWorkspaceView('canvas', projectId)
     }
     return opened
@@ -3003,11 +3047,12 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
   }, [openNewDocument, setWorkspaceView, workspaceProjects])
 
   const createWorkspaceProjectFromTemplate = useCallback(async (templateId: string, shared: boolean) => {
+    const navigationRunId = workspaceNavigationRunRef.current
     const project = createDocumentFromTemplate(templateId, shared)
     if (!project) return false
     try {
       const saved = await createCanvasProject(project)
-      openNewDocument(saved)
+      invalidateWorkspaceProjectRequests()
       setWorkspaceProjects((current) => [{
         id: saved.id,
         name: saved.name,
@@ -3015,16 +3060,20 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
         cover: saved.history[0]?.image || undefined,
         summary: `模板项目 · ${saved.nodes.length} 个节点`,
       }, ...current.filter((item) => item.id !== saved.id)])
-      setWorkspaceView('canvas', saved.id)
+      if (navigationRunId === workspaceNavigationRunRef.current) {
+        openNewDocument(saved)
+        setWorkspaceView('canvas', saved.id)
+      }
       return true
     } catch {
       return false
     }
-  }, [createDocumentFromTemplate, openNewDocument, setWorkspaceView])
+  }, [createDocumentFromTemplate, invalidateWorkspaceProjectRequests, openNewDocument, setWorkspaceView])
 
   const renameWorkspaceProject = useCallback(async (projectId: string, name: string) => {
     const nextName = name.trim()
     if (!nextName) return false
+    invalidateWorkspaceProjectRequests()
     if (projectId === document.id) {
       try {
         await renameDocument(nextName)
@@ -3046,7 +3095,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
       ? { ...project, name: nextName, updatedAt: Date.now() }
       : project))
     return true
-  }, [document.id, renameDocument])
+  }, [document.id, invalidateWorkspaceProjectRequests, renameDocument])
 
   const beginProjectTabRename = useCallback((project: WorkspaceProject) => {
     setProjectTabNameDraft(project.name)
@@ -3065,7 +3114,9 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
   }, [projectTabNameDraft, renameWorkspaceProject])
 
   const deleteWorkspaceProject = useCallback(async (projectId: string) => {
-    const previousProjects = workspaceProjects
+    const removedIndex = workspaceProjects.findIndex((project) => project.id === projectId)
+    const removedProject = removedIndex >= 0 ? workspaceProjects[removedIndex] : undefined
+    invalidateWorkspaceProjectRequests()
     // 删除操作可能涉及远端素材与任务清理。先从当前列表移除，避免界面被网络往返卡住。
     setWorkspaceProjects((current) => current.filter((project) => project.id !== projectId))
     setWorkspaceTabIds((current) => current.filter((id) => id !== projectId))
@@ -3075,12 +3126,19 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
     try {
       await deleteCanvasDocument(projectId)
     } catch (error) {
-      setWorkspaceProjects(previousProjects)
+      if (removedProject) {
+        setWorkspaceProjects((current) => {
+          if (current.some((project) => project.id === projectId)) return current
+          const next = [...current]
+          next.splice(Math.min(removedIndex, next.length), 0, removedProject)
+          return next
+        })
+      }
       throw error
     }
     // 后台校准列表，不阻塞弹窗关闭或用户继续操作。
     void refreshWorkspaceProjects()
-  }, [refreshWorkspaceProjects, setWorkspaceView, workspaceLocation, workspaceProjects])
+  }, [invalidateWorkspaceProjectRequests, refreshWorkspaceProjects, setWorkspaceView, workspaceLocation, workspaceProjects])
 
   const closeWorkspaceTab = useCallback((projectId: string) => {
     if (closingWorkspaceTabId) return
@@ -3385,7 +3443,17 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
   }, [refreshGenerationService])
 
   useEffect(() => {
-    if (generationCandidates.length && activeCanvasSurface !== 'agent') setCandidatesOpen(true)
+    if (
+      generationCandidates.length
+      && activeCanvasSurface === null
+      && !composerOpen
+      && !resultComposerDraft
+      && !batchComposerTargetId
+      && !accountMenuAnchor
+      && !accountDialog
+      && !imagePreview
+      && !assetToDelete
+    ) setCandidatesOpen(true)
   }, [generationCandidates.length])
 
   useEffect(() => {
@@ -3574,6 +3642,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
   }, [clearGenerationError, closeWorkbenchPanels, createGenerateFromResultRecipe, showComposer])
 
   const addDroppedFilesToCanvas = useCallback(async (files: File[], position: { x: number; y: number }) => {
+    const projectId = document.id
     const { accepted, message } = validateUploadFiles(files)
     const imageFiles = accepted.slice(0, 12)
     setCanvasUploadMessage(message)
@@ -3587,11 +3656,11 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
     const uploads = loaded
       .filter((result): result is PromiseFulfilledResult<UploadedAssetInput> => result.status === 'fulfilled')
       .map((result) => result.value)
-    if (uploads.length) {
+    if (uploads.length && useCanvasStore.getState().document.id === projectId) {
       addUploadedAssetsToCanvas(uploads, position)
       if (!message) setCanvasUploadMessage('已加入画布并存入素材库。')
     }
-  }, [addUploadedAssetsToCanvas, document.nodes])
+  }, [addUploadedAssetsToCanvas, document.id, document.nodes])
 
   const onCanvasDragOver = useCallback((event: DragEvent<HTMLElement>) => {
     event.preventDefault()
@@ -4064,6 +4133,8 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
     autoExecute: boolean,
     generationOverrides?: Partial<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution'>>,
   ) => {
+    const projectId = document.id
+    if (useCanvasStore.getState().document.id !== projectId) return { created: false, started: false, needsReference: false }
     const referenceNodeIds = contextNodeIds.filter((nodeId) => document.nodes.some((node) => {
       if (node.id !== nodeId) return false
       if (node.type === 'asset') return ((node.data as AssetNodeData).mediaKind ?? 'image') === 'image'
@@ -4077,6 +4148,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
     // Agent 默认把描述写入生成节点，避免为一次生成额外创建文字节点。
     const generateNodeId = addGenerateNode({ x: origin.x + 360, y: origin.y + 40 }, 'image', referenceNodeIds)
     if (!generateNodeId) return { created: false, started: false, needsReference: !referenceNodeIds.length }
+    if (useCanvasStore.getState().document.id !== projectId) return { created: false, started: false, needsReference: false }
     const generatedNode = useCanvasStore.getState().document.nodes.find((node) => node.id === generateNodeId)
     const generatedData = generatedNode?.type === 'generate' ? generatedNode.data as GenerateNodeData : undefined
     const selectedModel = availableModels.find((model) => model.id === generationOverrides?.model)
@@ -4089,11 +4161,13 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
     if (!autoExecute || !referenceNodeIds.length) return { created: true, started: false, needsReference: !referenceNodeIds.length }
     const started = await runGraphGeneration(generateNodeId)
     return { created: true, started, needsReference: false }
-  }, [addGenerateNode, availableModels, document.nodes, runGraphGeneration, updateGenerateNode])
+  }, [addGenerateNode, availableModels, document.id, document.nodes, runGraphGeneration, updateGenerateNode])
 
   const addAgentUploadedImages = useCallback((uploads: UploadedAssetInput[]) => {
     if (!uploads.length) return
+    const projectId = document.id
     const currentDocument = useCanvasStore.getState().document
+    if (currentDocument.id !== projectId) return
     const existingNodeIds = new Set(currentDocument.nodes.map((node) => node.id))
     const hasProduct = currentDocument.nodes.some((node) => node.type === 'asset' && (node.data as AssetNodeData).role === '商品')
     const normalizedUploads = uploads.map((upload, index) => ({
@@ -4112,11 +4186,15 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
     const sessionId = latestDocument.activeAgentSessionId ?? ensureAgentSession()
     const activeSession = useCanvasStore.getState().document.agentSessions.find((session) => session.id === sessionId)
     setAgentSessionContext(sessionId, [...new Set([...(activeSession?.contextNodeIds ?? []), ...addedNodeIds])])
-  }, [addUploadedAssetsToCanvas, ensureAgentSession, setAgentSessionContext])
+  }, [addUploadedAssetsToCanvas, document.id, ensureAgentSession, setAgentSessionContext])
 
   const confirmAgentAction = useCallback(async (action: BotanicAgentActionProposal): Promise<BotanicAgentActionResult> => {
-    const response = await executeProjectAgentAction({ projectId: document.id, action })
+    const projectId = document.id
+    const response = await executeProjectAgentAction({ projectId, action })
     const output = response.output
+    if (useCanvasStore.getState().document.id !== projectId) {
+      return { ...output, message: `${output.message} 已切换项目，结果保留在原项目，未写入当前画布。` }
+    }
     const nodes = useCanvasStore.getState().document.nodes
     const origin = nodes.length
       ? { x: Math.max(...nodes.map((node) => node.position.x)) + 220, y: Math.min(...nodes.map((node) => node.position.y)) + 120 }
@@ -4149,6 +4227,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
   }, [addTextNode, addUploadedAssetsToCanvas, document.id, renameCanvasNode, updateTextNode])
 
   const confirmAgentPlan = useCallback(async (plan: BotanicAgentPlan, submissionKey?: string) => {
+    const projectId = document.id
     const group = plan.assetGroupId ? document.assetGroups.find((item) => item.id === plan.assetGroupId) : undefined
     const branchInputs = plan.output.mode === 'batch_by_asset' && group
       ? group.assetIds.map((assetId, index) => ({ assetId, branchId: `branch-${crypto.randomUUID()}`, label: `分支 ${index + 1}` }))
@@ -4157,14 +4236,17 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
     if (serverPersistenceEnabled) {
       try {
         const activeDocument = useCanvasStore.getState().document
+        if (activeDocument.id !== projectId) throw new Error('项目已切换，本次计划未启动。')
         const sources = collectAgentMediaSources(activeDocument, plan.selectedResultNodeId, plan.assetGroupId)
         const replacements = await prepareAgentMediaSources(
           sources,
           (source) => persistAgentReferenceMedia(activeDocument.id, source),
         )
+        if (useCanvasStore.getState().document.id !== projectId) throw new Error('项目已切换，本次计划未启动。')
         await replaceMediaSources(replacements)
+        if (useCanvasStore.getState().document.id !== projectId) throw new Error('项目已切换，本次计划未启动。')
         const snapshot = await createPersistentBotanicAgentRun({
-          projectId: document.id,
+          projectId,
           plan,
           idempotencyKey: submissionKey,
           branches: branchInputs.map((branch) => ({
@@ -4173,10 +4255,19 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
             ...('assetId' in branch ? { assetId: branch.assetId } : {}),
           })),
         })
+        if (useCanvasStore.getState().document.id !== projectId) {
+          const execution = await executePersistentBotanicAgentRun(projectId, snapshot.id)
+          return { started: execution.jobIds.length > 0, runId: snapshot.id }
+        }
         runId = saveAgentPlan(plan, { id: snapshot.id, branches: snapshot.branches })
         applyAgentRunSnapshot(snapshot)
         await flushPendingCanvasDocumentWrites()
-        const execution = await executePersistentBotanicAgentRun(document.id, runId)
+        if (useCanvasStore.getState().document.id !== projectId) {
+          const execution = await executePersistentBotanicAgentRun(projectId, runId)
+          return { started: execution.jobIds.length > 0, runId }
+        }
+        const execution = await executePersistentBotanicAgentRun(projectId, runId)
+        if (useCanvasStore.getState().document.id !== projectId) return { started: execution.jobIds.length > 0, runId }
         applyAgentRunSnapshot(execution.run)
         await refreshDocumentFromRemote().catch(() => false)
         return { started: execution.jobIds.length > 0, runId }
@@ -4184,6 +4275,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
         throw new Error(caught instanceof Error ? caught.message : 'Agent Run 无法持久化，请稍后重试。')
       }
     } else {
+      if (useCanvasStore.getState().document.id !== projectId) throw new Error('项目已切换，本次计划未启动。')
       runId = saveAgentPlan(plan)
       updateAgentRunStatus(runId, 'executing')
     }
@@ -4447,7 +4539,11 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
                         onBlur={() => { void commitProjectTabRename(project) }}
                         onKeyDown={(event) => {
                           if (event.key === 'Enter') event.currentTarget.blur()
-                          if (event.key === 'Escape') setRenamingProjectTabId(null)
+                          if (event.key === 'Escape') {
+                            event.preventDefault()
+                            event.stopPropagation()
+                            setRenamingProjectTabId(null)
+                          }
                         }}
                       />
                     </div>
@@ -4717,7 +4813,14 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
         }} aria-label="打开 Agent" title="Agent"><SparkleIcon /></button> : null}
 
         {agentOpen ? <AgentWorkspace
+          key={document.id}
           projectId={document.id}
+          escapeEnabled={topOverlayLayer([
+            'agent',
+            ...(accountMenuAnchor || accountDialog ? ['account' as const] : []),
+            ...(imagePreview ? ['preview' as const] : []),
+            ...(assetToDelete ? ['confirmation' as const] : []),
+          ]) === 'agent'}
           persistenceStatus={persistenceStatus}
           target={agentTarget}
           groups={document.assetGroups}
@@ -4857,7 +4960,9 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
               setAssetsOpen(true)
             }}
             onGenerate={() => {
+              const submissionProjectId = document.id
               void runGraphGeneration(selectedGenerate.id).then((started) => {
+                if (useCanvasStore.getState().document.id !== submissionProjectId) return
                 if (started) {
                   setComposerOpen(false)
                   setAssetLibraryTargetGenerateId(null)
@@ -4930,7 +5035,9 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
               skipAutoComposerNodeIdRef.current = branchId
               setResultComposerDraft(null)
               setComposerOpen(false)
+              const submissionProjectId = document.id
               void runGraphGeneration(branchId).then((started) => {
+                if (useCanvasStore.getState().document.id !== submissionProjectId) return
                 resultComposerSubmissionRef.current = false
                 if (started) {
                   setCandidatesOpen(true)
@@ -4939,6 +5046,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
                 skipAutoComposerNodeIdRef.current = null
                 showComposer()
               }).catch(() => {
+                if (useCanvasStore.getState().document.id !== submissionProjectId) return
                 resultComposerSubmissionRef.current = false
                 skipAutoComposerNodeIdRef.current = null
                 showComposer()
@@ -4961,7 +5069,9 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
             setAssetsOpen(true)
           }}
           onSubmit={(request) => {
+            const submissionProjectId = document.id
             void runBatchVariation({ sourceResultNodeId: batchComposerTarget.id, ...request }).then((started) => {
+              if (useCanvasStore.getState().document.id !== submissionProjectId) return
               if (started) setBatchComposerTargetId(null)
             })
           }}
@@ -5074,6 +5184,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
 
         <CanvasPanelPresence open={assetsOpen} side="left">
           <AssetLibrary
+            key={document.id}
             assets={assetLibraryAssets}
             groups={document.assetGroups}
             onAdd={addAssetFromLibrary}
@@ -5092,6 +5203,8 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
         </CanvasPanelPresence>
         <CanvasPanelPresence open={templatesOpen} side="right">
           <TemplatePanel
+            key={document.id}
+            projectId={document.id}
             templates={document.templates}
             sharedTemplates={sharedTemplates}
             currentName={document.name}
@@ -5154,7 +5267,9 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
               setCandidatesOpen(false)
             }}
             onRetry={() => {
+              const submissionProjectId = document.id
               void retryGeneration().then((started) => {
+                if (useCanvasStore.getState().document.id !== submissionProjectId) return
                 if (started) setCandidatesOpen(true)
               })
             }}
@@ -5190,7 +5305,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
         ) : null}
         {imagePreviewPresence.present && visibleImagePreview ? (
           <div className={`image-preview-backdrop motion-overlay is-${imagePreviewPresence.phase}`} role="presentation" aria-hidden={imagePreviewPresence.phase === 'exit' ? true : undefined} onMouseDown={() => setImagePreview(null)}>
-            <section className="image-preview-dialog" role="dialog" aria-modal="true" aria-label={`${visibleImagePreview.name}预览`} onMouseDown={(event) => event.stopPropagation()}>
+            <section ref={imagePreviewDialogRef} className="image-preview-dialog" role="dialog" aria-modal="true" aria-label={`${visibleImagePreview.name}预览`} onMouseDown={(event) => event.stopPropagation()}>
               <button className="image-preview-dialog__download" type="button" aria-label="下载原媒体" title="下载原媒体" onClick={() => void downloadMedia(visibleImagePreview.image, visibleImagePreview.name, visibleImagePreview.mediaKind)}><DownloadIcon /></button>
               <button className="image-preview-dialog__close" type="button" onClick={() => setImagePreview(null)} aria-label="关闭媒体预览"><CloseIcon /></button>
               {visibleImagePreview.mediaKind === 'video'
@@ -5444,6 +5559,7 @@ function BatchVariationComposer({
   onSubmit: (request: BatchVariationRequest) => void
   onClose: () => void
 }) {
+  const dialogRef = useDialogFocusTrap(true)
   const imageAssetIds = useMemo(() => new Set(assets.filter((asset) => (asset.mediaKind ?? 'image') === 'image').map((asset) => asset.id)), [assets])
   const availableGroups = useMemo(() => groups.map((group) => ({
     ...group,
@@ -5469,7 +5585,7 @@ function BatchVariationComposer({
 
   return createPortal(
     <div className="batch-variation-backdrop" role="presentation" onPointerDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
-      <section className="batch-variation-composer" role="dialog" aria-modal="true" aria-label="批量变体">
+      <section ref={dialogRef} className="batch-variation-composer" role="dialog" aria-modal="true" aria-label="批量变体">
         <header>
           <div><span>BATCH VARIATION</span><h2>批量变体</h2></div>
           <button type="button" onClick={onClose} aria-label="关闭批量变体"><CloseIcon /></button>
@@ -5538,6 +5654,7 @@ function AssetLibrary({
   const assetMenuTriggerRef = useRef<HTMLButtonElement | null>(null)
   const assetDropPresence = useMotionPresence(isDraggingFiles, 100)
   useRestoreFocus(Boolean(previewAssetId || assetMenuId))
+  const previewDialogRef = useDialogFocusTrap(Boolean(previewAssetId))
   const roles: Array<'全部' | AssetRole> = ['全部', '商品', '模特', '场景', '调性']
   const stageFiles = async (files: File[]) => {
     const { accepted: imageFiles, message } = validateUploadFiles(files)
@@ -5611,6 +5728,18 @@ function AssetLibrary({
   const visiblePreviewAsset = useRetainedValue(previewAsset)
   const activeFilterCount = Number(role !== '全部') + Number(source !== '全部') + Number(groupId !== '全部')
   const advancedFilterCount = Number(source !== '全部')
+
+  useEffect(() => {
+    if (!previewAssetId) return
+    const closePreview = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      setPreviewAssetId(null)
+    }
+    document.addEventListener('keydown', closePreview)
+    return () => document.removeEventListener('keydown', closePreview)
+  }, [previewAssetId])
   const sourceLabel = (itemSource: AssetSource) => itemSource === 'brand' ? '共享品牌' : itemSource === 'upload' ? '本地上传' : '生成入库'
   const assetMenuPosition = (trigger: HTMLButtonElement) => {
     const rect = trigger.getBoundingClientRect()
@@ -5627,15 +5756,6 @@ function AssetLibrary({
   }
 
   useEffect(() => {
-    if (!previewAsset) return
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setPreviewAssetId(null)
-    }
-    document.addEventListener('keydown', closeOnEscape)
-    return () => document.removeEventListener('keydown', closeOnEscape)
-  }, [previewAsset])
-
-  useEffect(() => {
     if (!assetMenuId) return
     let positionFrame = 0
     const closeMenu = (event: PointerEvent) => {
@@ -5646,6 +5766,8 @@ function AssetLibrary({
     }
     const closeOnKey = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
       setAssetMenuId(null)
       setAssetMenuAnchor(null)
       assetMenuTriggerRef.current?.focus()
@@ -6004,7 +6126,7 @@ function AssetLibrary({
         <div className={`asset-preview-backdrop motion-overlay is-${previewPresence.phase}`} role="presentation" aria-hidden={previewPresence.phase === 'exit' ? true : undefined} onPointerDown={(event) => {
           if (event.target === event.currentTarget) setPreviewAssetId(null)
         }}>
-          <section className="asset-preview" role="dialog" aria-modal="true" aria-label={`预览素材 ${visiblePreviewAsset.name}`}>
+          <section ref={previewDialogRef} className="asset-preview" role="dialog" aria-modal="true" aria-label={`预览素材 ${visiblePreviewAsset.name}`}>
             <header>
               <div><span>{sourceLabel(visiblePreviewAsset.source)} · {visiblePreviewAsset.role}</span><h3>{visiblePreviewAsset.name}</h3></div>
               <button type="button" autoFocus onClick={() => setPreviewAssetId(null)} aria-label="关闭素材预览"><CloseIcon /></button>
@@ -6058,6 +6180,7 @@ function AssetLibrary({
 }
 
 function TemplatePanel({
+  projectId,
   templates,
   sharedTemplates,
   currentName,
@@ -6069,6 +6192,7 @@ function TemplatePanel({
   onRefresh,
   onClose,
 }: {
+  projectId: string
   templates: CanvasTemplate[]
   sharedTemplates: CanvasTemplate[]
   currentName: string
@@ -6091,6 +6215,7 @@ function TemplatePanel({
   const [createError, setCreateError] = useState('')
   const saveDialogPresence = useMotionPresence(saveOpen, 140)
   useRestoreFocus(saveOpen)
+  const saveDialogRef = useDialogFocusTrap(saveOpen)
   const saveSummary = scope === 'shared' ? sharedSaveSummary : projectSaveSummary
   const visibleTemplates = activeTab === 'shared' ? sharedTemplates : templates
 
@@ -6107,7 +6232,10 @@ function TemplatePanel({
   useEffect(() => {
     if (!saveOpen) return
     const closeDialog = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !saving) setSaveOpen(false)
+      if (event.key !== 'Escape' || saving) return
+      event.preventDefault()
+      event.stopPropagation()
+      setSaveOpen(false)
     }
     document.addEventListener('keydown', closeDialog)
     return () => document.removeEventListener('keydown', closeDialog)
@@ -6139,6 +6267,7 @@ function TemplatePanel({
     setCreateError('')
     setCreatingTemplateId(templateId)
     const created = await onCreateProject(templateId, activeTab === 'shared')
+    if (useCanvasStore.getState().document.id !== projectId) return
     setCreatingTemplateId(null)
     if (created) onClose()
     else setCreateError('项目未创建，请检查网络后重试。')
@@ -6182,7 +6311,7 @@ function TemplatePanel({
       </section>
       {saveDialogPresence.present && typeof document !== 'undefined' ? createPortal(
         <div className={`template-dialog-backdrop motion-overlay is-${saveDialogPresence.phase}`} role="presentation" aria-hidden={saveDialogPresence.phase === 'exit' ? true : undefined} onMouseDown={() => !saving && setSaveOpen(false)}>
-          <form className="template-dialog" role="dialog" aria-modal="true" aria-labelledby="save-template-title" onMouseDown={(event) => event.stopPropagation()} onSubmit={(event) => { event.preventDefault(); void saveTemplate() }}>
+          <form ref={(element) => { saveDialogRef.current = element }} className="template-dialog" role="dialog" aria-modal="true" aria-labelledby="save-template-title" onMouseDown={(event) => event.stopPropagation()} onSubmit={(event) => { event.preventDefault(); void saveTemplate() }}>
             <header><div><span className="panel-eyebrow">SAVE TEMPLATE</span><h2 id="save-template-title">保存为模板</h2></div><button type="button" onClick={() => setSaveOpen(false)} disabled={saving} aria-label="关闭"><CloseIcon /></button></header>
             <label htmlFor="template-name">模板名称</label>
             <input id="template-name" autoFocus value={name} maxLength={60} onChange={(event) => setName(event.target.value)} />
@@ -7085,9 +7214,10 @@ function PanelHeader({ eyebrow, title, onClose }: { eyebrow?: string; title: str
 
 function ConfirmationDialog({ asset, phase, onConfirm, onCancel }: { asset: AssetRecord; phase: MotionPhase; onConfirm: () => void; onCancel: () => void }) {
   const isSharedBrandAsset = asset.source === 'brand'
+  const dialogRef = useDialogFocusTrap(phase !== 'exit')
   return (
     <div className={`confirm-backdrop motion-overlay is-${phase}`} aria-hidden={phase === 'exit' ? true : undefined}>
-      <section className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-asset-title">
+      <section ref={dialogRef} className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-asset-title">
         <span className="panel-eyebrow">REMOVE ASSET</span>
         <h2 id="delete-asset-title">删除「{asset.name}」？</h2>
         <p>{isSharedBrandAsset
@@ -7581,6 +7711,7 @@ function createInitialAgentClarification(instruction: string, models: Generation
 
 function AgentWorkspace({
   projectId,
+  escapeEnabled,
   target,
   groups,
   sessions,
@@ -7621,6 +7752,7 @@ function AgentWorkspace({
   onClose,
 }: {
   projectId: string
+  escapeEnabled: boolean
   persistenceStatus: 'saved' | 'saving' | 'offline' | 'conflict' | 'error'
   target?: AgentDockTarget
   groups: AssetGroup[]
@@ -7712,6 +7844,8 @@ function AgentWorkspace({
     deliver: async (item) => { await submitPersistentBotanicAgentMessage(item) },
   }), [projectId])
   const plannerControllerRef = useRef<AbortController | null>(null)
+  const agentMountedRef = useRef(true)
+  const isCurrentAgentProject = () => agentMountedRef.current && useCanvasStore.getState().document.id === projectId
   const sendingInstructionRef = useRef(false)
   const submittingMessageIdRef = useRef('')
   // 终态同时记住产出数：服务端可能先标记完成、随后才持久化 Artifact，
@@ -7881,7 +8015,7 @@ function AgentWorkspace({
 
   useEffect(() => {
     const closeLayerOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
+      if (event.key !== 'Escape' || event.defaultPrevented || !escapeEnabled) return
       if (mentionQuery) {
         setMentionQuery(undefined)
         requestAnimationFrame(() => composerTextareaRef.current?.focus())
@@ -7917,7 +8051,7 @@ function AgentWorkspace({
     }
     window.addEventListener('keydown', closeLayerOnEscape)
     return () => window.removeEventListener('keydown', closeLayerOnEscape)
-  }, [contextMenuOpen, historyOpen, mentionQuery, modeMenuOpen, onClose, recoveryModelMenuKey, runtimeDetailsOpen, skillConfirming, utilityMenuOpen, utilityPanelOpen])
+  }, [contextMenuOpen, escapeEnabled, historyOpen, mentionQuery, modeMenuOpen, onClose, recoveryModelMenuKey, runtimeDetailsOpen, skillConfirming, utilityMenuOpen, utilityPanelOpen])
 
   useEffect(() => {
     setError('')
@@ -7973,7 +8107,10 @@ function AgentWorkspace({
     setSelectedArtifactIds((current) => current.filter((id) => artifacts.some((artifact) => artifact.id === id)))
   }, [artifacts])
 
-  useEffect(() => () => plannerControllerRef.current?.abort(), [])
+  useEffect(() => () => {
+    agentMountedRef.current = false
+    plannerControllerRef.current?.abort()
+  }, [])
 
   useEffect(() => {
     if (!skillPanelOpen) return
@@ -8003,6 +8140,7 @@ function AgentWorkspace({
   const flushQueuedAgentMessages = useCallback(async () => {
     const queued = new Map(agentMessageQueue.list().map((item) => [item.message.id, item.session.id]))
     const result = await agentMessageQueue.flush()
+    if (!agentMountedRef.current || useCanvasStore.getState().document.id !== projectId) return
     for (const messageId of result.delivered) {
       const sessionId = queued.get(messageId)
       if (sessionId) onUpdateMessage(sessionId, messageId, { deliveryStatus: 'synced' })
@@ -8011,7 +8149,7 @@ function AgentWorkspace({
       const sessionId = queued.get(messageId)
       if (sessionId) onUpdateMessage(sessionId, messageId, { deliveryStatus: 'failed' })
     }
-  }, [agentMessageQueue, onUpdateMessage])
+  }, [agentMessageQueue, onUpdateMessage, projectId])
 
   useEffect(() => {
     if (!serverPersistenceEnabled) return
@@ -8037,7 +8175,7 @@ function AgentWorkspace({
   }, [flushQueuedAgentMessages])
 
   const appendMessage = (message: Omit<BotanicAgentMessage, 'id' | 'createdAt'>) => {
-    if (!session) return ''
+    if (!session || !isCurrentAgentProject()) return ''
     const messageId = `agent-message-${crypto.randomUUID()}`
     const createdAt = Date.now()
     const queuedMessage: BotanicAgentMessage = {
@@ -8126,12 +8264,13 @@ function AgentWorkspace({
         name: skillName.trim(),
         instructions: skillInstructions.trim(),
       })
+      if (!isCurrentAgentProject()) return
       setSkills((items) => [result.output.skill, ...items.filter((item) => item.id !== result.output.skill.id)])
       setSkillName('')
       setSkillInstructions('')
       setSkillConfirming(false)
     } catch (caught) {
-      setSkillError(caught instanceof Error ? caught.message : 'Skill 创建失败。')
+      if (isCurrentAgentProject()) setSkillError(caught instanceof Error ? caught.message : 'Skill 创建失败。')
     } finally {
       setSkillSaving(false)
     }
@@ -8238,7 +8377,7 @@ function AgentWorkspace({
     generationOverrides?: Partial<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution'>>,
     clarificationAnswers?: Record<string, string>,
   ): Promise<BotanicAgentPlan | BotanicAgentClarificationResponse | null> => {
-    if (!target) return null
+    if (!target || !isCurrentAgentProject()) return null
     const assetGroup = compatibleGroups.find((group) => group.id === groupId)
     const input = {
       projectId,
@@ -8269,6 +8408,7 @@ function AgentWorkspace({
       attachPlannerToolTrace(nextPlan)
       updateRuntimeStep('call-planner', 'succeeded')
       await completeRuntimeTrace(true)
+      if (!isCurrentAgentProject()) return null
       return nextPlan
     } catch (planError) {
       if (controller.signal.aborted) return null
@@ -8288,6 +8428,7 @@ function AgentWorkspace({
           attachPlannerToolTrace(fallbackPlan)
           updateRuntimeStep('call-planner', 'succeeded')
           await completeRuntimeTrace(true)
+          if (!isCurrentAgentProject()) return null
           return fallbackPlan
         } catch (fallbackError) {
           const message = fallbackError instanceof Error ? fallbackError.message : '暂时无法生成计划。'
@@ -8324,6 +8465,7 @@ function AgentWorkspace({
     if (editedPrompt && editedPrompt !== message.plan.prompt) onUpdateMessage(session.id, message.id, { plan })
     try {
       const submission = await onConfirm(plan, botanicAgentSubmissionKey(message.id, plan))
+      if (!isCurrentAgentProject()) return
       setLastFailedPlanMessageId('')
       setLastFailedInstruction('')
       if (!submission.started) setRuntimePhase('failed')
@@ -8333,6 +8475,7 @@ function AgentWorkspace({
         content: submission.started ? '任务已提交。结果会直接出现在画布中，你可以继续告诉我下一步要改什么。' : '任务没有启动，请检查参考素材与生成服务后重试。',
       })
     } catch (caught) {
+      if (!isCurrentAgentProject()) return
       onUpdateMessage(session.id, message.id, { status: 'failed' })
       setRuntimePhase('failed')
       setError(caught instanceof Error ? caught.message : '任务未能启动，请稍后重试。')
@@ -8346,7 +8489,7 @@ function AgentWorkspace({
   }
 
   const confirmAction = async (message: BotanicAgentMessage, action: BotanicAgentActionProposal) => {
-    if (!session || executingActionId || action.status === 'running' || action.status === 'succeeded') return
+    if (!session || executingActionId || action.status === 'succeeded') return
     setExecutingActionId(action.id)
     setRuntimePhase('executing')
     setError('')
@@ -8354,6 +8497,7 @@ function AgentWorkspace({
     onUpdateAction(session.id, message.id, action.id, { status: 'running', error: undefined })
     try {
       const result = await onConfirmAction(action)
+      if (!isCurrentAgentProject()) return
       onUpdateAction(session.id, message.id, action.id, { status: 'succeeded', result, error: undefined })
       setRuntimePhase('completed')
       appendMessage({
@@ -8361,6 +8505,7 @@ function AgentWorkspace({
         content: `${result.message}${result.canvasNodeId ? ' 已写入画布。' : ''}`,
       })
     } catch (caught) {
+      if (!isCurrentAgentProject()) return
       const actionError = caught instanceof Error ? caught.message : '行动执行失败，请重试。'
       onUpdateAction(session.id, message.id, action.id, { status: 'failed', error: actionError })
       setRuntimePhase('failed')
@@ -8412,7 +8557,7 @@ function AgentWorkspace({
       clarificationAnswers?: Record<string, string>
     } = {},
   ) => {
-    if (!session || planning) return
+    if (!session || planning || !isCurrentAgentProject()) return
     if (options.appendUser) appendMessage({ role: 'user', kind: 'text', content: options.appendUser })
     setError('')
     setLastFailedInstruction('')
@@ -8432,6 +8577,7 @@ function AgentWorkspace({
         mode: route,
       })
       await completeRuntimeContextReads(runtimeTrace)
+      if (!isCurrentAgentProject()) return
       setRuntimePhase('planning')
       updateRuntimeStep('call-planner', 'running')
       const chatMessages = [
@@ -8450,6 +8596,7 @@ function AgentWorkspace({
         updateRuntimeStep('call-planner', 'succeeded')
         updateRuntimeStep('respond', 'running')
         await yieldRuntimeFrame()
+        if (!isCurrentAgentProject()) return
         updateRuntimeStep('respond', 'succeeded')
         setRuntimePhase('completed')
         setRuntimeDetailsOpen(false)
@@ -8478,6 +8625,7 @@ function AgentWorkspace({
       assetGroupCount: compatibleGroups.length,
     })
     await completeRuntimeContextReads(runtimeTrace)
+    if (!isCurrentAgentProject()) return
     setRuntimePhase('planning')
     updateRuntimeStep('call-planner', 'running')
     if (!target) {
@@ -8486,6 +8634,7 @@ function AgentWorkspace({
         updateRuntimeStep('call-planner', 'succeeded')
         updateRuntimeStep('create-workflow', 'running')
         await yieldRuntimeFrame()
+        if (!isCurrentAgentProject()) return
         updateRuntimeStep('create-workflow', 'succeeded')
         setRuntimePhase('waiting_clarification')
         appendMessage({
@@ -8500,10 +8649,11 @@ function AgentWorkspace({
       }
       try {
         const result = await onCreateDraft(cleanInstruction, session.contextNodeIds, session.executionMode === 'auto', options.generationOverrides)
+        if (!isCurrentAgentProject()) return
         const content = result.started
           ? '已根据画布上下文创建工作流并提交生成，结果会出现在画布中。'
           : result.needsReference
-            ? '已在画布创建文字与生成节点。再添加一张商品图或参考图，我就可以继续执行。'
+            ? '已在画布创建生成节点。再添加一张商品图或参考图，我就可以继续执行。'
               : result.created
                 ? '已在画布创建可编辑的生成工作流，你可以检查节点后手动生成。'
                 : '暂时无法创建工作流，请检查画布状态后重试。'
@@ -8526,7 +8676,7 @@ function AgentWorkspace({
       return
     }
     const nextPlan = await preparePlan(cleanInstruction, options.generationOverrides, options.clarificationAnswers)
-    if (!nextPlan || !session) return
+    if (!nextPlan || !session || !isCurrentAgentProject()) return
     if ('kind' in nextPlan && nextPlan.kind === 'clarification') {
       setRuntimePhase('waiting_clarification')
       appendMessage({
@@ -8884,7 +9034,7 @@ function AgentWorkspace({
                   {action.error ? <small className="agent-action-card__error">{action.error}</small> : null}
                   {action.status === 'succeeded' ? <div className="agent-action-card__result"><span>已执行</span>{action.result?.canvasNodeIds?.length ? <small>已创建 {action.result.canvasNodeIds.length} 个画布节点</small> : action.result?.artifacts?.length ? <small>已产出 {action.result.artifacts.length} 项</small> : null}{action.result?.canvasNodeId ? <button type="button" className="agent-icon-button" aria-label="在画布定位结果" title="在画布定位" onClick={() => onLocateNode(action.result!.canvasNodeId!)}><FocusIcon /></button> : null}</div> : null}
                   {action.status === 'dismissed' ? <span className="agent-action-card__dismissed">已跳过</span> : null}
-                  {action.status === 'running' ? <span className="agent-action-card__running">执行中…</span> : null}
+                  {action.status === 'running' ? <div className="agent-action-card__running"><span>执行状态待确认</span><button type="button" disabled={executingActionId === action.id} onClick={() => void confirmAction(message, action)}>{executingActionId === action.id ? '确认中…' : '确认状态'}</button></div> : null}
                   {action.status === 'awaiting_confirmation' || action.status === 'failed' ? <div className="agent-action-card__buttons">
                     {action.status === 'awaiting_confirmation' ? <button type="button" className="is-secondary" onClick={() => session && onUpdateAction(session.id, message.id, action.id, { status: 'dismissed' })}>跳过</button> : null}
                     <button type="button" disabled={executingActionId === action.id} onClick={() => void confirmAction(message, action)}>{executingActionId === action.id ? '执行中…' : action.status === 'failed' ? '重试' : '确认执行'}</button>

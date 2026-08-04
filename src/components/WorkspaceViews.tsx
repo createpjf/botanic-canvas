@@ -19,27 +19,50 @@ function projectUpdatedLabel(updatedAt: number) {
 }
 
 export function OperatingDashboard({ onOpenProjects }: { onOpenProjects: () => void }) {
+  const [lastRefreshedAt, setLastRefreshedAt] = useState(() => Date.now())
+  const [dashboardNotice, setDashboardNotice] = useState('')
   const decisions = [
     ['01', '夏日香氛系列：是否进入有限放量', '转化率 4.8%，贡献利润率 28.4%；可售库存支持 9 天，建议锁定 1,200 件。', '待批准', 'is-ready'],
     ['02', '无花果之影：补货与活动承接', '库存覆盖 6.8 天，在途 800 件；周末内容投放预计新增 340 单。', '需要判断', 'is-watch'],
     ['03', '旧季礼盒：确定清货路由', '库龄 112 天，建议优先达人高佣 20% 与店内会员专享组合。', '待复盘', 'is-muted'],
   ] as const
 
+  const refreshedAtLabel = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }).format(lastRefreshedAt)
+  const refreshDashboard = () => {
+    const refreshedAt = Date.now()
+    setLastRefreshedAt(refreshedAt)
+    setDashboardNotice('经营数据已刷新。')
+  }
+  const downloadApprovalPackage = () => {
+    const payload = {
+      generatedAt: new Date().toISOString(),
+      view: 'CEO 经营决策',
+      decisions: decisions.map(([number, title, detail, state]) => ({ number, title, detail, state })),
+    }
+    const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' }))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `botanic-approval-package-${new Date().toISOString().slice(0, 10)}.json`
+    link.click()
+    URL.revokeObjectURL(url)
+    setDashboardNotice('审批包已下载。')
+  }
+
   return (
     <main className="workspace-shell operating-dashboard" aria-label="经营驾驶舱">
       <aside className="workspace-sidebar">
         <div className="workspace-brand">Botanic</div>
         <nav className="workspace-sidebar__nav" aria-label="经营模块">
-          <button type="button">资料库</button>
-          <button type="button">定时任务</button>
+          <button type="button" disabled title="该模块尚未开放">资料库</button>
+          <button type="button" disabled title="该模块尚未开放">定时任务</button>
           <span>经营工作台</span>
-          <button type="button" className="is-active"><i />CEO 经营决策<small>CEO</small></button>
+          <button type="button" className="is-active" aria-current="page" disabled><i />CEO 经营决策<small>CEO</small></button>
           <span>专业 AGENT</span>
-          <button type="button"><i />商品企划</button>
+          <button type="button" disabled title="该模块尚未开放"><i />商品企划</button>
           <button type="button" onClick={onOpenProjects}><i />创意生成</button>
-          <button type="button"><i />增长经营</button>
-          <button type="button"><i />财务经营</button>
-          <button type="button"><i />供应链管理</button>
+          <button type="button" disabled title="该模块尚未开放"><i />增长经营</button>
+          <button type="button" disabled title="该模块尚未开放"><i />财务经营</button>
+          <button type="button" disabled title="该模块尚未开放"><i />供应链管理</button>
         </nav>
         <div className="workspace-sidebar__spacer" />
         <section className="workspace-invite">
@@ -54,10 +77,11 @@ export function OperatingDashboard({ onOpenProjects }: { onOpenProjects: () => v
           <div>
             <span className="workspace-eyebrow"><i />CEO OPERATING VIEW</span>
             <h1>经营驾驶舱</h1>
-            <p>周四 · 经营例会 · 18:30</p>
+            <p>周四 · 经营例会 · 数据更新于 {refreshedAtLabel}</p>
           </div>
-          <button type="button" className="workspace-secondary-button">↻ 刷新数据</button>
+          <button type="button" className="workspace-secondary-button" onClick={refreshDashboard}>↻ 刷新数据</button>
         </header>
+        {dashboardNotice ? <p className="operating-dashboard__notice" role="status">{dashboardNotice}</p> : null}
 
         <section className="dashboard-kpis" aria-label="核心经营指标">
           <article className="is-primary"><span>今日支付额</span><strong>¥126,400</strong><small>较昨日 +18.6% · 淘宝 ¥98,720</small></article>
@@ -68,7 +92,7 @@ export function OperatingDashboard({ onOpenProjects }: { onOpenProjects: () => v
 
         <section className="dashboard-grid">
           <article className="dashboard-card dashboard-decisions">
-            <header><div><h2>CEO 待决事项</h2><p>按「能否放量、是否赚钱、是否供得上」排序</p></div><button type="button">生成审批包 →</button></header>
+            <header><div><h2>CEO 待决事项</h2><p>按「能否放量、是否赚钱、是否供得上」排序</p></div><button type="button" onClick={downloadApprovalPackage}>生成审批包 →</button></header>
             <ol>
               {decisions.map(([number, title, detail, state, tone]) => (
                 <li key={number}>
@@ -173,6 +197,7 @@ export function ProjectLibrary({
   const deletingPresence = useMotionPresence(Boolean(deletingProject), 140)
   const visibleDeletingProject = useRetainedValue(deletingProject)
   useRestoreFocus(Boolean(editingProject || deletingProject))
+  const projectDialogRef = useDialogFocusTrap(Boolean(editingProject || deletingProject))
 
   useEffect(() => {
     setProjectName(editingProject?.name ?? '')
@@ -182,6 +207,8 @@ export function ProjectLibrary({
     if (!editingProject && !deletingProject) return
     const closeDialog = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || submitting) return
+      event.preventDefault()
+      event.stopPropagation()
       setEditingProject(null)
       setDeletingProject(null)
     }
@@ -298,7 +325,7 @@ export function ProjectLibrary({
         {operationError && !editingProject && !deletingProject ? <p className="project-library-operation-error" role="alert">{operationError}</p> : null}
       </section>
       {editingPresence.present && visibleEditingProject ? <div className={`project-dialog-backdrop motion-overlay is-${editingPresence.phase}`} role="presentation" aria-hidden={editingPresence.phase === 'exit' ? true : undefined} onMouseDown={() => !submitting && setEditingProject(null)}>
-        <form className="project-dialog" aria-labelledby="rename-project-title" onMouseDown={(event) => event.stopPropagation()} onSubmit={(event) => { event.preventDefault(); void submitRename() }}>
+        <form ref={(element) => { projectDialogRef.current = element }} className="project-dialog" role="dialog" aria-modal="true" aria-labelledby="rename-project-title" onMouseDown={(event) => event.stopPropagation()} onSubmit={(event) => { event.preventDefault(); void submitRename() }}>
           <span className="workspace-eyebrow">PROJECT SETTINGS</span><h2 id="rename-project-title">重命名项目</h2>
           <input autoFocus value={projectName} maxLength={60} onChange={(event) => setProjectName(event.target.value)} aria-label="项目名称" />
           {operationError ? <p className="project-dialog__error" role="alert">{operationError}</p> : null}
@@ -306,7 +333,7 @@ export function ProjectLibrary({
         </form>
       </div> : null}
       {deletingPresence.present && visibleDeletingProject ? <div className={`project-dialog-backdrop motion-overlay is-${deletingPresence.phase}`} role="presentation" aria-hidden={deletingPresence.phase === 'exit' ? true : undefined} onMouseDown={() => !submitting && setDeletingProject(null)}>
-        <section className="project-dialog project-dialog--danger" role="alertdialog" aria-modal="true" aria-labelledby="delete-project-title" onMouseDown={(event) => event.stopPropagation()}>
+        <section ref={projectDialogRef} className="project-dialog project-dialog--danger" role="alertdialog" aria-modal="true" aria-labelledby="delete-project-title" onMouseDown={(event) => event.stopPropagation()}>
           <span className="workspace-eyebrow">DELETE PROJECT</span><h2 id="delete-project-title">删除「{visibleDeletingProject.name}」？</h2>
           <p>项目画布、生成结果和项目私有素材会被永久删除，无法恢复。</p>
           {operationError ? <p className="project-dialog__error" role="alert">{operationError}</p> : null}
@@ -332,6 +359,6 @@ export function ProjectLibrary({
 }
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowUpRightIcon, DeleteIcon, MoreIcon } from './BotanicIcons'
-import { AccountDetailsDialog, AccountMenu, WorkspaceAuditDialog, WorkspaceMembersDialog, type AccountMenuAnchor, type AccountMfaEnrollment, type AccountMfaStatus, type AccountUser, type WorkspaceMember as AccountWorkspaceMember } from './AccountCenter'
+import { AccountDetailsDialog, AccountMenu, WorkspaceAuditDialog, WorkspaceMembersDialog, useDialogFocusTrap, type AccountMenuAnchor, type AccountMfaEnrollment, type AccountMfaStatus, type AccountUser, type WorkspaceMember as AccountWorkspaceMember } from './AccountCenter'
 import type { WorkspaceAuditEvent } from '../domain/auditEvents'
 import { useMotionPresence, useRestoreFocus, useRetainedValue } from './motionPresence'
