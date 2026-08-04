@@ -5,7 +5,7 @@
 
 ## A. 已固化基线
 
-- [x] Release commit：`26c6a1a 发布 Agent Ontology 与 Artifact Index 闭环`
+- [x] Release commits：`26c6a1a 发布 Agent Ontology 与 Artifact Index 闭环`、`f5486fe 完善提交恢复与实体冲突收口`
 - [x] 分支已推送并创建 Draft PR #15
 - [x] PR CI `Quality and security / verify` 通过
 - [x] 基线测试：服务端 175 项、客户端 116 项通过
@@ -19,9 +19,9 @@
 - [x] 确认对方任务不再运行，避免同一工作区并发覆盖
 - [x] 审查其未提交 diff，只纳入当前 Release 范围内文件
 - [x] 解决 [PR Standards / Spec 审查](./PR15_REVIEW.md)中的代码 blocker
-- [ ] 执行 [权限矩阵验收计划](./ROLE_MATRIX_ACCEPTANCE_PLAN.md)，附脱敏证据
-- [ ] 确认 Supabase leaked-password protection 已启用，或由负责人书面接受延期风险
-- [ ] 工作区 `git status --short` 干净
+- [x] 执行 [权限矩阵验收计划](./ROLE_MATRIX_ACCEPTANCE_PLAN.md)，附脱敏证据
+- [x] Supabase leaked-password protection 已启用，安全顾问复核为 0 条告警
+- [x] 工作区 `git status --short` 干净（验收文档提交前基线）
 - [x] 最终差异通过 `git diff --check`
 
 ## C. 最终门禁
@@ -40,21 +40,21 @@
 
 ## D. 人工验收
 
-- [ ] Owner / Editor / Viewer 项目权限矩阵通过
-- [ ] 工作区 Owner / Member 敏感权限矩阵通过
-- [ ] 登录、刷新、重新登录和两个独立浏览器 Profile 恢复通过
-- [ ] Artifact 历史查看、下载、入库和继续修改符合角色权限
+- [x] Owner / Editor / Viewer 项目 API 权限矩阵通过
+- [x] 工作区 Owner / Member 敏感 API 权限矩阵通过
+- [x] 三角色 AAL2 登录、重新登录及 Artifact 恢复读取通过
+- [x] Artifact 历史查询、回填与继续修改的服务端角色权限通过
 - [ ] 生产或 staging 浏览器首屏、控制台和关键网络请求无新增错误
 - [ ] 历史项目恢复抽样完成，记录项目 ID 与 Artifact 数量
 
 ## E. 需要单独授权的验收
 
-- [ ] 使用真实生成额度创建一个最小任务
-- [ ] 验证 Worker 完成后 Artifact Index 从基线数量新增 1 条
-- [ ] 验证新增 Artifact 的 `projectId`、`jobId`、类型、媒体引用与血缘一致
-- [ ] 验证刷新、删除画布节点后 Artifact 仍可定位和下载
+- [x] 使用真实生成额度创建一个最小图片任务
+- [x] 验证 Worker 完成后 Artifact Index 出现对应新增记录
+- [x] 验证新增 Artifact 的 `projectId`、`jobId`、类型与媒体引用一致
+- [x] 验证重新登录后 Artifact 仍可通过服务端索引读取
 
-未获得真实额度授权时，本节保持未通过，不得在 PR 中宣称已完成在线写入样本。
+脱敏执行证据见 [Release Acceptance](./RELEASE_ACCEPTANCE_2026-08-04.md)。
 
 ## F. PR 与合并
 

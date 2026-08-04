@@ -1,11 +1,11 @@
 # Botanic Owner / Editor / Viewer 权限矩阵验收计划
 
-状态：已准备，尚未执行
+状态：已执行，生产 API 权限矩阵通过（2026-08-04）
 适用版本：PR #15 `codex/release-agent-ontology-artifact-index` 及其后续整合提交
 
 ## 1. 验收边界
 
-本计划验证项目权限、工作区权限、Artifact Index 读取和跨刷新恢复。默认不触发真实图片或视频生成，不清理生产数据。优先在隔离 staging 工作区执行；若改用生产环境，必须使用专属测试项目、非敏感内容，并另行授权真实生成额度。
+本计划验证项目权限、工作区权限、Artifact Index 读取和跨刷新恢复。2026-08-04 已获得真实生成授权，并在生产环境使用临时专属账号与项目执行；验收结束后已确认 PostgreSQL 与 Supabase Auth 均无测试数据残留。
 
 ## 2. 账号与数据准备
 
@@ -79,3 +79,12 @@
 | RBAC-001 |  | Owner |  |  |  |  |  |  |  |
 
 验收结束后，将证据链接和失败项汇总到 PR；只记录脱敏 ID，不记录凭据。
+
+## 7. 2026-08-04 执行结果
+
+- 环境：Production；认证：Supabase Auth + 三角色 AAL2。
+- 结果：66 / 66 个 API 断言通过，66 个响应均捕获 Request ID。
+- 覆盖：项目与工作区读写、成员管理、审计、403 / 404 / 401 语义、Viewer 生成拦截、重新登录后 Artifact 读取。
+- 真实生成：Owner 最小图片任务成功，Worker 完成后 Artifact Index 按 `jobId` 查询到新增记录。
+- 清理：临时项目、用户、身份、审计、任务与 Artifact 均已清理；数据库计数和 Auth 测试账号计数均为 0。
+- 脱敏证据见 [Release Acceptance](./RELEASE_ACCEPTANCE_2026-08-04.md)。
