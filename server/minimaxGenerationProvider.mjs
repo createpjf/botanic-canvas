@@ -1,3 +1,4 @@
+import { mapWithConcurrency } from './concurrency.mjs'
 import { GenerationError } from './generationProvider.mjs'
 
 function dataUrl(media) {
@@ -58,8 +59,24 @@ export async function generateMiniMaxImages(job, {
   persistMedia,
   jobId,
   fetchImpl = fetch,
+  onVariant,
+  completedVariants = [],
 }) {
   if (!apiKey) throw new GenerationError(503, 'PROVIDER_NOT_CONFIGURED', 'MiniMax 图像服务尚未配置：请设置 MINIMAX_API_KEY。')
+  const previousOutputs = new Map(
+    completedVariants
+      .filter((variant) => variant?.status === 'succeeded' && variant.output)
+      .map((variant) => [Number(variant.index), variant.output]),
+  )
+  const pendingIndexes = Array.from({ length: job.batchCount }, (_, index) => index)
+    .filter((index) => !previousOutputs.has(index))
+  if (!pendingIndexes.length) {
+    return {
+      outputs: [...previousOutputs.entries()].sort(([left], [right]) => left - right).map(([, output]) => output),
+      missingOutputCount: 0,
+    }
+  }
+  await Promise.all(pendingIndexes.map((index) => onVariant?.({ index, status: 'running' })))
   const subject = job.references.find((reference) => reference.role === '模特')
     ?? job.references.find((reference) => reference.primary)
     ?? job.parent
@@ -68,7 +85,8 @@ export async function generateMiniMaxImages(job, {
     prompt: miniMaxImagePrompt(job),
     aspect_ratio: job.settings.aspectRatio,
     response_format: 'base64',
-    n: job.batchCount,
+    // 已成功的候选不会重复计费；服务端会把新返回值按 pendingIndexes 映射回子任务。
+    n: pendingIndexes.length,
     prompt_optimizer: true,
     ...(subject ? {
       subject_reference: [{
@@ -77,36 +95,65 @@ export async function generateMiniMaxImages(job, {
       }],
     } : {}),
   }
-  const response = await fetchImpl(`${apiBaseUrl}/v1/image_generation`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-    signal,
-  })
-  const body = await response.json().catch(() => null)
-  if (!response.ok || body?.base_resp?.status_code > 0) throw miniMaxError(response, body, '图像')
-  const images = Array.isArray(body?.data?.image_base64) ? body.data.image_base64 : []
-  const persisted = await Promise.allSettled(images.map(async (value, index) => ({
-    id: `${jobId}-output-${index + 1}`,
-    image: await persistMedia(imageMedia(value)),
-    mediaKind: 'image',
-  })))
-  const outputs = persisted.flatMap((result) => result.status === 'fulfilled' ? [result.value] : [])
-  if (!outputs.length) {
-    const failure = persisted.find((result) => result.status === 'rejected')
-    if (failure?.status === 'rejected') throw failure.reason
-    throw new GenerationError(502, 'EMPTY_PROVIDER_RESPONSE', 'MiniMax 图像服务没有返回候选图，请重试。')
-  }
-  const missingOutputCount = Math.max(0, job.batchCount - outputs.length)
-  return {
-    outputs,
-    missingOutputCount,
-    partialError: missingOutputCount
-      ? `MiniMax 图像服务仅返回 ${outputs.length}/${job.batchCount} 张候选，可补生成缺少的 ${missingOutputCount} 张。`
-      : undefined,
+  try {
+    const response = await fetchImpl(`${apiBaseUrl}/v1/image_generation`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+      signal,
+    })
+    const body = await response.json().catch(() => null)
+    if (!response.ok || body?.base_resp?.status_code > 0) throw miniMaxError(response, body, '图像')
+    const images = Array.isArray(body?.data?.image_base64) ? body.data.image_base64 : []
+    const persisted = await Promise.allSettled(images.slice(0, pendingIndexes.length).map(async (value, resultIndex) => ({
+      index: pendingIndexes[resultIndex],
+      output: {
+        id: `${jobId}-output-${pendingIndexes[resultIndex] + 1}`,
+        image: await persistMedia(imageMedia(value)),
+        mediaKind: 'image',
+      },
+    })))
+    const outputs = new Map(previousOutputs)
+    for (const result of persisted) {
+      if (result.status === 'fulfilled') {
+        outputs.set(result.value.index, result.value.output)
+        await onVariant?.({ index: result.value.index, status: 'succeeded', output: result.value.output })
+      }
+    }
+    const failed = persisted.filter((result) => result.status === 'rejected')
+    for (const index of pendingIndexes.slice(0, images.length)) {
+      if (!outputs.has(index)) {
+        const failure = failed.find((result) => result.status === 'rejected')
+        await onVariant?.({ index, status: 'failed', error: failure?.reason instanceof Error ? failure.reason.message : '候选图片保存失败。' })
+      }
+    }
+    for (const index of pendingIndexes.slice(images.length)) {
+      await onVariant?.({ index, status: 'failed', error: 'MiniMax 图像服务没有返回该候选图。' })
+    }
+    const orderedOutputs = [...outputs.entries()].sort(([left], [right]) => left - right).map(([, output]) => output)
+    if (!orderedOutputs.length) {
+      const failure = failed.find((result) => result.status === 'rejected')
+      if (failure?.status === 'rejected') throw failure.reason
+      throw new GenerationError(502, 'EMPTY_PROVIDER_RESPONSE', 'MiniMax 图像服务没有返回候选图，请重试。')
+    }
+    const missingOutputCount = Math.max(0, job.batchCount - orderedOutputs.length)
+    return {
+      outputs: orderedOutputs,
+      missingOutputCount,
+      partialError: missingOutputCount
+        ? `MiniMax 图像服务仅返回 ${orderedOutputs.length}/${job.batchCount} 张候选，可补生成缺少的 ${missingOutputCount} 张。`
+        : undefined,
+    }
+  } catch (error) {
+    await Promise.all(pendingIndexes.map((index) => onVariant?.({
+      index,
+      status: 'failed',
+      error: error instanceof Error ? error.message : String(error),
+    })))
+    throw error
   }
 }
 
@@ -213,29 +260,52 @@ export async function generateMiniMaxVideos(job, {
   fetchImpl = fetch,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   pollIntervalMs = 10_000,
+  variantConcurrency = 3,
+  onVariant,
+  completedVariants = [],
 }) {
   if (!apiKey) throw new GenerationError(503, 'PROVIDER_NOT_CONFIGURED', 'MiniMax H3 尚未配置：请设置 MINIMAX_API_KEY。')
   const options = { apiBaseUrl, apiKey, signal, persistMedia, jobId, fetchImpl, sleep, pollIntervalMs }
-  const settled = []
-  for (let index = 0; index < job.batchCount; index += 1) {
+  const previousOutputs = new Map(
+    completedVariants
+      .filter((variant) => variant?.status === 'succeeded' && variant.output)
+      .map((variant) => [Number(variant.index), variant.output]),
+  )
+  const pendingIndexes = Array.from({ length: job.batchCount }, (_, index) => index)
+    .filter((index) => !previousOutputs.has(index))
+  const settled = await mapWithConcurrency(pendingIndexes, variantConcurrency, async (index) => {
+    await onVariant?.({ index, status: 'running' })
     try {
       const media = await generateOneMiniMaxVideo(job, options, index)
-      settled.push({
+      const output = {
         id: `${jobId}-output-${index + 1}`,
         image: await persistMedia(media),
         mediaKind: 'video',
-      })
+      }
+      await onVariant?.({ index, status: 'succeeded', output })
+      return { status: 'fulfilled', value: { index, output } }
     } catch (caught) {
-      if (!settled.length) throw caught
-      break
+      await onVariant?.({ index, status: 'failed', error: caught instanceof Error ? caught.message : String(caught) })
+      return { status: 'rejected', reason: caught }
     }
+  })
+  const outputs = new Map(previousOutputs)
+  settled.forEach((result) => {
+    if (result.status === 'fulfilled') outputs.set(result.value.index, result.value.output)
+  })
+  const orderedOutputs = [...outputs.entries()].sort(([left], [right]) => left - right).map(([, output]) => output)
+  const failures = settled.filter((result) => result.status === 'rejected')
+  if (!orderedOutputs.length) {
+    const firstFailure = failures[0]
+    if (firstFailure?.status === 'rejected') throw firstFailure.reason
+    throw new GenerationError(502, 'EMPTY_PROVIDER_RESPONSE', 'MiniMax H3 没有返回候选视频，请重试。')
   }
-  const missingOutputCount = Math.max(0, job.batchCount - settled.length)
+  const missingOutputCount = Math.max(0, job.batchCount - orderedOutputs.length)
   return {
-    outputs: settled,
+    outputs: orderedOutputs,
     missingOutputCount,
     partialError: missingOutputCount
-      ? `MiniMax H3 仅返回 ${settled.length}/${job.batchCount} 个视频，可补生成缺少的 ${missingOutputCount} 个。`
+      ? `MiniMax H3 仅返回 ${orderedOutputs.length}/${job.batchCount} 个视频，可补生成缺少的 ${missingOutputCount} 个。`
       : undefined,
   }
 }

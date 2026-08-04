@@ -7,6 +7,8 @@ const intents = new Set([
 const branchStatuses = new Set(['queued', 'running', 'succeeded', 'failed', 'cancelled'])
 const toolRisks = new Set(['read', 'write', 'costly', 'external'])
 const toolStatuses = new Set(['pending', 'running', 'awaiting_confirmation', 'succeeded', 'failed'])
+const contextKinds = new Set(['素材', '结果', '文字', '节点'])
+const mediaKinds = new Set(['image', 'video'])
 const creativeDimensions = new Set([
   'person', 'garment', 'product', 'scene', 'style', 'pose',
   'composition', 'lighting', 'aspect_ratio', 'copy_space',
@@ -96,6 +98,29 @@ function validateConstraints(rawConstraints) {
   })
 }
 
+function validateContextSnapshot(rawSnapshot) {
+  if (rawSnapshot === undefined) return undefined
+  if (!Array.isArray(rawSnapshot) || rawSnapshot.length > 16) {
+    throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', 'Agent 上下文快照无效。')
+  }
+  const seen = new Set()
+  return rawSnapshot.map((item, index) => {
+    const nodeId = text(item?.nodeId, `第 ${index + 1} 个上下文节点`, 160)
+    if (seen.has(nodeId)) throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', 'Agent 上下文快照包含重复节点。')
+    seen.add(nodeId)
+    const kind = text(item?.kind, `第 ${index + 1} 个上下文类型`, 16)
+    if (!contextKinds.has(kind)) throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', 'Agent 上下文类型无效。')
+    const result = { nodeId, label: text(item?.label, `第 ${index + 1} 个上下文名称`, 160), kind }
+    if (item?.mediaKind !== undefined) {
+      const mediaKind = text(item.mediaKind, `第 ${index + 1} 个媒体类型`, 16)
+      if (!mediaKinds.has(mediaKind)) throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', 'Agent 媒体类型无效。')
+      result.mediaKind = mediaKind
+    }
+    if (item?.role !== undefined) result.role = text(item.role, `第 ${index + 1} 个上下文角色`, 80)
+    return result
+  })
+}
+
 export function validateAgentRunCreation(body) {
   if (!body || typeof body !== 'object') throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', 'Agent Run 不能为空。')
   if (containsMediaPayload(body)) throw new BotanicAgentRunError(400, 'AGENT_RUN_MEDIA_FORBIDDEN', 'Agent Run 不能包含图片或媒体数据。')
@@ -122,6 +147,7 @@ export function validateAgentRunCreation(body) {
     throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', 'Agent 分支标识重复。')
   }
   const toolCalls = validateToolCalls(rawPlan.toolCalls)
+  const contextSnapshot = validateContextSnapshot(rawPlan.contextSnapshot)
   return {
     projectId,
     plan: {
@@ -134,6 +160,7 @@ export function validateAgentRunCreation(body) {
       settings: validateSettings(rawPlan.settings),
       constraints: validateConstraints(rawPlan.constraints),
       output: { mode: output.mode, count, candidatesPerItem },
+      ...(contextSnapshot?.length ? { contextSnapshot } : {}),
       ...(rawPlan.assetGroupId ? { assetGroupId: text(rawPlan.assetGroupId, '素材组', 160) } : {}),
       ...(toolCalls ? { toolCalls } : {}),
     },

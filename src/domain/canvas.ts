@@ -293,6 +293,18 @@ export type GenerationOutput = {
   revisedPrompt?: string
 }
 
+/** 父生成任务下的独立候选子任务；每个候选可单独观察、失败和重试。 */
+export type GenerationVariantStatus = 'queued' | 'running' | 'succeeded' | 'failed'
+
+export type GenerationVariant = {
+  index: number
+  status: GenerationVariantStatus
+  output?: GenerationOutput
+  error?: string
+  startedAt?: number
+  completedAt?: number
+}
+
 export type GenerationJob = {
   id: string
   status: GenerationTaskStatus
@@ -309,8 +321,15 @@ export type GenerationJob = {
   missingOutputCount?: number
   partialError?: string
   outputs?: GenerationOutput[]
+  variants?: GenerationVariant[]
   /** 用户从画布移除的候选，服务端任务记录保留，但不应在下次恢复时复活。 */
   dismissedOutputIds?: string[]
+  /** 浏览器或 Worker 回写画布失败时保留的可恢复标记。 */
+  idempotencyKey?: string
+  projectWritebackPending?: boolean
+  projectWritebackAttempts?: number
+  projectWritebackError?: string
+  projectWritebackUpdatedAt?: number
   /** 统一图谱中的生成节点；旧字段仅用于迁移历史快照。 */
   generateNodeId?: string
   promptNodeId?: string

@@ -30,12 +30,14 @@ export function connectCanvasCollaboration({
   onRemoteGraph,
   onProjectUpdated,
   onAgentRunUpdated,
+  onReconnected,
 }: {
   projectId: string
   initialGraph: CollaborativeGraph
   onRemoteGraph: (graph: CollaborativeGraph) => void
   onProjectUpdated: (event: ProjectUpdatedRealtimeEvent) => void
   onAgentRunUpdated: (event: AgentRunUpdatedRealtimeEvent) => void
+  onReconnected?: () => void
 }): CanvasCollaboration {
   let channel: ReturnType<typeof openProjectRealtimeChannel> | undefined
   const graph = createCollaborativeGraph({
@@ -63,6 +65,8 @@ export function connectCanvasCollaboration({
     } catch {
       // 损坏增量不影响 HTTP 权威文档与后续实时消息。
     }
+  }, ({ reconnected }) => {
+    if (reconnected) onReconnected?.()
   })
 
   return {

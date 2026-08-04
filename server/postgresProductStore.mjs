@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto'
 import postgres from 'postgres'
 import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from './authorization.mjs'
+import { artifactIndexLimits, artifactsFromActionReceipt, artifactsFromAgentMessage, artifactsFromDocument, artifactsFromGenerationJob } from './botanicArtifactIndex.mjs'
 import { applyGenerationJobToAgentRun } from './botanicAgentRun.mjs'
+import { agentStateFromDocument, mergeAgentStateIntoDocument, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity } from './botanicAgentPersistence.mjs'
 
 const now = () => Date.now()
 const hashAccessToken = (token) => createHash('sha256').update(token).digest('hex')
@@ -159,6 +161,45 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       updated_at bigint not null,
       payload jsonb not null
     );
+    alter table agent_runs drop constraint if exists agent_runs_status_check;
+    alter table agent_runs add constraint agent_runs_status_check
+      check (status in ('awaiting_confirmation', 'queued', 'executing', 'running', 'completed', 'partial', 'failed', 'cancelled'));
+    create table if not exists agent_sessions (
+      id text primary key,
+      owner_id text not null references app_users(id) on delete cascade,
+      project_id text not null references projects(id) on delete cascade,
+      updated_at bigint not null,
+      payload jsonb not null
+    );
+    create table if not exists agent_messages (
+      id text primary key,
+      owner_id text not null references app_users(id) on delete cascade,
+      project_id text not null references projects(id) on delete cascade,
+      session_id text not null references agent_sessions(id) on delete cascade,
+      updated_at bigint not null,
+      payload jsonb not null
+    );
+    create table if not exists agent_memory_items (
+      id text primary key,
+      owner_id text not null references app_users(id) on delete cascade,
+      project_id text not null references projects(id) on delete cascade,
+      updated_at bigint not null,
+      deleted_at bigint,
+      payload jsonb not null
+    );
+    create table if not exists agent_artifacts (
+      project_id text not null references projects(id) on delete cascade,
+      id text not null,
+      owner_id text not null references app_users(id) on delete cascade,
+      kind text not null check (kind in ('image', 'video', 'text', 'workflow', 'asset_group', 'file')),
+      source_kind text not null check (source_kind in ('agent_action', 'generation_output')),
+      run_id text,
+      job_id text,
+      created_at bigint not null,
+      updated_at bigint not null,
+      payload jsonb not null,
+      primary key (project_id, id)
+    );
     create table if not exists agent_skills (
       id text primary key,
       owner_id text not null references app_users(id) on delete cascade,
@@ -199,6 +240,12 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     create index if not exists canvas_graph_updates_project_idx on canvas_graph_updates (project_id, id);
     create index if not exists jobs_status_updated_at_idx on generation_jobs (status, updated_at);
     create index if not exists agent_runs_project_updated_idx on agent_runs (project_id, updated_at desc);
+    create index if not exists agent_sessions_project_updated_idx on agent_sessions (project_id, updated_at desc);
+    create index if not exists agent_messages_session_updated_idx on agent_messages (session_id, updated_at asc);
+    create index if not exists agent_memory_project_updated_idx on agent_memory_items (project_id, updated_at desc);
+    create index if not exists agent_artifacts_project_created_idx on agent_artifacts (project_id, created_at desc, id);
+    create index if not exists agent_artifacts_run_idx on agent_artifacts (project_id, run_id) where run_id is not null;
+    create index if not exists agent_artifacts_job_idx on agent_artifacts (project_id, job_id) where job_id is not null;
     create index if not exists agent_skills_project_updated_idx on agent_skills (project_id, updated_at desc);
     create index if not exists agent_action_receipts_project_created_idx on agent_action_receipts (project_id, created_at desc);
     create index if not exists media_project_idx on media_objects (project_id);
@@ -217,6 +264,149 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       updated_at
     from projects
     on conflict (project_id) do nothing;
+    insert into agent_sessions (id, owner_id, project_id, updated_at, payload)
+    select session->>'id', member.user_id, project.id,
+      case when session->>'updatedAt' ~ '^[0-9]+$' then (session->>'updatedAt')::bigint else project.updated_at end,
+      session - 'messages'
+    from projects project
+    join lateral (
+      select user_id from project_members
+      where project_id = project.id
+      order by (role = 'owner') desc, added_at asc limit 1
+    ) member on true
+    cross join lateral jsonb_array_elements(coalesce(project.document->'agentSessions', '[]'::jsonb)) session
+    where nullif(session->>'id', '') is not null
+    on conflict (id) do nothing;
+    insert into agent_messages (id, owner_id, project_id, session_id, updated_at, payload)
+    select message->>'id', member.user_id, project.id, session->>'id',
+      case when session->>'updatedAt' ~ '^[0-9]+$' then (session->>'updatedAt')::bigint else project.updated_at end,
+      message
+    from projects project
+    join lateral (
+      select user_id from project_members
+      where project_id = project.id
+      order by (role = 'owner') desc, added_at asc limit 1
+    ) member on true
+    cross join lateral jsonb_array_elements(coalesce(project.document->'agentSessions', '[]'::jsonb)) session
+    cross join lateral jsonb_array_elements(coalesce(session->'messages', '[]'::jsonb)) message
+    where nullif(session->>'id', '') is not null and nullif(message->>'id', '') is not null
+    on conflict (id) do nothing;
+    insert into agent_memory_items (id, owner_id, project_id, updated_at, payload)
+    select memory->>'id', member.user_id, project.id,
+      case when memory->>'updatedAt' ~ '^[0-9]+$' then (memory->>'updatedAt')::bigint else project.updated_at end,
+      memory
+    from projects project
+    join lateral (
+      select user_id from project_members
+      where project_id = project.id
+      order by (role = 'owner') desc, added_at asc limit 1
+    ) member on true
+    cross join lateral jsonb_array_elements(coalesce(project.document->'agentMemory', '[]'::jsonb)) memory
+    where nullif(memory->>'id', '') is not null
+    on conflict (id) do nothing;
+    insert into agent_runs (id, owner_id, project_id, status, updated_at, payload)
+    select run->>'id', member.user_id, project.id,
+      case when run->>'status' in ('awaiting_confirmation', 'queued', 'executing', 'running', 'completed', 'partial', 'failed', 'cancelled')
+        then run->>'status' else 'awaiting_confirmation' end,
+      case when run->>'updatedAt' ~ '^[0-9]+$' then (run->>'updatedAt')::bigint else project.updated_at end,
+      run || jsonb_build_object('ownerId', member.user_id, 'projectId', project.id)
+    from projects project
+    join lateral (
+      select user_id from project_members
+      where project_id = project.id
+      order by (role = 'owner') desc, added_at asc limit 1
+    ) member on true
+    cross join lateral jsonb_array_elements(coalesce(project.document->'agentRuns', '[]'::jsonb)) run
+    where nullif(run->>'id', '') is not null
+    on conflict (id) do nothing;
+    insert into agent_artifacts (project_id, id, owner_id, kind, source_kind, run_id, job_id, created_at, updated_at, payload)
+    select message.project_id, artifact->>'id', message.owner_id, artifact->>'kind', 'agent_action',
+      nullif(artifact->'provenance'->>'runId', ''), null,
+      case when message.payload->>'createdAt' ~ '^[0-9]+$' then (message.payload->>'createdAt')::bigint else message.updated_at end,
+      message.updated_at,
+      artifact || jsonb_build_object(
+        'origin', jsonb_strip_nulls(jsonb_build_object(
+          'type', 'agent_action', 'sessionId', message.session_id,
+          'messageId', message.id, 'actionId', action->>'id'
+        )),
+        'createdAt', case when message.payload->>'createdAt' ~ '^[0-9]+$' then (message.payload->>'createdAt')::bigint else message.updated_at end,
+        'updatedAt', message.updated_at
+      )
+    from agent_messages message
+    cross join lateral jsonb_array_elements(case
+      when jsonb_typeof(message.payload->'plan'->'actions') = 'array' then message.payload->'plan'->'actions'
+      else '[]'::jsonb end) action
+    cross join lateral jsonb_array_elements(case
+      when jsonb_typeof(action->'result'->'artifacts') = 'array' then action->'result'->'artifacts'
+      else '[]'::jsonb end) artifact
+    where nullif(artifact->>'id', '') is not null
+      and artifact->>'kind' in ('image', 'video', 'text', 'workflow', 'asset_group', 'file')
+      and nullif(artifact->>'label', '') is not null
+      and jsonb_typeof(artifact->'provenance') = 'object'
+    on conflict (project_id, id) do update set
+      kind = excluded.kind, source_kind = excluded.source_kind, run_id = excluded.run_id,
+      updated_at = excluded.updated_at, payload = excluded.payload
+    where agent_artifacts.updated_at <= excluded.updated_at;
+    insert into agent_artifacts (project_id, id, owner_id, kind, source_kind, run_id, job_id, created_at, updated_at, payload)
+    select receipt.project_id, artifact->>'id', receipt.owner_id, artifact->>'kind', 'agent_action',
+      nullif(artifact->'provenance'->>'runId', ''), null, receipt.created_at, receipt.created_at,
+      artifact || jsonb_build_object(
+        'origin', jsonb_strip_nulls(jsonb_build_object(
+          'type', 'agent_action',
+          'actionId', coalesce(
+            receipt.payload->>'toolCallId',
+            receipt.payload->'result'->'toolCall'->>'id',
+            receipt.payload->'toolCall'->>'id'
+          )
+        )),
+        'createdAt', receipt.created_at, 'updatedAt', receipt.created_at
+      )
+    from agent_action_receipts receipt
+    cross join lateral jsonb_array_elements(case
+      when jsonb_typeof(receipt.payload->'output'->'artifacts') = 'array' then receipt.payload->'output'->'artifacts'
+      when jsonb_typeof(receipt.payload->'result'->'output'->'artifacts') = 'array' then receipt.payload->'result'->'output'->'artifacts'
+      when jsonb_typeof(receipt.payload->'result'->'artifacts') = 'array' then receipt.payload->'result'->'artifacts'
+      else '[]'::jsonb end) artifact
+    where nullif(artifact->>'id', '') is not null
+      and artifact->>'kind' in ('image', 'video', 'text', 'workflow', 'asset_group', 'file')
+      and nullif(artifact->>'label', '') is not null
+      and jsonb_typeof(artifact->'provenance') = 'object'
+    on conflict (project_id, id) do update set
+      kind = excluded.kind, source_kind = excluded.source_kind, run_id = excluded.run_id,
+      updated_at = excluded.updated_at, payload = excluded.payload
+    where agent_artifacts.updated_at <= excluded.updated_at;
+    insert into agent_artifacts (project_id, id, owner_id, kind, source_kind, run_id, job_id, created_at, updated_at, payload)
+    select job.project_id, 'generation:' || job.id || ':' || (output->>'id'), job.owner_id,
+      case when output->>'mediaKind' = 'video' then 'video' else 'image' end,
+      'generation_output', nullif(job.payload->'agentRun'->>'runId', ''), job.id,
+      job.updated_at, job.updated_at,
+      jsonb_build_object(
+        'id', 'generation:' || job.id || ':' || (output->>'id'),
+        'kind', case when output->>'mediaKind' = 'video' then 'video' else 'image' end,
+        'label', case when output->>'mediaKind' = 'video' then '生成视频' else '生成图片' end,
+        'url', output->>'image',
+        'metadata', jsonb_strip_nulls(jsonb_build_object(
+          'source', 'generation', 'status', job.status, 'jobId', job.id,
+          'branchId', job.payload->'agentRun'->>'branchId', 'groupId', job.payload->'agentRun'->>'runId',
+          'outputId', output->>'id', 'settings', job.payload->'settings'
+        )),
+        'provenance', jsonb_strip_nulls(jsonb_build_object(
+          'actionId', 'generation:' || job.id,
+          'toolName', case when output->>'mediaKind' = 'video' then 'video_generation' else 'image_generation' end,
+          'runId', job.payload->'agentRun'->>'runId', 'sourceNodeIds', '[]'::jsonb
+        )),
+        'origin', jsonb_build_object('type', 'generation_output', 'jobId', job.id, 'outputId', output->>'id'),
+        'createdAt', job.updated_at, 'updatedAt', job.updated_at
+      )
+    from generation_jobs job
+    cross join lateral jsonb_array_elements(case
+      when jsonb_typeof(job.payload->'outputs') = 'array' then job.payload->'outputs'
+      else '[]'::jsonb end) output
+    where nullif(output->>'id', '') is not null and nullif(output->>'image', '') is not null
+    on conflict (project_id, id) do update set
+      kind = excluded.kind, source_kind = excluded.source_kind, run_id = excluded.run_id,
+      job_id = excluded.job_id, updated_at = excluded.updated_at, payload = excluded.payload
+    where agent_artifacts.updated_at <= excluded.updated_at;
     `)
   })
 
@@ -256,6 +446,99 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       where p.id = ${projectId}
       on conflict (project_id) do nothing
     `
+  }
+
+  async function readAgentStateRows(query, projectId) {
+    const [sessionRows, messageRows, memoryRows, runRows] = await Promise.all([
+      query`select payload from agent_sessions where project_id = ${projectId} order by updated_at desc limit 80`,
+      query`select session_id as "sessionId", updated_at as "updatedAt", payload from agent_messages where project_id = ${projectId} order by updated_at asc limit 40000`,
+      query`select id, deleted_at as "deletedAt", payload from agent_memory_items where project_id = ${projectId} order by updated_at desc limit 200`,
+      query`select payload from agent_runs where project_id = ${projectId} order by updated_at desc limit 60`,
+    ])
+    return {
+      sessions: sessionRows.map(asPayload),
+      messages: messageRows.map((row) => ({ sessionId: row.sessionId, updatedAt: Number(row.updatedAt), message: asPayload(row) })),
+      memory: memoryRows.filter((row) => row.deletedAt === null).map(asPayload),
+      deletedMemoryIds: memoryRows.filter((row) => row.deletedAt !== null).map((row) => row.id),
+      runs: runRows.map(asPayload),
+    }
+  }
+
+  async function upsertArtifactRecords(query, userId, projectId, artifacts) {
+    for (const artifact of artifacts) {
+      await query`
+        insert into agent_artifacts (
+          project_id, id, owner_id, kind, source_kind, run_id, job_id,
+          created_at, updated_at, payload
+        ) values (
+          ${projectId}, ${artifact.id}, ${userId}, ${artifact.kind}, ${artifact.origin.type},
+          ${artifact.provenance.runId ?? null}, ${artifact.origin.jobId ?? null},
+          ${artifact.createdAt}, ${artifact.updatedAt}, ${query.json(artifact)}::jsonb
+        )
+        on conflict (project_id, id) do update set
+          kind = excluded.kind,
+          source_kind = excluded.source_kind,
+          run_id = excluded.run_id,
+          job_id = excluded.job_id,
+          created_at = least(agent_artifacts.created_at, excluded.created_at),
+          updated_at = excluded.updated_at,
+          payload = excluded.payload
+        where agent_artifacts.updated_at <= excluded.updated_at
+      `
+    }
+  }
+
+  async function syncAgentState(tx, userId, document, previousDocument) {
+    const extracted = agentStateFromDocument(document)
+    for (const session of extracted.sessions) {
+      const [conflict] = await tx`select project_id as "projectId" from agent_sessions where id = ${session.id}`
+      if (conflict && conflict.projectId !== document.id) throw productError('Agent 会话标识已被其他项目使用。', 'AGENT_SESSION_ID_CONFLICT')
+      await tx`
+        insert into agent_sessions (id, owner_id, project_id, updated_at, payload)
+        values (${session.id}, ${userId}, ${document.id}, ${session.updatedAt}, ${tx.json(session)}::jsonb)
+        on conflict (id) do update set updated_at = excluded.updated_at, payload = excluded.payload
+        where agent_sessions.project_id = excluded.project_id and agent_sessions.updated_at <= excluded.updated_at
+      `
+    }
+    for (const entry of extracted.messages) {
+      const [conflict] = await tx`select project_id as "projectId", session_id as "sessionId" from agent_messages where id = ${entry.message.id}`
+      if (conflict && (conflict.projectId !== document.id || conflict.sessionId !== entry.sessionId)) {
+        throw productError('Agent 消息标识已被其他会话使用。', 'AGENT_MESSAGE_ID_CONFLICT')
+      }
+      await tx`
+        insert into agent_messages (id, owner_id, project_id, session_id, updated_at, payload)
+        values (${entry.message.id}, ${userId}, ${document.id}, ${entry.sessionId}, ${entry.updatedAt}, ${tx.json(entry.message)}::jsonb)
+        on conflict (id) do update set updated_at = excluded.updated_at, payload = excluded.payload
+        where agent_messages.project_id = excluded.project_id
+          and agent_messages.session_id = excluded.session_id
+          and agent_messages.updated_at <= excluded.updated_at
+      `
+    }
+    const previousMemoryIds = new Set((Array.isArray(previousDocument?.agentMemory) ? previousDocument.agentMemory : []).map((item) => item?.id).filter(Boolean))
+    const nextMemoryIds = new Set(extracted.memory.map((item) => item.id))
+    for (const memoryId of previousMemoryIds) {
+      if (!nextMemoryIds.has(memoryId)) await tx`update agent_memory_items set deleted_at = ${now()}, updated_at = ${now()} where id = ${memoryId} and project_id = ${document.id}`
+    }
+    for (const memory of extracted.memory) {
+      const [conflict] = await tx`select project_id as "projectId" from agent_memory_items where id = ${memory.id}`
+      if (conflict && conflict.projectId !== document.id) throw productError('Agent 记忆标识已被其他项目使用。', 'AGENT_MEMORY_ID_CONFLICT')
+      await tx`
+        insert into agent_memory_items (id, owner_id, project_id, updated_at, deleted_at, payload)
+        values (${memory.id}, ${userId}, ${document.id}, ${memory.updatedAt}, null, ${tx.json(memory)}::jsonb)
+        on conflict (id) do update set updated_at = excluded.updated_at, deleted_at = null, payload = excluded.payload
+        where agent_memory_items.project_id = excluded.project_id and agent_memory_items.updated_at <= excluded.updated_at
+      `
+    }
+    for (const run of extracted.runs) {
+      const status = typeof run.status === 'string' ? run.status : 'awaiting_confirmation'
+      await tx`
+        insert into agent_runs (id, owner_id, project_id, status, updated_at, payload)
+        values (${run.id}, ${userId}, ${document.id}, ${status}, ${Number(run.updatedAt) || now()}, ${tx.json({ ...run, projectId: document.id, ownerId: userId })}::jsonb)
+        on conflict (id) do update set status = excluded.status, updated_at = excluded.updated_at, payload = excluded.payload
+        where agent_runs.project_id = excluded.project_id and agent_runs.updated_at <= excluded.updated_at
+      `
+    }
+    await upsertArtifactRecords(tx, userId, document.id, artifactsFromDocument(document))
   }
 
   const store = {
@@ -399,13 +682,14 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       if (!row) return undefined
       const document = asJson(row.document)
       const graph = row.graph ? asJson(row.graph) : canvasGraph(document)
+      const agentState = await readAgentStateRows(sql, projectId)
       const updatedAt = Math.max(
         Number(document.updatedAt ?? 0),
         Number(row.projectUpdatedAt ?? 0),
         Number(row.graphUpdatedAt ?? 0),
       )
       return {
-        document: { ...document, ...graph, updatedAt },
+        document: mergeAgentStateIntoDocument({ ...document, ...graph, updatedAt }, agentState),
         revision: Number(row.revision),
         graphRevision: Number(row.graphRevision ?? 1),
       }
@@ -428,7 +712,7 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     async writeProject(userId, document, expectedRevision, expectedGraphRevision) {
       return sql.begin(async (tx) => {
         const [existing] = await tx`
-          select p.id, p.revision, m.role
+          select p.id, p.revision, p.document, m.role
           from projects p left join project_members m on m.project_id = p.id and m.user_id = ${userId}
           where p.id = ${document.id}
           for update of p
@@ -450,6 +734,7 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
             throw productError('画布已被其他成员更新，请刷新后再保存。', 'CANVAS_GRAPH_CONFLICT')
           }
           const revision = Number(existing.revision) + 1
+          await syncAgentState(tx, userId, document, asJson(existing.document))
           await tx`update projects set name = ${document.name}, document = ${tx.json(document)}::jsonb, revision = ${revision}, updated_at = ${timestamp} where id = ${document.id}`
           let graphRevision = Number(currentGraphEntry.revision)
           if (graphChanged) {
@@ -471,6 +756,7 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
           insert into canvas_graphs (project_id, graph, revision, updated_at)
           values (${document.id}, ${tx.json(canvasGraph(document))}::jsonb, 1, ${timestamp})
         `
+        await syncAgentState(tx, userId, document)
         await insertAudit(tx, { actorId: userId, action: 'project.created', projectId: document.id })
         return { document: clone(document), revision: 1, graphRevision: 1, created: true }
       })
@@ -610,6 +896,100 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       })
     },
 
+    async readAgentState(userId, projectId) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const state = await readAgentStateRows(sql, projectId)
+      const hydrated = mergeAgentStateIntoDocument({ agentSessions: [], agentMemory: [], agentRuns: [] }, state)
+      return { sessions: hydrated.agentSessions, memory: hydrated.agentMemory, runs: hydrated.agentRuns }
+    },
+
+    async putAgentSession(userId, projectId, input) {
+      const role = await memberRole(projectId, userId)
+      assertProjectPermission(role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      const timestampValue = now()
+      const session = validateAgentSessionEntity({ ...input, updatedAt: timestampValue }, { now: timestampValue })
+      await sql.begin(async (tx) => {
+        const [existing] = await tx`select project_id as "projectId" from agent_sessions where id = ${session.id} for update`
+        if (existing && existing.projectId !== projectId) throw productError('Agent 会话标识已被其他项目使用。', 'AGENT_SESSION_ID_CONFLICT')
+        await tx`
+          insert into agent_sessions (id, owner_id, project_id, updated_at, payload)
+          values (${session.id}, ${userId}, ${projectId}, ${timestampValue}, ${tx.json(session)}::jsonb)
+          on conflict (id) do update set updated_at = excluded.updated_at, payload = excluded.payload
+        `
+        await insertAudit(tx, { actorId: userId, action: existing ? 'agent-session.updated' : 'agent-session.created', projectId, targetId: session.id })
+      })
+      return clone(session)
+    },
+
+    async putAgentMessage(userId, projectId, sessionId, input) {
+      const role = await memberRole(projectId, userId)
+      assertProjectPermission(role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      const timestampValue = now()
+      const message = validateAgentMessageEntity(input, { now: timestampValue })
+      await sql.begin(async (tx) => {
+        const [sessionRow] = await tx`select payload from agent_sessions where id = ${sessionId} and project_id = ${projectId} for update`
+        if (!sessionRow) throw productError('未找到 Agent 会话。', 'AGENT_SESSION_NOT_FOUND')
+        const [existing] = await tx`select project_id as "projectId", session_id as "sessionId" from agent_messages where id = ${message.id} for update`
+        if (existing && (existing.projectId !== projectId || existing.sessionId !== sessionId)) {
+          throw productError('Agent 消息标识已被其他会话使用。', 'AGENT_MESSAGE_ID_CONFLICT')
+        }
+        await tx`
+          insert into agent_messages (id, owner_id, project_id, session_id, updated_at, payload)
+          values (${message.id}, ${userId}, ${projectId}, ${sessionId}, ${timestampValue}, ${tx.json(message)}::jsonb)
+          on conflict (id) do update set updated_at = excluded.updated_at, payload = excluded.payload
+        `
+        const session = { ...asPayload(sessionRow), updatedAt: timestampValue }
+        await tx`update agent_sessions set updated_at = ${timestampValue}, payload = ${tx.json(session)}::jsonb where id = ${sessionId}`
+        await upsertArtifactRecords(tx, userId, projectId, artifactsFromAgentMessage(message, { sessionId, updatedAt: timestampValue }))
+        await insertAudit(tx, { actorId: userId, action: existing ? 'agent-message.updated' : 'agent-message.created', projectId, targetId: message.id, detail: { sessionId } })
+      })
+      return clone(message)
+    },
+
+    async putAgentMemoryItem(userId, projectId, input) {
+      const role = await memberRole(projectId, userId)
+      assertProjectPermission(role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      const timestampValue = now()
+      const memory = validateAgentMemoryEntity({ ...input, updatedAt: timestampValue }, { now: timestampValue })
+      await sql.begin(async (tx) => {
+        const [existing] = await tx`select project_id as "projectId" from agent_memory_items where id = ${memory.id} for update`
+        if (existing && existing.projectId !== projectId) throw productError('Agent 记忆标识已被其他项目使用。', 'AGENT_MEMORY_ID_CONFLICT')
+        await tx`
+          insert into agent_memory_items (id, owner_id, project_id, updated_at, deleted_at, payload)
+          values (${memory.id}, ${userId}, ${projectId}, ${timestampValue}, null, ${tx.json(memory)}::jsonb)
+          on conflict (id) do update set updated_at = excluded.updated_at, deleted_at = null, payload = excluded.payload
+        `
+        await insertAudit(tx, { actorId: userId, action: existing ? 'agent-memory.updated' : 'agent-memory.created', projectId, targetId: memory.id })
+      })
+      return clone(memory)
+    },
+
+    async deleteAgentMemoryItem(userId, projectId, memoryId) {
+      const role = await memberRole(projectId, userId)
+      assertProjectPermission(role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      return sql.begin(async (tx) => {
+        const [existing] = await tx`select id from agent_memory_items where id = ${memoryId} and project_id = ${projectId} and deleted_at is null for update`
+        if (!existing) return false
+        const timestampValue = now()
+        await tx`update agent_memory_items set deleted_at = ${timestampValue}, updated_at = ${timestampValue} where id = ${memoryId}`
+        await insertAudit(tx, { actorId: userId, action: 'agent-memory.deleted', projectId, targetId: memoryId })
+        return true
+      })
+    },
+
+    async listAgentArtifacts(userId, projectId, { limit = 100, before } = {}) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const maximum = Math.max(1, Math.min(Number(limit) || 100, artifactIndexLimits.page))
+      const beforeTimestamp = Number.isFinite(Number(before)) ? Number(before) : Number.MAX_SAFE_INTEGER
+      const rows = await sql`
+        select artifact.payload from agent_artifacts artifact
+        where artifact.project_id = ${projectId} and artifact.created_at < ${beforeTimestamp}
+        order by artifact.created_at desc, artifact.updated_at desc, artifact.id asc
+        limit ${maximum}
+      `
+      return rows.map(asPayload)
+    },
+
     async putAgentSkill(userId, skill) {
       const role = await memberRole(skill.projectId, userId)
       assertProjectPermission(role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
@@ -654,6 +1034,7 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
         values (${receipt.id}, ${userId}, ${receipt.projectId}, ${receipt.createdAt}, ${sql.json(payload)}::jsonb)
         on conflict (id) do update set payload = excluded.payload
       `
+      await upsertArtifactRecords(sql, userId, receipt.projectId, artifactsFromActionReceipt(receipt))
       try {
         await insertAudit(sql, { actorId: userId, action: 'agent-action.succeeded', projectId: receipt.projectId, targetId: receipt.id, detail: { toolCallId: receipt.toolCallId } })
       } catch (error) {
@@ -686,6 +1067,14 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
             await tx`update agent_runs set status = ${run.status}, updated_at = ${run.updatedAt}, payload = ${tx.json(run)}::jsonb where id = ${run.id}`
           }
         }
+        const [project] = await tx`
+          select p.document, g.graph from projects p
+          left join canvas_graphs g on g.project_id = p.id
+          where p.id = ${job.projectId}
+        `
+        if (project) await upsertArtifactRecords(tx, userId, job.projectId, artifactsFromGenerationJob(payload, {
+          document: { ...asJson(project.document), ...asJson(project.graph ?? {}) },
+        }))
       })
       await insertAudit(sql, { actorId: userId, action: `generation.${job.status}`, projectId: job.projectId, targetId: job.id, detail: { model: job.settings?.model, batchCount: job.batchCount } })
     },
@@ -747,7 +1136,11 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     },
 
     async recoverGenerationJobs() {
-      const queued = await sql`select payload from generation_jobs where status = 'queued' order by updated_at asc`
+      const queued = await sql`
+        select payload from generation_jobs
+        where status = 'queued' or payload->>'projectWritebackPending' = 'true'
+        order by updated_at asc
+      `
       return queued.map(asPayload)
     },
 

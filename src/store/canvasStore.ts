@@ -91,6 +91,8 @@ type GenerationRequest = {
   sourceGraphNodeId?: string
   refinementMode?: RefinementMode
   agentRun?: { runId: string; branchId: string }
+  /** 在请求写入任务节点前生成，并随草稿恢复；避免网络重试创建重复任务。 */
+  idempotencyKey?: string
 }
 
 type GenerateBranchDraft = {
@@ -108,8 +110,14 @@ type UndoAction = {
 let generationPollTimerId: number | null = null
 let generationPollRunId = 0
 let generationSubmissionRunId = 0
+
+function createGenerationSubmissionKey() {
+  const uuid = globalThis.crypto?.randomUUID?.()
+  return `gen_${(uuid ?? `${Date.now()}_${Math.random().toString(36).slice(2)}`).replaceAll('-', '')}`
+}
 let undoTimerId: number | null = null
 let persistenceRunId = 0
+let taskFlowSequence = 0
 const activeBatchVariationRuns = new Set<string>()
 /** 当前会话中正在删除或已删除的全局品牌素材，阻止异步任务用旧快照回写引用。 */
 const revokedGlobalAssetIds = new Set<string>()
@@ -137,6 +145,7 @@ type CanvasStore = {
   hydrate: () => Promise<void>
   openDocument: (documentId: string) => Promise<boolean>
   refreshDocumentFromRemote: () => Promise<boolean>
+  recoverGenerationResultsFromRemote: () => Promise<boolean>
   openNewDocument: (document: CanvasDocument) => void
   renameDocument: (name: string) => Promise<void>
   setNodes: (nodes: CanvasNode[]) => void
@@ -181,11 +190,12 @@ type CanvasStore = {
   applyAgentRunSnapshot: (snapshot: BotanicAgentRunSnapshot) => void
   retryAgentBranch: (runId: string, branchId: string) => Promise<boolean>
   cancelAgentRun: (runId: string) => Promise<boolean>
+  retryBatchVariationItem: (runId: string, itemId: string) => Promise<boolean>
   updateAgentRunStatus: (runId: string, status: BotanicAgentRunStatus, error?: string) => void
   ensureAgentSession: (contextNodeIds?: string[]) => string
   startNewAgentSession: (contextNodeIds?: string[]) => string
   appendAgentMessage: (sessionId: string, message: BotanicAgentMessage) => void
-  updateAgentMessage: (sessionId: string, messageId: string, patch: Partial<Pick<BotanicAgentMessage, 'content' | 'runId' | 'status' | 'feedback' | 'plan' | 'question'>>) => void
+  updateAgentMessage: (sessionId: string, messageId: string, patch: Partial<Pick<BotanicAgentMessage, 'content' | 'runId' | 'status' | 'feedback' | 'plan' | 'question' | 'deliveryStatus'>>) => void
   updateAgentAction: (sessionId: string, messageId: string, actionId: string, patch: Partial<Pick<BotanicAgentActionProposal, 'status' | 'error' | 'result'>>) => void
   setAgentSessionContext: (sessionId: string, contextNodeIds: string[]) => void
   setAgentSessionExecutionMode: (sessionId: string, mode: BotanicAgentExecutionMode) => void
@@ -1678,15 +1688,18 @@ function createTaskFlow(
   parentNode?: CanvasNode,
 ): { document: CanvasDocument; taskNodeIds: TaskNodeIds } {
   const timestamp = Date.now()
+  // 批量父任务会在同一帧创建多个子工作流；仅用 Date.now() 会让同毫秒
+  // 创建的节点互相覆盖，因此追加会话内单调序号保持 ID 唯一。
+  const flowKey = `${timestamp}-${++taskFlowSequence}`
   const sourceGenerateNode = request.sourceGraphNodeId
     ? document.nodes.find((node) => node.id === request.sourceGraphNodeId && node.type === 'generate')
     : undefined
   const taskNodeIds: TaskNodeIds = {
-    generateNodeId: sourceGenerateNode?.id ?? `generate-task-${timestamp}`,
-    resultNodeId: `result-task-${timestamp}`,
+    generateNodeId: sourceGenerateNode?.id ?? `generate-task-${flowKey}`,
+    resultNodeId: `result-task-${flowKey}`,
     resultNodeIds: Array.from({ length: request.batchCount }, (_, index) => index
-      ? `result-task-${timestamp}-${index + 1}`
-      : `result-task-${timestamp}`),
+      ? `result-task-${flowKey}-${index + 1}`
+      : `result-task-${flowKey}`),
   }
   const x = nextTaskFlowStartX(document.nodes)
   const y = 160
@@ -1714,7 +1727,7 @@ function createTaskFlow(
     : undefined
   const rootRecipe = cloneGenerationRecipe(request.rootRecipe ?? parentRootRecipe ?? recipe)
 
-  const textNodeId = sourceGenerateNode ? undefined : `text-task-${timestamp}`
+  const textNodeId = sourceGenerateNode ? undefined : `text-task-${flowKey}`
   const textNode: CanvasNode | undefined = textNodeId
     ? {
         id: textNodeId,
@@ -1780,13 +1793,13 @@ function createTaskFlow(
     for (const reference of recipe.references) {
       if (!nodeIds.has(reference.nodeId)) continue
       taskEdges.push({
-        ...migrationInputEdge(`task-asset-generate-${timestamp}-${reference.nodeId}`, reference.nodeId, taskNodeIds.generateNodeId, undefined, 'asset-output'),
+        ...migrationInputEdge(`task-asset-generate-${flowKey}-${reference.nodeId}`, reference.nodeId, taskNodeIds.generateNodeId, undefined, 'asset-output'),
         className: 'task-edge task-edge--active',
       })
     }
     if (textNodeId) {
       taskEdges.push({
-        ...migrationInputEdge(`task-text-generate-${timestamp}`, textNodeId, taskNodeIds.generateNodeId),
+        ...migrationInputEdge(`task-text-generate-${flowKey}`, textNodeId, taskNodeIds.generateNodeId),
         className: 'task-edge task-edge--active',
       })
     }
@@ -1794,7 +1807,7 @@ function createTaskFlow(
 
   if (parentNode && !document.edges.some((edge) => edge.source === parentNode.id && edge.target === taskNodeIds.generateNodeId)) {
     taskEdges.push({
-      id: `task-parent-generate-${timestamp}`,
+      id: `task-parent-generate-${flowKey}`,
       source: parentNode.id,
       target: taskNodeIds.generateNodeId,
       targetHandle: 'input',
@@ -1806,7 +1819,7 @@ function createTaskFlow(
 
   for (const resultNode of resultNodes) {
     taskEdges.push({
-      id: `task-generate-result-${timestamp}-${resultNode.id}`,
+      id: `task-generate-result-${flowKey}-${resultNode.id}`,
       source: taskNodeIds.generateNodeId,
       sourceHandle: 'output',
       target: resultNode.id,
@@ -1985,6 +1998,7 @@ function requestFromPersistedJob(document: CanvasDocument, job: GenerationJob): 
     parentImage: parent?.image,
     parentLabel: parent?.label,
     jobId: job.id,
+    idempotencyKey: job.idempotencyKey,
     taskNodeIds: {
       generateNodeId: generateNode.id,
       resultNodeId: job.resultNodeId,
@@ -2033,6 +2047,7 @@ function requestFromTaskNode(document: CanvasDocument, taskResultNode: CanvasNod
     parentImage: parent?.image,
     parentLabel: parent?.label,
     jobId,
+    idempotencyKey: document.generationJobs.find((item) => item.id === jobId)?.idempotencyKey,
     taskNodeIds: { generateNodeId: generateNode.id, resultNodeId },
     refinementMode: result.refinementMode ?? generate.refinementMode,
   }
@@ -2520,123 +2535,11 @@ async function executeBatchVariationRun(
   try {
     stopGenerationPolling()
     updateBatchVariationRun(set, get, runId, (run) => ({ ...run, status: 'running', updatedAt: Date.now() }))
-    while (true) {
-      const run = get().document.batchVariationRuns.find((item) => item.id === runId)
-      if (!run || run.status === 'cancelled') return
-      const item = run.items.find((candidate) => candidate.status === 'running' || candidate.status === 'queued')
-      if (!item) break
-
-      let jobId = item.jobId
-      let request: GenerationRequest | undefined
-      if (item.status === 'running' && jobId) {
-        const recordedJob = get().document.generationJobs.find((job) => job.id === jobId)
-        request = recordedJob ? requestFromPersistedJob(get().document, recordedJob) ?? undefined : undefined
-        if (request) set({ lastGenerationRequest: { ...request, jobId } })
-      } else {
-        const asset = findAvailableAsset(get().document, get().globalAssets, item.assetId)
-        if (!asset) {
-          updateBatchVariationRun(set, get, runId, (current) => ({
-            ...current,
-            items: current.items.map((candidate) => candidate.id === item.id
-              ? { ...candidate, status: 'failed', error: '素材已不存在。' }
-              : candidate),
-            updatedAt: Date.now(),
-          }))
-          continue
-        }
-        const branchPrompt = `${run.prompt.trim()}\n本次${run.variableRole}参考：${asset.name}。父图作为主体保持参考，不覆盖父图。`
-        const branchId = get().createGenerateBranchFromResult(run.sourceResultNodeId, {
-          prompt: branchPrompt,
-          batchCount: run.candidatesPerAsset,
-          settings: run.settings,
-          refinementMode: 'faithful',
-        })
-        if (!branchId) {
-          updateBatchVariationRun(set, get, runId, (current) => ({
-            ...current,
-            items: current.items.map((candidate) => candidate.id === item.id
-              ? { ...candidate, status: 'failed', error: '无法创建批量变体节点。' }
-              : candidate),
-            updatedAt: Date.now(),
-          }))
-          continue
-        }
-        const branch = get().document.nodes.find((node) => node.id === branchId)
-        get().addAssetToCanvas(asset.id, branch
-          ? { x: Math.max(20, branch.position.x - 236), y: branch.position.y + 16 }
-          : undefined, branchId)
-        updateBatchVariationRun(set, get, runId, (current) => ({
-          ...current,
-          items: current.items.map((candidate) => candidate.id === item.id
-            ? { ...candidate, status: 'running', generateNodeId: branchId, error: undefined }
-            : candidate),
-          updatedAt: Date.now(),
-        }), `批量变体 ${currentBatchCompletedCount(run) + 1}/${run.items.length}：正在提交「${asset.name}」。`)
-        const started = await get().runGraphGeneration(branchId, run.agentRunId && item.agentBranchId
-          ? { runId: run.agentRunId, branchId: item.agentBranchId }
-          : undefined)
-        if (!started) {
-          const message = get().generationError ?? '子任务提交失败。'
-          updateBatchVariationRun(set, get, runId, (current) => ({
-            ...current,
-            items: current.items.map((candidate) => candidate.id === item.id
-              ? { ...candidate, status: 'failed', generateNodeId: branchId, error: message }
-              : candidate),
-            updatedAt: Date.now(),
-          }))
-          continue
-        }
-        stopGenerationPolling()
-        request = get().lastGenerationRequest ?? undefined
-        jobId = request?.jobId
-        if (!jobId) {
-          updateBatchVariationRun(set, get, runId, (current) => ({
-            ...current,
-            items: current.items.map((candidate) => candidate.id === item.id
-              ? { ...candidate, status: 'failed', generateNodeId: branchId, error: '任务编号未写入画布。' }
-              : candidate),
-            updatedAt: Date.now(),
-          }))
-          continue
-        }
-        updateBatchVariationRun(set, get, runId, (current) => ({
-          ...current,
-          items: current.items.map((candidate) => candidate.id === item.id
-            ? { ...candidate, jobId }
-            : candidate),
-          updatedAt: Date.now(),
-        }))
-      }
-
-      if (!jobId || !request) {
-        updateBatchVariationRun(set, get, runId, (current) => ({
-          ...current,
-          items: current.items.map((candidate) => candidate.id === item.id
-            ? { ...candidate, status: 'failed', error: '无法恢复子任务配方。' }
-            : candidate),
-          updatedAt: Date.now(),
-        }))
-        continue
-      }
-
-      try {
-        const job = await waitForBatchGenerationJob(jobId)
-        set({ lastGenerationRequest: { ...request, jobId } })
-        syncGenerationJob(set, get, job)
-        const status = job.status === 'succeeded' ? 'succeeded' : job.status === 'cancelled' ? 'cancelled' : 'failed'
-        updateBatchVariationRun(set, get, runId, (current) => ({
-          ...current,
-          items: current.items.map((candidate) => candidate.id === item.id
-            ? { ...candidate, status, jobId, error: job.error }
-            : candidate),
-          updatedAt: Date.now(),
-        }))
-      } catch (error) {
-        updateBatchVariationRun(set, get, runId, (current) => ({ ...current, updatedAt: Date.now() }), error instanceof Error ? error.message : '批量任务状态同步中断。')
-        window.setTimeout(() => get().resumeBatchVariations(), 10_000)
-        return
-      }
-    }
+    const run = get().document.batchVariationRuns.find((item) => item.id === runId)
+    if (!run || run.status === 'cancelled') return
+    const pendingItems = run.items.filter((item) => item.status === 'queued' || item.status === 'running')
+    // 父任务只负责编排；每个素材对应一个可恢复子任务，最多同时运行 3 个。
+    await runWithConcurrency(pendingItems, batchVariationConcurrency, (item) => executeBatchVariationItem(set, get, runId, item.id))
 
     const completed = get().document.batchVariationRuns.find((item) => item.id === runId)
     if (!completed) return
@@ -2651,8 +2554,198 @@ async function executeBatchVariationRun(
   }
 }
 
-function currentBatchCompletedCount(run: BatchVariationRun) {
-  return run.items.filter((item) => item.status === 'succeeded' || item.status === 'failed' || item.status === 'cancelled').length
+const batchVariationConcurrency = 3
+
+async function runWithConcurrency<T>(items: T[], concurrency: number, worker: (item: T, index: number) => Promise<void>) {
+  const limit = Math.max(1, Math.min(items.length, Math.floor(concurrency) || 1))
+  let cursor = 0
+  async function consume() {
+    while (true) {
+      const index = cursor
+      cursor += 1
+      if (index >= items.length) return
+      await worker(items[index], index)
+    }
+  }
+  await Promise.all(Array.from({ length: limit }, () => consume()))
+}
+
+function applyGenerationJobToDocument(document: CanvasDocument, job: GenerationJob, request: GenerationRequest) {
+  if (!request.taskNodeIds) return document
+  const recordedDocument = recordGenerationJob(document, job, request.taskNodeIds)
+  if (job.status === 'succeeded') {
+    const recordedJob = recordedDocument.generationJobs.find((item) => item.id === job.id) ?? job
+    const candidates = candidatesFromJob(recordedJob, request)
+    return candidates.length
+      ? materializeGenerationOutputs(recordedDocument, recordedJob, request)
+      : updateTaskNodes(recordedDocument, request.taskNodeIds, 'failed', job.id, '生成服务没有返回结果，请重试。')
+  }
+  if (job.status === 'failed') {
+    return updateTaskNodes(recordedDocument, request.taskNodeIds, 'failed', job.id, job.error ?? '真实生成任务失败，请重试。')
+  }
+  if (job.status === 'cancelled') {
+    return updateTaskNodes(recordedDocument, request.taskNodeIds, 'cancelled', job.id, job.error)
+  }
+  return recordedDocument
+}
+
+function updateBatchVariationItemDocument(
+  document: CanvasDocument,
+  runId: string,
+  itemId: string,
+  patch: Partial<BatchVariationRun['items'][number]>,
+) {
+  return {
+    ...document,
+    batchVariationRuns: document.batchVariationRuns.map((run) => run.id === runId
+      ? {
+          ...run,
+          items: run.items.map((item) => item.id === itemId ? { ...item, ...patch } : item),
+          updatedAt: Date.now(),
+        }
+      : run),
+  }
+}
+
+async function executeBatchVariationItem(
+  set: (next: Partial<CanvasStore>) => void,
+  get: () => CanvasStore,
+  runId: string,
+  itemId: string,
+) {
+  const initialRun = get().document.batchVariationRuns.find((run) => run.id === runId)
+  const initialItem = initialRun?.items.find((item) => item.id === itemId)
+  if (!initialRun || !initialItem || initialItem.status === 'succeeded' || initialItem.status === 'cancelled') return
+  let jobId = initialItem.jobId
+  let request: GenerationRequest | undefined
+
+  try {
+    let item = initialItem
+    let run = initialRun
+
+    // 刷新后已有 jobId 的子任务直接恢复，不再创建重复分支。
+    if (item.status === 'running' && jobId) {
+      const recordedJob = get().document.generationJobs.find((job) => job.id === jobId)
+      request = recordedJob ? requestFromPersistedJob(get().document, recordedJob) ?? undefined : undefined
+    }
+
+    if (!request) {
+      const asset = findAvailableAsset(get().document, get().globalAssets, item.assetId)
+      if (!asset) throw new Error('素材已不存在。')
+      let branchId = item.generateNodeId
+      if (!branchId || !get().document.nodes.some((node) => node.id === branchId && node.type === 'generate')) {
+        branchId = get().createGenerateBranchFromResult(run.sourceResultNodeId, {
+          prompt: `${run.prompt.trim()}\n本次${run.variableRole}参考：${asset.name}。父图作为主体保持参考，不覆盖父图。`,
+          batchCount: run.candidatesPerAsset,
+          settings: run.settings,
+          refinementMode: 'faithful',
+        }) ?? undefined
+        if (!branchId) throw new Error('无法创建批量变体节点。')
+        const branch = get().document.nodes.find((node) => node.id === branchId)
+        get().addAssetToCanvas(asset.id, branch
+          ? { x: Math.max(20, branch.position.x - 236), y: branch.position.y + 16 }
+          : undefined, branchId)
+      }
+      const graphRecipe = buildGraphGenerationRecipe(get().document, branchId)
+      if (!graphRecipe || !graphRecipe.prompt.trim()) throw new Error('批量变体缺少生成描述。')
+      if (!graphRecipe.recipe.references.length && !graphRecipe.parent) throw new Error('批量变体缺少参考素材。')
+      const sourceResult = get().document.nodes.find((node) => node.id === run.sourceResultNodeId && node.type === 'result')
+      const sourceData = sourceResult?.type === 'result' ? sourceResult.data as ResultNodeData : undefined
+      const recipe = cloneGenerationRecipe(graphRecipe.recipe)
+      request = {
+        kind: 'refinement',
+        prompt: graphRecipe.prompt,
+        batchCount: recipe.batchCount,
+        settings: cloneGenerationSettings(recipe.settings),
+        recipe,
+        rootRecipe: cloneGenerationRecipe(sourceData?.rootRecipe ?? sourceData?.generationRecipe ?? recipe),
+        targetNodeId: graphRecipe.parent?.nodeId,
+        parentVersionId: sourceData?.versionId,
+        parentImage: sourceData?.image,
+        parentLabel: sourceData?.label,
+        sourceGraphNodeId: branchId,
+        refinementMode: 'faithful',
+        agentRun: run.agentRunId && item.agentBranchId
+          ? { runId: run.agentRunId, branchId: item.agentBranchId }
+          : undefined,
+        idempotencyKey: createGenerationSubmissionKey(),
+      }
+      const flow = createTaskFlow(get().document, request, sourceResult)
+      request = { ...request, taskNodeIds: flow.taskNodeIds }
+      await commit(set, flow.document, {}, { immediate: true })
+      item = { ...item, generateNodeId: branchId }
+      run = get().document.batchVariationRuns.find((candidate) => candidate.id === runId) ?? run
+      await commit(set, updateBatchVariationItemDocument(get().document, runId, itemId, {
+        status: 'running',
+        generateNodeId: branchId,
+        error: undefined,
+      }), { assistantMessage: `批量变体：已提交「${item.assetName}」子任务。` }, { immediate: true })
+      const job = await submitGenerationJob({
+        projectId: get().document.id,
+        kind: request.kind,
+        prompt: request.prompt,
+        batchCount: request.batchCount,
+        settings: request.settings,
+        recipe: request.recipe!,
+        parent: graphRecipe.parent
+          ? { nodeId: graphRecipe.parent.nodeId, name: graphRecipe.parent.label, image: graphRecipe.parent.image }
+          : undefined,
+        refinementMode: request.refinementMode,
+        agentRun: request.agentRun,
+        idempotencyKey: request.idempotencyKey,
+      })
+      jobId = job.id
+      // 新建子任务时 taskNodeIds 已由 createTaskFlow 生成；非空断言避免把不完整的旧任务形状写入权威记录。
+      const persisted = recordGenerationJob(get().document, job, request.taskNodeIds!)
+      await commit(set, updateBatchVariationItemDocument(persisted, runId, itemId, {
+        status: job.status === 'succeeded' ? 'succeeded' : 'running',
+        jobId,
+        generateNodeId: item.generateNodeId,
+      }), {}, { immediate: true })
+    }
+
+    if (!jobId || !request) throw new Error('无法恢复批量子任务配方。')
+    const finalJob = await waitForBatchGenerationJob(jobId)
+    const nextDocument = applyGenerationJobToDocument(get().document, finalJob, request)
+    const status = finalJob.status === 'succeeded' ? 'succeeded' : finalJob.status === 'cancelled' ? 'cancelled' : 'failed'
+    await commit(set, updateBatchVariationItemDocument(nextDocument, runId, itemId, {
+      status,
+      jobId,
+      error: finalJob.error,
+    }), {}, { immediate: true })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '批量子任务执行失败。'
+    // 子任务失败也要收敛画布节点与 GenerationJob，否则父任务结束后会留下
+    // 永远“处理中”的占位节点，刷新后又会被误判为可恢复任务。
+    try {
+      const currentDocument = get().document
+      const failedNodesDocument = request?.taskNodeIds
+        ? updateTaskNodes(currentDocument, request.taskNodeIds, 'failed', jobId, message)
+        : currentDocument
+      const failedDocument = jobId
+        ? {
+            ...failedNodesDocument,
+            generationJobs: failedNodesDocument.generationJobs.map((job) => job.id === jobId
+              ? { ...job, status: 'failed' as const, error: message, updatedAt: Date.now() }
+              : job),
+          }
+        : failedNodesDocument
+      await commit(set, updateBatchVariationItemDocument(failedDocument, runId, itemId, {
+        status: 'failed',
+        jobId,
+        error: message,
+      }), { assistantMessage: message }, { immediate: true })
+    } catch {
+      // 持久化异常不应掩盖原始子任务错误；父任务仍会把该子任务标记为失败。
+      updateBatchVariationRun(set, get, runId, (current) => ({
+        ...current,
+        items: current.items.map((candidate) => candidate.id === itemId
+          ? { ...candidate, status: 'failed', error: message }
+          : candidate),
+        updatedAt: Date.now(),
+      }), message)
+    }
+  }
 }
 
 function cloneSnapshotAsCanvas(snapshotValue: CanvasSnapshot, prefix: string) {
@@ -2759,6 +2852,43 @@ function applyRemoteDocumentRefresh(
   return true
 }
 
+/**
+ * 只合并服务端已完成任务与输出，不替换当前节点坐标、选中态或未提交编辑。
+ * 用于 Realtime 重连、跨设备恢复和 Agent Run 终态对账。
+ */
+async function recoverGenerationResults(
+  set: (next: Partial<CanvasStore>) => void,
+  get: () => CanvasStore,
+  documentId: string,
+) {
+  try {
+    const recovered = await reconcileProjectGenerationResults(documentId)
+    const current = get().document
+    if (current.id !== documentId) return false
+    const reconciledDocument = mergeRecoveredGenerationJobs(current, recovered.document)
+    if (resultImageCount(reconciledDocument) <= resultImageCount(current)) {
+      recoverTaskNodeJobs(set, get, documentId)
+      return false
+    }
+    const selected = [...reconciledDocument.nodes].reverse().find(
+      (node) => node.selected || (node.type === 'result' && Boolean((node.data as ResultNodeData).selected)),
+    )
+    const state = persistedGenerationState(reconciledDocument, '已从服务端补回生成结果。')
+    set({
+      document: reconciledDocument,
+      persistenceStatus: 'saved',
+      selectedNodeId: selected?.id ?? null,
+      ...state.state,
+    })
+    // 服务端输出是权威来源；覆盖本机旧草稿，避免下次打开再次出现空占位。
+    void writeCanvasDocument(reconciledDocument, { immediate: true }).catch(() => undefined)
+    return true
+  } catch {
+    recoverTaskNodeJobs(set, get, documentId)
+    return false
+  }
+}
+
 export const useCanvasStore = create<CanvasStore>((set, get) => ({
   document: seedDocument,
   globalAssets: [],
@@ -2849,28 +2979,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     if (get().globalAssets.length) window.setTimeout(() => get().resumeBatchVariations(), 0)
     // 历史任务可能在浏览器断开时完成，根本没有写入画布。服务端一次性回填，
     // 同时修复其他设备或旧版本留下的空占位节点。
-    void reconcileProjectGenerationResults(documentId)
-      .then((recovered) => {
-        const current = get().document
-        if (current.id !== documentId) return
-        const reconciledDocument = mergeRecoveredGenerationJobs(current, recovered.document)
-        if (resultImageCount(reconciledDocument) <= resultImageCount(current)) {
-          // 服务端没有补回新图片时，仍保留客户端的旧任务兼容恢复作为降级路径。
-          recoverTaskNodeJobs(set, get, documentId)
-          return
-        }
-        const selected = [...reconciledDocument.nodes].reverse().find((node) => node.selected || (node.type === 'result' && Boolean((node.data as ResultNodeData).selected)))
-        const state = persistedGenerationState(reconciledDocument, '已从服务端补回历史生成结果。')
-        set({
-          document: reconciledDocument,
-          persistenceStatus: 'saved',
-          selectedNodeId: selected?.id ?? null,
-          ...state.state,
-        })
-        // 服务端已完成回填；立刻覆盖本机旧草稿，避免下一次打开又读回空占位。
-        void writeCanvasDocument(reconciledDocument, { immediate: true }).catch(() => undefined)
-      })
-      .catch(() => recoverTaskNodeJobs(set, get, documentId))
+    void recoverGenerationResults(set, get, documentId)
     return true
   },
 
@@ -2892,6 +3001,12 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     } catch {
       return false
     }
+  },
+
+  recoverGenerationResultsFromRemote: async () => {
+    const documentId = get().document.id
+    if (documentId === 'workspace-placeholder') return false
+    return recoverGenerationResults(set, get, documentId)
   },
 
   openNewDocument: (document) => {
@@ -3896,9 +4011,13 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
   },
 
   saveAgentPlan: (plan, options) => {
+    const currentDocument = get().document
+    const existingRun = options?.id ? currentDocument.agentRuns.find((run) => run.id === options.id) : undefined
+    // 同一服务端 Run 可能在提交响应、Realtime 和恢复轮询中多次回到前端；
+    // 不重复插入本地记录，避免任务面板出现重复任务。
+    if (existingRun) return existingRun.id
     const run = createBotanicAgentRun(plan, options)
-    const document = get().document
-    commit(set, { ...document, agentRuns: [run, ...document.agentRuns] }, {
+    commit(set, { ...currentDocument, agentRuns: [run, ...currentDocument.agentRuns] }, {
       assistantMessage: plan.summary,
     })
     return run.id
@@ -3919,7 +4038,10 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
 
   retryAgentBranch: async (runId, branchId) => {
     try {
-      const snapshot = await retryPersistentBotanicAgentBranch(runId, branchId)
+      const run = get().document.agentRuns.find((candidate) => candidate.id === runId)
+      const branch = run?.branches.find((candidate) => candidate.id === branchId)
+      const retryKey = `agent-retry-${runId}-${branchId}-attempt-${(branch?.attempt ?? 0) + 1}`
+      const snapshot = await retryPersistentBotanicAgentBranch(runId, branchId, retryKey)
       get().applyAgentRunSnapshot(snapshot)
       await get().refreshDocumentFromRemote().catch(() => false)
       return true
@@ -4112,6 +4234,33 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
       assistantMessage: `已创建批量变体：${assetIds.length} 个${group.role} × ${normalizedCandidates} 张候选。`,
     }, { immediate: true })
     void executeBatchVariationRun(set, get, run.id)
+    return true
+  },
+
+  retryBatchVariationItem: async (runId, itemId) => {
+    if (activeBatchVariationRuns.has(runId)) {
+      set({ assistantMessage: '这组批量变体仍在执行，请等待其他子任务完成。' })
+      return false
+    }
+    const document = get().document
+    const run = document.batchVariationRuns.find((candidate) => candidate.id === runId)
+    const item = run?.items.find((candidate) => candidate.id === itemId)
+    if (!run || !item || (item.status !== 'failed' && item.status !== 'cancelled')) return false
+    const nextDocument = {
+      ...document,
+      batchVariationRuns: document.batchVariationRuns.map((candidate) => candidate.id === runId
+        ? {
+            ...candidate,
+            status: 'queued' as const,
+            items: candidate.items.map((child) => child.id === itemId
+              ? { ...child, status: 'queued' as const, jobId: undefined, error: undefined }
+              : child),
+            updatedAt: Date.now(),
+          }
+        : candidate),
+    }
+    await commit(set, nextDocument, { assistantMessage: `已重新排队「${item.assetName}」子任务。` }, { immediate: true })
+    void executeBatchVariationRun(set, get, runId)
     return true
   },
 
@@ -4549,6 +4698,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
       taskLayout,
       sourceGraphNodeId,
       agentRun,
+      idempotencyKey: createGenerationSubmissionKey(),
     }
     const flow = createTaskFlow(document, request)
     const preparedRequest = { ...request, taskNodeIds: flow.taskNodeIds }
@@ -4574,6 +4724,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
         settings: request.settings,
         recipe,
         agentRun,
+        idempotencyKey: request.idempotencyKey,
       })
       if (submissionRunId !== generationSubmissionRunId) {
         void cancelGenerationJob(job.id)
@@ -4654,6 +4805,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
       sourceGraphNodeId,
       refinementMode,
       agentRun,
+      idempotencyKey: createGenerationSubmissionKey(),
     }
     const flow = createTaskFlow(document, request, target)
     const preparedRequest = { ...request, taskNodeIds: flow.taskNodeIds }
@@ -4680,6 +4832,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
         parent: { nodeId: targetNodeId, name: parentLabel, image: parentImage },
         refinementMode,
         agentRun,
+        idempotencyKey: request.idempotencyKey,
       })
       if (submissionRunId !== generationSubmissionRunId) {
         void cancelGenerationJob(job.id)

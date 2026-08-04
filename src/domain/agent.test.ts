@@ -7,6 +7,8 @@ import {
   collectBotanicAgentResults,
   createBotanicAgentMemoryItem,
   buildBotanicAgentPlan,
+  botanicAgentContextSnapshotNodeIds,
+  createBotanicAgentContextSnapshot,
   createBotanicAgentRun,
   createBotanicAgentSession,
   inferBotanicAgentIntent,
@@ -22,8 +24,15 @@ import {
   updateBotanicAgentAction,
   updateBotanicAgentRun,
   createBotanicAgentRuntimeSteps,
+  shouldRecoverAgentRunResults,
   updateBotanicAgentRuntimeStep,
+  restoreBotanicAgentRuntimeSteps,
+  botanicAgentSubmissionKey,
+  botanicAgentRunFeedback,
+  botanicAgentBranchStatusLabel,
+  summarizeBotanicAgentRuntime,
   buildBotanicAgentPromptDiff,
+  mergeBotanicAgentArtifactIndex,
 } from './agent.ts'
 
 const rootRecipe: GenerationRecipe = {
@@ -57,6 +66,20 @@ test('Agent 运行记录按可验证的上下文来源生成步骤', () => {
   assert.equal(steps[4].detail, 'DeepSeek V4 · 生成执行计划')
 })
 
+test('Agent 提交时锁定安全上下文快照，并可在恢复时过滤已删除节点', () => {
+  const snapshot = createBotanicAgentContextSnapshot([
+    { nodeId: 'asset-1', label: '商品图', kind: '素材', mediaKind: 'image', role: '商品' },
+    { nodeId: 'result-1', label: '首图候选 01', kind: '结果', mediaKind: 'image' },
+    { nodeId: 'asset-1', label: '重复商品图', kind: '素材' },
+  ])
+  assert.deepEqual(snapshot, [
+    { nodeId: 'asset-1', label: '商品图', kind: '素材', mediaKind: 'image', role: '商品' },
+    { nodeId: 'result-1', label: '首图候选 01', kind: '结果', mediaKind: 'image' },
+  ])
+  assert.deepEqual(botanicAgentContextSnapshotNodeIds(snapshot, ['result-1', 'asset-1']), ['asset-1', 'result-1'])
+  assert.deepEqual(botanicAgentContextSnapshotNodeIds(snapshot, ['result-1']), ['result-1'])
+})
+
 test('Agent 运行记录按状态更新时间，不改变其他步骤', () => {
   const steps = createBotanicAgentRuntimeSteps({ hasTarget: false })
   const running = updateBotanicAgentRuntimeStep(steps, 'read-canvas', 'running', 100)
@@ -67,11 +90,78 @@ test('Agent 运行记录按状态更新时间，不改变其他步骤', () => {
   assert.equal(done[1].status, 'pending')
 })
 
+test('Agent Run 只在新的完成态出现时触发结果恢复', () => {
+  assert.equal(shouldRecoverAgentRunResults(undefined, { status: 'completed', updatedAt: 20 }), true)
+  assert.equal(shouldRecoverAgentRunResults({ status: 'running', updatedAt: 10 }, { status: 'completed', updatedAt: 20 }), true)
+  assert.equal(shouldRecoverAgentRunResults({ status: 'completed', updatedAt: 20 }, { status: 'completed', updatedAt: 20 }), false)
+  assert.equal(shouldRecoverAgentRunResults({ status: 'completed', updatedAt: 20 }, { status: 'completed', updatedAt: 30 }), true)
+  assert.equal(shouldRecoverAgentRunResults({ status: 'running', updatedAt: 10 }, { status: 'failed', updatedAt: 20 }), false)
+})
+
 test('对话与检索也展示可理解的运行阶段，而不是静默等待', () => {
   const steps = createBotanicAgentRuntimeSteps({ hasTarget: false, mode: 'research' })
   assert.deepEqual(steps.map((step) => step.id), ['read-canvas', 'call-planner', 'respond'])
   assert.equal(steps[1].detail, '检索项目资料并核对来源')
   assert.equal(steps[2].label, '整理检索结果')
+})
+
+test('刷新后从服务端 Run 恢复运行时间线，而不是伪造模型过程', () => {
+  const steps = restoreBotanicAgentRuntimeSteps({
+    run: { status: 'running' }, hasTarget: true, referenceCount: 1, plannerLabel: 'DeepSeek V4',
+  })
+  assert.equal(steps.at(-1)?.id, 'finalize-plan')
+  assert.equal(steps.at(-1)?.status, 'running')
+  assert.match(steps[0].detail, /已从服务端恢复/)
+
+  const failed = restoreBotanicAgentRuntimeSteps({ run: { status: 'failed' }, hasTarget: true })
+  assert.equal(failed.at(-1)?.status, 'failed')
+  assert.match(failed.at(-1)?.detail ?? '', /失败原因|重试/)
+})
+
+test('Runtime 默认只呈现当前阶段与下一步，展开后仍保留完整进度', () => {
+  const steps = createBotanicAgentRuntimeSteps({ hasTarget: true })
+  const running = updateBotanicAgentRuntimeStep(steps, 'read-canvas', 'running', 100)
+  const summary = summarizeBotanicAgentRuntime({ steps: running, phase: 'reading' })
+  assert.equal(summary.label, '读取画布上下文')
+  assert.equal(summary.nextAction, '等待读取完成')
+  assert.equal(summary.totalCount, 3)
+  assert.equal(summary.completedCount, 0)
+  assert.equal(summary.progress, 0)
+
+  const waiting = summarizeBotanicAgentRuntime({ steps: running, phase: 'waiting_confirmation' })
+  assert.equal(waiting.label, '等待你确认计划')
+  assert.match(waiting.detail, /确认后才会提交/)
+  assert.equal(waiting.nextAction, '确认生成')
+})
+
+test('Run 状态统一提供下一步反馈，并兼容超时错误', () => {
+  assert.deepEqual(botanicAgentRunFeedback('queued'), {
+    label: '排队中', detail: '任务已进入队列，生成服务接手后会继续更新。',
+    action: 'view_task', actionLabel: '查看任务', tone: 'progress', terminal: false,
+  })
+  assert.equal(botanicAgentRunFeedback('running').label, '生成中')
+  assert.equal(botanicAgentRunFeedback('completed', 2).detail, '已生成 2 项结果，并自动回填画布。')
+  assert.equal(botanicAgentRunFeedback('completed', 0).actionLabel, '查看任务')
+  assert.equal(botanicAgentRunFeedback('partial', 1).actionLabel, '查看失败分支')
+  assert.equal(botanicAgentRunFeedback('failed', 0, '工作区数据库响应超时').label, '响应超时')
+  assert.equal(botanicAgentRunFeedback('cancelled', 1).detail, '任务已取消，已保留 1 项已完成结果。')
+  assert.deepEqual([
+    botanicAgentBranchStatusLabel('queued'),
+    botanicAgentBranchStatusLabel('running'),
+    botanicAgentBranchStatusLabel('succeeded'),
+    botanicAgentBranchStatusLabel('failed'),
+    botanicAgentBranchStatusLabel('cancelled'),
+  ], ['排队中', '生成中', '已完成', '失败', '已取消'])
+})
+
+test('同一确认消息与计划生成稳定提交键，修改提示词后才产生新键', () => {
+  const plan = buildBotanicAgentPlan({
+    instruction: '调整动作', intent: 'change_pose', selectedResultNodeId: 'result-v03', rootRecipe,
+  })
+  const first = botanicAgentSubmissionKey('message-1', plan)
+  assert.equal(first, botanicAgentSubmissionKey('message-1', plan))
+  assert.notEqual(first, botanicAgentSubmissionKey('message-1', { ...plan, prompt: `${plan.prompt}，更自然。` }))
+  assert.match(first, /^agent-plan-message-1-/)
 })
 
 test('重复收到同一 Agent 消息 ID 时保持单条时间线', () => {
@@ -81,6 +171,19 @@ test('重复收到同一 Agent 消息 ID 时保持单条时间线', () => {
   const twice = appendBotanicAgentMessage(once, message)
   assert.equal(twice, once)
   assert.equal(twice.messages.length, 1)
+})
+
+test('Agent 消息保存自身版本时间，后续更新不借用会话时间', () => {
+  const session = createBotanicAgentSession({ id: 'session-message-version', now: 1 })
+  const appended = appendBotanicAgentMessage(session, {
+    id: 'message-version', role: 'assistant', kind: 'text', content: '初始内容', createdAt: 10,
+  })
+
+  assert.equal(appended.messages[0].updatedAt, 10)
+
+  const updated = updateBotanicAgentMessage(appended, 'message-version', { content: '设备 B 更新' }, 30)
+  assert.equal(updated.messages[0].updatedAt, 30)
+  assert.equal(updated.updatedAt, 30)
 })
 
 test('Agent 提示词差异突出新增、删除与保留内容', () => {
@@ -457,4 +560,42 @@ test('Agent 批量结果选择忽略失效项并去重画布引用', () => {
   assert.deepEqual(selection.artifacts.map((item) => item.id), ['image-b', 'image-a'])
   assert.deepEqual(selection.mediaArtifacts.map((item) => item.id), ['image-b', 'image-a'])
   assert.deepEqual(selection.sourceNodeIds, ['result-a', 'result-b'])
+})
+
+test('Artifact Index 覆盖同 ID 的本地快照，同时保留尚未入索引的新结果', () => {
+  const indexed = [{
+    id: 'artifact-a', kind: 'image' as const, label: '服务端历史结果', url: '/api/media/indexed',
+    provenance: { actionId: 'action-a', toolName: 'image_generation', runId: 'run-a', sourceNodeIds: ['deleted-result'] },
+    origin: { type: 'generation_output' as const, jobId: 'job-a', outputId: 'output-a' },
+    createdAt: 100,
+    updatedAt: 200,
+  }, {
+    id: 'manual-generation', kind: 'image' as const, label: '普通画布生成', url: '/api/media/manual',
+    provenance: { actionId: 'generation:manual-job', toolName: 'image_generation' },
+    origin: { type: 'generation_output' as const, jobId: 'manual-job', outputId: 'manual-output' },
+    createdAt: 90,
+    updatedAt: 90,
+  }]
+  const local = [{
+    id: 'artifact-a', kind: 'image' as const, label: '旧本地快照', url: '/api/media/local',
+    provenance: { actionId: 'action-a', toolName: 'image_generation', sourceNodeIds: ['result-a'] },
+  }, {
+    id: 'artifact-b', kind: 'video' as const, label: '刚生成的视频', url: '/api/media/new',
+    provenance: { actionId: 'action-b', toolName: 'video_generation', sourceNodeIds: ['result-b'] },
+  }]
+
+  const results = mergeBotanicAgentArtifactIndex(indexed, local)
+
+  assert.deepEqual(results.map((item) => item.id), ['artifact-a', 'artifact-b'])
+  assert.equal(results[0].label, '服务端历史结果')
+  assert.deepEqual(results[0].provenance.sourceNodeIds, ['deleted-result'])
+})
+
+test('Artifact Index 不可用或尚未迁移时，结果区完整回退到当前项目读模型', () => {
+  const local = [{
+    id: 'artifact-local', kind: 'text' as const, label: '本地结果', content: '保留商品',
+    provenance: { actionId: 'action-local', toolName: 'skill_apply' },
+  }]
+
+  assert.deepEqual(mergeBotanicAgentArtifactIndex([], local), local)
 })

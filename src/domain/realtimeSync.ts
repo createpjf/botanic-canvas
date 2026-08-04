@@ -22,6 +22,13 @@ export type AgentRunUpdatedRealtimeEvent = {
 
 export type ProjectRealtimeEvent = ProjectUpdatedRealtimeEvent | CanvasCrdtRealtimeEvent | AgentRunUpdatedRealtimeEvent
 
+export function projectRealtimeConnectionOpened(openedBefore: boolean) {
+  return {
+    openedBefore: true,
+    event: { reconnected: openedBefore },
+  }
+}
+
 export function parseProjectRealtimeEvent(event: unknown, currentProjectId: string): ProjectRealtimeEvent | undefined {
   if (!event || typeof event !== 'object') return undefined
   const candidate = event as {

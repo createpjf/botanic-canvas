@@ -50,6 +50,8 @@ H3 的 MP4 与历史图片共用授权 URL，但历史缺少 `mediaKind` 时始�
 - 所有项目 ID 入口先经 `requireProjectPermission`：对已存在但越权的对象返回 403，对真实缺失对象返回 404；Adapter 仍保留第二层权限校验。
 - 工作区敏感审计只能经 `listWorkspaceAuditEvents` 读取，项目审计必须同时指定项目并具备 Owner 权限；审计上报失败不回滚已成功的账户安全操作。
 - Yjs 不同步图片/视频字节、本机选择态或视角，也不决定生成任务、历史版本与同 Prompt 的产品冲突。
+- Agent Session、Message、Memory 与 Run 以项目级独立实体为权威；旧 `CanvasDocument` 字段只作为迁移兼容视图。Message 按 ID 追加，Memory 删除使用墓碑，旧文档快照不得覆盖新消息或复活已删除记忆。
+- Artifact Index 按项目保存 Agent 行动与生成输出的历史身份和血缘；删除画布节点、会话兼容字段或素材库引用不得删除索引中的历史 Artifact。
 
 ## 实时同步
 
@@ -72,6 +74,25 @@ API 重启后用快照与增量重建房间；累计 64 条后压缩，避免日
 
 当前房间在单个 API 实例内广播，持久化状态支持重启恢复。若未来横向扩容多个 API 实例，需要在相同 seam 后
 增加 Redis Pub/Sub 或等价跨实例广播；不应让 UI 感知实例拓扑。
+
+## Agent 实体持久化
+
+`server/botanicAgentPersistence.mjs` 定义 Session、Message、Memory 的安全实体形状，以及新实体和旧文档字段的兼容合并规则。ProductStore 的本地文件、PostgreSQL 和 Supabase Adapter 共同实现：
+
+- `agent_sessions` 只保存会话标题、执行模式和上下文节点；
+- `agent_messages` 按消息 ID 和 Session ID 独立追加或更新；
+- `agent_memory_items` 保存项目记忆，并用 `deleted_at` 阻止旧快照复活删除项；
+- `agent_runs` 继续保存确认计划后的执行状态和分支进度；
+- 项目文档写入期间双写独立实体，项目读取时由独立实体覆盖兼容字段；
+- 独立实体写入不增加画布 `revision`，因此两台设备追加不同消息不会因整份文档冲突而互相覆盖。
+
+迁移阶段不删除 `CanvasDocument.agentSessions / agentMemory / agentRuns`。Supabase 迁移完成、历史数据 Backfill 和双设备门禁通过后，才能停止旧字段写入。
+
+## Artifact Index 与历史回填
+
+`server/botanicArtifactIndex.mjs` 把 Agent Message/Action Receipt 中的工具产物，以及 Generation Job 中的图片或视频输出，规范为同一个项目级索引。Artifact ID 只在项目内唯一，数据库使用 `(project_id, id)` 复合身份，以兼容旧版 `legacy-writeback` 等跨项目重复 ID。
+
+本地 ProductStore 在启动时扫描项目文档、独立消息、行动回执和生成任务；PostgreSQL 启动建表过程与 Supabase Migration 则使用幂等 `upsert` 回填历史记录。后续 Message、Action Receipt、Generation Job 和兼容项目文档写入都会增量维护索引。索引不反向拥有画布节点或素材库记录，因而历史记录不会随 UI 删除而消失。
 
 ## 自动护栏
 

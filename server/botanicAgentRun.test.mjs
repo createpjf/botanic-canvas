@@ -15,6 +15,10 @@ const creation = {
     instruction: '保持人物和服装，替换场景。',
     summary: '按场景组生成 2 张。',
     selectedResultNodeId: 'result-1',
+    contextSnapshot: [
+      { nodeId: 'asset-product', label: '商品图', kind: '素材', mediaKind: 'image', role: '商品' },
+      { nodeId: 'result-1', label: '当前结果', kind: '结果', mediaKind: 'image' },
+    ],
     prompt: '保持人物和服装，替换为海边场景。',
     settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
     constraints: [
@@ -53,6 +57,7 @@ test('Agent Run 创建请求只持久化计划元数据与独立分支', () => {
   assert.equal(run.plan.prompt, creation.plan.prompt)
   assert.deepEqual(run.plan.settings, creation.plan.settings)
   assert.deepEqual(run.plan.constraints, creation.plan.constraints)
+  assert.deepEqual(run.plan.contextSnapshot, creation.plan.contextSnapshot)
   assert.equal(run.branches[0].assetId, 'asset-scene-a')
 })
 
@@ -128,4 +133,11 @@ test('Agent Run 拒绝图片数据与重复分支标识', () => {
       toolCalls: [{ ...creation.plan.toolCalls[0], status: 'invented' }],
     },
   }), /工具调用状态无效/)
+  assert.throws(() => validateAgentRunCreation({
+    ...creation,
+    plan: {
+      ...creation.plan,
+      contextSnapshot: [{ nodeId: 'asset-1', label: '商品', kind: '未知' }],
+    },
+  }), /上下文类型无效/)
 })
