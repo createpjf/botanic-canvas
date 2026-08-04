@@ -7226,7 +7226,7 @@ type AgentDockTarget = {
 type AgentArtifactIndexState = {
   projectId: string
   artifacts: BotanicIndexedArtifact[]
-  nextBefore?: number
+  nextBefore?: string
   status: 'idle' | 'loading' | 'loading-more' | 'ready' | 'error'
 }
 

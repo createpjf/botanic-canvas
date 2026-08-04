@@ -4,7 +4,7 @@ import { generateImages, GenerationError, persistedGenerationJob, publicGenerati
 
 const image = 'data:image/png;base64,iVBORw0KGgo='
 
-test('生成任务持久化与公开状态保留 Agent Run、幂等和回写标记', () => {
+test('生成任务持久化保留幂等键，公开状态只按需返回提交者幂等键', () => {
   const job = {
     id: 'job-agent', ownerId: 'user-a', projectId: 'project-a', status: 'queued', kind: 'generation',
     createdAt: 1, updatedAt: 1, batchCount: 1, settings: { model: 'gpt-image-2' }, outputs: [],
@@ -14,6 +14,8 @@ test('生成任务持久化与公开状态保留 Agent Run、幂等和回写标�
   assert.deepEqual(persistedGenerationJob(job).agentRun, job.agentRun)
   assert.deepEqual(publicGenerationJob(job).agentRun, job.agentRun)
   assert.equal(persistedGenerationJob(job).idempotencyKey, job.idempotencyKey)
+  assert.equal(publicGenerationJob(job).idempotencyKey, undefined)
+  assert.equal(publicGenerationJob(job, { includeIdempotencyKey: true }).idempotencyKey, job.idempotencyKey)
   assert.equal(publicGenerationJob(job).projectWritebackPending, true)
 })
 

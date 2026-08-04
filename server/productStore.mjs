@@ -612,10 +612,14 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       const project = state.projects.find((item) => item.id === projectId)
       if (!project || !canAccess(project, userId)) return undefined
       const maximum = Math.max(1, Math.min(Number(limit) || 100, artifactIndexLimits.page))
-      const beforeTimestamp = Number.isFinite(Number(before)) ? Number(before) : Number.POSITIVE_INFINITY
+      const beforeTimestamp = Number.isFinite(Number(before?.createdAt)) ? Number(before.createdAt) : Number.POSITIVE_INFINITY
+      const beforeId = typeof before?.id === 'string' ? before.id : undefined
       return state.agentArtifacts
-        .filter((artifact) => artifact.projectId === projectId && artifact.createdAt < beforeTimestamp)
-        .sort((left, right) => right.createdAt - left.createdAt || right.updatedAt - left.updatedAt)
+        .filter((artifact) => artifact.projectId === projectId && (
+          artifact.createdAt < beforeTimestamp
+          || (beforeId !== undefined && artifact.createdAt === beforeTimestamp && artifact.id.localeCompare(beforeId) > 0)
+        ))
+        .sort((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id))
         .slice(0, maximum)
         .map((artifact) => clone(artifact.payload))
     },

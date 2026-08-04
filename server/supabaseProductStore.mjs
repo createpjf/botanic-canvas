@@ -621,9 +621,18 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       let query = supabase.from('agent_artifacts').select('payload')
         .eq('project_id', projectId)
         .order('created_at', { ascending: false })
-        .order('updated_at', { ascending: false })
+        .order('id', { ascending: true })
         .limit(maximum)
-      if (Number.isFinite(Number(before))) query = query.lt('created_at', new Date(Number(before)).toISOString())
+      const beforeTimestamp = Number(before?.createdAt)
+      if (Number.isFinite(beforeTimestamp)) {
+        const timestampIso = new Date(beforeTimestamp).toISOString()
+        if (typeof before?.id === 'string') {
+          const cursorId = `"${before.id.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`
+          query = query.or(`created_at.lt.${timestampIso},and(created_at.eq.${timestampIso},id.gt.${cursorId})`)
+        } else {
+          query = query.lt('created_at', timestampIso)
+        }
+      }
       const { data, error } = await supabaseRequest(() => query)
       if (missingAgentEntityTable(error)) return []
       fail(error)
@@ -719,7 +728,16 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
         }
       }
       try {
-        await upsertArtifactRecords(userId, job.projectId, artifactsFromGenerationJob(payload))
+        const [{ data: project, error: projectError }, { data: graph, error: graphError }] = await Promise.all([
+          supabase.from('projects').select('document').eq('id', job.projectId).maybeSingle(),
+          supabase.from('canvas_graphs').select('graph').eq('project_id', job.projectId).maybeSingle(),
+        ])
+        fail(projectError)
+        fail(graphError)
+        const document = project?.document
+          ? { ...clone(project.document), ...clone(graph?.graph ?? {}) }
+          : undefined
+        await upsertArtifactRecords(userId, job.projectId, artifactsFromGenerationJob(payload, { document }))
       } catch (caught) {
         console.warn(`[artifact-index] generation sync deferred for ${job.id}: ${caught instanceof Error ? caught.message : String(caught)}`)
       }

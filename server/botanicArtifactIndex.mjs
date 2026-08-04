@@ -228,6 +228,28 @@ export function mergeArtifactRecords(artifacts) {
   return [...byId.values()].sort((left, right) => Number(right.createdAt ?? 0) - Number(left.createdAt ?? 0))
 }
 
+export function encodeArtifactCursor(artifact) {
+  const createdAt = Number(artifact?.createdAt)
+  const id = typeof artifact?.id === 'string' ? artifact.id : ''
+  if (!Number.isFinite(createdAt) || createdAt < 0 || !id) invalid('Artifact 分页游标无效。')
+  return Buffer.from(JSON.stringify([createdAt, id]), 'utf8').toString('base64url')
+}
+
+export function decodeArtifactCursor(value) {
+  if (value === undefined || value === null || value === '') return undefined
+  if (/^\d+$/u.test(String(value))) {
+    const createdAt = Number(value)
+    if (Number.isFinite(createdAt)) return { createdAt }
+  }
+  try {
+    const [createdAt, id] = JSON.parse(Buffer.from(String(value), 'base64url').toString('utf8'))
+    if (Number.isFinite(Number(createdAt)) && Number(createdAt) >= 0 && typeof id === 'string' && id) {
+      return { createdAt: Number(createdAt), id }
+    }
+  } catch {}
+  invalid('Artifact 分页游标无效。')
+}
+
 /**
  * 只读迁移对账：expected 是仍可从旧实体推导出的产物；索引中额外记录属于
  * 删除画布节点后应继续保留的历史，不视为失败。

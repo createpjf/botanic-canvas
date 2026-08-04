@@ -8,6 +8,7 @@ const messageKinds = new Set(['text', 'question', 'plan', 'run', 'notice'])
 const messageStatuses = new Set(['pending', 'answered', 'submitted', 'failed'])
 const feedbackValues = new Set(['positive', 'negative'])
 const memoryKinds = new Set(['rule', 'approved', 'avoid'])
+const runStatuses = new Set(['awaiting_confirmation', 'queued', 'executing', 'running', 'completed', 'partial', 'failed', 'cancelled'])
 
 const clone = (value) => structuredClone(value)
 
@@ -145,7 +146,12 @@ export function agentStateFromDocument(document, { now = Date.now() } = {}) {
   const memory = (Array.isArray(document?.agentMemory) ? document.agentMemory : [])
     .slice(0, MEMORY_LIMIT)
     .map((item) => validateAgentMemoryEntity(item, { now }))
-  const runs = (Array.isArray(document?.agentRuns) ? document.agentRuns : []).filter((run) => run?.id).map(clone)
+  const runs = (Array.isArray(document?.agentRuns) ? document.agentRuns : [])
+    .filter((run) => run?.id)
+    .map((run) => ({
+      ...clone(run),
+      status: runStatuses.has(run.status) ? run.status : 'awaiting_confirmation',
+    }))
   return { sessions, messages, memory, runs }
 }
 
@@ -196,7 +202,11 @@ export function mergeAgentStateIntoDocument(document, state = {}) {
   const runById = newerById(legacyRuns)
   for (const entityRun of Array.isArray(state.runs) ? state.runs.map(clone) : []) {
     const legacyRun = runById.get(entityRun.id)
-    if (!legacyRun || Number(entityRun.updatedAt ?? 0) < Number(legacyRun.updatedAt ?? 0)) continue
+    if (!legacyRun) {
+      runById.set(entityRun.id, entityRun)
+      continue
+    }
+    if (Number(entityRun.updatedAt ?? 0) < Number(legacyRun.updatedAt ?? 0)) continue
     // 服务端 Run 为安全执行快照，可能刻意省略 rootRecipe/references；兼容文档中的
     // 完整计划仍用于画布恢复，但状态、分支和错误以独立实体为准。
     runById.set(entityRun.id, legacyRun?.plan?.rootRecipe
