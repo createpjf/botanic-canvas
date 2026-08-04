@@ -159,7 +159,7 @@ export async function resolveGenerationInputMedia(input, resolveMedia) {
   }
 }
 
-export function publicGenerationJob(job) {
+export function publicGenerationJob(job, { includeIdempotencyKey = false } = {}) {
   return {
     id: job.id,
     status: job.status,
@@ -176,8 +176,8 @@ export function publicGenerationJob(job) {
     partialError: job.partialError,
     outputs: job.outputs ?? [],
     variants: job.variants ?? [],
-    // 仅用于客户端在网络重试时复用同一逻辑提交，不承载凭据。
-    idempotencyKey: job.idempotencyKey,
+    // 仅向任务提交者返回，用于网络状态未知时确认同一次逻辑提交。
+    ...(includeIdempotencyKey ? { idempotencyKey: job.idempotencyKey } : {}),
     projectWritebackPending: Boolean(job.projectWritebackPending),
     agentRun: job.agentRun,
   }

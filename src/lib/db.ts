@@ -10,7 +10,7 @@ import {
 import { normalizeAssetRecord } from '../domain/assets'
 import { isRemoteDocumentConflict } from '../domain/remoteDocumentSync'
 import { ProductApiError, productRequest, serverPersistenceEnabled } from './productSession'
-import { persistAcceptedRemoteRefresh } from './remoteDocumentRefresh'
+import { discardLocalDraftAndRefreshRemote, persistAcceptedRemoteRefresh } from './remoteDocumentRefresh'
 
 type CanvasDocumentBackup = {
   id: string
@@ -397,11 +397,11 @@ export async function discardPendingCanvasDraft(id: string) {
  * 流畅，因而会让“刷新远端”看起来没有任何变化。此处明确以远端为准并覆盖缓存。
  */
 export async function refreshCanvasDocumentFromRemote(id: string) {
-  await discardPendingCanvasDraft(id)
-  const remote = await readRemoteCanvasDocument(id)
-  if (!remote) return undefined
-  await persistLocalDocument(remote)
-  return remote
+  return discardLocalDraftAndRefreshRemote(
+    () => discardPendingCanvasDraft(id),
+    () => readRemoteCanvasDocument(id),
+    persistLocalDocument,
+  )
 }
 
 async function readPendingSyncDocuments() {

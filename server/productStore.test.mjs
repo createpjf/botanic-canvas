@@ -490,6 +490,45 @@ test('Artifact 标识按项目隔离，项目 Viewer 可读取但不能借此跨
   assert.equal(store.listAgentArtifacts(owner.id, 'project-artifact-b')[0].label, 'project-artifact-b')
 })
 
+test('Artifact 分页不会漏掉同一 createdAt 下的后续记录', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  const project = document('project-artifact-cursor')
+  store.writeProject(owner.id, project, undefined)
+
+  for (const id of ['artifact-a', 'artifact-b', 'artifact-c']) {
+    store.putAgentActionReceipt(owner.id, {
+      id: `receipt-${id}`,
+      projectId: project.id,
+      toolCallId: `call-${id}`,
+      createdAt: 100,
+      output: { artifacts: [{
+        id, kind: 'text', label: id, content: id,
+        provenance: { actionId: `call-${id}`, toolName: 'skill_apply' },
+      }] },
+    })
+  }
+  store.putAgentActionReceipt(owner.id, {
+    id: 'receipt-artifact-b-newer',
+    projectId: project.id,
+    toolCallId: 'call-artifact-b-newer',
+    createdAt: 200,
+    output: { artifacts: [{
+      id: 'artifact-b', kind: 'text', label: 'artifact-b-newer', content: 'artifact-b-newer',
+      provenance: { actionId: 'call-artifact-b-newer', toolName: 'skill_apply' },
+    }] },
+  })
+
+  const first = store.listAgentArtifacts(owner.id, project.id, { limit: 2 })
+  const second = store.listAgentArtifacts(owner.id, project.id, {
+    limit: 2,
+    before: { createdAt: first.at(-1).createdAt, id: first.at(-1).id },
+  })
+  assert.deepEqual(first.map((item) => item.id), ['artifact-a', 'artifact-b'])
+  assert.equal(first[1].createdAt, 100)
+  assert.deepEqual(second.map((item) => item.id), ['artifact-c'])
+})
+
 test('服务重启保留排队任务，并把执行中的任务标记为可重试失败', () => {
   const { store } = createStore()
   const owner = store.authenticate('owner-token')

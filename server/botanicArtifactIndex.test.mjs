@@ -6,10 +6,19 @@ import {
   artifactsFromActionReceipt,
   artifactsFromDocument,
   artifactsFromGenerationJob,
+  decodeArtifactCursor,
+  encodeArtifactCursor,
   mergeArtifactRecords,
   reconcileArtifactIndex,
   validateIndexedArtifact,
 } from './botanicArtifactIndex.mjs'
+
+test('Artifact 复合游标保留同一创建时间下的稳定 ID 边界', () => {
+  const cursor = encodeArtifactCursor({ id: 'artifact-b', createdAt: 100 })
+  assert.deepEqual(decodeArtifactCursor(cursor), { id: 'artifact-b', createdAt: 100 })
+  assert.deepEqual(decodeArtifactCursor('100'), { createdAt: 100 })
+  assert.throws(() => decodeArtifactCursor('broken'), /分页游标无效/)
+})
 
 test('历史 Agent 行动产物带会话、消息与行动来源进入 Artifact Index', () => {
   const [artifact] = artifactsFromAgentMessage({

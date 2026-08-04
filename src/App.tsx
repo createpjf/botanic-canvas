@@ -34,6 +34,7 @@ import { mediaFileExtension, reducedAspectRatio } from './domain/mediaPresentati
 import { mediaRetryUrl } from './domain/mediaRecovery'
 import { shouldRefreshFromRealtimeEvent } from './domain/realtimeSync'
 import { videoAspectRatioPolicy } from './domain/videoGeneration'
+import { beginCanvasFileDrag, endCanvasFileDrag, hasFileDragPayload } from './domain/canvasFileDrag'
 import { summarizeWorkflowTemplate, type WorkflowTemplateSummary } from './domain/workflowTemplates'
 import { useMotionPresence, useRestoreFocus, useRetainedValue, type MotionPhase } from './components/motionPresence'
 import { AccountDetailsDialog, AccountMenu, WorkspaceAuditDialog, WorkspaceMembersDialog, type AccountMenuAnchor } from './components/AccountCenter'
@@ -69,7 +70,7 @@ import { classifyBotanicAgentRequest } from './domain/agentChatContract'
 import { getGenerationServiceHealth } from './lib/generationApi'
 import { refinePrompt } from './lib/promptRefinementApi'
 import { connectCanvasCollaboration, type CanvasCollaboration } from './lib/projectCollaboration'
-import { createCanvasProject, deleteCanvasDocument, flushPendingCanvasDocumentWrites, readCanvasProjectSummaries, renameCanvasProject, syncPendingCanvasDrafts } from './lib/db'
+import { createCanvasProject, deleteCanvasDocument, flushPendingCanvasDocumentWrites, readCanvasProjectSummaries, refreshCanvasDocumentFromRemote, renameCanvasProject, syncPendingCanvasDrafts } from './lib/db'
 import { ProductApiError, clearProductSession, completeProductPasswordSetup, createProductSession, enrollProductMfa, hybridAuthEnabled, inviteWorkspaceMember, listWorkspaceAuditEvents, listWorkspaceMembers, productPasswordSetupRequired, readProductMfaStatus, readProductSession, refreshProductMediaSession, removeProductMfa, resendWorkspaceMemberInvite, serverPersistenceEnabled, signOutOtherProductSessions, supabaseAuthEnabled, updateProductPassword, updateWorkspaceMember, verifyProductMfa, type ProductUser } from './lib/productSession'
 import { subscribeProductSessionInvalidated } from './lib/productSessionInvalidation'
 import { createEmptyCanvasDocument } from './data/seed'
@@ -2676,6 +2677,8 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
   const refreshAgentCanvasFromRemote = useCallback(async () => {
     const projectId = useCanvasStore.getState().document.id
     if (projectId === 'workspace-placeholder') return false
+    const remote = await refreshCanvasDocumentFromRemote(projectId)
+    if (!remote) return false
     const opened = await openDocument(projectId)
     if (opened) useCanvasStore.setState({ persistenceStatus: 'saved', assistantMessage: '已切换到云端版本。' })
     return opened
@@ -3532,10 +3535,14 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
     event.dataTransfer.dropEffect = 'copy'
   }, [])
 
-  const onCanvasDrop = useCallback((event: DragEvent<HTMLElement>) => {
-    event.preventDefault()
+  const resetCanvasFileDragState = useCallback(() => {
     canvasFileDragDepthRef.current = 0
     setIsCanvasFileDragging(false)
+  }, [])
+
+  const onCanvasDrop = useCallback((event: DragEvent<HTMLElement>) => {
+    event.preventDefault()
+    resetCanvasFileDragState()
     const mapper = screenToFlowPositionRef.current
     if (!mapper) return
     const position = mapper({ x: event.clientX, y: event.clientY })
@@ -3548,23 +3555,44 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
     const assetId = event.dataTransfer.getData('application/x-botanic-asset-id')
       || event.dataTransfer.getData('text/plain')
     if (assetId && assetLibraryAssets.some((asset) => asset.id === assetId)) addAssetToCanvas(assetId, position)
-  }, [addAssetToCanvas, addDroppedFilesToCanvas, assetLibraryAssets])
+  }, [addAssetToCanvas, addDroppedFilesToCanvas, assetLibraryAssets, resetCanvasFileDragState])
 
   const isFlowDropTarget = useCallback((target: EventTarget | null) => (
     target instanceof Element && Boolean(target.closest('.react-flow'))
   ), [])
 
   const onCanvasFileDragEnter = useCallback((event: DragEvent<HTMLElement>) => {
-    if (!Array.from(event.dataTransfer.types).includes('Files')) return
-    canvasFileDragDepthRef.current += 1
-    setIsCanvasFileDragging(true)
-  }, [])
+    const next = beginCanvasFileDrag(
+      { depth: canvasFileDragDepthRef.current, active: isCanvasFileDragging },
+      Array.from(event.dataTransfer.types),
+      isFlowDropTarget(event.target),
+    )
+    canvasFileDragDepthRef.current = next.depth
+    setIsCanvasFileDragging(next.active)
+  }, [isCanvasFileDragging, isFlowDropTarget])
 
   const onCanvasFileDragLeave = useCallback((event: DragEvent<HTMLElement>) => {
-    if (!Array.from(event.dataTransfer.types).includes('Files')) return
-    canvasFileDragDepthRef.current = Math.max(0, canvasFileDragDepthRef.current - 1)
-    if (!canvasFileDragDepthRef.current) setIsCanvasFileDragging(false)
-  }, [])
+    if (!hasFileDragPayload(Array.from(event.dataTransfer.types)) || !isFlowDropTarget(event.target)) return
+    const next = endCanvasFileDrag({ depth: canvasFileDragDepthRef.current, active: isCanvasFileDragging })
+    canvasFileDragDepthRef.current = next.depth
+    setIsCanvasFileDragging(next.active)
+  }, [isCanvasFileDragging, isFlowDropTarget])
+
+  useEffect(() => {
+    const resetOnGlobalFileDrop = (event: globalThis.DragEvent) => {
+      if (hasFileDragPayload(Array.from(event.dataTransfer?.types ?? []))) resetCanvasFileDragState()
+    }
+    const resetOnWindowBlur = () => resetCanvasFileDragState()
+    // Agent/素材库会阻止 drop 冒泡；捕获阶段仍能保证画布状态复位。
+    window.addEventListener('drop', resetOnGlobalFileDrop, true)
+    window.addEventListener('dragend', resetOnGlobalFileDrop, true)
+    window.addEventListener('blur', resetOnWindowBlur)
+    return () => {
+      window.removeEventListener('drop', resetOnGlobalFileDrop, true)
+      window.removeEventListener('dragend', resetOnGlobalFileDrop, true)
+      window.removeEventListener('blur', resetOnWindowBlur)
+    }
+  }, [resetCanvasFileDragState])
 
   const openNodePalette = useCallback((event: ReactMouseEvent, fromDock = false, parentResultId?: string) => {
     const mapper = screenToFlowPositionRef.current
@@ -7226,7 +7254,7 @@ type AgentDockTarget = {
 type AgentArtifactIndexState = {
   projectId: string
   artifacts: BotanicIndexedArtifact[]
-  nextBefore?: number
+  nextBefore?: string
   status: 'idle' | 'loading' | 'loading-more' | 'ready' | 'error'
 }
 
@@ -7368,49 +7396,6 @@ function AgentClarificationCard({
       </div>
       {selectionSummary ? <div className="agent-clarification-card__selection" aria-live="polite"><span>当前选择</span><b>{selectionSummary}</b></div> : null}
       <button type="button" className="agent-clarification-card__submit" disabled={disabled || !complete} onClick={() => onSubmit(answers)}>{disabled ? '正在整理…' : '确认设置，继续规划'}</button>
-    </section>
-  )
-}
-
-function AgentContextBar({
-  target,
-  items,
-  settings,
-  generationModels,
-  onRemove,
-  onAdd,
-}: {
-  target?: AgentDockTarget
-  items: AgentContextItem[]
-  settings: Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution'>
-  generationModels: GenerationModelOption[]
-  onRemove: (nodeId: string) => void
-  onAdd: () => void
-}) {
-  const model = generationModels.find((item) => item.id === settings.model)
-  const references = items.filter((item) => item.id !== target?.id)
-  const hasContext = Boolean(target || references.length)
-  return (
-    <section className={`agent-context-bar${hasContext ? '' : ' is-empty'}`} aria-label="当前创作上下文">
-      <header>
-        <span><strong>当前上下文</strong><small>{target ? '目标与参考已就绪' : '未添加参考内容'}</small></span>
-        <button type="button" onClick={onAdd} aria-label="添加图像素材">+ 添加素材</button>
-      </header>
-      {hasContext ? <div className="agent-context-bar__items">
-          {target ? <span className="agent-context-bar__item is-target">
-            <img src={target.image} alt="" />
-            <span><small>目标</small><b>{target.label}</b></span>
-          </span> : null}
-          {references.map((item) => <button key={item.id} type="button" className="agent-context-bar__item" onClick={() => onRemove(item.id)} aria-label={`移除参考 ${item.label}`} title="移除参考">
-            {item.image ? <img src={item.image} alt="" /> : <i aria-hidden="true">{item.kind.slice(0, 1)}</i>}
-            <span><small>{item.kind}</small><b>{item.label}</b></span><em aria-hidden="true">×</em>
-          </button>)}
-        </div> : null}
-      <div className="agent-context-bar__settings" aria-label="当前输出设置">
-        <span><small>模型</small><b>{model?.label ?? settings.model}</b></span>
-        <span><small>比例</small><b>{settings.aspectRatio}</b></span>
-        <span><small>清晰度</small><b>{settings.resolution}</b></span>
-      </div>
     </section>
   )
 }
@@ -7637,15 +7622,6 @@ function AgentWorkspace({
     && Boolean(item.image)
     && (item.mediaKind ?? 'image') === 'image'
   ))
-  const contextSettings = useMemo<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution'>>(() => {
-    if (target) return target.rootRecipe.settings
-    const model = generationModels[0]
-    return {
-      model: model?.id ?? 'gpt-image-2',
-      aspectRatio: model?.aspectRatios?.[0] ?? '1:1',
-      resolution: model?.resolutions?.[0] ?? '1K',
-    }
-  }, [generationModels, target])
   const hasMessages = Boolean(session?.messages.length)
   const filteredArtifacts = useMemo(() => artifacts.filter((artifact) => {
     if (resultFilter === 'all') return true
@@ -8572,19 +8548,6 @@ function AgentWorkspace({
           {sessions.map((item) => <button key={item.id} type="button" className={item.id === session?.id ? 'is-active' : ''} onClick={() => { onSelectSession(item.id); setHistoryOpen(false) }}><span>{item.title}</span><small>{item.messages.length} 条</small></button>)}
         </div> : null}
       </header>
-      <div className="agent-context-drop-zone">
-        <AgentContextBar
-          target={target}
-          items={contextItems}
-          settings={contextSettings}
-          generationModels={generationModels}
-          onRemove={(nodeId) => session && onContextChange(session.id, session.contextNodeIds.filter((id) => id !== nodeId))}
-          onAdd={() => {
-            setContextMenuOpen(true)
-            requestAnimationFrame(() => contextMenuButtonRef.current?.focus())
-          }}
-        />
-      </div>
       <div className="agent-workspace__messages" role="log" aria-live="polite" aria-relevant="additions text">
         {resultPanelOpen ? <section className="agent-result-panel" aria-label="Agent 结果与文件">
           <header><div><small>AGENT OUTPUTS</small><h2>结果与文件</h2></div><span>{artifacts.length} 项</span></header>
@@ -8852,7 +8815,7 @@ function AgentWorkspace({
         <div ref={messageEndRef} />
       </div>
       {!utilityPanelOpen ? <div className="agent-composer">
-        {contextItems.length ? <div className="agent-composer__context">{contextItems.map((item) => <button key={item.id} type="button" aria-label={`移除 ${item.label}`} onClick={() => session && onContextChange(session.id, session.contextNodeIds.filter((id) => id !== item.id))}>{item.image ? <img src={item.image} alt="" /> : <span>{item.kind.slice(0, 1)}</span>}<b>{item.label}</b><i aria-hidden="true">×</i></button>)}</div> : null}
+        {contextItems.length ? <div className="agent-composer__context">{contextItems.map((item) => <button key={item.id} type="button" aria-label={`移除 ${item.label}`} title={`移除 ${item.label}`} onClick={() => session && onContextChange(session.id, session.contextNodeIds.filter((id) => id !== item.id))}>{item.image ? <img src={item.image} alt="" /> : <span>{item.kind.slice(0, 1)}</span>}<i aria-hidden="true">×</i></button>)}</div> : null}
         {mentionQuery ? <div className="agent-composer__mention-menu" role="group" aria-label="引用画布内容" onPointerDown={(event) => event.stopPropagation()}>
           {mentionOptions.map((item) => <button key={item.id} type="button" onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); selectMention(item) }}>{item.image ? <img src={item.image} alt="" /> : <span>{item.kind.slice(0, 1)}</span>}<b>{item.label}</b><small>{item.kind}</small></button>)}
           {!mentionOptions.length ? <p>没有匹配的画布内容</p> : null}

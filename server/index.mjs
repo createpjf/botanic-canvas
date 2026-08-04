@@ -25,6 +25,7 @@ import { issueRealtimeTicket } from './realtimeTicket.mjs'
 import { clientAddress, createSecurityControls, securityResponseHeaders, sensitiveActionDecision } from './securityControls.mjs'
 import { accessTokenFromRequest } from './requestAuth.mjs'
 import { ProjectAuthorizationError, requireProjectPermission } from './projectAuthorization.mjs'
+import { decodeArtifactCursor, encodeArtifactCursor } from './botanicArtifactIndex.mjs'
 
 loadLocalEnv()
 const config = runtimeConfig()
@@ -148,6 +149,7 @@ function enumValue(value, allowed, name) {
 function agentEntityHttpError(caught) {
   if (caught?.code === 'INVALID_AGENT_ENTITY') return new HttpError(400, caught.code, caught.message)
   if (caught?.code === 'AGENT_SESSION_NOT_FOUND') return new HttpError(404, caught.code, caught.message)
+  if (caught?.code === 'AGENT_MEMORY_DELETED') return new HttpError(409, caught.code, caught.message)
   if (typeof caught?.code === 'string' && /^(AGENT_(SESSION|MESSAGE|MEMORY|RUN|ENTITY)_ID_CONFLICT)$/.test(caught.code)) {
     return new HttpError(409, caught.code, caught.message)
   }
@@ -527,7 +529,9 @@ const server = createServer(async (request, response) => {
       await requireProjectPermission(productStore, user.id, projectId, 'read')
       const jobs = await productStore.listGenerationJobsForProject(user.id, projectId, Number(url.searchParams.get('limit') ?? 60))
       if (!jobs) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
-      return json(response, 200, { jobs: jobs.map(publicGenerationJob) })
+      return json(response, 200, {
+        jobs: jobs.map((job) => publicGenerationJob(job, { includeIdempotencyKey: job.ownerId === user.id })),
+      })
     }
     if (projectGenerationReconcileMatch && request.method === 'POST') {
       const user = await requireUser(request)
@@ -810,13 +814,15 @@ const server = createServer(async (request, response) => {
       await requireProjectPermission(productStore, user.id, projectId, 'read')
       const limit = Math.max(1, Math.min(Number(url.searchParams.get('limit')) || 100, 200))
       const beforeValue = url.searchParams.get('before')
-      const before = beforeValue === null ? undefined : Number(beforeValue)
-      if (beforeValue !== null && (!Number.isFinite(before) || before < 0)) {
+      let before
+      try {
+        before = decodeArtifactCursor(beforeValue ?? undefined)
+      } catch {
         return error(response, 400, 'INVALID_ARTIFACT_CURSOR', 'Artifact 分页游标无效。')
       }
       const artifacts = await productStore.listAgentArtifacts(user.id, projectId, { limit, before })
       if (!artifacts) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
-      const nextBefore = artifacts.length === limit ? artifacts.at(-1)?.createdAt : undefined
+      const nextBefore = artifacts.length === limit ? encodeArtifactCursor(artifacts.at(-1)) : undefined
       return json(response, 200, { artifacts, nextBefore })
     }
 
@@ -1004,7 +1010,7 @@ const server = createServer(async (request, response) => {
       if (!previousJob?.rawInput) return error(response, 409, 'AGENT_BRANCH_RETRY_SOURCE_MISSING', '该分支缺少可重试的原始生成配方。')
       const jobId = generationJobIdForIdempotency(user.id, idempotencyKey)
       const existingJob = await productStore.readGenerationJob(user.id, jobId)
-      if (existingJob) return json(response, 202, { run: publicAgentRun(await productStore.readAgentRun(user.id, runId)), job: publicGenerationJob(existingJob) })
+      if (existingJob) return json(response, 202, { run: publicAgentRun(await productStore.readAgentRun(user.id, runId)), job: publicGenerationJob(existingJob, { includeIdempotencyKey: existingJob.ownerId === user.id }) })
       if (!await enforceRateLimit(response, {
         scope: 'generation-output', subject: user.id,
         limit: config.security.generationOutputsPerDay, windowMs: 24 * 60 * 60_000,
@@ -1052,7 +1058,7 @@ const server = createServer(async (request, response) => {
       }
       const queuedRun = await productStore.readAgentRun(user.id, runId)
       await publishAgentRunUpdated({ projectId: run.projectId, run: publicAgentRun(queuedRun) })
-      return json(response, 202, { run: publicAgentRun(queuedRun), job: publicGenerationJob(job) })
+      return json(response, 202, { run: publicAgentRun(queuedRun), job: publicGenerationJob(job, { includeIdempotencyKey: true }) })
     }
 
     if (request.method === 'POST' && url.pathname === '/api/prompt-refinements') {
@@ -1112,7 +1118,7 @@ const server = createServer(async (request, response) => {
       }
       const id = generationJobIdForIdempotency(user.id, idempotencyKey)
       const existing = await productStore.readGenerationJob(user.id, id)
-      if (existing) return json(response, 202, publicGenerationJob(existing))
+      if (existing) return json(response, 202, publicGenerationJob(existing, { includeIdempotencyKey: existing.ownerId === user.id }))
       if (!await enforceRateLimit(response, {
         scope: 'generation-output', subject: user.id,
         limit: config.security.generationOutputsPerDay, windowMs: 24 * 60 * 60_000,
@@ -1137,7 +1143,7 @@ const server = createServer(async (request, response) => {
         await productStore.putGenerationJob(user.id, persistedGenerationJob(failed))
         return error(response, 503, 'QUEUE_UNAVAILABLE', failed.error)
       }
-      return json(response, 202, publicGenerationJob(job))
+      return json(response, 202, publicGenerationJob(job, { includeIdempotencyKey: true }))
     }
     if (jobMatch && request.method === 'GET' && !jobMatch[2]) {
       const user = await requireUser(request)
@@ -1156,9 +1162,9 @@ const server = createServer(async (request, response) => {
         }
         await productStore.putGenerationJob(user.id, persistedGenerationJob(failed))
         if (job.status === 'queued') await redisQueue?.cancel(job.id)
-        return json(response, 200, publicGenerationJob(failed))
+        return json(response, 200, publicGenerationJob(failed, { includeIdempotencyKey: failed.ownerId === user.id }))
       }
-      return json(response, 200, publicGenerationJob(job))
+      return json(response, 200, publicGenerationJob(job, { includeIdempotencyKey: job.ownerId === user.id }))
     }
     if (jobMatch && request.method === 'POST' && jobMatch[2] === 'cancel') {
       const user = await requireUser(request)
@@ -1169,9 +1175,9 @@ const server = createServer(async (request, response) => {
         const cancelled = { ...job, status: 'cancelled', error: undefined, updatedAt: Date.now() }
         await productStore.putGenerationJob(user.id, persistedGenerationJob(cancelled))
         await redisQueue?.cancel(jobId)
-        return json(response, 200, publicGenerationJob(cancelled))
+        return json(response, 200, publicGenerationJob(cancelled, { includeIdempotencyKey: cancelled.ownerId === user.id }))
       }
-      return json(response, 200, publicGenerationJob(job))
+      return json(response, 200, publicGenerationJob(job, { includeIdempotencyKey: job.ownerId === user.id }))
     }
     if (projectMediaMatch && request.method === 'POST') {
       const user = await requireUser(request)

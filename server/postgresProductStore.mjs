@@ -615,7 +615,12 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
           job_id = excluded.job_id,
           created_at = least(agent_artifacts.created_at, excluded.created_at),
           updated_at = excluded.updated_at,
-          payload = excluded.payload
+          payload = jsonb_set(
+            excluded.payload,
+            '{createdAt}',
+            to_jsonb(least(agent_artifacts.created_at, excluded.created_at)),
+            true
+          )
         where agent_artifacts.updated_at <= excluded.updated_at
       `
     }
@@ -623,7 +628,28 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
 
   async function syncAgentState(tx, userId, document, previousDocument) {
     const extracted = agentStateFromDocument(document)
-    for (const session of extracted.sessions) {
+    let previous
+    try {
+      previous = previousDocument ? agentStateFromDocument(previousDocument) : undefined
+    } catch {
+      // 旧文档可能包含当前规则不再接受的数据；差量基线失效时退回全量同步，
+      // 不能让上一版坏数据阻断用户提交已经修正的新文档。
+      previous = undefined
+    }
+    const changed = (items, previousItems, key = (item) => item.id) => {
+      if (!previous) return items
+      const previousById = new Map(previousItems.map((item) => [key(item), item]))
+      return items.filter((item) => {
+        const before = previousById.get(key(item))
+        return !before || JSON.stringify(before) !== JSON.stringify(item)
+      })
+    }
+    const changedSessions = changed(extracted.sessions, previous?.sessions ?? [])
+    const changedMessages = changed(extracted.messages, previous?.messages ?? [], (entry) => entry.message.id)
+    const changedMemory = changed(extracted.memory, previous?.memory ?? [])
+    const changedRuns = changed(extracted.runs, previous?.runs ?? [])
+
+    for (const session of changedSessions) {
       const [conflict] = await tx`select project_id as "projectId" from agent_sessions where id = ${session.id}`
       if (conflict && conflict.projectId !== document.id) throw productError('Agent 会话标识已被其他项目使用。', 'AGENT_SESSION_ID_CONFLICT')
       await tx`
@@ -633,7 +659,7 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
         where agent_sessions.project_id = excluded.project_id and agent_sessions.updated_at <= excluded.updated_at
       `
     }
-    for (const entry of extracted.messages) {
+    for (const entry of changedMessages) {
       const [conflict] = await tx`select project_id as "projectId", session_id as "sessionId" from agent_messages where id = ${entry.message.id}`
       if (conflict && (conflict.projectId !== document.id || conflict.sessionId !== entry.sessionId)) {
         throw productError('Agent 消息标识已被其他会话使用。', 'AGENT_MESSAGE_ID_CONFLICT')
@@ -652,7 +678,7 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     for (const memoryId of previousMemoryIds) {
       if (!nextMemoryIds.has(memoryId)) await tx`update agent_memory_items set deleted_at = ${now()}, updated_at = ${now()} where id = ${memoryId} and project_id = ${document.id}`
     }
-    for (const memory of extracted.memory) {
+    for (const memory of changedMemory) {
       const [conflict] = await tx`select project_id as "projectId" from agent_memory_items where id = ${memory.id}`
       if (conflict && conflict.projectId !== document.id) throw productError('Agent 记忆标识已被其他项目使用。', 'AGENT_MEMORY_ID_CONFLICT')
       await tx`
@@ -669,8 +695,8 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
           )
       `
     }
-    for (const run of extracted.runs) {
-      const status = typeof run.status === 'string' ? run.status : 'awaiting_confirmation'
+    for (const run of changedRuns) {
+      const status = run.status
       await tx`
         insert into agent_runs (id, owner_id, project_id, status, updated_at, payload)
         values (${run.id}, ${userId}, ${document.id}, ${status}, ${Number(run.updatedAt) || now()}, ${tx.json({ ...run, projectId: document.id, ownerId: userId })}::jsonb)
@@ -678,7 +704,9 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
         where agent_runs.project_id = excluded.project_id and agent_runs.updated_at <= excluded.updated_at
       `
     }
-    await upsertArtifactRecords(tx, userId, document.id, artifactsFromDocument(document))
+    const artifacts = artifactsFromDocument(document)
+    const previousArtifacts = previousDocument ? artifactsFromDocument(previousDocument) : []
+    await upsertArtifactRecords(tx, userId, document.id, changed(artifacts, previousArtifacts))
   }
 
   const store = {
@@ -1128,14 +1156,24 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     async listAgentArtifacts(userId, projectId, { limit = 100, before } = {}) {
       if (!await memberRole(projectId, userId)) return undefined
       const maximum = Math.max(1, Math.min(Number(limit) || 100, artifactIndexLimits.page))
-      const beforeTimestamp = Number.isFinite(Number(before)) ? Number(before) : Number.MAX_SAFE_INTEGER
-      const rows = await sql`
-        select artifact.payload from agent_artifacts artifact
-        where artifact.project_id = ${projectId} and artifact.created_at < ${beforeTimestamp}
-        order by artifact.created_at desc, artifact.updated_at desc, artifact.id asc
-        limit ${maximum}
-      `
-      return rows.map(asPayload)
+      const beforeTimestamp = Number.isFinite(Number(before?.createdAt)) ? Number(before.createdAt) : Number.MAX_SAFE_INTEGER
+      const beforeId = typeof before?.id === 'string' ? before.id : undefined
+      const rows = beforeId === undefined
+        ? await sql`
+          select artifact.payload, artifact.created_at as "indexCreatedAt" from agent_artifacts artifact
+          where artifact.project_id = ${projectId} and artifact.created_at < ${beforeTimestamp}
+          order by artifact.created_at desc, artifact.id asc
+          limit ${maximum}
+        `
+        : await sql`
+          select artifact.payload, artifact.created_at as "indexCreatedAt" from agent_artifacts artifact
+          where artifact.project_id = ${projectId}
+            and (artifact.created_at < ${beforeTimestamp}
+              or (artifact.created_at = ${beforeTimestamp} and artifact.id > ${beforeId}))
+          order by artifact.created_at desc, artifact.id asc
+          limit ${maximum}
+        `
+      return rows.map((row) => ({ ...asPayload(row), createdAt: Number(row.indexCreatedAt) }))
     },
 
     async putAgentSkill(userId, skill) {

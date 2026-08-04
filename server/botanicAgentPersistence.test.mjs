@@ -52,6 +52,25 @@ test('独立实体按 ID 合并，不因旧文档缺少并发新增消息而丢�
   assert.equal(merged.agentSessions[0].updatedAt, 30)
 })
 
+test('仅存在于独立实体表的 Agent Run 会进入兼容文档', () => {
+  const merged = mergeAgentStateIntoDocument({
+    agentSessions: [], agentMemory: [], agentRuns: [],
+  }, {
+    runs: [{ id: 'run-entity-only', status: 'running', updatedAt: 30 }],
+  })
+
+  assert.deepEqual(merged.agentRuns, [{ id: 'run-entity-only', status: 'running', updatedAt: 30 }])
+})
+
+test('历史 Agent Run 非法状态在写入独立实体前回退到等待确认', () => {
+  const state = agentStateFromDocument({
+    agentSessions: [], agentMemory: [],
+    agentRuns: [{ id: 'run-invalid', status: 'future_status', updatedAt: 13 }],
+  })
+
+  assert.equal(state.runs[0].status, 'awaiting_confirmation')
+})
+
 test('独立消息按自身 updatedAt 合并，旧会话时间戳不会覆盖另一设备的新内容', () => {
   const merged = mergeAgentStateIntoDocument({
     agentSessions: [session('session-a', 400, [{

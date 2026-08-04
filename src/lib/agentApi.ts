@@ -169,13 +169,13 @@ export async function listPersistentBotanicAgentRuns(projectId: string) {
 
 export async function listProjectAgentArtifacts(
   projectId: string,
-  options: { limit?: number; before?: number; signal?: AbortSignal } = {},
+  options: { limit?: number; before?: string; signal?: AbortSignal } = {},
 ) {
   const query = new URLSearchParams()
   if (options.limit !== undefined) query.set('limit', String(options.limit))
   if (options.before !== undefined) query.set('before', String(options.before))
   const suffix = query.size ? `?${query.toString()}` : ''
-  return productRequest<{ artifacts: BotanicIndexedArtifact[]; nextBefore?: number }>(
+  return productRequest<{ artifacts: BotanicIndexedArtifact[]; nextBefore?: string }>(
     `/api/projects/${encodeURIComponent(projectId)}/agent-artifacts${suffix}`,
     { signal: options.signal },
   )
