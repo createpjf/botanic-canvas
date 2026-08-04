@@ -2997,7 +2997,8 @@ button.project-tab__main { border: 0; cursor: pointer; }
   bottom: 12px;
   display: grid;
   width: min(480px, calc(100vw - 24px));
-  grid-template-rows: 58px auto minmax(0, 1fr) auto;
+  /* 无同步提示时：标题、消息、输入框三行；避免输入框误占用消息区的剩余高度。 */
+  grid-template-rows: 58px minmax(0, 1fr) auto;
   overflow: hidden;
   border: 1px solid #bcd2bf;
   border-radius: var(--radius-surface);
@@ -3013,22 +3014,16 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-workspace__drop-hint svg { width: 24px; height: 24px; }
 .agent-workspace__drop-hint strong { font-size: 12px; }
 .agent-workspace__drop-hint small { color: #68816d; font-size: 10px; }
-.agent-workspace__persistence-banner { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: 8px; margin: 8px 10px 0; padding: 8px 9px; border: 1px solid #d6e3d7; border-radius: 9px; background: #f5f8f4; color: #4d6654; }
-.agent-workspace__persistence-banner.is-conflict { border-color: #e2c8a8; background: #fff8ed; color: #75552f; }
-.agent-workspace__persistence-banner.is-error { border-color: #e4c7c0; background: #fff4f1; color: #8a4e45; }
-.agent-workspace__persistence-mark { display: grid; width: 20px; height: 20px; place-items: center; border-radius: 50%; background: #e3eee4; color: #397047; font-size: 13px; font-weight: 800; }
-.agent-workspace__persistence-banner.is-conflict .agent-workspace__persistence-mark { background: #f4e4c7; color: #9a6b2f; }
-.agent-workspace__persistence-banner.is-error .agent-workspace__persistence-mark { background: #f5ded9; color: #a45146; }
-.agent-workspace__persistence-banner > span:nth-child(2) { display: grid; min-width: 0; gap: 2px; }
-.agent-workspace__persistence-banner strong { font-size: 10px; font-weight: 780; }
-.agent-workspace__persistence-banner small { color: currentColor; font-size: 9px; opacity: .78; }
-.agent-workspace__persistence-banner button { min-height: 28px; padding: 0 8px; border: 1px solid currentColor; border-radius: 6px; background: transparent; color: currentColor; cursor: pointer; font-size: 9px; font-weight: 760; white-space: nowrap; }
-.agent-workspace__persistence-banner button:hover { background: rgba(255, 255, 255, .58); }
-.agent-workspace__persistence-banner button:disabled { cursor: wait; opacity: .62; }
 .agent-workspace__header { position: relative; display: flex; width: 100%; min-width: 0; align-items: center; justify-content: space-between; gap: 6px; padding: 0 8px; border-bottom: 1px solid #dde7de; background: rgba(255, 255, 255, .82); box-sizing: border-box; }
 .agent-workspace__title { display: flex; min-width: 0; flex: 1 1 auto; align-items: center; gap: 4px; overflow: hidden; }
 .agent-workspace__history-button, .agent-workspace__utility-menu-button { display: grid; width: 32px; height: 32px; place-items: center; padding: 0; border: 1px solid transparent; border-radius: var(--radius-control); background: transparent; color: #64766a; cursor: pointer; }
 .agent-workspace__header-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 2px; }
+.agent-workspace__persistence-status { display: grid; width: 32px; height: 32px; place-items: center; padding: 0; border: 0; border-radius: var(--radius-control); background: transparent; color: #7b8a80; cursor: pointer; }
+.agent-workspace__persistence-status > span { display: grid; width: 18px; height: 18px; place-items: center; border-radius: 50%; background: #e3eee4; color: #397047; font-size: 10px; font-weight: 850; }
+.agent-workspace__persistence-status.is-conflict > span { background: #f4e4c7; color: #946329; }
+.agent-workspace__persistence-status.is-error > span { background: #f5ded9; color: #a45146; }
+.agent-workspace__persistence-status:hover, .agent-workspace__persistence-status:focus-visible { outline: 0; background: #f1f6f0; }
+.agent-workspace__persistence-status:disabled { cursor: wait; opacity: .5; }
 .agent-workspace__utility-menu-wrap { position: relative; }
 .agent-workspace__utility-menu-button svg { width: 17px; height: 17px; }
 .agent-workspace__history-button:hover, .agent-workspace__history-button:focus-visible, .agent-workspace__utility-menu-button:hover, .agent-workspace__utility-menu-button:focus-visible { border-color: #c8dacb; background: #f1f6f0; color: #285d37; }

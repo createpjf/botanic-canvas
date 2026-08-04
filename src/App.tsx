@@ -8530,6 +8530,11 @@ function AgentWorkspace({
     : persistenceStatus === 'offline'
       ? { title: '正在使用离线草稿', detail: '恢复网络后会继续同步当前编辑。', action: 'retry' as const, actionLabel: '重试同步' }
       : { title: '画布同步暂时失败', detail: '当前编辑仍在本地，稍后可以继续同步。', action: 'retry' as const, actionLabel: '重试同步' }
+  const resolvePersistenceIssue = () => {
+    setPersistenceAction(persistenceCopy.action)
+    const task = persistenceCopy.action === 'refresh' ? onRefreshRemote() : onRetryPersistence()
+    void task.catch(() => undefined).finally(() => setPersistenceAction(''))
+  }
 
   return (
     <aside
@@ -8540,21 +8545,20 @@ function AgentWorkspace({
       onDrop={handleImageDrop}
     >
       {isImageDropActive ? <div className="agent-workspace__drop-hint" aria-hidden="true"><UploadIcon /><strong>松开即可添加图片素材</strong><small>PNG / JPEG / WebP，单张不超过 8MB</small></div> : null}
-      {persistenceIssue ? <div className={`agent-workspace__persistence-banner is-${persistenceStatus}`} role="status">
-        <span className="agent-workspace__persistence-mark" aria-hidden="true">{persistenceStatus === 'conflict' ? '!' : '·'}</span>
-        <span><strong>{persistenceCopy.title}</strong><small>{persistenceCopy.detail}</small></span>
-        <button type="button" disabled={Boolean(persistenceAction)} onClick={() => {
-          setPersistenceAction(persistenceCopy.action)
-          const task = persistenceCopy.action === 'refresh' ? onRefreshRemote() : onRetryPersistence()
-          void task.catch(() => undefined).finally(() => setPersistenceAction(''))
-        }}>{persistenceAction ? '处理中…' : persistenceCopy.actionLabel}</button>
-      </div> : null}
       <header className="agent-workspace__header">
         <div className="agent-workspace__title">
           <button type="button" className="agent-workspace__history-button" onClick={(event) => { historyTriggerRef.current = event.currentTarget; setUtilityMenuOpen(false); setHistoryOpen((open) => !open) }} aria-controls={historyMenuId} aria-expanded={historyOpen} aria-label="对话历史" title="对话历史"><FigmaIcon src={historyIcon} /></button>
           <button type="button" className="agent-workspace__title-button" onClick={(event) => { historyTriggerRef.current = event.currentTarget; setUtilityMenuOpen(false); setHistoryOpen((open) => !open) }} aria-controls={historyMenuId} aria-expanded={historyOpen}>{session?.title ?? '新建对话'} <span aria-hidden="true">⌄</span></button>
         </div>
         <div className="agent-workspace__header-actions">
+          {persistenceIssue ? <button
+            type="button"
+            className={`agent-workspace__persistence-status is-${persistenceStatus}`}
+            aria-label={`${persistenceCopy.title}。${persistenceAction ? '处理中' : persistenceCopy.actionLabel}`}
+            title={`${persistenceCopy.title} · ${persistenceCopy.actionLabel}`}
+            disabled={Boolean(persistenceAction)}
+            onClick={resolvePersistenceIssue}
+          ><span aria-hidden="true">{persistenceStatus === 'conflict' ? '!' : '·'}</span></button> : null}
           <div ref={utilityMenuRef} className="agent-workspace__utility-menu-wrap">
             <button ref={utilityMenuButtonRef} type="button" className={`agent-workspace__utility-menu-button${utilityPanelOpen ? ' is-active' : ''}`} aria-haspopup="menu" aria-expanded={utilityMenuOpen} aria-controls={utilityMenuId} aria-label="Agent 工具" title="Agent 工具" onClick={() => { setUtilityMenuOpen((open) => !open); setHistoryOpen(false) }}><ChecklistIcon /></button>
             {utilityMenuOpen ? <div id={utilityMenuId} className="agent-workspace__utility-menu" role="menu" aria-label="Agent 工具">
