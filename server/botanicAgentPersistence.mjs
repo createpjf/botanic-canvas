@@ -54,6 +54,8 @@ function newerById(items) {
 
 function comparableTimestamp(value) {
   if (typeof value === 'string') {
+    const numeric = Number(value)
+    if (Number.isFinite(numeric)) return numeric
     const parsed = Date.parse(value)
     return Number.isFinite(parsed) ? parsed : 0
   }

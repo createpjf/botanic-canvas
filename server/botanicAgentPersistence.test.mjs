@@ -112,6 +112,7 @@ test('Agent 实体验证拒绝越界类型与超长消息', () => {
 test('Postgres/Supabase 使用同一时间戳冲突规则，Memory 墓碑在同时刻胜出', () => {
   assert.equal(shouldApplyAgentEntityWrite(undefined, { updatedAt: 20 }), true)
   assert.equal(shouldApplyAgentEntityWrite({ updatedAt: 20 }, { updatedAt: 19 }), false)
+  assert.equal(shouldApplyAgentEntityWrite({ updatedAt: '20' }, { updatedAt: 19 }), false)
   assert.equal(shouldApplyAgentEntityWrite({ updatedAt: 20 }, { updatedAt: 20 }), true)
   assert.equal(shouldApplyAgentEntityWrite(
     { updatedAt: '2026-08-04T08:00:00.000Z', deletedAt: '2026-08-04T08:00:00.000Z' },

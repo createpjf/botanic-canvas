@@ -3,7 +3,7 @@ import postgres from 'postgres'
 import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from './authorization.mjs'
 import { artifactIndexLimits, artifactsFromActionReceipt, artifactsFromAgentMessage, artifactsFromDocument, artifactsFromGenerationJob } from './botanicArtifactIndex.mjs'
 import { applyGenerationJobToAgentRun } from './botanicAgentRun.mjs'
-import { agentStateFromDocument, mergeAgentStateIntoDocument, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity } from './botanicAgentPersistence.mjs'
+import { agentStateFromDocument, mergeAgentStateIntoDocument, shouldApplyAgentEntityWrite, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity } from './botanicAgentPersistence.mjs'
 
 const now = () => Date.now()
 const hashAccessToken = (token) => createHash('sha256').update(token).digest('hex')
@@ -1117,11 +1117,18 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     async putAgentMemoryItem(userId, projectId, input) {
       const role = await memberRole(projectId, userId)
       assertProjectPermission(role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
-      const timestampValue = now()
+      const timestampValue = Number.isFinite(Number(input?.updatedAt)) ? Number(input.updatedAt) : now()
       const memory = validateAgentMemoryEntity({ ...input, updatedAt: timestampValue }, { now: timestampValue })
-      await sql.begin(async (tx) => {
-        const [existing] = await tx`select project_id as "projectId" from agent_memory_items where id = ${memory.id} for update`
+      return sql.begin(async (tx) => {
+        const [existing] = await tx`
+          select project_id as "projectId", updated_at as "updatedAt", deleted_at as "deletedAt", payload
+          from agent_memory_items where id = ${memory.id} for update
+        `
         if (existing && existing.projectId !== projectId) throw productError('Agent 记忆标识已被其他项目使用。', 'AGENT_MEMORY_ID_CONFLICT')
+        if (existing && !shouldApplyAgentEntityWrite(existing, memory, { tombstoneWinsTie: true })) {
+          if (existing.deletedAt) throw productError('该 Agent 记忆已删除，不能由旧设备恢复。', 'AGENT_MEMORY_DELETED')
+          return clone(existing.payload)
+        }
         await tx`
           insert into agent_memory_items (id, owner_id, project_id, updated_at, deleted_at, payload)
           values (${memory.id}, ${userId}, ${projectId}, ${timestampValue}, null, ${tx.json(memory)}::jsonb)
@@ -1136,8 +1143,8 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
             )
         `
         await insertAudit(tx, { actorId: userId, action: existing ? 'agent-memory.updated' : 'agent-memory.created', projectId, targetId: memory.id })
+        return clone(memory)
       })
-      return clone(memory)
     },
 
     async deleteAgentMemoryItem(userId, projectId, memoryId) {
