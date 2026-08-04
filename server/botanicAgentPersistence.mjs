@@ -34,6 +34,13 @@ function timestamp(value, fallback) {
   return Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : fallback
 }
 
+export function validateAgentEntityWriteTimestamp(value, { now = Date.now(), maximumFutureSkewMs = 5 * 60_000 } = {}) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > now + maximumFutureSkewMs) {
+    invalid('Agent 实体时间戳无效。')
+  }
+  return value
+}
+
 function uniqueTextList(value, name, maximumItems, maximumLength = 160) {
   if (value === undefined) return []
   if (!Array.isArray(value) || value.length > maximumItems) invalid(`${name}格式无效。`)
@@ -64,15 +71,16 @@ function comparableTimestamp(value) {
 
 /**
  * 独立实体的 LWW 规则。Postgres SQL 与 Supabase Adapter 必须同步此语义：
- * 新时间戳覆盖旧值；普通实体同时刻允许幂等回放；Memory 墓碑在同时刻胜出。
+ * 新时间戳覆盖旧值；普通实体同时刻允许幂等回放；Memory 墓碑永久胜出，
+ * 显式重建必须使用新的实体 ID，避免旧设备或时钟漂移复活已删除数据。
  */
 export function shouldApplyAgentEntityWrite(existing, incoming, { tombstoneWinsTie = false } = {}) {
   if (!existing) return true
+  if (tombstoneWinsTie && (existing.deletedAt ?? existing.deleted_at)) return false
   const existingTimestamp = comparableTimestamp(existing.updatedAt ?? existing.updated_at)
   const incomingTimestamp = comparableTimestamp(incoming?.updatedAt ?? incoming?.updated_at)
   if (incomingTimestamp > existingTimestamp) return true
   if (incomingTimestamp < existingTimestamp) return false
-  if (tombstoneWinsTie && (existing.deletedAt ?? existing.deleted_at)) return false
   return true
 }
 
