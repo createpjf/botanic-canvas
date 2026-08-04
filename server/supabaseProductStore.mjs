@@ -5,7 +5,7 @@ import { decodeAuthAssurance } from './authAssurance.mjs'
 import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from './authorization.mjs'
 import { artifactIndexLimits, artifactsFromActionReceipt, artifactsFromAgentMessage, artifactsFromDocument, artifactsFromGenerationJob } from './botanicArtifactIndex.mjs'
 import { applyGenerationJobToAgentRun } from './botanicAgentRun.mjs'
-import { agentStateFromDocument, mergeAgentStateIntoDocument, shouldApplyAgentEntityWrite, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity } from './botanicAgentPersistence.mjs'
+import { agentStateFromDocument, mergeAgentStateIntoDocument, shouldApplyAgentEntityWrite, validateAgentEntityWriteTimestamp, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity } from './botanicAgentPersistence.mjs'
 
 const now = () => Date.now()
 const clone = (value) => structuredClone(value)
@@ -591,11 +591,20 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
 
     async putAgentMemoryItem(userId, projectId, input) {
       assertProjectPermission(await memberRole(projectId, userId), 'edit', 'PROJECT_WRITE_FORBIDDEN')
-      const timestampValue = now()
-      const memory = validateAgentMemoryEntity({ ...input, updatedAt: timestampValue }, { now: timestampValue })
-      const { data: existing, error: readError } = await supabaseRequest(() => supabase.from('agent_memory_items').select('project_id').eq('id', memory.id).maybeSingle())
+      const serverTime = now()
+      const requestedTimestamp = input?.updatedAt === undefined
+        ? serverTime
+        : validateAgentEntityWriteTimestamp(input.updatedAt, { now: serverTime })
+      const memory = validateAgentMemoryEntity({ ...input, updatedAt: requestedTimestamp }, { now: serverTime })
+      const timestampValue = validateAgentEntityWriteTimestamp(memory.updatedAt, { now: serverTime })
+      const { data: existing, error: readError } = await supabaseRequest(() => supabase.from('agent_memory_items')
+        .select('project_id,updated_at,deleted_at,payload').eq('id', memory.id).maybeSingle())
       fail(readError)
       if (existing && existing.project_id !== projectId) throw productError('Agent 记忆标识已被其他项目使用。', 'AGENT_MEMORY_ID_CONFLICT')
+      if (existing?.deleted_at) throw productError('该 Agent 记忆已删除，请创建新的记忆。', 'AGENT_MEMORY_DELETED')
+      if (existing && !shouldApplyAgentEntityWrite(existing, memory, { tombstoneWinsTie: true })) {
+        return clone(existing.payload)
+      }
       const { error } = await supabaseRequest(() => supabase.from('agent_memory_items').upsert({
         id: memory.id, owner_id: userId, project_id: projectId,
         updated_at: new Date(timestampValue).toISOString(), deleted_at: null, payload: memory,

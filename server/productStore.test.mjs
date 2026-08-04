@@ -390,6 +390,31 @@ test('Agent Memory 删除墓碑阻止旧设备增量 PUT 复活同 ID 记忆', (
   assert.deepEqual(store.readAgentState(owner.id, 'project-agent-memory-version').memory, [])
 })
 
+test('Agent Memory 删除后即使时间戳更新也必须使用新 ID 重建', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, { ...document('project-agent-memory-recreate'), agentSessions: [], agentMemory: [], agentRuns: [] }, undefined)
+  store.putAgentMemoryItem(owner.id, 'project-agent-memory-recreate', {
+    id: 'memory-recreate', kind: 'rule', content: '旧内容', sourceNodeIds: [], createdAt: 10, updatedAt: 100,
+  })
+  assert.equal(store.deleteAgentMemoryItem(owner.id, 'project-agent-memory-recreate', 'memory-recreate'), true)
+  assert.throws(() => store.putAgentMemoryItem(owner.id, 'project-agent-memory-recreate', {
+    id: 'memory-recreate', kind: 'rule', content: '显式重建', sourceNodeIds: [], createdAt: 10, updatedAt: Date.now() + 10_000,
+  }), (error) => error?.code === 'AGENT_MEMORY_DELETED')
+  assert.deepEqual(store.readAgentState(owner.id, 'project-agent-memory-recreate').memory, [])
+})
+
+test('Agent Memory 拒绝非整数、空值和远未来客户端时间戳', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, { ...document('project-agent-memory-timestamp'), agentSessions: [], agentMemory: [], agentRuns: [] }, undefined)
+  for (const updatedAt of [null, 1.5, Date.now() + 10 * 60_000]) {
+    assert.throws(() => store.putAgentMemoryItem(owner.id, 'project-agent-memory-timestamp', {
+      id: `memory-${String(updatedAt)}`, kind: 'rule', content: '无效时间戳', sourceNodeIds: [], createdAt: 10, updatedAt,
+    }), (error) => error?.code === 'INVALID_AGENT_ENTITY')
+  }
+})
+
 test('Agent Memory 使用墓碑删除，兼容文档中的旧副本不会复活', () => {
   const { store } = createStore()
   const owner = store.authenticate('owner-token')

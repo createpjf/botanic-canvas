@@ -4,7 +4,7 @@ import { dirname, resolve } from 'node:path'
 import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from './authorization.mjs'
 import { artifactIndexLimits, artifactsFromActionReceipt, artifactsFromAgentMessage, artifactsFromDocument, artifactsFromGenerationJob } from './botanicArtifactIndex.mjs'
 import { applyGenerationJobToAgentRun } from './botanicAgentRun.mjs'
-import { agentStateFromDocument, mergeAgentStateIntoDocument, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity } from './botanicAgentPersistence.mjs'
+import { agentStateFromDocument, mergeAgentStateIntoDocument, shouldApplyAgentEntityWrite, validateAgentEntityWriteTimestamp, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity } from './botanicAgentPersistence.mjs'
 
 const schemaVersion = 1
 
@@ -582,12 +582,18 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       const project = state.projects.find((item) => item.id === projectId)
       if (!project) throw productError('未找到项目。', 'PROJECT_NOT_FOUND')
       assertProjectPermission(project.members.find((item) => item.userId === userId)?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
-      const timestamp = Number.isFinite(Number(input?.updatedAt)) ? Number(input.updatedAt) : now()
-      const memory = validateAgentMemoryEntity({ ...input, updatedAt: timestamp }, { now: timestamp })
+      const serverTime = now()
+      const requestedTimestamp = input?.updatedAt === undefined
+        ? serverTime
+        : validateAgentEntityWriteTimestamp(input.updatedAt, { now: serverTime })
+      const memory = validateAgentMemoryEntity({ ...input, updatedAt: requestedTimestamp }, { now: serverTime })
+      const timestamp = validateAgentEntityWriteTimestamp(memory.updatedAt, { now: serverTime })
       const existing = state.agentMemoryItems.find((item) => item.id === memory.id)
       if (existing && existing.projectId !== projectId) throw productError('Agent 记忆标识已被其他项目使用。', 'AGENT_MEMORY_ID_CONFLICT')
-      if (existing?.deletedAt) throw productError('该 Agent 记忆已删除，不能由旧设备恢复。', 'AGENT_MEMORY_DELETED')
-      if (existing && existing.updatedAt >= memory.updatedAt) return clone(existing.payload)
+      if (existing?.deletedAt) throw productError('该 Agent 记忆已删除，请创建新的记忆。', 'AGENT_MEMORY_DELETED')
+      if (existing && !shouldApplyAgentEntityWrite(existing, memory, { tombstoneWinsTie: true })) {
+        return clone(existing.payload)
+      }
       const record = { id: memory.id, projectId, ownerId: existing?.ownerId ?? userId, updatedAt: timestamp, deletedAt: undefined, payload: memory }
       if (existing) Object.assign(existing, record)
       else state.agentMemoryItems.push(record)
