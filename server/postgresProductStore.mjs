@@ -615,7 +615,12 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
           job_id = excluded.job_id,
           created_at = least(agent_artifacts.created_at, excluded.created_at),
           updated_at = excluded.updated_at,
-          payload = excluded.payload
+          payload = jsonb_set(
+            excluded.payload,
+            '{createdAt}',
+            to_jsonb(least(agent_artifacts.created_at, excluded.created_at)),
+            true
+          )
         where agent_artifacts.updated_at <= excluded.updated_at
       `
     }
@@ -623,7 +628,14 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
 
   async function syncAgentState(tx, userId, document, previousDocument) {
     const extracted = agentStateFromDocument(document)
-    const previous = previousDocument ? agentStateFromDocument(previousDocument) : undefined
+    let previous
+    try {
+      previous = previousDocument ? agentStateFromDocument(previousDocument) : undefined
+    } catch {
+      // 旧文档可能包含当前规则不再接受的数据；差量基线失效时退回全量同步，
+      // 不能让上一版坏数据阻断用户提交已经修正的新文档。
+      previous = undefined
+    }
     const changed = (items, previousItems, key = (item) => item.id) => {
       if (!previous) return items
       const previousById = new Map(previousItems.map((item) => [key(item), item]))
@@ -1148,20 +1160,20 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       const beforeId = typeof before?.id === 'string' ? before.id : undefined
       const rows = beforeId === undefined
         ? await sql`
-          select artifact.payload from agent_artifacts artifact
+          select artifact.payload, artifact.created_at as "indexCreatedAt" from agent_artifacts artifact
           where artifact.project_id = ${projectId} and artifact.created_at < ${beforeTimestamp}
           order by artifact.created_at desc, artifact.id asc
           limit ${maximum}
         `
         : await sql`
-          select artifact.payload from agent_artifacts artifact
+          select artifact.payload, artifact.created_at as "indexCreatedAt" from agent_artifacts artifact
           where artifact.project_id = ${projectId}
             and (artifact.created_at < ${beforeTimestamp}
               or (artifact.created_at = ${beforeTimestamp} and artifact.id > ${beforeId}))
           order by artifact.created_at desc, artifact.id asc
           limit ${maximum}
         `
-      return rows.map(asPayload)
+      return rows.map((row) => ({ ...asPayload(row), createdAt: Number(row.indexCreatedAt) }))
     },
 
     async putAgentSkill(userId, skill) {

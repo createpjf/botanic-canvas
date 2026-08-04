@@ -141,6 +141,7 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
     for (const artifact of artifacts) {
       const existing = state.agentArtifacts.find((item) => item.projectId === projectId && item.id === artifact.id)
       if (existing && Number(existing.updatedAt ?? 0) > Number(artifact.updatedAt ?? 0)) continue
+      const indexedCreatedAt = existing ? Math.min(existing.createdAt, artifact.createdAt) : artifact.createdAt
       const record = {
         id: artifact.id,
         projectId,
@@ -149,9 +150,9 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
         sourceKind: artifact.origin.type,
         runId: artifact.provenance.runId,
         jobId: artifact.origin.jobId,
-        createdAt: existing ? Math.min(existing.createdAt, artifact.createdAt) : artifact.createdAt,
+        createdAt: indexedCreatedAt,
         updatedAt: artifact.updatedAt,
-        payload: clone(artifact),
+        payload: { ...clone(artifact), createdAt: indexedCreatedAt },
       }
       if (existing) Object.assign(existing, record)
       else state.agentArtifacts.push(record)
@@ -621,7 +622,7 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
         ))
         .sort((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id))
         .slice(0, maximum)
-        .map((artifact) => clone(artifact.payload))
+        .map((artifact) => ({ ...clone(artifact.payload), createdAt: artifact.createdAt }))
     },
 
     putAgentSkill(userId, skill) {

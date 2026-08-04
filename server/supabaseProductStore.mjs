@@ -180,21 +180,25 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       const rows = batch.filter((artifact) => {
         const existing = existingById.get(artifact.id)
         return !existing || artifact.updatedAt >= new Date(existing.updated_at).getTime()
-      }).map((artifact) => ({
-        project_id: projectId,
-        id: artifact.id,
-        owner_id: existingById.get(artifact.id)?.owner_id ?? userId,
-        kind: artifact.kind,
-        source_kind: artifact.origin.type,
-        run_id: artifact.provenance.runId ?? null,
-        job_id: artifact.origin.jobId ?? null,
-        created_at: new Date(Math.min(
+      }).map((artifact) => {
+        const existing = existingById.get(artifact.id)
+        const indexedCreatedAt = Math.min(
           artifact.createdAt,
-          existingById.get(artifact.id)?.created_at ? new Date(existingById.get(artifact.id).created_at).getTime() : artifact.createdAt,
-        )).toISOString(),
-        updated_at: new Date(artifact.updatedAt).toISOString(),
-        payload: artifact,
-      }))
+          existing?.created_at ? new Date(existing.created_at).getTime() : artifact.createdAt,
+        )
+        return {
+          project_id: projectId,
+          id: artifact.id,
+          owner_id: existing?.owner_id ?? userId,
+          kind: artifact.kind,
+          source_kind: artifact.origin.type,
+          run_id: artifact.provenance.runId ?? null,
+          job_id: artifact.origin.jobId ?? null,
+          created_at: new Date(indexedCreatedAt).toISOString(),
+          updated_at: new Date(artifact.updatedAt).toISOString(),
+          payload: { ...artifact, createdAt: indexedCreatedAt },
+        }
+      })
       if (!rows.length) continue
       const { error } = await supabaseRequest(() => supabase.from('agent_artifacts').upsert(rows, { onConflict: 'project_id,id' }))
       if (missingAgentEntityTable(error)) return false
@@ -618,25 +622,33 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
     async listAgentArtifacts(userId, projectId, { limit = 100, before } = {}) {
       if (!await memberRole(projectId, userId)) return undefined
       const maximum = Math.max(1, Math.min(Number(limit) || 100, artifactIndexLimits.page))
-      let query = supabase.from('agent_artifacts').select('payload')
+      const baseQuery = () => supabase.from('agent_artifacts').select('payload,created_at')
         .eq('project_id', projectId)
         .order('created_at', { ascending: false })
         .order('id', { ascending: true })
-        .limit(maximum)
       const beforeTimestamp = Number(before?.createdAt)
-      if (Number.isFinite(beforeTimestamp)) {
-        const timestampIso = new Date(beforeTimestamp).toISOString()
-        if (typeof before?.id === 'string') {
-          const cursorId = `"${before.id.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`
-          query = query.or(`created_at.lt.${timestampIso},and(created_at.eq.${timestampIso},id.gt.${cursorId})`)
-        } else {
-          query = query.lt('created_at', timestampIso)
-        }
+      const mapRows = (rows) => (rows ?? []).map((row) => ({
+        ...clone(row.payload),
+        createdAt: new Date(row.created_at).getTime(),
+      }))
+      if (!Number.isFinite(beforeTimestamp) || typeof before?.id !== 'string') {
+        let query = baseQuery().limit(maximum)
+        if (Number.isFinite(beforeTimestamp)) query = query.lt('created_at', new Date(beforeTimestamp).toISOString())
+        const { data, error } = await supabaseRequest(() => query)
+        if (missingAgentEntityTable(error)) return []
+        fail(error)
+        return mapRows(data)
       }
-      const { data, error } = await supabaseRequest(() => query)
-      if (missingAgentEntityTable(error)) return []
-      fail(error)
-      return (data ?? []).map((row) => clone(row.payload))
+      const timestampIso = new Date(beforeTimestamp).toISOString()
+      const { data: sameTimestamp, error: sameTimestampError } = await supabaseRequest(() => baseQuery()
+        .eq('created_at', timestampIso).gt('id', before.id).limit(maximum))
+      if (missingAgentEntityTable(sameTimestampError)) return []
+      fail(sameTimestampError)
+      if ((sameTimestamp ?? []).length >= maximum) return mapRows(sameTimestamp)
+      const { data: older, error: olderError } = await supabaseRequest(() => baseQuery()
+        .lt('created_at', timestampIso).limit(maximum - (sameTimestamp ?? []).length))
+      fail(olderError)
+      return mapRows([...(sameTimestamp ?? []), ...(older ?? [])])
     },
 
     async putAgentSkill(userId, skill) {

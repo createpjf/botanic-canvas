@@ -508,6 +508,16 @@ test('Artifact 分页不会漏掉同一 createdAt 下的后续记录', () => {
       }] },
     })
   }
+  store.putAgentActionReceipt(owner.id, {
+    id: 'receipt-artifact-b-newer',
+    projectId: project.id,
+    toolCallId: 'call-artifact-b-newer',
+    createdAt: 200,
+    output: { artifacts: [{
+      id: 'artifact-b', kind: 'text', label: 'artifact-b-newer', content: 'artifact-b-newer',
+      provenance: { actionId: 'call-artifact-b-newer', toolName: 'skill_apply' },
+    }] },
+  })
 
   const first = store.listAgentArtifacts(owner.id, project.id, { limit: 2 })
   const second = store.listAgentArtifacts(owner.id, project.id, {
@@ -515,6 +525,7 @@ test('Artifact 分页不会漏掉同一 createdAt 下的后续记录', () => {
     before: { createdAt: first.at(-1).createdAt, id: first.at(-1).id },
   })
   assert.deepEqual(first.map((item) => item.id), ['artifact-a', 'artifact-b'])
+  assert.equal(first[1].createdAt, 100)
   assert.deepEqual(second.map((item) => item.id), ['artifact-c'])
 })
 
