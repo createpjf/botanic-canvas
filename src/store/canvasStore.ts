@@ -3868,7 +3868,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
         ? `已创建「${planned.node.data.label}」并连接所选输入。`
         : mediaKind === 'video'
           ? '已创建视频生成节点；连接首帧、首尾帧或参考素材后即可生成。'
-          : '已创建图像生成节点；连接商品图片与文本描述后，可直接在节点内发起生成。',
+          : '已创建图像生成节点；连接商品图片后，可直接填写描述并生成。',
     })
     return nodeId
   },
@@ -4133,7 +4133,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
   runGraphGeneration: async (nodeId, agentRun) => {
     const graphRecipe = buildGraphGenerationRecipe(get().document, nodeId)
     if (!graphRecipe) return setGenerationError(set, '未找到要执行的生成节点。')
-    if (!graphRecipe.prompt.trim()) return setGenerationError(set, '请填写生成描述，或连接一个文本节点。')
+    if (!graphRecipe.prompt.trim()) return setGenerationError(set, '请填写生成描述。')
     if (graphRecipe.hasUnselectedResultInput) return setGenerationError(set, '上游结果尚未选图；请先在候选中选中一张首图，再继续生成。')
     if (!graphRecipe.recipe.references.length && !graphRecipe.parent) return setGenerationError(set, '请至少连接一张商品图片、参考素材或已选首图。')
     if (graphRecipe.recipe.references.length > 8) return setGenerationError(set, '单个生成节点最多连接 8 个参考素材。')

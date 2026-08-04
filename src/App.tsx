@@ -35,6 +35,7 @@ import { mediaRetryUrl } from './domain/mediaRecovery'
 import { shouldRefreshFromRealtimeEvent } from './domain/realtimeSync'
 import { videoAspectRatioPolicy } from './domain/videoGeneration'
 import { beginCanvasFileDrag, endCanvasFileDrag, hasFileDragPayload } from './domain/canvasFileDrag'
+import { nextExclusiveSurface, type ExclusiveSurfaceAction } from './domain/exclusiveSurface'
 import { summarizeWorkflowTemplate, type WorkflowTemplateSummary } from './domain/workflowTemplates'
 import { useMotionPresence, useRestoreFocus, useRetainedValue, type MotionPhase } from './components/motionPresence'
 import { AccountDetailsDialog, AccountMenu, WorkspaceAuditDialog, WorkspaceMembersDialog, type AccountMenuAnchor } from './components/AccountCenter'
@@ -220,6 +221,8 @@ function ComposerOptionPopover({ label, value, valueIcon, disabled = false, widt
     }
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
       setOpen(false)
       triggerRef.current?.focus()
     }
@@ -350,6 +353,8 @@ function BotanicSelect({
     }
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
       setOpen(false)
       triggerRef.current?.focus()
     }
@@ -673,7 +678,7 @@ function GenerateNode({ data, id, selected }: NodeProps) {
         type="target"
         position={Position.Left}
         aria-label={`${generateLabel} 输入端`}
-        title="将图片、文本或已选首图连到这里"
+        title="将图片或已选首图连到这里"
       />
       <Handle
         className="flow-handle flow-handle--graph flow-handle--source"
@@ -706,7 +711,7 @@ function GenerateNode({ data, id, selected }: NodeProps) {
               : <img key={reference.id} src={reference.image} alt={reference.name} title={reference.name} />)}
             {references.length > 4 ? <span>+{references.length - 4}</span> : null}
           </div>
-        ) : <span className="generate-node__empty-input">连接图片或文本作为输入</span>}
+        ) : <span className="generate-node__empty-input">连接参考素材后即可生成</span>}
         <p>{generate.prompt.trim() || '点击节点，编辑本次生成描述与参数'}</p>
         <footer>{hasPrimaryInput || inputSummary.readyResults ? '点击编辑本次生成' : '先连接主商品后生成'}</footer>
       </div>
@@ -2321,6 +2326,8 @@ function EmptyCanvasGuide({
   )
 }
 
+type CanvasPrimarySurface = 'assets' | 'templates' | 'history' | 'references' | 'candidates' | 'inspector' | 'delivery' | 'agent'
+
 function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser; onSignOut?: () => Promise<void> }) {
   const document = useCanvasStore((state) => state.document)
   const globalAssets = useCanvasStore((state) => state.globalAssets)
@@ -2399,15 +2406,29 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
   const createLocalDeliveries = useCanvasStore((state) => state.createLocalDeliveries)
   const undoAction = useCanvasStore((state) => state.undoAction)
   const undoLastAction = useCanvasStore((state) => state.undoLastAction)
-  const [assetsOpen, setAssetsOpen] = useState(false)
+  const [activeCanvasSurface, setActiveCanvasSurface] = useState<CanvasPrimarySurface | null>(null)
+  const canvasSurfaceTriggerRef = useRef<HTMLElement | null>(null)
+  const setCanvasSurfaceOpen = useCallback((surface: CanvasPrimarySurface, action: ExclusiveSurfaceAction) => {
+    if (action === true && globalThis.document.activeElement instanceof HTMLElement) canvasSurfaceTriggerRef.current = globalThis.document.activeElement
+    setActiveCanvasSurface((current) => nextExclusiveSurface(current, surface, action))
+  }, [])
+  const assetsOpen = activeCanvasSurface === 'assets'
+  const templatesOpen = activeCanvasSurface === 'templates'
+  const historyOpen = activeCanvasSurface === 'history'
+  const nodeReferencesOpen = activeCanvasSurface === 'references'
+  const candidatesOpen = activeCanvasSurface === 'candidates'
+  const nodeInspectorOpen = activeCanvasSurface === 'inspector'
+  const deliveryOpen = activeCanvasSurface === 'delivery'
+  const agentOpen = activeCanvasSurface === 'agent'
+  const setAssetsOpen = useCallback((action: ExclusiveSurfaceAction) => setCanvasSurfaceOpen('assets', action), [setCanvasSurfaceOpen])
+  const setTemplatesOpen = useCallback((action: ExclusiveSurfaceAction) => setCanvasSurfaceOpen('templates', action), [setCanvasSurfaceOpen])
+  const setHistoryOpen = useCallback((action: ExclusiveSurfaceAction) => setCanvasSurfaceOpen('history', action), [setCanvasSurfaceOpen])
+  const setNodeReferencesOpen = useCallback((action: ExclusiveSurfaceAction) => setCanvasSurfaceOpen('references', action), [setCanvasSurfaceOpen])
+  const setCandidatesOpen = useCallback((action: ExclusiveSurfaceAction) => setCanvasSurfaceOpen('candidates', action), [setCanvasSurfaceOpen])
+  const setNodeInspectorOpen = useCallback((action: ExclusiveSurfaceAction) => setCanvasSurfaceOpen('inspector', action), [setCanvasSurfaceOpen])
+  const setDeliveryOpen = useCallback((action: ExclusiveSurfaceAction) => setCanvasSurfaceOpen('delivery', action), [setCanvasSurfaceOpen])
+  const setAgentOpen = useCallback((action: ExclusiveSurfaceAction) => setCanvasSurfaceOpen('agent', action), [setCanvasSurfaceOpen])
   const [assetLibraryTargetGenerateId, setAssetLibraryTargetGenerateId] = useState<string | null>(null)
-  const [templatesOpen, setTemplatesOpen] = useState(false)
-  const [historyOpen, setHistoryOpen] = useState(false)
-  const [nodeReferencesOpen, setNodeReferencesOpen] = useState(false)
-  const [candidatesOpen, setCandidatesOpen] = useState(false)
-  const [nodeInspectorOpen, setNodeInspectorOpen] = useState(false)
-  const [deliveryOpen, setDeliveryOpen] = useState(false)
-  const [agentOpen, setAgentOpen] = useState(false)
   const [agentArtifactIndex, setAgentArtifactIndex] = useState<AgentArtifactIndexState>({
     projectId: '', artifacts: [], status: 'idle',
   })
@@ -2627,6 +2648,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
   }, [workspaceLocation])
 
   const showComposer = useCallback(() => {
+    setActiveCanvasSurface(null)
     setComposerLayout((current) => current.collapsed ? { ...current, collapsed: false } : current)
     setComposerOpen(true)
   }, [])
@@ -3184,6 +3206,9 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
     setCandidatesOpen(false)
     setNodeInspectorOpen(false)
     setDeliveryOpen(false)
+    setActiveCanvasSurface(null)
+    setComposerOpen(false)
+    setAccountMenuAnchor(null)
     setResultComposerDraft(null)
     setBatchComposerTargetId(null)
     setExpandedResultGroupIds((current) => {
@@ -3213,10 +3238,12 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
     const session = useCanvasStore.getState().document.agentSessions.find((item) => item.id === sessionId)
     setAgentSessionContext(sessionId, [...(session?.contextNodeIds ?? []), resultNodeId])
     setAgentTargetResultId(resultNodeId)
-    setAgentOpen(true)
     setComposerOpen(false)
     setResultComposerDraft(null)
     setBatchComposerTargetId(null)
+    setNodePalette(null)
+    setAccountMenuAnchor(null)
+    setAgentOpen(true)
   }, [document.nodes, ensureAgentSession, selectNode, setAgentSessionContext])
 
   const selectedFocusNodeIds = useMemo(() => {
@@ -3358,7 +3385,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
   }, [refreshGenerationService])
 
   useEffect(() => {
-    if (generationCandidates.length) setCandidatesOpen(true)
+    if (generationCandidates.length && activeCanvasSurface !== 'agent') setCandidatesOpen(true)
   }, [generationCandidates.length])
 
   useEffect(() => {
@@ -3459,6 +3486,43 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
     setResultComposerDraft(null)
     setBatchComposerTargetId(null)
   }, [])
+
+  const openDockSurface = useCallback((surface: Extract<CanvasPrimarySurface, 'assets' | 'templates' | 'history' | 'delivery'>) => {
+    setComposerOpen(false)
+    setResultComposerDraft(null)
+    setBatchComposerTargetId(null)
+    setNodePalette(null)
+    setCanvasSurfaceOpen(surface, true)
+  }, [setCanvasSurfaceOpen])
+
+  useEffect(() => {
+    const closeFrontSurfaceOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || agentOpen) return
+      if (accountMenuAnchor || accountDialog || imagePreview || assetToDelete) return
+      if (composerOpen || resultComposerDraft) return
+      if (batchComposerTargetId) {
+        setBatchComposerTargetId(null)
+        event.preventDefault()
+        return
+      }
+      const eventTarget = event.target instanceof Element ? event.target : null
+      if (eventTarget?.closest('[aria-modal="true"], .botanic-select__menu, .composer-option-menu')) return
+      if (nodePalette) {
+        setNodePalette(null)
+        event.preventDefault()
+        return
+      }
+      if (!activeCanvasSurface) return
+      setActiveCanvasSurface(null)
+      event.preventDefault()
+      requestAnimationFrame(() => {
+        const trigger = canvasSurfaceTriggerRef.current
+        if (trigger?.isConnected) trigger.focus()
+      })
+    }
+    window.addEventListener('keydown', closeFrontSurfaceOnEscape)
+    return () => window.removeEventListener('keydown', closeFrontSurfaceOnEscape)
+  }, [accountDialog, accountMenuAnchor, activeCanvasSurface, agentOpen, assetToDelete, batchComposerTargetId, composerOpen, imagePreview, nodePalette, resultComposerDraft])
 
   const setScreenToFlowPosition = useCallback((mapper: ScreenToFlowPosition) => {
     screenToFlowPositionRef.current = mapper
@@ -3612,6 +3676,11 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
       y: Math.max(paneRect.top + 92, Math.min(paneRect.bottom - 158, event.clientY)),
     }
     closeWorkbenchPanels()
+    setActiveCanvasSurface(null)
+    setComposerOpen(false)
+    setResultComposerDraft(null)
+    setBatchComposerTargetId(null)
+    setAccountMenuAnchor(null)
     setNodePalette({
       flow: mapper(screenPoint),
       screen: {
@@ -4005,11 +4074,8 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
     const origin = document.nodes.length
       ? { x: Math.max(...document.nodes.map((node) => node.position.x)) + 220, y: Math.min(...document.nodes.map((node) => node.position.y)) }
       : { x: 180, y: 160 }
-    addTextNode(origin)
-    const textNodeId = useCanvasStore.getState().selectedNodeId
-    if (!textNodeId) return { created: false, started: false, needsReference: !referenceNodeIds.length }
-    updateTextNode(textNodeId, instruction)
-    const generateNodeId = addGenerateNode({ x: origin.x + 360, y: origin.y + 40 }, 'image', [...referenceNodeIds, textNodeId])
+    // Agent 默认把描述写入生成节点，避免为一次生成额外创建文字节点。
+    const generateNodeId = addGenerateNode({ x: origin.x + 360, y: origin.y + 40 }, 'image', referenceNodeIds)
     if (!generateNodeId) return { created: false, started: false, needsReference: !referenceNodeIds.length }
     const generatedNode = useCanvasStore.getState().document.nodes.find((node) => node.id === generateNodeId)
     const generatedData = generatedNode?.type === 'generate' ? generatedNode.data as GenerateNodeData : undefined
@@ -4023,7 +4089,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
     if (!autoExecute || !referenceNodeIds.length) return { created: true, started: false, needsReference: !referenceNodeIds.length }
     const started = await runGraphGeneration(generateNodeId)
     return { created: true, started, needsReference: false }
-  }, [addGenerateNode, addTextNode, availableModels, document.nodes, runGraphGeneration, updateGenerateNode, updateTextNode])
+  }, [addGenerateNode, availableModels, document.nodes, runGraphGeneration, updateGenerateNode])
 
   const addAgentUploadedImages = useCallback((uploads: UploadedAssetInput[]) => {
     if (!uploads.length) return
@@ -4155,6 +4221,11 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
 
   useEffect(() => {
     if (!hydrated) return
+    if (agentOpen) {
+      selectedNodeTransitionRef.current = selectedNodeId
+      setComposerOpen(false)
+      return
+    }
     if (selectedNodeTransitionRef.current === undefined) {
       selectedNodeTransitionRef.current = selectedNodeId
       return
@@ -4171,7 +4242,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
     } else {
       setComposerOpen(false)
     }
-  }, [hydrated, selectedGenerate, selectedNodeId, showComposer])
+  }, [agentOpen, hydrated, selectedGenerate, selectedNodeId, showComposer])
 
   const canvasAssetReferences = document.nodes
     .flatMap((node, index) => {
@@ -4480,6 +4551,16 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
             const opensResultCandidates = node.type === 'result'
               && generationCandidates.some((candidate) => candidate.resultNodeId === node.id)
             selectNode(node.id)
+            if (agentOpen) {
+              setComposerOpen(false)
+              setResultComposerDraft(null)
+              setBatchComposerTargetId(null)
+              setIsConnecting(false)
+              setSelectedEdgeId(null)
+              setEdgeActionPosition(null)
+              setNodePalette(null)
+              return
+            }
             if (node.type === 'generate') showComposer()
             else setComposerOpen(false)
             setIsConnecting(false)
@@ -4544,7 +4625,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
           {!document.nodes.length ? (
             <Panel position="top-left" className="empty-canvas-guide-panel">
               <EmptyCanvasGuide
-                onOpenAssets={() => { closeWorkbenchPanels(); setAssetsOpen(true) }}
+                onOpenAssets={() => openDockSurface('assets')}
                 onAddImage={() => {
                   addGenerateNode({ x: 460, y: 330 }, 'image')
                   showComposer()
@@ -4580,10 +4661,10 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
           <Panel position="top-left" className="dock-panel">
             <nav className="dock" aria-label="画布工具">
               <button className="dock__add" onClick={(event) => openNodePalette(event, true)} aria-label="新增节点"><FigmaIcon src={plusIcon} /></button>
-              <button className={assetsOpen ? 'dock__button is-active' : 'dock__button'} onClick={() => { closeWorkbenchPanels(); setAssetsOpen(true) }} aria-label="打开素材库"><FigmaIcon src={folderIcon} /></button>
-              <button className={templatesOpen ? 'dock__button is-active' : 'dock__button'} onClick={() => { closeWorkbenchPanels(); setTemplatesOpen(true) }} aria-label="模板"><FigmaIcon src={templatesIcon} /></button>
-              <button className={historyOpen ? 'dock__button is-active' : 'dock__button'} onClick={() => { closeWorkbenchPanels(); setHistoryOpen(true) }} aria-label="画布历史"><FigmaIcon src={historyIcon} /></button>
-              <button className={deliveryOpen ? 'dock__button dock__button--delivery is-active' : 'dock__button dock__button--delivery'} onClick={() => { closeWorkbenchPanels(); setDeliveryOpen(true) }} aria-label="投放交付"><ArrowUpRightIcon /></button>
+              <button className={assetsOpen ? 'dock__button is-active' : 'dock__button'} onClick={() => openDockSurface('assets')} aria-label="打开素材库"><FigmaIcon src={folderIcon} /></button>
+              <button className={templatesOpen ? 'dock__button is-active' : 'dock__button'} onClick={() => openDockSurface('templates')} aria-label="模板"><FigmaIcon src={templatesIcon} /></button>
+              <button className={historyOpen ? 'dock__button is-active' : 'dock__button'} onClick={() => openDockSurface('history')} aria-label="画布历史"><FigmaIcon src={historyIcon} /></button>
+              <button className={deliveryOpen ? 'dock__button dock__button--delivery is-active' : 'dock__button dock__button--delivery'} onClick={() => openDockSurface('delivery')} aria-label="投放交付"><ArrowUpRightIcon /></button>
               <button ref={accountTriggerRef} className={accountMenuAnchor ? 'dock__account is-active' : 'dock__account'} aria-label="打开账户设置" aria-expanded={Boolean(accountMenuAnchor)} onClick={(event) => {
                 if (accountMenuAnchor) {
                   setAccountMenuAnchor(null)
@@ -4627,6 +4708,11 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
           const session = useCanvasStore.getState().document.agentSessions.find((item) => item.id === sessionId)
           if (selectedFocusNodeIds.length) setAgentSessionContext(sessionId, [...(session?.contextNodeIds ?? []), ...selectedFocusNodeIds])
           setAgentTargetResultId(selectedReadyResultData ? selectedResult!.id : null)
+          setComposerOpen(false)
+          setResultComposerDraft(null)
+          setBatchComposerTargetId(null)
+          setNodePalette(null)
+          setAccountMenuAnchor(null)
           setAgentOpen(true)
         }} aria-label="打开 Agent" title="Agent"><SparkleIcon /></button> : null}
 
@@ -4905,9 +4991,6 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
         {nodePalettePresence.present && visibleNodePalette ? (
           <div className={`node-palette is-${nodePalettePresence.phase}`} style={{ left: visibleNodePalette.screen.x, top: visibleNodePalette.screen.y }} role="dialog" aria-label="添加画布节点" aria-hidden={nodePalettePresence.phase === 'exit' ? true : undefined} onPointerDown={(event) => event.stopPropagation()}>
             <div className="node-palette__title"><span>{visibleNodePalette.parentResultId ? '基于此图添加' : visibleNodePalette.inputNodeId ? '连接所选节点' : '添加节点'}</span><button onClick={() => setNodePalette(null)} aria-label="关闭添加节点"><CloseIcon /></button></div>
-            <button onClick={() => { addTextNode(visibleNodePalette.flow); setNodePalette(null) }}>
-              <b>T</b><span><strong>描述</strong><small>补充画面、卖点或构图</small></span>
-            </button>
             <button onClick={() => {
               const parentNode = visibleNodePalette.parentResultId
                 ? document.nodes.find((node) => node.id === visibleNodePalette.parentResultId && node.type === 'result')
@@ -7251,6 +7334,17 @@ type AgentDockTarget = {
   rootRecipe: GenerationRecipe
 }
 
+type AgentTransientSurface = 'context' | 'history' | 'utility' | 'mode'
+
+function agentTargetDisplayLabel(target?: AgentDockTarget) {
+  if (!target) return ''
+  const primaryReference = target.rootRecipe.references.find((reference) => reference.primary)
+    ?? target.rootRecipe.references[0]
+  const referenceName = primaryReference?.name?.trim()
+  if (referenceName) return referenceName
+  return target.label.trim().replace(/^@+/, '').replace(/\s+\+\d+\b.*$/u, '')
+}
+
 type AgentArtifactIndexState = {
   projectId: string
   artifacts: BotanicIndexedArtifact[]
@@ -7581,11 +7675,19 @@ function AgentWorkspace({
   const [executingActionId, setExecutingActionId] = useState('')
   const [retryingBranchId, setRetryingBranchId] = useState('')
   const [cancellingRunId, setCancellingRunId] = useState('')
-  const [contextMenuOpen, setContextMenuOpen] = useState(false)
+  const [activeTransientSurface, setActiveTransientSurface] = useState<AgentTransientSurface | null>(null)
+  const setTransientSurfaceOpen = useCallback((surface: AgentTransientSurface, action: ExclusiveSurfaceAction) => {
+    setActiveTransientSurface((current) => nextExclusiveSurface(current, surface, action))
+  }, [])
+  const contextMenuOpen = activeTransientSurface === 'context'
+  const historyOpen = activeTransientSurface === 'history'
+  const utilityMenuOpen = activeTransientSurface === 'utility'
+  const modeMenuOpen = activeTransientSurface === 'mode'
+  const setContextMenuOpen = useCallback((action: ExclusiveSurfaceAction) => setTransientSurfaceOpen('context', action), [setTransientSurfaceOpen])
+  const setHistoryOpen = useCallback((action: ExclusiveSurfaceAction) => setTransientSurfaceOpen('history', action), [setTransientSurfaceOpen])
+  const setUtilityMenuOpen = useCallback((action: ExclusiveSurfaceAction) => setTransientSurfaceOpen('utility', action), [setTransientSurfaceOpen])
+  const setModeMenuOpen = useCallback((action: ExclusiveSurfaceAction) => setTransientSurfaceOpen('mode', action), [setTransientSurfaceOpen])
   const [isImageDropActive, setIsImageDropActive] = useState(false)
-  const [historyOpen, setHistoryOpen] = useState(false)
-  const [utilityMenuOpen, setUtilityMenuOpen] = useState(false)
-  const [modeMenuOpen, setModeMenuOpen] = useState(false)
   const [skillPanelOpen, setSkillPanelOpen] = useState(false)
   const [taskPanelOpen, setTaskPanelOpen] = useState(false)
   const [resultPanelOpen, setResultPanelOpen] = useState(false)
@@ -7667,7 +7769,10 @@ function AgentWorkspace({
   const mentionOptions = useMemo(() => {
     if (!mentionQuery) return []
     const query = mentionQuery.query.trim().toLocaleLowerCase()
-    return contextOptions.filter((item) => !query || `${item.label} ${item.kind}`.toLocaleLowerCase().includes(query)).slice(0, 6)
+    return contextOptions
+      .filter((item) => item.kind === '素材' && Boolean(item.image))
+      .filter((item) => !query || item.label.toLocaleLowerCase().includes(query))
+      .slice(0, 6)
   }, [contextOptions, mentionQuery])
   const utilityPanelOpen = taskPanelOpen || skillPanelOpen || resultPanelOpen || memoryPanelOpen
   const runtimeSummary = useMemo(
@@ -7738,14 +7843,41 @@ function AgentWorkspace({
   }, [instruction])
 
   useEffect(() => {
-    if (!utilityMenuOpen) return
+    if (!activeTransientSurface) return
     const closeOnOutsidePress = (event: PointerEvent) => {
-      if (utilityMenuRef.current?.contains(event.target as Node)) return
-      setUtilityMenuOpen(false)
+      const target = event.target as Node
+      const trigger = activeTransientSurface === 'history'
+        ? historyTriggerRef.current
+        : activeTransientSurface === 'utility'
+          ? utilityMenuButtonRef.current
+          : activeTransientSurface === 'context'
+            ? contextMenuButtonRef.current
+            : modeMenuButtonRef.current
+      const surfaceId = activeTransientSurface === 'history'
+        ? historyMenuId
+        : activeTransientSurface === 'utility'
+          ? utilityMenuId
+          : activeTransientSurface === 'context'
+            ? contextMenuId
+            : modeMenuId
+      if (trigger?.contains(target) || document.getElementById(surfaceId)?.contains(target)) return
+      setActiveTransientSurface(null)
     }
     document.addEventListener('pointerdown', closeOnOutsidePress)
     return () => document.removeEventListener('pointerdown', closeOnOutsidePress)
-  }, [utilityMenuOpen])
+  }, [activeTransientSurface, contextMenuId, historyMenuId, modeMenuId, utilityMenuId])
+
+  useEffect(() => {
+    if (!mentionQuery) return
+    const closeMentionOnOutsidePress = (event: PointerEvent) => {
+      const target = event.target as Node
+      const element = target instanceof Element ? target : target.parentElement
+      if (composerTextareaRef.current?.contains(target) || element?.closest('.agent-composer__mention-menu')) return
+      setMentionQuery(undefined)
+    }
+    document.addEventListener('pointerdown', closeMentionOnOutsidePress)
+    return () => document.removeEventListener('pointerdown', closeMentionOnOutsidePress)
+  }, [mentionQuery])
 
   useEffect(() => {
     const closeLayerOnEscape = (event: KeyboardEvent) => {
@@ -7770,6 +7902,8 @@ function AgentWorkspace({
         requestAnimationFrame(() => skillCreateButtonRef.current?.focus())
       } else if (recoveryModelMenuKey) {
         setRecoveryModelMenuKey('')
+      } else if (runtimeDetailsOpen) {
+        setRuntimeDetailsOpen(false)
       } else if (utilityPanelOpen) {
         setTaskPanelOpen(false)
         setSkillPanelOpen(false)
@@ -7777,13 +7911,13 @@ function AgentWorkspace({
         setMemoryPanelOpen(false)
         requestAnimationFrame(() => utilityButtonRef.current?.focus())
       } else {
-        return
+        onClose()
       }
       event.preventDefault()
     }
     window.addEventListener('keydown', closeLayerOnEscape)
     return () => window.removeEventListener('keydown', closeLayerOnEscape)
-  }, [contextMenuOpen, historyOpen, mentionQuery, modeMenuOpen, recoveryModelMenuKey, skillConfirming, utilityMenuOpen, utilityPanelOpen])
+  }, [contextMenuOpen, historyOpen, mentionQuery, modeMenuOpen, onClose, recoveryModelMenuKey, runtimeDetailsOpen, skillConfirming, utilityMenuOpen, utilityPanelOpen])
 
   useEffect(() => {
     setError('')
@@ -7931,8 +8065,8 @@ function AgentWorkspace({
     setTaskPanelOpen((open) => panel === 'task' ? !open : false)
     setMemoryPanelOpen((open) => panel === 'memory' ? !open : false)
     setSkillPanelOpen((open) => panel === 'skill' ? !open : false)
-    setUtilityMenuOpen(false)
-    setHistoryOpen(false)
+    setActiveTransientSurface(null)
+    setMentionQuery(undefined)
   }
 
   const openUtilityPanel = (panel: 'result' | 'task' | 'memory' | 'skill') => {
@@ -7940,8 +8074,8 @@ function AgentWorkspace({
     setTaskPanelOpen(panel === 'task')
     setMemoryPanelOpen(panel === 'memory')
     setSkillPanelOpen(panel === 'skill')
-    setUtilityMenuOpen(false)
-    setHistoryOpen(false)
+    setActiveTransientSurface(null)
+    setMentionQuery(undefined)
   }
 
   const openRunFeedback = (run: BotanicAgentRun) => {
@@ -8563,7 +8697,7 @@ function AgentWorkspace({
             <button ref={utilityMenuButtonRef} type="button" className={`agent-workspace__utility-menu-button${utilityPanelOpen ? ' is-active' : ''}`} aria-haspopup="menu" aria-expanded={utilityMenuOpen} aria-controls={utilityMenuId} aria-label="Agent 工具" title="Agent 工具" onClick={() => { setUtilityMenuOpen((open) => !open); setHistoryOpen(false) }}><ChecklistIcon /></button>
             {utilityMenuOpen ? <div id={utilityMenuId} className="agent-workspace__utility-menu" role="menu" aria-label="Agent 工具">
               <button type="button" role="menuitem" className={resultPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('result')}><GalleryIcon /><span>结果与文件</span></button>
-              <button type="button" role="menuitem" className={taskPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('task')}><ChecklistIcon /><span>生成任务</span></button>
+              <button type="button" role="menuitem" className={taskPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('task')}><ChecklistIcon /><span>Agent 任务</span></button>
               <button type="button" role="menuitem" className={memoryPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('memory')}><BookmarkIcon /><span>项目记忆</span></button>
               <button type="button" role="menuitem" className={skillPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('skill')}><SparkleIcon /><span>创作技能</span></button>
               <button type="button" role="menuitem" className="is-danger" onClick={() => { setUtilityMenuOpen(false); onClose() }}><CloseIcon /><span>关闭 Agent</span></button>
@@ -8646,8 +8780,8 @@ function AgentWorkspace({
           </div>
         </section> : null}
         {taskPanelOpen ? <section className="agent-task-panel" aria-label="Agent 任务与结果">
-          <header><div><small>AGENT RUNS</small><h2>任务与结果</h2></div><span>{runs.length} 个</span></header>
-          <p>每个任务只保留一条状态链；失败分支可重试，也可以修改参数或模型后重新提交，不会覆盖已完成结果。</p>
+          <header><div><small>AGENT RUNS</small><h2>Agent 任务</h2></div><span>{runs.length} 个</span></header>
+          <p>这里只显示由 Agent 发起的任务；失败分支可重试，也可以修改参数或模型后重新提交，不会覆盖已完成结果。</p>
           <div className="agent-task-panel__list">
             {runs.map((run) => {
               const outputCount = agentRunOutputCount(run, artifacts)
@@ -8693,8 +8827,8 @@ function AgentWorkspace({
         {!utilityPanelOpen && !hasMessages ? <section className="agent-workspace__welcome">
           <span className="agent-workspace__mark"><SparkleIcon /></span>
           <small>BOTANIC AGENT</small>
-          <h2>{target ? `继续优化「${target.label}」` : '今天一起创作什么？'}</h2>
-          <p>{target ? '我会继承当前图片与原始配方，只改变你明确提出的内容。' : '可以日常对话、生成 Prompt、检索项目，也可以直接描述生图目标。'}</p>
+          <h2>{target ? `继续优化「${agentTargetDisplayLabel(target)}」` : '今天一起创作什么？'}</h2>
+          <p>{target ? '保留当前画面与原始配方，仅调整你刚提出的内容。' : '可以日常对话、生成 Prompt、检索项目，也可以直接描述生图目标。'}</p>
           <div className="agent-workspace__starters">
             {agentQuickActions.slice(0, 3).map((action) => <button key={action.intent} type="button" onClick={() => { setIntent(action.intent); setInstruction(action.instruction) }}><strong>{action.label}</strong><span>{action.instruction}</span></button>)}
           </div>
@@ -8845,7 +8979,7 @@ function AgentWorkspace({
         {contextItems.length ? <div className="agent-composer__context">{contextItems.map((item) => <button key={item.id} type="button" aria-label={`移除 ${item.label}`} title={`移除 ${item.label}`} onClick={() => session && onContextChange(session.id, session.contextNodeIds.filter((id) => id !== item.id))}>{item.image ? <img src={item.image} alt="" /> : <span>{item.kind.slice(0, 1)}</span>}<i aria-hidden="true">×</i></button>)}</div> : null}
         {mentionQuery ? <div className="agent-composer__mention-menu" role="group" aria-label="引用画布内容" onPointerDown={(event) => event.stopPropagation()}>
           {mentionOptions.map((item) => <button key={item.id} type="button" onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); selectMention(item) }}>{item.image ? <img src={item.image} alt="" /> : <span>{item.kind.slice(0, 1)}</span>}<b>{item.label}</b><small>{item.kind}</small></button>)}
-          {!mentionOptions.length ? <p>没有匹配的画布内容</p> : null}
+          {!mentionOptions.length ? <p>没有匹配的素材</p> : null}
         </div> : null}
         <textarea ref={composerTextareaRef} value={instruction} onChange={(event) => { const value = event.target.value; setInstruction(value); setMentionQuery(readBotanicAgentMentionQuery(value, event.target.selectionStart ?? value.length)); setError(''); setLastFailedInstruction(''); setLastFailedPlanMessageId('') }} onClick={(event) => setMentionQuery(readBotanicAgentMentionQuery(instruction, event.currentTarget.selectionStart ?? instruction.length))} onKeyDown={(event) => {
           if (event.key === 'Escape' && mentionQuery) { event.preventDefault(); setMentionQuery(undefined); return }
