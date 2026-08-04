@@ -85,6 +85,12 @@ function defaultRetryableError(error: unknown) {
     || candidate?.code === 'REQUEST_TIMEOUT'
 }
 
+function compareQueueItems(left: AgentMessageQueueItem, right: AgentMessageQueueItem) {
+  return left.message.createdAt - right.message.createdAt
+    || left.queuedAt - right.queuedAt
+    || left.key.localeCompare(right.key)
+}
+
 export function createAgentMessageQueue(options: AgentMessageQueueOptions) {
   const storage = options.storage ?? createLocalStorageAgentMessageQueueStorage()
   const now = options.now ?? Date.now
@@ -95,7 +101,7 @@ export function createAgentMessageQueue(options: AgentMessageQueueOptions) {
 
   const snapshot = () => items
     .slice()
-    .sort((left, right) => left.queuedAt - right.queuedAt || left.message.createdAt - right.message.createdAt)
+    .sort(compareQueueItems)
     .map((item) => structuredClone(item))
 
   const persist = () => {
@@ -126,7 +132,7 @@ export function createAgentMessageQueue(options: AgentMessageQueueOptions) {
       const delivered: string[] = []
       const ordered = items
         .filter((item) => item.status !== 'failed')
-        .sort((left, right) => left.queuedAt - right.queuedAt || left.message.createdAt - right.message.createdAt)
+        .sort(compareQueueItems)
 
       for (const current of ordered) {
         const item = items.find((candidate) => candidate.key === current.key)

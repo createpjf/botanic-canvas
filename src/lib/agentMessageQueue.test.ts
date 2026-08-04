@@ -40,8 +40,10 @@ test('断网消息持久化后，新队列实例可恢复同一条待发消息',
 
 test('按创建时间顺序重放，成功后从本地队列移除', async () => {
   const delivered: string[] = []
+  let queuedAt = 100
   const queue = createAgentMessageQueue({
     storage: createMemoryStorage(),
+    now: () => queuedAt++,
     deliver: async (item) => { delivered.push(item.message.id) },
   })
   queue.enqueue(fixture('m-2', 20))
