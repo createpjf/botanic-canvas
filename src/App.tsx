@@ -7334,12 +7334,12 @@ function agentRunOutputCount(run: BotanicAgentRun, artifacts: BotanicAgentArtifa
 function AgentClarificationCard({
   clarification,
   generationModels,
-  disabled,
+  state,
   onSubmit,
 }: {
   clarification: BotanicAgentClarification
   generationModels: GenerationModelOption[]
-  disabled?: boolean
+  state: 'idle' | 'submitting' | 'completed'
   onSubmit: (answers: Record<string, string>) => void
 }) {
   const [answers, setAnswers] = useState<Record<string, string>>(() => Object.fromEntries(
@@ -7353,7 +7353,7 @@ function AgentClarificationCard({
         ? selectedModel.resolutions
         : undefined
     const options = values
-      ? values.map((value) => ({ value, label: value, description: value === field.defaultValue ? '沿用当前设置' : undefined }))
+      ? values.map((value) => ({ value, label: value, description: value === field.defaultValue ? '推荐' : undefined }))
       : field.options
     return { ...field, options }
   })
@@ -7374,13 +7374,26 @@ function AgentClarificationCard({
       return next
     })
   }
+  if (state === 'completed') {
+    return (
+      <section className="agent-clarification-card is-complete" aria-label="已确认的输出设置" aria-live="polite">
+        <span className="agent-clarification-card__complete-mark" aria-hidden="true">✓</span>
+        <span className="agent-clarification-card__complete-copy">
+          <strong>输出设置已确认</strong>
+          {selectionSummary ? <small>{selectionSummary}</small> : null}
+        </span>
+      </section>
+    )
+  }
+  const disabled = state === 'submitting'
   return (
     <section className="agent-clarification-card" aria-label="生成前参数确认">
-      <header><span className="agent-clarification-card__mark" aria-hidden="true">?</span><div><strong>先确认一下</strong><small>不会直接执行生成</small></div></header>
-      <p>{clarification.question}</p>
-      {clarification.helper ? <small className="agent-clarification-card__helper">{clarification.helper}</small> : null}
+      <div className="agent-clarification-card__intro">
+        <header><strong>确认输出设置</strong><small>确认后继续规划，不会立即生成</small></header>
+        <p>{clarification.question}</p>
+      </div>
       <div className="agent-clarification-card__fields">
-        {fields.map((field) => <fieldset key={field.id}>
+        {fields.map((field) => <fieldset key={field.id} data-field={field.id}>
           <legend>{field.label}</legend>
           <div role="group" aria-label={field.label}>
             {field.options.map((option) => <button
@@ -7394,8 +7407,10 @@ function AgentClarificationCard({
           </div>
         </fieldset>)}
       </div>
-      {selectionSummary ? <div className="agent-clarification-card__selection" aria-live="polite"><span>当前选择</span><b>{selectionSummary}</b></div> : null}
-      <button type="button" className="agent-clarification-card__submit" disabled={disabled || !complete} onClick={() => onSubmit(answers)}>{disabled ? '正在整理…' : '确认设置，继续规划'}</button>
+      <footer className="agent-clarification-card__footer">
+        {clarification.helper ? <small className="agent-clarification-card__helper">{clarification.helper}</small> : <span />}
+        <button type="button" className="agent-clarification-card__submit" disabled={disabled || !complete} onClick={() => onSubmit(answers)}>{disabled ? '正在规划…' : '继续规划'}</button>
+      </footer>
     </section>
   )
 }
@@ -8449,7 +8464,15 @@ function AgentWorkspace({
     const summary = fields
       .map((field) => `${field.label}：${field.options.find((option) => option.value === answers[field.id])?.label ?? answers[field.id]}`)
       .join('；')
-    onUpdateMessage(session.id, message.id, { status: 'answered' })
+    onUpdateMessage(session.id, message.id, {
+      status: 'answered',
+      question: {
+        ...message.question,
+        fields: fields.map((field) => answers[field.id]
+          ? { ...field, defaultValue: answers[field.id] }
+          : field),
+      },
+    })
     await runInstruction(message.question.originalInstruction, {
       appendUser: summary,
       clarificationAnswers: answers,
@@ -8675,7 +8698,7 @@ function AgentWorkspace({
         {!utilityPanelOpen ? session?.messages.map((message) => <article key={message.id} className={`agent-message is-${message.role} is-${message.kind}`}>
           <div className="agent-message__role">{message.role === 'assistant' ? <SparkleIcon /> : <span>你</span>}</div>
           <div className="agent-message__body">
-            <p>{message.content}</p>
+            {!message.question ? <p>{message.content}</p> : null}
             {message.role === 'user' && message.deliveryStatus === 'queued' ? <small className="agent-message__delivery-status" role="status">待同步</small> : null}
             {message.role === 'user' && message.deliveryStatus === 'failed' ? <small className="agent-message__delivery-status is-failed" role="status">同步失败，请检查权限</small> : null}
             {message.kind === 'run' && message.runId ? (() => {
@@ -8704,7 +8727,7 @@ function AgentWorkspace({
             {message.question ? <AgentClarificationCard
               clarification={message.question}
               generationModels={generationModels}
-              disabled={planning || message.status === 'answered'}
+              state={message.status === 'answered' ? 'completed' : planning ? 'submitting' : 'idle'}
               onSubmit={(answers) => void answerClarification(message, answers)}
             /> : null}
             {message.plan ? <div className="agent-message__plan">
