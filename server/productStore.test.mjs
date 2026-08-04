@@ -298,6 +298,198 @@ test('Agent Run 独立于画布文档持久化并由生成 Job 推进', () => {
   assert.equal(reloaded.readAgentRun(owner.id, 'run-agent')?.completedBranchCount, 1)
 })
 
+test('Agent Session、Message 与 Memory 从旧文档双写到独立实体并跨重启恢复', () => {
+  const { path, store } = createStore()
+  const owner = store.authenticate('owner-token')
+  const legacy = {
+    ...document('project-agent-state'),
+    agentSessions: [{
+      id: 'session-a', title: '首个会话', executionMode: 'manual', contextNodeIds: ['node-a'],
+      messages: [{ id: 'message-a', role: 'user', kind: 'text', content: '第一条', createdAt: 10 }],
+      createdAt: 10, updatedAt: 10,
+    }],
+    agentMemory: [{ id: 'memory-a', kind: 'rule', content: '保持品牌色', sourceNodeIds: ['node-a'], createdAt: 10, updatedAt: 10 }],
+    agentRuns: [],
+    activeAgentSessionId: 'session-a',
+  }
+  store.writeProject(owner.id, legacy, undefined)
+
+  const reloaded = createProductStore({ dataPath: path, bootstrapAccessToken: 'owner-token' })
+  assert.deepEqual(reloaded.readAgentState(owner.id, legacy.id).sessions[0].messages.map((item) => item.id), ['message-a'])
+  assert.equal(reloaded.readAgentState(owner.id, legacy.id).memory[0].content, '保持品牌色')
+  assert.equal(reloaded.readProject(owner.id, legacy.id).document.activeAgentSessionId, 'session-a')
+})
+
+test('Agent 消息按 ID 增量追加，旧文档快照不会覆盖另一设备的新消息', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, { ...document('project-agent-concurrent'), agentSessions: [], agentMemory: [], agentRuns: [] }, undefined)
+  store.putAgentSession(owner.id, 'project-agent-concurrent', {
+    id: 'session-concurrent', title: '并发会话', executionMode: 'manual', contextNodeIds: [], createdAt: 10, updatedAt: 10,
+  })
+  store.putAgentMessage(owner.id, 'project-agent-concurrent', 'session-concurrent', {
+    id: 'message-device-a', role: 'user', kind: 'text', content: '设备 A', createdAt: 11,
+  })
+  store.putAgentMessage(owner.id, 'project-agent-concurrent', 'session-concurrent', {
+    id: 'message-device-b', role: 'user', kind: 'text', content: '设备 B', createdAt: 12,
+  })
+
+  const project = store.readProject(owner.id, 'project-agent-concurrent')
+  assert.deepEqual(project.document.agentSessions[0].messages.map((item) => item.id), ['message-device-a', 'message-device-b'])
+})
+
+test('Agent 消息按 updatedAt 幂等合并，迟到的旧版本不覆盖新内容', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, { ...document('project-agent-message-version'), agentSessions: [], agentMemory: [], agentRuns: [] }, undefined)
+  store.putAgentSession(owner.id, 'project-agent-message-version', {
+    id: 'session-versioned', title: '并发会话', executionMode: 'manual', contextNodeIds: [], createdAt: 10, updatedAt: 10,
+  })
+  store.putAgentMessage(owner.id, 'project-agent-message-version', 'session-versioned', {
+    id: 'message-versioned', role: 'assistant', kind: 'text', content: '设备 B 新内容', createdAt: 20, updatedAt: 300,
+  })
+  store.putAgentMessage(owner.id, 'project-agent-message-version', 'session-versioned', {
+    id: 'message-versioned', role: 'assistant', kind: 'text', content: '设备 A 迟到旧内容', createdAt: 20, updatedAt: 100,
+  })
+
+  const [message] = store.readAgentState(owner.id, 'project-agent-message-version').sessions[0].messages
+  assert.equal(message.content, '设备 B 新内容')
+  assert.equal(message.updatedAt, 300)
+})
+
+test('Agent 会话按 updatedAt 幂等合并，迟到的旧设备标题不回退', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, { ...document('project-agent-session-version'), agentSessions: [], agentMemory: [], agentRuns: [] }, undefined)
+  store.putAgentSession(owner.id, 'project-agent-session-version', {
+    id: 'session-versioned', title: '设备 B 新标题', executionMode: 'auto', contextNodeIds: ['node-b'], createdAt: 10, updatedAt: 300,
+  })
+  store.putAgentSession(owner.id, 'project-agent-session-version', {
+    id: 'session-versioned', title: '设备 A 迟到旧标题', executionMode: 'manual', contextNodeIds: ['node-a'], createdAt: 10, updatedAt: 100,
+  })
+
+  const [session] = store.readAgentState(owner.id, 'project-agent-session-version').sessions
+  assert.equal(session.title, '设备 B 新标题')
+  assert.equal(session.executionMode, 'auto')
+  assert.deepEqual(session.contextNodeIds, ['node-b'])
+  assert.equal(session.updatedAt, 300)
+})
+
+test('Agent Memory 删除墓碑阻止旧设备增量 PUT 复活同 ID 记忆', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, { ...document('project-agent-memory-version'), agentSessions: [], agentMemory: [], agentRuns: [] }, undefined)
+  store.putAgentMemoryItem(owner.id, 'project-agent-memory-version', {
+    id: 'memory-versioned', kind: 'avoid', content: '不要暖色', sourceNodeIds: [], createdAt: 10, updatedAt: 100,
+  })
+  assert.equal(store.deleteAgentMemoryItem(owner.id, 'project-agent-memory-version', 'memory-versioned'), true)
+
+  assert.throws(() => store.putAgentMemoryItem(owner.id, 'project-agent-memory-version', {
+    id: 'memory-versioned', kind: 'avoid', content: '旧设备内容', sourceNodeIds: [], createdAt: 10, updatedAt: 150,
+  }), (error) => error?.code === 'AGENT_MEMORY_DELETED')
+  assert.deepEqual(store.readAgentState(owner.id, 'project-agent-memory-version').memory, [])
+})
+
+test('Agent Memory 使用墓碑删除，兼容文档中的旧副本不会复活', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, {
+    ...document('project-agent-memory'), agentSessions: [], agentRuns: [],
+    agentMemory: [{ id: 'memory-delete', kind: 'avoid', content: '不要暖色', sourceNodeIds: [], createdAt: 10, updatedAt: 10 }],
+  }, undefined)
+
+  assert.equal(store.deleteAgentMemoryItem(owner.id, 'project-agent-memory', 'memory-delete'), true)
+  assert.deepEqual(store.readAgentState(owner.id, 'project-agent-memory').memory, [])
+  assert.deepEqual(store.readProject(owner.id, 'project-agent-memory').document.agentMemory, [])
+})
+
+test('Agent 独立实体按项目授权，Viewer 只能读取且标识不能跨项目复用', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  const viewer = store.createUser(owner.id, { email: 'agent-viewer@example.com', accessToken: 'agent-viewer-token' })
+  store.writeProject(owner.id, { ...document('project-agent-a'), agentSessions: [], agentMemory: [], agentRuns: [] }, undefined)
+  store.writeProject(owner.id, { ...document('project-agent-b'), agentSessions: [], agentMemory: [], agentRuns: [] }, undefined)
+  store.addProjectMember(owner.id, 'project-agent-a', viewer.id, 'viewer')
+  store.putAgentSession(owner.id, 'project-agent-a', {
+    id: 'session-project-bound', title: '项目 A', executionMode: 'manual', contextNodeIds: [], createdAt: 10, updatedAt: 10,
+  })
+
+  assert.equal(store.readAgentState(viewer.id, 'project-agent-a').sessions[0].id, 'session-project-bound')
+  assert.throws(() => store.putAgentMessage(viewer.id, 'project-agent-a', 'session-project-bound', {
+    id: 'viewer-message', role: 'user', kind: 'text', content: '越权写入', createdAt: 11,
+  }), (error) => error?.code === 'PROJECT_WRITE_FORBIDDEN')
+  assert.throws(() => store.putAgentSession(owner.id, 'project-agent-b', {
+    id: 'session-project-bound', title: '项目 B', executionMode: 'manual', contextNodeIds: [], createdAt: 12, updatedAt: 12,
+  }), (error) => error?.code === 'AGENT_SESSION_ID_CONFLICT')
+})
+
+test('历史 Agent 行动与生成输出自动回填 Artifact Index，重启和旧快照重写保持幂等', () => {
+  const { path, store } = createStore()
+  const owner = store.authenticate('owner-token')
+  const project = {
+    ...document('project-artifact-backfill'),
+    nodes: [{
+      id: 'result-history', type: 'result', position: { x: 0, y: 0 },
+      data: { status: 'ready', jobId: 'job-history', candidateId: 'output-history', label: '历史主图', image: '/api/media/history' },
+    }],
+    agentSessions: [{
+      id: 'session-history', title: '历史会话', executionMode: 'manual', contextNodeIds: [], createdAt: 10, updatedAt: 20,
+      messages: [{
+        id: 'message-history', role: 'assistant', kind: 'text', content: '已完成', createdAt: 10,
+        plan: { actions: [{
+          id: 'action-history', toolName: 'skill_apply',
+          result: { artifacts: [{
+            id: 'artifact-history', kind: 'workflow', label: '历史 Skill', content: '锁定商品',
+            provenance: { actionId: 'action-history', toolName: 'skill_apply' },
+          }] },
+        }] },
+      }],
+    }],
+    agentMemory: [], agentRuns: [], activeAgentSessionId: 'session-history',
+  }
+  store.writeProject(owner.id, project, undefined)
+  store.putGenerationJob(owner.id, {
+    id: 'job-history', projectId: project.id, status: 'succeeded', kind: 'generation', batchCount: 1,
+    settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' }, rawInput: { projectId: project.id },
+    outputs: [{ id: 'output-history', image: '/api/media/history', mediaKind: 'image' }], createdAt: 30, updatedAt: 40,
+  })
+
+  assert.deepEqual(store.listAgentArtifacts(owner.id, project.id).map((item) => item.id), [
+    'generation:job-history:output-history', 'artifact-history',
+  ])
+  store.writeProject(owner.id, { ...document(project.id), agentSessions: [], agentMemory: [], agentRuns: [] }, 1)
+  assert.equal(store.listAgentArtifacts(owner.id, project.id).some((item) => item.id === 'artifact-history'), true)
+
+  const reloaded = createProductStore({ dataPath: path, bootstrapAccessToken: 'owner-token' })
+  assert.deepEqual(reloaded.listAgentArtifacts(owner.id, project.id).map((item) => item.id), [
+    'generation:job-history:output-history', 'artifact-history',
+  ])
+})
+
+test('Artifact 标识按项目隔离，项目 Viewer 可读取但不能借此跨项目访问', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, document('project-artifact-a'), undefined)
+  store.writeProject(owner.id, document('project-artifact-b'), undefined)
+  const viewer = store.createUser(owner.id, { email: 'artifact-viewer@example.com', name: 'Viewer', accessToken: 'artifact-viewer-token' })
+  store.addProjectMember(owner.id, 'project-artifact-a', viewer.id, 'viewer')
+
+  for (const projectId of ['project-artifact-a', 'project-artifact-b']) {
+    store.putAgentActionReceipt(owner.id, {
+      id: `receipt-${projectId}`, projectId, toolCallId: `call-${projectId}`, createdAt: 100,
+      toolCall: { id: `call-${projectId}`, name: 'skill_apply', status: 'succeeded' },
+      output: { artifacts: [{
+        id: 'legacy-writeback', kind: 'text', label: projectId, content: projectId,
+        provenance: { actionId: `call-${projectId}`, toolName: 'skill_apply' },
+      }] },
+    })
+  }
+
+  assert.equal(store.listAgentArtifacts(viewer.id, 'project-artifact-a')[0].label, 'project-artifact-a')
+  assert.equal(store.listAgentArtifacts(viewer.id, 'project-artifact-b'), undefined)
+  assert.equal(store.listAgentArtifacts(owner.id, 'project-artifact-b')[0].label, 'project-artifact-b')
+})
+
 test('服务重启保留排队任务，并把执行中的任务标记为可重试失败', () => {
   const { store } = createStore()
   const owner = store.authenticate('owner-token')
@@ -326,8 +518,20 @@ test('服务重启保留排队任务，并把执行中的任务标记为可重�
     outputs: [],
     createdAt: Date.now(),
   })
+  store.putGenerationJob(owner.id, {
+    id: 'pending-writeback-job',
+    projectId: 'project-a',
+    status: 'succeeded',
+    kind: 'generation',
+    batchCount: 1,
+    settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' },
+    rawInput: { projectId: 'project-a' },
+    outputs: [],
+    projectWritebackPending: true,
+    createdAt: Date.now(),
+  })
 
-  assert.deepEqual(store.recoverGenerationJobs().map((job) => job.id), ['queued-job'])
+  assert.deepEqual(store.recoverGenerationJobs().map((job) => job.id), ['queued-job', 'pending-writeback-job'])
   assert.equal(store.readGenerationJob(owner.id, 'running-job')?.status, 'failed')
 })
 

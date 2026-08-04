@@ -4,14 +4,17 @@ import { generateImages, GenerationError, persistedGenerationJob, publicGenerati
 
 const image = 'data:image/png;base64,iVBORw0KGgo='
 
-test('生成任务持久化与公开状态保留 Agent Run 分支关联', () => {
+test('生成任务持久化与公开状态保留 Agent Run、幂等和回写标记', () => {
   const job = {
     id: 'job-agent', ownerId: 'user-a', projectId: 'project-a', status: 'queued', kind: 'generation',
     createdAt: 1, updatedAt: 1, batchCount: 1, settings: { model: 'gpt-image-2' }, outputs: [],
     rawInput: { projectId: 'project-a' }, agentRun: { runId: 'run-a', branchId: 'branch-a' },
+    idempotencyKey: 'gen_test_key_123456', projectWritebackPending: true,
   }
   assert.deepEqual(persistedGenerationJob(job).agentRun, job.agentRun)
   assert.deepEqual(publicGenerationJob(job).agentRun, job.agentRun)
+  assert.equal(persistedGenerationJob(job).idempotencyKey, job.idempotencyKey)
+  assert.equal(publicGenerationJob(job).projectWritebackPending, true)
 })
 
 test('生成配方在进入 Redis 队列前完成模型、尺寸和图片约束校验', () => {
@@ -118,8 +121,14 @@ test('H3 接受带角色的视频素材，并阻止图片模型接收视频', as
 test('多张候选拆成独立请求，确保每张都有对应输出', async () => {
   const originalFetch = globalThis.fetch
   let requestCount = 0
+  let activeRequests = 0
+  let maximumActiveRequests = 0
   globalThis.fetch = async () => {
     requestCount += 1
+    activeRequests += 1
+    maximumActiveRequests = Math.max(maximumActiveRequests, activeRequests)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    activeRequests -= 1
     return new Response(JSON.stringify({
       data: [{ b64_json: 'iVBORw0KGgo=' }],
     }), { status: 200, headers: { 'content-type': 'application/json' } })
@@ -138,11 +147,13 @@ test('多张候选拆成独立请求，确保每张都有对应输出', async ()
       apiBaseUrl: 'https://example.test',
       apiKey: 'test-key',
       jobId: 'job-a',
+      variantConcurrency: 2,
       persistImage: async (value) => value.dataUrl,
     })
     assert.equal(result.outputs.length, 2)
     assert.deepEqual(result.outputs.map((output) => output.id), ['job-a-output-1', 'job-a-output-2'])
     assert.equal(requestCount, 2)
+    assert.equal(maximumActiveRequests, 2)
     assert.equal(result.missingOutputCount, 0)
     assert.equal(result.partialError, undefined)
   } finally {

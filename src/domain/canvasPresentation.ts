@@ -1,11 +1,12 @@
 import type { Edge } from '@xyflow/react'
+import type { CanvasGenerationTaskStatus } from './canvas'
 
 export type CanvasZoomMode = 'detail' | 'compact' | 'overview'
 
 type GenerationTaskResultLabelInput = {
   generationKind?: 'generation' | 'refinement'
-  status: 'uploading' | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
-  previousTaskStatus?: 'uploading' | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+  status: CanvasGenerationTaskStatus
+  previousTaskStatus?: CanvasGenerationTaskStatus
   error?: string
   currentLabel?: string
 }
@@ -13,6 +14,7 @@ type GenerationTaskResultLabelInput = {
 export function generationTaskResultLabel(input: GenerationTaskResultLabelInput) {
   const prefix = input.generationKind === 'refinement' ? '精修' : '首图'
   if (input.status === 'succeeded') return `${prefix}候选 · 等待选择`
+  if (input.status === 'submission_unknown') return `${prefix}候选 · 等待确认`
   if (input.status !== 'failed') return input.currentLabel ?? `${prefix}候选`
 
   const error = input.error?.trim() ?? ''
@@ -23,6 +25,23 @@ export function generationTaskResultLabel(input: GenerationTaskResultLabelInput)
     return `${prefix}候选 · 提交超时`
   }
   return input.currentLabel ?? `${prefix}候选`
+}
+
+export function generationTaskFeedback(status?: CanvasGenerationTaskStatus) {
+  if (status === 'submission_unknown') {
+    return {
+      title: '正在恢复任务',
+      detail: '请勿重复提交，联网后自动确认',
+      recoverable: true,
+    }
+  }
+  if (status === 'uploading') {
+    return { title: '准备生成', detail: '正在锁定参考', recoverable: false }
+  }
+  if (status === 'queued') {
+    return { title: '正在生成', detail: '已进入队列', recoverable: false }
+  }
+  return { title: '正在生成', detail: '可继续编辑画布', recoverable: false }
 }
 
 export function generationTaskErrorMessage(error?: string) {

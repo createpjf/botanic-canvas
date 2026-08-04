@@ -2,7 +2,9 @@ import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from './authorization.mjs'
+import { artifactIndexLimits, artifactsFromActionReceipt, artifactsFromAgentMessage, artifactsFromDocument, artifactsFromGenerationJob } from './botanicArtifactIndex.mjs'
 import { applyGenerationJobToAgentRun } from './botanicAgentRun.mjs'
+import { agentStateFromDocument, mergeAgentStateIntoDocument, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity } from './botanicAgentPersistence.mjs'
 
 const schemaVersion = 1
 
@@ -64,6 +66,10 @@ function initialState() {
     globalAssetLibraries: [],
     generationJobs: [],
     agentRuns: [],
+    agentSessions: [],
+    agentMessages: [],
+    agentMemoryItems: [],
+    agentArtifacts: [],
     agentSkills: [],
     agentActionReceipts: [],
     auditEvents: [],
@@ -84,6 +90,7 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
   mkdirSync(dirname(path), { recursive: true })
   let state = loadState(path)
   ensureBootstrapUser(state, bootstrapAccessToken, bootstrapEmail)
+  backfillArtifactIndexes()
   persist(path, state)
 
   function save() {
@@ -116,6 +123,101 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
   function canAccess(project, userId, allowedRoles = ['owner', 'editor', 'viewer']) {
     const member = project.members.find((item) => item.userId === userId)
     return member && allowedRoles.includes(member.role) ? member : undefined
+  }
+
+  function agentStateForProject(projectId) {
+    return {
+      sessions: state.agentSessions.filter((item) => item.projectId === projectId).map((item) => clone(item.payload)),
+      messages: state.agentMessages.filter((item) => item.projectId === projectId).map((item) => ({
+        sessionId: item.sessionId, updatedAt: item.updatedAt, message: clone(item.payload),
+      })),
+      memory: state.agentMemoryItems.filter((item) => item.projectId === projectId && !item.deletedAt).map((item) => clone(item.payload)),
+      deletedMemoryIds: state.agentMemoryItems.filter((item) => item.projectId === projectId && item.deletedAt).map((item) => item.id),
+      runs: state.agentRuns.filter((item) => item.projectId === projectId).map(clone),
+    }
+  }
+
+  function upsertArtifactRecords(projectId, ownerId, artifacts) {
+    for (const artifact of artifacts) {
+      const existing = state.agentArtifacts.find((item) => item.projectId === projectId && item.id === artifact.id)
+      if (existing && Number(existing.updatedAt ?? 0) > Number(artifact.updatedAt ?? 0)) continue
+      const record = {
+        id: artifact.id,
+        projectId,
+        ownerId: existing?.ownerId ?? ownerId,
+        kind: artifact.kind,
+        sourceKind: artifact.origin.type,
+        runId: artifact.provenance.runId,
+        jobId: artifact.origin.jobId,
+        createdAt: existing ? Math.min(existing.createdAt, artifact.createdAt) : artifact.createdAt,
+        updatedAt: artifact.updatedAt,
+        payload: clone(artifact),
+      }
+      if (existing) Object.assign(existing, record)
+      else state.agentArtifacts.push(record)
+    }
+  }
+
+  function backfillArtifactIndexes() {
+    for (const project of state.projects) {
+      const ownerId = project.members.find((member) => member.role === 'owner')?.userId ?? project.members[0]?.userId
+      if (!ownerId) continue
+      const graph = state.canvasGraphs.find((item) => item.projectId === project.id)?.graph
+      const document = mergeAgentStateIntoDocument({ ...project.document, ...(graph ?? {}) }, agentStateForProject(project.id))
+      const generationJobs = state.generationJobs.filter((job) => job.projectId === project.id)
+      upsertArtifactRecords(project.id, ownerId, artifactsFromDocument(document, { generationJobs }))
+      for (const receipt of state.agentActionReceipts.filter((item) => item.projectId === project.id)) {
+        upsertArtifactRecords(project.id, receipt.ownerId ?? ownerId, artifactsFromActionReceipt(receipt))
+      }
+    }
+  }
+
+  function syncAgentStateFromDocument(userId, document, previousDocument) {
+    const extracted = agentStateFromDocument(document)
+    for (const session of extracted.sessions) {
+      const existing = state.agentSessions.find((item) => item.id === session.id)
+      if (existing && existing.projectId !== document.id) throw productError('Agent 会话标识已被其他项目使用。', 'AGENT_SESSION_ID_CONFLICT')
+      const payload = { id: session.id, projectId: document.id, ownerId: existing?.ownerId ?? userId, updatedAt: session.updatedAt, payload: clone(session) }
+      if (!existing) state.agentSessions.push(payload)
+      else if (session.updatedAt >= existing.updatedAt) Object.assign(existing, payload)
+    }
+    for (const entry of extracted.messages) {
+      const existing = state.agentMessages.find((item) => item.id === entry.message.id)
+      if (existing && (existing.projectId !== document.id || existing.sessionId !== entry.sessionId)) {
+        throw productError('Agent 消息标识已被其他会话使用。', 'AGENT_MESSAGE_ID_CONFLICT')
+      }
+      const payload = {
+        id: entry.message.id, projectId: document.id, sessionId: entry.sessionId,
+        ownerId: existing?.ownerId ?? userId, updatedAt: entry.updatedAt, payload: clone(entry.message),
+      }
+      if (!existing) state.agentMessages.push(payload)
+      else if (entry.updatedAt >= existing.updatedAt) Object.assign(existing, payload)
+    }
+    const previousMemoryIds = new Set((Array.isArray(previousDocument?.agentMemory) ? previousDocument.agentMemory : []).map((item) => item?.id).filter(Boolean))
+    const nextMemoryIds = new Set(extracted.memory.map((item) => item.id))
+    for (const removedId of previousMemoryIds) {
+      if (nextMemoryIds.has(removedId)) continue
+      const existing = state.agentMemoryItems.find((item) => item.id === removedId && item.projectId === document.id)
+      if (existing) existing.deletedAt = now()
+    }
+    for (const memory of extracted.memory) {
+      const existing = state.agentMemoryItems.find((item) => item.id === memory.id)
+      if (existing && existing.projectId !== document.id) throw productError('Agent 记忆标识已被其他项目使用。', 'AGENT_MEMORY_ID_CONFLICT')
+      const payload = {
+        id: memory.id, projectId: document.id, ownerId: existing?.ownerId ?? userId,
+        updatedAt: memory.updatedAt, deletedAt: undefined, payload: clone(memory),
+      }
+      if (!existing) state.agentMemoryItems.push(payload)
+      else if (memory.updatedAt >= existing.updatedAt) Object.assign(existing, payload)
+    }
+    for (const run of extracted.runs) {
+      const existing = state.agentRuns.find((item) => item.id === run.id)
+      if (existing && existing.projectId !== document.id) throw productError('Agent Run 标识已被其他项目使用。', 'AGENT_RUN_ID_CONFLICT')
+      const payload = { ...clone(run), projectId: document.id, ownerId: existing?.ownerId ?? userId }
+      if (!existing) state.agentRuns.push(payload)
+      else if (Number(run.updatedAt ?? 0) >= Number(existing.updatedAt ?? 0)) Object.assign(existing, payload)
+    }
+    upsertArtifactRecords(document.id, userId, artifactsFromDocument(document))
   }
 
   function publicProject(project) {
@@ -220,11 +322,11 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       project.lastAccessedBy = userId
       const graph = ensureCanvasGraph(project)
       return {
-        document: {
+        document: mergeAgentStateIntoDocument({
           ...clone(project.document),
           ...clone(graph.graph),
           updatedAt: Math.max(project.document.updatedAt ?? 0, project.updatedAt, graph.updatedAt ?? 0),
-        },
+        }, agentStateForProject(projectId)),
         revision: project.revision,
         graphRevision: graph.graphRevision,
       }
@@ -267,6 +369,8 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
           graph.graphRevision += 1
           graph.updatedAt = now()
         }
+        const previousDocument = existing.document
+        syncAgentStateFromDocument(userId, document, previousDocument)
         existing.document = clone(document)
         existing.name = document.name
         existing.updatedAt = now()
@@ -298,6 +402,7 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
         updates: [],
         updatedAt: project.updatedAt,
       })
+      syncAgentStateFromDocument(userId, document)
       audit({ actorId: userId, action: 'project.created', projectId: project.id })
       save()
       return { document: clone(project.document), revision: project.revision, graphRevision: 1, created: true }
@@ -311,6 +416,10 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       state.canvasGraphs = state.canvasGraphs.filter((item) => item.projectId !== projectId)
       state.generationJobs = state.generationJobs.filter((item) => item.projectId !== projectId)
       state.agentRuns = state.agentRuns.filter((item) => item.projectId !== projectId)
+      state.agentSessions = state.agentSessions.filter((item) => item.projectId !== projectId)
+      state.agentMessages = state.agentMessages.filter((item) => item.projectId !== projectId)
+      state.agentMemoryItems = state.agentMemoryItems.filter((item) => item.projectId !== projectId)
+      state.agentArtifacts = state.agentArtifacts.filter((item) => item.projectId !== projectId)
       state.agentSkills = state.agentSkills.filter((item) => item.projectId !== projectId)
       state.agentActionReceipts = state.agentActionReceipts.filter((item) => item.projectId !== projectId)
       audit({ actorId: userId, action: 'project.deleted', targetId: projectId, detail: { name: project.name } })
@@ -416,6 +525,101 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       return { deleted, library: clone(libraryEntry.library) }
     },
 
+    readAgentState(userId, projectId) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project || !canAccess(project, userId)) return undefined
+      const hydrated = mergeAgentStateIntoDocument({ agentSessions: [], agentMemory: [], agentRuns: [] }, agentStateForProject(projectId))
+      return {
+        sessions: hydrated.agentSessions,
+        memory: hydrated.agentMemory,
+        runs: hydrated.agentRuns,
+      }
+    },
+
+    putAgentSession(userId, projectId, input) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project) throw productError('未找到项目。', 'PROJECT_NOT_FOUND')
+      assertProjectPermission(project.members.find((item) => item.userId === userId)?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      const timestamp = Number.isFinite(Number(input?.updatedAt)) ? Number(input.updatedAt) : now()
+      const session = validateAgentSessionEntity({ ...input, updatedAt: timestamp }, { now: timestamp })
+      const existing = state.agentSessions.find((item) => item.id === session.id)
+      if (existing && existing.projectId !== projectId) throw productError('Agent 会话标识已被其他项目使用。', 'AGENT_SESSION_ID_CONFLICT')
+      if (existing && existing.updatedAt >= session.updatedAt) return clone(existing.payload)
+      const record = { id: session.id, projectId, ownerId: existing?.ownerId ?? userId, updatedAt: timestamp, payload: session }
+      if (existing) Object.assign(existing, record)
+      else state.agentSessions.push(record)
+      audit({ actorId: userId, action: existing ? 'agent-session.updated' : 'agent-session.created', projectId, targetId: session.id })
+      save()
+      return clone(session)
+    },
+
+    putAgentMessage(userId, projectId, sessionId, input) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project) throw productError('未找到项目。', 'PROJECT_NOT_FOUND')
+      assertProjectPermission(project.members.find((item) => item.userId === userId)?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      const session = state.agentSessions.find((item) => item.id === sessionId && item.projectId === projectId)
+      if (!session) throw productError('未找到 Agent 会话。', 'AGENT_SESSION_NOT_FOUND')
+      const timestamp = Number.isFinite(Number(input?.updatedAt)) ? Number(input.updatedAt) : now()
+      const message = validateAgentMessageEntity({ ...input, updatedAt: timestamp }, { now: timestamp })
+      const existing = state.agentMessages.find((item) => item.id === message.id)
+      if (existing && (existing.projectId !== projectId || existing.sessionId !== sessionId)) {
+        throw productError('Agent 消息标识已被其他会话使用。', 'AGENT_MESSAGE_ID_CONFLICT')
+      }
+      if (existing && existing.updatedAt >= message.updatedAt) return clone(existing.payload)
+      const record = { id: message.id, projectId, sessionId, ownerId: existing?.ownerId ?? userId, updatedAt: timestamp, payload: message }
+      if (existing) Object.assign(existing, record)
+      else state.agentMessages.push(record)
+      session.updatedAt = Math.max(session.updatedAt, timestamp)
+      session.payload.updatedAt = session.updatedAt
+      upsertArtifactRecords(projectId, userId, artifactsFromAgentMessage(message, { sessionId, updatedAt: timestamp }))
+      audit({ actorId: userId, action: existing ? 'agent-message.updated' : 'agent-message.created', projectId, targetId: message.id, detail: { sessionId } })
+      save()
+      return clone(message)
+    },
+
+    putAgentMemoryItem(userId, projectId, input) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project) throw productError('未找到项目。', 'PROJECT_NOT_FOUND')
+      assertProjectPermission(project.members.find((item) => item.userId === userId)?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      const timestamp = Number.isFinite(Number(input?.updatedAt)) ? Number(input.updatedAt) : now()
+      const memory = validateAgentMemoryEntity({ ...input, updatedAt: timestamp }, { now: timestamp })
+      const existing = state.agentMemoryItems.find((item) => item.id === memory.id)
+      if (existing && existing.projectId !== projectId) throw productError('Agent 记忆标识已被其他项目使用。', 'AGENT_MEMORY_ID_CONFLICT')
+      if (existing?.deletedAt) throw productError('该 Agent 记忆已删除，不能由旧设备恢复。', 'AGENT_MEMORY_DELETED')
+      if (existing && existing.updatedAt >= memory.updatedAt) return clone(existing.payload)
+      const record = { id: memory.id, projectId, ownerId: existing?.ownerId ?? userId, updatedAt: timestamp, deletedAt: undefined, payload: memory }
+      if (existing) Object.assign(existing, record)
+      else state.agentMemoryItems.push(record)
+      audit({ actorId: userId, action: existing ? 'agent-memory.updated' : 'agent-memory.created', projectId, targetId: memory.id })
+      save()
+      return clone(memory)
+    },
+
+    deleteAgentMemoryItem(userId, projectId, memoryId) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project) throw productError('未找到项目。', 'PROJECT_NOT_FOUND')
+      assertProjectPermission(project.members.find((item) => item.userId === userId)?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      const existing = state.agentMemoryItems.find((item) => item.id === memoryId && item.projectId === projectId)
+      if (!existing || existing.deletedAt) return false
+      existing.deletedAt = now()
+      existing.updatedAt = existing.deletedAt
+      audit({ actorId: userId, action: 'agent-memory.deleted', projectId, targetId: memoryId })
+      save()
+      return true
+    },
+
+    listAgentArtifacts(userId, projectId, { limit = 100, before } = {}) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project || !canAccess(project, userId)) return undefined
+      const maximum = Math.max(1, Math.min(Number(limit) || 100, artifactIndexLimits.page))
+      const beforeTimestamp = Number.isFinite(Number(before)) ? Number(before) : Number.POSITIVE_INFINITY
+      return state.agentArtifacts
+        .filter((artifact) => artifact.projectId === projectId && artifact.createdAt < beforeTimestamp)
+        .sort((left, right) => right.createdAt - left.createdAt || right.updatedAt - left.updatedAt)
+        .slice(0, maximum)
+        .map((artifact) => clone(artifact.payload))
+    },
+
     putAgentSkill(userId, skill) {
       const project = state.projects.find((item) => item.id === skill.projectId)
       if (!project) throw productError('未找到项目。', 'PROJECT_NOT_FOUND')
@@ -456,6 +660,7 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       const payload = { ...clone(receipt), ownerId: userId }
       if (existing) Object.assign(existing, payload)
       else state.agentActionReceipts.push(payload)
+      upsertArtifactRecords(receipt.projectId, userId, artifactsFromActionReceipt(receipt))
       audit({ actorId: userId, action: 'agent-action.succeeded', projectId: receipt.projectId, targetId: receipt.id, detail: { toolCallId: receipt.toolCallId } })
       save()
       return clone(payload)
@@ -477,6 +682,11 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
         const runIndex = state.agentRuns.findIndex((item) => item.id === persistedJob.agentRun.runId && item.ownerId === userId)
         if (runIndex >= 0) state.agentRuns[runIndex] = applyGenerationJobToAgentRun(state.agentRuns[runIndex], persistedJob)
       }
+      const project = state.projects.find((item) => item.id === persistedJob.projectId)
+      const graph = state.canvasGraphs.find((item) => item.projectId === persistedJob.projectId)?.graph
+      if (project) upsertArtifactRecords(persistedJob.projectId, userId, artifactsFromGenerationJob(persistedJob, {
+        document: { ...project.document, ...(graph ?? {}) },
+      }))
       audit({ actorId: userId, action: `generation.${job.status}`, projectId: job.projectId, targetId: job.id, detail: { model: job.settings?.model, batchCount: job.batchCount } })
       save()
     },
@@ -540,7 +750,7 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
     recoverGenerationJobs() {
       const recovered = []
       for (const job of state.generationJobs) {
-        if (job.status === 'queued') recovered.push(clone(job))
+        if (job.status === 'queued' || job.projectWritebackPending) recovered.push(clone(job))
         if (job.status === 'running') {
           job.status = 'failed'
           job.error = '生成服务已重启，正在执行的任务已安全终止，请原配方重试。'

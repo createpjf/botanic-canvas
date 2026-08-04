@@ -1,0 +1,126 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import {
+  artifactsFromAgentMessage,
+  artifactsFromActionResult,
+  artifactsFromActionReceipt,
+  artifactsFromDocument,
+  artifactsFromGenerationJob,
+  mergeArtifactRecords,
+  reconcileArtifactIndex,
+  validateIndexedArtifact,
+} from './botanicArtifactIndex.mjs'
+
+test('历史 Agent 行动产物带会话、消息与行动来源进入 Artifact Index', () => {
+  const [artifact] = artifactsFromAgentMessage({
+    id: 'message-1', createdAt: 100,
+    plan: { actions: [{
+      id: 'action-1', toolName: 'mcp_call',
+      result: { artifacts: [{
+        id: 'artifact-1', kind: 'text', label: '检索结果', content: '春季场景',
+        provenance: { actionId: 'action-1', toolName: 'mcp_call' },
+      }] },
+    }] },
+  }, { sessionId: 'session-1', updatedAt: 120 })
+
+  assert.equal(artifact.id, 'artifact-1')
+  assert.deepEqual(artifact.origin, {
+    type: 'agent_action', sessionId: 'session-1', messageId: 'message-1', actionId: 'action-1',
+  })
+  assert.equal(artifact.updatedAt, 120)
+})
+
+test('历史生成任务的每个输出形成稳定 Artifact，并补齐画布节点血缘', () => {
+  const artifacts = artifactsFromGenerationJob({
+    id: 'job-1', projectId: 'project-1', status: 'succeeded', createdAt: 100, updatedAt: 300,
+    settings: { model: 'image-1', aspectRatio: '1:1', resolution: '1K' },
+    agentRun: { runId: 'run-1', branchId: 'branch-1' },
+    outputs: [{ id: 'output-1', image: '/api/media/media-1', mediaKind: 'image' }],
+    variants: [{ index: 0, status: 'succeeded', completedAt: 250, output: { id: 'output-1' } }],
+  }, {
+    document: {
+      nodes: [{ id: 'result-1', type: 'result', data: { jobId: 'job-1', candidateId: 'output-1', label: '海边主图' } }],
+      assets: [{ id: 'asset-1', source: 'generated', image: '/api/media/media-1' }],
+    },
+  })
+
+  assert.equal(artifacts[0].id, 'generation:job-1:output-1')
+  assert.equal(artifacts[0].label, '海边主图')
+  assert.equal(artifacts[0].metadata.savedToLibrary, true)
+  assert.deepEqual(artifacts[0].provenance.sourceNodeIds, ['result-1'])
+  assert.equal(artifacts[0].createdAt, 250)
+})
+
+test('行动回执可在消息写回前直接补入 Artifact Index', () => {
+  const [artifact] = artifactsFromActionResult({ artifacts: [{
+    id: 'receipt-artifact', kind: 'workflow', label: 'Skill', content: '锁定商品',
+    provenance: { actionId: 'call-1', toolName: 'skill_apply' },
+  }] }, { actionId: 'call-1', toolName: 'skill_apply', createdAt: 200 })
+  assert.equal(artifact.origin.type, 'agent_action')
+  assert.equal(artifact.origin.actionId, 'call-1')
+})
+
+test('服务端实际的嵌套行动回执形状也能回填 Artifact', () => {
+  const [artifact] = artifactsFromActionReceipt({
+    toolCallId: 'call-nested', createdAt: 300,
+    result: {
+      output: { artifacts: [{
+        id: 'nested-artifact', kind: 'text', label: '外部结果', content: '结果',
+        provenance: { actionId: 'call-nested', toolName: 'mcp_call' },
+      }] },
+      toolCall: { id: 'call-nested', name: 'mcp_call' },
+    },
+  })
+  assert.equal(artifact.id, 'nested-artifact')
+  assert.equal(artifact.provenance.toolName, 'mcp_call')
+})
+
+test('回填跳过单条损坏历史产物，并按项目内 Artifact ID 幂等保留最新版本', () => {
+  const document = {
+    agentSessions: [{ id: 'session-1', updatedAt: 300, messages: [{
+      id: 'message-1', createdAt: 100,
+      plan: { actions: [{ id: 'action-1', toolName: 'skill_apply', result: { artifacts: [
+        { id: 'same', kind: 'text', label: '新版', content: 'ok', provenance: { actionId: 'action-1', toolName: 'skill_apply' } },
+        { id: 'broken', kind: 'unknown', label: '损坏', provenance: {} },
+      ] } }] },
+    }] }],
+  }
+  const artifacts = artifactsFromDocument(document)
+  assert.deepEqual(artifacts.map((item) => item.id), ['same'])
+  assert.equal(mergeArtifactRecords([{ ...artifacts[0], updatedAt: 200 }, artifacts[0]])[0].updatedAt, 300)
+})
+
+test('Artifact 校验拒绝图片字节地址和超大元数据', () => {
+  const base = {
+    id: 'artifact-1', kind: 'image', label: '图片',
+    provenance: { actionId: 'action-1', toolName: 'mcp_call' },
+    origin: { type: 'agent_action', messageId: 'message-1', actionId: 'action-1' },
+  }
+  assert.throws(() => validateIndexedArtifact({ ...base, url: 'data:image/png;base64,AAAA' }), /同源媒体地址/)
+  assert.throws(() => validateIndexedArtifact({ ...base, metadata: { value: 'x'.repeat(70_000) } }), /过大/)
+})
+
+test('Artifact Index 对账报告区分缺失、历史保留与重复输入', () => {
+  const report = reconcileArtifactIndex({
+    expectedArtifacts: [
+      { id: 'artifact-a' },
+      { id: 'artifact-a' },
+      { id: 'artifact-b' },
+    ],
+    indexedArtifacts: [
+      { id: 'artifact-a' },
+      { id: 'artifact-history' },
+    ],
+  })
+
+  assert.deepEqual(report, {
+    status: 'failed',
+    expectedCount: 2,
+    indexedCount: 2,
+    missingCount: 1,
+    retainedHistoryCount: 1,
+    duplicateExpectedCount: 1,
+    missingIds: ['artifact-b'],
+    retainedHistoryIds: ['artifact-history'],
+  })
+})

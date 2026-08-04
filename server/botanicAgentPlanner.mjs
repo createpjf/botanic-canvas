@@ -15,6 +15,8 @@ const ASPECT_RATIOS = ['1:1', '16:9', '4:3', '3:4', '4:5', '9:16']
 const RESOLUTIONS = ['1K', '2K']
 const CLARIFICATION_FIELDS = new Set(['model', 'aspect_ratio', 'resolution'])
 const MEMORY_KINDS = new Set(['rule', 'approved', 'avoid'])
+const CONTEXT_KINDS = new Set(['素材', '结果', '文字', '节点'])
+const MEDIA_KINDS = new Set(['image', 'video'])
 const GROUP_DIMENSIONS = new Map([
   ['场景', 'scene'], ['模特', 'person'], ['商品', 'product'], ['调性', 'style'],
 ])
@@ -185,6 +187,33 @@ export function validateBotanicAgentPlanInput(raw) {
     })
     : undefined
 
+  const contextSnapshot = input.contextSnapshot === undefined
+    ? undefined
+    : (() => {
+      if (!Array.isArray(input.contextSnapshot) || input.contextSnapshot.length > 16) invalidRequest('上下文快照无效。')
+      const seen = new Set()
+      return input.contextSnapshot.map((rawItem, index) => {
+        const item = structuredObject(rawItem, `第 ${index + 1} 个上下文`)
+        const nodeId = requiredText(item.nodeId, `第 ${index + 1} 个上下文节点`, 160)
+        if (seen.has(nodeId)) invalidRequest('上下文快照包含重复节点。')
+        seen.add(nodeId)
+        const kind = requiredText(item.kind, `第 ${index + 1} 个上下文类型`, 16)
+        if (!CONTEXT_KINDS.has(kind)) invalidRequest('上下文类型无效。')
+        const result = {
+          nodeId,
+          label: requiredText(item.label, `第 ${index + 1} 个上下文名称`, 160),
+          kind,
+        }
+        if (item.mediaKind !== undefined) {
+          const mediaKind = requiredText(item.mediaKind, `第 ${index + 1} 个媒体类型`, 16)
+          if (!MEDIA_KINDS.has(mediaKind)) invalidRequest('媒体类型无效。')
+          result.mediaKind = mediaKind
+        }
+        if (item.role !== undefined) result.role = requiredText(item.role, `第 ${index + 1} 个上下文角色`, 80)
+        return result
+      })
+    })()
+
   return {
     projectId,
     ...(plannerModel ? { plannerModel } : {}),
@@ -199,6 +228,7 @@ export function validateBotanicAgentPlanInput(raw) {
     ...(generationModels ? { generationModels } : {}),
     ...(generationOverrides ? { generationOverrides } : {}),
     ...(clarificationAnswers ? { clarificationAnswers } : {}),
+    ...(contextSnapshot?.length ? { contextSnapshot } : {}),
   }
 }
 
@@ -294,6 +324,7 @@ function normalizeProviderPlan(raw, input) {
     output: batchCount
       ? { mode: 'batch_by_asset', count: batchCount, candidatesPerItem: 1 }
       : { mode: 'single', count: 1, candidatesPerItem: 1 },
+    ...(input.contextSnapshot?.length ? { contextSnapshot: input.contextSnapshot } : {}),
     ...(selectedAssetGroup ? { assetGroupId: selectedAssetGroup.id } : {}),
   }
 }

@@ -6,6 +6,7 @@ import type {
   GenerationSettings,
   GenerationModelOption,
 } from '../domain/canvas'
+import { confirmTimedOutGenerationSubmission } from '../domain/generationSubmission'
 import { productAuthorizationHeader } from './productSession'
 import { invalidateProductSessionIfRequired } from './productSessionInvalidation'
 
@@ -36,6 +37,8 @@ export type SubmitGenerationInput = {
   }
   refinementMode?: RefinementMode
   agentRun?: { runId: string; branchId: string }
+  /** 同一逻辑提交的网络重试必须复用；显式“重试任务”会由 Store 创建新键。 */
+  idempotencyKey?: string
 }
 
 type SubmitGenerationPayload = Omit<SubmitGenerationInput, 'recipe' | 'parent'> & {
@@ -252,7 +255,7 @@ async function buildPayload(input: SubmitGenerationInput): Promise<SubmitGenerat
 
 export async function submitGenerationJob(input: SubmitGenerationInput) {
   const payload = await buildPayload(input)
-  const idempotencyKey = submissionIdempotencyKey()
+  const idempotencyKey = input.idempotencyKey ?? submissionIdempotencyKey()
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     try {
       return await requestJson<GenerationJob>('/api/generation-jobs', {
@@ -261,7 +264,25 @@ export async function submitGenerationJob(input: SubmitGenerationInput) {
         body: JSON.stringify(payload),
       })
     } catch (error) {
-      if (!shouldRetrySubmission(error) || attempt === 2) throw error
+      if (!shouldRetrySubmission(error)) throw error
+      const confirmation = await confirmTimedOutGenerationSubmission({
+        projectId: input.projectId,
+        idempotencyKey,
+        listJobs: listProjectGenerationJobs,
+      })
+      if (confirmation.status === 'found') return confirmation.job
+      if (confirmation.status === 'unknown') {
+        throw new GenerationApiError(
+          '暂时无法确认任务状态，请不要重复提交；网络恢复后将自动恢复。',
+          { code: 'SUBMISSION_STATUS_UNKNOWN', status: 0 },
+        )
+      }
+      if (attempt === 2) {
+        throw new GenerationApiError(
+          '服务端已确认未创建该任务，请重试。',
+          { code: 'SUBMISSION_NOT_CONFIRMED', status: 0 },
+        )
+      }
       await new Promise((resolve) => window.setTimeout(resolve, 500))
     }
   }

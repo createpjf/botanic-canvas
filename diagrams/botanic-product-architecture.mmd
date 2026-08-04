@@ -1,0 +1,103 @@
+%% Botanic 植物学产品完整架构总览
+%% Source of truth: 当前仓库的 src/、server/、Supabase/Redis/对象存储边界
+graph LR
+  subgraph CLIENT[客户端 Web App]
+    UI[App.tsx
+    Canvas / Agent / Assets / Delivery]
+    STORE[canvasStore
+    本地状态与任务恢复]
+    DOMAIN[Domain contracts
+    Canvas / Agent / Generation / Media]
+    SYNC[Remote sync
+    HTTP + Yjs + Realtime]
+    UI --> STORE
+    STORE --> DOMAIN
+    STORE --> SYNC
+  end
+
+  subgraph EDGE[API 与安全边界]
+    API[server/index.mjs
+    REST API]
+    AUTH[requestAuth + Authorization
+    Supabase / Local / Hybrid]
+    RATE[Security controls
+    MFA / 限流 / 配额 / 审计]
+    API --> AUTH
+    API --> RATE
+  end
+
+  subgraph PRODUCT[产品核心服务]
+    PROJECT[Project & Canvas
+    文档版本 / 权限 / 协作补丁]
+    AGENT[Botanic Agent
+    Chat / Planner / Run]
+    TOOLS[Agent Tool Runtime
+    Ontology / Skills / MCP 白名单]
+    GENERATE[Generation API
+    配方校验 / 幂等 / 任务状态]
+    MEDIA[Media Service
+    上传 / 授权 / 归一化 / 恢复]
+    REALTIME[Realtime Hub
+    项目房间 / Agent 进度]
+    API --> PROJECT
+    API --> AGENT
+    API --> GENERATE
+    API --> MEDIA
+    API --> REALTIME
+    AGENT --> TOOLS
+    AGENT --> GENERATE
+    PROJECT --> MEDIA
+  end
+
+  subgraph ASYNC[异步生成链路]
+    QUEUE[Redis + BullMQ
+    Generation Queue / Event Bus]
+    WORKER[server/worker.mjs
+    并发消费与恢复]
+    PROCESSOR[Generation Processor
+    超时 / 重试 / 冲突回写]
+    PROVIDER[Provider Adapter
+    OpenAI Images / MiniMax Image + H3]
+    QUEUE --> WORKER --> PROCESSOR --> PROVIDER
+    PROCESSOR --> MEDIA
+    PROCESSOR --> PROJECT
+    PROCESSOR --> QUEUE
+  end
+
+  subgraph DATA[持久化与外部依赖]
+    STOREDB[Product Store
+    File / PostgreSQL / Supabase]
+    OBJECT[Object Storage
+    Supabase Storage / S3]
+    SUPAAUTH[Supabase Auth
+    邀请 / 密码 / 会话]
+    FLOCK[Flock Models
+    Agent Planner / Chat / Prompt Refiner]
+    AIGEN[OpenAI / MiniMax
+    图像与视频供应商]
+    MCP[MCP Servers
+    受控外部工具]
+  end
+
+  SYNC --> API
+  API --> STOREDB
+  AUTH --> SUPAAUTH
+  AGENT --> FLOCK
+  TOOLS --> MCP
+  GENERATE --> QUEUE
+  PROVIDER --> AIGEN
+  MEDIA --> OBJECT
+  REALTIME --> QUEUE
+  REALTIME --> SYNC
+  STOREDB --> PROJECT
+
+  classDef client fill:#edf6ee,stroke:#4b8055,color:#234b2a
+  classDef edge fill:#eef2fb,stroke:#647db3,color:#263b68
+  classDef core fill:#fff7e8,stroke:#ba8b3a,color:#5b411a
+  classDef async fill:#f5effb,stroke:#8965ad,color:#493265
+  classDef data fill:#f4f4f4,stroke:#777,color:#252525
+  class UI,STORE,DOMAIN,SYNC client
+  class API,AUTH,RATE edge
+  class PROJECT,AGENT,TOOLS,GENERATE,MEDIA,REALTIME core
+  class QUEUE,WORKER,PROCESSOR,PROVIDER async
+  class STOREDB,OBJECT,SUPAAUTH,FLOCK,AIGEN,MCP data

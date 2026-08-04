@@ -1,6 +1,20 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { parseProjectRealtimeEvent, shouldRefreshFromRealtimeEvent } from './realtimeSync.ts'
+import { parseProjectRealtimeEvent, projectRealtimeConnectionOpened, shouldRefreshFromRealtimeEvent } from './realtimeSync.ts'
+
+test('首次连接不触发恢复，断线重连后触发恢复', () => {
+  const first = projectRealtimeConnectionOpened(false)
+  assert.deepEqual(first, {
+    openedBefore: true,
+    event: { reconnected: false },
+  })
+
+  const reconnect = projectRealtimeConnectionOpened(first.openedBefore)
+  assert.deepEqual(reconnect, {
+    openedBefore: true,
+    event: { reconnected: true },
+  })
+})
 
 test('其他设备发布当前项目的新版本时刷新画布', () => {
   assert.equal(shouldRefreshFromRealtimeEvent({

@@ -1,4 +1,4 @@
-import { parseProjectRealtimeEvent, type ProjectRealtimeEvent } from '../domain/realtimeSync'
+import { parseProjectRealtimeEvent, projectRealtimeConnectionOpened, type ProjectRealtimeEvent } from '../domain/realtimeSync'
 import { productRequest, serverPersistenceEnabled } from './productSession'
 
 type RealtimeTicket = {
@@ -20,9 +20,14 @@ export type ProjectRealtimeChannel = {
   close: () => void
 }
 
+export type ProjectRealtimeConnectionOpened = {
+  reconnected: boolean
+}
+
 export function openProjectRealtimeChannel(
   projectId: string,
   onEvent: (event: ProjectRealtimeEvent) => void,
+  onConnectionOpened?: (event: ProjectRealtimeConnectionOpened) => void,
 ): ProjectRealtimeChannel {
   if (!serverPersistenceEnabled || !projectId || projectId === 'workspace-placeholder') {
     return { publish: () => false, close: () => undefined }
@@ -33,6 +38,7 @@ export function openProjectRealtimeChannel(
   let reconnectTimer: number | undefined
   let connectionRun = 0
   let retryCount = 0
+  let openedBefore = false
 
   const scheduleReconnect = () => {
     if (closed || reconnectTimer !== undefined) return
@@ -55,7 +61,12 @@ export function openProjectRealtimeChannel(
       })
       if (closed || run !== connectionRun) return
       socket = new WebSocket(websocketUrl(endpoint, projectId, ticket))
-      socket.addEventListener('open', () => { retryCount = 0 })
+      socket.addEventListener('open', () => {
+        retryCount = 0
+        const connection = projectRealtimeConnectionOpened(openedBefore)
+        openedBefore = connection.openedBefore
+        onConnectionOpened?.(connection.event)
+      })
       socket.addEventListener('message', (message) => {
         try {
           const event = parseProjectRealtimeEvent(JSON.parse(String(message.data)), projectId)

@@ -145,6 +145,15 @@ function enumValue(value, allowed, name) {
   return value
 }
 
+function agentEntityHttpError(caught) {
+  if (caught?.code === 'INVALID_AGENT_ENTITY') return new HttpError(400, caught.code, caught.message)
+  if (caught?.code === 'AGENT_SESSION_NOT_FOUND') return new HttpError(404, caught.code, caught.message)
+  if (typeof caught?.code === 'string' && /^(AGENT_(SESSION|MESSAGE|MEMORY|RUN|ENTITY)_ID_CONFLICT)$/.test(caught.code)) {
+    return new HttpError(409, caught.code, caught.message)
+  }
+  return undefined
+}
+
 async function enqueue(jobId) {
   if (redisQueue) return redisQueue.enqueue(jobId)
   if (!localProcessor) throw new HttpError(503, 'QUEUE_NOT_CONFIGURED', '生成队列尚未配置：生产环境请设置 REDIS_URL。')
@@ -307,6 +316,11 @@ const server = createServer(async (request, response) => {
     const projectGenerationReconcileMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/reconcile-generation-results$/)
     const projectAgentRunsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/agent-runs$/)
     const projectAgentSkillsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/agent-skills$/)
+    const projectAgentStateMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/agent-state$/)
+    const projectAgentArtifactsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/agent-artifacts$/)
+    const agentSessionMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/agent-sessions\/([^/]+)$/)
+    const agentMessageMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/agent-sessions\/([^/]+)\/messages\/([^/]+)$/)
+    const agentMemoryMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/agent-memory\/([^/]+)$/)
     const projectMediaMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/media$/)
     const agentRunMatch = url.pathname.match(/^\/api\/agent-runs\/([^/]+)$/)
     const agentRunCancelMatch = url.pathname.match(/^\/api\/agent-runs\/([^/]+)\/cancel$/)
@@ -781,6 +795,74 @@ const server = createServer(async (request, response) => {
       return json(response, 200, { skills: skills.map(publicAgentSkill) })
     }
 
+    if (projectAgentStateMatch && request.method === 'GET') {
+      const user = await requireUser(request)
+      const projectId = decodeURIComponent(projectAgentStateMatch[1])
+      await requireProjectPermission(productStore, user.id, projectId, 'read')
+      const state = await productStore.readAgentState(user.id, projectId)
+      if (!state) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
+      return json(response, 200, state)
+    }
+
+    if (projectAgentArtifactsMatch && request.method === 'GET') {
+      const user = await requireUser(request)
+      const projectId = decodeURIComponent(projectAgentArtifactsMatch[1])
+      await requireProjectPermission(productStore, user.id, projectId, 'read')
+      const limit = Math.max(1, Math.min(Number(url.searchParams.get('limit')) || 100, 200))
+      const beforeValue = url.searchParams.get('before')
+      const before = beforeValue === null ? undefined : Number(beforeValue)
+      if (beforeValue !== null && (!Number.isFinite(before) || before < 0)) {
+        return error(response, 400, 'INVALID_ARTIFACT_CURSOR', 'Artifact 分页游标无效。')
+      }
+      const artifacts = await productStore.listAgentArtifacts(user.id, projectId, { limit, before })
+      if (!artifacts) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
+      const nextBefore = artifacts.length === limit ? artifacts.at(-1)?.createdAt : undefined
+      return json(response, 200, { artifacts, nextBefore })
+    }
+
+    if (agentSessionMatch && request.method === 'PUT') {
+      const user = await requireUser(request)
+      const projectId = decodeURIComponent(agentSessionMatch[1])
+      const sessionId = decodeURIComponent(agentSessionMatch[2])
+      await requireProjectPermission(productStore, user.id, projectId, 'edit')
+      const body = await readJson(request, 64 * 1024, 'Agent 会话请求过大。')
+      if (body?.id !== sessionId) return error(response, 400, 'INVALID_AGENT_ENTITY', 'Agent 会话标识不一致。')
+      const session = await productStore.putAgentSession(user.id, projectId, body)
+      return json(response, 200, { session })
+    }
+
+    if (agentMessageMatch && request.method === 'PUT') {
+      const user = await requireUser(request)
+      const projectId = decodeURIComponent(agentMessageMatch[1])
+      const sessionId = decodeURIComponent(agentMessageMatch[2])
+      const messageId = decodeURIComponent(agentMessageMatch[3])
+      await requireProjectPermission(productStore, user.id, projectId, 'edit')
+      const body = await readJson(request, 96 * 1024, 'Agent 消息请求过大。')
+      if (body?.id !== messageId) return error(response, 400, 'INVALID_AGENT_ENTITY', 'Agent 消息标识不一致。')
+      const message = await productStore.putAgentMessage(user.id, projectId, sessionId, body)
+      return json(response, 200, { message })
+    }
+
+    if (agentMemoryMatch && request.method === 'PUT') {
+      const user = await requireUser(request)
+      const projectId = decodeURIComponent(agentMemoryMatch[1])
+      const memoryId = decodeURIComponent(agentMemoryMatch[2])
+      await requireProjectPermission(productStore, user.id, projectId, 'edit')
+      const body = await readJson(request, 16 * 1024, 'Agent 记忆请求过大。')
+      if (body?.id !== memoryId) return error(response, 400, 'INVALID_AGENT_ENTITY', 'Agent 记忆标识不一致。')
+      const memory = await productStore.putAgentMemoryItem(user.id, projectId, body)
+      return json(response, 200, { memory })
+    }
+
+    if (agentMemoryMatch && request.method === 'DELETE') {
+      const user = await requireUser(request)
+      const projectId = decodeURIComponent(agentMemoryMatch[1])
+      const memoryId = decodeURIComponent(agentMemoryMatch[2])
+      await requireProjectPermission(productStore, user.id, projectId, 'edit')
+      await productStore.deleteAgentMemoryItem(user.id, projectId, memoryId)
+      return json(response, 204)
+    }
+
     if (request.method === 'POST' && url.pathname === '/api/agent-actions') {
       const user = await requireUser(request)
       const idempotencyKey = generationIdempotencyKey(request.headers['idempotency-key'])
@@ -1135,8 +1217,11 @@ const server = createServer(async (request, response) => {
     }
     return error(response, 404, 'NOT_FOUND', '接口不存在。')
   } catch (caught) {
+    const agentEntityFailure = agentEntityHttpError(caught)
     const failure = caught instanceof HttpError || caught instanceof ProjectAuthorizationError || caught instanceof GenerationError || caught instanceof PromptRefinementError || caught instanceof BotanicAgentPlannerError || caught instanceof BotanicAgentChatError || caught instanceof BotanicAgentRunError || caught instanceof BotanicAgentSkillError || caught instanceof AgentToolRuntimeError || caught instanceof McpClientError
       ? caught
+      : agentEntityFailure
+        ? agentEntityFailure
       : caught?.code === 'WORKSPACE_STORE_TIMEOUT'
         ? new HttpError(503, 'WORKSPACE_STORE_TIMEOUT', caught.message)
       : new HttpError(500, 'INTERNAL_ERROR', '服务发生未预期错误。')

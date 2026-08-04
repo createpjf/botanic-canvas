@@ -142,6 +142,151 @@ export function updateBotanicAgentRuntimeStep(
   })
 }
 
+export type BotanicAgentRuntimePhase =
+  | 'idle'
+  | 'reading'
+  | 'planning'
+  | 'waiting_clarification'
+  | 'waiting_confirmation'
+  | 'executing'
+  | 'completed'
+  | 'failed'
+
+export type BotanicAgentRuntimeSummary = {
+  phase: BotanicAgentRuntimePhase
+  label: string
+  detail: string
+  nextAction: string
+  completedCount: number
+  totalCount: number
+  progress: number
+}
+
+/**
+ * 把多个底层步骤压缩成一个用户能理解的阶段摘要。
+ * 详细步骤仍可展开查看，但默认只显示当前阶段与下一步，避免 Runtime 变成日志墙。
+ */
+export function summarizeBotanicAgentRuntime(input: {
+  steps: BotanicAgentRuntimeStep[]
+  phase: BotanicAgentRuntimePhase
+}): BotanicAgentRuntimeSummary {
+  const totalCount = input.steps.length
+  const completedCount = input.steps.filter((step) => step.status === 'succeeded').length
+  const progress = totalCount ? Math.round((completedCount / totalCount) * 100) : 0
+  const activeStep = input.steps.find((step) => step.status === 'running')
+  const phaseCopy: Record<BotanicAgentRuntimePhase, Pick<BotanicAgentRuntimeSummary, 'label' | 'detail' | 'nextAction'>> = {
+    idle: {
+      label: '等待创作要求',
+      detail: '描述目标，Agent 会先读取上下文，再决定是否需要追问。',
+      nextAction: '输入需求',
+    },
+    reading: {
+      label: activeStep?.label ?? '读取创作上下文',
+      detail: activeStep?.detail ?? '正在读取当前画布、参考素材与项目记忆。',
+      nextAction: '等待读取完成',
+    },
+    planning: {
+      label: activeStep?.label ?? '正在制定计划',
+      detail: activeStep?.detail ?? '正在整理目标、锁定项与输出设置。',
+      nextAction: '等待计划',
+    },
+    waiting_clarification: {
+      label: '等待你补充设置',
+      detail: '选择模型、比例和分辨率后，Agent 才会继续规划。',
+      nextAction: '选择设置',
+    },
+    waiting_confirmation: {
+      label: '等待你确认计划',
+      detail: '检查提示词与输出设置；确认后才会提交生成任务。',
+      nextAction: '确认生成',
+    },
+    executing: {
+      label: '生成任务处理中',
+      detail: '任务已提交，结果完成后会直接回填画布。',
+      nextAction: '查看任务',
+    },
+    completed: {
+      label: 'Agent 已完成',
+      detail: '结果已回填画布，可以继续修改或定位结果。',
+      nextAction: '继续修改',
+    },
+    failed: {
+      label: 'Agent 运行未完成',
+      detail: '已保留失败位置；可以修改要求或重试当前任务。',
+      nextAction: '查看并重试',
+    },
+  }
+  return {
+    phase: input.phase,
+    ...phaseCopy[input.phase],
+    completedCount,
+    totalCount,
+    progress,
+  }
+}
+
+/**
+ * 从持久化 Run 快照恢复一条可理解的运行时间线。
+ * 时间线不是服务端事实，只是把已持久化的任务状态映射成 UI 进度，
+ * 因此刷新或跨设备打开时不会假装重放模型内部过程。
+ */
+export function restoreBotanicAgentRuntimeSteps(input: {
+  run: Pick<BotanicAgentRun, 'status'>
+  hasTarget: boolean
+  referenceCount?: number
+  memoryCount?: number
+  assetGroupCount?: number
+  plannerLabel?: string
+}): BotanicAgentRuntimeStep[] {
+  const steps = createBotanicAgentRuntimeSteps({
+    hasTarget: input.hasTarget,
+    referenceCount: input.referenceCount,
+    memoryCount: input.memoryCount,
+    assetGroupCount: input.assetGroupCount,
+    plannerLabel: input.plannerLabel,
+  })
+  const finalStepId = input.hasTarget ? 'finalize-plan' : 'create-workflow'
+  const active = input.run.status === 'queued' || input.run.status === 'running' || input.run.status === 'executing'
+  const failed = input.run.status === 'failed' || input.run.status === 'cancelled'
+  return steps.map((step) => {
+    if (step.id === finalStepId) {
+      return {
+        ...step,
+        status: failed ? 'failed' : active ? 'running' : 'succeeded',
+        detail: active ? '任务已恢复，正在等待生成结果' : failed ? '任务已结束，可查看失败原因或重试' : '任务已完成，结果已回填画布',
+        ...(failed ? { error: input.run.status === 'cancelled' ? '任务已取消。' : '任务未完成，请查看任务面板。' } : {}),
+      }
+    }
+    return {
+      ...step,
+      status: failed || !active ? 'succeeded' : step.id === 'call-planner' ? 'succeeded' : 'succeeded',
+      detail: `${step.detail} · 已从服务端恢复`,
+    }
+  })
+}
+
+function stableAgentPlanHash(value: string) {
+  let hash = 2166136261
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(36)
+}
+
+/** 同一确认消息与同一计划始终复用同一个提交键，防止网络重试产生重复 Run。 */
+export function botanicAgentSubmissionKey(messageId: string, plan: Pick<BotanicAgentPlan, 'instruction' | 'prompt' | 'settings' | 'output' | 'selectedResultNodeId'>) {
+  const safeMessageId = messageId.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 64) || 'message'
+  const fingerprint = JSON.stringify({
+    instruction: plan.instruction,
+    prompt: plan.prompt,
+    settings: plan.settings,
+    output: plan.output,
+    selectedResultNodeId: plan.selectedResultNodeId,
+  })
+  return `agent-plan-${safeMessageId}-${stableAgentPlanHash(fingerprint)}`
+}
+
 export type BotanicAgentArtifactKind = 'image' | 'video' | 'text' | 'workflow' | 'asset_group' | 'file'
 
 export type BotanicAgentArtifact = {
@@ -159,6 +304,21 @@ export type BotanicAgentArtifact = {
     externalTool?: string
     sourceNodeIds?: string[]
   }
+}
+
+export type BotanicAgentArtifactOrigin = {
+  type: 'agent_action' | 'generation_output'
+  sessionId?: string
+  messageId?: string
+  actionId?: string
+  jobId?: string
+  outputId?: string
+}
+
+export type BotanicIndexedArtifact = BotanicAgentArtifact & {
+  origin: BotanicAgentArtifactOrigin
+  createdAt: number
+  updatedAt: number
 }
 
 export type BotanicAgentCanvasCommand =
@@ -270,6 +430,11 @@ export type BotanicAgentPlan = {
   instruction: string
   summary: string
   selectedResultNodeId: string
+  /**
+   * 提交时锁定的画布上下文。只保存可解释的节点元数据，不携带图片地址或媒体内容，
+   * 让异步任务、刷新和跨设备恢复时仍能知道这次请求基于哪些输入。
+   */
+  contextSnapshot?: BotanicAgentContextSnapshot[]
   references: AgentReferenceBinding[]
   constraints: CreativeConstraint[]
   prompt: string
@@ -283,6 +448,50 @@ export type BotanicAgentPlan = {
   rootRecipe: GenerationRecipe
   toolCalls?: AgentToolCallTrace[]
   actions?: BotanicAgentActionProposal[]
+}
+
+export type BotanicAgentContextSnapshot = {
+  nodeId: string
+  label: string
+  kind: '素材' | '结果' | '文字' | '节点'
+  mediaKind?: 'image' | 'video'
+  role?: string
+}
+
+export type BotanicAgentContextSnapshotInput = Omit<BotanicAgentContextSnapshot, 'nodeId'> & {
+  nodeId?: string
+  id?: string
+}
+
+/** 生成可安全持久化的上下文快照，明确排除图片 URL、Blob 和其他媒体数据。 */
+export function createBotanicAgentContextSnapshot(
+  items: BotanicAgentContextSnapshotInput[],
+  maximum = 16,
+): BotanicAgentContextSnapshot[] {
+  const seen = new Set<string>()
+  return items.flatMap((item) => {
+    const nodeId = (item.nodeId ?? item.id ?? '').trim()
+    const label = item.label.trim()
+    if (!nodeId || !label || seen.has(nodeId)) return []
+    seen.add(nodeId)
+    return [{
+      nodeId,
+      label,
+      kind: item.kind,
+      ...(item.mediaKind ? { mediaKind: item.mediaKind } : {}),
+      ...(item.role?.trim() ? { role: item.role.trim() } : {}),
+    }]
+  }).slice(0, maximum)
+}
+
+export function botanicAgentContextSnapshotNodeIds(
+  snapshot: BotanicAgentContextSnapshot[] | undefined,
+  availableNodeIds?: Iterable<string>,
+): string[] {
+  const available = availableNodeIds ? new Set(availableNodeIds) : undefined
+  return [...new Set((snapshot ?? [])
+    .map((item) => item.nodeId)
+    .filter((nodeId) => nodeId && (!available || available.has(nodeId))))]
 }
 
 /**
@@ -323,6 +532,77 @@ export type BotanicAgentClarificationResponse = {
 export type BotanicAgentRunStatus = 'awaiting_confirmation' | 'queued' | 'executing' | 'running' | 'completed' | 'partial' | 'failed' | 'cancelled'
 
 export type BotanicAgentBranchStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+
+export type BotanicAgentRunFeedbackTone = 'neutral' | 'progress' | 'success' | 'warning' | 'error'
+
+export type BotanicAgentRunFeedbackAction = 'view_task' | 'view_results' | 'adjust' | 'none'
+
+export type BotanicAgentRunFeedback = {
+  label: string
+  detail: string
+  action: BotanicAgentRunFeedbackAction
+  actionLabel: string
+  tone: BotanicAgentRunFeedbackTone
+  terminal: boolean
+}
+
+/**
+ * 把服务端 Run 状态统一翻译成用户可执行的反馈，避免 Runtime、任务面板和消息各说一套。
+ * timeout 仍由现有 failed 状态承载，兼容历史快照，不扩张持久化状态机。
+ */
+export function botanicAgentRunFeedback(
+  status: BotanicAgentRunStatus,
+  outputCount = 0,
+  error?: string,
+): BotanicAgentRunFeedback {
+  const terminal = status === 'completed' || status === 'partial' || status === 'failed' || status === 'cancelled'
+  const timedOut = status === 'failed' && Boolean(error && /超时|timeout|timed out/i.test(error))
+  if (status === 'awaiting_confirmation') {
+    return { label: '待确认', detail: '计划已准备好，确认后才会提交生成任务。', action: 'view_task', actionLabel: '查看计划', tone: 'warning', terminal: false }
+  }
+  if (status === 'queued') {
+    return { label: '排队中', detail: '任务已进入队列，生成服务接手后会继续更新。', action: 'view_task', actionLabel: '查看任务', tone: 'progress', terminal: false }
+  }
+  if (status === 'executing' || status === 'running') {
+    return { label: '生成中', detail: '正在处理生成任务；结果完成后会自动回填画布。', action: 'view_task', actionLabel: '查看任务', tone: 'progress', terminal: false }
+  }
+  if (status === 'completed') {
+    return outputCount > 0
+      ? { label: '已完成', detail: `已生成 ${outputCount} 项结果，并自动回填画布。`, action: 'view_results', actionLabel: '查看结果', tone: 'success', terminal }
+      : { label: '已完成', detail: '任务已完成，但暂未发现可用结果；打开任务查看回填状态。', action: 'view_task', actionLabel: '查看任务', tone: 'warning', terminal }
+  }
+  if (status === 'partial') {
+    return { label: '部分完成', detail: `已生成 ${outputCount} 项结果；失败分支可以单独重试。`, action: 'view_task', actionLabel: '查看失败分支', tone: 'warning', terminal }
+  }
+  if (status === 'cancelled') {
+    return { label: '已取消', detail: `任务已取消，已保留 ${outputCount} 项已完成结果。`, action: 'adjust', actionLabel: '调整后重试', tone: 'warning', terminal }
+  }
+  return timedOut
+    ? { label: '响应超时', detail: '生成服务未在规定时间内返回；可调整参数或稍后重试。', action: 'adjust', actionLabel: '调整后重试', tone: 'error', terminal }
+    : { label: '生成失败', detail: outputCount ? `任务未完成，已保留 ${outputCount} 项结果；可重试失败分支。` : '任务未完成，可调整参数、切换模型后重试。', action: 'adjust', actionLabel: '调整后重试', tone: 'error', terminal }
+}
+
+export function botanicAgentBranchStatusLabel(status: BotanicAgentBranchStatus) {
+  if (status === 'succeeded') return '已完成'
+  if (status === 'running') return '生成中'
+  if (status === 'queued') return '排队中'
+  if (status === 'cancelled') return '已取消'
+  return '失败'
+}
+
+/**
+ * 判断一次持久化 Run 恢复是否可能带来新的画布结果。
+ * 只在终态首次出现或终态快照变新时触发，避免 4 秒轮询反复对账。
+ */
+export function shouldRecoverAgentRunResults(
+  current: Pick<BotanicAgentRun, 'status' | 'updatedAt'> | undefined,
+  incoming: Pick<BotanicAgentRunSnapshot, 'status' | 'updatedAt'>,
+) {
+  if (incoming.status !== 'completed' && incoming.status !== 'partial') return false
+  if (!current) return true
+  if (current.status !== 'completed' && current.status !== 'partial') return true
+  return incoming.updatedAt > current.updatedAt
+}
 
 export type BotanicAgentRunBranch = {
   id: string
@@ -390,11 +670,15 @@ export type BotanicAgentMessage = {
   kind: 'text' | 'question' | 'plan' | 'run' | 'notice'
   content: string
   createdAt: number
+  /** 消息自身的版本时间；旧文档缺省时由 append/服务端回退到 createdAt。 */
+  updatedAt?: number
   plan?: BotanicAgentPlan
   question?: BotanicAgentClarification
   runId?: string
   status?: 'pending' | 'answered' | 'submitted' | 'failed'
   feedback?: 'positive' | 'negative'
+  /** 只用于本地离线送达状态；服务端权威消息不依赖该字段。 */
+  deliveryStatus?: 'queued' | 'synced' | 'failed'
 }
 
 export type BotanicAgentSession = {
@@ -467,6 +751,34 @@ export function collectBotanicAgentArtifacts(sessions: BotanicAgentSession[]): B
         }
       }
     }
+  }
+  return [...artifacts.values()]
+}
+
+/**
+ * Artifact Index 是历史权威读模型；当前画布读模型只补充尚未完成服务端写入的新产物。
+ * 这样旧节点被删除后仍可查看历史，同时索引暂不可用时结果区不会空白。
+ */
+export function mergeBotanicAgentArtifactIndex(
+  indexedArtifacts: BotanicIndexedArtifact[],
+  localArtifacts: BotanicAgentArtifact[],
+): BotanicAgentArtifact[] {
+  const artifacts = new Map<string, BotanicAgentArtifact>()
+  const localById = new Map(localArtifacts.map((artifact) => [artifact.id, artifact]))
+  for (const artifact of indexedArtifacts) {
+    if (artifact.origin.type === 'generation_output' && !artifact.provenance.runId) continue
+    const localArtifact = localById.get(artifact.id)
+    const sourceNodeIds = uniqueIds([
+      ...(artifact.provenance.sourceNodeIds ?? []),
+      ...(localArtifact?.provenance.sourceNodeIds ?? []),
+    ])
+    if (!artifacts.has(artifact.id)) artifacts.set(artifact.id, {
+      ...artifact,
+      provenance: { ...artifact.provenance, sourceNodeIds },
+    })
+  }
+  for (const artifact of localArtifacts) {
+    if (!artifacts.has(artifact.id)) artifacts.set(artifact.id, artifact)
   }
   return [...artifacts.values()]
 }
@@ -573,13 +885,14 @@ export function createBotanicAgentSession(input: {
 
 export function appendBotanicAgentMessage(session: BotanicAgentSession, message: BotanicAgentMessage): BotanicAgentSession {
   if (session.messages.some((item) => item.id === message.id)) return session
+  const versionedMessage = { ...message, updatedAt: message.updatedAt ?? message.createdAt }
   return {
     ...session,
     title: session.messages.length === 0 && message.role === 'user'
       ? sessionTitle(message.content) || session.title
       : session.title,
-    messages: [...session.messages, message],
-    updatedAt: Math.max(session.updatedAt, message.createdAt),
+    messages: [...session.messages, versionedMessage],
+    updatedAt: Math.max(session.updatedAt, versionedMessage.updatedAt),
   }
 }
 
@@ -594,13 +907,13 @@ export function replaceBotanicAgentSessionContext(
 export function updateBotanicAgentMessage(
   session: BotanicAgentSession,
   messageId: string,
-  patch: Partial<Pick<BotanicAgentMessage, 'content' | 'runId' | 'status' | 'feedback' | 'plan' | 'question'>>,
+  patch: Partial<Pick<BotanicAgentMessage, 'content' | 'runId' | 'status' | 'feedback' | 'plan' | 'question' | 'deliveryStatus'>>,
   now = Date.now(),
 ): BotanicAgentSession {
   if (!session.messages.some((message) => message.id === messageId)) return session
   return {
     ...session,
-    messages: session.messages.map((message) => message.id === messageId ? { ...message, ...patch } : message),
+    messages: session.messages.map((message) => message.id === messageId ? { ...message, ...patch, updatedAt: now } : message),
     updatedAt: now,
   }
 }
@@ -618,6 +931,7 @@ export function updateBotanicAgentAction(
     changed = true
     return {
       ...message,
+      updatedAt: now,
       plan: {
         ...message.plan,
         actions: message.plan.actions.map((action) => action.id === actionId ? { ...action, ...patch } : action),
@@ -634,6 +948,7 @@ export type BuildBotanicAgentPlanInput = {
   selectedResultLabel?: string
   rootRecipe: GenerationRecipe
   assetGroup?: AssetGroup
+  contextSnapshot?: BotanicAgentContextSnapshot[]
 }
 
 const intentPatterns: Array<[BotanicAgentIntent, RegExp]> = [
@@ -747,6 +1062,7 @@ export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): Botani
     instruction,
     summary: `${intentLabel(intent)}，${output.mode === 'batch_by_asset' ? `按「${input.assetGroup?.name}」生成 ${output.count} 张` : '生成 1 张新版本'}。`,
     selectedResultNodeId: input.selectedResultNodeId,
+    ...(input.contextSnapshot?.length ? { contextSnapshot: input.contextSnapshot } : {}),
     references,
     constraints,
     prompt: instruction,

@@ -95,7 +95,9 @@ export function runtimeConfig(rootDir = process.cwd()) {
     // 图片任务保持 5 分钟上限；H3 是异步视频任务，官方耗时明显更长，独立使用 20 分钟上限。
     generationTimeoutMs: Math.min(5 * 60_000, Math.max(10_000, Number(process.env.GENERATION_TIMEOUT_MS ?? 5 * 60_000))),
     videoGenerationTimeoutMs: Math.min(30 * 60_000, Math.max(60_000, Number(process.env.VIDEO_GENERATION_TIMEOUT_MS ?? 20 * 60_000))),
-    workerConcurrency: Number(process.env.GENERATION_WORKER_CONCURRENCY ?? 1),
+    // 父任务由 Worker 消费，批量变体/候选作为子任务受控并发执行。
+    workerConcurrency: boundedInteger(process.env.GENERATION_WORKER_CONCURRENCY, 3, 1, 8),
+    generationVariantConcurrency: boundedInteger(process.env.GENERATION_VARIANT_CONCURRENCY, 3, 1, 8),
     bootstrapAccessToken: process.env.BOTANIC_BOOTSTRAP_ACCESS_TOKEN ?? (process.env.NODE_ENV === 'production' ? '' : 'botanic-local-dev'),
     bootstrapEmail: process.env.SUPABASE_BOOTSTRAP_OWNER_EMAIL ?? process.env.BOTANIC_BOOTSTRAP_EMAIL,
     realtimeTicketSecret: process.env.REALTIME_TICKET_SECRET,

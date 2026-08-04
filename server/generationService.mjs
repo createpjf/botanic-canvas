@@ -19,6 +19,8 @@ export async function generateMedia(job, {
   jobId,
   persistImage,
   persistMedia,
+  onVariant,
+  completedVariants,
 }) {
   const model = configuredModel(config, job.settings.model)
   if (!model) throw new GenerationError(400, 'INVALID_REQUEST', '生成模型未配置或不可用。')
@@ -29,6 +31,9 @@ export async function generateMedia(job, {
       signal,
       persistImage,
       jobId,
+      variantConcurrency: config.generationVariantConcurrency,
+      onVariant,
+      completedVariants,
     })
   }
   if (model.provider === 'minimax' && model.mediaKind === 'video') {
@@ -38,6 +43,8 @@ export async function generateMedia(job, {
       signal,
       persistMedia,
       jobId,
+      onVariant,
+      completedVariants,
     })
   }
   if (model.provider === 'minimax') {
@@ -47,6 +54,8 @@ export async function generateMedia(job, {
       signal,
       persistMedia,
       jobId,
+      onVariant,
+      completedVariants,
     })
   }
   throw new GenerationError(400, 'INVALID_REQUEST', '生成模型对应的供应商不受支持。')

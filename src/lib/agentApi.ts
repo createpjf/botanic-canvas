@@ -1,7 +1,7 @@
 import { buildBotanicAgentPlanRequest, completeBotanicAgentPlan, type BotanicAgentPlanRequestInput, type BotanicAgentPlanResponse } from '../domain/agentPlanContract'
 import { buildBotanicAgentChatRequest, type BotanicAgentChatRequestInput, type BotanicAgentChatResponse } from '../domain/agentChatContract'
 import { productRequest } from './productSession'
-import type { AgentToolCallTrace, BotanicAgentActionProposal, BotanicAgentActionResult, BotanicAgentClarificationResponse, BotanicAgentPlan, BotanicAgentRunSnapshot, BotanicAgentSkill } from '../domain/agent'
+import type { AgentToolCallTrace, BotanicAgentActionProposal, BotanicAgentActionResult, BotanicAgentClarificationResponse, BotanicAgentMessage, BotanicAgentPlan, BotanicAgentRunSnapshot, BotanicAgentSession, BotanicAgentSkill, BotanicIndexedArtifact } from '../domain/agent'
 
 export type AgentRunCreationBranch = { id: string; label: string; assetId?: string }
 
@@ -66,14 +66,62 @@ export async function requestBotanicAgentChat(input: BotanicAgentChatRequestInpu
   return response.response
 }
 
+/**
+ * Agent 消息独立持久化 seam。PUT 的实体 ID 与 Idempotency-Key 在断线重放时保持不变，
+ * 因此服务端可将重复送达合并为同一条消息。
+ */
+export async function submitPersistentBotanicAgentMessage(input: {
+  projectId: string
+  session: BotanicAgentSession
+  message: BotanicAgentMessage
+  idempotencyKey: string
+}) {
+  const projectId = encodeURIComponent(input.projectId)
+  const sessionId = encodeURIComponent(input.session.id)
+  const messageId = encodeURIComponent(input.message.id)
+  await productRequest<{ session: BotanicAgentSession }>(`/api/projects/${projectId}/agent-sessions/${sessionId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `${input.idempotencyKey}-session` },
+    body: JSON.stringify({
+      id: input.session.id,
+      title: input.session.title,
+      executionMode: input.session.executionMode,
+      contextNodeIds: input.session.contextNodeIds,
+      createdAt: input.session.createdAt,
+      updatedAt: input.session.updatedAt,
+    }),
+  })
+  const response = await productRequest<{ message: BotanicAgentMessage }>(
+    `/api/projects/${projectId}/agent-sessions/${sessionId}/messages/${messageId}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': input.idempotencyKey },
+      body: JSON.stringify({
+        id: input.message.id,
+        role: input.message.role,
+        kind: input.message.kind,
+        content: input.message.content,
+        createdAt: input.message.createdAt,
+        ...(input.message.plan === undefined ? {} : { plan: input.message.plan }),
+        ...(input.message.question === undefined ? {} : { question: input.message.question }),
+        ...(input.message.runId === undefined ? {} : { runId: input.message.runId }),
+        ...(input.message.status === undefined ? {} : { status: input.message.status }),
+        ...(input.message.feedback === undefined ? {} : { feedback: input.message.feedback }),
+      }),
+    },
+  )
+  return response.message
+}
+
 export async function createPersistentBotanicAgentRun(input: {
   projectId: string
   plan: BotanicAgentPlan
   branches: AgentRunCreationBranch[]
+  idempotencyKey?: string
 }) {
   const response = await productRequest<{ run: BotanicAgentRunSnapshot }>('/api/agent-runs', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey('agent-run') },
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': input.idempotencyKey ?? idempotencyKey('agent-run') },
     body: JSON.stringify({
       projectId: input.projectId,
       plan: {
@@ -82,6 +130,7 @@ export async function createPersistentBotanicAgentRun(input: {
         instruction: input.plan.instruction,
         summary: input.plan.summary,
         selectedResultNodeId: input.plan.selectedResultNodeId,
+        contextSnapshot: input.plan.contextSnapshot,
         prompt: input.plan.prompt,
         settings: input.plan.settings,
         constraints: input.plan.constraints,
@@ -118,10 +167,24 @@ export async function listPersistentBotanicAgentRuns(projectId: string) {
   return response.runs
 }
 
-export async function retryPersistentBotanicAgentBranch(runId: string, branchId: string) {
+export async function listProjectAgentArtifacts(
+  projectId: string,
+  options: { limit?: number; before?: number; signal?: AbortSignal } = {},
+) {
+  const query = new URLSearchParams()
+  if (options.limit !== undefined) query.set('limit', String(options.limit))
+  if (options.before !== undefined) query.set('before', String(options.before))
+  const suffix = query.size ? `?${query.toString()}` : ''
+  return productRequest<{ artifacts: BotanicIndexedArtifact[]; nextBefore?: number }>(
+    `/api/projects/${encodeURIComponent(projectId)}/agent-artifacts${suffix}`,
+    { signal: options.signal },
+  )
+}
+
+export async function retryPersistentBotanicAgentBranch(runId: string, branchId: string, retryKey?: string) {
   const response = await productRequest<{ run: BotanicAgentRunSnapshot }>(
     `/api/agent-runs/${encodeURIComponent(runId)}/branches/${encodeURIComponent(branchId)}/retry`,
-    { method: 'POST', headers: { 'Idempotency-Key': idempotencyKey(`agent-retry-${branchId}`) } },
+    { method: 'POST', headers: { 'Idempotency-Key': retryKey ?? idempotencyKey(`agent-retry-${branchId}`) } },
   )
   return response.run
 }

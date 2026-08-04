@@ -26,9 +26,9 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { defaultGenerationModels } from './domain/canvas'
-import { buildBotanicAgentPlan, buildBotanicAgentPromptDiff, collectBotanicAgentResults, createBotanicAgentRuntimeSteps, creativeDimensionLabel, insertBotanicAgentMention, readBotanicAgentMentionQuery, recordBotanicAgentCanvasWritebacks, resolveBotanicAgentCanvasCommands, resolveBotanicAgentResultSelection, updateBotanicAgentRuntimeStep, type BotanicAgentActionProposal, type BotanicAgentActionResult, type BotanicAgentArtifact, type BotanicAgentCanvasWriteback, type BotanicAgentClarification, type BotanicAgentClarificationField, type BotanicAgentClarificationResponse, type BotanicAgentExecutionMode, type BotanicAgentIntent, type BotanicAgentMemoryItem, type BotanicAgentMemoryKind, type BotanicAgentMentionQuery, type BotanicAgentMessage, type BotanicAgentPlan, type BotanicAgentPromptDiffSegment, type BotanicAgentRun, type BotanicAgentRuntimeStep, type BotanicAgentSession, type BotanicAgentSkill } from './domain/agent'
+import { appendBotanicAgentMessage, botanicAgentBranchStatusLabel, botanicAgentContextSnapshotNodeIds, botanicAgentRunFeedback, botanicAgentSubmissionKey, buildBotanicAgentPlan, buildBotanicAgentPromptDiff, collectBotanicAgentResults, createBotanicAgentContextSnapshot, createBotanicAgentRuntimeSteps, creativeDimensionLabel, insertBotanicAgentMention, mergeBotanicAgentArtifactIndex, readBotanicAgentMentionQuery, recordBotanicAgentCanvasWritebacks, resolveBotanicAgentCanvasCommands, resolveBotanicAgentResultSelection, restoreBotanicAgentRuntimeSteps, shouldRecoverAgentRunResults, summarizeBotanicAgentRuntime, updateBotanicAgentRuntimeStep, type BotanicAgentActionProposal, type BotanicAgentActionResult, type BotanicAgentArtifact, type BotanicAgentCanvasWriteback, type BotanicAgentClarification, type BotanicAgentClarificationField, type BotanicAgentClarificationResponse, type BotanicAgentExecutionMode, type BotanicAgentIntent, type BotanicAgentMemoryItem, type BotanicAgentMemoryKind, type BotanicAgentMentionQuery, type BotanicAgentMessage, type BotanicAgentPlan, type BotanicAgentPromptDiffSegment, type BotanicAgentRun, type BotanicAgentRuntimePhase, type BotanicAgentRuntimeStep, type BotanicAgentSession, type BotanicAgentSkill, type BotanicIndexedArtifact } from './domain/agent'
 import { collectAgentMediaSources, prepareAgentMediaSources } from './domain/agentMedia'
-import { canvasZoomMode, generationTaskErrorMessage, planResultGroupPresentation, traceCanvasLineage, type ResultGroupPresentation } from './domain/canvasPresentation'
+import { canvasZoomMode, generationTaskErrorMessage, generationTaskFeedback, planResultGroupPresentation, traceCanvasLineage, type ResultGroupPresentation } from './domain/canvasPresentation'
 import { buildDeliveryPreviewArtifacts, canUseForImageDelivery, resolveDeliveryDraft, type DeliveryPanelTarget } from './domain/deliveryPresentation'
 import { mediaFileExtension, reducedAspectRatio } from './domain/mediaPresentation'
 import { mediaRetryUrl } from './domain/mediaRecovery'
@@ -43,6 +43,7 @@ import type {
   AssetRole,
   AssetSource,
   AssetNodeData,
+  BatchVariationRun,
   CanvasNode,
   CanvasTemplate,
   DeliveryArtifact,
@@ -62,7 +63,8 @@ import type {
   UploadedAssetInput,
 } from './domain/canvas'
 import { deliveryPresets, downloadDeliveryPackage } from './lib/deliveryExport'
-import { createPersistentBotanicAgentRun, createProjectAgentSkill, executePersistentBotanicAgentRun, executeProjectAgentAction, listPersistentBotanicAgentRuns, listProjectAgentSkills, persistAgentReferenceMedia, requestBotanicAgentChat, requestBotanicAgentPlan } from './lib/agentApi'
+import { createPersistentBotanicAgentRun, createProjectAgentSkill, executePersistentBotanicAgentRun, executeProjectAgentAction, listPersistentBotanicAgentRuns, listProjectAgentArtifacts, listProjectAgentSkills, persistAgentReferenceMedia, requestBotanicAgentChat, requestBotanicAgentPlan, submitPersistentBotanicAgentMessage } from './lib/agentApi'
+import { createAgentMessageQueue, createLocalStorageAgentMessageQueueStorage } from './lib/agentMessageQueue'
 import { classifyBotanicAgentRequest } from './domain/agentChatContract'
 import { getGenerationServiceHealth } from './lib/generationApi'
 import { refinePrompt } from './lib/promptRefinementApi'
@@ -744,7 +746,7 @@ type CanvasComposerProps = {
   settings: GenerationSettings
   models: GenerationModelOption[]
   references: ComposerFocusReference[]
-  status: 'idle' | 'uploading' | 'queued' | 'running' | 'error'
+  status: 'idle' | 'uploading' | 'queued' | 'running' | 'recovering' | 'error'
   error?: string
   canGenerate: boolean
   onNodeLabelChange?: (label: string) => void
@@ -784,7 +786,7 @@ function settingsForModel(settings: GenerationSettings, model: GenerationModelOp
 }
 
 function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount, maximumBatchCount, settings, models, references, status, error, canGenerate, onNodeLabelChange, onPromptChange, onBatchCountChange, onSettingsChange, videoInputMode = 'first_frame', onVideoInputModeChange, refinementMode = 'faithful', onRefinementModeChange, onOpenReferences, onOpenAssets, onGenerate, onClose, layout, onLayoutChange }: CanvasComposerProps) {
-  const isGenerating = status === 'uploading' || status === 'queued' || status === 'running'
+  const isGenerating = status === 'uploading' || status === 'queued' || status === 'running' || status === 'recovering'
   const [refinement, setRefinement] = useState<PromptRefinementState>({ status: 'idle' })
   const refinementRequestRef = useRef<{ id: number; controller?: AbortController }>({ id: 0 })
   const refinementFeedbackTimerRef = useRef<number | null>(null)
@@ -1163,7 +1165,7 @@ function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount, maximu
           </div>
           <div className={error ? 'canvas-composer__feedback is-error' : 'canvas-composer__feedback'} role={error ? 'alert' : 'status'}>
             {error ?? (isGenerating
-              ? (status === 'uploading' ? '正在上传参考素材…' : status === 'queued' ? '任务已入队…' : `${selectedModel?.mediaKind === 'video' ? '视频' : '图像'}服务正在生成…`)
+              ? (status === 'recovering' ? '正在确认任务，请勿重复提交…' : status === 'uploading' ? '正在上传参考素材…' : status === 'queued' ? '任务已入队…' : `${selectedModel?.mediaKind === 'video' ? '视频' : '图像'}服务正在生成…`)
               : canGenerate
                 ? (primaryReference ? `主参考 · ${primaryReference.name}` : '参数已准备好，提交后会在画布中创建新的结果节点。')
                 : isVideoModel
@@ -1179,9 +1181,10 @@ function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount, maximu
   )
 }
 
-function taskStatusLabel(status: 'uploading' | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled') {
+function taskStatusLabel(status: 'uploading' | 'submission_unknown' | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled') {
   const labels = {
     uploading: '提交素材',
+    submission_unknown: '等待确认',
     queued: '任务排队',
     running: '真实生成中',
     succeeded: '候选待选',
@@ -1189,16 +1192,6 @@ function taskStatusLabel(status: 'uploading' | 'queued' | 'running' | 'succeeded
     cancelled: '已取消',
   }
   return labels[status]
-}
-
-function resultTaskFeedback(status: ResultNodeData['taskStatus']) {
-  if (status === 'uploading') {
-    return { title: '准备生成', detail: '正在锁定参考' }
-  }
-  if (status === 'queued') {
-    return { title: '正在生成', detail: '已进入队列' }
-  }
-  return { title: '正在生成', detail: '可继续编辑画布' }
 }
 
 function elapsedTaskLabel(seconds: number) {
@@ -1275,6 +1268,7 @@ function ResultNode({ data, id, selected }: NodeProps) {
   const [videoDimensions, setVideoDimensions] = useState<{ width: number; height: number } | null>(null)
   const [currentTime, setCurrentTime] = useState(() => Date.now())
   const cancelGeneration = useCanvasStore((state) => state.cancelGeneration)
+  const recoverUnknownGenerationSubmission = useCanvasStore((state) => state.recoverUnknownGenerationSubmission)
   const retryGeneration = useCanvasStore((state) => state.retryGeneration)
   const retryMissingGeneration = useCanvasStore((state) => state.retryMissingGeneration)
   const removeNodeFromCanvas = useCanvasStore((state) => state.removeNodeFromCanvas)
@@ -1297,7 +1291,8 @@ function ResultNode({ data, id, selected }: NodeProps) {
   const resultName = result.label ?? (result.generationKind === 'refinement' ? '精修版本' : '生成版本')
   const hasDisplayableImage = Boolean(result.image) && !imageFailed
   const isGenerating = result.status === 'generating'
-  const taskFeedback = resultTaskFeedback(result.taskStatus)
+  const isSubmissionUnknown = result.taskStatus === 'submission_unknown'
+  const taskFeedback = generationTaskFeedback(result.taskStatus)
   const elapsedSeconds = result.submittedAt && isGenerating
     ? Math.max(0, Math.floor((currentTime - result.submittedAt) / 1_000))
     : 0
@@ -1376,7 +1371,7 @@ function ResultNode({ data, id, selected }: NodeProps) {
         ><DeleteIcon /></button> : null}
       </header>
       <div
-        className={['result-node', ratioClass, isGenerating ? 'result-node--generating' : '', isSelected ? 'is-selected' : ''].filter(Boolean).join(' ')}
+        className={['result-node', ratioClass, isGenerating ? 'result-node--generating' : '', isSubmissionUnknown ? 'result-node--recovering' : '', isSelected ? 'is-selected' : ''].filter(Boolean).join(' ')}
         style={mediaKind === 'video' && videoDimensions
           ? { height: 'auto', aspectRatio: `${videoDimensions.width} / ${videoDimensions.height}` }
           : undefined}
@@ -1426,7 +1421,8 @@ function ResultNode({ data, id, selected }: NodeProps) {
             <strong aria-live="polite">{imageFailed ? '媒体无法显示' : isGenerating ? taskFeedback.title : result.status === 'failed' ? '任务未完成' : result.status === 'cancelled' ? '任务已取消' : '等待生成结果'}</strong>
             <small>{imageFailed ? '媒体读取失败，可能是登录状态或网络中断。' : isGenerating ? (isSlowTask ? elapsedTaskLabel(elapsedSeconds) : taskFeedback.detail) : generationTaskErrorMessage(result.error) ?? (result.status === 'ready' ? '等待生成服务返回结果。' : '生成服务的真实状态会在此同步。')}</small>
             {imageFailed ? <button className="result-node__task-action nodrag nowheel" type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void recoverMedia() }}>重新加载</button> : null}
-            {result.status === 'generating' ? <button className="result-node__task-action nodrag nowheel" type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); cancelGeneration() }}>取消</button> : null}
+            {isSubmissionUnknown ? <button className="result-node__task-action nodrag nowheel" type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void recoverUnknownGenerationSubmission() }}>立即确认</button> : null}
+            {result.status === 'generating' && !isSubmissionUnknown ? <button className="result-node__task-action nodrag nowheel" type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); cancelGeneration() }}>取消</button> : null}
             {result.status === 'failed' ? <div className="result-node__task-actions nodrag nowheel" onPointerDown={(event) => event.stopPropagation()}>
               <button className="result-node__task-action" type="button" onClick={(event) => { event.stopPropagation(); void retryGeneration() }}>原配方重试</button>
               <button className="result-node__task-action is-danger" type="button" onClick={(event) => { event.stopPropagation(); removeNodeFromCanvas(targetNodeId) }}>删除任务</button>
@@ -2334,6 +2330,8 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
   const hydrate = useCanvasStore((state) => state.hydrate)
   const openDocument = useCanvasStore((state) => state.openDocument)
   const refreshDocumentFromRemote = useCanvasStore((state) => state.refreshDocumentFromRemote)
+  const recoverGenerationResultsFromRemote = useCanvasStore((state) => state.recoverGenerationResultsFromRemote)
+  const recoverUnknownGenerationSubmission = useCanvasStore((state) => state.recoverUnknownGenerationSubmission)
   const openNewDocument = useCanvasStore((state) => state.openNewDocument)
   const renameDocument = useCanvasStore((state) => state.renameDocument)
   const setNodes = useCanvasStore((state) => state.setNodes)
@@ -2360,6 +2358,8 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
   const updateGenerateNode = useCanvasStore((state) => state.updateGenerateNode)
   const runGraphGeneration = useCanvasStore((state) => state.runGraphGeneration)
   const runBatchVariation = useCanvasStore((state) => state.runBatchVariation)
+  const retryBatchVariationItem = useCanvasStore((state) => state.retryBatchVariationItem)
+  const batchVariationRuns = useCanvasStore((state) => state.document.batchVariationRuns)
   const saveAgentPlan = useCanvasStore((state) => state.saveAgentPlan)
   const updateAgentRunStatus = useCanvasStore((state) => state.updateAgentRunStatus)
   const applyAgentRunSnapshot = useCanvasStore((state) => state.applyAgentRunSnapshot)
@@ -2407,6 +2407,9 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
   const [nodeInspectorOpen, setNodeInspectorOpen] = useState(false)
   const [deliveryOpen, setDeliveryOpen] = useState(false)
   const [agentOpen, setAgentOpen] = useState(false)
+  const [agentArtifactIndex, setAgentArtifactIndex] = useState<AgentArtifactIndexState>({
+    projectId: '', artifacts: [], status: 'idle',
+  })
   const agentLauncherRef = useRef<HTMLButtonElement | null>(null)
   const [agentTargetResultId, setAgentTargetResultId] = useState<string | null>(null)
   const [composerOpen, setComposerOpen] = useState(false)
@@ -2656,6 +2659,41 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
     return result
   }, [])
 
+  const retryAgentCanvasPersistence = useCallback(async () => {
+    try {
+      const result = await syncPendingCanvasDrafts()
+      const current = useCanvasStore.getState()
+      if (result.conflictIds.includes(current.document.id)) return false
+      if (result.pending === 0 && (current.persistenceStatus === 'offline' || current.persistenceStatus === 'error')) {
+        useCanvasStore.setState({ persistenceStatus: 'saved', assistantMessage: '本地草稿已同步。' })
+      }
+      return result.pending === 0
+    } catch {
+      return false
+    }
+  }, [])
+
+  const refreshAgentCanvasFromRemote = useCallback(async () => {
+    const projectId = useCanvasStore.getState().document.id
+    if (projectId === 'workspace-placeholder') return false
+    const opened = await openDocument(projectId)
+    if (opened) useCanvasStore.setState({ persistenceStatus: 'saved', assistantMessage: '已切换到云端版本。' })
+    return opened
+  }, [openDocument])
+
+  const recoverPersistentAgentRuns = useCallback(async () => {
+    const projectId = useCanvasStore.getState().document.id
+    const runs = await listPersistentBotanicAgentRuns(projectId)
+    if (useCanvasStore.getState().document.id !== projectId) return
+    let shouldRecoverResults = false
+    for (const run of runs) {
+      const current = useCanvasStore.getState().document.agentRuns.find((candidate) => candidate.id === run.id)
+      if (shouldRecoverAgentRunResults(current, run)) shouldRecoverResults = true
+      applyAgentRunSnapshot(run)
+    }
+    if (shouldRecoverResults) await recoverGenerationResultsFromRemote()
+  }, [applyAgentRunSnapshot, recoverGenerationResultsFromRemote])
+
   useEffect(() => {
     hydrateCanvas()
   }, [hydrateCanvas])
@@ -2671,16 +2709,23 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
     const syncDrafts = () => {
       void synchronizeLocalDrafts()
         .then(() => refreshDocumentFromRemote())
+        .then(() => recoverUnknownGenerationSubmission())
+        .then(() => recoverPersistentAgentRuns())
         .catch(() => undefined)
     }
     syncDrafts()
     window.addEventListener('online', syncDrafts)
     return () => window.removeEventListener('online', syncDrafts)
-  }, [hydrated, refreshDocumentFromRemote, synchronizeLocalDrafts])
+  }, [hydrated, recoverPersistentAgentRuns, recoverUnknownGenerationSubmission, refreshDocumentFromRemote, synchronizeLocalDrafts])
 
   useEffect(() => {
     if (!hydrated || !workspaceRestored || workspaceView !== 'canvas' || !serverPersistenceEnabled) return
-    const refresh = () => { void refreshDocumentFromRemote().catch(() => undefined) }
+    const refresh = () => {
+      void refreshDocumentFromRemote()
+        .then(() => recoverUnknownGenerationSubmission())
+        .then(() => recoverPersistentAgentRuns())
+        .catch(() => undefined)
+    }
     const refreshWhenVisible = () => {
       if (window.document.visibilityState === 'visible') refresh()
     }
@@ -2690,7 +2735,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
       window.removeEventListener('focus', refresh)
       window.document.removeEventListener('visibilitychange', refreshWhenVisible)
     }
-  }, [hydrated, refreshDocumentFromRemote, workspaceRestored, workspaceView])
+  }, [hydrated, recoverPersistentAgentRuns, recoverUnknownGenerationSubmission, refreshDocumentFromRemote, workspaceRestored, workspaceView])
 
   useEffect(() => {
     if (!hydrated || !workspaceRestored || workspaceView !== 'canvas' || !serverPersistenceEnabled) return
@@ -2711,7 +2756,18 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
       onAgentRunUpdated: (event) => {
         applyAgentRunSnapshot(event.run)
         const terminal = event.run.branches.every((branch) => ['succeeded', 'failed', 'cancelled'].includes(branch.status))
-        if (terminal) void refreshDocumentFromRemote().catch(() => undefined)
+        if (terminal) {
+          void recoverGenerationResultsFromRemote()
+            .then(() => refreshDocumentFromRemote())
+            .catch(() => undefined)
+        }
+      },
+      onReconnected: () => {
+        void synchronizeLocalDrafts()
+          .then(() => recoverUnknownGenerationSubmission())
+          .then(() => recoverPersistentAgentRuns())
+          .then(() => refreshDocumentFromRemote())
+          .catch(() => undefined)
       },
     })
     collaborationRef.current = collaboration
@@ -2719,17 +2775,14 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
       if (collaborationRef.current === collaboration) collaborationRef.current = null
       collaboration.close()
     }
-  }, [applyAgentRunSnapshot, applyCollaborativeGraph, document.id, hydrated, refreshDocumentFromRemote, workspaceRestored, workspaceView])
+  }, [applyAgentRunSnapshot, applyCollaborativeGraph, document.id, hydrated, recoverGenerationResultsFromRemote, recoverPersistentAgentRuns, recoverUnknownGenerationSubmission, refreshDocumentFromRemote, synchronizeLocalDrafts, workspaceRestored, workspaceView])
 
   useEffect(() => {
     if (!hydrated || !workspaceRestored || workspaceView !== 'canvas' || !serverPersistenceEnabled) return
     let active = true
-    void listPersistentBotanicAgentRuns(document.id).then((runs) => {
-      if (!active) return
-      for (const run of runs) applyAgentRunSnapshot(run)
-    }).catch(() => undefined)
+    void recoverPersistentAgentRuns().catch(() => undefined)
     return () => { active = false }
-  }, [applyAgentRunSnapshot, document.id, hydrated, workspaceRestored, workspaceView])
+  }, [document.id, hydrated, recoverPersistentAgentRuns, workspaceRestored, workspaceView])
 
   useEffect(() => {
     if (!hydrated || !workspaceRestored || workspaceView !== 'canvas' || !serverPersistenceEnabled) return
@@ -2740,9 +2793,8 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
       if (!active || requesting || window.document.visibilityState !== 'visible') return
       requesting = true
       try {
-        const runs = await listPersistentBotanicAgentRuns(document.id)
+        await recoverPersistentAgentRuns()
         if (!active) return
-        for (const run of runs) applyAgentRunSnapshot(run)
       } catch {
         // Realtime 断线或工作区短暂不可用时保留当前进度，下一轮自动恢复。
       } finally {
@@ -2754,7 +2806,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
       active = false
       window.clearInterval(timer)
     }
-  }, [applyAgentRunSnapshot, document.agentRuns, document.id, hydrated, workspaceRestored, workspaceView])
+  }, [document.agentRuns, document.id, hydrated, recoverPersistentAgentRuns, workspaceRestored, workspaceView])
 
   useEffect(() => {
     collaborationRef.current?.replaceLocalGraph({ nodes: document.nodes, edges: document.edges })
@@ -3818,6 +3870,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
         rootRecipe: agentRootRecipe,
       }
     : undefined
+  const batchVariationProgressRun = batchVariationRuns.find((run) => run.status !== 'succeeded' && run.status !== 'cancelled')
   const latestAgentRun = document.agentRuns.find((run) => run.plan.selectedResultNodeId === effectiveAgentTargetResultId)
   const focusAgentNodes = useCallback((nodeIds: string[]) => {
     const validNodeIds = [...new Set(nodeIds)].filter((nodeId) => document.nodes.some((node) => node.id === nodeId))
@@ -3827,12 +3880,56 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
     setResultComposerDraft(null)
     setAgentFocusRequest({ nodeIds: validNodeIds, requestId: Date.now() })
   }, [document.nodes, selectNode])
-  const agentArtifacts = useMemo(() => collectBotanicAgentResults({
+  const localAgentArtifacts = useMemo(() => collectBotanicAgentResults({
     sessions: document.agentSessions,
     nodes: document.nodes,
     generationJobs: document.generationJobs,
     assets: document.assets,
   }), [document.agentSessions, document.assets, document.generationJobs, document.nodes])
+  useEffect(() => {
+    if (!agentOpen || !serverPersistenceEnabled) return
+    const controller = new AbortController()
+    setAgentArtifactIndex({ projectId: document.id, artifacts: [], status: 'loading' })
+    void listProjectAgentArtifacts(document.id, { limit: 100, signal: controller.signal }).then((result) => {
+      if (controller.signal.aborted) return
+      setAgentArtifactIndex({
+        projectId: document.id,
+        artifacts: result.artifacts,
+        nextBefore: result.nextBefore,
+        status: 'ready',
+      })
+    }).catch(() => {
+      if (controller.signal.aborted) return
+      setAgentArtifactIndex({ projectId: document.id, artifacts: [], status: 'error' })
+    })
+    return () => controller.abort()
+  }, [agentOpen, document.id])
+  const indexedAgentArtifacts = agentArtifactIndex.projectId === document.id ? agentArtifactIndex.artifacts : []
+  const agentArtifacts = useMemo(
+    () => mergeBotanicAgentArtifactIndex(indexedAgentArtifacts, localAgentArtifacts),
+    [indexedAgentArtifacts, localAgentArtifacts],
+  )
+  const loadMoreAgentArtifacts = useCallback(async () => {
+    const cursor = agentArtifactIndex.projectId === document.id ? agentArtifactIndex.nextBefore : undefined
+    if (cursor === undefined || agentArtifactIndex.status === 'loading-more') return
+    setAgentArtifactIndex((current) => current.projectId === document.id ? { ...current, status: 'loading-more' } : current)
+    try {
+      const result = await listProjectAgentArtifacts(document.id, { limit: 100, before: cursor })
+      setAgentArtifactIndex((current) => {
+        if (current.projectId !== document.id) return current
+        const artifacts = new Map(current.artifacts.map((artifact) => [artifact.id, artifact]))
+        for (const artifact of result.artifacts) if (!artifacts.has(artifact.id)) artifacts.set(artifact.id, artifact)
+        return {
+          projectId: document.id,
+          artifacts: [...artifacts.values()],
+          nextBefore: result.nextBefore,
+          status: 'ready',
+        }
+      })
+    } catch {
+      setAgentArtifactIndex((current) => current.projectId === document.id ? { ...current, status: 'error' } : current)
+    }
+  }, [agentArtifactIndex.nextBefore, agentArtifactIndex.projectId, agentArtifactIndex.status, document.id])
   const agentContextOptions = document.nodes.flatMap((node): AgentContextItem[] => {
     if (node.type === 'asset') {
       const data = node.data as AssetNodeData
@@ -3957,7 +4054,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
     return recordBotanicAgentCanvasWritebacks(output, writebacks)
   }, [addTextNode, addUploadedAssetsToCanvas, document.id, renameCanvasNode, updateTextNode])
 
-  const confirmAgentPlan = useCallback(async (plan: BotanicAgentPlan) => {
+  const confirmAgentPlan = useCallback(async (plan: BotanicAgentPlan, submissionKey?: string) => {
     const group = plan.assetGroupId ? document.assetGroups.find((item) => item.id === plan.assetGroupId) : undefined
     const branchInputs = plan.output.mode === 'batch_by_asset' && group
       ? group.assetIds.map((assetId, index) => ({ assetId, branchId: `branch-${crypto.randomUUID()}`, label: `分支 ${index + 1}` }))
@@ -3975,6 +4072,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
         const snapshot = await createPersistentBotanicAgentRun({
           projectId: document.id,
           plan,
+          idempotencyKey: submissionKey,
           branches: branchInputs.map((branch) => ({
             id: branch.branchId,
             label: branch.label,
@@ -4491,6 +4589,11 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
           />
         </ReactFlow>
 
+        {batchVariationProgressRun ? <BatchVariationProgress
+          run={batchVariationProgressRun}
+          onRetry={(runId, itemId) => retryBatchVariationItem(runId, itemId)}
+        /> : null}
+
         {!agentOpen ? <button ref={agentLauncherRef} type="button" className="agent-launcher" onClick={() => {
           const sessionId = ensureAgentSession(selectedFocusNodeIds)
           const session = useCanvasStore.getState().document.agentSessions.find((item) => item.id === sessionId)
@@ -4501,6 +4604,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
 
         {agentOpen ? <AgentWorkspace
           projectId={document.id}
+          persistenceStatus={persistenceStatus}
           target={agentTarget}
           groups={document.assetGroups}
           sessions={document.agentSessions}
@@ -4508,6 +4612,8 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
           contextOptions={agentContextOptions}
           memory={document.agentMemory}
           artifacts={agentArtifacts}
+          artifactIndexStatus={agentArtifactIndex.projectId === document.id ? agentArtifactIndex.status : 'idle'}
+          artifactIndexHasMore={agentArtifactIndex.projectId === document.id && agentArtifactIndex.nextBefore !== undefined}
           latestRun={latestAgentRun}
           runs={document.agentRuns}
           plannerModels={agentPlannerModels}
@@ -4546,6 +4652,35 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
             if (!artifact.url || (artifact.kind !== 'image' && artifact.kind !== 'video')) return
             saveGeneratedImageToLibrary({ image: artifact.url, name: artifact.label, mediaKind: artifact.kind })
           }}
+          onContinueArtifact={(artifact) => {
+            let currentDocument = useCanvasStore.getState().document
+            let sourceNodeIds = (artifact.provenance.sourceNodeIds ?? [])
+              .filter((nodeId) => currentDocument.nodes.some((node) => node.id === nodeId))
+            if (!sourceNodeIds.length && artifact.url && (artifact.kind === 'image' || artifact.kind === 'video')) {
+              const existingNodeIds = new Set(currentDocument.nodes.map((node) => node.id))
+              addUploadedAssetsToCanvas([{
+                name: artifact.label,
+                image: artifact.url,
+                role: '场景',
+                mediaKind: artifact.kind,
+                collection: 'Agent 历史结果',
+                tags: ['Agent', '历史结果'],
+              }])
+              currentDocument = useCanvasStore.getState().document
+              sourceNodeIds = currentDocument.nodes
+                .filter((node) => node.type === 'asset' && !existingNodeIds.has(node.id))
+                .map((node) => node.id)
+            }
+            if (!sourceNodeIds.length) return
+            const sessionId = currentDocument.activeAgentSessionId ?? ensureAgentSession(sourceNodeIds)
+            const currentSession = useCanvasStore.getState().document.agentSessions.find((item) => item.id === sessionId)
+            setAgentSessionContext(sessionId, [...(currentSession?.contextNodeIds ?? []), ...sourceNodeIds])
+            const resultNodeId = sourceNodeIds.find((nodeId) => currentDocument.nodes.some((node) => node.id === nodeId && node.type === 'result'))
+            setAgentTargetResultId(resultNodeId ?? null)
+            selectNode(sourceNodeIds[0])
+            setAgentFocusRequest({ nodeIds: sourceNodeIds, requestId: Date.now() })
+          }}
+          onLoadMoreArtifacts={loadMoreAgentArtifacts}
           onUseResultContext={(sourceNodeIds) => {
             const currentDocument = useCanvasStore.getState().document
             const sessionId = currentDocument.activeAgentSessionId ?? ensureAgentSession(sourceNodeIds)
@@ -4555,6 +4690,8 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
             setAgentTargetResultId(resultNodeId ?? null)
             if (resultNodeId) selectNode(resultNodeId)
           }}
+          onRetryPersistence={retryAgentCanvasPersistence}
+          onRefreshRemote={refreshAgentCanvasFromRemote}
           onClose={() => {
             setAgentOpen(false)
             requestAnimationFrame(() => agentLauncherRef.current?.focus())
@@ -4704,7 +4841,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
           assets={assetLibraryAssets}
           models={availableModels}
           maximumCandidates={maximumBatchCount}
-          busy={generationStatus === 'uploading' || generationStatus === 'queued' || generationStatus === 'running'}
+          busy={generationStatus === 'uploading' || generationStatus === 'queued' || generationStatus === 'running' || generationStatus === 'recovering'}
           onOpenAssets={() => {
             setBatchComposerTargetId(null)
             setAssetsOpen(true)
@@ -4884,7 +5021,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
             node={{ id: selectedGenerate.id, data: selectedGenerate.data as GenerateNodeData }}
             references={canvasAssetReferences}
             connectedNodeIds={selectedGenerateReferenceNodeIds}
-            disabled={generationStatus === 'uploading' || generationStatus === 'queued' || generationStatus === 'running'}
+            disabled={generationStatus === 'uploading' || generationStatus === 'queued' || generationStatus === 'running' || generationStatus === 'recovering'}
             onToggle={(assetNodeId, enabled) => toggleNodeReference(selectedGenerate.id, assetNodeId, enabled)}
             onSetPrimary={(assetNodeId) => setGenerateNodePrimaryInput(selectedGenerate.id, assetNodeId)}
             onClose={() => setNodeReferencesOpen(false)}
@@ -5123,6 +5260,56 @@ function batchVariationDefaultPrompt(role: AssetGroup['role']) {
   if (role === '调性') return '保持父图中的人物、服装、商品与构图一致，分别参考素材组中的视觉风格调整色彩、光线与质感。'
   if (role === '模特') return '保持父图中的服装、商品、场景与整体构图，分别替换为素材组中的模特，并自然适配姿势与光线。'
   return '保持父图中的人物、场景与视觉风格，分别替换为素材组中的商品或服装，并保持商品结构、图案与标识清晰。'
+}
+
+function BatchVariationProgress({
+  run,
+  onRetry,
+}: {
+  run: BatchVariationRun
+  onRetry: (runId: string, itemId: string) => void
+}) {
+  const completedCount = run.items.filter((item) => item.status === 'succeeded').length
+  const settledCount = run.items.filter((item) => item.status === 'succeeded' || item.status === 'failed' || item.status === 'cancelled').length
+  const progress = run.items.length ? Math.round((settledCount / run.items.length) * 100) : 0
+  const statusLabel = run.status === 'queued'
+    ? '排队中'
+    : run.status === 'running'
+      ? '处理中'
+      : run.status === 'partial'
+        ? '部分完成'
+        : run.status === 'failed'
+          ? '未完成'
+          : run.status === 'cancelled'
+            ? '已取消'
+            : '已完成'
+  const itemStatusLabel = (status: BatchVariationRun['items'][number]['status']) => status === 'queued'
+    ? '排队中'
+    : status === 'running'
+      ? '生成中'
+      : status === 'succeeded'
+        ? '已完成'
+        : status === 'cancelled'
+          ? '已取消'
+          : '失败'
+
+  return createPortal(
+    <aside className="batch-variation-progress" role="status" aria-live="polite" aria-label="批量变体进度">
+      <header>
+        <span><strong>批量变体</strong><small>{run.groupName} · {completedCount}/{run.items.length} 张完成</small></span>
+        <b>{statusLabel}</b>
+      </header>
+      <div className="batch-variation-progress__track" aria-hidden="true"><i style={{ width: `${progress}%` }} /></div>
+      <ul>
+        {run.items.map((item) => <li key={item.id} className={`is-${item.status}`}>
+          <span className="batch-variation-progress__marker" aria-hidden="true">{item.status === 'succeeded' ? '✓' : item.status === 'failed' ? '!' : item.status === 'cancelled' ? '–' : ''}</span>
+          <span className="batch-variation-progress__copy"><strong>{item.assetName}</strong><small>{item.error ?? itemStatusLabel(item.status)}</small></span>
+          {item.status === 'failed' ? <button type="button" onClick={() => onRetry(run.id, item.id)}>重试</button> : null}
+        </li>)}
+      </ul>
+    </aside>,
+    document.body,
+  )
 }
 
 function BatchVariationComposer({
@@ -6475,7 +6662,7 @@ function GenerationPanel({
   onRetry,
   onClose,
 }: {
-  status: 'idle' | 'uploading' | 'queued' | 'running' | 'error'
+  status: 'idle' | 'uploading' | 'queued' | 'running' | 'recovering' | 'error'
   pendingCount: number
   error: string | null
   kind?: GenerationCandidate['kind']
@@ -6485,8 +6672,10 @@ function GenerationPanel({
   onRetry: () => void
   onClose: () => void
 }) {
-  const isInFlight = status === 'uploading' || status === 'queued' || status === 'running'
-  const statusMessage = status === 'uploading'
+  const isInFlight = status === 'uploading' || status === 'queued' || status === 'running' || status === 'recovering'
+  const statusMessage = status === 'recovering'
+    ? '正在确认任务，请勿重复提交'
+    : status === 'uploading'
     ? '正在上传画布参考素材'
     : status === 'queued'
       ? '生成服务已接收任务，正在排队'
@@ -6814,7 +7003,7 @@ type NodeComposerProps = {
   maximumBatchCount: number
   settings: GenerationSettings
   models: GenerationModelOption[]
-  status: 'idle' | 'uploading' | 'queued' | 'running' | 'error'
+  status: 'idle' | 'uploading' | 'queued' | 'running' | 'recovering' | 'error'
   service: GenerationServiceState
   hint: string
   canRetry: boolean
@@ -6858,7 +7047,7 @@ const refinementShortcuts: Array<{ label: string; prompt: string; aspectRatio?: 
 ]
 
 function NodeComposer({ prompt, batchCount, maximumBatchCount, settings, models, status, service, hint, canRetry, references, referenceCount, primaryReferenceName, context, onOpenReferences, onOpenAssets, onRefreshService, target, placement = 'canvas', onPromptChange, onBatchCountChange, onSettingsChange, onCancel, onRetry, onGenerate, onDismiss, layout, onLayoutChange }: NodeComposerProps) {
-  const isGenerating = status === 'uploading' || status === 'queued' || status === 'running'
+  const isGenerating = status === 'uploading' || status === 'queued' || status === 'running' || status === 'recovering'
   const isServiceReady = service.status === 'ready'
   const isResultAnchor = placement === 'result-anchor'
   const isNodeBound = context?.kind === 'generate'
@@ -7006,9 +7195,9 @@ function NodeComposer({ prompt, batchCount, maximumBatchCount, settings, models,
       </div>
       <div className={status === 'error' ? 'node-composer__feedback is-error' : 'node-composer__feedback'} role={status === 'error' ? 'alert' : 'status'}>
         <span>{isGenerating
-          ? (status === 'uploading' ? '正在上传参考素材…' : status === 'queued' ? '真实任务已入队…' : `${selectedModel?.mediaKind === 'video' ? '视频' : '图像'}服务正在生成…`)
+          ? (status === 'recovering' ? '正在确认任务，请勿重复提交…' : status === 'uploading' ? '正在上传参考素材…' : status === 'queued' ? '真实任务已入队…' : `${selectedModel?.mediaKind === 'video' ? '视频' : '图像'}服务正在生成…`)
           : !isServiceReady ? service.message : hint}</span>
-        {isGenerating ? <button onClick={onCancel}>取消</button> : null}
+        {isGenerating && status !== 'recovering' ? <button onClick={onCancel}>取消</button> : null}
         {!isGenerating && !isServiceReady ? <button onClick={onRefreshService} disabled={service.status === 'checking'}>{service.status === 'checking' ? '检查中' : '重新检查'}</button> : null}
         {isServiceReady && status === 'error' && canRetry ? <button onClick={onRetry}>重试</button> : null}
         {!target && !hasProductReference && !isGenerating ? <button onClick={references.length ? onOpenReferences : onOpenAssets}>{references.length ? '锁定主商品' : '添加商品'}</button> : null}
@@ -7032,6 +7221,13 @@ type AgentDockTarget = {
   label: string
   image: string
   rootRecipe: GenerationRecipe
+}
+
+type AgentArtifactIndexState = {
+  projectId: string
+  artifacts: BotanicIndexedArtifact[]
+  nextBefore?: number
+  status: 'idle' | 'loading' | 'loading-more' | 'ready' | 'error'
 }
 
 type AgentContextItem = {
@@ -7101,6 +7297,12 @@ function agentArtifactKindLabel(artifact: BotanicAgentArtifact) {
   return '文本'
 }
 
+function agentRunOutputCount(run: BotanicAgentRun, artifacts: BotanicAgentArtifact[]) {
+  const persistedCount = artifacts.filter((artifact) => artifact.provenance.runId === run.id).length
+  const branchCount = run.branches.reduce((total, branch) => total + branch.outputCount, 0)
+  return Math.max(persistedCount, branchCount)
+}
+
 function AgentClarificationCard({
   clarification,
   generationModels,
@@ -7128,6 +7330,10 @@ function AgentClarificationCard({
     return { ...field, options }
   })
   const complete = fields.every((field) => !field.required || Boolean(answers[field.id]) && field.options.some((option) => option.value === answers[field.id]))
+  const selectionSummary = fields
+    .map((field) => field.options.find((option) => option.value === answers[field.id])?.label)
+    .filter(Boolean)
+    .join(' · ')
   const selectOption = (fieldId: BotanicAgentClarificationField['id'], value: string) => {
     setAnswers((current: Record<string, string>) => {
       const next: Record<string, string> = { ...current, [fieldId]: value }
@@ -7160,7 +7366,8 @@ function AgentClarificationCard({
           </div>
         </fieldset>)}
       </div>
-      <button type="button" className="agent-clarification-card__submit" disabled={disabled || !complete} onClick={() => onSubmit(answers)}>{disabled ? '正在整理…' : '用这些设置继续'}</button>
+      {selectionSummary ? <div className="agent-clarification-card__selection" aria-live="polite"><span>当前选择</span><b>{selectionSummary}</b></div> : null}
+      <button type="button" className="agent-clarification-card__submit" disabled={disabled || !complete} onClick={() => onSubmit(answers)}>{disabled ? '正在整理…' : '确认设置，继续规划'}</button>
     </section>
   )
 }
@@ -7287,6 +7494,8 @@ function AgentWorkspace({
   contextOptions,
   memory,
   artifacts,
+  artifactIndexStatus,
+  artifactIndexHasMore,
   latestRun,
   runs,
   plannerModels,
@@ -7309,10 +7518,16 @@ function AgentWorkspace({
   onLocateNode,
   onFocusNodes,
   onSaveArtifact,
+  onContinueArtifact,
+  onLoadMoreArtifacts,
   onUseResultContext,
+  onRetryPersistence,
+  onRefreshRemote,
+  persistenceStatus,
   onClose,
 }: {
   projectId: string
+  persistenceStatus: 'saved' | 'saving' | 'offline' | 'conflict' | 'error'
   target?: AgentDockTarget
   groups: AssetGroup[]
   sessions: BotanicAgentSession[]
@@ -7320,16 +7535,18 @@ function AgentWorkspace({
   contextOptions: AgentContextItem[]
   memory: BotanicAgentMemoryItem[]
   artifacts: BotanicAgentArtifact[]
+  artifactIndexStatus: AgentArtifactIndexState['status']
+  artifactIndexHasMore: boolean
   latestRun?: BotanicAgentRun
   runs: BotanicAgentRun[]
   plannerModels: string[]
   generationModels: GenerationModelOption[]
-  onConfirm: (plan: BotanicAgentPlan) => Promise<{ started: boolean; runId: string }>
+  onConfirm: (plan: BotanicAgentPlan, submissionKey?: string) => Promise<{ started: boolean; runId: string }>
   onConfirmAction: (action: BotanicAgentActionProposal) => Promise<BotanicAgentActionResult>
   onCreateDraft: (instruction: string, contextNodeIds: string[], autoExecute: boolean, generationOverrides?: Partial<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution'>>) => Promise<{ created: boolean; started: boolean; needsReference: boolean }>
   onUploadImages: (uploads: UploadedAssetInput[]) => void
   onAppendMessage: (sessionId: string, message: BotanicAgentMessage) => void
-  onUpdateMessage: (sessionId: string, messageId: string, patch: Partial<Pick<BotanicAgentMessage, 'content' | 'runId' | 'status' | 'feedback' | 'plan' | 'question'>>) => void
+  onUpdateMessage: (sessionId: string, messageId: string, patch: Partial<Pick<BotanicAgentMessage, 'content' | 'runId' | 'status' | 'feedback' | 'plan' | 'question' | 'deliveryStatus'>>) => void
   onUpdateAction: (sessionId: string, messageId: string, actionId: string, patch: Partial<Pick<BotanicAgentActionProposal, 'status' | 'error' | 'result'>>) => void
   onContextChange: (sessionId: string, contextNodeIds: string[]) => void
   onExecutionModeChange: (sessionId: string, mode: BotanicAgentExecutionMode) => void
@@ -7342,7 +7559,11 @@ function AgentWorkspace({
   onLocateNode: (nodeId: string) => void
   onFocusNodes: (nodeIds: string[]) => void
   onSaveArtifact: (artifact: BotanicAgentArtifact) => void
+  onContinueArtifact: (artifact: BotanicAgentArtifact) => void
+  onLoadMoreArtifacts: () => Promise<void>
   onUseResultContext: (sourceNodeIds: string[]) => void
+  onRetryPersistence: () => Promise<boolean>
+  onRefreshRemote: () => Promise<boolean>
   onClose: () => void
 }) {
   const [intent, setIntent] = useState<BotanicAgentIntent>('replace_scene')
@@ -7350,8 +7571,11 @@ function AgentWorkspace({
   const [groupId, setGroupId] = useState('')
   const [plannerModel, setPlannerModel] = useState(plannerModels[0] ?? defaultAgentPlannerModels[0])
   const [error, setError] = useState('')
+  const [lastFailedInstruction, setLastFailedInstruction] = useState('')
+  const [lastFailedPlanMessageId, setLastFailedPlanMessageId] = useState('')
   const [planning, setPlanning] = useState(false)
   const [runtimeSteps, setRuntimeSteps] = useState<BotanicAgentRuntimeStep[]>([])
+  const [runtimePhase, setRuntimePhase] = useState<BotanicAgentRuntimePhase>('idle')
   const [runtimeDetailsOpen, setRuntimeDetailsOpen] = useState(false)
   const [submittingMessageId, setSubmittingMessageId] = useState('')
   const [executingActionId, setExecutingActionId] = useState('')
@@ -7377,12 +7601,20 @@ function AgentWorkspace({
   const [skillConfirming, setSkillConfirming] = useState(false)
   const [skillSaving, setSkillSaving] = useState(false)
   const [skillError, setSkillError] = useState('')
+  const [persistenceAction, setPersistenceAction] = useState<'retry' | 'refresh' | ''>('')
   const [promptDrafts, setPromptDrafts] = useState<Record<string, string>>({})
   const [recoveryModelMenuKey, setRecoveryModelMenuKey] = useState('')
   const [pendingGenerationOverrides, setPendingGenerationOverrides] = useState<Partial<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution'>>>({})
+  const agentMessageQueue = useMemo(() => createAgentMessageQueue({
+    storage: createLocalStorageAgentMessageQueueStorage(projectId),
+    deliver: async (item) => { await submitPersistentBotanicAgentMessage(item) },
+  }), [projectId])
   const plannerControllerRef = useRef<AbortController | null>(null)
   const sendingInstructionRef = useRef(false)
-  const reportedRunIdsRef = useRef(new Set<string>())
+  const submittingMessageIdRef = useRef('')
+  // 终态同时记住产出数：服务端可能先标记完成、随后才持久化 Artifact，
+  // 这样结果回填后会更新同一条消息，而不会重复刷屏。
+  const runNoticeStatusRef = useRef(new Map<string, string>())
   const focusedRunIdsRef = useRef(new Set<string>())
   const messageEndRef = useRef<HTMLDivElement | null>(null)
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null)
@@ -7440,14 +7672,23 @@ function AgentWorkspace({
     const resultNodeIds = new Set(contextOptions.filter((item) => item.kind === '结果').map((item) => item.id))
     return selectedArtifactBatch.sourceNodeIds.filter((nodeId) => resultNodeIds.has(nodeId))
   }, [contextOptions, selectedArtifactBatch.sourceNodeIds])
+  const availableContextNodeIds = useMemo(() => new Set(contextOptions.map((item) => item.id)), [contextOptions])
   const mentionOptions = useMemo(() => {
     if (!mentionQuery) return []
     const query = mentionQuery.query.trim().toLocaleLowerCase()
     return contextOptions.filter((item) => !query || `${item.label} ${item.kind}`.toLocaleLowerCase().includes(query)).slice(0, 6)
   }, [contextOptions, mentionQuery])
   const utilityPanelOpen = taskPanelOpen || skillPanelOpen || resultPanelOpen || memoryPanelOpen
-  const runtimeFailed = runtimeSteps.some((step) => step.status === 'failed')
-  const runtimeComplete = Boolean(runtimeSteps.length) && runtimeSteps.every((step) => step.status === 'succeeded')
+  const runtimeSummary = useMemo(
+    () => summarizeBotanicAgentRuntime({ steps: runtimeSteps, phase: runtimePhase }),
+    [runtimePhase, runtimeSteps],
+  )
+  const runtimeFailed = runtimePhase === 'failed' || runtimeSteps.some((step) => step.status === 'failed')
+  const runtimeComplete = runtimePhase === 'completed'
+  const latestRunOutputCount = latestRun ? agentRunOutputCount(latestRun, artifacts) : 0
+  const latestRunFeedback = latestRun ? botanicAgentRunFeedback(latestRun.status, latestRunOutputCount, latestRun.error) : undefined
+  // 提交任务后以 Run 卡作为唯一任务状态来源；规划/追问阶段仍显示 Runtime 摘要。
+  const showRuntimeFeed = runtimeSteps.length > 0 && (!latestRun?.branches.length || !['executing', 'completed', 'failed'].includes(runtimePhase))
 
   const importImageFiles = async (files: File[]) => {
     const { accepted, message } = validateUploadFiles(files)
@@ -7555,6 +7796,8 @@ function AgentWorkspace({
 
   useEffect(() => {
     setError('')
+    setLastFailedInstruction('')
+    setLastFailedPlanMessageId('')
     setGroupId('')
     setInstruction('')
     setContextMenuOpen(false)
@@ -7572,9 +7815,34 @@ function AgentWorkspace({
     setRecoveryModelMenuKey('')
     setPendingGenerationOverrides({})
     setRuntimeSteps([])
+    setRuntimePhase('idle')
     setRuntimeDetailsOpen(false)
+    runNoticeStatusRef.current.clear()
+    focusedRunIdsRef.current.clear()
+    submittingMessageIdRef.current = ''
     plannerControllerRef.current?.abort()
   }, [session?.id])
+
+  useEffect(() => {
+    if (!session || !latestRun || planning) return
+    // 旧的已完成 Run 不能覆盖当前尚未确认的新计划或追问卡。
+    if (runtimePhase === 'waiting_clarification' || runtimePhase === 'waiting_confirmation') return
+    const active = latestRun.status === 'queued' || latestRun.status === 'running' || latestRun.status === 'executing'
+    const failed = latestRun.status === 'failed' || latestRun.status === 'cancelled'
+    setRuntimePhase(active ? 'executing' : failed ? 'failed' : 'completed')
+    if (runtimeSteps.length) return
+    // Agent Run 是服务端权威状态；刷新、切换项目或重新登录后，
+    // 只恢复可验证的阶段，不重放也不猜测模型内部过程。
+    setRuntimeSteps(restoreBotanicAgentRuntimeSteps({
+      run: latestRun,
+      hasTarget: Boolean(target),
+      referenceCount: target?.rootRecipe.references.length ?? contextItems.length,
+      memoryCount: memory.length,
+      assetGroupCount: compatibleGroups.length,
+      plannerLabel: agentPlannerModelLabel(plannerModel),
+    }))
+    setRuntimeDetailsOpen(false)
+  }, [compatibleGroups.length, contextItems.length, latestRun?.id, latestRun?.status, latestRun?.updatedAt, memory.length, plannerModel, planning, runtimeSteps.length, session, target])
 
   useEffect(() => {
     setSelectedArtifactIds((current) => current.filter((id) => artifacts.some((artifact) => artifact.id === id)))
@@ -7607,10 +7875,62 @@ function AgentWorkspace({
     if (!plannerModels.includes(plannerModel)) setPlannerModel(plannerModels[0] ?? defaultAgentPlannerModels[0])
   }, [plannerModel, plannerModels])
 
+  const flushQueuedAgentMessages = useCallback(async () => {
+    const queued = new Map(agentMessageQueue.list().map((item) => [item.message.id, item.session.id]))
+    const result = await agentMessageQueue.flush()
+    for (const messageId of result.delivered) {
+      const sessionId = queued.get(messageId)
+      if (sessionId) onUpdateMessage(sessionId, messageId, { deliveryStatus: 'synced' })
+    }
+    for (const messageId of result.failed) {
+      const sessionId = queued.get(messageId)
+      if (sessionId) onUpdateMessage(sessionId, messageId, { deliveryStatus: 'failed' })
+    }
+  }, [agentMessageQueue, onUpdateMessage])
+
+  useEffect(() => {
+    if (!serverPersistenceEnabled) return
+    return agentMessageQueue.subscribe((items) => {
+    for (const item of items) {
+      onUpdateMessage(item.session.id, item.message.id, {
+        deliveryStatus: item.status === 'failed' ? 'failed' : 'queued',
+      })
+    }
+    })
+  }, [agentMessageQueue, onUpdateMessage])
+
+  useEffect(() => {
+    if (!serverPersistenceEnabled) return
+    const replay = () => { void flushQueuedAgentMessages() }
+    if (navigator.onLine) replay()
+    window.addEventListener('online', replay)
+    window.addEventListener('focus', replay)
+    return () => {
+      window.removeEventListener('online', replay)
+      window.removeEventListener('focus', replay)
+    }
+  }, [flushQueuedAgentMessages])
+
   const appendMessage = (message: Omit<BotanicAgentMessage, 'id' | 'createdAt'>) => {
     if (!session) return ''
     const messageId = `agent-message-${crypto.randomUUID()}`
-    onAppendMessage(session.id, { ...message, id: messageId, createdAt: Date.now() })
+    const createdAt = Date.now()
+    const queuedMessage: BotanicAgentMessage = {
+      ...message,
+      id: messageId,
+      createdAt,
+      deliveryStatus: serverPersistenceEnabled ? 'queued' : 'synced',
+    }
+    const queuedSession = appendBotanicAgentMessage(session, queuedMessage)
+    onAppendMessage(session.id, queuedMessage)
+    if (!serverPersistenceEnabled) return messageId
+    agentMessageQueue.enqueue({
+      projectId,
+      session: queuedSession,
+      message: queuedMessage,
+      idempotencyKey: `agent-message-${messageId}`,
+    })
+    if (navigator.onLine) void flushQueuedAgentMessages()
     return messageId
   }
 
@@ -7624,24 +7944,42 @@ function AgentWorkspace({
     setHistoryOpen(false)
   }
 
+  const openUtilityPanel = (panel: 'result' | 'task' | 'memory' | 'skill') => {
+    setResultPanelOpen(panel === 'result')
+    setTaskPanelOpen(panel === 'task')
+    setMemoryPanelOpen(panel === 'memory')
+    setSkillPanelOpen(panel === 'skill')
+    setUtilityMenuOpen(false)
+    setHistoryOpen(false)
+  }
+
+  const openRunFeedback = (run: BotanicAgentRun) => {
+    const feedback = botanicAgentRunFeedback(run.status, agentRunOutputCount(run, artifacts), run.error)
+    openUtilityPanel(feedback.action === 'view_results' ? 'result' : 'task')
+  }
+
   useEffect(() => {
     if (!session) return
-    for (const message of session.messages) {
-      if (message.kind === 'run' && message.runId) reportedRunIdsRef.current.add(message.runId)
-    }
-    const linkedRunIds = new Set(session.messages.flatMap((message) => message.runId ? [message.runId] : []))
     for (const run of runs) {
-      if (!linkedRunIds.has(run.id) || reportedRunIdsRef.current.has(run.id)) continue
-      if (run.status !== 'completed' && run.status !== 'partial' && run.status !== 'failed' && run.status !== 'cancelled') continue
-      const outputCount = artifacts.filter((artifact) => artifact.provenance.runId === run.id).length
-      if (!reportedRunIdsRef.current.has(run.id)) {
-        reportedRunIdsRef.current.add(run.id)
-        const content = run.status === 'completed'
-          ? `任务已完成，生成 ${outputCount} 项结果。可在「结果」中批量查看、下载或入库。`
-          : run.status === 'partial'
-            ? `任务部分完成，已产出 ${outputCount} 项结果；失败分支可在「任务」中单独重试。`
-            : `任务未完成。请在「任务」中查看失败原因，可重试分支或修改参数、模型后再提交。`
-        appendMessage({ role: 'assistant', kind: 'run', runId: run.id, content })
+      const outputCount = agentRunOutputCount(run, artifacts)
+      // 终态消息优先取已有的 run 卡；计划消息只负责承载提交前的确认状态。
+      const linkedMessage = session.messages.find((message) => message.runId === run.id && message.kind === 'run')
+        ?? session.messages.find((message) => message.runId === run.id)
+      const feedback = botanicAgentRunFeedback(run.status, outputCount, run.error)
+      const noticeKey = feedback.terminal ? `${run.status}:${outputCount}` : run.status
+      const previousNoticeKey = runNoticeStatusRef.current.get(run.id)
+      const content = feedback.detail
+
+      if (!linkedMessage && previousNoticeKey === undefined) {
+        appendMessage({ role: 'assistant', kind: feedback.terminal ? 'run' : 'notice', runId: run.id, content })
+        runNoticeStatusRef.current.set(run.id, noticeKey)
+      } else if (linkedMessage && feedback.terminal && previousNoticeKey !== undefined && previousNoticeKey !== noticeKey) {
+        if (linkedMessage.kind === 'run') onUpdateMessage(session.id, linkedMessage.id, { content })
+        else appendMessage({ role: 'assistant', kind: 'run', runId: run.id, content })
+        runNoticeStatusRef.current.set(run.id, noticeKey)
+      } else if (previousNoticeKey === undefined) {
+        // 已有提交提示的历史会话：记住当前状态，后续只在状态变化时追加结果。
+        runNoticeStatusRef.current.set(run.id, noticeKey)
       }
       const outputNodeIds = artifacts
         .filter((artifact) => artifact.provenance.runId === run.id)
@@ -7651,7 +7989,7 @@ function AgentWorkspace({
         onFocusNodes(outputNodeIds)
       }
     }
-  }, [artifacts, onFocusNodes, runs, session])
+  }, [artifacts, onFocusNodes, onUpdateMessage, runs, session])
 
   const confirmSkillCreation = async () => {
     if (!skillName.trim() || !skillInstructions.trim() || skillSaving) return
@@ -7707,6 +8045,7 @@ function AgentWorkspace({
     const firstStep = steps[0]
     const started = firstStep ? updateBotanicAgentRuntimeStep(steps, firstStep.id, 'running') : steps
     setRuntimeSteps(started)
+    setRuntimePhase('reading')
     setRuntimeDetailsOpen(false)
     return started
   }
@@ -7755,10 +8094,12 @@ function AgentWorkspace({
     updateRuntimeStep(finalStepId, 'running')
     await yieldRuntimeFrame()
     updateRuntimeStep(finalStepId, 'succeeded')
+    setRuntimePhase('completed')
     setRuntimeDetailsOpen(false)
   }
 
   const failRuntimeTrace = (message: string) => {
+    setRuntimePhase('failed')
     setRuntimeSteps((steps) => {
       const active = steps.find((step) => step.status === 'running')
       return active
@@ -7788,12 +8129,14 @@ function AgentWorkspace({
       availableGenerationModels: generationModels,
       generationOverrides,
       clarificationAnswers,
+      contextSnapshot: createBotanicAgentContextSnapshot(contextItems),
     }
     plannerControllerRef.current?.abort()
     const controller = new AbortController()
     plannerControllerRef.current = controller
     setPlanning(true)
     setError('')
+    setRuntimePhase('planning')
     updateRuntimeStep('call-planner', 'running')
     try {
       const nextPlan = await requestBotanicAgentPlan(input, controller.signal)
@@ -7815,16 +8158,23 @@ function AgentWorkspace({
             selectedResultLabel: target.label,
             rootRecipe: target.rootRecipe,
             assetGroup,
+            contextSnapshot: createBotanicAgentContextSnapshot(contextItems),
           }), plannerModel, settings: { ...target.rootRecipe.settings, ...generationOverrides } }
           attachPlannerToolTrace(fallbackPlan)
           updateRuntimeStep('call-planner', 'succeeded')
           await completeRuntimeTrace(true)
           return fallbackPlan
         } catch (fallbackError) {
-          setError(fallbackError instanceof Error ? fallbackError.message : '暂时无法生成计划。')
+          const message = fallbackError instanceof Error ? fallbackError.message : '暂时无法生成计划。'
+          setError(message)
+          setLastFailedPlanMessageId('')
+          setLastFailedInstruction(cleanInstruction)
         }
       } else {
-        setError(planError instanceof Error ? planError.message : '暂时无法生成计划。')
+        const message = planError instanceof Error ? planError.message : '暂时无法生成计划。'
+        setError(message)
+        setLastFailedPlanMessageId('')
+        setLastFailedInstruction(cleanInstruction)
       }
       failRuntimeTrace(planError instanceof Error ? planError.message : '暂时无法生成计划。')
     } finally {
@@ -7835,18 +8185,23 @@ function AgentWorkspace({
   }
 
   const confirmMessagePlan = async (message: BotanicAgentMessage) => {
-    if (!session || !message.plan || message.status === 'submitted') return
+    if (!session || !message.plan || message.status === 'submitted' || submittingMessageId === message.id || submittingMessageIdRef.current === message.id) return
     if (message.plan.actions?.some((action) => action.status === 'awaiting_confirmation' || action.status === 'running')) {
       setError('请先确认或跳过行动卡，再执行生成计划。')
       return
     }
+    submittingMessageIdRef.current = message.id
     setSubmittingMessageId(message.id)
+    setRuntimePhase('executing')
     setError('')
     const editedPrompt = promptDrafts[message.id]?.trim()
     const plan = editedPrompt ? { ...message.plan, prompt: editedPrompt } : message.plan
     if (editedPrompt && editedPrompt !== message.plan.prompt) onUpdateMessage(session.id, message.id, { plan })
     try {
-      const submission = await onConfirm(plan)
+      const submission = await onConfirm(plan, botanicAgentSubmissionKey(message.id, plan))
+      setLastFailedPlanMessageId('')
+      setLastFailedInstruction('')
+      if (!submission.started) setRuntimePhase('failed')
       onUpdateMessage(session.id, message.id, { status: submission.started ? 'submitted' : 'failed', runId: submission.runId })
       appendMessage({
         role: 'assistant', kind: submission.started ? 'notice' : 'text', runId: submission.runId,
@@ -7854,8 +8209,13 @@ function AgentWorkspace({
       })
     } catch (caught) {
       onUpdateMessage(session.id, message.id, { status: 'failed' })
+      setRuntimePhase('failed')
       setError(caught instanceof Error ? caught.message : '任务未能启动，请稍后重试。')
+      // 请求可能已被服务端接受，但响应在网络中断时丢失；重试原计划时必须复用同一幂等键。
+      setLastFailedInstruction('')
+      setLastFailedPlanMessageId(message.id)
     } finally {
+      submittingMessageIdRef.current = ''
       setSubmittingMessageId('')
     }
   }
@@ -7863,11 +8223,14 @@ function AgentWorkspace({
   const confirmAction = async (message: BotanicAgentMessage, action: BotanicAgentActionProposal) => {
     if (!session || executingActionId || action.status === 'running' || action.status === 'succeeded') return
     setExecutingActionId(action.id)
+    setRuntimePhase('executing')
     setError('')
+    setLastFailedPlanMessageId('')
     onUpdateAction(session.id, message.id, action.id, { status: 'running', error: undefined })
     try {
       const result = await onConfirmAction(action)
       onUpdateAction(session.id, message.id, action.id, { status: 'succeeded', result, error: undefined })
+      setRuntimePhase('completed')
       appendMessage({
         role: 'assistant', kind: 'notice',
         content: `${result.message}${result.canvasNodeId ? ' 已写入画布。' : ''}`,
@@ -7875,6 +8238,7 @@ function AgentWorkspace({
     } catch (caught) {
       const actionError = caught instanceof Error ? caught.message : '行动执行失败，请重试。'
       onUpdateAction(session.id, message.id, action.id, { status: 'failed', error: actionError })
+      setRuntimePhase('failed')
       setError(actionError)
     } finally {
       setExecutingActionId('')
@@ -7886,7 +8250,13 @@ function AgentWorkspace({
     mode: 'settings' | 'model',
     model?: GenerationModelOption,
   ) => {
-    if (run.plan.selectedResultNodeId) onUseResultContext([run.plan.selectedResultNodeId])
+    const availableNodeIds = contextOptions.map((item) => item.id)
+    const lockedContextIds = botanicAgentContextSnapshotNodeIds(run.plan.contextSnapshot, availableNodeIds)
+    const recoveryContextIds = [...new Set([
+      ...(run.plan.selectedResultNodeId ? [run.plan.selectedResultNodeId] : []),
+      ...lockedContextIds,
+    ])]
+    if (recoveryContextIds.length) onUseResultContext(recoveryContextIds)
     setIntent(run.plan.intent)
     setGroupId('')
     setRecoveryModelMenuKey('')
@@ -7905,6 +8275,7 @@ function AgentWorkspace({
     setSkillPanelOpen(false)
     setMemoryPanelOpen(false)
     setError('')
+    setLastFailedPlanMessageId('')
     requestAnimationFrame(() => composerTextareaRef.current?.focus())
   }
 
@@ -7919,6 +8290,8 @@ function AgentWorkspace({
     if (!session || planning) return
     if (options.appendUser) appendMessage({ role: 'user', kind: 'text', content: options.appendUser })
     setError('')
+    setLastFailedInstruction('')
+    setLastFailedPlanMessageId('')
 
     const route = classifyBotanicAgentRequest(cleanInstruction, Boolean(target))
     if (route !== 'generation') {
@@ -7934,6 +8307,7 @@ function AgentWorkspace({
         mode: route,
       })
       await completeRuntimeContextReads(runtimeTrace)
+      setRuntimePhase('planning')
       updateRuntimeStep('call-planner', 'running')
       const chatMessages = [
         ...session.messages.map((message) => ({ role: message.role, content: message.content })),
@@ -7952,6 +8326,7 @@ function AgentWorkspace({
         updateRuntimeStep('respond', 'running')
         await yieldRuntimeFrame()
         updateRuntimeStep('respond', 'succeeded')
+        setRuntimePhase('completed')
         setRuntimeDetailsOpen(false)
         const sourceNote = route === 'research'
           ? `\n\n来源：${response.sources?.length ? response.sources.join('、') : '当前没有命中项目受控检索来源。'}`
@@ -7959,8 +8334,11 @@ function AgentWorkspace({
         appendMessage({ role: 'assistant', kind: 'text', content: `${response.answer}${sourceNote}` })
       } catch (caught) {
         if (controller.signal.aborted) return
-        failRuntimeTrace(caught instanceof Error ? caught.message : 'Agent 暂时无法回答。')
-        setError(caught instanceof Error ? caught.message : 'Agent 暂时无法回答，请稍后重试。')
+        const message = caught instanceof Error ? caught.message : 'Agent 暂时无法回答，请稍后重试。'
+        failRuntimeTrace(message)
+        setError(message)
+        setLastFailedPlanMessageId('')
+        setLastFailedInstruction(cleanInstruction)
       } finally {
         if (plannerControllerRef.current === controller) plannerControllerRef.current = null
         setPlanning(false)
@@ -7975,6 +8353,7 @@ function AgentWorkspace({
       assetGroupCount: compatibleGroups.length,
     })
     await completeRuntimeContextReads(runtimeTrace)
+    setRuntimePhase('planning')
     updateRuntimeStep('call-planner', 'running')
     if (!target) {
       const instructionMentionsSettings = /(?:1\s*:\s*1|16\s*:\s*9|4\s*:\s*3|3\s*:\s*4|4\s*:\s*5|9\s*:\s*16|\b1k\b|\b2k\b|分辨率|比例|模型|gpt[- ]?image|minimax|h3)/iu.test(cleanInstruction)
@@ -7983,6 +8362,7 @@ function AgentWorkspace({
         updateRuntimeStep('create-workflow', 'running')
         await yieldRuntimeFrame()
         updateRuntimeStep('create-workflow', 'succeeded')
+        setRuntimePhase('waiting_clarification')
         appendMessage({
           role: 'assistant',
           kind: 'question',
@@ -8010,8 +8390,11 @@ function AgentWorkspace({
         }
         appendMessage({ role: 'assistant', kind: result.created ? 'notice' : 'text', content })
       } catch (caught) {
-        failRuntimeTrace(caught instanceof Error ? caught.message : '暂时无法创建工作流。')
-        setError(caught instanceof Error ? caught.message : '暂时无法创建工作流。')
+        const message = caught instanceof Error ? caught.message : '暂时无法创建工作流。'
+        failRuntimeTrace(message)
+        setError(message)
+        setLastFailedPlanMessageId('')
+        setLastFailedInstruction(cleanInstruction)
       } finally {
         setPlanning(false)
       }
@@ -8020,6 +8403,7 @@ function AgentWorkspace({
     const nextPlan = await preparePlan(cleanInstruction, options.generationOverrides, options.clarificationAnswers)
     if (!nextPlan || !session) return
     if ('kind' in nextPlan && nextPlan.kind === 'clarification') {
+      setRuntimePhase('waiting_clarification')
       appendMessage({
         role: 'assistant', kind: 'question', question: nextPlan.clarification, status: 'pending',
         content: nextPlan.clarification.question,
@@ -8031,12 +8415,39 @@ function AgentWorkspace({
       role: 'assistant', kind: 'plan', plan: resolvedPlan, status: 'pending',
       content: resolvedPlan.summary,
     })
+    if (planMessageId) setRuntimePhase('waiting_confirmation')
     if (session.executionMode === 'auto' && planMessageId && !resolvedPlan.actions?.length) {
       await confirmMessagePlan({
         id: planMessageId, role: 'assistant', kind: 'plan', content: resolvedPlan.summary,
         createdAt: Date.now(), plan: resolvedPlan, status: 'pending',
       })
     }
+  }
+
+  const retryLastInstruction = () => {
+    const retryInstruction = lastFailedInstruction.trim()
+    if (!retryInstruction || planning || sendingInstructionRef.current) return
+    sendingInstructionRef.current = true
+    setError('')
+    setLastFailedInstruction('')
+    setLastFailedPlanMessageId('')
+    setInstruction('')
+    setMentionQuery(undefined)
+    setPendingGenerationOverrides({})
+    void runInstruction(retryInstruction).finally(() => {
+      sendingInstructionRef.current = false
+    })
+  }
+
+  const retryLastFailedPlan = () => {
+    if (!session || !lastFailedPlanMessageId || planning || submittingMessageIdRef.current) return
+    const failedMessage = session.messages.find((message) => message.id === lastFailedPlanMessageId && message.plan)
+    if (!failedMessage) {
+      setLastFailedPlanMessageId('')
+      return
+    }
+    setError('')
+    void confirmMessagePlan(failedMessage)
   }
 
   const sendInstruction = async () => {
@@ -8046,6 +8457,7 @@ function AgentWorkspace({
     sendingInstructionRef.current = true
     setInstruction('')
     setMentionQuery(undefined)
+    setLastFailedPlanMessageId('')
     const generationOverrides = pendingGenerationOverrides
     setPendingGenerationOverrides({})
     try {
@@ -8106,6 +8518,20 @@ function AgentWorkspace({
     requestAnimationFrame(() => composerTextareaRef.current?.focus())
   }
 
+  const continueFromArtifact = (artifact: BotanicAgentArtifact) => {
+    onContinueArtifact(artifact)
+    setInstruction(`基于「${artifact.label}」继续修改：`)
+    setResultPanelOpen(false)
+    requestAnimationFrame(() => composerTextareaRef.current?.focus())
+  }
+
+  const persistenceIssue = persistenceStatus === 'offline' || persistenceStatus === 'conflict' || persistenceStatus === 'error'
+  const persistenceCopy = persistenceStatus === 'conflict'
+    ? { title: '画布有新的云端版本', detail: '本地草稿仍保留，生成任务与结果不会丢失。', action: 'refresh' as const, actionLabel: '使用云端版本' }
+    : persistenceStatus === 'offline'
+      ? { title: '正在使用离线草稿', detail: '恢复网络后会继续同步当前编辑。', action: 'retry' as const, actionLabel: '重试同步' }
+      : { title: '画布同步暂时失败', detail: '当前编辑仍在本地，稍后可以继续同步。', action: 'retry' as const, actionLabel: '重试同步' }
+
   return (
     <aside
       className="agent-workspace nopan nowheel"
@@ -8115,6 +8541,15 @@ function AgentWorkspace({
       onDrop={handleImageDrop}
     >
       {isImageDropActive ? <div className="agent-workspace__drop-hint" aria-hidden="true"><UploadIcon /><strong>松开即可添加图片素材</strong><small>PNG / JPEG / WebP，单张不超过 8MB</small></div> : null}
+      {persistenceIssue ? <div className={`agent-workspace__persistence-banner is-${persistenceStatus}`} role="status">
+        <span className="agent-workspace__persistence-mark" aria-hidden="true">{persistenceStatus === 'conflict' ? '!' : '·'}</span>
+        <span><strong>{persistenceCopy.title}</strong><small>{persistenceCopy.detail}</small></span>
+        <button type="button" disabled={Boolean(persistenceAction)} onClick={() => {
+          setPersistenceAction(persistenceCopy.action)
+          const task = persistenceCopy.action === 'refresh' ? onRefreshRemote() : onRetryPersistence()
+          void task.catch(() => undefined).finally(() => setPersistenceAction(''))
+        }}>{persistenceAction ? '处理中…' : persistenceCopy.actionLabel}</button>
+      </div> : null}
       <header className="agent-workspace__header">
         <div className="agent-workspace__title">
           <button type="button" className="agent-workspace__history-button" onClick={(event) => { historyTriggerRef.current = event.currentTarget; setUtilityMenuOpen(false); setHistoryOpen((open) => !open) }} aria-controls={historyMenuId} aria-expanded={historyOpen} aria-label="对话历史" title="对话历史"><FigmaIcon src={historyIcon} /></button>
@@ -8154,6 +8589,9 @@ function AgentWorkspace({
         {resultPanelOpen ? <section className="agent-result-panel" aria-label="Agent 结果与文件">
           <header><div><small>AGENT OUTPUTS</small><h2>结果与文件</h2></div><span>{artifacts.length} 项</span></header>
           <p>生成图与 Skill / MCP 产物统一按任务分组；画布节点和版本血缘不变。</p>
+          {artifactIndexStatus === 'loading' ? <div className="agent-result-panel__index-status" role="status">正在读取历史 Artifact Index…</div> : null}
+          {artifactIndexStatus === 'error' ? <div className="agent-result-panel__index-status is-warning" role="status">历史索引暂不可用，已显示当前画布结果。</div> : null}
+          {latestRunFeedback ? <div className={`agent-result-panel__run-status is-${latestRunFeedback.tone}`} role="status"><strong>{latestRunFeedback.label}</strong><span>{latestRunFeedback.detail}</span></div> : null}
           <div className="agent-result-panel__filters" role="group" aria-label="结果类型">
             {([['all', '全部'], ['image', '图片'], ['video', '视频'], ['file', '文件']] as const).map(([value, label]) => <button key={value} type="button" aria-pressed={resultFilter === value} className={resultFilter === value ? 'is-active' : ''} onClick={() => setResultFilter(value)}>{label}</button>)}
           </div>
@@ -8178,20 +8616,26 @@ function AgentWorkspace({
                 <button type="button" onClick={() => toggleArtifactGroupSelection(group.artifacts)}>{group.artifacts.every((artifact) => selectedArtifactIds.includes(artifact.id)) ? '取消本组' : '选择本组'}</button>
               </div></header>
               <div className="agent-result-panel__grid">
-                {group.artifacts.map((artifact) => <article key={artifact.id} className={selectedArtifactIds.includes(artifact.id) ? 'is-selected' : ''}>
-                  <button type="button" className="agent-result-panel__select" aria-pressed={selectedArtifactIds.includes(artifact.id)} aria-label={`${selectedArtifactIds.includes(artifact.id) ? '取消选择' : '选择'} ${artifact.label}`} onClick={() => toggleArtifactSelection(artifact.id)}>{selectedArtifactIds.includes(artifact.id) ? '✓' : ''}</button>
-                  {artifact.url && (artifact.kind === 'image' || artifact.kind === 'video') ? <div className="agent-result-panel__preview">
-                    {artifact.kind === 'image' ? <img src={artifact.url} alt="" /> : <video src={artifact.url} muted playsInline />}
-                  </div> : <div className="agent-result-panel__document"><span>{artifact.kind === 'workflow' ? '⌘' : 'Aa'}</span><p>{artifact.content ?? artifact.label}</p></div>}
-                  <div className="agent-result-panel__meta"><span><strong>{artifact.label}</strong><small>{agentArtifactKindLabel(artifact)} · {artifact.provenance.toolName}</small></span><div>
-                    {artifact.provenance.sourceNodeIds?.[0] ? <button type="button" aria-label={`在画布定位 ${artifact.label}`} title="在画布定位" onClick={() => onLocateNode(artifact.provenance.sourceNodeIds![0])}><FocusIcon /></button> : null}
-                    {artifact.url && (artifact.kind === 'image' || artifact.kind === 'video') ? <button type="button" aria-label={`下载 ${artifact.label}`} title="下载" onClick={() => void downloadMedia(artifact.url!, artifact.label, artifact.kind === 'video' ? 'video' : 'image')}><DownloadIcon /></button> : artifact.url ? <a href={artifact.url} target="_blank" rel="noreferrer" aria-label={`打开 ${artifact.label}`} title="打开"><ArrowUpRightIcon /></a> : null}
-                    {artifact.url && (artifact.kind === 'image' || artifact.kind === 'video') ? <button type="button" aria-label={artifact.metadata?.savedToLibrary === true ? `${artifact.label} 已入库` : `将 ${artifact.label} 入库`} title={artifact.metadata?.savedToLibrary === true ? '已入库' : '存入素材库'} disabled={artifact.metadata?.savedToLibrary === true} onClick={() => onSaveArtifact(artifact)}><FolderOutlineIcon /></button> : null}
-                  </div></div>
-                </article>)}
+                {group.artifacts.map((artifact) => {
+                  const locatableNodeId = artifact.provenance.sourceNodeIds?.find((nodeId) => availableContextNodeIds.has(nodeId))
+                  const canContinue = Boolean(locatableNodeId || (artifact.url && (artifact.kind === 'image' || artifact.kind === 'video')))
+                  return <article key={artifact.id} className={selectedArtifactIds.includes(artifact.id) ? 'is-selected' : ''}>
+                    <button type="button" className="agent-result-panel__select" aria-pressed={selectedArtifactIds.includes(artifact.id)} aria-label={`${selectedArtifactIds.includes(artifact.id) ? '取消选择' : '选择'} ${artifact.label}`} onClick={() => toggleArtifactSelection(artifact.id)}>{selectedArtifactIds.includes(artifact.id) ? '✓' : ''}</button>
+                    {artifact.url && (artifact.kind === 'image' || artifact.kind === 'video') ? <div className="agent-result-panel__preview">
+                      {artifact.kind === 'image' ? <img src={artifact.url} alt="" /> : <video src={artifact.url} muted playsInline />}
+                    </div> : <div className="agent-result-panel__document"><span>{artifact.kind === 'workflow' ? '⌘' : 'Aa'}</span><p>{artifact.content ?? artifact.label}</p></div>}
+                    <div className="agent-result-panel__meta"><span><strong>{artifact.label}</strong><small>{agentArtifactKindLabel(artifact)} · {artifact.provenance.toolName}{locatableNodeId ? ' · 已回填画布' : ''}</small></span><div>
+                      {locatableNodeId ? <button type="button" aria-label={`在画布定位 ${artifact.label}`} title="在画布定位" onClick={() => onLocateNode(locatableNodeId)}><FocusIcon /></button> : null}
+                      {canContinue ? <button type="button" aria-label={`基于 ${artifact.label} 继续修改`} title="继续修改" onClick={() => continueFromArtifact(artifact)}><SparkleIcon /></button> : null}
+                      {artifact.url && (artifact.kind === 'image' || artifact.kind === 'video') ? <button type="button" aria-label={`下载 ${artifact.label}`} title="下载" onClick={() => void downloadMedia(artifact.url!, artifact.label, artifact.kind === 'video' ? 'video' : 'image')}><DownloadIcon /></button> : artifact.url ? <a href={artifact.url} target="_blank" rel="noreferrer" aria-label={`打开 ${artifact.label}`} title="打开"><ArrowUpRightIcon /></a> : null}
+                      {artifact.url && (artifact.kind === 'image' || artifact.kind === 'video') ? <button type="button" aria-label={artifact.metadata?.savedToLibrary === true ? `${artifact.label} 已入库` : `将 ${artifact.label} 入库`} title={artifact.metadata?.savedToLibrary === true ? '已入库' : '存入素材库'} disabled={artifact.metadata?.savedToLibrary === true} onClick={() => onSaveArtifact(artifact)}><FolderOutlineIcon /></button> : null}
+                    </div></div>
+                  </article>
+                })}
               </div>
             </section>)}
             {!filteredArtifacts.length ? <div className="agent-skill-panel__empty">还没有该类型结果。生成或执行 Skill / MCP 后会自动汇总。</div> : null}
+            {artifactIndexHasMore ? <button type="button" className="agent-result-panel__load-more" disabled={artifactIndexStatus === 'loading-more'} onClick={() => void onLoadMoreArtifacts()}>{artifactIndexStatus === 'loading-more' ? '加载中…' : '加载更早结果'}</button> : null}
           </div>
         </section> : null}
         {memoryPanelOpen ? <section className="agent-memory-panel" aria-label="项目创作记忆">
@@ -8213,13 +8657,18 @@ function AgentWorkspace({
         </section> : null}
         {taskPanelOpen ? <section className="agent-task-panel" aria-label="Agent 任务与结果">
           <header><div><small>AGENT RUNS</small><h2>任务与结果</h2></div><span>{runs.length} 个</span></header>
-          <p>查看所有分支状态；失败分支可重试，也可以修改参数或模型后重新提交，不会覆盖已完成结果。</p>
+          <p>每个任务只保留一条状态链；失败分支可重试，也可以修改参数或模型后重新提交，不会覆盖已完成结果。</p>
           <div className="agent-task-panel__list">
-            {runs.map((run) => <article key={run.id} className={`is-${run.status}`}>
-              <header><span><strong>{run.plan.summary}</strong><small>{run.status === 'completed' ? '已完成' : run.status === 'partial' ? '部分完成' : run.status === 'failed' ? '失败' : run.status === 'cancelled' ? '已取消' : '处理中'}</small></span><div>{run.status === 'queued' || run.status === 'running' || run.status === 'executing' ? <button type="button" className="agent-icon-button agent-icon-button--danger" aria-label="取消任务" title="取消任务" disabled={cancellingRunId === run.id} onClick={() => { setCancellingRunId(run.id); void onCancelRun(run.id).finally(() => setCancellingRunId('')) }}>{cancellingRunId === run.id ? <span className="agent-workspace__mini-spinner" /> : <CloseIcon />}</button> : null}<b>{run.completedBranchCount}/{run.branches.length}</b></div></header>
+            {runs.map((run) => {
+              const outputCount = agentRunOutputCount(run, artifacts)
+              const feedback = botanicAgentRunFeedback(run.status, outputCount, run.error)
+              const active = run.status === 'queued' || run.status === 'running' || run.status === 'executing'
+              return <article key={run.id} className={`is-${run.status} is-${feedback.tone}`}>
+              <header><span><strong>{run.plan.summary}</strong><small>{feedback.label}</small></span><div>{active ? <button type="button" className="agent-icon-button agent-icon-button--danger" aria-label="取消任务" title="取消任务" disabled={cancellingRunId === run.id} onClick={() => { setCancellingRunId(run.id); void onCancelRun(run.id).finally(() => setCancellingRunId('')) }}>{cancellingRunId === run.id ? <span className="agent-workspace__mini-spinner" /> : <CloseIcon />}</button> : <button type="button" className="agent-task-panel__feedback-action" onClick={() => openRunFeedback(run)}>{feedback.actionLabel}</button>}<b>{run.completedBranchCount}/{run.branches.length}</b></div></header>
+              <p className="agent-task-panel__feedback">{feedback.detail}</p>
               <div className="agent-run-card__track" aria-hidden="true"><i style={{ width: `${run.branches.length ? Math.round(run.completedBranchCount / run.branches.length * 100) : 0}%` }} /></div>
               <div className="agent-task-panel__summary" aria-label="分支状态汇总"><span><b>{run.branches.filter((branch) => branch.status === 'succeeded').length}</b>完成</span><span><b>{run.branches.filter((branch) => branch.status === 'running').length}</b>生成中</span><span><b>{run.branches.filter((branch) => branch.status === 'queued').length}</b>排队</span><span><b>{run.branches.filter((branch) => branch.status === 'failed' || branch.status === 'cancelled').length}</b>失败</span></div>
-              <div className="agent-task-panel__matrix" aria-label="批量分支矩阵">{run.branches.map((branch, index) => <div key={branch.id} className={`is-${branch.status}`} title={`${branch.label} · ${branch.status}`}><span>{index + 1}</span><small>{branch.label}</small></div>)}</div>
+              <div className="agent-task-panel__matrix" aria-label="批量分支矩阵">{run.branches.map((branch, index) => <div key={branch.id} className={`is-${branch.status}`} title={`${branch.label} · ${botanicAgentBranchStatusLabel(branch.status)}`}><span>{index + 1}</span><small>{branch.label}</small></div>)}</div>
               {run.branches.filter((branch) => branch.status === 'failed' || branch.status === 'cancelled').map((branch) => <div className="agent-task-panel__branch" key={branch.id}><span><strong>{branch.label}</strong><small>{branch.error ?? '该分支未完成'}</small></span><AgentFailureRecoveryActions
                 branch={branch}
                 generationModels={generationModels}
@@ -8229,7 +8678,8 @@ function AgentWorkspace({
                 onPrepare={(mode, model) => prepareFailedRunRecovery(run, mode, model)}
                 onRetry={() => { setRetryingBranchId(branch.id); void onRetryBranch(run.id, branch.id).finally(() => setRetryingBranchId('')) }}
               /></div>)}
-            </article>)}
+            </article>
+            })}
             {!runs.length ? <div className="agent-skill-panel__empty">还没有 Agent 任务。</div> : null}
           </div>
         </section> : null}
@@ -8263,24 +8713,29 @@ function AgentWorkspace({
           <div className="agent-message__role">{message.role === 'assistant' ? <SparkleIcon /> : <span>你</span>}</div>
           <div className="agent-message__body">
             <p>{message.content}</p>
+            {message.role === 'user' && message.deliveryStatus === 'queued' ? <small className="agent-message__delivery-status" role="status">待同步</small> : null}
+            {message.role === 'user' && message.deliveryStatus === 'failed' ? <small className="agent-message__delivery-status is-failed" role="status">同步失败，请检查权限</small> : null}
             {message.kind === 'run' && message.runId ? (() => {
+              const linkedRun = runs.find((run) => run.id === message.runId)
               const outputNodeIds = artifacts
                 .filter((artifact) => artifact.provenance.runId === message.runId)
                 .flatMap((artifact) => artifact.provenance.sourceNodeIds ?? [])
-              return outputNodeIds.length ? <div className="agent-run-message__actions" aria-label="结果操作">
+              const lockedContextIds = botanicAgentContextSnapshotNodeIds(linkedRun?.plan.contextSnapshot, contextOptions.map((item) => item.id))
+              const continueNodeIds = [...new Set(outputNodeIds.length ? outputNodeIds : lockedContextIds)]
+              return continueNodeIds.length ? <div className="agent-run-message__actions" aria-label="结果操作">
                 <button type="button" onClick={() => {
-                  onUseResultContext(outputNodeIds)
-                  setInstruction(outputNodeIds.length === 1 ? '继续优化这张结果：' : `继续优化这 ${outputNodeIds.length} 张结果：`)
+                  onUseResultContext(continueNodeIds)
+                  setInstruction(outputNodeIds.length === 1 ? '继续优化这张结果：' : outputNodeIds.length > 1 ? `继续优化这 ${outputNodeIds.length} 张结果：` : '继续基于当前上下文创作：')
                   setResultPanelOpen(false)
                   requestAnimationFrame(() => composerTextareaRef.current?.focus())
                 }}>继续修改</button>
-                <button type="button" onClick={() => {
+                {outputNodeIds.length ? <button type="button" onClick={() => {
                   setResultPanelOpen(true)
                   setTaskPanelOpen(false)
                   setSkillPanelOpen(false)
                   setMemoryPanelOpen(false)
-                }}>查看结果</button>
-                <button type="button" onClick={() => onFocusNodes(outputNodeIds)}>定位画布</button>
+                }}>查看结果</button> : null}
+                {outputNodeIds.length ? <button type="button" onClick={() => onFocusNodes(outputNodeIds)}>定位画布</button> : null}
               </div> : null
             })() : null}
             {message.question ? <AgentClarificationCard
@@ -8331,9 +8786,16 @@ function AgentWorkspace({
               <div className="agent-message__constraints">
                 {message.plan.constraints.map((constraint) => <span key={constraint.dimension} className={constraint.mode === 'preserve' ? 'is-locked' : 'is-variable'}>{constraint.mode === 'preserve' ? '锁定' : '变化'} · {creativeDimensionLabel(constraint.dimension)}</span>)}
               </div>
+              <div className="agent-plan-settings" aria-label="本次生成设置">
+                <span><small>模型</small><b>{modelDisplayLabel(generationModels.find((model) => model.id === message.plan!.settings.model)) || message.plan.settings.model}</b></span>
+                <span><small>比例</small><b>{message.plan.settings.aspectRatio}</b></span>
+                <span><small>清晰度</small><b>{message.plan.settings.resolution}</b></span>
+                <span><small>输出</small><b>{message.plan.output.mode === 'batch_by_asset' ? `${message.plan.output.count} 个分支` : '1 个版本'}</b></span>
+              </div>
               <small>{message.plan.references.length} 个输入 · {message.plan.output.mode === 'batch_by_asset' ? `${message.plan.output.count} 个分支` : '1 个新版本'}</small>
+              {message.plan.contextSnapshot?.length ? <small className="agent-plan__context-lock">已锁定上下文 · {message.plan.contextSnapshot.slice(0, 3).map((item) => item.label).join('、')}{message.plan.contextSnapshot.length > 3 ? ` 等 ${message.plan.contextSnapshot.length} 项` : ''}</small> : null}
               <details className="agent-message__route"><summary>执行路由</summary><div><span>规划</span><b>{agentPlannerModelLabel(message.plan.plannerModel ?? plannerModel)}</b><span>生成</span><b>{message.plan.settings.model}</b><span>外部行动</span><b>{message.plan.actions?.length ? `${message.plan.actions.length} 项，确认后执行` : '无'}</b></div></details>
-              {message.status !== 'submitted' ? <button type="button" disabled={submittingMessageId === message.id || message.plan.actions?.some((action) => action.status === 'awaiting_confirmation' || action.status === 'running')} onClick={() => void confirmMessagePlan(message)}>{submittingMessageId === message.id ? '正在提交…' : message.plan.actions?.some((action) => action.status === 'awaiting_confirmation' || action.status === 'running') ? '先处理行动卡' : message.status === 'failed' ? '重新执行' : '确认生成'}</button> : <span className="agent-message__submitted">已提交</span>}
+              {message.status !== 'submitted' ? <><small className="agent-plan__confirm-hint">确认后才会提交生成任务，当前设置仍可在上方编辑。</small><button type="button" disabled={submittingMessageId === message.id || message.plan.actions?.some((action) => action.status === 'awaiting_confirmation' || action.status === 'running')} onClick={() => void confirmMessagePlan(message)}>{submittingMessageId === message.id ? '正在提交…' : message.plan.actions?.some((action) => action.status === 'awaiting_confirmation' || action.status === 'running') ? '先处理行动卡' : message.status === 'failed' ? '重新提交计划' : '确认并生成'}</button></> : <span className="agent-message__submitted">已提交</span>}
             </div> : null}
           </div>
           <div className="agent-message__utilities">
@@ -8345,28 +8807,23 @@ function AgentWorkspace({
             <button type="button" aria-label="复制消息" title="复制消息" onClick={() => void navigator.clipboard.writeText(message.content)}><CopyIcon /></button>
           </div>
         </article>) : null}
-        {!utilityPanelOpen && runtimeSteps.length ? (() => {
-          const activeStep = runtimeSteps.find((step) => step.status === 'running')
-          const completedCount = runtimeSteps.filter((step) => step.status === 'succeeded').length
-          const statusLabel = planning
-            ? activeStep ? `正在${activeStep.label}` : 'Agent 正在工作'
-            : runtimeFailed ? 'Agent 运行未完成' : 'Agent 已完成'
-          const summary = planning
-            ? `${completedCount}/${runtimeSteps.length} 项已完成`
-            : runtimeFailed ? '已保留失败位置，可修改要求后重试' : `${runtimeSteps.length} 项操作已记录`
-          return <section className={`agent-runtime-feed${runtimeFailed ? ' is-failed' : runtimeComplete ? ' is-complete' : ''}`} role="status" aria-live={planning ? 'polite' : undefined} aria-label="Agent 运行记录">
+        {!utilityPanelOpen && showRuntimeFeed ? (() => {
+          const livePhase = runtimePhase === 'reading' || runtimePhase === 'planning' || runtimePhase === 'executing'
+          return <section className={`agent-runtime-feed is-${runtimeSummary.phase}${runtimeFailed ? ' is-failed' : runtimeComplete ? ' is-complete' : ''}`} data-phase={runtimeSummary.phase} role="status" aria-live={livePhase ? 'polite' : undefined} aria-label="Agent 运行记录">
             <header className="agent-runtime-feed__header">
               <span className="agent-runtime-feed__status">
                 <span className="agent-runtime-feed__mark" aria-hidden="true">
-                  {planning && !runtimeFailed ? <span className="agent-composer__spinner" /> : runtimeFailed ? '!' : '✓'}
+                  {livePhase && !runtimeFailed ? <span className="agent-composer__spinner" /> : runtimeFailed ? '!' : runtimeComplete ? '✓' : '·'}
                 </span>
-                <strong>{statusLabel}</strong>
+                <strong>{runtimeSummary.label}</strong>
+                {runtimeSummary.totalCount ? <small>{runtimeSummary.completedCount}/{runtimeSummary.totalCount}</small> : null}
               </span>
               <button type="button" className="agent-runtime-feed__toggle" aria-expanded={runtimeDetailsOpen} onClick={() => setRuntimeDetailsOpen((open) => !open)}>
-                {runtimeDetailsOpen ? '收起' : '查看记录'}
+                {runtimeDetailsOpen ? '收起记录' : '查看记录'}
               </button>
             </header>
-            <p className="agent-runtime-feed__summary">{activeStep?.detail ?? summary}</p>
+            <p className="agent-runtime-feed__summary">{runtimeSummary.detail}</p>
+            {runtimeSummary.phase === 'waiting_clarification' || runtimeSummary.phase === 'waiting_confirmation' ? <span className="agent-runtime-feed__next">下一步：{runtimeSummary.nextAction}</span> : null}
             {runtimeDetailsOpen ? <ol aria-label="运行步骤">
               {runtimeSteps.map((step) => <li key={step.id} className={`is-${step.status}`}>
                 <span className="agent-runtime-feed__step-marker" aria-hidden="true">{agentRuntimeStepMarker(step)}</span>
@@ -8376,11 +8833,12 @@ function AgentWorkspace({
             </ol> : null}
           </section>
         })() : null}
-        {!utilityPanelOpen && latestRun?.branches.length ? <section className="agent-run-card" aria-label="Agent Run 实时进度">
-          <header><span><strong>生成任务</strong><small>{latestRun.status === 'completed' ? '已完成' : latestRun.status === 'partial' ? '部分完成' : latestRun.status === 'failed' ? '失败' : latestRun.status === 'cancelled' ? '已取消' : '处理中'}</small></span><div>{latestRun.status === 'queued' || latestRun.status === 'running' || latestRun.status === 'executing' ? <button type="button" className="agent-icon-button agent-icon-button--danger" aria-label="取消任务" title="取消任务" disabled={cancellingRunId === latestRun.id} onClick={() => { setCancellingRunId(latestRun.id); setError(''); void onCancelRun(latestRun.id).then((ok) => { if (!ok) setError('任务取消失败，请稍后重试。') }).finally(() => setCancellingRunId('')) }}>{cancellingRunId === latestRun.id ? <span className="agent-workspace__mini-spinner" /> : <CloseIcon />}</button> : null}<b>{latestRun.completedBranchCount}/{latestRun.branches.length}</b></div></header>
+        {!utilityPanelOpen && latestRun?.branches.length && latestRunFeedback ? <section className={`agent-run-card is-${latestRunFeedback.tone}`} aria-label="Agent Run 实时进度">
+          <header><span><strong>生成任务</strong><small>{latestRunFeedback.label}</small></span><div>{latestRun.status === 'queued' || latestRun.status === 'running' || latestRun.status === 'executing' ? <button type="button" className="agent-icon-button agent-icon-button--danger" aria-label="取消任务" title="取消任务" disabled={cancellingRunId === latestRun.id} onClick={() => { setCancellingRunId(latestRun.id); setError(''); void onCancelRun(latestRun.id).then((ok) => { if (!ok) setError('任务取消失败，请稍后重试。') }).finally(() => setCancellingRunId('')) }}>{cancellingRunId === latestRun.id ? <span className="agent-workspace__mini-spinner" /> : <CloseIcon />}</button> : <button type="button" className="agent-run-card__feedback-action" onClick={() => openRunFeedback(latestRun)}>{latestRunFeedback.actionLabel}</button>}<b>{latestRun.completedBranchCount}/{latestRun.branches.length}</b></div></header>
+          <p className="agent-run-card__feedback">{latestRunFeedback.detail}</p>
           <div className="agent-run-card__track" aria-hidden="true"><i style={{ width: `${Math.round(latestRun.completedBranchCount / latestRun.branches.length * 100)}%` }} /></div>
           <div className="agent-run-card__branches">
-            {latestRun.branches.map((branch) => <div key={branch.id}><span><strong>{branch.label}</strong><small>{branch.status === 'succeeded' ? '已完成' : branch.status === 'running' ? '生成中' : branch.status === 'queued' ? '排队中' : branch.status === 'cancelled' ? '已取消' : '失败'}</small></span>{branch.status === 'failed' || branch.status === 'cancelled' ? <AgentFailureRecoveryActions
+            {latestRun.branches.map((branch) => <div key={branch.id}><span><strong>{branch.label}</strong><small>{botanicAgentBranchStatusLabel(branch.status)}</small></span>{branch.status === 'failed' || branch.status === 'cancelled' ? <AgentFailureRecoveryActions
               branch={branch}
               generationModels={generationModels}
               retrying={retryingBranchId === branch.id}
@@ -8399,12 +8857,12 @@ function AgentWorkspace({
           {mentionOptions.map((item) => <button key={item.id} type="button" onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); selectMention(item) }}>{item.image ? <img src={item.image} alt="" /> : <span>{item.kind.slice(0, 1)}</span>}<b>{item.label}</b><small>{item.kind}</small></button>)}
           {!mentionOptions.length ? <p>没有匹配的画布内容</p> : null}
         </div> : null}
-        <textarea ref={composerTextareaRef} value={instruction} onChange={(event) => { const value = event.target.value; setInstruction(value); setMentionQuery(readBotanicAgentMentionQuery(value, event.target.selectionStart ?? value.length)); setError('') }} onClick={(event) => setMentionQuery(readBotanicAgentMentionQuery(instruction, event.currentTarget.selectionStart ?? instruction.length))} onKeyDown={(event) => {
+        <textarea ref={composerTextareaRef} value={instruction} onChange={(event) => { const value = event.target.value; setInstruction(value); setMentionQuery(readBotanicAgentMentionQuery(value, event.target.selectionStart ?? value.length)); setError(''); setLastFailedInstruction(''); setLastFailedPlanMessageId('') }} onClick={(event) => setMentionQuery(readBotanicAgentMentionQuery(instruction, event.currentTarget.selectionStart ?? instruction.length))} onKeyDown={(event) => {
           if (event.key === 'Escape' && mentionQuery) { event.preventDefault(); setMentionQuery(undefined); return }
           if (event.key === 'Enter' && mentionQuery && mentionOptions[0]) { event.preventDefault(); selectMention(mentionOptions[0]); return }
           if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendInstruction() }
         }} placeholder="和 Agent 聊天、生成 Prompt 或描述创作需求，@ 引用画布内容" aria-label="Agent 消息" />
-        {error ? <p className="agent-composer__error" role="alert">{error}</p> : null}
+        {error ? <div className="agent-composer__error" role="alert"><span>{error}</span>{lastFailedPlanMessageId || lastFailedInstruction ? <button type="button" onClick={lastFailedPlanMessageId ? retryLastFailedPlan : retryLastInstruction} disabled={planning || submittingMessageId === lastFailedPlanMessageId}>重试</button> : null}</div> : null}
         <input
           ref={agentFileInputRef}
           className="asset-file-input"

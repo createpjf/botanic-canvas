@@ -1,3 +1,5 @@
+import { mapWithConcurrency } from './concurrency.mjs'
+
 export class GenerationError extends Error {
   constructor(statusCode, code, message) {
     super(message)
@@ -173,6 +175,10 @@ export function publicGenerationJob(job) {
     missingOutputCount: job.missingOutputCount ?? 0,
     partialError: job.partialError,
     outputs: job.outputs ?? [],
+    variants: job.variants ?? [],
+    // 仅用于客户端在网络重试时复用同一逻辑提交，不承载凭据。
+    idempotencyKey: job.idempotencyKey,
+    projectWritebackPending: Boolean(job.projectWritebackPending),
     agentRun: job.agentRun,
   }
 }
@@ -189,12 +195,18 @@ export function persistedGenerationJob(job) {
     updatedAt: job.updatedAt,
     batchCount: job.batchCount,
     outputs: job.outputs ?? [],
+    variants: job.variants ?? [],
     error: job.error,
     missingOutputCount: job.missingOutputCount ?? 0,
     partialError: job.partialError,
     settings: job.settings,
     provider: job.provider,
     rawInput: job.rawInput,
+    idempotencyKey: job.idempotencyKey,
+    projectWritebackPending: job.projectWritebackPending,
+    projectWritebackAttempts: job.projectWritebackAttempts,
+    projectWritebackError: job.projectWritebackError,
+    projectWritebackUpdatedAt: job.projectWritebackUpdatedAt,
     agentRun: job.agentRun,
   }
 }
@@ -257,7 +269,16 @@ function providerImage(value) {
 }
 
 /** 在 Worker 中调用图像供应商；所有图片字节都由调用方决定如何持久化。 */
-export async function generateImages(job, { apiBaseUrl, apiKey, signal, persistImage, jobId }) {
+export async function generateImages(job, {
+  apiBaseUrl,
+  apiKey,
+  signal,
+  persistImage,
+  jobId,
+  variantConcurrency = 3,
+  onVariant,
+  completedVariants = [],
+}) {
   if (!apiKey) throw new GenerationError(503, 'PROVIDER_NOT_CONFIGURED', '真实生图尚未配置：请设置 OPENAI_API_KEY。')
   if (typeof jobId !== 'string' || !jobId) throw new GenerationError(500, 'INVALID_JOB_ID', '生成任务缺少唯一标识。')
   const inputImages = job.parent ? [job.parent, ...job.references.filter((reference) => !reference.buffer.equals(job.parent.buffer))] : job.references
@@ -288,28 +309,40 @@ export async function generateImages(job, { apiBaseUrl, apiKey, signal, persistI
   }
 
   // 每张候选各占一个供应商请求。部分兼容 OpenAI Images 的网关会忽略 n>1，
-  // 造成用户明明选择两张却只得到一个结果节点；按顺序发送还能避免网关并发限流。
-  const requests = []
-  for (let index = 0; index < job.batchCount; index += 1) {
-    requests.push(...await Promise.allSettled([submit(1, index)]))
-  }
-  const providerItems = requests.flatMap((result) => result.status === 'fulfilled' ? result.value : [])
-  const failedRequests = requests.filter((result) => result.status === 'rejected')
-  const persisted = await Promise.allSettled(providerItems.map(async (item, index) => {
-    const image = providerImage(item?.b64_json)
-    return {
-      id: `${jobId}-output-${index + 1}`,
-      image: await persistImage(image),
-      mediaKind: 'image',
-      revisedPrompt: typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined,
+  // 因此保留 n=1，但由父任务以受控并发的方式调度子候选。
+  const priorOutputs = new Map(
+    completedVariants
+      .filter((variant) => variant?.status === 'succeeded' && variant.output)
+      .map((variant) => [Number(variant.index), variant.output]),
+  )
+  const indexes = Array.from({ length: job.batchCount }, (_, index) => index)
+  const settled = await mapWithConcurrency(indexes, variantConcurrency, async (index) => {
+    const previous = priorOutputs.get(index)
+    if (previous) return { status: 'fulfilled', value: previous }
+    await onVariant?.({ index, status: 'running' })
+    try {
+      const providerItems = await submit(1, index)
+      const item = providerItems[0]
+      if (!item) throw new GenerationError(502, 'EMPTY_PROVIDER_RESPONSE', `第 ${index + 1} 张候选没有返回图片。`)
+      const image = providerImage(item.b64_json)
+      const output = {
+        id: `${jobId}-output-${index + 1}`,
+        image: await persistImage(image),
+        mediaKind: 'image',
+        revisedPrompt: typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined,
+      }
+      await onVariant?.({ index, status: 'succeeded', output })
+      return { status: 'fulfilled', value: output }
+    } catch (error) {
+      await onVariant?.({ index, status: 'failed', error: error instanceof Error ? error.message : String(error) })
+      return { status: 'rejected', reason: error }
     }
-  }))
-  const outputs = persisted.flatMap((result) => result.status === 'fulfilled' ? [result.value] : [])
+  })
+  const outputs = settled.flatMap((result) => result.status === 'fulfilled' ? [result.value] : [])
+  const failedRequests = settled.filter((result) => result.status === 'rejected')
   if (!outputs.length) {
     const firstFailure = failedRequests[0]
     if (firstFailure?.status === 'rejected') throw firstFailure.reason
-    const firstPersistFailure = persisted.find((result) => result.status === 'rejected')
-    if (firstPersistFailure?.status === 'rejected') throw firstPersistFailure.reason
     throw new GenerationError(502, 'EMPTY_PROVIDER_RESPONSE', '图像服务没有返回候选图，请重试。')
   }
   const missingOutputCount = Math.max(0, job.batchCount - outputs.length)

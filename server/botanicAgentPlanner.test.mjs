@@ -17,6 +17,10 @@ const validInput = {
     { id: 'asset-model', name: '模特 33', role: '模特', primary: false },
     { id: 'asset-product', name: '德国队球衣', role: '商品', primary: true },
   ],
+  contextSnapshot: [
+    { nodeId: 'asset-model', label: '模特 33', kind: '素材', mediaKind: 'image', role: '模特' },
+    { nodeId: 'result-v03', label: '首图候选 01', kind: '结果', mediaKind: 'image' },
+  ],
   assetGroup: { id: 'group-scenes', name: '夏日场景', role: '场景', assetCount: 10 },
   assetGroups: [
     { id: 'group-scenes', name: '夏日场景', role: '场景', assetCount: 10 },
@@ -43,6 +47,17 @@ test('Agent 计划输入只接收结构化元数据，不允许图片字节进�
         && error.code === 'INVALID_REQUEST',
     )
   }
+})
+
+test('Agent 计划只保留安全的上下文快照元数据，并拒绝重复节点', () => {
+  assert.deepEqual(validateBotanicAgentPlanInput(validInput).contextSnapshot, validInput.contextSnapshot)
+  assert.throws(() => validateBotanicAgentPlanInput({
+    ...validInput,
+    contextSnapshot: [
+      { nodeId: 'asset-model', label: '模特 33', kind: '素材' },
+      { nodeId: 'asset-model', label: '重复', kind: '素材' },
+    ],
+  }), /重复节点/)
 })
 
 test('Agent Planner 只允许服务端目录中的 Flock 模型，并按请求选择模型', async () => {
@@ -238,6 +253,7 @@ test('服务端 Agent 只让模型解释意图与约束，节点、参数和批�
     intent: 'replace_scene',
     instruction: validInput.instruction,
     summary: '锁定人物与服装，批量替换 10 个场景。',
+    contextSnapshot: validInput.contextSnapshot,
     selectedResultNodeId: 'result-v03',
     constraints: [
       { dimension: 'person', mode: 'preserve' },

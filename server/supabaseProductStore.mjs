@@ -3,7 +3,9 @@ import { createClient } from '@supabase/supabase-js'
 import { isRetryableSupabaseError, retrySupabaseOperation } from './supabaseRetry.mjs'
 import { decodeAuthAssurance } from './authAssurance.mjs'
 import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from './authorization.mjs'
+import { artifactIndexLimits, artifactsFromActionReceipt, artifactsFromAgentMessage, artifactsFromDocument, artifactsFromGenerationJob } from './botanicArtifactIndex.mjs'
 import { applyGenerationJobToAgentRun } from './botanicAgentRun.mjs'
+import { agentStateFromDocument, mergeAgentStateIntoDocument, shouldApplyAgentEntityWrite, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity } from './botanicAgentPersistence.mjs'
 
 const now = () => Date.now()
 const clone = (value) => structuredClone(value)
@@ -131,6 +133,159 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
     fail(error)
   }
 
+  const missingAgentEntityTable = (error) => error?.code === '42P01' || error?.code === 'PGRST205'
+  const missingAgentEntityRpc = (error) => error?.code === '42883' || error?.code === 'PGRST202'
+
+  async function collectSupabaseRows(buildQuery, maximum = 40_000) {
+    const rows = []
+    for (let offset = 0; offset < maximum; offset += 1000) {
+      const result = await supabaseRequest(() => buildQuery().range(offset, Math.min(offset + 999, maximum - 1)))
+      if (result.error) return result
+      rows.push(...(result.data ?? []))
+      if ((result.data ?? []).length < 1000) break
+    }
+    return { data: rows, error: undefined }
+  }
+
+  async function readAgentStateRows(projectId) {
+    const results = await Promise.all([
+      supabaseRequest(() => supabase.from('agent_sessions').select('payload').eq('project_id', projectId).order('updated_at', { ascending: false }).limit(80)),
+      collectSupabaseRows(() => supabase.from('agent_messages').select('session_id,updated_at,payload').eq('project_id', projectId).order('updated_at', { ascending: true })),
+      supabaseRequest(() => supabase.from('agent_memory_items').select('id,deleted_at,payload').eq('project_id', projectId).order('updated_at', { ascending: false }).limit(200)),
+      supabaseRequest(() => supabase.from('agent_runs').select('payload').eq('project_id', projectId).order('updated_at', { ascending: false }).limit(60)),
+    ])
+    if (results.some((result) => missingAgentEntityTable(result.error))) {
+      return { sessions: [], messages: [], memory: [], deletedMemoryIds: [], runs: [] }
+    }
+    results.forEach((result) => fail(result.error))
+    const [sessions, messages, memory, runs] = results.map((result) => result.data ?? [])
+    return {
+      sessions: sessions.map((row) => clone(row.payload)),
+      messages: messages.map((row) => ({ sessionId: row.session_id, updatedAt: new Date(row.updated_at).getTime(), message: clone(row.payload) })),
+      memory: memory.filter((row) => !row.deleted_at).map((row) => clone(row.payload)),
+      deletedMemoryIds: memory.filter((row) => row.deleted_at).map((row) => row.id),
+      runs: runs.map((row) => clone(row.payload)),
+    }
+  }
+
+  async function upsertArtifactRecords(userId, projectId, artifacts) {
+    for (let offset = 0; offset < artifacts.length; offset += 500) {
+      const batch = artifacts.slice(offset, offset + 500)
+      const ids = batch.map((artifact) => artifact.id)
+      const { data: existingRows, error: readError } = await supabaseRequest(() => supabase.from('agent_artifacts')
+        .select('id,owner_id,created_at,updated_at').eq('project_id', projectId).in('id', ids))
+      if (missingAgentEntityTable(readError)) return false
+      fail(readError)
+      const existingById = new Map((existingRows ?? []).map((row) => [row.id, row]))
+      const rows = batch.filter((artifact) => {
+        const existing = existingById.get(artifact.id)
+        return !existing || artifact.updatedAt >= new Date(existing.updated_at).getTime()
+      }).map((artifact) => ({
+        project_id: projectId,
+        id: artifact.id,
+        owner_id: existingById.get(artifact.id)?.owner_id ?? userId,
+        kind: artifact.kind,
+        source_kind: artifact.origin.type,
+        run_id: artifact.provenance.runId ?? null,
+        job_id: artifact.origin.jobId ?? null,
+        created_at: new Date(Math.min(
+          artifact.createdAt,
+          existingById.get(artifact.id)?.created_at ? new Date(existingById.get(artifact.id).created_at).getTime() : artifact.createdAt,
+        )).toISOString(),
+        updated_at: new Date(artifact.updatedAt).toISOString(),
+        payload: artifact,
+      }))
+      if (!rows.length) continue
+      const { error } = await supabaseRequest(() => supabase.from('agent_artifacts').upsert(rows, { onConflict: 'project_id,id' }))
+      if (missingAgentEntityTable(error)) return false
+      fail(error)
+    }
+    return true
+  }
+
+  async function syncAgentStateFromDocument(userId, document, previousDocument) {
+    const extracted = agentStateFromDocument(document)
+    const sessionRows = extracted.sessions.map((session) => ({
+      id: session.id, owner_id: userId, project_id: document.id,
+      updated_at: new Date(session.updatedAt).toISOString(), payload: session,
+    }))
+    const messageRows = extracted.messages.map((entry) => ({
+      id: entry.message.id, owner_id: userId, project_id: document.id, session_id: entry.sessionId,
+      updated_at: new Date(entry.updatedAt).toISOString(), payload: entry.message,
+    }))
+    const memoryRows = extracted.memory.map((memory) => ({
+      id: memory.id, owner_id: userId, project_id: document.id,
+      updated_at: new Date(memory.updatedAt).toISOString(), deleted_at: null, payload: memory,
+    }))
+    const runRows = extracted.runs.map((run) => ({
+      id: run.id, owner_id: userId, project_id: document.id, status: run.status,
+      updated_at: new Date(Number(run.updatedAt) || now()).toISOString(), payload: { ...run, ownerId: userId, projectId: document.id },
+    }))
+    const previousMemoryIds = new Set((Array.isArray(previousDocument?.agentMemory) ? previousDocument.agentMemory : []).map((item) => item?.id).filter(Boolean))
+    const nextMemoryIds = new Set(extracted.memory.map((item) => item.id))
+    const removedIds = [...previousMemoryIds].filter((id) => !nextMemoryIds.has(id))
+    const deletedAt = new Date().toISOString()
+    const deletedMemoryRows = removedIds.map((id) => ({ id, deleted_at: deletedAt }))
+
+    // 新项目通过 RPC 在单个事务中完成 LWW 合并。旧项目未迁移时才走下方兼容路径。
+    const { error: rpcError } = await supabaseRequest(() => supabase.rpc('botanic_sync_agent_entities', {
+      p_owner_id: userId,
+      p_project_id: document.id,
+      p_sessions: sessionRows,
+      p_messages: messageRows,
+      p_memory: memoryRows,
+      p_runs: runRows,
+      p_deleted_memory: deletedMemoryRows,
+    }))
+    if (!rpcError) {
+      await upsertArtifactRecords(userId, document.id, artifactsFromDocument(document))
+      return
+    }
+    if (!missingAgentEntityRpc(rpcError)) fail(rpcError)
+
+    for (const [table, rows] of [
+      ['agent_sessions', sessionRows], ['agent_messages', messageRows],
+      ['agent_memory_items', memoryRows], ['agent_runs', runRows],
+    ]) {
+      if (!rows.length) continue
+      for (let offset = 0; offset < rows.length; offset += 500) {
+        const batch = rows.slice(offset, offset + 500)
+        const existingColumns = table === 'agent_messages'
+          ? 'id,project_id,session_id,updated_at'
+          : table === 'agent_memory_items'
+            ? 'id,project_id,updated_at,deleted_at'
+            : 'id,project_id,updated_at'
+        const { data: existingRows, error: conflictError } = await supabaseRequest(() => supabase.from(table).select(existingColumns).in('id', batch.map((row) => row.id)))
+        if (missingAgentEntityTable(conflictError)) return
+        fail(conflictError)
+        if ((existingRows ?? []).some((row) => row.project_id !== document.id
+          || (table === 'agent_messages' && row.session_id !== batch.find((item) => item.id === row.id)?.session_id))) {
+          throw productError('Agent 实体标识已被其他项目使用。', 'AGENT_ENTITY_ID_CONFLICT')
+        }
+        const existingById = new Map((existingRows ?? []).map((row) => [row.id, row]))
+        const safeRows = batch.filter((row) => {
+          const existing = existingById.get(row.id)
+          return shouldApplyAgentEntityWrite(existing, row, {
+            tombstoneWinsTie: table === 'agent_memory_items',
+          })
+        })
+        if (!safeRows.length) continue
+        const { error } = await supabaseRequest(() => supabase.from(table).upsert(safeRows, { onConflict: 'id' }))
+        if (missingAgentEntityTable(error)) return
+        fail(error)
+      }
+    }
+    if (removedIds.length) {
+      const { error } = await supabaseRequest(() => supabase.from('agent_memory_items')
+        .update({ deleted_at: deletedAt, updated_at: deletedAt })
+        .eq('project_id', document.id)
+        .in('id', removedIds)
+        .lte('updated_at', deletedAt))
+      if (!missingAgentEntityTable(error)) fail(error)
+    }
+    await upsertArtifactRecords(userId, document.id, artifactsFromDocument(document))
+  }
+
   return {
     authProvider: 'supabase',
 
@@ -201,9 +356,10 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
     async readProject(userId, projectId) {
       const role = await memberRole(projectId, userId)
       if (!role) return undefined
-      const [{ data, error }, graphResult] = await Promise.all([
+      const [{ data, error }, graphResult, agentState] = await Promise.all([
         supabase.from('projects').select('document, revision, updated_at').eq('id', projectId).maybeSingle(),
         supabase.from('canvas_graphs').select('graph, revision, updated_at').eq('project_id', projectId).maybeSingle(),
+        readAgentStateRows(projectId),
       ])
       fail(error)
       fail(graphResult.error)
@@ -215,7 +371,7 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
         graphResult.data?.updated_at ? new Date(graphResult.data.updated_at).getTime() : 0,
       )
       return {
-        document: { ...clone(data.document), ...clone(graph), updatedAt },
+        document: mergeAgentStateIntoDocument({ ...clone(data.document), ...clone(graph), updatedAt }, agentState),
         revision: data.revision,
         graphRevision: graphResult.data?.revision ?? 1,
       }
@@ -236,6 +392,8 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
     },
 
     async writeProject(userId, document, expectedRevision, expectedGraphRevision) {
+      const { data: previous, error: previousError } = await supabaseRequest(() => supabase.from('projects').select('document').eq('id', document.id).maybeSingle())
+      fail(previousError)
       const { data, error } = await supabase.rpc('botanic_write_project_document', {
         p_actor: userId,
         p_document: document,
@@ -246,6 +404,13 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       if (error?.code === 'BG001') throw productError('画布已被其他成员更新，请刷新后再保存。', 'CANVAS_GRAPH_CONFLICT')
       if (error?.code === '42501') throw productError('你没有编辑该项目的权限。', 'PROJECT_WRITE_FORBIDDEN')
       fail(error, '项目保存失败。')
+      try {
+        await syncAgentStateFromDocument(userId, document, previous?.document)
+      } catch (caught) {
+        // Supabase RPC 已原子保存兼容文档；实体双写失败不能把已成功的项目保存
+        // 伪装成失败。读取仍会回退旧字段，下一次写入继续补偿。
+        console.warn(`[agent-persistence] entity sync deferred for ${document.id}: ${caught instanceof Error ? caught.message : String(caught)}`)
+      }
       return { document: clone(data.document), revision: data.revision, graphRevision: data.graph_revision, created: data.created }
     },
 
@@ -362,6 +527,109 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       return { deleted, library: clone(library) }
     },
 
+    async readAgentState(userId, projectId) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const state = await readAgentStateRows(projectId)
+      const hydrated = mergeAgentStateIntoDocument({ agentSessions: [], agentMemory: [], agentRuns: [] }, state)
+      return { sessions: hydrated.agentSessions, memory: hydrated.agentMemory, runs: hydrated.agentRuns }
+    },
+
+    async putAgentSession(userId, projectId, input) {
+      assertProjectPermission(await memberRole(projectId, userId), 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      const timestampValue = now()
+      const session = validateAgentSessionEntity({ ...input, updatedAt: timestampValue }, { now: timestampValue })
+      const { data: existing, error: readError } = await supabaseRequest(() => supabase.from('agent_sessions').select('project_id').eq('id', session.id).maybeSingle())
+      fail(readError)
+      if (existing && existing.project_id !== projectId) throw productError('Agent 会话标识已被其他项目使用。', 'AGENT_SESSION_ID_CONFLICT')
+      const { error } = await supabaseRequest(() => supabase.from('agent_sessions').upsert({
+        id: session.id, owner_id: userId, project_id: projectId,
+        updated_at: new Date(timestampValue).toISOString(), payload: session,
+      }, { onConflict: 'id' }))
+      fail(error)
+      await insertAudit({ actorId: userId, action: existing ? 'agent-session.updated' : 'agent-session.created', projectId, targetId: session.id })
+      return clone(session)
+    },
+
+    async putAgentMessage(userId, projectId, sessionId, input) {
+      assertProjectPermission(await memberRole(projectId, userId), 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      const timestampValue = now()
+      const message = validateAgentMessageEntity(input, { now: timestampValue })
+      const [{ data: session, error: sessionError }, { data: existing, error: readError }] = await Promise.all([
+        supabaseRequest(() => supabase.from('agent_sessions').select('payload').eq('id', sessionId).eq('project_id', projectId).maybeSingle()),
+        supabaseRequest(() => supabase.from('agent_messages').select('project_id,session_id').eq('id', message.id).maybeSingle()),
+      ])
+      fail(sessionError)
+      fail(readError)
+      if (!session) throw productError('未找到 Agent 会话。', 'AGENT_SESSION_NOT_FOUND')
+      if (existing && (existing.project_id !== projectId || existing.session_id !== sessionId)) {
+        throw productError('Agent 消息标识已被其他会话使用。', 'AGENT_MESSAGE_ID_CONFLICT')
+      }
+      const timestampIso = new Date(timestampValue).toISOString()
+      const [{ error }, { error: sessionWriteError }] = await Promise.all([
+        supabaseRequest(() => supabase.from('agent_messages').upsert({
+          id: message.id, owner_id: userId, project_id: projectId, session_id: sessionId,
+          updated_at: timestampIso, payload: message,
+        }, { onConflict: 'id' })),
+        supabaseRequest(() => supabase.from('agent_sessions').update({
+          updated_at: timestampIso, payload: { ...session.payload, updatedAt: timestampValue },
+        }).eq('id', sessionId).eq('project_id', projectId)),
+      ])
+      fail(error)
+      fail(sessionWriteError)
+      try {
+        await upsertArtifactRecords(userId, projectId, artifactsFromAgentMessage(message, { sessionId, updatedAt: timestampValue }))
+      } catch (caught) {
+        console.warn(`[artifact-index] message sync deferred for ${message.id}: ${caught instanceof Error ? caught.message : String(caught)}`)
+      }
+      await insertAudit({ actorId: userId, action: existing ? 'agent-message.updated' : 'agent-message.created', projectId, targetId: message.id, detail: { sessionId } })
+      return clone(message)
+    },
+
+    async putAgentMemoryItem(userId, projectId, input) {
+      assertProjectPermission(await memberRole(projectId, userId), 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      const timestampValue = now()
+      const memory = validateAgentMemoryEntity({ ...input, updatedAt: timestampValue }, { now: timestampValue })
+      const { data: existing, error: readError } = await supabaseRequest(() => supabase.from('agent_memory_items').select('project_id').eq('id', memory.id).maybeSingle())
+      fail(readError)
+      if (existing && existing.project_id !== projectId) throw productError('Agent 记忆标识已被其他项目使用。', 'AGENT_MEMORY_ID_CONFLICT')
+      const { error } = await supabaseRequest(() => supabase.from('agent_memory_items').upsert({
+        id: memory.id, owner_id: userId, project_id: projectId,
+        updated_at: new Date(timestampValue).toISOString(), deleted_at: null, payload: memory,
+      }, { onConflict: 'id' }))
+      fail(error)
+      await insertAudit({ actorId: userId, action: existing ? 'agent-memory.updated' : 'agent-memory.created', projectId, targetId: memory.id })
+      return clone(memory)
+    },
+
+    async deleteAgentMemoryItem(userId, projectId, memoryId) {
+      assertProjectPermission(await memberRole(projectId, userId), 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      const { data: existing, error: readError } = await supabaseRequest(() => supabase.from('agent_memory_items')
+        .select('id').eq('id', memoryId).eq('project_id', projectId).is('deleted_at', null).maybeSingle())
+      fail(readError)
+      if (!existing) return false
+      const timestampIso = new Date().toISOString()
+      const { error } = await supabaseRequest(() => supabase.from('agent_memory_items')
+        .update({ deleted_at: timestampIso, updated_at: timestampIso }).eq('id', memoryId).eq('project_id', projectId))
+      fail(error)
+      await insertAudit({ actorId: userId, action: 'agent-memory.deleted', projectId, targetId: memoryId })
+      return true
+    },
+
+    async listAgentArtifacts(userId, projectId, { limit = 100, before } = {}) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const maximum = Math.max(1, Math.min(Number(limit) || 100, artifactIndexLimits.page))
+      let query = supabase.from('agent_artifacts').select('payload')
+        .eq('project_id', projectId)
+        .order('created_at', { ascending: false })
+        .order('updated_at', { ascending: false })
+        .limit(maximum)
+      if (Number.isFinite(Number(before))) query = query.lt('created_at', new Date(Number(before)).toISOString())
+      const { data, error } = await supabaseRequest(() => query)
+      if (missingAgentEntityTable(error)) return []
+      fail(error)
+      return (data ?? []).map((row) => clone(row.payload))
+    },
+
     async putAgentSkill(userId, skill) {
       const role = await memberRole(skill.projectId, userId)
       assertProjectPermission(role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
@@ -410,6 +678,11 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       }, { onConflict: 'id' }))
       fail(error)
       try {
+        await upsertArtifactRecords(userId, receipt.projectId, artifactsFromActionReceipt(receipt))
+      } catch (caught) {
+        console.warn(`[artifact-index] action sync deferred for ${receipt.id}: ${caught instanceof Error ? caught.message : String(caught)}`)
+      }
+      try {
         await insertAudit({ actorId: userId, action: 'agent-action.succeeded', projectId: receipt.projectId, targetId: receipt.id, detail: { toolCallId: receipt.toolCallId } })
       } catch (caught) {
         console.warn(`[agent-action] audit deferred for ${receipt.id}: ${caught instanceof Error ? caught.message : String(caught)}`)
@@ -444,6 +717,11 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
           }).eq('id', run.id).eq('owner_id', userId))
           fail(runWriteError)
         }
+      }
+      try {
+        await upsertArtifactRecords(userId, job.projectId, artifactsFromGenerationJob(payload))
+      } catch (caught) {
+        console.warn(`[artifact-index] generation sync deferred for ${job.id}: ${caught instanceof Error ? caught.message : String(caught)}`)
       }
       // 审计不可用不能让已成功幂等写入的生成任务在客户端表现为失败。
       try {
@@ -518,9 +796,14 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
     },
 
     async recoverGenerationJobs() {
-      const { data, error } = await supabaseRequest(() => supabase.from('generation_jobs').select('payload').eq('status', 'queued').order('updated_at', { ascending: true }))
-      fail(error)
-      return (data ?? []).map((row) => clone(row.payload))
+      const [queuedResult, pendingResult] = await Promise.all([
+        supabaseRequest(() => supabase.from('generation_jobs').select('payload').eq('status', 'queued').order('updated_at', { ascending: true })),
+        supabaseRequest(() => supabase.from('generation_jobs').select('payload').eq('payload->>projectWritebackPending', 'true').order('updated_at', { ascending: true })),
+      ])
+      fail(queuedResult.error)
+      fail(pendingResult.error)
+      const jobs = [...(queuedResult.data ?? []), ...(pendingResult.data ?? [])]
+      return [...new Map(jobs.map((row) => [row.payload.id, row])).values()].map((row) => clone(row.payload))
     },
 
     async recoverStaleGenerationJobs(staleAfterMs = 90_000) {
