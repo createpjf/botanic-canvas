@@ -28,7 +28,7 @@ import '@xyflow/react/dist/style.css'
 import { defaultGenerationModels } from './domain/canvas'
 import { appendBotanicAgentMessage, botanicAgentBranchStatusLabel, botanicAgentContextSnapshotNodeIds, botanicAgentRunFeedback, botanicAgentSubmissionKey, buildBotanicAgentPlan, buildBotanicAgentPromptDiff, collectBotanicAgentResults, createBotanicAgentContextSnapshot, createBotanicAgentRuntimeSteps, creativeDimensionLabel, insertBotanicAgentMention, mergeBotanicAgentArtifactIndex, readBotanicAgentMentionQuery, recordBotanicAgentCanvasWritebacks, resolveBotanicAgentCanvasCommands, resolveBotanicAgentResultSelection, restoreBotanicAgentRuntimeSteps, shouldRecoverAgentRunResults, summarizeBotanicAgentRuntime, updateBotanicAgentRuntimeStep, type BotanicAgentActionProposal, type BotanicAgentActionResult, type BotanicAgentArtifact, type BotanicAgentCanvasWriteback, type BotanicAgentClarification, type BotanicAgentClarificationField, type BotanicAgentClarificationResponse, type BotanicAgentExecutionMode, type BotanicAgentIntent, type BotanicAgentMemoryItem, type BotanicAgentMemoryKind, type BotanicAgentMentionQuery, type BotanicAgentMessage, type BotanicAgentPlan, type BotanicAgentPromptDiffSegment, type BotanicAgentRun, type BotanicAgentRuntimePhase, type BotanicAgentRuntimeStep, type BotanicAgentSession, type BotanicAgentSkill, type BotanicIndexedArtifact } from './domain/agent'
 import { collectAgentMediaSources, prepareAgentMediaSources } from './domain/agentMedia'
-import { canvasZoomMode, generationTaskErrorMessage, planResultGroupPresentation, traceCanvasLineage, type ResultGroupPresentation } from './domain/canvasPresentation'
+import { canvasZoomMode, generationTaskErrorMessage, generationTaskFeedback, planResultGroupPresentation, traceCanvasLineage, type ResultGroupPresentation } from './domain/canvasPresentation'
 import { buildDeliveryPreviewArtifacts, canUseForImageDelivery, resolveDeliveryDraft, type DeliveryPanelTarget } from './domain/deliveryPresentation'
 import { mediaFileExtension, reducedAspectRatio } from './domain/mediaPresentation'
 import { mediaRetryUrl } from './domain/mediaRecovery'
@@ -746,7 +746,7 @@ type CanvasComposerProps = {
   settings: GenerationSettings
   models: GenerationModelOption[]
   references: ComposerFocusReference[]
-  status: 'idle' | 'uploading' | 'queued' | 'running' | 'error'
+  status: 'idle' | 'uploading' | 'queued' | 'running' | 'recovering' | 'error'
   error?: string
   canGenerate: boolean
   onNodeLabelChange?: (label: string) => void
@@ -786,7 +786,7 @@ function settingsForModel(settings: GenerationSettings, model: GenerationModelOp
 }
 
 function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount, maximumBatchCount, settings, models, references, status, error, canGenerate, onNodeLabelChange, onPromptChange, onBatchCountChange, onSettingsChange, videoInputMode = 'first_frame', onVideoInputModeChange, refinementMode = 'faithful', onRefinementModeChange, onOpenReferences, onOpenAssets, onGenerate, onClose, layout, onLayoutChange }: CanvasComposerProps) {
-  const isGenerating = status === 'uploading' || status === 'queued' || status === 'running'
+  const isGenerating = status === 'uploading' || status === 'queued' || status === 'running' || status === 'recovering'
   const [refinement, setRefinement] = useState<PromptRefinementState>({ status: 'idle' })
   const refinementRequestRef = useRef<{ id: number; controller?: AbortController }>({ id: 0 })
   const refinementFeedbackTimerRef = useRef<number | null>(null)
@@ -1165,7 +1165,7 @@ function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount, maximu
           </div>
           <div className={error ? 'canvas-composer__feedback is-error' : 'canvas-composer__feedback'} role={error ? 'alert' : 'status'}>
             {error ?? (isGenerating
-              ? (status === 'uploading' ? '正在上传参考素材…' : status === 'queued' ? '任务已入队…' : `${selectedModel?.mediaKind === 'video' ? '视频' : '图像'}服务正在生成…`)
+              ? (status === 'recovering' ? '正在确认任务，请勿重复提交…' : status === 'uploading' ? '正在上传参考素材…' : status === 'queued' ? '任务已入队…' : `${selectedModel?.mediaKind === 'video' ? '视频' : '图像'}服务正在生成…`)
               : canGenerate
                 ? (primaryReference ? `主参考 · ${primaryReference.name}` : '参数已准备好，提交后会在画布中创建新的结果节点。')
                 : isVideoModel
@@ -1181,9 +1181,10 @@ function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount, maximu
   )
 }
 
-function taskStatusLabel(status: 'uploading' | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled') {
+function taskStatusLabel(status: 'uploading' | 'submission_unknown' | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled') {
   const labels = {
     uploading: '提交素材',
+    submission_unknown: '等待确认',
     queued: '任务排队',
     running: '真实生成中',
     succeeded: '候选待选',
@@ -1191,16 +1192,6 @@ function taskStatusLabel(status: 'uploading' | 'queued' | 'running' | 'succeeded
     cancelled: '已取消',
   }
   return labels[status]
-}
-
-function resultTaskFeedback(status: ResultNodeData['taskStatus']) {
-  if (status === 'uploading') {
-    return { title: '准备生成', detail: '正在锁定参考' }
-  }
-  if (status === 'queued') {
-    return { title: '正在生成', detail: '已进入队列' }
-  }
-  return { title: '正在生成', detail: '可继续编辑画布' }
 }
 
 function elapsedTaskLabel(seconds: number) {
@@ -1277,6 +1268,7 @@ function ResultNode({ data, id, selected }: NodeProps) {
   const [videoDimensions, setVideoDimensions] = useState<{ width: number; height: number } | null>(null)
   const [currentTime, setCurrentTime] = useState(() => Date.now())
   const cancelGeneration = useCanvasStore((state) => state.cancelGeneration)
+  const recoverUnknownGenerationSubmission = useCanvasStore((state) => state.recoverUnknownGenerationSubmission)
   const retryGeneration = useCanvasStore((state) => state.retryGeneration)
   const retryMissingGeneration = useCanvasStore((state) => state.retryMissingGeneration)
   const removeNodeFromCanvas = useCanvasStore((state) => state.removeNodeFromCanvas)
@@ -1299,7 +1291,8 @@ function ResultNode({ data, id, selected }: NodeProps) {
   const resultName = result.label ?? (result.generationKind === 'refinement' ? '精修版本' : '生成版本')
   const hasDisplayableImage = Boolean(result.image) && !imageFailed
   const isGenerating = result.status === 'generating'
-  const taskFeedback = resultTaskFeedback(result.taskStatus)
+  const isSubmissionUnknown = result.taskStatus === 'submission_unknown'
+  const taskFeedback = generationTaskFeedback(result.taskStatus)
   const elapsedSeconds = result.submittedAt && isGenerating
     ? Math.max(0, Math.floor((currentTime - result.submittedAt) / 1_000))
     : 0
@@ -1378,7 +1371,7 @@ function ResultNode({ data, id, selected }: NodeProps) {
         ><DeleteIcon /></button> : null}
       </header>
       <div
-        className={['result-node', ratioClass, isGenerating ? 'result-node--generating' : '', isSelected ? 'is-selected' : ''].filter(Boolean).join(' ')}
+        className={['result-node', ratioClass, isGenerating ? 'result-node--generating' : '', isSubmissionUnknown ? 'result-node--recovering' : '', isSelected ? 'is-selected' : ''].filter(Boolean).join(' ')}
         style={mediaKind === 'video' && videoDimensions
           ? { height: 'auto', aspectRatio: `${videoDimensions.width} / ${videoDimensions.height}` }
           : undefined}
@@ -1428,7 +1421,8 @@ function ResultNode({ data, id, selected }: NodeProps) {
             <strong aria-live="polite">{imageFailed ? '媒体无法显示' : isGenerating ? taskFeedback.title : result.status === 'failed' ? '任务未完成' : result.status === 'cancelled' ? '任务已取消' : '等待生成结果'}</strong>
             <small>{imageFailed ? '媒体读取失败，可能是登录状态或网络中断。' : isGenerating ? (isSlowTask ? elapsedTaskLabel(elapsedSeconds) : taskFeedback.detail) : generationTaskErrorMessage(result.error) ?? (result.status === 'ready' ? '等待生成服务返回结果。' : '生成服务的真实状态会在此同步。')}</small>
             {imageFailed ? <button className="result-node__task-action nodrag nowheel" type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void recoverMedia() }}>重新加载</button> : null}
-            {result.status === 'generating' ? <button className="result-node__task-action nodrag nowheel" type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); cancelGeneration() }}>取消</button> : null}
+            {isSubmissionUnknown ? <button className="result-node__task-action nodrag nowheel" type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void recoverUnknownGenerationSubmission() }}>立即确认</button> : null}
+            {result.status === 'generating' && !isSubmissionUnknown ? <button className="result-node__task-action nodrag nowheel" type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); cancelGeneration() }}>取消</button> : null}
             {result.status === 'failed' ? <div className="result-node__task-actions nodrag nowheel" onPointerDown={(event) => event.stopPropagation()}>
               <button className="result-node__task-action" type="button" onClick={(event) => { event.stopPropagation(); void retryGeneration() }}>原配方重试</button>
               <button className="result-node__task-action is-danger" type="button" onClick={(event) => { event.stopPropagation(); removeNodeFromCanvas(targetNodeId) }}>删除任务</button>
@@ -2337,6 +2331,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
   const openDocument = useCanvasStore((state) => state.openDocument)
   const refreshDocumentFromRemote = useCanvasStore((state) => state.refreshDocumentFromRemote)
   const recoverGenerationResultsFromRemote = useCanvasStore((state) => state.recoverGenerationResultsFromRemote)
+  const recoverUnknownGenerationSubmission = useCanvasStore((state) => state.recoverUnknownGenerationSubmission)
   const openNewDocument = useCanvasStore((state) => state.openNewDocument)
   const renameDocument = useCanvasStore((state) => state.renameDocument)
   const setNodes = useCanvasStore((state) => state.setNodes)
@@ -2714,18 +2709,20 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
     const syncDrafts = () => {
       void synchronizeLocalDrafts()
         .then(() => refreshDocumentFromRemote())
+        .then(() => recoverUnknownGenerationSubmission())
         .then(() => recoverPersistentAgentRuns())
         .catch(() => undefined)
     }
     syncDrafts()
     window.addEventListener('online', syncDrafts)
     return () => window.removeEventListener('online', syncDrafts)
-  }, [hydrated, recoverPersistentAgentRuns, refreshDocumentFromRemote, synchronizeLocalDrafts])
+  }, [hydrated, recoverPersistentAgentRuns, recoverUnknownGenerationSubmission, refreshDocumentFromRemote, synchronizeLocalDrafts])
 
   useEffect(() => {
     if (!hydrated || !workspaceRestored || workspaceView !== 'canvas' || !serverPersistenceEnabled) return
     const refresh = () => {
       void refreshDocumentFromRemote()
+        .then(() => recoverUnknownGenerationSubmission())
         .then(() => recoverPersistentAgentRuns())
         .catch(() => undefined)
     }
@@ -2738,7 +2735,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
       window.removeEventListener('focus', refresh)
       window.document.removeEventListener('visibilitychange', refreshWhenVisible)
     }
-  }, [hydrated, recoverPersistentAgentRuns, refreshDocumentFromRemote, workspaceRestored, workspaceView])
+  }, [hydrated, recoverPersistentAgentRuns, recoverUnknownGenerationSubmission, refreshDocumentFromRemote, workspaceRestored, workspaceView])
 
   useEffect(() => {
     if (!hydrated || !workspaceRestored || workspaceView !== 'canvas' || !serverPersistenceEnabled) return
@@ -2767,6 +2764,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
       },
       onReconnected: () => {
         void synchronizeLocalDrafts()
+          .then(() => recoverUnknownGenerationSubmission())
           .then(() => recoverPersistentAgentRuns())
           .then(() => refreshDocumentFromRemote())
           .catch(() => undefined)
@@ -2777,7 +2775,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
       if (collaborationRef.current === collaboration) collaborationRef.current = null
       collaboration.close()
     }
-  }, [applyAgentRunSnapshot, applyCollaborativeGraph, document.id, hydrated, recoverGenerationResultsFromRemote, recoverPersistentAgentRuns, refreshDocumentFromRemote, synchronizeLocalDrafts, workspaceRestored, workspaceView])
+  }, [applyAgentRunSnapshot, applyCollaborativeGraph, document.id, hydrated, recoverGenerationResultsFromRemote, recoverPersistentAgentRuns, recoverUnknownGenerationSubmission, refreshDocumentFromRemote, synchronizeLocalDrafts, workspaceRestored, workspaceView])
 
   useEffect(() => {
     if (!hydrated || !workspaceRestored || workspaceView !== 'canvas' || !serverPersistenceEnabled) return
@@ -4843,7 +4841,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
           assets={assetLibraryAssets}
           models={availableModels}
           maximumCandidates={maximumBatchCount}
-          busy={generationStatus === 'uploading' || generationStatus === 'queued' || generationStatus === 'running'}
+          busy={generationStatus === 'uploading' || generationStatus === 'queued' || generationStatus === 'running' || generationStatus === 'recovering'}
           onOpenAssets={() => {
             setBatchComposerTargetId(null)
             setAssetsOpen(true)
@@ -5023,7 +5021,7 @@ function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser
             node={{ id: selectedGenerate.id, data: selectedGenerate.data as GenerateNodeData }}
             references={canvasAssetReferences}
             connectedNodeIds={selectedGenerateReferenceNodeIds}
-            disabled={generationStatus === 'uploading' || generationStatus === 'queued' || generationStatus === 'running'}
+            disabled={generationStatus === 'uploading' || generationStatus === 'queued' || generationStatus === 'running' || generationStatus === 'recovering'}
             onToggle={(assetNodeId, enabled) => toggleNodeReference(selectedGenerate.id, assetNodeId, enabled)}
             onSetPrimary={(assetNodeId) => setGenerateNodePrimaryInput(selectedGenerate.id, assetNodeId)}
             onClose={() => setNodeReferencesOpen(false)}
@@ -6664,7 +6662,7 @@ function GenerationPanel({
   onRetry,
   onClose,
 }: {
-  status: 'idle' | 'uploading' | 'queued' | 'running' | 'error'
+  status: 'idle' | 'uploading' | 'queued' | 'running' | 'recovering' | 'error'
   pendingCount: number
   error: string | null
   kind?: GenerationCandidate['kind']
@@ -6674,8 +6672,10 @@ function GenerationPanel({
   onRetry: () => void
   onClose: () => void
 }) {
-  const isInFlight = status === 'uploading' || status === 'queued' || status === 'running'
-  const statusMessage = status === 'uploading'
+  const isInFlight = status === 'uploading' || status === 'queued' || status === 'running' || status === 'recovering'
+  const statusMessage = status === 'recovering'
+    ? '正在确认任务，请勿重复提交'
+    : status === 'uploading'
     ? '正在上传画布参考素材'
     : status === 'queued'
       ? '生成服务已接收任务，正在排队'
@@ -7003,7 +7003,7 @@ type NodeComposerProps = {
   maximumBatchCount: number
   settings: GenerationSettings
   models: GenerationModelOption[]
-  status: 'idle' | 'uploading' | 'queued' | 'running' | 'error'
+  status: 'idle' | 'uploading' | 'queued' | 'running' | 'recovering' | 'error'
   service: GenerationServiceState
   hint: string
   canRetry: boolean
@@ -7047,7 +7047,7 @@ const refinementShortcuts: Array<{ label: string; prompt: string; aspectRatio?: 
 ]
 
 function NodeComposer({ prompt, batchCount, maximumBatchCount, settings, models, status, service, hint, canRetry, references, referenceCount, primaryReferenceName, context, onOpenReferences, onOpenAssets, onRefreshService, target, placement = 'canvas', onPromptChange, onBatchCountChange, onSettingsChange, onCancel, onRetry, onGenerate, onDismiss, layout, onLayoutChange }: NodeComposerProps) {
-  const isGenerating = status === 'uploading' || status === 'queued' || status === 'running'
+  const isGenerating = status === 'uploading' || status === 'queued' || status === 'running' || status === 'recovering'
   const isServiceReady = service.status === 'ready'
   const isResultAnchor = placement === 'result-anchor'
   const isNodeBound = context?.kind === 'generate'
@@ -7195,9 +7195,9 @@ function NodeComposer({ prompt, batchCount, maximumBatchCount, settings, models,
       </div>
       <div className={status === 'error' ? 'node-composer__feedback is-error' : 'node-composer__feedback'} role={status === 'error' ? 'alert' : 'status'}>
         <span>{isGenerating
-          ? (status === 'uploading' ? '正在上传参考素材…' : status === 'queued' ? '真实任务已入队…' : `${selectedModel?.mediaKind === 'video' ? '视频' : '图像'}服务正在生成…`)
+          ? (status === 'recovering' ? '正在确认任务，请勿重复提交…' : status === 'uploading' ? '正在上传参考素材…' : status === 'queued' ? '真实任务已入队…' : `${selectedModel?.mediaKind === 'video' ? '视频' : '图像'}服务正在生成…`)
           : !isServiceReady ? service.message : hint}</span>
-        {isGenerating ? <button onClick={onCancel}>取消</button> : null}
+        {isGenerating && status !== 'recovering' ? <button onClick={onCancel}>取消</button> : null}
         {!isGenerating && !isServiceReady ? <button onClick={onRefreshService} disabled={service.status === 'checking'}>{service.status === 'checking' ? '检查中' : '重新检查'}</button> : null}
         {isServiceReady && status === 'error' && canRetry ? <button onClick={onRetry}>重试</button> : null}
         {!target && !hasProductReference && !isGenerating ? <button onClick={references.length ? onOpenReferences : onOpenAssets}>{references.length ? '锁定主商品' : '添加商品'}</button> : null}

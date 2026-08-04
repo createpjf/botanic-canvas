@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Edge } from '@xyflow/react'
-import { canvasZoomMode, generationTaskErrorMessage, generationTaskResultLabel, planResultGroupPresentation, traceCanvasLineage } from './canvasPresentation.ts'
+import { canvasZoomMode, generationTaskErrorMessage, generationTaskFeedback, generationTaskResultLabel, planResultGroupPresentation, traceCanvasLineage } from './canvasPresentation.ts'
 
 test('canvasZoomMode applies stable semantic zoom bands', () => {
   assert.equal(canvasZoomMode(1), 'detail')
@@ -27,6 +27,20 @@ test('generationTaskResultLabel distinguishes expired login from a real submissi
     error: '任务提交超过 5 分钟，未进入生成队列。请重试。',
     currentLabel: '首图候选 01',
   }), '首图候选 · 提交超时')
+})
+
+test('提交状态未知时保持可恢复状态，不误报任务失败', () => {
+  assert.equal(generationTaskResultLabel({
+    generationKind: 'generation',
+    status: 'submission_unknown',
+    currentLabel: '首图候选 01',
+  }), '首图候选 · 等待确认')
+
+  assert.deepEqual(generationTaskFeedback('submission_unknown'), {
+    title: '正在恢复任务',
+    detail: '请勿重复提交，联网后自动确认',
+    recoverable: true,
+  })
 })
 
 test('generationTaskErrorMessage hides raw network errors while preserving actionable provider messages', () => {

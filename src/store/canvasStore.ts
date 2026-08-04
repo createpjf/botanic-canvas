@@ -7,7 +7,9 @@ import { normalizeAssetGroupName, normalizeAssetGroups, removeAssetFromGroups, u
 import { mergeCollaborativeCanvasGraph } from '../domain/collaborativeGraph'
 import { findOpenGeneratePosition, planGenerateNodeCreation } from '../domain/generateNodeCreation'
 import { planGenerationOutputPlacement } from '../domain/generationOutputPlacement'
+import { findUnknownSubmissionAnchor } from '../domain/generationRecovery'
 import { generationTaskResultLabel } from '../domain/canvasPresentation'
+import { generationSubmissionFailureDisposition } from '../domain/generationSubmission'
 import { isRemoteDocumentConflict, resolveRemoteCanvasRefresh } from '../domain/remoteDocumentSync'
 import { assignVideoInputRoles } from '../domain/videoGeneration'
 import { summarizeWorkflowTemplate } from '../domain/workflowTemplates'
@@ -21,6 +23,7 @@ import type {
   AssetRole,
   AssetNodeData,
   CanvasDocument,
+  CanvasGenerationTaskStatus,
   CanvasHistoryEntry,
   CanvasNode,
   CanvasSnapshot,
@@ -60,7 +63,7 @@ import { ProductApiError } from '../lib/productSession'
 import { assertGenerationServiceReady, cancelGenerationJob, GenerationApiError, getGenerationJob, listProjectGenerationJobs, reconcileProjectGenerationResults, submitGenerationJob } from '../lib/generationApi'
 import { cancelPersistentBotanicAgentRun, retryPersistentBotanicAgentBranch } from '../lib/agentApi'
 
-type GenerationStatus = 'idle' | 'uploading' | 'queued' | 'running' | 'error'
+type GenerationStatus = 'idle' | 'uploading' | 'queued' | 'running' | 'recovering' | 'error'
 type PersistenceStatus = 'saved' | 'saving' | 'offline' | 'conflict' | 'error'
 
 type TaskNodeIds = {
@@ -146,6 +149,7 @@ type CanvasStore = {
   openDocument: (documentId: string) => Promise<boolean>
   refreshDocumentFromRemote: () => Promise<boolean>
   recoverGenerationResultsFromRemote: () => Promise<boolean>
+  recoverUnknownGenerationSubmission: () => Promise<boolean>
   openNewDocument: (document: CanvasDocument) => void
   renameDocument: (name: string) => Promise<void>
   setNodes: (nodes: CanvasNode[]) => void
@@ -1652,7 +1656,7 @@ function setGenerationError(set: (next: Partial<CanvasStore>) => void, message: 
   return false
 }
 
-function taskResultStatus(status: GenerationJob['status'] | 'uploading'): ResultNodeData['status'] {
+function taskResultStatus(status: CanvasGenerationTaskStatus): ResultNodeData['status'] {
   if (status === 'failed') return 'failed'
   if (status === 'cancelled') return 'cancelled'
   if (status === 'succeeded') return 'ready'
@@ -1746,6 +1750,8 @@ function createTaskFlow(
           status: 'uploading',
           generationKind: request.kind,
           refinementMode: request.refinementMode,
+          submissionKey: request.idempotencyKey,
+          agentRun: request.agentRun,
           jobId: undefined,
           error: undefined,
         },
@@ -1763,6 +1769,8 @@ function createTaskFlow(
           settings: cloneGenerationSettings(request.settings),
           status: 'uploading',
           generationKind: request.kind,
+          submissionKey: request.idempotencyKey,
+          agentRun: request.agentRun,
         },
       }
   const resultNodes: CanvasNode[] = (taskNodeIds.resultNodeIds ?? [taskNodeIds.resultNodeId]).map((resultNodeId, variant) => ({
@@ -1785,6 +1793,8 @@ function createTaskFlow(
       variant,
       taskGroupId: taskNodeIds.resultNodeId,
       taskNodeId: taskNodeIds.resultNodeId,
+      submissionKey: request.idempotencyKey,
+      agentRun: request.agentRun,
     },
   }))
   const taskEdges: Edge[] = []
@@ -1852,7 +1862,7 @@ function createTaskFlow(
 function updateTaskNodes(
   document: CanvasDocument,
   taskNodeIds: TaskNodeIds,
-  status: GenerationJob['status'] | 'uploading',
+  status: CanvasGenerationTaskStatus,
   jobId?: string,
   error?: string,
 ) {
@@ -1894,13 +1904,55 @@ function updateTaskNodes(
   const taskResultNodeIds = new Set(nodes
     .filter((node) => node.type === 'result' && ((node.data as ResultNodeData).taskGroupId === taskNodeIds.resultNodeId || node.id === taskNodeIds.resultNodeId))
     .map((node) => node.id))
-  const isActive = status === 'uploading' || status === 'queued' || status === 'running'
+  const isActive = status === 'uploading' || status === 'queued' || status === 'running' || status === 'submission_unknown'
   const edges = document.edges.map((edge) => {
     const belongsToTask = edge.target === taskNodeIds.generateNodeId || edge.source === taskNodeIds.generateNodeId || taskResultNodeIds.has(edge.target)
     if (!belongsToTask || !edge.className?.includes('task-edge')) return edge
     return { ...edge, className: isActive ? 'task-edge task-edge--active' : 'task-edge' }
   })
   return { ...document, nodes, edges }
+}
+
+async function applyGenerationSubmissionFailure(
+  set: (next: Partial<CanvasStore>) => void,
+  get: () => CanvasStore,
+  request: GenerationRequest & { taskNodeIds: TaskNodeIds },
+  error: unknown,
+) {
+  const disposition = generationSubmissionFailureDisposition(error)
+  const fallbackMessage = request.kind === 'refinement'
+    ? '真实精修任务提交失败，请重试。'
+    : '真实生图任务提交失败，请重试。'
+  const message = disposition.message ?? fallbackMessage
+  const nextDocument = updateTaskNodes(
+    get().document,
+    request.taskNodeIds,
+    disposition.taskStatus,
+    undefined,
+    message,
+  )
+  if (disposition.kind === 'recovering') {
+    await commit(set, nextDocument, {
+      generationStatus: 'recovering',
+      generationProgress: 0,
+      generationError: null,
+      expectedCandidateCount: request.batchCount,
+      generationCandidates: [],
+      lastGenerationRequest: request,
+      assistantMessage: message,
+    }, { immediate: true })
+    return false
+  }
+  void commit(set, nextDocument, {
+    generationStatus: 'error',
+    generationProgress: 0,
+    generationError: message,
+    expectedCandidateCount: 0,
+    generationCandidates: [],
+    lastGenerationRequest: request,
+    assistantMessage: message,
+  })
+  return false
 }
 
 const generationSubmissionTimeoutMs = 5 * 60_000
@@ -2050,6 +2102,48 @@ function requestFromTaskNode(document: CanvasDocument, taskResultNode: CanvasNod
     idempotencyKey: document.generationJobs.find((item) => item.id === jobId)?.idempotencyKey,
     taskNodeIds: { generateNodeId: generateNode.id, resultNodeId },
     refinementMode: result.refinementMode ?? generate.refinementMode,
+  }
+}
+
+/**
+ * POST 超时时还没有 jobId；用已落库的节点配方与原幂等键恢复查询。
+ * 这条路径绝不创建新键，否则刷新/跨设备恢复会重复扣额并生成。
+ */
+function requestFromUnknownSubmission(document: CanvasDocument): GenerationRequest | null {
+  const anchor = findUnknownSubmissionAnchor(document.nodes)
+  if (!anchor) return null
+  const { generateNode, resultNode: taskResultNode, resultNodeIds, submissionKey: idempotencyKey } = anchor
+  const generate = generateNode.data as GenerateNodeData
+  const result = taskResultNode.data as ResultNodeData
+  const recipe = result.generationRecipe
+    ? cloneGenerationRecipe(result.generationRecipe)
+    : buildGraphGenerationRecipe(document, generateNode.id)?.recipe
+  if (!idempotencyKey || !recipe) return null
+
+  const kind = result.generationKind ?? generate.generationKind ?? 'generation'
+  const parentNodeId = kind === 'refinement'
+    ? document.edges.find((edge) => edge.target === generateNode.id && document.nodes.some((node) => node.id === edge.source && node.type === 'result'))?.source
+    : undefined
+  const parentNode = parentNodeId
+    ? document.nodes.find((node) => node.id === parentNodeId && node.type === 'result')
+    : undefined
+  const parent = parentNode?.type === 'result' ? parentNode.data as ResultNodeData : undefined
+  const resultNodeId = result.taskGroupId ?? taskResultNode.id
+  return {
+    kind,
+    prompt: recipe.prompt || generate.prompt,
+    batchCount: recipe.batchCount,
+    settings: cloneGenerationSettings(recipe.settings),
+    recipe,
+    rootRecipe: result.rootRecipe ? cloneGenerationRecipe(result.rootRecipe) : cloneGenerationRecipe(recipe),
+    targetNodeId: parentNodeId,
+    parentVersionId: parent?.versionId,
+    parentImage: parent?.image,
+    parentLabel: parent?.label,
+    idempotencyKey,
+    taskNodeIds: { generateNodeId: generateNode.id, resultNodeId, resultNodeIds },
+    refinementMode: result.refinementMode ?? generate.refinementMode,
+    agentRun: result.agentRun ?? generate.agentRun,
   }
 }
 
@@ -2317,6 +2411,18 @@ function persistedGenerationState(document: CanvasDocument, fallbackMessage: str
     expectedCandidateCount: 0,
     generationCandidates: [],
     lastGenerationRequest: null,
+  }
+  const unknownSubmissionRequest = requestFromUnknownSubmission(document)
+  if (unknownSubmissionRequest) {
+    return {
+      state: {
+        ...idleState,
+        lastGenerationRequest: unknownSubmissionRequest,
+        generationStatus: 'recovering',
+        expectedCandidateCount: unknownSubmissionRequest.batchCount,
+        assistantMessage: '已恢复一个提交状态未知的任务；正在用原幂等键确认，请勿重复提交。',
+      },
+    }
   }
   const latestJob = [...document.generationJobs].sort((left, right) => right.updatedAt - left.updatedAt)[0]
   const request = latestJob ? requestFromPersistedJob(document, latestJob) : null
@@ -2844,11 +2950,16 @@ function applyRemoteDocumentRefresh(
     persistenceStatus: 'saved',
     selectedNodeId: selectedNode?.id ?? null,
     ...recoveredGeneration.state,
-    assistantMessage: '已同步其他设备的更新。',
+    assistantMessage: recoveredGeneration.state.generationStatus === 'recovering'
+      ? recoveredGeneration.state.assistantMessage
+      : '已同步其他设备的更新。',
     undoAction: null,
     undoSnapshot: null,
   })
   if (recoveredGeneration.pollJobId) pollGenerationJob(set, get, recoveredGeneration.pollJobId)
+  else if (recoveredGeneration.state.generationStatus === 'recovering') {
+    queueMicrotask(() => { void get().recoverUnknownGenerationSubmission() })
+  }
   return true
 }
 
@@ -2974,6 +3085,9 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
       .then((library) => set({ sharedTemplates: library?.templates ?? [] }))
       .catch(() => undefined)
     if (recoveredGeneration.pollJobId) pollGenerationJob(set, get, recoveredGeneration.pollJobId)
+    else if (recoveredGeneration.state.generationStatus === 'recovering') {
+      queueMicrotask(() => { void get().recoverUnknownGenerationSubmission() })
+    }
     // 仅在共享素材已就绪时恢复批量任务；否则由素材库加载完成后继续，
     // 避免把共享品牌素材误判为“已不存在”。
     if (get().globalAssets.length) window.setTimeout(() => get().resumeBatchVariations(), 0)
@@ -3009,6 +3123,57 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     return recoverGenerationResults(set, get, documentId)
   },
 
+  recoverUnknownGenerationSubmission: async () => {
+    const request = get().lastGenerationRequest
+    if (
+      get().generationStatus !== 'recovering'
+      || !request?.taskNodeIds
+      || !request.recipe
+      || !request.idempotencyKey
+    ) return false
+    const recoverableRequest: GenerationRequest & {
+      taskNodeIds: TaskNodeIds
+      recipe: GenerationRecipe
+      idempotencyKey: string
+    } = {
+      ...request,
+      taskNodeIds: request.taskNodeIds,
+      recipe: request.recipe,
+      idempotencyKey: request.idempotencyKey,
+    }
+
+    const submissionRunId = ++generationSubmissionRunId
+    set({
+      generationError: null,
+      assistantMessage: '正在用原幂等键确认任务，不会重复生成。',
+    })
+    try {
+      const job = await submitGenerationJob({
+        projectId: get().document.id,
+        kind: recoverableRequest.kind,
+        prompt: recoverableRequest.prompt,
+        batchCount: recoverableRequest.batchCount,
+        settings: recoverableRequest.settings,
+        recipe: recoverableRequest.recipe,
+        parent: recoverableRequest.kind === 'refinement' && recoverableRequest.targetNodeId && recoverableRequest.parentImage
+          ? { nodeId: recoverableRequest.targetNodeId, name: recoverableRequest.parentLabel ?? '已选首图', image: recoverableRequest.parentImage }
+          : undefined,
+        refinementMode: recoverableRequest.refinementMode,
+        agentRun: recoverableRequest.agentRun,
+        idempotencyKey: recoverableRequest.idempotencyKey,
+      })
+      if (submissionRunId !== generationSubmissionRunId) return false
+      const recoveredRequest = { ...recoverableRequest, jobId: job.id }
+      set({ lastGenerationRequest: recoveredRequest })
+      syncGenerationJob(set, get, job)
+      if (job.status === 'queued' || job.status === 'running') pollGenerationJob(set, get, job.id)
+      return true
+    } catch (error) {
+      if (submissionRunId !== generationSubmissionRunId) return false
+      return applyGenerationSubmissionFailure(set, get, recoverableRequest, error)
+    }
+  },
+
   openNewDocument: (document) => {
     stopGenerationPolling()
     document = settleExpiredGenerationSubmissions(document).document
@@ -3033,6 +3198,9 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     void readGlobalWorkflowTemplateLibrary()
       .then((library) => set({ sharedTemplates: library?.templates ?? [] }))
       .catch(() => undefined)
+    if (recoveredGeneration.state.generationStatus === 'recovering') {
+      queueMicrotask(() => { void get().recoverUnknownGenerationSubmission() })
+    }
     window.setTimeout(() => get().resumeBatchVariations(), 0)
   },
 
@@ -4736,18 +4904,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
       return true
     } catch (error) {
       if (submissionRunId !== generationSubmissionRunId) return false
-      const message = error instanceof Error ? error.message : '真实生图任务提交失败，请重试。'
-      const failedDocument = updateTaskNodes(get().document, flow.taskNodeIds, 'failed', undefined, message)
-      commit(set, failedDocument, {
-        generationStatus: 'error',
-        generationProgress: 0,
-        generationError: message,
-        expectedCandidateCount: 0,
-        generationCandidates: [],
-        lastGenerationRequest: preparedRequest,
-        assistantMessage: message,
-      })
-      return false
+      return applyGenerationSubmissionFailure(set, get, preparedRequest, error)
     }
   },
 
@@ -4844,18 +5001,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
       return true
     } catch (error) {
       if (submissionRunId !== generationSubmissionRunId) return false
-      const message = error instanceof Error ? error.message : '真实精修任务提交失败，请重试。'
-      const failedDocument = updateTaskNodes(get().document, flow.taskNodeIds, 'failed', undefined, message)
-      commit(set, failedDocument, {
-        generationStatus: 'error',
-        generationProgress: 0,
-        generationError: message,
-        expectedCandidateCount: 0,
-        generationCandidates: [],
-        lastGenerationRequest: preparedRequest,
-        assistantMessage: message,
-      })
-      return false
+      return applyGenerationSubmissionFailure(set, get, preparedRequest, error)
     }
   },
 

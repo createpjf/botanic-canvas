@@ -1604,6 +1604,8 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .result-node__task-state--failed span { color: #a35e52; }
 .result-node__task-state--cancelled { background: linear-gradient(145deg, #f6f7f4, #e8ebe6); color: #6e776e; }
 .result-node--generating { border-color: #4b7b56; box-shadow: 0 0 0 3px rgba(76, 128, 88, 0.12), 0 12px 28px rgba(34, 70, 42, 0.13); }
+.result-node--recovering { border-color: #9a7b43; box-shadow: 0 0 0 3px rgba(154, 123, 67, 0.12), 0 12px 28px rgba(86, 65, 28, 0.12); }
+.result-node--recovering .result-node__task-state { background: radial-gradient(circle at 50% 0%, #fffdf7, #f3eee1 64%, #e9e1ce); color: #69552d; }
 .result-node__task-state--generating { position: relative; isolation: isolate; overflow: hidden; background: radial-gradient(circle at 50% 0%, #f6fbf6, #e5eee5 64%, #dce8dc); }
 .result-node__task-state--generating::before { content: none; }
 .result-node__task-pulse { display: block; width: 38px; height: 10px; margin: 2px auto 1px; border-radius: 99px; background: radial-gradient(circle at 7px 5px, #5f9a6c 0 3px, transparent 3.5px), radial-gradient(circle at 19px 5px, #5f9a6c 0 3px, transparent 3.5px), radial-gradient(circle at 31px 5px, #5f9a6c 0 3px, transparent 3.5px); opacity: .68; }

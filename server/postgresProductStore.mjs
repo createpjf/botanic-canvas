@@ -319,6 +319,67 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     cross join lateral jsonb_array_elements(coalesce(project.document->'agentRuns', '[]'::jsonb)) run
     where nullif(run->>'id', '') is not null
     on conflict (id) do nothing;
+    -- Agent 实体 ID 全局唯一，项目 ID 是授权与归属边界。历史快照若复用其他项目的
+    -- 实体 ID，不能被 on conflict 静默吞掉；启动事务必须中止并要求修复冲突数据。
+    do $$
+    declare
+      conflict_count bigint;
+    begin
+      with expected_sessions as (
+        select project.id as project_id, session->>'id' as id
+        from projects project
+        cross join lateral jsonb_array_elements(coalesce(project.document->'agentSessions', '[]'::jsonb)) session
+        where nullif(session->>'id', '') is not null
+      ), expected_messages as (
+        select project.id as project_id, session->>'id' as session_id, message->>'id' as id
+        from projects project
+        cross join lateral jsonb_array_elements(coalesce(project.document->'agentSessions', '[]'::jsonb)) session
+        cross join lateral jsonb_array_elements(coalesce(session->'messages', '[]'::jsonb)) message
+        where nullif(session->>'id', '') is not null and nullif(message->>'id', '') is not null
+      ), expected_memory as (
+        select project.id as project_id, memory->>'id' as id
+        from projects project
+        cross join lateral jsonb_array_elements(coalesce(project.document->'agentMemory', '[]'::jsonb)) memory
+        where nullif(memory->>'id', '') is not null
+      ), expected_runs as (
+        select project.id as project_id, run->>'id' as id
+        from projects project
+        cross join lateral jsonb_array_elements(coalesce(project.document->'agentRuns', '[]'::jsonb)) run
+        where nullif(run->>'id', '') is not null
+      )
+      select count(*) into conflict_count
+      from (
+        select expected.id
+        from expected_sessions expected
+        left join agent_sessions indexed
+          on indexed.id = expected.id and indexed.project_id = expected.project_id
+        where indexed.id is null
+        union all
+        select expected.id
+        from expected_messages expected
+        left join agent_messages indexed
+          on indexed.id = expected.id
+          and indexed.project_id = expected.project_id
+          and indexed.session_id = expected.session_id
+        where indexed.id is null
+        union all
+        select expected.id
+        from expected_memory expected
+        left join agent_memory_items indexed
+          on indexed.id = expected.id and indexed.project_id = expected.project_id
+        where indexed.id is null
+        union all
+        select expected.id
+        from expected_runs expected
+        left join agent_runs indexed
+          on indexed.id = expected.id and indexed.project_id = expected.project_id
+        where indexed.id is null
+      ) conflicts;
+
+      if conflict_count > 0 then
+        raise exception 'Agent entity migration reconciliation failed: % entities have conflicting project or session ownership', conflict_count;
+      end if;
+    end $$;
     insert into agent_artifacts (project_id, id, owner_id, kind, source_kind, run_id, job_id, created_at, updated_at, payload)
     select message.project_id, artifact->>'id', message.owner_id, artifact->>'kind', 'agent_action',
       nullif(artifact->'provenance'->>'runId', ''), null,
@@ -393,12 +454,26 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
         'provenance', jsonb_strip_nulls(jsonb_build_object(
           'actionId', 'generation:' || job.id,
           'toolName', case when output->>'mediaKind' = 'video' then 'video_generation' else 'image_generation' end,
-          'runId', job.payload->'agentRun'->>'runId', 'sourceNodeIds', '[]'::jsonb
+          'runId', job.payload->'agentRun'->>'runId',
+          'sourceNodeIds', coalesce((
+            select jsonb_agg(node->>'id' order by node->>'id')
+            from jsonb_array_elements(coalesce(project.document->'nodes', '[]'::jsonb)) node
+            where node->>'type' = 'result'
+              and node->'data'->>'jobId' = job.id
+              and (
+                node->'data'->>'candidateId' = output->>'id'
+                or (
+                  nullif(node->'data'->>'candidateId', '') is null
+                  and jsonb_array_length(job.payload->'outputs') = 1
+                )
+              )
+          ), '[]'::jsonb)
         )),
         'origin', jsonb_build_object('type', 'generation_output', 'jobId', job.id, 'outputId', output->>'id'),
         'createdAt', job.updated_at, 'updatedAt', job.updated_at
       )
     from generation_jobs job
+    join projects project on project.id = job.project_id
     cross join lateral jsonb_array_elements(case
       when jsonb_typeof(job.payload->'outputs') = 'array' then job.payload->'outputs'
       else '[]'::jsonb end) output
@@ -407,6 +482,64 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       kind = excluded.kind, source_kind = excluded.source_kind, run_id = excluded.run_id,
       job_id = excluded.job_id, updated_at = excluded.updated_at, payload = excluded.payload
     where agent_artifacts.updated_at <= excluded.updated_at;
+    -- 三类历史来源完成回填后立即对账；缺失或损坏会让同一启动事务回滚。
+    do $$
+    declare
+      missing_count bigint;
+      malformed_count bigint;
+    begin
+      with expected as (
+        select message.project_id, artifact->>'id' as id
+        from agent_messages message
+        cross join lateral jsonb_array_elements(case
+          when jsonb_typeof(message.payload->'plan'->'actions') = 'array' then message.payload->'plan'->'actions'
+          else '[]'::jsonb end) action
+        cross join lateral jsonb_array_elements(case
+          when jsonb_typeof(action->'result'->'artifacts') = 'array' then action->'result'->'artifacts'
+          else '[]'::jsonb end) artifact
+        where nullif(artifact->>'id', '') is not null
+          and artifact->>'kind' in ('image', 'video', 'text', 'workflow', 'asset_group', 'file')
+          and nullif(artifact->>'label', '') is not null
+          and jsonb_typeof(artifact->'provenance') = 'object'
+        union
+        select receipt.project_id, artifact->>'id' as id
+        from agent_action_receipts receipt
+        cross join lateral jsonb_array_elements(case
+          when jsonb_typeof(receipt.payload->'output'->'artifacts') = 'array' then receipt.payload->'output'->'artifacts'
+          when jsonb_typeof(receipt.payload->'result'->'output'->'artifacts') = 'array' then receipt.payload->'result'->'output'->'artifacts'
+          when jsonb_typeof(receipt.payload->'result'->'artifacts') = 'array' then receipt.payload->'result'->'artifacts'
+          else '[]'::jsonb end) artifact
+        where nullif(artifact->>'id', '') is not null
+          and artifact->>'kind' in ('image', 'video', 'text', 'workflow', 'asset_group', 'file')
+          and nullif(artifact->>'label', '') is not null
+          and jsonb_typeof(artifact->'provenance') = 'object'
+        union
+        select job.project_id, 'generation:' || job.id || ':' || (output->>'id') as id
+        from generation_jobs job
+        cross join lateral jsonb_array_elements(case
+          when jsonb_typeof(job.payload->'outputs') = 'array' then job.payload->'outputs'
+          else '[]'::jsonb end) output
+        where nullif(output->>'id', '') is not null and nullif(output->>'image', '') is not null
+      )
+      select count(*) into missing_count
+      from expected
+      left join agent_artifacts indexed
+        on indexed.project_id = expected.project_id and indexed.id = expected.id
+      where indexed.id is null;
+
+      select count(*) into malformed_count
+      from agent_artifacts
+      where payload->>'id' is distinct from id
+        or payload->>'kind' is distinct from kind
+        or payload->'origin'->>'type' is distinct from source_kind;
+
+      if missing_count > 0 then
+        raise exception 'Artifact Index migration reconciliation failed: % expected artifacts are missing', missing_count;
+      end if;
+      if malformed_count > 0 then
+        raise exception 'Artifact Index migration reconciliation failed: % indexed artifacts have malformed payloads', malformed_count;
+      end if;
+    end $$;
     `)
   })
 
@@ -526,7 +659,14 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
         insert into agent_memory_items (id, owner_id, project_id, updated_at, deleted_at, payload)
         values (${memory.id}, ${userId}, ${document.id}, ${memory.updatedAt}, null, ${tx.json(memory)}::jsonb)
         on conflict (id) do update set updated_at = excluded.updated_at, deleted_at = null, payload = excluded.payload
-        where agent_memory_items.project_id = excluded.project_id and agent_memory_items.updated_at <= excluded.updated_at
+        where agent_memory_items.project_id = excluded.project_id
+          and (
+            agent_memory_items.updated_at < excluded.updated_at
+            or (
+              agent_memory_items.updated_at = excluded.updated_at
+              and agent_memory_items.deleted_at is null
+            )
+          )
       `
     }
     for (const run of extracted.runs) {
@@ -958,6 +1098,14 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
           insert into agent_memory_items (id, owner_id, project_id, updated_at, deleted_at, payload)
           values (${memory.id}, ${userId}, ${projectId}, ${timestampValue}, null, ${tx.json(memory)}::jsonb)
           on conflict (id) do update set updated_at = excluded.updated_at, deleted_at = null, payload = excluded.payload
+          where agent_memory_items.project_id = excluded.project_id
+            and (
+              agent_memory_items.updated_at < excluded.updated_at
+              or (
+                agent_memory_items.updated_at = excluded.updated_at
+                and agent_memory_items.deleted_at is null
+              )
+            )
         `
         await insertAudit(tx, { actorId: userId, action: existing ? 'agent-memory.updated' : 'agent-memory.created', projectId, targetId: memory.id })
       })

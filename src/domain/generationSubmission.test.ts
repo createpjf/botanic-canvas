@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { GenerationJob } from './canvas.ts'
-import { confirmTimedOutGenerationSubmission } from './generationSubmission.ts'
+import { confirmTimedOutGenerationSubmission, generationSubmissionFailureDisposition } from './generationSubmission.ts'
 
 const recoveredJob: GenerationJob = {
   id: 'job-recovered',
@@ -53,4 +53,14 @@ test('超时后无法查询服务端时标记状态未知，不宣告任务失�
   })
 
   assert.deepEqual(confirmation, { status: 'unknown', error: lookupError })
+})
+
+test('画布仅将提交状态未知保留为可恢复任务', () => {
+  assert.deepEqual(generationSubmissionFailureDisposition({ code: 'SUBMISSION_STATUS_UNKNOWN' }), {
+    kind: 'recovering',
+    taskStatus: 'submission_unknown',
+    message: '暂时无法确认任务状态，请勿重复提交；联网后将自动确认。',
+  })
+  assert.equal(generationSubmissionFailureDisposition({ code: 'SUBMISSION_NOT_CONFIRMED' }).kind, 'failed')
+  assert.equal(generationSubmissionFailureDisposition(new Error('offline')).kind, 'failed')
 })

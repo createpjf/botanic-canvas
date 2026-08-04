@@ -133,7 +133,20 @@ select job.project_id, 'generation:' || job.id || ':' || (output->>'id'), job.ow
     'provenance', jsonb_strip_nulls(jsonb_build_object(
       'actionId', 'generation:' || job.id,
       'toolName', case when output->>'mediaKind' = 'video' then 'video_generation' else 'image_generation' end,
-      'runId', job.payload->'agentRun'->>'runId', 'sourceNodeIds', '[]'::jsonb
+      'runId', job.payload->'agentRun'->>'runId',
+      'sourceNodeIds', coalesce((
+        select jsonb_agg(node->>'id' order by node->>'id')
+        from jsonb_array_elements(coalesce(project.document->'nodes', '[]'::jsonb)) node
+        where node->>'type' = 'result'
+          and node->'data'->>'jobId' = job.id
+          and (
+            node->'data'->>'candidateId' = output->>'id'
+            or (
+              nullif(node->'data'->>'candidateId', '') is null
+              and jsonb_array_length(job.payload->'outputs') = 1
+            )
+          )
+      ), '[]'::jsonb)
     )),
     'origin', jsonb_build_object(
       'type', 'generation_output', 'jobId', job.id, 'outputId', output->>'id'
@@ -142,6 +155,7 @@ select job.project_id, 'generation:' || job.id || ':' || (output->>'id'), job.ow
     'updatedAt', (extract(epoch from job.updated_at) * 1000)::bigint
   )
 from public.generation_jobs job
+join public.projects project on project.id = job.project_id
 cross join lateral jsonb_array_elements(case
   when jsonb_typeof(job.payload->'outputs') = 'array' then job.payload->'outputs'
   else '[]'::jsonb end) output

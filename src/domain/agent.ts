@@ -764,9 +764,18 @@ export function mergeBotanicAgentArtifactIndex(
   localArtifacts: BotanicAgentArtifact[],
 ): BotanicAgentArtifact[] {
   const artifacts = new Map<string, BotanicAgentArtifact>()
+  const localById = new Map(localArtifacts.map((artifact) => [artifact.id, artifact]))
   for (const artifact of indexedArtifacts) {
     if (artifact.origin.type === 'generation_output' && !artifact.provenance.runId) continue
-    if (!artifacts.has(artifact.id)) artifacts.set(artifact.id, artifact)
+    const localArtifact = localById.get(artifact.id)
+    const sourceNodeIds = uniqueIds([
+      ...(artifact.provenance.sourceNodeIds ?? []),
+      ...(localArtifact?.provenance.sourceNodeIds ?? []),
+    ])
+    if (!artifacts.has(artifact.id)) artifacts.set(artifact.id, {
+      ...artifact,
+      provenance: { ...artifact.provenance, sourceNodeIds },
+    })
   }
   for (const artifact of localArtifacts) {
     if (!artifacts.has(artifact.id)) artifacts.set(artifact.id, artifact)

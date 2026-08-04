@@ -5,7 +5,7 @@ import { decodeAuthAssurance } from './authAssurance.mjs'
 import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from './authorization.mjs'
 import { artifactIndexLimits, artifactsFromActionReceipt, artifactsFromAgentMessage, artifactsFromDocument, artifactsFromGenerationJob } from './botanicArtifactIndex.mjs'
 import { applyGenerationJobToAgentRun } from './botanicAgentRun.mjs'
-import { agentStateFromDocument, mergeAgentStateIntoDocument, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity } from './botanicAgentPersistence.mjs'
+import { agentStateFromDocument, mergeAgentStateIntoDocument, shouldApplyAgentEntityWrite, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity } from './botanicAgentPersistence.mjs'
 
 const now = () => Date.now()
 const clone = (value) => structuredClone(value)
@@ -134,6 +134,7 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
   }
 
   const missingAgentEntityTable = (error) => error?.code === '42P01' || error?.code === 'PGRST205'
+  const missingAgentEntityRpc = (error) => error?.code === '42883' || error?.code === 'PGRST202'
 
   async function collectSupabaseRows(buildQuery, maximum = 40_000) {
     const rows = []
@@ -220,6 +221,28 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       id: run.id, owner_id: userId, project_id: document.id, status: run.status,
       updated_at: new Date(Number(run.updatedAt) || now()).toISOString(), payload: { ...run, ownerId: userId, projectId: document.id },
     }))
+    const previousMemoryIds = new Set((Array.isArray(previousDocument?.agentMemory) ? previousDocument.agentMemory : []).map((item) => item?.id).filter(Boolean))
+    const nextMemoryIds = new Set(extracted.memory.map((item) => item.id))
+    const removedIds = [...previousMemoryIds].filter((id) => !nextMemoryIds.has(id))
+    const deletedAt = new Date().toISOString()
+    const deletedMemoryRows = removedIds.map((id) => ({ id, deleted_at: deletedAt }))
+
+    // 新项目通过 RPC 在单个事务中完成 LWW 合并。旧项目未迁移时才走下方兼容路径。
+    const { error: rpcError } = await supabaseRequest(() => supabase.rpc('botanic_sync_agent_entities', {
+      p_owner_id: userId,
+      p_project_id: document.id,
+      p_sessions: sessionRows,
+      p_messages: messageRows,
+      p_memory: memoryRows,
+      p_runs: runRows,
+      p_deleted_memory: deletedMemoryRows,
+    }))
+    if (!rpcError) {
+      await upsertArtifactRecords(userId, document.id, artifactsFromDocument(document))
+      return
+    }
+    if (!missingAgentEntityRpc(rpcError)) fail(rpcError)
+
     for (const [table, rows] of [
       ['agent_sessions', sessionRows], ['agent_messages', messageRows],
       ['agent_memory_items', memoryRows], ['agent_runs', runRows],
@@ -227,16 +250,24 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       if (!rows.length) continue
       for (let offset = 0; offset < rows.length; offset += 500) {
         const batch = rows.slice(offset, offset + 500)
-        const { data: existingRows, error: conflictError } = await supabaseRequest(() => supabase.from(table).select('id,project_id,updated_at').in('id', batch.map((row) => row.id)))
+        const existingColumns = table === 'agent_messages'
+          ? 'id,project_id,session_id,updated_at'
+          : table === 'agent_memory_items'
+            ? 'id,project_id,updated_at,deleted_at'
+            : 'id,project_id,updated_at'
+        const { data: existingRows, error: conflictError } = await supabaseRequest(() => supabase.from(table).select(existingColumns).in('id', batch.map((row) => row.id)))
         if (missingAgentEntityTable(conflictError)) return
         fail(conflictError)
-        if ((existingRows ?? []).some((row) => row.project_id !== document.id)) {
+        if ((existingRows ?? []).some((row) => row.project_id !== document.id
+          || (table === 'agent_messages' && row.session_id !== batch.find((item) => item.id === row.id)?.session_id))) {
           throw productError('Agent 实体标识已被其他项目使用。', 'AGENT_ENTITY_ID_CONFLICT')
         }
         const existingById = new Map((existingRows ?? []).map((row) => [row.id, row]))
         const safeRows = batch.filter((row) => {
           const existing = existingById.get(row.id)
-          return !existing || new Date(row.updated_at).getTime() >= new Date(existing.updated_at).getTime()
+          return shouldApplyAgentEntityWrite(existing, row, {
+            tombstoneWinsTie: table === 'agent_memory_items',
+          })
         })
         if (!safeRows.length) continue
         const { error } = await supabaseRequest(() => supabase.from(table).upsert(safeRows, { onConflict: 'id' }))
@@ -244,13 +275,12 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
         fail(error)
       }
     }
-    const previousMemoryIds = new Set((Array.isArray(previousDocument?.agentMemory) ? previousDocument.agentMemory : []).map((item) => item?.id).filter(Boolean))
-    const nextMemoryIds = new Set(extracted.memory.map((item) => item.id))
-    const removedIds = [...previousMemoryIds].filter((id) => !nextMemoryIds.has(id))
     if (removedIds.length) {
-      const deletedAt = new Date().toISOString()
       const { error } = await supabaseRequest(() => supabase.from('agent_memory_items')
-        .update({ deleted_at: deletedAt, updated_at: deletedAt }).eq('project_id', document.id).in('id', removedIds))
+        .update({ deleted_at: deletedAt, updated_at: deletedAt })
+        .eq('project_id', document.id)
+        .in('id', removedIds)
+        .lte('updated_at', deletedAt))
       if (!missingAgentEntityTable(error)) fail(error)
     }
     await upsertArtifactRecords(userId, document.id, artifactsFromDocument(document))

@@ -562,7 +562,7 @@ test('Agent 批量结果选择忽略失效项并去重画布引用', () => {
   assert.deepEqual(selection.sourceNodeIds, ['result-a', 'result-b'])
 })
 
-test('Artifact Index 覆盖同 ID 的本地快照，同时保留尚未入索引的新结果', () => {
+test('Artifact Index 覆盖同 ID 的本地快照，同时合并当前画布可定位节点', () => {
   const indexed = [{
     id: 'artifact-a', kind: 'image' as const, label: '服务端历史结果', url: '/api/media/indexed',
     provenance: { actionId: 'action-a', toolName: 'image_generation', runId: 'run-a', sourceNodeIds: ['deleted-result'] },
@@ -588,7 +588,7 @@ test('Artifact Index 覆盖同 ID 的本地快照，同时保留尚未入索引�
 
   assert.deepEqual(results.map((item) => item.id), ['artifact-a', 'artifact-b'])
   assert.equal(results[0].label, '服务端历史结果')
-  assert.deepEqual(results[0].provenance.sourceNodeIds, ['deleted-result'])
+  assert.deepEqual(results[0].provenance.sourceNodeIds, ['deleted-result', 'result-a'])
 })
 
 test('Artifact Index 不可用或尚未迁移时，结果区完整回退到当前项目读模型', () => {

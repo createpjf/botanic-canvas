@@ -15,6 +15,11 @@ export type GenerationAspectRatio = '1:1' | '16:9' | '4:3' | '3:4' | '4:5' | '9:
 export type GenerationModelId = string
 export type GenerationResolution = '1K' | '2K'
 export type GenerationTaskStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+/**
+ * 画布在服务端任务号尚未确认时的本地恢复状态。
+ * 它不是 Provider 任务状态，不得持久化为 generation_jobs.status。
+ */
+export type CanvasGenerationTaskStatus = GenerationTaskStatus | 'uploading' | 'submission_unknown'
 
 export type GenerationModelOption = {
   id: GenerationModelId
@@ -139,7 +144,7 @@ export type AssetNodeData = {
 export type PromptNodeData = {
   kind: 'prompt'
   jobId?: string
-  status: GenerationTaskStatus | 'uploading'
+  status: CanvasGenerationTaskStatus
   generationKind: GenerationKind
   prompt: string
   batchCount: number
@@ -151,7 +156,7 @@ export type PromptNodeData = {
 export type ReferenceGroupNodeData = {
   kind: 'reference'
   jobId?: string
-  status: GenerationTaskStatus | 'uploading'
+  status: CanvasGenerationTaskStatus
   recipe: GenerationRecipe
   label: string
   error?: string
@@ -174,10 +179,14 @@ export type GenerateNodeData = {
   /** 当前生成节点中被锁定为主体的商品素材节点。 */
   primaryInputId?: string
   jobId?: string
-  status?: GenerationTaskStatus | 'uploading'
+  status?: CanvasGenerationTaskStatus
   generationKind?: GenerationKind
   refinementMode?: RefinementMode
   videoInputMode?: VideoInputMode
+  /** 提交超时后用原键查询/接管，不得换键重复生成。 */
+  submissionKey?: string
+  /** 未拿到 jobId 前仍需保留 Agent 分支归属。 */
+  agentRun?: { runId: string; branchId: string }
   error?: string
 }
 
@@ -191,7 +200,7 @@ export type ResultNodeData = {
   selected?: boolean
   status: 'ready' | 'generating' | 'failed' | 'cancelled'
   /** 真实任务状态；结果节点据此展示可解释的生成反馈，不伪造百分比。 */
-  taskStatus?: GenerationTaskStatus | 'uploading'
+  taskStatus?: CanvasGenerationTaskStatus
   /** 本次任务写入画布的时间，用于提示等待时长。 */
   submittedAt?: number
   label?: string
@@ -199,6 +208,9 @@ export type ResultNodeData = {
   /** 同一批生成的占位结果共用该任务锚点，完成后各自替换为独立输出。 */
   taskGroupId?: string
   taskNodeId?: string
+  /** 提交状态未知时的持久化恢复键。 */
+  submissionKey?: string
+  agentRun?: { runId: string; branchId: string }
   error?: string
   candidateId?: string
   versionId?: string

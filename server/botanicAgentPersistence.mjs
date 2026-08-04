@@ -51,6 +51,28 @@ function newerById(items) {
   return byId
 }
 
+function comparableTimestamp(value) {
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value)
+    return Number.isFinite(parsed) ? parsed : 0
+  }
+  return Number.isFinite(Number(value)) ? Number(value) : 0
+}
+
+/**
+ * 独立实体的 LWW 规则。Postgres SQL 与 Supabase Adapter 必须同步此语义：
+ * 新时间戳覆盖旧值；普通实体同时刻允许幂等回放；Memory 墓碑在同时刻胜出。
+ */
+export function shouldApplyAgentEntityWrite(existing, incoming, { tombstoneWinsTie = false } = {}) {
+  if (!existing) return true
+  const existingTimestamp = comparableTimestamp(existing.updatedAt ?? existing.updated_at)
+  const incomingTimestamp = comparableTimestamp(incoming?.updatedAt ?? incoming?.updated_at)
+  if (incomingTimestamp > existingTimestamp) return true
+  if (incomingTimestamp < existingTimestamp) return false
+  if (tombstoneWinsTie && (existing.deletedAt ?? existing.deleted_at)) return false
+  return true
+}
+
 export function validateAgentSessionEntity(value, { now = Date.now() } = {}) {
   const session = object(value, 'Agent 会话')
   const executionMode = session.executionMode ?? 'manual'
