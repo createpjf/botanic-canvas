@@ -266,8 +266,10 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
     if (typeof result.output !== 'string' || !result.output.trim()) {
       throw new BotanicAgentChatError(502, 'INVALID_PROVIDER_RESPONSE', 'Agent 没有返回有效回答。')
     }
+    const answer = result.output.trim().slice(0, 12_000)
     return {
-      answer: result.output.trim().slice(0, 12_000),
+      answer,
+      ...(input.mode === 'prompt' ? { prompt: answer } : {}),
       mode: input.mode,
       plannerModel: config.model,
       toolCalls: result.toolCalls,

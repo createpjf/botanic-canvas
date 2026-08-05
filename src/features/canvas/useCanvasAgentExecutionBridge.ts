@@ -3,6 +3,7 @@ import {
   collectBotanicAgentResults,
   mergeBotanicAgentArtifactIndex,
   recordBotanicAgentCanvasWritebacks,
+  resolveBotanicAgentWorkflowReferenceNodeIds,
   resolveBotanicAgentCanvasCommands,
   type BotanicAgentActionProposal,
   type BotanicAgentActionResult,
@@ -227,13 +228,8 @@ export function useCanvasAgentExecutionBridge({
   ) => {
     const projectId = document.id
     if (useCanvasStore.getState().document.id !== projectId) return { created: false, started: false, needsReference: false }
-    const referenceNodeIds = contextNodeIds.filter((nodeId) => document.nodes.some((node) => {
-      if (node.id !== nodeId) return false
-      if (node.type === 'asset') return ((node.data as AssetNodeData).mediaKind ?? 'image') === 'image'
-      if (node.type !== 'result') return false
-      const result = node.data as ResultNodeData
-      return Boolean(result.image) && canUseForImageDelivery(result.mediaKind)
-    }))
+    const referenceNodeIds = resolveBotanicAgentWorkflowReferenceNodeIds(document.nodes, contextNodeIds)
+    if (!referenceNodeIds.length) return { created: false, started: false, needsReference: true }
     const origin = document.nodes.length
       ? { x: Math.max(...document.nodes.map((node) => node.position.x)) + 220, y: Math.min(...document.nodes.map((node) => node.position.y)) }
       : { x: 180, y: 160 }
@@ -249,7 +245,7 @@ export function useCanvasAgentExecutionBridge({
         : { ...generatedData.settings, ...generationOverrides }
       : undefined
     updateGenerateNode(generateNodeId, { prompt: instruction, ...(nextSettings ? { settings: nextSettings } : {}) })
-    if (!autoExecute || !referenceNodeIds.length) return { created: true, started: false, needsReference: !referenceNodeIds.length }
+    if (!autoExecute) return { created: true, started: false, needsReference: false }
     const started = await runGraphGeneration(generateNodeId)
     return { created: true, started, needsReference: false }
   }, [addGenerateNode, availableModels, document.id, document.nodes, runGraphGeneration, updateGenerateNode])

@@ -109,6 +109,18 @@ test('Agent 实体验证拒绝越界类型与超长消息', () => {
   assert.throws(() => validateAgentMessageEntity({ id: 'm', role: 'user', kind: 'text', content: 'x'.repeat(64_001), createdAt: 1 }))
 })
 
+test('Prompt 消息的结构化结果会随独立消息保留', () => {
+  const result = validateAgentMessageEntity({
+    id: 'message-prompt', role: 'assistant', kind: 'text', content: '可直接使用的 Prompt',
+    prompt: '保持人物和服装，替换为海边场景。', createdAt: 1,
+  }, { now: 2 })
+
+  assert.equal(result.prompt, '保持人物和服装，替换为海边场景。')
+  assert.throws(() => validateAgentMessageEntity({
+    id: 'message-prompt', role: 'assistant', kind: 'text', content: 'x', prompt: 'x'.repeat(12_001), createdAt: 1,
+  }, { now: 2 }))
+})
+
 test('Postgres/Supabase 使用同一时间戳冲突规则，Memory 墓碑永久胜出', () => {
   assert.equal(shouldApplyAgentEntityWrite(undefined, { updatedAt: 20 }), true)
   assert.equal(shouldApplyAgentEntityWrite({ updatedAt: 20 }, { updatedAt: 19 }), false)

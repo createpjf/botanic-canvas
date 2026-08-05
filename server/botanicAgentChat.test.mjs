@@ -74,3 +74,25 @@ test('Agent 对话真正调用选定 Flock 模型，并通过本体工具检索�
   assert.deepEqual(result.sources, ['素材组'])
   assert.doesNotMatch(JSON.stringify(requests), /api\/media\/private|api\/media\/result/)
 })
+
+test('Prompt 模式返回可持久化的结构化 Prompt，供后续生成精确继承', async () => {
+  const result = await chatWithBotanicAgent({
+    projectId: 'project-chat',
+    plannerModel: 'deepseek-v4-flash',
+    mode: 'prompt',
+    messages: [{ role: 'user', content: '帮我写一个海边人像 Prompt。' }],
+    contextNodeIds: [],
+  }, {
+    flockApiKey: 'flock-secret',
+    flockTextModel: 'deepseek-v4-pro',
+    flockAgentModels: ['deepseek-v4-pro', 'deepseek-v4-flash'],
+  }, {
+    document,
+    fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: {
+      content: '保持人物和服装，替换为柔和夕阳海边场景。',
+    } }] }), { status: 200 }),
+  })
+
+  assert.equal(result.answer, '保持人物和服装，替换为柔和夕阳海边场景。')
+  assert.equal(result.prompt, result.answer)
+})

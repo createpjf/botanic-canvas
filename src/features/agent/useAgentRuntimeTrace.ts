@@ -112,7 +112,7 @@ export function useAgentRuntimeTrace({
 
   useEffect(() => {
     if (!hasSession || !latestRun || planning) return
-    if (phase === 'waiting_clarification' || phase === 'waiting_confirmation') return
+    if (phase === 'waiting_clarification' || phase === 'waiting_confirmation' || phase === 'waiting_reference' || phase === 'draft_ready') return
     const active = latestRun.status === 'queued' || latestRun.status === 'running' || latestRun.status === 'executing'
     const failed = latestRun.status === 'failed' || latestRun.status === 'cancelled'
     setPhase(active ? 'executing' : failed ? 'failed' : 'completed')

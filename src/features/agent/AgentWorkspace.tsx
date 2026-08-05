@@ -24,7 +24,7 @@ import {
   type BotanicAgentSession,
   type BotanicAgentSkill,
 } from '../../domain/agent'
-import { classifyBotanicAgentRequest } from '../../domain/agentChatContract'
+import { classifyBotanicAgentRequest, resolveBotanicAgentGenerationPrompt } from '../../domain/agentChatContract'
 import { nextExclusiveSurface, type ExclusiveSurfaceAction } from '../../domain/exclusiveSurface'
 import type {
   AssetGroup,
@@ -781,7 +781,12 @@ export default function AgentWorkspace({
         const sourceNote = route === 'research'
           ? `\n\n来源：${response.sources?.length ? response.sources.join('、') : '当前没有命中项目受控检索来源。'}`
           : ''
-        appendMessage({ role: 'assistant', kind: 'text', content: `${response.answer}${sourceNote}` })
+        appendMessage({
+          role: 'assistant',
+          kind: 'text',
+          content: `${response.answer}${sourceNote}`,
+          ...(response.prompt ? { prompt: response.prompt } : {}),
+        })
       } catch (caught) {
         if (controller.signal.aborted) return
         const message = caught instanceof Error ? caught.message : 'Agent 暂时无法回答，请稍后重试。'
@@ -795,6 +800,7 @@ export default function AgentWorkspace({
       }
       return
     }
+    const generationPrompt = resolveBotanicAgentGenerationPrompt(cleanInstruction, session.messages)
     setPlanning(true)
     const runtimeTrace = beginRuntimeTrace({
       hasTarget: Boolean(target),
@@ -810,10 +816,8 @@ export default function AgentWorkspace({
       const instructionMentionsSettings = /(?:1\s*:\s*1|16\s*:\s*9|4\s*:\s*3|3\s*:\s*4|4\s*:\s*5|9\s*:\s*16|\b1k\b|\b2k\b|分辨率|比例|模型|gpt[- ]?image|minimax|h3)/iu.test(cleanInstruction)
       if (!options.clarificationAnswers && !instructionMentionsSettings) {
         updateRuntimeStep('call-planner', 'succeeded')
-        updateRuntimeStep('create-workflow', 'running')
         await yieldRuntimeFrame()
         if (!isCurrentAgentProject()) return
-        updateRuntimeStep('create-workflow', 'succeeded')
         setRuntimePhase('waiting_clarification')
         appendMessage({
           role: 'assistant',
@@ -826,22 +830,29 @@ export default function AgentWorkspace({
         return
       }
       try {
-        const result = await onCreateDraft(cleanInstruction, session.contextNodeIds, session.executionMode === 'auto', options.generationOverrides)
+        const result = await onCreateDraft(generationPrompt, session.contextNodeIds, session.executionMode === 'auto', options.generationOverrides)
         if (!isCurrentAgentProject()) return
         const content = result.started
           ? '已根据画布上下文创建工作流并提交生成，结果会出现在画布中。'
           : result.needsReference
-            ? '已在画布创建生成节点。再添加一张商品图或参考图，我就可以继续执行。'
+            ? '还需要一张参考图片。请通过 + 添加或 @ 引用后再生成；画布未创建空节点。'
               : result.created
                 ? '已在画布创建可编辑的生成工作流，你可以检查节点后手动生成。'
                 : '暂时无法创建工作流，请检查画布状态后重试。'
-        if (result.created) {
-          await completeRuntimeTrace(false)
+        updateRuntimeStep('call-planner', 'succeeded')
+        if (result.started) {
+          updateRuntimeStep('create-workflow', 'succeeded')
+          setRuntimePhase('executing')
+        } else if (result.needsReference) {
+          setRuntimePhase('waiting_reference')
+        } else if (result.created) {
+          updateRuntimeStep('create-workflow', 'succeeded')
+          setRuntimePhase('draft_ready')
         } else {
-          updateRuntimeStep('call-planner', 'succeeded')
           updateRuntimeStep('create-workflow', 'failed', content)
+          setRuntimePhase('failed')
         }
-        appendMessage({ role: 'assistant', kind: result.created ? 'notice' : 'text', content })
+        appendMessage({ role: 'assistant', kind: result.created || result.needsReference ? 'notice' : 'text', content })
       } catch (caught) {
         const message = caught instanceof Error ? caught.message : '暂时无法创建工作流。'
         failRuntimeTrace(message)
@@ -853,7 +864,7 @@ export default function AgentWorkspace({
       }
       return
     }
-    const nextPlan = await preparePlan(cleanInstruction, options.generationOverrides, options.clarificationAnswers)
+    const nextPlan = await preparePlan(generationPrompt, options.generationOverrides, options.clarificationAnswers)
     if (!nextPlan || !session || !isCurrentAgentProject()) return
     if ('kind' in nextPlan && nextPlan.kind === 'clarification') {
       setRuntimePhase('waiting_clarification')
@@ -1143,7 +1154,7 @@ export default function AgentWorkspace({
               </button>
             </header>
             <p className="agent-runtime-feed__summary">{runtimeSummary.detail}</p>
-            {runtimeSummary.phase === 'waiting_clarification' || runtimeSummary.phase === 'waiting_confirmation' ? <span className="agent-runtime-feed__next">下一步：{runtimeSummary.nextAction}</span> : null}
+            {runtimeSummary.phase === 'waiting_clarification' || runtimeSummary.phase === 'waiting_confirmation' || runtimeSummary.phase === 'waiting_reference' || runtimeSummary.phase === 'draft_ready' ? <span className="agent-runtime-feed__next">下一步：{runtimeSummary.nextAction}</span> : null}
             {runtimeDetailsOpen ? <ol aria-label="运行步骤">
               {runtimeSteps.map((step) => <li key={step.id} className={`is-${step.status}`}>
                 <span className="agent-runtime-feed__step-marker" aria-hidden="true">{agentRuntimeStepMarker(step)}</span>

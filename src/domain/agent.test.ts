@@ -33,6 +33,7 @@ import {
   summarizeBotanicAgentRuntime,
   buildBotanicAgentPromptDiff,
   mergeBotanicAgentArtifactIndex,
+  resolveBotanicAgentWorkflowReferenceNodeIds,
 } from './agent.ts'
 
 const rootRecipe: GenerationRecipe = {
@@ -132,6 +133,33 @@ test('Runtime 默认只呈现当前阶段与下一步，展开后仍保留完整
   assert.equal(waiting.label, '等待你确认计划')
   assert.match(waiting.detail, /确认后才会提交/)
   assert.equal(waiting.nextAction, '确认生成')
+
+  const waitingReference = summarizeBotanicAgentRuntime({ steps: running, phase: 'waiting_reference' })
+  assert.equal(waitingReference.label, '等待参考图片')
+  assert.match(waitingReference.detail, /不会创建空节点/)
+  assert.equal(waitingReference.nextAction, '添加参考图片')
+
+  const draftReady = summarizeBotanicAgentRuntime({ steps: running, phase: 'draft_ready' })
+  assert.equal(draftReady.label, '生成草稿已创建')
+  assert.match(draftReady.detail, /尚未提交/)
+  assert.equal(draftReady.nextAction, '检查并生成')
+})
+
+test('Agent 只为有效图片参考创建生成工作流，忽略文字、生成节点和视频', () => {
+  const nodes = [
+    { id: 'asset-image', type: 'asset', position: { x: 0, y: 0 }, data: { kind: 'asset', assetId: 'a', name: '商品图', image: '/a.png', role: '商品', source: 'upload', mediaKind: 'image' } },
+    { id: 'asset-video', type: 'asset', position: { x: 0, y: 0 }, data: { kind: 'asset', assetId: 'v', name: '视频', image: '/v.mp4', role: '场景', source: 'upload', mediaKind: 'video' } },
+    { id: 'result-image', type: 'result', position: { x: 0, y: 0 }, data: { kind: 'result', label: '候选', image: '/result.png', mediaKind: 'image' } },
+    { id: 'result-empty', type: 'result', position: { x: 0, y: 0 }, data: { kind: 'result', label: '空候选', mediaKind: 'image' } },
+    { id: 'text', type: 'text', position: { x: 0, y: 0 }, data: { kind: 'text', label: '说明', text: '说明' } },
+    { id: 'generate', type: 'generate', position: { x: 0, y: 0 }, data: { kind: 'generate', label: '生成节点' } },
+  ] as CanvasNode[]
+
+  assert.deepEqual(resolveBotanicAgentWorkflowReferenceNodeIds(
+    nodes,
+    ['asset-image', 'asset-video', 'result-image', 'result-empty', 'text', 'generate', 'asset-image'],
+  ), ['asset-image', 'result-image'])
+  assert.deepEqual(resolveBotanicAgentWorkflowReferenceNodeIds(nodes, ['text', 'generate']), [])
 })
 
 test('Run 状态统一提供下一步反馈，并兼容超时错误', () => {

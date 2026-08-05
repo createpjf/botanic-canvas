@@ -1,4 +1,4 @@
-import type { AssetGroup, AssetRecord, CanvasNode, GenerationJob, GenerationRecipe, GenerationSettings, ResultNodeData } from './canvas.ts'
+import type { AssetGroup, AssetNodeData, AssetRecord, CanvasNode, GenerationJob, GenerationRecipe, GenerationSettings, ResultNodeData } from './canvas.ts'
 
 export type BotanicAgentIntent =
   | 'continue_generation'
@@ -148,6 +148,8 @@ export type BotanicAgentRuntimePhase =
   | 'planning'
   | 'waiting_clarification'
   | 'waiting_confirmation'
+  | 'waiting_reference'
+  | 'draft_ready'
   | 'executing'
   | 'completed'
   | 'failed'
@@ -200,6 +202,16 @@ export function summarizeBotanicAgentRuntime(input: {
       detail: '检查提示词与输出设置；确认后才会提交生成任务。',
       nextAction: '确认生成',
     },
+    waiting_reference: {
+      label: '等待参考图片',
+      detail: '添加或 @ 引用一张图片后再继续；当前不会创建空节点。',
+      nextAction: '添加参考图片',
+    },
+    draft_ready: {
+      label: '生成草稿已创建',
+      detail: '可编辑节点已写入画布，尚未提交生成任务。',
+      nextAction: '检查并生成',
+    },
     executing: {
       label: '生成任务处理中',
       detail: '任务已提交，结果完成后会直接回填画布。',
@@ -223,6 +235,29 @@ export function summarizeBotanicAgentRuntime(input: {
     totalCount,
     progress,
   }
+}
+
+/**
+ * Agent 只有拿到可用图片参考时才允许创建生成工作流。
+ * 该领域规则避免对话、文字说明、视频或空结果被误转成空白生成节点。
+ */
+export function resolveBotanicAgentWorkflowReferenceNodeIds(
+  nodes: CanvasNode[],
+  contextNodeIds: string[],
+): string[] {
+  const nodesById = new Map(nodes.map((node) => [node.id, node]))
+  return [...new Set(contextNodeIds)].filter((nodeId) => {
+    const node = nodesById.get(nodeId)
+    if (node?.type === 'asset') {
+      const data = node.data as AssetNodeData
+      return Boolean(data.image) && (data.mediaKind ?? 'image') === 'image'
+    }
+    if (node?.type === 'result') {
+      const data = node.data as ResultNodeData
+      return Boolean(data.image) && (data.mediaKind ?? 'image') === 'image'
+    }
+    return false
+  })
 }
 
 /**
@@ -669,6 +704,8 @@ export type BotanicAgentMessage = {
   role: 'user' | 'assistant'
   kind: 'text' | 'question' | 'plan' | 'run' | 'notice'
   content: string
+  /** Prompt 对话产出的结构化结果；普通助手文字不能被当作生图 Prompt。 */
+  prompt?: string
   createdAt: number
   /** 消息自身的版本时间；旧文档缺省时由 append/服务端回退到 createdAt。 */
   updatedAt?: number

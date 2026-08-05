@@ -101,6 +101,7 @@ export async function submitPersistentBotanicAgentMessage(input: {
         role: input.message.role,
         kind: input.message.kind,
         content: input.message.content,
+        ...(input.message.prompt === undefined ? {} : { prompt: input.message.prompt }),
         createdAt: input.message.createdAt,
         ...(input.message.plan === undefined ? {} : { plan: input.message.plan }),
         ...(input.message.question === undefined ? {} : { question: input.message.question }),

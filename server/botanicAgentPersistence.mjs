@@ -116,6 +116,7 @@ export function validateAgentMessageEntity(value, { now = Date.now() } = {}) {
     createdAt,
     updatedAt: Math.max(createdAt, timestamp(message.updatedAt, createdAt)),
   }
+  if (message.prompt !== undefined) result.prompt = text(message.prompt, 'Agent Prompt', 12_000)
   if (message.plan !== undefined) result.plan = clone(object(message.plan, 'Agent 计划'))
   if (message.question !== undefined) result.question = clone(object(message.question, 'Agent 追问'))
   if (message.runId !== undefined) result.runId = text(message.runId, 'Agent Run 标识', 160)
