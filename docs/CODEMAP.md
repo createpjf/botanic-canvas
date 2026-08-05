@@ -6,12 +6,12 @@
 
 | 需求/行为 | 首要入口 | 相关实现 | 聚焦测试与不变量 |
 | --- | --- | --- | --- |
-| 画布节点与连线 | `src/domain/canvas.ts` | `canvasGraph.ts`、`canvasBranch.ts`、`canvasNodeLayout.ts` | `src/domain/canvas*.test.ts`；输入连线是生成配方唯一来源 |
-| 输出节点与血缘 | `src/domain/generationResultPlacement.ts` | `generationResultReconciliation.ts`、`canvasPresentation.ts` | 每个输出独立成节点；候选 ID 稳定 |
+| 画布节点与连线 | `src/domain/canvas.ts` | `generationRecipe.ts`、`generateNodeCreation.ts`、`canvasNodeLayout.ts` | 对应 `src/domain/*.test.ts`；输入连线是生成配方唯一来源 |
+| 输出节点与血缘 | `src/domain/generationOutputPlacement.ts` | `src/store/canvasGenerationProjection.ts`、`server/generationResultReconciliation.mjs`、`canvasPresentation.ts` | 每个输出独立成节点；候选 ID 稳定 |
 | 应用登录与入口 | `src/App.tsx` | `src/lib/productSession.ts`、功能模块按需加载 | 应用壳不拥有画布或领域规则 |
-| 画布交互与面板 | `src/features/canvas/CanvasWorkspace.tsx` | `CanvasEditorViews.tsx`、`CanvasWorkspacePanels.tsx`、`canvasWorkspaceNavigation.ts`、`exclusiveSurface.ts`、`overlayPriority.ts` | `src/features/canvas/*.test.ts`、UI E2E；工作区只协调，节点/面板/路由各自拥有展示行为 |
+| 画布交互与面板 | `src/features/canvas/CanvasWorkspace.tsx` | `CanvasEditorViews.tsx`、`CanvasWorkspacePanels.tsx`、`workspaceProjectCoordinator.ts`、`canvasWorkspaceNavigation.ts`、`exclusiveSurface.ts`、`overlayPriority.ts` | `src/features/canvas/*.test.ts`、UI E2E；项目 I/O 与竞态归项目协调器，工作区只组合导航和画布交互 |
 | Agent 面板交互 | `src/features/agent/AgentWorkspace.tsx` | `AgentConversationMessage.tsx`、`AgentComposer.tsx`、`AgentUtilityPanels.tsx`、`useAgentMessageDelivery.ts`、`useAgentRuntimeTrace.ts` | Agent 领域/Lib 测试；工作区只编排，对话卡和 Composer 各自拥有展示交互 |
-| 画布应用状态 | `src/store/canvasStore.types.ts` | `canvasStore.ts`、`canvasDocumentMigration.ts`、`canvasDocumentAssets.ts`、`canvasGenerationLifecycle.ts`、`canvasGenerationProjection.ts`、`canvasAgentActions.ts`、`src/lib/db.ts` | 先核对 Store 端口；迁移/资产投影/生成投影保持纯函数；远端新结果不得被旧草稿覆盖 |
+| 画布应用状态 | `src/store/canvasStore.types.ts` | `canvasStore.ts`、`canvasDocumentMigration.ts`、`canvasDocumentAssets.ts`、`canvasGenerationLifecycle.ts`、`canvasGenerationProjection.ts`、`canvasTemplateHistoryActions.ts`、`canvasAgentActions.ts`、`src/lib/db.ts` | 先核对 Store 端口；模板/历史命令不回流 UI；远端新结果不得被旧草稿覆盖 |
 | 普通生成任务 | `src/lib/generationApi.ts` | `server/generationService.mjs`、`generationProcessor.mjs`、`generationProvider.mjs` | `server/generation*.test.mjs`；同一次重试复用幂等键 |
 | 批量变化 | `src/domain/batchVariations.ts` | Store 批量协调、服务端 Processor | `batchVariations.test.ts`、Processor 测试；计划先限制总输出，有界并发，各分支独立持久化和恢复 |
 | Agent 对话分流 | `src/domain/agentChatContract.ts` | `src/lib/agentApi.ts`、`server/botanicAgentChat.mjs` | 对话测试；浏览器不发送图片字节或私有 URL |

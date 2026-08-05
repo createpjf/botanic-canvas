@@ -38,7 +38,6 @@ import { videoAspectRatioPolicy } from '../../domain/videoGeneration'
 import { beginCanvasFileDrag, endCanvasFileDrag, hasFileDragPayload } from '../../domain/canvasFileDrag'
 import { canvasNodeBounds, layoutCanvasNodes } from '../../domain/canvasNodeLayout'
 import { nextExclusiveSurface, type ExclusiveSurfaceAction } from '../../domain/exclusiveSurface'
-import { createLatestOperation } from '../../domain/latestOperation'
 import { topOverlayLayer } from '../../domain/overlayPriority'
 import { summarizeWorkflowTemplate, type WorkflowTemplateSummary } from '../../domain/workflowTemplates'
 import { useMotionPresence, useRestoreFocus, useRetainedValue, type MotionPhase } from '../../components/motionPresence'
@@ -78,9 +77,8 @@ import { createPersistentBotanicAgentRun, executePersistentBotanicAgentRun, exec
 import { getGenerationServiceHealth } from '../../lib/generationApi'
 import { refinePrompt } from '../../lib/promptRefinementApi'
 import { connectCanvasCollaboration, type CanvasCollaboration } from '../../lib/projectCollaboration'
-import { createCanvasProject, deleteCanvasDocument, flushPendingCanvasDocumentWrites, readCanvasProjectSummaries, refreshCanvasDocumentFromRemote, renameCanvasProject, syncPendingCanvasDrafts } from '../../lib/db'
+import { flushPendingCanvasDocumentWrites, refreshCanvasDocumentFromRemote, syncPendingCanvasDrafts } from '../../lib/db'
 import { enrollProductMfa, inviteWorkspaceMember, listWorkspaceAuditEvents, listWorkspaceMembers, readProductMfaStatus, refreshProductMediaSession, removeProductMfa, resendWorkspaceMemberInvite, serverPersistenceEnabled, signOutOtherProductSessions, updateProductPassword, updateWorkspaceMember, verifyProductMfa, type ProductUser } from '../../lib/productSession'
-import { createEmptyCanvasDocument } from '../../data/seed'
 import { useCanvasStore } from '../../store/canvasStore'
 import type { WorkspaceProject } from '../../components/WorkspaceViews'
 import { ArrowUpRightIcon, CloseIcon, DeleteIcon, DownloadIcon, FigmaIcon, FocusIcon, FolderOutlineIcon, HomeIcon, MapIcon, MoreIcon, PlusSquareIcon, SparkleIcon, UploadIcon } from '../../components/BotanicIcons'
@@ -92,6 +90,7 @@ import {
   type WorkspaceLocation,
   type WorkspaceView,
 } from './canvasWorkspaceNavigation'
+import { useWorkspaceProjectCoordinator } from './workspaceProjectCoordinator'
 import {
   AssetLibrary,
   BatchVariationComposer,
@@ -904,14 +903,6 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
   const workspaceDocumentMismatch = workspaceView === 'canvas'
     && Boolean(workspaceLocation.projectId)
     && document.id !== workspaceLocation.projectId
-  const [workspaceProjects, setWorkspaceProjects] = useState<WorkspaceProject[]>([])
-  const [workspaceProjectsLoading, setWorkspaceProjectsLoading] = useState(false)
-  const [workspaceProjectsError, setWorkspaceProjectsError] = useState<string | null>(null)
-  const workspaceProjectRequests = useMemo(() => createLatestOperation(), [])
-  const invalidateWorkspaceProjectRequests = useCallback(() => {
-    workspaceProjectRequests.invalidate()
-    setWorkspaceProjectsLoading(false)
-  }, [workspaceProjectRequests])
   const assetLibraryAssets = useMemo(() => {
     const seen = new Set<string>()
     return [...globalAssets, ...document.assets].filter((asset) => {
@@ -1026,6 +1017,41 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
     }
     window.location.assign(targetHash)
   }, [])
+
+  const handleWorkspaceProjectOpened = useCallback((projectId: string) => {
+    setWorkspaceView('canvas', projectId)
+  }, [setWorkspaceView])
+
+  const handleWorkspaceProjectDeleted = useCallback((projectId: string) => {
+    setWorkspaceTabIds((current) => current.filter((id) => id !== projectId))
+    if (workspaceLocation.view === 'canvas' && workspaceLocation.projectId === projectId) {
+      setWorkspaceView('projects', undefined, 'replace')
+    }
+  }, [setWorkspaceView, workspaceLocation])
+
+  const {
+    projects: workspaceProjects,
+    loading: workspaceProjectsLoading,
+    error: workspaceProjectsError,
+    refresh: refreshWorkspaceProjects,
+    openProject: openWorkspaceProject,
+    createProject: createWorkspaceProject,
+    createProjectFromTemplate: createWorkspaceProjectFromTemplate,
+    renameProject: renameWorkspaceProject,
+    deleteProject: deleteWorkspaceProject,
+  } = useWorkspaceProjectCoordinator({
+    activeDocumentId: document.id,
+    refreshKey: hydrated && (workspaceView === 'projects' || workspaceView === 'canvas')
+      ? `${workspaceView}:${workspaceLocation.projectId ?? ''}`
+      : null,
+    navigationSequence: workspaceNavigationRunRef,
+    openDocument,
+    openNewDocument,
+    renameDocument,
+    createDocumentFromTemplate,
+    onProjectOpened: handleWorkspaceProjectOpened,
+    onProjectDeleted: handleWorkspaceProjectDeleted,
+  })
 
   useEffect(() => {
     writeWorkspaceTabs(workspaceTabIds)
@@ -1344,104 +1370,6 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
     }
   }, [hydrated, openDocument, setWorkspaceView, workspaceRestored])
 
-  const refreshWorkspaceProjects = useCallback(async () => {
-    const operationToken = workspaceProjectRequests.begin()
-    setWorkspaceProjectsLoading(true)
-    setWorkspaceProjectsError(null)
-    try {
-      const summaries = await readCanvasProjectSummaries()
-      if (!workspaceProjectRequests.isCurrent(operationToken)) return
-      const projects = summaries
-        // 空白草稿没有独立项目价值：不在项目库展示，也不计入项目数。
-        .filter((item) => (item.nodeCount ?? 0) > 0 || (item.resultCount ?? 0) > 0)
-        .map((item): WorkspaceProject => ({
-        id: item.id,
-        name: item.name,
-        updatedAt: item.updatedAt,
-        cover: item.coverImage,
-        summary: item.resultCount
-          ? `已生成 ${item.resultCount} 张图 · ${item.nodeCount ?? 0} 个节点`
-          : item.nodeCount ? `已搭建 ${item.nodeCount} 个节点` : '空白画布',
-        isSeed: item.id === 'summer-fragrance-visual-lab',
-      }))
-      setWorkspaceProjects(projects)
-    } catch {
-      if (workspaceProjectRequests.isCurrent(operationToken)) setWorkspaceProjectsError('请检查网络或稍后重试。')
-    } finally {
-      if (workspaceProjectRequests.isCurrent(operationToken)) setWorkspaceProjectsLoading(false)
-    }
-  }, [workspaceProjectRequests])
-
-  const openWorkspaceProject = useCallback(async (projectId: string) => {
-    const navigationRunId = workspaceNavigationRunRef.current
-    const opened = await openDocument(projectId)
-    if (opened && navigationRunId === workspaceNavigationRunRef.current) {
-      setWorkspaceView('canvas', projectId)
-    }
-    return opened
-  }, [openDocument, setWorkspaceView])
-
-  const createWorkspaceProject = useCallback(async () => {
-    const ordinal = workspaceProjects.filter((item) => item.id.startsWith('project-')).length + 1
-    const project = createEmptyCanvasDocument(`project-${Date.now()}`, `创意项目 ${ordinal}`)
-    // 先进入本地空白画布；首次添加素材/节点时才会持久化并创建项目。
-    // 这样不会制造无法进入创作流程的空项目卡片。
-    openNewDocument(project)
-    setWorkspaceView('canvas', project.id)
-    return true
-  }, [openNewDocument, setWorkspaceView, workspaceProjects])
-
-  const createWorkspaceProjectFromTemplate = useCallback(async (templateId: string, shared: boolean) => {
-    const navigationRunId = workspaceNavigationRunRef.current
-    const project = createDocumentFromTemplate(templateId, shared)
-    if (!project) return false
-    try {
-      const saved = await createCanvasProject(project)
-      invalidateWorkspaceProjectRequests()
-      setWorkspaceProjects((current) => [{
-        id: saved.id,
-        name: saved.name,
-        updatedAt: saved.updatedAt,
-        cover: saved.history[0]?.image || undefined,
-        summary: `模板项目 · ${saved.nodes.length} 个节点`,
-      }, ...current.filter((item) => item.id !== saved.id)])
-      if (navigationRunId === workspaceNavigationRunRef.current) {
-        openNewDocument(saved)
-        setWorkspaceView('canvas', saved.id)
-      }
-      return true
-    } catch {
-      return false
-    }
-  }, [createDocumentFromTemplate, invalidateWorkspaceProjectRequests, openNewDocument, setWorkspaceView])
-
-  const renameWorkspaceProject = useCallback(async (projectId: string, name: string) => {
-    const nextName = name.trim()
-    if (!nextName) return false
-    invalidateWorkspaceProjectRequests()
-    if (projectId === document.id) {
-      try {
-        await renameDocument(nextName)
-      } catch {
-        return false
-      }
-      setWorkspaceProjects((current) => current.map((project) => project.id === projectId
-        ? { ...project, name: nextName, updatedAt: Date.now() }
-        : project))
-      return true
-    } else {
-      try {
-        await renameCanvasProject(projectId, nextName)
-      } catch {
-        return false
-      }
-    }
-    setWorkspaceProjects((current) => current.map((project) => project.id === projectId
-      ? { ...project, name: nextName, updatedAt: Date.now() }
-      : project))
-    return true
-  }, [document.id, invalidateWorkspaceProjectRequests, renameDocument])
-
   const beginProjectTabRename = useCallback((project: WorkspaceProject) => {
     setProjectTabNameDraft(project.name)
     setRenamingProjectTabId(project.id)
@@ -1457,33 +1385,6 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
       setRenamingProjectTabId(project.id)
     }
   }, [projectTabNameDraft, renameWorkspaceProject])
-
-  const deleteWorkspaceProject = useCallback(async (projectId: string) => {
-    const removedIndex = workspaceProjects.findIndex((project) => project.id === projectId)
-    const removedProject = removedIndex >= 0 ? workspaceProjects[removedIndex] : undefined
-    invalidateWorkspaceProjectRequests()
-    // 删除操作可能涉及远端素材与任务清理。先从当前列表移除，避免界面被网络往返卡住。
-    setWorkspaceProjects((current) => current.filter((project) => project.id !== projectId))
-    setWorkspaceTabIds((current) => current.filter((id) => id !== projectId))
-    if (workspaceLocation.view === 'canvas' && workspaceLocation.projectId === projectId) {
-      setWorkspaceView('projects', undefined, 'replace')
-    }
-    try {
-      await deleteCanvasDocument(projectId)
-    } catch (error) {
-      if (removedProject) {
-        setWorkspaceProjects((current) => {
-          if (current.some((project) => project.id === projectId)) return current
-          const next = [...current]
-          next.splice(Math.min(removedIndex, next.length), 0, removedProject)
-          return next
-        })
-      }
-      throw error
-    }
-    // 后台校准列表，不阻塞弹窗关闭或用户继续操作。
-    void refreshWorkspaceProjects()
-  }, [invalidateWorkspaceProjectRequests, refreshWorkspaceProjects, setWorkspaceView, workspaceLocation, workspaceProjects])
 
   const closeWorkspaceTab = useCallback((projectId: string) => {
     if (closingWorkspaceTabId) return
@@ -1512,17 +1413,6 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
     returnToProjectLibrary()
     setClosingWorkspaceTabId(null)
   }, [closingWorkspaceTabId, document.id, openWorkspaceProject, returnToProjectLibrary, workspaceProjects, workspaceTabIds])
-
-  useEffect(() => {
-    if (hydrated && workspaceView === 'projects') void refreshWorkspaceProjects()
-  }, [hydrated, refreshWorkspaceProjects, workspaceView])
-
-  useEffect(() => {
-    if (!hydrated || workspaceView !== 'canvas') return
-    // 顶部标签只保存项目 ID；直接在画布中新建或刷新时也要补齐项目元数据，
-    // 否则旧标签会因找不到名称而被临时过滤，看起来像被新项目替换。
-    void refreshWorkspaceProjects()
-  }, [hydrated, refreshWorkspaceProjects, workspaceLocation.projectId, workspaceView])
 
   useEffect(() => {
     selectedNodeIdsRef.current = new Set(document.nodes.filter((node) => node.selected).map((node) => node.id))

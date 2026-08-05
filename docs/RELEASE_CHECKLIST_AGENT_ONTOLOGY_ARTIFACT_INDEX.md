@@ -3,6 +3,8 @@
 快照日期：2026-08-04（Asia/Shanghai）
 目标 PR：#15 `codex/release-agent-ontology-artifact-index` → `main`
 
+> 归档说明：这是 PR #15 当时的操作快照，未勾选项不代表当前版本待办。当前生产恢复证据见 [2026-08-05 Release Acceptance](./RELEASE_ACCEPTANCE_2026-08-05.md)，通用发布门禁以 [版本与 PR 流程](./DEVELOPMENT_WORKFLOW.md) 为准。
+
 ## A. 已固化基线
 
 - [x] Release commits：`26c6a1a 发布 Agent Ontology 与 Artifact Index 闭环`、`f5486fe 完善提交恢复与实体冲突收口`
