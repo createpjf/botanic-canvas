@@ -353,8 +353,10 @@ async function hydrateDocumentMedia(document: CanvasDocument) {
 
 async function persistLocalDocument(document: CanvasDocument, queueForSync = false) {
   return enqueuePersistence(async () => {
-    const previous = await canvasDb.documents.get(document.id)
-    const prepared = await serializeDocumentMedia(document)
+    const [previous, prepared] = await Promise.all([
+      canvasDb.documents.get(document.id),
+      serializeDocumentMedia(document),
+    ])
     const preparedBackup = previous ? await serializeDocumentMedia(previous) : undefined
     await canvasDb.transaction('rw', canvasDb.documents, canvasDb.documentBackups, canvasDb.media, canvasDb.pendingSync, async () => {
       const media = [...prepared.media, ...(preparedBackup?.media ?? [])]

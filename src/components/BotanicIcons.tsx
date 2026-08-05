@@ -1,5 +1,9 @@
 type BotanicIconProps = { className?: string }
 
+export function FigmaIcon({ src, alt = '' }: { src: string; alt?: string }) {
+  return <img src={src} alt={alt} aria-hidden={alt === ''} />
+}
+
 /** Agent 面板 · 结果画廊 */
 export function GalleryIcon({ className }: BotanicIconProps) {
   return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">

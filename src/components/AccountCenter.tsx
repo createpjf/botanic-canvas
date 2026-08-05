@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { useRestoreFocus, type MotionPhase } from './motionPresence'
 import { auditEventCategory, auditEventDetail, auditEventLabel, filterAuditEvents, type AuditEventCategory, type WorkspaceAuditEvent } from '../domain/auditEvents'
 import { accountMenuPlacement, type AccountMenuAnchor } from '../domain/accountCenterPresentation'
+import { useDialogFocusTrap } from './useDialogFocusTrap'
 
 export type { AccountMenuAnchor } from '../domain/accountCenterPresentation'
 
@@ -32,33 +33,6 @@ function AccountGlyph({ kind }: { kind: 'profile' | 'security' | 'members' | 'au
   return <svg viewBox="0 0 24 24" aria-hidden="true">{paths[kind]}</svg>
 }
 
-export function useDialogFocusTrap(active: boolean) {
-  const dialogRef = useRef<HTMLElement>(null)
-  useEffect(() => {
-    if (!active) return
-    const dialog = dialogRef.current
-    if (!dialog) return
-    const selector = 'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [href], [contenteditable="true"], [tabindex]:not([tabindex="-1"])'
-    const focusables = () => Array.from(dialog.querySelectorAll<HTMLElement>(selector)).filter((element) => !element.hidden)
-    const frame = window.requestAnimationFrame(() => {
-      const preferred = dialog.querySelector<HTMLElement>('[autofocus]') ?? focusables()[0]
-      preferred?.focus({ preventScroll: true })
-    })
-    const trap = (event: KeyboardEvent) => {
-      if (event.key !== 'Tab') return
-      const items = focusables()
-      if (!items.length) return
-      const first = items[0]
-      const last = items[items.length - 1]
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
-    }
-    dialog.addEventListener('keydown', trap)
-    return () => { window.cancelAnimationFrame(frame); dialog.removeEventListener('keydown', trap) }
-  }, [active])
-  return dialogRef
-}
-
 export function AccountMenu({
   user,
   anchor,
@@ -80,7 +54,7 @@ export function AccountMenu({
   onClose: () => void
   phase?: MotionPhase
 }) {
-  const menuRef = useRef<HTMLElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
   useRestoreFocus(phase !== 'exit')
 
   useEffect(() => {
@@ -127,7 +101,7 @@ export function AccountMenu({
   }
 
   return createPortal(
-    <aside ref={menuRef} className={`account-menu is-${phase}`} style={style} role="menu" aria-labelledby="account-menu-title" inert={phase === 'exit' || undefined} onKeyDown={moveFocus}>
+    <div ref={menuRef} className={`account-menu is-${phase}`} style={style} role="menu" aria-labelledby="account-menu-title" inert={phase === 'exit' || undefined} onKeyDown={moveFocus}>
       <header>
         <span className="account-menu__avatar">{user?.name?.slice(0, 1).toUpperCase() || 'B'}</span>
         <div><small>账号与工作区</small><strong id="account-menu-title">{user?.name || '本地工作区'}</strong><small>{user?.email || '本地预览模式'}</small></div>
@@ -142,7 +116,7 @@ export function AccountMenu({
         {user?.role === 'owner' ? <button type="button" role="menuitem" onClick={onOpenAudit}><em><AccountGlyph kind="audit" /></em><span>活动记录</span><small>查看账户、项目与生成操作</small><b>›</b></button> : null}
       </div>
       {onSignOut ? <button className="account-menu__sign-out" type="button" role="menuitem" onClick={() => void onSignOut()}><AccountGlyph kind="sign-out" /><span>退出登录</span></button> : null}
-    </aside>,
+    </div>,
     document.body,
   )
 }

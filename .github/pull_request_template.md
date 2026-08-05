@@ -20,6 +20,8 @@
 - [ ] `npm test`
 - [ ] `npm run build`
 - [ ] `npm run check:architecture`
+- [ ] `npm run check:security`
+- [ ] `npm run test:e2e`
 - [ ] `git diff --check`
 - [ ] 未使用真实生图验证普通 UI 改动
 - [ ] 未修改或清理生产数据

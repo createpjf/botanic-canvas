@@ -10,6 +10,7 @@ import { createSupabaseAuthPostgresStore } from './supabaseAuthPostgresStore.mjs
 import { createGenerationModelCatalog } from './generationModels.mjs'
 import { parseMcpToolConfigurations } from './mcpClient.mjs'
 import { resolveInviteRedirectTo } from './inviteRedirect.mjs'
+import { assertProductStoreContract } from './productStoreContract.mjs'
 
 function boundedInteger(value, fallback, minimum, maximum) {
   const parsed = Number(value)
@@ -134,7 +135,7 @@ export async function createProductRuntime(config = runtimeConfig()) {
   const usePostgres = Boolean(config.databaseUrl)
   if (config.production && !usePostgres) throw new Error('生产环境必须配置 DATABASE_URL。')
   if (config.production && useSupabaseAuth && !useSupabase) throw new Error('Supabase 登录模式必须配置 SUPABASE_URL 与 SUPABASE_SECRET_KEY。')
-  const productStore = usePostgres
+  const selectedProductStore = usePostgres
     ? await createPostgresProductStore({
         databaseUrl: config.databaseUrl,
         bootstrapAccessToken: useAccessTokenAuth || useHybridAuth ? config.bootstrapAccessToken : undefined,
@@ -148,6 +149,9 @@ export async function createProductRuntime(config = runtimeConfig()) {
         inviteRedirectTo: config.supabase.inviteRedirectTo,
       })
       : createProductStore({ dataPath: config.localDataPath, bootstrapAccessToken: config.bootstrapAccessToken, bootstrapEmail: config.bootstrapEmail })
+  const productStore = assertProductStoreContract(selectedProductStore, {
+    adapter: usePostgres ? 'PostgresProductStore' : useSupabase ? 'SupabaseProductStore' : 'LocalProductStore',
+  })
 
   const authenticatedStore = usePostgres && useSupabase && useSupabaseAuth
     ? createSupabaseAuthPostgresStore({
@@ -159,6 +163,7 @@ export async function createProductRuntime(config = runtimeConfig()) {
         allowLegacyTokens: useHybridAuth,
       })
     : productStore
+  assertProductStoreContract(authenticatedStore, { adapter: 'AuthenticatedProductStore' })
 
   if (!useS3Storage && useSupabase) {
     const objectStore = createSupabaseObjectStore({
