@@ -21,7 +21,7 @@ UI（App / features / components）
 | 应用壳 | `src/App.tsx` | 登录恢复与功能入口按需加载 | 会话 `lib` 与功能模块 |
 | 功能 UI | `src/features/` | 功能级交互与异步协调；Agent 内部分离消息卡、Composer、消息交付、运行轨迹和工具面板 | Store、领域契约和 `lib` 高层接口 |
 | 共享 UI | `src/components/` | 渲染属性与用户事件 | 领域类型与共享 UI，不直接依赖 Store 或网络 |
-| 画布应用模块 | `src/store/` | `canvasStore.types.ts` 契约；文档迁移、资产视图、生成生命周期与投影、模板/历史、Agent 实体命令分别由对应深模块拥有，`canvasStore.ts` 只组合命令 | `domain`、`lib`、种子数据 |
+| 画布应用模块 | `src/store/` | `canvasStore.types.ts` 契约；文档生命周期、素材/图谱、普通生成、批量变体、模板/历史与 Agent 实体命令分别由对应深模块拥有，`canvasStore.ts` 只组合命令和撤销/交付边界 | `domain`、`lib`、种子数据 |
 | 领域契约 | `src/domain/` | 画布数据、生成结果放置等纯规则 | 类型依赖与纯计算，不依赖 UI、Store、网络或存储 |
 | 浏览器基础设施 | `src/lib/` | 会话、生成请求、项目文档与离线草稿接口 | `domain`、浏览器/网络 Adapter，不依赖 UI 或 Store |
 | Node API | `server/index.mjs` | 鉴权后的 HTTP 与 WebSocket 接口；每类资源由独立 Route 模块拥有方法目录和 405 语义 | 队列、处理器、运行时组合根 |
@@ -39,9 +39,9 @@ H3 的 MP4 与历史图片共用授权 URL，但历史缺少 `mediaKind` 时始�
 
 生成配方和批量变体的纯规则分别位于 `src/domain/generationRecipe.ts` 与 `src/domain/batchVariations.ts`。前者以生成节点入线与输入顺序构建配方，后者在提交前限制总输出并提供有界并发；Store 只负责把这些规则与持久化、网络任务组合起来。
 
-`canvasDocumentMigration.ts` 与 `canvasDocumentAssets.ts` 分别拥有版本迁移、引用清理及模板快照，不发起 I/O；`canvasGenerationProjection.ts` 只把任务与批量分支投影为画布文档；`canvasTemplateHistoryActions.ts` 统一拥有模板发布、模板建图与历史恢复。调度、轮询和持久化仍由 Store 协调。本地持久化模式不发起服务端生成结果对账。
+`canvasDocumentMigration.ts` 与 `canvasDocumentAssets.ts` 分别拥有版本迁移、引用清理及模板快照，不发起 I/O；`canvasGenerationProjection.ts` 只把任务与批量分支投影为画布文档；`canvasGenerationActions.ts` 自持普通生成的幂等提交、轮询、取消与恢复；`canvasDocumentLifecycleActions.ts` 统一项目打开、远端刷新、新建与重命名；`canvasAssetGraphActions.ts` 统一画布图谱、参考素材、素材组和可编辑节点命令；模板/历史、Agent、批量变体分别由对应 Actions 模块拥有。本地持久化模式不发起服务端生成结果对账。
 
-`src/features/canvas/workspaceProjectCoordinator.ts` 统一拥有项目摘要读取、过期请求失效、模板建项、重命名与乐观删除。`CanvasWorkspace.tsx` 只提供当前导航序列和打开/删除后的路由决策，避免远端项目竞态重新散落到 UI 主协调器。
+`src/features/canvas/workspaceProjectCoordinator.ts` 统一拥有项目摘要读取、过期请求失效、模板建项、重命名与乐观删除；`useCanvasWorkspaceSynchronization.ts` 统一拥有本地草稿同步、页面恢复、Realtime/Yjs 协作和 Agent Run 追踪；`useCanvasAgentExecutionBridge.ts` 统一 Agent 上下文、Run、Artifact 与画布写回；`useCanvasInteractionCoordinator.ts` 统一 React Flow 变更、视口、连线、边操作和文件拖放。`CanvasWorkspace.tsx` 只组合导航、面板与上述协调器。
 
 ## 受保护的稳定接口
 

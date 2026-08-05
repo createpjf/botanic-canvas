@@ -10,6 +10,7 @@ import type { GenerationModelOption } from '../../domain/canvas'
 import { CopyIcon, EditIcon, FocusIcon, SparkleIcon, ThumbDownIcon, ThumbUpIcon } from '../../components/BotanicIcons'
 import { agentPlannerModelLabel, modelDisplayLabel } from '../../components/generationModelPresentation'
 import { AgentClarificationCard, AgentPromptDiff, agentToolStatusLabel } from './AgentWorkspaceParts'
+import { AgentMarkdown } from './AgentMarkdown'
 
 type AgentConversationMessageProps = {
   message: BotanicAgentMessage
@@ -73,7 +74,7 @@ export function AgentConversationMessage({
   return <article className={`agent-message is-${message.role} is-${message.kind}`}>
     <div className="agent-message__role">{message.role === 'assistant' ? <SparkleIcon /> : <span>你</span>}</div>
     <div className="agent-message__body">
-      {!message.question ? <p>{message.content}</p> : null}
+      {!message.question ? (message.role === 'assistant' ? <AgentMarkdown content={message.content} /> : <p>{message.content}</p>) : null}
       {message.role === 'user' && message.deliveryStatus === 'queued' ? <small className="agent-message__delivery-status" role="status">待同步</small> : null}
       {message.role === 'user' && message.deliveryStatus === 'failed' ? <small className="agent-message__delivery-status is-failed" role="status">同步失败，请检查权限</small> : null}
       {message.kind === 'run' && message.runId && continueNodeIds.length ? <div className="agent-run-message__actions" aria-label="结果操作">
@@ -81,10 +82,15 @@ export function AgentConversationMessage({
         {outputNodeIds.length ? <button type="button" onClick={onShowResults}>查看结果</button> : null}
         {outputNodeIds.length ? <button type="button" onClick={() => onFocusNodes(outputNodeIds)}>定位画布</button> : null}
       </div> : null}
-      {message.question ? <AgentClarificationCard
+      {message.question ? message.status === 'answered' ? <AgentClarificationCard
         clarification={message.question}
         generationModels={generationModels}
-        state={message.status === 'answered' ? 'completed' : planning ? 'submitting' : 'idle'}
+        state="completed"
+        onSubmit={(answers) => onAnswerClarification(message, answers)}
+      /> : <AgentClarificationCard
+        clarification={message.question}
+        generationModels={generationModels}
+        state={planning ? 'submitting' : 'idle'}
         onSubmit={(answers) => onAnswerClarification(message, answers)}
       /> : null}
       {message.plan ? <div className="agent-message__plan">

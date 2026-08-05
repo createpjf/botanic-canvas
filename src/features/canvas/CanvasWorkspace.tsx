@@ -1,9 +1,6 @@
-import { lazy, Suspense, type CSSProperties, type DragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal, flushSync } from 'react-dom'
 import {
-  addEdge,
-  applyEdgeChanges,
-  applyNodeChanges,
   Background,
   BackgroundVariant,
   ConnectionLineType,
@@ -17,26 +14,19 @@ import {
   useReactFlow,
   useViewport,
   type NodeProps,
-  type Connection,
   type Edge,
-  type OnEdgesChange,
-  type OnNodesChange,
   type SetCenter,
   type XYPosition,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { defaultGenerationModels } from '../../domain/canvas'
 import { settingsForGenerationModel } from '../../domain/generationRecipe'
-import { collectBotanicAgentResults, mergeBotanicAgentArtifactIndex, recordBotanicAgentCanvasWritebacks, resolveBotanicAgentCanvasCommands, shouldRecoverAgentRunResults, type BotanicAgentActionProposal, type BotanicAgentActionResult, type BotanicAgentCanvasWriteback, type BotanicAgentPlan } from '../../domain/agent'
-import { collectAgentMediaSources, prepareAgentMediaSources } from '../../domain/agentMedia'
-import { canvasZoomMode, generationTaskErrorMessage, generationTaskFeedback, planResultGroupPresentation, traceCanvasLineage, type ResultGroupPresentation } from '../../domain/canvasPresentation'
+import { generationTaskErrorMessage, generationTaskFeedback, planResultGroupPresentation, traceCanvasLineage, type ResultGroupPresentation } from '../../domain/canvasPresentation'
 import { buildDeliveryPreviewArtifacts, canUseForImageDelivery, resolveDeliveryDraft, type DeliveryPanelTarget } from '../../domain/deliveryPresentation'
 import { reducedAspectRatio } from '../../domain/mediaPresentation'
 import { mediaRetryUrl } from '../../domain/mediaRecovery'
-import { shouldRefreshFromRealtimeEvent } from '../../domain/realtimeSync'
 import { videoAspectRatioPolicy } from '../../domain/videoGeneration'
-import { beginCanvasFileDrag, endCanvasFileDrag, hasFileDragPayload } from '../../domain/canvasFileDrag'
-import { canvasNodeBounds, layoutCanvasNodes } from '../../domain/canvasNodeLayout'
+import { canvasNodeBounds } from '../../domain/canvasNodeLayout'
 import { nextExclusiveSurface, type ExclusiveSurfaceAction } from '../../domain/exclusiveSurface'
 import { topOverlayLayer } from '../../domain/overlayPriority'
 import { summarizeWorkflowTemplate, type WorkflowTemplateSummary } from '../../domain/workflowTemplates'
@@ -68,21 +58,16 @@ import type {
   ReferenceGroupNodeData,
   ResultNodeData,
   TextNodeData,
-  UploadedAssetInput,
 } from '../../domain/canvas'
 import { deliveryPresets, downloadDeliveryPackage } from '../../lib/deliveryExport'
 import { downloadMedia } from '../../lib/mediaDownload'
-import { maxUploadAssets, readUploadedAssetInput, validateUploadFiles } from '../../lib/uploadedAssets'
-import { createPersistentBotanicAgentRun, executePersistentBotanicAgentRun, executeProjectAgentAction, listPersistentBotanicAgentRuns, listProjectAgentArtifacts, persistAgentReferenceMedia } from '../../lib/agentApi'
+import { maxUploadAssets } from '../../lib/uploadedAssets'
 import { getGenerationServiceHealth } from '../../lib/generationApi'
 import { refinePrompt } from '../../lib/promptRefinementApi'
-import { connectCanvasCollaboration, type CanvasCollaboration } from '../../lib/projectCollaboration'
-import { flushPendingCanvasDocumentWrites, refreshCanvasDocumentFromRemote, syncPendingCanvasDrafts } from '../../lib/db'
-import { enrollProductMfa, inviteWorkspaceMember, listWorkspaceAuditEvents, listWorkspaceMembers, readProductMfaStatus, refreshProductMediaSession, removeProductMfa, resendWorkspaceMemberInvite, serverPersistenceEnabled, signOutOtherProductSessions, updateProductPassword, updateWorkspaceMember, verifyProductMfa, type ProductUser } from '../../lib/productSession'
+import { enrollProductMfa, inviteWorkspaceMember, listWorkspaceAuditEvents, listWorkspaceMembers, readProductMfaStatus, refreshProductMediaSession, removeProductMfa, resendWorkspaceMemberInvite, signOutOtherProductSessions, updateProductPassword, updateWorkspaceMember, verifyProductMfa, type ProductUser } from '../../lib/productSession'
 import { useCanvasStore } from '../../store/canvasStore'
 import type { WorkspaceProject } from '../../components/WorkspaceViews'
 import { ArrowUpRightIcon, CloseIcon, DeleteIcon, DownloadIcon, FigmaIcon, FocusIcon, FolderOutlineIcon, HomeIcon, MapIcon, MoreIcon, PlusSquareIcon, SparkleIcon, UploadIcon } from '../../components/BotanicIcons'
-import type { AgentArtifactIndexState, AgentContextItem, AgentDockTarget } from '../../features/agent/agentWorkspace.types'
 import {
   sameWorkspaceLocation,
   workspaceHash,
@@ -91,6 +76,9 @@ import {
   type WorkspaceView,
 } from './canvasWorkspaceNavigation'
 import { useWorkspaceProjectCoordinator } from './workspaceProjectCoordinator'
+import { useCanvasWorkspaceSynchronization } from './useCanvasWorkspaceSynchronization'
+import { useCanvasAgentExecutionBridge } from './useCanvasAgentExecutionBridge'
+import { readCachedCanvasViewport, useCanvasInteractionCoordinator, type ScreenToFlowPosition } from './useCanvasInteractionCoordinator'
 import {
   AssetLibrary,
   BatchVariationComposer,
@@ -178,30 +166,6 @@ function runWorkspaceTransition(direction: WorkspaceTransitionDirection, update:
     delete root.dataset.workspaceTransitionId
   })
 }
-
-// V2 对应 V17 的初始画布间距迁移，避免旧缓存重新带回紧凑布局的观察视角。
-const canvasViewportStoragePrefix = 'botanic-canvas-viewport:v2:'
-
-function readCachedCanvasViewport(documentId: string) {
-  try {
-    const value = JSON.parse(window.localStorage.getItem(`${canvasViewportStoragePrefix}${documentId}`) ?? '') as Partial<{ x: number; y: number; zoom: number }>
-    if (Number.isFinite(value.x) && Number.isFinite(value.y) && Number.isFinite(value.zoom) && value.zoom! > 0) {
-      return { x: value.x!, y: value.y!, zoom: value.zoom! }
-    }
-  } catch {
-    // 回退到项目文档中的视角。
-  }
-  return undefined
-}
-
-function cacheCanvasViewport(documentId: string, viewport: { x: number; y: number; zoom: number }) {
-  try {
-    window.localStorage.setItem(`${canvasViewportStoragePrefix}${documentId}`, JSON.stringify(viewport))
-  } catch {
-    // 本地缓存不可用时，仍由项目文档继续保存。
-  }
-}
-
 
 const defaultGenerationSettings: GenerationSettings = {
   model: 'gpt-image-2',
@@ -546,8 +510,6 @@ function RestoreCanvasViewport({
   return null
 }
 
-type ScreenToFlowPosition = (position: { x: number; y: number }) => { x: number; y: number }
-
 type NodePalettePosition = {
   screen: { x: number; y: number }
   flow: { x: number; y: number }
@@ -696,19 +658,14 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
   const hydrated = useCanvasStore((state) => state.hydrated)
   const persistenceStatus = useCanvasStore((state) => state.persistenceStatus)
   const selectedNodeId = useCanvasStore((state) => state.selectedNodeId)
-  const hydrate = useCanvasStore((state) => state.hydrate)
   const openDocument = useCanvasStore((state) => state.openDocument)
   const refreshDocumentFromRemote = useCanvasStore((state) => state.refreshDocumentFromRemote)
-  const recoverGenerationResultsFromRemote = useCanvasStore((state) => state.recoverGenerationResultsFromRemote)
-  const recoverUnknownGenerationSubmission = useCanvasStore((state) => state.recoverUnknownGenerationSubmission)
   const openNewDocument = useCanvasStore((state) => state.openNewDocument)
   const renameDocument = useCanvasStore((state) => state.renameDocument)
   const setNodes = useCanvasStore((state) => state.setNodes)
-  const replaceMediaSources = useCanvasStore((state) => state.replaceMediaSources)
   const setNodesTransient = useCanvasStore((state) => state.setNodesTransient)
   const setEdges = useCanvasStore((state) => state.setEdges)
   const setViewport = useCanvasStore((state) => state.setViewport)
-  const applyCollaborativeGraph = useCanvasStore((state) => state.applyCollaborativeGraph)
   const selectNode = useCanvasStore((state) => state.selectNode)
   const addAssetToCanvas = useCanvasStore((state) => state.addAssetToCanvas)
   const addUploadedAssets = useCanvasStore((state) => state.addUploadedAssets)
@@ -719,18 +676,12 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
   const renameAssetGroup = useCanvasStore((state) => state.renameAssetGroup)
   const deleteAssetGroup = useCanvasStore((state) => state.deleteAssetGroup)
   const addAssetsToGroup = useCanvasStore((state) => state.addAssetsToGroup)
-  const addTextNode = useCanvasStore((state) => state.addTextNode)
-  const updateTextNode = useCanvasStore((state) => state.updateTextNode)
   const addGenerateNode = useCanvasStore((state) => state.addGenerateNode)
-  const renameCanvasNode = useCanvasStore((state) => state.renameCanvasNode)
   const updateGenerateNode = useCanvasStore((state) => state.updateGenerateNode)
   const runGraphGeneration = useCanvasStore((state) => state.runGraphGeneration)
   const runBatchVariation = useCanvasStore((state) => state.runBatchVariation)
   const retryBatchVariationItem = useCanvasStore((state) => state.retryBatchVariationItem)
   const batchVariationRuns = useCanvasStore((state) => state.document.batchVariationRuns)
-  const saveAgentPlan = useCanvasStore((state) => state.saveAgentPlan)
-  const updateAgentRunStatus = useCanvasStore((state) => state.updateAgentRunStatus)
-  const applyAgentRunSnapshot = useCanvasStore((state) => state.applyAgentRunSnapshot)
   const retryAgentBranch = useCanvasStore((state) => state.retryAgentBranch)
   const cancelAgentRun = useCanvasStore((state) => state.cancelAgentRun)
   const availableModels = useCanvasStore((state) => state.availableModels)
@@ -751,14 +702,11 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
   const lastGenerationRequest = useCanvasStore((state) => state.lastGenerationRequest)
   const cancelGeneration = useCanvasStore((state) => state.cancelGeneration)
   const retryGeneration = useCanvasStore((state) => state.retryGeneration)
-  const ensureAgentSession = useCanvasStore((state) => state.ensureAgentSession)
-  const startNewAgentSession = useCanvasStore((state) => state.startNewAgentSession)
   const appendAgentMessage = useCanvasStore((state) => state.appendAgentMessage)
   const updateAgentMessage = useCanvasStore((state) => state.updateAgentMessage)
   const updateAgentAction = useCanvasStore((state) => state.updateAgentAction)
   const setAgentSessionContext = useCanvasStore((state) => state.setAgentSessionContext)
   const setAgentSessionExecutionMode = useCanvasStore((state) => state.setAgentSessionExecutionMode)
-  const setActiveAgentSession = useCanvasStore((state) => state.setActiveAgentSession)
   const addAgentMemory = useCanvasStore((state) => state.addAgentMemory)
   const removeAgentMemory = useCanvasStore((state) => state.removeAgentMemory)
   const clearGenerationError = useCanvasStore((state) => state.clearGenerationError)
@@ -788,17 +736,14 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
   const setDeliveryOpen = useCallback((action: ExclusiveSurfaceAction) => setCanvasSurfaceOpen('delivery', action), [setCanvasSurfaceOpen])
   const setAgentOpen = useCallback((action: ExclusiveSurfaceAction) => setCanvasSurfaceOpen('agent', action), [setCanvasSurfaceOpen])
   const [assetLibraryTargetGenerateId, setAssetLibraryTargetGenerateId] = useState<string | null>(null)
-  const [agentArtifactIndex, setAgentArtifactIndex] = useState<AgentArtifactIndexState>({
-    projectId: '', artifacts: [], status: 'idle',
-  })
   const agentLauncherRef = useRef<HTMLButtonElement | null>(null)
-  const [agentTargetResultId, setAgentTargetResultId] = useState<string | null>(null)
+  const openAgentForResultRef = useRef<(resultNodeId: string) => void>(() => undefined)
+  const openAgentForResult = useCallback((resultNodeId: string) => openAgentForResultRef.current(resultNodeId), [])
   const [composerOpen, setComposerOpen] = useState(false)
   const [resultComposerDraft, setResultComposerDraft] = useState<ResultComposerDraft | null>(null)
   const [batchComposerTargetId, setBatchComposerTargetId] = useState<string | null>(null)
   const [imagePreview, setImagePreview] = useState<{ image: string; name: string; mediaKind: GenerationMediaKind } | null>(null)
   const [historyFocusRequest, setHistoryFocusRequest] = useState<{ nodeId: string; requestId: number } | null>(null)
-  const [agentFocusRequest, setAgentFocusRequest] = useState<{ nodeIds: string[]; requestId: number } | null>(null)
   const [renamingProjectTabId, setRenamingProjectTabId] = useState<string | null>(null)
   const [projectTabNameDraft, setProjectTabNameDraft] = useState('')
   const [assetToDelete, setAssetToDelete] = useState<AssetRecord | null>(null)
@@ -806,9 +751,7 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
   const [agentPlannerModels, setAgentPlannerModels] = useState<string[]>(defaultAgentPlannerModels)
   const [composerLayout, setComposerLayout] = useState<ComposerLayout>(readComposerLayout)
   const [nodePalette, setNodePalette] = useState<NodePalettePosition | null>(null)
-  const [isCanvasFileDragging, setIsCanvasFileDragging] = useState(false)
   const [revealingResultNodeIds, setRevealingResultNodeIds] = useState<Map<string, number>>(() => new Map())
-  const [canvasUploadMessage, setCanvasUploadMessage] = useState('')
   const [marqueeMode, setMarqueeMode] = useState(false)
   const [miniMapOpen, setMiniMapOpen] = useState(false)
   const [accountMenuAnchor, setAccountMenuAnchor] = useState<AccountMenuAnchor | null>(null)
@@ -824,13 +767,8 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
     if (rect) setAccountMenuAnchor({ left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom })
   }, [])
   const [isTouchTablet, setIsTouchTablet] = useState(false)
-  const [zoomMode, setZoomMode] = useState(() => canvasZoomMode(document.viewport.zoom))
   const [expandedResultGroupIds, setExpandedResultGroupIds] = useState<Set<string>>(() => new Set())
   const [activeResultByGroupId, setActiveResultByGroupId] = useState<Map<string, string>>(() => new Map())
-  const [isConnecting, setIsConnecting] = useState(false)
-  const [connectionFeedback, setConnectionFeedback] = useState<'connected' | 'invalid' | 'cancelled' | null>(null)
-  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
-  const [edgeActionPosition, setEdgeActionPosition] = useState<{ x: number; y: number } | null>(null)
 
   useEffect(() => {
     const coarsePointer = window.matchMedia('(pointer: coarse)')
@@ -854,15 +792,9 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
   const visibleNodePalette = useRetainedValue(nodePalette)
   const undoPresence = useMotionPresence(Boolean(undoAction), 120)
   const visibleUndoAction = useRetainedValue(undoAction)
-  const canvasDropPresence = useMotionPresence(isCanvasFileDragging, 100)
   useRestoreFocus(Boolean(imagePreview || assetToDelete || nodePalette))
   const imagePreviewDialogRef = useDialogFocusTrap(Boolean(imagePreview))
 
-  useEffect(() => {
-    if (!connectionFeedback) return
-    const timer = window.setTimeout(() => setConnectionFeedback(null), 1_100)
-    return () => window.clearTimeout(timer)
-  }, [connectionFeedback])
 
   useEffect(() => {
     if (!imagePreview) return
@@ -898,8 +830,15 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
   const [workspaceRestored, setWorkspaceRestored] = useState(false)
   const [closingWorkspaceTabId, setClosingWorkspaceTabId] = useState<string | null>(null)
   const [viewportRestoring, setViewportRestoring] = useState(initialWorkspaceLocation.view === 'canvas')
-  const [canvasHydrationFailed, setCanvasHydrationFailed] = useState(false)
   const workspaceView = workspaceLocation.view
+  const {
+    canvasHydrationFailed,
+    hydrateCanvas,
+    refreshAgentCanvasFromRemote,
+    retryAgentCanvasPersistence,
+  } = useCanvasWorkspaceSynchronization({
+    workspaceActive: workspaceRestored && workspaceView === 'canvas',
+  })
   const workspaceDocumentMismatch = workspaceView === 'canvas'
     && Boolean(workspaceLocation.projectId)
     && document.id !== workspaceLocation.projectId
@@ -935,15 +874,12 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
   const screenToFlowPositionRef = useRef<ScreenToFlowPosition | null>(null)
   const canvasPaneRef = useRef<HTMLElement | null>(null)
   const nodeFileInputRef = useRef<HTMLInputElement>(null)
-  const canvasFileDragDepthRef = useRef(0)
   const selectedNodeIdsRef = useRef<Set<string>>(new Set())
   const selectedNodeTransitionRef = useRef<string | null | undefined>(undefined)
   const skipAutoComposerNodeIdRef = useRef<string | null>(null)
   const resultComposerSubmissionRef = useRef(false)
   const renderedResultNodeStateRef = useRef<Map<string, { candidateId?: string; hasImage: boolean }> | null>(null)
   const resultRevealTimersRef = useRef<Map<string, number>>(new Map())
-  const pendingNodePositionSaveRef = useRef(false)
-  const collaborationRef = useRef<CanvasCollaboration | null>(null)
   const viewportReadyRef = useRef(false)
   const viewportDocumentIdRef = useRef(document.id)
   useLayoutEffect(() => {
@@ -955,9 +891,6 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
     () => readCachedCanvasViewport(document.id) ?? document.viewport,
     [document.id, document.viewport],
   )
-  useEffect(() => {
-    setZoomMode(canvasZoomMode(restoredViewport.zoom))
-  }, [document.id, restoredViewport.zoom])
   useEffect(() => {
     setExpandedResultGroupIds(new Set())
     setActiveResultByGroupId(new Map())
@@ -1069,184 +1002,6 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
     setComposerLayout((current) => current.collapsed ? { ...current, collapsed: false } : current)
     setComposerOpen(true)
   }, [])
-
-  const hydrateCanvas = useCallback(() => {
-    setCanvasHydrationFailed(false)
-    void hydrate().catch(() => setCanvasHydrationFailed(true))
-  }, [hydrate])
-
-  const synchronizeLocalDrafts = useCallback(async () => {
-    const result = await syncPendingCanvasDrafts()
-    const current = useCanvasStore.getState()
-    if (result.conflictIds.includes(current.document.id)) {
-      const projectId = current.document.id
-      const opened = await openDocument(projectId)
-      if (opened && useCanvasStore.getState().document.id === projectId) {
-        useCanvasStore.setState({ persistenceStatus: 'saved', assistantMessage: '画布已同步。' })
-      }
-      return result
-    }
-    if (result.pending === 0 && (current.persistenceStatus === 'offline' || current.persistenceStatus === 'error')) {
-      useCanvasStore.setState({ persistenceStatus: 'saved', assistantMessage: '本地草稿已同步。' })
-    }
-    return result
-  }, [openDocument])
-
-  const retryAgentCanvasPersistence = useCallback(async () => {
-    const projectId = useCanvasStore.getState().document.id
-    try {
-      const result = await syncPendingCanvasDrafts()
-      const current = useCanvasStore.getState()
-      if (current.document.id !== projectId || result.conflictIds.includes(projectId)) return false
-      if (result.pending === 0 && (current.persistenceStatus === 'offline' || current.persistenceStatus === 'error')) {
-        useCanvasStore.setState({ persistenceStatus: 'saved', assistantMessage: '本地草稿已同步。' })
-      }
-      return result.pending === 0
-    } catch {
-      return false
-    }
-  }, [])
-
-  const refreshAgentCanvasFromRemote = useCallback(async () => {
-    const projectId = useCanvasStore.getState().document.id
-    if (projectId === 'workspace-placeholder') return false
-    const remote = await refreshCanvasDocumentFromRemote(projectId)
-    if (!remote || useCanvasStore.getState().document.id !== projectId) return false
-    const opened = await openDocument(projectId)
-    if (opened && useCanvasStore.getState().document.id === projectId) {
-      useCanvasStore.setState({ persistenceStatus: 'saved', assistantMessage: '已切换到云端版本。' })
-    }
-    return opened
-  }, [openDocument])
-
-  const recoverPersistentAgentRuns = useCallback(async () => {
-    const projectId = useCanvasStore.getState().document.id
-    const runs = await listPersistentBotanicAgentRuns(projectId)
-    if (useCanvasStore.getState().document.id !== projectId) return
-    let shouldRecoverResults = false
-    for (const run of runs) {
-      const current = useCanvasStore.getState().document.agentRuns.find((candidate) => candidate.id === run.id)
-      if (shouldRecoverAgentRunResults(current, run)) shouldRecoverResults = true
-      applyAgentRunSnapshot(run)
-    }
-    if (shouldRecoverResults) await recoverGenerationResultsFromRemote()
-  }, [applyAgentRunSnapshot, recoverGenerationResultsFromRemote])
-
-  useEffect(() => {
-    hydrateCanvas()
-  }, [hydrateCanvas])
-
-  useEffect(() => {
-    const flushPendingWrites = () => { void flushPendingCanvasDocumentWrites().catch(() => undefined) }
-    window.addEventListener('pagehide', flushPendingWrites)
-    return () => window.removeEventListener('pagehide', flushPendingWrites)
-  }, [])
-
-  useEffect(() => {
-    if (!hydrated || !serverPersistenceEnabled) return
-    const syncDrafts = () => {
-      void synchronizeLocalDrafts()
-        .then(() => refreshDocumentFromRemote())
-        .then(() => recoverUnknownGenerationSubmission())
-        .then(() => recoverPersistentAgentRuns())
-        .catch(() => undefined)
-    }
-    syncDrafts()
-    window.addEventListener('online', syncDrafts)
-    return () => window.removeEventListener('online', syncDrafts)
-  }, [hydrated, recoverPersistentAgentRuns, recoverUnknownGenerationSubmission, refreshDocumentFromRemote, synchronizeLocalDrafts])
-
-  useEffect(() => {
-    if (!hydrated || !workspaceRestored || workspaceView !== 'canvas' || !serverPersistenceEnabled) return
-    const refresh = () => {
-      void refreshDocumentFromRemote()
-        .then(() => recoverUnknownGenerationSubmission())
-        .then(() => recoverPersistentAgentRuns())
-        .catch(() => undefined)
-    }
-    const refreshWhenVisible = () => {
-      if (window.document.visibilityState === 'visible') refresh()
-    }
-    window.addEventListener('focus', refresh)
-    window.document.addEventListener('visibilitychange', refreshWhenVisible)
-    return () => {
-      window.removeEventListener('focus', refresh)
-      window.document.removeEventListener('visibilitychange', refreshWhenVisible)
-    }
-  }, [hydrated, recoverPersistentAgentRuns, recoverUnknownGenerationSubmission, refreshDocumentFromRemote, workspaceRestored, workspaceView])
-
-  useEffect(() => {
-    if (!hydrated || !workspaceRestored || workspaceView !== 'canvas' || !serverPersistenceEnabled) return
-    const current = useCanvasStore.getState().document
-    const collaboration = connectCanvasCollaboration({
-      projectId: current.id,
-      initialGraph: { nodes: current.nodes, edges: current.edges },
-      onRemoteGraph: applyCollaborativeGraph,
-      onProjectUpdated: (event) => {
-        const latest = useCanvasStore.getState().document
-        if (!shouldRefreshFromRealtimeEvent({
-          event,
-          currentProjectId: latest.id,
-          currentUpdatedAt: latest.updatedAt,
-        })) return
-        void refreshDocumentFromRemote().catch(() => undefined)
-      },
-      onAgentRunUpdated: (event) => {
-        applyAgentRunSnapshot(event.run)
-        const terminal = event.run.branches.every((branch) => ['succeeded', 'failed', 'cancelled'].includes(branch.status))
-        if (terminal) {
-          void recoverGenerationResultsFromRemote()
-            .then(() => refreshDocumentFromRemote())
-            .catch(() => undefined)
-        }
-      },
-      onReconnected: () => {
-        void synchronizeLocalDrafts()
-          .then(() => recoverUnknownGenerationSubmission())
-          .then(() => recoverPersistentAgentRuns())
-          .then(() => refreshDocumentFromRemote())
-          .catch(() => undefined)
-      },
-    })
-    collaborationRef.current = collaboration
-    return () => {
-      if (collaborationRef.current === collaboration) collaborationRef.current = null
-      collaboration.close()
-    }
-  }, [applyAgentRunSnapshot, applyCollaborativeGraph, document.id, hydrated, recoverGenerationResultsFromRemote, recoverPersistentAgentRuns, recoverUnknownGenerationSubmission, refreshDocumentFromRemote, synchronizeLocalDrafts, workspaceRestored, workspaceView])
-
-  useEffect(() => {
-    if (!hydrated || !workspaceRestored || workspaceView !== 'canvas' || !serverPersistenceEnabled) return
-    void recoverPersistentAgentRuns().catch(() => undefined)
-  }, [document.id, hydrated, recoverPersistentAgentRuns, workspaceRestored, workspaceView])
-
-  useEffect(() => {
-    if (!hydrated || !workspaceRestored || workspaceView !== 'canvas' || !serverPersistenceEnabled) return
-    if (!document.agentRuns.some((run) => run.status === 'queued' || run.status === 'running' || run.status === 'executing')) return
-    let active = true
-    let requesting = false
-    const recoverProgress = async () => {
-      if (!active || requesting || window.document.visibilityState !== 'visible') return
-      requesting = true
-      try {
-        await recoverPersistentAgentRuns()
-        if (!active) return
-      } catch {
-        // Realtime 断线或工作区短暂不可用时保留当前进度，下一轮自动恢复。
-      } finally {
-        requesting = false
-      }
-    }
-    const timer = window.setInterval(() => { void recoverProgress() }, 4_000)
-    return () => {
-      active = false
-      window.clearInterval(timer)
-    }
-  }, [document.agentRuns, document.id, hydrated, recoverPersistentAgentRuns, workspaceRestored, workspaceView])
-
-  useEffect(() => {
-    collaborationRef.current?.replaceLocalGraph({ nodes: document.nodes, edges: document.edges })
-  }, [document.edges, document.nodes])
 
   useEffect(() => {
     if (!hydrated || workspaceRestored) return
@@ -1522,23 +1277,6 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
     })
   }, [document.nodes])
 
-  const openAgentForResult = useCallback((resultNodeId: string) => {
-    const result = document.nodes.find((node) => node.id === resultNodeId && node.type === 'result')
-    const data = result?.type === 'result' ? result.data as ResultNodeData : undefined
-    if (!data?.image) return
-    selectNode(resultNodeId)
-    const sessionId = ensureAgentSession([resultNodeId])
-    const session = useCanvasStore.getState().document.agentSessions.find((item) => item.id === sessionId)
-    setAgentSessionContext(sessionId, [...(session?.contextNodeIds ?? []), resultNodeId])
-    setAgentTargetResultId(resultNodeId)
-    setComposerOpen(false)
-    setResultComposerDraft(null)
-    setBatchComposerTargetId(null)
-    setNodePalette(null)
-    setAccountMenuAnchor(null)
-    setAgentOpen(true)
-  }, [document.nodes, ensureAgentSession, selectNode, setAgentSessionContext])
-
   const selectedFocusNodeIds = useMemo(() => {
     const selectedIds = document.nodes.filter((node) => node.selected).map((node) => node.id)
     if (selectedIds.length) return selectedIds
@@ -1602,6 +1340,59 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
   const hiddenResultNodeIds = useMemo(() => new Set([...resultGroupPresentation]
     .filter(([, presentation]) => presentation.hidden)
     .map(([nodeId]) => nodeId)), [resultGroupPresentation])
+  const resetCanvasSelectionSurfaces = useCallback(() => {
+    setNodeInspectorOpen(false)
+    setNodePalette(null)
+    setResultComposerDraft(null)
+  }, [setNodeInspectorOpen])
+  const canvasInteraction = useCanvasInteractionCoordinator({
+    document,
+    hydrated,
+    restoredViewportZoom: restoredViewport.zoom,
+    hiddenResultNodeIds,
+    focusedLineageEdgeIds: focusedLineage.edgeIds,
+    hasLineageFocus,
+    assetLibraryAssets,
+    assetLibraryTargetGenerateId,
+    screenToFlowPositionRef,
+    canvasPaneRef,
+    viewportReadyRef,
+    onSelectionReset: resetCanvasSelectionSurfaces,
+  })
+  const {
+    zoomMode,
+    isConnecting,
+    connectionFeedback,
+    selectedEdge,
+    edgeActionPosition,
+    isCanvasFileDragging,
+    canvasUploadMessage,
+    onNodesChange,
+    persistDraggedNodes,
+    onEdgesChange,
+    persistViewport,
+    onMoveEnd,
+    onCanvasMove,
+    autoLayoutCanvas,
+    onSelectionChange,
+    setScreenToFlowPosition,
+    onCanvasDragOver,
+    onCanvasDrop,
+    onCanvasFileDragEnter,
+    onCanvasFileDragLeave,
+    isFlowDropTarget,
+    addDroppedFilesToCanvas,
+    renderedEdges,
+    onConnect,
+    onReconnect,
+    selectEdgeActions,
+    removeSelectedEdge,
+    toggleNodeReference,
+    addAssetFromLibrary,
+    isGraphConnectionValid,
+    clearConnectionSelection,
+  } = canvasInteraction
+  const canvasDropPresence = useMotionPresence(canvasInteraction.isCanvasFileDragging, 100)
 
   const renderedNodes = useMemo(() => document.nodes.map((node) => {
     const entryIndex = revealingResultNodeIds.get(node.id)
@@ -1695,84 +1486,6 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
     }
   }, [composerLayout])
 
-  const onNodesChange: OnNodesChange<CanvasNode> = useCallback(
-    (changes) => {
-      if (!hydrated) return
-      const nextNodes = applyNodeChanges(changes, useCanvasStore.getState().document.nodes)
-      // 框选、单选只是即时 UI 状态，不应触发整份画布远端保存。
-      if (changes.every((change) => change.type === 'select')) {
-        setNodesTransient(nextNodes)
-        return
-      }
-      // 拖动期间只更新画布，直到鼠标松开时才持久化最终坐标。
-      // 键盘等非拖动的位置变更仍立即保存，避免遗漏可访问性操作。
-      const positionOnly = changes.length > 0 && changes.every((change) => change.type === 'position')
-      const dragging = positionOnly && changes.some((change) => change.type === 'position' && change.dragging === true)
-      if (dragging) {
-        pendingNodePositionSaveRef.current = true
-        setNodesTransient(nextNodes)
-        return
-      }
-      if (positionOnly) pendingNodePositionSaveRef.current = false
-      setNodes(nextNodes)
-    },
-    [hydrated, setNodes, setNodesTransient],
-  )
-
-  const persistDraggedNodes = useCallback(() => {
-    if (!hydrated || !pendingNodePositionSaveRef.current) return
-    pendingNodePositionSaveRef.current = false
-    setNodes(useCanvasStore.getState().document.nodes)
-  }, [hydrated, setNodes])
-
-  const onEdgesChange: OnEdgesChange = useCallback(
-    (changes) => {
-      if (!hydrated) return
-      const currentEdges = useCanvasStore.getState().document.edges
-      const protectedEdgeIds = new Set(currentEdges
-        .filter((edge) => Boolean(edge.data?.system))
-        .map((edge) => edge.id))
-      const safeChanges = changes.filter((change) => change.type !== 'remove' || !protectedEdgeIds.has(change.id))
-      setEdges(applyEdgeChanges(safeChanges, currentEdges))
-    },
-    [hydrated, setEdges],
-  )
-
-  const persistViewport = useCallback((viewport: typeof document.viewport) => {
-    if (!hydrated) return
-    cacheCanvasViewport(document.id, viewport)
-    setViewport(viewport)
-  }, [document.id, hydrated, setViewport])
-
-  const onMoveEnd = useCallback((event: unknown, viewport: typeof document.viewport) => {
-    // React Flow 挂载会以空事件上报默认 100% 视角；它不是用户平移，不能覆盖已恢复的视角。
-    if (!event || !hydrated || !viewportReadyRef.current) return
-    persistViewport(viewport)
-  }, [hydrated, persistViewport])
-
-  const onCanvasMove = useCallback((_event: unknown, viewport: typeof document.viewport) => {
-    const nextMode = canvasZoomMode(viewport.zoom)
-    setZoomMode((current) => current === nextMode ? current : nextMode)
-  }, [])
-
-  const autoLayoutCanvas = useCallback(() => {
-    if (!document.nodes.length) return
-    setNodes(layoutCanvasNodes(document.nodes, document.edges))
-  }, [document.edges, document.nodes, setNodes])
-
-  const onSelectionChange = useCallback(({ nodes, edges }: { nodes: CanvasNode[]; edges: Edge[] }) => {
-    if (edges.length === 1) {
-      setSelectedEdgeId(edges[0].id)
-      return
-    }
-    if (nodes.length === 1) return
-    setSelectedEdgeId(null)
-    setEdgeActionPosition(null)
-    setNodeInspectorOpen(false)
-    setNodePalette(null)
-    setResultComposerDraft(null)
-  }, [])
-
   const closeWorkbenchPanels = useCallback(() => {
     setAssetsOpen(false)
     setAssetLibraryTargetGenerateId(null)
@@ -1823,96 +1536,6 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
     return () => window.removeEventListener('keydown', closeFrontSurfaceOnEscape)
   }, [accountDialog, accountMenuAnchor, activeCanvasSurface, agentOpen, assetToDelete, batchComposerTargetId, composerOpen, imagePreview, nodePalette, resultComposerDraft])
 
-  const setScreenToFlowPosition = useCallback((mapper: ScreenToFlowPosition) => {
-    screenToFlowPositionRef.current = mapper
-  }, [])
-
-  const addDroppedFilesToCanvas = useCallback(async (files: File[], position: { x: number; y: number }) => {
-    const projectId = document.id
-    const { accepted, message } = validateUploadFiles(files)
-    const imageFiles = accepted.slice(0, 12)
-    setCanvasUploadMessage(message)
-    if (!imageFiles.length) return
-    const hasProduct = document.nodes.some((node) => node.type === 'asset'
-      && (node.data as AssetNodeData).role === '商品')
-    const loaded = await Promise.allSettled(imageFiles.map((file, index) => readUploadedAssetInput(
-      file,
-      !hasProduct && index === 0 ? '商品' : '场景',
-    )))
-    const uploads = loaded
-      .filter((result): result is PromiseFulfilledResult<UploadedAssetInput> => result.status === 'fulfilled')
-      .map((result) => result.value)
-    if (uploads.length && useCanvasStore.getState().document.id === projectId) {
-      addUploadedAssetsToCanvas(uploads, position)
-      if (!message) setCanvasUploadMessage('已加入画布并存入素材库。')
-    }
-  }, [addUploadedAssetsToCanvas, document.id, document.nodes])
-
-  const onCanvasDragOver = useCallback((event: DragEvent<HTMLElement>) => {
-    event.preventDefault()
-    // 素材库中的卡片仍然保留在原处，拖入画布本质上是一次“添加”。
-    event.dataTransfer.dropEffect = 'copy'
-  }, [])
-
-  const resetCanvasFileDragState = useCallback(() => {
-    canvasFileDragDepthRef.current = 0
-    setIsCanvasFileDragging(false)
-  }, [])
-
-  const onCanvasDrop = useCallback((event: DragEvent<HTMLElement>) => {
-    event.preventDefault()
-    resetCanvasFileDragState()
-    const mapper = screenToFlowPositionRef.current
-    if (!mapper) return
-    const position = mapper({ x: event.clientX, y: event.clientY })
-    const files = Array.from(event.dataTransfer.files)
-    if (files.length) {
-      void addDroppedFilesToCanvas(files, position)
-      return
-    }
-    // Safari / 部分内嵌浏览器会在 drop 阶段丢弃自定义 MIME，只保留 text/plain。
-    const assetId = event.dataTransfer.getData('application/x-botanic-asset-id')
-      || event.dataTransfer.getData('text/plain')
-    if (assetId && assetLibraryAssets.some((asset) => asset.id === assetId)) addAssetToCanvas(assetId, position)
-  }, [addAssetToCanvas, addDroppedFilesToCanvas, assetLibraryAssets, resetCanvasFileDragState])
-
-  const isFlowDropTarget = useCallback((target: EventTarget | null) => (
-    target instanceof Element && Boolean(target.closest('.react-flow'))
-  ), [])
-
-  const onCanvasFileDragEnter = useCallback((event: DragEvent<HTMLElement>) => {
-    const next = beginCanvasFileDrag(
-      { depth: canvasFileDragDepthRef.current, active: isCanvasFileDragging },
-      Array.from(event.dataTransfer.types),
-      isFlowDropTarget(event.target),
-    )
-    canvasFileDragDepthRef.current = next.depth
-    setIsCanvasFileDragging(next.active)
-  }, [isCanvasFileDragging, isFlowDropTarget])
-
-  const onCanvasFileDragLeave = useCallback((event: DragEvent<HTMLElement>) => {
-    if (!hasFileDragPayload(Array.from(event.dataTransfer.types)) || !isFlowDropTarget(event.target)) return
-    const next = endCanvasFileDrag({ depth: canvasFileDragDepthRef.current, active: isCanvasFileDragging })
-    canvasFileDragDepthRef.current = next.depth
-    setIsCanvasFileDragging(next.active)
-  }, [isCanvasFileDragging, isFlowDropTarget])
-
-  useEffect(() => {
-    const resetOnGlobalFileDrop = (event: globalThis.DragEvent) => {
-      if (hasFileDragPayload(Array.from(event.dataTransfer?.types ?? []))) resetCanvasFileDragState()
-    }
-    const resetOnWindowBlur = () => resetCanvasFileDragState()
-    // Agent/素材库会阻止 drop 冒泡；捕获阶段仍能保证画布状态复位。
-    window.addEventListener('drop', resetOnGlobalFileDrop, true)
-    window.addEventListener('dragend', resetOnGlobalFileDrop, true)
-    window.addEventListener('blur', resetOnWindowBlur)
-    return () => {
-      window.removeEventListener('drop', resetOnGlobalFileDrop, true)
-      window.removeEventListener('dragend', resetOnGlobalFileDrop, true)
-      window.removeEventListener('blur', resetOnWindowBlur)
-    }
-  }, [resetCanvasFileDragState])
-
   const openNodePalette = useCallback((event: ReactMouseEvent, fromDock = false, parentResultId?: string) => {
     const mapper = screenToFlowPositionRef.current
     const paneRect = canvasPaneRef.current?.getBoundingClientRect()
@@ -1946,156 +1569,6 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
       inputNodeId: contextualInputNodeId,
     })
   }, [closeWorkbenchPanels, document.nodes, selectedNodeId])
-
-  const isGraphConnectionValid = useCallback((connection: Connection | Edge, ignoredEdgeId?: string) => {
-    const sourceId = connection.source
-    const targetId = connection.target
-    if (!sourceId || !targetId || sourceId === targetId) return false
-    const source = document.nodes.find((node) => node.id === sourceId)
-    const target = document.nodes.find((node) => node.id === targetId)
-    if (!source || !target) return false
-    const existingEdges = document.edges.filter((edge) => edge.id !== ignoredEdgeId)
-    const connectsToGenerate = target.type === 'generate' && (source.type === 'asset' || source.type === 'text' || source.type === 'result')
-    if (!connectsToGenerate) return false
-    if (existingEdges.some((edge) => edge.source === sourceId && edge.target === targetId
-      && (edge.sourceHandle ?? null) === (connection.sourceHandle ?? null)
-      && (edge.targetHandle ?? null) === (connection.targetHandle ?? null))) return false
-    if (source.type === 'asset') {
-      const connectedImages = existingEdges
-        .filter((edge) => edge.target === targetId)
-        .map((edge) => document.nodes.find((node) => node.id === edge.source))
-        .filter((node) => node?.type === 'asset')
-      if (connectedImages.length >= 8) return false
-    }
-    if (source.type === 'result') {
-      const connectedResults = existingEdges
-        .filter((edge) => edge.target === targetId)
-        .map((edge) => document.nodes.find((node) => node.id === edge.source))
-        .filter((node) => node?.type === 'result')
-      if (connectedResults.length >= 1) return false
-    }
-    return true
-  }, [document.edges, document.nodes])
-
-  const isVideoConnection = useCallback((connection: Connection | Edge) => {
-    const source = document.nodes.find((node) => node.id === connection.source)
-    const target = document.nodes.find((node) => node.id === connection.target)
-    const isVideoNode = (node?: CanvasNode) => node?.type === 'generate'
-      ? (node.data as GenerateNodeData).settings.duration !== undefined
-      : node?.type === 'result' && ((node.data as ResultNodeData).mediaKind ?? 'image') === 'video'
-    return isVideoNode(source) || isVideoNode(target)
-  }, [document.nodes])
-
-  const graphEdgeStyle = useCallback((connection: Connection | Edge) => {
-    const source = document.nodes.find((node) => node.id === connection.source)
-    const target = document.nodes.find((node) => node.id === connection.target)
-    if (isVideoConnection(connection)) {
-      return {
-        stroke: '#3f6f9d',
-        strokeWidth: 1.8,
-        ...(source?.type === 'result' && target?.type === 'generate' ? { strokeDasharray: '4 3' } : {}),
-      }
-    }
-    if (source?.type === 'result' && target?.type === 'generate') {
-      return { stroke: '#7e9785', strokeWidth: 1.25, strokeDasharray: '4 3' }
-    }
-    if (source?.type === 'generate' && target?.type === 'result') {
-      return { stroke: '#2a5238', strokeWidth: 1.7 }
-    }
-    return { stroke: '#4f805b', strokeWidth: 1.6 }
-  }, [document.nodes, isVideoConnection])
-
-  const renderedEdges = useMemo(() => document.edges.map((edge) => ({
-    ...edge,
-    hidden: Boolean(edge.hidden || hiddenResultNodeIds.has(edge.source) || hiddenResultNodeIds.has(edge.target)),
-    className: [
-      edge.className ?? '',
-      isVideoConnection(edge) ? 'media-edge--video' : '',
-      hasLineageFocus ? focusedLineage.edgeIds.has(edge.id) ? 'is-lineage' : 'is-lineage-muted' : '',
-    ].filter(Boolean).join(' '),
-    style: { ...edge.style, ...graphEdgeStyle(edge) },
-  })), [document.edges, focusedLineage.edgeIds, graphEdgeStyle, hasLineageFocus, hiddenResultNodeIds, isVideoConnection])
-
-  const onConnect = useCallback((connection: Connection) => {
-    if (!isGraphConnectionValid(connection)) return
-    setEdges(addEdge({
-      ...connection,
-      id: `graph-edge-${connection.source}-${connection.target}-${Date.now()}`,
-      type: 'default',
-      style: graphEdgeStyle(connection),
-      reconnectable: true,
-    }, document.edges))
-    setIsConnecting(false)
-  }, [document.edges, graphEdgeStyle, isGraphConnectionValid, setEdges])
-
-  const onReconnect = useCallback((oldEdge: Edge, connection: Connection) => {
-    if (oldEdge.data?.system) return
-    if (!isGraphConnectionValid(connection, oldEdge.id)) return
-    const nextEdge: Edge = {
-      ...oldEdge,
-      ...connection,
-      id: oldEdge.id,
-      type: 'default',
-      style: graphEdgeStyle(connection),
-      reconnectable: true,
-      selected: true,
-    }
-    setEdges(document.edges.map((edge) => edge.id === oldEdge.id ? nextEdge : { ...edge, selected: false }))
-    setSelectedEdgeId(oldEdge.id)
-  }, [document.edges, graphEdgeStyle, isGraphConnectionValid, setEdges])
-
-  const selectEdgeActions = useCallback((event: ReactMouseEvent, edge: Edge) => {
-    event.stopPropagation()
-    const paneRect = canvasPaneRef.current?.getBoundingClientRect()
-    if (!paneRect) return
-    setEdges(document.edges.map((item) => ({ ...item, selected: item.id === edge.id })))
-    setSelectedEdgeId(edge.id)
-    setEdgeActionPosition({
-      x: Math.max(12, Math.min(paneRect.width - 178, event.clientX - paneRect.left + 10)),
-      y: Math.max(78, Math.min(paneRect.height - 48, event.clientY - paneRect.top + 10)),
-    })
-  }, [document.edges, setEdges])
-
-  const removeSelectedEdge = useCallback(() => {
-    if (!selectedEdgeId) return
-    const edge = document.edges.find((item) => item.id === selectedEdgeId)
-    if (edge?.data?.system) {
-      setSelectedEdgeId(null)
-      setEdgeActionPosition(null)
-      return
-    }
-    setEdges(document.edges.filter((edge) => edge.id !== selectedEdgeId))
-    setSelectedEdgeId(null)
-    setEdgeActionPosition(null)
-  }, [document.edges, selectedEdgeId, setEdges])
-
-  const toggleNodeReference = useCallback((generateNodeId: string, assetNodeId: string, enabled: boolean) => {
-    const connection: Connection = {
-      source: assetNodeId,
-      sourceHandle: 'asset-output',
-      target: generateNodeId,
-      targetHandle: 'input',
-    }
-    if (!enabled) {
-      setEdges(document.edges.filter((edge) => !(edge.source === assetNodeId && edge.target === generateNodeId)))
-      return
-    }
-    if (!isGraphConnectionValid(connection)) return
-    setEdges(addEdge({
-      ...connection,
-      id: `graph-edge-${assetNodeId}-${generateNodeId}-${Date.now()}`,
-      type: 'default',
-      style: graphEdgeStyle(connection),
-      reconnectable: true,
-    }, document.edges))
-  }, [document.edges, graphEdgeStyle, isGraphConnectionValid, setEdges])
-
-  const addAssetFromLibrary = useCallback((assetId: string) => {
-    const target = assetLibraryTargetGenerateId
-      ? document.nodes.find((node) => node.id === assetLibraryTargetGenerateId && node.type === 'generate')
-      : undefined
-    addAssetToCanvas(assetId, undefined, target?.id)
-  }, [addAssetToCanvas, assetLibraryTargetGenerateId, document.nodes])
 
   const canvasClassName = 'app-shell app-shell--agent-closed'
   const workspaceTabs = useMemo(() => {
@@ -2156,7 +1629,6 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
       : []
   )), [generatedHistoryItems])
   const selectedCanvasNode = document.nodes.find((node) => node.id === selectedNodeId)
-  const selectedEdge = selectedEdgeId ? document.edges.find((edge) => edge.id === selectedEdgeId) : undefined
   const selectedResult = selectedCanvasNode?.type === 'result' ? selectedCanvasNode : undefined
   const selectedResultData = selectedResult?.type === 'result' ? selectedResult.data as ResultNodeData : undefined
   const selectedGenerate = selectedCanvasNode?.type === 'generate' ? selectedCanvasNode : undefined
@@ -2201,301 +1673,28 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
         recipe: resultComposerData.generationRecipe,
       }
     : undefined
-  const activeAgentSession = document.agentSessions.find((session) => session.id === document.activeAgentSessionId)
-  const activeAgentContextNodeIds = activeAgentSession?.contextNodeIds ?? selectedFocusNodeIds
-  const contextualResultId = activeAgentContextNodeIds.find((nodeId) => {
-    const node = document.nodes.find((item) => item.id === nodeId && item.type === 'result')
-    const result = node?.type === 'result' ? node.data as ResultNodeData : undefined
-    return Boolean(result?.image) && canUseForImageDelivery(result?.mediaKind)
-  })
-  const effectiveAgentTargetResultId = agentTargetResultId ?? contextualResultId
-  const agentTargetNode = effectiveAgentTargetResultId
-    ? document.nodes.find((node) => node.id === effectiveAgentTargetResultId && node.type === 'result')
-    : undefined
-  const agentTargetData = agentTargetNode?.type === 'result' ? agentTargetNode.data as ResultNodeData : undefined
-  const agentRootRecipe = agentTargetData?.rootRecipe ?? agentTargetData?.generationRecipe
-  const agentTarget: AgentDockTarget | undefined = agentTargetNode?.type === 'result' && agentTargetData?.image && agentRootRecipe
-    ? {
-        id: agentTargetNode.id,
-        label: agentTargetData.label ?? '已选结果',
-        image: agentTargetData.image,
-        rootRecipe: agentRootRecipe,
-      }
-    : undefined
-  const batchVariationProgressRun = batchVariationRuns.find((run) => run.status !== 'succeeded' && run.status !== 'cancelled')
-  const latestAgentRun = document.agentRuns.find((run) => run.plan.selectedResultNodeId === effectiveAgentTargetResultId)
-  const focusAgentNodes = useCallback((nodeIds: string[]) => {
-    const validNodeIds = [...new Set(nodeIds)].filter((nodeId) => document.nodes.some((node) => node.id === nodeId))
-    if (!validNodeIds.length) return
-    selectNode(validNodeIds[0])
+  const prepareAgentOpen = useCallback(() => {
     setComposerOpen(false)
     setResultComposerDraft(null)
-    setAgentFocusRequest({ nodeIds: validNodeIds, requestId: Date.now() })
-  }, [document.nodes, selectNode])
-  const localAgentArtifacts = useMemo(() => collectBotanicAgentResults({
-    sessions: document.agentSessions,
-    nodes: document.nodes,
-    generationJobs: document.generationJobs,
-    assets: document.assets,
-  }), [document.agentSessions, document.assets, document.generationJobs, document.nodes])
-  useEffect(() => {
-    if (!agentOpen || !serverPersistenceEnabled) return
-    const controller = new AbortController()
-    setAgentArtifactIndex({ projectId: document.id, artifacts: [], status: 'loading' })
-    void listProjectAgentArtifacts(document.id, { limit: 100, signal: controller.signal }).then((result) => {
-      if (controller.signal.aborted) return
-      setAgentArtifactIndex({
-        projectId: document.id,
-        artifacts: result.artifacts,
-        nextBefore: result.nextBefore,
-        status: 'ready',
-      })
-    }).catch(() => {
-      if (controller.signal.aborted) return
-      setAgentArtifactIndex({ projectId: document.id, artifacts: [], status: 'error' })
-    })
-    return () => controller.abort()
-  }, [agentOpen, document.id])
-  const indexedAgentArtifacts = agentArtifactIndex.projectId === document.id ? agentArtifactIndex.artifacts : []
-  const agentArtifacts = useMemo(
-    () => mergeBotanicAgentArtifactIndex(indexedAgentArtifacts, localAgentArtifacts),
-    [indexedAgentArtifacts, localAgentArtifacts],
-  )
-  const loadMoreAgentArtifacts = useCallback(async () => {
-    const cursor = agentArtifactIndex.projectId === document.id ? agentArtifactIndex.nextBefore : undefined
-    if (cursor === undefined || agentArtifactIndex.status === 'loading-more') return
-    setAgentArtifactIndex((current) => current.projectId === document.id ? { ...current, status: 'loading-more' } : current)
-    try {
-      const result = await listProjectAgentArtifacts(document.id, { limit: 100, before: cursor })
-      setAgentArtifactIndex((current) => {
-        if (current.projectId !== document.id) return current
-        const artifacts = new Map(current.artifacts.map((artifact) => [artifact.id, artifact]))
-        for (const artifact of result.artifacts) if (!artifacts.has(artifact.id)) artifacts.set(artifact.id, artifact)
-        return {
-          projectId: document.id,
-          artifacts: [...artifacts.values()],
-          nextBefore: result.nextBefore,
-          status: 'ready',
-        }
-      })
-    } catch {
-      setAgentArtifactIndex((current) => current.projectId === document.id ? { ...current, status: 'error' } : current)
-    }
-  }, [agentArtifactIndex.nextBefore, agentArtifactIndex.projectId, agentArtifactIndex.status, document.id])
-  const agentContextOptions = document.nodes.flatMap((node): AgentContextItem[] => {
-    if (node.type === 'asset') {
-      const data = node.data as AssetNodeData
-      return [{
-        id: node.id,
-        label: data.name ?? '图片素材',
-        kind: '素材',
-        image: data.image,
-        assetId: data.assetId,
-        role: data.role,
-        mediaKind: data.mediaKind ?? 'image',
-        source: data.source,
-      }]
-    }
-    if (node.type === 'result') {
-      const data = node.data as ResultNodeData
-      return data.image && canUseForImageDelivery(data.mediaKind)
-        ? [{ id: node.id, label: data.label ?? '生成结果', kind: '结果', image: data.image, mediaKind: data.mediaKind ?? 'image', source: 'generated' }]
-        : []
-    }
-    if (node.type === 'text') {
-      const data = node.data as TextNodeData
-      return [{ id: node.id, label: data.label ?? '文字描述', kind: '文字' }]
-    }
-    if (node.type === 'generate') {
-      const data = node.data as GenerateNodeData
-      return [{ id: node.id, label: data.label ?? '生成节点', kind: '节点' }]
-    }
-    return []
+    setBatchComposerTargetId(null)
+    setNodePalette(null)
+    setAccountMenuAnchor(null)
+    setAgentOpen(true)
+  }, [setAgentOpen])
+  const prepareAgentCanvasFocus = useCallback(() => {
+    setComposerOpen(false)
+    setResultComposerDraft(null)
+  }, [])
+  const agentBridge = useCanvasAgentExecutionBridge({
+    document,
+    agentOpen,
+    selectedFocusNodeIds,
+    selectedReadyResultId: selectedReadyResultData ? selectedResult!.id : undefined,
+    onPrepareAgentOpen: prepareAgentOpen,
+    onPrepareCanvasFocus: prepareAgentCanvasFocus,
   })
-
-  const createAgentWorkflowDraft = useCallback(async (
-    instruction: string,
-    contextNodeIds: string[],
-    autoExecute: boolean,
-    generationOverrides?: Partial<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution'>>,
-  ) => {
-    const projectId = document.id
-    if (useCanvasStore.getState().document.id !== projectId) return { created: false, started: false, needsReference: false }
-    const referenceNodeIds = contextNodeIds.filter((nodeId) => document.nodes.some((node) => {
-      if (node.id !== nodeId) return false
-      if (node.type === 'asset') return ((node.data as AssetNodeData).mediaKind ?? 'image') === 'image'
-      if (node.type !== 'result') return false
-      const result = node.data as ResultNodeData
-      return Boolean(result.image) && canUseForImageDelivery(result.mediaKind)
-    }))
-    const origin = document.nodes.length
-      ? { x: Math.max(...document.nodes.map((node) => node.position.x)) + 220, y: Math.min(...document.nodes.map((node) => node.position.y)) }
-      : { x: 180, y: 160 }
-    // Agent 默认把描述写入生成节点，避免为一次生成额外创建文字节点。
-    const generateNodeId = addGenerateNode({ x: origin.x + 360, y: origin.y + 40 }, 'image', referenceNodeIds)
-    if (!generateNodeId) return { created: false, started: false, needsReference: !referenceNodeIds.length }
-    if (useCanvasStore.getState().document.id !== projectId) return { created: false, started: false, needsReference: false }
-    const generatedNode = useCanvasStore.getState().document.nodes.find((node) => node.id === generateNodeId)
-    const generatedData = generatedNode?.type === 'generate' ? generatedNode.data as GenerateNodeData : undefined
-    const selectedModel = availableModels.find((model) => model.id === generationOverrides?.model)
-    const nextSettings = generatedData
-      ? selectedModel
-        ? settingsForGenerationModel({ ...generatedData.settings, ...generationOverrides }, selectedModel)
-        : { ...generatedData.settings, ...generationOverrides }
-      : undefined
-    updateGenerateNode(generateNodeId, { prompt: instruction, ...(nextSettings ? { settings: nextSettings } : {}) })
-    if (!autoExecute || !referenceNodeIds.length) return { created: true, started: false, needsReference: !referenceNodeIds.length }
-    const started = await runGraphGeneration(generateNodeId)
-    return { created: true, started, needsReference: false }
-  }, [addGenerateNode, availableModels, document.id, document.nodes, runGraphGeneration, updateGenerateNode])
-
-  const addAgentUploadedImages = useCallback((uploads: UploadedAssetInput[]) => {
-    if (!uploads.length) return
-    const projectId = document.id
-    const currentDocument = useCanvasStore.getState().document
-    if (currentDocument.id !== projectId) return
-    const existingNodeIds = new Set(currentDocument.nodes.map((node) => node.id))
-    const hasProduct = currentDocument.nodes.some((node) => node.type === 'asset' && (node.data as AssetNodeData).role === '商品')
-    const normalizedUploads = uploads.map((upload, index) => ({
-      ...upload,
-      role: !hasProduct && index === 0 ? '商品' as const : upload.role,
-    }))
-    const origin = currentDocument.nodes.length
-      ? { x: Math.max(...currentDocument.nodes.map((node) => node.position.x)) + 220, y: Math.min(...currentDocument.nodes.map((node) => node.position.y)) }
-      : { x: 180, y: 160 }
-    addUploadedAssetsToCanvas(normalizedUploads, origin)
-    const addedNodeIds = useCanvasStore.getState().document.nodes
-      .filter((node) => node.type === 'asset' && !existingNodeIds.has(node.id))
-      .map((node) => node.id)
-    if (!addedNodeIds.length) return
-    const latestDocument = useCanvasStore.getState().document
-    const sessionId = latestDocument.activeAgentSessionId ?? ensureAgentSession()
-    const activeSession = useCanvasStore.getState().document.agentSessions.find((session) => session.id === sessionId)
-    setAgentSessionContext(sessionId, [...new Set([...(activeSession?.contextNodeIds ?? []), ...addedNodeIds])])
-  }, [addUploadedAssetsToCanvas, document.id, ensureAgentSession, setAgentSessionContext])
-
-  const confirmAgentAction = useCallback(async (action: BotanicAgentActionProposal): Promise<BotanicAgentActionResult> => {
-    const projectId = document.id
-    const response = await executeProjectAgentAction({ projectId, action })
-    const output = response.output
-    if (useCanvasStore.getState().document.id !== projectId) {
-      return { ...output, message: `${output.message} 已切换项目，结果保留在原项目，未写入当前画布。` }
-    }
-    const nodes = useCanvasStore.getState().document.nodes
-    const origin = nodes.length
-      ? { x: Math.max(...nodes.map((node) => node.position.x)) + 220, y: Math.min(...nodes.map((node) => node.position.y)) + 120 }
-      : { x: 180, y: 160 }
-    const writebacks: BotanicAgentCanvasWriteback[] = []
-    for (const [index, resolved] of resolveBotanicAgentCanvasCommands(output).entries()) {
-      const position = { x: origin.x + (index % 2) * 240, y: origin.y + Math.floor(index / 2) * 260 }
-      if (resolved.command.type === 'create_text_node' && resolved.artifact.content) {
-        addTextNode(position)
-        const nodeId = useCanvasStore.getState().selectedNodeId
-        if (!nodeId) throw new Error('行动已执行，但文字节点创建失败。')
-        updateTextNode(nodeId, resolved.artifact.content)
-        renameCanvasNode(nodeId, resolved.artifact.label)
-        writebacks.push({ artifactId: resolved.artifact.id, nodeId })
-      }
-      if (resolved.command.type === 'create_media_node' && resolved.artifact.url) {
-        addUploadedAssetsToCanvas([{
-          name: resolved.artifact.label,
-          image: resolved.artifact.url,
-          role: '场景',
-          mediaKind: resolved.artifact.kind === 'video' ? 'video' : 'image',
-          collection: 'Agent 产物',
-          tags: ['Agent', resolved.artifact.provenance.externalTool ?? resolved.artifact.provenance.toolName],
-        }], position)
-        const nodeId = useCanvasStore.getState().selectedNodeId
-        if (nodeId) writebacks.push({ artifactId: resolved.artifact.id, nodeId })
-      }
-    }
-    return recordBotanicAgentCanvasWritebacks(output, writebacks)
-  }, [addTextNode, addUploadedAssetsToCanvas, document.id, renameCanvasNode, updateTextNode])
-
-  const confirmAgentPlan = useCallback(async (plan: BotanicAgentPlan, submissionKey?: string) => {
-    const projectId = document.id
-    const group = plan.assetGroupId ? document.assetGroups.find((item) => item.id === plan.assetGroupId) : undefined
-    const branchInputs = plan.output.mode === 'batch_by_asset' && group
-      ? group.assetIds.map((assetId, index) => ({ assetId, branchId: `branch-${crypto.randomUUID()}`, label: `分支 ${index + 1}` }))
-      : [{ branchId: `branch-${crypto.randomUUID()}`, label: plan.summary }]
-    let runId: string
-    if (serverPersistenceEnabled) {
-      try {
-        const activeDocument = useCanvasStore.getState().document
-        if (activeDocument.id !== projectId) throw new Error('项目已切换，本次计划未启动。')
-        const sources = collectAgentMediaSources(activeDocument, plan.selectedResultNodeId, plan.assetGroupId)
-        const replacements = await prepareAgentMediaSources(
-          sources,
-          (source) => persistAgentReferenceMedia(activeDocument.id, source),
-        )
-        if (useCanvasStore.getState().document.id !== projectId) throw new Error('项目已切换，本次计划未启动。')
-        await replaceMediaSources(replacements)
-        if (useCanvasStore.getState().document.id !== projectId) throw new Error('项目已切换，本次计划未启动。')
-        const snapshot = await createPersistentBotanicAgentRun({
-          projectId,
-          plan,
-          idempotencyKey: submissionKey,
-          branches: branchInputs.map((branch) => ({
-            id: branch.branchId,
-            label: branch.label,
-            ...('assetId' in branch ? { assetId: branch.assetId } : {}),
-          })),
-        })
-        if (useCanvasStore.getState().document.id !== projectId) {
-          const execution = await executePersistentBotanicAgentRun(projectId, snapshot.id)
-          return { started: execution.jobIds.length > 0, runId: snapshot.id }
-        }
-        runId = saveAgentPlan(plan, { id: snapshot.id, branches: snapshot.branches })
-        applyAgentRunSnapshot(snapshot)
-        await flushPendingCanvasDocumentWrites()
-        if (useCanvasStore.getState().document.id !== projectId) {
-          const execution = await executePersistentBotanicAgentRun(projectId, runId)
-          return { started: execution.jobIds.length > 0, runId }
-        }
-        const execution = await executePersistentBotanicAgentRun(projectId, runId)
-        if (useCanvasStore.getState().document.id !== projectId) return { started: execution.jobIds.length > 0, runId }
-        applyAgentRunSnapshot(execution.run)
-        await refreshDocumentFromRemote().catch(() => false)
-        return { started: execution.jobIds.length > 0, runId }
-      } catch (caught) {
-        throw new Error(caught instanceof Error ? caught.message : 'Agent Run 无法持久化，请稍后重试。')
-      }
-    } else {
-      if (useCanvasStore.getState().document.id !== projectId) throw new Error('项目已切换，本次计划未启动。')
-      runId = saveAgentPlan(plan)
-      updateAgentRunStatus(runId, 'executing')
-    }
-    let started = false
-    if (plan.output.mode === 'batch_by_asset' && plan.assetGroupId) {
-      started = await runBatchVariation({
-        sourceResultNodeId: plan.selectedResultNodeId,
-        groupId: plan.assetGroupId,
-        prompt: plan.prompt,
-        candidatesPerAsset: plan.output.candidatesPerItem,
-        settings: plan.settings,
-        agentRunId: serverPersistenceEnabled ? runId : undefined,
-        agentBranches: group ? branchInputs.map((branch, index) => ({ assetId: group.assetIds[index], branchId: branch.branchId })) : undefined,
-      })
-    } else {
-      const branchId = plan.intent === 'redo_from_root'
-        ? createGenerateFromResultRecipe(plan.selectedResultNodeId)
-        : createGenerateBranchFromResult(plan.selectedResultNodeId, {
-            prompt: plan.prompt,
-            batchCount: plan.output.count,
-            settings: plan.settings,
-            refinementMode: 'faithful',
-          })
-      if (branchId) {
-        if (plan.intent === 'redo_from_root') updateGenerateNode(branchId, { prompt: plan.prompt, settings: plan.settings })
-        started = await runGraphGeneration(branchId, serverPersistenceEnabled ? { runId, branchId: branchInputs[0].branchId } : undefined)
-      }
-    }
-    if (!started) {
-      updateAgentRunStatus(runId, 'failed', '生成任务未启动，请检查参考素材与生成服务。')
-      return { started: false, runId }
-    }
-    return { started: true, runId }
-  }, [applyAgentRunSnapshot, createGenerateBranchFromResult, createGenerateFromResultRecipe, document.assetGroups, document.id, refreshDocumentFromRemote, replaceMediaSources, runBatchVariation, runGraphGeneration, saveAgentPlan, updateAgentRunStatus, updateGenerateNode])
+  openAgentForResultRef.current = agentBridge.openForResult
+  const batchVariationProgressRun = batchVariationRuns.find((run) => run.status !== 'succeeded' && run.status !== 'cancelled')
 
   useEffect(() => {
     if (!hydrated) return
@@ -2789,13 +1988,9 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
           onConnect={onConnect}
           onReconnect={onReconnect}
           onEdgeClick={selectEdgeActions}
-          onConnectStart={() => {
-            setConnectionFeedback(null)
-            setIsConnecting(true)
-          }}
+          onConnectStart={canvasInteraction.startConnecting}
           onConnectEnd={(_, connectionState) => {
-            setIsConnecting(false)
-            setConnectionFeedback(connectionState.isValid ? 'connected' : connectionState.toNode ? 'invalid' : 'cancelled')
+            canvasInteraction.finishConnecting(connectionState.isValid === true, Boolean(connectionState.toNode))
           }}
           isValidConnection={isGraphConnectionValid}
           onSelectionChange={onSelectionChange}
@@ -2821,17 +2016,13 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
               setComposerOpen(false)
               setResultComposerDraft(null)
               setBatchComposerTargetId(null)
-              setIsConnecting(false)
-              setSelectedEdgeId(null)
-              setEdgeActionPosition(null)
+              clearConnectionSelection()
               setNodePalette(null)
               return
             }
             if (node.type === 'generate') showComposer()
             else setComposerOpen(false)
-            setIsConnecting(false)
-            setSelectedEdgeId(null)
-            setEdgeActionPosition(null)
+            clearConnectionSelection()
             closeWorkbenchPanels()
             setNodePalette(null)
             setNodeInspectorOpen(node.type !== 'asset' && node.type !== 'result' && node.type !== 'generate')
@@ -2855,9 +2046,7 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
           }}
           onPaneClick={() => {
             selectNode(null)
-            setIsConnecting(false)
-            setSelectedEdgeId(null)
-            setEdgeActionPosition(null)
+            clearConnectionSelection()
             setNodeInspectorOpen(false)
             setComposerOpen(false)
             setResultComposerDraft(null)
@@ -2913,12 +2102,12 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
             node={renderedNodes.find((node) => node.id === historyFocusRequest.nodeId)}
             requestId={historyFocusRequest.requestId}
           /> : null}
-          {agentFocusRequest ? <FocusCanvasNodes
-            nodes={agentFocusRequest.nodeIds.flatMap((nodeId) => {
+          {agentBridge.focusRequest ? <FocusCanvasNodes
+            nodes={agentBridge.focusRequest.nodeIds.flatMap((nodeId) => {
               const node = renderedNodes.find((item) => item.id === nodeId)
               return node ? [node] : []
             })}
-            requestId={agentFocusRequest.requestId}
+            requestId={agentBridge.focusRequest.requestId}
           /> : null}
 
           {multiSelectionPresence.present && visibleMultiSelectionCount ? <MultiSelectionToolbar count={visibleMultiSelectionCount} phase={multiSelectionPresence.phase} onClear={() => { selectNode(null); setComposerOpen(false) }} /> : null}
@@ -2969,21 +2158,10 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
           onRetry={(runId, itemId) => retryBatchVariationItem(runId, itemId)}
         /> : null}
 
-        {!agentOpen ? <button ref={agentLauncherRef} type="button" className="agent-launcher" onClick={() => {
-          const sessionId = ensureAgentSession(selectedFocusNodeIds)
-          const session = useCanvasStore.getState().document.agentSessions.find((item) => item.id === sessionId)
-          if (selectedFocusNodeIds.length) setAgentSessionContext(sessionId, [...(session?.contextNodeIds ?? []), ...selectedFocusNodeIds])
-          setAgentTargetResultId(selectedReadyResultData ? selectedResult!.id : null)
-          setComposerOpen(false)
-          setResultComposerDraft(null)
-          setBatchComposerTargetId(null)
-          setNodePalette(null)
-          setAccountMenuAnchor(null)
-          setAgentOpen(true)
-        }} aria-label="打开 Agent" title="Agent"><SparkleIcon /></button> : null}
+        {!agentOpen ? <button ref={agentLauncherRef} type="button" className="agent-launcher" onClick={agentBridge.open} aria-label="打开 Agent" title="Agent"><SparkleIcon /></button> : null}
 
         {agentOpen ? <Suspense fallback={<aside className="agent-workspace" aria-label="Botanic Agent"><div className="workspace-loading-indicator" role="status">正在载入 Agent…</div></aside>}><AgentWorkspace
-          key={`${document.id}:${activeAgentSession?.id ?? 'none'}`}
+          key={`${document.id}:${agentBridge.activeSession?.id ?? 'none'}`}
           projectId={document.id}
           escapeEnabled={topOverlayLayer([
             'agent',
@@ -2992,23 +2170,23 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
             ...(assetToDelete ? ['confirmation' as const] : []),
           ]) === 'agent'}
           persistenceStatus={persistenceStatus}
-          target={agentTarget}
+          target={agentBridge.target}
           groups={document.assetGroups}
           sessions={document.agentSessions}
-          session={activeAgentSession}
-          contextOptions={agentContextOptions}
+          session={agentBridge.activeSession}
+          contextOptions={agentBridge.contextOptions}
           memory={document.agentMemory}
-          artifacts={agentArtifacts}
-          artifactIndexStatus={agentArtifactIndex.projectId === document.id ? agentArtifactIndex.status : 'idle'}
-          artifactIndexHasMore={agentArtifactIndex.projectId === document.id && agentArtifactIndex.nextBefore !== undefined}
-          latestRun={latestAgentRun}
+          artifacts={agentBridge.artifacts}
+          artifactIndexStatus={agentBridge.artifactIndexStatus}
+          artifactIndexHasMore={agentBridge.artifactIndexHasMore}
+          latestRun={agentBridge.latestRun}
           runs={document.agentRuns}
           plannerModels={agentPlannerModels}
           generationModels={availableModels}
-          onConfirm={confirmAgentPlan}
-          onConfirmAction={confirmAgentAction}
-          onCreateDraft={createAgentWorkflowDraft}
-          onUploadImages={addAgentUploadedImages}
+          onConfirm={agentBridge.confirmPlan}
+          onConfirmAction={agentBridge.confirmAction}
+          onCreateDraft={agentBridge.createWorkflowDraft}
+          onUploadImages={agentBridge.addUploadedImages}
           onAppendMessage={appendAgentMessage}
           onUpdateMessage={updateAgentMessage}
           onUpdateAction={updateAgentAction}
@@ -3016,67 +2194,16 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
           onExecutionModeChange={setAgentSessionExecutionMode}
           onAddMemory={addAgentMemory}
           onRemoveMemory={removeAgentMemory}
-          onNewSession={() => {
-            const nextSessionId = startNewAgentSession(selectedFocusNodeIds)
-            setAgentTargetResultId(selectedReadyResultData ? selectedResult!.id : null)
-            return nextSessionId
-          }}
-          onSelectSession={(sessionId) => {
-            setActiveAgentSession(sessionId)
-            const nextSession = document.agentSessions.find((session) => session.id === sessionId)
-            const nextResultId = nextSession?.contextNodeIds.find((nodeId) => document.nodes.some((node) => {
-              if (node.id !== nodeId || node.type !== 'result') return false
-              const result = node.data as ResultNodeData
-              return Boolean(result.image) && canUseForImageDelivery(result.mediaKind)
-            }))
-            setAgentTargetResultId(nextResultId ?? null)
-          }}
+          onNewSession={agentBridge.newSession}
+          onSelectSession={agentBridge.selectSession}
           onRetryBranch={(runId, branchId) => retryAgentBranch(runId, branchId)}
           onCancelRun={(runId) => cancelAgentRun(runId)}
           onLocateNode={selectNode}
-          onFocusNodes={focusAgentNodes}
-          onSaveArtifact={(artifact) => {
-            if (!artifact.url || (artifact.kind !== 'image' && artifact.kind !== 'video')) return
-            saveGeneratedImageToLibrary({ image: artifact.url, name: artifact.label, mediaKind: artifact.kind })
-          }}
-          onContinueArtifact={(artifact) => {
-            let currentDocument = useCanvasStore.getState().document
-            let sourceNodeIds = (artifact.provenance.sourceNodeIds ?? [])
-              .filter((nodeId) => currentDocument.nodes.some((node) => node.id === nodeId))
-            if (!sourceNodeIds.length && artifact.url && (artifact.kind === 'image' || artifact.kind === 'video')) {
-              const existingNodeIds = new Set(currentDocument.nodes.map((node) => node.id))
-              addUploadedAssetsToCanvas([{
-                name: artifact.label,
-                image: artifact.url,
-                role: '场景',
-                mediaKind: artifact.kind,
-                collection: 'Agent 历史结果',
-                tags: ['Agent', '历史结果'],
-              }])
-              currentDocument = useCanvasStore.getState().document
-              sourceNodeIds = currentDocument.nodes
-                .filter((node) => node.type === 'asset' && !existingNodeIds.has(node.id))
-                .map((node) => node.id)
-            }
-            if (!sourceNodeIds.length) return
-            const sessionId = currentDocument.activeAgentSessionId ?? ensureAgentSession(sourceNodeIds)
-            const currentSession = useCanvasStore.getState().document.agentSessions.find((item) => item.id === sessionId)
-            setAgentSessionContext(sessionId, [...(currentSession?.contextNodeIds ?? []), ...sourceNodeIds])
-            const resultNodeId = sourceNodeIds.find((nodeId) => currentDocument.nodes.some((node) => node.id === nodeId && node.type === 'result'))
-            setAgentTargetResultId(resultNodeId ?? null)
-            selectNode(sourceNodeIds[0])
-            setAgentFocusRequest({ nodeIds: sourceNodeIds, requestId: Date.now() })
-          }}
-          onLoadMoreArtifacts={loadMoreAgentArtifacts}
-          onUseResultContext={(sourceNodeIds) => {
-            const currentDocument = useCanvasStore.getState().document
-            const sessionId = currentDocument.activeAgentSessionId ?? ensureAgentSession(sourceNodeIds)
-            const currentSession = useCanvasStore.getState().document.agentSessions.find((item) => item.id === sessionId)
-            setAgentSessionContext(sessionId, [...(currentSession?.contextNodeIds ?? []), ...sourceNodeIds])
-            const resultNodeId = sourceNodeIds.find((nodeId) => useCanvasStore.getState().document.nodes.some((node) => node.id === nodeId && node.type === 'result'))
-            setAgentTargetResultId(resultNodeId ?? null)
-            if (resultNodeId) selectNode(resultNodeId)
-          }}
+          onFocusNodes={agentBridge.focusNodes}
+          onSaveArtifact={agentBridge.saveArtifact}
+          onContinueArtifact={agentBridge.continueArtifact}
+          onLoadMoreArtifacts={agentBridge.loadMoreArtifacts}
+          onUseResultContext={agentBridge.useResultContext}
           onRetryPersistence={retryAgentCanvasPersistence}
           onRefreshRemote={refreshAgentCanvasFromRemote}
           onClose={() => {
@@ -3252,10 +2379,7 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
             edge={selectedEdge}
             position={edgeActionPosition}
             onDelete={removeSelectedEdge}
-            onClose={() => {
-              setSelectedEdgeId(null)
-              setEdgeActionPosition(null)
-            }}
+            onClose={clearConnectionSelection}
           />
         ) : null}
 
