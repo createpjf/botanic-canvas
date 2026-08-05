@@ -10,6 +10,7 @@ import type { GenerationModelOption } from '../../domain/canvas'
 import { CopyIcon, EditIcon, FocusIcon, SparkleIcon, ThumbDownIcon, ThumbUpIcon } from '../../components/BotanicIcons'
 import { agentPlannerModelLabel, modelDisplayLabel } from '../../components/generationModelPresentation'
 import { AgentClarificationCard, AgentPromptDiff, agentToolStatusLabel } from './AgentWorkspaceParts'
+import { AgentMarkdown } from './AgentMarkdown'
 
 type AgentConversationMessageProps = {
   message: BotanicAgentMessage
@@ -27,6 +28,7 @@ type AgentConversationMessageProps = {
   onShowResults: () => void
   onFocusNodes: (nodeIds: string[]) => void
   onAnswerClarification: (message: BotanicAgentMessage, answers: Record<string, string>) => void
+  onOpenClarification: (message: BotanicAgentMessage) => void
   onLocateNode: (nodeId: string) => void
   onConfirmAction: (message: BotanicAgentMessage, action: BotanicAgentActionProposal) => void
   onDismissAction: (message: BotanicAgentMessage, action: BotanicAgentActionProposal) => void
@@ -53,6 +55,7 @@ export function AgentConversationMessage({
   onShowResults,
   onFocusNodes,
   onAnswerClarification,
+  onOpenClarification,
   onLocateNode,
   onConfirmAction,
   onDismissAction,
@@ -73,7 +76,7 @@ export function AgentConversationMessage({
   return <article className={`agent-message is-${message.role} is-${message.kind}`}>
     <div className="agent-message__role">{message.role === 'assistant' ? <SparkleIcon /> : <span>你</span>}</div>
     <div className="agent-message__body">
-      {!message.question ? <p>{message.content}</p> : null}
+      {!message.question ? (message.role === 'assistant' ? <AgentMarkdown content={message.content} /> : <p>{message.content}</p>) : null}
       {message.role === 'user' && message.deliveryStatus === 'queued' ? <small className="agent-message__delivery-status" role="status">待同步</small> : null}
       {message.role === 'user' && message.deliveryStatus === 'failed' ? <small className="agent-message__delivery-status is-failed" role="status">同步失败，请检查权限</small> : null}
       {message.kind === 'run' && message.runId && continueNodeIds.length ? <div className="agent-run-message__actions" aria-label="结果操作">
@@ -81,12 +84,15 @@ export function AgentConversationMessage({
         {outputNodeIds.length ? <button type="button" onClick={onShowResults}>查看结果</button> : null}
         {outputNodeIds.length ? <button type="button" onClick={() => onFocusNodes(outputNodeIds)}>定位画布</button> : null}
       </div> : null}
-      {message.question ? <AgentClarificationCard
+      {message.question ? message.status === 'answered' ? <AgentClarificationCard
         clarification={message.question}
         generationModels={generationModels}
-        state={message.status === 'answered' ? 'completed' : planning ? 'submitting' : 'idle'}
+        state="completed"
         onSubmit={(answers) => onAnswerClarification(message, answers)}
-      /> : null}
+      /> : <div className="agent-question-summary" role="status">
+        <span><strong>需要补充输出设置</strong><small>{message.question.question}</small></span>
+        <button type="button" onClick={() => onOpenClarification(message)}>打开确认</button>
+      </div> : null}
       {message.plan ? <div className="agent-message__plan">
         {message.plan.toolCalls?.length ? <div className="agent-message__tools" aria-label="Agent 工具调用">
           {message.plan.toolCalls.map((call) => <div key={call.id} className={`agent-message__tool is-${call.status}`}>
