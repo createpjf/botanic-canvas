@@ -28,7 +28,6 @@ type AgentConversationMessageProps = {
   onShowResults: () => void
   onFocusNodes: (nodeIds: string[]) => void
   onAnswerClarification: (message: BotanicAgentMessage, answers: Record<string, string>) => void
-  onOpenClarification: (message: BotanicAgentMessage) => void
   onLocateNode: (nodeId: string) => void
   onConfirmAction: (message: BotanicAgentMessage, action: BotanicAgentActionProposal) => void
   onDismissAction: (message: BotanicAgentMessage, action: BotanicAgentActionProposal) => void
@@ -55,7 +54,6 @@ export function AgentConversationMessage({
   onShowResults,
   onFocusNodes,
   onAnswerClarification,
-  onOpenClarification,
   onLocateNode,
   onConfirmAction,
   onDismissAction,
@@ -89,10 +87,12 @@ export function AgentConversationMessage({
         generationModels={generationModels}
         state="completed"
         onSubmit={(answers) => onAnswerClarification(message, answers)}
-      /> : <div className="agent-question-summary" role="status">
-        <span><strong>需要补充输出设置</strong><small>{message.question.question}</small></span>
-        <button type="button" onClick={() => onOpenClarification(message)}>打开确认</button>
-      </div> : null}
+      /> : <AgentClarificationCard
+        clarification={message.question}
+        generationModels={generationModels}
+        state={planning ? 'submitting' : 'idle'}
+        onSubmit={(answers) => onAnswerClarification(message, answers)}
+      /> : null}
       {message.plan ? <div className="agent-message__plan">
         {message.plan.toolCalls?.length ? <div className="agent-message__tools" aria-label="Agent 工具调用">
           {message.plan.toolCalls.map((call) => <div key={call.id} className={`agent-message__tool is-${call.status}`}>

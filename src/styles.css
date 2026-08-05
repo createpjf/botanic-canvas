@@ -3227,12 +3227,6 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-run-message__actions button { min-height: 26px; padding: 0 8px; border: 1px solid #cbdacc; border-radius: 6px; background: #fff; color: #48674e; cursor: pointer; font-size: 9px; font-weight: 720; }
 .agent-run-message__actions button:hover { border-color: #8faf94; background: #f1f7f1; color: #2d633b; }
 .agent-message__plan { display: grid; gap: 9px; margin-top: 9px; padding: 11px; border: 1px solid #cbdccb; border-radius: 9px; background: #fff; }
-.agent-question-summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; padding: 9px 10px; border-radius: 9px; background: #f5f8f4; }
-.agent-question-summary > span { display: grid; min-width: 0; gap: 2px; }
-.agent-question-summary strong { color: #365f40; font-size: 11px; }
-.agent-question-summary small { overflow: hidden; color: #7b887f; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.agent-question-summary button { flex: 0 0 auto; min-height: 30px; padding: 0 9px; border: 1px solid #9cbaa1; border-radius: 7px; background: #fff; color: #356843; cursor: pointer; font-size: 10px; font-weight: 760; }
-.agent-question-summary button:hover { background: #edf4ed; border-color: #6f9d78; }
 .agent-plan__context-lock { color: #527058; font-weight: 650; }
 .agent-message__tools { display: grid; gap: 5px; }
 .agent-message__tool { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; min-height: 30px; align-items: center; gap: 6px; padding: 0 8px; border-radius: 6px; background: #f2f6f1; color: #48614e; }
@@ -3302,15 +3296,6 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-clarification-card__complete-copy { display: grid; min-width: 0; gap: 1px; }
 .agent-clarification-card__complete-copy strong { color: #3c6045; font-size: 10px; }
 .agent-clarification-card__complete-copy small { overflow: hidden; color: #7c8a80; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
-.agent-clarification-modal { position: absolute; z-index: 20; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(30, 52, 36, .18); backdrop-filter: blur(3px); }
-.agent-clarification-modal__dialog { width: min(100%, 430px); max-height: min(720px, calc(100% - 20px)); overflow-y: auto; padding: 18px; border: 1px solid #c8dccb; border-radius: 16px; background: rgba(255, 255, 255, .98); box-shadow: 0 22px 55px rgba(35, 66, 42, .2); }
-.agent-clarification-modal__header { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
-.agent-clarification-modal__header small { color: #6d8572; font-size: 9px; font-weight: 800; letter-spacing: .12em; }
-.agent-clarification-modal__header h2 { margin: 4px 0 0; color: #284530; font-size: 20px; letter-spacing: -.02em; }
-.agent-clarification-modal__close { display: grid; width: 32px; height: 32px; place-items: center; padding: 0; border: 1px solid #ceddcf; border-radius: 50%; background: #fff; color: #65766a; cursor: pointer; font-size: 20px; line-height: 1; }
-.agent-clarification-modal__close:hover { border-color: #8faf94; background: #edf4ed; color: #315d3b; }
-.agent-clarification-modal__hint { margin: 8px 0 0; color: #748177; font-size: 11px; line-height: 1.5; }
-.agent-clarification-modal .agent-clarification-card { margin-top: 14px; padding: 0; background: transparent; box-shadow: none; }
 @container (max-width: 320px) {
   .agent-clarification-card__footer { grid-template-columns: 1fr; align-items: start; }
   .agent-clarification-card__submit { justify-self: stretch; }

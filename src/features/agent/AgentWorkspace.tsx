@@ -49,7 +49,6 @@ import {
   agentRuntimeStepMarker,
   agentRuntimeStepStatusLabel,
   createInitialAgentClarification,
-  AgentClarificationCard,
 } from './AgentWorkspaceParts'
 import { agentComposerStateReducer, initialAgentComposerState } from './agentComposerState'
 import { useAgentMessageDelivery } from './useAgentMessageDelivery'
@@ -229,8 +228,6 @@ export default function AgentWorkspace({
   const [persistenceAction, setPersistenceAction] = useState<'retry' | 'refresh' | ''>('')
   const [promptDrafts, setPromptDrafts] = useState<Record<string, string>>({})
   const [recoveryModelMenuKey, setRecoveryModelMenuKey] = useState('')
-  const [clarificationModalMessageId, setClarificationModalMessageId] = useState('')
-  const clarificationAutoOpenedRef = useRef('')
   const plannerControllerRef = useRef<AbortController | null>(null)
   const agentMountedRef = useRef(true)
   const isCurrentAgentProject = useCallback(
@@ -272,11 +269,6 @@ export default function AgentWorkspace({
     && (item.mediaKind ?? 'image') === 'image'
   ))
   const hasMessages = Boolean(session?.messages.length)
-  const pendingClarificationMessage = useMemo(
-    () => [...(session?.messages ?? [])].reverse().find((message) => Boolean(message.question) && message.status !== 'answered'),
-    [session?.messages],
-  )
-  const clarificationModalMessage = session?.messages.find((message) => message.id === clarificationModalMessageId && message.question && message.status !== 'answered')
   const mentionOptions = useMemo(() => {
     if (!mentionQuery) return []
     const query = mentionQuery.query.trim().toLocaleLowerCase()
@@ -402,17 +394,6 @@ export default function AgentWorkspace({
   }, [activeTransientSurface, contextMenuId, historyMenuId, modeMenuId, utilityMenuId])
 
   useEffect(() => {
-    if (!pendingClarificationMessage) {
-      clarificationAutoOpenedRef.current = ''
-      setClarificationModalMessageId('')
-      return
-    }
-    if (planning || clarificationAutoOpenedRef.current === pendingClarificationMessage.id) return
-    clarificationAutoOpenedRef.current = pendingClarificationMessage.id
-    setClarificationModalMessageId(pendingClarificationMessage.id)
-  }, [pendingClarificationMessage, planning])
-
-  useEffect(() => {
     if (!mentionQuery) return
     const closeMentionOnOutsidePress = (event: PointerEvent) => {
       const target = event.target as Node
@@ -430,8 +411,6 @@ export default function AgentWorkspace({
       if (mentionQuery) {
         setMentionQuery(undefined)
         requestAnimationFrame(() => composerTextareaRef.current?.focus())
-      } else if (clarificationModalMessageId) {
-        setClarificationModalMessageId('')
       } else if (contextMenuOpen) {
         setContextMenuOpen(false)
         requestAnimationFrame(() => contextMenuButtonRef.current?.focus())
@@ -461,7 +440,7 @@ export default function AgentWorkspace({
     }
     window.addEventListener('keydown', closeLayerOnEscape)
     return () => window.removeEventListener('keydown', closeLayerOnEscape)
-  }, [clarificationModalMessageId, contextMenuOpen, escapeEnabled, historyOpen, mentionQuery, modeMenuOpen, onClose, recoveryModelMenuKey, runtimeDetailsOpen, skillConfirming, utilityMenuOpen, utilityPanelOpen])
+  }, [contextMenuOpen, escapeEnabled, historyOpen, mentionQuery, modeMenuOpen, onClose, recoveryModelMenuKey, runtimeDetailsOpen, skillConfirming, utilityMenuOpen, utilityPanelOpen])
 
   useEffect(() => () => {
     agentMountedRef.current = false
@@ -1139,7 +1118,6 @@ export default function AgentWorkspace({
           onShowResults={() => setActiveUtilityPanel('result')}
           onFocusNodes={onFocusNodes}
           onAnswerClarification={(targetMessage, answers) => void answerClarification(targetMessage, answers)}
-          onOpenClarification={(targetMessage) => setClarificationModalMessageId(targetMessage.id)}
           onLocateNode={onLocateNode}
           onConfirmAction={(targetMessage, action) => void confirmAction(targetMessage, action)}
           onDismissAction={(targetMessage, action) => onUpdateAction(session.id, targetMessage.id, action.id, { status: 'dismissed' })}
@@ -1193,24 +1171,6 @@ export default function AgentWorkspace({
         </section> : null}
         <div ref={messageEndRef} />
       </div>
-      {clarificationModalMessage?.question ? <div className="agent-clarification-modal" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setClarificationModalMessageId('') }}>
-        <section className="agent-clarification-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="agent-clarification-modal-title">
-          <header className="agent-clarification-modal__header">
-            <div><small>生成前确认</small><h2 id="agent-clarification-modal-title">补充几个设置</h2></div>
-            <button type="button" className="agent-clarification-modal__close" aria-label="稍后回答" title="稍后回答" onClick={() => setClarificationModalMessageId('')}>×</button>
-          </header>
-          <p className="agent-clarification-modal__hint">确认后 Agent 才会继续规划，不会立即生成。</p>
-          <AgentClarificationCard
-            clarification={clarificationModalMessage.question}
-            generationModels={generationModels}
-            state={planning ? 'submitting' : 'idle'}
-            onSubmit={(answers) => {
-              setClarificationModalMessageId('')
-              void answerClarification(clarificationModalMessage, answers)
-            }}
-          />
-        </section>
-      </div> : null}
       {!utilityPanelOpen ? <AgentComposer
         session={session}
         contextItems={contextItems}
