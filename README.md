@@ -4,7 +4,7 @@ Botanic 是面向品牌视觉生产的无限画布工作台。图片、文本和
 
 线上体验：[botanic-canvas.vercel.app](https://botanic-canvas.vercel.app/)
 
-开发前请阅读 [产品架构文档](docs/PRODUCT_ARCHITECTURE.md)、[模块接口与依赖方向](docs/ARCHITECTURE.md) 与 [版本及 PR 流程](docs/DEVELOPMENT_WORKFLOW.md)。其中产品架构文档第 3.2 节内置 Agent Ontology 语义定义，覆盖意图、创作维度、素材组、Memory、Skill、Plan、Run 与执行血缘。核心原则是：UI 只表达交互，任务与持久化结果才是生成状态的权威来源。
+开发前请从 [Agent 开发入口](AGENTS.md) 开始，并阅读 [产品架构文档](docs/PRODUCT_ARCHITECTURE.md)、[代码地图](docs/CODEMAP.md)、[模块接口与依赖方向](docs/ARCHITECTURE.md) 与 [版本及 PR 流程](docs/DEVELOPMENT_WORKFLOW.md)。其中产品架构文档第 3.2 节内置 Agent Ontology 语义定义，覆盖意图、创作维度、素材组、Memory、Skill、Plan、Run 与执行血缘。核心原则是：UI 只表达交互，任务与持久化结果才是生成状态的权威来源。
 
 ## 当前能力
 

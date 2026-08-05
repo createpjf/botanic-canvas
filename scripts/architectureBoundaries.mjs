@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url'
 
 const sourceExtensions = new Set(['.js', '.mjs', '.ts', '.tsx'])
 const staticImportPattern = /\b(?:import|export)\s+(?:type\s+)?(?:[^'"]*?\sfrom\s*)?['"]([^'"]+)['"]/g
+const dynamicImportPattern = /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g
+const commonJsRequirePattern = /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g
 
 function extension(path) {
   const match = path.match(/\.[^.]+$/)
@@ -32,6 +34,9 @@ function dependencyRule(file, dependency, rootDir) {
   const source = normalizedRelative(rootDir, file)
   const target = normalizedRelative(rootDir, dependency)
 
+  if (source.startsWith('server/') && target.startsWith('src/')) {
+    return 'server-cannot-import-frontend'
+  }
   if (source.startsWith('src/') && (target === 'server' || target.startsWith('server/'))) {
     return 'frontend-cannot-import-server'
   }
@@ -62,12 +67,81 @@ function dependencyRule(file, dependency, rootDir) {
   return undefined
 }
 
+function projectImports(source) {
+  return [staticImportPattern, dynamicImportPattern, commonJsRequirePattern]
+    .flatMap((pattern) => [...source.matchAll(pattern)].map((match) => match[1]))
+}
+
+function runtimeProjectImports(source) {
+  const staticImports = [...source.matchAll(staticImportPattern)]
+    .filter((match) => !/\b(?:import|export)\s+type\b/.test(match[0]))
+    .map((match) => match[1])
+  return [
+    ...staticImports,
+    ...[...source.matchAll(dynamicImportPattern)].map((match) => match[1]),
+    ...[...source.matchAll(commonJsRequirePattern)].map((match) => match[1]),
+  ]
+}
+
+function sourceDependency(file, importPath, files) {
+  const unresolved = resolvedProjectImport(file, importPath)
+  if (!unresolved) return undefined
+  const candidates = [
+    unresolved,
+    ...sourceExtensions.values().map((suffix) => `${unresolved}${suffix}`),
+    ...sourceExtensions.values().map((suffix) => resolve(unresolved, `index${suffix}`)),
+  ]
+  return candidates.find((candidate) => files.has(candidate))
+}
+
+function dependencyCycleViolations(graph, rootDir) {
+  const state = new Map()
+  const stack = []
+  const reported = new Set()
+  const violations = []
+
+  function visit(file) {
+    state.set(file, 'visiting')
+    stack.push(file)
+    for (const edge of graph.get(file) ?? []) {
+      if (state.get(edge.dependency) === 'visiting') {
+        const cycleStart = stack.indexOf(edge.dependency)
+        const cycle = [...stack.slice(cycleStart), edge.dependency]
+          .map((item) => normalizedRelative(rootDir, item))
+        const key = [...new Set(cycle)].sort().join('|')
+        if (!reported.has(key)) {
+          reported.add(key)
+          violations.push({
+            file: normalizedRelative(rootDir, file),
+            importPath: cycle.join(' -> '),
+            rule: 'dependency-cycle',
+          })
+        }
+        continue
+      }
+      if (!state.has(edge.dependency)) visit(edge.dependency)
+    }
+    stack.pop()
+    state.set(file, 'visited')
+  }
+
+  for (const file of graph.keys()) {
+    if (!state.has(file)) visit(file)
+  }
+  return violations
+}
+
 export function checkArchitectureBoundaries({ rootDir }) {
   const violations = []
-  for (const file of sourceFiles(resolve(rootDir, 'src'))) {
+  const files = [
+    ...sourceFiles(resolve(rootDir, 'src')),
+    ...sourceFiles(resolve(rootDir, 'server')),
+  ]
+  const fileSet = new Set(files)
+  const graph = new Map(files.map((file) => [file, []]))
+  for (const file of files) {
     const source = readFileSync(file, 'utf8')
-    for (const match of source.matchAll(staticImportPattern)) {
-      const importPath = match[1]
+    for (const importPath of projectImports(source)) {
       const dependency = resolvedProjectImport(file, importPath)
       if (!dependency) continue
       const rule = dependencyRule(file, dependency, rootDir)
@@ -79,7 +153,12 @@ export function checkArchitectureBoundaries({ rootDir }) {
         })
       }
     }
+    for (const importPath of runtimeProjectImports(source)) {
+      const dependency = sourceDependency(file, importPath, fileSet)
+      if (dependency) graph.get(file).push({ dependency, importPath })
+    }
   }
+  violations.push(...dependencyCycleViolations(graph, rootDir))
   return violations.sort((left, right) => left.file.localeCompare(right.file) || left.importPath.localeCompare(right.importPath))
 }
 
