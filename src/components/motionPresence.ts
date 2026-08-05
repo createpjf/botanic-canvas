@@ -30,7 +30,9 @@ export function useMotionPresence(open: boolean, exitDuration = 140) {
 
 export function useRetainedValue<T>(value: T | null | undefined) {
   const retained = useRef<T | null>(value ?? null)
-  if (value !== null && value !== undefined) retained.current = value
+  useEffect(() => {
+    if (value !== null && value !== undefined) retained.current = value
+  }, [value])
   return value ?? retained.current
 }
 

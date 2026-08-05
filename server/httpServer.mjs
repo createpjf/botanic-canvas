@@ -25,6 +25,7 @@ import { accessTokenFromRequest } from './requestAuth.mjs'
 import { ProjectAuthorizationError, requireProjectPermission } from './projectAuthorization.mjs'
 import { decodeArtifactCursor, encodeArtifactCursor } from './botanicArtifactIndex.mjs'
 import { productStoreSupports } from './productStoreContract.mjs'
+import { matchBotanicHttpRoutes } from './httpRouteTable.mjs'
 
 export function createBotanicHttpServer({
   config,
@@ -301,28 +302,31 @@ const handleRequest = async (request, response) => {
   }
   try {
     const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`)
-    const documentMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/document$/)
-    const projectMatch = url.pathname.match(/^\/api\/projects\/([^/]+)$/)
-    const memberMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/members$/)
-    const auditMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/audit$/)
-    const projectGenerationJobsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/generation-jobs$/)
-    const projectGenerationReconcileMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/reconcile-generation-results$/)
-    const projectAgentRunsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/agent-runs$/)
-    const projectAgentSkillsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/agent-skills$/)
-    const projectAgentStateMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/agent-state$/)
-    const projectAgentArtifactsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/agent-artifacts$/)
-    const agentSessionMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/agent-sessions\/([^/]+)$/)
-    const agentMessageMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/agent-sessions\/([^/]+)\/messages\/([^/]+)$/)
-    const agentMemoryMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/agent-memory\/([^/]+)$/)
-    const projectMediaMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/media$/)
-    const agentRunMatch = url.pathname.match(/^\/api\/agent-runs\/([^/]+)$/)
-    const agentRunCancelMatch = url.pathname.match(/^\/api\/agent-runs\/([^/]+)\/cancel$/)
-    const agentBranchRetryMatch = url.pathname.match(/^\/api\/agent-runs\/([^/]+)\/branches\/([^/]+)\/retry$/)
-    const assetMatch = url.pathname.match(/^\/api\/global-assets\/([^/]+)$/)
-    const jobMatch = url.pathname.match(/^\/api\/generation-jobs\/([^/]+)(?:\/(cancel))?$/)
-    const mediaMatch = url.pathname.match(/^\/api\/media\/([^/]+)$/)
-    const userMatch = url.pathname.match(/^\/api\/users\/([^/]+)$/)
-    const userInviteResendMatch = url.pathname.match(/^\/api\/users\/([^/]+)\/resend-invite$/)
+    const routeMatches = matchBotanicHttpRoutes(url.pathname)
+    const {
+      document: documentMatch,
+      project: projectMatch,
+      projectMembers: memberMatch,
+      projectAudit: auditMatch,
+      projectGenerationJobs: projectGenerationJobsMatch,
+      projectGenerationReconcile: projectGenerationReconcileMatch,
+      projectAgentRuns: projectAgentRunsMatch,
+      projectAgentSkills: projectAgentSkillsMatch,
+      projectAgentState: projectAgentStateMatch,
+      projectAgentArtifacts: projectAgentArtifactsMatch,
+      agentSession: agentSessionMatch,
+      agentMessage: agentMessageMatch,
+      agentMemory: agentMemoryMatch,
+      projectMedia: projectMediaMatch,
+      agentRun: agentRunMatch,
+      agentRunCancel: agentRunCancelMatch,
+      agentBranchRetry: agentBranchRetryMatch,
+      globalAsset: assetMatch,
+      generationJob: jobMatch,
+      media: mediaMatch,
+      user: userMatch,
+      userInviteResend: userInviteResendMatch,
+    } = routeMatches
 
     if (url.pathname !== '/api/health' && url.pathname.startsWith('/api/') && !await enforceRateLimit(response, {
       scope: 'api',

@@ -1,3 +1,10 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type { WorkspaceAuditEvent } from '../domain/auditEvents'
+import { AccountDetailsDialog, AccountMenu, WorkspaceAuditDialog, WorkspaceMembersDialog, type AccountMenuAnchor, type AccountMfaEnrollment, type AccountMfaStatus, type AccountUser, type WorkspaceMember as AccountWorkspaceMember } from './AccountCenter'
+import { ArrowUpRightIcon, DeleteIcon, MoreIcon } from './BotanicIcons'
+import { useMotionPresence, useRestoreFocus, useRetainedValue } from './motionPresence'
+import { useDialogFocusTrap } from './useDialogFocusTrap'
+
 export type WorkspaceProject = {
   id: string
   name: string
@@ -305,15 +312,12 @@ export function ProjectLibrary({
             <article
               className="project-card"
               key={project.id}
-              onClick={(event) => {
-                // 封面也是项目入口；卡片内的重命名、删除保留各自的按钮行为。
-                if ((event.target as HTMLElement).closest('button')) return
-                onOpenProject(project.id)
-              }}
             >
-              {project.cover
-                ? <img src={project.cover} alt="" loading="lazy" decoding="async" />
-                : <div className="project-card__cover-placeholder" aria-hidden="true"><span>尚未生成封面</span></div>}
+              <button type="button" className="project-card__cover-open" onClick={() => onOpenProject(project.id)} aria-label={`打开项目 ${project.name}`}>
+                {project.cover
+                  ? <img src={project.cover} alt="" loading="lazy" decoding="async" />
+                  : <span className="project-card__cover-placeholder" aria-hidden="true"><span>尚未生成封面</span></span>}
+              </button>
               <button type="button" className="project-card__open" onClick={() => onOpenProject(project.id)} aria-label={`打开项目 ${project.name}`}>
                 <strong>{project.name}</strong><span>{projectUpdatedLabel(project.updatedAt)}</span><small>{project.summary}</small>
               </button>
@@ -357,8 +361,3 @@ export function ProjectLibrary({
     </main>
   )
 }
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowUpRightIcon, DeleteIcon, MoreIcon } from './BotanicIcons'
-import { AccountDetailsDialog, AccountMenu, WorkspaceAuditDialog, WorkspaceMembersDialog, useDialogFocusTrap, type AccountMenuAnchor, type AccountMfaEnrollment, type AccountMfaStatus, type AccountUser, type WorkspaceMember as AccountWorkspaceMember } from './AccountCenter'
-import type { WorkspaceAuditEvent } from '../domain/auditEvents'
-import { useMotionPresence, useRestoreFocus, useRetainedValue } from './motionPresence'

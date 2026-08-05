@@ -1361,8 +1361,10 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     },
 
     async listAuditEvents(userId, projectId, limit = 100) {
-      const role = await memberRole(projectId, userId)
-      const [project] = await sql`select id from projects where id = ${projectId}`
+      const [role, [project]] = await Promise.all([
+        memberRole(projectId, userId),
+        sql`select id from projects where id = ${projectId}`,
+      ])
       if (!project) return undefined
       assertProjectPermission(role, 'read-audit', 'PROJECT_AUDIT_FORBIDDEN')
       const rows = await sql`
