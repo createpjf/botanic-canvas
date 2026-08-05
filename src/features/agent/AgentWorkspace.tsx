@@ -6,7 +6,6 @@ import {
   botanicAgentSubmissionKey,
   buildBotanicAgentPlan,
   createBotanicAgentContextSnapshot,
-  creativeDimensionLabel,
   insertBotanicAgentMention,
   readBotanicAgentMentionQuery,
   summarizeBotanicAgentRuntime,
@@ -41,18 +40,14 @@ import { BotanicSelect } from '../../components/BotanicSelect'
 import { AgentPlannerProviderIcon } from '../../components/AgentPlannerProviderIcon'
 import {
   agentPlannerModelLabel,
-  agentPlannerModelShortLabel,
   defaultAgentPlannerModels,
   modelDisplayLabel,
 } from '../../components/generationModelPresentation'
 import {
-  AgentClarificationCard,
   AgentFailureRecoveryActions,
-  AgentPromptDiff,
   agentRunOutputCount,
   agentRuntimeStepMarker,
   agentRuntimeStepStatusLabel,
-  agentToolStatusLabel,
   createInitialAgentClarification,
 } from './AgentWorkspaceParts'
 import { agentComposerStateReducer, initialAgentComposerState } from './agentComposerState'
@@ -60,22 +55,16 @@ import { useAgentMessageDelivery } from './useAgentMessageDelivery'
 import { useAgentRuntimeTrace } from './useAgentRuntimeTrace'
 import type { AgentArtifactIndexState, AgentContextItem, AgentDockTarget } from './agentWorkspace.types'
 import { AgentMemoryPanel, AgentResultPanel } from './AgentUtilityPanels'
+import { AgentConversationMessage } from './AgentConversationMessage'
+import { AgentComposer } from './AgentComposer'
 import {
-  ArrowUpIcon,
-  AutoRunIcon,
   BookmarkIcon,
   ChecklistIcon,
   CloseIcon,
-  CopyIcon,
-  EditIcon,
   FigmaIcon,
-  FocusIcon,
   GalleryIcon,
-  PlusIcon,
   PlusSquareIcon,
   SparkleIcon,
-  ThumbDownIcon,
-  ThumbUpIcon,
   UploadIcon,
 } from '../../components/BotanicIcons'
 import historyIcon from '../../assets/figma/icon-history.svg'
@@ -1107,101 +1096,37 @@ export default function AgentWorkspace({
             {agentQuickActions.slice(0, 3).map((action) => <button key={action.intent} type="button" onClick={() => { setIntent(action.intent); setInstruction(action.instruction) }}><strong>{action.label}</strong><span>{action.instruction}</span></button>)}
           </div>
         </section> : null}
-        {!utilityPanelOpen ? session?.messages.map((message) => <article key={message.id} className={`agent-message is-${message.role} is-${message.kind}`}>
-          <div className="agent-message__role">{message.role === 'assistant' ? <SparkleIcon /> : <span>你</span>}</div>
-          <div className="agent-message__body">
-            {!message.question ? <p>{message.content}</p> : null}
-            {message.role === 'user' && message.deliveryStatus === 'queued' ? <small className="agent-message__delivery-status" role="status">待同步</small> : null}
-            {message.role === 'user' && message.deliveryStatus === 'failed' ? <small className="agent-message__delivery-status is-failed" role="status">同步失败，请检查权限</small> : null}
-            {message.kind === 'run' && message.runId ? (() => {
-              const linkedRun = runs.find((run) => run.id === message.runId)
-              const outputNodeIds = artifacts
-                .filter((artifact) => artifact.provenance.runId === message.runId)
-                .flatMap((artifact) => artifact.provenance.sourceNodeIds ?? [])
-              const lockedContextIds = botanicAgentContextSnapshotNodeIds(linkedRun?.plan.contextSnapshot, contextOptions.map((item) => item.id))
-              const continueNodeIds = [...new Set(outputNodeIds.length ? outputNodeIds : lockedContextIds)]
-              return continueNodeIds.length ? <div className="agent-run-message__actions" aria-label="结果操作">
-                <button type="button" onClick={() => {
-                  onUseResultContext(continueNodeIds)
-                  setInstruction(outputNodeIds.length === 1 ? '继续优化这张结果：' : outputNodeIds.length > 1 ? `继续优化这 ${outputNodeIds.length} 张结果：` : '继续基于当前上下文创作：')
-                  setActiveUtilityPanel(null)
-                  requestAnimationFrame(() => composerTextareaRef.current?.focus())
-                }}>继续修改</button>
-                {outputNodeIds.length ? <button type="button" onClick={() => {
-                  setActiveUtilityPanel('result')
-                }}>查看结果</button> : null}
-                {outputNodeIds.length ? <button type="button" onClick={() => onFocusNodes(outputNodeIds)}>定位画布</button> : null}
-              </div> : null
-            })() : null}
-            {message.question ? <AgentClarificationCard
-              clarification={message.question}
-              generationModels={generationModels}
-              state={message.status === 'answered' ? 'completed' : planning ? 'submitting' : 'idle'}
-              onSubmit={(answers) => void answerClarification(message, answers)}
-            /> : null}
-            {message.plan ? <div className="agent-message__plan">
-              {message.plan.toolCalls?.length ? <div className="agent-message__tools" aria-label="Agent 工具调用">
-                {message.plan.toolCalls.map((call) => <div key={call.id} className={`agent-message__tool is-${call.status}`}>
-                  <span aria-hidden="true">↳</span><strong>{call.label}</strong><small>{agentToolStatusLabel(call.status)}</small>
-                </div>)}
-              </div> : null}
-              {message.plan.actions?.length ? <div className="agent-message__actions" aria-label="待确认行动">
-                {message.plan.actions.map((action) => <article key={action.id} className={`agent-action-card is-${action.status}`}>
-                  <header><span>{action.kind === 'skill' ? 'SKILL' : 'MCP'}</span><small>{action.risk === 'external' ? '外部调用' : action.toolName === 'skill_create' ? '写入项目' : '写入画布'}</small></header>
-                  <strong>{action.label}</strong>
-                  <p>{action.summary}</p>
-                  <div className="agent-action-card__impact"><span>输入</span><b>{action.toolName === 'mcp_call' ? `${String(action.arguments.server)}.${String(action.arguments.tool)}` : action.toolName === 'skill_create' ? '新项目 Skill' : '当前项目 Skill'}</b><span>输出</span><b>{action.toolName === 'mcp_call' ? '文件 / 画布节点' : action.toolName === 'skill_create' ? '可复用 Skill' : '工作流规则节点'}</b></div>
-                  <details className="agent-action-card__details"><summary>查看执行内容</summary><pre>{JSON.stringify(action.arguments, null, 2)}</pre></details>
-                  {action.error ? <small className="agent-action-card__error">{action.error}</small> : null}
-                  {action.status === 'succeeded' ? <div className="agent-action-card__result"><span>已执行</span>{action.result?.canvasNodeIds?.length ? <small>已创建 {action.result.canvasNodeIds.length} 个画布节点</small> : action.result?.artifacts?.length ? <small>已产出 {action.result.artifacts.length} 项</small> : null}{action.result?.canvasNodeId ? <button type="button" className="agent-icon-button" aria-label="在画布定位结果" title="在画布定位" onClick={() => onLocateNode(action.result!.canvasNodeId!)}><FocusIcon /></button> : null}</div> : null}
-                  {action.status === 'dismissed' ? <span className="agent-action-card__dismissed">已跳过</span> : null}
-                  {action.status === 'running' ? <div className="agent-action-card__running"><span>执行状态待确认</span><button type="button" disabled={executingActionId === action.id} onClick={() => void confirmAction(message, action)}>{executingActionId === action.id ? '确认中…' : '确认状态'}</button></div> : null}
-                  {action.status === 'awaiting_confirmation' || action.status === 'failed' ? <div className="agent-action-card__buttons">
-                    {action.status === 'awaiting_confirmation' ? <button type="button" className="is-secondary" onClick={() => session && onUpdateAction(session.id, message.id, action.id, { status: 'dismissed' })}>跳过</button> : null}
-                    <button type="button" disabled={executingActionId === action.id} onClick={() => void confirmAction(message, action)}>{executingActionId === action.id ? '执行中…' : action.status === 'failed' ? '重试' : '确认执行'}</button>
-                  </div> : null}
-                </article>)}
-              </div> : null}
-              <section className="agent-prompt-review" aria-label="润色后的提示词">
-                <header><span><strong>生成前确认</strong><small>已按 Botanic 结构整理</small></span><b>可编辑</b></header>
-                <div className="agent-prompt-review__original"><small>原始要求</small><p>{message.plan.instruction}</p></div>
-                <label><span>润色后提示词</span><textarea
-                  value={promptDrafts[message.id] ?? message.plan.prompt}
-                  onChange={(event) => setPromptDrafts((current) => ({ ...current, [message.id]: event.target.value }))}
-                  onBlur={(event) => commitPlanPrompt(message, event.currentTarget.value)}
-                  maxLength={6000}
-                  aria-label="润色后提示词"
-                /></label>
-                <AgentPromptDiff original={message.plan.instruction} revised={promptDrafts[message.id] ?? message.plan.prompt} />
-                <div className="agent-prompt-review__actions">
-                  <button type="button" className="is-secondary" onClick={() => { setPromptDrafts((current) => ({ ...current, [message.id]: message.plan!.instruction })); commitPlanPrompt(message, message.plan!.instruction) }}>用原文</button>
-                  <button type="button" className="is-secondary" onClick={() => { setPromptDrafts((current) => ({ ...current, [message.id]: message.plan!.prompt })); commitPlanPrompt(message, message.plan!.prompt) }}>恢复润色</button>
-                </div>
-              </section>
-              <div className="agent-message__constraints">
-                {message.plan.constraints.map((constraint) => <span key={constraint.dimension} className={constraint.mode === 'preserve' ? 'is-locked' : 'is-variable'}>{constraint.mode === 'preserve' ? '锁定' : '变化'} · {creativeDimensionLabel(constraint.dimension)}</span>)}
-              </div>
-              <div className="agent-plan-settings" aria-label="本次生成设置">
-                <span><small>模型</small><b>{modelDisplayLabel(generationModels.find((model) => model.id === message.plan!.settings.model)) || message.plan.settings.model}</b></span>
-                <span><small>比例</small><b>{message.plan.settings.aspectRatio}</b></span>
-                <span><small>清晰度</small><b>{message.plan.settings.resolution}</b></span>
-                <span><small>输出</small><b>{message.plan.output.mode === 'batch_by_asset' ? `${message.plan.output.count} 个分支` : '1 个版本'}</b></span>
-              </div>
-              <small>{message.plan.references.length} 个输入 · {message.plan.output.mode === 'batch_by_asset' ? `${message.plan.output.count} 个分支` : '1 个新版本'}</small>
-              {message.plan.contextSnapshot?.length ? <small className="agent-plan__context-lock">已锁定上下文 · {message.plan.contextSnapshot.slice(0, 3).map((item) => item.label).join('、')}{message.plan.contextSnapshot.length > 3 ? ` 等 ${message.plan.contextSnapshot.length} 项` : ''}</small> : null}
-              <details className="agent-message__route"><summary>执行路由</summary><div><span>规划</span><b>{agentPlannerModelLabel(message.plan.plannerModel ?? plannerModel)}</b><span>生成</span><b>{message.plan.settings.model}</b><span>外部行动</span><b>{message.plan.actions?.length ? `${message.plan.actions.length} 项，确认后执行` : '无'}</b></div></details>
-              {message.status !== 'submitted' ? <><small className="agent-plan__confirm-hint">确认后才会提交生成任务，当前设置仍可在上方编辑。</small><button type="button" disabled={submittingMessageId === message.id || message.plan.actions?.some((action) => action.status === 'awaiting_confirmation' || action.status === 'running')} onClick={() => void confirmMessagePlan(message)}>{submittingMessageId === message.id ? '正在提交…' : message.plan.actions?.some((action) => action.status === 'awaiting_confirmation' || action.status === 'running') ? '先处理行动卡' : message.status === 'failed' ? '重新提交计划' : '确认并生成'}</button></> : <span className="agent-message__submitted">已提交</span>}
-            </div> : null}
-          </div>
-          <div className="agent-message__utilities">
-            {message.role === 'user' ? <button type="button" aria-label="编辑消息" title="编辑消息" onClick={() => { setInstruction(message.content); requestAnimationFrame(() => composerTextareaRef.current?.focus()) }}><EditIcon /></button> : null}
-            {message.role === 'assistant' && session ? <>
-              <button type="button" className={message.feedback === 'positive' ? 'is-selected' : ''} aria-label="这个回答有帮助" title="有帮助" onClick={() => onUpdateMessage(session.id, message.id, { feedback: message.feedback === 'positive' ? undefined : 'positive' })}><ThumbUpIcon /></button>
-              <button type="button" className={message.feedback === 'negative' ? 'is-selected' : ''} aria-label="这个回答需要改进" title="需改进" onClick={() => onUpdateMessage(session.id, message.id, { feedback: message.feedback === 'negative' ? undefined : 'negative' })}><ThumbDownIcon /></button>
-            </> : null}
-            <button type="button" aria-label="复制消息" title="复制消息" onClick={() => void navigator.clipboard.writeText(message.content)}><CopyIcon /></button>
-          </div>
-        </article>) : null}
+        {!utilityPanelOpen ? session?.messages.map((message) => <AgentConversationMessage
+          key={message.id}
+          message={message}
+          sessionId={session.id}
+          runs={runs}
+          artifacts={artifacts}
+          contextOptionIds={contextOptions.map((item) => item.id)}
+          generationModels={generationModels}
+          planning={planning}
+          plannerModel={plannerModel}
+          executingActionId={executingActionId}
+          submittingMessageId={submittingMessageId}
+          promptDraft={promptDrafts[message.id]}
+          onContinueResultContext={(nodeIds, outputCount) => {
+            onUseResultContext(nodeIds)
+            setInstruction(outputCount === 1 ? '继续优化这张结果：' : outputCount > 1 ? `继续优化这 ${outputCount} 张结果：` : '继续基于当前上下文创作：')
+            setActiveUtilityPanel(null)
+            requestAnimationFrame(() => composerTextareaRef.current?.focus())
+          }}
+          onShowResults={() => setActiveUtilityPanel('result')}
+          onFocusNodes={onFocusNodes}
+          onAnswerClarification={(targetMessage, answers) => void answerClarification(targetMessage, answers)}
+          onLocateNode={onLocateNode}
+          onConfirmAction={(targetMessage, action) => void confirmAction(targetMessage, action)}
+          onDismissAction={(targetMessage, action) => onUpdateAction(session.id, targetMessage.id, action.id, { status: 'dismissed' })}
+          onPromptDraftChange={(messageId, prompt) => setPromptDrafts((current) => ({ ...current, [messageId]: prompt }))}
+          onCommitPlanPrompt={commitPlanPrompt}
+          onConfirmPlan={(targetMessage) => void confirmMessagePlan(targetMessage)}
+          onEdit={(content) => { setInstruction(content); requestAnimationFrame(() => composerTextareaRef.current?.focus()) }}
+          onFeedback={(targetMessage, feedback) => onUpdateMessage(session.id, targetMessage.id, { feedback })}
+        />) : null}
         {!utilityPanelOpen && showRuntimeFeed ? (() => {
           const livePhase = runtimePhase === 'reading' || runtimePhase === 'planning' || runtimePhase === 'executing'
           return <section className={`agent-runtime-feed is-${runtimeSummary.phase}${runtimeFailed ? ' is-failed' : runtimeComplete ? ' is-complete' : ''}`} data-phase={runtimeSummary.phase} role="status" aria-live={livePhase ? 'polite' : undefined} aria-label="Agent 运行记录">
@@ -1246,63 +1171,45 @@ export default function AgentWorkspace({
         </section> : null}
         <div ref={messageEndRef} />
       </div>
-      {!utilityPanelOpen ? <div className="agent-composer">
-        {contextItems.length ? <div className="agent-composer__context">{contextItems.map((item) => <button key={item.id} type="button" aria-label={`移除 ${item.label}`} title={`移除 ${item.label}`} onClick={() => session && onContextChange(session.id, session.contextNodeIds.filter((id) => id !== item.id))}>{item.image ? <img src={item.image} alt="" /> : <span>{item.kind.slice(0, 1)}</span>}<i aria-hidden="true">×</i></button>)}</div> : null}
-        {mentionQuery ? <div className="agent-composer__mention-menu" role="group" aria-label="引用画布内容" onPointerDown={(event) => event.stopPropagation()}>
-          {mentionOptions.map((item) => <button key={item.id} type="button" onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); selectMention(item) }}>{item.image ? <img src={item.image} alt="" /> : <span>{item.kind.slice(0, 1)}</span>}<b>{item.label}</b><small>{item.kind}</small></button>)}
-          {!mentionOptions.length ? <p>没有匹配的素材</p> : null}
-        </div> : null}
-        <textarea ref={composerTextareaRef} value={instruction} onChange={(event) => { const value = event.target.value; setInstruction(value); setMentionQuery(readBotanicAgentMentionQuery(value, event.target.selectionStart ?? value.length)); setError(''); setLastFailedInstruction(''); setLastFailedPlanMessageId('') }} onClick={(event) => setMentionQuery(readBotanicAgentMentionQuery(instruction, event.currentTarget.selectionStart ?? instruction.length))} onKeyDown={(event) => {
-          if (event.key === 'Escape' && mentionQuery) { event.preventDefault(); setMentionQuery(undefined); return }
-          if (event.key === 'Enter' && mentionQuery && mentionOptions[0]) { event.preventDefault(); selectMention(mentionOptions[0]); return }
-          if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendInstruction() }
-        }} placeholder="和 Agent 聊天、生成 Prompt 或描述创作需求，@ 引用画布内容" aria-label="Agent 消息" />
-        {error ? <div className="agent-composer__error" role="alert"><span>{error}</span>{lastFailedPlanMessageId || lastFailedInstruction ? <button type="button" onClick={lastFailedPlanMessageId ? retryLastFailedPlan : retryLastInstruction} disabled={planning || submittingMessageId === lastFailedPlanMessageId}>重试</button> : null}</div> : null}
-        <input
-          ref={agentFileInputRef}
-          className="asset-file-input"
-          type="file"
-          accept="image/png,image/jpeg,image/webp"
-          multiple
-          aria-label="从电脑添加图片素材"
-          onChange={(event) => {
-            const files = Array.from(event.currentTarget.files ?? [])
-            event.currentTarget.value = ''
-            void importImageFiles(files)
-          }}
-        />
-        <div className="agent-composer__toolbar">
-          <div>
-            <button ref={contextMenuButtonRef} type="button" className="agent-composer__add" onClick={() => setContextMenuOpen((open) => !open)} aria-controls={contextMenuId} aria-expanded={contextMenuOpen} aria-label="添加图像素材" title="添加图像素材"><PlusIcon /></button>
-            <button ref={modeMenuButtonRef} type="button" className="agent-composer__mode" onClick={() => setModeMenuOpen((open) => !open)} aria-controls={modeMenuId} aria-expanded={modeMenuOpen} aria-label={session?.executionMode === 'auto' ? '自动执行' : '手动确认'} title={session?.executionMode === 'auto' ? '自动执行' : '手动确认'}>
-              {session?.executionMode === 'auto' ? <AutoRunIcon /> : <ChecklistIcon />}<span className="agent-composer__mode-label" aria-hidden="true">{session?.executionMode === 'auto' ? '自动生成' : '手动确认'}</span><span className="agent-composer__mode-chevron" aria-hidden="true">⌄</span>
-            </button>
-            <BotanicSelect
-              className="agent-composer__model-select"
-              value={plannerModel}
-              ariaLabel={`Agent 模型：${agentPlannerModelLabel(plannerModel)}`}
-              menuWidth={220}
-              options={plannerModels.map((model) => ({ value: model, label: agentPlannerModelLabel(model) }))}
-              onChange={setPlannerModel}
-              renderTrigger={(selected) => <span className="agent-model-trigger" title={agentPlannerModelShortLabel(selected?.value ?? plannerModel)}><AgentPlannerProviderIcon model={selected?.value ?? plannerModel} /><span className="agent-model-trigger__label">{agentPlannerModelShortLabel(selected?.value ?? plannerModel)}</span></span>}
-              renderOption={(option, selected) => <span className="agent-model-option"><span className="agent-model-option__main"><AgentPlannerProviderIcon model={option.value} /><span>{option.label}</span></span>{selected ? <b aria-hidden="true">✓</b> : null}</span>}
-            />
-            {compatibleGroups.length ? <BotanicSelect className="agent-composer__group-select" value={groupId} placeholder="素材组" ariaLabel="批量素材组" options={[{ value: '', label: '单张' }, ...compatibleGroups.map((group) => ({ value: group.id, label: `${group.name} · ${group.assetIds.length}` }))]} onChange={setGroupId} renderTrigger={(selected) => <span className="agent-group-trigger" title={selected?.label ?? '单张'}><strong>{selected?.value ? '组' : '1'}</strong></span>} /> : null}
-          </div>
-          <button type="button" className="agent-composer__send" disabled={!instruction.trim() || planning || !session} onClick={() => void sendInstruction()} aria-label="发送给 Agent">{planning ? <span className="agent-composer__spinner" /> : <ArrowUpIcon />}</button>
-        </div>
-        {contextMenuOpen ? <div id={contextMenuId} className="agent-composer__context-menu" role="group" aria-label="添加图像素材" onPointerDown={(event) => event.stopPropagation()}>
-          <header><strong>添加图像素材</strong><button type="button" aria-label="关闭添加图像素材" onClick={() => { setContextMenuOpen(false); requestAnimationFrame(() => contextMenuButtonRef.current?.focus()) }}><CloseIcon /></button></header>
-          <div className="agent-composer__context-upload">
-            <button type="button" onClick={() => agentFileInputRef.current?.click()}><UploadIcon /><span><b>从电脑选择图片</b><small>也可以直接拖入 Agent 面板</small></span></button>
-          </div>
-          {imageContextOptions.length ? imageContextOptions.map((item) => { const selected = session?.contextNodeIds.includes(item.id) ?? false; return <button key={item.id} type="button" className={selected ? 'is-selected' : ''} aria-pressed={selected} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); if (!session) return; onContextChange(session.id, selected ? session.contextNodeIds.filter((id) => id !== item.id) : [...session.contextNodeIds, item.id]) }}>{item.image ? <img src={item.image} alt="" /> : null}<span><b>{item.label}</b><small>{item.kind}</small></span>{selected ? <i aria-hidden="true">✓</i> : null}</button> }) : <p>暂无图像素材，可从电脑选择或直接拖入。</p>}
-        </div> : null}
-        {modeMenuOpen ? <div id={modeMenuId} className="agent-composer__mode-menu" role="group" aria-label="执行模式">
-          <button type="button" className={session?.executionMode === 'manual' ? 'is-selected' : ''} onClick={() => { if (session) onExecutionModeChange(session.id, 'manual'); setModeMenuOpen(false); requestAnimationFrame(() => modeMenuButtonRef.current?.focus()) }}><ChecklistIcon /><span><strong>手动确认</strong><small>执行生成前先确认锁定项</small></span></button>
-          <button type="button" className={session?.executionMode === 'auto' ? 'is-selected' : ''} onClick={() => { if (session) onExecutionModeChange(session.id, 'auto'); setModeMenuOpen(false); requestAnimationFrame(() => modeMenuButtonRef.current?.focus()) }}><AutoRunIcon /><span><strong>自动执行</strong><small>规划完成后直接创建任务</small></span></button>
-        </div> : null}
-      </div> : null}
+      {!utilityPanelOpen ? <AgentComposer
+        session={session}
+        contextItems={contextItems}
+        mentionQuery={mentionQuery}
+        mentionOptions={mentionOptions}
+        instruction={instruction}
+        error={error}
+        canRetry={Boolean(lastFailedPlanMessageId || lastFailedInstruction)}
+        retrying={planning || submittingMessageId === lastFailedPlanMessageId}
+        planning={planning}
+        contextMenuOpen={contextMenuOpen}
+        modeMenuOpen={modeMenuOpen}
+        contextMenuId={contextMenuId}
+        modeMenuId={modeMenuId}
+        plannerModel={plannerModel}
+        plannerModels={plannerModels}
+        groupId={groupId}
+        compatibleGroups={compatibleGroups}
+        imageContextOptions={imageContextOptions}
+        textareaRef={composerTextareaRef}
+        fileInputRef={agentFileInputRef}
+        contextMenuButtonRef={contextMenuButtonRef}
+        modeMenuButtonRef={modeMenuButtonRef}
+        onRemoveContext={(itemId) => session && onContextChange(session.id, session.contextNodeIds.filter((id) => id !== itemId))}
+        onSelectMention={selectMention}
+        onDismissMention={() => setMentionQuery(undefined)}
+        onInstructionChange={(value, caret) => { setInstruction(value); setMentionQuery(readBotanicAgentMentionQuery(value, caret)); setError(''); setLastFailedInstruction(''); setLastFailedPlanMessageId('') }}
+        onInstructionClick={(caret) => setMentionQuery(readBotanicAgentMentionQuery(instruction, caret))}
+        onRetry={lastFailedPlanMessageId ? retryLastFailedPlan : retryLastInstruction}
+        onImportFiles={(files) => void importImageFiles(files)}
+        onToggleContextMenu={() => setContextMenuOpen((open) => !open)}
+        onCloseContextMenu={() => { setContextMenuOpen(false); requestAnimationFrame(() => contextMenuButtonRef.current?.focus()) }}
+        onToggleModeMenu={() => setModeMenuOpen((open) => !open)}
+        onPlannerModelChange={setPlannerModel}
+        onGroupChange={setGroupId}
+        onSend={() => void sendInstruction()}
+        onToggleImageContext={(itemId, selected) => { if (!session) return; onContextChange(session.id, selected ? session.contextNodeIds.filter((id) => id !== itemId) : [...session.contextNodeIds, itemId]) }}
+        onExecutionModeChange={(mode) => { if (session) onExecutionModeChange(session.id, mode); setModeMenuOpen(false); requestAnimationFrame(() => modeMenuButtonRef.current?.focus()) }}
+      /> : null}
     </aside>
   )
 }

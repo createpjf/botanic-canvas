@@ -4,12 +4,25 @@ import { createEmptyCanvasDocument, seedDocument, seedGlobalAssets } from '../da
 import { defaultGenerationModels } from '../domain/canvas'
 import { normalizeAssetCollection, normalizeAssetRecord } from '../domain/assets'
 import { normalizeAssetGroupName, normalizeAssetGroups, removeAssetFromGroups, upsertCollectionGroups } from '../domain/assetGroups'
+import { createBatchVariationRun, mapBatchVariationWithConcurrency, summarizeBatchVariationRun } from '../domain/batchVariations'
 import { mergeCollaborativeCanvasGraph } from '../domain/collaborativeGraph'
 import { findOpenGeneratePosition, planGenerateNodeCreation } from '../domain/generateNodeCreation'
 import { planGenerationOutputPlacement } from '../domain/generationOutputPlacement'
-import { findUnknownSubmissionAnchor } from '../domain/generationRecovery'
 import { generationTaskResultLabel } from '../domain/canvasPresentation'
 import { generationSubmissionFailureDisposition } from '../domain/generationSubmission'
+import {
+  buildGenerationRecipe,
+  buildGraphGenerationRecipe,
+  canvasGenerationReferences,
+  clampBatchCount,
+  cloneGenerationRecipe,
+  cloneGenerationSettings,
+  connectedGenerateInputs,
+  defaultSettingsForModel,
+  normalizeGenerateNodeInputs,
+  primaryGenerationReference,
+} from '../domain/generationRecipe'
+import type { CanvasGenerationReference } from '../domain/generationRecipe'
 import { isRemoteDocumentConflict, resolveRemoteCanvasRefresh } from '../domain/remoteDocumentSync'
 import { createLatestOperation } from '../domain/latestOperation'
 import { assignVideoInputRoles } from '../domain/videoGeneration'
@@ -57,8 +70,14 @@ import {
 } from '../lib/db'
 import { ProductApiError } from '../lib/productSession'
 import { assertGenerationServiceReady, cancelGenerationJob, GenerationApiError, getGenerationJob, listProjectGenerationJobs, reconcileProjectGenerationResults, submitGenerationJob } from '../lib/generationApi'
-import type { CanvasStore, GenerationRequest, PersistedGenerationState, TaskNodeIds } from './canvasStore.types'
+import type { CanvasStore, GenerationRequest, TaskNodeIds } from './canvasStore.types'
 import { createCanvasAgentActions } from './canvasAgentActions'
+import {
+  requestFromGenerationTaskNode,
+  requestFromPersistedGenerationJob,
+  requestFromUnknownGenerationSubmission,
+  restoreGenerationLifecycleState,
+} from './canvasGenerationLifecycle'
 
 let generationPollTimerId: number | null = null
 let generationPollRunId = 0
@@ -150,44 +169,6 @@ function snapshotThumbnail(nodes: CanvasNode[], fallback: string) {
   return result ? (result.data as ResultNodeData).image ?? fallback : fallback
 }
 
-function clampBatchCount(value: number) {
-  return Math.max(1, Math.round(value) || 1)
-}
-
-function cloneGenerationSettings(settings: Partial<GenerationSettings> | undefined): GenerationSettings {
-  return {
-    model: typeof settings?.model === 'string' && settings.model.trim() ? settings.model : 'gpt-image-2',
-    aspectRatio: settings?.aspectRatio === '1:1' || settings?.aspectRatio === '16:9' || settings?.aspectRatio === '4:3' || settings?.aspectRatio === '3:4' || settings?.aspectRatio === '4:5' || settings?.aspectRatio === '9:16'
-      ? settings.aspectRatio
-      : '3:4',
-    resolution: settings?.resolution === '1K' || settings?.resolution === '2K'
-      ? settings.resolution
-      : '2K',
-    ...(Number.isInteger(settings?.duration) && Number(settings?.duration) >= 4 && Number(settings?.duration) <= 15
-      ? { duration: Number(settings?.duration) }
-      : {}),
-  }
-}
-
-function defaultSettingsForModel(model: GenerationModelOption | undefined): GenerationSettings {
-  return {
-    model: model?.id ?? 'gpt-image-2',
-    aspectRatio: model?.aspectRatios?.includes('3:4') ? '3:4' : model?.aspectRatios?.[0] ?? '3:4',
-    resolution: model?.resolutions?.includes('2K') ? '2K' : model?.resolutions?.[0] ?? '2K',
-    ...(model?.mediaKind === 'video'
-      ? { duration: model.defaultDuration ?? model.durations?.[0] ?? 5 }
-      : {}),
-  }
-}
-
-function cloneGenerationRecipe(recipe: GenerationRecipe): GenerationRecipe {
-  return {
-    ...recipe,
-    settings: cloneGenerationSettings(recipe.settings),
-    references: recipe.references.map((reference) => ({ ...reference })),
-  }
-}
-
 /** 素材库展示与画布入库均使用「全局品牌 + 当前项目私有」的只读合并视图。 */
 function availableAssets(document: CanvasDocument, globalAssets: AssetRecord[]) {
   const ids = new Set<string>()
@@ -201,64 +182,6 @@ function availableAssets(document: CanvasDocument, globalAssets: AssetRecord[]) 
 
 function findAvailableAsset(document: CanvasDocument, globalAssets: AssetRecord[], assetId: string) {
   return availableAssets(document, globalAssets).find((asset) => asset.id === assetId)
-}
-
-function isGenerateInputNode(node: CanvasNode | undefined): node is CanvasNode {
-  return Boolean(node && (node.type === 'asset' || node.type === 'text' || node.type === 'result'))
-}
-
-function normalizeGenerateNodeInputs(nodes: CanvasNode[], edges: Edge[]): CanvasNode[] {
-  const nodeById = new Map(nodes.map((node) => [node.id, node]))
-  return nodes.map((node) => {
-    if (node.type !== 'generate') return node
-    const data = node.data as GenerateNodeData
-    const connectedIds = [...new Set(edges
-      .filter((edge) => edge.target === node.id)
-      .map((edge) => edge.source)
-      .filter((sourceId) => isGenerateInputNode(nodeById.get(sourceId))))]
-    const previousOrder = data.inputOrder ?? []
-    const inputOrder = [
-      ...previousOrder.filter((inputId) => connectedIds.includes(inputId)),
-      ...connectedIds.filter((inputId) => !previousOrder.includes(inputId)),
-    ]
-    const connectedAssets = inputOrder
-      .map((inputId) => nodeById.get(inputId))
-      .filter((input): input is CanvasNode => input?.type === 'asset')
-    const currentPrimary = connectedAssets.find((input) => input.id === data.primaryInputId)
-    const legacyPrimary = connectedAssets.find((input) => {
-      const asset = input.data as AssetNodeData
-      return Boolean(asset.primary)
-    })
-    // 任何图片都可以是主参考，避免上传角色误标时阻断生成。
-    const fallbackPrimary = connectedAssets[0]
-    const primaryInputId = (currentPrimary ?? legacyPrimary ?? fallbackPrimary)?.id
-    return {
-      ...node,
-      data: {
-        ...data,
-        inputOrder,
-        primaryInputId,
-      },
-    }
-  }) as CanvasNode[]
-}
-
-function connectedGenerateInputs(document: CanvasDocument, generateNodeId: string) {
-  const generateNode = document.nodes.find((node) => node.id === generateNodeId && node.type === 'generate')
-  if (!generateNode || generateNode.type !== 'generate') return []
-  const data = generateNode.data as GenerateNodeData
-  const nodeById = new Map(document.nodes.map((node) => [node.id, node]))
-  const connectedIds = [...new Set(document.edges
-    .filter((edge) => edge.target === generateNodeId)
-    .map((edge) => edge.source)
-    .filter((sourceId) => isGenerateInputNode(nodeById.get(sourceId))))]
-  const inputOrder = [
-    ...(data.inputOrder ?? []).filter((inputId) => connectedIds.includes(inputId)),
-    ...connectedIds.filter((inputId) => !(data.inputOrder ?? []).includes(inputId)),
-  ]
-  return inputOrder
-    .map((inputId) => nodeById.get(inputId))
-    .filter((node): node is CanvasNode => Boolean(node))
 }
 
 function withoutReference(recipe: GenerationRecipe, assetId: string): GenerationRecipe {
@@ -548,178 +471,6 @@ function stopGenerationPolling() {
 function clearUndoTimer() {
   if (undoTimerId !== null) window.clearTimeout(undoTimerId)
   undoTimerId = null
-}
-
-type CanvasGenerationReference = GenerationReference & {
-  enabled: boolean
-  primary: boolean
-  priority: number
-}
-
-function canvasGenerationReferences(document: CanvasDocument): CanvasGenerationReference[] {
-  const references = document.nodes
-    .flatMap((node, index): CanvasGenerationReference[] => {
-      if (node.type !== 'asset') return []
-      const asset = node.data as AssetNodeData
-      const enabled = asset.referenceEnabled !== false
-      return [{
-        nodeId: node.id,
-        assetId: asset.assetId,
-        name: asset.name,
-        image: asset.image,
-        role: asset.role,
-        source: asset.source,
-        mediaKind: asset.mediaKind ?? 'image',
-        enabled,
-        primary: enabled && asset.role === '商品' && Boolean(asset.primary),
-        priority: Number.isInteger(asset.referencePriority) && asset.referencePriority! > 0 ? asset.referencePriority! : index + 1,
-      }]
-    })
-    .sort((left, right) => {
-      if (left.primary !== right.primary) return left.primary ? -1 : 1
-      if (left.priority !== right.priority) return left.priority - right.priority
-      if (left.role === right.role) return left.name.localeCompare(right.name, 'zh-Hans-CN')
-      if (left.role === '商品') return -1
-      if (right.role === '商品') return 1
-      return left.role.localeCompare(right.role, 'zh-Hans-CN')
-    })
-  return references.map((reference, index) => ({ ...reference, priority: index + 1 }))
-}
-
-function buildGenerationRecipe(
-  document: CanvasDocument,
-  prompt: string,
-  batchCount: number,
-  settings: GenerationSettings,
-): GenerationRecipe {
-  const references = canvasGenerationReferences(document).filter((reference) => reference.enabled)
-  const primary = references.find((reference) => reference.primary && reference.role === '商品')
-    ?? references.find((reference) => reference.role === '商品')
-  return {
-    primaryReferenceNodeId: primary?.nodeId,
-    references: references.map((reference) => ({
-      nodeId: reference.nodeId,
-      assetId: reference.assetId,
-      name: reference.name,
-      image: reference.image,
-      role: reference.role,
-      source: reference.source,
-      mediaKind: reference.mediaKind ?? 'image',
-      primary: reference.nodeId === primary?.nodeId,
-      priority: reference.priority,
-    })),
-    prompt,
-    batchCount,
-    settings: cloneGenerationSettings(settings),
-  }
-}
-
-function buildGraphGenerationRecipe(document: CanvasDocument, generateNodeId: string) {
-  const generateNode = document.nodes.find((node) => node.id === generateNodeId && node.type === 'generate')
-  if (!generateNode || generateNode.type !== 'generate') return null
-
-  const generate = generateNode.data as GenerateNodeData
-  const isVideoGeneration = generate.settings.duration !== undefined
-  const connectedNodes = connectedGenerateInputs(document, generateNodeId)
-
-  const directReferences = connectedNodes
-    .flatMap((node, index): GenerationReference[] => {
-      if (node.type !== 'asset') return []
-      const asset = node.data as AssetNodeData
-      return [{
-        nodeId: node.id,
-        assetId: asset.assetId,
-        name: asset.name,
-        image: asset.image,
-        role: asset.role,
-        source: asset.source,
-        mediaKind: asset.mediaKind ?? 'image',
-        primary: false,
-        priority: index + 1,
-      }]
-    })
-
-  const promptParts = connectedNodes
-    .flatMap((node) => node.type === 'text' ? [(node.data as TextNodeData).content.trim()] : [])
-    .filter(Boolean)
-  if (generate.prompt.trim()) promptParts.push(generate.prompt.trim())
-
-  const resultInputs = connectedNodes.filter((node) => node.type === 'result') as CanvasNode[]
-  const parentResult = isVideoGeneration ? undefined : resultInputs.find((node) => {
-    const data = node.data as ResultNodeData
-    return Boolean(data.image) && (data.mediaKind ?? 'image') === 'image'
-  })
-  const parentData = parentResult?.type === 'result' ? parentResult.data as ResultNodeData : undefined
-  const inheritedReferences = parentData?.generationRecipe?.references ?? []
-  const imageResultReferences = isVideoGeneration ? resultInputs.flatMap((node, index): GenerationReference[] => {
-    const data = node.data as ResultNodeData
-    if (!data.image || data.mediaKind === 'video') return []
-    return [{
-      nodeId: node.id,
-      assetId: `result:${node.id}`,
-      name: data.label ?? '上游画面',
-      image: data.image,
-      role: '首图',
-      source: 'generated',
-      mediaKind: 'image',
-      primary: false,
-      priority: directReferences.length + index + 1,
-    }]
-  }) : []
-  const videoReferences = resultInputs.flatMap((node, index): GenerationReference[] => {
-    const data = node.data as ResultNodeData
-    if (!data.image || data.mediaKind !== 'video') return []
-    return [{
-      nodeId: node.id,
-      assetId: `result:${node.id}`,
-      name: data.label ?? '上游视频',
-      image: data.image,
-      role: '调性',
-      source: 'generated',
-      mediaKind: 'video',
-      primary: false,
-      priority: directReferences.length + index + 1,
-    }]
-  })
-  const references = [
-    ...directReferences,
-    ...imageResultReferences,
-    ...videoReferences,
-    ...(isVideoGeneration ? [] : inheritedReferences.filter((reference) => !directReferences.some((direct) => direct.assetId === reference.assetId))),
-  ]
-  const primary = references.find((reference) => reference.nodeId === generate.primaryInputId)
-    ?? references.find((reference) => reference.primary)
-    ?? references[0]
-
-  return {
-    prompt: promptParts.join('\n'),
-    hasUnselectedResultInput: Boolean(resultInputs.some((node) => !(node.data as ResultNodeData).image)),
-    parent: parentResult && parentData?.image
-      ? {
-          nodeId: parentResult.id,
-          image: parentData.image,
-          label: parentData.label ?? '上游首图',
-        }
-      : undefined,
-    recipe: {
-      primaryReferenceNodeId: primary?.nodeId,
-      references: references.map((reference, index) => ({
-        ...reference,
-        primary: reference.nodeId === primary?.nodeId,
-        priority: index + 1,
-      })),
-      prompt: promptParts.join('\n'),
-      batchCount: clampBatchCount(generate.batchCount),
-      settings: cloneGenerationSettings(generate.settings),
-      videoInputMode: generate.videoInputMode,
-    } satisfies GenerationRecipe,
-  }
-}
-
-function primaryGenerationReference(recipe: GenerationRecipe) {
-  return recipe.references.find((reference) => reference.nodeId === recipe.primaryReferenceNodeId)
-    ?? recipe.references.find((reference) => reference.primary)
-    ?? recipe.references[0]
 }
 
 function withoutAsset(snapshotValue: CanvasSnapshot, assetId: string): CanvasSnapshot {
@@ -1312,7 +1063,7 @@ function normalizeDocument(stored: CanvasDocument | undefined): CanvasDocument {
   // V18 起，同一次任务的每张输出都是画布上的独立结果节点；旧任务在首次打开时补齐。
   return document.generationJobs.reduce((nextDocument, job) => {
     if (job.status === 'succeeded' && job.outputs?.length) {
-      const request = requestFromPersistedJob(nextDocument, job)
+      const request = requestFromPersistedGenerationJob(nextDocument, job)
       return request ? materializeGenerationOutputs(nextDocument, job, request) : nextDocument
     }
     if (job.status === 'failed' && job.error === '图像服务没有返回结果，请重试。' && job.generateNodeId && job.resultNodeId) {
@@ -1780,135 +1531,6 @@ function recordGenerationJob(document: CanvasDocument, job: GenerationJob, taskN
   }
 }
 
-function requestFromPersistedJob(document: CanvasDocument, job: GenerationJob): GenerationRequest | null {
-  if (!job.generateNodeId || !job.resultNodeId) return null
-  const generateNode = document.nodes.find((node) => node.id === job.generateNodeId && node.type === 'generate')
-  const resultNode = document.nodes.find((node) => node.id === job.resultNodeId && node.type === 'result')
-  if (!generateNode || !resultNode) return null
-
-  const generate = generateNode.data as GenerateNodeData
-  const result = resultNode.data as ResultNodeData
-  const recipe = result.generationRecipe
-    ? cloneGenerationRecipe(result.generationRecipe)
-    : buildGraphGenerationRecipe(document, generateNode.id)?.recipe
-  if (!recipe) return null
-  const parentNodeId = job.kind === 'refinement'
-    ? document.edges.find((edge) => edge.target === generateNode.id && document.nodes.some((node) => node.id === edge.source && node.type === 'result'))?.source
-    : undefined
-  const parentNode = parentNodeId
-    ? document.nodes.find((node) => node.id === parentNodeId && node.type === 'result')
-    : undefined
-  const parent = parentNode?.type === 'result' ? parentNode.data as ResultNodeData : undefined
-
-  return {
-    kind: job.kind,
-    prompt: recipe.prompt || generate.prompt,
-    batchCount: recipe.batchCount,
-    settings: cloneGenerationSettings(recipe.settings),
-    recipe,
-    rootRecipe: result.rootRecipe ? cloneGenerationRecipe(result.rootRecipe) : cloneGenerationRecipe(recipe),
-    targetNodeId: parentNodeId,
-    parentVersionId: parent?.versionId,
-    parentImage: parent?.image,
-    parentLabel: parent?.label,
-    jobId: job.id,
-    idempotencyKey: job.idempotencyKey,
-    taskNodeIds: {
-      generateNodeId: generateNode.id,
-      resultNodeId: job.resultNodeId,
-    },
-    refinementMode: generate.refinementMode,
-  }
-}
-
-/**
- * 任务提交后，浏览器可能在结果返回前切换项目、刷新，或因网络抖动只留下本地占位节点。
- * 不依赖 generationJobs 的本地快照：从任务节点上的 jobId 重建请求，再向服务端取回最终结果。
- */
-function requestFromTaskNode(document: CanvasDocument, taskResultNode: CanvasNode): GenerationRequest | null {
-  if (taskResultNode.type !== 'result') return null
-  const result = taskResultNode.data as ResultNodeData
-  const jobId = result.jobId
-  const generateNodeId = result.outputOf
-  if (!jobId || !generateNodeId) return null
-  const generateNode = document.nodes.find((node) => node.id === generateNodeId && node.type === 'generate')
-  if (!generateNode || generateNode.type !== 'generate') return null
-  const generate = generateNode.data as GenerateNodeData
-  const recipe = result.generationRecipe
-    ? cloneGenerationRecipe(result.generationRecipe)
-    : buildGraphGenerationRecipe(document, generateNode.id)?.recipe
-  if (!recipe) return null
-
-  const kind = result.generationKind ?? generate.generationKind ?? 'generation'
-  const parentNodeId = kind === 'refinement'
-    ? document.edges.find((edge) => edge.target === generateNode.id && document.nodes.some((node) => node.id === edge.source && node.type === 'result'))?.source
-    : undefined
-  const parentNode = parentNodeId
-    ? document.nodes.find((node) => node.id === parentNodeId && node.type === 'result')
-    : undefined
-  const parent = parentNode?.type === 'result' ? parentNode.data as ResultNodeData : undefined
-  const resultNodeId = result.taskGroupId ?? taskResultNode.id
-
-  return {
-    kind,
-    prompt: recipe.prompt || generate.prompt,
-    batchCount: recipe.batchCount,
-    settings: cloneGenerationSettings(recipe.settings),
-    recipe,
-    rootRecipe: result.rootRecipe ? cloneGenerationRecipe(result.rootRecipe) : cloneGenerationRecipe(recipe),
-    targetNodeId: parentNodeId,
-    parentVersionId: parent?.versionId,
-    parentImage: parent?.image,
-    parentLabel: parent?.label,
-    jobId,
-    idempotencyKey: document.generationJobs.find((item) => item.id === jobId)?.idempotencyKey,
-    taskNodeIds: { generateNodeId: generateNode.id, resultNodeId },
-    refinementMode: result.refinementMode ?? generate.refinementMode,
-  }
-}
-
-/**
- * POST 超时时还没有 jobId；用已落库的节点配方与原幂等键恢复查询。
- * 这条路径绝不创建新键，否则刷新/跨设备恢复会重复扣额并生成。
- */
-function requestFromUnknownSubmission(document: CanvasDocument): GenerationRequest | null {
-  const anchor = findUnknownSubmissionAnchor(document.nodes)
-  if (!anchor) return null
-  const { generateNode, resultNode: taskResultNode, resultNodeIds, submissionKey: idempotencyKey } = anchor
-  const generate = generateNode.data as GenerateNodeData
-  const result = taskResultNode.data as ResultNodeData
-  const recipe = result.generationRecipe
-    ? cloneGenerationRecipe(result.generationRecipe)
-    : buildGraphGenerationRecipe(document, generateNode.id)?.recipe
-  if (!idempotencyKey || !recipe) return null
-
-  const kind = result.generationKind ?? generate.generationKind ?? 'generation'
-  const parentNodeId = kind === 'refinement'
-    ? document.edges.find((edge) => edge.target === generateNode.id && document.nodes.some((node) => node.id === edge.source && node.type === 'result'))?.source
-    : undefined
-  const parentNode = parentNodeId
-    ? document.nodes.find((node) => node.id === parentNodeId && node.type === 'result')
-    : undefined
-  const parent = parentNode?.type === 'result' ? parentNode.data as ResultNodeData : undefined
-  const resultNodeId = result.taskGroupId ?? taskResultNode.id
-  return {
-    kind,
-    prompt: recipe.prompt || generate.prompt,
-    batchCount: recipe.batchCount,
-    settings: cloneGenerationSettings(recipe.settings),
-    recipe,
-    rootRecipe: result.rootRecipe ? cloneGenerationRecipe(result.rootRecipe) : cloneGenerationRecipe(recipe),
-    targetNodeId: parentNodeId,
-    parentVersionId: parent?.versionId,
-    parentImage: parent?.image,
-    parentLabel: parent?.label,
-    idempotencyKey,
-    taskNodeIds: { generateNodeId: generateNode.id, resultNodeId, resultNodeIds },
-    refinementMode: result.refinementMode ?? generate.refinementMode,
-    agentRun: result.agentRun ?? generate.agentRun,
-  }
-}
-
 function recoverTaskNodeJobs(
   set: (next: Partial<CanvasStore>) => void,
   get: () => CanvasStore,
@@ -1921,7 +1543,7 @@ function recoverTaskNodeJobs(
     const result = node.data as ResultNodeData
     // 只恢复尚未落图的任务组首节点；批量任务的其他占位节点共用同一 jobId。
     if (result.image || !result.jobId || (result.taskGroupId && node.id !== result.taskGroupId)) continue
-    const request = requestFromTaskNode(document, node)
+    const request = requestFromGenerationTaskNode(document, node)
     if (request?.jobId) requests.set(request.jobId, request)
   }
 
@@ -1939,7 +1561,7 @@ function recoverTaskNodeJobs(
         && (!result.taskGroupId || candidate.id === result.taskGroupId)
     })
     if (!taskResultNode || taskResultNode.type !== 'result') continue
-    const request = requestFromTaskNode(document, {
+    const request = requestFromGenerationTaskNode(document, {
       ...taskResultNode,
       data: { ...(taskResultNode.data as ResultNodeData), jobId: generate.jobId },
     } as CanvasNode)
@@ -1982,7 +1604,7 @@ function recoverTaskNodeJobs(
           .filter((job) => !usedJobIds.has(job.id) && job.kind === kind)
           .sort((left, right) => Math.abs(left.createdAt - (result.submittedAt ?? left.createdAt)) - Math.abs(right.createdAt - (result.submittedAt ?? right.createdAt)))[0]
         if (!matching) continue
-        const request = requestFromTaskNode(get().document, {
+        const request = requestFromGenerationTaskNode(get().document, {
           ...taskResultNode,
           data: { ...result, jobId: matching.id },
         } as CanvasNode)
@@ -2160,85 +1782,6 @@ function materializeGenerationOutputs(document: CanvasDocument, job: GenerationJ
   return { ...document, nodes: [...nodes, ...extraNodes], edges: [...document.edges, ...extraEdges] }
 }
 
-/**
- * 真实任务的输出图保存在项目文档中。无论从刷新、路由恢复还是切回项目进入，
- * 都必须从同一份持久化任务状态恢复候选图或继续轮询，不能只恢复种子画布。
- */
-function persistedGenerationState(document: CanvasDocument, fallbackMessage: string): { state: PersistedGenerationState; pollJobId?: string } {
-  const idleState: PersistedGenerationState = {
-    assistantMessage: fallbackMessage,
-    generationStatus: 'idle',
-    generationProgress: 0,
-    generationError: null,
-    expectedCandidateCount: 0,
-    generationCandidates: [],
-    lastGenerationRequest: null,
-  }
-  const unknownSubmissionRequest = requestFromUnknownSubmission(document)
-  if (unknownSubmissionRequest) {
-    return {
-      state: {
-        ...idleState,
-        lastGenerationRequest: unknownSubmissionRequest,
-        generationStatus: 'recovering',
-        expectedCandidateCount: unknownSubmissionRequest.batchCount,
-        assistantMessage: '已恢复一个提交状态未知的任务；正在用原幂等键确认，请勿重复提交。',
-      },
-    }
-  }
-  const latestJob = [...document.generationJobs].sort((left, right) => right.updatedAt - left.updatedAt)[0]
-  const request = latestJob ? requestFromPersistedJob(document, latestJob) : null
-  if (!latestJob || !request) return { state: idleState }
-
-  if (latestJob.status === 'queued' || latestJob.status === 'running') {
-    return {
-      state: {
-        ...idleState,
-        lastGenerationRequest: request,
-        generationStatus: latestJob.status,
-        expectedCandidateCount: latestJob.batchCount,
-        assistantMessage: '已恢复真实生成任务，正在同步生成服务状态。',
-      },
-      pollJobId: latestJob.id,
-    }
-  }
-
-  if (latestJob.status === 'succeeded' && latestJob.outputs?.length) {
-    return {
-      state: {
-        ...idleState,
-        lastGenerationRequest: { ...request, jobId: latestJob.id },
-        assistantMessage: `已恢复 ${latestJob.outputs.length} 个生成结果；每个结果都保留在画布中。`,
-      },
-    }
-  }
-
-  if (latestJob.status === 'failed') {
-    const message = latestJob.error ?? '真实生成任务失败，请重试。'
-    return {
-      state: {
-        ...idleState,
-        lastGenerationRequest: { ...request, jobId: latestJob.id },
-        generationStatus: 'error',
-        generationError: message,
-        expectedCandidateCount: latestJob.batchCount,
-        assistantMessage: message,
-      },
-    }
-  }
-
-  if (latestJob.status === 'cancelled') {
-    return {
-      state: {
-        ...idleState,
-        assistantMessage: '上一次真实生成任务已取消；提示词、参考组和节点记录仍可继续使用。',
-      },
-    }
-  }
-
-  return { state: idleState }
-}
-
 function syncGenerationJob(
   set: (next: Partial<CanvasStore>) => void,
   get: () => CanvasStore,
@@ -2413,14 +1956,12 @@ async function executeBatchVariationRun(
     if (!run || run.status === 'cancelled') return
     const pendingItems = run.items.filter((item) => item.status === 'queued' || item.status === 'running')
     // 父任务只负责编排；每个素材对应一个可恢复子任务，最多同时运行 3 个。
-    await runWithConcurrency(pendingItems, batchVariationConcurrency, (item) => executeBatchVariationItem(set, get, projectId, runId, item.id))
+    await mapBatchVariationWithConcurrency(pendingItems, batchVariationConcurrency, (item) => executeBatchVariationItem(set, get, projectId, runId, item.id))
 
     if (get().document.id !== projectId) return
     const completed = get().document.batchVariationRuns.find((item) => item.id === runId)
     if (!completed) return
-    const succeeded = completed.items.filter((item) => item.status === 'succeeded').length
-    const failed = completed.items.filter((item) => item.status === 'failed' || item.status === 'cancelled').length
-    const status = succeeded === completed.items.length ? 'succeeded' : succeeded ? 'partial' : 'failed'
+    const { status, succeeded, failed } = summarizeBatchVariationRun(completed.items)
     updateBatchVariationRun(set, get, projectId, runId, (run) => ({ ...run, status, updatedAt: Date.now() }),
       failed ? `批量变体完成 ${succeeded}/${completed.items.length} 项；失败项可保留节点后单独重试。` : `批量变体已完成 ${succeeded} 项。`)
   } finally {
@@ -2430,20 +1971,6 @@ async function executeBatchVariationRun(
 }
 
 const batchVariationConcurrency = 3
-
-async function runWithConcurrency<T>(items: T[], concurrency: number, worker: (item: T, index: number) => Promise<void>) {
-  const limit = Math.max(1, Math.min(items.length, Math.floor(concurrency) || 1))
-  let cursor = 0
-  async function consume() {
-    while (true) {
-      const index = cursor
-      cursor += 1
-      if (index >= items.length) return
-      await worker(items[index], index)
-    }
-  }
-  await Promise.all(Array.from({ length: limit }, () => consume()))
-}
 
 function applyGenerationJobToDocument(document: CanvasDocument, job: GenerationJob, request: GenerationRequest) {
   if (!request.taskNodeIds) return document
@@ -2503,7 +2030,7 @@ async function executeBatchVariationItem(
     // 刷新后已有 jobId 的子任务直接恢复，不再创建重复分支。
     if (item.status === 'running' && jobId) {
       const recordedJob = get().document.generationJobs.find((job) => job.id === jobId)
-      request = recordedJob ? requestFromPersistedJob(get().document, recordedJob) ?? undefined : undefined
+      request = recordedJob ? requestFromPersistedGenerationJob(get().document, recordedJob) ?? undefined : undefined
     }
 
     if (!request) {
@@ -2721,7 +2248,7 @@ function applyRemoteDocumentRefresh(
   const selectedNode = [...document.nodes].reverse().find(
     (node) => node.selected || (node.type === 'result' && Boolean((node.data as ResultNodeData).selected)),
   )
-  const recoveredGeneration = persistedGenerationState(document, '已同步其他设备的更新。')
+  const recoveredGeneration = restoreGenerationLifecycleState(document, '已同步其他设备的更新。')
   set({
     document,
     persistenceStatus: 'saved',
@@ -2761,7 +2288,7 @@ async function recoverGenerationResults(
     const selected = [...reconciledDocument.nodes].reverse().find(
       (node) => node.selected || (node.type === 'result' && Boolean((node.data as ResultNodeData).selected)),
     )
-    const state = persistedGenerationState(reconciledDocument, '已从服务端补回生成结果。')
+    const state = restoreGenerationLifecycleState(reconciledDocument, '已从服务端补回生成结果。')
     set({
       document: reconciledDocument,
       persistenceStatus: 'saved',
@@ -2801,7 +2328,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     // 这让鉴权恢复后的项目首屏不再被全局素材库请求阻塞。
     const document = createEmptyCanvasDocument('workspace-placeholder', '未命名画布')
     const selectedNode = [...document.nodes].reverse().find((node) => node.selected || (node.type === 'result' && Boolean((node.data as ResultNodeData).selected)))
-    const recoveredGeneration = persistedGenerationState(document, document.nodes.length ? `已打开「${document.name}」。` : `「${document.name}」已创建，可以从素材或一句话开始。`)
+    const recoveredGeneration = restoreGenerationLifecycleState(document, document.nodes.length ? `已打开「${document.name}」。` : `「${document.name}」已创建，可以从素材或一句话开始。`)
     set({
       document,
       globalAssets: [],
@@ -2833,7 +2360,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     const settledSubmission = settleExpiredGenerationSubmissions(normalizedDocument)
     const document = settledSubmission.document
     const selectedNode = [...document.nodes].reverse().find((node) => node.selected || (node.type === 'result' && Boolean((node.data as ResultNodeData).selected)))
-    const recoveredGeneration = persistedGenerationState(
+    const recoveredGeneration = restoreGenerationLifecycleState(
       document,
       document.nodes.length ? `已打开「${document.name}」。` : `「${document.name}」已创建，可以从素材或一句话开始。`,
     )
@@ -2965,7 +2492,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     stopGenerationPolling()
     document = settleExpiredGenerationSubmissions(document).document
     const selectedNode = [...document.nodes].reverse().find((node) => node.selected || (node.type === 'result' && Boolean((node.data as ResultNodeData).selected)))
-    const recoveredGeneration = persistedGenerationState(
+    const recoveredGeneration = restoreGenerationLifecycleState(
       document,
       document.nodes.length ? `已打开「${document.name}」。` : `「${document.name}」已创建，可以从素材或一句话开始。`,
     )
@@ -4005,35 +3532,26 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     const availableIds = new Set(availableAssets(document, get().globalAssets).filter((asset) => (asset.mediaKind ?? 'image') === 'image').map((asset) => asset.id))
     const assetIds = group.assetIds.filter((assetId) => availableIds.has(assetId))
     if (!assetIds.length) return setGenerationError(set, '这个素材组暂无可用图片。')
-    const normalizedCandidates = Math.min(get().maximumBatchCount, clampBatchCount(candidatesPerAsset))
-    if (assetIds.length * normalizedCandidates > 20) {
-      return setGenerationError(set, `单次批量最多创建 20 张结果；当前为 ${assetIds.length} × ${normalizedCandidates}。`)
-    }
-    const timestamp = Date.now()
-    const run: BatchVariationRun = {
-      id: `batch-variation-${timestamp}`,
-      sourceResultNodeId,
-      groupId,
-      groupName: group.name,
-      variableRole: group.role,
-      prompt: cleanPrompt,
-      candidatesPerAsset: normalizedCandidates,
-      settings: cloneGenerationSettings(settings),
-      status: 'queued',
-      items: assetIds.map((assetId, index) => ({
-        id: `batch-item-${timestamp}-${index}`,
-        assetId,
-        assetName: findAvailableAsset(document, get().globalAssets, assetId)?.name ?? `素材 ${index + 1}`,
-        status: 'queued',
-        agentBranchId: agentBranches?.find((branch) => branch.assetId === assetId)?.branchId,
-      })),
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      agentRunId,
+    let run: BatchVariationRun
+    try {
+      run = createBatchVariationRun({
+        now: Date.now(),
+        sourceResultNodeId,
+        group: { ...group, assetIds },
+        prompt: cleanPrompt,
+        candidatesPerAsset,
+        maximumBatchCount: get().maximumBatchCount,
+        settings,
+        resolveAssetName: (assetId, index) => findAvailableAsset(document, get().globalAssets, assetId)?.name ?? `素材 ${index + 1}`,
+        agentRunId,
+        agentBranches,
+      })
+    } catch (error) {
+      return setGenerationError(set, error instanceof Error ? error.message : '批量变体计划无效。')
     }
     await commit(set, { ...document, batchVariationRuns: [run, ...document.batchVariationRuns] }, {
       generationError: null,
-      assistantMessage: `已创建批量变体：${assetIds.length} 个${group.role} × ${normalizedCandidates} 张候选。`,
+      assistantMessage: `已创建批量变体：${assetIds.length} 个${group.role} × ${run.candidatesPerAsset} 张候选。`,
     }, { immediate: true })
     if (get().document.id !== projectId) return false
     void executeBatchVariationRun(set, get, projectId, run.id)
@@ -4716,7 +4234,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     const document = get().document
     const job = document.generationJobs.find((item) => item.id === jobId)
     if (!job?.missingOutputCount) return setGenerationError(set, '本任务没有待补生成的候选。')
-    const request = requestFromPersistedJob(document, job)
+    const request = requestFromPersistedGenerationJob(document, job)
     if (!request?.recipe) return setGenerationError(set, '无法恢复本次生成配方，请基于任一候选继续生成。')
     if (request.kind === 'refinement' && request.targetNodeId) {
       return get().runRefinement({

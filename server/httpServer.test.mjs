@@ -111,3 +111,28 @@ test('生成任务集合资源对不支持的方法返回 405 和允许的方法
   assert.equal(JSON.parse(response.body).error.code, 'METHOD_NOT_ALLOWED')
   assert.equal(headers.Allow, 'POST')
 })
+
+for (const route of [
+  { name: '工作区成员', method: 'PUT', url: '/api/users', allow: 'GET, POST' },
+  { name: '品牌素材库', method: 'POST', url: '/api/global-assets', allow: 'GET, PUT' },
+  { name: 'Agent 规划', method: 'GET', url: '/api/agent-plans', allow: 'POST' },
+  { name: '提示词润色', method: 'GET', url: '/api/prompt-refinements', allow: 'POST' },
+  { name: '项目媒体上传', method: 'GET', url: '/api/projects/project-a/media', allow: 'POST' },
+  { name: '实时票据', method: 'GET', url: '/api/realtime/ticket', allow: 'POST' },
+]) {
+  test(`${route.name}资源对不支持的方法返回 405`, async () => {
+    const application = createBotanicHttpServer(testDependencies())
+    const { headers, response } = testResponse()
+
+    await application.handleRequest({
+      method: route.method,
+      url: route.url,
+      headers: { host: 'localhost' },
+      socket: { encrypted: false },
+    }, response)
+
+    assert.equal(response.statusCode, 405)
+    assert.equal(JSON.parse(response.body).error.code, 'METHOD_NOT_ALLOWED')
+    assert.equal(headers.Allow, route.allow)
+  })
+}
