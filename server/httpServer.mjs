@@ -26,6 +26,7 @@ import { ProjectAuthorizationError, requireProjectPermission } from './projectAu
 import { decodeArtifactCursor, encodeArtifactCursor } from './botanicArtifactIndex.mjs'
 import { productStoreSupports } from './productStoreContract.mjs'
 import { matchBotanicHttpRoutes } from './httpRouteTable.mjs'
+import { createSessionRouteHandler } from './sessionRoutes.mjs'
 
 export function createBotanicHttpServer({
   config,
@@ -293,6 +294,16 @@ function projectResponseHeaders(saved) {
   }
 }
 
+const handleSessionRoute = createSessionRouteHandler({
+  runtime,
+  productStore,
+  json,
+  error,
+  readJson,
+  text,
+  sessionCookie,
+})
+
 const handleRequest = async (request, response) => {
   const requestId = randomUUID()
   response.setHeader('X-Request-ID', requestId)
@@ -388,28 +399,7 @@ const handleRequest = async (request, response) => {
       })
     }
 
-    if (request.method === 'POST' && url.pathname === '/api/session') {
-      const bearerToken = accessTokenFromRequest(request)
-      if (runtime.authProvider === 'supabase' || (runtime.authProvider === 'hybrid' && bearerToken)) {
-        // Supabase 的访问令牌只存在于前端存储；图片标签无法携带 Bearer Header。
-        // 登录后同步一份同源 HttpOnly Cookie，供 /api/media 的 <img> 请求鉴权。
-        const accessToken = bearerToken
-        const user = await productStore.authenticate(accessToken)
-        if (!user) return error(response, 401, 'INVALID_ACCESS_TOKEN', '登录状态无效，请重新登录。')
-        return json(response, 200, { user }, { 'Set-Cookie': sessionCookie(accessToken, request, 60 * 60) })
-      }
-      const body = await readJson(request)
-      const accessToken = text(body?.accessToken, '访问令牌', 512)
-      const user = await productStore.authenticate(accessToken)
-      if (!user) return error(response, 401, 'INVALID_ACCESS_TOKEN', '访问令牌无效。')
-      return json(response, 200, { user }, { 'Set-Cookie': sessionCookie(accessToken, request, 60 * 60 * 12) })
-    }
-    if (request.method === 'GET' && url.pathname === '/api/session') {
-      return json(response, 200, { user: await productStore.authenticate(accessTokenFromRequest(request, { allowMediaCookie: runtime.authProvider !== 'supabase' })) ?? null })
-    }
-    if (request.method === 'DELETE' && url.pathname === '/api/session') {
-      return json(response, 204, undefined, { 'Set-Cookie': sessionCookie('', request, 0) })
-    }
+    if (await handleSessionRoute(request, response, url)) return
 
     if (request.method === 'GET' && url.pathname === '/api/users') {
       const user = await requireUser(request)

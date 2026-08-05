@@ -1,4 +1,4 @@
-import { type DragEvent, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { type DragEvent, useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from 'react'
 import {
   appendBotanicAgentMessage,
   botanicAgentBranchStatusLabel,
@@ -6,7 +6,6 @@ import {
   botanicAgentRunFeedback,
   botanicAgentSubmissionKey,
   buildBotanicAgentPlan,
-  buildBotanicAgentPromptDiff,
   createBotanicAgentContextSnapshot,
   createBotanicAgentRuntimeSteps,
   creativeDimensionLabel,
@@ -19,8 +18,6 @@ import {
   type BotanicAgentActionProposal,
   type BotanicAgentActionResult,
   type BotanicAgentArtifact,
-  type BotanicAgentClarification,
-  type BotanicAgentClarificationField,
   type BotanicAgentClarificationResponse,
   type BotanicAgentExecutionMode,
   type BotanicAgentIntent,
@@ -29,7 +26,6 @@ import {
   type BotanicAgentMentionQuery,
   type BotanicAgentMessage,
   type BotanicAgentPlan,
-  type BotanicAgentPromptDiffSegment,
   type BotanicAgentRun,
   type BotanicAgentRuntimePhase,
   type BotanicAgentRuntimeStep,
@@ -62,8 +58,20 @@ import {
   agentPlannerModelShortLabel,
   defaultAgentPlannerModels,
   modelDisplayLabel,
-  modelProviderLogo,
 } from '../../components/generationModelPresentation'
+import {
+  AgentClarificationCard,
+  AgentFailureRecoveryActions,
+  AgentPromptDiff,
+  agentArtifactKindLabel,
+  agentMemoryKindLabel,
+  agentRunOutputCount,
+  agentRuntimeStepMarker,
+  agentRuntimeStepStatusLabel,
+  agentToolStatusLabel,
+  createInitialAgentClarification,
+} from './AgentWorkspaceParts'
+import { agentComposerStateReducer, initialAgentComposerState } from './agentComposerState'
 import {
   ArrowUpIcon,
   ArrowUpRightIcon,
@@ -81,7 +89,6 @@ import {
   GalleryIcon,
   PlusIcon,
   PlusSquareIcon,
-  RefreshIcon,
   SparkleIcon,
   ThumbDownIcon,
   ThumbUpIcon,
@@ -97,6 +104,7 @@ export type AgentDockTarget = {
 }
 
 type AgentTransientSurface = 'context' | 'history' | 'utility' | 'mode'
+type AgentUtilityPanel = 'result' | 'task' | 'memory' | 'skill'
 
 function agentTargetDisplayLabel(target?: AgentDockTarget) {
   if (!target) return ''
@@ -142,204 +150,6 @@ function agentGroupRole(intent: BotanicAgentIntent): AssetGroup['role'] | null {
   return null
 }
 
-function agentToolStatusLabel(status: NonNullable<BotanicAgentPlan['toolCalls']>[number]['status']) {
-  if (status === 'succeeded') return '已完成'
-  if (status === 'failed') return '失败'
-  if (status === 'awaiting_confirmation') return '待确认'
-  if (status === 'running') return '执行中'
-  return '待执行'
-}
-
-function agentRuntimeStepStatusLabel(status: BotanicAgentRuntimeStep['status']) {
-  if (status === 'succeeded') return '已完成'
-  if (status === 'failed') return '失败'
-  if (status === 'running') return '执行中'
-  return '待执行'
-}
-
-function agentRuntimeStepMarker(step: BotanicAgentRuntimeStep) {
-  if (step.status === 'succeeded') return '✓'
-  if (step.status === 'failed') return '!'
-  if (step.status === 'running') return '·'
-  if (step.kind === 'search') return '⌕'
-  if (step.kind === 'write') return '↗'
-  return '○'
-}
-
-function agentMemoryKindLabel(kind: BotanicAgentMemoryKind) {
-  if (kind === 'approved') return '已确认方向'
-  if (kind === 'avoid') return '避免事项'
-  return '长期规则'
-}
-
-function agentArtifactKindLabel(artifact: BotanicAgentArtifact) {
-  if (artifact.kind === 'image') return '图片'
-  if (artifact.kind === 'video') return '视频'
-  if (artifact.kind === 'workflow') return '工作流'
-  if (artifact.kind === 'asset_group') return '素材组'
-  if (artifact.kind === 'file') return '文件'
-  return '文本'
-}
-
-function agentRunOutputCount(run: BotanicAgentRun, artifacts: BotanicAgentArtifact[]) {
-  const persistedCount = artifacts.filter((artifact) => artifact.provenance.runId === run.id).length
-  const branchCount = run.branches.reduce((total, branch) => total + branch.outputCount, 0)
-  return Math.max(persistedCount, branchCount)
-}
-
-function AgentClarificationCard({
-  clarification,
-  generationModels,
-  state,
-  onSubmit,
-}: {
-  clarification: BotanicAgentClarification
-  generationModels: GenerationModelOption[]
-  state: 'idle' | 'submitting' | 'completed'
-  onSubmit: (answers: Record<string, string>) => void
-}) {
-  const [answers, setAnswers] = useState<Record<string, string>>(() => Object.fromEntries(
-    clarification.fields.flatMap((field) => field.defaultValue ? [[field.id, field.defaultValue]] : []),
-  ))
-  const selectedModel = generationModels.find((model) => model.id === answers.model)
-  const fields = clarification.fields.map((field) => {
-    const values = field.id === 'aspect_ratio' && selectedModel?.aspectRatios?.length
-      ? selectedModel.aspectRatios
-      : field.id === 'resolution' && selectedModel?.resolutions?.length
-        ? selectedModel.resolutions
-        : undefined
-    const options = values
-      ? values.map((value) => ({ value, label: value, description: value === field.defaultValue ? '推荐' : undefined }))
-      : field.options
-    return { ...field, options }
-  })
-  const complete = fields.every((field) => !field.required || Boolean(answers[field.id]) && field.options.some((option) => option.value === answers[field.id]))
-  const selectionSummary = fields
-    .map((field) => field.options.find((option) => option.value === answers[field.id])?.label)
-    .filter(Boolean)
-    .join(' · ')
-  const selectOption = (fieldId: BotanicAgentClarificationField['id'], value: string) => {
-    setAnswers((current: Record<string, string>) => {
-      const next: Record<string, string> = { ...current, [fieldId]: value }
-      if (fieldId !== 'model') return next
-      const model = generationModels.find((item) => item.id === value)
-      for (const dependent of fields.filter((field) => field.id === 'aspect_ratio' || field.id === 'resolution')) {
-        const supported = dependent.id === 'aspect_ratio' ? model?.aspectRatios : model?.resolutions
-        if (supported?.length && !supported.some((item) => item === next[dependent.id])) next[dependent.id] = supported[0]
-      }
-      return next
-    })
-  }
-  if (state === 'completed') {
-    return (
-      <section className="agent-clarification-card is-complete" aria-label="已确认的输出设置" aria-live="polite">
-        <span className="agent-clarification-card__complete-mark" aria-hidden="true">✓</span>
-        <span className="agent-clarification-card__complete-copy">
-          <strong>输出设置已确认</strong>
-          {selectionSummary ? <small>{selectionSummary}</small> : null}
-        </span>
-      </section>
-    )
-  }
-  const disabled = state === 'submitting'
-  return (
-    <section className="agent-clarification-card" aria-label="生成前参数确认">
-      <div className="agent-clarification-card__intro">
-        <header><strong>确认输出设置</strong><small>确认后继续规划，不会立即生成</small></header>
-        <p>{clarification.question}</p>
-      </div>
-      <div className="agent-clarification-card__fields">
-        {fields.map((field) => <fieldset key={field.id} data-field={field.id}>
-          <legend>{field.label}</legend>
-          <div role="group" aria-label={field.label}>
-            {field.options.map((option) => <button
-              key={option.value}
-              type="button"
-              aria-pressed={answers[field.id] === option.value}
-              className={answers[field.id] === option.value ? 'is-selected' : ''}
-              disabled={disabled}
-              onClick={() => selectOption(field.id, option.value)}
-            ><span>{option.label}</span>{option.description ? <small>{option.description}</small> : null}</button>)}
-          </div>
-        </fieldset>)}
-      </div>
-      <footer className="agent-clarification-card__footer">
-        {clarification.helper ? <small className="agent-clarification-card__helper">{clarification.helper}</small> : <span />}
-        <button type="button" className="agent-clarification-card__submit" disabled={disabled || !complete} onClick={() => onSubmit(answers)}>{disabled ? '正在规划…' : '继续规划'}</button>
-      </footer>
-    </section>
-  )
-}
-
-function AgentPromptDiff({ original, revised }: { original: string; revised: string }) {
-  const segments = buildBotanicAgentPromptDiff(original, revised)
-  const changed = segments.some((segment) => segment.kind !== 'same')
-  const renderSegment = (segment: BotanicAgentPromptDiffSegment, index: number) => {
-    if (segment.kind === 'added') return <ins key={`${segment.kind}-${index}`}>{segment.text}</ins>
-    if (segment.kind === 'removed') return <del key={`${segment.kind}-${index}`}>{segment.text}</del>
-    return <span key={`${segment.kind}-${index}`}>{segment.text}</span>
-  }
-  return (
-    <section className="agent-prompt-review__diff" aria-label="提示词变化">
-      <header><span>原文与润色差异</span><b>{changed ? '已突出变化' : '未改动'}</b></header>
-      <p>{segments.length ? segments.map(renderSegment) : '暂无提示词内容'}</p>
-    </section>
-  )
-}
-
-function AgentFailureRecoveryActions({
-  branch,
-  generationModels,
-  retrying,
-  menuOpen,
-  onToggleModelMenu,
-  onRetry,
-  onPrepare,
-}: {
-  branch: BotanicAgentRun['branches'][number]
-  generationModels: GenerationModelOption[]
-  retrying: boolean
-  menuOpen: boolean
-  onToggleModelMenu: () => void
-  onRetry: () => void
-  onPrepare: (mode: 'settings' | 'model', model?: GenerationModelOption) => void
-}) {
-  return (
-    <div className="agent-recovery-actions" aria-label={`${branch.label} 恢复操作`}>
-      <button type="button" className="is-retry" disabled={retrying} onClick={onRetry} title="复用同一任务，不会创建重复任务">
-        {retrying ? <span className="agent-workspace__mini-spinner" /> : <RefreshIcon />}<span>重试当前分支</span>
-      </button>
-      <button type="button" onClick={() => onPrepare('settings')} title="只预填修改要求，不会立即提交">修改参数</button>
-      <span className="agent-recovery-model-picker">
-        <button type="button" aria-expanded={menuOpen} onClick={onToggleModelMenu} title="只预填模型，不会立即提交">更换模型</button>
-        {menuOpen ? <div className="agent-recovery-model-menu" role="group" aria-label="选择恢复模型" onPointerDown={(event) => event.stopPropagation()}>
-          {generationModels.map((model) => <button key={model.id} type="button" onClick={() => onPrepare('model', model)}>
-            <span>{modelProviderLogo(model) ? <img src={modelProviderLogo(model)} alt="" /> : null}<b>{modelDisplayLabel(model)}</b></span>
-          </button>)}
-          {!generationModels.length ? <small>暂无可用模型</small> : null}
-        </div> : null}
-      </span>
-    </div>
-  )
-}
-
-function createInitialAgentClarification(instruction: string, models: GenerationModelOption[]): BotanicAgentClarification {
-  const available = models.length ? models : [{ id: 'gpt-image-2', label: 'GPT Image 2' }]
-  const current = available[0]
-  const ratios = current.aspectRatios?.length ? current.aspectRatios : ['1:1', '3:4', '4:3', '16:9', '9:16']
-  const resolutions = current.resolutions?.length ? current.resolutions : ['1K', '2K']
-  return {
-    id: `clarification-local-${crypto.randomUUID()}`,
-    question: '为了让第一张图更接近你的目标，先确认一下输出设置。',
-    helper: '不确定时可以保留推荐值，之后仍可在生成节点里修改。',
-    originalInstruction: instruction,
-    fields: [
-      { id: 'model', label: '生成模型', required: true, defaultValue: current.id, options: available.map((model) => ({ value: model.id, label: model.label, description: model.mediaKind === 'video' ? '视频生成' : '图片生成' })) },
-      { id: 'aspect_ratio', label: '画面比例', required: true, defaultValue: ratios[0], options: ratios.map((value) => ({ value, label: value })) },
-      { id: 'resolution', label: '分辨率', required: true, defaultValue: resolutions[0], options: resolutions.map((value) => ({ value, label: value })) },
-    ],
-  }
-}
 
 export default function AgentWorkspace({
   projectId,
@@ -425,12 +235,19 @@ export default function AgentWorkspace({
   onClose: () => void
 }) {
   const [intent, setIntent] = useState<BotanicAgentIntent>('replace_scene')
-  const [instruction, setInstruction] = useState('')
   const [groupId, setGroupId] = useState('')
-  const [plannerModel, setPlannerModel] = useState(plannerModels[0] ?? defaultAgentPlannerModels[0])
-  const [error, setError] = useState('')
-  const [lastFailedInstruction, setLastFailedInstruction] = useState('')
-  const [lastFailedPlanMessageId, setLastFailedPlanMessageId] = useState('')
+  const [plannerModelPreference, setPlannerModel] = useState(plannerModels[0] ?? defaultAgentPlannerModels[0])
+  const plannerModel = plannerModels.includes(plannerModelPreference)
+    ? plannerModelPreference
+    : plannerModels[0] ?? defaultAgentPlannerModels[0]
+  const [composerState, updateComposerState] = useReducer(agentComposerStateReducer, initialAgentComposerState)
+  const { instruction, error, lastFailedInstruction, lastFailedPlanMessageId, mentionQuery, pendingGenerationOverrides } = composerState
+  const setInstruction = useCallback((value: string) => updateComposerState({ instruction: value }), [])
+  const setError = useCallback((value: string) => updateComposerState({ error: value }), [])
+  const setLastFailedInstruction = useCallback((value: string) => updateComposerState({ lastFailedInstruction: value }), [])
+  const setLastFailedPlanMessageId = useCallback((value: string) => updateComposerState({ lastFailedPlanMessageId: value }), [])
+  const setMentionQuery = useCallback((value?: BotanicAgentMentionQuery) => updateComposerState({ mentionQuery: value }), [])
+  const setPendingGenerationOverrides = useCallback((value: Partial<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution'>>) => updateComposerState({ pendingGenerationOverrides: value }), [])
   const [planning, setPlanning] = useState(false)
   const [runtimeSteps, setRuntimeSteps] = useState<BotanicAgentRuntimeStep[]>([])
   const [runtimePhase, setRuntimePhase] = useState<BotanicAgentRuntimePhase>('idle')
@@ -452,15 +269,15 @@ export default function AgentWorkspace({
   const setUtilityMenuOpen = useCallback((action: ExclusiveSurfaceAction) => setTransientSurfaceOpen('utility', action), [setTransientSurfaceOpen])
   const setModeMenuOpen = useCallback((action: ExclusiveSurfaceAction) => setTransientSurfaceOpen('mode', action), [setTransientSurfaceOpen])
   const [isImageDropActive, setIsImageDropActive] = useState(false)
-  const [skillPanelOpen, setSkillPanelOpen] = useState(false)
-  const [taskPanelOpen, setTaskPanelOpen] = useState(false)
-  const [resultPanelOpen, setResultPanelOpen] = useState(false)
+  const [activeUtilityPanel, setActiveUtilityPanel] = useState<AgentUtilityPanel | null>(null)
+  const skillPanelOpen = activeUtilityPanel === 'skill'
+  const taskPanelOpen = activeUtilityPanel === 'task'
+  const resultPanelOpen = activeUtilityPanel === 'result'
   const [resultFilter, setResultFilter] = useState<'all' | 'image' | 'video' | 'file'>('all')
   const [selectedArtifactIds, setSelectedArtifactIds] = useState<string[]>([])
-  const [memoryPanelOpen, setMemoryPanelOpen] = useState(false)
+  const memoryPanelOpen = activeUtilityPanel === 'memory'
   const [memoryKind, setMemoryKind] = useState<BotanicAgentMemoryKind>('rule')
   const [memoryDraft, setMemoryDraft] = useState('')
-  const [mentionQuery, setMentionQuery] = useState<BotanicAgentMentionQuery>()
   const [skills, setSkills] = useState<BotanicAgentSkill[]>([])
   const [skillName, setSkillName] = useState('')
   const [skillInstructions, setSkillInstructions] = useState('')
@@ -470,7 +287,6 @@ export default function AgentWorkspace({
   const [persistenceAction, setPersistenceAction] = useState<'retry' | 'refresh' | ''>('')
   const [promptDrafts, setPromptDrafts] = useState<Record<string, string>>({})
   const [recoveryModelMenuKey, setRecoveryModelMenuKey] = useState('')
-  const [pendingGenerationOverrides, setPendingGenerationOverrides] = useState<Partial<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution'>>>({})
   const agentMessageQueue = useMemo(() => createAgentMessageQueue({
     storage: createLocalStorageAgentMessageQueueStorage(projectId),
     deliver: async (item) => { await submitPersistentBotanicAgentMessage(item) },
@@ -671,10 +487,7 @@ export default function AgentWorkspace({
       } else if (runtimeDetailsOpen) {
         setRuntimeDetailsOpen(false)
       } else if (utilityPanelOpen) {
-        setTaskPanelOpen(false)
-        setSkillPanelOpen(false)
-        setResultPanelOpen(false)
-        setMemoryPanelOpen(false)
+        setActiveUtilityPanel(null)
         requestAnimationFrame(() => utilityButtonRef.current?.focus())
       } else {
         onClose()
@@ -704,7 +517,7 @@ export default function AgentWorkspace({
       plannerLabel: agentPlannerModelLabel(plannerModel),
     }))
     setRuntimeDetailsOpen(false)
-  }, [compatibleGroups.length, contextItems.length, latestRun?.id, latestRun?.status, latestRun?.updatedAt, memory.length, plannerModel, planning, runtimePhase, runtimeSteps.length, session, target])
+  }, [compatibleGroups.length, contextItems.length, latestRun, memory.length, plannerModel, planning, runtimePhase, runtimeSteps.length, session, target])
 
   useEffect(() => {
     setSelectedArtifactIds((current) => current.filter((id) => artifacts.some((artifact) => artifact.id === id)))
@@ -735,10 +548,6 @@ export default function AgentWorkspace({
   useEffect(() => {
     if (!compatibleGroups.some((group) => group.id === groupId)) setGroupId('')
   }, [compatibleGroups, groupId])
-
-  useEffect(() => {
-    if (!plannerModels.includes(plannerModel)) setPlannerModel(plannerModels[0] ?? defaultAgentPlannerModels[0])
-  }, [plannerModel, plannerModels])
 
   const flushQueuedAgentMessages = useCallback(async () => {
     const queued = new Map(agentMessageQueue.list().map((item) => [item.message.id, item.session.id]))
@@ -800,21 +609,15 @@ export default function AgentWorkspace({
     return messageId
   }
 
-  const toggleUtilityPanel = (panel: 'result' | 'task' | 'memory' | 'skill') => {
+  const toggleUtilityPanel = (panel: AgentUtilityPanel) => {
     utilityButtonRef.current = utilityMenuButtonRef.current
-    setResultPanelOpen((open) => panel === 'result' ? !open : false)
-    setTaskPanelOpen((open) => panel === 'task' ? !open : false)
-    setMemoryPanelOpen((open) => panel === 'memory' ? !open : false)
-    setSkillPanelOpen((open) => panel === 'skill' ? !open : false)
+    setActiveUtilityPanel((current) => current === panel ? null : panel)
     setActiveTransientSurface(null)
     setMentionQuery(undefined)
   }
 
-  const openUtilityPanel = (panel: 'result' | 'task' | 'memory' | 'skill') => {
-    setResultPanelOpen(panel === 'result')
-    setTaskPanelOpen(panel === 'task')
-    setMemoryPanelOpen(panel === 'memory')
-    setSkillPanelOpen(panel === 'skill')
+  const openUtilityPanel = (panel: AgentUtilityPanel) => {
+    setActiveUtilityPanel(panel)
     setActiveTransientSurface(null)
     setMentionQuery(undefined)
   }
@@ -1143,10 +946,7 @@ export default function AgentWorkspace({
       setPendingGenerationOverrides({})
       setInstruction(`调整输出设置后重新生成：${run.plan.prompt}`)
     }
-    setTaskPanelOpen(false)
-    setResultPanelOpen(false)
-    setSkillPanelOpen(false)
-    setMemoryPanelOpen(false)
+    setActiveUtilityPanel(null)
     setError('')
     setLastFailedPlanMessageId('')
     requestAnimationFrame(() => composerTextareaRef.current?.focus())
@@ -1400,14 +1200,14 @@ export default function AgentWorkspace({
     setInstruction(selectedArtifactBatch.artifacts.length === 1
       ? '基于这张结果继续生成：'
       : `基于这 ${selectedArtifactBatch.artifacts.length} 张结果继续生成：`)
-    setResultPanelOpen(false)
+    setActiveUtilityPanel(null)
     requestAnimationFrame(() => composerTextareaRef.current?.focus())
   }
 
   const continueFromArtifact = (artifact: BotanicAgentArtifact) => {
     onContinueArtifact(artifact)
     setInstruction(`基于「${artifact.label}」继续修改：`)
-    setResultPanelOpen(false)
+    setActiveUtilityPanel(null)
     requestAnimationFrame(() => composerTextareaRef.current?.focus())
   }
 
@@ -1603,14 +1403,11 @@ export default function AgentWorkspace({
                 <button type="button" onClick={() => {
                   onUseResultContext(continueNodeIds)
                   setInstruction(outputNodeIds.length === 1 ? '继续优化这张结果：' : outputNodeIds.length > 1 ? `继续优化这 ${outputNodeIds.length} 张结果：` : '继续基于当前上下文创作：')
-                  setResultPanelOpen(false)
+                  setActiveUtilityPanel(null)
                   requestAnimationFrame(() => composerTextareaRef.current?.focus())
                 }}>继续修改</button>
                 {outputNodeIds.length ? <button type="button" onClick={() => {
-                  setResultPanelOpen(true)
-                  setTaskPanelOpen(false)
-                  setSkillPanelOpen(false)
-                  setMemoryPanelOpen(false)
+                  setActiveUtilityPanel('result')
                 }}>查看结果</button> : null}
                 {outputNodeIds.length ? <button type="button" onClick={() => onFocusNodes(outputNodeIds)}>定位画布</button> : null}
               </div> : null

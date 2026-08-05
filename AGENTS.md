@@ -21,12 +21,13 @@
 
 ## 修改路线
 
-- 画布节点、连线、布局：从 `src/domain/canvas*.ts` 开始。
+- 画布工作区交互：从 `src/features/canvas/CanvasWorkspace.tsx` 开始；节点、连线、布局规则从 `src/domain/canvas*.ts` 开始。
 - 生成、恢复、批量任务：从 `src/domain/generation*.ts`、`src/store/canvasStore.ts` 和 `server/generation*.mjs` 开始。
 - Agent 面板交互：从 `src/features/agent/AgentWorkspace.tsx` 开始；对话、计划、执行、Artifact 语义从 `src/domain/agent*.ts` 和 `server/botanicAgent*.mjs` 开始。
 - Store 命令或状态形状：先核对 `src/store/canvasStore.types.ts`，再修改 `src/store/canvasStore.ts`。
 - 浏览器会话、远端项目、协作：从 `src/lib/` 开始。
 - HTTP、鉴权、队列和存储 Adapter：从 `server/` 开始。
+- 会话 HTTP 语义从 `server/sessionRoutes.mjs` 开始；动态路径目录仍在 `server/httpRouteTable.mjs`。
 - 更完整的文件和测试对应关系见 [CODEMAP](docs/CODEMAP.md)。
 
 ## 最小验证

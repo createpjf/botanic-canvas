@@ -8,7 +8,8 @@
 | --- | --- | --- | --- |
 | 画布节点与连线 | `src/domain/canvas.ts` | `canvasGraph.ts`、`canvasBranch.ts`、`canvasNodeLayout.ts` | `src/domain/canvas*.test.ts`；输入连线是生成配方唯一来源 |
 | 输出节点与血缘 | `src/domain/generationResultPlacement.ts` | `generationResultReconciliation.ts`、`canvasPresentation.ts` | 每个输出独立成节点；候选 ID 稳定 |
-| 画布交互与面板 | `src/App.tsx` | `src/components/`、`exclusiveSurface.ts`、`overlayPriority.ts` | `exclusiveSurface.test.ts`、`overlayPriority.test.ts`；高层浮层优先处理 Escape |
+| 应用登录与入口 | `src/App.tsx` | `src/lib/productSession.ts`、功能模块按需加载 | 应用壳不拥有画布或领域规则 |
+| 画布交互与面板 | `src/features/canvas/CanvasWorkspace.tsx` | `src/components/`、`exclusiveSurface.ts`、`overlayPriority.ts` | `exclusiveSurface.test.ts`、`overlayPriority.test.ts`；高层浮层优先处理 Escape |
 | Agent 面板交互 | `src/features/agent/AgentWorkspace.tsx` | `src/domain/agent*.ts`、`src/lib/agent*.ts` | Agent 领域/Lib 测试；面板按需加载，短暂交互面互斥 |
 | 画布应用状态 | `src/store/canvasStore.types.ts` | `src/store/canvasStore.ts`、`src/lib/db.ts`、领域命令 | 先核对 Store 端口；远端新结果不得被旧草稿覆盖 |
 | 普通生成任务 | `src/lib/generationApi.ts` | `server/generationService.mjs`、`generationProcessor.mjs`、`generationProvider.mjs` | `server/generation*.test.mjs`；同一次重试复用幂等键 |
@@ -20,7 +21,7 @@
 | 素材与媒体 | `src/domain/asset*.ts`、`agentMedia.ts` | `src/lib/db.ts`、`server/mediaService.mjs`、`objectStore.mjs` | 素材/媒体测试；组件不接触对象存储凭据 |
 | 项目同步 | `src/lib/db.ts` | `projectRealtime.ts`、`projectCollaboration.ts`、Store | Realtime/冲突测试；`revision` 与 `graphRevision` 分工明确 |
 | 账户与权限 | `src/lib/productSession.ts` | `server/authorization.mjs`、`projectAuthorization.mjs` | 授权和账户测试；越权 403、真实缺失 404 |
-| HTTP 路由 | `server/httpRouteTable.mjs` | `server/httpServer.mjs`、`server/index.mjs` | 路由目录/HTTP Server 测试；组合根不包含业务处理 |
+| HTTP 路由 | `server/httpRouteTable.mjs` | `server/sessionRoutes.mjs`、`server/httpServer.mjs`、`server/index.mjs` | 资源路由逐步拥有独立处理模块；组合根不包含业务处理 |
 | ProductStore | `server/runtime.mjs` | `productStore.mjs`、`postgresProductStore.mjs`、`supabaseProductStore.mjs` | Adapter 契约及各 Store 测试 |
 | 投放交付 | `src/domain/deliveryPresentation.ts` | `src/lib/deliveryExport.ts` | delivery 测试；视频不进入图片投放模板 |
 
@@ -35,7 +36,8 @@ App / Feature UI → Store → Domain + Browser Lib → Node HTTP → Queue / Pr
 - `src/store/`：组合领域规则和浏览器 Adapter，不依赖 UI。
 - `src/components/`：纯展示和用户事件，只依赖领域类型与共享 UI。
 - `src/features/`：按产品能力组合 Store、Lib 和组件；对外暴露一个明确功能入口。
-- `src/App.tsx`：组合根，负责把 Store/Lib 能力注入功能 UI，不拥有领域规则。
+- `src/App.tsx`：应用壳，只负责登录恢复和功能模块加载，不拥有画布或领域规则。
+- `src/domain/latestOperation.ts`：跨 Store/功能 UI 复用的最后请求令牌，项目切换时显式失效旧结果。
 - `server/runtime.mjs`：服务端组合根，选择 ProductStore、队列、媒体和 Provider Adapter。
 
 完整规则见 [ARCHITECTURE.md](ARCHITECTURE.md)，自动检查见 `scripts/architectureBoundaries.mjs`。

@@ -18,7 +18,8 @@ UI（App / features / components）
 
 | 模块 | 主要位置 | 对外接口 | 允许依赖 |
 | --- | --- | --- | --- |
-| 应用与功能 UI | `src/App.tsx`、`src/features/` | 页面组合、功能级交互与异步协调 | Store、领域契约和 `lib` 高层接口 |
+| 应用壳 | `src/App.tsx` | 登录恢复与功能入口按需加载 | 会话 `lib` 与功能模块 |
+| 功能 UI | `src/features/` | 功能级交互与异步协调 | Store、领域契约和 `lib` 高层接口 |
 | 共享 UI | `src/components/` | 渲染属性与用户事件 | 领域类型与共享 UI，不直接依赖 Store 或网络 |
 | 画布应用模块 | `src/store/` | `canvasStore.types.ts` 契约、画布命令、状态与任务生命周期 | `domain`、`lib`、种子数据 |
 | 领域契约 | `src/domain/` | 画布数据、生成结果放置等纯规则 | 类型依赖与纯计算，不依赖 UI、Store、网络或存储 |
@@ -33,7 +34,7 @@ UI（App / features / components）
 所有供应商输出都先转成 `{ mediaKind, mimeType, buffer }`，再由媒体服务持久化；
 H3 的 MP4 与历史图片共用授权 URL，但历史缺少 `mediaKind` 时始终按图片兼容读取。
 
-`src/components/` 是纯 UI 模块，不得直接导入 `src/lib/`、`src/store/` 或 `server/`。`src/features/` 拥有功能内的交互协调，可以使用 Store 与高层浏览器接口；`src/App.tsx` 仅保留跨功能组合和应用生命周期。
+`src/components/` 是纯 UI 模块，不得直接导入 `src/lib/`、`src/store/` 或 `server/`。`src/features/` 拥有功能内的交互协调，可以使用 Store 与高层浏览器接口；`src/App.tsx` 仅保留登录恢复、跨功能组合和按需加载。只允许最后一次异步结果落地的流程统一使用 `src/domain/latestOperation.ts` 的令牌接口。
 
 ## 受保护的稳定接口
 

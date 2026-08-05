@@ -11,7 +11,7 @@ import { findUnknownSubmissionAnchor } from '../domain/generationRecovery'
 import { generationTaskResultLabel } from '../domain/canvasPresentation'
 import { generationSubmissionFailureDisposition } from '../domain/generationSubmission'
 import { isRemoteDocumentConflict, resolveRemoteCanvasRefresh } from '../domain/remoteDocumentSync'
-import { projectOperationDisposition } from '../domain/projectOperation'
+import { createLatestOperation } from '../domain/latestOperation'
 import { assignVideoInputRoles } from '../domain/videoGeneration'
 import { summarizeWorkflowTemplate } from '../domain/workflowTemplates'
 import { replaceMediaSources as replaceDocumentMediaSources } from '../domain/agentMedia'
@@ -69,8 +69,8 @@ function createGenerationSubmissionKey() {
   return `gen_${(uuid ?? `${Date.now()}_${Math.random().toString(36).slice(2)}`).replaceAll('-', '')}`
 }
 let undoTimerId: number | null = null
-let persistenceRunId = 0
-let openDocumentRunId = 0
+const persistenceOperations = createLatestOperation()
+const openDocumentOperations = createLatestOperation()
 let taskFlowSequence = 0
 const activeBatchVariationRuns = new Set<string>()
 /** 当前会话中正在删除或已删除的全局品牌素材，阻止异步任务用旧快照回写引用。 */
@@ -1365,26 +1365,16 @@ function commit(
     document,
   )
   const nextDocument = { ...sanitizedDocument, updatedAt: Date.now() }
-  const runId = ++persistenceRunId
+  const operationToken = persistenceOperations.begin()
   set({ document: nextDocument, persistenceStatus: 'saving', ...scrubRevokedStoreExtra(extra) })
   const persistence = writeCanvasDocument(nextDocument, { immediate: options.immediate })
     .then((savedDocument) => {
-      if (projectOperationDisposition({
-        originProjectId: nextDocument.id,
-        activeProjectId: useCanvasStore.getState().document.id,
-        requestId: runId,
-        latestRequestId: persistenceRunId,
-      }) === 'apply') {
+      if (nextDocument.id === useCanvasStore.getState().document.id && persistenceOperations.isCurrent(operationToken)) {
         set({ document: savedDocument ?? nextDocument, persistenceStatus: 'saved' })
       }
     })
     .catch(async (error) => {
-      if (projectOperationDisposition({
-        originProjectId: nextDocument.id,
-        activeProjectId: useCanvasStore.getState().document.id,
-        requestId: runId,
-        latestRequestId: persistenceRunId,
-      }) !== 'apply') {
+      if (nextDocument.id !== useCanvasStore.getState().document.id || !persistenceOperations.isCurrent(operationToken)) {
         // 这是正常的写入合并：较新的本地快照已经接管当前项目，旧写入
         // 即使失败也不能冒泡成“请重新提交 Agent”的未捕获 Promise 错误。
         return
@@ -2824,10 +2814,10 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
   },
 
   openDocument: async (documentId) => {
-    const openRunId = ++openDocumentRunId
+    const operationToken = openDocumentOperations.begin()
     // 项目切换前先收敛当前项目的延迟写入；失败时草稿仍保留在本地，不能阻塞切换。
     await flushPendingCanvasDocumentWrites().catch(() => undefined)
-    if (openRunId !== openDocumentRunId) return false
+    if (!openDocumentOperations.isCurrent(operationToken)) return false
     // 画布本身是打开项目的关键路径；共享素材库仅服务素材面板，不能让它的
     // 网络故障阻塞整个画布恢复。
     const stored = await readCanvasDocument(documentId, {
@@ -2835,9 +2825,10 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
         applyRemoteDocumentRefresh(set, get, remoteDocument, cachedDocument.updatedAt)
       ),
     })
-    if (!stored || openRunId !== openDocumentRunId) return false
+    if (!stored || !openDocumentOperations.isCurrent(operationToken)) return false
 
     stopGenerationPolling()
+    persistenceOperations.invalidate()
     const normalizedDocument = normalizeDocument(stored)
     const settledSubmission = settleExpiredGenerationSubmissions(normalizedDocument)
     const document = settledSubmission.document
@@ -2859,9 +2850,9 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     if (settledSubmission.changed || document.schemaVersion !== stored.schemaVersion || hasCrampedStarterV03Layout(stored.nodes)) {
       try {
         await writeCanvasDocument(document)
-        if (openRunId === openDocumentRunId && get().document.id === documentId) set({ persistenceStatus: 'saved' })
+        if (openDocumentOperations.isCurrent(operationToken) && get().document.id === documentId) set({ persistenceStatus: 'saved' })
       } catch {
-        if (openRunId === openDocumentRunId && get().document.id === documentId) {
+        if (openDocumentOperations.isCurrent(operationToken) && get().document.id === documentId) {
           set({ persistenceStatus: 'error', assistantMessage: '项目迁移保存失败：请先不要刷新。' })
         }
       }
@@ -2969,7 +2960,8 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
   },
 
   openNewDocument: (document) => {
-    openDocumentRunId += 1
+    openDocumentOperations.invalidate()
+    persistenceOperations.invalidate()
     stopGenerationPolling()
     document = settleExpiredGenerationSubmissions(document).document
     const selectedNode = [...document.nodes].reverse().find((node) => node.selected || (node.type === 'result' && Boolean((node.data as ResultNodeData).selected)))
