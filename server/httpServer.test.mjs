@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { Readable } from 'node:stream'
 import test from 'node:test'
 import { createBotanicHttpServer } from './httpServer.mjs'
 
@@ -42,11 +43,30 @@ function testResponse() {
     response: {
       statusCode: 0,
       body: '',
+      headersSent: false,
       setHeader(name, value) { headers[name] = value },
-      writeHead(statusCode, nextHeaders) { this.statusCode = statusCode; Object.assign(headers, nextHeaders) },
+      writeHead(statusCode, nextHeaders) {
+        if (this.headersSent) {
+          const error = new Error('Cannot write headers after they are sent to the client')
+          error.code = 'ERR_HTTP_HEADERS_SENT'
+          throw error
+        }
+        this.headersSent = true
+        this.statusCode = statusCode
+        Object.assign(headers, nextHeaders)
+      },
       end(body = '') { this.body = String(body) },
     },
   }
+}
+
+function testRequest({ method, url, body }) {
+  return Object.assign(Readable.from(body === undefined ? [] : [Buffer.from(JSON.stringify(body))]), {
+    method,
+    url,
+    headers: { host: 'localhost', authorization: 'Bearer test-token' },
+    socket: { encrypted: false, remoteAddress: '127.0.0.1' },
+  })
 }
 
 test('可注入 HTTP Server 无需启动生产运行时即可响应健康检查', async () => {
@@ -94,6 +114,24 @@ test('项目集合资源对不支持的方法返回 405 和允许的方法目录
   assert.equal(response.statusCode, 405)
   assert.equal(JSON.parse(response.body).error.code, 'METHOD_NOT_ALLOWED')
   assert.equal(headers.Allow, 'GET, POST')
+})
+
+test('项目路由返回业务错误后不会继续写第二次响应', async () => {
+  const dependencies = testDependencies()
+  dependencies.runtime.productStore = {
+    async authenticate() { return { id: 'user-1' } },
+  }
+  const application = createBotanicHttpServer(dependencies)
+  const { response } = testResponse()
+
+  await application.handleRequest(testRequest({
+    method: 'POST',
+    url: '/api/projects',
+    body: {},
+  }), response)
+
+  assert.equal(response.statusCode, 400)
+  assert.equal(JSON.parse(response.body).error.code, 'INVALID_DOCUMENT')
 })
 
 test('生成任务集合资源对不支持的方法返回 405 和允许的方法目录', async () => {

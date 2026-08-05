@@ -67,7 +67,7 @@ function json(response, statusCode, body, headers = {}) {
 }
 
 function error(response, statusCode, code, message) {
-  json(response, statusCode, { error: { code, message } })
+  return json(response, statusCode, { error: { code, message } })
 }
 
 async function enforceRateLimit(response, input) {
