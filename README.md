@@ -64,7 +64,7 @@ npm run server
 npm run worker
 ```
 
-开发服务器默认使用 `http://localhost:5173`；`npm run preview` 默认使用 `http://localhost:4173`。容器部署配置保留在 [docker-compose.yml](docker-compose.yml)，使用前需提供生产所需的数据库、队列、鉴权与对象存储变量。
+开发服务器默认使用 `http://localhost:4173`；`npm run preview` 未指定端口时由 Vite 选择可用端口。容器部署配置保留在 [docker-compose.yml](docker-compose.yml)，使用前需提供生产所需的数据库、队列、鉴权与对象存储变量。
 
 ## 环境变量
 
@@ -140,11 +140,13 @@ API 与 Worker 必须使用相同的图像 / 视频 Provider 配置。H3 当前�
 ```bash
 npm test
 npm run check:architecture
+npm run check:security
 npm run build
+npm run test:e2e
 git diff --check
 ```
 
-`npm test` 覆盖生成模型目录、任务幂等与恢复、媒体持久化、历史结果回填、WebSocket 鉴权、Yjs 增量和重启恢复，以及画布、素材、模板和投放交付的纯领域规则。`check:architecture` 阻止 UI 直接依赖数据库、队列、Worker 或 Provider。
+`npm test` 覆盖生成模型目录、任务幂等与恢复、媒体持久化、历史结果回填、WebSocket 鉴权、Yjs 增量和重启恢复，以及画布、素材、模板和投放交付的纯领域规则。`check:architecture` 阻止 UI 直接依赖数据库、队列、Worker 或 Provider。`test:e2e` 使用本地持久化与伪健康接口验证项目、画布、Agent 与面板顺序，不调用真实生成 Provider。
 
 普通 UI 变更不得调用真实生图服务；真实 Provider 冒烟测试需要单独授权并明确允许消耗额度。
 

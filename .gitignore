@@ -3,6 +3,8 @@ dist
 .vite
 .playwright-cli
 output/playwright
+test-results
+playwright-report
 .env
 server/.data
 .gstack/

@@ -23,11 +23,8 @@ export function createAgentRouteHandler({
   text,
   requireUser,
   enforceRateLimit,
-  prepareAgentRunProjectExecution,
-  persistAgentRunWorkflow,
-  submitAgentRunGeneration,
+  agentRunGeneration,
   publishAgentRunUpdated,
-  persistAgentJobStateToProject,
   enqueue,
   publishProjectUpdated,
 }) {
@@ -190,12 +187,12 @@ export function createAgentRouteHandler({
       const execute = async () => {
         const registry = createBotanicAgentActionToolRegistry({
           createWorkflow: async ({ planId }) => {
-            const { project, prepared } = await prepareAgentRunProjectExecution(user.id, projectId, planId, { submission: false })
-            await persistAgentRunWorkflow(user.id, project, prepared)
+            const { project, prepared } = await agentRunGeneration.prepareProjectExecution(user.id, projectId, planId, { submission: false })
+            await agentRunGeneration.persistWorkflow(user.id, project, prepared)
             return { message: `已创建 ${prepared.workflows.length} 条画布工作流。`, canvasNodeIds: prepared.workflows.flatMap((workflow) => [workflow.generateNodeId, workflow.resultNodeId]) }
           },
           submitGeneration: async ({ planId }) => {
-            const execution = await submitAgentRunGeneration(user.id, projectId, planId)
+            const execution = await agentRunGeneration.submitGeneration(user.id, projectId, planId)
             return {
               message: `已提交 ${execution.jobs.length} 个 Agent 生成分支。`,
               run: publicAgentRun(execution.run),
@@ -280,7 +277,7 @@ export function createAgentRouteHandler({
         if (job?.status === 'queued' || job?.status === 'running') {
           const cancelledJob = { ...job, status: 'cancelled', error: undefined, updatedAt: Date.now() }
           await productStore.putGenerationJob(user.id, persistedGenerationJob(cancelledJob))
-          await persistAgentJobStateToProject(user.id, run.projectId, cancelledJob)
+          await agentRunGeneration.persistJobState(user.id, run.projectId, cancelledJob)
           await redisQueue?.cancel(jobId)
         }
       }
@@ -329,7 +326,7 @@ export function createAgentRouteHandler({
       } catch {
         const failed = { ...job, status: 'failed', error: '生成任务无法进入队列，请检查 Redis Worker 后重试。', updatedAt: Date.now() }
         await productStore.putGenerationJob(user.id, persistedGenerationJob(failed))
-        await persistAgentJobStateToProject(user.id, run.projectId, failed)
+        await agentRunGeneration.persistJobState(user.id, run.projectId, failed)
         const failedRun = await productStore.readAgentRun(user.id, runId)
         await publishAgentRunUpdated({ projectId: run.projectId, run: publicAgentRun(failedRun) })
         return error(response, 503, 'QUEUE_UNAVAILABLE', failed.error)

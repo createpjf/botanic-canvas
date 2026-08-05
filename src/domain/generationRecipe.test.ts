@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { CanvasDocument } from './canvas.ts'
-import { buildGraphGenerationRecipe, cloneGenerationRecipe } from './generationRecipe.ts'
+import { buildGraphGenerationRecipe, cloneGenerationRecipe, settingsForGenerationModel } from './generationRecipe.ts'
 
 const settings = { model: 'gpt-image-2', aspectRatio: '3:4' as const, resolution: '2K' as const }
 
@@ -44,4 +44,13 @@ test('复制配方不会共享设置或参考项引用', () => {
   copy.references[0].name = '已修改'
   assert.equal(source.settings.model, 'gpt-image-2')
   assert.equal(source.references[0].name, '场景')
+})
+
+test('切换模型保留被新模型支持的设置并补齐视频时长', () => {
+  const result = settingsForGenerationModel(
+    { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '2K' },
+    { id: 'video-model', label: '视频', mediaKind: 'video', aspectRatios: ['1:1', '16:9'], resolutions: ['2K'], durations: [5, 10], defaultDuration: 10 },
+  )
+
+  assert.deepEqual(result, { model: 'video-model', aspectRatio: '1:1', resolution: '2K', duration: 10 })
 })

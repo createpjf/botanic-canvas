@@ -9,13 +9,13 @@
 | 画布节点与连线 | `src/domain/canvas.ts` | `canvasGraph.ts`、`canvasBranch.ts`、`canvasNodeLayout.ts` | `src/domain/canvas*.test.ts`；输入连线是生成配方唯一来源 |
 | 输出节点与血缘 | `src/domain/generationResultPlacement.ts` | `generationResultReconciliation.ts`、`canvasPresentation.ts` | 每个输出独立成节点；候选 ID 稳定 |
 | 应用登录与入口 | `src/App.tsx` | `src/lib/productSession.ts`、功能模块按需加载 | 应用壳不拥有画布或领域规则 |
-| 画布交互与面板 | `src/features/canvas/CanvasWorkspace.tsx` | `src/components/`、`exclusiveSurface.ts`、`overlayPriority.ts` | `exclusiveSurface.test.ts`、`overlayPriority.test.ts`；高层浮层优先处理 Escape |
+| 画布交互与面板 | `src/features/canvas/CanvasWorkspace.tsx` | `CanvasEditorViews.tsx`、`CanvasWorkspacePanels.tsx`、`canvasWorkspaceNavigation.ts`、`exclusiveSurface.ts`、`overlayPriority.ts` | `src/features/canvas/*.test.ts`、UI E2E；工作区只协调，节点/面板/路由各自拥有展示行为 |
 | Agent 面板交互 | `src/features/agent/AgentWorkspace.tsx` | `AgentConversationMessage.tsx`、`AgentComposer.tsx`、`AgentUtilityPanels.tsx`、`useAgentMessageDelivery.ts`、`useAgentRuntimeTrace.ts` | Agent 领域/Lib 测试；工作区只编排，对话卡和 Composer 各自拥有展示交互 |
-| 画布应用状态 | `src/store/canvasStore.types.ts` | `src/store/canvasStore.ts`、`canvasGenerationLifecycle.ts`、`canvasAgentActions.ts`、`src/lib/db.ts` | 先核对 Store 端口；远端新结果不得被旧草稿覆盖 |
+| 画布应用状态 | `src/store/canvasStore.types.ts` | `canvasStore.ts`、`canvasDocumentMigration.ts`、`canvasDocumentAssets.ts`、`canvasGenerationLifecycle.ts`、`canvasGenerationProjection.ts`、`canvasAgentActions.ts`、`src/lib/db.ts` | 先核对 Store 端口；迁移/资产投影/生成投影保持纯函数；远端新结果不得被旧草稿覆盖 |
 | 普通生成任务 | `src/lib/generationApi.ts` | `server/generationService.mjs`、`generationProcessor.mjs`、`generationProvider.mjs` | `server/generation*.test.mjs`；同一次重试复用幂等键 |
 | 批量变化 | `src/domain/batchVariations.ts` | Store 批量协调、服务端 Processor | `batchVariations.test.ts`、Processor 测试；计划先限制总输出，有界并发，各分支独立持久化和恢复 |
 | Agent 对话分流 | `src/domain/agentChatContract.ts` | `src/lib/agentApi.ts`、`server/botanicAgentChat.mjs` | 对话测试；浏览器不发送图片字节或私有 URL |
-| Agent 计划和执行 | `src/domain/agentPlanContract.ts` | `agent.ts`、`server/botanicAgentPlanner.mjs`、`botanicAgentTools.mjs` | Agent Planner/Tool/Run 测试；外部行动默认确认 |
+| Agent 计划和执行 | `src/domain/agentPlanContract.ts` | `agent.ts`、`server/botanicAgentPlanner.mjs`、`botanicAgentTools.mjs`、`agentRunGenerationService.mjs` | Agent Planner/Tool/Run 测试；Run 生成复用持久化幂等任务，外部行动默认确认 |
 | Agent 持久化 | `server/botanicAgentPersistence.mjs` | 三个 ProductStore Adapter、Canvas 兼容视图 | 独立实体合并测试；Memory 墓碑永久胜出 |
 | Artifact Index | `server/botanicArtifactIndex.mjs` | 三个 Store Adapter、Agent 结果区 | Artifact 测试和迁移对账；历史不随 UI 删除 |
 | 素材与媒体 | `src/domain/asset*.ts`、`agentMedia.ts` | `src/lib/db.ts`、`server/mediaService.mjs`、`objectStore.mjs` | 素材/媒体测试；组件不接触对象存储凭据 |
@@ -68,3 +68,5 @@ rg "revision|graphRevision" src/lib server
 | Server / Adapter | 对应 `server/*.test.mjs`、`npm test` |
 | 依赖方向 | `npm run check:architecture` |
 | 发布相关 | 以上全部，加生产浏览器、控制台、HTTP 与 Provider 分项验证 |
+
+UI E2E 门禁使用本地持久化与伪健康接口，覆盖项目 → 画布 → Agent、面板互斥、Composer 执行模式、`@` 引用和 hash 刷新恢复；不消耗真实 Provider 额度。

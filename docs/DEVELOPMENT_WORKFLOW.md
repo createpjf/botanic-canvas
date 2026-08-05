@@ -16,6 +16,8 @@
    npm test
    npm run build
    npm run check:architecture
+   npm run check:security
+   npm run test:e2e
    git diff --check
    ```
 

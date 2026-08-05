@@ -21,12 +21,13 @@ UI（App / features / components）
 | 应用壳 | `src/App.tsx` | 登录恢复与功能入口按需加载 | 会话 `lib` 与功能模块 |
 | 功能 UI | `src/features/` | 功能级交互与异步协调；Agent 内部分离消息卡、Composer、消息交付、运行轨迹和工具面板 | Store、领域契约和 `lib` 高层接口 |
 | 共享 UI | `src/components/` | 渲染属性与用户事件 | 领域类型与共享 UI，不直接依赖 Store 或网络 |
-| 画布应用模块 | `src/store/` | `canvasStore.types.ts` 契约；`canvasGenerationLifecycle.ts` 恢复持久化任务状态，`canvasAgentActions.ts` 拥有 Agent 实体命令，其余画布命令由 `canvasStore.ts` 组合 | `domain`、`lib`、种子数据 |
+| 画布应用模块 | `src/store/` | `canvasStore.types.ts` 契约；文档迁移、资产视图、生成生命周期与投影、Agent 实体命令分别由对应深模块拥有，`canvasStore.ts` 只组合命令 | `domain`、`lib`、种子数据 |
 | 领域契约 | `src/domain/` | 画布数据、生成结果放置等纯规则 | 类型依赖与纯计算，不依赖 UI、Store、网络或存储 |
 | 浏览器基础设施 | `src/lib/` | 会话、生成请求、项目文档与离线草稿接口 | `domain`、浏览器/网络 Adapter，不依赖 UI 或 Store |
 | Node API | `server/index.mjs` | 鉴权后的 HTTP 与 WebSocket 接口；每类资源由独立 Route 模块拥有方法目录和 405 语义 | 队列、处理器、运行时组合根 |
 | 授权 | `server/authorization.mjs`、`server/projectAuthorization.mjs` | 工作区/项目权限决策与 403/404 语义 | ProductStore 的用户与项目成员关系，不依赖 UI |
 | 生成处理器 | `server/generationProcessor.mjs` | `processGenerationJob(jobId)` | 注入的 ProductStore、Media 与 Provider |
+| Agent Run 生成服务 | `server/agentRunGenerationService.mjs` | 为已确认 Run 准备工作流、复用幂等任务、入队并回写项目 | ProductStore、生成队列、安全配额与实时事件 |
 | Adapter | `server/*Store.mjs`、`server/objectStore.mjs` 等 | 产品存储、媒体、队列、第三方图像能力 | 各自外部系统；由 `server/runtime.mjs` 选择并组装 |
 
 模型能力由 `server/generationModels.mjs` 统一声明，Worker 只能经
@@ -37,6 +38,8 @@ H3 的 MP4 与历史图片共用授权 URL，但历史缺少 `mediaKind` 时始�
 `src/components/` 是纯 UI 模块，不得直接导入 `src/lib/`、`src/store/` 或 `server/`。`src/features/` 拥有功能内的交互协调，可以使用 Store 与高层浏览器接口；`src/App.tsx` 仅保留登录恢复、跨功能组合和按需加载。只允许最后一次异步结果落地的流程统一使用 `src/domain/latestOperation.ts` 的令牌接口。
 
 生成配方和批量变体的纯规则分别位于 `src/domain/generationRecipe.ts` 与 `src/domain/batchVariations.ts`。前者以生成节点入线与输入顺序构建配方，后者在提交前限制总输出并提供有界并发；Store 只负责把这些规则与持久化、网络任务组合起来。
+
+`canvasDocumentMigration.ts` 与 `canvasDocumentAssets.ts` 分别拥有版本迁移、引用清理及模板快照，不发起 I/O；`canvasGenerationProjection.ts` 只把任务与批量分支投影为画布文档，调度、轮询和持久化仍由 Store 协调。本地持久化模式不发起服务端生成结果对账。
 
 ## 受保护的稳定接口
 

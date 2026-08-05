@@ -42,6 +42,24 @@ export function defaultSettingsForModel(model: GenerationModelOption | undefined
   }
 }
 
+export function settingsForGenerationModel(
+  settings: GenerationSettings,
+  model: GenerationModelOption,
+): GenerationSettings {
+  const aspectRatio = model.aspectRatios?.includes(settings.aspectRatio)
+    ? settings.aspectRatio
+    : model.aspectRatios?.[0] ?? settings.aspectRatio
+  const resolution = model.resolutions?.includes(settings.resolution)
+    ? settings.resolution
+    : model.resolutions?.[0] ?? settings.resolution
+  const duration = model.mediaKind === 'video'
+    ? model.durations?.includes(settings.duration ?? -1)
+      ? settings.duration
+      : model.defaultDuration ?? model.durations?.[0] ?? 5
+    : undefined
+  return { model: model.id, aspectRatio, resolution, ...(duration === undefined ? {} : { duration }) }
+}
+
 export function cloneGenerationRecipe(recipe: GenerationRecipe): GenerationRecipe {
   return {
     ...recipe,
