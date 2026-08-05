@@ -26,7 +26,6 @@ import type { CanvasGenerationReference } from '../domain/generationRecipe'
 import { isRemoteDocumentConflict, resolveRemoteCanvasRefresh } from '../domain/remoteDocumentSync'
 import { createLatestOperation } from '../domain/latestOperation'
 import { assignVideoInputRoles } from '../domain/videoGeneration'
-import { summarizeWorkflowTemplate } from '../domain/workflowTemplates'
 import { replaceMediaSources as replaceDocumentMediaSources } from '../domain/agentMedia'
 import { createBotanicAgentMemoryItem } from '../domain/agent'
 import type { BotanicAgentRun } from '../domain/agent'
@@ -39,9 +38,6 @@ import type {
   CanvasGenerationTaskStatus,
   CanvasHistoryEntry,
   CanvasNode,
-  CanvasSnapshot,
-  CanvasTemplate,
-  GlobalWorkflowTemplateLibrary,
   DeliveryArtifact,
   GenerationCandidate,
   GenerationJob,
@@ -65,7 +61,6 @@ import {
   flushPendingCanvasDocumentWrites,
   renameCanvasProject,
   writeGlobalAssetLibrary,
-  writeGlobalWorkflowTemplateLibrary,
   writeCanvasDocument,
 } from '../lib/db'
 import { ProductApiError, serverPersistenceEnabled } from '../lib/productSession'
@@ -85,10 +80,6 @@ import {
   findAvailableAsset,
   normalizeSystemOutputEdges,
   scrubAssetFromDocument,
-  sharedWorkflowTemplateSnapshot,
-  snapshotThumbnail,
-  workflowTemplateSnapshot,
-  workflowTemplateSnapshotFromSnapshot,
   withoutReference,
 } from './canvasDocumentAssets'
 import {
@@ -111,6 +102,7 @@ import {
   updateBatchVariationItemDocument,
   updateTaskNodes,
 } from './canvasGenerationProjection'
+import { createCanvasTemplateHistoryActions } from './canvasTemplateHistoryActions'
 
 let generationPollTimerId: number | null = null
 let generationPollRunId = 0
@@ -750,69 +742,6 @@ async function executeBatchVariationItem(
         updatedAt: Date.now(),
       }), message)
     }
-  }
-}
-
-function cloneSnapshotAsCanvas(snapshotValue: CanvasSnapshot, prefix: string) {
-  const timestamp = Date.now()
-  const idMap = new Map<string, string>()
-  const nodes = snapshotValue.nodes.map((node, index) => {
-    const id = `${prefix}-node-${timestamp}-${index}`
-    idMap.set(node.id, id)
-    const data = node.type === 'result'
-      ? { ...node.data, selected: false, versionId: undefined, parentVersionId: undefined }
-      : { ...node.data }
-    return {
-      ...node,
-      id,
-      selected: false,
-      position: { ...node.position },
-      data,
-    }
-  }) as CanvasNode[]
-
-  const edges = snapshotValue.edges.map((edge, index) => ({
-    ...edge,
-    id: `${prefix}-edge-${timestamp}-${index}`,
-    source: idMap.get(edge.source) ?? edge.source,
-    target: idMap.get(edge.target) ?? edge.target,
-    style: edge.style ? { ...edge.style } : undefined,
-  }))
-
-  return { nodes, edges }
-}
-
-function instantiateWorkflowTemplateDocument(current: CanvasDocument, template: CanvasTemplate, shared: boolean) {
-  const timestamp = Date.now()
-  const cloned = cloneSnapshotAsCanvas(template.snapshot, shared ? 'shared-template' : 'template')
-  const referencedAssetIds = new Set(cloned.nodes.flatMap((node) => node.type === 'asset'
-    ? [(node.data as AssetNodeData).assetId]
-    : []))
-  const name = `${template.name} · 项目`
-  const project = createEmptyCanvasDocument(`project-${timestamp}`, name)
-  const historyEntry: CanvasHistoryEntry = {
-    id: `history-template-${timestamp}`,
-    name: `${template.name} · 初始模板`,
-    image: template.image,
-    createdAt: timestamp,
-    kind: 'template',
-    sourceTemplateId: template.id,
-    snapshot: {
-      name,
-      nodes: cloneNodes(cloned.nodes),
-      edges: cloneEdges(cloned.edges),
-      viewport: { x: 0, y: 0, zoom: 1 },
-    },
-  }
-  return {
-    ...project,
-    nodes: cloned.nodes,
-    edges: cloned.edges,
-    viewport: { x: 0, y: 0, zoom: 1 },
-    assets: shared ? [] : current.assets.filter((asset) => referencedAssetIds.has(asset.id)).map((asset) => ({ ...asset, tags: [...asset.tags] })),
-    history: [historyEntry],
-    activeTemplateId: template.id,
-    activeVersionId: historyEntry.id,
   }
 }
 
@@ -2343,249 +2272,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     })
   },
 
-  saveCurrentAsTemplate: (name) => {
-    const document = get().document
-    if (!summarizeWorkflowTemplate(document.nodes, document.edges).canSave) {
-      set({ assistantMessage: '请先添加素材、描述或生成节点，再保存为模板。' })
-      return
-    }
-    const cleanedName = name.trim() || `${document.name} · 模板`
-    const template: CanvasTemplate = {
-      id: `template-${Date.now()}`,
-      name: cleanedName,
-      image: snapshotThumbnail(document.nodes, availableAssets(document, get().globalAssets)[0]?.image ?? ''),
-      createdAt: Date.now(),
-      sourceHistoryId: document.activeVersionId,
-      snapshot: workflowTemplateSnapshot(document, cleanedName),
-    }
-    commit(set, { ...document, templates: [template, ...document.templates] }, {
-      assistantMessage: `已将当前画布保存为模板「${cleanedName}」。`,
-    })
-  },
-
-  refreshSharedTemplates: async () => {
-    const library = await readGlobalWorkflowTemplateLibrary()
-    set({ sharedTemplates: library?.templates ?? [] })
-  },
-
-  saveCurrentAsSharedTemplate: async (name) => {
-    const document = get().document
-    if (!summarizeWorkflowTemplate(document.nodes, document.edges, true).canSave) {
-      set({ assistantMessage: '请先添加素材、描述或生成节点，再保存为共享模板。' })
-      return false
-    }
-    const cleanedName = name.trim() || `${document.name} · 模板`
-    let existingTemplates = get().sharedTemplates
-    try {
-      // 写入前重新读取，避免用尚未加载的本地空数组覆盖其他人已发布的模板。
-      const library = await readGlobalWorkflowTemplateLibrary()
-      existingTemplates = library?.templates ?? []
-    } catch {
-      if (get().document.id === document.id) set({ assistantMessage: '共享模板库暂时不可用，请检查网络后重试。' })
-      return false
-    }
-    const { snapshot, omittedPrivateAssetCount } = sharedWorkflowTemplateSnapshot(document, cleanedName)
-    const image = snapshot.nodes.find((node) => node.type === 'asset' && (node.data as AssetNodeData).source === 'brand')
-    const template: CanvasTemplate = {
-      id: `shared-template-${Date.now()}`,
-      name: cleanedName,
-      image: image ? (image.data as AssetNodeData).image : '',
-      createdAt: Date.now(),
-      sourceHistoryId: document.activeVersionId,
-      snapshot,
-    }
-    const nextTemplates = [template, ...existingTemplates]
-    const library: GlobalWorkflowTemplateLibrary = {
-      id: 'global-workflow-templates',
-      schemaVersion: 1,
-      templates: nextTemplates,
-      updatedAt: Date.now(),
-    }
-    try {
-      await writeGlobalWorkflowTemplateLibrary(library)
-      set({
-        sharedTemplates: nextTemplates,
-        ...(get().document.id === document.id ? {
-          assistantMessage: omittedPrivateAssetCount
-            ? `已发布共享工作流「${cleanedName}」，已移除 ${omittedPrivateAssetCount} 个项目私有素材。`
-            : `已发布共享工作流「${cleanedName}」。`,
-        } : {}),
-      })
-      return true
-    } catch {
-      set({
-        sharedTemplates: existingTemplates,
-        ...(get().document.id === document.id ? { assistantMessage: '共享模板保存失败，请检查网络后重试。' } : {}),
-      })
-      return false
-    }
-  },
-
-  createCanvasFromTemplate: (templateId) => {
-    const document = get().document
-    const template = document.templates.find((item) => item.id === templateId)
-    if (!template) return
-
-    const nextName = `${template.name} · 新画布`
-    const cloned = cloneSnapshotAsCanvas(template.snapshot, 'template')
-    const historyEntry: CanvasHistoryEntry = {
-      id: `history-template-${Date.now()}`,
-      name: nextName,
-      image: template.image,
-      createdAt: Date.now(),
-      kind: 'template',
-      parentVersionId: document.activeVersionId,
-      sourceTemplateId: template.id,
-      snapshot: {
-        name: nextName,
-        nodes: cloneNodes(cloned.nodes),
-        edges: cloneEdges(cloned.edges),
-        viewport: { x: 0, y: 0, zoom: 1 },
-      },
-    }
-
-    commit(set, {
-      ...document,
-      name: nextName,
-      nodes: cloned.nodes,
-      edges: cloned.edges,
-      viewport: { x: 0, y: 0, zoom: 1 },
-      activeTemplateId: template.id,
-      activeVersionId: historyEntry.id,
-      history: [...document.history, historyEntry],
-    }, {
-      selectedNodeId: null,
-      assistantMessage: `已从工作流模板「${template.name}」新建画布，可继续补充素材并生成。`,
-    })
-  },
-
-  createCanvasFromSharedTemplate: (templateId) => {
-    const document = get().document
-    const template = get().sharedTemplates.find((item) => item.id === templateId)
-    if (!template) return
-
-    const nextName = `${template.name} · 新画布`
-    const cloned = cloneSnapshotAsCanvas(template.snapshot, 'shared-template')
-    const historyEntry: CanvasHistoryEntry = {
-      id: `history-shared-template-${Date.now()}`,
-      name: nextName,
-      image: template.image,
-      createdAt: Date.now(),
-      kind: 'template',
-      parentVersionId: document.activeVersionId,
-      sourceTemplateId: template.id,
-      snapshot: {
-        name: nextName,
-        nodes: cloneNodes(cloned.nodes),
-        edges: cloneEdges(cloned.edges),
-        viewport: { x: 0, y: 0, zoom: 1 },
-      },
-    }
-
-    commit(set, {
-      ...document,
-      name: nextName,
-      nodes: cloned.nodes,
-      edges: cloned.edges,
-      viewport: { x: 0, y: 0, zoom: 1 },
-      activeTemplateId: template.id,
-      activeVersionId: historyEntry.id,
-      history: [...document.history, historyEntry],
-    }, {
-      selectedNodeId: null,
-      assistantMessage: `已从共享工作流「${template.name}」新建画布，可补充项目素材后生成。`,
-    })
-  },
-
-  createDocumentFromTemplate: (templateId, shared) => {
-    const template = shared
-      ? get().sharedTemplates.find((item) => item.id === templateId)
-      : get().document.templates.find((item) => item.id === templateId)
-    return template ? instantiateWorkflowTemplateDocument(get().document, template, shared) : null
-  },
-
-  createCanvasFromHistory: (historyId) => {
-    const document = get().document
-    const source = document.history.find((item) => item.id === historyId)
-    if (!source) return
-
-    const nextName = `${source.name} · 延展`
-    const cloned = cloneSnapshotAsCanvas(source.snapshot, 'history')
-    const historyEntry: CanvasHistoryEntry = {
-      id: `history-continue-${Date.now()}`,
-      name: nextName,
-      image: source.image,
-      createdAt: Date.now(),
-      kind: 'generation',
-      parentVersionId: source.id,
-      snapshot: {
-        name: nextName,
-        nodes: cloneNodes(cloned.nodes),
-        edges: cloneEdges(cloned.edges),
-        viewport: { x: 0, y: 0, zoom: 1 },
-      },
-    }
-
-    commit(set, {
-      ...document,
-      name: nextName,
-      nodes: cloned.nodes,
-      edges: cloned.edges,
-      viewport: { x: 0, y: 0, zoom: 1 },
-      activeTemplateId: undefined,
-      activeVersionId: historyEntry.id,
-      history: [...document.history, historyEntry],
-    }, {
-      selectedNodeId: null,
-      assistantMessage: `已基于「${source.name}」创建延展画布，下一次生成会作为它的分支。`,
-    })
-  },
-
-  restoreHistoryVersion: (historyId) => {
-    const document = get().document
-    const source = document.history.find((item) => item.id === historyId)
-    if (!source) return
-
-    const lastResult = [...source.snapshot.nodes].reverse().find((node) => node.type === 'result')
-    const selectedNodeId = lastResult?.id ?? null
-    const nodes = cloneNodes(source.snapshot.nodes).map((node) => ({
-      ...node,
-      selected: node.id === selectedNodeId,
-      data: node.type === 'result'
-        ? { ...node.data, selected: node.id === selectedNodeId }
-        : { ...node.data },
-    })) as CanvasNode[]
-
-    commit(set, {
-      ...document,
-      name: source.snapshot.name,
-      nodes,
-      edges: cloneEdges(source.snapshot.edges),
-      viewport: { ...source.snapshot.viewport },
-      activeVersionId: source.id,
-    }, {
-      selectedNodeId,
-      assistantMessage: `已回到「${source.name}」。历史分支均保留，可继续在此版定向精修。`,
-    })
-  },
-
-  saveHistoryAsTemplate: (historyId) => {
-    const document = get().document
-    const source = document.history.find((item) => item.id === historyId)
-    if (!source) return
-
-    const template: CanvasTemplate = {
-      id: `template-history-${Date.now()}`,
-      name: `${source.name} · 模板`,
-      image: source.image,
-      createdAt: Date.now(),
-      sourceHistoryId: source.id,
-      snapshot: workflowTemplateSnapshotFromSnapshot(source.snapshot, `${source.name} · 模板`),
-    }
-    commit(set, { ...document, templates: [template, ...document.templates] }, {
-      assistantMessage: `已将历史画布「${source.name}」保存为可复用模板。`,
-    })
-  },
+  ...createCanvasTemplateHistoryActions({ set, get, commit }),
 
   runGeneration: async ({ prompt, batchCount, settings, recipe: inputRecipe, rootRecipe: inputRootRecipe, taskLayout, sourceGraphNodeId, agentRun }) => {
     if (get().generationStatus !== 'idle' && get().generationStatus !== 'error') return false
