@@ -1,0 +1,617 @@
+import { generationSubmissionFailureDisposition } from '../domain/generationSubmission'
+import {
+  buildGenerationRecipe,
+  buildGraphGenerationRecipe,
+  clampBatchCount,
+  cloneGenerationRecipe,
+  cloneGenerationSettings,
+  primaryGenerationReference,
+} from '../domain/generationRecipe'
+import { assignVideoInputRoles } from '../domain/videoGeneration'
+import type { CanvasDocument, CanvasNode, GenerateNodeData, GenerationJob, GenerationRecipe, ResultNodeData } from '../domain/canvas'
+import { writeCanvasDocument } from '../lib/db'
+import {
+  assertGenerationServiceReady,
+  cancelGenerationJob,
+  GenerationApiError,
+  getGenerationJob,
+  listProjectGenerationJobs,
+  reconcileProjectGenerationResults,
+  submitGenerationJob,
+} from '../lib/generationApi'
+import { serverPersistenceEnabled } from '../lib/productSession'
+import {
+  requestFromGenerationTaskNode,
+  requestFromPersistedGenerationJob,
+  restoreGenerationLifecycleState,
+} from './canvasGenerationLifecycle'
+import {
+  candidatesFromJob,
+  createTaskFlow,
+  materializeGenerationOutputs,
+  recordGenerationJob,
+  updateTaskNodes,
+} from './canvasGenerationProjection'
+import type { CanvasStore, GenerationRequest, TaskNodeIds } from './canvasStore.types'
+
+type GenerationActions = Pick<CanvasStore,
+  | 'runGeneration'
+  | 'runRefinement'
+  | 'cancelGeneration'
+  | 'retryGeneration'
+  | 'retryMissingGeneration'
+  | 'clearGenerationError'
+  | 'recoverUnknownGenerationSubmission'
+  | 'recoverGenerationResultsFromRemote'
+  | 'runGraphGeneration'
+>
+
+type CommitDocument = (
+  document: CanvasDocument,
+  extra?: Partial<CanvasStore>,
+  options?: { immediate?: boolean; rejectOnFailure?: boolean },
+) => Promise<void>
+
+type CanvasGenerationDependencies = {
+  set: (next: Partial<CanvasStore>) => void
+  get: () => CanvasStore
+  commitDocument: CommitDocument
+  normalizeDocument: (document: CanvasDocument | undefined) => CanvasDocument
+  scrubGenerationRequest: (request: GenerationRequest | null) => GenerationRequest | null
+}
+
+export type CanvasGenerationController = {
+  actions: GenerationActions
+  stopPolling: () => void
+  pollJob: (jobId: string) => void
+  recoverTaskNodeJobs: (documentId: string) => void
+  recoverResults: (documentId: string) => Promise<boolean>
+  createSubmissionKey: () => string
+}
+
+function createGenerationSubmissionKey() {
+  const uuid = globalThis.crypto?.randomUUID?.()
+  return `gen_${(uuid ?? `${Date.now()}_${Math.random().toString(36).slice(2)}`).replaceAll('-', '')}`
+}
+
+/** Owns the regular generation submission, polling, retry and recovery lifecycle. */
+export function createCanvasGenerationActions({
+  set,
+  get,
+  commitDocument,
+  normalizeDocument,
+  scrubGenerationRequest,
+}: CanvasGenerationDependencies): CanvasGenerationController {
+  let pollTimerId: number | null = null
+  let pollRunId = 0
+  let submissionRunId = 0
+
+  const stopPolling = () => {
+    if (pollTimerId !== null) window.clearTimeout(pollTimerId)
+    pollTimerId = null
+    pollRunId += 1
+  }
+
+  const setGenerationError = (message: string, preserveLastRequest = false) => {
+    set({
+      generationStatus: 'error',
+      generationProgress: 0,
+      generationError: message,
+      generationCandidates: [],
+      ...(preserveLastRequest ? {} : { lastGenerationRequest: null }),
+      assistantMessage: message,
+    })
+    return false
+  }
+
+  const applySubmissionFailure = async (
+    request: GenerationRequest & { taskNodeIds: TaskNodeIds },
+    error: unknown,
+  ) => {
+    const disposition = generationSubmissionFailureDisposition(error)
+    const fallbackMessage = request.kind === 'refinement'
+      ? '真实精修任务提交失败，请重试。'
+      : '真实生图任务提交失败，请重试。'
+    const message = disposition.message ?? fallbackMessage
+    const nextDocument = updateTaskNodes(get().document, request.taskNodeIds, disposition.taskStatus, undefined, message)
+    if (disposition.kind === 'recovering') {
+      await commitDocument(nextDocument, {
+        generationStatus: 'recovering',
+        generationProgress: 0,
+        generationError: null,
+        expectedCandidateCount: request.batchCount,
+        generationCandidates: [],
+        lastGenerationRequest: request,
+        assistantMessage: message,
+      }, { immediate: true })
+      return false
+    }
+    void commitDocument(nextDocument, {
+      generationStatus: 'error',
+      generationProgress: 0,
+      generationError: message,
+      expectedCandidateCount: 0,
+      generationCandidates: [],
+      lastGenerationRequest: request,
+      assistantMessage: message,
+    })
+    return false
+  }
+
+  const syncJob = (job: GenerationJob) => {
+    const request = get().lastGenerationRequest
+    if (!request?.taskNodeIds || request.jobId !== job.id) return
+    const recordedDocument = recordGenerationJob(get().document, job, request.taskNodeIds)
+    const existingJob = get().document.generationJobs.find((item) => item.id === job.id)
+    if (job.status === 'succeeded') {
+      const recordedJob = recordedDocument.generationJobs.find((item) => item.id === job.id) ?? job
+      const candidates = candidatesFromJob(recordedJob, request)
+      const document = candidates.length
+        ? materializeGenerationOutputs(recordedDocument, recordedJob, request)
+        : updateTaskNodes(recordedDocument, request.taskNodeIds, 'failed', job.id, '生成服务没有返回结果，请重试。')
+      void commitDocument(document, {
+        generationStatus: 'idle',
+        generationProgress: 0,
+        generationError: candidates.length ? null : '真实生成未返回候选结果，请重试。',
+        expectedCandidateCount: job.missingOutputCount ? job.batchCount : 0,
+        generationCandidates: job.missingOutputCount ? candidates : [],
+        assistantMessage: candidates.length
+          ? job.missingOutputCount
+            ? `真实生成已完成 ${candidates.length}/${job.batchCount} 个；缺少的 ${job.missingOutputCount} 个可单独补生成。`
+            : `真实生成已完成：${candidates.length} 个结果已作为独立节点写入画布；不需要的可直接删除。`
+          : '真实生成没有返回候选结果，请重试。',
+      }, { immediate: true })
+      return
+    }
+    if (job.status === 'failed') {
+      void commitDocument(recordedDocument, {
+        generationStatus: 'error', generationProgress: 0,
+        generationError: job.error ?? '真实生成任务失败，请重试。',
+        expectedCandidateCount: 0, generationCandidates: [],
+        assistantMessage: job.error ?? '真实生成任务失败，请重试。',
+      }, { immediate: true })
+      return
+    }
+    if (job.status === 'cancelled') {
+      void commitDocument(recordedDocument, {
+        generationStatus: 'idle', generationProgress: 0, generationError: null,
+        expectedCandidateCount: 0, generationCandidates: [],
+        assistantMessage: '已取消真实生成任务；画布保留本次的提示词、参考组与任务记录。',
+      }, { immediate: true })
+      return
+    }
+    const transientState = {
+      generationStatus: job.status,
+      generationProgress: 0,
+      generationError: null,
+      expectedCandidateCount: job.batchCount,
+      assistantMessage: job.status === 'queued' ? '真实生成任务已入队，等待生成服务处理。' : '生成服务正在处理，请保留此页面或稍后返回查看结果。',
+    }
+    if (!existingJob || existingJob.status !== job.status) {
+      void commitDocument(recordedDocument, transientState, { immediate: true })
+      return
+    }
+    set(transientState)
+  }
+
+  const pollJob = (jobId: string) => {
+    stopPolling()
+    const runId = pollRunId
+    let retryDelay = 1_500
+    const poll = async () => {
+      if (runId !== pollRunId) return
+      try {
+        const job = await getGenerationJob(jobId)
+        if (runId !== pollRunId) return
+        syncJob(job)
+        if (job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled') {
+          pollTimerId = null
+          return
+        }
+        const nextDelay = window.document.hidden ? 10_000 : retryDelay
+        retryDelay = Math.min(5_000, Math.round(retryDelay * 1.5))
+        pollTimerId = window.setTimeout(() => void poll(), nextDelay)
+      } catch (error) {
+        if (runId !== pollRunId) return
+        if (error instanceof GenerationApiError && error.code === 'JOB_NOT_FOUND') {
+          const request = get().lastGenerationRequest
+          const message = '生成服务已重启，无法恢复本次任务。请重试。'
+          const failedDocument = request?.taskNodeIds
+            ? updateTaskNodes(get().document, request.taskNodeIds, 'failed', request.jobId, message)
+            : get().document
+          void commitDocument({
+            ...failedDocument,
+            generationJobs: failedDocument.generationJobs.map((job) => job.id === jobId
+              ? { ...job, status: 'failed' as const, error: message, updatedAt: Date.now() }
+              : job),
+          }, {
+            generationStatus: 'error', generationProgress: 0,
+            generationError: message, generationCandidates: [], assistantMessage: message,
+          })
+          pollTimerId = null
+          return
+        }
+        set({ assistantMessage: error instanceof Error ? `${error.message} 任务仍可能在服务端执行。` : '任务状态同步失败，任务仍可能在服务端执行。' })
+        retryDelay = Math.min(10_000, Math.max(2_000, Math.round(retryDelay * 2)))
+        pollTimerId = window.setTimeout(() => void poll(), window.document.hidden ? 15_000 : retryDelay)
+      }
+    }
+    void poll()
+  }
+
+  const recoverTaskNodeJobs = (documentId: string) => {
+    const document = get().document
+    const requests = new Map<string, GenerationRequest>()
+    for (const node of document.nodes) {
+      if (node.type !== 'result') continue
+      const result = node.data as ResultNodeData
+      if (result.image || !result.jobId || (result.taskGroupId && node.id !== result.taskGroupId)) continue
+      const request = requestFromGenerationTaskNode(document, node)
+      if (request?.jobId) requests.set(request.jobId, request)
+    }
+    for (const node of document.nodes) {
+      if (node.type !== 'generate') continue
+      const generate = node.data as GenerateNodeData
+      if (!generate.jobId || requests.has(generate.jobId)) continue
+      const taskResultNode = document.nodes.find((candidate) => {
+        if (candidate.type !== 'result') return false
+        const result = candidate.data as ResultNodeData
+        return result.outputOf === node.id && !result.image && (!result.taskGroupId || candidate.id === result.taskGroupId)
+      })
+      if (!taskResultNode || taskResultNode.type !== 'result') continue
+      const request = requestFromGenerationTaskNode(document, {
+        ...taskResultNode,
+        data: { ...(taskResultNode.data as ResultNodeData), jobId: generate.jobId },
+      } as CanvasNode)
+      if (request?.jobId) requests.set(request.jobId, request)
+    }
+    for (const request of requests.values()) {
+      void getGenerationJob(request.jobId!).then((job) => {
+        if (get().document.id !== documentId) return
+        set({ lastGenerationRequest: request })
+        syncJob(job)
+        if (job.status === 'queued' || job.status === 'running') pollJob(job.id)
+      }).catch(() => undefined)
+    }
+    const unresolvedTaskNodes = document.nodes.filter((node) => {
+      if (node.type !== 'result') return false
+      const result = node.data as ResultNodeData
+      return !result.image && (!result.taskGroupId || node.id === result.taskGroupId)
+    })
+    if (!unresolvedTaskNodes.length) return
+    void listProjectGenerationJobs(documentId).then((jobs) => {
+      if (get().document.id !== documentId) return
+      const usedJobIds = new Set(requests.keys())
+      const candidates = jobs
+        .filter((job) => !usedJobIds.has(job.id) && job.status === 'succeeded' && Boolean(job.outputs?.length))
+        .sort((left, right) => left.createdAt - right.createdAt)
+      for (const taskResultNode of unresolvedTaskNodes) {
+        const result = taskResultNode.data as ResultNodeData
+        const kind = result.generationKind ?? 'generation'
+        const matching = candidates
+          .filter((job) => !usedJobIds.has(job.id) && job.kind === kind)
+          .sort((left, right) => Math.abs(left.createdAt - (result.submittedAt ?? left.createdAt)) - Math.abs(right.createdAt - (result.submittedAt ?? right.createdAt)))[0]
+        if (!matching) continue
+        const request = requestFromGenerationTaskNode(get().document, {
+          ...taskResultNode,
+          data: { ...result, jobId: matching.id },
+        } as CanvasNode)
+        if (!request?.jobId) continue
+        usedJobIds.add(matching.id)
+        set({ lastGenerationRequest: request })
+        syncJob(matching)
+      }
+    }).catch(() => undefined)
+  }
+
+  const mergeRecoveredGenerationJobs = (current: CanvasDocument, recovered: CanvasDocument) => {
+    const jobsById = new Map(current.generationJobs.map((job) => [job.id, job]))
+    for (const job of recovered.generationJobs) {
+      const existing = jobsById.get(job.id)
+      if (!existing || job.updatedAt > existing.updatedAt || (job.outputs?.length ?? 0) > (existing.outputs?.length ?? 0)) jobsById.set(job.id, job)
+    }
+    return normalizeDocument({
+      ...current,
+      generationJobs: [...jobsById.values()].sort((left, right) => right.updatedAt - left.updatedAt).slice(0, 60),
+    })
+  }
+  const resultImageCount = (document: CanvasDocument) => document.nodes
+    .filter((node) => node.type === 'result' && Boolean((node.data as ResultNodeData).image)).length
+
+  const recoverResults = async (documentId: string) => {
+    if (!serverPersistenceEnabled) return false
+    try {
+      const recovered = await reconcileProjectGenerationResults(documentId)
+      const current = get().document
+      if (current.id !== documentId) return false
+      const reconciledDocument = mergeRecoveredGenerationJobs(current, recovered.document)
+      if (resultImageCount(reconciledDocument) <= resultImageCount(current)) {
+        recoverTaskNodeJobs(documentId)
+        return false
+      }
+      const selected = [...reconciledDocument.nodes].reverse().find(
+        (node) => node.selected || (node.type === 'result' && Boolean((node.data as ResultNodeData).selected)),
+      )
+      const state = restoreGenerationLifecycleState(reconciledDocument, '已从服务端补回生成结果。')
+      set({ document: reconciledDocument, persistenceStatus: 'saved', selectedNodeId: selected?.id ?? null, ...state.state })
+      void writeCanvasDocument(reconciledDocument, { immediate: true }).catch(() => undefined)
+      return true
+    } catch {
+      recoverTaskNodeJobs(documentId)
+      return false
+    }
+  }
+
+  const actions: GenerationActions = {
+    runGraphGeneration: async (nodeId, agentRun) => {
+      const graphRecipe = buildGraphGenerationRecipe(get().document, nodeId)
+      if (!graphRecipe) return setGenerationError('未找到要执行的生成节点。')
+      if (!graphRecipe.prompt.trim()) return setGenerationError('请填写生成描述。')
+      if (graphRecipe.hasUnselectedResultInput) return setGenerationError('上游结果尚未选图；请先在候选中选中一张首图，再继续生成。')
+      if (!graphRecipe.recipe.references.length && !graphRecipe.parent) return setGenerationError('请至少连接一张商品图片、参考素材或已选首图。')
+      if (graphRecipe.recipe.references.length > 8) return setGenerationError('单个生成节点最多连接 8 个参考素材。')
+      const selectedModel = get().availableModels.find((model) => model.id === graphRecipe.recipe.settings.model)
+      const isVideoModel = selectedModel?.mediaKind === 'video'
+      let preparedRecipe: GenerationRecipe = graphRecipe.recipe
+      if (isVideoModel) {
+        const defaultMode = preparedRecipe.references.some((reference) => reference.mediaKind === 'video')
+          ? 'reference'
+          : preparedRecipe.references.length === 2 ? 'first_last' : 'first_frame'
+        const assignment = assignVideoInputRoles(preparedRecipe.references, preparedRecipe.videoInputMode ?? defaultMode)
+        if (assignment.error) return setGenerationError(assignment.error)
+        preparedRecipe = { ...preparedRecipe, videoInputMode: preparedRecipe.videoInputMode ?? defaultMode, references: assignment.references }
+      } else if (preparedRecipe.references.some((reference) => reference.mediaKind === 'video')) {
+        return setGenerationError('视频素材只能连接到视频生成模型。')
+      }
+      if (!isVideoModel && !primaryGenerationReference(preparedRecipe) && !graphRecipe.parent) {
+        return setGenerationError('请在当前生成节点至少连接一张图片作为主参考。')
+      }
+      if (graphRecipe.parent) {
+        const refinementMode = (get().document.nodes.find((node) => node.id === nodeId && node.type === 'generate')?.data as GenerateNodeData | undefined)?.refinementMode ?? 'faithful'
+        return get().runRefinement({
+          targetNodeId: graphRecipe.parent.nodeId,
+          prompt: graphRecipe.prompt,
+          batchCount: preparedRecipe.batchCount,
+          settings: preparedRecipe.settings,
+          recipe: preparedRecipe,
+          sourceGraphNodeId: nodeId,
+          refinementMode,
+          agentRun,
+        })
+      }
+      return get().runGeneration({
+        prompt: graphRecipe.prompt,
+        batchCount: preparedRecipe.batchCount,
+        settings: preparedRecipe.settings,
+        recipe: preparedRecipe,
+        sourceGraphNodeId: nodeId,
+        agentRun,
+      })
+    },
+
+    recoverGenerationResultsFromRemote: async () => {
+      const documentId = get().document.id
+      if (documentId === 'workspace-placeholder') return false
+      return recoverResults(documentId)
+    },
+
+    recoverUnknownGenerationSubmission: async () => {
+      const projectId = get().document.id
+      const request = get().lastGenerationRequest
+      if (get().generationStatus !== 'recovering' || !request?.taskNodeIds || !request.recipe || !request.idempotencyKey) return false
+      const recoverableRequest: GenerationRequest & { taskNodeIds: TaskNodeIds; recipe: GenerationRecipe; idempotencyKey: string } = {
+        ...request,
+        taskNodeIds: request.taskNodeIds,
+        recipe: request.recipe,
+        idempotencyKey: request.idempotencyKey,
+      }
+      const runId = ++submissionRunId
+      set({ generationError: null, assistantMessage: '正在用原幂等键确认任务，不会重复生成。' })
+      try {
+        const job = await submitGenerationJob({
+          projectId, kind: recoverableRequest.kind, prompt: recoverableRequest.prompt,
+          batchCount: recoverableRequest.batchCount, settings: recoverableRequest.settings,
+          recipe: recoverableRequest.recipe,
+          parent: recoverableRequest.kind === 'refinement' && recoverableRequest.targetNodeId && recoverableRequest.parentImage
+            ? { nodeId: recoverableRequest.targetNodeId, name: recoverableRequest.parentLabel ?? '已选首图', image: recoverableRequest.parentImage }
+            : undefined,
+          refinementMode: recoverableRequest.refinementMode,
+          agentRun: recoverableRequest.agentRun,
+          idempotencyKey: recoverableRequest.idempotencyKey,
+        })
+        if (get().document.id !== projectId || runId !== submissionRunId) return false
+        const recoveredRequest = { ...recoverableRequest, jobId: job.id }
+        set({ lastGenerationRequest: recoveredRequest })
+        syncJob(job)
+        if (job.status === 'queued' || job.status === 'running') pollJob(job.id)
+        return true
+      } catch (error) {
+        if (get().document.id !== projectId || runId !== submissionRunId) return false
+        return applySubmissionFailure(recoverableRequest, error)
+      }
+    },
+
+    runGeneration: async ({ prompt, batchCount, settings, recipe: inputRecipe, rootRecipe: inputRootRecipe, taskLayout, sourceGraphNodeId, agentRun }) => {
+      if (get().generationStatus !== 'idle' && get().generationStatus !== 'error') return false
+      const cleanPrompt = prompt.trim()
+      if (!cleanPrompt) return setGenerationError('请先描述你想生成的首图。')
+      const document = get().document
+      const normalizedBatchCount = clampBatchCount(batchCount)
+      const recipe = inputRecipe
+        ? cloneGenerationRecipe({ ...inputRecipe, prompt: cleanPrompt, batchCount: normalizedBatchCount, settings: cloneGenerationSettings(settings) })
+        : buildGenerationRecipe(document, cleanPrompt, normalizedBatchCount, settings)
+      const primaryProduct = primaryGenerationReference(recipe)
+      if (!primaryProduct) return setGenerationError('请在当前生成节点至少连接一张图片作为主参考。')
+      try {
+        await assertGenerationServiceReady()
+      } catch (error) {
+        if (get().document.id !== document.id) return false
+        return setGenerationError(error instanceof Error ? error.message : '真实生图服务暂不可用，请稍后重新检查。')
+      }
+      if (get().document.id !== document.id) return false
+      const request: GenerationRequest = {
+        kind: 'generation', prompt: cleanPrompt, batchCount: normalizedBatchCount,
+        settings: cloneGenerationSettings(settings), recipe: cloneGenerationRecipe(recipe),
+        rootRecipe: cloneGenerationRecipe(inputRootRecipe ?? recipe), parentVersionId: document.activeVersionId,
+        taskLayout, sourceGraphNodeId, agentRun, idempotencyKey: createGenerationSubmissionKey(),
+      }
+      const flow = createTaskFlow(document, request)
+      const preparedRequest = { ...request, taskNodeIds: flow.taskNodeIds }
+      const runId = ++submissionRunId
+      await commitDocument(flow.document, {
+        generationStatus: 'uploading', generationProgress: 0, generationError: null,
+        expectedCandidateCount: normalizedBatchCount, generationCandidates: [], lastGenerationRequest: preparedRequest,
+        assistantMessage: `正在提交真实任务：主商品「${primaryProduct.name}」与 ${recipe.references.length} 个画布参考。`,
+      }, { immediate: true })
+      if (get().document.id !== document.id) return false
+      try {
+        const job = await submitGenerationJob({
+          projectId: document.id, kind: request.kind, prompt: request.prompt,
+          batchCount: request.batchCount, settings: request.settings, recipe, agentRun,
+          idempotencyKey: request.idempotencyKey,
+        })
+        if (get().document.id !== document.id) return false
+        if (runId !== submissionRunId) {
+          void cancelGenerationJob(job.id)
+          return false
+        }
+        set({ lastGenerationRequest: scrubGenerationRequest({ ...preparedRequest, jobId: job.id }) })
+        syncJob(job)
+        if (job.status === 'queued' || job.status === 'running') pollJob(job.id)
+        return true
+      } catch (error) {
+        if (get().document.id !== document.id || runId !== submissionRunId) return false
+        return applySubmissionFailure(preparedRequest, error)
+      }
+    },
+
+    runRefinement: async ({ targetNodeId, prompt, batchCount, settings, recipe: inputRecipe, rootRecipe: inputRootRecipe, taskLayout, sourceGraphNodeId, refinementMode = 'faithful', agentRun }) => {
+      if (get().generationStatus !== 'idle' && get().generationStatus !== 'error') return false
+      const cleanPrompt = prompt.trim()
+      if (!cleanPrompt) return setGenerationError('请先描述要如何精修这张首图。')
+      const document = get().document
+      const target = document.nodes.find((node) => node.id === targetNodeId)
+      if (!target || target.type !== 'result') return setGenerationError('未找到要精修的首图，请重新选择。')
+      const result = target.data as ResultNodeData
+      if (!result.image) return setGenerationError('请先从真实任务候选中选中一张首图，再进行定向精修。')
+      const parentVersionId = result.versionId ?? document.activeVersionId
+      const parentLabel = result.label ?? '已选首图'
+      const parentImage = result.image
+      const normalizedBatchCount = clampBatchCount(batchCount)
+      const recipe = inputRecipe
+        ? cloneGenerationRecipe({ ...inputRecipe, prompt: cleanPrompt, batchCount: normalizedBatchCount, settings: cloneGenerationSettings(settings) })
+        : result.generationRecipe
+          ? cloneGenerationRecipe({ ...result.generationRecipe, prompt: cleanPrompt, batchCount: normalizedBatchCount, settings: cloneGenerationSettings(settings) })
+          : buildGenerationRecipe(document, cleanPrompt, normalizedBatchCount, settings)
+      const rootRecipe = cloneGenerationRecipe(inputRootRecipe ?? result.rootRecipe ?? result.generationRecipe ?? recipe)
+      try {
+        await assertGenerationServiceReady()
+      } catch (error) {
+        if (get().document.id !== document.id) return false
+        return setGenerationError(error instanceof Error ? error.message : '真实生图服务暂不可用，请稍后重新检查。')
+      }
+      if (get().document.id !== document.id) return false
+      const request: GenerationRequest = {
+        kind: 'refinement', prompt: cleanPrompt, batchCount: normalizedBatchCount,
+        settings: cloneGenerationSettings(settings), recipe: cloneGenerationRecipe(recipe), rootRecipe,
+        targetNodeId, parentVersionId, parentImage, parentLabel, taskLayout, sourceGraphNodeId,
+        refinementMode, agentRun, idempotencyKey: createGenerationSubmissionKey(),
+      }
+      const flow = createTaskFlow(document, request, target)
+      const preparedRequest = { ...request, taskNodeIds: flow.taskNodeIds }
+      const runId = ++submissionRunId
+      await commitDocument(flow.document, {
+        generationStatus: 'uploading', generationProgress: 0, generationError: null,
+        expectedCandidateCount: normalizedBatchCount, generationCandidates: [], lastGenerationRequest: preparedRequest,
+        assistantMessage: `正在提交「${parentLabel}」的真实精修任务。`,
+      }, { immediate: true })
+      if (get().document.id !== document.id) return false
+      try {
+        const job = await submitGenerationJob({
+          projectId: document.id, kind: request.kind, prompt: request.prompt,
+          batchCount: request.batchCount, settings: request.settings, recipe,
+          parent: { nodeId: targetNodeId, name: parentLabel, image: parentImage },
+          refinementMode, agentRun, idempotencyKey: request.idempotencyKey,
+        })
+        if (get().document.id !== document.id) return false
+        if (runId !== submissionRunId) {
+          void cancelGenerationJob(job.id)
+          return false
+        }
+        set({ lastGenerationRequest: scrubGenerationRequest({ ...preparedRequest, jobId: job.id }) })
+        syncJob(job)
+        if (job.status === 'queued' || job.status === 'running') pollJob(job.id)
+        return true
+      } catch (error) {
+        if (get().document.id !== document.id || runId !== submissionRunId) return false
+        return applySubmissionFailure(preparedRequest, error)
+      }
+    },
+
+    cancelGeneration: () => {
+      const projectId = get().document.id
+      const request = get().lastGenerationRequest
+      if (!request?.taskNodeIds || !['uploading', 'queued', 'running'].includes(get().generationStatus)) return
+      submissionRunId += 1
+      stopPolling()
+      const cancelledDocument = updateTaskNodes(get().document, request.taskNodeIds, 'cancelled', request.jobId)
+      void commitDocument(cancelledDocument, {
+        generationStatus: 'idle', generationProgress: 0, generationError: null,
+        expectedCandidateCount: 0, generationCandidates: [],
+        assistantMessage: request.jobId ? '正在取消真实生成任务…' : '已取消本地素材提交。',
+      })
+      if (!request.jobId) return
+      void cancelGenerationJob(request.jobId).then((job) => {
+        if (get().document.id === projectId) syncJob(job)
+      }).catch(() => {
+        if (get().document.id === projectId) set({ assistantMessage: '取消请求未能同步到服务端，请在任务面板稍后确认状态。' })
+      })
+    },
+
+    retryGeneration: async () => {
+      const request = get().lastGenerationRequest
+      if (!request) return setGenerationError('没有可重试的真实生成任务。')
+      const job = request.jobId ? get().document.generationJobs.find((item) => item.id === request.jobId) : undefined
+      const retryBatchCount = job?.missingOutputCount || request.batchCount
+      if (request.kind === 'refinement' && request.targetNodeId) {
+        return get().runRefinement({
+          targetNodeId: request.targetNodeId, prompt: request.prompt, batchCount: retryBatchCount,
+          settings: request.settings, recipe: request.recipe, rootRecipe: request.rootRecipe,
+          taskLayout: request.taskLayout, sourceGraphNodeId: request.sourceGraphNodeId ?? request.taskNodeIds?.generateNodeId,
+          refinementMode: request.refinementMode,
+        })
+      }
+      return get().runGeneration({
+        prompt: request.prompt, batchCount: retryBatchCount, settings: request.settings,
+        recipe: request.recipe, rootRecipe: request.rootRecipe, taskLayout: request.taskLayout,
+        sourceGraphNodeId: request.taskNodeIds?.generateNodeId,
+      })
+    },
+
+    retryMissingGeneration: async (jobId) => {
+      const document = get().document
+      const job = document.generationJobs.find((item) => item.id === jobId)
+      if (!job?.missingOutputCount) return setGenerationError('本任务没有待补生成的候选。')
+      const request = requestFromPersistedGenerationJob(document, job)
+      if (!request?.recipe) return setGenerationError('无法恢复本次生成配方，请基于任一候选继续生成。')
+      if (request.kind === 'refinement' && request.targetNodeId) {
+        return get().runRefinement({
+          targetNodeId: request.targetNodeId, prompt: request.prompt, batchCount: job.missingOutputCount,
+          settings: request.settings, recipe: request.recipe, rootRecipe: request.rootRecipe,
+          sourceGraphNodeId: request.sourceGraphNodeId, refinementMode: request.refinementMode,
+        })
+      }
+      return get().runGeneration({
+        prompt: request.prompt, batchCount: job.missingOutputCount, settings: request.settings,
+        recipe: request.recipe, rootRecipe: request.rootRecipe, sourceGraphNodeId: request.sourceGraphNodeId,
+      })
+    },
+
+    clearGenerationError: () => {
+      if (get().generationStatus !== 'error') return
+      set({ generationStatus: 'idle', generationError: null })
+    },
+  }
+
+  return { actions, stopPolling, pollJob, recoverTaskNodeJobs, recoverResults, createSubmissionKey: createGenerationSubmissionKey }
+}

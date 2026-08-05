@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createBatchVariationRun, mapBatchVariationWithConcurrency, summarizeBatchVariationRun } from './batchVariations.ts'
+import { createBatchVariationRun, mapBatchVariationWithConcurrency, nextResumableBatchVariationRun, summarizeBatchVariationRun } from './batchVariations.ts'
 
 const settings = { model: 'gpt-image-2', aspectRatio: '3:4' as const, resolution: '2K' as const }
 
@@ -51,4 +51,32 @@ test('部分成功不会被标记成全量成功', () => {
   assert.deepEqual(summarizeBatchVariationRun([
     { status: 'succeeded' }, { status: 'failed' }, { status: 'cancelled' },
   ]), { status: 'partial', succeeded: 1, failed: 2 })
+})
+
+test('恢复时只选择队列顺序中的首个未完成父任务', () => {
+  const completed = createBatchVariationRun({
+    now: 100, sourceResultNodeId: 'result-a',
+    group: { id: 'group-a', name: 'A', role: '场景', assetIds: ['asset-a'] },
+    prompt: '替换场景', candidatesPerAsset: 1, maximumBatchCount: 4, settings,
+    resolveAssetName: (assetId) => assetId,
+  })
+  const running = createBatchVariationRun({
+    now: 200, sourceResultNodeId: 'result-b',
+    group: { id: 'group-b', name: 'B', role: '场景', assetIds: ['asset-b'] },
+    prompt: '替换场景', candidatesPerAsset: 1, maximumBatchCount: 4, settings,
+    resolveAssetName: (assetId) => assetId,
+  })
+  const queued = createBatchVariationRun({
+    now: 300, sourceResultNodeId: 'result-c',
+    group: { id: 'group-c', name: 'C', role: '场景', assetIds: ['asset-c'] },
+    prompt: '替换场景', candidatesPerAsset: 1, maximumBatchCount: 4, settings,
+    resolveAssetName: (assetId) => assetId,
+  })
+
+  assert.equal(nextResumableBatchVariationRun([
+    { ...completed, status: 'succeeded' },
+    { ...running, status: 'running' },
+    queued,
+  ])?.id, running.id)
+  assert.equal(nextResumableBatchVariationRun([{ ...completed, status: 'failed' }]), undefined)
 })

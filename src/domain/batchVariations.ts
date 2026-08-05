@@ -53,6 +53,11 @@ export function summarizeBatchVariationRun(items: Array<Pick<BatchVariationRun['
   return { status, succeeded, failed }
 }
 
+/** 父任务按文档顺序串行恢复，终态任务不会重新进入协调器。 */
+export function nextResumableBatchVariationRun(runs: BatchVariationRun[]) {
+  return runs.find((run) => run.status === 'queued' || run.status === 'running')
+}
+
 /** 共享的有界并发执行器；避免 Promise.all 同时提交全部变体。 */
 export async function mapBatchVariationWithConcurrency<T>(
   items: T[],

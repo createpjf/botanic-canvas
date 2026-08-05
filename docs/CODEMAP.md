@@ -9,11 +9,11 @@
 | 画布节点与连线 | `src/domain/canvas.ts` | `generationRecipe.ts`、`generateNodeCreation.ts`、`canvasNodeLayout.ts` | 对应 `src/domain/*.test.ts`；输入连线是生成配方唯一来源 |
 | 输出节点与血缘 | `src/domain/generationOutputPlacement.ts` | `src/store/canvasGenerationProjection.ts`、`server/generationResultReconciliation.mjs`、`canvasPresentation.ts` | 每个输出独立成节点；候选 ID 稳定 |
 | 应用登录与入口 | `src/App.tsx` | `src/lib/productSession.ts`、功能模块按需加载 | 应用壳不拥有画布或领域规则 |
-| 画布交互与面板 | `src/features/canvas/CanvasWorkspace.tsx` | `CanvasEditorViews.tsx`、`CanvasWorkspacePanels.tsx`、`workspaceProjectCoordinator.ts`、`canvasWorkspaceNavigation.ts`、`exclusiveSurface.ts`、`overlayPriority.ts` | `src/features/canvas/*.test.ts`、UI E2E；项目 I/O 与竞态归项目协调器，工作区只组合导航和画布交互 |
+| 画布交互与面板 | `src/features/canvas/CanvasWorkspace.tsx` | `CanvasEditorViews.tsx`、`CanvasWorkspacePanels.tsx`、`workspaceProjectCoordinator.ts`、`useCanvasWorkspaceSynchronization.ts`、`useCanvasAgentExecutionBridge.ts`、`useCanvasInteractionCoordinator.ts`、`canvasWorkspaceNavigation.ts` | `src/features/canvas/*.test.ts`、UI E2E；项目 I/O、同步、Agent 执行桥和 React Flow 交互分别归对应协调器，工作区只组合导航与面板 |
 | Agent 面板交互 | `src/features/agent/AgentWorkspace.tsx` | `AgentConversationMessage.tsx`、`AgentComposer.tsx`、`AgentUtilityPanels.tsx`、`useAgentMessageDelivery.ts`、`useAgentRuntimeTrace.ts` | Agent 领域/Lib 测试；工作区只编排，对话卡和 Composer 各自拥有展示交互 |
-| 画布应用状态 | `src/store/canvasStore.types.ts` | `canvasStore.ts`、`canvasDocumentMigration.ts`、`canvasDocumentAssets.ts`、`canvasGenerationLifecycle.ts`、`canvasGenerationProjection.ts`、`canvasTemplateHistoryActions.ts`、`canvasAgentActions.ts`、`src/lib/db.ts` | 先核对 Store 端口；模板/历史命令不回流 UI；远端新结果不得被旧草稿覆盖 |
+| 画布应用状态 | `src/store/canvasStore.types.ts` | `canvasStore.ts`、`canvasDocumentLifecycleActions.ts`、`canvasAssetGraphActions.ts`、`canvasGenerationActions.ts`、`canvasGenerationLifecycle.ts`、`canvasGenerationProjection.ts`、`canvasTemplateHistoryActions.ts`、`canvasAgentActions.ts`、`canvasBatchVariationActions.ts` | 先核对 Store 端口；文档、图谱素材、普通生成、模板/历史、Agent 和批量变体命令分别由深模块拥有；远端新结果不得被旧草稿覆盖 |
 | 普通生成任务 | `src/lib/generationApi.ts` | `server/generationService.mjs`、`generationProcessor.mjs`、`generationProvider.mjs` | `server/generation*.test.mjs`；同一次重试复用幂等键 |
-| 批量变化 | `src/domain/batchVariations.ts` | Store 批量协调、服务端 Processor | `batchVariations.test.ts`、Processor 测试；计划先限制总输出，有界并发，各分支独立持久化和恢复 |
+| 批量变化 | `src/domain/batchVariations.ts` | `src/store/canvasBatchVariationActions.ts`、服务端 Processor | `batchVariations.test.ts`、Processor 测试；计划先限制总输出，Store 以有界并发协调独立子任务及恢复，各分支独立持久化 |
 | Agent 对话分流 | `src/domain/agentChatContract.ts` | `src/lib/agentApi.ts`、`server/botanicAgentChat.mjs` | 对话测试；浏览器不发送图片字节或私有 URL |
 | Agent 计划和执行 | `src/domain/agentPlanContract.ts` | `agent.ts`、`server/botanicAgentPlanner.mjs`、`botanicAgentTools.mjs`、`agentRunGenerationService.mjs` | Agent Planner/Tool/Run 测试；Run 生成复用持久化幂等任务，外部行动默认确认 |
 | Agent 持久化 | `server/botanicAgentPersistence.mjs` | 三个 ProductStore Adapter、Canvas 兼容视图 | 独立实体合并测试；Memory 墓碑永久胜出 |
