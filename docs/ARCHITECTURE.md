@@ -19,12 +19,12 @@ UI（App / features / components）
 | 模块 | 主要位置 | 对外接口 | 允许依赖 |
 | --- | --- | --- | --- |
 | 应用壳 | `src/App.tsx` | 登录恢复与功能入口按需加载 | 会话 `lib` 与功能模块 |
-| 功能 UI | `src/features/` | 功能级交互与异步协调 | Store、领域契约和 `lib` 高层接口 |
+| 功能 UI | `src/features/` | 功能级交互与异步协调；Agent 内部分离消息交付、运行轨迹和工具面板 | Store、领域契约和 `lib` 高层接口 |
 | 共享 UI | `src/components/` | 渲染属性与用户事件 | 领域类型与共享 UI，不直接依赖 Store 或网络 |
-| 画布应用模块 | `src/store/` | `canvasStore.types.ts` 契约、画布命令、状态与任务生命周期 | `domain`、`lib`、种子数据 |
+| 画布应用模块 | `src/store/` | `canvasStore.types.ts` 契约；`canvasAgentActions.ts` 拥有 Agent 实体命令，其余画布命令由 `canvasStore.ts` 组合 | `domain`、`lib`、种子数据 |
 | 领域契约 | `src/domain/` | 画布数据、生成结果放置等纯规则 | 类型依赖与纯计算，不依赖 UI、Store、网络或存储 |
 | 浏览器基础设施 | `src/lib/` | 会话、生成请求、项目文档与离线草稿接口 | `domain`、浏览器/网络 Adapter，不依赖 UI 或 Store |
-| Node API | `server/index.mjs` | 鉴权后的 HTTP 与 WebSocket 接口 | 队列、处理器、运行时组合根 |
+| Node API | `server/index.mjs` | 鉴权后的 HTTP 与 WebSocket 接口；项目与生成资源分别由独立 Route 模块处理 | 队列、处理器、运行时组合根 |
 | 授权 | `server/authorization.mjs`、`server/projectAuthorization.mjs` | 工作区/项目权限决策与 403/404 语义 | ProductStore 的用户与项目成员关系，不依赖 UI |
 | 生成处理器 | `server/generationProcessor.mjs` | `processGenerationJob(jobId)` | 注入的 ProductStore、Media 与 Provider |
 | Adapter | `server/*Store.mjs`、`server/objectStore.mjs` 等 | 产品存储、媒体、队列、第三方图像能力 | 各自外部系统；由 `server/runtime.mjs` 选择并组装 |

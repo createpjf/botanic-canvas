@@ -79,3 +79,35 @@ test('会话资源对不支持的方法返回 405 和允许的方法目录', asy
   assert.equal(JSON.parse(response.body).error.code, 'METHOD_NOT_ALLOWED')
   assert.equal(headers.Allow, 'GET, POST, DELETE')
 })
+
+test('项目集合资源对不支持的方法返回 405 和允许的方法目录', async () => {
+  const application = createBotanicHttpServer(testDependencies())
+  const { headers, response } = testResponse()
+
+  await application.handleRequest({
+    method: 'PUT',
+    url: '/api/projects',
+    headers: { host: 'localhost' },
+    socket: { encrypted: false },
+  }, response)
+
+  assert.equal(response.statusCode, 405)
+  assert.equal(JSON.parse(response.body).error.code, 'METHOD_NOT_ALLOWED')
+  assert.equal(headers.Allow, 'GET, POST')
+})
+
+test('生成任务集合资源对不支持的方法返回 405 和允许的方法目录', async () => {
+  const application = createBotanicHttpServer(testDependencies())
+  const { headers, response } = testResponse()
+
+  await application.handleRequest({
+    method: 'GET',
+    url: '/api/generation-jobs',
+    headers: { host: 'localhost' },
+    socket: { encrypted: false },
+  }, response)
+
+  assert.equal(response.statusCode, 405)
+  assert.equal(JSON.parse(response.body).error.code, 'METHOD_NOT_ALLOWED')
+  assert.equal(headers.Allow, 'POST')
+})

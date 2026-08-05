@@ -2,8 +2,8 @@ import { createServer } from 'node:http'
 import { Readable } from 'node:stream'
 import { randomUUID } from 'node:crypto'
 import { createGenerationProcessor } from './generationProcessor.mjs'
-import { GenerationError, persistedGenerationJob, publicGenerationJob, validateGenerationInput } from './generationProvider.mjs'
-import { reconcileGenerationResults, retargetGenerationJobForRetry } from './generationResultReconciliation.mjs'
+import { GenerationError, persistedGenerationJob, publicGenerationJob } from './generationProvider.mjs'
+import { retargetGenerationJobForRetry } from './generationResultReconciliation.mjs'
 import { PromptRefinementError, refinePrompt, validatePromptRefinementInput } from './promptRefinementProvider.mjs'
 import { BotanicAgentPlannerError, planBotanicGeneration, validateBotanicAgentPlanInput } from './botanicAgentPlanner.mjs'
 import { BotanicAgentChatError, chatWithBotanicAgent, validateBotanicAgentChatInput } from './botanicAgentChat.mjs'
@@ -14,9 +14,7 @@ import { AgentToolRuntimeError, executeConfirmedAgentAction } from './agentToolR
 import { botanicAgentBuiltInSkill, createBotanicAgentActionToolRegistry } from './botanicAgentTools.mjs'
 import { McpClientError } from './mcpClient.mjs'
 import { createAgentRunEventSubscriber } from './agentRunEventBus.mjs'
-import { applyCanvasDocumentPatch } from './canvasDocumentPatch.mjs'
-import { generationIdempotencyKey, generationJobIdForIdempotency } from './generationIdempotency.mjs'
-import { generationTimeoutForModel, providerForModel } from './generationModels.mjs'
+import { generationJobIdForIdempotency } from './generationIdempotency.mjs'
 import { createProjectRealtimeHub } from './realtimeHub.mjs'
 import { publishProjectUpdatedSafely } from './projectUpdatePublisher.mjs'
 import { issueRealtimeTicket } from './realtimeTicket.mjs'
@@ -27,6 +25,8 @@ import { decodeArtifactCursor, encodeArtifactCursor } from './botanicArtifactInd
 import { productStoreSupports } from './productStoreContract.mjs'
 import { matchBotanicHttpRoutes } from './httpRouteTable.mjs'
 import { createSessionRouteHandler } from './sessionRoutes.mjs'
+import { createProjectRouteHandler } from './projectRoutes.mjs'
+import { createGenerationRouteHandler } from './generationRoutes.mjs'
 
 export function createBotanicHttpServer({
   config,
@@ -72,6 +72,7 @@ function json(response, statusCode, body, headers = {}) {
     ...headers,
   })
   response.end(statusCode === 204 ? undefined : JSON.stringify(body))
+  return true
 }
 
 function error(response, statusCode, code, message) {
@@ -304,6 +305,38 @@ const handleSessionRoute = createSessionRouteHandler({
   sessionCookie,
 })
 
+const handleProjectRoute = createProjectRouteHandler({
+  config,
+  productStore,
+  mediaService,
+  json,
+  error,
+  readJson,
+  text,
+  enumValue,
+  requireUser,
+  requireSensitiveSession,
+  enforceRateLimit,
+  publishProjectUpdated,
+  expectedGraphRevision,
+  projectResponseHeaders,
+})
+
+const handleGenerationRoute = createGenerationRouteHandler({
+  config,
+  productStore,
+  redisQueue,
+  json,
+  error,
+  readJson,
+  text,
+  requireUser,
+  enforceRateLimit,
+  enqueue,
+  publishProjectUpdated,
+  projectResponseHeaders,
+})
+
 const handleRequest = async (request, response) => {
   const requestId = randomUUID()
   response.setHeader('X-Request-ID', requestId)
@@ -315,12 +348,6 @@ const handleRequest = async (request, response) => {
     const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`)
     const routeMatches = matchBotanicHttpRoutes(url.pathname)
     const {
-      document: documentMatch,
-      project: projectMatch,
-      projectMembers: memberMatch,
-      projectAudit: auditMatch,
-      projectGenerationJobs: projectGenerationJobsMatch,
-      projectGenerationReconcile: projectGenerationReconcileMatch,
       projectAgentRuns: projectAgentRunsMatch,
       projectAgentSkills: projectAgentSkillsMatch,
       projectAgentState: projectAgentStateMatch,
@@ -333,7 +360,6 @@ const handleRequest = async (request, response) => {
       agentRunCancel: agentRunCancelMatch,
       agentBranchRetry: agentBranchRetryMatch,
       globalAsset: assetMatch,
-      generationJob: jobMatch,
       media: mediaMatch,
       user: userMatch,
       userInviteResend: userInviteResendMatch,
@@ -491,169 +517,8 @@ const handleRequest = async (request, response) => {
       return json(response, 204)
     }
 
-    if (request.method === 'GET' && url.pathname === '/api/projects') {
-      const user = await requireUser(request)
-      return json(response, 200, { projects: await productStore.listProjects(user.id) })
-    }
-    if (request.method === 'POST' && url.pathname === '/api/projects') {
-      const user = await requireUser(request)
-      const body = await readJson(request)
-      const document = body?.document
-      if (!document || typeof document.id !== 'string' || typeof document.name !== 'string') {
-        return error(response, 400, 'INVALID_DOCUMENT', '新建项目格式无效。')
-      }
-      try {
-        await requireProjectPermission(productStore, user.id, document.id, 'edit', { allowMissing: true })
-        const normalized = await mediaService.normalizeDocument(document, { ownerId: user.id, projectId: document.id })
-        const saved = await productStore.writeProject(user.id, normalized)
-        await publishProjectUpdated(saved, user.id)
-        return json(response, saved.created ? 201 : 200, saved, projectResponseHeaders(saved))
-      } catch (caught) {
-        if (caught?.code === 'MEDIA_VALIDATION_FAILED') return error(response, 400, caught.code, caught.message)
-        if (caught?.code === 'PROJECT_CONFLICT' || caught?.code === 'CANVAS_GRAPH_CONFLICT') return error(response, 409, caught.code, caught.message)
-        return error(response, 403, 'PROJECT_CREATE_FORBIDDEN', caught instanceof Error ? caught.message : '无法新建项目。')
-      }
-    }
-    if (projectGenerationJobsMatch && request.method === 'GET') {
-      const user = await requireUser(request)
-      const projectId = decodeURIComponent(projectGenerationJobsMatch[1])
-      await requireProjectPermission(productStore, user.id, projectId, 'read')
-      const jobs = await productStore.listGenerationJobsForProject(user.id, projectId, Number(url.searchParams.get('limit') ?? 60))
-      if (!jobs) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
-      return json(response, 200, {
-        jobs: jobs.map((job) => publicGenerationJob(job, { includeIdempotencyKey: job.ownerId === user.id })),
-      })
-    }
-    if (projectGenerationReconcileMatch && request.method === 'POST') {
-      const user = await requireUser(request)
-      const projectId = decodeURIComponent(projectGenerationReconcileMatch[1])
-      await requireProjectPermission(productStore, user.id, projectId, 'edit')
-      const project = await productStore.readProject(user.id, projectId)
-      if (!project) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
-      const jobs = await productStore.listGenerationJobsForProject(user.id, projectId, 120)
-      const reconciled = reconcileGenerationResults(project.document, jobs ?? [])
-      if (!reconciled.changed) return json(response, 200, { ...project, changed: false }, projectResponseHeaders(project))
-      try {
-        const saved = await productStore.writeProject(user.id, reconciled.document, project.revision, project.graphRevision)
-        await publishProjectUpdated(saved, user.id)
-        return json(response, 200, { ...saved, changed: true }, projectResponseHeaders(saved))
-      } catch (caught) {
-        if (caught?.code === 'PROJECT_CONFLICT' || caught?.code === 'CANVAS_GRAPH_CONFLICT') return error(response, 409, caught.code, caught.message)
-        return error(response, 403, 'PROJECT_WRITE_FORBIDDEN', caught instanceof Error ? caught.message : '历史结果回填失败。')
-      }
-    }
-    if (projectMatch && request.method === 'PATCH') {
-      const user = await requireUser(request)
-      const projectId = decodeURIComponent(projectMatch[1])
-      await requireProjectPermission(productStore, user.id, projectId, 'edit')
-      const body = await readJson(request)
-      const name = text(body?.name, '项目名称', 60)
-      const current = await productStore.readProject(user.id, projectId)
-      if (!current) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
-      const expected = request.headers['if-match']?.replaceAll('"', '')
-      const expectedRevision = expected && /^\d+$/.test(expected) ? Number(expected) : current.revision
-      try {
-        const saved = await productStore.writeProject(user.id, {
-          ...current.document,
-          name,
-          updatedAt: Date.now(),
-        }, expectedRevision, current.graphRevision)
-        await publishProjectUpdated(saved, user.id)
-        return json(response, 200, saved, projectResponseHeaders(saved))
-      } catch (caught) {
-        if (caught?.code === 'PROJECT_CONFLICT' || caught?.code === 'CANVAS_GRAPH_CONFLICT') return error(response, 409, caught.code, caught.message)
-        return error(response, 403, 'PROJECT_RENAME_FORBIDDEN', caught instanceof Error ? caught.message : '无法重命名项目。')
-      }
-    }
-    if (projectMatch && request.method === 'DELETE') {
-      const user = await requireUser(request)
-      await requireSensitiveSession(request)
-      const projectId = decodeURIComponent(projectMatch[1])
-      await requireProjectPermission(productStore, user.id, projectId, 'delete')
-      try {
-        const deleted = await productStore.deleteProject(user.id, projectId)
-        if (!deleted) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有删除权限。')
-        return json(response, 204)
-      } catch (caught) {
-        return error(response, 403, 'PROJECT_DELETE_FORBIDDEN', caught instanceof Error ? caught.message : '没有删除项目的权限。')
-      }
-    }
-    if (documentMatch && request.method === 'GET') {
-      const user = await requireUser(request)
-      const projectId = decodeURIComponent(documentMatch[1])
-      await requireProjectPermission(productStore, user.id, projectId, 'read')
-      const project = await productStore.readProject(user.id, projectId)
-      if (!project) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
-      return json(response, 200, project, projectResponseHeaders(project))
-    }
-    if (documentMatch && request.method === 'PUT') {
-      const user = await requireUser(request)
-      const projectId = decodeURIComponent(documentMatch[1])
-      await requireProjectPermission(productStore, user.id, projectId, 'edit', { allowMissing: true })
-      const document = await readJson(request)
-      if (!document || document.id !== projectId || typeof document.name !== 'string') return error(response, 400, 'INVALID_DOCUMENT', '项目文档格式无效。')
-      const expected = request.headers['if-match']?.replaceAll('"', '')
-      const expectedRevision = expected && /^\d+$/.test(expected) ? Number(expected) : undefined
-      const graphRevision = expectedGraphRevision(request, undefined)
-      try {
-        const normalized = await mediaService.normalizeDocument(document, { ownerId: user.id, projectId })
-        const saved = await productStore.writeProject(user.id, normalized, expectedRevision, graphRevision)
-        await publishProjectUpdated(saved, user.id)
-        return json(response, saved.created ? 201 : 200, saved, projectResponseHeaders(saved))
-      } catch (caught) {
-        if (caught?.code === 'MEDIA_VALIDATION_FAILED') return error(response, 400, caught.code, caught.message)
-        if (caught?.code === 'PROJECT_CONFLICT' || caught?.code === 'CANVAS_GRAPH_CONFLICT') return error(response, 409, caught.code, caught.message)
-        return error(response, 403, 'PROJECT_WRITE_FORBIDDEN', caught instanceof Error ? caught.message : '没有编辑项目的权限。')
-      }
-    }
-    if (documentMatch && request.method === 'PATCH') {
-      const user = await requireUser(request)
-      const projectId = decodeURIComponent(documentMatch[1])
-      await requireProjectPermission(productStore, user.id, projectId, 'edit')
-      const expected = request.headers['if-match']?.replaceAll('"', '')
-      const expectedRevision = expected && /^\d+$/.test(expected) ? Number(expected) : undefined
-      const graphRevision = expectedGraphRevision(request, undefined)
-      try {
-        const current = await productStore.readProject(user.id, projectId)
-        if (!current) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
-        const patch = await readJson(request)
-        const document = applyCanvasDocumentPatch(current.document, patch)
-        const normalized = await mediaService.normalizeDocument(document, { ownerId: user.id, projectId })
-        const saved = await productStore.writeProject(user.id, normalized, expectedRevision, graphRevision)
-        await publishProjectUpdated(saved, user.id)
-        return json(response, 200, saved, projectResponseHeaders(saved))
-      } catch (caught) {
-        if (caught?.code === 'MEDIA_VALIDATION_FAILED') return error(response, 400, caught.code, caught.message)
-        if (caught?.code === 'PROJECT_CONFLICT' || caught?.code === 'CANVAS_GRAPH_CONFLICT') return error(response, 409, caught.code, caught.message)
-        if (caught instanceof TypeError) return error(response, 400, 'INVALID_DOCUMENT_PATCH', caught.message)
-        return error(response, 403, 'PROJECT_WRITE_FORBIDDEN', caught instanceof Error ? caught.message : '没有编辑项目的权限。')
-      }
-    }
-    if (memberMatch && request.method === 'POST') {
-      const user = await requireUser(request)
-      await requireSensitiveSession(request)
-      const projectId = decodeURIComponent(memberMatch[1])
-      await requireProjectPermission(productStore, user.id, projectId, 'manage-members')
-      if (!await enforceRateLimit(response, {
-        scope: 'member-mutation', subject: user.id,
-        limit: config.security.memberMutationsPerHour, windowMs: 60 * 60_000,
-      })) return
-      const body = await readJson(request)
-      try {
-        await productStore.addProjectMember(user.id, projectId, text(body?.userId, '成员', 160), enumValue(body?.role, ['owner', 'editor', 'viewer'], '成员角色'))
-        return json(response, 204)
-      } catch (caught) {
-        return error(response, 403, 'PROJECT_MEMBER_FORBIDDEN', caught instanceof Error ? caught.message : '成员权限更新失败。')
-      }
-    }
-    if (auditMatch && request.method === 'GET') {
-      const user = await requireUser(request)
-      const projectId = decodeURIComponent(auditMatch[1])
-      await requireProjectPermission(productStore, user.id, projectId, 'read-audit')
-      const events = await productStore.listAuditEvents(user.id, projectId, Number(url.searchParams.get('limit') ?? 100))
-      if (!events) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
-      return json(response, 200, { events })
-    }
+    if (await handleProjectRoute(request, response, url, routeMatches)) return
+    if (await handleGenerationRoute(request, response, url, routeMatches)) return
 
     if (request.method === 'GET' && url.pathname === '/api/global-assets') {
       const user = await requireUser(request)
@@ -1085,91 +950,6 @@ const handleRequest = async (request, response) => {
       }
     }
 
-    if (request.method === 'POST' && url.pathname === '/api/generation-jobs') {
-      const user = await requireUser(request)
-      const idempotencyKey = generationIdempotencyKey(request.headers['idempotency-key'])
-      if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', '任务提交标识无效，请刷新页面后重试。')
-      const rawInput = await readJson(request)
-      const input = validateGenerationInput(rawInput, {
-        models: config.modelOptions?.length ? config.modelOptions : config.models,
-        maximumBatchCount: config.maximumBatchCount,
-        maximumReferenceBytes: config.maximumReferenceBytes,
-      })
-      const selectedModel = providerForModel(config.modelOptions ?? [], input.settings.model)
-      if (!selectedModel) return error(response, 503, 'PROVIDER_NOT_CONFIGURED', '所选生成模型尚未配置，请检查对应供应商 API Key。')
-      await requireProjectPermission(productStore, user.id, input.projectId, 'edit')
-      let agentRun
-      if (rawInput.agentRun !== undefined) {
-        const runId = text(rawInput.agentRun?.runId, 'Agent Run', 160)
-        const branchId = text(rawInput.agentRun?.branchId, 'Agent 分支', 160)
-        const run = await productStore.readAgentRun(user.id, runId)
-        if (!run || run.projectId !== input.projectId) return error(response, 404, 'AGENT_RUN_NOT_FOUND', '未找到当前项目的 Agent Run。')
-        if (!run.branches.some((branch) => branch.id === branchId)) return error(response, 404, 'AGENT_BRANCH_NOT_FOUND', '未找到 Agent 分支。')
-        agentRun = { runId, branchId }
-      }
-      const id = generationJobIdForIdempotency(user.id, idempotencyKey)
-      const existing = await productStore.readGenerationJob(user.id, id)
-      if (existing) return json(response, 202, publicGenerationJob(existing, { includeIdempotencyKey: existing.ownerId === user.id }))
-      if (!await enforceRateLimit(response, {
-        scope: 'generation-output', subject: user.id,
-        limit: config.security.generationOutputsPerDay, windowMs: 24 * 60 * 60_000,
-        cost: input.batchCount,
-      })) return
-      const timestamp = Date.now()
-      const job = {
-        id, ownerId: user.id, projectId: input.projectId, status: 'queued', kind: input.kind,
-        createdAt: timestamp, updatedAt: timestamp, batchCount: input.batchCount, settings: input.settings,
-        provider: selectedModel.provider === 'minimax'
-          ? selectedModel.mediaKind === 'video' ? 'minimax-video' : 'minimax-image'
-          : 'openai-images',
-        refinementMode: input.refinementMode,
-        idempotencyKey,
-        outputs: [], error: undefined, rawInput, agentRun,
-      }
-      await productStore.putGenerationJob(user.id, persistedGenerationJob(job))
-      try {
-        await enqueue(job.id)
-      } catch (caught) {
-        const failed = { ...job, status: 'failed', error: '生成任务无法进入队列，请检查 Redis Worker 后重试。', updatedAt: Date.now() }
-        await productStore.putGenerationJob(user.id, persistedGenerationJob(failed))
-        return error(response, 503, 'QUEUE_UNAVAILABLE', failed.error)
-      }
-      return json(response, 202, publicGenerationJob(job, { includeIdempotencyKey: true }))
-    }
-    if (jobMatch && request.method === 'GET' && !jobMatch[2]) {
-      const user = await requireUser(request)
-      const job = await productStore.readGenerationJob(user.id, decodeURIComponent(jobMatch[1]))
-      if (!job) return error(response, 404, 'JOB_NOT_FOUND', '未找到该真实生成任务。')
-      const maximumTaskDurationMs = generationTimeoutForModel(config.modelOptions ?? [], job.settings?.model, {
-        imageTimeoutMs: config.generationTimeoutMs ?? 5 * 60_000,
-        videoTimeoutMs: config.videoGenerationTimeoutMs ?? 20 * 60_000,
-      })
-      if ((job.status === 'queued' || job.status === 'running') && Date.now() - job.createdAt >= maximumTaskDurationMs) {
-        const failed = {
-          ...job,
-          status: 'failed',
-          error: '生成任务超过模型等待时限，已停止，请稍后重试。',
-          updatedAt: Date.now(),
-        }
-        await productStore.putGenerationJob(user.id, persistedGenerationJob(failed))
-        if (job.status === 'queued') await redisQueue?.cancel(job.id)
-        return json(response, 200, publicGenerationJob(failed, { includeIdempotencyKey: failed.ownerId === user.id }))
-      }
-      return json(response, 200, publicGenerationJob(job, { includeIdempotencyKey: job.ownerId === user.id }))
-    }
-    if (jobMatch && request.method === 'POST' && jobMatch[2] === 'cancel') {
-      const user = await requireUser(request)
-      const jobId = decodeURIComponent(jobMatch[1])
-      const job = await productStore.readGenerationJob(user.id, jobId)
-      if (!job) return error(response, 404, 'JOB_NOT_FOUND', '未找到该真实生成任务。')
-      if (job.status === 'queued' || job.status === 'running') {
-        const cancelled = { ...job, status: 'cancelled', error: undefined, updatedAt: Date.now() }
-        await productStore.putGenerationJob(user.id, persistedGenerationJob(cancelled))
-        await redisQueue?.cancel(jobId)
-        return json(response, 200, publicGenerationJob(cancelled, { includeIdempotencyKey: cancelled.ownerId === user.id }))
-      }
-      return json(response, 200, publicGenerationJob(job, { includeIdempotencyKey: job.ownerId === user.id }))
-    }
     if (projectMediaMatch && request.method === 'POST') {
       const user = await requireUser(request)
       if (!await enforceRateLimit(response, {
