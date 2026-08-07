@@ -1,7 +1,7 @@
 import type { Edge } from '@xyflow/react'
 import type { CanvasNode } from '../domain/canvas'
 import { createCollaborativeGraph, type CollaborativeGraph } from '../domain/collaborativeGraph'
-import type { AgentRunUpdatedRealtimeEvent, CollaborationPresenceRealtimeEvent, ProjectUpdatedRealtimeEvent } from '../domain/realtimeSync'
+import type { AgentRunUpdatedRealtimeEvent, CanvasCrdtRealtimeEvent, CollaborationPresenceRealtimeEvent, ProjectUpdatedRealtimeEvent } from '../domain/realtimeSync'
 import { openProjectRealtimeChannel } from './projectRealtime'
 
 function updateToBase64(update: Uint8Array) {
@@ -37,7 +37,7 @@ export function connectCanvasCollaboration({
   projectId: string
   initialGraph: CollaborativeGraph
   onRemoteGraph: (graph: CollaborativeGraph) => void
-  onRemoteCanvasChanged?: (event: { actorId?: string }) => void
+  onRemoteCanvasChanged?: (event: Pick<CanvasCrdtRealtimeEvent, 'actorId' | 'actorName' | 'activity'>) => void
   onProjectUpdated: (event: ProjectUpdatedRealtimeEvent) => void
   onAgentRunUpdated: (event: AgentRunUpdatedRealtimeEvent) => void
   onPresenceChanged?: (event: CollaborationPresenceRealtimeEvent) => void
@@ -70,7 +70,7 @@ export function connectCanvasCollaboration({
     }
     try {
       graph.applyRemoteUpdate(base64ToUpdate(event.update))
-      onRemoteCanvasChanged?.({ actorId: event.actorId })
+      onRemoteCanvasChanged?.({ actorId: event.actorId, actorName: event.actorName, activity: event.activity })
     } catch {
       // 损坏增量不影响 HTTP 权威文档与后续实时消息。
     }

@@ -26,7 +26,7 @@ test('其他设备发布当前项目的新版本时刷新画布', () => {
 
 test('保留项目更新的协作者来源，供界面解释远端变更', () => {
   const event = {
-    type: 'project.updated', projectId: 'project-1', revision: 5, updatedAt: 200, actorId: 'member-2',
+    type: 'project.updated', projectId: 'project-1', revision: 5, updatedAt: 200, actorId: 'member-2', actorName: 'Mia',
   }
   assert.deepEqual(parseProjectRealtimeEvent(event, 'project-1'), event)
 })
@@ -37,7 +37,7 @@ test('只接受当前项目且成员列表有效的协作在线状态', () => {
     projectId: 'project-1',
     members: [
       { userId: 'member-1', connectionCount: 2 },
-      { userId: 'member-2', connectionCount: 1 },
+      { userId: 'member-2', actorName: 'Mia', connectionCount: 1 },
     ],
   }
   assert.deepEqual(parseProjectRealtimeEvent(event, 'project-1'), event)
@@ -83,6 +83,18 @@ test('只接受当前项目且格式有效的 CRDT 增量', () => {
     projectId: 'project-1',
     update: 'not base64!',
   }, 'project-1'), undefined)
+})
+
+test('CRDT 增量携带可持久化的协作动态', () => {
+  const event = {
+    type: 'canvas.crdt.update', projectId: 'project-1', update: 'AQID', actorId: 'member-2', actorName: 'Mia',
+    activity: {
+      id: 'activity-1', actorId: 'member-2', actorName: 'Mia', kind: 'canvas', summary: '新增了「海边版本」',
+      target: { kind: 'node', nodeId: 'node-2' }, occurredAt: 200, unread: true, count: 1,
+    },
+  }
+  assert.deepEqual(parseProjectRealtimeEvent(event, 'project-1'), event)
+  assert.equal(parseProjectRealtimeEvent({ ...event, activity: { id: 'broken' } }, 'project-1'), undefined)
 })
 
 test('只接受当前项目且格式完整的 Agent Run 进度', () => {

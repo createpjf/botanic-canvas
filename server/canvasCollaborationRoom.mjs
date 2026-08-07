@@ -124,12 +124,13 @@ export function createCanvasCollaborationRoom({ state, append, compact, compactE
     }
     if (!applied) return { applied: false, graph: clone(graph) }
 
+    const previousGraph = clone(graph)
     graph = materializeGraph(document, graph, changedNodeIds, changedEdgeIds)
     const saved = await append({ update: encodedUpdate, graph: clone(graph) }, actorId)
     if (saved.updateCount >= compactEvery) {
       await compact({ snapshot: updateToBase64(Y.encodeStateAsUpdate(document)), graph: clone(graph) }, actorId)
     }
-    return { applied: true, graph: clone(graph), ...saved }
+    return { applied: true, previousGraph, graph: clone(graph), ...saved }
   }
 
   return {

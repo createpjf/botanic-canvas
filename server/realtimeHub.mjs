@@ -1,6 +1,7 @@
 import { WebSocket, WebSocketServer } from 'ws'
 import { createCanvasCollaborationRoom } from './canvasCollaborationRoom.mjs'
 import { verifyRealtimeTicket } from './realtimeTicket.mjs'
+import { collaborationChangeFromDocuments } from './collaborationActivityPersistence.mjs'
 
 export function createProjectRealtimeHub({ server, productStore, ticketSecret, roomIdleMs = 60_000 }) {
   if (!server || !productStore || !ticketSecret) throw new TypeError('实时服务配置不完整。')
@@ -14,14 +15,16 @@ export function createProjectRealtimeHub({ server, productStore, ticketSecret, r
     const members = new Map()
     for (const client of clientsByProject.get(projectId) ?? []) {
       if (!client.presenceSubscribed || client.readyState !== WebSocket.OPEN) continue
-      members.set(client.userId, (members.get(client.userId) ?? 0) + 1)
+      const member = members.get(client.userId) ?? { actorName: client.actorName, connectionCount: 0 }
+      member.connectionCount += 1
+      members.set(client.userId, member)
     }
     const payload = JSON.stringify({
       type: 'collaboration.presence',
       projectId,
       members: [...members.entries()]
         .sort(([left], [right]) => left.localeCompare(right))
-        .map(([userId, connectionCount]) => ({ userId, connectionCount })),
+        .map(([userId, member]) => ({ userId, ...(member.actorName ? { actorName: member.actorName } : {}), connectionCount: member.connectionCount })),
     })
     for (const client of clientsByProject.get(projectId) ?? []) {
       if (client.presenceSubscribed && client.readyState === WebSocket.OPEN) client.send(payload)
@@ -106,6 +109,7 @@ export function createProjectRealtimeHub({ server, productStore, ticketSecret, r
     clients.add(socket)
     clientsByProject.set(context.projectId, clients)
     socket.userId = context.userId
+    socket.actorName = context.actorName
     socket.presenceSubscribed = false
     socket.isAlive = true
     socket.on('pong', () => { socket.isAlive = true })
@@ -135,11 +139,23 @@ export function createProjectRealtimeHub({ server, productStore, ticketSecret, r
           || !/^[A-Za-z0-9+/]*={0,2}$/.test(event.update)) return
         const result = await context.roomEntry.room.applyUpdate(event.update, context.userId)
         if (!result.applied) return
+        const change = collaborationChangeFromDocuments(result.previousGraph, result.graph) ?? { kind: 'canvas', summary: '更新了画布内容' }
+        let activity
+        try {
+          activity = await productStore.putCollaborationActivity(context.userId, context.projectId, {
+            id: `canvas-${context.userId}-${result.graphRevision}`,
+            ...change,
+          })
+        } catch {
+          // 历史索引暂不可写时仍广播已持久化的 CRDT 更新，客户端可用事件摘要降级展示。
+        }
         const payload = JSON.stringify({
           type: 'canvas.crdt.update',
           projectId: context.projectId,
           update: event.update,
           actorId: context.userId,
+          ...(context.actorName ? { actorName: context.actorName } : {}),
+          ...(activity ? { activity: { ...activity, unread: true } } : {}),
         })
         for (const peer of clients) {
           if (peer !== socket && peer.readyState === WebSocket.OPEN) peer.send(payload)
@@ -200,9 +216,12 @@ export function createProjectRealtimeHub({ server, productStore, ticketSecret, r
         await room.replaceBaseGraph(graph, actorId)
         scheduleRoomEviction(projectId)
       }
+      const actorName = [...(clientsByProject.get(projectId) ?? [])]
+        .find((client) => client.userId === actorId)?.actorName
       const payload = JSON.stringify({
         type: 'project.updated', projectId, revision, graphRevision, updatedAt,
         ...(actorId ? { actorId } : {}),
+        ...(actorName ? { actorName } : {}),
       })
       for (const socket of clientsByProject.get(projectId) ?? []) {
         if (socket.readyState === WebSocket.OPEN) socket.send(payload)

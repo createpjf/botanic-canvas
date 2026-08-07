@@ -26,6 +26,16 @@ test('短期实时票据只授权指定用户与项目', () => {
   }), undefined)
 })
 
+test('实时票据安全携带成员显示名', () => {
+  const ticket = issueRealtimeTicket({
+    userId: 'user-1', actorName: ' Mia ', projectId: 'project-1',
+    origin: 'https://botanic-canvas.vercel.app', secret: 'test-secret', now: 1_000,
+  })
+  assert.deepEqual(verifyRealtimeTicket(ticket, {
+    projectId: 'project-1', origin: 'https://botanic-canvas.vercel.app', secret: 'test-secret', now: 2_000,
+  }), { userId: 'user-1', actorName: 'Mia', projectId: 'project-1' })
+})
+
 test('实时票据被篡改或过期后失效', () => {
   const ticket = issueRealtimeTicket({
     userId: 'user-1',

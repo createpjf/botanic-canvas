@@ -9,9 +9,59 @@ import {
 } from '../../domain/agent'
 import { BotanicSelect } from '../../components/BotanicSelect'
 import { ArrowUpRightIcon, DeleteIcon, DownloadIcon, FocusIcon, FolderOutlineIcon, SparkleIcon } from '../../components/BotanicIcons'
+import type { CollaborationActivity, CollaborationDocumentChange } from '../../domain/collaborationActivity'
 import { downloadMedia } from '../../lib/mediaDownload'
 import { agentArtifactKindLabel, agentMemoryKindLabel, agentRunOutputCount } from './AgentWorkspaceParts'
 import type { AgentArtifactIndexState, AgentContextItem } from './agentWorkspace.types'
+
+function collaborationTime(timestamp: number) {
+  return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(timestamp))
+}
+
+export function AgentCollaborationPanel({
+  activities,
+  conflictChanges,
+  persistenceStatus,
+  onLocate,
+  onMarkRead,
+  onClear,
+  onKeepLocal,
+  onUseRemote,
+}: {
+  activities: CollaborationActivity[]
+  conflictChanges: CollaborationDocumentChange[]
+  persistenceStatus: 'saved' | 'saving' | 'offline' | 'conflict' | 'error'
+  onLocate: (activity: CollaborationActivity) => void
+  onMarkRead: () => void
+  onClear: () => void
+  onKeepLocal: () => void
+  onUseRemote: () => void
+}) {
+  return <section className="agent-collaboration-panel" aria-label="协作动态">
+    <header><div><small>COLLABORATION</small><h2>协作动态</h2></div><span>{activities.length} 条</span></header>
+    <p>查看成员最近修改，并直接定位到相关节点、对话或任务。</p>
+    {persistenceStatus === 'conflict' ? <div className="agent-collaboration-panel__conflict" role="alert">
+      <span><strong>画布有新的云端版本</strong><small>本地草稿仍保留。先查看变更，再决定使用哪一版。</small></span>
+      {conflictChanges.length ? <ul>{conflictChanges.map((change, index) => <li key={`${change.summary}-${index}`}>
+        <button type="button" onClick={() => onLocate({ id: `conflict-${index}`, actorName: '云端版本', occurredAt: Date.now(), unread: false, count: 1, ...change })}>{change.summary}{change.target?.kind === 'node' ? <FocusIcon /> : null}</button>
+      </li>)}</ul> : <small>正在读取云端变更…</small>}
+      <div><button type="button" onClick={onKeepLocal}>暂留本地</button><button type="button" className="is-primary" onClick={onUseRemote}>使用云端版本</button></div>
+    </div> : null}
+    <div className="agent-collaboration-panel__toolbar">
+      <button type="button" disabled={!activities.some((activity) => activity.unread)} onClick={onMarkRead}>全部已读</button>
+      <button type="button" disabled={!activities.length} onClick={onClear}>清空记录</button>
+    </div>
+    <div className="agent-collaboration-panel__list">
+      {activities.map((activity) => <button key={activity.id} type="button" className={activity.unread ? 'is-unread' : ''} onClick={() => onLocate(activity)}>
+        <i aria-hidden="true" />
+        <span><strong>{activity.actorName}</strong><small>{activity.summary}{activity.count > 1 ? ` · ${activity.count} 次` : ''}</small></span>
+        <time dateTime={new Date(activity.occurredAt).toISOString()}>{collaborationTime(activity.occurredAt)}</time>
+        {activity.target && activity.target.kind !== 'project' ? <FocusIcon /> : null}
+      </button>)}
+      {!activities.length ? <div className="agent-skill-panel__empty">还没有协作变更。</div> : null}
+    </div>
+  </section>
+}
 
 export function AgentResultPanel({
   artifacts,

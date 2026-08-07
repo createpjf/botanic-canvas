@@ -146,7 +146,7 @@ test('客户端主动订阅后收到按成员去重的在线状态', async (cont
   })
 })
 
-test('项目更新可携带成员来源但不改变旧消息形状', async (context) => {
+test('项目更新携带成员来源与可读显示名', async (context) => {
   const server = createServer((_request, response) => response.end())
   const hub = createProjectRealtimeHub({
     server,
@@ -159,7 +159,7 @@ test('项目更新可携带成员来源但不改变旧消息形状', async (cont
   await listen(server)
   const address = server.address()
   const socket = new WebSocket(
-    `ws://127.0.0.1:${address.port}/api/realtime?projectId=project-1&ticket=${encodeURIComponent(issueRealtimeTicket({ userId: 'member-1', projectId: 'project-1', origin: testOrigin, secret: 'test-secret' }))}`,
+    `ws://127.0.0.1:${address.port}/api/realtime?projectId=project-1&ticket=${encodeURIComponent(issueRealtimeTicket({ userId: 'member-1', actorName: 'Mia', projectId: 'project-1', origin: testOrigin, secret: 'test-secret' }))}`,
     { origin: testOrigin },
   )
   context.after(async () => {
@@ -169,9 +169,9 @@ test('项目更新可携带成员来源但不改变旧消息形状', async (cont
   })
   await nextMessage(socket)
 
-  hub.publishProjectUpdated({ projectId: 'project-1', revision: 4, updatedAt: 400, actorId: 'member-2' })
+  hub.publishProjectUpdated({ projectId: 'project-1', revision: 4, updatedAt: 400, actorId: 'member-1' })
   assert.deepEqual(await nextMessage(socket), {
-    type: 'project.updated', projectId: 'project-1', revision: 4, updatedAt: 400, actorId: 'member-2',
+    type: 'project.updated', projectId: 'project-1', revision: 4, updatedAt: 400, actorId: 'member-1', actorName: 'Mia',
   })
 })
 
@@ -248,6 +248,9 @@ test('编辑者的 CRDT 增量只转发给同项目的其他连接', async (cont
     async canEditProject(userId, projectId) {
       return projectId === 'project-1' && userId !== 'viewer'
     },
+    async putCollaborationActivity(userId, _projectId, input) {
+      return { ...input, actorId: userId, actorName: '协作者', occurredAt: 200, count: 1 }
+    },
   }
   const hub = createProjectRealtimeHub({ server, ticketSecret: 'test-secret', productStore })
   await listen(server)
@@ -275,6 +278,10 @@ test('编辑者的 CRDT 增量只转发给同项目的其他连接', async (cont
     projectId: 'project-1',
     update,
     actorId: 'editor-1',
+    activity: {
+      id: 'canvas-editor-1-1', actorId: 'editor-1', actorName: '协作者', kind: 'canvas',
+      summary: '新增了「node-a」', target: { kind: 'node', nodeId: 'node-a' }, occurredAt: 200, count: 1, unread: true,
+    },
   })
 })
 

@@ -1,5 +1,6 @@
 import { applyCanvasDocumentPatch } from './canvasDocumentPatch.mjs'
 import { requireProjectPermission } from './projectAuthorization.mjs'
+import { collaborationChangeFromDocuments } from './collaborationActivityPersistence.mjs'
 
 /**
  * 项目、项目文档、成员与项目审计的 HTTP 模块。
@@ -27,6 +28,8 @@ export function createProjectRouteHandler({
       project: projectMatch,
       projectMembers: memberMatch,
       projectAudit: auditMatch,
+      projectCollaborationActivities: collaborationActivitiesMatch,
+      projectCollaborationReceipt: collaborationReceiptMatch,
     } = routeMatches
 
     if (url.pathname === '/api/projects') {
@@ -74,6 +77,14 @@ export function createProjectRouteHandler({
           name,
           updatedAt: Date.now(),
         }, expectedRevision, current.graphRevision)
+        const change = collaborationChangeFromDocuments(current.document, saved.document)
+        if (change) {
+          try {
+            await productStore.putCollaborationActivity(user.id, projectId, { id: `project-${user.id}-${saved.revision}`, ...change })
+          } catch {
+            // 协作历史是派生读模型；写入失败不能把已成功的项目写入伪装成失败。
+          }
+        }
         await publishProjectUpdated(saved, user.id)
         return json(response, 200, saved, projectResponseHeaders(saved))
       } catch (caught) {
@@ -115,8 +126,17 @@ export function createProjectRouteHandler({
       const expectedRevision = expected && /^\d+$/.test(expected) ? Number(expected) : undefined
       const graphRevision = expectedGraphRevision(request, undefined)
       try {
+        const current = await productStore.readProject(user.id, projectId)
         const normalized = await mediaService.normalizeDocument(document, { ownerId: user.id, projectId })
         const saved = await productStore.writeProject(user.id, normalized, expectedRevision, graphRevision)
+        const change = current ? collaborationChangeFromDocuments(current.document, saved.document) : undefined
+        if (change) {
+          try {
+            await productStore.putCollaborationActivity(user.id, projectId, { id: `project-${user.id}-${saved.revision}`, ...change })
+          } catch {
+            // 协作历史是派生读模型；权威项目文档仍以本次成功写入为准。
+          }
+        }
         await publishProjectUpdated(saved, user.id)
         return json(response, saved.created ? 201 : 200, saved, projectResponseHeaders(saved))
       } catch (caught) {
@@ -140,6 +160,14 @@ export function createProjectRouteHandler({
         const document = applyCanvasDocumentPatch(current.document, patch)
         const normalized = await mediaService.normalizeDocument(document, { ownerId: user.id, projectId })
         const saved = await productStore.writeProject(user.id, normalized, expectedRevision, graphRevision)
+        const change = collaborationChangeFromDocuments(current.document, saved.document)
+        if (change) {
+          try {
+            await productStore.putCollaborationActivity(user.id, projectId, { id: `project-${user.id}-${saved.revision}`, ...change })
+          } catch {
+            // 协作历史是派生读模型；权威项目文档仍以本次成功写入为准。
+          }
+        }
         await publishProjectUpdated(saved, user.id)
         return json(response, 200, saved, projectResponseHeaders(saved))
       } catch (caught) {
@@ -175,6 +203,24 @@ export function createProjectRouteHandler({
       const events = await productStore.listAuditEvents(user.id, projectId, Number(url.searchParams.get('limit') ?? 100))
       if (!events) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
       return json(response, 200, { events })
+    }
+
+    if (collaborationActivitiesMatch && request.method === 'GET') {
+      const user = await requireUser(request)
+      const projectId = decodeURIComponent(collaborationActivitiesMatch[1])
+      await requireProjectPermission(productStore, user.id, projectId, 'read')
+      const activities = await productStore.listCollaborationActivities(user.id, projectId, Number(url.searchParams.get('limit') ?? 100))
+      if (!activities) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
+      return json(response, 200, { activities })
+    }
+
+    if (collaborationReceiptMatch && request.method === 'PATCH') {
+      const user = await requireUser(request)
+      const projectId = decodeURIComponent(collaborationReceiptMatch[1])
+      await requireProjectPermission(productStore, user.id, projectId, 'read')
+      const body = await readJson(request)
+      const action = enumValue(body?.action, ['read', 'clear'], '协作回执操作')
+      return json(response, 200, { receipt: await productStore.putCollaborationActivityReceipt(user.id, projectId, { action }) })
     }
 
     return false

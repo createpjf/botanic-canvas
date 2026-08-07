@@ -6,6 +6,7 @@ import { assertProjectPermission, assertWorkspacePermission, projectPermissionDe
 import { artifactIndexLimits, artifactsFromActionReceipt, artifactsFromAgentMessage, artifactsFromDocument, artifactsFromGenerationJob } from './botanicArtifactIndex.mjs'
 import { applyGenerationJobToAgentRun } from './botanicAgentRun.mjs'
 import { agentStateFromDocument, applyAgentSessionReadReceipts, mergeAgentStateIntoDocument, shouldApplyAgentEntityWrite, validateAgentEntityWriteTimestamp, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity, validateAgentSessionReadReceipt } from './botanicAgentPersistence.mjs'
+import { collaborationActivitiesForMember, validateCollaborationActivity } from './collaborationActivityPersistence.mjs'
 
 const now = () => Date.now()
 const clone = (value) => structuredClone(value)
@@ -565,6 +566,59 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       const state = await readAgentStateRows(projectId, userId)
       const hydrated = mergeAgentStateIntoDocument({ agentSessions: [], agentMemory: [], agentRuns: [] }, state)
       return { sessions: hydrated.agentSessions, memory: hydrated.agentMemory, runs: hydrated.agentRuns }
+    },
+
+    async listCollaborationActivities(userId, projectId, limit = 100) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const [{ data: activities, error: activityError }, { data: receipt, error: receiptError }] = await Promise.all([
+        supabaseRequest(() => supabase.from('collaboration_activities').select('payload').eq('project_id', projectId).order('occurred_at', { ascending: false }).order('id', { ascending: false }).limit(500)),
+        supabaseRequest(() => supabase.from('collaboration_activity_receipts').select('read_at,cleared_at,updated_at').eq('user_id', userId).eq('project_id', projectId).maybeSingle()),
+      ])
+      fail(activityError)
+      fail(receiptError)
+      const memberReceipt = receipt ? {
+        readAt: new Date(receipt.read_at).getTime(),
+        clearedAt: new Date(receipt.cleared_at).getTime(),
+        updatedAt: new Date(receipt.updated_at).getTime(),
+      } : undefined
+      return collaborationActivitiesForMember((activities ?? []).map((row) => clone(row.payload)), memberReceipt, userId, limit)
+    },
+
+    async putCollaborationActivity(userId, projectId, input) {
+      assertProjectPermission(await memberRole(projectId, userId), 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      const { data: existing, error: existingError } = await supabaseRequest(() => supabase.from('collaboration_activities').select('payload').eq('project_id', projectId).eq('id', input?.id ?? '').maybeSingle())
+      fail(existingError)
+      if (existing) return clone(existing.payload)
+      const { data: actor, error: actorError } = await supabaseRequest(() => supabase.from('profiles').select('display_name').eq('id', userId).maybeSingle())
+      fail(actorError)
+      const activity = validateCollaborationActivity(input, { actorId: userId, actorName: actor?.display_name })
+      const { error } = await supabaseRequest(() => supabase.from('collaboration_activities').upsert({
+        project_id: projectId,
+        id: activity.id,
+        actor_id: userId,
+        occurred_at: new Date(activity.occurredAt).toISOString(),
+        payload: activity,
+      }, { onConflict: 'project_id,id', ignoreDuplicates: true }))
+      fail(error)
+      return clone(activity)
+    },
+
+    async putCollaborationActivityReceipt(userId, projectId, input) {
+      assertProjectPermission(await memberRole(projectId, userId), 'read', 'PROJECT_READ_FORBIDDEN')
+      const timestamp = now()
+      const { data, error } = await supabaseRequest(() => supabase.rpc('botanic_put_collaboration_activity_receipt', {
+        p_user_id: userId,
+        p_project_id: projectId,
+        p_action: input?.action,
+        p_timestamp: new Date(timestamp).toISOString(),
+      }))
+      fail(error)
+      const receipt = Array.isArray(data) ? data[0] : data
+      return {
+        readAt: new Date(receipt.read_at).getTime(),
+        clearedAt: new Date(receipt.cleared_at).getTime(),
+        updatedAt: new Date(receipt.updated_at).getTime(),
+      }
     },
 
     async putAgentSessionReadReceipt(userId, projectId, sessionId, input) {
