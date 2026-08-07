@@ -3,7 +3,7 @@ import postgres from 'postgres'
 import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from './authorization.mjs'
 import { artifactIndexLimits, artifactsFromActionReceipt, artifactsFromAgentMessage, artifactsFromDocument, artifactsFromGenerationJob } from './botanicArtifactIndex.mjs'
 import { applyGenerationJobToAgentRun } from './botanicAgentRun.mjs'
-import { agentStateFromDocument, mergeAgentStateIntoDocument, shouldApplyAgentEntityWrite, validateAgentEntityWriteTimestamp, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity } from './botanicAgentPersistence.mjs'
+import { agentStateFromDocument, applyAgentSessionReadReceipts, mergeAgentStateIntoDocument, shouldApplyAgentEntityWrite, shouldApplyAgentRunWrite, validateAgentEntityWriteTimestamp, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity, validateAgentSessionReadReceipt } from './botanicAgentPersistence.mjs'
 
 const now = () => Date.now()
 const hashAccessToken = (token) => createHash('sha256').update(token).digest('hex')
@@ -179,6 +179,23 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       updated_at bigint not null,
       payload jsonb not null
     );
+    create table if not exists agent_session_read_receipts (
+      user_id text not null references app_users(id) on delete cascade,
+      project_id text not null references projects(id) on delete cascade,
+      session_id text not null references agent_sessions(id) on delete cascade,
+      message_id text not null,
+      updated_at bigint not null,
+      primary key (user_id, project_id, session_id)
+    );
+    create index if not exists agent_session_read_receipts_project_user_updated_idx
+      on agent_session_read_receipts (project_id, user_id, updated_at desc);
+    insert into agent_session_read_receipts (user_id, project_id, session_id, message_id, updated_at)
+    select owner_id, project_id, id, payload->>'readingAnchorMessageId',
+      case when payload->>'readingAnchorUpdatedAt' ~ '^[0-9]+$'
+        then (payload->>'readingAnchorUpdatedAt')::bigint else updated_at end
+    from agent_sessions
+    where nullif(payload->>'readingAnchorMessageId', '') is not null
+    on conflict (user_id, project_id, session_id) do nothing;
     create table if not exists agent_memory_items (
       id text primary key,
       owner_id text not null references app_users(id) on delete cascade,
@@ -581,15 +598,22 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     `
   }
 
-  async function readAgentStateRows(query, projectId) {
-    const [sessionRows, messageRows, memoryRows, runRows] = await Promise.all([
+  async function readAgentStateRows(query, projectId, userId) {
+    const [sessionRows, messageRows, memoryRows, runRows, receiptRows] = await Promise.all([
       query`select payload from agent_sessions where project_id = ${projectId} order by updated_at desc limit 80`,
       query`select session_id as "sessionId", updated_at as "updatedAt", payload from agent_messages where project_id = ${projectId} order by updated_at asc limit 40000`,
       query`select id, deleted_at as "deletedAt", payload from agent_memory_items where project_id = ${projectId} order by updated_at desc limit 200`,
       query`select payload from agent_runs where project_id = ${projectId} order by updated_at desc limit 60`,
+      userId
+        ? query`select session_id as "sessionId", message_id as "messageId", updated_at as "updatedAt" from agent_session_read_receipts where project_id = ${projectId} and user_id = ${userId}`
+        : [],
     ])
     return {
-      sessions: sessionRows.map(asPayload),
+      sessions: applyAgentSessionReadReceipts(sessionRows.map(asPayload), receiptRows.map((row) => ({
+        sessionId: row.sessionId,
+        messageId: row.messageId,
+        updatedAt: Number(row.updatedAt),
+      }))),
       messages: messageRows.map((row) => ({ sessionId: row.sessionId, updatedAt: Number(row.updatedAt), message: asPayload(row) })),
       memory: memoryRows.filter((row) => row.deletedAt === null).map(asPayload),
       deletedMemoryIds: memoryRows.filter((row) => row.deletedAt !== null).map((row) => row.id),
@@ -673,6 +697,19 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
           and agent_messages.updated_at <= excluded.updated_at
       `
     }
+    for (const session of extracted.sessions) {
+      if (!session.readingAnchorMessageId || session.readingAnchorUpdatedAt === undefined) continue
+      const messageExists = extracted.messages.some((entry) => entry.sessionId === session.id && entry.message.id === session.readingAnchorMessageId)
+      if (!messageExists) continue
+      await tx`
+        insert into agent_session_read_receipts (user_id, project_id, session_id, message_id, updated_at)
+        values (${userId}, ${document.id}, ${session.id}, ${session.readingAnchorMessageId}, ${session.readingAnchorUpdatedAt})
+        on conflict (user_id, project_id, session_id) do update set
+          message_id = excluded.message_id,
+          updated_at = excluded.updated_at
+        where agent_session_read_receipts.updated_at < excluded.updated_at
+      `
+    }
     const previousMemoryIds = new Set((Array.isArray(previousDocument?.agentMemory) ? previousDocument.agentMemory : []).map((item) => item?.id).filter(Boolean))
     const nextMemoryIds = new Set(extracted.memory.map((item) => item.id))
     for (const memoryId of previousMemoryIds) {
@@ -692,11 +729,12 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     }
     for (const run of changedRuns) {
       const status = run.status
+      const [conflict] = await tx`select project_id as "projectId" from agent_runs where id = ${run.id}`
+      if (conflict && conflict.projectId !== document.id) throw productError('Agent Run 标识已被其他项目使用。', 'AGENT_RUN_ID_CONFLICT')
       await tx`
         insert into agent_runs (id, owner_id, project_id, status, updated_at, payload)
         values (${run.id}, ${userId}, ${document.id}, ${status}, ${Number(run.updatedAt) || now()}, ${tx.json({ ...run, projectId: document.id, ownerId: userId })}::jsonb)
-        on conflict (id) do update set status = excluded.status, updated_at = excluded.updated_at, payload = excluded.payload
-        where agent_runs.project_id = excluded.project_id and agent_runs.updated_at <= excluded.updated_at
+        on conflict (id) do nothing
       `
     }
     const artifacts = artifactsFromDocument(document)
@@ -845,7 +883,7 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       if (!row) return undefined
       const document = asJson(row.document)
       const graph = row.graph ? asJson(row.graph) : canvasGraph(document)
-      const agentState = await readAgentStateRows(sql, projectId)
+      const agentState = await readAgentStateRows(sql, projectId, userId)
       const updatedAt = Math.max(
         Number(document.updatedAt ?? 0),
         Number(row.projectUpdatedAt ?? 0),
@@ -1061,9 +1099,43 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
 
     async readAgentState(userId, projectId) {
       if (!await memberRole(projectId, userId)) return undefined
-      const state = await readAgentStateRows(sql, projectId)
+      const state = await readAgentStateRows(sql, projectId, userId)
       const hydrated = mergeAgentStateIntoDocument({ agentSessions: [], agentMemory: [], agentRuns: [] }, state)
       return { sessions: hydrated.agentSessions, memory: hydrated.agentMemory, runs: hydrated.agentRuns }
+    },
+
+    async putAgentSessionReadReceipt(userId, projectId, sessionId, input) {
+      const role = await memberRole(projectId, userId)
+      assertProjectPermission(role, 'read', 'PROJECT_READ_FORBIDDEN')
+      const serverTime = now()
+      const requestedTimestamp = input?.updatedAt === undefined
+        ? serverTime
+        : validateAgentEntityWriteTimestamp(input.updatedAt, { now: serverTime })
+      const receipt = validateAgentSessionReadReceipt({ ...input, sessionId, updatedAt: requestedTimestamp }, { now: serverTime })
+      return sql.begin(async (tx) => {
+        const [session] = await tx`select id from agent_sessions where id = ${sessionId} and project_id = ${projectId}`
+        if (!session) throw productError('未找到 Agent 会话。', 'AGENT_SESSION_NOT_FOUND')
+        const [message] = await tx`select id from agent_messages where id = ${receipt.messageId} and project_id = ${projectId} and session_id = ${sessionId}`
+        if (!message) throw productError('目标消息已不存在。', 'AGENT_MESSAGE_NOT_FOUND')
+        const [existing] = await tx`
+          select session_id as "sessionId", message_id as "messageId", updated_at as "updatedAt"
+          from agent_session_read_receipts
+          where user_id = ${userId} and project_id = ${projectId} and session_id = ${sessionId}
+          for update
+        `
+        if (existing && Number(existing.updatedAt) >= receipt.updatedAt) {
+          return { sessionId: existing.sessionId, messageId: existing.messageId, updatedAt: Number(existing.updatedAt) }
+        }
+        await tx`
+          insert into agent_session_read_receipts (user_id, project_id, session_id, message_id, updated_at)
+          values (${userId}, ${projectId}, ${sessionId}, ${receipt.messageId}, ${receipt.updatedAt})
+          on conflict (user_id, project_id, session_id) do update set
+            message_id = excluded.message_id,
+            updated_at = excluded.updated_at
+          where agent_session_read_receipts.updated_at < excluded.updated_at
+        `
+        return clone(receipt)
+      })
     },
 
     async putAgentSession(userId, projectId, input) {
@@ -1271,17 +1343,66 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       await insertAudit(sql, { actorId: userId, action: `generation.${job.status}`, projectId: job.projectId, targetId: job.id, detail: { model: job.settings?.model, batchCount: job.batchCount } })
     },
 
+    async refreshGenerationArtifacts(userId, jobId) {
+      return sql.begin(async (tx) => {
+        const [row] = await tx`
+          select job.payload, project.document, graph.graph
+          from generation_jobs job
+          join projects project on project.id = job.project_id
+          join project_members member on member.project_id = project.id and member.user_id = ${userId}
+          left join canvas_graphs graph on graph.project_id = project.id
+          where job.id = ${jobId} and job.owner_id = ${userId}
+        `
+        if (!row) return false
+        const job = asPayload(row)
+        await upsertArtifactRecords(tx, userId, job.projectId, artifactsFromGenerationJob(job, {
+          document: { ...asJson(row.document), ...asJson(row.graph ?? {}) },
+        }))
+        return true
+      })
+    },
+
     async putAgentRun(userId, run) {
       const role = await memberRole(run.projectId, userId)
       assertProjectPermission(role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
       const payload = { ...clone(run), ownerId: userId, updatedAt: Number(run.updatedAt) || now() }
-      await sql`
-        insert into agent_runs (id, owner_id, project_id, status, updated_at, payload)
-        values (${run.id}, ${userId}, ${run.projectId}, ${run.status}, ${payload.updatedAt}, ${sql.json(payload)}::jsonb)
-        on conflict (id) do update set status = excluded.status, updated_at = excluded.updated_at, payload = excluded.payload
-      `
-      await insertAudit(sql, { actorId: userId, action: `agent-run.${run.status}`, projectId: run.projectId, targetId: run.id })
-      return clone(payload)
+      return sql.begin(async (tx) => {
+        // 行尚未创建时 SELECT ... FOR UPDATE 无法加锁；同一 runId 先获取事务级咨询锁，
+        // 让首次创建与后续更新共用同一条串行化写入路径。
+        await tx`select pg_advisory_xact_lock(hashtextextended(${run.id}, 0))`
+        const [existing] = await tx`
+          select owner_id as "ownerId", project_id as "projectId", status, updated_at as "updatedAt", payload
+          from agent_runs where id = ${run.id} for update
+        `
+        if (existing && (existing.projectId !== run.projectId || existing.ownerId !== userId)) {
+          throw productError('Agent Run 标识已被其他项目使用。', 'AGENT_RUN_ID_CONFLICT')
+        }
+        if (existing && !shouldApplyAgentRunWrite(existing, payload)) return clone(asPayload(existing))
+        await tx`
+          insert into agent_runs (id, owner_id, project_id, status, updated_at, payload)
+          values (${run.id}, ${userId}, ${run.projectId}, ${run.status}, ${payload.updatedAt}, ${tx.json(payload)}::jsonb)
+          on conflict (id) do update set status = excluded.status, updated_at = excluded.updated_at, payload = excluded.payload
+          where agent_runs.project_id = excluded.project_id
+            and agent_runs.owner_id = excluded.owner_id
+            and agent_runs.updated_at <= excluded.updated_at
+            and not (
+              agent_runs.status <> 'awaiting_confirmation'
+              and excluded.status = 'awaiting_confirmation'
+            )
+        `
+        const [storedRow] = await tx`
+          select owner_id as "ownerId", project_id as "projectId", payload
+          from agent_runs where id = ${run.id}
+        `
+        if (!storedRow || storedRow.projectId !== run.projectId || storedRow.ownerId !== userId) {
+          throw productError('Agent Run 标识已被其他项目使用。', 'AGENT_RUN_ID_CONFLICT')
+        }
+        const stored = asPayload(storedRow)
+        if (stored?.updatedAt === payload.updatedAt && stored?.status === payload.status) {
+          await insertAudit(tx, { actorId: userId, action: `agent-run.${run.status}`, projectId: run.projectId, targetId: run.id })
+        }
+        return clone(stored)
+      })
     },
 
     async readAgentRun(userId, runId) {

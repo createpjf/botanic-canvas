@@ -156,6 +156,7 @@ export type CanvasStore = {
   updateAgentAction: (sessionId: string, messageId: string, actionId: string, patch: Partial<Pick<BotanicAgentActionProposal, 'status' | 'error' | 'result'>>) => void
   setAgentSessionContext: (sessionId: string, contextNodeIds: string[]) => void
   setAgentSessionExecutionMode: (sessionId: string, mode: BotanicAgentExecutionMode) => void
+  setAgentSessionReadingAnchor: (sessionId: string, messageId: string, updatedAt?: number) => void
   setActiveAgentSession: (sessionId: string) => void
   addAgentMemory: (kind: BotanicAgentMemoryKind, content: string, sourceNodeIds?: string[]) => string | null
   removeAgentMemory: (memoryId: string) => void

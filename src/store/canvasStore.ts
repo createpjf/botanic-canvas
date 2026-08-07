@@ -23,6 +23,7 @@ import {
   deleteGlobalAssetAndScrubDocuments,
   writeCanvasDocument,
 } from '../lib/db'
+import { cancelPersistentBotanicAgentRun, retryPersistentBotanicAgentBranch } from '../lib/agentApi'
 import { ProductApiError } from '../lib/productSession'
 import type { CanvasStore, GenerationRequest } from './canvasStore.types'
 import { createCanvasAgentActions } from './canvasAgentActions'
@@ -225,6 +226,10 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
     set,
     get,
     commitDocument: (document, extra, options) => commit(set, document, extra, options),
+    persistentAgentRunApi: {
+      retryBranch: retryPersistentBotanicAgentBranch,
+      cancelRun: cancelPersistentBotanicAgentRun,
+    },
   }),
 
   ...createCanvasBatchVariationActions({

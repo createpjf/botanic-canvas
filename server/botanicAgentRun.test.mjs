@@ -4,6 +4,7 @@ import {
   applyGenerationJobToAgentRun,
   cancelPersistentAgentRun,
   createPersistentAgentRun,
+  failUnsubmittedPersistentAgentRun,
   prepareAgentBranchRetry,
   validateAgentRunCreation,
 } from './botanicAgentRun.mjs'
@@ -61,6 +62,38 @@ test('Agent Run 创建请求只持久化计划元数据与独立分支', () => {
   assert.equal(run.branches[0].assetId, 'asset-scene-a')
 })
 
+test('首次生成允许没有父结果，但必须携带图片素材或图片结果上下文', () => {
+  const input = validateAgentRunCreation({
+    ...creation,
+    plan: {
+      ...creation.plan,
+      intent: 'initial_generation',
+      selectedResultNodeId: undefined,
+      constraints: [],
+      contextSnapshot: [
+        { nodeId: 'asset-product-node', label: '商品图', kind: '素材', mediaKind: 'image', role: '商品' },
+      ],
+    },
+  })
+
+  assert.equal(input.plan.intent, 'initial_generation')
+  assert.equal(input.plan.selectedResultNodeId, undefined)
+  assert.deepEqual(input.plan.constraints, [])
+  assert.deepEqual(input.plan.contextSnapshot, [
+    { nodeId: 'asset-product-node', label: '商品图', kind: '素材', mediaKind: 'image', role: '商品' },
+  ])
+
+  assert.throws(() => validateAgentRunCreation({
+    ...creation,
+    plan: {
+      ...creation.plan,
+      intent: 'initial_generation',
+      selectedResultNodeId: undefined,
+      contextSnapshot: [{ nodeId: 'asset-video', label: '视频', kind: '素材', mediaKind: 'video' }],
+    },
+  }), /图片素材或图片结果/)
+})
+
 test('生成 Job 状态驱动 Agent Run 分支与整体进度', () => {
   let run = createPersistentAgentRun(validateAgentRunCreation(creation), { id: 'run-1', ownerId: 'user-1', now: 100 })
   run = applyGenerationJobToAgentRun(run, {
@@ -115,6 +148,21 @@ test('取消 Agent Run 只终止活动分支并保留已完成结果', () => {
   assert.equal(cancelled.updatedAt, 300)
 
   assert.deepEqual(cancelPersistentAgentRun(cancelled, { now: 400 }), cancelled)
+})
+
+test('仅在尚未建立生成 Job 时收口确定性提交失败', () => {
+  const queued = createPersistentAgentRun(validateAgentRunCreation(creation), { id: 'run-1', ownerId: 'user-1', now: 100 })
+  const failed = failUnsubmittedPersistentAgentRun(queued, '父结果节点已不存在。', { now: 200 })
+
+  assert.equal(failed.status, 'failed')
+  assert.equal(failed.branches[0].status, 'failed')
+  assert.equal(failed.branches[0].error, '父结果节点已不存在。')
+  assert.equal(failed.updatedAt, 200)
+
+  const withJob = applyGenerationJobToAgentRun(queued, {
+    id: 'job-a', status: 'queued', agentRun: { runId: 'run-1', branchId: 'branch-a' }, updatedAt: 150,
+  })
+  assert.equal(failUnsubmittedPersistentAgentRun(withJob, '不应覆盖', { now: 300 }), withJob)
 })
 
 test('Agent Run 拒绝图片数据与重复分支标识', () => {

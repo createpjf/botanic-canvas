@@ -172,9 +172,22 @@ export function createAgentMessageQueue(options: AgentMessageQueueOptions) {
     return flushPromise
   }
 
+  const retry = (messageId: string) => {
+    const item = items.find((candidate) => candidate.message.id === messageId)
+    if (!item) return undefined
+    if (item.status === 'failed') {
+      item.status = 'queued'
+      item.error = undefined
+      item.errorCode = undefined
+      persist()
+    }
+    return structuredClone(item)
+  }
+
   return {
     enqueue,
     flush,
+    retry,
     list: snapshot,
     subscribe(listener: (items: AgentMessageQueueItem[]) => void) {
       listeners.add(listener)

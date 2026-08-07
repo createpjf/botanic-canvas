@@ -20,11 +20,13 @@ export function AgentResultPanel({
   contextOptions,
   artifactIndexStatus,
   artifactIndexHasMore,
+  conversationRunIds,
   onLocateNode,
   onSaveArtifact,
   onContinue,
   onStartNextRound,
   onLoadMoreArtifacts,
+  onLocateConversation,
 }: {
   artifacts: BotanicAgentArtifact[]
   runs: BotanicAgentRun[]
@@ -32,11 +34,13 @@ export function AgentResultPanel({
   contextOptions: AgentContextItem[]
   artifactIndexStatus: AgentArtifactIndexState['status']
   artifactIndexHasMore: boolean
+  conversationRunIds: string[]
   onLocateNode: (nodeId: string) => void
   onSaveArtifact: (artifact: BotanicAgentArtifact) => void
   onContinue: (artifact: BotanicAgentArtifact) => void
   onStartNextRound: (sourceNodeIds: string[], artifactCount: number) => void
   onLoadMoreArtifacts: () => Promise<void>
+  onLocateConversation: (runId: string) => void
 }) {
   const [filter, setFilter] = useState<'all' | 'image' | 'video' | 'file'>('all')
   const [selectedIds, setSelectedIds] = useState<string[]>([])
@@ -107,6 +111,7 @@ export function AgentResultPanel({
     <div className="agent-result-panel__groups">
       {groups.map((group) => <section key={group.id} className="agent-result-group">
         <header><span><strong>{group.label}</strong><small>{group.artifacts.length} 项</small></span><div>
+          {conversationRunIds.includes(group.id) ? <button type="button" onClick={() => onLocateConversation(group.id)}>来源对话</button> : null}
           <button type="button" onClick={() => toggleGroup(group.artifacts)}>{group.artifacts.every((artifact) => selectedIds.includes(artifact.id)) ? '取消本组' : '选择本组'}</button>
         </div></header>
         <div className="agent-result-panel__grid">

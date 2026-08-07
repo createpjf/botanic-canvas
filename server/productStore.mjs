@@ -4,7 +4,7 @@ import { dirname, resolve } from 'node:path'
 import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from './authorization.mjs'
 import { artifactIndexLimits, artifactsFromActionReceipt, artifactsFromAgentMessage, artifactsFromDocument, artifactsFromGenerationJob } from './botanicArtifactIndex.mjs'
 import { applyGenerationJobToAgentRun } from './botanicAgentRun.mjs'
-import { agentStateFromDocument, mergeAgentStateIntoDocument, shouldApplyAgentEntityWrite, validateAgentEntityWriteTimestamp, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity } from './botanicAgentPersistence.mjs'
+import { agentStateFromDocument, applyAgentSessionReadReceipts, mergeAgentStateIntoDocument, shouldApplyAgentEntityWrite, shouldApplyAgentRunWrite, validateAgentEntityWriteTimestamp, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity, validateAgentSessionReadReceipt } from './botanicAgentPersistence.mjs'
 
 const schemaVersion = 1
 
@@ -67,6 +67,7 @@ function initialState() {
     generationJobs: [],
     agentRuns: [],
     agentSessions: [],
+    agentSessionReadReceipts: [],
     agentMessages: [],
     agentMemoryItems: [],
     agentArtifacts: [],
@@ -125,9 +126,13 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
     return member && allowedRoles.includes(member.role) ? member : undefined
   }
 
-  function agentStateForProject(projectId) {
+  function agentStateForProject(projectId, userId) {
+    const sessions = state.agentSessions.filter((item) => item.projectId === projectId).map((item) => clone(item.payload))
+    const receipts = userId
+      ? state.agentSessionReadReceipts.filter((item) => item.projectId === projectId && item.userId === userId).map((item) => clone(item.payload))
+      : []
     return {
-      sessions: state.agentSessions.filter((item) => item.projectId === projectId).map((item) => clone(item.payload)),
+      sessions: userId ? applyAgentSessionReadReceipts(sessions, receipts) : sessions,
       messages: state.agentMessages.filter((item) => item.projectId === projectId).map((item) => ({
         sessionId: item.sessionId, updatedAt: item.updatedAt, message: clone(item.payload),
       })),
@@ -194,6 +199,21 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       if (!existing) state.agentMessages.push(payload)
       else if (entry.updatedAt >= existing.updatedAt) Object.assign(existing, payload)
     }
+    // 旧 CanvasDocument 的共享阅读位置只在迁移时归属本次写入成员；
+    // 之后所有更新都走成员级回执，避免继续污染共享 Session。
+    for (const session of extracted.sessions) {
+      if (!session.readingAnchorMessageId || session.readingAnchorUpdatedAt === undefined) continue
+      const messageExists = extracted.messages.some((entry) => entry.sessionId === session.id && entry.message.id === session.readingAnchorMessageId)
+      if (!messageExists) continue
+      const receipt = {
+        sessionId: session.id,
+        messageId: session.readingAnchorMessageId,
+        updatedAt: session.readingAnchorUpdatedAt,
+      }
+      const existing = state.agentSessionReadReceipts.find((item) => item.userId === userId && item.projectId === document.id && item.sessionId === session.id)
+      if (!existing) state.agentSessionReadReceipts.push({ userId, projectId: document.id, sessionId: session.id, updatedAt: receipt.updatedAt, payload: receipt })
+      else if (receipt.updatedAt > existing.updatedAt) Object.assign(existing, { updatedAt: receipt.updatedAt, payload: receipt })
+    }
     const previousMemoryIds = new Set((Array.isArray(previousDocument?.agentMemory) ? previousDocument.agentMemory : []).map((item) => item?.id).filter(Boolean))
     const nextMemoryIds = new Set(extracted.memory.map((item) => item.id))
     for (const removedId of previousMemoryIds) {
@@ -216,7 +236,7 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       if (existing && existing.projectId !== document.id) throw productError('Agent Run 标识已被其他项目使用。', 'AGENT_RUN_ID_CONFLICT')
       const payload = { ...clone(run), projectId: document.id, ownerId: existing?.ownerId ?? userId }
       if (!existing) state.agentRuns.push(payload)
-      else if (Number(run.updatedAt ?? 0) >= Number(existing.updatedAt ?? 0)) Object.assign(existing, payload)
+      // CanvasDocument 仅负责首次兼容迁移；已有独立 Run 始终是执行状态权威。
     }
     upsertArtifactRecords(document.id, userId, artifactsFromDocument(document))
   }
@@ -327,7 +347,7 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
           ...clone(project.document),
           ...clone(graph.graph),
           updatedAt: Math.max(project.document.updatedAt ?? 0, project.updatedAt, graph.updatedAt ?? 0),
-        }, agentStateForProject(projectId)),
+        }, agentStateForProject(projectId, userId)),
         revision: project.revision,
         graphRevision: graph.graphRevision,
       }
@@ -418,6 +438,7 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       state.generationJobs = state.generationJobs.filter((item) => item.projectId !== projectId)
       state.agentRuns = state.agentRuns.filter((item) => item.projectId !== projectId)
       state.agentSessions = state.agentSessions.filter((item) => item.projectId !== projectId)
+      state.agentSessionReadReceipts = state.agentSessionReadReceipts.filter((item) => item.projectId !== projectId)
       state.agentMessages = state.agentMessages.filter((item) => item.projectId !== projectId)
       state.agentMemoryItems = state.agentMemoryItems.filter((item) => item.projectId !== projectId)
       state.agentArtifacts = state.agentArtifacts.filter((item) => item.projectId !== projectId)
@@ -529,12 +550,34 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
     readAgentState(userId, projectId) {
       const project = state.projects.find((item) => item.id === projectId)
       if (!project || !canAccess(project, userId)) return undefined
-      const hydrated = mergeAgentStateIntoDocument({ agentSessions: [], agentMemory: [], agentRuns: [] }, agentStateForProject(projectId))
+      const hydrated = mergeAgentStateIntoDocument({ agentSessions: [], agentMemory: [], agentRuns: [] }, agentStateForProject(projectId, userId))
       return {
         sessions: hydrated.agentSessions,
         memory: hydrated.agentMemory,
         runs: hydrated.agentRuns,
       }
+    },
+
+    putAgentSessionReadReceipt(userId, projectId, sessionId, input) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project) throw productError('未找到项目。', 'PROJECT_NOT_FOUND')
+      assertProjectPermission(project.members.find((item) => item.userId === userId)?.role, 'read', 'PROJECT_READ_FORBIDDEN')
+      const session = state.agentSessions.find((item) => item.id === sessionId && item.projectId === projectId)
+      if (!session) throw productError('未找到 Agent 会话。', 'AGENT_SESSION_NOT_FOUND')
+      const serverTime = now()
+      const timestampValue = input?.updatedAt === undefined
+        ? serverTime
+        : validateAgentEntityWriteTimestamp(input.updatedAt, { now: serverTime })
+      const receipt = validateAgentSessionReadReceipt({ ...input, sessionId, updatedAt: timestampValue }, { now: serverTime })
+      const message = state.agentMessages.find((item) => item.id === receipt.messageId && item.projectId === projectId && item.sessionId === sessionId)
+      if (!message) throw productError('目标消息已不存在。', 'AGENT_MESSAGE_NOT_FOUND')
+      const existing = state.agentSessionReadReceipts.find((item) => item.userId === userId && item.projectId === projectId && item.sessionId === sessionId)
+      if (existing && existing.updatedAt >= receipt.updatedAt) return clone(existing.payload)
+      const record = { userId, projectId, sessionId, updatedAt: receipt.updatedAt, payload: receipt }
+      if (existing) Object.assign(existing, record)
+      else state.agentSessionReadReceipts.push(record)
+      save()
+      return clone(receipt)
     },
 
     putAgentSession(userId, projectId, input) {
@@ -702,12 +745,29 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       save()
     },
 
+    refreshGenerationArtifacts(userId, jobId) {
+      const job = state.generationJobs.find((item) => item.id === jobId && item.ownerId === userId)
+      if (!job) return false
+      const project = state.projects.find((item) => item.id === job.projectId)
+      if (!project || !canAccess(project, userId)) return false
+      const graph = state.canvasGraphs.find((item) => item.projectId === job.projectId)?.graph
+      upsertArtifactRecords(job.projectId, userId, artifactsFromGenerationJob(job, {
+        document: { ...project.document, ...(graph ?? {}) },
+      }))
+      save()
+      return true
+    },
+
     putAgentRun(userId, run) {
       const project = state.projects.find((item) => item.id === run.projectId)
       if (!project) throw productError('未找到项目。', 'PROJECT_NOT_FOUND')
       assertProjectPermission(project.members.find((item) => item.userId === userId)?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
       const payload = { ...clone(run), ownerId: userId, updatedAt: Number(run.updatedAt) || now() }
       const existing = state.agentRuns.find((item) => item.id === run.id)
+      if (existing && (existing.projectId !== run.projectId || existing.ownerId !== userId)) {
+        throw productError('Agent Run 标识已被其他项目使用。', 'AGENT_RUN_ID_CONFLICT')
+      }
+      if (existing && !shouldApplyAgentRunWrite(existing, payload)) return clone(existing)
       if (existing) Object.assign(existing, payload)
       else state.agentRuns.push(payload)
       audit({ actorId: userId, action: `agent-run.${run.status}`, projectId: run.projectId, targetId: run.id })

@@ -1,5 +1,5 @@
 import { persistedGenerationJob } from './generationProvider.mjs'
-import { publicAgentRun } from './botanicAgentRun.mjs'
+import { failUnsubmittedPersistentAgentRun, publicAgentRun } from './botanicAgentRun.mjs'
 import { prepareAgentRunExecution, reconcileAgentGenerationJobToProject } from './botanicAgentExecution.mjs'
 import { AgentToolRuntimeError } from './agentToolRuntime.mjs'
 import { generationJobIdForIdempotency } from './generationIdempotency.mjs'
@@ -78,7 +78,7 @@ export function createAgentRunGenerationService({
     throw new AgentToolRuntimeError('AGENT_WRITEBACK_CONFLICT', '任务状态回写连续冲突，请刷新画布后重试。', 409)
   }
 
-  async function submitGeneration(userId, projectId, runId) {
+  async function submitGenerationOnce(userId, projectId, runId) {
     const { run, project, prepared } = await prepareProjectExecution(userId, projectId, runId, { submission: true })
     const existingJobs = new Map()
     for (const job of prepared.jobs) existingJobs.set(job.id, await productStore.readGenerationJob(userId, job.id))
@@ -109,6 +109,25 @@ export function createAgentRunGenerationService({
     await publishAgentRunUpdated({ projectId, run: publicAgentRun(latestRun) })
     if (queueFailures.length) throw new AgentToolRuntimeError('QUEUE_UNAVAILABLE', queueFailures[0].error, 503)
     return { run: latestRun, jobs: prepared.jobs, workflows: prepared.workflows }
+  }
+
+  async function submitGeneration(userId, projectId, runId) {
+    try {
+      return await submitGenerationOnce(userId, projectId, runId)
+    } catch (caught) {
+      // 4xx 代表这次请求在当前画布/配额/权限下已确定无法提交。
+      // 收口为 failed 后 UI 可给出明确调整/重试入口，避免每 4 秒无限重打。
+      // 5xx/网络等未知错误仍保留 queued，交给幂等恢复器再确认。
+      if (caught instanceof AgentToolRuntimeError && caught.statusCode >= 400 && caught.statusCode < 500) {
+        const run = await productStore.readAgentRun(userId, runId)
+        const failed = failUnsubmittedPersistentAgentRun(run, caught.message)
+        if (failed && failed !== run) {
+          await productStore.putAgentRun(userId, failed)
+          await publishAgentRunUpdated({ projectId, run: publicAgentRun(failed) })
+        }
+      }
+      throw caught
+    }
   }
 
   return { prepareProjectExecution, persistWorkflow, persistJobState, submitGeneration }

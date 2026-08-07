@@ -114,3 +114,24 @@ test('明确业务错误标记失败且不再自动重放，不阻塞后续消�
   assert.equal(queue.list()[0]?.status, 'failed')
   assert.equal(queue.list()[0]?.attempts, 1)
 })
+
+test('失败消息可由用户手动重新排队，并沿用原幂等键只提交一次', async () => {
+  let allowed = false
+  const delivered: string[] = []
+  const queue = createAgentMessageQueue({
+    storage: createMemoryStorage(),
+    deliver: async (item) => {
+      if (!allowed) throw Object.assign(new Error('无权限'), { status: 403, code: 'PROJECT_WRITE_FORBIDDEN' })
+      delivered.push(item.idempotencyKey)
+    },
+  })
+  queue.enqueue(fixture('m-retry', 10))
+
+  assert.deepEqual(await queue.flush(), { delivered: [], failed: ['m-retry'], pending: [] })
+  allowed = true
+  assert.equal(queue.retry('m-retry')?.status, 'queued')
+  assert.equal(queue.retry('m-retry')?.status, 'queued')
+  assert.deepEqual(await queue.flush(), { delivered: ['m-retry'], failed: [], pending: [] })
+  assert.deepEqual(delivered, ['agent-message-m-retry'])
+  assert.deepEqual(queue.list(), [])
+})

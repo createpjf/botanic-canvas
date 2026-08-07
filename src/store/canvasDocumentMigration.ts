@@ -698,7 +698,7 @@ export function normalizeCanvasDocumentBase(stored: CanvasDocument | undefined, 
         references: run.plan.references.map((reference) => ({ ...reference })),
         constraints: run.plan.constraints.map((constraint) => ({ ...constraint })),
         settings: cloneGenerationSettings(run.plan.settings),
-        rootRecipe: cloneGenerationRecipe(run.plan.rootRecipe),
+        ...(run.plan.rootRecipe ? { rootRecipe: cloneGenerationRecipe(run.plan.rootRecipe) } : {}),
       },
     })),
     agentSessions: (legacy.agentSessions ?? []).map((session) => ({

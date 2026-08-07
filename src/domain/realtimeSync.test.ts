@@ -24,6 +24,27 @@ test('其他设备发布当前项目的新版本时刷新画布', () => {
   }), true)
 })
 
+test('保留项目更新的协作者来源，供界面解释远端变更', () => {
+  const event = {
+    type: 'project.updated', projectId: 'project-1', revision: 5, updatedAt: 200, actorId: 'member-2',
+  }
+  assert.deepEqual(parseProjectRealtimeEvent(event, 'project-1'), event)
+})
+
+test('只接受当前项目且成员列表有效的协作在线状态', () => {
+  const event = {
+    type: 'collaboration.presence',
+    projectId: 'project-1',
+    members: [
+      { userId: 'member-1', connectionCount: 2 },
+      { userId: 'member-2', connectionCount: 1 },
+    ],
+  }
+  assert.deepEqual(parseProjectRealtimeEvent(event, 'project-1'), event)
+  assert.equal(parseProjectRealtimeEvent({ ...event, projectId: 'project-2' }, 'project-1'), undefined)
+  assert.equal(parseProjectRealtimeEvent({ ...event, members: [{ userId: '', connectionCount: 0 }] }, 'project-1'), undefined)
+})
+
 test('忽略其他项目、旧版本和未知实时消息', () => {
   assert.equal(shouldRefreshFromRealtimeEvent({
     event: { type: 'project.updated', projectId: 'project-2', revision: 5, updatedAt: 200 },

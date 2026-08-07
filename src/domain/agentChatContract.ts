@@ -1,7 +1,23 @@
 import type { BotanicAgentMessage } from './agent'
+import type { GenerationAspectRatio, GenerationModelOption, GenerationResolution } from './canvas'
 
 export type BotanicAgentChatMode = 'conversation' | 'prompt' | 'research'
 export type BotanicAgentRequestRoute = BotanicAgentChatMode | 'generation'
+
+export type BotanicAgentRequestDecision =
+  | { kind: 'chat'; mode: BotanicAgentChatMode }
+  | { kind: 'generation'; mediaKind: 'image' | 'video'; promptSource: 'instruction' | 'previous_prompt' }
+  | { kind: 'clarification'; reason: 'unsupported_media' | 'ambiguous_action' }
+
+export type BotanicAgentGenerationPromptResolution =
+  | { status: 'resolved'; prompt: string; sourceMessageId?: string; delta?: string }
+  | { status: 'missing'; prompt: '' }
+
+export type BotanicAgentGenerationSettingsHint = {
+  model?: string
+  aspectRatio?: GenerationAspectRatio
+  resolution?: GenerationResolution
+}
 
 export type BotanicAgentChatRequestInput = {
   projectId: string
@@ -31,35 +47,141 @@ export type BotanicAgentChatResponse = {
   sources?: string[]
 }
 
-const refersToPreviousPrompt = /(?:这个|上面的?|刚才的?|上一条|该).{0,8}(?:prompt|提示词|提示语)|(?:按照|按|使用|用|基于|拿).{0,6}(?:这个|上面的?|刚才的?|上一条|该).{0,8}(?:生成|生图|出图|做一张|来一张)/iu
+const refersToPreviousPrompt = /(?:按照|按|使用|用|基于|拿).{0,8}(?:这个|上面的?|刚才的?|上一条|该|这段)(?:.{0,8}(?:prompt|提示词|提示语))?.{0,16}(?:生成|生图|出图|做一张|来一张)/iu
+
+function previousPromptDelta(instruction: string) {
+  const match = instruction.match(/(?:生成|生图|出图|做一张|来一张)(?:一张|一版|图片|画面)?[\s：:，,；;]*([^\s].+)$/iu)
+  const delta = match?.[1]?.trim()
+  return delta && !/^(?:一张|一版|图片|画面)$/u.test(delta) ? delta : undefined
+}
+
+export function resolveBotanicAgentGenerationPromptDecision(
+  instruction: string,
+  messages: Pick<BotanicAgentMessage, 'id' | 'role' | 'content' | 'prompt'>[],
+  sourceMessageId?: string,
+): BotanicAgentGenerationPromptResolution {
+  const cleanInstruction = instruction.trim()
+  const explicitSource = sourceMessageId
+    ? messages.find((message) => message.id === sourceMessageId && message.role === 'assistant' && message.prompt?.trim())
+    : undefined
+  const referencesPrevious = Boolean(sourceMessageId) || refersToPreviousPrompt.test(cleanInstruction)
+  if (!referencesPrevious) return { status: 'resolved', prompt: cleanInstruction }
+  const promptMessage = explicitSource
+    ?? [...messages].reverse().find((message) => message.role === 'assistant' && message.prompt?.trim())
+  const basePrompt = promptMessage?.prompt?.trim()
+  if (!basePrompt) return { status: 'missing', prompt: '' }
+  const delta = previousPromptDelta(cleanInstruction)
+  return {
+    status: 'resolved',
+    prompt: delta ? `${basePrompt}\n\n本次修改：${delta}` : basePrompt,
+    ...(promptMessage?.id ? { sourceMessageId: promptMessage.id } : {}),
+    ...(delta ? { delta } : {}),
+  }
+}
 
 export function resolveBotanicAgentGenerationPrompt(
   instruction: string,
-  messages: Pick<BotanicAgentMessage, 'role' | 'content' | 'prompt'>[],
+  messages: Pick<BotanicAgentMessage, 'id' | 'role' | 'content' | 'prompt'>[],
+  sourceMessageId?: string,
 ) {
-  const cleanInstruction = instruction.trim()
-  if (!refersToPreviousPrompt.test(cleanInstruction)) return cleanInstruction
-  const promptMessage = [...messages].reverse().find((message) => message.role === 'assistant' && message.prompt?.trim())
-  return promptMessage?.prompt?.trim() || cleanInstruction
+  const resolution = resolveBotanicAgentGenerationPromptDecision(instruction, messages, sourceMessageId)
+  return resolution.status === 'resolved' ? resolution.prompt : ''
+}
+
+const asksForAdviceOrExplanation = /(?:为什么|为何|怎么|如何|什么意思|多久|多慢|是否|用了什么|给我.{0,8}建议|分析|比较|好吗|怎么样|哪次)/iu
+const explicitVisualGeneration = /(?:帮我|请|直接|马上|按照|按|用|基于|拿)?\s*(?:生成|生图|出图|做一张|来一张|做一版|出一张|我要一张|创建一张)|(?:generate|create|make|edit)\s+(?:(?:an?|this|the)\s+)?(?:image|photo|video)/iu
+const explicitVisualChange = /(?:帮我|请|直接|把|将|给).{0,8}(?:换|替换|改成|调整|重做).{0,16}(?:场景|背景|模特|人物|商品|动作|姿势|风格|光线|构图)|(?:换|替换|改成|重做).{0,8}(?:场景|背景|模特|人物|商品|动作|姿势|风格|光线|构图)|(?:把|将|给)?\s*(?:场景|背景|模特|人物|商品|动作|姿势|风格|光线|构图).{0,8}(?:换|替换|改成|调整|重做)/iu
+const cancelsVisualGeneration = /(?:先\s*)?(?:不要|不用|别|暂不)\s*(?:再\s*)?(?:生成|生图|出图|做图|创建)|(?:先\s*)?不\s*(?:再\s*)?(?:生成|生图|出图|做图)(?:了)?|(?:取消|停止|中止|暂停)(?:当前|这次|刚才的)?(?:生成|生图|出图|任务)?/iu
+const asksForPromptWork = /(?:怎么|如何).{0,16}(?:写|改|优化|润色).{0,8}(?:prompt|提示词|提示语)|(?:prompt|提示词|提示语).{0,16}(?:怎么|如何).{0,8}(?:写|改|优化|润色|更好)|(?:写|创作|生成|改写|优化|润色).{0,12}(?:prompt|提示词|提示语)/iu
+
+function normalizedModelSearchValue(value: string) {
+  return value.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+}
+
+export function inferBotanicAgentGenerationSettings(
+  value: string,
+  models: Pick<GenerationModelOption, 'id' | 'label' | 'aspectRatios' | 'resolutions'>[],
+): BotanicAgentGenerationSettingsHint {
+  const normalizedText = normalizedModelSearchValue(value)
+  const selectedModel = models.find((model) => {
+    const candidates = [model.id, model.label]
+      .map(normalizedModelSearchValue)
+      .filter((candidate) => candidate.length >= 3)
+    return candidates.some((candidate) => normalizedText.includes(candidate))
+  })
+  const ratioMatch = value.match(/\b(1|3|4|9|16)\s*[:：]\s*(1|3|4|5|9|16)\b/u)
+  const ratio = ratioMatch ? `${ratioMatch[1]}:${ratioMatch[2]}` as GenerationAspectRatio : undefined
+  const resolutionMatch = value.match(/\b(1|2)\s*k\b/iu)
+  const resolution = resolutionMatch ? `${resolutionMatch[1]}K` as GenerationResolution : undefined
+  const supportedRatios = selectedModel?.aspectRatios?.length
+    ? selectedModel.aspectRatios
+    : [...new Set(models.flatMap((model) => model.aspectRatios ?? []))]
+  const supportedResolutions = selectedModel?.resolutions?.length
+    ? selectedModel.resolutions
+    : [...new Set(models.flatMap((model) => model.resolutions ?? []))]
+  return {
+    ...(selectedModel ? { model: selectedModel.id } : {}),
+    ...(ratio && (!supportedRatios.length || supportedRatios.includes(ratio)) ? { aspectRatio: ratio } : {}),
+    ...(resolution && (!supportedResolutions.length || supportedResolutions.includes(resolution)) ? { resolution } : {}),
+  }
+}
+
+export function isBotanicAgentPromptGenerationPending(
+  sourceMessageId: string,
+  messages: Pick<BotanicAgentMessage, 'kind' | 'status' | 'question'>[],
+) {
+  return messages.some((message) => (
+    message.kind === 'question'
+    && message.status === 'pending'
+    && message.question?.sourcePromptMessageId === sourceMessageId
+  ))
+}
+
+/**
+ * 只有明确的视觉执行请求才进入生成链路；咨询、解释和能力询问永远留在对话链路。
+ * 这是防止 Agent 因一句“图片怎么改”就在画布创建空节点的单一边界。
+ */
+export function decideBotanicAgentRequest(value: string, hasGenerationTarget = false): BotanicAgentRequestDecision {
+  const text = value.trim()
+  if (!text) return { kind: 'chat', mode: 'conversation' }
+
+  const asksAboutPreviousOutcome = /(?:没有|没|未).{0,8}(?:生成|生图|出图|结果)|(?:刚才|之前|上次)?.{0,6}(?:为什么|为何|怎么).{0,16}(?:没|未|不).{0,6}(?:成功|生成|反应|结果)/iu.test(text)
+  const asksAboutCapability = /(?:你|agent).{0,8}(?:可以|能|支持).{0,12}(?:生成|生图|出图|做图|视频)|\bcan\s+you\s+(?:generate|create|make|edit)\b/iu.test(text)
+  if (cancelsVisualGeneration.test(text) || asksAboutPreviousOutcome || asksAboutCapability) return { kind: 'chat', mode: 'conversation' }
+  if (/(?:生成|写|创作).{0,12}(?:文案|标题|脚本|slogan)/iu.test(text) && !/(?:图片|画面|海报|视频|image|photo|video)/iu.test(text)) {
+    return { kind: 'chat', mode: 'conversation' }
+  }
+
+  const explicitlyUsesPromptForGeneration = /(?:按照|使用|用|基于|拿).{0,16}(?:prompt|提示词|提示语).{0,16}(?:生成|生图|出图|做一张|来一张)/iu.test(text)
+  const usesPreviousPromptForGeneration = refersToPreviousPrompt.test(text)
+  if (explicitlyUsesPromptForGeneration || usesPreviousPromptForGeneration) {
+    return { kind: 'generation', mediaKind: /视频|video/iu.test(text) ? 'video' : 'image', promptSource: 'previous_prompt' }
+  }
+  if (asksForPromptWork.test(text)) return { kind: 'chat', mode: 'prompt' }
+  if (asksForAdviceOrExplanation.test(text)) return { kind: 'chat', mode: 'conversation' }
+  if (/(?:prompt|提示词|提示语|提示词生成|写一段.*(?:提示|prompt)|润色提示)/iu.test(text)) return { kind: 'chat', mode: 'prompt' }
+  if (/(?:检索|搜索|查找|查一下|研究|资料|联网|外部来源|项目里|画布中|有哪些素材|哪些节点|多少个节点)/iu.test(text)) return { kind: 'chat', mode: 'research' }
+  if (/(?:你是谁|你能做什么|如何使用|怎么使用|怎么用|请解释|解释一下|日常聊天|闲聊|你可以|你能)/iu.test(text)) return { kind: 'chat', mode: 'conversation' }
+
+  const mediaKind = /视频|video/iu.test(text) ? 'video' as const : 'image' as const
+  if (mediaKind === 'video' && explicitVisualGeneration.test(text)) {
+    return { kind: 'clarification', reason: 'unsupported_media' }
+  }
+  if (explicitVisualGeneration.test(text) || explicitVisualChange.test(text)) {
+    return { kind: 'generation', mediaKind, promptSource: 'instruction' }
+  }
+  if (hasGenerationTarget && /^(?:保持|继续|再来|重试|重新|换|替换|调整)(?!.*[?？])/iu.test(text)) {
+    return { kind: 'generation', mediaKind: 'image', promptSource: 'instruction' }
+  }
+  return { kind: 'chat', mode: 'conversation' }
 }
 
 /**
  * 通用 Agent 先路由，再决定是否进入生图 Planner；显式 Prompt/检索请求不应误触发生成。
  */
 export function classifyBotanicAgentRequest(value: string, hasGenerationTarget = false): BotanicAgentRequestRoute {
-  const text = value.trim()
-  const asksAboutPreviousOutcome = /(?:没有|没|未).{0,8}(?:生成|生图|出图|结果)|(?:刚才|之前|上次)?.{0,6}(?:为什么|为何|怎么).{0,16}(?:没|未|不).{0,6}(?:成功|生成|反应|结果)|(?:效果|结果|这张|这个).{0,10}(?:好吗|如何|怎么样|是否|吗|呢|呀)\s*[?？]?$/iu.test(text)
-  if (asksAboutPreviousOutcome) return 'conversation'
-  const explicitlyUsesPromptForGeneration = /(?:按照|使用|用|基于|拿).{0,16}(?:prompt|提示词|提示语).{0,16}(?:生成|生图|出图|做一张|来一张)/iu.test(text)
-  if (explicitlyUsesPromptForGeneration) return 'generation'
-  if (/(?:prompt|提示词|提示语|提示词生成|写一段.*(?:提示|prompt)|润色提示)/iu.test(text)) return 'prompt'
-  if (/(?:检索|搜索|查找|查一下|研究|资料|联网|外部来源|项目里|画布中|有哪些素材|哪些节点|多少个节点)/iu.test(text)) return 'research'
-  if (/(?:你是谁|你能做什么|如何使用|怎么使用|怎么用|请解释|解释一下|日常聊天|闲聊)/iu.test(text)) return 'conversation'
-  const changesVisual = /(?:换|替换|改|调整).{0,16}(?:场景|背景|模特|商品|动作|风格|光线|构图)/iu.test(text)
-  if ((hasGenerationTarget && /(?:保持|继续|再来|重试|重新|换|替换|调整)/iu.test(text))
-    || changesVisual
-    || /(?:生成|生图|出图|图片|画面|换场景|换模特|换商品|换动作|换风格|重做|变体|批量)/iu.test(text)) return 'generation'
-  return 'conversation'
+  const decision = decideBotanicAgentRequest(value, hasGenerationTarget)
+  return decision.kind === 'generation' ? 'generation' : decision.kind === 'chat' ? decision.mode : 'conversation'
 }
 
 export function buildBotanicAgentChatRequest(input: BotanicAgentChatRequestInput) {

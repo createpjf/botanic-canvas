@@ -6,12 +6,14 @@ export type ProjectUpdatedRealtimeEvent = {
   revision: number
   graphRevision?: number
   updatedAt: number
+  actorId?: string
 }
 
 export type CanvasCrdtRealtimeEvent = {
   type: 'canvas.crdt.update'
   projectId: string
   update: string
+  actorId?: string
 }
 
 export type AgentRunUpdatedRealtimeEvent = {
@@ -20,7 +22,13 @@ export type AgentRunUpdatedRealtimeEvent = {
   run: BotanicAgentRunSnapshot
 }
 
-export type ProjectRealtimeEvent = ProjectUpdatedRealtimeEvent | CanvasCrdtRealtimeEvent | AgentRunUpdatedRealtimeEvent
+export type CollaborationPresenceRealtimeEvent = {
+  type: 'collaboration.presence'
+  projectId: string
+  members: Array<{ userId: string; connectionCount: number }>
+}
+
+export type ProjectRealtimeEvent = ProjectUpdatedRealtimeEvent | CanvasCrdtRealtimeEvent | AgentRunUpdatedRealtimeEvent | CollaborationPresenceRealtimeEvent
 
 export function projectRealtimeConnectionOpened(openedBefore: boolean) {
   return {
@@ -37,21 +45,39 @@ export function parseProjectRealtimeEvent(event: unknown, currentProjectId: stri
     revision?: unknown
     graphRevision?: unknown
     updatedAt?: unknown
+    actorId?: unknown
     update?: unknown
     run?: unknown
+    members?: unknown
   }
   if (candidate.projectId !== currentProjectId) return undefined
   if (candidate.type === 'project.updated'
     && typeof candidate.revision === 'number'
     && (candidate.graphRevision === undefined || typeof candidate.graphRevision === 'number')
-    && typeof candidate.updatedAt === 'number') {
+    && typeof candidate.updatedAt === 'number'
+    && (candidate.actorId === undefined || typeof candidate.actorId === 'string')) {
     return candidate as ProjectUpdatedRealtimeEvent
+  }
+  if (candidate.type === 'collaboration.presence'
+    && Array.isArray(candidate.members)
+    && candidate.members.length <= 100
+    && candidate.members.every((member) => {
+      if (!member || typeof member !== 'object') return false
+      const value = member as { userId?: unknown; connectionCount?: unknown }
+      return typeof value.userId === 'string'
+        && value.userId.length > 0
+        && value.userId.length <= 200
+        && Number.isInteger(value.connectionCount)
+        && Number(value.connectionCount) > 0
+    })) {
+    return candidate as CollaborationPresenceRealtimeEvent
   }
   if (candidate.type === 'canvas.crdt.update'
     && typeof candidate.update === 'string'
     && candidate.update.length > 0
     && candidate.update.length <= 700_000
-    && /^[A-Za-z0-9+/]*={0,2}$/.test(candidate.update)) {
+    && /^[A-Za-z0-9+/]*={0,2}$/.test(candidate.update)
+    && (candidate.actorId === undefined || typeof candidate.actorId === 'string')) {
     return candidate as CanvasCrdtRealtimeEvent
   }
   if (candidate.type === 'agent.run.updated' && candidate.run && typeof candidate.run === 'object') {

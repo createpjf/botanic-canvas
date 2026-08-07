@@ -2,6 +2,7 @@ import { createGenerationProcessor } from './generationProcessor.mjs'
 import { createGenerationQueue, createGenerationWorker } from './generationQueue.mjs'
 import { createProductRuntime, loadLocalEnv, runtimeConfig } from './runtime.mjs'
 import { createAgentRunEventPublisher } from './agentRunEventBus.mjs'
+import { writeAgentRunOperationalEvent } from './agentRunObservability.mjs'
 
 loadLocalEnv()
 const config = runtimeConfig()
@@ -13,7 +14,12 @@ const agentRunEvents = createAgentRunEventPublisher(config.redisUrl)
 const worker = createGenerationWorker({
   redisUrl: config.redisUrl,
   concurrency: config.workerConcurrency,
-  processJob: createGenerationProcessor({ ...runtime, config, publishAgentRunUpdated: agentRunEvents.publish }),
+  processJob: createGenerationProcessor({
+    ...runtime,
+    config,
+    publishAgentRunUpdated: agentRunEvents.publish,
+    observeAgentRun: writeAgentRunOperationalEvent,
+  }),
 })
 
 worker.on('failed', (job, caught) => console.error(`[generation] BullMQ job ${job?.id ?? 'unknown'} failed: ${caught.message}`))

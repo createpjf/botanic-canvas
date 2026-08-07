@@ -1,6 +1,7 @@
 import type { AssetGroup, AssetNodeData, AssetRecord, CanvasNode, GenerationJob, GenerationRecipe, GenerationSettings, ResultNodeData } from './canvas.ts'
 
 export type BotanicAgentIntent =
+  | 'initial_generation'
   | 'continue_generation'
   | 'replace_scene'
   | 'replace_person'
@@ -29,7 +30,7 @@ export type CreativeConstraint = {
 }
 
 export type AgentReferenceBinding = {
-  source: 'selected_result' | 'root_recipe' | 'asset_group'
+  source: 'selected_result' | 'root_recipe' | 'asset_group' | 'context_node'
   id: string
   label: string
   role?: string
@@ -310,7 +311,7 @@ function stableAgentPlanHash(value: string) {
 }
 
 /** 同一确认消息与同一计划始终复用同一个提交键，防止网络重试产生重复 Run。 */
-export function botanicAgentSubmissionKey(messageId: string, plan: Pick<BotanicAgentPlan, 'instruction' | 'prompt' | 'settings' | 'output' | 'selectedResultNodeId'>) {
+export function botanicAgentSubmissionKey(messageId: string, plan: Pick<BotanicAgentPlan, 'instruction' | 'prompt' | 'settings' | 'output' | 'selectedResultNodeId' | 'contextSnapshot'>) {
   const safeMessageId = messageId.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 64) || 'message'
   const fingerprint = JSON.stringify({
     instruction: plan.instruction,
@@ -318,6 +319,7 @@ export function botanicAgentSubmissionKey(messageId: string, plan: Pick<BotanicA
     settings: plan.settings,
     output: plan.output,
     selectedResultNodeId: plan.selectedResultNodeId,
+    contextNodeIds: [...new Set(plan.contextSnapshot?.map((item) => item.nodeId).filter(Boolean) ?? [])].sort(),
   })
   return `agent-plan-${safeMessageId}-${stableAgentPlanHash(fingerprint)}`
 }
@@ -464,7 +466,7 @@ export type BotanicAgentPlan = {
   intent: BotanicAgentIntent
   instruction: string
   summary: string
-  selectedResultNodeId: string
+  selectedResultNodeId?: string
   /**
    * 提交时锁定的画布上下文。只保存可解释的节点元数据，不携带图片地址或媒体内容，
    * 让异步任务、刷新和跨设备恢复时仍能知道这次请求基于哪些输入。
@@ -480,7 +482,7 @@ export type BotanicAgentPlan = {
     candidatesPerItem: number
   }
   assetGroupId?: string
-  rootRecipe: GenerationRecipe
+  rootRecipe?: GenerationRecipe
   toolCalls?: AgentToolCallTrace[]
   actions?: BotanicAgentActionProposal[]
 }
@@ -554,6 +556,8 @@ export type BotanicAgentClarification = {
   question: string
   helper?: string
   originalInstruction: string
+  /** 精确复用某条 Agent Prompt，避免确认输出参数后误取其他历史 Prompt。 */
+  sourcePromptMessageId?: string
   fields: BotanicAgentClarificationField[]
 }
 
@@ -639,6 +643,19 @@ export function shouldRecoverAgentRunResults(
   return incoming.updatedAt > current.updatedAt
 }
 
+/**
+ * 用户已确认后，Run 会先持久化，再幂等提交生成任务。如果页面在
+ * 两步之间关闭，恢复器只对“仍排队且从未绑定 Job”的 Run 补做
+ * 幂等执行；已绑定 Job 的正常排队任务不会重复提交。
+ */
+export function shouldResumeQueuedAgentRunExecution(
+  run: Pick<BotanicAgentRunSnapshot, 'status' | 'branches'>,
+) {
+  return run.status === 'queued'
+    && run.branches.length > 0
+    && run.branches.every((branch) => !branch.activeJobId && branch.jobIds.length === 0)
+}
+
 export type BotanicAgentRunBranch = {
   id: string
   label: string
@@ -715,7 +732,7 @@ export type BotanicAgentMessage = {
   status?: 'pending' | 'answered' | 'submitted' | 'failed'
   feedback?: 'positive' | 'negative'
   /** 只用于本地离线送达状态；服务端权威消息不依赖该字段。 */
-  deliveryStatus?: 'queued' | 'synced' | 'failed'
+  deliveryStatus?: 'waiting_network' | 'queued' | 'syncing' | 'synced' | 'failed'
 }
 
 export type BotanicAgentSession = {
@@ -724,8 +741,136 @@ export type BotanicAgentSession = {
   executionMode: BotanicAgentExecutionMode
   contextNodeIds: string[]
   messages: BotanicAgentMessage[]
+  /** 最近一次稳定阅读到的消息；用于切换设备或重新打开会话后恢复视图。 */
+  readingAnchorMessageId?: string
+  readingAnchorUpdatedAt?: number
   createdAt: number
   updatedAt: number
+}
+
+export type BotanicAgentRunTimelineItem = {
+  run: BotanicAgentRun
+  source?: { sessionId: string; sessionTitle: string; messageId: string }
+}
+
+/**
+ * Run 是任务状态权威；Session 只补充“从哪段对话发起”的导航信息。
+ * 时间线始终按 Run 的服务端更新时间排序，不受各 Adapter 返回顺序影响。
+ */
+export function buildBotanicAgentRunTimeline(
+  runs: BotanicAgentRun[],
+  sessions: BotanicAgentSession[],
+): BotanicAgentRunTimelineItem[] {
+  const sourceByRunId = new Map<string, BotanicAgentRunTimelineItem['source']>()
+  const newestSessions = [...sessions].sort((left, right) => right.updatedAt - left.updatedAt)
+  for (const session of newestSessions) {
+    const newestMessages = [...session.messages].sort((left, right) => (
+      (right.updatedAt ?? right.createdAt) - (left.updatedAt ?? left.createdAt)
+    ))
+    for (const message of newestMessages) {
+      if (!message.runId || sourceByRunId.has(message.runId)) continue
+      sourceByRunId.set(message.runId, {
+        sessionId: session.id,
+        sessionTitle: session.title,
+        messageId: message.id,
+      })
+    }
+  }
+  return [...runs]
+    .sort((left, right) => right.updatedAt - left.updatedAt)
+    .map((run) => ({ run, source: sourceByRunId.get(run.id) }))
+}
+
+export type BotanicAgentRunTimelineFilter = 'all' | 'active' | 'completed' | 'attention'
+
+export function filterBotanicAgentRunTimeline(
+  timeline: BotanicAgentRunTimelineItem[],
+  filter: BotanicAgentRunTimelineFilter,
+): BotanicAgentRunTimelineItem[] {
+  if (filter === 'all') return timeline
+  const activeStatuses = new Set<BotanicAgentRunStatus>(['awaiting_confirmation', 'queued', 'executing', 'running'])
+  const attentionStatuses = new Set<BotanicAgentRunStatus>(['partial', 'failed', 'cancelled'])
+  return timeline.filter(({ run }) => {
+    if (filter === 'active') return activeStatuses.has(run.status)
+    if (filter === 'completed') return run.status === 'completed'
+    return attentionStatuses.has(run.status)
+  })
+}
+
+export type BotanicAgentSessionTimelineItem = {
+  session: BotanicAgentSession
+  preview: string
+  updatedAt: number
+  runCount: number
+  activeRunCount: number
+  unreadRunCount: number
+  unreadResultCount: number
+  attentionRunCount: number
+  searchText: string
+}
+
+export type BotanicAgentSessionTimelineFilter = 'all' | 'unread' | 'results' | 'attention'
+
+/**
+ * 对话历史使用消息自身版本时间排序；Run 只补充任务摘要，不反向修改会话。
+ * 这样跨设备增量合并后，即使会话外层 updatedAt 尚未刷新，最近对话仍会回到顶部。
+ */
+export function buildBotanicAgentSessionTimeline(
+  sessions: BotanicAgentSession[],
+  runs: BotanicAgentRun[],
+): BotanicAgentSessionTimelineItem[] {
+  const runTimeline = buildBotanicAgentRunTimeline(runs, sessions)
+  const runsBySessionId = new Map<string, BotanicAgentRun[]>()
+  for (const item of runTimeline) {
+    if (!item.source) continue
+    const linked = runsBySessionId.get(item.source.sessionId) ?? []
+    linked.push(item.run)
+    runsBySessionId.set(item.source.sessionId, linked)
+  }
+  return sessions.map((session) => {
+    const messages = [...session.messages].sort((left, right) => (
+      (right.updatedAt ?? right.createdAt) - (left.updatedAt ?? left.createdAt)
+    ))
+    const latestMessage = messages[0]
+    const linkedRuns = runsBySessionId.get(session.id) ?? []
+    const readingBaseline = session.readingAnchorUpdatedAt
+    const unreadRuns = readingBaseline === undefined
+      ? []
+      : linkedRuns.filter((run) => run.updatedAt > readingBaseline)
+    return {
+      session,
+      preview: latestMessage?.content.trim() || '还没有消息',
+      updatedAt: Math.max(session.updatedAt, latestMessage?.updatedAt ?? latestMessage?.createdAt ?? 0),
+      runCount: linkedRuns.length,
+      activeRunCount: linkedRuns.filter((run) => ['queued', 'running', 'executing'].includes(run.status)).length,
+      unreadRunCount: unreadRuns.length,
+      unreadResultCount: unreadRuns.filter((run) => (
+        (run.status === 'completed' || run.status === 'partial') && run.completedBranchCount > 0
+      )).length,
+      attentionRunCount: linkedRuns.filter((run) => ['partial', 'failed', 'cancelled'].includes(run.status)).length,
+      searchText: [
+        session.title,
+        ...session.messages.map((message) => message.content),
+        ...linkedRuns.map((run) => run.plan.summary),
+      ].join('\n').toLocaleLowerCase(),
+    }
+  }).sort((left, right) => right.updatedAt - left.updatedAt)
+}
+
+export function filterBotanicAgentSessionTimeline(
+  timeline: BotanicAgentSessionTimelineItem[],
+  query: string,
+  filter: BotanicAgentSessionTimelineFilter = 'all',
+): BotanicAgentSessionTimelineItem[] {
+  const normalized = query.trim().toLocaleLowerCase()
+  if (!normalized && filter === 'all') return timeline
+  return timeline.filter((item) => {
+    if (normalized && !item.searchText.includes(normalized)) return false
+    if (filter === 'unread') return item.unreadRunCount > 0
+    if (filter === 'results') return item.unreadResultCount > 0
+    if (filter === 'attention') return item.attentionRunCount > 0
+    return true
+  })
 }
 
 export type BotanicAgentMentionQuery = {
@@ -941,6 +1086,21 @@ export function replaceBotanicAgentSessionContext(
   return { ...session, contextNodeIds: uniqueIds(contextNodeIds), updatedAt: now }
 }
 
+export function updateBotanicAgentSessionReadingAnchor(
+  session: BotanicAgentSession,
+  messageId: string,
+  now = Date.now(),
+): BotanicAgentSession {
+  if (!session.messages.some((message) => message.id === messageId)) return session
+  if (session.readingAnchorMessageId === messageId && session.readingAnchorUpdatedAt === now) return session
+  return {
+    ...session,
+    readingAnchorMessageId: messageId,
+    readingAnchorUpdatedAt: now,
+    updatedAt: Math.max(session.updatedAt, now),
+  }
+}
+
 export function updateBotanicAgentMessage(
   session: BotanicAgentSession,
   messageId: string,
@@ -983,7 +1143,8 @@ export type BuildBotanicAgentPlanInput = {
   intent?: BotanicAgentIntent
   selectedResultNodeId?: string
   selectedResultLabel?: string
-  rootRecipe: GenerationRecipe
+  rootRecipe?: GenerationRecipe
+  settings?: GenerationSettings
   assetGroup?: AssetGroup
   contextSnapshot?: BotanicAgentContextSnapshot[]
 }
@@ -1005,6 +1166,7 @@ export function inferBotanicAgentIntent(instruction: string): BotanicAgentIntent
 
 function constraintsForIntent(intent: BotanicAgentIntent, assetGroup?: AssetGroup): CreativeConstraint[] {
   const groupSource = assetGroup ? { sourceAssetGroupId: assetGroup.id } : {}
+  if (intent === 'initial_generation') return []
   if (intent === 'replace_scene') return [
     { dimension: 'person', mode: 'preserve' },
     { dimension: 'garment', mode: 'preserve' },
@@ -1056,6 +1218,7 @@ function constraintsForIntent(intent: BotanicAgentIntent, assetGroup?: AssetGrou
 
 function intentLabel(intent: BotanicAgentIntent) {
   const labels: Record<BotanicAgentIntent, string> = {
+    initial_generation: '首次生成',
     continue_generation: '继续生成',
     replace_scene: '替换场景',
     replace_person: '替换模特',
@@ -1069,24 +1232,39 @@ function intentLabel(intent: BotanicAgentIntent) {
 }
 
 export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): BotanicAgentPlan {
-  if (!input.selectedResultNodeId) throw new Error('请先选择一张已生成图片。')
   const instruction = input.instruction.trim()
   if (!instruction) throw new Error('请描述希望 Agent 完成的修改。')
   const intent = input.intent ?? inferBotanicAgentIntent(instruction)
+  const isInitialGeneration = intent === 'initial_generation'
+  if (!isInitialGeneration && !input.selectedResultNodeId) throw new Error('请先选择一张已生成图片。')
+  if (!isInitialGeneration && !input.rootRecipe) throw new Error('当前结果缺少可恢复的生成配方。')
+  const contextSnapshot = createBotanicAgentContextSnapshot(input.contextSnapshot ?? [])
+  const imageContext = contextSnapshot.filter((item) =>
+    item.mediaKind === 'image' && (item.kind === '素材' || item.kind === '结果'))
+  if (isInitialGeneration && !imageContext.length) throw new Error('首次生成至少需要一项图片素材或图片结果。')
+  const settings = input.rootRecipe?.settings ?? input.settings
+  if (!settings) throw new Error('请先设置生成模型与输出参数。')
   const constraints = constraintsForIntent(intent, input.assetGroup)
   const batchCount = input.assetGroup?.assetIds.length ?? 0
   const output = batchCount
     ? { mode: 'batch_by_asset' as const, count: batchCount, candidatesPerItem: 1 }
     : { mode: 'single' as const, count: 1, candidatesPerItem: 1 }
-  const references: AgentReferenceBinding[] = [
-    { source: 'selected_result', id: input.selectedResultNodeId, label: input.selectedResultLabel ?? '当前结果图' },
-    ...input.rootRecipe.references.map((reference) => ({
-      source: 'root_recipe' as const,
-      id: reference.nodeId,
-      label: reference.name,
-      role: reference.role,
-    })),
-  ]
+  const references: AgentReferenceBinding[] = isInitialGeneration
+    ? imageContext.map((item) => ({
+        source: 'context_node' as const,
+        id: item.nodeId,
+        label: item.label,
+        ...(item.role ? { role: item.role } : {}),
+      }))
+    : [
+        { source: 'selected_result', id: input.selectedResultNodeId!, label: input.selectedResultLabel ?? '当前结果图' },
+        ...input.rootRecipe!.references.map((reference) => ({
+          source: 'root_recipe' as const,
+          id: reference.nodeId,
+          label: reference.name,
+          role: reference.role,
+        })),
+      ]
   if (input.assetGroup) references.push({
     source: 'asset_group',
     id: input.assetGroup.id,
@@ -1098,15 +1276,15 @@ export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): Botani
     intent,
     instruction,
     summary: `${intentLabel(intent)}，${output.mode === 'batch_by_asset' ? `按「${input.assetGroup?.name}」生成 ${output.count} 张` : '生成 1 张新版本'}。`,
-    selectedResultNodeId: input.selectedResultNodeId,
-    ...(input.contextSnapshot?.length ? { contextSnapshot: input.contextSnapshot } : {}),
+    ...(input.selectedResultNodeId ? { selectedResultNodeId: input.selectedResultNodeId } : {}),
+    ...(contextSnapshot.length ? { contextSnapshot } : {}),
     references,
     constraints,
     prompt: instruction,
-    settings: input.rootRecipe.settings,
+    settings,
     output,
     ...(input.assetGroup ? { assetGroupId: input.assetGroup.id } : {}),
-    rootRecipe: input.rootRecipe,
+    ...(input.rootRecipe ? { rootRecipe: input.rootRecipe } : {}),
   }
 }
 
@@ -1169,27 +1347,38 @@ export function upsertBotanicAgentRunSnapshot(
       .sort((a, b) => b.updatedAt - a.updatedAt)
   }
   if (!snapshot.plan) return runs
-  const recipe = rootRecipe ?? {
-    references: [],
-    prompt: snapshot.plan.prompt,
-    batchCount: Math.max(1, snapshot.plan.output.candidatesPerItem),
-    settings: snapshot.plan.settings,
-  }
-  const restored: BotanicAgentRun = {
-    id: snapshot.id,
-    status: snapshot.status,
-    plan: {
-      ...snapshot.plan,
-      references: [
-        { source: 'selected_result', id: snapshot.plan.selectedResultNodeId, label: '父结果' },
-        ...recipe.references.map((reference) => ({
+  const initialGeneration = snapshot.plan.intent === 'initial_generation'
+  const recipe = initialGeneration ? undefined : rootRecipe ?? {
+      references: [],
+      prompt: snapshot.plan.prompt,
+      batchCount: Math.max(1, snapshot.plan.output.candidatesPerItem),
+      settings: snapshot.plan.settings,
+    }
+  const references: AgentReferenceBinding[] = initialGeneration
+    ? (snapshot.plan.contextSnapshot ?? [])
+        .filter((item) => item.mediaKind === 'image' && (item.kind === '素材' || item.kind === '结果'))
+        .map((item) => ({
+          source: 'context_node', id: item.nodeId, label: item.label,
+          ...(item.role ? { role: item.role } : {}),
+        }))
+    : [
+        ...(snapshot.plan.selectedResultNodeId
+          ? [{ source: 'selected_result' as const, id: snapshot.plan.selectedResultNodeId, label: '父结果' }]
+          : []),
+        ...(recipe?.references ?? []).map((reference) => ({
           source: 'root_recipe' as const,
           id: reference.nodeId,
           label: reference.name,
           role: reference.role,
         })),
-      ],
-      rootRecipe: recipe,
+      ]
+  const restored: BotanicAgentRun = {
+    id: snapshot.id,
+    status: snapshot.status,
+    plan: {
+      ...snapshot.plan,
+      references,
+      ...(recipe ? { rootRecipe: recipe } : {}),
     },
     branches: snapshot.branches,
     completedBranchCount: snapshot.completedBranchCount,

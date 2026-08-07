@@ -27,9 +27,13 @@ export function createAgentRouteHandler({
   publishAgentRunUpdated,
   enqueue,
   publishProjectUpdated,
+  observeAgentRun = () => {},
 }) {
   const agentActionExecutions = new Map()
   const methodNotAllowed = (response, message, allow) => json(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message } }, { Allow: allow })
+  const observeRun = (event) => {
+    try { observeAgentRun(event) } catch { /* 运行日志不得阻断用户请求。 */ }
+  }
 
   return async function handleAgentRoute(request, response, url, routeMatches, requestId) {
     const {
@@ -38,6 +42,7 @@ export function createAgentRouteHandler({
       projectAgentState: projectAgentStateMatch,
       projectAgentArtifacts: projectAgentArtifactsMatch,
       agentSession: agentSessionMatch,
+      agentSessionReadingAnchor: agentSessionReadingAnchorMatch,
       agentMessage: agentMessageMatch,
       agentMemory: agentMemoryMatch,
       agentRun: agentRunMatch,
@@ -134,6 +139,26 @@ export function createAgentRouteHandler({
       const artifacts = await productStore.listAgentArtifacts(user.id, projectId, { limit, before })
       if (!artifacts) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
       return json(response, 200, { artifacts, nextBefore: artifacts.length === limit ? encodeArtifactCursor(artifacts.at(-1)) : undefined })
+    }
+    if (agentSessionReadingAnchorMatch) {
+      if (request.method !== 'PATCH') return methodNotAllowed(response, 'Agent 阅读位置只接受更新。', 'PATCH')
+      const user = await requireUser(request)
+      const projectId = decodeURIComponent(agentSessionReadingAnchorMatch[1])
+      const sessionId = decodeURIComponent(agentSessionReadingAnchorMatch[2])
+      await requireProjectPermission(productStore, user.id, projectId, 'read')
+      const body = await readJson(request, 4 * 1024, 'Agent 阅读位置请求过大。')
+      const messageId = text(body?.messageId, 'Agent 阅读位置', 160)
+      const state = await productStore.readAgentState(user.id, projectId)
+      const session = state?.sessions?.find((candidate) => candidate.id === sessionId)
+      if (!session) return error(response, 404, 'AGENT_SESSION_NOT_FOUND', '未找到该 Agent 对话。')
+      if (!session.messages?.some((message) => message.id === messageId)) {
+        return error(response, 409, 'AGENT_MESSAGE_NOT_FOUND', '目标消息已不存在，请刷新对话后重试。')
+      }
+      const updatedAt = Date.now()
+      return json(response, 200, { receipt: await productStore.putAgentSessionReadReceipt(user.id, projectId, sessionId, {
+        messageId,
+        updatedAt,
+      }) })
     }
     if (agentSessionMatch) {
       if (request.method !== 'PUT') return methodNotAllowed(response, 'Agent 会话资源只接受写入。', 'PUT')
@@ -235,6 +260,7 @@ export function createAgentRouteHandler({
     }
 
     if (url.pathname === '/api/agent-runs') {
+      const startedAt = Date.now()
       if (request.method !== 'POST') return methodNotAllowed(response, 'Agent Run 集合只接受提交请求。', 'POST')
       const user = await requireUser(request)
       const idempotencyKey = generationIdempotencyKey(request.headers['idempotency-key'])
@@ -243,11 +269,15 @@ export function createAgentRouteHandler({
       await requireProjectPermission(productStore, user.id, input.projectId, 'edit')
       const id = `agent_run_${generationJobIdForIdempotency(user.id, idempotencyKey).slice(4)}`
       const existing = await productStore.readAgentRun(user.id, id)
-      if (existing) return json(response, 200, { run: publicAgentRun(existing) })
+      if (existing) {
+        observeRun({ type: 'submission_reused', requestId, projectId: existing.projectId, runId: existing.id, status: existing.status, durationMs: Date.now() - startedAt })
+        return json(response, 200, { run: publicAgentRun(existing) })
+      }
       const run = createPersistentAgentRun(input, { id, ownerId: user.id })
-      await productStore.putAgentRun(user.id, run)
-      await publishAgentRunUpdated({ projectId: run.projectId, run: publicAgentRun(run) })
-      return json(response, 201, { run: publicAgentRun(run) })
+      const storedRun = await productStore.putAgentRun(user.id, run)
+      await publishAgentRunUpdated({ projectId: storedRun.projectId, run: publicAgentRun(storedRun) })
+      observeRun({ type: 'created', requestId, projectId: storedRun.projectId, runId: storedRun.id, status: storedRun.status, durationMs: Date.now() - startedAt })
+      return json(response, 201, { run: publicAgentRun(storedRun) })
     }
     if (projectAgentRunsMatch) {
       if (request.method !== 'GET') return methodNotAllowed(response, '项目 Agent Run 资源只支持读取。', 'GET')
@@ -285,6 +315,7 @@ export function createAgentRouteHandler({
       const cancelledRun = cancelPersistentAgentRun(latestRun)
       if (cancelledRun !== latestRun) await productStore.putAgentRun(user.id, cancelledRun)
       await publishAgentRunUpdated({ projectId: run.projectId, run: publicAgentRun(cancelledRun) })
+      observeRun({ type: 'cancelled', requestId, projectId: run.projectId, runId, status: cancelledRun.status, activeJobCount: activeJobIds.length })
       return json(response, 200, { run: publicAgentRun(cancelledRun) })
     }
     if (agentBranchRetryMatch) {
@@ -303,7 +334,11 @@ export function createAgentRouteHandler({
       if (!previousJob?.rawInput) return error(response, 409, 'AGENT_BRANCH_RETRY_SOURCE_MISSING', '该分支缺少可重试的原始生成配方。')
       const jobId = generationJobIdForIdempotency(user.id, idempotencyKey)
       const existingJob = await productStore.readGenerationJob(user.id, jobId)
-      if (existingJob) return json(response, 202, { run: publicAgentRun(await productStore.readAgentRun(user.id, runId)), job: publicGenerationJob(existingJob, { includeIdempotencyKey: existingJob.ownerId === user.id }) })
+      if (existingJob) {
+        const currentRun = await productStore.readAgentRun(user.id, runId)
+        observeRun({ type: 'retry_reused', requestId, projectId: run.projectId, runId, branchId, jobId, status: currentRun?.status ?? run.status })
+        return json(response, 202, { run: publicAgentRun(currentRun), job: publicGenerationJob(existingJob, { includeIdempotencyKey: existingJob.ownerId === user.id }) })
+      }
       if (!await enforceRateLimit(response, { scope: 'generation-output', subject: user.id, limit: config.security.generationOutputsPerDay, windowMs: 24 * 60 * 60_000, cost: previousJob.batchCount })) return true
       const timestamp = Date.now()
       const retriedRun = prepareAgentBranchRetry(run, branchId, { jobId, now: timestamp })
@@ -329,10 +364,12 @@ export function createAgentRouteHandler({
         await agentRunGeneration.persistJobState(user.id, run.projectId, failed)
         const failedRun = await productStore.readAgentRun(user.id, runId)
         await publishAgentRunUpdated({ projectId: run.projectId, run: publicAgentRun(failedRun) })
+        observeRun({ type: 'retry_failed', requestId, projectId: run.projectId, runId, branchId, jobId, status: failedRun?.status ?? 'failed', code: 'QUEUE_UNAVAILABLE' })
         return error(response, 503, 'QUEUE_UNAVAILABLE', failed.error)
       }
       const queuedRun = await productStore.readAgentRun(user.id, runId)
       await publishAgentRunUpdated({ projectId: run.projectId, run: publicAgentRun(queuedRun) })
+      observeRun({ type: 'retry_queued', requestId, projectId: run.projectId, runId, branchId, jobId, status: queuedRun?.status ?? 'queued' })
       return json(response, 202, { run: publicAgentRun(queuedRun), job: publicGenerationJob(job, { includeIdempotencyKey: true }) })
     }
     return false

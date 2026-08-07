@@ -44,7 +44,63 @@ function providerName(model) {
   return 'openai-images'
 }
 
-function recipeForRun(run, document, parentNode, branch) {
+function initialGenerationReferences(run, document) {
+  const snapshot = run.plan?.contextSnapshot
+  if (!Array.isArray(snapshot) || !snapshot.length) {
+    throw new AgentToolRuntimeError('AGENT_INITIAL_REFERENCE_INVALID', 'Agent 首次生成只支持已存入画布的图片素材或图片结果。', 409)
+  }
+  const imageSnapshot = snapshot.filter((item) => (
+    (item.kind === '素材' || item.kind === '结果') && item.mediaKind === 'image'
+  ))
+  if (!imageSnapshot.length) {
+    throw new AgentToolRuntimeError('AGENT_INITIAL_REFERENCE_INVALID', 'Agent 首次生成只支持已存入画布的图片素材或图片结果。', 409)
+  }
+  const nodesById = new Map((document.nodes ?? []).map((node) => [node.id, node]))
+  return imageSnapshot.map((item, index) => {
+    const node = nodesById.get(item.nodeId)
+    const isMediaNode = node?.type === 'asset' || node?.type === 'result'
+    const isImage = node?.data?.mediaKind === undefined || node.data.mediaKind === 'image'
+    const image = node?.data?.image
+    if (!isMediaNode || !isImage || typeof image !== 'string' || !image) {
+      throw new AgentToolRuntimeError('AGENT_INITIAL_REFERENCE_INVALID', 'Agent 首次生成只支持已存入画布的图片素材或图片结果。', 409)
+    }
+    return {
+      nodeId: node.id,
+      ...(node.data.assetId ? { assetId: node.data.assetId } : {}),
+      name: node.data.name ?? node.data.label ?? `参考图 ${index + 1}`,
+      image,
+      role: node.data.role ?? '参考',
+      primary: Boolean(node.data.primary),
+      priority: index + 1,
+    }
+  })
+}
+
+function recipeForRun(run, document, parentNode, branch, resolvedInitialReferences) {
+  if (run.plan.intent === 'initial_generation') {
+    let references = clone(resolvedInitialReferences)
+    if (branch.assetId) {
+      const asset = (document.assets ?? []).find((candidate) => candidate.id === branch.assetId)
+      if (!asset) throw new AgentToolRuntimeError('AGENT_BRANCH_ASSET_MISSING', `分支素材「${branch.label}」已不存在。`, 409)
+      references = references.filter((reference) => reference.role !== asset.role)
+      references.push({
+        assetId: asset.id,
+        name: asset.name,
+        image: asset.image,
+        role: asset.role ?? '参考',
+        primary: Boolean(asset.primary),
+        priority: references.length + 1,
+      })
+    }
+    return {
+      references,
+      prompt: run.plan.prompt,
+      batchCount: run.plan.output.mode === 'single'
+        ? run.plan.output.count
+        : run.plan.output.candidatesPerItem,
+      settings: clone(run.plan.settings),
+    }
+  }
   const rootRecipe = parentNode.data?.rootRecipe ?? parentNode.data?.generationRecipe
   if (!rootRecipe || !Array.isArray(rootRecipe.references)) {
     throw new AgentToolRuntimeError('AGENT_RECIPE_MISSING', '父结果缺少可追溯的生成配方。', 409)
@@ -74,7 +130,9 @@ function recipeForRun(run, document, parentNode, branch) {
 }
 
 function rawGenerationInput(run, parentNode, recipe) {
-  const kind = run.plan.intent === 'redo_from_root' ? 'generation' : 'refinement'
+  const kind = run.plan.intent === 'redo_from_root' || run.plan.intent === 'initial_generation'
+    ? 'generation'
+    : 'refinement'
   return {
     projectId: run.projectId,
     kind,
@@ -99,9 +157,11 @@ function rawGenerationInput(run, parentNode, recipe) {
 
 function workflowForBranch({ run, branch, parentNode, recipe, jobId, branchIndex, now, submission }) {
   const { generateNodeId, resultNodeId } = branchNodeIds(run.id, branch.id)
-  const parentPosition = parentNode.position ?? { x: 0, y: 0 }
+  const parentPosition = parentNode?.position ?? { x: 0, y: 0 }
   const y = parentPosition.y + branchIndex * 420
-  const generationKind = run.plan.intent === 'redo_from_root' ? 'generation' : 'refinement'
+  const generationKind = run.plan.intent === 'redo_from_root' || run.plan.intent === 'initial_generation'
+    ? 'generation'
+    : 'refinement'
   const generateNode = {
     id: generateNodeId,
     type: 'generate',
@@ -127,7 +187,9 @@ function workflowForBranch({ run, branch, parentNode, recipe, jobId, branchIndex
       jobId, taskGroupId: resultNodeId, taskNodeId: resultNodeId, variant: 0,
       generationKind, refinementMode: 'faithful', generationSettings: clone(recipe.settings),
       generationRecipe: clone(recipe),
-      ...(parentNode.data?.rootRecipe ? { rootRecipe: clone(parentNode.data.rootRecipe) } : {}),
+      ...(run.plan.intent === 'initial_generation'
+        ? { rootRecipe: clone(recipe) }
+        : parentNode?.data?.rootRecipe ? { rootRecipe: clone(parentNode.data.rootRecipe) } : {}),
     },
   }
   const edges = [{
@@ -171,14 +233,18 @@ export function prepareAgentRunExecution({
   if (run.projectId !== document.id) {
     throw new AgentToolRuntimeError('AGENT_PROJECT_MISMATCH', 'Agent Run 不属于当前画布。', 409)
   }
-  const parentNode = (document.nodes ?? []).find((node) => node.id === run.plan?.selectedResultNodeId && node.type === 'result')
+  const isInitialGeneration = run.plan?.intent === 'initial_generation'
+  const resolvedInitialReferences = isInitialGeneration ? initialGenerationReferences(run, document) : undefined
+  const parentNode = isInitialGeneration
+    ? (document.nodes ?? []).find((node) => node.id === resolvedInitialReferences[0].nodeId)
+    : (document.nodes ?? []).find((node) => node.id === run.plan?.selectedResultNodeId && node.type === 'result')
   if (!parentNode) throw new AgentToolRuntimeError('AGENT_PARENT_NOT_FOUND', 'Agent 父结果节点已不存在。', 409)
 
   const jobs = []
   const workflows = []
   for (const [branchIndex, branch] of run.branches.entries()) {
     const jobId = jobIdForBranch(branch)
-    const recipe = recipeForRun(run, document, parentNode, branch)
+    const recipe = recipeForRun(run, document, parentNode, branch, resolvedInitialReferences)
     const rawInput = rawGenerationInput(run, parentNode, recipe)
     const validated = validateGenerationInput(rawInput, { models, maximumBatchCount, maximumReferenceBytes })
     const selectedModel = models.map((model) => typeof model === 'string' ? { id: model, provider: 'openai', mediaKind: 'image' } : model)

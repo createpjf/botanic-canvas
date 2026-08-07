@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
 const intents = new Set([
+  'initial_generation',
   'continue_generation', 'replace_scene', 'replace_person', 'replace_product',
   'change_pose', 'change_style', 'batch_variation', 'redo_from_root',
 ])
@@ -82,8 +83,12 @@ function validateSettings(rawSettings) {
   }
 }
 
-function validateConstraints(rawConstraints) {
-  if (!Array.isArray(rawConstraints) || !rawConstraints.length || rawConstraints.length > creativeDimensions.size) {
+function validateConstraints(rawConstraints, { allowEmpty = false } = {}) {
+  if (
+    !Array.isArray(rawConstraints)
+    || (!allowEmpty && !rawConstraints.length)
+    || rawConstraints.length > creativeDimensions.size
+  ) {
     throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', 'Agent 创作约束无效。')
   }
   return rawConstraints.map((constraint, index) => {
@@ -148,6 +153,18 @@ export function validateAgentRunCreation(body) {
   }
   const toolCalls = validateToolCalls(rawPlan.toolCalls)
   const contextSnapshot = validateContextSnapshot(rawPlan.contextSnapshot)
+  const isInitialGeneration = rawPlan.intent === 'initial_generation'
+  const selectedResultNodeId = rawPlan.selectedResultNodeId === undefined
+    ? undefined
+    : text(rawPlan.selectedResultNodeId, '父结果节点', 160)
+  if (!isInitialGeneration && !selectedResultNodeId) {
+    throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', '父结果节点不能为空。')
+  }
+  if (isInitialGeneration && !contextSnapshot?.some((item) => (
+    (item.kind === '素材' || item.kind === '结果') && item.mediaKind === 'image'
+  ))) {
+    throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', 'Agent 首次生成需要至少一个图片素材或图片结果。')
+  }
   return {
     projectId,
     plan: {
@@ -155,10 +172,10 @@ export function validateAgentRunCreation(body) {
       intent: rawPlan.intent,
       instruction: text(rawPlan.instruction, 'Agent 指令'),
       summary: text(rawPlan.summary, 'Agent 计划摘要', 1000),
-      selectedResultNodeId: text(rawPlan.selectedResultNodeId, '父结果节点', 160),
+      ...(selectedResultNodeId ? { selectedResultNodeId } : {}),
       prompt: text(rawPlan.prompt, 'Agent 生图提示词'),
       settings: validateSettings(rawPlan.settings),
-      constraints: validateConstraints(rawPlan.constraints),
+      constraints: validateConstraints(rawPlan.constraints, { allowEmpty: isInitialGeneration }),
       output: { mode: output.mode, count, candidatesPerItem },
       ...(contextSnapshot?.length ? { contextSnapshot } : {}),
       ...(rawPlan.assetGroupId ? { assetGroupId: text(rawPlan.assetGroupId, '素材组', 160) } : {}),
@@ -247,6 +264,28 @@ export function cancelPersistentAgentRun(run, { now = Date.now() } = {}) {
       : branch
   ))
   return progress({ ...run, branches, updatedAt: now })
+}
+
+/**
+ * 用户已确认，但在任何 Generation Job 建立前发生可确定的业务失败时，
+ * 将空排队 Run 收口为可见的 failed。已绑定 Job 的 Run 由 Job 状态机推进，
+ * 网络等未知错误也不调用此函数，以便后续幂等确认。
+ */
+export function failUnsubmittedPersistentAgentRun(run, error, { now = Date.now() } = {}) {
+  if (!run || run.status !== 'queued' || run.branches.some((branch) => branch.activeJobId || branch.jobIds?.length)) {
+    return run
+  }
+  const message = typeof error === 'string' && error.trim() ? error.trim() : 'Agent 任务未能提交。'
+  return progress({
+    ...run,
+    branches: run.branches.map((branch) => ({
+      ...branch,
+      status: 'failed',
+      error: message,
+      updatedAt: now,
+    })),
+    updatedAt: now,
+  })
 }
 
 export function publicAgentRun(run) {

@@ -45,6 +45,41 @@ function persistentRun() {
   }
 }
 
+function initialGenerationRun(contextSnapshot = [
+  { nodeId: 'asset-product-node', label: '球衣', kind: '素材', mediaKind: 'image', role: '商品' },
+]) {
+  return {
+    id: 'agent-run-initial', ownerId: 'user-1', projectId: 'project-1', status: 'queued',
+    plan: {
+      intent: 'initial_generation', instruction: '生成商品首图', summary: '生成两张商品首图',
+      contextSnapshot, prompt: '以球衣为主体，生成棚拍商品首图。', settings,
+      constraints: [{ dimension: 'style', mode: 'vary' }],
+      output: { mode: 'single', count: 2, candidatesPerItem: 1 },
+    },
+    branches: [
+      { id: 'branch-initial', label: '商品首图', status: 'queued', attempt: 0, jobIds: [], outputCount: 0, updatedAt: 1 },
+    ],
+    createdAt: 1, updatedAt: 1,
+  }
+}
+
+function initialGenerationDocument() {
+  const document = projectDocument()
+  document.nodes.push(
+    {
+      id: 'asset-product-node', type: 'asset', position: { x: 40, y: 80 }, draggable: true,
+      data: { kind: 'asset', assetId: 'asset-product', name: '球衣', image: '/api/media/media_product', role: '商品', source: 'upload', mediaKind: 'image', primary: true },
+    },
+    {
+      id: 'asset-video-node', type: 'asset', position: { x: 40, y: 520 }, draggable: true,
+      data: { kind: 'asset', assetId: 'asset-video', name: '视频', image: '/api/media/media_video', role: '场景', source: 'upload', mediaKind: 'video' },
+    },
+    { id: 'text-node', type: 'text', position: { x: 40, y: 920 }, draggable: true, data: { kind: 'text', text: '文字描述' } },
+    { id: 'empty-result-node', type: 'result', position: { x: 40, y: 1320 }, draggable: true, data: { kind: 'result', label: '空结果', mediaKind: 'image' } },
+  )
+  return document
+}
+
 function prepare(document = projectDocument()) {
   return prepareAgentRunExecution({
     run: persistentRun(), document, now: 100,
@@ -87,6 +122,58 @@ test('单分支计划按总候选数提交，而不是误用每素材候选数',
     models, maximumBatchCount: 8, maximumReferenceBytes: 8 * 1024 * 1024,
   })
   assert.equal(result.jobs[0].batchCount, 3)
+})
+
+test('首次生成从权威画布解析图片上下文并复用普通 Generation Job 链路', () => {
+  const result = prepareAgentRunExecution({
+    run: initialGenerationRun(), document: initialGenerationDocument(), now: 100,
+    jobIdForBranch: (branch) => `job-${branch.id}`,
+    models, maximumBatchCount: 8, maximumReferenceBytes: 8 * 1024 * 1024,
+  })
+
+  assert.equal(result.jobs.length, 1)
+  assert.equal(result.jobs[0].kind, 'generation')
+  assert.equal(result.jobs[0].batchCount, 2)
+  assert.equal(result.jobs[0].rawInput.parent, undefined)
+  assert.deepEqual(result.jobs[0].rawInput.recipe.references, [{
+    name: '球衣', role: '商品', primary: true, priority: 1, mediaId: 'media_product',
+  }])
+  const workflow = result.workflows[0]
+  assert.equal(workflow.resultNode.data.rootRecipe.references[0].nodeId, 'asset-product-node')
+  assert.equal(result.document.edges.some((edge) => edge.source === 'asset-product-node' && edge.target === workflow.generateNodeId), true)
+  assert.equal(result.document.edges.some((edge) => edge.data?.role === 'parent'), false)
+})
+
+test('首次生成忽略同一上下文中的文字和视频，只解析声明为图片的节点', () => {
+  const result = prepareAgentRunExecution({
+    run: initialGenerationRun([
+      { nodeId: 'asset-product-node', label: '球衣', kind: '素材', mediaKind: 'image', role: '商品' },
+      { nodeId: 'asset-video-node', label: '视频', kind: '素材', mediaKind: 'video' },
+      { nodeId: 'text-node', label: '文字', kind: '文字' },
+    ]),
+    document: initialGenerationDocument(), now: 100,
+    jobIdForBranch: (branch) => `job-${branch.id}`,
+    models, maximumBatchCount: 8, maximumReferenceBytes: 8 * 1024 * 1024,
+  })
+
+  assert.deepEqual(result.jobs[0].rawInput.recipe.references.map((reference) => reference.mediaId), ['media_product'])
+})
+
+test('首次生成在创建工作流和 Job 前拒绝视频、文字和空结果上下文', () => {
+  const document = initialGenerationDocument()
+  const invalidSnapshots = [
+    [{ nodeId: 'asset-video-node', label: '视频', kind: '素材', mediaKind: 'image' }],
+    [{ nodeId: 'text-node', label: '文字', kind: '节点', mediaKind: 'image' }],
+    [{ nodeId: 'empty-result-node', label: '空结果', kind: '结果', mediaKind: 'image' }],
+  ]
+
+  for (const contextSnapshot of invalidSnapshots) {
+    assert.throws(() => prepareAgentRunExecution({
+      run: initialGenerationRun(contextSnapshot), document, now: 100,
+      jobIdForBranch: (branch) => `job-${branch.id}`,
+      models, maximumBatchCount: 8, maximumReferenceBytes: 8 * 1024 * 1024,
+    }), /Agent 首次生成只支持已存入画布的图片素材或图片结果/)
+  }
 })
 
 test('Worker 完成任务后把图片写回占位结果节点', () => {

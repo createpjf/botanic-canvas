@@ -4,14 +4,15 @@ import {
   createBotanicAgentRun,
   createBotanicAgentSession,
   replaceBotanicAgentSessionContext,
+  updateBotanicAgentSessionReadingAnchor,
   updateBotanicAgentAction,
   updateBotanicAgentMessage,
   updateBotanicAgentRun,
   upsertBotanicAgentRunSnapshot,
-} from '../domain/agent'
-import type { CanvasDocument, ResultNodeData } from '../domain/canvas'
-import { cancelPersistentBotanicAgentRun, retryPersistentBotanicAgentBranch } from '../lib/agentApi'
-import type { CanvasStore } from './canvasStore.types'
+} from '../domain/agent.ts'
+import type { BotanicAgentRunSnapshot } from '../domain/agent.ts'
+import type { CanvasDocument, ResultNodeData } from '../domain/canvas.ts'
+import type { CanvasStore } from './canvasStore.types.ts'
 
 type AgentStoreActions = Pick<CanvasStore,
   | 'saveAgentPlan'
@@ -26,6 +27,7 @@ type AgentStoreActions = Pick<CanvasStore,
   | 'updateAgentAction'
   | 'setAgentSessionContext'
   | 'setAgentSessionExecutionMode'
+  | 'setAgentSessionReadingAnchor'
   | 'setActiveAgentSession'
   | 'addAgentMemory'
   | 'removeAgentMemory'
@@ -37,6 +39,11 @@ type CommitDocument = (
   options?: { immediate?: boolean; rejectOnFailure?: boolean },
 ) => Promise<void>
 
+type PersistentAgentRunApi = {
+  retryBranch: (runId: string, branchId: string, idempotencyKey: string) => Promise<BotanicAgentRunSnapshot>
+  cancelRun: (runId: string) => Promise<BotanicAgentRunSnapshot>
+}
+
 /**
  * CanvasStore 内的 Agent 实体命令模块。
  * Session、Message、Memory 与 Run 的兼容双写都经同一个提交端口完成。
@@ -45,11 +52,20 @@ export function createCanvasAgentActions({
   set,
   get,
   commitDocument,
+  persistentAgentRunApi,
 }: {
   set: (next: Partial<CanvasStore>) => void
   get: () => CanvasStore
   commitDocument: CommitDocument
+  persistentAgentRunApi: PersistentAgentRunApi
 }): AgentStoreActions {
+  const commitAgentSessionDocument = (document: CanvasDocument) => {
+    // Session 创建后的首条消息/上下文可能与持久化同一帧发生；
+    // 先更新本地权威快照，后续命令才能稳定命中同一 Session。
+    set({ document })
+    void commitDocument(document)
+  }
+
   return {
     saveAgentPlan: (plan, options) => {
       const currentDocument = get().document
@@ -78,7 +94,7 @@ export function createCanvasAgentActions({
         const run = get().document.agentRuns.find((candidate) => candidate.id === runId)
         const branch = run?.branches.find((candidate) => candidate.id === branchId)
         const retryKey = `agent-retry-${runId}-${branchId}-attempt-${(branch?.attempt ?? 0) + 1}`
-        const snapshot = await retryPersistentBotanicAgentBranch(runId, branchId, retryKey)
+        const snapshot = await persistentAgentRunApi.retryBranch(runId, branchId, retryKey)
         if (get().document.id !== projectId) return true
         get().applyAgentRunSnapshot(snapshot)
         await get().refreshDocumentFromRemote().catch(() => false)
@@ -92,7 +108,7 @@ export function createCanvasAgentActions({
     cancelAgentRun: async (runId) => {
       const projectId = get().document.id
       try {
-        const snapshot = await cancelPersistentBotanicAgentRun(runId)
+        const snapshot = await persistentAgentRunApi.cancelRun(runId)
         if (get().document.id !== projectId) return true
         get().applyAgentRunSnapshot(snapshot)
         await get().refreshDocumentFromRemote().catch(() => false)
@@ -127,7 +143,7 @@ export function createCanvasAgentActions({
         id: `agent-session-${crypto.randomUUID()}`,
         contextNodeIds,
       })
-      void commitDocument({
+      commitAgentSessionDocument({
         ...document,
         agentSessions: [session, ...document.agentSessions],
         activeAgentSessionId: session.id,
@@ -139,7 +155,7 @@ export function createCanvasAgentActions({
       const document = get().document
       const session = document.agentSessions.find((item) => item.id === sessionId)
       if (!session || session.messages.some((item) => item.id === message.id)) return
-      void commitDocument({
+      commitAgentSessionDocument({
         ...document,
         agentSessions: document.agentSessions.map((candidate) => candidate.id === sessionId
           ? appendBotanicAgentMessage(candidate, message)
@@ -151,7 +167,7 @@ export function createCanvasAgentActions({
     updateAgentMessage: (sessionId, messageId, patch) => {
       const document = get().document
       if (!document.agentSessions.some((session) => session.id === sessionId)) return
-      void commitDocument({
+      commitAgentSessionDocument({
         ...document,
         agentSessions: document.agentSessions.map((session) => session.id === sessionId
           ? updateBotanicAgentMessage(session, messageId, patch)
@@ -163,7 +179,7 @@ export function createCanvasAgentActions({
     updateAgentAction: (sessionId, messageId, actionId, patch) => {
       const document = get().document
       if (!document.agentSessions.some((session) => session.id === sessionId)) return
-      void commitDocument({
+      commitAgentSessionDocument({
         ...document,
         agentSessions: document.agentSessions.map((session) => session.id === sessionId
           ? updateBotanicAgentAction(session, messageId, actionId, patch)
@@ -175,7 +191,7 @@ export function createCanvasAgentActions({
     setAgentSessionContext: (sessionId, contextNodeIds) => {
       const document = get().document
       if (!document.agentSessions.some((session) => session.id === sessionId)) return
-      void commitDocument({
+      commitAgentSessionDocument({
         ...document,
         agentSessions: document.agentSessions.map((session) => session.id === sessionId
           ? replaceBotanicAgentSessionContext(session, contextNodeIds)
@@ -187,7 +203,7 @@ export function createCanvasAgentActions({
     setAgentSessionExecutionMode: (sessionId, mode) => {
       const document = get().document
       if (!document.agentSessions.some((session) => session.id === sessionId)) return
-      void commitDocument({
+      commitAgentSessionDocument({
         ...document,
         agentSessions: document.agentSessions.map((session) => session.id === sessionId
           ? { ...session, executionMode: mode, updatedAt: Date.now() }
@@ -196,10 +212,25 @@ export function createCanvasAgentActions({
       })
     },
 
+    setAgentSessionReadingAnchor: (sessionId, messageId, updatedAt = Date.now()) => {
+      const document = get().document
+      const session = document.agentSessions.find((candidate) => candidate.id === sessionId)
+      if (!session) return
+      const updatedSession = updateBotanicAgentSessionReadingAnchor(session, messageId, updatedAt)
+      if (updatedSession === session) return
+      // 阅读位置由独立 Session 资源持久化；这里仅更新本地视图，避免滚动触发整份画布写入。
+      set({
+        document: {
+          ...document,
+          agentSessions: document.agentSessions.map((candidate) => candidate.id === sessionId ? updatedSession : candidate),
+        },
+      })
+    },
+
     setActiveAgentSession: (sessionId) => {
       const document = get().document
       if (!document.agentSessions.some((session) => session.id === sessionId)) return
-      void commitDocument({ ...document, activeAgentSessionId: sessionId })
+      commitAgentSessionDocument({ ...document, activeAgentSessionId: sessionId })
     },
 
     addAgentMemory: (kind, content, sourceNodeIds = []) => {

@@ -5,7 +5,7 @@ import { decodeAuthAssurance } from './authAssurance.mjs'
 import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from './authorization.mjs'
 import { artifactIndexLimits, artifactsFromActionReceipt, artifactsFromAgentMessage, artifactsFromDocument, artifactsFromGenerationJob } from './botanicArtifactIndex.mjs'
 import { applyGenerationJobToAgentRun } from './botanicAgentRun.mjs'
-import { agentStateFromDocument, mergeAgentStateIntoDocument, shouldApplyAgentEntityWrite, validateAgentEntityWriteTimestamp, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity } from './botanicAgentPersistence.mjs'
+import { agentStateFromDocument, applyAgentSessionReadReceipts, mergeAgentStateIntoDocument, shouldApplyAgentEntityWrite, validateAgentEntityWriteTimestamp, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity, validateAgentSessionReadReceipt } from './botanicAgentPersistence.mjs'
 
 const now = () => Date.now()
 const clone = (value) => structuredClone(value)
@@ -147,24 +147,50 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
     return { data: rows, error: undefined }
   }
 
-  async function readAgentStateRows(projectId) {
+  async function readAgentStateRows(projectId, userId) {
     const results = await Promise.all([
       supabaseRequest(() => supabase.from('agent_sessions').select('payload').eq('project_id', projectId).order('updated_at', { ascending: false }).limit(80)),
       collectSupabaseRows(() => supabase.from('agent_messages').select('session_id,updated_at,payload').eq('project_id', projectId).order('updated_at', { ascending: true })),
       supabaseRequest(() => supabase.from('agent_memory_items').select('id,deleted_at,payload').eq('project_id', projectId).order('updated_at', { ascending: false }).limit(200)),
       supabaseRequest(() => supabase.from('agent_runs').select('payload').eq('project_id', projectId).order('updated_at', { ascending: false }).limit(60)),
+      userId
+        ? supabaseRequest(() => supabase.from('agent_session_read_receipts').select('session_id,message_id,updated_at').eq('project_id', projectId).eq('user_id', userId))
+        : Promise.resolve({ data: [], error: undefined }),
     ])
-    if (results.some((result) => missingAgentEntityTable(result.error))) {
+    if (results.slice(0, 4).some((result) => missingAgentEntityTable(result.error))) {
       return { sessions: [], messages: [], memory: [], deletedMemoryIds: [], runs: [] }
     }
-    results.forEach((result) => fail(result.error))
+    results.slice(0, 4).forEach((result) => fail(result.error))
+    if (results[4].error && !missingAgentEntityTable(results[4].error)) fail(results[4].error)
     const [sessions, messages, memory, runs] = results.map((result) => result.data ?? [])
+    const receipts = results[4].error ? [] : results[4].data ?? []
     return {
-      sessions: sessions.map((row) => clone(row.payload)),
+      sessions: applyAgentSessionReadReceipts(sessions.map((row) => clone(row.payload)), receipts.map((row) => ({
+        sessionId: row.session_id,
+        messageId: row.message_id,
+        updatedAt: new Date(row.updated_at).getTime(),
+      }))),
       messages: messages.map((row) => ({ sessionId: row.session_id, updatedAt: new Date(row.updated_at).getTime(), message: clone(row.payload) })),
       memory: memory.filter((row) => !row.deleted_at).map((row) => clone(row.payload)),
       deletedMemoryIds: memory.filter((row) => row.deleted_at).map((row) => row.id),
       runs: runs.map((row) => clone(row.payload)),
+    }
+  }
+
+  async function syncLegacyReadingReceipts(userId, projectId, extracted) {
+    for (const session of extracted.sessions) {
+      if (!session.readingAnchorMessageId || session.readingAnchorUpdatedAt === undefined) continue
+      const messageExists = extracted.messages.some((entry) => entry.sessionId === session.id && entry.message.id === session.readingAnchorMessageId)
+      if (!messageExists) continue
+      const { error } = await supabaseRequest(() => supabase.rpc('botanic_put_agent_session_read_receipt', {
+        p_user_id: userId,
+        p_project_id: projectId,
+        p_session_id: session.id,
+        p_message_id: session.readingAnchorMessageId,
+        p_updated_at: new Date(session.readingAnchorUpdatedAt).toISOString(),
+      }))
+      if (missingAgentEntityRpc(error) || missingAgentEntityTable(error)) return
+      fail(error)
     }
   }
 
@@ -242,6 +268,7 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       p_deleted_memory: deletedMemoryRows,
     }))
     if (!rpcError) {
+      await syncLegacyReadingReceipts(userId, document.id, extracted)
       await upsertArtifactRecords(userId, document.id, artifactsFromDocument(document))
       return
     }
@@ -269,6 +296,7 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
         const existingById = new Map((existingRows ?? []).map((row) => [row.id, row]))
         const safeRows = batch.filter((row) => {
           const existing = existingById.get(row.id)
+          if (table === 'agent_runs') return !existing
           return shouldApplyAgentEntityWrite(existing, row, {
             tombstoneWinsTie: table === 'agent_memory_items',
           })
@@ -287,6 +315,7 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
         .lte('updated_at', deletedAt))
       if (!missingAgentEntityTable(error)) fail(error)
     }
+    await syncLegacyReadingReceipts(userId, document.id, extracted)
     await upsertArtifactRecords(userId, document.id, artifactsFromDocument(document))
   }
 
@@ -363,7 +392,7 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       const [{ data, error }, graphResult, agentState] = await Promise.all([
         supabase.from('projects').select('document, revision, updated_at').eq('id', projectId).maybeSingle(),
         supabase.from('canvas_graphs').select('graph, revision, updated_at').eq('project_id', projectId).maybeSingle(),
-        readAgentStateRows(projectId),
+        readAgentStateRows(projectId, userId),
       ])
       fail(error)
       fail(graphResult.error)
@@ -533,9 +562,40 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
 
     async readAgentState(userId, projectId) {
       if (!await memberRole(projectId, userId)) return undefined
-      const state = await readAgentStateRows(projectId)
+      const state = await readAgentStateRows(projectId, userId)
       const hydrated = mergeAgentStateIntoDocument({ agentSessions: [], agentMemory: [], agentRuns: [] }, state)
       return { sessions: hydrated.agentSessions, memory: hydrated.agentMemory, runs: hydrated.agentRuns }
+    },
+
+    async putAgentSessionReadReceipt(userId, projectId, sessionId, input) {
+      assertProjectPermission(await memberRole(projectId, userId), 'read', 'PROJECT_READ_FORBIDDEN')
+      const serverTime = now()
+      const requestedTimestamp = input?.updatedAt === undefined
+        ? serverTime
+        : validateAgentEntityWriteTimestamp(input.updatedAt, { now: serverTime })
+      const receipt = validateAgentSessionReadReceipt({ ...input, sessionId, updatedAt: requestedTimestamp }, { now: serverTime })
+      const [{ data: session, error: sessionError }, { data: message, error: messageError }] = await Promise.all([
+        supabaseRequest(() => supabase.from('agent_sessions').select('id').eq('id', sessionId).eq('project_id', projectId).maybeSingle()),
+        supabaseRequest(() => supabase.from('agent_messages').select('id').eq('id', receipt.messageId).eq('project_id', projectId).eq('session_id', sessionId).maybeSingle()),
+      ])
+      fail(sessionError)
+      fail(messageError)
+      if (!session) throw productError('未找到 Agent 会话。', 'AGENT_SESSION_NOT_FOUND')
+      if (!message) throw productError('目标消息已不存在。', 'AGENT_MESSAGE_NOT_FOUND')
+      const { data, error } = await supabaseRequest(() => supabase.rpc('botanic_put_agent_session_read_receipt', {
+        p_user_id: userId,
+        p_project_id: projectId,
+        p_session_id: sessionId,
+        p_message_id: receipt.messageId,
+        p_updated_at: new Date(receipt.updatedAt).toISOString(),
+      }))
+      fail(error)
+      const stored = Array.isArray(data) ? data[0] : data
+      return stored ? {
+        sessionId: stored.session_id,
+        messageId: stored.message_id,
+        updatedAt: new Date(stored.updated_at).getTime(),
+      } : clone(receipt)
     },
 
     async putAgentSession(userId, projectId, input) {
@@ -770,25 +830,58 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       }
     },
 
+    async refreshGenerationArtifacts(userId, jobId) {
+      const { data: jobRow, error: jobError } = await supabaseRequest(() => supabase.from('generation_jobs')
+        .select('payload').eq('id', jobId).eq('owner_id', userId).maybeSingle())
+      fail(jobError)
+      if (!jobRow) return false
+      const job = clone(jobRow.payload)
+      if (!await memberRole(job.projectId, userId)) return false
+      const [{ data: project, error: projectError }, { data: graph, error: graphError }] = await Promise.all([
+        supabaseRequest(() => supabase.from('projects').select('document').eq('id', job.projectId).maybeSingle()),
+        supabaseRequest(() => supabase.from('canvas_graphs').select('graph').eq('project_id', job.projectId).maybeSingle()),
+      ])
+      fail(projectError)
+      fail(graphError)
+      if (!project) return false
+      return upsertArtifactRecords(userId, job.projectId, artifactsFromGenerationJob(job, {
+        document: { ...clone(project.document), ...clone(graph?.graph ?? {}) },
+      }))
+    },
+
     async putAgentRun(userId, run) {
       const role = await memberRole(run.projectId, userId)
       assertProjectPermission(role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
       const payload = { ...clone(run), ownerId: userId, updatedAt: Number(run.updatedAt) || now() }
-      const { error } = await supabaseRequest(() => supabase.from('agent_runs').upsert({
+      const row = {
         id: run.id,
         owner_id: userId,
         project_id: run.projectId,
         status: run.status,
         updated_at: new Date(payload.updatedAt).toISOString(),
         payload,
-      }, { onConflict: 'id' }))
-      fail(error)
-      try {
-        await insertAudit({ actorId: userId, action: `agent-run.${run.status}`, projectId: run.projectId, targetId: run.id })
-      } catch (caught) {
-        console.warn(`[agent-run] audit deferred for ${run.id}: ${caught instanceof Error ? caught.message : String(caught)}`)
       }
-      return clone(payload)
+      let stored
+      const { data: rpcData, error: rpcError } = await supabaseRequest(() => supabase.rpc('botanic_put_agent_run', {
+        p_owner_id: userId,
+        p_run: row,
+      }))
+      if (!rpcError) {
+        stored = rpcData
+      } else {
+        if (!missingAgentEntityRpc(rpcError)) fail(rpcError)
+        // 缺失行无法通过先读后写获得并发保护；RPC 未部署时必须失败关闭，
+        // 不能退回普通 upsert，否则首次创建仍可能被迟到快照覆盖。
+        throw productError('Agent Run 原子写入迁移尚未部署。', 'AGENT_RUN_ATOMIC_WRITE_REQUIRED')
+      }
+      if (stored?.updatedAt === payload.updatedAt && stored?.status === payload.status) {
+        try {
+          await insertAudit({ actorId: userId, action: `agent-run.${run.status}`, projectId: run.projectId, targetId: run.id })
+        } catch (caught) {
+          console.warn(`[agent-run] audit deferred for ${run.id}: ${caught instanceof Error ? caught.message : String(caught)}`)
+        }
+      }
+      return clone(stored)
     },
 
     async readAgentRun(userId, runId) {

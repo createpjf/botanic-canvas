@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   collectBotanicAgentResults,
   mergeBotanicAgentArtifactIndex,
@@ -16,19 +16,18 @@ import {
   type AssetNodeData,
   type CanvasDocument,
   type GenerateNodeData,
-  type GenerationSettings,
   type ResultNodeData,
   type TextNodeData,
   type UploadedAssetInput,
 } from '../../domain/canvas'
 import { canUseForImageDelivery } from '../../domain/deliveryPresentation'
-import { settingsForGenerationModel } from '../../domain/generationRecipe'
 import {
   createPersistentBotanicAgentRun,
   executePersistentBotanicAgentRun,
   executeProjectAgentAction,
   listProjectAgentArtifacts,
   persistAgentReferenceMedia,
+  submitPersistentBotanicAgentReadingAnchor,
 } from '../../lib/agentApi'
 import { flushPendingCanvasDocumentWrites } from '../../lib/db'
 import { serverPersistenceEnabled } from '../../lib/productSession'
@@ -56,7 +55,6 @@ export function useCanvasAgentExecutionBridge({
   onPrepareAgentOpen,
   onPrepareCanvasFocus,
 }: UseCanvasAgentExecutionBridgeOptions) {
-  const addGenerateNode = useCanvasStore((state) => state.addGenerateNode)
   const updateGenerateNode = useCanvasStore((state) => state.updateGenerateNode)
   const runGraphGeneration = useCanvasStore((state) => state.runGraphGeneration)
   const runBatchVariation = useCanvasStore((state) => state.runBatchVariation)
@@ -67,11 +65,11 @@ export function useCanvasAgentExecutionBridge({
   const replaceMediaSources = useCanvasStore((state) => state.replaceMediaSources)
   const refreshDocumentFromRemote = useCanvasStore((state) => state.refreshDocumentFromRemote)
   const saveGeneratedImageToLibrary = useCanvasStore((state) => state.saveGeneratedImageToLibrary)
-  const availableModels = useCanvasStore((state) => state.availableModels)
   const ensureAgentSession = useCanvasStore((state) => state.ensureAgentSession)
   const startNewAgentSession = useCanvasStore((state) => state.startNewAgentSession)
   const setActiveAgentSession = useCanvasStore((state) => state.setActiveAgentSession)
   const setAgentSessionContext = useCanvasStore((state) => state.setAgentSessionContext)
+  const setAgentSessionReadingAnchor = useCanvasStore((state) => state.setAgentSessionReadingAnchor)
   const saveAgentPlan = useCanvasStore((state) => state.saveAgentPlan)
   const updateAgentRunStatus = useCanvasStore((state) => state.updateAgentRunStatus)
   const applyAgentRunSnapshot = useCanvasStore((state) => state.applyAgentRunSnapshot)
@@ -86,6 +84,7 @@ export function useCanvasAgentExecutionBridge({
   })
   const [targetResultId, setTargetResultId] = useState<string | null>(null)
   const [focusRequest, setFocusRequest] = useState<{ nodeIds: string[]; requestId: number } | null>(null)
+  const readingAnchorWritesRef = useRef(new Map<string, Promise<void>>())
 
   const activeSession = document.agentSessions.find((session) => session.id === document.activeAgentSessionId)
   const activeContextNodeIds = activeSession?.contextNodeIds ?? selectedFocusNodeIds
@@ -103,7 +102,9 @@ export function useCanvasAgentExecutionBridge({
   const target: AgentDockTarget | undefined = targetNode?.type === 'result' && targetData?.image && rootRecipe
     ? { id: targetNode.id, label: targetData.label ?? '已选结果', image: targetData.image, rootRecipe }
     : undefined
-  const latestRun = document.agentRuns.find((run) => run.plan.selectedResultNodeId === effectiveTargetResultId)
+  const latestRun = effectiveTargetResultId
+    ? document.agentRuns.find((run) => run.plan.selectedResultNodeId === effectiveTargetResultId)
+    : undefined
 
   const localArtifacts = useMemo(() => collectBotanicAgentResults({
     sessions: document.agentSessions,
@@ -220,36 +221,6 @@ export function useCanvasAgentExecutionBridge({
     setFocusRequest({ nodeIds: validNodeIds, requestId: Date.now() })
   }, [document.nodes, onPrepareCanvasFocus, selectNode])
 
-  const createWorkflowDraft = useCallback(async (
-    instruction: string,
-    contextNodeIds: string[],
-    autoExecute: boolean,
-    generationOverrides?: Partial<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution'>>,
-  ) => {
-    const projectId = document.id
-    if (useCanvasStore.getState().document.id !== projectId) return { created: false, started: false, needsReference: false }
-    const referenceNodeIds = resolveBotanicAgentWorkflowReferenceNodeIds(document.nodes, contextNodeIds)
-    if (!referenceNodeIds.length) return { created: false, started: false, needsReference: true }
-    const origin = document.nodes.length
-      ? { x: Math.max(...document.nodes.map((node) => node.position.x)) + 220, y: Math.min(...document.nodes.map((node) => node.position.y)) }
-      : { x: 180, y: 160 }
-    const generateNodeId = addGenerateNode({ x: origin.x + 360, y: origin.y + 40 }, 'image', referenceNodeIds)
-    if (!generateNodeId) return { created: false, started: false, needsReference: !referenceNodeIds.length }
-    if (useCanvasStore.getState().document.id !== projectId) return { created: false, started: false, needsReference: false }
-    const generatedNode = useCanvasStore.getState().document.nodes.find((node) => node.id === generateNodeId)
-    const generatedData = generatedNode?.type === 'generate' ? generatedNode.data as GenerateNodeData : undefined
-    const selectedModel = availableModels.find((model) => model.id === generationOverrides?.model)
-    const nextSettings = generatedData
-      ? selectedModel
-        ? settingsForGenerationModel({ ...generatedData.settings, ...generationOverrides }, selectedModel)
-        : { ...generatedData.settings, ...generationOverrides }
-      : undefined
-    updateGenerateNode(generateNodeId, { prompt: instruction, ...(nextSettings ? { settings: nextSettings } : {}) })
-    if (!autoExecute) return { created: true, started: false, needsReference: false }
-    const started = await runGraphGeneration(generateNodeId)
-    return { created: true, started, needsReference: false }
-  }, [addGenerateNode, availableModels, document.id, document.nodes, runGraphGeneration, updateGenerateNode])
-
   const addUploadedImages = useCallback((uploads: UploadedAssetInput[]) => {
     if (!uploads.length) return
     const projectId = document.id
@@ -323,7 +294,23 @@ export function useCanvasAgentExecutionBridge({
       try {
         const activeDocument = useCanvasStore.getState().document
         if (activeDocument.id !== projectId) throw new Error('项目已切换，本次计划未启动。')
-        const sources = collectAgentMediaSources(activeDocument, plan.selectedResultNodeId, plan.assetGroupId)
+        const contextNodeIds = new Set(plan.contextSnapshot?.map((item) => item.nodeId) ?? [])
+        const contextSources = activeDocument.nodes.flatMap((node) => {
+          if (!contextNodeIds.has(node.id)) return []
+          if (node.type === 'asset') {
+            const data = node.data as AssetNodeData
+            return data.image && canUseForImageDelivery(data.mediaKind) ? [data.image] : []
+          }
+          if (node.type === 'result') {
+            const data = node.data as ResultNodeData
+            return data.image && canUseForImageDelivery(data.mediaKind) ? [data.image] : []
+          }
+          return []
+        })
+        const sources = [...new Set([
+          ...collectAgentMediaSources(activeDocument, plan.selectedResultNodeId ?? '', plan.assetGroupId),
+          ...contextSources,
+        ])]
         const replacements = await prepareAgentMediaSources(sources, (source) => persistAgentReferenceMedia(activeDocument.id, source))
         if (useCanvasStore.getState().document.id !== projectId) throw new Error('项目已切换，本次计划未启动。')
         await replaceMediaSources(replacements)
@@ -342,7 +329,10 @@ export function useCanvasAgentExecutionBridge({
           const execution = await executePersistentBotanicAgentRun(projectId, snapshot.id)
           return { started: execution.jobIds.length > 0, runId: snapshot.id }
         }
-        runId = saveAgentPlan(plan, { id: snapshot.id, branches: snapshot.branches })
+        // POST 返回的 Run 是独立持久化实体的权威快照。不能再用客户端时钟
+        // 重建同 ID 的 awaiting_confirmation Run，否则会用更新的本地时间戳压住
+        // 服务端 queued 状态，断线后任务也无法恢复执行。
+        runId = snapshot.id
         applyAgentRunSnapshot(snapshot)
         await flushPendingCanvasDocumentWrites()
         if (useCanvasStore.getState().document.id !== projectId) {
@@ -359,12 +349,17 @@ export function useCanvasAgentExecutionBridge({
       }
     }
     if (useCanvasStore.getState().document.id !== projectId) throw new Error('项目已切换，本次计划未启动。')
+    if (plan.intent === 'initial_generation') {
+      throw new Error('首次生成需要连接工作区服务，以创建可恢复任务；当前未修改画布。')
+    }
+    const selectedResultNodeId = plan.selectedResultNodeId
+    if (!selectedResultNodeId) throw new Error('当前计划缺少父结果，未创建画布节点。')
     runId = saveAgentPlan(plan)
     updateAgentRunStatus(runId, 'executing')
     let started = false
     if (plan.output.mode === 'batch_by_asset' && plan.assetGroupId) {
       started = await runBatchVariation({
-        sourceResultNodeId: plan.selectedResultNodeId,
+        sourceResultNodeId: selectedResultNodeId,
         groupId: plan.assetGroupId,
         prompt: plan.prompt,
         candidatesPerAsset: plan.output.candidatesPerItem,
@@ -373,8 +368,8 @@ export function useCanvasAgentExecutionBridge({
       })
     } else {
       const branchId = plan.intent === 'redo_from_root'
-        ? createGenerateFromResultRecipe(plan.selectedResultNodeId)
-        : createGenerateBranchFromResult(plan.selectedResultNodeId, {
+        ? createGenerateFromResultRecipe(selectedResultNodeId)
+        : createGenerateBranchFromResult(selectedResultNodeId, {
             prompt: plan.prompt,
             batchCount: plan.output.count,
             settings: plan.settings,
@@ -408,6 +403,30 @@ export function useCanvasAgentExecutionBridge({
     }))
     setTargetResultId(resultId ?? null)
   }, [document.agentSessions, document.nodes, setActiveAgentSession])
+
+  const updateSessionReadingAnchor = useCallback((sessionId: string, messageId: string) => {
+    const currentDocument = useCanvasStore.getState().document
+    if (currentDocument.id !== document.id) return
+    const session = currentDocument.agentSessions.find((candidate) => candidate.id === sessionId)
+    if (!session?.messages.some((message) => message.id === messageId)) return
+    if (session.readingAnchorMessageId === messageId) return
+    setAgentSessionReadingAnchor(sessionId, messageId)
+    if (!serverPersistenceEnabled) return
+
+    const previous = readingAnchorWritesRef.current.get(sessionId) ?? Promise.resolve()
+    const write = previous.catch(() => undefined).then(async () => {
+      const latestDocument = useCanvasStore.getState().document
+      if (latestDocument.id !== document.id) return
+      const latestSession = latestDocument.agentSessions.find((candidate) => candidate.id === sessionId)
+      if (!latestSession?.readingAnchorMessageId) return
+      await submitPersistentBotanicAgentReadingAnchor(document.id, sessionId, latestSession.readingAnchorMessageId)
+    }).catch(() => {
+      // 阅读位置是增强能力；同步失败不得阻断对话或画布编辑。
+    }).finally(() => {
+      if (readingAnchorWritesRef.current.get(sessionId) === write) readingAnchorWritesRef.current.delete(sessionId)
+    })
+    readingAnchorWritesRef.current.set(sessionId, write)
+  }, [document.id, setAgentSessionReadingAnchor])
 
   const saveArtifact = useCallback((artifact: BotanicAgentArtifact) => {
     if (!artifact.url || (artifact.kind !== 'image' && artifact.kind !== 'video')) return
@@ -464,12 +483,12 @@ export function useCanvasAgentExecutionBridge({
     open,
     openForResult,
     focusNodes,
-    createWorkflowDraft,
     addUploadedImages,
     confirmAction,
     confirmPlan,
     newSession,
     selectSession,
+    updateSessionReadingAnchor,
     saveArtifact,
     continueArtifact,
     loadMoreArtifacts,
