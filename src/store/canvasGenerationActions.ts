@@ -32,6 +32,7 @@ import {
   recordGenerationJob,
   updateTaskNodes,
 } from './canvasGenerationProjection'
+import { mergeRecoveredGenerationJobs } from './canvasGenerationRecovery'
 import type { CanvasStore, GenerationRequest, TaskNodeIds } from './canvasStore.types'
 
 type GenerationActions = Pick<CanvasStore,
@@ -304,17 +305,6 @@ export function createCanvasGenerationActions({
     }).catch(() => undefined)
   }
 
-  const mergeRecoveredGenerationJobs = (current: CanvasDocument, recovered: CanvasDocument) => {
-    const jobsById = new Map(current.generationJobs.map((job) => [job.id, job]))
-    for (const job of recovered.generationJobs) {
-      const existing = jobsById.get(job.id)
-      if (!existing || job.updatedAt > existing.updatedAt || (job.outputs?.length ?? 0) > (existing.outputs?.length ?? 0)) jobsById.set(job.id, job)
-    }
-    return normalizeDocument({
-      ...current,
-      generationJobs: [...jobsById.values()].sort((left, right) => right.updatedAt - left.updatedAt).slice(0, 60),
-    })
-  }
   const resultImageCount = (document: CanvasDocument) => document.nodes
     .filter((node) => node.type === 'result' && Boolean((node.data as ResultNodeData).image)).length
 
@@ -324,7 +314,7 @@ export function createCanvasGenerationActions({
       const recovered = await reconcileProjectGenerationResults(documentId)
       const current = get().document
       if (current.id !== documentId) return false
-      const reconciledDocument = mergeRecoveredGenerationJobs(current, recovered.document)
+      const reconciledDocument = normalizeDocument(mergeRecoveredGenerationJobs(current, recovered.document))
       if (resultImageCount(reconciledDocument) <= resultImageCount(current)) {
         recoverTaskNodeJobs(documentId)
         return false

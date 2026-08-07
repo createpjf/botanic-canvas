@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { shouldRecoverAgentRunResults } from '../../domain/agent'
+import { shouldRecoverAgentRunResults, shouldResumeQueuedAgentRunExecution } from '../../domain/agent'
 import { shouldRefreshFromRealtimeEvent } from '../../domain/realtimeSync'
-import { listPersistentBotanicAgentRuns } from '../../lib/agentApi'
+import { executePersistentBotanicAgentRun, listPersistentBotanicAgentRuns } from '../../lib/agentApi'
 import { flushPendingCanvasDocumentWrites, refreshCanvasDocumentFromRemote, syncPendingCanvasDrafts } from '../../lib/db'
 import { connectCanvasCollaboration, type CanvasCollaboration } from '../../lib/projectCollaboration'
 import { serverPersistenceEnabled } from '../../lib/productSession'
@@ -9,13 +9,19 @@ import { useCanvasStore } from '../../store/canvasStore'
 
 type CanvasWorkspaceSynchronizationOptions = {
   workspaceActive: boolean
+  currentUserId?: string
+}
+
+export type CollaborationAwareness = {
+  onlineCollaboratorCount: number
+  lastRemoteChangeAt?: number
 }
 
 /**
  * 画布工作区的远端同步、协作连接与 Agent Run 恢复协调器。
  * UI 只消费重试入口，不直接组合网络恢复时序。
  */
-export function useCanvasWorkspaceSynchronization({ workspaceActive }: CanvasWorkspaceSynchronizationOptions) {
+export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUserId }: CanvasWorkspaceSynchronizationOptions) {
   const documentId = useCanvasStore((state) => state.document.id)
   const nodes = useCanvasStore((state) => state.document.nodes)
   const edges = useCanvasStore((state) => state.document.edges)
@@ -29,7 +35,17 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive }: CanvasWor
   const applyCollaborativeGraph = useCanvasStore((state) => state.applyCollaborativeGraph)
   const applyAgentRunSnapshot = useCanvasStore((state) => state.applyAgentRunSnapshot)
   const [canvasHydrationFailed, setCanvasHydrationFailed] = useState(false)
+  const [collaborationAwareness, setCollaborationAwareness] = useState<CollaborationAwareness>({ onlineCollaboratorCount: 0 })
   const collaborationRef = useRef<CanvasCollaboration | null>(null)
+
+  const markRemoteChange = useCallback((actorId?: string) => {
+    if (!actorId || actorId === currentUserId) return
+    setCollaborationAwareness((current) => ({ ...current, lastRemoteChangeAt: Date.now() }))
+  }, [currentUserId])
+
+  const dismissRemoteChange = useCallback(() => {
+    setCollaborationAwareness((current) => ({ ...current, lastRemoteChangeAt: undefined }))
+  }, [])
 
   const hydrateCanvas = useCallback(() => {
     setCanvasHydrationFailed(false)
@@ -85,7 +101,16 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive }: CanvasWor
     const runs = await listPersistentBotanicAgentRuns(projectId)
     if (useCanvasStore.getState().document.id !== projectId) return
     let shouldRecoverResults = false
-    for (const run of runs) {
+    for (const persistedRun of runs) {
+      let run = persistedRun
+      if (shouldResumeQueuedAgentRunExecution(run)) {
+        // execute 使用 runId 稳定幂等键；多设备同时恢复也不会创建重复任务。
+        try {
+          run = (await executePersistentBotanicAgentRun(projectId, run.id)).run
+        } catch {
+          // 保留 queued 快照，下一轮轮询或重连再自动确认。
+        }
+      }
       const current = useCanvasStore.getState().document.agentRuns.find((candidate) => candidate.id === run.id)
       if (shouldRecoverAgentRunResults(current, run)) shouldRecoverResults = true
       applyAgentRunSnapshot(run)
@@ -143,6 +168,7 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive }: CanvasWor
       projectId: current.id,
       initialGraph: { nodes: current.nodes, edges: current.edges },
       onRemoteGraph: applyCollaborativeGraph,
+      onRemoteCanvasChanged: ({ actorId }) => markRemoteChange(actorId),
       onProjectUpdated: (event) => {
         const latest = useCanvasStore.getState().document
         if (!shouldRefreshFromRealtimeEvent({
@@ -150,6 +176,7 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive }: CanvasWor
           currentProjectId: latest.id,
           currentUpdatedAt: latest.updatedAt,
         })) return
+        markRemoteChange(event.actorId)
         void refreshDocumentFromRemote().catch(() => undefined)
       },
       onAgentRunUpdated: (event) => {
@@ -160,6 +187,12 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive }: CanvasWor
             .then(() => refreshDocumentFromRemote())
             .catch(() => undefined)
         }
+      },
+      onPresenceChanged: (event) => {
+        setCollaborationAwareness((current) => ({
+          ...current,
+          onlineCollaboratorCount: event.members.filter((member) => member.userId !== currentUserId).length,
+        }))
       },
       onReconnected: () => {
         void synchronizeLocalDrafts()
@@ -174,7 +207,11 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive }: CanvasWor
       if (collaborationRef.current === collaboration) collaborationRef.current = null
       collaboration.close()
     }
-  }, [applyAgentRunSnapshot, applyCollaborativeGraph, documentId, hydrated, recoverGenerationResultsFromRemote, recoverPersistentAgentRuns, recoverUnknownGenerationSubmission, refreshDocumentFromRemote, synchronizeLocalDrafts, workspaceActive])
+  }, [applyAgentRunSnapshot, applyCollaborativeGraph, currentUserId, documentId, hydrated, markRemoteChange, recoverGenerationResultsFromRemote, recoverPersistentAgentRuns, recoverUnknownGenerationSubmission, refreshDocumentFromRemote, synchronizeLocalDrafts, workspaceActive])
+
+  useEffect(() => {
+    setCollaborationAwareness({ onlineCollaboratorCount: 0 })
+  }, [documentId])
 
   useEffect(() => {
     if (!hydrated || !workspaceActive || !serverPersistenceEnabled) return
@@ -214,5 +251,7 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive }: CanvasWor
     hydrateCanvas,
     refreshAgentCanvasFromRemote,
     retryAgentCanvasPersistence,
+    collaborationAwareness,
+    dismissRemoteChange,
   }
 }

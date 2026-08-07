@@ -84,13 +84,25 @@ export function shouldApplyAgentEntityWrite(existing, incoming, { tombstoneWinsT
   return true
 }
 
+/**
+ * Agent Run 的显式实体写入规则。独立 Run 一旦进入执行态，迟到的兼容文档
+ * 不得把它回退到待确认；其余状态迁移仍遵守统一 LWW 语义。
+ */
+export function shouldApplyAgentRunWrite(existing, incoming) {
+  if (!existing) return true
+  const existingStatus = existing.status ?? existing.payload?.status
+  const incomingStatus = incoming?.status ?? incoming?.payload?.status
+  if (existingStatus !== 'awaiting_confirmation' && incomingStatus === 'awaiting_confirmation') return false
+  return shouldApplyAgentEntityWrite(existing, incoming)
+}
+
 export function validateAgentSessionEntity(value, { now = Date.now() } = {}) {
   const session = object(value, 'Agent 会话')
   const executionMode = session.executionMode ?? 'manual'
   if (!sessionModes.has(executionMode)) invalid('Agent 会话执行模式无效。')
   const createdAt = timestamp(session.createdAt, now)
   const updatedAt = Math.max(createdAt, timestamp(session.updatedAt, now))
-  return {
+  const result = {
     id: text(session.id, 'Agent 会话标识', 160),
     title: text(session.title || '新建对话', 'Agent 会话标题', 160),
     executionMode,
@@ -98,6 +110,37 @@ export function validateAgentSessionEntity(value, { now = Date.now() } = {}) {
     createdAt,
     updatedAt,
   }
+  if (session.readingAnchorMessageId !== undefined) {
+    result.readingAnchorMessageId = text(session.readingAnchorMessageId, 'Agent 阅读位置', 160)
+    result.readingAnchorUpdatedAt = Math.min(updatedAt, timestamp(session.readingAnchorUpdatedAt, updatedAt))
+  }
+  return result
+}
+
+/**
+ * 阅读回执属于“成员 × 项目 × 会话”，不是共享 Session 的内容。
+ * Adapter 只持久化这个最小实体，读取时再投影成 UI 兼容的 readingAnchor 字段。
+ */
+export function validateAgentSessionReadReceipt(value, { now = Date.now() } = {}) {
+  const receipt = object(value, 'Agent 阅读回执')
+  return {
+    sessionId: text(receipt.sessionId, 'Agent 会话标识', 160),
+    messageId: text(receipt.messageId, 'Agent 阅读位置', 160),
+    updatedAt: validateAgentEntityWriteTimestamp(receipt.updatedAt, { now }),
+  }
+}
+
+export function applyAgentSessionReadReceipts(sessions, receipts = []) {
+  const receiptBySessionId = new Map(receipts.map((receipt) => [receipt.sessionId, receipt]))
+  return sessions.map((session) => {
+    const { readingAnchorMessageId: _legacyMessageId, readingAnchorUpdatedAt: _legacyUpdatedAt, ...shared } = session
+    const receipt = receiptBySessionId.get(session.id)
+    return receipt ? {
+      ...shared,
+      readingAnchorMessageId: receipt.messageId,
+      readingAnchorUpdatedAt: receipt.updatedAt,
+    } : shared
+  })
 }
 
 export function validateAgentMessageEntity(value, { now = Date.now() } = {}) {
@@ -168,6 +211,7 @@ export function agentStateFromDocument(document, { now = Date.now() } = {}) {
 
 export function mergeAgentStateIntoDocument(document, state = {}) {
   const legacySessions = Array.isArray(document?.agentSessions) ? document.agentSessions : []
+  const projectedSessionById = new Map((Array.isArray(state.sessions) ? state.sessions : []).map((session) => [session.id, session]))
   const sessionById = newerById([
     ...legacySessions.map((session) => ({ ...clone(session), messages: undefined })),
     ...(Array.isArray(state.sessions) ? state.sessions.map(clone) : []),
@@ -190,12 +234,26 @@ export function mergeAgentStateIntoDocument(document, state = {}) {
     messageBySession.set(entry.sessionId, messages)
   }
   const sessions = [...sessionById.values()]
-    .map((session) => ({
-      ...session,
-      messages: [...(messageBySession.get(session.id)?.values() ?? [])]
-        .map((entry) => entry.message)
-        .sort((left, right) => Number(left.createdAt ?? 0) - Number(right.createdAt ?? 0)),
-    }))
+    .map((session) => {
+      const projected = projectedSessionById.get(session.id)
+      if (!projected) return {
+        ...session,
+        messages: [...(messageBySession.get(session.id)?.values() ?? [])]
+          .map((entry) => entry.message)
+          .sort((left, right) => Number(left.createdAt ?? 0) - Number(right.createdAt ?? 0)),
+      }
+      const { readingAnchorMessageId: _legacyMessageId, readingAnchorUpdatedAt: _legacyUpdatedAt, ...shared } = session
+      return {
+        ...shared,
+        ...(projected?.readingAnchorMessageId ? {
+          readingAnchorMessageId: projected.readingAnchorMessageId,
+          readingAnchorUpdatedAt: projected.readingAnchorUpdatedAt,
+        } : {}),
+        messages: [...(messageBySession.get(session.id)?.values() ?? [])]
+          .map((entry) => entry.message)
+          .sort((left, right) => Number(left.createdAt ?? 0) - Number(right.createdAt ?? 0)),
+      }
+    })
     .sort((left, right) => Number(right.updatedAt ?? 0) - Number(left.updatedAt ?? 0))
     .slice(0, SESSION_LIMIT)
 
@@ -217,9 +275,8 @@ export function mergeAgentStateIntoDocument(document, state = {}) {
       runById.set(entityRun.id, entityRun)
       continue
     }
-    if (Number(entityRun.updatedAt ?? 0) < Number(legacyRun.updatedAt ?? 0)) continue
     // 服务端 Run 为安全执行快照，可能刻意省略 rootRecipe/references；兼容文档中的
-    // 完整计划仍用于画布恢复，但状态、分支和错误以独立实体为准。
+    // 完整计划仍用于画布恢复，但独立实体无条件提供状态、分支和错误。
     runById.set(entityRun.id, legacyRun?.plan?.rootRecipe
       ? { ...legacyRun, ...entityRun, plan: legacyRun.plan }
       : entityRun)

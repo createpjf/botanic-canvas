@@ -1,7 +1,7 @@
 import type { Edge } from '@xyflow/react'
 import type { CanvasNode } from '../domain/canvas'
 import { createCollaborativeGraph, type CollaborativeGraph } from '../domain/collaborativeGraph'
-import type { AgentRunUpdatedRealtimeEvent, ProjectUpdatedRealtimeEvent } from '../domain/realtimeSync'
+import type { AgentRunUpdatedRealtimeEvent, CollaborationPresenceRealtimeEvent, ProjectUpdatedRealtimeEvent } from '../domain/realtimeSync'
 import { openProjectRealtimeChannel } from './projectRealtime'
 
 function updateToBase64(update: Uint8Array) {
@@ -28,15 +28,19 @@ export function connectCanvasCollaboration({
   projectId,
   initialGraph,
   onRemoteGraph,
+  onRemoteCanvasChanged,
   onProjectUpdated,
   onAgentRunUpdated,
+  onPresenceChanged,
   onReconnected,
 }: {
   projectId: string
   initialGraph: CollaborativeGraph
   onRemoteGraph: (graph: CollaborativeGraph) => void
+  onRemoteCanvasChanged?: (event: { actorId?: string }) => void
   onProjectUpdated: (event: ProjectUpdatedRealtimeEvent) => void
   onAgentRunUpdated: (event: AgentRunUpdatedRealtimeEvent) => void
+  onPresenceChanged?: (event: CollaborationPresenceRealtimeEvent) => void
   onReconnected?: () => void
 }): CanvasCollaboration {
   let channel: ReturnType<typeof openProjectRealtimeChannel> | undefined
@@ -60,8 +64,13 @@ export function connectCanvasCollaboration({
       onAgentRunUpdated(event)
       return
     }
+    if (event.type === 'collaboration.presence') {
+      onPresenceChanged?.(event)
+      return
+    }
     try {
       graph.applyRemoteUpdate(base64ToUpdate(event.update))
+      onRemoteCanvasChanged?.({ actorId: event.actorId })
     } catch {
       // 损坏增量不影响 HTTP 权威文档与后续实时消息。
     }

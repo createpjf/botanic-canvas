@@ -4,6 +4,10 @@ import {
   botanicAgentContextSnapshotNodeIds,
   botanicAgentRunFeedback,
   botanicAgentSubmissionKey,
+  buildBotanicAgentRunTimeline,
+  buildBotanicAgentSessionTimeline,
+  filterBotanicAgentSessionTimeline,
+  filterBotanicAgentRunTimeline,
   buildBotanicAgentPlan,
   createBotanicAgentContextSnapshot,
   insertBotanicAgentMention,
@@ -21,10 +25,17 @@ import {
   type BotanicAgentMessage,
   type BotanicAgentPlan,
   type BotanicAgentRun,
+  type BotanicAgentRunTimelineFilter,
   type BotanicAgentSession,
+  type BotanicAgentSessionTimelineFilter,
   type BotanicAgentSkill,
 } from '../../domain/agent'
-import { classifyBotanicAgentRequest, resolveBotanicAgentGenerationPrompt } from '../../domain/agentChatContract'
+import {
+  decideBotanicAgentRequest,
+  inferBotanicAgentGenerationSettings,
+  isBotanicAgentPromptGenerationPending,
+  resolveBotanicAgentGenerationPromptDecision,
+} from '../../domain/agentChatContract'
 import { nextExclusiveSurface, type ExclusiveSurfaceAction } from '../../domain/exclusiveSurface'
 import type {
   AssetGroup,
@@ -50,7 +61,12 @@ import {
   agentRuntimeStepStatusLabel,
   createInitialAgentClarification,
 } from './AgentWorkspaceParts'
-import { agentComposerStateReducer, initialAgentComposerState } from './agentComposerState'
+import {
+  agentComposerStateReducer,
+  initialAgentComposerState,
+  type AgentFailedInstruction,
+  type AgentInstructionRetryOptions,
+} from './agentComposerState'
 import { useAgentMessageDelivery } from './useAgentMessageDelivery'
 import { useAgentRuntimeTrace } from './useAgentRuntimeTrace'
 import type { AgentArtifactIndexState, AgentContextItem, AgentDockTarget } from './agentWorkspace.types'
@@ -71,6 +87,7 @@ import historyIcon from '../../assets/figma/icon-history.svg'
 
 type AgentTransientSurface = 'context' | 'history' | 'utility' | 'mode'
 type AgentUtilityPanel = 'result' | 'task' | 'memory' | 'skill'
+type AgentRunInstructionOptions = AgentInstructionRetryOptions & { appendUser?: string }
 
 function agentTargetDisplayLabel(target?: AgentDockTarget) {
   if (!target) return ''
@@ -79,6 +96,12 @@ function agentTargetDisplayLabel(target?: AgentDockTarget) {
   const referenceName = primaryReference?.name?.trim()
   if (referenceName) return referenceName
   return target.label.trim().replace(/^@+/, '').replace(/\s+\+\d+\b.*$/u, '')
+}
+
+function agentTimelineTimestamp(timestamp: number) {
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(new Date(timestamp))
 }
 
 const agentQuickActions: Array<{ intent: BotanicAgentIntent; label: string; instruction: string }> = [
@@ -117,7 +140,6 @@ export default function AgentWorkspace({
   generationModels,
   onConfirm,
   onConfirmAction,
-  onCreateDraft,
   onUploadImages,
   onAppendMessage,
   onUpdateMessage,
@@ -128,6 +150,7 @@ export default function AgentWorkspace({
   onRemoveMemory,
   onNewSession,
   onSelectSession,
+  onUpdateReadingAnchor,
   onRetryBranch,
   onCancelRun,
   onLocateNode,
@@ -138,12 +161,15 @@ export default function AgentWorkspace({
   onUseResultContext,
   onRetryPersistence,
   onRefreshRemote,
+  collaborationAwareness,
+  onDismissRemoteChange,
   persistenceStatus,
   onClose,
 }: {
   projectId: string
   escapeEnabled: boolean
   persistenceStatus: 'saved' | 'saving' | 'offline' | 'conflict' | 'error'
+  collaborationAwareness: { onlineCollaboratorCount: number; lastRemoteChangeAt?: number }
   target?: AgentDockTarget
   groups: AssetGroup[]
   sessions: BotanicAgentSession[]
@@ -159,7 +185,6 @@ export default function AgentWorkspace({
   generationModels: GenerationModelOption[]
   onConfirm: (plan: BotanicAgentPlan, submissionKey?: string) => Promise<{ started: boolean; runId: string }>
   onConfirmAction: (action: BotanicAgentActionProposal) => Promise<BotanicAgentActionResult>
-  onCreateDraft: (instruction: string, contextNodeIds: string[], autoExecute: boolean, generationOverrides?: Partial<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution'>>) => Promise<{ created: boolean; started: boolean; needsReference: boolean }>
   onUploadImages: (uploads: UploadedAssetInput[]) => void
   onAppendMessage: (sessionId: string, message: BotanicAgentMessage) => void
   onUpdateMessage: (sessionId: string, messageId: string, patch: Partial<Pick<BotanicAgentMessage, 'content' | 'runId' | 'status' | 'feedback' | 'plan' | 'question' | 'deliveryStatus'>>) => void
@@ -170,6 +195,7 @@ export default function AgentWorkspace({
   onRemoveMemory: (memoryId: string) => void
   onNewSession: () => string
   onSelectSession: (sessionId: string) => void
+  onUpdateReadingAnchor: (sessionId: string, messageId: string) => void
   onRetryBranch: (runId: string, branchId: string) => Promise<boolean>
   onCancelRun: (runId: string) => Promise<boolean>
   onLocateNode: (nodeId: string) => void
@@ -180,6 +206,7 @@ export default function AgentWorkspace({
   onUseResultContext: (sourceNodeIds: string[]) => void
   onRetryPersistence: () => Promise<boolean>
   onRefreshRemote: () => Promise<boolean>
+  onDismissRemoteChange: () => void
   onClose: () => void
 }) {
   const [intent, setIntent] = useState<BotanicAgentIntent>('replace_scene')
@@ -189,13 +216,20 @@ export default function AgentWorkspace({
     ? plannerModelPreference
     : plannerModels[0] ?? defaultAgentPlannerModels[0]
   const [composerState, updateComposerState] = useReducer(agentComposerStateReducer, initialAgentComposerState)
-  const { instruction, error, lastFailedInstruction, lastFailedPlanMessageId, mentionQuery, pendingGenerationOverrides } = composerState
+  const { instruction, error, lastFailedInstruction, lastFailedCommand, lastFailedPlanMessageId, mentionQuery, pendingGenerationOverrides } = composerState
   const setInstruction = useCallback((value: string) => updateComposerState({ instruction: value }), [])
   const setError = useCallback((value: string) => updateComposerState({ error: value }), [])
-  const setLastFailedInstruction = useCallback((value: string) => updateComposerState({ lastFailedInstruction: value }), [])
+  const setLastFailedInstruction = useCallback((value: string) => updateComposerState({
+    lastFailedInstruction: value,
+    ...(!value ? { lastFailedCommand: undefined } : {}),
+  }), [])
   const setLastFailedPlanMessageId = useCallback((value: string) => updateComposerState({ lastFailedPlanMessageId: value }), [])
   const setMentionQuery = useCallback((value?: BotanicAgentMentionQuery) => updateComposerState({ mentionQuery: value }), [])
   const setPendingGenerationOverrides = useCallback((value: Partial<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution'>>) => updateComposerState({ pendingGenerationOverrides: value }), [])
+  const rememberFailedInstruction = useCallback((command: AgentFailedInstruction) => updateComposerState({
+    lastFailedInstruction: command.instruction,
+    lastFailedCommand: command,
+  }), [])
   const [planning, setPlanning] = useState(false)
   const [submittingMessageId, setSubmittingMessageId] = useState('')
   const [executingActionId, setExecutingActionId] = useState('')
@@ -215,6 +249,11 @@ export default function AgentWorkspace({
   const setModeMenuOpen = useCallback((action: ExclusiveSurfaceAction) => setTransientSurfaceOpen('mode', action), [setTransientSurfaceOpen])
   const [isImageDropActive, setIsImageDropActive] = useState(false)
   const [activeUtilityPanel, setActiveUtilityPanel] = useState<AgentUtilityPanel | null>(null)
+  const [taskStatusFilter, setTaskStatusFilter] = useState<BotanicAgentRunTimelineFilter>('all')
+  const [historyQuery, setHistoryQuery] = useState('')
+  const [historyFilter, setHistoryFilter] = useState<BotanicAgentSessionTimelineFilter>('all')
+  const [readingRestoreNotice, setReadingRestoreNotice] = useState(false)
+  const [focusedTaskRunId, setFocusedTaskRunId] = useState('')
   const skillPanelOpen = activeUtilityPanel === 'skill'
   const taskPanelOpen = activeUtilityPanel === 'task'
   const resultPanelOpen = activeUtilityPanel === 'result'
@@ -234,7 +273,7 @@ export default function AgentWorkspace({
     () => agentMountedRef.current && useCanvasStore.getState().document.id === projectId,
     [projectId],
   )
-  const { appendMessage } = useAgentMessageDelivery({
+  const { appendMessage, retryMessage } = useAgentMessageDelivery({
     projectId,
     session,
     isCurrentProject: isCurrentAgentProject,
@@ -248,6 +287,15 @@ export default function AgentWorkspace({
   const runNoticeStatusRef = useRef(new Map<string, string>())
   const focusedRunIdsRef = useRef(new Set<string>())
   const messageEndRef = useRef<HTMLDivElement | null>(null)
+  const messagesViewportRef = useRef<HTMLDivElement | null>(null)
+  const messageNodesRef = useRef(new Map<string, HTMLDivElement>())
+  const taskNodesRef = useRef(new Map<string, HTMLElement>())
+  const readingAnchorTimerRef = useRef<number | null>(null)
+  const readingPositionRestoredRef = useRef(false)
+  const followLatestMessagesRef = useRef(true)
+  const lastReadingAnchorRef = useRef(session?.readingAnchorMessageId ?? '')
+  const locatedMessageTimerRef = useRef<number | null>(null)
+  const [locatedMessageId, setLocatedMessageId] = useState('')
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const agentFileInputRef = useRef<HTMLInputElement | null>(null)
   const historyTriggerRef = useRef<HTMLButtonElement | null>(null)
@@ -269,6 +317,9 @@ export default function AgentWorkspace({
     && (item.mediaKind ?? 'image') === 'image'
   ))
   const hasMessages = Boolean(session?.messages.length)
+  const pendingPromptSourceIds = useMemo(() => new Set((session?.messages ?? [])
+    .filter((message) => message.question?.sourcePromptMessageId && message.kind === 'question' && message.status === 'pending')
+    .map((message) => message.question!.sourcePromptMessageId!)), [session?.messages])
   const mentionOptions = useMemo(() => {
     if (!mentionQuery) return []
     const query = mentionQuery.query.trim().toLocaleLowerCase()
@@ -309,8 +360,108 @@ export default function AgentWorkspace({
   const runtimeComplete = runtimePhase === 'completed'
   const latestRunOutputCount = latestRun ? agentRunOutputCount(latestRun, artifacts) : 0
   const latestRunFeedback = latestRun ? botanicAgentRunFeedback(latestRun.status, latestRunOutputCount, latestRun.error) : undefined
+  const runTimeline = useMemo(() => buildBotanicAgentRunTimeline(runs, sessions), [runs, sessions])
+  const filteredRunTimeline = useMemo(
+    () => filterBotanicAgentRunTimeline(runTimeline, taskStatusFilter),
+    [runTimeline, taskStatusFilter],
+  )
+  const taskFilterCounts = useMemo(() => ({
+    all: runTimeline.length,
+    active: filterBotanicAgentRunTimeline(runTimeline, 'active').length,
+    completed: filterBotanicAgentRunTimeline(runTimeline, 'completed').length,
+    attention: filterBotanicAgentRunTimeline(runTimeline, 'attention').length,
+  }), [runTimeline])
+  const sessionTimeline = useMemo(() => buildBotanicAgentSessionTimeline(sessions, runs), [runs, sessions])
+  const filteredSessionTimeline = useMemo(
+    () => filterBotanicAgentSessionTimeline(sessionTimeline, historyQuery, historyFilter),
+    [historyFilter, historyQuery, sessionTimeline],
+  )
+  const historyFilterCounts = useMemo(() => ({
+    all: sessionTimeline.length,
+    unread: filterBotanicAgentSessionTimeline(sessionTimeline, '', 'unread').length,
+    results: filterBotanicAgentSessionTimeline(sessionTimeline, '', 'results').length,
+    attention: filterBotanicAgentSessionTimeline(sessionTimeline, '', 'attention').length,
+  }), [sessionTimeline])
+  const unreadSessionCount = useMemo(
+    () => sessionTimeline.filter((item) => item.unreadRunCount > 0).length,
+    [sessionTimeline],
+  )
   // 提交任务后以 Run 卡作为唯一任务状态来源；规划/追问阶段仍显示 Runtime 摘要。
   const showRuntimeFeed = runtimeSteps.length > 0 && (!latestRun?.branches.length || !['executing', 'completed', 'failed'].includes(runtimePhase))
+
+  const registerMessageNode = useCallback((messageId: string, node: HTMLDivElement | null) => {
+    if (node) messageNodesRef.current.set(messageId, node)
+    else messageNodesRef.current.delete(messageId)
+  }, [])
+
+  const revealConversationMessage = useCallback((messageId: string, behavior: ScrollBehavior = 'smooth') => {
+    const node = messageNodesRef.current.get(messageId)
+    if (!node) return false
+    node.scrollIntoView({ block: 'center', behavior })
+    node.focus({ preventScroll: true })
+    setLocatedMessageId(messageId)
+    if (locatedMessageTimerRef.current !== null) window.clearTimeout(locatedMessageTimerRef.current)
+    locatedMessageTimerRef.current = window.setTimeout(() => setLocatedMessageId(''), 1800)
+    return true
+  }, [])
+
+  const locateTaskSourceMessage = useCallback((source: { sessionId: string; messageId: string }) => {
+    onUpdateReadingAnchor(source.sessionId, source.messageId)
+    setActiveUtilityPanel(null)
+    if (source.sessionId !== session?.id) {
+      onSelectSession(source.sessionId)
+      return
+    }
+    requestAnimationFrame(() => revealConversationMessage(source.messageId))
+  }, [onSelectSession, onUpdateReadingAnchor, revealConversationMessage, session?.id])
+
+  const locateRunSourceMessage = useCallback((runId: string) => {
+    const source = runTimeline.find((item) => item.run.id === runId)?.source
+    if (source) locateTaskSourceMessage(source)
+  }, [locateTaskSourceMessage, runTimeline])
+
+  const showTaskForRun = useCallback((runId: string) => {
+    setTaskStatusFilter('all')
+    setFocusedTaskRunId(runId)
+    setActiveUtilityPanel('task')
+    setActiveTransientSurface(null)
+    setMentionQuery(undefined)
+  }, [])
+
+  const jumpToLatestConversation = useCallback(() => {
+    const latestMessageId = session?.messages.at(-1)?.id
+    if (!session || !latestMessageId) return
+    followLatestMessagesRef.current = true
+    lastReadingAnchorRef.current = latestMessageId
+    setReadingRestoreNotice(false)
+    messageEndRef.current?.scrollIntoView({ block: 'end', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })
+    onUpdateReadingAnchor(session.id, latestMessageId)
+  }, [onUpdateReadingAnchor, session])
+
+  const scheduleReadingAnchorUpdate = useCallback(() => {
+    const viewport = messagesViewportRef.current
+    if (!viewport) return
+    followLatestMessagesRef.current = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 96
+    if (!readingPositionRestoredRef.current || utilityPanelOpen || !session?.id) return
+    if (readingAnchorTimerRef.current !== null) window.clearTimeout(readingAnchorTimerRef.current)
+    readingAnchorTimerRef.current = window.setTimeout(() => {
+      const currentViewport = messagesViewportRef.current
+      if (!currentViewport) return
+      const viewportRect = currentViewport.getBoundingClientRect()
+      const visible = [...messageNodesRef.current.entries()].flatMap(([messageId, node]) => {
+        const rect = node.getBoundingClientRect()
+        if (rect.bottom <= viewportRect.top || rect.top >= viewportRect.bottom) return []
+        return [{ messageId, distance: Math.abs(rect.top - viewportRect.top - 12) }]
+      }).sort((left, right) => left.distance - right.distance)
+      const messageId = followLatestMessagesRef.current
+        ? session.messages.at(-1)?.id
+        : visible[0]?.messageId
+      if (!messageId || messageId === lastReadingAnchorRef.current) return
+      lastReadingAnchorRef.current = messageId
+      if (messageId === session.messages.at(-1)?.id) setReadingRestoreNotice(false)
+      onUpdateReadingAnchor(session.id, messageId)
+    }, 700)
+  }, [onUpdateReadingAnchor, session?.id, utilityPanelOpen])
 
   const importImageFiles = async (files: File[]) => {
     const { accepted, message } = validateUploadFiles(files)
@@ -445,6 +596,8 @@ export default function AgentWorkspace({
   useEffect(() => () => {
     agentMountedRef.current = false
     plannerControllerRef.current?.abort()
+    if (readingAnchorTimerRef.current !== null) window.clearTimeout(readingAnchorTimerRef.current)
+    if (locatedMessageTimerRef.current !== null) window.clearTimeout(locatedMessageTimerRef.current)
   }, [])
 
   useEffect(() => {
@@ -460,9 +613,35 @@ export default function AgentWorkspace({
   }, [projectId, skillPanelOpen])
 
   useEffect(() => {
+    if (utilityPanelOpen || !session || readingPositionRestoredRef.current) return
+    const frame = requestAnimationFrame(() => {
+      const anchorId = session.readingAnchorMessageId
+      const restored = anchorId ? revealConversationMessage(anchorId, 'auto') : false
+      if (!restored) messageEndRef.current?.scrollIntoView({ block: 'end', behavior: 'auto' })
+      followLatestMessagesRef.current = !anchorId || anchorId === session.messages.at(-1)?.id
+      lastReadingAnchorRef.current = anchorId ?? ''
+      setReadingRestoreNotice(Boolean(restored && anchorId !== session.messages.at(-1)?.id))
+      readingPositionRestoredRef.current = true
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [revealConversationMessage, session, utilityPanelOpen])
+
+  useEffect(() => {
+    if (!taskPanelOpen || !focusedTaskRunId) return
+    const frame = requestAnimationFrame(() => {
+      const node = taskNodesRef.current.get(focusedTaskRunId)
+      node?.scrollIntoView({ block: 'center', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })
+      node?.focus({ preventScroll: true })
+      window.setTimeout(() => setFocusedTaskRunId(''), 1800)
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [focusedTaskRunId, taskPanelOpen])
+
+  useEffect(() => {
+    if (!readingPositionRestoredRef.current || utilityPanelOpen || !followLatestMessagesRef.current) return
     const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
     messageEndRef.current?.scrollIntoView({ block: 'end', behavior })
-  }, [session?.messages.length, latestRun?.updatedAt, planning, runtimeSteps.length, runtimeSteps[runtimeSteps.length - 1]?.status])
+  }, [session?.messages.length, latestRun?.updatedAt, planning, runtimeSteps.length, runtimeSteps[runtimeSteps.length - 1]?.status, utilityPanelOpen])
 
   useEffect(() => {
     if (!compatibleGroups.some((group) => group.id === groupId)) setGroupId('')
@@ -557,6 +736,7 @@ export default function AgentWorkspace({
     cleanInstruction: string,
     generationOverrides?: Partial<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution'>>,
     clarificationAnswers?: Record<string, string>,
+    failedCommand?: AgentFailedInstruction,
   ): Promise<BotanicAgentPlan | BotanicAgentClarificationResponse | null> => {
     if (!target || !isCurrentAgentProject()) return null
     const assetGroup = compatibleGroups.find((group) => group.id === groupId)
@@ -615,13 +795,13 @@ export default function AgentWorkspace({
           const message = fallbackError instanceof Error ? fallbackError.message : '暂时无法生成计划。'
           setError(message)
           setLastFailedPlanMessageId('')
-          setLastFailedInstruction(cleanInstruction)
+          rememberFailedInstruction(failedCommand ?? { instruction: cleanInstruction, options: { generationOverrides, clarificationAnswers } })
         }
       } else {
         const message = planError instanceof Error ? planError.message : '暂时无法生成计划。'
         setError(message)
         setLastFailedPlanMessageId('')
-        setLastFailedInstruction(cleanInstruction)
+        rememberFailedInstruction(failedCommand ?? { instruction: cleanInstruction, options: { generationOverrides, clarificationAnswers } })
       }
       failRuntimeTrace(planError instanceof Error ? planError.message : '暂时无法生成计划。')
     } finally {
@@ -729,20 +909,35 @@ export default function AgentWorkspace({
 
   const runInstruction = async (
     cleanInstruction: string,
-    options: {
-      appendUser?: string
-      generationOverrides?: Partial<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution'>>
-      clarificationAnswers?: Record<string, string>
-    } = {},
+    options: AgentRunInstructionOptions = {},
   ) => {
     if (!session || planning || !isCurrentAgentProject()) return
     if (options.appendUser) appendMessage({ role: 'user', kind: 'text', content: options.appendUser })
     setError('')
     setLastFailedInstruction('')
     setLastFailedPlanMessageId('')
+    const failedCommand: AgentFailedInstruction = {
+      instruction: cleanInstruction,
+      options: {
+        ...(options.generationOverrides ? { generationOverrides: options.generationOverrides } : {}),
+        ...(options.clarificationAnswers ? { clarificationAnswers: options.clarificationAnswers } : {}),
+        ...(options.sourcePromptMessageId ? { sourcePromptMessageId: options.sourcePromptMessageId } : {}),
+      },
+    }
 
-    const route = classifyBotanicAgentRequest(cleanInstruction, Boolean(target))
-    if (route !== 'generation') {
+    const decision = decideBotanicAgentRequest(cleanInstruction, Boolean(target))
+    if (decision.kind === 'clarification') {
+      appendMessage({
+        role: 'assistant',
+        kind: 'notice',
+        content: decision.reason === 'unsupported_media'
+          ? 'Agent 对话暂未接入视频执行链。请先在画布添加「视频生成」节点；本次没有创建节点或任务。'
+          : '请明确是只需要建议，还是要我直接生成；本次没有改动画布。',
+      })
+      return
+    }
+    if (decision.kind === 'chat') {
+      const route = decision.mode
       plannerControllerRef.current?.abort()
       const controller = new AbortController()
       plannerControllerRef.current = controller
@@ -793,14 +988,27 @@ export default function AgentWorkspace({
         failRuntimeTrace(message)
         setError(message)
         setLastFailedPlanMessageId('')
-        setLastFailedInstruction(cleanInstruction)
+        rememberFailedInstruction(failedCommand)
       } finally {
         if (plannerControllerRef.current === controller) plannerControllerRef.current = null
         setPlanning(false)
       }
       return
     }
-    const generationPrompt = resolveBotanicAgentGenerationPrompt(cleanInstruction, session.messages)
+    const promptResolution = resolveBotanicAgentGenerationPromptDecision(
+      cleanInstruction,
+      session.messages,
+      options.sourcePromptMessageId,
+    )
+    if (promptResolution.status === 'missing') {
+      appendMessage({
+        role: 'assistant',
+        kind: 'notice',
+        content: '没有找到你指的 Prompt。请先让 Agent 写一段 Prompt，或粘贴完整 Prompt；本次没有改动画布。',
+      })
+      return
+    }
+    const generationPrompt = promptResolution.prompt
     setPlanning(true)
     const runtimeTrace = beginRuntimeTrace({
       hasTarget: Boolean(target),
@@ -813,8 +1021,17 @@ export default function AgentWorkspace({
     setRuntimePhase('planning')
     updateRuntimeStep('call-planner', 'running')
     if (!target) {
-      const instructionMentionsSettings = /(?:1\s*:\s*1|16\s*:\s*9|4\s*:\s*3|3\s*:\s*4|4\s*:\s*5|9\s*:\s*16|\b1k\b|\b2k\b|分辨率|比例|模型|gpt[- ]?image|minimax|h3)/iu.test(cleanInstruction)
-      if (!options.clarificationAnswers && !instructionMentionsSettings) {
+      const inferredGenerationOverrides = inferBotanicAgentGenerationSettings(
+        cleanInstruction,
+        generationModels.filter((model) => model.mediaKind !== 'video'),
+      )
+      const resolvedGenerationOverrides = { ...inferredGenerationOverrides, ...options.generationOverrides }
+      const hasCompleteOutputSettings = Boolean(
+        resolvedGenerationOverrides.model
+        && resolvedGenerationOverrides.aspectRatio
+        && resolvedGenerationOverrides.resolution,
+      )
+      if (!options.clarificationAnswers && !hasCompleteOutputSettings) {
         updateRuntimeStep('call-planner', 'succeeded')
         await yieldRuntimeFrame()
         if (!isCurrentAgentProject()) return
@@ -822,7 +1039,16 @@ export default function AgentWorkspace({
         appendMessage({
           role: 'assistant',
           kind: 'question',
-          question: createInitialAgentClarification(cleanInstruction, generationModels),
+          question: {
+            ...createInitialAgentClarification(
+              cleanInstruction,
+              generationModels.filter((model) => model.mediaKind !== 'video'),
+              resolvedGenerationOverrides,
+            ),
+            ...(promptResolution.sourceMessageId
+              ? { sourcePromptMessageId: promptResolution.sourceMessageId }
+              : {}),
+          },
           status: 'pending',
           content: '先确认一下输出设置。',
         })
@@ -830,41 +1056,47 @@ export default function AgentWorkspace({
         return
       }
       try {
-        const result = await onCreateDraft(generationPrompt, session.contextNodeIds, session.executionMode === 'auto', options.generationOverrides)
-        if (!isCurrentAgentProject()) return
-        const content = result.started
-          ? '已根据画布上下文创建工作流并提交生成，结果会出现在画布中。'
-          : result.needsReference
-            ? '还需要一张参考图片。请通过 + 添加或 @ 引用后再生成；画布未创建空节点。'
-              : result.created
-                ? '已在画布创建可编辑的生成工作流，你可以检查节点后手动生成。'
-                : '暂时无法创建工作流，请检查画布状态后重试。'
-        updateRuntimeStep('call-planner', 'succeeded')
-        if (result.started) {
-          updateRuntimeStep('create-workflow', 'succeeded')
-          setRuntimePhase('executing')
-        } else if (result.needsReference) {
-          setRuntimePhase('waiting_reference')
-        } else if (result.created) {
-          updateRuntimeStep('create-workflow', 'succeeded')
-          setRuntimePhase('draft_ready')
-        } else {
-          updateRuntimeStep('create-workflow', 'failed', content)
-          setRuntimePhase('failed')
+        const initialPlan = {
+          ...buildBotanicAgentPlan({
+            instruction: generationPrompt,
+            intent: 'initial_generation',
+            settings: resolvedGenerationOverrides as GenerationSettings,
+            contextSnapshot: createBotanicAgentContextSnapshot(contextItems),
+          }),
+          plannerModel,
         }
-        appendMessage({ role: 'assistant', kind: result.created || result.needsReference ? 'notice' : 'text', content })
+        attachPlannerToolTrace(initialPlan)
+        updateRuntimeStep('call-planner', 'succeeded')
+        await completeRuntimeTrace(true)
+        if (!isCurrentAgentProject()) return
+        const planMessageId = appendMessage({
+          role: 'assistant', kind: 'plan', plan: initialPlan, status: 'pending',
+          content: initialPlan.summary,
+        })
+        if (planMessageId) setRuntimePhase('waiting_confirmation')
+        if (session.executionMode === 'auto' && planMessageId) {
+          await confirmMessagePlan({
+            id: planMessageId, role: 'assistant', kind: 'plan', content: initialPlan.summary,
+            createdAt: Date.now(), plan: initialPlan, status: 'pending',
+          })
+        }
       } catch (caught) {
-        const message = caught instanceof Error ? caught.message : '暂时无法创建工作流。'
+        const message = caught instanceof Error ? caught.message : '暂时无法创建生成计划。'
         failRuntimeTrace(message)
         setError(message)
         setLastFailedPlanMessageId('')
-        setLastFailedInstruction(cleanInstruction)
+        rememberFailedInstruction({ ...failedCommand, options: { ...failedCommand.options, generationOverrides: resolvedGenerationOverrides } })
       } finally {
         setPlanning(false)
       }
       return
     }
-    const nextPlan = await preparePlan(generationPrompt, options.generationOverrides, options.clarificationAnswers)
+    const nextPlan = await preparePlan(
+      generationPrompt,
+      options.generationOverrides,
+      options.clarificationAnswers,
+      failedCommand,
+    )
     if (!nextPlan || !session || !isCurrentAgentProject()) return
     if ('kind' in nextPlan && nextPlan.kind === 'clarification') {
       setRuntimePhase('waiting_clarification')
@@ -889,7 +1121,10 @@ export default function AgentWorkspace({
   }
 
   const retryLastInstruction = () => {
-    const retryInstruction = lastFailedInstruction.trim()
+    const command = lastFailedCommand ?? (lastFailedInstruction.trim()
+      ? { instruction: lastFailedInstruction.trim(), options: {} }
+      : undefined)
+    const retryInstruction = command?.instruction.trim() ?? ''
     if (!retryInstruction || planning || sendingInstructionRef.current) return
     sendingInstructionRef.current = true
     setError('')
@@ -898,7 +1133,7 @@ export default function AgentWorkspace({
     setInstruction('')
     setMentionQuery(undefined)
     setPendingGenerationOverrides({})
-    void runInstruction(retryInstruction).finally(() => {
+    void runInstruction(retryInstruction, command?.options).finally(() => {
       sendingInstructionRef.current = false
     })
   }
@@ -949,11 +1184,30 @@ export default function AgentWorkspace({
     await runInstruction(message.question.originalInstruction, {
       appendUser: summary,
       clarificationAnswers: answers,
+      sourcePromptMessageId: message.question.sourcePromptMessageId,
       generationOverrides: {
         ...(answers.model ? { model: answers.model } : {}),
         ...(answers.aspect_ratio ? { aspectRatio: answers.aspect_ratio as GenerationSettings['aspectRatio'] } : {}),
         ...(answers.resolution ? { resolution: answers.resolution as GenerationSettings['resolution'] } : {}),
       },
+    })
+  }
+
+  const usePromptForGeneration = (message: BotanicAgentMessage) => {
+    if (
+      !message.prompt?.trim()
+      || planning
+      || sendingInstructionRef.current
+      || !session
+      || isBotanicAgentPromptGenerationPending(message.id, session.messages)
+    ) return
+    const command = '使用这段 Prompt 生成'
+    sendingInstructionRef.current = true
+    void runInstruction(command, {
+      appendUser: command,
+      sourcePromptMessageId: message.id,
+    }).finally(() => {
+      sendingInstructionRef.current = false
     })
   }
 
@@ -1004,10 +1258,15 @@ export default function AgentWorkspace({
       {isImageDropActive ? <div className="agent-workspace__drop-hint" aria-hidden="true"><UploadIcon /><strong>松开即可添加图片素材</strong><small>PNG / JPEG / WebP，单张不超过 8MB</small></div> : null}
       <header className="agent-workspace__header">
         <div className="agent-workspace__title">
-          <button type="button" className="agent-workspace__history-button" onClick={(event) => { historyTriggerRef.current = event.currentTarget; setUtilityMenuOpen(false); setHistoryOpen((open) => !open) }} aria-controls={historyMenuId} aria-expanded={historyOpen} aria-label="对话历史" title="对话历史"><FigmaIcon src={historyIcon} /></button>
+          <button type="button" className="agent-workspace__history-button" onClick={(event) => { historyTriggerRef.current = event.currentTarget; setUtilityMenuOpen(false); setHistoryOpen((open) => !open) }} aria-controls={historyMenuId} aria-expanded={historyOpen} aria-label={unreadSessionCount ? `对话历史，${unreadSessionCount} 个会话有更新` : '对话历史'} title="对话历史"><FigmaIcon src={historyIcon} />{unreadSessionCount ? <span className="agent-workspace__history-unread" aria-hidden="true">{Math.min(unreadSessionCount, 9)}</span> : null}</button>
           <button type="button" className="agent-workspace__title-button" onClick={(event) => { historyTriggerRef.current = event.currentTarget; setUtilityMenuOpen(false); setHistoryOpen((open) => !open) }} aria-controls={historyMenuId} aria-expanded={historyOpen}>{session?.title ?? '新建对话'} <span aria-hidden="true">⌄</span></button>
         </div>
         <div className="agent-workspace__header-actions">
+          {collaborationAwareness.onlineCollaboratorCount ? <span
+            className="agent-workspace__collaborators"
+            title={`另有 ${collaborationAwareness.onlineCollaboratorCount} 位协作者在线`}
+            aria-label={`另有 ${collaborationAwareness.onlineCollaboratorCount} 位协作者在线`}
+          ><i aria-hidden="true" />{collaborationAwareness.onlineCollaboratorCount}</span> : null}
           {persistenceIssue ? <button
             type="button"
             className={`agent-workspace__persistence-status is-${persistenceStatus}`}
@@ -1028,11 +1287,41 @@ export default function AgentWorkspace({
           </div>
         </div>
         {historyOpen ? <div id={historyMenuId} className="agent-workspace__history" aria-label="对话历史">
-          <button type="button" onClick={() => { onNewSession(); setHistoryOpen(false) }}><PlusSquareIcon /> 新建对话</button>
-          {sessions.map((item) => <button key={item.id} type="button" className={item.id === session?.id ? 'is-active' : ''} onClick={() => { onSelectSession(item.id); setHistoryOpen(false) }}><span>{item.title}</span><small>{item.messages.length} 条</small></button>)}
+          <button type="button" onClick={() => { onNewSession(); setHistoryOpen(false); setHistoryQuery(''); setHistoryFilter('all') }}><PlusSquareIcon /> 新建对话</button>
+          <label className="agent-workspace__history-search"><input type="search" aria-label="搜索对话" value={historyQuery} onChange={(event) => setHistoryQuery(event.target.value)} placeholder="搜索对话、消息或任务" autoFocus /></label>
+          <div className="agent-workspace__history-filters" aria-label="筛选协作历史">
+            {([
+              ['all', '全部'],
+              ['unread', '未读'],
+              ['results', '新结果'],
+              ['attention', '需处理'],
+            ] as const).map(([value, label]) => <button
+              key={value}
+              type="button"
+              className={historyFilter === value ? 'is-active' : ''}
+              aria-pressed={historyFilter === value}
+              onClick={() => setHistoryFilter(value)}
+            >{label}<small>{historyFilterCounts[value]}</small></button>)}
+          </div>
+          {filteredSessionTimeline.map((item) => <button key={item.session.id} type="button" className={item.session.id === session?.id ? 'is-active' : ''} onClick={() => { onSelectSession(item.session.id); setHistoryOpen(false); setHistoryQuery('') }}>
+            <span><strong>{item.session.title}</strong><small>{item.preview}</small></span>
+            <span className="agent-workspace__history-meta"><time dateTime={new Date(item.updatedAt).toISOString()}>{agentTimelineTimestamp(item.updatedAt)}</time>{item.unreadResultCount ? <b className="is-unread">{item.unreadResultCount} 个新结果</b> : item.unreadRunCount ? <b className="is-unread">{item.unreadRunCount} 条更新</b> : item.attentionRunCount ? <b className="is-attention">{item.attentionRunCount} 项需处理</b> : item.activeRunCount ? <b>{item.activeRunCount} 进行中</b> : item.runCount ? <small>{item.runCount} 个任务</small> : null}</span>
+          </button>)}
+          {!filteredSessionTimeline.length ? <p className="agent-workspace__history-empty">当前筛选下没有对话。</p> : null}
         </div> : null}
       </header>
-      <div className="agent-workspace__messages" role="log" aria-live="polite" aria-relevant="additions text">
+      {collaborationAwareness.lastRemoteChangeAt ? <div className="agent-workspace__collaboration-notice" role="status">
+        <span><i aria-hidden="true" /><strong>协作者刚刚更新了画布</strong><small>{persistenceStatus === 'conflict' ? '本地改动仍保留，请处理版本选择。' : '最新内容已同步，可继续创作。'}</small></span>
+        <button type="button" aria-label="关闭协作更新提示" title="知道了" onClick={onDismissRemoteChange}><CloseIcon /></button>
+      </div> : null}
+      <div
+        ref={messagesViewportRef}
+        className="agent-workspace__messages"
+        role="log"
+        aria-live="polite"
+        aria-relevant="additions text"
+        onScroll={scheduleReadingAnchorUpdate}
+      >
         {resultPanelOpen ? <AgentResultPanel
           artifacts={artifacts}
           runs={runs}
@@ -1040,11 +1329,13 @@ export default function AgentWorkspace({
           contextOptions={contextOptions}
           artifactIndexStatus={artifactIndexStatus}
           artifactIndexHasMore={artifactIndexHasMore}
+          conversationRunIds={runTimeline.flatMap((item) => item.source ? [item.run.id] : [])}
           onLocateNode={onLocateNode}
           onSaveArtifact={onSaveArtifact}
           onContinue={continueFromArtifact}
           onStartNextRound={createNextRoundFromResults}
           onLoadMoreArtifacts={onLoadMoreArtifacts}
+          onLocateConversation={locateRunSourceMessage}
         /> : null}
         {memoryPanelOpen ? <AgentMemoryPanel
           memory={memory}
@@ -1056,13 +1347,26 @@ export default function AgentWorkspace({
         {taskPanelOpen ? <section className="agent-task-panel" aria-label="Agent 任务与结果">
           <header><div><small>AGENT RUNS</small><h2>Agent 任务</h2></div><span>{runs.length} 个</span></header>
           <p>这里只显示由 Agent 发起的任务；失败分支可重试，也可以修改参数或模型后重新提交，不会覆盖已完成结果。</p>
+          <div className="agent-task-panel__filters" aria-label="按任务状态筛选">
+            {([
+              ['all', '全部', taskFilterCounts.all],
+              ['active', '进行中', taskFilterCounts.active],
+              ['completed', '已完成', taskFilterCounts.completed],
+              ['attention', '需处理', taskFilterCounts.attention],
+            ] as const).map(([value, label, count]) => <button
+              key={value}
+              type="button"
+              aria-pressed={taskStatusFilter === value}
+              onClick={() => setTaskStatusFilter(value)}
+            ><span>{label}</span><b>{count}</b></button>)}
+          </div>
           <div className="agent-task-panel__list">
-            {runs.map((run) => {
+            {filteredRunTimeline.map(({ run, source }) => {
               const outputCount = agentRunOutputCount(run, artifacts)
               const feedback = botanicAgentRunFeedback(run.status, outputCount, run.error)
               const active = run.status === 'queued' || run.status === 'running' || run.status === 'executing'
-              return <article key={run.id} className={`is-${run.status} is-${feedback.tone}`}>
-              <header><span><strong>{run.plan.summary}</strong><small>{feedback.label}</small></span><div>{active ? <button type="button" className="agent-icon-button agent-icon-button--danger" aria-label="取消任务" title="取消任务" disabled={cancellingRunId === run.id} onClick={() => { setCancellingRunId(run.id); void onCancelRun(run.id).finally(() => setCancellingRunId('')) }}>{cancellingRunId === run.id ? <span className="agent-workspace__mini-spinner" /> : <CloseIcon />}</button> : <button type="button" className="agent-task-panel__feedback-action" onClick={() => openRunFeedback(run)}>{feedback.actionLabel}</button>}<b>{run.completedBranchCount}/{run.branches.length}</b></div></header>
+              return <article key={run.id} ref={(node) => { if (node) taskNodesRef.current.set(run.id, node); else taskNodesRef.current.delete(run.id) }} tabIndex={-1} className={`is-${run.status} is-${feedback.tone}${focusedTaskRunId === run.id ? ' is-located' : ''}`}>
+              <header><span><strong>{run.plan.summary}</strong><small>{feedback.label} · <time dateTime={new Date(run.updatedAt).toISOString()}>{agentTimelineTimestamp(run.updatedAt)}</time></small>{source ? <button type="button" className="agent-task-panel__source" onClick={() => locateTaskSourceMessage(source)}>定位到「{source.sessionTitle}」</button> : null}</span><div>{active ? <button type="button" className="agent-icon-button agent-icon-button--danger" aria-label="取消任务" title="取消任务" disabled={cancellingRunId === run.id} onClick={() => { setCancellingRunId(run.id); void onCancelRun(run.id).finally(() => setCancellingRunId('')) }}>{cancellingRunId === run.id ? <span className="agent-workspace__mini-spinner" /> : <CloseIcon />}</button> : <button type="button" className="agent-task-panel__feedback-action" onClick={() => openRunFeedback(run)}>{feedback.actionLabel}</button>}<b>{run.completedBranchCount}/{run.branches.length}</b></div></header>
               <p className="agent-task-panel__feedback">{feedback.detail}</p>
               <div className="agent-run-card__track" aria-hidden="true"><i style={{ width: `${run.branches.length ? Math.round(run.completedBranchCount / run.branches.length * 100) : 0}%` }} /></div>
               <div className="agent-task-panel__summary" aria-label="分支状态汇总"><span><b>{run.branches.filter((branch) => branch.status === 'succeeded').length}</b>完成</span><span><b>{run.branches.filter((branch) => branch.status === 'running').length}</b>生成中</span><span><b>{run.branches.filter((branch) => branch.status === 'queued').length}</b>排队</span><span><b>{run.branches.filter((branch) => branch.status === 'failed' || branch.status === 'cancelled').length}</b>失败</span></div>
@@ -1078,7 +1382,7 @@ export default function AgentWorkspace({
               /></div>)}
             </article>
             })}
-            {!runs.length ? <div className="agent-skill-panel__empty">还没有 Agent 任务。</div> : null}
+            {!filteredRunTimeline.length ? <div className="agent-skill-panel__empty">{runTimeline.length ? '当前筛选下没有任务。' : '还没有 Agent 任务。'}</div> : null}
           </div>
         </section> : null}
         {skillPanelOpen ? <section className="agent-skill-panel" aria-label="项目 Skill">
@@ -1107,8 +1411,14 @@ export default function AgentWorkspace({
             {agentQuickActions.slice(0, 3).map((action) => <button key={action.intent} type="button" onClick={() => { setIntent(action.intent); setInstruction(action.instruction) }}><strong>{action.label}</strong><span>{action.instruction}</span></button>)}
           </div>
         </section> : null}
-        {!utilityPanelOpen ? session?.messages.map((message) => <AgentConversationMessage
+        {!utilityPanelOpen && readingRestoreNotice ? <div className="agent-reading-restore" role="status"><span>已回到上次阅读位置</span><button type="button" onClick={jumpToLatestConversation}>跳到最新</button></div> : null}
+        {!utilityPanelOpen ? session?.messages.map((message) => <div
           key={message.id}
+          ref={(node) => registerMessageNode(message.id, node)}
+          className={`agent-conversation-anchor${locatedMessageId === message.id ? ' is-located' : ''}`}
+          tabIndex={-1}
+          data-agent-message-id={message.id}
+        ><AgentConversationMessage
           message={message}
           sessionId={session.id}
           runs={runs}
@@ -1116,6 +1426,7 @@ export default function AgentWorkspace({
           contextOptionIds={contextOptions.map((item) => item.id)}
           generationModels={generationModels}
           planning={planning}
+          promptUsePending={pendingPromptSourceIds.has(message.id)}
           plannerModel={plannerModel}
           executingActionId={executingActionId}
           submittingMessageId={submittingMessageId}
@@ -1127,6 +1438,7 @@ export default function AgentWorkspace({
             requestAnimationFrame(() => composerTextareaRef.current?.focus())
           }}
           onShowResults={() => setActiveUtilityPanel('result')}
+          onShowTask={showTaskForRun}
           onFocusNodes={onFocusNodes}
           onAnswerClarification={(targetMessage, answers) => void answerClarification(targetMessage, answers)}
           onLocateNode={onLocateNode}
@@ -1135,9 +1447,11 @@ export default function AgentWorkspace({
           onPromptDraftChange={(messageId, prompt) => setPromptDrafts((current) => ({ ...current, [messageId]: prompt }))}
           onCommitPlanPrompt={commitPlanPrompt}
           onConfirmPlan={(targetMessage) => void confirmMessagePlan(targetMessage)}
+          onUsePrompt={usePromptForGeneration}
           onEdit={(content) => { setInstruction(content); requestAnimationFrame(() => composerTextareaRef.current?.focus()) }}
+          onRetryDelivery={retryMessage}
           onFeedback={(targetMessage, feedback) => onUpdateMessage(session.id, targetMessage.id, { feedback })}
-        />) : null}
+        /></div>) : null}
         {!utilityPanelOpen && showRuntimeFeed ? (() => {
           const livePhase = runtimePhase === 'reading' || runtimePhase === 'planning' || runtimePhase === 'executing'
           return <section className={`agent-runtime-feed is-${runtimeSummary.phase}${runtimeFailed ? ' is-failed' : runtimeComplete ? ' is-complete' : ''}`} data-phase={runtimeSummary.phase} role="status" aria-live={livePhase ? 'polite' : undefined} aria-label="Agent 运行记录">

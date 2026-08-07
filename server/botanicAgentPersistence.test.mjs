@@ -4,6 +4,7 @@ import {
   agentStateFromDocument,
   mergeAgentStateIntoDocument,
   shouldApplyAgentEntityWrite,
+  shouldApplyAgentRunWrite,
   validateAgentMemoryEntity,
   validateAgentMessageEntity,
   validateAgentSessionEntity,
@@ -34,6 +35,23 @@ test('Agent 文档状态被拆成独立 Session、Message、Memory 与 Run 实�
   assert.equal(state.runs[0].id, 'run-a')
 })
 
+test('Agent 会话阅读锚点会进入独立实体并在跨设备读取时保留', () => {
+  const state = agentStateFromDocument({
+    agentSessions: [{
+      ...session('session-reading', 40, [message('message-reading', '停在这里', 30)]),
+      readingAnchorMessageId: 'message-reading',
+      readingAnchorUpdatedAt: 40,
+    }],
+    agentMemory: [],
+    agentRuns: [],
+  })
+
+  assert.equal(state.sessions[0].readingAnchorMessageId, 'message-reading')
+  assert.equal(state.sessions[0].readingAnchorUpdatedAt, 40)
+  const merged = mergeAgentStateIntoDocument({ agentSessions: [], agentMemory: [], agentRuns: [] }, state)
+  assert.equal(merged.agentSessions[0].readingAnchorMessageId, 'message-reading')
+})
+
 test('独立实体按 ID 合并，不因旧文档缺少并发新增消息而丢失', () => {
   const merged = mergeAgentStateIntoDocument({
     agentSessions: [session('session-a', 20, [message('message-a', '设备 A', 11)])],
@@ -60,6 +78,22 @@ test('仅存在于独立实体表的 Agent Run 会进入兼容文档', () => {
   })
 
   assert.deepEqual(merged.agentRuns, [{ id: 'run-entity-only', status: 'running', updatedAt: 30 }])
+})
+
+test('独立 Agent Run 是权威状态，不被更新的兼容文档回退', () => {
+  const merged = mergeAgentStateIntoDocument({
+    agentSessions: [], agentMemory: [],
+    agentRuns: [{
+      id: 'run-authoritative', status: 'awaiting_confirmation', updatedAt: 500,
+      plan: { rootRecipe: { prompt: '完整本地配方' } },
+    }],
+  }, {
+    runs: [{ id: 'run-authoritative', status: 'running', updatedAt: 100 }],
+  })
+
+  assert.equal(merged.agentRuns[0].status, 'running')
+  assert.equal(merged.agentRuns[0].updatedAt, 100)
+  assert.equal(merged.agentRuns[0].plan.rootRecipe.prompt, '完整本地配方')
 })
 
 test('历史 Agent Run 非法状态在写入独立实体前回退到等待确认', () => {
@@ -136,4 +170,20 @@ test('Postgres/Supabase 使用同一时间戳冲突规则，Memory 墓碑永久�
     { updatedAt: 21 },
     { tombstoneWinsTie: true },
   ), false)
+})
+
+test('Agent Run 拒绝旧或更新的本地待确认状态覆盖已执行实体', () => {
+  assert.equal(shouldApplyAgentRunWrite(undefined, { status: 'awaiting_confirmation', updatedAt: 500 }), true)
+  assert.equal(shouldApplyAgentRunWrite(
+    { status: 'queued', updatedAt: 200 },
+    { status: 'awaiting_confirmation', updatedAt: 100 },
+  ), false)
+  assert.equal(shouldApplyAgentRunWrite(
+    { status: 'running', updatedAt: 200 },
+    { status: 'awaiting_confirmation', updatedAt: 500 },
+  ), false)
+  assert.equal(shouldApplyAgentRunWrite(
+    { status: 'queued', updatedAt: 200 },
+    { status: 'running', updatedAt: 300 },
+  ), true)
 })

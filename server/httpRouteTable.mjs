@@ -13,6 +13,7 @@ export const botanicHttpRoutePatterns = Object.freeze({
   projectAgentState: /^\/api\/projects\/([^/]+)\/agent-state$/,
   projectAgentArtifacts: /^\/api\/projects\/([^/]+)\/agent-artifacts$/,
   agentSession: /^\/api\/projects\/([^/]+)\/agent-sessions\/([^/]+)$/,
+  agentSessionReadingAnchor: /^\/api\/projects\/([^/]+)\/agent-sessions\/([^/]+)\/reading-anchor$/,
   agentMessage: /^\/api\/projects\/([^/]+)\/agent-sessions\/([^/]+)\/messages\/([^/]+)$/,
   agentMemory: /^\/api\/projects\/([^/]+)\/agent-memory\/([^/]+)$/,
   projectMedia: /^\/api\/projects\/([^/]+)\/media$/,

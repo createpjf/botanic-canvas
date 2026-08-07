@@ -26,8 +26,8 @@ test('Agent 区分 Prompt 写作与明确使用上一条 Prompt 生成', () => {
 
 test('Agent 执行“按这个生成”时只继承最新的结构化 Prompt', () => {
   const messages = [
-    { role: 'assistant' as const, content: '这是一段解释，不应该被执行。' },
-    { role: 'assistant' as const, content: '海边人像 Prompt', prompt: '保持人物和服装，替换为柔和夕阳海边场景。' },
+    { id: 'explanation', role: 'assistant' as const, content: '这是一段解释，不应该被执行。' },
+    { id: 'prompt', role: 'assistant' as const, content: '海边人像 Prompt', prompt: '保持人物和服装，替换为柔和夕阳海边场景。' },
   ]
   assert.equal(
     resolveBotanicAgentGenerationPrompt('按照上面的 Prompt 生成一张', messages),
@@ -38,8 +38,8 @@ test('Agent 执行“按这个生成”时只继承最新的结构化 Prompt', (
     '保持人物和服装，替换为柔和夕阳海边场景。',
   )
   assert.equal(
-    resolveBotanicAgentGenerationPrompt('按照上面的 Prompt 生成一张', [{ role: 'assistant', content: '只有解释' }]),
-    '按照上面的 Prompt 生成一张',
+    resolveBotanicAgentGenerationPrompt('按照上面的 Prompt 生成一张', [{ id: 'explanation', role: 'assistant', content: '只有解释' }]),
+    '',
   )
   assert.equal(resolveBotanicAgentGenerationPrompt('换成森林背景', messages), '换成森林背景')
 })

@@ -26,6 +26,7 @@ import { createRealtimeTicketRouteHandler } from './realtimeTicketRoutes.mjs'
 import { createPromptMediaRouteHandler } from './promptMediaRoutes.mjs'
 import { createAgentRouteHandler } from './agentRoutes.mjs'
 import { createAgentRunGenerationService } from './agentRunGenerationService.mjs'
+import { writeAgentRunOperationalEvent } from './agentRunObservability.mjs'
 
 export function createBotanicHttpServer({
   config,
@@ -43,7 +44,7 @@ async function publishAgentRunUpdated(event) {
   realtimeHub?.publishAgentRunUpdated(event)
 }
 const localProcessor = !redisQueue && !config.production
-  ? createGenerationProcessor({ productStore, mediaService, config, publishAgentRunUpdated })
+  ? createGenerationProcessor({ productStore, mediaService, config, publishAgentRunUpdated, observeAgentRun })
   : undefined
 if (config.production && !redisQueue) throw new Error('生产环境必须配置 REDIS_URL；内存任务队列只用于本地原型。')
 if (!config.realtimeTicketSecret) throw new Error('实时服务必须配置 REALTIME_TICKET_SECRET。')
@@ -68,6 +69,10 @@ function json(response, statusCode, body, headers = {}) {
 
 function error(response, statusCode, code, message) {
   return json(response, statusCode, { error: { code, message } })
+}
+
+function observeAgentRun(input) {
+  writeAgentRunOperationalEvent(input)
 }
 
 async function enforceRateLimit(response, input) {
@@ -256,7 +261,7 @@ const agentRunGeneration = createAgentRunGenerationService({
 const handleAgentRoute = createAgentRouteHandler({
   config, productStore, redisQueue, configuredMcpTools, json, error, readJson, text,
   requireUser, enforceRateLimit, agentRunGeneration, publishAgentRunUpdated,
-  enqueue, publishProjectUpdated,
+  enqueue, publishProjectUpdated, observeAgentRun,
 })
 
 const handleRequest = async (request, response) => {

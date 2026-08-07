@@ -93,6 +93,88 @@ test('已授权客户端只接收当前项目的实时更新', async (context) =
   })
 })
 
+test('客户端主动订阅后收到按成员去重的在线状态', async (context) => {
+  const server = createServer((_request, response) => response.end())
+  const hub = createProjectRealtimeHub({
+    server,
+    ticketSecret: 'test-secret',
+    productStore: {
+      async readProject(_userId, projectId) {
+        return projectId === 'project-1' ? { document: {}, revision: 1 } : undefined
+      },
+      async canEditProject(userId) { return userId !== 'member-2' },
+    },
+  })
+  await listen(server)
+  const address = server.address()
+  const connect = (userId) => new WebSocket(
+    `ws://127.0.0.1:${address.port}/api/realtime?projectId=project-1&ticket=${encodeURIComponent(issueRealtimeTicket({ userId, projectId: 'project-1', origin: testOrigin, secret: 'test-secret' }))}`,
+    { origin: testOrigin },
+  )
+  const first = connect('member-1')
+  const duplicate = connect('member-1')
+  const second = connect('member-2')
+  context.after(async () => {
+    first.close()
+    duplicate.close()
+    second.close()
+    await hub.close()
+    await new Promise((resolve) => server.close(resolve))
+  })
+  await Promise.all([nextMessage(first), nextMessage(duplicate), nextMessage(second)])
+
+  first.send(JSON.stringify({ type: 'collaboration.presence.subscribe', projectId: 'project-1' }))
+  const firstPresence = await nextMessage(first)
+  assert.deepEqual(firstPresence, {
+    type: 'collaboration.presence',
+    projectId: 'project-1',
+    members: [{ userId: 'member-1', connectionCount: 1 }],
+  })
+
+  duplicate.send(JSON.stringify({ type: 'collaboration.presence.subscribe', projectId: 'project-1' }))
+  await nextMessage(first)
+  await nextMessage(duplicate)
+  second.send(JSON.stringify({ type: 'collaboration.presence.subscribe', projectId: 'project-1' }))
+  const presence = await nextMessage(second)
+  assert.deepEqual(presence, {
+    type: 'collaboration.presence',
+    projectId: 'project-1',
+    members: [
+      { userId: 'member-1', connectionCount: 2 },
+      { userId: 'member-2', connectionCount: 1 },
+    ],
+  })
+})
+
+test('项目更新可携带成员来源但不改变旧消息形状', async (context) => {
+  const server = createServer((_request, response) => response.end())
+  const hub = createProjectRealtimeHub({
+    server,
+    ticketSecret: 'test-secret',
+    productStore: {
+      async readProject() { return { document: {}, revision: 1 } },
+      async canEditProject() { return true },
+    },
+  })
+  await listen(server)
+  const address = server.address()
+  const socket = new WebSocket(
+    `ws://127.0.0.1:${address.port}/api/realtime?projectId=project-1&ticket=${encodeURIComponent(issueRealtimeTicket({ userId: 'member-1', projectId: 'project-1', origin: testOrigin, secret: 'test-secret' }))}`,
+    { origin: testOrigin },
+  )
+  context.after(async () => {
+    socket.close()
+    await hub.close()
+    await new Promise((resolve) => server.close(resolve))
+  })
+  await nextMessage(socket)
+
+  hub.publishProjectUpdated({ projectId: 'project-1', revision: 4, updatedAt: 400, actorId: 'member-2' })
+  assert.deepEqual(await nextMessage(socket), {
+    type: 'project.updated', projectId: 'project-1', revision: 4, updatedAt: 400, actorId: 'member-2',
+  })
+})
+
 test('Agent Run 进度只推送给当前项目连接', async (context) => {
   const server = createServer((_request, response) => response.end())
   const hub = createProjectRealtimeHub({
@@ -192,6 +274,7 @@ test('编辑者的 CRDT 增量只转发给同项目的其他连接', async (cont
     type: 'canvas.crdt.update',
     projectId: 'project-1',
     update,
+    actorId: 'editor-1',
   })
 })
 

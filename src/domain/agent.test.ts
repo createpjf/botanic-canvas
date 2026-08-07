@@ -25,6 +25,7 @@ import {
   updateBotanicAgentRun,
   createBotanicAgentRuntimeSteps,
   shouldRecoverAgentRunResults,
+  shouldResumeQueuedAgentRunExecution,
   updateBotanicAgentRuntimeStep,
   restoreBotanicAgentRuntimeSteps,
   botanicAgentSubmissionKey,
@@ -34,6 +35,11 @@ import {
   buildBotanicAgentPromptDiff,
   mergeBotanicAgentArtifactIndex,
   resolveBotanicAgentWorkflowReferenceNodeIds,
+  buildBotanicAgentRunTimeline,
+  buildBotanicAgentSessionTimeline,
+  filterBotanicAgentSessionTimeline,
+  filterBotanicAgentRunTimeline,
+  updateBotanicAgentSessionReadingAnchor,
 } from './agent.ts'
 
 const rootRecipe: GenerationRecipe = {
@@ -67,6 +73,144 @@ test('Agent 运行记录按可验证的上下文来源生成步骤', () => {
   assert.equal(steps[4].detail, 'DeepSeek V4 · 生成执行计划')
 })
 
+test('Agent 任务时间线按远端更新时间排序并关联来源对话', () => {
+  const runs = [{ id: 'run-old', status: 'completed', plan: { summary: '旧任务' }, branches: [], completedBranchCount: 0, failedBranchCount: 0, createdAt: 100, updatedAt: 200 }, { id: 'run-new', status: 'running', plan: { summary: '新任务' }, branches: [], completedBranchCount: 0, failedBranchCount: 0, createdAt: 300, updatedAt: 500 }] as unknown as import('./agent.ts').BotanicAgentRun[]
+  const sessions = [{
+    id: 'session-source', title: '海边系列', executionMode: 'manual', contextNodeIds: [], createdAt: 10, updatedAt: 600,
+    messages: [{ id: 'message-run', role: 'assistant', kind: 'run', content: '已提交', runId: 'run-new', createdAt: 320 }],
+  }] as import('./agent.ts').BotanicAgentSession[]
+
+  const timeline = buildBotanicAgentRunTimeline(runs, sessions)
+
+  assert.deepEqual(timeline.map((item) => item.run.id), ['run-new', 'run-old'])
+  assert.deepEqual(timeline[0].source, { sessionId: 'session-source', sessionTitle: '海边系列', messageId: 'message-run' })
+  assert.equal(timeline[1].source, undefined)
+})
+
+test('Agent 对话历史按消息真实更新时间排序并汇总关联任务', () => {
+  const sessions = [{
+    id: 'session-old', title: '旧会话', executionMode: 'manual', contextNodeIds: [], createdAt: 1, updatedAt: 10,
+    messages: [{ id: 'message-old', role: 'user', kind: 'text', content: '较早的内容', createdAt: 10 }],
+  }, {
+    id: 'session-current', title: '海边系列', executionMode: 'manual', contextNodeIds: [], createdAt: 2, updatedAt: 20,
+    messages: [
+      { id: 'message-user', role: 'user', kind: 'text', content: '把背景换成海边', createdAt: 30, updatedAt: 80 },
+      { id: 'message-run', role: 'assistant', kind: 'run', content: '任务已提交', runId: 'run-active', createdAt: 40 },
+    ],
+  }] as import('./agent.ts').BotanicAgentSession[]
+  const runs = [
+    { id: 'run-active', status: 'running', plan: { summary: '海边换景' }, branches: [], completedBranchCount: 0, failedBranchCount: 0, createdAt: 40, updatedAt: 70 },
+    { id: 'run-orphan', status: 'completed', plan: { summary: '无来源任务' }, branches: [], completedBranchCount: 0, failedBranchCount: 0, createdAt: 50, updatedAt: 90 },
+  ] as unknown as import('./agent.ts').BotanicAgentRun[]
+
+  const timeline = buildBotanicAgentSessionTimeline(sessions, runs)
+
+  assert.deepEqual(timeline.map((item) => item.session.id), ['session-current', 'session-old'])
+  assert.equal(timeline[0].preview, '把背景换成海边')
+  assert.equal(timeline[0].updatedAt, 80)
+  assert.equal(timeline[0].runCount, 1)
+  assert.equal(timeline[0].activeRunCount, 1)
+  assert.equal(timeline[1].runCount, 0)
+})
+
+test('Agent 对话历史可按标题、消息和任务摘要搜索', () => {
+  const sessions = [{
+    id: 'session-seaside', title: '海边视觉', executionMode: 'manual', contextNodeIds: [], createdAt: 1, updatedAt: 20,
+    messages: [{ id: 'message-user', role: 'user', kind: 'text', content: '把人物放到日落沙滩', createdAt: 20 }],
+  }, {
+    id: 'session-studio', title: '棚拍系列', executionMode: 'manual', contextNodeIds: [], createdAt: 2, updatedAt: 30,
+    messages: [{ id: 'message-run', role: 'assistant', kind: 'run', content: '任务已提交', runId: 'run-studio', createdAt: 30 }],
+  }] as import('./agent.ts').BotanicAgentSession[]
+  const runs = [{
+    id: 'run-studio', status: 'completed', plan: { summary: '暖色商品棚拍' }, branches: [], completedBranchCount: 1, failedBranchCount: 0, createdAt: 30, updatedAt: 40,
+  }] as unknown as import('./agent.ts').BotanicAgentRun[]
+  const timeline = buildBotanicAgentSessionTimeline(sessions, runs)
+
+  assert.deepEqual(filterBotanicAgentSessionTimeline(timeline, '海边').map((item) => item.session.id), ['session-seaside'])
+  assert.deepEqual(filterBotanicAgentSessionTimeline(timeline, '日落沙滩').map((item) => item.session.id), ['session-seaside'])
+  assert.deepEqual(filterBotanicAgentSessionTimeline(timeline, '商品棚拍').map((item) => item.session.id), ['session-studio'])
+  assert.equal(filterBotanicAgentSessionTimeline(timeline, '  '), timeline)
+})
+
+test('Agent 对话历史可筛选未读、新结果与需处理任务', () => {
+  const timeline = [{
+    session: { id: 'session-unread' }, unreadRunCount: 2, unreadResultCount: 0, attentionRunCount: 0, searchText: '海边',
+  }, {
+    session: { id: 'session-result' }, unreadRunCount: 1, unreadResultCount: 1, attentionRunCount: 0, searchText: '棚拍',
+  }, {
+    session: { id: 'session-attention' }, unreadRunCount: 0, unreadResultCount: 0, attentionRunCount: 1, searchText: '失败',
+  }, {
+    session: { id: 'session-read' }, unreadRunCount: 0, unreadResultCount: 0, attentionRunCount: 0, searchText: '完成',
+  }] as unknown as ReturnType<typeof buildBotanicAgentSessionTimeline>
+
+  assert.deepEqual(filterBotanicAgentSessionTimeline(timeline, '', 'unread').map((item) => item.session.id), ['session-unread', 'session-result'])
+  assert.deepEqual(filterBotanicAgentSessionTimeline(timeline, '', 'results').map((item) => item.session.id), ['session-result'])
+  assert.deepEqual(filterBotanicAgentSessionTimeline(timeline, '', 'attention').map((item) => item.session.id), ['session-attention'])
+  assert.deepEqual(filterBotanicAgentSessionTimeline(timeline, '棚', 'unread').map((item) => item.session.id), ['session-result'])
+})
+
+test('Agent 对话历史按跨设备阅读时间汇总未读任务与新结果', () => {
+  const sessions = [{
+    id: 'session-read', title: '已读会话', executionMode: 'manual', contextNodeIds: [], readingAnchorMessageId: 'message-read', readingAnchorUpdatedAt: 100, createdAt: 1, updatedAt: 100,
+    messages: [
+      { id: 'message-read', role: 'user', kind: 'text', content: '开始', createdAt: 90 },
+      { id: 'message-running', role: 'assistant', kind: 'run', content: '任务一', runId: 'run-running', createdAt: 95 },
+      { id: 'message-result', role: 'assistant', kind: 'run', content: '任务二', runId: 'run-result', createdAt: 96 },
+      { id: 'message-old', role: 'assistant', kind: 'run', content: '旧任务', runId: 'run-old', createdAt: 97 },
+    ],
+  }, {
+    id: 'session-no-anchor', title: '未建立阅读基线', executionMode: 'manual', contextNodeIds: [], createdAt: 2, updatedAt: 80,
+    messages: [{ id: 'message-no-anchor', role: 'assistant', kind: 'run', content: '历史任务', runId: 'run-no-anchor', createdAt: 80 }],
+  }] as import('./agent.ts').BotanicAgentSession[]
+  const runs = [
+    { id: 'run-running', status: 'running', plan: { summary: '正在生成' }, branches: [], completedBranchCount: 0, failedBranchCount: 0, createdAt: 95, updatedAt: 130 },
+    { id: 'run-result', status: 'completed', plan: { summary: '新结果' }, branches: [], completedBranchCount: 2, failedBranchCount: 0, createdAt: 96, updatedAt: 140 },
+    { id: 'run-old', status: 'completed', plan: { summary: '旧结果' }, branches: [], completedBranchCount: 1, failedBranchCount: 0, createdAt: 97, updatedAt: 99 },
+    { id: 'run-no-anchor', status: 'completed', plan: { summary: '历史结果' }, branches: [], completedBranchCount: 1, failedBranchCount: 0, createdAt: 80, updatedAt: 120 },
+  ] as unknown as import('./agent.ts').BotanicAgentRun[]
+
+  const timeline = buildBotanicAgentSessionTimeline(sessions, runs)
+  const read = timeline.find((item) => item.session.id === 'session-read')!
+  const noAnchor = timeline.find((item) => item.session.id === 'session-no-anchor')!
+
+  assert.equal(read.unreadRunCount, 2)
+  assert.equal(read.unreadResultCount, 1)
+  assert.equal(noAnchor.unreadRunCount, 0)
+  assert.equal(noAnchor.unreadResultCount, 0)
+})
+
+test('Agent 任务时间线按进行中、已完成和需处理筛选', () => {
+  const timeline = buildBotanicAgentRunTimeline([
+    { id: 'run-waiting', status: 'awaiting_confirmation', updatedAt: 70 },
+    { id: 'run-running', status: 'running', updatedAt: 60 },
+    { id: 'run-completed', status: 'completed', updatedAt: 50 },
+    { id: 'run-partial', status: 'partial', updatedAt: 40 },
+    { id: 'run-failed', status: 'failed', updatedAt: 30 },
+    { id: 'run-cancelled', status: 'cancelled', updatedAt: 20 },
+  ] as import('./agent.ts').BotanicAgentRun[], [])
+
+  assert.deepEqual(filterBotanicAgentRunTimeline(timeline, 'active').map((item) => item.run.id), ['run-waiting', 'run-running'])
+  assert.deepEqual(filterBotanicAgentRunTimeline(timeline, 'completed').map((item) => item.run.id), ['run-completed'])
+  assert.deepEqual(filterBotanicAgentRunTimeline(timeline, 'attention').map((item) => item.run.id), ['run-partial', 'run-failed', 'run-cancelled'])
+  assert.equal(filterBotanicAgentRunTimeline(timeline, 'all'), timeline)
+})
+
+test('Agent 阅读锚点只接受当前会话中存在的消息', () => {
+  const session = {
+    id: 'session-reading', title: '阅读恢复', executionMode: 'manual', contextNodeIds: [], createdAt: 10, updatedAt: 20,
+    messages: [
+      { id: 'message-a', role: 'user', kind: 'text', content: '第一条', createdAt: 11 },
+      { id: 'message-b', role: 'assistant', kind: 'text', content: '第二条', createdAt: 12 },
+    ],
+  } as import('./agent.ts').BotanicAgentSession
+
+  const updated = updateBotanicAgentSessionReadingAnchor(session, 'message-b', 100)
+  assert.equal(updated.readingAnchorMessageId, 'message-b')
+  assert.equal(updated.readingAnchorUpdatedAt, 100)
+  assert.equal(updated.updatedAt, 100)
+  assert.equal(updateBotanicAgentSessionReadingAnchor(updated, 'message-missing', 120), updated)
+})
+
 test('Agent 提交时锁定安全上下文快照，并可在恢复时过滤已删除节点', () => {
   const snapshot = createBotanicAgentContextSnapshot([
     { nodeId: 'asset-1', label: '商品图', kind: '素材', mediaKind: 'image', role: '商品' },
@@ -97,6 +241,19 @@ test('Agent Run 只在新的完成态出现时触发结果恢复', () => {
   assert.equal(shouldRecoverAgentRunResults({ status: 'completed', updatedAt: 20 }, { status: 'completed', updatedAt: 20 }), false)
   assert.equal(shouldRecoverAgentRunResults({ status: 'completed', updatedAt: 20 }, { status: 'completed', updatedAt: 30 }), true)
   assert.equal(shouldRecoverAgentRunResults({ status: 'running', updatedAt: 10 }, { status: 'failed', updatedAt: 20 }), false)
+})
+
+test('Agent Run 只对已确认但未绑定任务的 queued 快照补执行', () => {
+  const branch = {
+    id: 'branch-a', label: '新场景', status: 'queued' as const, attempt: 0,
+    jobIds: [], outputCount: 0, updatedAt: 100,
+  }
+  assert.equal(shouldResumeQueuedAgentRunExecution({ status: 'queued', branches: [branch] }), true)
+  assert.equal(shouldResumeQueuedAgentRunExecution({
+    status: 'queued', branches: [{ ...branch, activeJobId: 'job-a', jobIds: ['job-a'] }],
+  }), false)
+  assert.equal(shouldResumeQueuedAgentRunExecution({ status: 'running', branches: [branch] }), false)
+  assert.equal(shouldResumeQueuedAgentRunExecution({ status: 'queued', branches: [] }), false)
 })
 
 test('对话与检索也展示可理解的运行阶段，而不是静默等待', () => {
@@ -190,6 +347,58 @@ test('同一确认消息与计划生成稳定提交键，修改提示词后才�
   assert.equal(first, botanicAgentSubmissionKey('message-1', plan))
   assert.notEqual(first, botanicAgentSubmissionKey('message-1', { ...plan, prompt: `${plan.prompt}，更自然。` }))
   assert.match(first, /^agent-plan-message-1-/)
+})
+
+test('首次生成计划只需有效图片上下文，不伪造父结果或根配方', () => {
+  const plan = buildBotanicAgentPlan({
+    instruction: '基于商品图生成一张海边广告图',
+    intent: 'initial_generation',
+    settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' },
+    contextSnapshot: [
+      { nodeId: 'asset-product', label: '商品图', kind: '素材', mediaKind: 'image', role: '商品' },
+      { nodeId: 'result-reference', label: '氛围参考', kind: '结果', mediaKind: 'image' },
+      { nodeId: 'asset-video', label: '视频参考', kind: '素材', mediaKind: 'video' },
+    ],
+  })
+
+  assert.equal(plan.selectedResultNodeId, undefined)
+  assert.equal(plan.rootRecipe, undefined)
+  assert.deepEqual(plan.references, [
+    { source: 'context_node', id: 'asset-product', label: '商品图', role: '商品' },
+    { source: 'context_node', id: 'result-reference', label: '氛围参考' },
+  ])
+  assert.equal(plan.settings.model, 'gpt-image-2')
+})
+
+test('首次生成拒绝空上下文和仅视频上下文，其他意图仍要求父结果', () => {
+  const settings = { model: 'gpt-image-2' as const, aspectRatio: '1:1' as const, resolution: '1K' as const }
+  assert.throws(() => buildBotanicAgentPlan({
+    instruction: '生成广告图', intent: 'initial_generation', settings, contextSnapshot: [],
+  }), /图片素材或图片结果/)
+  assert.throws(() => buildBotanicAgentPlan({
+    instruction: '生成广告图', intent: 'initial_generation', settings,
+    contextSnapshot: [{ nodeId: 'video-1', label: '视频', kind: '素材', mediaKind: 'video' }],
+  }), /图片素材或图片结果/)
+  assert.throws(() => buildBotanicAgentPlan({
+    instruction: '换场景', intent: 'replace_scene', settings,
+    contextSnapshot: [{ nodeId: 'asset-1', label: '图片', kind: '素材', mediaKind: 'image' }],
+  }), /先选择一张已生成图片/)
+})
+
+test('首次生成提交键包含排序后的上下文节点，顺序不影响键但上下文变化会影响键', () => {
+  const base = buildBotanicAgentPlan({
+    instruction: '生成广告图', intent: 'initial_generation',
+    settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' },
+    contextSnapshot: [
+      { nodeId: 'asset-b', label: 'B', kind: '素材', mediaKind: 'image' },
+      { nodeId: 'asset-a', label: 'A', kind: '素材', mediaKind: 'image' },
+    ],
+  })
+  const reordered = { ...base, contextSnapshot: [...(base.contextSnapshot ?? [])].reverse() }
+  const changed = { ...base, contextSnapshot: [{ nodeId: 'asset-c', label: 'C', kind: '素材' as const, mediaKind: 'image' as const }] }
+
+  assert.equal(botanicAgentSubmissionKey('message-initial', base), botanicAgentSubmissionKey('message-initial', reordered))
+  assert.notEqual(botanicAgentSubmissionKey('message-initial', base), botanicAgentSubmissionKey('message-initial', changed))
 })
 
 test('重复收到同一 Agent 消息 ID 时保持单条时间线', () => {
@@ -344,6 +553,28 @@ test('刷新后可用服务端权威快照恢复本地缺失的 Agent Run', () =
   assert.equal(restored[0].status, 'running')
   assert.equal(restored[0].plan.rootRecipe, rootRecipe)
   assert.equal(restored[0].plan.selectedResultNodeId, 'result-v03')
+})
+
+test('刷新恢复首次生成 Run 时不伪造父结果引用', () => {
+  const plan = buildBotanicAgentPlan({
+    instruction: '基于商品图生成广告图', intent: 'initial_generation',
+    settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' },
+    contextSnapshot: [{ nodeId: 'asset-product', label: '商品图', kind: '素材', mediaKind: 'image', role: '商品' }],
+  })
+  const snapshot = {
+    id: 'agent-run-initial', projectId: 'project-a', status: 'running' as const,
+    plan: (({ references: _references, rootRecipe: _rootRecipe, actions: _actions, ...safePlan }) => safePlan)(plan),
+    completedBranchCount: 0, failedBranchCount: 0,
+    branches: [{ id: 'branch-a', label: '广告图', status: 'running' as const, attempt: 0, jobIds: ['job-a'], activeJobId: 'job-a', outputCount: 0, updatedAt: 210 }],
+    createdAt: 100, updatedAt: 210,
+  }
+
+  const restored = upsertBotanicAgentRunSnapshot([], snapshot)
+  assert.equal(restored[0].plan.selectedResultNodeId, undefined)
+  assert.equal(restored[0].plan.rootRecipe, undefined)
+  assert.deepEqual(restored[0].plan.references, [
+    { source: 'context_node', id: 'asset-product', label: '商品图', role: '商品' },
+  ])
 })
 
 test('Agent 会话保存执行模式、画布上下文与可恢复的消息时间线', () => {

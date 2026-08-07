@@ -79,18 +79,7 @@ export async function submitPersistentBotanicAgentMessage(input: {
   const projectId = encodeURIComponent(input.projectId)
   const sessionId = encodeURIComponent(input.session.id)
   const messageId = encodeURIComponent(input.message.id)
-  await productRequest<{ session: BotanicAgentSession }>(`/api/projects/${projectId}/agent-sessions/${sessionId}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `${input.idempotencyKey}-session` },
-    body: JSON.stringify({
-      id: input.session.id,
-      title: input.session.title,
-      executionMode: input.session.executionMode,
-      contextNodeIds: input.session.contextNodeIds,
-      createdAt: input.session.createdAt,
-      updatedAt: input.session.updatedAt,
-    }),
-  })
+  await submitPersistentBotanicAgentSession(input.projectId, input.session, `${input.idempotencyKey}-session`)
   const response = await productRequest<{ message: BotanicAgentMessage }>(
     `/api/projects/${projectId}/agent-sessions/${sessionId}/messages/${messageId}`,
     {
@@ -112,6 +101,48 @@ export async function submitPersistentBotanicAgentMessage(input: {
     },
   )
   return response.message
+}
+
+/** 独立 Session 写入用于跨设备同步标题、执行模式和上下文；阅读位置使用成员级回执。 */
+export async function submitPersistentBotanicAgentSession(
+  projectIdValue: string,
+  session: BotanicAgentSession,
+  idempotencyKey = `agent-session-${session.id}-${session.updatedAt}`,
+) {
+  const projectId = encodeURIComponent(projectIdValue)
+  const sessionId = encodeURIComponent(session.id)
+  const response = await productRequest<{ session: BotanicAgentSession }>(`/api/projects/${projectId}/agent-sessions/${sessionId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
+    body: JSON.stringify({
+      id: session.id,
+      title: session.title,
+      executionMode: session.executionMode,
+      contextNodeIds: session.contextNodeIds,
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
+    }),
+  })
+  return response.session
+}
+
+/** 独立更新阅读锚点，避免旧设备用整份 Session 覆盖另一设备的新设置。 */
+export async function submitPersistentBotanicAgentReadingAnchor(
+  projectIdValue: string,
+  sessionIdValue: string,
+  messageId: string,
+) {
+  const projectId = encodeURIComponent(projectIdValue)
+  const sessionId = encodeURIComponent(sessionIdValue)
+  const response = await productRequest<{ receipt: { sessionId: string; messageId: string; updatedAt: number } }>(
+    `/api/projects/${projectId}/agent-sessions/${sessionId}/reading-anchor`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `agent-reading-anchor-${sessionIdValue}-${messageId}` },
+      body: JSON.stringify({ messageId }),
+    },
+  )
+  return response.receipt
 }
 
 export async function createPersistentBotanicAgentRun(input: {

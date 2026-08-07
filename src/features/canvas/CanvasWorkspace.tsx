@@ -836,8 +836,11 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
     hydrateCanvas,
     refreshAgentCanvasFromRemote,
     retryAgentCanvasPersistence,
+    collaborationAwareness,
+    dismissRemoteChange,
   } = useCanvasWorkspaceSynchronization({
     workspaceActive: workspaceRestored && workspaceView === 'canvas',
+    currentUserId: currentUser?.id,
   })
   const workspaceDocumentMismatch = workspaceView === 'canvas'
     && Boolean(workspaceLocation.projectId)
@@ -2170,6 +2173,7 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
             ...(assetToDelete ? ['confirmation' as const] : []),
           ]) === 'agent'}
           persistenceStatus={persistenceStatus}
+          collaborationAwareness={collaborationAwareness}
           target={agentBridge.target}
           groups={document.assetGroups}
           sessions={document.agentSessions}
@@ -2185,7 +2189,6 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
           generationModels={availableModels}
           onConfirm={agentBridge.confirmPlan}
           onConfirmAction={agentBridge.confirmAction}
-          onCreateDraft={agentBridge.createWorkflowDraft}
           onUploadImages={agentBridge.addUploadedImages}
           onAppendMessage={appendAgentMessage}
           onUpdateMessage={updateAgentMessage}
@@ -2196,6 +2199,7 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
           onRemoveMemory={removeAgentMemory}
           onNewSession={agentBridge.newSession}
           onSelectSession={agentBridge.selectSession}
+          onUpdateReadingAnchor={agentBridge.updateSessionReadingAnchor}
           onRetryBranch={(runId, branchId) => retryAgentBranch(runId, branchId)}
           onCancelRun={(runId) => cancelAgentRun(runId)}
           onLocateNode={selectNode}
@@ -2206,6 +2210,7 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
           onUseResultContext={agentBridge.useResultContext}
           onRetryPersistence={retryAgentCanvasPersistence}
           onRefreshRemote={refreshAgentCanvasFromRemote}
+          onDismissRemoteChange={dismissRemoteChange}
           onClose={() => {
             setAgentOpen(false)
             requestAnimationFrame(() => agentLauncherRef.current?.focus())

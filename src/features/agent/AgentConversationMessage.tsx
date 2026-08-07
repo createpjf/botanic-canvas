@@ -20,12 +20,14 @@ type AgentConversationMessageProps = {
   contextOptionIds: string[]
   generationModels: GenerationModelOption[]
   planning: boolean
+  promptUsePending: boolean
   plannerModel: string
   executingActionId: string
   submittingMessageId: string
   promptDraft?: string
   onContinueResultContext: (nodeIds: string[], outputCount: number) => void
   onShowResults: () => void
+  onShowTask: (runId: string) => void
   onFocusNodes: (nodeIds: string[]) => void
   onAnswerClarification: (message: BotanicAgentMessage, answers: Record<string, string>) => void
   onLocateNode: (nodeId: string) => void
@@ -34,7 +36,9 @@ type AgentConversationMessageProps = {
   onPromptDraftChange: (messageId: string, prompt: string) => void
   onCommitPlanPrompt: (message: BotanicAgentMessage, prompt: string) => void
   onConfirmPlan: (message: BotanicAgentMessage) => void
+  onUsePrompt: (message: BotanicAgentMessage) => void
   onEdit: (content: string) => void
+  onRetryDelivery: (messageId: string) => void
   onFeedback: (message: BotanicAgentMessage, feedback: BotanicAgentMessage['feedback']) => void
 }
 
@@ -46,12 +50,14 @@ export function AgentConversationMessage({
   contextOptionIds,
   generationModels,
   planning,
+  promptUsePending,
   plannerModel,
   executingActionId,
   submittingMessageId,
   promptDraft,
   onContinueResultContext,
   onShowResults,
+  onShowTask,
   onFocusNodes,
   onAnswerClarification,
   onLocateNode,
@@ -60,7 +66,9 @@ export function AgentConversationMessage({
   onPromptDraftChange,
   onCommitPlanPrompt,
   onConfirmPlan,
+  onUsePrompt,
   onEdit,
+  onRetryDelivery,
   onFeedback,
 }: AgentConversationMessageProps) {
   const linkedRun = message.runId ? runs.find((run) => run.id === message.runId) : undefined
@@ -75,10 +83,17 @@ export function AgentConversationMessage({
     <div className="agent-message__role">{message.role === 'assistant' ? <SparkleIcon /> : <span>你</span>}</div>
     <div className="agent-message__body">
       {!message.question ? (message.role === 'assistant' ? <AgentMarkdown content={message.content} /> : <p>{message.content}</p>) : null}
-      {message.role === 'user' && message.deliveryStatus === 'queued' ? <small className="agent-message__delivery-status" role="status">待同步</small> : null}
-      {message.role === 'user' && message.deliveryStatus === 'failed' ? <small className="agent-message__delivery-status is-failed" role="status">同步失败，请检查权限</small> : null}
-      {message.kind === 'run' && message.runId && continueNodeIds.length ? <div className="agent-run-message__actions" aria-label="结果操作">
-        <button type="button" onClick={() => onContinueResultContext(continueNodeIds, outputNodeIds.length)}>继续修改</button>
+      {message.role === 'user' && message.deliveryStatus === 'waiting_network' ? <small className="agent-message__delivery-status" role="status">等待联网</small> : null}
+      {message.role === 'user' && message.deliveryStatus === 'queued' ? <small className="agent-message__delivery-status" role="status">等待同步</small> : null}
+      {message.role === 'user' && message.deliveryStatus === 'syncing' ? <small className="agent-message__delivery-status" role="status">正在同步</small> : null}
+      {message.role === 'user' && message.deliveryStatus === 'synced' ? <small className="agent-message__delivery-status is-synced" role="status">已同步</small> : null}
+      {message.role === 'user' && message.deliveryStatus === 'failed' ? <small className="agent-message__delivery-status is-failed" role="alert">同步失败 <button type="button" onClick={() => onRetryDelivery(message.id)}>重试</button></small> : null}
+      {message.role === 'assistant' && message.prompt && !message.plan && !message.question ? <div className="agent-run-message__actions" aria-label="Prompt 操作">
+        <button type="button" disabled={planning || promptUsePending} onClick={() => onUsePrompt(message)}>{promptUsePending ? '等待确认' : '用这段 Prompt 生成'}</button>
+      </div> : null}
+      {message.runId ? <div className="agent-run-message__actions" aria-label="任务与结果操作">
+        <button type="button" onClick={() => onShowTask(message.runId!)}>查看任务</button>
+        {message.kind === 'run' && continueNodeIds.length ? <button type="button" onClick={() => onContinueResultContext(continueNodeIds, outputNodeIds.length)}>继续修改</button> : null}
         {outputNodeIds.length ? <button type="button" onClick={onShowResults}>查看结果</button> : null}
         {outputNodeIds.length ? <button type="button" onClick={() => onFocusNodes(outputNodeIds)}>定位画布</button> : null}
       </div> : null}

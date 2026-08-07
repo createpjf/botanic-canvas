@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { appendBotanicAgentMessage, type BotanicAgentMessage, type BotanicAgentSession } from '../../domain/agent'
 import { submitPersistentBotanicAgentMessage } from '../../lib/agentApi'
 import { createAgentMessageQueue, createLocalStorageAgentMessageQueueStorage } from '../../lib/agentMessageQueue'
@@ -23,6 +23,7 @@ export function useAgentMessageDelivery({
   onAppendMessage: (sessionId: string, message: BotanicAgentMessage) => void
   onUpdateMessage: (sessionId: string, messageId: string, patch: AgentMessagePatch) => void
 }) {
+  const [online, setOnline] = useState(() => typeof navigator === 'undefined' || navigator.onLine)
   const queue = useMemo(() => createAgentMessageQueue({
     storage: createLocalStorageAgentMessageQueueStorage(projectId),
     deliver: async (item) => { await submitPersistentBotanicAgentMessage(item) },
@@ -47,20 +48,34 @@ export function useAgentMessageDelivery({
     return queue.subscribe((items) => {
       for (const item of items) {
         onUpdateMessage(item.session.id, item.message.id, {
-          deliveryStatus: item.status === 'failed' ? 'failed' : 'queued',
+          deliveryStatus: item.status === 'failed'
+            ? 'failed'
+            : item.status === 'sending'
+              ? 'syncing'
+              : online
+                ? 'queued'
+                : 'waiting_network',
         })
       }
     })
-  }, [onUpdateMessage, queue])
+  }, [onUpdateMessage, online, queue])
 
   useEffect(() => {
     if (!serverPersistenceEnabled) return
-    const replay = () => { void flush() }
+    const replay = () => {
+      const isOnline = navigator.onLine
+      setOnline(isOnline)
+      if (isOnline) void flush()
+    }
+    const markOffline = () => setOnline(false)
     if (navigator.onLine) replay()
+    else markOffline()
     window.addEventListener('online', replay)
+    window.addEventListener('offline', markOffline)
     window.addEventListener('focus', replay)
     return () => {
       window.removeEventListener('online', replay)
+      window.removeEventListener('offline', markOffline)
       window.removeEventListener('focus', replay)
     }
   }, [flush])
@@ -72,7 +87,7 @@ export function useAgentMessageDelivery({
       ...message,
       id: messageId,
       createdAt: Date.now(),
-      deliveryStatus: serverPersistenceEnabled ? 'queued' : 'synced',
+      deliveryStatus: serverPersistenceEnabled ? online ? 'queued' : 'waiting_network' : 'synced',
     }
     const queuedSession = appendBotanicAgentMessage(session, queuedMessage)
     onAppendMessage(session.id, queuedMessage)
@@ -85,7 +100,14 @@ export function useAgentMessageDelivery({
     })
     if (navigator.onLine) void flush()
     return messageId
-  }, [flush, isCurrentProject, onAppendMessage, projectId, queue, session])
+  }, [flush, isCurrentProject, onAppendMessage, online, projectId, queue, session])
 
-  return { appendMessage }
+  const retryMessage = useCallback((messageId: string) => {
+    const item = queue.retry(messageId)
+    if (!item || !isCurrentProject()) return
+    onUpdateMessage(item.session.id, messageId, { deliveryStatus: online ? 'queued' : 'waiting_network' })
+    if (online) void flush()
+  }, [flush, isCurrentProject, onUpdateMessage, online, queue])
+
+  return { appendMessage, retryMessage }
 }

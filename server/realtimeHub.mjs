@@ -10,6 +10,24 @@ export function createProjectRealtimeHub({ server, productStore, ticketSecret, r
   const roomIdleTimers = new Map()
   let closing = false
 
+  const broadcastPresence = (projectId) => {
+    const members = new Map()
+    for (const client of clientsByProject.get(projectId) ?? []) {
+      if (!client.presenceSubscribed || client.readyState !== WebSocket.OPEN) continue
+      members.set(client.userId, (members.get(client.userId) ?? 0) + 1)
+    }
+    const payload = JSON.stringify({
+      type: 'collaboration.presence',
+      projectId,
+      members: [...members.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([userId, connectionCount]) => ({ userId, connectionCount })),
+    })
+    for (const client of clientsByProject.get(projectId) ?? []) {
+      if (client.presenceSubscribed && client.readyState === WebSocket.OPEN) client.send(payload)
+    }
+  }
+
   const cancelRoomEviction = (projectId) => {
     const timer = roomIdleTimers.get(projectId)
     if (timer) clearTimeout(timer)
@@ -87,19 +105,28 @@ export function createProjectRealtimeHub({ server, productStore, ticketSecret, r
     cancelRoomEviction(context.projectId)
     clients.add(socket)
     clientsByProject.set(context.projectId, clients)
+    socket.userId = context.userId
+    socket.presenceSubscribed = false
     socket.isAlive = true
     socket.on('pong', () => { socket.isAlive = true })
     socket.on('close', () => {
       clients.delete(socket)
+      if (socket.presenceSubscribed && clients.size) broadcastPresence(context.projectId)
       if (!clients.size) {
         clientsByProject.delete(context.projectId)
         scheduleRoomEviction(context.projectId)
       }
     })
     socket.on('message', async (data, isBinary) => {
-      if (isBinary || !context.canEdit || data.byteLength > 700_000) return
+      if (isBinary || data.byteLength > 700_000) return
       try {
         const event = JSON.parse(data.toString())
+        if (event?.type === 'collaboration.presence.subscribe' && event.projectId === context.projectId) {
+          socket.presenceSubscribed = true
+          broadcastPresence(context.projectId)
+          return
+        }
+        if (!context.canEdit) return
         if (event?.type !== 'canvas.crdt.update'
           || event.projectId !== context.projectId
           || typeof event.update !== 'string'
@@ -112,6 +139,7 @@ export function createProjectRealtimeHub({ server, productStore, ticketSecret, r
           type: 'canvas.crdt.update',
           projectId: context.projectId,
           update: event.update,
+          actorId: context.userId,
         })
         for (const peer of clients) {
           if (peer !== socket && peer.readyState === WebSocket.OPEN) peer.send(payload)
@@ -172,7 +200,10 @@ export function createProjectRealtimeHub({ server, productStore, ticketSecret, r
         await room.replaceBaseGraph(graph, actorId)
         scheduleRoomEviction(projectId)
       }
-      const payload = JSON.stringify({ type: 'project.updated', projectId, revision, graphRevision, updatedAt })
+      const payload = JSON.stringify({
+        type: 'project.updated', projectId, revision, graphRevision, updatedAt,
+        ...(actorId ? { actorId } : {}),
+      })
       for (const socket of clientsByProject.get(projectId) ?? []) {
         if (socket.readyState === WebSocket.OPEN) socket.send(payload)
       }

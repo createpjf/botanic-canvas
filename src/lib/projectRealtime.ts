@@ -66,6 +66,7 @@ export function openProjectRealtimeChannel(
         const connection = projectRealtimeConnectionOpened(openedBefore)
         openedBefore = connection.openedBefore
         onConnectionOpened?.(connection.event)
+        socket?.send(JSON.stringify({ type: 'collaboration.presence.subscribe', projectId }))
       })
       socket.addEventListener('message', (message) => {
         try {

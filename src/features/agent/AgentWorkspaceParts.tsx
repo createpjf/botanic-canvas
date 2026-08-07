@@ -10,7 +10,7 @@ import {
   type BotanicAgentRun,
   type BotanicAgentRuntimeStep,
 } from '../../domain/agent'
-import type { GenerationModelOption } from '../../domain/canvas'
+import type { GenerationModelOption, GenerationSettings } from '../../domain/canvas'
 import { modelDisplayLabel, modelProviderLogo } from '../../components/generationModelPresentation'
 import { RefreshIcon } from '../../components/BotanicIcons'
 
@@ -195,11 +195,17 @@ export function AgentFailureRecoveryActions({
   )
 }
 
-export function createInitialAgentClarification(instruction: string, models: GenerationModelOption[]): BotanicAgentClarification {
+export function createInitialAgentClarification(
+  instruction: string,
+  models: GenerationModelOption[],
+  defaults: Partial<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution'>> = {},
+): BotanicAgentClarification {
   const available = models.length ? models : [{ id: 'gpt-image-2', label: 'GPT Image 2' }]
-  const current = available[0]
+  const current = available.find((model) => model.id === defaults.model) ?? available[0]
   const ratios = current.aspectRatios?.length ? current.aspectRatios : ['1:1', '3:4', '4:3', '16:9', '9:16']
   const resolutions = current.resolutions?.length ? current.resolutions : ['1K', '2K']
+  const defaultRatio = defaults.aspectRatio && ratios.includes(defaults.aspectRatio) ? defaults.aspectRatio : ratios[0]
+  const defaultResolution = defaults.resolution && resolutions.includes(defaults.resolution) ? defaults.resolution : resolutions[0]
   return {
     id: `clarification-local-${crypto.randomUUID()}`,
     question: '为了让第一张图更接近你的目标，先确认一下输出设置。',
@@ -207,8 +213,8 @@ export function createInitialAgentClarification(instruction: string, models: Gen
     originalInstruction: instruction,
     fields: [
       { id: 'model', label: '生成模型', required: true, defaultValue: current.id, options: available.map((model) => ({ value: model.id, label: model.label, description: model.mediaKind === 'video' ? '视频生成' : '图片生成' })) },
-      { id: 'aspect_ratio', label: '画面比例', required: true, defaultValue: ratios[0], options: ratios.map((value) => ({ value, label: value })) },
-      { id: 'resolution', label: '分辨率', required: true, defaultValue: resolutions[0], options: resolutions.map((value) => ({ value, label: value })) },
+      { id: 'aspect_ratio', label: '画面比例', required: true, defaultValue: defaultRatio, options: ratios.map((value) => ({ value, label: value })) },
+      { id: 'resolution', label: '分辨率', required: true, defaultValue: defaultResolution, options: resolutions.map((value) => ({ value, label: value })) },
     ],
   }
 }

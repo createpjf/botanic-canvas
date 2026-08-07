@@ -298,6 +298,56 @@ test('Agent Run 独立于画布文档持久化并由生成 Job 推进', () => {
   assert.equal(reloaded.readAgentRun(owner.id, 'run-agent')?.completedBranchCount, 1)
 })
 
+test('Agent Run 独立实体不被新旧兼容文档回退，首次迁移仍可建立实体', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  assert.ok(owner)
+  const legacyPlan = {
+    intent: 'replace_scene', instruction: '换场景', summary: '换场景', selectedResultNodeId: 'result-1',
+    rootRecipe: { prompt: '保留的完整配方' },
+    output: { mode: 'single', count: 1, candidatesPerItem: 1 },
+  }
+  const legacyRun = {
+    id: 'run-compat-authority', status: 'awaiting_confirmation', plan: legacyPlan,
+    branches: [], createdAt: 10, updatedAt: 10,
+  }
+  store.writeProject(owner.id, {
+    ...document('project-agent-run-authority'), agentSessions: [], agentMemory: [], agentRuns: [legacyRun],
+  }, undefined)
+  assert.equal(store.readAgentRun(owner.id, legacyRun.id)?.status, 'awaiting_confirmation')
+
+  store.putAgentRun(owner.id, {
+    ...legacyRun, ownerId: owner.id, projectId: 'project-agent-run-authority', status: 'running', updatedAt: 100,
+  })
+  const saved = store.readProject(owner.id, 'project-agent-run-authority')
+  store.writeProject(owner.id, {
+    ...saved.document,
+    agentRuns: [{ ...legacyRun, status: 'awaiting_confirmation', updatedAt: 500 }],
+    updatedAt: 500,
+  }, saved.revision, saved.graphRevision)
+
+  assert.equal(store.readAgentRun(owner.id, legacyRun.id)?.status, 'running')
+  const hydratedRun = store.readProject(owner.id, 'project-agent-run-authority').document.agentRuns[0]
+  assert.equal(hydratedRun.status, 'running')
+  assert.equal(hydratedRun.plan.rootRecipe.prompt, '保留的完整配方')
+})
+
+test('putAgentRun 拒绝迟到旧快照和待确认状态回退', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  assert.ok(owner)
+  store.writeProject(owner.id, { ...document('project-agent-run-lww'), agentSessions: [], agentMemory: [], agentRuns: [] }, undefined)
+  const base = {
+    id: 'run-lww', ownerId: owner.id, projectId: 'project-agent-run-lww',
+    plan: { intent: 'replace_scene', instruction: '换场景', summary: '换场景', selectedResultNodeId: 'result-1', output: { mode: 'single', count: 1, candidatesPerItem: 1 } },
+    branches: [], createdAt: 10,
+  }
+  store.putAgentRun(owner.id, { ...base, status: 'running', updatedAt: 200 })
+  assert.equal(store.putAgentRun(owner.id, { ...base, status: 'queued', updatedAt: 100 }).status, 'running')
+  assert.equal(store.putAgentRun(owner.id, { ...base, status: 'awaiting_confirmation', updatedAt: 500 }).status, 'running')
+  assert.equal(store.readAgentRun(owner.id, base.id)?.status, 'running')
+})
+
 test('Agent Session、Message 与 Memory 从旧文档双写到独立实体并跨重启恢复', () => {
   const { path, store } = createStore()
   const owner = store.authenticate('owner-token')
@@ -306,6 +356,7 @@ test('Agent Session、Message 与 Memory 从旧文档双写到独立实体并跨
     agentSessions: [{
       id: 'session-a', title: '首个会话', executionMode: 'manual', contextNodeIds: ['node-a'],
       messages: [{ id: 'message-a', role: 'user', kind: 'text', content: '第一条', createdAt: 10 }],
+      readingAnchorMessageId: 'message-a', readingAnchorUpdatedAt: 10,
       createdAt: 10, updatedAt: 10,
     }],
     agentMemory: [{ id: 'memory-a', kind: 'rule', content: '保持品牌色', sourceNodeIds: ['node-a'], createdAt: 10, updatedAt: 10 }],
@@ -315,9 +366,49 @@ test('Agent Session、Message 与 Memory 从旧文档双写到独立实体并跨
   store.writeProject(owner.id, legacy, undefined)
 
   const reloaded = createProductStore({ dataPath: path, bootstrapAccessToken: 'owner-token' })
-  assert.deepEqual(reloaded.readAgentState(owner.id, legacy.id).sessions[0].messages.map((item) => item.id), ['message-a'])
+  const [reloadedSession] = reloaded.readAgentState(owner.id, legacy.id).sessions
+  assert.deepEqual(reloadedSession.messages.map((item) => item.id), ['message-a'])
+  assert.equal(reloadedSession.readingAnchorMessageId, 'message-a')
+  assert.equal(reloadedSession.readingAnchorUpdatedAt, 10)
   assert.equal(reloaded.readAgentState(owner.id, legacy.id).memory[0].content, '保持品牌色')
   assert.equal(reloaded.readProject(owner.id, legacy.id).document.activeAgentSessionId, 'session-a')
+})
+
+test('Agent 阅读位置按成员隔离，并在跨设备重启后分别恢复', () => {
+  const { path, store } = createStore()
+  const owner = store.authenticate('owner-token')
+  assert.ok(owner)
+  store.writeProject(owner.id, { ...document('project-agent-reading'), agentSessions: [], agentMemory: [], agentRuns: [] }, undefined)
+  store.putAgentSession(owner.id, 'project-agent-reading', {
+    id: 'session-reading', title: '协作会话', executionMode: 'manual', contextNodeIds: [], createdAt: 10, updatedAt: 10,
+  })
+  store.putAgentMessage(owner.id, 'project-agent-reading', 'session-reading', {
+    id: 'message-first', role: 'assistant', kind: 'text', content: '第一条', createdAt: 20,
+  })
+  store.putAgentMessage(owner.id, 'project-agent-reading', 'session-reading', {
+    id: 'message-latest', role: 'assistant', kind: 'text', content: '最新一条', createdAt: 30,
+  })
+  const member = store.createUser(owner.id, {
+    email: 'reader@example.com', name: 'Reader', accessToken: 'reader-token',
+  })
+  store.addProjectMember(owner.id, 'project-agent-reading', member.id, 'viewer')
+
+  store.putAgentSessionReadReceipt(owner.id, 'project-agent-reading', 'session-reading', {
+    messageId: 'message-latest', updatedAt: 40,
+  })
+
+  assert.equal(store.readAgentState(owner.id, 'project-agent-reading').sessions[0].readingAnchorMessageId, 'message-latest')
+  assert.equal(store.readAgentState(member.id, 'project-agent-reading').sessions[0].readingAnchorMessageId, undefined)
+
+  store.putAgentSessionReadReceipt(member.id, 'project-agent-reading', 'session-reading', {
+    messageId: 'message-first', updatedAt: 50,
+  })
+  assert.equal(store.readAgentState(owner.id, 'project-agent-reading').sessions[0].readingAnchorMessageId, 'message-latest')
+  assert.equal(store.readAgentState(member.id, 'project-agent-reading').sessions[0].readingAnchorMessageId, 'message-first')
+
+  const reloaded = createProductStore({ dataPath: path, bootstrapAccessToken: 'owner-token' })
+  assert.equal(reloaded.readProject(owner.id, 'project-agent-reading').document.agentSessions[0].readingAnchorMessageId, 'message-latest')
+  assert.equal(reloaded.readProject(member.id, 'project-agent-reading').document.agentSessions[0].readingAnchorMessageId, 'message-first')
 })
 
 test('Agent 消息按 ID 增量追加，旧文档快照不会覆盖另一设备的新消息', () => {

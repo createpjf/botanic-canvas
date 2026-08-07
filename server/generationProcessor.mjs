@@ -4,7 +4,19 @@ import { generateMedia } from './generationService.mjs'
 import { publicAgentRun } from './botanicAgentRun.mjs'
 import { reconcileAgentGenerationJobToProject } from './botanicAgentExecution.mjs'
 
-export function createGenerationProcessor({ productStore, mediaService, config, publishAgentRunUpdated, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }) {
+export function createGenerationProcessor({ productStore, mediaService, config, publishAgentRunUpdated, observeAgentRun = () => {}, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }) {
+  const observeRun = (job, event) => {
+    if (!job.agentRun) return
+    try {
+      observeAgentRun({
+        ...event,
+        projectId: job.projectId,
+        runId: job.agentRun.runId,
+        branchId: job.agentRun.branchId,
+        jobId: job.id,
+      })
+    } catch { /* 可观测性不得改变任务状态。 */ }
+  }
   async function writeJobToProject(job) {
     const maxAttempts = 5
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
@@ -73,13 +85,26 @@ export function createGenerationProcessor({ productStore, mediaService, config, 
     }
   }
 
+  async function refreshGenerationArtifacts(job) {
+    try {
+      await productStore.refreshGenerationArtifacts(job.ownerId, job.id)
+    } catch (caught) {
+      // Artifact Index 是可重建的历史目录；索引补偿失败不能把已经成功的
+      // Provider 任务和画布回填伪装成失败，后续恢复流程仍可再次补齐。
+      console.error(`[artifact-index] generation refresh deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
+    }
+  }
+
   return async function processGenerationJob(jobId) {
     const stored = await productStore.readGenerationJobForWorker(jobId)
     if (!stored) return
     // 终态任务只在画布回写待处理时重新入队；不会再次调用真实 Provider。
     if (stored.projectWritebackPending) {
       const recovered = await writeJobToProjectSafely(stored)
-      if (recovered) await clearProjectWriteback(stored)
+      if (recovered) {
+        await clearProjectWriteback(stored)
+        if (stored.status === 'succeeded') await refreshGenerationArtifacts(stored)
+      }
       await publishRun(recovered ? { ...stored, projectWritebackPending: undefined } : stored)
       return
     }
@@ -93,6 +118,7 @@ export function createGenerationProcessor({ productStore, mediaService, config, 
     await productStore.putGenerationJob(running.ownerId, persistedGenerationJob(running))
     await writeJobToProjectSafely(running)
     await publishRun(running)
+    observeRun(running, { type: 'worker_started', status: 'running', queueDurationMs: Math.max(0, running.updatedAt - running.createdAt) })
     let variantWrite = Promise.resolve()
     try {
       const maximumTaskDurationMs = generationTimeoutForModel(config.modelOptions ?? [], running.settings?.model, {
@@ -187,7 +213,12 @@ export function createGenerationProcessor({ productStore, mediaService, config, 
       }
       await productStore.putGenerationJob(completed.ownerId, persistedGenerationJob(completed))
       const writebackSucceeded = await writeJobToProjectSafely(completed, { markPending: true })
+      if (writebackSucceeded) await refreshGenerationArtifacts(completed)
       await publishRun(writebackSucceeded ? completed : { ...completed, projectWritebackPending: true })
+      observeRun(completed, {
+        type: 'worker_completed', status: 'succeeded', outputCount: completed.outputs.length,
+        durationMs: Math.max(0, completed.updatedAt - completed.createdAt), projectWritebackPending: !writebackSucceeded,
+      })
     } catch (caught) {
       const latest = await productStore.readGenerationJobForWorker(jobId)
       if (!latest || latest.status === 'cancelled') return
@@ -201,6 +232,10 @@ export function createGenerationProcessor({ productStore, mediaService, config, 
       await productStore.putGenerationJob(failed.ownerId, persistedGenerationJob(failed))
       const writebackSucceeded = await writeJobToProjectSafely(failed, { markPending: true })
       await publishRun(writebackSucceeded ? failed : { ...failed, projectWritebackPending: true })
+      observeRun(failed, {
+        type: 'worker_failed', status: 'failed', code: failure.code,
+        durationMs: Math.max(0, failed.updatedAt - failed.createdAt), projectWritebackPending: !writebackSucceeded,
+      })
     }
   }
 }
