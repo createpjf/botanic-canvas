@@ -411,6 +411,38 @@ test('Agent 阅读位置按成员隔离，并在跨设备重启后分别恢复',
   assert.equal(reloaded.readProject(member.id, 'project-agent-reading').document.agentSessions[0].readingAnchorMessageId, 'message-first')
 })
 
+test('协作历史跨重启保留，已读与清空状态按成员隔离', () => {
+  const { path, store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, document('project-collaboration-history'), undefined)
+  const member = store.createUser(owner.id, {
+    email: 'collaborator@example.com', name: 'Mia', accessToken: 'collaborator-token',
+  })
+  store.addProjectMember(owner.id, 'project-collaboration-history', member.id, 'editor')
+
+  const activity = store.putCollaborationActivity(member.id, 'project-collaboration-history', {
+    id: 'activity-node-added',
+    kind: 'canvas',
+    summary: '新增了「海边版本」',
+    target: { kind: 'node', nodeId: 'node-seaside' },
+  })
+  assert.equal(activity.actorName, 'Mia')
+  assert.equal(store.listCollaborationActivities(owner.id, 'project-collaboration-history')[0].unread, true)
+  assert.equal(store.listCollaborationActivities(member.id, 'project-collaboration-history')[0].unread, false)
+
+  store.putCollaborationActivityReceipt(owner.id, 'project-collaboration-history', { action: 'read' })
+  assert.equal(store.listCollaborationActivities(owner.id, 'project-collaboration-history')[0].unread, false)
+  assert.equal(store.listCollaborationActivities(member.id, 'project-collaboration-history').length, 1)
+
+  store.putCollaborationActivityReceipt(member.id, 'project-collaboration-history', { action: 'clear' })
+  assert.equal(store.listCollaborationActivities(member.id, 'project-collaboration-history').length, 0)
+  assert.equal(store.listCollaborationActivities(owner.id, 'project-collaboration-history').length, 1)
+
+  const reloaded = createProductStore({ dataPath: path, bootstrapAccessToken: 'owner-token' })
+  assert.equal(reloaded.listCollaborationActivities(owner.id, 'project-collaboration-history')[0].id, 'activity-node-added')
+  assert.equal(reloaded.listCollaborationActivities(member.id, 'project-collaboration-history').length, 0)
+})
+
 test('Agent 消息按 ID 增量追加，旧文档快照不会覆盖另一设备的新消息', () => {
   const { store } = createStore()
   const owner = store.authenticate('owner-token')

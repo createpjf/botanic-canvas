@@ -4,6 +4,7 @@ import { assertProjectPermission, assertWorkspacePermission, projectPermissionDe
 import { artifactIndexLimits, artifactsFromActionReceipt, artifactsFromAgentMessage, artifactsFromDocument, artifactsFromGenerationJob } from './botanicArtifactIndex.mjs'
 import { applyGenerationJobToAgentRun } from './botanicAgentRun.mjs'
 import { agentStateFromDocument, applyAgentSessionReadReceipts, mergeAgentStateIntoDocument, shouldApplyAgentEntityWrite, shouldApplyAgentRunWrite, validateAgentEntityWriteTimestamp, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity, validateAgentSessionReadReceipt } from './botanicAgentPersistence.mjs'
+import { collaborationActivitiesForMember, nextCollaborationReceipt, validateCollaborationActivity } from './collaborationActivityPersistence.mjs'
 
 const now = () => Date.now()
 const hashAccessToken = (token) => createHash('sha256').update(token).digest('hex')
@@ -189,6 +190,24 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     );
     create index if not exists agent_session_read_receipts_project_user_updated_idx
       on agent_session_read_receipts (project_id, user_id, updated_at desc);
+    create table if not exists collaboration_activities (
+      project_id text not null references projects(id) on delete cascade,
+      id text not null,
+      actor_id text not null references app_users(id) on delete cascade,
+      occurred_at bigint not null,
+      payload jsonb not null,
+      primary key (project_id, id)
+    );
+    create index if not exists collaboration_activities_project_occurred_idx
+      on collaboration_activities (project_id, occurred_at desc, id desc);
+    create table if not exists collaboration_activity_receipts (
+      user_id text not null references app_users(id) on delete cascade,
+      project_id text not null references projects(id) on delete cascade,
+      read_at bigint not null default 0,
+      cleared_at bigint not null default 0,
+      updated_at bigint not null,
+      primary key (user_id, project_id)
+    );
     insert into agent_session_read_receipts (user_id, project_id, session_id, message_id, updated_at)
     select owner_id, project_id, id, payload->>'readingAnchorMessageId',
       case when payload->>'readingAnchorUpdatedAt' ~ '^[0-9]+$'
@@ -1102,6 +1121,49 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       const state = await readAgentStateRows(sql, projectId, userId)
       const hydrated = mergeAgentStateIntoDocument({ agentSessions: [], agentMemory: [], agentRuns: [] }, state)
       return { sessions: hydrated.agentSessions, memory: hydrated.agentMemory, runs: hydrated.agentRuns }
+    },
+
+    async listCollaborationActivities(userId, projectId, limit = 100) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const [activities, receipts] = await Promise.all([
+        sql`select payload from collaboration_activities where project_id = ${projectId} order by occurred_at desc, id desc limit 500`,
+        sql`select read_at as "readAt", cleared_at as "clearedAt", updated_at as "updatedAt" from collaboration_activity_receipts where user_id = ${userId} and project_id = ${projectId}`,
+      ])
+      return collaborationActivitiesForMember(activities.map((row) => asJson(row.payload)), receipts[0], userId, limit)
+    },
+
+    async putCollaborationActivity(userId, projectId, input) {
+      assertProjectPermission(await memberRole(projectId, userId), 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      return sql.begin(async (tx) => {
+        const [existing] = await tx`select payload from collaboration_activities where project_id = ${projectId} and id = ${input?.id ?? ''}`
+        if (existing) return asJson(existing.payload)
+        const [actor] = await tx`select name from app_users where id = ${userId}`
+        const activity = validateCollaborationActivity(input, { actorId: userId, actorName: actor?.name })
+        await tx`
+          insert into collaboration_activities (project_id, id, actor_id, occurred_at, payload)
+          values (${projectId}, ${activity.id}, ${userId}, ${activity.occurredAt}, ${tx.json(activity)}::jsonb)
+          on conflict (project_id, id) do nothing
+        `
+        const [stored] = await tx`select payload from collaboration_activities where project_id = ${projectId} and id = ${activity.id}`
+        return asJson(stored.payload)
+      })
+    },
+
+    async putCollaborationActivityReceipt(userId, projectId, input) {
+      assertProjectPermission(await memberRole(projectId, userId), 'read', 'PROJECT_READ_FORBIDDEN')
+      return sql.begin(async (tx) => {
+        const [current] = await tx`select read_at as "readAt", cleared_at as "clearedAt" from collaboration_activity_receipts where user_id = ${userId} and project_id = ${projectId} for update`
+        const receipt = nextCollaborationReceipt(current, input?.action)
+        await tx`
+          insert into collaboration_activity_receipts (user_id, project_id, read_at, cleared_at, updated_at)
+          values (${userId}, ${projectId}, ${receipt.readAt}, ${receipt.clearedAt}, ${receipt.updatedAt})
+          on conflict (user_id, project_id) do update set
+            read_at = greatest(collaboration_activity_receipts.read_at, excluded.read_at),
+            cleared_at = greatest(collaboration_activity_receipts.cleared_at, excluded.cleared_at),
+            updated_at = greatest(collaboration_activity_receipts.updated_at, excluded.updated_at)
+        `
+        return receipt
+      })
     },
 
     async putAgentSessionReadReceipt(userId, projectId, sessionId, input) {

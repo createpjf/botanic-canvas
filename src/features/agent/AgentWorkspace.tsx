@@ -37,6 +37,7 @@ import {
   resolveBotanicAgentGenerationPromptDecision,
 } from '../../domain/agentChatContract'
 import { nextExclusiveSurface, type ExclusiveSurfaceAction } from '../../domain/exclusiveSurface'
+import type { CollaborationActivity, CollaborationDocumentChange } from '../../domain/collaborationActivity'
 import type {
   AssetGroup,
   GenerationModelOption,
@@ -70,7 +71,7 @@ import {
 import { useAgentMessageDelivery } from './useAgentMessageDelivery'
 import { useAgentRuntimeTrace } from './useAgentRuntimeTrace'
 import type { AgentArtifactIndexState, AgentContextItem, AgentDockTarget } from './agentWorkspace.types'
-import { AgentMemoryPanel, AgentResultPanel } from './AgentUtilityPanels'
+import { AgentCollaborationPanel, AgentMemoryPanel, AgentResultPanel } from './AgentUtilityPanels'
 import { AgentConversationMessage } from './AgentConversationMessage'
 import { AgentComposer } from './AgentComposer'
 import {
@@ -86,7 +87,7 @@ import {
 import historyIcon from '../../assets/figma/icon-history.svg'
 
 type AgentTransientSurface = 'context' | 'history' | 'utility' | 'mode'
-type AgentUtilityPanel = 'result' | 'task' | 'memory' | 'skill'
+type AgentUtilityPanel = 'result' | 'task' | 'memory' | 'skill' | 'collaboration'
 type AgentRunInstructionOptions = AgentInstructionRetryOptions & { appendUser?: string }
 
 function agentTargetDisplayLabel(target?: AgentDockTarget) {
@@ -163,13 +164,14 @@ export default function AgentWorkspace({
   onRefreshRemote,
   collaborationAwareness,
   onDismissRemoteChange,
+  onClearCollaborationActivities,
   persistenceStatus,
   onClose,
 }: {
   projectId: string
   escapeEnabled: boolean
   persistenceStatus: 'saved' | 'saving' | 'offline' | 'conflict' | 'error'
-  collaborationAwareness: { onlineCollaboratorCount: number; lastRemoteChangeAt?: number }
+  collaborationAwareness: { onlineCollaboratorCount: number; activities: CollaborationActivity[]; unreadActivityCount: number; conflictChanges: CollaborationDocumentChange[] }
   target?: AgentDockTarget
   groups: AssetGroup[]
   sessions: BotanicAgentSession[]
@@ -207,6 +209,7 @@ export default function AgentWorkspace({
   onRetryPersistence: () => Promise<boolean>
   onRefreshRemote: () => Promise<boolean>
   onDismissRemoteChange: () => void
+  onClearCollaborationActivities: () => void
   onClose: () => void
 }) {
   const [intent, setIntent] = useState<BotanicAgentIntent>('replace_scene')
@@ -258,6 +261,7 @@ export default function AgentWorkspace({
   const taskPanelOpen = activeUtilityPanel === 'task'
   const resultPanelOpen = activeUtilityPanel === 'result'
   const memoryPanelOpen = activeUtilityPanel === 'memory'
+  const collaborationPanelOpen = activeUtilityPanel === 'collaboration'
   const [skills, setSkills] = useState<BotanicAgentSkill[]>([])
   const [skillName, setSkillName] = useState('')
   const [skillInstructions, setSkillInstructions] = useState('')
@@ -328,7 +332,7 @@ export default function AgentWorkspace({
       .filter((item) => !query || item.label.toLocaleLowerCase().includes(query))
       .slice(0, 6)
   }, [contextOptions, mentionQuery])
-  const utilityPanelOpen = taskPanelOpen || skillPanelOpen || resultPanelOpen || memoryPanelOpen
+  const utilityPanelOpen = taskPanelOpen || skillPanelOpen || resultPanelOpen || memoryPanelOpen || collaborationPanelOpen
   const {
     runtimeSteps,
     runtimePhase,
@@ -427,6 +431,22 @@ export default function AgentWorkspace({
     setActiveTransientSurface(null)
     setMentionQuery(undefined)
   }, [])
+
+  const locateCollaborationActivity = useCallback((activity: CollaborationActivity) => {
+    const target = activity.target
+    if (!target || target.kind === 'project') {
+      setActiveUtilityPanel('collaboration')
+      setActiveTransientSurface(null)
+    } else if (target.kind === 'node') {
+      onFocusNodes([target.nodeId])
+      setActiveUtilityPanel(null)
+    } else if (target.kind === 'message') {
+      locateTaskSourceMessage({ sessionId: target.sessionId, messageId: target.messageId })
+    } else {
+      showTaskForRun(target.runId)
+    }
+    onDismissRemoteChange()
+  }, [locateTaskSourceMessage, onDismissRemoteChange, onFocusNodes, showTaskForRun])
 
   const jumpToLatestConversation = useCallback(() => {
     const latestMessageId = session?.messages.at(-1)?.id
@@ -1236,8 +1256,9 @@ export default function AgentWorkspace({
   }
 
   const persistenceIssue = persistenceStatus === 'offline' || persistenceStatus === 'conflict' || persistenceStatus === 'error'
+  const latestCollaborationActivity = collaborationAwareness.activities[0]
   const persistenceCopy = persistenceStatus === 'conflict'
-    ? { title: '画布有新的云端版本', detail: '本地草稿仍保留，生成任务与结果不会丢失。', action: 'refresh' as const, actionLabel: '使用云端版本' }
+    ? { title: '画布有新的云端版本', detail: '本地草稿仍保留，生成任务与结果不会丢失。', action: 'refresh' as const, actionLabel: '查看变更' }
     : persistenceStatus === 'offline'
       ? { title: '正在使用离线草稿', detail: '恢复网络后会继续同步当前编辑。', action: 'retry' as const, actionLabel: '重试同步' }
       : { title: '画布同步暂时失败', detail: '当前编辑仍在本地，稍后可以继续同步。', action: 'retry' as const, actionLabel: '重试同步' }
@@ -1245,6 +1266,13 @@ export default function AgentWorkspace({
     setPersistenceAction(persistenceCopy.action)
     const task = persistenceCopy.action === 'refresh' ? onRefreshRemote() : onRetryPersistence()
     void task.catch(() => undefined).finally(() => setPersistenceAction(''))
+  }
+  const inspectPersistenceIssue = () => {
+    if (persistenceStatus === 'conflict') {
+      openUtilityPanel('collaboration')
+      return
+    }
+    resolvePersistenceIssue()
   }
 
   return (
@@ -1273,7 +1301,7 @@ export default function AgentWorkspace({
             aria-label={`${persistenceCopy.title}。${persistenceAction ? '处理中' : persistenceCopy.actionLabel}`}
             title={`${persistenceCopy.title} · ${persistenceCopy.actionLabel}`}
             disabled={Boolean(persistenceAction)}
-            onClick={resolvePersistenceIssue}
+            onClick={inspectPersistenceIssue}
           ><span aria-hidden="true">{persistenceStatus === 'conflict' ? '!' : '·'}</span></button> : null}
           <div ref={utilityMenuRef} className="agent-workspace__utility-menu-wrap">
             <button ref={utilityMenuButtonRef} type="button" className={`agent-workspace__utility-menu-button${utilityPanelOpen ? ' is-active' : ''}`} aria-haspopup="menu" aria-expanded={utilityMenuOpen} aria-controls={utilityMenuId} aria-label="Agent 工具" title="Agent 工具" onClick={() => { setUtilityMenuOpen((open) => !open); setHistoryOpen(false) }}><ChecklistIcon /></button>
@@ -1282,6 +1310,7 @@ export default function AgentWorkspace({
               <button type="button" role="menuitem" className={taskPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('task')}><ChecklistIcon /><span>Agent 任务</span></button>
               <button type="button" role="menuitem" className={memoryPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('memory')}><BookmarkIcon /><span>项目记忆</span></button>
               <button type="button" role="menuitem" className={skillPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('skill')}><SparkleIcon /><span>创作技能</span></button>
+              <button type="button" role="menuitem" className={collaborationPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('collaboration')}><ChecklistIcon /><span>协作动态</span>{collaborationAwareness.unreadActivityCount ? <b>{Math.min(collaborationAwareness.unreadActivityCount, 99)}</b> : null}</button>
               <button type="button" role="menuitem" className="is-danger" onClick={() => { setUtilityMenuOpen(false); onClose() }}><CloseIcon /><span>关闭 Agent</span></button>
             </div> : null}
           </div>
@@ -1310,8 +1339,10 @@ export default function AgentWorkspace({
           {!filteredSessionTimeline.length ? <p className="agent-workspace__history-empty">当前筛选下没有对话。</p> : null}
         </div> : null}
       </header>
-      {collaborationAwareness.lastRemoteChangeAt ? <div className="agent-workspace__collaboration-notice" role="status">
-        <span><i aria-hidden="true" /><strong>协作者刚刚更新了画布</strong><small>{persistenceStatus === 'conflict' ? '本地改动仍保留，请处理版本选择。' : '最新内容已同步，可继续创作。'}</small></span>
+      {latestCollaborationActivity?.unread ? <div className="agent-workspace__collaboration-notice" role="status">
+        <button type="button" className="agent-workspace__collaboration-summary" onClick={() => locateCollaborationActivity(latestCollaborationActivity)}>
+          <i aria-hidden="true" /><span><strong>{latestCollaborationActivity.actorName} · {latestCollaborationActivity.summary}</strong><small>{persistenceStatus === 'conflict' ? '本地改动仍保留，点击查看变更。' : latestCollaborationActivity.target && latestCollaborationActivity.target.kind !== 'project' ? '点击定位变更。' : '最新内容已同步。'}</small></span>
+        </button>
         <button type="button" aria-label="关闭协作更新提示" title="知道了" onClick={onDismissRemoteChange}><CloseIcon /></button>
       </div> : null}
       <div
@@ -1336,6 +1367,16 @@ export default function AgentWorkspace({
           onStartNextRound={createNextRoundFromResults}
           onLoadMoreArtifacts={onLoadMoreArtifacts}
           onLocateConversation={locateRunSourceMessage}
+        /> : null}
+        {collaborationPanelOpen ? <AgentCollaborationPanel
+          activities={collaborationAwareness.activities}
+          conflictChanges={collaborationAwareness.conflictChanges}
+          persistenceStatus={persistenceStatus}
+          onLocate={locateCollaborationActivity}
+          onMarkRead={onDismissRemoteChange}
+          onClear={onClearCollaborationActivities}
+          onKeepLocal={onDismissRemoteChange}
+          onUseRemote={resolvePersistenceIssue}
         /> : null}
         {memoryPanelOpen ? <AgentMemoryPanel
           memory={memory}

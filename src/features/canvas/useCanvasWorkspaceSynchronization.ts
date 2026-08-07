@@ -1,8 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { shouldRecoverAgentRunResults, shouldResumeQueuedAgentRunExecution } from '../../domain/agent'
+import {
+  appendCollaborationActivity,
+  collaborationDocumentChange,
+  collaborationDocumentChanges,
+  markCollaborationActivitiesRead,
+  type CollaborationActivity,
+  type CollaborationDocumentChange,
+} from '../../domain/collaborationActivity'
 import { shouldRefreshFromRealtimeEvent } from '../../domain/realtimeSync'
 import { executePersistentBotanicAgentRun, listPersistentBotanicAgentRuns } from '../../lib/agentApi'
-import { flushPendingCanvasDocumentWrites, refreshCanvasDocumentFromRemote, syncPendingCanvasDrafts } from '../../lib/db'
+import { listProjectCollaborationActivities, updateProjectCollaborationActivityReceipt } from '../../lib/collaborationApi'
+import { flushPendingCanvasDocumentWrites, previewRemoteCanvasDocument, refreshCanvasDocumentFromRemote, syncPendingCanvasDrafts } from '../../lib/db'
 import { connectCanvasCollaboration, type CanvasCollaboration } from '../../lib/projectCollaboration'
 import { serverPersistenceEnabled } from '../../lib/productSession'
 import { useCanvasStore } from '../../store/canvasStore'
@@ -14,7 +23,9 @@ type CanvasWorkspaceSynchronizationOptions = {
 
 export type CollaborationAwareness = {
   onlineCollaboratorCount: number
-  lastRemoteChangeAt?: number
+  activities: CollaborationActivity[]
+  unreadActivityCount: number
+  conflictChanges: CollaborationDocumentChange[]
 }
 
 /**
@@ -26,6 +37,7 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
   const nodes = useCanvasStore((state) => state.document.nodes)
   const edges = useCanvasStore((state) => state.document.edges)
   const agentRuns = useCanvasStore((state) => state.document.agentRuns)
+  const persistenceStatus = useCanvasStore((state) => state.persistenceStatus)
   const hydrated = useCanvasStore((state) => state.hydrated)
   const hydrate = useCanvasStore((state) => state.hydrate)
   const openDocument = useCanvasStore((state) => state.openDocument)
@@ -35,16 +47,61 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
   const applyCollaborativeGraph = useCanvasStore((state) => state.applyCollaborativeGraph)
   const applyAgentRunSnapshot = useCanvasStore((state) => state.applyAgentRunSnapshot)
   const [canvasHydrationFailed, setCanvasHydrationFailed] = useState(false)
-  const [collaborationAwareness, setCollaborationAwareness] = useState<CollaborationAwareness>({ onlineCollaboratorCount: 0 })
+  const [collaborationAwareness, setCollaborationAwareness] = useState<CollaborationAwareness>({ onlineCollaboratorCount: 0, activities: [], unreadActivityCount: 0, conflictChanges: [] })
   const collaborationRef = useRef<CanvasCollaboration | null>(null)
+  const pendingRemoteGraphChangeRef = useRef<CollaborationDocumentChange | undefined>(undefined)
+  const collaboratorNamesRef = useRef(new Map<string, string>())
 
-  const markRemoteChange = useCallback((actorId?: string) => {
+  const recordRemoteChange = useCallback(({
+    actorId,
+    actorName,
+    change,
+    occurredAt = Date.now(),
+  }: {
+    actorId?: string
+    actorName?: string
+    change: CollaborationDocumentChange
+    occurredAt?: number
+  }) => {
     if (!actorId || actorId === currentUserId) return
-    setCollaborationAwareness((current) => ({ ...current, lastRemoteChangeAt: Date.now() }))
+    setCollaborationAwareness((current) => {
+      const activities = appendCollaborationActivity(current.activities, {
+        id: `collaboration-${actorId}-${occurredAt}`,
+        actorId,
+        actorName: actorName || collaboratorNamesRef.current.get(actorId) || '协作者',
+        ...change,
+        occurredAt,
+        unread: true,
+        count: 1,
+      })
+      return { ...current, activities, unreadActivityCount: activities.filter((activity) => activity.unread).length }
+    })
   }, [currentUserId])
 
+  const loadCollaborationActivities = useCallback(async () => {
+    const projectId = useCanvasStore.getState().document.id
+    if (!serverPersistenceEnabled || projectId === 'workspace-placeholder') return
+    const { activities } = await listProjectCollaborationActivities(projectId)
+    if (useCanvasStore.getState().document.id !== projectId) return
+    setCollaborationAwareness((current) => ({
+      ...current,
+      activities,
+      unreadActivityCount: activities.filter((activity) => activity.unread).length,
+    }))
+  }, [])
+
   const dismissRemoteChange = useCallback(() => {
-    setCollaborationAwareness((current) => ({ ...current, lastRemoteChangeAt: undefined }))
+    setCollaborationAwareness((current) => ({
+      ...current,
+      activities: markCollaborationActivitiesRead(current.activities),
+      unreadActivityCount: 0,
+    }))
+    if (serverPersistenceEnabled) void updateProjectCollaborationActivityReceipt(useCanvasStore.getState().document.id, 'read').catch(() => undefined)
+  }, [])
+
+  const clearCollaborationActivities = useCallback(() => {
+    setCollaborationAwareness((current) => ({ ...current, activities: [], unreadActivityCount: 0 }))
+    if (serverPersistenceEnabled) void updateProjectCollaborationActivityReceipt(useCanvasStore.getState().document.id, 'clear').catch(() => undefined)
   }, [])
 
   const hydrateCanvas = useCallback(() => {
@@ -135,12 +192,13 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
         .then(() => refreshDocumentFromRemote())
         .then(() => recoverUnknownGenerationSubmission())
         .then(() => recoverPersistentAgentRuns())
+        .then(() => loadCollaborationActivities())
         .catch(() => undefined)
     }
     syncDrafts()
     window.addEventListener('online', syncDrafts)
     return () => window.removeEventListener('online', syncDrafts)
-  }, [hydrated, recoverPersistentAgentRuns, recoverUnknownGenerationSubmission, refreshDocumentFromRemote, synchronizeLocalDrafts])
+  }, [hydrated, loadCollaborationActivities, recoverPersistentAgentRuns, recoverUnknownGenerationSubmission, refreshDocumentFromRemote, synchronizeLocalDrafts])
 
   useEffect(() => {
     if (!hydrated || !workspaceActive || !serverPersistenceEnabled) return
@@ -148,6 +206,7 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
       void refreshDocumentFromRemote()
         .then(() => recoverUnknownGenerationSubmission())
         .then(() => recoverPersistentAgentRuns())
+        .then(() => loadCollaborationActivities())
         .catch(() => undefined)
     }
     const refreshWhenVisible = () => {
@@ -159,7 +218,7 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
       window.removeEventListener('focus', refresh)
       window.document.removeEventListener('visibilitychange', refreshWhenVisible)
     }
-  }, [hydrated, recoverPersistentAgentRuns, recoverUnknownGenerationSubmission, refreshDocumentFromRemote, workspaceActive])
+  }, [hydrated, loadCollaborationActivities, recoverPersistentAgentRuns, recoverUnknownGenerationSubmission, refreshDocumentFromRemote, workspaceActive])
 
   useEffect(() => {
     if (!hydrated || !workspaceActive || !serverPersistenceEnabled) return
@@ -167,8 +226,21 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
     const collaboration = connectCanvasCollaboration({
       projectId: current.id,
       initialGraph: { nodes: current.nodes, edges: current.edges },
-      onRemoteGraph: applyCollaborativeGraph,
-      onRemoteCanvasChanged: ({ actorId }) => markRemoteChange(actorId),
+      onRemoteGraph: (graph) => {
+        const before = useCanvasStore.getState().document
+        pendingRemoteGraphChangeRef.current = collaborationDocumentChange(before, { ...before, nodes: graph.nodes, edges: graph.edges })
+        applyCollaborativeGraph(graph)
+      },
+      onRemoteCanvasChanged: ({ actorId, actorName, activity }) => {
+        const change = pendingRemoteGraphChangeRef.current ?? { kind: 'canvas', summary: '更新了画布内容' }
+        pendingRemoteGraphChangeRef.current = undefined
+        if (activity && activity.actorId !== currentUserId) {
+          setCollaborationAwareness((current) => {
+            const activities = appendCollaborationActivity(current.activities, activity)
+            return { ...current, activities, unreadActivityCount: activities.filter((entry) => entry.unread).length }
+          })
+        } else recordRemoteChange({ actorId, actorName, change })
+      },
       onProjectUpdated: (event) => {
         const latest = useCanvasStore.getState().document
         if (!shouldRefreshFromRealtimeEvent({
@@ -176,8 +248,19 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
           currentProjectId: latest.id,
           currentUpdatedAt: latest.updatedAt,
         })) return
-        markRemoteChange(event.actorId)
-        void refreshDocumentFromRemote().catch(() => undefined)
+        const before = latest
+        void refreshDocumentFromRemote()
+          .then(() => {
+            const after = useCanvasStore.getState().document
+            if (after.id !== before.id) return
+            return loadCollaborationActivities().catch(() => recordRemoteChange({
+                actorId: event.actorId,
+                actorName: event.actorName,
+                change: collaborationDocumentChange(before, after),
+                occurredAt: event.updatedAt,
+              }))
+          })
+          .catch(() => undefined)
       },
       onAgentRunUpdated: (event) => {
         applyAgentRunSnapshot(event.run)
@@ -189,6 +272,7 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
         }
       },
       onPresenceChanged: (event) => {
+        collaboratorNamesRef.current = new Map(event.members.flatMap((member) => member.actorName ? [[member.userId, member.actorName] as const] : []))
         setCollaborationAwareness((current) => ({
           ...current,
           onlineCollaboratorCount: event.members.filter((member) => member.userId !== currentUserId).length,
@@ -199,6 +283,7 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
           .then(() => recoverUnknownGenerationSubmission())
           .then(() => recoverPersistentAgentRuns())
           .then(() => refreshDocumentFromRemote())
+          .then(() => loadCollaborationActivities())
           .catch(() => undefined)
       },
     })
@@ -207,11 +292,31 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
       if (collaborationRef.current === collaboration) collaborationRef.current = null
       collaboration.close()
     }
-  }, [applyAgentRunSnapshot, applyCollaborativeGraph, currentUserId, documentId, hydrated, markRemoteChange, recoverGenerationResultsFromRemote, recoverPersistentAgentRuns, recoverUnknownGenerationSubmission, refreshDocumentFromRemote, synchronizeLocalDrafts, workspaceActive])
+  }, [applyAgentRunSnapshot, applyCollaborativeGraph, currentUserId, documentId, hydrated, loadCollaborationActivities, recordRemoteChange, recoverGenerationResultsFromRemote, recoverPersistentAgentRuns, recoverUnknownGenerationSubmission, refreshDocumentFromRemote, synchronizeLocalDrafts, workspaceActive])
 
   useEffect(() => {
-    setCollaborationAwareness({ onlineCollaboratorCount: 0 })
+    collaboratorNamesRef.current.clear()
+    setCollaborationAwareness({ onlineCollaboratorCount: 0, activities: [], unreadActivityCount: 0, conflictChanges: [] })
   }, [documentId])
+
+  useEffect(() => {
+    if (!hydrated || !workspaceActive || !serverPersistenceEnabled) return
+    void loadCollaborationActivities().catch(() => undefined)
+  }, [documentId, hydrated, loadCollaborationActivities, workspaceActive])
+
+  useEffect(() => {
+    if (persistenceStatus !== 'conflict' || !serverPersistenceEnabled) {
+      setCollaborationAwareness((current) => current.conflictChanges.length ? { ...current, conflictChanges: [] } : current)
+      return
+    }
+    const local = useCanvasStore.getState().document
+    void previewRemoteCanvasDocument(local.id)
+      .then((remote) => {
+        if (!remote || useCanvasStore.getState().document.id !== local.id) return
+        setCollaborationAwareness((current) => ({ ...current, conflictChanges: collaborationDocumentChanges(local, remote) }))
+      })
+      .catch(() => undefined)
+  }, [documentId, persistenceStatus])
 
   useEffect(() => {
     if (!hydrated || !workspaceActive || !serverPersistenceEnabled) return
@@ -253,5 +358,6 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
     retryAgentCanvasPersistence,
     collaborationAwareness,
     dismissRemoteChange,
+    clearCollaborationActivities,
   }
 }

@@ -453,6 +453,18 @@ async function readRemoteCanvasDocument(id: string) {
   }
 }
 
+/** 只读预览服务器版本，不修改本地草稿、版本缓存或同步队列。 */
+export async function previewRemoteCanvasDocument(id: string) {
+  if (!serverPersistenceEnabled) return undefined
+  try {
+    const response = await productRequest<{ document: CanvasDocument }>(`/api/projects/${encodeURIComponent(id)}/document`)
+    return response.document
+  } catch (error) {
+    if (error instanceof ProductApiError && error.status === 404) return undefined
+    throw error
+  }
+}
+
 function refreshRemoteCanvasDocumentInBackground(
   id: string,
   cachedDocument: CanvasDocument,

@@ -5,6 +5,7 @@ import { assertProjectPermission, assertWorkspacePermission, projectPermissionDe
 import { artifactIndexLimits, artifactsFromActionReceipt, artifactsFromAgentMessage, artifactsFromDocument, artifactsFromGenerationJob } from './botanicArtifactIndex.mjs'
 import { applyGenerationJobToAgentRun } from './botanicAgentRun.mjs'
 import { agentStateFromDocument, applyAgentSessionReadReceipts, mergeAgentStateIntoDocument, shouldApplyAgentEntityWrite, shouldApplyAgentRunWrite, validateAgentEntityWriteTimestamp, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity, validateAgentSessionReadReceipt } from './botanicAgentPersistence.mjs'
+import { collaborationActivitiesForMember, nextCollaborationReceipt, validateCollaborationActivity } from './collaborationActivityPersistence.mjs'
 
 const schemaVersion = 1
 
@@ -68,6 +69,8 @@ function initialState() {
     agentRuns: [],
     agentSessions: [],
     agentSessionReadReceipts: [],
+    collaborationActivities: [],
+    collaborationActivityReceipts: [],
     agentMessages: [],
     agentMemoryItems: [],
     agentArtifacts: [],
@@ -439,6 +442,8 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       state.agentRuns = state.agentRuns.filter((item) => item.projectId !== projectId)
       state.agentSessions = state.agentSessions.filter((item) => item.projectId !== projectId)
       state.agentSessionReadReceipts = state.agentSessionReadReceipts.filter((item) => item.projectId !== projectId)
+      state.collaborationActivities = state.collaborationActivities.filter((item) => item.projectId !== projectId)
+      state.collaborationActivityReceipts = state.collaborationActivityReceipts.filter((item) => item.projectId !== projectId)
       state.agentMessages = state.agentMessages.filter((item) => item.projectId !== projectId)
       state.agentMemoryItems = state.agentMemoryItems.filter((item) => item.projectId !== projectId)
       state.agentArtifacts = state.agentArtifacts.filter((item) => item.projectId !== projectId)
@@ -556,6 +561,44 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
         memory: hydrated.agentMemory,
         runs: hydrated.agentRuns,
       }
+    },
+
+    listCollaborationActivities(userId, projectId, limit = 100) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project || !canAccess(project, userId)) return undefined
+      const receipt = state.collaborationActivityReceipts.find((item) => item.userId === userId && item.projectId === projectId)
+      return collaborationActivitiesForMember(
+        state.collaborationActivities.filter((item) => item.projectId === projectId).map((item) => item.payload),
+        receipt?.payload,
+        userId,
+        limit,
+      )
+    },
+
+    putCollaborationActivity(userId, projectId, input) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project) throw productError('未找到项目。', 'PROJECT_NOT_FOUND')
+      assertProjectPermission(project.members.find((item) => item.userId === userId)?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      const existing = state.collaborationActivities.find((item) => item.projectId === projectId && item.id === input?.id)
+      if (existing) return clone(existing.payload)
+      const actor = state.users.find((item) => item.id === userId)
+      const activity = validateCollaborationActivity(input, { actorId: userId, actorName: actor?.name })
+      state.collaborationActivities.push({ id: activity.id, projectId, occurredAt: activity.occurredAt, payload: activity })
+      if (state.collaborationActivities.length > 20_000) state.collaborationActivities.splice(0, state.collaborationActivities.length - 20_000)
+      save()
+      return clone(activity)
+    },
+
+    putCollaborationActivityReceipt(userId, projectId, input) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project || !canAccess(project, userId)) throw productError('未找到项目。', 'PROJECT_NOT_FOUND')
+      const existing = state.collaborationActivityReceipts.find((item) => item.userId === userId && item.projectId === projectId)
+      const receipt = nextCollaborationReceipt(existing?.payload, input?.action)
+      const record = { userId, projectId, updatedAt: receipt.updatedAt, payload: receipt }
+      if (existing) Object.assign(existing, record)
+      else state.collaborationActivityReceipts.push(record)
+      save()
+      return clone(receipt)
     },
 
     putAgentSessionReadReceipt(userId, projectId, sessionId, input) {

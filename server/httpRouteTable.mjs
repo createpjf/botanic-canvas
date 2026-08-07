@@ -6,6 +6,8 @@ export const botanicHttpRoutePatterns = Object.freeze({
   project: /^\/api\/projects\/([^/]+)$/,
   projectMembers: /^\/api\/projects\/([^/]+)\/members$/,
   projectAudit: /^\/api\/projects\/([^/]+)\/audit$/,
+  projectCollaborationActivities: /^\/api\/projects\/([^/]+)\/collaboration-activities$/,
+  projectCollaborationReceipt: /^\/api\/projects\/([^/]+)\/collaboration-activity-receipt$/,
   projectGenerationJobs: /^\/api\/projects\/([^/]+)\/generation-jobs$/,
   projectGenerationReconcile: /^\/api\/projects\/([^/]+)\/reconcile-generation-results$/,
   projectAgentRuns: /^\/api\/projects\/([^/]+)\/agent-runs$/,

@@ -21,7 +21,7 @@ export function createRealtimeTicketRouteHandler({ config, productStore, json, r
     const protocol = forwardedProtocol || (request.socket.encrypted ? 'https' : 'http')
     const realtimeOrigin = config.realtimePublicUrl || `${protocol}://${request.headers.host}`
     return json(response, 201, {
-      ticket: issueRealtimeTicket({ userId: user.id, projectId, origin: parsedOrigin.origin, secret: config.realtimeTicketSecret }),
+      ticket: issueRealtimeTicket({ userId: user.id, actorName: user.name, projectId, origin: parsedOrigin.origin, secret: config.realtimeTicketSecret }),
       expiresIn: 30,
       websocketUrl: new URL('/api/realtime', realtimeOrigin).toString(),
     })
