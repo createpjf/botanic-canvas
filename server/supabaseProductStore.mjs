@@ -450,7 +450,7 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
     },
 
     async deleteProject(userId, projectId) {
-      assertProjectPermission(await memberRole(projectId, userId), 'delete', 'PROJECT_DELETE_FORBIDDEN')
+      assertProjectPermission(await memberRole(projectId, userId), 'delete-project', 'PROJECT_DELETE_FORBIDDEN')
       const { data: project, error: projectError } = await supabase.from('projects').select('name').eq('id', projectId).maybeSingle()
       fail(projectError)
       if (!project) return false

@@ -18,6 +18,12 @@ function boundedInteger(value, fallback, minimum, maximum) {
   return Math.min(maximum, Math.max(minimum, parsed))
 }
 
+function optionalBudget(value) {
+  if (value === undefined || value === '') return Number.POSITIVE_INFINITY
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : Number.POSITIVE_INFINITY
+}
+
 export function loadLocalEnv(rootDir = process.cwd()) {
   const envPath = resolve(rootDir, '.env')
   if (!existsSync(envPath)) return
@@ -99,6 +105,15 @@ export function runtimeConfig(rootDir = process.cwd()) {
     // 父任务由 Worker 消费，批量变体/候选作为子任务受控并发执行。
     workerConcurrency: boundedInteger(process.env.GENERATION_WORKER_CONCURRENCY, 3, 1, 8),
     generationVariantConcurrency: boundedInteger(process.env.GENERATION_VARIANT_CONCURRENCY, 3, 1, 8),
+    generationBudgets: {
+      workspace: optionalBudget(process.env.GENERATION_WORKSPACE_BUDGET_UNITS),
+      project: optionalBudget(process.env.GENERATION_PROJECT_BUDGET_UNITS),
+      member: optionalBudget(process.env.GENERATION_MEMBER_BUDGET_UNITS),
+    },
+    providerFailureThreshold: boundedInteger(process.env.GENERATION_PROVIDER_FAILURE_THRESHOLD, 3, 1, 20),
+    providerCircuitCooldownMs: boundedInteger(process.env.GENERATION_PROVIDER_CIRCUIT_COOLDOWN_MS, 30_000, 1_000, 30 * 60_000),
+    providerFallbackModelIds: [...new Set((process.env.GENERATION_PROVIDER_FALLBACK_MODELS ?? '')
+      .split(',').map((model) => model.trim()).filter(Boolean))],
     bootstrapAccessToken: process.env.BOTANIC_BOOTSTRAP_ACCESS_TOKEN ?? (process.env.NODE_ENV === 'production' ? '' : 'botanic-local-dev'),
     bootstrapEmail: process.env.SUPABASE_BOOTSTRAP_OWNER_EMAIL ?? process.env.BOTANIC_BOOTSTRAP_EMAIL,
     realtimeTicketSecret: process.env.REALTIME_TICKET_SECRET,

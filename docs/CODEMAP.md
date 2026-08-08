@@ -13,14 +13,18 @@
 | Agent 面板交互 | `src/features/agent/AgentWorkspace.tsx` | `AgentConversationMessage.tsx`、`AgentComposer.tsx`、`AgentUtilityPanels.tsx`、`useAgentMessageDelivery.ts`、`useAgentRuntimeTrace.ts` | Agent 领域/Lib 测试；工作区只编排，对话卡和 Composer 各自拥有展示交互 |
 | 画布应用状态 | `src/store/canvasStore.types.ts` | `canvasStore.ts`、`canvasDocumentLifecycleActions.ts`、`canvasAssetGraphActions.ts`、`canvasGenerationActions.ts`、`canvasGenerationLifecycle.ts`、`canvasGenerationProjection.ts`、`canvasTemplateHistoryActions.ts`、`canvasAgentActions.ts`、`canvasBatchVariationActions.ts` | 先核对 Store 端口；文档、图谱素材、普通生成、模板/历史、Agent 和批量变体命令分别由深模块拥有；远端新结果不得被旧草稿覆盖 |
 | 普通生成任务 | `src/lib/generationApi.ts` | `server/generationService.mjs`、`generationProcessor.mjs`、`generationProvider.mjs` | `server/generation*.test.mjs`；同一次重试复用幂等键 |
+| 生成成本与 Provider 容灾 | `server/generationGovernance.mjs` | `securityControls.mjs`、`providerHealthMonitor.mjs`、`generationRoutes.mjs`、`generationProcessor.mjs` | 任务级唯一记账；多维预算原子预留；仅语义兼容模型可降级；熔断半开后恢复 |
+| 版本化生产工作流 | `server/productionWorkflow.mjs` | `productionWorkflowRoutes.mjs`、`generationSubmissionService.mjs`、`src/domain/productionWorkflows.ts`、`src/lib/productionWorkflowApi.ts`、模板面板、Artifact Index | 已验证 Agent/画布操作可提升为版本；运行固定快照；批量项独立恢复；失败重试复用任务与预算；Artifact 保留版本血缘 |
 | 批量变化 | `src/domain/batchVariations.ts` | `src/store/canvasBatchVariationActions.ts`、服务端 Processor | `batchVariations.test.ts`、Processor 测试；计划先限制总输出，Store 以有界并发协调独立子任务及恢复，各分支独立持久化 |
 | Agent 对话分流 | `src/domain/agentChatContract.ts` | `src/lib/agentApi.ts`、`server/botanicAgentChat.mjs` | 对话测试；浏览器不发送图片字节或私有 URL |
 | Agent 计划和执行 | `src/domain/agentPlanContract.ts` | `agent.ts`、`server/botanicAgentPlanner.mjs`、`botanicAgentTools.mjs`、`agentRunGenerationService.mjs` | Agent Planner/Tool/Run 测试；Run 生成复用持久化幂等任务，外部行动默认确认 |
+| Agent 可观测与评测 | `server/agentExecutionTrace.mjs` | `agentRunObservability.mjs`、`agentQualityEvaluation.mjs`、`src/lib/agentApi.ts` | 稳定 traceId 串联 Run/Job/Artifact；只返回运维字段；固定评测不调用 Provider |
+| Agent 权限与审批 | `server/agentActionGovernance.mjs` | `authorization.mjs`、`projectAuthorization.mjs`、`agentRoutes.mjs`、`projectRoutes.mjs` | 服务端权限矩阵、短期行动审批和脱敏审计导出；UI 不可替代鉴权 |
 | Agent 持久化 | `server/botanicAgentPersistence.mjs` | 三个 ProductStore Adapter、Canvas 兼容视图 | 独立实体合并测试；Memory 墓碑永久胜出 |
 | Agent 协作历史 | `server/collaborationActivityPersistence.mjs` | `agentRoutes.mjs`、三个 ProductStore Adapter、`agentRunEventBus.mjs`、`useCanvasWorkspaceSynchronization.ts` | 稳定游标分页、成员回执单调前进、跨实例实时失效；旧快照不得覆盖远端独立实体 |
 | Artifact Index | `server/botanicArtifactIndex.mjs` | 三个 Store Adapter、Agent 结果区 | Artifact 测试和迁移对账；历史不随 UI 删除 |
 | 素材与媒体 | `src/domain/asset*.ts`、`agentMedia.ts` | `src/lib/db.ts`、`server/mediaService.mjs`、`objectStore.mjs` | 素材/媒体测试；组件不接触对象存储凭据 |
-| 项目同步 | `src/lib/db.ts` | `projectRealtime.ts`、`projectCollaboration.ts`、Store | Realtime/冲突测试；`revision` 与 `graphRevision` 分工明确 |
+| 项目同步 | `src/lib/db.ts` | `projectRealtime.ts`、`projectCollaboration.ts`、`server/realtimeHub.mjs`、`server/canvasRealtimeEventBus.mjs`、Store | Realtime/冲突/双实例测试；`revision` 与 `graphRevision` 分工明确，跨实例 Yjs 只在来源实例落库 |
 | 账户与权限 | `src/lib/productSession.ts` | `server/authorization.mjs`、`projectAuthorization.mjs` | 授权和账户测试；越权 403、真实缺失 404 |
 | HTTP 路由 | `server/httpRouteTable.mjs` | `sessionRoutes.mjs`、`projectRoutes.mjs`、`generationRoutes.mjs`、`accountRoutes.mjs`、`libraryRoutes.mjs`、`agentRoutes.mjs`、`promptMediaRoutes.mjs`、`realtimeTicketRoutes.mjs` | 资源模块返回是否已处理并拥有 405/Allow；组合根只负责鉴权基础设施与处理器编排 |
 | ProductStore | `server/runtime.mjs` | `productStore.mjs`、`postgresProductStore.mjs`、`supabaseProductStore.mjs` | Adapter 契约及各 Store 测试 |

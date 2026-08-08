@@ -717,6 +717,29 @@ export function normalizeCanvasDocumentBase(stored: CanvasDocument | undefined, 
         })]
       } catch { return [] }
     }),
+    productionWorkflows: Array.isArray(legacy.productionWorkflows)
+      ? legacy.productionWorkflows.map((workflow) => ({
+          ...workflow,
+          versions: Array.isArray(workflow.versions)
+            ? workflow.versions.map((version) => ({
+                ...version,
+                definition: structuredClone(version.definition),
+              }))
+            : [],
+        }))
+      : [],
+    productionWorkflowRuns: Array.isArray(legacy.productionWorkflowRuns)
+      ? legacy.productionWorkflowRuns.map((run) => ({
+          ...run,
+          definition: structuredClone(run.definition),
+          items: Array.isArray(run.items) ? run.items.map((item) => ({
+            ...item,
+            input: structuredClone(item.input),
+            artifactIds: item.artifactIds ? [...item.artifactIds] : undefined,
+            canvasNodeIds: item.canvasNodeIds ? [...item.canvasNodeIds] : undefined,
+          })) : [],
+        }))
+      : [],
     activeAgentSessionId: legacy.activeAgentSessionId,
     activeVersionId: legacy.activeVersionId ?? fallbackDocument.activeVersionId,
   }

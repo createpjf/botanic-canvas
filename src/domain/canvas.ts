@@ -393,6 +393,67 @@ export type DeliveryArtifact = {
   createdAt: number
 }
 
+export type ProductionWorkflowDefinition = {
+  prompt: string
+  model: string
+  settings: Record<string, unknown>
+  output: Record<string, unknown>
+  brandRules: string[]
+  assetGroupIds: string[]
+  confirmationPolicy: string
+  recipe?: Record<string, unknown>
+}
+
+export type ProductionWorkflowVersion = {
+  version: number
+  definition: ProductionWorkflowDefinition
+  createdAt: number
+  createdBy: string
+}
+
+/** 发布后只追加版本；历史运行始终固定到当时的版本快照。 */
+export type ProductionWorkflow = {
+  id: string
+  projectId: string
+  name: string
+  currentVersion: number
+  versions: ProductionWorkflowVersion[]
+  createdAt: number
+  createdBy: string
+  updatedAt: number
+  updatedBy: string
+}
+
+export type ProductionWorkflowRunItem = {
+  id: string
+  index: number
+  input: Record<string, unknown>
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+  attempt: number
+  idempotencyKey: string
+  jobId?: string
+  artifactIds?: string[]
+  canvasNodeIds?: string[]
+  error?: { code: string; message: string }
+  updatedAt: number
+  completedAt?: number
+}
+
+export type ProductionWorkflowRun = {
+  id: string
+  workflowId: string
+  workflowVersion: number
+  projectId: string
+  definition: ProductionWorkflowDefinition
+  status: 'queued' | 'running' | 'paused' | 'succeeded' | 'partially_failed' | 'failed' | 'cancelled'
+  items: ProductionWorkflowRunItem[]
+  createdAt: number
+  createdBy: string
+  updatedAt: number
+  startedAt?: number
+  completedAt?: number
+}
+
 export type CanvasDocument = {
   schemaVersion: 25
   id: string
@@ -414,6 +475,9 @@ export type CanvasDocument = {
   agentSessions: BotanicAgentSession[]
   /** 当前项目批准的创作规则、视觉方向与禁用项；不会跨项目自动共享。 */
   agentMemory: BotanicAgentMemoryItem[]
+  /** 生产工作流是项目级版本目录；生成任务与 Artifact 仍是执行结果权威。 */
+  productionWorkflows?: ProductionWorkflow[]
+  productionWorkflowRuns?: ProductionWorkflowRun[]
   activeAgentSessionId?: string
   activeTemplateId?: string
   activeVersionId?: string

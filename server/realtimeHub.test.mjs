@@ -471,3 +471,105 @@ test('最后一个客户端离开后释放空闲房间', async (context) => {
   assert.equal(loadCount, 2)
   second.close()
 })
+
+test('两个 API 实例通过跨实例总线同步 CRDT，重复事件不回环且只落库一次', async (context) => {
+  const servers = [createServer((_request, response) => response.end()), createServer((_request, response) => response.end())]
+  const graph = { nodes: [], edges: [] }
+  let appendCount = 0
+  const productStore = {
+    async readProject() { return { document: graph, revision: 1 } },
+    async canEditProject() { return true },
+    async loadCanvasCollaboration() { return { graph, graphRevision: 1, updates: [] } },
+    async appendCanvasGraphUpdate(_userId, _projectId, payload) {
+      appendCount += 1
+      graph.nodes = structuredClone(payload.graph.nodes)
+      return { graphRevision: 2, updatedAt: 200, updateCount: 1 }
+    },
+    async putCollaborationActivity(userId, _projectId, input) {
+      return { ...input, actorId: userId, occurredAt: 200, count: 1 }
+    },
+  }
+  let secondHub
+  const published = []
+  const firstHub = createProjectRealtimeHub({
+    server: servers[0], productStore, ticketSecret: 'test-secret', instanceId: 'api-a',
+    crossInstancePublisher: {
+      async publishCanvasUpdate(event) {
+        published.push(event)
+        await secondHub.receiveCanvasUpdate(event)
+        await secondHub.receiveCanvasUpdate(event)
+      },
+      async publishPresence() {},
+    },
+  })
+  secondHub = createProjectRealtimeHub({
+    server: servers[1], productStore, ticketSecret: 'test-secret', instanceId: 'api-b',
+    crossInstancePublisher: { async publishCanvasUpdate() {}, async publishPresence() {} },
+  })
+  await Promise.all(servers.map(listen))
+  const connect = (index, userId) => new WebSocket(
+    `ws://127.0.0.1:${servers[index].address().port}/api/realtime?projectId=project-1&ticket=${encodeURIComponent(issueRealtimeTicket({ userId, projectId: 'project-1', origin: testOrigin, secret: 'test-secret' }))}`,
+    { origin: testOrigin },
+  )
+  const sender = connect(0, 'editor-1')
+  const receiver = connect(1, 'editor-2')
+  context.after(async () => {
+    sender.close()
+    receiver.close()
+    await Promise.all([firstHub.close(), secondHub.close()])
+    await Promise.all(servers.map((server) => new Promise((resolve) => server.close(resolve))))
+  })
+  await Promise.all([nextMessage(sender), nextMessage(receiver)])
+
+  const received = nextMessage(receiver)
+  sender.send(JSON.stringify({ type: 'canvas.crdt.update', projectId: 'project-1', update: validCrdtUpdate('node-cross-instance') }))
+  const event = await received
+
+  assert.equal(event.type, 'canvas.crdt.update')
+  assert.equal(event.actorId, 'editor-1')
+  assert.equal(appendCount, 1)
+  assert.equal(published.length, 1)
+  await assert.rejects(nextMessageWithin(receiver, 40), /等待实时消息超时/)
+})
+
+test('跨实例 Presence 合并成员并在远端快照过期后移除', async (context) => {
+  const server = createServer((_request, response) => response.end())
+  let now = 100
+  let hub
+  const productStore = {
+    async readProject() { return { document: { nodes: [], edges: [] }, revision: 1 } },
+    async canEditProject() { return true },
+  }
+  hub = createProjectRealtimeHub({
+    server, productStore, ticketSecret: 'test-secret', instanceId: 'api-b',
+    now: () => now, presenceTtlMs: 50,
+    crossInstancePublisher: { async publishCanvasUpdate() {}, async publishPresence() {} },
+  })
+  await listen(server)
+  const socket = new WebSocket(
+    `ws://127.0.0.1:${server.address().port}/api/realtime?projectId=project-1&ticket=${encodeURIComponent(issueRealtimeTicket({ userId: 'member-b', projectId: 'project-1', origin: testOrigin, secret: 'test-secret' }))}`,
+    { origin: testOrigin },
+  )
+  context.after(async () => {
+    socket.close()
+    await hub.close()
+    await new Promise((resolve) => server.close(resolve))
+  })
+  await nextMessage(socket)
+  socket.send(JSON.stringify({ type: 'collaboration.presence.subscribe', projectId: 'project-1' }))
+  await nextMessage(socket)
+
+  const merged = nextMessage(socket)
+  await hub.receivePresence({
+    eventId: 'presence-a-1', sourceInstanceId: 'api-a', projectId: 'project-1', sentAt: now,
+    members: [{ userId: 'member-a', actorName: 'Mia', connectionCount: 2 }],
+  })
+  assert.deepEqual((await merged).members, [
+    { userId: 'member-a', actorName: 'Mia', connectionCount: 2 },
+    { userId: 'member-b', connectionCount: 1 },
+  ])
+
+  now = 200
+  hub.pruneRemotePresence()
+  assert.deepEqual((await nextMessage(socket)).members, [{ userId: 'member-b', connectionCount: 1 }])
+})

@@ -4,6 +4,7 @@ import { buildDeliveryPreviewArtifacts, resolveDeliveryDraft, type DeliveryPanel
 import { topOverlayLayer } from '../../domain/overlayPriority'
 import { primaryGenerationReference, settingsForGenerationModel } from '../../domain/generationRecipe'
 import { summarizeWorkflowTemplate, type WorkflowTemplateSummary } from '../../domain/workflowTemplates'
+import { productionWorkflowDraftFromCanvas } from '../../domain/productionWorkflows'
 import { useMotionPresence, useRestoreFocus, useRetainedValue, type MotionPhase } from '../../components/motionPresence'
 import { useDialogFocusTrap } from '../../components/useDialogFocusTrap'
 import { BotanicSelect } from '../../components/BotanicSelect'
@@ -14,6 +15,7 @@ import type {
   AssetSource,
   BatchVariationRun,
   CanvasNode,
+  CanvasDocument,
   CanvasTemplate,
   DeliveryArtifact,
   DeliveryPresetId,
@@ -23,11 +25,21 @@ import type {
   GenerationRecipe,
   GenerationSettings,
   GenerateNodeData,
+  ProductionWorkflow,
+  ProductionWorkflowRun,
   UploadedAssetInput,
 } from '../../domain/canvas'
 import { useCanvasStore } from '../../store/canvasStore'
 import { deliveryPresets, downloadDeliveryPackage } from '../../lib/deliveryExport'
 import { downloadMedia } from '../../lib/mediaDownload'
+import {
+  listProductionWorkflowRuns,
+  listProductionWorkflows,
+  publishProductionWorkflow,
+  readProductionWorkflowRun,
+  startProductionWorkflowRun,
+  updateProductionWorkflowRun,
+} from '../../lib/productionWorkflowApi'
 import { maxUploadAssets, readUploadedAssetInput, validateUploadFiles } from '../../lib/uploadedAssets'
 import { CloseIcon, DeleteIcon, DownloadIcon, FocusIcon, MoreIcon, PlusSquareIcon, UploadIcon } from '../../components/BotanicIcons'
 
@@ -783,6 +795,7 @@ export function AssetLibrary({
 
 export function TemplatePanel({
   projectId,
+  canvasDocument,
   templates,
   sharedTemplates,
   currentName,
@@ -792,9 +805,12 @@ export function TemplatePanel({
   onSaveShared,
   onCreateProject,
   onRefresh,
+  onOpenHistory,
+  onLocateWorkflowNode,
   onClose,
 }: {
   projectId: string
+  canvasDocument: CanvasDocument
   templates: CanvasTemplate[]
   sharedTemplates: CanvasTemplate[]
   currentName: string
@@ -804,9 +820,11 @@ export function TemplatePanel({
   onSaveShared: (name: string) => Promise<boolean>
   onCreateProject: (id: string, shared: boolean) => Promise<boolean>
   onRefresh: () => Promise<void>
+  onOpenHistory: () => void
+  onLocateWorkflowNode: (nodeId: string) => void
   onClose: () => void
 }) {
-  const [activeTab, setActiveTab] = useState<'shared' | 'project'>(sharedTemplates.length ? 'shared' : 'project')
+  const [activeTab, setActiveTab] = useState<'shared' | 'project' | 'automation'>(sharedTemplates.length ? 'shared' : 'project')
   const [name, setName] = useState(`${currentName} · 模板`)
   const [saveOpen, setSaveOpen] = useState(false)
   const [scope, setScope] = useState<'project' | 'shared'>('project')
@@ -815,11 +833,28 @@ export function TemplatePanel({
   const [refreshError, setRefreshError] = useState('')
   const [creatingTemplateId, setCreatingTemplateId] = useState<string | null>(null)
   const [createError, setCreateError] = useState('')
+  const [productionWorkflows, setProductionWorkflows] = useState<ProductionWorkflow[]>(canvasDocument.productionWorkflows ?? [])
+  const [productionRuns, setProductionRuns] = useState<ProductionWorkflowRun[]>(canvasDocument.productionWorkflowRuns ?? [])
+  const [productionBusy, setProductionBusy] = useState('')
+  const [productionError, setProductionError] = useState('')
   const saveDialogPresence = useMotionPresence(saveOpen, 140)
   useRestoreFocus(saveOpen)
   const saveDialogRef = useDialogFocusTrap(saveOpen)
   const saveSummary = scope === 'shared' ? sharedSaveSummary : projectSaveSummary
   const visibleTemplates = activeTab === 'shared' ? sharedTemplates : templates
+  const productionDraft = useMemo(() => productionWorkflowDraftFromCanvas(canvasDocument), [canvasDocument])
+
+  const refreshProductionWorkflows = async () => {
+    const workflows = await listProductionWorkflows(projectId)
+    const runGroups = await Promise.all(workflows.map(async (workflow) => {
+      const runs = await listProductionWorkflowRuns(projectId, workflow.id)
+      return Promise.all(runs.map((run) => ['queued', 'running', 'paused'].includes(run.status)
+        ? readProductionWorkflowRun(projectId, run.id)
+        : run))
+    }))
+    setProductionWorkflows(workflows)
+    setProductionRuns(runGroups.flat().sort((left, right) => right.createdAt - left.createdAt))
+  }
 
   useEffect(() => {
     let active = true
@@ -830,6 +865,20 @@ export function TemplatePanel({
       .finally(() => { if (active) setRefreshing(false) })
     return () => { active = false }
   }, [onRefresh])
+
+  useEffect(() => {
+    let active = true
+    void refreshProductionWorkflows().catch(() => {
+      if (active) setProductionError('生产工作流暂时无法同步，当前显示上次保存的记录。')
+    })
+    return () => { active = false }
+  }, [projectId])
+
+  useEffect(() => {
+    if (activeTab !== 'automation' || !productionRuns.some((run) => ['queued', 'running'].includes(run.status))) return
+    const timer = window.setInterval(() => void refreshProductionWorkflows().catch(() => undefined), 3_000)
+    return () => window.clearInterval(timer)
+  }, [activeTab, productionRuns])
 
   useEffect(() => {
     if (!saveOpen) return
@@ -874,6 +923,59 @@ export function TemplatePanel({
     if (created) onClose()
     else setCreateError('项目未创建，请检查网络后重试。')
   }
+  const publishAutomation = async () => {
+    if (!productionDraft || productionBusy) return
+    setProductionBusy('publish')
+    setProductionError('')
+    try {
+      await publishProductionWorkflow({
+        projectId,
+        id: `production-${productionDraft.sourceNodeId}`,
+        name: productionDraft.name,
+        definition: productionDraft.definition,
+      })
+      await refreshProductionWorkflows()
+      setActiveTab('automation')
+    } catch (error) {
+      setProductionError(error instanceof Error ? error.message : '生产工作流保存失败，请稍后重试。')
+    } finally {
+      setProductionBusy('')
+    }
+  }
+  const startAutomation = async (workflow: ProductionWorkflow) => {
+    if (productionBusy) return
+    setProductionBusy(workflow.id)
+    setProductionError('')
+    try {
+      const runId = `run-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`
+      await startProductionWorkflowRun({
+        projectId,
+        workflowId: workflow.id,
+        workflowVersion: workflow.currentVersion,
+        id: runId,
+        items: [{ id: 'item-1' }],
+      })
+      await refreshProductionWorkflows()
+    } catch (error) {
+      setProductionError(error instanceof Error ? error.message : '生产工作流启动失败，请稍后重试。')
+    } finally {
+      setProductionBusy('')
+    }
+  }
+  const updateAutomation = async (run: ProductionWorkflowRun, action: 'pause' | 'resume' | 'cancel' | 'retry-failed') => {
+    if (productionBusy) return
+    setProductionBusy(run.id)
+    setProductionError('')
+    try {
+      const updated = await updateProductionWorkflowRun(projectId, run.id, action)
+      setProductionRuns((current) => current.map((item) => item.id === updated.id ? updated : item))
+      await refreshProductionWorkflows()
+    } catch (error) {
+      setProductionError(error instanceof Error ? error.message : '生产工作流操作失败，请稍后重试。')
+    } finally {
+      setProductionBusy('')
+    }
+  }
 
   return (
     <aside className="workbench-panel template-panel" aria-label="模板">
@@ -885,11 +987,13 @@ export function TemplatePanel({
       <div className="template-tabs" role="tablist" aria-label="模板范围">
         <button type="button" role="tab" aria-selected={activeTab === 'shared'} className={activeTab === 'shared' ? 'is-active' : ''} onClick={() => setActiveTab('shared')}>团队模板 <span>{sharedTemplates.length}</span></button>
         <button type="button" role="tab" aria-selected={activeTab === 'project'} className={activeTab === 'project' ? 'is-active' : ''} onClick={() => setActiveTab('project')}>本项目 <span>{templates.length}</span></button>
+        <button type="button" role="tab" aria-selected={activeTab === 'automation'} className={activeTab === 'automation' ? 'is-active' : ''} onClick={() => setActiveTab('automation')}>生产 <span>{productionWorkflows.length}</span></button>
       </div>
       {refreshing && activeTab === 'shared' ? <p className="template-sync-state" role="status">正在更新团队模板…</p> : null}
       {refreshError && activeTab === 'shared' ? <p className="template-sync-state is-error">{refreshError}</p> : null}
       {createError ? <p className="template-sync-state is-error" role="alert">{createError}</p> : null}
-      <section className="template-section" aria-label={activeTab === 'shared' ? '团队模板' : '本项目模板'}>
+      {productionError ? <p className="template-sync-state is-error" role="alert">{productionError}</p> : null}
+      {activeTab !== 'automation' ? <section className="template-section" aria-label={activeTab === 'shared' ? '团队模板' : '本项目模板'}>
         <div className="template-list">
           {visibleTemplates.map((template) => {
             const summary = summarizeWorkflowTemplate(template.snapshot.nodes, template.snapshot.edges)
@@ -910,7 +1014,37 @@ export function TemplatePanel({
           })}
           {!visibleTemplates.length && !refreshing ? <div className="template-empty"><strong>{activeTab === 'shared' ? '还没有团队模板' : '本项目还没有模板'}</strong><span>{activeTab === 'shared' ? '将稳定的工作流保存为团队模板，其他项目即可复用。' : '保存当前画布后，可随时从相同 Prompt 和参数开始。'}</span></div> : null}
         </div>
-      </section>
+      </section> : (
+        <section className="template-section production-workflow-section" aria-label="生产工作流">
+          <button type="button" className="production-workflow-publish" disabled={!productionDraft || Boolean(productionBusy)} onClick={() => void publishAutomation()}>
+            <PlusSquareIcon />{productionBusy === 'publish' ? '正在保存…' : productionDraft?.sourceAgentRunId ? '保存已验证 Agent 操作' : '保存当前生成流程'}
+          </button>
+          {!productionDraft ? <p className="panel-note">先完成一条已连接稳定入库素材的生成流程，再保存为生产工作流。</p> : null}
+          <div className="production-workflow-list">
+            {productionWorkflows.map((workflow) => {
+              const runs = productionRuns.filter((run) => run.workflowId === workflow.id)
+              const latestRun = runs[0]
+              const resultNodeId = latestRun?.items.flatMap((item) => item.canvasNodeIds ?? [])[0]
+              const hasFailed = latestRun?.items.some((item) => item.status === 'failed')
+              return <article className="production-workflow-card" key={workflow.id}>
+                <header><div><strong>{workflow.name}</strong><span>版本 {workflow.currentVersion} · {runs.length} 次运行</span></div><em>{latestRun?.status ?? '未运行'}</em></header>
+                <p>{workflow.versions.at(-1)?.definition.prompt}</p>
+                <small>{workflow.versions.at(-1)?.definition.model} · {String(workflow.versions.at(-1)?.definition.output?.aspectRatio ?? '')} · {String(workflow.versions.at(-1)?.definition.output?.resolution ?? '')}</small>
+                <footer>
+                  <button type="button" disabled={Boolean(productionBusy)} onClick={() => void startAutomation(workflow)}>{productionBusy === workflow.id ? '处理中…' : '运行当前版本'}</button>
+                  {latestRun?.status === 'running' ? <button type="button" onClick={() => void updateAutomation(latestRun, 'pause')}>暂停</button> : null}
+                  {latestRun?.status === 'paused' ? <button type="button" onClick={() => void updateAutomation(latestRun, 'resume')}>恢复</button> : null}
+                  {latestRun && ['queued', 'running', 'paused'].includes(latestRun.status) ? <button type="button" onClick={() => void updateAutomation(latestRun, 'cancel')}>取消</button> : null}
+                  {hasFailed ? <button type="button" onClick={() => void updateAutomation(latestRun, 'retry-failed')}>重试失败项</button> : null}
+                  {resultNodeId ? <button type="button" onClick={() => onLocateWorkflowNode(resultNodeId)}>定位结果</button> : null}
+                  {latestRun?.items.some((item) => item.artifactIds?.length) ? <button type="button" onClick={onOpenHistory}>审核与交付</button> : null}
+                </footer>
+              </article>
+            })}
+            {!productionWorkflows.length ? <div className="template-empty"><strong>还没有生产工作流</strong><span>将已验证的 Agent 或画布生成流程保存为不可变版本，之后可批量运行与恢复。</span></div> : null}
+          </div>
+        </section>
+      )}
       {saveDialogPresence.present && typeof document !== 'undefined' ? createPortal(
         <div className={`template-dialog-backdrop motion-overlay is-${saveDialogPresence.phase}`} role="presentation" aria-hidden={saveDialogPresence.phase === 'exit' ? true : undefined} onMouseDown={() => !saving && setSaveOpen(false)}>
           <form ref={(element) => { saveDialogRef.current = element }} className="template-dialog" role="dialog" aria-modal="true" aria-labelledby="save-template-title" onMouseDown={(event) => event.stopPropagation()} onSubmit={(event) => { event.preventDefault(); void saveTemplate() }}>

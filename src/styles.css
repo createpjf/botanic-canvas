@@ -1063,7 +1063,7 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .template-save-trigger { display: flex; width: 100%; height: 36px; align-items: center; justify-content: center; gap: 6px; margin-top: 12px; border: 1px solid #2a5238; border-radius: 8px; background: #2a5238; color: #fff; font-size: 10px; font-weight: 700; }
 .template-save-trigger:disabled { border-color: #dde4dc; background: #edf1ec; color: #9aa29a; }
 .template-save-trigger svg { width: 15px; height: 15px; }
-.template-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; margin-top: 13px; padding: 3px; border-radius: 9px; background: #eff2ed; }
+.template-tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; margin-top: 13px; padding: 3px; border-radius: 9px; background: #eff2ed; }
 .template-tabs button { height: 31px; border: 0; border-radius: 7px; background: transparent; color: #788079; font-size: 10px; font-weight: 700; }
 .template-tabs button.is-active { background: #fff; box-shadow: 0 1px 4px rgba(30, 50, 34, .1); color: #2a5238; }
 .template-tabs span { margin-left: 3px; color: #929991; font-size: 8px; }
@@ -1080,6 +1080,22 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .template-empty { display: grid; gap: 4px; padding: 24px 16px; border: 1px dashed #dce3da; border-radius: 9px; background: #fafbf9; text-align: center; }
 .template-empty strong { color: #526056; font-size: 10px; }
 .template-empty span { color: #929991; font-size: 9px; line-height: 14px; }
+.production-workflow-section { display: grid; gap: 8px; }
+.production-workflow-publish { display: flex; min-height: 34px; align-items: center; justify-content: center; gap: 6px; border: 1px solid #9db9a3; border-radius: 8px; background: #f3f7f2; color: #2a5238; font-size: 10px; font-weight: 700; }
+.production-workflow-publish:disabled { cursor: not-allowed; opacity: .5; }
+.production-workflow-publish svg { width: 14px; height: 14px; }
+.production-workflow-list { display: grid; gap: 8px; }
+.production-workflow-card { display: grid; gap: 6px; padding: 10px; border: 1px solid #dfe7dd; border-radius: 9px; background: #fff; }
+.production-workflow-card header { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.production-workflow-card header div { display: grid; gap: 2px; min-width: 0; }
+.production-workflow-card strong { color: #2c4935; font-size: 11px; }
+.production-workflow-card span,
+.production-workflow-card small { color: #819087; font-size: 8px; }
+.production-workflow-card em { padding: 3px 6px; border-radius: 999px; background: #edf4ed; color: #52705b; font-size: 8px; font-style: normal; white-space: nowrap; }
+.production-workflow-card p { display: -webkit-box; margin: 0; overflow: hidden; color: #56665c; font-size: 9px; line-height: 14px; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.production-workflow-card footer { display: flex; flex-wrap: wrap; gap: 5px; }
+.production-workflow-card footer button { min-height: 28px; padding: 0 8px; border: 1px solid #d7e1d5; border-radius: 7px; background: #f8faf7; color: #3d6048; font-size: 8px; font-weight: 700; }
+.production-workflow-card footer button:first-child { border-color: #2a5238; background: #2a5238; color: #fff; }
 .template-dialog-backdrop { position: fixed; z-index: 150; inset: 0; display: grid; place-items: center; padding: 22px; background: rgba(25, 34, 27, .36); backdrop-filter: blur(3px); }
 .template-dialog { width: min(460px, calc(100vw - 44px)); padding: 18px; border: 1px solid #dfe6dd; border-radius: var(--radius-surface); background: #fff; box-shadow: 0 24px 60px rgba(20, 34, 24, .25); }
 .template-dialog > header { display: flex; align-items: flex-start; justify-content: space-between; }

@@ -3,6 +3,7 @@ import { createGenerationQueue, createGenerationWorker } from './generationQueue
 import { createProductRuntime, loadLocalEnv, runtimeConfig } from './runtime.mjs'
 import { createAgentRunEventPublisher } from './agentRunEventBus.mjs'
 import { writeAgentRunOperationalEvent } from './agentRunObservability.mjs'
+import { createProviderHealthMonitor } from './providerHealthMonitor.mjs'
 
 loadLocalEnv()
 const config = runtimeConfig()
@@ -11,6 +12,12 @@ const runtime = await createProductRuntime(config)
 if (!config.redisUrl) throw new Error('REDIS_URL 未配置，Worker 拒绝启动。')
 const queue = createGenerationQueue(config.redisUrl)
 const agentRunEvents = createAgentRunEventPublisher(config.redisUrl)
+const providerHealth = createProviderHealthMonitor({
+  redisUrl: config.redisUrl,
+  failureThreshold: config.providerFailureThreshold,
+  cooldownMs: config.providerCircuitCooldownMs,
+  onFallback: (caught) => console.error(`[provider-health] Redis unavailable: ${caught instanceof Error ? caught.message : String(caught)}`),
+})
 const worker = createGenerationWorker({
   redisUrl: config.redisUrl,
   concurrency: config.workerConcurrency,
@@ -19,6 +26,7 @@ const worker = createGenerationWorker({
     config,
     publishAgentRunUpdated: agentRunEvents.publish,
     observeAgentRun: writeAgentRunOperationalEvent,
+    providerCircuitBreaker: providerHealth,
   }),
 })
 
@@ -61,6 +69,7 @@ async function shutdown() {
   await worker.close(true)
   await queue.close()
   await agentRunEvents.close()
+  await providerHealth.close()
   await runtime.mediaService.close()
   await runtime.productStore.close?.()
 }

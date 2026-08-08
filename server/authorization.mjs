@@ -1,6 +1,9 @@
 const projectPermissions = Object.freeze({
-  owner: new Set(['read', 'edit', 'manage-members', 'delete', 'read-audit']),
-  editor: new Set(['read', 'edit']),
+  owner: new Set([
+    'read', 'edit', 'create-generation', 'delete-content', 'modify-workflow',
+    'execute-external-tool', 'manage-members', 'delete-project', 'read-audit', 'read-operational',
+  ]),
+  editor: new Set(['read', 'edit', 'create-generation', 'delete-content', 'modify-workflow']),
   viewer: new Set(['read']),
 })
 

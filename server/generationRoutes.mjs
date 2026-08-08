@@ -1,6 +1,5 @@
-import { generationIdempotencyKey, generationJobIdForIdempotency } from './generationIdempotency.mjs'
-import { generationTimeoutForModel, providerForModel } from './generationModels.mjs'
-import { persistedGenerationJob, publicGenerationJob, validateGenerationInput } from './generationProvider.mjs'
+import { generationTimeoutForModel } from './generationModels.mjs'
+import { persistedGenerationJob, publicGenerationJob } from './generationProvider.mjs'
 import { reconcileGenerationResults } from './generationResultReconciliation.mjs'
 import { requireProjectPermission } from './projectAuthorization.mjs'
 
@@ -15,9 +14,8 @@ export function createGenerationRouteHandler({
   json,
   error,
   readJson,
-  text,
   requireUser,
-  enforceRateLimit,
+  submitGeneration,
   enqueue,
   publishProjectUpdated,
   projectResponseHeaders,
@@ -66,54 +64,22 @@ export function createGenerationRouteHandler({
         })
       }
       const user = await requireUser(request)
-      const idempotencyKey = generationIdempotencyKey(request.headers['idempotency-key'])
-      if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', '任务提交标识无效，请刷新页面后重试。')
       const rawInput = await readJson(request)
-      const input = validateGenerationInput(rawInput, {
-        models: config.modelOptions?.length ? config.modelOptions : config.models,
-        maximumBatchCount: config.maximumBatchCount,
-        maximumReferenceBytes: config.maximumReferenceBytes,
-      })
-      const selectedModel = providerForModel(config.modelOptions ?? [], input.settings.model)
-      if (!selectedModel) return error(response, 503, 'PROVIDER_NOT_CONFIGURED', '所选生成模型尚未配置，请检查对应供应商 API Key。')
-      await requireProjectPermission(productStore, user.id, input.projectId, 'edit')
-      let agentRun
-      if (rawInput.agentRun !== undefined) {
-        const runId = text(rawInput.agentRun?.runId, 'Agent Run', 160)
-        const branchId = text(rawInput.agentRun?.branchId, 'Agent 分支', 160)
-        const run = await productStore.readAgentRun(user.id, runId)
-        if (!run || run.projectId !== input.projectId) return error(response, 404, 'AGENT_RUN_NOT_FOUND', '未找到当前项目的 Agent Run。')
-        if (!run.branches.some((branch) => branch.id === branchId)) return error(response, 404, 'AGENT_BRANCH_NOT_FOUND', '未找到 Agent 分支。')
-        agentRun = { runId, branchId }
-      }
-      const id = generationJobIdForIdempotency(user.id, idempotencyKey)
-      const existing = await productStore.readGenerationJob(user.id, id)
-      if (existing) return json(response, 202, publicGenerationJob(existing, { includeIdempotencyKey: existing.ownerId === user.id }))
-      if (!await enforceRateLimit(response, {
-        scope: 'generation-output', subject: user.id,
-        limit: config.security.generationOutputsPerDay, windowMs: 24 * 60 * 60_000,
-        cost: input.batchCount,
-      })) return true
-      const timestamp = Date.now()
-      const job = {
-        id, ownerId: user.id, projectId: input.projectId, status: 'queued', kind: input.kind,
-        createdAt: timestamp, updatedAt: timestamp, batchCount: input.batchCount, settings: input.settings,
-        provider: selectedModel.provider === 'minimax'
-          ? selectedModel.mediaKind === 'video' ? 'minimax-video' : 'minimax-image'
-          : 'openai-images',
-        refinementMode: input.refinementMode,
-        idempotencyKey,
-        outputs: [], error: undefined, rawInput, agentRun,
-      }
-      await productStore.putGenerationJob(user.id, persistedGenerationJob(job))
       try {
-        await enqueue(job.id)
-      } catch {
-        const failed = { ...job, status: 'failed', error: '生成任务无法进入队列，请检查 Redis Worker 后重试。', updatedAt: Date.now() }
-        await productStore.putGenerationJob(user.id, persistedGenerationJob(failed))
-        return error(response, 503, 'QUEUE_UNAVAILABLE', failed.error)
+        const submitted = await submitGeneration({
+          user,
+          rawInput,
+          idempotencyKey: request.headers['idempotency-key'],
+        })
+        return json(response, 202, publicGenerationJob(submitted.job, { includeIdempotencyKey: true }))
+      } catch (caught) {
+        if (caught?.code === 'RATE_LIMITED') {
+          return json(response, 429, { error: { code: caught.code, message: caught.message } }, {
+            'Retry-After': String(caught.retryAfterSeconds ?? 1),
+          })
+        }
+        throw caught
       }
-      return json(response, 202, publicGenerationJob(job, { includeIdempotencyKey: true }))
     }
 
     if (jobMatch && request.method === 'GET' && !jobMatch[2]) {

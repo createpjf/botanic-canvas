@@ -986,7 +986,7 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       return sql.begin(async (tx) => {
         const [member] = await tx`select role from project_members where project_id = ${projectId} and user_id = ${userId} for update`
         if (!member) return false
-        assertProjectPermission(member.role, 'delete', 'PROJECT_DELETE_FORBIDDEN')
+        assertProjectPermission(member.role, 'delete-project', 'PROJECT_DELETE_FORBIDDEN')
         const [project] = await tx`select name from projects where id = ${projectId} for update`
         if (!project) return false
         await tx`delete from media_objects where project_id = ${projectId}`

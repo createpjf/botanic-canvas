@@ -180,6 +180,10 @@ export function publicGenerationJob(job, { includeIdempotencyKey = false } = {})
     ...(includeIdempotencyKey ? { idempotencyKey: job.idempotencyKey } : {}),
     projectWritebackPending: Boolean(job.projectWritebackPending),
     agentRun: job.agentRun,
+    usage: job.usage,
+    budgetWarning: job.budgetWarning,
+    effectiveModel: job.effectiveModel,
+    providerAttempts: job.providerAttempts ?? [],
   }
 }
 
@@ -208,6 +212,10 @@ export function persistedGenerationJob(job) {
     projectWritebackError: job.projectWritebackError,
     projectWritebackUpdatedAt: job.projectWritebackUpdatedAt,
     agentRun: job.agentRun,
+    usage: job.usage,
+    budgetWarning: job.budgetWarning,
+    effectiveModel: job.effectiveModel,
+    providerAttempts: job.providerAttempts,
   }
 }
 
