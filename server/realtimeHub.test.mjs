@@ -207,6 +207,37 @@ test('Agent Run 进度只推送给当前项目连接', async (context) => {
   })
 })
 
+test('独立 Agent 实体活动实时推送给当前项目连接', async (context) => {
+  const server = createServer((_request, response) => response.end())
+  const hub = createProjectRealtimeHub({
+    server,
+    ticketSecret: 'test-secret',
+    productStore: {
+      async readProject() { return { document: {}, revision: 1 } },
+      async canEditProject() { return true },
+    },
+  })
+  await listen(server)
+  const address = server.address()
+  const ticket = issueRealtimeTicket({ userId: 'user-1', projectId: 'project-1', origin: testOrigin, secret: 'test-secret' })
+  const socket = new WebSocket(`ws://127.0.0.1:${address.port}/api/realtime?projectId=project-1&ticket=${encodeURIComponent(ticket)}`, { origin: testOrigin })
+  context.after(async () => {
+    socket.close()
+    await hub.close()
+    await new Promise((resolve) => server.close(resolve))
+  })
+  await nextMessage(socket)
+
+  const activity = {
+    id: 'agent-message-1', actorId: 'member-2', actorName: 'Mia', kind: 'conversation', summary: '更新了对话「海边方向」',
+    target: { kind: 'message', sessionId: 'session-1', messageId: 'message-1' }, occurredAt: 200, count: 1,
+  }
+  hub.publishCollaborationActivity({ projectId: 'project-1', activity })
+  assert.deepEqual(await nextMessage(socket), {
+    type: 'collaboration.activity', projectId: 'project-1', activity: { ...activity, unread: true },
+  })
+})
+
 test('只有 HTTP 物化图谱的项目在连接时也会下发 Yjs 初始状态', async (context) => {
   const server = createServer((_request, response) => response.end())
   const graph = {

@@ -1,8 +1,9 @@
 import Redis from 'ioredis'
 
-const channel = 'botanic-agent-runs'
+const agentRunChannel = 'botanic-agent-runs'
+const collaborationActivityChannel = 'botanic-collaboration-activities'
 
-function validEvent(event) {
+function validAgentRunEvent(event) {
   return Boolean(
     event
     && typeof event.projectId === 'string'
@@ -13,14 +14,33 @@ function validEvent(event) {
   )
 }
 
+function validCollaborationActivityEvent(event) {
+  return Boolean(
+    event
+    && typeof event.projectId === 'string'
+    && event.projectId.trim()
+    && event.activity
+    && typeof event.activity.id === 'string'
+    && event.activity.id.trim(),
+  )
+}
+
 export function createAgentRunEventPublisher(redisUrl, { RedisClass = Redis } = {}) {
-  if (!redisUrl) return { publish: async () => undefined, close: async () => undefined }
+  if (!redisUrl) return {
+    publish: async () => undefined,
+    publishCollaborationActivity: async () => undefined,
+    close: async () => undefined,
+  }
   const redis = new RedisClass(redisUrl, { maxRetriesPerRequest: null })
 
   return {
     async publish(event) {
-      if (!validEvent(event)) return
-      await redis.publish(channel, JSON.stringify(event))
+      if (!validAgentRunEvent(event)) return
+      await redis.publish(agentRunChannel, JSON.stringify(event))
+    },
+    async publishCollaborationActivity(event) {
+      if (!validCollaborationActivityEvent(event)) return
+      await redis.publish(collaborationActivityChannel, JSON.stringify(event))
     },
     async close() {
       await redis.quit()
@@ -28,19 +48,22 @@ export function createAgentRunEventPublisher(redisUrl, { RedisClass = Redis } = 
   }
 }
 
-export async function createAgentRunEventSubscriber(redisUrl, onEvent, { RedisClass = Redis } = {}) {
+export async function createAgentRunEventSubscriber(redisUrl, onEvent, {
+  RedisClass = Redis,
+  onCollaborationActivity = () => {},
+} = {}) {
   if (!redisUrl) return { close: async () => undefined }
   const redis = new RedisClass(redisUrl, { maxRetriesPerRequest: null })
   redis.on('message', (messageChannel, payload) => {
-    if (messageChannel !== channel) return
     try {
       const event = JSON.parse(payload)
-      if (validEvent(event)) onEvent(event)
+      if (messageChannel === agentRunChannel && validAgentRunEvent(event)) onEvent(event)
+      if (messageChannel === collaborationActivityChannel && validCollaborationActivityEvent(event)) onCollaborationActivity(event)
     } catch {
       // 单条损坏消息不能中断后续实时进度。
     }
   })
-  await redis.subscribe(channel)
+  await redis.subscribe(agentRunChannel, collaborationActivityChannel)
 
   return {
     async close() {

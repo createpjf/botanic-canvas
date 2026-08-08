@@ -32,7 +32,13 @@ export type CollaborationPresenceRealtimeEvent = {
   members: Array<{ userId: string; actorName?: string; connectionCount: number }>
 }
 
-export type ProjectRealtimeEvent = ProjectUpdatedRealtimeEvent | CanvasCrdtRealtimeEvent | AgentRunUpdatedRealtimeEvent | CollaborationPresenceRealtimeEvent
+export type CollaborationActivityRealtimeEvent = {
+  type: 'collaboration.activity'
+  projectId: string
+  activity: CollaborationActivity
+}
+
+export type ProjectRealtimeEvent = ProjectUpdatedRealtimeEvent | CanvasCrdtRealtimeEvent | AgentRunUpdatedRealtimeEvent | CollaborationPresenceRealtimeEvent | CollaborationActivityRealtimeEvent
 
 export function projectRealtimeConnectionOpened(openedBefore: boolean) {
   return {
@@ -102,6 +108,9 @@ export function parseProjectRealtimeEvent(event: unknown, currentProjectId: stri
       && typeof run.updatedAt === 'number') {
       return candidate as AgentRunUpdatedRealtimeEvent
     }
+  }
+  if (candidate.type === 'collaboration.activity' && validCollaborationActivity(candidate.activity)) {
+    return candidate as CollaborationActivityRealtimeEvent
   }
   return undefined
 }

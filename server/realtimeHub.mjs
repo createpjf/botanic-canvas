@@ -233,6 +233,12 @@ export function createProjectRealtimeHub({ server, productStore, ticketSecret, r
         if (socket.readyState === WebSocket.OPEN) socket.send(payload)
       }
     },
+    publishCollaborationActivity({ projectId, activity }) {
+      const payload = JSON.stringify({ type: 'collaboration.activity', projectId, activity: { ...activity, unread: true } })
+      for (const socket of clientsByProject.get(projectId) ?? []) {
+        if (socket.readyState === WebSocket.OPEN) socket.send(payload)
+      }
+    },
     async close() {
       closing = true
       clearInterval(heartbeat)

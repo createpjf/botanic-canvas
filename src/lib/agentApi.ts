@@ -1,7 +1,7 @@
 import { buildBotanicAgentPlanRequest, completeBotanicAgentPlan, type BotanicAgentPlanRequestInput, type BotanicAgentPlanResponse } from '../domain/agentPlanContract'
 import { buildBotanicAgentChatRequest, type BotanicAgentChatRequestInput, type BotanicAgentChatResponse } from '../domain/agentChatContract'
 import { productRequest } from './productSession'
-import type { AgentToolCallTrace, BotanicAgentActionProposal, BotanicAgentActionResult, BotanicAgentClarificationResponse, BotanicAgentMessage, BotanicAgentPlan, BotanicAgentRunSnapshot, BotanicAgentSession, BotanicAgentSkill, BotanicIndexedArtifact } from '../domain/agent'
+import type { AgentToolCallTrace, BotanicAgentActionProposal, BotanicAgentActionResult, BotanicAgentClarificationResponse, BotanicAgentMemoryItem, BotanicAgentMessage, BotanicAgentPlan, BotanicAgentRunSnapshot, BotanicAgentSession, BotanicAgentSkill, BotanicIndexedArtifact } from '../domain/agent'
 
 export type AgentRunCreationBranch = { id: string; label: string; assetId?: string }
 
@@ -197,6 +197,15 @@ export async function executePersistentBotanicAgentRun(projectId: string, runId:
 export async function listPersistentBotanicAgentRuns(projectId: string) {
   const response = await productRequest<{ runs: BotanicAgentRunSnapshot[] }>(`/api/projects/${encodeURIComponent(projectId)}/agent-runs`)
   return response.runs
+}
+
+/** 读取独立 Agent 实体权威状态，用于其他设备消息、记忆与任务的增量失效恢复。 */
+export async function readPersistentBotanicAgentState(projectId: string) {
+  return productRequest<{
+    sessions: BotanicAgentSession[]
+    memory: BotanicAgentMemoryItem[]
+    runs: BotanicAgentRunSnapshot[]
+  }>(`/api/projects/${encodeURIComponent(projectId)}/agent-state`)
 }
 
 export async function listProjectAgentArtifacts(

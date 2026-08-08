@@ -6,7 +6,7 @@ class FakeRedis {
   static subscribers = new Map()
   constructor() { this.handlers = new Map() }
   on(type, handler) { this.handlers.set(type, handler) }
-  async subscribe(channel) { FakeRedis.subscribers.set(channel, this) }
+  async subscribe(...channels) { channels.forEach((channel) => FakeRedis.subscribers.set(channel, this)) }
   async publish(channel, payload) {
     const subscriber = FakeRedis.subscribers.get(channel)
     subscriber?.handlers.get('message')?.(channel, payload)
@@ -32,5 +32,20 @@ test('Redis 事件总线忽略损坏或越权形状的消息', async () => {
   await raw.publish('botanic-agent-runs', JSON.stringify({ projectId: '', run: { id: 'run-1' } }))
   await raw.publish('botanic-agent-runs', 'bad-json')
   assert.deepEqual(events, [])
+  await subscriber.close()
+})
+
+test('Redis 事件总线跨 API 实例转发协作动态', async () => {
+  const activities = []
+  const subscriber = await createAgentRunEventSubscriber('redis://test', () => {}, {
+    RedisClass: FakeRedis,
+    onCollaborationActivity: (event) => activities.push(event),
+  })
+  const publisher = createAgentRunEventPublisher('redis://test', { RedisClass: FakeRedis })
+  const event = { projectId: 'project-1', activity: { id: 'activity-1', kind: 'conversation' } }
+  await publisher.publishCollaborationActivity(event)
+
+  assert.deepEqual(activities, [event])
+  await publisher.close()
   await subscriber.close()
 })

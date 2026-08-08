@@ -839,6 +839,8 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
     collaborationAwareness,
     dismissRemoteChange,
     clearCollaborationActivities,
+    loadMoreCollaborationActivities,
+    reloadCollaborationActivities,
   } = useCanvasWorkspaceSynchronization({
     workspaceActive: workspaceRestored && workspaceView === 'canvas',
     currentUserId: currentUser?.id,
@@ -2213,6 +2215,8 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
           onRefreshRemote={refreshAgentCanvasFromRemote}
           onDismissRemoteChange={dismissRemoteChange}
           onClearCollaborationActivities={clearCollaborationActivities}
+          onLoadMoreCollaborationActivities={loadMoreCollaborationActivities}
+          onReloadCollaborationActivities={reloadCollaborationActivities}
           onClose={() => {
             setAgentOpen(false)
             requestAnimationFrame(() => agentLauncherRef.current?.focus())

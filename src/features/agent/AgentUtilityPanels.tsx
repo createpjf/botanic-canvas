@@ -27,15 +27,25 @@ export function AgentCollaborationPanel({
   onClear,
   onKeepLocal,
   onUseRemote,
+  historyStatus,
+  historyHasMore,
+  historyErrorAction,
+  onLoadMore,
+  onReload,
 }: {
   activities: CollaborationActivity[]
   conflictChanges: CollaborationDocumentChange[]
   persistenceStatus: 'saved' | 'saving' | 'offline' | 'conflict' | 'error'
   onLocate: (activity: CollaborationActivity) => void
-  onMarkRead: () => void
-  onClear: () => void
+  onMarkRead: () => Promise<void>
+  onClear: () => Promise<void>
   onKeepLocal: () => void
   onUseRemote: () => void
+  historyStatus: 'idle' | 'loading' | 'loading-more' | 'saving' | 'error'
+  historyHasMore: boolean
+  historyErrorAction?: 'load' | 'load-more' | 'read' | 'clear'
+  onLoadMore: () => Promise<void>
+  onReload: () => Promise<void>
 }) {
   return <section className="agent-collaboration-panel" aria-label="协作动态">
     <header><div><small>COLLABORATION</small><h2>协作动态</h2></div><span>{activities.length} 条</span></header>
@@ -47,9 +57,10 @@ export function AgentCollaborationPanel({
       </li>)}</ul> : <small>正在读取云端变更…</small>}
       <div><button type="button" onClick={onKeepLocal}>暂留本地</button><button type="button" className="is-primary" onClick={onUseRemote}>使用云端版本</button></div>
     </div> : null}
+    {historyStatus === 'error' ? <button type="button" className="agent-collaboration-panel__sync-error" onClick={() => void onReload().catch(() => undefined)}>{historyErrorAction === 'read' ? '已读状态同步失败，点击重试' : historyErrorAction === 'clear' ? '清空状态同步失败，点击重试' : '协作动态同步失败，点击重试'}</button> : null}
     <div className="agent-collaboration-panel__toolbar">
-      <button type="button" disabled={!activities.some((activity) => activity.unread)} onClick={onMarkRead}>全部已读</button>
-      <button type="button" disabled={!activities.length} onClick={onClear}>清空记录</button>
+      <button type="button" disabled={historyStatus === 'saving' || !activities.some((activity) => activity.unread)} onClick={() => void onMarkRead().catch(() => undefined)}>全部已读</button>
+      <button type="button" disabled={historyStatus === 'saving' || !activities.length} onClick={() => void onClear().catch(() => undefined)}>清空记录</button>
     </div>
     <div className="agent-collaboration-panel__list">
       {activities.map((activity) => <button key={activity.id} type="button" className={activity.unread ? 'is-unread' : ''} onClick={() => onLocate(activity)}>
@@ -58,7 +69,9 @@ export function AgentCollaborationPanel({
         <time dateTime={new Date(activity.occurredAt).toISOString()}>{collaborationTime(activity.occurredAt)}</time>
         {activity.target && activity.target.kind !== 'project' ? <FocusIcon /> : null}
       </button>)}
-      {!activities.length ? <div className="agent-skill-panel__empty">还没有协作变更。</div> : null}
+      {!activities.length && historyStatus !== 'loading' ? <div className="agent-skill-panel__empty">还没有协作变更。</div> : null}
+      {historyStatus === 'loading' ? <div className="agent-skill-panel__empty" role="status">正在读取协作动态…</div> : null}
+      {historyHasMore ? <button type="button" className="agent-collaboration-panel__load-more" disabled={historyStatus === 'loading-more'} onClick={() => void onLoadMore().catch(() => undefined)}>{historyStatus === 'loading-more' ? '加载中…' : '加载更早动态'}</button> : null}
     </div>
   </section>
 }

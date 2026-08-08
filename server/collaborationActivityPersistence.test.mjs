@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { collaborationChangeFromDocuments, nextCollaborationReceipt } from './collaborationActivityPersistence.mjs'
+import {
+  collaborationActivitiesForMember,
+  collaborationChangeFromDocuments,
+  decodeCollaborationActivityCursor,
+  encodeCollaborationActivityCursor,
+  nextCollaborationReceipt,
+} from './collaborationActivityPersistence.mjs'
 
 const document = (overrides = {}) => ({ name: '项目', nodes: [], edges: [], agentSessions: [], agentRuns: [], ...overrides })
 
@@ -32,4 +38,20 @@ test('成员已读与清空时间只向前推进', () => {
   assert.deepEqual(nextCollaborationReceipt({ readAt: 500, clearedAt: 400 }, 'clear', 600), {
     readAt: 600, clearedAt: 600, updatedAt: 600,
   })
+})
+
+test('协作历史游标在相同时间戳下仍稳定分页且不重复', () => {
+  const activities = ['a', 'b', 'c'].map((id) => ({
+    id: `activity-${id}`, actorId: 'member-2', actorName: 'Mia', kind: 'canvas', summary: id, occurredAt: 100, count: 1,
+  }))
+  const first = collaborationActivitiesForMember(activities, undefined, 'member-1', { limit: 2 })
+  assert.deepEqual(first.map((activity) => activity.id), ['activity-c', 'activity-b'])
+  const cursor = encodeCollaborationActivityCursor(first.at(-1))
+  assert.deepEqual(decodeCollaborationActivityCursor(cursor), { occurredAt: 100, id: 'activity-b' })
+  const second = collaborationActivitiesForMember(activities, undefined, 'member-1', {
+    limit: 2,
+    before: decodeCollaborationActivityCursor(cursor),
+  })
+  assert.deepEqual(second.map((activity) => activity.id), ['activity-a'])
+  assert.throws(() => decodeCollaborationActivityCursor('broken-cursor'), /分页游标无效/)
 })

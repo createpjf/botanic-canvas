@@ -165,13 +165,23 @@ export default function AgentWorkspace({
   collaborationAwareness,
   onDismissRemoteChange,
   onClearCollaborationActivities,
+  onLoadMoreCollaborationActivities,
+  onReloadCollaborationActivities,
   persistenceStatus,
   onClose,
 }: {
   projectId: string
   escapeEnabled: boolean
   persistenceStatus: 'saved' | 'saving' | 'offline' | 'conflict' | 'error'
-  collaborationAwareness: { onlineCollaboratorCount: number; activities: CollaborationActivity[]; unreadActivityCount: number; conflictChanges: CollaborationDocumentChange[] }
+  collaborationAwareness: {
+    onlineCollaboratorCount: number
+    activities: CollaborationActivity[]
+    unreadActivityCount: number
+    conflictChanges: CollaborationDocumentChange[]
+    historyStatus: 'idle' | 'loading' | 'loading-more' | 'saving' | 'error'
+    historyHasMore: boolean
+    historyErrorAction?: 'load' | 'load-more' | 'read' | 'clear'
+  }
   target?: AgentDockTarget
   groups: AssetGroup[]
   sessions: BotanicAgentSession[]
@@ -208,8 +218,10 @@ export default function AgentWorkspace({
   onUseResultContext: (sourceNodeIds: string[]) => void
   onRetryPersistence: () => Promise<boolean>
   onRefreshRemote: () => Promise<boolean>
-  onDismissRemoteChange: () => void
-  onClearCollaborationActivities: () => void
+  onDismissRemoteChange: () => Promise<void>
+  onClearCollaborationActivities: () => Promise<void>
+  onLoadMoreCollaborationActivities: () => Promise<void>
+  onReloadCollaborationActivities: () => Promise<void>
   onClose: () => void
 }) {
   const [intent, setIntent] = useState<BotanicAgentIntent>('replace_scene')
@@ -1343,7 +1355,7 @@ export default function AgentWorkspace({
         <button type="button" className="agent-workspace__collaboration-summary" onClick={() => locateCollaborationActivity(latestCollaborationActivity)}>
           <i aria-hidden="true" /><span><strong>{latestCollaborationActivity.actorName} · {latestCollaborationActivity.summary}</strong><small>{persistenceStatus === 'conflict' ? '本地改动仍保留，点击查看变更。' : latestCollaborationActivity.target && latestCollaborationActivity.target.kind !== 'project' ? '点击定位变更。' : '最新内容已同步。'}</small></span>
         </button>
-        <button type="button" aria-label="关闭协作更新提示" title="知道了" onClick={onDismissRemoteChange}><CloseIcon /></button>
+        <button type="button" aria-label="关闭协作更新提示" title="知道了" onClick={() => void onDismissRemoteChange().catch(() => undefined)}><CloseIcon /></button>
       </div> : null}
       <div
         ref={messagesViewportRef}
@@ -1377,6 +1389,11 @@ export default function AgentWorkspace({
           onClear={onClearCollaborationActivities}
           onKeepLocal={onDismissRemoteChange}
           onUseRemote={resolvePersistenceIssue}
+          historyStatus={collaborationAwareness.historyStatus}
+          historyHasMore={collaborationAwareness.historyHasMore}
+          historyErrorAction={collaborationAwareness.historyErrorAction}
+          onLoadMore={onLoadMoreCollaborationActivities}
+          onReload={onReloadCollaborationActivities}
         /> : null}
         {memoryPanelOpen ? <AgentMemoryPanel
           memory={memory}

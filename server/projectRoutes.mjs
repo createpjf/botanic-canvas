@@ -1,6 +1,6 @@
 import { applyCanvasDocumentPatch } from './canvasDocumentPatch.mjs'
 import { requireProjectPermission } from './projectAuthorization.mjs'
-import { collaborationChangeFromDocuments } from './collaborationActivityPersistence.mjs'
+import { collaborationChangeFromDocuments, decodeCollaborationActivityCursor, encodeCollaborationActivityCursor } from './collaborationActivityPersistence.mjs'
 
 /**
  * 项目、项目文档、成员与项目审计的 HTTP 模块。
@@ -209,9 +209,18 @@ export function createProjectRouteHandler({
       const user = await requireUser(request)
       const projectId = decodeURIComponent(collaborationActivitiesMatch[1])
       await requireProjectPermission(productStore, user.id, projectId, 'read')
-      const activities = await productStore.listCollaborationActivities(user.id, projectId, Number(url.searchParams.get('limit') ?? 100))
+      const limit = Math.max(1, Math.min(Number(url.searchParams.get('limit')) || 30, 100))
+      let before
+      try { before = decodeCollaborationActivityCursor(url.searchParams.get('before') ?? undefined) } catch {
+        return error(response, 400, 'INVALID_COLLABORATION_CURSOR', '协作动态分页游标无效。')
+      }
+      const page = await productStore.listCollaborationActivities(user.id, projectId, { limit: limit + 1, before })
+      const activities = page?.slice(0, limit)
       if (!activities) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
-      return json(response, 200, { activities })
+      return json(response, 200, {
+        activities,
+        nextBefore: page.length > limit ? encodeCollaborationActivityCursor(activities.at(-1)) : undefined,
+      })
     }
 
     if (collaborationReceiptMatch && request.method === 'PATCH') {

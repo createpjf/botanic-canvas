@@ -26,16 +26,47 @@ export function validateCollaborationActivity(input, { actorId, actorName, occur
 }
 
 export function collaborationActivitiesForMember(activities, receipt, userId, limit = 100) {
+  const options = collaborationActivityListOptions(limit)
   const readAt = Number(receipt?.readAt ?? 0)
   const clearedAt = Number(receipt?.clearedAt ?? 0)
   return activities
     .filter((activity) => activity.occurredAt > clearedAt)
+    .filter((activity) => !options.before
+      || activity.occurredAt < options.before.occurredAt
+      || (activity.occurredAt === options.before.occurredAt && activity.id.localeCompare(options.before.id) < 0))
     .sort((left, right) => right.occurredAt - left.occurredAt || right.id.localeCompare(left.id))
-    .slice(0, Math.max(1, Math.min(Number(limit) || 100, 500)))
+    .slice(0, options.limit)
     .map((activity) => ({
       ...structuredClone(activity),
       unread: activity.actorId !== userId && activity.occurredAt > readAt,
     }))
+}
+
+export function collaborationActivityListOptions(input = 100) {
+  const value = typeof input === 'number' ? { limit: input } : input ?? {}
+  const limit = Math.max(1, Math.min(Number(value.limit) || 100, 500))
+  const occurredAt = Number(value.before?.occurredAt)
+  const id = text(value.before?.id, 200)
+  return {
+    limit,
+    ...(Number.isFinite(occurredAt) && occurredAt >= 0 && id ? { before: { occurredAt, id } } : {}),
+  }
+}
+
+export function encodeCollaborationActivityCursor(activity) {
+  if (!activity || !Number.isFinite(Number(activity.occurredAt)) || typeof activity.id !== 'string' || !activity.id) return undefined
+  return Buffer.from(JSON.stringify([Number(activity.occurredAt), activity.id]), 'utf8').toString('base64url')
+}
+
+export function decodeCollaborationActivityCursor(value) {
+  if (value === undefined || value === null || value === '') return undefined
+  try {
+    const [occurredAt, id] = JSON.parse(Buffer.from(String(value), 'base64url').toString('utf8'))
+    if (Number.isFinite(Number(occurredAt)) && Number(occurredAt) >= 0 && typeof id === 'string' && id) {
+      return { occurredAt: Number(occurredAt), id: id.slice(0, 200) }
+    }
+  } catch {}
+  throw new TypeError('协作动态分页游标无效。')
 }
 
 export function nextCollaborationReceipt(current, action, timestamp = Date.now()) {

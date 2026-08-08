@@ -563,7 +563,7 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       }
     },
 
-    listCollaborationActivities(userId, projectId, limit = 100) {
+    listCollaborationActivities(userId, projectId, options = 100) {
       const project = state.projects.find((item) => item.id === projectId)
       if (!project || !canAccess(project, userId)) return undefined
       const receipt = state.collaborationActivityReceipts.find((item) => item.userId === userId && item.projectId === projectId)
@@ -571,7 +571,7 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
         state.collaborationActivities.filter((item) => item.projectId === projectId).map((item) => item.payload),
         receipt?.payload,
         userId,
-        limit,
+        options,
       )
     },
 

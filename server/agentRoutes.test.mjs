@@ -140,3 +140,79 @@ test('Agent 阅读位置增量更新写入当前成员回执，不修改共享�
   assert.ok(storedReceipts[0]?.receipt.updatedAt >= remoteSession.updatedAt)
   assert.equal(responses[0]?.body.receipt.messageId, 'message-reading')
 })
+
+test('Agent 消息独立写入后产生可定位协作活动并实时广播', async () => {
+  const responses = []
+  const activities = []
+  const published = []
+  const message = { id: 'message-1', role: 'user', kind: 'text', content: '继续优化', createdAt: 20 }
+  const handler = createAgentRouteHandler({
+    config: {},
+    productStore: {
+      projectAccess: async () => ({ exists: true, role: 'owner' }),
+      putAgentMessage: async () => message,
+      readAgentState: async () => ({ sessions: [{ id: 'session-1', title: '海边方向', messages: [message] }] }),
+      putCollaborationActivity: async (_userId, projectId, input) => {
+        const activity = { ...input, actorId: 'user-1', actorName: 'Leo', occurredAt: 30, count: 1 }
+        activities.push({ projectId, activity })
+        return activity
+      },
+    },
+    json: (_response, status, body) => { responses.push({ status, body }); return true },
+    readJson: async () => message,
+    requireUser: async () => ({ id: 'user-1' }),
+    publishCollaborationActivity: (event) => { published.push(event) },
+  })
+
+  await handler(
+    { method: 'PUT', headers: {} },
+    {},
+    new URL('http://botanic.test/api/projects/project-1/agent-sessions/session-1/messages/message-1'),
+    { agentMessage: ['agent-message', 'project-1', 'session-1', 'message-1'] },
+    'request-message',
+  )
+
+  assert.equal(responses[0]?.status, 200)
+  assert.deepEqual(activities[0], {
+    projectId: 'project-1',
+    activity: {
+      id: 'agent-message-message-1', kind: 'conversation', summary: '更新了对话「海边方向」',
+      target: { kind: 'message', sessionId: 'session-1', messageId: 'message-1' },
+      actorId: 'user-1', actorName: 'Leo', occurredAt: 30, count: 1,
+    },
+  })
+  assert.deepEqual(published[0], { projectId: 'project-1', activity: activities[0].activity })
+})
+
+test('Agent 会话设置仅在真实变化时产生协作动态', async () => {
+  const activities = []
+  let stored = {
+    id: 'session-settings', title: '原始标题', executionMode: 'manual', contextNodeIds: [],
+    createdAt: 10, updatedAt: 10,
+  }
+  const handler = createAgentRouteHandler({
+    config: {},
+    productStore: {
+      projectAccess: async () => ({ exists: true, role: 'owner' }),
+      readAgentState: async () => ({ sessions: [stored] }),
+      putAgentSession: async (_userId, _projectId, session) => { stored = session; return session },
+      putCollaborationActivity: async (_userId, _projectId, input) => {
+        activities.push(input)
+        return { ...input, actorId: 'user-1', actorName: 'Leo', occurredAt: 30, count: 1 }
+      },
+    },
+    json: () => true,
+    readJson: async () => ({ ...stored, title: '新标题', updatedAt: 20 }),
+    requireUser: async () => ({ id: 'user-1' }),
+    publishCollaborationActivity: async () => {},
+  })
+  const request = { method: 'PUT', headers: {} }
+  const url = new URL('http://botanic.test/api/projects/project-1/agent-sessions/session-settings')
+  const matches = { agentSession: ['agent-session', 'project-1', 'session-settings'] }
+
+  await handler(request, {}, url, matches, 'request-session-change')
+  await handler(request, {}, url, matches, 'request-session-same')
+
+  assert.equal(activities.length, 1)
+  assert.equal(activities[0].summary, '更新了对话设置「新标题」')
+})

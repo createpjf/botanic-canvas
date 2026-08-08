@@ -43,6 +43,10 @@ async function publishAgentRunUpdated(event) {
   if (config.redisUrl) return agentRunEvents.publish(event)
   realtimeHub?.publishAgentRunUpdated(event)
 }
+async function publishCollaborationActivity(event) {
+  if (config.redisUrl) return agentRunEvents.publishCollaborationActivity(event)
+  realtimeHub?.publishCollaborationActivity(event)
+}
 const localProcessor = !redisQueue && !config.production
   ? createGenerationProcessor({ productStore, mediaService, config, publishAgentRunUpdated, observeAgentRun })
   : undefined
@@ -261,7 +265,7 @@ const agentRunGeneration = createAgentRunGenerationService({
 const handleAgentRoute = createAgentRouteHandler({
   config, productStore, redisQueue, configuredMcpTools, json, error, readJson, text,
   requireUser, enforceRateLimit, agentRunGeneration, publishAgentRunUpdated,
-  enqueue, publishProjectUpdated, observeAgentRun,
+  enqueue, publishProjectUpdated, publishCollaborationActivity, observeAgentRun,
 })
 
 const handleRequest = async (request, response) => {
@@ -352,7 +356,11 @@ async function start() {
     productStore,
     ticketSecret: config.realtimeTicketSecret,
   })
-  agentRunEventSubscriber = await createAgentRunEventSubscriber(config.redisUrl, (event) => realtimeHub.publishAgentRunUpdated(event))
+  agentRunEventSubscriber = await createAgentRunEventSubscriber(
+    config.redisUrl,
+    (event) => realtimeHub.publishAgentRunUpdated(event),
+    { onCollaborationActivity: (event) => realtimeHub.publishCollaborationActivity(event) },
+  )
   await new Promise((resolveStart, rejectStart) => {
     const onError = (caught) => rejectStart(caught)
     server.once('error', onError)

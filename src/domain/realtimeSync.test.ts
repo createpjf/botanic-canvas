@@ -97,6 +97,19 @@ test('CRDT 增量携带可持久化的协作动态', () => {
   assert.equal(parseProjectRealtimeEvent({ ...event, activity: { id: 'broken' } }, 'project-1'), undefined)
 })
 
+test('独立 Agent 实体变更通过协作动态实时失效', () => {
+  const event = {
+    type: 'collaboration.activity', projectId: 'project-1',
+    activity: {
+      id: 'agent-message-1', actorId: 'member-2', actorName: 'Mia', kind: 'conversation', summary: '更新了对话「海边方向」',
+      target: { kind: 'message', sessionId: 'session-1', messageId: 'message-1' }, occurredAt: 200, unread: true, count: 1,
+    },
+  }
+  assert.deepEqual(parseProjectRealtimeEvent(event, 'project-1'), event)
+  assert.equal(parseProjectRealtimeEvent({ ...event, projectId: 'project-2' }, 'project-1'), undefined)
+  assert.equal(parseProjectRealtimeEvent({ ...event, activity: { id: 'broken' } }, 'project-1'), undefined)
+})
+
 test('只接受当前项目且格式完整的 Agent Run 进度', () => {
   const event = {
     type: 'agent.run.updated', projectId: 'project-1',

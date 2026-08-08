@@ -1,7 +1,7 @@
 import type { Edge } from '@xyflow/react'
 import type { CanvasNode } from '../domain/canvas'
 import { createCollaborativeGraph, type CollaborativeGraph } from '../domain/collaborativeGraph'
-import type { AgentRunUpdatedRealtimeEvent, CanvasCrdtRealtimeEvent, CollaborationPresenceRealtimeEvent, ProjectUpdatedRealtimeEvent } from '../domain/realtimeSync'
+import type { AgentRunUpdatedRealtimeEvent, CanvasCrdtRealtimeEvent, CollaborationActivityRealtimeEvent, CollaborationPresenceRealtimeEvent, ProjectUpdatedRealtimeEvent } from '../domain/realtimeSync'
 import { openProjectRealtimeChannel } from './projectRealtime'
 
 function updateToBase64(update: Uint8Array) {
@@ -32,6 +32,7 @@ export function connectCanvasCollaboration({
   onProjectUpdated,
   onAgentRunUpdated,
   onPresenceChanged,
+  onCollaborationActivity,
   onReconnected,
 }: {
   projectId: string
@@ -41,6 +42,7 @@ export function connectCanvasCollaboration({
   onProjectUpdated: (event: ProjectUpdatedRealtimeEvent) => void
   onAgentRunUpdated: (event: AgentRunUpdatedRealtimeEvent) => void
   onPresenceChanged?: (event: CollaborationPresenceRealtimeEvent) => void
+  onCollaborationActivity?: (event: CollaborationActivityRealtimeEvent) => void
   onReconnected?: () => void
 }): CanvasCollaboration {
   let channel: ReturnType<typeof openProjectRealtimeChannel> | undefined
@@ -66,6 +68,10 @@ export function connectCanvasCollaboration({
     }
     if (event.type === 'collaboration.presence') {
       onPresenceChanged?.(event)
+      return
+    }
+    if (event.type === 'collaboration.activity') {
+      onCollaborationActivity?.(event)
       return
     }
     try {

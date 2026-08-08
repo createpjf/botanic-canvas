@@ -6,10 +6,11 @@ import { assertProjectPermission, assertWorkspacePermission, projectPermissionDe
 import { artifactIndexLimits, artifactsFromActionReceipt, artifactsFromAgentMessage, artifactsFromDocument, artifactsFromGenerationJob } from './botanicArtifactIndex.mjs'
 import { applyGenerationJobToAgentRun } from './botanicAgentRun.mjs'
 import { agentStateFromDocument, applyAgentSessionReadReceipts, mergeAgentStateIntoDocument, shouldApplyAgentEntityWrite, validateAgentEntityWriteTimestamp, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity, validateAgentSessionReadReceipt } from './botanicAgentPersistence.mjs'
-import { collaborationActivitiesForMember, validateCollaborationActivity } from './collaborationActivityPersistence.mjs'
+import { collaborationActivitiesForMember, collaborationActivityListOptions, validateCollaborationActivity } from './collaborationActivityPersistence.mjs'
 
 const now = () => Date.now()
 const clone = (value) => structuredClone(value)
+const postgrestQuotedValue = (value) => `"${String(value).replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`
 
 function productError(message, code = 'PRODUCT_STORE_ERROR') {
   const error = new Error(message)
@@ -568,10 +569,21 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       return { sessions: hydrated.agentSessions, memory: hydrated.agentMemory, runs: hydrated.agentRuns }
     },
 
-    async listCollaborationActivities(userId, projectId, limit = 100) {
+    async listCollaborationActivities(userId, projectId, options = 100) {
       if (!await memberRole(projectId, userId)) return undefined
+      const page = collaborationActivityListOptions(options)
+      let activityQuery = supabase.from('collaboration_activities')
+        .select('payload')
+        .eq('project_id', projectId)
+        .order('occurred_at', { ascending: false })
+        .order('id', { ascending: false })
+        .limit(page.limit)
+      if (page.before) {
+        const beforeTimestamp = new Date(page.before.occurredAt).toISOString()
+        activityQuery = activityQuery.or(`occurred_at.lt.${beforeTimestamp},and(occurred_at.eq.${beforeTimestamp},id.lt.${postgrestQuotedValue(page.before.id)})`)
+      }
       const [{ data: activities, error: activityError }, { data: receipt, error: receiptError }] = await Promise.all([
-        supabaseRequest(() => supabase.from('collaboration_activities').select('payload').eq('project_id', projectId).order('occurred_at', { ascending: false }).order('id', { ascending: false }).limit(500)),
+        supabaseRequest(() => activityQuery),
         supabaseRequest(() => supabase.from('collaboration_activity_receipts').select('read_at,cleared_at,updated_at').eq('user_id', userId).eq('project_id', projectId).maybeSingle()),
       ])
       fail(activityError)
@@ -581,7 +593,7 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
         clearedAt: new Date(receipt.cleared_at).getTime(),
         updatedAt: new Date(receipt.updated_at).getTime(),
       } : undefined
-      return collaborationActivitiesForMember((activities ?? []).map((row) => clone(row.payload)), memberReceipt, userId, limit)
+      return collaborationActivitiesForMember((activities ?? []).map((row) => clone(row.payload)), memberReceipt, userId, page)
     },
 
     async putCollaborationActivity(userId, projectId, input) {

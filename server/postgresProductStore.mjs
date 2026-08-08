@@ -4,7 +4,7 @@ import { assertProjectPermission, assertWorkspacePermission, projectPermissionDe
 import { artifactIndexLimits, artifactsFromActionReceipt, artifactsFromAgentMessage, artifactsFromDocument, artifactsFromGenerationJob } from './botanicArtifactIndex.mjs'
 import { applyGenerationJobToAgentRun } from './botanicAgentRun.mjs'
 import { agentStateFromDocument, applyAgentSessionReadReceipts, mergeAgentStateIntoDocument, shouldApplyAgentEntityWrite, shouldApplyAgentRunWrite, validateAgentEntityWriteTimestamp, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity, validateAgentSessionReadReceipt } from './botanicAgentPersistence.mjs'
-import { collaborationActivitiesForMember, nextCollaborationReceipt, validateCollaborationActivity } from './collaborationActivityPersistence.mjs'
+import { collaborationActivitiesForMember, collaborationActivityListOptions, nextCollaborationReceipt, validateCollaborationActivity } from './collaborationActivityPersistence.mjs'
 
 const now = () => Date.now()
 const hashAccessToken = (token) => createHash('sha256').update(token).digest('hex')
@@ -1123,13 +1123,16 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       return { sessions: hydrated.agentSessions, memory: hydrated.agentMemory, runs: hydrated.agentRuns }
     },
 
-    async listCollaborationActivities(userId, projectId, limit = 100) {
+    async listCollaborationActivities(userId, projectId, options = 100) {
       if (!await memberRole(projectId, userId)) return undefined
+      const page = collaborationActivityListOptions(options)
       const [activities, receipts] = await Promise.all([
-        sql`select payload from collaboration_activities where project_id = ${projectId} order by occurred_at desc, id desc limit 500`,
+        page.before
+          ? sql`select payload from collaboration_activities where project_id = ${projectId} and (occurred_at < ${page.before.occurredAt} or (occurred_at = ${page.before.occurredAt} and id < ${page.before.id})) order by occurred_at desc, id desc limit ${page.limit}`
+          : sql`select payload from collaboration_activities where project_id = ${projectId} order by occurred_at desc, id desc limit ${page.limit}`,
         sql`select read_at as "readAt", cleared_at as "clearedAt", updated_at as "updatedAt" from collaboration_activity_receipts where user_id = ${userId} and project_id = ${projectId}`,
       ])
-      return collaborationActivitiesForMember(activities.map((row) => asJson(row.payload)), receipts[0], userId, limit)
+      return collaborationActivitiesForMember(activities.map((row) => asJson(row.payload)), receipts[0], userId, page)
     },
 
     async putCollaborationActivity(userId, projectId, input) {

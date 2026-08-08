@@ -27,7 +27,7 @@ function testDependencies() {
       authProvider: 'access-token',
     },
     redisQueue: undefined,
-    agentRunEvents: { async publish() {}, async close() {} },
+    agentRunEvents: { async publish() {}, async publishCollaborationActivity() {}, async close() {} },
     securityControls: {
       async consume() { return { allowed: true } },
       async close() {},

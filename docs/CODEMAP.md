@@ -17,6 +17,7 @@
 | Agent 对话分流 | `src/domain/agentChatContract.ts` | `src/lib/agentApi.ts`、`server/botanicAgentChat.mjs` | 对话测试；浏览器不发送图片字节或私有 URL |
 | Agent 计划和执行 | `src/domain/agentPlanContract.ts` | `agent.ts`、`server/botanicAgentPlanner.mjs`、`botanicAgentTools.mjs`、`agentRunGenerationService.mjs` | Agent Planner/Tool/Run 测试；Run 生成复用持久化幂等任务，外部行动默认确认 |
 | Agent 持久化 | `server/botanicAgentPersistence.mjs` | 三个 ProductStore Adapter、Canvas 兼容视图 | 独立实体合并测试；Memory 墓碑永久胜出 |
+| Agent 协作历史 | `server/collaborationActivityPersistence.mjs` | `agentRoutes.mjs`、三个 ProductStore Adapter、`agentRunEventBus.mjs`、`useCanvasWorkspaceSynchronization.ts` | 稳定游标分页、成员回执单调前进、跨实例实时失效；旧快照不得覆盖远端独立实体 |
 | Artifact Index | `server/botanicArtifactIndex.mjs` | 三个 Store Adapter、Agent 结果区 | Artifact 测试和迁移对账；历史不随 UI 删除 |
 | 素材与媒体 | `src/domain/asset*.ts`、`agentMedia.ts` | `src/lib/db.ts`、`server/mediaService.mjs`、`objectStore.mjs` | 素材/媒体测试；组件不接触对象存储凭据 |
 | 项目同步 | `src/lib/db.ts` | `projectRealtime.ts`、`projectCollaboration.ts`、Store | Realtime/冲突测试；`revision` 与 `graphRevision` 分工明确 |

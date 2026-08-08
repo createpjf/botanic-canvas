@@ -27,12 +27,21 @@ export function createAgentRouteHandler({
   publishAgentRunUpdated,
   enqueue,
   publishProjectUpdated,
+  publishCollaborationActivity,
   observeAgentRun = () => {},
 }) {
   const agentActionExecutions = new Map()
   const methodNotAllowed = (response, message, allow) => json(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message } }, { Allow: allow })
   const observeRun = (event) => {
     try { observeAgentRun(event) } catch { /* 运行日志不得阻断用户请求。 */ }
+  }
+  const recordCollaborationActivity = async (user, projectId, input) => {
+    try {
+      const activity = await productStore.putCollaborationActivity(user.id, projectId, input)
+      await publishCollaborationActivity?.({ projectId, activity })
+    } catch {
+      // 协作历史是派生读模型；写入或广播失败不能回滚权威 Agent 实体。
+    }
   }
 
   return async function handleAgentRoute(request, response, url, routeMatches, requestId) {
@@ -168,7 +177,22 @@ export function createAgentRouteHandler({
       await requireProjectPermission(productStore, user.id, projectId, 'edit')
       const body = await readJson(request, 64 * 1024, 'Agent 会话请求过大。')
       if (body?.id !== sessionId) return error(response, 400, 'INVALID_AGENT_ENTITY', 'Agent 会话标识不一致。')
-      return json(response, 200, { session: await productStore.putAgentSession(user.id, projectId, body) })
+      let previous
+      try {
+        const before = await productStore.readAgentState(user.id, projectId)
+        previous = before?.sessions?.find((candidate) => candidate.id === sessionId)
+      } catch { /* 差异判断失败时仍应完成权威 Session 写入。 */ }
+      const session = await productStore.putAgentSession(user.id, projectId, body)
+      const settingsChanged = !previous
+        || previous.title !== session.title
+        || previous.executionMode !== session.executionMode
+        || JSON.stringify(previous.contextNodeIds ?? []) !== JSON.stringify(session.contextNodeIds ?? [])
+      if (settingsChanged) await recordCollaborationActivity(user, projectId, {
+        id: `agent-session-${session.id}-${session.updatedAt}`,
+        kind: 'conversation',
+        summary: previous ? `更新了对话设置「${session.title || '新建对话'}」` : `创建了对话「${session.title || '新建对话'}」`,
+      })
+      return json(response, 200, { session })
     }
     if (agentMessageMatch) {
       if (request.method !== 'PUT') return methodNotAllowed(response, 'Agent 消息资源只接受写入。', 'PUT')
@@ -179,7 +203,19 @@ export function createAgentRouteHandler({
       await requireProjectPermission(productStore, user.id, projectId, 'edit')
       const body = await readJson(request, 96 * 1024, 'Agent 消息请求过大。')
       if (body?.id !== messageId) return error(response, 400, 'INVALID_AGENT_ENTITY', 'Agent 消息标识不一致。')
-      return json(response, 200, { message: await productStore.putAgentMessage(user.id, projectId, sessionId, body) })
+      const message = await productStore.putAgentMessage(user.id, projectId, sessionId, body)
+      let sessionTitle = '新建对话'
+      try {
+        const state = await productStore.readAgentState(user.id, projectId)
+        sessionTitle = state?.sessions?.find((candidate) => candidate.id === sessionId)?.title || sessionTitle
+      } catch { /* 标题只用于协作历史，不得阻断消息权威写入。 */ }
+      await recordCollaborationActivity(user, projectId, {
+        id: `agent-message-${message.id}`,
+        kind: 'conversation',
+        summary: `更新了对话「${sessionTitle}」`,
+        target: { kind: 'message', sessionId, messageId: message.id },
+      })
+      return json(response, 200, { message })
     }
     if (agentMemoryMatch) {
       const user = await requireUser(request)
@@ -189,10 +225,23 @@ export function createAgentRouteHandler({
       if (request.method === 'PUT') {
         const body = await readJson(request, 16 * 1024, 'Agent 记忆请求过大。')
         if (body?.id !== memoryId) return error(response, 400, 'INVALID_AGENT_ENTITY', 'Agent 记忆标识不一致。')
-        return json(response, 200, { memory: await productStore.putAgentMemoryItem(user.id, projectId, body) })
+        const memory = await productStore.putAgentMemoryItem(user.id, projectId, body)
+        await recordCollaborationActivity(user, projectId, {
+          id: `agent-memory-${memory.id}-${memory.updatedAt}`,
+          kind: 'project',
+          summary: '更新了项目记忆',
+          target: { kind: 'project' },
+        })
+        return json(response, 200, { memory })
       }
       if (request.method === 'DELETE') {
         await productStore.deleteAgentMemoryItem(user.id, projectId, memoryId)
+        await recordCollaborationActivity(user, projectId, {
+          id: `agent-memory-${memoryId}-deleted-${Date.now()}`,
+          kind: 'project',
+          summary: '删除了项目记忆',
+          target: { kind: 'project' },
+        })
         return json(response, 204)
       }
       return methodNotAllowed(response, 'Agent 记忆资源不支持该请求方法。', 'PUT, DELETE')
@@ -275,6 +324,12 @@ export function createAgentRouteHandler({
       }
       const run = createPersistentAgentRun(input, { id, ownerId: user.id })
       const storedRun = await productStore.putAgentRun(user.id, run)
+      await recordCollaborationActivity(user, storedRun.projectId, {
+        id: `agent-run-${storedRun.id}-${storedRun.updatedAt}`,
+        kind: 'task',
+        summary: `提交了任务「${storedRun.plan?.summary || '生成任务'}」`,
+        target: { kind: 'task', runId: storedRun.id },
+      })
       await publishAgentRunUpdated({ projectId: storedRun.projectId, run: publicAgentRun(storedRun) })
       observeRun({ type: 'created', requestId, projectId: storedRun.projectId, runId: storedRun.id, status: storedRun.status, durationMs: Date.now() - startedAt })
       return json(response, 201, { run: publicAgentRun(storedRun) })
@@ -314,6 +369,12 @@ export function createAgentRouteHandler({
       const latestRun = await productStore.readAgentRun(user.id, runId) ?? run
       const cancelledRun = cancelPersistentAgentRun(latestRun)
       if (cancelledRun !== latestRun) await productStore.putAgentRun(user.id, cancelledRun)
+      if (cancelledRun !== latestRun) await recordCollaborationActivity(user, run.projectId, {
+        id: `agent-run-${cancelledRun.id}-${cancelledRun.updatedAt}`,
+        kind: 'task',
+        summary: `取消了任务「${cancelledRun.plan?.summary || '生成任务'}」`,
+        target: { kind: 'task', runId: cancelledRun.id },
+      })
       await publishAgentRunUpdated({ projectId: run.projectId, run: publicAgentRun(cancelledRun) })
       observeRun({ type: 'cancelled', requestId, projectId: run.projectId, runId, status: cancelledRun.status, activeJobCount: activeJobIds.length })
       return json(response, 200, { run: publicAgentRun(cancelledRun) })
@@ -355,6 +416,12 @@ export function createAgentRouteHandler({
         }
       }
       await productStore.putAgentRun(user.id, retriedRun)
+      await recordCollaborationActivity(user, run.projectId, {
+        id: `agent-run-${retriedRun.id}-${retriedRun.updatedAt}`,
+        kind: 'task',
+        summary: `重试了任务「${retriedRun.plan?.summary || '生成任务'}」`,
+        target: { kind: 'task', runId: retriedRun.id },
+      })
       await productStore.putGenerationJob(user.id, persistedGenerationJob(job))
       try {
         await enqueue(job.id)

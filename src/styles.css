@@ -3446,9 +3446,13 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-collaboration-panel__conflict button, .agent-collaboration-panel__toolbar button { min-height: 32px; padding: 0 9px; border: 1px solid #cbdacc; border-radius: 7px; background: #fff; color: #496650; cursor: pointer; font-size: 10px; font-weight: 720; }
 .agent-collaboration-panel__conflict button.is-primary { border-color: #356b43; background: #356b43; color: #fff; }
 .agent-collaboration-panel__toolbar button:disabled { cursor: default; opacity: .45; }
+.agent-collaboration-panel__sync-error, .agent-collaboration-panel__load-more { width: 100%; min-height: 34px; border: 1px solid #d3dfd4; border-radius: 7px; background: #f8faf7; color: #56705c; cursor: pointer; font-size: 10px; font-weight: 700; }
+.agent-collaboration-panel__sync-error { border-color: #e2bbb4; background: #fff7f5; color: #a35449; }
+.agent-collaboration-panel__sync-error:hover, .agent-collaboration-panel__sync-error:focus-visible, .agent-collaboration-panel__load-more:hover, .agent-collaboration-panel__load-more:focus-visible { outline: 0; border-color: #9ab99f; background: #eef5ed; }
+.agent-collaboration-panel__load-more:disabled { cursor: wait; opacity: .55; }
 .agent-collaboration-panel__list { display: grid; gap: 6px; }
-.agent-collaboration-panel__list > button { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto 16px; align-items: center; gap: 8px; min-height: 54px; padding: 8px 9px; border: 1px solid transparent; border-radius: 8px; background: #f7f9f6; color: #405a47; cursor: pointer; text-align: left; }
-.agent-collaboration-panel__list > button:hover, .agent-collaboration-panel__list > button:focus-visible { border-color: #b9cfbc; outline: 0; background: #f0f6ef; }
+.agent-collaboration-panel__list > button:not(.agent-collaboration-panel__load-more) { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto 16px; align-items: center; gap: 8px; min-height: 54px; padding: 8px 9px; border: 1px solid transparent; border-radius: 8px; background: #f7f9f6; color: #405a47; cursor: pointer; text-align: left; }
+.agent-collaboration-panel__list > button:not(.agent-collaboration-panel__load-more):hover, .agent-collaboration-panel__list > button:not(.agent-collaboration-panel__load-more):focus-visible { border-color: #b9cfbc; outline: 0; background: #f0f6ef; }
 .agent-collaboration-panel__list > button.is-unread { background: #eaf3e9; }
 .agent-collaboration-panel__list > button > i { width: 7px; height: 7px; border-radius: 50%; background: #9cad9f; }
 .agent-collaboration-panel__list > button.is-unread > i { background: #4d8459; box-shadow: 0 0 0 3px rgba(77, 132, 89, .12); }

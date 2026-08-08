@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { shouldRecoverAgentRunResults, shouldResumeQueuedAgentRunExecution } from '../../domain/agent'
+import { mergeCollaborativeAgentSessions } from '../../domain/agentCollaboration'
 import {
   appendCollaborationActivity,
   collaborationDocumentChange,
@@ -9,7 +10,7 @@ import {
   type CollaborationDocumentChange,
 } from '../../domain/collaborationActivity'
 import { shouldRefreshFromRealtimeEvent } from '../../domain/realtimeSync'
-import { executePersistentBotanicAgentRun, listPersistentBotanicAgentRuns } from '../../lib/agentApi'
+import { executePersistentBotanicAgentRun, listPersistentBotanicAgentRuns, readPersistentBotanicAgentState } from '../../lib/agentApi'
 import { listProjectCollaborationActivities, updateProjectCollaborationActivityReceipt } from '../../lib/collaborationApi'
 import { flushPendingCanvasDocumentWrites, previewRemoteCanvasDocument, refreshCanvasDocumentFromRemote, syncPendingCanvasDrafts } from '../../lib/db'
 import { connectCanvasCollaboration, type CanvasCollaboration } from '../../lib/projectCollaboration'
@@ -26,6 +27,19 @@ export type CollaborationAwareness = {
   activities: CollaborationActivity[]
   unreadActivityCount: number
   conflictChanges: CollaborationDocumentChange[]
+  historyStatus: 'idle' | 'loading' | 'loading-more' | 'saving' | 'error'
+  historyHasMore: boolean
+  historyNextBefore?: string
+  historyErrorAction?: 'load' | 'load-more' | 'read' | 'clear'
+}
+
+const emptyCollaborationAwareness: CollaborationAwareness = {
+  onlineCollaboratorCount: 0,
+  activities: [],
+  unreadActivityCount: 0,
+  conflictChanges: [],
+  historyStatus: 'idle',
+  historyHasMore: false,
 }
 
 /**
@@ -47,7 +61,7 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
   const applyCollaborativeGraph = useCanvasStore((state) => state.applyCollaborativeGraph)
   const applyAgentRunSnapshot = useCanvasStore((state) => state.applyAgentRunSnapshot)
   const [canvasHydrationFailed, setCanvasHydrationFailed] = useState(false)
-  const [collaborationAwareness, setCollaborationAwareness] = useState<CollaborationAwareness>({ onlineCollaboratorCount: 0, activities: [], unreadActivityCount: 0, conflictChanges: [] })
+  const [collaborationAwareness, setCollaborationAwareness] = useState<CollaborationAwareness>(emptyCollaborationAwareness)
   const collaborationRef = useRef<CanvasCollaboration | null>(null)
   const pendingRemoteGraphChangeRef = useRef<CollaborationDocumentChange | undefined>(undefined)
   const collaboratorNamesRef = useRef(new Map<string, string>())
@@ -81,28 +95,120 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
   const loadCollaborationActivities = useCallback(async () => {
     const projectId = useCanvasStore.getState().document.id
     if (!serverPersistenceEnabled || projectId === 'workspace-placeholder') return
-    const { activities } = await listProjectCollaborationActivities(projectId)
-    if (useCanvasStore.getState().document.id !== projectId) return
-    setCollaborationAwareness((current) => ({
-      ...current,
-      activities,
-      unreadActivityCount: activities.filter((activity) => activity.unread).length,
-    }))
+    setCollaborationAwareness((current) => ({ ...current, historyStatus: 'loading', historyErrorAction: undefined }))
+    try {
+      const { activities, nextBefore } = await listProjectCollaborationActivities(projectId, { limit: 30 })
+      if (useCanvasStore.getState().document.id !== projectId) return
+      setCollaborationAwareness((current) => ({
+        ...current,
+        activities,
+        unreadActivityCount: activities.filter((activity) => activity.unread).length,
+        historyStatus: 'idle',
+        historyHasMore: Boolean(nextBefore),
+        historyNextBefore: nextBefore,
+        historyErrorAction: undefined,
+      }))
+    } catch (caught) {
+      if (useCanvasStore.getState().document.id === projectId) {
+        setCollaborationAwareness((current) => ({ ...current, historyStatus: 'error', historyErrorAction: 'load' }))
+      }
+      throw caught
+    }
   }, [])
 
-  const dismissRemoteChange = useCallback(() => {
+  const loadMoreCollaborationActivities = useCallback(async () => {
+    const projectId = useCanvasStore.getState().document.id
+    const cursor = collaborationAwareness.historyNextBefore
+    if (!serverPersistenceEnabled || projectId === 'workspace-placeholder' || !cursor || collaborationAwareness.historyStatus === 'loading-more') return
+    setCollaborationAwareness((current) => ({ ...current, historyStatus: 'loading-more', historyErrorAction: undefined }))
+    try {
+      const { activities: page, nextBefore } = await listProjectCollaborationActivities(projectId, { limit: 30, before: cursor })
+      if (useCanvasStore.getState().document.id !== projectId) return
+      setCollaborationAwareness((current) => {
+        const byId = new Map([...current.activities, ...page].map((activity) => [activity.id, activity]))
+        const activities = [...byId.values()].sort((left, right) => right.occurredAt - left.occurredAt || right.id.localeCompare(left.id))
+        return {
+          ...current,
+          activities,
+          unreadActivityCount: activities.filter((activity) => activity.unread).length,
+          historyStatus: 'idle',
+          historyHasMore: Boolean(nextBefore),
+          historyNextBefore: nextBefore,
+          historyErrorAction: undefined,
+        }
+      })
+    } catch (caught) {
+      if (useCanvasStore.getState().document.id === projectId) {
+        setCollaborationAwareness((current) => ({ ...current, historyStatus: 'error', historyErrorAction: 'load-more' }))
+      }
+      throw caught
+    }
+  }, [collaborationAwareness.historyNextBefore, collaborationAwareness.historyStatus])
+
+  const dismissRemoteChange = useCallback(async () => {
+    const projectId = useCanvasStore.getState().document.id
+    if (serverPersistenceEnabled) {
+      setCollaborationAwareness((current) => ({ ...current, historyStatus: 'saving', historyErrorAction: undefined }))
+      try {
+        await updateProjectCollaborationActivityReceipt(projectId, 'read')
+      } catch (caught) {
+        if (useCanvasStore.getState().document.id === projectId) setCollaborationAwareness((current) => ({ ...current, historyStatus: 'error', historyErrorAction: 'read' }))
+        throw caught
+      }
+    }
+    if (useCanvasStore.getState().document.id !== projectId) return
     setCollaborationAwareness((current) => ({
       ...current,
       activities: markCollaborationActivitiesRead(current.activities),
       unreadActivityCount: 0,
+      historyStatus: 'idle',
+      historyErrorAction: undefined,
     }))
-    if (serverPersistenceEnabled) void updateProjectCollaborationActivityReceipt(useCanvasStore.getState().document.id, 'read').catch(() => undefined)
   }, [])
 
-  const clearCollaborationActivities = useCallback(() => {
-    setCollaborationAwareness((current) => ({ ...current, activities: [], unreadActivityCount: 0 }))
-    if (serverPersistenceEnabled) void updateProjectCollaborationActivityReceipt(useCanvasStore.getState().document.id, 'clear').catch(() => undefined)
+  const clearCollaborationActivities = useCallback(async () => {
+    const projectId = useCanvasStore.getState().document.id
+    if (serverPersistenceEnabled) {
+      setCollaborationAwareness((current) => ({ ...current, historyStatus: 'saving', historyErrorAction: undefined }))
+      try {
+        await updateProjectCollaborationActivityReceipt(projectId, 'clear')
+      } catch (caught) {
+        if (useCanvasStore.getState().document.id === projectId) setCollaborationAwareness((current) => ({ ...current, historyStatus: 'error', historyErrorAction: 'clear' }))
+        throw caught
+      }
+    }
+    if (useCanvasStore.getState().document.id !== projectId) return
+    setCollaborationAwareness((current) => ({ ...current, activities: [], unreadActivityCount: 0, historyStatus: 'idle', historyHasMore: false, historyNextBefore: undefined, historyErrorAction: undefined }))
   }, [])
+
+  const refreshAgentEntitiesFromRemote = useCallback(async () => {
+    const projectId = useCanvasStore.getState().document.id
+    if (!serverPersistenceEnabled || projectId === 'workspace-placeholder') return
+    const state = await readPersistentBotanicAgentState(projectId)
+    if (useCanvasStore.getState().document.id !== projectId) return
+    useCanvasStore.setState((current) => {
+      const agentSessions = mergeCollaborativeAgentSessions(current.document.agentSessions, state.sessions)
+      const activeAgentSessionId = agentSessions.some((session) => session.id === current.document.activeAgentSessionId)
+        ? current.document.activeAgentSessionId
+        : agentSessions[0]?.id
+      return {
+        document: {
+          ...current.document,
+          agentSessions,
+          agentMemory: state.memory,
+          activeAgentSessionId,
+        },
+      }
+    })
+    state.runs.forEach((run) => applyAgentRunSnapshot(run))
+  }, [applyAgentRunSnapshot])
+
+  const retryCollaborationHistory = useCallback(async () => {
+    if (collaborationAwareness.historyErrorAction === 'read') return dismissRemoteChange()
+    if (collaborationAwareness.historyErrorAction === 'clear') return clearCollaborationActivities()
+    if (collaborationAwareness.historyErrorAction === 'load-more') return loadMoreCollaborationActivities()
+    return loadCollaborationActivities()
+  }, [clearCollaborationActivities, collaborationAwareness.historyErrorAction, dismissRemoteChange, loadCollaborationActivities, loadMoreCollaborationActivities])
 
   const hydrateCanvas = useCallback(() => {
     setCanvasHydrationFailed(false)
@@ -268,8 +374,18 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
         if (terminal) {
           void recoverGenerationResultsFromRemote()
             .then(() => refreshDocumentFromRemote())
-            .catch(() => undefined)
+          .catch(() => undefined)
         }
+      },
+      onCollaborationActivity: (event) => {
+        if (event.activity.actorId !== currentUserId) {
+          setCollaborationAwareness((current) => {
+            const activities = appendCollaborationActivity(current.activities, event.activity, { maximum: Math.max(30, current.activities.length + 1) })
+            return { ...current, activities, unreadActivityCount: activities.filter((entry) => entry.unread).length }
+          })
+        }
+        // 同一账号的另一台设备 actorId 相同，也必须刷新独立 Agent 实体。
+        void refreshAgentEntitiesFromRemote().catch(() => undefined)
       },
       onPresenceChanged: (event) => {
         collaboratorNamesRef.current = new Map(event.members.flatMap((member) => member.actorName ? [[member.userId, member.actorName] as const] : []))
@@ -282,6 +398,7 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
         void synchronizeLocalDrafts()
           .then(() => recoverUnknownGenerationSubmission())
           .then(() => recoverPersistentAgentRuns())
+          .then(() => refreshAgentEntitiesFromRemote())
           .then(() => refreshDocumentFromRemote())
           .then(() => loadCollaborationActivities())
           .catch(() => undefined)
@@ -292,11 +409,11 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
       if (collaborationRef.current === collaboration) collaborationRef.current = null
       collaboration.close()
     }
-  }, [applyAgentRunSnapshot, applyCollaborativeGraph, currentUserId, documentId, hydrated, loadCollaborationActivities, recordRemoteChange, recoverGenerationResultsFromRemote, recoverPersistentAgentRuns, recoverUnknownGenerationSubmission, refreshDocumentFromRemote, synchronizeLocalDrafts, workspaceActive])
+  }, [applyAgentRunSnapshot, applyCollaborativeGraph, currentUserId, documentId, hydrated, loadCollaborationActivities, recordRemoteChange, recoverGenerationResultsFromRemote, recoverPersistentAgentRuns, recoverUnknownGenerationSubmission, refreshAgentEntitiesFromRemote, refreshDocumentFromRemote, synchronizeLocalDrafts, workspaceActive])
 
   useEffect(() => {
     collaboratorNamesRef.current.clear()
-    setCollaborationAwareness({ onlineCollaboratorCount: 0, activities: [], unreadActivityCount: 0, conflictChanges: [] })
+    setCollaborationAwareness(emptyCollaborationAwareness)
   }, [documentId])
 
   useEffect(() => {
@@ -359,5 +476,7 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
     collaborationAwareness,
     dismissRemoteChange,
     clearCollaborationActivities,
+    loadMoreCollaborationActivities,
+    reloadCollaborationActivities: retryCollaborationHistory,
   }
 }
