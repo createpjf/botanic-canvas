@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { createGenerationProcessor } from './generationProcessor.mjs'
+import { GenerationError } from './generationProvider.mjs'
 import { createProductStore } from './productStore.mjs'
 
 test('语义兼容备用 Provider 成功后按实际模型与 Provider 归因且不复制任务', async () => {
@@ -60,6 +61,46 @@ test('语义兼容备用 Provider 成功后按实际模型与 Provider 归因且
   assert.deepEqual(storedJob.providerAttempts.map(({ provider, model }) => ({ provider, model })), [
     { provider: 'backup', model: 'fallback-image' },
   ])
+})
+
+test('没有兼容备用模型时保留 Provider 原始错误码对应的用户消息', async () => {
+  let storedJob = {
+    id: 'job-provider-timeout', ownerId: 'user-a', projectId: 'project-a', status: 'queued', kind: 'generation',
+    createdAt: Date.now(), updatedAt: Date.now(), batchCount: 1,
+    settings: { model: 'primary-image', aspectRatio: '1:1', resolution: '1K' },
+    outputs: [],
+    rawInput: {
+      projectId: 'project-a', kind: 'generation', prompt: '生成一张品牌首图', batchCount: 1,
+      settings: { model: 'primary-image', aspectRatio: '1:1', resolution: '1K' },
+      recipe: { references: [{ name: '商品', role: '商品', primary: true, dataUrl: 'data:image/png;base64,iVBORw0KGgo=' }] },
+    },
+  }
+  const productStore = {
+    async readGenerationJobForWorker() { return structuredClone(storedJob) },
+    async putGenerationJob(_ownerId, job) { storedJob = structuredClone(job) },
+    async readProject() { return undefined },
+  }
+  const providerCircuitBreaker = {
+    async canRequest() { return { allowed: true, state: 'closed' } },
+    async recordSuccess() {},
+    async recordFailure() {},
+  }
+  const processJob = createGenerationProcessor({
+    productStore,
+    mediaService: {},
+    providerCircuitBreaker,
+    config: {
+      modelOptions: [{ id: 'primary-image', provider: 'primary', mediaKind: 'image', aspectRatios: ['1:1'], resolutions: ['1K'], inputRoles: [] }],
+      providerFallbackModelIds: [], maximumBatchCount: 4, maximumReferenceBytes: 1024,
+    },
+    generate: async () => { throw new GenerationError(504, 'REQUEST_TIMEOUT', '上游请求超时，请稍后重试。') },
+  })
+
+  await processJob(storedJob.id)
+
+  assert.equal(storedJob.status, 'failed')
+  assert.equal(storedJob.error, '上游请求超时，请稍后重试。')
+  assert.doesNotMatch(storedJob.error, /备用模型|规格不兼容/)
 })
 
 test('普通生成任务也由服务端把生命周期状态权威回写到项目画布', async () => {

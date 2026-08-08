@@ -374,7 +374,7 @@ async function start() {
     console.error(`[generation] queue recovery deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
   }
 
-  canvasRealtimeEventPublisher = createCanvasRealtimeEventPublisher(config.redisUrl)
+  canvasRealtimeEventPublisher = createCanvasRealtimeEventPublisher(config.redisUrl, { eventSecret: config.realtimeEventSecret })
   realtimeHub = createProjectRealtimeHub({
     server,
     productStore,
@@ -382,9 +382,9 @@ async function start() {
     crossInstancePublisher: canvasRealtimeEventPublisher,
   })
   canvasRealtimeEventSubscriber = await createCanvasRealtimeEventSubscriber(config.redisUrl, {
-    onCanvasUpdate: (event) => void realtimeHub.receiveCanvasUpdate(event),
-    onPresence: (event) => void realtimeHub.receivePresence(event),
-  })
+    onCanvasUpdate: (event) => void realtimeHub.receiveCanvasUpdate(event).catch(() => undefined),
+    onPresence: (event) => void realtimeHub.receivePresence(event).catch(() => undefined),
+  }, { eventSecret: config.realtimeEventSecret })
   agentRunEventSubscriber = await createAgentRunEventSubscriber(
     config.redisUrl,
     (event) => realtimeHub.publishAgentRunUpdated(event),

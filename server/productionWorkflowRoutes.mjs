@@ -83,12 +83,15 @@ export function createProductionWorkflowRouteHandler({
     for (const item of next.items) {
       if (!item.jobId) continue
       const job = await productStore.readGenerationJob(user.id, item.jobId)
-      if (!job || item.status === job.status) continue
+      // Generation Job 的 queued 在工作流中表示已接管、等待 Worker；不能把它
+      // 当成未知状态写入工作流状态机，否则恢复读取会直接抛错并返回 500。
+      const workflowStatus = job?.status === 'queued' ? 'running' : job?.status
+      if (!job || item.status === workflowStatus) continue
       const artifacts = (job.outputs ?? []).map((output) => `generation:${job.id}:${output.id}`)
       const canvasNodeIds = (project.document.nodes ?? []).filter((node) => node?.type === 'result'
         && node?.data?.jobId === job.id).map((node) => node.id)
       next = applyWorkflowItemResult(next, item.id, {
-        status: job.status,
+        status: workflowStatus,
         jobId: job.id,
         artifactIds: artifacts,
         canvasNodeIds,
@@ -226,7 +229,7 @@ export function createProductionWorkflowRouteHandler({
       const user = await requireUser(request)
       const projectId = decodeURIComponent(runMatch[1])
       const runId = decodeURIComponent(runMatch[2])
-      await requireProjectPermission(productStore, user.id, projectId, request.method === 'GET' ? 'read' : 'create-generation')
+      const access = await requireProjectPermission(productStore, user.id, projectId, request.method === 'GET' ? 'read' : 'create-generation')
       const project = await productStore.readProject(user.id, projectId)
       if (!project) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
       const state = documents(project.document)
@@ -236,7 +239,9 @@ export function createProductionWorkflowRouteHandler({
       const reconciled = await reconcileRun(user, project, run)
       run = reconciled.run
       if (request.method === 'GET') {
-        if (reconciled.changed) await updateProject(user.id, projectId, (document) => ({
+        // Viewer 可以读取并即时看到 Job 状态，但不能因为 GET 触发项目写入。
+        // Owner/Editor 仍将恢复后的运行快照持久化，避免刷新后重复进入旧状态。
+        if (reconciled.changed && access.role !== 'viewer') await updateProject(user.id, projectId, (document) => ({
           ...document,
           productionWorkflowRuns: documents(document).runs.map((entry) => entry.id === run.id ? run : entry),
         }))

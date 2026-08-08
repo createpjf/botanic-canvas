@@ -254,11 +254,9 @@ export function createGenerationProcessor({
             const transientFailure = ['PROVIDER_TIMEOUT', 'PROVIDER_UNAVAILABLE', 'GENERATION_FAILED', 'REQUEST_TIMEOUT'].includes(caught?.code)
             if (!transientFailure || hasOutput) throw caught
             if (!alternate) {
-              throw new GenerationError(
-                503,
-                'PROVIDER_FALLBACK_UNAVAILABLE',
-                '当前生成服务暂不可用，备用模型与当前输入或输出规格不兼容，请稍后重试或手动调整模型。',
-              )
+              // 没有语义兼容的备用模型时保留 Provider 原始错误；否则会把
+              // 超时/限流/上游错误误报成“规格不兼容”，用户无法选择正确恢复动作。
+              throw caught
             }
             const fallbackInput = { ...input, settings: { ...input.settings, model: alternate.id } }
             result = await runProvider(fallbackInput, alternate.id, alternate.provider)

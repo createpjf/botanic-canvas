@@ -4,20 +4,25 @@ import { createProductionWorkflowRouteHandler } from './productionWorkflowRoutes
 
 function harness(bodies, submitGeneration = async ({ idempotencyKey }) => ({
   job: { id: `job-${idempotencyKey}`, status: 'queued' },
-})) {
-  let document = { id: 'project-a', nodes: [], productionWorkflows: [], productionWorkflowRuns: [] }
+}), options = {}) {
+  let document = structuredClone(options.initialDocument ?? { id: 'project-a', nodes: [], productionWorkflows: [], productionWorkflowRuns: [] })
   let revision = 1
   const responses = []
   const handler = createProductionWorkflowRouteHandler({
     productStore: {
-      projectAccess: async () => ({ exists: true, role: 'owner' }),
+      projectAccess: async () => ({ exists: true, role: options.role ?? 'owner' }),
       readProject: async () => ({ document: structuredClone(document), revision, graphRevision: 1 }),
       writeProject: async (_userId, next) => {
+        if (options.rejectWrites) {
+          const caught = new Error('Viewer 不得写入项目')
+          caught.code = 'PROJECT_ACCESS_FORBIDDEN'
+          throw caught
+        }
         document = structuredClone(next)
         revision += 1
         return { document, revision, graphRevision: 1 }
       },
-      readGenerationJob: async () => undefined,
+      readGenerationJob: async (_userId, jobId) => options.jobs?.[jobId],
     },
     json: (_response, status, body) => { responses.push({ status, body }); return true },
     error: (_response, status, code, message) => { responses.push({ status, body: { error: { code, message } } }); return true },
@@ -113,4 +118,35 @@ test('重复创建同一运行不会重复派发任务，且运行标识不能�
   assert.equal(responses[2].body.reused, true)
   assert.equal(responses.at(-1).status, 409)
   assert.equal(responses.at(-1).body.error.code, 'WORKFLOW_RUN_ID_CONFLICT')
+})
+
+test('恢复读取时将排队中的 Generation Job 映射为工作流运行中，不返回 500', async () => {
+  const { handler, responses, document } = harness([
+    { id: 'workflow-a', name: '品牌首图', definition },
+    { id: 'run-a', workflowVersion: 1, items: [{ id: 'sku-a' }] },
+  ], undefined, { jobs: { 'job-sku-a': { id: 'job-sku-a', status: 'queued', outputs: [] } } })
+  // 先创建运行，再把测试文档中的任务绑定为已排队 Job。
+  await handler({ method: 'POST' }, {}, new URL('http://test'), { projectProductionWorkflows: ['path', 'project-a'] })
+  await handler({ method: 'POST' }, {}, new URL('http://test'), { projectProductionWorkflowRuns: ['path', 'project-a', 'workflow-a'] })
+  const run = document().productionWorkflowRuns[0]
+  run.items[0].jobId = 'job-sku-a'
+  run.items[0].status = 'running'
+  const getResponse = await handler({ method: 'GET' }, {}, new URL('http://test'), { projectProductionWorkflowRun: ['path', 'project-a', 'run-a'] })
+  assert.equal(getResponse, true)
+  assert.equal(responses.at(-1).status, 200)
+  assert.equal(responses.at(-1).body.run.items[0].status, 'running')
+})
+
+test('Viewer 读取运行状态不尝试写回项目，仍返回最新任务状态', async () => {
+  const initialDocument = {
+    id: 'project-a', nodes: [], productionWorkflows: [{ id: 'workflow-a', currentVersion: 1, versions: [{ version: 1, definition }] }],
+    productionWorkflowRuns: [{ id: 'run-a', workflowId: 'workflow-a', workflowVersion: 1, status: 'running', items: [{ id: 'sku-a', status: 'running', jobId: 'job-sku-a' }] }],
+  }
+  const { handler, responses } = harness([], undefined, {
+    role: 'viewer', rejectWrites: true, initialDocument,
+    jobs: { 'job-sku-a': { id: 'job-sku-a', status: 'succeeded', outputs: [] } },
+  })
+  await handler({ method: 'GET' }, {}, new URL('http://test'), { projectProductionWorkflowRun: ['path', 'project-a', 'run-a'] })
+  assert.equal(responses.at(-1).status, 200)
+  assert.equal(responses.at(-1).body.run.items[0].status, 'succeeded')
 })

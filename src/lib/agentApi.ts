@@ -178,19 +178,24 @@ export async function createPersistentBotanicAgentRun(input: {
 
 export async function executePersistentBotanicAgentRun(projectId: string, runId: string) {
   const toolCallId = `call-generation-submit-${runId}`
-  const approvedAt = Date.now()
+  const idempotencyKey = `agent-run-execute-${runId}`
+  const approvalResponse = await productRequest<{ approval: { token: string; approvedAt: number; expiresAt: number } }>('/api/agent-action-approvals', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
+    body: JSON.stringify({ projectId, name: 'generation_submit', toolCallId, arguments: { planId: runId } }),
+  })
   const response = await productRequest<{
     output: BotanicAgentActionResult & { run: BotanicAgentRunSnapshot; jobIds: string[] }
     toolCall: AgentToolCallTrace
   }>('/api/agent-actions', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `agent-run-execute-${runId}` },
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
     body: JSON.stringify({
       projectId,
       name: 'generation_submit',
       toolCallId,
       confirmed: true,
-      approval: { projectId, toolCallId, approvedAt, expiresAt: approvedAt + 15 * 60_000 },
+      approval: approvalResponse.approval,
       arguments: { planId: runId },
     }),
   })
@@ -281,16 +286,23 @@ export async function createProjectAgentSkill(input: { projectId: string; name: 
 
 export async function executeProjectAgentAction(input: { projectId: string; action: BotanicAgentActionProposal }) {
   const actionKey = `${input.action.id}-${input.action.toolName}`.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 112)
-  const approvedAt = Date.now()
+  const idempotencyKey = `agent-action-${actionKey}`
+  const approvalResponse = ['generation_submit', 'mcp_call'].includes(input.action.toolName)
+    ? await productRequest<{ approval: { token: string; approvedAt: number; expiresAt: number } }>('/api/agent-action-approvals', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify({ projectId: input.projectId, name: input.action.toolName, toolCallId: input.action.id, arguments: input.action.arguments }),
+    })
+    : undefined
   const response = await productRequest<{ output: BotanicAgentActionResult; toolCall: AgentToolCallTrace }>('/api/agent-actions', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `agent-action-${actionKey}` },
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
     body: JSON.stringify({
       projectId: input.projectId,
       name: input.action.toolName,
       toolCallId: input.action.id,
       confirmed: true,
-      approval: { projectId: input.projectId, toolCallId: input.action.id, approvedAt, expiresAt: approvedAt + 15 * 60_000 },
+      ...(approvalResponse ? { approval: approvalResponse.approval } : {}),
       arguments: input.action.arguments,
     }),
   })

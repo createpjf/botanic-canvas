@@ -52,9 +52,12 @@ export function AgentCollaborationPanel({
     <p>查看成员最近修改，并直接定位到相关节点、对话或任务。</p>
     {persistenceStatus === 'conflict' ? <div className="agent-collaboration-panel__conflict" role="alert">
       <span><strong>画布有新的云端版本</strong><small>本地草稿仍保留。先查看变更，再决定使用哪一版。</small></span>
-      {conflictChanges.length ? <ul>{conflictChanges.map((change, index) => <li key={`${change.summary}-${index}`}>
-        <button type="button" onClick={() => onLocate({ id: `conflict-${index}`, actorName: '云端版本', occurredAt: Date.now(), unread: false, count: 1, ...change })}>{change.summary}{change.target?.kind === 'node' ? <FocusIcon /> : null}</button>
-      </li>)}</ul> : <small>正在读取云端变更…</small>}
+      {conflictChanges.length ? <details className="agent-collaboration-panel__conflict-details">
+        <summary>查看 {conflictChanges.length} 项变更</summary>
+        <ul>{conflictChanges.map((change, index) => <li key={`${change.summary}-${index}`}>
+          <button type="button" onClick={() => onLocate({ id: `conflict-${index}`, actorName: '云端版本', occurredAt: Date.now(), unread: false, count: 1, ...change })}>{change.summary}{change.target?.kind === 'node' ? <FocusIcon /> : null}</button>
+        </li>)}</ul>
+      </details> : <small>正在读取云端变更…</small>}
       <div><button type="button" onClick={onKeepLocal}>暂留本地</button><button type="button" className="is-primary" onClick={onUseRemote}>使用云端版本</button></div>
     </div> : null}
     {historyStatus === 'error' ? <button type="button" className="agent-collaboration-panel__sync-error" onClick={() => void onReload().catch(() => undefined)}>{historyErrorAction === 'read' ? '已读状态同步失败，点击重试' : historyErrorAction === 'clear' ? '清空状态同步失败，点击重试' : '协作动态同步失败，点击重试'}</button> : null}
@@ -69,8 +72,8 @@ export function AgentCollaborationPanel({
         <time dateTime={new Date(activity.occurredAt).toISOString()}>{collaborationTime(activity.occurredAt)}</time>
         {activity.target && activity.target.kind !== 'project' ? <FocusIcon /> : null}
       </button>)}
-      {!activities.length && historyStatus !== 'loading' ? <div className="agent-skill-panel__empty">还没有协作变更。</div> : null}
-      {historyStatus === 'loading' ? <div className="agent-skill-panel__empty" role="status">正在读取协作动态…</div> : null}
+      {!activities.length && historyStatus !== 'loading' ? <div className="agent-panel__empty">还没有协作变更。</div> : null}
+      {historyStatus === 'loading' ? <div className="agent-panel__empty" role="status">正在读取协作动态…</div> : null}
       {historyHasMore ? <button type="button" className="agent-collaboration-panel__load-more" disabled={historyStatus === 'loading-more'} onClick={() => void onLoadMore().catch(() => undefined)}>{historyStatus === 'loading-more' ? '加载中…' : '加载更早动态'}</button> : null}
     </div>
   </section>
@@ -107,6 +110,7 @@ export function AgentResultPanel({
 }) {
   const [filter, setFilter] = useState<'all' | 'image' | 'video' | 'file'>('all')
   const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const [expandedGroupId, setExpandedGroupId] = useState<string | null>(null)
   const filteredArtifacts = useMemo(() => artifacts.filter((artifact) => {
     if (filter === 'all') return true
     if (filter === 'file') return artifact.kind !== 'image' && artifact.kind !== 'video'
@@ -135,6 +139,11 @@ export function AgentResultPanel({
   useEffect(() => {
     setSelectedIds((current) => current.filter((id) => artifacts.some((artifact) => artifact.id === id)))
   }, [artifacts])
+
+  useEffect(() => {
+    if (expandedGroupId && groups.some((group) => group.id === expandedGroupId)) return
+    setExpandedGroupId(groups[0]?.id ?? null)
+  }, [expandedGroupId, groups])
 
   const toggleSelection = (artifactId: string) => {
     setSelectedIds((current) => current.includes(artifactId)
@@ -172,8 +181,17 @@ export function AgentResultPanel({
       </div>
     </div> : null}
     <div className="agent-result-panel__groups">
-      {groups.map((group) => <section key={group.id} className="agent-result-group">
-        <header><span><strong>{group.label}</strong><small>{group.artifacts.length} 项</small></span><div>
+      {groups.map((group, index) => <details
+        key={group.id}
+        className="agent-result-group"
+        open={expandedGroupId ? expandedGroupId === group.id : index === 0}
+        onToggle={(event) => setExpandedGroupId(event.currentTarget.open ? group.id : null)}
+      >
+        <summary>
+          <span><strong>{group.label}</strong><small>{group.artifacts.length} 项</small></span>
+          <em>{group.artifacts.some((artifact) => artifact.provenance.sourceNodeIds?.some((nodeId) => availableNodeIds.has(nodeId))) ? '已回填画布' : '查看结果'}</em>
+        </summary>
+        <header className="agent-result-group__actions"><span aria-hidden="true" /> <div>
           {conversationRunIds.includes(group.id) ? <button type="button" onClick={() => onLocateConversation(group.id)}>来源对话</button> : null}
           <button type="button" onClick={() => toggleGroup(group.artifacts)}>{group.artifacts.every((artifact) => selectedIds.includes(artifact.id)) ? '取消本组' : '选择本组'}</button>
         </div></header>
@@ -196,8 +214,8 @@ export function AgentResultPanel({
             </article>
           })}
         </div>
-      </section>)}
-      {!filteredArtifacts.length ? <div className="agent-skill-panel__empty">还没有该类型结果。生成或执行 Skill / MCP 后会自动汇总。</div> : null}
+      </details>)}
+      {!filteredArtifacts.length ? <div className="agent-panel__empty">还没有该类型结果。生成或执行 Skill / MCP 后会自动汇总。</div> : null}
       {artifactIndexHasMore ? <button type="button" className="agent-result-panel__load-more" disabled={artifactIndexStatus === 'loading-more'} onClick={() => void onLoadMoreArtifacts()}>{artifactIndexStatus === 'loading-more' ? '加载中…' : '加载更早结果'}</button> : null}
     </div>
   </section>
@@ -231,7 +249,7 @@ export function AgentMemoryPanel({ memory, sourceNodeIds, onAddMemory, onRemoveM
     </div>
     <div className="agent-memory-panel__list">
       {memory.map((item) => <article key={item.id} className={`is-${item.kind}`}><span><small>{agentMemoryKindLabel(item.kind)}</small><p>{item.content}</p></span><div>{item.sourceNodeIds[0] ? <button type="button" aria-label={`在画布定位记忆 ${item.content}`} title="在画布定位" onClick={() => onLocateNode(item.sourceNodeIds[0])}><FocusIcon /></button> : null}<button type="button" className="is-delete" aria-label={`删除记忆 ${item.content}`} title="删除记忆" onClick={() => onRemoveMemory(item.id)}><DeleteIcon /></button></div></article>)}
-      {!memory.length ? <div className="agent-skill-panel__empty">还没有项目记忆。</div> : null}
+      {!memory.length ? <div className="agent-panel__empty">还没有项目记忆。</div> : null}
     </div>
   </section>
 }

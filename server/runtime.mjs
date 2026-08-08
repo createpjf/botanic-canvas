@@ -117,6 +117,9 @@ export function runtimeConfig(rootDir = process.cwd()) {
     bootstrapAccessToken: process.env.BOTANIC_BOOTSTRAP_ACCESS_TOKEN ?? (process.env.NODE_ENV === 'production' ? '' : 'botanic-local-dev'),
     bootstrapEmail: process.env.SUPABASE_BOOTSTRAP_OWNER_EMAIL ?? process.env.BOTANIC_BOOTSTRAP_EMAIL,
     realtimeTicketSecret: process.env.REALTIME_TICKET_SECRET,
+    // 行动审批与实时票据分开命名；未单独配置时沿用已必需的实时密钥，保持旧部署可启动。
+    agentActionApprovalSecret: process.env.AGENT_ACTION_APPROVAL_SECRET ?? process.env.REALTIME_TICKET_SECRET,
+    realtimeEventSecret: process.env.REALTIME_EVENT_SECRET ?? process.env.REALTIME_TICKET_SECRET,
     realtimePublicUrl: process.env.REALTIME_PUBLIC_URL,
     security: {
       apiRequestsPerMinute: boundedInteger(process.env.SECURITY_API_REQUESTS_PER_MINUTE, 600, 60, 10_000),

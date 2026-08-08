@@ -292,30 +292,61 @@ export function createProjectRealtimeHub({
 
   return {
     async receiveCanvasUpdate(event) {
-      if (!event || event.sourceInstanceId === instanceId || event.projectId == null) return
+      if (!event || typeof event !== 'object' || event.sourceInstanceId === instanceId) return
+      if (typeof event.eventId !== 'string' || !event.eventId.trim()
+        || typeof event.sourceInstanceId !== 'string' || !event.sourceInstanceId.trim()
+        || typeof event.projectId !== 'string' || !event.projectId.trim()
+        || typeof event.update !== 'string' || !event.update
+        || event.update.length > 700_000
+        || !/^[A-Za-z0-9+/]*={0,2}$/.test(event.update)
+        || typeof event.actorId !== 'string' || !event.actorId.trim()) return
+      // Redis 是跨实例传输层，不是权限边界；只接受仍具备项目编辑权的操作者。
+      // 这样即使旧实例/恶意消息伪造 actorId，也不会把增量写入当前房间。
+      try {
+        if (!await productStore.canEditProject(event.actorId, event.projectId)) return
+      } catch {
+        return
+      }
       const updateHash = createHash('sha256').update(event.update ?? '').digest('base64url')
       if (!rememberEvent(`event:${event.eventId}`) || !rememberEvent(`update:${event.projectId}:${updateHash}`)) return
       const roomPromise = roomsByProject.get(event.projectId)
       if (!roomPromise) return
-      const entry = await roomPromise
-      await entry.room.applyPersistedUpdate(event.update)
-      entry.hasState = true
-      const payload = JSON.stringify({
-        type: 'canvas.crdt.update', projectId: event.projectId, update: event.update,
-        actorId: event.actorId,
-        ...(event.actorName ? { actorName: event.actorName } : {}),
-        ...(event.activity ? { activity: { ...event.activity, unread: true } } : {}),
-      })
-      for (const socket of clientsByProject.get(event.projectId) ?? []) {
-        if (socket.readyState === WebSocket.OPEN) socket.send(payload)
+      try {
+        const entry = await roomPromise
+        await entry.room.applyPersistedUpdate(event.update)
+        entry.hasState = true
+        const payload = JSON.stringify({
+          type: 'canvas.crdt.update', projectId: event.projectId, update: event.update,
+          actorId: event.actorId,
+          ...(event.actorName ? { actorName: event.actorName } : {}),
+          ...(event.activity ? { activity: { ...event.activity, unread: true } } : {}),
+        })
+        for (const socket of clientsByProject.get(event.projectId) ?? []) {
+          if (socket.readyState === WebSocket.OPEN) socket.send(payload)
+        }
+      } catch {
+        // 乱序/损坏的远端增量只能丢弃，不能让 Redis listener 的 Promise 拒绝进程。
       }
     },
     async receivePresence(event) {
-      if (!event || event.sourceInstanceId === instanceId || !rememberEvent(`presence:${event.eventId}`)) return
-      const snapshots = remotePresenceByProject.get(event.projectId) ?? new Map()
-      snapshots.set(event.sourceInstanceId, { members: structuredClone(event.members), receivedAt: now() })
-      remotePresenceByProject.set(event.projectId, snapshots)
-      broadcastPresence(event.projectId)
+      if (!event || typeof event !== 'object' || event.sourceInstanceId === instanceId) return
+      if (typeof event.eventId !== 'string' || !event.eventId.trim()
+        || typeof event.sourceInstanceId !== 'string' || !event.sourceInstanceId.trim()
+        || typeof event.projectId !== 'string' || !event.projectId.trim()
+        || !Array.isArray(event.members) || event.members.length > 1_000
+        || !event.members.every((member) => member && typeof member === 'object'
+          && typeof member.userId === 'string' && member.userId.trim()
+          && Number.isInteger(member.connectionCount) && member.connectionCount > 0 && member.connectionCount <= 100)
+        || !Number.isFinite(event.sentAt)
+        || !rememberEvent(`presence:${event.eventId}`)) return
+      try {
+        const snapshots = remotePresenceByProject.get(event.projectId) ?? new Map()
+        snapshots.set(event.sourceInstanceId, { members: structuredClone(event.members), receivedAt: now() })
+        remotePresenceByProject.set(event.projectId, snapshots)
+        broadcastPresence(event.projectId)
+      } catch {
+        // 损坏的跨实例 Presence 只能丢弃，不能让 Redis listener 的 Promise 拒绝。
+      }
     },
     pruneRemotePresence,
     async publishProjectUpdated({ projectId, revision, graphRevision, updatedAt, graph, actorId }) {

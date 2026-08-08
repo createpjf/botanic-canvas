@@ -573,3 +573,37 @@ test('跨实例 Presence 合并成员并在远端快照过期后移除', async (
   hub.pruneRemotePresence()
   assert.deepEqual((await nextMessage(socket)).members, [{ userId: 'member-b', connectionCount: 1 }])
 })
+
+test('损坏的跨实例增量或 Presence 被丢弃，不让实时 Hub 抛出未处理异常', async (context) => {
+  const server = createServer((_request, response) => response.end())
+  const productStore = {
+    async readProject() { return { document: { nodes: [], edges: [] }, revision: 1 } },
+    async canEditProject() { return true },
+    async loadCanvasCollaboration() { return { graph: { nodes: [], edges: [] }, graphRevision: 1, updates: [] } },
+  }
+  const hub = createProjectRealtimeHub({ server, productStore, ticketSecret: 'test-secret', instanceId: 'api-b' })
+  await listen(server)
+  const socket = new WebSocket(
+    `ws://127.0.0.1:${server.address().port}/api/realtime?projectId=project-1&ticket=${encodeURIComponent(issueRealtimeTicket({ userId: 'editor-1', projectId: 'project-1', origin: testOrigin, secret: 'test-secret' }))}`,
+    { origin: testOrigin },
+  )
+  context.after(async () => {
+    socket.close()
+    await hub.close()
+    await new Promise((resolve) => server.close(resolve))
+  })
+  await nextMessage(socket)
+
+  await assert.doesNotReject(() => hub.receiveCanvasUpdate({
+    eventId: 'bad-update-1', sourceInstanceId: 'api-a', projectId: 'project-1',
+    update: 'AQ==', actorId: 'editor-1', graphRevision: 2, updatedAt: 200,
+  }))
+  await assert.doesNotReject(() => hub.receiveCanvasUpdate({
+    eventId: 'bad-update-2', sourceInstanceId: 'api-a', projectId: 'project-1',
+    update: 'not-base64', actorId: 'editor-1', graphRevision: 3, updatedAt: 201,
+  }))
+  await assert.doesNotReject(() => hub.receivePresence({
+    eventId: 'bad-presence-1', sourceInstanceId: 'api-a', projectId: 'project-1',
+    members: [{ userId: 'editor-1', connectionCount: 0 }], sentAt: 200,
+  }))
+})

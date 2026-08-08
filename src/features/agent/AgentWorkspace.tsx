@@ -277,6 +277,7 @@ export default function AgentWorkspace({
   const [skills, setSkills] = useState<BotanicAgentSkill[]>([])
   const [skillName, setSkillName] = useState('')
   const [skillInstructions, setSkillInstructions] = useState('')
+  const [skillFormOpen, setSkillFormOpen] = useState(false)
   const [skillConfirming, setSkillConfirming] = useState(false)
   const [skillSaving, setSkillSaving] = useState(false)
   const [skillError, setSkillError] = useState('')
@@ -325,6 +326,7 @@ export default function AgentWorkspace({
   const utilityMenuId = useId()
   const contextMenuId = useId()
   const modeMenuId = useId()
+  const runtimeStepsId = useId()
   const compatibleGroups = groups.filter((group) => group.role === agentGroupRole(intent) && group.assetIds.length)
   const contextItems = contextOptions.filter((item) => session?.contextNodeIds.includes(item.id))
   const imageContextOptions = contextOptions.filter((item) => (
@@ -633,7 +635,10 @@ export default function AgentWorkspace({
   }, [])
 
   useEffect(() => {
-    if (!skillPanelOpen) return
+    if (!skillPanelOpen) {
+      setSkillFormOpen(false)
+      return
+    }
     let active = true
     setSkillError('')
     void listProjectAgentSkills(projectId).then((items) => {
@@ -745,6 +750,7 @@ export default function AgentWorkspace({
       setSkillName('')
       setSkillInstructions('')
       setSkillConfirming(false)
+      setSkillFormOpen(false)
     } catch (caught) {
       if (isCurrentAgentProject()) setSkillError(caught instanceof Error ? caught.message : 'Skill 创建失败。')
     } finally {
@@ -1427,8 +1433,11 @@ export default function AgentWorkspace({
               <header><span><strong>{run.plan.summary}</strong><small>{feedback.label} · <time dateTime={new Date(run.updatedAt).toISOString()}>{agentTimelineTimestamp(run.updatedAt)}</time></small>{source ? <button type="button" className="agent-task-panel__source" onClick={() => locateTaskSourceMessage(source)}>定位到「{source.sessionTitle}」</button> : null}</span><div>{active ? <button type="button" className="agent-icon-button agent-icon-button--danger" aria-label="取消任务" title="取消任务" disabled={cancellingRunId === run.id} onClick={() => { setCancellingRunId(run.id); void onCancelRun(run.id).finally(() => setCancellingRunId('')) }}>{cancellingRunId === run.id ? <span className="agent-workspace__mini-spinner" /> : <CloseIcon />}</button> : <button type="button" className="agent-task-panel__feedback-action" onClick={() => openRunFeedback(run)}>{feedback.actionLabel}</button>}<b>{run.completedBranchCount}/{run.branches.length}</b></div></header>
               <p className="agent-task-panel__feedback">{feedback.detail}</p>
               <div className="agent-run-card__track" aria-hidden="true"><i style={{ width: `${run.branches.length ? Math.round(run.completedBranchCount / run.branches.length * 100) : 0}%` }} /></div>
-              <div className="agent-task-panel__summary" aria-label="分支状态汇总"><span><b>{run.branches.filter((branch) => branch.status === 'succeeded').length}</b>完成</span><span><b>{run.branches.filter((branch) => branch.status === 'running').length}</b>生成中</span><span><b>{run.branches.filter((branch) => branch.status === 'queued').length}</b>排队</span><span><b>{run.branches.filter((branch) => branch.status === 'failed' || branch.status === 'cancelled').length}</b>失败</span></div>
-              <div className="agent-task-panel__matrix" aria-label="批量分支矩阵">{run.branches.map((branch, index) => <div key={branch.id} className={`is-${branch.status}`} title={`${branch.label} · ${botanicAgentBranchStatusLabel(branch.status)}`}><span>{index + 1}</span><small>{branch.label}</small></div>)}</div>
+              <details className="agent-task-panel__details">
+                <summary>查看分支详情 <span>{run.branches.length} 个</span></summary>
+                <div className="agent-task-panel__summary" aria-label="分支状态汇总"><span><b>{run.branches.filter((branch) => branch.status === 'succeeded').length}</b>完成</span><span><b>{run.branches.filter((branch) => branch.status === 'running').length}</b>生成中</span><span><b>{run.branches.filter((branch) => branch.status === 'queued').length}</b>排队</span><span><b>{run.branches.filter((branch) => branch.status === 'failed' || branch.status === 'cancelled').length}</b>失败</span></div>
+                <div className="agent-task-panel__matrix" aria-label="批量分支矩阵">{run.branches.map((branch, index) => <div key={branch.id} className={`is-${branch.status}`} title={`${branch.label} · ${botanicAgentBranchStatusLabel(branch.status)}`}><span>{index + 1}</span><small>{branch.label}</small></div>)}</div>
+              </details>
               {run.branches.filter((branch) => branch.status === 'failed' || branch.status === 'cancelled').map((branch) => <div className="agent-task-panel__branch" key={branch.id}><span><strong>{branch.label}</strong><small>{branch.error ?? '该分支未完成'}</small></span><AgentFailureRecoveryActions
                 branch={branch}
                 generationModels={generationModels}
@@ -1440,24 +1449,24 @@ export default function AgentWorkspace({
               /></div>)}
             </article>
             })}
-            {!filteredRunTimeline.length ? <div className="agent-skill-panel__empty">{runTimeline.length ? '当前筛选下没有任务。' : '还没有 Agent 任务。'}</div> : null}
+            {!filteredRunTimeline.length ? <div className="agent-panel__empty">{runTimeline.length ? '当前筛选下没有任务。' : '还没有 Agent 任务。'}</div> : null}
           </div>
         </section> : null}
         {skillPanelOpen ? <section className="agent-skill-panel" aria-label="项目 Skill">
           <header><div><small>PROJECT SKILLS</small><h2>创作技能</h2></div><span>{skills.length} 个</span></header>
           <p>把常用的锁定项和创作规则保存到当前项目，Agent 规划时可自动调用。</p>
-          <div className="agent-skill-panel__form">
-            <input value={skillName} onChange={(event) => { setSkillName(event.target.value); setSkillConfirming(false); setSkillError('') }} maxLength={80} placeholder="技能名称，例如：夏日换景" aria-label="Skill 名称" />
-            <textarea value={skillInstructions} onChange={(event) => { setSkillInstructions(event.target.value); setSkillConfirming(false); setSkillError('') }} maxLength={4000} placeholder="描述必须保持什么、允许改变什么，以及结果规则。" aria-label="Skill 规则" />
-            {skillConfirming ? <div className="agent-skill-panel__confirm">
-              <span><strong>创建项目 Skill</strong><small>将写入当前项目，之后可被 Agent 调用。</small></span>
-              <div><button type="button" autoFocus onClick={() => { setSkillConfirming(false); requestAnimationFrame(() => skillCreateButtonRef.current?.focus()) }}>取消</button><button type="button" disabled={skillSaving} onClick={() => void confirmSkillCreation()}>{skillSaving ? '创建中…' : '确认创建'}</button></div>
-            </div> : <button ref={skillCreateButtonRef} type="button" className="agent-skill-panel__create" disabled={!skillName.trim() || !skillInstructions.trim()} onClick={() => setSkillConfirming(true)}>创建 Skill</button>}
-            {skillError ? <p role="alert">{skillError}</p> : null}
-          </div>
+          {!skillFormOpen && !skillConfirming && !skillError ? <button type="button" className="agent-skill-panel__create-entry" aria-expanded="false" onClick={() => setSkillFormOpen(true)}>＋ 新建技能</button> : <div className="agent-skill-panel__form">
+              <input value={skillName} onChange={(event) => { setSkillName(event.target.value); setSkillConfirming(false); setSkillError('') }} maxLength={80} placeholder="技能名称，例如：夏日换景" aria-label="Skill 名称" autoFocus />
+              <textarea value={skillInstructions} onChange={(event) => { setSkillInstructions(event.target.value); setSkillConfirming(false); setSkillError('') }} maxLength={4000} placeholder="描述必须保持什么、允许改变什么，以及结果规则。" aria-label="Skill 规则" />
+              {skillConfirming ? <div className="agent-skill-panel__confirm">
+                <span><strong>创建项目 Skill</strong><small>将写入当前项目，之后可被 Agent 调用。</small></span>
+                <div><button type="button" autoFocus onClick={() => { setSkillConfirming(false); requestAnimationFrame(() => skillCreateButtonRef.current?.focus()) }}>取消</button><button type="button" disabled={skillSaving} onClick={() => void confirmSkillCreation()}>{skillSaving ? '创建中…' : '确认创建'}</button></div>
+              </div> : <div className="agent-skill-panel__form-actions"><button ref={skillCreateButtonRef} type="button" className="agent-skill-panel__cancel" onClick={() => { setSkillFormOpen(false); setSkillError('') }}>取消</button><button type="button" className="agent-skill-panel__create" disabled={!skillName.trim() || !skillInstructions.trim()} onClick={() => setSkillConfirming(true)}>创建 Skill</button></div>}
+              {skillError ? <p role="alert">{skillError}</p> : null}
+            </div>}
           <div className="agent-skill-panel__list">
             {skills.map((skill) => <article key={skill.id}><strong>{skill.name}</strong><p>{skill.instructions}</p><small>项目 Skill · 可自动调用</small></article>)}
-            {!skills.length && !skillError ? <div className="agent-skill-panel__empty">还没有项目 Skill。</div> : null}
+            {!skills.length && !skillError ? <div className="agent-panel__empty">还没有项目 Skill。</div> : null}
           </div>
         </section> : null}
         {!utilityPanelOpen && !hasMessages ? <section className="agent-workspace__welcome">
@@ -1521,13 +1530,13 @@ export default function AgentWorkspace({
                 <strong>{runtimeSummary.label}</strong>
                 {runtimeSummary.totalCount ? <small>{runtimeSummary.completedCount}/{runtimeSummary.totalCount}</small> : null}
               </span>
-              <button type="button" className="agent-runtime-feed__toggle" aria-expanded={runtimeDetailsOpen} onClick={() => setRuntimeDetailsOpen((open) => !open)}>
-                {runtimeDetailsOpen ? '收起记录' : '查看记录'}
+              <button type="button" className="agent-runtime-feed__toggle" aria-expanded={runtimeDetailsOpen} aria-controls={runtimeStepsId} onClick={() => setRuntimeDetailsOpen((open) => !open)}>
+                {runtimeDetailsOpen ? '收起步骤' : '查看步骤'}
               </button>
             </header>
             <p className="agent-runtime-feed__summary">{runtimeSummary.detail}</p>
             {runtimeSummary.phase === 'waiting_clarification' || runtimeSummary.phase === 'waiting_confirmation' || runtimeSummary.phase === 'waiting_reference' || runtimeSummary.phase === 'draft_ready' ? <span className="agent-runtime-feed__next">下一步：{runtimeSummary.nextAction}</span> : null}
-            {runtimeDetailsOpen ? <ol aria-label="运行步骤">
+            {runtimeDetailsOpen ? <ol id={runtimeStepsId} aria-label="运行步骤">
               {runtimeSteps.map((step) => <li key={step.id} className={`is-${step.status}`}>
                 <span className="agent-runtime-feed__step-marker" aria-hidden="true">{agentRuntimeStepMarker(step)}</span>
                 <span className="agent-runtime-feed__step-copy"><strong>{step.status === 'running' ? `正在${step.label}` : step.label}</strong><small>{step.error ?? step.detail}</small></span>

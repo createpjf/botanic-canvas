@@ -79,3 +79,27 @@ test('Redis 画布总线忽略损坏、越权形状和媒体字节', async () =>
   assert.deepEqual(presences, [])
   await subscriber.close()
 })
+
+test('配置共享密钥后只转发带有效签名的跨实例事件', async () => {
+  const updates = []
+  const subscriber = await createCanvasRealtimeEventSubscriber('redis://test', {
+    onCanvasUpdate: (event) => updates.push(event),
+  }, { RedisClass: FakeRedis, eventSecret: 'shared-secret' })
+  const publisher = createCanvasRealtimeEventPublisher('redis://test', { RedisClass: FakeRedis, eventSecret: 'shared-secret' })
+  const update = {
+    eventId: 'signed-event-1', sourceInstanceId: 'api-a', projectId: 'project-1',
+    update: 'AQ==', actorId: 'member-1', graphRevision: 2, updatedAt: 200,
+  }
+  const raw = new FakeRedis()
+
+  await publisher.publishCanvasUpdate(update)
+  assert.equal(updates.length, 1)
+  assert.equal(typeof updates[0].signature, 'string')
+
+  await raw.publish('botanic-canvas-updates', JSON.stringify({ ...updates[0], update: 'Ag==' }))
+  await raw.publish('botanic-canvas-updates', JSON.stringify({ ...update, actorId: 'attacker' }))
+  assert.equal(updates.length, 1)
+
+  await publisher.close()
+  await subscriber.close()
+})

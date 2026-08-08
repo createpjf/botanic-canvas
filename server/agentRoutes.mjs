@@ -10,7 +10,7 @@ import { persistedGenerationJob, publicGenerationJob } from './generationProvide
 import { retargetGenerationJobForRetry } from './generationResultReconciliation.mjs'
 import { requireProjectPermission } from './projectAuthorization.mjs'
 import { buildAgentExecutionTrace } from './agentExecutionTrace.mjs'
-import { agentToolPermission, assertFreshActionApproval } from './agentActionGovernance.mjs'
+import { actionArgumentsHash, agentToolPermission, assertFreshActionApproval, createActionApprovalToken } from './agentActionGovernance.mjs'
 
 export { BotanicAgentPlannerError, BotanicAgentChatError }
 
@@ -36,6 +36,27 @@ export function createAgentRouteHandler({
   const methodNotAllowed = (response, message, allow) => json(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message } }, { Allow: allow })
   const observeRun = (event) => {
     try { observeAgentRun(event) } catch { /* 运行日志不得阻断用户请求。 */ }
+  }
+  const approvalRequired = new Set(['generation_submit', 'mcp_call'])
+  const requireActionProposal = async ({ user, projectId, actionName, toolCallId, argumentsValue }) => {
+    if (actionName === 'generation_submit') {
+      const runId = text(argumentsValue?.planId, 'Agent Run', 160)
+      const run = await productStore.readAgentRun(user.id, runId)
+      if (!run || run.projectId !== projectId || !['awaiting_confirmation', 'queued', 'executing', 'running'].includes(run.status)) {
+        throw new AgentToolRuntimeError('ACTION_PROPOSAL_NOT_FOUND', '该生成行动已不存在或已完成，请重新规划。', 409)
+      }
+      return
+    }
+    const state = await productStore.readAgentState(user.id, projectId)
+    const proposal = state?.sessions?.flatMap((session) => session.messages ?? [])
+      .flatMap((message) => message.plan?.actions ?? [])
+      .find((action) => action.id === toolCallId && action.toolName === actionName)
+    if (!proposal || !['awaiting_confirmation', 'failed'].includes(proposal.status)) {
+      throw new AgentToolRuntimeError('ACTION_PROPOSAL_NOT_FOUND', '该行动已不存在或已处理，请重新规划。', 409)
+    }
+    if (actionArgumentsHash(proposal.arguments) !== actionArgumentsHash(argumentsValue)) {
+      throw new AgentToolRuntimeError('ACTION_PROPOSAL_MISMATCH', '行动参数已变化，请重新确认。', 409)
+    }
   }
   const recordCollaborationActivity = async (user, projectId, input) => {
     try {
@@ -250,6 +271,32 @@ export function createAgentRouteHandler({
       return methodNotAllowed(response, 'Agent 记忆资源不支持该请求方法。', 'PUT, DELETE')
     }
 
+    if (url.pathname === '/api/agent-action-approvals') {
+      if (request.method !== 'POST') return methodNotAllowed(response, 'Agent 行动审批资源只接受提交请求。', 'POST')
+      const user = await requireUser(request)
+      const idempotencyKey = generationIdempotencyKey(request.headers['idempotency-key'])
+      if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', 'Agent 行动审批标识无效，请重试。')
+      const body = await readJson(request, 16 * 1024, 'Agent 行动审批请求过大。')
+      const projectId = text(body?.projectId, '项目', 160)
+      const actionName = text(body?.name, '工具名称', 80)
+      const toolCallId = text(body?.toolCallId, '工具调用标识', 160)
+      if (!approvalRequired.has(actionName)) return error(response, 400, 'ACTION_APPROVAL_NOT_REQUIRED', '该行动不需要审批凭据。')
+      await requireProjectPermission(productStore, user.id, projectId, agentToolPermission(actionName))
+      await requireActionProposal({ user, projectId, actionName, toolCallId, argumentsValue: body?.arguments })
+      if (!config.agentActionApprovalSecret) return error(response, 503, 'ACTION_APPROVAL_UNAVAILABLE', '当前行动审批服务尚未配置，请稍后重试。')
+      return json(response, 200, {
+        approval: createActionApprovalToken({
+          secret: config.agentActionApprovalSecret,
+          userId: user.id,
+          projectId,
+          actionName,
+          toolCallId,
+          argumentsValue: body?.arguments,
+          idempotencyKey,
+        }),
+      })
+    }
+
     if (url.pathname === '/api/agent-actions') {
       if (request.method !== 'POST') return methodNotAllowed(response, 'Agent 行动资源只接受提交请求。', 'POST')
       const user = await requireUser(request)
@@ -260,8 +307,16 @@ export function createAgentRouteHandler({
       const actionName = text(body?.name, '工具名称', 80)
       const toolCallId = text(body?.toolCallId, '工具调用标识', 160)
       await requireProjectPermission(productStore, user.id, projectId, agentToolPermission(actionName))
-      if (actionName === 'generation_submit' || actionName === 'mcp_call') {
-        assertFreshActionApproval(body, { projectId, toolCallId })
+      if (approvalRequired.has(actionName)) {
+        assertFreshActionApproval(body, {
+          secret: config.agentActionApprovalSecret,
+          userId: user.id,
+          projectId,
+          actionName,
+          toolCallId,
+          argumentsValue: body?.arguments,
+          idempotencyKey,
+        })
       }
       const receiptId = `agent_action_${generationJobIdForIdempotency(user.id, `${projectId}:${idempotencyKey}`).slice(4)}`
       const persistedReceipt = await productStore.readAgentActionReceipt(user.id, receiptId)

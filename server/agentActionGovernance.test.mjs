@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { agentToolPermission, assertFreshActionApproval, sanitizeAuditEvent } from './agentActionGovernance.mjs'
+import { agentToolPermission, assertFreshActionApproval, createActionApprovalToken, sanitizeAuditEvent } from './agentActionGovernance.mjs'
 
 test('Agent 行动按生成、工作流与外部工具映射到服务端权限', () => {
   assert.equal(agentToolPermission('generation_submit'), 'create-generation')
@@ -10,16 +10,20 @@ test('Agent 行动按生成、工作流与外部工具映射到服务端权限',
 })
 
 test('高风险行动审批绑定项目、工具调用并会过期', () => {
-  assert.doesNotThrow(() => assertFreshActionApproval({
-    confirmed: true,
-    approval: { projectId: 'project-1', toolCallId: 'call-1', approvedAt: 900, expiresAt: 1_100 },
-  }, { projectId: 'project-1', toolCallId: 'call-1', now: 1_000 }))
+  const common = {
+    secret: 'test-secret', userId: 'user-1', projectId: 'project-1', actionName: 'mcp_call',
+    toolCallId: 'call-1', argumentsValue: { server: 'assets', tool: 'search' }, idempotencyKey: 'action-1', now: 1_000,
+  }
+  const approval = createActionApprovalToken({ ...common, now: 900, ttlMs: 200 })
+  assert.doesNotThrow(() => assertFreshActionApproval({ confirmed: true, approval }, common))
+  const expired = createActionApprovalToken({ ...common, now: 700, ttlMs: 200 })
   assert.throws(() => assertFreshActionApproval({
     confirmed: true,
-    approval: { projectId: 'project-1', toolCallId: 'call-1', approvedAt: 900, expiresAt: 999 },
-  }, { projectId: 'project-1', toolCallId: 'call-1', now: 1_000 }), /审批已失效/)
+    approval: expired,
+  }, common), /审批已失效/)
+  assert.throws(() => assertFreshActionApproval({ confirmed: true, approval }, { ...common, argumentsValue: { tool: 'delete' } }), /不匹配/)
   assert.throws(() => assertFreshActionApproval({ confirmed: true }, {
-    projectId: 'project-1', toolCallId: 'call-1', now: 1_000,
+    ...common,
   }), /需要明确审批/)
 })
 

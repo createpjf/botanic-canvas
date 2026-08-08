@@ -1,4 +1,5 @@
 import Redis from 'ioredis'
+import { createHmac, timingSafeEqual } from 'node:crypto'
 
 const canvasUpdateChannel = 'botanic-canvas-updates'
 const canvasPresenceChannel = 'botanic-canvas-presence'
@@ -12,12 +13,33 @@ function exactKeys(value, allowed) {
   return Object.keys(value).every((key) => allowed.has(key))
 }
 
+function canonicalize(value) {
+  if (Array.isArray(value)) return value.map(canonicalize)
+  if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalize(value[key])]))
+  return value
+}
+
+function eventSignature(event, secret) {
+  return createHmac('sha256', secret).update(JSON.stringify(canonicalize({ ...event, signature: undefined }))).digest('base64url')
+}
+
+function signedEvent(event, secret) {
+  return secret ? { ...event, signature: eventSignature(event, secret) } : event
+}
+
+function hasValidSignature(event, secret) {
+  if (!secret || typeof event?.signature !== 'string') return false
+  const expected = eventSignature(event, secret)
+  return event.signature.length === expected.length
+    && timingSafeEqual(Buffer.from(event.signature), Buffer.from(expected))
+}
+
 function validCanvasUpdateEvent(event) {
   return Boolean(
     event
     && exactKeys(event, new Set([
       'eventId', 'sourceInstanceId', 'projectId', 'update', 'actorId', 'actorName',
-      'graphRevision', 'updatedAt', 'activity',
+      'graphRevision', 'updatedAt', 'activity', 'signature',
     ]))
     && nonEmptyText(event.eventId)
     && nonEmptyText(event.sourceInstanceId)
@@ -46,7 +68,7 @@ function validPresenceMember(member) {
 function validPresenceEvent(event) {
   return Boolean(
     event
-    && exactKeys(event, new Set(['eventId', 'sourceInstanceId', 'projectId', 'members', 'sentAt']))
+    && exactKeys(event, new Set(['eventId', 'sourceInstanceId', 'projectId', 'members', 'sentAt', 'signature']))
     && nonEmptyText(event.eventId)
     && nonEmptyText(event.sourceInstanceId)
     && nonEmptyText(event.projectId)
@@ -57,7 +79,7 @@ function validPresenceEvent(event) {
   )
 }
 
-export function createCanvasRealtimeEventPublisher(redisUrl, { RedisClass = Redis } = {}) {
+export function createCanvasRealtimeEventPublisher(redisUrl, { RedisClass = Redis, eventSecret } = {}) {
   if (!redisUrl) return {
     publishCanvasUpdate: async () => undefined,
     publishPresence: async () => undefined,
@@ -66,23 +88,29 @@ export function createCanvasRealtimeEventPublisher(redisUrl, { RedisClass = Redi
   const redis = new RedisClass(redisUrl, { maxRetriesPerRequest: null })
   return {
     async publishCanvasUpdate(event) {
-      if (validCanvasUpdateEvent(event)) await redis.publish(canvasUpdateChannel, JSON.stringify(event))
+      const payload = signedEvent(event, eventSecret)
+      if (validCanvasUpdateEvent(payload) && (!eventSecret || hasValidSignature(payload, eventSecret))) await redis.publish(canvasUpdateChannel, JSON.stringify(payload))
     },
     async publishPresence(event) {
-      if (validPresenceEvent(event)) await redis.publish(canvasPresenceChannel, JSON.stringify(event))
+      const payload = signedEvent(event, eventSecret)
+      if (validPresenceEvent(payload) && (!eventSecret || hasValidSignature(payload, eventSecret))) await redis.publish(canvasPresenceChannel, JSON.stringify(payload))
     },
     async close() { await redis.quit() },
   }
 }
 
-export async function createCanvasRealtimeEventSubscriber(redisUrl, handlers = {}, { RedisClass = Redis } = {}) {
+export async function createCanvasRealtimeEventSubscriber(redisUrl, handlers = {}, { RedisClass = Redis, eventSecret } = {}) {
   if (!redisUrl) return { close: async () => undefined }
   const redis = new RedisClass(redisUrl, { maxRetriesPerRequest: null })
   redis.on('message', (channel, payload) => {
     try {
       const event = JSON.parse(payload)
-      if (channel === canvasUpdateChannel && validCanvasUpdateEvent(event)) handlers.onCanvasUpdate?.(event)
-      if (channel === canvasPresenceChannel && validPresenceEvent(event)) handlers.onPresence?.(event)
+      if (channel === canvasUpdateChannel && validCanvasUpdateEvent(event) && (!eventSecret || hasValidSignature(event, eventSecret))) {
+        Promise.resolve(handlers.onCanvasUpdate?.(event)).catch(() => undefined)
+      }
+      if (channel === canvasPresenceChannel && validPresenceEvent(event) && (!eventSecret || hasValidSignature(event, eventSecret))) {
+        Promise.resolve(handlers.onPresence?.(event)).catch(() => undefined)
+      }
     } catch {
       // 单条损坏消息不能中断后续画布协作。
     }

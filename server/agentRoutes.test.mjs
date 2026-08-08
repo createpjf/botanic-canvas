@@ -169,7 +169,7 @@ test('Editor 不能越权执行外部工具，过期审批也不能绕过服务�
       { method: 'POST', headers: { 'idempotency-key': 'external-expired-action-1' } }, {},
       new URL('http://botanic.test/api/agent-actions'), {}, 'request-owner',
     ),
-    (caught) => caught?.code === 'ACTION_APPROVAL_EXPIRED',
+    (caught) => caught?.code === 'ACTION_APPROVAL_REQUIRED',
   )
 })
 

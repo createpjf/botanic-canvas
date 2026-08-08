@@ -1,3 +1,4 @@
+import { useId } from 'react'
 import type { ChangeEvent, KeyboardEvent, RefObject } from 'react'
 import type { BotanicAgentMentionQuery, BotanicAgentSession } from '../../domain/agent'
 import type { AssetGroup } from '../../domain/canvas'
@@ -86,6 +87,7 @@ export function AgentComposer({
   onToggleImageContext,
   onExecutionModeChange,
 }: AgentComposerProps) {
+  const composerErrorId = useId()
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Escape' && mentionQuery) {
       event.preventDefault()
@@ -108,11 +110,11 @@ export function AgentComposer({
     onImportFiles(files)
   }
 
-  return <div className="agent-composer">
-    {contextItems.length ? <div className="agent-composer__context">{contextItems.map((item) => <button key={item.id} type="button" aria-label={`移除 ${item.label}`} title={`移除 ${item.label}`} onClick={() => onRemoveContext(item.id)}>{item.image ? <img src={item.image} alt="" /> : <span>{item.kind.slice(0, 1)}</span>}<i aria-hidden="true">×</i></button>)}</div> : null}
-    {mentionQuery ? <div className="agent-composer__mention-menu" role="group" aria-label="引用画布内容" onPointerDown={(event) => event.stopPropagation()}>
-      {mentionOptions.map((item) => <button key={item.id} type="button" onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onSelectMention(item) }}>{item.image ? <img src={item.image} alt="" /> : <span>{item.kind.slice(0, 1)}</span>}<b>{item.label}</b><small>{item.kind}</small></button>)}
-      {!mentionOptions.length ? <p>没有匹配的素材</p> : null}
+  return <div className="agent-composer" role="group" aria-label="Agent 输入" aria-busy={planning}>
+    {contextItems.length ? <div className="agent-composer__context" aria-label={`已引用 ${contextItems.length} 个素材`}>{contextItems.map((item) => <button key={item.id} type="button" aria-label={`移除 ${item.label}`} title={`移除 ${item.label}`} onClick={() => onRemoveContext(item.id)}>{item.image ? <img src={item.image} alt="" /> : <span>{item.kind.slice(0, 1)}</span>}<i aria-hidden="true">×</i></button>)}</div> : null}
+    {mentionQuery ? <div className="agent-composer__mention-menu" role="listbox" aria-label="选择素材引用" onPointerDown={(event) => event.stopPropagation()}>
+      {mentionOptions.map((item) => <button key={item.id} type="button" role="option" aria-label={`引用素材 ${item.label}`} onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onSelectMention(item) }}>{item.image ? <img src={item.image} alt="" /> : <span>{item.kind.slice(0, 1)}</span>}<b>{item.label}</b><small>素材</small></button>)}
+      {!mentionOptions.length ? <p>没有匹配的素材，按 Esc 关闭</p> : null}
     </div> : null}
     <textarea
       ref={textareaRef}
@@ -122,8 +124,10 @@ export function AgentComposer({
       onKeyDown={handleKeyDown}
       placeholder="和 Agent 聊天、生成 Prompt 或描述创作需求，@ 引用画布内容"
       aria-label="Agent 消息"
+      aria-invalid={Boolean(error)}
+      aria-describedby={error ? composerErrorId : undefined}
     />
-    {error ? <div className="agent-composer__error" role="alert"><span>{error}</span>{canRetry ? <button type="button" onClick={onRetry} disabled={retrying}>重试</button> : null}</div> : null}
+    {error ? <div id={composerErrorId} className="agent-composer__error" role="alert"><span>{error}</span>{canRetry ? <button type="button" onClick={onRetry} disabled={retrying}>重试</button> : null}</div> : null}
     <input ref={fileInputRef} className="asset-file-input" type="file" accept="image/png,image/jpeg,image/webp" multiple aria-label="从电脑添加图片素材" onChange={handleFiles} />
     <div className="agent-composer__toolbar">
       <div>
@@ -145,19 +149,19 @@ export function AgentComposer({
       </div>
       <button type="button" className="agent-composer__send" disabled={!instruction.trim() || planning || !session} onClick={onSend} aria-label="发送给 Agent">{planning ? <span className="agent-composer__spinner" /> : <ArrowUpIcon />}</button>
     </div>
-    {contextMenuOpen ? <div id={contextMenuId} className="agent-composer__context-menu" role="group" aria-label="添加图像素材" onPointerDown={(event) => event.stopPropagation()}>
+    {contextMenuOpen ? <div id={contextMenuId} className="agent-composer__context-menu" role="menu" aria-label="添加图像素材" onPointerDown={(event) => event.stopPropagation()}>
       <header><strong>添加图像素材</strong><button type="button" aria-label="关闭添加图像素材" onClick={onCloseContextMenu}><CloseIcon /></button></header>
       <div className="agent-composer__context-upload">
-        <button type="button" onClick={() => fileInputRef.current?.click()}><UploadIcon /><span><b>从电脑选择图片</b><small>也可以直接拖入 Agent 面板</small></span></button>
+        <button type="button" role="menuitem" onClick={() => fileInputRef.current?.click()}><UploadIcon /><span><b>从电脑选择图片</b><small>也可以直接拖入 Agent 面板</small></span></button>
       </div>
       {imageContextOptions.length ? imageContextOptions.map((item) => {
         const selected = session?.contextNodeIds.includes(item.id) ?? false
-        return <button key={item.id} type="button" className={selected ? 'is-selected' : ''} aria-pressed={selected} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onToggleImageContext(item.id, selected) }}>{item.image ? <img src={item.image} alt="" /> : null}<span><b>{item.label}</b><small>{item.kind}</small></span>{selected ? <i aria-hidden="true">✓</i> : null}</button>
+        return <button key={item.id} type="button" role="menuitemcheckbox" className={selected ? 'is-selected' : ''} aria-checked={selected} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onToggleImageContext(item.id, selected) }}>{item.image ? <img src={item.image} alt="" /> : null}<span><b>{item.label}</b><small>{item.kind}</small></span>{selected ? <i aria-hidden="true">✓</i> : null}</button>
       }) : <p>暂无图像素材，可从电脑选择或直接拖入。</p>}
     </div> : null}
-    {modeMenuOpen ? <div id={modeMenuId} className="agent-composer__mode-menu" role="group" aria-label="执行模式">
-      <button type="button" className={session?.executionMode === 'manual' ? 'is-selected' : ''} onClick={() => onExecutionModeChange('manual')}><ChecklistIcon /><span><strong>手动确认</strong><small>执行生成前先确认锁定项</small></span></button>
-      <button type="button" className={session?.executionMode === 'auto' ? 'is-selected' : ''} onClick={() => onExecutionModeChange('auto')}><AutoRunIcon /><span><strong>自动执行</strong><small>规划完成后直接创建任务</small></span></button>
+    {modeMenuOpen ? <div id={modeMenuId} className="agent-composer__mode-menu" role="menu" aria-label="执行模式">
+      <button type="button" role="menuitemradio" aria-checked={session?.executionMode === 'manual'} className={session?.executionMode === 'manual' ? 'is-selected' : ''} onClick={() => onExecutionModeChange('manual')}><ChecklistIcon /><span><strong>手动确认</strong><small>执行生成前先确认锁定项</small></span></button>
+      <button type="button" role="menuitemradio" aria-checked={session?.executionMode === 'auto'} className={session?.executionMode === 'auto' ? 'is-selected' : ''} onClick={() => onExecutionModeChange('auto')}><AutoRunIcon /><span><strong>自动执行</strong><small>规划完成后直接创建任务</small></span></button>
     </div> : null}
   </div>
 }
