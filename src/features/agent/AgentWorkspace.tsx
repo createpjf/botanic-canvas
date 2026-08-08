@@ -57,6 +57,7 @@ import {
 } from '../../components/generationModelPresentation'
 import {
   AgentFailureRecoveryActions,
+  AgentBranchStatusIcon,
   agentRunOutputCount,
   agentRuntimeStepMarker,
   agentRuntimeStepStatusLabel,
@@ -75,10 +76,14 @@ import { AgentCollaborationPanel, AgentMemoryPanel, AgentResultPanel } from './A
 import { AgentConversationMessage } from './AgentConversationMessage'
 import { AgentComposer } from './AgentComposer'
 import {
+  AlertIcon,
   BookmarkIcon,
+  CheckIcon,
   ChecklistIcon,
+  ClockIcon,
   CloseIcon,
   FigmaIcon,
+  FocusIcon,
   GalleryIcon,
   PlusSquareIcon,
   SparkleIcon,
@@ -120,6 +125,19 @@ function agentGroupRole(intent: BotanicAgentIntent): AssetGroup['role'] | null {
   if (intent === 'replace_product') return '商品'
   if (intent === 'change_style') return '调性'
   return null
+}
+
+function AgentRunActionIcon({ label }: { label: string }) {
+  if (label.includes('结果')) return <GalleryIcon />
+  if (label.includes('失败')) return <AlertIcon />
+  return <ChecklistIcon />
+}
+
+function AgentTaskFilterIcon({ value }: { value: 'all' | 'active' | 'completed' | 'attention' }) {
+  if (value === 'completed') return <CheckIcon />
+  if (value === 'attention') return <AlertIcon />
+  if (value === 'active') return <ClockIcon />
+  return <ChecklistIcon />
 }
 
 
@@ -1420,9 +1438,11 @@ export default function AgentWorkspace({
             ] as const).map(([value, label, count]) => <button
               key={value}
               type="button"
+              aria-label={`${label} · ${count} 项`}
               aria-pressed={taskStatusFilter === value}
+              title={`${label} · ${count} 项`}
               onClick={() => setTaskStatusFilter(value)}
-            ><span>{label}</span><b>{count}</b></button>)}
+            ><AgentTaskFilterIcon value={value} /><b>{count}</b></button>)}
           </div>
           <div className="agent-task-panel__list">
             {filteredRunTimeline.map(({ run, source }) => {
@@ -1430,13 +1450,13 @@ export default function AgentWorkspace({
               const feedback = botanicAgentRunFeedback(run.status, outputCount, run.error)
               const active = run.status === 'queued' || run.status === 'running' || run.status === 'executing'
               return <article key={run.id} ref={(node) => { if (node) taskNodesRef.current.set(run.id, node); else taskNodesRef.current.delete(run.id) }} tabIndex={-1} className={`is-${run.status} is-${feedback.tone}${focusedTaskRunId === run.id ? ' is-located' : ''}`}>
-              <header><span><strong>{run.plan.summary}</strong><small>{feedback.label} · <time dateTime={new Date(run.updatedAt).toISOString()}>{agentTimelineTimestamp(run.updatedAt)}</time></small>{source ? <button type="button" className="agent-task-panel__source" onClick={() => locateTaskSourceMessage(source)}>定位到「{source.sessionTitle}」</button> : null}</span><div>{active ? <button type="button" className="agent-icon-button agent-icon-button--danger" aria-label="取消任务" title="取消任务" disabled={cancellingRunId === run.id} onClick={() => { setCancellingRunId(run.id); void onCancelRun(run.id).finally(() => setCancellingRunId('')) }}>{cancellingRunId === run.id ? <span className="agent-workspace__mini-spinner" /> : <CloseIcon />}</button> : <button type="button" className="agent-task-panel__feedback-action" onClick={() => openRunFeedback(run)}>{feedback.actionLabel}</button>}<b>{run.completedBranchCount}/{run.branches.length}</b></div></header>
+              <header><span><strong>{run.plan.summary}</strong><small>{feedback.label} · <time dateTime={new Date(run.updatedAt).toISOString()}>{agentTimelineTimestamp(run.updatedAt)}</time></small>{source ? <button type="button" className="agent-task-panel__source" aria-label={`定位到「${source.sessionTitle}」`} title={`定位到「${source.sessionTitle}」`} onClick={() => locateTaskSourceMessage(source)}><FocusIcon /></button> : null}</span><div>{active ? <button type="button" className="agent-icon-button agent-icon-button--danger" aria-label="取消任务" title="取消任务" disabled={cancellingRunId === run.id} onClick={() => { setCancellingRunId(run.id); void onCancelRun(run.id).finally(() => setCancellingRunId('')) }}>{cancellingRunId === run.id ? <span className="agent-workspace__mini-spinner" /> : <CloseIcon />}</button> : <button type="button" className="agent-task-panel__feedback-action" aria-label={feedback.actionLabel} title={feedback.actionLabel} onClick={() => openRunFeedback(run)}><AgentRunActionIcon label={feedback.actionLabel} /></button>}<b>{run.completedBranchCount}/{run.branches.length}</b></div></header>
               <p className="agent-task-panel__feedback">{feedback.detail}</p>
               <div className="agent-run-card__track" aria-hidden="true"><i style={{ width: `${run.branches.length ? Math.round(run.completedBranchCount / run.branches.length * 100) : 0}%` }} /></div>
               <details className="agent-task-panel__details">
-                <summary>查看分支详情 <span>{run.branches.length} 个</span></summary>
-                <div className="agent-task-panel__summary" aria-label="分支状态汇总"><span><b>{run.branches.filter((branch) => branch.status === 'succeeded').length}</b>完成</span><span><b>{run.branches.filter((branch) => branch.status === 'running').length}</b>生成中</span><span><b>{run.branches.filter((branch) => branch.status === 'queued').length}</b>排队</span><span><b>{run.branches.filter((branch) => branch.status === 'failed' || branch.status === 'cancelled').length}</b>失败</span></div>
-                <div className="agent-task-panel__matrix" aria-label="批量分支矩阵">{run.branches.map((branch, index) => <div key={branch.id} className={`is-${branch.status}`} title={`${branch.label} · ${botanicAgentBranchStatusLabel(branch.status)}`}><span>{index + 1}</span><small>{branch.label}</small></div>)}</div>
+                <summary aria-label="查看分支详情" title="查看分支详情"><ChecklistIcon /><span>{run.branches.length}</span></summary>
+                <div className="agent-task-panel__summary" aria-label="分支状态汇总"><span aria-label={`${run.branches.filter((branch) => branch.status === 'succeeded').length} 项完成`} title="完成"><AgentBranchStatusIcon status="succeeded" /><b>{run.branches.filter((branch) => branch.status === 'succeeded').length}</b></span><span aria-label={`${run.branches.filter((branch) => branch.status === 'running').length} 项生成中`} title="生成中"><AgentBranchStatusIcon status="running" /><b>{run.branches.filter((branch) => branch.status === 'running').length}</b></span><span aria-label={`${run.branches.filter((branch) => branch.status === 'queued').length} 项排队`} title="排队"><AgentBranchStatusIcon status="queued" /><b>{run.branches.filter((branch) => branch.status === 'queued').length}</b></span><span aria-label={`${run.branches.filter((branch) => branch.status === 'failed' || branch.status === 'cancelled').length} 项失败`} title="失败"><AgentBranchStatusIcon status="failed" /><b>{run.branches.filter((branch) => branch.status === 'failed' || branch.status === 'cancelled').length}</b></span></div>
+                <div className="agent-task-panel__matrix" aria-label="批量分支矩阵">{run.branches.map((branch, index) => <div key={branch.id} className={`is-${branch.status}`} aria-label={`${branch.label} · ${botanicAgentBranchStatusLabel(branch.status)}`} title={`${branch.label} · ${botanicAgentBranchStatusLabel(branch.status)}`}><span>{index + 1}</span><AgentBranchStatusIcon status={branch.status} /></div>)}</div>
               </details>
               {run.branches.filter((branch) => branch.status === 'failed' || branch.status === 'cancelled').map((branch) => <div className="agent-task-panel__branch" key={branch.id}><span><strong>{branch.label}</strong><small>{branch.error ?? '该分支未完成'}</small></span><AgentFailureRecoveryActions
                 branch={branch}
@@ -1525,13 +1545,13 @@ export default function AgentWorkspace({
             <header className="agent-runtime-feed__header">
               <span className="agent-runtime-feed__status">
                 <span className="agent-runtime-feed__mark" aria-hidden="true">
-                  {livePhase && !runtimeFailed ? <span className="agent-composer__spinner" /> : runtimeFailed ? '!' : runtimeComplete ? '✓' : '·'}
+                  {livePhase && !runtimeFailed ? <span className="agent-composer__spinner" /> : runtimeFailed ? <AlertIcon /> : runtimeComplete ? <CheckIcon /> : <ClockIcon />}
                 </span>
                 <strong>{runtimeSummary.label}</strong>
                 {runtimeSummary.totalCount ? <small>{runtimeSummary.completedCount}/{runtimeSummary.totalCount}</small> : null}
               </span>
-              <button type="button" className="agent-runtime-feed__toggle" aria-expanded={runtimeDetailsOpen} aria-controls={runtimeStepsId} onClick={() => setRuntimeDetailsOpen((open) => !open)}>
-                {runtimeDetailsOpen ? '收起步骤' : '查看步骤'}
+              <button type="button" className="agent-runtime-feed__toggle" aria-label={runtimeDetailsOpen ? '收起运行步骤' : '查看运行步骤'} title={runtimeDetailsOpen ? '收起运行步骤' : '查看运行步骤'} aria-expanded={runtimeDetailsOpen} aria-controls={runtimeStepsId} onClick={() => setRuntimeDetailsOpen((open) => !open)}>
+                <ChecklistIcon />
               </button>
             </header>
             <p className="agent-runtime-feed__summary">{runtimeSummary.detail}</p>
@@ -1546,7 +1566,7 @@ export default function AgentWorkspace({
           </section>
         })() : null}
         {!utilityPanelOpen && latestRun?.branches.length && latestRunFeedback ? <section className={`agent-run-card is-${latestRunFeedback.tone}`} aria-label="Agent Run 实时进度">
-          <header><span><strong>生成任务</strong><small>{latestRunFeedback.label}</small></span><div>{latestRun.status === 'queued' || latestRun.status === 'running' || latestRun.status === 'executing' ? <button type="button" className="agent-icon-button agent-icon-button--danger" aria-label="取消任务" title="取消任务" disabled={cancellingRunId === latestRun.id} onClick={() => { setCancellingRunId(latestRun.id); setError(''); void onCancelRun(latestRun.id).then((ok) => { if (!ok) setError('任务取消失败，请稍后重试。') }).catch(() => setError('任务取消失败，请稍后重试。')).finally(() => setCancellingRunId('')) }}>{cancellingRunId === latestRun.id ? <span className="agent-workspace__mini-spinner" /> : <CloseIcon />}</button> : <button type="button" className="agent-run-card__feedback-action" onClick={() => openRunFeedback(latestRun)}>{latestRunFeedback.actionLabel}</button>}<b>{latestRun.completedBranchCount}/{latestRun.branches.length}</b></div></header>
+          <header><span><strong>生成任务</strong><small>{latestRunFeedback.label}</small></span><div>{latestRun.status === 'queued' || latestRun.status === 'running' || latestRun.status === 'executing' ? <button type="button" className="agent-icon-button agent-icon-button--danger" aria-label="取消任务" title="取消任务" disabled={cancellingRunId === latestRun.id} onClick={() => { setCancellingRunId(latestRun.id); setError(''); void onCancelRun(latestRun.id).then((ok) => { if (!ok) setError('任务取消失败，请稍后重试。') }).catch(() => setError('任务取消失败，请稍后重试。')).finally(() => setCancellingRunId('')) }}>{cancellingRunId === latestRun.id ? <span className="agent-workspace__mini-spinner" /> : <CloseIcon />}</button> : <button type="button" className="agent-run-card__feedback-action" aria-label={latestRunFeedback.actionLabel} title={latestRunFeedback.actionLabel} onClick={() => openRunFeedback(latestRun)}><AgentRunActionIcon label={latestRunFeedback.actionLabel} /></button>}<b>{latestRun.completedBranchCount}/{latestRun.branches.length}</b></div></header>
           <p className="agent-run-card__feedback">{latestRunFeedback.detail}</p>
           <div className="agent-run-card__track" aria-hidden="true"><i style={{ width: `${Math.round(latestRun.completedBranchCount / latestRun.branches.length * 100)}%` }} /></div>
           <div className="agent-run-card__branches">

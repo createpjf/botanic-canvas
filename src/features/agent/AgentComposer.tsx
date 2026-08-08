@@ -147,7 +147,7 @@ export function AgentComposer({
         />
         {compatibleGroups.length ? <BotanicSelect className="agent-composer__group-select" value={groupId} placeholder="素材组" ariaLabel="批量素材组" options={[{ value: '', label: '单张' }, ...compatibleGroups.map((group) => ({ value: group.id, label: `${group.name} · ${group.assetIds.length}` }))]} onChange={onGroupChange} renderTrigger={(selected) => <span className="agent-group-trigger" title={selected?.label ?? '单张'}><strong>{selected?.value ? '组' : '1'}</strong></span>} /> : null}
       </div>
-      <button type="button" className="agent-composer__send" disabled={!instruction.trim() || planning || !session} onClick={onSend} aria-label="发送给 Agent">{planning ? <span className="agent-composer__spinner" /> : <ArrowUpIcon />}</button>
+      <button type="button" className="agent-composer__send" disabled={!instruction.trim() || planning || !session} onClick={onSend} aria-label="发送给 Agent" title="发送给 Agent">{planning ? <span className="agent-composer__spinner" /> : <ArrowUpIcon />}</button>
     </div>
     {contextMenuOpen ? <div id={contextMenuId} className="agent-composer__context-menu" role="menu" aria-label="添加图像素材" onPointerDown={(event) => event.stopPropagation()}>
       <header><strong>添加图像素材</strong><button type="button" aria-label="关闭添加图像素材" onClick={onCloseContextMenu}><CloseIcon /></button></header>

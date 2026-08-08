@@ -201,7 +201,7 @@ export function AgentResultPanel({
             const canContinue = Boolean(locatableNodeId || (artifact.url && (artifact.kind === 'image' || artifact.kind === 'video')))
             const selected = selectedIds.includes(artifact.id)
             return <article key={artifact.id} className={selected ? 'is-selected' : ''}>
-              <button type="button" className="agent-result-panel__select" aria-pressed={selected} aria-label={`${selected ? '取消选择' : '选择'} ${artifact.label}`} onClick={() => toggleSelection(artifact.id)}>{selected ? '✓' : ''}</button>
+              <button type="button" className="agent-result-panel__select" aria-pressed={selected} aria-label={`${selected ? '取消选择' : '选择'} ${artifact.label}`} title={selected ? '取消选择' : '选择'} onClick={() => toggleSelection(artifact.id)}>{selected ? '✓' : ''}</button>
               {artifact.url && (artifact.kind === 'image' || artifact.kind === 'video') ? <div className="agent-result-panel__preview">
                 {artifact.kind === 'image' ? <img src={artifact.url} alt="" /> : <video src={artifact.url} muted playsInline />}
               </div> : <div className="agent-result-panel__document"><span>{artifact.kind === 'workflow' ? '⌘' : 'Aa'}</span><p>{artifact.content ?? artifact.label}</p></div>}

@@ -65,6 +65,39 @@ export function RefreshIcon({ className }: BotanicIconProps) {
   </svg>
 }
 
+/** 通用完成状态 */
+export function CheckIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="m5 12.5 4.25 4.25L19 7" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+}
+
+/** 通用等待状态 */
+export function ClockIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <circle cx="12" cy="12" r="8.75" stroke="currentColor" strokeWidth="1.5" />
+    <path d="M12 7.25v5l3.25 2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+}
+
+/** 通用警告状态 */
+export function AlertIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="M12 3.25 21 19.75H3L12 3.25Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+    <path d="M12 9v4.25M12 16.25v.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+  </svg>
+}
+
+/** 参数调整动作 */
+export function SlidersIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="M4 6.25h16M4 12h16M4 17.75h16" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    <circle cx="8" cy="6.25" r="1.75" fill="currentColor" />
+    <circle cx="15" cy="12" r="1.75" fill="currentColor" />
+    <circle cx="10" cy="17.75" r="1.75" fill="currentColor" />
+  </svg>
+}
+
 /** 植物学 Figma · Iconly/Sharp/Close Square（1228:231093） */
 export function CloseIcon({ className }: BotanicIconProps) {
   return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">

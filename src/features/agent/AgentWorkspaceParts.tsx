@@ -12,7 +12,7 @@ import {
 } from '../../domain/agent'
 import type { GenerationModelOption, GenerationSettings } from '../../domain/canvas'
 import { modelDisplayLabel, modelProviderLogo } from '../../components/generationModelPresentation'
-import { RefreshIcon } from '../../components/BotanicIcons'
+import { AlertIcon, CheckIcon, ClockIcon, CloseIcon, EditIcon, RefreshIcon, SlidersIcon } from '../../components/BotanicIcons'
 
 export function agentToolStatusLabel(status: NonNullable<BotanicAgentPlan['toolCalls']>[number]['status']) {
   if (status === 'succeeded') return '已完成'
@@ -36,6 +36,19 @@ export function agentRuntimeStepMarker(step: BotanicAgentRuntimeStep) {
   if (step.kind === 'search') return '⌕'
   if (step.kind === 'write') return '↗'
   return '○'
+}
+
+export function AgentBranchStatusIcon({ status }: { status: BotanicAgentRun['branches'][number]['status'] }) {
+  const icon = status === 'succeeded'
+    ? <CheckIcon />
+    : status === 'running'
+      ? <span className="agent-branch-status-icon__spinner" />
+      : status === 'queued'
+        ? <ClockIcon />
+        : status === 'cancelled'
+          ? <CloseIcon />
+          : <AlertIcon />
+  return <span className={`agent-branch-status-icon is-${status}`} aria-hidden="true">{icon}</span>
 }
 
 export function agentMemoryKindLabel(kind: BotanicAgentMemoryKind) {
@@ -178,12 +191,12 @@ export function AgentFailureRecoveryActions({
 }) {
   return (
     <div className="agent-recovery-actions" aria-label={`${branch.label} 恢复操作`}>
-      <button type="button" className="is-retry" disabled={retrying} onClick={onRetry} title="复用同一任务，不会创建重复任务">
-        {retrying ? <span className="agent-workspace__mini-spinner" /> : <RefreshIcon />}<span>重试当前分支</span>
+      <button type="button" className="is-retry" aria-label="重试当前分支" disabled={retrying} onClick={onRetry} title="重试当前分支 · 复用同一任务，不会创建重复任务">
+        {retrying ? <span className="agent-workspace__mini-spinner" /> : <RefreshIcon />}
       </button>
-      <button type="button" onClick={() => onPrepare('settings')} title="只预填修改要求，不会立即提交">修改参数</button>
+      <button type="button" aria-label="修改参数" onClick={() => onPrepare('settings')} title="修改参数 · 只预填修改要求，不会立即提交"><EditIcon /></button>
       <span className="agent-recovery-model-picker">
-        <button type="button" aria-expanded={menuOpen} onClick={onToggleModelMenu} title="只预填模型，不会立即提交">更换模型</button>
+        <button type="button" aria-label="更换模型" aria-expanded={menuOpen} onClick={onToggleModelMenu} title="更换模型 · 只预填模型，不会立即提交"><SlidersIcon /></button>
         {menuOpen ? <div className="agent-recovery-model-menu" role="group" aria-label="选择恢复模型" onPointerDown={(event) => event.stopPropagation()}>
           {generationModels.map((model) => <button key={model.id} type="button" onClick={() => onPrepare('model', model)}>
             <span>{modelProviderLogo(model) ? <img src={modelProviderLogo(model)} alt="" /> : null}<b>{modelDisplayLabel(model)}</b></span>
