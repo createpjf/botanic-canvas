@@ -3,6 +3,7 @@ import { failUnsubmittedPersistentAgentRun, publicAgentRun } from './botanicAgen
 import { prepareAgentRunExecution, reconcileAgentGenerationJobToProject } from './botanicAgentExecution.mjs'
 import { AgentToolRuntimeError } from './agentToolRuntime.mjs'
 import { generationJobIdForIdempotency } from './generationIdempotency.mjs'
+import { buildGenerationUsage, reserveGenerationBudget } from './generationGovernance.mjs'
 
 /**
  * Agent Run 确认后的唯一生成提交模块。路由只调用这个小接口；配额、幂等、
@@ -91,6 +92,19 @@ export function createAgentRunGenerationService({
         cost: outputCost,
       })
       if (!quota.allowed) throw new AgentToolRuntimeError('RATE_LIMITED', '今日生成额度已用完，请稍后重试。', 429)
+    }
+    for (const job of pendingJobs) {
+      const model = (config.modelOptions ?? []).find((candidate) => candidate.id === job.settings?.model)
+      const usage = buildGenerationUsage(job.rawInput ?? job, {
+        jobId: job.id,
+        memberId: userId,
+        mediaKind: model?.mediaKind ?? 'image',
+        provider: model?.provider ?? job.provider,
+      })
+      const budget = await reserveGenerationBudget({ securityControls, usage, limits: config.generationBudgets })
+      if (!budget.allowed) throw new AgentToolRuntimeError('GENERATION_BUDGET_EXCEEDED', '生成额度不足，请降低输出规格或联系工作区所有者。', 402)
+      job.usage = usage
+      if (budget.warning) job.budgetWarning = '生成额度接近上限。'
     }
     await persistWorkflow(userId, project, prepared)
     const queueFailures = []

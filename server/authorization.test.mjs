@@ -5,12 +5,19 @@ import {
   workspacePermissionDecision,
 } from './authorization.mjs'
 
-test('项目角色权限矩阵区分读取、编辑、成员管理、删除与审计', () => {
+test('项目角色权限矩阵区分读取、生产、治理、外部行动与审计', () => {
   assert.equal(projectPermissionDecision('viewer', 'read'), 'allow')
   assert.equal(projectPermissionDecision('viewer', 'edit'), 'forbidden')
+  assert.equal(projectPermissionDecision('viewer', 'create-generation'), 'forbidden')
   assert.equal(projectPermissionDecision('editor', 'edit'), 'allow')
+  assert.equal(projectPermissionDecision('editor', 'create-generation'), 'allow')
+  assert.equal(projectPermissionDecision('editor', 'delete-content'), 'allow')
+  assert.equal(projectPermissionDecision('editor', 'modify-workflow'), 'allow')
+  assert.equal(projectPermissionDecision('editor', 'execute-external-tool'), 'forbidden')
   assert.equal(projectPermissionDecision('editor', 'manage-members'), 'forbidden')
-  assert.equal(projectPermissionDecision('owner', 'delete'), 'allow')
+  assert.equal(projectPermissionDecision('owner', 'delete-project'), 'allow')
+  assert.equal(projectPermissionDecision('owner', 'execute-external-tool'), 'allow')
+  assert.equal(projectPermissionDecision('owner', 'read-operational'), 'allow')
   assert.equal(projectPermissionDecision('owner', 'read-audit'), 'allow')
   assert.equal(projectPermissionDecision(undefined, 'read'), 'forbidden')
 })

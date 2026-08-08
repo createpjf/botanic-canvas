@@ -1,10 +1,24 @@
 import { GenerationError, persistedGenerationJob, resolveGenerationInputMedia, validateGenerationInput } from './generationProvider.mjs'
 import { generationTimeoutForModel } from './generationModels.mjs'
+import { providerForModel } from './generationModels.mjs'
 import { generateMedia } from './generationService.mjs'
 import { publicAgentRun } from './botanicAgentRun.mjs'
 import { reconcileAgentGenerationJobToProject } from './botanicAgentExecution.mjs'
+import { compatibleFallbackModel, ProviderCircuitBreaker } from './generationGovernance.mjs'
 
-export function createGenerationProcessor({ productStore, mediaService, config, publishAgentRunUpdated, observeAgentRun = () => {}, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }) {
+export function createGenerationProcessor({
+  productStore,
+  mediaService,
+  config,
+  publishAgentRunUpdated,
+  observeAgentRun = () => {},
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  providerCircuitBreaker = new ProviderCircuitBreaker({
+    failureThreshold: config.providerFailureThreshold,
+    cooldownMs: config.providerCircuitCooldownMs,
+  }),
+  generate = generateMedia,
+}) {
   const observeRun = (job, event) => {
     if (!job.agentRun) return
     try {
@@ -182,15 +196,74 @@ export function createGenerationProcessor({ productStore, mediaService, config, 
       let result
       try {
         console.info(`[generation] ${jobId} requesting provider`)
-        result = await generateMedia(input, {
-          config,
-          jobId,
-          signal: controller.signal,
-          persistImage: (image) => mediaService.persistProviderImage({ ownerId: running.ownerId, projectId: running.projectId, image }),
-          persistMedia: (media) => mediaService.persistProviderMedia({ ownerId: running.ownerId, projectId: running.projectId, media }),
-          onVariant,
-          completedVariants: running.variants,
+        const model = providerForModel(config.modelOptions ?? [], input.settings.model)
+        const provider = model?.provider ?? running.provider ?? 'unknown'
+        const runProvider = async (effectiveInput, effectiveModel, effectiveProvider) => {
+          const latestJob = await productStore.readGenerationJobForWorker(jobId)
+          const attempt = {
+            provider: effectiveProvider,
+            model: effectiveModel,
+            startedAt: Date.now(),
+          }
+          await productStore.putGenerationJob(running.ownerId, persistedGenerationJob({
+            ...latestJob,
+            effectiveModel,
+            usage: latestJob.usage ? {
+              ...latestJob.usage,
+              model: effectiveModel,
+              provider: effectiveProvider,
+            } : latestJob.usage,
+            providerAttempts: [...(latestJob.providerAttempts ?? []), attempt],
+            updatedAt: Date.now(),
+          }))
+          try {
+            const generated = await generate(effectiveInput, {
+              config,
+              jobId,
+              signal: controller.signal,
+              persistImage: (image) => mediaService.persistProviderImage({ ownerId: running.ownerId, projectId: running.projectId, image }),
+              persistMedia: (media) => mediaService.persistProviderMedia({ ownerId: running.ownerId, projectId: running.projectId, media }),
+              onVariant,
+              completedVariants: running.variants,
+            })
+            await providerCircuitBreaker.recordSuccess(effectiveProvider)
+            return generated
+          } catch (caught) {
+            await providerCircuitBreaker.recordFailure(effectiveProvider, caught)
+            throw caught
+          }
+        }
+        const fallback = () => compatibleFallbackModel({
+          catalog: config.modelOptions ?? [],
+          input,
+          candidateIds: config.providerFallbackModelIds ?? [],
         })
+        const providerDecision = await providerCircuitBreaker.canRequest(provider)
+        if (!providerDecision.allowed) {
+          const alternate = fallback()
+          if (!alternate) throw new GenerationError(503, 'PROVIDER_CIRCUIT_OPEN', '当前生成服务暂不可用，且没有语义兼容的备用模型，请稍后重试。')
+          const fallbackInput = { ...input, settings: { ...input.settings, model: alternate.id } }
+          result = await runProvider(fallbackInput, alternate.id, alternate.provider)
+        } else {
+          try {
+            result = await runProvider(input, input.settings.model, provider)
+          } catch (caught) {
+            const latestJob = await productStore.readGenerationJobForWorker(jobId)
+            const hasOutput = latestJob?.variants?.some((variant) => variant.status === 'succeeded')
+            const alternate = hasOutput ? undefined : fallback()
+            const transientFailure = ['PROVIDER_TIMEOUT', 'PROVIDER_UNAVAILABLE', 'GENERATION_FAILED', 'REQUEST_TIMEOUT'].includes(caught?.code)
+            if (!transientFailure || hasOutput) throw caught
+            if (!alternate) {
+              throw new GenerationError(
+                503,
+                'PROVIDER_FALLBACK_UNAVAILABLE',
+                '当前生成服务暂不可用，备用模型与当前输入或输出规格不兼容，请稍后重试或手动调整模型。',
+              )
+            }
+            const fallbackInput = { ...input, settings: { ...input.settings, model: alternate.id } }
+            result = await runProvider(fallbackInput, alternate.id, alternate.provider)
+          }
+        }
         await variantWrite
       } catch (caught) {
         if (controller.signal.aborted) throw new GenerationError(504, 'PROVIDER_TIMEOUT', '生成服务响应超时，任务已停止，请稍后重试。')

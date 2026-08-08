@@ -56,3 +56,30 @@ test('画布文档规范化保留无父结果和根配方的首次生成 Run', (
   assert.equal(normalized.agentRuns[0].plan.rootRecipe, undefined)
   assert.equal(normalized.agentRuns[0].plan.selectedResultNodeId, undefined)
 })
+
+test('画布文档规范化保留生产工作流版本与历史运行血缘', () => {
+  const stored = {
+    id: 'workflow-project', name: '工作流项目', schemaVersion: 25,
+    nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 }, assets: [], assetGroups: [],
+    templates: [], history: [], deliveries: [], generationJobs: [], batchVariationRuns: [],
+    agentSessions: [], agentMemory: [], agentRuns: [], updatedAt: 1,
+    productionWorkflows: [{
+      id: 'workflow-a', projectId: 'workflow-project', name: '品牌首图', currentVersion: 1,
+      versions: [{ version: 1, definition: {
+        prompt: '品牌首图', model: 'gpt-image-2', settings: {}, output: {}, brandRules: [], assetGroupIds: [], confirmationPolicy: 'before-submit',
+      }, createdAt: 1, createdBy: 'owner-a' }],
+      createdAt: 1, createdBy: 'owner-a', updatedAt: 1, updatedBy: 'owner-a',
+    }],
+    productionWorkflowRuns: [{
+      id: 'run-a', workflowId: 'workflow-a', workflowVersion: 1, projectId: 'workflow-project',
+      definition: { prompt: '品牌首图', model: 'gpt-image-2', settings: {}, output: {}, brandRules: [], assetGroupIds: [], confirmationPolicy: 'before-submit' },
+      status: 'succeeded', items: [{ id: 'item-a', index: 0, input: {}, status: 'succeeded', attempt: 1, idempotencyKey: 'workflow:run-a:item-a', artifactIds: ['artifact-a'], canvasNodeIds: ['node-a'], updatedAt: 2 }],
+      createdAt: 1, createdBy: 'owner-a', updatedAt: 2,
+    }],
+  } as CanvasDocument
+
+  const normalized = normalizeCanvasDocumentBase(stored, stored)
+  assert.equal(normalized.productionWorkflows?.[0].versions[0].definition.prompt, '品牌首图')
+  assert.deepEqual(normalized.productionWorkflowRuns?.[0].items[0].artifactIds, ['artifact-a'])
+  assert.deepEqual(normalized.productionWorkflowRuns?.[0].items[0].canvasNodeIds, ['node-a'])
+})

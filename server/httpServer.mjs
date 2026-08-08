@@ -11,6 +11,7 @@ import { BotanicAgentRunError } from './botanicAgentRun.mjs'
 import { AgentToolRuntimeError } from './agentToolRuntime.mjs'
 import { McpClientError } from './mcpClient.mjs'
 import { createAgentRunEventSubscriber } from './agentRunEventBus.mjs'
+import { createCanvasRealtimeEventPublisher, createCanvasRealtimeEventSubscriber } from './canvasRealtimeEventBus.mjs'
 import { createProjectRealtimeHub } from './realtimeHub.mjs'
 import { publishProjectUpdatedSafely } from './projectUpdatePublisher.mjs'
 import { clientAddress, securityResponseHeaders, sensitiveActionDecision } from './securityControls.mjs'
@@ -20,6 +21,8 @@ import { matchBotanicHttpRoutes } from './httpRouteTable.mjs'
 import { createSessionRouteHandler } from './sessionRoutes.mjs'
 import { createProjectRouteHandler } from './projectRoutes.mjs'
 import { createGenerationRouteHandler } from './generationRoutes.mjs'
+import { createGenerationSubmissionService } from './generationSubmissionService.mjs'
+import { createProductionWorkflowRouteHandler } from './productionWorkflowRoutes.mjs'
 import { createAccountRouteHandler } from './accountRoutes.mjs'
 import { createLibraryRouteHandler } from './libraryRoutes.mjs'
 import { createRealtimeTicketRouteHandler } from './realtimeTicketRoutes.mjs'
@@ -39,6 +42,8 @@ export function createBotanicHttpServer({
 const { productStore, mediaService } = runtime
 let realtimeHub
 let agentRunEventSubscriber
+let canvasRealtimeEventPublisher
+let canvasRealtimeEventSubscriber
 async function publishAgentRunUpdated(event) {
   if (config.redisUrl) return agentRunEvents.publish(event)
   realtimeHub?.publishAgentRunUpdated(event)
@@ -222,9 +227,17 @@ const handleProjectRoute = createProjectRouteHandler({
   requireUser,
   requireSensitiveSession,
   enforceRateLimit,
+  securityControls,
   publishProjectUpdated,
   expectedGraphRevision,
   projectResponseHeaders,
+})
+
+const submitGeneration = createGenerationSubmissionService({
+  config,
+  productStore,
+  securityControls,
+  enqueue,
 })
 
 const handleGenerationRoute = createGenerationRouteHandler({
@@ -234,12 +247,21 @@ const handleGenerationRoute = createGenerationRouteHandler({
   json,
   error,
   readJson,
-  text,
   requireUser,
-  enforceRateLimit,
-  enqueue,
+  submitGeneration,
   publishProjectUpdated,
   projectResponseHeaders,
+})
+
+const handleProductionWorkflowRoute = createProductionWorkflowRouteHandler({
+  productStore,
+  json,
+  error,
+  readJson,
+  requireUser,
+  submitGeneration,
+  redisQueue,
+  publishProjectUpdated,
 })
 
 const handleAccountRoute = createAccountRouteHandler({
@@ -315,6 +337,7 @@ const handleRequest = async (request, response) => {
 
     if (await handleProjectRoute(request, response, url, routeMatches)) return
     if (await handleGenerationRoute(request, response, url, routeMatches)) return
+    if (await handleProductionWorkflowRoute(request, response, url, routeMatches)) return
     if (await handleLibraryRoute(request, response, url, routeMatches)) return
     if (await handleAgentRoute(request, response, url, routeMatches, requestId)) return
 
@@ -351,10 +374,16 @@ async function start() {
     console.error(`[generation] queue recovery deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
   }
 
+  canvasRealtimeEventPublisher = createCanvasRealtimeEventPublisher(config.redisUrl)
   realtimeHub = createProjectRealtimeHub({
     server,
     productStore,
     ticketSecret: config.realtimeTicketSecret,
+    crossInstancePublisher: canvasRealtimeEventPublisher,
+  })
+  canvasRealtimeEventSubscriber = await createCanvasRealtimeEventSubscriber(config.redisUrl, {
+    onCanvasUpdate: (event) => void realtimeHub.receiveCanvasUpdate(event),
+    onPresence: (event) => void realtimeHub.receivePresence(event),
   })
   agentRunEventSubscriber = await createAgentRunEventSubscriber(
     config.redisUrl,
@@ -376,6 +405,8 @@ async function start() {
 async function close() {
   if (server.listening) await new Promise((resolveClose, rejectClose) => server.close((caught) => caught ? rejectClose(caught) : resolveClose()))
   await realtimeHub?.close()
+  await canvasRealtimeEventSubscriber?.close()
+  await canvasRealtimeEventPublisher?.close()
   await agentRunEventSubscriber?.close()
   await agentRunEvents.close()
   await redisQueue?.close()

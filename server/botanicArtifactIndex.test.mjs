@@ -44,6 +44,9 @@ test('历史生成任务的每个输出形成稳定 Artifact，并补齐画布�
     id: 'job-1', projectId: 'project-1', status: 'succeeded', createdAt: 100, updatedAt: 300,
     settings: { model: 'image-1', aspectRatio: '1:1', resolution: '1K' },
     agentRun: { runId: 'run-1', branchId: 'branch-1' },
+    rawInput: { productionWorkflow: {
+      workflowId: 'workflow-1', workflowVersion: 2, workflowRunId: 'workflow-run-1', workflowItemId: 'sku-a',
+    } },
     outputs: [{ id: 'output-1', image: '/api/media/media-1', mediaKind: 'image' }],
     variants: [{ index: 0, status: 'succeeded', completedAt: 250, output: { id: 'output-1' } }],
   }, {
@@ -57,6 +60,9 @@ test('历史生成任务的每个输出形成稳定 Artifact，并补齐画布�
   assert.equal(artifacts[0].label, '海边主图')
   assert.equal(artifacts[0].metadata.savedToLibrary, true)
   assert.deepEqual(artifacts[0].provenance.sourceNodeIds, ['result-1'])
+  assert.deepEqual(artifacts[0].metadata.productionWorkflow, {
+    workflowId: 'workflow-1', workflowVersion: 2, workflowRunId: 'workflow-run-1', workflowItemId: 'sku-a',
+  })
   assert.equal(artifacts[0].createdAt, 250)
 })
 

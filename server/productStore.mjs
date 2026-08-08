@@ -435,7 +435,7 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
     deleteProject(userId, projectId) {
       const project = state.projects.find((item) => item.id === projectId)
       if (!project) return false
-      assertProjectPermission(project.members.find((item) => item.userId === userId)?.role, 'delete', 'PROJECT_DELETE_FORBIDDEN')
+      assertProjectPermission(project.members.find((item) => item.userId === userId)?.role, 'delete-project', 'PROJECT_DELETE_FORBIDDEN')
       state.projects = state.projects.filter((item) => item.id !== projectId)
       state.canvasGraphs = state.canvasGraphs.filter((item) => item.projectId !== projectId)
       state.generationJobs = state.generationJobs.filter((item) => item.projectId !== projectId)

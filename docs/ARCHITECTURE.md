@@ -81,9 +81,12 @@ API 重启后用快照与增量重建房间；累计 64 条后压缩，避免日
 房间重建时先用物化图谱纠正可能过期的 Yjs 日志；最后一个客户端离开后，房间默认空闲 60 秒即释放。
 初始化失败的房间 Promise 不缓存，使短暂数据库故障恢复后可以重新连接。
 
-画布房间仍在单个 API 实例内广播，持久化状态支持重启恢复；独立 Agent Run 与协作动态则经 Redis Pub/Sub
-跨 API 实例转发，再由各实例按项目推送给浏览器。UI 不感知实例拓扑，断线后仍以 ProductStore 的独立 Agent
-实体、协作历史与成员回执恢复。未来若画布 Yjs 房间横向扩容，需在相同 seam 后补跨实例增量广播。
+画布房间经 `server/canvasRealtimeEventBus.mjs` 使用 Redis Pub/Sub 跨 API 实例传播已持久化的 Yjs 增量与 Presence
+快照。来源实例先持久化再广播，远端实例只更新内存房间并转发给本机连接，不重复落库；实例 ID、事件 ID 与更新摘要
+共同阻止广播回环和重复应用，Yjs 负责乱序依赖补偿。Presence 只传播成员与连接数，按 TTL 清除失联实例；图片/视频
+字节、本机选择态和视角不进入事件总线。API 重启或切换实例后仍从 ProductStore 的物化图谱、快照和增量日志恢复。
+独立 Agent Run 与协作动态继续经 `server/agentRunEventBus.mjs` 跨实例传播；UI 不感知实例拓扑，断线后仍以 ProductStore
+的独立 Agent 实体、协作历史与成员回执恢复。
 
 ## Agent 实体持久化
 
@@ -106,6 +109,54 @@ API 重启后用快照与增量重建房间；累计 64 条后压缩，避免日
 `server/botanicArtifactIndex.mjs` 把 Agent Message/Action Receipt 中的工具产物，以及 Generation Job 中的图片或视频输出，规范为同一个项目级索引。Artifact ID 只在项目内唯一，数据库使用 `(project_id, id)` 复合身份，以兼容旧版 `legacy-writeback` 等跨项目重复 ID。
 
 本地 ProductStore 在启动时扫描项目文档、独立消息、行动回执和生成任务；PostgreSQL 启动建表过程与 Supabase Migration 则使用幂等 `upsert` 回填历史记录。后续 Message、Action Receipt、Generation Job 和兼容项目文档写入都会增量维护索引。索引不反向拥有画布节点或素材库记录，因而历史记录不会随 UI 删除而消失。
+
+## Agent 执行可观测性
+
+`server/agentExecutionTrace.mjs` 使用 `agent-trace:<runId>` 作为稳定关联标识，把 Agent Run、Planner 模型、
+工具调用、生成 Job 与 Artifact Index 组合为只读执行快照。它不改变 Session、Message、Run、Job 或 Artifact 的
+既有身份和幂等键，也不返回 Prompt、媒体地址或 Provider 原始请求。浏览器通过 Agent API 读取简洁状态；技术阶段、
+失败类型、耗时、重试与回填状态留在可展开 Runtime/执行链路中。
+
+`server/agentRunObservability.mjs` 为 API 与 Worker 日志写入同一 traceId；失败分支继续使用原有幂等重试入口，
+已存在的 Job 在配额扣减前即被复用，因此重放不会重复创建任务或重复扣费。`server/agentQualityEvaluation.mjs`
+只消费固定离线夹具，计算成功率、等待时间、恢复率、重复提交率和结果回填完整性，普通验证不得调用真实 Provider。
+
+## 项目权限与 Agent 行动审批
+
+项目权限由服务端区分读取、编辑、生成、内容删除、工作流修改、成员管理、外部工具、项目删除、审计与运行详情。
+Owner 可管理成员、读取治理信息并审批外部工具；Editor 可编辑、生成和维护工作流；Viewer 只读。UI 隐藏按钮不是鉴权边界。
+
+`server/agentActionGovernance.mjs` 把 Agent 工具映射为项目权限。付费生成与外部工具行动必须携带绑定项目和工具调用的
+短期审批；过期、跨项目或跨行动审批均由服务端拒绝。审计导出只允许白名单字段，不返回 Prompt、密钥、原始请求或私有媒体地址。
+
+## 生成成本与 Provider 容灾
+
+`server/generationGovernance.mjs` 把一次持久化 Generation Job 作为唯一记账单元，按工作区、项目、成员、模型、媒体类型和
+任务记录估算成本单位；同一幂等任务的重连、查询、恢复和 Worker 重启不会再次预留预算。`securityControls.reserveMany`
+使用 Redis Lua 原子预留工作区、项目和成员额度，任一维度不足时全部拒绝，并在临界值向任务返回提醒。
+
+`server/providerHealthMonitor.mjs` 在 Worker 间共享 Provider 失败计数、熔断和半开探测租约；Redis 暂时不可用时降级到进程内
+熔断，但不改变任务身份。`generationProcessor.mjs` 只有在尚无成功变体，且媒体类型、输入角色、比例、清晰度和视频时长
+语义完全兼容时才切换备用模型；否则返回明确的不可安全切换提示。重试和备用模型继续使用原任务 ID 与幂等键，不能创建
+第二个任务或第二次预算预留。备用 Provider 真正接管后，任务的 `effectiveModel`、尝试记录与消耗归因同时更新为实际执行方，
+不会把备用模型消耗误记到原模型。
+
+## 版本化生产工作流
+
+`server/productionWorkflow.mjs` 定义只追加版本的生产工作流与运行状态机；每个版本固定 Prompt、模型参数、输出设置、
+品牌规则、素材组和确认策略。运行先持久化版本快照与批量输入，再经 `server/generationSubmissionService.mjs` 的单一提交
+入口创建 Generation Job，避免工作流、HTTP 与 Agent 各自实现幂等、预算和队列语义。失败项重试复用运行项的稳定哈希键，
+不会再次预留预算，也不会复制已成功输出。
+
+`server/productionWorkflowRoutes.mjs` 提供发布、读取、批量运行、暂停、恢复、取消和失败项重试；新版本不会改变进行中或
+历史运行。运行读取时以持久化 Generation Job 对账状态，再关联 Artifact ID 与画布结果节点。Artifact Index 在每个生成输出
+中保存工作流、版本、运行和运行项来源，因此删除临时画布节点后仍可从历史定位、下载、入库和继续迭代。
+
+浏览器只通过 `src/lib/productionWorkflowApi.ts` 使用稳定资源契约；项目文档中的可选工作流目录是三类 ProductStore Adapter
+共同保存的兼容视图，任务、Artifact 与画布图谱继续分别由原有权威记录拥有。生产工作流不得把媒体字节、Provider 凭据或
+本机 UI 状态写入定义和运行记录。`src/domain/productionWorkflows.ts` 只把已完成的 Agent/画布生成操作转换为无媒体字节的
+工作流草稿，模板面板提供发布、运行、暂停、恢复、取消、失败项重试、结果定位与审核入口；运行时由服务端从项目权威文档
+解析稳定媒体标识，临时 Object URL 或未入库素材会被明确拒绝。
 
 ## 自动护栏
 

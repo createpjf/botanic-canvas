@@ -1,4 +1,5 @@
 const finiteNumber = (value) => Number.isFinite(value) ? value : undefined
+const traceId = (runId) => runId ? `agent-trace:${runId}` : undefined
 
 export function agentRunOperationalPayload(input, occurredAt = new Date().toISOString()) {
   return {
@@ -7,6 +8,7 @@ export function agentRunOperationalPayload(input, occurredAt = new Date().toISOS
     ...(input.requestId ? { requestId: input.requestId } : {}),
     ...(input.projectId ? { projectId: input.projectId } : {}),
     ...(input.runId ? { runId: input.runId } : {}),
+    ...(traceId(input.runId) ? { traceId: traceId(input.runId) } : {}),
     ...(input.status ? { status: input.status } : {}),
     ...(input.branchId ? { branchId: input.branchId } : {}),
     ...(input.jobId ? { jobId: input.jobId } : {}),

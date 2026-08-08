@@ -99,6 +99,80 @@ test('Agent Run 创建与幂等复用产生不含创作内容的结构化运行�
   assert.doesNotMatch(JSON.stringify(events), /生成一张海边人像|自然光海边人像|参考人物/)
 })
 
+test('Agent 执行链路从权威 Run、Job 与 Artifact 生成安全关联快照', async () => {
+  const responses = []
+  const run = {
+    id: 'run-trace', projectId: 'project-trace', status: 'completed', createdAt: 10, updatedAt: 50,
+    plan: { plannerModel: 'deepseek-v4-pro', prompt: '不应返回' },
+    branches: [{ id: 'branch-1', status: 'succeeded', attempt: 0, jobIds: ['job-1'], outputCount: 1, updatedAt: 50 }],
+  }
+  const handler = createAgentRouteHandler({
+    config: {},
+    productStore: {
+      projectAccess: async () => ({ exists: true, role: 'owner' }),
+      readAgentRun: async () => run,
+      readGenerationJob: async () => ({ id: 'job-1', status: 'succeeded', createdAt: 20, updatedAt: 50, outputs: [{ id: 'output-1' }] }),
+      listAgentArtifacts: async () => [{ id: 'artifact-1', provenance: { runId: 'run-trace' }, origin: { jobId: 'job-1' }, url: 'https://private.example/media' }],
+    },
+    json: (_response, status, body) => { responses.push({ status, body }); return true },
+    error: (_response, status, code, message) => { responses.push({ status, body: { error: { code, message } } }); return true },
+    requireUser: async () => ({ id: 'user-1' }),
+  })
+
+  await handler(
+    { method: 'GET', headers: {} },
+    {},
+    new URL('http://botanic.test/api/agent-runs/run-trace/trace'),
+    { agentRunTrace: ['trace', 'run-trace'] },
+    'request-trace',
+  )
+
+  assert.equal(responses[0]?.status, 200)
+  assert.equal(responses[0]?.body.trace.traceId, 'agent-trace:run-trace')
+  assert.deepEqual(responses[0]?.body.trace.links.jobIds, ['job-1'])
+  assert.deepEqual(responses[0]?.body.trace.links.artifactIds, ['artifact-1'])
+  assert.doesNotMatch(JSON.stringify(responses[0]?.body), /不应返回|private\.example/)
+})
+
+test('Editor 不能越权执行外部工具，过期审批也不能绕过服务端校验', async () => {
+  const requestBody = {
+    projectId: 'project-governed', name: 'mcp_call', toolCallId: 'call-mcp-1', confirmed: true,
+    approval: { projectId: 'project-governed', toolCallId: 'call-mcp-1', approvedAt: 1, expiresAt: 2 },
+    arguments: { server: 'assets', tool: 'search', arguments: {} },
+  }
+  const shared = {
+    config: {},
+    readJson: async () => requestBody,
+    text: (value) => String(value),
+    requireUser: async () => ({ id: 'user-1' }),
+    json: () => true,
+    error: () => true,
+  }
+  const editorHandler = createAgentRouteHandler({
+    ...shared,
+    productStore: { projectAccess: async () => ({ exists: true, role: 'editor' }) },
+  })
+  await assert.rejects(
+    () => editorHandler(
+      { method: 'POST', headers: { 'idempotency-key': 'external-editor-action-1' } }, {},
+      new URL('http://botanic.test/api/agent-actions'), {}, 'request-editor',
+    ),
+    (caught) => caught?.code === 'PROJECT_ACCESS_FORBIDDEN',
+  )
+
+  const ownerHandler = createAgentRouteHandler({
+    ...shared,
+    productStore: { projectAccess: async () => ({ exists: true, role: 'owner' }) },
+  })
+  await assert.rejects(
+    () => ownerHandler(
+      { method: 'POST', headers: { 'idempotency-key': 'external-expired-action-1' } }, {},
+      new URL('http://botanic.test/api/agent-actions'), {}, 'request-owner',
+    ),
+    (caught) => caught?.code === 'ACTION_APPROVAL_EXPIRED',
+  )
+})
+
 test('Agent 阅读位置增量更新写入当前成员回执，不修改共享会话', async () => {
   const responses = []
   const storedReceipts = []

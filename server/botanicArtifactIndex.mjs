@@ -192,6 +192,9 @@ export function artifactsFromGenerationJob(job, { document, now = Date.now() } =
         dismissed: Array.isArray(job.dismissedOutputIds) && job.dismissedOutputIds.includes(output.id),
         savedToLibrary: assets.some((asset) => asset?.source === 'generated' && asset?.image === output.image),
         settings: clone(job.settings),
+        ...(job.rawInput?.productionWorkflow
+          ? { productionWorkflow: clone(job.rawInput.productionWorkflow) }
+          : {}),
       },
       provenance: {
         actionId: `generation:${job.id}`,

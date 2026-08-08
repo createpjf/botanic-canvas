@@ -104,7 +104,7 @@ export function createCanvasCollaborationRoom({ state, append, compact, compactE
   let graph = clone(state.graph)
   let applyChain = Promise.resolve()
 
-  const applyUpdate = async (encodedUpdate, actorId) => {
+  const applyUpdate = async (encodedUpdate, actorId, { persist = true } = {}) => {
     const update = updateFromBase64(encodedUpdate)
     let applied = false
     const changedNodeIds = new Set()
@@ -126,6 +126,7 @@ export function createCanvasCollaborationRoom({ state, append, compact, compactE
 
     const previousGraph = clone(graph)
     graph = materializeGraph(document, graph, changedNodeIds, changedEdgeIds)
+    if (!persist) return { applied: true, previousGraph, graph: clone(graph) }
     const saved = await append({ update: encodedUpdate, graph: clone(graph) }, actorId)
     if (saved.updateCount >= compactEvery) {
       await compact({ snapshot: updateToBase64(Y.encodeStateAsUpdate(document)), graph: clone(graph) }, actorId)
@@ -159,6 +160,11 @@ export function createCanvasCollaborationRoom({ state, append, compact, compactE
     },
     applyUpdate(encodedUpdate, actorId) {
       const run = applyChain.then(() => applyUpdate(encodedUpdate, actorId))
+      applyChain = run.catch(() => undefined)
+      return run
+    },
+    applyPersistedUpdate(encodedUpdate) {
+      const run = applyChain.then(() => applyUpdate(encodedUpdate, undefined, { persist: false }))
       applyChain = run.catch(() => undefined)
       return run
     },

@@ -6,6 +6,62 @@ import test from 'node:test'
 import { createGenerationProcessor } from './generationProcessor.mjs'
 import { createProductStore } from './productStore.mjs'
 
+test('语义兼容备用 Provider 成功后按实际模型与 Provider 归因且不复制任务', async () => {
+  let storedJob = {
+    id: 'job-provider-fallback', ownerId: 'user-a', projectId: 'project-a', status: 'queued', kind: 'generation',
+    createdAt: Date.now(), updatedAt: Date.now(), batchCount: 1,
+    settings: { model: 'primary-image', aspectRatio: '1:1', resolution: '1K' },
+    usage: { workspaceId: 'workspace-a', projectId: 'project-a', memberId: 'user-a', model: 'primary-image', provider: 'primary', units: 1 },
+    outputs: [],
+    rawInput: {
+      projectId: 'project-a', kind: 'generation', prompt: '生成品牌首图', batchCount: 1,
+      settings: { model: 'primary-image', aspectRatio: '1:1', resolution: '1K' },
+      recipe: { references: [{ name: '商品', role: '商品', primary: true, dataUrl: 'data:image/png;base64,iVBORw0KGgo=' }] },
+    },
+  }
+  const writtenJobIds = []
+  const productStore = {
+    async readGenerationJobForWorker() { return structuredClone(storedJob) },
+    async putGenerationJob(_ownerId, job) { storedJob = structuredClone(job); writtenJobIds.push(job.id) },
+    async readProject() { return undefined },
+    async refreshGenerationArtifacts() {},
+  }
+  const providerCircuitBreaker = {
+    async canRequest() { return { allowed: false, state: 'open' } },
+    async recordSuccess() {},
+    async recordFailure() {},
+  }
+  const processJob = createGenerationProcessor({
+    productStore,
+    mediaService: { async readGenerationInput() { throw new Error('不应读取媒体标识') } },
+    providerCircuitBreaker,
+    config: {
+      modelOptions: [
+        { id: 'primary-image', provider: 'primary', mediaKind: 'image', aspectRatios: ['1:1'], resolutions: ['1K'], inputRoles: [] },
+        { id: 'fallback-image', provider: 'backup', mediaKind: 'image', aspectRatios: ['1:1'], resolutions: ['1K'], inputRoles: [] },
+      ],
+      providerFallbackModelIds: ['fallback-image'],
+      maximumBatchCount: 4,
+      maximumReferenceBytes: 1024,
+    },
+    generate: async (input) => {
+      assert.equal(input.settings.model, 'fallback-image')
+      return { outputs: [{ id: 'output-a', image: '/api/media/output-a' }], missingOutputCount: 0 }
+    },
+  })
+
+  await processJob(storedJob.id)
+
+  assert.equal(storedJob.status, 'succeeded')
+  assert.equal(storedJob.effectiveModel, 'fallback-image')
+  assert.equal(storedJob.usage.model, 'fallback-image')
+  assert.equal(storedJob.usage.provider, 'backup')
+  assert.deepEqual([...new Set(writtenJobIds)], ['job-provider-fallback'])
+  assert.deepEqual(storedJob.providerAttempts.map(({ provider, model }) => ({ provider, model })), [
+    { provider: 'backup', model: 'fallback-image' },
+  ])
+})
+
 test('普通生成任务也由服务端把生命周期状态权威回写到项目画布', async () => {
   const observed = []
   let storedJob = {

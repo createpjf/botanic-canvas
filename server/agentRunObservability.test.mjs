@@ -22,6 +22,7 @@ test('Agent 运行日志只保留运维字段，不泄露 Prompt、媒体或用�
     occurredAt: '2026-08-07T00:00:00.000Z',
     projectId: 'project-a',
     runId: 'run-a',
+    traceId: 'agent-trace:run-a',
     status: 'succeeded',
     jobId: 'job-a',
     queueDurationMs: 120,

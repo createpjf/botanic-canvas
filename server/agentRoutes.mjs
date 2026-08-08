@@ -9,6 +9,8 @@ import { generationIdempotencyKey, generationJobIdForIdempotency } from './gener
 import { persistedGenerationJob, publicGenerationJob } from './generationProvider.mjs'
 import { retargetGenerationJobForRetry } from './generationResultReconciliation.mjs'
 import { requireProjectPermission } from './projectAuthorization.mjs'
+import { buildAgentExecutionTrace } from './agentExecutionTrace.mjs'
+import { agentToolPermission, assertFreshActionApproval } from './agentActionGovernance.mjs'
 
 export { BotanicAgentPlannerError, BotanicAgentChatError }
 
@@ -55,6 +57,7 @@ export function createAgentRouteHandler({
       agentMessage: agentMessageMatch,
       agentMemory: agentMemoryMatch,
       agentRun: agentRunMatch,
+      agentRunTrace: agentRunTraceMatch,
       agentRunCancel: agentRunCancelMatch,
       agentBranchRetry: agentBranchRetryMatch,
     } = routeMatches
@@ -254,7 +257,12 @@ export function createAgentRouteHandler({
       if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', 'Agent 行动提交标识无效，请重试。')
       const body = await readJson(request, 16 * 1024, 'Agent 行动请求过大。')
       const projectId = text(body?.projectId, '项目', 160)
-      await requireProjectPermission(productStore, user.id, projectId, 'edit')
+      const actionName = text(body?.name, '工具名称', 80)
+      const toolCallId = text(body?.toolCallId, '工具调用标识', 160)
+      await requireProjectPermission(productStore, user.id, projectId, agentToolPermission(actionName))
+      if (actionName === 'generation_submit' || actionName === 'mcp_call') {
+        assertFreshActionApproval(body, { projectId, toolCallId })
+      }
       const receiptId = `agent_action_${generationJobIdForIdempotency(user.id, `${projectId}:${idempotencyKey}`).slice(4)}`
       const persistedReceipt = await productStore.readAgentActionReceipt(user.id, receiptId)
       if (persistedReceipt) return json(response, 200, persistedReceipt.result)
@@ -291,9 +299,9 @@ export function createAgentRouteHandler({
         })
         const result = await executeConfirmedAgentAction({
           registry,
-          name: text(body?.name, '工具名称', 80),
+          name: actionName,
           arguments: body?.arguments,
-          toolCallId: text(body?.toolCallId, '工具调用标识', 160),
+          toolCallId,
           confirmed: body?.confirmed,
           context: { projectId, userId: user.id, requestId },
         })
@@ -315,7 +323,7 @@ export function createAgentRouteHandler({
       const idempotencyKey = generationIdempotencyKey(request.headers['idempotency-key'])
       if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', 'Agent Run 提交标识无效，请重试。')
       const input = validateAgentRunCreation(await readJson(request, 64 * 1024, 'Agent Run 请求过大。'))
-      await requireProjectPermission(productStore, user.id, input.projectId, 'edit')
+      await requireProjectPermission(productStore, user.id, input.projectId, 'create-generation')
       const id = `agent_run_${generationJobIdForIdempotency(user.id, idempotencyKey).slice(4)}`
       const existing = await productStore.readAgentRun(user.id, id)
       if (existing) {
@@ -349,13 +357,24 @@ export function createAgentRouteHandler({
       await requireProjectPermission(productStore, user.id, run.projectId, 'read')
       return json(response, 200, { run: publicAgentRun(run) })
     }
+    if (agentRunTraceMatch) {
+      if (request.method !== 'GET') return methodNotAllowed(response, 'Agent 执行链路只支持读取。', 'GET')
+      const user = await requireUser(request)
+      const run = await productStore.readAgentRun(user.id, decodeURIComponent(agentRunTraceMatch[1]))
+      if (!run) return error(response, 404, 'AGENT_RUN_NOT_FOUND', '未找到该 Agent Run。')
+      await requireProjectPermission(productStore, user.id, run.projectId, 'read-operational')
+      const jobIds = [...new Set(run.branches.flatMap((branch) => branch.jobIds ?? []).filter(Boolean))]
+      const jobs = (await Promise.all(jobIds.map((jobId) => productStore.readGenerationJob(user.id, jobId)))).filter(Boolean)
+      const artifacts = await productStore.listAgentArtifacts(user.id, run.projectId, { limit: 200 }) ?? []
+      return json(response, 200, { trace: buildAgentExecutionTrace({ run, jobs, artifacts }) })
+    }
     if (agentRunCancelMatch) {
       if (request.method !== 'POST') return methodNotAllowed(response, 'Agent Run 取消资源只接受提交请求。', 'POST')
       const user = await requireUser(request)
       const runId = decodeURIComponent(agentRunCancelMatch[1])
       const run = await productStore.readAgentRun(user.id, runId)
       if (!run) return error(response, 404, 'AGENT_RUN_NOT_FOUND', '未找到该 Agent Run。')
-      await requireProjectPermission(productStore, user.id, run.projectId, 'edit')
+      await requireProjectPermission(productStore, user.id, run.projectId, 'create-generation')
       const activeJobIds = [...new Set(run.branches.filter((branch) => branch.status === 'queued' || branch.status === 'running').map((branch) => branch.activeJobId).filter(Boolean))]
       for (const jobId of activeJobIds) {
         const job = await productStore.readGenerationJob(user.id, jobId)
@@ -388,7 +407,7 @@ export function createAgentRouteHandler({
       if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', '分支重试标识无效，请重试。')
       const run = await productStore.readAgentRun(user.id, runId)
       if (!run) return error(response, 404, 'AGENT_RUN_NOT_FOUND', '未找到该 Agent Run。')
-      await requireProjectPermission(productStore, user.id, run.projectId, 'edit')
+      await requireProjectPermission(productStore, user.id, run.projectId, 'create-generation')
       const branch = run.branches.find((candidate) => candidate.id === branchId)
       if (!branch) return error(response, 404, 'AGENT_BRANCH_NOT_FOUND', '未找到 Agent 分支。')
       const previousJob = branch.activeJobId ? await productStore.readGenerationJob(user.id, branch.activeJobId) : undefined

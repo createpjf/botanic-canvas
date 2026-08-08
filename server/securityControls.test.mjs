@@ -30,6 +30,27 @@ test('生成输出配额按候选数量计费，且不同用户相互隔离', as
   assert.equal((await security.consume({ scope: 'generation-output', subject: 'user-2', limit: 4, windowMs: 86_400_000, cost: 4 })).allowed, true)
 })
 
+test('多维预算预留保持原子且同一任务只记一次', async () => {
+  const security = createSecurityControls({ now: () => 20_000 })
+  const input = {
+    reservationId: 'job-a', windowMs: 86_400_000,
+    entries: [
+      { scope: 'workspace-budget', subject: 'workspace', limit: 10, cost: 4 },
+      { scope: 'member-budget', subject: 'member-a', limit: 5, cost: 4 },
+    ],
+  }
+  assert.equal((await security.reserveMany(input)).allowed, true)
+  assert.equal((await security.reserveMany(input)).reused, true)
+  assert.equal((await security.reserveMany({
+    ...input, reservationId: 'job-b',
+    entries: input.entries.map((entry) => ({ ...entry, cost: 2 })),
+  })).allowed, false)
+  assert.equal((await security.reserveMany({
+    ...input, reservationId: 'job-c',
+    entries: input.entries.map((entry) => ({ ...entry, cost: 1 })),
+  })).allowed, true)
+})
+
 test('安全响应头限制嗅探、嵌入、权限与跨站来源泄露', () => {
   assert.deepEqual(securityResponseHeaders({ secure: true }), {
     'Cross-Origin-Opener-Policy': 'same-origin',

@@ -1,17 +1,39 @@
+import { createHash, randomUUID } from 'node:crypto'
 import { WebSocket, WebSocketServer } from 'ws'
 import { createCanvasCollaborationRoom } from './canvasCollaborationRoom.mjs'
 import { verifyRealtimeTicket } from './realtimeTicket.mjs'
 import { collaborationChangeFromDocuments } from './collaborationActivityPersistence.mjs'
 
-export function createProjectRealtimeHub({ server, productStore, ticketSecret, roomIdleMs = 60_000 }) {
+export function createProjectRealtimeHub({
+  server,
+  productStore,
+  ticketSecret,
+  roomIdleMs = 60_000,
+  instanceId = randomUUID(),
+  crossInstancePublisher = { async publishCanvasUpdate() {}, async publishPresence() {} },
+  now = Date.now,
+  presenceHeartbeatMs = 20_000,
+  presenceTtlMs = 65_000,
+}) {
   if (!server || !productStore || !ticketSecret) throw new TypeError('实时服务配置不完整。')
   const webSocketServer = new WebSocketServer({ noServer: true })
   const clientsByProject = new Map()
   const roomsByProject = new Map()
   const roomIdleTimers = new Map()
+  const remotePresenceByProject = new Map()
+  const seenCrossInstanceEvents = new Map()
   let closing = false
 
-  const broadcastPresence = (projectId) => {
+  const rememberEvent = (key) => {
+    if (seenCrossInstanceEvents.has(key)) return false
+    seenCrossInstanceEvents.set(key, now())
+    if (seenCrossInstanceEvents.size > 2_000) {
+      for (const oldest of [...seenCrossInstanceEvents.keys()].slice(0, 500)) seenCrossInstanceEvents.delete(oldest)
+    }
+    return true
+  }
+
+  const localPresenceMembers = (projectId) => {
     const members = new Map()
     for (const client of clientsByProject.get(projectId) ?? []) {
       if (!client.presenceSubscribed || client.readyState !== WebSocket.OPEN) continue
@@ -19,16 +41,49 @@ export function createProjectRealtimeHub({ server, productStore, ticketSecret, r
       member.connectionCount += 1
       members.set(client.userId, member)
     }
+    return [...members.entries()].map(([userId, member]) => ({
+      userId,
+      ...(member.actorName ? { actorName: member.actorName } : {}),
+      connectionCount: member.connectionCount,
+    }))
+  }
+
+  const mergedPresenceMembers = (projectId) => {
+    const members = new Map()
+    const merge = (member) => {
+      const current = members.get(member.userId) ?? { connectionCount: 0 }
+      current.connectionCount += member.connectionCount
+      if (!current.actorName && member.actorName) current.actorName = member.actorName
+      members.set(member.userId, current)
+    }
+    localPresenceMembers(projectId).forEach(merge)
+    for (const snapshot of remotePresenceByProject.get(projectId)?.values() ?? []) snapshot.members.forEach(merge)
+    return [...members.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([userId, member]) => ({ userId, ...(member.actorName ? { actorName: member.actorName } : {}), connectionCount: member.connectionCount }))
+  }
+
+  const broadcastPresence = (projectId) => {
     const payload = JSON.stringify({
       type: 'collaboration.presence',
       projectId,
-      members: [...members.entries()]
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([userId, member]) => ({ userId, ...(member.actorName ? { actorName: member.actorName } : {}), connectionCount: member.connectionCount })),
+      members: mergedPresenceMembers(projectId),
     })
     for (const client of clientsByProject.get(projectId) ?? []) {
       if (client.presenceSubscribed && client.readyState === WebSocket.OPEN) client.send(payload)
     }
+  }
+
+  const publishLocalPresence = async (projectId) => {
+    await crossInstancePublisher.publishPresence({
+      eventId: randomUUID(), sourceInstanceId: instanceId, projectId,
+      members: localPresenceMembers(projectId), sentAt: now(),
+    })
+  }
+
+  const presenceChanged = (projectId) => {
+    broadcastPresence(projectId)
+    void publishLocalPresence(projectId).catch(() => undefined)
   }
 
   const cancelRoomEviction = (projectId) => {
@@ -115,7 +170,7 @@ export function createProjectRealtimeHub({ server, productStore, ticketSecret, r
     socket.on('pong', () => { socket.isAlive = true })
     socket.on('close', () => {
       clients.delete(socket)
-      if (socket.presenceSubscribed && clients.size) broadcastPresence(context.projectId)
+      if (socket.presenceSubscribed) presenceChanged(context.projectId)
       if (!clients.size) {
         clientsByProject.delete(context.projectId)
         scheduleRoomEviction(context.projectId)
@@ -127,7 +182,7 @@ export function createProjectRealtimeHub({ server, productStore, ticketSecret, r
         const event = JSON.parse(data.toString())
         if (event?.type === 'collaboration.presence.subscribe' && event.projectId === context.projectId) {
           socket.presenceSubscribed = true
-          broadcastPresence(context.projectId)
+          presenceChanged(context.projectId)
           return
         }
         if (!context.canEdit) return
@@ -160,6 +215,13 @@ export function createProjectRealtimeHub({ server, productStore, ticketSecret, r
         for (const peer of clients) {
           if (peer !== socket && peer.readyState === WebSocket.OPEN) peer.send(payload)
         }
+        await crossInstancePublisher.publishCanvasUpdate({
+          eventId: randomUUID(), sourceInstanceId: instanceId, projectId: context.projectId,
+          update: event.update, actorId: context.userId,
+          ...(context.actorName ? { actorName: context.actorName } : {}),
+          graphRevision: result.graphRevision, updatedAt: result.updatedAt,
+          ...(activity ? { activity } : {}),
+        })
       } catch {
         // 未知消息不影响项目失效通知；权威文档仍由 HTTP 接口负责。
       }
@@ -209,7 +271,53 @@ export function createProjectRealtimeHub({ server, productStore, ticketSecret, r
   }, 30_000)
   heartbeat.unref?.()
 
+  const pruneRemotePresence = () => {
+    const changedProjects = new Set()
+    for (const [projectId, snapshots] of remotePresenceByProject) {
+      for (const [sourceInstanceId, snapshot] of snapshots) {
+        if (now() - snapshot.receivedAt > presenceTtlMs) {
+          snapshots.delete(sourceInstanceId)
+          changedProjects.add(projectId)
+        }
+      }
+      if (!snapshots.size) remotePresenceByProject.delete(projectId)
+    }
+    changedProjects.forEach(broadcastPresence)
+  }
+  const presenceHeartbeat = setInterval(() => {
+    pruneRemotePresence()
+    for (const projectId of clientsByProject.keys()) void publishLocalPresence(projectId).catch(() => undefined)
+  }, presenceHeartbeatMs)
+  presenceHeartbeat.unref?.()
+
   return {
+    async receiveCanvasUpdate(event) {
+      if (!event || event.sourceInstanceId === instanceId || event.projectId == null) return
+      const updateHash = createHash('sha256').update(event.update ?? '').digest('base64url')
+      if (!rememberEvent(`event:${event.eventId}`) || !rememberEvent(`update:${event.projectId}:${updateHash}`)) return
+      const roomPromise = roomsByProject.get(event.projectId)
+      if (!roomPromise) return
+      const entry = await roomPromise
+      await entry.room.applyPersistedUpdate(event.update)
+      entry.hasState = true
+      const payload = JSON.stringify({
+        type: 'canvas.crdt.update', projectId: event.projectId, update: event.update,
+        actorId: event.actorId,
+        ...(event.actorName ? { actorName: event.actorName } : {}),
+        ...(event.activity ? { activity: { ...event.activity, unread: true } } : {}),
+      })
+      for (const socket of clientsByProject.get(event.projectId) ?? []) {
+        if (socket.readyState === WebSocket.OPEN) socket.send(payload)
+      }
+    },
+    async receivePresence(event) {
+      if (!event || event.sourceInstanceId === instanceId || !rememberEvent(`presence:${event.eventId}`)) return
+      const snapshots = remotePresenceByProject.get(event.projectId) ?? new Map()
+      snapshots.set(event.sourceInstanceId, { members: structuredClone(event.members), receivedAt: now() })
+      remotePresenceByProject.set(event.projectId, snapshots)
+      broadcastPresence(event.projectId)
+    },
+    pruneRemotePresence,
     async publishProjectUpdated({ projectId, revision, graphRevision, updatedAt, graph, actorId }) {
       if (graph) {
         const { room } = await collaborationRoom(actorId, projectId, { document: graph })
@@ -242,6 +350,7 @@ export function createProjectRealtimeHub({ server, productStore, ticketSecret, r
     async close() {
       closing = true
       clearInterval(heartbeat)
+      clearInterval(presenceHeartbeat)
       for (const timer of roomIdleTimers.values()) clearTimeout(timer)
       roomIdleTimers.clear()
       server.off('upgrade', onUpgrade)
@@ -251,6 +360,8 @@ export function createProjectRealtimeHub({ server, productStore, ticketSecret, r
         try { await (await roomPromise).room.destroy() } catch { /* 已失败房间无需再次关闭。 */ }
       }
       roomsByProject.clear()
+      remotePresenceByProject.clear()
+      seenCrossInstanceEvents.clear()
     },
   }
 }

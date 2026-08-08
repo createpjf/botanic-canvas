@@ -1,6 +1,7 @@
 import { applyCanvasDocumentPatch } from './canvasDocumentPatch.mjs'
 import { requireProjectPermission } from './projectAuthorization.mjs'
 import { collaborationChangeFromDocuments, decodeCollaborationActivityCursor, encodeCollaborationActivityCursor } from './collaborationActivityPersistence.mjs'
+import { filterAuditEvents } from './agentActionGovernance.mjs'
 
 /**
  * 项目、项目文档、成员与项目审计的 HTTP 模块。
@@ -97,7 +98,7 @@ export function createProjectRouteHandler({
       const user = await requireUser(request)
       await requireSensitiveSession(request)
       const projectId = decodeURIComponent(projectMatch[1])
-      await requireProjectPermission(productStore, user.id, projectId, 'delete')
+      await requireProjectPermission(productStore, user.id, projectId, 'delete-project')
       try {
         const deleted = await productStore.deleteProject(user.id, projectId)
         if (!deleted) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有删除权限。')
@@ -202,7 +203,11 @@ export function createProjectRouteHandler({
       await requireProjectPermission(productStore, user.id, projectId, 'read-audit')
       const events = await productStore.listAuditEvents(user.id, projectId, Number(url.searchParams.get('limit') ?? 100))
       if (!events) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
-      return json(response, 200, { events })
+      return json(response, 200, { events: filterAuditEvents(events, {
+        action: url.searchParams.get('action') || undefined,
+        actorId: url.searchParams.get('actorId') || undefined,
+        result: url.searchParams.get('result') || undefined,
+      }) })
     }
 
     if (collaborationActivitiesMatch && request.method === 'GET') {

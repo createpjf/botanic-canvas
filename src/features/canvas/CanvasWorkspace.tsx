@@ -2509,6 +2509,7 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
           <TemplatePanel
             key={document.id}
             projectId={document.id}
+            canvasDocument={document}
             templates={document.templates}
             sharedTemplates={sharedTemplates}
             currentName={document.name}
@@ -2518,6 +2519,15 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
             onSaveShared={saveCurrentAsSharedTemplate}
             onCreateProject={createWorkspaceProjectFromTemplate}
             onRefresh={refreshSharedTemplates}
+            onOpenHistory={() => {
+              setTemplatesOpen(false)
+              setHistoryOpen(true)
+            }}
+            onLocateWorkflowNode={(nodeId) => {
+              selectNode(nodeId)
+              setHistoryFocusRequest({ nodeId, requestId: Date.now() })
+              setTemplatesOpen(false)
+            }}
             onClose={() => setTemplatesOpen(false)}
           />
         </CanvasPanelPresence>

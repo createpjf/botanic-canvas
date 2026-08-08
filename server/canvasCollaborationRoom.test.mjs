@@ -148,3 +148,54 @@ test('物化图谱与旧 Yjs 历史不一致时即使图谱未变也执行一次
   assert.equal(compactCount, 1)
   await room.destroy()
 })
+
+test('跨实例已持久化增量只更新内存房间，不会重复追加或压缩', async () => {
+  let appendCount = 0
+  let compactCount = 0
+  const room = createCanvasCollaborationRoom({
+    state: { graph: { nodes: [], edges: [] }, graphRevision: 1, updates: [] },
+    append: async () => {
+      appendCount += 1
+      return { graphRevision: 2, updatedAt: 200, updateCount: 1 }
+    },
+    compact: async () => { compactCount += 1 },
+  })
+
+  const update = encodedNodeUpdate('node-remote', 240)
+  const first = await room.applyPersistedUpdate(update)
+  const duplicate = await room.applyPersistedUpdate(update)
+
+  assert.equal(first.applied, true)
+  assert.equal(duplicate.applied, false)
+  assert.equal(room.graph().nodes[0].id, 'node-remote')
+  assert.equal(appendCount, 0)
+  assert.equal(compactCount, 0)
+  await room.destroy()
+})
+
+test('跨实例增量乱序到达时由 Yjs 补偿依赖并保留全部更新', async () => {
+  const source = new Y.Doc()
+  let vector = Y.encodeStateVector(source)
+  source.getMap('nodes').set('node-first', {
+    order: 0,
+    value: { id: 'node-first', type: 'text', position: { x: 80, y: 20 }, data: { kind: 'text', label: 'first', content: 'first' } },
+  })
+  const first = Buffer.from(Y.encodeStateAsUpdate(source, vector)).toString('base64')
+  vector = Y.encodeStateVector(source)
+  source.getMap('nodes').set('node-second', {
+    order: 1,
+    value: { id: 'node-second', type: 'text', position: { x: 240, y: 20 }, data: { kind: 'text', label: 'second', content: 'second' } },
+  })
+  const second = Buffer.from(Y.encodeStateAsUpdate(source, vector)).toString('base64')
+  const room = createCanvasCollaborationRoom({
+    state: { graph: { nodes: [], edges: [] }, graphRevision: 1, updates: [] },
+    append: async () => { throw new Error('远端增量不得再次持久化') },
+    compact: async () => { throw new Error('远端增量不得再次压缩') },
+  })
+
+  await room.applyPersistedUpdate(second)
+  await room.applyPersistedUpdate(first)
+
+  assert.deepEqual(room.graph().nodes.map((node) => node.id), ['node-first', 'node-second'])
+  await room.destroy()
+})

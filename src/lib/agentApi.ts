@@ -177,6 +177,8 @@ export async function createPersistentBotanicAgentRun(input: {
 }
 
 export async function executePersistentBotanicAgentRun(projectId: string, runId: string) {
+  const toolCallId = `call-generation-submit-${runId}`
+  const approvedAt = Date.now()
   const response = await productRequest<{
     output: BotanicAgentActionResult & { run: BotanicAgentRunSnapshot; jobIds: string[] }
     toolCall: AgentToolCallTrace
@@ -186,8 +188,9 @@ export async function executePersistentBotanicAgentRun(projectId: string, runId:
     body: JSON.stringify({
       projectId,
       name: 'generation_submit',
-      toolCallId: `call-generation-submit-${runId}`,
+      toolCallId,
       confirmed: true,
+      approval: { projectId, toolCallId, approvedAt, expiresAt: approvedAt + 15 * 60_000 },
       arguments: { planId: runId },
     }),
   })
@@ -197,6 +200,23 @@ export async function executePersistentBotanicAgentRun(projectId: string, runId:
 export async function listPersistentBotanicAgentRuns(projectId: string) {
   const response = await productRequest<{ runs: BotanicAgentRunSnapshot[] }>(`/api/projects/${encodeURIComponent(projectId)}/agent-runs`)
   return response.runs
+}
+
+export type BotanicAgentExecutionTrace = {
+  traceId: string
+  projectId: string
+  runId: string
+  status: string
+  links: { sessionId?: string; messageId?: string; plannerModel?: string; toolCallIds: string[]; skillIds: string[]; jobIds: string[]; artifactIds: string[] }
+  metrics: { durationMs: number; retryCount: number; outputCount: number; expectedOutputCount: number; writebackComplete: boolean; recoveryState: 'pending' | 'settled' | 'not_required' }
+  failure?: { stage: string; code: string; recoverable: boolean }
+}
+
+export async function readPersistentBotanicAgentExecutionTrace(runId: string) {
+  const response = await productRequest<{ trace: BotanicAgentExecutionTrace }>(
+    `/api/agent-runs/${encodeURIComponent(runId)}/trace`,
+  )
+  return response.trace
 }
 
 /** 读取独立 Agent 实体权威状态，用于其他设备消息、记忆与任务的增量失效恢复。 */
@@ -261,6 +281,7 @@ export async function createProjectAgentSkill(input: { projectId: string; name: 
 
 export async function executeProjectAgentAction(input: { projectId: string; action: BotanicAgentActionProposal }) {
   const actionKey = `${input.action.id}-${input.action.toolName}`.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 112)
+  const approvedAt = Date.now()
   const response = await productRequest<{ output: BotanicAgentActionResult; toolCall: AgentToolCallTrace }>('/api/agent-actions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `agent-action-${actionKey}` },
@@ -269,6 +290,7 @@ export async function executeProjectAgentAction(input: { projectId: string; acti
       name: input.action.toolName,
       toolCallId: input.action.id,
       confirmed: true,
+      approval: { projectId: input.projectId, toolCallId: input.action.id, approvedAt, expiresAt: approvedAt + 15 * 60_000 },
       arguments: input.action.arguments,
     }),
   })
