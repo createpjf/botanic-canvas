@@ -31,6 +31,17 @@ function normalizeDefinition(value) {
     ? [...new Set(definition.assetGroupIds.map((id) => requiredText(id, '素材组', 160)))]
     : []
   definition.confirmationPolicy = definition.confirmationPolicy ?? 'before-submit'
+  if (definition.graph?.nodes) {
+    definition.graph = {
+      nodes: definition.graph.nodes.map((node) => ({
+        id: requiredText(node?.id, '图节点标识', 160),
+        kind: requiredText(node?.kind, '图节点类型', 40),
+        dependencies: Array.isArray(node.dependencies) ? node.dependencies.map((value) => requiredText(value, '依赖节点', 160)) : [],
+        ...(node.label ? { label: requiredText(node.label, '图节点名称', 120) } : {}),
+        ...(node.parentSourceNodeId ? { parentSourceNodeId: requiredText(node.parentSourceNodeId, '母版节点', 160) } : {}),
+      })),
+    }
+  }
   return definition
 }
 
@@ -139,6 +150,15 @@ export function createProductionWorkflowRun(input, { actorId, now = Date.now() }
       attempt: 1,
       idempotencyKey: workflowItemIdempotencyKey(id, itemId),
       updatedAt: now,
+      ...(version.definition.graph?.nodes ? {
+        nodeRuns: version.definition.graph.nodes.map((node) => ({
+          nodeId: node.id,
+          kind: node.kind,
+          status: 'blocked',
+          ...(node.label ? { label: node.label } : {}),
+          updatedAt: now,
+        })),
+      } : {}),
     }
   })
   return {
@@ -149,6 +169,7 @@ export function createProductionWorkflowRun(input, { actorId, now = Date.now() }
     definition: clone(version.definition),
     status: 'queued',
     items,
+    ...(version.definition.graph ? { approvals: [], validationReports: [] } : {}),
     createdAt: now,
     createdBy: requiredText(actorId, '操作者', 160),
     updatedAt: now,
@@ -164,9 +185,18 @@ export function transitionProductionWorkflowRun(value, action, { now = Date.now(
   if (!['start', 'pause', 'resume', 'cancel'].includes(action)) throw new Error('工作流运行操作不支持。')
   if (action === 'cancel') {
     run.status = 'cancelled'
-    run.items = run.items.map((item) => workflowItemTerminalStatuses.has(item.status)
-      ? item
-      : { ...item, status: 'cancelled', updatedAt: now })
+    run.items = run.items.map((item) => {
+      const cancelledItem = workflowItemTerminalStatuses.has(item.status)
+        ? item
+        : { ...item, status: 'cancelled', updatedAt: now }
+      if (!cancelledItem.nodeRuns) return cancelledItem
+      return {
+        ...cancelledItem,
+        nodeRuns: cancelledItem.nodeRuns.map((node) => ['succeeded', 'failed', 'cancelled'].includes(node.status)
+          ? node
+          : { ...node, status: 'cancelled', updatedAt: now }),
+      }
+    })
     run.completedAt = now
   } else {
     run.status = action === 'pause' ? 'paused' : 'running'
@@ -223,4 +253,133 @@ export function productionWorkflowLineage(input) {
     canvasNodeId: input.canvasNodeId,
     sourceVersionId: input.sourceVersionId,
   }
+}
+
+function graphNodeMap(item) {
+  return new Map((item?.nodeRuns ?? []).map((node) => [node.nodeId, node]))
+}
+
+function completeImmediateGraphNode(run, node, { now, quality }) {
+  if (node.kind === 'content' || node.kind === 'context') {
+    node.status = 'succeeded'
+  } else if (node.kind === 'approval') {
+    node.status = 'awaiting_approval'
+  } else if (node.kind === 'validation') {
+    const report = quality ?? { checks: [], blockingPassed: true }
+    const reportId = `validation-${node.nodeId}-${now}`
+    run.validationReports = [...(run.validationReports ?? []), {
+      id: reportId,
+      itemId: run.items[0].id,
+      nodeId: node.nodeId,
+      scope: 'preflight',
+      status: report.blockingPassed ? 'passed' : 'failed',
+      checks: clone(report.checks ?? []),
+      createdAt: now,
+    }]
+    node.validationReportId = reportId
+    node.status = report.blockingPassed ? 'succeeded' : 'failed'
+    if (!report.blockingPassed) node.error = { code: 'VALIDATION_FAILED', message: '质量预检未通过。' }
+  } else if (node.kind === 'delivery') {
+    const blockingFailed = (run.items[0].nodeRuns ?? []).some((entry) => (
+      (entry.kind === 'approval' || entry.kind === 'validation') && entry.status === 'failed'
+    ))
+    if (blockingFailed) {
+      node.status = 'failed'
+      node.error = { code: 'DELIVERY_BLOCKED', message: '审批或 QA 未通过时不能交付。' }
+    } else {
+      node.status = 'succeeded'
+      node.artifactIds = run.items.flatMap((item) => item.artifactIds ?? [])
+    }
+  }
+  node.updatedAt = now
+}
+
+export function advanceProductionWorkflowRun(run, { now = Date.now(), quality } = {}) {
+  if (!run?.definition?.graph) return clone(run)
+  const next = clone(run)
+  const item = next.items[0]
+  if (!item?.nodeRuns) return next
+  let changed = true
+  while (changed) {
+    changed = false
+    const nodeRunById = graphNodeMap(item)
+    const definitions = new Map(next.definition.graph.nodes.map((node) => [node.id, node]))
+    for (const node of item.nodeRuns) {
+      if (!['blocked', 'queued'].includes(node.status)) continue
+      const definition = definitions.get(node.nodeId)
+      const depsOk = (definition?.dependencies ?? []).every((dep) => nodeRunById.get(dep)?.status === 'succeeded')
+      if (!depsOk) continue
+      if (node.status === 'blocked') {
+        node.status = 'queued'
+        node.updatedAt = now
+        changed = true
+      }
+      if (node.status === 'queued' && node.kind !== 'generation') {
+        completeImmediateGraphNode(next, node, { now, quality })
+        changed = true
+      }
+    }
+  }
+  next.updatedAt = now
+  return next
+}
+
+export function recordWorkflowApprovalDecision(run, input, { actorId, now = Date.now(), quality } = {}) {
+  const next = clone(run)
+  const node = next.items[0]?.nodeRuns?.find((entry) => entry.nodeId === input?.nodeId)
+  if (!node || node.kind !== 'approval') throw new Error('审批节点不存在。')
+  if (node.status !== 'awaiting_approval') throw new Error('当前节点不可审批。')
+  if (!['approved', 'rejected'].includes(input.decision)) throw new Error('审批决定无效。')
+  const decision = {
+    id: requiredText(input.id ?? `approval-${node.nodeId}-${now}`, '审批标识', 160),
+    nodeId: node.nodeId,
+    decision: input.decision,
+    ...(input.comment ? { comment: requiredText(input.comment, '审批意见', 2_000) } : {}),
+    actorId: requiredText(actorId, '操作者', 160),
+    createdAt: now,
+  }
+  next.approvals = [...(next.approvals ?? []), decision]
+  node.approvalDecisionId = decision.id
+  node.status = input.decision === 'approved' ? 'succeeded' : 'failed'
+  node.updatedAt = now
+  if (input.decision === 'rejected') node.error = { code: 'APPROVAL_REJECTED', message: input.comment || '文案未批准。' }
+  return advanceProductionWorkflowRun(next, { now, quality })
+}
+
+export function applyWorkflowNodeResult(run, nodeId, result, { now = Date.now(), quality } = {}) {
+  const next = clone(run)
+  const node = next.items[0]?.nodeRuns?.find((entry) => entry.nodeId === nodeId)
+  if (!node || node.kind !== 'generation') throw new Error('生成节点不存在。')
+  node.status = result.status
+  node.updatedAt = now
+  if (result.jobId) node.jobId = result.jobId
+  if (result.artifactIds) node.artifactIds = clone(result.artifactIds)
+  if (result.error) node.error = clone(result.error)
+  const item = next.items.find((entry) => entry.id === (result.itemId ?? next.items[0].id))
+  if (item && result.status === 'succeeded') {
+    item.status = 'succeeded'
+    item.jobId = result.jobId ?? item.jobId
+    item.artifactIds = result.artifactIds ?? item.artifactIds
+    item.updatedAt = now
+  }
+  return advanceProductionWorkflowRun(next, { now, quality })
+}
+
+export function retryFailedWorkflowNodes(run, nodeId, { now = Date.now() } = {}) {
+  const next = clone(run)
+  const node = next.items[0]?.nodeRuns?.find((entry) => entry.nodeId === nodeId)
+  if (!node || node.kind !== 'generation' || node.status !== 'failed') throw new Error('没有可重试的失败生成节点。')
+  node.status = 'queued'
+  node.error = undefined
+  node.updatedAt = now
+  next.status = 'running'
+  next.completedAt = undefined
+  next.updatedAt = now
+  return next
+}
+
+export function queuedGenerationNodeIds(run) {
+  return (run.items[0]?.nodeRuns ?? [])
+    .filter((node) => node.kind === 'generation' && node.status === 'queued')
+    .map((node) => node.nodeId)
 }

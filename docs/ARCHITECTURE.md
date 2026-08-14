@@ -158,6 +158,12 @@ Owner 可管理成员、读取治理信息并审批外部工具；Editor 可编�
 工作流草稿，模板面板提供发布、运行、暂停、恢复、取消、失败项重试、结果定位与审核入口；运行时由服务端从项目权威文档
 解析稳定媒体标识，临时 Object URL 或未入库素材会被明确拒绝。
 
+节点式营销 DAG 是可选叠加：`definition.graph` 含 approval / generation / validation / delivery。
+文案批准前生成节点保持 blocked；校验失败时交付节点不得运行。浏览器经 `publishMarketingPlanWorkflow`、
+`startProductionWorkflowRun`、`approve-node` / `advance` / `retry-node` 操作服务端权威，不在 UI 推演整链。
+`marketingWorkflowRunProjection` 把 NodeRun、`approvals[]` 与 `validationReports[]` 投影给 Agent 面板；
+刷新从 `readProductionWorkflowRun` 恢复，本地 Demo 执行不是权威。
+
 ## 自动护栏
 
 `npm test` 会同时执行：

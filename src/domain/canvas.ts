@@ -393,6 +393,56 @@ export type DeliveryArtifact = {
   createdAt: number
 }
 
+export type ProductionWorkflowGraphNodeKind = 'context' | 'content' | 'approval' | 'generation' | 'validation' | 'delivery'
+
+export type ProductionWorkflowGraphNode = {
+  id: string
+  kind: ProductionWorkflowGraphNodeKind
+  label?: string
+  dependencies: string[]
+  parentSourceNodeId?: string
+  checks?: string[]
+}
+
+export type ProductionWorkflowNodeRun = {
+  nodeId: string
+  kind: ProductionWorkflowGraphNodeKind
+  status: 'blocked' | 'queued' | 'running' | 'awaiting_approval' | 'succeeded' | 'failed' | 'cancelled'
+  label?: string
+  jobId?: string
+  artifactIds?: string[]
+  approvalDecisionId?: string
+  validationReportId?: string
+  error?: { code: string; message: string }
+  updatedAt: number
+}
+
+export type ProductionWorkflowApprovalDecision = {
+  id: string
+  nodeId: string
+  decision: 'approved' | 'rejected'
+  comment?: string
+  actorId: string
+  createdAt: number
+}
+
+export type ProductionWorkflowValidationReport = {
+  id: string
+  itemId: string
+  nodeId: string
+  scope: 'preflight'
+  status: 'passed' | 'failed'
+  checks: Array<{
+    id: string
+    label: string
+    passed: boolean
+    severity: 'blocking' | 'warning'
+    reason: string
+    locator?: string
+  }>
+  createdAt: number
+}
+
 export type ProductionWorkflowDefinition = {
   prompt: string
   model: string
@@ -402,6 +452,7 @@ export type ProductionWorkflowDefinition = {
   assetGroupIds: string[]
   confirmationPolicy: string
   recipe?: Record<string, unknown>
+  graph?: { nodes: ProductionWorkflowGraphNode[] }
 }
 
 export type ProductionWorkflowVersion = {
@@ -437,6 +488,7 @@ export type ProductionWorkflowRunItem = {
   error?: { code: string; message: string }
   updatedAt: number
   completedAt?: number
+  nodeRuns?: ProductionWorkflowNodeRun[]
 }
 
 export type ProductionWorkflowRun = {
@@ -447,6 +499,8 @@ export type ProductionWorkflowRun = {
   definition: ProductionWorkflowDefinition
   status: 'queued' | 'running' | 'paused' | 'succeeded' | 'partially_failed' | 'failed' | 'cancelled'
   items: ProductionWorkflowRunItem[]
+  approvals?: ProductionWorkflowApprovalDecision[]
+  validationReports?: ProductionWorkflowValidationReport[]
   createdAt: number
   createdBy: string
   updatedAt: number

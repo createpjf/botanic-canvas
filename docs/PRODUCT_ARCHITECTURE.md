@@ -63,6 +63,7 @@ Agent 只接收必要的结构化元数据。图片字节、对象存储地址�
 | --- | --- | --- |
 | 生成进度与结果 | 持久化 GenerationJob | UI 占位、Toast、本地 loading |
 | Agent 执行 | 独立 Agent Run 与分支任务 | 对话卡片的临时进度 |
+| 营销生产链 | ProductionWorkflowRun / NodeRun / ApprovalDecision / ValidationReport | Agent 面板 Demo 动画、本地 `demoExecutions` |
 | Agent 会话内容 | 独立 Session / Message / Memory 实体 | CanvasDocument 迁移兼容字段 |
 | 历史产物 | Artifact Index | 当前画布节点和素材引用 |
 | 节点与连线协作 | 独立画布图谱与 Yjs 增量 | 本机选择态和视角 |

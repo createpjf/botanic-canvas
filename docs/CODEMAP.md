@@ -15,6 +15,7 @@
 | 普通生成任务 | `src/lib/generationApi.ts` | `server/generationService.mjs`、`generationProcessor.mjs`、`generationProvider.mjs` | `server/generation*.test.mjs`；同一次重试复用幂等键 |
 | 生成成本与 Provider 容灾 | `server/generationGovernance.mjs` | `securityControls.mjs`、`providerHealthMonitor.mjs`、`generationRoutes.mjs`、`generationProcessor.mjs` | 任务级唯一记账；多维预算原子预留；仅语义兼容模型可降级；熔断半开后恢复 |
 | 版本化生产工作流 | `server/productionWorkflow.mjs` | `productionWorkflowRoutes.mjs`、`generationSubmissionService.mjs`、`src/domain/productionWorkflows.ts`、`src/lib/productionWorkflowApi.ts`、模板面板、Artifact Index | 已验证 Agent/画布操作可提升为版本；运行固定快照；批量项独立恢复；失败重试复用任务与预算；Artifact 保留版本血缘 |
+| 营销生产 Run 权威 | `src/domain/productionWorkflows.ts` | `src/lib/productionWorkflowApi.ts`、`src/features/agent/AgentWorkspace.tsx`、`AgentConversationMessage.tsx`、`server/productionWorkflowRoutes.mjs` | Plan 发布为 Workflow；UI 投影 NodeRun / ApprovalDecision / ValidationReport；批准与驳回都走 `approve-node`；刷新从 Run 恢复；Demo 不是权威；审批/QA 失败时 delivery 不可运行 |
 | 批量变化 | `src/domain/batchVariations.ts` | `src/store/canvasBatchVariationActions.ts`、服务端 Processor | `batchVariations.test.ts`、Processor 测试；计划先限制总输出，Store 以有界并发协调独立子任务及恢复，各分支独立持久化 |
 | Agent 对话分流 | `src/domain/agentChatContract.ts` | `src/lib/agentApi.ts`、`server/botanicAgentChat.mjs` | 对话测试；浏览器不发送图片字节或私有 URL |
 | Agent 计划和执行 | `src/domain/agentPlanContract.ts` | `agent.ts`、`server/botanicAgentPlanner.mjs`、`botanicAgentTools.mjs`、`agentRunGenerationService.mjs` | Agent Planner/Tool/Run 测试；Run 生成复用持久化幂等任务，外部行动默认确认 |

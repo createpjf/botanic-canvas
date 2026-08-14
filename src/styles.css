@@ -3383,6 +3383,18 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-plan-settings small { overflow: hidden; color: #89968c; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .agent-plan-settings b { overflow: hidden; color: #48634e; font-size: 10px; font-weight: 720; text-overflow: ellipsis; white-space: nowrap; }
 .agent-plan__confirm-hint { color: #829087; font-size: 9px; }
+.agent-marketing-run { display: grid; gap: 8px; padding: 10px; border: 1px solid #d5e4d6; border-radius: 8px; background: #f7fbf7; }
+.agent-marketing-run header { display: flex; flex-direction: column; gap: 2px; }
+.agent-marketing-run header strong { color: #2d4a34; font-size: 11px; }
+.agent-marketing-run header small { color: #6f7f73; font-size: 10px; }
+.agent-marketing-run__nodes { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.agent-marketing-run__nodes li { display: flex; justify-content: space-between; gap: 8px; padding: 5px 7px; border-radius: 6px; background: #fff; color: #48634e; font-size: 10px; }
+.agent-marketing-run__nodes li.is-awaiting_approval,
+.agent-marketing-run__nodes li.is-running { background: #eef6ee; }
+.agent-marketing-run__nodes li.is-completed { color: #2d633b; }
+.agent-marketing-run__nodes li.is-failed { color: #8a3b32; background: #f8ecea; }
+.agent-marketing-run__records { display: grid; gap: 3px; margin: 0; padding: 0; list-style: none; color: #5c6d60; font-size: 10px; }
+.agent-marketing-run__actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .agent-message__submitted { justify-self: start; color: #397149; font-size: 11px; font-weight: 760; }
 .agent-message__route { border-top: 1px solid #e1e9e0; color: #66766b; font-size: 10px; }
 .agent-message__route summary { padding-top: 8px; cursor: pointer; font-weight: 750; }

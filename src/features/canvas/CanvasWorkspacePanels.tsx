@@ -4,7 +4,7 @@ import { buildDeliveryPreviewArtifacts, resolveDeliveryDraft, type DeliveryPanel
 import { topOverlayLayer } from '../../domain/overlayPriority'
 import { primaryGenerationReference, settingsForGenerationModel } from '../../domain/generationRecipe'
 import { summarizeWorkflowTemplate, type WorkflowTemplateSummary } from '../../domain/workflowTemplates'
-import { productionWorkflowDraftFromCanvas } from '../../domain/productionWorkflows'
+import { productionWorkflowDraftFromCanvas, marketingWorkflowRunProjection } from '../../domain/productionWorkflows'
 import { useMotionPresence, useRestoreFocus, useRetainedValue, type MotionPhase } from '../../components/motionPresence'
 import { useDialogFocusTrap } from '../../components/useDialogFocusTrap'
 import { BotanicSelect } from '../../components/BotanicSelect'
@@ -1026,6 +1026,8 @@ export function TemplatePanel({
               const latestRun = runs[0]
               const resultNodeId = latestRun?.items.flatMap((item) => item.canvasNodeIds ?? [])[0]
               const hasFailed = latestRun?.items.some((item) => item.status === 'failed')
+              const projection = latestRun ? marketingWorkflowRunProjection(latestRun) : undefined
+              const deliveryRunnable = projection ? projection.deliveryRunnable : Boolean(latestRun?.items.some((item) => item.artifactIds?.length))
               return <article className="production-workflow-card" key={workflow.id}>
                 <header><div><strong>{workflow.name}</strong><span>版本 {workflow.currentVersion} · {runs.length} 次运行</span></div><em>{latestRun?.status ?? '未运行'}</em></header>
                 <p>{workflow.versions.at(-1)?.definition.prompt}</p>
@@ -1037,7 +1039,7 @@ export function TemplatePanel({
                   {latestRun && ['queued', 'running', 'paused'].includes(latestRun.status) ? <button type="button" onClick={() => void updateAutomation(latestRun, 'cancel')}>取消</button> : null}
                   {hasFailed ? <button type="button" onClick={() => void updateAutomation(latestRun, 'retry-failed')}>重试失败项</button> : null}
                   {resultNodeId ? <button type="button" onClick={() => onLocateWorkflowNode(resultNodeId)}>定位结果</button> : null}
-                  {latestRun?.items.some((item) => item.artifactIds?.length) ? <button type="button" onClick={onOpenHistory}>审核与交付</button> : null}
+                  {deliveryRunnable ? <button type="button" onClick={onOpenHistory}>审核与交付</button> : projection && !projection.deliveryRunnable ? <button type="button" disabled title="审批或 QA 未通过，交付不可运行">交付未放行</button> : null}
                 </footer>
               </article>
             })}

@@ -7,6 +7,7 @@ import {
   type BotanicAgentRun,
 } from '../../domain/agent'
 import type { GenerationModelOption } from '../../domain/canvas'
+import type { MarketingWorkflowRunProjection } from '../../domain/productionWorkflows'
 import { CopyIcon, EditIcon, FocusIcon, SparkleIcon, ThumbDownIcon, ThumbUpIcon } from '../../components/BotanicIcons'
 import { agentPlannerModelLabel, modelDisplayLabel } from '../../components/generationModelPresentation'
 import { AgentClarificationCard, AgentPromptDiff, agentToolStatusLabel } from './AgentWorkspaceParts'
@@ -40,6 +41,12 @@ type AgentConversationMessageProps = {
   onEdit: (content: string) => void
   onRetryDelivery: (messageId: string) => void
   onFeedback: (message: BotanicAgentMessage, feedback: BotanicAgentMessage['feedback']) => void
+  marketingProjection?: MarketingWorkflowRunProjection
+  marketingBusy?: boolean
+  marketingError?: string
+  onPublishMarketingPlan?: (message: BotanicAgentMessage) => void
+  onApproveMarketingCopy?: (message: BotanicAgentMessage, decision: 'approved' | 'rejected') => void
+  onResetMarketingRun?: (message: BotanicAgentMessage) => void
 }
 
 export function AgentConversationMessage({
@@ -70,6 +77,12 @@ export function AgentConversationMessage({
   onEdit,
   onRetryDelivery,
   onFeedback,
+  marketingProjection,
+  marketingBusy,
+  marketingError,
+  onPublishMarketingPlan,
+  onApproveMarketingCopy,
+  onResetMarketingRun,
 }: AgentConversationMessageProps) {
   const linkedRun = message.runId ? runs.find((run) => run.id === message.runId) : undefined
   const outputNodeIds = message.runId
@@ -154,6 +167,39 @@ export function AgentConversationMessage({
         {message.plan.contextSnapshot?.length ? <small className="agent-plan__context-lock">已锁定上下文 · {message.plan.contextSnapshot.slice(0, 3).map((item) => item.label).join('、')}{message.plan.contextSnapshot.length > 3 ? ` 等 ${message.plan.contextSnapshot.length} 项` : ''}</small> : null}
         <details className="agent-message__route"><summary>执行路由</summary><div><span>规划</span><b>{agentPlannerModelLabel(message.plan.plannerModel ?? plannerModel)}</b><span>生成</span><b>{message.plan.settings.model}</b><span>外部行动</span><b>{message.plan.actions?.length ? `${message.plan.actions.length} 项，确认后执行` : '无'}</b></div></details>
         {message.status !== 'submitted' ? <><small className="agent-plan__confirm-hint">确认后才会提交生成任务，当前设置仍可在上方编辑。</small><button type="button" disabled={submittingMessageId === message.id || message.plan.actions?.some((action) => action.status === 'awaiting_confirmation' || action.status === 'running')} onClick={() => onConfirmPlan(message)}>{submittingMessageId === message.id ? '正在提交…' : message.plan.actions?.some((action) => action.status === 'awaiting_confirmation' || action.status === 'running') ? '先处理行动卡' : message.status === 'failed' ? '重新提交计划' : '确认并生成'}</button></> : <span className="agent-message__submitted">已提交</span>}
+        {onPublishMarketingPlan ? <section className="agent-marketing-run" aria-label="营销生产运行">
+          <header>
+            <strong>营销生产链</strong>
+            <small>{marketingProjection
+              ? `${marketingPhaseLabel(marketingProjection.phase)} · ${marketingProjection.executionMode === 'fixture' ? 'Fixture 样张' : marketingProjection.executionMode === 'provider' ? 'Provider 任务' : '服务端运行'}`
+              : '发布后由 Workflow Run 拥有进度，刷新从服务端恢复'}</small>
+          </header>
+          {marketingProjection ? <>
+            <ol className="agent-marketing-run__nodes">
+              {marketingProjection.nodeRuns.map((node) => <li key={node.nodeId} className={`is-${marketingProjection.nodeStatuses[node.nodeId]}`}>
+                <span>{node.label ?? node.nodeId}</span>
+                <small>{marketingNodeStatusLabel(marketingProjection.nodeStatuses[node.nodeId])}</small>
+              </li>)}
+            </ol>
+            {marketingProjection.approvals.length ? <ul className="agent-marketing-run__records" aria-label="审批记录">
+              {marketingProjection.approvals.map((approval) => <li key={approval.id}>{approval.decision === 'approved' ? '已批准' : '已驳回'}{approval.comment ? ` · ${approval.comment}` : ''}</li>)}
+            </ul> : null}
+            {marketingProjection.validationReports.length ? <ul className="agent-marketing-run__records" aria-label="预检报告">
+              {marketingProjection.validationReports.flatMap((report) => report.checks.map((check) => <li key={`${report.id}-${check.id}`}>{check.passed ? '通过' : '未通过'} · {check.label} · {check.reason}</li>))}
+            </ul> : null}
+            {marketingProjection.status === 'waiting_copy' && onApproveMarketingCopy ? <div className="agent-marketing-run__actions">
+              <button type="button" className="is-secondary" disabled={marketingBusy} onClick={() => onApproveMarketingCopy(message, 'rejected')}>{marketingBusy ? '处理中…' : '驳回文案'}</button>
+              <button type="button" disabled={marketingBusy} onClick={() => onApproveMarketingCopy(message, 'approved')}>{marketingBusy ? '处理中…' : '批准文案'}</button>
+            </div> : null}
+            <div className="agent-marketing-run__actions">
+              <button type="button" disabled={!marketingProjection.deliveryRunnable} title={marketingProjection.deliveryRunnable ? '交付节点已放行' : '审批或 QA 未通过，交付不可运行'}>{marketingProjection.deliveryRunnable ? '交付已放行' : '交付未放行'}</button>
+              {onResetMarketingRun && marketingProjection.status !== 'cancelled' ? <button type="button" className="is-secondary" disabled={marketingBusy} onClick={() => onResetMarketingRun(message)}>{marketingBusy ? '处理中…' : '重置并取消运行'}</button> : null}
+            </div>
+          </> : <div className="agent-marketing-run__actions">
+            <button type="button" disabled={marketingBusy || message.plan.actions?.some((action) => action.status === 'awaiting_confirmation' || action.status === 'running')} onClick={() => onPublishMarketingPlan(message)}>{marketingBusy ? '正在发布…' : '发布并执行'}</button>
+          </div>}
+          {marketingError ? <small className="agent-action-card__error">{marketingError}</small> : null}
+        </section> : null}
       </div> : null}
     </div>
     <div className="agent-message__utilities">
@@ -165,4 +211,24 @@ export function AgentConversationMessage({
       <button type="button" aria-label="复制消息" title="复制消息" onClick={() => void navigator.clipboard.writeText(message.content)}><CopyIcon /></button>
     </div>
   </article>
+}
+
+function marketingPhaseLabel(phase: MarketingWorkflowRunProjection['phase']) {
+  if (phase === 'copy-review') return '待文案审批'
+  if (phase === 'poster') return '主视觉'
+  if (phase === 'review') return '品牌预检'
+  if (phase === 'variants') return '渠道变体'
+  if (phase === 'delivery') return '交付'
+  if (phase === 'completed') return '已完成'
+  return '已失败'
+}
+
+function marketingNodeStatusLabel(status: MarketingWorkflowRunProjection['nodeStatuses'][string]) {
+  if (status === 'completed') return '已完成'
+  if (status === 'awaiting_approval') return '待审批'
+  if (status === 'running') return '执行中'
+  if (status === 'queued') return '排队'
+  if (status === 'blocked') return '等待依赖'
+  if (status === 'failed') return '失败'
+  return '未开始'
 }

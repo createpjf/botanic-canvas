@@ -150,3 +150,61 @@ test('Viewer 读取运行状态不尝试写回项目，仍返回最新任务状�
   assert.equal(responses.at(-1).status, 200)
   assert.equal(responses.at(-1).body.run.items[0].status, 'succeeded')
 })
+
+const graphDefinition = {
+  ...definition,
+  recipe: { references: [{ name: '产品', role: '商品', primary: true, mediaId: 'media_product' }] },
+  graph: {
+    nodes: [
+      { id: 'copy', kind: 'content', dependencies: [] },
+      { id: 'copy-approval', kind: 'approval', dependencies: ['copy'] },
+      { id: 'poster', kind: 'generation', dependencies: ['copy-approval'] },
+      { id: 'poster-qa', kind: 'validation', dependencies: ['poster'] },
+      { id: 'delivery', kind: 'delivery', dependencies: ['poster-qa'] },
+    ],
+  },
+}
+
+test('文案批准与驳回都走 approve-node，Fixture 不调用真实 Provider', async () => {
+  let submits = 0
+  const { handler, responses, document } = harness([
+    { id: 'workflow-g', name: 'Campaign Kit', definition: graphDefinition },
+    { id: 'run-g', workflowVersion: 1, items: [{ id: 'poster', executionMode: 'fixture', fixtureAssetIds: ['asset-a'], copyText: '夏日冰茶' }] },
+    { action: 'approve-node', nodeId: 'copy-approval', decision: 'approved', id: 'approval-1' },
+  ], async () => {
+    submits += 1
+    return { job: { id: 'job-should-not-run', status: 'queued' } }
+  }, {
+    initialDocument: { id: 'project-a', nodes: [], agentMemory: [{ kind: 'approved', content: '清爽解渴' }], productionWorkflows: [], productionWorkflowRuns: [] },
+  })
+  await handler({ method: 'POST' }, {}, new URL('http://test'), { projectProductionWorkflows: ['path', 'project-a'] })
+  await handler({ method: 'POST' }, {}, new URL('http://test'), { projectProductionWorkflowRuns: ['path', 'project-a', 'workflow-g'] })
+  assert.equal(responses[1].status, 202)
+  assert.equal(responses[1].body.run.items[0].nodeRuns.find((node) => node.kind === 'approval').status, 'awaiting_approval')
+  assert.equal(submits, 0)
+  await handler({ method: 'PATCH' }, {}, new URL('http://test'), { projectProductionWorkflowRun: ['path', 'project-a', 'run-g'] })
+  const approved = responses.at(-1).body.run
+  assert.equal(approved.approvals[0].decision, 'approved')
+  assert.equal(approved.items[0].nodeRuns.find((node) => node.nodeId === 'poster').status, 'succeeded')
+  assert.equal(submits, 0)
+  assert.equal(document().productionWorkflowRuns[0].id, 'run-g')
+})
+
+test('文案驳回后交付仍不可运行，且不派发生成任务', async () => {
+  let submits = 0
+  const { handler, responses } = harness([
+    { id: 'workflow-g', name: 'Campaign Kit', definition: graphDefinition },
+    { id: 'run-r', workflowVersion: 1, items: [{ id: 'poster', executionMode: 'fixture', fixtureAssetIds: ['asset-a'] }] },
+    { action: 'approve-node', nodeId: 'copy-approval', decision: 'rejected', comment: '禁用表达' },
+  ], async () => {
+    submits += 1
+    return { job: { id: 'job-x', status: 'queued' } }
+  })
+  await handler({ method: 'POST' }, {}, new URL('http://test'), { projectProductionWorkflows: ['path', 'project-a'] })
+  await handler({ method: 'POST' }, {}, new URL('http://test'), { projectProductionWorkflowRuns: ['path', 'project-a', 'workflow-g'] })
+  await handler({ method: 'PATCH' }, {}, new URL('http://test'), { projectProductionWorkflowRun: ['path', 'project-a', 'run-r'] })
+  const rejected = responses.at(-1).body.run
+  assert.equal(rejected.approvals[0].decision, 'rejected')
+  assert.equal(rejected.items[0].nodeRuns.find((node) => node.kind === 'delivery')?.status ?? 'blocked', 'blocked')
+  assert.equal(submits, 0)
+})

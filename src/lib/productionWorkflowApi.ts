@@ -27,6 +27,16 @@ export async function publishProductionWorkflow(input: {
   })).workflow
 }
 
+/** Agent「发布并执行」的唯一发布入口；与模板面板共用不可变版本语义。 */
+export async function publishMarketingPlanWorkflow(input: {
+  projectId: string
+  id: string
+  name: string
+  definition: ProductionWorkflowDefinition
+}) {
+  return publishProductionWorkflow(input)
+}
+
 export async function readProductionWorkflow(projectId: string, workflowId: string) {
   return (await productRequest<{ workflow: ProductionWorkflow }>(workflowPath(projectId, workflowId))).workflow
 }
@@ -56,11 +66,24 @@ export async function readProductionWorkflowRun(projectId: string, runId: string
 export async function updateProductionWorkflowRun(
   projectId: string,
   runId: string,
-  action: 'pause' | 'resume' | 'cancel' | 'retry-failed',
+  action: 'pause' | 'resume' | 'cancel' | 'retry-failed' | 'advance' | 'approve-node' | 'retry-node',
+  extra: Record<string, unknown> = {},
 ) {
   return (await productRequest<{ run: ProductionWorkflowRun }>(runPath(projectId, runId), {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action }),
+    body: JSON.stringify({ action, ...extra }),
   })).run
+}
+
+export async function approveProductionWorkflowNode(projectId: string, runId: string, input: {
+  nodeId: string
+  decision: 'approved' | 'rejected'
+  comment?: string
+}) {
+  return updateProductionWorkflowRun(projectId, runId, 'approve-node', input)
+}
+
+export async function retryProductionWorkflowNode(projectId: string, runId: string, nodeId: string) {
+  return updateProductionWorkflowRun(projectId, runId, 'retry-node', { nodeId })
 }

@@ -75,6 +75,7 @@ import type { AgentArtifactIndexState, AgentContextItem, AgentDockTarget } from 
 import { AgentCollaborationPanel, AgentMemoryPanel, AgentResultPanel } from './AgentUtilityPanels'
 import { AgentConversationMessage } from './AgentConversationMessage'
 import { AgentComposer } from './AgentComposer'
+import { useAgentMarketingWorkflow } from './useAgentMarketingWorkflow'
 import {
   AlertIcon,
   BookmarkIcon,
@@ -308,6 +309,20 @@ export default function AgentWorkspace({
     () => agentMountedRef.current && useCanvasStore.getState().document.id === projectId,
     [projectId],
   )
+  const canvasDocument = useCanvasStore((state) => state.document)
+  const {
+    busyMessageId: marketingBusyMessageId,
+    errors: marketingErrors,
+    projectionFor,
+    executeMarketingPlan,
+    approveMarketingCopy,
+    resetMarketingRun,
+  } = useAgentMarketingWorkflow({
+    projectId,
+    messages: session?.messages ?? [],
+    document: canvasDocument,
+    isCurrentProject: isCurrentAgentProject,
+  })
   const { appendMessage, retryMessage } = useAgentMessageDelivery({
     projectId,
     session,
@@ -1538,6 +1553,12 @@ export default function AgentWorkspace({
           onEdit={(content) => { setInstruction(content); requestAnimationFrame(() => composerTextareaRef.current?.focus()) }}
           onRetryDelivery={retryMessage}
           onFeedback={(targetMessage, feedback) => onUpdateMessage(session.id, targetMessage.id, { feedback })}
+          marketingProjection={projectionFor(message.id)}
+          marketingBusy={marketingBusyMessageId === message.id}
+          marketingError={marketingErrors[message.id]}
+          onPublishMarketingPlan={(targetMessage) => void executeMarketingPlan(targetMessage)}
+          onApproveMarketingCopy={(targetMessage, decision) => void approveMarketingCopy(targetMessage, decision)}
+          onResetMarketingRun={(targetMessage) => void resetMarketingRun(targetMessage)}
         /></div>) : null}
         {!utilityPanelOpen && showRuntimeFeed ? (() => {
           const livePhase = runtimePhase === 'reading' || runtimePhase === 'planning' || runtimePhase === 'executing'

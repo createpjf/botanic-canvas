@@ -73,7 +73,8 @@ test('画布文档规范化保留生产工作流版本与历史运行血缘', ()
     productionWorkflowRuns: [{
       id: 'run-a', workflowId: 'workflow-a', workflowVersion: 1, projectId: 'workflow-project',
       definition: { prompt: '品牌首图', model: 'gpt-image-2', settings: {}, output: {}, brandRules: [], assetGroupIds: [], confirmationPolicy: 'before-submit' },
-      status: 'succeeded', items: [{ id: 'item-a', index: 0, input: {}, status: 'succeeded', attempt: 1, idempotencyKey: 'workflow:run-a:item-a', artifactIds: ['artifact-a'], canvasNodeIds: ['node-a'], updatedAt: 2 }],
+      status: 'succeeded', items: [{ id: 'item-a', index: 0, input: {}, status: 'succeeded', attempt: 1, idempotencyKey: 'workflow:run-a:item-a', artifactIds: ['artifact-a'], canvasNodeIds: ['node-a'], updatedAt: 2, nodeRuns: [{ nodeId: 'copy-approval', kind: 'approval', status: 'succeeded', updatedAt: 2 }] }],
+      approvals: [{ id: 'approval-a', nodeId: 'copy-approval', decision: 'approved', actorId: 'owner-a', createdAt: 2 }],
       createdAt: 1, createdBy: 'owner-a', updatedAt: 2,
     }],
   } as CanvasDocument
@@ -82,4 +83,6 @@ test('画布文档规范化保留生产工作流版本与历史运行血缘', ()
   assert.equal(normalized.productionWorkflows?.[0].versions[0].definition.prompt, '品牌首图')
   assert.deepEqual(normalized.productionWorkflowRuns?.[0].items[0].artifactIds, ['artifact-a'])
   assert.deepEqual(normalized.productionWorkflowRuns?.[0].items[0].canvasNodeIds, ['node-a'])
+  assert.equal(normalized.productionWorkflowRuns?.[0].items[0].nodeRuns?.[0].kind, 'approval')
+  assert.equal(normalized.productionWorkflowRuns?.[0].approvals?.[0].decision, 'approved')
 })

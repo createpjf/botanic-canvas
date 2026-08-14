@@ -1,13 +1,19 @@
 import {
   applyWorkflowItemResult,
+  applyWorkflowNodeResult,
+  advanceProductionWorkflowRun,
   createProductionWorkflowRun,
   createProductionWorkflowVersion,
   productionWorkflowVersion,
+  queuedGenerationNodeIds,
+  recordWorkflowApprovalDecision,
   resolveProductionWorkflowRecipe,
   retryFailedWorkflowItems,
+  retryFailedWorkflowNodes,
   transitionProductionWorkflowRun,
 } from './productionWorkflow.mjs'
 import { persistedGenerationJob, publicGenerationJob } from './generationProvider.mjs'
+import { qualityFromWorkflow } from './marketingQualityGate.mjs'
 import { requireProjectPermission } from './projectAuthorization.mjs'
 
 const clone = (value) => structuredClone(value)
@@ -99,14 +105,46 @@ export function createProductionWorkflowRouteHandler({
       })
       changed = true
     }
+    if (next.definition?.graph) {
+      const quality = qualityFromWorkflow(next, project.document)
+      for (const item of next.items) {
+        const node = next.items[0]?.nodeRuns?.find((entry) => entry.nodeId === item.id && entry.kind === 'generation')
+        if (!node || node.status === item.status) continue
+        if (!['succeeded', 'failed', 'cancelled', 'running'].includes(item.status)) continue
+        next = applyWorkflowNodeResult(next, item.id, {
+          status: item.status,
+          jobId: item.jobId,
+          artifactIds: item.artifactIds,
+          error: item.error,
+          itemId: item.id,
+        }, { quality })
+        changed = true
+      }
+    }
     return { run: next, changed }
   }
 
   async function dispatchItems(user, workflow, run, document, itemIds = run.items.map((item) => item.id), retryExisting = false) {
     let next = run.status === 'queued' ? transitionProductionWorkflowRun(run, 'start') : clone(run)
+    const quality = qualityFromWorkflow(next, document)
     for (const itemId of itemIds) {
       const item = next.items.find((entry) => entry.id === itemId)
       if (!item) continue
+      if (item.input?.executionMode === 'fixture') {
+        const fixtureIds = Array.isArray(item.input.fixtureAssetIds) ? item.input.fixtureAssetIds : []
+        next = applyWorkflowItemResult(next, item.id, {
+          status: 'succeeded',
+          artifactIds: fixtureIds.map((assetId) => `fixture:${assetId}`),
+        })
+        if (next.definition?.graph) {
+          next = applyWorkflowNodeResult(next, item.id, {
+            status: 'succeeded',
+            artifactIds: fixtureIds.map((assetId) => `fixture:${assetId}`),
+            itemId: item.id,
+          }, { quality })
+        }
+        continue
+      }
       try {
         const submitted = await submitGeneration({
           user,
@@ -118,12 +156,45 @@ export function createProductionWorkflowRouteHandler({
           status: submitted.job.status === 'queued' ? 'running' : submitted.job.status,
           jobId: submitted.job.id,
         })
+        if (next.definition?.graph) {
+          next = applyWorkflowNodeResult(next, item.id, {
+            status: submitted.job.status === 'queued' ? 'running' : submitted.job.status,
+            jobId: submitted.job.id,
+            itemId: item.id,
+          }, { quality })
+        }
       } catch (caught) {
         next = applyWorkflowItemResult(next, item.id, {
           status: 'failed',
           error: { code: caught?.code ?? 'WORKFLOW_ITEM_SUBMIT_FAILED', message: caught instanceof Error ? caught.message : String(caught) },
         })
+        if (next.definition?.graph) {
+          next = applyWorkflowNodeResult(next, item.id, {
+            status: 'failed',
+            error: { code: caught?.code ?? 'WORKFLOW_ITEM_SUBMIT_FAILED', message: caught instanceof Error ? caught.message : String(caught) },
+            itemId: item.id,
+          }, { quality })
+        }
       }
+    }
+    return next
+  }
+
+  async function dispatchQueuedGraph(user, workflow, run, document, retryExisting = false) {
+    let next = run
+    for (let step = 0; step < 8; step += 1) {
+      const queued = queuedGenerationNodeIds(next)
+      if (!queued.length) return next
+      next = await dispatchItems(
+        user,
+        workflow,
+        next,
+        document,
+        next.items.filter((item) => queued.includes(item.id)).map((item) => item.id),
+        retryExisting,
+      )
+      const remaining = queuedGenerationNodeIds(next)
+      if (remaining.length === queued.length && remaining.every((id) => queued.includes(id))) return next
     }
     return next
   }
@@ -206,6 +277,9 @@ export function createProductionWorkflowRouteHandler({
           workflowVersion: body.workflowVersion,
           itemInputs: body.items,
         }, { actorId: user.id })
+        if (run.definition.graph) {
+          run = advanceProductionWorkflowRun(run, { now: Date.now(), quality: qualityFromWorkflow(run, project.document) })
+        }
 
         // 先保存固定版本与输入快照，再创建真实任务。这样项目写入失败时不会留下
         // 无法从工作流历史追溯的孤儿任务。
@@ -215,7 +289,12 @@ export function createProductionWorkflowRouteHandler({
         })
         if (!prepared) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
 
-        run = await dispatchItems(user, workflow, run, project.document)
+        const queued = run.definition.graph ? queuedGenerationNodeIds(run) : run.items.map((item) => item.id)
+        if (!run.definition.graph) {
+          run = await dispatchItems(user, workflow, run, project.document)
+        } else if (queued.length) {
+          run = await dispatchQueuedGraph(user, workflow, run, project.document)
+        }
         await updateProject(user.id, projectId, (document) => {
           const state = documents(document)
           return { ...document, productionWorkflowRuns: [...state.runs.filter((entry) => entry.id !== run.id), run] }
@@ -249,7 +328,21 @@ export function createProductionWorkflowRouteHandler({
       }
       if (request.method === 'PATCH') {
         const body = await readJson(request)
-        if (body.action === 'retry-failed') {
+        const quality = qualityFromWorkflow(run, project.document)
+        if (body.action === 'approve-node') {
+          run = recordWorkflowApprovalDecision(run, {
+            id: body.id,
+            nodeId: body.nodeId,
+            decision: body.decision,
+            comment: body.comment,
+          }, { actorId: user.id, quality })
+          run = await dispatchQueuedGraph(user, workflow, run, project.document)
+        } else if (body.action === 'advance') {
+          run = advanceProductionWorkflowRun(run, { quality })
+        } else if (body.action === 'retry-node') {
+          run = retryFailedWorkflowNodes(run, body.nodeId)
+          run = await dispatchQueuedGraph(user, workflow, run, project.document, true)
+        } else if (body.action === 'retry-failed') {
           run = retryFailedWorkflowItems(run)
           run = await dispatchItems(user, workflow, run, project.document, run.items.filter((item) => item.status === 'queued').map((item) => item.id), true)
         } else if (body.action === 'pause') {

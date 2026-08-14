@@ -2,9 +2,12 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   applyWorkflowItemResult,
+  applyWorkflowNodeResult,
+  advanceProductionWorkflowRun,
   createProductionWorkflowVersion,
   createProductionWorkflowRun,
   productionWorkflowLineage,
+  recordWorkflowApprovalDecision,
   resolveProductionWorkflowRecipe,
   retryFailedWorkflowItems,
   transitionProductionWorkflowRun,
@@ -109,4 +112,66 @@ test('工作流结果血缘关联版本、运行、任务、Artifact、画布节
     workflowId: 'workflow-a', workflowVersion: 3, workflowRunId: 'run-a', workflowItemId: 'sku-a',
     generationJobId: 'job-a', artifactId: 'artifact-a', canvasNodeId: 'result-a', sourceVersionId: 'history-a',
   })
+})
+
+test('图节点在文案批准前阻断生成，QA 失败则交付不可运行', () => {
+  const graphDefinition = {
+    ...definition,
+    graph: {
+      nodes: [
+        { id: 'copy', kind: 'content', dependencies: [] },
+        { id: 'copy-approval', kind: 'approval', dependencies: ['copy'] },
+        { id: 'poster', kind: 'generation', dependencies: ['copy-approval'] },
+        { id: 'poster-qa', kind: 'validation', dependencies: ['poster'] },
+        { id: 'delivery', kind: 'delivery', dependencies: ['poster-qa'] },
+      ],
+    },
+  }
+  const workflow = createProductionWorkflowVersion({
+    id: 'workflow-g', projectId: 'project-a', name: 'Campaign Kit', definition: graphDefinition,
+  }, { actorId: 'user-a', now: 100 })
+  let run = createProductionWorkflowRun({
+    id: 'run-g', workflow, itemInputs: [{ id: 'poster' }],
+  }, { actorId: 'user-a', now: 200 })
+  run = advanceProductionWorkflowRun(run, { now: 210, quality: { checks: [], blockingPassed: true } })
+  const approval = run.items[0].nodeRuns.find((node) => node.kind === 'approval')
+  const poster = run.items[0].nodeRuns.find((node) => node.nodeId === 'poster')
+  assert.equal(approval.status, 'awaiting_approval')
+  assert.equal(poster.status, 'blocked')
+
+  run = recordWorkflowApprovalDecision(run, { nodeId: 'copy-approval', decision: 'approved' }, { actorId: 'user-a', now: 220 })
+  assert.equal(run.items[0].nodeRuns.find((node) => node.nodeId === 'poster').status, 'queued')
+
+  run = applyWorkflowNodeResult(run, 'poster', { status: 'succeeded', jobId: 'job-1', artifactIds: ['art-1'] }, {
+    now: 230,
+    quality: { checks: [{ id: 'x', label: '主张溯源', passed: false, severity: 'blocking', reason: '缺少主张' }], blockingPassed: false },
+  })
+  assert.equal(run.items[0].nodeRuns.find((node) => node.kind === 'validation').status, 'failed')
+  assert.equal(run.items[0].nodeRuns.find((node) => node.kind === 'delivery').status, 'blocked')
+})
+
+test('文案驳回写入审批记录并取消未完成节点', () => {
+  const graphDefinition = {
+    ...definition,
+    graph: {
+      nodes: [
+        { id: 'copy', kind: 'content', dependencies: [] },
+        { id: 'copy-approval', kind: 'approval', dependencies: ['copy'] },
+        { id: 'poster', kind: 'generation', dependencies: ['copy-approval'] },
+      ],
+    },
+  }
+  const workflow = createProductionWorkflowVersion({
+    id: 'workflow-r', projectId: 'project-a', name: 'Campaign Kit', definition: graphDefinition,
+  }, { actorId: 'user-a', now: 100 })
+  let run = advanceProductionWorkflowRun(createProductionWorkflowRun({
+    id: 'run-r', workflow, itemInputs: [{ id: 'poster' }],
+  }, { actorId: 'user-a', now: 200 }), { now: 210 })
+  run = recordWorkflowApprovalDecision(run, { nodeId: 'copy-approval', decision: 'rejected', comment: '禁用表达' }, { actorId: 'user-a', now: 220 })
+  assert.equal(run.approvals[0].decision, 'rejected')
+  assert.equal(run.items[0].nodeRuns.find((node) => node.kind === 'approval').status, 'failed')
+  assert.equal(run.items[0].nodeRuns.find((node) => node.nodeId === 'poster').status, 'blocked')
+  const cancelled = transitionProductionWorkflowRun(transitionProductionWorkflowRun(run, 'start', { now: 230 }), 'cancel', { now: 240 })
+  assert.equal(cancelled.status, 'cancelled')
+  assert.ok(cancelled.items[0].nodeRuns.every((node) => ['succeeded', 'failed', 'cancelled'].includes(node.status)))
 })

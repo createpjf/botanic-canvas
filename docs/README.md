@@ -13,6 +13,8 @@
 - [ADR 0001：语义化生成图谱](adr/0001-semantic-node-graph.md)
 - [ADR 0002：Agent 独立实体持久化](adr/0002-agent-entity-persistence.md)
 - [ADR 0003：项目级 Artifact Index](adr/0003-project-scoped-artifact-index.md)
+- [ADR 0004：营销生产运行拥有整链状态](adr/0004-marketing-production-run-authority.md)
+- [ADR 0005：营销生产链分层](adr/0005-marketing-production-layers.md)
 
 ## 功能规格
 
