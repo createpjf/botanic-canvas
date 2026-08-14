@@ -190,3 +190,27 @@ test('审批或 QA 未通过时交付节点不可运行', () => {
   assert.equal(view?.deliveryRunnable, false)
   assert.equal(isDeliveryNodeRunnable(run), false)
 })
+
+test('审批与 QA 均通过后交付节点可运行', () => {
+  const run = graphRun({
+    status: 'running',
+    approvals: [{ id: 'approval-1', nodeId: 'copy-approval', decision: 'approved', actorId: 'user-a', createdAt: 2 }],
+    validationReports: [{
+      id: 'qa-1', itemId: 'poster', nodeId: 'poster-qa', scope: 'preflight', status: 'passed', createdAt: 3,
+      checks: [{ id: 'copy-prohibited-claims', label: '禁用表达', passed: true, severity: 'blocking', reason: '未命中禁用表达', locator: 'copy' }],
+    }],
+  })
+  run.items[0].nodeRuns = run.items[0].nodeRuns!.map((node) => {
+    if (node.kind === 'delivery') return { ...node, status: 'queued' }
+    if (node.nodeId === 'copy-approval') return { ...node, status: 'succeeded', approvalDecisionId: 'approval-1' }
+    if (node.nodeId === 'poster-qa') return { ...node, status: 'succeeded', validationReportId: 'qa-1' }
+    return { ...node, status: 'succeeded' }
+  })
+  const view = marketingWorkflowRunProjection(run)
+  assert.equal(view?.copyApproved, true)
+  assert.equal(view?.validationPassed, true)
+  assert.equal(view?.deliveryRunnable, true)
+  assert.equal(isDeliveryNodeRunnable(run), true)
+  assert.equal(view?.phase, 'delivery')
+  assert.equal(view?.validationReports[0].status, 'passed')
+})
