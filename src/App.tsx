@@ -1,6 +1,7 @@
 
 
 import { lazy, Suspense, type FormEvent, useEffect, useState } from 'react'
+import { Analytics } from '@vercel/analytics/react'
 import { ProductApiError, clearProductSession, completeProductPasswordSetup, createProductSession, hybridAuthEnabled, productPasswordSetupRequired, readProductSession, serverPersistenceEnabled, supabaseAuthEnabled, type ProductUser } from './lib/productSession'
 import { subscribeProductSessionInvalidated } from './lib/productSessionInvalidation'
 
@@ -110,46 +111,52 @@ function App() {
   }
 
   if (state === 'ready') return (
-    <Suspense fallback={<main className="product-access" aria-live="polite"><section><span>BOTANIC</span><h1>正在载入工作台…</h1></section></main>}>
-      <CanvasWorkspace currentUser={user ?? undefined} onSignOut={serverPersistenceEnabled ? signOut : undefined} />
-    </Suspense>
+    <>
+      <Suspense fallback={<main className="product-access" aria-live="polite"><section><span>BOTANIC</span><h1>正在载入工作台…</h1></section></main>}>
+        <CanvasWorkspace currentUser={user ?? undefined} onSignOut={serverPersistenceEnabled ? signOut : undefined} />
+      </Suspense>
+      <Analytics />
+    </>
   )
 
   return (
-    <main className="product-access" aria-live="polite">
-      <section>
-        <span>BOTANIC</span>
-        <h1>{state === 'checking' ? '正在进入…' : state === 'password-setup' ? '设置登录密码' : '登录工作台'}</h1>
-        {state === 'checking' ? <p>正在同步你的工作区。</p> : (
-          state === 'password-setup' ? <form onSubmit={completePasswordSetup}>
-            <p>邀请已确认。设置密码后，下次可直接使用邮箱登录。</p>
-            <label><span>新密码</span><input autoComplete="new-password" type="password" minLength={8} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="至少 8 个字符" /></label>
-            <label><span>确认密码</span><input autoComplete="new-password" type="password" minLength={8} value={passwordConfirmation} onChange={(event) => setPasswordConfirmation(event.target.value)} placeholder="再输入一次" /></label>
-            {passwordConfirmation && password !== passwordConfirmation ? <small role="alert">两次输入的密码不一致。</small> : message ? <small role="alert">{message}</small> : null}
-            <button type="submit" disabled={password.length < 8 || password !== passwordConfirmation}>保存并进入工作台</button>
-          </form> : <form onSubmit={signIn}>
-            <p>{useLegacyToken ? '迁移期间仍可使用原访问令牌。' : supabaseAuthEnabled ? '使用工作区账号登录。' : '输入管理员提供的访问令牌。'}</p>
-            <label>
-              <span>{useLegacyToken ? '访问令牌' : supabaseAuthEnabled ? '邮箱' : '访问令牌'}</span>
-              <input autoComplete={useLegacyToken || !supabaseAuthEnabled ? 'current-password' : 'email'} type={useLegacyToken || !supabaseAuthEnabled ? 'password' : 'email'} value={accessToken} onChange={(event) => setAccessToken(event.target.value)} placeholder={useLegacyToken || !supabaseAuthEnabled ? '粘贴访问令牌' : 'name@company.com'} />
-            </label>
-            {supabaseAuthEnabled && !useLegacyToken ? <label>
-              <span>密码</span>
-              <input autoComplete="current-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="输入密码" />
-            </label> : null}
-            {message ? <small role="alert">{message}</small> : null}
-            <button type="submit">进入工作台</button>
-            {hybridAuthEnabled ? <button className="product-access__alternate" type="button" onClick={() => {
-              setAuthMethod(useLegacyToken ? 'account' : 'legacy')
-              setAccessToken('')
-              setPassword('')
-              setMessage('')
-            }}>{useLegacyToken ? '返回邮箱登录' : '使用旧访问令牌'}</button> : null}
-          </form>
-        )}
-        {user ? <small>{user.name}</small> : null}
-      </section>
-    </main>
+    <>
+      <main className="product-access" aria-live="polite">
+        <section>
+          <span>BOTANIC</span>
+          <h1>{state === 'checking' ? '正在进入…' : state === 'password-setup' ? '设置登录密码' : '登录工作台'}</h1>
+          {state === 'checking' ? <p>正在同步你的工作区。</p> : (
+            state === 'password-setup' ? <form onSubmit={completePasswordSetup}>
+              <p>邀请已确认。设置密码后，下次可直接使用邮箱登录。</p>
+              <label><span>新密码</span><input autoComplete="new-password" type="password" minLength={8} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="至少 8 个字符" /></label>
+              <label><span>确认密码</span><input autoComplete="new-password" type="password" minLength={8} value={passwordConfirmation} onChange={(event) => setPasswordConfirmation(event.target.value)} placeholder="再输入一次" /></label>
+              {passwordConfirmation && password !== passwordConfirmation ? <small role="alert">两次输入的密码不一致。</small> : message ? <small role="alert">{message}</small> : null}
+              <button type="submit" disabled={password.length < 8 || password !== passwordConfirmation}>保存并进入工作台</button>
+            </form> : <form onSubmit={signIn}>
+              <p>{useLegacyToken ? '迁移期间仍可使用原访问令牌。' : supabaseAuthEnabled ? '使用工作区账号登录。' : '输入管理员提供的访问令牌。'}</p>
+              <label>
+                <span>{useLegacyToken ? '访问令牌' : supabaseAuthEnabled ? '邮箱' : '访问令牌'}</span>
+                <input autoComplete={useLegacyToken || !supabaseAuthEnabled ? 'current-password' : 'email'} type={useLegacyToken || !supabaseAuthEnabled ? 'password' : 'email'} value={accessToken} onChange={(event) => setAccessToken(event.target.value)} placeholder={useLegacyToken || !supabaseAuthEnabled ? '粘贴访问令牌' : 'name@company.com'} />
+              </label>
+              {supabaseAuthEnabled && !useLegacyToken ? <label>
+                <span>密码</span>
+                <input autoComplete="current-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="输入密码" />
+              </label> : null}
+              {message ? <small role="alert">{message}</small> : null}
+              <button type="submit">进入工作台</button>
+              {hybridAuthEnabled ? <button className="product-access__alternate" type="button" onClick={() => {
+                setAuthMethod(useLegacyToken ? 'account' : 'legacy')
+                setAccessToken('')
+                setPassword('')
+                setMessage('')
+              }}>{useLegacyToken ? '返回邮箱登录' : '使用旧访问令牌'}</button> : null}
+            </form>
+          )}
+          {user ? <small>{user.name}</small> : null}
+        </section>
+      </main>
+      <Analytics />
+    </>
   )
 }
 
