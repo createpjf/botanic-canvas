@@ -1006,6 +1006,12 @@ export default function AgentWorkspace({
       setLastFailedInstruction('')
       if (!submission.started) setRuntimePhase('failed')
       onUpdateMessage(session.id, message.id, { status: submission.started ? 'submitted' : 'failed', runId: submission.runId })
+      if (submission.started) {
+        // 本次参考已随计划快照提交，composer 里就该清空：留着它们下一轮会被继续带上，
+        // 参考集越改越脏。要复用同一张参考时重新 @ 引用即可。
+        if (session.contextNodeIds.length) onContextChange(session.id, [])
+        setGroupId('')
+      }
       if (!submission.started) appendMessage({
         role: 'assistant', kind: 'text',
         content: '任务没有启动，请检查参考素材与生成服务后重试。',
