@@ -3327,6 +3327,7 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-run-message__results :is(img, video) { display: block; width: 82px; height: 82px; flex: 0 0 82px; object-fit: cover; border: 1px solid #cbdacc; border-radius: 7px; background: #edf3ec; }
 .agent-message__plan { display: grid; gap: 9px; margin-top: 9px; padding: 11px; border: 1px solid #cbdccb; border-radius: 9px; background: #fff; }
 .agent-plan__context-lock { color: #527058; font-weight: 650; }
+.agent-plan__auto-paused { padding: 7px 8px; border-radius: 6px; background: #fdf3e0; color: #8a6a2f !important; font-weight: 700; line-height: 1.5; }
 .agent-message__tools { display: grid; gap: 5px; }
 .agent-message__tool { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; min-height: 30px; align-items: center; gap: 6px; padding: 0 8px; border-radius: 6px; background: #f2f6f1; color: #48614e; }
 .agent-message__tool > span { color: #6f8b75; font-size: 12px; }
@@ -3732,7 +3733,7 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-composer__mode { display: inline-flex; width: auto; height: 38px; min-width: 70px; flex: 0 0 auto; align-items: center; justify-content: center; gap: 6px; padding: 0 8px; border: 0; border-radius: var(--radius-control); background: transparent; color: #355d3e; cursor: pointer; transition: background 140ms ease, color 140ms ease; }
 .agent-composer__mode:hover, .agent-composer__mode[aria-expanded="true"] { background: #e2eee3; color: #285d37; }
 .agent-composer__mode > svg { width: 18px; height: 18px; flex: 0 0 auto; }
-.agent-composer__mode-label { display: inline; font-size: 11px; font-weight: 720; }
+.agent-composer__mode-label { display: inline; font-size: 11px; font-weight: 720; white-space: nowrap; }
 .agent-composer__mode-chevron { display: inline; font-size: 14px; line-height: 1; }
 .agent-composer__model-select { width: 124px; flex: 0 1 124px; margin-left: 0; padding-left: 5px; border-left: 1px solid #e2e9e2; }
 .agent-composer__model-select .botanic-select__trigger { height: 38px; justify-content: space-between; gap: 7px; padding: 0 7px; border-color: transparent; border-radius: var(--radius-control); background: transparent; }
@@ -3786,7 +3787,9 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-composer__mode-menu button > svg { width: 18px; height: 18px; }
 .agent-composer__mode-menu button > span { display: grid; gap: 2px; }
 .agent-composer__mode-menu strong { font-size: 11px; }
-.agent-composer__mode-menu small { color: #7a877e; font-size: 10px; }
+.agent-composer__mode-menu small { color: #7a877e; font-size: 10px; line-height: 1.5; }
+.agent-composer__mode-menu { width: 290px; }
+.agent-composer__mode-note { margin: 4px 0 0; padding: 0 10px; color: #8b968e; font-size: 9px; line-height: 1.5; }
 
 /* Agent 最后一轮收口：结果按批次渐进披露，运行步骤默认只留一行摘要。 */
 .agent-result-group { gap: 0; overflow: hidden; border: 1px solid #dce8dd; border-radius: var(--radius-card); background: #fff; }

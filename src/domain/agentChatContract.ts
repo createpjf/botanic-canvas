@@ -127,6 +127,25 @@ export function inferBotanicAgentGenerationSettings(
   }
 }
 
+/**
+ * 自动模式下补齐仍然缺失的输出设置：只从可信模型目录里取该模型自己支持的第一项，
+ * 不发明目录之外的取值。补不齐时返回原提示，调用方仍会退回追问。
+ */
+export function completeBotanicAgentGenerationSettings(
+  hint: BotanicAgentGenerationSettingsHint,
+  models: Pick<GenerationModelOption, 'id' | 'label' | 'aspectRatios' | 'resolutions'>[],
+): BotanicAgentGenerationSettingsHint {
+  const model = models.find((item) => item.id === hint.model) ?? models[0]
+  if (!model) return hint
+  const aspectRatio = hint.aspectRatio ?? model.aspectRatios?.[0]
+  const resolution = hint.resolution ?? model.resolutions?.[0]
+  return {
+    model: model.id,
+    ...(aspectRatio ? { aspectRatio } : {}),
+    ...(resolution ? { resolution } : {}),
+  }
+}
+
 export function isBotanicAgentPromptGenerationPending(
   sourceMessageId: string,
   messages: Pick<BotanicAgentMessage, 'kind' | 'status' | 'question'>[],

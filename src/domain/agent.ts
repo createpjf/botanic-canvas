@@ -743,6 +743,32 @@ export type BotanicAgentRun = {
 
 export type BotanicAgentExecutionMode = 'manual' | 'auto'
 
+export type BotanicAgentExecutionDecision =
+  /** 输出设置仍然缺项，两种模式都必须先问清楚，不猜测会产生费用的参数。 */
+  | { action: 'ask_settings' }
+  /** 计划里还有需要人工确认的外部行动，自动模式在此降级为手动。 */
+  | { action: 'confirm'; reason: 'manual' | 'pending_actions' }
+  | { action: 'auto_submit' }
+
+/**
+ * 执行模式的唯一判定处。计划模式与自动模式的差别在这里成为可解释的结论，
+ * 而不是散落在界面里的若干 if：自动模式会自己补全可推断的输出设置并直接提交，
+ * 但遇到外部行动仍然停下来，且降级原因可以被界面读出来告诉用户。
+ */
+export function resolveBotanicAgentExecutionDecision(input: {
+  mode: BotanicAgentExecutionMode
+  settingsComplete: boolean
+  pendingActionCount: number
+}): BotanicAgentExecutionDecision {
+  if (!input.settingsComplete) return { action: 'ask_settings' }
+  if (input.pendingActionCount > 0) return { action: 'confirm', reason: 'pending_actions' }
+  return input.mode === 'auto' ? { action: 'auto_submit' } : { action: 'confirm', reason: 'manual' }
+}
+
+export function botanicAgentExecutionModeLabel(mode: BotanicAgentExecutionMode) {
+  return mode === 'auto' ? '自动模式' : '计划模式'
+}
+
 export type BotanicAgentMemoryKind = 'rule' | 'approved' | 'avoid'
 
 export type BotanicAgentMemoryItem = {

@@ -30,6 +30,8 @@ import {
   restoreBotanicAgentRuntimeSteps,
   shouldRestoreBotanicAgentRuntimeSteps,
   botanicAgentArtifactPlacement,
+  resolveBotanicAgentExecutionDecision,
+  botanicAgentExecutionModeLabel,
   botanicAgentArtifactPrompt,
   botanicAgentArtifactModel,
   botanicAgentArtifactTimestamp,
@@ -924,4 +926,28 @@ test('Artifact Index 不可用或尚未迁移时，结果区完整回退到当�
   }]
 
   assert.deepEqual(mergeBotanicAgentArtifactIndex([], local), local)
+})
+
+test('执行模式是可解释的领域决策，自动模式遇到外部行动会降级并说明原因', () => {
+  const auto = { mode: 'auto' as const, settingsComplete: true, pendingActionCount: 0 }
+  assert.deepEqual(resolveBotanicAgentExecutionDecision(auto), { action: 'auto_submit' })
+  assert.deepEqual(
+    resolveBotanicAgentExecutionDecision({ ...auto, pendingActionCount: 2 }),
+    { action: 'confirm', reason: 'pending_actions' },
+  )
+  // 会产生费用的参数缺失时，两种模式都必须先问，不猜。
+  assert.deepEqual(
+    resolveBotanicAgentExecutionDecision({ ...auto, settingsComplete: false }),
+    { action: 'ask_settings' },
+  )
+  assert.deepEqual(
+    resolveBotanicAgentExecutionDecision({ mode: 'manual', settingsComplete: true, pendingActionCount: 0 }),
+    { action: 'confirm', reason: 'manual' },
+  )
+  assert.deepEqual(
+    resolveBotanicAgentExecutionDecision({ mode: 'manual', settingsComplete: false, pendingActionCount: 0 }),
+    { action: 'ask_settings' },
+  )
+  assert.equal(botanicAgentExecutionModeLabel('auto'), '自动模式')
+  assert.equal(botanicAgentExecutionModeLabel('manual'), '计划模式')
 })

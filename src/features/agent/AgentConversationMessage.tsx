@@ -4,6 +4,7 @@ import {
   creativeDimensionLabel,
   type BotanicAgentActionProposal,
   type BotanicAgentArtifact,
+  type BotanicAgentExecutionMode,
   type BotanicAgentMessage,
   type BotanicAgentRun,
 } from '../../domain/agent'
@@ -39,6 +40,7 @@ type AgentConversationMessageProps = {
   artifacts: BotanicAgentArtifact[]
   contextOptionIds: string[]
   generationModels: GenerationModelOption[]
+  executionMode: BotanicAgentExecutionMode
   planning: boolean
   promptUsePending: boolean
   plannerModel: string
@@ -69,6 +71,7 @@ export function AgentConversationMessage({
   artifacts,
   contextOptionIds,
   generationModels,
+  executionMode,
   planning,
   promptUsePending,
   plannerModel,
@@ -145,6 +148,8 @@ export function AgentConversationMessage({
       {message.plan ? (() => {
         const plan = message.plan
         const blockedByActions = plan.actions?.some((action) => action.status === 'awaiting_confirmation' || action.status === 'running')
+        const pendingActionCount = plan.actions?.filter((action) => action.status === 'awaiting_confirmation').length ?? 0
+        const autoPaused = executionMode === 'auto' && pendingActionCount > 0
         const detail = <>
           {plan.toolCalls?.length ? <div className="agent-message__tools" aria-label="Agent 工具调用">
             {plan.toolCalls.map((call) => <div key={call.id} className={`agent-message__tool is-${call.status}`}>
@@ -204,13 +209,18 @@ export function AgentConversationMessage({
           <small>{plan.references.length} 个输入 · {plan.output.mode === 'batch_by_asset' ? `${plan.output.count} 个分支` : '1 个新版本'}</small>
           {plan.contextSnapshot?.length ? <small className="agent-plan__context-lock">已锁定上下文 · {plan.contextSnapshot.slice(0, 3).map((item) => item.label).join('、')}{plan.contextSnapshot.length > 3 ? ` 等 ${plan.contextSnapshot.length} 项` : ''}</small> : null}
           <details className="agent-message__route"><summary>执行路由</summary><div><span>规划</span><b>{agentPlannerModelLabel(plan.plannerModel ?? plannerModel)}</b><span>生成</span><b>{plan.settings.model}</b><span>外部行动</span><b>{plan.actions?.length ? `${plan.actions.length} 项，确认后执行` : '无'}</b></div></details>
-          {planSubmitted ? null : <><small className="agent-plan__confirm-hint">确认后才会提交生成任务，当前设置仍可在上方编辑。</small><button type="button" disabled={submittingMessageId === message.id || blockedByActions} onClick={() => onConfirmPlan(message)}>{submittingMessageId === message.id ? '正在提交…' : blockedByActions ? '先处理行动卡' : message.status === 'failed' ? '重新提交计划' : '确认并生成'}</button></>}
+          {planSubmitted ? null : <>
+            {/* 自动模式下停在这里一定有原因，必须说清楚，否则用户只会觉得“自动模式没生效”。 */}
+            {autoPaused ? <small className="agent-plan__auto-paused">自动模式已暂停：本次包含 {pendingActionCount} 个需要你确认的外部行动，处理完才会提交生成任务。</small> : null}
+            <small className="agent-plan__confirm-hint">确认后才会提交生成任务，当前设置仍可在上方编辑。</small>
+            <button type="button" disabled={submittingMessageId === message.id || blockedByActions} onClick={() => onConfirmPlan(message)}>{submittingMessageId === message.id ? '正在提交…' : blockedByActions ? '先处理行动卡' : message.status === 'failed' ? '重新提交计划' : '确认并生成'}</button>
+          </>}
         </>
         // 已提交的计划折叠成一行摘要：任务状态由下方的任务消息承载，细节按需展开。
         if (planSubmitted) return <details className="agent-message__plan is-submitted">
           <summary>
             <span><strong>{plan.summary}</strong><small>{modelDisplayLabel(generationModels.find((model) => model.id === plan.settings.model)) || plan.settings.model} · {plan.settings.aspectRatio} · {plan.output.mode === 'batch_by_asset' ? `${plan.output.count} 个分支` : '1 个版本'}</small></span>
-            <em className="agent-message__submitted">已提交</em>
+            <em className="agent-message__submitted">{executionMode === 'auto' ? '已自动提交' : '已提交'}</em>
           </summary>
           {detail}
         </details>

@@ -11,6 +11,7 @@ import {
   createBotanicAgentContextSnapshot,
   insertBotanicAgentMention,
   readBotanicAgentMentionQuery,
+  resolveBotanicAgentExecutionDecision,
   summarizeBotanicAgentRuntime,
   type BotanicAgentActionProposal,
   type BotanicAgentActionResult,
@@ -32,6 +33,7 @@ import {
   type BotanicAgentSkillCatalogItem,
 } from '../../domain/agent'
 import {
+  completeBotanicAgentGenerationSettings,
   decideBotanicAgentRequest,
   inferBotanicAgentGenerationSettings,
   isBotanicAgentPromptGenerationPending,
@@ -1191,13 +1193,23 @@ export default function AgentWorkspace({
         cleanInstruction,
         generationModels.filter((model) => model.mediaKind !== 'video'),
       )
-      const resolvedGenerationOverrides = { ...inferredGenerationOverrides, ...options.generationOverrides }
+      const imageModels = generationModels.filter((model) => model.mediaKind !== 'video')
+      const requestedGenerationOverrides = { ...inferredGenerationOverrides, ...options.generationOverrides }
+      // 自动模式自己从可信模型目录补齐缺失的输出设置，不再为了同一个问题停下来。
+      const resolvedGenerationOverrides = session.executionMode === 'auto'
+        ? completeBotanicAgentGenerationSettings(requestedGenerationOverrides, imageModels)
+        : requestedGenerationOverrides
       const hasCompleteOutputSettings = Boolean(
         resolvedGenerationOverrides.model
         && resolvedGenerationOverrides.aspectRatio
         && resolvedGenerationOverrides.resolution,
       )
-      if (!options.clarificationAnswers && !hasCompleteOutputSettings) {
+      const executionDecision = resolveBotanicAgentExecutionDecision({
+        mode: session.executionMode,
+        settingsComplete: hasCompleteOutputSettings,
+        pendingActionCount: 0,
+      })
+      if (!options.clarificationAnswers && executionDecision.action === 'ask_settings') {
         updateRuntimeStep('call-planner', 'succeeded')
         await yieldRuntimeFrame()
         if (!isCurrentAgentProject()) return
@@ -1206,11 +1218,7 @@ export default function AgentWorkspace({
           role: 'assistant',
           kind: 'question',
           question: {
-            ...createInitialAgentClarification(
-              cleanInstruction,
-              generationModels.filter((model) => model.mediaKind !== 'video'),
-              resolvedGenerationOverrides,
-            ),
+            ...createInitialAgentClarification(cleanInstruction, imageModels, resolvedGenerationOverrides),
             ...(promptResolution.sourceMessageId
               ? { sourcePromptMessageId: promptResolution.sourceMessageId }
               : {}),
@@ -1240,7 +1248,7 @@ export default function AgentWorkspace({
           content: initialPlan.summary,
         })
         if (planMessageId) setRuntimePhase('waiting_confirmation')
-        if (session.executionMode === 'auto' && planMessageId) {
+        if (planMessageId && executionDecision.action === 'auto_submit') {
           await confirmMessagePlan({
             id: planMessageId, role: 'assistant', kind: 'plan', content: initialPlan.summary,
             createdAt: Date.now(), plan: initialPlan, status: 'pending',
@@ -1278,7 +1286,13 @@ export default function AgentWorkspace({
       content: resolvedPlan.summary,
     })
     if (planMessageId) setRuntimePhase('waiting_confirmation')
-    if (session.executionMode === 'auto' && planMessageId && !resolvedPlan.actions?.length) {
+    // 计划已带完整设置；这里只判断自动模式是否因为待确认行动而降级。
+    const planExecutionDecision = resolveBotanicAgentExecutionDecision({
+      mode: session.executionMode,
+      settingsComplete: true,
+      pendingActionCount: resolvedPlan.actions?.filter((action) => action.status === 'awaiting_confirmation').length ?? 0,
+    })
+    if (planMessageId && planExecutionDecision.action === 'auto_submit') {
       await confirmMessagePlan({
         id: planMessageId, role: 'assistant', kind: 'plan', content: resolvedPlan.summary,
         createdAt: Date.now(), plan: resolvedPlan, status: 'pending',
@@ -1638,6 +1652,7 @@ export default function AgentWorkspace({
           artifacts={artifacts}
           contextOptionIds={contextOptions.map((item) => item.id)}
           generationModels={generationModels}
+          executionMode={session.executionMode}
           planning={planning}
           promptUsePending={pendingPromptSourceIds.has(message.id)}
           plannerModel={plannerModel}
