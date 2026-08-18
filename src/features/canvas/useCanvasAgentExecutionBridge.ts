@@ -182,7 +182,12 @@ export function useCanvasAgentExecutionBridge({
     }
     if (node.type === 'text') {
       const data = node.data as TextNodeData
-      return [{ id: node.id, label: data.label ?? '文字描述', kind: '文字' }]
+      return [{
+        id: node.id,
+        label: data.label ?? '文字描述',
+        kind: '文字',
+        ...(data.content?.trim() ? { content: data.content.trim() } : {}),
+      }]
     }
     if (node.type === 'generate') {
       const data = node.data as GenerateNodeData

@@ -122,6 +122,7 @@ function validateContextSnapshot(rawSnapshot) {
       result.mediaKind = mediaKind
     }
     if (item?.role !== undefined) result.role = text(item.role, `第 ${index + 1} 个上下文角色`, 80)
+    if (item?.note !== undefined) result.note = text(item.note, `第 ${index + 1} 个上下文补充描述`, 500)
     return result
   })
 }

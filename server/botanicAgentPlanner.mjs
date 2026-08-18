@@ -216,6 +216,8 @@ export function validateBotanicAgentPlanInput(raw) {
           result.mediaKind = mediaKind
         }
         if (item.role !== undefined) result.role = requiredText(item.role, `第 ${index + 1} 个上下文角色`, 80)
+        // 文字节点的正文是用户写下的创作说明，规划时作为补充描述使用。
+        if (item.note !== undefined) result.note = requiredText(item.note, `第 ${index + 1} 个上下文补充描述`, 500)
         return result
       })
     })()

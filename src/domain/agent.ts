@@ -570,17 +570,24 @@ export type BotanicAgentPlan = {
   actions?: BotanicAgentActionProposal[]
 }
 
+/** 单条文字节点带进计划的补充描述长度上限。 */
+export const botanicAgentContextNoteLimit = 500
+
 export type BotanicAgentContextSnapshot = {
   nodeId: string
   label: string
   kind: '素材' | '结果' | '文字' | '节点'
   mediaKind?: 'image' | 'video'
   role?: string
+  /** 文字节点的正文。它是可解释的创作说明，不是媒体数据，因此可以随快照持久化。 */
+  note?: string
 }
 
 export type BotanicAgentContextSnapshotInput = Omit<BotanicAgentContextSnapshot, 'nodeId'> & {
   nodeId?: string
   id?: string
+  /** 画布读模型里文字节点的字段名；与 note 等价。 */
+  content?: string
 }
 
 /** 生成可安全持久化的上下文快照，明确排除图片 URL、Blob 和其他媒体数据。 */
@@ -594,14 +601,30 @@ export function createBotanicAgentContextSnapshot(
     const label = item.label.trim()
     if (!nodeId || !label || seen.has(nodeId)) return []
     seen.add(nodeId)
+    const note = (item.note ?? item.content ?? '').trim().slice(0, botanicAgentContextNoteLimit)
     return [{
       nodeId,
       label,
       kind: item.kind,
       ...(item.mediaKind ? { mediaKind: item.mediaKind } : {}),
       ...(item.role?.trim() ? { role: item.role.trim() } : {}),
+      ...(item.kind === '文字' && note ? { note } : {}),
     }]
   }).slice(0, maximum)
+}
+
+/**
+ * 画布上的文字节点是用户写下的补充描述，把它拼进提示词，
+ * 而不是让它既能进上下文、又对生成毫无影响。
+ */
+export function botanicAgentPromptWithContextNotes(
+  instruction: string,
+  contextSnapshot: BotanicAgentContextSnapshot[],
+) {
+  const notes = contextSnapshot.flatMap((item) => (
+    item.kind === '文字' && item.note ? [`- ${item.label}：${item.note}`] : []
+  ))
+  return notes.length ? `${instruction}\n\n补充描述：\n${notes.join('\n')}` : instruction
 }
 
 export function botanicAgentContextSnapshotNodeIds(
@@ -1473,7 +1496,7 @@ export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): Botani
     ...(contextSnapshot.length ? { contextSnapshot } : {}),
     references,
     constraints,
-    prompt: instruction,
+    prompt: botanicAgentPromptWithContextNotes(instruction, contextSnapshot),
     settings,
     output,
     ...(input.assetGroup ? { assetGroupId: input.assetGroup.id } : {}),

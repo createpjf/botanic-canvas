@@ -30,6 +30,8 @@ import {
   restoreBotanicAgentRuntimeSteps,
   shouldRestoreBotanicAgentRuntimeSteps,
   botanicAgentArtifactPlacement,
+  botanicAgentPromptWithContextNotes,
+  botanicAgentContextNoteLimit,
   insertBotanicAgentToolCallSteps,
   resolveBotanicAgentExecutionDecision,
   botanicAgentExecutionModeLabel,
@@ -978,4 +980,41 @@ test('真实工具调用展开成独立运行步骤，插在规划步骤之后',
   ])
   assert.equal(again.filter((step) => step.id === 'tool:call-1').length, 1)
   assert.deepEqual(insertBotanicAgentToolCallSteps(steps, []), steps)
+})
+
+test('画布文字节点作为补充描述进入上下文快照与提示词', () => {
+  const snapshot = createBotanicAgentContextSnapshot([
+    { id: 'asset-product', label: '德国队球衣', kind: '素材', mediaKind: 'image', role: '商品' },
+    { id: 'text-brief', label: '留白要求', kind: '文字', content: '  右上角留出文案位置。  ' },
+    { id: 'text-empty', label: '空描述', kind: '文字', content: '   ' },
+    { id: 'generate-1', label: '生成节点', kind: '节点', content: '这不是文字节点，不应被当成描述' },
+  ])
+
+  assert.equal(snapshot[0].note, undefined)
+  assert.equal(snapshot[1].note, '右上角留出文案位置。')
+  assert.equal(snapshot[2].note, undefined)
+  assert.equal(snapshot[3].note, undefined)
+
+  assert.equal(
+    botanicAgentPromptWithContextNotes('把背景换成海边', snapshot),
+    '把背景换成海边\n\n补充描述：\n- 留白要求：右上角留出文案位置。',
+  )
+  // 没有文字节点时提示词原样返回，不加空的补充段落。
+  assert.equal(botanicAgentPromptWithContextNotes('把背景换成海边', [snapshot[0]]), '把背景换成海边')
+
+  const plan = buildBotanicAgentPlan({
+    instruction: '生成一张主图',
+    intent: 'initial_generation',
+    settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
+    contextSnapshot: snapshot,
+  })
+  assert.equal(plan.instruction, '生成一张主图')
+  assert.match(plan.prompt, /补充描述：\n- 留白要求：右上角留出文案位置。/)
+})
+
+test('上下文补充描述被截断到长度上限', () => {
+  const [item] = createBotanicAgentContextSnapshot([
+    { id: 'text-long', label: '长描述', kind: '文字', content: 'x'.repeat(900) },
+  ])
+  assert.equal(item.note?.length, botanicAgentContextNoteLimit)
 })

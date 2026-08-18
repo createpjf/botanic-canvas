@@ -396,7 +396,8 @@ export default function AgentWorkspace({
     if (!mentionQuery) return []
     const query = mentionQuery.query.trim().toLocaleLowerCase()
     return contextOptions
-      .filter((item) => item.kind === '素材' && Boolean(item.image))
+      // 文字节点现在会作为补充描述进入提示词，所以它和图片素材一样可以被 @ 引用。
+      .filter((item) => (item.kind === '素材' && Boolean(item.image)) || (item.kind === '文字' && Boolean(item.content)))
       .filter((item) => !query || item.label.toLocaleLowerCase().includes(query))
       .slice(0, 6)
   }, [contextOptions, mentionQuery])

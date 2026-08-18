@@ -19,6 +19,8 @@ export type AgentContextItem = {
   id: string
   label: string
   kind: '素材' | '结果' | '文字' | '节点'
+  /** 文字节点的正文；进入计划时作为补充描述拼进提示词。 */
+  content?: string
   image?: string
   assetId?: string
   role?: AssetRole
