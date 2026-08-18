@@ -76,57 +76,77 @@ function initialGenerationReferences(run, document) {
   })
 }
 
-function recipeForRun(run, document, parentNode, branch, resolvedInitialReferences) {
-  if (run.plan.intent === 'initial_generation') {
-    let references = clone(resolvedInitialReferences)
-    if (branch.assetId) {
-      const asset = (document.assets ?? []).find((candidate) => candidate.id === branch.assetId)
-      if (!asset) throw new AgentToolRuntimeError('AGENT_BRANCH_ASSET_MISSING', `分支素材「${branch.label}」已不存在。`, 409)
-      references = references.filter((reference) => reference.role !== asset.role)
-      references.push({
-        assetId: asset.id,
-        name: asset.name,
-        image: asset.image,
-        role: asset.role ?? '参考',
-        primary: Boolean(asset.primary),
-        priority: references.length + 1,
-      })
-    }
-    return {
-      references,
-      prompt: run.plan.prompt,
-      batchCount: run.plan.output.mode === 'single'
-        ? run.plan.output.count
-        : run.plan.output.candidatesPerItem,
-      settings: clone(run.plan.settings),
-    }
-  }
-  const rootRecipe = parentNode.data?.rootRecipe ?? parentNode.data?.generationRecipe
-  if (!rootRecipe || !Array.isArray(rootRecipe.references)) {
-    throw new AgentToolRuntimeError('AGENT_RECIPE_MISSING', '父结果缺少可追溯的生成配方。', 409)
-  }
-  let references = clone(rootRecipe.references)
-  if (branch.assetId) {
-    const asset = (document.assets ?? []).find((candidate) => candidate.id === branch.assetId)
-    if (!asset) throw new AgentToolRuntimeError('AGENT_BRANCH_ASSET_MISSING', `分支素材「${branch.label}」已不存在。`, 409)
-    references = references.filter((reference) => reference.role !== asset.role)
-    references.push({
-      assetId: asset.id,
-      name: asset.name,
-      image: asset.image,
-      role: asset.role ?? '参考',
-      primary: Boolean(asset.primary),
-      priority: references.length + 1,
-    })
-  }
-  return {
-    references,
+/** 素材组分支把本分支的素材并进参考集；同角色的旧参考被替换而不是叠加。 */
+function withBranchAsset(references, run, document, branch) {
+  const recipeTail = {
     prompt: run.plan.prompt,
-    batchCount: run.plan.output.mode === 'single'
-      ? run.plan.output.count
-      : run.plan.output.candidatesPerItem,
+    batchCount: run.plan.output.mode === 'single' ? run.plan.output.count : run.plan.output.candidatesPerItem,
     settings: clone(run.plan.settings),
   }
+  if (!branch.assetId) return { references, ...recipeTail }
+  const asset = (document.assets ?? []).find((candidate) => candidate.id === branch.assetId)
+  if (!asset) throw new AgentToolRuntimeError('AGENT_BRANCH_ASSET_MISSING', `分支素材「${branch.label}」已不存在。`, 409)
+  const kept = references.filter((reference) => reference.role !== asset.role)
+  kept.push({
+    assetId: asset.id,
+    name: asset.name,
+    image: asset.image,
+    role: asset.role ?? '参考',
+    primary: Boolean(asset.primary),
+    priority: kept.length + 1,
+  })
+  return { references: kept, ...recipeTail }
+}
+
+/**
+ * 继续生成时“这一轮”的参考集：只取用户本轮锁定的画布图片素材/结果。
+ * 父结果本身通过 parent 单独传入，不重复进参考集。
+ */
+function refinementReferences(run, document) {
+  const snapshot = run.plan?.contextSnapshot
+  if (!Array.isArray(snapshot) || !snapshot.length) return []
+  const nodesById = new Map((document.nodes ?? []).map((node) => [node.id, node]))
+  const parentNodeId = run.plan?.selectedResultNodeId
+  return snapshot.flatMap((item, index) => {
+    if (item.kind !== '素材' && item.kind !== '结果') return []
+    if (item.mediaKind !== 'image') return []
+    if (item.nodeId === parentNodeId) return []
+    const node = nodesById.get(item.nodeId)
+    const isMediaNode = node?.type === 'asset' || node?.type === 'result'
+    const isImage = node?.data?.mediaKind === undefined || node.data.mediaKind === 'image'
+    const image = node?.data?.image
+    if (!isMediaNode || !isImage || typeof image !== 'string' || !image) return []
+    return [{
+      nodeId: node.id,
+      ...(node.data.assetId ? { assetId: node.data.assetId } : {}),
+      name: node.data.name ?? node.data.label ?? `参考图 ${index + 1}`,
+      image,
+      role: node.data.role ?? '参考',
+      primary: Boolean(node.data.primary),
+      priority: index + 1,
+    }]
+  })
+}
+
+/**
+ * 每一轮的参考集由 intent 决定，三条路径互不污染：
+ * - 首次生成：用户这次锁定的画布图片。
+ * - 从原配方重做：语义就是复用最初那次配方，因此只有它读 rootRecipe。
+ * - 其余继续生成：只带用户本轮重新指定的参考；上一轮结果通过 parent 单独传入。
+ *   不再沿用最初那次的参考，否则改得越多参考越脏，画面会被最初的素材拖回去。
+ */
+function recipeForRun(run, document, parentNode, branch, resolvedInitialReferences) {
+  if (run.plan.intent === 'initial_generation') {
+    return withBranchAsset(clone(resolvedInitialReferences), run, document, branch)
+  }
+  if (run.plan.intent === 'redo_from_root') {
+    const rootRecipe = parentNode.data?.rootRecipe ?? parentNode.data?.generationRecipe
+    if (!rootRecipe || !Array.isArray(rootRecipe.references)) {
+      throw new AgentToolRuntimeError('AGENT_RECIPE_MISSING', '父结果缺少可追溯的生成配方。', 409)
+    }
+    return withBranchAsset(clone(rootRecipe.references), run, document, branch)
+  }
+  return withBranchAsset(refinementReferences(run, document), run, document, branch)
 }
 
 function rawGenerationInput(run, parentNode, recipe) {
@@ -155,7 +175,15 @@ function rawGenerationInput(run, parentNode, recipe) {
   }
 }
 
-function workflowForBranch({ run, branch, parentNode, recipe, jobId, branchIndex, now, submission }) {
+/**
+ * 画布节点的输出端口 id 按节点类型不同：素材节点是 asset-output，结果节点是 output。
+ * 连线指向不存在的端口时 React Flow 不会渲染这条边——参考图看起来就“没连上”。
+ */
+function sourceHandleForNode(node) {
+  return node?.type === 'asset' ? 'asset-output' : 'output'
+}
+
+function workflowForBranch({ run, branch, parentNode, recipe, jobId, branchIndex, now, submission, nodesById }) {
   const { generateNodeId, resultNodeId } = branchNodeIds(run.id, branch.id)
   const parentPosition = parentNode?.position ?? { x: 0, y: 0 }
   const y = parentPosition.y + branchIndex * 420
@@ -198,14 +226,15 @@ function workflowForBranch({ run, branch, parentNode, recipe, jobId, branchIndex
     style: { stroke: '#2a5238', strokeWidth: 1.7 }, data: { system: true, role: 'output' }, reconnectable: false,
   }]
   if (generationKind === 'refinement') edges.unshift({
-    id: `agent-parent-edge-${jobId}`, source: parentNode.id, sourceHandle: 'output',
+    id: `agent-parent-edge-${jobId}`, source: parentNode.id, sourceHandle: sourceHandleForNode(parentNode),
     target: generateNodeId, targetHandle: 'input', type: 'default',
     style: { stroke: '#2a5238', strokeWidth: 1.7 }, data: { system: true, role: 'parent' }, reconnectable: false,
   })
   for (const reference of recipe.references) {
     if (!reference.nodeId) continue
     edges.unshift({
-      id: `agent-reference-edge-${jobId}-${reference.nodeId}`, source: reference.nodeId, sourceHandle: 'output',
+      id: `agent-reference-edge-${jobId}-${reference.nodeId}`, source: reference.nodeId,
+      sourceHandle: sourceHandleForNode(nodesById?.get(reference.nodeId)),
       target: generateNodeId, targetHandle: 'input', type: 'default',
       style: { stroke: '#8bad97', strokeWidth: 1.4 }, data: { system: true, role: 'reference' }, reconnectable: false,
     })
@@ -240,6 +269,7 @@ export function prepareAgentRunExecution({
     : (document.nodes ?? []).find((node) => node.id === run.plan?.selectedResultNodeId && node.type === 'result')
   if (!parentNode) throw new AgentToolRuntimeError('AGENT_PARENT_NOT_FOUND', 'Agent 父结果节点已不存在。', 409)
 
+  const nodesById = new Map((document.nodes ?? []).map((node) => [node.id, node]))
   const jobs = []
   const workflows = []
   for (const [branchIndex, branch] of run.branches.entries()) {
@@ -258,7 +288,7 @@ export function prepareAgentRunExecution({
       outputs: [], error: undefined, rawInput,
       agentRun: { runId: run.id, branchId: branch.id },
     }
-    const workflow = workflowForBranch({ run, branch, parentNode, recipe, jobId, branchIndex, now, submission })
+    const workflow = workflowForBranch({ run, branch, parentNode, recipe, jobId, branchIndex, now, submission, nodesById })
     job.generateNodeId = workflow.generateNodeId
     job.resultNodeId = workflow.resultNodeId
     job.generateNodePosition = clone(workflow.generateNode.position)

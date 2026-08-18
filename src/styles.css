@@ -3670,7 +3670,7 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-composer__context-menu > button:focus-visible,
 .agent-composer__mode-menu button:focus-visible { outline: 2px solid rgba(64, 111, 73, .38); outline-offset: -2px; }
 .agent-composer__mode-menu { border-radius: var(--radius-surface); padding: 9px; }
-.agent-composer__mode-menu button { min-height: 48px; border-radius: var(--radius-control); }
+.agent-composer__mode-menu button { min-height: 48px; border-radius: var(--radius-control); align-items: start; }
 .agent-composer__toolbar { min-height: 40px; padding-top: 2px; }
 .agent-composer__toolbar > div { min-width: 0; }
 .agent-composer__model-select .botanic-select__trigger { min-width: 0; }
@@ -3782,15 +3782,14 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-composer__context-upload b { font-size: 10px; }
 .agent-composer__context-upload small { color: #849087; font-size: 9px; }
 .agent-composer__context-menu > p { padding: 16px; color: #7b887f; font-size: 10px; text-align: center; }
-.agent-composer__mode-menu { right: auto; bottom: 50px; left: 42px; width: 250px; }
-.agent-composer__mode-menu button { display: grid; grid-template-columns: 20px minmax(0, 1fr); align-items: center; gap: 8px; padding: 9px 10px; border: 0; border-radius: 7px; background: transparent; color: #37513d; cursor: pointer; text-align: left; }
+.agent-composer__mode-menu { right: auto; bottom: 50px; left: 42px; width: min(320px, calc(100% - 24px)); }
+.agent-composer__mode-menu button { display: grid; grid-template-columns: 20px minmax(0, 1fr); align-items: start; gap: 8px; padding: 10px; align-content: start; border: 0; border-radius: 7px; background: transparent; color: #37513d; cursor: pointer; text-align: left; }
 .agent-composer__mode-menu button:hover, .agent-composer__mode-menu button.is-selected { background: #edf4ed; }
-.agent-composer__mode-menu button > svg { width: 18px; height: 18px; }
+.agent-composer__mode-menu button > svg { width: 18px; height: 18px; margin-top: 1px; }
 .agent-composer__mode-menu button > span { display: grid; gap: 2px; }
-.agent-composer__mode-menu strong { font-size: 11px; }
-.agent-composer__mode-menu small { color: #7a877e; font-size: 10px; line-height: 1.5; }
-.agent-composer__mode-menu { width: 290px; }
-.agent-composer__mode-note { margin: 4px 0 0; padding: 0 10px; color: #8b968e; font-size: 9px; line-height: 1.5; }
+.agent-composer__mode-menu strong { color: #315c3b; font-size: 12px; line-height: 1.45; }
+.agent-composer__mode-menu small { color: #7a877e; font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
+.agent-composer__mode-note { margin: 4px 0 0; padding: 0 10px; color: #8b968e; font-size: 9px; line-height: 1.5; overflow-wrap: anywhere; }
 
 /* Agent 最后一轮收口：结果按批次渐进披露，运行步骤默认只留一行摘要。 */
 .agent-result-group { gap: 0; overflow: hidden; border: 1px solid #dce8dd; border-radius: var(--radius-card); background: #fff; }

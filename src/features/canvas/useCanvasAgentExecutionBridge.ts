@@ -241,6 +241,19 @@ export function useCanvasAgentExecutionBridge({
     onPrepareAgentOpen()
   }, [document.nodes, ensureAgentSession, onPrepareAgentOpen, selectNode, setSessionContext])
 
+  /**
+   * Agent Run 在画布上的节点。任务刚提交时结果还是占位节点（没有图片），
+   * 因此按 agentRun.runId 直接查图谱，而不是等 Artifact 出现。
+   */
+  const resolveRunNodes = useCallback((runId: string) => {
+    const nodes = useCanvasStore.getState().document.nodes
+    return nodes.flatMap((node) => {
+      if (node.type !== 'result') return []
+      const data = node.data as ResultNodeData
+      return data.agentRun?.runId === runId ? [node.id] : []
+    })
+  }, [])
+
   const focusNodes = useCallback((nodeIds: string[]) => {
     const validNodeIds = [...new Set(nodeIds)].filter((nodeId) => document.nodes.some((node) => node.id === nodeId))
     if (!validNodeIds.length) return
@@ -503,6 +516,7 @@ export function useCanvasAgentExecutionBridge({
     latestRun,
     artifacts,
     contextOptions,
+    resolveRunNodes,
     artifactIndexStatus: artifactIndex.projectId === document.id ? artifactIndex.status : 'idle' as const,
     artifactIndexHasMore: artifactIndex.projectId === document.id && artifactIndex.nextBefore !== undefined,
     focusRequest,

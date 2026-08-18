@@ -112,14 +112,20 @@ export function useAgentRuntimeTrace({
     setSteps((current) => current.map((step) => step.id === stepId ? { ...step, detail } : step))
   }, [])
 
+  /**
+   * 上下文（画布节点、参考、项目记忆、素材组）本来就在内存里，读取是同步且瞬时的。
+   * 这里一次性标记完成——此前逐条播 rAF 动画，会让人误以为后台正在做耗时工作，
+   * 也把真实的模型调用淹没在假进度里。轨迹只应反映真实发生的事。
+   */
   const completeContextReads = useCallback(async (runtimeSteps: BotanicAgentRuntimeStep[]) => {
-    const contextSteps = runtimeSteps.filter((step) => !['call-planner', 'finalize-plan', 'create-workflow', 'respond'].includes(step.id))
-    for (const step of contextSteps) {
-      updateStep(step.id, 'running')
-      await yieldRuntimeFrame()
-      updateStep(step.id, 'succeeded')
-    }
-  }, [updateStep])
+    const contextStepIds = new Set(runtimeSteps
+      .filter((step) => !['call-planner', 'finalize-plan', 'create-workflow', 'respond'].includes(step.id))
+      .map((step) => step.id))
+    if (!contextStepIds.size) return
+    setSteps((current) => current.map((step) => contextStepIds.has(step.id)
+      ? { ...step, status: 'succeeded', completedAt: Date.now() }
+      : step))
+  }, [])
 
   const complete = useCallback(async (targetPresent: boolean) => {
     updateStep('call-planner', 'succeeded')

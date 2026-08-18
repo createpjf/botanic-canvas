@@ -191,6 +191,7 @@ export default function AgentWorkspace({
   onCancelRun,
   onLocateNode,
   onFocusNodes,
+  onResolveRunNodes,
   onSaveArtifact,
   onContinueArtifact,
   onLoadMoreArtifacts,
@@ -250,6 +251,8 @@ export default function AgentWorkspace({
   onCancelRun: (runId: string) => Promise<boolean>
   onLocateNode: (nodeId: string) => void
   onFocusNodes: (nodeIds: string[]) => void
+  /** 解析某个 Run 当前在画布上的占位/结果节点；Agent 面板本身读不到画布图谱。 */
+  onResolveRunNodes: (runId: string) => string[]
   onSaveArtifact: (artifact: BotanicAgentArtifact) => void
   onContinueArtifact: (artifact: BotanicAgentArtifact) => void
   onLoadMoreArtifacts: () => Promise<void>
@@ -829,15 +832,21 @@ export default function AgentWorkspace({
         if (linkedMessage.content !== content) onUpdateMessage(session.id, linkedMessage.id, { content })
         runNoticeStatusRef.current.set(run.id, noticeKey)
       }
-      const outputNodeIds = artifacts
-        .filter((artifact) => artifact.provenance.runId === run.id)
-        .flatMap((artifact) => artifact.provenance.sourceNodeIds ?? [])
-      if (outputNodeIds.length && !focusedRunIdsRef.current.has(run.id)) {
-        focusedRunIdsRef.current.add(run.id)
-        onFocusNodes(outputNodeIds)
-      }
     }
-  }, [artifacts, availableCanvasNodeIds, onFocusNodes, onUpdateMessage, runs, session])
+  }, [artifacts, availableCanvasNodeIds, onUpdateMessage, runs, session])
+
+  // 任务开始时把视角带到正在生成的节点，且每个 Run 只带一次；之后画布归用户，
+  // 结果完成不再抢视角——需要回看结果时用消息里的「定位画布」。
+  useEffect(() => {
+    for (const run of runs) {
+      if (!['queued', 'running', 'executing'].includes(run.status)) continue
+      if (focusedRunIdsRef.current.has(run.id)) continue
+      const pendingNodeIds = onResolveRunNodes(run.id)
+      if (!pendingNodeIds.length) continue
+      focusedRunIdsRef.current.add(run.id)
+      onFocusNodes(pendingNodeIds)
+    }
+  }, [onFocusNodes, onResolveRunNodes, runs])
 
   const confirmSkillCreation = async () => {
     if (!skillName.trim() || !skillInstructions.trim() || skillSaving) return

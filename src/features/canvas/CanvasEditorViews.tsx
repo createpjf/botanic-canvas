@@ -285,10 +285,40 @@ function AssetNode({ data, id, selected }: NodeProps) {
   )
 }
 
+/** 输入停顿多久后才把文字节点内容提交到文档。 */
+const textNodeCommitDelayMs = 300
+
 function TextNode({ data, id, selected }: NodeProps) {
   const text = data as TextNodeData
   const updateTextNode = useCanvasStore((state) => state.updateTextNode)
   const removeNodeFromCanvas = useCanvasStore((state) => state.removeNodeFromCanvas)
+  // 每次按键都提交整份文档会触发全画布重渲染与一次持久化写入，节点一多就打不动字。
+  // 输入期间只更新本地草稿，停顿或失焦后再提交一次。
+  const [draft, setDraft] = useState(text.content)
+  const committedRef = useRef(text.content)
+  const commitTimerRef = useRef<number | null>(null)
+
+  // 协作、撤销等外部改动要同步回输入框；自己提交造成的回流不覆盖正在输入的内容。
+  useEffect(() => {
+    if (text.content === committedRef.current) return
+    committedRef.current = text.content
+    setDraft(text.content)
+  }, [text.content])
+
+  useEffect(() => () => {
+    if (commitTimerRef.current !== null) window.clearTimeout(commitTimerRef.current)
+  }, [])
+
+  const commitContent = (value: string) => {
+    if (commitTimerRef.current !== null) {
+      window.clearTimeout(commitTimerRef.current)
+      commitTimerRef.current = null
+    }
+    if (value === committedRef.current) return
+    committedRef.current = value
+    updateTextNode(id, value)
+  }
+
   return (
     <div className={`graph-node text-node${selected ? ' is-selected' : ''}`}>
       <span className="graph-node__port-label graph-node__port-label--out">描述</span>
@@ -316,11 +346,20 @@ function TextNode({ data, id, selected }: NodeProps) {
       </header>
       <textarea
         className="nodrag nowheel"
-        value={text.content}
+        value={draft}
         aria-label={`${text.label}内容`}
         placeholder="写下视觉目标或文案要求"
         onClick={(event) => event.stopPropagation()}
-        onChange={(event) => updateTextNode(id, event.target.value)}
+        onChange={(event) => {
+          const { value } = event.target
+          setDraft(value)
+          if (commitTimerRef.current !== null) window.clearTimeout(commitTimerRef.current)
+          commitTimerRef.current = window.setTimeout(() => {
+            commitTimerRef.current = null
+            commitContent(value)
+          }, textNodeCommitDelayMs)
+        }}
+        onBlur={(event) => commitContent(event.currentTarget.value)}
       />
       <footer>连到生成节点，作为本次描述</footer>
     </div>
