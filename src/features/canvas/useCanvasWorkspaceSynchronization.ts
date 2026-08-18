@@ -292,7 +292,9 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
       if (shouldResumeQueuedAgentRunExecution(run)) {
         // execute 使用 runId 稳定幂等键；多设备同时恢复也不会创建重复任务。
         try {
-          run = (await executePersistentBotanicAgentRun(projectId, run.id)).run
+          run = (await executePersistentBotanicAgentRun(projectId, run.id, {
+            onWorkflowReady: async () => { await refreshDocumentFromRemote() },
+          })).run
         } catch {
           // 保留 queued 快照，下一轮轮询或重连再自动确认。
         }
@@ -302,7 +304,7 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
       applyAgentRunSnapshot(run)
     }
     if (shouldRecoverResults) await recoverAgentRunResults()
-  }, [applyAgentRunSnapshot, recoverAgentRunResults])
+  }, [applyAgentRunSnapshot, recoverAgentRunResults, refreshDocumentFromRemote])
 
   useEffect(() => {
     hydrateCanvas()

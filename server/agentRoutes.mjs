@@ -96,6 +96,33 @@ export function createAgentRouteHandler({
       // 协作历史是派生读模型；写入或广播失败不能回滚权威 Agent 实体。
     }
   }
+  const configuredActionTimeout = Number(config?.agentActionTimeoutMs)
+  const agentActionTimeoutMs = Number.isFinite(configuredActionTimeout)
+    ? Math.max(1, Math.min(120_000, configuredActionTimeout))
+    : 30_000
+  const withActionTimeout = (promise, actionName) => new Promise((resolve, reject) => {
+    let settled = false
+    const timeoutId = setTimeout(() => {
+      if (settled) return
+      settled = true
+      const label = actionName === 'skill_apply' ? 'Skill 执行超时，请稍后重试。' : 'Agent 行动执行超时，请稍后重试。'
+      reject(new AgentToolRuntimeError('AGENT_ACTION_TIMEOUT', label, 504))
+    }, agentActionTimeoutMs)
+    Promise.resolve(promise).then(
+      (value) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timeoutId)
+        resolve(value)
+      },
+      (caught) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timeoutId)
+        reject(caught)
+      },
+    )
+  })
 
   return async function handleAgentRoute(request, response, url, routeMatches, requestId) {
     const {
@@ -391,7 +418,7 @@ export function createAgentRouteHandler({
           createWorkflow: async ({ planId }) => {
             const { project, prepared } = await agentRunGeneration.prepareProjectExecution(user.id, projectId, planId, { submission: false })
             await agentRunGeneration.persistWorkflow(user.id, project, prepared)
-            return { message: `已创建 ${prepared.workflows.length} 条画布工作流。`, canvasNodeIds: prepared.workflows.flatMap((workflow) => [workflow.generateNodeId, workflow.resultNodeId]) }
+            return { message: `已创建 ${prepared.workflows.length} 条画布工作流。`, canvasNodeIds: prepared.workflows.flatMap((workflow) => [workflow.promptNodeId, workflow.generateNodeId, workflow.resultNodeId]) }
           },
           submitGeneration: async ({ planId }) => {
             const execution = await agentRunGeneration.submitGeneration(user.id, projectId, planId)
@@ -399,7 +426,7 @@ export function createAgentRouteHandler({
               message: `已提交 ${execution.jobs.length} 个 Agent 生成分支。`,
               run: publicAgentRun(execution.run),
               jobIds: execution.jobs.map((job) => job.id),
-              canvasNodeIds: execution.workflows.flatMap((workflow) => [workflow.generateNodeId, workflow.resultNodeId]),
+              canvasNodeIds: execution.workflows.flatMap((workflow) => [workflow.promptNodeId, workflow.generateNodeId, workflow.resultNodeId]),
             }
           },
           applySkill: async ({ skillId }) => {
@@ -430,7 +457,7 @@ export function createAgentRouteHandler({
       }
       let execution = agentActionExecutions.get(receiptId)
       if (!execution) {
-        execution = execute().finally(() => agentActionExecutions.delete(receiptId))
+        execution = withActionTimeout(execute(), actionName).finally(() => agentActionExecutions.delete(receiptId))
         agentActionExecutions.set(receiptId, execution)
       }
       return json(response, 200, await execution)

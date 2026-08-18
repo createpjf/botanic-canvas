@@ -288,6 +288,7 @@ export default function AgentWorkspace({
   const [planning, setPlanning] = useState(false)
   const [submittingMessageId, setSubmittingMessageId] = useState('')
   const [executingActionId, setExecutingActionId] = useState('')
+  const executingActionIdRef = useRef('')
   const [retryingBranchId, setRetryingBranchId] = useState('')
   const [cancellingRunId, setCancellingRunId] = useState('')
   const [activeTransientSurface, setActiveTransientSurface] = useState<AgentTransientSurface | null>(null)
@@ -1031,7 +1032,10 @@ export default function AgentWorkspace({
   }
 
   const confirmAction = async (message: BotanicAgentMessage, action: BotanicAgentActionProposal) => {
-    if (!session || executingActionId || action.status === 'succeeded') return
+    if (!session || executingActionId || executingActionIdRef.current || action.status === 'succeeded') return
+    // setState 在同一事件循环内不是同步锁；双击确认会在重渲染前发出两次请求，
+    // 进而产生重复 Skill 回执，并让卡片长期停留在 running。
+    executingActionIdRef.current = action.id
     setExecutingActionId(action.id)
     setRuntimePhase('executing')
     setError('')
@@ -1053,6 +1057,7 @@ export default function AgentWorkspace({
       setRuntimePhase('failed')
       setError(actionError)
     } finally {
+      if (executingActionIdRef.current === action.id) executingActionIdRef.current = ''
       setExecutingActionId('')
     }
   }

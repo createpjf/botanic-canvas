@@ -386,7 +386,13 @@ export function useCanvasAgentExecutionBridge({
           const execution = await executePersistentBotanicAgentRun(projectId, runId)
           return { started: execution.jobIds.length > 0, runId }
         }
-        const execution = await executePersistentBotanicAgentRun(projectId, runId)
+        const execution = await executePersistentBotanicAgentRun(projectId, runId, {
+          // 服务端先落盘文字/参考/生成占位工作流；在提交真实 Job 前刷新一次，
+          // 让用户看到“生成中”节点，而不是等整个提交请求返回后才看到画布变化。
+          onWorkflowReady: async () => {
+            if (useCanvasStore.getState().document.id === projectId) await refreshDocumentFromRemote()
+          },
+        })
         if (useCanvasStore.getState().document.id !== projectId) return { started: execution.jobIds.length > 0, runId }
         applyAgentRunSnapshot(execution.run)
         await refreshDocumentFromRemote().catch(() => false)

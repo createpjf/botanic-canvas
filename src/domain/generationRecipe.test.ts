@@ -36,6 +36,16 @@ test('生成配方以连线和生成节点输入顺序为权威', () => {
   assert.equal(result.recipe.batchCount, 2)
 })
 
+test('文字节点与生成节点描述相同时只提交一次 Prompt', () => {
+  const document = documentWithOrderedInputs()
+  const text = document.nodes.find((node) => node.id === 'text-a')
+  if (text?.type === 'text') text.data.content = '保持商品主体'
+
+  const result = buildGraphGenerationRecipe(document, 'generate-a')
+
+  assert.equal(result?.prompt, '保持商品主体')
+})
+
 test('复制配方不会共享设置或参考项引用', () => {
   const source = buildGraphGenerationRecipe(documentWithOrderedInputs(), 'generate-a')!.recipe
   const copy = cloneGenerationRecipe(source)

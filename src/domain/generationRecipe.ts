@@ -201,7 +201,10 @@ export function buildGraphGenerationRecipe(document: CanvasDocument, generateNod
   const promptParts = connectedNodes
     .flatMap((node) => node.type === 'text' ? [(node.data as TextNodeData).content.trim()] : [])
     .filter(Boolean)
-  if (generate.prompt.trim()) promptParts.push(generate.prompt.trim())
+  const directPrompt = generate.prompt.trim()
+  // Agent 工作流会把同一份描述同时保留在生成节点与文字节点中；
+  // 两者完全相同时只保留一份，避免用户从该节点再次生成时重复提交 Prompt。
+  if (directPrompt && !promptParts.includes(directPrompt)) promptParts.push(directPrompt)
 
   const resultInputs = connectedNodes.filter((node) => node.type === 'result') as CanvasNode[]
   const parentResult = isVideoGeneration ? undefined : resultInputs.find((node) => {

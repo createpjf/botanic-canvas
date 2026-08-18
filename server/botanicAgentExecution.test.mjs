@@ -99,7 +99,18 @@ test('服务端从持久化 Agent Run 创建独立工作流占位与可执行 Ge
   assert.equal(result.jobs[0].rawInput.recipe.references.at(-1).mediaId, 'media_scene_a')
   assert.equal(result.jobs[1].rawInput.recipe.references.at(-1).mediaId, 'media_scene_b')
   assert.equal(result.document.nodes.filter((node) => node.type === 'generate').length, 2)
+  assert.equal(result.document.nodes.filter((node) => node.type === 'text' && node.data.content === persistentRun().plan.prompt).length, 2)
   assert.equal(result.document.nodes.filter((node) => node.type === 'result' && !node.data.image).length, 2)
+  for (const workflow of result.workflows) {
+    assert.equal(workflow.promptNode.type, 'text')
+    assert.equal(workflow.promptNode.data.content, persistentRun().plan.prompt)
+    assert.equal(result.document.edges.some((edge) => edge.data?.role === 'prompt'
+      && edge.source === workflow.promptNodeId
+      && edge.target === workflow.generateNodeId), true)
+    assert.equal(result.document.edges.some((edge) => edge.data?.role === 'output'
+      && edge.source === workflow.generateNodeId
+      && edge.target === workflow.resultNodeId), true)
+  }
   assert.equal(result.document.generationJobs.length, 2)
   assert.equal(JSON.stringify(result).includes('data:image'), false)
 })
@@ -224,7 +235,10 @@ test('部分结果已落盘时继续补齐缺失候选，不重复覆盖已有�
 test('画布缺少 Agent 占位时按 Job 血缘补建生成与结果节点，并保留 Artifact 所需的 agentRun', () => {
   const document = {
     ...projectDocument(),
-    nodes: [],
+    nodes: [{
+      id: 'result-parent', type: 'result', position: { x: 100, y: 100 }, draggable: true,
+      data: { kind: 'result', status: 'ready', image: '/api/media/media_parent', label: '首图' },
+    }],
     edges: [],
     generationJobs: [],
   }
@@ -247,9 +261,17 @@ test('画布缺少 Agent 占位时按 Job 血缘补建生成与结果节点，�
   assert.equal(reconciled.changed, true)
   assert.equal(reconciled.complete, true)
   assert.equal(reconciled.document.nodes.find((node) => node.id === job.generateNodeId)?.type, 'generate')
+  const prompt = reconciled.document.nodes.find((node) => node.type === 'text' && node.data.content === job.generationRecipe.prompt)
+  assert.equal(prompt?.id, 'agent-prompt-agent-run-1-branch-a')
   const result = reconciled.document.nodes.find((node) => node.id === job.resultNodeId)
   assert.equal(result?.data.image, '/api/media/media_recovered')
   assert.equal(reconciled.document.edges.some((edge) => edge.source === job.generateNodeId && edge.target === job.resultNodeId), true)
+  assert.equal(reconciled.document.edges.some((edge) => edge.data?.role === 'prompt'
+    && edge.source === prompt?.id
+    && edge.target === job.generateNodeId), true)
+  assert.equal(reconciled.document.edges.some((edge) => edge.data?.role === 'reference'
+    && edge.source === 'result-parent'
+    && edge.target === job.generateNodeId), true)
   assert.deepEqual(reconciled.document.generationJobs[0].agentRun, job.agentRun)
 })
 

@@ -265,13 +265,48 @@ export async function createPersistentBotanicAgentRun(input: {
   return response.run
 }
 
-export async function executePersistentBotanicAgentRun(projectId: string, runId: string) {
-  const toolCallId = `call-generation-submit-${runId}`
-  const idempotencyKey = `agent-run-execute-${runId}`
+function stableAgentRunKey(runId: string) {
+  return runId.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 96)
+}
+
+const agentActionRequestTimeoutMs = 15_000
+
+export async function preparePersistentBotanicAgentWorkflow(projectId: string, runId: string) {
+  const stableRunId = stableAgentRunKey(runId)
+  const toolCallId = `call-workflow-create-${stableRunId}`
+  const idempotencyKey = `agent-workflow-${stableRunId}`
+  const response = await productRequest<{ output: BotanicAgentActionResult; toolCall: AgentToolCallTrace }>('/api/agent-actions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
+    body: JSON.stringify({
+      projectId,
+      name: 'workflow_create',
+      toolCallId,
+      confirmed: true,
+      arguments: { planId: runId },
+    }),
+    timeoutMs: agentActionRequestTimeoutMs,
+    timeoutMessage: '画布工作流准备超时，请稍后重试；本次生成尚未提交。',
+  })
+  return response.output
+}
+
+export async function executePersistentBotanicAgentRun(
+  projectId: string,
+  runId: string,
+  options: { onWorkflowReady?: () => Promise<void> } = {},
+) {
+  await preparePersistentBotanicAgentWorkflow(projectId, runId)
+  await options.onWorkflowReady?.()
+  const stableRunId = stableAgentRunKey(runId)
+  const toolCallId = `call-generation-submit-${stableRunId}`
+  const idempotencyKey = `agent-run-execute-${stableRunId}`
   const approvalResponse = await productRequest<{ approval: { token: string; approvedAt: number; expiresAt: number } }>('/api/agent-action-approvals', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
     body: JSON.stringify({ projectId, name: 'generation_submit', toolCallId, arguments: { planId: runId } }),
+    timeoutMs: agentActionRequestTimeoutMs,
+    timeoutMessage: '生成提交响应超时，请稍后重试；任务可能仍在云端排队。',
   })
   const response = await productRequest<{
     output: BotanicAgentActionResult & { run: BotanicAgentRunSnapshot; jobIds: string[] }
@@ -287,6 +322,8 @@ export async function executePersistentBotanicAgentRun(projectId: string, runId:
       approval: approvalResponse.approval,
       arguments: { planId: runId },
     }),
+    timeoutMs: agentActionRequestTimeoutMs,
+    timeoutMessage: '生成提交响应超时，请稍后重试；任务可能仍在云端排队。',
   })
   return response.output
 }
@@ -386,6 +423,8 @@ export async function executeProjectAgentAction(input: { projectId: string; acti
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
       body: JSON.stringify({ projectId: input.projectId, name: input.action.toolName, toolCallId: input.action.id, arguments: input.action.arguments }),
+      timeoutMs: agentActionRequestTimeoutMs,
+      timeoutMessage: `${input.action.label}响应超时，请稍后重试。`,
     })
     : undefined
   const response = await productRequest<{ output: BotanicAgentActionResult; toolCall: AgentToolCallTrace }>('/api/agent-actions', {
@@ -399,6 +438,8 @@ export async function executeProjectAgentAction(input: { projectId: string; acti
       ...(approvalResponse ? { approval: approvalResponse.approval } : {}),
       arguments: input.action.arguments,
     }),
+    timeoutMs: agentActionRequestTimeoutMs,
+    timeoutMessage: `${input.action.label}响应超时，请稍后重试。`,
   })
   return response
 }

@@ -291,6 +291,35 @@ test('Agent 会话设置仅在真实变化时产生协作动态', async () => {
   assert.equal(activities[0].summary, '更新了对话设置「新标题」')
 })
 
+test('Skill 执行超时会收口为明确失败，不把 Agent 行动永远留在 running', async () => {
+  const body = {
+    projectId: 'project-skill-timeout', name: 'skill_apply', toolCallId: 'call-skill-timeout',
+    confirmed: true, arguments: { skillId: 'project-skill' },
+  }
+  const handler = createAgentRouteHandler({
+    config: { agentActionTimeoutMs: 5 },
+    productStore: {
+      projectAccess: async () => ({ exists: true, role: 'owner' }),
+      readAgentActionReceipt: async () => undefined,
+      listAgentSkills: async () => new Promise(() => {}),
+    },
+    json: () => true,
+    error: () => true,
+    readJson: async () => body,
+    text: (value) => String(value),
+    requireUser: async () => ({ id: 'user-1' }),
+  })
+  const request = handler(
+    { method: 'POST', headers: { 'idempotency-key': 'skill-timeout-0001' } }, {},
+    new URL('http://botanic.test/api/agent-actions'), {}, 'request-skill-timeout',
+  )
+  const result = Promise.race([
+    request,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('test timeout')), 50)),
+  ])
+  await assert.rejects(result, (caught) => caught?.code === 'AGENT_ACTION_TIMEOUT')
+})
+
 function fakeServerResponse() {
   return {
     writableEnded: false,

@@ -18,7 +18,11 @@ function mediaInput(image) {
 
 function branchNodeIds(runId, branchId) {
   const suffix = `${runId}-${branchId}`.replace(/[^A-Za-z0-9_-]/g, '-')
-  return { generateNodeId: `agent-generate-${suffix}`, resultNodeId: `agent-result-${suffix}` }
+  return {
+    promptNodeId: `agent-prompt-${suffix}`,
+    generateNodeId: `agent-generate-${suffix}`,
+    resultNodeId: `agent-result-${suffix}`,
+  }
 }
 
 function appendMissingById(items, additions) {
@@ -184,7 +188,7 @@ function sourceHandleForNode(node) {
 }
 
 function workflowForBranch({ run, branch, parentNode, recipe, jobId, branchIndex, now, submission, nodesById }) {
-  const { generateNodeId, resultNodeId } = branchNodeIds(run.id, branch.id)
+  const { promptNodeId, generateNodeId, resultNodeId } = branchNodeIds(run.id, branch.id)
   const parentPosition = parentNode?.position ?? { x: 0, y: 0 }
   const y = parentPosition.y + branchIndex * 420
   const generationKind = run.plan.intent === 'redo_from_root' || run.plan.intent === 'initial_generation'
@@ -201,6 +205,14 @@ function workflowForBranch({ run, branch, parentNode, recipe, jobId, branchIndex
       batchCount: recipe.batchCount, settings: clone(recipe.settings), status: submission ? 'queued' : 'idle',
       generationKind, refinementMode: 'faithful', jobId,
     },
+  }
+  const promptNode = {
+    id: promptNodeId,
+    type: 'text',
+    position: { x: generateNode.position.x, y: generateNode.position.y - 172 },
+    draggable: true,
+    selected: false,
+    data: { kind: 'text', label: generationKind === 'refinement' ? '精修描述' : '生成描述', content: recipe.prompt },
   }
   const resultNode = {
     id: resultNodeId,
@@ -221,6 +233,10 @@ function workflowForBranch({ run, branch, parentNode, recipe, jobId, branchIndex
     },
   }
   const edges = [{
+    id: `agent-prompt-edge-${jobId}`, source: promptNodeId, sourceHandle: 'output',
+    target: generateNodeId, targetHandle: 'input', type: 'default',
+    style: { stroke: '#8bad97', strokeWidth: 1.4 }, data: { system: true, role: 'prompt' }, reconnectable: false,
+  }, {
     id: `agent-output-edge-${jobId}`, source: generateNodeId, sourceHandle: 'output',
     target: resultNodeId, targetHandle: 'input', type: 'default',
     style: { stroke: '#2a5238', strokeWidth: 1.7 }, data: { system: true, role: 'output' }, reconnectable: false,
@@ -239,7 +255,7 @@ function workflowForBranch({ run, branch, parentNode, recipe, jobId, branchIndex
       style: { stroke: '#8bad97', strokeWidth: 1.4 }, data: { system: true, role: 'reference' }, reconnectable: false,
     })
   }
-  return { generateNode, resultNode, edges, generateNodeId, resultNodeId }
+  return { promptNode, generateNode, resultNode, edges, promptNodeId, generateNodeId, resultNodeId }
 }
 
 function publicJobRecord(job, workflow) {
@@ -298,7 +314,7 @@ export function prepareAgentRunExecution({
     workflows.push(workflow)
   }
 
-  const nodes = mergeWorkflowNodes(document.nodes ?? [], workflows.flatMap((workflow) => [workflow.generateNode, workflow.resultNode]), submission)
+  const nodes = mergeWorkflowNodes(document.nodes ?? [], workflows.flatMap((workflow) => [workflow.promptNode, workflow.generateNode, workflow.resultNode]), submission)
   const edges = appendMissingById(document.edges ?? [], workflows.flatMap((workflow) => workflow.edges))
   const generationJobs = submission
     ? appendMissingById(document.generationJobs ?? [], jobs.map((job, index) => publicJobRecord(job, workflows[index])))

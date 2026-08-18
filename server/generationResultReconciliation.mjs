@@ -7,12 +7,22 @@ function candidateLabel(kind, index) {
 }
 
 function agentNodeIds(job) {
+  const suffix = job?.agentRun?.runId && job?.agentRun?.branchId
+    ? `${job.agentRun.runId}-${job.agentRun.branchId}`.replace(/[^A-Za-z0-9_-]/g, '-')
+    : undefined
   if (job?.generateNodeId && job?.resultNodeId) {
-    return { generateNodeId: job.generateNodeId, resultNodeId: job.resultNodeId }
+    return {
+      promptNodeId: job.promptNodeId ?? (suffix ? `agent-prompt-${suffix}` : undefined),
+      generateNodeId: job.generateNodeId,
+      resultNodeId: job.resultNodeId,
+    }
   }
-  if (!job?.agentRun?.runId || !job?.agentRun?.branchId) return {}
-  const suffix = `${job.agentRun.runId}-${job.agentRun.branchId}`.replace(/[^A-Za-z0-9_-]/g, '-')
-  return { generateNodeId: `agent-generate-${suffix}`, resultNodeId: `agent-result-${suffix}` }
+  if (!suffix) return {}
+  return {
+    promptNodeId: `agent-prompt-${suffix}`,
+    generateNodeId: `agent-generate-${suffix}`,
+    resultNodeId: `agent-result-${suffix}`,
+  }
 }
 
 function recoveredRecipe(job) {
@@ -64,9 +74,13 @@ function agentResultPlaceholder({ id, generate, job, settings, generationKind, r
   }
 }
 
+function sourceHandleForNode(node) {
+  return node?.type === 'asset' ? 'asset-output' : 'output'
+}
+
 function ensureAgentGenerationPlaceholder(next, job) {
   if (!job?.agentRun || job.status !== 'succeeded' || !job.outputs?.length) return false
-  const { generateNodeId, resultNodeId } = agentNodeIds(job)
+  const { promptNodeId, generateNodeId, resultNodeId } = agentNodeIds(job)
   if (!generateNodeId || !resultNodeId) return false
   const nodes = next.nodes
   let changed = false
@@ -101,6 +115,26 @@ function ensureAgentGenerationPlaceholder(next, job) {
       },
     }
     nodes.push(generate)
+    changed = true
+  }
+
+  let prompt = promptNodeId
+    ? nodes.find((node) => node.id === promptNodeId && node.type === 'text')
+    : undefined
+  if (!prompt && promptNodeId) {
+    prompt = {
+      id: promptNodeId,
+      type: 'text',
+      position: { x: generate.position?.x ?? 0, y: (generate.position?.y ?? 0) - 172 },
+      draggable: true,
+      selected: false,
+      data: {
+        kind: 'text',
+        label: generationKind === 'refinement' ? '精修描述' : '生成描述',
+        content: job.rawInput?.prompt ?? recipe?.prompt ?? '',
+      },
+    }
+    nodes.push(prompt)
     changed = true
   }
 
@@ -168,6 +202,40 @@ function ensureAgentGenerationPlaceholder(next, job) {
       type: 'default',
       style: { stroke: '#2a5238', strokeWidth: 1.7 },
       data: { system: true, role: 'output' },
+      reconnectable: false,
+    })
+    changed = true
+  }
+  if (prompt && !next.edges.some((edge) => edge.data?.role === 'prompt'
+    && edge.source === prompt.id
+    && edge.target === generate.id)) {
+    next.edges.push({
+      id: `agent-prompt-edge-${job.id}`,
+      source: prompt.id,
+      sourceHandle: 'output',
+      target: generate.id,
+      targetHandle: 'input',
+      type: 'default',
+      style: { stroke: '#8bad97', strokeWidth: 1.4 },
+      data: { system: true, role: 'prompt' },
+      reconnectable: false,
+    })
+    changed = true
+  }
+  for (const reference of recipe?.references ?? []) {
+    if (!reference.nodeId || !nodes.some((node) => node.id === reference.nodeId)) continue
+    if (next.edges.some((edge) => edge.data?.role === 'reference'
+      && edge.source === reference.nodeId
+      && edge.target === generate.id)) continue
+    next.edges.push({
+      id: `agent-reference-edge-${job.id}-${reference.nodeId}`,
+      source: reference.nodeId,
+      sourceHandle: sourceHandleForNode(nodes.find((node) => node.id === reference.nodeId)),
+      target: generate.id,
+      targetHandle: 'input',
+      type: 'default',
+      style: { stroke: '#8bad97', strokeWidth: 1.4 },
+      data: { system: true, role: 'reference' },
       reconnectable: false,
     })
     changed = true
