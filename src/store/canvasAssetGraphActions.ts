@@ -549,21 +549,27 @@ export function createCanvasAssetGraphActions({
       }, { assistantMessage: '已将素材移出当前素材组；素材原件仍保留。' })
     },
 
-    addTextNode: (position) => {
+    addTextNode: (position, options) => {
       const document = get().document
+      const select = options?.select ?? true
       const nodeId = `text-${Date.now()}`
       const node: CanvasNode = {
         id: nodeId,
         type: 'text',
         position: position ?? { x: 190, y: 140 },
         draggable: true,
-        selected: true,
+        selected: select,
         data: { kind: 'text', label: '视觉描述', content: '描述商品、场景、构图与留白要求' },
       }
       void commitDocument({
         ...document,
-        nodes: [...document.nodes.map((item) => ({ ...item, selected: false })), node] as CanvasNode[],
-      }, { selectedNodeId: nodeId, assistantMessage: '已创建文本节点；将右侧端口连到生成节点即可作为本次描述。' })
+        nodes: select
+          ? [...document.nodes.map((item) => ({ ...item, selected: false })), node] as CanvasNode[]
+          : [...document.nodes, node] as CanvasNode[],
+      }, select
+        ? { selectedNodeId: nodeId, assistantMessage: '已创建文本节点；将右侧端口连到生成节点即可作为本次描述。' }
+        : {})
+      return nodeId
     },
 
     addGenerateNode: (position, mediaKind = 'image', inputNodeIds) => {

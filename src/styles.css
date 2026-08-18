@@ -3352,6 +3352,36 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-message__plan small { color: #77847b; font-size: 10px; }
 .agent-message__plan button { justify-self: start; height: 32px; padding: 0 12px; border: 1px solid #2d633b; border-radius: 7px; background: #2d633b; color: #fff; cursor: pointer; font-size: 10px; font-weight: 760; }
 .agent-message__plan button:disabled { opacity: .5; }
+.agent-message__plan.is-submitted { padding: 0; background: #fbfdfa; }
+.agent-message__plan.is-submitted[open] { padding-bottom: 11px; }
+.agent-message__plan.is-submitted > summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 11px; cursor: pointer; }
+.agent-message__plan.is-submitted > summary::marker, .agent-message__plan.is-submitted > summary::-webkit-details-marker { color: #9fb0a3; }
+.agent-message__plan.is-submitted > summary > span { display: grid; gap: 2px; min-width: 0; }
+.agent-message__plan.is-submitted > summary strong { overflow: hidden; color: #2e4735; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.agent-message__plan.is-submitted > summary small { color: #7f8d84; font-size: 9px; }
+.agent-message__plan.is-submitted > :not(summary) { margin-inline: 11px; }
+.agent-message__submitted { flex: 0 0 auto; padding: 3px 7px; border-radius: 5px; background: #e5efe6; color: #315d3b; font-size: 9px; font-style: normal; font-weight: 780; }
+.agent-prompt-review__submitted { display: grid; gap: 4px; }
+.agent-prompt-review__submitted small { color: #7d8a80; font-size: 9px; font-weight: 760; }
+.agent-prompt-review__submitted pre { max-height: 168px; margin: 0; overflow: auto; padding: 7px 8px; border: 1px solid #cbdccb; border-radius: 6px; background: #fff; color: #304a37; font-family: inherit; font-size: 11px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+.agent-action-card.is-settled { padding: 0; }
+.agent-action-card.is-settled[open] { padding-bottom: 9px; }
+.agent-action-card.is-settled > summary { display: flex; align-items: center; gap: 7px; padding: 9px 10px; cursor: pointer; }
+.agent-action-card.is-settled > summary > span { color: #477052; font-size: 10px; font-weight: 850; letter-spacing: .1em; }
+.agent-action-card.is-settled > summary strong { overflow: hidden; color: #2e4735; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.agent-action-card.is-settled > summary small { margin-left: auto; color: #78857c; font-size: 10px; }
+.agent-action-card.is-settled > :not(summary) { margin-inline: 10px; }
+.agent-action-card.is-dismissed { border-color: #dde3de; background: #fafbfa; }
+.agent-message__collapsible { display: grid; gap: 4px; }
+.agent-message__collapsible .agent-message__collapsible-body { position: relative; max-height: 200px; overflow: hidden; }
+.agent-message__collapsible .agent-message__collapsible-body::after { position: absolute; inset: auto 0 0; height: 46px; content: ''; background: linear-gradient(rgba(250, 252, 249, 0), rgba(250, 252, 249, .985) 86%); pointer-events: none; }
+.agent-message.is-notice .agent-message__collapsible-body::after, .agent-message.is-run .agent-message__collapsible-body::after { background: linear-gradient(rgba(245, 248, 244, 0), #f5f8f4 86%); }
+.agent-message__collapsible.is-expanded .agent-message__collapsible-body { max-height: none; overflow: visible; }
+.agent-message__collapsible.is-expanded .agent-message__collapsible-body::after { display: none; }
+.agent-message__collapsible-toggle { justify-self: start; min-height: 26px; padding: 0 9px; border: 1px solid #cbdacc; border-radius: 6px; background: #fff; color: #48674e; cursor: pointer; font-size: 9px; font-weight: 720; }
+.agent-message__collapsible-toggle:hover { border-color: #8faf94; background: #f1f7f1; color: #2d633b; }
+.agent-run-message__more { min-height: 82px; flex: 0 0 82px; padding: 0 8px; border: 1px dashed #cbdacc; border-radius: 7px; background: #f5f9f4; color: #48674e; cursor: pointer; font-size: 9px; font-weight: 720; }
+.agent-run-message__more:hover { border-color: #8faf94; color: #2d633b; }
 .agent-clarification-card { container-type: inline-size; display: grid; gap: 16px; margin-block-start: 9px; padding: 14px; border: 0; border-radius: 14px; background: #f6f9f5; box-shadow: 0 0 0 1px rgba(37, 74, 45, .06), 0 2px 6px rgba(37, 74, 45, .04); }
 .agent-clarification-card__intro { display: grid; gap: 6px; }
 .agent-clarification-card__intro > header { display: grid; gap: 2px; }

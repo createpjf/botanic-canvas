@@ -79,6 +79,10 @@ export function validateIndexedArtifact(value, { now = Date.now() } = {}) {
     createdAt,
     updatedAt: Math.max(createdAt, timestamp(artifact.updatedAt, now)),
   }
+  if (artifact.placement !== undefined) {
+    if (artifact.placement !== 'canvas' && artifact.placement !== 'panel') invalid('Artifact 落点无效。')
+    result.placement = artifact.placement
+  }
   if (artifact.content !== undefined) result.content = text(artifact.content, 'Artifact 内容', 64_000)
   if (artifact.url !== undefined) result.url = safeUrl(artifact.url)
   if (artifact.mimeType !== undefined) result.mimeType = text(artifact.mimeType, 'Artifact MIME 类型', 160)

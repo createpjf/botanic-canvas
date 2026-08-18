@@ -24,6 +24,7 @@ import {
   type BotanicAgentMessage,
   type BotanicAgentPlan,
   type BotanicAgentRun,
+  type BotanicAgentRuntimePhase,
   type BotanicAgentRunTimelineFilter,
   type BotanicAgentSession,
   type BotanicAgentSessionTimelineFilter,
@@ -111,6 +112,15 @@ function agentTimelineTimestamp(timestamp: number) {
     month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
   }).format(new Date(timestamp))
 }
+
+/**
+ * 底部运行轨迹只在“这一轮还没收束”时出现：进行中、等待用户输入，或本轮失败需要处理。
+ * completed 不在其中——完成信息由对话内该轮的状态消息承载，避免上一轮永远钉在最下方。
+ */
+const agentRuntimeFeedPhases = new Set<BotanicAgentRuntimePhase>([
+  'reading', 'planning', 'waiting_clarification', 'waiting_confirmation',
+  'waiting_reference', 'draft_ready', 'executing', 'failed',
+])
 
 const agentQuickActions: Array<{ intent: BotanicAgentIntent; label: string; instruction: string }> = [
   { intent: 'replace_scene', label: '换场景', instruction: '保持人物、服装和商品不变，只替换场景与环境光线。' },
@@ -417,10 +427,12 @@ export default function AgentWorkspace({
   const {
     runtimeSteps,
     runtimePhase,
+    runtimeMode,
     runtimeDetailsOpen,
     setRuntimePhase,
     setRuntimeDetailsOpen,
     beginRuntimeTrace,
+    resetRuntimeTrace,
     updateRuntimeStep,
     attachPlannerToolTrace,
     yieldRuntimeFrame,
@@ -438,8 +450,8 @@ export default function AgentWorkspace({
     plannerLabel: agentPlannerModelLabel(plannerModel),
   })
   const runtimeSummary = useMemo(
-    () => summarizeBotanicAgentRuntime({ steps: runtimeSteps, phase: runtimePhase }),
-    [runtimePhase, runtimeSteps],
+    () => summarizeBotanicAgentRuntime({ steps: runtimeSteps, phase: runtimePhase, mode: runtimeMode }),
+    [runtimeMode, runtimePhase, runtimeSteps],
   )
   const runtimeFailed = runtimePhase === 'failed' || runtimeSteps.some((step) => step.status === 'failed')
   const runtimeComplete = runtimePhase === 'completed'
@@ -471,8 +483,17 @@ export default function AgentWorkspace({
     () => sessionTimeline.filter((item) => item.unreadRunCount > 0).length,
     [sessionTimeline],
   )
-  // 提交任务后以 Run 卡作为唯一任务状态来源；规划/追问阶段仍显示 Runtime 摘要。
-  const showRuntimeFeed = runtimeSteps.length > 0 && (!latestRun?.branches.length || !['executing', 'completed', 'failed'].includes(runtimePhase))
+  // 运行轨迹只描述“这一轮正在发生什么”：轮次收束后由对话内的状态消息接手，
+  // 底部不再留下上一轮的完成卡。提交任务后仍以 Run 卡作为唯一任务状态来源。
+  const runtimeFeedPhase = agentRuntimeFeedPhases.has(runtimePhase)
+  const showRuntimeFeed = runtimeSteps.length > 0 && runtimeFeedPhase
+    && (!latestRun?.branches.length || runtimePhase !== 'executing')
+
+  // 切换会话时上一轮轨迹不再跟随；新会话若有进行中的 Run 会由恢复逻辑重新填充。
+  const sessionId = session?.id
+  useEffect(() => {
+    resetRuntimeTrace()
+  }, [resetRuntimeTrace, sessionId])
 
   const registerMessageNode = useCallback((messageId: string, node: HTMLDivElement | null) => {
     if (node) messageNodesRef.current.set(messageId, node)
@@ -1358,6 +1379,8 @@ export default function AgentWorkspace({
 
   const commitPlanPrompt = (message: BotanicAgentMessage, prompt: string) => {
     if (!session || !message.plan) return
+    // 任务已按这条计划提交，改写提示词只会让历史记录与真实执行不一致。
+    if (message.status === 'submitted') return
     const cleanPrompt = prompt.trim()
     if (!cleanPrompt || cleanPrompt === message.plan.prompt) return
     onUpdateMessage(session.id, message.id, { plan: { ...message.plan, prompt: cleanPrompt } })

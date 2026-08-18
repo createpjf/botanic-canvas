@@ -2,10 +2,12 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   createBotanicAgentRuntimeSteps,
   restoreBotanicAgentRuntimeSteps,
+  shouldRestoreBotanicAgentRuntimeSteps,
   updateBotanicAgentRuntimeStep,
   type BotanicAgentPlan,
   type BotanicAgentClarificationResponse,
   type BotanicAgentRun,
+  type BotanicAgentRuntimeMode,
   type BotanicAgentRuntimePhase,
   type BotanicAgentRuntimeStep,
 } from '../../domain/agent'
@@ -47,6 +49,7 @@ export function useAgentRuntimeTrace({
 }) {
   const [steps, setSteps] = useState<BotanicAgentRuntimeStep[]>([])
   const [phase, setPhase] = useState<BotanicAgentRuntimePhase>('idle')
+  const [mode, setMode] = useState<BotanicAgentRuntimeMode>('generation')
   const [detailsOpen, setDetailsOpen] = useState(false)
 
   const updateStep = useCallback((
@@ -62,16 +65,25 @@ export function useAgentRuntimeTrace({
     referenceCount: number
     memoryCount: number
     assetGroupCount: number
-    mode?: 'generation' | 'conversation' | 'prompt' | 'research'
+    mode?: BotanicAgentRuntimeMode
   }) => {
     const nextSteps = createBotanicAgentRuntimeSteps({ ...input, plannerLabel })
     const firstStep = nextSteps[0]
     const started = firstStep ? updateBotanicAgentRuntimeStep(nextSteps, firstStep.id, 'running') : nextSteps
     setSteps(started)
+    setMode(input.mode ?? 'generation')
     setPhase('reading')
     setDetailsOpen(false)
     return started
   }, [plannerLabel])
+
+  /** 切换会话时丢弃上一轮的运行轨迹，避免旧内容跟着新会话留在面板底部。 */
+  const reset = useCallback(() => {
+    setSteps([])
+    setMode('generation')
+    setPhase('idle')
+    setDetailsOpen(false)
+  }, [])
 
   const attachPlannerTools = useCallback((plan?: BotanicAgentPlan | BotanicAgentClarificationResponse) => {
     const labels = plan?.toolCalls?.map((call) => call.label).filter(Boolean) ?? []
@@ -117,6 +129,9 @@ export function useAgentRuntimeTrace({
     const failed = latestRun.status === 'failed' || latestRun.status === 'cancelled'
     setPhase(active ? 'executing' : failed ? 'failed' : 'completed')
     if (steps.length) return
+    // 已结束的 Run 由对话内的状态消息承载，不再在面板底部重放一份历史步骤。
+    if (!shouldRestoreBotanicAgentRuntimeSteps(latestRun.status)) return
+    setMode('generation')
     setSteps(restoreBotanicAgentRuntimeSteps({
       run: latestRun,
       hasTarget,
@@ -131,10 +146,12 @@ export function useAgentRuntimeTrace({
   return {
     runtimeSteps: steps,
     runtimePhase: phase,
+    runtimeMode: mode,
     runtimeDetailsOpen: detailsOpen,
     setRuntimePhase: setPhase,
     setRuntimeDetailsOpen: setDetailsOpen,
     beginRuntimeTrace: begin,
+    resetRuntimeTrace: reset,
     updateRuntimeStep: updateStep,
     attachPlannerToolTrace: attachPlannerTools,
     yieldRuntimeFrame,

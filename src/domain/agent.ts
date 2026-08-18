@@ -165,13 +165,17 @@ export type BotanicAgentRuntimeSummary = {
   progress: number
 }
 
+export type BotanicAgentRuntimeMode = 'generation' | 'conversation' | 'prompt' | 'research'
+
 /**
  * 把多个底层步骤压缩成一个用户能理解的阶段摘要。
  * 详细步骤仍可展开查看，但默认只显示当前阶段与下一步，避免 Runtime 变成日志墙。
+ * 摘要按本轮路由取词：对话、Prompt 与检索轮次不会谎称“结果已回填画布”。
  */
 export function summarizeBotanicAgentRuntime(input: {
   steps: BotanicAgentRuntimeStep[]
   phase: BotanicAgentRuntimePhase
+  mode?: BotanicAgentRuntimeMode
 }): BotanicAgentRuntimeSummary {
   const totalCount = input.steps.length
   const completedCount = input.steps.filter((step) => step.status === 'succeeded').length
@@ -229,9 +233,25 @@ export function summarizeBotanicAgentRuntime(input: {
       nextAction: '查看并重试',
     },
   }
+  const mode = input.mode ?? 'generation'
+  const nonGenerationCopy: Partial<Record<BotanicAgentRuntimePhase, Pick<BotanicAgentRuntimeSummary, 'label' | 'detail' | 'nextAction'>>> = mode === 'generation'
+    ? {}
+    : {
+      idle: {
+        label: '等待你的问题',
+        detail: mode === 'research' ? '描述要查的内容，Agent 只回答项目内可核对的事实。' : '可以直接提问，也可以让我先写一段 Prompt。',
+        nextAction: '输入问题',
+      },
+      completed: mode === 'prompt'
+        ? { label: 'Prompt 已生成', detail: '可以直接复制使用，或让我按这段 Prompt 生成。', nextAction: '用这段 Prompt 生成' }
+        : mode === 'research'
+          ? { label: '检索完成', detail: '已列出命中的项目资料与来源。', nextAction: '继续追问' }
+          : { label: '已回复', detail: '可以继续追问，或描述创作目标进入生成。', nextAction: '继续对话' },
+    }
   return {
     phase: input.phase,
     ...phaseCopy[input.phase],
+    ...nonGenerationCopy[input.phase],
     completedCount,
     totalCount,
     progress,
@@ -259,6 +279,11 @@ export function resolveBotanicAgentWorkflowReferenceNodeIds(
     }
     return false
   })
+}
+
+/** 仍在进行的 Run 才需要在面板底部恢复实时进度；已结束的 Run 由对话内的状态消息承载。 */
+export function shouldRestoreBotanicAgentRuntimeSteps(status: BotanicAgentRunStatus) {
+  return status === 'queued' || status === 'running' || status === 'executing'
 }
 
 /**
@@ -293,9 +318,10 @@ export function restoreBotanicAgentRuntimeSteps(input: {
         ...(failed ? { error: input.run.status === 'cancelled' ? '任务已取消。' : '任务未完成，请查看任务面板。' } : {}),
       }
     }
+    // 上下文与规划步骤在 Run 落库时必然已经完成，无论 Run 最终成败。
     return {
       ...step,
-      status: failed || !active ? 'succeeded' : step.id === 'call-planner' ? 'succeeded' : 'succeeded',
+      status: 'succeeded',
       detail: `${step.detail} · 已从服务端恢复`,
     }
   })
@@ -326,6 +352,12 @@ export function botanicAgentSubmissionKey(messageId: string, plan: Pick<BotanicA
 
 export type BotanicAgentArtifactKind = 'image' | 'video' | 'text' | 'workflow' | 'asset_group' | 'file'
 
+/**
+ * Artifact 自己声明落点。'panel' 只进结果面板与 Artifact Index，'canvas' 才允许创建节点。
+ * 缺省时按媒体落画布、文本留面板，避免 Skill 规则、MCP 文本被当成创作素材写进画布。
+ */
+export type BotanicAgentArtifactPlacement = 'canvas' | 'panel'
+
 export type BotanicAgentArtifact = {
   id: string
   kind: BotanicAgentArtifactKind
@@ -333,6 +365,7 @@ export type BotanicAgentArtifact = {
   content?: string
   url?: string
   mimeType?: string
+  placement?: BotanicAgentArtifactPlacement
   metadata?: Record<string, unknown>
   provenance: {
     actionId: string
@@ -401,29 +434,30 @@ function safeAgentArtifactUrl(value?: string) {
   try { return new URL(value).protocol === 'https:' } catch { return false }
 }
 
+export function botanicAgentArtifactPlacement(artifact: Pick<BotanicAgentArtifact, 'kind' | 'placement'>): BotanicAgentArtifactPlacement {
+  if (artifact.placement) return artifact.placement
+  return artifact.kind === 'image' || artifact.kind === 'video' ? 'canvas' : 'panel'
+}
+
+/**
+ * 只有显式落点为 canvas 的 Artifact 才会创建节点。文字与工作流产物默认留在结果面板，
+ * 旧版 writeback 也不再兜底生成文字节点——它仍会进入 Artifact Index，不丢历史。
+ */
 export function resolveBotanicAgentCanvasCommands(result: BotanicAgentActionResult): ResolvedBotanicAgentCanvasCommand[] {
-  if (result.artifacts?.length && result.canvasCommands?.length) {
-    const artifacts = new Map(result.artifacts.map((artifact) => [artifact.id, artifact]))
-    return result.canvasCommands.flatMap((command): ResolvedBotanicAgentCanvasCommand[] => {
-      if (command.type !== 'create_text_node' && command.type !== 'create_media_node') return []
-      const artifact = artifacts.get(command.artifactId)
-      if (!artifact) return []
-      const textCompatible = command.type === 'create_text_node'
-        && (artifact.kind === 'text' || artifact.kind === 'workflow')
-        && Boolean(artifact.content?.trim())
-      const mediaCompatible = command.type === 'create_media_node'
-        && (artifact.kind === 'image' || artifact.kind === 'video')
-        && safeAgentArtifactUrl(artifact.url)
-      return textCompatible || mediaCompatible ? [{ artifact, command }] : []
-    })
-  }
-  if (!result.writeback?.content.trim()) return []
-  const artifact: BotanicAgentArtifact = {
-    id: 'legacy-writeback', kind: 'text', label: result.writeback.label,
-    content: result.writeback.content,
-    provenance: { actionId: 'legacy-action', toolName: 'legacy_writeback' },
-  }
-  return [{ artifact, command: { id: 'legacy-writeback-command', type: 'create_text_node', artifactId: artifact.id } }]
+  if (!result.artifacts?.length || !result.canvasCommands?.length) return []
+  const artifacts = new Map(result.artifacts.map((artifact) => [artifact.id, artifact]))
+  return result.canvasCommands.flatMap((command): ResolvedBotanicAgentCanvasCommand[] => {
+    if (command.type !== 'create_text_node' && command.type !== 'create_media_node') return []
+    const artifact = artifacts.get(command.artifactId)
+    if (!artifact || botanicAgentArtifactPlacement(artifact) !== 'canvas') return []
+    const textCompatible = command.type === 'create_text_node'
+      && (artifact.kind === 'text' || artifact.kind === 'workflow')
+      && Boolean(artifact.content?.trim())
+    const mediaCompatible = command.type === 'create_media_node'
+      && (artifact.kind === 'image' || artifact.kind === 'video')
+      && safeAgentArtifactUrl(artifact.url)
+    return textCompatible || mediaCompatible ? [{ artifact, command }] : []
+  })
 }
 
 export function recordBotanicAgentCanvasWritebacks(

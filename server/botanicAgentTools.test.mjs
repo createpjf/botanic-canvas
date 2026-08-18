@@ -195,12 +195,11 @@ test('已确认的 Skill/MCP 行动返回统一 Artifact 与画布命令', async
     artifacts: [{
       id: 'artifact-call-skill-apply-1-1', kind: 'workflow', label: 'Skill · 夏日场景系列',
       content: '锁定人物与服装，只替换场景。',
+      placement: 'panel',
       provenance: { actionId: 'call-skill-apply-1', toolName: 'skill_apply' },
     }],
-    canvasCommands: [{
-      id: 'command-call-skill-apply-1-1', type: 'create_text_node',
-      artifactId: 'artifact-call-skill-apply-1-1',
-    }],
+    // Skill 规则只进结果面板，不再无条件在画布上创建文字节点。
+    canvasCommands: [],
   })
 
   const mcp = await executeConfirmedAgentAction({
@@ -214,17 +213,17 @@ test('已确认的 Skill/MCP 行动返回统一 Artifact 与画布命令', async
     artifacts: [
       {
         id: 'artifact-call-mcp-apply-1-1', kind: 'text', label: 'MCP · asset-catalog.search',
-        content: '找到 3 个已审核海边场景。',
+        content: '找到 3 个已审核海边场景。', placement: 'panel',
         provenance: { actionId: 'call-mcp-apply-1', toolName: 'mcp_call', externalTool: 'asset-catalog.search' },
       },
       {
-        id: 'artifact-call-mcp-apply-1-2', kind: 'image', label: '海边场景 01',
+        id: 'artifact-call-mcp-apply-1-2', kind: 'image', label: '海边场景 01', placement: 'canvas',
         url: 'https://assets.example.com/scene-01.webp', mimeType: 'image/webp',
         provenance: { actionId: 'call-mcp-apply-1', toolName: 'mcp_call', externalTool: 'asset-catalog.search' },
       },
     ],
+    // MCP 文本留在结果面板，只有媒体产物写画布。
     canvasCommands: [
-      { id: 'command-call-mcp-apply-1-1', type: 'create_text_node', artifactId: 'artifact-call-mcp-apply-1-1' },
       { id: 'command-call-mcp-apply-1-2', type: 'create_media_node', artifactId: 'artifact-call-mcp-apply-1-2' },
     ],
   })

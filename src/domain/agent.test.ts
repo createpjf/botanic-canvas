@@ -28,6 +28,8 @@ import {
   shouldResumeQueuedAgentRunExecution,
   updateBotanicAgentRuntimeStep,
   restoreBotanicAgentRuntimeSteps,
+  shouldRestoreBotanicAgentRuntimeSteps,
+  botanicAgentArtifactPlacement,
   botanicAgentSubmissionKey,
   botanicAgentRunFeedback,
   botanicAgentBranchStatusLabel,
@@ -665,26 +667,77 @@ test('Agent 行动卡状态可在对话计划内恢复，并记录画布回写�
   assert.equal(succeeded.updatedAt, 130)
 })
 
-test('Agent 只执行引用现有 Artifact 的安全画布命令，并兼容旧文字回写', () => {
+test('Agent 只为落点是画布的 Artifact 执行节点命令', () => {
   assert.deepEqual(resolveBotanicAgentCanvasCommands({
     message: '完成',
     artifacts: [
       { id: 'artifact-text', kind: 'text', label: '检索结果', content: '找到 3 个场景。', provenance: { actionId: 'action-1', toolName: 'mcp_call' } },
+      { id: 'artifact-note', kind: 'workflow', label: 'Skill 规则', content: '锁定商品。', placement: 'canvas', provenance: { actionId: 'action-1', toolName: 'skill_apply' } },
       { id: 'artifact-image', kind: 'image', label: '场景图', url: 'https://assets.example.com/scene.webp', provenance: { actionId: 'action-1', toolName: 'mcp_call' } },
+      { id: 'artifact-hidden', kind: 'image', label: '仅面板', url: 'https://assets.example.com/panel.webp', placement: 'panel', provenance: { actionId: 'action-1', toolName: 'mcp_call' } },
     ],
     canvasCommands: [
       { id: 'command-text', type: 'create_text_node', artifactId: 'artifact-text' },
+      { id: 'command-note', type: 'create_text_node', artifactId: 'artifact-note' },
       { id: 'command-image', type: 'create_media_node', artifactId: 'artifact-image' },
+      { id: 'command-hidden', type: 'create_media_node', artifactId: 'artifact-hidden' },
       { id: 'command-unknown', type: 'create_media_node', artifactId: 'missing' },
     ],
-  }).map((item) => item.command.id), ['command-text', 'command-image'])
+    // 文本产物默认留在结果面板；只有显式 placement: 'canvas' 才写节点。
+  }).map((item) => item.command.id), ['command-note', 'command-image'])
 
-  const legacy = resolveBotanicAgentCanvasCommands({
+  assert.deepEqual(resolveBotanicAgentCanvasCommands({
     message: '完成', writeback: { kind: 'text', label: '旧结果', content: '仍可写回。' },
-  })
-  assert.equal(legacy[0].artifact.kind, 'text')
-  assert.equal(legacy[0].artifact.label, '旧结果')
-  assert.equal(legacy[0].command.type, 'create_text_node')
+  }), [])
+})
+
+test('Artifact 落点默认按媒体进画布、文本留面板', () => {
+  assert.equal(botanicAgentArtifactPlacement({ kind: 'image' }), 'canvas')
+  assert.equal(botanicAgentArtifactPlacement({ kind: 'video' }), 'canvas')
+  assert.equal(botanicAgentArtifactPlacement({ kind: 'workflow' }), 'panel')
+  assert.equal(botanicAgentArtifactPlacement({ kind: 'text' }), 'panel')
+  assert.equal(botanicAgentArtifactPlacement({ kind: 'file' }), 'panel')
+  assert.equal(botanicAgentArtifactPlacement({ kind: 'text', placement: 'canvas' }), 'canvas')
+  assert.equal(botanicAgentArtifactPlacement({ kind: 'image', placement: 'panel' }), 'panel')
+})
+
+test('运行摘要按本轮路由取词，对话轮次不谎称已回填画布', () => {
+  const steps = createBotanicAgentRuntimeSteps({ hasTarget: false, mode: 'conversation' })
+  const generation = summarizeBotanicAgentRuntime({ steps, phase: 'completed' })
+  assert.equal(generation.label, 'Agent 已完成')
+  assert.match(generation.detail, /回填画布/)
+
+  const conversation = summarizeBotanicAgentRuntime({ steps, phase: 'completed', mode: 'conversation' })
+  assert.equal(conversation.label, '已回复')
+  assert.doesNotMatch(conversation.detail, /回填画布/)
+
+  assert.equal(summarizeBotanicAgentRuntime({ steps, phase: 'completed', mode: 'prompt' }).label, 'Prompt 已生成')
+  assert.equal(summarizeBotanicAgentRuntime({ steps, phase: 'completed', mode: 'research' }).label, '检索完成')
+
+  // 进行中与等待阶段的文案与计数不受路由影响。
+  assert.equal(
+    summarizeBotanicAgentRuntime({ steps, phase: 'waiting_confirmation', mode: 'conversation' }).label,
+    summarizeBotanicAgentRuntime({ steps, phase: 'waiting_confirmation' }).label,
+  )
+})
+
+test('只有仍在进行的 Run 才在面板底部恢复运行轨迹', () => {
+  assert.equal(shouldRestoreBotanicAgentRuntimeSteps('queued'), true)
+  assert.equal(shouldRestoreBotanicAgentRuntimeSteps('running'), true)
+  assert.equal(shouldRestoreBotanicAgentRuntimeSteps('executing'), true)
+  assert.equal(shouldRestoreBotanicAgentRuntimeSteps('completed'), false)
+  assert.equal(shouldRestoreBotanicAgentRuntimeSteps('partial'), false)
+  assert.equal(shouldRestoreBotanicAgentRuntimeSteps('failed'), false)
+  assert.equal(shouldRestoreBotanicAgentRuntimeSteps('cancelled'), false)
+  assert.equal(shouldRestoreBotanicAgentRuntimeSteps('awaiting_confirmation'), false)
+
+  // 恢复出来的上下文步骤一律是已完成状态，只有终点步骤反映 Run 的真实结果。
+  const restored = restoreBotanicAgentRuntimeSteps({ run: { status: 'running' }, hasTarget: true })
+  assert.deepEqual(
+    restored.filter((step) => step.id !== 'finalize-plan').map((step) => step.status),
+    restored.filter((step) => step.id !== 'finalize-plan').map(() => 'succeeded'),
+  )
+  assert.equal(restored.find((step) => step.id === 'finalize-plan')?.status, 'running')
 })
 
 test('Agent 行动产物回写画布后记录真实节点血缘', () => {

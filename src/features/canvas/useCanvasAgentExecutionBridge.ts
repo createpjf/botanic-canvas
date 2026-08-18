@@ -283,9 +283,7 @@ export function useCanvasAgentExecutionBridge({
     for (const [index, resolved] of resolveBotanicAgentCanvasCommands(output).entries()) {
       const position = { x: origin.x + (index % 2) * 240, y: origin.y + Math.floor(index / 2) * 260 }
       if (resolved.command.type === 'create_text_node' && resolved.artifact.content) {
-        addTextNode(position)
-        const nodeId = useCanvasStore.getState().selectedNodeId
-        if (!nodeId) throw new Error('行动已执行，但文字节点创建失败。')
+        const nodeId = addTextNode(position, { select: false })
         updateTextNode(nodeId, resolved.artifact.content)
         renameCanvasNode(nodeId, resolved.artifact.label)
         writebacks.push({ artifactId: resolved.artifact.id, nodeId })
