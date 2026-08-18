@@ -43,7 +43,21 @@ export type AgentToolCallTrace = {
   risk: 'read' | 'write' | 'costly' | 'external'
   status: 'pending' | 'running' | 'awaiting_confirmation' | 'succeeded' | 'failed'
   requiresConfirmation: boolean
+  /** 模型自述的一句话调用目的。它是说给用户听的摘要，不是隐藏思维链，可展示也可持久化。 */
+  summary?: string
   error?: string
+}
+
+/**
+ * 一轮里的运行说明片段。
+ * - `summary` 来自模型自述的工具调用目的，可展示、可随计划持久化。
+ * - `raw` 是提供方回传的完整推理，默认关闭；即使打开也只用于当轮实时展示，
+ *   不写入消息、计划或 Artifact Index。
+ */
+export type BotanicAgentReasoningEntry = {
+  step: number
+  source: 'summary' | 'raw'
+  text: string
 }
 
 /**
@@ -160,7 +174,7 @@ export function insertBotanicAgentToolCallSteps(
       id,
       kind: agentToolCallStepKind(call.risk),
       label,
-      detail: agentToolCallStepDetail(call),
+      detail: call.summary?.trim() || agentToolCallStepDetail(call),
       status: call.status === 'awaiting_confirmation' ? 'pending' : call.status,
       ...(call.error?.trim() ? { error: call.error.trim() } : {}),
     }]
@@ -171,6 +185,33 @@ export function insertBotanicAgentToolCallSteps(
   const plannerIndex = base.findIndex((step) => step.id === 'call-planner')
   if (plannerIndex < 0) return [...base, ...toolSteps]
   return [...base.slice(0, plannerIndex + 1), ...toolSteps, ...base.slice(plannerIndex + 1)]
+}
+
+/**
+ * 把当轮运行说明补进轨迹。summary 片段已经由工具步骤承载，这里只补提供方原始推理——
+ * 它默认关闭，即使打开也只活在这一轮的组件状态里，不写入消息、计划或 Artifact Index。
+ */
+export function insertBotanicAgentReasoningSteps(
+  steps: BotanicAgentRuntimeStep[],
+  entries: BotanicAgentReasoningEntry[],
+): BotanicAgentRuntimeStep[] {
+  const reasoningSteps = entries.flatMap((entry, index): BotanicAgentRuntimeStep[] => {
+    const text = entry.source === 'raw' ? entry.text.trim() : ''
+    if (!text) return []
+    return [{
+      id: `reasoning:${entry.step}:${index}`,
+      kind: 'plan',
+      label: '模型运行说明',
+      detail: text,
+      status: 'succeeded',
+    }]
+  })
+  if (!reasoningSteps.length) return steps
+  const replaced = new Set(reasoningSteps.map((step) => step.id))
+  const base = steps.filter((step) => !replaced.has(step.id))
+  const plannerIndex = base.findIndex((step) => step.id === 'call-planner')
+  if (plannerIndex < 0) return [...base, ...reasoningSteps]
+  return [...base.slice(0, plannerIndex + 1), ...reasoningSteps, ...base.slice(plannerIndex + 1)]
 }
 
 export function updateBotanicAgentRuntimeStep(

@@ -438,6 +438,7 @@ export default function AgentWorkspace({
     resetRuntimeTrace,
     updateRuntimeStep,
     attachPlannerToolTrace,
+    attachRuntimeReasoning,
     yieldRuntimeFrame,
     completeRuntimeContextReads,
     completeRuntimeTrace,
@@ -1135,6 +1136,8 @@ export default function AgentWorkspace({
           contextNodeIds: session.contextNodeIds,
         }, controller.signal)
         if (controller.signal.aborted) return
+        attachPlannerToolTrace({ toolCalls: response.toolCalls } as BotanicAgentPlan)
+        attachRuntimeReasoning(response.reasoning)
         updateRuntimeStep('call-planner', 'succeeded')
         updateRuntimeStep('respond', 'running')
         await yieldRuntimeFrame()

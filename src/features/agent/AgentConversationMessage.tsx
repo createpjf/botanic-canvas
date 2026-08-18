@@ -153,7 +153,10 @@ export function AgentConversationMessage({
         const detail = <>
           {plan.toolCalls?.length ? <div className="agent-message__tools" aria-label="Agent 工具调用">
             {plan.toolCalls.map((call) => <div key={call.id} className={`agent-message__tool is-${call.status}`}>
-              <span aria-hidden="true">↳</span><strong>{call.label}</strong><small>{agentToolStatusLabel(call.status)}</small>
+              <span aria-hidden="true">↳</span>
+              {/* summary 是模型自述的一句话调用目的，比工具名更能说明这一步在做什么。 */}
+              <strong title={call.summary ?? call.label}>{call.label}{call.summary ? <em> · {call.summary}</em> : null}</strong>
+              <small>{agentToolStatusLabel(call.status)}</small>
             </div>)}
           </div> : null}
           {plan.actions?.length ? <div className="agent-message__actions" aria-label="待确认行动">

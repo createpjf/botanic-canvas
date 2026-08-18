@@ -33,6 +33,7 @@ import {
   botanicAgentPromptWithContextNotes,
   botanicAgentContextNoteLimit,
   insertBotanicAgentToolCallSteps,
+  insertBotanicAgentReasoningSteps,
   resolveBotanicAgentExecutionDecision,
   botanicAgentExecutionModeLabel,
   botanicAgentArtifactPrompt,
@@ -1017,4 +1018,30 @@ test('上下文补充描述被截断到长度上限', () => {
     { id: 'text-long', label: '长描述', kind: '文字', content: 'x'.repeat(900) },
   ])
   assert.equal(item.note?.length, botanicAgentContextNoteLimit)
+})
+
+test('工具步骤优先展示模型自述的调用目的', () => {
+  const steps = insertBotanicAgentToolCallSteps(createBotanicAgentRuntimeSteps({ hasTarget: true }), [
+    { id: 'call-1', name: 'ontology_read', label: '读取项目本体', risk: 'read', status: 'succeeded', requiresConfirmation: false, summary: '先确认画布里有哪些结果' },
+    { id: 'call-2', name: 'skill_search', label: '检索已审核 Skill', risk: 'read', status: 'succeeded', requiresConfirmation: false },
+  ])
+  assert.equal(steps.find((step) => step.id === 'tool:call-1')?.detail, '先确认画布里有哪些结果')
+  // 没有自述目的时回落到工具名与风险说明。
+  assert.equal(steps.find((step) => step.id === 'tool:call-2')?.detail, 'skill_search · 读取项目数据')
+})
+
+test('只有提供方原始推理才补进运行轨迹，摘要片段由工具步骤承载', () => {
+  const steps = createBotanicAgentRuntimeSteps({ hasTarget: true })
+  const withReasoning = insertBotanicAgentReasoningSteps(steps, [
+    { step: 0, source: 'summary', text: '先确认画布里有哪些结果' },
+    { step: 0, source: 'raw', text: '先看看上下文，再决定锁定哪些维度。' },
+    { step: 1, source: 'raw', text: '   ' },
+  ])
+  const reasoningSteps = withReasoning.filter((step) => step.id.startsWith('reasoning:'))
+  assert.equal(reasoningSteps.length, 1)
+  assert.equal(reasoningSteps[0].detail, '先看看上下文，再决定锁定哪些维度。')
+  assert.equal(reasoningSteps[0].label, '模型运行说明')
+  // 补在规划步骤之后，终点步骤仍在最后。
+  assert.equal(withReasoning.at(-1)?.id, 'finalize-plan')
+  assert.deepEqual(insertBotanicAgentReasoningSteps(steps, []), steps)
 })

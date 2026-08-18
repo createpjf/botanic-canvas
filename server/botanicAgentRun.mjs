@@ -66,6 +66,8 @@ function validateToolCalls(rawToolCalls) {
       risk: call.risk,
       status: call.status,
       requiresConfirmation: call.requiresConfirmation,
+      // 模型自述的一句话调用目的：可展示的摘要级说明，不是隐藏思维链。
+      ...(call.summary ? { summary: text(call.summary, `第 ${index + 1} 个工具调用说明`, 160) } : {}),
       ...(call.error ? { error: text(call.error, `第 ${index + 1} 个工具错误`, 1000) } : {}),
     }
   })

@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   createBotanicAgentRuntimeSteps,
+  insertBotanicAgentReasoningSteps,
   insertBotanicAgentToolCallSteps,
   restoreBotanicAgentRuntimeSteps,
   shouldRestoreBotanicAgentRuntimeSteps,
   updateBotanicAgentRuntimeStep,
   type BotanicAgentPlan,
   type BotanicAgentClarificationResponse,
+  type BotanicAgentReasoningEntry,
   type BotanicAgentRun,
   type BotanicAgentRuntimeMode,
   type BotanicAgentRuntimePhase,
@@ -93,6 +95,12 @@ export function useAgentRuntimeTrace({
     setSteps((current) => insertBotanicAgentToolCallSteps(current, toolCalls))
   }, [])
 
+  /** 当轮运行说明只活在组件状态里，轮次结束随轨迹一起消失。 */
+  const attachReasoning = useCallback((entries?: BotanicAgentReasoningEntry[]) => {
+    if (!entries?.length) return
+    setSteps((current) => insertBotanicAgentReasoningSteps(current, entries))
+  }, [])
+
   const completeContextReads = useCallback(async (runtimeSteps: BotanicAgentRuntimeStep[]) => {
     const contextSteps = runtimeSteps.filter((step) => !['call-planner', 'finalize-plan', 'create-workflow', 'respond'].includes(step.id))
     for (const step of contextSteps) {
@@ -154,6 +162,7 @@ export function useAgentRuntimeTrace({
     resetRuntimeTrace: reset,
     updateRuntimeStep: updateStep,
     attachPlannerToolTrace: attachPlannerTools,
+    attachRuntimeReasoning: attachReasoning,
     yieldRuntimeFrame,
     completeRuntimeContextReads: completeContextReads,
     completeRuntimeTrace: complete,

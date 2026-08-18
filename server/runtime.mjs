@@ -50,6 +50,9 @@ export function runtimeConfig(rootDir = process.cwd()) {
   const flockAgentModels = [...new Set((process.env.FLOCK_AGENT_MODELS ?? 'deepseek-v4-pro,deepseek-v4-flash,kimi-k3')
     .split(',').map((model) => model.trim()).filter(Boolean))]
   const flockTextModel = (process.env.FLOCK_TEXT_MODEL ?? flockAgentModels[0] ?? '').trim()
+  // 提供方回传的 reasoning_content 是完整思维链，不是摘要。默认关闭；打开后也只随
+  // 当轮响应下发用于实时展示，不写入任何持久化记录。
+  const agentRawReasoning = (process.env.AGENT_RAW_REASONING ?? '').trim().toLowerCase() === 'true'
   const publicAppUrl = process.env.BOTANIC_WEB_URL ?? process.env.PUBLIC_APP_URL
   // Railway 不一定自动注入 NODE_ENV；正式 Web 回跳地址也应将 API 视为生产环境。
   const production = process.env.NODE_ENV === 'production'
@@ -90,6 +93,7 @@ export function runtimeConfig(rootDir = process.cwd()) {
     flockApiKey: process.env.FLOCK_API_KEY,
     flockTextModel,
     flockAgentModels,
+    agentRawReasoning,
     promptRefinementTimeoutMs: Number(process.env.PROMPT_REFINEMENT_TIMEOUT_MS ?? 30000),
     // Agent 规划与对话包含受控上下文读取和多轮工具调用；给它足够时间，
     // 避免浏览器先于 Provider 报“工作区超时”。客户端仍有独立的 60 秒上限。

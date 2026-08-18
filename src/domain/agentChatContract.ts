@@ -1,4 +1,4 @@
-import type { BotanicAgentMessage } from './agent'
+import type { BotanicAgentMessage, BotanicAgentReasoningEntry } from './agent'
 import type { GenerationAspectRatio, GenerationModelOption, GenerationResolution } from './canvas'
 
 export type BotanicAgentChatMode = 'conversation' | 'prompt' | 'research'
@@ -35,6 +35,7 @@ export type BotanicAgentChatToolCall = {
   risk: 'read' | 'write' | 'costly' | 'external'
   status: 'pending' | 'running' | 'awaiting_confirmation' | 'succeeded' | 'failed'
   requiresConfirmation: boolean
+  summary?: string
   error?: string
 }
 
@@ -45,6 +46,8 @@ export type BotanicAgentChatResponse = {
   mode: BotanicAgentChatMode
   plannerModel?: string
   toolCalls?: BotanicAgentChatToolCall[]
+  /** 当轮运行说明；仅用于面板实时展示，不随消息持久化。 */
+  reasoning?: BotanicAgentReasoningEntry[]
   sources?: string[]
 }
 

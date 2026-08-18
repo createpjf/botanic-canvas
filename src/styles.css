@@ -3332,6 +3332,7 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-message__tool { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; min-height: 30px; align-items: center; gap: 6px; padding: 0 8px; border-radius: 6px; background: #f2f6f1; color: #48614e; }
 .agent-message__tool > span { color: #6f8b75; font-size: 12px; }
 .agent-message__tool strong { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.agent-message__tool strong em { color: #6b7f71; font-style: normal; font-weight: 500; }
 .agent-message__tool small { color: #64806a; font-size: 10px; }
 .agent-message__tool.is-failed { background: #fff1ed; color: #994f43; }
 .agent-message__actions { display: grid; gap: 7px; }
