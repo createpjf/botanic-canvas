@@ -32,7 +32,7 @@ import {
   recordGenerationJob,
   updateTaskNodes,
 } from './canvasGenerationProjection'
-import { mergeRecoveredGenerationJobs } from './canvasGenerationRecovery'
+import { hasRecoveredGenerationDelta, mergeRecoveredGenerationJobs } from './canvasGenerationRecovery'
 import type { CanvasStore, GenerationRequest, TaskNodeIds } from './canvasStore.types'
 
 type GenerationActions = Pick<CanvasStore,
@@ -315,7 +315,8 @@ export function createCanvasGenerationActions({
       const current = get().document
       if (current.id !== documentId) return false
       const reconciledDocument = normalizeDocument(mergeRecoveredGenerationJobs(current, recovered.document))
-      if (resultImageCount(reconciledDocument) <= resultImageCount(current)) {
+      if (!hasRecoveredGenerationDelta(current, reconciledDocument)
+        && resultImageCount(reconciledDocument) <= resultImageCount(current)) {
         recoverTaskNodeJobs(documentId)
         return false
       }

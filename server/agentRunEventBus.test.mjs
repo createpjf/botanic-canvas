@@ -49,3 +49,21 @@ test('Redis 事件总线跨 API 实例转发协作动态', async () => {
   await publisher.close()
   await subscriber.close()
 })
+
+test('Redis 事件总线把 Worker 的画布投影更新交给 API 广播', async () => {
+  const updates = []
+  const subscriber = await createAgentRunEventSubscriber('redis://test', () => {}, {
+    RedisClass: FakeRedis,
+    onProjectUpdated: (event) => updates.push(event),
+  })
+  const publisher = createAgentRunEventPublisher('redis://test', { RedisClass: FakeRedis })
+  const event = {
+    projectId: 'project-1', revision: 4, graphRevision: 7, updatedAt: 200,
+    graph: { nodes: [], edges: [] },
+  }
+  await publisher.publishProjectUpdated(event)
+
+  assert.deepEqual(updates, [event])
+  await publisher.close()
+  await subscriber.close()
+})

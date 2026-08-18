@@ -52,8 +52,12 @@ async function publishCollaborationActivity(event) {
   if (config.redisUrl) return agentRunEvents.publishCollaborationActivity(event)
   realtimeHub?.publishCollaborationActivity(event)
 }
+async function publishGenerationProjectUpdated(event) {
+  if (config.redisUrl) return agentRunEvents.publishProjectUpdated?.(event)
+  return realtimeHub?.publishProjectUpdated(event)
+}
 const localProcessor = !redisQueue && !config.production
-  ? createGenerationProcessor({ productStore, mediaService, config, publishAgentRunUpdated, observeAgentRun })
+  ? createGenerationProcessor({ productStore, mediaService, config, publishAgentRunUpdated, publishProjectUpdated: publishGenerationProjectUpdated, observeAgentRun })
   : undefined
 if (config.production && !redisQueue) throw new Error('生产环境必须配置 REDIS_URL；内存任务队列只用于本地原型。')
 if (!config.realtimeTicketSecret) throw new Error('实时服务必须配置 REALTIME_TICKET_SECRET。')
@@ -388,7 +392,10 @@ async function start() {
   agentRunEventSubscriber = await createAgentRunEventSubscriber(
     config.redisUrl,
     (event) => realtimeHub.publishAgentRunUpdated(event),
-    { onCollaborationActivity: (event) => realtimeHub.publishCollaborationActivity(event) },
+    {
+      onCollaborationActivity: (event) => realtimeHub.publishCollaborationActivity(event),
+      onProjectUpdated: (event) => void realtimeHub.publishProjectUpdated(event),
+    },
   )
   await new Promise((resolveStart, rejectStart) => {
     const onError = (caught) => rejectStart(caught)

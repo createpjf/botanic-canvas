@@ -102,9 +102,19 @@ export function useCanvasAgentExecutionBridge({
   const target: AgentDockTarget | undefined = targetNode?.type === 'result' && targetData?.image && rootRecipe
     ? { id: targetNode.id, label: targetData.label ?? '已选结果', image: targetData.image, rootRecipe }
     : undefined
-  const latestRun = effectiveTargetResultId
-    ? document.agentRuns.find((run) => run.plan.selectedResultNodeId === effectiveTargetResultId)
-    : undefined
+  const latestRun = useMemo(() => {
+    const candidates = new Map<string, typeof document.agentRuns[number]>()
+    for (const message of activeSession?.messages ?? []) {
+      if (!message.runId) continue
+      const run = document.agentRuns.find((item) => item.id === message.runId)
+      if (run) candidates.set(run.id, run)
+    }
+    if (effectiveTargetResultId) {
+      const targetRun = document.agentRuns.find((run) => run.plan.selectedResultNodeId === effectiveTargetResultId)
+      if (targetRun) candidates.set(targetRun.id, targetRun)
+    }
+    return [...candidates.values()].sort((left, right) => right.updatedAt - left.updatedAt || right.id.localeCompare(left.id))[0]
+  }, [activeSession?.messages, document.agentRuns, effectiveTargetResultId])
 
   const localArtifacts = useMemo(() => collectBotanicAgentResults({
     sessions: document.agentSessions,

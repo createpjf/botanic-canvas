@@ -585,6 +585,13 @@ export type BotanicAgentRunFeedback = {
   terminal: boolean
 }
 
+export type BotanicAgentRunFeedbackOptions = {
+  /** 当前 Run 已进入 Artifact Index 的结果数。 */
+  artifactCount?: number
+  /** 当前 Run 已有画布来源节点的结果数。 */
+  canvasOutputCount?: number
+}
+
 /**
  * 把服务端 Run 状态统一翻译成用户可执行的反馈，避免 Runtime、任务面板和消息各说一套。
  * timeout 仍由现有 failed 状态承载，兼容历史快照，不扩张持久化状态机。
@@ -593,6 +600,7 @@ export function botanicAgentRunFeedback(
   status: BotanicAgentRunStatus,
   outputCount = 0,
   error?: string,
+  options?: BotanicAgentRunFeedbackOptions,
 ): BotanicAgentRunFeedback {
   const terminal = status === 'completed' || status === 'partial' || status === 'failed' || status === 'cancelled'
   const timedOut = status === 'failed' && Boolean(error && /超时|timeout|timed out/i.test(error))
@@ -606,6 +614,12 @@ export function botanicAgentRunFeedback(
     return { label: '生成中', detail: '正在处理生成任务；结果完成后会自动回填画布。', action: 'view_task', actionLabel: '查看任务', tone: 'progress', terminal: false }
   }
   if (status === 'completed') {
+    if (outputCount > 0 && options && (options.artifactCount ?? 0) === 0) {
+      return { label: '已完成', detail: '任务已完成，但结果正在整理；暂未发现可用 Artifact。', action: 'view_task', actionLabel: '查看任务', tone: 'warning', terminal }
+    }
+    if (outputCount > 0 && options && (options.canvasOutputCount ?? 0) < (options.artifactCount ?? 0)) {
+      return { label: '已完成', detail: `已生成 ${outputCount} 项结果，正在同步到画布。`, action: 'view_results', actionLabel: '查看结果', tone: 'warning', terminal }
+    }
     return outputCount > 0
       ? { label: '已完成', detail: `已生成 ${outputCount} 项结果，并自动回填画布。`, action: 'view_results', actionLabel: '查看结果', tone: 'success', terminal }
       : { label: '已完成', detail: '任务已完成，但暂未发现可用结果；打开任务查看回填状态。', action: 'view_task', actionLabel: '查看任务', tone: 'warning', terminal }

@@ -463,3 +463,65 @@ test('成功任务只在画布回写与 Artifact 刷新后推进 Agent Run 终�
   assert.ok(terminalIndex > events.lastIndexOf('canvas-writeback'))
   assert.ok(terminalIndex > events.lastIndexOf('artifact-refresh'))
 })
+
+test('Artifact Index 刷新失败时保留恢复标记，不提前推进 Agent Run 终态', async () => {
+  const events = []
+  const createdAt = Date.now()
+  let storedJob = {
+    id: 'job-artifact-pending', ownerId: 'user-a', projectId: 'project-a', status: 'queued', kind: 'generation',
+    createdAt, updatedAt: createdAt, batchCount: 1,
+    settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' },
+    outputs: [],
+    rawInput: {
+      projectId: 'project-a', kind: 'generation', prompt: '生成一张结果图', batchCount: 1,
+      settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' },
+      recipe: { references: [{ name: '主素材', role: '商品', primary: true, dataUrl: 'data:image/png;base64,iVBORw0KGgo=' }] },
+    },
+    agentRun: { runId: 'run-artifact-pending', branchId: 'branch-artifact-pending' },
+  }
+  let storedRun = createPersistentAgentRun({
+    projectId: 'project-a',
+    plan: {
+      intent: 'initial_generation', instruction: '生成一张结果图', summary: '生成结果', prompt: '生成一张结果图',
+      settings: storedJob.settings, constraints: [], output: { mode: 'single', count: 1, candidatesPerItem: 1 },
+    },
+    branches: [{ id: 'branch-artifact-pending', label: '主分支' }],
+  }, { id: 'run-artifact-pending', ownerId: 'user-a', now: createdAt })
+  let document = {
+    id: 'project-a',
+    nodes: [
+      { id: 'generate-a', type: 'generate', position: { x: 0, y: 0 }, data: { jobId: storedJob.id, status: 'queued' } },
+      { id: 'result-a', type: 'result', position: { x: 400, y: 0 }, data: { jobId: storedJob.id, outputOf: 'generate-a', taskGroupId: 'result-a', taskStatus: 'queued', status: 'generating' } },
+    ],
+    edges: [], generationJobs: [{ id: storedJob.id, status: 'queued' }],
+  }
+  const productStore = {
+    async readGenerationJobForWorker() { return structuredClone(storedJob) },
+    async putGenerationJob(_ownerId, job, options = {}) {
+      storedJob = structuredClone(job)
+      if (options.updateAgentRun !== false && job.agentRun) {
+        storedRun = applyGenerationJobToAgentRun(storedRun, job)
+        events.push(`run-status:${storedRun.status}`)
+      }
+    },
+    async readProject() { return { document, revision: 1, graphRevision: 1 } },
+    async writeProject(_ownerId, nextDocument) { document = nextDocument; events.push('canvas-writeback'); return { document, revision: 2, graphRevision: 2 } },
+    async refreshGenerationArtifacts() { throw new Error('Artifact 数据库暂不可用') },
+    async readAgentRunForWorker() { return structuredClone(storedRun) },
+  }
+  const processJob = createGenerationProcessor({
+    productStore,
+    mediaService: {},
+    config: { modelOptions: [{ id: 'gpt-image-2', provider: 'openai', mediaKind: 'image', aspectRatios: ['1:1'], resolutions: ['1K'] }] },
+    publishAgentRunUpdated: ({ run }) => events.push(`published:${run.status}`),
+    generate: async () => ({ outputs: [{ id: 'output-a', image: '/api/media/output-a' }], missingOutputCount: 0 }),
+  })
+
+  await processJob(storedJob.id)
+
+  assert.equal(storedJob.status, 'succeeded')
+  assert.equal(storedJob.projectWritebackPending, true)
+  assert.equal(events.includes('run-status:completed'), false)
+  assert.equal(events.includes('published:completed'), false)
+  assert.equal(document.nodes.find((node) => node.type === 'result')?.data.image, '/api/media/output-a')
+})

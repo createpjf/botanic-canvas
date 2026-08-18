@@ -11,6 +11,7 @@ export function createGenerationProcessor({
   mediaService,
   config,
   publishAgentRunUpdated,
+  publishProjectUpdated,
   observeAgentRun = () => {},
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   providerCircuitBreaker = new ProviderCircuitBreaker({
@@ -37,9 +38,17 @@ export function createGenerationProcessor({
       const project = await productStore.readProject(job.ownerId, job.projectId)
       if (!project) return true
       const reconciled = reconcileAgentGenerationJobToProject(project.document, job)
+      if (job.agentRun && job.status === 'succeeded' && job.outputs?.length && reconciled.complete === false) {
+        throw new Error('Agent 结果尚未完成画布投影。')
+      }
       if (!reconciled.changed) return true
       try {
-        await productStore.writeProject(job.ownerId, reconciled.document, project.revision, project.graphRevision)
+        const saved = await productStore.writeProject(job.ownerId, reconciled.document, project.revision, project.graphRevision)
+        await publishProjectUpdate(job, saved ?? {
+          document: reconciled.document,
+          revision: project.revision,
+          graphRevision: project.graphRevision,
+        })
         return true
       } catch (caught) {
         if (caught?.code !== 'PROJECT_CONFLICT' && caught?.code !== 'CANVAS_GRAPH_CONFLICT') throw caught
@@ -56,25 +65,29 @@ export function createGenerationProcessor({
     } catch (caught) {
       console.error(`[generation] project writeback deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
       if (markPending) {
-        const errorMessage = caught instanceof Error ? caught.message : String(caught)
-        const pending = {
-          ...job,
-          projectWritebackPending: true,
-          projectWritebackAttempts: (job.projectWritebackAttempts ?? 0) + 1,
-          projectWritebackError: errorMessage,
-          projectWritebackUpdatedAt: Date.now(),
-          updatedAt: Date.now(),
-        }
-        try {
-          // 画布尚未回写时不能把 Agent Run 推进到终态；否则前端会在产出落盘前
-          // 收到 completed/failed，并过早执行一次恢复。
-          await productStore.putGenerationJob(pending.ownerId, persistedGenerationJob(pending), { updateAgentRun: false, recordAudit: false })
-        } catch (persistError) {
-          console.error(`[generation] project writeback marker deferred: ${persistError instanceof Error ? persistError.message : String(persistError)}`)
-        }
+        await markProjectWritebackPending(job, caught instanceof Error ? caught.message : String(caught))
       }
       return false
     }
+  }
+
+  async function markProjectWritebackPending(job, errorMessage) {
+    const pending = {
+      ...job,
+      projectWritebackPending: true,
+      projectWritebackAttempts: (job.projectWritebackAttempts ?? 0) + 1,
+      projectWritebackError: errorMessage,
+      projectWritebackUpdatedAt: Date.now(),
+      updatedAt: Date.now(),
+    }
+    try {
+      // 画布或 Artifact 尚未回写时不能把 Agent Run 推进到终态；否则前端会在产出落盘前
+      // 收到 completed/failed，并过早执行一次恢复。
+      await productStore.putGenerationJob(pending.ownerId, persistedGenerationJob(pending), { updateAgentRun: false, recordAudit: false })
+    } catch (persistError) {
+      console.error(`[generation] project writeback marker deferred: ${persistError instanceof Error ? persistError.message : String(persistError)}`)
+    }
+    return pending
   }
 
   async function clearProjectWriteback(job) {
@@ -101,13 +114,32 @@ export function createGenerationProcessor({
     }
   }
 
-  async function refreshGenerationArtifacts(job) {
+  async function publishProjectUpdate(job, saved) {
+    if (!publishProjectUpdated || !saved?.document?.id) return
     try {
-      await productStore.refreshGenerationArtifacts(job.ownerId, job.id)
+      await publishProjectUpdated({
+        projectId: saved.document.id,
+        revision: saved.revision,
+        graphRevision: saved.graphRevision,
+        updatedAt: saved.document.updatedAt,
+        graph: { nodes: saved.document.nodes ?? [], edges: saved.document.edges ?? [] },
+      })
     } catch (caught) {
-      // Artifact Index 是可重建的历史目录；索引补偿失败不能把已经成功的
-      // Provider 任务和画布回填伪装成失败，后续恢复流程仍可再次补齐。
+      // 项目已写入；实时通知只是可恢复旁路，客户端会在事件重连或聚焦时重新读取。
+      console.error(`[realtime] generation project update deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
+    }
+  }
+
+  async function refreshGenerationArtifacts(job) {
+    if (typeof productStore.refreshGenerationArtifacts !== 'function') return false
+    try {
+      const refreshed = await productStore.refreshGenerationArtifacts(job.ownerId, job.id)
+      return refreshed !== false
+    } catch (caught) {
+      // Artifact Index 是可重建的历史目录；索引补偿失败时保留恢复标记，
+      // 不能让 Agent Run 在历史目录尚未可读时提前进入 completed。
       console.error(`[artifact-index] generation refresh deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
+      return false
     }
   }
 
@@ -117,11 +149,20 @@ export function createGenerationProcessor({
     // 终态任务只在画布回写待处理时重新入队；不会再次调用真实 Provider。
     if (stored.projectWritebackPending) {
       const recovered = await writeJobToProjectSafely(stored)
-      if (recovered) {
-        if (stored.status === 'succeeded') await refreshGenerationArtifacts(stored)
-        await clearProjectWriteback(stored)
+      if (!recovered) {
+        await publishRun(stored)
+        return
       }
-      await publishRun(recovered ? { ...stored, projectWritebackPending: undefined } : stored)
+      if (stored.status === 'succeeded') {
+        const artifactReady = await refreshGenerationArtifacts(stored)
+        if (stored.agentRun && !artifactReady) {
+          const pending = await markProjectWritebackPending(stored, 'Artifact Index 尚未完成回写。')
+          await publishRun(pending)
+          return
+        }
+      }
+      const cleared = await clearProjectWriteback(stored)
+      await publishRun(cleared)
       return
     }
     if (['cancelled', 'succeeded', 'failed'].includes(stored.status)) return
@@ -288,14 +329,22 @@ export function createGenerationProcessor({
       // 才发布可观察的 Agent Run 终态。
       await productStore.putGenerationJob(completed.ownerId, persistedGenerationJob(completed), { updateAgentRun: false, recordAudit: false })
       const writebackSucceeded = await writeJobToProjectSafely(completed, { markPending: true })
-      if (writebackSucceeded) {
-        await refreshGenerationArtifacts(completed)
+      let terminalReady = writebackSucceeded
+      let finalJob = writebackSucceeded ? completed : { ...completed, projectWritebackPending: true }
+      if (terminalReady) {
+        const artifactReady = await refreshGenerationArtifacts(completed)
+        if (completed.agentRun && !artifactReady) {
+          finalJob = await markProjectWritebackPending(completed, 'Artifact Index 尚未完成回写。')
+          terminalReady = false
+        }
+      }
+      if (terminalReady) {
         await productStore.putGenerationJob(completed.ownerId, persistedGenerationJob(completed), { updateAgentRun: true })
       }
-      await publishRun(writebackSucceeded ? completed : { ...completed, projectWritebackPending: true })
+      await publishRun(finalJob)
       observeRun(completed, {
         type: 'worker_completed', status: 'succeeded', outputCount: completed.outputs.length,
-        durationMs: Math.max(0, completed.updatedAt - completed.createdAt), projectWritebackPending: !writebackSucceeded,
+        durationMs: Math.max(0, completed.updatedAt - completed.createdAt), projectWritebackPending: !terminalReady,
       })
     } catch (caught) {
       const latest = await productStore.readGenerationJobForWorker(jobId)

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import {
   buildBotanicAgentPromptDiff,
+  botanicAgentRunFeedback,
   type BotanicAgentArtifact,
   type BotanicAgentClarification,
   type BotanicAgentClarificationField,
@@ -67,9 +68,28 @@ export function agentArtifactKindLabel(artifact: BotanicAgentArtifact) {
 }
 
 export function agentRunOutputCount(run: BotanicAgentRun, artifacts: BotanicAgentArtifact[]) {
-  const persistedCount = artifacts.filter((artifact) => artifact.provenance.runId === run.id).length
+  const persistedCount = agentRunArtifacts(run, artifacts).length
   const branchCount = run.branches.reduce((total, branch) => total + branch.outputCount, 0)
   return Math.max(persistedCount, branchCount)
+}
+
+export function agentRunArtifacts(run: BotanicAgentRun, artifacts: BotanicAgentArtifact[]) {
+  return artifacts.filter((artifact) => artifact.provenance.runId === run.id)
+}
+
+export function agentRunCanvasOutputCount(run: BotanicAgentRun, artifacts: BotanicAgentArtifact[], nodeIds: Set<string>) {
+  return agentRunArtifacts(run, artifacts).filter((artifact) => artifact.provenance.sourceNodeIds?.some((nodeId) => nodeIds.has(nodeId))).length
+}
+
+export function agentRunFeedback(
+  run: BotanicAgentRun,
+  artifacts: BotanicAgentArtifact[],
+  nodeIds: Set<string>,
+) {
+  return botanicAgentRunFeedback(run.status, agentRunOutputCount(run, artifacts), run.error, {
+    artifactCount: agentRunArtifacts(run, artifacts).length,
+    canvasOutputCount: agentRunCanvasOutputCount(run, artifacts, nodeIds),
+  })
 }
 
 export function AgentClarificationCard({

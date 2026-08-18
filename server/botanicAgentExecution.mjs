@@ -1,6 +1,6 @@
 import { AgentToolRuntimeError } from './agentToolRuntime.mjs'
 import { validateGenerationInput } from './generationProvider.mjs'
-import { reconcileGenerationResults } from './generationResultReconciliation.mjs'
+import { generationJobProjectionComplete, reconcileGenerationResults } from './generationResultReconciliation.mjs'
 
 function clone(value) {
   return structuredClone(value)
@@ -259,6 +259,11 @@ export function prepareAgentRunExecution({
       agentRun: { runId: run.id, branchId: branch.id },
     }
     const workflow = workflowForBranch({ run, branch, parentNode, recipe, jobId, branchIndex, now, submission })
+    job.generateNodeId = workflow.generateNodeId
+    job.resultNodeId = workflow.resultNodeId
+    job.generateNodePosition = clone(workflow.generateNode.position)
+    job.resultNodePosition = clone(workflow.resultNode.position)
+    job.generationRecipe = clone(recipe)
     jobs.push(job)
     workflows.push(workflow)
   }
@@ -274,10 +279,37 @@ export function prepareAgentRunExecution({
 export function reconcileAgentGenerationJobToProject(document, job, now = Date.now()) {
   if (!document || !job?.id) return { document, changed: false }
   if (job.status === 'succeeded' && job.outputs?.length) {
-    const reconciled = reconcileGenerationResults(document, [job])
-    return reconciled.changed
-      ? { document: { ...reconciled.document, updatedAt: now }, changed: true }
-      : reconciled
+    const reconciled = reconcileGenerationResults(document, [job], { ensureAgentPlaceholders: true })
+    const projectedDocument = reconciled.document ?? document
+    const existingRecord = projectedDocument.generationJobs?.find((record) => record.id === job.id)
+    const nextRecord = {
+      id: job.id,
+      status: job.status,
+      kind: job.kind,
+      refinementMode: job.refinementMode,
+      createdAt: job.createdAt,
+      updatedAt: job.updatedAt,
+      batchCount: job.batchCount,
+      outputCount: job.outputs?.length ?? 0,
+      provider: job.provider ?? 'openai-images',
+      model: job.settings?.model,
+      error: job.error,
+      missingOutputCount: job.missingOutputCount ?? 0,
+      partialError: job.partialError,
+      outputs: job.outputs ?? [],
+      generateNodeId: job.generateNodeId ?? existingRecord?.generateNodeId,
+      resultNodeId: job.resultNodeId ?? existingRecord?.resultNodeId,
+      agentRun: job.agentRun ?? existingRecord?.agentRun,
+    }
+    const recordChanged = JSON.stringify(existingRecord) !== JSON.stringify(nextRecord)
+    const complete = generationJobProjectionComplete(projectedDocument, job)
+    if (!reconciled.changed && !recordChanged) return { document, changed: false, complete }
+    const next = {
+      ...clone(projectedDocument),
+      generationJobs: [nextRecord, ...(projectedDocument.generationJobs ?? []).filter((record) => record.id !== job.id)].slice(0, 60),
+      updatedAt: now,
+    }
+    return { document: next, changed: true, complete }
   }
   let changed = false
   const nodes = (document.nodes ?? []).map((node) => {

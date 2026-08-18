@@ -3,7 +3,7 @@ import type { CanvasDocument, CanvasNode, GenerationJob, ResultNodeData } from '
 
 function mergeGenerationJob(current: GenerationJob | undefined, recovered: GenerationJob) {
   const preferRecovered = !current
-    || recovered.updatedAt > current.updatedAt
+    || recovered.updatedAt >= current.updatedAt
     || (recovered.outputs?.length ?? 0) > (current.outputs?.length ?? 0)
   const preferred = preferRecovered ? { ...current, ...recovered } : { ...recovered, ...current }
   const dismissedOutputIds = [...new Set([
@@ -49,6 +49,39 @@ function mergeRecoveredResultNode(current: CanvasNode, recovered: CanvasNode): C
 
 function edgeIdentity(edge: Edge) {
   return `${edge.source}\u0000${edge.sourceHandle ?? ''}\u0000${edge.target}\u0000${edge.targetHandle ?? ''}`
+}
+
+function recoverySignature(document: CanvasDocument) {
+  const nodes = document.nodes
+    .filter((node) => node.type === 'result')
+    .map((node) => {
+      const data = node.data as ResultNodeData
+      return {
+        id: node.id,
+        image: data.image,
+        jobId: data.jobId,
+        candidateId: data.candidateId,
+        status: data.status,
+        taskStatus: data.taskStatus,
+        outputOf: data.outputOf,
+      }
+    })
+    .sort((left, right) => left.id.localeCompare(right.id))
+  const jobs = document.generationJobs.map((job) => ({
+    id: job.id,
+    status: job.status,
+    outputs: job.outputs,
+    agentRun: job.agentRun,
+    generateNodeId: job.generateNodeId,
+    resultNodeId: job.resultNodeId,
+    projectWritebackPending: job.projectWritebackPending,
+    error: job.error,
+  })).sort((left, right) => left.id.localeCompare(right.id))
+  return JSON.stringify({ nodes, jobs })
+}
+
+export function hasRecoveredGenerationDelta(current: CanvasDocument, recovered: CanvasDocument) {
+  return recoverySignature(current) !== recoverySignature(recovered)
 }
 
 /**

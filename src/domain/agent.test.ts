@@ -326,6 +326,7 @@ test('Run 状态统一提供下一步反馈，并兼容超时错误', () => {
   })
   assert.equal(botanicAgentRunFeedback('running').label, '生成中')
   assert.equal(botanicAgentRunFeedback('completed', 2).detail, '已生成 2 项结果，并自动回填画布。')
+  assert.equal(botanicAgentRunFeedback('completed', 1, undefined, { artifactCount: 1, canvasOutputCount: 0 }).detail, '已生成 1 项结果，正在同步到画布。')
   assert.equal(botanicAgentRunFeedback('completed', 0).actionLabel, '查看任务')
   assert.equal(botanicAgentRunFeedback('partial', 1).actionLabel, '查看失败分支')
   assert.equal(botanicAgentRunFeedback('failed', 0, '工作区数据库响应超时').label, '响应超时')

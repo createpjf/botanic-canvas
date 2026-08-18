@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { CanvasDocument, CanvasNode, GenerationJob, ResultNodeData } from '../domain/canvas.ts'
-import { mergeRecoveredGenerationJobs } from './canvasGenerationRecovery.ts'
+import { hasRecoveredGenerationDelta, mergeRecoveredGenerationJobs } from './canvasGenerationRecovery.ts'
 
 function job(id: string, outputs: GenerationJob['outputs'] = [], updatedAt = 20): GenerationJob {
   return {
@@ -182,4 +182,24 @@ test('浏览器断线后接受远端完成结果，同时保留离线期间的�
   assert.deepEqual(merged.nodes.find((node) => node.id === 'result-a')!.position, { x: 680, y: 350 })
   assert.equal((merged.nodes.find((node) => node.id === 'result-a')!.data as ResultNodeData).image, '/api/media/reconnected')
   assert.deepEqual(new Set(merged.edges.map((edge) => edge.id)), new Set(['local-reference', 'remote-output']))
+})
+
+test('结果数量不变时仍识别候选血缘与 Agent Run 的远端修复', () => {
+  const current = document([
+    generateNode(),
+    resultNode('result-a', { x: 520, y: 240 }, {
+      image: '/api/media/same', candidateId: 'legacy-output', jobId: 'job-a', status: 'ready', taskStatus: 'succeeded',
+    }),
+  ], [], [{ ...job('job-a', [{ id: 'legacy-output', image: '/api/media/same' }]), agentRun: undefined }])
+  const recovered = document([
+    generateNode(),
+    resultNode('result-a', { x: 520, y: 240 }, {
+      image: '/api/media/same', candidateId: 'output-a', jobId: 'job-a', status: 'ready', taskStatus: 'succeeded',
+    }),
+  ], [], [{ ...job('job-a', [{ id: 'output-a', image: '/api/media/same' }]), agentRun: { runId: 'run-a', branchId: 'branch-a' } }])
+
+  assert.equal(hasRecoveredGenerationDelta(current, recovered), true)
+  const merged = mergeRecoveredGenerationJobs(current, recovered)
+  assert.equal((merged.nodes.find((node) => node.id === 'result-a')!.data as ResultNodeData).candidateId, 'output-a')
+  assert.deepEqual(merged.generationJobs[0].agentRun, { runId: 'run-a', branchId: 'branch-a' })
 })

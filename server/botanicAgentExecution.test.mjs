@@ -189,6 +189,70 @@ test('Worker 完成任务后把图片写回占位结果节点', () => {
   assert.equal(output.data.taskStatus, 'succeeded')
 })
 
+test('部分结果已落盘时继续补齐缺失候选，不重复覆盖已有图片', () => {
+  const run = persistentRun()
+  run.plan.output = { mode: 'single', count: 2, candidatesPerItem: 1 }
+  run.branches = [run.branches[0]]
+  const prepared = prepareAgentRunExecution({
+    run, document: projectDocument(), now: 100,
+    jobIdForBranch: (branch) => `job-${branch.id}`,
+    models, maximumBatchCount: 8, maximumReferenceBytes: 8 * 1024 * 1024,
+  })
+  const workflow = prepared.workflows[0]
+  const existing = prepared.document.nodes.find((node) => node.id === workflow.resultNodeId)
+  existing.data = {
+    ...existing.data,
+    status: 'ready', taskStatus: 'succeeded', image: '/api/media/media-existing', candidateId: 'output-a',
+  }
+  const completed = {
+    ...prepared.jobs[0], status: 'succeeded', updatedAt: 200,
+    outputs: [
+      { id: 'output-a', image: '/api/media/media-existing' },
+      { id: 'output-b', image: '/api/media/media-missing' },
+    ],
+  }
+
+  const reconciled = reconcileAgentGenerationJobToProject(prepared.document, completed, 210)
+  const outputs = reconciled.document.nodes.filter((node) => node.type === 'result' && node.data.jobId === completed.id && node.data.image)
+
+  assert.equal(reconciled.complete, true)
+  assert.equal(outputs.length, 2)
+  assert.deepEqual(outputs.map((node) => node.data.candidateId).sort(), ['output-a', 'output-b'])
+  assert.equal(reconciled.document.nodes.some((node) => node.type === 'result' && node.data.jobId === completed.id && !node.data.image), false)
+})
+
+test('画布缺少 Agent 占位时按 Job 血缘补建生成与结果节点，并保留 Artifact 所需的 agentRun', () => {
+  const document = {
+    ...projectDocument(),
+    nodes: [],
+    edges: [],
+    generationJobs: [],
+  }
+  const job = {
+    id: 'job-recovered-agent', ownerId: 'user-1', projectId: document.id,
+    status: 'succeeded', kind: 'generation', refinementMode: 'faithful',
+    createdAt: 100, updatedAt: 200, batchCount: 1,
+    settings, provider: 'openai-images',
+    generateNodeId: 'agent-generate-recovered', resultNodeId: 'agent-result-recovered',
+    generationRecipe: {
+      references: [{ nodeId: 'result-parent', name: '首图', image: '/api/media/media_parent', role: '首图', primary: true }],
+      prompt: '生成新版本', batchCount: 1, settings,
+    },
+    outputs: [{ id: 'output-recovered', image: '/api/media/media_recovered' }],
+    agentRun: { runId: 'agent-run-1', branchId: 'branch-a' },
+  }
+
+  const reconciled = reconcileAgentGenerationJobToProject(document, job, 210)
+
+  assert.equal(reconciled.changed, true)
+  assert.equal(reconciled.complete, true)
+  assert.equal(reconciled.document.nodes.find((node) => node.id === job.generateNodeId)?.type, 'generate')
+  const result = reconciled.document.nodes.find((node) => node.id === job.resultNodeId)
+  assert.equal(result?.data.image, '/api/media/media_recovered')
+  assert.equal(reconciled.document.edges.some((edge) => edge.source === job.generateNodeId && edge.target === job.resultNodeId), true)
+  assert.deepEqual(reconciled.document.generationJobs[0].agentRun, job.agentRun)
+})
+
 test('取消分支会同步关闭画布占位节点，不遗留永久生成态', () => {
   const prepared = prepare()
   const cancelled = { ...prepared.jobs[0], status: 'cancelled', updatedAt: 200 }

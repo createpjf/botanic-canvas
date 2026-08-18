@@ -42,6 +42,7 @@ input:focus-visible { outline: 2px solid #7ca58a; outline-offset: 2px; }
 }
 
 .app-shell.app-shell--agent-closed { grid-template-columns: minmax(0, 1fr); }
+.app-shell.app-shell--agent-open { grid-template-columns: minmax(0, 1fr); }
 
 .canvas-pane {
   position: relative;
@@ -52,6 +53,9 @@ input:focus-visible { outline: 2px solid #7ca58a; outline-offset: 2px; }
   overscroll-behavior: none;
   background: #f3f4f0;
 }
+
+/* Agent 是右侧浮层；给 React Flow 留出同等安全区，结果节点不会被浮层盖住。 */
+.canvas-pane.has-agent-open { padding-right: 504px; }
 
 .canvas-loading { display: grid; place-items: center; background: #f7f8f4; }
 .canvas-loading > div { display: grid; gap: 6px; padding: 16px 18px; border: 1px solid #e6e7e2; border-radius: 10px; background: #fff; box-shadow: 8px 8px 9px rgba(20, 40, 25, 0.05); }
@@ -649,6 +653,10 @@ button.project-tab__main { border: 0; cursor: pointer; }
   .agent-panel__composer { padding-right: 14px; padding-left: 14px; }
   .agent-panel__composer > div { gap: 4px; }
   .agent-panel__composer button { padding: 0 9px; }
+}
+
+@media (max-width: 900px) {
+  .canvas-pane.has-agent-open { padding-right: 0; }
 }
 
 /* V0.2：可操作的素材、版本与画布分支 */
@@ -3303,6 +3311,8 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-run-message__actions { display: flex; flex-wrap: wrap; gap: 5px; margin: -2px 0 7px; }
 .agent-run-message__actions button { min-height: 26px; padding: 0 8px; border: 1px solid #cbdacc; border-radius: 6px; background: #fff; color: #48674e; cursor: pointer; font-size: 9px; font-weight: 720; }
 .agent-run-message__actions button:hover { border-color: #8faf94; background: #f1f7f1; color: #2d633b; }
+.agent-run-message__results { display: flex; gap: 6px; max-width: 100%; margin: 8px 0 7px; overflow-x: auto; padding-bottom: 2px; }
+.agent-run-message__results :is(img, video) { display: block; width: 82px; height: 82px; flex: 0 0 82px; object-fit: cover; border: 1px solid #cbdacc; border-radius: 7px; background: #edf3ec; }
 .agent-message__plan { display: grid; gap: 9px; margin-top: 9px; padding: 11px; border: 1px solid #cbdccb; border-radius: 9px; background: #fff; }
 .agent-plan__context-lock { color: #527058; font-weight: 650; }
 .agent-message__tools { display: grid; gap: 5px; }

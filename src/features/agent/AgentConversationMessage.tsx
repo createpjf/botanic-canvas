@@ -72,9 +72,10 @@ export function AgentConversationMessage({
   onFeedback,
 }: AgentConversationMessageProps) {
   const linkedRun = message.runId ? runs.find((run) => run.id === message.runId) : undefined
-  const outputNodeIds = message.runId
-    ? artifacts.filter((artifact) => artifact.provenance.runId === message.runId).flatMap((artifact) => artifact.provenance.sourceNodeIds ?? [])
+  const runArtifacts = message.runId
+    ? artifacts.filter((artifact) => artifact.provenance.runId === message.runId)
     : []
+  const outputNodeIds = runArtifacts.flatMap((artifact) => artifact.provenance.sourceNodeIds ?? [])
   const lockedContextIds = botanicAgentContextSnapshotNodeIds(linkedRun?.plan.contextSnapshot, contextOptionIds)
   const continueNodeIds = [...new Set(outputNodeIds.length ? outputNodeIds : lockedContextIds)]
   const planPrompt = message.plan ? promptDraft ?? message.plan.prompt : ''
@@ -85,6 +86,11 @@ export function AgentConversationMessage({
     <div className="agent-message__role">{message.role === 'assistant' ? <SparkleIcon /> : <span>你</span>}</div>
     <div className="agent-message__body">
       {!message.question ? (message.role === 'assistant' ? <AgentPromptResponse content={message.content} /> : <p>{message.content}</p>) : null}
+      {message.kind === 'run' && runArtifacts.length ? <div className="agent-run-message__results" aria-label="本次任务结果">
+        {runArtifacts.filter((artifact) => artifact.url && (artifact.kind === 'image' || artifact.kind === 'video')).map((artifact) => artifact.kind === 'image'
+          ? <img key={artifact.id} src={artifact.url} alt={artifact.label} />
+          : <video key={artifact.id} src={artifact.url} muted playsInline aria-label={artifact.label} />)}
+      </div> : null}
       {message.role === 'user' && message.deliveryStatus === 'waiting_network' ? <small className="agent-message__delivery-status" role="status">等待联网</small> : null}
       {message.role === 'user' && message.deliveryStatus === 'queued' ? <small className="agent-message__delivery-status" role="status">等待同步</small> : null}
       {message.role === 'user' && message.deliveryStatus === 'syncing' ? <small className="agent-message__delivery-status" role="status">正在同步</small> : null}
@@ -96,7 +102,7 @@ export function AgentConversationMessage({
       {message.runId ? <div className="agent-run-message__actions" aria-label="任务与结果操作">
         <button type="button" onClick={() => onShowTask(message.runId!)}>查看任务</button>
         {message.kind === 'run' && continueNodeIds.length ? <button type="button" onClick={() => onContinueResultContext(continueNodeIds, outputNodeIds.length)}>继续修改</button> : null}
-        {outputNodeIds.length ? <button type="button" onClick={onShowResults}>查看结果</button> : null}
+        {runArtifacts.length ? <button type="button" onClick={onShowResults}>查看结果</button> : null}
         {outputNodeIds.length ? <button type="button" onClick={() => onFocusNodes(outputNodeIds)}>定位画布</button> : null}
       </div> : null}
       {message.question ? message.status === 'answered' ? <AgentClarificationCard

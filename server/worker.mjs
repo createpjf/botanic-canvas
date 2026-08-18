@@ -25,6 +25,7 @@ const worker = createGenerationWorker({
     ...runtime,
     config,
     publishAgentRunUpdated: agentRunEvents.publish,
+    publishProjectUpdated: agentRunEvents.publishProjectUpdated,
     observeAgentRun: writeAgentRunOperationalEvent,
     providerCircuitBreaker: providerHealth,
   }),

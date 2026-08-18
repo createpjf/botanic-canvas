@@ -45,7 +45,7 @@ export function createGenerationRouteHandler({
       const project = await productStore.readProject(user.id, projectId)
       if (!project) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
       const jobs = await productStore.listGenerationJobsForProject(user.id, projectId, 120)
-      const reconciled = reconcileGenerationResults(project.document, jobs ?? [])
+      const reconciled = reconcileGenerationResults(project.document, jobs ?? [], { ensureAgentPlaceholders: true })
       if (!reconciled.changed) return json(response, 200, { ...project, changed: false }, projectResponseHeaders(project))
       try {
         const saved = await productStore.writeProject(user.id, reconciled.document, project.revision, project.graphRevision)

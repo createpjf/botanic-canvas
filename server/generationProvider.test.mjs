@@ -12,6 +12,7 @@ test('生成任务持久化保留幂等键，公开状态只按需返回提交�
     idempotencyKey: 'gen_test_key_123456', projectWritebackPending: true,
   }
   assert.deepEqual(persistedGenerationJob(job).agentRun, job.agentRun)
+  assert.equal(persistedGenerationJob({ ...job, generateNodeId: 'generate-a', resultNodeId: 'result-a' }).generateNodeId, 'generate-a')
   assert.deepEqual(publicGenerationJob(job).agentRun, job.agentRun)
   assert.equal(persistedGenerationJob(job).idempotencyKey, job.idempotencyKey)
   assert.equal(publicGenerationJob(job).idempotencyKey, undefined)

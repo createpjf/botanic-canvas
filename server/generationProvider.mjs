@@ -184,6 +184,8 @@ export function publicGenerationJob(job, { includeIdempotencyKey = false } = {})
     budgetWarning: job.budgetWarning,
     effectiveModel: job.effectiveModel,
     providerAttempts: job.providerAttempts ?? [],
+    generateNodeId: job.generateNodeId,
+    resultNodeId: job.resultNodeId,
   }
 }
 
@@ -216,6 +218,11 @@ export function persistedGenerationJob(job) {
     budgetWarning: job.budgetWarning,
     effectiveModel: job.effectiveModel,
     providerAttempts: job.providerAttempts,
+    generateNodeId: job.generateNodeId,
+    resultNodeId: job.resultNodeId,
+    generateNodePosition: job.generateNodePosition,
+    resultNodePosition: job.resultNodePosition,
+    generationRecipe: job.generationRecipe,
   }
 }
 

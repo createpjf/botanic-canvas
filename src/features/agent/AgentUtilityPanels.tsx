@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  botanicAgentRunFeedback,
   resolveBotanicAgentResultSelection,
   type BotanicAgentArtifact,
   type BotanicAgentMemoryItem,
@@ -11,7 +10,7 @@ import { BotanicSelect } from '../../components/BotanicSelect'
 import { ArrowUpRightIcon, DeleteIcon, DownloadIcon, FocusIcon, FolderOutlineIcon, SparkleIcon } from '../../components/BotanicIcons'
 import type { CollaborationActivity, CollaborationDocumentChange } from '../../domain/collaborationActivity'
 import { downloadMedia } from '../../lib/mediaDownload'
-import { agentArtifactKindLabel, agentMemoryKindLabel, agentRunOutputCount } from './AgentWorkspaceParts'
+import { agentArtifactKindLabel, agentMemoryKindLabel, agentRunFeedback } from './AgentWorkspaceParts'
 import type { AgentArtifactIndexState, AgentContextItem } from './agentWorkspace.types'
 
 function collaborationTime(timestamp: number) {
@@ -133,7 +132,7 @@ export function AgentResultPanel({
   const resultNodeIds = useMemo(() => new Set(contextOptions.filter((item) => item.kind === '结果').map((item) => item.id)), [contextOptions])
   const selectedResultNodeIds = selectedBatch.sourceNodeIds.filter((nodeId) => resultNodeIds.has(nodeId))
   const latestFeedback = latestRun
-    ? botanicAgentRunFeedback(latestRun.status, agentRunOutputCount(latestRun, artifacts), latestRun.error)
+    ? agentRunFeedback(latestRun, artifacts, availableNodeIds)
     : undefined
 
   useEffect(() => {

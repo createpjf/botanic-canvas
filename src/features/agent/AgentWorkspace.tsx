@@ -2,7 +2,6 @@ import { type DragEvent, useCallback, useEffect, useId, useMemo, useReducer, use
 import {
   botanicAgentBranchStatusLabel,
   botanicAgentContextSnapshotNodeIds,
-  botanicAgentRunFeedback,
   botanicAgentSubmissionKey,
   buildBotanicAgentRunTimeline,
   buildBotanicAgentSessionTimeline,
@@ -59,6 +58,7 @@ import {
 import {
   AgentFailureRecoveryActions,
   AgentBranchStatusIcon,
+  agentRunFeedback,
   agentRunOutputCount,
   agentRuntimeStepMarker,
   agentRuntimeStepStatusLabel,
@@ -443,8 +443,8 @@ export default function AgentWorkspace({
   )
   const runtimeFailed = runtimePhase === 'failed' || runtimeSteps.some((step) => step.status === 'failed')
   const runtimeComplete = runtimePhase === 'completed'
-  const latestRunOutputCount = latestRun ? agentRunOutputCount(latestRun, artifacts) : 0
-  const latestRunFeedback = latestRun ? botanicAgentRunFeedback(latestRun.status, latestRunOutputCount, latestRun.error) : undefined
+  const availableCanvasNodeIds = useMemo(() => new Set(contextOptions.map((item) => item.id)), [contextOptions])
+  const latestRunFeedback = latestRun ? agentRunFeedback(latestRun, artifacts, availableCanvasNodeIds) : undefined
   const runTimeline = useMemo(() => buildBotanicAgentRunTimeline(runs, sessions), [runs, sessions])
   const filteredRunTimeline = useMemo(
     () => filterBotanicAgentRunTimeline(runTimeline, taskStatusFilter),
@@ -776,7 +776,7 @@ export default function AgentWorkspace({
   }
 
   const openRunFeedback = (run: BotanicAgentRun) => {
-    const feedback = botanicAgentRunFeedback(run.status, agentRunOutputCount(run, artifacts), run.error)
+    const feedback = agentRunFeedback(run, artifacts, availableCanvasNodeIds)
     openUtilityPanel(feedback.action === 'view_results' ? 'result' : 'task')
   }
 
@@ -788,7 +788,7 @@ export default function AgentWorkspace({
       const linkedMessage = [...session.messages]
         .reverse()
         .find((message) => message.runId === run.id && (message.kind === 'run' || message.kind === 'notice'))
-      const feedback = botanicAgentRunFeedback(run.status, outputCount, run.error)
+      const feedback = agentRunFeedback(run, artifacts, availableCanvasNodeIds)
       const noticeKey = feedback.terminal ? `${run.status}:${outputCount}` : run.status
       const previousNoticeKey = runNoticeStatusRef.current.get(run.id)
       const content = feedback.detail
@@ -810,7 +810,7 @@ export default function AgentWorkspace({
         onFocusNodes(outputNodeIds)
       }
     }
-  }, [artifacts, onFocusNodes, onUpdateMessage, runs, session])
+  }, [artifacts, availableCanvasNodeIds, onFocusNodes, onUpdateMessage, runs, session])
 
   const confirmSkillCreation = async () => {
     if (!skillName.trim() || !skillInstructions.trim() || skillSaving) return
@@ -1548,8 +1548,7 @@ export default function AgentWorkspace({
           </div>
           <div className="agent-task-panel__list">
             {filteredRunTimeline.map(({ run, source }) => {
-              const outputCount = agentRunOutputCount(run, artifacts)
-              const feedback = botanicAgentRunFeedback(run.status, outputCount, run.error)
+              const feedback = agentRunFeedback(run, artifacts, availableCanvasNodeIds)
               const active = run.status === 'queued' || run.status === 'running' || run.status === 'executing'
               return <article key={run.id} ref={(node) => { if (node) taskNodesRef.current.set(run.id, node); else taskNodesRef.current.delete(run.id) }} tabIndex={-1} className={`is-${run.status} is-${feedback.tone}${focusedTaskRunId === run.id ? ' is-located' : ''}`}>
               <header><span><strong>{run.plan.summary}</strong><small>{feedback.label} · <time dateTime={new Date(run.updatedAt).toISOString()}>{agentTimelineTimestamp(run.updatedAt)}</time></small>{source ? <button type="button" className="agent-task-panel__source" aria-label={`定位到「${source.sessionTitle}」`} title={`定位到「${source.sessionTitle}」`} onClick={() => locateTaskSourceMessage(source)}><FocusIcon /></button> : null}</span><div>{active ? <button type="button" className="agent-icon-button agent-icon-button--danger" aria-label="取消任务" title="取消任务" disabled={cancellingRunId === run.id} onClick={() => { setCancellingRunId(run.id); void onCancelRun(run.id).finally(() => setCancellingRunId('')) }}>{cancellingRunId === run.id ? <span className="agent-workspace__mini-spinner" /> : <CloseIcon />}</button> : <button type="button" className="agent-task-panel__feedback-action" aria-label={feedback.actionLabel} title={feedback.actionLabel} onClick={() => openRunFeedback(run)}><AgentRunActionIcon label={feedback.actionLabel} /></button>}<b>{run.completedBranchCount}/{run.branches.length}</b></div></header>
@@ -1668,7 +1667,7 @@ export default function AgentWorkspace({
             </ol> : null}
           </section>
         })() : null}
-        {!utilityPanelOpen && latestRun?.branches.length && latestRunFeedback ? <section className={`agent-run-card is-${latestRunFeedback.tone}`} aria-label="Agent Run 实时进度">
+        {!utilityPanelOpen && latestRun?.branches.length && latestRunFeedback && ['queued', 'running', 'executing'].includes(latestRun.status) ? <section className={`agent-run-card is-${latestRunFeedback.tone}`} aria-label="Agent Run 实时进度">
           <header><span><strong>生成任务</strong><small>{latestRunFeedback.label}</small></span><div>{latestRun.status === 'queued' || latestRun.status === 'running' || latestRun.status === 'executing' ? <button type="button" className="agent-icon-button agent-icon-button--danger" aria-label="取消任务" title="取消任务" disabled={cancellingRunId === latestRun.id} onClick={() => { setCancellingRunId(latestRun.id); setError(''); void onCancelRun(latestRun.id).then((ok) => { if (!ok) setError('任务取消失败，请稍后重试。') }).catch(() => setError('任务取消失败，请稍后重试。')).finally(() => setCancellingRunId('')) }}>{cancellingRunId === latestRun.id ? <span className="agent-workspace__mini-spinner" /> : <CloseIcon />}</button> : <button type="button" className="agent-run-card__feedback-action" aria-label={latestRunFeedback.actionLabel} title={latestRunFeedback.actionLabel} onClick={() => openRunFeedback(latestRun)}><AgentRunActionIcon label={latestRunFeedback.actionLabel} /></button>}<b>{latestRun.completedBranchCount}/{latestRun.branches.length}</b></div></header>
           <p className="agent-run-card__feedback">{latestRunFeedback.detail}</p>
           <div className="agent-run-card__track" aria-hidden="true"><i style={{ width: `${Math.round(latestRun.completedBranchCount / latestRun.branches.length * 100)}%` }} /></div>

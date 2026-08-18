@@ -1579,7 +1579,7 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
     })
   }, [closeWorkbenchPanels, document.nodes, selectedNodeId])
 
-  const canvasClassName = 'app-shell app-shell--agent-closed'
+  const canvasClassName = `app-shell app-shell--agent-${agentOpen ? 'open' : 'closed'}`
   const workspaceTabs = useMemo(() => {
     const projectsById = new Map(workspaceProjects.map((project) => [project.id, project]))
     if (!projectsById.has(document.id)) {
@@ -1883,6 +1883,7 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
           viewportRestoring ? 'is-restoring-viewport' : '',
           isTouchTablet ? 'is-touch-tablet' : '',
           assetsOpen ? 'has-asset-library' : '',
+          agentOpen ? 'has-agent-open' : '',
           composerOpen || resultComposerDraft || batchComposerTargetId ? 'has-open-composer' : '',
         ].filter(Boolean).join(' ')}
         aria-label={document.name.endsWith('画布') ? document.name : `${document.name}画布`}
