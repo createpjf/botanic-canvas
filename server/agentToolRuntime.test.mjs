@@ -30,6 +30,7 @@ test('Tool Registry 以 OpenAI 兼容函数协议暴露受控工具并执行参�
     },
   ])
 
+  // 每个工具都额外暴露 why：模型自述的一句话调用目的，用于展示，不进入工具校验器。
   assert.deepEqual(registry.openAITools(), [{
     type: 'function',
     function: {
@@ -38,12 +39,22 @@ test('Tool Registry 以 OpenAI 兼容函数协议暴露受控工具并执行参�
       parameters: {
         type: 'object',
         additionalProperties: false,
-        properties: { projectId: { type: 'string' } },
+        properties: {
+          projectId: { type: 'string' },
+          why: {
+            type: 'string',
+            maxLength: 120,
+            description: '用一句话说明你为什么要进行这次调用；这句话会直接展示给用户，不要包含隐藏推理。',
+          },
+        },
         required: ['projectId'],
       },
     },
   }])
   assert.deepEqual(await registry.execute('canvas_read_selection', { projectId: ' project-a ' }), {
+    projectId: 'project-a', nodes: ['result-1'],
+  })
+  assert.deepEqual(await registry.execute('canvas_read_selection', { projectId: 'project-a', why: '看看选了什么' }), {
     projectId: 'project-a', nodes: ['result-1'],
   })
   await assert.rejects(

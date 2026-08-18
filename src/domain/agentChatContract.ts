@@ -1,4 +1,4 @@
-import type { BotanicAgentMessage } from './agent'
+import type { BotanicAgentMessage, BotanicAgentReasoningEntry } from './agent'
 import type { GenerationAspectRatio, GenerationModelOption, GenerationResolution } from './canvas'
 
 export type BotanicAgentChatMode = 'conversation' | 'prompt' | 'research'
@@ -35,6 +35,7 @@ export type BotanicAgentChatToolCall = {
   risk: 'read' | 'write' | 'costly' | 'external'
   status: 'pending' | 'running' | 'awaiting_confirmation' | 'succeeded' | 'failed'
   requiresConfirmation: boolean
+  summary?: string
   error?: string
 }
 
@@ -45,6 +46,8 @@ export type BotanicAgentChatResponse = {
   mode: BotanicAgentChatMode
   plannerModel?: string
   toolCalls?: BotanicAgentChatToolCall[]
+  /** 当轮运行说明；仅用于面板实时展示，不随消息持久化。 */
+  reasoning?: BotanicAgentReasoningEntry[]
   sources?: string[]
 }
 
@@ -124,6 +127,25 @@ export function inferBotanicAgentGenerationSettings(
     ...(selectedModel ? { model: selectedModel.id } : {}),
     ...(ratio && (!supportedRatios.length || supportedRatios.includes(ratio)) ? { aspectRatio: ratio } : {}),
     ...(resolution && (!supportedResolutions.length || supportedResolutions.includes(resolution)) ? { resolution } : {}),
+  }
+}
+
+/**
+ * 自动模式下补齐仍然缺失的输出设置：只从可信模型目录里取该模型自己支持的第一项，
+ * 不发明目录之外的取值。补不齐时返回原提示，调用方仍会退回追问。
+ */
+export function completeBotanicAgentGenerationSettings(
+  hint: BotanicAgentGenerationSettingsHint,
+  models: Pick<GenerationModelOption, 'id' | 'label' | 'aspectRatios' | 'resolutions'>[],
+): BotanicAgentGenerationSettingsHint {
+  const model = models.find((item) => item.id === hint.model) ?? models[0]
+  if (!model) return hint
+  const aspectRatio = hint.aspectRatio ?? model.aspectRatios?.[0]
+  const resolution = hint.resolution ?? model.resolutions?.[0]
+  return {
+    model: model.id,
+    ...(aspectRatio ? { aspectRatio } : {}),
+    ...(resolution ? { resolution } : {}),
   }
 }
 

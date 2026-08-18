@@ -28,6 +28,17 @@ import {
   shouldResumeQueuedAgentRunExecution,
   updateBotanicAgentRuntimeStep,
   restoreBotanicAgentRuntimeSteps,
+  shouldRestoreBotanicAgentRuntimeSteps,
+  botanicAgentArtifactPlacement,
+  botanicAgentPromptWithContextNotes,
+  botanicAgentContextNoteLimit,
+  insertBotanicAgentToolCallSteps,
+  insertBotanicAgentReasoningSteps,
+  resolveBotanicAgentExecutionDecision,
+  botanicAgentExecutionModeLabel,
+  botanicAgentArtifactPrompt,
+  botanicAgentArtifactModel,
+  botanicAgentArtifactTimestamp,
   botanicAgentSubmissionKey,
   botanicAgentRunFeedback,
   botanicAgentBranchStatusLabel,
@@ -665,26 +676,77 @@ test('Agent 行动卡状态可在对话计划内恢复，并记录画布回写�
   assert.equal(succeeded.updatedAt, 130)
 })
 
-test('Agent 只执行引用现有 Artifact 的安全画布命令，并兼容旧文字回写', () => {
+test('Agent 只为落点是画布的 Artifact 执行节点命令', () => {
   assert.deepEqual(resolveBotanicAgentCanvasCommands({
     message: '完成',
     artifacts: [
       { id: 'artifact-text', kind: 'text', label: '检索结果', content: '找到 3 个场景。', provenance: { actionId: 'action-1', toolName: 'mcp_call' } },
+      { id: 'artifact-note', kind: 'workflow', label: 'Skill 规则', content: '锁定商品。', placement: 'canvas', provenance: { actionId: 'action-1', toolName: 'skill_apply' } },
       { id: 'artifact-image', kind: 'image', label: '场景图', url: 'https://assets.example.com/scene.webp', provenance: { actionId: 'action-1', toolName: 'mcp_call' } },
+      { id: 'artifact-hidden', kind: 'image', label: '仅面板', url: 'https://assets.example.com/panel.webp', placement: 'panel', provenance: { actionId: 'action-1', toolName: 'mcp_call' } },
     ],
     canvasCommands: [
       { id: 'command-text', type: 'create_text_node', artifactId: 'artifact-text' },
+      { id: 'command-note', type: 'create_text_node', artifactId: 'artifact-note' },
       { id: 'command-image', type: 'create_media_node', artifactId: 'artifact-image' },
+      { id: 'command-hidden', type: 'create_media_node', artifactId: 'artifact-hidden' },
       { id: 'command-unknown', type: 'create_media_node', artifactId: 'missing' },
     ],
-  }).map((item) => item.command.id), ['command-text', 'command-image'])
+    // 文本产物默认留在结果面板；只有显式 placement: 'canvas' 才写节点。
+  }).map((item) => item.command.id), ['command-note', 'command-image'])
 
-  const legacy = resolveBotanicAgentCanvasCommands({
+  assert.deepEqual(resolveBotanicAgentCanvasCommands({
     message: '完成', writeback: { kind: 'text', label: '旧结果', content: '仍可写回。' },
-  })
-  assert.equal(legacy[0].artifact.kind, 'text')
-  assert.equal(legacy[0].artifact.label, '旧结果')
-  assert.equal(legacy[0].command.type, 'create_text_node')
+  }), [])
+})
+
+test('Artifact 落点默认按媒体进画布、文本留面板', () => {
+  assert.equal(botanicAgentArtifactPlacement({ kind: 'image' }), 'canvas')
+  assert.equal(botanicAgentArtifactPlacement({ kind: 'video' }), 'canvas')
+  assert.equal(botanicAgentArtifactPlacement({ kind: 'workflow' }), 'panel')
+  assert.equal(botanicAgentArtifactPlacement({ kind: 'text' }), 'panel')
+  assert.equal(botanicAgentArtifactPlacement({ kind: 'file' }), 'panel')
+  assert.equal(botanicAgentArtifactPlacement({ kind: 'text', placement: 'canvas' }), 'canvas')
+  assert.equal(botanicAgentArtifactPlacement({ kind: 'image', placement: 'panel' }), 'panel')
+})
+
+test('运行摘要按本轮路由取词，对话轮次不谎称已回填画布', () => {
+  const steps = createBotanicAgentRuntimeSteps({ hasTarget: false, mode: 'conversation' })
+  const generation = summarizeBotanicAgentRuntime({ steps, phase: 'completed' })
+  assert.equal(generation.label, 'Agent 已完成')
+  assert.match(generation.detail, /回填画布/)
+
+  const conversation = summarizeBotanicAgentRuntime({ steps, phase: 'completed', mode: 'conversation' })
+  assert.equal(conversation.label, '已回复')
+  assert.doesNotMatch(conversation.detail, /回填画布/)
+
+  assert.equal(summarizeBotanicAgentRuntime({ steps, phase: 'completed', mode: 'prompt' }).label, 'Prompt 已生成')
+  assert.equal(summarizeBotanicAgentRuntime({ steps, phase: 'completed', mode: 'research' }).label, '检索完成')
+
+  // 进行中与等待阶段的文案与计数不受路由影响。
+  assert.equal(
+    summarizeBotanicAgentRuntime({ steps, phase: 'waiting_confirmation', mode: 'conversation' }).label,
+    summarizeBotanicAgentRuntime({ steps, phase: 'waiting_confirmation' }).label,
+  )
+})
+
+test('只有仍在进行的 Run 才在面板底部恢复运行轨迹', () => {
+  assert.equal(shouldRestoreBotanicAgentRuntimeSteps('queued'), true)
+  assert.equal(shouldRestoreBotanicAgentRuntimeSteps('running'), true)
+  assert.equal(shouldRestoreBotanicAgentRuntimeSteps('executing'), true)
+  assert.equal(shouldRestoreBotanicAgentRuntimeSteps('completed'), false)
+  assert.equal(shouldRestoreBotanicAgentRuntimeSteps('partial'), false)
+  assert.equal(shouldRestoreBotanicAgentRuntimeSteps('failed'), false)
+  assert.equal(shouldRestoreBotanicAgentRuntimeSteps('cancelled'), false)
+  assert.equal(shouldRestoreBotanicAgentRuntimeSteps('awaiting_confirmation'), false)
+
+  // 恢复出来的上下文步骤一律是已完成状态，只有终点步骤反映 Run 的真实结果。
+  const restored = restoreBotanicAgentRuntimeSteps({ run: { status: 'running' }, hasTarget: true })
+  assert.deepEqual(
+    restored.filter((step) => step.id !== 'finalize-plan').map((step) => step.status),
+    restored.filter((step) => step.id !== 'finalize-plan').map(() => 'succeeded'),
+  )
+  assert.equal(restored.find((step) => step.id === 'finalize-plan')?.status, 'running')
 })
 
 test('Agent 行动产物回写画布后记录真实节点血缘', () => {
@@ -762,6 +824,10 @@ test('Agent 结果区合并关联 Run 的生成结果并保留批次溯源', () 
       kind: 'result', status: 'ready', image: 'https://assets.example.com/output.webp',
       label: '海边候选 01', jobId: 'job-agent-1', candidateId: 'candidate-1',
       generationSettings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
+      generationRecipe: {
+        references: [], prompt: '海边黄昏，保持商品不变。', batchCount: 1,
+        settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
+      },
     },
   }] as CanvasNode[]
   const generationJobs = [{
@@ -777,16 +843,22 @@ test('Agent 结果区合并关联 Run 的生成结果并保留批次溯源', () 
   assert.deepEqual(results[0], {
     id: 'generation:job-agent-1:candidate-1', kind: 'image', label: '海边候选 01',
     url: 'https://assets.example.com/output.webp', mimeType: undefined,
+    placement: 'canvas',
     metadata: {
       source: 'generation', status: 'ready', createdAt: 220, jobId: 'job-agent-1',
       branchId: 'branch-beach', groupId: 'run-scene', savedToLibrary: false,
       settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
+      // 结果面板要展示“图 + 生成它的 Prompt”，提示词直接来自节点配方。
+      prompt: '海边黄昏，保持商品不变。',
     },
     provenance: {
       actionId: 'generation:job-agent-1', toolName: 'image_generation', runId: 'run-scene',
       sourceNodeIds: ['result-agent-1'],
     },
   })
+  assert.equal(botanicAgentArtifactPrompt(results[0]), '海边黄昏，保持商品不变。')
+  assert.equal(botanicAgentArtifactModel(results[0]), 'gpt-image-2')
+  assert.equal(botanicAgentArtifactTimestamp(results[0]), 220)
 })
 
 test('Agent 结果区不混入普通画布任务，并识别已入库结果', () => {
@@ -858,4 +930,151 @@ test('Artifact Index 不可用或尚未迁移时，结果区完整回退到当�
   }]
 
   assert.deepEqual(mergeBotanicAgentArtifactIndex([], local), local)
+})
+
+test('执行模式是可解释的领域决策，自动模式遇到外部行动会降级并说明原因', () => {
+  const auto = { mode: 'auto' as const, settingsComplete: true, pendingActionCount: 0 }
+  assert.deepEqual(resolveBotanicAgentExecutionDecision(auto), { action: 'auto_submit' })
+  assert.deepEqual(
+    resolveBotanicAgentExecutionDecision({ ...auto, pendingActionCount: 2 }),
+    { action: 'confirm', reason: 'pending_actions' },
+  )
+  // 会产生费用的参数缺失时，两种模式都必须先问，不猜。
+  assert.deepEqual(
+    resolveBotanicAgentExecutionDecision({ ...auto, settingsComplete: false }),
+    { action: 'ask_settings' },
+  )
+  assert.deepEqual(
+    resolveBotanicAgentExecutionDecision({ mode: 'manual', settingsComplete: true, pendingActionCount: 0 }),
+    { action: 'confirm', reason: 'manual' },
+  )
+  assert.deepEqual(
+    resolveBotanicAgentExecutionDecision({ mode: 'manual', settingsComplete: false, pendingActionCount: 0 }),
+    { action: 'ask_settings' },
+  )
+  assert.equal(botanicAgentExecutionModeLabel('auto'), '自动模式')
+  assert.equal(botanicAgentExecutionModeLabel('manual'), '计划模式')
+})
+
+test('真实工具调用展开成独立运行步骤，插在规划步骤之后', () => {
+  const steps = createBotanicAgentRuntimeSteps({ hasTarget: true, referenceCount: 1 })
+  const expanded = insertBotanicAgentToolCallSteps(steps, [
+    { id: 'call-1', name: 'canvas_read', label: '读取画布节点', risk: 'read', status: 'succeeded', requiresConfirmation: false },
+    { id: 'call-2', name: 'skill_apply', label: '应用 Skill 夏日换景', risk: 'write', status: 'awaiting_confirmation', requiresConfirmation: true },
+    { id: 'call-3', name: 'mcp_call', label: '检索素材库', risk: 'external', status: 'failed', requiresConfirmation: true, error: '外部服务超时。' },
+  ])
+
+  assert.deepEqual(expanded.map((step) => step.id), [
+    'read-canvas', 'read-references', 'call-planner', 'tool:call-1', 'tool:call-2', 'tool:call-3', 'finalize-plan',
+  ])
+  assert.equal(expanded[3].detail, 'canvas_read · 读取项目数据')
+  assert.equal(expanded[3].kind, 'read')
+  // 等待确认在运行轨迹里就是“还没跑”，不是一个额外状态。
+  assert.equal(expanded[4].status, 'pending')
+  assert.equal(expanded[5].kind, 'search')
+  assert.equal(expanded[5].status, 'failed')
+  assert.equal(expanded[5].error, '外部服务超时。')
+
+  // 重复回传同一批工具调用时就地更新，不会越插越多。
+  const again = insertBotanicAgentToolCallSteps(expanded, [
+    { id: 'call-1', name: 'canvas_read', label: '读取画布节点', risk: 'read', status: 'succeeded', requiresConfirmation: false },
+  ])
+  assert.equal(again.filter((step) => step.id === 'tool:call-1').length, 1)
+  assert.deepEqual(insertBotanicAgentToolCallSteps(steps, []), steps)
+})
+
+test('画布文字节点作为补充描述进入上下文快照与提示词', () => {
+  const snapshot = createBotanicAgentContextSnapshot([
+    { id: 'asset-product', label: '德国队球衣', kind: '素材', mediaKind: 'image', role: '商品' },
+    { id: 'text-brief', label: '留白要求', kind: '文字', content: '  右上角留出文案位置。  ' },
+    { id: 'text-empty', label: '空描述', kind: '文字', content: '   ' },
+    { id: 'generate-1', label: '生成节点', kind: '节点', content: '这不是文字节点，不应被当成描述' },
+  ])
+
+  assert.equal(snapshot[0].note, undefined)
+  assert.equal(snapshot[1].note, '右上角留出文案位置。')
+  assert.equal(snapshot[2].note, undefined)
+  assert.equal(snapshot[3].note, undefined)
+
+  assert.equal(
+    botanicAgentPromptWithContextNotes('把背景换成海边', snapshot),
+    '把背景换成海边\n\n补充描述：\n- 留白要求：右上角留出文案位置。',
+  )
+  // 没有文字节点时提示词原样返回，不加空的补充段落。
+  assert.equal(botanicAgentPromptWithContextNotes('把背景换成海边', [snapshot[0]]), '把背景换成海边')
+
+  const plan = buildBotanicAgentPlan({
+    instruction: '生成一张主图',
+    intent: 'initial_generation',
+    settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
+    contextSnapshot: snapshot,
+  })
+  assert.equal(plan.instruction, '生成一张主图')
+  assert.match(plan.prompt, /补充描述：\n- 留白要求：右上角留出文案位置。/)
+})
+
+test('上下文补充描述被截断到长度上限', () => {
+  const [item] = createBotanicAgentContextSnapshot([
+    { id: 'text-long', label: '长描述', kind: '文字', content: 'x'.repeat(900) },
+  ])
+  assert.equal(item.note?.length, botanicAgentContextNoteLimit)
+})
+
+test('工具步骤优先展示模型自述的调用目的', () => {
+  const steps = insertBotanicAgentToolCallSteps(createBotanicAgentRuntimeSteps({ hasTarget: true }), [
+    { id: 'call-1', name: 'ontology_read', label: '读取项目本体', risk: 'read', status: 'succeeded', requiresConfirmation: false, summary: '先确认画布里有哪些结果' },
+    { id: 'call-2', name: 'skill_search', label: '检索已审核 Skill', risk: 'read', status: 'succeeded', requiresConfirmation: false },
+  ])
+  assert.equal(steps.find((step) => step.id === 'tool:call-1')?.detail, '先确认画布里有哪些结果')
+  // 没有自述目的时回落到工具名与风险说明。
+  assert.equal(steps.find((step) => step.id === 'tool:call-2')?.detail, 'skill_search · 读取项目数据')
+})
+
+test('只有提供方原始推理才补进运行轨迹，摘要片段由工具步骤承载', () => {
+  const steps = createBotanicAgentRuntimeSteps({ hasTarget: true })
+  const withReasoning = insertBotanicAgentReasoningSteps(steps, [
+    { step: 0, source: 'summary', text: '先确认画布里有哪些结果' },
+    { step: 0, source: 'raw', text: '先看看上下文，再决定锁定哪些维度。' },
+    { step: 1, source: 'raw', text: '   ' },
+  ])
+  const reasoningSteps = withReasoning.filter((step) => step.id.startsWith('reasoning:'))
+  assert.equal(reasoningSteps.length, 1)
+  assert.equal(reasoningSteps[0].detail, '先看看上下文，再决定锁定哪些维度。')
+  assert.equal(reasoningSteps[0].label, '模型运行说明')
+  // 补在规划步骤之后，终点步骤仍在最后。
+  assert.equal(withReasoning.at(-1)?.id, 'finalize-plan')
+  assert.deepEqual(insertBotanicAgentReasoningSteps(steps, []), steps)
+})
+
+test('逐条到达的工具调用按真实执行顺序排列', () => {
+  // 流式路径每个事件只带一条工具调用；新步骤必须接在已有工具步骤之后。
+  const base = createBotanicAgentRuntimeSteps({ hasTarget: true })
+  const first = insertBotanicAgentToolCallSteps(base, [
+    { id: 'call-a', name: 'ontology_read', label: '读取项目本体', risk: 'read', status: 'running', requiresConfirmation: false },
+  ])
+  const second = insertBotanicAgentToolCallSteps(first, [
+    { id: 'call-b', name: 'skill_search', label: '检索已审核 Skill', risk: 'read', status: 'running', requiresConfirmation: false },
+  ])
+  const third = insertBotanicAgentToolCallSteps(second, [
+    { id: 'call-c', name: 'asset_group_search', label: '检索素材组', risk: 'read', status: 'succeeded', requiresConfirmation: false },
+  ])
+
+  assert.deepEqual(third.map((step) => step.id), [
+    'read-canvas', 'call-planner', 'tool:call-a', 'tool:call-b', 'tool:call-c', 'finalize-plan',
+  ])
+
+  // 已存在的调用就地更新状态，不改变它在序列里的位置。
+  const settled = insertBotanicAgentToolCallSteps(third, [
+    { id: 'call-a', name: 'ontology_read', label: '读取项目本体', risk: 'read', status: 'succeeded', requiresConfirmation: false },
+  ])
+  assert.deepEqual(settled.map((step) => step.id), third.map((step) => step.id))
+  assert.equal(settled.find((step) => step.id === 'tool:call-a')?.status, 'succeeded')
+
+  // 整批更新与逐条到达的最终顺序一致。
+  const batched = insertBotanicAgentToolCallSteps(base, [
+    { id: 'call-a', name: 'ontology_read', label: '读取项目本体', risk: 'read', status: 'succeeded', requiresConfirmation: false },
+    { id: 'call-b', name: 'skill_search', label: '检索已审核 Skill', risk: 'read', status: 'succeeded', requiresConfirmation: false },
+    { id: 'call-c', name: 'asset_group_search', label: '检索素材组', risk: 'read', status: 'succeeded', requiresConfirmation: false },
+  ])
+  assert.deepEqual(batched.map((step) => step.id), third.map((step) => step.id))
 })

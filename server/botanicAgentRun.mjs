@@ -66,6 +66,8 @@ function validateToolCalls(rawToolCalls) {
       risk: call.risk,
       status: call.status,
       requiresConfirmation: call.requiresConfirmation,
+      // 模型自述的一句话调用目的：可展示的摘要级说明，不是隐藏思维链。
+      ...(call.summary ? { summary: text(call.summary, `第 ${index + 1} 个工具调用说明`, 160) } : {}),
       ...(call.error ? { error: text(call.error, `第 ${index + 1} 个工具错误`, 1000) } : {}),
     }
   })
@@ -122,6 +124,7 @@ function validateContextSnapshot(rawSnapshot) {
       result.mediaKind = mediaKind
     }
     if (item?.role !== undefined) result.role = text(item.role, `第 ${index + 1} 个上下文角色`, 80)
+    if (item?.note !== undefined) result.note = text(item.note, `第 ${index + 1} 个上下文补充描述`, 500)
     return result
   })
 }

@@ -56,10 +56,10 @@ test('project to canvas and Agent surfaces stay ordered across reload', async ({
   const composer = page.getByRole('textbox', { name: 'Agent 消息' })
   await expect(composer).toHaveValue('保持人物、服装和商品不变，只替换场景与环境光线。')
 
-  await page.getByRole('button', { name: '手动确认' }).click()
+  await page.getByRole('button', { name: '执行模式：计划模式' }).click()
   await expect(page.getByRole('group', { name: '执行模式' })).toBeVisible()
-  await page.getByRole('group', { name: '执行模式' }).getByRole('button', { name: /自动执行/ }).click()
-  await expect(page.getByRole('button', { name: '自动执行' })).toBeVisible()
+  await page.getByRole('group', { name: '执行模式' }).getByRole('button', { name: '自动模式' }).click()
+  await expect(page.getByRole('button', { name: '执行模式：自动模式' })).toBeVisible()
 
   await composer.fill('@')
   await expect(page.getByRole('group', { name: '引用画布内容' })).toBeVisible()

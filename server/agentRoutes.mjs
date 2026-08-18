@@ -14,6 +14,36 @@ import { actionArgumentsHash, agentToolPermission, assertFreshActionApproval, cr
 
 export { BotanicAgentPlannerError, BotanicAgentChatError }
 
+/**
+ * SSE 写出器。第一次写出后响应头已定，任何失败都只能作为事件送达，
+ * 因此调用方需要用 started 判断还能不能回退成普通错误响应。
+ */
+export function createServerSentEventWriter(response) {
+  let started = false
+  return {
+    get started() { return started },
+    send(event) {
+      if (response.writableEnded) return false
+      if (!started) {
+        started = true
+        response.writeHead(200, {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-store',
+          Connection: 'keep-alive',
+          // 反向代理默认会缓冲响应体，缓冲后流式就退化成一次性返回。
+          'X-Accel-Buffering': 'no',
+        })
+      }
+      response.write(`data: ${JSON.stringify(event)}\n\n`)
+      return true
+    },
+    end() {
+      if (!response.writableEnded) response.end()
+      return true
+    },
+  }
+}
+
 export function createAgentRouteHandler({
   config,
   productStore,
@@ -104,9 +134,15 @@ export function createAgentRouteHandler({
       response.once('close', cancelOnClosedResponse)
       if (request.aborted || response.destroyed) cancel()
       try {
-        const plan = await planBotanicGeneration(input, config, { signal: controller.signal })
+        const result = await planBotanicGeneration(input, config, { signal: controller.signal })
         if (controller.signal.aborted || response.destroyed) return true
-        return plan?.kind === 'clarification' ? json(response, 200, { clarification: plan.clarification }) : json(response, 200, { plan })
+        // reasoning 必须留在 plan 之外：计划会被原样持久化到会话消息里，
+        // 而原始推理只允许随当轮响应下发。
+        const { reasoning, ...plan } = result ?? {}
+        const liveReasoning = reasoning?.length ? { reasoning } : {}
+        return result?.kind === 'clarification'
+          ? json(response, 200, { clarification: result.clarification, ...liveReasoning })
+          : json(response, 200, { plan, ...liveReasoning })
       } catch (caught) {
         if (controller.signal.aborted || response.destroyed) return true
         throw caught
@@ -116,7 +152,9 @@ export function createAgentRouteHandler({
       }
     }
 
-    if (url.pathname === '/api/agent-chat') {
+    if (url.pathname === '/api/agent-chat' || url.pathname === '/api/agent-chat/stream') {
+      // 实时通道与一次性请求共用同一套鉴权、限流、校验与取消语义，只是回传方式不同。
+      const streaming = url.pathname.endsWith('/stream')
       if (request.method !== 'POST') return methodNotAllowed(response, 'Agent 对话资源只接受提交请求。', 'POST')
       const user = await requireUser(request)
       if (!await enforceRateLimit(response, { scope: 'agent-chat', subject: user.id, limit: config.security.agentChatsPerFiveMinutes, windowMs: 5 * 60_000 })) return true
@@ -133,12 +171,30 @@ export function createAgentRouteHandler({
       request.once('aborted', cancel)
       response.once('close', cancelOnClosedResponse)
       if (request.aborted || response.destroyed) cancel()
+      const sse = streaming ? createServerSentEventWriter(response) : undefined
       try {
-        const result = await chatWithBotanicAgent(input, config, { document: project.document, projectSkills, signal: controller.signal })
+        const result = await chatWithBotanicAgent(input, config, {
+          document: project.document,
+          projectSkills,
+          signal: controller.signal,
+          ...(sse ? { onEvent: (event) => sse.send(event) } : {}),
+        })
         if (controller.signal.aborted || response.destroyed) return true
-        return json(response, 200, { response: result })
+        if (!sse) return json(response, 200, { response: result })
+        // done 事件携带与非流式完全一致的响应体，客户端据此收敛这一轮。
+        sse.send({ type: 'done', response: result })
+        return sse.end()
       } catch (caught) {
         if (controller.signal.aborted || response.destroyed) return true
+        // 已经开始推送就不能再改状态码，只能把失败作为事件送达。
+        if (sse?.started) {
+          sse.send({
+            type: 'error',
+            code: caught?.code ?? 'AGENT_CHAT_FAILED',
+            message: typeof caught?.message === 'string' ? caught.message : 'Agent 对话未完成，请重试。',
+          })
+          return sse.end()
+        }
         throw caught
       } finally {
         request.off('aborted', cancel)

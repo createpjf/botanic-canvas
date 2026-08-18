@@ -3,6 +3,7 @@ import test from 'node:test'
 import type { GenerationModelOption } from './canvas.ts'
 import {
   buildBotanicAgentChatRequest,
+  completeBotanicAgentGenerationSettings,
   decideBotanicAgentRequest,
   inferBotanicAgentGenerationSettings,
   isBotanicAgentPromptGenerationPending,
@@ -180,4 +181,20 @@ test('历史 Prompt 必须精确按消息取用，并保留本次增量修改', 
 
 test('引用历史 Prompt 但找不到来源时明确返回缺失', () => {
   assert.deepEqual(resolveBotanicAgentGenerationPromptDecision('按这个生成', []), { status: 'missing', prompt: '' })
+})
+
+test('自动模式只用模型目录内的取值补齐输出设置', () => {
+  const models: GenerationModelOption[] = [
+    { id: 'gpt-image-2', label: 'GPT Image 2', aspectRatios: ['1:1', '16:9'], resolutions: ['1K', '2K'] },
+    { id: 'minimax-h3', label: 'MiniMax H3', aspectRatios: ['16:9'], resolutions: ['2K'] },
+  ]
+  assert.deepEqual(completeBotanicAgentGenerationSettings({}, models), {
+    model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K',
+  })
+  // 已解析出的取值不被覆盖，只补缺项。
+  assert.deepEqual(completeBotanicAgentGenerationSettings({ model: 'minimax-h3', resolution: '2K' }, models), {
+    model: 'minimax-h3', aspectRatio: '16:9', resolution: '2K',
+  })
+  // 没有可信目录就补不出取值，调用方仍会退回追问。
+  assert.deepEqual(completeBotanicAgentGenerationSettings({ aspectRatio: '1:1' }, []), { aspectRatio: '1:1' })
 })

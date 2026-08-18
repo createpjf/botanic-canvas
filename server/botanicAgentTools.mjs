@@ -103,14 +103,16 @@ function mcpArtifacts(result, { actionId, externalTool }) {
     .filter(Boolean)
     .join('\n'))
   if (textContent) artifacts.push({
-    kind: 'text', label: `MCP · ${externalTool}`, content: textContent,
+    kind: 'text', label: `MCP · ${externalTool}`, content: textContent, placement: 'panel',
   })
   for (const item of result.content) {
     if (item?.type !== 'resource_link') continue
     const url = safeArtifactUrl(item.uri)
     if (!url) continue
+    const kind = artifactKindForMimeType(item.mimeType)
     artifacts.push({
-      kind: artifactKindForMimeType(item.mimeType),
+      kind,
+      placement: kind === 'image' || kind === 'video' ? 'canvas' : 'panel',
       label: safeResultText(item.title || item.name, 120) || 'MCP 文件',
       url,
       ...(typeof item.mimeType === 'string' ? { mimeType: item.mimeType.slice(0, 120) } : {}),
@@ -123,8 +125,18 @@ function mcpArtifacts(result, { actionId, externalTool }) {
   }))
 }
 
+function artifactPlacement(artifact) {
+  if (artifact.placement === 'canvas' || artifact.placement === 'panel') return artifact.placement
+  return artifact.kind === 'image' || artifact.kind === 'video' ? 'canvas' : 'panel'
+}
+
+/**
+ * 只为落点是 canvas 的 Artifact 生成节点命令。Skill 规则与 MCP 文本默认留在结果面板，
+ * 不再无条件在画布上产生一个既不能当参考、又会抢走选中态的文字节点。
+ */
 function artifactCanvasCommands(artifacts, actionId) {
   return artifacts.flatMap((artifact, index) => {
+    if (artifactPlacement(artifact) !== 'canvas') return []
     const type = artifact.kind === 'text' || artifact.kind === 'workflow'
       ? 'create_text_node'
       : artifact.kind === 'image' || artifact.kind === 'video'
@@ -398,7 +410,7 @@ export function createBotanicAgentActionToolRegistry({
     },
     {
       name: 'skill_apply', label: '应用项目 Skill',
-      description: '读取已审核的项目或内置 Skill，并把规则作为新的文字节点写回画布。',
+      description: '读取已审核的项目或内置 Skill，并把规则作为本轮创作约束返回；不会在画布上创建节点。',
       risk: 'write', requiresConfirmation: true, terminal: true,
       parameters: {
         type: 'object', additionalProperties: false,
@@ -414,6 +426,7 @@ export function createBotanicAgentActionToolRegistry({
         const actionId = context?.toolCallId ?? `skill-apply-${skillId}`
         const artifact = {
           id: `artifact-${actionId}-1`, kind: 'workflow', label: `Skill · ${name}`, content: instructions,
+          placement: 'panel',
           provenance: { actionId, toolName: 'skill_apply' },
         }
         return {
@@ -448,6 +461,7 @@ export function createBotanicAgentActionToolRegistry({
           message: `已创建项目 Skill「${name}」。`,
           artifacts: [{
             id: `artifact-${actionId}-1`, kind: 'workflow', label: `Skill · ${name}`, content: instructions,
+            placement: 'panel',
             provenance: { actionId, toolName: 'skill_create' },
           }],
         }

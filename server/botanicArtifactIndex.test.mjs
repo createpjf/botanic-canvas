@@ -44,7 +44,8 @@ test('历史生成任务的每个输出形成稳定 Artifact，并补齐画布�
     id: 'job-1', projectId: 'project-1', status: 'succeeded', createdAt: 100, updatedAt: 300,
     settings: { model: 'image-1', aspectRatio: '1:1', resolution: '1K' },
     agentRun: { runId: 'run-1', branchId: 'branch-1' },
-    rawInput: { productionWorkflow: {
+    generationRecipe: { prompt: '海边黄昏，保持商品不变。', batchCount: 1, references: [] },
+    rawInput: { prompt: '原始请求提示词', productionWorkflow: {
       workflowId: 'workflow-1', workflowVersion: 2, workflowRunId: 'workflow-run-1', workflowItemId: 'sku-a',
     } },
     outputs: [{ id: 'output-1', image: '/api/media/media-1', mediaKind: 'image' }],
@@ -64,6 +65,17 @@ test('历史生成任务的每个输出形成稳定 Artifact，并补齐画布�
     workflowId: 'workflow-1', workflowVersion: 2, workflowRunId: 'workflow-run-1', workflowItemId: 'sku-a',
   })
   assert.equal(artifacts[0].createdAt, 250)
+  // 结果面板要展示“图 + 生成它的 Prompt”，配方优先于原始请求。
+  assert.equal(artifacts[0].metadata.prompt, '海边黄昏，保持商品不变。')
+  assert.equal(artifacts[0].placement, 'canvas')
+
+  const withoutRecipe = artifactsFromGenerationJob({
+    id: 'job-2', projectId: 'project-1', status: 'succeeded', createdAt: 100, updatedAt: 300,
+    settings: { model: 'image-1', aspectRatio: '1:1', resolution: '1K' },
+    rawInput: { prompt: '原始请求提示词' },
+    outputs: [{ id: 'output-1', image: '/api/media/media-2', mediaKind: 'image' }],
+  })
+  assert.equal(withoutRecipe[0].metadata.prompt, '原始请求提示词')
 })
 
 test('行动回执可在消息写回前直接补入 Artifact Index', () => {

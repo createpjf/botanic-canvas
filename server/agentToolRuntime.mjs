@@ -1,4 +1,33 @@
+import { agentToolCallSummary, appendAgentReasoning, extractProviderReasoning } from './botanicAgentReasoning.mjs'
+
 const TOOL_NAME = /^[a-z][a-z0-9_]{1,63}$/
+
+/**
+ * 每个工具都额外接受一个 why 参数：模型用一句话自述本次调用的目的。
+ * 它是模型主动说给用户听的摘要，不是隐藏思维链，因此可以展示也可以持久化。
+ */
+const REASON_PARAMETER = {
+  type: 'string',
+  maxLength: 120,
+  description: '用一句话说明你为什么要进行这次调用；这句话会直接展示给用户，不要包含隐藏推理。',
+}
+
+function withReasonParameter(parameters) {
+  if (!parameters || typeof parameters !== 'object' || parameters.type !== 'object') return parameters
+  return {
+    ...parameters,
+    properties: { ...(parameters.properties ?? {}), why: REASON_PARAMETER },
+  }
+}
+
+/** why 只用于展示，不进入各工具自己的校验器。 */
+function withoutReason(rawArguments) {
+  if (!rawArguments || typeof rawArguments !== 'object' || Array.isArray(rawArguments)) return rawArguments
+  if (!('why' in rawArguments)) return rawArguments
+  const { why, ...rest } = rawArguments
+  void why
+  return rest
+}
 
 export class AgentToolRuntimeError extends Error {
   constructor(code, message, statusCode = 422) {
@@ -46,7 +75,7 @@ export function createAgentToolRegistry(definitions) {
         function: {
           name: tool.name,
           description: tool.description,
-          parameters: tool.parameters,
+          parameters: withReasonParameter(tool.parameters),
         },
       }))
     },
@@ -56,7 +85,7 @@ export function createAgentToolRegistry(definitions) {
     async execute(name, rawArguments, context) {
       const tool = tools.get(name)
       if (!tool) throw new AgentToolRuntimeError('TOOL_NOT_ALLOWED', `Agent 无权调用工具：${name}。`, 403)
-      const input = tool.validate(rawArguments, context)
+      const input = tool.validate(withoutReason(rawArguments), context)
       return tool.execute(input, context)
     },
   })
@@ -82,6 +111,7 @@ export async function executeConfirmedAgentAction({
     toolCallId: id,
     approvedToolCallIds: new Set([...(context?.approvedToolCallIds ?? []), id]),
   })
+  const summary = agentToolCallSummary(argumentsValue)
   return {
     output,
     toolCall: {
@@ -91,6 +121,7 @@ export async function executeConfirmedAgentAction({
       risk: tool.risk,
       status: 'succeeded',
       requiresConfirmation: tool.requiresConfirmation,
+      ...(summary ? { summary } : {}),
     },
   }
 }
@@ -102,18 +133,31 @@ export async function runAgentToolLoop({
   toolChoice = 'auto',
   maximumSteps = 4,
   context,
+  allowRawReasoning = false,
+  onEvent,
 }) {
   const conversation = [...messages]
   const toolCalls = []
+  let reasoning = []
+  const emit = (event) => {
+    if (typeof onEvent !== 'function') return
+    try { onEvent(event) } catch { /* 展示层异常不得中断工具循环。 */ }
+  }
   for (let step = 0; step < maximumSteps; step += 1) {
     const response = await callModel({
       messages: conversation,
       tools: registry.openAITools(),
       tool_choice: toolChoice,
+      step,
     })
     const message = response?.choices?.[0]?.message
+    reasoning = appendAgentReasoning(reasoning, {
+      step,
+      source: 'raw',
+      text: extractProviderReasoning(message, { allowRaw: allowRawReasoning }),
+    })
     const calls = Array.isArray(message?.tool_calls) ? message.tool_calls : []
-    if (!calls.length) return { output: message?.content, toolCalls }
+    if (!calls.length) return { output: message?.content, toolCalls, reasoning }
 
     conversation.push({
       role: 'assistant',
@@ -125,6 +169,7 @@ export async function runAgentToolLoop({
       const tool = registry.get(name)
       if (!tool) throw new AgentToolRuntimeError('TOOL_NOT_ALLOWED', `Agent 无权调用工具：${name ?? 'unknown'}。`, 403)
       const rawArguments = parseArguments(call?.function?.arguments)
+      const summary = agentToolCallSummary(rawArguments)
       const trace = {
         id: typeof call.id === 'string' && call.id ? call.id : `tool-call-${step + 1}`,
         name,
@@ -132,13 +177,17 @@ export async function runAgentToolLoop({
         risk: tool.risk,
         status: 'succeeded',
         requiresConfirmation: tool.requiresConfirmation,
+        ...(summary ? { summary } : {}),
       }
+      reasoning = appendAgentReasoning(reasoning, { step, source: 'summary', text: summary })
       if (tool.requiresConfirmation && !context?.approvedToolCallIds?.has(trace.id)) {
         throw new AgentToolRuntimeError('TOOL_CONFIRMATION_REQUIRED', `${tool.label}需要用户确认。`, 409)
       }
+      emit({ type: 'tool', step, toolCall: { ...trace, status: 'running' } })
       const output = await registry.execute(name, rawArguments, { ...context, toolCallId: trace.id })
+      emit({ type: 'tool', step, toolCall: trace })
       toolCalls.push(trace)
-      if (tool.terminal) return { output, toolCalls }
+      if (tool.terminal) return { output, toolCalls, reasoning }
       conversation.push({ role: 'tool', tool_call_id: trace.id, content: JSON.stringify(output) })
     }
   }

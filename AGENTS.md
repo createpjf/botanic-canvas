@@ -12,6 +12,9 @@
 - 先确认行为归属，再修改拥有该行为的模块；不要把领域规则放回 UI。
 - `src/components/` 保持纯 UI，不直接访问 Store、网络或服务端。
 - 生成任务与持久化记录是状态权威；UI 占位、Toast 和本地选择态不是。
+- Agent 运行记录可以承载摘要级说明：模型通过工具 `why` 参数自述的一句话调用目的，可展示也可随计划持久化。
+  提供方回传的原始推理（`reasoning_content` 等）是完整思维链，不是摘要：默认不下发，只有 `AGENT_RAW_REASONING=true` 时
+  才随当轮响应下发供面板实时展示，且不得写入消息、计划、Run 或 Artifact Index。
 - 不改变幂等键、任务恢复、项目版本冲突和媒体授权语义，除非需求明确要求。
 - Agent Session、Message、Memory、Run 的独立实体是权威；`CanvasDocument` 中同名字段仍是迁移兼容视图。
 - Artifact Index 是历史血缘目录；删除画布节点或素材引用不得级联删除历史 Artifact。

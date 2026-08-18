@@ -187,3 +187,26 @@ test('Agent Run 拒绝旧或更新的本地待确认状态覆盖已执行实体'
     { status: 'running', updatedAt: 300 },
   ), true)
 })
+
+test('计划落库时剥离提供方原始推理，其余字段原样保留', () => {
+  const message = validateAgentMessageEntity({
+    id: 'message-plan', role: 'assistant', kind: 'plan', content: '海边换景', createdAt: 100,
+    plan: {
+      intent: 'replace_scene',
+      instruction: '把背景换成海边',
+      summary: '替换场景',
+      prompt: '海边黄昏',
+      settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
+      constraints: [{ dimension: 'scene', mode: 'vary' }],
+      output: { mode: 'single', count: 1, candidatesPerItem: 1 },
+      // 模型自述的调用目的可以持久化；提供方完整思维链不可以。
+      toolCalls: [{ id: 'call-1', name: 'canvas_read', label: '读取画布', risk: 'read', status: 'succeeded', requiresConfirmation: false, summary: '先确认画布内容' }],
+      reasoning: [{ step: 0, source: 'raw', text: '完整思维链不应落库' }],
+    },
+  })
+
+  assert.equal(message.plan.reasoning, undefined)
+  assert.equal(message.plan.prompt, '海边黄昏')
+  assert.equal(message.plan.toolCalls[0].summary, '先确认画布内容')
+  assert.deepEqual(message.plan.constraints, [{ dimension: 'scene', mode: 'vary' }])
+})

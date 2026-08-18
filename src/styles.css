@@ -3159,9 +3159,21 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-result-panel__run-status.is-success { background: #edf6ee; }
 .agent-result-panel__run-status.is-warning { background: #fff7e7; }
 .agent-result-panel__run-status.is-error { background: #fff4f1; }
-.agent-result-panel__filters { display: flex; gap: 5px; }
+.agent-result-panel__tabs { display: flex; gap: 5px; }
+.agent-result-panel__tabs button { display: inline-flex; min-height: 32px; align-items: center; gap: 5px; padding: 0 11px; border: 1px solid #d1ddd2; border-radius: 6px; background: #fff; color: #68796c; cursor: pointer; font-size: 11px; font-weight: 740; }
+.agent-result-panel__tabs button.is-active { border-color: #5e8768; background: #e9f1e9; color: #285c36; }
+.agent-result-panel__tabs button b { padding: 1px 5px; border-radius: 4px; background: #eef3ed; color: #6c7d70; font-size: 9px; font-weight: 760; }
+.agent-result-panel__tabs button.is-active b { background: #d8e8d9; color: #285c36; }
+.agent-result-panel__filters { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
 .agent-result-panel__filters button { min-height: 32px; padding: 0 10px; border: 1px solid #d1ddd2; border-radius: 6px; background: #fff; color: #68796c; cursor: pointer; font-size: 10px; font-weight: 720; }
 .agent-result-panel__filters button.is-active { border-color: #5e8768; background: #e9f1e9; color: #285c36; }
+.agent-result-panel__filters-divider { width: 1px; height: 18px; background: #dde5dd; }
+.agent-result-panel__model-select { margin-left: auto; }
+.agent-result-panel__prompt { margin: 0 9px 9px; border-top: 1px solid #e5ede5; color: #5f7065; font-size: 10px; }
+.agent-result-panel__prompt summary { min-height: 28px; cursor: pointer; color: #4b6a53; font-weight: 740; line-height: 28px; }
+.agent-result-panel__prompt pre { max-height: 128px; margin: 0 0 6px; overflow: auto; padding: 7px 8px; border-radius: 6px; background: #f2f6f1; color: #45584b; font-family: inherit; font-size: 10px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+.agent-result-panel__prompt button { display: inline-flex; min-height: 26px; align-items: center; gap: 5px; padding: 0 8px; border: 1px solid #cfdbd0; border-radius: 6px; background: #fff; color: #3d6146; cursor: pointer; font-size: 9px; font-weight: 720; }
+.agent-result-panel__prompt button svg { width: 12px; height: 12px; }
 .agent-result-panel__selection { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 9px; border: 1px solid #cbdacc; border-radius: 8px; background: #f2f7f1; }
 .agent-result-panel__selection strong { color: #2e5538; font-size: 11px; }
 .agent-result-panel__selection > div { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
@@ -3315,10 +3327,12 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-run-message__results :is(img, video) { display: block; width: 82px; height: 82px; flex: 0 0 82px; object-fit: cover; border: 1px solid #cbdacc; border-radius: 7px; background: #edf3ec; }
 .agent-message__plan { display: grid; gap: 9px; margin-top: 9px; padding: 11px; border: 1px solid #cbdccb; border-radius: 9px; background: #fff; }
 .agent-plan__context-lock { color: #527058; font-weight: 650; }
+.agent-plan__auto-paused { padding: 7px 8px; border-radius: 6px; background: #fdf3e0; color: #8a6a2f !important; font-weight: 700; line-height: 1.5; }
 .agent-message__tools { display: grid; gap: 5px; }
 .agent-message__tool { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; min-height: 30px; align-items: center; gap: 6px; padding: 0 8px; border-radius: 6px; background: #f2f6f1; color: #48614e; }
 .agent-message__tool > span { color: #6f8b75; font-size: 12px; }
 .agent-message__tool strong { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.agent-message__tool strong em { color: #6b7f71; font-style: normal; font-weight: 500; }
 .agent-message__tool small { color: #64806a; font-size: 10px; }
 .agent-message__tool.is-failed { background: #fff1ed; color: #994f43; }
 .agent-message__actions { display: grid; gap: 7px; }
@@ -3352,6 +3366,36 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-message__plan small { color: #77847b; font-size: 10px; }
 .agent-message__plan button { justify-self: start; height: 32px; padding: 0 12px; border: 1px solid #2d633b; border-radius: 7px; background: #2d633b; color: #fff; cursor: pointer; font-size: 10px; font-weight: 760; }
 .agent-message__plan button:disabled { opacity: .5; }
+.agent-message__plan.is-submitted { padding: 0; background: #fbfdfa; }
+.agent-message__plan.is-submitted[open] { padding-bottom: 11px; }
+.agent-message__plan.is-submitted > summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 11px; cursor: pointer; }
+.agent-message__plan.is-submitted > summary::marker, .agent-message__plan.is-submitted > summary::-webkit-details-marker { color: #9fb0a3; }
+.agent-message__plan.is-submitted > summary > span { display: grid; gap: 2px; min-width: 0; }
+.agent-message__plan.is-submitted > summary strong { overflow: hidden; color: #2e4735; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.agent-message__plan.is-submitted > summary small { color: #7f8d84; font-size: 9px; }
+.agent-message__plan.is-submitted > :not(summary) { margin-inline: 11px; }
+.agent-message__submitted { flex: 0 0 auto; padding: 3px 7px; border-radius: 5px; background: #e5efe6; color: #315d3b; font-size: 9px; font-style: normal; font-weight: 780; }
+.agent-prompt-review__submitted { display: grid; gap: 4px; }
+.agent-prompt-review__submitted small { color: #7d8a80; font-size: 9px; font-weight: 760; }
+.agent-prompt-review__submitted pre { max-height: 168px; margin: 0; overflow: auto; padding: 7px 8px; border: 1px solid #cbdccb; border-radius: 6px; background: #fff; color: #304a37; font-family: inherit; font-size: 11px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+.agent-action-card.is-settled { padding: 0; }
+.agent-action-card.is-settled[open] { padding-bottom: 9px; }
+.agent-action-card.is-settled > summary { display: flex; align-items: center; gap: 7px; padding: 9px 10px; cursor: pointer; }
+.agent-action-card.is-settled > summary > span { color: #477052; font-size: 10px; font-weight: 850; letter-spacing: .1em; }
+.agent-action-card.is-settled > summary strong { overflow: hidden; color: #2e4735; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.agent-action-card.is-settled > summary small { margin-left: auto; color: #78857c; font-size: 10px; }
+.agent-action-card.is-settled > :not(summary) { margin-inline: 10px; }
+.agent-action-card.is-dismissed { border-color: #dde3de; background: #fafbfa; }
+.agent-message__collapsible { display: grid; gap: 4px; }
+.agent-message__collapsible .agent-message__collapsible-body { position: relative; max-height: 200px; overflow: hidden; }
+.agent-message__collapsible .agent-message__collapsible-body::after { position: absolute; inset: auto 0 0; height: 46px; content: ''; background: linear-gradient(rgba(250, 252, 249, 0), rgba(250, 252, 249, .985) 86%); pointer-events: none; }
+.agent-message.is-notice .agent-message__collapsible-body::after, .agent-message.is-run .agent-message__collapsible-body::after { background: linear-gradient(rgba(245, 248, 244, 0), #f5f8f4 86%); }
+.agent-message__collapsible.is-expanded .agent-message__collapsible-body { max-height: none; overflow: visible; }
+.agent-message__collapsible.is-expanded .agent-message__collapsible-body::after { display: none; }
+.agent-message__collapsible-toggle { justify-self: start; min-height: 26px; padding: 0 9px; border: 1px solid #cbdacc; border-radius: 6px; background: #fff; color: #48674e; cursor: pointer; font-size: 9px; font-weight: 720; }
+.agent-message__collapsible-toggle:hover { border-color: #8faf94; background: #f1f7f1; color: #2d633b; }
+.agent-run-message__more { min-height: 82px; flex: 0 0 82px; padding: 0 8px; border: 1px dashed #cbdacc; border-radius: 7px; background: #f5f9f4; color: #48674e; cursor: pointer; font-size: 9px; font-weight: 720; }
+.agent-run-message__more:hover { border-color: #8faf94; color: #2d633b; }
 .agent-clarification-card { container-type: inline-size; display: grid; gap: 16px; margin-block-start: 9px; padding: 14px; border: 0; border-radius: 14px; background: #f6f9f5; box-shadow: 0 0 0 1px rgba(37, 74, 45, .06), 0 2px 6px rgba(37, 74, 45, .04); }
 .agent-clarification-card__intro { display: grid; gap: 6px; }
 .agent-clarification-card__intro > header { display: grid; gap: 2px; }
@@ -3690,7 +3734,7 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-composer__mode { display: inline-flex; width: auto; height: 38px; min-width: 70px; flex: 0 0 auto; align-items: center; justify-content: center; gap: 6px; padding: 0 8px; border: 0; border-radius: var(--radius-control); background: transparent; color: #355d3e; cursor: pointer; transition: background 140ms ease, color 140ms ease; }
 .agent-composer__mode:hover, .agent-composer__mode[aria-expanded="true"] { background: #e2eee3; color: #285d37; }
 .agent-composer__mode > svg { width: 18px; height: 18px; flex: 0 0 auto; }
-.agent-composer__mode-label { display: inline; font-size: 11px; font-weight: 720; }
+.agent-composer__mode-label { display: inline; font-size: 11px; font-weight: 720; white-space: nowrap; }
 .agent-composer__mode-chevron { display: inline; font-size: 14px; line-height: 1; }
 .agent-composer__model-select { width: 124px; flex: 0 1 124px; margin-left: 0; padding-left: 5px; border-left: 1px solid #e2e9e2; }
 .agent-composer__model-select .botanic-select__trigger { height: 38px; justify-content: space-between; gap: 7px; padding: 0 7px; border-color: transparent; border-radius: var(--radius-control); background: transparent; }
@@ -3744,7 +3788,9 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-composer__mode-menu button > svg { width: 18px; height: 18px; }
 .agent-composer__mode-menu button > span { display: grid; gap: 2px; }
 .agent-composer__mode-menu strong { font-size: 11px; }
-.agent-composer__mode-menu small { color: #7a877e; font-size: 10px; }
+.agent-composer__mode-menu small { color: #7a877e; font-size: 10px; line-height: 1.5; }
+.agent-composer__mode-menu { width: 290px; }
+.agent-composer__mode-note { margin: 4px 0 0; padding: 0 10px; color: #8b968e; font-size: 9px; line-height: 1.5; }
 
 /* Agent 最后一轮收口：结果按批次渐进披露，运行步骤默认只留一行摘要。 */
 .agent-result-group { gap: 0; overflow: hidden; border: 1px solid #dce8dd; border-radius: var(--radius-card); background: #fff; }

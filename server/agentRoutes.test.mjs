@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createAgentRouteHandler } from './agentRoutes.mjs'
+import { createAgentRouteHandler, createServerSentEventWriter } from './agentRoutes.mjs'
 
 const runInput = {
   projectId: 'project-concurrent',
@@ -289,4 +289,46 @@ test('Agent 会话设置仅在真实变化时产生协作动态', async () => {
 
   assert.equal(activities.length, 1)
   assert.equal(activities[0].summary, '更新了对话设置「新标题」')
+})
+
+function fakeServerResponse() {
+  return {
+    writableEnded: false,
+    head: undefined,
+    chunks: [],
+    writeHead(statusCode, headers) { this.head = { statusCode, headers } },
+    write(chunk) { this.chunks.push(chunk) },
+    end() { this.writableEnded = true },
+  }
+}
+
+test('SSE 写出器只在首个事件时写响应头，并按事件边界分隔', () => {
+  const response = fakeServerResponse()
+  const sse = createServerSentEventWriter(response)
+
+  assert.equal(sse.started, false)
+  assert.equal(response.head, undefined)
+
+  sse.send({ type: 'answer', step: 0, delta: '你好' })
+  assert.equal(sse.started, true)
+  assert.equal(response.head.statusCode, 200)
+  assert.match(response.head.headers['Content-Type'], /text\/event-stream/)
+  assert.equal(response.head.headers['Cache-Control'], 'no-store')
+  // 反向代理缓冲会让流式退化成一次性返回。
+  assert.equal(response.head.headers['X-Accel-Buffering'], 'no')
+
+  const firstHead = response.head
+  sse.send({ type: 'done', response: { answer: '你好', mode: 'conversation' } })
+  assert.equal(response.head, firstHead)
+  assert.deepEqual(response.chunks, [
+    'data: {"type":"answer","step":0,"delta":"你好"}\n\n',
+    'data: {"type":"done","response":{"answer":"你好","mode":"conversation"}}\n\n',
+  ])
+
+  sse.end()
+  assert.equal(response.writableEnded, true)
+  // 响应结束后不再写出，也不会重复 end。
+  assert.equal(sse.send({ type: 'answer', step: 1, delta: '晚了' }), false)
+  assert.equal(response.chunks.length, 2)
+  assert.equal(sse.end(), true)
 })

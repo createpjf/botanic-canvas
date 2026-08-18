@@ -43,7 +43,21 @@ export type AgentToolCallTrace = {
   risk: 'read' | 'write' | 'costly' | 'external'
   status: 'pending' | 'running' | 'awaiting_confirmation' | 'succeeded' | 'failed'
   requiresConfirmation: boolean
+  /** 模型自述的一句话调用目的。它是说给用户听的摘要，不是隐藏思维链，可展示也可持久化。 */
+  summary?: string
   error?: string
+}
+
+/**
+ * 一轮里的运行说明片段。
+ * - `summary` 来自模型自述的工具调用目的，可展示、可随计划持久化。
+ * - `raw` 是提供方回传的完整推理，默认关闭；即使打开也只用于当轮实时展示，
+ *   不写入消息、计划或 Artifact Index。
+ */
+export type BotanicAgentReasoningEntry = {
+  step: number
+  source: 'summary' | 'raw'
+  text: string
 }
 
 /**
@@ -124,6 +138,130 @@ export function createBotanicAgentRuntimeSteps(input: {
   return steps
 }
 
+const toolCallStepPrefix = 'tool:'
+
+function agentToolCallStepKind(risk: AgentToolCallTrace['risk']): BotanicAgentRuntimeStep['kind'] {
+  if (risk === 'read') return 'read'
+  if (risk === 'external') return 'search'
+  return 'write'
+}
+
+function agentToolCallStepDetail(call: AgentToolCallTrace) {
+  const riskLabel = call.risk === 'read'
+    ? '读取项目数据'
+    : call.risk === 'external'
+      ? '调用外部工具'
+      : call.risk === 'costly'
+        ? '会产生生成费用'
+        : '写入项目数据'
+  return `${call.name} · ${riskLabel}`
+}
+
+/**
+ * 把服务端真实回传的工具调用展开成独立运行步骤，插在规划步骤之后。
+ * 这些仍然只是可验证的产品操作——调了哪个工具、结果如何——不是模型内部思考内容，
+ * 但比“已调用：A、B”这一行 detail 能说明的多得多。
+ */
+export function insertBotanicAgentToolCallSteps(
+  steps: BotanicAgentRuntimeStep[],
+  toolCalls: AgentToolCallTrace[],
+): BotanicAgentRuntimeStep[] {
+  const seen = new Set<string>()
+  const toolSteps = toolCalls.flatMap((call): BotanicAgentRuntimeStep[] => {
+    const id = `${toolCallStepPrefix}${call.id}`
+    const label = call.label?.trim()
+    if (!call.id || !label || seen.has(id)) return []
+    seen.add(id)
+    return [{
+      id,
+      kind: agentToolCallStepKind(call.risk),
+      label,
+      detail: call.summary?.trim() || agentToolCallStepDetail(call),
+      status: call.status === 'awaiting_confirmation' ? 'pending' : call.status,
+      ...(call.error?.trim() ? { error: call.error.trim() } : {}),
+    }]
+  })
+  if (!toolSteps.length) return steps
+  // 工具调用可能一条一条到达（流式）。已有的调用就地更新状态、保持原位；
+  // 新调用接在最后一条工具步骤之后，否则实时轨迹会倒序显示，
+  // 直到轮次结束被整批更新纠正。
+  const incomingById = new Map(toolSteps.map((step) => [step.id, step]))
+  const existingIds = new Set(steps.map((step) => step.id))
+  const updated = steps.map((step) => incomingById.get(step.id) ?? step)
+  const appended = toolSteps.filter((step) => !existingIds.has(step.id))
+  if (!appended.length) return updated
+  const lastToolIndex = updated.reduce(
+    (last, step, index) => step.id.startsWith(toolCallStepPrefix) ? index : last,
+    -1,
+  )
+  if (lastToolIndex < 0) return insertAfterPlannerStep(updated, appended)
+  return [...updated.slice(0, lastToolIndex + 1), ...appended, ...updated.slice(lastToolIndex + 1)]
+}
+
+function insertAfterPlannerStep(
+  steps: BotanicAgentRuntimeStep[],
+  inserted: BotanicAgentRuntimeStep[],
+): BotanicAgentRuntimeStep[] {
+  const replaced = new Set(inserted.map((step) => step.id))
+  const base = steps.filter((step) => !replaced.has(step.id))
+  const plannerIndex = base.findIndex((step) => step.id === 'call-planner')
+  if (plannerIndex < 0) return [...base, ...inserted]
+  return [...base.slice(0, plannerIndex + 1), ...inserted, ...base.slice(plannerIndex + 1)]
+}
+
+const liveReasoningStepPrefix = 'reasoning:live:'
+/** 实时推理只保留尾部，避免长思维链把运行轨迹撑成日志墙。 */
+export const botanicAgentLiveReasoningLimit = 600
+
+/**
+ * 流式推理增量。同一步的增量追加到同一条步骤上，轮次收束后由最终片段替换。
+ * 这条步骤只活在组件状态里，不写入消息、计划或 Artifact Index。
+ */
+export function appendBotanicAgentReasoningDelta(
+  steps: BotanicAgentRuntimeStep[],
+  step: number,
+  delta: string,
+): BotanicAgentRuntimeStep[] {
+  if (!delta) return steps
+  const id = `${liveReasoningStepPrefix}${step}`
+  const existing = steps.find((item) => item.id === id)
+  if (existing) {
+    const detail = `${existing.detail}${delta}`.slice(-botanicAgentLiveReasoningLimit)
+    return steps.map((item) => item.id === id ? { ...item, detail } : item)
+  }
+  return insertAfterPlannerStep(steps, [{
+    id,
+    kind: 'plan',
+    label: '模型运行说明',
+    detail: delta.slice(-botanicAgentLiveReasoningLimit),
+    status: 'running',
+  }])
+}
+
+/**
+ * 把当轮运行说明补进轨迹。summary 片段已经由工具步骤承载，这里只补提供方原始推理——
+ * 它默认关闭，即使打开也只活在这一轮的组件状态里，不写入消息、计划或 Artifact Index。
+ * 收到最终片段时同时清掉流式过程中的临时步骤，避免同一段推理出现两次。
+ */
+export function insertBotanicAgentReasoningSteps(
+  steps: BotanicAgentRuntimeStep[],
+  entries: BotanicAgentReasoningEntry[],
+): BotanicAgentRuntimeStep[] {
+  const reasoningSteps = entries.flatMap((entry, index): BotanicAgentRuntimeStep[] => {
+    const text = entry.source === 'raw' ? entry.text.trim() : ''
+    if (!text) return []
+    return [{
+      id: `reasoning:${entry.step}:${index}`,
+      kind: 'plan',
+      label: '模型运行说明',
+      detail: text,
+      status: 'succeeded',
+    }]
+  })
+  if (!reasoningSteps.length) return steps
+  return insertAfterPlannerStep(steps.filter((step) => !step.id.startsWith(liveReasoningStepPrefix)), reasoningSteps)
+}
+
 export function updateBotanicAgentRuntimeStep(
   steps: BotanicAgentRuntimeStep[],
   stepId: string,
@@ -165,13 +303,17 @@ export type BotanicAgentRuntimeSummary = {
   progress: number
 }
 
+export type BotanicAgentRuntimeMode = 'generation' | 'conversation' | 'prompt' | 'research'
+
 /**
  * 把多个底层步骤压缩成一个用户能理解的阶段摘要。
  * 详细步骤仍可展开查看，但默认只显示当前阶段与下一步，避免 Runtime 变成日志墙。
+ * 摘要按本轮路由取词：对话、Prompt 与检索轮次不会谎称“结果已回填画布”。
  */
 export function summarizeBotanicAgentRuntime(input: {
   steps: BotanicAgentRuntimeStep[]
   phase: BotanicAgentRuntimePhase
+  mode?: BotanicAgentRuntimeMode
 }): BotanicAgentRuntimeSummary {
   const totalCount = input.steps.length
   const completedCount = input.steps.filter((step) => step.status === 'succeeded').length
@@ -229,9 +371,25 @@ export function summarizeBotanicAgentRuntime(input: {
       nextAction: '查看并重试',
     },
   }
+  const mode = input.mode ?? 'generation'
+  const nonGenerationCopy: Partial<Record<BotanicAgentRuntimePhase, Pick<BotanicAgentRuntimeSummary, 'label' | 'detail' | 'nextAction'>>> = mode === 'generation'
+    ? {}
+    : {
+      idle: {
+        label: '等待你的问题',
+        detail: mode === 'research' ? '描述要查的内容，Agent 只回答项目内可核对的事实。' : '可以直接提问，也可以让我先写一段 Prompt。',
+        nextAction: '输入问题',
+      },
+      completed: mode === 'prompt'
+        ? { label: 'Prompt 已生成', detail: '可以直接复制使用，或让我按这段 Prompt 生成。', nextAction: '用这段 Prompt 生成' }
+        : mode === 'research'
+          ? { label: '检索完成', detail: '已列出命中的项目资料与来源。', nextAction: '继续追问' }
+          : { label: '已回复', detail: '可以继续追问，或描述创作目标进入生成。', nextAction: '继续对话' },
+    }
   return {
     phase: input.phase,
     ...phaseCopy[input.phase],
+    ...nonGenerationCopy[input.phase],
     completedCount,
     totalCount,
     progress,
@@ -259,6 +417,11 @@ export function resolveBotanicAgentWorkflowReferenceNodeIds(
     }
     return false
   })
+}
+
+/** 仍在进行的 Run 才需要在面板底部恢复实时进度；已结束的 Run 由对话内的状态消息承载。 */
+export function shouldRestoreBotanicAgentRuntimeSteps(status: BotanicAgentRunStatus) {
+  return status === 'queued' || status === 'running' || status === 'executing'
 }
 
 /**
@@ -293,9 +456,10 @@ export function restoreBotanicAgentRuntimeSteps(input: {
         ...(failed ? { error: input.run.status === 'cancelled' ? '任务已取消。' : '任务未完成，请查看任务面板。' } : {}),
       }
     }
+    // 上下文与规划步骤在 Run 落库时必然已经完成，无论 Run 最终成败。
     return {
       ...step,
-      status: failed || !active ? 'succeeded' : step.id === 'call-planner' ? 'succeeded' : 'succeeded',
+      status: 'succeeded',
       detail: `${step.detail} · 已从服务端恢复`,
     }
   })
@@ -326,6 +490,12 @@ export function botanicAgentSubmissionKey(messageId: string, plan: Pick<BotanicA
 
 export type BotanicAgentArtifactKind = 'image' | 'video' | 'text' | 'workflow' | 'asset_group' | 'file'
 
+/**
+ * Artifact 自己声明落点。'panel' 只进结果面板与 Artifact Index，'canvas' 才允许创建节点。
+ * 缺省时按媒体落画布、文本留面板，避免 Skill 规则、MCP 文本被当成创作素材写进画布。
+ */
+export type BotanicAgentArtifactPlacement = 'canvas' | 'panel'
+
 export type BotanicAgentArtifact = {
   id: string
   kind: BotanicAgentArtifactKind
@@ -333,6 +503,7 @@ export type BotanicAgentArtifact = {
   content?: string
   url?: string
   mimeType?: string
+  placement?: BotanicAgentArtifactPlacement
   metadata?: Record<string, unknown>
   provenance: {
     actionId: string
@@ -401,29 +572,30 @@ function safeAgentArtifactUrl(value?: string) {
   try { return new URL(value).protocol === 'https:' } catch { return false }
 }
 
+export function botanicAgentArtifactPlacement(artifact: Pick<BotanicAgentArtifact, 'kind' | 'placement'>): BotanicAgentArtifactPlacement {
+  if (artifact.placement) return artifact.placement
+  return artifact.kind === 'image' || artifact.kind === 'video' ? 'canvas' : 'panel'
+}
+
+/**
+ * 只有显式落点为 canvas 的 Artifact 才会创建节点。文字与工作流产物默认留在结果面板，
+ * 旧版 writeback 也不再兜底生成文字节点——它仍会进入 Artifact Index，不丢历史。
+ */
 export function resolveBotanicAgentCanvasCommands(result: BotanicAgentActionResult): ResolvedBotanicAgentCanvasCommand[] {
-  if (result.artifacts?.length && result.canvasCommands?.length) {
-    const artifacts = new Map(result.artifacts.map((artifact) => [artifact.id, artifact]))
-    return result.canvasCommands.flatMap((command): ResolvedBotanicAgentCanvasCommand[] => {
-      if (command.type !== 'create_text_node' && command.type !== 'create_media_node') return []
-      const artifact = artifacts.get(command.artifactId)
-      if (!artifact) return []
-      const textCompatible = command.type === 'create_text_node'
-        && (artifact.kind === 'text' || artifact.kind === 'workflow')
-        && Boolean(artifact.content?.trim())
-      const mediaCompatible = command.type === 'create_media_node'
-        && (artifact.kind === 'image' || artifact.kind === 'video')
-        && safeAgentArtifactUrl(artifact.url)
-      return textCompatible || mediaCompatible ? [{ artifact, command }] : []
-    })
-  }
-  if (!result.writeback?.content.trim()) return []
-  const artifact: BotanicAgentArtifact = {
-    id: 'legacy-writeback', kind: 'text', label: result.writeback.label,
-    content: result.writeback.content,
-    provenance: { actionId: 'legacy-action', toolName: 'legacy_writeback' },
-  }
-  return [{ artifact, command: { id: 'legacy-writeback-command', type: 'create_text_node', artifactId: artifact.id } }]
+  if (!result.artifacts?.length || !result.canvasCommands?.length) return []
+  const artifacts = new Map(result.artifacts.map((artifact) => [artifact.id, artifact]))
+  return result.canvasCommands.flatMap((command): ResolvedBotanicAgentCanvasCommand[] => {
+    if (command.type !== 'create_text_node' && command.type !== 'create_media_node') return []
+    const artifact = artifacts.get(command.artifactId)
+    if (!artifact || botanicAgentArtifactPlacement(artifact) !== 'canvas') return []
+    const textCompatible = command.type === 'create_text_node'
+      && (artifact.kind === 'text' || artifact.kind === 'workflow')
+      && Boolean(artifact.content?.trim())
+    const mediaCompatible = command.type === 'create_media_node'
+      && (artifact.kind === 'image' || artifact.kind === 'video')
+      && safeAgentArtifactUrl(artifact.url)
+    return textCompatible || mediaCompatible ? [{ artifact, command }] : []
+  })
 }
 
 export function recordBotanicAgentCanvasWritebacks(
@@ -487,17 +659,24 @@ export type BotanicAgentPlan = {
   actions?: BotanicAgentActionProposal[]
 }
 
+/** 单条文字节点带进计划的补充描述长度上限。 */
+export const botanicAgentContextNoteLimit = 500
+
 export type BotanicAgentContextSnapshot = {
   nodeId: string
   label: string
   kind: '素材' | '结果' | '文字' | '节点'
   mediaKind?: 'image' | 'video'
   role?: string
+  /** 文字节点的正文。它是可解释的创作说明，不是媒体数据，因此可以随快照持久化。 */
+  note?: string
 }
 
 export type BotanicAgentContextSnapshotInput = Omit<BotanicAgentContextSnapshot, 'nodeId'> & {
   nodeId?: string
   id?: string
+  /** 画布读模型里文字节点的字段名；与 note 等价。 */
+  content?: string
 }
 
 /** 生成可安全持久化的上下文快照，明确排除图片 URL、Blob 和其他媒体数据。 */
@@ -511,14 +690,30 @@ export function createBotanicAgentContextSnapshot(
     const label = item.label.trim()
     if (!nodeId || !label || seen.has(nodeId)) return []
     seen.add(nodeId)
+    const note = (item.note ?? item.content ?? '').trim().slice(0, botanicAgentContextNoteLimit)
     return [{
       nodeId,
       label,
       kind: item.kind,
       ...(item.mediaKind ? { mediaKind: item.mediaKind } : {}),
       ...(item.role?.trim() ? { role: item.role.trim() } : {}),
+      ...(item.kind === '文字' && note ? { note } : {}),
     }]
   }).slice(0, maximum)
+}
+
+/**
+ * 画布上的文字节点是用户写下的补充描述，把它拼进提示词，
+ * 而不是让它既能进上下文、又对生成毫无影响。
+ */
+export function botanicAgentPromptWithContextNotes(
+  instruction: string,
+  contextSnapshot: BotanicAgentContextSnapshot[],
+) {
+  const notes = contextSnapshot.flatMap((item) => (
+    item.kind === '文字' && item.note ? [`- ${item.label}：${item.note}`] : []
+  ))
+  return notes.length ? `${instruction}\n\n补充描述：\n${notes.join('\n')}` : instruction
 }
 
 export function botanicAgentContextSnapshotNodeIds(
@@ -708,6 +903,32 @@ export type BotanicAgentRun = {
 }
 
 export type BotanicAgentExecutionMode = 'manual' | 'auto'
+
+export type BotanicAgentExecutionDecision =
+  /** 输出设置仍然缺项，两种模式都必须先问清楚，不猜测会产生费用的参数。 */
+  | { action: 'ask_settings' }
+  /** 计划里还有需要人工确认的外部行动，自动模式在此降级为手动。 */
+  | { action: 'confirm'; reason: 'manual' | 'pending_actions' }
+  | { action: 'auto_submit' }
+
+/**
+ * 执行模式的唯一判定处。计划模式与自动模式的差别在这里成为可解释的结论，
+ * 而不是散落在界面里的若干 if：自动模式会自己补全可推断的输出设置并直接提交，
+ * 但遇到外部行动仍然停下来，且降级原因可以被界面读出来告诉用户。
+ */
+export function resolveBotanicAgentExecutionDecision(input: {
+  mode: BotanicAgentExecutionMode
+  settingsComplete: boolean
+  pendingActionCount: number
+}): BotanicAgentExecutionDecision {
+  if (!input.settingsComplete) return { action: 'ask_settings' }
+  if (input.pendingActionCount > 0) return { action: 'confirm', reason: 'pending_actions' }
+  return input.mode === 'auto' ? { action: 'auto_submit' } : { action: 'confirm', reason: 'manual' }
+}
+
+export function botanicAgentExecutionModeLabel(mode: BotanicAgentExecutionMode) {
+  return mode === 'auto' ? '自动模式' : '计划模式'
+}
 
 export type BotanicAgentMemoryKind = 'rule' | 'approved' | 'avoid'
 
@@ -981,6 +1202,8 @@ export function mergeBotanicAgentArtifactIndex(
     ])
     if (!artifacts.has(artifact.id)) artifacts.set(artifact.id, {
       ...artifact,
+      // 索引条目的时间落进 metadata，读模型才有统一可排序的时间戳。
+      metadata: { createdAt: artifact.createdAt, ...artifact.metadata },
       provenance: { ...artifact.provenance, sourceNodeIds },
     })
   }
@@ -1011,12 +1234,15 @@ export function collectBotanicAgentResults(input: {
     if (!job?.agentRun) return []
     const candidateId = result.candidateId ?? node.id
     const mediaKind = result.mediaKind ?? 'image'
+    // 结果的提示词来自节点配方，不需要额外持久化字段就能在结果面板还原“图 + prompt”。
+    const prompt = result.generationRecipe?.prompt?.trim() || result.rootRecipe?.prompt?.trim()
     return [{
       id: `generation:${job.id}:${candidateId}`,
       kind: mediaKind,
       label: result.label?.trim() || (mediaKind === 'video' ? '生成视频' : '生成图片'),
       url: result.image,
       mimeType: undefined,
+      placement: 'canvas',
       metadata: {
         source: 'generation',
         status: result.status,
@@ -1026,6 +1252,7 @@ export function collectBotanicAgentResults(input: {
         groupId: job.agentRun.runId,
         savedToLibrary: assets.some((asset) => asset.source === 'generated' && asset.image === result.image),
         settings: result.generationSettings,
+        ...(prompt ? { prompt } : {}),
       },
       provenance: {
         actionId: `generation:${job.id}`,
@@ -1040,6 +1267,24 @@ export function collectBotanicAgentResults(input: {
     const rightTime = Number(right.metadata?.createdAt ?? 0)
     return rightTime - leftTime
   }), ...actionArtifacts]
+}
+
+/** 结果面板的统一排序键；缺时间的历史产物排在最后而不是随机穿插。 */
+export function botanicAgentArtifactTimestamp(artifact: Pick<BotanicAgentArtifact, 'metadata'>) {
+  const value = Number(artifact.metadata?.createdAt ?? 0)
+  return Number.isFinite(value) ? value : 0
+}
+
+export function botanicAgentArtifactPrompt(artifact: Pick<BotanicAgentArtifact, 'metadata'>) {
+  const value = artifact.metadata?.prompt
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+export function botanicAgentArtifactModel(artifact: Pick<BotanicAgentArtifact, 'metadata'>) {
+  const settings = artifact.metadata?.settings
+  if (!settings || typeof settings !== 'object') return undefined
+  const model = (settings as { model?: unknown }).model
+  return typeof model === 'string' && model.trim() ? model.trim() : undefined
 }
 
 export type BotanicAgentResultSelection = {
@@ -1340,7 +1585,7 @@ export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): Botani
     ...(contextSnapshot.length ? { contextSnapshot } : {}),
     references,
     constraints,
-    prompt: instruction,
+    prompt: botanicAgentPromptWithContextNotes(instruction, contextSnapshot),
     settings,
     output,
     ...(input.assetGroup ? { assetGroupId: input.assetGroup.id } : {}),

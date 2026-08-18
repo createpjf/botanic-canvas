@@ -11,6 +11,7 @@ import {
   createBotanicAgentContextSnapshot,
   insertBotanicAgentMention,
   readBotanicAgentMentionQuery,
+  resolveBotanicAgentExecutionDecision,
   summarizeBotanicAgentRuntime,
   type BotanicAgentActionProposal,
   type BotanicAgentActionResult,
@@ -24,6 +25,7 @@ import {
   type BotanicAgentMessage,
   type BotanicAgentPlan,
   type BotanicAgentRun,
+  type BotanicAgentRuntimePhase,
   type BotanicAgentRunTimelineFilter,
   type BotanicAgentSession,
   type BotanicAgentSessionTimelineFilter,
@@ -31,6 +33,7 @@ import {
   type BotanicAgentSkillCatalogItem,
 } from '../../domain/agent'
 import {
+  completeBotanicAgentGenerationSettings,
   decideBotanicAgentRequest,
   inferBotanicAgentGenerationSettings,
   isBotanicAgentPromptGenerationPending,
@@ -44,7 +47,7 @@ import type {
   GenerationSettings,
   UploadedAssetInput,
 } from '../../domain/canvas'
-import { createProjectAgentSkill, listBotanicAgentSystemSkills, listProjectAgentSkills, requestBotanicAgentChat, requestBotanicAgentPlan } from '../../lib/agentApi'
+import { createProjectAgentSkill, listBotanicAgentSystemSkills, listProjectAgentSkills, requestBotanicAgentPlan, streamBotanicAgentChat } from '../../lib/agentApi'
 import { ProductApiError, serverPersistenceEnabled } from '../../lib/productSession'
 import { maxUploadAssets, readUploadedAssetInput, validateUploadFiles } from '../../lib/uploadedAssets'
 import { useCanvasStore } from '../../store/canvasStore'
@@ -111,6 +114,15 @@ function agentTimelineTimestamp(timestamp: number) {
     month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
   }).format(new Date(timestamp))
 }
+
+/**
+ * 底部运行轨迹只在“这一轮还没收束”时出现：进行中、等待用户输入，或本轮失败需要处理。
+ * completed 不在其中——完成信息由对话内该轮的状态消息承载，避免上一轮永远钉在最下方。
+ */
+const agentRuntimeFeedPhases = new Set<BotanicAgentRuntimePhase>([
+  'reading', 'planning', 'waiting_clarification', 'waiting_confirmation',
+  'waiting_reference', 'draft_ready', 'executing', 'failed',
+])
 
 const agentQuickActions: Array<{ intent: BotanicAgentIntent; label: string; instruction: string }> = [
   { intent: 'replace_scene', label: '换场景', instruction: '保持人物、服装和商品不变，只替换场景与环境光线。' },
@@ -384,7 +396,8 @@ export default function AgentWorkspace({
     if (!mentionQuery) return []
     const query = mentionQuery.query.trim().toLocaleLowerCase()
     return contextOptions
-      .filter((item) => item.kind === '素材' && Boolean(item.image))
+      // 文字节点现在会作为补充描述进入提示词，所以它和图片素材一样可以被 @ 引用。
+      .filter((item) => (item.kind === '素材' && Boolean(item.image)) || (item.kind === '文字' && Boolean(item.content)))
       .filter((item) => !query || item.label.toLocaleLowerCase().includes(query))
       .slice(0, 6)
   }, [contextOptions, mentionQuery])
@@ -417,12 +430,17 @@ export default function AgentWorkspace({
   const {
     runtimeSteps,
     runtimePhase,
+    runtimeMode,
     runtimeDetailsOpen,
     setRuntimePhase,
     setRuntimeDetailsOpen,
     beginRuntimeTrace,
+    resetRuntimeTrace,
     updateRuntimeStep,
     attachPlannerToolTrace,
+    attachRuntimeReasoning,
+    appendRuntimeReasoningDelta,
+    updateRuntimeStepDetail,
     yieldRuntimeFrame,
     completeRuntimeContextReads,
     completeRuntimeTrace,
@@ -438,8 +456,8 @@ export default function AgentWorkspace({
     plannerLabel: agentPlannerModelLabel(plannerModel),
   })
   const runtimeSummary = useMemo(
-    () => summarizeBotanicAgentRuntime({ steps: runtimeSteps, phase: runtimePhase }),
-    [runtimePhase, runtimeSteps],
+    () => summarizeBotanicAgentRuntime({ steps: runtimeSteps, phase: runtimePhase, mode: runtimeMode }),
+    [runtimeMode, runtimePhase, runtimeSteps],
   )
   const runtimeFailed = runtimePhase === 'failed' || runtimeSteps.some((step) => step.status === 'failed')
   const runtimeComplete = runtimePhase === 'completed'
@@ -471,8 +489,17 @@ export default function AgentWorkspace({
     () => sessionTimeline.filter((item) => item.unreadRunCount > 0).length,
     [sessionTimeline],
   )
-  // 提交任务后以 Run 卡作为唯一任务状态来源；规划/追问阶段仍显示 Runtime 摘要。
-  const showRuntimeFeed = runtimeSteps.length > 0 && (!latestRun?.branches.length || !['executing', 'completed', 'failed'].includes(runtimePhase))
+  // 运行轨迹只描述“这一轮正在发生什么”：轮次收束后由对话内的状态消息接手，
+  // 底部不再留下上一轮的完成卡。提交任务后仍以 Run 卡作为唯一任务状态来源。
+  const runtimeFeedPhase = agentRuntimeFeedPhases.has(runtimePhase)
+  const showRuntimeFeed = runtimeSteps.length > 0 && runtimeFeedPhase
+    && (!latestRun?.branches.length || runtimePhase !== 'executing')
+
+  // 切换会话时上一轮轨迹不再跟随；新会话若有进行中的 Run 会由恢复逻辑重新填充。
+  const sessionId = session?.id
+  useEffect(() => {
+    resetRuntimeTrace()
+  }, [resetRuntimeTrace, sessionId])
 
   const registerMessageNode = useCallback((messageId: string, node: HTMLDivElement | null) => {
     if (node) messageNodesRef.current.set(messageId, node)
@@ -903,7 +930,7 @@ export default function AgentWorkspace({
     setRuntimePhase('planning')
     updateRuntimeStep('call-planner', 'running')
     try {
-      const nextPlan = await requestBotanicAgentPlan(input, controller.signal)
+      const nextPlan = await requestBotanicAgentPlan(input, controller.signal, attachRuntimeReasoning)
       if (controller.signal.aborted) return null
       attachPlannerToolTrace(nextPlan)
       updateRuntimeStep('call-planner', 'succeeded')
@@ -1102,19 +1129,48 @@ export default function AgentWorkspace({
         { role: 'user' as const, content: options.appendUser ?? cleanInstruction },
       ].slice(-16)
       try {
-        const response = await requestBotanicAgentChat({
+        // 实时通道只改变“回答什么时候到”：工具与推理增量直接更新运行轨迹，
+        // 回答本身仍然等 done 事件一次性落成消息，避免半截内容进入对话记录。
+        let answerPreview = ''
+        const respondDetail = runtimeTrace.find((step) => step.id === 'respond')?.detail ?? ''
+        const response = await streamBotanicAgentChat({
           projectId,
           plannerModel,
           mountedSkillIds: session.mountedSkillIds,
           mode: route,
           messages: chatMessages,
           contextNodeIds: session.contextNodeIds,
-        }, controller.signal)
+        }, {
+          signal: controller.signal,
+          onEvent: (event) => {
+            if (controller.signal.aborted) return
+            if (event.type === 'tool') {
+              attachPlannerToolTrace({ toolCalls: [event.toolCall] } as BotanicAgentPlan)
+              return
+            }
+            if (event.type === 'reasoning') {
+              appendRuntimeReasoningDelta(event.step, event.delta)
+              return
+            }
+            if (event.type === 'answer') {
+              if (!answerPreview) {
+                updateRuntimeStep('call-planner', 'succeeded')
+                updateRuntimeStep('respond', 'running')
+              }
+              answerPreview = `${answerPreview}${event.delta}`.slice(-120)
+              updateRuntimeStepDetail('respond', answerPreview)
+            }
+          },
+        })
         if (controller.signal.aborted) return
+        attachPlannerToolTrace({ toolCalls: response.toolCalls } as BotanicAgentPlan)
+        attachRuntimeReasoning(response.reasoning)
         updateRuntimeStep('call-planner', 'succeeded')
         updateRuntimeStep('respond', 'running')
         await yieldRuntimeFrame()
         if (!isCurrentAgentProject()) return
+        // 流式过程中借用了这条步骤展示回答预览，收敛时换回它本来的说明。
+        if (answerPreview && respondDetail) updateRuntimeStepDetail('respond', respondDetail)
         updateRuntimeStep('respond', 'succeeded')
         setRuntimePhase('completed')
         setRuntimeDetailsOpen(false)
@@ -1170,13 +1226,23 @@ export default function AgentWorkspace({
         cleanInstruction,
         generationModels.filter((model) => model.mediaKind !== 'video'),
       )
-      const resolvedGenerationOverrides = { ...inferredGenerationOverrides, ...options.generationOverrides }
+      const imageModels = generationModels.filter((model) => model.mediaKind !== 'video')
+      const requestedGenerationOverrides = { ...inferredGenerationOverrides, ...options.generationOverrides }
+      // 自动模式自己从可信模型目录补齐缺失的输出设置，不再为了同一个问题停下来。
+      const resolvedGenerationOverrides = session.executionMode === 'auto'
+        ? completeBotanicAgentGenerationSettings(requestedGenerationOverrides, imageModels)
+        : requestedGenerationOverrides
       const hasCompleteOutputSettings = Boolean(
         resolvedGenerationOverrides.model
         && resolvedGenerationOverrides.aspectRatio
         && resolvedGenerationOverrides.resolution,
       )
-      if (!options.clarificationAnswers && !hasCompleteOutputSettings) {
+      const executionDecision = resolveBotanicAgentExecutionDecision({
+        mode: session.executionMode,
+        settingsComplete: hasCompleteOutputSettings,
+        pendingActionCount: 0,
+      })
+      if (!options.clarificationAnswers && executionDecision.action === 'ask_settings') {
         updateRuntimeStep('call-planner', 'succeeded')
         await yieldRuntimeFrame()
         if (!isCurrentAgentProject()) return
@@ -1185,11 +1251,7 @@ export default function AgentWorkspace({
           role: 'assistant',
           kind: 'question',
           question: {
-            ...createInitialAgentClarification(
-              cleanInstruction,
-              generationModels.filter((model) => model.mediaKind !== 'video'),
-              resolvedGenerationOverrides,
-            ),
+            ...createInitialAgentClarification(cleanInstruction, imageModels, resolvedGenerationOverrides),
             ...(promptResolution.sourceMessageId
               ? { sourcePromptMessageId: promptResolution.sourceMessageId }
               : {}),
@@ -1219,7 +1281,7 @@ export default function AgentWorkspace({
           content: initialPlan.summary,
         })
         if (planMessageId) setRuntimePhase('waiting_confirmation')
-        if (session.executionMode === 'auto' && planMessageId) {
+        if (planMessageId && executionDecision.action === 'auto_submit') {
           await confirmMessagePlan({
             id: planMessageId, role: 'assistant', kind: 'plan', content: initialPlan.summary,
             createdAt: Date.now(), plan: initialPlan, status: 'pending',
@@ -1257,7 +1319,13 @@ export default function AgentWorkspace({
       content: resolvedPlan.summary,
     })
     if (planMessageId) setRuntimePhase('waiting_confirmation')
-    if (session.executionMode === 'auto' && planMessageId && !resolvedPlan.actions?.length) {
+    // 计划已带完整设置；这里只判断自动模式是否因为待确认行动而降级。
+    const planExecutionDecision = resolveBotanicAgentExecutionDecision({
+      mode: session.executionMode,
+      settingsComplete: true,
+      pendingActionCount: resolvedPlan.actions?.filter((action) => action.status === 'awaiting_confirmation').length ?? 0,
+    })
+    if (planMessageId && planExecutionDecision.action === 'auto_submit') {
       await confirmMessagePlan({
         id: planMessageId, role: 'assistant', kind: 'plan', content: resolvedPlan.summary,
         createdAt: Date.now(), plan: resolvedPlan, status: 'pending',
@@ -1358,6 +1426,8 @@ export default function AgentWorkspace({
 
   const commitPlanPrompt = (message: BotanicAgentMessage, prompt: string) => {
     if (!session || !message.plan) return
+    // 任务已按这条计划提交，改写提示词只会让历史记录与真实执行不一致。
+    if (message.status === 'submitted') return
     const cleanPrompt = prompt.trim()
     if (!cleanPrompt || cleanPrompt === message.plan.prompt) return
     onUpdateMessage(session.id, message.id, { plan: { ...message.plan, prompt: cleanPrompt } })
@@ -1496,6 +1566,7 @@ export default function AgentWorkspace({
           runs={runs}
           latestRun={latestRun}
           contextOptions={contextOptions}
+          generationModels={generationModels}
           artifactIndexStatus={artifactIndexStatus}
           artifactIndexHasMore={artifactIndexHasMore}
           conversationRunIds={runTimeline.flatMap((item) => item.source ? [item.run.id] : [])}
@@ -1614,6 +1685,7 @@ export default function AgentWorkspace({
           artifacts={artifacts}
           contextOptionIds={contextOptions.map((item) => item.id)}
           generationModels={generationModels}
+          executionMode={session.executionMode}
           planning={planning}
           promptUsePending={pendingPromptSourceIds.has(message.id)}
           plannerModel={plannerModel}

@@ -1,11 +1,17 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
+  appendBotanicAgentReasoningDelta,
   createBotanicAgentRuntimeSteps,
+  insertBotanicAgentReasoningSteps,
+  insertBotanicAgentToolCallSteps,
   restoreBotanicAgentRuntimeSteps,
+  shouldRestoreBotanicAgentRuntimeSteps,
   updateBotanicAgentRuntimeStep,
   type BotanicAgentPlan,
   type BotanicAgentClarificationResponse,
+  type BotanicAgentReasoningEntry,
   type BotanicAgentRun,
+  type BotanicAgentRuntimeMode,
   type BotanicAgentRuntimePhase,
   type BotanicAgentRuntimeStep,
 } from '../../domain/agent'
@@ -47,6 +53,7 @@ export function useAgentRuntimeTrace({
 }) {
   const [steps, setSteps] = useState<BotanicAgentRuntimeStep[]>([])
   const [phase, setPhase] = useState<BotanicAgentRuntimePhase>('idle')
+  const [mode, setMode] = useState<BotanicAgentRuntimeMode>('generation')
   const [detailsOpen, setDetailsOpen] = useState(false)
 
   const updateStep = useCallback((
@@ -62,23 +69,47 @@ export function useAgentRuntimeTrace({
     referenceCount: number
     memoryCount: number
     assetGroupCount: number
-    mode?: 'generation' | 'conversation' | 'prompt' | 'research'
+    mode?: BotanicAgentRuntimeMode
   }) => {
     const nextSteps = createBotanicAgentRuntimeSteps({ ...input, plannerLabel })
     const firstStep = nextSteps[0]
     const started = firstStep ? updateBotanicAgentRuntimeStep(nextSteps, firstStep.id, 'running') : nextSteps
     setSteps(started)
+    setMode(input.mode ?? 'generation')
     setPhase('reading')
     setDetailsOpen(false)
     return started
   }, [plannerLabel])
 
+  /** 切换会话时丢弃上一轮的运行轨迹，避免旧内容跟着新会话留在面板底部。 */
+  const reset = useCallback(() => {
+    setSteps([])
+    setMode('generation')
+    setPhase('idle')
+    setDetailsOpen(false)
+  }, [])
+
+  // 服务端真实回传的工具调用展开成独立步骤，而不是压成规划步骤下的一行说明。
   const attachPlannerTools = useCallback((plan?: BotanicAgentPlan | BotanicAgentClarificationResponse) => {
-    const labels = plan?.toolCalls?.map((call) => call.label).filter(Boolean) ?? []
-    if (!labels.length) return
-    setSteps((current) => current.map((step) => step.id === 'call-planner'
-      ? { ...step, detail: `已调用：${[...new Set(labels)].join('、')}` }
-      : step))
+    const toolCalls = plan?.toolCalls ?? []
+    if (!toolCalls.length) return
+    setSteps((current) => insertBotanicAgentToolCallSteps(current, toolCalls))
+  }, [])
+
+  /** 当轮运行说明只活在组件状态里，轮次结束随轨迹一起消失。 */
+  const attachReasoning = useCallback((entries?: BotanicAgentReasoningEntry[]) => {
+    if (!entries?.length) return
+    setSteps((current) => insertBotanicAgentReasoningSteps(current, entries))
+  }, [])
+
+  /** 流式推理增量；收到最终片段时会被 attachReasoning 替换掉。 */
+  const appendReasoningDelta = useCallback((step: number, delta: string) => {
+    if (!delta) return
+    setSteps((current) => appendBotanicAgentReasoningDelta(current, step, delta))
+  }, [])
+
+  const updateStepDetail = useCallback((stepId: string, detail: string) => {
+    setSteps((current) => current.map((step) => step.id === stepId ? { ...step, detail } : step))
   }, [])
 
   const completeContextReads = useCallback(async (runtimeSteps: BotanicAgentRuntimeStep[]) => {
@@ -117,6 +148,9 @@ export function useAgentRuntimeTrace({
     const failed = latestRun.status === 'failed' || latestRun.status === 'cancelled'
     setPhase(active ? 'executing' : failed ? 'failed' : 'completed')
     if (steps.length) return
+    // 已结束的 Run 由对话内的状态消息承载，不再在面板底部重放一份历史步骤。
+    if (!shouldRestoreBotanicAgentRuntimeSteps(latestRun.status)) return
+    setMode('generation')
     setSteps(restoreBotanicAgentRuntimeSteps({
       run: latestRun,
       hasTarget,
@@ -131,12 +165,17 @@ export function useAgentRuntimeTrace({
   return {
     runtimeSteps: steps,
     runtimePhase: phase,
+    runtimeMode: mode,
     runtimeDetailsOpen: detailsOpen,
     setRuntimePhase: setPhase,
     setRuntimeDetailsOpen: setDetailsOpen,
     beginRuntimeTrace: begin,
+    resetRuntimeTrace: reset,
     updateRuntimeStep: updateStep,
     attachPlannerToolTrace: attachPlannerTools,
+    attachRuntimeReasoning: attachReasoning,
+    appendRuntimeReasoningDelta: appendReasoningDelta,
+    updateRuntimeStepDetail: updateStepDetail,
     yieldRuntimeFrame,
     completeRuntimeContextReads: completeContextReads,
     completeRuntimeTrace: complete,

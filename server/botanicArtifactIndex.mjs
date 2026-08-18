@@ -79,6 +79,10 @@ export function validateIndexedArtifact(value, { now = Date.now() } = {}) {
     createdAt,
     updatedAt: Math.max(createdAt, timestamp(artifact.updatedAt, now)),
   }
+  if (artifact.placement !== undefined) {
+    if (artifact.placement !== 'canvas' && artifact.placement !== 'panel') invalid('Artifact 落点无效。')
+    result.placement = artifact.placement
+  }
   if (artifact.content !== undefined) result.content = text(artifact.content, 'Artifact 内容', 64_000)
   if (artifact.url !== undefined) result.url = safeUrl(artifact.url)
   if (artifact.mimeType !== undefined) result.mimeType = text(artifact.mimeType, 'Artifact MIME 类型', 160)
@@ -177,13 +181,18 @@ export function artifactsFromGenerationJob(job, { document, now = Date.now() } =
       ...(resultNode?.id ? [resultNode.id] : []),
     ])]
     const completedAt = timestamp(variant?.completedAt, timestamp(job.updatedAt, timestamp(job.createdAt, now)))
+    // 结果面板要展示“图 + 生成它的 prompt”；配方优先，回落到本次任务的原始请求。
+    const prompt = [job.generationRecipe?.prompt, job.rawInput?.prompt, resultNode?.data?.generationRecipe?.prompt]
+      .find((value) => typeof value === 'string' && value.trim())
     return validateIndexedArtifact({
       id: `generation:${job.id}:${output.id}`,
       kind: mediaKind,
       label: resultNode?.data?.label?.trim() || (mediaKind === 'video' ? '生成视频' : '生成图片'),
       url: output.image,
+      placement: 'canvas',
       metadata: {
         source: 'generation',
+        ...(prompt ? { prompt: prompt.trim().slice(0, 6_000) } : {}),
         status: job.status,
         jobId: job.id,
         branchId: job.agentRun?.branchId,
