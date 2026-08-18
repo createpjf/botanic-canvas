@@ -94,6 +94,23 @@ test('能力询问和先写 Prompt 的请求不应直接创建画布节点', () 
   })
 })
 
+test('已有图片上下文时视觉能力问句进入生成计划链路', () => {
+  const requests = [
+    'Can you generate this girl?',
+    'Generate this girl',
+    'I want to generate this girl',
+    'Can you create an image of this woman?',
+  ]
+
+  requests.forEach((instruction) => {
+    assert.equal(decideBotanicAgentRequest(instruction, true).kind, 'generation', instruction)
+  })
+  assert.deepEqual(decideBotanicAgentRequest('Can you generate this girl?'), {
+    kind: 'chat',
+    mode: 'conversation',
+  })
+})
+
 test('否定和取消生成请求不会创建画布节点', () => {
   for (const instruction of ['先不要生成图片', '取消生成', '停止生成', '暂不出图', '先不生成了', '不生图了', '不生成了']) {
     assert.deepEqual(decideBotanicAgentRequest(instruction, true), {

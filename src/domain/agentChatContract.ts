@@ -147,7 +147,9 @@ export function decideBotanicAgentRequest(value: string, hasGenerationTarget = f
 
   const asksAboutPreviousOutcome = /(?:没有|没|未).{0,8}(?:生成|生图|出图|结果)|(?:刚才|之前|上次)?.{0,6}(?:为什么|为何|怎么).{0,16}(?:没|未|不).{0,6}(?:成功|生成|反应|结果)/iu.test(text)
   const asksAboutCapability = /(?:你|agent).{0,8}(?:可以|能|支持).{0,12}(?:生成|生图|出图|做图|视频)|\bcan\s+you\s+(?:generate|create|make|edit)\b/iu.test(text)
-  if (cancelsVisualGeneration.test(text) || asksAboutPreviousOutcome || asksAboutCapability) return { kind: 'chat', mode: 'conversation' }
+  const contextualVisualCommand = /\b(?:generate|create|make|edit|change|turn|transform)\b.{0,32}\b(?:this|the)\s+(?:image|photo|picture|girl|woman|person|model|character|subject)\b/iu
+  const hasContextualVisualCommand = hasGenerationTarget && contextualVisualCommand.test(text)
+  if (cancelsVisualGeneration.test(text) || asksAboutPreviousOutcome || (asksAboutCapability && !hasContextualVisualCommand)) return { kind: 'chat', mode: 'conversation' }
   if (/(?:生成|写|创作).{0,12}(?:文案|标题|脚本|slogan)/iu.test(text) && !/(?:图片|画面|海报|视频|image|photo|video)/iu.test(text)) {
     return { kind: 'chat', mode: 'conversation' }
   }
@@ -167,7 +169,7 @@ export function decideBotanicAgentRequest(value: string, hasGenerationTarget = f
   if (mediaKind === 'video' && explicitVisualGeneration.test(text)) {
     return { kind: 'clarification', reason: 'unsupported_media' }
   }
-  if (explicitVisualGeneration.test(text) || explicitVisualChange.test(text)) {
+  if (hasContextualVisualCommand || explicitVisualGeneration.test(text) || explicitVisualChange.test(text)) {
     return { kind: 'generation', mediaKind, promptSource: 'instruction' }
   }
   if (hasGenerationTarget && /^(?:保持|继续|再来|重试|重新|换|替换|调整)(?!.*[?？])/iu.test(text)) {
