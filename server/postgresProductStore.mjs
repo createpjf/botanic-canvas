@@ -1381,7 +1381,7 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       return asPayload(row)
     },
 
-    async putGenerationJob(userId, job) {
+    async putGenerationJob(userId, job, { updateAgentRun = true, recordAudit = true } = {}) {
       const payload = { ...clone(job), ownerId: userId, updatedAt: now() }
       await sql.begin(async (tx) => {
         await tx`
@@ -1389,7 +1389,7 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
           values (${job.id}, ${userId}, ${job.projectId}, ${job.status}, ${payload.updatedAt}, ${tx.json(payload)}::jsonb)
           on conflict (id) do update set status = excluded.status, updated_at = excluded.updated_at, payload = excluded.payload
         `
-        if (payload.agentRun?.runId) {
+        if (updateAgentRun && payload.agentRun?.runId) {
           const [row] = await tx`select payload from agent_runs where id = ${payload.agentRun.runId} and owner_id = ${userId} for update`
           if (row) {
             const run = applyGenerationJobToAgentRun(asPayload(row), payload)
@@ -1405,7 +1405,7 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
           document: { ...asJson(project.document), ...asJson(project.graph ?? {}) },
         }))
       })
-      await insertAudit(sql, { actorId: userId, action: `generation.${job.status}`, projectId: job.projectId, targetId: job.id, detail: { model: job.settings?.model, batchCount: job.batchCount } })
+      if (recordAudit) await insertAudit(sql, { actorId: userId, action: `generation.${job.status}`, projectId: job.projectId, targetId: job.id, detail: { model: job.settings?.model, batchCount: job.batchCount } })
     },
 
     async refreshGenerationArtifacts(userId, jobId) {

@@ -66,7 +66,9 @@ export function createGenerationProcessor({
           updatedAt: Date.now(),
         }
         try {
-          await productStore.putGenerationJob(pending.ownerId, persistedGenerationJob(pending))
+          // 画布尚未回写时不能把 Agent Run 推进到终态；否则前端会在产出落盘前
+          // 收到 completed/failed，并过早执行一次恢复。
+          await productStore.putGenerationJob(pending.ownerId, persistedGenerationJob(pending), { updateAgentRun: false, recordAudit: false })
         } catch (persistError) {
           console.error(`[generation] project writeback marker deferred: ${persistError instanceof Error ? persistError.message : String(persistError)}`)
         }
@@ -116,8 +118,8 @@ export function createGenerationProcessor({
     if (stored.projectWritebackPending) {
       const recovered = await writeJobToProjectSafely(stored)
       if (recovered) {
-        await clearProjectWriteback(stored)
         if (stored.status === 'succeeded') await refreshGenerationArtifacts(stored)
+        await clearProjectWriteback(stored)
       }
       await publishRun(recovered ? { ...stored, projectWritebackPending: undefined } : stored)
       return
@@ -282,9 +284,14 @@ export function createGenerationProcessor({
         error: undefined,
         updatedAt: Date.now(),
       }
-      await productStore.putGenerationJob(completed.ownerId, persistedGenerationJob(completed))
+      // 先持久化任务产出但暂不推进 Run；只有画布与 Artifact 都写好后，
+      // 才发布可观察的 Agent Run 终态。
+      await productStore.putGenerationJob(completed.ownerId, persistedGenerationJob(completed), { updateAgentRun: false, recordAudit: false })
       const writebackSucceeded = await writeJobToProjectSafely(completed, { markPending: true })
-      if (writebackSucceeded) await refreshGenerationArtifacts(completed)
+      if (writebackSucceeded) {
+        await refreshGenerationArtifacts(completed)
+        await productStore.putGenerationJob(completed.ownerId, persistedGenerationJob(completed), { updateAgentRun: true })
+      }
       await publishRun(writebackSucceeded ? completed : { ...completed, projectWritebackPending: true })
       observeRun(completed, {
         type: 'worker_completed', status: 'succeeded', outputCount: completed.outputs.length,
@@ -300,8 +307,9 @@ export function createGenerationProcessor({
       console.error(`[generation] ${jobId} failed (${failure.code}): ${detail}`)
       await variantWrite
       const failed = { ...latest, status: 'failed', error: failure.message, variants: latest.variants ?? running.variants, updatedAt: Date.now() }
-      await productStore.putGenerationJob(failed.ownerId, persistedGenerationJob(failed))
+      await productStore.putGenerationJob(failed.ownerId, persistedGenerationJob(failed), { updateAgentRun: false, recordAudit: false })
       const writebackSucceeded = await writeJobToProjectSafely(failed, { markPending: true })
+      if (writebackSucceeded) await productStore.putGenerationJob(failed.ownerId, persistedGenerationJob(failed), { updateAgentRun: true })
       await publishRun(writebackSucceeded ? failed : { ...failed, projectWritebackPending: true })
       observeRun(failed, {
         type: 'worker_failed', status: 'failed', code: failure.code,

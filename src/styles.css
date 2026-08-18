@@ -3259,7 +3259,7 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-message__utilities button:hover { background: #edf4ed; color: #2d633b; }
 .agent-message__utilities button svg { width: 15px; height: 15px; }
 .agent-message__utilities button.is-selected { color: #245b35; font-weight: 800; }
-.agent-message.is-notice .agent-message__body { padding: 9px 11px; border: 1px solid #d7e4d8; border-radius: 8px; background: #f5f8f4; }
+.agent-message.is-notice .agent-message__body, .agent-message.is-run .agent-message__body { padding: 9px 11px; border: 1px solid #d7e4d8; border-radius: 8px; background: #f5f8f4; }
 .agent-runtime-feed { display: grid; gap: 4px; margin: 0 0 18px; padding: 2px 0 0; color: #52665a; }
 .agent-runtime-feed__header { display: flex; min-height: 25px; align-items: center; justify-content: space-between; gap: 8px; }
 .agent-runtime-feed__status { display: flex; min-width: 0; align-items: center; gap: 7px; }

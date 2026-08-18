@@ -79,7 +79,9 @@ export function AgentConversationMessage({
   const continueNodeIds = [...new Set(outputNodeIds.length ? outputNodeIds : lockedContextIds)]
   const planPrompt = message.plan ? promptDraft ?? message.plan.prompt : ''
 
-  return <article className={`agent-message is-${message.role} is-${message.kind}`}>
+  const isLiveRunMessage = message.role === 'assistant' && Boolean(message.runId) && (message.kind === 'run' || message.kind === 'notice')
+
+  return <article className={`agent-message is-${message.role} is-${message.kind}`} role={isLiveRunMessage ? 'status' : undefined} aria-live={isLiveRunMessage ? 'polite' : undefined}>
     <div className="agent-message__role">{message.role === 'assistant' ? <SparkleIcon /> : <span>你</span>}</div>
     <div className="agent-message__body">
       {!message.question ? (message.role === 'assistant' ? <AgentPromptResponse content={message.content} /> : <p>{message.content}</p>) : null}

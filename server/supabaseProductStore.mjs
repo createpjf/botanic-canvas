@@ -854,14 +854,14 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       return clone(data.payload)
     },
 
-    async putGenerationJob(userId, job) {
+    async putGenerationJob(userId, job, { updateAgentRun = true, recordAudit = true } = {}) {
       const payload = { ...clone(job), ownerId: userId, updatedAt: now() }
       const { error } = await supabaseRequest(() => supabase.from('generation_jobs').upsert({
         id: job.id, owner_id: userId, project_id: job.projectId, status: job.status,
         updated_at: new Date(payload.updatedAt).toISOString(), payload,
       }, { onConflict: 'id' }))
       fail(error)
-      if (payload.agentRun?.runId) {
+      if (updateAgentRun && payload.agentRun?.runId) {
         const { data: runRow, error: runReadError } = await supabaseRequest(() => supabase.from('agent_runs').select('payload').eq('id', payload.agentRun.runId).eq('owner_id', userId).maybeSingle())
         fail(runReadError)
         if (runRow) {
@@ -889,10 +889,12 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
         console.warn(`[artifact-index] generation sync deferred for ${job.id}: ${caught instanceof Error ? caught.message : String(caught)}`)
       }
       // 审计不可用不能让已成功幂等写入的生成任务在客户端表现为失败。
-      try {
-        await insertAudit({ actorId: userId, action: `generation.${job.status}`, projectId: job.projectId, targetId: job.id, detail: { model: job.settings?.model, batchCount: job.batchCount } })
-      } catch (error) {
-        console.warn(`[generation] audit deferred for ${job.id}: ${error instanceof Error ? error.message : String(error)}`)
+      if (recordAudit) {
+        try {
+          await insertAudit({ actorId: userId, action: `generation.${job.status}`, projectId: job.projectId, targetId: job.id, detail: { model: job.settings?.model, batchCount: job.batchCount } })
+        } catch (error) {
+          console.warn(`[generation] audit deferred for ${job.id}: ${error instanceof Error ? error.message : String(error)}`)
+        }
       }
     },
 

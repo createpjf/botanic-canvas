@@ -353,6 +353,20 @@ export default function AgentWorkspace({
     && (item.mediaKind ?? 'image') === 'image'
   ))
   const hasMessages = Boolean(session?.messages.length)
+  const conversationMessages = useMemo(() => {
+    const messages = session?.messages ?? []
+    const latestStatusMessageByRun = new Map<string, string>()
+    for (const message of messages) {
+      if (message.runId && (message.kind === 'run' || message.kind === 'notice')) {
+        latestStatusMessageByRun.set(message.runId, message.id)
+      }
+    }
+    return messages.filter((message) => (
+      !message.runId
+      || (message.kind !== 'run' && message.kind !== 'notice')
+      || latestStatusMessageByRun.get(message.runId) === message.id
+    ))
+  }, [session?.messages])
   const pendingPromptSourceIds = useMemo(() => new Set((session?.messages ?? [])
     .filter((message) => message.question?.sourcePromptMessageId && message.kind === 'question' && message.status === 'pending')
     .map((message) => message.question!.sourcePromptMessageId!)), [session?.messages])
@@ -724,23 +738,22 @@ export default function AgentWorkspace({
     if (!session) return
     for (const run of runs) {
       const outputCount = agentRunOutputCount(run, artifacts)
-      // 终态消息优先取已有的 run 卡；计划消息只负责承载提交前的确认状态。
-      const linkedMessage = session.messages.find((message) => message.runId === run.id && message.kind === 'run')
-        ?? session.messages.find((message) => message.runId === run.id)
+      // 只更新同一 Run 的最后一条状态消息；计划消息承载确认状态，不参与流式状态展示。
+      const linkedMessage = [...session.messages]
+        .reverse()
+        .find((message) => message.runId === run.id && (message.kind === 'run' || message.kind === 'notice'))
       const feedback = botanicAgentRunFeedback(run.status, outputCount, run.error)
       const noticeKey = feedback.terminal ? `${run.status}:${outputCount}` : run.status
       const previousNoticeKey = runNoticeStatusRef.current.get(run.id)
       const content = feedback.detail
 
       if (!linkedMessage && previousNoticeKey === undefined) {
-        appendMessage({ role: 'assistant', kind: feedback.terminal ? 'run' : 'notice', runId: run.id, content })
+        // 不把其他会话的历史 Run 注入当前对话；新任务已有带 runId 的计划消息作为锚点。
+        if (!session.messages.some((message) => message.runId === run.id)) continue
+        appendMessage({ role: 'assistant', kind: 'run', runId: run.id, content })
         runNoticeStatusRef.current.set(run.id, noticeKey)
-      } else if (linkedMessage && feedback.terminal && previousNoticeKey !== undefined && previousNoticeKey !== noticeKey) {
-        if (linkedMessage.kind === 'run') onUpdateMessage(session.id, linkedMessage.id, { content })
-        else appendMessage({ role: 'assistant', kind: 'run', runId: run.id, content })
-        runNoticeStatusRef.current.set(run.id, noticeKey)
-      } else if (previousNoticeKey === undefined) {
-        // 已有提交提示的历史会话：记住当前状态，后续只在状态变化时追加结果。
+      } else if (linkedMessage && (previousNoticeKey === undefined || previousNoticeKey !== noticeKey)) {
+        if (linkedMessage.content !== content) onUpdateMessage(session.id, linkedMessage.id, { content })
         runNoticeStatusRef.current.set(run.id, noticeKey)
       }
       const outputNodeIds = artifacts
@@ -887,9 +900,9 @@ export default function AgentWorkspace({
       setLastFailedInstruction('')
       if (!submission.started) setRuntimePhase('failed')
       onUpdateMessage(session.id, message.id, { status: submission.started ? 'submitted' : 'failed', runId: submission.runId })
-      appendMessage({
-        role: 'assistant', kind: submission.started ? 'notice' : 'text', runId: submission.runId,
-        content: submission.started ? '任务已提交。结果会直接出现在画布中，你可以继续告诉我下一步要改什么。' : '任务没有启动，请检查参考素材与生成服务后重试。',
+      if (!submission.started) appendMessage({
+        role: 'assistant', kind: 'text',
+        content: '任务没有启动，请检查参考素材与生成服务后重试。',
       })
     } catch (caught) {
       if (!isCurrentAgentProject()) return
@@ -1504,7 +1517,7 @@ export default function AgentWorkspace({
           </div>
         </section> : null}
         {!utilityPanelOpen && readingRestoreNotice ? <div className="agent-reading-restore" role="status"><span>已回到上次阅读位置</span><button type="button" onClick={jumpToLatestConversation}>跳到最新</button></div> : null}
-        {!utilityPanelOpen ? session?.messages.map((message) => <div
+        {!utilityPanelOpen && session ? conversationMessages.map((message) => <div
           key={message.id}
           ref={(node) => registerMessageNode(message.id, node)}
           className={`agent-conversation-anchor${locatedMessageId === message.id ? ' is-located' : ''}`}

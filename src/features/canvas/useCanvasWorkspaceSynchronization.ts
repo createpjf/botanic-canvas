@@ -63,6 +63,7 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
   const [canvasHydrationFailed, setCanvasHydrationFailed] = useState(false)
   const [collaborationAwareness, setCollaborationAwareness] = useState<CollaborationAwareness>(emptyCollaborationAwareness)
   const collaborationRef = useRef<CanvasCollaboration | null>(null)
+  const agentRunRecoveryRef = useRef<Promise<boolean> | null>(null)
   const pendingRemoteGraphChangeRef = useRef<CollaborationDocumentChange | undefined>(undefined)
   const collaboratorNamesRef = useRef(new Map<string, string>())
 
@@ -259,6 +260,28 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
     return opened
   }, [openDocument])
 
+  const recoverAgentRunResults = useCallback(async () => {
+    if (agentRunRecoveryRef.current) return agentRunRecoveryRef.current
+    const recovery = (async () => {
+      // Worker 的画布写回与 realtime 事件在不同基础设施上到达；短暂重试
+      // 只处理这个竞态，不会重新调用 Provider。
+      const retryDelays = [0, 300, 1_000, 2_500]
+      for (const [index, delay] of retryDelays.entries()) {
+        if (delay) await new Promise<void>((resolve) => window.setTimeout(resolve, delay))
+        const recovered = await recoverGenerationResultsFromRemote()
+        if (recovered) return true
+        if (index < retryDelays.length - 1) await refreshDocumentFromRemote().catch(() => false)
+      }
+      return false
+    })()
+    agentRunRecoveryRef.current = recovery
+    try {
+      return await recovery
+    } finally {
+      if (agentRunRecoveryRef.current === recovery) agentRunRecoveryRef.current = null
+    }
+  }, [recoverGenerationResultsFromRemote, refreshDocumentFromRemote])
+
   const recoverPersistentAgentRuns = useCallback(async () => {
     const projectId = useCanvasStore.getState().document.id
     const runs = await listPersistentBotanicAgentRuns(projectId)
@@ -278,8 +301,8 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
       if (shouldRecoverAgentRunResults(current, run)) shouldRecoverResults = true
       applyAgentRunSnapshot(run)
     }
-    if (shouldRecoverResults) await recoverGenerationResultsFromRemote()
-  }, [applyAgentRunSnapshot, recoverGenerationResultsFromRemote])
+    if (shouldRecoverResults) await recoverAgentRunResults()
+  }, [applyAgentRunSnapshot, recoverAgentRunResults])
 
   useEffect(() => {
     hydrateCanvas()
@@ -372,9 +395,7 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
         applyAgentRunSnapshot(event.run)
         const terminal = event.run.branches.every((branch) => ['succeeded', 'failed', 'cancelled'].includes(branch.status))
         if (terminal) {
-          void recoverGenerationResultsFromRemote()
-            .then(() => refreshDocumentFromRemote())
-          .catch(() => undefined)
+          void recoverAgentRunResults().catch(() => undefined)
         }
       },
       onCollaborationActivity: (event) => {
@@ -409,7 +430,7 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
       if (collaborationRef.current === collaboration) collaborationRef.current = null
       collaboration.close()
     }
-  }, [applyAgentRunSnapshot, applyCollaborativeGraph, currentUserId, documentId, hydrated, loadCollaborationActivities, recordRemoteChange, recoverGenerationResultsFromRemote, recoverPersistentAgentRuns, recoverUnknownGenerationSubmission, refreshAgentEntitiesFromRemote, refreshDocumentFromRemote, synchronizeLocalDrafts, workspaceActive])
+  }, [applyAgentRunSnapshot, applyCollaborativeGraph, currentUserId, documentId, hydrated, loadCollaborationActivities, recordRemoteChange, recoverAgentRunResults, recoverPersistentAgentRuns, recoverUnknownGenerationSubmission, refreshAgentEntitiesFromRemote, refreshDocumentFromRemote, synchronizeLocalDrafts, workspaceActive])
 
   useEffect(() => {
     collaboratorNamesRef.current.clear()

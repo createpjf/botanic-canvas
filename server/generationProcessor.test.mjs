@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
+import { applyGenerationJobToAgentRun, createPersistentAgentRun } from './botanicAgentRun.mjs'
 import { createGenerationProcessor } from './generationProcessor.mjs'
 import { GenerationError } from './generationProvider.mjs'
 import { createProductStore } from './productStore.mjs'
@@ -400,4 +401,65 @@ test('Worker 先持久化 N 输出再回写画布后，Artifact Index 补齐每�
     productStore.listAuditEvents(owner.id, projectId).filter((event) => event.action === 'generation.succeeded').length,
     1,
   )
+})
+
+test('成功任务只在画布回写与 Artifact 刷新后推进 Agent Run 终态', async () => {
+  const events = []
+  const createdAt = Date.now()
+  let storedJob = {
+    id: 'job-terminal-order', ownerId: 'user-a', projectId: 'project-a', status: 'queued', kind: 'generation',
+    createdAt, updatedAt: createdAt, batchCount: 1,
+    settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' },
+    outputs: [],
+    rawInput: {
+      projectId: 'project-a', kind: 'generation', prompt: '生成一张结果图', batchCount: 1,
+      settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' },
+      recipe: { references: [{ name: '主素材', role: '商品', primary: true, dataUrl: 'data:image/png;base64,iVBORw0KGgo=' }] },
+    },
+    agentRun: { runId: 'run-terminal-order', branchId: 'branch-terminal-order' },
+  }
+  let storedRun = createPersistentAgentRun({
+    projectId: 'project-a',
+    plan: {
+      intent: 'initial_generation', instruction: '生成一张结果图', summary: '生成结果', prompt: '生成一张结果图',
+      settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' }, constraints: [],
+      output: { mode: 'single', count: 1, candidatesPerItem: 1 },
+    },
+    branches: [{ id: 'branch-terminal-order', label: '主分支' }],
+  }, { id: 'run-terminal-order', ownerId: 'user-a', now: createdAt })
+  const document = {
+    id: 'project-a',
+    nodes: [
+      { id: 'generate-a', type: 'generate', data: { jobId: storedJob.id, status: 'queued' } },
+      { id: 'result-a', type: 'result', data: { jobId: storedJob.id, taskStatus: 'queued', status: 'generating' } },
+    ],
+    generationJobs: [{ id: storedJob.id, status: 'queued' }],
+  }
+  const productStore = {
+    async readGenerationJobForWorker() { return structuredClone(storedJob) },
+    async putGenerationJob(_ownerId, job, options = {}) {
+      storedJob = structuredClone(job)
+      if (options.updateAgentRun !== false && job.agentRun) {
+        storedRun = applyGenerationJobToAgentRun(storedRun, job)
+        events.push(`run-status:${storedRun.status}`)
+      }
+    },
+    async readProject() { return { document, revision: 1, graphRevision: 1 } },
+    async writeProject() { events.push('canvas-writeback') },
+    async refreshGenerationArtifacts() { events.push('artifact-refresh') },
+    async readAgentRunForWorker() { return structuredClone(storedRun) },
+  }
+  const processJob = createGenerationProcessor({
+    productStore,
+    mediaService: {},
+    config: { modelOptions: [{ id: 'gpt-image-2', provider: 'openai', mediaKind: 'image', aspectRatios: ['1:1'], resolutions: ['1K'] }] },
+    publishAgentRunUpdated: ({ run }) => events.push(`published:${run.status}`),
+    generate: async () => ({ outputs: [{ id: 'output-a', image: '/api/media/output-a' }], missingOutputCount: 0 }),
+  })
+
+  await processJob(storedJob.id)
+
+  const terminalIndex = events.indexOf('run-status:completed')
+  assert.ok(terminalIndex > events.lastIndexOf('canvas-writeback'))
+  assert.ok(terminalIndex > events.lastIndexOf('artifact-refresh'))
 })

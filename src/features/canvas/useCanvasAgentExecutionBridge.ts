@@ -113,10 +113,21 @@ export function useCanvasAgentExecutionBridge({
     assets: document.assets,
   }), [document.agentSessions, document.assets, document.generationJobs, document.nodes])
 
+  const artifactRefreshKey = useMemo(() => [
+    ...document.generationJobs
+      .filter((job) => ['succeeded', 'failed', 'cancelled'].includes(job.status))
+      .map((job) => `job:${job.id}:${job.status}:${job.updatedAt ?? 0}:${job.outputs?.length ?? 0}`),
+    ...document.agentRuns
+      .filter((run) => ['completed', 'partial', 'failed', 'cancelled'].includes(run.status))
+      .map((run) => `run:${run.id}:${run.status}:${run.updatedAt}`),
+  ].join('|'), [document.agentRuns, document.generationJobs])
+
   useEffect(() => {
     if (!agentOpen || !serverPersistenceEnabled) return
     const controller = new AbortController()
-    setArtifactIndex({ projectId: document.id, artifacts: [], status: 'loading' })
+    setArtifactIndex((current) => current.projectId === document.id
+      ? { ...current, status: 'loading' }
+      : { projectId: document.id, artifacts: [], status: 'loading' })
     void listProjectAgentArtifacts(document.id, { limit: 100, signal: controller.signal }).then((result) => {
       if (controller.signal.aborted) return
       setArtifactIndex({
@@ -127,10 +138,12 @@ export function useCanvasAgentExecutionBridge({
       })
     }).catch(() => {
       if (controller.signal.aborted) return
-      setArtifactIndex({ projectId: document.id, artifacts: [], status: 'error' })
+      setArtifactIndex((current) => current.projectId === document.id
+        ? { ...current, status: 'error' }
+        : { projectId: document.id, artifacts: [], status: 'error' })
     })
     return () => controller.abort()
-  }, [agentOpen, document.id])
+  }, [agentOpen, artifactRefreshKey, document.id])
 
   const indexedArtifacts = artifactIndex.projectId === document.id ? artifactIndex.artifacts : []
   const artifacts = useMemo(

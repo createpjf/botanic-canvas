@@ -324,7 +324,8 @@ export function createCanvasGenerationActions({
       )
       const state = restoreGenerationLifecycleState(reconciledDocument, '已从服务端补回生成结果。')
       set({ document: reconciledDocument, persistenceStatus: 'saved', selectedNodeId: selected?.id ?? null, ...state.state })
-      void writeCanvasDocument(reconciledDocument, { immediate: true }).catch(() => undefined)
+      // 等待这次即时写入完成，终态事件触发的远端刷新不能读到旧画布。
+      await writeCanvasDocument(reconciledDocument, { immediate: true }).catch(() => undefined)
       return true
     } catch {
       recoverTaskNodeJobs(documentId)

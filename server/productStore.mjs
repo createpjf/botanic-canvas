@@ -770,12 +770,12 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       return project && canAccess(project, userId) ? clone(receipt) : undefined
     },
 
-    putGenerationJob(userId, job) {
+    putGenerationJob(userId, job, { updateAgentRun = true, recordAudit = true } = {}) {
       const persistedJob = { ...clone(job), ownerId: userId, updatedAt: now() }
       const existing = state.generationJobs.find((item) => item.id === job.id)
       if (existing) Object.assign(existing, persistedJob)
       else state.generationJobs.push(persistedJob)
-      if (persistedJob.agentRun?.runId) {
+      if (updateAgentRun && persistedJob.agentRun?.runId) {
         const runIndex = state.agentRuns.findIndex((item) => item.id === persistedJob.agentRun.runId && item.ownerId === userId)
         if (runIndex >= 0) state.agentRuns[runIndex] = applyGenerationJobToAgentRun(state.agentRuns[runIndex], persistedJob)
       }
@@ -784,7 +784,7 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       if (project) upsertArtifactRecords(persistedJob.projectId, userId, artifactsFromGenerationJob(persistedJob, {
         document: { ...project.document, ...(graph ?? {}) },
       }))
-      audit({ actorId: userId, action: `generation.${job.status}`, projectId: job.projectId, targetId: job.id, detail: { model: job.settings?.model, batchCount: job.batchCount } })
+      if (recordAudit) audit({ actorId: userId, action: `generation.${job.status}`, projectId: job.projectId, targetId: job.id, detail: { model: job.settings?.model, batchCount: job.batchCount } })
       save()
     },
 
