@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   createBotanicAgentRuntimeSteps,
+  insertBotanicAgentToolCallSteps,
   restoreBotanicAgentRuntimeSteps,
   shouldRestoreBotanicAgentRuntimeSteps,
   updateBotanicAgentRuntimeStep,
@@ -85,12 +86,11 @@ export function useAgentRuntimeTrace({
     setDetailsOpen(false)
   }, [])
 
+  // 服务端真实回传的工具调用展开成独立步骤，而不是压成规划步骤下的一行说明。
   const attachPlannerTools = useCallback((plan?: BotanicAgentPlan | BotanicAgentClarificationResponse) => {
-    const labels = plan?.toolCalls?.map((call) => call.label).filter(Boolean) ?? []
-    if (!labels.length) return
-    setSteps((current) => current.map((step) => step.id === 'call-planner'
-      ? { ...step, detail: `已调用：${[...new Set(labels)].join('、')}` }
-      : step))
+    const toolCalls = plan?.toolCalls ?? []
+    if (!toolCalls.length) return
+    setSteps((current) => insertBotanicAgentToolCallSteps(current, toolCalls))
   }, [])
 
   const completeContextReads = useCallback(async (runtimeSteps: BotanicAgentRuntimeStep[]) => {

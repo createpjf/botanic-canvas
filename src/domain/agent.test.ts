@@ -30,6 +30,7 @@ import {
   restoreBotanicAgentRuntimeSteps,
   shouldRestoreBotanicAgentRuntimeSteps,
   botanicAgentArtifactPlacement,
+  insertBotanicAgentToolCallSteps,
   resolveBotanicAgentExecutionDecision,
   botanicAgentExecutionModeLabel,
   botanicAgentArtifactPrompt,
@@ -950,4 +951,31 @@ test('执行模式是可解释的领域决策，自动模式遇到外部行动�
   )
   assert.equal(botanicAgentExecutionModeLabel('auto'), '自动模式')
   assert.equal(botanicAgentExecutionModeLabel('manual'), '计划模式')
+})
+
+test('真实工具调用展开成独立运行步骤，插在规划步骤之后', () => {
+  const steps = createBotanicAgentRuntimeSteps({ hasTarget: true, referenceCount: 1 })
+  const expanded = insertBotanicAgentToolCallSteps(steps, [
+    { id: 'call-1', name: 'canvas_read', label: '读取画布节点', risk: 'read', status: 'succeeded', requiresConfirmation: false },
+    { id: 'call-2', name: 'skill_apply', label: '应用 Skill 夏日换景', risk: 'write', status: 'awaiting_confirmation', requiresConfirmation: true },
+    { id: 'call-3', name: 'mcp_call', label: '检索素材库', risk: 'external', status: 'failed', requiresConfirmation: true, error: '外部服务超时。' },
+  ])
+
+  assert.deepEqual(expanded.map((step) => step.id), [
+    'read-canvas', 'read-references', 'call-planner', 'tool:call-1', 'tool:call-2', 'tool:call-3', 'finalize-plan',
+  ])
+  assert.equal(expanded[3].detail, 'canvas_read · 读取项目数据')
+  assert.equal(expanded[3].kind, 'read')
+  // 等待确认在运行轨迹里就是“还没跑”，不是一个额外状态。
+  assert.equal(expanded[4].status, 'pending')
+  assert.equal(expanded[5].kind, 'search')
+  assert.equal(expanded[5].status, 'failed')
+  assert.equal(expanded[5].error, '外部服务超时。')
+
+  // 重复回传同一批工具调用时就地更新，不会越插越多。
+  const again = insertBotanicAgentToolCallSteps(expanded, [
+    { id: 'call-1', name: 'canvas_read', label: '读取画布节点', risk: 'read', status: 'succeeded', requiresConfirmation: false },
+  ])
+  assert.equal(again.filter((step) => step.id === 'tool:call-1').length, 1)
+  assert.deepEqual(insertBotanicAgentToolCallSteps(steps, []), steps)
 })

@@ -124,6 +124,55 @@ export function createBotanicAgentRuntimeSteps(input: {
   return steps
 }
 
+function agentToolCallStepKind(risk: AgentToolCallTrace['risk']): BotanicAgentRuntimeStep['kind'] {
+  if (risk === 'read') return 'read'
+  if (risk === 'external') return 'search'
+  return 'write'
+}
+
+function agentToolCallStepDetail(call: AgentToolCallTrace) {
+  const riskLabel = call.risk === 'read'
+    ? '读取项目数据'
+    : call.risk === 'external'
+      ? '调用外部工具'
+      : call.risk === 'costly'
+        ? '会产生生成费用'
+        : '写入项目数据'
+  return `${call.name} · ${riskLabel}`
+}
+
+/**
+ * 把服务端真实回传的工具调用展开成独立运行步骤，插在规划步骤之后。
+ * 这些仍然只是可验证的产品操作——调了哪个工具、结果如何——不是模型内部思考内容，
+ * 但比“已调用：A、B”这一行 detail 能说明的多得多。
+ */
+export function insertBotanicAgentToolCallSteps(
+  steps: BotanicAgentRuntimeStep[],
+  toolCalls: AgentToolCallTrace[],
+): BotanicAgentRuntimeStep[] {
+  const seen = new Set<string>()
+  const toolSteps = toolCalls.flatMap((call): BotanicAgentRuntimeStep[] => {
+    const id = `tool:${call.id}`
+    const label = call.label?.trim()
+    if (!call.id || !label || seen.has(id)) return []
+    seen.add(id)
+    return [{
+      id,
+      kind: agentToolCallStepKind(call.risk),
+      label,
+      detail: agentToolCallStepDetail(call),
+      status: call.status === 'awaiting_confirmation' ? 'pending' : call.status,
+      ...(call.error?.trim() ? { error: call.error.trim() } : {}),
+    }]
+  })
+  if (!toolSteps.length) return steps
+  const replaced = new Set(toolSteps.map((step) => step.id))
+  const base = steps.filter((step) => !replaced.has(step.id))
+  const plannerIndex = base.findIndex((step) => step.id === 'call-planner')
+  if (plannerIndex < 0) return [...base, ...toolSteps]
+  return [...base.slice(0, plannerIndex + 1), ...toolSteps, ...base.slice(plannerIndex + 1)]
+}
+
 export function updateBotanicAgentRuntimeStep(
   steps: BotanicAgentRuntimeStep[],
   stepId: string,
