@@ -60,6 +60,7 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
   const recoverUnknownGenerationSubmission = useCanvasStore((state) => state.recoverUnknownGenerationSubmission)
   const applyCollaborativeGraph = useCanvasStore((state) => state.applyCollaborativeGraph)
   const applyAgentRunSnapshot = useCanvasStore((state) => state.applyAgentRunSnapshot)
+  const applyAgentWorkflowPatch = useCanvasStore((state) => state.applyAgentWorkflowPatch)
   const [canvasHydrationFailed, setCanvasHydrationFailed] = useState(false)
   const [collaborationAwareness, setCollaborationAwareness] = useState<CollaborationAwareness>(emptyCollaborationAwareness)
   const collaborationRef = useRef<CanvasCollaboration | null>(null)
@@ -293,7 +294,10 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
         // execute 使用 runId 稳定幂等键；多设备同时恢复也不会创建重复任务。
         try {
           run = (await executePersistentBotanicAgentRun(projectId, run.id, {
-            onWorkflowReady: async () => { await refreshDocumentFromRemote() },
+            onWorkflowReady: async (workflow) => {
+              if (workflow.canvasPatch) await applyAgentWorkflowPatch(workflow.canvasPatch)
+              else await refreshDocumentFromRemote()
+            },
           })).run
         } catch {
           // 保留 queued 快照，下一轮轮询或重连再自动确认。
@@ -304,7 +308,7 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
       applyAgentRunSnapshot(run)
     }
     if (shouldRecoverResults) await recoverAgentRunResults()
-  }, [applyAgentRunSnapshot, recoverAgentRunResults, refreshDocumentFromRemote])
+  }, [applyAgentRunSnapshot, applyAgentWorkflowPatch, recoverAgentRunResults, refreshDocumentFromRemote])
 
   useEffect(() => {
     hydrateCanvas()

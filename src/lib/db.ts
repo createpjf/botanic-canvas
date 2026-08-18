@@ -656,6 +656,19 @@ export async function persistAcceptedRemoteCanvasDocument(document: CanvasDocume
   await persistLocalDocument(document)
 }
 
+/**
+ * 接受同源 API 刚刚持久化的工作流增量。只推进远端版本并缓存当前合并视图；
+ * 不把可能包含未同步编辑的本地文档误记成远端基线，也不反向 PATCH 服务端。
+ */
+export async function persistAcknowledgedRemoteCanvasPatch(
+  document: CanvasDocument,
+  revision: number,
+  graphRevision: number,
+) {
+  rememberRemoteRevisions(document.id, { revision, graphRevision })
+  await persistLocalDocument(document)
+}
+
 export async function writeCanvasDocument(document: CanvasDocument, options: { immediate?: boolean } = {}) {
   if (serverPersistenceEnabled) {
     // 先写入 IndexedDB 草稿，再把同一变更排入云端队列；断网也不会丢失编辑。

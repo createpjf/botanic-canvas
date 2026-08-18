@@ -80,9 +80,9 @@ export function useAgentMessageDelivery({
     }
   }, [flush])
 
-  const appendMessage = useCallback((message: Omit<BotanicAgentMessage, 'id' | 'createdAt'>) => {
+  const appendMessage = useCallback((message: Omit<BotanicAgentMessage, 'id' | 'createdAt'> & { id?: string }) => {
     if (!session || !isCurrentProject()) return ''
-    const messageId = `agent-message-${crypto.randomUUID()}`
+    const messageId = message.id?.trim() || `agent-message-${crypto.randomUUID()}`
     const queuedMessage: BotanicAgentMessage = {
       ...message,
       id: messageId,

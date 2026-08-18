@@ -417,8 +417,18 @@ export function createAgentRouteHandler({
         const registry = createBotanicAgentActionToolRegistry({
           createWorkflow: async ({ planId }) => {
             const { project, prepared } = await agentRunGeneration.prepareProjectExecution(user.id, projectId, planId, { submission: false })
-            await agentRunGeneration.persistWorkflow(user.id, project, prepared)
-            return { message: `已创建 ${prepared.workflows.length} 条画布工作流。`, canvasNodeIds: prepared.workflows.flatMap((workflow) => [workflow.promptNodeId, workflow.generateNodeId, workflow.resultNodeId]) }
+            const saved = await agentRunGeneration.persistWorkflow(user.id, project, prepared)
+            return {
+              message: `已创建 ${prepared.workflows.length} 条画布工作流。`,
+              canvasNodeIds: prepared.workflows.flatMap((workflow) => [workflow.promptNodeId, workflow.generateNodeId, workflow.resultNodeId]),
+              canvasPatch: {
+                nodes: prepared.workflows.flatMap((workflow) => [workflow.promptNode, workflow.generateNode, workflow.resultNode]),
+                edges: prepared.workflows.flatMap((workflow) => workflow.edges),
+                updatedAt: saved.document.updatedAt,
+                revision: saved.revision,
+                graphRevision: saved.graphRevision,
+              },
+            }
           },
           submitGeneration: async ({ planId }) => {
             const execution = await agentRunGeneration.submitGeneration(user.id, projectId, planId)

@@ -1,6 +1,7 @@
 import { type DragEvent, useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from 'react'
 import {
   botanicAgentBranchStatusLabel,
+  botanicAgentActionReceiptMessageId,
   botanicAgentContextSnapshotNodeIds,
   botanicAgentSubmissionKey,
   buildBotanicAgentRunTimeline,
@@ -1047,6 +1048,7 @@ export default function AgentWorkspace({
       onUpdateAction(session.id, message.id, action.id, { status: 'succeeded', result, error: undefined })
       setRuntimePhase('completed')
       appendMessage({
+        id: botanicAgentActionReceiptMessageId(action.id),
         role: 'assistant', kind: 'notice',
         content: `${result.message}${result.canvasNodeId ? ' 已写入画布。' : ''}`,
       })

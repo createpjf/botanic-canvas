@@ -1,4 +1,4 @@
-import type { AssetGroup, AssetNodeData, AssetRecord, CanvasNode, GenerationJob, GenerationRecipe, GenerationSettings, ResultNodeData } from './canvas.ts'
+import type { AssetGroup, AssetNodeData, AssetRecord, CanvasDocument, CanvasNode, GenerationJob, GenerationRecipe, GenerationSettings, ResultNodeData } from './canvas.ts'
 
 export type BotanicAgentIntent =
   | 'initial_generation'
@@ -539,8 +539,65 @@ export type BotanicAgentActionResult = {
   writeback?: { kind: 'text'; label: string; content: string }
   canvasNodeId?: string
   canvasNodeIds?: string[]
+  /** 服务端已持久化的工作流增量；客户端先落本地视图，再提交真实生成任务。 */
+  canvasPatch?: {
+    nodes: CanvasNode[]
+    edges: CanvasDocument['edges']
+    updatedAt: number
+    revision: number
+    graphRevision: number
+  }
   artifacts?: BotanicAgentArtifact[]
   canvasCommands?: BotanicAgentCanvasCommand[]
+}
+
+/** 同一行动的成功回执跨双击、重试和多端重放只保留一条消息。 */
+export function botanicAgentActionReceiptMessageId(actionId: string) {
+  const stableActionId = actionId.trim().replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 120) || 'unknown'
+  return `agent-message-action-${stableActionId}`
+}
+
+function canvasEdgeIdentity(edge: CanvasDocument['edges'][number]) {
+  return `${edge.source}\u0000${edge.sourceHandle ?? ''}\u0000${edge.target}\u0000${edge.targetHandle ?? ''}`
+}
+
+/**
+ * 合并服务端已落盘的 Agent 工作流。已有节点保留用户布局与选择态，节点数据和
+ * 新连线来自服务端权威增量；按语义去重连线，兼容旧版本不同的 edge id。
+ */
+export function mergeBotanicAgentCanvasPatch(
+  document: CanvasDocument,
+  patch: NonNullable<BotanicAgentActionResult['canvasPatch']>,
+): CanvasDocument {
+  const nodes = [...document.nodes]
+  for (const incoming of patch.nodes) {
+    const index = nodes.findIndex((node) => node.id === incoming.id)
+    if (index < 0) {
+      nodes.push({ ...incoming, selected: false } as CanvasNode)
+      continue
+    }
+    const current = nodes[index]
+    nodes[index] = {
+      ...current,
+      ...incoming,
+      position: current.position,
+      selected: current.selected,
+      data: { ...current.data, ...incoming.data },
+    } as CanvasNode
+  }
+
+  const nodeIds = new Set(nodes.map((node) => node.id))
+  const edges = [...document.edges]
+  const edgeIds = new Set(edges.map((edge) => edge.id))
+  const edgeIdentities = new Set(edges.map(canvasEdgeIdentity))
+  for (const edge of patch.edges) {
+    const identity = canvasEdgeIdentity(edge)
+    if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target) || edgeIds.has(edge.id) || edgeIdentities.has(identity)) continue
+    edges.push(edge)
+    edgeIds.add(edge.id)
+    edgeIdentities.add(identity)
+  }
+  return { ...document, nodes, edges, updatedAt: Math.max(document.updatedAt, patch.updatedAt) }
 }
 
 export type BotanicAgentActionProposal = {

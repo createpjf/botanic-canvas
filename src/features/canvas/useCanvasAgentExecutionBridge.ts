@@ -73,6 +73,7 @@ export function useCanvasAgentExecutionBridge({
   const saveAgentPlan = useCanvasStore((state) => state.saveAgentPlan)
   const updateAgentRunStatus = useCanvasStore((state) => state.updateAgentRunStatus)
   const applyAgentRunSnapshot = useCanvasStore((state) => state.applyAgentRunSnapshot)
+  const applyAgentWorkflowPatch = useCanvasStore((state) => state.applyAgentWorkflowPatch)
   const createGenerateBranchFromResult = useCanvasStore((state) => state.createGenerateBranchFromResult)
   const createGenerateFromResultRecipe = useCanvasStore((state) => state.createGenerateFromResultRecipe)
   const selectNode = useCanvasStore((state) => state.selectNode)
@@ -387,10 +388,20 @@ export function useCanvasAgentExecutionBridge({
           return { started: execution.jobIds.length > 0, runId }
         }
         const execution = await executePersistentBotanicAgentRun(projectId, runId, {
-          // 服务端先落盘文字/参考/生成占位工作流；在提交真实 Job 前刷新一次，
-          // 让用户看到“生成中”节点，而不是等整个提交请求返回后才看到画布变化。
-          onWorkflowReady: async () => {
-            if (useCanvasStore.getState().document.id === projectId) await refreshDocumentFromRemote()
+          // 服务端先落盘文字/生成/结果占位工作流；在提交真实 Job 前直接应用回执，
+          // 让用户立即看到节点，旧服务端回执才回退到整份刷新。
+          onWorkflowReady: async (workflow) => {
+            if (useCanvasStore.getState().document.id !== projectId) return
+            if (workflow.canvasPatch) await applyAgentWorkflowPatch(workflow.canvasPatch)
+            else await refreshDocumentFromRemote()
+            const visibleNodeIds = workflow.canvasNodeIds?.filter((nodeId) => (
+              useCanvasStore.getState().document.nodes.some((node) => node.id === nodeId)
+            )) ?? []
+            if (visibleNodeIds.length) {
+              selectNode(visibleNodeIds.at(-1)!)
+              onPrepareCanvasFocus()
+              setFocusRequest({ nodeIds: visibleNodeIds, requestId: Date.now() })
+            }
           },
         })
         if (useCanvasStore.getState().document.id !== projectId) return { started: execution.jobIds.length > 0, runId }
@@ -438,7 +449,7 @@ export function useCanvasAgentExecutionBridge({
       return { started: false, runId }
     }
     return { started: true, runId }
-  }, [applyAgentRunSnapshot, createGenerateBranchFromResult, createGenerateFromResultRecipe, document.assetGroups, document.id, refreshDocumentFromRemote, replaceMediaSources, runBatchVariation, runGraphGeneration, saveAgentPlan, updateAgentRunStatus, updateGenerateNode])
+  }, [applyAgentRunSnapshot, applyAgentWorkflowPatch, createGenerateBranchFromResult, createGenerateFromResultRecipe, document.assetGroups, document.id, onPrepareCanvasFocus, refreshDocumentFromRemote, replaceMediaSources, runBatchVariation, runGraphGeneration, saveAgentPlan, selectNode, updateAgentRunStatus, updateGenerateNode])
 
   const newSession = useCallback(() => {
     const sessionId = startNewAgentSession(selectedFocusNodeIds)

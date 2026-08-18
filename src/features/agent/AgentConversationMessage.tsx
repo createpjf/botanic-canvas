@@ -151,14 +151,19 @@ export function AgentConversationMessage({
         const pendingActionCount = plan.actions?.filter((action) => action.status === 'awaiting_confirmation').length ?? 0
         const autoPaused = executionMode === 'auto' && pendingActionCount > 0
         const detail = <>
-          {plan.toolCalls?.length ? <div className="agent-message__tools" aria-label="Agent 工具调用">
-            {plan.toolCalls.map((call) => <div key={call.id} className={`agent-message__tool is-${call.status}`}>
+          {plan.toolCalls?.length ? <details
+            className="agent-message__tools"
+            aria-label="Agent 工具调用"
+            open={plan.toolCalls.some((call) => call.status !== 'succeeded') || undefined}
+          >
+            <summary><span>执行步骤</span><small>{plan.toolCalls.filter((call) => call.status === 'succeeded').length}/{plan.toolCalls.length} 已完成</small></summary>
+            <div>{plan.toolCalls.map((call) => <div key={call.id} className={`agent-message__tool is-${call.status}`}>
               <span aria-hidden="true">↳</span>
               {/* summary 是模型自述的一句话调用目的，比工具名更能说明这一步在做什么。 */}
               <strong title={call.summary ?? call.label}>{call.label}{call.summary ? <em> · {call.summary}</em> : null}</strong>
               <small>{agentToolStatusLabel(call.status)}</small>
-            </div>)}
-          </div> : null}
+            </div>)}</div>
+          </details> : null}
           {plan.actions?.length ? <div className="agent-message__actions" aria-label="待确认行动">
             {plan.actions.map((action) => {
               // 已执行或已跳过的行动卡收成一行，只有仍需处理的卡片保持展开。

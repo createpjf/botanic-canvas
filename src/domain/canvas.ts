@@ -347,6 +347,7 @@ export type GenerationJob = {
   promptNodeId?: string
   referenceNodeId?: string
   resultNodeId?: string
+  parentNodeId?: string
   agentRun?: { runId: string; branchId: string }
 }
 

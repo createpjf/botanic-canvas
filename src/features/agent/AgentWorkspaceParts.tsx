@@ -185,10 +185,10 @@ export function AgentPromptDiff({ original, revised }: { original: string; revis
     return <span key={`${segment.kind}-${index}`}>{segment.text}</span>
   }
   return (
-    <section className="agent-prompt-review__diff" aria-label="提示词变化">
-      <header><span>原文与润色差异</span><b>{changed ? '已突出变化' : '未改动'}</b></header>
+    <details className="agent-prompt-review__diff" aria-label="提示词变化">
+      <summary><span>原文与润色差异</span><b>{changed ? '已突出变化' : '未改动'}</b></summary>
       <p>{segments.length ? segments.map(renderSegment) : '暂无提示词内容'}</p>
-    </section>
+    </details>
   )
 }
 

@@ -294,10 +294,10 @@ export async function preparePersistentBotanicAgentWorkflow(projectId: string, r
 export async function executePersistentBotanicAgentRun(
   projectId: string,
   runId: string,
-  options: { onWorkflowReady?: () => Promise<void> } = {},
+  options: { onWorkflowReady?: (workflow: BotanicAgentActionResult) => Promise<void> } = {},
 ) {
-  await preparePersistentBotanicAgentWorkflow(projectId, runId)
-  await options.onWorkflowReady?.()
+  const workflow = await preparePersistentBotanicAgentWorkflow(projectId, runId)
+  await options.onWorkflowReady?.(workflow)
   const stableRunId = stableAgentRunKey(runId)
   const toolCallId = `call-generation-submit-${stableRunId}`
   const idempotencyKey = `agent-run-execute-${stableRunId}`

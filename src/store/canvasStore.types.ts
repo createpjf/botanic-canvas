@@ -1,6 +1,7 @@
 import type { Edge, Viewport, XYPosition } from '@xyflow/react'
 import type {
   BotanicAgentActionProposal,
+  BotanicAgentActionResult,
   BotanicAgentExecutionMode,
   BotanicAgentMemoryKind,
   BotanicAgentMessage,
@@ -146,6 +147,7 @@ export type CanvasStore = {
   }) => Promise<boolean>
   saveAgentPlan: (plan: BotanicAgentPlan, options?: { id?: string; branches?: BotanicAgentRunBranch[] }) => string
   applyAgentRunSnapshot: (snapshot: BotanicAgentRunSnapshot) => void
+  applyAgentWorkflowPatch: (patch: NonNullable<BotanicAgentActionResult['canvasPatch']>) => Promise<boolean>
   retryAgentBranch: (runId: string, branchId: string) => Promise<boolean>
   cancelAgentRun: (runId: string) => Promise<boolean>
   retryBatchVariationItem: (runId: string, itemId: string) => Promise<boolean>

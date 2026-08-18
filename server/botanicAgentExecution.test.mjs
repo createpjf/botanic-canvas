@@ -101,9 +101,11 @@ test('服务端从持久化 Agent Run 创建独立工作流占位与可执行 Ge
   assert.equal(result.document.nodes.filter((node) => node.type === 'generate').length, 2)
   assert.equal(result.document.nodes.filter((node) => node.type === 'text' && node.data.content === persistentRun().plan.prompt).length, 2)
   assert.equal(result.document.nodes.filter((node) => node.type === 'result' && !node.data.image).length, 2)
-  for (const workflow of result.workflows) {
+  for (const [index, workflow] of result.workflows.entries()) {
     assert.equal(workflow.promptNode.type, 'text')
     assert.equal(workflow.promptNode.data.content, persistentRun().plan.prompt)
+    assert.deepEqual(workflow.generateNode.data.agentRun, { runId: 'agent-run-1', branchId: persistentRun().branches[index].id })
+    assert.deepEqual(workflow.resultNode.data.agentRun, workflow.generateNode.data.agentRun)
     assert.equal(result.document.edges.some((edge) => edge.data?.role === 'prompt'
       && edge.source === workflow.promptNodeId
       && edge.target === workflow.generateNodeId), true)
@@ -112,6 +114,8 @@ test('服务端从持久化 Agent Run 创建独立工作流占位与可执行 Ge
       && edge.target === workflow.resultNodeId), true)
   }
   assert.equal(result.document.generationJobs.length, 2)
+  assert.equal(result.document.generationJobs[0].promptNodeId, result.workflows[0].promptNodeId)
+  assert.equal(result.document.generationJobs[0].parentNodeId, 'result-parent')
   assert.equal(JSON.stringify(result).includes('data:image'), false)
 })
 

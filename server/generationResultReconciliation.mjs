@@ -222,6 +222,25 @@ function ensureAgentGenerationPlaceholder(next, job) {
     })
     changed = true
   }
+  const parent = generationKind === 'refinement' && job.parentNodeId
+    ? nodes.find((node) => node.id === job.parentNodeId && node.type === 'result')
+    : undefined
+  if (parent && !next.edges.some((edge) => edge.data?.role === 'parent'
+    && edge.source === parent.id
+    && edge.target === generate.id)) {
+    next.edges.push({
+      id: `agent-parent-edge-${job.id}`,
+      source: parent.id,
+      sourceHandle: sourceHandleForNode(parent),
+      target: generate.id,
+      targetHandle: 'input',
+      type: 'default',
+      style: { stroke: '#2a5238', strokeWidth: 1.7 },
+      data: { system: true, role: 'parent' },
+      reconnectable: false,
+    })
+    changed = true
+  }
   for (const reference of recipe?.references ?? []) {
     if (!reference.nodeId || !nodes.some((node) => node.id === reference.nodeId)) continue
     if (next.edges.some((edge) => edge.data?.role === 'reference'
@@ -270,7 +289,9 @@ function persistedJob(job, generateNodeId, resultNodeId, existing = {}) {
     partialError: job.partialError,
     outputs: job.outputs ?? [],
     generateNodeId: generateNodeId ?? job.generateNodeId ?? existing.generateNodeId,
+    promptNodeId: job.promptNodeId ?? existing.promptNodeId,
     resultNodeId: resultNodeId ?? job.resultNodeId ?? existing.resultNodeId,
+    parentNodeId: job.parentNodeId ?? existing.parentNodeId,
     agentRun: job.agentRun ?? existing.agentRun,
   }
 }

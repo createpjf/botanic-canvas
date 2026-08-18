@@ -126,3 +126,44 @@ test('浏览器断开后完成的 H3 任务会回填视频节点并保留供应�
   assert.equal(reconciled.nodes[1].data.mediaKind, 'video')
   assert.equal(reconciled.generationJobs[0].provider, 'minimax-video')
 })
+
+test('Agent 完成回写缺失工作流时重建 prompt、生成节点及父图参考和输出连线', () => {
+  const document = {
+    id: 'project-agent-recovery',
+    nodes: [
+      { id: 'parent-result', type: 'result', position: { x: 0, y: 0 }, data: { kind: 'result', status: 'ready', image: '/parent.jpg' } },
+      { id: 'asset-reference', type: 'asset', position: { x: 0, y: 360 }, data: { kind: 'asset', assetId: 'asset-a', image: '/reference.jpg' } },
+    ],
+    edges: [],
+    generationJobs: [],
+    updatedAt: 1,
+  }
+  const { document: reconciled, changed } = reconcileGenerationResults(document, [{
+    id: 'job-agent',
+    status: 'succeeded',
+    kind: 'refinement',
+    batchCount: 1,
+    createdAt: 1,
+    updatedAt: 2,
+    settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
+    outputs: [{ id: 'output-agent', image: '/api/media/agent' }],
+    promptNodeId: 'prompt-agent',
+    generateNodeId: 'generate-agent',
+    resultNodeId: 'result-agent',
+    parentNodeId: 'parent-result',
+    agentRun: { runId: 'run-a', branchId: 'branch-a' },
+    generationRecipe: {
+      prompt: '只替换背景。',
+      batchCount: 1,
+      settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
+      references: [{ nodeId: 'asset-reference', assetId: 'asset-a', image: '/reference.jpg', name: '参考图', role: '模特' }],
+    },
+    rawInput: { prompt: '只替换背景。' },
+  }], { ensureAgentPlaceholders: true })
+
+  assert.equal(changed, true)
+  assert.ok(reconciled.nodes.some((node) => node.id === 'prompt-agent' && node.type === 'text'))
+  assert.ok(reconciled.nodes.some((node) => node.id === 'generate-agent' && node.type === 'generate'))
+  assert.ok(reconciled.nodes.some((node) => node.id === 'result-agent' && node.data.image === '/api/media/agent'))
+  assert.deepEqual(new Set(reconciled.edges.map((edge) => edge.data?.role)), new Set(['prompt', 'parent', 'reference', 'output']))
+})

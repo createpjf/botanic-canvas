@@ -204,6 +204,7 @@ function workflowForBranch({ run, branch, parentNode, recipe, jobId, branchIndex
       kind: 'generate', label: branch.label, prompt: recipe.prompt,
       batchCount: recipe.batchCount, settings: clone(recipe.settings), status: submission ? 'queued' : 'idle',
       generationKind, refinementMode: 'faithful', jobId,
+      agentRun: { runId: run.id, branchId: branch.id },
     },
   }
   const promptNode = {
@@ -226,6 +227,7 @@ function workflowForBranch({ run, branch, parentNode, recipe, jobId, branchIndex
       ...(submission ? { submittedAt: now } : {}),
       jobId, taskGroupId: resultNodeId, taskNodeId: resultNodeId, variant: 0,
       generationKind, refinementMode: 'faithful', generationSettings: clone(recipe.settings),
+      agentRun: { runId: run.id, branchId: branch.id },
       generationRecipe: clone(recipe),
       ...(run.plan.intent === 'initial_generation'
         ? { rootRecipe: clone(recipe) }
@@ -264,6 +266,7 @@ function publicJobRecord(job, workflow) {
     createdAt: job.createdAt, updatedAt: job.updatedAt, batchCount: job.batchCount,
     outputCount: 0, provider: job.provider, model: job.settings.model, outputs: [],
     generateNodeId: workflow.generateNodeId, resultNodeId: workflow.resultNodeId,
+    promptNodeId: workflow.promptNodeId, parentNodeId: job.parentNodeId,
     agentRun: clone(job.agentRun),
   }
 }
@@ -306,7 +309,9 @@ export function prepareAgentRunExecution({
     }
     const workflow = workflowForBranch({ run, branch, parentNode, recipe, jobId, branchIndex, now, submission, nodesById })
     job.generateNodeId = workflow.generateNodeId
+    job.promptNodeId = workflow.promptNodeId
     job.resultNodeId = workflow.resultNodeId
+    if (workflow.generateNode.data.generationKind === 'refinement') job.parentNodeId = parentNode.id
     job.generateNodePosition = clone(workflow.generateNode.position)
     job.resultNodePosition = clone(workflow.resultNode.position)
     job.generationRecipe = clone(recipe)
@@ -344,7 +349,9 @@ export function reconcileAgentGenerationJobToProject(document, job, now = Date.n
       partialError: job.partialError,
       outputs: job.outputs ?? [],
       generateNodeId: job.generateNodeId ?? existingRecord?.generateNodeId,
+      promptNodeId: job.promptNodeId ?? existingRecord?.promptNodeId,
       resultNodeId: job.resultNodeId ?? existingRecord?.resultNodeId,
+      parentNodeId: job.parentNodeId ?? existingRecord?.parentNodeId,
       agentRun: job.agentRun ?? existingRecord?.agentRun,
     }
     const recordChanged = JSON.stringify(existingRecord) !== JSON.stringify(nextRecord)

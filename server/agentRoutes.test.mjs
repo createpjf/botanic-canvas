@@ -320,6 +320,53 @@ test('Skill 执行超时会收口为明确失败，不把 Agent 行动永远留�
   await assert.rejects(result, (caught) => caught?.code === 'AGENT_ACTION_TIMEOUT')
 })
 
+test('工作流创建回执携带已持久化的节点与连线，客户端可在提交生成前直接显示', async () => {
+  const responses = []
+  const workflow = {
+    promptNode: { id: 'prompt-1', type: 'text', position: { x: 100, y: 0 }, data: { kind: 'text', content: '海边人像' } },
+    generateNode: { id: 'generate-1', type: 'generate', position: { x: 100, y: 172 }, data: { kind: 'generate', status: 'idle' } },
+    resultNode: { id: 'result-1', type: 'result', position: { x: 560, y: 172 }, data: { kind: 'result', taskStatus: 'draft' } },
+    edges: [
+      { id: 'prompt-generate', source: 'prompt-1', target: 'generate-1', data: { role: 'prompt' } },
+      { id: 'generate-result', source: 'generate-1', target: 'result-1', data: { role: 'output' } },
+    ],
+    promptNodeId: 'prompt-1', generateNodeId: 'generate-1', resultNodeId: 'result-1',
+  }
+  const result = {
+    document: { id: 'project-workflow', updatedAt: 50, nodes: [workflow.promptNode, workflow.generateNode, workflow.resultNode], edges: workflow.edges },
+    jobs: [], workflows: [workflow],
+  }
+  const handler = createAgentRouteHandler({
+    config: {},
+    productStore: {
+      projectAccess: async () => ({ exists: true, role: 'owner' }),
+      readAgentActionReceipt: async () => undefined,
+      putAgentActionReceipt: async () => {},
+    },
+    agentRunGeneration: {
+      prepareProjectExecution: async () => ({ project: { revision: 1, graphRevision: 1 }, prepared: result }),
+      persistWorkflow: async () => ({ document: result.document, revision: 2, graphRevision: 2 }),
+    },
+    json: (_response, status, body) => { responses.push({ status, body }); return true },
+    error: () => true,
+    readJson: async () => ({
+      projectId: 'project-workflow', name: 'workflow_create', toolCallId: 'call-workflow',
+      confirmed: true, arguments: { planId: 'run-workflow' },
+    }),
+    text: (value) => String(value),
+    requireUser: async () => ({ id: 'user-1' }),
+  })
+
+  await handler(
+    { method: 'POST', headers: { 'idempotency-key': 'agent-workflow-run-workflow' } }, {},
+    new URL('http://botanic.test/api/agent-actions'), {}, 'request-workflow',
+  )
+
+  assert.equal(responses[0]?.status, 200)
+  assert.deepEqual(responses[0]?.body.output.canvasPatch.nodes.map((node) => node.id), ['prompt-1', 'generate-1', 'result-1'])
+  assert.deepEqual(responses[0]?.body.output.canvasPatch.edges.map((edge) => edge.id), ['prompt-generate', 'generate-result'])
+})
+
 function fakeServerResponse() {
   return {
     writableEnded: false,

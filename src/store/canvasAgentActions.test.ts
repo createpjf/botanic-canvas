@@ -26,7 +26,7 @@ function emptyDocument(): CanvasDocument {
 }
 
 function createDelayedPersistenceHarness() {
-  let state = { document: emptyDocument() } as CanvasStore
+  let state = { document: emptyDocument(), persistenceStatus: 'saving' } as CanvasStore
   const pendingDocuments: CanvasDocument[] = []
   const actions = createCanvasAgentActions({
     set: (patch) => { state = { ...state, ...patch } },
@@ -36,6 +36,7 @@ function createDelayedPersistenceHarness() {
       retryBranch: async () => { throw new Error('测试未调用远程分支重试') },
       cancelRun: async () => { throw new Error('测试未调用远程任务取消') },
     },
+    persistAcknowledgedRemotePatch: async () => {},
   })
   state = { ...state, ...actions }
   return { actions, pendingDocuments, getState: () => state }
@@ -101,4 +102,50 @@ test('Agent 会话的模型、挂载 Skill 和自定义标题会持久化', () =
   assert.equal(session?.plannerModel, 'kimi-k3')
   assert.deepEqual(session?.mountedSkillIds, ['controlled_edit', 'project-night-scene'])
   assert.equal(session?.title, '夜景生成方案')
+})
+
+test('Agent 工作流回执立即补入 prompt、生成节点与连线，且不重复写回服务端', async () => {
+  const { actions, pendingDocuments, getState } = createDelayedPersistenceHarness()
+
+  const applied = await actions.applyAgentWorkflowPatch({
+    nodes: [
+      {
+        id: 'prompt-agent-1',
+        type: 'text',
+        position: { x: 300, y: 120 },
+        data: { kind: 'text', label: '生成提示词', content: '人物不变，仅替换背景。' },
+      },
+      {
+        id: 'generate-agent-1',
+        type: 'generate',
+        position: { x: 620, y: 120 },
+        data: {
+          kind: 'generate',
+          label: '图像生成',
+          prompt: '人物不变，仅替换背景。',
+          batchCount: 1,
+          settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
+        },
+      },
+      {
+        id: 'result-agent-1',
+        type: 'result',
+        position: { x: 940, y: 120 },
+        data: { kind: 'result', status: 'generating', taskStatus: 'queued', outputOf: 'generate-agent-1' },
+      },
+    ],
+    edges: [
+      { id: 'edge-prompt-generate', source: 'prompt-agent-1', target: 'generate-agent-1' },
+      { id: 'edge-generate-result', source: 'generate-agent-1', target: 'result-agent-1' },
+    ],
+    updatedAt: 50,
+    revision: 2,
+    graphRevision: 2,
+  })
+
+  assert.equal(applied, true)
+  assert.deepEqual(getState().document.nodes.map((node) => node.id), ['prompt-agent-1', 'generate-agent-1', 'result-agent-1'])
+  assert.deepEqual(getState().document.edges.map((edge) => edge.id), ['edge-prompt-generate', 'edge-generate-result'])
+  assert.equal(getState().persistenceStatus, 'saving')
+  assert.equal(pendingDocuments.length, 0)
 })

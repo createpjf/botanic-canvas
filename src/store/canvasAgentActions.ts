@@ -12,6 +12,7 @@ import {
   updateBotanicAgentMessage,
   updateBotanicAgentRun,
   upsertBotanicAgentRunSnapshot,
+  mergeBotanicAgentCanvasPatch,
 } from '../domain/agent.ts'
 import type { BotanicAgentRunSnapshot } from '../domain/agent.ts'
 import type { CanvasDocument, ResultNodeData } from '../domain/canvas.ts'
@@ -20,6 +21,7 @@ import type { CanvasStore } from './canvasStore.types.ts'
 type AgentStoreActions = Pick<CanvasStore,
   | 'saveAgentPlan'
   | 'applyAgentRunSnapshot'
+  | 'applyAgentWorkflowPatch'
   | 'retryAgentBranch'
   | 'cancelAgentRun'
   | 'updateAgentRunStatus'
@@ -59,11 +61,13 @@ export function createCanvasAgentActions({
   get,
   commitDocument,
   persistentAgentRunApi,
+  persistAcknowledgedRemotePatch,
 }: {
   set: (next: Partial<CanvasStore>) => void
   get: () => CanvasStore
   commitDocument: CommitDocument
   persistentAgentRunApi: PersistentAgentRunApi
+  persistAcknowledgedRemotePatch: (document: CanvasDocument, revision: number, graphRevision: number) => Promise<void>
 }): AgentStoreActions {
   const commitAgentSessionDocument = (document: CanvasDocument) => {
     // Session 创建后的首条消息/上下文可能与持久化同一帧发生；
@@ -92,6 +96,16 @@ export function createCanvasAgentActions({
       const agentRuns = upsertBotanicAgentRunSnapshot(document.agentRuns, snapshot, rootRecipe)
       if (agentRuns === document.agentRuns) return
       void commitDocument({ ...document, agentRuns }, {}, { immediate: true })
+    },
+
+    applyAgentWorkflowPatch: async (patch) => {
+      const document = get().document
+      const nextDocument = mergeBotanicAgentCanvasPatch(document, patch)
+      set({ document: nextDocument })
+      void persistAcknowledgedRemotePatch(nextDocument, patch.revision, patch.graphRevision).catch(() => {
+        // 服务端工作流已经落盘；本机缓存失败不能阻断真实生成任务。
+      })
+      return true
     },
 
     retryAgentBranch: async (runId, branchId) => {

@@ -158,3 +158,49 @@ test('Agent 离线消息跨页面实例恢复，联网后只按原幂等键提�
     deliveries: ['agent-message-message-e2e'],
   })
 })
+
+test('Agent 生成卡片默认收起已完成步骤与提示词差异，主内容保持清晰', async ({ page }) => {
+  await stubReadOnlyRuntime(page)
+  await page.goto('/#/projects')
+  await page.getByRole('button', { name: '新建项目' }).click()
+  await page.getByRole('button', { name: '打开 Agent' }).click()
+
+  await page.evaluate(async () => {
+    const loadStore = new Function('return import("/src/store/canvasStore.ts")') as () => Promise<{
+      useCanvasStore: { getState: () => {
+        ensureAgentSession: () => string
+        appendAgentMessage: (sessionId: string, message: unknown) => void
+      } }
+    }>
+    const { useCanvasStore } = await loadStore()
+    const store = useCanvasStore.getState()
+    const sessionId = store.ensureAgentSession()
+    store.appendAgentMessage(sessionId, {
+      id: 'message-ui-card', role: 'assistant', kind: 'plan', status: 'pending', createdAt: Date.now(),
+      content: '已整理生成方案。',
+      plan: {
+        intent: 'replace_scene',
+        instruction: '人物不变，背景换成海边。',
+        summary: '海边场景替换',
+        prompt: '保持人物、五官、服装与姿态不变，仅将背景替换为晴朗海边。',
+        settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
+        constraints: [{ dimension: 'scene', mode: 'vary' }],
+        references: [],
+        output: { mode: 'single', count: 1, candidatesPerItem: 1 },
+        toolCalls: [
+          { id: 'read', name: 'canvas_read', label: '读取画布上下文', status: 'succeeded', risk: 'read', requiresConfirmation: false },
+          { id: 'skill', name: 'skill_apply', label: '应用受控局部编辑', status: 'succeeded', risk: 'write', requiresConfirmation: true },
+        ],
+      },
+    })
+  })
+
+  await expect(page.getByText('生成前确认')).toBeVisible()
+  const toolSteps = page.locator('details.agent-message__tools')
+  const promptDiff = page.locator('details.agent-prompt-review__diff')
+  await expect(toolSteps).toBeVisible()
+  await expect(promptDiff).toBeVisible()
+  expect(await toolSteps.evaluate((element: HTMLDetailsElement) => element.open)).toBe(false)
+  expect(await promptDiff.evaluate((element: HTMLDetailsElement) => element.open)).toBe(false)
+  await expect(page.getByText('保持人物、五官、服装与姿态不变，仅将背景替换为晴朗海边。')).toBeVisible()
+})

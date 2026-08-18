@@ -185,7 +185,9 @@ export function publicGenerationJob(job, { includeIdempotencyKey = false } = {})
     effectiveModel: job.effectiveModel,
     providerAttempts: job.providerAttempts ?? [],
     generateNodeId: job.generateNodeId,
+    promptNodeId: job.promptNodeId,
     resultNodeId: job.resultNodeId,
+    parentNodeId: job.parentNodeId,
   }
 }
 
@@ -219,7 +221,9 @@ export function persistedGenerationJob(job) {
     effectiveModel: job.effectiveModel,
     providerAttempts: job.providerAttempts,
     generateNodeId: job.generateNodeId,
+    promptNodeId: job.promptNodeId,
     resultNodeId: job.resultNodeId,
+    parentNodeId: job.parentNodeId,
     generateNodePosition: job.generateNodePosition,
     resultNodePosition: job.resultNodePosition,
     generationRecipe: job.generationRecipe,

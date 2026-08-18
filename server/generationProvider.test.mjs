@@ -9,11 +9,16 @@ test('生成任务持久化保留幂等键，公开状态只按需返回提交�
     id: 'job-agent', ownerId: 'user-a', projectId: 'project-a', status: 'queued', kind: 'generation',
     createdAt: 1, updatedAt: 1, batchCount: 1, settings: { model: 'gpt-image-2' }, outputs: [],
     rawInput: { projectId: 'project-a' }, agentRun: { runId: 'run-a', branchId: 'branch-a' },
+    promptNodeId: 'prompt-a', generateNodeId: 'generate-a', resultNodeId: 'result-a', parentNodeId: 'parent-a',
     idempotencyKey: 'gen_test_key_123456', projectWritebackPending: true,
   }
   assert.deepEqual(persistedGenerationJob(job).agentRun, job.agentRun)
-  assert.equal(persistedGenerationJob({ ...job, generateNodeId: 'generate-a', resultNodeId: 'result-a' }).generateNodeId, 'generate-a')
+  assert.equal(persistedGenerationJob(job).generateNodeId, 'generate-a')
+  assert.equal(persistedGenerationJob(job).promptNodeId, 'prompt-a')
+  assert.equal(persistedGenerationJob(job).parentNodeId, 'parent-a')
   assert.deepEqual(publicGenerationJob(job).agentRun, job.agentRun)
+  assert.equal(publicGenerationJob(job).promptNodeId, 'prompt-a')
+  assert.equal(publicGenerationJob(job).parentNodeId, 'parent-a')
   assert.equal(persistedGenerationJob(job).idempotencyKey, job.idempotencyKey)
   assert.equal(publicGenerationJob(job).idempotencyKey, undefined)
   assert.equal(publicGenerationJob(job, { includeIdempotencyKey: true }).idempotencyKey, job.idempotencyKey)

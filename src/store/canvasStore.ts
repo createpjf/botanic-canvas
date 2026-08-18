@@ -21,6 +21,7 @@ import type {
 } from '../domain/canvas'
 import {
   deleteGlobalAssetAndScrubDocuments,
+  persistAcknowledgedRemoteCanvasPatch,
   writeCanvasDocument,
 } from '../lib/db'
 import { cancelPersistentBotanicAgentRun, retryPersistentBotanicAgentBranch } from '../lib/agentApi'
@@ -230,6 +231,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
       retryBranch: retryPersistentBotanicAgentBranch,
       cancelRun: cancelPersistentBotanicAgentRun,
     },
+    persistAcknowledgedRemotePatch: persistAcknowledgedRemoteCanvasPatch,
   }),
 
   ...createCanvasBatchVariationActions({

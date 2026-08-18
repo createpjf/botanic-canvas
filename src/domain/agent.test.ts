@@ -51,6 +51,7 @@ import {
   filterBotanicAgentSessionTimeline,
   filterBotanicAgentRunTimeline,
   updateBotanicAgentSessionReadingAnchor,
+  botanicAgentActionReceiptMessageId,
 } from './agent.ts'
 
 const rootRecipe: GenerationRecipe = {
@@ -72,6 +73,24 @@ const sceneGroup: AssetGroup = {
   createdAt: 1,
   updatedAt: 1,
 }
+
+test('同一个 Agent 行动始终复用同一条成功回执消息标识', () => {
+  const session = createBotanicAgentSession({ id: 'session-action-receipt', now: 1 })
+  const messageId = botanicAgentActionReceiptMessageId('call-skill-controlled-edit')
+  const receipt = {
+    id: messageId,
+    role: 'assistant' as const,
+    kind: 'notice' as const,
+    content: '已应用 Skill「受控局部编辑」。',
+    createdAt: 2,
+  }
+
+  const once = appendBotanicAgentMessage(session, receipt)
+  const twice = appendBotanicAgentMessage(once, { ...receipt, createdAt: 3 })
+
+  assert.equal(twice.messages.length, 1)
+  assert.equal(twice.messages[0].id, messageId)
+})
 
 test('Agent 运行记录按可验证的上下文来源生成步骤', () => {
   const steps = createBotanicAgentRuntimeSteps({

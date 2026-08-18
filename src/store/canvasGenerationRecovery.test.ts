@@ -203,3 +203,56 @@ test('结果数量不变时仍识别候选血缘与 Agent Run 的远端修复', 
   assert.equal((merged.nodes.find((node) => node.id === 'result-a')!.data as ResultNodeData).candidateId, 'output-a')
   assert.deepEqual(merged.generationJobs[0].agentRun, { runId: 'run-a', branchId: 'branch-a' })
 })
+
+test('Agent 结果恢复会补回完整 prompt、生成节点及参考和输出连线', () => {
+  const reference: CanvasNode = {
+    id: 'asset-reference',
+    type: 'asset',
+    position: { x: 20, y: 180 },
+    draggable: true,
+    data: {
+      kind: 'asset', assetId: 'asset-reference', name: '参考图', image: '/api/media/reference',
+      role: '商品', source: 'upload', mediaKind: 'image',
+    },
+  }
+  const current = document([reference])
+  const recoveredJob = {
+    ...job('job-agent', [{ id: 'output-agent', image: '/api/media/output', mediaKind: 'image' }]),
+    agentRun: { runId: 'run-agent', branchId: 'branch-agent' },
+    generateNodeId: 'agent-generate-run-agent-branch-agent',
+    resultNodeId: 'agent-result-run-agent-branch-agent',
+  }
+  const prompt: CanvasNode = {
+    id: 'agent-prompt-run-agent-branch-agent', type: 'text', position: { x: 480, y: 8 }, draggable: true,
+    data: { kind: 'text', label: '生成描述', content: '保持人物不变，只替换背景。' },
+  }
+  const generate: CanvasNode = {
+    id: 'agent-generate-run-agent-branch-agent', type: 'generate', position: { x: 480, y: 180 }, draggable: true,
+    data: {
+      kind: 'generate', label: 'Agent 生成', prompt: '保持人物不变，只替换背景。', batchCount: 1,
+      settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' }, status: 'succeeded',
+      jobId: 'job-agent', agentRun: recoveredJob.agentRun,
+    },
+  }
+  const result = resultNode('agent-result-run-agent-branch-agent', { x: 940, y: 180 }, {
+    outputOf: generate.id,
+    image: '/api/media/output', candidateId: 'output-agent', jobId: 'job-agent',
+    status: 'ready', taskStatus: 'succeeded', agentRun: recoveredJob.agentRun,
+  })
+  const recovered = document([reference, prompt, generate, result], [
+    { id: 'edge-reference', source: reference.id, sourceHandle: 'asset-output', target: generate.id, targetHandle: 'input', data: { role: 'reference' } },
+    { id: 'edge-prompt', source: prompt.id, sourceHandle: 'output', target: generate.id, targetHandle: 'input', data: { role: 'prompt' } },
+    { id: 'edge-output', source: generate.id, sourceHandle: 'output', target: result.id, targetHandle: 'input', data: { role: 'output' } },
+  ], [recoveredJob])
+
+  const merged = mergeRecoveredGenerationJobs(current, recovered)
+
+  assert.deepEqual(
+    new Set(merged.nodes.map((node) => node.id)),
+    new Set([reference.id, prompt.id, generate.id, result.id]),
+  )
+  assert.deepEqual(
+    new Set(merged.edges.map((edge) => edge.data?.role)),
+    new Set(['reference', 'prompt', 'output']),
+  )
+})
