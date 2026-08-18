@@ -57,8 +57,22 @@ test('project to canvas and Agent surfaces stay ordered across reload', async ({
   await expect(composer).toHaveValue('保持人物、服装和商品不变，只替换场景与环境光线。')
 
   await page.getByRole('button', { name: '执行模式：计划模式' }).click()
-  await expect(page.getByRole('group', { name: '执行模式' })).toBeVisible()
-  await page.getByRole('group', { name: '执行模式' }).getByRole('button', { name: '自动模式' }).click()
+  const modeMenu = page.getByRole('group', { name: '执行模式' })
+  await expect(modeMenu).toBeVisible()
+
+  // 菜单必须整体落在 Agent 面板内，且说明文字不被裁切——面板有 overflow: hidden，
+  // 菜单一旦溢出，说明文案就会被切掉半句。
+  const menuBox = await modeMenu.boundingBox()
+  const panelBox = await page.getByRole('complementary', { name: 'Botanic Agent' }).boundingBox()
+  expect(menuBox!.x).toBeGreaterThanOrEqual(panelBox!.x - 1)
+  expect(menuBox!.x + menuBox!.width).toBeLessThanOrEqual(panelBox!.x + panelBox!.width + 1)
+  for (const modeName of ['计划模式', '自动模式']) {
+    const clipped = await modeMenu.getByRole('button', { name: modeName }).locator('small')
+      .evaluate((element) => element.scrollWidth > element.clientWidth + 1)
+    expect(clipped, `${modeName} 的说明文字被裁切`).toBe(false)
+  }
+
+  await modeMenu.getByRole('button', { name: '自动模式' }).click()
   await expect(page.getByRole('button', { name: '执行模式：自动模式' })).toBeVisible()
 
   await composer.fill('@')

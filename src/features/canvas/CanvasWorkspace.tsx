@@ -575,31 +575,37 @@ function TaskFlowFocus({ taskKey, nodes }: { taskKey?: string; nodes: CanvasNode
   return null
 }
 
+/**
+ * 定位是一次性动作，只能由新的 requestId 触发。
+ *
+ * 节点数组/对象是父组件每次 render 现算的新引用，而生成期间结果节点状态一直在变
+ * （queued → generating → ready、轮询与实时推送），画布因此频繁重渲染。若把节点放进
+ * 依赖数组，fitView 会在每次重渲染时重跑，视角被钉死在生成节点上，用户平移完立刻被拉回。
+ */
+function useFocusOnRequest(requestId: number, focus: () => void) {
+  const focusRef = useRef(focus)
+  focusRef.current = focus
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => focusRef.current())
+    return () => window.cancelAnimationFrame(frame)
+  }, [requestId])
+}
+
 function FocusCanvasNode({ node, requestId }: { node?: CanvasNode; requestId: number }) {
   const { fitView } = useReactFlow()
-
-  useEffect(() => {
+  useFocusOnRequest(requestId, () => {
     if (!node) return
-    const frame = window.requestAnimationFrame(() => {
-      void fitView({ nodes: [node], duration: viewportMotionDuration(220), padding: 0.48, minZoom: canvasMinZoom, maxZoom: 1.05 })
-    })
-    return () => window.cancelAnimationFrame(frame)
-  }, [fitView, node, requestId])
-
+    void fitView({ nodes: [node], duration: viewportMotionDuration(220), padding: 0.48, minZoom: canvasMinZoom, maxZoom: 1.05 })
+  })
   return null
 }
 
 function FocusCanvasNodes({ nodes, requestId }: { nodes: CanvasNode[]; requestId: number }) {
   const { fitView } = useReactFlow()
-
-  useEffect(() => {
+  useFocusOnRequest(requestId, () => {
     if (!nodes.length) return
-    const frame = window.requestAnimationFrame(() => {
-      void fitView({ nodes, duration: viewportMotionDuration(220), padding: 0.34, minZoom: canvasMinZoom, maxZoom: 1.05 })
-    })
-    return () => window.cancelAnimationFrame(frame)
-  }, [fitView, nodes, requestId])
-
+    void fitView({ nodes, duration: viewportMotionDuration(220), padding: 0.34, minZoom: canvasMinZoom, maxZoom: 1.05 })
+  })
   return null
 }
 
@@ -2214,6 +2220,7 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
           onCancelRun={(runId) => cancelAgentRun(runId)}
           onLocateNode={selectNode}
           onFocusNodes={agentBridge.focusNodes}
+          onResolveRunNodes={agentBridge.resolveRunNodes}
           onSaveArtifact={agentBridge.saveArtifact}
           onContinueArtifact={agentBridge.continueArtifact}
           onLoadMoreArtifacts={agentBridge.loadMoreArtifacts}

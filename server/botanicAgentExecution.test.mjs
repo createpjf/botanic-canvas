@@ -265,3 +265,90 @@ test('取消分支会同步关闭画布占位节点，不遗留永久生成态',
   assert.equal(resultNode.data.taskStatus, 'cancelled')
   assert.equal(generateNode.data.status, 'cancelled')
 })
+
+test('参考连线按源节点类型选择输出端口，素材节点不会连到不存在的端口', () => {
+  // 素材节点的输出端口是 asset-output，结果节点是 output。
+  // 端口写错时 React Flow 不渲染这条边，参考图看起来就“没连上”。
+  const initial = prepareAgentRunExecution({
+    run: initialGenerationRun(), document: initialGenerationDocument(), now: 100,
+    jobIdForBranch: (branch) => `job-${branch.id}`,
+    models, maximumBatchCount: 8, maximumReferenceBytes: 8 * 1024 * 1024,
+  })
+  const referenceEdge = initial.document.edges.find((edge) => edge.data?.role === 'reference')
+  assert.equal(referenceEdge.source, 'asset-product-node')
+  assert.equal(referenceEdge.sourceHandle, 'asset-output')
+
+  // 精修时父结果是 result 节点，仍然用 output。
+  const refinement = prepare()
+  const parentEdge = refinement.document.edges.find((edge) => edge.data?.role === 'parent')
+  assert.equal(parentEdge.sourceHandle, 'output')
+
+  // 每条参考边的端口都必须和它源节点的真实类型一致。
+  const nodesById = new Map(initial.document.nodes.map((node) => [node.id, node]))
+  for (const edge of initial.document.edges.filter((item) => item.data?.role === 'reference')) {
+    const expected = nodesById.get(edge.source)?.type === 'asset' ? 'asset-output' : 'output'
+    assert.equal(edge.sourceHandle, expected, `参考边 ${edge.id} 的输出端口与源节点类型不一致`)
+  }
+})
+
+test('继续生成只带本轮指定的参考，不再沿用最初那次配方', () => {
+  const document = projectDocument()
+  document.nodes.push({
+    id: 'asset-mood-node', type: 'asset', position: { x: 0, y: 600 }, draggable: true,
+    data: { kind: 'asset', assetId: 'asset-mood', name: '氛围参考', image: '/api/media/media_mood', role: '调性', mediaKind: 'image' },
+  })
+
+  // 本轮用户只锁定了「氛围参考」；父结果的 rootRecipe 里那张商品图不应再被带上。
+  const run = persistentRun()
+  run.plan.output = { mode: 'single', count: 1, candidatesPerItem: 1 }
+  delete run.plan.assetGroupId
+  run.branches = [{ id: 'branch-single', label: '继续修改', status: 'queued', attempt: 0, jobIds: [], outputCount: 0, updatedAt: 1 }]
+  run.plan.contextSnapshot = [
+    { nodeId: 'asset-mood-node', label: '氛围参考', kind: '素材', mediaKind: 'image' },
+    // 父结果本身通过 parent 传入，不重复进参考集。
+    { nodeId: 'result-parent', label: '首图 01', kind: '结果', mediaKind: 'image' },
+  ]
+
+  const result = prepareAgentRunExecution({
+    run, document, now: 100,
+    jobIdForBranch: (branch) => `job-${branch.id}`,
+    models, maximumBatchCount: 8, maximumReferenceBytes: 8 * 1024 * 1024,
+  })
+
+  const references = result.jobs[0].rawInput.recipe.references
+  assert.deepEqual(references.map((reference) => reference.mediaId), ['media_mood'])
+  // 上一轮结果仍然作为 parent 单独传入。
+  assert.equal(result.jobs[0].rawInput.parent.mediaId, 'media_parent')
+
+  // 本轮没有指定任何参考时，参考集为空，只靠上一轮结果继续改。
+  const bare = persistentRun()
+  bare.plan.output = { mode: 'single', count: 1, candidatesPerItem: 1 }
+  delete bare.plan.assetGroupId
+  bare.branches = [{ id: 'branch-bare', label: '继续修改', status: 'queued', attempt: 0, jobIds: [], outputCount: 0, updatedAt: 1 }]
+  const bareResult = prepareAgentRunExecution({
+    run: bare, document, now: 100,
+    jobIdForBranch: (branch) => `job-${branch.id}`,
+    models, maximumBatchCount: 8, maximumReferenceBytes: 8 * 1024 * 1024,
+  })
+  assert.deepEqual(bareResult.jobs[0].rawInput.recipe.references, [])
+  assert.equal(bareResult.jobs[0].rawInput.parent.mediaId, 'media_parent')
+})
+
+test('「从原配方重做」仍然复用最初那次配方的参考', () => {
+  const run = persistentRun()
+  run.plan.intent = 'redo_from_root'
+  run.plan.output = { mode: 'single', count: 1, candidatesPerItem: 1 }
+  delete run.plan.assetGroupId
+  run.branches = [{ id: 'branch-redo', label: '原配方重做', status: 'queued', attempt: 0, jobIds: [], outputCount: 0, updatedAt: 1 }]
+  run.plan.contextSnapshot = []
+
+  const result = prepareAgentRunExecution({
+    run, document: projectDocument(), now: 100,
+    jobIdForBranch: (branch) => `job-${branch.id}`,
+    models, maximumBatchCount: 8, maximumReferenceBytes: 8 * 1024 * 1024,
+  })
+
+  assert.deepEqual(result.jobs[0].rawInput.recipe.references.map((item) => item.mediaId), ['media_product'])
+  // 原配方重做是一次全新生成，没有 parent。
+  assert.equal(result.jobs[0].rawInput.parent, undefined)
+})

@@ -218,7 +218,15 @@ export function useCanvasAgentExecutionBridge({
     }
   }, [artifactIndex.nextBefore, artifactIndex.projectId, artifactIndex.status, document.id])
 
-  const setSessionContext = useCallback((sessionId: string, nodeIds: string[]) => {
+  /**
+   * 默认并入已有上下文（用户逐张添加素材时需要），但「基于这张结果继续」这类入口
+   * 必须整组替换：叠加会让 composer 里的参考越攒越多，下一轮把上一轮的参考也带上。
+   */
+  const setSessionContext = useCallback((sessionId: string, nodeIds: string[], options?: { replace?: boolean }) => {
+    if (options?.replace) {
+      setAgentSessionContext(sessionId, [...new Set(nodeIds)])
+      return
+    }
     const session = useCanvasStore.getState().document.agentSessions.find((item) => item.id === sessionId)
     setAgentSessionContext(sessionId, [...new Set([...(session?.contextNodeIds ?? []), ...nodeIds])])
   }, [setAgentSessionContext])
@@ -236,10 +244,23 @@ export function useCanvasAgentExecutionBridge({
     if (!data?.image) return
     selectNode(resultNodeId)
     const sessionId = ensureAgentSession([resultNodeId])
-    setSessionContext(sessionId, [resultNodeId])
+    setSessionContext(sessionId, [resultNodeId], { replace: true })
     setTargetResultId(resultNodeId)
     onPrepareAgentOpen()
   }, [document.nodes, ensureAgentSession, onPrepareAgentOpen, selectNode, setSessionContext])
+
+  /**
+   * Agent Run 在画布上的节点。任务刚提交时结果还是占位节点（没有图片），
+   * 因此按 agentRun.runId 直接查图谱，而不是等 Artifact 出现。
+   */
+  const resolveRunNodes = useCallback((runId: string) => {
+    const nodes = useCanvasStore.getState().document.nodes
+    return nodes.flatMap((node) => {
+      if (node.type !== 'result') return []
+      const data = node.data as ResultNodeData
+      return data.agentRun?.runId === runId ? [node.id] : []
+    })
+  }, [])
 
   const focusNodes = useCallback((nodeIds: string[]) => {
     const validNodeIds = [...new Set(nodeIds)].filter((nodeId) => document.nodes.some((node) => node.id === nodeId))
@@ -480,7 +501,7 @@ export function useCanvasAgentExecutionBridge({
     }
     if (!sourceNodeIds.length) return
     const sessionId = currentDocument.activeAgentSessionId ?? ensureAgentSession(sourceNodeIds)
-    setSessionContext(sessionId, sourceNodeIds)
+    setSessionContext(sessionId, sourceNodeIds, { replace: true })
     const resultId = sourceNodeIds.find((nodeId) => currentDocument.nodes.some((node) => node.id === nodeId && node.type === 'result'))
     setTargetResultId(resultId ?? null)
     selectNode(sourceNodeIds[0])
@@ -491,7 +512,7 @@ export function useCanvasAgentExecutionBridge({
   const useResultContext = useCallback((sourceNodeIds: string[]) => {
     const currentDocument = useCanvasStore.getState().document
     const sessionId = currentDocument.activeAgentSessionId ?? ensureAgentSession(sourceNodeIds)
-    setSessionContext(sessionId, sourceNodeIds)
+    setSessionContext(sessionId, sourceNodeIds, { replace: true })
     const resultId = sourceNodeIds.find((nodeId) => currentDocument.nodes.some((node) => node.id === nodeId && node.type === 'result'))
     setTargetResultId(resultId ?? null)
     if (resultId) selectNode(resultId)
@@ -503,6 +524,7 @@ export function useCanvasAgentExecutionBridge({
     latestRun,
     artifacts,
     contextOptions,
+    resolveRunNodes,
     artifactIndexStatus: artifactIndex.projectId === document.id ? artifactIndex.status : 'idle' as const,
     artifactIndexHasMore: artifactIndex.projectId === document.id && artifactIndex.nextBefore !== undefined,
     focusRequest,
