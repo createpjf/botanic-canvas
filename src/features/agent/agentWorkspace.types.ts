@@ -1,4 +1,4 @@
-import type { BotanicIndexedArtifact } from '../../domain/agent'
+import type { BotanicAgentSkillCatalogItem, BotanicIndexedArtifact } from '../../domain/agent'
 import type { AssetRole, AssetSource, GenerationMediaKind, GenerationRecipe } from '../../domain/canvas'
 
 export type AgentDockTarget = {
@@ -25,3 +25,5 @@ export type AgentContextItem = {
   mediaKind?: GenerationMediaKind
   source?: AssetSource
 }
+
+export type AgentSkillOption = Pick<BotanicAgentSkillCatalogItem, 'id' | 'name' | 'source'>

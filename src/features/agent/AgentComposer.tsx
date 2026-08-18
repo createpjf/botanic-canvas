@@ -4,15 +4,17 @@ import type { BotanicAgentMentionQuery, BotanicAgentSession } from '../../domain
 import type { AssetGroup } from '../../domain/canvas'
 import { AgentPlannerProviderIcon } from '../../components/AgentPlannerProviderIcon'
 import { BotanicSelect } from '../../components/BotanicSelect'
-import { ArrowUpIcon, AutoRunIcon, ChecklistIcon, CloseIcon, PlusIcon, UploadIcon } from '../../components/BotanicIcons'
+import { ArrowUpIcon, AutoRunIcon, ChecklistIcon, CloseIcon, PlusIcon, SparkleIcon, UploadIcon } from '../../components/BotanicIcons'
 import { agentPlannerModelLabel, agentPlannerModelShortLabel } from '../../components/generationModelPresentation'
-import type { AgentContextItem } from './agentWorkspace.types'
+import type { AgentContextItem, AgentSkillOption } from './agentWorkspace.types'
 
 type AgentComposerProps = {
   session?: BotanicAgentSession
   contextItems: AgentContextItem[]
   mentionQuery?: BotanicAgentMentionQuery
   mentionOptions: AgentContextItem[]
+  skillOptions: AgentSkillOption[]
+  mountedSkills: AgentSkillOption[]
   instruction: string
   error: string
   canRetry: boolean
@@ -32,7 +34,10 @@ type AgentComposerProps = {
   contextMenuButtonRef: RefObject<HTMLButtonElement | null>
   modeMenuButtonRef: RefObject<HTMLButtonElement | null>
   onRemoveContext: (itemId: string) => void
+  onRemoveMountedSkill: (skillId: string) => void
   onSelectMention: (item: AgentContextItem) => void
+  onSelectSkill: (skill: AgentSkillOption) => void
+  onCreateSkill: () => void
   onDismissMention: () => void
   onInstructionChange: (value: string, caret: number) => void
   onInstructionClick: (caret: number) => void
@@ -53,6 +58,8 @@ export function AgentComposer({
   contextItems,
   mentionQuery,
   mentionOptions,
+  skillOptions,
+  mountedSkills,
   instruction,
   error,
   canRetry,
@@ -72,7 +79,10 @@ export function AgentComposer({
   contextMenuButtonRef,
   modeMenuButtonRef,
   onRemoveContext,
+  onRemoveMountedSkill,
   onSelectMention,
+  onSelectSkill,
+  onCreateSkill,
   onDismissMention,
   onInstructionChange,
   onInstructionClick,
@@ -94,9 +104,10 @@ export function AgentComposer({
       onDismissMention()
       return
     }
-    if (event.key === 'Enter' && mentionQuery && mentionOptions[0]) {
+    if (event.key === 'Enter' && mentionQuery && (skillOptions[0] || mentionOptions[0])) {
       event.preventDefault()
-      onSelectMention(mentionOptions[0])
+      if (skillOptions[0]) onSelectSkill(skillOptions[0])
+      else onSelectMention(mentionOptions[0])
       return
     }
     if (event.key === 'Enter' && !event.shiftKey) {
@@ -112,9 +123,12 @@ export function AgentComposer({
 
   return <div className="agent-composer" role="group" aria-label="Agent 输入" aria-busy={planning}>
     {contextItems.length ? <div className="agent-composer__context" aria-label={`已引用 ${contextItems.length} 个素材`}>{contextItems.map((item) => <button key={item.id} type="button" aria-label={`移除 ${item.label}`} title={`移除 ${item.label}`} onClick={() => onRemoveContext(item.id)}>{item.image ? <img src={item.image} alt="" /> : <span>{item.kind.slice(0, 1)}</span>}<i aria-hidden="true">×</i></button>)}</div> : null}
-    {mentionQuery ? <div className="agent-composer__mention-menu" role="listbox" aria-label="选择素材引用" onPointerDown={(event) => event.stopPropagation()}>
-      {mentionOptions.map((item) => <button key={item.id} type="button" role="option" aria-label={`引用素材 ${item.label}`} onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onSelectMention(item) }}>{item.image ? <img src={item.image} alt="" /> : <span>{item.kind.slice(0, 1)}</span>}<b>{item.label}</b><small>素材</small></button>)}
-      {!mentionOptions.length ? <p>没有匹配的素材，按 Esc 关闭</p> : null}
+    {mountedSkills.length ? <div className="agent-composer__skills" aria-label={`已挂载 ${mountedSkills.length} 个 Skill`}><span>已挂载</span>{mountedSkills.map((skill) => <button key={skill.id} type="button" aria-label={`移除已挂载 Skill ${skill.name}`} title={`移除 ${skill.name}`} onClick={() => onRemoveMountedSkill(skill.id)}><SparkleIcon /><b>{skill.name}</b><i aria-hidden="true">×</i></button>)}</div> : null}
+    {mentionQuery ? <div className="agent-composer__mention-menu" role="group" aria-label="引用画布内容" onPointerDown={(event) => event.stopPropagation()}>
+      {skillOptions.length ? <div className="agent-composer__mention-section"><strong>调用 Skill</strong>{skillOptions.map((skill) => <button key={`skill-${skill.id}`} type="button" role="option" aria-label={`调用 Skill ${skill.name}`} onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onSelectSkill(skill) }}><SparkleIcon /><b>{skill.name}</b><small>{skill.source === 'system' ? '系统 Skill' : '项目 Skill'}</small></button>)}</div> : null}
+      <button type="button" role="option" className="agent-composer__create-skill" aria-label="创建项目 Skill" onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onCreateSkill() }}><PlusIcon /><b>创建项目 Skill</b><small>保存一组可复用规则</small></button>
+      {mentionOptions.length ? <div className="agent-composer__mention-section"><strong>引用画布</strong>{mentionOptions.map((item) => <button key={item.id} type="button" role="option" aria-label={`引用素材 ${item.label}`} onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onSelectMention(item) }}>{item.image ? <img src={item.image} alt="" /> : <span>{item.kind.slice(0, 1)}</span>}<b>{item.label}</b><small>素材</small></button>)}</div> : null}
+      {!mentionOptions.length && !skillOptions.length ? <p>没有匹配的素材，按 Esc 关闭</p> : null}
     </div> : null}
     <textarea
       ref={textareaRef}
@@ -133,7 +147,7 @@ export function AgentComposer({
       <div>
         <button ref={contextMenuButtonRef} type="button" className="agent-composer__add" onClick={onToggleContextMenu} aria-controls={contextMenuId} aria-expanded={contextMenuOpen} aria-label="添加图像素材" title="添加图像素材"><PlusIcon /></button>
         <button ref={modeMenuButtonRef} type="button" className="agent-composer__mode" onClick={onToggleModeMenu} aria-controls={modeMenuId} aria-expanded={modeMenuOpen} aria-label={session?.executionMode === 'auto' ? '自动执行' : '手动确认'} title={session?.executionMode === 'auto' ? '自动执行' : '手动确认'}>
-          {session?.executionMode === 'auto' ? <AutoRunIcon /> : <ChecklistIcon />}<span className="agent-composer__mode-label" aria-hidden="true">{session?.executionMode === 'auto' ? '自动生成' : '手动确认'}</span><span className="agent-composer__mode-chevron" aria-hidden="true">⌄</span>
+          {session?.executionMode === 'auto' ? <AutoRunIcon /> : <ChecklistIcon />}<span className="agent-composer__mode-label" aria-hidden="true">{session?.executionMode === 'auto' ? 'Auto' : 'Plan'}</span><span className="agent-composer__mode-chevron" aria-hidden="true">⌄</span>
         </button>
         <BotanicSelect
           className="agent-composer__model-select"
@@ -159,9 +173,9 @@ export function AgentComposer({
         return <button key={item.id} type="button" role="menuitemcheckbox" className={selected ? 'is-selected' : ''} aria-checked={selected} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onToggleImageContext(item.id, selected) }}>{item.image ? <img src={item.image} alt="" /> : null}<span><b>{item.label}</b><small>{item.kind}</small></span>{selected ? <i aria-hidden="true">✓</i> : null}</button>
       }) : <p>暂无图像素材，可从电脑选择或直接拖入。</p>}
     </div> : null}
-    {modeMenuOpen ? <div id={modeMenuId} className="agent-composer__mode-menu" role="menu" aria-label="执行模式">
-      <button type="button" role="menuitemradio" aria-checked={session?.executionMode === 'manual'} className={session?.executionMode === 'manual' ? 'is-selected' : ''} onClick={() => onExecutionModeChange('manual')}><ChecklistIcon /><span><strong>手动确认</strong><small>执行生成前先确认锁定项</small></span></button>
-      <button type="button" role="menuitemradio" aria-checked={session?.executionMode === 'auto'} className={session?.executionMode === 'auto' ? 'is-selected' : ''} onClick={() => onExecutionModeChange('auto')}><AutoRunIcon /><span><strong>自动执行</strong><small>规划完成后直接创建任务</small></span></button>
+    {modeMenuOpen ? <div id={modeMenuId} className="agent-composer__mode-menu" role="group" aria-label="执行模式">
+      <button type="button" aria-label="手动确认" aria-pressed={session?.executionMode === 'manual'} className={session?.executionMode === 'manual' ? 'is-selected' : ''} onClick={() => onExecutionModeChange('manual')}><ChecklistIcon /><span><strong>Plan</strong><small>规划完成后先确认执行</small></span></button>
+      <button type="button" aria-label="自动执行" aria-pressed={session?.executionMode === 'auto'} className={session?.executionMode === 'auto' ? 'is-selected' : ''} onClick={() => onExecutionModeChange('auto')}><AutoRunIcon /><span><strong>Auto</strong><small>规划完成后直接创建任务</small></span></button>
     </div> : null}
   </div>
 }

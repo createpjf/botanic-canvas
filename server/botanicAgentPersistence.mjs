@@ -110,6 +110,8 @@ export function validateAgentSessionEntity(value, { now = Date.now() } = {}) {
     createdAt,
     updatedAt,
   }
+  if (session.plannerModel !== undefined) result.plannerModel = text(session.plannerModel, 'Agent 模型', 160)
+  if (session.mountedSkillIds !== undefined) result.mountedSkillIds = uniqueTextList(session.mountedSkillIds, 'Agent 已挂载 Skill', 16)
   if (session.readingAnchorMessageId !== undefined) {
     result.readingAnchorMessageId = text(session.readingAnchorMessageId, 'Agent 阅读位置', 160)
     result.readingAnchorUpdatedAt = Math.min(updatedAt, timestamp(session.readingAnchorUpdatedAt, updatedAt))

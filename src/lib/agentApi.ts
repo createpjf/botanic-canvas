@@ -1,7 +1,7 @@
 import { buildBotanicAgentPlanRequest, completeBotanicAgentPlan, type BotanicAgentPlanRequestInput, type BotanicAgentPlanResponse } from '../domain/agentPlanContract'
 import { buildBotanicAgentChatRequest, type BotanicAgentChatRequestInput, type BotanicAgentChatResponse } from '../domain/agentChatContract'
 import { productRequest } from './productSession'
-import type { AgentToolCallTrace, BotanicAgentActionProposal, BotanicAgentActionResult, BotanicAgentClarificationResponse, BotanicAgentMemoryItem, BotanicAgentMessage, BotanicAgentPlan, BotanicAgentRunSnapshot, BotanicAgentSession, BotanicAgentSkill, BotanicIndexedArtifact } from '../domain/agent'
+import type { AgentToolCallTrace, BotanicAgentActionProposal, BotanicAgentActionResult, BotanicAgentClarificationResponse, BotanicAgentMemoryItem, BotanicAgentMessage, BotanicAgentPlan, BotanicAgentRunSnapshot, BotanicAgentSession, BotanicAgentSkill, BotanicAgentSkillCatalogItem, BotanicIndexedArtifact } from '../domain/agent'
 
 export type AgentRunCreationBranch = { id: string; label: string; assetId?: string }
 
@@ -103,7 +103,7 @@ export async function submitPersistentBotanicAgentMessage(input: {
   return response.message
 }
 
-/** 独立 Session 写入用于跨设备同步标题、执行模式和上下文；阅读位置使用成员级回执。 */
+/** 独立 Session 写入用于跨设备同步标题、模型、Skill、执行模式和上下文；阅读位置使用成员级回执。 */
 export async function submitPersistentBotanicAgentSession(
   projectIdValue: string,
   session: BotanicAgentSession,
@@ -118,6 +118,8 @@ export async function submitPersistentBotanicAgentSession(
       id: session.id,
       title: session.title,
       executionMode: session.executionMode,
+      ...(session.plannerModel ? { plannerModel: session.plannerModel } : {}),
+      ...(session.mountedSkillIds?.length ? { mountedSkillIds: session.mountedSkillIds } : {}),
       contextNodeIds: session.contextNodeIds,
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
@@ -265,6 +267,11 @@ export async function cancelPersistentBotanicAgentRun(runId: string) {
 
 export async function listProjectAgentSkills(projectId: string) {
   const response = await productRequest<{ skills: BotanicAgentSkill[] }>(`/api/projects/${encodeURIComponent(projectId)}/agent-skills`)
+  return response.skills
+}
+
+export async function listBotanicAgentSystemSkills() {
+  const response = await productRequest<{ skills: BotanicAgentSkillCatalogItem[] }>('/api/agent-skill-catalog')
   return response.skills
 }
 

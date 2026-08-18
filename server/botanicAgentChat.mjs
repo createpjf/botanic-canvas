@@ -58,10 +58,17 @@ export function validateBotanicAgentChatInput(raw) {
   if (!CHAT_MODES.has(mode)) invalidRequest('Agent 对话模式不支持。')
   const projectId = requiredText(input.projectId, '项目', 160)
   const plannerModel = optionalText(input.plannerModel, 'Agent 模型', 160)
+  const mountedSkillIds = input.mountedSkillIds === undefined
+    ? undefined
+    : (() => {
+      if (!Array.isArray(input.mountedSkillIds) || input.mountedSkillIds.length > 16) invalidRequest('已挂载 Skill 无效。')
+      return [...new Set(input.mountedSkillIds.map((id, index) => requiredText(id, `第 ${index + 1} 个已挂载 Skill`, 160)))]
+    })()
   return {
     projectId,
     mode,
     ...(plannerModel ? { plannerModel } : {}),
+    ...(mountedSkillIds?.length ? { mountedSkillIds } : {}),
     messages: boundedMessages(input.messages),
     contextNodeIds: boundedNodeIds(input.contextNodeIds),
   }
@@ -76,8 +83,9 @@ function matchesQuery(item, query, fields) {
   return fields.some((field) => searchText(item?.[field]).includes(query))
 }
 
-function chatToolRegistry({ ontology, memory, skills }) {
+function chatToolRegistry({ ontology, memory, skills, mountedSkillIds = [] }) {
   const nodeById = new Map(ontology.nodes.map((node) => [node.id, node]))
+  const mounted = new Set(mountedSkillIds)
   const tools = [
     {
       name: 'ontology_read',
@@ -167,7 +175,10 @@ function chatToolRegistry({ ontology, memory, skills }) {
       execute: async ({ query }) => {
         const normalizedQuery = searchText(query)
         const matches = skills.filter((skill) => !normalizedQuery || matchesQuery(skill, normalizedQuery, ['id', 'name', 'instructions']))
-        return { total: matches.length, skills: matches.slice(0, 30) }
+        return {
+          total: matches.length,
+          skills: matches.slice(0, 30).map((skill) => ({ ...skill, mounted: mounted.has(skill.id) })),
+        }
       },
     },
   ]
@@ -225,7 +236,7 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
   const ontology = buildBotanicAgentOntology(options.document, input.contextNodeIds)
   const memory = safeBotanicAgentMemory(options.document)
   const skills = safeBotanicAgentSkills(options.projectSkills)
-  const registry = chatToolRegistry({ ontology, memory, skills })
+  const registry = chatToolRegistry({ ontology, memory, skills, mountedSkillIds: input.mountedSkillIds })
   const timeoutSignal = AbortSignal.timeout(config.timeoutMs)
   const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal
   const fetchImpl = options.fetchImpl ?? fetch

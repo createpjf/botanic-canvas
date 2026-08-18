@@ -3,7 +3,10 @@ import {
   createBotanicAgentMemoryItem,
   createBotanicAgentRun,
   createBotanicAgentSession,
+  renameBotanicAgentSession,
+  replaceBotanicAgentSessionSkills,
   replaceBotanicAgentSessionContext,
+  updateBotanicAgentSessionPlannerModel,
   updateBotanicAgentSessionReadingAnchor,
   updateBotanicAgentAction,
   updateBotanicAgentMessage,
@@ -27,6 +30,9 @@ type AgentStoreActions = Pick<CanvasStore,
   | 'updateAgentAction'
   | 'setAgentSessionContext'
   | 'setAgentSessionExecutionMode'
+  | 'setAgentSessionPlannerModel'
+  | 'setAgentSessionSkills'
+  | 'renameAgentSession'
   | 'setAgentSessionReadingAnchor'
   | 'setActiveAgentSession'
   | 'addAgentMemory'
@@ -208,6 +214,45 @@ export function createCanvasAgentActions({
         agentSessions: document.agentSessions.map((session) => session.id === sessionId
           ? { ...session, executionMode: mode, updatedAt: Date.now() }
           : session),
+        activeAgentSessionId: sessionId,
+      })
+    },
+
+    setAgentSessionPlannerModel: (sessionId, plannerModel) => {
+      const document = get().document
+      const session = document.agentSessions.find((candidate) => candidate.id === sessionId)
+      if (!session) return
+      const updatedSession = updateBotanicAgentSessionPlannerModel(session, plannerModel)
+      if (updatedSession === session) return
+      commitAgentSessionDocument({
+        ...document,
+        agentSessions: document.agentSessions.map((candidate) => candidate.id === sessionId ? updatedSession : candidate),
+        activeAgentSessionId: sessionId,
+      })
+    },
+
+    setAgentSessionSkills: (sessionId, mountedSkillIds) => {
+      const document = get().document
+      const session = document.agentSessions.find((candidate) => candidate.id === sessionId)
+      if (!session) return
+      const updatedSession = replaceBotanicAgentSessionSkills(session, mountedSkillIds)
+      if (updatedSession === session) return
+      commitAgentSessionDocument({
+        ...document,
+        agentSessions: document.agentSessions.map((candidate) => candidate.id === sessionId ? updatedSession : candidate),
+        activeAgentSessionId: sessionId,
+      })
+    },
+
+    renameAgentSession: (sessionId, title) => {
+      const document = get().document
+      const session = document.agentSessions.find((candidate) => candidate.id === sessionId)
+      if (!session) return
+      const updatedSession = renameBotanicAgentSession(session, title)
+      if (updatedSession === session) return
+      commitAgentSessionDocument({
+        ...document,
+        agentSessions: document.agentSessions.map((candidate) => candidate.id === sessionId ? updatedSession : candidate),
         activeAgentSessionId: sessionId,
       })
     },

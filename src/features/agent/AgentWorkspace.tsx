@@ -29,6 +29,7 @@ import {
   type BotanicAgentSession,
   type BotanicAgentSessionTimelineFilter,
   type BotanicAgentSkill,
+  type BotanicAgentSkillCatalogItem,
 } from '../../domain/agent'
 import {
   decideBotanicAgentRequest,
@@ -44,8 +45,8 @@ import type {
   GenerationSettings,
   UploadedAssetInput,
 } from '../../domain/canvas'
-import { createProjectAgentSkill, listProjectAgentSkills, requestBotanicAgentChat, requestBotanicAgentPlan } from '../../lib/agentApi'
-import { ProductApiError } from '../../lib/productSession'
+import { createProjectAgentSkill, listBotanicAgentSystemSkills, listProjectAgentSkills, requestBotanicAgentChat, requestBotanicAgentPlan } from '../../lib/agentApi'
+import { ProductApiError, serverPersistenceEnabled } from '../../lib/productSession'
 import { maxUploadAssets, readUploadedAssetInput, validateUploadFiles } from '../../lib/uploadedAssets'
 import { useCanvasStore } from '../../store/canvasStore'
 import { BotanicSelect } from '../../components/BotanicSelect'
@@ -71,7 +72,7 @@ import {
 } from './agentComposerState'
 import { useAgentMessageDelivery } from './useAgentMessageDelivery'
 import { useAgentRuntimeTrace } from './useAgentRuntimeTrace'
-import type { AgentArtifactIndexState, AgentContextItem, AgentDockTarget } from './agentWorkspace.types'
+import type { AgentArtifactIndexState, AgentContextItem, AgentDockTarget, AgentSkillOption } from './agentWorkspace.types'
 import { AgentCollaborationPanel, AgentMemoryPanel, AgentResultPanel } from './AgentUtilityPanels'
 import { AgentConversationMessage } from './AgentConversationMessage'
 import { AgentComposer } from './AgentComposer'
@@ -85,6 +86,7 @@ import {
   FigmaIcon,
   FocusIcon,
   GalleryIcon,
+  EditIcon,
   PlusSquareIcon,
   SparkleIcon,
   UploadIcon,
@@ -165,6 +167,9 @@ export default function AgentWorkspace({
   onUpdateAction,
   onContextChange,
   onExecutionModeChange,
+  onPlannerModelChange,
+  onSkillsChange,
+  onRenameSession,
   onAddMemory,
   onRemoveMemory,
   onNewSession,
@@ -221,6 +226,9 @@ export default function AgentWorkspace({
   onUpdateAction: (sessionId: string, messageId: string, actionId: string, patch: Partial<Pick<BotanicAgentActionProposal, 'status' | 'error' | 'result'>>) => void
   onContextChange: (sessionId: string, contextNodeIds: string[]) => void
   onExecutionModeChange: (sessionId: string, mode: BotanicAgentExecutionMode) => void
+  onPlannerModelChange: (sessionId: string, model: string) => void
+  onSkillsChange: (sessionId: string, skillIds: string[]) => void
+  onRenameSession: (sessionId: string, title: string) => void
   onAddMemory: (kind: BotanicAgentMemoryKind, content: string, sourceNodeIds?: string[]) => string | null
   onRemoveMemory: (memoryId: string) => void
   onNewSession: () => string
@@ -244,9 +252,8 @@ export default function AgentWorkspace({
 }) {
   const [intent, setIntent] = useState<BotanicAgentIntent>('replace_scene')
   const [groupId, setGroupId] = useState('')
-  const [plannerModelPreference, setPlannerModel] = useState(plannerModels[0] ?? defaultAgentPlannerModels[0])
-  const plannerModel = plannerModels.includes(plannerModelPreference)
-    ? plannerModelPreference
+  const plannerModel = plannerModels.includes(session?.plannerModel ?? '')
+    ? session!.plannerModel!
     : plannerModels[0] ?? defaultAgentPlannerModels[0]
   const [composerState, updateComposerState] = useReducer(agentComposerStateReducer, initialAgentComposerState)
   const { instruction, error, lastFailedInstruction, lastFailedCommand, lastFailedPlanMessageId, mentionQuery, pendingGenerationOverrides } = composerState
@@ -293,12 +300,15 @@ export default function AgentWorkspace({
   const memoryPanelOpen = activeUtilityPanel === 'memory'
   const collaborationPanelOpen = activeUtilityPanel === 'collaboration'
   const [skills, setSkills] = useState<BotanicAgentSkill[]>([])
+  const [systemSkills, setSystemSkills] = useState<BotanicAgentSkillCatalogItem[]>([])
   const [skillName, setSkillName] = useState('')
   const [skillInstructions, setSkillInstructions] = useState('')
   const [skillFormOpen, setSkillFormOpen] = useState(false)
   const [skillConfirming, setSkillConfirming] = useState(false)
   const [skillSaving, setSkillSaving] = useState(false)
   const [skillError, setSkillError] = useState('')
+  const [renamingSession, setRenamingSession] = useState(false)
+  const [sessionTitleDraft, setSessionTitleDraft] = useState(session?.title ?? '新建对话')
   const [persistenceAction, setPersistenceAction] = useState<'retry' | 'refresh' | ''>('')
   const [promptDrafts, setPromptDrafts] = useState<Record<string, string>>({})
   const [recoveryModelMenuKey, setRecoveryModelMenuKey] = useState('')
@@ -378,6 +388,31 @@ export default function AgentWorkspace({
       .filter((item) => !query || item.label.toLocaleLowerCase().includes(query))
       .slice(0, 6)
   }, [contextOptions, mentionQuery])
+  const skillOptions = useMemo<AgentSkillOption[]>(() => {
+    if (!mentionQuery) return []
+    const query = mentionQuery.query.trim().toLocaleLowerCase()
+    return [...systemSkills, ...skills.map((skill) => ({
+      id: skill.id,
+      name: skill.name,
+      instructions: skill.instructions,
+      source: 'project' as const,
+    }))]
+      .filter((skill, index, items) => items.findIndex((candidate) => candidate.id === skill.id) === index)
+      .filter((skill) => !query || skill.name.toLocaleLowerCase().includes(query) || skill.id.toLocaleLowerCase().includes(query))
+      .slice(0, 8)
+      .map(({ id, name, source }) => ({ id, name, source }))
+  }, [mentionQuery, skills, systemSkills])
+  const mountedSkillOptions = useMemo<AgentSkillOption[]>(() => {
+    const mountedIds = new Set(session?.mountedSkillIds ?? [])
+    return [...systemSkills, ...skills.map((skill) => ({
+      id: skill.id,
+      name: skill.name,
+      instructions: skill.instructions,
+      source: 'project' as const,
+    }))]
+      .filter((skill, index, items) => mountedIds.has(skill.id) && items.findIndex((candidate) => candidate.id === skill.id) === index)
+      .map(({ id, name, source }) => ({ id, name, source }))
+  }, [session?.mountedSkillIds, skills, systemSkills])
   const utilityPanelOpen = taskPanelOpen || skillPanelOpen || resultPanelOpen || memoryPanelOpen || collaborationPanelOpen
   const {
     runtimeSteps,
@@ -667,19 +702,30 @@ export default function AgentWorkspace({
   }, [])
 
   useEffect(() => {
-    if (!skillPanelOpen) {
-      setSkillFormOpen(false)
-      return
-    }
+    if (!skillPanelOpen) setSkillFormOpen(false)
+  }, [skillPanelOpen])
+
+  useEffect(() => {
     let active = true
     setSkillError('')
-    void listProjectAgentSkills(projectId).then((items) => {
-      if (active) setSkills(items)
-    }).catch((caught) => {
-      if (active) setSkillError(caught instanceof Error ? caught.message : 'Skill 列表加载失败。')
+    if (!serverPersistenceEnabled) {
+      setSkills([])
+      setSystemSkills([])
+      return () => { active = false }
+    }
+    void Promise.allSettled([listProjectAgentSkills(projectId), listBotanicAgentSystemSkills()]).then(([projectResult, systemResult]) => {
+      if (!active) return
+      if (projectResult.status === 'fulfilled') setSkills(projectResult.value)
+      else setSkillError(projectResult.reason instanceof Error ? projectResult.reason.message : '项目 Skill 列表加载失败。')
+      if (systemResult.status === 'fulfilled') setSystemSkills(systemResult.value)
     })
     return () => { active = false }
   }, [projectId, skillPanelOpen])
+
+  useEffect(() => {
+    setSessionTitleDraft(session?.title ?? '新建对话')
+    setRenamingSession(false)
+  }, [session?.id, session?.title])
 
   useEffect(() => {
     if (utilityPanelOpen || !session || readingPositionRestoredRef.current) return
@@ -778,6 +824,7 @@ export default function AgentWorkspace({
       })
       if (!isCurrentAgentProject()) return
       setSkills((items) => [result.output.skill, ...items.filter((item) => item.id !== result.output.skill.id)])
+      if (session) onSkillsChange(session.id, [...new Set([...(session.mountedSkillIds ?? []), result.output.skill.id])])
       setSkillName('')
       setSkillInstructions('')
       setSkillConfirming(false)
@@ -801,6 +848,28 @@ export default function AgentWorkspace({
     })
   }
 
+  const selectSkill = (skill: AgentSkillOption) => {
+    if (!session || !mentionQuery) return
+    const inserted = insertBotanicAgentMention(instruction, mentionQuery, skill.name)
+    setInstruction(inserted.value)
+    onSkillsChange(session.id, [...new Set([...(session.mountedSkillIds ?? []), skill.id])])
+    setMentionQuery(undefined)
+    requestAnimationFrame(() => {
+      composerTextareaRef.current?.focus()
+      composerTextareaRef.current?.setSelectionRange(inserted.caret, inserted.caret)
+    })
+  }
+
+  const openSkillCreation = () => {
+    setMentionQuery(undefined)
+    setUtilityMenuOpen(false)
+    setActiveUtilityPanel('skill')
+    setSkillFormOpen(true)
+    setSkillConfirming(false)
+    setSkillError('')
+    requestAnimationFrame(() => document.querySelector<HTMLInputElement>('[aria-label="Skill 名称"]')?.focus())
+  }
+
   const preparePlan = async (
     cleanInstruction: string,
     generationOverrides?: Partial<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution'>>,
@@ -812,6 +881,7 @@ export default function AgentWorkspace({
     const input = {
       projectId,
       plannerModel,
+      mountedSkillIds: session?.mountedSkillIds,
       instruction: cleanInstruction,
       requestedIntent: intent,
       selectedResultNodeId: target.id,
@@ -1035,6 +1105,7 @@ export default function AgentWorkspace({
         const response = await requestBotanicAgentChat({
           projectId,
           plannerModel,
+          mountedSkillIds: session.mountedSkillIds,
           mode: route,
           messages: chatMessages,
           contextNodeIds: session.contextNodeIds,
@@ -1328,6 +1399,12 @@ export default function AgentWorkspace({
     }
     resolvePersistenceIssue()
   }
+  const commitSessionTitle = () => {
+    if (!session) return
+    const title = sessionTitleDraft.trim()
+    if (title) onRenameSession(session.id, title)
+    setRenamingSession(false)
+  }
 
   return (
     <aside
@@ -1341,7 +1418,14 @@ export default function AgentWorkspace({
       <header className="agent-workspace__header">
         <div className="agent-workspace__title">
           <button type="button" className="agent-workspace__history-button" onClick={(event) => { historyTriggerRef.current = event.currentTarget; setUtilityMenuOpen(false); setHistoryOpen((open) => !open) }} aria-controls={historyMenuId} aria-expanded={historyOpen} aria-label={unreadSessionCount ? `对话历史，${unreadSessionCount} 个会话有更新` : '对话历史'} title="对话历史"><FigmaIcon src={historyIcon} />{unreadSessionCount ? <span className="agent-workspace__history-unread" aria-hidden="true">{Math.min(unreadSessionCount, 9)}</span> : null}</button>
-          <button type="button" className="agent-workspace__title-button" onClick={(event) => { historyTriggerRef.current = event.currentTarget; setUtilityMenuOpen(false); setHistoryOpen((open) => !open) }} aria-controls={historyMenuId} aria-expanded={historyOpen}>{session?.title ?? '新建对话'} <span aria-hidden="true">⌄</span></button>
+          {renamingSession ? <form className="agent-workspace__title-editor" onSubmit={(event) => { event.preventDefault(); commitSessionTitle() }}>
+            <input value={sessionTitleDraft} onChange={(event) => setSessionTitleDraft(event.target.value)} maxLength={160} autoFocus aria-label="对话名称" onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); setRenamingSession(false) } }} />
+            <button type="submit" aria-label="保存对话名称" title="保存"><CheckIcon /></button>
+            <button type="button" aria-label="取消编辑对话名称" title="取消" onClick={() => setRenamingSession(false)}><CloseIcon /></button>
+          </form> : <>
+            <button type="button" className="agent-workspace__title-button" onClick={(event) => { historyTriggerRef.current = event.currentTarget; setUtilityMenuOpen(false); setHistoryOpen((open) => !open) }} aria-controls={historyMenuId} aria-expanded={historyOpen}>{session?.title ?? '新建对话'} <span aria-hidden="true">⌄</span></button>
+            {session ? <button type="button" className="agent-workspace__rename-button" aria-label="编辑对话名称" title="编辑对话名称" onClick={() => { setHistoryOpen(false); setSessionTitleDraft(session.title); setRenamingSession(true) }}><EditIcon /></button> : null}
+          </>}
         </div>
         <div className="agent-workspace__header-actions">
           {collaborationAwareness.onlineCollaboratorCount ? <span
@@ -1490,9 +1574,10 @@ export default function AgentWorkspace({
             {!filteredRunTimeline.length ? <div className="agent-panel__empty">{runTimeline.length ? '当前筛选下没有任务。' : '还没有 Agent 任务。'}</div> : null}
           </div>
         </section> : null}
-        {skillPanelOpen ? <section className="agent-skill-panel" aria-label="项目 Skill">
-          <header><div><small>PROJECT SKILLS</small><h2>创作技能</h2></div><span>{skills.length} 个</span></header>
-          <p>把常用的锁定项和创作规则保存到当前项目，Agent 规划时可自动调用。</p>
+        {skillPanelOpen ? <section className="agent-skill-panel" aria-label="系统与项目 Skill">
+          <header><div><small>SKILL REGISTRY</small><h2>创作技能</h2></div><span>{systemSkills.length + skills.length} 个</span></header>
+          <p>在输入框键入 @ 即可调用 Skill。新建的项目 Skill 会自动挂载到当前对话。</p>
+          {systemSkills.length ? <div className="agent-skill-panel__catalog"><strong>系统 Skills</strong>{systemSkills.map((skill) => <article key={skill.id}><span><SparkleIcon /><b>{skill.name}</b></span><small>{skill.instructions}</small></article>)}</div> : null}
           {!skillFormOpen && !skillConfirming && !skillError ? <button type="button" className="agent-skill-panel__create-entry" aria-expanded="false" onClick={() => setSkillFormOpen(true)}>＋ 新建技能</button> : <div className="agent-skill-panel__form">
               <input value={skillName} onChange={(event) => { setSkillName(event.target.value); setSkillConfirming(false); setSkillError('') }} maxLength={80} placeholder="技能名称，例如：夏日换景" aria-label="Skill 名称" autoFocus />
               <textarea value={skillInstructions} onChange={(event) => { setSkillInstructions(event.target.value); setSkillConfirming(false); setSkillError('') }} maxLength={4000} placeholder="描述必须保持什么、允许改变什么，以及结果规则。" aria-label="Skill 规则" />
@@ -1606,6 +1691,8 @@ export default function AgentWorkspace({
         contextItems={contextItems}
         mentionQuery={mentionQuery}
         mentionOptions={mentionOptions}
+        skillOptions={skillOptions}
+        mountedSkills={mountedSkillOptions}
         instruction={instruction}
         error={error}
         canRetry={Boolean(lastFailedPlanMessageId || lastFailedInstruction)}
@@ -1625,7 +1712,10 @@ export default function AgentWorkspace({
         contextMenuButtonRef={contextMenuButtonRef}
         modeMenuButtonRef={modeMenuButtonRef}
         onRemoveContext={(itemId) => session && onContextChange(session.id, session.contextNodeIds.filter((id) => id !== itemId))}
+        onRemoveMountedSkill={(skillId) => session && onSkillsChange(session.id, (session.mountedSkillIds ?? []).filter((id) => id !== skillId))}
         onSelectMention={selectMention}
+        onSelectSkill={selectSkill}
+        onCreateSkill={openSkillCreation}
         onDismissMention={() => setMentionQuery(undefined)}
         onInstructionChange={(value, caret) => { setInstruction(value); setMentionQuery(readBotanicAgentMentionQuery(value, caret)); setError(''); setLastFailedInstruction(''); setLastFailedPlanMessageId('') }}
         onInstructionClick={(caret) => setMentionQuery(readBotanicAgentMentionQuery(instruction, caret))}
@@ -1634,7 +1724,7 @@ export default function AgentWorkspace({
         onToggleContextMenu={() => setContextMenuOpen((open) => !open)}
         onCloseContextMenu={() => { setContextMenuOpen(false); requestAnimationFrame(() => contextMenuButtonRef.current?.focus()) }}
         onToggleModeMenu={() => setModeMenuOpen((open) => !open)}
-        onPlannerModelChange={setPlannerModel}
+        onPlannerModelChange={(model) => { if (session) onPlannerModelChange(session.id, model) }}
         onGroupChange={setGroupId}
         onSend={() => void sendInstruction()}
         onToggleImageContext={(itemId, selected) => { if (!session) return; onContextChange(session.id, selected ? session.contextNodeIds.filter((id) => id !== itemId) : [...session.contextNodeIds, itemId]) }}

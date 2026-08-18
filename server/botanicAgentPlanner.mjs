@@ -139,6 +139,12 @@ export function validateBotanicAgentPlanInput(raw) {
   const clarificationAnswers = input.clarificationAnswers === undefined
     ? undefined
     : boundedRecord(input.clarificationAnswers, '参数确认答案')
+  const mountedSkillIds = input.mountedSkillIds === undefined
+    ? undefined
+    : (() => {
+      if (!Array.isArray(input.mountedSkillIds) || input.mountedSkillIds.length > 16) invalidRequest('已挂载 Skill 无效。')
+      return [...new Set(input.mountedSkillIds.map((id, index) => requiredText(id, `第 ${index + 1} 个已挂载 Skill`, 160)))]
+    })()
 
   if (!Array.isArray(input.references) || input.references.length > 16) invalidRequest('参考信息无效。')
   const references = input.references.map((rawReference, index) => {
@@ -228,6 +234,7 @@ export function validateBotanicAgentPlanInput(raw) {
     ...(generationModels ? { generationModels } : {}),
     ...(generationOverrides ? { generationOverrides } : {}),
     ...(clarificationAnswers ? { clarificationAnswers } : {}),
+    ...(mountedSkillIds?.length ? { mountedSkillIds } : {}),
     ...(contextSnapshot?.length ? { contextSnapshot } : {}),
   }
 }
@@ -394,10 +401,14 @@ async function plannerInstructions() {
 
 function plannerModelInput(input) {
   const { projectSkills, ...safeInput } = input
+  const mountedSkillIds = new Set(input.mountedSkillIds ?? [])
   return {
     ...safeInput,
     ...(Array.isArray(projectSkills) && projectSkills.length
       ? { availableSkills: projectSkills.map((skill) => ({ id: skill.id, name: skill.name })) }
+      : {}),
+    ...(mountedSkillIds.size && Array.isArray(projectSkills)
+      ? { mountedSkills: projectSkills.filter((skill) => mountedSkillIds.has(skill.id)).map((skill) => ({ id: skill.id, name: skill.name })) }
       : {}),
   }
 }

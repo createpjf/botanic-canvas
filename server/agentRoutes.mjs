@@ -3,7 +3,7 @@ import { BotanicAgentChatError, chatWithBotanicAgent, validateBotanicAgentChatIn
 import { createAgentSkill, publicAgentSkill, validateAgentSkillCreation } from './botanicAgentSkill.mjs'
 import { cancelPersistentAgentRun, createPersistentAgentRun, prepareAgentBranchRetry, publicAgentRun, validateAgentRunCreation } from './botanicAgentRun.mjs'
 import { AgentToolRuntimeError, executeConfirmedAgentAction } from './agentToolRuntime.mjs'
-import { botanicAgentBuiltInSkill, createBotanicAgentActionToolRegistry } from './botanicAgentTools.mjs'
+import { botanicAgentBuiltInSkill, botanicAgentSystemSkills, createBotanicAgentActionToolRegistry } from './botanicAgentTools.mjs'
 import { decodeArtifactCursor, encodeArtifactCursor } from './botanicArtifactIndex.mjs'
 import { generationIdempotencyKey, generationJobIdForIdempotency } from './generationIdempotency.mjs'
 import { persistedGenerationJob, publicGenerationJob } from './generationProvider.mjs'
@@ -71,6 +71,7 @@ export function createAgentRouteHandler({
     const {
       projectAgentRuns: projectAgentRunsMatch,
       projectAgentSkills: projectAgentSkillsMatch,
+      agentSkillCatalog: agentSkillCatalogMatch,
       projectAgentState: projectAgentStateMatch,
       projectAgentArtifacts: projectAgentArtifactsMatch,
       agentSession: agentSessionMatch,
@@ -145,6 +146,12 @@ export function createAgentRouteHandler({
       }
     }
 
+    if (agentSkillCatalogMatch) {
+      if (request.method !== 'GET') return methodNotAllowed(response, '系统 Skill 目录只支持读取。', 'GET')
+      await requireUser(request)
+      return json(response, 200, { skills: botanicAgentSystemSkills() })
+    }
+
     if (projectAgentSkillsMatch) {
       if (request.method !== 'GET') return methodNotAllowed(response, '项目 Skill 资源只支持读取。', 'GET')
       const user = await requireUser(request)
@@ -210,6 +217,8 @@ export function createAgentRouteHandler({
       const settingsChanged = !previous
         || previous.title !== session.title
         || previous.executionMode !== session.executionMode
+        || previous.plannerModel !== session.plannerModel
+        || JSON.stringify(previous.mountedSkillIds ?? []) !== JSON.stringify(session.mountedSkillIds ?? [])
         || JSON.stringify(previous.contextNodeIds ?? []) !== JSON.stringify(session.contextNodeIds ?? [])
       if (settingsChanged) await recordCollaborationActivity(user, projectId, {
         id: `agent-session-${session.id}-${session.updatedAt}`,

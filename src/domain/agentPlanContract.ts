@@ -4,6 +4,7 @@ import type { AssetGroup, GenerationModelOption, GenerationRecipe, GenerationSet
 export type BotanicAgentPlanRequestInput = {
   projectId: string
   plannerModel?: string
+  mountedSkillIds?: string[]
   instruction: string
   requestedIntent?: BotanicAgentIntent
   selectedResultNodeId: string
@@ -21,6 +22,7 @@ export type BotanicAgentPlanRequestInput = {
 export type BotanicAgentPlanRequest = {
   projectId: string
   plannerModel?: string
+  mountedSkillIds?: string[]
   instruction: string
   requestedIntent?: BotanicAgentIntent
   selectedResult: { nodeId: string; label: string }
@@ -44,6 +46,7 @@ export function buildBotanicAgentPlanRequest(input: BotanicAgentPlanRequestInput
   return {
     projectId: input.projectId,
     ...(input.plannerModel ? { plannerModel: input.plannerModel } : {}),
+    ...(input.mountedSkillIds?.length ? { mountedSkillIds: [...new Set(input.mountedSkillIds)].slice(0, 16) } : {}),
     instruction: input.instruction.trim(),
     ...(input.requestedIntent ? { requestedIntent: input.requestedIntent } : {}),
     selectedResult: { nodeId: input.selectedResultNodeId, label: input.selectedResultLabel },

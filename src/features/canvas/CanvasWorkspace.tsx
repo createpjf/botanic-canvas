@@ -707,6 +707,9 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
   const updateAgentAction = useCanvasStore((state) => state.updateAgentAction)
   const setAgentSessionContext = useCanvasStore((state) => state.setAgentSessionContext)
   const setAgentSessionExecutionMode = useCanvasStore((state) => state.setAgentSessionExecutionMode)
+  const setAgentSessionPlannerModel = useCanvasStore((state) => state.setAgentSessionPlannerModel)
+  const setAgentSessionSkills = useCanvasStore((state) => state.setAgentSessionSkills)
+  const renameAgentSession = useCanvasStore((state) => state.renameAgentSession)
   const addAgentMemory = useCanvasStore((state) => state.addAgentMemory)
   const removeAgentMemory = useCanvasStore((state) => state.removeAgentMemory)
   const clearGenerationError = useCanvasStore((state) => state.clearGenerationError)
@@ -2198,6 +2201,9 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
           onUpdateAction={updateAgentAction}
           onContextChange={setAgentSessionContext}
           onExecutionModeChange={setAgentSessionExecutionMode}
+          onPlannerModelChange={setAgentSessionPlannerModel}
+          onSkillsChange={setAgentSessionSkills}
+          onRenameSession={renameAgentSession}
           onAddMemory={addAgentMemory}
           onRemoveMemory={removeAgentMemory}
           onNewSession={agentBridge.newSession}

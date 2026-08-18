@@ -20,6 +20,15 @@ export function botanicAgentBuiltInSkill(skillId) {
   return skill ? { id: skillId, name: skill.label, instructions: skill.instructions } : undefined
 }
 
+export function botanicAgentSystemSkills() {
+  return Object.entries(skillCatalog).map(([id, skill]) => ({
+    id,
+    name: skill.label,
+    instructions: skill.instructions,
+    source: 'system',
+  }))
+}
+
 function object(value, name) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new AgentToolRuntimeError('INVALID_TOOL_ARGUMENTS', `${name}参数无效。`)
@@ -171,6 +180,9 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
     .slice(0, 30)
     .map((skill) => [skill.id, { label: skill.name, instructions: skill.instructions, source: 'project' }]))
   const availableSkills = { ...skillCatalog, ...projectSkills }
+  const mountedSkillLabels = (input.mountedSkillIds ?? [])
+    .map((skillId) => availableSkills[skillId]?.label)
+    .filter(Boolean)
   const availableMcpTools = (input.availableMcpTools ?? [])
     .filter((item) => item && typeof item.server === 'string' && typeof item.tool === 'string')
     .slice(0, 30)
@@ -215,7 +227,7 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
     {
       name: 'skill_run',
       label: '调用创作 Skill',
-      description: `调用 Botanic 已审核的创作规则。可用 Skill：${Object.keys(availableSkills).join('、')}。`,
+      description: `调用 Botanic 已审核的创作规则。可用 Skill：${Object.keys(availableSkills).join('、')}。${mountedSkillLabels.length ? `当前已挂载，相关任务优先使用：${mountedSkillLabels.join('、')}。` : ''}`,
       risk: 'read',
       parameters: {
         type: 'object', additionalProperties: false,

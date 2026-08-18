@@ -79,3 +79,26 @@ test('Agent 阅读位置先更新本地会话，不触发整份画布文档写�
   assert.equal(latestSession?.readingAnchorMessageId, 'message-anchor')
   assert.equal(latestSession?.readingAnchorUpdatedAt, 30)
 })
+
+test('Agent 会话的模型、挂载 Skill 和自定义标题会持久化', () => {
+  const { actions, pendingDocuments } = createDelayedPersistenceHarness()
+  const sessionId = actions.ensureAgentSession()
+
+  actions.setAgentSessionPlannerModel(sessionId, 'kimi-k3')
+  actions.setAgentSessionSkills(sessionId, ['controlled_edit', 'project-night-scene'])
+  actions.renameAgentSession(sessionId, '夜景生成方案')
+  actions.appendAgentMessage(sessionId, {
+    id: 'message-after-rename',
+    role: 'user',
+    kind: 'text',
+    content: '继续执行',
+    createdAt: 40,
+  })
+
+  const latestDocument = pendingDocuments.at(-1)
+  assert.ok(latestDocument)
+  const session = latestDocument.agentSessions.find((item) => item.id === sessionId)
+  assert.equal(session?.plannerModel, 'kimi-k3')
+  assert.deepEqual(session?.mountedSkillIds, ['controlled_edit', 'project-night-scene'])
+  assert.equal(session?.title, '夜景生成方案')
+})

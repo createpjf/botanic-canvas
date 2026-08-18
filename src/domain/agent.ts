@@ -716,6 +716,13 @@ export type BotanicAgentSkill = {
   updatedAt: number
 }
 
+export type BotanicAgentSkillCatalogItem = {
+  id: string
+  name: string
+  instructions: string
+  source: 'system' | 'project'
+}
+
 export type BotanicAgentMessage = {
   id: string
   role: 'user' | 'assistant'
@@ -739,6 +746,10 @@ export type BotanicAgentSession = {
   id: string
   title: string
   executionMode: BotanicAgentExecutionMode
+  /** 会话级 Agent 规划模型；旧会话缺省时由客户端使用默认模型。 */
+  plannerModel?: string
+  /** 会话级已挂载 Skill；只保存 ID，规则仍由服务端按项目权限解析。 */
+  mountedSkillIds?: string[]
   contextNodeIds: string[]
   messages: BotanicAgentMessage[]
   /** 最近一次稳定阅读到的消息；用于切换设备或重新打开会话后恢复视图。 */
@@ -1051,6 +1062,8 @@ export function createBotanicAgentSession(input: {
   now?: number
   title?: string
   executionMode?: BotanicAgentExecutionMode
+  plannerModel?: string
+  mountedSkillIds?: string[]
   contextNodeIds?: string[]
 } = {}): BotanicAgentSession {
   const now = input.now ?? Date.now()
@@ -1058,6 +1071,8 @@ export function createBotanicAgentSession(input: {
     id: input.id ?? `agent-session-${now}`,
     title: input.title?.trim() || '新建对话',
     executionMode: input.executionMode ?? 'manual',
+    ...(input.plannerModel?.trim() ? { plannerModel: input.plannerModel.trim() } : {}),
+    ...(input.mountedSkillIds?.length ? { mountedSkillIds: uniqueIds(input.mountedSkillIds) } : {}),
     contextNodeIds: uniqueIds(input.contextNodeIds ?? []),
     messages: [],
     createdAt: now,
@@ -1070,12 +1085,43 @@ export function appendBotanicAgentMessage(session: BotanicAgentSession, message:
   const versionedMessage = { ...message, updatedAt: message.updatedAt ?? message.createdAt }
   return {
     ...session,
-    title: session.messages.length === 0 && message.role === 'user'
+    title: session.messages.length === 0 && message.role === 'user' && session.title === '新建对话'
       ? sessionTitle(message.content) || session.title
       : session.title,
     messages: [...session.messages, versionedMessage],
     updatedAt: Math.max(session.updatedAt, versionedMessage.updatedAt),
   }
+}
+
+export function renameBotanicAgentSession(
+  session: BotanicAgentSession,
+  title: string,
+  now = Date.now(),
+): BotanicAgentSession {
+  const nextTitle = title.trim().replace(/\s+/g, ' ').slice(0, 160) || '新建对话'
+  if (nextTitle === session.title) return session
+  return { ...session, title: nextTitle, updatedAt: now }
+}
+
+export function updateBotanicAgentSessionPlannerModel(
+  session: BotanicAgentSession,
+  plannerModel: string,
+  now = Date.now(),
+): BotanicAgentSession {
+  const nextModel = plannerModel.trim()
+  if (!nextModel || nextModel === session.plannerModel) return session
+  return { ...session, plannerModel: nextModel, updatedAt: now }
+}
+
+export function replaceBotanicAgentSessionSkills(
+  session: BotanicAgentSession,
+  mountedSkillIds: string[],
+  now = Date.now(),
+): BotanicAgentSession {
+  const nextIds = uniqueIds(mountedSkillIds).slice(0, 16)
+  const currentIds = session.mountedSkillIds ?? []
+  if (nextIds.length === currentIds.length && nextIds.every((id, index) => id === currentIds[index])) return session
+  return { ...session, mountedSkillIds: nextIds, updatedAt: now }
 }
 
 export function replaceBotanicAgentSessionContext(
