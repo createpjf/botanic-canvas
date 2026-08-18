@@ -60,6 +60,22 @@ test('明确的视觉执行请求才进入生成链路', () => {
   })
 })
 
+test('自然语言创作请求在已有图片上下文时进入生成计划链路', () => {
+  const requests = [
+    '我想要一张 Mori Kei 风格的人像',
+    '把这张图变成森系风格',
+    '这张图换成海边版本',
+    '我希望调整背景为海边',
+    'I want an image of a Mori Kei woman',
+    'Turn this image into a forest scene',
+    'I want to turn this image into a forest scene',
+  ]
+
+  requests.forEach((instruction) => {
+    assert.equal(decideBotanicAgentRequest(instruction, true).kind, 'generation', instruction)
+  })
+})
+
 test('视频执行请求不得误建图片节点', () => {
   assert.deepEqual(decideBotanicAgentRequest('帮我生成一个视频'), {
     kind: 'clarification',

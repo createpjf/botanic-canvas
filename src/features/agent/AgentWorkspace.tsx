@@ -981,7 +981,12 @@ export default function AgentWorkspace({
       },
     }
 
-    const decision = decideBotanicAgentRequest(cleanInstruction, Boolean(target))
+    const hasImageContext = contextItems.some((item) => (
+      (item.kind === '素材' || item.kind === '结果')
+      && Boolean(item.image)
+      && (item.mediaKind ?? 'image') === 'image'
+    ))
+    const decision = decideBotanicAgentRequest(cleanInstruction, Boolean(target) || hasImageContext)
     if (decision.kind === 'clarification') {
       appendMessage({
         role: 'assistant',
