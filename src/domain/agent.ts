@@ -1015,6 +1015,8 @@ export function mergeBotanicAgentArtifactIndex(
     ])
     if (!artifacts.has(artifact.id)) artifacts.set(artifact.id, {
       ...artifact,
+      // 索引条目的时间落进 metadata，读模型才有统一可排序的时间戳。
+      metadata: { createdAt: artifact.createdAt, ...artifact.metadata },
       provenance: { ...artifact.provenance, sourceNodeIds },
     })
   }
@@ -1045,12 +1047,15 @@ export function collectBotanicAgentResults(input: {
     if (!job?.agentRun) return []
     const candidateId = result.candidateId ?? node.id
     const mediaKind = result.mediaKind ?? 'image'
+    // 结果的提示词来自节点配方，不需要额外持久化字段就能在结果面板还原“图 + prompt”。
+    const prompt = result.generationRecipe?.prompt?.trim() || result.rootRecipe?.prompt?.trim()
     return [{
       id: `generation:${job.id}:${candidateId}`,
       kind: mediaKind,
       label: result.label?.trim() || (mediaKind === 'video' ? '生成视频' : '生成图片'),
       url: result.image,
       mimeType: undefined,
+      placement: 'canvas',
       metadata: {
         source: 'generation',
         status: result.status,
@@ -1060,6 +1065,7 @@ export function collectBotanicAgentResults(input: {
         groupId: job.agentRun.runId,
         savedToLibrary: assets.some((asset) => asset.source === 'generated' && asset.image === result.image),
         settings: result.generationSettings,
+        ...(prompt ? { prompt } : {}),
       },
       provenance: {
         actionId: `generation:${job.id}`,
@@ -1074,6 +1080,24 @@ export function collectBotanicAgentResults(input: {
     const rightTime = Number(right.metadata?.createdAt ?? 0)
     return rightTime - leftTime
   }), ...actionArtifacts]
+}
+
+/** 结果面板的统一排序键；缺时间的历史产物排在最后而不是随机穿插。 */
+export function botanicAgentArtifactTimestamp(artifact: Pick<BotanicAgentArtifact, 'metadata'>) {
+  const value = Number(artifact.metadata?.createdAt ?? 0)
+  return Number.isFinite(value) ? value : 0
+}
+
+export function botanicAgentArtifactPrompt(artifact: Pick<BotanicAgentArtifact, 'metadata'>) {
+  const value = artifact.metadata?.prompt
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+export function botanicAgentArtifactModel(artifact: Pick<BotanicAgentArtifact, 'metadata'>) {
+  const settings = artifact.metadata?.settings
+  if (!settings || typeof settings !== 'object') return undefined
+  const model = (settings as { model?: unknown }).model
+  return typeof model === 'string' && model.trim() ? model.trim() : undefined
 }
 
 export type BotanicAgentResultSelection = {

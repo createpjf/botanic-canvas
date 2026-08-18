@@ -30,6 +30,9 @@ import {
   restoreBotanicAgentRuntimeSteps,
   shouldRestoreBotanicAgentRuntimeSteps,
   botanicAgentArtifactPlacement,
+  botanicAgentArtifactPrompt,
+  botanicAgentArtifactModel,
+  botanicAgentArtifactTimestamp,
   botanicAgentSubmissionKey,
   botanicAgentRunFeedback,
   botanicAgentBranchStatusLabel,
@@ -815,6 +818,10 @@ test('Agent 结果区合并关联 Run 的生成结果并保留批次溯源', () 
       kind: 'result', status: 'ready', image: 'https://assets.example.com/output.webp',
       label: '海边候选 01', jobId: 'job-agent-1', candidateId: 'candidate-1',
       generationSettings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
+      generationRecipe: {
+        references: [], prompt: '海边黄昏，保持商品不变。', batchCount: 1,
+        settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
+      },
     },
   }] as CanvasNode[]
   const generationJobs = [{
@@ -830,16 +837,22 @@ test('Agent 结果区合并关联 Run 的生成结果并保留批次溯源', () 
   assert.deepEqual(results[0], {
     id: 'generation:job-agent-1:candidate-1', kind: 'image', label: '海边候选 01',
     url: 'https://assets.example.com/output.webp', mimeType: undefined,
+    placement: 'canvas',
     metadata: {
       source: 'generation', status: 'ready', createdAt: 220, jobId: 'job-agent-1',
       branchId: 'branch-beach', groupId: 'run-scene', savedToLibrary: false,
       settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
+      // 结果面板要展示“图 + 生成它的 Prompt”，提示词直接来自节点配方。
+      prompt: '海边黄昏，保持商品不变。',
     },
     provenance: {
       actionId: 'generation:job-agent-1', toolName: 'image_generation', runId: 'run-scene',
       sourceNodeIds: ['result-agent-1'],
     },
   })
+  assert.equal(botanicAgentArtifactPrompt(results[0]), '海边黄昏，保持商品不变。')
+  assert.equal(botanicAgentArtifactModel(results[0]), 'gpt-image-2')
+  assert.equal(botanicAgentArtifactTimestamp(results[0]), 220)
 })
 
 test('Agent 结果区不混入普通画布任务，并识别已入库结果', () => {

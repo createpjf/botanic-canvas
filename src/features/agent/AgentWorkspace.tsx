@@ -1519,6 +1519,7 @@ export default function AgentWorkspace({
           runs={runs}
           latestRun={latestRun}
           contextOptions={contextOptions}
+          generationModels={generationModels}
           artifactIndexStatus={artifactIndexStatus}
           artifactIndexHasMore={artifactIndexHasMore}
           conversationRunIds={runTimeline.flatMap((item) => item.source ? [item.run.id] : [])}
