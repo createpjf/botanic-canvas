@@ -1045,3 +1045,36 @@ test('只有提供方原始推理才补进运行轨迹，摘要片段由工具�
   assert.equal(withReasoning.at(-1)?.id, 'finalize-plan')
   assert.deepEqual(insertBotanicAgentReasoningSteps(steps, []), steps)
 })
+
+test('逐条到达的工具调用按真实执行顺序排列', () => {
+  // 流式路径每个事件只带一条工具调用；新步骤必须接在已有工具步骤之后。
+  const base = createBotanicAgentRuntimeSteps({ hasTarget: true })
+  const first = insertBotanicAgentToolCallSteps(base, [
+    { id: 'call-a', name: 'ontology_read', label: '读取项目本体', risk: 'read', status: 'running', requiresConfirmation: false },
+  ])
+  const second = insertBotanicAgentToolCallSteps(first, [
+    { id: 'call-b', name: 'skill_search', label: '检索已审核 Skill', risk: 'read', status: 'running', requiresConfirmation: false },
+  ])
+  const third = insertBotanicAgentToolCallSteps(second, [
+    { id: 'call-c', name: 'asset_group_search', label: '检索素材组', risk: 'read', status: 'succeeded', requiresConfirmation: false },
+  ])
+
+  assert.deepEqual(third.map((step) => step.id), [
+    'read-canvas', 'call-planner', 'tool:call-a', 'tool:call-b', 'tool:call-c', 'finalize-plan',
+  ])
+
+  // 已存在的调用就地更新状态，不改变它在序列里的位置。
+  const settled = insertBotanicAgentToolCallSteps(third, [
+    { id: 'call-a', name: 'ontology_read', label: '读取项目本体', risk: 'read', status: 'succeeded', requiresConfirmation: false },
+  ])
+  assert.deepEqual(settled.map((step) => step.id), third.map((step) => step.id))
+  assert.equal(settled.find((step) => step.id === 'tool:call-a')?.status, 'succeeded')
+
+  // 整批更新与逐条到达的最终顺序一致。
+  const batched = insertBotanicAgentToolCallSteps(base, [
+    { id: 'call-a', name: 'ontology_read', label: '读取项目本体', risk: 'read', status: 'succeeded', requiresConfirmation: false },
+    { id: 'call-b', name: 'skill_search', label: '检索已审核 Skill', risk: 'read', status: 'succeeded', requiresConfirmation: false },
+    { id: 'call-c', name: 'asset_group_search', label: '检索素材组', risk: 'read', status: 'succeeded', requiresConfirmation: false },
+  ])
+  assert.deepEqual(batched.map((step) => step.id), third.map((step) => step.id))
+})

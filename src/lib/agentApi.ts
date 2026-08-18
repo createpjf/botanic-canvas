@@ -2,7 +2,7 @@ import { buildBotanicAgentPlanRequest, completeBotanicAgentPlan, type BotanicAge
 import { buildBotanicAgentChatRequest, type BotanicAgentChatRequestInput, type BotanicAgentChatResponse } from '../domain/agentChatContract'
 import { createBotanicAgentChatStreamReader, type BotanicAgentChatStreamEvent } from '../domain/agentChatStream'
 import { ProductApiError, productAuthorizationHeader, productRequest } from './productSession'
-import type { AgentToolCallTrace, BotanicAgentActionProposal, BotanicAgentActionResult, BotanicAgentClarificationResponse, BotanicAgentMemoryItem, BotanicAgentMessage, BotanicAgentPlan, BotanicAgentRunSnapshot, BotanicAgentSession, BotanicAgentSkill, BotanicAgentSkillCatalogItem, BotanicIndexedArtifact } from '../domain/agent'
+import type { AgentToolCallTrace, BotanicAgentReasoningEntry, BotanicAgentActionProposal, BotanicAgentActionResult, BotanicAgentClarificationResponse, BotanicAgentMemoryItem, BotanicAgentMessage, BotanicAgentPlan, BotanicAgentRunSnapshot, BotanicAgentSession, BotanicAgentSkill, BotanicAgentSkillCatalogItem, BotanicIndexedArtifact } from '../domain/agent'
 
 export type AgentRunCreationBranch = { id: string; label: string; assetId?: string }
 
@@ -40,7 +40,15 @@ function idempotencyKey(prefix: string) {
   return `${prefix}-${crypto.randomUUID()}`
 }
 
-export async function requestBotanicAgentPlan(input: BotanicAgentPlanRequestInput, signal?: AbortSignal) {
+/**
+ * `onReasoning` 只用于把当轮运行说明喂给运行轨迹。它刻意不进入返回的计划——
+ * 计划会被原样持久化，而提供方原始推理只允许在当轮实时展示。
+ */
+export async function requestBotanicAgentPlan(
+  input: BotanicAgentPlanRequestInput,
+  signal?: AbortSignal,
+  onReasoning?: (entries: BotanicAgentReasoningEntry[]) => void,
+) {
   const response = await productRequest<BotanicAgentPlanResponse>('/api/agent-plans', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -49,6 +57,7 @@ export async function requestBotanicAgentPlan(input: BotanicAgentPlanRequestInpu
     timeoutMs: 60_000,
     timeoutMessage: 'Agent 规划响应较慢，请稍后重试；当前画布内容未被修改。',
   })
+  if (response.reasoning?.length) onReasoning?.(response.reasoning)
   if ('clarification' in response) {
     return { kind: 'clarification', clarification: response.clarification } satisfies BotanicAgentClarificationResponse
   }

@@ -1,4 +1,4 @@
-import type { BotanicAgentClarification, BotanicAgentContextSnapshot, BotanicAgentIntent, BotanicAgentMemoryItem, BotanicAgentPlan } from './agent.ts'
+import type { BotanicAgentClarification, BotanicAgentContextSnapshot, BotanicAgentIntent, BotanicAgentMemoryItem, BotanicAgentPlan, BotanicAgentReasoningEntry } from './agent.ts'
 import type { AssetGroup, GenerationModelOption, GenerationRecipe, GenerationSettings } from './canvas.ts'
 
 export type BotanicAgentPlanRequestInput = {
@@ -38,9 +38,13 @@ export type BotanicAgentPlanRequest = {
 
 export type BotanicAgentPlanDraft = Omit<BotanicAgentPlan, 'references' | 'rootRecipe'>
 
+/**
+ * reasoning 刻意是 plan / clarification 的**兄弟字段**：计划会被原样持久化到会话消息里，
+ * 提供方原始推理只允许随当轮响应下发用于实时展示，所以它不能进入计划本体。
+ */
 export type BotanicAgentPlanResponse =
-  | { plan: BotanicAgentPlanDraft }
-  | { clarification: BotanicAgentClarification }
+  | { plan: BotanicAgentPlanDraft; reasoning?: BotanicAgentReasoningEntry[] }
+  | { clarification: BotanicAgentClarification; reasoning?: BotanicAgentReasoningEntry[] }
 
 export function buildBotanicAgentPlanRequest(input: BotanicAgentPlanRequestInput): BotanicAgentPlanRequest {
   return {

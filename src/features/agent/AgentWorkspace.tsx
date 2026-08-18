@@ -930,7 +930,7 @@ export default function AgentWorkspace({
     setRuntimePhase('planning')
     updateRuntimeStep('call-planner', 'running')
     try {
-      const nextPlan = await requestBotanicAgentPlan(input, controller.signal)
+      const nextPlan = await requestBotanicAgentPlan(input, controller.signal, attachRuntimeReasoning)
       if (controller.signal.aborted) return null
       attachPlannerToolTrace(nextPlan)
       updateRuntimeStep('call-planner', 'succeeded')

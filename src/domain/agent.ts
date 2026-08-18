@@ -138,6 +138,8 @@ export function createBotanicAgentRuntimeSteps(input: {
   return steps
 }
 
+const toolCallStepPrefix = 'tool:'
+
 function agentToolCallStepKind(risk: AgentToolCallTrace['risk']): BotanicAgentRuntimeStep['kind'] {
   if (risk === 'read') return 'read'
   if (risk === 'external') return 'search'
@@ -166,7 +168,7 @@ export function insertBotanicAgentToolCallSteps(
 ): BotanicAgentRuntimeStep[] {
   const seen = new Set<string>()
   const toolSteps = toolCalls.flatMap((call): BotanicAgentRuntimeStep[] => {
-    const id = `tool:${call.id}`
+    const id = `${toolCallStepPrefix}${call.id}`
     const label = call.label?.trim()
     if (!call.id || !label || seen.has(id)) return []
     seen.add(id)
@@ -180,7 +182,20 @@ export function insertBotanicAgentToolCallSteps(
     }]
   })
   if (!toolSteps.length) return steps
-  return insertAfterPlannerStep(steps, toolSteps)
+  // 工具调用可能一条一条到达（流式）。已有的调用就地更新状态、保持原位；
+  // 新调用接在最后一条工具步骤之后，否则实时轨迹会倒序显示，
+  // 直到轮次结束被整批更新纠正。
+  const incomingById = new Map(toolSteps.map((step) => [step.id, step]))
+  const existingIds = new Set(steps.map((step) => step.id))
+  const updated = steps.map((step) => incomingById.get(step.id) ?? step)
+  const appended = toolSteps.filter((step) => !existingIds.has(step.id))
+  if (!appended.length) return updated
+  const lastToolIndex = updated.reduce(
+    (last, step, index) => step.id.startsWith(toolCallStepPrefix) ? index : last,
+    -1,
+  )
+  if (lastToolIndex < 0) return insertAfterPlannerStep(updated, appended)
+  return [...updated.slice(0, lastToolIndex + 1), ...appended, ...updated.slice(lastToolIndex + 1)]
 }
 
 function insertAfterPlannerStep(

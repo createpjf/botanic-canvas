@@ -3,6 +3,16 @@ const MESSAGE_LIMIT = 500
 const MEMORY_LIMIT = 30
 
 const sessionModes = new Set(['manual', 'auto'])
+
+/**
+ * 计划是被原样持久化的，因此这里是原始推理进入项目记录的最后一道闸。
+ * 提供方推理只允许随当轮响应下发用于实时展示，任何路径都不得把它写进会话消息。
+ */
+function persistedAgentPlan(rawPlan) {
+  const { reasoning, ...plan } = clone(object(rawPlan, 'Agent 计划'))
+  void reasoning
+  return plan
+}
 const messageRoles = new Set(['user', 'assistant'])
 const messageKinds = new Set(['text', 'question', 'plan', 'run', 'notice'])
 const messageStatuses = new Set(['pending', 'answered', 'submitted', 'failed'])
@@ -162,7 +172,7 @@ export function validateAgentMessageEntity(value, { now = Date.now() } = {}) {
     updatedAt: Math.max(createdAt, timestamp(message.updatedAt, createdAt)),
   }
   if (message.prompt !== undefined) result.prompt = text(message.prompt, 'Agent Prompt', 12_000)
-  if (message.plan !== undefined) result.plan = clone(object(message.plan, 'Agent 计划'))
+  if (message.plan !== undefined) result.plan = persistedAgentPlan(message.plan)
   if (message.question !== undefined) result.question = clone(object(message.question, 'Agent 追问'))
   if (message.runId !== undefined) result.runId = text(message.runId, 'Agent Run 标识', 160)
   if (message.status !== undefined) result.status = message.status

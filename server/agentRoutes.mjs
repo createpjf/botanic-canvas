@@ -134,9 +134,15 @@ export function createAgentRouteHandler({
       response.once('close', cancelOnClosedResponse)
       if (request.aborted || response.destroyed) cancel()
       try {
-        const plan = await planBotanicGeneration(input, config, { signal: controller.signal })
+        const result = await planBotanicGeneration(input, config, { signal: controller.signal })
         if (controller.signal.aborted || response.destroyed) return true
-        return plan?.kind === 'clarification' ? json(response, 200, { clarification: plan.clarification }) : json(response, 200, { plan })
+        // reasoning 必须留在 plan 之外：计划会被原样持久化到会话消息里，
+        // 而原始推理只允许随当轮响应下发。
+        const { reasoning, ...plan } = result ?? {}
+        const liveReasoning = reasoning?.length ? { reasoning } : {}
+        return result?.kind === 'clarification'
+          ? json(response, 200, { clarification: result.clarification, ...liveReasoning })
+          : json(response, 200, { plan, ...liveReasoning })
       } catch (caught) {
         if (controller.signal.aborted || response.destroyed) return true
         throw caught
