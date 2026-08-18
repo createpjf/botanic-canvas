@@ -2,6 +2,7 @@ import { AgentToolRuntimeError, createAgentToolRegistry, runAgentToolLoop } from
 import { botanicAgentProviderConfig, botanicAgentProviderTemperature } from './botanicAgentPlanner.mjs'
 import { readBotanicAgentInstructions } from './agentInstructions.mjs'
 import { buildBotanicAgentOntology, safeBotanicAgentMemory, safeBotanicAgentSkills } from './botanicAgentOntology.mjs'
+import { readStreamedChatCompletion } from './botanicAgentStream.mjs'
 
 const CHAT_MODES = new Set(['conversation', 'prompt', 'research'])
 const MESSAGE_ROLES = new Set(['user', 'assistant'])
@@ -221,6 +222,13 @@ function sourceLabels(toolCalls) {
 
 export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
   const config = chatConfig(runtimeConfig, input?.plannerModel)
+  const allowRawReasoning = Boolean(runtimeConfig?.agentRawReasoning)
+  // 有实时通道时才向提供方请求流式；没有就完全走原来的一次性请求。
+  const streaming = typeof options.onEvent === 'function'
+  const emitEvent = (event) => {
+    if (!streaming) return
+    try { options.onEvent(event) } catch { /* 展示层异常不得中断本轮对话。 */ }
+  }
   let system
   try {
     system = [
@@ -250,14 +258,15 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
       ],
       toolChoice: 'auto',
       maximumSteps: 5,
-      allowRawReasoning: Boolean(runtimeConfig?.agentRawReasoning),
-      callModel: async ({ messages, tools, tool_choice }) => {
+      allowRawReasoning: allowRawReasoning,
+      onEvent: emitEvent,
+      callModel: async ({ messages, tools, tool_choice, step }) => {
         const response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${config.apiKey}`,
             'x-litellm-api-key': config.apiKey,
-            Accept: 'application/json',
+            Accept: streaming ? 'text/event-stream' : 'application/json',
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
@@ -267,13 +276,22 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
             tool_choice,
             max_tokens: input.mode === 'prompt' ? 2200 : 3000,
             temperature: botanicAgentProviderTemperature(config.model),
-            stream: false,
+            stream: streaming,
           }),
           signal,
         })
-        const body = await response.json().catch(() => null)
         if (!response.ok) throw providerError(response.status)
-        return body
+        if (!streaming) return await response.json().catch(() => null)
+        // 传输层把增量还原成非流式形状，工具循环下游完全不感知流式。
+        return await readStreamedChatCompletion(response.body, {
+          onEvent: (event) => {
+            if (event.type === 'reasoning') {
+              if (allowRawReasoning) emitEvent({ type: 'reasoning', step, delta: event.delta })
+              return
+            }
+            if (event.type === 'answer') emitEvent({ type: 'answer', step, delta: event.delta })
+          },
+        })
       },
     })
     if (typeof result.output !== 'string' || !result.output.trim()) {

@@ -47,7 +47,7 @@ import type {
   GenerationSettings,
   UploadedAssetInput,
 } from '../../domain/canvas'
-import { createProjectAgentSkill, listBotanicAgentSystemSkills, listProjectAgentSkills, requestBotanicAgentChat, requestBotanicAgentPlan } from '../../lib/agentApi'
+import { createProjectAgentSkill, listBotanicAgentSystemSkills, listProjectAgentSkills, requestBotanicAgentPlan, streamBotanicAgentChat } from '../../lib/agentApi'
 import { ProductApiError, serverPersistenceEnabled } from '../../lib/productSession'
 import { maxUploadAssets, readUploadedAssetInput, validateUploadFiles } from '../../lib/uploadedAssets'
 import { useCanvasStore } from '../../store/canvasStore'
@@ -439,6 +439,8 @@ export default function AgentWorkspace({
     updateRuntimeStep,
     attachPlannerToolTrace,
     attachRuntimeReasoning,
+    appendRuntimeReasoningDelta,
+    updateRuntimeStepDetail,
     yieldRuntimeFrame,
     completeRuntimeContextReads,
     completeRuntimeTrace,
@@ -1127,14 +1129,39 @@ export default function AgentWorkspace({
         { role: 'user' as const, content: options.appendUser ?? cleanInstruction },
       ].slice(-16)
       try {
-        const response = await requestBotanicAgentChat({
+        // 实时通道只改变“回答什么时候到”：工具与推理增量直接更新运行轨迹，
+        // 回答本身仍然等 done 事件一次性落成消息，避免半截内容进入对话记录。
+        let answerPreview = ''
+        const respondDetail = runtimeTrace.find((step) => step.id === 'respond')?.detail ?? ''
+        const response = await streamBotanicAgentChat({
           projectId,
           plannerModel,
           mountedSkillIds: session.mountedSkillIds,
           mode: route,
           messages: chatMessages,
           contextNodeIds: session.contextNodeIds,
-        }, controller.signal)
+        }, {
+          signal: controller.signal,
+          onEvent: (event) => {
+            if (controller.signal.aborted) return
+            if (event.type === 'tool') {
+              attachPlannerToolTrace({ toolCalls: [event.toolCall] } as BotanicAgentPlan)
+              return
+            }
+            if (event.type === 'reasoning') {
+              appendRuntimeReasoningDelta(event.step, event.delta)
+              return
+            }
+            if (event.type === 'answer') {
+              if (!answerPreview) {
+                updateRuntimeStep('call-planner', 'succeeded')
+                updateRuntimeStep('respond', 'running')
+              }
+              answerPreview = `${answerPreview}${event.delta}`.slice(-120)
+              updateRuntimeStepDetail('respond', answerPreview)
+            }
+          },
+        })
         if (controller.signal.aborted) return
         attachPlannerToolTrace({ toolCalls: response.toolCalls } as BotanicAgentPlan)
         attachRuntimeReasoning(response.reasoning)
@@ -1142,6 +1169,8 @@ export default function AgentWorkspace({
         updateRuntimeStep('respond', 'running')
         await yieldRuntimeFrame()
         if (!isCurrentAgentProject()) return
+        // 流式过程中借用了这条步骤展示回答预览，收敛时换回它本来的说明。
+        if (answerPreview && respondDetail) updateRuntimeStepDetail('respond', respondDetail)
         updateRuntimeStep('respond', 'succeeded')
         setRuntimePhase('completed')
         setRuntimeDetailsOpen(false)

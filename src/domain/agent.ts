@@ -180,16 +180,53 @@ export function insertBotanicAgentToolCallSteps(
     }]
   })
   if (!toolSteps.length) return steps
-  const replaced = new Set(toolSteps.map((step) => step.id))
+  return insertAfterPlannerStep(steps, toolSteps)
+}
+
+function insertAfterPlannerStep(
+  steps: BotanicAgentRuntimeStep[],
+  inserted: BotanicAgentRuntimeStep[],
+): BotanicAgentRuntimeStep[] {
+  const replaced = new Set(inserted.map((step) => step.id))
   const base = steps.filter((step) => !replaced.has(step.id))
   const plannerIndex = base.findIndex((step) => step.id === 'call-planner')
-  if (plannerIndex < 0) return [...base, ...toolSteps]
-  return [...base.slice(0, plannerIndex + 1), ...toolSteps, ...base.slice(plannerIndex + 1)]
+  if (plannerIndex < 0) return [...base, ...inserted]
+  return [...base.slice(0, plannerIndex + 1), ...inserted, ...base.slice(plannerIndex + 1)]
+}
+
+const liveReasoningStepPrefix = 'reasoning:live:'
+/** 实时推理只保留尾部，避免长思维链把运行轨迹撑成日志墙。 */
+export const botanicAgentLiveReasoningLimit = 600
+
+/**
+ * 流式推理增量。同一步的增量追加到同一条步骤上，轮次收束后由最终片段替换。
+ * 这条步骤只活在组件状态里，不写入消息、计划或 Artifact Index。
+ */
+export function appendBotanicAgentReasoningDelta(
+  steps: BotanicAgentRuntimeStep[],
+  step: number,
+  delta: string,
+): BotanicAgentRuntimeStep[] {
+  if (!delta) return steps
+  const id = `${liveReasoningStepPrefix}${step}`
+  const existing = steps.find((item) => item.id === id)
+  if (existing) {
+    const detail = `${existing.detail}${delta}`.slice(-botanicAgentLiveReasoningLimit)
+    return steps.map((item) => item.id === id ? { ...item, detail } : item)
+  }
+  return insertAfterPlannerStep(steps, [{
+    id,
+    kind: 'plan',
+    label: '模型运行说明',
+    detail: delta.slice(-botanicAgentLiveReasoningLimit),
+    status: 'running',
+  }])
 }
 
 /**
  * 把当轮运行说明补进轨迹。summary 片段已经由工具步骤承载，这里只补提供方原始推理——
  * 它默认关闭，即使打开也只活在这一轮的组件状态里，不写入消息、计划或 Artifact Index。
+ * 收到最终片段时同时清掉流式过程中的临时步骤，避免同一段推理出现两次。
  */
 export function insertBotanicAgentReasoningSteps(
   steps: BotanicAgentRuntimeStep[],
@@ -207,11 +244,7 @@ export function insertBotanicAgentReasoningSteps(
     }]
   })
   if (!reasoningSteps.length) return steps
-  const replaced = new Set(reasoningSteps.map((step) => step.id))
-  const base = steps.filter((step) => !replaced.has(step.id))
-  const plannerIndex = base.findIndex((step) => step.id === 'call-planner')
-  if (plannerIndex < 0) return [...base, ...reasoningSteps]
-  return [...base.slice(0, plannerIndex + 1), ...reasoningSteps, ...base.slice(plannerIndex + 1)]
+  return insertAfterPlannerStep(steps.filter((step) => !step.id.startsWith(liveReasoningStepPrefix)), reasoningSteps)
 }
 
 export function updateBotanicAgentRuntimeStep(

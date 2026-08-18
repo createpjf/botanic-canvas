@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
+  appendBotanicAgentReasoningDelta,
   createBotanicAgentRuntimeSteps,
   insertBotanicAgentReasoningSteps,
   insertBotanicAgentToolCallSteps,
@@ -101,6 +102,16 @@ export function useAgentRuntimeTrace({
     setSteps((current) => insertBotanicAgentReasoningSteps(current, entries))
   }, [])
 
+  /** 流式推理增量；收到最终片段时会被 attachReasoning 替换掉。 */
+  const appendReasoningDelta = useCallback((step: number, delta: string) => {
+    if (!delta) return
+    setSteps((current) => appendBotanicAgentReasoningDelta(current, step, delta))
+  }, [])
+
+  const updateStepDetail = useCallback((stepId: string, detail: string) => {
+    setSteps((current) => current.map((step) => step.id === stepId ? { ...step, detail } : step))
+  }, [])
+
   const completeContextReads = useCallback(async (runtimeSteps: BotanicAgentRuntimeStep[]) => {
     const contextSteps = runtimeSteps.filter((step) => !['call-planner', 'finalize-plan', 'create-workflow', 'respond'].includes(step.id))
     for (const step of contextSteps) {
@@ -163,6 +174,8 @@ export function useAgentRuntimeTrace({
     updateRuntimeStep: updateStep,
     attachPlannerToolTrace: attachPlannerTools,
     attachRuntimeReasoning: attachReasoning,
+    appendRuntimeReasoningDelta: appendReasoningDelta,
+    updateRuntimeStepDetail: updateStepDetail,
     yieldRuntimeFrame,
     completeRuntimeContextReads: completeContextReads,
     completeRuntimeTrace: complete,

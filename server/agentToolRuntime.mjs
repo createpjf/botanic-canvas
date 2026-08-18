@@ -134,15 +134,21 @@ export async function runAgentToolLoop({
   maximumSteps = 4,
   context,
   allowRawReasoning = false,
+  onEvent,
 }) {
   const conversation = [...messages]
   const toolCalls = []
   let reasoning = []
+  const emit = (event) => {
+    if (typeof onEvent !== 'function') return
+    try { onEvent(event) } catch { /* 展示层异常不得中断工具循环。 */ }
+  }
   for (let step = 0; step < maximumSteps; step += 1) {
     const response = await callModel({
       messages: conversation,
       tools: registry.openAITools(),
       tool_choice: toolChoice,
+      step,
     })
     const message = response?.choices?.[0]?.message
     reasoning = appendAgentReasoning(reasoning, {
@@ -177,7 +183,9 @@ export async function runAgentToolLoop({
       if (tool.requiresConfirmation && !context?.approvedToolCallIds?.has(trace.id)) {
         throw new AgentToolRuntimeError('TOOL_CONFIRMATION_REQUIRED', `${tool.label}需要用户确认。`, 409)
       }
+      emit({ type: 'tool', step, toolCall: { ...trace, status: 'running' } })
       const output = await registry.execute(name, rawArguments, { ...context, toolCallId: trace.id })
+      emit({ type: 'tool', step, toolCall: trace })
       toolCalls.push(trace)
       if (tool.terminal) return { output, toolCalls, reasoning }
       conversation.push({ role: 'tool', tool_call_id: trace.id, content: JSON.stringify(output) })

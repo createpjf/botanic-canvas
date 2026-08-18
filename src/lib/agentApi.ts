@@ -1,6 +1,7 @@
 import { buildBotanicAgentPlanRequest, completeBotanicAgentPlan, type BotanicAgentPlanRequestInput, type BotanicAgentPlanResponse } from '../domain/agentPlanContract'
 import { buildBotanicAgentChatRequest, type BotanicAgentChatRequestInput, type BotanicAgentChatResponse } from '../domain/agentChatContract'
-import { productRequest } from './productSession'
+import { createBotanicAgentChatStreamReader, type BotanicAgentChatStreamEvent } from '../domain/agentChatStream'
+import { ProductApiError, productAuthorizationHeader, productRequest } from './productSession'
 import type { AgentToolCallTrace, BotanicAgentActionProposal, BotanicAgentActionResult, BotanicAgentClarificationResponse, BotanicAgentMemoryItem, BotanicAgentMessage, BotanicAgentPlan, BotanicAgentRunSnapshot, BotanicAgentSession, BotanicAgentSkill, BotanicAgentSkillCatalogItem, BotanicIndexedArtifact } from '../domain/agent'
 
 export type AgentRunCreationBranch = { id: string; label: string; assetId?: string }
@@ -64,6 +65,83 @@ export async function requestBotanicAgentChat(input: BotanicAgentChatRequestInpu
     timeoutMessage: 'Agent 正在整理上下文，响应较慢，请稍后重试；当前画布内容未被修改。',
   })
   return response.response
+}
+
+/** 实时通道的静默上限：这么久没有任何事件就判定连接已死，回退或报错。 */
+const agentChatStreamIdleTimeoutMs = 60_000
+
+/**
+ * 实时对话通道。它只改变“回答什么时候到”，不改变回答本身：done 事件携带的响应体
+ * 与一次性接口完全一致，所以下游收敛逻辑只有一套。
+ *
+ * 任何在收到首个事件之前的失败都退回一次性接口——网关缓冲、代理不支持 SSE、
+ * 部署尚未更新都属于这一类，用户不该因此拿不到回答。
+ */
+export async function streamBotanicAgentChat(
+  input: BotanicAgentChatRequestInput,
+  options: { signal?: AbortSignal; onEvent?: (event: BotanicAgentChatStreamEvent) => void } = {},
+): Promise<BotanicAgentChatResponse> {
+  const body = JSON.stringify(buildBotanicAgentChatRequest(input))
+  let received = false
+  // 静默挂起的连接必须自己超时：SSE 不像一次性请求那样有天然的结束点。
+  const controller = new AbortController()
+  const abortFromCaller = () => controller.abort()
+  if (options.signal?.aborted) controller.abort()
+  else options.signal?.addEventListener('abort', abortFromCaller, { once: true })
+  let inactivityTimer = window.setTimeout(() => controller.abort(), agentChatStreamIdleTimeoutMs)
+  const keepAlive = () => {
+    window.clearTimeout(inactivityTimer)
+    inactivityTimer = window.setTimeout(() => controller.abort(), agentChatStreamIdleTimeoutMs)
+  }
+  try {
+    const headers = new Headers({ 'Content-Type': 'application/json', Accept: 'text/event-stream' })
+    for (const [key, value] of Object.entries(await productAuthorizationHeader())) headers.set(key, value)
+    const response = await fetch('/api/agent-chat/stream', {
+      method: 'POST',
+      credentials: 'include',
+      headers,
+      body,
+      signal: controller.signal,
+    })
+    if (!response.ok || !response.body) throw new ProductApiError('Agent 实时通道不可用。', response.status)
+    let settled: BotanicAgentChatResponse | undefined
+    for await (const event of readAgentChatStream(response.body)) {
+      keepAlive()
+      received = true
+      if (event.type === 'error') {
+        throw new ProductApiError(event.message ?? 'Agent 对话未完成，请重试。', 502, event.code)
+      }
+      if (event.type === 'done') settled = event.response
+      options.onEvent?.(event)
+    }
+    if (!settled) throw new ProductApiError('Agent 实时通道意外结束。', 0)
+    return settled
+  } catch (caught) {
+    // 用户主动取消要如实抛出；只有实时通道本身不可用才回退。
+    if (options.signal?.aborted) throw caught
+    // 已经开始推送后失败是真实错误，不能悄悄用另一条通道重跑一次模型。
+    if (received) throw caught
+    return requestBotanicAgentChat(input, options.signal)
+  } finally {
+    window.clearTimeout(inactivityTimer)
+    options.signal?.removeEventListener('abort', abortFromCaller)
+  }
+}
+
+async function* readAgentChatStream(body: ReadableStream<Uint8Array>): AsyncGenerator<BotanicAgentChatStreamEvent> {
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  const stream = createBotanicAgentChatStreamReader()
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      yield* stream.push(decoder.decode(value, { stream: true }))
+    }
+    yield* stream.flush()
+  } finally {
+    reader.releaseLock()
+  }
 }
 
 /**
