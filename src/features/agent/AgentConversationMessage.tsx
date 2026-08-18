@@ -10,7 +10,7 @@ import type { GenerationModelOption } from '../../domain/canvas'
 import { CopyIcon, EditIcon, FocusIcon, SparkleIcon, ThumbDownIcon, ThumbUpIcon } from '../../components/BotanicIcons'
 import { agentPlannerModelLabel, modelDisplayLabel } from '../../components/generationModelPresentation'
 import { AgentClarificationCard, AgentPromptDiff, agentToolStatusLabel } from './AgentWorkspaceParts'
-import { AgentMarkdown } from './AgentMarkdown'
+import { AgentPromptResponse } from './AgentPromptResponse'
 
 type AgentConversationMessageProps = {
   message: BotanicAgentMessage
@@ -82,7 +82,7 @@ export function AgentConversationMessage({
   return <article className={`agent-message is-${message.role} is-${message.kind}`}>
     <div className="agent-message__role">{message.role === 'assistant' ? <SparkleIcon /> : <span>你</span>}</div>
     <div className="agent-message__body">
-      {!message.question ? (message.role === 'assistant' ? <AgentMarkdown content={message.content} /> : <p>{message.content}</p>) : null}
+      {!message.question ? (message.role === 'assistant' ? <AgentPromptResponse content={message.content} /> : <p>{message.content}</p>) : null}
       {message.role === 'user' && message.deliveryStatus === 'waiting_network' ? <small className="agent-message__delivery-status" role="status">等待联网</small> : null}
       {message.role === 'user' && message.deliveryStatus === 'queued' ? <small className="agent-message__delivery-status" role="status">等待同步</small> : null}
       {message.role === 'user' && message.deliveryStatus === 'syncing' ? <small className="agent-message__delivery-status" role="status">正在同步</small> : null}

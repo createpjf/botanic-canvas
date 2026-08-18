@@ -6,9 +6,64 @@ export type AgentMarkdownBlock =
   | { kind: 'code'; language?: string; text: string }
   | { kind: 'rule' }
 
+export type AgentPromptSections = {
+  before: string
+  prompt: string
+  promptLabel: string
+  negativePrompt?: string
+  negativePromptLabel?: string
+  after: string
+}
+
 const isRule = (line: string) => /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)
 const isUnorderedItem = (line: string) => /^\s*[-*+]\s+(.+)$/.exec(line)?.[1]
 const isOrderedItem = (line: string) => /^\s*\d+[.)]\s+(.+)$/.exec(line)?.[1]
+const promptHeading = /^\s*(Prompt(?:\s*\([A-Za-z]{2,8}\))?|提示词)\s*[:：]\s*(.*)$/i
+const negativePromptHeading = /^\s*(Negative\s+prompt|反向提示词|负面提示词)\s*[:：]\s*(.*)$/i
+const promptNote = /^\s*(?:changes?\b|two\s+reminders?\b|note\b|reminders?\b|说明|修改|改动|变化|备注|提醒)/i
+
+function cleanPromptText(lines: string[]) {
+  return lines
+    .map((line) => line.replace(/^\s*>\s?/, '').trimEnd())
+    .join('\n')
+    .trim()
+}
+
+function cleanNarrative(lines: string[]) {
+  return lines.join('\n').trim()
+}
+
+/**
+ * Detects the prompt format commonly returned by the agent and separates it
+ * from explanatory text so the UI can present a copyable prompt card.
+ */
+export function parseAgentPromptSections(source: string): AgentPromptSections | null {
+  const lines = source.replace(/\r\n?/g, '\n').split('\n')
+  const promptMatch = lines.map((line, index) => ({ line, index, match: promptHeading.exec(line) })).find((item) => item.match)
+  if (!promptMatch?.match) return null
+
+  const negativeMatch = lines
+    .map((line, index) => ({ line, index, match: negativePromptHeading.exec(line) }))
+    .find((item) => item.match && item.index > promptMatch.index)
+  const noteStart = lines.findIndex((line, index) => index > (negativeMatch?.index ?? promptMatch.index) && promptNote.test(line))
+  const promptEnd = negativeMatch?.index ?? (noteStart >= 0 ? noteStart : lines.length)
+  const promptLines = [promptMatch.match[2], ...lines.slice(promptMatch.index + 1, promptEnd)]
+  const prompt = cleanPromptText(promptLines)
+  if (!prompt) return null
+
+  const negativePrompt = negativeMatch
+    ? cleanPromptText([negativeMatch.match![2], ...lines.slice(negativeMatch.index + 1, noteStart >= 0 ? noteStart : lines.length)])
+    : undefined
+  const after = noteStart >= 0 ? cleanNarrative(lines.slice(noteStart)) : ''
+
+  return {
+    before: cleanNarrative(lines.slice(0, promptMatch.index)),
+    prompt,
+    promptLabel: promptMatch.match[1].trim(),
+    ...(negativePrompt ? { negativePrompt, negativePromptLabel: negativeMatch?.match?.[1].trim() } : {}),
+    after,
+  }
+}
 
 /**
  * A deliberately small, safe Markdown subset for assistant messages.
