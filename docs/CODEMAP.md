@@ -16,7 +16,7 @@
 | 生成成本与 Provider 容灾 | `server/generationGovernance.mjs` | `securityControls.mjs`、`providerHealthMonitor.mjs`、`generationRoutes.mjs`、`generationProcessor.mjs` | 任务级唯一记账；多维预算原子预留；仅语义兼容模型可降级；熔断半开后恢复 |
 | 版本化生产工作流 | `server/productionWorkflow.mjs` | `productionWorkflowRoutes.mjs`、`generationSubmissionService.mjs`、`src/domain/productionWorkflows.ts`、`src/lib/productionWorkflowApi.ts`、模板面板、Artifact Index | 已验证 Agent/画布操作可提升为版本；运行固定快照；批量项独立恢复；失败重试复用任务与预算；Artifact 保留版本血缘 |
 | 批量变化 | `src/domain/batchVariations.ts` | `src/store/canvasBatchVariationActions.ts`、服务端 Processor | `batchVariations.test.ts`、Processor 测试；计划先限制总输出，Store 以有界并发协调独立子任务及恢复，各分支独立持久化 |
-| Agent 对话分流 | `src/domain/agentChatContract.ts` | `src/lib/agentApi.ts`、`server/botanicAgentChat.mjs`、`webSearchProvider.mjs` | 对话测试；浏览器不发送图片字节或私有 URL；Tavily 为默认 `web_search` |
+| Agent 对话分流 | `src/domain/agentChatContract.ts` | `src/lib/agentApi.ts`、`server/botanicAgentChat.mjs`、`server/agentWebResearch.mjs`、`webSearchProvider.mjs` | 对话测试；浏览器不发送图片字节或私有 URL；Tavily 为默认 `web_search`；URL 守卫与结果清洗只在服务端一份实现 |
 | Agent 计划和执行 | `src/domain/agentPlanContract.ts` | `agent.ts`、`agentVariations.ts`、`server/botanicAgentPlanner.mjs`、`botanicAgentTools.mjs`、`agentRunGenerationService.mjs` | Agent Planner/Tool/Run 测试；无素材组时按已确认变体轴展开，张数由展开结果决定；Run 生成复用持久化幂等任务，外部行动默认确认 |
 | Agent 可观测与评测 | `server/agentExecutionTrace.mjs` | `agentRunObservability.mjs`、`agentQualityEvaluation.mjs`、`src/lib/agentApi.ts` | 稳定 traceId 串联 Run/Job/Artifact；只返回运维字段；固定评测不调用 Provider |
 | Agent 权限与审批 | `server/agentActionGovernance.mjs` | `authorization.mjs`、`projectAuthorization.mjs`、`agentRoutes.mjs`、`projectRoutes.mjs` | 服务端权限矩阵、短期行动审批和脱敏审计导出；UI 不可替代鉴权 |

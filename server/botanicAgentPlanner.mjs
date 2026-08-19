@@ -612,6 +612,7 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
     extractUrl: runtimeConfig?.webSearch?.extractUrl,
     fetchImpl: options.webFetchImpl ?? fetch,
     allowLocal: Boolean(runtimeConfig?.webSearch?.allowLocal),
+    consumeQuota: options.consumeWebResearchQuota,
   }
   const registry = createBotanicAgentPlanningToolRegistry({
     input,

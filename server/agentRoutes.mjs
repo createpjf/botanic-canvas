@@ -61,6 +61,7 @@ export function createAgentRouteHandler({
   publishProjectUpdated,
   publishCollaborationActivity,
   observeAgentRun = () => {},
+  consumeWebResearchQuota,
 }) {
   const agentActionExecutions = new Map()
   const methodNotAllowed = (response, message, allow) => json(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message } }, { Allow: allow })
@@ -161,7 +162,12 @@ export function createAgentRouteHandler({
       response.once('close', cancelOnClosedResponse)
       if (request.aborted || response.destroyed) cancel()
       try {
-        const result = await planBotanicGeneration(input, config, { signal: controller.signal })
+        const result = await planBotanicGeneration(input, config, {
+          signal: controller.signal,
+          consumeWebResearchQuota: consumeWebResearchQuota
+            ? () => consumeWebResearchQuota(user.id)
+            : undefined,
+        })
         if (controller.signal.aborted || response.destroyed) return true
         // reasoning 必须留在 plan 之外：计划会被原样持久化到会话消息里，
         // 而原始推理只允许随当轮响应下发。
@@ -204,6 +210,9 @@ export function createAgentRouteHandler({
           document: project.document,
           projectSkills,
           signal: controller.signal,
+          consumeWebResearchQuota: consumeWebResearchQuota
+            ? () => consumeWebResearchQuota(user.id)
+            : undefined,
           ...(sse ? { onEvent: (event) => sse.send(event) } : {}),
         })
         if (controller.signal.aborted || response.destroyed) return true

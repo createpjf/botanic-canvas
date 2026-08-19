@@ -292,6 +292,18 @@ const handleAgentRoute = createAgentRouteHandler({
   config, productStore, redisQueue, configuredMcpTools, json, error, readJson, text,
   requireUser, enforceRateLimit, agentRunGeneration, publishAgentRunUpdated,
   enqueue, publishProjectUpdated, publishCollaborationActivity, observeAgentRun,
+  consumeWebResearchQuota: async (userId) => {
+    const result = await securityControls.consume({
+      scope: 'web-research',
+      subject: userId,
+      limit: config.security.webResearchPerMinute,
+      windowMs: 60_000,
+    })
+    if (!result.allowed) {
+      console.warn(JSON.stringify({ event: 'security.rate_limited', scope: 'web-research', retryAfterSeconds: result.retryAfterSeconds }))
+    }
+    return result
+  },
 })
 
 const handleRequest = async (request, response) => {

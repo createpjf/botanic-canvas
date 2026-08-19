@@ -209,3 +209,38 @@ test('web_fetch 被守卫拒绝时对话继续，模型收到工具错误而不�
   assert.match(flockBodies[1].messages.at(-1).content, /WEB_URL_NOT_ALLOWED|不能抓取内网/)
   assert.equal(result.answer, '这个地址不能打开，它指向本机。')
 })
+
+test('联网配额用尽时对话继续，模型收到 WEB_QUOTA_EXCEEDED', async () => {
+  const flockBodies = []
+  const result = await chatWithBotanicAgent({
+    ...input,
+    messages: [{ role: 'user', content: '打开 https://www.andlight.cn/ 看看。' }],
+  }, {
+    flockApiKey: 'flock-secret',
+    flockTextModel: 'deepseek-v4-pro',
+    flockAgentModels: ['deepseek-v4-pro', 'deepseek-v4-flash', 'kimi-k3'],
+  }, {
+    document,
+    consumeWebResearchQuota: async () => ({ allowed: false, remaining: 0, retryAfterSeconds: 30 }),
+    fetchImpl: async (_url, init) => {
+      flockBodies.push(JSON.parse(init.body))
+      if (flockBodies.length === 1) {
+        return new Response(JSON.stringify({ choices: [{ message: {
+          content: null,
+          tool_calls: [{ id: 'call-fetch', type: 'function', function: {
+            name: 'web_fetch', arguments: JSON.stringify({ url: 'https://www.andlight.cn/', why: '读取官网' }),
+          } }],
+        } }] }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ choices: [{ message: {
+        content: '现在检索次数用完了，请稍后再试。',
+      } }] }), { status: 200 })
+    },
+    webFetchImpl: async () => {
+      throw new Error('配额用尽后不应再出网')
+    },
+  })
+
+  assert.match(flockBodies[1].messages.at(-1).content, /WEB_QUOTA_EXCEEDED/)
+  assert.equal(result.answer, '现在检索次数用完了，请稍后再试。')
+})

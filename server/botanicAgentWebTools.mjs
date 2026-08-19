@@ -16,6 +16,14 @@ function requiredText(value, name, maximumLength) {
   return value.trim()
 }
 
+async function consumeWebResearchQuota(webResearch) {
+  if (typeof webResearch?.consumeQuota !== 'function') return
+  const result = await webResearch.consumeQuota()
+  if (result?.allowed === false) {
+    throw new AgentToolRuntimeError('WEB_QUOTA_EXCEEDED', '联网检索次数过多，请稍后重试。', 429)
+  }
+}
+
 export function createBotanicAgentWebResearchTools(webResearch) {
   if (!webResearch || typeof webResearch !== 'object') return []
   const client = createTavilyWebResearch(webResearch)
@@ -36,7 +44,10 @@ export function createBotanicAgentWebResearchTools(webResearch) {
         if (!query) throw new AgentToolRuntimeError('INVALID_TOOL_ARGUMENTS', '搜索词无效。')
         return { query }
       },
-      execute: async ({ query }) => client.search(query),
+      execute: async ({ query }) => {
+        await consumeWebResearchQuota(webResearch)
+        return client.search(query)
+      },
     })
   }
   tools.push({
@@ -50,7 +61,10 @@ export function createBotanicAgentWebResearchTools(webResearch) {
       required: ['url'],
     },
     validate: (raw) => ({ url: requiredText(object(raw, '网页获取').url, '网页地址', 2048) }),
-    execute: async ({ url }) => client.extract(url),
+    execute: async ({ url }) => {
+      await consumeWebResearchQuota(webResearch)
+      return client.extract(url)
+    },
   })
   return tools
 }

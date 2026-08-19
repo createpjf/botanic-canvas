@@ -248,6 +248,7 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
     extractUrl: runtimeConfig?.webSearch?.extractUrl,
     fetchImpl: options.webFetchImpl ?? fetch,
     allowLocal: Boolean(runtimeConfig?.webSearch?.allowLocal),
+    consumeQuota: options.consumeWebResearchQuota,
   }
   const registry = chatToolRegistry({ ontology, memory, skills, mountedSkillIds: input.mountedSkillIds, webResearch })
   const hasWebSearch = Boolean(registry.get('web_search'))

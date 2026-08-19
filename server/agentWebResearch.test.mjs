@@ -8,7 +8,7 @@ import {
   normalizeWebSearchHits,
   resolveTavilyExtractUrl,
   resolveTavilySearchUrl,
-} from './agentWebResearch.ts'
+} from './agentWebResearch.mjs'
 
 test('Tavily MCP 地址回退到官方 Search REST，不把 Key 留在 URL 里', () => {
   assert.equal(resolveTavilySearchUrl(undefined), 'https://api.tavily.com/search')
