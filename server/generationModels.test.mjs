@@ -28,3 +28,20 @@ test('模型目录只公开已配置供应商，并声明每个模型的媒体�
     videoTimeoutMs: 1_200_000,
   }), 1_200_000)
 })
+
+test('gpt-image-2 打开 16:9 / 4:3 与自定义像素，其它 GPT 模型保持竖图四档', () => {
+  const catalog = createGenerationModelCatalog({
+    openAIApiKey: 'openai-key',
+    openAIModels: ['gpt-image-2', 'gpt-image-1'],
+    miniMaxApiKey: '',
+  })
+
+  assert.deepEqual(catalog.find((model) => model.id === 'gpt-image-2')?.aspectRatios, [
+    '1:1', '16:9', '4:3', '3:4', '4:5', '9:16',
+  ])
+  assert.equal(catalog.find((model) => model.id === 'gpt-image-2')?.supportsCustomSize, true)
+  assert.deepEqual(catalog.find((model) => model.id === 'gpt-image-1')?.aspectRatios, [
+    '1:1', '3:4', '4:5', '9:16',
+  ])
+  assert.equal(catalog.find((model) => model.id === 'gpt-image-1')?.supportsCustomSize, undefined)
+})

@@ -12,9 +12,12 @@ import {
   type BotanicAgentRun,
 } from '../../domain/agent'
 import type { AgentTimelineState, TimelineStepKind } from '../../domain/agentTimeline'
-import type { GenerationModelOption } from '../../domain/canvas'
+import type { GenerationModelOption, GenerationSettings } from '../../domain/canvas'
+import { generationSettingsSizeLabel, modelSupportsCustomSize, applyCustomGenerationSize, withoutCustomGenerationSize } from '../../domain/generationOutputSize'
+import { settingsForGenerationModel } from '../../domain/generationRecipe'
 import { AlertIcon, BookIcon, ChecklistIcon, ClockIcon, CopyIcon, EditIcon, FocusIcon, GlobeIcon, SearchIcon, SparkleIcon, ThumbDownIcon, ThumbUpIcon } from '../../components/BotanicIcons'
 import { agentPlannerModelLabel, modelDisplayLabel } from '../../components/generationModelPresentation'
+import { BotanicSelect } from '../../components/BotanicSelect'
 import { AgentClarificationCard, AgentPromptDiff, agentToolStatusLabel } from './AgentWorkspaceParts'
 import { AgentPromptResponse } from './AgentPromptResponse'
 import { botanicAgentPlanBranchPrompts, botanicAgentPlanOutputLabel } from '../../domain/agentVariations'
@@ -97,6 +100,117 @@ function AgentCollapsibleContent({ content, prompt }: { content: string; prompt?
   </div>
 }
 
+function AgentPlanSettingsEditor({
+  settings,
+  models,
+  disabled,
+  onChange,
+}: {
+  settings: GenerationSettings
+  models: GenerationModelOption[]
+  disabled: boolean
+  onChange: (settings: GenerationSettings) => void
+}) {
+  const selectedModel = models.find((model) => model.id === settings.model)
+    ?? models[0]
+    ?? { id: settings.model, label: settings.model }
+  const modelOptions = models.some((model) => model.id === settings.model)
+    ? models
+    : [{ id: settings.model, label: settings.model }, ...models]
+  const [widthDraft, setWidthDraft] = useState(settings.outputWidth ? String(settings.outputWidth) : '')
+  const [heightDraft, setHeightDraft] = useState(settings.outputHeight ? String(settings.outputHeight) : '')
+  const [customHint, setCustomHint] = useState('')
+  useEffect(() => {
+    setWidthDraft(settings.outputWidth ? String(settings.outputWidth) : '')
+    setHeightDraft(settings.outputHeight ? String(settings.outputHeight) : '')
+  }, [settings.outputWidth, settings.outputHeight])
+  const allowCustom = modelSupportsCustomSize(selectedModel)
+  const aspectRatios = selectedModel.aspectRatios ?? ['1:1', '16:9', '4:3', '3:4', '4:5', '9:16']
+  const resolutions = selectedModel.resolutions ?? ['1K', '2K']
+  const commitCustomSize = () => {
+    if (!allowCustom) return
+    if (!widthDraft.trim() && !heightDraft.trim()) {
+      setCustomHint('')
+      onChange(withoutCustomGenerationSize(settings))
+      return
+    }
+    const applied = applyCustomGenerationSize(settings, Number(widthDraft), Number(heightDraft))
+    if (!applied.ok || !applied.settings) {
+      setCustomHint(applied.ok ? '自定义宽高无效。' : applied.message)
+      return
+    }
+    setCustomHint(applied.snapped ? `已对齐为 ${applied.width}×${applied.height}` : '')
+    onChange(applied.settings)
+  }
+
+  return <div className="agent-plan-settings is-editable" aria-label="本次生成设置">
+    <label className="agent-plan-settings__row">
+      <small>模型</small>
+      <BotanicSelect
+        value={settings.model}
+        ariaLabel="选择生成模型"
+        disabled={disabled}
+        options={modelOptions.map((model) => ({ value: model.id, label: modelDisplayLabel(model) || model.label || model.id }))}
+        onChange={(value) => {
+          const model = modelOptions.find((item) => item.id === value)
+          if (model) onChange(settingsForGenerationModel(settings, model))
+        }}
+      />
+    </label>
+    <label className="agent-plan-settings__row">
+      <small>比例</small>
+      <BotanicSelect
+        value={settings.aspectRatio}
+        ariaLabel="选择画面比例"
+        disabled={disabled}
+        options={aspectRatios.map((ratio) => ({ value: ratio, label: ratio }))}
+        onChange={(value) => onChange({ ...withoutCustomGenerationSize(settings), aspectRatio: value as GenerationSettings['aspectRatio'] })}
+      />
+    </label>
+    <label className="agent-plan-settings__row">
+      <small>清晰度</small>
+      <BotanicSelect
+        value={settings.resolution}
+        ariaLabel="选择输出清晰度"
+        disabled={disabled}
+        options={resolutions.map((resolution) => ({ value: resolution, label: resolution }))}
+        onChange={(value) => onChange({ ...settings, resolution: value as GenerationSettings['resolution'] })}
+      />
+    </label>
+    {allowCustom ? <div className="agent-plan-settings__custom">
+      <small>自定义像素</small>
+      <input
+        type="number"
+        inputMode="numeric"
+        min={16}
+        max={3840}
+        step={16}
+        value={widthDraft}
+        disabled={disabled}
+        aria-label="自定义输出宽度"
+        placeholder="宽"
+        onChange={(event) => setWidthDraft(event.target.value)}
+        onBlur={commitCustomSize}
+      />
+      <span aria-hidden="true">×</span>
+      <input
+        type="number"
+        inputMode="numeric"
+        min={16}
+        max={3840}
+        step={16}
+        value={heightDraft}
+        disabled={disabled}
+        aria-label="自定义输出高度"
+        placeholder="高"
+        onChange={(event) => setHeightDraft(event.target.value)}
+        onBlur={commitCustomSize}
+      />
+      {customHint ? <em>{customHint}</em> : null}
+    </div> : <span><small>输出</small><b>{generationSettingsSizeLabel(settings)}</b></span>}
+  </div>
+}
+
 type AgentConversationMessageProps = {
   message: BotanicAgentMessage
   timeline?: AgentTimelineState
@@ -123,6 +237,7 @@ type AgentConversationMessageProps = {
   onDismissAction: (message: BotanicAgentMessage, action: BotanicAgentActionProposal) => void
   onPromptDraftChange: (messageId: string, prompt: string) => void
   onCommitPlanPrompt: (message: BotanicAgentMessage, prompt: string) => void
+  onCommitPlanSettings: (message: BotanicAgentMessage, settings: GenerationSettings) => void
   onConfirmPlan: (message: BotanicAgentMessage) => void
   onUsePrompt: (message: BotanicAgentMessage) => void
   onEdit: (content: string) => void
@@ -156,6 +271,7 @@ export function AgentConversationMessage({
   onDismissAction,
   onPromptDraftChange,
   onCommitPlanPrompt,
+  onCommitPlanSettings,
   onConfirmPlan,
   onUsePrompt,
   onEdit,
@@ -278,12 +394,19 @@ export function AgentConversationMessage({
             {lockedConstraints.length ? <div className="agent-message__constraint-group is-locked"><span>锁定</span>{lockedConstraints.map((constraint) => <b key={constraint.dimension}>{creativeDimensionLabel(constraint.dimension)}</b>)}</div> : null}
             {variedConstraints.length ? <div className="agent-message__constraint-group is-variable"><span>变化</span>{variedConstraints.map((constraint) => <b key={constraint.dimension}>{creativeDimensionLabel(constraint.dimension)}</b>)}</div> : null}
           </div>
-          <div className="agent-plan-settings" aria-label="本次生成设置">
-            <span><small>模型</small><b>{modelDisplayLabel(generationModels.find((model) => model.id === plan.settings.model)) || plan.settings.model}</b></span>
-            <span><small>比例</small><b>{plan.settings.aspectRatio}</b></span>
-            <span><small>清晰度</small><b>{plan.settings.resolution}</b></span>
-            <span><small>输出</small><b>{botanicAgentPlanOutputLabel(plan)}</b></span>
-          </div>
+          {planSubmitted
+            ? <div className="agent-plan-settings" aria-label="本次生成设置">
+              <span><small>模型</small><b>{modelDisplayLabel(generationModels.find((model) => model.id === plan.settings.model)) || plan.settings.model}</b></span>
+              <span><small>尺寸</small><b>{generationSettingsSizeLabel(plan.settings)}</b></span>
+              <span><small>清晰度</small><b>{plan.settings.resolution}</b></span>
+              <span><small>输出</small><b>{botanicAgentPlanOutputLabel(plan)}</b></span>
+            </div>
+            : <AgentPlanSettingsEditor
+              settings={plan.settings}
+              models={generationModels}
+              disabled={submittingMessageId === message.id}
+              onChange={(settings) => onCommitPlanSettings(message, settings)}
+            />}
           {contextLabel ? <small className="agent-plan__context-lock">基于 {contextLabel}{plan.contextSnapshot && plan.contextSnapshot.length > 1 ? ` 等 ${plan.contextSnapshot.length} 项` : ''}</small> : null}
           <section className="agent-prompt-review" aria-label="润色后的提示词">
             <header><span><strong>{planSubmitted ? '本次提示词' : '提示词'}</strong></span><b>{planSubmitted ? '只读' : '可改'}</b></header>
@@ -303,7 +426,8 @@ export function AgentConversationMessage({
             <header><strong>{branchPrompts.length} 个分支节点</strong><small>原参考图保留，各分支单独出图</small></header>
             <ol>{branchPrompts.map((branch, index) => <li key={`${branch.label}-${index}`}>
               <b>{branch.label}</b>
-              <pre>{branch.prompt}</pre>
+              <p>{branch.delta || branch.prompt}</p>
+              {branch.delta ? <details className="agent-plan-branches__full"><summary>完整提示词</summary><pre>{branch.prompt}</pre></details> : null}
             </li>)}</ol>
           </section> : null}
           {pendingActionCount ? <details className="agent-message__route"><summary>执行路由</summary><div><span>规划</span><b>{agentPlannerModelLabel(plan.plannerModel ?? plannerModel)}</b><span>生成</span><b>{plan.settings.model}</b><span>外部行动</span><b>{pendingActionCount} 项，确认后执行</b></div></details> : null}
@@ -317,7 +441,7 @@ export function AgentConversationMessage({
         // 已提交的计划折叠成一行摘要：任务状态由下方的任务消息承载，细节按需展开。
         if (planSubmitted) return <details className="agent-message__plan is-submitted">
           <summary>
-            <span><strong>{plan.summary}</strong><small>{modelDisplayLabel(generationModels.find((model) => model.id === plan.settings.model)) || plan.settings.model} · {plan.settings.aspectRatio} · {botanicAgentPlanOutputLabel(plan)}</small></span>
+            <span><strong>{plan.summary}</strong><small>{modelDisplayLabel(generationModels.find((model) => model.id === plan.settings.model)) || plan.settings.model} · {generationSettingsSizeLabel(plan.settings)} · {botanicAgentPlanOutputLabel(plan)}</small></span>
             <em className="agent-message__submitted">{executionMode === 'auto' ? '已自动提交' : '已提交'}</em>
           </summary>
           {detail}

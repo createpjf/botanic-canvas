@@ -22,14 +22,20 @@ export function createGenerationModelCatalog({
 }) {
   const catalog = []
   if (openAIApiKey) {
-    catalog.push(...unique(openAIModels).map((id) => ({
-      id,
-      label: labelForModel(id),
-      provider: 'openai',
-      mediaKind: 'image',
-      aspectRatios: ['1:1', '3:4', '4:5', '9:16'],
-      resolutions: ['1K', '2K'],
-    })))
+    catalog.push(...unique(openAIModels).map((id) => {
+      const gptImage2 = id === 'gpt-image-2' || id.startsWith('gpt-image-2')
+      return {
+        id,
+        label: labelForModel(id),
+        provider: 'openai',
+        mediaKind: 'image',
+        aspectRatios: gptImage2
+          ? ['1:1', '16:9', '4:3', '3:4', '4:5', '9:16']
+          : ['1:1', '3:4', '4:5', '9:16'],
+        resolutions: ['1K', '2K'],
+        ...(gptImage2 ? { supportsCustomSize: true } : {}),
+      }
+    }))
   }
   if (miniMaxApiKey) {
     catalog.push(...unique(miniMaxImageModels).map((id) => ({

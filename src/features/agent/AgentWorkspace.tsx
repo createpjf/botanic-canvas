@@ -54,6 +54,7 @@ import type {
   GenerationSettings,
   UploadedAssetInput,
 } from '../../domain/canvas'
+import type { GenerationSizeOverride } from '../../domain/generationOutputSize'
 import { createProjectAgentSkill, listBotanicAgentSystemSkills, listProjectAgentSkills, requestBotanicAgentPlan, streamBotanicAgentChat } from '../../lib/agentApi'
 import {
   applyBotanicAgentVariationToPlan,
@@ -307,7 +308,7 @@ export default function AgentWorkspace({
   }), [])
   const setLastFailedPlanMessageId = useCallback((value: string) => updateComposerState({ lastFailedPlanMessageId: value }), [])
   const setMentionQuery = useCallback((value?: BotanicAgentMentionQuery) => updateComposerState({ mentionQuery: value }), [])
-  const setPendingGenerationOverrides = useCallback((value: Partial<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution'>>) => updateComposerState({ pendingGenerationOverrides: value }), [])
+  const setPendingGenerationOverrides = useCallback((value: GenerationSizeOverride) => updateComposerState({ pendingGenerationOverrides: value }), [])
   const rememberFailedInstruction = useCallback((command: AgentFailedInstruction) => updateComposerState({
     lastFailedInstruction: command.instruction,
     lastFailedCommand: command,
@@ -963,7 +964,7 @@ export default function AgentWorkspace({
 
   const preparePlan = async (
     cleanInstruction: string,
-    generationOverrides?: Partial<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution'>>,
+    generationOverrides?: GenerationSizeOverride,
     clarificationAnswers?: Record<string, string>,
     creativeBrief?: BotanicCreativeBrief,
     failedCommand?: AgentFailedInstruction,
@@ -1024,6 +1025,7 @@ export default function AgentWorkspace({
             requestedIntent: intent,
             clarificationAnswers,
             brief: creativeBrief,
+            fallbackPrompt: target.rootRecipe?.prompt,
             assetGroup: assetGroup
               ? { id: assetGroup.id, role: assetGroup.role, assetCount: assetGroup.assetIds.length }
               : undefined,
@@ -1147,7 +1149,7 @@ export default function AgentWorkspace({
     setGroupId('')
     setRecoveryModelMenuKey('')
     if (mode === 'model' && model) {
-      const modelOverrides: Partial<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution'>> = { model: model.id }
+      const modelOverrides: GenerationSizeOverride = { model: model.id }
       if (model.aspectRatios?.length && !model.aspectRatios.includes(run.plan.settings.aspectRatio)) modelOverrides.aspectRatio = model.aspectRatios[0]
       if (model.resolutions?.length && !model.resolutions.includes(run.plan.settings.resolution)) modelOverrides.resolution = model.resolutions[0]
       setPendingGenerationOverrides(modelOverrides)
@@ -1677,6 +1679,12 @@ export default function AgentWorkspace({
     onUpdateMessage(session.id, message.id, { plan: { ...message.plan, prompt: cleanPrompt } })
   }
 
+  const commitPlanSettings = (message: BotanicAgentMessage, settings: GenerationSettings) => {
+    if (!session || !message.plan) return
+    if (message.status === 'submitted') return
+    onUpdateMessage(session.id, message.id, { plan: { ...message.plan, settings } })
+  }
+
   const createNextRoundFromResults = (sourceNodeIds: string[], artifactCount: number) => {
     if (!sourceNodeIds.length) return
     onUseResultContext(sourceNodeIds)
@@ -1879,7 +1887,7 @@ export default function AgentWorkspace({
                 {!active && feedback.action !== 'none' ? <button type="button" onClick={() => openRunFeedback(run)}>{feedback.actionLabel}</button> : null}
                 {active ? <button type="button" className="is-danger" disabled={cancellingRunId === run.id} onClick={() => { setCancellingRunId(run.id); void onCancelRun(run.id).finally(() => setCancellingRunId('')) }}>{cancellingRunId === run.id ? '取消中…' : '取消'}</button> : null}
               </div>
-              {run.branches.length >= 2 ? <details className="agent-task-panel__details">
+              {run.branches.length >= 2 ? <details className="agent-task-panel__details" open>
                 <summary>{agentTaskBranchSummary(run)}</summary>
                 <div className="agent-task-panel__branch-list" aria-label="分支状态">
                   {run.branches.map((branch) => <div className={`agent-task-panel__branch-row is-${branch.status}`} key={branch.id}>
@@ -1987,6 +1995,7 @@ export default function AgentWorkspace({
           onDismissAction={(targetMessage, action) => onUpdateAction(session.id, targetMessage.id, action.id, { status: 'dismissed' })}
           onPromptDraftChange={(messageId, prompt) => setPromptDrafts((current) => ({ ...current, [messageId]: prompt }))}
           onCommitPlanPrompt={commitPlanPrompt}
+          onCommitPlanSettings={commitPlanSettings}
           onConfirmPlan={(targetMessage) => void confirmMessagePlan(targetMessage)}
           onUsePrompt={usePromptForGeneration}
           onEdit={(content) => { setInstruction(content); requestAnimationFrame(() => composerTextareaRef.current?.focus()) }}

@@ -12,6 +12,11 @@ import {
   botanicAgentVariationClarificationFieldIds,
   mergeVariationClarification,
 } from './botanicAgentVariations.mjs'
+import {
+  inferAspectRatioFromPixels,
+  modelSupportsCustomSize,
+  normalizeCustomGenerationSize,
+} from './generationOutputSize.mjs'
 
 const INTENTS = new Set([
   'continue_generation', 'replace_scene', 'replace_person', 'replace_product',
@@ -129,8 +134,23 @@ function validateGenerationModels(value) {
       if (!Array.isArray(model.resolutions) || model.resolutions.some((resolution) => !RESOLUTIONS.includes(resolution))) invalidRequest('模型分辨率目录无效。')
       result.resolutions = [...new Set(model.resolutions)]
     }
+    if (model.supportsCustomSize !== undefined) {
+      if (typeof model.supportsCustomSize !== 'boolean') invalidRequest('模型自定义尺寸标记无效。')
+      result.supportsCustomSize = model.supportsCustomSize
+    }
     return result
   })
+}
+
+function optionalCustomSize(raw, model) {
+  const hasWidth = raw.outputWidth !== undefined
+  const hasHeight = raw.outputHeight !== undefined
+  if (!hasWidth && !hasHeight) return {}
+  if (!hasWidth || !hasHeight) invalidRequest('自定义宽高必须同时提供。')
+  if (!modelSupportsCustomSize(model)) invalidRequest('当前模型不支持自定义像素。')
+  const normalized = normalizeCustomGenerationSize(Number(raw.outputWidth), Number(raw.outputHeight))
+  if (!normalized.ok) invalidRequest(normalized.message)
+  return { outputWidth: normalized.width, outputHeight: normalized.height }
 }
 
 export function validateBotanicAgentPlanInput(raw) {
@@ -151,6 +171,10 @@ export function validateBotanicAgentPlanInput(raw) {
     model: requiredText(settingsValue.model, '模型', 160),
     aspectRatio: requiredText(settingsValue.aspectRatio, '比例', 32),
     resolution: requiredText(settingsValue.resolution, '分辨率', 32),
+    ...optionalCustomSize(settingsValue, { id: requiredText(settingsValue.model, '模型', 160) }),
+  }
+  if (settings.outputWidth && settings.outputHeight) {
+    settings.aspectRatio = inferAspectRatioFromPixels(settings.outputWidth, settings.outputHeight)
   }
 
   let generationModels
@@ -168,12 +192,23 @@ export function validateBotanicAgentPlanInput(raw) {
       generationOverrides.resolution = requiredText(overrides.resolution, '覆盖分辨率', 32)
       if (!RESOLUTIONS.includes(generationOverrides.resolution)) invalidRequest('覆盖分辨率不支持。')
     }
+    Object.assign(generationOverrides, optionalCustomSize(overrides, { id: overrides.model ?? settings.model }))
+    if (generationOverrides.outputWidth && generationOverrides.outputHeight) {
+      generationOverrides.aspectRatio = inferAspectRatioFromPixels(
+        generationOverrides.outputWidth,
+        generationOverrides.outputHeight,
+      )
+    }
     if (generationOverrides.model !== undefined) {
       const allowedModels = new Set((generationModels ?? []).map((model) => model.id))
       if (generationOverrides.model !== settings.model && !allowedModels.has(generationOverrides.model)) invalidRequest('覆盖模型不在可用目录中。')
     }
   }
   const effectiveSettings = { ...settings, ...generationOverrides }
+  if (!modelSupportsCustomSize(effectiveSettings.model)) {
+    delete effectiveSettings.outputWidth
+    delete effectiveSettings.outputHeight
+  }
   if (generationModels?.length) {
     const selectedModel = generationModels.find((model) => model.id === effectiveSettings.model)
     if (!selectedModel) invalidRequest('当前模型不在可用目录中。')
@@ -283,6 +318,8 @@ export function validateBotanicAgentPlanInput(raw) {
       })
     })()
 
+  const parentPrompt = optionalText(input.parentPrompt, '父图提示词', 6000)
+
   return {
     projectId,
     ...(plannerModel ? { plannerModel } : {}),
@@ -300,6 +337,7 @@ export function validateBotanicAgentPlanInput(raw) {
     ...(creativeBrief ? { creativeBrief } : {}),
     ...(mountedSkillIds?.length ? { mountedSkillIds } : {}),
     ...(contextSnapshot?.length ? { contextSnapshot } : {}),
+    ...(parentPrompt ? { parentPrompt } : {}),
   }
 }
 
@@ -440,6 +478,7 @@ function normalizeProviderPlan(raw, input) {
     clarificationAnswers: input.clarificationAnswers,
     brief: input.creativeBrief,
     assetGroup: selectedAssetGroup ?? input.assetGroup,
+    fallbackPrompt: input.parentPrompt,
   })
   if (applied.kind === 'clarification') return { kind: 'clarification', clarification: applied.clarification }
   return applied.plan

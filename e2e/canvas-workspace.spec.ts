@@ -9,8 +9,9 @@ const healthResponse = {
     id: 'gpt-image-2',
     label: 'GPT Image 2',
     mediaKind: 'image',
-    aspectRatios: ['1:1', '3:4', '4:5', '9:16'],
+    aspectRatios: ['1:1', '16:9', '4:3', '3:4', '4:5', '9:16'],
     resolutions: ['1K', '2K'],
+    supportsCustomSize: true,
   }],
   agentPlanner: {
     provider: 'flock-api',

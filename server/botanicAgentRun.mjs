@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { inferAspectRatioFromPixels, normalizeCustomGenerationSize } from './generationOutputSize.mjs'
 
 const intents = new Set([
   'initial_generation',
@@ -126,12 +127,22 @@ function validateSettings(rawSettings) {
   if (!rawSettings || typeof rawSettings !== 'object' || Array.isArray(rawSettings)) {
     throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', 'Agent 生成参数无效。')
   }
-  return {
+  const settings = {
     model: text(rawSettings.model, '生成模型', 160),
     aspectRatio: text(rawSettings.aspectRatio, '画面比例', 32),
     resolution: text(rawSettings.resolution, '输出规格', 32),
     ...(rawSettings.duration === undefined ? {} : { duration: Number(rawSettings.duration) }),
   }
+  if (rawSettings.outputWidth !== undefined || rawSettings.outputHeight !== undefined) {
+    const normalized = normalizeCustomGenerationSize(Number(rawSettings.outputWidth), Number(rawSettings.outputHeight))
+    if (!normalized.ok) {
+      throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', normalized.message)
+    }
+    settings.outputWidth = normalized.width
+    settings.outputHeight = normalized.height
+    settings.aspectRatio = inferAspectRatioFromPixels(normalized.width, normalized.height)
+  }
+  return settings
 }
 
 function validateConstraints(rawConstraints, { allowEmpty = false } = {}) {

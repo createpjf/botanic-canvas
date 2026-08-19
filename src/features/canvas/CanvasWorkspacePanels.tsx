@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { buildDeliveryPreviewArtifacts, resolveDeliveryDraft, type DeliveryPanelTarget } from '../../domain/deliveryPresentation'
 import { topOverlayLayer } from '../../domain/overlayPriority'
 import { primaryGenerationReference, settingsForGenerationModel } from '../../domain/generationRecipe'
+import { withoutCustomGenerationSize } from '../../domain/generationOutputSize'
 import { summarizeWorkflowTemplate, type WorkflowTemplateSummary } from '../../domain/workflowTemplates'
 import { productionWorkflowDraftFromCanvas } from '../../domain/productionWorkflows'
 import { useMotionPresence, useRestoreFocus, useRetainedValue, type MotionPhase } from '../../components/motionPresence'
@@ -224,7 +225,7 @@ export function BatchVariationComposer({
               const model = models.find((item) => item.id === value)
               if (model) setSettings((current) => settingsForGenerationModel(current, model))
             }} /></label>
-            <label><span>比例</span><BotanicSelect value={settings.aspectRatio} ariaLabel="选择批量画面比例" options={(selectedModel?.aspectRatios ?? ['1:1', '3:4', '4:5', '9:16']).map((ratio) => ({ value: ratio, label: ratio }))} onChange={(value) => setSettings((current) => ({ ...current, aspectRatio: value as GenerationSettings['aspectRatio'] }))} /></label>
+            <label><span>比例</span><BotanicSelect value={settings.aspectRatio} ariaLabel="选择批量画面比例" options={(selectedModel?.aspectRatios ?? ['1:1', '16:9', '4:3', '3:4', '4:5', '9:16']).map((ratio) => ({ value: ratio, label: ratio }))} onChange={(value) => setSettings((current) => withoutCustomGenerationSize({ ...current, aspectRatio: value as GenerationSettings['aspectRatio'] }))} /></label>
             <label><span>分辨率</span><BotanicSelect value={settings.resolution} ariaLabel="选择批量输出分辨率" options={(selectedModel?.resolutions ?? ['1K', '2K']).map((resolution) => ({ value: resolution, label: resolution }))} onChange={(value) => setSettings((current) => ({ ...current, resolution: value as GenerationSettings['resolution'] }))} /></label>
             <label><span>每项候选</span><input type="number" min={1} max={maximumCandidates} value={candidatesPerAsset} onChange={(event) => setCandidatesPerAsset(Math.min(maximumCandidates, Math.max(1, Math.round(Number(event.target.value)) || 1)))} /></label>
           </div>

@@ -126,6 +126,85 @@ test('H3 接受带角色的视频素材，并阻止图片模型接收视频', as
   }), (error) => error instanceof GenerationError && error.code === 'INVALID_REFERENCE')
 })
 
+test('gpt-image-2 接受 16:9 目录和自定义像素，并对齐到 16 的倍数', () => {
+  const models = [{
+    id: 'gpt-image-2',
+    mediaKind: 'image',
+    aspectRatios: ['1:1', '16:9', '4:3', '3:4', '4:5', '9:16'],
+    resolutions: ['1K', '2K'],
+    supportsCustomSize: true,
+  }]
+  const widescreen = validateGenerationInput({
+    projectId: 'project-a', kind: 'generation', prompt: '横图主图', batchCount: 1,
+    settings: { model: 'gpt-image-2', aspectRatio: '16:9', resolution: '2K' },
+    recipe: { references: [{ name: '主商品', role: '商品', primary: true, dataUrl: image }] },
+  }, { models, maximumBatchCount: 8, maximumReferenceBytes: 1024 })
+  assert.equal(widescreen.settings.aspectRatio, '16:9')
+
+  const custom = validateGenerationInput({
+    projectId: 'project-a', kind: 'generation', prompt: '横图主图', batchCount: 1,
+    settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '2K', outputWidth: 1920, outputHeight: 1080 },
+    recipe: { references: [{ name: '主商品', role: '商品', primary: true, dataUrl: image }] },
+  }, { models, maximumBatchCount: 8, maximumReferenceBytes: 1024 })
+  assert.equal(custom.settings.outputWidth, 1920)
+  assert.equal(custom.settings.outputHeight, 1088)
+  assert.equal(custom.settings.aspectRatio, '16:9')
+
+  assert.throws(() => validateGenerationInput({
+    projectId: 'project-a', kind: 'generation', prompt: '横图主图', batchCount: 1,
+    settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '2K', outputWidth: 100, outputHeight: 100 },
+    recipe: { references: [{ name: '主商品', role: '商品', primary: true, dataUrl: image }] },
+  }, { models, maximumBatchCount: 8, maximumReferenceBytes: 1024 }), (error) => error instanceof GenerationError && error.code === 'INVALID_REQUEST')
+})
+
+test('不支持自定义像素的模型拒绝宽高，字符串模型目录仍允许 gpt-image-2 的 16:9', () => {
+  assert.throws(() => validateGenerationInput({
+    projectId: 'project-a', kind: 'generation', prompt: '横图主图', batchCount: 1,
+    settings: { model: 'image-01', aspectRatio: '16:9', resolution: '1K', outputWidth: 1920, outputHeight: 1080 },
+    recipe: { references: [{ name: '主商品', role: '商品', primary: true, dataUrl: image }] },
+  }, {
+    models: [{ id: 'image-01', mediaKind: 'image', aspectRatios: ['1:1', '16:9'], resolutions: ['1K'] }],
+    maximumBatchCount: 8,
+    maximumReferenceBytes: 1024,
+  }), (error) => error instanceof GenerationError && error.code === 'INVALID_REQUEST')
+
+  const input = validateGenerationInput({
+    projectId: 'project-a', kind: 'generation', prompt: '横图主图', batchCount: 1,
+    settings: { model: 'gpt-image-2', aspectRatio: '16:9', resolution: '1K' },
+    recipe: { references: [{ name: '主商品', role: '商品', primary: true, dataUrl: image }] },
+  }, { models: ['gpt-image-2'], maximumBatchCount: 8, maximumReferenceBytes: 1024 })
+  assert.equal(input.settings.aspectRatio, '16:9')
+})
+
+test('gpt-image-2 自定义尺寸写入对齐后的 Provider size', async () => {
+  const originalFetch = globalThis.fetch
+  let size
+  globalThis.fetch = async (_url, init) => {
+    size = init.body.get('size')
+    return new Response(JSON.stringify({
+      data: [{ b64_json: 'iVBORw0KGgo=' }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }
+  try {
+    await generateImages({
+      id: 'job-custom-size',
+      kind: 'generation',
+      batchCount: 1,
+      prompt: '香氛商品主图',
+      settings: { model: 'gpt-image-2', aspectRatio: '16:9', resolution: '2K', outputWidth: 1920, outputHeight: 1080 },
+      references: [{ name: '主商品', role: '商品', primary: true, mimeType: 'image/png', buffer: Buffer.from('reference') }],
+    }, {
+      apiBaseUrl: 'https://example.test',
+      apiKey: 'test-key',
+      jobId: 'job-custom-size',
+      persistImage: async (value) => value.dataUrl,
+    })
+    assert.equal(size, '1920x1088')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('多张候选拆成独立请求，确保每张都有对应输出', async () => {
   const originalFetch = globalThis.fetch
   let requestCount = 0

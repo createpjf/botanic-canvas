@@ -21,8 +21,9 @@
 
 ## 进行中的设计
 
-以下规格正在本轮对齐，完成后以代码与测试为准：
+以下规格正在本轮实现，完成后以代码与测试为准：
 
+- [批量变体：共享提示词、按支回填、尺寸与自定义像素](superpowers/specs/2026-08-19-variation-prompt-writeback-size-design.md)
 - [Agent 深度思考时间线与联网检索](superpowers/specs/2026-08-19-agent-thinking-web-search-design.md)
 
 ## 验收与历史记录

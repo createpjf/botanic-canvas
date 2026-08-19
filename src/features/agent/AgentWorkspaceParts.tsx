@@ -96,6 +96,7 @@ export function agentRunFeedback(
   return botanicAgentRunFeedback(run.status, agentRunOutputCount(run, artifacts), run.error, {
     artifactCount: agentRunArtifacts(run, artifacts).length,
     canvasOutputCount: agentRunCanvasOutputCount(run, artifacts, nodeIds),
+    activeBranchCount: run.branches.filter((branch) => branch.status === 'queued' || branch.status === 'running').length,
   })
 }
 
