@@ -13,7 +13,7 @@ import {
 } from '../../domain/agent'
 import type { GenerationModelOption, GenerationSettings } from '../../domain/canvas'
 import { modelDisplayLabel, modelProviderLogo } from '../../components/generationModelPresentation'
-import { AlertIcon, CheckIcon, ClockIcon, CloseIcon, EditIcon, RefreshIcon, SlidersIcon } from '../../components/BotanicIcons'
+import { AlertIcon, CheckIcon, ChevronLeftIcon, ClockIcon, CloseIcon, EditIcon, RefreshIcon, SlidersIcon } from '../../components/BotanicIcons'
 
 export function agentToolStatusLabel(status: NonNullable<BotanicAgentPlan['toolCalls']>[number]['status']) {
   if (status === 'succeeded') return '已完成'
@@ -37,6 +37,13 @@ export function agentRuntimeStepMarker(step: BotanicAgentRuntimeStep) {
   if (step.kind === 'search') return '⌕'
   if (step.kind === 'write') return '↗'
   return '○'
+}
+
+export function AgentPanelBackButton({ onClick }: { onClick: () => void }) {
+  return <button type="button" className="agent-panel-back" onClick={onClick}>
+    <ChevronLeftIcon />
+    <span>返回对话</span>
+  </button>
 }
 
 export function AgentBranchStatusIcon({ status }: { status: BotanicAgentRun['branches'][number]['status'] }) {

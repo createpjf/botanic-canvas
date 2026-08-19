@@ -351,16 +351,18 @@ test('Agent 只为有效图片参考创建生成工作流，忽略文字、生�
 
 test('Run 状态统一提供下一步反馈，并兼容超时错误', () => {
   assert.deepEqual(botanicAgentRunFeedback('queued'), {
-    label: '排队中', detail: '任务已进入队列，生成服务接手后会继续更新。',
+    label: '排队中', detail: '已入队，等待生成。',
     action: 'view_task', actionLabel: '查看任务', tone: 'progress', terminal: false,
   })
   assert.equal(botanicAgentRunFeedback('running').label, '生成中')
-  assert.equal(botanicAgentRunFeedback('completed', 2).detail, '已生成 2 项结果，并自动回填画布。')
-  assert.equal(botanicAgentRunFeedback('completed', 1, undefined, { artifactCount: 1, canvasOutputCount: 0 }).detail, '已生成 1 项结果，正在同步到画布。')
+  assert.equal(botanicAgentRunFeedback('running').detail, '正在生成，完成后回填画布。')
+  assert.equal(botanicAgentRunFeedback('completed', 2).detail, '已回填画布 · 2 项')
+  assert.equal(botanicAgentRunFeedback('completed', 1, undefined, { artifactCount: 1, canvasOutputCount: 0 }).detail, '结果已生成，正在回填画布。')
   assert.equal(botanicAgentRunFeedback('completed', 0).actionLabel, '查看任务')
   assert.equal(botanicAgentRunFeedback('partial', 1).actionLabel, '查看失败分支')
+  assert.equal(botanicAgentRunFeedback('partial', 1).detail, '已回填 1 项，有分支失败。')
   assert.equal(botanicAgentRunFeedback('failed', 0, '工作区数据库响应超时').label, '响应超时')
-  assert.equal(botanicAgentRunFeedback('cancelled', 1).detail, '任务已取消，已保留 1 项已完成结果。')
+  assert.equal(botanicAgentRunFeedback('cancelled', 1).detail, '已取消，保留 1 项结果。')
   assert.deepEqual([
     botanicAgentBranchStatusLabel('queued'),
     botanicAgentBranchStatusLabel('running'),

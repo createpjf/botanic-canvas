@@ -175,9 +175,9 @@ export function AgentComposer({
       }) : <p>暂无图像素材，可从电脑选择或直接拖入。</p>}
     </div> : null}
     {modeMenuOpen ? <div id={modeMenuId} className="agent-composer__mode-menu" role="group" aria-label="执行模式">
-      <button type="button" aria-label="计划模式" aria-pressed={session?.executionMode === 'manual'} className={session?.executionMode === 'manual' ? 'is-selected' : ''} onClick={() => onExecutionModeChange('manual')}><ChecklistIcon /><span><strong>计划模式</strong><small>先给出完整计划，缺参数会问你，确认后才提交生成任务</small></span></button>
-      <button type="button" aria-label="自动模式" aria-pressed={session?.executionMode === 'auto'} className={session?.executionMode === 'auto' ? 'is-selected' : ''} onClick={() => onExecutionModeChange('auto')}><AutoRunIcon /><span><strong>自动模式</strong><small>自动补齐模型与输出设置并直接提交；遇到外部行动仍会停下来问你</small></span></button>
-      <p className="agent-composer__mode-note">切换只影响之后的新计划；已经在等待确认的计划不会自动执行。</p>
+      <button type="button" aria-label="计划模式" aria-pressed={session?.executionMode === 'manual'} className={session?.executionMode === 'manual' ? 'is-selected' : ''} title="缺参数会询问；确认后才提交生成任务。只影响之后的新计划。" onClick={() => onExecutionModeChange('manual')}><ChecklistIcon /><span><strong>计划模式</strong><small>确认计划后再生成</small></span></button>
+      <button type="button" aria-label="自动模式" aria-pressed={session?.executionMode === 'auto'} className={session?.executionMode === 'auto' ? 'is-selected' : ''} title="自动补齐设置并提交；外部行动仍会停下来确认。只影响之后的新计划。" onClick={() => onExecutionModeChange('auto')}><AutoRunIcon /><span><strong>自动模式</strong><small>直接生成，行动需确认</small></span></button>
+      <p className="agent-composer__mode-note">只影响之后的新计划</p>
     </div> : null}
   </div>
 }

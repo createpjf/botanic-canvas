@@ -857,34 +857,34 @@ export function botanicAgentRunFeedback(
   const terminal = status === 'completed' || status === 'partial' || status === 'failed' || status === 'cancelled'
   const timedOut = status === 'failed' && Boolean(error && /超时|timeout|timed out/i.test(error))
   if (status === 'awaiting_confirmation') {
-    return { label: '待确认', detail: '计划已准备好，确认后才会提交生成任务。', action: 'view_task', actionLabel: '查看计划', tone: 'warning', terminal: false }
+    return { label: '待确认', detail: '确认后才会提交生成。', action: 'view_task', actionLabel: '查看计划', tone: 'warning', terminal: false }
   }
   if (status === 'queued') {
-    return { label: '排队中', detail: '任务已进入队列，生成服务接手后会继续更新。', action: 'view_task', actionLabel: '查看任务', tone: 'progress', terminal: false }
+    return { label: '排队中', detail: '已入队，等待生成。', action: 'view_task', actionLabel: '查看任务', tone: 'progress', terminal: false }
   }
   if (status === 'executing' || status === 'running') {
-    return { label: '生成中', detail: '正在处理生成任务；结果完成后会自动回填画布。', action: 'view_task', actionLabel: '查看任务', tone: 'progress', terminal: false }
+    return { label: '生成中', detail: '正在生成，完成后回填画布。', action: 'view_task', actionLabel: '查看任务', tone: 'progress', terminal: false }
   }
   if (status === 'completed') {
     if (outputCount > 0 && options && (options.artifactCount ?? 0) === 0) {
-      return { label: '已完成', detail: '任务已完成，但结果正在整理；暂未发现可用 Artifact。', action: 'view_task', actionLabel: '查看任务', tone: 'warning', terminal }
+      return { label: '已完成', detail: '已完成，结果整理中。', action: 'view_task', actionLabel: '查看任务', tone: 'warning', terminal }
     }
     if (outputCount > 0 && options && (options.canvasOutputCount ?? 0) < (options.artifactCount ?? 0)) {
-      return { label: '已完成', detail: `已生成 ${outputCount} 项结果，正在同步到画布。`, action: 'view_results', actionLabel: '查看结果', tone: 'warning', terminal }
+      return { label: '已完成', detail: '结果已生成，正在回填画布。', action: 'view_results', actionLabel: '查看结果', tone: 'warning', terminal }
     }
     return outputCount > 0
-      ? { label: '已完成', detail: `已生成 ${outputCount} 项结果，并自动回填画布。`, action: 'view_results', actionLabel: '查看结果', tone: 'success', terminal }
-      : { label: '已完成', detail: '任务已完成，但暂未发现可用结果；打开任务查看回填状态。', action: 'view_task', actionLabel: '查看任务', tone: 'warning', terminal }
+      ? { label: '已完成', detail: `已回填画布 · ${outputCount} 项`, action: 'view_results', actionLabel: '查看结果', tone: 'success', terminal }
+      : { label: '已完成', detail: '已完成，暂无可用结果。', action: 'view_task', actionLabel: '查看任务', tone: 'warning', terminal }
   }
   if (status === 'partial') {
-    return { label: '部分完成', detail: `已生成 ${outputCount} 项结果；失败分支可以单独重试。`, action: 'view_task', actionLabel: '查看失败分支', tone: 'warning', terminal }
+    return { label: '部分完成', detail: `已回填 ${outputCount} 项，有分支失败。`, action: 'view_task', actionLabel: '查看失败分支', tone: 'warning', terminal }
   }
   if (status === 'cancelled') {
-    return { label: '已取消', detail: `任务已取消，已保留 ${outputCount} 项已完成结果。`, action: 'adjust', actionLabel: '调整后重试', tone: 'warning', terminal }
+    return { label: '已取消', detail: `已取消，保留 ${outputCount} 项结果。`, action: 'adjust', actionLabel: '调整后重试', tone: 'warning', terminal }
   }
   return timedOut
-    ? { label: '响应超时', detail: '生成服务未在规定时间内返回；可调整参数或稍后重试。', action: 'adjust', actionLabel: '调整后重试', tone: 'error', terminal }
-    : { label: '生成失败', detail: outputCount ? `任务未完成，已保留 ${outputCount} 项结果；可重试失败分支。` : '任务未完成，可调整参数、切换模型后重试。', action: 'adjust', actionLabel: '调整后重试', tone: 'error', terminal }
+    ? { label: '响应超时', detail: '生成超时，可调整后重试。', action: 'adjust', actionLabel: '调整后重试', tone: 'error', terminal }
+    : { label: '生成失败', detail: outputCount ? `未完成，已保留 ${outputCount} 项。` : '任务未完成，可调整后重试。', action: 'adjust', actionLabel: '调整后重试', tone: 'error', terminal }
 }
 
 export function botanicAgentBranchStatusLabel(status: BotanicAgentBranchStatus) {

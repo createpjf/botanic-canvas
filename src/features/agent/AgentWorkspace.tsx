@@ -61,7 +61,7 @@ import {
 } from '../../components/generationModelPresentation'
 import {
   AgentFailureRecoveryActions,
-  AgentBranchStatusIcon,
+  AgentPanelBackButton,
   agentRunFeedback,
   agentRunOutputCount,
   agentRuntimeStepMarker,
@@ -85,10 +85,10 @@ import {
   BookmarkIcon,
   CheckIcon,
   ChecklistIcon,
+  ChevronLeftIcon,
   ClockIcon,
   CloseIcon,
   FigmaIcon,
-  FocusIcon,
   GalleryIcon,
   EditIcon,
   PlusSquareIcon,
@@ -153,6 +153,19 @@ function AgentTaskFilterIcon({ value }: { value: 'all' | 'active' | 'completed' 
   if (value === 'attention') return <AlertIcon />
   if (value === 'active') return <ClockIcon />
   return <ChecklistIcon />
+}
+
+function agentTaskBranchSummary(run: BotanicAgentRun) {
+  const succeeded = run.branches.filter((branch) => branch.status === 'succeeded').length
+  const running = run.branches.filter((branch) => branch.status === 'running').length
+  const queued = run.branches.filter((branch) => branch.status === 'queued').length
+  const failed = run.branches.filter((branch) => branch.status === 'failed' || branch.status === 'cancelled').length
+  return [
+    succeeded ? `${succeeded} 完成` : '',
+    running ? `${running} 生成中` : '',
+    queued ? `${queued} 排队` : '',
+    failed ? `${failed} 失败` : '',
+  ].filter(Boolean).join(' · ') || `${run.branches.length} 个分支`
 }
 
 
@@ -799,6 +812,14 @@ export default function AgentWorkspace({
     setActiveUtilityPanel((current) => current === panel ? null : panel)
     setActiveTransientSurface(null)
     setMentionQuery(undefined)
+  }
+
+  const closeUtilityPanel = () => {
+    setActiveUtilityPanel(null)
+    setUtilityMenuOpen(false)
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      (composerTextareaRef.current ?? utilityButtonRef.current)?.focus()
+    }))
   }
 
   const openUtilityPanel = (panel: AgentUtilityPanel) => {
@@ -1536,6 +1557,7 @@ export default function AgentWorkspace({
           <div ref={utilityMenuRef} className="agent-workspace__utility-menu-wrap">
             <button ref={utilityMenuButtonRef} type="button" className={`agent-workspace__utility-menu-button${utilityPanelOpen ? ' is-active' : ''}`} aria-haspopup="menu" aria-expanded={utilityMenuOpen} aria-controls={utilityMenuId} aria-label="Agent 工具" title="Agent 工具" onClick={() => { setUtilityMenuOpen((open) => !open); setHistoryOpen(false) }}><ChecklistIcon /></button>
             {utilityMenuOpen ? <div id={utilityMenuId} className="agent-workspace__utility-menu" role="menu" aria-label="Agent 工具">
+              {utilityPanelOpen ? <button type="button" role="menuitem" onClick={closeUtilityPanel}><ChevronLeftIcon /><span>返回对话</span></button> : null}
               <button type="button" role="menuitem" className={resultPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('result')}><GalleryIcon /><span>结果与文件</span></button>
               <button type="button" role="menuitem" className={taskPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('task')}><ChecklistIcon /><span>Agent 任务</span></button>
               <button type="button" role="menuitem" className={memoryPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('memory')}><BookmarkIcon /><span>项目记忆</span></button>
@@ -1598,6 +1620,7 @@ export default function AgentWorkspace({
           onStartNextRound={createNextRoundFromResults}
           onLoadMoreArtifacts={onLoadMoreArtifacts}
           onLocateConversation={locateRunSourceMessage}
+          onBackToConversation={closeUtilityPanel}
         /> : null}
         {collaborationPanelOpen ? <AgentCollaborationPanel
           activities={collaborationAwareness.activities}
@@ -1613,6 +1636,7 @@ export default function AgentWorkspace({
           historyErrorAction={collaborationAwareness.historyErrorAction}
           onLoadMore={onLoadMoreCollaborationActivities}
           onReload={onReloadCollaborationActivities}
+          onBackToConversation={closeUtilityPanel}
         /> : null}
         {memoryPanelOpen ? <AgentMemoryPanel
           memory={memory}
@@ -1620,10 +1644,11 @@ export default function AgentWorkspace({
           onAddMemory={onAddMemory}
           onRemoveMemory={onRemoveMemory}
           onLocateNode={onLocateNode}
+          onBackToConversation={closeUtilityPanel}
         /> : null}
         {taskPanelOpen ? <section className="agent-task-panel" aria-label="Agent 任务与结果">
-          <header><div><small>AGENT RUNS</small><h2>Agent 任务</h2></div><span>{runs.length} 个</span></header>
-          <p>这里只显示由 Agent 发起的任务；失败分支可重试，也可以修改参数或模型后重新提交，不会覆盖已完成结果。</p>
+          <header><AgentPanelBackButton onClick={closeUtilityPanel} /><div><small>AGENT RUNS</small><h2>Agent 任务</h2></div><span>{runs.length} 个</span></header>
+          <p>仅 Agent 发起的任务。失败可重试，不覆盖已完成结果。</p>
           <div className="agent-task-panel__filters" aria-label="按任务状态筛选">
             {([
               ['all', '全部', taskFilterCounts.all],
@@ -1637,22 +1662,32 @@ export default function AgentWorkspace({
               aria-pressed={taskStatusFilter === value}
               title={`${label} · ${count} 项`}
               onClick={() => setTaskStatusFilter(value)}
-            ><AgentTaskFilterIcon value={value} /><b>{count}</b></button>)}
+            ><AgentTaskFilterIcon value={value} /><span>{label}</span><b>{count}</b></button>)}
           </div>
           <div className="agent-task-panel__list">
             {filteredRunTimeline.map(({ run, source }) => {
               const feedback = agentRunFeedback(run, artifacts, availableCanvasNodeIds)
               const active = run.status === 'queued' || run.status === 'running' || run.status === 'executing'
+              const failedBranches = run.branches.filter((branch) => branch.status === 'failed' || branch.status === 'cancelled')
               return <article key={run.id} ref={(node) => { if (node) taskNodesRef.current.set(run.id, node); else taskNodesRef.current.delete(run.id) }} tabIndex={-1} className={`is-${run.status} is-${feedback.tone}${focusedTaskRunId === run.id ? ' is-located' : ''}`}>
-              <header><span><strong>{run.plan.summary}</strong><small>{feedback.label} · <time dateTime={new Date(run.updatedAt).toISOString()}>{agentTimelineTimestamp(run.updatedAt)}</time></small>{source ? <button type="button" className="agent-task-panel__source" aria-label={`定位到「${source.sessionTitle}」`} title={`定位到「${source.sessionTitle}」`} onClick={() => locateTaskSourceMessage(source)}><FocusIcon /></button> : null}</span><div>{active ? <button type="button" className="agent-icon-button agent-icon-button--danger" aria-label="取消任务" title="取消任务" disabled={cancellingRunId === run.id} onClick={() => { setCancellingRunId(run.id); void onCancelRun(run.id).finally(() => setCancellingRunId('')) }}>{cancellingRunId === run.id ? <span className="agent-workspace__mini-spinner" /> : <CloseIcon />}</button> : <button type="button" className="agent-task-panel__feedback-action" aria-label={feedback.actionLabel} title={feedback.actionLabel} onClick={() => openRunFeedback(run)}><AgentRunActionIcon label={feedback.actionLabel} /></button>}<b>{run.completedBranchCount}/{run.branches.length}</b></div></header>
+              <header><span><strong>{run.plan.summary}</strong><small>{feedback.label} · <time dateTime={new Date(run.updatedAt).toISOString()}>{agentTimelineTimestamp(run.updatedAt)}</time></small></span></header>
               <p className="agent-task-panel__feedback">{feedback.detail}</p>
-              <div className="agent-run-card__track" aria-hidden="true"><i style={{ width: `${run.branches.length ? Math.round(run.completedBranchCount / run.branches.length * 100) : 0}%` }} /></div>
-              <details className="agent-task-panel__details">
-                <summary aria-label="查看分支详情" title="查看分支详情"><ChecklistIcon /><span>{run.branches.length}</span></summary>
-                <div className="agent-task-panel__summary" aria-label="分支状态汇总"><span aria-label={`${run.branches.filter((branch) => branch.status === 'succeeded').length} 项完成`} title="完成"><AgentBranchStatusIcon status="succeeded" /><b>{run.branches.filter((branch) => branch.status === 'succeeded').length}</b></span><span aria-label={`${run.branches.filter((branch) => branch.status === 'running').length} 项生成中`} title="生成中"><AgentBranchStatusIcon status="running" /><b>{run.branches.filter((branch) => branch.status === 'running').length}</b></span><span aria-label={`${run.branches.filter((branch) => branch.status === 'queued').length} 项排队`} title="排队"><AgentBranchStatusIcon status="queued" /><b>{run.branches.filter((branch) => branch.status === 'queued').length}</b></span><span aria-label={`${run.branches.filter((branch) => branch.status === 'failed' || branch.status === 'cancelled').length} 项失败`} title="失败"><AgentBranchStatusIcon status="failed" /><b>{run.branches.filter((branch) => branch.status === 'failed' || branch.status === 'cancelled').length}</b></span></div>
-                <div className="agent-task-panel__matrix" aria-label="批量分支矩阵">{run.branches.map((branch, index) => <div key={branch.id} className={`is-${branch.status}`} aria-label={`${branch.label} · ${botanicAgentBranchStatusLabel(branch.status)}`} title={`${branch.label} · ${botanicAgentBranchStatusLabel(branch.status)}`}><span>{index + 1}</span><AgentBranchStatusIcon status={branch.status} /></div>)}</div>
-              </details>
-              {run.branches.filter((branch) => branch.status === 'failed' || branch.status === 'cancelled').map((branch) => <div className="agent-task-panel__branch" key={branch.id}><span><strong>{branch.label}</strong><small>{branch.error ?? '该分支未完成'}</small></span><AgentFailureRecoveryActions
+              {active ? <div className="agent-run-card__track" aria-hidden="true"><i style={{ width: `${run.branches.length ? Math.round(run.completedBranchCount / run.branches.length * 100) : 0}%` }} /></div> : null}
+              <div className="agent-task-panel__actions">
+                {source ? <button type="button" onClick={() => locateTaskSourceMessage(source)}>来源对话</button> : null}
+                {!active && feedback.action !== 'none' ? <button type="button" onClick={() => openRunFeedback(run)}>{feedback.actionLabel}</button> : null}
+                {active ? <button type="button" className="is-danger" disabled={cancellingRunId === run.id} onClick={() => { setCancellingRunId(run.id); void onCancelRun(run.id).finally(() => setCancellingRunId('')) }}>{cancellingRunId === run.id ? '取消中…' : '取消'}</button> : null}
+              </div>
+              {run.branches.length >= 2 ? <details className="agent-task-panel__details">
+                <summary>{agentTaskBranchSummary(run)}</summary>
+                <div className="agent-task-panel__branch-list" aria-label="分支状态">
+                  {run.branches.map((branch) => <div className={`agent-task-panel__branch-row is-${branch.status}`} key={branch.id}>
+                    <strong>{branch.label}</strong>
+                    <small>{botanicAgentBranchStatusLabel(branch.status)}</small>
+                  </div>)}
+                </div>
+              </details> : null}
+              {failedBranches.map((branch) => <div className="agent-task-panel__branch" key={branch.id}><span><strong>{branch.label}</strong><small>{branch.error ?? '该分支未完成'}</small></span><AgentFailureRecoveryActions
                 branch={branch}
                 generationModels={generationModels}
                 retrying={retryingBranchId === branch.id}
@@ -1667,7 +1702,7 @@ export default function AgentWorkspace({
           </div>
         </section> : null}
         {skillPanelOpen ? <section className="agent-skill-panel" aria-label="系统与项目 Skill">
-          <header><div><small>SKILL REGISTRY</small><h2>创作技能</h2></div><span>{systemSkills.length + skills.length} 个</span></header>
+          <header><AgentPanelBackButton onClick={closeUtilityPanel} /><div><small>SKILL REGISTRY</small><h2>创作技能</h2></div><span>{systemSkills.length + skills.length} 个</span></header>
           <p>在输入框键入 @ 即可调用 Skill。新建的项目 Skill 会自动挂载到当前对话。</p>
           {systemSkills.length ? <div className="agent-skill-panel__catalog"><strong>系统 Skills</strong>{systemSkills.map((skill) => <article key={skill.id}><span><SparkleIcon /><b>{skill.name}</b></span><small>{skill.instructions}</small></article>)}</div> : null}
           {!skillFormOpen && !skillConfirming && !skillError ? <button type="button" className="agent-skill-panel__create-entry" aria-expanded="false" onClick={() => setSkillFormOpen(true)}>＋ 新建技能</button> : <div className="agent-skill-panel__form">
