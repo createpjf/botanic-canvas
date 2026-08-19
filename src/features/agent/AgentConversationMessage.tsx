@@ -82,13 +82,13 @@ function AgentMessageTimeline({ timeline }: { timeline: AgentTimelineState }) {
   </div>
 }
 
-function AgentCollapsibleContent({ content }: { content: string }) {
+function AgentCollapsibleContent({ content, prompt }: { content: string; prompt?: string }) {
   const [expanded, setExpanded] = useState(false)
   const collapsible = content.length > collapsibleContentLength
     || content.split('\n').length > collapsibleContentLines
-  if (!collapsible) return <AgentPromptResponse content={content} />
+  if (!collapsible) return <AgentPromptResponse content={content} prompt={prompt} />
   return <div className={`agent-message__collapsible${expanded ? ' is-expanded' : ''}`}>
-    <div className="agent-message__collapsible-body"><AgentPromptResponse content={content} /></div>
+    <div className="agent-message__collapsible-body"><AgentPromptResponse content={content} prompt={prompt} /></div>
     <button type="button" className="agent-message__collapsible-toggle" aria-expanded={expanded} onClick={() => setExpanded((open) => !open)}>
       {expanded ? '收起' : '展开全文'}
     </button>
@@ -181,7 +181,9 @@ export function AgentConversationMessage({
     <div className="agent-message__body">
       {timeline ? <AgentMessageTimeline timeline={timeline} /> : null}
       {!message.question && message.content ? (message.role === 'assistant'
-        ? streaming ? <AgentPromptResponse content={message.content} /> : <AgentCollapsibleContent content={message.content} />
+        ? streaming
+          ? <AgentPromptResponse content={message.content} prompt={message.prompt} />
+          : <AgentCollapsibleContent content={message.content} prompt={message.prompt} />
         : <p>{message.content}</p>) : null}
       {message.kind === 'run' && inlineRunResults.length ? <div className="agent-run-message__results" aria-label="本次任务结果">
         {inlineRunResults.map((artifact) => artifact.kind === 'image'

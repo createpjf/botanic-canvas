@@ -4,6 +4,7 @@ export type AgentMarkdownBlock =
   | { kind: 'unordered-list'; items: string[] }
   | { kind: 'ordered-list'; items: string[] }
   | { kind: 'code'; language?: string; text: string }
+  | { kind: 'table'; headers: string[]; rows: string[][] }
   | { kind: 'rule' }
 
 export type AgentPromptSections = {
@@ -21,16 +22,70 @@ const isOrderedItem = (line: string) => /^\s*\d+[.)]\s+(.+)$/.exec(line)?.[1]
 const promptHeading = /^\s*(Prompt(?:\s*\([A-Za-z]{2,8}\))?|提示词)\s*[:：]\s*(.*)$/i
 const negativePromptHeading = /^\s*(Negative\s+prompt|反向提示词|负面提示词)\s*[:：]\s*(.*)$/i
 const promptNote = /^\s*(?:changes?\b|two\s+reminders?\b|note\b|reminders?\b|说明|修改|改动|变化|备注|提醒)/i
+const promptFenceOpen = /^\s*```\s*(prompt|提示词)\s*$/i
 
 function cleanPromptText(lines: string[]) {
-  return lines
+  return unwrapPromptFence(lines
     .map((line) => line.replace(/^\s*>\s?/, '').trimEnd())
     .join('\n')
-    .trim()
+    .trim())
 }
 
 function cleanNarrative(lines: string[]) {
   return lines.join('\n').trim()
+}
+
+function unwrapPromptFence(text: string) {
+  const match = text.match(/^```(?:prompt|提示词)?\s*\n([\s\S]*?)\n```$/)
+  return match ? match[1].trim() : text
+}
+
+function splitTableRow(line: string) {
+  const trimmed = line.trim()
+  const withoutLead = trimmed.startsWith('|') ? trimmed.slice(1) : trimmed
+  const withoutTail = withoutLead.endsWith('|') ? withoutLead.slice(0, -1) : withoutLead
+  return withoutTail.split('|').map((cell) => cell.trim())
+}
+
+function isTableSeparator(line: string) {
+  const cells = splitTableRow(line)
+  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell))
+}
+
+function isTableRow(line: string) {
+  return line.includes('|') && !isTableSeparator(line) && !isRule(line)
+}
+
+function padTableRow(cells: string[], columns: number) {
+  return Array.from({ length: columns }, (_, index) => cells[index] ?? '')
+}
+
+function startsTable(lines: string[], index: number) {
+  return isTableRow(lines[index]) && Boolean(lines[index + 1] && isTableSeparator(lines[index + 1]))
+}
+
+function findPromptFence(lines: string[]) {
+  for (let start = 0; start < lines.length; start += 1) {
+    if (!promptFenceOpen.test(lines[start])) continue
+    const body: string[] = []
+    let end = start + 1
+    while (end < lines.length && !/^\s*```\s*$/.test(lines[end])) {
+      body.push(lines[end])
+      end += 1
+    }
+    if (end >= lines.length) return undefined
+    const prompt = body.join('\n').trim()
+    if (!prompt) return undefined
+    return { start, end, prompt }
+  }
+  return undefined
+}
+
+function dropTrailingPromptHeading(lines: string[]) {
+  const next = [...lines]
+  while (next.length && !next[next.length - 1].trim()) next.pop()
+  if (next.length && promptHeading.test(next[next.length - 1])) next.pop()
+  return next
 }
 
 /**
@@ -39,6 +94,16 @@ function cleanNarrative(lines: string[]) {
  */
 export function parseAgentPromptSections(source: string): AgentPromptSections | null {
   const lines = source.replace(/\r\n?/g, '\n').split('\n')
+  const fence = findPromptFence(lines)
+  if (fence) {
+    return {
+      before: cleanNarrative(dropTrailingPromptHeading(lines.slice(0, fence.start))),
+      prompt: fence.prompt,
+      promptLabel: 'Prompt',
+      after: cleanNarrative(lines.slice(fence.end + 1)),
+    }
+  }
+
   const promptMatch = lines.map((line, index) => ({ line, index, match: promptHeading.exec(line) })).find((item) => item.match)
   if (!promptMatch?.match) return null
 
@@ -65,6 +130,28 @@ export function parseAgentPromptSections(source: string): AgentPromptSections | 
   }
 }
 
+/** 展示层切片：正文结构优先，缺标题时用消息上已存的 Prompt。 */
+export function resolveAgentPromptSections(content: string, storedPrompt = ''): AgentPromptSections | null {
+  const parsed = parseAgentPromptSections(content)
+  if (parsed) return parsed
+  const prompt = storedPrompt.trim()
+  if (!prompt) return null
+  const text = content.replace(/\r\n?/g, '\n').trim()
+  if (text === prompt) {
+    return { before: '', prompt, promptLabel: 'Prompt', after: '' }
+  }
+  const index = text.indexOf(prompt)
+  if (index < 0) {
+    return { before: text, prompt, promptLabel: 'Prompt', after: '' }
+  }
+  return {
+    before: text.slice(0, index).trim(),
+    prompt,
+    promptLabel: 'Prompt',
+    after: text.slice(index + prompt.length).trim(),
+  }
+}
+
 /**
  * A deliberately small, safe Markdown subset for assistant messages.
  * It keeps the UI deterministic and never interprets arbitrary HTML.
@@ -81,7 +168,7 @@ export function parseAgentMarkdown(source: string): AgentMarkdownBlock[] {
       continue
     }
 
-    const fence = /^\s*```\s*([\w-]+)?\s*$/.exec(line)
+    const fence = /^\s*```\s*([\w-]+|提示词)?\s*$/.exec(line)
     if (fence) {
       const codeLines: string[] = []
       index += 1
@@ -103,6 +190,18 @@ export function parseAgentMarkdown(source: string): AgentMarkdownBlock[] {
     if (isRule(line)) {
       blocks.push({ kind: 'rule' })
       index += 1
+      continue
+    }
+
+    if (startsTable(lines, index)) {
+      const headers = splitTableRow(line)
+      index += 2
+      const rows: string[][] = []
+      while (index < lines.length && isTableRow(lines[index])) {
+        rows.push(padTableRow(splitTableRow(lines[index]), headers.length))
+        index += 1
+      }
+      blocks.push({ kind: 'table', headers, rows })
       continue
     }
 
@@ -136,7 +235,14 @@ export function parseAgentMarkdown(source: string): AgentMarkdownBlock[] {
     index += 1
     while (index < lines.length && lines[index].trim()) {
       const next = lines[index]
-      if (/^\s*```/.test(next) || /^(#{1,3})\s+/.test(next) || isRule(next) || isUnorderedItem(next) || isOrderedItem(next)) break
+      if (
+        /^\s*```/.test(next)
+        || /^(#{1,3})\s+/.test(next)
+        || isRule(next)
+        || startsTable(lines, index)
+        || isUnorderedItem(next)
+        || isOrderedItem(next)
+      ) break
       paragraph.push(next.trimEnd())
       index += 1
     }
