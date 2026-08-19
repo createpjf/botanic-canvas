@@ -409,6 +409,28 @@ export function summarizeBotanicAgentRuntime(input: {
   }
 }
 
+const botanicAgentRuntimeFeedPhases = new Set<BotanicAgentRuntimePhase>([
+  'reading', 'planning', 'waiting_clarification', 'waiting_confirmation',
+  'waiting_reference', 'draft_ready', 'executing', 'failed',
+])
+
+/**
+ * 底部运行卡只描述“这一轮还没收束”的规划/生成过程。
+ * 对话流式时同一段回答已经在气泡里出现，不再另开一张“组织回答”卡。
+ */
+export function shouldShowBotanicAgentRuntimeFeed(input: {
+  runtimePhase: BotanicAgentRuntimePhase
+  hasRuntimeSteps: boolean
+  hasLiveConversation: boolean
+  runBranchCount?: number
+}): boolean {
+  if (input.hasLiveConversation) return false
+  if (!input.hasRuntimeSteps) return false
+  if (!botanicAgentRuntimeFeedPhases.has(input.runtimePhase)) return false
+  if ((input.runBranchCount ?? 0) > 0 && input.runtimePhase === 'executing') return false
+  return true
+}
+
 /**
  * Agent 只有拿到可用图片参考时才允许创建生成工作流。
  * 该领域规则避免对话、文字说明、视频或空结果被误转成空白生成节点。

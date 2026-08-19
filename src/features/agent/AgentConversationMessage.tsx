@@ -180,7 +180,9 @@ export function AgentConversationMessage({
     <div className="agent-message__role">{message.role === 'assistant' ? <SparkleIcon /> : <span>你</span>}</div>
     <div className="agent-message__body">
       {timeline ? <AgentMessageTimeline timeline={timeline} /> : null}
-      {!message.question && message.content ? (message.role === 'assistant' ? <AgentCollapsibleContent content={message.content} /> : <p>{message.content}</p>) : null}
+      {!message.question && message.content ? (message.role === 'assistant'
+        ? streaming ? <AgentPromptResponse content={message.content} /> : <AgentCollapsibleContent content={message.content} />
+        : <p>{message.content}</p>) : null}
       {message.kind === 'run' && inlineRunResults.length ? <div className="agent-run-message__results" aria-label="本次任务结果">
         {inlineRunResults.map((artifact) => artifact.kind === 'image'
           ? <img key={artifact.id} src={artifact.url} alt={artifact.label} />

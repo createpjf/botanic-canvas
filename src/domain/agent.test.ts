@@ -49,6 +49,7 @@ import {
   botanicAgentRunFeedback,
   botanicAgentBranchStatusLabel,
   summarizeBotanicAgentRuntime,
+  shouldShowBotanicAgentRuntimeFeed,
   buildBotanicAgentPromptDiff,
   mergeBotanicAgentArtifactIndex,
   resolveBotanicAgentWorkflowReferenceNodeIds,
@@ -336,6 +337,40 @@ test('Runtime 默认只呈现当前阶段与下一步，展开后仍保留完整
   assert.equal(draftReady.label, '生成草稿已创建')
   assert.match(draftReady.detail, /尚未提交/)
   assert.equal(draftReady.nextAction, '检查并生成')
+})
+
+test('对话流式进行时不展示底部运行卡，生成规划与等待确认仍可展示', () => {
+  assert.equal(shouldShowBotanicAgentRuntimeFeed({
+    runtimePhase: 'planning',
+    hasRuntimeSteps: true,
+    hasLiveConversation: true,
+  }), false)
+  assert.equal(shouldShowBotanicAgentRuntimeFeed({
+    runtimePhase: 'planning',
+    hasRuntimeSteps: true,
+    hasLiveConversation: false,
+  }), true)
+  assert.equal(shouldShowBotanicAgentRuntimeFeed({
+    runtimePhase: 'waiting_confirmation',
+    hasRuntimeSteps: true,
+    hasLiveConversation: false,
+  }), true)
+  assert.equal(shouldShowBotanicAgentRuntimeFeed({
+    runtimePhase: 'executing',
+    hasRuntimeSteps: true,
+    hasLiveConversation: false,
+    runBranchCount: 2,
+  }), false)
+  assert.equal(shouldShowBotanicAgentRuntimeFeed({
+    runtimePhase: 'completed',
+    hasRuntimeSteps: true,
+    hasLiveConversation: false,
+  }), false)
+  assert.equal(shouldShowBotanicAgentRuntimeFeed({
+    runtimePhase: 'planning',
+    hasRuntimeSteps: false,
+    hasLiveConversation: false,
+  }), false)
 })
 
 test('Agent 只为有效图片参考创建生成工作流，忽略文字、生成节点和视频', () => {
