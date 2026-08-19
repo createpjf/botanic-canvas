@@ -1,5 +1,5 @@
 import type { Edge, XYPosition } from '@xyflow/react'
-import { generationTaskResultLabel } from '../domain/canvasPresentation.ts'
+import { generationResultNodeLabel, generationTaskResultLabel } from '../domain/canvasPresentation.ts'
 import { planGenerationOutputPlacement } from '../domain/generationOutputPlacement.ts'
 import { cloneGenerationRecipe, cloneGenerationSettings } from '../domain/generationRecipe.ts'
 import type { BatchVariationRun, CanvasDocument, CanvasGenerationTaskStatus, CanvasNode, GenerationCandidate, GenerationJob, GenerationSettings, GenerateNodeData, ResultNodeData } from '../domain/canvas.ts'
@@ -19,23 +19,16 @@ function taskFlowLabel(kind: GenerationRequest['kind']) {
   return kind === 'refinement' ? '定向精修' : '图像生成'
 }
 
-function concisePromptName(prompt: string) {
-  const compact = prompt
-    .replace(/\s+/g, ' ')
-    .replace(/[，,；;、]+/g, ' ')
-    .trim()
-    .replace(/[。！？!?.：:]+$/, '')
-  const characters = Array.from(compact)
-  return characters.length > 14 ? `${characters.slice(0, 14).join('')}…` : compact || '创意图'
-}
-
-/** 输出名保持可读且稳定：精修沿用父节点，首图取提示词短摘要。 */
-function generationCandidateName(request: GenerationRequest, variant: number) {
-  if (request.kind === 'refinement' && request.parentLabel?.trim()) {
-    return `${request.parentLabel.trim()} +${variant + 1}`
-  }
-  const base = concisePromptName(request.prompt)
-  return request.batchCount > 1 ? `${base} ${String(variant + 1).padStart(2, '0')}` : base
+/** 输出名保持可读且稳定：优先短标题，不用 Prompt 原文。 */
+function generationCandidateName(request: GenerationRequest, variant: number, generateLabel?: string) {
+  return generationResultNodeLabel({
+    kind: request.kind,
+    title: request.title ?? generateLabel,
+    generateLabel,
+    parentLabel: request.parentLabel,
+    variant,
+    batchCount: request.batchCount,
+  })
 }
 
 export function createTaskFlow(
@@ -50,6 +43,9 @@ export function createTaskFlow(
   const sourceGenerateNode = request.sourceGraphNodeId
     ? document.nodes.find((node) => node.id === request.sourceGraphNodeId && node.type === 'generate')
     : undefined
+  const generateLabel = sourceGenerateNode
+    ? (sourceGenerateNode.data as GenerateNodeData).label
+    : request.title
   const taskNodeIds: TaskNodeIds = {
     generateNodeId: sourceGenerateNode?.id ?? `generate-task-${flowKey}`,
     resultNodeId: `result-task-${flowKey}`,
@@ -136,7 +132,7 @@ export function createTaskFlow(
       status: 'generating',
       taskStatus: 'uploading',
       submittedAt: timestamp,
-      label: generationCandidateName(request, variant),
+      label: generationCandidateName(request, variant, generateLabel),
       generationKind: request.kind,
       refinementMode: request.refinementMode,
       generationSettings: cloneGenerationSettings(request.settings),
@@ -334,7 +330,7 @@ export function candidatesFromJob(job: GenerationJob, request: GenerationRequest
   if (!recipe) return []
   return (job.outputs ?? []).map((output, index) => ({
     id: output.id,
-    name: generationCandidateName(request, index),
+    name: generationCandidateName(request, index, request.title),
     image: output.image,
     mediaKind: output.mediaKind ?? 'image',
     variant: index,

@@ -1705,6 +1705,23 @@ export function botanicAgentSkillBody(instructions: string): string {
   return botanicAgentSkillDocument(instructions).body
 }
 
+const canvasPromptMetaPattern = /^(?:说明一下(?:来源)?|来源说明|补充说明)[:：]/u
+const canvasPromptMetaBodyPattern = /(?:我没有读取到|当前项目上下文里|根据(?:之前的)?对话上下文)/u
+
+/**
+ * 画布文本节点和生图任务只接受视觉描述。
+ * 模型把读取失败、对话回顾写进 Prompt 时，这些旁白留在对话里，不进画布。
+ */
+export function botanicAgentVisualGenerationPrompt(prompt: string, fallback = ''): string {
+  const text = prompt.trim()
+  const blocks = text.split(/\n{2,}/u).map((block) => block.trim()).filter(Boolean)
+  const visual = blocks
+    .filter((block) => !canvasPromptMetaPattern.test(block) && !canvasPromptMetaBodyPattern.test(block))
+    .join('\n\n')
+    .trim()
+  return visual || fallback.trim() || text
+}
+
 export function botanicAgentBatchBranchTitles(
   plan: Pick<BotanicAgentPlan, 'intent' | 'constraints'> & { title?: string },
   preferredNames: Array<string | undefined>,

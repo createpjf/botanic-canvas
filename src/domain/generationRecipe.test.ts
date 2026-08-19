@@ -46,6 +46,15 @@ test('文字节点与生成节点描述相同时只提交一次 Prompt', () => {
   assert.equal(result?.prompt, '保持商品主体')
 })
 
+test('生成节点没有自带 Prompt 时只用已连接文本节点', () => {
+  const document = documentWithOrderedInputs()
+  const generate = document.nodes.find((node) => node.id === 'generate-a')
+  if (generate?.type === 'generate') generate.data.prompt = ''
+
+  const result = buildGraphGenerationRecipe(document, 'generate-a')
+  assert.equal(result?.prompt, '海边自然光')
+})
+
 test('复制配方不会共享设置或参考项引用', () => {
   const source = buildGraphGenerationRecipe(documentWithOrderedInputs(), 'generate-a')!.recipe
   const copy = cloneGenerationRecipe(source)

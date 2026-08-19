@@ -359,7 +359,9 @@ export function createCanvasGenerationActions({
         return setGenerationError('请在当前生成节点至少连接一张图片作为主参考。')
       }
       if (graphRecipe.parent) {
-        const refinementMode = (get().document.nodes.find((node) => node.id === nodeId && node.type === 'generate')?.data as GenerateNodeData | undefined)?.refinementMode ?? 'faithful'
+        const generateNode = get().document.nodes.find((node) => node.id === nodeId && node.type === 'generate')
+        const generate = generateNode?.type === 'generate' ? generateNode.data as GenerateNodeData : undefined
+        const refinementMode = generate?.refinementMode ?? 'faithful'
         return get().runRefinement({
           targetNodeId: graphRecipe.parent.nodeId,
           prompt: graphRecipe.prompt,
@@ -367,16 +369,19 @@ export function createCanvasGenerationActions({
           settings: preparedRecipe.settings,
           recipe: preparedRecipe,
           sourceGraphNodeId: nodeId,
+          title: generate?.label,
           refinementMode,
           agentRun,
         })
       }
+      const generateNode = get().document.nodes.find((node) => node.id === nodeId && node.type === 'generate')
       return get().runGeneration({
         prompt: graphRecipe.prompt,
         batchCount: preparedRecipe.batchCount,
         settings: preparedRecipe.settings,
         recipe: preparedRecipe,
         sourceGraphNodeId: nodeId,
+        title: generateNode?.type === 'generate' ? (generateNode.data as GenerateNodeData).label : undefined,
         agentRun,
       })
     },
@@ -423,7 +428,7 @@ export function createCanvasGenerationActions({
       }
     },
 
-    runGeneration: async ({ prompt, batchCount, settings, recipe: inputRecipe, rootRecipe: inputRootRecipe, taskLayout, sourceGraphNodeId, agentRun }) => {
+    runGeneration: async ({ prompt, batchCount, settings, recipe: inputRecipe, rootRecipe: inputRootRecipe, taskLayout, sourceGraphNodeId, title, agentRun }) => {
       if (get().generationStatus !== 'idle' && get().generationStatus !== 'error') return false
       const cleanPrompt = prompt.trim()
       if (!cleanPrompt) return setGenerationError('请先描述你想生成的首图。')
@@ -445,7 +450,7 @@ export function createCanvasGenerationActions({
         kind: 'generation', prompt: cleanPrompt, batchCount: normalizedBatchCount,
         settings: cloneGenerationSettings(settings), recipe: cloneGenerationRecipe(recipe),
         rootRecipe: cloneGenerationRecipe(inputRootRecipe ?? recipe), parentVersionId: document.activeVersionId,
-        taskLayout, sourceGraphNodeId, agentRun, idempotencyKey: createGenerationSubmissionKey(),
+        taskLayout, sourceGraphNodeId, title, agentRun, idempotencyKey: createGenerationSubmissionKey(),
       }
       const flow = createTaskFlow(document, request)
       const preparedRequest = { ...request, taskNodeIds: flow.taskNodeIds }
@@ -477,7 +482,7 @@ export function createCanvasGenerationActions({
       }
     },
 
-    runRefinement: async ({ targetNodeId, prompt, batchCount, settings, recipe: inputRecipe, rootRecipe: inputRootRecipe, taskLayout, sourceGraphNodeId, refinementMode = 'faithful', agentRun }) => {
+    runRefinement: async ({ targetNodeId, prompt, batchCount, settings, recipe: inputRecipe, rootRecipe: inputRootRecipe, taskLayout, sourceGraphNodeId, title, refinementMode = 'faithful', agentRun }) => {
       if (get().generationStatus !== 'idle' && get().generationStatus !== 'error') return false
       const cleanPrompt = prompt.trim()
       if (!cleanPrompt) return setGenerationError('请先描述要如何精修这张首图。')
@@ -506,7 +511,7 @@ export function createCanvasGenerationActions({
       const request: GenerationRequest = {
         kind: 'refinement', prompt: cleanPrompt, batchCount: normalizedBatchCount,
         settings: cloneGenerationSettings(settings), recipe: cloneGenerationRecipe(recipe), rootRecipe,
-        targetNodeId, parentVersionId, parentImage, parentLabel, taskLayout, sourceGraphNodeId,
+        targetNodeId, parentVersionId, parentImage, parentLabel, taskLayout, sourceGraphNodeId, title,
         refinementMode, agentRun, idempotencyKey: createGenerationSubmissionKey(),
       }
       const flow = createTaskFlow(document, request, target)

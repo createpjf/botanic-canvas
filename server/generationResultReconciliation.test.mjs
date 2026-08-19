@@ -166,4 +166,21 @@ test('Agent 完成回写缺失工作流时重建 prompt、生成节点及父图�
   assert.ok(reconciled.nodes.some((node) => node.id === 'generate-agent' && node.type === 'generate'))
   assert.ok(reconciled.nodes.some((node) => node.id === 'result-agent' && node.data.image === '/api/media/agent'))
   assert.deepEqual(new Set(reconciled.edges.map((edge) => edge.data?.role)), new Set(['prompt', 'parent', 'reference', 'output']))
+  const generate = reconciled.nodes.find((node) => node.id === 'generate-agent')
+  assert.equal(generate?.data.prompt, '')
+})
+
+test('落图时保留已有短标题，不用候选文案覆盖', () => {
+  const document = {
+    id: 'project-keep-title', nodes: [
+      { id: 'generate-a', type: 'generate', position: { x: 0, y: 0 }, data: { jobId: 'job-a', generationKind: 'refinement', label: '换景调光', prompt: '' } },
+      { id: 'result-a', type: 'result', position: { x: 400, y: 0 }, data: { outputOf: 'generate-a', taskGroupId: 'result-a', taskStatus: 'succeeded', status: 'ready', generationKind: 'refinement', label: '换景调光' } },
+    ], edges: [], generationJobs: [], updatedAt: 1,
+  }
+  const { document: reconciled } = reconcileGenerationResults(document, [{
+    id: 'job-a', status: 'succeeded', kind: 'refinement', batchCount: 1, createdAt: 1, updatedAt: 2,
+    settings: { model: 'gpt-image-2' }, outputs: [{ id: 'output-a', image: '/api/media/a' }],
+  }])
+  assert.equal(reconciled.nodes[1].data.image, '/api/media/a')
+  assert.equal(reconciled.nodes[1].data.label, '换景调光')
 })

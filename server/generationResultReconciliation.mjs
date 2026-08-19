@@ -6,6 +6,13 @@ function candidateLabel(kind, index) {
   return `${kind === 'refinement' ? '精修候选' : '生成候选'} ${index + 1}`
 }
 
+function preservedResultLabel(current, kind, index) {
+  const fallback = candidateLabel(kind, index)
+  const value = typeof current === 'string' ? current.trim() : ''
+  if (!value || value === fallback || value === 'Agent 结果') return fallback
+  return value
+}
+
 function agentNodeIds(job) {
   const suffix = job?.agentRun?.runId && job?.agentRun?.branchId
     ? `${job.agentRun.runId}-${job.agentRun.branchId}`.replace(/[^A-Za-z0-9_-]/g, '-')
@@ -104,7 +111,7 @@ function ensureAgentGenerationPlaceholder(next, job) {
       data: {
         kind: 'generate',
         label: 'Agent 生成',
-        prompt: job.rawInput?.prompt ?? recipe?.prompt ?? '',
+        prompt: '',
         batchCount: job.batchCount ?? job.rawInput?.batchCount ?? job.outputs.length,
         settings,
         status: 'succeeded',
@@ -374,7 +381,7 @@ export function reconcileGenerationResults(document, jobs, { ensureAgentPlacehol
         mediaKind: output.mediaKind ?? 'image',
         candidateId: output.id,
         taskNodeId: target?.id ?? `result-${output.id}`,
-        label: candidateLabel(job.kind, index),
+        label: preservedResultLabel(target?.data?.label, job.kind, index),
         variant: index,
       }
       if (target) {

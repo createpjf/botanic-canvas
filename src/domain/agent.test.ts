@@ -47,6 +47,7 @@ import {
   botanicAgentSkillSummary,
   botanicAgentSkillBody,
   botanicAgentSkillSummaryLimit,
+  botanicAgentVisualGenerationPrompt,
   botanicAgentArtifactPrompt,
   botanicAgentArtifactModel,
   botanicAgentArtifactTimestamp,
@@ -593,6 +594,18 @@ test('结果批次标题用 8 字短名，不用 summary 或 Prompt', () => {
     constraints: plan.constraints,
   }), '换景调光')
   assert.equal(botanicAgentResultGroupTitle(), '生成批次')
+})
+
+test('写入画布的生图 Prompt 去掉来源旁白，只保留视觉描述', () => {
+  assert.equal(botanicAgentVisualGenerationPrompt(
+    '说明一下来源：当前项目上下文里我没有读取到这张图的元数据。\n\n模特站在撒哈拉沙漠，自然光，保留白裙与构图。',
+    '把背景换成撒哈拉沙漠',
+  ), '模特站在撒哈拉沙漠，自然光，保留白裙与构图。')
+  assert.equal(botanicAgentVisualGenerationPrompt(
+    '说明一下来源：当前项目上下文里我没有读取到原图元数据，所以根据对话补了沙漠场景。',
+    '保持人物服装，换成撒哈拉沙漠自然光',
+  ), '保持人物服装，换成撒哈拉沙漠自然光')
+  assert.equal(botanicAgentVisualGenerationPrompt('模特站在海边，黄昏柔光。', '换场景'), '模特站在海边，黄昏柔光。')
 })
 
 test('Skill 列表只展示一句用途，展开时才给完整规则且不含 YAML', () => {

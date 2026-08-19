@@ -1,4 +1,5 @@
 import type { Edge } from '@xyflow/react'
+import { botanicAgentNodeTitleLimit, clipBotanicAgentNodeTitle } from './agent.ts'
 import type { CanvasGenerationTaskStatus } from './canvas'
 
 export type CanvasZoomMode = 'detail' | 'compact' | 'overview'
@@ -13,7 +14,7 @@ type GenerationTaskResultLabelInput = {
 
 export function generationTaskResultLabel(input: GenerationTaskResultLabelInput) {
   const prefix = input.generationKind === 'refinement' ? '精修' : '首图'
-  if (input.status === 'succeeded') return `${prefix}候选 · 等待选择`
+  if (input.status === 'succeeded') return input.currentLabel?.trim() || `${prefix}候选 · 等待选择`
   if (input.status === 'submission_unknown') return `${prefix}候选 · 等待确认`
   if (input.status !== 'failed') return input.currentLabel ?? `${prefix}候选`
 
@@ -25,6 +26,32 @@ export function generationTaskResultLabel(input: GenerationTaskResultLabelInput)
     return `${prefix}候选 · 提交超时`
   }
   return input.currentLabel ?? `${prefix}候选`
+}
+
+const genericGenerateLabels = new Set(['图像生成', '视频生成', '定向精修', 'Agent 生成'])
+
+/** 新图节点名只保留短标题，不用 Prompt 原文。 */
+export function generationResultNodeLabel(input: {
+  kind: 'generation' | 'refinement'
+  title?: string
+  generateLabel?: string
+  parentLabel?: string
+  variant?: number
+  batchCount?: number
+  prompt?: string
+}) {
+  const preferred = clipBotanicAgentNodeTitle(input.title ?? '')
+    || (!genericGenerateLabels.has((input.generateLabel ?? '').trim())
+      ? clipBotanicAgentNodeTitle(input.generateLabel ?? '')
+      : '')
+    || (input.kind === 'refinement' ? clipBotanicAgentNodeTitle(input.parentLabel ?? '') : '')
+    || (input.kind === 'refinement' ? '新版本' : '创意图')
+  const variant = input.variant ?? 0
+  const batchCount = input.batchCount ?? 1
+  if (batchCount <= 1 && variant === 0) return preferred
+  const suffix = String(variant + 1)
+  const room = Math.max(1, botanicAgentNodeTitleLimit - suffix.length)
+  return `${Array.from(preferred).slice(0, room).join('')}${suffix}`
 }
 
 export function generationTaskFeedback(status?: CanvasGenerationTaskStatus) {

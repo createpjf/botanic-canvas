@@ -1,4 +1,5 @@
 import { AgentToolRuntimeError } from './agentToolRuntime.mjs'
+import { visualGenerationPrompt } from './botanicAgentPlanner.mjs'
 import { validateGenerationInput } from './generationProvider.mjs'
 import { generationJobProjectionComplete, reconcileGenerationResults } from './generationResultReconciliation.mjs'
 
@@ -83,7 +84,7 @@ function initialGenerationReferences(run, document) {
 /** 素材组分支把本分支的素材并进参考集；同角色的旧参考被替换而不是叠加。 */
 function withBranchAsset(references, run, document, branch) {
   const recipeTail = {
-    prompt: run.plan.prompt,
+    prompt: visualGenerationPrompt(run.plan.prompt, run.plan.instruction),
     batchCount: run.plan.output.mode === 'single' ? run.plan.output.count : run.plan.output.candidatesPerItem,
     settings: clone(run.plan.settings),
   }
@@ -165,6 +166,7 @@ function rawGenerationInput(run, parentNode, recipe) {
     batchCount: recipe.batchCount,
     settings: clone(recipe.settings),
     recipe: {
+      prompt: recipe.prompt,
       references: recipe.references.map((reference) => ({
         name: reference.name,
         role: reference.role,
@@ -206,7 +208,7 @@ function workflowForBranch({ run, branch, parentNode, recipe, jobId, branchIndex
     draggable: true,
     selected: false,
     data: {
-      kind: 'generate', label: clipBranchLabel(branch.label), prompt: recipe.prompt,
+      kind: 'generate', label: clipBranchLabel(branch.label), prompt: '',
       batchCount: recipe.batchCount, settings: clone(recipe.settings), status: submission ? 'queued' : 'idle',
       generationKind, refinementMode: 'faithful', jobId,
       agentRun: { runId: run.id, branchId: branch.id },
@@ -218,7 +220,7 @@ function workflowForBranch({ run, branch, parentNode, recipe, jobId, branchIndex
     position: { x: generateNode.position.x, y: generateNode.position.y - 172 },
     draggable: true,
     selected: false,
-    data: { kind: 'text', label: generationKind === 'refinement' ? '精修描述' : '生成描述', content: recipe.prompt },
+    data: { kind: 'text', label: generationKind === 'refinement' ? '精修描述' : '生成描述', content: visualGenerationPrompt(recipe.prompt, run.plan.instruction) },
   }
   const resultNode = {
     id: resultNodeId,

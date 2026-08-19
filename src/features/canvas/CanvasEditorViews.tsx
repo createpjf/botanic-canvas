@@ -451,7 +451,9 @@ function GenerateNode({ data, id, selected }: NodeProps) {
             {references.length > 4 ? <span>+{references.length - 4}</span> : null}
           </div>
         ) : <span className="generate-node__empty-input">连接参考素材后即可生成</span>}
-        <p>{generate.prompt.trim() || '点击节点，编辑本次生成描述与参数'}</p>
+        {inputSummary.texts
+          ? <p>描述已连到文本节点</p>
+          : <p>{generate.prompt.trim() || '点击节点，编辑本次生成描述与参数'}</p>}
         <footer>{hasPrimaryInput || inputSummary.readyResults ? '点击编辑本次生成' : '先连接主商品后生成'}</footer>
       </div>
     </div>
