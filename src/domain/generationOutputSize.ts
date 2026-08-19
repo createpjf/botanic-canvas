@@ -53,9 +53,13 @@ export function catalogAspectRatiosForModel(model: Pick<GenerationModelOption, '
   return modelSupportsCustomSize(model) ? [...gptImage2CatalogAspectRatios] : [...gptImage1CatalogAspectRatios]
 }
 
-export function customGenerationSizeFields(settings: Partial<GenerationSettings> | undefined): Pick<GenerationSettings, 'outputWidth' | 'outputHeight'> | undefined {
-  if (!Number.isInteger(settings?.outputWidth) || !Number.isInteger(settings?.outputHeight)) return undefined
-  const normalized = normalizeCustomGenerationSize(Number(settings.outputWidth), Number(settings.outputHeight))
+export function customGenerationSizeFields(settings: Partial<GenerationSettings> | undefined): { outputWidth: number; outputHeight: number } | undefined {
+  const width = settings?.outputWidth
+  const height = settings?.outputHeight
+  if (typeof width !== 'number' || typeof height !== 'number' || !Number.isInteger(width) || !Number.isInteger(height)) {
+    return undefined
+  }
+  const normalized = normalizeCustomGenerationSize(width, height)
   if (!normalized.ok) return undefined
   return { outputWidth: normalized.width, outputHeight: normalized.height }
 }
