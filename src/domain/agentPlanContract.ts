@@ -1,4 +1,5 @@
 import type { BotanicAgentClarification, BotanicAgentContextSnapshot, BotanicAgentIntent, BotanicAgentMemoryItem, BotanicAgentPlan, BotanicAgentReasoningEntry, BotanicCreativeBrief } from './agent.ts'
+import { summarizeBotanicAgentNodeTitle } from './agent.ts'
 import type { AssetGroup, GenerationModelOption, GenerationRecipe, GenerationSettings } from './canvas.ts'
 
 export type BotanicAgentPlanRequestInput = {
@@ -111,6 +112,7 @@ export function completeBotanicAgentPlan(
   const settings = { ...input.rootRecipe.settings, ...input.generationOverrides }
   return {
     ...draft,
+    title: summarizeBotanicAgentNodeTitle(draft),
     ...(input.creativeBrief ? { creativeBrief: structuredClone(input.creativeBrief) } : {}),
     ...(input.contextSnapshot?.length ? { contextSnapshot: input.contextSnapshot } : {}),
     settings,

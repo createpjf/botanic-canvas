@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createAgentTimeline, reduceAgentTimeline } from './agentTimeline.ts'
+import { applyAgentConversationStreamEvent, createAgentTimeline, reduceAgentTimeline } from './agentTimeline.ts'
 
 const toolCall = (
   id: string,
@@ -16,11 +16,10 @@ const toolCall = (
   requiresConfirmation: false,
 })
 
-test('实时事件按到达顺序形成思考、旁白和语义步骤，同一工具调用只更新一行', () => {
+test('实时事件按到达顺序形成思考和语义步骤，同一工具调用只更新一行', () => {
   let timeline = createAgentTimeline(1_000)
   const events = [
     { type: 'reasoning' as const, step: 0, delta: '先核地址', receivedAt: 1_050 },
-    { type: 'answer' as const, step: 0, delta: '我查这页和它关联的资金规则页面，确认国库 Safe 地址。', receivedAt: 1_100 },
     {
       type: 'tool' as const,
       step: 0,
@@ -35,7 +34,6 @@ test('实时事件按到达顺序形成思考、旁白和语义步骤，同一�
       presentation: { kind: 'search' as const, title: '已搜索 25 个网站', count: 25 },
       receivedAt: 1_300,
     },
-    { type: 'answer' as const, step: 1, delta: '网页正文接口没有直接返回内容，我改用浏览器打开页面，读取页面里的 Safe 链接。', receivedAt: 1_400 },
     {
       type: 'tool' as const,
       step: 1,
@@ -81,9 +79,7 @@ test('实时事件按到达顺序形成思考、旁白和语义步骤，同一�
     ? `${block.type}:${block.kind}:${block.title}`
     : block.type), [
     'thinking',
-    'narration',
     'step:search:已搜索 25 个网站',
-    'narration',
     'step:read_skill:读取浏览器技能指南',
     'step:connect_runtime:连接浏览器 runtime',
     'step:search:已搜索 29 个网站',
@@ -97,7 +93,7 @@ test('实时事件按到达顺序形成思考、旁白和语义步骤，同一�
   assert.equal(rawGroup?.items.find((item) => item.id === 'search-1')?.status, 'succeeded')
 })
 
-test('连续搜索折叠并累加结果数，旁白会结束当前搜索分组', () => {
+test('连续搜索折叠并累加结果数；回答增量不打断搜索分组', () => {
   let timeline = createAgentTimeline(1_000)
   timeline = reduceAgentTimeline(timeline, {
     type: 'tool', step: 0, toolCall: toolCall('search-a', 'web_search', '网页搜索', 'succeeded'), receivedAt: 1_100,
@@ -117,12 +113,40 @@ test('连续搜索折叠并累加结果数，旁白会结束当前搜索分组',
 
   const searches = timeline.blocks.filter((block) => block.type === 'step' && block.kind === 'search')
   assert.deepEqual(searches.map((block) => ({ title: block.title, count: block.count, sourceToolIds: block.sourceToolIds })), [
-    { title: '已搜索 10 个网站', count: 10, sourceToolIds: ['search-a', 'search-b'] },
-    { title: '已搜索 4 个网站', count: 4, sourceToolIds: ['search-c'] },
+    { title: '已搜索 14 个网站', count: 14, sourceToolIds: ['search-a', 'search-b', 'search-c'] },
   ])
   const rawGroup = timeline.blocks.at(-1)
   assert.equal(rawGroup?.type, 'raw_group')
   assert.equal(rawGroup?.type === 'raw_group' ? rawGroup.summary : '', '已搜索 14 个网站')
+})
+
+test('回答增量写入正文，不进入时间线旁白', () => {
+  let state = { content: '', timeline: createAgentTimeline(1_000) }
+  state = applyAgentConversationStreamEvent(state, { type: 'reasoning', step: 0, delta: '先核地址', receivedAt: 1_050 })
+  state = applyAgentConversationStreamEvent(state, {
+    type: 'answer', step: 0, delta: '我查这页和它关联的资金规则。', receivedAt: 1_100,
+  })
+  state = applyAgentConversationStreamEvent(state, {
+    type: 'tool',
+    step: 0,
+    toolCall: toolCall('search-1', 'web_search', '网页搜索', 'succeeded'),
+    presentation: { kind: 'search', title: '已搜索 25 个网站', count: 25 },
+    receivedAt: 1_200,
+  })
+  state = applyAgentConversationStreamEvent(state, { type: 'answer', step: 1, delta: '网页没有直接返回内容。', receivedAt: 1_300 })
+  state = applyAgentConversationStreamEvent(state, { type: 'done', receivedAt: 1_400 })
+
+  assert.equal(state.content, '我查这页和它关联的资金规则。网页没有直接返回内容。')
+  assert.equal(state.timeline.blocks.some((block) => block.type === 'narration'), false)
+  assert.deepEqual(state.timeline.blocks.filter((block) => block.type !== 'raw_group').map((block) => block.type === 'step'
+    ? `${block.type}:${block.kind}:${block.title}`
+    : block.type), [
+    'thinking',
+    'step:search:已搜索 25 个网站',
+  ])
+  const thinking = state.timeline.blocks.find((block) => block.type === 'thinking')
+  assert.equal(thinking?.type === 'thinking' ? thinking.text : '', '先核地址')
+  assert.equal(thinking?.type === 'thinking' ? thinking.status : '', 'done')
 })
 
 test('错误事件收束思考并把当前运行步骤标记为失败', () => {

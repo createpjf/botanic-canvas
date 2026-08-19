@@ -24,10 +24,12 @@ export class BotanicAgentRunError extends Error {
   }
 }
 
-function text(value, name, maximumLength = 6000) {
+function text(value, name, maximumLength = 6000, options = {}) {
   if (typeof value !== 'string' || !value.trim()) throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', `${name}不能为空。`)
-  if (value.length > maximumLength) throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', `${name}过长。`)
-  return value.trim()
+  const normalized = value.trim()
+  const length = options.countCodePoints ? Array.from(normalized).length : normalized.length
+  if (length > maximumLength) throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', `${name}过长。`)
+  return normalized
 }
 
 function containsMediaPayload(value) {
@@ -175,6 +177,7 @@ export function validateAgentRunCreation(body) {
       intent: rawPlan.intent,
       instruction: text(rawPlan.instruction, 'Agent 指令'),
       summary: text(rawPlan.summary, 'Agent 计划摘要', 1000),
+      ...(rawPlan.title ? { title: text(rawPlan.title, 'Agent 新图名', 8, { countCodePoints: true }) } : {}),
       ...(selectedResultNodeId ? { selectedResultNodeId } : {}),
       prompt: text(rawPlan.prompt, 'Agent 生图提示词'),
       settings: validateSettings(rawPlan.settings),

@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import {
+  botanicAgentAppliedSkillName,
   botanicAgentContextSnapshotNodeIds,
+  botanicAgentPendingConfirmationCount,
   creativeDimensionLabel,
   type BotanicAgentActionProposal,
   type BotanicAgentArtifact,
@@ -178,7 +180,9 @@ export function AgentConversationMessage({
     <div className="agent-message__role">{message.role === 'assistant' ? <SparkleIcon /> : <span>你</span>}</div>
     <div className="agent-message__body">
       {timeline ? <AgentMessageTimeline timeline={timeline} /> : null}
-      {!message.question && message.content ? (message.role === 'assistant' ? <AgentCollapsibleContent content={message.content} /> : <p>{message.content}</p>) : null}
+      {!message.question && message.content ? (message.role === 'assistant'
+        ? streaming ? <AgentPromptResponse content={message.content} /> : <AgentCollapsibleContent content={message.content} />
+        : <p>{message.content}</p>) : null}
       {message.kind === 'run' && inlineRunResults.length ? <div className="agent-run-message__results" aria-label="本次任务结果">
         {inlineRunResults.map((artifact) => artifact.kind === 'image'
           ? <img key={artifact.id} src={artifact.url} alt={artifact.label} />
@@ -214,9 +218,14 @@ export function AgentConversationMessage({
       /> : null}
       {message.plan ? (() => {
         const plan = message.plan
-        const blockedByActions = plan.actions?.some((action) => action.status === 'awaiting_confirmation' || action.status === 'running')
-        const pendingActionCount = plan.actions?.filter((action) => action.status === 'awaiting_confirmation').length ?? 0
+        const pendingActionCount = botanicAgentPendingConfirmationCount(plan.actions)
+        const blockedByActions = pendingActionCount > 0
         const autoPaused = executionMode === 'auto' && pendingActionCount > 0
+        const appliedSkills = plan.actions?.filter((action) => action.toolName === 'skill_apply') ?? []
+        const confirmableActions = plan.actions?.filter((action) => action.toolName !== 'skill_apply') ?? []
+        const lockedConstraints = plan.constraints.filter((constraint) => constraint.mode === 'preserve')
+        const variedConstraints = plan.constraints.filter((constraint) => constraint.mode === 'vary')
+        const contextLabel = plan.contextSnapshot?.[0]?.label
         const detail = <>
           {plan.toolCalls?.length ? <details
             className="agent-message__tools"
@@ -231,12 +240,15 @@ export function AgentConversationMessage({
               <small>{agentToolStatusLabel(call.status)}</small>
             </div>)}</div>
           </details> : null}
-          {plan.actions?.length ? <div className="agent-message__actions" aria-label="待确认行动">
-            {plan.actions.map((action) => {
+          {appliedSkills.length ? <div className="agent-plan__skills" aria-label="已应用 Skill">
+            {appliedSkills.map((action) => <span key={action.id}>Skill · {botanicAgentAppliedSkillName(action)}</span>)}
+          </div> : null}
+          {confirmableActions.length ? <div className="agent-message__actions" aria-label="待确认行动">
+            {confirmableActions.map((action) => {
               // 已执行或已跳过的行动卡收成一行，只有仍需处理的卡片保持展开。
               const settled = action.status === 'succeeded' || action.status === 'dismissed'
               const body = <>
-                <div className="agent-action-card__impact"><span>输入</span><b>{action.toolName === 'mcp_call' ? `${String(action.arguments.server)}.${String(action.arguments.tool)}` : action.toolName === 'skill_create' ? '新项目 Skill' : '当前项目 Skill'}</b><span>输出</span><b>{action.toolName === 'mcp_call' ? '文件 / 结果面板' : action.toolName === 'skill_create' ? '可复用 Skill' : '本轮创作约束'}</b></div>
+                <div className="agent-action-card__impact"><span>输入</span><b>{action.toolName === 'mcp_call' ? `${String(action.arguments.server)}.${String(action.arguments.tool)}` : '新项目 Skill'}</b><span>输出</span><b>{action.toolName === 'mcp_call' ? '文件 / 结果面板' : '可复用 Skill'}</b></div>
                 <details className="agent-action-card__details"><summary>查看执行内容</summary><pre>{JSON.stringify(action.arguments, null, 2)}</pre></details>
                 {action.error ? <small className="agent-action-card__error">{action.error}</small> : null}
                 {action.status === 'succeeded' ? <div className="agent-action-card__result"><span>已执行</span>{action.result?.canvasNodeIds?.length ? <small>已创建 {action.result.canvasNodeIds.length} 个画布节点</small> : action.result?.artifacts?.length ? <small>已产出 {action.result.artifacts.length} 项</small> : null}{action.result?.canvasNodeId ? <button type="button" className="agent-icon-button" aria-label="在画布定位结果" title="在画布定位" onClick={() => onLocateNode(action.result!.canvasNodeId!)}><FocusIcon /></button> : null}</div> : null}
@@ -252,28 +264,16 @@ export function AgentConversationMessage({
                 {body}
               </details>
               return <article key={action.id} className={`agent-action-card is-${action.status}`}>
-                <header><span>{action.kind === 'skill' ? 'SKILL' : 'MCP'}</span><small>{action.risk === 'external' ? '外部调用' : action.toolName === 'skill_create' ? '写入项目' : '本轮创作约束'}</small></header>
+                <header><span>{action.kind === 'skill' ? 'SKILL' : 'MCP'}</span><small>{action.risk === 'external' ? '外部调用' : '写入项目'}</small></header>
                 <strong>{action.label}</strong>
                 <p>{action.summary}</p>
                 {body}
               </article>
             })}
           </div> : null}
-          <section className="agent-prompt-review" aria-label="润色后的提示词">
-            <header><span><strong>{planSubmitted ? '本次提交的提示词' : '生成前确认'}</strong><small>已按 Botanic 结构整理</small></span><b>{planSubmitted ? '只读' : '可编辑'}</b></header>
-            <div className="agent-prompt-review__original"><small>原始要求</small><p>{plan.instruction}</p></div>
-            {planSubmitted
-              // 任务已按这份提示词提交，再编辑只会让记录与事实不符，因此提交后转为只读。
-              ? <div className="agent-prompt-review__submitted"><small>润色后提示词</small><pre>{plan.prompt}</pre></div>
-              : <label><span>润色后提示词</span><textarea value={planPrompt} onChange={(event) => onPromptDraftChange(message.id, event.target.value)} onBlur={(event) => onCommitPlanPrompt(message, event.currentTarget.value)} maxLength={6000} aria-label="润色后提示词" /></label>}
-            <AgentPromptDiff original={plan.instruction} revised={planSubmitted ? plan.prompt : planPrompt} />
-            {planSubmitted ? null : <div className="agent-prompt-review__actions">
-              <button type="button" className="is-secondary" onClick={() => { onPromptDraftChange(message.id, plan.instruction); onCommitPlanPrompt(message, plan.instruction) }}>用原文</button>
-              <button type="button" className="is-secondary" onClick={() => { onPromptDraftChange(message.id, plan.prompt); onCommitPlanPrompt(message, plan.prompt) }}>恢复润色</button>
-            </div>}
-          </section>
           <div className="agent-message__constraints">
-            {plan.constraints.map((constraint) => <span key={constraint.dimension} className={constraint.mode === 'preserve' ? 'is-locked' : 'is-variable'}>{constraint.mode === 'preserve' ? '锁定' : '变化'} · {creativeDimensionLabel(constraint.dimension)}</span>)}
+            {lockedConstraints.length ? <div className="agent-message__constraint-group is-locked"><span>锁定</span>{lockedConstraints.map((constraint) => <b key={constraint.dimension}>{creativeDimensionLabel(constraint.dimension)}</b>)}</div> : null}
+            {variedConstraints.length ? <div className="agent-message__constraint-group is-variable"><span>变化</span>{variedConstraints.map((constraint) => <b key={constraint.dimension}>{creativeDimensionLabel(constraint.dimension)}</b>)}</div> : null}
           </div>
           <div className="agent-plan-settings" aria-label="本次生成设置">
             <span><small>模型</small><b>{modelDisplayLabel(generationModels.find((model) => model.id === plan.settings.model)) || plan.settings.model}</b></span>
@@ -281,14 +281,26 @@ export function AgentConversationMessage({
             <span><small>清晰度</small><b>{plan.settings.resolution}</b></span>
             <span><small>输出</small><b>{plan.output.mode === 'batch_by_asset' ? `${plan.output.count} 个分支` : '1 个版本'}</b></span>
           </div>
-          <small>{plan.references.length} 个输入 · {plan.output.mode === 'batch_by_asset' ? `${plan.output.count} 个分支` : '1 个新版本'}</small>
-          {plan.contextSnapshot?.length ? <small className="agent-plan__context-lock">已锁定上下文 · {plan.contextSnapshot.slice(0, 3).map((item) => item.label).join('、')}{plan.contextSnapshot.length > 3 ? ` 等 ${plan.contextSnapshot.length} 项` : ''}</small> : null}
-          <details className="agent-message__route"><summary>执行路由</summary><div><span>规划</span><b>{agentPlannerModelLabel(plan.plannerModel ?? plannerModel)}</b><span>生成</span><b>{plan.settings.model}</b><span>外部行动</span><b>{plan.actions?.length ? `${plan.actions.length} 项，确认后执行` : '无'}</b></div></details>
+          {contextLabel ? <small className="agent-plan__context-lock">基于 {contextLabel}{plan.contextSnapshot && plan.contextSnapshot.length > 1 ? ` 等 ${plan.contextSnapshot.length} 项` : ''}</small> : null}
+          <section className="agent-prompt-review" aria-label="润色后的提示词">
+            <header><span><strong>{planSubmitted ? '本次提示词' : '提示词'}</strong></span><b>{planSubmitted ? '只读' : '可改'}</b></header>
+            {plan.instruction.trim() && plan.instruction.trim() !== (planSubmitted ? plan.prompt : planPrompt).trim() ? <details className="agent-prompt-review__original"><summary>对照原文</summary><p>{plan.instruction}</p></details> : null}
+            {planSubmitted
+              // 任务已按这份提示词提交，再编辑只会让记录与事实不符，因此提交后转为只读。
+              ? <div className="agent-prompt-review__submitted"><pre>{plan.prompt}</pre></div>
+              : <textarea value={planPrompt} onChange={(event) => onPromptDraftChange(message.id, event.target.value)} onBlur={(event) => onCommitPlanPrompt(message, event.currentTarget.value)} maxLength={6000} aria-label="润色后提示词" />}
+            <AgentPromptDiff original={plan.instruction} revised={planSubmitted ? plan.prompt : planPrompt} />
+            {planSubmitted ? null : <div className="agent-prompt-review__actions">
+              <button type="button" className="is-secondary" onClick={() => { onPromptDraftChange(message.id, plan.instruction); onCommitPlanPrompt(message, plan.instruction) }}>用原文</button>
+              <button type="button" className="is-secondary" onClick={() => { onPromptDraftChange(message.id, plan.prompt); onCommitPlanPrompt(message, plan.prompt) }}>恢复润色</button>
+            </div>}
+          </section>
+          {pendingActionCount ? <details className="agent-message__route"><summary>执行路由</summary><div><span>规划</span><b>{agentPlannerModelLabel(plan.plannerModel ?? plannerModel)}</b><span>生成</span><b>{plan.settings.model}</b><span>外部行动</span><b>{pendingActionCount} 项，确认后执行</b></div></details> : null}
           {planSubmitted ? null : <>
             {/* 自动模式下停在这里一定有原因，必须说清楚，否则用户只会觉得“自动模式没生效”。 */}
-            {autoPaused ? <small className="agent-plan__auto-paused">自动模式已暂停：本次包含 {pendingActionCount} 个需要你确认的外部行动，处理完才会提交生成任务。</small> : null}
-            <small className="agent-plan__confirm-hint">确认后才会提交生成任务，当前设置仍可在上方编辑。</small>
-            <button type="button" disabled={submittingMessageId === message.id || blockedByActions} onClick={() => onConfirmPlan(message)}>{submittingMessageId === message.id ? '正在提交…' : blockedByActions ? '先处理行动卡' : message.status === 'failed' ? '重新提交计划' : '确认并生成'}</button>
+            {autoPaused ? <small className="agent-plan__auto-paused">自动模式已暂停：本次包含 {pendingActionCount} 个需要你确认的外部行动，处理完才会开始生成。</small> : null}
+            <small className="agent-plan__confirm-hint">确认后开始生成</small>
+            <button type="button" disabled={submittingMessageId === message.id || blockedByActions} onClick={() => onConfirmPlan(message)}>{submittingMessageId === message.id ? '正在提交…' : blockedByActions ? '先处理行动卡' : message.status === 'failed' ? '重新生成' : '生成'}</button>
           </>}
         </>
         // 已提交的计划折叠成一行摘要：任务状态由下方的任务消息承载，细节按需展开。

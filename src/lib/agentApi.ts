@@ -251,6 +251,7 @@ export async function createPersistentBotanicAgentRun(input: {
         intent: input.plan.intent,
         instruction: input.plan.instruction,
         summary: input.plan.summary,
+        ...(input.plan.title ? { title: input.plan.title } : {}),
         selectedResultNodeId: input.plan.selectedResultNodeId,
         contextSnapshot: input.plan.contextSnapshot,
         prompt: input.plan.prompt,

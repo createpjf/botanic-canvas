@@ -187,6 +187,11 @@ function sourceHandleForNode(node) {
   return node?.type === 'asset' ? 'asset-output' : 'output'
 }
 
+function clipBranchLabel(value) {
+  if (typeof value !== 'string' || !value.trim()) return '新版本'
+  return Array.from(value.replace(/[\s·.,，。:：；;、\-_/\\]+/gu, '')).slice(0, 8).join('') || '新版本'
+}
+
 function workflowForBranch({ run, branch, parentNode, recipe, jobId, branchIndex, now, submission, nodesById }) {
   const { promptNodeId, generateNodeId, resultNodeId } = branchNodeIds(run.id, branch.id)
   const parentPosition = parentNode?.position ?? { x: 0, y: 0 }
@@ -201,7 +206,7 @@ function workflowForBranch({ run, branch, parentNode, recipe, jobId, branchIndex
     draggable: true,
     selected: false,
     data: {
-      kind: 'generate', label: branch.label, prompt: recipe.prompt,
+      kind: 'generate', label: clipBranchLabel(branch.label), prompt: recipe.prompt,
       batchCount: recipe.batchCount, settings: clone(recipe.settings), status: submission ? 'queued' : 'idle',
       generationKind, refinementMode: 'faithful', jobId,
       agentRun: { runId: run.id, branchId: branch.id },
@@ -222,7 +227,7 @@ function workflowForBranch({ run, branch, parentNode, recipe, jobId, branchIndex
     draggable: true,
     selected: false,
     data: {
-      kind: 'result', outputOf: generateNodeId, label: branch.label,
+      kind: 'result', outputOf: generateNodeId, label: clipBranchLabel(branch.label),
       status: submission ? 'generating' : 'ready', taskStatus: submission ? 'queued' : 'draft',
       ...(submission ? { submittedAt: now } : {}),
       jobId, taskGroupId: resultNodeId, taskNodeId: resultNodeId, variant: 0,

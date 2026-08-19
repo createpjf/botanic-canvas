@@ -13,7 +13,9 @@ import {
   insertBotanicAgentMention,
   readBotanicAgentMentionQuery,
   resolveBotanicAgentExecutionDecision,
+  botanicAgentPendingConfirmationCount,
   summarizeBotanicAgentRuntime,
+  shouldShowBotanicAgentRuntimeFeed,
   type BotanicAgentActionProposal,
   type BotanicAgentActionResult,
   type BotanicAgentArtifact,
@@ -26,7 +28,6 @@ import {
   type BotanicAgentMessage,
   type BotanicAgentPlan,
   type BotanicAgentRun,
-  type BotanicAgentRuntimePhase,
   type BotanicAgentRunTimelineFilter,
   type BotanicAgentSession,
   type BotanicAgentSessionTimelineFilter,
@@ -42,7 +43,7 @@ import {
 } from '../../domain/agentChatContract'
 import { advanceBotanicCreativeBrief } from '../../domain/agentCreativeBrief'
 import type { BotanicAgentChatStreamEvent } from '../../domain/agentChatStream'
-import { createAgentTimeline, reduceAgentTimeline, type AgentTimelineEvent, type AgentTimelineState } from '../../domain/agentTimeline'
+import { applyAgentConversationStreamEvent, createAgentTimeline, type AgentTimelineEvent, type AgentTimelineState } from '../../domain/agentTimeline'
 import { nextExclusiveSurface, type ExclusiveSurfaceAction } from '../../domain/exclusiveSurface'
 import type { CollaborationActivity, CollaborationDocumentChange } from '../../domain/collaborationActivity'
 import type {
@@ -137,15 +138,6 @@ function agentTimelineTimestamp(timestamp: number) {
     month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
   }).format(new Date(timestamp))
 }
-
-/**
- * 底部运行轨迹只在“这一轮还没收束”时出现：进行中、等待用户输入，或本轮失败需要处理。
- * completed 不在其中——完成信息由对话内该轮的状态消息承载，避免上一轮永远钉在最下方。
- */
-const agentRuntimeFeedPhases = new Set<BotanicAgentRuntimePhase>([
-  'reading', 'planning', 'waiting_clarification', 'waiting_confirmation',
-  'waiting_reference', 'draft_ready', 'executing', 'failed',
-])
 
 const agentQuickActions: Array<{ intent: BotanicAgentIntent; label: string; instruction: string }> = [
   { intent: 'replace_scene', label: '换场景', instruction: '保持人物、服装和商品不变，只替换场景与环境光线。' },
@@ -486,7 +478,6 @@ export default function AgentWorkspace({
     attachPlannerToolTrace,
     attachRuntimeReasoning,
     appendRuntimeReasoningDelta,
-    updateRuntimeStepDetail,
     yieldRuntimeFrame,
     completeRuntimeContextReads,
     completeRuntimeTrace,
@@ -537,9 +528,13 @@ export default function AgentWorkspace({
   )
   // 运行轨迹只描述“这一轮正在发生什么”：轮次收束后由对话内的状态消息接手，
   // 底部不再留下上一轮的完成卡。提交任务后仍以 Run 卡作为唯一任务状态来源。
-  const runtimeFeedPhase = agentRuntimeFeedPhases.has(runtimePhase)
-  const showRuntimeFeed = runtimeSteps.length > 0 && runtimeFeedPhase
-    && (!latestRun?.branches.length || runtimePhase !== 'executing')
+  // 对话流式时同一段回答已经在气泡里出现，不再另开运行卡。
+  const showRuntimeFeed = shouldShowBotanicAgentRuntimeFeed({
+    runtimePhase,
+    hasRuntimeSteps: runtimeSteps.length > 0,
+    hasLiveConversation: Boolean(liveConversation),
+    runBranchCount: latestRun?.branches.length,
+  })
 
   // 切换会话时上一轮轨迹不再跟随；新会话若有进行中的 Run 会由恢复逻辑重新填充。
   const sessionId = session?.id
@@ -1048,7 +1043,7 @@ export default function AgentWorkspace({
 
   const confirmMessagePlan = async (message: BotanicAgentMessage) => {
     if (!session || !message.plan || message.status === 'submitted' || submittingMessageId === message.id || submittingMessageIdRef.current === message.id) return
-    if (message.plan.actions?.some((action) => action.status === 'awaiting_confirmation' || action.status === 'running')) {
+    if (botanicAgentPendingConfirmationCount(message.plan.actions) > 0) {
       setError('请先确认或跳过行动卡，再执行生成计划。')
       return
     }
@@ -1159,6 +1154,7 @@ export default function AgentWorkspace({
   ) => {
     if (!session || planning || !isCurrentAgentProject()) return
     if (options.appendUser) appendMessage({ role: 'user', kind: 'text', content: options.appendUser })
+    setLiveConversation(undefined)
     setError('')
     setLastFailedInstruction('')
     setLastFailedPlanMessageId('')
@@ -1255,10 +1251,9 @@ export default function AgentWorkspace({
         streaming: true,
       })
       try {
-        // 实时通道只改变“回答什么时候到”：工具与推理增量直接更新运行轨迹，
-        // 回答本身仍然等 done 事件一次性落成消息，避免半截内容进入对话记录。
-        let answerPreview = ''
-        const respondDetail = runtimeTrace.find((step) => step.id === 'respond')?.detail ?? ''
+        // 实时通道只改变“回答什么时候到”：思考与工具进入时间线，回答增量写入气泡正文。
+        // 完整回答仍等 done 一次性落成消息，避免半截内容进入对话记录。
+        let answerStarted = false
         const response = await streamBotanicAgentChat({
           projectId,
           plannerModel,
@@ -1271,13 +1266,19 @@ export default function AgentWorkspace({
           onEvent: (event) => {
             if (controller.signal.aborted) return
             const receivedAt = Date.now()
-            setLiveConversation((current) => current?.sessionId === session.id && current.message.id === liveMessageId
-              ? {
-                  ...current,
-                  timeline: reduceAgentTimeline(current.timeline, agentTimelineEvent(event, receivedAt)),
-                  streaming: event.type !== 'done' && event.type !== 'error',
-                }
-              : current)
+            setLiveConversation((current) => {
+              if (current?.sessionId !== session.id || current.message.id !== liveMessageId) return current
+              const next = applyAgentConversationStreamEvent(
+                { content: current.message.content, timeline: current.timeline },
+                agentTimelineEvent(event, receivedAt),
+              )
+              return {
+                ...current,
+                message: { ...current.message, content: next.content },
+                timeline: next.timeline,
+                streaming: event.type !== 'done' && event.type !== 'error',
+              }
+            })
             if (event.type === 'tool') {
               attachPlannerToolTrace({ toolCalls: [event.toolCall] } as BotanicAgentPlan)
               return
@@ -1286,13 +1287,10 @@ export default function AgentWorkspace({
               appendRuntimeReasoningDelta(event.step, event.delta)
               return
             }
-            if (event.type === 'answer') {
-              if (!answerPreview) {
-                updateRuntimeStep('call-planner', 'succeeded')
-                updateRuntimeStep('respond', 'running')
-              }
-              answerPreview = `${answerPreview}${event.delta}`.slice(-120)
-              updateRuntimeStepDetail('respond', answerPreview)
+            if (event.type === 'answer' && !answerStarted) {
+              answerStarted = true
+              updateRuntimeStep('call-planner', 'succeeded')
+              updateRuntimeStep('respond', 'running')
             }
           },
         })
@@ -1303,8 +1301,6 @@ export default function AgentWorkspace({
         updateRuntimeStep('respond', 'running')
         await yieldRuntimeFrame()
         if (!isCurrentAgentProject()) return
-        // 流式过程中借用了这条步骤展示回答预览，收敛时换回它本来的说明。
-        if (answerPreview && respondDetail) updateRuntimeStepDetail('respond', respondDetail)
         updateRuntimeStep('respond', 'succeeded')
         setRuntimePhase('completed')
         setRuntimeDetailsOpen(false)
@@ -1322,14 +1318,19 @@ export default function AgentWorkspace({
       } catch (caught) {
         if (controller.signal.aborted) return
         const message = caught instanceof Error ? caught.message : 'Agent 暂时无法回答，请稍后重试。'
-        setLiveConversation((current) => current?.sessionId === session.id && current.message.id === liveMessageId
-          ? {
-              ...current,
-              message: { ...current.message, content: `未完成：${message}` },
-              timeline: reduceAgentTimeline(current.timeline, { type: 'error', message, receivedAt: Date.now() }),
-              streaming: false,
-            }
-          : current)
+        setLiveConversation((current) => {
+          if (current?.sessionId !== session.id || current.message.id !== liveMessageId) return current
+          const next = applyAgentConversationStreamEvent(
+            { content: current.message.content, timeline: current.timeline },
+            { type: 'error', message, receivedAt: Date.now() },
+          )
+          return {
+            ...current,
+            message: { ...current.message, content: `未完成：${message}` },
+            timeline: next.timeline,
+            streaming: false,
+          }
+        })
         failRuntimeTrace(message)
         setError(message)
         setLastFailedPlanMessageId('')
@@ -1486,7 +1487,7 @@ export default function AgentWorkspace({
     const planExecutionDecision = resolveBotanicAgentExecutionDecision({
       mode: session.executionMode,
       settingsComplete: true,
-      pendingActionCount: resolvedPlan.actions?.filter((action) => action.status === 'awaiting_confirmation').length ?? 0,
+      pendingActionCount: botanicAgentPendingConfirmationCount(resolvedPlan.actions),
     })
     if (planMessageId && planExecutionDecision.action === 'auto_submit') {
       await confirmMessagePlan({

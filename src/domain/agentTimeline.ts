@@ -191,6 +191,21 @@ export function createAgentTimeline(startedAt: number): AgentTimelineState {
   }
 }
 
+/**
+ * 把一轮对话的实时事件拆到两处：回答增量追加到正文，思考/工具进入时间线。
+ * 正文只出现一次；时间线不再复制旁白。
+ */
+export function applyAgentConversationStreamEvent(
+  state: { content: string; timeline: AgentTimelineState },
+  event: AgentTimelineEvent,
+): { content: string; timeline: AgentTimelineState } {
+  if (event.type === 'answer') {
+    if (!event.delta) return state
+    return { content: `${state.content}${event.delta}`, timeline: state.timeline }
+  }
+  return { content: state.content, timeline: reduceAgentTimeline(state.timeline, event) }
+}
+
 export function reduceAgentTimeline(prev: AgentTimelineState, event: AgentTimelineEvent): AgentTimelineState {
   if (event.type === 'reasoning') {
     const existing = prev.blocks.find((block) => block.type === 'thinking')
@@ -203,15 +218,8 @@ export function reduceAgentTimeline(prev: AgentTimelineState, event: AgentTimeli
         : block),
     }
   }
-  if (event.type === 'answer') {
-    if (!event.delta) return prev
-    const rawGroup = timelineRawGroup(prev.blocks)
-    const blocks = semanticBlocks(prev.blocks)
-    const last = blocks.at(-1)
-    if (last?.type === 'narration') blocks[blocks.length - 1] = { ...last, text: `${last.text}${event.delta}` }
-    else blocks.push({ id: `narration:${blocks.filter((block) => block.type === 'narration').length + 1}`, type: 'narration', text: event.delta })
-    return rawGroup ? { blocks: withRawGroup(blocks, rawGroup.items, rawGroup.open) } : { blocks }
-  }
+  // 回答属于气泡正文，不进入时间线；连续工具步骤因此不会被旁白打断。
+  if (event.type === 'answer') return prev
   if (event.type === 'tool') return reduceToolEvent(prev, event)
   if (event.type === 'done') {
     return {

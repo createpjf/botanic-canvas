@@ -189,3 +189,22 @@ test('Agent Run 拒绝图片数据与重复分支标识', () => {
     },
   }), /上下文类型无效/)
 })
+
+test('Agent 新图名按字计长，8 个含 emoji 的字可以通过校验', () => {
+  const emojiTitle = '🌸'.repeat(8)
+  assert.equal(Array.from(emojiTitle).length, 8)
+  assert.ok(emojiTitle.length > 8)
+  const input = validateAgentRunCreation({
+    ...creation,
+    plan: { ...creation.plan, title: emojiTitle },
+  })
+  assert.equal(input.plan.title, emojiTitle)
+  assert.throws(() => validateAgentRunCreation({
+    ...creation,
+    plan: { ...creation.plan, title: `${emojiTitle}景` },
+  }), /新图名过长/)
+  assert.throws(() => validateAgentRunCreation({
+    ...creation,
+    plan: { ...creation.plan, title: '替换场景黄昏柔光场' },
+  }), /新图名过长/)
+})
