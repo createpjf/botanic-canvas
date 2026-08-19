@@ -1787,6 +1787,8 @@ export function botanicAgentMessageOffersVisualPrompt(message: Pick<BotanicAgent
 /**
  * 画布文本节点和生图任务只接受视觉描述。
  * 模型把读取失败、对话回顾或规划说明写进 Prompt 时，这些旁白留在对话里，不进画布。
+ *
+ * 取不到画面描述时返回空串：宁可让调用方继承基准图或追问，也不能把旁白当成提示词发给 Provider。
  */
 export function botanicAgentVisualGenerationPrompt(prompt: string, fallback = ''): string {
   const text = prompt.trim()
@@ -1798,7 +1800,7 @@ export function botanicAgentVisualGenerationPrompt(prompt: string, fallback = ''
   if (visual && !botanicAgentLooksLikePlannerNarration(visual)) return visual
   const fallbackText = fallback.trim()
   if (fallbackText && !botanicAgentLooksLikePlannerNarration(fallbackText)) return fallbackText
-  return visual || fallbackText || text
+  return ''
 }
 
 export function botanicAgentBatchBranchTitles(
@@ -1824,6 +1826,12 @@ export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): Botani
   if (isInitialGeneration && !imageContext.length) throw new Error('首次生成至少需要一项图片素材或图片结果。')
   const settings = input.rootRecipe?.settings ?? input.settings
   if (!settings) throw new Error('请先设置生成模型与输出参数。')
+  // 提示词只接受画面描述：本轮指令优先，其次继承基准图的配方；都取不到就停下追问，不拿旁白凑数。
+  const visualPrompt = botanicAgentVisualGenerationPrompt(instruction)
+    || botanicAgentVisualGenerationPrompt(input.rootRecipe?.prompt ?? '')
+  if (!visualPrompt) {
+    throw new Error('这轮还没有可执行的画面描述。请说明画面要改成什么样，或选中一张作为基准的结果图。')
+  }
   const constraints = constraintsForIntent(intent, input.assetGroup)
   const batchCount = input.assetGroup?.assetIds.length ?? 0
   const output = batchCount
@@ -1862,7 +1870,7 @@ export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): Botani
     ...(contextSnapshot.length ? { contextSnapshot } : {}),
     references,
     constraints,
-    prompt: botanicAgentPromptWithContextNotes(instruction, contextSnapshot),
+    prompt: botanicAgentPromptWithContextNotes(visualPrompt, contextSnapshot),
     settings,
     output,
     ...(input.assetGroup ? { assetGroupId: input.assetGroup.id } : {}),

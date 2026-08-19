@@ -292,8 +292,9 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
     }
     const answer = result.output.trim().slice(0, 12_000)
     return {
+      // 整段回答是解释性正文，不是可执行提示词。是否存在提示词由展示层用同一套 Markdown 规则解析，
+      // 这里不再把说明文回填成 prompt，否则规划旁白会被当成画面描述提交给生图 Provider。
       answer,
-      ...(input.mode === 'prompt' ? { prompt: answer } : {}),
       mode: input.mode,
       plannerModel: config.model,
       toolCalls: result.toolCalls,

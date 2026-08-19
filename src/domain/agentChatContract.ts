@@ -42,8 +42,6 @@ export type BotanicAgentChatToolCall = {
 
 export type BotanicAgentChatResponse = {
   answer: string
-  /** Prompt 模式的可执行结果；后续生成不从普通解释文字猜测。 */
-  prompt?: string
   mode: BotanicAgentChatMode
   plannerModel?: string
   toolCalls?: BotanicAgentChatToolCall[]

@@ -43,6 +43,7 @@ import {
   resolveBotanicAgentGenerationPromptDecision,
 } from '../../domain/agentChatContract'
 import { advanceBotanicCreativeBrief } from '../../domain/agentCreativeBrief'
+import { resolveAgentChatPrompt } from '../../domain/agentMarkdown'
 import type { BotanicAgentChatStreamEvent } from '../../domain/agentChatStream'
 import { applyAgentConversationStreamEvent, createAgentTimeline, type AgentTimelineEvent, type AgentTimelineState } from '../../domain/agentTimeline'
 import { nextExclusiveSurface, type ExclusiveSurfaceAction } from '../../domain/exclusiveSurface'
@@ -1320,12 +1321,14 @@ export default function AgentWorkspace({
         const sourceNote = route === 'research'
           ? `\n\n来源：${response.sources?.length ? response.sources.join('、') : '当前没有命中项目受控检索来源。'}`
           : ''
+        const chatPrompt = resolveAgentChatPrompt(response.answer)
         appendMessage({
           id: liveMessageId,
           role: 'assistant',
           kind: 'text',
           content: `${response.answer}${sourceNote}`,
-          ...(response.prompt ? { prompt: response.prompt } : {}),
+          // 可执行提示词只能来自回答里显式的 Prompt 区块，不能把整段解释当成提示词存下来。
+          ...(chatPrompt ? { prompt: chatPrompt } : {}),
         })
         setLiveConversation((current) => current?.message.id === liveMessageId ? undefined : current)
       } catch (caught) {

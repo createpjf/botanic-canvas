@@ -75,7 +75,7 @@ test('Agent 对话真正调用选定 Flock 模型，并通过本体工具检索�
   assert.doesNotMatch(JSON.stringify(requests), /api\/media\/private|api\/media\/result/)
 })
 
-test('Prompt 模式返回可持久化的结构化 Prompt，供后续生成精确继承', async () => {
+test('Prompt 模式只回传对话正文，不把整段回答回填成可执行提示词', async () => {
   const result = await chatWithBotanicAgent({
     projectId: 'project-chat',
     plannerModel: 'deepseek-v4-flash',
@@ -94,7 +94,7 @@ test('Prompt 模式返回可持久化的结构化 Prompt，供后续生成精确
   })
 
   assert.equal(result.answer, '保持人物和服装，替换为柔和夕阳海边场景。')
-  assert.equal(result.prompt, result.answer)
+  assert.equal(result.prompt, undefined)
 })
 
 test('流式旁白在对应工具事件前到达，工具完成后可继续追加新旁白', async () => {
