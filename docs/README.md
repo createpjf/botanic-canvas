@@ -19,17 +19,7 @@
 - [Prompt Pack MVP](BOTANIC_PROMPT_PACK_MVP.md)
 - [服务端迁移说明](product-server-migration.md)
 
-<<<<<<< HEAD
 ## 进行中的设计
-=======
-## 分析与审查
-
-以下文档记录特定时点的产品/代码审查，不替代当前规范：
-
-- [Agent AIGC 可规模化创意工作流审查](AGENT_AIGC_WORKFLOW_REVIEW.md)
-
-## 验收与历史记录
->>>>>>> origin/cursor/agent-aigc-workflow-review-b851
 
 以下规格正在本轮实现，完成后以代码与测试为准：
 
@@ -41,6 +31,7 @@
 以下文档记录特定时点的评审、验收或迁移阶段，不代表当前通用开发规范：
 
 - [产品与代码深度评审（2026-08-16）](PRODUCT_CODE_REVIEW_2026-08-16.md)
+- [Agent AIGC 可规模化创意工作流审查](AGENT_AIGC_WORKFLOW_REVIEW.md)
 - `P0-6_MIGRATION_ACCEPTANCE.md`
 - `PR15_REVIEW.md`
 - `RELEASE_ACCEPTANCE_2026-08-04.md`
