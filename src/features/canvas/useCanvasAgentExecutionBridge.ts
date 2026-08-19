@@ -5,6 +5,7 @@ import {
   recordBotanicAgentCanvasWritebacks,
   resolveBotanicAgentWorkflowReferenceNodeIds,
   resolveBotanicAgentCanvasCommands,
+  botanicAgentBatchBranchTitles,
   summarizeBotanicAgentNodeTitle,
   type BotanicAgentActionProposal,
   type BotanicAgentActionResult,
@@ -345,10 +346,10 @@ export function useCanvasAgentExecutionBridge({
     const projectId = document.id
     const group = plan.assetGroupId ? document.assetGroups.find((item) => item.id === plan.assetGroupId) : undefined
     const branchInputs = plan.output.mode === 'batch_by_asset' && group
-      ? group.assetIds.map((assetId) => ({
-          assetId,
+      ? botanicAgentBatchBranchTitles(plan, group.assetIds.map((assetId) => canvasAssetName(document, assetId))).map((label, index) => ({
+          assetId: group.assetIds[index],
           branchId: `branch-${crypto.randomUUID()}`,
-          label: summarizeBotanicAgentNodeTitle(plan, { preferred: canvasAssetName(document, assetId) }),
+          label,
         }))
       : [{ branchId: `branch-${crypto.randomUUID()}`, label: summarizeBotanicAgentNodeTitle(plan) }]
     let runId: string

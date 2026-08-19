@@ -1660,6 +1660,16 @@ export function summarizeBotanicAgentNodeTitle(
   return base
 }
 
+export function botanicAgentBatchBranchTitles(
+  plan: Pick<BotanicAgentPlan, 'intent' | 'constraints'> & { title?: string },
+  preferredNames: Array<string | undefined>,
+): string[] {
+  return preferredNames.map((preferred, index) => summarizeBotanicAgentNodeTitle(plan, {
+    preferred,
+    sequence: index + 1,
+  }))
+}
+
 export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): BotanicAgentPlan {
   const instruction = input.instruction.trim()
   if (!instruction) throw new Error('请描述希望 Agent 完成的修改。')

@@ -41,6 +41,7 @@ import {
   botanicAgentAppliedSkillName,
   clipBotanicAgentNodeTitle,
   summarizeBotanicAgentNodeTitle,
+  botanicAgentBatchBranchTitles,
   botanicAgentNodeTitleLimit,
   botanicAgentArtifactPrompt,
   botanicAgentArtifactModel,
@@ -560,6 +561,10 @@ test('新图节点标题只概括变化且不超过 8 个字', () => {
   assert.equal(clipBotanicAgentNodeTitle('保留模特人物、服装、姿态与构图不变 3:4'), '保留模特人物服装')
   assert.equal(summarizeBotanicAgentNodeTitle(scenePlan, { preferred: '撒哈拉沙漠柔和自然光' }), '撒哈拉沙漠柔和自')
   assert.equal(summarizeBotanicAgentNodeTitle(scenePlan, { preferred: '沙漠柔光', sequence: 2 }), '沙漠柔光2')
+  assert.deepEqual(
+    botanicAgentBatchBranchTitles(scenePlan, ['撒哈拉沙漠黄昏场景 01', '撒哈拉沙漠黄昏场景 02', '撒哈拉沙漠黄昏场景 03']),
+    ['撒哈拉沙漠黄昏场', '撒哈拉沙漠黄昏2', '撒哈拉沙漠黄昏3'],
+  )
   assert.equal(summarizeBotanicAgentNodeTitle({
     intent: 'change_pose',
     constraints: [{ dimension: 'pose', mode: 'vary' }, { dimension: 'person', mode: 'preserve' }],
