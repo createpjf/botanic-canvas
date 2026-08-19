@@ -15,7 +15,7 @@ import type { GenerationModelOption } from '../../domain/canvas'
 import { ArrowUpRightIcon, CopyIcon, DeleteIcon, DownloadIcon, FocusIcon, FolderOutlineIcon, SparkleIcon } from '../../components/BotanicIcons'
 import type { CollaborationActivity, CollaborationDocumentChange } from '../../domain/collaborationActivity'
 import { downloadMedia } from '../../lib/mediaDownload'
-import { agentArtifactKindLabel, agentMemoryKindLabel, agentRunFeedback } from './AgentWorkspaceParts'
+import { agentArtifactKindLabel, agentMemoryKindLabel, agentRunFeedback, AgentPanelBackButton } from './AgentWorkspaceParts'
 import type { AgentArtifactIndexState, AgentContextItem } from './agentWorkspace.types'
 
 function collaborationTime(timestamp: number) {
@@ -36,6 +36,7 @@ export function AgentCollaborationPanel({
   historyErrorAction,
   onLoadMore,
   onReload,
+  onBackToConversation,
 }: {
   activities: CollaborationActivity[]
   conflictChanges: CollaborationDocumentChange[]
@@ -50,9 +51,10 @@ export function AgentCollaborationPanel({
   historyErrorAction?: 'load' | 'load-more' | 'read' | 'clear'
   onLoadMore: () => Promise<void>
   onReload: () => Promise<void>
+  onBackToConversation: () => void
 }) {
   return <section className="agent-collaboration-panel" aria-label="协作动态">
-    <header><div><small>COLLABORATION</small><h2>协作动态</h2></div><span>{activities.length} 条</span></header>
+    <header><AgentPanelBackButton onClick={onBackToConversation} /><div><small>COLLABORATION</small><h2>协作动态</h2></div><span>{activities.length} 条</span></header>
     <p>查看成员最近修改，并直接定位到相关节点、对话或任务。</p>
     {persistenceStatus === 'conflict' ? <div className="agent-collaboration-panel__conflict" role="alert">
       <span><strong>画布有新的云端版本</strong><small>本地草稿仍保留。先查看变更，再决定使用哪一版。</small></span>
@@ -114,6 +116,7 @@ export function AgentResultPanel({
   onStartNextRound,
   onLoadMoreArtifacts,
   onLocateConversation,
+  onBackToConversation,
 }: {
   artifacts: BotanicAgentArtifact[]
   runs: BotanicAgentRun[]
@@ -129,6 +132,7 @@ export function AgentResultPanel({
   onStartNextRound: (sourceNodeIds: string[], artifactCount: number) => void
   onLoadMoreArtifacts: () => Promise<void>
   onLocateConversation: (runId: string) => void
+  onBackToConversation: () => void
 }) {
   // 结果面板的主体是“生成出来的画面”；Skill / MCP 的文本产物退到次级页签，
   // 不再和图片、视频抢同一个栅格。
@@ -208,7 +212,7 @@ export function AgentResultPanel({
   }
 
   return <section className="agent-result-panel" aria-label="Agent 结果与文件">
-    <header><div><small>AGENT OUTPUTS</small><h2>结果与文件</h2></div><span>{mediaArtifacts.length} 项</span></header>
+    <header><AgentPanelBackButton onClick={onBackToConversation} /><div><small>AGENT OUTPUTS</small><h2>结果与文件</h2></div><span>{mediaArtifacts.length} 项</span></header>
     <p>生成的图片与视频按任务批次归档，并保留生成它们的 Prompt；画布节点和版本血缘不变。</p>
     {artifactIndexStatus === 'loading' ? <div className="agent-result-panel__index-status" role="status">正在读取历史 Artifact Index…</div> : null}
     {artifactIndexStatus === 'error' ? <div className="agent-result-panel__index-status is-warning" role="status">历史索引暂不可用，已显示当前画布结果。</div> : null}
@@ -293,12 +297,13 @@ export function AgentResultPanel({
   </section>
 }
 
-export function AgentMemoryPanel({ memory, sourceNodeIds, onAddMemory, onRemoveMemory, onLocateNode }: {
+export function AgentMemoryPanel({ memory, sourceNodeIds, onAddMemory, onRemoveMemory, onLocateNode, onBackToConversation }: {
   memory: BotanicAgentMemoryItem[]
   sourceNodeIds: string[]
   onAddMemory: (kind: BotanicAgentMemoryKind, content: string, sourceNodeIds?: string[]) => string | null
   onRemoveMemory: (memoryId: string) => void
   onLocateNode: (nodeId: string) => void
+  onBackToConversation: () => void
 }) {
   const [kind, setKind] = useState<BotanicAgentMemoryKind>('rule')
   const [draft, setDraft] = useState('')
@@ -308,7 +313,7 @@ export function AgentMemoryPanel({ memory, sourceNodeIds, onAddMemory, onRemoveM
   }
 
   return <section className="agent-memory-panel" aria-label="项目创作记忆">
-    <header><div><small>PROJECT MEMORY</small><h2>项目记忆</h2></div><span>{memory.length} 条</span></header>
+    <header><AgentPanelBackButton onClick={onBackToConversation} /><div><small>PROJECT MEMORY</small><h2>项目记忆</h2></div><span>{memory.length} 条</span></header>
     <p>仅用于当前项目的后续规划；保存品牌规则、认可方向与禁区。</p>
     <div className="agent-memory-panel__form">
       <BotanicSelect value={kind} ariaLabel="记忆类型" options={[

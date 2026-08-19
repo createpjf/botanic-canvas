@@ -212,6 +212,13 @@ export function ArrowDownIcon({ className }: BotanicIconProps) {
   return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 2.75V20.5m0 0 5.25-5.25M12 20.5l-5.25-5.25" stroke="currentColor" strokeWidth="1.5" strokeLinecap="square" strokeLinejoin="round" /></svg>
 }
 
+/** 工具面板 · 返回对话 */
+export function ChevronLeftIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+    <path d="M10 3.5 5.5 8 10 12.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+}
+
 /** 下拉触发器 · 与文字同行垂直居中 */
 export function ChevronDownIcon({ className }: BotanicIconProps) {
   return <svg className={className} width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
