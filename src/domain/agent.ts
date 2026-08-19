@@ -1,9 +1,11 @@
 import type { AssetGroup, AssetNodeData, AssetRecord, CanvasDocument, CanvasNode, GenerationJob, GenerationRecipe, GenerationSettings, ResultNodeData } from './canvas.ts'
 import type { BotanicAgentClarification, BotanicCreativeBrief } from './agentCreativeBrief.ts'
+import type { BotanicAgentBranchVariation, BotanicAgentVariationSpec } from './agentVariations.ts'
 export type {
   BotanicAgentClarification,
   BotanicAgentClarificationField,
   BotanicAgentClarificationFieldId,
+  BotanicCreativeBriefFieldId,
   BotanicAgentClarificationOption,
   BotanicCreativeBrief,
   BotanicCreativeBriefMode,
@@ -745,10 +747,12 @@ export type BotanicAgentPlan = {
   prompt: string
   settings: GenerationSettings
   output: {
-    mode: 'single' | 'batch_by_asset'
+    mode: 'single' | 'batch_by_asset' | 'batch_by_variation'
     count: number
     candidatesPerItem: number
   }
+  /** 无素材组时按确认过的变体轴展开；张数以展开结果为准。 */
+  variation?: BotanicAgentVariationSpec
   assetGroupId?: string
   rootRecipe?: GenerationRecipe
   toolCalls?: AgentToolCallTrace[]
@@ -935,6 +939,7 @@ export type BotanicAgentRunBranch = {
   id: string
   label: string
   assetId?: string
+  variation?: BotanicAgentBranchVariation
   status: BotanicAgentBranchStatus
   attempt: number
   jobIds: string[]
@@ -1538,19 +1543,56 @@ export type BuildBotanicAgentPlanInput = {
   contextSnapshot?: BotanicAgentContextSnapshot[]
 }
 
+const variationDimensionPattern = '人物|模特|角色|场景|背景|画面|环境|肤色|动作|姿势|姿态|风格|服装|衣服|穿搭|版本|变体'
+
+function stripPreserveClauses(instruction: string) {
+  return instruction.replace(/(?:保持|保留)[^，。,；;\n]{0,40}?(?:不变|一致)/gu, ' ')
+}
+
+/** 只有明确要出多张/多取值时才走批量；「多个细节」「2个道具」「一组姿态」仍是单图。 */
+export function instructionRequestsBatchVariation(instruction: string) {
+  const text = stripPreserveClauses(String(instruction ?? '').trim())
+  if (!text) return false
+  if (/(?:批量|多图|多张|逐一|多来几|来几个|多出几)/u.test(text)) return true
+  if (new RegExp(`(?:\\d+|两|三|四|五|六|七|八|九|十)种(?:不同(?:的)?)?(?:${variationDimensionPattern})`, 'u').test(text)) return true
+  if (new RegExp(`(?:[2-9]|[1-9]\\d|十|两|三|四|五|六|七|八|九)个(?:不同(?:的)?)?(?:[\\u4e00-\\u9fff]{0,6})?(?:${variationDimensionPattern})`, 'u').test(text)) return true
+  if (new RegExp(`(?:多个|多种|几种|一组|一批)(?:不同(?:的)?)?(?:${variationDimensionPattern})`, 'u').test(text)) return true
+  return false
+}
+
 const intentPatterns: Array<[BotanicAgentIntent, RegExp]> = [
   ['redo_from_root', /(最初|原始|原配方|商品图).*(重新|重做|再做)|复用.*(最初|原始)/i],
   ['replace_scene', /(换|替换|改变|更换).*(场景|背景)|(场景|背景).*(换|替换|改变|更换)/i],
+  ['change_pose', /(动作|姿势|姿态|肢体)/i],
   ['replace_person', /(换|替换|改变|更换).*(人物|模特)|(人物|模特).*(换|替换|改变|更换)/i],
   ['replace_product', /(换|替换|改变|更换).*(商品|服装|衣服)|(商品|服装|衣服).*(换|替换|改变|更换)/i],
-  ['change_pose', /(动作|姿势|姿态|肢体)/i],
   ['change_style', /(风格|调性|色调|质感)/i],
-  ['batch_variation', /(批量|一组|一批|多个|十个|10个)/i],
 ]
 
 export function inferBotanicAgentIntent(instruction: string): BotanicAgentIntent {
   const normalized = instruction.trim()
+  if (instructionRequestsBatchVariation(normalized)) return 'batch_variation'
   return intentPatterns.find(([, pattern]) => pattern.test(normalized))?.[0] ?? 'continue_generation'
+}
+
+export function botanicAgentGroupRole(intent?: BotanicAgentIntent): AssetGroup['role'] | null {
+  if (intent === 'replace_scene') return '场景'
+  if (intent === 'replace_person') return '模特'
+  if (intent === 'replace_product') return '商品'
+  if (intent === 'change_style') return '调性'
+  return null
+}
+
+/** Composer 未点快捷项时仍列出场景组；不把 requestedIntent 默认成换景。 */
+export function botanicAgentComposerGroupRole(intent?: BotanicAgentIntent): AssetGroup['role'] | null {
+  return botanicAgentGroupRole(intent ?? 'replace_scene')
+}
+
+/** 指令里已写明批量/多取值时，界面上的换景快捷项不能压过批量流。 */
+export function resolveBotanicAgentIntent(instruction: string, requestedIntent?: BotanicAgentIntent): BotanicAgentIntent {
+  const inferred = inferBotanicAgentIntent(instruction)
+  if (inferred === 'batch_variation') return 'batch_variation'
+  return requestedIntent ?? inferred
 }
 
 function constraintsForIntent(intent: BotanicAgentIntent, assetGroup?: AssetGroup): CreativeConstraint[] {
@@ -1724,19 +1766,32 @@ export function botanicAgentSkillBody(instructions: string): string {
 
 const canvasPromptMetaPattern = /^(?:说明一下(?:来源)?|来源说明|补充说明)[:：]/u
 const canvasPromptMetaBodyPattern = /(?:我没有读取到|当前项目上下文里|根据(?:之前的)?对话上下文)/u
+const plannerNarrationPattern = /(?:项目没有配置|没有配置批量|缺(?:少)?(?:\d+个)?字段|批量\s*Skill|当前无法批量|请确认.{0,12}取值)/u
+
+/** 规划说明、缺字段分析和读取失败旁白不是画面描述。 */
+export function botanicAgentLooksLikePlannerNarration(text: string) {
+  const value = text.trim()
+  if (!value) return false
+  return canvasPromptMetaPattern.test(value)
+    || canvasPromptMetaBodyPattern.test(value)
+    || plannerNarrationPattern.test(value)
+}
 
 /**
  * 画布文本节点和生图任务只接受视觉描述。
- * 模型把读取失败、对话回顾写进 Prompt 时，这些旁白留在对话里，不进画布。
+ * 模型把读取失败、对话回顾或规划说明写进 Prompt 时，这些旁白留在对话里，不进画布。
  */
 export function botanicAgentVisualGenerationPrompt(prompt: string, fallback = ''): string {
   const text = prompt.trim()
   const blocks = text.split(/\n{2,}/u).map((block) => block.trim()).filter(Boolean)
   const visual = blocks
-    .filter((block) => !canvasPromptMetaPattern.test(block) && !canvasPromptMetaBodyPattern.test(block))
+    .filter((block) => !botanicAgentLooksLikePlannerNarration(block))
     .join('\n\n')
     .trim()
-  return visual || fallback.trim() || text
+  if (visual && !botanicAgentLooksLikePlannerNarration(visual)) return visual
+  const fallbackText = fallback.trim()
+  if (fallbackText && !botanicAgentLooksLikePlannerNarration(fallbackText)) return fallbackText
+  return visual || fallbackText || text
 }
 
 export function botanicAgentBatchBranchTitles(

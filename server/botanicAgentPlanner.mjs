@@ -6,6 +6,12 @@ import {
   BotanicCreativeBriefValidationError,
   validateBotanicCreativeBrief,
 } from './botanicCreativeBrief.mjs'
+import {
+  applyBotanicAgentVariationToPlan,
+  botanicAgentLooksLikePlannerNarration,
+  botanicAgentVariationClarificationFieldIds,
+  mergeVariationClarification,
+} from './botanicAgentVariations.mjs'
 
 const INTENTS = new Set([
   'continue_generation', 'replace_scene', 'replace_person', 'replace_product',
@@ -18,7 +24,7 @@ const DIMENSIONS = new Set([
 const MODES = new Set(['preserve', 'vary'])
 const ASPECT_RATIOS = ['1:1', '16:9', '4:3', '3:4', '4:5', '9:16']
 const RESOLUTIONS = ['1K', '2K']
-const CLARIFICATION_FIELDS = new Set(botanicCreativeBriefFieldIds)
+const CLARIFICATION_FIELDS = new Set([...botanicCreativeBriefFieldIds, ...botanicAgentVariationClarificationFieldIds])
 const DELIVERY_OPTIONS = [
   { value: 'taobao', label: '淘宝 / 天猫', description: '1:1 · 800×800' },
   { value: 'xiaohongshu', label: '小红书', description: '3:4 · 1242×1660' },
@@ -101,7 +107,7 @@ function boundedRecord(value, name, maximumEntries = 8) {
   return Object.fromEntries(entries.map(([key, item]) => {
     const cleanKey = requiredText(key, `${name}字段`, 40)
     if (!CLARIFICATION_FIELDS.has(cleanKey)) invalidRequest(`${name}字段不支持。`)
-    return [cleanKey, requiredText(item, `${name}值`, cleanKey === 'custom_direction' ? 500 : 160)]
+    return [cleanKey, requiredText(item, `${name}值`, cleanKey === 'custom_direction' || cleanKey === 'variation_values' ? 500 : 160)]
   }))
 }
 
@@ -352,17 +358,14 @@ function clipNodeTitle(value) {
   return Array.from(value.replace(/[\s·.,，。:：；;、\-_/\\]+/gu, '')).slice(0, NODE_TITLE_LIMIT).join('')
 }
 
-const canvasPromptMetaPattern = /^(?:说明一下(?:来源)?|来源说明|补充说明)[:：]/u
-const canvasPromptMetaBodyPattern = /(?:我没有读取到|当前项目上下文里|根据(?:之前的)?对话上下文)/u
-
 export function visualGenerationPrompt(prompt, fallback = '') {
   const text = typeof prompt === 'string' ? prompt.trim() : ''
   const blocks = text.split(/\n{2,}/u).map((block) => block.trim()).filter(Boolean)
-  const visual = blocks
-    .filter((block) => !canvasPromptMetaPattern.test(block) && !canvasPromptMetaBodyPattern.test(block))
-    .join('\n\n')
-    .trim()
-  return visual || (typeof fallback === 'string' ? fallback.trim() : '') || text
+  const visual = blocks.filter((block) => !botanicAgentLooksLikePlannerNarration(block)).join('\n\n').trim()
+  if (visual && !botanicAgentLooksLikePlannerNarration(visual)) return visual
+  const fallbackText = typeof fallback === 'string' ? fallback.trim() : ''
+  if (fallbackText && !botanicAgentLooksLikePlannerNarration(fallbackText)) return fallbackText
+  return visual || fallbackText || text
 }
 
 function summarizeNodeTitle(intent, constraints, preferred) {
@@ -405,7 +408,7 @@ function normalizeProviderPlan(raw, input) {
     ? assetGroup
     : undefined
   const batchCount = selectedAssetGroup?.assetCount ?? 0
-  return {
+  const plan = {
     intent,
     instruction: input.instruction,
     summary,
@@ -421,9 +424,24 @@ function normalizeProviderPlan(raw, input) {
     ...(input.contextSnapshot?.length ? { contextSnapshot: input.contextSnapshot } : {}),
     ...(selectedAssetGroup ? { assetGroupId: selectedAssetGroup.id } : {}),
   }
+  const applied = applyBotanicAgentVariationToPlan(plan, {
+    instruction: input.instruction,
+    requestedIntent: input.requestedIntent,
+    clarificationAnswers: input.clarificationAnswers,
+    assetGroup: selectedAssetGroup ?? input.assetGroup,
+  })
+  if (applied.kind === 'clarification') return { kind: 'clarification', clarification: applied.clarification }
+  return applied.plan
 }
 
 function clarificationOptions(fieldId, input) {
+  if (fieldId === 'variation_values') return []
+  if (fieldId === 'variation_combine') {
+    return [
+      { value: 'first', label: '只拆一条轴', description: '默认不把多轴相乘' },
+      { value: 'combine', label: '组合出图', description: '先写明张数，最多 20 张' },
+    ]
+  }
   if (fieldId === 'delivery_preset') return DELIVERY_OPTIONS
   if (fieldId === 'prompt_direction') return PROMPT_DIRECTION_OPTIONS
   if (fieldId === 'preservation_priority') return PRESERVATION_OPTIONS
@@ -460,14 +478,19 @@ function normalizeProviderClarification(raw, input, toolCallId) {
     if (!id || !CLARIFICATION_FIELDS.has(id) || seen.has(id)) return []
     seen.add(id)
     const options = clarificationOptions(id, input)
-    const control = id === 'custom_direction' ? 'text' : 'single_choice'
+    const control = id === 'custom_direction' || id === 'variation_values' ? 'text' : 'single_choice'
     if (control !== 'text' && !options.length) return []
     const labels = {
       model: '生成模型', delivery_preset: '用途与画面比例', aspect_ratio: '图片比例', resolution: '分辨率',
       prompt_direction: 'Prompt 优化方向', preservation_priority: '保持重点', custom_direction: '自定义优化方向',
+      variation_values: '变体取值', variation_combine: '是否组合',
     }
     const brief = input.creativeBrief
-    const defaultValue = id === 'model'
+    const defaultValue = id === 'variation_combine'
+      ? 'first'
+      : id === 'variation_values'
+        ? undefined
+      : id === 'model'
       ? input.settings.model
       : id === 'aspect_ratio'
         ? input.settings.aspectRatio
@@ -486,7 +509,9 @@ function normalizeProviderClarification(raw, input, toolCallId) {
       required: true,
       control,
       ...(defaultValue ? { defaultValue } : {}),
-      ...(control === 'text' ? { placeholder: '请描述希望强化的画面方向' } : {}),
+      ...(control === 'text' ? {
+        placeholder: id === 'variation_values' ? '例如：白皙、自然、小麦、深棕' : '请描述希望强化的画面方向',
+      } : {}),
       options,
     }]
   }).slice(0, 3)
@@ -583,13 +608,22 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
     if (output?.kind === 'clarification' && output.clarification) {
       return {
         kind: 'clarification',
-        clarification: output.clarification,
+        clarification: mergeVariationClarification(output.clarification, input),
         plannerModel: config.model,
         toolCalls: result.toolCalls,
         ...(result.reasoning?.length ? { reasoning: result.reasoning } : {}),
       }
     }
     const plan = normalizeProviderPlan(output, input)
+    if (plan?.kind === 'clarification') {
+      return {
+        kind: 'clarification',
+        clarification: plan.clarification,
+        plannerModel: config.model,
+        toolCalls: result.toolCalls,
+        ...(result.reasoning?.length ? { reasoning: result.reasoning } : {}),
+      }
+    }
     return {
       ...plan,
       plannerModel: config.model,

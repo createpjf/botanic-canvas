@@ -75,6 +75,53 @@ function validateToolCalls(rawToolCalls) {
   })
 }
 
+function validateVariationValue(raw, name) {
+  return {
+    label: text(raw?.label, `${name}名称`, 8, { countCodePoints: true }),
+    promptDelta: text(raw?.promptDelta, `${name}增量`, 500),
+  }
+}
+
+function validateVariationSpec(raw) {
+  if (raw === undefined) return undefined
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || !Array.isArray(raw.axes) || !raw.axes.length || raw.axes.length > 4) {
+    throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', 'Agent 变体轴无效。')
+  }
+  return {
+    combine: Boolean(raw.combine),
+    axes: raw.axes.map((axis, index) => {
+      const key = text(axis?.key, `第 ${index + 1} 条变体轴`, 40)
+      const label = text(axis?.label, `第 ${index + 1} 条变体轴名称`, 16, { countCodePoints: true })
+      if (!Array.isArray(axis?.values) || axis.values.length < 2 || axis.values.length > 8) {
+        throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', `第 ${index + 1} 条变体轴取值无效。`)
+      }
+      return {
+        key,
+        label,
+        values: axis.values.map((value, valueIndex) => validateVariationValue(value, `第 ${index + 1} 条变体轴第 ${valueIndex + 1} 个取值`)),
+      }
+    }),
+  }
+}
+
+function validateBranchVariation(raw, name) {
+  if (raw === undefined) return undefined
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', `${name}变体无效。`)
+  }
+  return {
+    label: text(raw.label, `${name}变体名称`, 8, { countCodePoints: true }),
+    promptDelta: text(raw.promptDelta, `${name}变体增量`, 500),
+    values: Array.isArray(raw.values)
+      ? raw.values.slice(0, 4).map((item, index) => ({
+        key: text(item?.key, `${name}变体第 ${index + 1} 个维度`, 40),
+        axisLabel: text(item?.axisLabel, `${name}变体第 ${index + 1} 个维度名`, 16, { countCodePoints: true }),
+        valueLabel: text(item?.valueLabel, `${name}变体第 ${index + 1} 个取值`, 8, { countCodePoints: true }),
+      }))
+      : [],
+  }
+}
+
 function validateSettings(rawSettings) {
   if (!rawSettings || typeof rawSettings !== 'object' || Array.isArray(rawSettings)) {
     throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', 'Agent 生成参数无效。')
@@ -139,7 +186,7 @@ export function validateAgentRunCreation(body) {
   if (!rawPlan || typeof rawPlan !== 'object') throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', 'Agent 计划不能为空。')
   if (!intents.has(rawPlan.intent)) throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', 'Agent 计划类型不支持。')
   const output = rawPlan.output
-  if (!output || !['single', 'batch_by_asset'].includes(output.mode)) throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', 'Agent 输出方式无效。')
+  if (!output || !['single', 'batch_by_asset', 'batch_by_variation'].includes(output.mode)) throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', 'Agent 输出方式无效。')
   const count = Number(output.count)
   const candidatesPerItem = Number(output.candidatesPerItem)
   if (!Number.isInteger(count) || count < 1 || count > 20 || !Number.isInteger(candidatesPerItem) || candidatesPerItem < 1 || candidatesPerItem > 8) {
@@ -148,11 +195,15 @@ export function validateAgentRunCreation(body) {
   if (!Array.isArray(body.branches) || !body.branches.length || body.branches.length > 20) {
     throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', 'Agent Run 需包含 1–20 个分支。')
   }
-  const branches = body.branches.map((branch, index) => ({
-    id: text(branch?.id, `第 ${index + 1} 个分支标识`, 160),
-    label: text(branch?.label ?? `分支 ${index + 1}`, `第 ${index + 1} 个分支名称`, 160),
-    ...(branch?.assetId ? { assetId: text(branch.assetId, `第 ${index + 1} 个分支素材`, 160) } : {}),
-  }))
+  const branches = body.branches.map((branch, index) => {
+    const variation = validateBranchVariation(branch?.variation, `第 ${index + 1} 个分支`)
+    return {
+      id: text(branch?.id, `第 ${index + 1} 个分支标识`, 160),
+      label: text(branch?.label ?? `分支 ${index + 1}`, `第 ${index + 1} 个分支名称`, 160),
+      ...(branch?.assetId ? { assetId: text(branch.assetId, `第 ${index + 1} 个分支素材`, 160) } : {}),
+      ...(variation ? { variation } : {}),
+    }
+  })
   if (new Set(branches.map((branch) => branch.id)).size !== branches.length) {
     throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', 'Agent 分支标识重复。')
   }
@@ -170,6 +221,10 @@ export function validateAgentRunCreation(body) {
   ))) {
     throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', 'Agent 首次生成需要至少一个图片素材或图片结果。')
   }
+  const variation = validateVariationSpec(rawPlan.variation)
+  if (output.mode === 'batch_by_variation' && !variation) {
+    throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', '按变体批量时必须包含已确认的变体轴。')
+  }
   return {
     projectId,
     plan: {
@@ -183,6 +238,7 @@ export function validateAgentRunCreation(body) {
       settings: validateSettings(rawPlan.settings),
       constraints: validateConstraints(rawPlan.constraints, { allowEmpty: isInitialGeneration }),
       output: { mode: output.mode, count, candidatesPerItem },
+      ...(variation ? { variation } : {}),
       ...(contextSnapshot?.length ? { contextSnapshot } : {}),
       ...(rawPlan.assetGroupId ? { assetGroupId: text(rawPlan.assetGroupId, '素材组', 160) } : {}),
       ...(toolCalls ? { toolCalls } : {}),

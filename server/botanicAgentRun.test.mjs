@@ -208,3 +208,54 @@ test('Agent 新图名按字计长，8 个含 emoji 的字可以通过校验', ()
     plan: { ...creation.plan, title: '替换场景黄昏柔光场' },
   }), /新图名过长/)
 })
+
+test('按变体轴批量允许无素材分支，并持久化分支增量', () => {
+  const input = validateAgentRunCreation({
+    ...creation,
+    plan: {
+      ...creation.plan,
+      intent: 'batch_variation',
+      instruction: '白皙、自然、小麦、深棕四种肤色，多图',
+      summary: '按「肤色」生成 4 张。',
+      title: '肤色变体',
+      assetGroupId: undefined,
+      output: { mode: 'batch_by_variation', count: 2, candidatesPerItem: 1 },
+      variation: {
+        combine: false,
+        axes: [{
+          key: 'skin_tone',
+          label: '肤色',
+          values: [
+            { label: '白皙', promptDelta: '人物肤色为白皙，保持五官与身份不变。' },
+            { label: '小麦', promptDelta: '人物肤色为小麦，保持五官与身份不变。' },
+          ],
+        }],
+      },
+    },
+    branches: [
+      {
+        id: 'branch-fair',
+        label: '白皙',
+        variation: {
+          label: '白皙',
+          promptDelta: '人物肤色为白皙，保持五官与身份不变。',
+          values: [{ key: 'skin_tone', axisLabel: '肤色', valueLabel: '白皙' }],
+        },
+      },
+      {
+        id: 'branch-tan',
+        label: '小麦',
+        variation: {
+          label: '小麦',
+          promptDelta: '人物肤色为小麦，保持五官与身份不变。',
+          values: [{ key: 'skin_tone', axisLabel: '肤色', valueLabel: '小麦' }],
+        },
+      },
+    ],
+  })
+
+  assert.equal(input.plan.output.mode, 'batch_by_variation')
+  assert.equal(input.plan.variation.axes[0].values.length, 2)
+  assert.equal(input.branches[0].assetId, undefined)
+  assert.match(input.branches[1].variation.promptDelta, /小麦/)
+})

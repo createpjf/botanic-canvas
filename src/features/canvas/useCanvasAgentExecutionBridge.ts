@@ -6,7 +6,6 @@ import {
   resolveBotanicAgentWorkflowReferenceNodeIds,
   resolveBotanicAgentCanvasCommands,
   botanicAgentBatchBranchTitles,
-  summarizeBotanicAgentNodeTitle,
   type BotanicAgentActionProposal,
   type BotanicAgentActionResult,
   type BotanicAgentArtifact,
@@ -23,6 +22,7 @@ import {
   type UploadedAssetInput,
 } from '../../domain/canvas'
 import { canUseForImageDelivery } from '../../domain/deliveryPresentation'
+import { botanicAgentConfirmBranchDrafts, botanicAgentBranchGenerationPrompt } from '../../domain/agentVariations'
 import {
   createPersistentBotanicAgentRun,
   executePersistentBotanicAgentRun,
@@ -345,13 +345,21 @@ export function useCanvasAgentExecutionBridge({
   const confirmPlan = useCallback(async (plan: BotanicAgentPlan, submissionKey?: string) => {
     const projectId = document.id
     const group = plan.assetGroupId ? document.assetGroups.find((item) => item.id === plan.assetGroupId) : undefined
-    const branchInputs = plan.output.mode === 'batch_by_asset' && group
-      ? botanicAgentBatchBranchTitles(plan, group.assetIds.map((assetId) => canvasAssetName(document, assetId))).map((label, index) => ({
-          assetId: group.assetIds[index],
-          branchId: `branch-${crypto.randomUUID()}`,
-          label,
-        }))
-      : [{ branchId: `branch-${crypto.randomUUID()}`, label: summarizeBotanicAgentNodeTitle(plan) }]
+    const drafts = botanicAgentConfirmBranchDrafts(plan, group ? {
+      group: {
+        assetIds: group.assetIds,
+        names: group.assetIds.map((assetId) => canvasAssetName(document, assetId)),
+      },
+    } : undefined)
+    const labels = plan.output.mode === 'batch_by_asset'
+      ? botanicAgentBatchBranchTitles(plan, drafts.map((draft) => draft.label))
+      : drafts.map((draft) => draft.label)
+    const branchInputs = drafts.map((draft, index) => ({
+      branchId: `branch-${crypto.randomUUID()}`,
+      label: labels[index] ?? draft.label,
+      ...(draft.assetId ? { assetId: draft.assetId } : {}),
+      ...(draft.variation ? { variation: draft.variation } : {}),
+    }))
     let runId: string
     if (serverPersistenceEnabled) {
       try {
@@ -385,7 +393,8 @@ export function useCanvasAgentExecutionBridge({
           branches: branchInputs.map((branch) => ({
             id: branch.branchId,
             label: branch.label,
-            ...('assetId' in branch ? { assetId: branch.assetId } : {}),
+            ...(branch.assetId ? { assetId: branch.assetId } : {}),
+            ...(branch.variation ? { variation: branch.variation } : {}),
           })),
         })
         if (useCanvasStore.getState().document.id !== projectId) {
@@ -445,6 +454,16 @@ export function useCanvasAgentExecutionBridge({
         settings: plan.settings,
         agentRunId: undefined,
       })
+    } else if (plan.output.mode === 'batch_by_variation') {
+      for (const branch of branchInputs) {
+        const nodeId = createGenerateBranchFromResult(selectedResultNodeId, {
+          prompt: botanicAgentBranchGenerationPrompt(plan.prompt, branch.variation?.promptDelta),
+          batchCount: 1,
+          settings: plan.settings,
+          refinementMode: 'faithful',
+        })
+        if (nodeId) started = await runGraphGeneration(nodeId) || started
+      }
     } else {
       const branchId = plan.intent === 'redo_from_root'
         ? createGenerateFromResultRecipe(selectedResultNodeId)
