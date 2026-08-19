@@ -171,6 +171,9 @@ test('只回填从可信模型目录中完整解析出的输出设置', () => {
   assert.deepEqual(inferBotanicAgentGenerationSettings('生成 4:3、2K 图片', models), {
     resolution: '2K',
   })
+  assert.deepEqual(inferBotanicAgentGenerationSettings('请用 1920×1080 出图', models), {
+    aspectRatio: '16:9', outputWidth: 1920, outputHeight: 1088,
+  })
 })
 
 test('同一 Prompt 已有待回答输出设置时阻止重复创建追问', () => {

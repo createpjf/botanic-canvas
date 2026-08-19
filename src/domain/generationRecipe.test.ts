@@ -73,3 +73,27 @@ test('切换模型保留被新模型支持的设置并补齐视频时长', () =>
 
   assert.deepEqual(result, { model: 'video-model', aspectRatio: '1:1', resolution: '2K', duration: 10 })
 })
+
+test('复制配方保留 gpt-image-2 自定义像素，换到不支持的模型时丢弃', () => {
+  const source = buildGraphGenerationRecipe(documentWithOrderedInputs(), 'generate-a')!.recipe
+  source.settings.outputWidth = 1920
+  source.settings.outputHeight = 1080
+  const copy = cloneGenerationRecipe(source)
+  assert.equal(copy.settings.outputWidth, 1920)
+  assert.equal(copy.settings.outputHeight, 1088)
+  copy.settings.outputWidth = 1
+  assert.equal(source.settings.outputWidth, 1920)
+
+  const minimax = settingsForGenerationModel(copy.settings, {
+    id: 'image-01', label: 'MiniMax Image 01', provider: 'minimax', mediaKind: 'image',
+    aspectRatios: ['1:1', '16:9', '4:3', '3:4', '9:16'], resolutions: ['1K'],
+  })
+  assert.equal('outputWidth' in minimax, false)
+  assert.equal('outputHeight' in minimax, false)
+
+  const gpt = settingsForGenerationModel({
+    model: 'image-01', aspectRatio: '16:9', resolution: '1K', outputWidth: 1920, outputHeight: 1088,
+  }, { id: 'gpt-image-2', label: 'GPT Image 2', provider: 'openai', mediaKind: 'image', supportsCustomSize: true, aspectRatios: ['1:1', '16:9'], resolutions: ['1K', '2K'] })
+  assert.equal(gpt.outputWidth, 1920)
+  assert.equal(gpt.outputHeight, 1088)
+})

@@ -22,8 +22,8 @@ function mergeGenerationJob(current: GenerationJob | undefined, recovered: Gener
 function resultOutputIdentity(node: CanvasNode) {
   if (node.type !== 'result') return null
   const data = node.data as ResultNodeData
-  if (!data.image || !data.jobId || !data.candidateId) return null
-  return { jobId: data.jobId, outputId: data.candidateId }
+  if (!data.image || !data.jobId) return null
+  return { jobId: data.jobId, outputId: data.candidateId ?? '__single__' }
 }
 
 function agentWorkflowNodeIds(document: CanvasDocument, jobs: GenerationJob[]) {
@@ -134,7 +134,9 @@ export function mergeRecoveredGenerationJobs(current: CanvasDocument, recovered:
   const recoverableOutputs = new Map<string, Set<string>>()
   for (const job of jobsById.values()) {
     if (job.status !== 'succeeded' || !job.outputs?.length) continue
-    recoverableOutputs.set(job.id, new Set(job.outputs.map((output) => output.id)))
+    const outputIds = new Set(job.outputs.map((output) => output.id))
+    if (job.outputs.length === 1) outputIds.add('__single__')
+    recoverableOutputs.set(job.id, outputIds)
   }
 
   const recoveredOutputNodes = new Map<string, CanvasNode>()

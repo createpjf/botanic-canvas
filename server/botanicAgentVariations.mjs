@@ -96,18 +96,43 @@ function uniqueLabels(values) {
   }).slice(0, botanicAgentVariationValueMax)
 }
 
+function normalizeVariationToken(chunk) {
+  return chunk
+    .replace(/[，,]\s*(?:多图|多张|多出几张).*$/u, '')
+    .replace(/^一个在/u, '')
+    .replace(/^在(?=[\u4e00-\u9fff])/u, '')
+    .replace(/里$/u, '')
+    .trim()
+}
+
 function splitValueList(raw) {
   return uniqueLabels(raw.split(/[、，,;/＋+|]/u).flatMap((item) => {
-    const chunk = item
+    const chunk = normalizeVariationToken(item
       .replace(/(?:等)?\s*(?:\d+|两|三|四|五|六|七|八|九|十)\s*(?:种|个|档).*$/u, '')
       .replace(/^(?:分别是|分别|包括)/u, '')
       .replace(/^(?:换成|换为|替换为|改为|改成|使用|用)/u, '')
-      .trim()
-    if (/不变|保持/.test(chunk)) return []
-    const parts = chunk.split(/(?:(?<=\S)和(?=\S))/u).map((part) => part.trim()).filter(Boolean)
+      .trim())
+    if (!chunk || /不变|保持/.test(chunk)) return []
+    const parts = chunk.split(/(?:(?<=\S)和(?=\S))/u).map((part) => normalizeVariationToken(part)).filter(Boolean)
     if (parts.length === 2 && parts.every((part) => Array.from(part).length <= 8)) return parts
     return chunk ? [chunk] : []
   }))
+}
+
+function splitNumberedList(text) {
+  if (!/(?:^|[\s\n])\d+[\.．、)]/u.test(text) && !/\(\d+\)/.test(text)) return []
+  const parts = text.split(/(?:^|[\s\n]+)(?:\d+[\.．、)]|\(\d+\))\s*/u)
+    .map((part) => normalizeVariationToken(part))
+    .filter(Boolean)
+  return uniqueLabels(parts)
+}
+
+function inferInstructionValues(text) {
+  const numbered = splitNumberedList(text)
+  if (numbered.length >= botanicAgentVariationValueMin) return numbered
+  const parallel = uniqueLabels([...text.matchAll(/一个在([^\s、，,。；;\d]{1,8})/gu)].map((match) => match[1]))
+  if (parallel.length >= botanicAgentVariationValueMin) return parallel
+  return listedValuesFromText(text)
 }
 
 function parseCountToken(token) {
@@ -140,6 +165,8 @@ function axisCountMismatch(axis, instruction) {
 }
 
 function listedValuesFromText(text) {
+  const numbered = splitNumberedList(text)
+  if (numbered.length >= botanicAgentVariationValueMin) return numbered
   const segments = text.includes('|')
     ? text.split('|').map((cell) => cell.trim()).filter(Boolean)
     : [text]
@@ -217,6 +244,24 @@ function parseAxes(instruction) {
 }
 
 const skinToneValuePattern = /白|麦|棕|黑|黄|冷|暖|自然|健康|古铜|蜜|橄榄|浅|中|深/u
+const sceneValuePattern = /海边|沙漠|宇宙|森林|街道|海滩|雪地|室内|户外|棚拍|夜景|城市|公园|沙滩|沙丘|星空/u
+
+function looksLikeSceneValue(label) {
+  return sceneValuePattern.test(label)
+}
+
+function axisFromListedValues(listed, axisKey) {
+  const known = axisKey ? axisCatalog.find((item) => item.key === axisKey) : undefined
+  if (known) return axisFromCatalog(known, listed)
+  const scene = axisCatalog.find((item) => item.key === 'scene')
+  if (scene && listed.filter(looksLikeSceneValue).length >= botanicAgentVariationValueMin) {
+    return axisFromCatalog(scene, listed)
+  }
+  const skin = axisCatalog[0]
+  return listed.every((label) => skinToneValuePattern.test(label))
+    ? axisFromCatalog(skin, listed)
+    : customAxis(listed)
+}
 
 function fillAxisValues(axes, listed, axisKey) {
   if (!listed.length) return axes
@@ -227,14 +272,7 @@ function fillAxisValues(axes, listed, axisKey) {
       ? axisFromCatalog(catalog, listed)
       : axis)
   }
-  if (!axes.length) {
-    const known = axisKey ? axisCatalog.find((item) => item.key === axisKey) : undefined
-    if (known) return [axisFromCatalog(known, listed)]
-    const skin = axisCatalog[0]
-    return [listed.every((label) => skinToneValuePattern.test(label))
-      ? axisFromCatalog(skin, listed)
-      : customAxis(listed)]
-  }
+  if (!axes.length) return [axisFromListedValues(listed, axisKey)]
   return axes
 }
 
@@ -312,7 +350,8 @@ export function resolveBotanicAgentVariationRequest(input) {
   const intent = resolveBotanicAgentIntent(instruction, input.requestedIntent)
   const answered = splitValueList(input.clarificationAnswers?.variation_values ?? '')
   const confirmed = answered.length ? answered : uniqueLabels(input.brief?.variation?.values ?? [])
-  const axes = fillAxisValues(parseAxes(instruction), confirmed, input.brief?.variation?.axisKey)
+  const inferred = confirmed.length ? confirmed : inferInstructionValues(instruction)
+  const axes = fillAxisValues(parseAxes(instruction), inferred, input.brief?.variation?.axisKey)
   const wantsBatch = instructionRequestsBatchVariation(instruction) || intent === 'batch_variation' || axes.some((axis) => axis.values.length >= botanicAgentVariationValueMin)
   const group = input.assetGroup
   const groupMatches = Boolean(group?.id && group.assetCount > 0 && axes[0] && groupRoleByKey[axes[0].key] === group.role)
@@ -374,6 +413,15 @@ export function resolveBotanicAgentVariationRequest(input) {
   return { kind: 'ready', spec: { axes: readyAxes.length > 1 ? readyAxes : readyAxes, combine: false } }
 }
 
+function variationLabels(spec) {
+  return spec?.axes.flatMap((axis) => axis.values.map((value) => value.label)) ?? []
+}
+
+function stillEnumeratesValues(text, spec) {
+  const labels = variationLabels(spec).filter((label) => Array.from(label).length >= 2)
+  return labels.filter((label) => text.includes(label)).length >= 2
+}
+
 function stripVariationInventory(text, spec) {
   let next = text
   const lists = spec?.axes.flatMap((axis) => {
@@ -381,6 +429,12 @@ function stripVariationInventory(text, spec) {
     return joined ? [joined] : []
   }) ?? []
   for (const list of lists) next = next.replace(list, '')
+  next = next
+    .replace(/(?:^|\n)\s*(?:\d+[\.．、)]|\(\d+\))\s*[^\n]*/gu, ' ')
+    .replace(/一个在[^\s、，,。；;]{1,8}/gu, ' ')
+  for (const label of variationLabels(spec)) {
+    if (Array.from(label).length >= 2) next = next.split(label).join('')
+  }
   next = next
     .replace(/(?:[\u4e00-\u9fffA-Za-z0-9]{1,8}[、，,]){1,7}[\u4e00-\u9fffA-Za-z0-9]{1,8}\s*(?:等)?\s*(?:\d+|两|三|四|五|六|七|八|九|十)种?[。]?/gu, '')
     .replace(/(?:多图|多张|多出几张|多种|几个|各种)/gu, '')
@@ -392,14 +446,21 @@ function stripVariationInventory(text, spec) {
   return next
 }
 
-export function botanicAgentSharedVariationPrompt(prompt, instruction, spec) {
+function usableSharedPrompt(text, spec) {
+  const stripped = stripVariationInventory(text, spec)
+  if (!stripped || botanicAgentLooksLikePlannerNarration(stripped) || stillEnumeratesValues(stripped, spec)) return ''
+  return stripped
+}
+
+export function botanicAgentSharedVariationPrompt(prompt, instruction, spec, fallbackPrompt = '') {
   const cleaned = botanicAgentVisualGenerationPrompt(prompt, '')
   const source = !cleaned || botanicAgentLooksLikePlannerNarration(cleaned)
     ? botanicAgentVisualGenerationPrompt(instruction, '')
     : cleaned
-  const stripped = stripVariationInventory(source, spec)
-  if (stripped && !botanicAgentLooksLikePlannerNarration(stripped)) return stripped
-  return '保持人物身份、服装与商品不变，仅按变体说明调整画面。'
+  return usableSharedPrompt(source, spec)
+    || usableSharedPrompt(fallbackPrompt, spec)
+    || usableSharedPrompt(instruction, spec)
+    || '保持人物身份、服装与商品不变，仅按变体说明调整画面。'
 }
 
 export function botanicAgentBranchGenerationPrompt(prompt, promptDelta, fallback = '') {
@@ -487,7 +548,7 @@ export function applyBotanicAgentVariationToPlan(plan, input) {
     plan: {
       ...plan,
       intent: 'batch_variation',
-      prompt: botanicAgentSharedVariationPrompt(plan.prompt, plan.instruction, request.spec),
+      prompt: botanicAgentSharedVariationPrompt(plan.prompt, plan.instruction, request.spec, input.fallbackPrompt),
       summary: request.spec.combine && request.spec.axes.length > 1
         ? `按「${request.spec.axes.map((item) => item.label).join('×')}」生成 ${count} 张。`
         : `按「${axis.label}」生成 ${count} 张。`,

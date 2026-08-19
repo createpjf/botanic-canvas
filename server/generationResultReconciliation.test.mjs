@@ -184,3 +184,49 @@ test('落图时保留已有短标题，不用候选文案覆盖', () => {
   assert.equal(reconciled.nodes[1].data.image, '/api/media/a')
   assert.equal(reconciled.nodes[1].data.label, '换景调光')
 })
+
+test('三支 Agent Job 依次 reconcile 时不覆盖兄弟结果图', () => {
+  const document = {
+    id: 'project-three-branches',
+    nodes: [
+      { id: 'parent', type: 'result', position: { x: 0, y: 0 }, data: { kind: 'result', status: 'ready', image: '/parent.jpg' } },
+      { id: 'generate-sea', type: 'generate', position: { x: 400, y: 0 }, data: { jobId: 'job-sea', status: 'running' } },
+      { id: 'result-sea', type: 'result', position: { x: 800, y: 0 }, data: { outputOf: 'generate-sea', jobId: 'job-sea', status: 'generating', taskStatus: 'running' } },
+      { id: 'generate-desert', type: 'generate', position: { x: 400, y: 200 }, data: { jobId: 'job-desert', status: 'running' } },
+      { id: 'result-desert', type: 'result', position: { x: 800, y: 200 }, data: { outputOf: 'generate-desert', jobId: 'job-desert', status: 'generating', taskStatus: 'running' } },
+      { id: 'generate-space', type: 'generate', position: { x: 400, y: 400 }, data: { jobId: 'job-space', status: 'running' } },
+      { id: 'result-space', type: 'result', position: { x: 800, y: 400 }, data: { outputOf: 'generate-space', jobId: 'job-space', status: 'generating', taskStatus: 'running' } },
+    ],
+    edges: [],
+    generationJobs: [],
+    updatedAt: 1,
+  }
+  const afterSea = reconcileGenerationResults(document, [{
+    id: 'job-sea', status: 'succeeded', kind: 'generation', batchCount: 1, createdAt: 1, updatedAt: 2,
+    settings: { model: 'gpt-image-2' }, outputs: [{ id: 'output-sea', image: '/api/media/sea' }],
+    generateNodeId: 'generate-sea', resultNodeId: 'result-sea',
+    agentRun: { runId: 'run-a', branchId: 'sea' },
+  }])
+  const afterDesert = reconcileGenerationResults(afterSea.document, [{
+    id: 'job-desert', status: 'succeeded', kind: 'generation', batchCount: 1, createdAt: 3, updatedAt: 4,
+    settings: { model: 'gpt-image-2' }, outputs: [{ id: 'output-desert', image: '/api/media/desert' }],
+    generateNodeId: 'generate-desert', resultNodeId: 'result-desert',
+    agentRun: { runId: 'run-a', branchId: 'desert' },
+  }])
+  const afterSpace = reconcileGenerationResults(afterDesert.document, [{
+    id: 'job-space', status: 'succeeded', kind: 'generation', batchCount: 1, createdAt: 5, updatedAt: 6,
+    settings: { model: 'gpt-image-2' }, outputs: [{ id: 'output-space', image: '/api/media/space' }],
+    generateNodeId: 'generate-space', resultNodeId: 'result-space',
+    agentRun: { runId: 'run-a', branchId: 'space' },
+  }])
+
+  const images = Object.fromEntries(afterSpace.document.nodes
+    .filter((node) => node.type === 'result' && node.id !== 'parent')
+    .map((node) => [node.id, node.data.image]))
+  assert.deepEqual(images, {
+    'result-sea': '/api/media/sea',
+    'result-desert': '/api/media/desert',
+    'result-space': '/api/media/space',
+  })
+  assert.equal(afterSpace.document.nodes.find((node) => node.id === 'parent')?.data.image, '/parent.jpg')
+})

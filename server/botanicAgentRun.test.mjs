@@ -259,3 +259,16 @@ test('按变体轴批量允许无素材分支，并持久化分支增量', () =>
   assert.equal(input.branches[0].assetId, undefined)
   assert.match(input.branches[1].variation.promptDelta, /小麦/)
 })
+
+test('Agent Run 创建保留对齐后的自定义像素', () => {
+  const input = validateAgentRunCreation({
+    ...creation,
+    plan: {
+      ...creation.plan,
+      settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '2K', outputWidth: 1920, outputHeight: 1080 },
+    },
+  })
+  assert.equal(input.plan.settings.outputWidth, 1920)
+  assert.equal(input.plan.settings.outputHeight, 1088)
+  assert.equal(input.plan.settings.aspectRatio, '16:9')
+})

@@ -15,7 +15,7 @@ export type BotanicAgentPlanRequestInput = {
   availableAssetGroups?: AssetGroup[]
   projectMemory?: BotanicAgentMemoryItem[]
   availableGenerationModels?: GenerationModelOption[]
-  generationOverrides?: Partial<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution'>>
+  generationOverrides?: Partial<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution' | 'outputWidth' | 'outputHeight'>>
   clarificationAnswers?: Record<string, string>
   creativeBrief?: BotanicCreativeBrief
   contextSnapshot?: BotanicAgentContextSnapshot[]
@@ -33,10 +33,11 @@ export type BotanicAgentPlanRequest = {
   assetGroup?: { id: string; name: string; role: string; assetCount: number }
   assetGroups?: Array<{ id: string; name: string; role: string; assetCount: number }>
   projectMemory?: Array<{ id: string; kind: BotanicAgentMemoryItem['kind']; content: string }>
-  generationModels?: Array<Pick<GenerationModelOption, 'id' | 'label' | 'provider' | 'mediaKind' | 'aspectRatios' | 'resolutions'>>
+  generationModels?: Array<Pick<GenerationModelOption, 'id' | 'label' | 'provider' | 'mediaKind' | 'aspectRatios' | 'resolutions' | 'supportsCustomSize'>>
   clarificationAnswers?: Record<string, string>
   creativeBrief?: BotanicCreativeBrief
   contextSnapshot?: BotanicAgentContextSnapshot[]
+  parentPrompt?: string
 }
 
 export type BotanicAgentPlanDraft = Omit<BotanicAgentPlan, 'references' | 'rootRecipe'>
@@ -95,11 +96,13 @@ export function buildBotanicAgentPlanRequest(input: BotanicAgentPlanRequestInput
         ...(model.mediaKind ? { mediaKind: model.mediaKind } : {}),
         ...(model.aspectRatios ? { aspectRatios: model.aspectRatios } : {}),
         ...(model.resolutions ? { resolutions: model.resolutions } : {}),
+        ...(model.supportsCustomSize === undefined ? {} : { supportsCustomSize: model.supportsCustomSize }),
       })),
     } : {}),
     ...(input.clarificationAnswers ? { clarificationAnswers: input.clarificationAnswers } : {}),
     ...(input.creativeBrief ? { creativeBrief: structuredClone(input.creativeBrief) } : {}),
     ...(input.contextSnapshot?.length ? { contextSnapshot: input.contextSnapshot } : {}),
+    ...(input.rootRecipe.prompt.trim() ? { parentPrompt: input.rootRecipe.prompt } : {}),
   }
 }
 

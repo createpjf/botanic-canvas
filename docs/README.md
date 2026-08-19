@@ -21,9 +21,9 @@
 
 ## 进行中的设计
 
-尚未实现，不代表当前代码行为：
+以下规格正在本轮实现，完成后以代码与测试为准：
 
-- [批量变体：共享提示词、按支回填、尺寸目录](superpowers/specs/2026-08-19-variation-prompt-writeback-size-design.md)
+- [批量变体：共享提示词、按支回填、尺寸与自定义像素](superpowers/specs/2026-08-19-variation-prompt-writeback-size-design.md)
 
 ## 验收与历史记录
 

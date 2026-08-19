@@ -30,10 +30,20 @@ export type GenerationModelOption = {
   resolutions?: GenerationResolution[]
   durations?: number[]
   defaultDuration?: number
+  /** gpt-image-2 允许在官方像素窗内自定义宽高；其它模型忽略。 */
+  supportsCustomSize?: boolean
 }
 
 export const defaultGenerationModels: GenerationModelOption[] = [
-  { id: 'gpt-image-2', label: 'GPT Image 2', provider: 'openai', mediaKind: 'image' },
+  {
+    id: 'gpt-image-2',
+    label: 'GPT Image 2',
+    provider: 'openai',
+    mediaKind: 'image',
+    aspectRatios: ['1:1', '16:9', '4:3', '3:4', '4:5', '9:16'],
+    resolutions: ['1K', '2K'],
+    supportsCustomSize: true,
+  },
 ]
 
 export type GenerationSettings = {
@@ -42,6 +52,10 @@ export type GenerationSettings = {
   resolution: GenerationResolution
   /** 仅视频模型使用；历史图片任务缺省该字段。 */
   duration?: number
+  /** gpt-image-2 自定义输出宽，须与 outputHeight 同时出现。 */
+  outputWidth?: number
+  /** gpt-image-2 自定义输出高，须与 outputWidth 同时出现。 */
+  outputHeight?: number
 }
 
 export type GenerationReference = {

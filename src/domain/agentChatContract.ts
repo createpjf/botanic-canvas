@@ -1,6 +1,13 @@
 import type { BotanicAgentMessage, BotanicAgentReasoningEntry } from './agent.ts'
 import { instructionRequestsBatchVariation } from './agent.ts'
 import type { GenerationAspectRatio, GenerationModelOption, GenerationResolution } from './canvas'
+import {
+  customGenerationSizeFields,
+  inferAspectRatioFromPixels,
+  modelSupportsCustomSize,
+  parseCustomGenerationSize,
+  normalizeCustomGenerationSize,
+} from './generationOutputSize.ts'
 
 export type BotanicAgentChatMode = 'conversation' | 'prompt' | 'research'
 export type BotanicAgentRequestRoute = BotanicAgentChatMode | 'generation'
@@ -20,6 +27,8 @@ export type BotanicAgentGenerationSettingsHint = {
   model?: string
   aspectRatio?: GenerationAspectRatio
   resolution?: GenerationResolution
+  outputWidth?: number
+  outputHeight?: number
 }
 
 export type BotanicAgentChatRequestInput = {
@@ -106,7 +115,7 @@ function normalizedModelSearchValue(value: string) {
 
 export function inferBotanicAgentGenerationSettings(
   value: string,
-  models: Pick<GenerationModelOption, 'id' | 'label' | 'aspectRatios' | 'resolutions'>[],
+  models: Pick<GenerationModelOption, 'id' | 'label' | 'aspectRatios' | 'resolutions' | 'supportsCustomSize'>[],
 ): BotanicAgentGenerationSettingsHint {
   const normalizedText = normalizedModelSearchValue(value)
   const selectedModel = models.find((model) => {
@@ -125,10 +134,22 @@ export function inferBotanicAgentGenerationSettings(
   const supportedResolutions = selectedModel?.resolutions?.length
     ? selectedModel.resolutions
     : [...new Set(models.flatMap((model) => model.resolutions ?? []))]
+  const customModel = selectedModel ?? models.find((model) => modelSupportsCustomSize(model))
+  const parsedCustomSize = parseCustomGenerationSize(value)
+  const customSize = parsedCustomSize && modelSupportsCustomSize(customModel)
+    ? normalizeCustomGenerationSize(parsedCustomSize.width, parsedCustomSize.height)
+    : undefined
+  const customRatio = customSize?.ok ? inferAspectRatioFromPixels(customSize.width, customSize.height) : undefined
+  const aspectRatio = customRatio && (!supportedRatios.length || supportedRatios.includes(customRatio))
+    ? customRatio
+    : ratio && (!supportedRatios.length || supportedRatios.includes(ratio))
+      ? ratio
+      : undefined
   return {
     ...(selectedModel ? { model: selectedModel.id } : {}),
-    ...(ratio && (!supportedRatios.length || supportedRatios.includes(ratio)) ? { aspectRatio: ratio } : {}),
+    ...(aspectRatio ? { aspectRatio } : {}),
     ...(resolution && (!supportedResolutions.length || supportedResolutions.includes(resolution)) ? { resolution } : {}),
+    ...(customSize?.ok ? { outputWidth: customSize.width, outputHeight: customSize.height } : {}),
   }
 }
 
@@ -138,16 +159,20 @@ export function inferBotanicAgentGenerationSettings(
  */
 export function completeBotanicAgentGenerationSettings(
   hint: BotanicAgentGenerationSettingsHint,
-  models: Pick<GenerationModelOption, 'id' | 'label' | 'aspectRatios' | 'resolutions'>[],
+  models: Pick<GenerationModelOption, 'id' | 'label' | 'aspectRatios' | 'resolutions' | 'supportsCustomSize'>[],
 ): BotanicAgentGenerationSettingsHint {
   const model = models.find((item) => item.id === hint.model) ?? models[0]
   if (!model) return hint
-  const aspectRatio = hint.aspectRatio ?? model.aspectRatios?.[0]
+  const customSize = modelSupportsCustomSize(model) ? customGenerationSizeFields(hint) : undefined
+  const aspectRatio = customSize
+    ? inferAspectRatioFromPixels(customSize.outputWidth, customSize.outputHeight)
+    : hint.aspectRatio ?? model.aspectRatios?.[0]
   const resolution = hint.resolution ?? model.resolutions?.[0]
   return {
     model: model.id,
     ...(aspectRatio ? { aspectRatio } : {}),
     ...(resolution ? { resolution } : {}),
+    ...customSize,
   }
 }
 

@@ -51,6 +51,7 @@ test('浏览器只向 Agent Planner 发送参考元数据，不发送图片与�
     assetGroup: { id: 'group-scenes', name: '夏日场景', role: '场景', assetCount: 2 },
     assetGroups: [{ id: 'group-scenes', name: '夏日场景', role: '场景', assetCount: 2 }],
     projectMemory: [{ id: 'memory-brand', kind: 'rule', content: 'Logo 与瓶身比例不可改变。' }],
+    parentPrompt: '模特穿着球衣。',
   })
   assert.doesNotMatch(JSON.stringify(request), /base64|private-model|media/i)
 })

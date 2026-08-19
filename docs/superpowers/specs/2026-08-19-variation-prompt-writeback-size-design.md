@@ -1,10 +1,10 @@
 # 批量变体：共享提示词、按支回填、尺寸目录
 
-> 设计规格。未批准前不改代码。实现时按三个独立 PR 拆分，不要混入无关 UI。
+> 设计规格。本轮一次落地 A/B/C，并支持 gpt-image-2 自定义像素。
 
-**Goal:** 以画布参考图为父节点开 N 个分支时，每支只拿到自己的画面指令、每支独立对账出图，并允许在模型真实支持的范围内改比例/清晰度。
+**Goal:** 以画布参考图为父节点开 N 个分支时，每支只拿到自己的画面指令、每支独立对账出图，并允许在模型真实支持的范围内改比例、清晰度或自定义像素。
 
-**Architecture:** 变体取值与 `promptDelta` 仍是分支权威；`plan.prompt` 只允许共享底（锁定约束 + 继承画面，不含取值清单）。Run/Job 按 `branchId` 对账，终态不得早于画布投影。尺寸只暴露 Provider 目录内的比例×清晰度，确认卡可改；不把任意像素直接传给不支持的模型。
+**Architecture:** 变体取值与 `promptDelta` 仍是分支权威；`plan.prompt` 只允许共享底（锁定约束 + 继承画面，不含取值清单）。Run/Job 按 `branchId` 对账，终态不得早于画布投影。尺寸权威字段是 `aspectRatio` / `resolution`，gpt-image-2 可另存 `outputWidth` + `outputHeight`；选目录比例时清掉自定义像素。不把任意像素传给不支持的模型，也不静默换 MiniMax。
 
 **Tech Stack:** 现有 Botanic Agent 领域模块、`server/botanicAgent*.mjs`、GenerationJob / Artifact Index、模型目录 `server/generationModels.mjs`。
 
@@ -19,7 +19,7 @@
 - `src/domain/agentVariations.ts` 与 `server/botanicAgentVariations.mjs` 必须同步。
 - ProductStore 三 Adapter 若接口变化则同步契约测试。
 - 普通开发测试不得调用真实生成 Provider。
-- 本规格覆盖三个可独立交付的子系统；批准后按 PR-A → PR-B → PR-C 实现。
+- 本规格覆盖三个子系统，本轮一次落地；不要把改动塞进已合并的 #38–#41。
 
 ---
 
@@ -33,7 +33,7 @@
 2. 新增节点数 = 已确认取值数。
 3. 每节点独立 prompt：共享底不含完整变体清单，本支只带本支 delta。
 4. 任务面板能看到每支 queued / running / succeeded / failed，而不是只显示一张图或一句总进度。
-5. 确认卡可以改比例和清晰度；选项来自当前模型目录，而不是自由像素框。
+5. 确认卡可以改模型/比例/清晰度；gpt-image-2 可输入自定义宽×高（对齐 /16，拒绝超窗）。
 
 ---
 
@@ -191,36 +191,32 @@
 
 | 方案 | 做法 | 取舍 |
 | --- | --- | --- |
-| **A. 目录补齐 + 确认卡可改（推荐，本轮）** | gpt-image-2 打开 16:9 / 4:3，映射到合法像素；确认卡可改比例/清晰度；「自定义」= 目录内比例×1K/2K | 覆盖截图诉求，不发明自由像素框 |
-| B. 本轮就做任意像素 | 确认卡出现宽高输入，校验 /16 与像素上下限 | gpt-image-1 不能用；预算/超时/UI 都要新语义，超出本轮 |
+| **A. 目录补齐 + 确认卡可改（本轮）** | gpt-image-2 打开 16:9 / 4:3，映射到合法像素；确认卡可改比例/清晰度 | 覆盖截图诉求 |
+| **B. gpt-image-2 自定义像素（本轮一并做）** | 确认卡与画布 Composer 可输入宽高；校验 /16 与像素窗；1920×1080 对齐到 1920×1088 | 仅 gpt-image-2；不支持则拒绝，不换模型 |
 | C. 要 16:9 就静默换 MiniMax | 目录不够就换模型 | 画面模型和用户选择被偷换，不接受 |
 
-### 推荐设计（分两层，本轮只做第一层）
-
-**第一层（本规格实现）：**
+### 推荐设计
 
 1. 模型目录按 **模型 id** 而不是「凡是 openai」一刀切：
-   - `gpt-image-2`：`['1:1', '16:9', '4:3', '3:4', '4:5', '9:16']`，分辨率仍 `1K` / `2K`。
-   - 其他 gpt-image-1 系：保持现有四档，或只保留官方三档再映射（1:1、约 2:3 的 3:4、约 3:2 的 16:9 用 1536x1024 并在确认卡标明「最接近」）。若生产只配 `gpt-image-2`，优先把 2 的目录补齐。
-2. `outputSize` 为新增比例提供合法像素，例如 gpt-image-2：
-   - 1K 16:9 → `1536x864`；1K 4:3 → `1536x1152`（或同等 /16 且落在像素窗内的映射，实现时用一张表钉死）。
-   - 2K 16:9 → `2048x1152`（官方示例档）；2K 1:1 → `2048x2048`。
-   - 现有 `960x1280` / `720x1280` 若仍给 gpt-image-1 用，实现时核对这些值是否被上游拒绝；gpt-image-2 可继续用，因其满足 /16。
-3. 确认卡「本次生成设置」在提交前可改模型/比例/清晰度，选项 = 当前模型目录。默认值 = 用户说过的值，否则继承参考图（且该值必须在目录内，否则改用目录第一项并在卡上标明「已按模型目录调整」）。
-4. 文案「自定义」只表示投放预设不是淘宝/小红书/抖音，**不是**任意像素。
-
-**第二层（明确不做，除非另开规格）：**
-
-- 自由输入 `1920x1080` 并直接传给 Provider。
-- 若将来做自定义像素：仅 gpt-image-2；宽高 /16；夹紧到官方像素窗；超出则拒绝并说明，不静默裁切到奇怪比例。
+   - `gpt-image-2`：`['1:1', '16:9', '4:3', '3:4', '4:5', '9:16']`，分辨率仍 `1K` / `2K`，`supportsCustomSize: true`。
+   - 其他 gpt-image-1 系：保持现有四档。
+2. `outputSize` 优先 `outputWidth`×`outputHeight`（对齐 /16），否则走目录表：
+   - 1K 16:9 → `1536x864`；1K 4:3 → `1536x1152`。
+   - 2K 16:9 → `2048x1152`；2K 1:1 → `2048x2048`。
+3. 确认卡「本次生成设置」在提交前可改模型/比例/清晰度，选项 = 当前模型目录。gpt-image-2 另提供宽×高输入。默认值 = 用户说过的值，否则继承参考图。
+4. 选目录比例时清掉自定义像素。自定义时仍可保留推断的最近目录比例，**不要**把 `'custom'` 加进 `GenerationAspectRatio`。
+5. 投放文案「自定义」只表示不是淘宝/小红书/抖音，与像素输入无关。
+6. 对齐 /16 可接受（1920×1080 → 1920×1088）；拒绝无法满足像素窗/比例的值，不静默裁成奇怪比例。MiniMax 无自定义像素。
 
 ### 改哪些文件
 
+- `src/domain/generationOutputSize.ts` 与 `server/generationOutputSize.mjs`
 - `server/generationModels.mjs`
-- `server/generationProvider.mjs`（`outputSize`）
+- `server/generationProvider.mjs`（`resolveGenerationOutputSize`）
 - `src/domain/agentCreativeBrief.ts`、`src/domain/agentChatContract.ts`（推断与目录对齐）
-- 确认卡：`AgentConversationMessage.tsx` 设置区由只读改为提交前可编辑；规则仍走 Brief/settings 命令，不在 UI 里写目录
-- 对应 planner / provider / brief 测试；e2e 夹具里的 GPT 目录一并补 16:9（若该模型已打开）
+- 确认卡：`AgentConversationMessage.tsx` 设置区由只读改为提交前可编辑
+- 画布 Composer：`CanvasEditorViews.tsx`
+- 对应 planner / provider / brief 测试；e2e 夹具里的 GPT 目录一并补 16:9
 
 ### 验收用例
 
@@ -228,13 +224,13 @@
 2. 指令「16:9」但当前模型目录无 16:9 → 追问或标明最接近档，不静默改模型。
 3. 未提尺寸 → 继承参考图；若参考图比例不在目录内，确认卡预选目录第一项并可见提示。
 4. 确认卡改 3:4 → 2K 后提交，三支 Job 使用同一 settings，互不影响 prompt 通道。
-5. 不出现任意宽高输入框。
+5. 指令「1920×1080」+ gpt-image-2 → Job `size` 为 `1920x1088`；MiniMax 拒绝自定义像素。
 
 ---
 
 ## PR 拆分
 
-三个子系统可独立合并，建议顺序：
+本轮在 `cursor/agent-variation-channel-design-dfcd` 一次落地 A/B/C 与自定义像素，不要把改动塞进已合并的 #38–#41。
 
 | PR | 内容 | 为什么先做 |
 | --- | --- | --- |
@@ -258,5 +254,5 @@
 - Agent 面板：`src/features/agent/AgentWorkspace.tsx`、`AgentConversationMessage.tsx`、`AgentUtilityPanels.tsx`
 - 画布文本节点：`src/features/canvas/CanvasEditorViews.tsx`
 - 生成对账：`server/generationResultReconciliation.mjs`、`src/store/canvasGenerationRecovery.ts`、`server/generationProcessor.mjs`
-- 尺寸目录：`server/generationModels.mjs`、`server/generationProvider.mjs`
+- 尺寸：`src/domain/generationOutputSize.ts`、`server/generationOutputSize.mjs`、`server/generationModels.mjs`、`server/generationProvider.mjs`
 - 验证：先跑被改模块测试，再 `npm test`、`npm run check:architecture`、`npm run check:security`、`npm run build`、`git diff --check`

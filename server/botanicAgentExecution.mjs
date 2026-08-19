@@ -220,7 +220,7 @@ function workflowForBranch({ run, branch, parentNode, recipe, jobId, branchIndex
     position: { x: generateNode.position.x, y: generateNode.position.y - 172 },
     draggable: true,
     selected: false,
-    data: { kind: 'text', label: generationKind === 'refinement' ? '精修描述' : '生成描述', content: botanicAgentBranchGenerationPrompt(recipe.prompt, undefined, run.plan.instruction) },
+    data: { kind: 'text', label: generationKind === 'refinement' ? '精修描述' : '生成描述', content: recipe.prompt },
   }
   const resultNode = {
     id: resultNodeId,
