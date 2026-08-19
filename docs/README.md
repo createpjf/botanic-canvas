@@ -19,6 +19,12 @@
 - [Prompt Pack MVP](BOTANIC_PROMPT_PACK_MVP.md)
 - [服务端迁移说明](product-server-migration.md)
 
+## 进行中的设计
+
+尚未实现，不代表当前代码行为：
+
+- [批量变体：共享提示词、按支回填、尺寸目录](superpowers/specs/2026-08-19-variation-prompt-writeback-size-design.md)
+
 ## 验收与历史记录
 
 以下文档记录特定版本或迁移阶段，不代表当前通用开发规范：
