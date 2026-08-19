@@ -1543,21 +1543,49 @@ export type BuildBotanicAgentPlanInput = {
   contextSnapshot?: BotanicAgentContextSnapshot[]
 }
 
-const batchLanguagePattern = /(?:批量|一组|一批|多个|多种|几种|多图|多张|逐一)|(?:十|[2-9]|1[0-9]|20)个|(?:两|三|四|五|六|七|八|九|十)种/u
+const variationDimensionPattern = '人物|模特|角色|场景|背景|画面|环境|肤色|动作|姿势|姿态|风格|服装|衣服|穿搭|版本|变体'
+
+function stripPreserveClauses(instruction: string) {
+  return instruction.replace(/(?:保持|保留)[^，。,；;\n]{0,40}?(?:不变|一致)/gu, ' ')
+}
+
+/** 只有明确要出多张/多取值时才走批量；「多个细节」「2个道具」「一组姿态」仍是单图。 */
+export function instructionRequestsBatchVariation(instruction: string) {
+  const text = stripPreserveClauses(String(instruction ?? '').trim())
+  if (!text) return false
+  if (/(?:批量|多图|多张|逐一|多来几|来几个|多出几)/u.test(text)) return true
+  if (new RegExp(`(?:\\d+|两|三|四|五|六|七|八|九|十)种(?:不同(?:的)?)?(?:${variationDimensionPattern})`, 'u').test(text)) return true
+  if (new RegExp(`(?:[2-9]|[1-9]\\d|十|两|三|四|五|六|七|八|九)个(?:不同(?:的)?)?(?:[\\u4e00-\\u9fff]{0,6})?(?:${variationDimensionPattern})`, 'u').test(text)) return true
+  if (new RegExp(`(?:多个|多种|几种|一组|一批)(?:不同(?:的)?)?(?:${variationDimensionPattern})`, 'u').test(text)) return true
+  return false
+}
 
 const intentPatterns: Array<[BotanicAgentIntent, RegExp]> = [
   ['redo_from_root', /(最初|原始|原配方|商品图).*(重新|重做|再做)|复用.*(最初|原始)/i],
-  ['batch_variation', batchLanguagePattern],
   ['replace_scene', /(换|替换|改变|更换).*(场景|背景)|(场景|背景).*(换|替换|改变|更换)/i],
+  ['change_pose', /(动作|姿势|姿态|肢体)/i],
   ['replace_person', /(换|替换|改变|更换).*(人物|模特)|(人物|模特).*(换|替换|改变|更换)/i],
   ['replace_product', /(换|替换|改变|更换).*(商品|服装|衣服)|(商品|服装|衣服).*(换|替换|改变|更换)/i],
-  ['change_pose', /(动作|姿势|姿态|肢体)/i],
   ['change_style', /(风格|调性|色调|质感)/i],
 ]
 
 export function inferBotanicAgentIntent(instruction: string): BotanicAgentIntent {
   const normalized = instruction.trim()
+  if (instructionRequestsBatchVariation(normalized)) return 'batch_variation'
   return intentPatterns.find(([, pattern]) => pattern.test(normalized))?.[0] ?? 'continue_generation'
+}
+
+export function botanicAgentGroupRole(intent?: BotanicAgentIntent): AssetGroup['role'] | null {
+  if (intent === 'replace_scene') return '场景'
+  if (intent === 'replace_person') return '模特'
+  if (intent === 'replace_product') return '商品'
+  if (intent === 'change_style') return '调性'
+  return null
+}
+
+/** Composer 未点快捷项时仍列出场景组；不把 requestedIntent 默认成换景。 */
+export function botanicAgentComposerGroupRole(intent?: BotanicAgentIntent): AssetGroup['role'] | null {
+  return botanicAgentGroupRole(intent ?? 'replace_scene')
 }
 
 /** 指令里已写明批量/多取值时，界面上的换景快捷项不能压过批量流。 */

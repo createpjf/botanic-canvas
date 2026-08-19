@@ -25,10 +25,24 @@ export function botanicAgentVisualGenerationPrompt(prompt, fallback = '') {
   return visual || fallbackText || text
 }
 
-const batchLanguagePattern = /(?:批量|一组|一批|多个|多种|几种|多图|多张|逐一)|(?:十|[2-9]|1[0-9]|20)个|(?:两|三|四|五|六|七|八|九|十)种/u
+const variationDimensionPattern = '人物|模特|角色|场景|背景|画面|环境|肤色|动作|姿势|姿态|风格|服装|衣服|穿搭|版本|变体'
+
+function stripPreserveClauses(instruction) {
+  return String(instruction ?? '').replace(/(?:保持|保留)[^，。,；;\n]{0,40}?(?:不变|一致)/gu, ' ')
+}
+
+export function instructionRequestsBatchVariation(instruction) {
+  const text = stripPreserveClauses(instruction).trim()
+  if (!text) return false
+  if (/(?:批量|多图|多张|逐一|多来几|来几个|多出几)/u.test(text)) return true
+  if (new RegExp(`(?:\\d+|两|三|四|五|六|七|八|九|十)种(?:不同(?:的)?)?(?:${variationDimensionPattern})`, 'u').test(text)) return true
+  if (new RegExp(`(?:[2-9]|[1-9]\\d|十|两|三|四|五|六|七|八|九)个(?:不同(?:的)?)?(?:[\\u4e00-\\u9fff]{0,6})?(?:${variationDimensionPattern})`, 'u').test(text)) return true
+  if (new RegExp(`(?:多个|多种|几种|一组|一批)(?:不同(?:的)?)?(?:${variationDimensionPattern})`, 'u').test(text)) return true
+  return false
+}
 
 export function resolveBotanicAgentIntent(instruction, requestedIntent) {
-  if (batchLanguagePattern.test(String(instruction ?? '').trim())) return 'batch_variation'
+  if (instructionRequestsBatchVariation(instruction)) return 'batch_variation'
   return requestedIntent
 }
 
@@ -51,18 +65,31 @@ const axisCatalog = [
   { key: 'garment', label: '服装', names: ['服装', '衣服', '球衣'], promptDelta: (value) => `服装替换为${value}，保持人物身份与场景不变。` },
 ]
 
-const vagueValuePattern = /^(?:各种|多种|一些|任意|几个|多图|多张|变体|版本|图片|生成|人物|模特|场景|背景|肤色)$/u
+const axisNameValues = new Set([
+  '人物', '模特', '角色', '场景', '背景', '画面', '环境',
+  '肤色', '动作', '姿势', '姿态', '风格', '调性', '服装', '衣服', '穿搭', '球衣',
+])
+const valueJunkPattern = /^(?:各种|多种|一些|任意|几个|多图|多张|变体|版本|图片|生成|层次|细节|道具|质感|细腻|更细腻)$/u
 const combineLanguagePattern = /组合|相乘|交叉|笛卡尔|[×x]\s*\d|全部组合|逐一组合/u
+const chineseCountByToken = {
+  两: 2, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10,
+}
 const groupRoleByKey = {
   scene: '场景', person: '模特', garment: '商品', style: '调性',
+}
+
+function isUsableVariationValue(label) {
+  if (!label || Array.from(label).length > 8) return false
+  if (axisNameValues.has(label) || valueJunkPattern.test(label)) return false
+  if (/[更最]/.test(label) || /(?:层次|细节|道具)$/u.test(label)) return false
+  return true
 }
 
 function uniqueLabels(values) {
   const seen = new Set()
   return values.flatMap((value) => {
     const label = clipBotanicAgentNodeTitle(value)
-    if (!label || vagueValuePattern.test(label) || seen.has(label)) return []
-    if (Array.from(label).length > 8) return []
+    if (!isUsableVariationValue(label) || seen.has(label)) return []
     seen.add(label)
     return [label]
   }).slice(0, botanicAgentVariationValueMax)
@@ -73,12 +100,42 @@ function splitValueList(raw) {
     const chunk = item
       .replace(/(?:等)?\s*(?:\d+|两|三|四|五|六|七|八|九|十)\s*(?:种|个).*$/u, '')
       .replace(/^(?:分别是|分别|包括)/u, '')
+      .replace(/^(?:换成|换为|替换为|改为|改成|使用|用)/u, '')
       .trim()
-    if (/不变|换成|保持|替换|调整|使用|生成|出图/.test(chunk)) return []
+    if (/不变|保持/.test(chunk)) return []
     const parts = chunk.split(/(?:(?<=\S)和(?=\S))/u).map((part) => part.trim()).filter(Boolean)
     if (parts.length === 2 && parts.every((part) => Array.from(part).length <= 8)) return parts
     return chunk ? [chunk] : []
   }))
+}
+
+function parseCountToken(token) {
+  if (chineseCountByToken[token] != null) return chineseCountByToken[token]
+  const count = Number(token)
+  return Number.isInteger(count) && count >= 2 && count <= botanicAgentVariationBranchLimit ? count : null
+}
+
+function statedAxisCount(text, names) {
+  for (const name of names) {
+    const patterns = [
+      new RegExp(`(\\d+|两|二|三|四|五|六|七|八|九|十)\\s*(?:种|个)${name}`, 'u'),
+      new RegExp(`${name}[^。；\\n]{0,16}?(\\d+|两|二|三|四|五|六|七|八|九|十)\\s*(?:种|个)`, 'u'),
+    ]
+    for (const pattern of patterns) {
+      const match = text.match(pattern)
+      if (!match) continue
+      const count = parseCountToken(match[1])
+      if (count != null) return count
+    }
+  }
+  return null
+}
+
+function axisCountMismatch(axis, instruction) {
+  if (axis.values.length < botanicAgentVariationValueMin) return false
+  const item = axisCatalog.find((entry) => entry.key === axis.key)
+  const count = statedAxisCount(instruction, item ? [item.label, ...item.names] : [axis.label])
+  return count != null && axis.values.length !== count
 }
 
 function extractEnumeration(text, label) {
@@ -138,7 +195,7 @@ function parseAxes(instruction) {
     if (!item.names.some((name) => text.includes(name))) continue
     const values = extractEnumeration(text, item.label)
     if (seen.has(item.key)) continue
-    if (values.length < botanicAgentVariationValueMin && !batchLanguagePattern.test(text)) continue
+    if (values.length < botanicAgentVariationValueMin && !instructionRequestsBatchVariation(text)) continue
     seen.add(item.key)
     found.push(axisFromCatalog(item, values))
   }
@@ -161,10 +218,6 @@ function fillAxisValues(axes, answers) {
     return [looksLikeSkin ? axisFromCatalog(skin, listed) : customAxis(listed)]
   }
   return axes
-}
-
-export function instructionRequestsBatchVariation(instruction) {
-  return batchLanguagePattern.test(instruction.trim())
 }
 
 export function expandBotanicAgentVariationBranches(spec) {
@@ -247,8 +300,8 @@ export function resolveBotanicAgentVariationRequest(input) {
 
   const combineAnswer = input.clarificationAnswers?.variation_combine?.trim()
   const combineRequested = combineAnswer === 'combine' || (combineAnswer !== 'first' && combineLanguagePattern.test(instruction))
-  const readyAxes = axes.filter((axis) => axis.values.length >= botanicAgentVariationValueMin)
-  const incomplete = axes.find((axis) => axis.key && axis.values.length < botanicAgentVariationValueMin)
+  const readyAxes = axes.filter((axis) => axis.values.length >= botanicAgentVariationValueMin && !axisCountMismatch(axis, instruction))
+  const incomplete = axes.find((axis) => axis.key && (axis.values.length < botanicAgentVariationValueMin || axisCountMismatch(axis, instruction)))
     ?? (wantsBatch && !axes.length ? { key: 'custom', label: '变体', values: [] } : undefined)
 
   if (readyAxes.length >= 2 && combineRequested) {
@@ -266,7 +319,7 @@ export function resolveBotanicAgentVariationRequest(input) {
     return { kind: 'ready', spec: { axes: readyAxes, combine: true } }
   }
 
-  if (incomplete && incomplete.values.length < botanicAgentVariationValueMin && readyAxes.length < 1) {
+  if (incomplete && readyAxes.length < 1) {
     return {
       kind: 'ask',
       clarification: createVariationClarification({

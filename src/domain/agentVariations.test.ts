@@ -29,6 +29,49 @@ test('多个、几种、批量、一组会识别为批量变体，不压成换�
   assert.equal(resolveBotanicAgentIntent('换成海边场景', 'replace_scene'), 'replace_scene')
 })
 
+test('单图指令里的多个、2个、一组不能当成批量', () => {
+  assert.equal(instructionRequestsBatchVariation('保持多个细节不变，把背景换成海边黄昏'), false)
+  assert.equal(instructionRequestsBatchVariation('画面里加2个道具，保持人物不变'), false)
+  assert.equal(instructionRequestsBatchVariation('模特换一组更自然的姿态'), false)
+  assert.equal(inferBotanicAgentIntent('保持多个细节不变，把背景换成海边黄昏'), 'replace_scene')
+  assert.equal(inferBotanicAgentIntent('模特换一组更自然的姿态'), 'change_pose')
+  assert.equal(resolveBotanicAgentIntent('保持多个细节不变，把背景换成海边黄昏', 'replace_scene'), 'replace_scene')
+  assert.equal(resolveBotanicAgentVariationRequest({
+    instruction: '保持多个细节不变，把背景换成海边黄昏',
+    requestedIntent: 'replace_scene',
+  }).kind, 'none')
+  assert.equal(resolveBotanicAgentVariationRequest({
+    instruction: '画面里加2个道具，保持人物不变',
+  }).kind, 'none')
+  assert.equal(resolveBotanicAgentVariationRequest({
+    instruction: '模特换一组更自然的姿态',
+  }).kind, 'none')
+})
+
+test('修饰语和轴名不能当成变体取值，缺枚举时要追问', () => {
+  assert.equal(resolveBotanicAgentVariationRequest({
+    instruction: '让服装质感更细腻，多种材质层次',
+  }).kind, 'none')
+
+  const vague = resolveBotanicAgentVariationRequest({
+    instruction: '肤色、场景、动作、风格、人物、服装都多来几个',
+  })
+  assert.equal(vague.kind, 'ask')
+  assert.equal(vague.kind === 'ask' && /人物肤色为动作|动作调整为风格|场景替换为动作/.test(JSON.stringify(vague)), false)
+
+  const scenes = resolveBotanicAgentVariationRequest({
+    instruction: '换成海边、森林、街道三个场景',
+  })
+  assert.equal(scenes.kind, 'ready')
+  assert.deepEqual(scenes.spec.axes[0].values.map((value) => value.label), ['海边', '森林', '街道'])
+
+  const mismatched = resolveBotanicAgentVariationRequest({
+    instruction: '海边、森林三个场景',
+  })
+  assert.equal(mismatched.kind, 'ask')
+  assert.match(mismatched.clarification.question, /场景/)
+})
+
 test('各种肤色没有具体取值时必须追问，不能假装已批量', () => {
   const request = resolveBotanicAgentVariationRequest({
     instruction: '多个肤色人物、多图',

@@ -1,5 +1,6 @@
 import { type DragEvent, useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from 'react'
 import {
+  botanicAgentComposerGroupRole,
   botanicAgentBranchStatusLabel,
   botanicAgentActionReceiptMessageId,
   botanicAgentContextSnapshotNodeIds,
@@ -147,14 +148,6 @@ const agentQuickActions: Array<{ intent: BotanicAgentIntent; label: string; inst
   { intent: 'replace_product', label: '换商品', instruction: '保持人物、场景和风格不变，替换服装或商品。' },
   { intent: 'redo_from_root', label: '原配方重做', instruction: '复用原始参考素材、提示词和参数，重新生成独立首图。' },
 ]
-
-function agentGroupRole(intent?: BotanicAgentIntent): AssetGroup['role'] | null {
-  if (intent === 'replace_scene') return '场景'
-  if (intent === 'replace_person') return '模特'
-  if (intent === 'replace_product') return '商品'
-  if (intent === 'change_style') return '调性'
-  return null
-}
 
 function AgentRunActionIcon({ label }: { label: string }) {
   if (label.includes('结果')) return <GalleryIcon />
@@ -401,7 +394,7 @@ export default function AgentWorkspace({
   const contextMenuId = useId()
   const modeMenuId = useId()
   const runtimeStepsId = useId()
-  const compatibleGroups = groups.filter((group) => group.role === agentGroupRole(intent) && group.assetIds.length)
+  const compatibleGroups = groups.filter((group) => group.role === botanicAgentComposerGroupRole(intent) && group.assetIds.length)
   const contextItems = contextOptions.filter((item) => session?.contextNodeIds.includes(item.id))
   const imageContextOptions = contextOptions.filter((item) => (
     (item.kind === '素材' || item.kind === '结果')
