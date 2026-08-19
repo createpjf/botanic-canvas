@@ -684,6 +684,7 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
   const addAssetsToGroup = useCanvasStore((state) => state.addAssetsToGroup)
   const addGenerateNode = useCanvasStore((state) => state.addGenerateNode)
   const updateGenerateNode = useCanvasStore((state) => state.updateGenerateNode)
+  const updateTextNode = useCanvasStore((state) => state.updateTextNode)
   const runGraphGeneration = useCanvasStore((state) => state.runGraphGeneration)
   const runBatchVariation = useCanvasStore((state) => state.runBatchVariation)
   const retryBatchVariationItem = useCanvasStore((state) => state.retryBatchVariationItem)
@@ -1762,6 +1763,8 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
       .map((nodeId) => document.nodes.find((node) => node.id === nodeId))
       .filter((node): node is CanvasNode => Boolean(node))
     : []
+  const selectedGeneratePromptTexts = selectedGenerateInputs.filter((node) => node.type === 'text')
+  const selectedGeneratePromptText = selectedGeneratePromptTexts.length === 1 ? selectedGeneratePromptTexts[0] : undefined
   const selectedGenerateReferenceNodeIds = new Set(selectedGenerateInputs
     .filter((node) => node.type === 'asset')
     .map((node) => node.id))
@@ -2243,7 +2246,9 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
             projectId={document.id}
             mode="generate"
             nodeLabel={selectedGenerateLabel ?? selectedGenerateData.label}
-            prompt={selectedGenerateData.prompt}
+            prompt={selectedGeneratePromptText
+              ? (selectedGeneratePromptText.data as TextNodeData).content
+              : selectedGenerateData.prompt}
             batchCount={selectedGenerateData.batchCount}
             maximumBatchCount={maximumBatchCount}
             settings={selectedGenerateData.settings}
@@ -2256,7 +2261,8 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
             layout={composerLayout}
             onLayoutChange={setComposerLayout}
             onPromptChange={(prompt) => {
-              updateGenerateNode(selectedGenerate.id, { prompt })
+              if (selectedGeneratePromptText) updateTextNode(selectedGeneratePromptText.id, prompt)
+              else updateGenerateNode(selectedGenerate.id, { prompt })
               clearGenerationError()
             }}
             onBatchCountChange={(batchCount) => {

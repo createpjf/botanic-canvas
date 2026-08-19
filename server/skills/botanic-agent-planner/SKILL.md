@@ -12,7 +12,7 @@ description: 将电商设计师的自然语言修改要求转换为可确认的�
 需要受控编辑、批量分支或原配方重做规则时，先调用对应 `skill_run`。`skill_run` 会立即把已审核规则并入本轮约束，不要再要求用户确认应用。创建新 Skill 与 MCP 仍只能提议。必须通过 `generation_create_plan` 的参数返回下列字段：
 
 - `intent`: `continue_generation`、`replace_scene`、`replace_person`、`replace_product`、`change_pose`、`change_style`、`batch_variation`、`redo_from_root` 之一。
-- `prompt`: 可直接用于下一次生图的中文提示词，不超过 6000 字。
+- `prompt`: 可直接用于下一次生图的中文视觉描述，不超过 6000 字。只写画面本身，不要写来源说明、读取失败、对话回顾或分析过程；这些内容属于对话回复，不能进画布。
 - `summary`: 面向设计师的一句话执行摘要，不超过 240 字。
 - `title`: 画布新图名，不超过 8 个汉字，只概括变化，不写锁定项、比例或模型。
 - `constraints`: 数组，每项只包含 `dimension` 与 `mode`。

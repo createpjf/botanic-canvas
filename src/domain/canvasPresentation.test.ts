@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Edge } from '@xyflow/react'
-import { canvasZoomMode, generationTaskErrorMessage, generationTaskFeedback, generationTaskResultLabel, planResultGroupPresentation, traceCanvasLineage } from './canvasPresentation.ts'
+import { canvasZoomMode, generationResultNodeLabel, generationTaskErrorMessage, generationTaskFeedback, generationTaskResultLabel, planResultGroupPresentation, traceCanvasLineage } from './canvasPresentation.ts'
 
 test('canvasZoomMode applies stable semantic zoom bands', () => {
   assert.equal(canvasZoomMode(1), 'detail')
@@ -27,6 +27,33 @@ test('generationTaskResultLabel distinguishes expired login from a real submissi
     error: '任务提交超过 5 分钟，未进入生成队列。请重试。',
     currentLabel: '首图候选 01',
   }), '首图候选 · 提交超时')
+})
+
+test('提交成功后保留已有新图名，不用状态文案覆盖', () => {
+  assert.equal(generationTaskResultLabel({
+    generationKind: 'refinement',
+    status: 'succeeded',
+    currentLabel: '换景调光',
+  }), '换景调光')
+})
+
+test('新图名用短标题，不用 Prompt 原文', () => {
+  assert.equal(generationResultNodeLabel({
+    kind: 'refinement',
+    title: '换景调光',
+    prompt: '说明一下来源：当前项目上下文里我没有读取到原图。保留模特，把背景换成撒哈拉沙漠柔和自然光。',
+  }), '换景调光')
+  assert.equal(generationResultNodeLabel({
+    kind: 'generation',
+    generateLabel: '换景调光',
+    prompt: '把原图里的女孩换成短发女孩，手持花瓶站在窗边。',
+  }), '换景调光')
+  const labeled = generationResultNodeLabel({
+    kind: 'generation',
+    prompt: '把原图里的女孩换成短发女孩，手持花瓶站在窗边柔和自然光。',
+  })
+  assert.notEqual(labeled, '把原图里的女孩换成短发女孩，手持花瓶站在窗边柔和自然光。')
+  assert.ok(Array.from(labeled).length <= 8)
 })
 
 test('提交状态未知时保持可恢复状态，不误报任务失败', () => {

@@ -104,6 +104,7 @@ test('服务端从持久化 Agent Run 创建独立工作流占位与可执行 Ge
   for (const [index, workflow] of result.workflows.entries()) {
     assert.equal(workflow.promptNode.type, 'text')
     assert.equal(workflow.promptNode.data.content, persistentRun().plan.prompt)
+    assert.equal(workflow.generateNode.data.prompt, '')
     assert.deepEqual(workflow.generateNode.data.agentRun, { runId: 'agent-run-1', branchId: persistentRun().branches[index].id })
     assert.deepEqual(workflow.resultNode.data.agentRun, workflow.generateNode.data.agentRun)
     assert.equal(result.document.edges.some((edge) => edge.data?.role === 'prompt'
@@ -137,6 +138,23 @@ test('单分支计划按总候选数提交，而不是误用每素材候选数',
     models, maximumBatchCount: 8, maximumReferenceBytes: 8 * 1024 * 1024,
   })
   assert.equal(result.jobs[0].batchCount, 3)
+})
+
+test('画布文本节点去掉旁白，生成节点不复制 Prompt', () => {
+  const run = persistentRun()
+  run.plan.prompt = '说明一下来源：当前项目上下文里我没有读取到原图。'
+  run.plan.instruction = '保持人物服装，换成海边自然光'
+  run.branches = [run.branches[0]]
+  const result = prepareAgentRunExecution({
+    run, document: projectDocument(), now: 100,
+    jobIdForBranch: (branch) => `job-${branch.id}`,
+    models, maximumBatchCount: 8, maximumReferenceBytes: 8 * 1024 * 1024,
+  })
+  assert.equal(result.workflows[0].generateNode.data.prompt, '')
+  assert.equal(result.workflows[0].promptNode.data.content, '保持人物服装，换成海边自然光')
+  assert.equal(result.jobs[0].rawInput.prompt, '保持人物服装，换成海边自然光')
+  assert.equal(result.jobs[0].rawInput.recipe.prompt, '保持人物服装，换成海边自然光')
+  assert.equal(result.jobs[0].generationRecipe.prompt, '保持人物服装，换成海边自然光')
 })
 
 test('首次生成从权威画布解析图片上下文并复用普通 Generation Job 链路', () => {

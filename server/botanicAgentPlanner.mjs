@@ -352,6 +352,19 @@ function clipNodeTitle(value) {
   return Array.from(value.replace(/[\s·.,，。:：；;、\-_/\\]+/gu, '')).slice(0, NODE_TITLE_LIMIT).join('')
 }
 
+const canvasPromptMetaPattern = /^(?:说明一下(?:来源)?|来源说明|补充说明)[:：]/u
+const canvasPromptMetaBodyPattern = /(?:我没有读取到|当前项目上下文里|根据(?:之前的)?对话上下文)/u
+
+export function visualGenerationPrompt(prompt, fallback = '') {
+  const text = typeof prompt === 'string' ? prompt.trim() : ''
+  const blocks = text.split(/\n{2,}/u).map((block) => block.trim()).filter(Boolean)
+  const visual = blocks
+    .filter((block) => !canvasPromptMetaPattern.test(block) && !canvasPromptMetaBodyPattern.test(block))
+    .join('\n\n')
+    .trim()
+  return visual || (typeof fallback === 'string' ? fallback.trim() : '') || text
+}
+
 function summarizeNodeTitle(intent, constraints, preferred) {
   const named = clipNodeTitle(preferred)
   if (named) return named
@@ -400,7 +413,7 @@ function normalizeProviderPlan(raw, input) {
     ...(input.creativeBrief ? { creativeBrief: structuredClone(input.creativeBrief) } : {}),
     selectedResultNodeId: input.selectedResult.nodeId,
     constraints,
-    prompt,
+    prompt: visualGenerationPrompt(prompt, input.instruction),
     settings: input.settings,
     output: batchCount
       ? { mode: 'batch_by_asset', count: batchCount, candidatesPerItem: 1 }

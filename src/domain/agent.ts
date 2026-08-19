@@ -1660,6 +1660,85 @@ export function summarizeBotanicAgentNodeTitle(
   return base
 }
 
+export function botanicAgentResultGroupTitle(
+  plan?: Pick<BotanicAgentPlan, 'intent' | 'constraints'> & { title?: string; summary?: string },
+): string {
+  if (!plan) return '生成批次'
+  return summarizeBotanicAgentNodeTitle(plan)
+}
+
+export const botanicAgentSkillSummaryLimit = 28
+
+function botanicAgentSkillFrontmatterDescription(block: string) {
+  const lines = block.split(/\r?\n/)
+  const start = lines.findIndex((line) => /^description\s*:/i.test(line))
+  if (start < 0) return ''
+  const remainder = lines[start].replace(/^description\s*:/i, '').trim()
+  const blockScalar = remainder.match(/^(>|\\|)\+?-?$/)
+  if (blockScalar) {
+    const collected: string[] = []
+    for (let index = start + 1; index < lines.length; index += 1) {
+      const line = lines[index]
+      if (!/^\s/.test(line)) break
+      collected.push(line.trim())
+    }
+    return (blockScalar[1] === '>' ? collected.join(' ') : collected.join('\n'))
+      .replace(/\s+/g, ' ')
+      .trim()
+  }
+  return remainder.replace(/^['"]|['"]$/g, '').trim()
+}
+
+function botanicAgentSkillDocument(instructions: string) {
+  const text = instructions.trim()
+  const frontmatter = text.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)
+  if (!frontmatter) return { description: '', body: text }
+  return {
+    description: botanicAgentSkillFrontmatterDescription(frontmatter[1]),
+    body: text.slice(frontmatter[0].length).trim(),
+  }
+}
+
+function botanicAgentSkillLead(body: string) {
+  const compact = body.replace(/^#+\s+[^\n]+\n+/, '').replace(/\s+/g, ' ').trim()
+  return compact.match(/^(.+?[。！？!?])/)?.[1]?.trim() || compact
+}
+
+function clipBotanicAgentSkillSummary(value: string) {
+  const compact = value.replace(/\s+/g, ' ').trim()
+  const characters = Array.from(compact)
+  if (characters.length <= botanicAgentSkillSummaryLimit) return compact
+  return `${characters.slice(0, botanicAgentSkillSummaryLimit).join('')}…`
+}
+
+/** 技能列表的一句用途：优先 YAML description，否则取正文首句。 */
+export function botanicAgentSkillSummary(instructions: string): string {
+  const document = botanicAgentSkillDocument(instructions)
+  return clipBotanicAgentSkillSummary(document.description || botanicAgentSkillLead(document.body))
+}
+
+/** 技能展开正文：去掉 YAML frontmatter，保留可读规则。 */
+export function botanicAgentSkillBody(instructions: string): string {
+  return botanicAgentSkillDocument(instructions).body
+}
+
+const canvasPromptMetaPattern = /^(?:说明一下(?:来源)?|来源说明|补充说明)[:：]/u
+const canvasPromptMetaBodyPattern = /(?:我没有读取到|当前项目上下文里|根据(?:之前的)?对话上下文)/u
+
+/**
+ * 画布文本节点和生图任务只接受视觉描述。
+ * 模型把读取失败、对话回顾写进 Prompt 时，这些旁白留在对话里，不进画布。
+ */
+export function botanicAgentVisualGenerationPrompt(prompt: string, fallback = ''): string {
+  const text = prompt.trim()
+  const blocks = text.split(/\n{2,}/u).map((block) => block.trim()).filter(Boolean)
+  const visual = blocks
+    .filter((block) => !canvasPromptMetaPattern.test(block) && !canvasPromptMetaBodyPattern.test(block))
+    .join('\n\n')
+    .trim()
+  return visual || fallback.trim() || text
+}
+
 export function botanicAgentBatchBranchTitles(
   plan: Pick<BotanicAgentPlan, 'intent' | 'constraints'> & { title?: string },
   preferredNames: Array<string | undefined>,

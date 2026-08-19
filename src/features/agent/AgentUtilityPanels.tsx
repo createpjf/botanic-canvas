@@ -3,6 +3,10 @@ import {
   botanicAgentArtifactModel,
   botanicAgentArtifactPrompt,
   botanicAgentArtifactTimestamp,
+  botanicAgentResultGroupTitle,
+  botanicAgentSkillBody,
+  botanicAgentSkillSummary,
+  clipBotanicAgentNodeTitle,
   resolveBotanicAgentResultSelection,
   type BotanicAgentArtifact,
   type BotanicAgentMemoryItem,
@@ -12,7 +16,7 @@ import {
 import { BotanicSelect } from '../../components/BotanicSelect'
 import { modelDisplayLabel } from '../../components/generationModelPresentation'
 import type { GenerationModelOption } from '../../domain/canvas'
-import { ArrowUpRightIcon, CopyIcon, DeleteIcon, DownloadIcon, FocusIcon, FolderOutlineIcon, SparkleIcon } from '../../components/BotanicIcons'
+import { CopyIcon, DeleteIcon, FocusIcon, SparkleIcon } from '../../components/BotanicIcons'
 import type { CollaborationActivity, CollaborationDocumentChange } from '../../domain/collaborationActivity'
 import { downloadMedia } from '../../lib/mediaDownload'
 import { agentArtifactKindLabel, agentMemoryKindLabel, agentRunFeedback, AgentPanelBackButton } from './AgentWorkspaceParts'
@@ -92,13 +96,17 @@ function isMediaArtifact(artifact: BotanicAgentArtifact) {
 function AgentResultPrompt({ prompt }: { prompt: string }) {
   const [copied, setCopied] = useState(false)
   return <details className="agent-result-panel__prompt">
-    <summary>Prompt</summary>
+    <summary>对照 Prompt</summary>
     <pre>{prompt}</pre>
     <button type="button" onClick={() => {
       if (!navigator.clipboard?.writeText) return
       void navigator.clipboard.writeText(prompt).then(() => setCopied(true)).catch(() => setCopied(false))
     }}><CopyIcon /><span>{copied ? '已复制' : '复制 Prompt'}</span></button>
   </details>
+}
+
+function artifactShortLabel(artifact: BotanicAgentArtifact) {
+  return clipBotanicAgentNodeTitle(artifact.label) || artifact.label || '生成结果'
 }
 
 export function AgentResultPanel({
@@ -134,15 +142,13 @@ export function AgentResultPanel({
   onLocateConversation: (runId: string) => void
   onBackToConversation: () => void
 }) {
-  // 结果面板的主体是“生成出来的画面”；Skill / MCP 的文本产物退到次级页签，
-  // 不再和图片、视频抢同一个栅格。
+  // 一级直接看画面；点图才进入该项的操作层。Skill / MCP 文本产物仍在次级页签。
   const [tab, setTab] = useState<'media' | 'tool'>('media')
   const [kindFilter, setKindFilter] = useState<'all' | 'image' | 'video'>('all')
   const [modelFilter, setModelFilter] = useState('')
   const [libraryFilter, setLibraryFilter] = useState<'all' | 'saved' | 'unsaved'>('all')
   const [selectedIds, setSelectedIds] = useState<string[]>([])
-  // 分组展开是每组独立的显式状态：默认只展开最新一组，用户的展开不会被回弹。
-  const [groupOverrides, setGroupOverrides] = useState<Record<string, boolean>>({})
+  const [previewId, setPreviewId] = useState<string | null>(null)
 
   const mediaArtifacts = useMemo(() => artifacts.filter(isMediaArtifact), [artifacts])
   const toolArtifacts = useMemo(() => artifacts.filter((artifact) => !isMediaArtifact(artifact)), [artifacts])
@@ -167,13 +173,13 @@ export function AgentResultPanel({
     for (const artifact of filteredArtifacts) {
       const runId = artifact.provenance.runId
       const id = runId ?? `action:${artifact.provenance.actionId}`
-      const label = runId ? runs.find((run) => run.id === runId)?.plan.summary ?? '生成批次' : '工具产物'
+      const plan = runId ? runs.find((run) => run.id === runId)?.plan : undefined
+      const label = runId ? botanicAgentResultGroupTitle(plan) : '工具产物'
       const group = grouped.get(id) ?? { id, label, artifacts: [], updatedAt: 0 }
       group.artifacts.push(artifact)
       group.updatedAt = Math.max(group.updatedAt, botanicAgentArtifactTimestamp(artifact))
       grouped.set(id, group)
     }
-    // 索引与本地读模型合并后顺序不定，这里统一按批次最新时间倒序。
     return [...grouped.values()]
       .map((group) => ({
         ...group,
@@ -189,6 +195,7 @@ export function AgentResultPanel({
   const latestFeedback = latestRun
     ? agentRunFeedback(latestRun, artifacts, availableNodeIds)
     : undefined
+  const preview = previewId ? artifacts.find((artifact) => artifact.id === previewId) : undefined
 
   useEffect(() => {
     setSelectedIds((current) => current.filter((id) => artifacts.some((artifact) => artifact.id === id)))
@@ -197,6 +204,10 @@ export function AgentResultPanel({
   useEffect(() => {
     if (modelFilter && !modelOptions.includes(modelFilter)) setModelFilter('')
   }, [modelFilter, modelOptions])
+
+  useEffect(() => {
+    if (previewId && !artifacts.some((artifact) => artifact.id === previewId)) setPreviewId(null)
+  }, [artifacts, previewId])
 
   const toggleSelection = (artifactId: string) => {
     setSelectedIds((current) => current.includes(artifactId)
@@ -211,20 +222,68 @@ export function AgentResultPanel({
       : [...current, ...groupIds.filter((id) => !current.includes(id))])
   }
 
+  const openTab = (next: 'media' | 'tool') => {
+    setTab(next)
+    setPreviewId(null)
+  }
+
+  if (preview) {
+    const locatableNodeId = preview.provenance.sourceNodeIds?.find((nodeId) => availableNodeIds.has(nodeId))
+    const media = isMediaArtifact(preview)
+    const canContinue = Boolean(locatableNodeId || media)
+    const prompt = botanicAgentArtifactPrompt(preview)
+    const model = botanicAgentArtifactModel(preview)
+    const shortLabel = artifactShortLabel(preview)
+    const modelLabel = model
+      ? modelDisplayLabel(generationModels.find((option) => option.id === model)) || model
+      : preview.provenance.toolName
+    return <section className="agent-result-panel is-detail" aria-label={`${shortLabel} 详情`}>
+      <header>
+        <AgentPanelBackButton label="返回结果" onClick={() => setPreviewId(null)} />
+        <div><small>ARTIFACT</small><h2>{shortLabel}</h2></div>
+      </header>
+      <div className="agent-result-panel__detail">
+        {media ? <div className="agent-result-panel__hero">
+          {preview.kind === 'image' ? <img src={preview.url} alt={shortLabel} /> : <video src={preview.url} controls playsInline />}
+        </div> : <div className="agent-result-panel__document is-detail"><span>{preview.kind === 'workflow' ? '⌘' : 'Aa'}</span><p>{preview.content ?? preview.label}</p></div>}
+        <p className="agent-result-panel__detail-meta">
+          {agentArtifactKindLabel(preview)}
+          {modelLabel ? ` · ${modelLabel}` : ''}
+          {locatableNodeId ? ' · 已回填画布' : ''}
+        </p>
+        <div className="agent-result-panel__detail-actions">
+          {locatableNodeId ? <button type="button" onClick={() => onLocateNode(locatableNodeId)}>定位画布</button> : null}
+          {canContinue ? <button type="button" onClick={() => onContinue(preview)}>继续改</button> : null}
+          {media ? <button type="button" disabled={preview.metadata?.savedToLibrary === true} onClick={() => onSaveArtifact(preview)}>{preview.metadata?.savedToLibrary === true ? '已入库' : '入库'}</button> : null}
+          {media ? <button type="button" onClick={() => void downloadMedia(preview.url!, preview.label, preview.kind === 'video' ? 'video' : 'image')}>下载</button> : preview.url ? <a href={preview.url} target="_blank" rel="noreferrer">打开</a> : null}
+        </div>
+        {prompt ? <AgentResultPrompt prompt={prompt} /> : null}
+      </div>
+    </section>
+  }
+
   return <section className="agent-result-panel" aria-label="Agent 结果与文件">
     <header><AgentPanelBackButton onClick={onBackToConversation} /><div><small>AGENT OUTPUTS</small><h2>结果与文件</h2></div><span>{mediaArtifacts.length} 项</span></header>
-    <p>生成的图片与视频按任务批次归档，并保留生成它们的 Prompt；画布节点和版本血缘不变。</p>
     {artifactIndexStatus === 'loading' ? <div className="agent-result-panel__index-status" role="status">正在读取历史 Artifact Index…</div> : null}
     {artifactIndexStatus === 'error' ? <div className="agent-result-panel__index-status is-warning" role="status">历史索引暂不可用，已显示当前画布结果。</div> : null}
     {latestFeedback ? <div className={`agent-result-panel__run-status is-${latestFeedback.tone}`} role="status"><strong>{latestFeedback.label}</strong><span>{latestFeedback.detail}</span></div> : null}
     <div className="agent-result-panel__tabs" role="group" aria-label="结果分区">
-      <button type="button" aria-pressed={tab === 'media'} className={tab === 'media' ? 'is-active' : ''} onClick={() => setTab('media')}>生成结果<b>{mediaArtifacts.length}</b></button>
-      <button type="button" aria-pressed={tab === 'tool'} className={tab === 'tool' ? 'is-active' : ''} onClick={() => setTab('tool')}>工具产物<b>{toolArtifacts.length}</b></button>
+      <button type="button" aria-pressed={tab === 'media'} className={tab === 'media' ? 'is-active' : ''} onClick={() => openTab('media')}>生成结果<b>{mediaArtifacts.length}</b></button>
+      <button type="button" aria-pressed={tab === 'tool'} className={tab === 'tool' ? 'is-active' : ''} onClick={() => openTab('tool')}>工具产物<b>{toolArtifacts.length}</b></button>
     </div>
     {tab === 'media' ? <div className="agent-result-panel__filters" role="group" aria-label="结果筛选">
       {([['all', '全部'], ['image', '图片'], ['video', '视频']] as const).map(([value, label]) => <button key={value} type="button" aria-pressed={kindFilter === value} className={kindFilter === value ? 'is-active' : ''} onClick={() => setKindFilter(value)}>{label}</button>)}
-      <span className="agent-result-panel__filters-divider" aria-hidden="true" />
-      {([['all', '不限入库'], ['unsaved', '未入库'], ['saved', '已入库']] as const).map(([value, label]) => <button key={value} type="button" aria-pressed={libraryFilter === value} className={libraryFilter === value ? 'is-active' : ''} onClick={() => setLibraryFilter(value)}>{label}</button>)}
+      <BotanicSelect
+        className="agent-result-panel__library-select"
+        value={libraryFilter}
+        ariaLabel="按入库状态筛选"
+        options={[
+          { value: 'all', label: '不限入库' },
+          { value: 'unsaved', label: '未入库' },
+          { value: 'saved', label: '已入库' },
+        ]}
+        onChange={(value) => setLibraryFilter(value as 'all' | 'saved' | 'unsaved')}
+      />
       {modelOptions.length > 1 ? <BotanicSelect
         className="agent-result-panel__model-select"
         value={modelFilter}
@@ -250,47 +309,32 @@ export function AgentResultPanel({
       </div>
     </div> : null}
     <div className="agent-result-panel__groups">
-      {groups.map((group, index) => <details
-        key={group.id}
-        className="agent-result-group"
-        open={groupOverrides[group.id] ?? index === 0}
-        onToggle={(event) => {
-          const open = event.currentTarget.open
-          setGroupOverrides((current) => current[group.id] === open ? current : { ...current, [group.id]: open })
-        }}
-      >
-        <summary>
-          <span><strong>{group.label}</strong><small>{group.artifacts.length} 项</small></span>
-          <em>{group.artifacts.some((artifact) => artifact.provenance.sourceNodeIds?.some((nodeId) => availableNodeIds.has(nodeId))) ? '已回填画布' : '查看结果'}</em>
-        </summary>
-        <header className="agent-result-group__actions"><span aria-hidden="true" /> <div>
-          {conversationRunIds.includes(group.id) ? <button type="button" onClick={() => onLocateConversation(group.id)}>来源对话</button> : null}
-          <button type="button" onClick={() => toggleGroup(group.artifacts)}>{group.artifacts.every((artifact) => selectedIds.includes(artifact.id)) ? '取消本组' : '选择本组'}</button>
-        </div></header>
-        <div className="agent-result-panel__grid">
-          {group.artifacts.map((artifact) => {
-            const locatableNodeId = artifact.provenance.sourceNodeIds?.find((nodeId) => availableNodeIds.has(nodeId))
-            const media = isMediaArtifact(artifact)
-            const canContinue = Boolean(locatableNodeId || media)
-            const selected = selectedIds.includes(artifact.id)
-            const prompt = botanicAgentArtifactPrompt(artifact)
-            const model = botanicAgentArtifactModel(artifact)
-            return <article key={artifact.id} className={selected ? 'is-selected' : ''}>
-              <button type="button" className="agent-result-panel__select" aria-pressed={selected} aria-label={`${selected ? '取消选择' : '选择'} ${artifact.label}`} title={selected ? '取消选择' : '选择'} onClick={() => toggleSelection(artifact.id)}>{selected ? '✓' : ''}</button>
-              {media ? <div className="agent-result-panel__preview">
-                {artifact.kind === 'image' ? <img src={artifact.url} alt="" /> : <video src={artifact.url} muted playsInline />}
-              </div> : <div className="agent-result-panel__document"><span>{artifact.kind === 'workflow' ? '⌘' : 'Aa'}</span><p>{artifact.content ?? artifact.label}</p></div>}
-              <div className="agent-result-panel__meta"><span><strong>{artifact.label}</strong><small>{agentArtifactKindLabel(artifact)}{model ? ` · ${modelDisplayLabel(generationModels.find((option) => option.id === model)) || model}` : ` · ${artifact.provenance.toolName}`}{locatableNodeId ? ' · 已回填画布' : ''}</small></span><div>
-                {locatableNodeId ? <button type="button" aria-label={`在画布定位 ${artifact.label}`} title="在画布定位" onClick={() => onLocateNode(locatableNodeId)}><FocusIcon /></button> : null}
-                {canContinue ? <button type="button" aria-label={`基于 ${artifact.label} 继续修改`} title="继续修改" onClick={() => onContinue(artifact)}><SparkleIcon /></button> : null}
-                {media ? <button type="button" aria-label={`下载 ${artifact.label}`} title="下载" onClick={() => void downloadMedia(artifact.url!, artifact.label, artifact.kind === 'video' ? 'video' : 'image')}><DownloadIcon /></button> : artifact.url ? <a href={artifact.url} target="_blank" rel="noreferrer" aria-label={`打开 ${artifact.label}`} title="打开"><ArrowUpRightIcon /></a> : null}
-                {media ? <button type="button" aria-label={artifact.metadata?.savedToLibrary === true ? `${artifact.label} 已入库` : `将 ${artifact.label} 入库`} title={artifact.metadata?.savedToLibrary === true ? '已入库' : '存入素材库'} disabled={artifact.metadata?.savedToLibrary === true} onClick={() => onSaveArtifact(artifact)}><FolderOutlineIcon /></button> : null}
-              </div></div>
-              {prompt ? <AgentResultPrompt prompt={prompt} /> : null}
-            </article>
-          })}
-        </div>
-      </details>)}
+      {groups.map((group) => {
+        const backfilled = group.artifacts.some((artifact) => artifact.provenance.sourceNodeIds?.some((nodeId) => availableNodeIds.has(nodeId)))
+        return <section key={group.id} className="agent-result-group">
+          <header>
+            <span><strong>{group.label}</strong><small>{group.artifacts.length} 项</small></span>
+            <em>{backfilled ? '已回填画布' : '未入画布'}</em>
+            {conversationRunIds.includes(group.id) ? <button type="button" onClick={() => onLocateConversation(group.id)}>来源对话</button> : null}
+            <button type="button" onClick={() => toggleGroup(group.artifacts)}>{group.artifacts.every((artifact) => selectedIds.includes(artifact.id)) ? '取消全选' : '全选'}</button>
+          </header>
+          <div className={`agent-result-panel__grid${tab === 'tool' ? ' is-documents' : ''}`}>
+            {group.artifacts.map((artifact) => {
+              const media = isMediaArtifact(artifact)
+              const selected = selectedIds.includes(artifact.id)
+              const shortLabel = artifactShortLabel(artifact)
+              return <article key={artifact.id} className={selected ? 'is-selected' : ''}>
+                <button type="button" className="agent-result-panel__select" aria-pressed={selected} aria-label={`${selected ? '取消选择' : '选择'} ${shortLabel}`} title={selected ? '取消选择' : '选择'} onClick={() => toggleSelection(artifact.id)}>{selected ? '✓' : ''}</button>
+                <button type="button" className="agent-result-panel__open" aria-label={`查看 ${shortLabel}`} onClick={() => setPreviewId(artifact.id)}>
+                  {media ? <span className="agent-result-panel__preview">
+                    {artifact.kind === 'image' ? <img src={artifact.url} alt="" /> : <video src={artifact.url} muted playsInline />}
+                  </span> : <span className="agent-result-panel__document"><span>{artifact.kind === 'workflow' ? '⌘' : 'Aa'}</span><b>{shortLabel}</b></span>}
+                </button>
+              </article>
+            })}
+          </div>
+        </section>
+      })}
       {!filteredArtifacts.length ? <div className="agent-panel__empty">{tab === 'tool' ? '还没有 Skill / MCP 产物。' : '还没有该条件下的生成结果。'}</div> : null}
       {artifactIndexHasMore ? <button type="button" className="agent-result-panel__load-more" disabled={artifactIndexStatus === 'loading-more'} onClick={() => void onLoadMoreArtifacts()}>{artifactIndexStatus === 'loading-more' ? '加载中…' : '加载更早结果'}</button> : null}
     </div>
@@ -329,4 +373,34 @@ export function AgentMemoryPanel({ memory, sourceNodeIds, onAddMemory, onRemoveM
       {!memory.length ? <div className="agent-panel__empty">还没有项目记忆。</div> : null}
     </div>
   </section>
+}
+
+export function AgentSkillCard({
+  id,
+  name,
+  instructions,
+  source,
+  expanded,
+  onToggle,
+}: {
+  id: string
+  name: string
+  instructions: string
+  source: 'system' | 'project'
+  expanded: boolean
+  onToggle: (id: string) => void
+}) {
+  const summary = botanicAgentSkillSummary(instructions)
+  const body = botanicAgentSkillBody(instructions)
+  return <article className={`agent-skill-card${expanded ? ' is-expanded' : ''}`}>
+    <button type="button" aria-expanded={expanded} aria-controls={`skill-body-${id}`} onClick={() => onToggle(id)}>
+      <span>
+        {source === 'system' ? <SparkleIcon /> : null}
+        <b>{name}</b>
+      </span>
+      <small>{source === 'system' ? '系统' : '项目'} · @调用</small>
+      {!expanded && summary ? <p>{summary}</p> : null}
+    </button>
+    {expanded ? <pre id={`skill-body-${id}`} className="agent-skill-card__body">{body}</pre> : null}
+  </article>
 }

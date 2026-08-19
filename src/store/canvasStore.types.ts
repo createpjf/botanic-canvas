@@ -49,6 +49,7 @@ export type GenerationRequest = {
   settings: GenerationSettings
   recipe?: GenerationRecipe
   rootRecipe?: GenerationRecipe
+  title?: string
   targetNodeId?: string
   parentVersionId?: string
   parentImage?: string
@@ -182,8 +183,8 @@ export type CanvasStore = {
   createCanvasFromHistory: (historyId: string) => void
   restoreHistoryVersion: (historyId: string) => void
   saveHistoryAsTemplate: (historyId: string) => void
-  runGeneration: (input: { prompt: string; batchCount: number; settings: GenerationSettings; recipe?: GenerationRecipe; rootRecipe?: GenerationRecipe; taskLayout?: TaskFlowLayout; sourceGraphNodeId?: string; agentRun?: { runId: string; branchId: string } }) => Promise<boolean>
-  runRefinement: (input: { targetNodeId: string; prompt: string; batchCount: number; settings: GenerationSettings; recipe?: GenerationRecipe; rootRecipe?: GenerationRecipe; taskLayout?: TaskFlowLayout; sourceGraphNodeId?: string; refinementMode?: RefinementMode; agentRun?: { runId: string; branchId: string } }) => Promise<boolean>
+  runGeneration: (input: { prompt: string; batchCount: number; settings: GenerationSettings; recipe?: GenerationRecipe; rootRecipe?: GenerationRecipe; taskLayout?: TaskFlowLayout; sourceGraphNodeId?: string; title?: string; agentRun?: { runId: string; branchId: string } }) => Promise<boolean>
+  runRefinement: (input: { targetNodeId: string; prompt: string; batchCount: number; settings: GenerationSettings; recipe?: GenerationRecipe; rootRecipe?: GenerationRecipe; taskLayout?: TaskFlowLayout; sourceGraphNodeId?: string; title?: string; refinementMode?: RefinementMode; agentRun?: { runId: string; branchId: string } }) => Promise<boolean>
   cancelGeneration: () => void
   retryGeneration: () => Promise<boolean>
   retryMissingGeneration: (jobId: string) => Promise<boolean>

@@ -43,6 +43,11 @@ import {
   summarizeBotanicAgentNodeTitle,
   botanicAgentBatchBranchTitles,
   botanicAgentNodeTitleLimit,
+  botanicAgentResultGroupTitle,
+  botanicAgentSkillSummary,
+  botanicAgentSkillBody,
+  botanicAgentSkillSummaryLimit,
+  botanicAgentVisualGenerationPrompt,
   botanicAgentArtifactPrompt,
   botanicAgentArtifactModel,
   botanicAgentArtifactTimestamp,
@@ -569,6 +574,82 @@ test('新图节点标题只概括变化且不超过 8 个字', () => {
     intent: 'change_pose',
     constraints: [{ dimension: 'pose', mode: 'vary' }, { dimension: 'person', mode: 'preserve' }],
   }), '换动作')
+})
+
+test('结果批次标题用 8 字短名，不用 summary 或 Prompt', () => {
+  const plan = buildBotanicAgentPlan({
+    instruction: '保留模特人物、服装、姿态与构图不变，把海边换成撒哈拉沙漠并调成多云柔光',
+    intent: 'replace_scene',
+    selectedResultNodeId: 'result-v03',
+    rootRecipe,
+  })
+  assert.equal(botanicAgentResultGroupTitle(plan), '换景调光')
+  assert.ok(Array.from(botanicAgentResultGroupTitle(plan)).length <= botanicAgentNodeTitleLimit)
+  assert.notEqual(botanicAgentResultGroupTitle(plan), plan.summary)
+  assert.notEqual(botanicAgentResultGroupTitle(plan), plan.prompt)
+  assert.equal(botanicAgentResultGroupTitle({
+    intent: 'replace_scene',
+    summary: '把原图里的女孩换成短发女孩，手持花瓶站在窗边，柔和自然光。',
+    title: '换景调光',
+    constraints: plan.constraints,
+  }), '换景调光')
+  assert.equal(botanicAgentResultGroupTitle(), '生成批次')
+})
+
+test('写入画布的生图 Prompt 去掉来源旁白，只保留视觉描述', () => {
+  assert.equal(botanicAgentVisualGenerationPrompt(
+    '说明一下来源：当前项目上下文里我没有读取到这张图的元数据。\n\n模特站在撒哈拉沙漠，自然光，保留白裙与构图。',
+    '把背景换成撒哈拉沙漠',
+  ), '模特站在撒哈拉沙漠，自然光，保留白裙与构图。')
+  assert.equal(botanicAgentVisualGenerationPrompt(
+    '说明一下来源：当前项目上下文里我没有读取到原图元数据，所以根据对话补了沙漠场景。',
+    '保持人物服装，换成撒哈拉沙漠自然光',
+  ), '保持人物服装，换成撒哈拉沙漠自然光')
+  assert.equal(botanicAgentVisualGenerationPrompt('模特站在海边，黄昏柔光。', '换场景'), '模特站在海边，黄昏柔光。')
+})
+
+test('Skill 列表只展示一句用途，展开时才给完整规则且不含 YAML', () => {
+  const instructions = `---
+name: controlled-edit
+description: 只修改用户授权变化的视觉维度，并锁定其余核心主体。
+---
+
+# 受控局部编辑
+
+只改变用户明确允许变化的维度。人物身份与五官必须保持。`
+  assert.equal(botanicAgentSkillSummary(instructions), '只修改用户授权变化的视觉维度，并锁定其余核心主体。')
+  assert.ok(Array.from(botanicAgentSkillSummary(instructions)).length <= botanicAgentSkillSummaryLimit)
+  assert.equal(botanicAgentSkillBody(instructions).startsWith('# 受控局部编辑'), true)
+  assert.equal(botanicAgentSkillBody(instructions).includes('---'), false)
+  assert.equal(botanicAgentSkillBody(instructions).includes('description:'), false)
+
+  const longDescription = `---
+description: ${'把原图里的女孩换成短发女孩手持花瓶站在窗边柔和自然光再补一句超长说明'}
+---
+
+正文规则。`
+  assert.equal(Array.from(botanicAgentSkillSummary(longDescription)).length, botanicAgentSkillSummaryLimit + 1)
+  assert.equal(botanicAgentSkillSummary(longDescription).endsWith('…'), true)
+
+  assert.equal(
+    botanicAgentSkillSummary('人物和包装保持不变，只把场景换成黄昏海边。其余锁定项不要动。'),
+    '人物和包装保持不变，只把场景换成黄昏海边。',
+  )
+
+  const folded = `---
+name: prompt-refiner
+description: >-
+  Refine a user prompt into one clearer, ready-to-use prompt while preserving
+  the original intent.
+---
+
+# Refine
+
+Do not execute the prompt.`
+  const foldedSummary = botanicAgentSkillSummary(folded)
+  assert.notEqual(foldedSummary, '>-')
+  assert.match(foldedSummary, /Refine a user prompt/)
+  assert.equal(foldedSummary.includes('>-'), false)
 })
 
 test('无素材组的换动作计划创建单次分支且继承根配方参数', () => {
