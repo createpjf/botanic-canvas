@@ -4,7 +4,7 @@ import { botanicAgentExecutionModeLabel, type BotanicAgentMentionQuery, type Bot
 import type { AssetGroup } from '../../domain/canvas'
 import { AgentPlannerProviderIcon } from '../../components/AgentPlannerProviderIcon'
 import { BotanicSelect } from '../../components/BotanicSelect'
-import { ArrowUpIcon, AutoRunIcon, ChecklistIcon, CloseIcon, PlusIcon, SparkleIcon, UploadIcon } from '../../components/BotanicIcons'
+import { ArrowUpIcon, AutoRunIcon, ChecklistIcon, ChevronDownIcon, CloseIcon, PlusIcon, SparkleIcon, UploadIcon } from '../../components/BotanicIcons'
 import { agentPlannerModelLabel, agentPlannerModelShortLabel } from '../../components/generationModelPresentation'
 import type { AgentContextItem, AgentSkillOption } from './agentWorkspace.types'
 
@@ -148,7 +148,7 @@ export function AgentComposer({
       <div>
         <button ref={contextMenuButtonRef} type="button" className="agent-composer__add" onClick={onToggleContextMenu} aria-controls={contextMenuId} aria-expanded={contextMenuOpen} aria-label="添加图像素材" title="添加图像素材"><PlusIcon /></button>
         <button ref={modeMenuButtonRef} type="button" className="agent-composer__mode" onClick={onToggleModeMenu} aria-controls={modeMenuId} aria-expanded={modeMenuOpen} aria-label={`执行模式：${executionModeLabel}`} title={session?.executionMode === 'auto' ? '自动模式：补齐设置后直接提交生成任务' : '计划模式：先给出计划，你确认后再提交'}>
-          {session?.executionMode === 'auto' ? <AutoRunIcon /> : <ChecklistIcon />}<span className="agent-composer__mode-label" aria-hidden="true">{executionModeLabel}</span><span className="agent-composer__mode-chevron" aria-hidden="true">⌄</span>
+          {session?.executionMode === 'auto' ? <AutoRunIcon /> : <ChecklistIcon />}<span className="agent-composer__mode-label" aria-hidden="true">{executionModeLabel}</span><ChevronDownIcon className="agent-composer__mode-chevron" />
         </button>
         <BotanicSelect
           className="agent-composer__model-select"

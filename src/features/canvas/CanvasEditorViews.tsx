@@ -14,7 +14,7 @@ import { downloadMedia } from '../../lib/mediaDownload'
 import { refinePrompt } from '../../lib/promptRefinementApi'
 import { refreshProductMediaSession } from '../../lib/productSession'
 import { useCanvasStore } from '../../store/canvasStore'
-import { ArrowUpRightIcon, CloseIcon, DeleteIcon, DownloadIcon, PlusSquareIcon, SparkleIcon } from '../../components/BotanicIcons'
+import { ArrowUpRightIcon, ChevronDownIcon, CloseIcon, DeleteIcon, DownloadIcon, PlusSquareIcon, SparkleIcon } from '../../components/BotanicIcons'
 
 export type ComposerLayout = {
   dock: 'bottom' | 'free'
@@ -122,6 +122,7 @@ function ComposerOptionPopover({ label, value, valueIcon, disabled = false, widt
     >
       {valueIcon ? <img className="composer-option-trigger__provider" src={valueIcon} alt="" /> : null}
       <strong>{value}</strong>
+      <ChevronDownIcon className="composer-option-trigger__chevron" />
     </button>
     {menuPresence.present && anchor && typeof document !== 'undefined' ? createPortal(
       <div

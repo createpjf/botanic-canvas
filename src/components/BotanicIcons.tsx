@@ -218,3 +218,10 @@ export function ChevronLeftIcon({ className }: BotanicIconProps) {
     <path d="M10 3.5 5.5 8 10 12.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 }
+
+/** 下拉触发器 · 与文字同行垂直居中 */
+export function ChevronDownIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+    <path d="M2 3.5 5 6.5 8 3.5" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+}
