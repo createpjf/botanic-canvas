@@ -1319,6 +1319,7 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
         selected: Boolean(node.selected || node.id === selectedNodeId || result.selected),
         active: activeResultByGroupId.get(result.jobId ?? result.taskGroupId ?? '') === node.id,
         hasDownstream: resultNodesWithDownstream.has(node.id),
+        hasOutput: Boolean(result.image),
         variant: result.variant,
       }]
     }),

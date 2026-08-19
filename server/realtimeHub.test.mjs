@@ -405,6 +405,35 @@ test('没有在线房间时，HTTP 权威保存仍重写旧 Yjs 历史', async (
   assert.equal(recovered.getMap('nodes').get('node-a').value.position.x, 400)
 })
 
+test('带图谱的项目更新缺少 actorId 时不进入画布存储', async (context) => {
+  const server = createServer((_request, response) => response.end())
+  let loadCount = 0
+  const hub = createProjectRealtimeHub({
+    server,
+    ticketSecret: 'test-secret',
+    productStore: {
+      async loadCanvasCollaboration() {
+        loadCount += 1
+        return { graph: { nodes: [], edges: [] }, graphRevision: 1, updates: [] }
+      },
+    },
+  })
+  context.after(async () => {
+    await hub.close()
+    await new Promise((resolve) => server.close(resolve))
+  })
+  await listen(server)
+
+  await assert.rejects(
+    hub.publishProjectUpdated({
+      projectId: 'project-1', revision: 2, graphRevision: 3, updatedAt: 300,
+      graph: { nodes: [], edges: [] },
+    }),
+    /actorId/,
+  )
+  assert.equal(loadCount, 0)
+})
+
 test('房间初始化暂时失败后，下一次连接会重新加载', async (context) => {
   const server = createServer((_request, response) => response.end())
   let loadCount = 0

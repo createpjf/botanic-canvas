@@ -128,6 +128,7 @@ export type ResultGroupMember = {
   selected?: boolean
   active?: boolean
   hasDownstream?: boolean
+  hasOutput?: boolean
   variant?: number
 }
 
@@ -148,7 +149,7 @@ export function planResultGroupPresentation(
 ) {
   const groups = new Map<string, ResultGroupMember[]>()
   for (const member of members) {
-    if (!member.groupId) continue
+    if (!member.groupId || member.hasOutput === false) continue
     groups.set(member.groupId, [...(groups.get(member.groupId) ?? []), member])
   }
 

@@ -351,6 +351,9 @@ export function createProjectRealtimeHub({
     pruneRemotePresence,
     async publishProjectUpdated({ projectId, revision, graphRevision, updatedAt, graph, actorId }) {
       if (graph) {
+        if (typeof actorId !== 'string' || !actorId.trim()) {
+          throw new TypeError('画布项目更新缺少 actorId。')
+        }
         const { room } = await collaborationRoom(actorId, projectId, { document: graph })
         await room.replaceBaseGraph(graph, actorId)
         scheduleRoomEviction(projectId)

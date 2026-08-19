@@ -31,6 +31,8 @@ function validProjectUpdateEvent(event) {
     event
     && typeof event.projectId === 'string'
     && event.projectId.trim()
+    && typeof event.actorId === 'string'
+    && event.actorId.trim()
     && Number.isFinite(Number(event.revision))
     && Number.isFinite(Number(event.graphRevision))
     && Number.isFinite(Number(event.updatedAt))

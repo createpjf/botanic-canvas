@@ -106,6 +106,7 @@ test('没有兼容备用模型时保留 Provider 原始错误码对应的用户�
 
 test('普通生成任务也由服务端把生命周期状态权威回写到项目画布', async () => {
   const observed = []
+  const publishedProjectUpdates = []
   let storedJob = {
     id: 'job-direct',
     ownerId: 'user-a',
@@ -143,6 +144,7 @@ test('普通生成任务也由服务端把生命周期状态权威回写到项�
     mediaService: {},
     config: { modelOptions: [{ id: 'gpt-image-2', provider: 'openai', mediaKind: 'image' }] },
     observeAgentRun: (event) => observed.push(event),
+    publishProjectUpdated: async (event) => publishedProjectUpdates.push(event),
   })
 
   await processJob('job-direct')
@@ -154,6 +156,8 @@ test('普通生成任务也由服务端把生命周期状态权威回写到项�
   assert.equal(observed[0].runId, 'agent-run-direct')
   assert.equal(observed[1].status, 'failed')
   assert.doesNotMatch(JSON.stringify(observed), /私密提示词/)
+  assert.ok(publishedProjectUpdates.length > 0)
+  assert.equal(publishedProjectUpdates.every((event) => event.actorId === 'user-a'), true)
 })
 
 test('画布版本冲突使用指数退避并重新读取最新版本后回写', async () => {

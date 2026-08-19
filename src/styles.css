@@ -1634,12 +1634,15 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .result-node--recovering { border-color: #9a7b43; box-shadow: 0 0 0 3px rgba(154, 123, 67, 0.12), 0 12px 28px rgba(86, 65, 28, 0.12); }
 .result-node--recovering .result-node__task-state { background: radial-gradient(circle at 50% 0%, #fffdf7, #f3eee1 64%, #e9e1ce); color: #69552d; }
 .result-node__task-state--generating { position: relative; isolation: isolate; overflow: hidden; background: radial-gradient(circle at 50% 0%, #f6fbf6, #e5eee5 64%, #dce8dc); }
-.result-node__task-state--generating::before { content: none; }
-.result-node__task-pulse { display: block; width: 38px; height: 10px; margin: 2px auto 1px; border-radius: 99px; background: radial-gradient(circle at 7px 5px, #5f9a6c 0 3px, transparent 3.5px), radial-gradient(circle at 19px 5px, #5f9a6c 0 3px, transparent 3.5px), radial-gradient(circle at 31px 5px, #5f9a6c 0 3px, transparent 3.5px); opacity: .68; }
+.result-node__task-state--generating::before { content: ''; position: absolute; z-index: 0; inset: -38% -72%; pointer-events: none; background: linear-gradient(100deg, transparent 38%, rgba(255, 255, 255, .62) 49%, transparent 60%); opacity: 0; animation: result-task-sheen 2.6s ease-in-out infinite; }
+.result-node__task-state--generating > * { position: relative; z-index: 1; }
+.result-node__task-pulse { display: block; width: 38px; height: 10px; margin: 2px auto 1px; border-radius: 99px; background: radial-gradient(circle at 7px 5px, #5f9a6c 0 3px, transparent 3.5px), radial-gradient(circle at 19px 5px, #5f9a6c 0 3px, transparent 3.5px), radial-gradient(circle at 31px 5px, #5f9a6c 0 3px, transparent 3.5px); opacity: .68; transform-origin: center; animation: result-task-pulse 1.2s ease-in-out infinite; }
 .result-node__task-action { justify-self: center; min-height: 24px; padding: 0 8px; border: 1px solid #c5d8c7; border-radius: 6px; background: rgba(255, 255, 255, 0.72); color: #456c4d; font-size: 8px; font-weight: 700; }
 .result-node__task-action:hover { border-color: #8fb796; background: #f8fcf8; color: #245f35; }
 .result-node__task-state--failed .result-node__task-action { border-color: #e2c4bc; color: #95584d; }
 .botanic-flow .react-flow__edge.task-edge--active .react-flow__edge-path { stroke: #5d9469; stroke-dasharray: 7 6; animation: task-edge-flow 900ms linear infinite; }
+@keyframes result-task-sheen { 0% { opacity: 0; transform: translate3d(-38%, 0, 0); } 20% { opacity: .46; } 72% { opacity: .32; } 100% { opacity: 0; transform: translate3d(38%, 0, 0); } }
+@keyframes result-task-pulse { 0%, 100% { opacity: .42; transform: scale(.9); } 50% { opacity: .92; transform: scale(1.06); } }
 @keyframes task-edge-flow { to { stroke-dashoffset: -26; } }
 @media (prefers-reduced-motion: reduce) {
   .result-node__task-state--generating::before,
@@ -3542,8 +3545,10 @@ details.agent-timeline__thinking { display: block; padding: 0; }
 .agent-run-card.is-warning { border-color: #e5d2a8; background: #fffdf8; }
 .agent-run-card.is-error { border-color: #e7c5bf; background: #fff9f7; }
 .agent-run-card > header b { color: #366844; font-size: 11px; font-variant-numeric: tabular-nums; }
-.agent-run-card__track { height: 4px; overflow: hidden; border-radius: 3px; background: #e8eee7; }
+.agent-run-card__track { position: relative; height: 4px; overflow: hidden; border-radius: 3px; background: #e8eee7; }
 .agent-run-card__track i { display: block; height: 100%; background: #3e774b; transition: width .2s ease; }
+.agent-run-card__track::after { content: ''; position: absolute; inset: 0 auto 0 0; width: 38%; border-radius: inherit; background: linear-gradient(90deg, transparent, rgba(78, 137, 91, .7), transparent); transform: translateX(-110%); animation: agent-run-track-flow 1.25s ease-in-out infinite; }
+@keyframes agent-run-track-flow { to { transform: translateX(370%); } }
 .agent-run-card__branches { display: grid; gap: 5px; }
 .agent-run-card__branches > div { display: flex; align-items: center; justify-content: space-between; padding: 7px 8px; border-radius: 7px; background: #f3f7f2; }
 .agent-run-card__branches span { display: grid; }
@@ -3922,6 +3927,7 @@ details.agent-timeline__thinking { display: block; padding: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .agent-run-card__track::after { animation: none; opacity: .32; transform: translateX(82%); }
   .agent-workspace { animation: none; }
   .agent-composer__spinner { animation: none; }
   .agent-composer__add,

@@ -119,6 +119,7 @@ export function createGenerationProcessor({
     try {
       await publishProjectUpdated({
         projectId: saved.document.id,
+        actorId: job.ownerId,
         revision: saved.revision,
         graphRevision: saved.graphRevision,
         updatedAt: saved.document.updatedAt,

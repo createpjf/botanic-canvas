@@ -134,3 +134,12 @@ test('planResultGroupPresentation promotes candidates with downstream branches',
   assert.equal(result.get('result-2')?.hidden, false)
   assert.equal(result.get('result-3')?.hidden, true)
 })
+
+test('planResultGroupPresentation ignores generating placeholders when only one real output exists', () => {
+  const result = planResultGroupPresentation([
+    { id: 'result-ready', groupId: 'job-1', variant: 0, hasOutput: true },
+    { id: 'result-placeholder', groupId: 'job-1', variant: 0, hasOutput: false },
+  ], new Set())
+
+  assert.equal(result.size, 0)
+})

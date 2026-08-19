@@ -394,7 +394,10 @@ async function start() {
     (event) => realtimeHub.publishAgentRunUpdated(event),
     {
       onCollaborationActivity: (event) => realtimeHub.publishCollaborationActivity(event),
-      onProjectUpdated: (event) => void realtimeHub.publishProjectUpdated(event),
+      onProjectUpdated: (event) => void realtimeHub.publishProjectUpdated(event).catch((caught) => {
+        // Worker 的权威写入已完成；实时旁路失败不得形成未处理拒绝并拉垮 API 进程。
+        console.error(`[realtime] worker project update deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
+      }),
     },
   )
   await new Promise((resolveStart, rejectStart) => {
