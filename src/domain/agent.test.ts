@@ -635,6 +635,21 @@ description: ${'把原图里的女孩换成短发女孩手持花瓶站在窗边�
     botanicAgentSkillSummary('人物和包装保持不变，只把场景换成黄昏海边。其余锁定项不要动。'),
     '人物和包装保持不变，只把场景换成黄昏海边。',
   )
+
+  const folded = `---
+name: prompt-refiner
+description: >-
+  Refine a user prompt into one clearer, ready-to-use prompt while preserving
+  the original intent.
+---
+
+# Refine
+
+Do not execute the prompt.`
+  const foldedSummary = botanicAgentSkillSummary(folded)
+  assert.notEqual(foldedSummary, '>-')
+  assert.match(foldedSummary, /Refine a user prompt/)
+  assert.equal(foldedSummary.includes('>-'), false)
 })
 
 test('无素材组的换动作计划创建单次分支且继承根配方参数', () => {

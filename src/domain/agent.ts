@@ -1669,17 +1669,34 @@ export function botanicAgentResultGroupTitle(
 
 export const botanicAgentSkillSummaryLimit = 28
 
+function botanicAgentSkillFrontmatterDescription(block: string) {
+  const lines = block.split(/\r?\n/)
+  const start = lines.findIndex((line) => /^description\s*:/i.test(line))
+  if (start < 0) return ''
+  const remainder = lines[start].replace(/^description\s*:/i, '').trim()
+  const blockScalar = remainder.match(/^(>|\\|)\+?-?$/)
+  if (blockScalar) {
+    const collected: string[] = []
+    for (let index = start + 1; index < lines.length; index += 1) {
+      const line = lines[index]
+      if (!/^\s/.test(line)) break
+      collected.push(line.trim())
+    }
+    return (blockScalar[1] === '>' ? collected.join(' ') : collected.join('\n'))
+      .replace(/\s+/g, ' ')
+      .trim()
+  }
+  return remainder.replace(/^['"]|['"]$/g, '').trim()
+}
+
 function botanicAgentSkillDocument(instructions: string) {
   const text = instructions.trim()
   const frontmatter = text.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)
   if (!frontmatter) return { description: '', body: text }
-  const description = frontmatter[1]
-    .split(/\r?\n/)
-    .find((line) => /^description\s*:/i.test(line))
-    ?.replace(/^description\s*:\s*/i, '')
-    .trim()
-    .replace(/^['"]|['"]$/g, '') ?? ''
-  return { description, body: text.slice(frontmatter[0].length).trim() }
+  return {
+    description: botanicAgentSkillFrontmatterDescription(frontmatter[1]),
+    body: text.slice(frontmatter[0].length).trim(),
+  }
 }
 
 function botanicAgentSkillLead(body: string) {
