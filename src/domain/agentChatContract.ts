@@ -8,6 +8,8 @@ export type BotanicAgentRequestRoute = BotanicAgentChatMode | 'generation'
 export type BotanicAgentRequestDecision =
   | { kind: 'chat'; mode: BotanicAgentChatMode }
   | { kind: 'generation'; mediaKind: 'image' | 'video'; promptSource: 'instruction' | 'previous_prompt' }
+  /** 裸确认语没有创作内容，只能去提交已存在的待确认计划，不能当成新指令送进规划器。 */
+  | { kind: 'confirm_pending' }
   | { kind: 'clarification'; reason: 'unsupported_media' | 'ambiguous_action' }
 
 export type BotanicAgentGenerationPromptResolution =
@@ -91,6 +93,7 @@ export function resolveBotanicAgentGenerationPrompt(
   return resolution.status === 'resolved' ? resolution.prompt : ''
 }
 
+const bareGenerationConfirmation = /^(?:确认(?:生成|执行|提交)?|生成|生成吧|开始生成|就(?:这样|按这个)生成|按推荐(?:值|方案)(?:继续)?)[。！!～~\s]*$/u
 const asksForAdviceOrExplanation = /(?:为什么|为何|怎么|如何|什么意思|多久|多慢|是否|用了什么|给我.{0,8}建议|分析|比较|好吗|怎么样|哪次)/iu
 const explicitVisualGeneration = /(?:帮我|请|直接|马上|按照|按|用|基于|拿)?\s*(?:生成|生图|出图|做一张|来一张|做一版|出一张|我要一张|创建一张)|(?:我想要|我希望|我需要|想要|希望|需要)\s*(?:一张|一版)?\s*[^，。！？?!]{0,40}(?:图片|图|画面|海报|人像|照片)|(?:generate|create|make|edit)\s+(?:(?:an?|this|the)\s+)?(?:image|photo|video)|(?:i\s+)?want\s+(?:an?|the)\s+(?:image|photo|picture|visual)\b/iu
 const explicitVisualChange = /(?:帮我|请|直接|把|将|给|我想(?:要)?|我希望|我需要).{0,8}(?:换|替换|改成|变成|变为|调整|重做).{0,16}(?:场景|背景|模特|人物|商品|动作|姿势|风格|光线|构图)|(?:换|替换|改成|变成|变为|重做).{0,8}(?:场景|背景|模特|人物|商品|动作|姿势|风格|光线|构图)|(?:把|将|给|我想(?:要)?|我希望|我需要)?\s*(?:场景|背景|模特|人物|商品|动作|姿势|风格|光线|构图|图|画面|照片).{0,8}(?:换|替换|改成|变成|变为|调整|重做)|(?:i\s+want\s+to\s+)?(?:turn|transform|change|edit)\s+(?:(?:this|the)\s+)?(?:image|photo|picture)\s+(?:into|to)\b/iu
@@ -166,6 +169,9 @@ export function isBotanicAgentPromptGenerationPending(
 export function decideBotanicAgentRequest(value: string, hasGenerationTarget = false): BotanicAgentRequestDecision {
   const text = value.trim()
   if (!text) return { kind: 'chat', mode: 'conversation' }
+  // 「确认生成」这类裸确认语不含任何画面信息。把它送进规划器只会得到一份凭空编写的样板计划，
+  // 唯一正确的去处是提交对话里已存在的待确认计划。
+  if (bareGenerationConfirmation.test(text)) return { kind: 'confirm_pending' }
 
   const asksAboutPreviousOutcome = /(?:没有|没|未).{0,8}(?:生成|生图|出图|结果)|(?:刚才|之前|上次)?.{0,6}(?:为什么|为何|怎么).{0,16}(?:没|未|不).{0,6}(?:成功|生成|反应|结果)/iu.test(text)
   const asksAboutCapability = /(?:你|agent).{0,8}(?:可以|能|支持).{0,12}(?:生成|生图|出图|做图|视频)|\bcan\s+you\s+(?:generate|create|make|edit)\b/iu.test(text)
@@ -193,9 +199,6 @@ export function decideBotanicAgentRequest(value: string, hasGenerationTarget = f
   }
   if (hasContextualVisualCommand || instructionRequestsBatchVariation(text) || explicitVisualGeneration.test(text) || explicitVisualChange.test(text)) {
     return { kind: 'generation', mediaKind, promptSource: 'instruction' }
-  }
-  if (hasGenerationTarget && /(?:按推荐值继续|按推荐方案继续)/u.test(text)) {
-    return { kind: 'generation', mediaKind: 'image', promptSource: 'instruction' }
   }
   if (hasGenerationTarget && /^(?:保持|继续|再来|重试|重新|换|替换|调整)(?!.*[?？])/iu.test(text)) {
     return { kind: 'generation', mediaKind: 'image', promptSource: 'instruction' }

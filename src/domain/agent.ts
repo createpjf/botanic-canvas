@@ -1543,7 +1543,7 @@ export type BuildBotanicAgentPlanInput = {
   contextSnapshot?: BotanicAgentContextSnapshot[]
 }
 
-const variationDimensionPattern = '人物|模特|角色|场景|背景|画面|环境|肤色|动作|姿势|姿态|风格|服装|衣服|穿搭|版本|变体'
+const variationDimensionPattern = '人物|模特|角色|场景|背景|画面|环境|肤色|族裔|人种|动作|姿势|姿态|风格|服装|衣服|穿搭|版本|变体'
 
 function stripPreserveClauses(instruction: string) {
   return instruction.replace(/(?:保持|保留)[^，。,；;\n]{0,40}?(?:不变|一致)/gu, ' ')
@@ -1556,7 +1556,7 @@ export function instructionRequestsBatchVariation(instruction: string) {
   if (/(?:批量|多图|多张|逐一|多来几|来几个|多出几|多肤色)/u.test(text)) return true
   if (new RegExp(`(?:\\d+|两|三|四|五|六|七|八|九|十)(?:种|档)(?:不同(?:的)?)?(?:${variationDimensionPattern})`, 'u').test(text)) return true
   if (new RegExp(`(?:[2-9]|[1-9]\\d|十|两|三|四|五|六|七|八|九)个(?:不同(?:的)?)?(?:[\\u4e00-\\u9fff]{0,6})?(?:${variationDimensionPattern})`, 'u').test(text)) return true
-  if (new RegExp(`(?:多个|多种|几种|一组|一批)(?:不同(?:的)?)?(?:${variationDimensionPattern})`, 'u').test(text)) return true
+  if (new RegExp(`(?:多个|多种|几种|几个|一组|一批)(?:不同(?:的)?)?(?:${variationDimensionPattern})`, 'u').test(text)) return true
   return false
 }
 

@@ -54,6 +54,7 @@ type VariationAxisCatalogItem = {
 
 const axisCatalog: VariationAxisCatalogItem[] = [
   { key: 'skin_tone', label: '肤色', names: ['肤色', '皮肤色', '肤质色'], promptDelta: (value) => `人物肤色为${value}，保持五官与身份不变。` },
+  { key: 'ethnicity', label: '族裔', names: ['族裔', '人种'], promptDelta: (value) => `人物族裔特征调整为${value}，保持五官结构、发型与服装不变。` },
   { key: 'scene', label: '场景', names: ['场景', '背景'], promptDelta: (value) => `场景替换为${value}，保持人物、服装与商品不变。` },
   { key: 'pose', label: '动作', names: ['动作', '姿势', '姿态'], promptDelta: (value) => `动作调整为${value}，保持人物身份与服装不变。` },
   { key: 'style', label: '风格', names: ['风格', '调性'], promptDelta: (value) => `视觉风格调整为${value}，保持人物、服装与商品不变。` },
@@ -63,7 +64,7 @@ const axisCatalog: VariationAxisCatalogItem[] = [
 
 const axisNameValues = new Set([
   '人物', '模特', '角色', '场景', '背景', '画面', '环境',
-  '肤色', '动作', '姿势', '姿态', '风格', '调性', '服装', '衣服', '穿搭', '球衣',
+  '肤色', '族裔', '人种', '动作', '姿势', '姿态', '风格', '调性', '服装', '衣服', '穿搭', '球衣',
 ])
 const valueJunkPattern = /^(?:各种|多种|一些|任意|几个|多图|多张|变体|版本|图片|生成|层次|细节|道具|质感|细腻|更细腻|档位|字段|推荐值|说明|选项)$/u
 const combineLanguagePattern = /组合|相乘|交叉|笛卡尔|[×x]\s*\d|全部组合|逐一组合/u
@@ -502,15 +503,17 @@ type VariationPlanDraft = Pick<BotanicAgentPlan, 'intent' | 'instruction' | 'sum
   variation?: BotanicAgentVariationSpec
 }
 
+// 肤色与族裔不是受控创作维度：主体、服装、场景全部锁定，只在风格维度上表达外观变化。
+const identityAxisKeys = new Set(['skin_tone', 'ethnicity'])
+const creativeDimensionKeys = new Set<CreativeDimension>(['person', 'garment', 'product', 'scene', 'style', 'pose', 'composition', 'lighting', 'aspect_ratio', 'copy_space'])
+
 function varyConstraintForAxis(axis: BotanicAgentVariationAxis): CreativeConstraint[] {
-  const dimension: CreativeDimension | undefined = axis.key === 'skin_tone'
+  const dimension: CreativeDimension | undefined = identityAxisKeys.has(axis.key)
     ? undefined
-    : axis.key === 'custom'
-      ? 'style'
-      : axisCatalog.some((item) => item.key === axis.key)
-        ? axis.key as CreativeDimension
-        : 'style'
-  if (axis.key === 'skin_tone') {
+    : creativeDimensionKeys.has(axis.key as CreativeDimension)
+      ? axis.key as CreativeDimension
+      : 'style'
+  if (identityAxisKeys.has(axis.key)) {
     return [
       { dimension: 'person', mode: 'preserve' },
       { dimension: 'garment', mode: 'preserve' },
