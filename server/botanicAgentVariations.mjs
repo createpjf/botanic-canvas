@@ -215,8 +215,9 @@ function parseAxes(instruction) {
   return found
 }
 
-function fillAxisValues(axes, answers) {
-  const listed = splitValueList(answers?.variation_values ?? '')
+const skinToneValuePattern = /白|麦|棕|黑|黄|冷|暖|自然|健康|古铜|蜜|橄榄|浅|中|深/u
+
+function fillAxisValues(axes, listed, axisKey) {
   if (!listed.length) return axes
   const incomplete = axes.find((axis) => axis.values.length < botanicAgentVariationValueMin)
   if (incomplete) {
@@ -226,9 +227,12 @@ function fillAxisValues(axes, answers) {
       : axis)
   }
   if (!axes.length) {
+    const known = axisKey ? axisCatalog.find((item) => item.key === axisKey) : undefined
+    if (known) return [axisFromCatalog(known, listed)]
     const skin = axisCatalog[0]
-    const looksLikeSkin = listed.every((label) => /白|麦|棕|黑|冷|暖|自然|健康/.test(label))
-    return [looksLikeSkin ? axisFromCatalog(skin, listed) : customAxis(listed)]
+    return [listed.every((label) => skinToneValuePattern.test(label))
+      ? axisFromCatalog(skin, listed)
+      : customAxis(listed)]
   }
   return axes
 }
@@ -264,11 +268,15 @@ function variationCount(spec) {
 }
 
 function createVariationClarification(input) {
+  const brief = input.brief
+    ? { ...input.brief, variation: { ...(input.axisKey ? { axisKey: input.axisKey } : {}), values: [] } }
+    : undefined
   return {
     id: 'clarification-variation',
     question: input.question,
     helper: input.helper ?? '取值需要具体到 2–8 个短词；张数由展开结果决定，不会立即生成。',
     originalInstruction: input.instruction,
+    ...(brief ? { brief } : {}),
     fields: input.fields,
   }
 }
@@ -301,7 +309,9 @@ function combineField(first, second, product) {
 export function resolveBotanicAgentVariationRequest(input) {
   const instruction = input.instruction.trim()
   const intent = resolveBotanicAgentIntent(instruction, input.requestedIntent)
-  const axes = fillAxisValues(parseAxes(instruction), input.clarificationAnswers)
+  const answered = splitValueList(input.clarificationAnswers?.variation_values ?? '')
+  const confirmed = answered.length ? answered : uniqueLabels(input.brief?.variation?.values ?? [])
+  const axes = fillAxisValues(parseAxes(instruction), confirmed, input.brief?.variation?.axisKey)
   const wantsBatch = instructionRequestsBatchVariation(instruction) || intent === 'batch_variation' || axes.some((axis) => axis.values.length >= botanicAgentVariationValueMin)
   const group = input.assetGroup
   const groupMatches = Boolean(group?.id && group.assetCount > 0 && axes[0] && groupRoleByKey[axes[0].key] === group.role)
@@ -324,6 +334,7 @@ export function resolveBotanicAgentVariationRequest(input) {
         kind: 'ask',
         clarification: createVariationClarification({
           instruction,
+          brief: input.brief,
           question: `组合后共 ${product} 张，超过单次 ${botanicAgentVariationBranchLimit} 张上限。请只拆一条轴，或减少取值。`,
           fields: [combineField(readyAxes[0], readyAxes[1], Math.min(product, botanicAgentVariationBranchLimit))],
         }),
@@ -337,6 +348,8 @@ export function resolveBotanicAgentVariationRequest(input) {
       kind: 'ask',
       clarification: createVariationClarification({
         instruction,
+        brief: input.brief,
+        axisKey: incomplete.key,
         question: incomplete.label === '肤色'
           ? '这次要按几种肤色出图？请列出 2 到 8 个具体取值，例如白皙、自然、小麦、深棕。'
           : `这次要按「${incomplete.label}」出多张。请列出 2 到 8 个具体取值，不要用「各种」代替。`,
@@ -350,6 +363,7 @@ export function resolveBotanicAgentVariationRequest(input) {
       kind: 'ask',
       clarification: createVariationClarification({
         instruction,
+        brief: input.brief,
         question: '这次要按哪一个维度出多张？请列出 2 到 8 个具体取值。',
         fields: [valuesField('变体')],
       }),
@@ -447,6 +461,7 @@ export function applyBotanicAgentVariationToPlan(plan, input) {
     instruction: input.instruction || plan.instruction,
     requestedIntent: input.requestedIntent ?? plan.intent,
     clarificationAnswers: input.clarificationAnswers,
+    brief: input.brief,
     assetGroup: input.assetGroup,
   })
   if (request.kind === 'none') return { kind: 'plan', plan }

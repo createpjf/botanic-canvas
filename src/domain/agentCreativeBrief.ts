@@ -56,6 +56,14 @@ export type BotanicCreativeBrief = {
     preservationPriority?: BotanicPreservationPriority
     customDirection?: string
   }
+  /**
+   * 用户已确认的批量变体轴与取值。确认一次即长期有效：后续轮次据此直接展开分支，
+   * 不再重复追问同一个维度。取值由变体模块解析后写入，这里只做承载。
+   */
+  variation?: {
+    axisKey?: string
+    values: string[]
+  }
   provenance: Partial<Record<BotanicCreativeBriefFieldId, BotanicCreativeBriefSource>>
 }
 

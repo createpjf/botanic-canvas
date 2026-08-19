@@ -54,7 +54,11 @@ import type {
   UploadedAssetInput,
 } from '../../domain/canvas'
 import { createProjectAgentSkill, listBotanicAgentSystemSkills, listProjectAgentSkills, requestBotanicAgentPlan, streamBotanicAgentChat } from '../../lib/agentApi'
-import { applyBotanicAgentVariationToPlan } from '../../domain/agentVariations'
+import {
+  applyBotanicAgentVariationToPlan,
+  botanicAgentBriefWithVariationAnswers,
+  botanicAgentPendingVariationClarification,
+} from '../../domain/agentVariations'
 import { ProductApiError, serverPersistenceEnabled } from '../../lib/productSession'
 import { maxUploadAssets, readUploadedAssetInput, validateUploadFiles } from '../../lib/uploadedAssets'
 import { useCanvasStore } from '../../store/canvasStore'
@@ -1018,6 +1022,7 @@ export default function AgentWorkspace({
             instruction: cleanInstruction,
             requestedIntent: intent,
             clarificationAnswers,
+            brief: creativeBrief,
             assetGroup: assetGroup
               ? { id: assetGroup.id, role: assetGroup.role, assetCount: assetGroup.assetIds.length }
               : undefined,
@@ -1366,6 +1371,31 @@ export default function AgentWorkspace({
     const imageModels = generationModels.filter((model) => model.mediaKind !== 'video')
     const inferredGenerationOverrides = inferBotanicAgentGenerationSettings(cleanInstruction, imageModels)
     const requestedGenerationOverrides = { ...inferredGenerationOverrides, ...options.generationOverrides }
+    const variationGroup = compatibleGroups.find((group) => group.id === groupId)
+    // 变体轴决定要开几个分支，必须先于比例与清晰度确认；已确认过的取值不再重复追问。
+    const pendingVariation = botanicAgentPendingVariationClarification({
+      instruction: generationPrompt,
+      requestedIntent: intent,
+      clarificationAnswers: options.clarificationAnswers,
+      brief: options.creativeBrief,
+      assetGroup: variationGroup
+        ? { id: variationGroup.id, role: variationGroup.role, assetCount: variationGroup.assetIds.length }
+        : undefined,
+    })
+    if (pendingVariation) {
+      setRuntimePhase('waiting_clarification')
+      appendMessage({
+        role: 'assistant',
+        kind: 'question',
+        question: {
+          ...pendingVariation,
+          ...(promptResolution.sourceMessageId ? { sourcePromptMessageId: promptResolution.sourceMessageId } : {}),
+        },
+        status: 'pending',
+        content: pendingVariation.question,
+      })
+      return
+    }
     const briefTurn = advanceBotanicCreativeBrief({
       mode: 'generation',
       executionMode: session.executionMode,
@@ -1383,6 +1413,7 @@ export default function AgentWorkspace({
         kind: 'question',
         question: {
           ...briefTurn.clarification,
+          brief: botanicAgentBriefWithVariationAnswers(briefTurn.clarification.brief, options.clarificationAnswers),
           ...(promptResolution.sourceMessageId ? { sourcePromptMessageId: promptResolution.sourceMessageId } : {}),
         },
         status: 'pending',
@@ -1444,6 +1475,7 @@ export default function AgentWorkspace({
           instruction: briefTurn.prompt,
           requestedIntent: 'initial_generation',
           clarificationAnswers: options.clarificationAnswers,
+          brief: briefTurn.brief,
         })
         if (appliedInitial.kind === 'clarification') {
           setRuntimePhase('waiting_clarification')
@@ -1586,7 +1618,7 @@ export default function AgentWorkspace({
     await runInstruction(message.question.originalInstruction, {
       appendUser: summary,
       clarificationAnswers: answers,
-      creativeBrief: message.question.brief,
+      creativeBrief: botanicAgentBriefWithVariationAnswers(message.question.brief, answers),
       sourcePromptMessageId: message.question.sourcePromptMessageId,
       generationOverrides: {
         ...(answers.model ? { model: answers.model } : {}),

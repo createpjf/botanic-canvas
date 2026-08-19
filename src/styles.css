@@ -3298,6 +3298,15 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-prompt-output__copy:hover { border-color: #9ebda2; background: #edf6ed; color: #285f37; }
 .agent-prompt-output__copy:focus-visible { outline: 2px solid rgba(79, 133, 91, .28); outline-offset: 1px; }
 .agent-prompt-output__copy svg { width: 13px; height: 13px; }
+.agent-plan-branches { display: grid; gap: 7px; padding: 9px 10px; border: 1px solid #d7e4d8; border-radius: 9px; background: #fbfdfb; }
+.agent-plan-branches > header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.agent-plan-branches strong { color: #294f34; font-size: 11px; font-weight: 780; }
+.agent-plan-branches header small { color: #829188; font-size: 9px; font-weight: 650; }
+.agent-plan-branches ol { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; counter-reset: agent-branch; }
+.agent-plan-branches li { display: grid; gap: 4px; padding: 7px 8px; border: 1px solid #e3eee4; border-radius: 7px; background: #fff; counter-increment: agent-branch; }
+.agent-plan-branches li > b { color: #315d3b; font-size: 10px; font-weight: 760; }
+.agent-plan-branches li > b::before { margin-right: 5px; color: #8aa38f; content: counter(agent-branch) '.'; }
+.agent-plan-branches pre { margin: 0; color: #3a5241; font: 10px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 .agent-message.is-user .agent-message__body { justify-self: end; max-width: 86%; padding: 10px 12px; border-radius: 9px 9px 2px 9px; background: #e8f1e9; }
 .agent-message.is-user .agent-message__body > p { margin: 0; }
 .agent-message.is-user .agent-message__delivery-status { justify-self: end; max-width: 86%; margin-top: 4px; padding: 0 2px; }

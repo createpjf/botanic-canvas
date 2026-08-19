@@ -469,6 +469,44 @@ test('无素材组的多肤色请求不会被默认换景压成 1 张，而是�
   assert.match(result.clarification.question, /肤色/)
 })
 
+test('Brief 里已确认的肤色直接展开分支，不再重复追问同一个维度', async () => {
+  const creativeBrief = {
+    version: 1,
+    mode: 'generation',
+    originalInstruction: '生成多个肤色的任务',
+    output: { model: validInput.settings.model, aspectRatio: validInput.settings.aspectRatio, resolution: validInput.settings.resolution },
+    creative: {},
+    variation: { axisKey: 'skin_tone', values: ['白', '黑', '黄'] },
+    provenance: { model: 'canvas', aspect_ratio: 'canvas', resolution: 'canvas' },
+  }
+  const result = await planBotanicGeneration({
+    ...validInput,
+    instruction: '生成多个肤色的任务',
+    requestedIntent: 'replace_scene',
+    assetGroup: undefined,
+    creativeBrief,
+  }, {
+    flockApiKey: 'flock-secret', flockTextModel: 'deepseek-v4-pro',
+  }, {
+    fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: {
+      content: null,
+      tool_calls: [{ id: 'call-plan-skin-brief', type: 'function', function: {
+        name: 'generation_create_plan', arguments: JSON.stringify({
+          intent: 'replace_scene',
+          prompt: '以画布上的黑人女性图为参考，保持场景与构图不变。',
+          summary: '替换场景，生成 1 张新版本。',
+          constraints: [{ dimension: 'person', mode: 'preserve' }, { dimension: 'scene', mode: 'vary' }],
+        }),
+      } }],
+    } }] }), { status: 200 }),
+  })
+
+  assert.equal(result.kind, undefined)
+  assert.deepEqual(result.output, { mode: 'batch_by_variation', count: 3, candidatesPerItem: 1 })
+  assert.deepEqual(result.variation.axes[0].values.map((value) => value.label), ['白', '黑', '黄'])
+  assert.equal(result.creativeBrief.variation.values.length, 3)
+})
+
 test('列出肤色取值后按变体轴展开，张数由展开结果决定', async () => {
   const result = await planBotanicGeneration({
     ...validInput,

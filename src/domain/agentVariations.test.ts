@@ -9,7 +9,10 @@ import {
 import {
   applyBotanicAgentVariationToPlan,
   botanicAgentBranchGenerationPrompt,
+  botanicAgentBriefWithVariationAnswers,
   botanicAgentConfirmBranchDrafts,
+  botanicAgentPendingVariationClarification,
+  botanicAgentPlanBranchPrompts,
   botanicAgentPlanOutputLabel,
   botanicAgentSharedVariationPrompt,
   expandBotanicAgentVariationBranches,
@@ -213,6 +216,76 @@ test('模糊批量在模型已给出单张计划时仍改成追问卡，不进�
   })
   assert.equal(applied.kind, 'clarification')
   assert.equal(applied.clarification.fields[0].id, 'variation_values')
+})
+
+test('肤色确认一次后沉淀在 Brief 上，后续轮次不再重复追问', () => {
+  const brief = {
+    version: 1 as const,
+    mode: 'generation' as const,
+    originalInstruction: '@批量变量生成 生成多个肤色的任务',
+    output: {},
+    creative: {},
+    provenance: {},
+  }
+  const asked = resolveBotanicAgentVariationRequest({ instruction: brief.originalInstruction, brief })
+  assert.equal(asked.kind, 'ask')
+  assert.equal(asked.clarification.brief?.variation?.axisKey, 'skin_tone')
+
+  const answers = { variation_values: '白、黑、黄' }
+  const remembered = botanicAgentBriefWithVariationAnswers(asked.clarification.brief, answers)
+  assert.deepEqual(remembered?.variation, { axisKey: 'skin_tone', values: ['白', '黑', '黄'] })
+
+  // 下一轮只带 Brief、不带本轮答案，仍应直接展开 3 支而不是再问一次肤色。
+  const resumed = resolveBotanicAgentVariationRequest({
+    instruction: brief.originalInstruction,
+    brief: remembered,
+  })
+  assert.equal(resumed.kind, 'ready')
+  assert.deepEqual(resumed.spec.axes[0].values.map((value) => value.label), ['白', '黑', '黄'])
+  assert.equal(expandBotanicAgentVariationBranches(resumed.spec).length, 3)
+  assert.equal(botanicAgentPendingVariationClarification({
+    instruction: brief.originalInstruction,
+    brief: remembered,
+  }), undefined)
+})
+
+test('已确认肤色数决定分支数，每支一条点名该肤色的独立提示词', () => {
+  const applied = applyBotanicAgentVariationToPlan({
+    intent: 'replace_scene',
+    instruction: '生成多个肤色的任务',
+    summary: '替换场景，生成 1 张新版本。',
+    prompt: '以画布上的黑人女性图为参考，保持场景、构图与光影不变。',
+    constraints: [{ dimension: 'scene', mode: 'vary' }],
+    output: { mode: 'single', count: 1, candidatesPerItem: 1 },
+  }, {
+    instruction: '生成多个肤色的任务',
+    brief: {
+      version: 1,
+      mode: 'generation',
+      originalInstruction: '生成多个肤色的任务',
+      output: {},
+      creative: {},
+      variation: { axisKey: 'skin_tone', values: ['白', '黑', '黄'] },
+      provenance: {},
+    },
+  })
+  assert.equal(applied.kind, 'plan')
+  assert.equal(applied.plan.output.count, 3)
+
+  const branches = botanicAgentPlanBranchPrompts(applied.plan as Parameters<typeof botanicAgentPlanBranchPrompts>[0])
+  assert.deepEqual(branches.map((branch) => branch.label), ['白', '黑', '黄'])
+  assert.equal(new Set(branches.map((branch) => branch.prompt)).size, 3)
+  branches.forEach((branch) => {
+    assert.match(branch.prompt, /黑人女性图为参考/)
+    assert.match(branch.prompt, new RegExp(`人物肤色为${branch.label}`))
+  })
+})
+
+test('非批量计划没有分支提示词列表', () => {
+  assert.deepEqual(botanicAgentPlanBranchPrompts({
+    output: { mode: 'single', count: 1, candidatesPerItem: 1 },
+    prompt: '换成海边黄昏。',
+  }), [])
 })
 
 test('匹配的素材组仍走按图批量，不改成变体轴', () => {

@@ -17,6 +17,7 @@ const resolutions = new Set(['1K', '2K'])
 const promptDirections = new Set(['faithful', 'commercial', 'editorial', 'social', 'custom'])
 const preservationPriorities = new Set(['identity', 'product', 'garment', 'balanced'])
 const sources = new Set(['user', 'canvas', 'memory', 'skill', 'inferred', 'default'])
+const botanicCreativeBriefVariationValueMax = 8
 
 export class BotanicCreativeBriefValidationError extends TypeError {
   constructor(message) {
@@ -81,6 +82,20 @@ export function validateBotanicCreativeBrief(value) {
   if (customDirection) creative.customDirection = customDirection
   if (customDirection && promptDirection !== 'custom') invalid('自定义创作方向与方向类型冲突。')
 
+  // 已确认的变体轴与取值属于长期创作设置，必须原样保留：丢掉它就会在下一轮重复追问同一个维度。
+  let variation
+  if (brief.variation !== undefined) {
+    const rawVariation = object(brief.variation, 'Creative Brief 变体设置')
+    if (!Array.isArray(rawVariation.values)) invalid('Creative Brief 变体取值无效。')
+    if (rawVariation.values.length > botanicCreativeBriefVariationValueMax) invalid('Creative Brief 变体取值过多。')
+    const values = rawVariation.values.map((value) => {
+      if (typeof value !== 'string' || !value.trim() || value.trim().length > 40) invalid('Creative Brief 变体取值无效。')
+      return value.trim()
+    })
+    const axisKey = optionalText(rawVariation.axisKey, 'Creative Brief 变体维度', 40)
+    variation = { ...(axisKey ? { axisKey } : {}), values }
+  }
+
   const provenance = {}
   const provenanceEntries = Object.entries(rawProvenance)
   if (provenanceEntries.length > botanicCreativeBriefFieldIds.length) invalid('Creative Brief 来源过多。')
@@ -89,5 +104,5 @@ export function validateBotanicCreativeBrief(value) {
     provenance[fieldId] = source
   }
 
-  return { version: 1, mode, originalInstruction, output, creative, provenance }
+  return { version: 1, mode, originalInstruction, output, creative, ...(variation ? { variation } : {}), provenance }
 }

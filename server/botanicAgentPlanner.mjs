@@ -428,6 +428,7 @@ function normalizeProviderPlan(raw, input) {
     instruction: input.instruction,
     requestedIntent: input.requestedIntent,
     clarificationAnswers: input.clarificationAnswers,
+    brief: input.creativeBrief,
     assetGroup: selectedAssetGroup ?? input.assetGroup,
   })
   if (applied.kind === 'clarification') return { kind: 'clarification', clarification: applied.clarification }
