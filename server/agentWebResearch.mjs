@@ -51,6 +51,21 @@ function ipv4FromHostname(hostname) {
   return octets
 }
 
+function canonicalHost(value) {
+  const lowered = String(value).trim().toLocaleLowerCase()
+  return lowered.startsWith('[') && lowered.endsWith(']') ? lowered.slice(1, -1) : lowered
+}
+
+function ipv4MappedFromIpv6(host) {
+  const dotted = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i.exec(host)
+  if (dotted) return ipv4FromHostname(dotted[1])
+  const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(host)
+  if (!hex) return undefined
+  const high = Number.parseInt(hex[1], 16)
+  const low = Number.parseInt(hex[2], 16)
+  return [(high >> 8) & 255, high & 255, (low >> 8) & 255, low & 255]
+}
+
 export function isPrivateIpv4(octets) {
   const [first, second] = octets
   if (first === 0 || first === 10 || first === 127) return true
@@ -61,17 +76,14 @@ export function isPrivateIpv4(octets) {
 }
 
 export function isPrivateIpAddress(value) {
-  const ipv4 = ipv4FromHostname(value)
+  const host = canonicalHost(value)
+  const ipv4 = ipv4FromHostname(host)
   if (ipv4) return isPrivateIpv4(ipv4)
-  const lowered = String(value).toLocaleLowerCase()
-  if (lowered === '::1' || lowered === '0:0:0:0:0:0:0:1') return true
-  if (lowered.startsWith('fe80:') || lowered.startsWith('fc') || lowered.startsWith('fd')) return true
-  const mapped = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i.exec(value)
-  if (mapped) {
-    const octets = ipv4FromHostname(mapped[1])
-    return octets ? isPrivateIpv4(octets) : true
-  }
-  return false
+  if (!host.includes(':')) return false
+  if (host === '::1' || host === '::' || host === '0:0:0:0:0:0:0:1' || host === '0:0:0:0:0:0:0:0') return true
+  if (host.startsWith('fe80:') || host.startsWith('fc') || host.startsWith('fd') || host.startsWith('ff')) return true
+  const mapped = ipv4MappedFromIpv6(host)
+  return mapped ? isPrivateIpv4(mapped) : false
 }
 
 export function classifyPublicHttpUrl(raw, { allowLocal = false } = {}) {
@@ -82,7 +94,7 @@ export function classifyPublicHttpUrl(raw, { allowLocal = false } = {}) {
   } catch {
     return { ok: false, message: '网页地址无效。' }
   }
-  const hostname = url.hostname.toLocaleLowerCase()
+  const hostname = canonicalHost(url.hostname)
   const localHost = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1'
   if (url.protocol === 'http:') {
     if (!allowLocal || !localHost) return { ok: false, message: '只允许抓取公开 HTTPS 网页。' }

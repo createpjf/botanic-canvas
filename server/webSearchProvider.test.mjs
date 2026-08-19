@@ -46,4 +46,7 @@ test('Tavily 抽取公开页正文，并拒绝内网 URL', async () => {
   await assert.rejects(client.extract('https://192.168.0.8/'), (error) => (
     error instanceof AgentToolRuntimeError && error.code === 'WEB_URL_NOT_ALLOWED'
   ))
+  await assert.rejects(client.extract('https://[::1]/'), (error) => (
+    error instanceof AgentToolRuntimeError && error.code === 'WEB_URL_NOT_ALLOWED'
+  ))
 })

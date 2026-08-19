@@ -232,6 +232,46 @@ test('工具执行失败时用同一调用标识收束 running 事件', async ()
   ])
 })
 
+test('WEB_ 工具失败回传给模型，不中断整轮对话', async () => {
+  const registry = createAgentToolRegistry([{
+    name: 'web_fetch',
+    label: '网页获取',
+    description: '读取公开网页。',
+    risk: 'external',
+    parameters: { type: 'object', properties: { url: { type: 'string' } } },
+    validate: (value) => value,
+    execute: async () => {
+      throw new AgentToolRuntimeError('WEB_URL_NOT_ALLOWED', '不能抓取内网或本机地址。', 400)
+    },
+  }])
+  const events = []
+  let modelCall = 0
+  const result = await runAgentToolLoop({
+    registry,
+    messages: [],
+    onEvent: (event) => events.push(event),
+    callModel: async ({ messages }) => {
+      modelCall += 1
+      if (modelCall === 1) {
+        return { choices: [{ message: { tool_calls: [{
+          id: 'call-blocked-fetch', type: 'function', function: {
+            name: 'web_fetch', arguments: '{"url":"https://[::1]/"}',
+          },
+        }] } }] }
+      }
+      const toolMessage = messages.at(-1)
+      assert.equal(toolMessage.role, 'tool')
+      assert.match(toolMessage.content, /WEB_URL_NOT_ALLOWED/)
+      return { choices: [{ message: { content: '这个地址打不开。' } }] }
+    },
+  })
+
+  assert.equal(result.output, '这个地址打不开。')
+  assert.equal(result.toolCalls[0].status, 'failed')
+  assert.equal(result.toolCalls[0].error, '不能抓取内网或本机地址。')
+  assert.deepEqual(events.map((event) => event.toolCall.status), ['running', 'failed'])
+})
+
 test('搜索结果数为 0 时保留真实计数', async () => {
   const registry = createAgentToolRegistry([{
     name: 'web_search', label: '网页搜索', description: '搜索网页。', risk: 'external',

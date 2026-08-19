@@ -38,6 +38,10 @@ export class AgentToolRuntimeError extends Error {
   }
 }
 
+function isRecoverableToolFailure(caught) {
+  return caught instanceof AgentToolRuntimeError && typeof caught.code === 'string' && caught.code.startsWith('WEB_')
+}
+
 function parseArguments(value) {
   if (typeof value !== 'string' || value.length > 64 * 1024) {
     throw new AgentToolRuntimeError('INVALID_TOOL_ARGUMENTS', '工具参数无效。')
@@ -235,11 +239,23 @@ export async function runAgentToolLoop({
         output = await registry.execute(name, rawArguments, { ...context, toolCallId: trace.id })
       } catch (caught) {
         const error = caught instanceof Error ? caught.message : '工具执行失败。'
+        const failed = { ...trace, status: 'failed', error }
         emit({
-          type: 'tool', step, toolCall: { ...trace, status: 'failed', error },
+          type: 'tool', step, toolCall: failed,
           ...(runningPresentation ? { presentation: runningPresentation } : {}),
         })
-        throw caught
+        if (!isRecoverableToolFailure(caught)) throw caught
+        toolCalls.push(failed)
+        conversation.push({
+          role: 'tool',
+          tool_call_id: trace.id,
+          content: JSON.stringify({
+            ok: false,
+            error,
+            code: caught.code,
+          }),
+        })
+        continue
       }
       const succeededPresentation = toolEventPresentation(name, output)
       emit({
