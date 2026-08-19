@@ -1660,6 +1660,51 @@ export function summarizeBotanicAgentNodeTitle(
   return base
 }
 
+export function botanicAgentResultGroupTitle(
+  plan?: Pick<BotanicAgentPlan, 'intent' | 'constraints'> & { title?: string; summary?: string },
+): string {
+  if (!plan) return '生成批次'
+  return summarizeBotanicAgentNodeTitle(plan)
+}
+
+export const botanicAgentSkillSummaryLimit = 28
+
+function botanicAgentSkillDocument(instructions: string) {
+  const text = instructions.trim()
+  const frontmatter = text.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)
+  if (!frontmatter) return { description: '', body: text }
+  const description = frontmatter[1]
+    .split(/\r?\n/)
+    .find((line) => /^description\s*:/i.test(line))
+    ?.replace(/^description\s*:\s*/i, '')
+    .trim()
+    .replace(/^['"]|['"]$/g, '') ?? ''
+  return { description, body: text.slice(frontmatter[0].length).trim() }
+}
+
+function botanicAgentSkillLead(body: string) {
+  const compact = body.replace(/^#+\s+[^\n]+\n+/, '').replace(/\s+/g, ' ').trim()
+  return compact.match(/^(.+?[。！？!?])/)?.[1]?.trim() || compact
+}
+
+function clipBotanicAgentSkillSummary(value: string) {
+  const compact = value.replace(/\s+/g, ' ').trim()
+  const characters = Array.from(compact)
+  if (characters.length <= botanicAgentSkillSummaryLimit) return compact
+  return `${characters.slice(0, botanicAgentSkillSummaryLimit).join('')}…`
+}
+
+/** 技能列表的一句用途：优先 YAML description，否则取正文首句。 */
+export function botanicAgentSkillSummary(instructions: string): string {
+  const document = botanicAgentSkillDocument(instructions)
+  return clipBotanicAgentSkillSummary(document.description || botanicAgentSkillLead(document.body))
+}
+
+/** 技能展开正文：去掉 YAML frontmatter，保留可读规则。 */
+export function botanicAgentSkillBody(instructions: string): string {
+  return botanicAgentSkillDocument(instructions).body
+}
+
 export function botanicAgentBatchBranchTitles(
   plan: Pick<BotanicAgentPlan, 'intent' | 'constraints'> & { title?: string },
   preferredNames: Array<string | undefined>,

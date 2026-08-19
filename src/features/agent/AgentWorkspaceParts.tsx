@@ -39,10 +39,10 @@ export function agentRuntimeStepMarker(step: BotanicAgentRuntimeStep) {
   return '○'
 }
 
-export function AgentPanelBackButton({ onClick }: { onClick: () => void }) {
+export function AgentPanelBackButton({ onClick, label = '返回对话' }: { onClick: () => void; label?: string }) {
   return <button type="button" className="agent-panel-back" onClick={onClick}>
     <ChevronLeftIcon />
-    <span>返回对话</span>
+    <span>{label}</span>
   </button>
 }
 

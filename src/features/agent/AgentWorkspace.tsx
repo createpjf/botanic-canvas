@@ -80,7 +80,7 @@ import {
 import { useAgentMessageDelivery } from './useAgentMessageDelivery'
 import { useAgentRuntimeTrace } from './useAgentRuntimeTrace'
 import type { AgentArtifactIndexState, AgentContextItem, AgentDockTarget, AgentSkillOption } from './agentWorkspace.types'
-import { AgentCollaborationPanel, AgentMemoryPanel, AgentResultPanel } from './AgentUtilityPanels'
+import { AgentCollaborationPanel, AgentMemoryPanel, AgentResultPanel, AgentSkillCard } from './AgentUtilityPanels'
 import { AgentConversationMessage } from './AgentConversationMessage'
 import { AgentComposer } from './AgentComposer'
 import {
@@ -352,6 +352,7 @@ export default function AgentWorkspace({
   const [skillConfirming, setSkillConfirming] = useState(false)
   const [skillSaving, setSkillSaving] = useState(false)
   const [skillError, setSkillError] = useState('')
+  const [expandedSkillId, setExpandedSkillId] = useState('')
   const [renamingSession, setRenamingSession] = useState(false)
   const [sessionTitleDraft, setSessionTitleDraft] = useState(session?.title ?? '新建对话')
   const [persistenceAction, setPersistenceAction] = useState<'retry' | 'refresh' | ''>('')
@@ -776,7 +777,10 @@ export default function AgentWorkspace({
   }, [])
 
   useEffect(() => {
-    if (!skillPanelOpen) setSkillFormOpen(false)
+    if (!skillPanelOpen) {
+      setSkillFormOpen(false)
+      setExpandedSkillId('')
+    }
   }, [skillPanelOpen])
 
   useEffect(() => {
@@ -1826,7 +1830,15 @@ export default function AgentWorkspace({
         {skillPanelOpen ? <section className="agent-skill-panel" aria-label="系统与项目 Skill">
           <header><AgentPanelBackButton onClick={closeUtilityPanel} /><div><small>SKILL REGISTRY</small><h2>创作技能</h2></div><span>{systemSkills.length + skills.length} 个</span></header>
           <p>在输入框键入 @ 即可调用 Skill。新建的项目 Skill 会自动挂载到当前对话。</p>
-          {systemSkills.length ? <div className="agent-skill-panel__catalog"><strong>系统 Skills</strong>{systemSkills.map((skill) => <article key={skill.id}><span><SparkleIcon /><b>{skill.name}</b></span><small>{skill.instructions}</small></article>)}</div> : null}
+          {systemSkills.length ? <div className="agent-skill-panel__catalog"><strong>系统 Skills</strong>{systemSkills.map((skill) => <AgentSkillCard
+            key={skill.id}
+            id={skill.id}
+            name={skill.name}
+            instructions={skill.instructions}
+            source="system"
+            expanded={expandedSkillId === skill.id}
+            onToggle={(id) => setExpandedSkillId((current) => current === id ? '' : id)}
+          />)}</div> : null}
           {!skillFormOpen && !skillConfirming && !skillError ? <button type="button" className="agent-skill-panel__create-entry" aria-expanded="false" onClick={() => setSkillFormOpen(true)}>＋ 新建技能</button> : <div className="agent-skill-panel__form">
               <input value={skillName} onChange={(event) => { setSkillName(event.target.value); setSkillConfirming(false); setSkillError('') }} maxLength={80} placeholder="技能名称，例如：夏日换景" aria-label="Skill 名称" autoFocus />
               <textarea value={skillInstructions} onChange={(event) => { setSkillInstructions(event.target.value); setSkillConfirming(false); setSkillError('') }} maxLength={4000} placeholder="描述必须保持什么、允许改变什么，以及结果规则。" aria-label="Skill 规则" />
@@ -1837,7 +1849,15 @@ export default function AgentWorkspace({
               {skillError ? <p role="alert">{skillError}</p> : null}
             </div>}
           <div className="agent-skill-panel__list">
-            {skills.map((skill) => <article key={skill.id}><strong>{skill.name}</strong><p>{skill.instructions}</p><small>项目 Skill · 可自动调用</small></article>)}
+            {skills.map((skill) => <AgentSkillCard
+              key={skill.id}
+              id={skill.id}
+              name={skill.name}
+              instructions={skill.instructions}
+              source="project"
+              expanded={expandedSkillId === skill.id}
+              onToggle={(id) => setExpandedSkillId((current) => current === id ? '' : id)}
+            />)}
             {!skills.length && !skillError ? <div className="agent-panel__empty">还没有项目 Skill。</div> : null}
           </div>
         </section> : null}
