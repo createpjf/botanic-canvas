@@ -195,7 +195,7 @@ test('Agent 生成卡片默认收起已完成步骤与提示词差异，主内�
     })
   })
 
-  await expect(page.getByText('生成前确认')).toBeVisible()
+  await expect(page.getByText('提示词')).toBeVisible()
   const toolSteps = page.locator('details.agent-message__tools')
   const promptDiff = page.locator('details.agent-prompt-review__diff')
   await expect(toolSteps).toBeVisible()

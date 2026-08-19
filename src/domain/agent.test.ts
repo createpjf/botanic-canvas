@@ -36,6 +36,12 @@ import {
   insertBotanicAgentReasoningSteps,
   resolveBotanicAgentExecutionDecision,
   botanicAgentExecutionModeLabel,
+  botanicAgentPendingConfirmationCount,
+  botanicAgentActionRequiresUserConfirmation,
+  botanicAgentAppliedSkillName,
+  clipBotanicAgentNodeTitle,
+  summarizeBotanicAgentNodeTitle,
+  botanicAgentNodeTitleLimit,
   botanicAgentArtifactPrompt,
   botanicAgentArtifactModel,
   botanicAgentArtifactTimestamp,
@@ -318,7 +324,7 @@ test('Runtime 默认只呈现当前阶段与下一步，展开后仍保留完整
 
   const waiting = summarizeBotanicAgentRuntime({ steps: running, phase: 'waiting_confirmation' })
   assert.equal(waiting.label, '等待你确认计划')
-  assert.match(waiting.detail, /确认后才会提交/)
+  assert.match(waiting.detail, /确认后开始生成/)
   assert.equal(waiting.nextAction, '确认生成')
 
   const waitingReference = summarizeBotanicAgentRuntime({ steps: running, phase: 'waiting_reference' })
@@ -504,6 +510,25 @@ test('换场景计划锁定人物服装商品并按素材组逐项生成', () =>
   assert.deepEqual(plan.output, { mode: 'batch_by_asset', count: 3, candidatesPerItem: 1 })
   assert.equal(plan.references.some((reference) => reference.source === 'root_recipe'), true)
   assert.match(plan.summary, /3 张/)
+  assert.equal(plan.title, '换景调光')
+  assert.ok(Array.from(plan.title).length <= botanicAgentNodeTitleLimit)
+})
+
+test('新图节点标题只概括变化且不超过 8 个字', () => {
+  const scenePlan = buildBotanicAgentPlan({
+    instruction: '保留模特人物、服装、姿态与构图不变，把海边换成撒哈拉沙漠并调成多云柔光',
+    intent: 'replace_scene',
+    selectedResultNodeId: 'result-v03',
+    rootRecipe,
+  })
+  assert.equal(summarizeBotanicAgentNodeTitle(scenePlan), '换景调光')
+  assert.equal(clipBotanicAgentNodeTitle('保留模特人物、服装、姿态与构图不变 3:4'), '保留模特人物服装')
+  assert.equal(summarizeBotanicAgentNodeTitle(scenePlan, { preferred: '撒哈拉沙漠柔和自然光' }), '撒哈拉沙漠柔和自')
+  assert.equal(summarizeBotanicAgentNodeTitle(scenePlan, { preferred: '沙漠柔光', sequence: 2 }), '沙漠柔光2')
+  assert.equal(summarizeBotanicAgentNodeTitle({
+    intent: 'change_pose',
+    constraints: [{ dimension: 'pose', mode: 'vary' }, { dimension: 'person', mode: 'preserve' }],
+  }), '换动作')
 })
 
 test('无素材组的换动作计划创建单次分支且继承根配方参数', () => {
@@ -951,6 +976,32 @@ test('Artifact Index 不可用或尚未迁移时，结果区完整回退到当�
   }]
 
   assert.deepEqual(mergeBotanicAgentArtifactIndex([], local), local)
+})
+
+test('应用已审核 Skill 不计入需用户确认的外部行动', () => {
+  const skillApply = {
+    id: 'call-skill-1', kind: 'skill' as const, toolName: 'skill_apply' as const,
+    label: '应用 Skill：受控局部编辑', summary: '按规则约束本次创作。', risk: 'write' as const,
+    arguments: { skillId: 'controlled_edit' }, status: 'awaiting_confirmation' as const,
+  }
+  const mcp = {
+    id: 'call-mcp-1', kind: 'mcp' as const, toolName: 'mcp_call' as const,
+    label: '调用 MCP：asset-catalog.search', summary: '检索海边场景。', risk: 'external' as const,
+    arguments: { server: 'asset-catalog', tool: 'search' }, status: 'awaiting_confirmation' as const,
+  }
+  assert.equal(botanicAgentActionRequiresUserConfirmation(skillApply), false)
+  assert.equal(botanicAgentActionRequiresUserConfirmation(mcp), true)
+  assert.equal(botanicAgentPendingConfirmationCount([skillApply]), 0)
+  assert.equal(botanicAgentPendingConfirmationCount([skillApply, mcp]), 1)
+  assert.equal(botanicAgentAppliedSkillName(skillApply), '受控局部编辑')
+  assert.deepEqual(
+    resolveBotanicAgentExecutionDecision({
+      mode: 'auto',
+      settingsComplete: true,
+      pendingActionCount: botanicAgentPendingConfirmationCount([skillApply]),
+    }),
+    { action: 'auto_submit' },
+  )
 })
 
 test('执行模式是可解释的领域决策，自动模式遇到外部行动会降级并说明原因', () => {

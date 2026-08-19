@@ -326,6 +326,7 @@ test('服务端 Agent 只让模型解释意图与约束，节点、参数和批�
     intent: 'replace_scene',
     instruction: validInput.instruction,
     summary: '锁定人物与服装，批量替换 10 个场景。',
+    title: '换景调光',
     contextSnapshot: validInput.contextSnapshot,
     selectedResultNodeId: 'result-v03',
     constraints: [
@@ -340,9 +341,9 @@ test('服务端 Agent 只让模型解释意图与约束，节点、参数和批�
     output: { mode: 'batch_by_asset', count: 10, candidatesPerItem: 1 },
     assetGroupId: 'group-scenes',
     actions: [{
-      id: 'call-skill-1', kind: 'skill', toolName: 'skill_apply', label: '应用 Skill：受控局部编辑',
-      summary: '按「受控局部编辑」约束本次创作，并把规则写回画布。', risk: 'write',
-      arguments: { skillId: 'controlled_edit' }, status: 'awaiting_confirmation',
+      id: 'call-skill-1', kind: 'skill', toolName: 'skill_apply', label: 'Skill · 受控局部编辑',
+      summary: '已按「受控局部编辑」约束本次创作。', risk: 'write',
+      arguments: { skillId: 'controlled_edit' }, status: 'succeeded',
     }],
     toolCalls: [
       { id: 'call-canvas-1', name: 'canvas_read', label: '读取画布上下文', risk: 'read', status: 'succeeded', requiresConfirmation: false },

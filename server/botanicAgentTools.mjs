@@ -160,6 +160,7 @@ function planParameters() {
       intent: { type: 'string' },
       prompt: { type: 'string', maxLength: 6000 },
       summary: { type: 'string', maxLength: 240 },
+      title: { type: 'string', maxLength: 40 },
       assetGroupId: { type: 'string', maxLength: 160 },
       constraints: { type: 'array', minItems: 1, maxItems: 10, items: { type: 'object' } },
     },
@@ -245,7 +246,7 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
     {
       name: 'skill_run',
       label: '调用创作 Skill',
-      description: `调用 Botanic 已审核的创作规则。可用 Skill：${Object.keys(availableSkills).join('、')}。${mountedSkillLabels.length ? `当前已挂载，相关任务优先使用：${mountedSkillLabels.join('、')}。` : ''}`,
+      description: `调用 Botanic 已审核的创作规则，并立即并入本轮约束。可用 Skill：${Object.keys(availableSkills).join('、')}。${mountedSkillLabels.length ? `当前已挂载，相关任务优先使用：${mountedSkillLabels.join('、')}。` : ''}`,
       risk: 'read',
       parameters: {
         type: 'object', additionalProperties: false,
@@ -263,11 +264,11 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
           id: context?.toolCallId ?? `skill-${skillId}`,
           kind: 'skill',
           toolName: 'skill_apply',
-          label: `应用 Skill：${skill.label}`,
-          summary: `按「${skill.label}」约束本次创作，并把规则写回画布。`,
+          label: `Skill · ${skill.label}`,
+          summary: `已按「${skill.label}」约束本次创作。`,
           risk: 'write',
           arguments: { skillId },
-          status: 'awaiting_confirmation',
+          status: 'succeeded',
         })
         return { skillId, ...skill }
       },

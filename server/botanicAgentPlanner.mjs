@@ -44,6 +44,15 @@ const MEDIA_KINDS = new Set(['image', 'video'])
 const GROUP_DIMENSIONS = new Map([
   ['场景', 'scene'], ['模特', 'person'], ['商品', 'product'], ['调性', 'style'],
 ])
+const NODE_TITLE_LIMIT = 8
+const VARY_TITLE = Object.freeze({
+  person: '换人物', garment: '换服装', product: '换商品', scene: '换场景', style: '换风格',
+  pose: '换动作', composition: '调构图', lighting: '调光线', aspect_ratio: '改比例', copy_space: '调留白',
+})
+const VARY_SHORT_TITLE = Object.freeze({
+  person: '换人', garment: '换装', product: '换品', scene: '换景', style: '换风',
+  pose: '换姿', composition: '构图', lighting: '调光', aspect_ratio: '比例', copy_space: '留白',
+})
 const DEFAULT_AGENT_MODELS = ['deepseek-v4-pro', 'deepseek-v4-flash', 'kimi-k3']
 
 export class BotanicAgentPlannerError extends Error {
@@ -338,6 +347,20 @@ function providerText(value, maximumLength) {
   return typeof value === 'string' && value.trim() && value.trim().length <= maximumLength ? value.trim() : undefined
 }
 
+function clipNodeTitle(value) {
+  if (typeof value !== 'string') return ''
+  return Array.from(value.replace(/[\s·.,，。:：；;、\-_/\\]+/gu, '')).slice(0, NODE_TITLE_LIMIT).join('')
+}
+
+function summarizeNodeTitle(intent, constraints, preferred) {
+  const named = clipNodeTitle(preferred)
+  if (named) return named
+  const vary = constraints.filter((item) => item.mode === 'vary')
+  if (vary.length === 1) return clipNodeTitle(VARY_TITLE[vary[0].dimension] ?? '新版本')
+  if (vary.length > 1) return clipNodeTitle(vary.map((item) => VARY_SHORT_TITLE[item.dimension] ?? '').join('')) || '新版本'
+  return clipNodeTitle(intent === 'replace_scene' ? '替换场景' : intent === 'change_pose' ? '调整动作' : '新版本') || '新版本'
+}
+
 function normalizeProviderPlan(raw, input) {
   const providerIntent = providerText(raw?.intent, 80)
   const intent = input.requestedIntent ?? providerIntent
@@ -373,6 +396,7 @@ function normalizeProviderPlan(raw, input) {
     intent,
     instruction: input.instruction,
     summary,
+    title: summarizeNodeTitle(intent, constraints, raw?.title),
     ...(input.creativeBrief ? { creativeBrief: structuredClone(input.creativeBrief) } : {}),
     selectedResultNodeId: input.selectedResult.nodeId,
     constraints,

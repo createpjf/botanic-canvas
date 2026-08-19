@@ -64,7 +64,7 @@ test('Agent 规划工具可调用当前项目已审核 Skill，但不能跨项�
   await assert.rejects(registry.execute('skill_run', { skillId: 'skill-other-project' }, {}), /不在允许列表/)
 })
 
-test('Planner 把 Skill 与 MCP 转换为待确认行动提议，不在规划阶段执行外部工具', async () => {
+test('Planner 调用 Skill 后立即生效，MCP 仍转为待确认行动', async () => {
   const proposals = []
   const registry = createBotanicAgentPlanningToolRegistry({
     input: {
@@ -88,9 +88,9 @@ test('Planner 把 Skill 与 MCP 转换为待确认行动提议，不在规划阶
 
   assert.deepEqual(proposals, [
     {
-      id: 'call-skill-1', kind: 'skill', toolName: 'skill_apply', label: '应用 Skill：夏日场景系列',
-      summary: '按「夏日场景系列」约束本次创作，并把规则写回画布。', risk: 'write',
-      arguments: { skillId: 'skill-scene-campaign' }, status: 'awaiting_confirmation',
+      id: 'call-skill-1', kind: 'skill', toolName: 'skill_apply', label: 'Skill · 夏日场景系列',
+      summary: '已按「夏日场景系列」约束本次创作。', risk: 'write',
+      arguments: { skillId: 'skill-scene-campaign' }, status: 'succeeded',
     },
     {
       id: 'call-mcp-1', kind: 'mcp', toolName: 'mcp_call', label: '调用 MCP：asset-catalog.search',

@@ -13,6 +13,7 @@ import {
   insertBotanicAgentMention,
   readBotanicAgentMentionQuery,
   resolveBotanicAgentExecutionDecision,
+  botanicAgentPendingConfirmationCount,
   summarizeBotanicAgentRuntime,
   type BotanicAgentActionProposal,
   type BotanicAgentActionResult,
@@ -1048,7 +1049,7 @@ export default function AgentWorkspace({
 
   const confirmMessagePlan = async (message: BotanicAgentMessage) => {
     if (!session || !message.plan || message.status === 'submitted' || submittingMessageId === message.id || submittingMessageIdRef.current === message.id) return
-    if (message.plan.actions?.some((action) => action.status === 'awaiting_confirmation' || action.status === 'running')) {
+    if (botanicAgentPendingConfirmationCount(message.plan.actions) > 0) {
       setError('请先确认或跳过行动卡，再执行生成计划。')
       return
     }
@@ -1486,7 +1487,7 @@ export default function AgentWorkspace({
     const planExecutionDecision = resolveBotanicAgentExecutionDecision({
       mode: session.executionMode,
       settingsComplete: true,
-      pendingActionCount: resolvedPlan.actions?.filter((action) => action.status === 'awaiting_confirmation').length ?? 0,
+      pendingActionCount: botanicAgentPendingConfirmationCount(resolvedPlan.actions),
     })
     if (planMessageId && planExecutionDecision.action === 'auto_submit') {
       await confirmMessagePlan({

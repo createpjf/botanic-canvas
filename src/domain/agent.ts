@@ -355,7 +355,7 @@ export function summarizeBotanicAgentRuntime(input: {
     },
     waiting_confirmation: {
       label: '等待你确认计划',
-      detail: '检查提示词与输出设置；确认后才会提交生成任务。',
+      detail: '检查提示词与输出设置；确认后开始生成。',
       nextAction: '确认生成',
     },
     waiting_reference: {
@@ -708,6 +708,8 @@ export type BotanicAgentPlan = {
   intent: BotanicAgentIntent
   instruction: string
   summary: string
+  /** 画布新图名；只概括变化，不超过 8 个字，不复述锁定项或比例。 */
+  title?: string
   /** 本轮生成前已确认的结构化创意简报；用于解释、刷新恢复与后续继续修改。 */
   creativeBrief?: BotanicCreativeBrief
   selectedResultNodeId?: string
@@ -842,7 +844,7 @@ export function botanicAgentRunFeedback(
   const terminal = status === 'completed' || status === 'partial' || status === 'failed' || status === 'cancelled'
   const timedOut = status === 'failed' && Boolean(error && /超时|timeout|timed out/i.test(error))
   if (status === 'awaiting_confirmation') {
-    return { label: '待确认', detail: '确认后才会提交生成。', action: 'view_task', actionLabel: '查看计划', tone: 'warning', terminal: false }
+    return { label: '待确认', detail: '确认后开始生成。', action: 'view_task', actionLabel: '查看计划', tone: 'warning', terminal: false }
   }
   if (status === 'queued') {
     return { label: '排队中', detail: '已入队，等待生成。', action: 'view_task', actionLabel: '查看任务', tone: 'progress', terminal: false }
@@ -970,6 +972,23 @@ export function resolveBotanicAgentExecutionDecision(input: {
 
 export function botanicAgentExecutionModeLabel(mode: BotanicAgentExecutionMode) {
   return mode === 'auto' ? '自动模式' : '计划模式'
+}
+
+/** 已审核 Skill 只注入本轮约束，不单独占用一次确认。 */
+export function botanicAgentActionRequiresUserConfirmation(
+  action: Pick<BotanicAgentActionProposal, 'toolName' | 'status'>,
+): boolean {
+  if (action.toolName === 'skill_apply') return false
+  return action.status === 'awaiting_confirmation' || action.status === 'running'
+}
+
+export function botanicAgentPendingConfirmationCount(actions?: BotanicAgentActionProposal[]): number {
+  return actions?.filter((action) => botanicAgentActionRequiresUserConfirmation(action)).length ?? 0
+}
+
+export function botanicAgentAppliedSkillName(action: Pick<BotanicAgentActionProposal, 'label'>): string {
+  const name = action.label.replace(/^(应用\s*)?Skill\s*[：:·]\s*/u, '').trim()
+  return name || '已应用'
 }
 
 export type BotanicAgentMemoryKind = 'rule' | 'approved' | 'avoid'
@@ -1579,6 +1598,46 @@ function intentLabel(intent: BotanicAgentIntent) {
   return labels[intent]
 }
 
+export const botanicAgentNodeTitleLimit = 8
+
+const varyDimensionTitle: Record<CreativeDimension, string> = {
+  person: '换人物', garment: '换服装', product: '换商品', scene: '换场景', style: '换风格',
+  pose: '换动作', composition: '调构图', lighting: '调光线', aspect_ratio: '改比例', copy_space: '调留白',
+}
+
+const varyDimensionShortTitle: Record<CreativeDimension, string> = {
+  person: '换人', garment: '换装', product: '换品', scene: '换景', style: '换风',
+  pose: '换姿', composition: '构图', lighting: '调光', aspect_ratio: '比例', copy_space: '留白',
+}
+
+/** 去掉空白与标点后截到 8 个字，供画布节点标题使用。 */
+export function clipBotanicAgentNodeTitle(value: string): string {
+  const compact = value.replace(/[\s·.,，。:：；;、\-_/\\]+/gu, '')
+  return Array.from(compact).slice(0, botanicAgentNodeTitleLimit).join('')
+}
+
+export function summarizeBotanicAgentNodeTitle(
+  plan: Pick<BotanicAgentPlan, 'intent' | 'constraints'> & { title?: string },
+  options: { preferred?: string; sequence?: number } = {},
+): string {
+  const preferred = clipBotanicAgentNodeTitle(options.preferred ?? '')
+  const named = preferred || clipBotanicAgentNodeTitle(plan.title ?? '')
+  const vary = plan.constraints.filter((constraint) => constraint.mode === 'vary')
+  let base = named
+  if (!base && vary.length === 1) base = clipBotanicAgentNodeTitle(varyDimensionTitle[vary[0].dimension])
+  if (!base && vary.length > 1) {
+    base = clipBotanicAgentNodeTitle(vary.map((constraint) => varyDimensionShortTitle[constraint.dimension]).join(''))
+  }
+  if (!base) base = clipBotanicAgentNodeTitle(intentLabel(plan.intent) || '新版本')
+  if (!base) base = '新版本'
+  if (options.sequence && options.sequence > 1) {
+    const suffix = String(options.sequence)
+    const room = Math.max(1, botanicAgentNodeTitleLimit - suffix.length)
+    return `${Array.from(base).slice(0, room).join('')}${suffix}`
+  }
+  return base
+}
+
 export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): BotanicAgentPlan {
   const instruction = input.instruction.trim()
   if (!instruction) throw new Error('请描述希望 Agent 完成的修改。')
@@ -1624,6 +1683,7 @@ export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): Botani
     intent,
     instruction,
     summary: `${intentLabel(intent)}，${output.mode === 'batch_by_asset' ? `按「${input.assetGroup?.name}」生成 ${output.count} 张` : '生成 1 张新版本'}。`,
+    title: summarizeBotanicAgentNodeTitle({ intent, constraints }),
     ...(input.creativeBrief ? { creativeBrief: structuredClone(input.creativeBrief) } : {}),
     ...(input.selectedResultNodeId ? { selectedResultNodeId: input.selectedResultNodeId } : {}),
     ...(contextSnapshot.length ? { contextSnapshot } : {}),

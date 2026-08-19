@@ -175,6 +175,7 @@ export function validateAgentRunCreation(body) {
       intent: rawPlan.intent,
       instruction: text(rawPlan.instruction, 'Agent 指令'),
       summary: text(rawPlan.summary, 'Agent 计划摘要', 1000),
+      ...(rawPlan.title ? { title: text(rawPlan.title, 'Agent 新图名', 8) } : {}),
       ...(selectedResultNodeId ? { selectedResultNodeId } : {}),
       prompt: text(rawPlan.prompt, 'Agent 生图提示词'),
       settings: validateSettings(rawPlan.settings),

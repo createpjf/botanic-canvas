@@ -5,6 +5,7 @@ import {
   recordBotanicAgentCanvasWritebacks,
   resolveBotanicAgentWorkflowReferenceNodeIds,
   resolveBotanicAgentCanvasCommands,
+  summarizeBotanicAgentNodeTitle,
   type BotanicAgentActionProposal,
   type BotanicAgentActionResult,
   type BotanicAgentArtifact,
@@ -47,6 +48,15 @@ type UseCanvasAgentExecutionBridgeOptions = {
  * Owns the Agent-to-canvas execution boundary: context projection, run persistence,
  * artifact paging and command writeback. The workspace only coordinates surfaces.
  */
+function canvasAssetName(document: CanvasDocument, assetId: string) {
+  return document.assets.find((asset) => asset.id === assetId)?.name
+    ?? document.nodes.flatMap((node) => {
+      if (node.type !== 'asset') return []
+      const data = node.data as AssetNodeData
+      return data.assetId === assetId ? [data.name] : []
+    })[0]
+}
+
 export function useCanvasAgentExecutionBridge({
   document,
   agentOpen,
@@ -335,8 +345,12 @@ export function useCanvasAgentExecutionBridge({
     const projectId = document.id
     const group = plan.assetGroupId ? document.assetGroups.find((item) => item.id === plan.assetGroupId) : undefined
     const branchInputs = plan.output.mode === 'batch_by_asset' && group
-      ? group.assetIds.map((assetId, index) => ({ assetId, branchId: `branch-${crypto.randomUUID()}`, label: `分支 ${index + 1}` }))
-      : [{ branchId: `branch-${crypto.randomUUID()}`, label: plan.summary }]
+      ? group.assetIds.map((assetId) => ({
+          assetId,
+          branchId: `branch-${crypto.randomUUID()}`,
+          label: summarizeBotanicAgentNodeTitle(plan, { preferred: canvasAssetName(document, assetId) }),
+        }))
+      : [{ branchId: `branch-${crypto.randomUUID()}`, label: summarizeBotanicAgentNodeTitle(plan) }]
     let runId: string
     if (serverPersistenceEnabled) {
       try {
