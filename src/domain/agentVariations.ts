@@ -2,6 +2,7 @@ import type {
   BotanicAgentClarification,
   BotanicAgentIntent,
   BotanicAgentPlan,
+  BotanicCreativeBrief,
   CreativeConstraint,
   CreativeDimension,
 } from './agent.ts'
@@ -64,7 +65,7 @@ const axisNameValues = new Set([
   '人物', '模特', '角色', '场景', '背景', '画面', '环境',
   '肤色', '动作', '姿势', '姿态', '风格', '调性', '服装', '衣服', '穿搭', '球衣',
 ])
-const valueJunkPattern = /^(?:各种|多种|一些|任意|几个|多图|多张|变体|版本|图片|生成|层次|细节|道具|质感|细腻|更细腻)$/u
+const valueJunkPattern = /^(?:各种|多种|一些|任意|几个|多图|多张|变体|版本|图片|生成|层次|细节|道具|质感|细腻|更细腻|档位|字段|推荐值|说明|选项)$/u
 const combineLanguagePattern = /组合|相乘|交叉|笛卡尔|[×x]\s*\d|全部组合|逐一组合/u
 const chineseCountByToken: Record<string, number> = {
   两: 2, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10,
@@ -91,9 +92,9 @@ function uniqueLabels(values: string[]) {
 }
 
 function splitValueList(raw: string) {
-  return uniqueLabels(raw.split(/[、，,;/＋+]/u).flatMap((item) => {
+  return uniqueLabels(raw.split(/[、，,;/＋+|]/u).flatMap((item) => {
     const chunk = item
-      .replace(/(?:等)?\s*(?:\d+|两|三|四|五|六|七|八|九|十)\s*(?:种|个).*$/u, '')
+      .replace(/(?:等)?\s*(?:\d+|两|三|四|五|六|七|八|九|十)\s*(?:种|个|档).*$/u, '')
       .replace(/^(?:分别是|分别|包括)/u, '')
       .replace(/^(?:换成|换为|替换为|改为|改成|使用|用)/u, '')
       .trim()
@@ -113,8 +114,8 @@ function parseCountToken(token: string) {
 function statedAxisCount(text: string, names: string[]) {
   for (const name of names) {
     const patterns = [
-      new RegExp(`(\\d+|两|二|三|四|五|六|七|八|九|十)\\s*(?:种|个)${name}`, 'u'),
-      new RegExp(`${name}[^。；\\n]{0,16}?(\\d+|两|二|三|四|五|六|七|八|九|十)\\s*(?:种|个)`, 'u'),
+      new RegExp(`(\\d+|两|二|三|四|五|六|七|八|九|十)\\s*(?:种|个|档)${name}`, 'u'),
+      new RegExp(`${name}[^。；\\n]{0,16}?(\\d+|两|二|三|四|五|六|七|八|九|十)\\s*(?:种|个|档)`, 'u'),
     ]
     for (const pattern of patterns) {
       const match = text.match(pattern)
@@ -133,6 +134,19 @@ function axisCountMismatch(axis: BotanicAgentVariationAxis, instruction: string)
   return count != null && axis.values.length !== count
 }
 
+function listedValuesFromText(text: string) {
+  const segments = text.includes('|')
+    ? text.split('|').map((cell) => cell.trim()).filter(Boolean)
+    : [text]
+  for (const segment of segments) {
+    const values = splitValueList(segment)
+    if (values.length >= botanicAgentVariationValueMin && /[、，,;/＋+]/u.test(segment)) return values
+  }
+  const values = splitValueList(text)
+  if (values.length >= botanicAgentVariationValueMin && /[、，,;/＋+|]/u.test(text)) return values
+  return []
+}
+
 function extractEnumeration(text: string, label: string) {
   const index = text.lastIndexOf(label)
   if (index < 0) return []
@@ -145,11 +159,11 @@ function extractEnumeration(text: string, label: string) {
   before = before.replace(/^[，,、。；:\s]+/u, '')
   const after = text.slice(index + label.length).split(/[。；\n]/u)[0]
     .replace(/^[为是用：:\s]+/u, '')
-  const fromBefore = splitValueList(before)
-  if (fromBefore.length >= botanicAgentVariationValueMin && /[、，,]/.test(before)) return fromBefore
-  const fromAfter = splitValueList(after)
-  if (fromAfter.length >= botanicAgentVariationValueMin && /[、，,]/.test(after)) return fromAfter
-  return []
+  const fromAfter = listedValuesFromText(after)
+  const fromBefore = listedValuesFromText(before)
+  if (after.includes('|') && fromAfter.length) return fromAfter
+  if (fromBefore.length) return fromBefore
+  return fromAfter
 }
 
 function axisFromCatalog(item: VariationAxisCatalogItem, values: string[]): BotanicAgentVariationAxis {
@@ -197,8 +211,9 @@ function parseAxes(instruction: string): BotanicAgentVariationAxis[] {
   return found
 }
 
-function fillAxisValues(axes: BotanicAgentVariationAxis[], answers?: Record<string, string>) {
-  const listed = splitValueList(answers?.variation_values ?? '')
+const skinToneValuePattern = /白|麦|棕|黑|黄|冷|暖|自然|健康|古铜|蜜|橄榄|浅|中|深/u
+
+function fillAxisValues(axes: BotanicAgentVariationAxis[], listed: string[], axisKey?: string) {
   if (!listed.length) return axes
   const incomplete = axes.find((axis) => axis.values.length < botanicAgentVariationValueMin)
   if (incomplete) {
@@ -208,9 +223,13 @@ function fillAxisValues(axes: BotanicAgentVariationAxis[], answers?: Record<stri
       : axis)
   }
   if (!axes.length) {
+    // 追问时记下的轴比取值字面更可信：「白、黑、黄」不该因为字面不像肤色就掉进自定义轴。
+    const known = axisKey ? axisCatalog.find((item) => item.key === axisKey) : undefined
+    if (known) return [axisFromCatalog(known, listed)]
     const skin = axisCatalog[0]
-    const looksLikeSkin = listed.every((label) => /白|麦|棕|黑|冷|暖|自然|健康/.test(label))
-    return [looksLikeSkin ? axisFromCatalog(skin, listed) : customAxis(listed)]
+    return [listed.every((label) => skinToneValuePattern.test(label))
+      ? axisFromCatalog(skin, listed)
+      : customAxis(listed)]
   }
   return axes
 }
@@ -249,13 +268,20 @@ function createVariationClarification(input: {
   question: string
   helper?: string
   instruction: string
+  brief?: BotanicCreativeBrief
+  axisKey?: string
   fields: BotanicAgentClarification['fields']
 }): BotanicAgentClarification {
+  // 追问卡带上 Brief 与本次追问的轴，用户回答后才能把取值沉淀成长期状态而不是一次性答案。
+  const brief = input.brief
+    ? { ...input.brief, variation: { ...(input.axisKey ? { axisKey: input.axisKey } : {}), values: [] } }
+    : undefined
   return {
     id: 'clarification-variation',
     question: input.question,
     helper: input.helper ?? '取值需要具体到 2–8 个短词；张数由展开结果决定，不会立即生成。',
     originalInstruction: input.instruction,
+    ...(brief ? { brief } : {}),
     fields: input.fields,
   }
 }
@@ -289,6 +315,8 @@ export type BotanicAgentVariationRequestInput = {
   instruction: string
   requestedIntent?: BotanicAgentIntent
   clarificationAnswers?: Record<string, string>
+  /** 已确认并沉淀在 Brief 上的变体轴与取值；有它就不再追问同一个维度。 */
+  brief?: BotanicCreativeBrief
   assetGroup?: { id: string; role?: string; assetCount: number }
 }
 
@@ -301,7 +329,9 @@ export type BotanicAgentVariationRequest =
 export function resolveBotanicAgentVariationRequest(input: BotanicAgentVariationRequestInput): BotanicAgentVariationRequest {
   const instruction = input.instruction.trim()
   const intent = resolveBotanicAgentIntent(instruction, input.requestedIntent)
-  const axes = fillAxisValues(parseAxes(instruction), input.clarificationAnswers)
+  const answered = splitValueList(input.clarificationAnswers?.variation_values ?? '')
+  const confirmed = answered.length ? answered : uniqueLabels(input.brief?.variation?.values ?? [])
+  const axes = fillAxisValues(parseAxes(instruction), confirmed, input.brief?.variation?.axisKey)
   const wantsBatch = instructionRequestsBatchVariation(instruction) || intent === 'batch_variation' || axes.some((axis) => axis.values.length >= botanicAgentVariationValueMin)
   const group = input.assetGroup
   const groupMatches = Boolean(group?.id && group.assetCount > 0 && axes[0] && groupRoleByKey[axes[0].key] === group.role)
@@ -324,6 +354,7 @@ export function resolveBotanicAgentVariationRequest(input: BotanicAgentVariation
         kind: 'ask',
         clarification: createVariationClarification({
           instruction,
+          brief: input.brief,
           question: `组合后共 ${product} 张，超过单次 ${botanicAgentVariationBranchLimit} 张上限。请只拆一条轴，或减少取值。`,
           fields: [combineField(readyAxes[0], readyAxes[1], Math.min(product, botanicAgentVariationBranchLimit))],
         }),
@@ -337,6 +368,8 @@ export function resolveBotanicAgentVariationRequest(input: BotanicAgentVariation
       kind: 'ask',
       clarification: createVariationClarification({
         instruction,
+        brief: input.brief,
+        axisKey: incomplete.key,
         question: incomplete.label === '肤色'
           ? '这次要按几种肤色出图？请列出 2 到 8 个具体取值，例如白皙、自然、小麦、深棕。'
           : `这次要按「${incomplete.label}」出多张。请列出 2 到 8 个具体取值，不要用「各种」代替。`,
@@ -350,6 +383,7 @@ export function resolveBotanicAgentVariationRequest(input: BotanicAgentVariation
       kind: 'ask',
       clarification: createVariationClarification({
         instruction,
+        brief: input.brief,
         question: '这次要按哪一个维度出多张？请列出 2 到 8 个具体取值。',
         fields: [valuesField('变体')],
       }),
@@ -391,6 +425,43 @@ export function botanicAgentBranchGenerationPrompt(prompt: string, promptDelta?:
   const base = botanicAgentVisualGenerationPrompt(prompt, fallback)
   const delta = promptDelta?.trim()
   return delta ? `${base}\n\n${delta}` : base
+}
+
+/**
+ * 把用户在追问卡里确认的取值沉淀到 Brief 上。确认过一次的维度属于长期创作设置，
+ * 不能只活在这一轮的 clarificationAnswers 里，否则下一轮又会重新追问同一个问题。
+ */
+export function botanicAgentBriefWithVariationAnswers(
+  brief: BotanicCreativeBrief | undefined,
+  answers: Record<string, string> | undefined,
+): BotanicCreativeBrief | undefined {
+  if (!brief) return brief
+  const values = splitValueList(answers?.variation_values ?? '')
+  if (!values.length) return brief
+  const axisKey = brief.variation?.axisKey
+  return { ...brief, variation: { ...(axisKey ? { axisKey } : {}), values } }
+}
+
+/**
+ * 批量请求必须先定下「按哪个维度、哪几个取值出图」，再谈比例与清晰度：
+ * 变体数量决定要开几个分支，输出设置只影响每个分支怎么画。
+ */
+export function botanicAgentPendingVariationClarification(
+  input: BotanicAgentVariationRequestInput,
+): BotanicAgentClarification | undefined {
+  const request = resolveBotanicAgentVariationRequest(input)
+  return request.kind === 'ask' ? request.clarification : undefined
+}
+
+/** 确认卡要能逐条核对：每个已确认取值对应一个分支节点和一条独立提示词。 */
+export function botanicAgentPlanBranchPrompts(
+  plan: Pick<BotanicAgentPlan, 'output' | 'prompt' | 'variation'>,
+): Array<{ label: string; prompt: string }> {
+  if (plan.output.mode !== 'batch_by_variation' || !plan.variation) return []
+  return expandBotanicAgentVariationBranches(plan.variation).map((branch) => ({
+    label: branch.label,
+    prompt: botanicAgentBranchGenerationPrompt(plan.prompt, branch.promptDelta),
+  }))
 }
 
 export function botanicAgentPlanOutputLabel(plan: Pick<BotanicAgentPlan, 'output'>) {
@@ -463,6 +534,7 @@ export function applyBotanicAgentVariationToPlan(
     instruction: input.instruction || plan.instruction,
     requestedIntent: input.requestedIntent ?? plan.intent,
     clarificationAnswers: input.clarificationAnswers,
+    brief: input.brief,
     assetGroup: input.assetGroup,
   })
   if (request.kind === 'none') return { kind: 'plan', plan }

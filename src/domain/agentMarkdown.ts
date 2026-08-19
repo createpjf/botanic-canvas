@@ -1,3 +1,5 @@
+import { botanicAgentLooksLikePlannerNarration } from './agent.ts'
+
 export type AgentMarkdownBlock =
   | { kind: 'heading'; level: 1 | 2 | 3; text: string }
   | { kind: 'paragraph'; text: string }
@@ -23,6 +25,7 @@ const promptHeading = /^\s*(Prompt(?:\s*\([A-Za-z]{2,8}\))?|提示词)\s*[:：]\
 const negativePromptHeading = /^\s*(Negative\s+prompt|反向提示词|负面提示词)\s*[:：]\s*(.*)$/i
 const promptNote = /^\s*(?:changes?\b|two\s+reminders?\b|note\b|reminders?\b|说明|修改|改动|变化|备注|提醒)/i
 const promptFenceOpen = /^\s*```\s*(prompt|提示词)\s*$/i
+const agentChatPromptLength = 600
 
 function cleanPromptText(lines: string[]) {
   return unwrapPromptFence(lines
@@ -136,6 +139,8 @@ export function resolveAgentPromptSections(content: string, storedPrompt = ''): 
   if (parsed) return parsed
   const prompt = storedPrompt.trim()
   if (!prompt) return null
+  // 规划旁白被 chat/prompt 模式整段存进 prompt 时，不能再塞进 <pre> 卡片，否则表格会变成生竖线。
+  if (botanicAgentLooksLikePlannerNarration(prompt) || botanicAgentLooksLikePlannerNarration(content)) return null
   const text = content.replace(/\r\n?/g, '\n').trim()
   if (text === prompt) {
     return { before: '', prompt, promptLabel: 'Prompt', after: '' }
@@ -150,6 +155,19 @@ export function resolveAgentPromptSections(content: string, storedPrompt = ''): 
     promptLabel: 'Prompt',
     after: text.slice(index + prompt.length).trim(),
   }
+}
+
+/**
+ * 对话回答与可执行提示词是两个通道：只有模型显式给出的 Prompt 区块，或整段就是一句画面描述时，
+ * 才能成为提示词。带标题、表格、多段解释的说明文永远留在对话里，不进生图参数。
+ */
+export function resolveAgentChatPrompt(answer: string): string {
+  const explicit = parseAgentPromptSections(answer)?.prompt.trim()
+  if (explicit) return botanicAgentLooksLikePlannerNarration(explicit) ? '' : explicit
+  const text = answer.replace(/\r\n?/g, '\n').trim()
+  if (!text || text.length > agentChatPromptLength || botanicAgentLooksLikePlannerNarration(text)) return ''
+  const blocks = parseAgentMarkdown(text)
+  return blocks.length === 1 && blocks[0].kind === 'paragraph' ? text : ''
 }
 
 /**

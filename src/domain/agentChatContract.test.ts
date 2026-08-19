@@ -61,6 +61,21 @@ test('明确的视觉执行请求才进入生成链路', () => {
   })
 })
 
+test('无素材组的批量变体请求进入生成计划，而不是写成对话旁白', () => {
+  const requests = [
+    '多个肤色人物、多图',
+    '白皙、自然、小麦、深棕四种肤色，多图',
+    '多肤色批量',
+    '做几种肤色版本',
+    '出一组变体',
+  ]
+  requests.forEach((instruction) => {
+    assert.equal(decideBotanicAgentRequest(instruction, true).kind, 'generation', instruction)
+  })
+  assert.notEqual(decideBotanicAgentRequest('能不能给我几个换场景的建议？', true).kind, 'generation')
+  assert.equal(decideBotanicAgentRequest('按推荐值继续', true).kind, 'generation')
+})
+
 test('自然语言创作请求在已有图片上下文时进入生成计划链路', () => {
   const requests = [
     '我想要一张 Mori Kei 风格的人像',

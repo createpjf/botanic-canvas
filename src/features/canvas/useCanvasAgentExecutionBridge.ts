@@ -455,15 +455,17 @@ export function useCanvasAgentExecutionBridge({
         agentRunId: undefined,
       })
     } else if (plan.output.mode === 'batch_by_variation') {
-      for (const branch of branchInputs) {
+      const nodeIds = branchInputs.flatMap((branch) => {
         const nodeId = createGenerateBranchFromResult(selectedResultNodeId, {
           prompt: botanicAgentBranchGenerationPrompt(plan.prompt, branch.variation?.promptDelta),
           batchCount: 1,
           settings: plan.settings,
           refinementMode: 'faithful',
         })
-        if (nodeId) started = await runGraphGeneration(nodeId) || started
-      }
+        return nodeId ? [nodeId] : []
+      })
+      const results = await Promise.all(nodeIds.map((nodeId) => runGraphGeneration(nodeId)))
+      started = results.some(Boolean)
     } else {
       const branchId = plan.intent === 'redo_from_root'
         ? createGenerateFromResultRecipe(selectedResultNodeId)

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { parseAgentMarkdown, parseAgentPromptSections, resolveAgentPromptSections } from './agentMarkdown.ts'
+import { parseAgentMarkdown, parseAgentPromptSections, resolveAgentChatPrompt, resolveAgentPromptSections } from './agentMarkdown.ts'
 
 test('agent markdown keeps headings, emphasis, lists and code blocks as safe blocks', () => {
   const blocks = parseAgentMarkdown('**说明**\n\n## 三个变量\n- **光线**：柔光\n- 场景\n\n---\n\n```json\n{"ok":true}\n```')
@@ -17,6 +17,29 @@ test('agent markdown does not treat html as executable markup', () => {
   const [block] = parseAgentMarkdown('<script>alert(1)</script>\n\n下一段')
   assert.equal(block?.kind, 'paragraph')
   assert.equal(block?.text, '<script>alert(1)</script>')
+})
+
+test('agent markdown 把管道表格收成安全表格块，不把竖线原文摊在段落里', () => {
+  const blocks = parseAgentMarkdown([
+    '### 批量设置',
+    '',
+    '| 字段 | 推荐值 | 说明 |',
+    '|---|---|---|',
+    '| 变体数量 | 4 个 | 每档肤色生成 1 张 |',
+    '| 肤色档位 | 浅 / 中 / 深 / 极深 | 四档递进 |',
+    '',
+    '确认前不会生成。',
+  ].join('\n'))
+  const table = blocks.find((block) => block.kind === 'table')
+  assert.deepEqual(table, {
+    kind: 'table',
+    headers: ['字段', '推荐值', '说明'],
+    rows: [
+      ['变体数量', '4 个', '每档肤色生成 1 张'],
+      ['肤色档位', '浅 / 中 / 深 / 极深', '四档递进'],
+    ],
+  })
+  assert.equal(blocks.some((block) => block.kind === 'paragraph' && block.text.includes('|---|')), false)
 })
 
 test('agent prompt sections separate copyable prompt, negative prompt and notes', () => {
@@ -146,4 +169,42 @@ test('stored prompt does not duplicate surrounding explanation as the prompt bod
     promptLabel: 'Prompt',
     after: '',
   })
+})
+
+test('说明文回答不会变成可执行提示词，显式 Prompt 区块才会', () => {
+  const essay = [
+    '结论：多肤色批量计划已就绪，只差两个字段确认即可出待确认计划。',
+    '',
+    '依据：我查了当前项目，没有已启用的批量变量 Skill。',
+    '',
+    '| 字段 | 推荐值 |',
+    '|---|---|',
+    '| 变体数量 | 4 个 |',
+  ].join('\n')
+  assert.equal(resolveAgentChatPrompt(essay), '')
+
+  assert.equal(
+    resolveAgentChatPrompt('已按你的要求收紧光线。\n\n```prompt\n模特站在海边，黄昏柔光，3:4。\n```'),
+    '模特站在海边，黄昏柔光，3:4。',
+  )
+  // 整段就是一句画面描述时仍可直接使用，不因为缺少标题就丢掉。
+  assert.equal(
+    resolveAgentChatPrompt('保持人物和服装，替换为柔和夕阳海边场景。'),
+    '保持人物和服装，替换为柔和夕阳海边场景。',
+  )
+  assert.equal(resolveAgentChatPrompt('## 三个方案\n\n- 海边\n- 森林'), '')
+})
+
+test('规划旁白即使被整段存成 prompt 也不进可复制卡片，留给表格渲染', () => {
+  const content = [
+    '结论：多肤色批量计划已就绪，只差两个字段确认即可出待确认计划。',
+    '',
+    '| 字段 | 推荐值 | 说明 |',
+    '|---|---|---|',
+    '| 变体数量 | 4 个 | 每档肤色生成 1 张 |',
+    '',
+    '确认前不会执行任何生成。',
+  ].join('\n')
+  assert.equal(resolveAgentPromptSections(content, content), null)
+  assert.equal(parseAgentMarkdown(content).some((block) => block.kind === 'table'), true)
 })

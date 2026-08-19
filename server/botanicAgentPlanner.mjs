@@ -408,6 +408,16 @@ function normalizeProviderPlan(raw, input) {
     ? assetGroup
     : undefined
   const batchCount = selectedAssetGroup?.assetCount ?? 0
+  // 计划里的提示词只能是画面描述。模型和用户本轮都只给了规划旁白时，宁可让这轮失败重来，
+  // 也不能把「结论 / 依据 / 待确认」这类说明文当成提示词提交给生图 Provider。
+  const visualPrompt = visualGenerationPrompt(prompt, input.instruction)
+  if (!visualPrompt) {
+    throw new BotanicAgentPlannerError(
+      422,
+      'PROMPT_NOT_VISUAL',
+      '这轮只拿到规划说明，没有可执行的画面描述。请直接说明画面要改成什么样。',
+    )
+  }
   const plan = {
     intent,
     instruction: input.instruction,
@@ -416,7 +426,7 @@ function normalizeProviderPlan(raw, input) {
     ...(input.creativeBrief ? { creativeBrief: structuredClone(input.creativeBrief) } : {}),
     selectedResultNodeId: input.selectedResult.nodeId,
     constraints,
-    prompt: visualGenerationPrompt(prompt, input.instruction),
+    prompt: visualPrompt,
     settings: input.settings,
     output: batchCount
       ? { mode: 'batch_by_asset', count: batchCount, candidatesPerItem: 1 }
@@ -428,6 +438,7 @@ function normalizeProviderPlan(raw, input) {
     instruction: input.instruction,
     requestedIntent: input.requestedIntent,
     clarificationAnswers: input.clarificationAnswers,
+    brief: input.creativeBrief,
     assetGroup: selectedAssetGroup ?? input.assetGroup,
   })
   if (applied.kind === 'clarification') return { kind: 'clarification', clarification: applied.clarification }

@@ -43,6 +43,7 @@ import {
   resolveBotanicAgentGenerationPromptDecision,
 } from '../../domain/agentChatContract'
 import { advanceBotanicCreativeBrief } from '../../domain/agentCreativeBrief'
+import { resolveAgentChatPrompt } from '../../domain/agentMarkdown'
 import type { BotanicAgentChatStreamEvent } from '../../domain/agentChatStream'
 import { applyAgentConversationStreamEvent, createAgentTimeline, type AgentTimelineEvent, type AgentTimelineState } from '../../domain/agentTimeline'
 import { nextExclusiveSurface, type ExclusiveSurfaceAction } from '../../domain/exclusiveSurface'
@@ -54,6 +55,11 @@ import type {
   UploadedAssetInput,
 } from '../../domain/canvas'
 import { createProjectAgentSkill, listBotanicAgentSystemSkills, listProjectAgentSkills, requestBotanicAgentPlan, streamBotanicAgentChat } from '../../lib/agentApi'
+import {
+  applyBotanicAgentVariationToPlan,
+  botanicAgentBriefWithVariationAnswers,
+  botanicAgentPendingVariationClarification,
+} from '../../domain/agentVariations'
 import { ProductApiError, serverPersistenceEnabled } from '../../lib/productSession'
 import { maxUploadAssets, readUploadedAssetInput, validateUploadFiles } from '../../lib/uploadedAssets'
 import { useCanvasStore } from '../../store/canvasStore'
@@ -1013,11 +1019,22 @@ export default function AgentWorkspace({
             creativeBrief,
             contextSnapshot: createBotanicAgentContextSnapshot(contextItems),
           }), plannerModel, settings: { ...target.rootRecipe.settings, ...generationOverrides } }
-          attachPlannerToolTrace(fallbackPlan)
+          const applied = applyBotanicAgentVariationToPlan(fallbackPlan, {
+            instruction: cleanInstruction,
+            requestedIntent: intent,
+            clarificationAnswers,
+            brief: creativeBrief,
+            assetGroup: assetGroup
+              ? { id: assetGroup.id, role: assetGroup.role, assetCount: assetGroup.assetIds.length }
+              : undefined,
+          })
+          if (applied.kind === 'clarification') return applied
+          const resolvedFallback = { ...fallbackPlan, ...applied.plan }
+          attachPlannerToolTrace(resolvedFallback)
           updateRuntimeStep('call-planner', 'succeeded')
           await completeRuntimeTrace(true)
           if (!isCurrentAgentProject()) return null
-          return fallbackPlan
+          return resolvedFallback
         } catch (fallbackError) {
           const message = fallbackError instanceof Error ? fallbackError.message : '暂时无法生成计划。'
           setError(message)
@@ -1304,12 +1321,14 @@ export default function AgentWorkspace({
         const sourceNote = route === 'research'
           ? `\n\n来源：${response.sources?.length ? response.sources.join('、') : '当前没有命中项目受控检索来源。'}`
           : ''
+        const chatPrompt = resolveAgentChatPrompt(response.answer)
         appendMessage({
           id: liveMessageId,
           role: 'assistant',
           kind: 'text',
           content: `${response.answer}${sourceNote}`,
-          ...(response.prompt ? { prompt: response.prompt } : {}),
+          // 可执行提示词只能来自回答里显式的 Prompt 区块，不能把整段解释当成提示词存下来。
+          ...(chatPrompt ? { prompt: chatPrompt } : {}),
         })
         setLiveConversation((current) => current?.message.id === liveMessageId ? undefined : current)
       } catch (caught) {
@@ -1355,6 +1374,31 @@ export default function AgentWorkspace({
     const imageModels = generationModels.filter((model) => model.mediaKind !== 'video')
     const inferredGenerationOverrides = inferBotanicAgentGenerationSettings(cleanInstruction, imageModels)
     const requestedGenerationOverrides = { ...inferredGenerationOverrides, ...options.generationOverrides }
+    const variationGroup = compatibleGroups.find((group) => group.id === groupId)
+    // 变体轴决定要开几个分支，必须先于比例与清晰度确认；已确认过的取值不再重复追问。
+    const pendingVariation = botanicAgentPendingVariationClarification({
+      instruction: generationPrompt,
+      requestedIntent: intent,
+      clarificationAnswers: options.clarificationAnswers,
+      brief: options.creativeBrief,
+      assetGroup: variationGroup
+        ? { id: variationGroup.id, role: variationGroup.role, assetCount: variationGroup.assetIds.length }
+        : undefined,
+    })
+    if (pendingVariation) {
+      setRuntimePhase('waiting_clarification')
+      appendMessage({
+        role: 'assistant',
+        kind: 'question',
+        question: {
+          ...pendingVariation,
+          ...(promptResolution.sourceMessageId ? { sourcePromptMessageId: promptResolution.sourceMessageId } : {}),
+        },
+        status: 'pending',
+        content: pendingVariation.question,
+      })
+      return
+    }
     const briefTurn = advanceBotanicCreativeBrief({
       mode: 'generation',
       executionMode: session.executionMode,
@@ -1372,6 +1416,7 @@ export default function AgentWorkspace({
         kind: 'question',
         question: {
           ...briefTurn.clarification,
+          brief: botanicAgentBriefWithVariationAnswers(briefTurn.clarification.brief, options.clarificationAnswers),
           ...(promptResolution.sourceMessageId ? { sourcePromptMessageId: promptResolution.sourceMessageId } : {}),
         },
         status: 'pending',
@@ -1429,19 +1474,37 @@ export default function AgentWorkspace({
           }),
           plannerModel,
         }
-        attachPlannerToolTrace(initialPlan)
+        const appliedInitial = applyBotanicAgentVariationToPlan(initialPlan, {
+          instruction: briefTurn.prompt,
+          requestedIntent: 'initial_generation',
+          clarificationAnswers: options.clarificationAnswers,
+          brief: briefTurn.brief,
+        })
+        if (appliedInitial.kind === 'clarification') {
+          setRuntimePhase('waiting_clarification')
+          appendMessage({
+            role: 'assistant',
+            kind: 'question',
+            question: appliedInitial.clarification,
+            status: 'pending',
+            content: appliedInitial.clarification.question,
+          })
+          return
+        }
+        const resolvedInitialPlan = { ...initialPlan, ...appliedInitial.plan }
+        attachPlannerToolTrace(resolvedInitialPlan)
         updateRuntimeStep('call-planner', 'succeeded')
         await completeRuntimeTrace(true)
         if (!isCurrentAgentProject()) return
         const planMessageId = appendMessage({
-          role: 'assistant', kind: 'plan', plan: initialPlan, status: 'pending',
-          content: initialPlan.summary,
+          role: 'assistant', kind: 'plan', plan: resolvedInitialPlan, status: 'pending',
+          content: resolvedInitialPlan.summary,
         })
         if (planMessageId) setRuntimePhase('waiting_confirmation')
         if (planMessageId && executionDecision.action === 'auto_submit') {
           await confirmMessagePlan({
-            id: planMessageId, role: 'assistant', kind: 'plan', content: initialPlan.summary,
-            createdAt: Date.now(), plan: initialPlan, status: 'pending',
+            id: planMessageId, role: 'assistant', kind: 'plan', content: resolvedInitialPlan.summary,
+            createdAt: Date.now(), plan: resolvedInitialPlan, status: 'pending',
           })
         }
       } catch (caught) {
@@ -1558,7 +1621,7 @@ export default function AgentWorkspace({
     await runInstruction(message.question.originalInstruction, {
       appendUser: summary,
       clarificationAnswers: answers,
-      creativeBrief: message.question.brief,
+      creativeBrief: botanicAgentBriefWithVariationAnswers(message.question.brief, answers),
       sourcePromptMessageId: message.question.sourcePromptMessageId,
       generationOverrides: {
         ...(answers.model ? { model: answers.model } : {}),

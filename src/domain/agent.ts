@@ -1553,8 +1553,8 @@ function stripPreserveClauses(instruction: string) {
 export function instructionRequestsBatchVariation(instruction: string) {
   const text = stripPreserveClauses(String(instruction ?? '').trim())
   if (!text) return false
-  if (/(?:批量|多图|多张|逐一|多来几|来几个|多出几)/u.test(text)) return true
-  if (new RegExp(`(?:\\d+|两|三|四|五|六|七|八|九|十)种(?:不同(?:的)?)?(?:${variationDimensionPattern})`, 'u').test(text)) return true
+  if (/(?:批量|多图|多张|逐一|多来几|来几个|多出几|多肤色)/u.test(text)) return true
+  if (new RegExp(`(?:\\d+|两|三|四|五|六|七|八|九|十)(?:种|档)(?:不同(?:的)?)?(?:${variationDimensionPattern})`, 'u').test(text)) return true
   if (new RegExp(`(?:[2-9]|[1-9]\\d|十|两|三|四|五|六|七|八|九)个(?:不同(?:的)?)?(?:[\\u4e00-\\u9fff]{0,6})?(?:${variationDimensionPattern})`, 'u').test(text)) return true
   if (new RegExp(`(?:多个|多种|几种|一组|一批)(?:不同(?:的)?)?(?:${variationDimensionPattern})`, 'u').test(text)) return true
   return false
@@ -1766,7 +1766,7 @@ export function botanicAgentSkillBody(instructions: string): string {
 
 const canvasPromptMetaPattern = /^(?:说明一下(?:来源)?|来源说明|补充说明)[:：]/u
 const canvasPromptMetaBodyPattern = /(?:我没有读取到|当前项目上下文里|根据(?:之前的)?对话上下文)/u
-const plannerNarrationPattern = /(?:项目没有配置|没有配置批量|缺(?:少)?(?:\d+个)?字段|批量\s*Skill|当前无法批量|请确认.{0,12}取值)/u
+const plannerNarrationPattern = /(?:项目没有配置|没有配置批量|没有启用批量|缺(?:少)?(?:\d+个)?字段|只差.{0,12}字段|批量(?:变体)?\s*Skill|当前无法批量|请确认.{0,12}取值|按推荐值继续|确认前不会(?:执行|生成)|待确认计划)/u
 
 /** 规划说明、缺字段分析和读取失败旁白不是画面描述。 */
 export function botanicAgentLooksLikePlannerNarration(text: string) {
@@ -1777,9 +1777,18 @@ export function botanicAgentLooksLikePlannerNarration(text: string) {
     || plannerNarrationPattern.test(value)
 }
 
+export function botanicAgentMessageOffersVisualPrompt(message: Pick<BotanicAgentMessage, 'prompt' | 'content' | 'plan' | 'question'>) {
+  if (message.plan || message.question) return false
+  const prompt = message.prompt?.trim()
+  if (!prompt) return false
+  return !botanicAgentLooksLikePlannerNarration(prompt) && !botanicAgentLooksLikePlannerNarration(message.content)
+}
+
 /**
  * 画布文本节点和生图任务只接受视觉描述。
  * 模型把读取失败、对话回顾或规划说明写进 Prompt 时，这些旁白留在对话里，不进画布。
+ *
+ * 取不到画面描述时返回空串：宁可让调用方继承基准图或追问，也不能把旁白当成提示词发给 Provider。
  */
 export function botanicAgentVisualGenerationPrompt(prompt: string, fallback = ''): string {
   const text = prompt.trim()
@@ -1791,7 +1800,7 @@ export function botanicAgentVisualGenerationPrompt(prompt: string, fallback = ''
   if (visual && !botanicAgentLooksLikePlannerNarration(visual)) return visual
   const fallbackText = fallback.trim()
   if (fallbackText && !botanicAgentLooksLikePlannerNarration(fallbackText)) return fallbackText
-  return visual || fallbackText || text
+  return ''
 }
 
 export function botanicAgentBatchBranchTitles(
@@ -1817,6 +1826,12 @@ export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): Botani
   if (isInitialGeneration && !imageContext.length) throw new Error('首次生成至少需要一项图片素材或图片结果。')
   const settings = input.rootRecipe?.settings ?? input.settings
   if (!settings) throw new Error('请先设置生成模型与输出参数。')
+  // 提示词只接受画面描述：本轮指令优先，其次继承基准图的配方；都取不到就停下追问，不拿旁白凑数。
+  const visualPrompt = botanicAgentVisualGenerationPrompt(instruction)
+    || botanicAgentVisualGenerationPrompt(input.rootRecipe?.prompt ?? '')
+  if (!visualPrompt) {
+    throw new Error('这轮还没有可执行的画面描述。请说明画面要改成什么样，或选中一张作为基准的结果图。')
+  }
   const constraints = constraintsForIntent(intent, input.assetGroup)
   const batchCount = input.assetGroup?.assetIds.length ?? 0
   const output = batchCount
@@ -1855,7 +1870,7 @@ export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): Botani
     ...(contextSnapshot.length ? { contextSnapshot } : {}),
     references,
     constraints,
-    prompt: botanicAgentPromptWithContextNotes(instruction, contextSnapshot),
+    prompt: botanicAgentPromptWithContextNotes(visualPrompt, contextSnapshot),
     settings,
     output,
     ...(input.assetGroup ? { assetGroupId: input.assetGroup.id } : {}),
