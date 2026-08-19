@@ -19,6 +19,12 @@
 - [Prompt Pack MVP](BOTANIC_PROMPT_PACK_MVP.md)
 - [服务端迁移说明](product-server-migration.md)
 
+## 进行中的设计
+
+以下规格正在本轮对齐，完成后以代码与测试为准：
+
+- [Agent 深度思考时间线与联网检索](superpowers/specs/2026-08-19-agent-thinking-web-search-design.md)
+
 ## 验收与历史记录
 
 以下文档记录特定版本或迁移阶段，不代表当前通用开发规范：
