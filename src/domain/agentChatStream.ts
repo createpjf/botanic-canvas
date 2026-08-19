@@ -1,5 +1,6 @@
 import type { AgentToolCallTrace } from './agent'
 import type { BotanicAgentChatResponse } from './agentChatContract'
+import type { TimelineToolPresentation } from './agentTimeline'
 
 /**
  * Agent 实时对话通道的事件契约。
@@ -10,7 +11,7 @@ import type { BotanicAgentChatResponse } from './agentChatContract'
 export type BotanicAgentChatStreamEvent =
   | { type: 'reasoning'; step: number; delta: string }
   | { type: 'answer'; step: number; delta: string }
-  | { type: 'tool'; step: number; toolCall: AgentToolCallTrace }
+  | { type: 'tool'; step: number; toolCall: AgentToolCallTrace; presentation?: TimelineToolPresentation }
   | { type: 'done'; response: BotanicAgentChatResponse }
   | { type: 'error'; code?: string; message?: string }
 

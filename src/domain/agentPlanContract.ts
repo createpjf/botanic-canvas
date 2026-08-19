@@ -1,4 +1,4 @@
-import type { BotanicAgentClarification, BotanicAgentContextSnapshot, BotanicAgentIntent, BotanicAgentMemoryItem, BotanicAgentPlan, BotanicAgentReasoningEntry } from './agent.ts'
+import type { BotanicAgentClarification, BotanicAgentContextSnapshot, BotanicAgentIntent, BotanicAgentMemoryItem, BotanicAgentPlan, BotanicAgentReasoningEntry, BotanicCreativeBrief } from './agent.ts'
 import type { AssetGroup, GenerationModelOption, GenerationRecipe, GenerationSettings } from './canvas.ts'
 
 export type BotanicAgentPlanRequestInput = {
@@ -16,6 +16,7 @@ export type BotanicAgentPlanRequestInput = {
   availableGenerationModels?: GenerationModelOption[]
   generationOverrides?: Partial<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution'>>
   clarificationAnswers?: Record<string, string>
+  creativeBrief?: BotanicCreativeBrief
   contextSnapshot?: BotanicAgentContextSnapshot[]
 }
 
@@ -33,6 +34,7 @@ export type BotanicAgentPlanRequest = {
   projectMemory?: Array<{ id: string; kind: BotanicAgentMemoryItem['kind']; content: string }>
   generationModels?: Array<Pick<GenerationModelOption, 'id' | 'label' | 'provider' | 'mediaKind' | 'aspectRatios' | 'resolutions'>>
   clarificationAnswers?: Record<string, string>
+  creativeBrief?: BotanicCreativeBrief
   contextSnapshot?: BotanicAgentContextSnapshot[]
 }
 
@@ -95,6 +97,7 @@ export function buildBotanicAgentPlanRequest(input: BotanicAgentPlanRequestInput
       })),
     } : {}),
     ...(input.clarificationAnswers ? { clarificationAnswers: input.clarificationAnswers } : {}),
+    ...(input.creativeBrief ? { creativeBrief: structuredClone(input.creativeBrief) } : {}),
     ...(input.contextSnapshot?.length ? { contextSnapshot: input.contextSnapshot } : {}),
   }
 }
@@ -108,6 +111,7 @@ export function completeBotanicAgentPlan(
   const settings = { ...input.rootRecipe.settings, ...input.generationOverrides }
   return {
     ...draft,
+    ...(input.creativeBrief ? { creativeBrief: structuredClone(input.creativeBrief) } : {}),
     ...(input.contextSnapshot?.length ? { contextSnapshot: input.contextSnapshot } : {}),
     settings,
     references: [

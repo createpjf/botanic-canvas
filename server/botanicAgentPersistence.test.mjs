@@ -155,6 +155,29 @@ test('Prompt 消息的结构化结果会随独立消息保留', () => {
   }, { now: 2 }))
 })
 
+test('多轮追问中的 Creative Brief 会随问题消息持久化', () => {
+  const brief = {
+    version: 1,
+    mode: 'generation',
+    originalInstruction: '生成一张海边人像',
+    output: { model: 'gpt-image-2', deliveryPreset: 'custom', resolution: '2K' },
+    creative: { promptDirection: 'faithful' },
+    provenance: { model: 'default', delivery_preset: 'user', resolution: 'user', prompt_direction: 'user' },
+  }
+  const result = validateAgentMessageEntity({
+    id: 'message-brief', role: 'assistant', kind: 'question', content: '请选择图片比例。', createdAt: 1,
+    status: 'pending',
+    question: {
+      id: 'clarification-brief', question: '请选择图片比例。', originalInstruction: brief.originalInstruction,
+      brief,
+      fields: [{ id: 'aspect_ratio', label: '图片比例', required: true, control: 'single_choice', options: [{ value: '3:4', label: '3:4' }] }],
+    },
+  }, { now: 2 })
+
+  assert.deepEqual(result.question.brief, brief)
+  assert.notEqual(result.question.brief, brief)
+})
+
 test('Postgres/Supabase 使用同一时间戳冲突规则，Memory 墓碑永久胜出', () => {
   assert.equal(shouldApplyAgentEntityWrite(undefined, { updatedAt: 20 }), true)
   assert.equal(shouldApplyAgentEntityWrite({ updatedAt: 20 }, { updatedAt: 19 }), false)

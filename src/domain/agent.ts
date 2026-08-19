@@ -1,4 +1,17 @@
 import type { AssetGroup, AssetNodeData, AssetRecord, CanvasDocument, CanvasNode, GenerationJob, GenerationRecipe, GenerationSettings, ResultNodeData } from './canvas.ts'
+import type { BotanicAgentClarification, BotanicCreativeBrief } from './agentCreativeBrief.ts'
+export type {
+  BotanicAgentClarification,
+  BotanicAgentClarificationField,
+  BotanicAgentClarificationFieldId,
+  BotanicAgentClarificationOption,
+  BotanicCreativeBrief,
+  BotanicCreativeBriefMode,
+  BotanicCreativeBriefSource,
+  BotanicDeliveryPreset,
+  BotanicPreservationPriority,
+  BotanicPromptDirection,
+} from './agentCreativeBrief.ts'
 
 export type BotanicAgentIntent =
   | 'initial_generation'
@@ -337,7 +350,7 @@ export function summarizeBotanicAgentRuntime(input: {
     },
     waiting_clarification: {
       label: '等待你补充设置',
-      detail: '选择模型、比例和分辨率后，Agent 才会继续规划。',
+      detail: '补充交付规格或创作方向后，Agent 才会继续整理。',
       nextAction: '选择设置',
     },
     waiting_confirmation: {
@@ -695,6 +708,8 @@ export type BotanicAgentPlan = {
   intent: BotanicAgentIntent
   instruction: string
   summary: string
+  /** 本轮生成前已确认的结构化创意简报；用于解释、刷新恢复与后续继续修改。 */
+  creativeBrief?: BotanicCreativeBrief
   selectedResultNodeId?: string
   /**
    * 提交时锁定的画布上下文。只保存可解释的节点元数据，不携带图片地址或媒体内容，
@@ -781,36 +796,6 @@ export function botanicAgentContextSnapshotNodeIds(
   return [...new Set((snapshot ?? [])
     .map((item) => item.nodeId)
     .filter((nodeId) => nodeId && (!available || available.has(nodeId))))]
-}
-
-/**
- * 规划信息不足时，Agent 只提出最少的可选问题，不直接猜测生成参数。
- * 选项是服务端从可信模型目录与画布能力中裁剪后的安全元数据。
- */
-export type BotanicAgentClarificationFieldId = 'model' | 'aspect_ratio' | 'resolution'
-
-export type BotanicAgentClarificationOption = {
-  value: string
-  label: string
-  description?: string
-}
-
-export type BotanicAgentClarificationField = {
-  id: BotanicAgentClarificationFieldId
-  label: string
-  required: boolean
-  defaultValue?: string
-  options: BotanicAgentClarificationOption[]
-}
-
-export type BotanicAgentClarification = {
-  id: string
-  question: string
-  helper?: string
-  originalInstruction: string
-  /** 精确复用某条 Agent Prompt，避免确认输出参数后误取其他历史 Prompt。 */
-  sourcePromptMessageId?: string
-  fields: BotanicAgentClarificationField[]
 }
 
 export type BotanicAgentClarificationResponse = {
@@ -1502,6 +1487,7 @@ export function updateBotanicAgentAction(
 
 export type BuildBotanicAgentPlanInput = {
   instruction: string
+  creativeBrief?: BotanicCreativeBrief
   intent?: BotanicAgentIntent
   selectedResultNodeId?: string
   selectedResultLabel?: string
@@ -1638,6 +1624,7 @@ export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): Botani
     intent,
     instruction,
     summary: `${intentLabel(intent)}，${output.mode === 'batch_by_asset' ? `按「${input.assetGroup?.name}」生成 ${output.count} 张` : '生成 1 张新版本'}。`,
+    ...(input.creativeBrief ? { creativeBrief: structuredClone(input.creativeBrief) } : {}),
     ...(input.selectedResultNodeId ? { selectedResultNodeId: input.selectedResultNodeId } : {}),
     ...(contextSnapshot.length ? { contextSnapshot } : {}),
     references,

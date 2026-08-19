@@ -117,11 +117,12 @@ export async function streamBotanicAgentChat(
     for await (const event of readAgentChatStream(response.body)) {
       keepAlive()
       received = true
+      if (event.type === 'done') settled = event.response
+      // error 也必须先进入展示层，让对话内正在运行的步骤明确收束为失败。
+      options.onEvent?.(event)
       if (event.type === 'error') {
         throw new ProductApiError(event.message ?? 'Agent 对话未完成，请重试。', 502, event.code)
       }
-      if (event.type === 'done') settled = event.response
-      options.onEvent?.(event)
     }
     if (!settled) throw new ProductApiError('Agent 实时通道意外结束。', 0)
     return settled

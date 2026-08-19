@@ -1,9 +1,10 @@
-import type { BotanicAgentMentionQuery } from '../../domain/agent'
+import type { BotanicAgentMentionQuery, BotanicCreativeBrief } from '../../domain/agent'
 import type { GenerationSettings } from '../../domain/canvas'
 
 export type AgentInstructionRetryOptions = {
   generationOverrides?: Partial<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution'>>
   clarificationAnswers?: Record<string, string>
+  creativeBrief?: BotanicCreativeBrief
   sourcePromptMessageId?: string
 }
 

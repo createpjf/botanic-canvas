@@ -11,7 +11,7 @@ import {
   type BotanicAgentRun,
   type BotanicAgentRuntimeStep,
 } from '../../domain/agent'
-import type { GenerationModelOption, GenerationSettings } from '../../domain/canvas'
+import type { GenerationModelOption } from '../../domain/canvas'
 import { modelDisplayLabel, modelProviderLogo } from '../../components/generationModelPresentation'
 import { AlertIcon, CheckIcon, ChevronLeftIcon, ClockIcon, CloseIcon, EditIcon, RefreshIcon, SlidersIcon } from '../../components/BotanicIcons'
 
@@ -125,9 +125,16 @@ export function AgentClarificationCard({
       : field.options
     return { ...field, options }
   })
-  const complete = fields.every((field) => !field.required || Boolean(answers[field.id]) && field.options.some((option) => option.value === answers[field.id]))
+  const complete = fields.every((field) => {
+    if (!field.required) return true
+    const value = answers[field.id]?.trim()
+    if (!value) return false
+    return field.control === 'text' || field.options.some((option) => option.value === value)
+  })
   const selectionSummary = fields
-    .map((field) => field.options.find((option) => option.value === answers[field.id])?.label)
+    .map((field) => field.control === 'text'
+      ? answers[field.id]?.trim()
+      : field.options.find((option) => option.value === answers[field.id])?.label)
     .filter(Boolean)
     .join(' · ')
   const selectOption = (fieldId: BotanicAgentClarificationField['id'], value: string) => {
@@ -144,10 +151,10 @@ export function AgentClarificationCard({
   }
   if (state === 'completed') {
     return (
-      <section className="agent-clarification-card is-complete" aria-label="已确认的输出设置" aria-live="polite">
+      <section className="agent-clarification-card is-complete" aria-label="已确认的创作设置" aria-live="polite">
         <span className="agent-clarification-card__complete-mark" aria-hidden="true">✓</span>
         <span className="agent-clarification-card__complete-copy">
-          <strong>输出设置已确认</strong>
+          <strong>创作设置已确认</strong>
           {selectionSummary ? <small>{selectionSummary}</small> : null}
         </span>
       </section>
@@ -155,15 +162,22 @@ export function AgentClarificationCard({
   }
   const disabled = state === 'submitting'
   return (
-    <section className="agent-clarification-card" aria-label="生成前参数确认">
+    <section className="agent-clarification-card" aria-label="创作设置确认">
       <div className="agent-clarification-card__intro">
-        <header><strong>确认输出设置</strong><small>确认后继续规划，不会立即生成</small></header>
+        <header><strong>确认创作设置</strong><small>确认后继续整理，不会立即生成</small></header>
         <p>{clarification.question}</p>
       </div>
       <div className="agent-clarification-card__fields">
         {fields.map((field) => <fieldset key={field.id} data-field={field.id}>
           <legend>{field.label}</legend>
-          <div role="group" aria-label={field.label}>
+          {field.control === 'text' ? <textarea
+            aria-label={field.label}
+            value={answers[field.id] ?? ''}
+            placeholder={field.placeholder}
+            disabled={disabled}
+            maxLength={500}
+            onChange={(event) => setAnswers((current) => ({ ...current, [field.id]: event.target.value }))}
+          /> : <div role="group" aria-label={field.label}>
             {field.options.map((option) => <button
               key={option.value}
               type="button"
@@ -172,7 +186,7 @@ export function AgentClarificationCard({
               disabled={disabled}
               onClick={() => selectOption(field.id, option.value)}
             ><span>{option.label}</span>{option.description ? <small>{option.description}</small> : null}</button>)}
-          </div>
+          </div>}
         </fieldset>)}
       </div>
       <footer className="agent-clarification-card__footer">
@@ -233,28 +247,4 @@ export function AgentFailureRecoveryActions({
       </span>
     </div>
   )
-}
-
-export function createInitialAgentClarification(
-  instruction: string,
-  models: GenerationModelOption[],
-  defaults: Partial<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution'>> = {},
-): BotanicAgentClarification {
-  const available = models.length ? models : [{ id: 'gpt-image-2', label: 'GPT Image 2' }]
-  const current = available.find((model) => model.id === defaults.model) ?? available[0]
-  const ratios = current.aspectRatios?.length ? current.aspectRatios : ['1:1', '3:4', '4:3', '16:9', '9:16']
-  const resolutions = current.resolutions?.length ? current.resolutions : ['1K', '2K']
-  const defaultRatio = defaults.aspectRatio && ratios.includes(defaults.aspectRatio) ? defaults.aspectRatio : ratios[0]
-  const defaultResolution = defaults.resolution && resolutions.includes(defaults.resolution) ? defaults.resolution : resolutions[0]
-  return {
-    id: `clarification-local-${crypto.randomUUID()}`,
-    question: '为了让第一张图更接近你的目标，先确认一下输出设置。',
-    helper: '不确定时可以保留推荐值，之后仍可在生成节点里修改。',
-    originalInstruction: instruction,
-    fields: [
-      { id: 'model', label: '生成模型', required: true, defaultValue: current.id, options: available.map((model) => ({ value: model.id, label: model.label, description: model.mediaKind === 'video' ? '视频生成' : '图片生成' })) },
-      { id: 'aspect_ratio', label: '画面比例', required: true, defaultValue: defaultRatio, options: ratios.map((value) => ({ value, label: value })) },
-      { id: 'resolution', label: '分辨率', required: true, defaultValue: defaultResolution, options: resolutions.map((value) => ({ value, label: value })) },
-    ],
-  }
 }

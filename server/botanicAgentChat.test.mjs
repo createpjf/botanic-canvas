@@ -96,3 +96,44 @@ test('Prompt 模式返回可持久化的结构化 Prompt，供后续生成精确
   assert.equal(result.answer, '保持人物和服装，替换为柔和夕阳海边场景。')
   assert.equal(result.prompt, result.answer)
 })
+
+test('流式旁白在对应工具事件前到达，工具完成后可继续追加新旁白', async () => {
+  const events = []
+  let requestIndex = 0
+  const streamResponse = (chunks) => new Response([
+    ...chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`),
+    'data: [DONE]\n\n',
+  ].join(''), { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+
+  const result = await chatWithBotanicAgent(input, {
+    flockApiKey: 'flock-secret',
+    flockTextModel: 'deepseek-v4-flash',
+    flockAgentModels: ['deepseek-v4-flash'],
+  }, {
+    document,
+    onEvent: (event) => events.push(event),
+    fetchImpl: async () => {
+      requestIndex += 1
+      if (requestIndex === 1) return streamResponse([
+        { choices: [{ delta: { content: '我先核对项目素材。' } }] },
+        { choices: [{ delta: { tool_calls: [{ index: 0, id: 'call-search', type: 'function', function: {
+          name: 'asset_group_search', arguments: JSON.stringify({ query: '夏日', role: '场景' }),
+        } }] }, finish_reason: 'tool_calls' }] },
+      ])
+      return streamResponse([
+        { choices: [{ delta: { content: '找到一个夏日场景素材组。' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ])
+    },
+  })
+
+  assert.deepEqual(events.map((event) => event.type === 'answer'
+    ? `answer:${event.delta}`
+    : `tool:${event.toolCall.id}:${event.toolCall.status}`), [
+    'answer:我先核对项目素材。',
+    'tool:call-search:running',
+    'tool:call-search:succeeded',
+    'answer:找到一个夏日场景素材组。',
+  ])
+  assert.equal(result.answer, '找到一个夏日场景素材组。')
+})

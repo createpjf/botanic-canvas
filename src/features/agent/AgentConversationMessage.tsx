@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   botanicAgentContextSnapshotNodeIds,
   creativeDimensionLabel,
@@ -8,8 +8,9 @@ import {
   type BotanicAgentMessage,
   type BotanicAgentRun,
 } from '../../domain/agent'
+import type { AgentTimelineState, TimelineStepKind } from '../../domain/agentTimeline'
 import type { GenerationModelOption } from '../../domain/canvas'
-import { CopyIcon, EditIcon, FocusIcon, SparkleIcon, ThumbDownIcon, ThumbUpIcon } from '../../components/BotanicIcons'
+import { AlertIcon, BookIcon, ChecklistIcon, ClockIcon, CopyIcon, EditIcon, FocusIcon, GlobeIcon, SearchIcon, SparkleIcon, ThumbDownIcon, ThumbUpIcon } from '../../components/BotanicIcons'
 import { agentPlannerModelLabel, modelDisplayLabel } from '../../components/generationModelPresentation'
 import { AgentClarificationCard, AgentPromptDiff, agentToolStatusLabel } from './AgentWorkspaceParts'
 import { AgentPromptResponse } from './AgentPromptResponse'
@@ -19,6 +20,65 @@ const collapsibleContentLength = 600
 const collapsibleContentLines = 14
 /** 单条任务消息内联展示的结果上限；更多结果去结果面板看，避免对话被结果流冲垮。 */
 const inlineRunResultLimit = 4
+
+function timelineElapsedLabel(startedAt: number, endedAt: number) {
+  const seconds = Math.max(0, Math.floor((endedAt - startedAt) / 1_000))
+  const minutes = Math.floor(seconds / 60)
+  const remainder = seconds % 60
+  return minutes ? `思考了 ${minutes}m ${remainder}s` : `思考了 ${seconds}s`
+}
+
+function TimelineStepIcon({ kind }: { kind: TimelineStepKind }) {
+  if (kind === 'search') return <SearchIcon />
+  if (kind === 'read_skill' || kind === 'read') return <BookIcon />
+  if (kind === 'connect_runtime') return <GlobeIcon />
+  if (kind === 'write') return <EditIcon />
+  return <ChecklistIcon />
+}
+
+function AgentMessageTimeline({ timeline }: { timeline: AgentTimelineState }) {
+  const running = timeline.blocks.some((block) => block.type === 'thinking' && block.status === 'running')
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    if (!running) return
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000)
+    return () => window.clearInterval(timer)
+  }, [running])
+
+  return <div className="agent-timeline" aria-label="Agent 实时进度">
+    {timeline.blocks.map((block) => {
+      if (block.type === 'thinking') {
+        const label = timelineElapsedLabel(block.startedAt, block.endedAt ?? now)
+        const summary = <><ClockIcon /><span>{label}</span></>
+        return block.text ? <details key={block.id} className={`agent-timeline__thinking is-${block.status}`}>
+          <summary>{summary}</summary>
+          <p>{block.text}</p>
+        </details> : <div key={block.id} className={`agent-timeline__thinking is-${block.status}`} aria-label={label}>{summary}</div>
+      }
+      if (block.type === 'narration') return <p key={block.id} className="agent-timeline__narration">{block.text}</p>
+      if (block.type === 'step') {
+        const statusLabel = block.status === 'running' ? '进行中' : block.status === 'succeeded' ? '已完成' : '失败'
+        return <div key={block.id} className={`agent-timeline__step is-${block.status}`} aria-label={`${block.title}，${statusLabel}`}>
+          <span className="agent-timeline__step-icon" aria-hidden="true">{block.status === 'failed' ? <AlertIcon /> : <TimelineStepIcon kind={block.kind} />}</span>
+          <strong>{block.title}</strong>
+          <small>{statusLabel}</small>
+        </div>
+      }
+      return <details key={block.id} className="agent-timeline__raw" open={block.open || undefined}>
+        <summary><span>{block.summary}</span><small>{block.items.length} 项</small></summary>
+        <div className="agent-timeline__raw-list">
+          {block.items.map((item) => <div key={item.id} className={`is-${item.status}`}>
+            <span><strong>{item.label}</strong><code>{item.name}</code></span>
+            <small>{agentToolStatusLabel(item.status)}</small>
+            {item.summary ? <p>{item.summary}</p> : null}
+            {item.error ? <p className="is-error">{item.error}</p> : null}
+          </div>)}
+        </div>
+      </details>
+    })}
+  </div>
+}
 
 function AgentCollapsibleContent({ content }: { content: string }) {
   const [expanded, setExpanded] = useState(false)
@@ -35,6 +95,8 @@ function AgentCollapsibleContent({ content }: { content: string }) {
 
 type AgentConversationMessageProps = {
   message: BotanicAgentMessage
+  timeline?: AgentTimelineState
+  streaming?: boolean
   sessionId?: string
   runs: BotanicAgentRun[]
   artifacts: BotanicAgentArtifact[]
@@ -66,6 +128,8 @@ type AgentConversationMessageProps = {
 
 export function AgentConversationMessage({
   message,
+  timeline,
+  streaming = false,
   sessionId,
   runs,
   artifacts,
@@ -108,10 +172,13 @@ export function AgentConversationMessage({
   const runMediaArtifacts = runArtifacts.filter((artifact) => artifact.url && (artifact.kind === 'image' || artifact.kind === 'video'))
   const inlineRunResults = runMediaArtifacts.slice(0, inlineRunResultLimit)
 
-  return <article className={`agent-message is-${message.role} is-${message.kind}`} role={isLiveRunMessage ? 'status' : undefined} aria-live={isLiveRunMessage ? 'polite' : undefined}>
+  const liveStatus = isLiveRunMessage || streaming
+
+  return <article className={`agent-message is-${message.role} is-${message.kind}${timeline ? ' has-timeline' : ''}`} role={liveStatus ? 'status' : undefined} aria-live={liveStatus ? 'polite' : undefined} aria-busy={streaming || undefined}>
     <div className="agent-message__role">{message.role === 'assistant' ? <SparkleIcon /> : <span>你</span>}</div>
     <div className="agent-message__body">
-      {!message.question ? (message.role === 'assistant' ? <AgentCollapsibleContent content={message.content} /> : <p>{message.content}</p>) : null}
+      {timeline ? <AgentMessageTimeline timeline={timeline} /> : null}
+      {!message.question && message.content ? (message.role === 'assistant' ? <AgentCollapsibleContent content={message.content} /> : <p>{message.content}</p>) : null}
       {message.kind === 'run' && inlineRunResults.length ? <div className="agent-run-message__results" aria-label="本次任务结果">
         {inlineRunResults.map((artifact) => artifact.kind === 'image'
           ? <img key={artifact.id} src={artifact.url} alt={artifact.label} />
@@ -235,13 +302,13 @@ export function AgentConversationMessage({
         return <div className="agent-message__plan">{detail}</div>
       })() : null}
     </div>
-    <div className="agent-message__utilities">
+    {timeline ? null : <div className="agent-message__utilities">
       {message.role === 'user' ? <button type="button" aria-label="编辑消息" title="编辑消息" onClick={() => onEdit(message.content)}><EditIcon /></button> : null}
       {message.role === 'assistant' && sessionId ? <>
         <button type="button" className={message.feedback === 'positive' ? 'is-selected' : ''} aria-label="这个回答有帮助" title="有帮助" onClick={() => onFeedback(message, message.feedback === 'positive' ? undefined : 'positive')}><ThumbUpIcon /></button>
         <button type="button" className={message.feedback === 'negative' ? 'is-selected' : ''} aria-label="这个回答需要改进" title="需改进" onClick={() => onFeedback(message, message.feedback === 'negative' ? undefined : 'negative')}><ThumbDownIcon /></button>
       </> : null}
       <button type="button" aria-label="复制消息" title="复制消息" onClick={() => void navigator.clipboard.writeText(message.content)}><CopyIcon /></button>
-    </div>
+    </div>}
   </article>
 }

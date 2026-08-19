@@ -88,6 +88,29 @@ export function AlertIcon({ className }: BotanicIconProps) {
   </svg>
 }
 
+/** Agent 时间线 · 搜索 */
+export function SearchIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <circle cx="10.5" cy="10.5" r="6.25" stroke="currentColor" strokeWidth="1.5" />
+    <path d="m15.25 15.25 4.5 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+  </svg>
+}
+
+/** Agent 时间线 · 技能指南 */
+export function BookIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="M4 4.5h5.25A2.75 2.75 0 0 1 12 7.25v12A2.75 2.75 0 0 0 9.25 16.5H4v-12Zm16 0h-5.25A2.75 2.75 0 0 0 12 7.25v12a2.75 2.75 0 0 1 2.75-2.75H20v-12Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+  </svg>
+}
+
+/** Agent 时间线 · 浏览器 Runtime */
+export function GlobeIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <circle cx="12" cy="12" r="8.75" stroke="currentColor" strokeWidth="1.5" />
+    <path d="M3.5 12h17M12 3.25c2.25 2.4 3.25 5.32 3.25 8.75S14.25 18.35 12 20.75C9.75 18.35 8.75 15.43 8.75 12S9.75 5.65 12 3.25Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+}
+
 /** 参数调整动作 */
 export function SlidersIcon({ className }: BotanicIconProps) {
   return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">

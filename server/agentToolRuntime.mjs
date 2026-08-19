@@ -51,6 +51,42 @@ function parseArguments(value) {
   }
 }
 
+function safePresentationLabel(value) {
+  return typeof value === 'string' ? value.trim().replace(/\s+/g, ' ').slice(0, 80) : ''
+}
+
+function presentationCount(output) {
+  if (!output || typeof output !== 'object' || Array.isArray(output)) return undefined
+  const direct = [output.hitCount, output.sourceCount, output.count, output.total]
+    .map(Number)
+    .find((value) => Number.isInteger(value) && value >= 0)
+  if (direct !== undefined) return direct
+  const collection = [output.hits, output.sources, output.results].find(Array.isArray)
+  return collection?.length
+}
+
+/**
+ * 工具展示元数据只从工具名和安全结果摘要中提取，不复制参数或完整返回值。
+ * 缺失时客户端领域映射仍会兜底，因此这里不改变工具执行协议。
+ */
+function toolEventPresentation(name, output) {
+  const normalizedName = typeof name === 'string' ? name.toLowerCase() : ''
+  if (normalizedName === 'web_search' || normalizedName.startsWith('search_')) {
+    const count = presentationCount(output)
+    return count !== undefined
+      ? { kind: 'search', title: `已搜索 ${count} 个网站`, count }
+      : { kind: 'search', title: '正在搜索网站' }
+  }
+  if (/^(?:skill_read|read_skill)$/u.test(normalizedName)) {
+    const skillName = safePresentationLabel(output?.skillName ?? output?.skill?.name)
+    return { kind: 'read_skill', title: skillName ? `读取${skillName}技能指南` : '读取技能指南' }
+  }
+  if (/^(?:browser_connect|playwright_connect|cdp_attach)$/u.test(normalizedName)) {
+    return { kind: 'connect_runtime', title: '连接浏览器 runtime' }
+  }
+  return undefined
+}
+
 export function createAgentToolRegistry(definitions) {
   const tools = new Map()
   for (const definition of definitions) {
@@ -183,9 +219,27 @@ export async function runAgentToolLoop({
       if (tool.requiresConfirmation && !context?.approvedToolCallIds?.has(trace.id)) {
         throw new AgentToolRuntimeError('TOOL_CONFIRMATION_REQUIRED', `${tool.label}需要用户确认。`, 409)
       }
-      emit({ type: 'tool', step, toolCall: { ...trace, status: 'running' } })
-      const output = await registry.execute(name, rawArguments, { ...context, toolCallId: trace.id })
-      emit({ type: 'tool', step, toolCall: trace })
+      const runningPresentation = toolEventPresentation(name)
+      emit({
+        type: 'tool', step, toolCall: { ...trace, status: 'running' },
+        ...(runningPresentation ? { presentation: runningPresentation } : {}),
+      })
+      let output
+      try {
+        output = await registry.execute(name, rawArguments, { ...context, toolCallId: trace.id })
+      } catch (caught) {
+        const error = caught instanceof Error ? caught.message : '工具执行失败。'
+        emit({
+          type: 'tool', step, toolCall: { ...trace, status: 'failed', error },
+          ...(runningPresentation ? { presentation: runningPresentation } : {}),
+        })
+        throw caught
+      }
+      const succeededPresentation = toolEventPresentation(name, output)
+      emit({
+        type: 'tool', step, toolCall: trace,
+        ...(succeededPresentation ? { presentation: succeededPresentation } : {}),
+      })
       toolCalls.push(trace)
       if (tool.terminal) return { output, toolCalls, reasoning }
       conversation.push({ role: 'tool', tool_call_id: trace.id, content: JSON.stringify(output) })

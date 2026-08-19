@@ -129,6 +129,48 @@ test('Agent 在规格缺失时返回受控追问卡，并从可信模型目录�
   assert.equal(result.clarification.fields[0].defaultValue, validInput.settings.model)
 })
 
+test('Agent Planner 的创作方向追问只返回受控选项与文本控件', async () => {
+  const creativeBrief = {
+    version: 1,
+    mode: 'generation',
+    originalInstruction: validInput.instruction,
+    output: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
+    creative: { promptDirection: 'custom' },
+    provenance: { model: 'canvas', aspect_ratio: 'canvas', resolution: 'canvas', prompt_direction: 'user' },
+  }
+  const result = await planBotanicGeneration({ ...validInput, creativeBrief }, {
+    flockApiKey: 'flock-secret', flockTextModel: 'deepseek-v4-pro',
+  }, {
+    fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: {
+      content: null,
+      tool_calls: [{ id: 'call-clarify-creative', type: 'function', function: {
+        name: 'generation_ask_clarification', arguments: JSON.stringify({
+          question: '再确认一下创作方向。',
+          fields: [
+            { id: 'prompt_direction', label: 'Prompt 优化方向' },
+            { id: 'preservation_priority', label: '保持重点' },
+            { id: 'custom_direction', label: '自定义方向' },
+          ],
+        }),
+      } }],
+    } }] }), { status: 200 }),
+  })
+
+  assert.equal(result.kind, 'clarification')
+  assert.deepEqual(result.clarification.brief, creativeBrief)
+  assert.deepEqual(result.clarification.fields.map((field) => field.id), [
+    'prompt_direction', 'preservation_priority', 'custom_direction',
+  ])
+  assert.deepEqual(result.clarification.fields[0].options.map((option) => option.value), [
+    'faithful', 'commercial', 'editorial', 'social', 'custom',
+  ])
+  assert.deepEqual(result.clarification.fields[1].options.map((option) => option.value), [
+    'identity', 'product', 'garment', 'balanced',
+  ])
+  assert.equal(result.clarification.fields[2].control, 'text')
+  assert.deepEqual(result.clarification.fields[2].options, [])
+})
+
 test('Agent 参数回填只接受可信目录中的模型、比例和分辨率', () => {
   const input = validateBotanicAgentPlanInput({
     ...validInput,
@@ -146,6 +188,37 @@ test('Agent 参数回填只接受可信目录中的模型、比例和分辨率',
     generationModels: [{ id: 'gpt-image-2', label: 'GPT Image 2' }],
     generationOverrides: { model: 'attacker-model' },
   }), /覆盖模型不在可用目录中/)
+  assert.throws(() => validateBotanicAgentPlanInput({
+    ...validInput,
+    generationModels: [{ id: 'gpt-image-2', label: 'GPT Image 2', aspectRatios: ['1:1'], resolutions: ['1K'] }],
+  }), /当前比例不受所选模型支持/)
+  assert.equal(validateBotanicAgentPlanInput({
+    ...validInput,
+    clarificationAnswers: { custom_direction: '克制、自然、保留真实肤质。'.repeat(14) },
+  }).clarificationAnswers.custom_direction.length > 160, true)
+})
+
+test('Agent 计划输入保留受控 Creative Brief 并拒绝未知创作方向', () => {
+  const creativeBrief = {
+    version: 1,
+    mode: 'generation',
+    originalInstruction: validInput.instruction,
+    output: { model: 'gpt-image-2', deliveryPreset: 'xiaohongshu', aspectRatio: '3:4', resolution: '2K' },
+    creative: { promptDirection: 'editorial', preservationPriority: 'identity' },
+    provenance: { model: 'canvas', delivery_preset: 'user', aspect_ratio: 'inferred', resolution: 'user', prompt_direction: 'user' },
+  }
+  const input = validateBotanicAgentPlanInput({
+    ...validInput,
+    creativeBrief,
+    clarificationAnswers: { delivery_preset: 'xiaohongshu', prompt_direction: 'editorial' },
+  })
+
+  assert.deepEqual(input.creativeBrief, creativeBrief)
+  assert.deepEqual(input.clarificationAnswers, { delivery_preset: 'xiaohongshu', prompt_direction: 'editorial' })
+  assert.throws(() => validateBotanicAgentPlanInput({
+    ...validInput,
+    creativeBrief: { ...creativeBrief, creative: { promptDirection: 'invented' } },
+  }), /创作方向不支持/)
 })
 
 test('Kimi K3 使用服务商要求的 temperature=1，其余规划模型保持低温度', async () => {

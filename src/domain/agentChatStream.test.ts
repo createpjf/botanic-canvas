@@ -48,3 +48,19 @@ test('多行 data 按 SSE 规范拼接后再解析', () => {
     { type: 'answer', step: 0, delta: '分两行' },
   ])
 })
+
+test('tool presentation 是向后兼容的加字段，未知键不会影响事件解析', () => {
+  const reader = createBotanicAgentChatStreamReader()
+  const [event] = reader.push(sse({
+    type: 'tool',
+    step: 1,
+    toolCall: { id: 'search-1', name: 'web_search', label: '网页搜索', risk: 'external', status: 'succeeded', requiresConfirmation: false },
+    presentation: { kind: 'search', title: '已搜索 25 个网站', count: 25 },
+    futureField: { ignoredByOldClients: true },
+  }))
+
+  assert.equal(event.type, 'tool')
+  if (event.type !== 'tool') return
+  assert.deepEqual(event.presentation, { kind: 'search', title: '已搜索 25 个网站', count: 25 })
+  assert.equal(event.toolCall.id, 'search-1')
+})

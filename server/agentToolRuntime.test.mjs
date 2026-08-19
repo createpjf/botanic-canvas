@@ -157,3 +157,98 @@ test('规划工具执行时收到稳定的模型调用标识，供行动提议�
   assert.equal(result.output, '完成')
   assert.equal(result.toolCalls[0].id, 'call-proposal-1')
 })
+
+test('工具事件用可选 presentation 暴露安全的人话标题和结果计数', async () => {
+  const definitions = [
+    {
+      name: 'web_search', label: '网页搜索', output: { hitCount: 25, sources: Array.from({ length: 25 }, (_, index) => `source-${index}`) },
+    },
+    { name: 'skill_read', label: '读取 Skill', output: { skillName: '浏览器' } },
+    { name: 'browser_connect', label: '连接浏览器', output: { connected: true } },
+  ].map(({ name, label, output }) => ({
+    name, label, description: label, risk: 'read',
+    parameters: { type: 'object', properties: {} },
+    validate: (value) => value,
+    execute: async () => output,
+  }))
+  const registry = createAgentToolRegistry(definitions)
+  const events = []
+  let modelCall = 0
+  await runAgentToolLoop({
+    registry, messages: [], onEvent: (event) => events.push(event),
+    callModel: async () => {
+      modelCall += 1
+      return modelCall === 1
+        ? { choices: [{ message: { content: '我先核对页面。', tool_calls: definitions.map((tool, index) => ({
+          id: `call-${index + 1}`, type: 'function', function: { name: tool.name, arguments: '{}' },
+        })) } }] }
+        : { choices: [{ message: { content: '核对完成。' } }] }
+    },
+  })
+
+  assert.deepEqual(events.map((event) => ({
+    type: event.type,
+    id: event.toolCall.id,
+    status: event.toolCall.status,
+    presentation: event.presentation,
+  })), [
+    { type: 'tool', id: 'call-1', status: 'running', presentation: { kind: 'search', title: '正在搜索网站' } },
+    { type: 'tool', id: 'call-1', status: 'succeeded', presentation: { kind: 'search', title: '已搜索 25 个网站', count: 25 } },
+    { type: 'tool', id: 'call-2', status: 'running', presentation: { kind: 'read_skill', title: '读取技能指南' } },
+    { type: 'tool', id: 'call-2', status: 'succeeded', presentation: { kind: 'read_skill', title: '读取浏览器技能指南' } },
+    { type: 'tool', id: 'call-3', status: 'running', presentation: { kind: 'connect_runtime', title: '连接浏览器 runtime' } },
+    { type: 'tool', id: 'call-3', status: 'succeeded', presentation: { kind: 'connect_runtime', title: '连接浏览器 runtime' } },
+  ])
+})
+
+test('工具执行失败时用同一调用标识收束 running 事件', async () => {
+  const registry = createAgentToolRegistry([{
+    name: 'web_search',
+    label: '网页搜索',
+    description: '搜索网页。',
+    risk: 'external',
+    parameters: { type: 'object', properties: {} },
+    validate: (value) => value,
+    execute: async () => { throw new Error('搜索服务不可用') },
+  }])
+  const events = []
+
+  await assert.rejects(runAgentToolLoop({
+    registry,
+    messages: [],
+    onEvent: (event) => events.push(event),
+    callModel: async () => ({ choices: [{ message: { tool_calls: [{
+      id: 'call-failed-search', type: 'function', function: { name: 'web_search', arguments: '{}' },
+    }] } }] }),
+  }), /\u641c索服务不可用/u)
+
+  assert.deepEqual(events.map((event) => ({
+    id: event.toolCall.id,
+    status: event.toolCall.status,
+    error: event.toolCall.error,
+  })), [
+    { id: 'call-failed-search', status: 'running', error: undefined },
+    { id: 'call-failed-search', status: 'failed', error: '搜索服务不可用' },
+  ])
+})
+
+test('搜索结果数为 0 时保留真实计数', async () => {
+  const registry = createAgentToolRegistry([{
+    name: 'web_search', label: '网页搜索', description: '搜索网页。', risk: 'external',
+    parameters: { type: 'object', properties: {} }, validate: (value) => value,
+    execute: async () => ({ hitCount: 0, sources: [] }),
+  }])
+  const events = []
+  let modelCall = 0
+  await runAgentToolLoop({
+    registry, messages: [], onEvent: (event) => events.push(event),
+    callModel: async () => {
+      modelCall += 1
+      return modelCall === 1
+        ? { choices: [{ message: { tool_calls: [{ id: 'call-empty', type: 'function', function: { name: 'web_search', arguments: '{}' } }] } }] }
+        : { choices: [{ message: { content: '没有命中。' } }] }
+    },
+  })
+
+  assert.deepEqual(events[1].presentation, { kind: 'search', title: '已搜索 0 个网站', count: 0 })
+})

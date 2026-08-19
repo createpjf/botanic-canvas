@@ -1,17 +1,23 @@
 import { AgentToolRuntimeError, createAgentToolRegistry } from './agentToolRuntime.mjs'
+import { botanicCreativeBriefFieldIds } from './botanicCreativeBrief.mjs'
+import { readFileSync } from 'node:fs'
+
+function readBuiltInSkill(relativePath) {
+  return readFileSync(new URL(relativePath, import.meta.url), 'utf8').trim()
+}
 
 const skillCatalog = Object.freeze({
   controlled_edit: {
     label: '受控局部编辑',
-    instructions: '只改变用户明确允许变化的维度；人物、服装、商品等锁定项必须写入提示词，并且新结果不得覆盖父图。',
+    instructions: readBuiltInSkill('./skills/controlled-edit/SKILL.md'),
   },
   batch_variation: {
     label: '批量变量生成',
-    instructions: '以素材组中的每个素材建立独立分支；继承同一父图和锁定项，每个分支保持独立状态、结果与重试记录。',
+    instructions: readBuiltInSkill('./skills/batch-variation/SKILL.md'),
   },
   root_recipe_redo: {
     label: '原配方重做',
-    instructions: '从根配方恢复原始参考、提示词和参数，创建独立首图分支；当前结果图不能作为直接输入。',
+    instructions: readBuiltInSkill('./skills/root-recipe-redo/SKILL.md'),
   },
 })
 
@@ -173,7 +179,7 @@ function clarificationParameters() {
         items: {
           type: 'object', additionalProperties: false,
           properties: {
-            id: { type: 'string', enum: ['model', 'aspect_ratio', 'resolution'] },
+            id: { type: 'string', enum: botanicCreativeBriefFieldIds },
             label: { type: 'string', maxLength: 80 },
           },
           required: ['id', 'label'],
@@ -338,7 +344,7 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
     {
       name: 'generation_ask_clarification',
       label: '确认生成参数',
-      description: '当用户目标或输出规格确实不清晰时，提出最多三个简短的参数选择问题；只返回问题卡，不执行生成。优先询问模型、比例和分辨率，不要重复询问上下文中已有且未要求改变的设置。',
+      description: '当用户目标、输出规格或创作方向确实不清晰时，提出最多三个简短问题；只返回问题卡，不执行生成。优先询问会明显改变结果的用途、比例、清晰度、Prompt 方向或保持重点，不要重复询问已知项。',
       risk: 'read',
       terminal: true,
       parameters: clarificationParameters(),

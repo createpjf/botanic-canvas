@@ -56,6 +56,14 @@ test('浏览器只向 Agent Planner 发送参考元数据，不发送图片与�
 })
 
 test('浏览器把追问答案和模型目录回填到 Agent 请求，但仍只发送安全元数据', () => {
+  const creativeBrief = {
+    version: 1 as const,
+    mode: 'generation' as const,
+    originalInstruction: '把场景换成海边。',
+    output: { model: 'minimax-h3', aspectRatio: '16:9' as const, resolution: '2K' as const },
+    creative: { promptDirection: 'editorial' as const },
+    provenance: { model: 'user' as const, aspect_ratio: 'user' as const, resolution: 'user' as const, prompt_direction: 'user' as const },
+  }
   const request = buildBotanicAgentPlanRequest({
     projectId: 'project-agent',
     instruction: '把场景换成海边。',
@@ -64,6 +72,7 @@ test('浏览器把追问答案和模型目录回填到 Agent 请求，但仍只�
     rootRecipe: recipe,
     generationOverrides: { model: 'minimax-h3', aspectRatio: '16:9', resolution: '2K' },
     clarificationAnswers: { model: 'minimax-h3', aspect_ratio: '16:9', resolution: '2K' },
+    creativeBrief,
     availableGenerationModels: [
       { id: 'gpt-image-2', label: 'GPT Image 2', provider: 'openai', mediaKind: 'image', aspectRatios: ['1:1', '3:4'], resolutions: ['1K', '2K'] },
       { id: 'minimax-h3', label: 'MiniMax H3', provider: 'minimax', mediaKind: 'video', aspectRatios: ['16:9'], resolutions: ['2K'] },
@@ -72,6 +81,8 @@ test('浏览器把追问答案和模型目录回填到 Agent 请求，但仍只�
 
   assert.deepEqual(request.settings, { model: 'minimax-h3', aspectRatio: '16:9', resolution: '2K' })
   assert.deepEqual(request.clarificationAnswers, { model: 'minimax-h3', aspect_ratio: '16:9', resolution: '2K' })
+  assert.deepEqual(request.creativeBrief, creativeBrief)
+  assert.notEqual(request.creativeBrief, creativeBrief)
   assert.deepEqual(request.generationModels, [
     { id: 'gpt-image-2', label: 'GPT Image 2', provider: 'openai', mediaKind: 'image', aspectRatios: ['1:1', '3:4'], resolutions: ['1K', '2K'] },
     { id: 'minimax-h3', label: 'MiniMax H3', provider: 'minimax', mediaKind: 'video', aspectRatios: ['16:9'], resolutions: ['2K'] },

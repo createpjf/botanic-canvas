@@ -32,14 +32,17 @@ import {
   type BotanicAgentSessionTimelineFilter,
   type BotanicAgentSkill,
   type BotanicAgentSkillCatalogItem,
+  type BotanicCreativeBrief,
 } from '../../domain/agent'
 import {
-  completeBotanicAgentGenerationSettings,
   decideBotanicAgentRequest,
   inferBotanicAgentGenerationSettings,
   isBotanicAgentPromptGenerationPending,
   resolveBotanicAgentGenerationPromptDecision,
 } from '../../domain/agentChatContract'
+import { advanceBotanicCreativeBrief } from '../../domain/agentCreativeBrief'
+import type { BotanicAgentChatStreamEvent } from '../../domain/agentChatStream'
+import { createAgentTimeline, reduceAgentTimeline, type AgentTimelineEvent, type AgentTimelineState } from '../../domain/agentTimeline'
 import { nextExclusiveSurface, type ExclusiveSurfaceAction } from '../../domain/exclusiveSurface'
 import type { CollaborationActivity, CollaborationDocumentChange } from '../../domain/collaborationActivity'
 import type {
@@ -66,7 +69,6 @@ import {
   agentRunOutputCount,
   agentRuntimeStepMarker,
   agentRuntimeStepStatusLabel,
-  createInitialAgentClarification,
 } from './AgentWorkspaceParts'
 import {
   agentComposerStateReducer,
@@ -100,6 +102,26 @@ import historyIcon from '../../assets/figma/icon-history.svg'
 type AgentTransientSurface = 'context' | 'history' | 'utility' | 'mode'
 type AgentUtilityPanel = 'result' | 'task' | 'memory' | 'skill' | 'collaboration'
 type AgentRunInstructionOptions = AgentInstructionRetryOptions & { appendUser?: string }
+type AgentLiveConversation = {
+  sessionId: string
+  message: BotanicAgentMessage
+  timeline: AgentTimelineState
+  streaming: boolean
+}
+
+function agentTimelineEvent(event: BotanicAgentChatStreamEvent, receivedAt: number): AgentTimelineEvent {
+  if (event.type === 'reasoning') return { type: event.type, step: event.step, delta: event.delta, receivedAt }
+  if (event.type === 'answer') return { type: event.type, step: event.step, delta: event.delta, receivedAt }
+  if (event.type === 'tool') return {
+    type: event.type,
+    step: event.step,
+    toolCall: event.toolCall,
+    ...(event.presentation ? { presentation: event.presentation } : {}),
+    receivedAt,
+  }
+  if (event.type === 'error') return { type: event.type, ...(event.message ? { message: event.message } : {}), receivedAt }
+  return { type: 'done', receivedAt }
+}
 
 function agentTargetDisplayLabel(target?: AgentDockTarget) {
   if (!target) return ''
@@ -300,6 +322,7 @@ export default function AgentWorkspace({
     lastFailedCommand: command,
   }), [])
   const [planning, setPlanning] = useState(false)
+  const [liveConversation, setLiveConversation] = useState<AgentLiveConversation>()
   const [submittingMessageId, setSubmittingMessageId] = useState('')
   const [executingActionId, setExecutingActionId] = useState('')
   const executingActionIdRef = useRef('')
@@ -407,6 +430,11 @@ export default function AgentWorkspace({
       || latestStatusMessageByRun.get(message.runId) === message.id
     ))
   }, [session?.messages])
+  const renderedConversationMessages = useMemo(() => {
+    if (!session || !liveConversation || liveConversation.sessionId !== session.id) return conversationMessages
+    if (conversationMessages.some((message) => message.id === liveConversation.message.id)) return conversationMessages
+    return [...conversationMessages, liveConversation.message]
+  }, [conversationMessages, liveConversation, session])
   const pendingPromptSourceIds = useMemo(() => new Set((session?.messages ?? [])
     .filter((message) => message.question?.sourcePromptMessageId && message.kind === 'question' && message.status === 'pending')
     .map((message) => message.question!.sourcePromptMessageId!)), [session?.messages])
@@ -517,6 +545,7 @@ export default function AgentWorkspace({
   const sessionId = session?.id
   useEffect(() => {
     resetRuntimeTrace()
+    setLiveConversation(undefined)
   }, [resetRuntimeTrace, sessionId])
 
   const registerMessageNode = useCallback((messageId: string, node: HTMLDivElement | null) => {
@@ -739,11 +768,16 @@ export default function AgentWorkspace({
     return () => window.removeEventListener('keydown', closeLayerOnEscape)
   }, [contextMenuOpen, escapeEnabled, historyOpen, mentionQuery, modeMenuOpen, onClose, recoveryModelMenuKey, runtimeDetailsOpen, skillConfirming, utilityMenuOpen, utilityPanelOpen])
 
-  useEffect(() => () => {
-    agentMountedRef.current = false
-    plannerControllerRef.current?.abort()
-    if (readingAnchorTimerRef.current !== null) window.clearTimeout(readingAnchorTimerRef.current)
-    if (locatedMessageTimerRef.current !== null) window.clearTimeout(locatedMessageTimerRef.current)
+  useEffect(() => {
+    // Strict Mode 会执行 setup → cleanup → setup；每次 setup 都必须恢复活动标记，
+    // 否则开发环境中的消息发送会被误判为“组件已卸载”而静默丢弃。
+    agentMountedRef.current = true
+    return () => {
+      agentMountedRef.current = false
+      plannerControllerRef.current?.abort()
+      if (readingAnchorTimerRef.current !== null) window.clearTimeout(readingAnchorTimerRef.current)
+      if (locatedMessageTimerRef.current !== null) window.clearTimeout(locatedMessageTimerRef.current)
+    }
   }, [])
 
   useEffect(() => {
@@ -801,7 +835,7 @@ export default function AgentWorkspace({
     if (!readingPositionRestoredRef.current || utilityPanelOpen || !followLatestMessagesRef.current) return
     const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
     messageEndRef.current?.scrollIntoView({ block: 'end', behavior })
-  }, [session?.messages.length, latestRun?.updatedAt, planning, runtimeSteps.length, runtimeSteps[runtimeSteps.length - 1]?.status, utilityPanelOpen])
+  }, [session?.messages.length, latestRun?.updatedAt, liveConversation, planning, runtimeSteps.length, runtimeSteps[runtimeSteps.length - 1]?.status, utilityPanelOpen])
 
   useEffect(() => {
     if (!compatibleGroups.some((group) => group.id === groupId)) setGroupId('')
@@ -933,6 +967,7 @@ export default function AgentWorkspace({
     cleanInstruction: string,
     generationOverrides?: Partial<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution'>>,
     clarificationAnswers?: Record<string, string>,
+    creativeBrief?: BotanicCreativeBrief,
     failedCommand?: AgentFailedInstruction,
   ): Promise<BotanicAgentPlan | BotanicAgentClarificationResponse | null> => {
     if (!target || !isCurrentAgentProject()) return null
@@ -952,6 +987,7 @@ export default function AgentWorkspace({
       availableGenerationModels: generationModels,
       generationOverrides,
       clarificationAnswers,
+      creativeBrief,
       contextSnapshot: createBotanicAgentContextSnapshot(contextItems),
     }
     plannerControllerRef.current?.abort()
@@ -982,6 +1018,7 @@ export default function AgentWorkspace({
             selectedResultLabel: target.label,
             rootRecipe: target.rootRecipe,
             assetGroup,
+            creativeBrief,
             contextSnapshot: createBotanicAgentContextSnapshot(contextItems),
           }), plannerModel, settings: { ...target.rootRecipe.settings, ...generationOverrides } }
           attachPlannerToolTrace(fallbackPlan)
@@ -993,13 +1030,13 @@ export default function AgentWorkspace({
           const message = fallbackError instanceof Error ? fallbackError.message : '暂时无法生成计划。'
           setError(message)
           setLastFailedPlanMessageId('')
-          rememberFailedInstruction(failedCommand ?? { instruction: cleanInstruction, options: { generationOverrides, clarificationAnswers } })
+          rememberFailedInstruction(failedCommand ?? { instruction: cleanInstruction, options: { generationOverrides, clarificationAnswers, creativeBrief } })
         }
       } else {
         const message = planError instanceof Error ? planError.message : '暂时无法生成计划。'
         setError(message)
         setLastFailedPlanMessageId('')
-        rememberFailedInstruction(failedCommand ?? { instruction: cleanInstruction, options: { generationOverrides, clarificationAnswers } })
+        rememberFailedInstruction(failedCommand ?? { instruction: cleanInstruction, options: { generationOverrides, clarificationAnswers, creativeBrief } })
       }
       failRuntimeTrace(planError instanceof Error ? planError.message : '暂时无法生成计划。')
     } finally {
@@ -1130,6 +1167,7 @@ export default function AgentWorkspace({
       options: {
         ...(options.generationOverrides ? { generationOverrides: options.generationOverrides } : {}),
         ...(options.clarificationAnswers ? { clarificationAnswers: options.clarificationAnswers } : {}),
+        ...(options.creativeBrief ? { creativeBrief: options.creativeBrief } : {}),
         ...(options.sourcePromptMessageId ? { sourcePromptMessageId: options.sourcePromptMessageId } : {}),
       },
     }
@@ -1152,6 +1190,37 @@ export default function AgentWorkspace({
     }
     if (decision.kind === 'chat') {
       const route = decision.mode
+      let routedInstruction = cleanInstruction
+      let routedFailedCommand = failedCommand
+      if (route === 'prompt') {
+        const briefTurn = advanceBotanicCreativeBrief({
+          mode: 'prompt',
+          executionMode: session.executionMode,
+          instruction: cleanInstruction,
+          previousBrief: options.creativeBrief,
+          answers: options.clarificationAnswers,
+        })
+        if (briefTurn.kind === 'ask') {
+          setRuntimePhase('waiting_clarification')
+          appendMessage({
+            role: 'assistant',
+            kind: 'question',
+            question: briefTurn.clarification,
+            status: 'pending',
+            content: briefTurn.clarification.question,
+          })
+          return
+        }
+        if (briefTurn.kind === 'failed') {
+          setError(briefTurn.message)
+          return
+        }
+        routedInstruction = briefTurn.prompt
+        routedFailedCommand = {
+          instruction: cleanInstruction,
+          options: { ...failedCommand.options, creativeBrief: briefTurn.brief },
+        }
+      }
       plannerControllerRef.current?.abort()
       const controller = new AbortController()
       plannerControllerRef.current = controller
@@ -1169,8 +1238,22 @@ export default function AgentWorkspace({
       updateRuntimeStep('call-planner', 'running')
       const chatMessages = [
         ...session.messages.map((message) => ({ role: message.role, content: message.content })),
-        { role: 'user' as const, content: options.appendUser ?? cleanInstruction },
+        { role: 'user' as const, content: routedInstruction },
       ].slice(-16)
+      const liveMessageId = `agent-message-${crypto.randomUUID()}`
+      const liveStartedAt = Date.now()
+      setLiveConversation({
+        sessionId: session.id,
+        message: {
+          id: liveMessageId,
+          role: 'assistant',
+          kind: 'text',
+          content: '',
+          createdAt: liveStartedAt,
+        },
+        timeline: createAgentTimeline(liveStartedAt),
+        streaming: true,
+      })
       try {
         // 实时通道只改变“回答什么时候到”：工具与推理增量直接更新运行轨迹，
         // 回答本身仍然等 done 事件一次性落成消息，避免半截内容进入对话记录。
@@ -1187,6 +1270,14 @@ export default function AgentWorkspace({
           signal: controller.signal,
           onEvent: (event) => {
             if (controller.signal.aborted) return
+            const receivedAt = Date.now()
+            setLiveConversation((current) => current?.sessionId === session.id && current.message.id === liveMessageId
+              ? {
+                  ...current,
+                  timeline: reduceAgentTimeline(current.timeline, agentTimelineEvent(event, receivedAt)),
+                  streaming: event.type !== 'done' && event.type !== 'error',
+                }
+              : current)
             if (event.type === 'tool') {
               attachPlannerToolTrace({ toolCalls: [event.toolCall] } as BotanicAgentPlan)
               return
@@ -1221,18 +1312,28 @@ export default function AgentWorkspace({
           ? `\n\n来源：${response.sources?.length ? response.sources.join('、') : '当前没有命中项目受控检索来源。'}`
           : ''
         appendMessage({
+          id: liveMessageId,
           role: 'assistant',
           kind: 'text',
           content: `${response.answer}${sourceNote}`,
           ...(response.prompt ? { prompt: response.prompt } : {}),
         })
+        setLiveConversation((current) => current?.message.id === liveMessageId ? undefined : current)
       } catch (caught) {
         if (controller.signal.aborted) return
         const message = caught instanceof Error ? caught.message : 'Agent 暂时无法回答，请稍后重试。'
+        setLiveConversation((current) => current?.sessionId === session.id && current.message.id === liveMessageId
+          ? {
+              ...current,
+              message: { ...current.message, content: `未完成：${message}` },
+              timeline: reduceAgentTimeline(current.timeline, { type: 'error', message, receivedAt: Date.now() }),
+              streaming: false,
+            }
+          : current)
         failRuntimeTrace(message)
         setError(message)
         setLastFailedPlanMessageId('')
-        rememberFailedInstruction(failedCommand)
+        rememberFailedInstruction(routedFailedCommand)
       } finally {
         if (plannerControllerRef.current === controller) plannerControllerRef.current = null
         setPlanning(false)
@@ -1253,6 +1354,55 @@ export default function AgentWorkspace({
       return
     }
     const generationPrompt = promptResolution.prompt
+    const imageModels = generationModels.filter((model) => model.mediaKind !== 'video')
+    const inferredGenerationOverrides = inferBotanicAgentGenerationSettings(cleanInstruction, imageModels)
+    const requestedGenerationOverrides = { ...inferredGenerationOverrides, ...options.generationOverrides }
+    const briefTurn = advanceBotanicCreativeBrief({
+      mode: 'generation',
+      executionMode: session.executionMode,
+      instruction: generationPrompt,
+      generationModels: imageModels,
+      inheritedSettings: target?.rootRecipe.settings,
+      requestedSettings: requestedGenerationOverrides,
+      previousBrief: options.creativeBrief,
+      answers: options.clarificationAnswers,
+    })
+    if (briefTurn.kind === 'ask') {
+      setRuntimePhase('waiting_clarification')
+      appendMessage({
+        role: 'assistant',
+        kind: 'question',
+        question: {
+          ...briefTurn.clarification,
+          ...(promptResolution.sourceMessageId ? { sourcePromptMessageId: promptResolution.sourceMessageId } : {}),
+        },
+        status: 'pending',
+        content: briefTurn.clarification.question,
+      })
+      return
+    }
+    if (briefTurn.kind === 'failed') {
+      setError(briefTurn.message)
+      return
+    }
+    const resolvedGenerationOverrides = briefTurn.settings
+    const hasCompleteOutputSettings = Boolean(
+      resolvedGenerationOverrides.model
+      && resolvedGenerationOverrides.aspectRatio
+      && resolvedGenerationOverrides.resolution,
+    )
+    if (!hasCompleteOutputSettings) {
+      setError('当前没有可用的完整生成设置，请检查模型目录。')
+      return
+    }
+    const resolvedFailedCommand: AgentFailedInstruction = {
+      instruction: cleanInstruction,
+      options: {
+        ...failedCommand.options,
+        generationOverrides: resolvedGenerationOverrides,
+        creativeBrief: briefTurn.brief,
+      },
+    }
     setPlanning(true)
     const runtimeTrace = beginRuntimeTrace({
       hasTarget: Boolean(target),
@@ -1265,50 +1415,16 @@ export default function AgentWorkspace({
     setRuntimePhase('planning')
     updateRuntimeStep('call-planner', 'running')
     if (!target) {
-      const inferredGenerationOverrides = inferBotanicAgentGenerationSettings(
-        cleanInstruction,
-        generationModels.filter((model) => model.mediaKind !== 'video'),
-      )
-      const imageModels = generationModels.filter((model) => model.mediaKind !== 'video')
-      const requestedGenerationOverrides = { ...inferredGenerationOverrides, ...options.generationOverrides }
-      // 自动模式自己从可信模型目录补齐缺失的输出设置，不再为了同一个问题停下来。
-      const resolvedGenerationOverrides = session.executionMode === 'auto'
-        ? completeBotanicAgentGenerationSettings(requestedGenerationOverrides, imageModels)
-        : requestedGenerationOverrides
-      const hasCompleteOutputSettings = Boolean(
-        resolvedGenerationOverrides.model
-        && resolvedGenerationOverrides.aspectRatio
-        && resolvedGenerationOverrides.resolution,
-      )
       const executionDecision = resolveBotanicAgentExecutionDecision({
         mode: session.executionMode,
         settingsComplete: hasCompleteOutputSettings,
         pendingActionCount: 0,
       })
-      if (!options.clarificationAnswers && executionDecision.action === 'ask_settings') {
-        updateRuntimeStep('call-planner', 'succeeded')
-        await yieldRuntimeFrame()
-        if (!isCurrentAgentProject()) return
-        setRuntimePhase('waiting_clarification')
-        appendMessage({
-          role: 'assistant',
-          kind: 'question',
-          question: {
-            ...createInitialAgentClarification(cleanInstruction, imageModels, resolvedGenerationOverrides),
-            ...(promptResolution.sourceMessageId
-              ? { sourcePromptMessageId: promptResolution.sourceMessageId }
-              : {}),
-          },
-          status: 'pending',
-          content: '先确认一下输出设置。',
-        })
-        setPlanning(false)
-        return
-      }
       try {
         const initialPlan = {
           ...buildBotanicAgentPlan({
-            instruction: generationPrompt,
+            instruction: briefTurn.prompt,
+            creativeBrief: briefTurn.brief,
             intent: 'initial_generation',
             settings: resolvedGenerationOverrides as GenerationSettings,
             contextSnapshot: createBotanicAgentContextSnapshot(contextItems),
@@ -1335,23 +1451,27 @@ export default function AgentWorkspace({
         failRuntimeTrace(message)
         setError(message)
         setLastFailedPlanMessageId('')
-        rememberFailedInstruction({ ...failedCommand, options: { ...failedCommand.options, generationOverrides: resolvedGenerationOverrides } })
+        rememberFailedInstruction(resolvedFailedCommand)
       } finally {
         setPlanning(false)
       }
       return
     }
     const nextPlan = await preparePlan(
-      generationPrompt,
-      options.generationOverrides,
+      briefTurn.prompt,
+      resolvedGenerationOverrides,
       options.clarificationAnswers,
-      failedCommand,
+      briefTurn.brief,
+      resolvedFailedCommand,
     )
     if (!nextPlan || !session || !isCurrentAgentProject()) return
     if ('kind' in nextPlan && nextPlan.kind === 'clarification') {
       setRuntimePhase('waiting_clarification')
       appendMessage({
-        role: 'assistant', kind: 'question', question: nextPlan.clarification, status: 'pending',
+        role: 'assistant', kind: 'question', question: {
+          ...nextPlan.clarification,
+          ...(promptResolution.sourceMessageId ? { sourcePromptMessageId: promptResolution.sourceMessageId } : {}),
+        }, status: 'pending',
         content: nextPlan.clarification.question,
       })
       return
@@ -1440,6 +1560,7 @@ export default function AgentWorkspace({
     await runInstruction(message.question.originalInstruction, {
       appendUser: summary,
       clarificationAnswers: answers,
+      creativeBrief: message.question.brief,
       sourcePromptMessageId: message.question.sourcePromptMessageId,
       generationOverrides: {
         ...(answers.model ? { model: answers.model } : {}),
@@ -1729,14 +1850,20 @@ export default function AgentWorkspace({
           </div>
         </section> : null}
         {!utilityPanelOpen && readingRestoreNotice ? <div className="agent-reading-restore" role="status"><span>已回到上次阅读位置</span><button type="button" onClick={jumpToLatestConversation}>跳到最新</button></div> : null}
-        {!utilityPanelOpen && session ? conversationMessages.map((message) => <div
-          key={message.id}
-          ref={(node) => registerMessageNode(message.id, node)}
-          className={`agent-conversation-anchor${locatedMessageId === message.id ? ' is-located' : ''}`}
-          tabIndex={-1}
-          data-agent-message-id={message.id}
-        ><AgentConversationMessage
+        {!utilityPanelOpen && session ? renderedConversationMessages.map((message) => {
+          const live = liveConversation?.sessionId === session.id && liveConversation.message.id === message.id
+            ? liveConversation
+            : undefined
+          return <div
+            key={message.id}
+            ref={(node) => registerMessageNode(message.id, node)}
+            className={`agent-conversation-anchor${locatedMessageId === message.id ? ' is-located' : ''}`}
+            tabIndex={-1}
+            data-agent-message-id={message.id}
+          ><AgentConversationMessage
           message={message}
+          timeline={live?.timeline}
+          streaming={live?.streaming}
           sessionId={session.id}
           runs={runs}
           artifacts={artifacts}
@@ -1769,7 +1896,8 @@ export default function AgentWorkspace({
           onEdit={(content) => { setInstruction(content); requestAnimationFrame(() => composerTextareaRef.current?.focus()) }}
           onRetryDelivery={retryMessage}
           onFeedback={(targetMessage, feedback) => onUpdateMessage(session.id, targetMessage.id, { feedback })}
-        /></div>) : null}
+        /></div>
+        }) : null}
         {!utilityPanelOpen && showRuntimeFeed ? (() => {
           const livePhase = runtimePhase === 'reading' || runtimePhase === 'planning' || runtimePhase === 'executing'
           return <section className={`agent-runtime-feed is-${runtimeSummary.phase}${runtimeFailed ? ' is-failed' : runtimeComplete ? ' is-complete' : ''}`} data-phase={runtimeSummary.phase} role="status" aria-live={livePhase ? 'polite' : undefined} aria-label="Agent 运行记录">
