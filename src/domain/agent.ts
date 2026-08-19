@@ -1553,8 +1553,8 @@ function stripPreserveClauses(instruction: string) {
 export function instructionRequestsBatchVariation(instruction: string) {
   const text = stripPreserveClauses(String(instruction ?? '').trim())
   if (!text) return false
-  if (/(?:批量|多图|多张|逐一|多来几|来几个|多出几)/u.test(text)) return true
-  if (new RegExp(`(?:\\d+|两|三|四|五|六|七|八|九|十)种(?:不同(?:的)?)?(?:${variationDimensionPattern})`, 'u').test(text)) return true
+  if (/(?:批量|多图|多张|逐一|多来几|来几个|多出几|多肤色)/u.test(text)) return true
+  if (new RegExp(`(?:\\d+|两|三|四|五|六|七|八|九|十)(?:种|档)(?:不同(?:的)?)?(?:${variationDimensionPattern})`, 'u').test(text)) return true
   if (new RegExp(`(?:[2-9]|[1-9]\\d|十|两|三|四|五|六|七|八|九)个(?:不同(?:的)?)?(?:[\\u4e00-\\u9fff]{0,6})?(?:${variationDimensionPattern})`, 'u').test(text)) return true
   if (new RegExp(`(?:多个|多种|几种|一组|一批)(?:不同(?:的)?)?(?:${variationDimensionPattern})`, 'u').test(text)) return true
   return false
@@ -1766,7 +1766,7 @@ export function botanicAgentSkillBody(instructions: string): string {
 
 const canvasPromptMetaPattern = /^(?:说明一下(?:来源)?|来源说明|补充说明)[:：]/u
 const canvasPromptMetaBodyPattern = /(?:我没有读取到|当前项目上下文里|根据(?:之前的)?对话上下文)/u
-const plannerNarrationPattern = /(?:项目没有配置|没有配置批量|缺(?:少)?(?:\d+个)?字段|批量\s*Skill|当前无法批量|请确认.{0,12}取值)/u
+const plannerNarrationPattern = /(?:项目没有配置|没有配置批量|没有启用批量|缺(?:少)?(?:\d+个)?字段|只差.{0,12}字段|批量(?:变体)?\s*Skill|当前无法批量|请确认.{0,12}取值|按推荐值继续|确认前不会(?:执行|生成)|待确认计划)/u
 
 /** 规划说明、缺字段分析和读取失败旁白不是画面描述。 */
 export function botanicAgentLooksLikePlannerNarration(text: string) {
@@ -1775,6 +1775,13 @@ export function botanicAgentLooksLikePlannerNarration(text: string) {
   return canvasPromptMetaPattern.test(value)
     || canvasPromptMetaBodyPattern.test(value)
     || plannerNarrationPattern.test(value)
+}
+
+export function botanicAgentMessageOffersVisualPrompt(message: Pick<BotanicAgentMessage, 'prompt' | 'content' | 'plan' | 'question'>) {
+  if (message.plan || message.question) return false
+  const prompt = message.prompt?.trim()
+  if (!prompt) return false
+  return !botanicAgentLooksLikePlannerNarration(prompt) && !botanicAgentLooksLikePlannerNarration(message.content)
 }
 
 /**

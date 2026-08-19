@@ -5,7 +5,7 @@ function clipBotanicAgentNodeTitle(value) {
 
 const canvasPromptMetaPattern = /^(?:说明一下(?:来源)?|来源说明|补充说明)[:：]/u
 const canvasPromptMetaBodyPattern = /(?:我没有读取到|当前项目上下文里|根据(?:之前的)?对话上下文)/u
-const plannerNarrationPattern = /(?:项目没有配置|没有配置批量|缺(?:少)?(?:\d+个)?字段|批量\s*Skill|当前无法批量|请确认.{0,12}取值)/u
+const plannerNarrationPattern = /(?:项目没有配置|没有配置批量|没有启用批量|缺(?:少)?(?:\d+个)?字段|只差.{0,12}字段|批量(?:变体)?\s*Skill|当前无法批量|请确认.{0,12}取值|按推荐值继续|确认前不会(?:执行|生成)|待确认计划)/u
 
 export function botanicAgentLooksLikePlannerNarration(text) {
   const value = typeof text === 'string' ? text.trim() : ''
@@ -34,8 +34,8 @@ function stripPreserveClauses(instruction) {
 export function instructionRequestsBatchVariation(instruction) {
   const text = stripPreserveClauses(instruction).trim()
   if (!text) return false
-  if (/(?:批量|多图|多张|逐一|多来几|来几个|多出几)/u.test(text)) return true
-  if (new RegExp(`(?:\\d+|两|三|四|五|六|七|八|九|十)种(?:不同(?:的)?)?(?:${variationDimensionPattern})`, 'u').test(text)) return true
+  if (/(?:批量|多图|多张|逐一|多来几|来几个|多出几|多肤色)/u.test(text)) return true
+  if (new RegExp(`(?:\\d+|两|三|四|五|六|七|八|九|十)(?:种|档)(?:不同(?:的)?)?(?:${variationDimensionPattern})`, 'u').test(text)) return true
   if (new RegExp(`(?:[2-9]|[1-9]\\d|十|两|三|四|五|六|七|八|九)个(?:不同(?:的)?)?(?:[\\u4e00-\\u9fff]{0,6})?(?:${variationDimensionPattern})`, 'u').test(text)) return true
   if (new RegExp(`(?:多个|多种|几种|一组|一批)(?:不同(?:的)?)?(?:${variationDimensionPattern})`, 'u').test(text)) return true
   return false
@@ -69,7 +69,7 @@ const axisNameValues = new Set([
   '人物', '模特', '角色', '场景', '背景', '画面', '环境',
   '肤色', '动作', '姿势', '姿态', '风格', '调性', '服装', '衣服', '穿搭', '球衣',
 ])
-const valueJunkPattern = /^(?:各种|多种|一些|任意|几个|多图|多张|变体|版本|图片|生成|层次|细节|道具|质感|细腻|更细腻)$/u
+const valueJunkPattern = /^(?:各种|多种|一些|任意|几个|多图|多张|变体|版本|图片|生成|层次|细节|道具|质感|细腻|更细腻|档位|字段|推荐值|说明|选项)$/u
 const combineLanguagePattern = /组合|相乘|交叉|笛卡尔|[×x]\s*\d|全部组合|逐一组合/u
 const chineseCountByToken = {
   两: 2, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10,
@@ -96,9 +96,9 @@ function uniqueLabels(values) {
 }
 
 function splitValueList(raw) {
-  return uniqueLabels(raw.split(/[、，,;/＋+]/u).flatMap((item) => {
+  return uniqueLabels(raw.split(/[、，,;/＋+|]/u).flatMap((item) => {
     const chunk = item
-      .replace(/(?:等)?\s*(?:\d+|两|三|四|五|六|七|八|九|十)\s*(?:种|个).*$/u, '')
+      .replace(/(?:等)?\s*(?:\d+|两|三|四|五|六|七|八|九|十)\s*(?:种|个|档).*$/u, '')
       .replace(/^(?:分别是|分别|包括)/u, '')
       .replace(/^(?:换成|换为|替换为|改为|改成|使用|用)/u, '')
       .trim()
@@ -118,8 +118,8 @@ function parseCountToken(token) {
 function statedAxisCount(text, names) {
   for (const name of names) {
     const patterns = [
-      new RegExp(`(\\d+|两|二|三|四|五|六|七|八|九|十)\\s*(?:种|个)${name}`, 'u'),
-      new RegExp(`${name}[^。；\\n]{0,16}?(\\d+|两|二|三|四|五|六|七|八|九|十)\\s*(?:种|个)`, 'u'),
+      new RegExp(`(\\d+|两|二|三|四|五|六|七|八|九|十)\\s*(?:种|个|档)${name}`, 'u'),
+      new RegExp(`${name}[^。；\\n]{0,16}?(\\d+|两|二|三|四|五|六|七|八|九|十)\\s*(?:种|个|档)`, 'u'),
     ]
     for (const pattern of patterns) {
       const match = text.match(pattern)
@@ -138,6 +138,19 @@ function axisCountMismatch(axis, instruction) {
   return count != null && axis.values.length !== count
 }
 
+function listedValuesFromText(text) {
+  const segments = text.includes('|')
+    ? text.split('|').map((cell) => cell.trim()).filter(Boolean)
+    : [text]
+  for (const segment of segments) {
+    const values = splitValueList(segment)
+    if (values.length >= botanicAgentVariationValueMin && /[、，,;/＋+]/u.test(segment)) return values
+  }
+  const values = splitValueList(text)
+  if (values.length >= botanicAgentVariationValueMin && /[、，,;/＋+|]/u.test(text)) return values
+  return []
+}
+
 function extractEnumeration(text, label) {
   const index = text.lastIndexOf(label)
   if (index < 0) return []
@@ -150,11 +163,11 @@ function extractEnumeration(text, label) {
   before = before.replace(/^[，,、。；:\s]+/u, '')
   const after = text.slice(index + label.length).split(/[。；\n]/u)[0]
     .replace(/^[为是用：:\s]+/u, '')
-  const fromBefore = splitValueList(before)
-  if (fromBefore.length >= botanicAgentVariationValueMin && /[、，,]/.test(before)) return fromBefore
-  const fromAfter = splitValueList(after)
-  if (fromAfter.length >= botanicAgentVariationValueMin && /[、，,]/.test(after)) return fromAfter
-  return []
+  const fromAfter = listedValuesFromText(after)
+  const fromBefore = listedValuesFromText(before)
+  if (after.includes('|') && fromAfter.length) return fromAfter
+  if (fromBefore.length) return fromBefore
+  return fromAfter
 }
 
 function axisFromCatalog(item, values) {

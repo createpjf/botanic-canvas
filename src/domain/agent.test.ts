@@ -51,6 +51,8 @@ import {
   botanicAgentSkillBody,
   botanicAgentSkillSummaryLimit,
   botanicAgentVisualGenerationPrompt,
+  botanicAgentLooksLikePlannerNarration,
+  botanicAgentMessageOffersVisualPrompt,
   botanicAgentArtifactPrompt,
   botanicAgentArtifactModel,
   botanicAgentArtifactTimestamp,
@@ -622,6 +624,19 @@ test('写入画布的生图 Prompt 去掉来源旁白，只保留视觉描述', 
     '保持人物服装，换成撒哈拉沙漠自然光',
   ), '保持人物服装，换成撒哈拉沙漠自然光')
   assert.equal(botanicAgentVisualGenerationPrompt('模特站在海边，黄昏柔光。', '换场景'), '模特站在海边，黄昏柔光。')
+})
+
+test('规划确认旁白不能当成可执行 Prompt，也不展示「用这段 Prompt 生成」', () => {
+  const essay = '结论：多肤色批量计划已就绪，只差两个字段确认即可出待确认计划。\n\n当前项目没有启用批量变体 Skill。确认前不会执行任何生成。回复「按推荐值继续」。'
+  assert.equal(botanicAgentLooksLikePlannerNarration(essay), true)
+  assert.equal(botanicAgentMessageOffersVisualPrompt({
+    content: essay,
+    prompt: essay,
+  }), false)
+  assert.equal(botanicAgentMessageOffersVisualPrompt({
+    content: '下面是可直接使用的画面描述。',
+    prompt: '模特站在海边黄昏，白裙与构图保持不变。',
+  }), true)
 })
 
 test('Skill 列表只展示一句用途，展开时才给完整规则且不含 YAML', () => {

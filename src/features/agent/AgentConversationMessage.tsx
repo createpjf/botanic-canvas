@@ -3,6 +3,7 @@ import {
   botanicAgentAppliedSkillName,
   botanicAgentContextSnapshotNodeIds,
   botanicAgentPendingConfirmationCount,
+  botanicAgentMessageOffersVisualPrompt,
   creativeDimensionLabel,
   type BotanicAgentActionProposal,
   type BotanicAgentArtifact,
@@ -194,12 +195,7 @@ export function AgentConversationMessage({
           查看全部 {runMediaArtifacts.length} 项
         </button> : null}
       </div> : null}
-      {message.role === 'user' && message.deliveryStatus === 'waiting_network' ? <small className="agent-message__delivery-status" role="status">等待联网</small> : null}
-      {message.role === 'user' && message.deliveryStatus === 'queued' ? <small className="agent-message__delivery-status" role="status">等待同步</small> : null}
-      {message.role === 'user' && message.deliveryStatus === 'syncing' ? <small className="agent-message__delivery-status" role="status">正在同步</small> : null}
-      {message.role === 'user' && message.deliveryStatus === 'synced' ? <small className="agent-message__delivery-status is-synced" role="status">已同步</small> : null}
-      {message.role === 'user' && message.deliveryStatus === 'failed' ? <small className="agent-message__delivery-status is-failed" role="alert">同步失败 <button type="button" onClick={() => onRetryDelivery(message.id)}>重试</button></small> : null}
-      {message.role === 'assistant' && message.prompt && !message.plan && !message.question ? <div className="agent-run-message__actions" aria-label="Prompt 操作">
+      {message.role === 'assistant' && botanicAgentMessageOffersVisualPrompt(message) ? <div className="agent-run-message__actions" aria-label="Prompt 操作">
         <button type="button" disabled={planning || promptUsePending} onClick={() => onUsePrompt(message)}>{promptUsePending ? '等待确认' : '用这段 Prompt 生成'}</button>
       </div> : null}
       {message.runId ? <div className="agent-run-message__actions" aria-label="任务与结果操作">
@@ -317,6 +313,11 @@ export function AgentConversationMessage({
         return <div className="agent-message__plan">{detail}</div>
       })() : null}
     </div>
+    {message.role === 'user' && message.deliveryStatus === 'waiting_network' ? <small className="agent-message__delivery-status" role="status">等待联网</small> : null}
+    {message.role === 'user' && message.deliveryStatus === 'queued' ? <small className="agent-message__delivery-status" role="status">等待同步</small> : null}
+    {message.role === 'user' && message.deliveryStatus === 'syncing' ? <small className="agent-message__delivery-status" role="status">正在同步</small> : null}
+    {message.role === 'user' && message.deliveryStatus === 'synced' ? <small className="agent-message__delivery-status is-synced" role="status">已同步</small> : null}
+    {message.role === 'user' && message.deliveryStatus === 'failed' ? <small className="agent-message__delivery-status is-failed" role="alert">同步失败 <button type="button" onClick={() => onRetryDelivery(message.id)}>重试</button></small> : null}
     {timeline ? null : <div className="agent-message__utilities">
       {message.role === 'user' ? <button type="button" aria-label="编辑消息" title="编辑消息" onClick={() => onEdit(message.content)}><EditIcon /></button> : null}
       {message.role === 'assistant' && sessionId ? <>

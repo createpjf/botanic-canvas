@@ -19,6 +19,29 @@ test('agent markdown does not treat html as executable markup', () => {
   assert.equal(block?.text, '<script>alert(1)</script>')
 })
 
+test('agent markdown 把管道表格收成安全表格块，不把竖线原文摊在段落里', () => {
+  const blocks = parseAgentMarkdown([
+    '### 批量设置',
+    '',
+    '| 字段 | 推荐值 | 说明 |',
+    '|---|---|---|',
+    '| 变体数量 | 4 个 | 每档肤色生成 1 张 |',
+    '| 肤色档位 | 浅 / 中 / 深 / 极深 | 四档递进 |',
+    '',
+    '确认前不会生成。',
+  ].join('\n'))
+  const table = blocks.find((block) => block.kind === 'table')
+  assert.deepEqual(table, {
+    kind: 'table',
+    headers: ['字段', '推荐值', '说明'],
+    rows: [
+      ['变体数量', '4 个', '每档肤色生成 1 张'],
+      ['肤色档位', '浅 / 中 / 深 / 极深', '四档递进'],
+    ],
+  })
+  assert.equal(blocks.some((block) => block.kind === 'paragraph' && block.text.includes('|---|')), false)
+})
+
 test('agent prompt sections separate copyable prompt, negative prompt and notes', () => {
   const sections = parseAgentPromptSections([
     "Got it — here's the updated 16:9 prompt:",
@@ -146,4 +169,18 @@ test('stored prompt does not duplicate surrounding explanation as the prompt bod
     promptLabel: 'Prompt',
     after: '',
   })
+})
+
+test('规划旁白即使被整段存成 prompt 也不进可复制卡片，留给表格渲染', () => {
+  const content = [
+    '结论：多肤色批量计划已就绪，只差两个字段确认即可出待确认计划。',
+    '',
+    '| 字段 | 推荐值 | 说明 |',
+    '|---|---|---|',
+    '| 变体数量 | 4 个 | 每档肤色生成 1 张 |',
+    '',
+    '确认前不会执行任何生成。',
+  ].join('\n')
+  assert.equal(resolveAgentPromptSections(content, content), null)
+  assert.equal(parseAgentMarkdown(content).some((block) => block.kind === 'table'), true)
 })

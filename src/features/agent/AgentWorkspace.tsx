@@ -54,6 +54,7 @@ import type {
   UploadedAssetInput,
 } from '../../domain/canvas'
 import { createProjectAgentSkill, listBotanicAgentSystemSkills, listProjectAgentSkills, requestBotanicAgentPlan, streamBotanicAgentChat } from '../../lib/agentApi'
+import { applyBotanicAgentVariationToPlan } from '../../domain/agentVariations'
 import { ProductApiError, serverPersistenceEnabled } from '../../lib/productSession'
 import { maxUploadAssets, readUploadedAssetInput, validateUploadFiles } from '../../lib/uploadedAssets'
 import { useCanvasStore } from '../../store/canvasStore'
@@ -1013,11 +1014,21 @@ export default function AgentWorkspace({
             creativeBrief,
             contextSnapshot: createBotanicAgentContextSnapshot(contextItems),
           }), plannerModel, settings: { ...target.rootRecipe.settings, ...generationOverrides } }
-          attachPlannerToolTrace(fallbackPlan)
+          const applied = applyBotanicAgentVariationToPlan(fallbackPlan, {
+            instruction: cleanInstruction,
+            requestedIntent: intent,
+            clarificationAnswers,
+            assetGroup: assetGroup
+              ? { id: assetGroup.id, role: assetGroup.role, assetCount: assetGroup.assetIds.length }
+              : undefined,
+          })
+          if (applied.kind === 'clarification') return applied
+          const resolvedFallback = { ...fallbackPlan, ...applied.plan }
+          attachPlannerToolTrace(resolvedFallback)
           updateRuntimeStep('call-planner', 'succeeded')
           await completeRuntimeTrace(true)
           if (!isCurrentAgentProject()) return null
-          return fallbackPlan
+          return resolvedFallback
         } catch (fallbackError) {
           const message = fallbackError instanceof Error ? fallbackError.message : '暂时无法生成计划。'
           setError(message)
@@ -1429,19 +1440,36 @@ export default function AgentWorkspace({
           }),
           plannerModel,
         }
-        attachPlannerToolTrace(initialPlan)
+        const appliedInitial = applyBotanicAgentVariationToPlan(initialPlan, {
+          instruction: briefTurn.prompt,
+          requestedIntent: 'initial_generation',
+          clarificationAnswers: options.clarificationAnswers,
+        })
+        if (appliedInitial.kind === 'clarification') {
+          setRuntimePhase('waiting_clarification')
+          appendMessage({
+            role: 'assistant',
+            kind: 'question',
+            question: appliedInitial.clarification,
+            status: 'pending',
+            content: appliedInitial.clarification.question,
+          })
+          return
+        }
+        const resolvedInitialPlan = { ...initialPlan, ...appliedInitial.plan }
+        attachPlannerToolTrace(resolvedInitialPlan)
         updateRuntimeStep('call-planner', 'succeeded')
         await completeRuntimeTrace(true)
         if (!isCurrentAgentProject()) return
         const planMessageId = appendMessage({
-          role: 'assistant', kind: 'plan', plan: initialPlan, status: 'pending',
-          content: initialPlan.summary,
+          role: 'assistant', kind: 'plan', plan: resolvedInitialPlan, status: 'pending',
+          content: resolvedInitialPlan.summary,
         })
         if (planMessageId) setRuntimePhase('waiting_confirmation')
         if (planMessageId && executionDecision.action === 'auto_submit') {
           await confirmMessagePlan({
-            id: planMessageId, role: 'assistant', kind: 'plan', content: initialPlan.summary,
-            createdAt: Date.now(), plan: initialPlan, status: 'pending',
+            id: planMessageId, role: 'assistant', kind: 'plan', content: resolvedInitialPlan.summary,
+            createdAt: Date.now(), plan: resolvedInitialPlan, status: 'pending',
           })
         }
       } catch (caught) {

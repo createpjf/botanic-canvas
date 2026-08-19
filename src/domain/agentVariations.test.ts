@@ -82,6 +82,29 @@ test('各种肤色没有具体取值时必须追问，不能假装已批量', ()
   assert.match(request.clarification.question, /肤色/)
 })
 
+test('斜杠分隔的短值也能展开成变体轴', () => {
+  const request = resolveBotanicAgentVariationRequest({
+    instruction: '浅 / 中 / 深 / 极深四档肤色，多图',
+  })
+  assert.equal(request.kind, 'ready')
+  assert.deepEqual(request.spec.axes[0].values.map((value) => value.label), ['浅', '中', '深', '极深'])
+})
+
+test('Markdown 表格里的斜杠肤色档也能展开成 4 支', () => {
+  const request = resolveBotanicAgentVariationRequest({
+    instruction: [
+      '结论：多肤色批量计划已就绪。',
+      '| 字段 | 推荐值 | 说明 |',
+      '|---|---|---|',
+      '| 变体数量 | 4 个 | 每档肤色生成 1 张 |',
+      '| 肤色档位 | 浅 / 中 / 深 / 极深 | 四档递进 |',
+    ].join('\n'),
+  })
+  assert.equal(request.kind, 'ready')
+  assert.deepEqual(request.spec.axes[0].values.map((value) => value.label), ['浅', '中', '深', '极深'])
+  assert.equal(expandBotanicAgentVariationBranches(request.spec).length, 4)
+})
+
 test('列出 2–8 个短值时按单轴展开，张数由展开结果决定', () => {
   const request = resolveBotanicAgentVariationRequest({
     instruction: '白皙、自然、小麦、深棕四种肤色，多图',

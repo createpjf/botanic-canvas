@@ -1,3 +1,5 @@
+import { botanicAgentLooksLikePlannerNarration } from './agent.ts'
+
 export type AgentMarkdownBlock =
   | { kind: 'heading'; level: 1 | 2 | 3; text: string }
   | { kind: 'paragraph'; text: string }
@@ -136,6 +138,8 @@ export function resolveAgentPromptSections(content: string, storedPrompt = ''): 
   if (parsed) return parsed
   const prompt = storedPrompt.trim()
   if (!prompt) return null
+  // 规划旁白被 chat/prompt 模式整段存进 prompt 时，不能再塞进 <pre> 卡片，否则表格会变成生竖线。
+  if (botanicAgentLooksLikePlannerNarration(prompt) || botanicAgentLooksLikePlannerNarration(content)) return null
   const text = content.replace(/\r\n?/g, '\n').trim()
   if (text === prompt) {
     return { before: '', prompt, promptLabel: 'Prompt', after: '' }

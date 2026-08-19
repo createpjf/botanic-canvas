@@ -1,4 +1,5 @@
-import type { BotanicAgentMessage, BotanicAgentReasoningEntry } from './agent'
+import type { BotanicAgentMessage, BotanicAgentReasoningEntry } from './agent.ts'
+import { instructionRequestsBatchVariation } from './agent.ts'
 import type { GenerationAspectRatio, GenerationModelOption, GenerationResolution } from './canvas'
 
 export type BotanicAgentChatMode = 'conversation' | 'prompt' | 'research'
@@ -192,8 +193,11 @@ export function decideBotanicAgentRequest(value: string, hasGenerationTarget = f
   if (mediaKind === 'video' && explicitVisualGeneration.test(text)) {
     return { kind: 'clarification', reason: 'unsupported_media' }
   }
-  if (hasContextualVisualCommand || explicitVisualGeneration.test(text) || explicitVisualChange.test(text)) {
+  if (hasContextualVisualCommand || instructionRequestsBatchVariation(text) || explicitVisualGeneration.test(text) || explicitVisualChange.test(text)) {
     return { kind: 'generation', mediaKind, promptSource: 'instruction' }
+  }
+  if (hasGenerationTarget && /(?:按推荐值继续|按推荐方案继续)/u.test(text)) {
+    return { kind: 'generation', mediaKind: 'image', promptSource: 'instruction' }
   }
   if (hasGenerationTarget && /^(?:保持|继续|再来|重试|重新|换|替换|调整)(?!.*[?？])/iu.test(text)) {
     return { kind: 'generation', mediaKind: 'image', promptSource: 'instruction' }
