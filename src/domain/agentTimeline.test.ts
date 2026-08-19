@@ -185,3 +185,17 @@ test('搜索结果数为 0 时不用调用次数冒充站点数', () => {
   assert.equal(step?.type === 'step' ? step.title : '', '已搜索 0 个网站')
   assert.equal(rawGroup?.type === 'raw_group' ? rawGroup.summary : '', '已搜索 0 个网站')
 })
+
+test('web_fetch 展示网页获取主机名，不与搜索步骤合并', () => {
+  let timeline = createAgentTimeline(1_000)
+  timeline = reduceAgentTimeline(timeline, {
+    type: 'tool',
+    step: 0,
+    toolCall: toolCall('fetch-1', 'web_fetch', '网页获取', 'succeeded'),
+    presentation: { kind: 'fetch', title: '网页获取 www.andlight.cn' },
+    receivedAt: 1_100,
+  })
+  const step = timeline.blocks.find((block) => block.type === 'step')
+  assert.equal(step?.type === 'step' ? step.kind : '', 'fetch')
+  assert.equal(step?.type === 'step' ? step.title : '', '网页获取 www.andlight.cn')
+})

@@ -34,8 +34,8 @@ function timelineElapsedLabel(startedAt: number, endedAt: number) {
 
 function TimelineStepIcon({ kind }: { kind: TimelineStepKind }) {
   if (kind === 'search') return <SearchIcon />
+  if (kind === 'fetch' || kind === 'connect_runtime') return <GlobeIcon />
   if (kind === 'read_skill' || kind === 'read') return <BookIcon />
-  if (kind === 'connect_runtime') return <GlobeIcon />
   if (kind === 'write') return <EditIcon />
   return <ChecklistIcon />
 }

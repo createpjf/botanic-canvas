@@ -77,6 +77,12 @@ function toolEventPresentation(name, output) {
       ? { kind: 'search', title: `已搜索 ${count} 个网站`, count }
       : { kind: 'search', title: '正在搜索网站' }
   }
+  if (normalizedName === 'web_fetch') {
+    const hostname = safePresentationLabel(output?.hostname)
+    return hostname
+      ? { kind: 'fetch', title: `网页获取 ${hostname}` }
+      : { kind: 'fetch', title: '正在获取网页' }
+  }
   if (/^(?:skill_read|read_skill)$/u.test(normalizedName)) {
     const skillName = safePresentationLabel(output?.skillName ?? output?.skill?.name)
     return { kind: 'read_skill', title: skillName ? `读取${skillName}技能指南` : '读取技能指南' }

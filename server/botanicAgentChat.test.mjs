@@ -137,3 +137,41 @@ test('流式旁白在对应工具事件前到达，工具完成后可继续追�
   ])
   assert.equal(result.answer, '找到一个夏日场景素材组。')
 })
+
+test('配置搜索密钥后对话可调用 web_search，来源记为互联网', async () => {
+  const flockBodies = []
+  const result = await chatWithBotanicAgent(input, {
+    flockApiKey: 'flock-secret',
+    flockTextModel: 'deepseek-v4-pro',
+    flockAgentModels: ['deepseek-v4-pro', 'deepseek-v4-flash', 'kimi-k3'],
+    webSearch: { apiKey: 'test-search-key' },
+  }, {
+    document,
+    fetchImpl: async (_url, init) => {
+      flockBodies.push(JSON.parse(init.body))
+      if (flockBodies.length === 1) {
+        return new Response(JSON.stringify({ choices: [{ message: {
+          content: null,
+          tool_calls: [{ id: 'call-web', type: 'function', function: {
+            name: 'web_search', arguments: JSON.stringify({ query: '和光品牌', why: '查品牌介绍' }),
+          } }],
+        } }] }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ choices: [{ message: {
+        content: '和光是灯具品牌。',
+      } }] }), { status: 200 })
+    },
+    webFetchImpl: async (url, init) => {
+      assert.equal(url, 'https://api.tavily.com/search')
+      assert.equal(init.headers.Authorization, 'Bearer test-search-key')
+      return new Response(JSON.stringify({
+        results: [{ title: '和光', url: 'https://www.andlight.cn/', content: '灯具' }],
+      }), { status: 200 })
+    },
+  })
+
+  assert.ok(flockBodies[0].tools.some((tool) => tool.function.name === 'web_search'))
+  assert.ok(flockBodies[0].tools.some((tool) => tool.function.name === 'web_fetch'))
+  assert.match(flockBodies[1].messages.at(-1).content, /andlight.cn/)
+  assert.ok(result.sources.includes('互联网'))
+})

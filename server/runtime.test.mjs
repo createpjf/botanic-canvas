@@ -110,3 +110,21 @@ test('Agent Planner 默认只暴露三种已确认的 Flock 模型', () => {
     }
   }
 })
+
+test('联网搜索默认走 Tavily REST，MCP 地址会被忽略', () => {
+  const keys = ['BOTANIC_WEB_SEARCH_API_KEY', 'BOTANIC_WEB_SEARCH_URL']
+  const original = new Map(keys.map((key) => [key, process.env[key]]))
+  try {
+    process.env.BOTANIC_WEB_SEARCH_API_KEY = 'test-search-key'
+    process.env.BOTANIC_WEB_SEARCH_URL = 'https://mcp.tavily.com/mcp/?tavilyApiKey=secret'
+    const config = runtimeConfig('/tmp/botanic-runtime-test')
+    assert.equal(config.webSearch.apiKey, 'test-search-key')
+    assert.equal(config.webSearch.searchUrl, 'https://api.tavily.com/search')
+    assert.equal(config.webSearch.extractUrl, 'https://api.tavily.com/extract')
+  } finally {
+    for (const [key, value] of original) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+})

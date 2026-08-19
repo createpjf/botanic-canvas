@@ -43,6 +43,18 @@ test('Agent 规划工具可以读取画布上下文、搜索素材并调用白�
   assert.doesNotMatch(JSON.stringify({ canvas, search, skill }), /data:image|https?:\/\//)
 })
 
+test('规划器在提供搜索配置时暴露 web_search 与 web_fetch', () => {
+  const registry = createBotanicAgentPlanningToolRegistry({
+    input,
+    finalizePlan: (raw) => raw,
+    finalizeClarification: (raw) => raw,
+    webResearch: { apiKey: 'test-search-key' },
+  })
+  assert.deepEqual(registry.openAITools().map((item) => item.function.name).slice(0, 4), [
+    'canvas_read', 'asset_search', 'web_search', 'web_fetch',
+  ])
+})
+
 test('Agent 规划工具可调用当前项目已审核 Skill，但不能跨项目猜测 Skill', async () => {
   const projectSkill = {
     id: 'skill-scene-campaign', name: '夏日场景系列',

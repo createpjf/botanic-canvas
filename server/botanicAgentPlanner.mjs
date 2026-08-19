@@ -567,6 +567,13 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
   const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal
   const fetchImpl = options.fetchImpl ?? fetch
   const proposedActions = []
+  const webResearch = {
+    apiKey: runtimeConfig?.webSearch?.apiKey,
+    searchUrl: runtimeConfig?.webSearch?.searchUrl,
+    extractUrl: runtimeConfig?.webSearch?.extractUrl,
+    fetchImpl: options.webFetchImpl ?? fetch,
+    allowLocal: Boolean(runtimeConfig?.webSearch?.allowLocal),
+  }
   const registry = createBotanicAgentPlanningToolRegistry({
     input,
     finalizePlan: (raw) => normalizeProviderPlan(raw, input),
@@ -577,7 +584,9 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
     onProposeAction: (proposal) => {
       if (!proposedActions.some((item) => item.id === proposal.id)) proposedActions.push(proposal)
     },
+    webResearch,
   })
+  const hasWebTools = Boolean(registry.get('web_search') || registry.get('web_fetch'))
   try {
     const result = await runAgentToolLoop({
       registry,
@@ -586,7 +595,7 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
         { role: 'user', content: JSON.stringify(plannerModelInput(input)) },
       ],
       toolChoice: 'auto',
-      maximumSteps: 4,
+      maximumSteps: hasWebTools ? 8 : 4,
       allowRawReasoning: Boolean(runtimeConfig?.agentRawReasoning),
       callModel: async ({ messages, tools, tool_choice }) => {
         const response = await fetchImpl(`${config.baseUrl}/chat/completions`, {

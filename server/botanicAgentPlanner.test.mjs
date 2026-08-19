@@ -315,7 +315,7 @@ test('服务端 Agent 只让模型解释意图与约束，节点、参数和批�
   assert.match(firstRequest.messages[0].content, /受控上下文/)
   assert.deepEqual(JSON.parse(firstRequest.messages[1].content), validInput)
   assert.deepEqual(firstRequest.tools.map((item) => item.function.name), [
-    'canvas_read', 'asset_search', 'skill_run', 'skill_create_propose', 'generation_ask_clarification', 'generation_create_plan',
+    'canvas_read', 'asset_search', 'web_fetch', 'skill_run', 'skill_create_propose', 'generation_ask_clarification', 'generation_create_plan',
   ])
   assert.equal(firstRequest.tool_choice, 'auto')
   assert.deepEqual(finalRequest.messages.filter((message) => message.role === 'tool').map((message) => message.tool_call_id), [
