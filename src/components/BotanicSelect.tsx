@@ -1,6 +1,6 @@
 import { createPortal } from 'react-dom'
 import { type KeyboardEvent as ReactKeyboardEvent, type ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
-import chevronIcon from '../assets/figma/icon-chevron.svg'
+import { ChevronDownIcon } from './BotanicIcons'
 import { useMotionPresence } from './motionPresence'
 
 export type BotanicSelectOption = { value: string; label: string }
@@ -111,7 +111,7 @@ export function BotanicSelect({
       }}
     >
       {renderTrigger ? renderTrigger(selected) : <span>{selected?.label ?? placeholder ?? '请选择'}</span>}
-      <img src={chevronIcon} alt="" />
+      <ChevronDownIcon className="botanic-select__chevron" />
     </button>
     {menuPresence.present && anchor && typeof document !== 'undefined' ? createPortal(
       <div
