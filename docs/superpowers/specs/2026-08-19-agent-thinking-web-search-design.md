@@ -128,7 +128,7 @@ Botanic 已经有同一骨架，缺的是：**交错的多段思考、工具行�
 | 运行时展示 | `server/agentToolRuntime.mjs` `toolEventPresentation` | `web_fetch` 展示「网页获取 {hostname}」；`web_search` 继续聚合「已搜索 N 个网站」 |
 | 客户端兜底 | `src/domain/agentTimeline.ts` | 为 `web_fetch` 增加 `TimelineStepKind` 值 `fetch`，图标用现有 `GlobeIcon` |
 | 来源脚注 | `sourceLabels` + 对话 `sources` | 命中后回答末尾可列公开 URL 主机名，不列完整抓取正文 |
-| 配置 | `server/runtime.mjs` | `BOTANIC_WEB_SEARCH_URL`（HTTPS 搜索 API）与 `BOTANIC_WEB_SEARCH_API_KEY`；缺一则**不注册**这两个工具 |
+| 配置 | `server/runtime.mjs` | `BOTANIC_WEB_SEARCH_API_KEY` 控制是否注册 `web_search`；`BOTANIC_WEB_SEARCH_URL` 缺省 `https://api.tavily.com/search`。`web_fetch` 不依赖这两项 |
 | 系统提示 | `botanicAgentChat.mjs`、`server/skills/botanic-agent/modes/*.md` | 有工具才允许搜；没有就维持现有「不得声称查过互联网」 |
 | 配额 | `server/securityControls.mjs` 或 Agent 路由侧 | 每用户每分钟次数上限；失败计次 |
 
@@ -154,23 +154,74 @@ Botanic 已经有同一骨架，缺的是：**交错的多段思考、工具行�
 
 对话 `maximumSteps` 现为 5，规划器现为 4。注册了联网工具时两者都提到 **8**，避免「搜 → 抓 → 再想 → 回答」被截断。未注册时保持原上限。不要无界循环。
 
+### 最后一公里：谁出网
+
+模型自己不上网。Botanic 已经有 OpenAI 兼容的 `tool_calls` 循环（`runAgentToolLoop`）：模型只生成 `{ name, arguments }`，服务端执行后再把 JSON 结果以 `role: "tool"` 塞回去。联网就是在这个循环里多两个只读工具。
+
+不要接 Kimi 官方 `$web_search` / Formula。Agent 流量走 Flock（`kimi-k3` 与 DeepSeek 共用同一套 `tools`），Flock 不保证透传 Moonshot 内置工具；内置搜索也不会打出「网页获取 {hostname}」这种我们自己的步骤。
+
+```text
+用户：和光是做什么的？官网 https://www.andlight.cn/
+        │
+        ▼
+Flock chat/completions（带 web_search / web_fetch 声明）
+        │  tool_calls
+        ▼
+runAgentToolLoop
+        │
+        ├─ web_search(query) ──► webSearchProvider
+        │                         POST BOTANIC_WEB_SEARCH_URL
+        │                         Authorization: Bearer KEY
+        │                         body: { query, max_results: 5 }
+        │                         归一成最多 5 条 { title, url, snippet, hostname }
+        │
+        └─ web_fetch(url) ─────► webEgressGuard（HTTPS / 拒私网 / 超时 / 体积）
+                                  GET 目标页
+                                  HTML → 纯文本 ≤ 4000 字
+        │
+        ▼
+role=tool 结果回模型 → 再思考 → 回答
+时间线：已搜索 N 个网站 / 网页获取 www.andlight.cn
+```
+
+截图里的「网页获取 www.andlight.cn」对应 **`web_fetch`**：用户或上一跳搜索已经给出 URL，Botanic Node 自己 GET，不经过搜索引擎。用户只说「搜一下和光」、没有 URL 时才走 **`web_search`**。
+
+**搜索供应商（第一版只做一个适配器）：**
+
+- 环境变量：`BOTANIC_WEB_SEARCH_URL`、`BOTANIC_WEB_SEARCH_API_KEY`。
+- 适配器按 [Tavily Search API](https://docs.tavily.com/documentation/api-reference/endpoint/search) 的请求/响应形状实现：`POST { query, max_results: 5 }` → `results[].{ title, url, content }`，再映射到我们的 `{ title, url, snippet, hostname }`。
+- 默认 URL 为 `https://api.tavily.com/search`。若改用博查等中文搜索，只要网关吐出同一 `results` 形状，或加第二个适配器分支；第一版不并行接两家。
+- 密钥只留在 Railway/API 进程，不进浏览器、不进模型消息。
+
+**抓取没有第三方：** `web_fetch` 用 Node `fetch`（测试注入 `fetchImpl`）。这是截图能落地的最小闭环；没有搜索 Key 时，只要用户消息里已有 https URL，仍可只注册 `web_fetch`。
+
+配置矩阵：
+
+| 配置 | `web_search` | `web_fetch` |
+| --- | --- | --- |
+| 有 `BOTANIC_WEB_SEARCH_API_KEY`（URL 可缺省 Tavily） | 注册 | 注册 |
+| 无搜索 Key | 不注册 | **仍注册**。截图那种「网页获取官网」不依赖搜索引擎 |
+| 守卫拒绝 / 配额用尽 | 工具报错，模型必须如实说没查到 | 同左 |
+
+无搜索 Key 时系统提示改为：没有关键词搜索，但可以抓取用户或上下文里已给出的 https URL；不得声称做过全网检索。
+
 ### 备选
 
 | 方案 | 做法 | 取舍 |
 | --- | --- | --- |
-| **A. 一等只读工具（推荐）** | 服务端 `web_search` + `web_fetch`，时间线直接画出来 | 与截图一致；SSRF/配额要自己做；未配置 API 时工具不出现 |
-| B. 只配 MCP 搜索 | `BOTANIC_MCP_TOOLS_JSON` 挂 Tavily 等 | 每次确认，链路长，和「查一下官网」不匹配 |
-| C. 依赖模型自带联网 | 让 Kimi/OpenAI 在提供方侧搜 | 时间线看不到稳定工具行；无法统一 SSRF；无工具时模型会幻觉「我搜过了」 |
+| **A. 一等只读工具（推荐）** | 服务端执行 `web_search`（Tavily 形状）+ `web_fetch`（自抓） | 与截图一致；DeepSeek / Kimi 都能用；SSRF/配额自己做 |
+| B. 只配 MCP 搜索 | `BOTANIC_MCP_TOOLS_JSON` 挂 Tavily | 每次确认，和「查一下官网」不匹配 |
+| C. 模型内置联网 | 接 Kimi `$web_search` / Formula | 绑死 Kimi；Flock + DeepSeek 不可用；时间线不是我们的工具行 |
 
-不选 B 作为默认。MCP 仍留给写操作和客户自建工具。C 只允许作为搜索 API 未配置时的提供方能力，UI 不得假装存在 `web_search` 步骤。
+不选 B、C。MCP 仍留给写操作。Kimi 内置搜索不当作生产路径。
 
 ### 未配置时的行为
 
-`BOTANIC_WEB_SEARCH_URL` 或 `BOTANIC_WEB_SEARCH_API_KEY` 缺失：
+没有 `BOTANIC_WEB_SEARCH_API_KEY`：
 
-- 工具不进入 `openAITools()`。
-- 系统提示保持「没有外部搜索工具」。
-- 时间线不会出现「网页获取」。
+- 不注册 `web_search`。
+- 仍注册 `web_fetch`（自抓，与搜索供应商无关）。
+- 系统提示：没有关键词搜索；只有用户或上下文给出 https URL 时才能抓取；不得声称做过全网检索。
 - 测试用注入配置 + mock `fetchImpl` 覆盖成功/拒绝/超时。
 
 ---
@@ -193,7 +244,7 @@ Botanic 已经有同一骨架，缺的是：**交错的多段思考、工具行�
 - 不把抓取页当素材导入画布。
 - 不把完整网页或原始推理写入 Message / Plan / Run / Artifact Index。
 - 不用 `Promise.all` 并行抓一堆 URL 当生产路径；逐步、有上限。
-- 不在未配置搜索 API 时向模型暴露空壳工具（避免幻觉调用）。
+- 不在未配置搜索 API 时向模型暴露空壳 `web_search`（避免幻觉调用）。`web_fetch` 在无搜索 Key 时仍可注册。
 
 ---
 
