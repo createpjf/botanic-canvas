@@ -25,7 +25,7 @@ export function botanicAgentVisualGenerationPrompt(prompt, fallback = '') {
   return visual || fallbackText || text
 }
 
-const variationDimensionPattern = '人物|模特|角色|场景|背景|画面|环境|肤色|动作|姿势|姿态|风格|服装|衣服|穿搭|版本|变体'
+const variationDimensionPattern = '人物|模特|角色|场景|背景|画面|环境|肤色|族裔|人种|动作|姿势|姿态|风格|服装|衣服|穿搭|版本|变体'
 
 function stripPreserveClauses(instruction) {
   return String(instruction ?? '').replace(/(?:保持|保留)[^，。,；;\n]{0,40}?(?:不变|一致)/gu, ' ')
@@ -37,7 +37,7 @@ export function instructionRequestsBatchVariation(instruction) {
   if (/(?:批量|多图|多张|逐一|多来几|来几个|多出几|多肤色)/u.test(text)) return true
   if (new RegExp(`(?:\\d+|两|三|四|五|六|七|八|九|十)(?:种|档)(?:不同(?:的)?)?(?:${variationDimensionPattern})`, 'u').test(text)) return true
   if (new RegExp(`(?:[2-9]|[1-9]\\d|十|两|三|四|五|六|七|八|九)个(?:不同(?:的)?)?(?:[\\u4e00-\\u9fff]{0,6})?(?:${variationDimensionPattern})`, 'u').test(text)) return true
-  if (new RegExp(`(?:多个|多种|几种|一组|一批)(?:不同(?:的)?)?(?:${variationDimensionPattern})`, 'u').test(text)) return true
+  if (new RegExp(`(?:多个|多种|几种|几个|一组|一批)(?:不同(?:的)?)?(?:${variationDimensionPattern})`, 'u').test(text)) return true
   return false
 }
 
@@ -58,6 +58,7 @@ export const botanicAgentVariationClarificationFieldIds = ['variation_values', '
 
 const axisCatalog = [
   { key: 'skin_tone', label: '肤色', names: ['肤色', '皮肤色', '肤质色'], promptDelta: (value) => `人物肤色为${value}，保持五官与身份不变。` },
+  { key: 'ethnicity', label: '族裔', names: ['族裔', '人种'], promptDelta: (value) => `人物族裔特征调整为${value}，保持五官结构、发型与服装不变。` },
   { key: 'scene', label: '场景', names: ['场景', '背景'], promptDelta: (value) => `场景替换为${value}，保持人物、服装与商品不变。` },
   { key: 'pose', label: '动作', names: ['动作', '姿势', '姿态'], promptDelta: (value) => `动作调整为${value}，保持人物身份与服装不变。` },
   { key: 'style', label: '风格', names: ['风格', '调性'], promptDelta: (value) => `视觉风格调整为${value}，保持人物、服装与商品不变。` },
@@ -67,7 +68,7 @@ const axisCatalog = [
 
 const axisNameValues = new Set([
   '人物', '模特', '角色', '场景', '背景', '画面', '环境',
-  '肤色', '动作', '姿势', '姿态', '风格', '调性', '服装', '衣服', '穿搭', '球衣',
+  '肤色', '族裔', '人种', '动作', '姿势', '姿态', '风格', '调性', '服装', '衣服', '穿搭', '球衣',
 ])
 const valueJunkPattern = /^(?:各种|多种|一些|任意|几个|多图|多张|变体|版本|图片|生成|层次|细节|道具|质感|细腻|更细腻|档位|字段|推荐值|说明|选项)$/u
 const combineLanguagePattern = /组合|相乘|交叉|笛卡尔|[×x]\s*\d|全部组合|逐一组合/u
@@ -432,15 +433,16 @@ export function botanicAgentConfirmBranchDrafts(plan, options = {}) {
 }
 
 
+const identityAxisKeys = new Set(['skin_tone', 'ethnicity'])
+const creativeDimensionKeys = new Set(['person', 'garment', 'product', 'scene', 'style', 'pose', 'composition', 'lighting', 'aspect_ratio', 'copy_space'])
+
 function varyConstraintForAxis(axis) {
-  const dimension = axis.key === 'skin_tone'
+  const dimension = identityAxisKeys.has(axis.key)
     ? undefined
-    : axis.key === 'custom'
-      ? 'style'
-      : axisCatalog.some((item) => item.key === axis.key)
-        ? axis.key
-        : 'style'
-  if (axis.key === 'skin_tone') {
+    : creativeDimensionKeys.has(axis.key)
+      ? axis.key
+      : 'style'
+  if (identityAxisKeys.has(axis.key)) {
     return [
       { dimension: 'person', mode: 'preserve' },
       { dimension: 'garment', mode: 'preserve' },

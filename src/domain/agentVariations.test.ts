@@ -281,6 +281,18 @@ test('已确认肤色数决定分支数，每支一条点名该肤色的独立�
   })
 })
 
+test('肤色×族裔组合出 6 支，每支叠加两条增量', () => {
+  const instruction = '白皙、小麦、黄色三档肤色，白人、亚洲人两种族裔，组合出 6 张'
+  assert.equal(instructionRequestsBatchVariation('做几个肤色和族裔的组合版本'), true)
+  const request = resolveBotanicAgentVariationRequest({ instruction })
+  assert.equal(request.kind, 'ready')
+  assert.equal(request.spec.combine, true)
+  const branches = expandBotanicAgentVariationBranches(request.spec)
+  assert.equal(branches.length, 6)
+  assert.match(branches[0].promptDelta, /肤色为白皙/)
+  assert.match(branches[0].promptDelta, /族裔特征调整为白人/)
+})
+
 test('非批量计划没有分支提示词列表', () => {
   assert.deepEqual(botanicAgentPlanBranchPrompts({
     output: { mode: 'single', count: 1, candidatesPerItem: 1 },

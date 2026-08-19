@@ -73,7 +73,15 @@ test('无素材组的批量变体请求进入生成计划，而不是写成对�
     assert.equal(decideBotanicAgentRequest(instruction, true).kind, 'generation', instruction)
   })
   assert.notEqual(decideBotanicAgentRequest('能不能给我几个换场景的建议？', true).kind, 'generation')
-  assert.equal(decideBotanicAgentRequest('按推荐值继续', true).kind, 'generation')
+})
+
+test('裸确认语只提交待确认计划，不当成新指令送进规划器', () => {
+  for (const instruction of ['确认生成', '确认', '生成', '开始生成', '就这样生成', '按推荐值继续', '按推荐方案继续', '确认生成。']) {
+    assert.deepEqual(decideBotanicAgentRequest(instruction, true), { kind: 'confirm_pending' }, instruction)
+  }
+  // 带画面内容的指令仍是新的生成请求，不能被裸确认语规则吞掉。
+  assert.equal(decideBotanicAgentRequest('确认生成一张海边人像', true).kind, 'generation')
+  assert.equal(decideBotanicAgentRequest('生成多个肤色的任务', true).kind, 'generation')
 })
 
 test('自然语言创作请求在已有图片上下文时进入生成计划链路', () => {

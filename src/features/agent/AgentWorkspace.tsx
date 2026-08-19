@@ -1188,6 +1188,25 @@ export default function AgentWorkspace({
       && (item.mediaKind ?? 'image') === 'image'
     ))
     const decision = decideBotanicAgentRequest(cleanInstruction, Boolean(target) || hasImageContext)
+    if (decision.kind === 'confirm_pending') {
+      // 「确认生成」只提交已存在的待确认计划。没有计划时绝不能把这两个字送进规划器凭空造一份。
+      const pendingPlanMessage = [...session.messages].reverse()
+        .find((item) => item.kind === 'plan' && item.plan && item.status === 'pending')
+      if (pendingPlanMessage) {
+        await confirmMessagePlan(pendingPlanMessage)
+        return
+      }
+      const pendingQuestion = [...session.messages].reverse()
+        .find((item) => item.kind === 'question' && item.question && item.status === 'pending')
+      appendMessage({
+        role: 'assistant',
+        kind: 'notice',
+        content: pendingQuestion
+          ? '上面还有一张待回答的确认卡，请直接在卡片里选择或填写；本次没有创建任务。'
+          : '当前没有待确认的生成计划。请直接描述要生成的画面或批量取值（例如「按白皙、小麦、黄色三档肤色出 3 张」），我会先给出待确认计划。',
+      })
+      return
+    }
     if (decision.kind === 'clarification') {
       appendMessage({
         role: 'assistant',
