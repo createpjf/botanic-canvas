@@ -3276,6 +3276,16 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-markdown pre code { padding: 0; background: transparent; color: inherit; }
 .agent-markdown hr { width: 100%; margin: 2px 0; border: 0; border-top: 1px solid #dbe7dc; }
 .agent-markdown a { color: #326a40; text-decoration: underline; text-underline-offset: 2px; }
+.agent-markdown__table-wrap { overflow-x: auto; border: 1px solid #d7e4d8; border-radius: 8px; background: #fbfdfb; }
+.agent-markdown table { width: max-content; min-width: 100%; border-collapse: collapse; font-size: 11px; line-height: 1.5; }
+.agent-markdown th, .agent-markdown td { padding: 7px 8px; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+.agent-markdown th { background: #eef5ee; color: #294632; font-weight: 760; border-bottom: 1px solid #d7e4d8; }
+.agent-markdown td { border-top: 1px solid #e3eee4; color: #3a5241; }
+.agent-markdown tr:first-child td { border-top: 0; }
+.agent-markdown__code { display: grid; gap: 6px; min-width: 0; }
+.agent-markdown__code > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.agent-markdown__code > header small { color: #829188; font-size: 9px; font-weight: 720; }
+.agent-markdown__code pre { margin: 0; }
 .agent-prompt-output { display: grid; gap: 10px; margin-top: 2px; color: #344b3a; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
 .agent-prompt-output > .agent-markdown { margin-top: 0; }
 .agent-prompt-output__section { display: grid; gap: 7px; padding: 9px 10px; border: 1px solid #d2e1d3; border-radius: 9px; background: #f7fbf7; }

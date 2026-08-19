@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { parseAgentMarkdown, parseAgentPromptSections } from './agentMarkdown.ts'
+import { parseAgentMarkdown, parseAgentPromptSections, resolveAgentPromptSections } from './agentMarkdown.ts'
 
 test('agent markdown keeps headings, emphasis, lists and code blocks as safe blocks', () => {
   const blocks = parseAgentMarkdown('**说明**\n\n## 三个变量\n- **光线**：柔光\n- 场景\n\n---\n\n```json\n{"ok":true}\n```')
@@ -49,4 +49,101 @@ test('agent prompt sections separate copyable prompt, negative prompt and notes'
 
 test('ordinary assistant copy is not treated as a prompt response', () => {
   assert.equal(parseAgentPromptSections('这是一段普通说明，没有提示词区块。'), null)
+})
+
+test('agent markdown parses GFM tables once a separator row is present', () => {
+  const blocks = parseAgentMarkdown([
+    '请确认两个字段：',
+    '',
+    '| 字段 | 选项 | 说明 |',
+    '|---|---|---|',
+    '| 变体数量 | ① 4个 (推荐) | 每个变体都会产生一次生成成本 |',
+    '| 肤色范围 | ① 浅 / 中 / 深 / 极深四档 (推荐) | 推荐方案可在同一场景下呈现最大对比度 |',
+  ].join('\n'))
+
+  assert.deepEqual(blocks, [
+    { kind: 'paragraph', text: '请确认两个字段：' },
+    {
+      kind: 'table',
+      headers: ['字段', '选项', '说明'],
+      rows: [
+        ['变体数量', '① 4个 (推荐)', '每个变体都会产生一次生成成本'],
+        ['肤色范围', '① 浅 / 中 / 深 / 极深四档 (推荐)', '推荐方案可在同一场景下呈现最大对比度'],
+      ],
+    },
+  ])
+})
+
+test('agent markdown keeps incomplete tables as paragraphs until a separator appears', () => {
+  const blocks = parseAgentMarkdown('| 字段 | 选项 | 说明 |\n| 变体数量 | 4个 | 成本 |')
+  assert.equal(blocks.length, 1)
+  assert.equal(blocks[0]?.kind, 'paragraph')
+  assert.match(blocks[0]?.text ?? '', /\| 字段 \|/)
+})
+
+test('agent markdown keeps html inside table cells as text', () => {
+  const [block] = parseAgentMarkdown('| 名称 | 值 |\n|---|---|\n| 注入 | <script>alert(1)</script> |')
+  assert.equal(block?.kind, 'table')
+  if (block?.kind !== 'table') return
+  assert.equal(block.rows[0]?.[1], '<script>alert(1)</script>')
+})
+
+test('agent prompt sections read fenced prompt code and leave surrounding copy outside', () => {
+  const sections = parseAgentPromptSections([
+    '已按你的要求收紧光线描述。',
+    '',
+    '```prompt',
+    'cinematic 16:9 photograph, moonlit forest clearing, soft mist.',
+    '```',
+    '',
+    '说明：可直接复制后生成。',
+  ].join('\n'))
+
+  assert.deepEqual(sections, {
+    before: '已按你的要求收紧光线描述。',
+    prompt: 'cinematic 16:9 photograph, moonlit forest clearing, soft mist.',
+    promptLabel: 'Prompt',
+    after: '说明：可直接复制后生成。',
+  })
+})
+
+test('json code fences are not treated as a copyable prompt card', () => {
+  assert.equal(parseAgentPromptSections('结果如下：\n\n```json\n{"ok":true}\n```'), null)
+})
+
+test('Prompt heading before a prompt fence is not kept as surrounding copy', () => {
+  const sections = parseAgentPromptSections([
+    'Prompt:',
+    '',
+    '```prompt',
+    'soft window light, 3:4, photorealistic',
+    '```',
+  ].join('\n'))
+  assert.deepEqual(sections, {
+    before: '',
+    prompt: 'soft window light, 3:4, photorealistic',
+    promptLabel: 'Prompt',
+    after: '',
+  })
+})
+
+test('stored prompt becomes a copyable card even without a Prompt heading', () => {
+  const prompt = 'a woman standing by a window, soft daylight, 3:4, photorealistic'
+  assert.deepEqual(resolveAgentPromptSections(prompt, prompt), {
+    before: '',
+    prompt,
+    promptLabel: 'Prompt',
+    after: '',
+  })
+})
+
+test('stored prompt does not duplicate surrounding explanation as the prompt body', () => {
+  const prompt = 'a woman standing by a window, soft daylight'
+  const content = `先看这版描述。\n\n${prompt}`
+  assert.deepEqual(resolveAgentPromptSections(content, prompt), {
+    before: '先看这版描述。',
+    prompt,
+    promptLabel: 'Prompt',
+    after: '',
+  })
 })

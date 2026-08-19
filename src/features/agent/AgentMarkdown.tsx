@@ -1,5 +1,6 @@
-import { Fragment } from 'react'
+import { Fragment, useState } from 'react'
 import { parseAgentMarkdown, type AgentMarkdownBlock } from '../../domain/agentMarkdown'
+import { CopyIcon } from '../../components/BotanicIcons'
 
 const inlinePattern = /(\*\*[^*\n]+\*\*|__[^_\n]+__|`[^`\n]+`|\*[^*\n]+\*|_[^_\n]+_|https?:\/\/[^\s<]+)/g
 
@@ -15,6 +16,32 @@ function renderInline(text: string) {
   })
 }
 
+function CopyableCode({ language, text }: { language?: string; text: string }) {
+  const [copied, setCopied] = useState(false)
+  const label = language || '代码'
+
+  const copyText = async () => {
+    if (!navigator.clipboard?.writeText) return
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+    } catch {
+      setCopied(false)
+    }
+  }
+
+  return <div className="agent-markdown__code">
+    <header>
+      <small>{label}</small>
+      <button type="button" className="agent-prompt-output__copy" onClick={() => void copyText()} aria-label={`复制${label}`} title={`复制${label}`}>
+        <CopyIcon />
+        <span>{copied ? '已复制' : '复制'}</span>
+      </button>
+    </header>
+    <pre data-language={language}><code>{text}</code></pre>
+  </div>
+}
+
 function renderBlock(block: AgentMarkdownBlock, index: number) {
   if (block.kind === 'heading') {
     const Heading = `h${block.level}` as 'h1' | 'h2' | 'h3'
@@ -22,7 +49,21 @@ function renderBlock(block: AgentMarkdownBlock, index: number) {
   }
   if (block.kind === 'unordered-list') return <ul key={index}>{block.items.map((item, itemIndex) => <li key={itemIndex}>{renderInline(item)}</li>)}</ul>
   if (block.kind === 'ordered-list') return <ol key={index}>{block.items.map((item, itemIndex) => <li key={itemIndex}>{renderInline(item)}</li>)}</ol>
-  if (block.kind === 'code') return <pre key={index} data-language={block.language}><code>{block.text}</code></pre>
+  if (block.kind === 'code') return <CopyableCode key={index} language={block.language} text={block.text} />
+  if (block.kind === 'table') {
+    return <div key={index} className="agent-markdown__table-wrap">
+      <table>
+        <thead>
+          <tr>{block.headers.map((header, headerIndex) => <th key={headerIndex}>{renderInline(header)}</th>)}</tr>
+        </thead>
+        <tbody>
+          {block.rows.map((row, rowIndex) => <tr key={rowIndex}>
+            {row.map((cell, cellIndex) => <td key={cellIndex}>{renderInline(cell)}</td>)}
+          </tr>)}
+        </tbody>
+      </table>
+    </div>
+  }
   if (block.kind === 'rule') return <hr key={index} />
   return <p key={index}>{renderInline(block.text)}</p>
 }

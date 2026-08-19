@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { parseAgentPromptSections, type AgentPromptSections } from '../../domain/agentMarkdown'
+import { resolveAgentPromptSections, type AgentPromptSections } from '../../domain/agentMarkdown'
 import { CopyIcon } from '../../components/BotanicIcons'
 import { AgentMarkdown } from './AgentMarkdown'
 
@@ -56,7 +56,7 @@ function PromptOutput({ sections }: { sections: AgentPromptSections }) {
   </div>
 }
 
-export function AgentPromptResponse({ content }: { content: string }) {
-  const sections = parseAgentPromptSections(content)
+export function AgentPromptResponse({ content, prompt }: { content: string; prompt?: string }) {
+  const sections = resolveAgentPromptSections(content, prompt)
   return sections ? <PromptOutput sections={sections} /> : <AgentMarkdown content={content} />
 }
