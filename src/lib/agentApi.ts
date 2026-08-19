@@ -3,8 +3,9 @@ import { buildBotanicAgentChatRequest, type BotanicAgentChatRequestInput, type B
 import { createBotanicAgentChatStreamReader, type BotanicAgentChatStreamEvent } from '../domain/agentChatStream'
 import { ProductApiError, productAuthorizationHeader, productRequest } from './productSession'
 import type { AgentToolCallTrace, BotanicAgentReasoningEntry, BotanicAgentActionProposal, BotanicAgentActionResult, BotanicAgentClarificationResponse, BotanicAgentMemoryItem, BotanicAgentMessage, BotanicAgentPlan, BotanicAgentRunSnapshot, BotanicAgentSession, BotanicAgentSkill, BotanicAgentSkillCatalogItem, BotanicIndexedArtifact } from '../domain/agent'
+import type { BotanicAgentBranchVariation } from '../domain/agentVariations'
 
-export type AgentRunCreationBranch = { id: string; label: string; assetId?: string }
+export type AgentRunCreationBranch = { id: string; label: string; assetId?: string; variation?: BotanicAgentBranchVariation }
 
 function blobAsDataUrl(blob: Blob) {
   return new Promise<string>((resolve, reject) => {
@@ -258,6 +259,7 @@ export async function createPersistentBotanicAgentRun(input: {
         settings: input.plan.settings,
         constraints: input.plan.constraints,
         output: input.plan.output,
+        ...(input.plan.variation ? { variation: input.plan.variation } : {}),
         assetGroupId: input.plan.assetGroupId,
         toolCalls: input.plan.toolCalls,
       },

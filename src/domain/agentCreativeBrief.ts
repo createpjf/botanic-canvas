@@ -11,7 +11,7 @@ export type BotanicDeliveryPreset = 'taobao' | 'xiaohongshu' | 'douyin' | 'custo
 export type BotanicPromptDirection = 'faithful' | 'commercial' | 'editorial' | 'social' | 'custom'
 export type BotanicPreservationPriority = 'identity' | 'product' | 'garment' | 'balanced'
 
-export type BotanicAgentClarificationFieldId =
+export type BotanicCreativeBriefFieldId =
   | 'model'
   | 'delivery_preset'
   | 'aspect_ratio'
@@ -19,6 +19,11 @@ export type BotanicAgentClarificationFieldId =
   | 'prompt_direction'
   | 'preservation_priority'
   | 'custom_direction'
+
+export type BotanicAgentClarificationFieldId =
+  | BotanicCreativeBriefFieldId
+  | 'variation_values'
+  | 'variation_combine'
 
 export type BotanicAgentClarificationOption = {
   value: string
@@ -51,7 +56,7 @@ export type BotanicCreativeBrief = {
     preservationPriority?: BotanicPreservationPriority
     customDirection?: string
   }
-  provenance: Partial<Record<BotanicAgentClarificationFieldId, BotanicCreativeBriefSource>>
+  provenance: Partial<Record<BotanicCreativeBriefFieldId, BotanicCreativeBriefSource>>
 }
 
 export type BotanicAgentClarification = {

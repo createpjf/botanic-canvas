@@ -12,6 +12,7 @@ import {
   createBotanicAgentRun,
   createBotanicAgentSession,
   inferBotanicAgentIntent,
+  resolveBotanicAgentIntent,
   insertBotanicAgentMention,
   mergeBotanicAgentRunSnapshot,
   upsertBotanicAgentRunSnapshot,
@@ -524,7 +525,10 @@ test('相同提示词的差异结果保持为单一同文段', () => {
 })
 
 test('Botanic Agent 能从自然语言识别高频生图意图', () => {
-  assert.equal(inferBotanicAgentIntent('保持衣服不变，换十个海边场景'), 'replace_scene')
+  assert.equal(inferBotanicAgentIntent('保持衣服不变，换十个海边场景'), 'batch_variation')
+  assert.equal(inferBotanicAgentIntent('多个肤色人物、多图'), 'batch_variation')
+  assert.equal(resolveBotanicAgentIntent('多个肤色人物、多图', 'replace_scene'), 'batch_variation')
+  assert.equal(inferBotanicAgentIntent('换成海边场景'), 'replace_scene')
   assert.equal(inferBotanicAgentIntent('人物和背景不变，调整一下动作'), 'change_pose')
   assert.equal(inferBotanicAgentIntent('复用最初商品图重新做首图'), 'redo_from_root')
 })

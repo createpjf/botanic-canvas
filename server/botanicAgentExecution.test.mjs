@@ -396,3 +396,33 @@ test('「从原配方重做」仍然复用最初那次配方的参考', () => {
   // 原配方重做是一次全新生成，没有 parent。
   assert.equal(result.jobs[0].rawInput.parent, undefined)
 })
+
+test('无素材变体分支把本支增量叠到共用画面 Prompt 上', () => {
+  const run = persistentRun()
+  run.plan.intent = 'batch_variation'
+  run.plan.instruction = '白皙、自然两种肤色，多图'
+  run.plan.prompt = '保持人物与白裙，棚拍柔光。'
+  run.plan.output = { mode: 'batch_by_variation', count: 2, candidatesPerItem: 1 }
+  delete run.plan.assetGroupId
+  run.branches = [
+    {
+      id: 'branch-fair', label: '白皙', status: 'queued', attempt: 0, jobIds: [], outputCount: 0, updatedAt: 1,
+      variation: { label: '白皙', promptDelta: '人物肤色为白皙，保持五官与身份不变。', values: [{ key: 'skin_tone', axisLabel: '肤色', valueLabel: '白皙' }] },
+    },
+    {
+      id: 'branch-tan', label: '小麦', status: 'queued', attempt: 0, jobIds: [], outputCount: 0, updatedAt: 1,
+      variation: { label: '小麦', promptDelta: '人物肤色为小麦，保持五官与身份不变。', values: [{ key: 'skin_tone', axisLabel: '肤色', valueLabel: '小麦' }] },
+    },
+  ]
+
+  const result = prepareAgentRunExecution({
+    run, document: projectDocument(), now: 100,
+    jobIdForBranch: (branch) => `job-${branch.id}`,
+    models, maximumBatchCount: 8, maximumReferenceBytes: 8 * 1024 * 1024,
+  })
+
+  assert.equal(result.jobs.length, 2)
+  assert.equal(result.jobs[0].rawInput.prompt, '保持人物与白裙，棚拍柔光。\n\n人物肤色为白皙，保持五官与身份不变。')
+  assert.equal(result.jobs[1].rawInput.prompt, '保持人物与白裙，棚拍柔光。\n\n人物肤色为小麦，保持五官与身份不变。')
+  assert.equal(result.jobs[0].rawInput.parent.mediaId, 'media_parent')
+})

@@ -17,7 +17,7 @@
 | 版本化生产工作流 | `server/productionWorkflow.mjs` | `productionWorkflowRoutes.mjs`、`generationSubmissionService.mjs`、`src/domain/productionWorkflows.ts`、`src/lib/productionWorkflowApi.ts`、模板面板、Artifact Index | 已验证 Agent/画布操作可提升为版本；运行固定快照；批量项独立恢复；失败重试复用任务与预算；Artifact 保留版本血缘 |
 | 批量变化 | `src/domain/batchVariations.ts` | `src/store/canvasBatchVariationActions.ts`、服务端 Processor | `batchVariations.test.ts`、Processor 测试；计划先限制总输出，Store 以有界并发协调独立子任务及恢复，各分支独立持久化 |
 | Agent 对话分流 | `src/domain/agentChatContract.ts` | `src/lib/agentApi.ts`、`server/botanicAgentChat.mjs` | 对话测试；浏览器不发送图片字节或私有 URL |
-| Agent 计划和执行 | `src/domain/agentPlanContract.ts` | `agent.ts`、`server/botanicAgentPlanner.mjs`、`botanicAgentTools.mjs`、`agentRunGenerationService.mjs` | Agent Planner/Tool/Run 测试；Run 生成复用持久化幂等任务，外部行动默认确认 |
+| Agent 计划和执行 | `src/domain/agentPlanContract.ts` | `agent.ts`、`agentVariations.ts`、`server/botanicAgentPlanner.mjs`、`botanicAgentTools.mjs`、`agentRunGenerationService.mjs` | Agent Planner/Tool/Run 测试；无素材组时按已确认变体轴展开，张数由展开结果决定；Run 生成复用持久化幂等任务，外部行动默认确认 |
 | Agent 可观测与评测 | `server/agentExecutionTrace.mjs` | `agentRunObservability.mjs`、`agentQualityEvaluation.mjs`、`src/lib/agentApi.ts` | 稳定 traceId 串联 Run/Job/Artifact；只返回运维字段；固定评测不调用 Provider |
 | Agent 权限与审批 | `server/agentActionGovernance.mjs` | `authorization.mjs`、`projectAuthorization.mjs`、`agentRoutes.mjs`、`projectRoutes.mjs` | 服务端权限矩阵、短期行动审批和脱敏审计导出；UI 不可替代鉴权 |
 | Agent 持久化 | `server/botanicAgentPersistence.mjs` | 三个 ProductStore Adapter、Canvas 兼容视图 | 独立实体合并测试；Memory 墓碑永久胜出 |

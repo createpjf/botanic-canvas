@@ -441,3 +441,60 @@ test('未手选素材组时，Agent 只能从服务端提供的素材组中选�
   assert.deepEqual(result.output, { mode: 'batch_by_asset', count: 10, candidatesPerItem: 1 })
   assert.equal(result.constraints.find((item) => item.dimension === 'scene').sourceAssetGroupId, 'group-scenes')
 })
+
+test('无素材组的多肤色请求不会被默认换景压成 1 张，而是追问具体取值', async () => {
+  const result = await planBotanicGeneration({
+    ...validInput,
+    instruction: '多个肤色人物、多图',
+    requestedIntent: 'replace_scene',
+    assetGroup: undefined,
+  }, {
+    flockApiKey: 'flock-secret', flockTextModel: 'deepseek-v4-pro',
+  }, {
+    fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: {
+      content: null,
+      tool_calls: [{ id: 'call-plan-skin-ask', type: 'function', function: {
+        name: 'generation_create_plan', arguments: JSON.stringify({
+          intent: 'replace_scene',
+          prompt: '当前项目没有配置批量 Skill，还缺两个字段。',
+          summary: '替换场景，生成 1 张新版本。',
+          constraints: [{ dimension: 'person', mode: 'preserve' }, { dimension: 'scene', mode: 'vary' }],
+        }),
+      } }],
+    } }] }), { status: 200 }),
+  })
+
+  assert.equal(result.kind, 'clarification')
+  assert.equal(result.clarification.fields[0].id, 'variation_values')
+  assert.match(result.clarification.question, /肤色/)
+})
+
+test('列出肤色取值后按变体轴展开，张数由展开结果决定', async () => {
+  const result = await planBotanicGeneration({
+    ...validInput,
+    instruction: '白皙、自然、小麦、深棕四种肤色，多图',
+    requestedIntent: 'replace_scene',
+    assetGroup: undefined,
+  }, {
+    flockApiKey: 'flock-secret', flockTextModel: 'deepseek-v4-pro',
+  }, {
+    fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: {
+      content: null,
+      tool_calls: [{ id: 'call-plan-skin-ready', type: 'function', function: {
+        name: 'generation_create_plan', arguments: JSON.stringify({
+          intent: 'replace_scene',
+          prompt: '当前项目没有配置批量 Skill，还缺两个字段。',
+          summary: '替换场景，生成 1 张新版本。',
+          constraints: [{ dimension: 'person', mode: 'preserve' }, { dimension: 'scene', mode: 'vary' }],
+        }),
+      } }],
+    } }] }), { status: 200 }),
+  })
+
+  assert.equal(result.kind, undefined)
+  assert.equal(result.intent, 'batch_variation')
+  assert.deepEqual(result.output, { mode: 'batch_by_variation', count: 4, candidatesPerItem: 1 })
+  assert.equal(result.prompt.includes('批量 Skill'), false)
+  assert.equal(result.variation.axes[0].values.length, 4)
+  assert.match(result.summary, /4 张/)
+})

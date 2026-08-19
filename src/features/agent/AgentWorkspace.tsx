@@ -148,7 +148,7 @@ const agentQuickActions: Array<{ intent: BotanicAgentIntent; label: string; inst
   { intent: 'redo_from_root', label: '原配方重做', instruction: '复用原始参考素材、提示词和参数，重新生成独立首图。' },
 ]
 
-function agentGroupRole(intent: BotanicAgentIntent): AssetGroup['role'] | null {
+function agentGroupRole(intent?: BotanicAgentIntent): AssetGroup['role'] | null {
   if (intent === 'replace_scene') return '场景'
   if (intent === 'replace_person') return '模特'
   if (intent === 'replace_product') return '商品'
@@ -293,7 +293,7 @@ export default function AgentWorkspace({
   onReloadCollaborationActivities: () => Promise<void>
   onClose: () => void
 }) {
-  const [intent, setIntent] = useState<BotanicAgentIntent>('replace_scene')
+  const [intent, setIntent] = useState<BotanicAgentIntent | undefined>(undefined)
   const [groupId, setGroupId] = useState('')
   const plannerModel = plannerModels.includes(session?.plannerModel ?? '')
     ? session!.plannerModel!

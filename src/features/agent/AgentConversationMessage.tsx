@@ -16,6 +16,7 @@ import { AlertIcon, BookIcon, ChecklistIcon, ClockIcon, CopyIcon, EditIcon, Focu
 import { agentPlannerModelLabel, modelDisplayLabel } from '../../components/generationModelPresentation'
 import { AgentClarificationCard, AgentPromptDiff, agentToolStatusLabel } from './AgentWorkspaceParts'
 import { AgentPromptResponse } from './AgentPromptResponse'
+import { botanicAgentPlanOutputLabel } from '../../domain/agentVariations'
 
 /** 超过这个体量的助手回复默认折叠；阈值只影响展示，不改变消息内容。 */
 const collapsibleContentLength = 600
@@ -279,7 +280,7 @@ export function AgentConversationMessage({
             <span><small>模型</small><b>{modelDisplayLabel(generationModels.find((model) => model.id === plan.settings.model)) || plan.settings.model}</b></span>
             <span><small>比例</small><b>{plan.settings.aspectRatio}</b></span>
             <span><small>清晰度</small><b>{plan.settings.resolution}</b></span>
-            <span><small>输出</small><b>{plan.output.mode === 'batch_by_asset' ? `${plan.output.count} 个分支` : '1 个版本'}</b></span>
+            <span><small>输出</small><b>{botanicAgentPlanOutputLabel(plan)}</b></span>
           </div>
           {contextLabel ? <small className="agent-plan__context-lock">基于 {contextLabel}{plan.contextSnapshot && plan.contextSnapshot.length > 1 ? ` 等 ${plan.contextSnapshot.length} 项` : ''}</small> : null}
           <section className="agent-prompt-review" aria-label="润色后的提示词">
@@ -306,7 +307,7 @@ export function AgentConversationMessage({
         // 已提交的计划折叠成一行摘要：任务状态由下方的任务消息承载，细节按需展开。
         if (planSubmitted) return <details className="agent-message__plan is-submitted">
           <summary>
-            <span><strong>{plan.summary}</strong><small>{modelDisplayLabel(generationModels.find((model) => model.id === plan.settings.model)) || plan.settings.model} · {plan.settings.aspectRatio} · {plan.output.mode === 'batch_by_asset' ? `${plan.output.count} 个分支` : '1 个版本'}</small></span>
+            <span><strong>{plan.summary}</strong><small>{modelDisplayLabel(generationModels.find((model) => model.id === plan.settings.model)) || plan.settings.model} · {plan.settings.aspectRatio} · {botanicAgentPlanOutputLabel(plan)}</small></span>
             <em className="agent-message__submitted">{executionMode === 'auto' ? '已自动提交' : '已提交'}</em>
           </summary>
           {detail}

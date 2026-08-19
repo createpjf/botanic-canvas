@@ -1,5 +1,6 @@
 import { AgentToolRuntimeError, createAgentToolRegistry } from './agentToolRuntime.mjs'
 import { botanicCreativeBriefFieldIds } from './botanicCreativeBrief.mjs'
+import { botanicAgentVariationClarificationFieldIds } from './botanicAgentVariations.mjs'
 import { readFileSync } from 'node:fs'
 
 function readBuiltInSkill(relativePath) {
@@ -180,7 +181,7 @@ function clarificationParameters() {
         items: {
           type: 'object', additionalProperties: false,
           properties: {
-            id: { type: 'string', enum: botanicCreativeBriefFieldIds },
+            id: { type: 'string', enum: [...botanicCreativeBriefFieldIds, ...botanicAgentVariationClarificationFieldIds] },
             label: { type: 'string', maxLength: 80 },
           },
           required: ['id', 'label'],
@@ -345,7 +346,7 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
     {
       name: 'generation_ask_clarification',
       label: '确认生成参数',
-      description: '当用户目标、输出规格或创作方向确实不清晰时，提出最多三个简短问题；只返回问题卡，不执行生成。优先询问会明显改变结果的用途、比例、清晰度、Prompt 方向或保持重点，不要重复询问已知项。',
+      description: '当用户目标、输出规格、变体取值或创作方向确实不清晰时，提出最多三个简短问题；只返回问题卡，不执行生成。批量但未列出 2–8 个具体取值时，必须询问 variation_values。多轴相乘前必须询问 variation_combine 并写明张数。不要重复询问已知项。',
       risk: 'read',
       terminal: true,
       parameters: clarificationParameters(),
