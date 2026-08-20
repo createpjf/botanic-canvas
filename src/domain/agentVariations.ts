@@ -80,6 +80,8 @@ const groupRoleByKey: Record<string, string> = {
 
 function isUsableVariationValue(label: string) {
   if (!label || Array.from(label).length > 8) return false
+  // 「不同背景下的」这类表达剥掉轴名后只剩方位助词，不是取值。
+  if (/^(?:[的地得了着]|[在于下里中上旁边处]{0,2}的)$/u.test(label)) return false
   if (axisNameValues.has(label) || valueJunkPattern.test(label) || valueMetaPattern.test(label)) return false
   if (/[更最]/.test(label) || /(?:层次|细节|道具)$/u.test(label)) return false
   return true
