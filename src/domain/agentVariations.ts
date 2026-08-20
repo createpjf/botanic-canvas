@@ -539,6 +539,20 @@ export function botanicAgentPlanOutputLabel(plan: Pick<BotanicAgentPlan, 'output
   return `${plan.output.count} 个分支`
 }
 
+export function botanicAgentPlanSheetCountLabel(plan: Pick<BotanicAgentPlan, 'output'>) {
+  return `${Math.max(1, plan.output.count)} 张`
+}
+
+export function botanicAgentPlanConfirmActionLabel(
+  plan: Pick<BotanicAgentPlan, 'output'>,
+  state: 'ready' | 'submitting' | 'blocked' | 'failed' = 'ready',
+) {
+  if (state === 'submitting') return '正在提交…'
+  if (state === 'blocked') return '先处理行动卡'
+  if (state === 'failed') return '重新生成'
+  return plan.output.count > 1 ? `生成 ${plan.output.count} 张` : '生成'
+}
+
 export type BotanicAgentConfirmBranchDraft = {
   label: string
   assetId?: string
