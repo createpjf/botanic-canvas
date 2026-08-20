@@ -95,9 +95,47 @@ test('模型基于既有建议直接综合可执行 Prompt 并生成多张，而
   assert.doesNotMatch(JSON.stringify(requests), /api\/media\/private/)
 })
 
-test('回合解析同样注入视觉识别描述，Prompt 综合可以看图写', async () => {
+test('原生多模态：引用图片直接随消息附给视觉模型，模型看着画面推理', async () => {
   const requests = []
   await resolveBotanicAgentTurn({
+    projectId: 'project-turn',
+    plannerModel: 'deepseek-v4-pro',
+    messages: [
+      { role: 'assistant', content: '可以试试海边场景。' },
+      { role: 'user', content: '基于这张图出 3 张' },
+    ],
+    contextNodeIds: ['asset-mia-portrait'],
+    hasTarget: false,
+    generationModels,
+    maxOutputCount: 8,
+  }, { ...runtime, agentVisionModel: 'gemini-flash' }, {
+    document: {
+      ...document,
+      nodes: document.nodes.map((node) => node.id === 'asset-mia-portrait'
+        ? { ...node, data: { ...node.data, image: 'data:image/png;base64,TUlB' } }
+        : node),
+    },
+    fetchImpl: async (_url, init) => {
+      requests.push(JSON.parse(init.body))
+      return new Response(JSON.stringify({ choices: [{ message: { content: '好的。' } }] }), { status: 200 })
+    },
+  })
+
+  assert.equal(requests.length, 1)
+  // 视觉轮次主轮切到视觉模型，最后一条用户消息升级为多模态。
+  assert.equal(requests[0].model, 'gemini-flash')
+  const lastUser = requests[0].messages.at(-1)
+  assert.equal(lastUser.role, 'user')
+  assert.ok(Array.isArray(lastUser.content))
+  assert.match(lastUser.content[0].text, /基于这张图出 3 张/)
+  assert.match(lastUser.content[0].text, /图1＝Mia 肖像/)
+  assert.equal(lastUser.content[1].image_url.url, 'data:image/png;base64,TUlB')
+  assert.match(requests[0].messages[0].content, /已随用户消息直接附上/)
+})
+
+test('视觉模型被网关拒绝时回退 caption 描述 + 文本模型，超时不重试', async () => {
+  const models = []
+  const result = await resolveBotanicAgentTurn({
     projectId: 'project-turn',
     plannerModel: 'deepseek-v4-pro',
     messages: [{ role: 'user', content: '基于这张图出 3 张' }],
@@ -114,17 +152,20 @@ test('回合解析同样注入视觉识别描述，Prompt 综合可以看图写'
     },
     visionCache: new Map(),
     visionFetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: {
-      content: '自然光半身人像，盘发，米色亚麻上衣，绿植前景。',
+      content: '自然光半身人像，盘发。',
     } }] }), { status: 200 }),
     fetchImpl: async (_url, init) => {
-      requests.push(JSON.parse(init.body))
+      const body = JSON.parse(init.body)
+      models.push(body.model)
+      // 视觉模型的 tool-calling 被网关拒绝；文本模型正常。
+      if (body.model === 'gemini-flash') return new Response('unsupported', { status: 422 })
       return new Response(JSON.stringify({ choices: [{ message: { content: '好的。' } }] }), { status: 200 })
     },
   })
 
-  const system = requests[0].messages[0].content
-  assert.match(system, /自然光半身人像/)
-  assert.doesNotMatch(JSON.stringify(requests), /TUlB/)
+  assert.deepEqual(models, ['gemini-flash', 'deepseek-v4-pro'])
+  assert.equal(result.kind, 'chat')
+  // 回退轮的系统提示带 caption 描述；图片字节不进文本模型请求（models 记录已证明只发了两轮）。
 })
 
 test('回合解析同样先把引用节点写进系统提示', async () => {

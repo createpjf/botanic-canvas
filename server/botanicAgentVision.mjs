@@ -163,6 +163,45 @@ export async function describeBotanicAgentContextImages({
     : []))
 }
 
+/**
+ * 原生多模态：把引用图片解析成可直接放进消息的 image_url parts。
+ * 与 caption 通道二选一——parts 可用时模型直接看图推理，caption 只作降级。
+ */
+export async function resolveBotanicAgentVisionParts({ document, contextNodeIds, resolveMedia } = {}) {
+  const candidates = botanicAgentVisionCandidates(document, contextNodeIds)
+  const parts = []
+  for (const candidate of candidates) {
+    const dataUrl = await resolveBotanicAgentImageDataUrl(candidate.image, resolveMedia).catch(() => undefined)
+    if (!dataUrl) continue
+    parts.push({
+      nodeId: candidate.nodeId,
+      label: candidate.label,
+      ...(candidate.role ? { role: candidate.role } : {}),
+      part: { type: 'image_url', image_url: { url: dataUrl } },
+    })
+  }
+  return parts
+}
+
+/** 把最后一条用户消息升级为多模态：正文 + 图片名对照 + 图片 parts。 */
+export function botanicAgentMultimodalMessages(messages, visionParts) {
+  if (!visionParts.length) return messages
+  const lastUserIndex = messages.map((message) => message.role).lastIndexOf('user')
+  if (lastUserIndex < 0) return messages
+  const legend = visionParts
+    .map((item, index) => `图${index + 1}＝${item.label}${item.role ? `（${item.role}）` : ''}`)
+    .join('；')
+  return messages.map((message, index) => (index === lastUserIndex
+    ? {
+      role: 'user',
+      content: [
+        { type: 'text', text: `${message.content}\n\n（引用图片已随消息附上：${legend}）` },
+        ...visionParts.map((item) => item.part),
+      ],
+    }
+    : message))
+}
+
 /** 视觉描述的系统提示段；空描述返回空串，调用方据此决定 briefing 措辞。 */
 export function botanicAgentVisionBriefing(descriptions) {
   if (!Array.isArray(descriptions) || !descriptions.length) return ''

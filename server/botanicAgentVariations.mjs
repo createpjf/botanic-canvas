@@ -15,14 +15,20 @@ export function botanicAgentLooksLikePlannerNarration(text) {
     || plannerNarrationPattern.test(value)
 }
 
+/** 创作简报附录是给规划器的上下文，不是画面描述；与客户端 compileBriefPrompt 的格式对应。 */
+function stripCreativeBriefNotes(text) {
+  return text.replace(/\n{2,}创作简报：[\s\S]*$/u, '').trim()
+}
+
+// 与 src/domain/agent.ts 的同名函数保持逐行一致；一致性由 scripts/fixtures 的镜像夹具锁定。
 export function botanicAgentVisualGenerationPrompt(prompt, fallback = '') {
-  const text = typeof prompt === 'string' ? prompt.trim() : ''
+  const text = typeof prompt === 'string' ? stripCreativeBriefNotes(prompt.trim()) : ''
   const blocks = text.split(/\n{2,}/u).map((block) => block.trim()).filter(Boolean)
   const visual = blocks.filter((block) => !botanicAgentLooksLikePlannerNarration(block)).join('\n\n').trim()
   if (visual && !botanicAgentLooksLikePlannerNarration(visual)) return visual
-  const fallbackText = typeof fallback === 'string' ? fallback.trim() : ''
+  const fallbackText = typeof fallback === 'string' ? stripCreativeBriefNotes(fallback.trim()) : ''
   if (fallbackText && !botanicAgentLooksLikePlannerNarration(fallbackText)) return fallbackText
-  return visual || fallbackText || text
+  return ''
 }
 
 const variationDimensionPattern = '人物|模特|角色|场景|背景|画面|环境|肤色|族裔|人种|动作|姿势|姿态|风格|服装|衣服|穿搭|版本|变体'

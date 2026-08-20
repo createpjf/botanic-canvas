@@ -3,7 +3,12 @@ import { botanicAgentProviderConfig, botanicAgentProviderTemperature } from './b
 import { BotanicAgentChatError } from './botanicAgentChat.mjs'
 import { readBotanicAgentInstructions } from './agentInstructions.mjs'
 import { botanicAgentContextBriefing, buildBotanicAgentOntology, safeBotanicAgentMemory, safeBotanicAgentSkills } from './botanicAgentOntology.mjs'
-import { botanicAgentVisionBriefing, describeBotanicAgentContextImages } from './botanicAgentVision.mjs'
+import {
+  botanicAgentMultimodalMessages,
+  botanicAgentVisionBriefing,
+  describeBotanicAgentContextImages,
+  resolveBotanicAgentVisionParts,
+} from './botanicAgentVision.mjs'
 import { botanicAgentContextToolSourceLabels, createBotanicAgentReadToolDefinitions } from './botanicAgentContextTools.mjs'
 
 // Botanic Agent 回合解析器：把“这一句到底是聊天/建议/检索，还是要生成图片，以及要用什么
@@ -304,27 +309,7 @@ function turnConfig(runtimeConfig, requestedModel) {
   }
 }
 
-export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}) {
-  const config = turnConfig(runtimeConfig, input?.plannerModel)
-  const baseSystem = await turnInstructions()
-  if (options.signal?.aborted) throw new BotanicAgentChatError(499, 'REQUEST_CANCELLED', 'Agent 请求已取消。')
-  const ontology = buildBotanicAgentOntology(options.document, input.contextNodeIds)
-  const memory = safeBotanicAgentMemory(options.document)
-  const skills = safeBotanicAgentSkills(options.projectSkills)
-  // 看图失败不弄坏整轮回合；识别结果只进当轮系统提示，不进消息记录或任何持久化实体。
-  const visionDescriptions = await describeBotanicAgentContextImages({
-    document: options.document,
-    contextNodeIds: input.contextNodeIds,
-    runtimeConfig,
-    resolveMedia: options.resolveVisionMedia,
-    fetchImpl: options.visionFetchImpl ?? fetch,
-    signal: options.signal,
-    ...(options.visionCache ? { cache: options.visionCache } : {}),
-  }).catch(() => [])
-  const contextBriefing = botanicAgentContextBriefing(ontology, { visionDescribed: visionDescriptions.length > 0 })
-  const visionBriefing = botanicAgentVisionBriefing(visionDescriptions)
-  const system = [baseSystem, contextBriefing, visionBriefing].filter(Boolean).join('\n\n')
-  const registry = turnToolRegistry(input, { ontology, memory, skills })
+async function executeTurnAttempt({ config, model, system, messages, registry, options }) {
   const timeoutSignal = AbortSignal.timeout(config.timeoutMs)
   const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal
   const fetchImpl = options.fetchImpl ?? fetch
@@ -333,11 +318,11 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
       registry,
       messages: [
         { role: 'system', content: system },
-        ...input.messages,
+        ...messages,
       ],
       toolChoice: 'auto',
       maximumSteps: 5,
-      callModel: async ({ messages, tools, tool_choice }) => {
+      callModel: async ({ messages: turnMessages, tools, tool_choice }) => {
         const response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
           method: 'POST',
           headers: {
@@ -347,12 +332,12 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            model: config.model,
-            messages,
+            model,
+            messages: turnMessages,
             tools,
             tool_choice,
             max_tokens: 3000,
-            temperature: botanicAgentProviderTemperature(config.model),
+            temperature: botanicAgentProviderTemperature(model),
             stream: false,
           }),
           signal,
@@ -370,7 +355,7 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
         count: result.output.count,
         ...(result.output.duration ? { duration: result.output.duration } : {}),
         ...(Object.keys(result.output.settingsHint ?? {}).length ? { settingsHint: result.output.settingsHint } : {}),
-        plannerModel: config.model,
+        plannerModel: model,
         toolCalls: result.toolCalls,
       }
     }
@@ -379,7 +364,7 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
         kind: 'clarification',
         question: result.output.question,
         ...(result.output.options?.length ? { options: result.output.options } : {}),
-        plannerModel: config.model,
+        plannerModel: model,
         toolCalls: result.toolCalls,
       }
     }
@@ -389,7 +374,7 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
     return {
       kind: 'chat',
       answer: result.output.trim().slice(0, 12_000),
-      plannerModel: config.model,
+      plannerModel: model,
       toolCalls: result.toolCalls,
       sources: botanicAgentContextToolSourceLabels(result.toolCalls),
     }
@@ -402,4 +387,65 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
     }
     throw new BotanicAgentChatError(502, 'PROVIDER_UNAVAILABLE', 'Agent 服务暂时不可用，请稍后重试。')
   }
+}
+
+export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}) {
+  const config = turnConfig(runtimeConfig, input?.plannerModel)
+  const baseSystem = await turnInstructions()
+  if (options.signal?.aborted) throw new BotanicAgentChatError(499, 'REQUEST_CANCELLED', 'Agent 请求已取消。')
+  const ontology = buildBotanicAgentOntology(options.document, input.contextNodeIds)
+  const memory = safeBotanicAgentMemory(options.document)
+  const skills = safeBotanicAgentSkills(options.projectSkills)
+  const registry = turnToolRegistry(input, { ontology, memory, skills })
+
+  // 原生多模态优先：引用图片直接随消息附给视觉模型，让它看着画面判断意图、综合 Prompt。
+  const visionModel = typeof runtimeConfig?.agentVisionModel === 'string' ? runtimeConfig.agentVisionModel.trim() : ''
+  const visionParts = visionModel
+    ? await resolveBotanicAgentVisionParts({
+      document: options.document,
+      contextNodeIds: input.contextNodeIds,
+      resolveMedia: options.resolveVisionMedia,
+    }).catch(() => [])
+    : []
+  if (visionParts.length) {
+    try {
+      return await executeTurnAttempt({
+        config,
+        model: visionModel,
+        system: [baseSystem, botanicAgentContextBriefing(ontology, { visionAttached: true })].filter(Boolean).join('\n\n'),
+        messages: botanicAgentMultimodalMessages(input.messages, visionParts),
+        registry,
+        options,
+      })
+    } catch (caught) {
+      // 视觉模型对 tool-calling 的兼容性因网关而异：被拒绝或不可用时回退
+      // 「caption 描述 + 文本模型」，超时与取消不重试——时间预算已经花完。
+      const recoverable = caught instanceof BotanicAgentChatError && [422, 429, 502].includes(caught.statusCode)
+      if (!recoverable) throw caught
+    }
+  }
+
+  // 降级路径：看图失败不弄坏整轮回合；识别结果只进当轮系统提示，不进任何持久化实体。
+  const visionDescriptions = await describeBotanicAgentContextImages({
+    document: options.document,
+    contextNodeIds: input.contextNodeIds,
+    runtimeConfig,
+    resolveMedia: options.resolveVisionMedia,
+    fetchImpl: options.visionFetchImpl ?? fetch,
+    signal: options.signal,
+    ...(options.visionCache ? { cache: options.visionCache } : {}),
+  }).catch(() => [])
+  const system = [
+    baseSystem,
+    botanicAgentContextBriefing(ontology, { visionDescribed: visionDescriptions.length > 0 }),
+    botanicAgentVisionBriefing(visionDescriptions),
+  ].filter(Boolean).join('\n\n')
+  return executeTurnAttempt({
+    config,
+    model: config.model,
+    system,
+    messages: input.messages,
+    registry,
+    options,
+  })
 }
