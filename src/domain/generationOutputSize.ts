@@ -97,6 +97,16 @@ function snapEdge(value: number) {
   return Math.min(gptImage2CustomSizeLimits.maxEdge, Math.max(gptImage2CustomSizeLimits.minEdge, snapped))
 }
 
+/** 校验文案是中文稳定值；展示层按界面语言翻译，不改校验结果。 */
+export function localizeCustomGenerationSizeMessage(message: string, locale: 'zh-CN' | 'en' = 'zh-CN') {
+  if (locale !== 'en') return message
+  if (message.includes('整数')) return 'Width and height must be whole pixels.'
+  if (message.includes('3:1')) return 'The long edge cannot be more than 3× the short edge.'
+  if (message.includes('总像素')) return 'Custom pixel count is outside the allowed range.'
+  if (message.includes('边长')) return `Each side must be between ${gptImage2CustomSizeLimits.minEdge} and ${gptImage2CustomSizeLimits.maxEdge} pixels.`
+  return 'Custom width and height are invalid.'
+}
+
 export function normalizeCustomGenerationSize(width: number, height: number): CustomGenerationSizeResult {
   if (!Number.isInteger(width) || !Number.isInteger(height)) {
     return { ok: false, message: '自定义宽高必须是整数像素。' }
