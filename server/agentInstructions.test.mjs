@@ -7,6 +7,8 @@ test('Agent 每种模式都加载通用人格与对应模式规则', async () =>
   assert.match(conversation, /# Botanic Agent/)
   assert.match(conversation, /# Botanic Agent Soul/)
   assert.match(conversation, /# 日常对话模式/)
+  assert.match(conversation, /没有生成、提交或写画布的工具/)
+  assert.match(conversation, /不得发明系统中不存在的执行流程/)
   assert.doesNotMatch(conversation, /# 生图规划模式/)
 
   const prompt = await readBotanicAgentInstructions('prompt')

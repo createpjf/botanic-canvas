@@ -354,6 +354,67 @@ test('清洗后仍含多个取值时共享底回退到 fallbackPrompt', () => {
   assert.equal(applied.plan.prompt, '保持人物身份、白裙与商品，棚拍柔光。')
 })
 
+test('执行链路元话语和创作简报拼接段不能切成自定义变体', () => {
+  const harness = [
+    '在画布/执行界面触发这批生成节点，执行链路会按交接计划读取 Mia 素材并出图；',
+    '',
+    '创作简报：',
+    '- 交付用途：小红书，画面比例 3:4',
+    '- Prompt 优化方向：杂志氛围',
+  ].join('\n')
+  assert.equal(resolveBotanicAgentVariationRequest({ instruction: harness }).kind, 'none')
+  assert.equal(resolveBotanicAgentVariationRequest({
+    instruction: '在画布/执行界面触发这批生成节点，执行链路会按交接计划读取 Mia 素材并出图；',
+  }).kind, 'none')
+
+  const applied = applyBotanicAgentVariationToPlan({
+    intent: 'initial_generation',
+    instruction: harness,
+    summary: '首次生成',
+    prompt: harness,
+    constraints: [],
+    output: { mode: 'single', count: 1, candidatesPerItem: 1 },
+  }, { instruction: harness, requestedIntent: 'initial_generation' })
+  assert.equal(applied.kind, 'plan')
+  assert.equal(applied.plan.intent, 'initial_generation')
+  assert.equal(applied.plan.output.mode, 'single')
+  assert.equal(applied.plan.variation, undefined)
+})
+
+test('目录轴枚举和已确认取值仍可展开，不依赖自定义标点兜底', () => {
+  const scenes = resolveBotanicAgentVariationRequest({
+    instruction: '海边、沙漠、森林',
+  })
+  assert.equal(scenes.kind, 'ready')
+  assert.equal(scenes.spec.axes[0].key, 'scene')
+  assert.deepEqual(scenes.spec.axes[0].values.map((value) => value.label), ['海边', '沙漠', '森林'])
+
+  const confirmed = resolveBotanicAgentVariationRequest({
+    instruction: '按确认的取值出图',
+    clarificationAnswers: { variation_values: '画布、天台、雨夜' },
+  })
+  assert.equal(confirmed.kind, 'ready')
+  assert.deepEqual(confirmed.spec.axes[0].values.map((value) => value.label), ['画布', '天台', '雨夜'])
+})
+
+test('首次生成按变体展开时保留 initial_generation，不改写成需要父结果的意图', () => {
+  const applied = applyBotanicAgentVariationToPlan({
+    intent: 'initial_generation',
+    instruction: '白皙、自然、小麦、深棕四种肤色，多图',
+    summary: '首次生成 1 张。',
+    prompt: '基于 Mia 氛围肖像，保持人物身份。',
+    constraints: [],
+    output: { mode: 'single', count: 1, candidatesPerItem: 1 },
+  }, {
+    instruction: '白皙、自然、小麦、深棕四种肤色，多图',
+    requestedIntent: 'initial_generation',
+  })
+  assert.equal(applied.kind, 'plan')
+  assert.equal(applied.plan.intent, 'initial_generation')
+  assert.deepEqual(applied.plan.output, { mode: 'batch_by_variation', count: 4, candidatesPerItem: 1 })
+  assert.equal(applied.plan.variation?.axes[0].key, 'skin_tone')
+})
+
 test('匹配的素材组仍走按图批量，不改成变体轴', () => {
   const applied = applyBotanicAgentVariationToPlan({
     intent: 'replace_scene',
