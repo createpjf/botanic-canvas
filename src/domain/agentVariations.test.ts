@@ -27,6 +27,7 @@ test('多个、几种、批量、一组会识别为批量变体，不压成换�
   assert.equal(instructionRequestsBatchVariation('做几种肤色版本'), true)
   assert.equal(instructionRequestsBatchVariation('批量换场景'), true)
   assert.equal(instructionRequestsBatchVariation('出一组变体'), true)
+  assert.equal(instructionRequestsBatchVariation('生成两张全身人像'), true)
   assert.equal(instructionRequestsBatchVariation('保持人物、服装和商品不变，只替换场景与环境光线。'), false)
   assert.equal(inferBotanicAgentIntent('多个肤色人物、多图'), 'batch_variation')
   assert.equal(inferBotanicAgentIntent('保持衣服不变，换十个海边场景'), 'batch_variation')
@@ -415,6 +416,33 @@ test('首次生成按变体展开时保留 initial_generation，不改写成需�
   assert.equal(applied.plan.intent, 'initial_generation')
   assert.deepEqual(applied.plan.output, { mode: 'batch_by_variation', count: 4, candidatesPerItem: 1 })
   assert.equal(applied.plan.variation?.axes[0].key, 'skin_tone')
+})
+
+test('两个不同背景一个在沙漠一个在海边，只展开 2 张场景，人物要全身不是人物轴', () => {
+  const request = resolveBotanicAgentVariationRequest({
+    instruction: '@Mia 氛围肖像 这张图给我生成两个不同的背景，一个在沙漠一个在海边。16:9，人物要全身',
+  })
+  assert.equal(request.kind, 'ready')
+  assert.equal(request.spec.axes[0].key, 'scene')
+  assert.deepEqual(request.spec.axes[0].values.map((value) => value.label), ['沙漠', '海边'])
+  assert.equal(expandBotanicAgentVariationBranches(request.spec).length, 2)
+  assert.equal(request.spec.axes.some((axis) => axis.key === 'person'), false)
+})
+
+test('说了两张却切出一长串画面碎词时必须追问，不能按 8 张提交', () => {
+  const request = resolveBotanicAgentVariationRequest({
+    instruction: '基于同一女性人物生成两张全身人像。海岸线与沙滩，海浪，海风吹拂发丝与裙摆，柔和光线，金色夕阳，广角，浅景深，胶片颗粒',
+  })
+  assert.equal(request.kind, 'ask')
+  assert.match(request.clarification.question, /2 张/)
+})
+
+test('说了 4 张且正好 4 个肤色取值时直接展开，不追问', () => {
+  const request = resolveBotanicAgentVariationRequest({
+    instruction: '生成 4 张，白皙、自然、小麦、深棕四种肤色',
+  })
+  assert.equal(request.kind, 'ready')
+  assert.equal(expandBotanicAgentVariationBranches(request.spec).length, 4)
 })
 
 test('匹配的素材组仍走按图批量，不改成变体轴', () => {

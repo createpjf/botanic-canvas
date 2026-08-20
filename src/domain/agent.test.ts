@@ -41,6 +41,7 @@ import {
   insertBotanicAgentReasoningSteps,
   resolveBotanicAgentExecutionDecision,
   botanicAgentExecutionModeLabel,
+  botanicAgentExecutionPauseHint,
   botanicAgentPendingConfirmationCount,
   botanicAgentActionRequiresUserConfirmation,
   botanicAgentAppliedSkillName,
@@ -1297,6 +1298,14 @@ test('执行模式是可解释的领域决策，自动模式遇到外部行动�
   const auto = { mode: 'auto' as const, settingsComplete: true, pendingActionCount: 0 }
   assert.deepEqual(resolveBotanicAgentExecutionDecision(auto), { action: 'auto_submit' })
   assert.deepEqual(
+    resolveBotanicAgentExecutionDecision({ ...auto, outputCount: 1 }),
+    { action: 'auto_submit' },
+  )
+  assert.deepEqual(
+    resolveBotanicAgentExecutionDecision({ ...auto, outputCount: 2 }),
+    { action: 'confirm', reason: 'batch_count' },
+  )
+  assert.deepEqual(
     resolveBotanicAgentExecutionDecision({ ...auto, pendingActionCount: 2 }),
     { action: 'confirm', reason: 'pending_actions' },
   )
@@ -1315,6 +1324,15 @@ test('执行模式是可解释的领域决策，自动模式遇到外部行动�
   )
   assert.equal(botanicAgentExecutionModeLabel('auto'), '自动模式')
   assert.equal(botanicAgentExecutionModeLabel('manual'), '计划模式')
+  assert.equal(
+    botanicAgentExecutionPauseHint({ action: 'confirm', reason: 'batch_count' }, { pendingActionCount: 0, outputCount: 2 }),
+    '自动模式已暂停：本次将生成 2 张，请确认张数后再提交。',
+  )
+  assert.match(
+    botanicAgentExecutionPauseHint({ action: 'confirm', reason: 'pending_actions' }, { pendingActionCount: 2, outputCount: 1 }) ?? '',
+    /2 个需要你确认的外部行动/,
+  )
+  assert.equal(botanicAgentExecutionPauseHint({ action: 'auto_submit' }, { pendingActionCount: 0, outputCount: 1 }), null)
 })
 
 test('真实工具调用展开成独立运行步骤，插在规划步骤之后', () => {
