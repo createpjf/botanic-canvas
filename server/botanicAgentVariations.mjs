@@ -493,6 +493,13 @@ export function botanicAgentPlanOutputLabel(plan) {
 
 export function botanicAgentConfirmBranchDrafts(plan, options = {}) {
   const group = options?.group
+  // 成套方案的分支就是方案条目本身：异构（图片/视频混排）由条目携带，不进变体展开。
+  if (plan.composition?.items?.length) {
+    return plan.composition.items.map((item) => ({
+      label: clipBotanicAgentNodeTitle(item.title) || `第 ${item.index} 项`,
+      item,
+    }))
+  }
   if (plan.output.mode === 'batch_by_asset' && group?.assetIds.length) {
     return group.assetIds.map((assetId, index) => ({
       assetId,

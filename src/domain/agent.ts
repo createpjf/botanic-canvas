@@ -1,6 +1,7 @@
 import type { AssetGroup, AssetNodeData, AssetRecord, CanvasDocument, CanvasNode, GenerationJob, GenerationRecipe, GenerationSettings, ResultNodeData } from './canvas.ts'
 import type { BotanicAgentClarification, BotanicCreativeBrief } from './agentCreativeBrief.ts'
 import type { BotanicAgentBranchVariation, BotanicAgentVariationSpec } from './agentVariations.ts'
+import type { BotanicAgentComposition } from './agentCreativeComposition.ts'
 export type {
   BotanicAgentClarification,
   BotanicAgentClarificationField,
@@ -762,6 +763,8 @@ export type BotanicAgentPlan = {
    * 位图蒙版由执行层按基准图真实像素生成，不进计划 JSON。
    */
   region?: BotanicAgentRegionSelection
+  /** 成套方案（MCoT 分解结果）：分支按条目展开，各自携带媒体类型与定稿 Prompt。 */
+  composition?: BotanicAgentComposition
   toolCalls?: AgentToolCallTrace[]
   actions?: BotanicAgentActionProposal[]
 }

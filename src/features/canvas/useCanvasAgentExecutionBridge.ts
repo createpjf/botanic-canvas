@@ -389,6 +389,7 @@ export function useCanvasAgentExecutionBridge({
       label: labels[index] ?? draft.label,
       ...(draft.assetId ? { assetId: draft.assetId } : {}),
       ...(draft.variation ? { variation: draft.variation } : {}),
+      ...(draft.item ? { item: draft.item } : {}),
     }))
     let runId: string
     if (serverPersistenceEnabled) {
@@ -425,6 +426,7 @@ export function useCanvasAgentExecutionBridge({
             label: branch.label,
             ...(branch.assetId ? { assetId: branch.assetId } : {}),
             ...(branch.variation ? { variation: branch.variation } : {}),
+            ...(branch.item ? { item: branch.item } : {}),
           })),
         })
         if (useCanvasStore.getState().document.id !== projectId) {

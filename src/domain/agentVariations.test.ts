@@ -481,3 +481,22 @@ test('镜像夹具：批量意图识别与 server 实现一致', () => {
     assert.equal(instructionRequestsBatchVariation(item.instruction), item.expected, item.instruction)
   }
 })
+
+test('成套方案的分支按条目展开，条目随分支下发', () => {
+  const drafts = botanicAgentConfirmBranchDrafts({
+    intent: 'initial_generation',
+    constraints: [],
+    output: { mode: 'single', count: 2, candidatesPerItem: 1 },
+    composition: {
+      theme: '春季系列',
+      items: [
+        { index: 1, title: '主视觉', mediaKind: 'image', prompt: '主画面', count: 1 },
+        { index: 2, title: '氛围视频', mediaKind: 'video', prompt: '镜头缓推', count: 1, duration: 10 },
+      ],
+    },
+  })
+  assert.deepEqual(drafts.map((draft) => [draft.label, draft.item?.mediaKind]), [
+    ['主视觉', 'image'],
+    ['氛围视频', 'video'],
+  ])
+})

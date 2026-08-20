@@ -308,17 +308,41 @@ export function prepareAgentRunExecution({
   const planModelIsVideo = normalizedModels.find((model) => model.id === run.plan?.settings?.model)?.mediaKind === 'video'
   const jobs = []
   const workflows = []
+  const catalogVideoModel = normalizedModels.find((model) => model.mediaKind === 'video')
   for (const [branchIndex, branch] of run.branches.entries()) {
     const jobId = jobIdForBranch(branch)
     const recipe = recipeForRun(run, document, parentNode, branch, resolvedInitialReferences)
-    if (planModelIsVideo) {
+    // 成套方案条目让分支异构：媒体类型、定稿 Prompt、数量与时长全部按条目覆盖统一计划。
+    const item = branch.item
+    if (item) {
+      recipe.prompt = item.prompt
+      recipe.batchCount = item.mediaKind === 'video' ? 1 : item.count
+      if (item.mediaKind === 'video') {
+        if (!catalogVideoModel) throw new AgentToolRuntimeError('AGENT_VIDEO_MODEL_MISSING', '方案包含视频条目，但当前没有可用的视频模型。', 409)
+        const aspectRatio = catalogVideoModel.aspectRatios?.includes(recipe.settings.aspectRatio)
+          ? recipe.settings.aspectRatio
+          : catalogVideoModel.aspectRatios?.[0] ?? recipe.settings.aspectRatio
+        recipe.settings = {
+          model: catalogVideoModel.id,
+          aspectRatio,
+          resolution: catalogVideoModel.resolutions?.[0] ?? recipe.settings.resolution,
+          duration: catalogVideoModel.durations?.includes(item.duration)
+            ? item.duration
+            : catalogVideoModel.defaultDuration ?? catalogVideoModel.durations?.[0] ?? 5,
+        }
+      }
+    }
+    const branchModelIsVideo = item
+      ? item.mediaKind === 'video'
+      : planModelIsVideo
+    if (branchModelIsVideo) {
       // Agent 视频计划的语义是「以第一张图片为首帧生成一条视频」：多余参考会把
       // Provider 的输入模式改成 first_last / reference，宁可裁掉；配方与提交输入保持一致。
       recipe.references = recipe.references.slice(0, 1)
       recipe.videoInputMode = 'first_frame'
       recipe.batchCount = 1
     }
-    const rawInput = rawGenerationInput(run, parentNode, recipe, { videoModel: planModelIsVideo })
+    const rawInput = rawGenerationInput(run, parentNode, recipe, { videoModel: branchModelIsVideo })
     const validated = validateGenerationInput(rawInput, { models, maximumBatchCount, maximumReferenceBytes })
     const selectedModel = normalizedModels.find((model) => model.id === validated.settings.model)
     const job = {

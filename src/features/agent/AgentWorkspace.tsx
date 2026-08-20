@@ -64,7 +64,9 @@ import { createProjectAgentSkill, listBotanicAgentSystemSkills, listProjectAgent
 import { describeRegionRect } from '../../domain/regionMask'
 import { RegionMaskEditor } from '../canvas/RegionMaskEditor'
 import {
+  buildBotanicAgentCompositionPlan,
   formatBotanicAgentCompositionMessage,
+  instructionRequestsCompositionRun,
   resolveBotanicAgentCompositionItem,
   type BotanicAgentComposition,
 } from '../../domain/agentCreativeComposition'
@@ -1265,6 +1267,50 @@ export default function AgentWorkspace({
           ...(compositionItem.duration ? { duration: compositionItem.duration } : {}),
         },
       }
+    }
+
+    // 「执行方案 / 整套生成」：分支按方案条目展开成一个异构 Run，一次确认整套推进。
+    if (activeCompositionRef.current && !options.resolvedGeneration && !compositionItem
+      && instructionRequestsCompositionRun(cleanInstruction)) {
+      const executionDecision = resolveBotanicAgentExecutionDecision({
+        mode: session.executionMode,
+        settingsComplete: true,
+        pendingActionCount: 0,
+      })
+      const imageModel = generationModels.find((model) => (model.mediaKind ?? 'image') === 'image')
+      if (!imageModel) {
+        setError('当前没有可用的图片生成模型，无法整套执行。')
+        return
+      }
+      try {
+        const compositionPlan = {
+          ...buildBotanicAgentCompositionPlan({
+            instruction: cleanInstruction,
+            composition: activeCompositionRef.current,
+            contextSnapshot: createBotanicAgentContextSnapshot(contextItems),
+            settings: {
+              model: imageModel.id,
+              aspectRatio: imageModel.aspectRatios?.[0] ?? '3:4',
+              resolution: imageModel.resolutions?.[0] ?? '1K',
+              ...pendingGenerationOverrides,
+            } as GenerationSettings,
+          }),
+          plannerModel,
+        }
+        const planMessageId = appendMessage({
+          role: 'assistant', kind: 'plan', plan: compositionPlan, status: 'pending',
+          content: compositionPlan.summary,
+        })
+        if (planMessageId && executionDecision.action === 'auto_submit') {
+          await confirmMessagePlan({
+            id: planMessageId, role: 'assistant', kind: 'plan', content: compositionPlan.summary,
+            createdAt: Date.now(), plan: compositionPlan, status: 'pending',
+          })
+        }
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : '暂时无法创建整套生成计划。')
+      }
+      return
     }
 
     const hasImageContext = contextItems.some((item) => (

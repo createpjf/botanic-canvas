@@ -484,3 +484,55 @@ test('局部重绘计划只以父结果为基准图，选区随任务下发为 m
   assert.deepEqual(job.rawInput.recipe.references, [])
   assert.equal(job.rawInput.parent.mediaId, 'media_parent')
 })
+
+test('成套方案分支异构执行：图片条目按数量、视频条目切视频模型并走首帧', () => {
+  const mixedModels = [
+    ...models,
+    { id: 'MiniMax-H3', provider: 'minimax', mediaKind: 'video', aspectRatios: ['3:4', '16:9'], resolutions: ['2K'], durations: [5, 10, 15], defaultDuration: 5 },
+  ]
+  const run = {
+    ...persistentRun(),
+    plan: {
+      intent: 'initial_generation', instruction: '执行方案', summary: '成套生成 3 项。',
+      contextSnapshot: [
+        { nodeId: 'asset-product-node', label: '球衣', kind: '素材', mediaKind: 'image', role: '商品' },
+      ],
+      prompt: '主画面', settings,
+      constraints: [],
+      output: { mode: 'single', count: 3, candidatesPerItem: 1 },
+      composition: {
+        theme: '春季系列',
+        items: [
+          { index: 1, title: '主视觉', mediaKind: 'image', prompt: '主画面：盛开山茶花与球衣', count: 1 },
+          { index: 2, title: '细节', mediaKind: 'image', prompt: '细节：面料与花瓣特写', count: 2 },
+          { index: 3, title: '氛围视频', mediaKind: 'video', prompt: '镜头缓推花丛', count: 1, duration: 10 },
+        ],
+      },
+    },
+    branches: [
+      { id: 'branch-1', label: '主视觉', item: { index: 1, title: '主视觉', mediaKind: 'image', prompt: '主画面：盛开山茶花与球衣', count: 1 }, status: 'queued', attempt: 0, jobIds: [], outputCount: 0, updatedAt: 1 },
+      { id: 'branch-2', label: '细节', item: { index: 2, title: '细节', mediaKind: 'image', prompt: '细节：面料与花瓣特写', count: 2 }, status: 'queued', attempt: 0, jobIds: [], outputCount: 0, updatedAt: 1 },
+      { id: 'branch-3', label: '氛围视频', item: { index: 3, title: '氛围视频', mediaKind: 'video', prompt: '镜头缓推花丛', count: 1, duration: 10 }, status: 'queued', attempt: 0, jobIds: [], outputCount: 0, updatedAt: 1 },
+    ],
+  }
+  const result = prepareAgentRunExecution({
+    run, document: initialGenerationDocument(), now: 100,
+    jobIdForBranch: (branch) => `job-${branch.id}`,
+    models: mixedModels, maximumBatchCount: 8, maximumReferenceBytes: 8 * 1024 * 1024,
+  })
+
+  assert.equal(result.jobs.length, 3)
+  assert.deepEqual(result.jobs.map((job) => [job.rawInput.prompt, job.batchCount]), [
+    ['主画面：盛开山茶花与球衣', 1],
+    ['细节：面料与花瓣特写', 2],
+    ['镜头缓推花丛', 1],
+  ])
+  const videoJob = result.jobs[2]
+  assert.equal(videoJob.settings.model, 'MiniMax-H3')
+  assert.equal(videoJob.settings.duration, 10)
+  assert.equal(videoJob.settings.resolution, '2K')
+  assert.equal(videoJob.rawInput.recipe.references[0].inputRole, 'first_frame')
+  assert.equal(videoJob.provider, 'minimax-video')
+  // 图片条目仍用计划设置。
+  assert.equal(result.jobs[0].settings.model, 'gpt-image-2')
+})

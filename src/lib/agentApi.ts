@@ -6,8 +6,16 @@ import { buildBotanicAgentTurnRequest, type BotanicAgentTurnRequestInput, type B
 import { ProductApiError, productAuthorizationHeader, productRequest } from './productSession'
 import type { AgentToolCallTrace, BotanicAgentReasoningEntry, BotanicAgentActionProposal, BotanicAgentActionResult, BotanicAgentClarificationResponse, BotanicAgentMemoryItem, BotanicAgentMessage, BotanicAgentPlan, BotanicAgentRunSnapshot, BotanicAgentSession, BotanicAgentSkill, BotanicAgentSkillCatalogItem, BotanicIndexedArtifact } from '../domain/agent'
 import type { BotanicAgentBranchVariation } from '../domain/agentVariations'
+import type { BotanicAgentCompositionItem } from '../domain/agentCreativeComposition'
 
-export type AgentRunCreationBranch = { id: string; label: string; assetId?: string; variation?: BotanicAgentBranchVariation }
+export type AgentRunCreationBranch = {
+  id: string
+  label: string
+  assetId?: string
+  variation?: BotanicAgentBranchVariation
+  /** 成套方案条目：分支自带媒体类型与定稿 Prompt。 */
+  item?: BotanicAgentCompositionItem
+}
 
 function blobAsDataUrl(blob: Blob) {
   return new Promise<string>((resolve, reject) => {
@@ -296,6 +304,8 @@ export async function createPersistentBotanicAgentRun(input: {
         constraints: input.plan.constraints,
         output: input.plan.output,
         ...(input.plan.variation ? { variation: input.plan.variation } : {}),
+        ...(input.plan.region ? { region: input.plan.region } : {}),
+        ...(input.plan.composition ? { composition: input.plan.composition } : {}),
         assetGroupId: input.plan.assetGroupId,
         toolCalls: input.plan.toolCalls,
       },
