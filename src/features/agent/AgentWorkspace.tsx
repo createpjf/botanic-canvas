@@ -1328,9 +1328,10 @@ export default function AgentWorkspace({
         }
       } catch (caught) {
         if (controller.signal.aborted) return
-        // 未配置(503)、离线(0)、项目缺失(404) 或模型没给出可用结论(502) 时回退本地正则；
-        // 其余按 Agent 错误处理。
-        const fallBack = caught instanceof ProductApiError && [0, 404, 502, 503].includes(caught.status)
+        // 离线(0)、项目缺失(404) 与所有 5xx（未配置、网关/代理故障、模型无可用结论）
+        // 都回退本地正则——与 preparePlan 的降级判定保持同一语义；其余按 Agent 错误处理。
+        const fallBack = caught instanceof ProductApiError
+          && (caught.status === 0 || caught.status === 404 || caught.status >= 500)
         if (!fallBack) {
           const message = caught instanceof Error ? caught.message : 'Agent 暂时无法回答，请稍后重试。'
           failRuntimeTrace(message)

@@ -43,6 +43,13 @@ test('路由决策由领域模块拥有，编排层不再自带落点判断', ()
   assert.doesNotMatch(run, /botanicAgentPendingVariationClarification/, '变体追问判定属于生成草案领域函数')
 })
 
+test('服务端回合的降级判定与图片规划器同语义：离线、缺失与所有 5xx 都回退本地正则', () => {
+  const turnBranch = between(workspace, 'if (entry.useServerTurn) {', 'const decision = serverDecision')
+  // 曾用枚举集合 [0,404,502,503]：本地代理或网关故障返回 500 时不降级，
+  // 服务端一挂用户就被整体挡住，而设计初衷是回退本地正则继续可用。
+  assert.match(turnBranch, /caught\.status === 0 \|\| caught\.status === 404 \|\| caught\.status >= 500/)
+})
+
 test('服务端判定的生成意图跟着追问卡回到下一轮', () => {
   // 追问卡本体由领域草案产出（已含 resolvedGeneration）；编排层负责在作答时原样回传。
   assert.match(workspace, /question: draft\.clarification/)
