@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { WorkspaceAuditEvent } from '../domain/auditEvents'
+import { formatProductNumber, formatProductRelativeTime, type LocalizedText, type ProductLocale } from '../i18n/core'
+import { LanguageSwitcher, useProductI18n, useProductMessages } from '../i18n/react'
 import { AccountDetailsDialog, AccountMenu, WorkspaceAuditDialog, WorkspaceMembersDialog, type AccountMenuAnchor, type AccountMfaEnrollment, type AccountMfaStatus, type AccountUser, type WorkspaceMember as AccountWorkspaceMember } from './AccountCenter'
 import { DeleteIcon, HomeIcon, MoreIcon } from './BotanicIcons'
 import { useMotionPresence, useRestoreFocus, useRetainedValue } from './motionPresence'
@@ -11,18 +13,46 @@ export type WorkspaceProject = {
   updatedAt: number
   cover?: string
   summary: string
+  summaryByLocale?: LocalizedText
   isSeed?: boolean
 }
 
 export type WorkspaceCurrentUser = AccountUser
 export type WorkspaceMember = AccountWorkspaceMember
 
-function projectUpdatedLabel(updatedAt: number) {
+const projectLibraryMessages = {
+  'zh-CN': {
+    pageAria: '创意项目', studio: '创意工作室', productHome: '产品首页', openAccount: '打开账户设置', localWorkspace: '本地工作区',
+    title: '创意项目', description: '从不同的商品与创作目标，进入各自独立的画布。', updating: '正在更新…',
+    loadTitle: '项目列表暂时无法加载', loadError: '请检查网络或稍后重试。', retry: '重试', loadingAria: '正在加载项目',
+    newProject: '新建项目', newProjectDescription: '从空白画布开始', noCover: '尚未生成封面',
+    renameTitle: '重命名项目', projectName: '项目名称', cancel: '取消', save: '保存', deleteTitle: '删除项目',
+    deleteDescription: '项目画布、生成结果和项目私有素材会被永久删除，无法恢复。', confirmDelete: '确认删除',
+    renameError: '项目名称未保存，请检查网络后重试。', deleteError: '删除未完成，请稍后重试。', createError: '新建项目失败，请检查网络后重试。',
+    count: (count: number) => `${formatProductNumber(count, 'zh-CN')} 个项目`,
+    open: (name: string) => `打开项目 ${name}`, rename: (name: string) => `重命名 ${name}`, delete: (name: string) => `删除 ${name}`,
+    deleteQuestion: (name: string) => `删除「${name}」？`, lastEdited: (relative: string) => `最近编辑 · ${relative}`, justNow: '刚刚',
+  },
+  en: {
+    pageAria: 'Creative projects', studio: 'Creative studio', productHome: 'Product home', openAccount: 'Open account settings', localWorkspace: 'Local workspace',
+    title: 'Creative projects', description: 'Open a dedicated canvas for each product and creative goal.', updating: 'Updating…',
+    loadTitle: 'Projects are temporarily unavailable', loadError: 'Check your connection and try again.', retry: 'Try again', loadingAria: 'Loading projects',
+    newProject: 'New project', newProjectDescription: 'Start with a blank canvas', noCover: 'No cover generated yet',
+    renameTitle: 'Rename project', projectName: 'Project name', cancel: 'Cancel', save: 'Save', deleteTitle: 'Delete project',
+    deleteDescription: 'The project canvas, generated outputs, and private project assets will be permanently deleted.', confirmDelete: 'Delete project',
+    renameError: 'The project name was not saved. Check your connection and try again.', deleteError: 'The project could not be deleted. Try again shortly.', createError: 'The project could not be created. Check your connection and try again.',
+    count: (count: number) => `${formatProductNumber(count, 'en')} ${count === 1 ? 'project' : 'projects'}`,
+    open: (name: string) => `Open project ${name}`, rename: (name: string) => `Rename ${name}`, delete: (name: string) => `Delete ${name}`,
+    deleteQuestion: (name: string) => `Delete “${name}”?`, lastEdited: (relative: string) => `Last edited · ${relative}`, justNow: 'just now',
+  },
+} as const
+
+function projectUpdatedLabel(updatedAt: number, locale: ProductLocale, copy: (typeof projectLibraryMessages)[ProductLocale]) {
   const elapsed = Math.max(0, Date.now() - updatedAt)
   const hours = Math.floor(elapsed / 3_600_000)
-  if (hours < 1) return '最近编辑 · 刚刚'
-  if (hours < 24) return `最近编辑 · ${hours} 小时前`
-  return `最近编辑 · ${Math.floor(hours / 24)} 天前`
+  if (hours < 1) return copy.lastEdited(copy.justNow)
+  if (hours < 24) return copy.lastEdited(formatProductRelativeTime(-hours, 'hour', locale))
+  return copy.lastEdited(formatProductRelativeTime(-Math.floor(hours / 24), 'day', locale))
 }
 
 export function ProjectLibrary({
@@ -74,6 +104,9 @@ export function ProjectLibrary({
   onDeleteProject: (projectId: string) => Promise<void>
   onRetry: () => void
 }) {
+  const { locale } = useProductI18n()
+  const copy = useProductMessages(projectLibraryMessages)
+  const homeLabel = locale === 'en' ? copy.productHome : productHomeLabel || copy.productHome
   const [editingProject, setEditingProject] = useState<WorkspaceProject | null>(null)
   const [projectName, setProjectName] = useState('')
   const [deletingProject, setDeletingProject] = useState<WorkspaceProject | null>(null)
@@ -123,9 +156,9 @@ export function ProjectLibrary({
     try {
       const renamed = await onRenameProject(editingProject.id, projectName)
       if (renamed) setEditingProject(null)
-      else setOperationError('项目名称未保存，请检查网络后重试。')
+      else setOperationError(copy.renameError)
     } catch {
-      setOperationError('项目名称未保存，请检查网络后重试。')
+      setOperationError(copy.renameError)
     } finally {
       setSubmitting(false)
     }
@@ -141,7 +174,7 @@ export function ProjectLibrary({
     try {
       await onDeleteProject(target.id)
     } catch {
-      setOperationError('删除未完成，请稍后重试。')
+      setOperationError(copy.deleteError)
     } finally {
       setSubmitting(false)
     }
@@ -152,28 +185,30 @@ export function ProjectLibrary({
     setCreating(true)
     setOperationError('')
     try {
-      if (!await onCreateProject()) setOperationError('新建项目失败，请检查网络后重试。')
+      if (!await onCreateProject()) setOperationError(copy.createError)
     } catch {
-      setOperationError('新建项目失败，请检查网络后重试。')
+      setOperationError(copy.createError)
     } finally {
       setCreating(false)
     }
   }
 
   return (
-    <main className="project-library-page" aria-label="创意项目">
+    <main className="project-library-page" aria-label={copy.pageAria} lang={locale}>
       <header className="project-library-page__header">
-        <div className="project-library-page__brand"><strong>Botanic</strong><span>创意工作室</span></div>
+        <div className="project-library-page__brand"><strong>Botanic</strong><span>{copy.studio}</span></div>
         <div className="project-library-page__account-actions">
-          <button type="button" className="project-library-page__home" onClick={onReturnToLanding} aria-label={productHomeLabel}>
+          <LanguageSwitcher className="project-library-page__language" />
+          <button type="button" className="project-library-page__home" onClick={onReturnToLanding} aria-label={homeLabel}>
             <HomeIcon />
-            <span>{productHomeLabel}</span>
+            <span>{homeLabel}</span>
           </button>
           <button
             ref={accountTriggerRef}
             type="button"
             className="project-library-page__account"
-            aria-label="打开账户设置"
+            aria-label={copy.openAccount}
+            data-account-menu-trigger
             aria-expanded={Boolean(accountMenuAnchor)}
             onClick={(event) => {
               if (accountMenuAnchor) {
@@ -185,40 +220,40 @@ export function ProjectLibrary({
             }}
           >
             <span>{currentUser?.name?.slice(0, 1).toUpperCase() || 'B'}</span>
-            <strong>{currentUser?.name || '本地工作区'}</strong>
+            <strong>{currentUser?.name || copy.localWorkspace}</strong>
           </button>
         </div>
       </header>
       <section className="project-library-page__content">
         <header>
-          <div><span className="workspace-eyebrow"><i />CREATIVE PROJECTS</span><h1>创意项目</h1><p>从不同的商品与创作目标，进入各自独立的画布。</p></div>
-          <strong><b>{projects.length}</b> 个项目{loading && projects.length > 0 ? <em role="status">正在更新…</em> : null}</strong>
+          <div><span className="workspace-eyebrow"><i />CREATIVE PROJECTS</span><h1>{copy.title}</h1><p>{copy.description}</p></div>
+          <strong><b>{formatProductNumber(projects.length, locale)}</b> {copy.count(projects.length).replace(/^\S+\s*/, '')}{loading && projects.length > 0 ? <em role="status">{copy.updating}</em> : null}</strong>
         </header>
         {loadError ? <section className="project-library-state project-library-state--error" role="alert">
-          <div><strong>项目列表暂时无法加载</strong><span>{loadError}</span></div>
-          <button type="button" onClick={onRetry} disabled={loading}>重试</button>
+          <div><strong>{copy.loadTitle}</strong><span>{locale === 'zh-CN' ? loadError : copy.loadError}</span></div>
+          <button type="button" onClick={onRetry} disabled={loading}>{copy.retry}</button>
         </section> : null}
-        {loading && projects.length === 0 ? <div className="project-library-page__grid project-library-page__grid--loading" role="status" aria-label="正在加载项目">
+        {loading && projects.length === 0 ? <div className="project-library-page__grid project-library-page__grid--loading" role="status" aria-label={copy.loadingAria}>
           {[0, 1, 2].map((index) => <div className="project-card project-card--skeleton" key={index} />)}
         </div> : <div className="project-library-page__grid">
           <button type="button" className="project-card project-card--new" onClick={() => void createProject()} disabled={creating}>
-            <i>＋</i><strong>新建项目</strong><span>从空白画布开始</span>
+            <i>＋</i><strong>{copy.newProject}</strong><span>{copy.newProjectDescription}</span>
           </button>
           {projects.map((project) => (
             <article
               className="project-card"
               key={project.id}
             >
-              <button type="button" className="project-card__cover-open" onClick={() => onOpenProject(project.id)} aria-label={`打开项目 ${project.name}`}>
+              <button type="button" className="project-card__cover-open" onClick={() => onOpenProject(project.id)} aria-label={copy.open(project.name)}>
                 {project.cover
                   ? <img src={project.cover} alt="" loading="lazy" decoding="async" />
-                  : <span className="project-card__cover-placeholder" aria-hidden="true"><span>尚未生成封面</span></span>}
+                  : <span className="project-card__cover-placeholder" aria-hidden="true"><span>{copy.noCover}</span></span>}
               </button>
-              <button type="button" className="project-card__open" onClick={() => onOpenProject(project.id)} aria-label={`打开项目 ${project.name}`}>
-                <strong>{project.name}</strong><span>{projectUpdatedLabel(project.updatedAt)}</span><small>{project.summary}</small>
+              <button type="button" className="project-card__open" onClick={() => onOpenProject(project.id)} aria-label={copy.open(project.name)}>
+                <strong>{project.name}</strong><span>{projectUpdatedLabel(project.updatedAt, locale, copy)}</span><small>{project.summaryByLocale?.[locale] ?? project.summary}</small>
               </button>
-              <button type="button" className="project-card__menu" onClick={() => setEditingProject(project)} aria-label={`重命名 ${project.name}`} title="重命名项目"><MoreIcon /></button>
-              <button type="button" className="project-card__delete" onClick={() => setDeletingProject(project)} aria-label={`删除 ${project.name}`} title="删除项目"><DeleteIcon /></button>
+              <button type="button" className="project-card__menu" onClick={() => setEditingProject(project)} aria-label={copy.rename(project.name)} title={copy.renameTitle}><MoreIcon /></button>
+              <button type="button" className="project-card__delete" onClick={() => setDeletingProject(project)} aria-label={copy.delete(project.name)} title={copy.deleteTitle}><DeleteIcon /></button>
             </article>
           ))}
         </div>}
@@ -226,18 +261,18 @@ export function ProjectLibrary({
       </section>
       {editingPresence.present && visibleEditingProject ? <div className={`project-dialog-backdrop motion-overlay is-${editingPresence.phase}`} role="presentation" aria-hidden={editingPresence.phase === 'exit' ? true : undefined} onMouseDown={() => !submitting && setEditingProject(null)}>
         <form ref={(element) => { projectDialogRef.current = element }} className="project-dialog" role="dialog" aria-modal="true" aria-labelledby="rename-project-title" onMouseDown={(event) => event.stopPropagation()} onSubmit={(event) => { event.preventDefault(); void submitRename() }}>
-          <span className="workspace-eyebrow">PROJECT SETTINGS</span><h2 id="rename-project-title">重命名项目</h2>
-          <input autoFocus value={projectName} maxLength={60} onChange={(event) => setProjectName(event.target.value)} aria-label="项目名称" />
+          <span className="workspace-eyebrow">PROJECT SETTINGS</span><h2 id="rename-project-title">{copy.renameTitle}</h2>
+          <input autoFocus value={projectName} maxLength={60} onChange={(event) => setProjectName(event.target.value)} aria-label={copy.projectName} />
           {operationError ? <p className="project-dialog__error" role="alert">{operationError}</p> : null}
-          <div><button type="button" onClick={() => setEditingProject(null)} disabled={submitting}>取消</button><button type="submit" className="is-primary" disabled={submitting || !projectName.trim()}>保存</button></div>
+          <div><button type="button" onClick={() => setEditingProject(null)} disabled={submitting}>{copy.cancel}</button><button type="submit" className="is-primary" disabled={submitting || !projectName.trim()}>{copy.save}</button></div>
         </form>
       </div> : null}
       {deletingPresence.present && visibleDeletingProject ? <div className={`project-dialog-backdrop motion-overlay is-${deletingPresence.phase}`} role="presentation" aria-hidden={deletingPresence.phase === 'exit' ? true : undefined} onMouseDown={() => !submitting && setDeletingProject(null)}>
         <section ref={projectDialogRef} className="project-dialog project-dialog--danger" role="alertdialog" aria-modal="true" aria-labelledby="delete-project-title" onMouseDown={(event) => event.stopPropagation()}>
-          <span className="workspace-eyebrow">DELETE PROJECT</span><h2 id="delete-project-title">删除「{visibleDeletingProject.name}」？</h2>
-          <p>项目画布、生成结果和项目私有素材会被永久删除，无法恢复。</p>
+          <span className="workspace-eyebrow">DELETE PROJECT</span><h2 id="delete-project-title">{copy.deleteQuestion(visibleDeletingProject.name)}</h2>
+          <p>{copy.deleteDescription}</p>
           {operationError ? <p className="project-dialog__error" role="alert">{operationError}</p> : null}
-          <div><button type="button" onClick={() => setDeletingProject(null)} disabled={submitting}>取消</button><button type="button" className="is-danger" onClick={() => void confirmDelete()} disabled={submitting}>确认删除</button></div>
+          <div><button type="button" onClick={() => setDeletingProject(null)} disabled={submitting}>{copy.cancel}</button><button type="button" className="is-danger" onClick={() => void confirmDelete()} disabled={submitting}>{copy.confirmDelete}</button></div>
         </section>
       </div> : null}
       {accountMenuPresence.present && visibleAccountMenuAnchor ? <AccountMenu
