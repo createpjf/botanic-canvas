@@ -8,6 +8,7 @@ import {
   generationSettingsSizeLabel,
   inferAspectRatioFromPixels,
   modelSupportsCustomSize,
+  localizeCustomGenerationSizeMessage,
   normalizeCustomGenerationSize,
   parseCustomGenerationSize,
   resolveGenerationOutputSize,
@@ -32,9 +33,19 @@ test('1920x1080 对齐到 16 的倍数后可被 gpt-image-2 接受', () => {
 })
 
 test('过小、过长或比例超过 3:1 的自定义尺寸被拒绝', () => {
-  assert.equal(normalizeCustomGenerationSize(100, 100).ok, false)
-  assert.equal(normalizeCustomGenerationSize(3840, 16).ok, false)
-  assert.equal(normalizeCustomGenerationSize(5000, 5000).ok, false)
+  const tiny = normalizeCustomGenerationSize(100, 100)
+  const ratio = normalizeCustomGenerationSize(3840, 16)
+  const huge = normalizeCustomGenerationSize(5000, 5000)
+  assert.equal(tiny.ok, false)
+  assert.equal(ratio.ok, false)
+  assert.equal(huge.ok, false)
+  if (!tiny.ok) {
+    assert.equal(localizeCustomGenerationSizeMessage(tiny.message, 'en'), 'Custom pixel count is outside the allowed range.')
+    assert.equal(localizeCustomGenerationSizeMessage(tiny.message, 'zh-CN'), tiny.message)
+  }
+  if (!ratio.ok) {
+    assert.equal(localizeCustomGenerationSizeMessage(ratio.message, 'en'), 'The long edge cannot be more than 3× the short edge.')
+  }
 })
 
 test('从指令里解析 1920×1080 / 1920*1080', () => {

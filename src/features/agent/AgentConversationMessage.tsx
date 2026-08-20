@@ -18,7 +18,14 @@ import {
 } from '../../domain/agent'
 import type { AgentTimelineState, TimelineBlock, TimelineStepKind } from '../../domain/agentTimeline'
 import type { GenerationModelOption, GenerationSettings } from '../../domain/canvas'
-import { generationSettingsSizeLabel, modelSupportsCustomSize, applyCustomGenerationSize, withoutCustomGenerationSize } from '../../domain/generationOutputSize'
+import {
+  applyCustomGenerationSize,
+  customGenerationSizeFields,
+  generationSettingsSizeLabel,
+  localizeCustomGenerationSizeMessage,
+  modelSupportsCustomSize,
+  withoutCustomGenerationSize,
+} from '../../domain/generationOutputSize'
 import { settingsForGenerationModel } from '../../domain/generationRecipe'
 import { AlertIcon, BookIcon, ChecklistIcon, ClockIcon, CopyIcon, EditIcon, FocusIcon, GlobeIcon, SearchIcon, SparkleIcon, ThumbDownIcon, ThumbUpIcon } from '../../components/BotanicIcons'
 import { agentPlannerModelLabel, modelDisplayLabel } from '../../components/generationModelPresentation'
@@ -180,39 +187,47 @@ function AgentPlanSettingsEditor({
   const modelOptions = models.some((model) => model.id === settings.model)
     ? models
     : [{ id: settings.model, label: settings.model }, ...models]
-  const [widthDraft, setWidthDraft] = useState(settings.outputWidth ? String(settings.outputWidth) : '')
-  const [heightDraft, setHeightDraft] = useState(settings.outputHeight ? String(settings.outputHeight) : '')
+  const validCustom = customGenerationSizeFields(settings)
+  const [customMode, setCustomMode] = useState(Boolean(validCustom))
+  const [widthDraft, setWidthDraft] = useState(validCustom ? String(validCustom.outputWidth) : '')
+  const [heightDraft, setHeightDraft] = useState(validCustom ? String(validCustom.outputHeight) : '')
   const [customHint, setCustomHint] = useState('')
+  const [customHintError, setCustomHintError] = useState(false)
   useEffect(() => {
-    setWidthDraft(settings.outputWidth ? String(settings.outputWidth) : '')
-    setHeightDraft(settings.outputHeight ? String(settings.outputHeight) : '')
+    const next = customGenerationSizeFields(settings)
+    if (!next) return
+    setCustomMode(true)
+    setWidthDraft(String(next.outputWidth))
+    setHeightDraft(String(next.outputHeight))
   }, [settings.outputWidth, settings.outputHeight])
   const allowCustom = modelSupportsCustomSize(selectedModel)
   const aspectRatios = selectedModel.aspectRatios ?? ['1:1', '16:9', '4:3', '3:4', '4:5', '9:16']
   const resolutions = selectedModel.resolutions ?? ['1K', '2K']
   const commitCustomSize = () => {
-    if (!allowCustom) return
+    if (!allowCustom || !customMode) return
     if (!widthDraft.trim() && !heightDraft.trim()) {
       setCustomHint('')
+      setCustomHintError(false)
       onChange(withoutCustomGenerationSize(settings))
       return
     }
     const applied = applyCustomGenerationSize(settings, Number(widthDraft), Number(heightDraft))
     if (!applied.ok || !applied.settings) {
-      setCustomHint(locale === 'en' ? 'Custom width and height are invalid.' : applied.ok ? '自定义宽高无效。' : applied.message)
+      setCustomHint(localizeCustomGenerationSizeMessage(
+        applied.ok ? '自定义宽高无效。' : applied.message,
+        locale,
+      ))
+      setCustomHintError(true)
       return
     }
     setCustomHint(applied.snapped ? `${locale === 'en' ? 'Adjusted to' : '已对齐为'} ${applied.width}×${applied.height}` : '')
+    setCustomHintError(false)
     onChange(applied.settings)
   }
-  // 窄栏两列：标签 + 等高控件。自定义宽高单独占一行，避免 W×H 挤进尺寸格。
-  const aspectSelect = <BotanicSelect
-    value={settings.aspectRatio}
-    ariaLabel={locale === 'en' ? 'Select aspect ratio' : '选择画面比例'}
-    disabled={disabled}
-    options={aspectRatios.map((ratio) => ({ value: ratio, label: ratio }))}
-    onChange={(value) => onChange({ ...withoutCustomGenerationSize(settings), aspectRatio: value as GenerationSettings['aspectRatio'] })}
-  />
+  const sizeOptions = [
+    ...aspectRatios.map((ratio) => ({ value: ratio, label: ratio })),
+    ...(allowCustom ? [{ value: '__custom__', label: locale === 'en' ? 'Custom' : '自定义' }] : []),
+  ]
 
   return <div className="agent-plan-settings is-editable" aria-label={locale === 'en' ? 'Generation settings' : '本次生成设置'}>
     <label>
@@ -230,7 +245,26 @@ function AgentPlanSettingsEditor({
     </label>
     <label>
       <small>{locale === 'en' ? 'Size' : '尺寸'}</small>
-      {aspectSelect}
+      <BotanicSelect
+        value={allowCustom && customMode ? '__custom__' : settings.aspectRatio}
+        ariaLabel={locale === 'en' ? 'Select aspect ratio' : '选择画面比例'}
+        disabled={disabled}
+        options={sizeOptions}
+        onChange={(value) => {
+          if (value === '__custom__') {
+            setCustomMode(true)
+            setCustomHint('')
+            setCustomHintError(false)
+            return
+          }
+          setCustomMode(false)
+          setCustomHint('')
+          setCustomHintError(false)
+          setWidthDraft('')
+          setHeightDraft('')
+          onChange({ ...withoutCustomGenerationSize(settings), aspectRatio: value as GenerationSettings['aspectRatio'] })
+        }}
+      />
     </label>
     <label>
       <small>{locale === 'en' ? 'Resolution' : '清晰度'}</small>
@@ -246,36 +280,41 @@ function AgentPlanSettingsEditor({
       <small>{locale === 'en' ? 'Output' : '输出'}</small>
       <span className="agent-plan-settings__readonly" title={locale === 'en' ? 'Output count is set by the plan' : '张数由计划展开决定'}>{countLabel}</span>
     </span>
-    {allowCustom ? <div className="agent-plan-settings__custom">
-      <small>{locale === 'en' ? 'Custom size' : '自定义尺寸'}</small>
-      <input
-        type="number"
-        inputMode="numeric"
-        min={16}
-        max={3840}
-        step={16}
-        value={widthDraft}
-        disabled={disabled}
-        aria-label={locale === 'en' ? 'Custom output width' : '自定义输出宽度'}
-        placeholder={locale === 'en' ? 'W' : '宽'}
-        onChange={(event) => setWidthDraft(event.target.value)}
-        onBlur={commitCustomSize}
-      />
-      <span aria-hidden="true">×</span>
-      <input
-        type="number"
-        inputMode="numeric"
-        min={16}
-        max={3840}
-        step={16}
-        value={heightDraft}
-        disabled={disabled}
-        aria-label={locale === 'en' ? 'Custom output height' : '自定义输出高度'}
-        placeholder={locale === 'en' ? 'H' : '高'}
-        onChange={(event) => setHeightDraft(event.target.value)}
-        onBlur={commitCustomSize}
-      />
-      {customHint ? <em>{customHint}</em> : null}
+    {allowCustom && customMode ? <div className="agent-plan-settings__custom">
+      <label className="agent-plan-settings__custom-field">
+        <small>{locale === 'en' ? 'Width' : '宽'}</small>
+        <input
+          type="number"
+          inputMode="numeric"
+          min={16}
+          max={3840}
+          step={16}
+          value={widthDraft}
+          disabled={disabled}
+          aria-label={locale === 'en' ? 'Custom output width' : '自定义输出宽度'}
+          placeholder="1536"
+          onChange={(event) => setWidthDraft(event.target.value)}
+          onBlur={commitCustomSize}
+        />
+      </label>
+      <i className="agent-plan-settings__times" aria-hidden="true">×</i>
+      <label className="agent-plan-settings__custom-field">
+        <small>{locale === 'en' ? 'Height' : '高'}</small>
+        <input
+          type="number"
+          inputMode="numeric"
+          min={16}
+          max={3840}
+          step={16}
+          value={heightDraft}
+          disabled={disabled}
+          aria-label={locale === 'en' ? 'Custom output height' : '自定义输出高度'}
+          placeholder="864"
+          onChange={(event) => setHeightDraft(event.target.value)}
+          onBlur={commitCustomSize}
+        />
+      </label>
+      {customHint ? <em className={customHintError ? 'is-error' : undefined}>{customHint}</em> : null}
     </div> : null}
   </div>
 }
