@@ -95,6 +95,38 @@ test('模型基于既有建议直接综合可执行 Prompt 并生成多张，而
   assert.doesNotMatch(JSON.stringify(requests), /api\/media\/private/)
 })
 
+test('回合解析同样注入视觉识别描述，Prompt 综合可以看图写', async () => {
+  const requests = []
+  await resolveBotanicAgentTurn({
+    projectId: 'project-turn',
+    plannerModel: 'deepseek-v4-pro',
+    messages: [{ role: 'user', content: '基于这张图出 3 张' }],
+    contextNodeIds: ['asset-mia-portrait'],
+    hasTarget: false,
+    generationModels,
+    maxOutputCount: 8,
+  }, { ...runtime, agentVisionModel: 'gemini-flash' }, {
+    document: {
+      ...document,
+      nodes: document.nodes.map((node) => node.id === 'asset-mia-portrait'
+        ? { ...node, data: { ...node.data, image: 'data:image/png;base64,TUlB' } }
+        : node),
+    },
+    visionCache: new Map(),
+    visionFetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: {
+      content: '自然光半身人像，盘发，米色亚麻上衣，绿植前景。',
+    } }] }), { status: 200 }),
+    fetchImpl: async (_url, init) => {
+      requests.push(JSON.parse(init.body))
+      return new Response(JSON.stringify({ choices: [{ message: { content: '好的。' } }] }), { status: 200 })
+    },
+  })
+
+  const system = requests[0].messages[0].content
+  assert.match(system, /自然光半身人像/)
+  assert.doesNotMatch(JSON.stringify(requests), /TUlB/)
+})
+
 test('回合解析同样先把引用节点写进系统提示', async () => {
   const requests = []
   await resolveBotanicAgentTurn({

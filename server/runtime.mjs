@@ -94,6 +94,8 @@ export function runtimeConfig(rootDir = process.cwd()) {
     flockApiKey: process.env.FLOCK_API_KEY,
     flockTextModel,
     flockAgentModels,
+    // 看图走同一个 Flock 网关；置空即关闭视觉识别，Agent 回到只有节点元数据的状态。
+    agentVisionModel: (process.env.AGENT_VISION_MODEL ?? 'gemini-flash').trim(),
     agentRawReasoning,
     promptRefinementTimeoutMs: Number(process.env.PROMPT_REFINEMENT_TIMEOUT_MS ?? 30000),
     // Agent 规划与对话包含受控上下文读取和多轮工具调用；给它足够时间，

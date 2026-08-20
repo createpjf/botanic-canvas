@@ -3,6 +3,7 @@ import { botanicAgentWebResearchSourceLabels, createBotanicAgentWebResearchTools
 import { botanicAgentProviderConfig, botanicAgentProviderTemperature } from './botanicAgentPlanner.mjs'
 import { readBotanicAgentInstructions } from './agentInstructions.mjs'
 import { botanicAgentContextBriefing, buildBotanicAgentOntology, safeBotanicAgentMemory, safeBotanicAgentSkills } from './botanicAgentOntology.mjs'
+import { botanicAgentVisionBriefing, describeBotanicAgentContextImages } from './botanicAgentVision.mjs'
 import { readStreamedChatCompletion } from './botanicAgentStream.mjs'
 import { botanicAgentContextToolSourceLabels, createBotanicAgentReadToolDefinitions } from './botanicAgentContextTools.mjs'
 
@@ -153,8 +154,20 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
     allowLocal: Boolean(runtimeConfig?.webSearch?.allowLocal),
     consumeQuota: options.consumeWebResearchQuota,
   }
-  const contextBriefing = botanicAgentContextBriefing(ontology)
+  // 看图失败不弄坏整轮对话；识别结果只进当轮系统提示，不进消息记录或任何持久化实体。
+  const visionDescriptions = await describeBotanicAgentContextImages({
+    document: options.document,
+    contextNodeIds: input.contextNodeIds,
+    runtimeConfig,
+    resolveMedia: options.resolveVisionMedia,
+    fetchImpl: options.visionFetchImpl ?? fetch,
+    signal: options.signal,
+    ...(options.visionCache ? { cache: options.visionCache } : {}),
+  }).catch(() => [])
+  const contextBriefing = botanicAgentContextBriefing(ontology, { visionDescribed: visionDescriptions.length > 0 })
   if (contextBriefing) system += `\n\n${contextBriefing}`
+  const visionBriefing = botanicAgentVisionBriefing(visionDescriptions)
+  if (visionBriefing) system += `\n\n${visionBriefing}`
   const registry = chatToolRegistry({ ontology, memory, skills, mountedSkillIds: input.mountedSkillIds, webResearch })
   const hasWebSearch = Boolean(registry.get('web_search'))
   const hasWebFetch = Boolean(registry.get('web_fetch'))

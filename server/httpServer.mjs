@@ -292,6 +292,7 @@ const handleAgentRoute = createAgentRouteHandler({
   config, productStore, redisQueue, configuredMcpTools, json, error, readJson, text,
   requireUser, enforceRateLimit, agentRunGeneration, publishAgentRunUpdated,
   enqueue, publishProjectUpdated, publishCollaborationActivity, observeAgentRun,
+  mediaService,
   consumeWebResearchQuota: async (userId) => {
     const result = await securityControls.consume({
       scope: 'web-research',

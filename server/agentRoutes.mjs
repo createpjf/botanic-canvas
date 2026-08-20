@@ -104,7 +104,12 @@ export function createAgentRouteHandler({
   publishCollaborationActivity,
   observeAgentRun = () => {},
   consumeWebResearchQuota,
+  mediaService,
 }) {
+  // 看图只读当前项目内的媒体：readGenerationInput 校验归属，图片字节不离开服务端与模型网关。
+  const visionMediaResolver = (userId, projectId) => (mediaService?.enabled
+    ? (mediaId) => mediaService.readGenerationInput(userId, mediaId, projectId)
+    : undefined)
   const agentActionExecutions = new Map()
   const methodNotAllowed = (response, message, allow) => json(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message } }, { Allow: allow })
   const observeRun = (event) => {
@@ -254,6 +259,7 @@ export function createAgentRouteHandler({
           document: project.document,
           projectSkills,
           signal: controller.signal,
+          resolveVisionMedia: visionMediaResolver(user.id, validatedInput.projectId),
           consumeWebResearchQuota: consumeWebResearchQuota
             ? () => consumeWebResearchQuota(user.id)
             : undefined,
@@ -307,7 +313,12 @@ export function createAgentRouteHandler({
       response.once('close', cancelOnClosedResponse)
       if (request.aborted || response.destroyed) cancel()
       try {
-        const turn = await resolveBotanicAgentTurn(input, config, { document: project.document, projectSkills, signal: controller.signal })
+        const turn = await resolveBotanicAgentTurn(input, config, {
+          document: project.document,
+          projectSkills,
+          signal: controller.signal,
+          resolveVisionMedia: visionMediaResolver(user.id, validatedInput.projectId),
+        })
         if (controller.signal.aborted || response.destroyed) return true
         return json(response, 200, { turn })
       } catch (caught) {

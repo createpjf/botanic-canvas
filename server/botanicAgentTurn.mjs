@@ -3,6 +3,7 @@ import { botanicAgentProviderConfig, botanicAgentProviderTemperature } from './b
 import { BotanicAgentChatError } from './botanicAgentChat.mjs'
 import { readBotanicAgentInstructions } from './agentInstructions.mjs'
 import { botanicAgentContextBriefing, buildBotanicAgentOntology, safeBotanicAgentMemory, safeBotanicAgentSkills } from './botanicAgentOntology.mjs'
+import { botanicAgentVisionBriefing, describeBotanicAgentContextImages } from './botanicAgentVision.mjs'
 import { botanicAgentContextToolSourceLabels, createBotanicAgentReadToolDefinitions } from './botanicAgentContextTools.mjs'
 
 // Botanic Agent 回合解析器：把“这一句到底是聊天/建议/检索，还是要生成图片，以及要用什么
@@ -310,8 +311,19 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
   const ontology = buildBotanicAgentOntology(options.document, input.contextNodeIds)
   const memory = safeBotanicAgentMemory(options.document)
   const skills = safeBotanicAgentSkills(options.projectSkills)
-  const contextBriefing = botanicAgentContextBriefing(ontology)
-  const system = contextBriefing ? `${baseSystem}\n\n${contextBriefing}` : baseSystem
+  // 看图失败不弄坏整轮回合；识别结果只进当轮系统提示，不进消息记录或任何持久化实体。
+  const visionDescriptions = await describeBotanicAgentContextImages({
+    document: options.document,
+    contextNodeIds: input.contextNodeIds,
+    runtimeConfig,
+    resolveMedia: options.resolveVisionMedia,
+    fetchImpl: options.visionFetchImpl ?? fetch,
+    signal: options.signal,
+    ...(options.visionCache ? { cache: options.visionCache } : {}),
+  }).catch(() => [])
+  const contextBriefing = botanicAgentContextBriefing(ontology, { visionDescribed: visionDescriptions.length > 0 })
+  const visionBriefing = botanicAgentVisionBriefing(visionDescriptions)
+  const system = [baseSystem, contextBriefing, visionBriefing].filter(Boolean).join('\n\n')
   const registry = turnToolRegistry(input, { ontology, memory, skills })
   const timeoutSignal = AbortSignal.timeout(config.timeoutMs)
   const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal

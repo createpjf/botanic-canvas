@@ -99,6 +99,42 @@ test('输入框里引用的节点直接进入系统提示，模型不必先猜�
   assert.doesNotMatch(JSON.stringify(requests), /api\/media\/private/)
 })
 
+test('配置视觉模型后，引用图片的画面描述进入系统提示，主轮请求不含图片字节', async () => {
+  const flockBodies = []
+  const visionBodies = []
+  await chatWithBotanicAgent({ ...input, mode: 'conversation', contextNodeIds: ['asset-scene'] }, {
+    flockApiKey: 'flock-secret',
+    flockTextModel: 'deepseek-v4-pro',
+    flockAgentModels: ['deepseek-v4-pro', 'deepseek-v4-flash', 'kimi-k3'],
+    agentVisionModel: 'gemini-flash',
+  }, {
+    document: {
+      ...document,
+      nodes: document.nodes.map((node) => node.id === 'asset-scene'
+        ? { ...node, data: { ...node.data, image: 'data:image/png;base64,U0NFTkU=' } }
+        : node),
+    },
+    visionCache: new Map(),
+    visionFetchImpl: async (_url, init) => {
+      visionBodies.push(JSON.parse(init.body))
+      return new Response(JSON.stringify({ choices: [{ message: { content: '海边夕阳场景，暖调，空镜。' } }] }), { status: 200 })
+    },
+    fetchImpl: async (_url, init) => {
+      flockBodies.push(JSON.parse(init.body))
+      return new Response(JSON.stringify({ choices: [{ message: { content: '好的。' } }] }), { status: 200 })
+    },
+  })
+
+  assert.equal(visionBodies.length, 1)
+  assert.equal(visionBodies[0].model, 'gemini-flash')
+  const system = flockBodies[0].messages[0].content
+  assert.match(system, /海边夕阳场景/)
+  assert.match(system, /画面内容见下方的视觉识别描述/)
+  assert.doesNotMatch(system, /看不到画面本身/)
+  // 图片字节只去视觉模型；主轮文本模型的请求里不得出现。
+  assert.doesNotMatch(JSON.stringify(flockBodies), /U0NFTkU=/)
+})
+
 test('没有引用节点时不追加引用说明', async () => {
   const requests = []
   await chatWithBotanicAgent({ ...input, mode: 'conversation', contextNodeIds: [] }, {
