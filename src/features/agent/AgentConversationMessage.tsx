@@ -637,7 +637,7 @@ export function AgentConversationMessage({
         <button type="button" className={message.feedback === 'positive' ? 'is-selected' : ''} aria-label={t('这个回答有帮助', 'This response was helpful')} title={t('有帮助', 'Helpful')} onClick={() => onFeedback(message, message.feedback === 'positive' ? undefined : 'positive')}><ThumbUpIcon /></button>
         <button type="button" className={message.feedback === 'negative' ? 'is-selected' : ''} aria-label={t('这个回答需要改进', 'This response needs improvement')} title={t('需改进', 'Needs improvement')} onClick={() => onFeedback(message, message.feedback === 'negative' ? undefined : 'negative')}><ThumbDownIcon /></button>
       </> : null}
-      <button type="button" aria-label={t('复制消息', 'Copy message')} title={t('复制消息', 'Copy message')} onClick={() => void navigator.clipboard.writeText(message.composition ? formatBotanicAgentCompositionMessage(message.composition) : message.content)}><CopyIcon /></button>
+      <button type="button" aria-label={t('复制消息', 'Copy message')} title={t('复制消息', 'Copy message')} onClick={() => void navigator.clipboard.writeText(message.composition ? formatBotanicAgentCompositionMessage(message.composition, locale) : message.content)}><CopyIcon /></button>
     </div>}
   </article>
 }
