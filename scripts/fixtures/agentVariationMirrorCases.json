@@ -43,6 +43,16 @@
       "expected": { "kind": "ready", "combine": false, "branchLabels": ["海边", "沙漠"] }
     },
     {
+      "name": "换模特肤色一个白人一个黑人按肤色轴展开两张",
+      "input": { "instruction": "模特换肤色，一个白人一个黑人" },
+      "expected": { "kind": "ready", "combine": false, "branchLabels": ["白人", "黑人"] }
+    },
+    {
+      "name": "换成一个白人一个黑人剥掉计数词后按人物轴展开",
+      "input": { "instruction": "根据这张图换一下模特，换成一个白人，一个黑人" },
+      "expected": { "kind": "ready", "combine": false, "branchLabels": ["白人", "黑人"] }
+    },
+    {
       "name": "模型综合的画面描述不是批量指令",
       "input": { "instruction": "Mia 的氛围肖像照（海边版）：一位 20 多岁韩国女性，黑色长发自然垂落，清透裸妆，身穿燕麦色针织衫，站在海边浅滩上，背景是灰蓝色海面，柔和的自然光，视觉风格清新通透，画面比例 3:4。" },
       "expected": { "kind": "none" }

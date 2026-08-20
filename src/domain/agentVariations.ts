@@ -99,11 +99,16 @@ function uniqueLabels(values: string[]) {
   }).slice(0, botanicAgentVariationValueMax)
 }
 
+/** 「一个白人一个黑人」这类并列计数枚举：计数词后的短词是取值，「一个在」交给方位并列。 */
+const counterEnumPattern = /(?:一个|一位|一名)(?!在)([\u4e00-\u9fff]{1,8}?)(?=一个|一位|一名|[，。,；;、\s]|$)/gu
+
 function normalizeVariationToken(chunk: string) {
   return chunk
     .replace(/[，,]\s*(?:多图|多张|多出几张).*$/u, '')
     .replace(/^(?:比方说|比如说|比如|例如|譬如)/u, '')
     .replace(/^一个在/u, '')
+    // 「一个白人」的计数词不是取值前缀；连写的「一个X一个Y」保留原文交给并列拆分。
+    .replace(/^(?:一个|一位|一名)(?=[\u4e00-\u9fff])(?![\s\S]*(?:一个|一位|一名))/u, '')
     .replace(/^在(?=[\u4e00-\u9fff])/u, '')
     .replace(/里$/u, '')
     .trim()
@@ -115,8 +120,12 @@ function splitValueList(raw: string) {
       .replace(/(?:等)?\s*(?:\d+|两|三|四|五|六|七|八|九|十)\s*(?:种|个|档).*$/u, '')
       .replace(/^(?:分别是|分别|包括|比方说|比如说|比如|例如|譬如)/u, '')
       .replace(/^(?:换成|换为|替换为|改为|改成|使用|用)/u, '')
+      // 「换肤色」「改背景」是动宾指令：剥掉动词后剩下的轴名会被取值过滤拒绝。
+      .replace(/^[换改](?=(?:肤色|场景|背景|风格|动作|姿势|姿态|服装|衣服|人物|模特|调性))/u, '')
       .trim())
     if (!chunk || /不变|保持/.test(chunk)) return []
+    const counterParts = [...chunk.matchAll(counterEnumPattern)].map((match) => match[1])
+    if (counterParts.length >= 2) return counterParts
     // 「和」切分只认两侧都是 ≥2 字的短词：「海边和沙漠」是枚举，「柔和的自然光」不是。
     const parts = chunk.split(/(?:(?<=\S)和(?=\S))/u).map((part) => normalizeVariationToken(part)).filter(Boolean)
     if (parts.length === 2 && parts.every((part) => {
@@ -139,11 +148,17 @@ function parallelLocationValues(text: string) {
   return uniqueLabels([...text.matchAll(/一个在([\u4e00-\u9fff]{1,8}?)(?=一个在|[，。,；;、\s]|$)/gu)].map((match) => match[1]))
 }
 
+function parallelCounterValues(text: string) {
+  return uniqueLabels([...text.matchAll(counterEnumPattern)].map((match) => match[1]))
+}
+
 function inferInstructionValues(text: string) {
   const numbered = splitNumberedList(text)
   if (numbered.length >= botanicAgentVariationValueMin) return numbered
   const parallel = parallelLocationValues(text)
   if (parallel.length >= botanicAgentVariationValueMin) return parallel
+  const counters = parallelCounterValues(text)
+  if (counters.length >= botanicAgentVariationValueMin) return counters
   return listedValuesFromText(text)
 }
 
@@ -277,6 +292,14 @@ function parseAxes(instruction: string): BotanicAgentVariationAxis[] {
     if (values.length < botanicAgentVariationValueMin && !instructionRequestsBatchVariation(text)) continue
     seen.add(item.key)
     found.push(axisFromCatalog(item, values))
+  }
+  // 「模特换肤色」里的“模特”只是换肤色的宾语：两轴切出同一组取值时，更具体的肤色轴优先。
+  const skinAxis = found.find((axis) => axis.key === 'skin_tone')
+  const personAxis = found.find((axis) => axis.key === 'person')
+  if (skinAxis && personAxis
+    && skinAxis.values.length >= botanicAgentVariationValueMin
+    && personAxis.values.map((value) => value.label).join('\u0001') === skinAxis.values.map((value) => value.label).join('\u0001')) {
+    return found.filter((axis) => axis.key !== 'person')
   }
   return found
 }

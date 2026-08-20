@@ -566,6 +566,47 @@ test('列出肤色取值后按变体轴展开，张数由展开结果决定', as
   assert.match(result.summary, /4 张/)
 })
 
+test('综合 Prompt 链路的变体轴从用户原话解析，模型 prose 不再被挖成伪变体', async () => {
+  // 客户端把回合解析器综合的画面描述当 instruction 发来；里面的「两张」「场景」会诱发 prose 挖掘。
+  const synthesized = '基于画布参考素材「Mia 氛围肖像」生成两张同场景人像写真，构图完全一致，仅改变模特肤色：第一张白人女性模特，保留同款发型与着装；第二张黑人女性模特，同样的侧光与背景。'
+  const result = await planBotanicGeneration({
+    ...validInput,
+    instruction: synthesized,
+    sourceInstruction: '模特换肤色，一个白人一个黑人',
+    requestedIntent: 'replace_person',
+    assetGroup: undefined,
+  }, {
+    flockApiKey: 'flock-secret', flockTextModel: 'deepseek-v4-pro',
+  }, {
+    fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: {
+      content: null,
+      tool_calls: [{ id: 'call-plan-source-instruction', type: 'function', function: {
+        name: 'generation_create_plan', arguments: JSON.stringify({
+          intent: 'replace_person',
+          prompt: synthesized,
+          summary: '生成 2 张肤色版本。',
+          constraints: [{ dimension: 'person', mode: 'preserve' }, { dimension: 'style', mode: 'vary' }],
+        }),
+      } }],
+    } }] }), { status: 200 }),
+  })
+
+  assert.equal(result.kind, undefined)
+  assert.deepEqual(result.output, { mode: 'batch_by_variation', count: 2, candidatesPerItem: 1 })
+  assert.equal(result.variation.axes[0].key, 'skin_tone')
+  assert.deepEqual(result.variation.axes[0].values.map((value) => value.label), ['白人', '黑人'])
+  // 共享底是画面描述，分支差异只来自各自的 promptDelta，不再出现提示词碎片当变体。
+  assert.match(result.summary, /肤色/)
+})
+
+test('validateBotanicAgentPlanInput 保留 sourceInstruction 供变体解析使用', () => {
+  const input = validateBotanicAgentPlanInput({
+    ...validInput,
+    sourceInstruction: '模特换肤色，一个白人一个黑人',
+  })
+  assert.equal(input.sourceInstruction, '模特换肤色，一个白人一个黑人')
+})
+
 test('validateBotanicAgentPlanInput 保留 parentPrompt 并对齐自定义像素', () => {
   const input = validateBotanicAgentPlanInput({
     ...validInput,

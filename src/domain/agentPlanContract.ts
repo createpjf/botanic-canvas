@@ -7,6 +7,8 @@ export type BotanicAgentPlanRequestInput = {
   plannerModel?: string
   mountedSkillIds?: string[]
   instruction: string
+  /** 用户原话。变体轴只从它解析；instruction 在综合 Prompt 链路里是模型写的画面描述。 */
+  sourceInstruction?: string
   requestedIntent?: BotanicAgentIntent
   selectedResultNodeId: string
   selectedResultLabel: string
@@ -28,6 +30,7 @@ export type BotanicAgentPlanRequest = {
   plannerModel?: string
   mountedSkillIds?: string[]
   instruction: string
+  sourceInstruction?: string
   requestedIntent?: BotanicAgentIntent
   selectedResult: { nodeId: string; label: string }
   settings: GenerationRecipe['settings']
@@ -65,6 +68,7 @@ export function buildBotanicAgentPlanRequest(input: BotanicAgentPlanRequestInput
     ...(input.plannerModel ? { plannerModel: input.plannerModel } : {}),
     ...(input.mountedSkillIds?.length ? { mountedSkillIds: [...new Set(input.mountedSkillIds)].slice(0, 16) } : {}),
     instruction: input.instruction.trim(),
+    ...(input.sourceInstruction?.trim() ? { sourceInstruction: input.sourceInstruction.trim() } : {}),
     ...(input.requestedIntent ? { requestedIntent: input.requestedIntent } : {}),
     selectedResult: { nodeId: input.selectedResultNodeId, label: input.selectedResultLabel },
     settings: { ...input.rootRecipe.settings, ...input.generationOverrides },

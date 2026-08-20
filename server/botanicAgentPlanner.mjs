@@ -160,6 +160,8 @@ export function validateBotanicAgentPlanInput(raw) {
   const projectId = requiredText(input.projectId, '项目', 160)
   const plannerModel = optionalText(input.plannerModel, 'Agent 模型', 160)
   const instruction = requiredText(input.instruction, '修改要求', 4000)
+  // 用户原话：综合 Prompt 链路里 instruction 是模型写的画面描述，变体轴只允许从原话解析。
+  const sourceInstruction = optionalText(input.sourceInstruction, '用户原话', 4000)
   const requestedIntent = optionalText(input.requestedIntent, '操作类型', 80)
   if (requestedIntent && !INTENTS.has(requestedIntent)) invalidRequest('操作类型不支持。')
 
@@ -334,6 +336,7 @@ export function validateBotanicAgentPlanInput(raw) {
     projectId,
     ...(plannerModel ? { plannerModel } : {}),
     instruction,
+    ...(sourceInstruction ? { sourceInstruction } : {}),
     ...(requestedIntent ? { requestedIntent } : {}),
     selectedResult,
     settings: effectiveSettings,
@@ -489,7 +492,8 @@ function normalizeProviderPlan(raw, input) {
     ...(selectedAssetGroup ? { assetGroupId: selectedAssetGroup.id } : {}),
   }
   const applied = applyBotanicAgentVariationToPlan(plan, {
-    instruction: input.instruction,
+    // 变体轴只从用户原话解析；综合 Prompt 里的「两张」等字样会把模型 prose 挖成伪变体。
+    instruction: input.sourceInstruction || input.instruction,
     requestedIntent: input.requestedIntent,
     clarificationAnswers: input.clarificationAnswers,
     brief: input.creativeBrief,
@@ -586,7 +590,8 @@ function normalizeProviderClarification(raw, input, toolCallId) {
     id: `clarification-${toolCallId}`,
     question,
     ...(providerText(raw?.helper, 240) ? { helper: providerText(raw.helper, 240) } : {}),
-    originalInstruction: input.instruction,
+    // 追问卡带回的原话用于下一轮重放：必须是用户的话，不能把模型 prose 当成用户指令。
+    originalInstruction: input.sourceInstruction || input.instruction,
     ...(input.creativeBrief ? { brief: structuredClone(input.creativeBrief) } : {}),
     fields,
   }
@@ -684,7 +689,10 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
     if (output?.kind === 'clarification' && output.clarification) {
       return {
         kind: 'clarification',
-        clarification: mergeVariationClarification(output.clarification, input),
+        clarification: mergeVariationClarification(output.clarification, {
+          ...input,
+          instruction: input.sourceInstruction || input.instruction,
+        }),
         plannerModel: config.model,
         toolCalls: result.toolCalls,
         ...(result.reasoning?.length ? { reasoning: result.reasoning } : {}),

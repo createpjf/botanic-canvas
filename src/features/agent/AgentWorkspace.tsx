@@ -1030,6 +1030,7 @@ export default function AgentWorkspace({
     creativeBrief?: BotanicCreativeBrief,
     failedCommand?: AgentFailedInstruction,
     outputCount?: number,
+    sourceInstruction?: string,
   ): Promise<BotanicAgentPlan | BotanicAgentClarificationResponse | null> => {
     if (!target || !isCurrentAgentProject()) return null
     const assetGroup = compatibleGroups.find((group) => group.id === groupId)
@@ -1038,6 +1039,8 @@ export default function AgentWorkspace({
       plannerModel,
       mountedSkillIds: session?.mountedSkillIds,
       instruction: cleanInstruction,
+      // 综合 Prompt 链路里 cleanInstruction 是模型写的画面描述；变体轴必须从用户原话解析。
+      ...(sourceInstruction?.trim() ? { sourceInstruction: sourceInstruction.trim() } : {}),
       requestedIntent: intent,
       selectedResultNodeId: target.id,
       selectedResultLabel: target.label,
@@ -1086,7 +1089,7 @@ export default function AgentWorkspace({
           }), plannerModel, settings: { ...target.rootRecipe.settings, ...generationOverrides } }
           const applied = applyBotanicAgentVariationToPlan(fallbackPlan, {
             // 变体轴只从用户原话解析：cleanInstruction 在综合 Prompt 链路里是模型 prose。
-            instruction: failedCommand?.instruction ?? cleanInstruction,
+            instruction: sourceInstruction ?? failedCommand?.instruction ?? cleanInstruction,
             requestedIntent: intent,
             clarificationAnswers,
             brief: creativeBrief,
@@ -1807,6 +1810,7 @@ export default function AgentWorkspace({
       draft.brief,
       resolvedFailedCommand,
       draft.outputCount,
+      draft.instruction,
     )
     if (!nextPlan || !session || !isCurrentAgentProject()) return
     if ('kind' in nextPlan && nextPlan.kind === 'clarification') {
