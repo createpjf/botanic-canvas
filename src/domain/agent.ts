@@ -819,11 +819,12 @@ export function createBotanicAgentContextSnapshot(
 export function botanicAgentPromptWithContextNotes(
   instruction: string,
   contextSnapshot: BotanicAgentContextSnapshot[],
+  locale: 'zh-CN' | 'en' = 'zh-CN',
 ) {
   const notes = contextSnapshot.flatMap((item) => (
-    item.kind === '文字' && item.note ? [`- ${item.label}：${item.note}`] : []
+    item.kind === '文字' && item.note ? [`- ${item.label}${locale === 'en' ? ': ' : '：'}${item.note}`] : []
   ))
-  return notes.length ? `${instruction}\n\n补充描述：\n${notes.join('\n')}` : instruction
+  return notes.length ? `${instruction}\n\n${locale === 'en' ? 'Additional context:' : '补充描述：'}\n${notes.join('\n')}` : instruction
 }
 
 export function botanicAgentContextSnapshotNodeIds(
@@ -1613,6 +1614,7 @@ export function updateBotanicAgentAction(
 
 export type BuildBotanicAgentPlanInput = {
   instruction: string
+  locale?: 'zh-CN' | 'en'
   creativeBrief?: BotanicCreativeBrief
   intent?: BotanicAgentIntent
   selectedResultNodeId?: string
@@ -1743,8 +1745,19 @@ function constraintsForIntent(intent: BotanicAgentIntent, assetGroup?: AssetGrou
   ]
 }
 
-function intentLabel(intent: BotanicAgentIntent) {
-  const labels: Record<BotanicAgentIntent, string> = {
+function intentLabel(intent: BotanicAgentIntent, locale: 'zh-CN' | 'en' = 'zh-CN') {
+  const labels: Record<BotanicAgentIntent, string> = locale === 'en' ? {
+    initial_generation: 'Initial generation',
+    continue_generation: 'Continue generation',
+    replace_scene: 'Replace scene',
+    replace_person: 'Replace model',
+    replace_product: 'Replace product',
+    change_pose: 'Adjust pose',
+    change_style: 'Change style',
+    batch_variation: 'Batch variation',
+    region_edit: 'Region edit',
+    redo_from_root: 'Rebuild from original recipe',
+  } : {
     initial_generation: '首次生成',
     continue_generation: '继续生成',
     replace_scene: '替换场景',
@@ -1921,6 +1934,7 @@ export function botanicAgentPlanMediaKind(plan: Pick<BotanicAgentPlan, 'settings
 }
 
 export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): BotanicAgentPlan {
+  const locale = input.locale ?? 'zh-CN'
   const instruction = input.instruction.trim()
   if (!instruction) throw new Error('请描述希望 Agent 完成的修改。')
   // 带选区时意图不再靠文字猜：选区本身就是「只改这里」的明确表达。
@@ -1957,7 +1971,7 @@ export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): Botani
         ...(item.role ? { role: item.role } : {}),
       }))
     : [
-        { source: 'selected_result', id: input.selectedResultNodeId!, label: input.selectedResultLabel ?? '当前结果图' },
+        { source: 'selected_result', id: input.selectedResultNodeId!, label: input.selectedResultLabel ?? (locale === 'en' ? 'Current result' : '当前结果图') },
         ...input.rootRecipe!.references.map((reference) => ({
           source: 'root_recipe' as const,
           id: reference.nodeId,
@@ -1976,18 +1990,28 @@ export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): Botani
   return {
     intent,
     instruction,
-    summary: intent === 'region_edit' && input.region
-      ? `局部重绘${input.region.description ?? '所选区域'}，其余画面保持原样。`
-      : isVideoPlan
-        ? `${intentLabel(intent)}，以参考图为首帧生成 ${output.count} 条 ${settings.duration} 秒视频。`
-        : `${intentLabel(intent)}，${output.mode === 'batch_by_asset' ? `按「${input.assetGroup?.name}」生成 ${output.count} 张` : `生成 ${output.count} 张新版本`}。`,
-    title: summarizeBotanicAgentNodeTitle({ intent, constraints }),
+    summary: locale === 'en'
+      ? intent === 'region_edit' && input.region
+        ? `Redraw ${input.region.description ?? 'the selected area'} while keeping the rest of the image unchanged.`
+        : isVideoPlan
+          ? `${intentLabel(intent, locale)}. Generate ${output.count} ${output.count === 1 ? 'video' : 'videos'} of ${settings.duration} seconds from the reference image.`
+          : `${intentLabel(intent, locale)}. ${output.mode === 'batch_by_asset'
+            ? `Generate ${output.count} ${output.count === 1 ? 'image' : 'images'} from “${input.assetGroup?.name}”`
+            : `Generate ${output.count} new ${output.count === 1 ? 'version' : 'versions'}`}.`
+      : intent === 'region_edit' && input.region
+        ? `局部重绘${input.region.description ?? '所选区域'}，其余画面保持原样。`
+        : isVideoPlan
+          ? `${intentLabel(intent)}，以参考图为首帧生成 ${output.count} 条 ${settings.duration} 秒视频。`
+          : `${intentLabel(intent)}，${output.mode === 'batch_by_asset' ? `按「${input.assetGroup?.name}」生成 ${output.count} 张` : `生成 ${output.count} 张新版本`}。`,
+    title: locale === 'en'
+      ? ({ initial_generation: 'Generate', continue_generation: 'Continue', replace_scene: 'Scene', replace_person: 'Model', replace_product: 'Product', change_pose: 'Pose', change_style: 'Style', batch_variation: 'Variants', redo_from_root: 'Rebuild', region_edit: 'Region edit' } as const)[intent]
+      : summarizeBotanicAgentNodeTitle({ intent, constraints }),
     ...(input.creativeBrief ? { creativeBrief: structuredClone(input.creativeBrief) } : {}),
     ...(input.selectedResultNodeId ? { selectedResultNodeId: input.selectedResultNodeId } : {}),
     ...(contextSnapshot.length ? { contextSnapshot } : {}),
     references,
     constraints,
-    prompt: botanicAgentPromptWithContextNotes(visualPrompt, contextSnapshot),
+    prompt: botanicAgentPromptWithContextNotes(visualPrompt, contextSnapshot, locale),
     settings,
     output,
     ...(input.assetGroup ? { assetGroupId: input.assetGroup.id } : {}),

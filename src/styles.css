@@ -247,6 +247,9 @@ button.project-tab__main { border: 0; cursor: pointer; }
 }
 .product-home-tab:hover { border-color: #a9c0ad; background: #eef5ed; transform: translateY(-1px); }
 .product-home-tab svg { width: 14px; height: 14px; }
+.canvas-language-switcher { min-width: 38px; min-height: 34px; flex: 0 0 auto; margin-left: auto; padding: 0 9px; border: 1px solid #d7e2d6; border-radius: 9px; background: #f7faf6; color: #3f6949; font: inherit; font-size: 10px; font-weight: 760; transition: border-color 140ms ease, background 140ms ease, transform 120ms ease; }
+.canvas-language-switcher:hover { border-color: #a9c0ad; background: #eef5ed; transform: translateY(-1px); }
+.canvas-language-switcher + .product-home-tab { margin-left: 0; }
 
 .botanic-flow {
   height: calc(100% - var(--tab-bar-height)) !important;
@@ -2608,6 +2611,7 @@ button.project-tab__main { border: 0; cursor: pointer; }
   .project-library-page__home span,
   .product-home-tab span { display: none; }
   .product-home-tab { width: 38px; min-height: 38px; justify-content: center; padding: 0; }
+  .canvas-language-switcher { min-width: 38px; min-height: 38px; padding: 0 7px; }
   .project-library-page__account strong { display: none; }
   .project-library-page__account { padding-right: 5px; }
   .project-library-page__content { padding-top: 34px; }
@@ -4189,6 +4193,7 @@ details.agent-timeline__thinking { display: block; padding: 0; }
   .canvas-pane.is-touch-tablet .tab-bar { min-height: var(--tab-bar-height); padding-right: max(12px, env(safe-area-inset-right)); padding-left: max(12px, env(safe-area-inset-left)); }
   .canvas-pane.is-touch-tablet .home-tab,
   .canvas-pane.is-touch-tablet .new-tab,
+  .canvas-pane.is-touch-tablet .canvas-language-switcher,
   .canvas-pane.is-touch-tablet .product-home-tab,
   .canvas-pane.is-touch-tablet .project-tab__close { min-width: 44px; min-height: 44px; }
   .canvas-pane.is-touch-tablet .new-tab { width: 44px; height: 44px; }

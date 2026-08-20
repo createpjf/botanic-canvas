@@ -102,12 +102,35 @@ import folderIcon from '../../assets/figma/icon-folder.svg'
 import templatesIcon from '../../assets/figma/icon-templates.svg'
 import historyIcon from '../../assets/figma/icon-history.svg'
 import resultImage from '../../assets/figma/result.webp'
+import { LanguageSwitcher, useProductI18n, useProductMessages } from '../../i18n/react'
+import { localizeProductError } from '../../i18n/core'
+import { canvasSystemLabel } from './canvasI18n'
+
+const workspaceMessages = {
+  'zh-CN': {
+    loadingProject: '正在载入项目', loadingProjectShort: '载入项目', focusSelected: '聚焦选中节点', focusTask: '聚焦本次任务', fitAll: '适配全部节点', canvasNavigation: '画布导航', closeMinimap: '关闭小地图', openMinimap: '打开小地图', minimapNotNeeded: '节点较少，暂不需要小地图', zoomLevel: '画布缩放级别', moreTools: '更多画布工具', exitMarquee: '退出框选', marquee: '框选节点', drag: '拖动', autoLayout: '自动整理', showAll: '显示全部',
+    selectedCount: (count: number) => `${count} 个节点已选中`, moveTogether: '拖动任意节点可整体移动', clearSelection: '取消选择', connected: '已连接', invalidConnection: '无法连接到这里', connectionCancelled: '已取消连线', connecting: '正在连线', dragToPort: '拖到绿色空心点', connectionHint: '素材 / 文本 / 已选图片 → 生成；输出由任务自动创建',
+    edgeActions: '已选连线操作', systemEdge: '系统输出连线', selectedEdge: '连线已选中', systemEdgeHint: '用于保留生成血缘，不可删除或重连', reconnectHint: '拖动端点可重连', delete: '删除', closeEdgeActions: '关闭连线操作', emptyGuide: '空画布引导', emptyTitle: '从一个创意目标开始', emptyDetail: '拖入商品、场景或灵感图；也可以先添加一个生成节点，逐步搭建这次项目的创作路径。', addAssets: '添加素材', imageGeneration: '图片生成', videoGeneration: '视频生成',
+    initFailed: '画布初始化失败', initFailedDetail: '请重试；若仍失败，请退出后重新登录。', retry: '重试', loadingCanvas: '正在加载画布', canvasLabel: (name: string) => name.endsWith('画布') ? name : `${name}画布`, backProjects: '返回项目', projects: '项目', openProjects: '已打开项目', projectName: '项目名称', openProject: (name: string) => `打开${name}`, renameProject: '双击重命名', closeProject: (name: string) => `关闭${name}`, closeTab: '关闭标签', newProject: '新建创意项目',
+    minimapLabel: '画布导航地图', videoModelMissing: '视频模型尚未配置，请先检查 MiniMax H3。', canvasTools: '画布工具', addNode: '新增节点', openAssets: '打开素材库', templates: '模板', history: '画布历史', delivery: '投放交付', account: '打开账户设置', openAgent: '打开 Agent', loadingAgent: '正在载入 Agent…', language: '切换为英文',
+    imageAsset: '图片素材', selectedResult: '已选结果', candidate: (index: number) => `候选 ${index}`, builtNodes: (count: number) => `已搭建 ${count} 个节点`, blankCanvasSummary: '空白画布 · 等待开始', refinedVersion: '精修版本', generatedImage: '生成图片', keyVisualVersion: '首图版本', dropToAdd: '松开即可加入画布', uploadLimits: 'PNG / JPEG / WebP，单张不超过 8MB', addCanvasNode: '添加画布节点', addFromImage: '基于此图添加', connectSelected: '连接所选节点', addNodeTitle: '添加节点', closeAddNode: '关闭添加节点', continueImage: '基于当前图片继续创作', connectToGenerate: '连接素材与描述生成图片', batchVariations: '批量变体', batchDetail: '用一个素材组逐项生成', continueVideo: '以当前画面或视频继续生成', videoReferenceDetail: '连接首帧、首尾帧或参考素材', assets: '素材', assetsDetail: '添加商品、场景或调性图', localImages: '本地图片', uploadImages: '上传图片', uploadToCanvas: '上传图片并加入画布', preview: (name: string) => `${name}预览`, downloadMedia: '下载原媒体', closePreview: '关闭媒体预览',
+  },
+  en: {
+    loadingProject: 'Loading project', loadingProjectShort: 'Loading project', focusSelected: 'Focus selected nodes', focusTask: 'Focus current task', fitAll: 'Fit all nodes', canvasNavigation: 'Canvas navigation', closeMinimap: 'Close minimap', openMinimap: 'Open minimap', minimapNotNeeded: 'Minimap is not needed for a small canvas', zoomLevel: 'Canvas zoom level', moreTools: 'More canvas tools', exitMarquee: 'Exit marquee select', marquee: 'Select nodes', drag: 'Drag', autoLayout: 'Auto arrange', showAll: 'Show all',
+    selectedCount: (count: number) => `${count} ${count === 1 ? 'node' : 'nodes'} selected`, moveTogether: 'Drag any selected node to move them together', clearSelection: 'Clear selection', connected: 'Connected', invalidConnection: 'Cannot connect here', connectionCancelled: 'Connection cancelled', connecting: 'Connecting', dragToPort: 'Drag to a green open port', connectionHint: 'Asset / text / selected image → generation; outputs are created automatically',
+    edgeActions: 'Selected connection actions', systemEdge: 'System output connection', selectedEdge: 'Connection selected', systemEdgeHint: 'Preserves generation lineage and cannot be deleted or reconnected', reconnectHint: 'Drag an endpoint to reconnect', delete: 'Delete', closeEdgeActions: 'Close connection actions', emptyGuide: 'Empty canvas guide', emptyTitle: 'Start with a creative direction', emptyDetail: 'Add a product, scene, or inspiration image, or start with a generation node and build the creative workflow step by step.', addAssets: 'Add assets', imageGeneration: 'Image generation', videoGeneration: 'Video generation',
+    initFailed: 'Canvas could not start', initFailedDetail: 'Try again. If it still fails, sign out and sign in again.', retry: 'Retry', loadingCanvas: 'Loading canvas', canvasLabel: (name: string) => `${name} canvas`, backProjects: 'Back to projects', projects: 'Projects', openProjects: 'Open projects', projectName: 'Project name', openProject: (name: string) => `Open ${name}`, renameProject: 'Double-click to rename', closeProject: (name: string) => `Close ${name}`, closeTab: 'Close tab', newProject: 'New creative project',
+    minimapLabel: 'Canvas navigation map', videoModelMissing: 'No video model is configured. Check MiniMax H3.', canvasTools: 'Canvas tools', addNode: 'Add node', openAssets: 'Open asset library', templates: 'Templates', history: 'Canvas history', delivery: 'Delivery', account: 'Open account settings', openAgent: 'Open Agent', loadingAgent: 'Loading Agent…', language: 'Switch to Chinese',
+    imageAsset: 'Image asset', selectedResult: 'Selected result', candidate: (index: number) => `Candidate ${index}`, builtNodes: (count: number) => `${count} ${count === 1 ? 'node' : 'nodes'} built`, blankCanvasSummary: 'Blank canvas · Ready to start', refinedVersion: 'Refined version', generatedImage: 'Generated image', keyVisualVersion: 'Key visual version', dropToAdd: 'Drop to add to canvas', uploadLimits: 'PNG / JPEG / WebP, up to 8 MB each', addCanvasNode: 'Add canvas node', addFromImage: 'Add from this image', connectSelected: 'Connect selected node', addNodeTitle: 'Add node', closeAddNode: 'Close add-node menu', continueImage: 'Continue creating from this image', connectToGenerate: 'Connect assets and a description to generate an image', batchVariations: 'Batch variations', batchDetail: 'Generate once for each asset in a group', continueVideo: 'Continue from the current image or video', videoReferenceDetail: 'Connect a first frame, first and last frames, or reference assets', assets: 'Assets', assetsDetail: 'Add product, scene, or style images', localImages: 'Local images', uploadImages: 'Upload images', uploadToCanvas: 'Upload images and add to canvas', preview: (name: string) => `${name} preview`, downloadMedia: 'Download original media', closePreview: 'Close media preview',
+  },
+} as const
 
 // 项目库不参与画布编辑。按路由加载，避免直接打开画布时额外解析入口内容。
 const ProjectLibrary = lazy(() => import('../../components/WorkspaceViews').then((module) => ({ default: module.ProjectLibrary })))
 const AgentWorkspace = lazy(() => import('../../features/agent/AgentWorkspace'))
 
 function DeferredWorkspaceIndicator() {
+  const t = useProductMessages(workspaceMessages)
   const [visible, setVisible] = useState(false)
 
   useEffect(() => {
@@ -117,9 +140,9 @@ function DeferredWorkspaceIndicator() {
 
   if (!visible) return null
   return (
-    <div className="workspace-loading-indicator" role="status" aria-label="正在载入项目">
+    <div className="workspace-loading-indicator" role="status" aria-label={t.loadingProject}>
       <span aria-hidden="true"><i /><i /><i /></span>
-      <small>载入项目</small>
+      <small>{t.loadingProjectShort}</small>
     </div>
   )
 }
@@ -317,6 +340,7 @@ function CanvasNavigation({
   onAutoLayout: () => void
   onViewportChange: (viewport: { x: number; y: number; zoom: number }) => void
 }) {
+  const t = useProductMessages(workspaceMessages)
   const { getViewport, zoomTo, fitView, setCenter } = useReactFlow()
   const { zoom } = useViewport()
   const directViewportFrame = useRef(0)
@@ -337,10 +361,10 @@ function CanvasNavigation({
     })
   }
   const smartFocusLabel = selectedNodes.length
-    ? '聚焦选中节点'
+    ? t.focusSelected
     : taskNodes.length
-      ? '聚焦本次任务'
-      : '适配全部节点'
+      ? t.focusTask
+      : t.fitAll
   const focusCanvas = () => {
     if (selectedNodes.length) {
       commitViewport(fitView({ nodes: selectedNodes, duration: viewportMotionDuration(180), padding: 0.32, minZoom: canvasMinZoom, maxZoom: 1.2 }))
@@ -357,22 +381,22 @@ function CanvasNavigation({
   }
   return (
     <Panel position="bottom-left" className="zoom-panel nopan nowheel">
-      <div className="zoom-panel__controls" aria-label="画布导航">
+      <div className="zoom-panel__controls" aria-label={t.canvasNavigation}>
         <button
           className={miniMapOpen ? 'zoom-panel__icon-button is-active' : 'zoom-panel__icon-button'}
           type="button"
           onClick={onToggleMiniMap}
           disabled={!canShowMiniMap}
-          aria-label={miniMapOpen ? '关闭小地图' : '打开小地图'}
+          aria-label={miniMapOpen ? t.closeMinimap : t.openMinimap}
           aria-expanded={miniMapOpen}
           aria-controls="canvas-minimap"
-          title={canShowMiniMap ? (miniMapOpen ? '关闭小地图' : '打开小地图') : '节点较少，暂不需要小地图'}
+          title={canShowMiniMap ? (miniMapOpen ? t.closeMinimap : t.openMinimap) : t.minimapNotNeeded}
         ><MapIcon /></button>
         <button className="zoom-panel__icon-button" type="button" onClick={focusCanvas} aria-label={smartFocusLabel} title={smartFocusLabel}><FocusIcon /></button>
         <div className="zoom-panel__slider">
           <input
             className="zoom-track"
-            aria-label="画布缩放级别"
+            aria-label={t.zoomLevel}
             type="range"
             min={canvasMinZoom}
             max={canvasMaxZoom}
@@ -384,23 +408,23 @@ function CanvasNavigation({
           <output aria-live="polite">{zoomPercent}%</output>
         </div>
         <details className="zoom-panel__more">
-          <summary className="zoom-panel__icon-button" role="button" aria-label="更多画布工具" title="更多画布工具"><MoreIcon /></summary>
+          <summary className="zoom-panel__icon-button" role="button" aria-label={t.moreTools} title={t.moreTools}><MoreIcon /></summary>
           <div className="zoom-panel__menu" role="menu">
             <button
               className={marqueeMode ? 'is-active' : ''}
               type="button"
               role="menuitem"
               onClick={(event) => { onToggleMarqueeMode(); closeMoreMenu(event) }}
-            >{marqueeMode ? '退出框选' : '框选节点'}<span>{touchInput ? '拖动' : 'Shift'}</span></button>
+            >{marqueeMode ? t.exitMarquee : t.marquee}<span>{touchInput ? t.drag : 'Shift'}</span></button>
             <button type="button" role="menuitem" onClick={(event) => {
               onAutoLayout()
               window.requestAnimationFrame(() => commitViewport(fitView({ duration: viewportMotionDuration(220), padding: 0.16, minZoom: canvasMinZoom, maxZoom: 1 })))
               closeMoreMenu(event)
-            }}>自动整理</button>
+            }}>{t.autoLayout}</button>
             <button type="button" role="menuitem" onClick={(event) => {
               commitViewport(fitView({ duration: viewportMotionDuration(180), padding: 0.16, minZoom: canvasMinZoom, maxZoom: 1 }))
               closeMoreMenu(event)
-            }}>显示全部</button>
+            }}>{t.showAll}</button>
           </div>
         </details>
       </div>
@@ -409,20 +433,22 @@ function CanvasNavigation({
 }
 
 function MultiSelectionToolbar({ count, onClear, phase }: { count: number; onClear: () => void; phase: MotionPhase }) {
+  const t = useProductMessages(workspaceMessages)
   return (
     <Panel position="top-center" className="multi-selection-panel">
       <div className={`multi-selection-toolbar is-${phase}`} role="status" aria-live="polite">
-        <span><strong>{count}</strong> 个节点已选中</span>
-        <i>拖动任意节点可整体移动</i>
-        <button type="button" onClick={onClear}>取消选择</button>
+        <span>{t.selectedCount(count)}</span>
+        <i>{t.moveTogether}</i>
+        <button type="button" onClick={onClear}>{t.clearSelection}</button>
       </div>
     </Panel>
   )
 }
 
 function ConnectionGuide({ feedback }: { feedback?: 'connected' | 'invalid' | 'cancelled' | null }) {
+  const t = useProductMessages(workspaceMessages)
   if (feedback) {
-    const message = feedback === 'connected' ? '已连接' : feedback === 'invalid' ? '无法连接到这里' : '已取消连线'
+    const message = feedback === 'connected' ? t.connected : feedback === 'invalid' ? t.invalidConnection : t.connectionCancelled
     return (
       <Panel position="top-center" className="connection-guide-panel">
         <div className={`connection-feedback is-${feedback}`} role="status" aria-live="polite">{message}</div>
@@ -432,9 +458,9 @@ function ConnectionGuide({ feedback }: { feedback?: 'connected' | 'invalid' | 'c
   return (
     <Panel position="top-center" className="connection-guide-panel">
       <div className="connection-guide" role="status" aria-live="polite">
-        <b>正在连线</b>
-        <span>拖到绿色空心点</span>
-        <i>素材 / 文本 / 已选图片 → 生成；输出由任务自动创建</i>
+        <b>{t.connecting}</b>
+        <span>{t.dragToPort}</span>
+        <i>{t.connectionHint}</i>
       </div>
     </Panel>
   )
@@ -617,19 +643,20 @@ function EdgeActions({ edge, position, onDelete, onClose }: {
   onDelete: () => void
   onClose: () => void
 }) {
+  const t = useProductMessages(workspaceMessages)
   const isSystemEdge = Boolean(edge.data?.system)
   return (
     <div
       className="edge-actions"
       style={{ left: position.x, top: position.y }}
       role="toolbar"
-      aria-label="已选连线操作"
+      aria-label={t.edgeActions}
       onPointerDown={(event) => event.stopPropagation()}
     >
-      <span>{isSystemEdge ? '系统输出连线' : '连线已选中'}</span>
-      <small>{isSystemEdge ? '用于保留生成血缘，不可删除或重连' : '拖动端点可重连'}</small>
-      {!isSystemEdge ? <button type="button" onClick={onDelete}>删除</button> : null}
-      <button type="button" className="edge-actions__close" onClick={onClose} aria-label="关闭连线操作"><CloseIcon /></button>
+      <span>{isSystemEdge ? t.systemEdge : t.selectedEdge}</span>
+      <small>{isSystemEdge ? t.systemEdgeHint : t.reconnectHint}</small>
+      {!isSystemEdge ? <button type="button" onClick={onDelete}>{t.delete}</button> : null}
+      <button type="button" className="edge-actions__close" onClick={onClose} aria-label={t.closeEdgeActions}><CloseIcon /></button>
     </div>
   )
 }
@@ -643,15 +670,16 @@ function EmptyCanvasGuide({
   onAddImage: () => void
   onAddVideo: () => void
 }) {
+  const t = useProductMessages(workspaceMessages)
   return (
-    <section className="empty-canvas-guide" aria-label="空画布引导">
+    <section className="empty-canvas-guide" aria-label={t.emptyGuide}>
       <span className="panel-eyebrow">START A PROJECT</span>
-      <h2>从一个创意目标开始</h2>
-      <p>拖入商品、场景或灵感图；也可以先添加一个生成节点，逐步搭建这次项目的创作路径。</p>
+      <h2>{t.emptyTitle}</h2>
+      <p>{t.emptyDetail}</p>
       <div>
-        <button type="button" onClick={onOpenAssets}>添加素材</button>
-        <button type="button" className="is-primary" onClick={onAddImage}>图片生成</button>
-        <button type="button" onClick={onAddVideo}>视频生成</button>
+        <button type="button" onClick={onOpenAssets}>{t.addAssets}</button>
+        <button type="button" className="is-primary" onClick={onAddImage}>{t.imageGeneration}</button>
+        <button type="button" onClick={onAddVideo}>{t.videoGeneration}</button>
       </div>
     </section>
   )
@@ -670,6 +698,8 @@ export default function CanvasWorkspace({
   onReturnToLanding: () => void
   productHomeLabel: string
 }) {
+  const { locale } = useProductI18n()
+  const t = useProductMessages(workspaceMessages)
   const document = useCanvasStore((state) => state.document)
   const globalAssets = useCanvasStore((state) => state.globalAssets)
   const sharedTemplates = useCanvasStore((state) => state.sharedTemplates)
@@ -888,11 +918,11 @@ export default function CanvasWorkspace({
     if (!result.image) return null
     return {
       id: node.id,
-      name: result.label ?? '已选结果',
+      name: result.label ? canvasSystemLabel(result.label, locale) : t.selectedResult,
       image: result.image,
       settings: result.generationSettings ?? defaultGenerationSettings,
     }
-  }, [batchComposerTargetId, document.nodes])
+  }, [batchComposerTargetId, document.nodes, locale, t.selectedResult])
   const regionEditTarget = useMemo(() => {
     if (!regionEditTargetId) return null
     const node = document.nodes.find((item) => item.id === regionEditTargetId && item.type === 'result')
@@ -901,11 +931,11 @@ export default function CanvasWorkspace({
     if (!result.image || result.mediaKind === 'video') return null
     return {
       id: node.id,
-      name: result.label ?? '已选结果',
+      name: result.label ? canvasSystemLabel(result.label, locale) : t.selectedResult,
       image: result.image,
       settings: result.generationSettings ?? result.generationRecipe?.settings ?? defaultGenerationSettings,
     }
-  }, [document.nodes, regionEditTargetId])
+  }, [document.nodes, locale, regionEditTargetId, t.selectedResult])
   const projectTemplateSaveSummary = useMemo(
     () => summarizeWorkflowTemplate(document.nodes, document.edges),
     [document.edges, document.nodes],
@@ -1361,7 +1391,7 @@ export default function CanvasWorkspace({
       const candidates = groups.get(group.groupId) ?? []
       candidates.push({
         id: node.id,
-        name: result.label ?? `候选 ${(result.variant ?? candidates.length) + 1}`,
+        name: result.label ? canvasSystemLabel(result.label, locale) : t.candidate((result.variant ?? candidates.length) + 1),
         image: result.image,
         mediaKind: result.mediaKind ?? 'image',
         active: group.activeId === node.id,
@@ -1380,7 +1410,7 @@ export default function CanvasWorkspace({
       })
     }
     return groups
-  }, [resultGroupPresentation, resultNodesById])
+  }, [locale, resultGroupPresentation, resultNodesById, t])
   const hiddenResultNodeIds = useMemo(() => new Set([...resultGroupPresentation]
     .filter(([, presentation]) => presentation.hidden)
     .map(([nodeId]) => nodeId)), [resultGroupPresentation])
@@ -1624,7 +1654,7 @@ export default function CanvasWorkspace({
         name: document.name,
         updatedAt: document.updatedAt,
         cover: resultImage,
-        summary: document.nodes.length ? `已搭建 ${document.nodes.length} 个节点` : '空白画布 · 等待开始',
+        summary: document.nodes.length ? t.builtNodes(document.nodes.length) : t.blankCanvasSummary,
       })
     }
     // 正在关闭的当前项目不能再被旧画布状态兜底补回，否则会出现“点击关闭但标签还在”。
@@ -1635,7 +1665,7 @@ export default function CanvasWorkspace({
       const project = projectsById.get(id)
       return project ? [project] : []
     })
-  }, [closingWorkspaceTabId, document.id, document.name, document.nodes.length, document.updatedAt, workspaceProjects, workspaceTabIds])
+  }, [closingWorkspaceTabId, document.id, document.name, document.nodes.length, document.updatedAt, t, workspaceProjects, workspaceTabIds])
 
   const generatedHistoryItems = useMemo<GeneratedHistoryItem[]>(() => {
     const results = document.nodes.flatMap((node) => {
@@ -1649,7 +1679,7 @@ export default function CanvasWorkspace({
         versionId: result.versionId,
         image: result.image,
         mediaKind: result.mediaKind ?? 'image',
-        name: result.label ?? (result.generationKind === 'refinement' ? '精修版本' : '生成图片'),
+        name: result.label ? canvasSystemLabel(result.label, locale) : (result.generationKind === 'refinement' ? t.refinedVersion : t.generatedImage),
         createdAt: result.submittedAt ?? 0,
         aspectRatio: settings?.aspectRatio,
         resolution: settings?.resolution,
@@ -1667,7 +1697,7 @@ export default function CanvasWorkspace({
         createdAt: entry.createdAt,
       }))
     return [...results, ...legacyHistory].sort((left, right) => right.createdAt - left.createdAt)
-  }, [document.history, document.nodes])
+  }, [document.history, document.nodes, locale, t])
   const deliveryTargets = useMemo<DeliveryPanelTarget[]>(() => generatedHistoryItems.flatMap((item) => (
     item.nodeId && canUseForImageDelivery(item.mediaKind)
       ? [{ nodeId: item.nodeId, versionId: item.versionId, image: item.image, label: item.name }]
@@ -1714,7 +1744,7 @@ export default function CanvasWorkspace({
         nodeId: resultComposerNode.id,
         image: resultComposerData.image,
         mediaKind: resultComposerData.mediaKind ?? 'image',
-        label: resultComposerData.label ?? (resultComposerData.generationKind === 'refinement' ? '精修版本' : '首图版本'),
+        label: resultComposerData.label ?? (resultComposerData.generationKind === 'refinement' ? t.refinedVersion : t.keyVisualVersion),
         recipe: resultComposerData.generationRecipe,
       }
     : undefined
@@ -1822,7 +1852,7 @@ export default function CanvasWorkspace({
     return [{
       id: node.id,
       image: result.image,
-      name: result.label ?? '上游输出',
+      name: result.label ?? canvasSystemLabel('上游输出', locale),
       role: (result.mediaKind === 'video' ? '调性' : '首图') as AssetRole,
       source: 'generated' as const,
       primary: result.mediaKind !== 'video',
@@ -1840,9 +1870,9 @@ export default function CanvasWorkspace({
   ]
   const selectedGenerateModel = availableModels.find((model) => model.id === selectedGenerateData?.settings.model)
   const selectedGenerateIsVideo = selectedGenerateModel?.mediaKind === 'video'
-  const selectedGenerateLabel = selectedGenerateIsVideo && selectedGenerateData?.label === '图像生成'
-    ? '视频生成'
-    : selectedGenerateData?.label
+  const selectedGenerateLabel = selectedGenerateData
+    ? canvasSystemLabel(selectedGenerateIsVideo ? '视频生成' : selectedGenerateData.label, locale)
+    : undefined
   const selectedVideoInputMode: VideoInputMode = selectedGenerateData?.videoInputMode
     ?? (composerReferences.some((reference) => reference.mediaKind === 'video') ? 'reference' : composerReferences.length === 2 ? 'first_last' : 'first_frame')
   const selectedVideoInputsValid = selectedVideoInputMode === 'reference'
@@ -1851,17 +1881,17 @@ export default function CanvasWorkspace({
       ? composerReferences.length === 1 && composerReferences[0]?.mediaKind !== 'video'
       : composerReferences.length === 2 && composerReferences.every((reference) => reference.mediaKind !== 'video')
   const composerPrimaryReferenceName = selectedGenerateParent?.type === 'result'
-    ? ((selectedGenerateParent.data as ResultNodeData).label ?? '上游输出')
+    ? ((selectedGenerateParent.data as ResultNodeData).label ?? canvasSystemLabel('上游输出', locale))
     : (selectedGeneratePrimaryReference?.name ?? selectedGenerateParentReference?.name)
   if (canvasHydrationFailed) {
     return (
       <main className={canvasClassName}>
-        <section className="canvas-pane canvas-loading" aria-label="画布初始化失败">
+        <section className="canvas-pane canvas-loading" aria-label={t.initFailed}>
           <div>
             <span className="panel-eyebrow">BOTANIC CANVAS</span>
-            <strong>画布初始化失败</strong>
-            <p>请重试；若仍失败，请退出后重新登录。</p>
-            <button type="button" onClick={hydrateCanvas}>重试</button>
+            <strong>{t.initFailed}</strong>
+            <p>{t.initFailedDetail}</p>
+            <button type="button" onClick={hydrateCanvas}>{t.retry}</button>
           </div>
         </section>
       </main>
@@ -1871,7 +1901,7 @@ export default function CanvasWorkspace({
   if (!hydrated || workspaceRestoring || workspaceDocumentMismatch) {
     return (
       <main className={canvasClassName}>
-        <section className="canvas-pane canvas-loading canvas-loading--restoring" aria-label="正在加载画布">
+        <section className="canvas-pane canvas-loading canvas-loading--restoring" aria-label={t.loadingCanvas}>
           <DeferredWorkspaceIndicator />
         </section>
       </main>
@@ -1921,7 +1951,7 @@ export default function CanvasWorkspace({
           agentOpen ? 'has-agent-open' : '',
           composerOpen || resultComposerDraft || batchComposerTargetId ? 'has-open-composer' : '',
         ].filter(Boolean).join(' ')}
-        aria-label={document.name.endsWith('画布') ? document.name : `${document.name}画布`}
+        aria-label={t.canvasLabel(document.name)}
         onDragEnter={onCanvasFileDragEnter}
         onDragLeave={onCanvasFileDragLeave}
         onDragOverCapture={(event) => {
@@ -1935,9 +1965,9 @@ export default function CanvasWorkspace({
         }}
       >
         <header className="tab-bar" data-node-id="894:230346">
-          <button className="home-tab" onClick={() => { void refreshWorkspaceProjects(); setWorkspaceView('projects') }} aria-label="返回项目"><HomeIcon /> <span>项目</span></button>
+          <button className="home-tab" onClick={() => { void refreshWorkspaceProjects(); setWorkspaceView('projects') }} aria-label={t.backProjects}><HomeIcon /> <span>{t.projects}</span></button>
           <span className="tab-divider" />
-          <nav className="project-tabs" aria-label="已打开项目">
+          <nav className="project-tabs" aria-label={t.openProjects}>
             {workspaceTabs.map((project) => {
               const active = project.id === document.id
               return (
@@ -1948,7 +1978,7 @@ export default function CanvasWorkspace({
                       <input
                         autoFocus
                         value={projectTabNameDraft}
-                        aria-label="项目名称"
+                        aria-label={t.projectName}
                         onChange={(event) => setProjectTabNameDraft(event.target.value)}
                         onBlur={() => { void commitProjectTabRename(project) }}
                         onKeyDown={(event) => {
@@ -1966,8 +1996,8 @@ export default function CanvasWorkspace({
                       type="button"
                       className="project-tab__main"
                       aria-current={active ? 'page' : undefined}
-                      aria-label={`打开${project.name}`}
-                      title={active ? '双击重命名' : undefined}
+                      aria-label={t.openProject(project.name)}
+                      title={active ? t.renameProject : undefined}
                       onClick={() => { if (!active) void openWorkspaceProject(project.id) }}
                       onDoubleClick={() => { if (active) beginProjectTabRename(project) }}
                     >
@@ -1980,8 +2010,8 @@ export default function CanvasWorkspace({
                     className="project-tab__close"
                     onClick={() => closeWorkspaceTab(project.id)}
                     disabled={Boolean(closingWorkspaceTabId)}
-                    aria-label={`关闭${project.name}`}
-                    title="关闭标签"
+                    aria-label={t.closeProject(project.name)}
+                    title={t.closeTab}
                   >
                     <CloseIcon />
                   </button>
@@ -1992,10 +2022,11 @@ export default function CanvasWorkspace({
           <button
             className="new-tab"
             onClick={() => { void createWorkspaceProject() }}
-            aria-label="新建创意项目"
+            aria-label={t.newProject}
           >
             <FigmaIcon src={plusIcon} />
           </button>
+          <LanguageSwitcher className="canvas-language-switcher" />
           <button type="button" className="product-home-tab" onClick={onReturnToLanding} aria-label={productHomeLabel}>
             <span>{productHomeLabel}</span>
             <ArrowUpRightIcon />
@@ -2089,7 +2120,7 @@ export default function CanvasWorkspace({
             setImagePreview({
               image: imageNode.image,
               name: isResult
-                ? (imageNode as ResultNodeData).label ?? '生成结果'
+                ? (imageNode as ResultNodeData).label ?? canvasSystemLabel('生成结果', locale)
                 : (imageNode as AssetNodeData).name,
               mediaKind: imageNode.mediaKind ?? 'image',
             })
@@ -2125,7 +2156,7 @@ export default function CanvasWorkspace({
             maskStrokeWidth={1.5}
             pannable
             zoomable
-            ariaLabel="画布导航地图"
+            ariaLabel={t.minimapLabel}
           /> : null}
           {!document.nodes.length ? (
             <Panel position="top-left" className="empty-canvas-guide-panel">
@@ -2137,7 +2168,7 @@ export default function CanvasWorkspace({
                 }}
                 onAddVideo={() => {
                   if (!availableModels.some((model) => model.mediaKind === 'video')) {
-                    useCanvasStore.setState({ assistantMessage: '视频模型尚未配置，请先检查 MiniMax H3。' })
+                    useCanvasStore.setState({ assistantMessage: t.videoModelMissing })
                     return
                   }
                   addGenerateNode({ x: 460, y: 330 }, 'video')
@@ -2164,13 +2195,13 @@ export default function CanvasWorkspace({
           {isConnecting || connectionFeedback ? <ConnectionGuide feedback={isConnecting ? null : connectionFeedback} /> : null}
 
           <Panel position="top-left" className="dock-panel">
-            <nav className="dock" aria-label="画布工具">
-              <button className="dock__add" onClick={(event) => openNodePalette(event, true)} aria-label="新增节点"><FigmaIcon src={plusIcon} /></button>
-              <button className={assetsOpen ? 'dock__button is-active' : 'dock__button'} onClick={() => openDockSurface('assets')} aria-label="打开素材库"><FigmaIcon src={folderIcon} /></button>
-              <button className={templatesOpen ? 'dock__button is-active' : 'dock__button'} onClick={() => openDockSurface('templates')} aria-label="模板"><FigmaIcon src={templatesIcon} /></button>
-              <button className={historyOpen ? 'dock__button is-active' : 'dock__button'} onClick={() => openDockSurface('history')} aria-label="画布历史"><FigmaIcon src={historyIcon} /></button>
-              <button className={deliveryOpen ? 'dock__button dock__button--delivery is-active' : 'dock__button dock__button--delivery'} onClick={() => openDockSurface('delivery')} aria-label="投放交付"><ArrowUpRightIcon /></button>
-              <button ref={accountTriggerRef} className={accountMenuAnchor ? 'dock__account is-active' : 'dock__account'} aria-label="打开账户设置" aria-expanded={Boolean(accountMenuAnchor)} onClick={(event) => {
+            <nav className="dock" aria-label={t.canvasTools}>
+              <button className="dock__add" onClick={(event) => openNodePalette(event, true)} aria-label={t.addNode}><FigmaIcon src={plusIcon} /></button>
+              <button className={assetsOpen ? 'dock__button is-active' : 'dock__button'} onClick={() => openDockSurface('assets')} aria-label={t.openAssets}><FigmaIcon src={folderIcon} /></button>
+              <button className={templatesOpen ? 'dock__button is-active' : 'dock__button'} onClick={() => openDockSurface('templates')} aria-label={t.templates}><FigmaIcon src={templatesIcon} /></button>
+              <button className={historyOpen ? 'dock__button is-active' : 'dock__button'} onClick={() => openDockSurface('history')} aria-label={t.history}><FigmaIcon src={historyIcon} /></button>
+              <button className={deliveryOpen ? 'dock__button dock__button--delivery is-active' : 'dock__button dock__button--delivery'} onClick={() => openDockSurface('delivery')} aria-label={t.delivery}><ArrowUpRightIcon /></button>
+              <button ref={accountTriggerRef} data-account-menu-trigger className={accountMenuAnchor ? 'dock__account is-active' : 'dock__account'} aria-label={t.account} aria-expanded={Boolean(accountMenuAnchor)} onClick={(event) => {
                 if (accountMenuAnchor) {
                   setAccountMenuAnchor(null)
                   return
@@ -2208,9 +2239,9 @@ export default function CanvasWorkspace({
           onRetry={(runId, itemId) => retryBatchVariationItem(runId, itemId)}
         /> : null}
 
-        {!agentOpen ? <button ref={agentLauncherRef} type="button" className="agent-launcher" onClick={agentBridge.open} aria-label="打开 Agent" title="Agent"><SparkleIcon /></button> : null}
+        {!agentOpen ? <button ref={agentLauncherRef} type="button" className="agent-launcher" onClick={agentBridge.open} aria-label={t.openAgent} title="Agent"><SparkleIcon /></button> : null}
 
-        {agentOpen ? <Suspense fallback={<aside className="agent-workspace" aria-label="Botanic Agent"><div className="workspace-loading-indicator" role="status">正在载入 Agent…</div></aside>}><AgentWorkspace
+        {agentOpen ? <Suspense fallback={<aside className="agent-workspace" aria-label="Botanic Agent"><div className="workspace-loading-indicator" role="status">{t.loadingAgent}</div></aside>}><AgentWorkspace
           key={`${document.id}:${agentBridge.activeSession?.id ?? 'none'}`}
           projectId={document.id}
           escapeEnabled={topOverlayLayer([
@@ -2474,15 +2505,15 @@ export default function CanvasWorkspace({
 
         {canvasDropPresence.present ? (
           <div className={`canvas-file-drop is-${canvasDropPresence.phase}`} aria-hidden="true">
-            <span>图片素材</span>
-            <strong>松开即可加入画布</strong>
-            <small>PNG / JPEG / WebP，单张不超过 8MB</small>
+            <span>{t.imageAsset}</span>
+            <strong>{t.dropToAdd}</strong>
+            <small>{t.uploadLimits}</small>
           </div>
         ) : null}
         {canvasUploadMessage ? <div className="canvas-upload-message" role="status">{canvasUploadMessage}</div> : null}
         {nodePalettePresence.present && visibleNodePalette ? (
-          <div className={`node-palette is-${nodePalettePresence.phase}`} style={{ left: visibleNodePalette.screen.x, top: visibleNodePalette.screen.y }} role="dialog" aria-label="添加画布节点" aria-hidden={nodePalettePresence.phase === 'exit' ? true : undefined} onPointerDown={(event) => event.stopPropagation()}>
-            <div className="node-palette__title"><span>{visibleNodePalette.parentResultId ? '基于此图添加' : visibleNodePalette.inputNodeId ? '连接所选节点' : '添加节点'}</span><button onClick={() => setNodePalette(null)} aria-label="关闭添加节点"><CloseIcon /></button></div>
+          <div className={`node-palette is-${nodePalettePresence.phase}`} style={{ left: visibleNodePalette.screen.x, top: visibleNodePalette.screen.y }} role="dialog" aria-label={t.addCanvasNode} aria-hidden={nodePalettePresence.phase === 'exit' ? true : undefined} onPointerDown={(event) => event.stopPropagation()}>
+            <div className="node-palette__title"><span>{visibleNodePalette.parentResultId ? t.addFromImage : visibleNodePalette.inputNodeId ? t.connectSelected : t.addNodeTitle}</span><button onClick={() => setNodePalette(null)} aria-label={t.closeAddNode}><CloseIcon /></button></div>
             <button onClick={() => {
               const parentNode = visibleNodePalette.parentResultId
                 ? document.nodes.find((node) => node.id === visibleNodePalette.parentResultId && node.type === 'result')
@@ -2503,19 +2534,19 @@ export default function CanvasWorkspace({
               if (!visibleNodePalette.parentResultId || branchId) showComposer()
               setNodePalette(null)
             }}>
-              <b><SparkleIcon /></b><span><strong>图片生成</strong><small>{visibleNodePalette.parentResultId ? '基于当前图片继续创作' : '连接素材与描述生成图片'}</small></span>
+              <b><SparkleIcon /></b><span><strong>{t.imageGeneration}</strong><small>{visibleNodePalette.parentResultId ? t.continueImage : t.connectToGenerate}</small></span>
             </button>
             {visibleNodePalette.parentResultId ? <button onClick={() => {
               setBatchComposerTargetId(visibleNodePalette.parentResultId ?? null)
               setNodePalette(null)
             }}>
-              <b>×N</b><span><strong>批量变体</strong><small>用一个素材组逐项生成</small></span>
+              <b>×N</b><span><strong>{t.batchVariations}</strong><small>{t.batchDetail}</small></span>
             </button> : null}
             <button onClick={() => {
               const videoModel = availableModels.find((model) => model.mediaKind === 'video')
               if (!videoModel) {
                 setNodePalette(null)
-                useCanvasStore.setState({ assistantMessage: '视频模型尚未配置，请先检查 MiniMax H3。' })
+                useCanvasStore.setState({ assistantMessage: t.videoModelMissing })
                 return
               }
               const videoSettings = settingsForGenerationModel({
@@ -2541,12 +2572,12 @@ export default function CanvasWorkspace({
               if (!visibleNodePalette.parentResultId || branchId) showComposer()
               setNodePalette(null)
             }}>
-              <b className="node-palette__video-icon">▶</b><span><strong>视频生成</strong><small>{visibleNodePalette.parentResultId ? '以当前画面或视频继续生成' : '连接首帧、首尾帧或参考素材'}</small></span>
+              <b className="node-palette__video-icon">▶</b><span><strong>{t.videoGeneration}</strong><small>{visibleNodePalette.parentResultId ? t.continueVideo : t.videoReferenceDetail}</small></span>
             </button>
             <button onClick={() => { setNodePalette(null); setAssetsOpen(true) }}>
-              <b><FolderOutlineIcon /></b><span><strong>素材</strong><small>添加商品、场景或调性图</small></span>
+              <b><FolderOutlineIcon /></b><span><strong>{t.assets}</strong><small>{t.assetsDetail}</small></span>
             </button>
-            <div className="node-palette__upload"><span>本地图片</span><button onClick={() => nodeFileInputRef.current?.click()}><UploadIcon />上传图片</button></div>
+            <div className="node-palette__upload"><span>{t.localImages}</span><button onClick={() => nodeFileInputRef.current?.click()}><UploadIcon />{t.uploadImages}</button></div>
           </div>
         ) : null}
         <input
@@ -2555,7 +2586,7 @@ export default function CanvasWorkspace({
           type="file"
           accept="image/png,image/jpeg,image/webp"
           multiple
-          aria-label="上传图片并加入画布"
+          aria-label={t.uploadToCanvas}
           onChange={(event) => {
             const files = Array.from(event.currentTarget.files ?? [])
             event.currentTarget.value = ''
@@ -2674,7 +2705,7 @@ export default function CanvasWorkspace({
               nodeId: selectedResult.id,
               versionId: selectedReadyResultData.versionId,
               image: selectedReadyResultData.image!,
-              label: selectedReadyResultData.label ?? '已选首图',
+              label: selectedReadyResultData.label ?? (locale === 'en' ? 'Selected key visual' : '已选首图'),
             } : undefined}
             targets={deliveryTargets}
             blockedVideo={Boolean(selectedReadyResultData && !canUseForImageDelivery(selectedReadyResultData.mediaKind))}
@@ -2697,9 +2728,9 @@ export default function CanvasWorkspace({
         ) : null}
         {imagePreviewPresence.present && visibleImagePreview ? (
           <div className={`image-preview-backdrop motion-overlay is-${imagePreviewPresence.phase}`} role="presentation" aria-hidden={imagePreviewPresence.phase === 'exit' ? true : undefined} onMouseDown={() => setImagePreview(null)}>
-            <section ref={imagePreviewDialogRef} className="image-preview-dialog" role="dialog" aria-modal="true" aria-label={`${visibleImagePreview.name}预览`} onMouseDown={(event) => event.stopPropagation()}>
-              <button className="image-preview-dialog__download" type="button" aria-label="下载原媒体" title="下载原媒体" onClick={() => void downloadMedia(visibleImagePreview.image, visibleImagePreview.name, visibleImagePreview.mediaKind)}><DownloadIcon /></button>
-              <button className="image-preview-dialog__close" type="button" onClick={() => setImagePreview(null)} aria-label="关闭媒体预览"><CloseIcon /></button>
+            <section ref={imagePreviewDialogRef} className="image-preview-dialog" role="dialog" aria-modal="true" aria-label={t.preview(visibleImagePreview.name)} onMouseDown={(event) => event.stopPropagation()}>
+              <button className="image-preview-dialog__download" type="button" aria-label={t.downloadMedia} title={t.downloadMedia} onClick={() => void downloadMedia(visibleImagePreview.image, visibleImagePreview.name, visibleImagePreview.mediaKind)}><DownloadIcon /></button>
+              <button className="image-preview-dialog__close" type="button" onClick={() => setImagePreview(null)} aria-label={t.closePreview}><CloseIcon /></button>
               {visibleImagePreview.mediaKind === 'video'
                 ? <video src={visibleImagePreview.image} aria-label={visibleImagePreview.name} controls playsInline preload="metadata" />
                 : <img src={visibleImagePreview.image} alt={visibleImagePreview.name} />}

@@ -96,7 +96,11 @@ export type GenerationServiceHealth = {
 }
 
 function readableApiError(payload: ApiErrorPayload | null, fallback: string) {
-  return payload?.error?.message || fallback
+  return readProductLocale() === 'en' ? fallback : payload?.error?.message || fallback
+}
+
+function generationCopy(zh: string, en: string) {
+  return readProductLocale() === 'en' ? en : zh
 }
 
 // 任务提交、轮询与读取旧参考素材共用同一上限，避免画布永久停在“正在整理参考素材”。
@@ -133,9 +137,9 @@ async function requestJson<T>(path: string, init?: RequestInit, timeoutMs = gene
     })
   } catch {
     if (timedOut) {
-      throw new GenerationApiError('任务等待超过 5 分钟，已停止等待。请重试。', { code: 'REQUEST_TIMEOUT', status: 0 })
+      throw new GenerationApiError(generationCopy('任务等待超过 5 分钟，已停止等待。请重试。', 'The task timed out after 5 minutes. Try again.'), { code: 'REQUEST_TIMEOUT', status: 0 })
     }
-    throw new GenerationApiError('真实生图服务不可用，请稍后重试。', { status: 0 })
+    throw new GenerationApiError(generationCopy('真实生图服务不可用，请稍后重试。', 'The generation service is unavailable. Try again shortly.'), { status: 0 })
   } finally {
     window.clearTimeout(timeoutId)
     init?.signal?.removeEventListener('abort', onCallerAbort)
@@ -145,7 +149,7 @@ async function requestJson<T>(path: string, init?: RequestInit, timeoutMs = gene
   if (!response.ok) {
     const error = payload as ApiErrorPayload | null
     invalidateProductSessionIfRequired({ status: response.status, code: error?.error?.code })
-    throw new GenerationApiError(readableApiError(error, '真实生图服务返回异常，请稍后重试。'), {
+    throw new GenerationApiError(readableApiError(error, generationCopy('真实生图服务返回异常，请稍后重试。', 'The generation service returned an error. Try again shortly.')), {
       code: error?.error?.code,
       status: response.status,
     })
@@ -279,20 +283,20 @@ export async function submitGenerationJob(input: SubmitGenerationInput) {
       if (confirmation.status === 'found') return confirmation.job
       if (confirmation.status === 'unknown') {
         throw new GenerationApiError(
-          '暂时无法确认任务状态，请不要重复提交；网络恢复后将自动恢复。',
+          generationCopy('暂时无法确认任务状态，请不要重复提交；网络恢复后将自动恢复。', 'The task status is not confirmed yet. Do not submit it again; recovery will resume when the connection returns.'),
           { code: 'SUBMISSION_STATUS_UNKNOWN', status: 0 },
         )
       }
       if (attempt === 2) {
         throw new GenerationApiError(
-          '服务端已确认未创建该任务，请重试。',
+          generationCopy('服务端已确认未创建该任务，请重试。', 'The server confirmed that the task was not created. Try again.'),
           { code: 'SUBMISSION_NOT_CONFIRMED', status: 0 },
         )
       }
       await new Promise((resolve) => window.setTimeout(resolve, 500))
     }
   }
-  throw new GenerationApiError('真实生图任务提交失败，请重试。', { status: 0 })
+  throw new GenerationApiError(generationCopy('真实生图任务提交失败，请重试。', 'The generation task could not be submitted. Try again.'), { status: 0 })
 }
 
 export function getGenerationJob(jobId: string) {

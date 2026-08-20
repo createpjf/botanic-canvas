@@ -34,8 +34,42 @@ import {
 } from '../../lib/agentApi'
 import { flushPendingCanvasDocumentWrites } from '../../lib/db'
 import { serverPersistenceEnabled } from '../../lib/productSession'
+import { localizeProductError } from '../../i18n/core'
+import { useProductI18n } from '../../i18n/react'
 import { useCanvasStore } from '../../store/canvasStore'
 import type { AgentArtifactIndexState, AgentContextItem, AgentDockTarget } from '../agent/agentWorkspace.types'
+import { canvasSystemLabel } from './canvasI18n'
+
+const canvasAgentExecutionCopy = {
+  'zh-CN': {
+    selectedResult: '已选结果',
+    imageAsset: '图片素材',
+    generatedResult: '生成结果',
+    textDescription: '文字描述',
+    generateNode: '生成节点',
+    projectChanged: '项目已切换，本次计划未启动。',
+    projectChangedResult: '已切换项目，结果保留在原项目，未写入当前画布。',
+    actionFailed: 'Agent 操作执行失败，请稍后重试。',
+    runPersistenceFailed: 'Agent Run 无法持久化，请稍后重试。',
+    initialGenerationRequiresService: '首次生成需要连接工作区服务，以创建可恢复任务；当前未修改画布。',
+    missingParentResult: '当前计划缺少父结果，未创建画布节点。',
+    generationNotStarted: '生成任务未启动，请检查参考素材与生成服务。',
+  },
+  en: {
+    selectedResult: 'Selected result',
+    imageAsset: 'Image asset',
+    generatedResult: 'Generated result',
+    textDescription: 'Text description',
+    generateNode: 'Generation node',
+    projectChanged: 'The project changed, so this plan was not started.',
+    projectChangedResult: 'The project changed. The result remains in the original project and was not added to this canvas.',
+    actionFailed: 'Unable to complete the Agent action. Try again.',
+    runPersistenceFailed: 'Unable to save the Agent run. Try again.',
+    initialGenerationRequiresService: 'Connect to the workspace service to create a recoverable first-generation task. The canvas was not changed.',
+    missingParentResult: 'This plan has no parent result, so no canvas node was created.',
+    generationNotStarted: 'The generation task did not start. Check the reference assets and generation service.',
+  },
+} as const
 
 type UseCanvasAgentExecutionBridgeOptions = {
   document: CanvasDocument
@@ -67,6 +101,8 @@ export function useCanvasAgentExecutionBridge({
   onPrepareAgentOpen,
   onPrepareCanvasFocus,
 }: UseCanvasAgentExecutionBridgeOptions) {
+  const { locale } = useProductI18n()
+  const copy = canvasAgentExecutionCopy[locale]
   const updateGenerateNode = useCanvasStore((state) => state.updateGenerateNode)
   const runGraphGeneration = useCanvasStore((state) => state.runGraphGeneration)
   const runBatchVariation = useCanvasStore((state) => state.runBatchVariation)
@@ -113,7 +149,7 @@ export function useCanvasAgentExecutionBridge({
   const targetData = targetNode?.type === 'result' ? targetNode.data as ResultNodeData : undefined
   const rootRecipe = targetData?.rootRecipe ?? targetData?.generationRecipe
   const target: AgentDockTarget | undefined = targetNode?.type === 'result' && targetData?.image && rootRecipe
-    ? { id: targetNode.id, label: targetData.label ?? '已选结果', image: targetData.image, rootRecipe }
+    ? { id: targetNode.id, label: canvasSystemLabel(targetData.label ?? copy.selectedResult, locale), image: targetData.image, rootRecipe }
     : undefined
   const latestRun = useMemo(() => {
     const candidates = new Map<string, typeof document.agentRuns[number]>()
@@ -184,15 +220,16 @@ export function useCanvasAgentExecutionBridge({
 
   const indexedArtifacts = artifactIndex.projectId === document.id ? artifactIndex.artifacts : []
   const artifacts = useMemo(
-    () => mergeBotanicAgentArtifactIndex(indexedArtifacts, localArtifacts),
-    [indexedArtifacts, localArtifacts],
+    () => mergeBotanicAgentArtifactIndex(indexedArtifacts, localArtifacts)
+      .map((artifact) => ({ ...artifact, label: canvasSystemLabel(artifact.label, locale) })),
+    [indexedArtifacts, localArtifacts, locale],
   )
   const contextOptions = useMemo(() => document.nodes.flatMap((node): AgentContextItem[] => {
     if (node.type === 'asset') {
       const data = node.data as AssetNodeData
       return [{
         id: node.id,
-        label: data.name ?? '图片素材',
+        label: data.name ?? copy.imageAsset,
         kind: '素材',
         image: data.image,
         assetId: data.assetId,
@@ -204,24 +241,24 @@ export function useCanvasAgentExecutionBridge({
     if (node.type === 'result') {
       const data = node.data as ResultNodeData
       return data.image && canUseForImageDelivery(data.mediaKind)
-        ? [{ id: node.id, label: data.label ?? '生成结果', kind: '结果', image: data.image, mediaKind: data.mediaKind ?? 'image', source: 'generated' }]
+        ? [{ id: node.id, label: canvasSystemLabel(data.label ?? copy.generatedResult, locale), kind: '结果', image: data.image, mediaKind: data.mediaKind ?? 'image', source: 'generated' }]
         : []
     }
     if (node.type === 'text') {
       const data = node.data as TextNodeData
       return [{
         id: node.id,
-        label: data.label ?? '文字描述',
+        label: canvasSystemLabel(data.label ?? copy.textDescription, locale),
         kind: '文字',
         ...(data.content?.trim() ? { content: data.content.trim() } : {}),
       }]
     }
     if (node.type === 'generate') {
       const data = node.data as GenerateNodeData
-      return [{ id: node.id, label: data.label ?? '生成节点', kind: '节点' }]
+      return [{ id: node.id, label: canvasSystemLabel(data.label ?? copy.generateNode, locale), kind: '节点' }]
     }
     return []
-  }), [document.nodes])
+  }), [copy.generateNode, copy.generatedResult, copy.imageAsset, copy.textDescription, document.nodes, locale])
 
   const loadMoreArtifacts = useCallback(async () => {
     const cursor = artifactIndex.projectId === document.id ? artifactIndex.nextBefore : undefined
@@ -338,10 +375,18 @@ export function useCanvasAgentExecutionBridge({
 
   const confirmAction = useCallback(async (action: BotanicAgentActionProposal): Promise<BotanicAgentActionResult> => {
     const projectId = document.id
-    const response = await executeProjectAgentAction({ projectId, action })
+    let response
+    try {
+      response = await executeProjectAgentAction({ projectId, action })
+    } catch (caught) {
+      throw new Error(localizeProductError(caught, locale, {
+        'zh-CN': canvasAgentExecutionCopy['zh-CN'].actionFailed,
+        en: canvasAgentExecutionCopy.en.actionFailed,
+      }))
+    }
     const output = response.output
     if (useCanvasStore.getState().document.id !== projectId) {
-      return { ...output, message: `${output.message} 已切换项目，结果保留在原项目，未写入当前画布。` }
+      return { ...output, message: `${output.message} ${copy.projectChangedResult}` }
     }
     const nodes = useCanvasStore.getState().document.nodes
     const origin = nodes.length
@@ -370,7 +415,7 @@ export function useCanvasAgentExecutionBridge({
       }
     }
     return recordBotanicAgentCanvasWritebacks(output, writebacks)
-  }, [addTextNode, addUploadedAssetsToCanvas, document.id, renameCanvasNode, updateTextNode])
+  }, [addTextNode, addUploadedAssetsToCanvas, copy.projectChangedResult, document.id, locale, renameCanvasNode, updateTextNode])
 
   const confirmPlan = useCallback(async (plan: BotanicAgentPlan, submissionKey?: string) => {
     const projectId = document.id
@@ -395,7 +440,7 @@ export function useCanvasAgentExecutionBridge({
     if (serverPersistenceEnabled) {
       try {
         const activeDocument = useCanvasStore.getState().document
-        if (activeDocument.id !== projectId) throw new Error('项目已切换，本次计划未启动。')
+        if (activeDocument.id !== projectId) throw new Error(copy.projectChanged)
         const contextNodeIds = new Set(plan.contextSnapshot?.map((item) => item.nodeId) ?? [])
         const contextSources = activeDocument.nodes.flatMap((node) => {
           if (!contextNodeIds.has(node.id)) return []
@@ -414,9 +459,9 @@ export function useCanvasAgentExecutionBridge({
           ...contextSources,
         ])]
         const replacements = await prepareAgentMediaSources(sources, (source) => persistAgentReferenceMedia(activeDocument.id, source))
-        if (useCanvasStore.getState().document.id !== projectId) throw new Error('项目已切换，本次计划未启动。')
+        if (useCanvasStore.getState().document.id !== projectId) throw new Error(copy.projectChanged)
         await replaceMediaSources(replacements)
-        if (useCanvasStore.getState().document.id !== projectId) throw new Error('项目已切换，本次计划未启动。')
+        if (useCanvasStore.getState().document.id !== projectId) throw new Error(copy.projectChanged)
         const snapshot = await createPersistentBotanicAgentRun({
           projectId,
           plan,
@@ -486,15 +531,22 @@ export function useCanvasAgentExecutionBridge({
         await refreshDocumentFromRemote().catch(() => false)
         return { started: execution.jobIds.length > 0, runId }
       } catch (caught) {
-        throw new Error(caught instanceof Error ? caught.message : 'Agent Run 无法持久化，请稍后重试。')
+        const projectChanged = caught instanceof Error && caught.message === copy.projectChanged
+        throw new Error(localizeProductError(caught, locale, projectChanged ? {
+          'zh-CN': canvasAgentExecutionCopy['zh-CN'].projectChanged,
+          en: canvasAgentExecutionCopy.en.projectChanged,
+        } : {
+          'zh-CN': canvasAgentExecutionCopy['zh-CN'].runPersistenceFailed,
+          en: canvasAgentExecutionCopy.en.runPersistenceFailed,
+        }))
       }
     }
-    if (useCanvasStore.getState().document.id !== projectId) throw new Error('项目已切换，本次计划未启动。')
+    if (useCanvasStore.getState().document.id !== projectId) throw new Error(copy.projectChanged)
     if (plan.intent === 'initial_generation') {
-      throw new Error('首次生成需要连接工作区服务，以创建可恢复任务；当前未修改画布。')
+      throw new Error(copy.initialGenerationRequiresService)
     }
     const selectedResultNodeId = plan.selectedResultNodeId
-    if (!selectedResultNodeId) throw new Error('当前计划缺少父结果，未创建画布节点。')
+    if (!selectedResultNodeId) throw new Error(copy.missingParentResult)
     runId = saveAgentPlan(plan)
     updateAgentRunStatus(runId, 'executing')
     let started = false
@@ -534,11 +586,11 @@ export function useCanvasAgentExecutionBridge({
       }
     }
     if (!started) {
-      updateAgentRunStatus(runId, 'failed', '生成任务未启动，请检查参考素材与生成服务。')
+      updateAgentRunStatus(runId, 'failed', copy.generationNotStarted)
       return { started: false, runId }
     }
     return { started: true, runId }
-  }, [applyAgentRunSnapshot, applyAgentWorkflowPatch, createGenerateBranchFromResult, createGenerateFromResultRecipe, document.assetGroups, document.id, onPrepareCanvasFocus, refreshDocumentFromRemote, replaceMediaSources, resolveRunNodes, runBatchVariation, runGraphGeneration, saveAgentPlan, selectNode, updateAgentRunStatus, updateGenerateNode])
+  }, [applyAgentRunSnapshot, applyAgentWorkflowPatch, copy.generationNotStarted, copy.initialGenerationRequiresService, copy.missingParentResult, copy.projectChanged, createGenerateBranchFromResult, createGenerateFromResultRecipe, document.assetGroups, document.id, locale, onPrepareCanvasFocus, refreshDocumentFromRemote, replaceMediaSources, resolveRunNodes, runBatchVariation, runGraphGeneration, saveAgentPlan, selectNode, updateAgentRunStatus, updateGenerateNode])
 
   const newSession = useCallback(() => {
     const sessionId = startNewAgentSession(selectedFocusNodeIds)

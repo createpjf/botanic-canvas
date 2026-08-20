@@ -14,7 +14,7 @@ import {
   type BotanicAgentMessage,
   type BotanicAgentRun,
 } from '../../domain/agent'
-import type { AgentTimelineState, TimelineStepKind } from '../../domain/agentTimeline'
+import type { AgentTimelineState, TimelineBlock, TimelineStepKind } from '../../domain/agentTimeline'
 import type { GenerationModelOption, GenerationSettings } from '../../domain/canvas'
 import { generationSettingsSizeLabel, modelSupportsCustomSize, applyCustomGenerationSize, withoutCustomGenerationSize } from '../../domain/generationOutputSize'
 import { settingsForGenerationModel } from '../../domain/generationRecipe'
@@ -54,6 +54,22 @@ function TimelineStepIcon({ kind }: { kind: TimelineStepKind }) {
   return <ChecklistIcon />
 }
 
+function timelineStepTitle(block: Extract<TimelineBlock, { type: 'step' }>, locale: ProductLocale) {
+  if (locale !== 'en' || !/\p{Script=Han}/u.test(block.title)) return block.title
+  if (block.kind === 'search') {
+    const count = block.count ?? 1
+    if (block.status === 'running') return `Searching websites${block.count ? ` · ${count} checked` : ''}`
+    if (block.status === 'failed') return `Website search failed${block.count ? ` · ${count} checked` : ''}`
+    return `${count} ${count === 1 ? 'website' : 'websites'} searched`
+  }
+  if (block.kind === 'fetch') return 'Fetching webpage'
+  if (block.kind === 'read_skill') return 'Reading Skill guide'
+  if (block.kind === 'connect_runtime') return 'Connecting browser runtime'
+  if (block.kind === 'read') return 'Reading project data'
+  if (block.kind === 'write') return 'Writing project data'
+  return 'Running tool'
+}
+
 function AgentMessageTimeline({ timeline }: { timeline: AgentTimelineState }) {
   const { locale } = useProductI18n()
   const running = timeline.blocks.some((block) => block.type === 'thinking' && block.status === 'running')
@@ -78,14 +94,15 @@ function AgentMessageTimeline({ timeline }: { timeline: AgentTimelineState }) {
       if (block.type === 'narration') return <p key={block.id} className="agent-timeline__narration">{block.text}</p>
       if (block.type === 'step') {
         const statusLabel = block.status === 'running' ? (locale === 'en' ? 'Running' : '进行中') : block.status === 'succeeded' ? (locale === 'en' ? 'Completed' : '已完成') : (locale === 'en' ? 'Failed' : '失败')
-        return <div key={block.id} className={`agent-timeline__step is-${block.status}`} aria-label={`${block.title}，${statusLabel}`}>
+        const title = timelineStepTitle(block, locale)
+        return <div key={block.id} className={`agent-timeline__step is-${block.status}`} aria-label={`${title}, ${statusLabel}`}>
           <span className="agent-timeline__step-icon" aria-hidden="true">{block.status === 'failed' ? <AlertIcon /> : <TimelineStepIcon kind={block.kind} />}</span>
-          <strong>{block.title}</strong>
+          <strong>{title}</strong>
           <small>{statusLabel}</small>
         </div>
       }
       return <details key={block.id} className="agent-timeline__raw" open={block.open || undefined}>
-        <summary><span>{block.summary}</span><small>{block.items.length} {locale === 'en' ? 'items' : '项'}</small></summary>
+        <summary><span>{locale === 'en' ? `${block.items.length} tool ${block.items.length === 1 ? 'call' : 'calls'}` : block.summary}</span><small>{block.items.length} {locale === 'en' ? 'items' : '项'}</small></summary>
         <div className="agent-timeline__raw-list">
           {block.items.map((item) => <div key={item.id} className={`is-${item.status}`}>
             <span><strong>{item.label}</strong><code>{item.name}</code></span>
@@ -152,7 +169,7 @@ function AgentPlanSettingsEditor({
     }
     const applied = applyCustomGenerationSize(settings, Number(widthDraft), Number(heightDraft))
     if (!applied.ok || !applied.settings) {
-      setCustomHint(applied.ok ? (locale === 'en' ? 'Custom width and height are invalid.' : '自定义宽高无效。') : applied.message)
+      setCustomHint(locale === 'en' ? 'Custom width and height are invalid.' : applied.ok ? '自定义宽高无效。' : applied.message)
       return
     }
     setCustomHint(applied.snapped ? `${locale === 'en' ? 'Adjusted to' : '已对齐为'} ${applied.width}×${applied.height}` : '')
@@ -518,7 +535,10 @@ export function AgentConversationMessage({
             </div>)}</div>
           </details> : null}
           {appliedSkills.length ? <div className="agent-plan__skills" aria-label={t('已应用 Skill', 'Applied Skills')}>
-            {appliedSkills.map((action) => <span key={action.id}>Skill · {botanicAgentAppliedSkillName(action)}</span>)}
+            {appliedSkills.map((action) => {
+              const name = botanicAgentAppliedSkillName(action)
+              return <span key={action.id}>Skill · {name === '已应用' ? t('已应用', 'Applied') : name}</span>
+            })}
           </div> : null}
           {confirmableActions.length ? <div className="agent-message__actions" aria-label={t('待确认行动', 'Actions awaiting approval')}>
             {confirmableActions.map((action) => {

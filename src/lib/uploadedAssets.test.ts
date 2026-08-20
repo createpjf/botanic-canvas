@@ -11,4 +11,5 @@ test('上传素材端口集中声明批次上限和可接受图片类型', () =>
   assert.equal(maxUploadAssets, 12)
   assert.deepEqual(result.accepted, [accepted])
   assert.match(result.message, /已跳过 2 个文件/)
+  assert.match(validateUploadFiles([accepted, rejectedType, empty], 'en').message, /Skipped 2 files/)
 })

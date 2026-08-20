@@ -99,6 +99,7 @@ type BriefGenerationModel = Pick<GenerationModelOption, 'id' | 'label' | 'mediaK
 
 export type AdvanceBotanicCreativeBriefInput = {
   mode: BotanicCreativeBriefMode
+  locale?: 'zh-CN' | 'en'
   executionMode?: 'manual' | 'auto'
   instruction: string
   generationModels?: readonly BriefGenerationModel[]
@@ -166,6 +167,45 @@ const preservationLabels: Record<BotanicPreservationPriority, string> = {
   product: '商品主体与结构',
   garment: '服装款式与材质',
   balanced: '整体平衡',
+}
+
+const englishDeliveryLabels: Record<BotanicDeliveryPreset, string> = {
+  taobao: 'Taobao / Tmall', xiaohongshu: 'RED', douyin: 'Douyin', custom: 'Custom aspect ratio',
+}
+const englishPromptDirectionLabels: Record<BotanicPromptDirection, string> = {
+  faithful: 'Natural and faithful', commercial: 'Commercial campaign', editorial: 'Editorial mood', social: 'Social lifestyle', custom: 'Custom direction',
+}
+const englishPromptDirectionDescriptions: Record<BotanicPromptDirection, string> = {
+  faithful: 'Prioritize the subject and original features', commercial: 'Strengthen product communication and conversion', editorial: 'Strengthen composition, light, and texture', social: 'Natural, lived-in, and easy to share', custom: 'Describe your own creative direction',
+}
+const englishPreservationLabels: Record<BotanicPreservationPriority, string> = {
+  identity: 'Identity and facial features', product: 'Product subject and structure', garment: 'Garment shape and material', balanced: 'Balanced preservation',
+}
+
+function localizeClarification(clarification: BotanicAgentClarification, locale: 'zh-CN' | 'en') {
+  if (locale !== 'en') return clarification
+  const fieldLabels: Partial<Record<BotanicAgentClarificationFieldId, string>> = {
+    model: 'Model', delivery_preset: 'Use and aspect ratio', aspect_ratio: 'Aspect ratio', resolution: 'Resolution', prompt_direction: 'Prompt direction', preservation_priority: 'Preserve', custom_direction: 'Custom direction', variation_values: 'Variation values', variation_combine: 'Variation mode',
+  }
+  return {
+    ...clarification,
+    question: 'Confirm these settings to continue refining the prompt. No image will be generated yet.',
+    fields: clarification.fields.map((field) => ({
+      ...field,
+      label: fieldLabels[field.id] ?? field.label,
+      ...(field.id === 'custom_direction' ? { placeholder: 'For example: restrained cinematic light with natural skin texture' } : {}),
+      options: field.options.map((option) => {
+        if (field.id === 'delivery_preset' && option.value in englishDeliveryLabels) return { ...option, label: englishDeliveryLabels[option.value as BotanicDeliveryPreset] }
+        if (field.id === 'prompt_direction' && option.value in englishPromptDirectionLabels) {
+          const value = option.value as BotanicPromptDirection
+          return { ...option, label: englishPromptDirectionLabels[value], description: englishPromptDirectionDescriptions[value] }
+        }
+        if (field.id === 'preservation_priority' && option.value in englishPreservationLabels) return { ...option, label: englishPreservationLabels[option.value as BotanicPreservationPriority] }
+        if (field.id === 'resolution') return { ...option, description: option.value === '2K' ? 'Recommended' : 'Faster generation' }
+        return option
+      }),
+    })),
+  }
 }
 
 function createBrief(input: AdvanceBotanicCreativeBriefInput): BotanicCreativeBrief {
@@ -345,19 +385,28 @@ function mergeAnswers(
   return next
 }
 
-function compileBriefPrompt(brief: BotanicCreativeBrief) {
+function compileBriefPrompt(brief: BotanicCreativeBrief, locale: 'zh-CN' | 'en' = 'zh-CN') {
   const details: string[] = []
   if (brief.output.deliveryPreset) {
-    details.push(`交付用途：${deliveryLabels[brief.output.deliveryPreset]}${brief.output.aspectRatio ? `，画面比例 ${brief.output.aspectRatio}` : ''}`)
+    details.push(locale === 'en'
+      ? `Delivery: ${englishDeliveryLabels[brief.output.deliveryPreset]}${brief.output.aspectRatio ? `, aspect ratio ${brief.output.aspectRatio}` : ''}`
+      : `交付用途：${deliveryLabels[brief.output.deliveryPreset]}${brief.output.aspectRatio ? `，画面比例 ${brief.output.aspectRatio}` : ''}`)
   }
   if (brief.creative.promptDirection) {
     const direction = brief.creative.promptDirection === 'custom' && brief.creative.customDirection
       ? brief.creative.customDirection
-      : promptDirectionLabels[brief.creative.promptDirection]
-    details.push(`Prompt 优化方向：${direction}`)
+      : locale === 'en'
+        ? englishPromptDirectionLabels[brief.creative.promptDirection]
+        : promptDirectionLabels[brief.creative.promptDirection]
+    details.push(locale === 'en' ? `Prompt direction: ${direction}` : `Prompt 优化方向：${direction}`)
   }
-  if (brief.creative.preservationPriority) details.push(`保持重点：${preservationLabels[brief.creative.preservationPriority]}`)
-  return details.length ? `${brief.originalInstruction}\n\n创作简报：\n- ${details.join('\n- ')}` : brief.originalInstruction
+  if (brief.creative.preservationPriority) {
+    details.push(locale === 'en'
+      ? `Preserve: ${englishPreservationLabels[brief.creative.preservationPriority]}`
+      : `保持重点：${preservationLabels[brief.creative.preservationPriority]}`)
+  }
+  const briefHeading = locale === 'en' ? 'Creative brief:' : '创作简报：'
+  return details.length ? `${brief.originalInstruction}\n\n${briefHeading}\n- ${details.join('\n- ')}` : brief.originalInstruction
 }
 
 function completeAutomaticBrief(brief: BotanicCreativeBrief, model: BriefGenerationModel | undefined) {
@@ -382,31 +431,32 @@ function completeAutomaticBrief(brief: BotanicCreativeBrief, model: BriefGenerat
 }
 
 export function advanceBotanicCreativeBrief(input: AdvanceBotanicCreativeBriefInput): BotanicCreativeBriefTurn {
+  const locale = input.locale ?? 'zh-CN'
   const current = input.previousBrief ? structuredClone(input.previousBrief) : createBrief(input)
   if (input.mode === 'generation') {
     const models = input.generationModels ?? []
     if (!models.length) {
-      return { kind: 'failed', brief: current, code: 'NO_IMAGE_MODEL', message: '当前没有可用的图片模型，请先检查模型配置。' }
+      return { kind: 'failed', brief: current, code: 'NO_IMAGE_MODEL', message: locale === 'en' ? 'No image model is available. Check the model configuration.' : '当前没有可用的图片模型，请先检查模型配置。' }
     }
     const selectedModelId = input.answers?.model?.trim() || current.output.model
     const selectedModel = models.find((item) => item.id === selectedModelId)
     if (!selectedModel) {
-      return { kind: 'failed', brief: current, code: 'MODEL_UNAVAILABLE', message: '所选图片模型当前不可用，请重新选择。' }
+      return { kind: 'failed', brief: current, code: 'MODEL_UNAVAILABLE', message: locale === 'en' ? 'The selected image model is unavailable. Choose another model.' : '所选图片模型当前不可用，请重新选择。' }
     }
     const requestedAspectRatio = input.answers?.aspect_ratio?.trim() || input.requestedSettings?.aspectRatio
     if (requestedAspectRatio && !supportsValue(selectedModel.aspectRatios, requestedAspectRatio)) {
-      return { kind: 'failed', brief: current, code: 'ASPECT_RATIO_UNSUPPORTED', message: '所选模型不支持这个画面比例，请重新选择。' }
+      return { kind: 'failed', brief: current, code: 'ASPECT_RATIO_UNSUPPORTED', message: locale === 'en' ? 'The selected model does not support this aspect ratio. Choose another ratio.' : '所选模型不支持这个画面比例，请重新选择。' }
     }
     const requestedResolution = input.answers?.resolution?.trim() || input.requestedSettings?.resolution
     if (requestedResolution && !supportsValue(selectedModel.resolutions, requestedResolution)) {
-      return { kind: 'failed', brief: current, code: 'RESOLUTION_UNSUPPORTED', message: '所选模型不支持这个分辨率，请重新选择。' }
+      return { kind: 'failed', brief: current, code: 'RESOLUTION_UNSUPPORTED', message: locale === 'en' ? 'The selected model does not support this resolution. Choose another resolution.' : '所选模型不支持这个分辨率，请重新选择。' }
     }
     const requestedPreset = input.answers?.delivery_preset?.trim() as BotanicDeliveryPreset | undefined
     if (requestedPreset && !deliveryPresetValues.has(requestedPreset)) {
-      return { kind: 'failed', brief: current, code: 'DELIVERY_PRESET_UNSUPPORTED', message: '这个交付用途当前不受支持，请重新选择。' }
+      return { kind: 'failed', brief: current, code: 'DELIVERY_PRESET_UNSUPPORTED', message: locale === 'en' ? 'This delivery preset is not supported. Choose another preset.' : '这个交付用途当前不受支持，请重新选择。' }
     }
     if (requestedPreset && requestedPreset !== 'custom' && !supportsValue(selectedModel.aspectRatios, deliveryRatios[requestedPreset])) {
-      return { kind: 'failed', brief: current, code: 'DELIVERY_PRESET_UNSUPPORTED', message: '所选模型不支持这个交付用途所需的画面比例。' }
+      return { kind: 'failed', brief: current, code: 'DELIVERY_PRESET_UNSUPPORTED', message: locale === 'en' ? 'The selected model does not support the aspect ratio required by this delivery preset.' : '所选模型不支持这个交付用途所需的画面比例。' }
     }
   }
   const brief = mergeAnswers(current, input.answers, input.generationModels)
@@ -478,7 +528,7 @@ export function advanceBotanicCreativeBrief(input: AdvanceBotanicCreativeBriefIn
       brief,
       fields: fields.slice(0, 3),
     }
-    return { kind: 'ask', brief, clarification }
+    return { kind: 'ask', brief, clarification: localizeClarification(clarification, locale) }
   }
   return {
     kind: 'ready',
@@ -489,6 +539,6 @@ export function advanceBotanicCreativeBrief(input: AdvanceBotanicCreativeBriefIn
       ...(brief.output.resolution ? { resolution: brief.output.resolution } : {}),
       ...(customGenerationSizeFields(input.requestedSettings) ?? customGenerationSizeFields(input.inheritedSettings) ?? {}),
     },
-    prompt: compileBriefPrompt(brief),
+    prompt: compileBriefPrompt(brief, locale),
   }
 }

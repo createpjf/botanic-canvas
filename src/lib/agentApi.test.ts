@@ -21,6 +21,7 @@ const group: AssetGroup = {
 test('浏览器只向 Agent Planner 发送参考元数据，不发送图片与媒体地址', () => {
   const request = buildBotanicAgentPlanRequest({
     projectId: 'project-agent',
+    locale: 'zh-CN',
     plannerModel: 'kimi-k3',
     instruction: '保持人物服装不变，替换场景。',
     requestedIntent: 'replace_scene',
@@ -39,6 +40,7 @@ test('浏览器只向 Agent Planner 发送参考元数据，不发送图片与�
 
   assert.deepEqual(request, {
     projectId: 'project-agent',
+    locale: 'zh-CN',
     plannerModel: 'kimi-k3',
     instruction: '保持人物服装不变，替换场景。',
     requestedIntent: 'replace_scene',
@@ -140,7 +142,7 @@ test('浏览器合成计划时保留追问后的生成参数，而不是被旧�
 
 test('已有基准图时请求张数一路带到规划器，并按上限收敛单次生成', () => {
   const base = {
-    projectId: 'project-agent', instruction: '基于这张再做 3 张', requestedIntent: 'continue_generation' as const,
+    projectId: 'project-agent', locale: 'zh-CN' as const, instruction: '基于这张再做 3 张', requestedIntent: 'continue_generation' as const,
     selectedResultNodeId: 'result-v03', selectedResultLabel: '首图候选 01', rootRecipe: recipe,
   }
   assert.equal(buildBotanicAgentPlanRequest({ ...base, outputCount: 3 }).outputCount, 3)

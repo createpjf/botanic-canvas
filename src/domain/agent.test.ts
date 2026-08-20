@@ -1392,6 +1392,24 @@ test('画布文字节点作为补充描述进入上下文快照与提示词', ()
   assert.match(plan.prompt, /补充描述：\n- 留白要求：右上角留出文案位置。/)
 })
 
+test('英文模式的本地计划使用英文标题、摘要与上下文说明', () => {
+  const plan = buildBotanicAgentPlan({
+    locale: 'en',
+    instruction: 'Create a seaside campaign image',
+    intent: 'initial_generation',
+    settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
+    contextSnapshot: [
+      { nodeId: 'asset-product', label: 'Product', kind: '素材', mediaKind: 'image', role: '商品' },
+      { nodeId: 'text-brief', label: 'Layout note', kind: '文字', note: 'Keep the upper-right corner clear.' },
+    ],
+  })
+
+  assert.equal(plan.title, 'Generate')
+  assert.equal(plan.summary, 'Initial generation. Generate 1 new version.')
+  assert.match(plan.prompt, /Additional context:\n- Layout note: Keep the upper-right corner clear\./)
+  assert.doesNotMatch(`${plan.title}\n${plan.summary}\n${plan.prompt}`, /[\u3400-\u9fff]/u)
+})
+
 test('上下文补充描述被截断到长度上限', () => {
   const [item] = createBotanicAgentContextSnapshot([
     { id: 'text-long', label: '长描述', kind: '文字', content: 'x'.repeat(900) },

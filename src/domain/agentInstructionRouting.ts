@@ -114,6 +114,7 @@ export function resolveBotanicAgentInstructionEntry(input: {
 
 export type BotanicAgentGenerationDraftInput = {
   instruction: string
+  locale?: 'zh-CN' | 'en'
   decision: BotanicAgentGenerationDecision
   options: BotanicAgentInstructionOptions
   messages: BotanicAgentMessage[]
@@ -200,6 +201,7 @@ export function prepareBotanicAgentGenerationDraft(input: BotanicAgentGeneration
   // 视频一次一条、局部重绘一次一张，都不进入变体展开。
   const pendingVariation = isVideo || options.region ? undefined : botanicAgentPendingVariationClarification({
     instruction,
+    locale: input.locale,
     requestedIntent: input.requestedIntent,
     clarificationAnswers: options.clarificationAnswers,
     brief: options.creativeBrief,
@@ -275,9 +277,11 @@ export type BotanicAgentInitialDraftPlanResult =
 export function buildBotanicAgentInitialDraftPlan(
   draft: Extract<BotanicAgentGenerationDraft, { kind: 'ready' }>,
   clarificationAnswers?: Record<string, string>,
+  locale: 'zh-CN' | 'en' = 'zh-CN',
 ): BotanicAgentInitialDraftPlanResult {
   const initialPlan = buildBotanicAgentPlan({
     instruction: draft.prompt,
+    locale,
     creativeBrief: draft.brief,
     intent: 'initial_generation',
     settings: draft.planSettings,
@@ -289,6 +293,7 @@ export function buildBotanicAgentInitialDraftPlan(
     ? { kind: 'plan' as const, plan: initialPlan }
     : applyBotanicAgentVariationToPlan(initialPlan, {
       instruction: draft.instruction,
+      locale,
       requestedIntent: 'initial_generation',
       clarificationAnswers,
       brief: draft.brief,

@@ -13,6 +13,7 @@ export function ProductI18nProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     document.documentElement.lang = locale
+    document.title = locale === 'en' ? 'Botanic · Creative workspace' : 'Botanic · 创意工作台'
     try {
       window.localStorage.setItem(productLocaleStorageKey, locale)
     } catch {

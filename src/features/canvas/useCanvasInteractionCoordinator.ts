@@ -21,6 +21,7 @@ import type {
   UploadedAssetInput,
 } from '../../domain/canvas'
 import { readUploadedAssetInput, validateUploadFiles } from '../../lib/uploadedAssets'
+import { useProductI18n } from '../../i18n/react'
 import { useCanvasStore } from '../../store/canvasStore'
 
 export type ScreenToFlowPosition = (position: { x: number; y: number }) => { x: number; y: number }
@@ -77,6 +78,7 @@ export function useCanvasInteractionCoordinator({
   viewportReadyRef,
   onSelectionReset,
 }: UseCanvasInteractionCoordinatorOptions) {
+  const { locale } = useProductI18n()
   const setNodes = useCanvasStore((state) => state.setNodes)
   const setNodesTransient = useCanvasStore((state) => state.setNodesTransient)
   const setEdges = useCanvasStore((state) => state.setEdges)
@@ -174,7 +176,7 @@ export function useCanvasInteractionCoordinator({
 
   const addDroppedFilesToCanvas = useCallback(async (files: File[], position: { x: number; y: number }) => {
     const projectId = document.id
-    const { accepted, message } = validateUploadFiles(files)
+    const { accepted, message } = validateUploadFiles(files, locale)
     const imageFiles = accepted.slice(0, 12)
     setCanvasUploadMessage(message)
     if (!imageFiles.length) return
@@ -188,9 +190,9 @@ export function useCanvasInteractionCoordinator({
       .map((result) => result.value)
     if (uploads.length && useCanvasStore.getState().document.id === projectId) {
       addUploadedAssetsToCanvas(uploads, position)
-      if (!message) setCanvasUploadMessage('已加入画布并存入素材库。')
+      if (!message) setCanvasUploadMessage(locale === 'en' ? 'Added to the canvas and saved to the asset library.' : '已加入画布并存入素材库。')
     }
-  }, [addUploadedAssetsToCanvas, document.id, document.nodes])
+  }, [addUploadedAssetsToCanvas, document.id, document.nodes, locale])
 
   const onCanvasDragOver = useCallback((event: DragEvent<HTMLElement>) => {
     event.preventDefault()

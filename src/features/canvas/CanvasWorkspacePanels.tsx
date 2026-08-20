@@ -43,6 +43,41 @@ import {
 } from '../../lib/productionWorkflowApi'
 import { maxUploadAssets, readUploadedAssetInput, validateUploadFiles } from '../../lib/uploadedAssets'
 import { CloseIcon, DeleteIcon, DownloadIcon, FocusIcon, MoreIcon, PlusSquareIcon, UploadIcon } from '../../components/BotanicIcons'
+import { formatProductDateTime, localizeProductError } from '../../i18n/core'
+import { useProductI18n, useProductMessages } from '../../i18n/react'
+import { canvasAssetRoleLabel, canvasAssetSourceLabel, canvasDurationLabel, canvasSystemLabel } from './canvasI18n'
+
+const batchCopy = {
+  'zh-CN': {
+    prompts: {
+      '场景': '保持父图中的人物、服装与商品主体一致，分别替换为素材组中的场景，并让光线、透视与接触关系自然融合。',
+      '调性': '保持父图中的人物、服装、商品与构图一致，分别参考素材组中的视觉风格调整色彩、光线与质感。',
+      '模特': '保持父图中的服装、商品、场景与整体构图，分别替换为素材组中的模特，并自然适配姿势与光线。',
+      '商品': '保持父图中的人物、场景与视觉风格，分别替换为素材组中的商品或服装，并保持商品结构、图案与标识清晰。',
+      '首图': '保持父图的主体与构图，分别使用素材组中的首图参考。',
+    },
+    statuses: { queued: '排队中', running: '处理中', partial: '部分完成', failed: '未完成', cancelled: '已取消', succeeded: '已完成' }, itemStatuses: { queued: '排队中', running: '生成中', succeeded: '已完成', cancelled: '已取消', failed: '失败' }, progress: '批量变体进度', title: '批量变体', completed: (done: number, total: number) => `${done}/${total} 张完成`, retry: '重试', close: '关闭批量变体', parent: '父图', branchHint: '新结果会形成子分支，不覆盖父图', variableGroup: '可变素材组', chooseGroup: '选择可变素材组', groupOption: (name: string, count: number, role: string) => `${name} · ${count} 个${role}`, parentReference: '父图主参考', lockSubject: '锁定核心主体', variable: (role: string) => `可变：${role}`, changeBrief: '变化说明', model: '模型', chooseModel: '选择批量生成模型', ratio: '比例', chooseRatio: '选择批量画面比例', resolution: '分辨率', chooseResolution: '选择批量输出分辨率', each: '每项候选', total: (assets: number, each: number, total: number, over: boolean) => `${assets} 个素材 × ${each} = ${total} 张${over ? '（最多 20 张）' : ''}`, taskRunning: '已有任务运行中', generate: (total: number) => `生成 ${total} 张`, createGroup: '先创建一个素材组', createGroupHint: '可在素材库上传整个文件夹，系统会自动形成素材组。', openLibrary: '打开素材库',
+  },
+  en: {
+    prompts: {
+      '场景': 'Keep the people, clothing, and product consistent while replacing the scene with each asset in the group. Blend lighting, perspective, and contact naturally.',
+      '调性': 'Keep the people, clothing, product, and composition while applying the color, lighting, and texture of each style reference.',
+      '模特': 'Keep the clothing, product, scene, and composition while replacing the model with each asset and adapting pose and lighting naturally.',
+      '商品': 'Keep the people, scene, and visual style while replacing the product or garment with each asset. Preserve its structure, pattern, and branding.',
+      '首图': 'Keep the subject and composition while using each key visual in the group as a reference.',
+    },
+    statuses: { queued: 'Queued', running: 'Processing', partial: 'Partially complete', failed: 'Incomplete', cancelled: 'Cancelled', succeeded: 'Complete' }, itemStatuses: { queued: 'Queued', running: 'Generating', succeeded: 'Complete', cancelled: 'Cancelled', failed: 'Failed' }, progress: 'Batch variation progress', title: 'Batch variations', completed: (done: number, total: number) => `${done}/${total} complete`, retry: 'Retry', close: 'Close batch variations', parent: 'Parent image', branchHint: 'New results become child branches and do not overwrite the parent', variableGroup: 'Variable asset group', chooseGroup: 'Choose variable asset group', groupOption: (name: string, count: number, role: string) => `${name} · ${count} ${role}`, parentReference: 'Parent reference', lockSubject: 'Lock core subject', variable: (role: string) => `Variable: ${role}`, changeBrief: 'Variation brief', model: 'Model', chooseModel: 'Choose batch model', ratio: 'Ratio', chooseRatio: 'Choose batch aspect ratio', resolution: 'Resolution', chooseResolution: 'Choose batch output resolution', each: 'Candidates each', total: (assets: number, each: number, total: number, over: boolean) => `${assets} assets × ${each} = ${total}${over ? ' (20 maximum)' : ''}`, taskRunning: 'Another task is running', generate: (total: number) => `Generate ${total}`, createGroup: 'Create an asset group first', createGroupHint: 'Upload a folder in the asset library to create a group automatically.', openLibrary: 'Open asset library',
+  },
+} as const
+
+const assetCopy = {
+  'zh-CN': {
+    library: '素材库', uploadAsset: '上传素材', upload: '上传', uploadImages: '上传图片', maxImages: `最多 ${maxUploadAssets} 张`, uploadFolder: '上传文件夹', recursive: '递归读取图片', close: '关闭素材库', bulkImages: '批量上传图片素材', bulkFolder: '批量上传图片文件夹', drop: '松开以上传', staged: '待入库素材', stagedCount: (count: number) => `待入库 · ${count}/${maxUploadAssets}`, clear: '清空', assetName: (name: string) => `素材名称 ${name}`, role: (name: string) => `${name} 的角色`, tags: (name: string) => `${name} 的标签`, tagsPlaceholder: '标签，用逗号分隔', removePending: (name: string) => `移除待上传素材 ${name}`, readyAfterSave: '确认后可拖入画布', saveCount: (count: number) => `入库 ${count} 张`, mediaType: '素材媒体类型', images: '图片', videos: '视频', searchPlaceholder: '搜索素材或标签', search: '搜索素材', sourceFilter: (count: number) => `筛选素材来源${count ? `，已启用 ${count} 项` : ''}`, source: '来源', assetSource: '素材来源', all: '全部', clearSource: '清除来源筛选', assetType: '素材类型', groups: '素材组', newGroup: '新建', noGroups: '暂无素材组', groupName: '素材组名称', groupType: '素材组类型', cancel: '取消', create: (count: number) => `创建${count ? `并加入 ${count} 项` : ''}`, renameGroup: '重命名素材组', save: '保存', assetsRemain: '素材仍会保留', confirmDelete: '确认删除', rename: '重命名', deleteGroup: '删除组', filtered: '筛选结果', allAssets: '全部素材', itemCount: (count: number) => `${count} 项`, cardTitle: '点击预览，或拖拽到画布', preview: (name: string) => `预览 ${name}`, select: (name: string, selected: boolean) => `${selected ? '取消选择' : '选择'} ${name}`, addToCanvas: (name: string) => `将 ${name} 加入画布`, add: '加入画布', more: (name: string) => `更多操作：${name}`, empty: '没有匹配的素材', moreMenu: (name: string) => `${name} 的更多操作`, setType: (name: string) => `设置 ${name} 的素材类型`, deleteAsset: '删除素材', previewAsset: (name: string) => `预览素材 ${name}`, closePreview: '关闭素材预览', videoAsset: '视频素材', imageAsset: '图片素材', noTags: '暂无标签', download: '下载', bulkActions: '批量素材操作', selected: (count: number) => `已选 ${count} 项`, addGroup: '加入素材组', addSelectedGroup: '将所选素材加入素材组', createGroupOption: '＋ 新建素材组', maxStaged: `单次最多暂存 ${maxUploadAssets} 张图片`, chooseImages: '请选择 PNG、JPEG 或 WebP 图片', stagedNotice: (count: number) => `已暂存 ${count} 张，单次最多 ${maxUploadAssets} 张。`, readFailed: (count: number) => `${count} 张图片读取失败。`, savedLocal: '已存入本地素材库',
+  },
+  en: {
+    library: 'Asset library', uploadAsset: 'Upload assets', upload: 'Upload', uploadImages: 'Upload images', maxImages: `Up to ${maxUploadAssets}`, uploadFolder: 'Upload folder', recursive: 'Read images recursively', close: 'Close asset library', bulkImages: 'Upload multiple image assets', bulkFolder: 'Upload an image folder', drop: 'Drop to upload', staged: 'Assets to save', stagedCount: (count: number) => `Ready to save · ${count}/${maxUploadAssets}`, clear: 'Clear', assetName: (name: string) => `Asset name: ${name}`, role: (name: string) => `${name} role`, tags: (name: string) => `${name} tags`, tagsPlaceholder: 'Tags, separated by commas', removePending: (name: string) => `Remove pending asset ${name}`, readyAfterSave: 'Save before dragging to canvas', saveCount: (count: number) => `Save ${count}`, mediaType: 'Asset media type', images: 'Images', videos: 'Videos', searchPlaceholder: 'Search assets or tags', search: 'Search assets', sourceFilter: (count: number) => `Filter asset source${count ? `, ${count} active` : ''}`, source: 'Source', assetSource: 'Asset source', all: 'All', clearSource: 'Clear source filter', assetType: 'Asset type', groups: 'Asset groups', newGroup: 'New', noGroups: 'No asset groups', groupName: 'Asset group name', groupType: 'Asset group type', cancel: 'Cancel', create: (count: number) => `Create${count ? ` and add ${count}` : ''}`, renameGroup: 'Rename asset group', save: 'Save', assetsRemain: 'Assets will remain', confirmDelete: 'Confirm delete', rename: 'Rename', deleteGroup: 'Delete group', filtered: 'Filtered results', allAssets: 'All assets', itemCount: (count: number) => `${count} ${count === 1 ? 'item' : 'items'}`, cardTitle: 'Select to preview or drag to canvas', preview: (name: string) => `Preview ${name}`, select: (name: string, selected: boolean) => `${selected ? 'Deselect' : 'Select'} ${name}`, addToCanvas: (name: string) => `Add ${name} to canvas`, add: 'Add to canvas', more: (name: string) => `More actions: ${name}`, empty: 'No matching assets', moreMenu: (name: string) => `More actions for ${name}`, setType: (name: string) => `Set asset type for ${name}`, deleteAsset: 'Delete asset', previewAsset: (name: string) => `Preview asset ${name}`, closePreview: 'Close asset preview', videoAsset: 'Video asset', imageAsset: 'Image asset', noTags: 'No tags', download: 'Download', bulkActions: 'Bulk asset actions', selected: (count: number) => `${count} selected`, addGroup: 'Add to asset group', addSelectedGroup: 'Add selected assets to group', createGroupOption: '+ New asset group', maxStaged: `Up to ${maxUploadAssets} images per batch`, chooseImages: 'Choose PNG, JPEG, or WebP images', stagedNotice: (count: number) => `${count} staged, up to ${maxUploadAssets} per batch.`, readFailed: (count: number) => `${count} images could not be read.`, savedLocal: 'Saved to local asset library',
+  },
+} as const
 
 export type GeneratedHistoryItem = {
   id: string
@@ -102,11 +137,8 @@ function imagePreviewSize(imageWidth: number, imageHeight: number) {
   }
 }
 
-function batchVariationDefaultPrompt(role: AssetGroup['role']) {
-  if (role === '场景') return '保持父图中的人物、服装与商品主体一致，分别替换为素材组中的场景，并让光线、透视与接触关系自然融合。'
-  if (role === '调性') return '保持父图中的人物、服装、商品与构图一致，分别参考素材组中的视觉风格调整色彩、光线与质感。'
-  if (role === '模特') return '保持父图中的服装、商品、场景与整体构图，分别替换为素材组中的模特，并自然适配姿势与光线。'
-  return '保持父图中的人物、场景与视觉风格，分别替换为素材组中的商品或服装，并保持商品结构、图案与标识清晰。'
+function batchVariationDefaultPrompt(role: AssetGroup['role'], locale: 'zh-CN' | 'en') {
+  return batchCopy[locale].prompts[role]
 }
 
 export function BatchVariationProgress({
@@ -116,42 +148,26 @@ export function BatchVariationProgress({
   run: BatchVariationRun
   onRetry: (runId: string, itemId: string) => void
 }) {
+  const { locale } = useProductI18n()
+  const t = batchCopy[locale]
   const completedCount = run.items.filter((item) => item.status === 'succeeded').length
   const settledCount = run.items.filter((item) => item.status === 'succeeded' || item.status === 'failed' || item.status === 'cancelled').length
   const progress = run.items.length ? Math.round((settledCount / run.items.length) * 100) : 0
-  const statusLabel = run.status === 'queued'
-    ? '排队中'
-    : run.status === 'running'
-      ? '处理中'
-      : run.status === 'partial'
-        ? '部分完成'
-        : run.status === 'failed'
-          ? '未完成'
-          : run.status === 'cancelled'
-            ? '已取消'
-            : '已完成'
-  const itemStatusLabel = (status: BatchVariationRun['items'][number]['status']) => status === 'queued'
-    ? '排队中'
-    : status === 'running'
-      ? '生成中'
-      : status === 'succeeded'
-        ? '已完成'
-        : status === 'cancelled'
-          ? '已取消'
-          : '失败'
+  const statusLabel = t.statuses[run.status]
+  const itemStatusLabel = (status: BatchVariationRun['items'][number]['status']) => t.itemStatuses[status]
 
   return createPortal(
-    <aside className="batch-variation-progress" role="status" aria-live="polite" aria-label="批量变体进度">
+    <aside className="batch-variation-progress" role="status" aria-live="polite" aria-label={t.progress}>
       <header>
-        <span><strong>批量变体</strong><small>{run.groupName} · {completedCount}/{run.items.length} 张完成</small></span>
+        <span><strong>{t.title}</strong><small>{run.groupName} · {t.completed(completedCount, run.items.length)}</small></span>
         <b>{statusLabel}</b>
       </header>
       <div className="batch-variation-progress__track" aria-hidden="true"><i style={{ width: `${progress}%` }} /></div>
       <ul>
         {run.items.map((item) => <li key={item.id} className={`is-${item.status}`}>
           <span className="batch-variation-progress__marker" aria-hidden="true">{item.status === 'succeeded' ? '✓' : item.status === 'failed' ? '!' : item.status === 'cancelled' ? '–' : ''}</span>
-          <span className="batch-variation-progress__copy"><strong>{item.assetName}</strong><small>{item.error ?? itemStatusLabel(item.status)}</small></span>
-          {item.status === 'failed' ? <button type="button" onClick={() => onRetry(run.id, item.id)}>重试</button> : null}
+          <span className="batch-variation-progress__copy"><strong>{item.assetName}</strong><small>{item.error ? localizeProductError(new Error(item.error), locale, { 'zh-CN': item.error, en: t.itemStatuses.failed }) : itemStatusLabel(item.status)}</small></span>
+          {item.status === 'failed' ? <button type="button" onClick={() => onRetry(run.id, item.id)}>{t.retry}</button> : null}
         </li>)}
       </ul>
     </aside>,
@@ -180,6 +196,8 @@ export function BatchVariationComposer({
   onSubmit: (request: BatchVariationRequest) => void
   onClose: () => void
 }) {
+  const { locale } = useProductI18n()
+  const t = batchCopy[locale]
   const dialogRef = useDialogFocusTrap(true)
   const imageAssetIds = useMemo(() => new Set(assets.filter((asset) => (asset.mediaKind ?? 'image') === 'image').map((asset) => asset.id)), [assets])
   const availableGroups = useMemo(() => groups.map((group) => ({
@@ -188,7 +206,7 @@ export function BatchVariationComposer({
   })).filter((group) => group.assetIds.length), [groups, imageAssetIds])
   const [groupId, setGroupId] = useState(availableGroups[0]?.id ?? '')
   const activeGroup = availableGroups.find((group) => group.id === groupId) ?? availableGroups[0]
-  const [prompt, setPrompt] = useState(() => batchVariationDefaultPrompt(availableGroups[0]?.role ?? '场景'))
+  const [prompt, setPrompt] = useState<string>(() => batchVariationDefaultPrompt(availableGroups[0]?.role ?? '场景', locale))
   const [candidatesPerAsset, setCandidatesPerAsset] = useState(1)
   const [settings, setSettings] = useState(() => {
     const imageModel = models.find((model) => model.id === target.settings.model && (model.mediaKind ?? 'image') === 'image')
@@ -206,31 +224,31 @@ export function BatchVariationComposer({
 
   return createPortal(
     <div className="batch-variation-backdrop" role="presentation" onPointerDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
-      <section ref={dialogRef} className="batch-variation-composer" role="dialog" aria-modal="true" aria-label="批量变体">
+      <section ref={dialogRef} className="batch-variation-composer" role="dialog" aria-modal="true" aria-label={t.title}>
         <header>
-          <div><span>BATCH VARIATION</span><h2>批量变体</h2></div>
-          <button type="button" onClick={onClose} aria-label="关闭批量变体"><CloseIcon /></button>
+          <div><span>BATCH VARIATION</span><h2>{t.title}</h2></div>
+          <button type="button" onClick={onClose} aria-label={t.close}><CloseIcon /></button>
         </header>
-        <div className="batch-variation-source"><img src={target.image} alt="" /><div><span>父图</span><strong>{target.name}</strong><small>新结果会形成子分支，不覆盖父图</small></div></div>
+        <div className="batch-variation-source"><img src={target.image} alt="" /><div><span>{t.parent}</span><strong>{target.name}</strong><small>{t.branchHint}</small></div></div>
         {availableGroups.length ? <>
-          <label className="batch-variation-field"><span>可变素材组</span><BotanicSelect value={activeGroup?.id ?? ''} ariaLabel="选择可变素材组" options={availableGroups.map((group) => ({ value: group.id, label: `${group.name} · ${group.assetIds.length} 个${group.role}` }))} onChange={(value) => {
+          <label className="batch-variation-field"><span>{t.variableGroup}</span><BotanicSelect value={activeGroup?.id ?? ''} ariaLabel={t.chooseGroup} options={availableGroups.map((group) => ({ value: group.id, label: t.groupOption(group.name, group.assetIds.length, canvasAssetRoleLabel(group.role, locale)) }))} onChange={(value) => {
             const next = availableGroups.find((group) => group.id === value)
             setGroupId(value)
-            if (next) setPrompt(batchVariationDefaultPrompt(next.role))
+            if (next) setPrompt(batchVariationDefaultPrompt(next.role, locale))
           }} /></label>
-          <div className="batch-variation-locks"><span>父图主参考</span><strong>锁定核心主体</strong><i>可变：{activeGroup?.role}</i></div>
-          <label className="batch-variation-field"><span>变化说明</span><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={4} /></label>
+          <div className="batch-variation-locks"><span>{t.parentReference}</span><strong>{t.lockSubject}</strong><i>{activeGroup ? t.variable(canvasAssetRoleLabel(activeGroup.role, locale)) : ''}</i></div>
+          <label className="batch-variation-field"><span>{t.changeBrief}</span><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={4} /></label>
           <div className="batch-variation-parameters">
-            <label><span>模型</span><BotanicSelect value={settings.model} ariaLabel="选择批量生成模型" menuWidth={180} options={models.filter((model) => (model.mediaKind ?? 'image') === 'image').map((model) => ({ value: model.id, label: model.label }))} onChange={(value) => {
+            <label><span>{t.model}</span><BotanicSelect value={settings.model} ariaLabel={t.chooseModel} menuWidth={180} options={models.filter((model) => (model.mediaKind ?? 'image') === 'image').map((model) => ({ value: model.id, label: model.label }))} onChange={(value) => {
               const model = models.find((item) => item.id === value)
               if (model) setSettings((current) => settingsForGenerationModel(current, model))
             }} /></label>
-            <label><span>比例</span><BotanicSelect value={settings.aspectRatio} ariaLabel="选择批量画面比例" options={(selectedModel?.aspectRatios ?? ['1:1', '16:9', '4:3', '3:4', '4:5', '9:16']).map((ratio) => ({ value: ratio, label: ratio }))} onChange={(value) => setSettings((current) => withoutCustomGenerationSize({ ...current, aspectRatio: value as GenerationSettings['aspectRatio'] }))} /></label>
-            <label><span>分辨率</span><BotanicSelect value={settings.resolution} ariaLabel="选择批量输出分辨率" options={(selectedModel?.resolutions ?? ['1K', '2K']).map((resolution) => ({ value: resolution, label: resolution }))} onChange={(value) => setSettings((current) => ({ ...current, resolution: value as GenerationSettings['resolution'] }))} /></label>
-            <label><span>每项候选</span><input type="number" min={1} max={maximumCandidates} value={candidatesPerAsset} onChange={(event) => setCandidatesPerAsset(Math.min(maximumCandidates, Math.max(1, Math.round(Number(event.target.value)) || 1)))} /></label>
+            <label><span>{t.ratio}</span><BotanicSelect value={settings.aspectRatio} ariaLabel={t.chooseRatio} options={(selectedModel?.aspectRatios ?? ['1:1', '16:9', '4:3', '3:4', '4:5', '9:16']).map((ratio) => ({ value: ratio, label: ratio }))} onChange={(value) => setSettings((current) => withoutCustomGenerationSize({ ...current, aspectRatio: value as GenerationSettings['aspectRatio'] }))} /></label>
+            <label><span>{t.resolution}</span><BotanicSelect value={settings.resolution} ariaLabel={t.chooseResolution} options={(selectedModel?.resolutions ?? ['1K', '2K']).map((resolution) => ({ value: resolution, label: resolution }))} onChange={(value) => setSettings((current) => ({ ...current, resolution: value as GenerationSettings['resolution'] }))} /></label>
+            <label><span>{t.each}</span><input type="number" min={1} max={maximumCandidates} value={candidatesPerAsset} onChange={(event) => setCandidatesPerAsset(Math.min(maximumCandidates, Math.max(1, Math.round(Number(event.target.value)) || 1)))} /></label>
           </div>
-          <footer><span className={overLimit ? 'is-error' : ''}>{activeGroup?.assetIds.length ?? 0} 个素材 × {candidatesPerAsset} = {total} 张{overLimit ? '（最多 20 张）' : ''}</span><button type="button" disabled={busy || overLimit || !prompt.trim()} onClick={() => activeGroup && onSubmit({ groupId: activeGroup.id, prompt, candidatesPerAsset, settings })}>{busy ? '已有任务运行中' : `生成 ${total} 张`}</button></footer>
-        </> : <div className="batch-variation-empty"><strong>先创建一个素材组</strong><p>可在素材库上传整个文件夹，系统会自动形成素材组。</p><button type="button" onClick={onOpenAssets}>打开素材库</button></div>}
+          <footer><span className={overLimit ? 'is-error' : ''}>{t.total(activeGroup?.assetIds.length ?? 0, candidatesPerAsset, total, overLimit)}</span><button type="button" disabled={busy || overLimit || !prompt.trim()} onClick={() => activeGroup && onSubmit({ groupId: activeGroup.id, prompt, candidatesPerAsset, settings })}>{busy ? t.taskRunning : t.generate(total)}</button></footer>
+        </> : <div className="batch-variation-empty"><strong>{t.createGroup}</strong><p>{t.createGroupHint}</p><button type="button" onClick={onOpenAssets}>{t.openLibrary}</button></div>}
       </section>
     </div>,
     document.body,
@@ -250,6 +268,11 @@ export function AssetLibrary({
   onDelete,
   onClose,
 }: AssetLibraryProps) {
+  const { locale } = useProductI18n()
+  const t = assetCopy[locale]
+  const displayAssetName = (asset: AssetRecord) => asset.source === 'generated'
+    ? canvasSystemLabel(asset.name, locale)
+    : asset.name
   const [mediaKind, setMediaKind] = useState<GenerationMediaKind>('image')
   const [role, setRole] = useState<'全部' | AssetRole>('全部')
   const [source, setSource] = useState<'全部' | AssetSource>('全部')
@@ -278,10 +301,10 @@ export function AssetLibrary({
   const previewDialogRef = useDialogFocusTrap(Boolean(previewAssetId))
   const roles: Array<'全部' | AssetRole> = ['全部', '商品', '模特', '场景', '调性']
   const stageFiles = async (files: File[]) => {
-    const { accepted: imageFiles, message } = validateUploadFiles(files)
+    const { accepted: imageFiles, message } = validateUploadFiles(files, locale)
     const allowed = imageFiles.slice(0, Math.max(0, maxUploadAssets - pendingUploads.length))
     if (!allowed.length) {
-      setUploadMessage(pendingUploads.length >= maxUploadAssets ? `单次最多暂存 ${maxUploadAssets} 张图片` : message || '请选择 PNG、JPEG 或 WebP 图片')
+      setUploadMessage(pendingUploads.length >= maxUploadAssets ? t.maxStaged : (locale === 'zh-CN' ? message : '') || t.chooseImages)
       return
     }
 
@@ -299,8 +322,8 @@ export function AssetLibrary({
     setPendingUploads((items) => [...items, ...staged])
     const notices = [
       message,
-      imageFiles.length > allowed.length ? `已暂存 ${staged.length} 张，单次最多 ${maxUploadAssets} 张。` : '',
-      loaded.length > staged.length ? `${loaded.length - staged.length} 张图片读取失败。` : '',
+      imageFiles.length > allowed.length ? t.stagedNotice(staged.length) : '',
+      loaded.length > staged.length ? t.readFailed(loaded.length - staged.length) : '',
     ].filter(Boolean)
     setUploadMessage(notices.join(' '))
   }
@@ -322,7 +345,7 @@ export function AssetLibrary({
     setPendingUploads([])
     setSource('upload')
     setQuery('')
-    setUploadMessage('已存入本地素材库')
+    setUploadMessage(t.savedLocal)
   }
   const deferredQuery = useDeferredValue(query)
   const mediaCounts = useMemo(() => ({
@@ -361,7 +384,7 @@ export function AssetLibrary({
     document.addEventListener('keydown', closePreview)
     return () => document.removeEventListener('keydown', closePreview)
   }, [previewAssetId])
-  const sourceLabel = (itemSource: AssetSource) => itemSource === 'brand' ? '共享品牌' : itemSource === 'upload' ? '本地上传' : '生成入库'
+  const sourceLabel = (itemSource: AssetSource) => canvasAssetSourceLabel(itemSource, locale)
   const assetMenuPosition = (trigger: HTMLButtonElement) => {
     const rect = trigger.getBoundingClientRect()
     const width = 260
@@ -432,7 +455,7 @@ export function AssetLibrary({
   return (
     <aside
       className={`${pendingUploads.length ? 'asset-library has-pending-uploads' : 'asset-library'}${isDraggingFiles ? ' is-dragging-files' : ''}`}
-      aria-label="素材库"
+      aria-label={t.library}
       onDragOver={(event) => {
         if (!Array.from(event.dataTransfer.types).includes('Files')) return
         event.preventDefault()
@@ -451,29 +474,29 @@ export function AssetLibrary({
     >
       <div className="asset-library__header">
         <div>
-          <h2>素材库</h2>
+          <h2>{t.library}</h2>
         </div>
         <div className="asset-library__header-actions">
           <details className="asset-upload-menu">
-            <summary aria-label="上传素材"><UploadIcon />上传</summary>
+            <summary aria-label={t.uploadAsset}><UploadIcon />{t.upload}</summary>
             <div>
               <button type="button" onClick={(event) => {
                 fileInputRef.current?.click()
                 event.currentTarget.closest('details')?.removeAttribute('open')
               }}>
-                <strong>上传图片</strong>
-                <span>最多 {maxUploadAssets} 张</span>
+                <strong>{t.uploadImages}</strong>
+                <span>{t.maxImages}</span>
               </button>
               <button type="button" onClick={(event) => {
                 folderInputRef.current?.click()
                 event.currentTarget.closest('details')?.removeAttribute('open')
               }}>
-                <strong>上传文件夹</strong>
-                <span>递归读取图片</span>
+                <strong>{t.uploadFolder}</strong>
+                <span>{t.recursive}</span>
               </button>
             </div>
           </details>
-          <button className="close-panel" onClick={onClose} aria-label="关闭素材库"><CloseIcon /></button>
+          <button className="close-panel" onClick={onClose} aria-label={t.close}><CloseIcon /></button>
         </div>
       </div>
       <input
@@ -482,7 +505,7 @@ export function AssetLibrary({
         type="file"
         accept="image/png,image/jpeg,image/webp"
         multiple
-        aria-label="批量上传图片素材"
+        aria-label={t.bulkImages}
         onChange={(event) => {
           const files = Array.from(event.currentTarget.files ?? [])
           event.currentTarget.value = ''
@@ -496,43 +519,43 @@ export function AssetLibrary({
         accept="image/png,image/jpeg,image/webp"
         multiple
         {...({ webkitdirectory: '', directory: '' } as Record<string, string>)}
-        aria-label="批量上传图片文件夹"
+        aria-label={t.bulkFolder}
         onChange={(event) => {
           const files = Array.from(event.currentTarget.files ?? [])
           event.currentTarget.value = ''
           void stageFiles(files)
         }}
       />
-      {assetDropPresence.present ? <div className={`asset-drop-overlay is-${assetDropPresence.phase}`}><UploadIcon /><strong>松开以上传</strong><span>PNG、JPEG、WebP</span></div> : null}
+      {assetDropPresence.present ? <div className={`asset-drop-overlay is-${assetDropPresence.phase}`}><UploadIcon /><strong>{t.drop}</strong><span>PNG / JPEG / WebP</span></div> : null}
       {uploadMessage ? <p className="upload-message">{uploadMessage}</p> : null}
       {pendingUploads.length ? (
-        <section className="upload-staging" aria-label="待入库素材">
+        <section className="upload-staging" aria-label={t.staged}>
           <div className="upload-staging__header">
-            <strong>待入库 · {pendingUploads.length}/{maxUploadAssets}</strong>
-            <button onClick={() => setPendingUploads([])}>清空</button>
+            <strong>{t.stagedCount(pendingUploads.length)}</strong>
+            <button onClick={() => setPendingUploads([])}>{t.clear}</button>
           </div>
           <div className="upload-staging__list">
             {pendingUploads.map((item) => (
               <article className="upload-staging__item" key={item.id}>
                 <img src={item.image} alt={item.name} />
                 <div>
-                  <input value={item.name} onChange={(event) => updatePending(item.id, { name: event.target.value })} aria-label={`素材名称 ${item.name}`} />
+                  <input value={item.name} onChange={(event) => updatePending(item.id, { name: event.target.value })} aria-label={t.assetName(item.name)} />
                   <div className="upload-staging__fields">
-                    <BotanicSelect value={item.role} onChange={(value) => updatePending(item.id, { role: value as UploadedAssetInput['role'] })} ariaLabel={`${item.name} 的角色`} options={uploadRoles.map((itemRole) => ({ value: itemRole, label: itemRole }))} />
-                    <input value={item.tagsText} onChange={(event) => updatePending(item.id, { tagsText: event.target.value })} placeholder="标签，用逗号分隔" aria-label={`${item.name} 的标签`} />
+                    <BotanicSelect value={item.role} onChange={(value) => updatePending(item.id, { role: value as UploadedAssetInput['role'] })} ariaLabel={t.role(item.name)} options={uploadRoles.map((itemRole) => ({ value: itemRole, label: canvasAssetRoleLabel(itemRole, locale) }))} />
+                    <input value={item.tagsText} onChange={(event) => updatePending(item.id, { tagsText: event.target.value })} placeholder={t.tagsPlaceholder} aria-label={t.tags(item.name)} />
                   </div>
                 </div>
-                <button className="upload-staging__remove" onClick={() => setPendingUploads((items) => items.filter((pending) => pending.id !== item.id))} aria-label={`移除待上传素材 ${item.name}`}><DeleteIcon /></button>
+                <button className="upload-staging__remove" onClick={() => setPendingUploads((items) => items.filter((pending) => pending.id !== item.id))} aria-label={t.removePending(item.name)}><DeleteIcon /></button>
               </article>
             ))}
           </div>
           <div className="upload-staging__footer">
-            <span>确认后可拖入画布</span>
-            <button onClick={savePendingUploads}>入库 {pendingUploads.length} 张</button>
+            <span>{t.readyAfterSave}</span>
+            <button onClick={savePendingUploads}>{t.saveCount(pendingUploads.length)}</button>
           </div>
         </section>
       ) : null}
-      <div className="asset-library__media-tabs" role="tablist" aria-label="素材媒体类型">
+      <div className="asset-library__media-tabs" role="tablist" aria-label={t.mediaType}>
         {(['image', 'video'] as const).map((kind) => (
           <button
             type="button"
@@ -545,50 +568,50 @@ export function AssetLibrary({
               setGroupId('全部')
               setSelectedAssetIds(new Set())
             }}
-          >{kind === 'image' ? '图片' : '视频'} <span>{mediaCounts[kind]}</span></button>
+          >{kind === 'image' ? t.images : t.videos} <span>{mediaCounts[kind]}</span></button>
         ))}
       </div>
       <div className="asset-library__toolbar">
-        <input className="asset-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索素材或标签" aria-label="搜索素材" />
+        <input className="asset-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t.searchPlaceholder} aria-label={t.search} />
         <details className="asset-filter-popover">
-          <summary aria-label={`筛选素材来源${advancedFilterCount ? `，已启用 ${advancedFilterCount} 项` : ''}`}>
-            来源{advancedFilterCount ? <i>{advancedFilterCount}</i> : null}
+          <summary aria-label={t.sourceFilter(advancedFilterCount)}>
+            {t.source}{advancedFilterCount ? <i>{advancedFilterCount}</i> : null}
           </summary>
           <div className="asset-filter-popover__panel">
             <section>
-              <span>素材来源</span>
-              <div className="asset-filter-options asset-filter-options--source" role="group" aria-label="素材来源">
+              <span>{t.assetSource}</span>
+              <div className="asset-filter-options asset-filter-options--source" role="group" aria-label={t.assetSource}>
                 {(['全部', 'brand', 'upload', 'generated'] as const).map((item) => (
                   <button type="button" key={item} className={source === item ? 'is-active' : ''} aria-pressed={source === item} onClick={() => setSource(item)}>
-                    {item === '全部' ? '全部' : sourceLabel(item)}
+                    {item === '全部' ? t.all : sourceLabel(item)}
                   </button>
                 ))}
               </div>
             </section>
-            {advancedFilterCount ? <button className="asset-filter-popover__reset" type="button" onClick={() => setSource('全部')}>清除来源筛选</button> : null}
+            {advancedFilterCount ? <button className="asset-filter-popover__reset" type="button" onClick={() => setSource('全部')}>{t.clearSource}</button> : null}
           </div>
         </details>
       </div>
       <section className="asset-library__facet" aria-labelledby="asset-role-heading">
-        <div className="asset-library__section-heading"><strong id="asset-role-heading">素材类型</strong></div>
-        <div className="asset-library__role-tabs" role="group" aria-label="素材类型">
+        <div className="asset-library__section-heading"><strong id="asset-role-heading">{t.assetType}</strong></div>
+        <div className="asset-library__role-tabs" role="group" aria-label={t.assetType}>
           {roles.map((item) => (
-            <button type="button" key={item} className={role === item ? 'is-active' : ''} aria-pressed={role === item} onClick={() => setRole(item)}>{item}</button>
+            <button type="button" key={item} className={role === item ? 'is-active' : ''} aria-pressed={role === item} onClick={() => setRole(item)}>{item === '全部' ? t.all : canvasAssetRoleLabel(item, locale)}</button>
           ))}
         </div>
       </section>
       <section className="asset-library__facet asset-library__groups" aria-labelledby="asset-group-heading">
         <div className="asset-library__section-heading">
-          <strong id="asset-group-heading">素材组</strong>
+          <strong id="asset-group-heading">{t.groups}</strong>
           <button className="asset-group-create-button" type="button" onClick={() => {
             setGroupRoleDraft(role === '全部' || role === '首图' ? '场景' : role)
             setCreatingGroup(true)
-          }}><PlusSquareIcon />新建</button>
+          }}><PlusSquareIcon />{t.newGroup}</button>
         </div>
-        <div className="asset-library__collections" aria-label="素材组">
-          <button type="button" className={groupId === '全部' ? 'is-active' : ''} onClick={() => setGroupId('全部')}>全部</button>
+        <div className="asset-library__collections" aria-label={t.groups}>
+          <button type="button" className={groupId === '全部' ? 'is-active' : ''} onClick={() => setGroupId('全部')}>{t.all}</button>
           {visibleGroups.map((group) => <button type="button" key={group.id} className={groupId === group.id ? 'is-active' : ''} onClick={() => setGroupId(group.id)}>{group.name} · {group.assetIds.length}</button>)}
-          {!visibleGroups.length ? <span>暂无素材组</span> : null}
+          {!visibleGroups.length ? <span>{t.noGroups}</span> : null}
         </div>
         {creatingGroup ? (
           <form className="asset-group-create" onSubmit={(event) => {
@@ -601,11 +624,11 @@ export function AssetLibrary({
             setCreatingGroup(false)
             setSelectedAssetIds(new Set())
           }}>
-            <input autoFocus value={groupNameDraft} onChange={(event) => setGroupNameDraft(event.target.value)} placeholder="素材组名称" aria-label="素材组名称" />
-            <BotanicSelect value={groupRoleDraft} onChange={(value) => setGroupRoleDraft(value as AssetGroup['role'])} ariaLabel="素材组类型" options={uploadRoles.map((itemRole) => ({ value: itemRole, label: itemRole }))} />
+            <input autoFocus value={groupNameDraft} onChange={(event) => setGroupNameDraft(event.target.value)} placeholder={t.groupName} aria-label={t.groupName} />
+            <BotanicSelect value={groupRoleDraft} onChange={(value) => setGroupRoleDraft(value as AssetGroup['role'])} ariaLabel={t.groupType} options={uploadRoles.map((itemRole) => ({ value: itemRole, label: canvasAssetRoleLabel(itemRole, locale) }))} />
             <div className="asset-group-create__actions">
-              <button type="button" onClick={() => { setCreatingGroup(false); setGroupNameDraft('') }}>取消</button>
-              <button type="submit" disabled={!groupNameDraft.trim()}>创建{selectedAssetIds.size ? `并加入 ${selectedAssetIds.size} 项` : ''}</button>
+              <button type="button" onClick={() => { setCreatingGroup(false); setGroupNameDraft('') }}>{t.cancel}</button>
+              <button type="submit" disabled={!groupNameDraft.trim()}>{t.create(selectedAssetIds.size)}</button>
             </div>
           </form>
         ) : null}
@@ -619,40 +642,40 @@ export function AssetLibrary({
               onRenameGroup(activeGroup.id, groupRenameDraft)
               setRenamingGroupId(null)
             }}>
-              <input autoFocus value={groupRenameDraft} onChange={(event) => setGroupRenameDraft(event.target.value)} aria-label="重命名素材组" />
+              <input autoFocus value={groupRenameDraft} onChange={(event) => setGroupRenameDraft(event.target.value)} aria-label={t.renameGroup} />
               <div className="asset-group-toolbar__actions">
-                <button type="button" onClick={() => setRenamingGroupId(null)}>取消</button>
-                <button type="submit">保存</button>
+                <button type="button" onClick={() => setRenamingGroupId(null)}>{t.cancel}</button>
+                <button type="submit">{t.save}</button>
               </div>
             </form>
           ) : deleteGroupId === activeGroup.id ? (
             <>
               <strong>{activeGroup.name}</strong>
-              <span>素材仍会保留</span>
+              <span>{t.assetsRemain}</span>
               <div className="asset-group-toolbar__actions">
-                <button type="button" onClick={() => setDeleteGroupId(null)}>取消</button>
-                <button type="button" className="is-danger" onClick={() => { onDeleteGroup(activeGroup.id); setGroupId('全部'); setDeleteGroupId(null) }}>确认删除</button>
+                <button type="button" onClick={() => setDeleteGroupId(null)}>{t.cancel}</button>
+                <button type="button" className="is-danger" onClick={() => { onDeleteGroup(activeGroup.id); setGroupId('全部'); setDeleteGroupId(null) }}>{t.confirmDelete}</button>
               </div>
             </>
           ) : (
             <>
               <strong>{activeGroup.name}</strong>
               <div className="asset-group-toolbar__actions">
-                <button type="button" onClick={() => { setRenamingGroupId(activeGroup.id); setGroupRenameDraft(activeGroup.name) }}>重命名</button>
-                <button type="button" className="is-danger" onClick={() => setDeleteGroupId(activeGroup.id)}>删除组</button>
+                <button type="button" onClick={() => { setRenamingGroupId(activeGroup.id); setGroupRenameDraft(activeGroup.name) }}>{t.rename}</button>
+                <button type="button" className="is-danger" onClick={() => setDeleteGroupId(activeGroup.id)}>{t.deleteGroup}</button>
               </div>
             </>
           )}
         </div>
       ) : null}
-      <div className="asset-library__results"><strong>{activeFilterCount || query ? '筛选结果' : '全部素材'}</strong><span>{visibleItems.length} 项</span></div>
+      <div className="asset-library__results"><strong>{activeFilterCount || query ? t.filtered : t.allAssets}</strong><span>{t.itemCount(visibleItems.length)}</span></div>
       <div className="asset-grid">
         {visibleItems.length ? visibleItems.map((item) => (
           <article
             className={['asset-card', assetMenuId === item.id ? 'is-menu-open' : '', selectedAssetIds.has(item.id) ? 'is-selected' : '', item.mediaKind === 'video' ? 'asset-card--video' : ''].filter(Boolean).join(' ')}
             key={item.id}
             draggable
-            title="点击预览，或拖拽到画布"
+            title={t.cardTitle}
             onDragStart={(event) => {
               event.dataTransfer.setData('text/plain', item.id)
               event.dataTransfer.setData('application/x-botanic-asset-id', item.id)
@@ -661,13 +684,13 @@ export function AssetLibrary({
           >
             <div className="asset-card__visual">
               {item.mediaKind === 'video'
-                ? <video src={item.image} aria-label={item.name} muted playsInline preload="metadata" />
-                : <img src={item.image} alt={item.name} loading="lazy" decoding="async" />}
-              <button type="button" className="asset-card__preview-hitbox" onClick={() => setPreviewAssetId(item.id)} aria-label={`预览 ${item.name}`} />
+                ? <video src={item.image} aria-label={displayAssetName(item)} muted playsInline preload="metadata" />
+                : <img src={item.image} alt={displayAssetName(item)} loading="lazy" decoding="async" />}
+              <button type="button" className="asset-card__preview-hitbox" onClick={() => setPreviewAssetId(item.id)} aria-label={t.preview(displayAssetName(item))} />
               <button
                 type="button"
                 className="asset-card__select"
-                aria-label={`${selectedAssetIds.has(item.id) ? '取消选择' : '选择'} ${item.name}`}
+                aria-label={t.select(displayAssetName(item), selectedAssetIds.has(item.id))}
                 aria-pressed={selectedAssetIds.has(item.id)}
                 onClick={(event) => {
                   event.stopPropagation()
@@ -681,12 +704,12 @@ export function AssetLibrary({
               >{selectedAssetIds.has(item.id) ? '✓' : ''}</button>
               {source === '全部' ? <span className={`asset-card__source asset-card__source--${item.source}`}>{sourceLabel(item.source)}</span> : null}
               <div className="asset-card__quick-actions">
-                <button type="button" className="asset-card__add" aria-label={`将 ${item.name} 加入画布`} title="加入画布" onClick={(event) => { event.stopPropagation(); onAdd(item.id) }}><PlusSquareIcon /></button>
+                <button type="button" className="asset-card__add" aria-label={t.addToCanvas(displayAssetName(item))} title={t.add} onClick={(event) => { event.stopPropagation(); onAdd(item.id) }}><PlusSquareIcon /></button>
                 <div className="asset-card__more-wrap">
                   <button
                     className="asset-card__more"
                     type="button"
-                    aria-label={`更多操作：${item.name}`}
+                    aria-label={t.more(displayAssetName(item))}
                     aria-expanded={assetMenuId === item.id}
                     onPointerDown={(event) => event.stopPropagation()}
                     onClick={(event) => {
@@ -697,31 +720,31 @@ export function AssetLibrary({
                 </div>
               </div>
             </div>
-            <button type="button" className="asset-card__copy" onClick={() => setPreviewAssetId(item.id)} aria-label={`预览 ${item.name}`}>
-              <strong>{item.name}</strong>
+            <button type="button" className="asset-card__copy" onClick={() => setPreviewAssetId(item.id)} aria-label={t.preview(displayAssetName(item))}>
+              <strong>{displayAssetName(item)}</strong>
               <span>{visibleAssetTags(item.tags).filter((tag) => item.source !== 'generated' || !/^(生成|真实生成|已入库|生成入库)$/i.test(tag)).slice(0, 2).join(' · ')}</span>
             </button>
           </article>
-        )) : <p className="asset-empty">没有匹配的素材</p>}
+        )) : <p className="asset-empty">{t.empty}</p>}
       </div>
       {assetMenuAsset && assetMenuAnchor && typeof document !== 'undefined' ? createPortal(
         <div
           ref={assetMenuRef}
           className={`asset-card__menu is-${assetMenuAnchor.placement}`}
           role="menu"
-          aria-label={`${assetMenuAsset.name} 的更多操作`}
+          aria-label={t.moreMenu(displayAssetName(assetMenuAsset))}
           style={{ left: assetMenuAnchor.left, top: assetMenuAnchor.top }}
           onClick={(event) => event.stopPropagation()}
         >
-          <section className="asset-card__role-section" aria-label={`设置 ${assetMenuAsset.name} 的素材类型`}>
-            <div><span>素材类型</span></div>
+          <section className="asset-card__role-section" aria-label={t.setType(assetMenuAsset.name)}>
+            <div><span>{t.assetType}</span></div>
             <div className="asset-card__role-options">
               {uploadRoles.map((itemRole) => <button
                 type="button"
                 key={itemRole}
                 aria-pressed={assetMenuAsset.role === itemRole}
                 onClick={() => onMoveToRole(assetMenuAsset.id, itemRole)}
-              >{itemRole}</button>)}
+              >{canvasAssetRoleLabel(itemRole, locale)}</button>)}
             </div>
           </section>
           <button
@@ -733,7 +756,7 @@ export function AssetLibrary({
               setAssetMenuAnchor(null)
               onDelete(assetMenuAsset)
             }}
-          >删除素材</button>
+          >{t.deleteAsset}</button>
         </div>,
         document.body,
       ) : null}
@@ -741,22 +764,22 @@ export function AssetLibrary({
         <div className={`asset-preview-backdrop motion-overlay is-${previewPresence.phase}`} role="presentation" aria-hidden={previewPresence.phase === 'exit' ? true : undefined} onPointerDown={(event) => {
           if (event.target === event.currentTarget) setPreviewAssetId(null)
         }}>
-          <section ref={previewDialogRef} className="asset-preview" role="dialog" aria-modal="true" aria-label={`预览素材 ${visiblePreviewAsset.name}`}>
+          <section ref={previewDialogRef} className="asset-preview" role="dialog" aria-modal="true" aria-label={t.previewAsset(displayAssetName(visiblePreviewAsset))}>
             <header>
-              <div><span>{sourceLabel(visiblePreviewAsset.source)} · {visiblePreviewAsset.role}</span><h3>{visiblePreviewAsset.name}</h3></div>
-              <button type="button" autoFocus onClick={() => setPreviewAssetId(null)} aria-label="关闭素材预览"><CloseIcon /></button>
+              <div><span>{sourceLabel(visiblePreviewAsset.source)} · {canvasAssetRoleLabel(visiblePreviewAsset.role, locale)}</span><h3>{displayAssetName(visiblePreviewAsset)}</h3></div>
+              <button type="button" autoFocus onClick={() => setPreviewAssetId(null)} aria-label={t.closePreview}><CloseIcon /></button>
             </header>
             <div className="asset-preview__image">{visiblePreviewAsset.mediaKind === 'video'
-              ? <video src={visiblePreviewAsset.image} aria-label={visiblePreviewAsset.name} controls playsInline preload="metadata" />
-              : <img src={visiblePreviewAsset.image} alt={visiblePreviewAsset.name} />}</div>
+              ? <video src={visiblePreviewAsset.image} aria-label={displayAssetName(visiblePreviewAsset)} controls playsInline preload="metadata" />
+              : <img src={visiblePreviewAsset.image} alt={displayAssetName(visiblePreviewAsset)} />}</div>
             <footer>
               <div>
-                <span>{visiblePreviewAsset.imageWidth && visiblePreviewAsset.imageHeight ? `${visiblePreviewAsset.imageWidth} × ${visiblePreviewAsset.imageHeight}` : visiblePreviewAsset.mediaKind === 'video' ? '视频素材' : '图片素材'}{visiblePreviewAsset.collection ? ` · ${visiblePreviewAsset.collection}` : ''}</span>
-                <p>{visibleAssetTags(visiblePreviewAsset.tags).slice(0, 4).join(' · ') || '暂无标签'}</p>
+                <span>{visiblePreviewAsset.imageWidth && visiblePreviewAsset.imageHeight ? `${visiblePreviewAsset.imageWidth} × ${visiblePreviewAsset.imageHeight}` : visiblePreviewAsset.mediaKind === 'video' ? t.videoAsset : t.imageAsset}{visiblePreviewAsset.collection ? ` · ${visiblePreviewAsset.collection}` : ''}</span>
+                <p>{visibleAssetTags(visiblePreviewAsset.tags).slice(0, 4).join(' · ') || t.noTags}</p>
               </div>
               <div className="asset-preview__actions">
-                <button type="button" className="asset-preview__download" onClick={() => void downloadMedia(visiblePreviewAsset.image, visiblePreviewAsset.name, visiblePreviewAsset.mediaKind ?? 'image')}><DownloadIcon />下载</button>
-                <button type="button" className="asset-preview__add" onClick={() => { onAdd(visiblePreviewAsset.id); setPreviewAssetId(null) }}><PlusSquareIcon />加入画布</button>
+                <button type="button" className="asset-preview__download" onClick={() => void downloadMedia(visiblePreviewAsset.image, visiblePreviewAsset.name, visiblePreviewAsset.mediaKind ?? 'image')}><DownloadIcon />{t.download}</button>
+                <button type="button" className="asset-preview__add" onClick={() => { onAdd(visiblePreviewAsset.id); setPreviewAssetId(null) }}><PlusSquareIcon />{t.add}</button>
               </div>
             </footer>
           </section>
@@ -764,15 +787,15 @@ export function AssetLibrary({
         document.body,
       ) : null}
       {selectedAssetIds.size ? (
-        <div className="asset-library__batch-bar" role="toolbar" aria-label="批量素材操作">
-          <strong>已选 {selectedAssetIds.size} 项</strong>
+        <div className="asset-library__batch-bar" role="toolbar" aria-label={t.bulkActions}>
+          <strong>{t.selected(selectedAssetIds.size)}</strong>
           <button type="button" onClick={() => {
             selectedAssetIds.forEach((id) => onAdd(id))
             setSelectedAssetIds(new Set())
-          }}><PlusSquareIcon />加入画布</button>
-          <BotanicSelect className="asset-batch-group-select" value={batchGroupId} placeholder="加入素材组" ariaLabel="将所选素材加入素材组" options={[
+          }}><PlusSquareIcon />{t.add}</button>
+          <BotanicSelect className="asset-batch-group-select" value={batchGroupId} placeholder={t.addGroup} ariaLabel={t.addSelectedGroup} options={[
             ...groups.map((group) => ({ value: group.id, label: group.name })),
-            { value: '__create_asset_group__', label: '＋ 新建素材组' },
+            { value: '__create_asset_group__', label: t.createGroupOption },
           ]} onChange={(nextGroupId) => {
             if (nextGroupId === '__create_asset_group__') {
               setBatchGroupId('')
@@ -787,12 +810,23 @@ export function AssetLibrary({
             setGroupId(nextGroupId)
             setBatchGroupId('')
           }} />
-          <button type="button" onClick={() => setSelectedAssetIds(new Set())}>取消</button>
+          <button type="button" onClick={() => setSelectedAssetIds(new Set())}>{t.cancel}</button>
         </div>
       ) : null}
     </aside>
   )
 }
+
+const templateCopy = {
+  'zh-CN': {
+    suffix: '模板', refreshError: '团队模板暂时无法更新，当前显示上次同步结果。', workflowSyncError: '生产工作流暂时无法同步，当前显示上次保存的记录。', createError: '项目未创建，请检查网络后重试。', saveWorkflowError: '生产工作流保存失败，请稍后重试。', startWorkflowError: '生产工作流启动失败，请稍后重试。', updateWorkflowError: '生产工作流操作失败，请稍后重试。', templates: '模板', saveCanvas: '保存当前画布为模板', saveHint: '添加素材、文本或生成节点后，即可保存完整工作流设置。', scope: '模板范围', teamTemplates: '团队模板', thisProject: '本项目', production: '生产', updating: '正在更新团队模板…', projectTemplates: '本项目模板', mixedWorkflow: '图片 + 视频', videoWorkflow: '视频工作流', imageWorkflow: '图片工作流', placeholder: '模板', summary: (nodes: number, prompts: number) => `${nodes} 个节点 · ${prompts} 条 Prompt`, creating: '创建中…', createFromTemplate: '从模板创建', noTeam: '还没有团队模板', noProject: '本项目还没有模板', noTeamHint: '将稳定的工作流保存为团队模板，其他项目即可复用。', noProjectHint: '保存当前画布后，可随时从相同 Prompt 和参数开始。', productionWorkflow: '生产工作流', saving: '正在保存…', saveAgent: '保存已验证 Agent 操作', saveFlow: '保存当前生成流程', productionHint: '先完成一条已连接稳定入库素材的生成流程，再保存为生产工作流。', versionRuns: (version: number, runs: number) => `版本 ${version} · ${runs} 次运行`, notRun: '未运行', processing: '处理中…', runCurrent: '运行当前版本', pause: '暂停', resume: '恢复', cancel: '取消', retryFailed: '重试失败项', locateResult: '定位结果', reviewDelivery: '审核与交付', noProduction: '还没有生产工作流', noProductionHint: '将已验证的 Agent 或画布生成流程保存为不可变版本，之后可批量运行与恢复。', saveAsTemplate: '保存为模板', close: '关闭', templateName: '模板名称', saveScope: '保存范围', projectOnly: '仅本项目', projectOnlyHint: '保留当前素材与完整设置', teamShared: '团队共享', teamSharedHint: '其他项目也可以使用', savedContent: '模板保存内容', willSave: '将保存', savedSummary: (nodes: number, edges: number, prompts: number) => `${nodes} 个节点 · ${edges} 条连线 · ${prompts} 条 Prompt`, privateAssets: (count: number) => `${count} 个项目私有素材不会包含，Prompt 和生成参数仍会保留。`, saveTemplate: '保存模板',
+    runStatuses: { queued: '排队中', running: '运行中', paused: '已暂停', succeeded: '已完成', partial: '部分完成', partially_failed: '部分失败', failed: '已失败', cancelled: '已取消' },
+  },
+  en: {
+    suffix: 'Template', refreshError: 'Team templates could not be updated. Showing the last synced results.', workflowSyncError: 'Production workflows could not be synced. Showing the last saved records.', createError: 'The project was not created. Check your connection and try again.', saveWorkflowError: 'The production workflow could not be saved. Try again later.', startWorkflowError: 'The production workflow could not be started. Try again later.', updateWorkflowError: 'The production workflow action failed. Try again later.', templates: 'Templates', saveCanvas: 'Save current canvas as template', saveHint: 'Add an asset, text, or generation node to save the complete workflow settings.', scope: 'Template scope', teamTemplates: 'Team templates', thisProject: 'This project', production: 'Production', updating: 'Updating team templates…', projectTemplates: 'Project templates', mixedWorkflow: 'Image + video', videoWorkflow: 'Video workflow', imageWorkflow: 'Image workflow', placeholder: 'Template', summary: (nodes: number, prompts: number) => `${nodes} ${nodes === 1 ? 'node' : 'nodes'} · ${prompts} ${prompts === 1 ? 'Prompt' : 'Prompts'}`, creating: 'Creating…', createFromTemplate: 'Create from template', noTeam: 'No team templates yet', noProject: 'No templates in this project', noTeamHint: 'Save a stable workflow as a team template so other projects can reuse it.', noProjectHint: 'Save the current canvas to restart later with the same prompts and settings.', productionWorkflow: 'Production workflows', saving: 'Saving…', saveAgent: 'Save verified Agent action', saveFlow: 'Save current generation flow', productionHint: 'Complete a generation flow connected to stable saved assets, then save it as a production workflow.', versionRuns: (version: number, runs: number) => `Version ${version} · ${runs} ${runs === 1 ? 'run' : 'runs'}`, notRun: 'Not run', processing: 'Processing…', runCurrent: 'Run current version', pause: 'Pause', resume: 'Resume', cancel: 'Cancel', retryFailed: 'Retry failed items', locateResult: 'Locate result', reviewDelivery: 'Review and deliver', noProduction: 'No production workflows yet', noProductionHint: 'Save a verified Agent or canvas generation flow as an immutable version for batch runs and recovery.', saveAsTemplate: 'Save as template', close: 'Close', templateName: 'Template name', saveScope: 'Save scope', projectOnly: 'This project only', projectOnlyHint: 'Keep current assets and all settings', teamShared: 'Share with team', teamSharedHint: 'Available to other projects', savedContent: 'Template contents', willSave: 'Will save', savedSummary: (nodes: number, edges: number, prompts: number) => `${nodes} ${nodes === 1 ? 'node' : 'nodes'} · ${edges} ${edges === 1 ? 'connection' : 'connections'} · ${prompts} ${prompts === 1 ? 'Prompt' : 'Prompts'}`, privateAssets: (count: number) => `${count} private project ${count === 1 ? 'asset is' : 'assets are'} excluded. Prompts and generation settings are kept.`, saveTemplate: 'Save template',
+    runStatuses: { queued: 'Queued', running: 'Running', paused: 'Paused', succeeded: 'Complete', partial: 'Partially complete', partially_failed: 'Partially failed', failed: 'Failed', cancelled: 'Cancelled' },
+  },
+} as const
 
 export function TemplatePanel({
   projectId,
@@ -825,8 +859,10 @@ export function TemplatePanel({
   onLocateWorkflowNode: (nodeId: string) => void
   onClose: () => void
 }) {
+  const { locale } = useProductI18n()
+  const t = templateCopy[locale]
   const [activeTab, setActiveTab] = useState<'shared' | 'project' | 'automation'>(sharedTemplates.length ? 'shared' : 'project')
-  const [name, setName] = useState(`${currentName} · 模板`)
+  const [name, setName] = useState(`${currentName} · ${t.suffix}`)
   const [saveOpen, setSaveOpen] = useState(false)
   const [scope, setScope] = useState<'project' | 'shared'>('project')
   const [saving, setSaving] = useState(false)
@@ -862,7 +898,7 @@ export function TemplatePanel({
     setRefreshing(true)
     setRefreshError('')
     void onRefresh()
-      .catch(() => { if (active) setRefreshError('团队模板暂时无法更新，当前显示上次同步结果。') })
+      .catch(() => { if (active) setRefreshError(t.refreshError) })
       .finally(() => { if (active) setRefreshing(false) })
     return () => { active = false }
   }, [onRefresh])
@@ -870,7 +906,7 @@ export function TemplatePanel({
   useEffect(() => {
     let active = true
     void refreshProductionWorkflows().catch(() => {
-      if (active) setProductionError('生产工作流暂时无法同步，当前显示上次保存的记录。')
+      if (active) setProductionError(t.workflowSyncError)
     })
     return () => { active = false }
   }, [projectId])
@@ -894,7 +930,7 @@ export function TemplatePanel({
   }, [saveOpen, saving])
 
   const openSaveDialog = () => {
-    setName(`${currentName} · 模板`)
+    setName(`${currentName} · ${t.suffix}`)
     setScope('project')
     setSaveOpen(true)
   }
@@ -922,7 +958,7 @@ export function TemplatePanel({
     if (useCanvasStore.getState().document.id !== projectId) return
     setCreatingTemplateId(null)
     if (created) onClose()
-    else setCreateError('项目未创建，请检查网络后重试。')
+    else setCreateError(t.createError)
   }
   const publishAutomation = async () => {
     if (!productionDraft || productionBusy) return
@@ -938,7 +974,7 @@ export function TemplatePanel({
       await refreshProductionWorkflows()
       setActiveTab('automation')
     } catch (error) {
-      setProductionError(error instanceof Error ? error.message : '生产工作流保存失败，请稍后重试。')
+      setProductionError(localizeProductError(error, locale, { 'zh-CN': t.saveWorkflowError, en: t.saveWorkflowError }))
     } finally {
       setProductionBusy('')
     }
@@ -958,7 +994,7 @@ export function TemplatePanel({
       })
       await refreshProductionWorkflows()
     } catch (error) {
-      setProductionError(error instanceof Error ? error.message : '生产工作流启动失败，请稍后重试。')
+      setProductionError(localizeProductError(error, locale, { 'zh-CN': t.startWorkflowError, en: t.startWorkflowError }))
     } finally {
       setProductionBusy('')
     }
@@ -972,55 +1008,55 @@ export function TemplatePanel({
       setProductionRuns((current) => current.map((item) => item.id === updated.id ? updated : item))
       await refreshProductionWorkflows()
     } catch (error) {
-      setProductionError(error instanceof Error ? error.message : '生产工作流操作失败，请稍后重试。')
+      setProductionError(localizeProductError(error, locale, { 'zh-CN': t.updateWorkflowError, en: t.updateWorkflowError }))
     } finally {
       setProductionBusy('')
     }
   }
 
   return (
-    <aside className="workbench-panel template-panel" aria-label="模板">
-      <PanelHeader eyebrow="TEMPLATES" title="模板" onClose={onClose} />
+    <aside className="workbench-panel template-panel" aria-label={t.templates}>
+      <PanelHeader eyebrow="TEMPLATES" title={t.templates} onClose={onClose} />
       <button type="button" className="template-save-trigger" disabled={!projectSaveSummary.canSave} onClick={openSaveDialog}>
-        <PlusSquareIcon />保存当前画布为模板
+        <PlusSquareIcon />{t.saveCanvas}
       </button>
-      {!projectSaveSummary.canSave ? <p className="panel-note">添加素材、文本或生成节点后，即可保存完整工作流设置。</p> : null}
-      <div className="template-tabs" role="tablist" aria-label="模板范围">
-        <button type="button" role="tab" aria-selected={activeTab === 'shared'} className={activeTab === 'shared' ? 'is-active' : ''} onClick={() => setActiveTab('shared')}>团队模板 <span>{sharedTemplates.length}</span></button>
-        <button type="button" role="tab" aria-selected={activeTab === 'project'} className={activeTab === 'project' ? 'is-active' : ''} onClick={() => setActiveTab('project')}>本项目 <span>{templates.length}</span></button>
-        <button type="button" role="tab" aria-selected={activeTab === 'automation'} className={activeTab === 'automation' ? 'is-active' : ''} onClick={() => setActiveTab('automation')}>生产 <span>{productionWorkflows.length}</span></button>
+      {!projectSaveSummary.canSave ? <p className="panel-note">{t.saveHint}</p> : null}
+      <div className="template-tabs" role="tablist" aria-label={t.scope}>
+        <button type="button" role="tab" aria-selected={activeTab === 'shared'} className={activeTab === 'shared' ? 'is-active' : ''} onClick={() => setActiveTab('shared')}>{t.teamTemplates} <span>{sharedTemplates.length}</span></button>
+        <button type="button" role="tab" aria-selected={activeTab === 'project'} className={activeTab === 'project' ? 'is-active' : ''} onClick={() => setActiveTab('project')}>{t.thisProject} <span>{templates.length}</span></button>
+        <button type="button" role="tab" aria-selected={activeTab === 'automation'} className={activeTab === 'automation' ? 'is-active' : ''} onClick={() => setActiveTab('automation')}>{t.production} <span>{productionWorkflows.length}</span></button>
       </div>
-      {refreshing && activeTab === 'shared' ? <p className="template-sync-state" role="status">正在更新团队模板…</p> : null}
+      {refreshing && activeTab === 'shared' ? <p className="template-sync-state" role="status">{t.updating}</p> : null}
       {refreshError && activeTab === 'shared' ? <p className="template-sync-state is-error">{refreshError}</p> : null}
       {createError ? <p className="template-sync-state is-error" role="alert">{createError}</p> : null}
       {productionError ? <p className="template-sync-state is-error" role="alert">{productionError}</p> : null}
-      {activeTab !== 'automation' ? <section className="template-section" aria-label={activeTab === 'shared' ? '团队模板' : '本项目模板'}>
+      {activeTab !== 'automation' ? <section className="template-section" aria-label={activeTab === 'shared' ? t.teamTemplates : t.projectTemplates}>
         <div className="template-list">
           {visibleTemplates.map((template) => {
             const summary = summarizeWorkflowTemplate(template.snapshot.nodes, template.snapshot.edges)
             const workflowKind = summary.videoWorkflowCount && summary.imageWorkflowCount
-              ? '图片 + 视频'
-              : summary.videoWorkflowCount ? '视频工作流' : '图片工作流'
+              ? t.mixedWorkflow
+              : summary.videoWorkflowCount ? t.videoWorkflow : t.imageWorkflow
             return (
               <article className="template-card" key={template.id}>
-                {template.image ? <img src={template.image} alt="" /> : <div className="template-card__placeholder" aria-hidden="true">模板</div>}
+                {template.image ? <img src={template.image} alt="" /> : <div className="template-card__placeholder" aria-hidden="true">{t.placeholder}</div>}
                 <div>
                   <strong>{template.name}</strong>
-                  <span>{workflowKind} · {summary.nodeCount} 个节点 · {summary.promptCount} 条 Prompt</span>
+                  <span>{workflowKind} · {t.summary(summary.nodeCount, summary.promptCount)}</span>
                   {summary.settings[0] ? <small>{summary.settings[0]}</small> : null}
-                  <button type="button" onClick={() => void createFromTemplate(template.id)} disabled={Boolean(creatingTemplateId)}>{creatingTemplateId === template.id ? '创建中…' : '从模板创建'}</button>
+                  <button type="button" onClick={() => void createFromTemplate(template.id)} disabled={Boolean(creatingTemplateId)}>{creatingTemplateId === template.id ? t.creating : t.createFromTemplate}</button>
                 </div>
               </article>
             )
           })}
-          {!visibleTemplates.length && !refreshing ? <div className="template-empty"><strong>{activeTab === 'shared' ? '还没有团队模板' : '本项目还没有模板'}</strong><span>{activeTab === 'shared' ? '将稳定的工作流保存为团队模板，其他项目即可复用。' : '保存当前画布后，可随时从相同 Prompt 和参数开始。'}</span></div> : null}
+          {!visibleTemplates.length && !refreshing ? <div className="template-empty"><strong>{activeTab === 'shared' ? t.noTeam : t.noProject}</strong><span>{activeTab === 'shared' ? t.noTeamHint : t.noProjectHint}</span></div> : null}
         </div>
       </section> : (
-        <section className="template-section production-workflow-section" aria-label="生产工作流">
+        <section className="template-section production-workflow-section" aria-label={t.productionWorkflow}>
           <button type="button" className="production-workflow-publish" disabled={!productionDraft || Boolean(productionBusy)} onClick={() => void publishAutomation()}>
-            <PlusSquareIcon />{productionBusy === 'publish' ? '正在保存…' : productionDraft?.sourceAgentRunId ? '保存已验证 Agent 操作' : '保存当前生成流程'}
+            <PlusSquareIcon />{productionBusy === 'publish' ? t.saving : productionDraft?.sourceAgentRunId ? t.saveAgent : t.saveFlow}
           </button>
-          {!productionDraft ? <p className="panel-note">先完成一条已连接稳定入库素材的生成流程，再保存为生产工作流。</p> : null}
+          {!productionDraft ? <p className="panel-note">{t.productionHint}</p> : null}
           <div className="production-workflow-list">
             {productionWorkflows.map((workflow) => {
               const runs = productionRuns.filter((run) => run.workflowId === workflow.id)
@@ -1028,44 +1064,44 @@ export function TemplatePanel({
               const resultNodeId = latestRun?.items.flatMap((item) => item.canvasNodeIds ?? [])[0]
               const hasFailed = latestRun?.items.some((item) => item.status === 'failed')
               return <article className="production-workflow-card" key={workflow.id}>
-                <header><div><strong>{workflow.name}</strong><span>版本 {workflow.currentVersion} · {runs.length} 次运行</span></div><em>{latestRun?.status ?? '未运行'}</em></header>
+                <header><div><strong>{workflow.name}</strong><span>{t.versionRuns(workflow.currentVersion, runs.length)}</span></div><em>{latestRun ? t.runStatuses[latestRun.status] : t.notRun}</em></header>
                 <p>{workflow.versions.at(-1)?.definition.prompt}</p>
                 <small>{workflow.versions.at(-1)?.definition.model} · {String(workflow.versions.at(-1)?.definition.output?.aspectRatio ?? '')} · {String(workflow.versions.at(-1)?.definition.output?.resolution ?? '')}</small>
                 <footer>
-                  <button type="button" disabled={Boolean(productionBusy)} onClick={() => void startAutomation(workflow)}>{productionBusy === workflow.id ? '处理中…' : '运行当前版本'}</button>
-                  {latestRun?.status === 'running' ? <button type="button" onClick={() => void updateAutomation(latestRun, 'pause')}>暂停</button> : null}
-                  {latestRun?.status === 'paused' ? <button type="button" onClick={() => void updateAutomation(latestRun, 'resume')}>恢复</button> : null}
-                  {latestRun && ['queued', 'running', 'paused'].includes(latestRun.status) ? <button type="button" onClick={() => void updateAutomation(latestRun, 'cancel')}>取消</button> : null}
-                  {hasFailed ? <button type="button" onClick={() => void updateAutomation(latestRun, 'retry-failed')}>重试失败项</button> : null}
-                  {resultNodeId ? <button type="button" onClick={() => onLocateWorkflowNode(resultNodeId)}>定位结果</button> : null}
-                  {latestRun?.items.some((item) => item.artifactIds?.length) ? <button type="button" onClick={onOpenHistory}>审核与交付</button> : null}
+                  <button type="button" disabled={Boolean(productionBusy)} onClick={() => void startAutomation(workflow)}>{productionBusy === workflow.id ? t.processing : t.runCurrent}</button>
+                  {latestRun?.status === 'running' ? <button type="button" onClick={() => void updateAutomation(latestRun, 'pause')}>{t.pause}</button> : null}
+                  {latestRun?.status === 'paused' ? <button type="button" onClick={() => void updateAutomation(latestRun, 'resume')}>{t.resume}</button> : null}
+                  {latestRun && ['queued', 'running', 'paused'].includes(latestRun.status) ? <button type="button" onClick={() => void updateAutomation(latestRun, 'cancel')}>{t.cancel}</button> : null}
+                  {hasFailed ? <button type="button" onClick={() => void updateAutomation(latestRun, 'retry-failed')}>{t.retryFailed}</button> : null}
+                  {resultNodeId ? <button type="button" onClick={() => onLocateWorkflowNode(resultNodeId)}>{t.locateResult}</button> : null}
+                  {latestRun?.items.some((item) => item.artifactIds?.length) ? <button type="button" onClick={onOpenHistory}>{t.reviewDelivery}</button> : null}
                 </footer>
               </article>
             })}
-            {!productionWorkflows.length ? <div className="template-empty"><strong>还没有生产工作流</strong><span>将已验证的 Agent 或画布生成流程保存为不可变版本，之后可批量运行与恢复。</span></div> : null}
+            {!productionWorkflows.length ? <div className="template-empty"><strong>{t.noProduction}</strong><span>{t.noProductionHint}</span></div> : null}
           </div>
         </section>
       )}
       {saveDialogPresence.present && typeof document !== 'undefined' ? createPortal(
         <div className={`template-dialog-backdrop motion-overlay is-${saveDialogPresence.phase}`} role="presentation" aria-hidden={saveDialogPresence.phase === 'exit' ? true : undefined} onMouseDown={() => !saving && setSaveOpen(false)}>
           <form ref={(element) => { saveDialogRef.current = element }} className="template-dialog" role="dialog" aria-modal="true" aria-labelledby="save-template-title" onMouseDown={(event) => event.stopPropagation()} onSubmit={(event) => { event.preventDefault(); void saveTemplate() }}>
-            <header><div><span className="panel-eyebrow">SAVE TEMPLATE</span><h2 id="save-template-title">保存为模板</h2></div><button type="button" onClick={() => setSaveOpen(false)} disabled={saving} aria-label="关闭"><CloseIcon /></button></header>
-            <label htmlFor="template-name">模板名称</label>
+            <header><div><span className="panel-eyebrow">SAVE TEMPLATE</span><h2 id="save-template-title">{t.saveAsTemplate}</h2></div><button type="button" onClick={() => setSaveOpen(false)} disabled={saving} aria-label={t.close}><CloseIcon /></button></header>
+            <label htmlFor="template-name">{t.templateName}</label>
             <input id="template-name" autoFocus value={name} maxLength={60} onChange={(event) => setName(event.target.value)} />
             <fieldset>
-              <legend>保存范围</legend>
+              <legend>{t.saveScope}</legend>
               <div className="template-dialog__scope">
-                <button type="button" className={scope === 'project' ? 'is-active' : ''} aria-pressed={scope === 'project'} onClick={() => setScope('project')}><strong>仅本项目</strong><span>保留当前素材与完整设置</span></button>
-                <button type="button" className={scope === 'shared' ? 'is-active' : ''} aria-pressed={scope === 'shared'} onClick={() => setScope('shared')}><strong>团队共享</strong><span>其他项目也可以使用</span></button>
+                <button type="button" className={scope === 'project' ? 'is-active' : ''} aria-pressed={scope === 'project'} onClick={() => setScope('project')}><strong>{t.projectOnly}</strong><span>{t.projectOnlyHint}</span></button>
+                <button type="button" className={scope === 'shared' ? 'is-active' : ''} aria-pressed={scope === 'shared'} onClick={() => setScope('shared')}><strong>{t.teamShared}</strong><span>{t.teamSharedHint}</span></button>
               </div>
             </fieldset>
-            <section className="template-dialog__summary" aria-label="模板保存内容">
-              <strong>将保存</strong>
-              <p>{saveSummary.nodeCount} 个节点 · {saveSummary.edgeCount} 条连线 · {saveSummary.promptCount} 条 Prompt</p>
+            <section className="template-dialog__summary" aria-label={t.savedContent}>
+              <strong>{t.willSave}</strong>
+              <p>{t.savedSummary(saveSummary.nodeCount, saveSummary.edgeCount, saveSummary.promptCount)}</p>
               {saveSummary.settings.length ? <small>{saveSummary.settings.slice(0, 2).join(' / ')}</small> : null}
-              {scope === 'shared' && sharedSaveSummary.privateAssetCount ? <em>{sharedSaveSummary.privateAssetCount} 个项目私有素材不会包含，Prompt 和生成参数仍会保留。</em> : null}
+              {scope === 'shared' && sharedSaveSummary.privateAssetCount ? <em>{t.privateAssets(sharedSaveSummary.privateAssetCount)}</em> : null}
             </section>
-            <footer><button type="button" onClick={() => setSaveOpen(false)} disabled={saving}>取消</button><button type="submit" className="is-primary" disabled={saving || !name.trim() || !saveSummary.canSave}>{saving ? '保存中…' : '保存模板'}</button></footer>
+            <footer><button type="button" onClick={() => setSaveOpen(false)} disabled={saving}>{t.cancel}</button><button type="submit" className="is-primary" disabled={saving || !name.trim() || !saveSummary.canSave}>{saving ? t.saving : t.saveTemplate}</button></footer>
           </form>
         </div>,
         document.body,
@@ -1074,22 +1110,27 @@ export function TemplatePanel({
   )
 }
 
-function historyItemMeta(item: GeneratedHistoryItem) {
+const historyCopy = {
+  'zh-CN': { groups: { today: '今天', yesterday: '昨天', earlier: '更早', archive: '历史记录' }, history: '画布历史', filter: '筛选历史类型', all: '全部', images: '图片', videos: '视频', preview: (name: string) => `预览 ${name}`, latest: '最新', locate: (name: string) => `在画布定位 ${name}`, locateTitle: '在画布定位', locateShort: '定位', download: (name: string) => `下载 ${name}`, downloadTitle: '下载原媒体', savedLabel: (name: string) => `${name} 已入库`, saveLabel: (name: string) => `将 ${name} 入库`, saved: '已入库', saveTitle: '存入素材库', save: '入库', emptyFiltered: (video: boolean) => `暂无${video ? '视频' : '图片'}`, empty: '暂无生成内容', switchType: '切换类型查看其他历史内容。', emptyHint: '完成图片或视频生成后，结果会出现在这里。' },
+  en: { groups: { today: 'Today', yesterday: 'Yesterday', earlier: 'Earlier', archive: 'Archive' }, history: 'Canvas history', filter: 'Filter history by type', all: 'All', images: 'Images', videos: 'Videos', preview: (name: string) => `Preview ${name}`, latest: 'Latest', locate: (name: string) => `Locate ${name} on canvas`, locateTitle: 'Locate on canvas', locateShort: 'Locate', download: (name: string) => `Download ${name}`, downloadTitle: 'Download original media', savedLabel: (name: string) => `${name} saved`, saveLabel: (name: string) => `Save ${name} to library`, saved: 'Saved', saveTitle: 'Save to asset library', save: 'Save', emptyFiltered: (video: boolean) => `No ${video ? 'videos' : 'images'}`, empty: 'No generated content', switchType: 'Switch type to view other history.', emptyHint: 'Generated images and videos will appear here.' },
+} as const
+
+function historyItemMeta(item: GeneratedHistoryItem, locale: 'zh-CN' | 'en') {
   return [
     item.aspectRatio,
     item.resolution,
-    item.mediaKind === 'video' && item.duration ? `${item.duration}秒` : undefined,
+    item.mediaKind === 'video' && item.duration ? canvasDurationLabel(item.duration, locale) : undefined,
   ].filter(Boolean).join(' · ')
 }
 
-function historyItemTime(createdAt: number) {
+function historyItemTime(createdAt: number, locale: 'zh-CN' | 'en') {
   if (!createdAt) return ''
   const date = new Date(createdAt)
   const today = new Date()
   if (date.toDateString() === today.toDateString()) {
-    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
+    return formatProductDateTime(date, locale, { hour: '2-digit', minute: '2-digit', hour12: false })
   }
-  return `${date.getMonth() + 1}/${date.getDate()}`
+  return formatProductDateTime(date, locale, { month: 'numeric', day: 'numeric' })
 }
 
 type HistoryTimeGroup = 'today' | 'yesterday' | 'earlier' | 'archive'
@@ -1103,13 +1144,6 @@ function historyTimeGroup(createdAt: number): HistoryTimeGroup {
   if (createdAt >= today.getTime()) return 'today'
   if (createdAt >= yesterday.getTime()) return 'yesterday'
   return 'earlier'
-}
-
-const historyTimeGroupLabels: Record<HistoryTimeGroup, string> = {
-  today: '今天',
-  yesterday: '昨天',
-  earlier: '更早',
-  archive: '历史记录',
 }
 
 export function HistoryPanel({
@@ -1127,6 +1161,8 @@ export function HistoryPanel({
   isSaved: (item: GeneratedHistoryItem) => boolean
   onClose: () => void
 }) {
+  const { locale } = useProductI18n()
+  const t = historyCopy[locale]
   const [filter, setFilter] = useState<'all' | GenerationMediaKind>('all')
   const imageCount = results.filter((item) => item.mediaKind === 'image').length
   const videoCount = results.length - imageCount
@@ -1138,43 +1174,43 @@ export function HistoryPanel({
   })
 
   return (
-    <aside className="workbench-panel history-panel" aria-label="画布历史">
-      <PanelHeader title="画布历史" onClose={onClose} />
-      <div className="history-filters" role="tablist" aria-label="筛选历史类型">
-        <button type="button" role="tab" aria-selected={filter === 'all'} className={filter === 'all' ? 'is-active' : ''} onClick={() => setFilter('all')}>全部 <span>{results.length}</span></button>
-        <button type="button" role="tab" aria-selected={filter === 'image'} className={filter === 'image' ? 'is-active' : ''} onClick={() => setFilter('image')}>图片 <span>{imageCount}</span></button>
-        <button type="button" role="tab" aria-selected={filter === 'video'} className={filter === 'video' ? 'is-active' : ''} onClick={() => setFilter('video')}>视频 <span>{videoCount}</span></button>
+    <aside className="workbench-panel history-panel" aria-label={t.history}>
+      <PanelHeader title={t.history} onClose={onClose} />
+      <div className="history-filters" role="tablist" aria-label={t.filter}>
+        <button type="button" role="tab" aria-selected={filter === 'all'} className={filter === 'all' ? 'is-active' : ''} onClick={() => setFilter('all')}>{t.all} <span>{results.length}</span></button>
+        <button type="button" role="tab" aria-selected={filter === 'image'} className={filter === 'image' ? 'is-active' : ''} onClick={() => setFilter('image')}>{t.images} <span>{imageCount}</span></button>
+        <button type="button" role="tab" aria-selected={filter === 'video'} className={filter === 'video' ? 'is-active' : ''} onClick={() => setFilter('video')}>{t.videos} <span>{videoCount}</span></button>
       </div>
       {visibleResults.length ? <div className="history-groups">
         {groupedResults.map(({ group, items }) => <section className="history-group" key={group} aria-labelledby={`history-group-${group}`}>
-          <header><strong id={`history-group-${group}`}>{historyTimeGroupLabels[group]}</strong><span>{items.length}</span></header>
+          <header><strong id={`history-group-${group}`}>{t.groups[group]}</strong><span>{items.length}</span></header>
           <div className="history-gallery">
         {items.map((item) => {
           const saved = isSaved(item)
-          const metadata = historyItemMeta(item)
-          const timestamp = historyItemTime(item.createdAt)
+          const metadata = historyItemMeta(item, locale)
+          const timestamp = historyItemTime(item.createdAt, locale)
           return <article className={`history-gallery__item history-gallery__item--${item.mediaKind}`} key={item.id}>
-            <button type="button" className="history-gallery__open" onClick={() => onPreview(item)} aria-label={`预览 ${item.name}`} title={`预览 ${item.name}`}>
+            <button type="button" className="history-gallery__open" onClick={() => onPreview(item)} aria-label={t.preview(item.name)} title={t.preview(item.name)}>
               {item.mediaKind === 'video'
                 ? <video src={item.image} aria-hidden="true" muted playsInline preload="metadata" />
                 : <img src={item.image} alt="" />}
-              {item.mediaKind === 'video' ? <><span className="history-gallery__type">视频</span><span className="history-gallery__play" aria-hidden="true">▶</span>{item.duration ? <span className="history-gallery__duration">{item.duration}秒</span> : null}</> : null}
-              {item.id === latestVisibleId ? <span className={`history-gallery__latest${item.mediaKind === 'video' ? ' is-video' : ''}`}>最新</span> : null}
+              {item.mediaKind === 'video' ? <><span className="history-gallery__type">{t.videos}</span><span className="history-gallery__play" aria-hidden="true">▶</span>{item.duration ? <span className="history-gallery__duration">{canvasDurationLabel(item.duration, locale)}</span> : null}</> : null}
+              {item.id === latestVisibleId ? <span className={`history-gallery__latest${item.mediaKind === 'video' ? ' is-video' : ''}`}>{t.latest}</span> : null}
             </button>
             <div className="history-gallery__copy">
               <strong title={item.name}>{item.name}</strong>
-              <span>{metadata || (item.mediaKind === 'video' ? '视频' : '图片')}{timestamp ? ` · ${timestamp}` : ''}</span>
+              <span>{metadata || (item.mediaKind === 'video' ? t.videos : t.images)}{timestamp ? ` · ${timestamp}` : ''}</span>
             </div>
             <footer className="history-gallery__actions">
-              {item.nodeId ? <button type="button" onClick={() => onLocate(item)} aria-label={`在画布定位 ${item.name}`} title="在画布定位"><FocusIcon /><span>定位</span></button> : <span />}
-              <button type="button" aria-label={`下载 ${item.name}`} title="下载原媒体" onClick={() => void downloadMedia(item.image, item.name, item.mediaKind)}><DownloadIcon /></button>
-              <button type="button" className={saved ? 'is-saved' : ''} disabled={saved} aria-label={saved ? `${item.name} 已入库` : `将 ${item.name} 入库`} title={saved ? '已入库' : '存入素材库'} onClick={() => onSaveToLibrary(item)}>{saved ? '已入库' : '入库'}</button>
+              {item.nodeId ? <button type="button" onClick={() => onLocate(item)} aria-label={t.locate(item.name)} title={t.locateTitle}><FocusIcon /><span>{t.locateShort}</span></button> : <span />}
+              <button type="button" aria-label={t.download(item.name)} title={t.downloadTitle} onClick={() => void downloadMedia(item.image, item.name, item.mediaKind)}><DownloadIcon /></button>
+              <button type="button" className={saved ? 'is-saved' : ''} disabled={saved} aria-label={saved ? t.savedLabel(item.name) : t.saveLabel(item.name)} title={saved ? t.saved : t.saveTitle} onClick={() => onSaveToLibrary(item)}>{saved ? t.saved : t.save}</button>
             </footer>
           </article>
         })}
           </div>
         </section>)}
-      </div> : <div className="template-empty history-empty"><strong>{results.length ? `暂无${filter === 'video' ? '视频' : '图片'}` : '暂无生成内容'}</strong><span>{results.length ? '切换类型查看其他历史内容。' : '完成图片或视频生成后，结果会出现在这里。'}</span></div>}
+      </div> : <div className="template-empty history-empty"><strong>{results.length ? t.emptyFiltered(filter === 'video') : t.empty}</strong><span>{results.length ? t.switchType : t.emptyHint}</span></div>}
     </aside>
   )
 }
@@ -1190,6 +1226,17 @@ type CanvasReferenceControl = {
   primary: boolean
   priority: number
 }
+
+const generationPanelCopy = {
+  'zh-CN': {
+    referenceInput: (name: string) => `${name}的参考输入`, referenceTitle: (name: string, count: number) => `${name} · ${count} 个参考`, referenceHint: '选择要连入当前节点的素材；主商品决定生成主体。', availableAssets: '可连接的画布素材', toggleReference: (connected: boolean, asset: string, node: string) => `${connected ? '断开' : '连接'} ${asset} 到 ${node}`, connected: '已连入节点', limit: '最多 8 张', connect: '连接到节点', primary: '主商品', setPrimary: '设为主商品', emptyReferences: '先把素材加入画布，才能连接到此节点',
+    recovering: '正在确认任务，请勿重复提交', uploading: '正在上传画布参考素材', queued: '生成服务已接收任务，正在排队', running: '生成服务正在处理', candidatesAria: '真实生成候选', needsAttention: '生成需要处理', candidateTitle: (refinement: boolean, count: string | number) => `${refinement ? '精修' : '首图'}候选 · ${count}`, refinementHint: '候选会继承父版本配方；选择后写入同一条“素材/文本 → 生成 → 结果”图谱，并可在历史中一键回退。', selectedReferencesHint: (names: string) => `真实任务以已选参考「${names}」为依据，并固定主商品。`, selectKeyVisualHint: '选择一张首图会写入结果节点、生成版本分支，并进入素材库的“生成入库”。', recipe: '候选生成配方', primaryName: (name: string) => `主商品 · ${name}`, inheritParent: '继承父版本', referenceCount: (count: number) => `${count} 个参考`, generatingAria: (count: number) => `正在真实生成 ${count} 个候选`, targetCount: (count: number) => `目标 ${count} 个`, cancelGeneration: '取消生成', errorFallback: '生成失败，请重试。', retry: '重试', partial: (ready: number, missing: number) => `已有 ${ready} 张可用，缺少 ${missing} 张。`, fillMissing: (count: number) => `补生成 ${count} 张`, compare: '父版本与精修候选对比', parentVersion: '父版本', selectedKeyVisual: '已选首图', emptyCandidates: '先在下方输入描述并发起真实生成', refinedFrom: (name: string) => `精修自 ${name}`, unlocked: '未锁定',
+  },
+  en: {
+    referenceInput: (name: string) => `Reference inputs for ${name}`, referenceTitle: (name: string, count: number) => `${name} · ${count} ${count === 1 ? 'reference' : 'references'}`, referenceHint: 'Choose assets to connect to this node. The primary product determines the generated subject.', availableAssets: 'Available canvas assets', toggleReference: (connected: boolean, asset: string, node: string) => `${connected ? 'Disconnect' : 'Connect'} ${asset} ${connected ? 'from' : 'to'} ${node}`, connected: 'Connected to node', limit: '8 maximum', connect: 'Connect to node', primary: 'Primary product', setPrimary: 'Set as primary product', emptyReferences: 'Add assets to the canvas before connecting them to this node.',
+    recovering: 'Confirming task. Do not submit again.', uploading: 'Uploading canvas reference assets', queued: 'The generation service received the task and queued it', running: 'The generation service is processing', candidatesAria: 'Generation candidates', needsAttention: 'Generation needs attention', candidateTitle: (refinement: boolean, count: string | number) => `${refinement ? 'Refinement' : 'Key visual'} candidates · ${count}`, refinementHint: 'Candidates inherit the parent recipe. Selecting one writes it to the same asset/text → generation → result graph and keeps it available in history.', selectedReferencesHint: (names: string) => `The task uses the selected references ${names} and locks the primary product.`, selectKeyVisualHint: 'Selecting a key visual writes a result node and version branch, then saves it to generated assets.', recipe: 'Candidate recipe', primaryName: (name: string) => `Primary product · ${name}`, inheritParent: 'Inherited from parent', referenceCount: (count: number) => `${count} ${count === 1 ? 'reference' : 'references'}`, generatingAria: (count: number) => `Generating ${count} candidates`, targetCount: (count: number) => `Target: ${count}`, cancelGeneration: 'Cancel generation', errorFallback: 'Generation failed. Try again.', retry: 'Retry', partial: (ready: number, missing: number) => `${ready} available, ${missing} missing.`, fillMissing: (count: number) => `Generate ${count} missing`, compare: 'Compare parent and refined candidate', parentVersion: 'Parent version', selectedKeyVisual: 'Selected key visual', emptyCandidates: 'Enter a description below and start generation.', refinedFrom: (name: string) => `Refined from ${name}`, unlocked: 'Not locked',
+  },
+} as const
 
 
 export function NodeReferencePanel({
@@ -1209,6 +1256,8 @@ export function NodeReferencePanel({
   onSetPrimary: (assetNodeId: string) => void
   onClose: () => void
 }) {
+  const { locale } = useProductI18n()
+  const t = useProductMessages(generationPanelCopy)
   const connectedReferences = references
     .filter((reference) => connectedNodeIds.has(reference.nodeId))
     .sort((left, right) => {
@@ -1218,12 +1267,13 @@ export function NodeReferencePanel({
     })
   const primary = connectedReferences.find((reference) => reference.nodeId === node.data.primaryInputId)
   const atLimit = connectedReferences.length >= 8
+  const nodeLabel = canvasSystemLabel(node.data.label, locale)
   return (
-    <aside className="workbench-panel reference-panel node-reference-panel" aria-label={`${node.data.label}的参考输入`}>
-      <PanelHeader eyebrow="NODE INPUTS" title={`${node.data.label} · ${connectedReferences.length} 个参考`} onClose={onClose} />
-      <p className="panel-note">选择要连入当前节点的素材；主商品决定生成主体。</p>
+    <aside className="workbench-panel reference-panel node-reference-panel" aria-label={t.referenceInput(nodeLabel)}>
+      <PanelHeader eyebrow="NODE INPUTS" title={t.referenceTitle(nodeLabel, connectedReferences.length)} onClose={onClose} />
+      <p className="panel-note">{t.referenceHint}</p>
 
-      <div className="reference-list" aria-label="可连接的画布素材">
+      <div className="reference-list" aria-label={t.availableAssets}>
         {references.length ? references.map((reference) => {
           const connected = connectedNodeIds.has(reference.nodeId)
           const isPrimary = connected && reference.nodeId === primary?.nodeId
@@ -1231,7 +1281,7 @@ export function NodeReferencePanel({
             <article className={['reference-item', connected ? '' : 'is-off', isPrimary ? 'is-primary' : ''].filter(Boolean).join(' ')} key={reference.nodeId}>
               <img src={reference.image} alt={reference.name} />
               <div className="reference-item__copy">
-                <span>{reference.role}</span>
+                <span>{canvasAssetRoleLabel(reference.role, locale)}</span>
                 <strong>{reference.name}</strong>
               </div>
               <div className="reference-item__actions">
@@ -1241,19 +1291,19 @@ export function NodeReferencePanel({
                     checked={connected}
                     disabled={disabled || (!connected && atLimit)}
                     onChange={(event) => onToggle(reference.nodeId, event.target.checked)}
-                    aria-label={`${connected ? '断开' : '连接'} ${reference.name} 到 ${node.data.label}`}
+                    aria-label={t.toggleReference(connected, reference.name, nodeLabel)}
                   />
-                  <span>{connected ? '已连入节点' : atLimit ? '最多 8 张' : '连接到节点'}</span>
+                  <span>{connected ? t.connected : atLimit ? t.limit : t.connect}</span>
                 </label>
                 {connected && reference.role === '商品' ? (
                   isPrimary
-                    ? <span className="reference-role is-primary">主商品</span>
-                    : <button type="button" disabled={disabled} onClick={() => onSetPrimary(reference.nodeId)}>设为主商品</button>
+                    ? <span className="reference-role is-primary">{t.primary}</span>
+                    : <button type="button" disabled={disabled} onClick={() => onSetPrimary(reference.nodeId)}>{t.setPrimary}</button>
                 ) : null}
               </div>
             </article>
           )
-        }) : <p className="asset-empty">先把素材加入画布，才能连接到此节点</p>}
+        }) : <p className="asset-empty">{t.emptyReferences}</p>}
       </div>
     </aside>
   )
@@ -1281,14 +1331,16 @@ export function GenerationPanel({
   onRetry: () => void
   onClose: () => void
 }) {
+  const { locale } = useProductI18n()
+  const t = useProductMessages(generationPanelCopy)
   const isInFlight = status === 'uploading' || status === 'queued' || status === 'running' || status === 'recovering'
   const statusMessage = status === 'recovering'
-    ? '正在确认任务，请勿重复提交'
+    ? t.recovering
     : status === 'uploading'
-    ? '正在上传画布参考素材'
+    ? t.uploading
     : status === 'queued'
-      ? '生成服务已接收任务，正在排队'
-      : '生成服务正在处理'
+      ? t.queued
+      : t.running
   const isRefinement = kind === 'refinement' || candidates[0]?.kind === 'refinement'
   const parent = candidates.find((candidate) => candidate.kind === 'refinement' && candidate.parentImage)
   const sourceAssetNames = candidates[0]?.sourceAssetNames ?? []
@@ -1296,42 +1348,42 @@ export function GenerationPanel({
   const primaryReference = primaryReferenceFromRecipe(recipe)
   const isPartial = status === 'idle' && pendingCount > candidates.length
   return (
-    <aside className="workbench-panel generation-panel" aria-label="真实生成候选">
-      <PanelHeader eyebrow={isRefinement ? 'REAL REFINEMENT' : 'REAL GENERATION'} title={isInFlight ? statusMessage : status === 'error' ? '生成需要处理' : `${isRefinement ? '精修' : '首图'}候选 · ${isPartial ? `${candidates.length}/${pendingCount}` : candidates.length}`} onClose={onClose} />
-      <p className="panel-note">{isRefinement ? '候选会继承父版本配方；选择后写入同一条“素材/文本 → 生成 → 结果”图谱，并可在历史中一键回退。' : sourceAssetNames.length ? `真实任务以已选参考「${sourceAssetNames.join('、')}」为依据，并固定主商品。` : '选择一张首图会写入结果节点、生成版本分支，并进入素材库的“生成入库”。'}</p>
-      {recipe ? <div className="candidate-recipe" aria-label="候选生成配方"><strong>{primaryReference ? `主商品 · ${primaryReference.name}` : '继承父版本'}</strong><span>{recipe.references.length} 个参考 · {recipe.settings.aspectRatio} / {recipe.settings.resolution}</span></div> : null}
+    <aside className="workbench-panel generation-panel" aria-label={t.candidatesAria}>
+      <PanelHeader eyebrow={isRefinement ? 'REAL REFINEMENT' : 'REAL GENERATION'} title={isInFlight ? statusMessage : status === 'error' ? t.needsAttention : t.candidateTitle(isRefinement, isPartial ? `${candidates.length}/${pendingCount}` : candidates.length)} onClose={onClose} />
+      <p className="panel-note">{isRefinement ? t.refinementHint : sourceAssetNames.length ? t.selectedReferencesHint(sourceAssetNames.join(locale === 'en' ? ', ' : '、')) : t.selectKeyVisualHint}</p>
+      {recipe ? <div className="candidate-recipe" aria-label={t.recipe}><strong>{primaryReference ? t.primaryName(primaryReference.name) : t.inheritParent}</strong><span>{t.referenceCount(recipe.references.length)} · {recipe.settings.aspectRatio} / {recipe.settings.resolution}</span></div> : null}
       {isInFlight ? (
-        <div className="generation-progress" role="status" aria-label={`正在真实生成 ${pendingCount} 个候选`}>
+        <div className="generation-progress" role="status" aria-label={t.generatingAria(pendingCount)}>
           <div><span className="is-indeterminate" /></div>
-          <span>{statusMessage} · 目标 {pendingCount} 个</span>
-          <button onClick={onCancel}>取消生成</button>
+          <span>{statusMessage} · {t.targetCount(pendingCount)}</span>
+          <button onClick={onCancel}>{t.cancelGeneration}</button>
         </div>
       ) : null}
       {status === 'error' ? (
         <div className="generation-error" role="alert">
-          <span>{error ?? '生成失败，请重试。'}</span>
-          <button onClick={onRetry}>重试</button>
+          <span>{error ? localizeProductError(new Error(error), locale, { 'zh-CN': error, en: t.errorFallback }) : t.errorFallback}</span>
+          <button onClick={onRetry}>{t.retry}</button>
         </div>
       ) : null}
       {isPartial ? (
         <div className="generation-partial" role="status">
-          <span>已有 {candidates.length} 张可用，缺少 {pendingCount - candidates.length} 张。</span>
-          <button onClick={onRetry}>补生成 {pendingCount - candidates.length} 张</button>
+          <span>{t.partial(candidates.length, pendingCount - candidates.length)}</span>
+          <button onClick={onRetry}>{t.fillMissing(pendingCount - candidates.length)}</button>
         </div>
       ) : null}
       {parent ? (
-        <section className="version-compare" aria-label="父版本与精修候选对比">
-          <img src={parent.parentImage} alt={parent.parentLabel ?? '父版本'} />
+        <section className="version-compare" aria-label={t.compare}>
+          <img src={parent.parentImage} alt={parent.parentLabel ?? t.parentVersion} />
           <div>
-            <span>父版本</span>
-            <strong>{parent.parentLabel ?? '已选首图'}</strong>
+            <span>{t.parentVersion}</span>
+            <strong>{parent.parentLabel ?? t.selectedKeyVisual}</strong>
             <p>{parent.refinementInstruction}</p>
           </div>
         </section>
       ) : null}
       <div className="candidate-grid">
         {isInFlight ? Array.from({ length: Math.max(1, pendingCount) }, (_, index) => <div className="candidate-skeleton" key={index} />) : null}
-        {status === 'idle' && candidates.length === 0 ? <p className="asset-empty">先在下方输入描述并发起真实生成</p> : null}
+        {status === 'idle' && candidates.length === 0 ? <p className="asset-empty">{t.emptyCandidates}</p> : null}
         {status === 'idle' ? candidates.map((candidate) => (
           <article className={`${candidate.selected ? 'candidate-card is-selected' : 'candidate-card'} candidate-card--ratio-${candidate.settings.aspectRatio.replace(':', '-')}`} key={candidate.id}>
             {candidate.mediaKind === 'video'
@@ -1339,7 +1391,7 @@ export function GenerationPanel({
               : <img src={candidate.image} alt={candidate.name} />}
             <button type="button" className="candidate-card__select" onClick={() => onSelect(candidate.id)} aria-pressed={candidate.selected}>
               <span>{candidate.name}</span>
-              <small>{candidate.kind === 'refinement' ? `精修自 ${candidate.parentLabel ?? '已选首图'}` : `主商品 · ${primaryReferenceFromRecipe(candidate.recipe)?.name ?? '未锁定'}`} · {candidate.recipe.references.length} 参考</small>
+              <small>{candidate.kind === 'refinement' ? t.refinedFrom(candidate.parentLabel ?? t.selectedKeyVisual) : t.primaryName(primaryReferenceFromRecipe(candidate.recipe)?.name ?? t.unlocked)} · {t.referenceCount(candidate.recipe.references.length)}</small>
             </button>
           </article>
         )) : null}
@@ -1347,6 +1399,15 @@ export function GenerationPanel({
     </aside>
   )
 }
+
+const deliveryCopy = {
+  'zh-CN': {
+    title: '投放交付', currentKeyVisual: '当前首图', savedVersion: '已保存的画布版本', currentCanvas: '来自当前画布', change: '更换', videoBlocked: '视频暂不支持图片投放交付', videoBlockedHint: '请选择一张生成图片，视频交付将在独立流程中处理。', chooseImage: '选择图片', emptyHint: '请选择一张生成图片开始投放交付。', chooseAsset: '选择交付素材', recentImages: '最近生成图片', imageCount: (count: number) => `${count} 张`, noImages: '暂无可用于交付的生成图片。', specs: '投放规格', livePreview: '实时预览', previewHint: '边调边看', previewChannels: '预览渠道', safeZone: '安全区', selectSpec: '至少选择一个投放规格。', copyLayout: '文案与版式', optional: '可选', mainTitle: '主标题', mainTitlePlaceholder: '输入投放主标题', subtitle: '副标题', subtitlePlaceholder: '输入补充卖点', showSafeZone: '显示安全区辅助线', safeZoneHint: '仅用于预览定位，导出文件不包含辅助线', packaging: '正在打包…', export: (count: number) => `导出 ${count || ''} 个规格`, localOnly: '本地裁切并打包，不会直接发布到平台。', downloaded: (count: number) => `已下载 ZIP：${count} 个文件（含 manifest）`, exportError: '导出失败，请重试。', closePanel: (title: string) => `关闭${title}`, deleteTitle: (name: string) => `删除「${name}」？`, deleteShared: '这会从共享品牌素材库下架，并同步移除所有项目画布、模板与历史配方中的引用。', deleteProject: '这会同步移除当前画布及模板中的引用；历史画布仍会保留为版本记录。', cancel: '取消', confirmDelete: '确认删除', undo: '撤销', channels: { taobao: '淘宝', xiaohongshu: '小红书', douyin: '抖音' },
+  },
+  en: {
+    title: 'Delivery kit', currentKeyVisual: 'Current key visual', savedVersion: 'Saved canvas version', currentCanvas: 'From current canvas', change: 'Change', videoBlocked: 'Image delivery is not available for video', videoBlockedHint: 'Choose a generated image. Video delivery is handled in a separate workflow.', chooseImage: 'Choose image', emptyHint: 'Choose a generated image to start delivery.', chooseAsset: 'Choose delivery asset', recentImages: 'Recent generated images', imageCount: (count: number) => `${count} ${count === 1 ? 'image' : 'images'}`, noImages: 'No generated images are available for delivery.', specs: 'Delivery specs', livePreview: 'Live preview', previewHint: 'Updates as you edit', previewChannels: 'Preview channels', safeZone: 'Safe zone', selectSpec: 'Select at least one delivery spec.', copyLayout: 'Copy and layout', optional: 'Optional', mainTitle: 'Headline', mainTitlePlaceholder: 'Enter the campaign headline', subtitle: 'Subheadline', subtitlePlaceholder: 'Add a supporting benefit', showSafeZone: 'Show safe-zone guides', safeZoneHint: 'Guides are for preview only and are not included in exported files', packaging: 'Packaging…', export: (count: number) => `Export ${count || ''} ${count === 1 ? 'spec' : 'specs'}`, localOnly: 'Cropped and packaged locally. Nothing is published directly.', downloaded: (count: number) => `ZIP downloaded: ${count} ${count === 1 ? 'file' : 'files'} including manifest`, exportError: 'Export failed. Try again.', closePanel: (title: string) => `Close ${title}`, deleteTitle: (name: string) => `Delete “${name}”?`, deleteShared: 'This removes the asset from the shared brand library and all references in project canvases, templates, and historical recipes.', deleteProject: 'This removes references from the current canvas and templates. Historical canvas versions remain available.', cancel: 'Cancel', confirmDelete: 'Delete asset', undo: 'Undo', channels: { taobao: 'Taobao', xiaohongshu: 'Xiaohongshu', douyin: 'Douyin' },
+  },
+} as const
 
 export function DeliveryPanel({
   target,
@@ -1371,6 +1432,8 @@ export function DeliveryPanel({
   onSelectTarget: (nodeId: string) => void
   onClose: () => void
 }) {
+  const { locale } = useProductI18n()
+  const t = deliveryCopy[locale]
   const [selectedPresets, setSelectedPresets] = useState<DeliveryPresetId[]>(() => deliveryPresets.map((preset) => preset.id))
   const [activePreviewPreset, setActivePreviewPreset] = useState<DeliveryPresetId>('taobao')
   const [title, setTitle] = useState('')
@@ -1378,7 +1441,9 @@ export function DeliveryPanel({
   const [safeZone, setSafeZone] = useState(true)
   const [targetPickerOpen, setTargetPickerOpen] = useState(false)
   const [exporting, setExporting] = useState(false)
-  const [exportMessage, setExportMessage] = useState('')
+  const [exportFeedback, setExportFeedback] = useState<
+    { kind: 'success'; fileCount: number } | { kind: 'error'; error: unknown } | null
+  >(null)
 
   const previewArtifacts = useMemo(() => target
     ? buildDeliveryPreviewArtifacts({
@@ -1395,7 +1460,7 @@ export function DeliveryPanel({
 
   useEffect(() => {
     setTargetPickerOpen(false)
-    setExportMessage('')
+    setExportFeedback(null)
     if (!target) {
       setTitle('')
       setSubtitle('')
@@ -1421,13 +1486,13 @@ export function DeliveryPanel({
   const selectTarget = (nodeId: string) => {
     onSelectTarget(nodeId)
     setTargetPickerOpen(false)
-    setExportMessage('')
+    setExportFeedback(null)
   }
 
   const handleExport = async () => {
     if (!target || !previewArtifacts.length || exporting) return
     setExporting(true)
-    setExportMessage('')
+    setExportFeedback(null)
     try {
       const result = await downloadDeliveryPackage(previewArtifacts)
       onCreate({
@@ -1437,43 +1502,43 @@ export function DeliveryPanel({
         subtitle,
         safeZone,
       })
-      setExportMessage(`已下载 ZIP：${result.fileCount} 个文件（含 manifest）`)
+      setExportFeedback({ kind: 'success', fileCount: result.fileCount })
     } catch (error) {
-      setExportMessage(error instanceof Error ? error.message : '导出失败，请重试')
+      setExportFeedback({ kind: 'error', error })
     } finally {
       setExporting(false)
     }
   }
 
   return (
-    <aside className="workbench-panel delivery-panel" aria-label="投放交付">
-      <PanelHeader eyebrow="DELIVERY KIT" title="投放交付" onClose={onClose} />
+    <aside className="workbench-panel delivery-panel" aria-label={t.title}>
+      <PanelHeader eyebrow="DELIVERY KIT" title={t.title} onClose={onClose} />
       {target ? (
         <div className="delivery-target">
           <img src={target.image} alt={target.label} />
           <div>
-            <span>当前首图</span>
+            <span>{t.currentKeyVisual}</span>
             <strong>{target.label}</strong>
-            <small>{target.versionId ? '已保存的画布版本' : '来自当前画布'}</small>
+            <small>{target.versionId ? t.savedVersion : t.currentCanvas}</small>
           </div>
-          <button type="button" className="delivery-target__change" onClick={() => setTargetPickerOpen((open) => !open)}>更换</button>
+          <button type="button" className="delivery-target__change" onClick={() => setTargetPickerOpen((open) => !open)}>{t.change}</button>
         </div>
       ) : blockedVideo ? (
         <div className="delivery-blocked">
-          <strong>视频暂不支持图片投放交付</strong>
-          <span>请选择一张生成图片，视频交付将在独立流程中处理。</span>
-          <button type="button" onClick={() => setTargetPickerOpen(true)}>选择图片</button>
+          <strong>{t.videoBlocked}</strong>
+          <span>{t.videoBlockedHint}</span>
+          <button type="button" onClick={() => setTargetPickerOpen(true)}>{t.chooseImage}</button>
         </div>
       ) : (
         <div className="delivery-empty">
-          <span>请选择一张生成图片开始投放交付。</span>
-          <button type="button" onClick={() => setTargetPickerOpen(true)}>选择图片</button>
+          <span>{t.emptyHint}</span>
+          <button type="button" onClick={() => setTargetPickerOpen(true)}>{t.chooseImage}</button>
         </div>
       )}
 
       {targetPickerOpen ? (
-        <section className="delivery-target-picker" aria-label="选择交付素材">
-          <div className="delivery-section__title"><strong>最近生成图片</strong><span>{targets.length} 张</span></div>
+        <section className="delivery-target-picker" aria-label={t.chooseAsset}>
+          <div className="delivery-section__title"><strong>{t.recentImages}</strong><span>{t.imageCount(targets.length)}</span></div>
           {targets.length ? (
             <div className="delivery-target-picker__list">
               {targets.map((item) => (
@@ -1489,14 +1554,14 @@ export function DeliveryPanel({
                 </button>
               ))}
             </div>
-          ) : <p>暂无可用于交付的生成图片。</p>}
+          ) : <p>{t.noImages}</p>}
         </section>
       ) : null}
 
       {target ? <>
-      <section className="delivery-section" aria-label="投放规格">
+      <section className="delivery-section" aria-label={t.specs}>
         <div className="delivery-section__title">
-          <strong>投放规格</strong>
+          <strong>{t.specs}</strong>
           <span>{selectedPresets.length}/3</span>
         </div>
         <div className="delivery-preset-list">
@@ -1511,7 +1576,7 @@ export function DeliveryPanel({
                 aria-pressed={active}
               >
                 <span className={`delivery-preset__ratio delivery-preset__ratio--${preset.id}`} />
-                <span><strong>{preset.channel}</strong><small>{preset.ratio} · {preset.width}×{preset.height}</small></span>
+                <span><strong>{t.channels[preset.id]}</strong><small>{preset.ratio} · {preset.width}×{preset.height}</small></span>
                 <i>{active ? '✓' : ''}</i>
               </button>
             )
@@ -1519,84 +1584,91 @@ export function DeliveryPanel({
         </div>
       </section>
 
-      <section className="delivery-live-preview" aria-label="实时预览">
-          <div className="delivery-section__title"><strong>实时预览</strong><span>边调边看</span></div>
+      <section className="delivery-live-preview" aria-label={t.livePreview}>
+          <div className="delivery-section__title"><strong>{t.livePreview}</strong><span>{t.previewHint}</span></div>
           {selectedPresets.length ? (
             <>
-              <div className="delivery-preview-tabs" role="tablist" aria-label="预览渠道">
+              <div className="delivery-preview-tabs" role="tablist" aria-label={t.previewChannels}>
                 {selectedPresets.map((presetId) => {
                   const preset = deliveryPresets.find((item) => item.id === presetId)
                   if (!preset) return null
                   const active = activePreview?.presetId === presetId
-                  return <button type="button" role="tab" aria-selected={active} className={active ? 'is-active' : ''} key={presetId} onClick={() => setActivePreviewPreset(presetId)}>{preset.channel}</button>
+                  return <button type="button" role="tab" aria-selected={active} className={active ? 'is-active' : ''} key={presetId} onClick={() => setActivePreviewPreset(presetId)}>{t.channels[preset.id]}</button>
                 })}
               </div>
               {activePreview && activePreviewDefinition ? (
                 <div className="delivery-live-preview__stage">
                   <div className={`delivery-preview delivery-preview--${activePreview.presetId}`}>
-                    <img src={activePreview.image} alt={`${activePreview.targetLabel} · ${activePreviewDefinition.channel}`} />
+                    <img src={activePreview.image} alt={`${activePreview.targetLabel} · ${t.channels[activePreviewDefinition.id]}`} />
                     {activePreview.title || activePreview.subtitle ? (
                       <div className="delivery-preview__copy">
                         {activePreview.title ? <strong>{activePreview.title}</strong> : null}
                         {activePreview.subtitle ? <small>{activePreview.subtitle}</small> : null}
                       </div>
                     ) : null}
-                    {activePreview.safeZone ? <span className="delivery-preview__safe">安全区</span> : null}
+                    {activePreview.safeZone ? <span className="delivery-preview__safe">{t.safeZone}</span> : null}
                   </div>
-                  <p><strong>{activePreviewDefinition.channel}</strong><span>{activePreviewDefinition.ratio} · {activePreviewDefinition.width}×{activePreviewDefinition.height}</span></p>
+                  <p><strong>{t.channels[activePreviewDefinition.id]}</strong><span>{activePreviewDefinition.ratio} · {activePreviewDefinition.width}×{activePreviewDefinition.height}</span></p>
                 </div>
               ) : null}
             </>
-          ) : <p className="delivery-live-preview__empty">至少选择一个投放规格。</p>}
+          ) : <p className="delivery-live-preview__empty">{t.selectSpec}</p>}
       </section>
 
-      <section className="delivery-copy" aria-label="文案与版式">
-        <div className="delivery-section__title"><strong>文案与版式</strong><span>可选</span></div>
-        <label htmlFor="delivery-title">主标题</label>
-        <input id="delivery-title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="输入投放主标题" />
-        <label htmlFor="delivery-subtitle">副标题</label>
-        <input id="delivery-subtitle" value={subtitle} onChange={(event) => setSubtitle(event.target.value)} placeholder="输入补充卖点" />
+      <section className="delivery-copy" aria-label={t.copyLayout}>
+        <div className="delivery-section__title"><strong>{t.copyLayout}</strong><span>{t.optional}</span></div>
+        <label htmlFor="delivery-title">{t.mainTitle}</label>
+        <input id="delivery-title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder={t.mainTitlePlaceholder} />
+        <label htmlFor="delivery-subtitle">{t.subtitle}</label>
+        <input id="delivery-subtitle" value={subtitle} onChange={(event) => setSubtitle(event.target.value)} placeholder={t.subtitlePlaceholder} />
         <label className="delivery-safe-toggle">
           <input type="checkbox" checked={safeZone} onChange={(event) => setSafeZone(event.target.checked)} />
-          <span><strong>显示安全区辅助线</strong><small>仅用于预览定位，导出文件不包含辅助线</small></span>
+          <span><strong>{t.showSafeZone}</strong><small>{t.safeZoneHint}</small></span>
           <i aria-hidden="true" />
         </label>
       </section>
 
-      <button className="delivery-export" onClick={() => void handleExport()} disabled={!target || !selectedPresets.length || exporting}>{exporting ? '正在打包…' : `导出 ${selectedPresets.length || ''} 个规格`}</button>
-      <p className="delivery-note">本地裁切并打包，不会直接发布到平台。</p>
-      {exportMessage ? <p className="delivery-export-message" role="status">{exportMessage}</p> : null}
+      <button className="delivery-export" onClick={() => void handleExport()} disabled={!target || !selectedPresets.length || exporting}>{exporting ? t.packaging : t.export(selectedPresets.length)}</button>
+      <p className="delivery-note">{t.localOnly}</p>
+      {exportFeedback ? <p className="delivery-export-message" role="status">{exportFeedback.kind === 'success'
+        ? t.downloaded(exportFeedback.fileCount)
+        : localizeProductError(exportFeedback.error, locale, { 'zh-CN': t.exportError, en: t.exportError })}</p> : null}
       </> : null}
     </aside>
   )
 }
 
 function PanelHeader({ eyebrow, title, onClose }: { eyebrow?: string; title: string; onClose: () => void }) {
+  const { locale } = useProductI18n()
+  const t = deliveryCopy[locale]
   return (
     <div className="panel-header">
       <div>
         {eyebrow ? <span className="panel-eyebrow">{eyebrow}</span> : null}
         <h2>{title}</h2>
       </div>
-      <button className="close-panel" onClick={onClose} aria-label={`关闭${title}`}><CloseIcon /></button>
+      <button className="close-panel" onClick={onClose} aria-label={t.closePanel(title)}><CloseIcon /></button>
     </div>
   )
 }
 
 export function ConfirmationDialog({ asset, phase, onConfirm, onCancel }: { asset: AssetRecord; phase: MotionPhase; onConfirm: () => void; onCancel: () => void }) {
+  const { locale } = useProductI18n()
+  const t = deliveryCopy[locale]
   const isSharedBrandAsset = asset.source === 'brand'
+  const assetName = asset.source === 'generated' ? canvasSystemLabel(asset.name, locale) : asset.name
   const dialogRef = useDialogFocusTrap(phase !== 'exit')
   return (
     <div className={`confirm-backdrop motion-overlay is-${phase}`} aria-hidden={phase === 'exit' ? true : undefined}>
       <section ref={dialogRef} className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-asset-title">
         <span className="panel-eyebrow">REMOVE ASSET</span>
-        <h2 id="delete-asset-title">删除「{asset.name}」？</h2>
+        <h2 id="delete-asset-title">{t.deleteTitle(assetName)}</h2>
         <p>{isSharedBrandAsset
-          ? '这会从共享品牌素材库下架，并同步移除所有项目画布、模板与历史配方中的引用。'
-          : '这会同步移除当前画布及模板中的引用；历史画布仍会保留为版本记录。'}</p>
+          ? t.deleteShared
+          : t.deleteProject}</p>
         <div>
-          <button className="secondary-button" onClick={onCancel}>取消</button>
-          <button className="danger-button" onClick={onConfirm}>确认删除</button>
+          <button className="secondary-button" onClick={onCancel}>{t.cancel}</button>
+          <button className="danger-button" onClick={onConfirm}>{t.confirmDelete}</button>
         </div>
       </section>
     </div>
@@ -1605,10 +1677,17 @@ export function ConfirmationDialog({ asset, phase, onConfirm, onCancel }: { asse
 
 
 export function UndoToast({ label, phase, onUndo }: { label: string; phase: MotionPhase; onUndo: () => void }) {
+  const { locale } = useProductI18n()
+  const t = deliveryCopy[locale]
+  const displayLabel = locale === 'en'
+    ? label
+      .replace(/^已移除「(.+)」$/u, 'Removed “$1”')
+      .replace(/^已删除「(.+)」$/u, 'Deleted “$1”')
+    : label
   return (
     <div className={`undo-toast is-${phase}`} role="status" aria-hidden={phase === 'exit' ? true : undefined}>
-      <span>{label}</span>
-      <button onClick={onUndo}>撤销</button>
+      <span>{displayLabel}</span>
+      <button onClick={onUndo}>{t.undo}</button>
     </div>
   )
 }

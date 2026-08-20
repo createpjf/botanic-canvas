@@ -15,7 +15,65 @@ import { listProjectCollaborationActivities, updateProjectCollaborationActivityR
 import { flushPendingCanvasDocumentWrites, previewRemoteCanvasDocument, refreshCanvasDocumentFromRemote, syncPendingCanvasDrafts } from '../../lib/db'
 import { connectCanvasCollaboration, type CanvasCollaboration } from '../../lib/projectCollaboration'
 import { serverPersistenceEnabled } from '../../lib/productSession'
+import { localizeProductError, type ProductLocale } from '../../i18n/core'
+import { useProductI18n } from '../../i18n/react'
 import { useCanvasStore } from '../../store/canvasStore'
+import { canvasSystemLabel } from './canvasI18n'
+
+const canvasSynchronizationCopy = {
+  'zh-CN': {
+    collaborator: '协作者',
+    canvasSynced: '画布已同步。',
+    localDraftSynced: '本地草稿已同步。',
+    cloudVersionSelected: '已切换到云端版本。',
+    canvasUpdated: '更新了画布内容',
+    historyLoadFailed: '协作记录加载失败，请重试。',
+    historyMoreFailed: '更多协作记录加载失败，请重试。',
+    markReadFailed: '协作记录标记失败，请重试。',
+    clearFailed: '协作记录清空失败，请重试。',
+    remoteRefreshFailed: '无法加载云端画布，请重试。',
+  },
+  en: {
+    collaborator: 'Collaborator',
+    canvasSynced: 'Canvas synced.',
+    localDraftSynced: 'Local draft synced.',
+    cloudVersionSelected: 'Switched to the cloud version.',
+    canvasUpdated: 'Updated the canvas',
+    historyLoadFailed: 'Unable to load collaboration activity. Try again.',
+    historyMoreFailed: 'Unable to load more collaboration activity. Try again.',
+    markReadFailed: 'Unable to mark collaboration activity as read. Try again.',
+    clearFailed: 'Unable to clear collaboration activity. Try again.',
+    remoteRefreshFailed: 'Unable to load the cloud canvas. Try again.',
+  },
+} as const
+
+function localizeCollaborationChange<T extends CollaborationDocumentChange>(change: T, locale: ProductLocale): T {
+  if (locale !== 'en') return change
+  const displayName = (value: string) => value === '新建对话' ? 'New conversation' : canvasSystemLabel(value, locale)
+  const summary = change.summary
+  let match = summary.match(/^新增了「(.+)」$/u)
+  if (match) return { ...change, summary: `Added “${displayName(match[1])}”` }
+  match = summary.match(/^移除了「(.+)」$/u)
+  if (match) return { ...change, summary: `Removed “${displayName(match[1])}”` }
+  match = summary.match(/^(移动|更新)了「(.+)」$/u)
+  if (match) return { ...change, summary: `${match[1] === '移动' ? 'Moved' : 'Updated'} “${displayName(match[2])}”` }
+  match = summary.match(/^更新了对话「(.+)」$/u)
+  if (match) return { ...change, summary: `Updated conversation “${displayName(match[1])}”` }
+  match = summary.match(/^更新了任务「(.+)」$/u)
+  if (match) return { ...change, summary: `Updated task “${match[1]}”` }
+  match = summary.match(/^(新增|移除|更新)了 (\d+) 个画布节点$/u)
+  if (match) {
+    const count = Number(match[2])
+    const verb = match[1] === '新增' ? 'Added' : match[1] === '移除' ? 'Removed' : 'Updated'
+    return { ...change, summary: `${verb} ${count} canvas ${count === 1 ? 'node' : 'nodes'}` }
+  }
+  match = summary.match(/^将项目重命名为「(.+)」$/u)
+  if (match) return { ...change, summary: `Renamed project to “${match[1]}”` }
+  if (summary === '调整了画布连线') return { ...change, summary: 'Updated canvas connections' }
+  if (summary === '更新了项目内容') return { ...change, summary: 'Updated project content' }
+  if (summary === '更新了画布内容') return { ...change, summary: 'Updated the canvas' }
+  return change
+}
 
 type CanvasWorkspaceSynchronizationOptions = {
   workspaceActive: boolean
@@ -47,6 +105,8 @@ const emptyCollaborationAwareness: CollaborationAwareness = {
  * UI 只消费重试入口，不直接组合网络恢复时序。
  */
 export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUserId }: CanvasWorkspaceSynchronizationOptions) {
+  const { locale } = useProductI18n()
+  const copy = canvasSynchronizationCopy[locale]
   const documentId = useCanvasStore((state) => state.document.id)
   const nodes = useCanvasStore((state) => state.document.nodes)
   const edges = useCanvasStore((state) => state.document.edges)
@@ -80,27 +140,29 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
     occurredAt?: number
   }) => {
     if (!actorId || actorId === currentUserId) return
+    const localizedChange = localizeCollaborationChange(change, locale)
     setCollaborationAwareness((current) => {
       const activities = appendCollaborationActivity(current.activities, {
         id: `collaboration-${actorId}-${occurredAt}`,
         actorId,
-        actorName: actorName || collaboratorNamesRef.current.get(actorId) || '协作者',
-        ...change,
+        actorName: actorName || collaboratorNamesRef.current.get(actorId) || copy.collaborator,
+        ...localizedChange,
         occurredAt,
         unread: true,
         count: 1,
       })
       return { ...current, activities, unreadActivityCount: activities.filter((activity) => activity.unread).length }
     })
-  }, [currentUserId])
+  }, [copy.collaborator, currentUserId, locale])
 
   const loadCollaborationActivities = useCallback(async () => {
     const projectId = useCanvasStore.getState().document.id
     if (!serverPersistenceEnabled || projectId === 'workspace-placeholder') return
     setCollaborationAwareness((current) => ({ ...current, historyStatus: 'loading', historyErrorAction: undefined }))
     try {
-      const { activities, nextBefore } = await listProjectCollaborationActivities(projectId, { limit: 30 })
+      const { activities: rawActivities, nextBefore } = await listProjectCollaborationActivities(projectId, { limit: 30 })
       if (useCanvasStore.getState().document.id !== projectId) return
+      const activities = rawActivities.map((activity) => localizeCollaborationChange(activity, locale))
       setCollaborationAwareness((current) => ({
         ...current,
         activities,
@@ -114,9 +176,12 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
       if (useCanvasStore.getState().document.id === projectId) {
         setCollaborationAwareness((current) => ({ ...current, historyStatus: 'error', historyErrorAction: 'load' }))
       }
-      throw caught
+      throw new Error(localizeProductError(caught, locale, {
+        'zh-CN': canvasSynchronizationCopy['zh-CN'].historyLoadFailed,
+        en: canvasSynchronizationCopy.en.historyLoadFailed,
+      }))
     }
-  }, [])
+  }, [locale])
 
   const loadMoreCollaborationActivities = useCallback(async () => {
     const projectId = useCanvasStore.getState().document.id
@@ -124,8 +189,9 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
     if (!serverPersistenceEnabled || projectId === 'workspace-placeholder' || !cursor || collaborationAwareness.historyStatus === 'loading-more') return
     setCollaborationAwareness((current) => ({ ...current, historyStatus: 'loading-more', historyErrorAction: undefined }))
     try {
-      const { activities: page, nextBefore } = await listProjectCollaborationActivities(projectId, { limit: 30, before: cursor })
+      const { activities: rawPage, nextBefore } = await listProjectCollaborationActivities(projectId, { limit: 30, before: cursor })
       if (useCanvasStore.getState().document.id !== projectId) return
+      const page = rawPage.map((activity) => localizeCollaborationChange(activity, locale))
       setCollaborationAwareness((current) => {
         const byId = new Map([...current.activities, ...page].map((activity) => [activity.id, activity]))
         const activities = [...byId.values()].sort((left, right) => right.occurredAt - left.occurredAt || right.id.localeCompare(left.id))
@@ -143,9 +209,12 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
       if (useCanvasStore.getState().document.id === projectId) {
         setCollaborationAwareness((current) => ({ ...current, historyStatus: 'error', historyErrorAction: 'load-more' }))
       }
-      throw caught
+      throw new Error(localizeProductError(caught, locale, {
+        'zh-CN': canvasSynchronizationCopy['zh-CN'].historyMoreFailed,
+        en: canvasSynchronizationCopy.en.historyMoreFailed,
+      }))
     }
-  }, [collaborationAwareness.historyNextBefore, collaborationAwareness.historyStatus])
+  }, [collaborationAwareness.historyNextBefore, collaborationAwareness.historyStatus, locale])
 
   const dismissRemoteChange = useCallback(async () => {
     const projectId = useCanvasStore.getState().document.id
@@ -155,7 +224,10 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
         await updateProjectCollaborationActivityReceipt(projectId, 'read')
       } catch (caught) {
         if (useCanvasStore.getState().document.id === projectId) setCollaborationAwareness((current) => ({ ...current, historyStatus: 'error', historyErrorAction: 'read' }))
-        throw caught
+        throw new Error(localizeProductError(caught, locale, {
+          'zh-CN': canvasSynchronizationCopy['zh-CN'].markReadFailed,
+          en: canvasSynchronizationCopy.en.markReadFailed,
+        }))
       }
     }
     if (useCanvasStore.getState().document.id !== projectId) return
@@ -166,7 +238,7 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
       historyStatus: 'idle',
       historyErrorAction: undefined,
     }))
-  }, [])
+  }, [locale])
 
   const clearCollaborationActivities = useCallback(async () => {
     const projectId = useCanvasStore.getState().document.id
@@ -176,12 +248,15 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
         await updateProjectCollaborationActivityReceipt(projectId, 'clear')
       } catch (caught) {
         if (useCanvasStore.getState().document.id === projectId) setCollaborationAwareness((current) => ({ ...current, historyStatus: 'error', historyErrorAction: 'clear' }))
-        throw caught
+        throw new Error(localizeProductError(caught, locale, {
+          'zh-CN': canvasSynchronizationCopy['zh-CN'].clearFailed,
+          en: canvasSynchronizationCopy.en.clearFailed,
+        }))
       }
     }
     if (useCanvasStore.getState().document.id !== projectId) return
     setCollaborationAwareness((current) => ({ ...current, activities: [], unreadActivityCount: 0, historyStatus: 'idle', historyHasMore: false, historyNextBefore: undefined, historyErrorAction: undefined }))
-  }, [])
+  }, [locale])
 
   const refreshAgentEntitiesFromRemote = useCallback(async () => {
     const projectId = useCanvasStore.getState().document.id
@@ -224,15 +299,15 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
       const projectId = current.document.id
       const opened = await openDocument(projectId)
       if (opened && useCanvasStore.getState().document.id === projectId) {
-        useCanvasStore.setState({ persistenceStatus: 'saved', assistantMessage: '画布已同步。' })
+        useCanvasStore.setState({ persistenceStatus: 'saved', assistantMessage: copy.canvasSynced })
       }
       return result
     }
     if (result.pending === 0 && (current.persistenceStatus === 'offline' || current.persistenceStatus === 'error')) {
-      useCanvasStore.setState({ persistenceStatus: 'saved', assistantMessage: '本地草稿已同步。' })
+      useCanvasStore.setState({ persistenceStatus: 'saved', assistantMessage: copy.localDraftSynced })
     }
     return result
-  }, [openDocument])
+  }, [copy.canvasSynced, copy.localDraftSynced, openDocument])
 
   const retryAgentCanvasPersistence = useCallback(async () => {
     const projectId = useCanvasStore.getState().document.id
@@ -241,25 +316,32 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
       const current = useCanvasStore.getState()
       if (current.document.id !== projectId || result.conflictIds.includes(projectId)) return false
       if (result.pending === 0 && (current.persistenceStatus === 'offline' || current.persistenceStatus === 'error')) {
-        useCanvasStore.setState({ persistenceStatus: 'saved', assistantMessage: '本地草稿已同步。' })
+        useCanvasStore.setState({ persistenceStatus: 'saved', assistantMessage: copy.localDraftSynced })
       }
       return result.pending === 0
     } catch {
       return false
     }
-  }, [])
+  }, [copy.localDraftSynced])
 
   const refreshAgentCanvasFromRemote = useCallback(async () => {
     const projectId = useCanvasStore.getState().document.id
     if (projectId === 'workspace-placeholder') return false
-    const remote = await refreshCanvasDocumentFromRemote(projectId)
-    if (!remote || useCanvasStore.getState().document.id !== projectId) return false
-    const opened = await openDocument(projectId)
-    if (opened && useCanvasStore.getState().document.id === projectId) {
-      useCanvasStore.setState({ persistenceStatus: 'saved', assistantMessage: '已切换到云端版本。' })
+    try {
+      const remote = await refreshCanvasDocumentFromRemote(projectId)
+      if (!remote || useCanvasStore.getState().document.id !== projectId) return false
+      const opened = await openDocument(projectId)
+      if (opened && useCanvasStore.getState().document.id === projectId) {
+        useCanvasStore.setState({ persistenceStatus: 'saved', assistantMessage: copy.cloudVersionSelected })
+      }
+      return opened
+    } catch (caught) {
+      throw new Error(localizeProductError(caught, locale, {
+        'zh-CN': canvasSynchronizationCopy['zh-CN'].remoteRefreshFailed,
+        en: canvasSynchronizationCopy.en.remoteRefreshFailed,
+      }))
     }
-    return opened
-  }, [openDocument])
+  }, [copy.cloudVersionSelected, locale, openDocument])
 
   const recoverAgentRunResults = useCallback(async () => {
     if (agentRunRecoveryRef.current) return agentRunRecoveryRef.current
@@ -367,11 +449,11 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
         applyCollaborativeGraph(graph)
       },
       onRemoteCanvasChanged: ({ actorId, actorName, activity }) => {
-        const change = pendingRemoteGraphChangeRef.current ?? { kind: 'canvas', summary: '更新了画布内容' }
+        const change = pendingRemoteGraphChangeRef.current ?? { kind: 'canvas', summary: copy.canvasUpdated }
         pendingRemoteGraphChangeRef.current = undefined
         if (activity && activity.actorId !== currentUserId) {
           setCollaborationAwareness((current) => {
-            const activities = appendCollaborationActivity(current.activities, activity)
+            const activities = appendCollaborationActivity(current.activities, localizeCollaborationChange(activity, locale))
             return { ...current, activities, unreadActivityCount: activities.filter((entry) => entry.unread).length }
           })
         } else recordRemoteChange({ actorId, actorName, change })
@@ -407,7 +489,7 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
       onCollaborationActivity: (event) => {
         if (event.activity.actorId !== currentUserId) {
           setCollaborationAwareness((current) => {
-            const activities = appendCollaborationActivity(current.activities, event.activity, { maximum: Math.max(30, current.activities.length + 1) })
+            const activities = appendCollaborationActivity(current.activities, localizeCollaborationChange(event.activity, locale), { maximum: Math.max(30, current.activities.length + 1) })
             return { ...current, activities, unreadActivityCount: activities.filter((entry) => entry.unread).length }
           })
         }
@@ -436,7 +518,7 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
       if (collaborationRef.current === collaboration) collaborationRef.current = null
       collaboration.close()
     }
-  }, [applyAgentRunSnapshot, applyCollaborativeGraph, currentUserId, documentId, hydrated, loadCollaborationActivities, recordRemoteChange, recoverAgentRunResults, recoverPersistentAgentRuns, recoverUnknownGenerationSubmission, refreshAgentEntitiesFromRemote, refreshDocumentFromRemote, synchronizeLocalDrafts, workspaceActive])
+  }, [applyAgentRunSnapshot, applyCollaborativeGraph, copy.canvasUpdated, currentUserId, documentId, hydrated, loadCollaborationActivities, locale, recordRemoteChange, recoverAgentRunResults, recoverPersistentAgentRuns, recoverUnknownGenerationSubmission, refreshAgentEntitiesFromRemote, refreshDocumentFromRemote, synchronizeLocalDrafts, workspaceActive])
 
   useEffect(() => {
     collaboratorNamesRef.current.clear()
@@ -457,10 +539,10 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
     void previewRemoteCanvasDocument(local.id)
       .then((remote) => {
         if (!remote || useCanvasStore.getState().document.id !== local.id) return
-        setCollaborationAwareness((current) => ({ ...current, conflictChanges: collaborationDocumentChanges(local, remote) }))
+        setCollaborationAwareness((current) => ({ ...current, conflictChanges: collaborationDocumentChanges(local, remote).map((change) => localizeCollaborationChange(change, locale)) }))
       })
       .catch(() => undefined)
-  }, [documentId, persistenceStatus])
+  }, [documentId, locale, persistenceStatus])
 
   useEffect(() => {
     if (!hydrated || !workspaceActive || !serverPersistenceEnabled) return
