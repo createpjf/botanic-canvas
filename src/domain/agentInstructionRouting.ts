@@ -228,6 +228,7 @@ export function prepareBotanicAgentGenerationDraft(input: BotanicAgentGeneration
   }
   const briefTurn = advanceBotanicCreativeBrief({
     mode: 'generation',
+    locale: input.locale,
     executionMode: input.executionMode,
     instruction: prompt,
     generationModels: candidateModels,
@@ -250,7 +251,12 @@ export function prepareBotanicAgentGenerationDraft(input: BotanicAgentGeneration
   if (briefTurn.kind === 'failed') return { kind: 'failed', message: briefTurn.message }
   const generationOverrides = briefTurn.settings
   const settingsComplete = Boolean(generationOverrides.model && generationOverrides.aspectRatio && generationOverrides.resolution)
-  if (!settingsComplete) return { kind: 'failed', message: '当前没有可用的完整生成设置，请检查模型目录。' }
+  if (!settingsComplete) return {
+    kind: 'failed',
+    message: input.locale === 'en'
+      ? 'No complete generation settings are available. Check the model catalog.'
+      : '当前没有可用的完整生成设置，请检查模型目录。',
+  }
   // 视频计划一律走首帧语义：选中的结果图并进上下文作为首帧来源。
   const planContextItems = isVideo && target && !input.contextItems.some((item) => (item.nodeId ?? item.id) === target.id)
     ? [
