@@ -30,6 +30,28 @@ function parseStreamEvent(payload: string): BotanicAgentChatStreamEvent[] {
 }
 
 /**
+ * 浏览器在 SSE 读到一半被掐断时，经常抛出 `network error` / `Failed to fetch`，
+ * 而不是服务端那句中文错误。展示层只消费这一句，不能把原生英文漏给用户。
+ */
+export function botanicAgentChatTransportErrorMessage(
+  caught: unknown,
+  options: { idleTimedOut?: boolean; fallback?: string } = {},
+) {
+  const fallback = options.fallback ?? 'Agent 暂时无法回答，请稍后重试。'
+  if (options.idleTimedOut) return 'Agent 对话连接中断，请重试。'
+  const name = caught instanceof Error ? caught.name : ''
+  const message = caught instanceof Error ? caught.message.trim() : ''
+  if (
+    name === 'AbortError'
+    || name === 'TimeoutError'
+    || /^(network error|failed to fetch|fetch failed|load failed|the network connection was lost\.?|networkerror when attempting to fetch resource\.?|the user aborted a request\.?|the operation was aborted\.?|signal is aborted without reason)$/i.test(message)
+  ) {
+    return 'Agent 对话连接中断，请重试。'
+  }
+  return message || fallback
+}
+
+/**
  * SSE 文本读取器。按事件边界解析，容忍跨网络块切断的行、CRLF、注释行与多行 data；
  * 无法解析的事件被跳过而不是让整轮失败。它是纯函数状态机，解码与网络留给调用方。
  */
