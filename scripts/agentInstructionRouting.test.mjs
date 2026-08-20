@@ -31,9 +31,22 @@ test('服务端回合判定生成后立刻复位忙碌态，追问分支不会�
   )
 })
 
+test('执行语按序落点：待确认计划、待答确认卡、历史定稿 Prompt，最后才提示', () => {
+  const confirmBranch = between(workspace, "if (pendingDecision?.kind === 'confirm_pending')", 'const useServerTurn')
+  const planAt = confirmBranch.indexOf("item.kind === 'plan'")
+  const questionAt = confirmBranch.indexOf("item.kind === 'question'")
+  const promptAt = confirmBranch.indexOf('item.prompt?.trim()')
+  assert.ok(planAt !== -1 && questionAt !== -1 && promptAt !== -1, '三级落点必须齐全')
+  assert.ok(planAt < questionAt && questionAt < promptAt, '落点顺序：计划 → 确认卡 → 历史 Prompt')
+  // 执行语沿用历史 Prompt 时必须以 previous_prompt 进入生成，不得把执行语本身当画面描述。
+  assert.match(confirmBranch, /executionPromptMessageId = promptMessage\.id/)
+  const routing = between(workspace, 'const useServerTurn', 'if (useServerTurn)')
+  assert.match(routing, /executionPromptMessageId[\s\S]*?promptSource: 'previous_prompt'/)
+})
+
 test('服务端判定的生成意图跟着追问卡回到下一轮', () => {
   const beforeRouting = between(workspace, 'const restoredGeneration', 'if (decision.kind === ')
-  assert.match(beforeRouting, /useServerTurn\s*=[^\n]*!restoredGeneration/)
+  assert.match(beforeRouting, /useServerTurn\s*=[\s\S]{0,160}?!restoredGeneration/)
   assert.match(beforeRouting, /serverDecision[^=]*=\s*restoredGeneration/)
   assert.match(beforeRouting, /synthesizedPrompt[^=]*=\s*restoredGeneration\?\.prompt/)
 

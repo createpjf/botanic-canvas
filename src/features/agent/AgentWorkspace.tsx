@@ -1201,8 +1201,10 @@ export default function AgentWorkspace({
     const pendingDecision = restoredGeneration
       ? undefined
       : decideBotanicAgentRequest(cleanInstruction, hasVisualContext)
+    // 「直接生成」这类执行语没有画面信息：有待确认计划就提交它；没有计划但历史里有
+    // 定稿 Prompt，就沿用那份 Prompt——绝不能把执行语本身写进创作简报当画面描述。
+    let executionPromptMessageId: string | undefined
     if (pendingDecision?.kind === 'confirm_pending') {
-      // 「确认生成」只提交已存在的待确认计划。没有计划时绝不能把这两个字送进规划器凭空造一份。
       const pendingPlanMessage = [...session.messages].reverse()
         .find((item) => item.kind === 'plan' && item.plan && item.status === 'pending')
       if (pendingPlanMessage) {
@@ -1211,26 +1213,42 @@ export default function AgentWorkspace({
       }
       const pendingQuestion = [...session.messages].reverse()
         .find((item) => item.kind === 'question' && item.question && item.status === 'pending')
-      appendMessage({
-        role: 'assistant',
-        kind: 'notice',
-        content: pendingQuestion
-          ? '上面还有一张待回答的确认卡，请直接在卡片里选择或填写；本次没有创建任务。'
-          : '当前没有待确认的生成计划。请直接描述要生成的画面或批量取值（例如「按白皙、小麦、黄色三档肤色出 3 张」），我会先给出待确认计划。',
-      })
-      return
+      if (pendingQuestion) {
+        appendMessage({
+          role: 'assistant',
+          kind: 'notice',
+          content: '上面还有一张待回答的确认卡，请直接在卡片里选择或填写；本次没有创建任务。',
+        })
+        return
+      }
+      const promptMessage = [...session.messages].reverse()
+        .find((item) => item.role === 'assistant' && item.prompt?.trim())
+      if (!promptMessage) {
+        appendMessage({
+          role: 'assistant',
+          kind: 'notice',
+          content: '当前没有待确认的生成计划。请直接描述要生成的画面或批量取值（例如「按白皙、小麦、黄色三档肤色出 3 张」），我会先给出待确认计划。',
+        })
+        return
+      }
+      executionPromptMessageId = promptMessage.id
     }
 
     // 服务端回合解析器：让模型读整段对话判断意图并综合可执行 Prompt，取代浏览器端正则路由。
-    // 仅用于全新用户发送；澄清答复与“使用这段 Prompt”已有明确意图/来源，保持既有确定性路径。
+    // 仅用于全新用户发送；澄清答复、“使用这段 Prompt”与执行语已有明确意图/来源，保持既有确定性路径。
     // 服务端未配置或离线时回退到本地正则决策，保证本地开发、e2e 与无 Provider 部署不受影响。
-    const useServerTurn = !options.clarificationAnswers && !options.sourcePromptMessageId && !restoredGeneration
+    const useServerTurn = !options.clarificationAnswers && !options.sourcePromptMessageId
+      && !restoredGeneration && !executionPromptMessageId
     let serverDecision: ReturnType<typeof decideBotanicAgentRequest> | undefined = restoredGeneration
       ? { kind: 'generation', mediaKind: restoredGeneration.mediaKind, promptSource: 'instruction' }
-      : undefined
+      : executionPromptMessageId
+        ? { kind: 'generation', mediaKind: 'image', promptSource: 'previous_prompt' }
+        : undefined
     let synthesizedPrompt: string | undefined = restoredGeneration?.prompt
     let synthesizedCount: number | undefined = restoredGeneration?.count
-    let resolvedOptions = options
+    let resolvedOptions = executionPromptMessageId
+      ? { ...options, sourcePromptMessageId: executionPromptMessageId }
+      : options
     if (useServerTurn) {
       plannerControllerRef.current?.abort()
       const controller = new AbortController()

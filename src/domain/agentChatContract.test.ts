@@ -79,6 +79,7 @@ test('裸确认语只提交待确认计划，不当成新指令送进规划器',
   for (const instruction of [
     '确认生成', '确认', '生成', '开始生成', '就这样生成', '按推荐值继续', '按推荐方案继续', '确认生成。',
     '开始执行', '直接执行', '执行吧', '可以的 直接执行', '好的，开始生成', '马上执行',
+    '直接生成', '马上生成', '立即生成', '生成一下',
   ]) {
     assert.deepEqual(decideBotanicAgentRequest(instruction, true), { kind: 'confirm_pending' }, instruction)
   }

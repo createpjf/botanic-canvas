@@ -103,7 +103,7 @@ export function resolveBotanicAgentGenerationPrompt(
 }
 
 const acknowledgePrefix = /^(?:好的|好|嗯|行|可以的?|没问题|ok)[，,。!！~\s]*/iu
-const bareGenerationConfirmation = /^(?:确认(?:生成|执行|提交)?|生成|生成吧|开始生成|开始执行|直接执行|马上执行|执行吧?|继续执行|开始吧|就(?:这样|按这个)(?:生成|执行)|按推荐(?:值|方案)(?:继续)?)[。！!～~\s]*$/u
+const bareGenerationConfirmation = /^(?:确认(?:生成|执行|提交)?|生成|生成吧|生成一下|开始生成|直接生成|马上生成|立即生成|开始执行|直接执行|马上执行|执行吧?|继续执行|开始吧|就(?:这样|按这个)(?:生成|执行)|按推荐(?:值|方案)(?:继续)?)[。！!～~\s]*$/u
 const refersToHarnessExecution = /(?:执行链路|执行界面|接手.{0,12}待确认|待确认(?:任务|计划)|触发这批(?:生成)?节点|交接计划)/u
 const asksForAdviceOrExplanation = /(?:为什么|为何|怎么|如何|什么意思|多久|多慢|是否|用了什么|给我.{0,8}建议|分析|比较|好吗|怎么样|哪次)/iu
 const explicitVisualGeneration = /(?:帮我|请|直接|马上|按照|按|用|基于|拿)?\s*(?:生成|生图|出图|做一张|来一张|做一版|出一张|我要一张|创建一张)|(?:我想要|我希望|我需要|想要|希望|需要)\s*(?:一张|一版)?\s*[^，。！？?!]{0,40}(?:图片|图|画面|海报|人像|照片)|(?:generate|create|make|edit)\s+(?:(?:an?|this|the)\s+)?(?:image|photo|video)|(?:i\s+)?want\s+(?:an?|the)\s+(?:image|photo|picture|visual)\b/iu
