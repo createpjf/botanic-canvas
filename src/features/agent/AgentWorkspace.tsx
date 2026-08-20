@@ -1813,11 +1813,15 @@ export default function AgentWorkspace({
           {!filteredSessionTimeline.length ? <p className="agent-workspace__history-empty">当前筛选下没有对话。</p> : null}
         </div> : null}
       </header>
+      <div className="agent-workspace__body">
+      {latestCollaborationActivity?.unread || (!utilityPanelOpen && readingRestoreNotice) ? <div className="agent-workspace__chrome">
       {latestCollaborationActivity?.unread ? <div className="agent-workspace__collaboration-notice" role="status">
         <button type="button" className="agent-workspace__collaboration-summary" onClick={() => locateCollaborationActivity(latestCollaborationActivity)}>
           <i aria-hidden="true" /><span><strong>{latestCollaborationActivity.actorName} · {latestCollaborationActivity.summary}</strong><small>{persistenceStatus === 'conflict' ? '本地改动仍保留，点击查看变更。' : latestCollaborationActivity.target && latestCollaborationActivity.target.kind !== 'project' ? '点击定位变更。' : '最新内容已同步。'}</small></span>
         </button>
         <button type="button" aria-label="关闭协作更新提示" title="知道了" onClick={() => void onDismissRemoteChange().catch(() => undefined)}><CloseIcon /></button>
+      </div> : null}
+      {!utilityPanelOpen && readingRestoreNotice ? <div className="agent-reading-restore" role="status"><span>已回到上次阅读位置</span><button type="button" onClick={jumpToLatestConversation}>跳到最新</button></div> : null}
       </div> : null}
       <div
         ref={messagesViewportRef}
@@ -1966,7 +1970,6 @@ export default function AgentWorkspace({
             {agentQuickActions.slice(0, 3).map((action) => <button key={action.intent} type="button" onClick={() => { setIntent(action.intent); setInstruction(action.instruction) }}><strong>{action.label}</strong><span>{action.instruction}</span></button>)}
           </div>
         </section> : null}
-        {!utilityPanelOpen && readingRestoreNotice ? <div className="agent-reading-restore" role="status"><span>已回到上次阅读位置</span><button type="button" onClick={jumpToLatestConversation}>跳到最新</button></div> : null}
         {!utilityPanelOpen && session ? renderedConversationMessages.map((message) => {
           const live = liveConversation?.sessionId === session.id && liveConversation.message.id === message.id
             ? liveConversation
@@ -2059,6 +2062,7 @@ export default function AgentWorkspace({
           </div>
         </section> : null}
         <div ref={messageEndRef} />
+      </div>
       </div>
       {!utilityPanelOpen ? <AgentComposer
         session={session}

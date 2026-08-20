@@ -52,10 +52,15 @@ input:focus-visible { outline: 2px solid #7ca58a; outline-offset: 2px; }
   /* 画布消费滚轮平移，不把边缘横滑继续交给浏览器的历史导航。 */
   overscroll-behavior: none;
   background: #f3f4f0;
+  --tab-bar-height: 57px;
+  --agent-workspace-gap: 12px;
+  --agent-workspace-width: 480px;
+  --agent-workspace-column: calc(var(--agent-workspace-width) + var(--agent-workspace-gap) * 2);
 }
 
 /* Agent 是右侧浮层；给 React Flow 留出同等安全区，结果节点不会被浮层盖住。 */
-.canvas-pane.has-agent-open { padding-right: 504px; }
+.canvas-pane.has-agent-open { padding-right: var(--agent-workspace-column); }
+.canvas-pane.has-agent-open .tab-bar { margin-right: calc(-1 * var(--agent-workspace-column)); }
 
 .canvas-loading { display: grid; place-items: center; background: #f7f8f4; }
 .canvas-loading > div { display: grid; gap: 6px; padding: 16px 18px; border: 1px solid #e6e7e2; border-radius: 10px; background: #fff; box-shadow: 8px 8px 9px rgba(20, 40, 25, 0.05); }
@@ -76,11 +81,11 @@ input:focus-visible { outline: 2px solid #7ca58a; outline-offset: 2px; }
 
 .tab-bar {
   position: relative;
-  z-index: 10;
+  z-index: 90;
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 57px;
+  height: var(--tab-bar-height);
   padding: 10.5px 14px 10.5px 8px;
   border-bottom: 1px solid #e6e7e2;
   background: #fff;
@@ -224,7 +229,7 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .new-tab img { width: 12px; height: 12px; filter: brightness(0) saturate(100%) invert(47%) sepia(5%) saturate(743%) hue-rotate(56deg) brightness(94%) contrast(91%); }
 
 .botanic-flow {
-  height: calc(100% - 57px) !important;
+  height: calc(100% - var(--tab-bar-height)) !important;
   overscroll-behavior: none;
   background: #f7f8f4;
   --xy-selection-background-color: rgba(95, 148, 112, 0.1);
@@ -657,6 +662,7 @@ button.project-tab__main { border: 0; cursor: pointer; }
 
 @media (max-width: 900px) {
   .canvas-pane.has-agent-open { padding-right: 0; }
+  .canvas-pane.has-agent-open .tab-bar { margin-right: 0; }
 }
 
 /* V0.2：可操作的素材、版本与画布分支 */
@@ -2816,8 +2822,9 @@ button.project-tab__main { border: 0; cursor: pointer; }
   .project-library-page { padding-right: clamp(48px, 6vw, 128px); padding-left: clamp(48px, 6vw, 128px); }
   .project-library-page__content { max-width: 1680px; padding-top: 64px; }
   .project-library-page__grid { gap: 24px; margin-top: 40px; }
-  .tab-bar { height: 64px; padding: 12px 22px; }
-  .botanic-flow { height: calc(100% - 64px) !important; }
+  .canvas-pane { --tab-bar-height: 64px; }
+  .tab-bar { padding: 12px 22px; }
+  .botanic-flow { height: calc(100% - var(--tab-bar-height)) !important; }
   .zoom-panel { bottom: 36px !important; left: 30px !important; }
 }
 
@@ -3034,13 +3041,13 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-launcher svg { width: 21px; height: 21px; }
 
 .agent-workspace {
-  position: fixed;
+  position: absolute;
   z-index: 82;
-  top: 70px;
-  right: 12px;
-  bottom: 12px;
+  top: calc(var(--tab-bar-height) + var(--agent-workspace-gap));
+  right: var(--agent-workspace-gap);
+  bottom: var(--agent-workspace-gap);
   display: grid;
-  width: min(480px, calc(100vw - 24px));
+  width: min(var(--agent-workspace-width), calc(100% - 24px));
   /* 无同步提示时：标题、消息、输入框三行；避免输入框误占用消息区的剩余高度。 */
   grid-template-rows: 58px minmax(0, 1fr) auto;
   overflow: hidden;
@@ -3248,8 +3255,10 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-memory-panel__list button { display: grid; width: 32px; height: 32px; place-items: center; padding: 0; border: 1px solid #cedbcf; border-radius: 6px; background: #fff; color: #416048; cursor: pointer; }
 .agent-memory-panel__list button svg { width: 15px; height: 15px; }
 .agent-memory-panel__list button.is-delete { color: #a05449; }
-.agent-workspace__messages { min-height: 0; overflow-y: auto; padding: 16px 18px 28px; overscroll-behavior: contain; }
-.agent-reading-restore { position: sticky; z-index: 2; top: 0; display: flex; width: fit-content; align-items: center; gap: 8px; margin: 0 auto 12px; padding: 5px 6px 5px 10px; border: 1px solid #ccdbcd; border-radius: 999px; background: rgba(255, 255, 255, .96); box-shadow: 0 5px 16px rgba(38, 70, 45, .1); color: #647369; font-size: 9px; backdrop-filter: blur(8px); }
+.agent-workspace__body { min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); }
+.agent-workspace__chrome { display: grid; }
+.agent-workspace__messages { min-height: 0; overflow-y: auto; padding: 16px 18px 28px; overscroll-behavior: contain; grid-row: 2; }
+.agent-reading-restore { position: relative; z-index: 1; display: flex; width: fit-content; justify-self: center; align-items: center; gap: 8px; margin: 8px auto 0; padding: 5px 6px 5px 10px; border: 1px solid #ccdbcd; border-radius: 999px; background: rgba(250, 252, 249, .98); box-shadow: none; color: #647369; font-size: 9px; }
 .agent-reading-restore button { min-height: 26px; padding: 0 9px; border: 0; border-radius: 999px; background: #eaf3ea; color: #315f3c; cursor: pointer; font: inherit; font-weight: 760; }
 .agent-reading-restore button:hover { background: #dfece0; }
 .agent-workspace__welcome { display: grid; min-height: auto; align-content: start; gap: 8px; padding: 20px 4px 36px; }
@@ -3957,7 +3966,8 @@ details.agent-timeline__thinking { display: block; padding: 0; }
 
 @media (max-width: 900px) {
   .agent-launcher { right: 10px; }
-  .agent-workspace { top: 64px; right: 8px; bottom: 8px; width: min(440px, calc(100vw - 16px)); }
+  .canvas-pane { --agent-workspace-gap: 8px; --agent-workspace-width: 440px; }
+  .agent-workspace { width: min(var(--agent-workspace-width), calc(100% - 16px)); }
   .agent-workspace__starters { grid-template-columns: 1fr; }
   .agent-workspace__starters button { min-height: 72px; }
   .agent-workspace :is(input, textarea, .botanic-select__trigger) { font-size: 16px; }
@@ -4016,7 +4026,8 @@ details.agent-timeline__thinking { display: block; padding: 0; }
   .project-card__open { min-height: 112px; padding-right: 118px; }
   .project-library-state button { min-height: 44px; }
 
-  .canvas-pane.is-touch-tablet .tab-bar { min-height: 60px; padding-right: max(12px, env(safe-area-inset-right)); padding-left: max(12px, env(safe-area-inset-left)); }
+  .canvas-pane.is-touch-tablet { --tab-bar-height: 60px; }
+  .canvas-pane.is-touch-tablet .tab-bar { min-height: var(--tab-bar-height); padding-right: max(12px, env(safe-area-inset-right)); padding-left: max(12px, env(safe-area-inset-left)); }
   .canvas-pane.is-touch-tablet .home-tab,
   .canvas-pane.is-touch-tablet .new-tab,
   .canvas-pane.is-touch-tablet .project-tab__close { min-width: 44px; min-height: 44px; }
