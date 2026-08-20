@@ -8,6 +8,7 @@ import {
   createBotanicAgentMemoryItem,
   buildBotanicAgentPlan,
   botanicAgentContextSnapshotNodeIds,
+  botanicAgentNextIterationTargetId,
   createBotanicAgentContextSnapshot,
   createBotanicAgentRun,
   createBotanicAgentSession,
@@ -302,6 +303,26 @@ test('Agent Run 只对已确认但未绑定任务的 queued 快照补执行', ()
   }), false)
   assert.equal(shouldResumeQueuedAgentRunExecution({ status: 'running', branches: [branch] }), false)
   assert.equal(shouldResumeQueuedAgentRunExecution({ status: 'queued', branches: [] }), false)
+})
+
+test('一轮生成回填后，新结果按分支顺序成为下一轮默认基准', () => {
+  const branches = [
+    { id: 'branch-a', label: '分支 A', status: 'failed' as const, attempt: 0, jobIds: [], outputCount: 0, updatedAt: 100 },
+    { id: 'branch-b', label: '分支 B', status: 'succeeded' as const, attempt: 0, jobIds: ['job-b'], outputCount: 1, updatedAt: 110 },
+  ]
+  const nodes = [
+    { id: 'result-video', type: 'result', position: { x: 0, y: 0 }, data: { label: '视频结果', image: '/video', mediaKind: 'video', status: 'ready', agentRun: { runId: 'run-1', branchId: 'branch-b' } } },
+    { id: 'result-b', type: 'result', position: { x: 0, y: 0 }, data: { label: '成图 B', image: '/b', status: 'ready', agentRun: { runId: 'run-1', branchId: 'branch-b' } } },
+    { id: 'result-other-run', type: 'result', position: { x: 0, y: 0 }, data: { label: '别的 Run', image: '/x', status: 'ready', agentRun: { runId: 'run-2', branchId: 'branch-z' } } },
+  ] as CanvasNode[]
+
+  // 视频结果不作基准；同分支下取第一个图片结果。
+  assert.equal(botanicAgentNextIterationTargetId({ id: 'run-1', status: 'partial', branches }, nodes), 'result-b')
+  // 未到终态、或结果尚未回填（无 image）时不抢基准，等回填后重算。
+  assert.equal(botanicAgentNextIterationTargetId({ id: 'run-1', status: 'running', branches }, nodes), undefined)
+  assert.equal(botanicAgentNextIterationTargetId({ id: 'run-1', status: 'completed', branches }, [
+    { id: 'result-pending', type: 'result', position: { x: 0, y: 0 }, data: { label: '占位', status: 'loading', agentRun: { runId: 'run-1', branchId: 'branch-b' } } },
+  ] as CanvasNode[]), undefined)
 })
 
 test('对话与检索也展示可理解的运行阶段，而不是静默等待', () => {

@@ -930,6 +930,33 @@ export function shouldRecoverAgentRunResults(
 }
 
 /**
+ * 一轮生成完成后，新结果就是下一轮的默认基准：创意循环里「再改一下」应当指向
+ * 刚生成的图，而不是回到上一轮的父图。按分支顺序取第一个已回填画布的图片结果；
+ * 结果尚未回填时返回空，调用方在回填到达后重算。用户显式点选其他结果时以点选为准。
+ */
+export function botanicAgentNextIterationTargetId(
+  run: Pick<BotanicAgentRun, 'id' | 'status' | 'branches'>,
+  nodes: CanvasNode[],
+): string | undefined {
+  if (run.status !== 'completed' && run.status !== 'partial') return undefined
+  const imageResultsByBranch = new Map<string, string>()
+  for (const node of nodes) {
+    if (node.type !== 'result') continue
+    const data = node.data as ResultNodeData
+    if (data.agentRun?.runId !== run.id || !data.image || (data.mediaKind ?? 'image') !== 'image') continue
+    if (data.agentRun.branchId && !imageResultsByBranch.has(data.agentRun.branchId)) {
+      imageResultsByBranch.set(data.agentRun.branchId, node.id)
+    }
+  }
+  for (const branch of run.branches) {
+    if (branch.status !== 'succeeded') continue
+    const nodeId = imageResultsByBranch.get(branch.id)
+    if (nodeId) return nodeId
+  }
+  return [...imageResultsByBranch.values()][0]
+}
+
+/**
  * 用户已确认后，Run 会先持久化，再幂等提交生成任务。如果页面在
  * 两步之间关闭，恢复器只对“仍排队且从未绑定 Job”的 Run 补做
  * 幂等执行；已绑定 Job 的正常排队任务不会重复提交。
