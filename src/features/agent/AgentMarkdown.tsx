@@ -1,6 +1,11 @@
 import { Fragment, useState } from 'react'
 import type { BotanicAgentMentionCatalog } from '../../domain/agentMentions'
-import { parseAgentMarkdown, type AgentMarkdownBlock } from '../../domain/agentMarkdown'
+import {
+  parseAgentMarkdown,
+  splitAgentMessageSources,
+  stripAgentMarkdownHashes,
+  type AgentMarkdownBlock,
+} from '../../domain/agentMarkdown'
 import { CopyIcon } from '../../components/BotanicIcons'
 import { AgentRichText } from './AgentMentionText'
 import { useProductI18n } from '../../i18n/react'
@@ -8,7 +13,8 @@ import { useProductI18n } from '../../i18n/react'
 const inlinePattern = /(\*\*[^*\n]+\*\*|__[^_\n]+__|`[^`\n]+`|\*[^*\n]+\*|_[^_\n]+_|https?:\/\/[^\s<]+)/g
 
 function renderInline(text: string, catalogs?: BotanicAgentMentionCatalog) {
-  const parts = text.split(inlinePattern)
+  const safe = stripAgentMarkdownHashes(text)
+  const parts = safe.split(inlinePattern)
   return parts.map((part, index) => {
     if (!part) return null
     if (/^\*\*.*\*\*$|^__.*__$/.test(part)) return <strong key={index}>{part.slice(2, -2)}</strong>
@@ -49,7 +55,9 @@ function CopyableCode({ language, text }: { language?: string; text: string }) {
 
 function renderBlock(block: AgentMarkdownBlock, index: number, catalogs?: BotanicAgentMentionCatalog) {
   if (block.kind === 'heading') {
-    const Heading = `h${block.level}` as 'h1' | 'h2' | 'h3'
+    // 解析已把 #{4–6} 压到 3；这里再 clamp，避免脏数据落到非法标签。
+    const level = Math.min(3, Math.max(1, block.level)) as 1 | 2 | 3
+    const Heading = `h${level}` as 'h1' | 'h2' | 'h3'
     return <Heading key={index}>{renderInline(block.text, catalogs)}</Heading>
   }
   if (block.kind === 'unordered-list') return <ul key={index}>{block.items.map((item, itemIndex) => <li key={itemIndex}>{renderInline(item, catalogs)}</li>)}</ul>
@@ -73,6 +81,19 @@ function renderBlock(block: AgentMarkdownBlock, index: number, catalogs?: Botani
   return <p key={index}>{renderInline(block.text, catalogs)}</p>
 }
 
+function AgentMarkdownSources({ sources }: { sources: string[] }) {
+  const { locale } = useProductI18n()
+  if (!sources.length) return null
+  return <div className="agent-markdown__sources" aria-label={locale === 'en' ? 'Sources' : '来源'}>
+    <span>{locale === 'en' ? 'Sources' : '来源'}</span>
+    {sources.map((source) => <small key={source}>{source}</small>)}
+  </div>
+}
+
 export function AgentMarkdown({ content, catalogs }: { content: string; catalogs?: BotanicAgentMentionCatalog }) {
-  return <div className="agent-markdown">{parseAgentMarkdown(content).map((block, index) => renderBlock(block, index, catalogs))}</div>
+  const { body, sources } = splitAgentMessageSources(content)
+  return <div className="agent-markdown">
+    {parseAgentMarkdown(body).map((block, index) => renderBlock(block, index, catalogs))}
+    <AgentMarkdownSources sources={sources} />
+  </div>
 }

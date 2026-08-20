@@ -240,8 +240,18 @@ export function useCanvasAgentExecutionBridge({
     }
     if (node.type === 'result') {
       const data = node.data as ResultNodeData
-      return data.image && canUseForImageDelivery(data.mediaKind)
-        ? [{ id: node.id, label: canvasSystemLabel(data.label ?? copy.generatedResult, locale), kind: '结果', image: data.image, mediaKind: data.mediaKind ?? 'image', source: 'generated' }]
+      const mediaKind = data.mediaKind ?? 'image'
+      // Agent @ 引用比投放更宽：有预览图或视频结果都可进菜单；投放仍走 canUseForImageDelivery。
+      const usableForAgentReference = Boolean(data.image) || mediaKind === 'video'
+      return usableForAgentReference
+        ? [{
+          id: node.id,
+          label: canvasSystemLabel(data.label ?? copy.generatedResult, locale),
+          kind: '结果',
+          ...(data.image ? { image: data.image } : {}),
+          mediaKind,
+          source: 'generated',
+        }]
         : []
     }
     if (node.type === 'text') {

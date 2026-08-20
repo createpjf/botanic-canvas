@@ -1332,6 +1332,8 @@ export function filterBotanicAgentSessionTimeline(
 }
 
 export type BotanicAgentMentionQuery = {
+  /** `@` 引用画布节点；`/` 挂载 Skill。 */
+  trigger: '@' | '/'
   start: number
   end: number
   query: string
@@ -1361,11 +1363,24 @@ export function createBotanicAgentMemoryItem(input: {
   }
 }
 
+/**
+ * Composer token：`@` 挂画布，`/` 挂 Skill。
+ * `/` 要求前面是行首或空白，避免吃到 `https://` 或 `3/4`。
+ */
 export function readBotanicAgentMentionQuery(value: string, caret: number): BotanicAgentMentionQuery | undefined {
   const safeCaret = Math.max(0, Math.min(value.length, caret))
-  const match = value.slice(0, safeCaret).match(/@([^\s@]*)$/u)
-  if (!match || match.index === undefined) return undefined
-  return { start: match.index, end: safeCaret, query: match[1] }
+  const before = value.slice(0, safeCaret)
+  const atMatch = before.match(/@([^\s@]*)$/u)
+  if (atMatch && atMatch.index !== undefined) {
+    return { trigger: '@', start: atMatch.index, end: safeCaret, query: atMatch[1] }
+  }
+  const slashMatch = before.match(/(?:^|[\s])\/([^\s/]*)$/u)
+  if (slashMatch && slashMatch.index !== undefined) {
+    const start = before.lastIndexOf('/')
+    if (start < 0) return undefined
+    return { trigger: '/', start, end: safeCaret, query: slashMatch[1] }
+  }
+  return undefined
 }
 
 export function insertBotanicAgentMention(
@@ -1380,10 +1395,10 @@ export function insertBotanicAgentMention(
   }
 }
 
-/** 选中 @Skill / @素材后只消耗查询，不把名称写进提示词。 */
+/** 选中 /Skill 或 @素材后只消耗查询，不把名称写进提示词。 */
 export function consumeBotanicAgentMention(
   value: string,
-  mention: BotanicAgentMentionQuery,
+  mention: Pick<BotanicAgentMentionQuery, 'start' | 'end'>,
 ): { value: string; caret: number } {
   const before = value.slice(0, mention.start)
   const after = value.slice(mention.end)

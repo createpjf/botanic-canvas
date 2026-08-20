@@ -1,4 +1,4 @@
-import type { AgentToolCallTrace, BotanicAgentExecutionMode, BotanicAgentMessage } from './agent'
+import type { AgentToolCallTrace, BotanicAgentExecutionMode, BotanicAgentMessage, BotanicAgentReasoningEntry } from './agent'
 import type { GenerationAspectRatio, GenerationModelOption, GenerationResolution } from './canvas'
 import type { ProductLocale } from '../i18n/core'
 
@@ -57,6 +57,8 @@ export type BotanicAgentTurnResult =
       axisLabel?: string
       plannerModel?: string
       toolCalls?: AgentToolCallTrace[]
+      /** 当轮运行说明；原始推理只在 AGENT_RAW_REASONING 时出现，不得写入消息。 */
+      reasoning?: BotanicAgentReasoningEntry[]
     }
   | {
       kind: 'chat'
@@ -64,6 +66,7 @@ export type BotanicAgentTurnResult =
       plannerModel?: string
       sources?: string[]
       toolCalls?: AgentToolCallTrace[]
+      reasoning?: BotanicAgentReasoningEntry[]
     }
   | {
       /** 模型判定核心信息缺失时的结构化中断；客户端据此进入等待作答，而不是当成普通回答。 */
@@ -72,6 +75,7 @@ export type BotanicAgentTurnResult =
       options?: string[]
       plannerModel?: string
       toolCalls?: AgentToolCallTrace[]
+      reasoning?: BotanicAgentReasoningEntry[]
     }
   | {
       /** MCoT 分解：一次多资产请求被拆成结构化方案，客户端以方案卡呈现并逐项推进。 */
@@ -88,6 +92,7 @@ export type BotanicAgentTurnResult =
       }>
       plannerModel?: string
       toolCalls?: AgentToolCallTrace[]
+      reasoning?: BotanicAgentReasoningEntry[]
     }
 
 /**

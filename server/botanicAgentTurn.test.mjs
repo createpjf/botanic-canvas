@@ -559,3 +559,149 @@ test('成套多资产请求经分解工具返回结构化方案，条目归一�
   assert.equal(result.items[2].duration, 10)
   assert.ok(requests[0].tools.some((tool) => tool.function.name === 'decompose_creative_brief'))
 })
+
+test('配置搜索密钥后回合暴露 web_search，互联网调研会调用它并标来源', async () => {
+  const requests = []
+  const result = await resolveBotanicAgentTurn({
+    projectId: 'project-turn',
+    plannerModel: 'deepseek-v4-pro',
+    messages: [{ role: 'user', content: '你帮我互联网调研一下和光品牌' }],
+    contextNodeIds: [],
+    hasTarget: false,
+    generationModels,
+  }, {
+    ...runtime,
+    webSearch: { apiKey: 'test-search-key' },
+  }, {
+    document,
+    fetchImpl: async (_url, init) => {
+      requests.push(JSON.parse(init.body))
+      if (requests.length === 1) {
+        return new Response(JSON.stringify({ choices: [{ message: {
+          content: null,
+          tool_calls: [{ id: 'call-web', type: 'function', function: {
+            name: 'web_search', arguments: JSON.stringify({ query: '和光品牌', why: '互联网调研' }),
+          } }],
+        } }] }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ choices: [{ message: { content: '和光是灯具品牌。' } }] }), { status: 200 })
+    },
+    webFetchImpl: async (url, init) => {
+      assert.equal(url, 'https://api.tavily.com/search')
+      assert.equal(init.headers.Authorization, 'Bearer test-search-key')
+      return new Response(JSON.stringify({
+        results: [{ title: '和光', url: 'https://www.andlight.cn/', content: '灯具' }],
+      }), { status: 200 })
+    },
+  })
+
+  assert.ok(requests[0].tools.some((tool) => tool.function.name === 'web_search'))
+  assert.ok(requests[0].tools.some((tool) => tool.function.name === 'web_fetch'))
+  assert.match(requests[0].messages[0].content, /web_search/)
+  assert.equal(result.kind, 'chat')
+  assert.ok(result.sources.includes('互联网'))
+})
+
+test('未配置搜索密钥时回合不暴露 web_search', async () => {
+  const requests = []
+  await resolveBotanicAgentTurn({
+    projectId: 'project-turn',
+    plannerModel: 'deepseek-v4-pro',
+    messages: [{ role: 'user', content: '你帮我互联网调研一下' }],
+    contextNodeIds: [],
+    hasTarget: false,
+    generationModels,
+  }, runtime, {
+    document,
+    fetchImpl: async (_url, init) => {
+      requests.push(JSON.parse(init.body))
+      return new Response(JSON.stringify({ choices: [{ message: {
+        content: '这一轮没有互联网检索工具。',
+      } }] }), { status: 200 })
+    },
+  })
+
+  assert.equal(requests[0].tools.some((tool) => tool.function.name === 'web_search'), false)
+  // web_fetch 仍可出现（读已有 URL），但系统提示必须说明没有关键词搜索或没有外部来源。
+  assert.match(requests[0].messages[0].content, /没有关键词搜索|没有外部来源|没有外部搜索/)
+})
+
+function streamResponse(chunks) {
+  return new Response([
+    ...chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`),
+    'data: [DONE]\n\n',
+  ].join(''), { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+}
+
+test('回合流式通道发出工具步，打开原始推理开关才下发 reasoning', async () => {
+  const events = []
+  let requestIndex = 0
+  const result = await resolveBotanicAgentTurn({
+    projectId: 'project-turn',
+    plannerModel: 'deepseek-v4-pro',
+    messages: [{ role: 'user', content: '你帮我互联网调研一下和光品牌' }],
+    contextNodeIds: [],
+    hasTarget: false,
+    generationModels,
+  }, {
+    ...runtime,
+    agentRawReasoning: true,
+    webSearch: { apiKey: 'test-search-key' },
+  }, {
+    document,
+    onEvent: (event) => events.push(event),
+    fetchImpl: async () => {
+      requestIndex += 1
+      if (requestIndex === 1) return streamResponse([
+        { choices: [{ delta: { reasoning_content: '先搜官网。' } }] },
+        { choices: [{ delta: { tool_calls: [{ index: 0, id: 'call-web', type: 'function', function: {
+          name: 'web_search', arguments: JSON.stringify({ query: '和光品牌', why: '互联网调研' }),
+        } }] }, finish_reason: 'tool_calls' }] },
+      ])
+      return streamResponse([
+        { choices: [{ delta: { content: '和光是灯具品牌。' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ])
+    },
+    webFetchImpl: async () => new Response(JSON.stringify({
+      results: [{ title: '和光', url: 'https://www.andlight.cn/', content: '灯具' }],
+    }), { status: 200 }),
+  })
+
+  assert.deepEqual(events.map((event) => event.type === 'reasoning'
+    ? `reasoning:${event.delta}`
+    : event.type === 'answer'
+      ? `answer:${event.delta}`
+      : `tool:${event.toolCall.id}:${event.toolCall.status}`), [
+    'reasoning:先搜官网。',
+    'tool:call-web:running',
+    'tool:call-web:succeeded',
+    'answer:和光是灯具品牌。',
+  ])
+  assert.equal(result.kind, 'chat')
+  assert.ok(result.reasoning?.some((entry) => entry.source === 'raw' && entry.text.includes('先搜官网')))
+})
+
+test('未打开原始推理开关时回合不转发 reasoning 事件，结果也不带原始推理', async () => {
+  const events = []
+  const result = await resolveBotanicAgentTurn({
+    projectId: 'project-turn',
+    plannerModel: 'deepseek-v4-pro',
+    messages: [{ role: 'user', content: '介绍一下和光' }],
+    contextNodeIds: [],
+    hasTarget: false,
+    generationModels,
+  }, runtime, {
+    document,
+    onEvent: (event) => events.push(event),
+    fetchImpl: async () => streamResponse([
+      { choices: [{ delta: { reasoning_content: '完整思维链不应下发。' } }] },
+      { choices: [{ delta: { content: '和光是灯具品牌。' } }] },
+      { choices: [{ delta: {}, finish_reason: 'stop' }] },
+    ]),
+  })
+
+  assert.equal(events.some((event) => event.type === 'reasoning'), false)
+  assert.ok(events.some((event) => event.type === 'answer'))
+  assert.equal((result.reasoning ?? []).some((entry) => entry.source === 'raw'), false)
+})
