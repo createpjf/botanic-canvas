@@ -39,6 +39,9 @@ test('回合请求只接收受控字段，拒绝非法消息与数量', () => {
   }
   const validated = validateBotanicAgentTurnInput(input)
   assert.equal(validated.projectId, 'project-turn')
+  assert.equal(validated.locale, 'zh-CN')
+  assert.equal(validateBotanicAgentTurnInput({ ...input, locale: 'en' }).locale, 'en')
+  assert.throws(() => validateBotanicAgentTurnInput({ ...input, locale: 'fr' }), /locale/)
   assert.equal(validated.hasTarget, false)
   assert.equal(validated.maxOutputCount, 8)
   assert.throws(

@@ -8,6 +8,7 @@ import {
 
 const validInput = {
   projectId: 'project-agent',
+  locale: 'en',
   plannerModel: 'deepseek-v4-flash',
   instruction: '保持人物和服装不变，把场景换成海边，并让环境光更柔和。',
   requestedIntent: 'replace_scene',
@@ -34,6 +35,8 @@ const validInput = {
 
 test('Agent 计划输入只接收结构化元数据，不允许图片字节进入文本模型', () => {
   assert.deepEqual(validateBotanicAgentPlanInput(validInput), validInput)
+  assert.equal(validateBotanicAgentPlanInput({ ...validInput, locale: undefined }).locale, 'zh-CN')
+  assert.throws(() => validateBotanicAgentPlanInput({ ...validInput, locale: 'fr' }), /locale/)
 
   for (const unsafe of [
     { ...validInput, selectedResult: { ...validInput.selectedResult, image: 'data:image/png;base64,secret' } },
@@ -164,9 +167,13 @@ test('Agent Planner 的创作方向追问只返回受控选项与文本控件', 
   assert.deepEqual(result.clarification.fields[0].options.map((option) => option.value), [
     'faithful', 'commercial', 'editorial', 'social', 'custom',
   ])
+  assert.deepEqual(result.clarification.fields[0].options.map((option) => option.label), [
+    'Natural fidelity', 'Commercial', 'Editorial', 'Social lifestyle', 'Custom direction',
+  ])
   assert.deepEqual(result.clarification.fields[1].options.map((option) => option.value), [
     'identity', 'product', 'garment', 'balanced',
   ])
+  assert.equal(result.clarification.fields[1].options[0].label, 'Identity and facial features')
   assert.equal(result.clarification.fields[2].control, 'text')
   assert.deepEqual(result.clarification.fields[2].options, [])
 })
@@ -313,6 +320,7 @@ test('服务端 Agent 只让模型解释意图与约束，节点、参数和批�
   const firstRequest = JSON.parse(requests[0].init.body)
   const finalRequest = JSON.parse(requests[1].init.body)
   assert.match(firstRequest.messages[0].content, /受控上下文/)
+  assert.match(firstRequest.messages[0].content, /Use concise, natural English/)
   assert.deepEqual(JSON.parse(firstRequest.messages[1].content), validInput)
   assert.deepEqual(firstRequest.tools.map((item) => item.function.name), [
     'canvas_read', 'asset_search', 'web_fetch', 'skill_run', 'skill_create_propose', 'generation_ask_clarification', 'generation_create_plan',

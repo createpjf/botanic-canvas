@@ -1,6 +1,7 @@
 import type { BotanicAgentMessage, BotanicAgentReasoningEntry } from './agent.ts'
 import { instructionRequestsBatchVariation } from './agent.ts'
 import type { GenerationAspectRatio, GenerationModelOption, GenerationResolution } from './canvas'
+import type { ProductLocale } from '../i18n/core'
 import {
   customGenerationSizeFields,
   inferAspectRatioFromPixels,
@@ -33,6 +34,7 @@ export type BotanicAgentGenerationSettingsHint = {
 
 export type BotanicAgentChatRequestInput = {
   projectId: string
+  locale: ProductLocale
   plannerModel?: string
   mountedSkillIds?: string[]
   mode: BotanicAgentChatMode
@@ -266,6 +268,7 @@ export function classifyBotanicAgentRequest(value: string, hasGenerationTarget =
 export function buildBotanicAgentChatRequest(input: BotanicAgentChatRequestInput) {
   return {
     projectId: input.projectId,
+    locale: input.locale,
     ...(input.plannerModel ? { plannerModel: input.plannerModel } : {}),
     ...(input.mountedSkillIds?.length ? { mountedSkillIds: [...new Set(input.mountedSkillIds)].slice(0, 16) } : {}),
     mode: input.mode,

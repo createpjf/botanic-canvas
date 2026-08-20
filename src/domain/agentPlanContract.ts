@@ -1,9 +1,11 @@
 import type { BotanicAgentClarification, BotanicAgentContextSnapshot, BotanicAgentIntent, BotanicAgentMemoryItem, BotanicAgentPlan, BotanicAgentReasoningEntry, BotanicCreativeBrief } from './agent.ts'
 import { BOTANIC_AGENT_MAX_SINGLE_OUTPUT, summarizeBotanicAgentNodeTitle } from './agent.ts'
 import type { AssetGroup, GenerationModelOption, GenerationRecipe, GenerationSettings } from './canvas.ts'
+import type { ProductLocale } from '../i18n/core'
 
 export type BotanicAgentPlanRequestInput = {
   projectId: string
+  locale: ProductLocale
   plannerModel?: string
   mountedSkillIds?: string[]
   instruction: string
@@ -27,6 +29,7 @@ export type BotanicAgentPlanRequestInput = {
 
 export type BotanicAgentPlanRequest = {
   projectId: string
+  locale: ProductLocale
   plannerModel?: string
   mountedSkillIds?: string[]
   instruction: string
@@ -65,6 +68,7 @@ export function buildBotanicAgentPlanRequest(input: BotanicAgentPlanRequestInput
   const outputCount = requestedSingleOutputCount(input.outputCount)
   return {
     projectId: input.projectId,
+    locale: input.locale,
     ...(input.plannerModel ? { plannerModel: input.plannerModel } : {}),
     ...(input.mountedSkillIds?.length ? { mountedSkillIds: [...new Set(input.mountedSkillIds)].slice(0, 16) } : {}),
     instruction: input.instruction.trim(),

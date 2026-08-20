@@ -1,6 +1,6 @@
 import { AgentToolRuntimeError, runAgentToolLoop } from './agentToolRuntime.mjs'
 import { createBotanicAgentPlanningToolRegistry } from './botanicAgentTools.mjs'
-import { readBotanicAgentInstructions } from './agentInstructions.mjs'
+import { normalizeBotanicAgentLocale, readBotanicAgentInstructions } from './agentInstructions.mjs'
 import {
   botanicCreativeBriefFieldIds,
   BotanicCreativeBriefValidationError,
@@ -36,6 +36,12 @@ const DELIVERY_OPTIONS = [
   { value: 'douyin', label: '抖音', description: '9:16 · 1080×1920' },
   { value: 'custom', label: '自定义比例' },
 ]
+const DELIVERY_OPTIONS_EN = [
+  { value: 'taobao', label: 'Taobao / Tmall', description: '1:1 · 800×800' },
+  { value: 'xiaohongshu', label: 'Xiaohongshu', description: '3:4 · 1242×1660' },
+  { value: 'douyin', label: 'Douyin', description: '9:16 · 1080×1920' },
+  { value: 'custom', label: 'Custom ratio' },
+]
 const PROMPT_DIRECTION_OPTIONS = [
   { value: 'faithful', label: '保真自然', description: '优先保持主体与原始特征' },
   { value: 'commercial', label: '商业广告', description: '强化商品表达与转化' },
@@ -43,11 +49,24 @@ const PROMPT_DIRECTION_OPTIONS = [
   { value: 'social', label: '社媒种草', description: '自然、生活化、适合分享' },
   { value: 'custom', label: '自定义方向' },
 ]
+const PROMPT_DIRECTION_OPTIONS_EN = [
+  { value: 'faithful', label: 'Natural fidelity', description: 'Prioritize the subject and original features' },
+  { value: 'commercial', label: 'Commercial', description: 'Strengthen product expression and conversion' },
+  { value: 'editorial', label: 'Editorial', description: 'Strengthen composition, light, and texture' },
+  { value: 'social', label: 'Social lifestyle', description: 'Natural, lived-in, and shareable' },
+  { value: 'custom', label: 'Custom direction' },
+]
 const PRESERVATION_OPTIONS = [
   { value: 'identity', label: '人物身份与五官' },
   { value: 'product', label: '商品主体与结构' },
   { value: 'garment', label: '服装款式与材质' },
   { value: 'balanced', label: '整体平衡' },
+]
+const PRESERVATION_OPTIONS_EN = [
+  { value: 'identity', label: 'Identity and facial features' },
+  { value: 'product', label: 'Product subject and structure' },
+  { value: 'garment', label: 'Garment design and material' },
+  { value: 'balanced', label: 'Overall balance' },
 ]
 const MEMORY_KINDS = new Set(['rule', 'approved', 'avoid'])
 const CONTEXT_KINDS = new Set(['素材', '结果', '文字', '节点'])
@@ -157,7 +176,9 @@ function optionalCustomSize(raw, model) {
 
 export function validateBotanicAgentPlanInput(raw) {
   const input = structuredObject(raw, 'Agent 计划请求')
+  if (input.locale !== undefined && input.locale !== 'zh-CN' && input.locale !== 'en') invalidRequest('Agent locale 不支持。')
   const projectId = requiredText(input.projectId, '项目', 160)
+  const locale = normalizeBotanicAgentLocale(input.locale)
   const plannerModel = optionalText(input.plannerModel, 'Agent 模型', 160)
   const instruction = requiredText(input.instruction, '修改要求', 4000)
   // 用户原话：综合 Prompt 链路里 instruction 是模型写的画面描述，变体轴只允许从原话解析。
@@ -334,6 +355,7 @@ export function validateBotanicAgentPlanInput(raw) {
 
   return {
     projectId,
+    locale,
     ...(plannerModel ? { plannerModel } : {}),
     instruction,
     ...(sourceInstruction ? { sourceInstruction } : {}),
@@ -505,16 +527,17 @@ function normalizeProviderPlan(raw, input) {
 }
 
 function clarificationOptions(fieldId, input) {
+  const english = input.locale === 'en'
   if (fieldId === 'variation_values') return []
   if (fieldId === 'variation_combine') {
     return [
-      { value: 'first', label: '只拆一条轴', description: '默认不把多轴相乘' },
-      { value: 'combine', label: '组合出图', description: '先写明张数，最多 20 张' },
+      { value: 'first', label: english ? 'Use one axis' : '只拆一条轴', description: english ? 'Do not multiply axes by default' : '默认不把多轴相乘' },
+      { value: 'combine', label: english ? 'Combine axes' : '组合出图', description: english ? 'State the count first, up to 20 images' : '先写明张数，最多 20 张' },
     ]
   }
-  if (fieldId === 'delivery_preset') return DELIVERY_OPTIONS
-  if (fieldId === 'prompt_direction') return PROMPT_DIRECTION_OPTIONS
-  if (fieldId === 'preservation_priority') return PRESERVATION_OPTIONS
+  if (fieldId === 'delivery_preset') return english ? DELIVERY_OPTIONS_EN : DELIVERY_OPTIONS
+  if (fieldId === 'prompt_direction') return english ? PROMPT_DIRECTION_OPTIONS_EN : PROMPT_DIRECTION_OPTIONS
+  if (fieldId === 'preservation_priority') return english ? PRESERVATION_OPTIONS_EN : PRESERVATION_OPTIONS
   if (fieldId === 'custom_direction') return []
   if (fieldId === 'model') {
     const models = input.generationModels?.length
@@ -523,17 +546,17 @@ function clarificationOptions(fieldId, input) {
     return models.map((model) => ({
       value: model.id,
       label: model.label,
-      ...(model.mediaKind ? { description: model.mediaKind === 'video' ? '视频生成' : '图片生成' } : {}),
+      ...(model.mediaKind ? { description: model.mediaKind === 'video' ? (english ? 'Video generation' : '视频生成') : (english ? 'Image generation' : '图片生成') } : {}),
     }))
   }
   if (fieldId === 'aspect_ratio') {
     const model = input.generationModels?.find((item) => item.id === input.settings.model)
     const values = model?.aspectRatios?.length ? model.aspectRatios : ASPECT_RATIOS
-    return values.map((value) => ({ value, label: value, description: value === input.settings.aspectRatio ? '沿用当前比例' : undefined })).filter((item) => item.description || item.value)
+    return values.map((value) => ({ value, label: value, description: value === input.settings.aspectRatio ? (english ? 'Keep current ratio' : '沿用当前比例') : undefined })).filter((item) => item.description || item.value)
   }
   const model = input.generationModels?.find((item) => item.id === input.settings.model)
   const values = model?.resolutions?.length ? model.resolutions : RESOLUTIONS
-  return values.map((value) => ({ value, label: value, description: value === input.settings.resolution ? '沿用当前分辨率' : undefined }))
+  return values.map((value) => ({ value, label: value, description: value === input.settings.resolution ? (english ? 'Keep current resolution' : '沿用当前分辨率') : undefined }))
 }
 
 function normalizeProviderClarification(raw, input, toolCallId) {
@@ -550,7 +573,11 @@ function normalizeProviderClarification(raw, input, toolCallId) {
     const options = clarificationOptions(id, input)
     const control = id === 'custom_direction' || id === 'variation_values' ? 'text' : 'single_choice'
     if (control !== 'text' && !options.length) return []
-    const labels = {
+    const labels = input.locale === 'en' ? {
+      model: 'Generation model', delivery_preset: 'Use and aspect ratio', aspect_ratio: 'Aspect ratio', resolution: 'Resolution',
+      prompt_direction: 'Prompt direction', preservation_priority: 'Preserve', custom_direction: 'Custom direction',
+      variation_values: 'Variation values', variation_combine: 'Combine variations',
+    } : {
       model: '生成模型', delivery_preset: '用途与画面比例', aspect_ratio: '图片比例', resolution: '分辨率',
       prompt_direction: 'Prompt 优化方向', preservation_priority: '保持重点', custom_direction: '自定义优化方向',
       variation_values: '变体取值', variation_combine: '是否组合',
@@ -580,7 +607,9 @@ function normalizeProviderClarification(raw, input, toolCallId) {
       control,
       ...(defaultValue ? { defaultValue } : {}),
       ...(control === 'text' ? {
-        placeholder: id === 'variation_values' ? '例如：白皙、自然、小麦、深棕' : '请描述希望强化的画面方向',
+        placeholder: input.locale === 'en'
+          ? (id === 'variation_values' ? 'For example: fair, natural, tan, deep brown' : 'Describe the visual direction to strengthen')
+          : (id === 'variation_values' ? '例如：白皙、自然、小麦、深棕' : '请描述希望强化的画面方向'),
       } : {}),
       options,
     }]
@@ -597,9 +626,9 @@ function normalizeProviderClarification(raw, input, toolCallId) {
   }
 }
 
-async function plannerInstructions() {
+async function plannerInstructions(locale) {
   try {
-    return await readBotanicAgentInstructions('generation')
+    return await readBotanicAgentInstructions('generation', locale)
   } catch {
     throw new BotanicAgentPlannerError(503, 'SKILLS_NOT_CONFIGURED', '生图 Agent 规则尚未配置完成。')
   }
@@ -621,7 +650,7 @@ function plannerModelInput(input) {
 
 export async function planBotanicGeneration(input, runtimeConfig, options = {}) {
   const config = botanicAgentProviderConfig(runtimeConfig, input?.plannerModel)
-  const system = await plannerInstructions()
+  const system = await plannerInstructions(input.locale)
   if (options.signal?.aborted) throw new BotanicAgentPlannerError(499, 'REQUEST_CANCELLED', '生图 Agent 请求已取消。')
   const timeoutSignal = AbortSignal.timeout(config.timeoutMs)
   const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal

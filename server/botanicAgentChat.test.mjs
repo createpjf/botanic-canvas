@@ -8,6 +8,7 @@ import {
 
 const input = {
   projectId: 'project-chat',
+  locale: 'en',
   plannerModel: 'deepseek-v4-flash',
   mode: 'research',
   messages: [{ role: 'user', content: '查一下项目里有哪些场景素材。' }],
@@ -28,6 +29,8 @@ const document = {
 
 test('通用 Agent 对话请求只接收受控模式、消息和节点 ID', () => {
   assert.deepEqual(validateBotanicAgentChatInput(input), input)
+  assert.equal(validateBotanicAgentChatInput({ ...input, locale: undefined }).locale, 'zh-CN')
+  assert.throws(() => validateBotanicAgentChatInput({ ...input, locale: 'fr' }), /locale/)
   assert.throws(
     () => validateBotanicAgentChatInput({ ...input, mode: 'generation' }),
     (error) => error instanceof BotanicAgentChatError && error.code === 'INVALID_REQUEST',
@@ -67,6 +70,8 @@ test('Agent 对话真正调用选定 Flock 模型，并通过本体工具检索�
   assert.equal(requests[0].model, 'deepseek-v4-flash')
   assert.match(requests[0].messages[0].content, /项目本体/)
   assert.match(requests[0].messages[0].content, /Botanic Agent Soul/)
+  assert.match(requests[0].messages[0].content, /Use concise, natural English/)
+  assert.match(requests[0].messages[0].content, /why parameter with one concise English sentence/)
   assert.ok(requests[0].tools.some((tool) => tool.function.name === 'ontology_read'))
   assert.ok(requests[0].tools.some((tool) => tool.function.name === 'asset_group_search'))
   assert.match(requests[1].messages.at(-1).content, /夏日场景/)

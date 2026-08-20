@@ -13,6 +13,8 @@ test('传输层把浏览器掐流的英文错误收成可重试的中文，服�
   assert.equal(botanicAgentChatTransportErrorMessage(new Error('load failed'), { idleTimedOut: true }), 'Agent 对话连接中断，请重试。')
   assert.equal(botanicAgentChatTransportErrorMessage(new Error('Agent 对话超时，请重试。')), 'Agent 对话超时，请重试。')
   assert.equal(botanicAgentChatTransportErrorMessage('not-an-error'), 'Agent 暂时无法回答，请稍后重试。')
+  assert.equal(botanicAgentChatTransportErrorMessage(new Error('Failed to fetch'), { locale: 'en' }), 'Agent connection was interrupted. Try again.')
+  assert.equal(botanicAgentChatTransportErrorMessage(new Error('服务端返回中文错误'), { locale: 'en' }), 'Agent is temporarily unavailable. Try again shortly.')
 })
 
 test('实时事件读取容忍跨网络块切断的行、CRLF 与注释行', () => {

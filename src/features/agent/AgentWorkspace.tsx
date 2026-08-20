@@ -122,6 +122,8 @@ import {
   UploadIcon,
 } from '../../components/BotanicIcons'
 import historyIcon from '../../assets/figma/icon-history.svg'
+import { useProductI18n, useProductMessages } from '../../i18n/react'
+import { productIntlLocale, type ProductLocale } from '../../i18n/core'
 
 type AgentTransientSurface = 'context' | 'history' | 'utility' | 'mode'
 type AgentUtilityPanel = 'result' | 'task' | 'memory' | 'skill' | 'collaboration'
@@ -156,24 +158,33 @@ function agentTargetDisplayLabel(target?: AgentDockTarget) {
   return target.label.trim().replace(/^@+/, '').replace(/\s+\+\d+\b.*$/u, '')
 }
 
-function agentTimelineTimestamp(timestamp: number) {
-  return new Intl.DateTimeFormat('zh-CN', {
+function agentTimelineTimestamp(timestamp: number, locale: ProductLocale) {
+  return new Intl.DateTimeFormat(productIntlLocale(locale), {
     month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
   }).format(new Date(timestamp))
 }
 
-const agentQuickActions: Array<{ intent: BotanicAgentIntent; label: string; instruction: string }> = [
-  { intent: 'replace_scene', label: '换场景', instruction: '保持人物、服装和商品不变，只替换场景与环境光线。' },
-  { intent: 'change_pose', label: '换动作', instruction: '保持人物、服装、商品和场景不变，调整动作姿势与构图。' },
-  { intent: 'change_style', label: '换风格', instruction: '保持人物、服装、商品、场景和动作不变，调整视觉风格与光线。' },
-  { intent: 'replace_person', label: '换模特', instruction: '保持服装、商品、场景和风格不变，替换模特。' },
-  { intent: 'replace_product', label: '换商品', instruction: '保持人物、场景和风格不变，替换服装或商品。' },
-  { intent: 'redo_from_root', label: '原配方重做', instruction: '复用原始参考素材、提示词和参数，重新生成独立首图。' },
-]
+function agentQuickActions(locale: ProductLocale): Array<{ intent: BotanicAgentIntent; label: string; instruction: string }> {
+  return locale === 'en' ? [
+    { intent: 'replace_scene', label: 'Change scene', instruction: 'Keep the person, clothing, and product unchanged; replace only the scene and ambient lighting.' },
+    { intent: 'change_pose', label: 'Change pose', instruction: 'Keep the person, clothing, product, and scene unchanged; adjust the pose and composition.' },
+    { intent: 'change_style', label: 'Change style', instruction: 'Keep the person, clothing, product, scene, and pose unchanged; adjust the visual style and lighting.' },
+    { intent: 'replace_person', label: 'Change model', instruction: 'Keep the clothing, product, scene, and style unchanged; replace the model.' },
+    { intent: 'replace_product', label: 'Change product', instruction: 'Keep the person, scene, and style unchanged; replace the clothing or product.' },
+    { intent: 'redo_from_root', label: 'Redo original recipe', instruction: 'Reuse the original references, prompt, and settings to generate a new independent key visual.' },
+  ] : [
+    { intent: 'replace_scene', label: '换场景', instruction: '保持人物、服装和商品不变，只替换场景与环境光线。' },
+    { intent: 'change_pose', label: '换动作', instruction: '保持人物、服装、商品和场景不变，调整动作姿势与构图。' },
+    { intent: 'change_style', label: '换风格', instruction: '保持人物、服装、商品、场景和动作不变，调整视觉风格与光线。' },
+    { intent: 'replace_person', label: '换模特', instruction: '保持服装、商品、场景和风格不变，替换模特。' },
+    { intent: 'replace_product', label: '换商品', instruction: '保持人物、场景和风格不变，替换服装或商品。' },
+    { intent: 'redo_from_root', label: '原配方重做', instruction: '复用原始参考素材、提示词和参数，重新生成独立首图。' },
+  ]
+}
 
-function AgentRunActionIcon({ label }: { label: string }) {
-  if (label.includes('结果')) return <GalleryIcon />
-  if (label.includes('失败')) return <AlertIcon />
+function AgentRunActionIcon({ action }: { action: 'view_task' | 'view_results' | 'adjust' | 'none' }) {
+  if (action === 'view_results') return <GalleryIcon />
+  if (action === 'adjust') return <AlertIcon />
   return <ChecklistIcon />
 }
 
@@ -184,17 +195,17 @@ function AgentTaskFilterIcon({ value }: { value: 'all' | 'active' | 'completed' 
   return <ChecklistIcon />
 }
 
-function agentTaskBranchSummary(run: BotanicAgentRun) {
+function agentTaskBranchSummary(run: BotanicAgentRun, locale: ProductLocale) {
   const succeeded = run.branches.filter((branch) => branch.status === 'succeeded').length
   const running = run.branches.filter((branch) => branch.status === 'running').length
   const queued = run.branches.filter((branch) => branch.status === 'queued').length
   const failed = run.branches.filter((branch) => branch.status === 'failed' || branch.status === 'cancelled').length
   return [
-    succeeded ? `${succeeded} 完成` : '',
-    running ? `${running} 生成中` : '',
-    queued ? `${queued} 排队` : '',
-    failed ? `${failed} 失败` : '',
-  ].filter(Boolean).join(' · ') || `${run.branches.length} 个分支`
+    succeeded ? `${succeeded} ${locale === 'en' ? 'complete' : '完成'}` : '',
+    running ? `${running} ${locale === 'en' ? 'generating' : '生成中'}` : '',
+    queued ? `${queued} ${locale === 'en' ? 'queued' : '排队'}` : '',
+    failed ? `${failed} ${locale === 'en' ? 'failed' : '失败'}` : '',
+  ].filter(Boolean).join(' · ') || `${run.branches.length} ${locale === 'en' ? 'branches' : '个分支'}`
 }
 
 
@@ -308,6 +319,22 @@ export default function AgentWorkspace({
   onReloadCollaborationActivities: () => Promise<void>
   onClose: () => void
 }) {
+  const { locale } = useProductI18n()
+  const copy = useProductMessages({
+    'zh-CN': {
+      tools: 'Agent 工具', back: '返回对话', results: '结果与文件', tasks: 'Agent 任务', memory: '项目记忆', skills: '创作技能', collaboration: '协作动态', close: '关闭 Agent',
+      welcome: '今天一起创作什么？', welcomeTarget: (name: string) => `继续优化「${name}」`, welcomeBody: '可以日常对话、生成 Prompt、检索项目，也可以直接描述生图目标。', welcomeTargetBody: '保留当前画面与原始配方，仅调整你刚提出的内容。',
+      sources: '来源', unavailable: 'Agent 暂时无法回答，请稍后重试。', unsupportedVideo: 'Agent 对话暂未接入视频执行链。请先在画布添加「视频生成」节点；本次没有创建节点或任务。', clarifyAction: '请明确是只需要建议，还是要我直接生成；本次没有改动画布。',
+    },
+    en: {
+      tools: 'Agent tools', back: 'Back to conversation', results: 'Results & files', tasks: 'Agent tasks', memory: 'Project memory', skills: 'Creative skills', collaboration: 'Collaboration', close: 'Close Agent',
+      welcome: 'What shall we create today?', welcomeTarget: (name: string) => `Continue refining “${name}”`, welcomeBody: 'Chat, create prompts, search this project, or describe the image you want to make.', welcomeTargetBody: 'Keep the current visual and original recipe, and change only what you just requested.',
+      sources: 'Sources', unavailable: 'Agent is temporarily unavailable. Try again shortly.', unsupportedVideo: 'Video execution is not available in Agent chat yet. Add a Video Generation node on the canvas; no node or task was created.', clarifyAction: 'Please clarify whether you only want advice or want me to generate it. The canvas was not changed.',
+    },
+  })
+  const branchStatusLabel = (status: BotanicAgentRun['branches'][number]['status']) => locale === 'en'
+    ? ({ succeeded: 'Completed', running: 'Generating', queued: 'Queued', cancelled: 'Cancelled', failed: 'Failed' }[status])
+    : botanicAgentBranchStatusLabel(status)
   const [intent, setIntent] = useState<BotanicAgentIntent | undefined>(undefined)
   const [groupId, setGroupId] = useState('')
   const plannerModel = plannerModels.includes(session?.plannerModel ?? '')
@@ -374,7 +401,7 @@ export default function AgentWorkspace({
   const [skillError, setSkillError] = useState('')
   const [expandedSkillId, setExpandedSkillId] = useState('')
   const [renamingSession, setRenamingSession] = useState(false)
-  const [sessionTitleDraft, setSessionTitleDraft] = useState(session?.title ?? '新建对话')
+  const [sessionTitleDraft, setSessionTitleDraft] = useState(session?.title ?? (locale === 'en' ? 'New conversation' : '新建对话'))
   const [persistenceAction, setPersistenceAction] = useState<'retry' | 'refresh' | ''>('')
   const [promptDrafts, setPromptDrafts] = useState<Record<string, string>>({})
   const [recoveryModelMenuKey, setRecoveryModelMenuKey] = useState('')
@@ -521,7 +548,7 @@ export default function AgentWorkspace({
   const runtimeFailed = runtimePhase === 'failed' || runtimeSteps.some((step) => step.status === 'failed')
   const runtimeComplete = runtimePhase === 'completed'
   const availableCanvasNodeIds = useMemo(() => new Set(contextOptions.map((item) => item.id)), [contextOptions])
-  const latestRunFeedback = latestRun ? agentRunFeedback(latestRun, artifacts, availableCanvasNodeIds) : undefined
+  const latestRunFeedback = latestRun ? agentRunFeedback(latestRun, artifacts, availableCanvasNodeIds, locale) : undefined
   const runTimeline = useMemo(() => buildBotanicAgentRunTimeline(runs, sessions), [runs, sessions])
   const filteredRunTimeline = useMemo(
     () => filterBotanicAgentRunTimeline(runTimeline, taskStatusFilter),
@@ -815,16 +842,16 @@ export default function AgentWorkspace({
     void Promise.allSettled([listProjectAgentSkills(projectId), listBotanicAgentSystemSkills()]).then(([projectResult, systemResult]) => {
       if (!active) return
       if (projectResult.status === 'fulfilled') setSkills(projectResult.value)
-      else setSkillError(projectResult.reason instanceof Error ? projectResult.reason.message : '项目 Skill 列表加载失败。')
+      else setSkillError(projectResult.reason instanceof Error ? projectResult.reason.message : (locale === 'en' ? 'Unable to load project Skills.' : '项目 Skill 列表加载失败。'))
       if (systemResult.status === 'fulfilled') setSystemSkills(systemResult.value)
     })
     return () => { active = false }
-  }, [projectId, skillPanelOpen])
+  }, [locale, projectId, skillPanelOpen])
 
   useEffect(() => {
-    setSessionTitleDraft(session?.title ?? '新建对话')
+    setSessionTitleDraft(session?.title ?? (locale === 'en' ? 'New conversation' : '新建对话'))
     setRenamingSession(false)
-  }, [session?.id, session?.title])
+  }, [locale, session?.id, session?.title])
 
   useEffect(() => {
     if (utilityPanelOpen || !session || readingPositionRestoredRef.current) return
@@ -883,7 +910,7 @@ export default function AgentWorkspace({
   }
 
   const openRunFeedback = (run: BotanicAgentRun) => {
-    const feedback = agentRunFeedback(run, artifacts, availableCanvasNodeIds)
+    const feedback = agentRunFeedback(run, artifacts, availableCanvasNodeIds, locale)
     openUtilityPanel(feedback.action === 'view_results' ? 'result' : 'task')
   }
 
@@ -895,7 +922,7 @@ export default function AgentWorkspace({
       const linkedMessage = [...session.messages]
         .reverse()
         .find((message) => message.runId === run.id && (message.kind === 'run' || message.kind === 'notice'))
-      const feedback = agentRunFeedback(run, artifacts, availableCanvasNodeIds)
+      const feedback = agentRunFeedback(run, artifacts, availableCanvasNodeIds, locale)
       const noticeKey = feedback.terminal ? `${run.status}:${outputCount}` : run.status
       const previousNoticeKey = runNoticeStatusRef.current.get(run.id)
       const content = feedback.detail
@@ -1036,6 +1063,7 @@ export default function AgentWorkspace({
     const assetGroup = compatibleGroups.find((group) => group.id === groupId)
     const input = {
       projectId,
+      locale,
       plannerModel,
       mountedSkillIds: session?.mountedSkillIds,
       instruction: cleanInstruction,
@@ -1390,6 +1418,7 @@ export default function AgentWorkspace({
         updateRuntimeStep('call-planner', 'running')
         const turn = await requestBotanicAgentTurn({
           projectId,
+          locale,
           plannerModel,
           messages: [
             ...session.messages.map((message) => ({ role: message.role, content: message.content })),
@@ -1408,7 +1437,7 @@ export default function AgentWorkspace({
           updateRuntimeStep('respond', 'succeeded')
           setRuntimePhase('completed')
           setRuntimeDetailsOpen(false)
-          const sourceNote = turn.sources?.length ? `\n\n来源：${turn.sources.join('、')}` : ''
+          const sourceNote = turn.sources?.length ? `\n\n${copy.sources}: ${turn.sources.join(locale === 'en' ? ', ' : '、')}` : ''
           appendMessage({ role: 'assistant', kind: 'text', content: `${turn.answer}${sourceNote}` })
           return
         }
@@ -1456,7 +1485,7 @@ export default function AgentWorkspace({
         const fallBack = caught instanceof ProductApiError
           && (caught.status === 0 || caught.status === 404 || caught.status >= 500)
         if (!fallBack) {
-          const message = caught instanceof Error ? caught.message : 'Agent 暂时无法回答，请稍后重试。'
+          const message = caught instanceof Error ? caught.message : copy.unavailable
           failRuntimeTrace(message)
           setError(message)
           rememberFailedInstruction(failedCommand)
@@ -1476,10 +1505,12 @@ export default function AgentWorkspace({
         role: 'assistant',
         kind: 'notice',
         content: decision.reason === 'video_requires_reference'
-          ? '视频需要一张图片作首帧。请先 @ 引用一张素材或点选一张结果图，再说要生成的视频；本次没有创建任务。'
+          ? locale === 'en'
+            ? 'Video generation needs an image as the first frame. Reference an asset or result, then describe the video you want; no task was created.'
+            : '视频需要一张图片作首帧。请先 @ 引用一张素材或点选一张结果图，再说要生成的视频；本次没有创建任务。'
           : decision.reason === 'unsupported_media'
-            ? 'Agent 对话暂未接入这类媒体的执行链；本次没有创建节点或任务。'
-            : '请明确是只需要建议，还是要我直接生成；本次没有改动画布。',
+            ? copy.unsupportedVideo
+            : copy.clarifyAction,
       })
       return
     }
@@ -1555,6 +1586,7 @@ export default function AgentWorkspace({
         let answerStarted = false
         const response = await streamBotanicAgentChat({
           projectId,
+          locale,
           plannerModel,
           mountedSkillIds: session.mountedSkillIds,
           mode: route,
@@ -2025,7 +2057,7 @@ export default function AgentWorkspace({
             <button type="submit" aria-label="保存对话名称" title="保存"><CheckIcon /></button>
             <button type="button" aria-label="取消编辑对话名称" title="取消" onClick={() => setRenamingSession(false)}><CloseIcon /></button>
           </form> : <>
-            <button type="button" className="agent-workspace__title-button" onClick={(event) => { historyTriggerRef.current = event.currentTarget; setUtilityMenuOpen(false); setHistoryOpen((open) => !open) }} aria-controls={historyMenuId} aria-expanded={historyOpen}>{session?.title ?? '新建对话'} <span aria-hidden="true">⌄</span></button>
+            <button type="button" className="agent-workspace__title-button" onClick={(event) => { historyTriggerRef.current = event.currentTarget; setUtilityMenuOpen(false); setHistoryOpen((open) => !open) }} aria-controls={historyMenuId} aria-expanded={historyOpen}>{session?.title ?? (locale === 'en' ? 'New conversation' : '新建对话')} <span aria-hidden="true">⌄</span></button>
             {session ? <button type="button" className="agent-workspace__rename-button" aria-label="编辑对话名称" title="编辑对话名称" onClick={() => { setHistoryOpen(false); setSessionTitleDraft(session.title); setRenamingSession(true) }}><EditIcon /></button> : null}
           </>}
         </div>
@@ -2044,15 +2076,15 @@ export default function AgentWorkspace({
             onClick={inspectPersistenceIssue}
           ><span aria-hidden="true">{persistenceStatus === 'conflict' ? '!' : '·'}</span></button> : null}
           <div ref={utilityMenuRef} className="agent-workspace__utility-menu-wrap">
-            <button ref={utilityMenuButtonRef} type="button" className={`agent-workspace__utility-menu-button${utilityPanelOpen ? ' is-active' : ''}`} aria-haspopup="menu" aria-expanded={utilityMenuOpen} aria-controls={utilityMenuId} aria-label="Agent 工具" title="Agent 工具" onClick={() => { setUtilityMenuOpen((open) => !open); setHistoryOpen(false) }}><ChecklistIcon /></button>
-            {utilityMenuOpen ? <div id={utilityMenuId} className="agent-workspace__utility-menu" role="menu" aria-label="Agent 工具">
-              {utilityPanelOpen ? <button type="button" role="menuitem" onClick={closeUtilityPanel}><ChevronLeftIcon /><span>返回对话</span></button> : null}
-              <button type="button" role="menuitem" className={resultPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('result')}><GalleryIcon /><span>结果与文件</span></button>
-              <button type="button" role="menuitem" className={taskPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('task')}><ChecklistIcon /><span>Agent 任务</span></button>
-              <button type="button" role="menuitem" className={memoryPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('memory')}><BookmarkIcon /><span>项目记忆</span></button>
-              <button type="button" role="menuitem" className={skillPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('skill')}><SparkleIcon /><span>创作技能</span></button>
-              <button type="button" role="menuitem" className={collaborationPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('collaboration')}><ChecklistIcon /><span>协作动态</span>{collaborationAwareness.unreadActivityCount ? <b>{Math.min(collaborationAwareness.unreadActivityCount, 99)}</b> : null}</button>
-              <button type="button" role="menuitem" className="is-danger" onClick={() => { setUtilityMenuOpen(false); onClose() }}><CloseIcon /><span>关闭 Agent</span></button>
+            <button ref={utilityMenuButtonRef} type="button" className={`agent-workspace__utility-menu-button${utilityPanelOpen ? ' is-active' : ''}`} aria-haspopup="menu" aria-expanded={utilityMenuOpen} aria-controls={utilityMenuId} aria-label={copy.tools} title={copy.tools} onClick={() => { setUtilityMenuOpen((open) => !open); setHistoryOpen(false) }}><ChecklistIcon /></button>
+            {utilityMenuOpen ? <div id={utilityMenuId} className="agent-workspace__utility-menu" role="menu" aria-label={copy.tools}>
+              {utilityPanelOpen ? <button type="button" role="menuitem" onClick={closeUtilityPanel}><ChevronLeftIcon /><span>{copy.back}</span></button> : null}
+              <button type="button" role="menuitem" className={resultPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('result')}><GalleryIcon /><span>{copy.results}</span></button>
+              <button type="button" role="menuitem" className={taskPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('task')}><ChecklistIcon /><span>{copy.tasks}</span></button>
+              <button type="button" role="menuitem" className={memoryPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('memory')}><BookmarkIcon /><span>{copy.memory}</span></button>
+              <button type="button" role="menuitem" className={skillPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('skill')}><SparkleIcon /><span>{copy.skills}</span></button>
+              <button type="button" role="menuitem" className={collaborationPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('collaboration')}><ChecklistIcon /><span>{copy.collaboration}</span>{collaborationAwareness.unreadActivityCount ? <b>{Math.min(collaborationAwareness.unreadActivityCount, 99)}</b> : null}</button>
+              <button type="button" role="menuitem" className="is-danger" onClick={() => { setUtilityMenuOpen(false); onClose() }}><CloseIcon /><span>{copy.close}</span></button>
             </div> : null}
           </div>
         </div>
@@ -2075,7 +2107,7 @@ export default function AgentWorkspace({
           </div>
           {filteredSessionTimeline.map((item) => <button key={item.session.id} type="button" className={item.session.id === session?.id ? 'is-active' : ''} onClick={() => { onSelectSession(item.session.id); setHistoryOpen(false); setHistoryQuery('') }}>
             <span><strong>{item.session.title}</strong><small>{item.preview}</small></span>
-            <span className="agent-workspace__history-meta"><time dateTime={new Date(item.updatedAt).toISOString()}>{agentTimelineTimestamp(item.updatedAt)}</time>{item.unreadResultCount ? <b className="is-unread">{item.unreadResultCount} 个新结果</b> : item.unreadRunCount ? <b className="is-unread">{item.unreadRunCount} 条更新</b> : item.attentionRunCount ? <b className="is-attention">{item.attentionRunCount} 项需处理</b> : item.activeRunCount ? <b>{item.activeRunCount} 进行中</b> : item.runCount ? <small>{item.runCount} 个任务</small> : null}</span>
+            <span className="agent-workspace__history-meta"><time dateTime={new Date(item.updatedAt).toISOString()}>{agentTimelineTimestamp(item.updatedAt, locale)}</time>{item.unreadResultCount ? <b className="is-unread">{item.unreadResultCount} {locale === 'en' ? 'new results' : '个新结果'}</b> : item.unreadRunCount ? <b className="is-unread">{item.unreadRunCount} {locale === 'en' ? 'updates' : '条更新'}</b> : item.attentionRunCount ? <b className="is-attention">{item.attentionRunCount} {locale === 'en' ? 'need attention' : '项需处理'}</b> : item.activeRunCount ? <b>{item.activeRunCount} {locale === 'en' ? 'active' : '进行中'}</b> : item.runCount ? <small>{item.runCount} {locale === 'en' ? 'tasks' : '个任务'}</small> : null}</span>
           </button>)}
           {!filteredSessionTimeline.length ? <p className="agent-workspace__history-empty">当前筛选下没有对话。</p> : null}
         </div> : null}
@@ -2159,11 +2191,11 @@ export default function AgentWorkspace({
           </div>
           <div className="agent-task-panel__list">
             {filteredRunTimeline.map(({ run, source }) => {
-              const feedback = agentRunFeedback(run, artifacts, availableCanvasNodeIds)
+              const feedback = agentRunFeedback(run, artifacts, availableCanvasNodeIds, locale)
               const active = run.status === 'queued' || run.status === 'running' || run.status === 'executing'
               const failedBranches = run.branches.filter((branch) => branch.status === 'failed' || branch.status === 'cancelled')
               return <article key={run.id} ref={(node) => { if (node) taskNodesRef.current.set(run.id, node); else taskNodesRef.current.delete(run.id) }} tabIndex={-1} className={`is-${run.status} is-${feedback.tone}${focusedTaskRunId === run.id ? ' is-located' : ''}`}>
-              <header><span><strong>{run.plan.summary}</strong><small>{feedback.label} · <time dateTime={new Date(run.updatedAt).toISOString()}>{agentTimelineTimestamp(run.updatedAt)}</time></small></span></header>
+              <header><span><strong>{run.plan.summary}</strong><small>{feedback.label} · <time dateTime={new Date(run.updatedAt).toISOString()}>{agentTimelineTimestamp(run.updatedAt, locale)}</time></small></span></header>
               <p className="agent-task-panel__feedback">{feedback.detail}</p>
               {active ? <div className="agent-run-card__track" aria-hidden="true"><i style={{ width: `${run.branches.length ? Math.round(run.completedBranchCount / run.branches.length * 100) : 0}%` }} /></div> : null}
               <div className="agent-task-panel__actions">
@@ -2172,11 +2204,11 @@ export default function AgentWorkspace({
                 {active ? <button type="button" className="is-danger" disabled={cancellingRunId === run.id} onClick={() => { setCancellingRunId(run.id); void onCancelRun(run.id).finally(() => setCancellingRunId('')) }}>{cancellingRunId === run.id ? '取消中…' : '取消'}</button> : null}
               </div>
               {run.branches.length >= 2 ? <details className="agent-task-panel__details" open>
-                <summary>{agentTaskBranchSummary(run)}</summary>
+                <summary>{agentTaskBranchSummary(run, locale)}</summary>
                 <div className="agent-task-panel__branch-list" aria-label="分支状态">
                   {run.branches.map((branch) => <div className={`agent-task-panel__branch-row is-${branch.status}`} key={branch.id}>
                     <strong>{branch.label}</strong>
-                    <small>{botanicAgentBranchStatusLabel(branch.status)}</small>
+                    <small>{branchStatusLabel(branch.status)}</small>
                   </div>)}
                 </div>
               </details> : null}
@@ -2231,10 +2263,10 @@ export default function AgentWorkspace({
         {!utilityPanelOpen && !hasMessages ? <section className="agent-workspace__welcome">
           <span className="agent-workspace__mark"><SparkleIcon /></span>
           <small>BOTANIC AGENT</small>
-          <h2>{target ? `继续优化「${agentTargetDisplayLabel(target)}」` : '今天一起创作什么？'}</h2>
-          <p>{target ? '保留当前画面与原始配方，仅调整你刚提出的内容。' : '可以日常对话、生成 Prompt、检索项目，也可以直接描述生图目标。'}</p>
+          <h2>{target ? copy.welcomeTarget(agentTargetDisplayLabel(target)) : copy.welcome}</h2>
+          <p>{target ? copy.welcomeTargetBody : copy.welcomeBody}</p>
           <div className="agent-workspace__starters">
-            {agentQuickActions.slice(0, 3).map((action) => <button key={action.intent} type="button" onClick={() => { setIntent(action.intent); setInstruction(action.instruction) }}><strong>{action.label}</strong><span>{action.instruction}</span></button>)}
+            {agentQuickActions(locale).slice(0, 3).map((action) => <button key={action.intent} type="button" onClick={() => { setIntent(action.intent); setInstruction(action.instruction) }}><strong>{action.label}</strong><span>{action.instruction}</span></button>)}
           </div>
         </section> : null}
         {!utilityPanelOpen && session ? renderedConversationMessages.map((message) => {
@@ -2332,11 +2364,11 @@ export default function AgentWorkspace({
           </section>
         })() : null}
         {!utilityPanelOpen && latestRun?.branches.length && latestRunFeedback && ['queued', 'running', 'executing'].includes(latestRun.status) ? <section className={`agent-run-card is-${latestRunFeedback.tone}`} aria-label="Agent Run 实时进度">
-          <header><span><strong>生成任务</strong><small>{latestRunFeedback.label}</small></span><div>{latestRun.status === 'queued' || latestRun.status === 'running' || latestRun.status === 'executing' ? <button type="button" className="agent-icon-button agent-icon-button--danger" aria-label="取消任务" title="取消任务" disabled={cancellingRunId === latestRun.id} onClick={() => { setCancellingRunId(latestRun.id); setError(''); void onCancelRun(latestRun.id).then((ok) => { if (!ok) setError('任务取消失败，请稍后重试。') }).catch(() => setError('任务取消失败，请稍后重试。')).finally(() => setCancellingRunId('')) }}>{cancellingRunId === latestRun.id ? <span className="agent-workspace__mini-spinner" /> : <CloseIcon />}</button> : <button type="button" className="agent-run-card__feedback-action" aria-label={latestRunFeedback.actionLabel} title={latestRunFeedback.actionLabel} onClick={() => openRunFeedback(latestRun)}><AgentRunActionIcon label={latestRunFeedback.actionLabel} /></button>}<b>{latestRun.completedBranchCount}/{latestRun.branches.length}</b></div></header>
+          <header><span><strong>{locale === 'en' ? 'Generation task' : '生成任务'}</strong><small>{latestRunFeedback.label}</small></span><div>{latestRun.status === 'queued' || latestRun.status === 'running' || latestRun.status === 'executing' ? <button type="button" className="agent-icon-button agent-icon-button--danger" aria-label={locale === 'en' ? 'Cancel task' : '取消任务'} title={locale === 'en' ? 'Cancel task' : '取消任务'} disabled={cancellingRunId === latestRun.id} onClick={() => { setCancellingRunId(latestRun.id); setError(''); void onCancelRun(latestRun.id).then((ok) => { if (!ok) setError(locale === 'en' ? 'Unable to cancel the task. Try again shortly.' : '任务取消失败，请稍后重试。') }).catch(() => setError(locale === 'en' ? 'Unable to cancel the task. Try again shortly.' : '任务取消失败，请稍后重试。')).finally(() => setCancellingRunId('')) }}>{cancellingRunId === latestRun.id ? <span className="agent-workspace__mini-spinner" /> : <CloseIcon />}</button> : <button type="button" className="agent-run-card__feedback-action" aria-label={latestRunFeedback.actionLabel} title={latestRunFeedback.actionLabel} onClick={() => openRunFeedback(latestRun)}><AgentRunActionIcon action={latestRunFeedback.action} /></button>}<b>{latestRun.completedBranchCount}/{latestRun.branches.length}</b></div></header>
           <p className="agent-run-card__feedback">{latestRunFeedback.detail}</p>
           <div className="agent-run-card__track" aria-hidden="true"><i style={{ width: `${Math.round(latestRun.completedBranchCount / latestRun.branches.length * 100)}%` }} /></div>
           <div className="agent-run-card__branches">
-            {latestRun.branches.map((branch) => <div key={branch.id}><span><strong>{branch.label}</strong><small>{botanicAgentBranchStatusLabel(branch.status)}</small></span>{branch.status === 'failed' || branch.status === 'cancelled' ? <AgentFailureRecoveryActions
+            {latestRun.branches.map((branch) => <div key={branch.id}><span><strong>{branch.label}</strong><small>{branchStatusLabel(branch.status)}</small></span>{branch.status === 'failed' || branch.status === 'cancelled' ? <AgentFailureRecoveryActions
               branch={branch}
               generationModels={generationModels}
               retrying={retryingBranchId === branch.id}
