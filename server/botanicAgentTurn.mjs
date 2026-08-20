@@ -12,6 +12,7 @@ import {
   resolveBotanicAgentVisionParts,
 } from './botanicAgentVision.mjs'
 import { botanicAgentContextToolSourceLabels, createBotanicAgentReadToolDefinitions } from './botanicAgentContextTools.mjs'
+import { botanicAgentWebResearchSourceLabels, createBotanicAgentWebResearchTools } from './botanicAgentWebTools.mjs'
 
 // Botanic Agent 回合解析器：把“这一句到底是聊天/建议/检索，还是要生成图片，以及要用什么
 // Prompt、生成几张”整体交给服务端模型判断。它读整段对话（包含 Agent 自己刚给出的建议）与
@@ -414,7 +415,7 @@ function askClarificationTool() {
   }
 }
 
-function turnToolRegistry(input, { ontology, memory, skills }) {
+function turnToolRegistry(input, { ontology, memory, skills, webResearch }) {
   const mounted = new Set(input.mountedSkillIds ?? [])
   const readTools = createBotanicAgentReadToolDefinitions({ ontology, memory, skills }).map((tool) => {
     if (tool.name !== 'skill_search') return tool
@@ -432,12 +433,33 @@ function turnToolRegistry(input, { ontology, memory, skills }) {
   })
   return createAgentToolRegistry([
     ...readTools,
+    ...createBotanicAgentWebResearchTools(webResearch),
     generateImagesTool(input),
     // 目录里没有视频模型时不暴露视频工具，模型也就不会声称能做视频。
     ...(videoModels(input.generationModels).length ? [generateVideosTool(input)] : []),
     decomposeCreativeBriefTool(input),
     askClarificationTool(),
   ])
+}
+
+/** 与对话链路 chatSearchGuidance 同语义：有工具才让模型用，没有就明确说没有。 */
+function turnSearchGuidance(registry) {
+  const hasWebSearch = Boolean(registry.get('web_search'))
+  const hasWebFetch = Boolean(registry.get('web_fetch'))
+  if (hasWebSearch) {
+    return '你可以使用 web_search 检索公开网页，再用 web_fetch 读取具体页面正文。'
+      + '用户要互联网调研、联网搜索或查公开品牌资料时必须调用 web_search，不要用项目只读工具冒充。'
+      + '不要编造来源，也不要把抓取内容写成已审核项目资料。'
+  }
+  if (hasWebFetch) return '没有关键词搜索。只有用户或上下文给出 https URL 时才能调用 web_fetch；不得声称做过全网检索。'
+  return '若工具列表没有外部搜索工具，就明确说明没有外部来源；不得凭空声称查过互联网。'
+}
+
+function turnSourceLabels(toolCalls) {
+  return [...new Set([
+    ...botanicAgentContextToolSourceLabels(toolCalls),
+    ...botanicAgentWebResearchSourceLabels(toolCalls),
+  ])]
 }
 
 async function turnInstructions(locale = 'zh-CN') {
@@ -512,7 +534,11 @@ function turnConfig(runtimeConfig, requestedModel) {
   }
 }
 
-async function executeTurnAttempt({ config, model, system, messages, registry, options }) {
+function withTurnReasoning(result, reasoning) {
+  return reasoning?.length ? { ...result, reasoning } : result
+}
+
+async function executeTurnAttempt({ config, model, system, messages, registry, options, allowRawReasoning }) {
   const timeoutSignal = AbortSignal.timeout(config.timeoutMs)
   const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal
   const fetchImpl = options.fetchImpl ?? fetch
@@ -530,7 +556,9 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
         ...messages,
       ],
       toolChoice: 'auto',
-      maximumSteps: 5,
+      // 有联网工具时与对话链路对齐，给搜索+读页留够步数。
+      maximumSteps: registry.get('web_search') || registry.get('web_fetch') ? 8 : 5,
+      allowRawReasoning,
       onEvent: emitEvent,
       callModel: async ({ messages: turnMessages, tools, tool_choice, step }) => {
         const response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
@@ -556,13 +584,17 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
         if (!streaming) return await response.json().catch(() => null)
         return await readStreamedChatCompletion(response.body, {
           onEvent: (event) => {
+            if (event.type === 'reasoning') {
+              if (allowRawReasoning) emitEvent({ type: 'reasoning', step, delta: event.delta })
+              return
+            }
             if (event.type === 'answer') emitEvent({ type: 'answer', step, delta: event.delta })
           },
         })
       },
     })
     if (result.output && typeof result.output === 'object' && result.output.__turnKind === 'generation') {
-      return {
+      return withTurnReasoning({
         kind: 'generation',
         mediaKind: result.output.mediaKind,
         prompt: result.output.prompt,
@@ -573,36 +605,36 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
         ...(result.output.axisLabel ? { axisLabel: result.output.axisLabel } : {}),
         plannerModel: model,
         toolCalls: result.toolCalls,
-      }
+      }, result.reasoning)
     }
     if (result.output && typeof result.output === 'object' && result.output.__turnKind === 'clarification') {
-      return {
+      return withTurnReasoning({
         kind: 'clarification',
         question: result.output.question,
         ...(result.output.options?.length ? { options: result.output.options } : {}),
         plannerModel: model,
         toolCalls: result.toolCalls,
-      }
+      }, result.reasoning)
     }
     if (result.output && typeof result.output === 'object' && result.output.__turnKind === 'composition') {
-      return {
+      return withTurnReasoning({
         kind: 'composition',
         theme: result.output.theme,
         items: result.output.items,
         plannerModel: model,
         toolCalls: result.toolCalls,
-      }
+      }, result.reasoning)
     }
     if (typeof result.output !== 'string' || !result.output.trim()) {
       throw new BotanicAgentChatError(502, 'INVALID_PROVIDER_RESPONSE', 'Agent 没有返回有效回答。')
     }
-    return {
+    return withTurnReasoning({
       kind: 'chat',
       answer: result.output.trim().slice(0, 12_000),
       plannerModel: model,
       toolCalls: result.toolCalls,
-      sources: botanicAgentContextToolSourceLabels(result.toolCalls),
-    }
+      sources: turnSourceLabels(result.toolCalls),
+    }, result.reasoning)
   } catch (caught) {
     if (caught instanceof BotanicAgentChatError) throw caught
     if (timeoutSignal.aborted) throw new BotanicAgentChatError(504, 'PROVIDER_TIMEOUT', 'Agent 响应超时，请重试。')
@@ -616,6 +648,7 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
 
 export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}) {
   const config = turnConfig(runtimeConfig, input?.plannerModel)
+  const allowRawReasoning = Boolean(runtimeConfig?.agentRawReasoning)
   const baseSystem = await turnInstructions(input.locale)
   const situation = turnSituationBriefing(input, input.locale)
   const mountedSkills = resolveBotanicAgentMountedSkills(input.mountedSkillIds, options.projectSkills)
@@ -624,7 +657,17 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
   const ontology = buildBotanicAgentOntology(options.document, input.contextNodeIds)
   const memory = safeBotanicAgentMemory(options.document)
   const skills = botanicAgentSearchableSkills(options.projectSkills)
-  const registry = turnToolRegistry(input, { ontology, memory, skills })
+  // 与对话/规划链路同一套 Tavily 配置；没 Key 时 createBotanicAgentWebResearchTools 不会暴露 web_search。
+  const webResearch = {
+    apiKey: runtimeConfig?.webSearch?.apiKey,
+    searchUrl: runtimeConfig?.webSearch?.searchUrl,
+    extractUrl: runtimeConfig?.webSearch?.extractUrl,
+    fetchImpl: options.webFetchImpl ?? fetch,
+    allowLocal: Boolean(runtimeConfig?.webSearch?.allowLocal),
+    consumeQuota: options.consumeWebResearchQuota,
+  }
+  const registry = turnToolRegistry(input, { ontology, memory, skills, webResearch })
+  const searchGuidance = turnSearchGuidance(registry)
 
   // 原生多模态优先：引用图片直接随消息附给视觉模型，让它看着画面判断意图、综合 Prompt。
   const visionModel = typeof runtimeConfig?.agentVisionModel === 'string' ? runtimeConfig.agentVisionModel.trim() : ''
@@ -645,10 +688,12 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
           situation,
           mountedBriefing,
           botanicAgentContextBriefing(ontology, { visionAttached: true }),
+          searchGuidance,
         ].filter(Boolean).join('\n\n'),
         messages: botanicAgentMultimodalMessages(input.messages, visionParts),
         registry,
         options,
+        allowRawReasoning,
       })
     } catch (caught) {
       // 视觉模型对 tool-calling 的兼容性因网关而异：被拒绝或不可用时回退
@@ -674,6 +719,7 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
     mountedBriefing,
     botanicAgentContextBriefing(ontology, { visionDescribed: visionDescriptions.length > 0 }),
     botanicAgentVisionBriefing(visionDescriptions),
+    searchGuidance,
   ].filter(Boolean).join('\n\n')
   return executeTurnAttempt({
     config,
@@ -682,5 +728,6 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
     messages: input.messages,
     registry,
     options,
+    allowRawReasoning,
   })
 }

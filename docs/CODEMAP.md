@@ -11,7 +11,8 @@
 | 应用登录与入口 | `src/App.tsx` | `src/lib/productSession.ts`、功能模块按需加载 | 应用壳不拥有画布或领域规则 |
 | 画布交互与面板 | `src/features/canvas/CanvasWorkspace.tsx` | `CanvasEditorViews.tsx`、`CanvasWorkspacePanels.tsx`、`workspaceProjectCoordinator.ts`、`useCanvasWorkspaceSynchronization.ts`、`useCanvasAgentExecutionBridge.ts`、`useCanvasInteractionCoordinator.ts`、`canvasWorkspaceNavigation.ts` | `src/features/canvas/*.test.ts`、UI E2E；项目 I/O、同步、Agent 执行桥和 React Flow 交互分别归对应协调器，工作区只组合导航与面板 |
 | Agent 面板交互 | `src/features/agent/AgentWorkspace.tsx` | `AgentConversationMessage.tsx`、`AgentComposer.tsx`、`AgentUtilityPanels.tsx`、`useAgentMessageDelivery.ts`、`useAgentRuntimeTrace.ts` | Agent 领域/Lib 测试；工作区只编排，对话卡和 Composer 各自拥有展示交互 |
-| Agent Composer 引用字段 | `src/domain/agentMentions.ts` | `AgentComposer.tsx`、`AgentConversationMessage.tsx`、`AgentPromptResponse.tsx`、`botanicAgentPersistence.mjs` | `@` Skill / 图片是独立引用字段，不写入可执行 Prompt；用户消息可持久化 `mentions` 快照，展示层渲染成芯片 |
+| Agent Composer 引用字段 | `src/domain/agentMentions.ts`、`readBotanicAgentMentionQuery`（`agent.ts`） | `AgentComposer.tsx`、`AgentConversationMessage.tsx`、`AgentPromptResponse.tsx`、`botanicAgentPersistence.mjs` | `/` 挂载 Skill、`@` 引用画布节点或图片视频；选中后写入 `mentions` 芯片，不写入可执行 Prompt |
+| Agent 回合解析 | `server/botanicAgentTurn.mjs` | `AgentWorkspace.tsx`、`agentApi.ts`、`botanicAgentWebTools.mjs` | 回合与对话共用 `web_search`/`web_fetch`（需 `BOTANIC_WEB_SEARCH_API_KEY`）；流式工具步与时间线收口在回合完成；原始推理仅 `AGENT_RAW_REASONING` 下发且不落盘 |
 | 画布应用状态 | `src/store/canvasStore.types.ts` | `canvasStore.ts`、`canvasDocumentLifecycleActions.ts`、`canvasAssetGraphActions.ts`、`canvasGenerationActions.ts`、`canvasGenerationLifecycle.ts`、`canvasGenerationProjection.ts`、`canvasTemplateHistoryActions.ts`、`canvasAgentActions.ts`、`canvasBatchVariationActions.ts` | 先核对 Store 端口；文档、图谱素材、普通生成、模板/历史、Agent 和批量变体命令分别由深模块拥有；远端新结果不得被旧草稿覆盖 |
 | 普通生成任务 | `src/lib/generationApi.ts` | `server/generationService.mjs`、`generationProcessor.mjs`、`generationProvider.mjs`、`generationOutputSize.mjs`、`generationComposition.mjs` | `server/generation*.test.mjs`、`src/domain/generationOutputSize.test.ts`、`src/domain/generationComposition.test.ts`；同一次重试复用幂等键；gpt-image-2 可自定义像素；多图合成时标识不得当底图 |
 | 生成成本与 Provider 容灾 | `server/generationGovernance.mjs` | `securityControls.mjs`、`providerHealthMonitor.mjs`、`generationRoutes.mjs`、`generationProcessor.mjs` | 任务级唯一记账；多维预算原子预留；仅语义兼容模型可降级；熔断半开后恢复 |
@@ -79,4 +80,4 @@ rg "revision|graphRevision" src/lib server
 | 依赖方向 | `npm run check:architecture` |
 | 发布相关 | 以上全部，加生产浏览器、控制台、HTTP 与 Provider 分项验证 |
 
-UI E2E 门禁使用本地持久化与伪健康接口，覆盖项目 → 画布 → Agent、面板互斥、Composer 执行模式、`@` 引用和 hash 刷新恢复；不消耗真实 Provider 额度。
+UI E2E 门禁使用本地持久化与伪健康接口，覆盖项目 → 画布 → Agent、面板互斥、Composer 执行模式、`/` Skill 与 `@` 引用和 hash 刷新恢复；不消耗真实 Provider 额度。

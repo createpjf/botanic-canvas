@@ -55,7 +55,7 @@ import {
 import { botanicAgentRunReviewMessageId, formatBotanicAgentRunReviewMessage } from '../../domain/agentReviewContract'
 import { resolveAgentChatPrompt } from '../../domain/agentMarkdown'
 import type { BotanicAgentChatStreamEvent } from '../../domain/agentChatStream'
-import { applyAgentConversationStreamEvent, createAgentTimeline, projectBotanicAgentRunOntoTimeline, type AgentTimelineEvent, type AgentTimelineState } from '../../domain/agentTimeline'
+import { applyAgentConversationStreamEvent, createAgentTimeline, persistAgentLiveTimeline, projectBotanicAgentRunOntoTimeline, type AgentTimelineEvent, type AgentTimelineState } from '../../domain/agentTimeline'
 import { nextExclusiveSurface, type ExclusiveSurfaceAction } from '../../domain/exclusiveSurface'
 import type { CollaborationActivity, CollaborationDocumentChange } from '../../domain/collaborationActivity'
 import type {
@@ -404,7 +404,7 @@ export default function AgentWorkspace({
     options: AgentInstructionRetryOptions
   } | null>(null)
   const [liveConversation, setLiveConversation] = useState<AgentLiveConversation>()
-  /** 确认后的 Run 进度投影：keyed by 计划消息 id，只反映已持久化状态。 */
+  /** 气泡旁路时间线：回合结束后的工具步骤，以及确认后的 Run 进度投影。 */
   const [executionTimelines, setExecutionTimelines] = useState<Record<string, AgentTimelineState>>({})
   const [submittingMessageId, setSubmittingMessageId] = useState('')
   const [executingActionId, setExecutingActionId] = useState('')
@@ -533,16 +533,23 @@ export default function AgentWorkspace({
     .filter((message) => message.question?.sourcePromptMessageId && message.kind === 'question' && message.status === 'pending')
     .map((message) => message.question!.sourcePromptMessageId!)), [session?.messages])
   const mentionOptions = useMemo(() => {
-    if (!mentionQuery) return []
+    if (!mentionQuery || mentionQuery.trigger !== '@') return []
     const query = mentionQuery.query.trim().toLocaleLowerCase()
+    const canReference = (item: AgentContextItem) => {
+      if (item.kind === '文字') return Boolean(item.content)
+      // 图/视频素材与结果都可 @；视频没封面时仍保留，由菜单用「视」徽章展示。
+      if (item.kind === '素材' || item.kind === '结果') {
+        return Boolean(item.image) || item.mediaKind === 'video'
+      }
+      return false
+    }
     return contextOptions
-      // 文字节点现在会作为补充描述进入提示词，所以它和图片素材一样可以被 @ 引用。
-      .filter((item) => (item.kind === '素材' && Boolean(item.image)) || (item.kind === '文字' && Boolean(item.content)))
+      .filter(canReference)
       .filter((item) => !query || item.label.toLocaleLowerCase().includes(query))
-      .slice(0, 6)
+      .slice(0, 8)
   }, [contextOptions, mentionQuery])
   const skillOptions = useMemo<AgentSkillOption[]>(() => {
-    if (!mentionQuery) return []
+    if (!mentionQuery || mentionQuery.trigger !== '/') return []
     const query = mentionQuery.query.trim().toLocaleLowerCase()
     const catalog = [...systemSkills, ...skills.map((skill) => ({
       id: skill.id,
@@ -552,7 +559,7 @@ export default function AgentWorkspace({
     }))]
       .filter((skill, index, items) => items.findIndex((candidate) => candidate.id === skill.id) === index)
       .filter((skill) => !query || skill.name.toLocaleLowerCase().includes(query) || skill.id.toLocaleLowerCase().includes(query))
-    // 系统 Skill 全量出现在 @ 菜单；项目 Skill 仍截断，避免目录把菜单撑爆。
+    // 系统 Skill 全量出现在 / 菜单；项目 Skill 仍截断，避免目录把菜单撑爆。
     const systemMatches = catalog.filter((skill) => skill.source === 'system')
     const projectMatches = catalog.filter((skill) => skill.source !== 'system').slice(0, 8)
     return [...systemMatches, ...projectMatches].map(({ id, name, source }) => ({ id, name, source }))
@@ -1626,6 +1633,7 @@ export default function AgentWorkspace({
       setRuntimePhase('planning')
       const liveMessageId = `agent-message-${crypto.randomUUID()}`
       const liveStartedAt = Date.now()
+      let latestTimeline = createAgentTimeline(liveStartedAt)
       setLiveConversation({
         sessionId: session.id,
         message: {
@@ -1635,7 +1643,7 @@ export default function AgentWorkspace({
           content: '',
           createdAt: liveStartedAt,
         },
-        timeline: createAgentTimeline(liveStartedAt),
+        timeline: latestTimeline,
         streaming: true,
       })
       try {
@@ -1665,6 +1673,7 @@ export default function AgentWorkspace({
                 { content: current.message.content, timeline: current.timeline },
                 agentTimelineEvent(event, receivedAt),
               )
+              latestTimeline = next.timeline
               return {
                 ...current,
                 message: { ...current.message, content: next.content },
@@ -1672,9 +1681,24 @@ export default function AgentWorkspace({
                 streaming: event.type !== 'done' && event.type !== 'error',
               }
             })
+            if (event.type === 'tool') {
+              attachPlannerToolTrace({ toolCalls: [event.toolCall] } as BotanicAgentPlan)
+              return
+            }
+            if (event.type === 'reasoning') {
+              appendRuntimeReasoningDelta(event.step, event.delta)
+            }
           },
         })
         if (controller.signal.aborted) return
+        const settleTurnLive = (persistTimeline: boolean) => {
+          attachPlannerToolTrace({ toolCalls: turn.toolCalls } as BotanicAgentPlan)
+          attachRuntimeReasoning(turn.reasoning)
+          if (persistTimeline) {
+            setExecutionTimelines((current) => persistAgentLiveTimeline(current, liveMessageId, latestTimeline))
+          }
+          setLiveConversation((current) => current?.message.id === liveMessageId ? undefined : current)
+        }
         if (turn.kind === 'chat') {
           setRuntimePhase('completed')
           setRuntimeDetailsOpen(false)
@@ -1685,7 +1709,7 @@ export default function AgentWorkspace({
             kind: 'text',
             content: `${turn.answer}${sourceNote}`,
           })
-          setLiveConversation((current) => current?.message.id === liveMessageId ? undefined : current)
+          settleTurnLive(true)
           return
         }
         if (turn.kind === 'clarification') {
@@ -1702,7 +1726,7 @@ export default function AgentWorkspace({
             kind: 'text',
             content: `${turn.question}${optionLines}`,
           })
-          setLiveConversation((current) => current?.message.id === liveMessageId ? undefined : current)
+          settleTurnLive(true)
           return
         }
         if (turn.kind === 'composition') {
@@ -1710,8 +1734,8 @@ export default function AgentWorkspace({
           setRuntimePhase('completed')
           setRuntimeDetailsOpen(false)
           const composition = normalizeBotanicAgentComposition({ theme: turn.theme, items: turn.items })
-          setLiveConversation((current) => current?.message.id === liveMessageId ? undefined : current)
           if (!composition) {
+            settleTurnLive(false)
             appendMessage({
               role: 'assistant',
               kind: 'notice',
@@ -1728,9 +1752,10 @@ export default function AgentWorkspace({
             composition,
             content: formatBotanicAgentCompositionSummary(composition, locale),
           })
+          settleTurnLive(true)
           return
         }
-        setLiveConversation((current) => current?.message.id === liveMessageId ? undefined : current)
+        settleTurnLive(false)
         serverDecision = { kind: 'generation', mediaKind: turn.mediaKind, promptSource: 'instruction' }
         synthesizedPrompt = turn.prompt
         synthesizedCount = turn.count

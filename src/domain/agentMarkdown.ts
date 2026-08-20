@@ -170,6 +170,48 @@ export function resolveAgentChatPrompt(answer: string): string {
   return blocks.length === 1 && blocks[0].kind === 'paragraph' ? text : ''
 }
 
+/** 气泡只渲染 h1–h3；更深标题在解析时压到 3，不在界面露出 #。 */
+function clampHeadingLevel(hashCount: number): 1 | 2 | 3 {
+  if (hashCount <= 1) return 1
+  if (hashCount === 2) return 2
+  return 3
+}
+
+/**
+ * 剥掉行首残留的 #（含无空格的脏输出），保证展示层永不出现 markdown 井号。
+ * 代码块内容不走这里。
+ */
+export function stripAgentMarkdownHashes(text: string) {
+  return text
+    .split('\n')
+    .map((line) => line.replace(/^\s*#{1,6}(?:\s+|(?=\S))/u, '').replace(/^\s*#+\s*$/u, ''))
+    .join('\n')
+}
+
+const sourceLinePattern = /^(?:来源|Sources)\s*[:：]\s*(.+)\s*$/iu
+
+/**
+ * 从正文末段抽出「来源 / Sources」行，供展示层收成 chips。
+ * 不改已落库字符串；刷新后仍能认出同一段文案。
+ */
+export function splitAgentMessageSources(source: string): { body: string; sources: string[] } {
+  const text = source.replace(/\r\n?/g, '\n').trimEnd()
+  if (!text) return { body: '', sources: [] }
+  const lines = text.split('\n')
+  let end = lines.length
+  while (end > 0 && !lines[end - 1].trim()) end -= 1
+  const last = lines[end - 1]?.trim() ?? ''
+  const match = sourceLinePattern.exec(last)
+  if (!match) return { body: text, sources: [] }
+  const sources = match[1]
+    .split(/[,，、]/u)
+    .map((item) => item.trim())
+    .filter(Boolean)
+  if (!sources.length) return { body: text, sources: [] }
+  const body = lines.slice(0, end - 1).join('\n').trimEnd()
+  return { body, sources }
+}
+
 /**
  * A deliberately small, safe Markdown subset for assistant messages.
  * It keeps the UI deterministic and never interprets arbitrary HTML.
@@ -199,9 +241,10 @@ export function parseAgentMarkdown(source: string): AgentMarkdownBlock[] {
       continue
     }
 
-    const heading = /^(#{1,3})\s+(.+?)\s*$/.exec(line)
+    // 接受 #{1,6}：模型常写 ####；展示层 clamp 到 h1–h3，文本不含 #。
+    const heading = /^(#{1,6})\s+(.+?)\s*$/.exec(line)
     if (heading) {
-      blocks.push({ kind: 'heading', level: heading[1].length as 1 | 2 | 3, text: heading[2] })
+      blocks.push({ kind: 'heading', level: clampHeadingLevel(heading[1].length), text: heading[2] })
       index += 1
       continue
     }
@@ -249,19 +292,19 @@ export function parseAgentMarkdown(source: string): AgentMarkdownBlock[] {
       continue
     }
 
-    const paragraph: string[] = [line.trimEnd()]
+    const paragraph: string[] = [stripAgentMarkdownHashes(line.trimEnd())]
     index += 1
     while (index < lines.length && lines[index].trim()) {
       const next = lines[index]
       if (
         /^\s*```/.test(next)
-        || /^(#{1,3})\s+/.test(next)
+        || /^(#{1,6})\s+/.test(next)
         || isRule(next)
         || startsTable(lines, index)
         || isUnorderedItem(next)
         || isOrderedItem(next)
       ) break
-      paragraph.push(next.trimEnd())
+      paragraph.push(stripAgentMarkdownHashes(next.trimEnd()))
       index += 1
     }
     blocks.push({ kind: 'paragraph', text: paragraph.join('\n') })

@@ -223,6 +223,20 @@ export function createAgentTimeline(startedAt: number): AgentTimelineState {
 }
 
 /**
+ * 回合结束后把 live 时间线收进旁路状态，避免清掉 liveConversation 后工具步骤消失。
+ * 收口时把仍在转的思考标成结束；空时间线不写入。
+ */
+export function persistAgentLiveTimeline(
+  timelines: Record<string, AgentTimelineState>,
+  messageId: string,
+  timeline: AgentTimelineState | undefined,
+  receivedAt = Date.now(),
+): Record<string, AgentTimelineState> {
+  if (!timeline?.blocks.length) return timelines
+  return { ...timelines, [messageId]: reduceAgentTimeline(timeline, { type: 'done', receivedAt }) }
+}
+
+/**
  * 把一轮对话的实时事件拆到两处：回答增量追加到正文，思考/工具进入时间线。
  * 正文只出现一次；时间线不再复制旁白。
  */

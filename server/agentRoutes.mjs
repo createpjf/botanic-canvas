@@ -346,6 +346,9 @@ export function createAgentRouteHandler({
           projectSkills,
           signal: controller.signal,
           resolveVisionMedia: visionMediaResolver(user.id, validatedInput.projectId),
+          consumeWebResearchQuota: consumeWebResearchQuota
+            ? () => consumeWebResearchQuota(user.id)
+            : undefined,
           ...(sse ? { onEvent: (event) => sse.send(event) } : {}),
         })
         if (controller.signal.aborted || response.destroyed) return true

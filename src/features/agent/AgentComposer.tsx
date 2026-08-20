@@ -101,10 +101,10 @@ export function AgentComposer({
   const { locale } = useProductI18n()
   const copy = useProductMessages({
     'zh-CN': {
-      input: 'Agent 输入', referenced: '已引用', remove: '移除', mounted: '已挂载', callSkill: '调用 Skill', systemSkill: '系统 Skill', projectSkill: '项目 Skill', createSkill: '创建项目 Skill', saveRules: '保存一组可复用规则', referenceCanvas: '引用画布内容', description: '补充描述', asset: '素材', noMatch: '没有匹配的素材，按 Esc 关闭', placeholder: '描述创作需求；用 @ 挂载 Skill 或引用图片，它们会显示为标签，不写入提示词', message: 'Agent 消息', promptField: '提示词', retry: '重试', addImages: '添加图像素材', executionMode: '执行模式', manual: '计划模式', auto: '自动模式', manualTitle: '计划模式：先给出计划，你确认后再提交', autoTitle: '自动模式：补齐设置后直接提交生成任务', model: 'Agent 模型', assetGroup: '素材组', single: '单张', group: '组', send: '发送给 Agent', closeImages: '关闭添加图像素材', chooseImages: '从电脑选择图片', dragHint: '也可以直接拖入 Agent 面板', noImages: '暂无图像素材，可从电脑选择或直接拖入。', manualHelp: '确认计划后再生成', autoHelp: '直接生成，行动需确认', modeNote: '只影响之后的新计划', textKind: '文字',
+      input: 'Agent 输入', referenced: '已引用', remove: '移除', mounted: '已挂载', callSkill: '挂载 Skill', systemSkill: '系统 Skill', projectSkill: '项目 Skill', createSkill: '创建项目 Skill', saveRules: '保存一组可复用规则', referenceCanvas: '引用画布节点或图片视频', description: '补充描述', asset: '素材', result: '结果', video: '视频', noMatch: '没有匹配项，按 Esc 关闭', noSkillMatch: '没有匹配的 Skill，按 Esc 关闭', placeholder: '/ 挂载 Skill，@ 引用画布节点或图片视频；它们会显示为标签，不写入提示词', message: 'Agent 消息', promptField: '提示词', retry: '重试', addImages: '添加图像素材', executionMode: '执行模式', manual: '计划模式', auto: '自动模式', manualTitle: '计划模式：先给出计划，你确认后再提交', autoTitle: '自动模式：补齐设置后直接提交生成任务', model: 'Agent 模型', assetGroup: '素材组', single: '单张', group: '组', send: '发送给 Agent', closeImages: '关闭添加图像素材', chooseImages: '从电脑选择图片', dragHint: '也可以直接拖入 Agent 面板', noImages: '暂无图像素材，可从电脑选择或直接拖入。', manualHelp: '确认计划后再生成', autoHelp: '直接生成，行动需确认', modeNote: '只影响之后的新计划', textKind: '文字',
     },
     en: {
-      input: 'Agent input', referenced: 'Referenced', remove: 'Remove', mounted: 'Mounted', callSkill: 'Use Skill', systemSkill: 'System Skill', projectSkill: 'Project Skill', createSkill: 'Create project Skill', saveRules: 'Save a reusable set of rules', referenceCanvas: 'Reference canvas content', description: 'Description', asset: 'Asset', noMatch: 'No matching assets. Press Esc to close.', placeholder: 'Describe the task. Use @ to mount a Skill or reference an image — they become chips, not prompt text.', message: 'Agent message', promptField: 'Prompt', retry: 'Retry', addImages: 'Add image assets', executionMode: 'Execution mode', manual: 'Plan mode', auto: 'Auto mode', manualTitle: 'Plan mode: review the plan before submitting generation', autoTitle: 'Auto mode: complete settings and submit generation directly', model: 'Agent model', assetGroup: 'Asset group', single: 'Single', group: 'Group', send: 'Send to Agent', closeImages: 'Close image picker', chooseImages: 'Choose images from computer', dragHint: 'You can also drag images into the Agent panel', noImages: 'No image assets yet. Choose files or drag images into the panel.', manualHelp: 'Generate after plan confirmation', autoHelp: 'Generate directly; actions still need approval', modeNote: 'Applies to future plans only', textKind: 'Text',
+      input: 'Agent input', referenced: 'Referenced', remove: 'Remove', mounted: 'Mounted', callSkill: 'Mount Skill', systemSkill: 'System Skill', projectSkill: 'Project Skill', createSkill: 'Create project Skill', saveRules: 'Save a reusable set of rules', referenceCanvas: 'Reference canvas nodes or media', description: 'Description', asset: 'Asset', result: 'Result', video: 'Video', noMatch: 'No matches. Press Esc to close.', noSkillMatch: 'No matching Skill. Press Esc to close.', placeholder: 'Use / to mount a Skill, @ to reference canvas nodes or media — they become chips, not prompt text.', message: 'Agent message', promptField: 'Prompt', retry: 'Retry', addImages: 'Add image assets', executionMode: 'Execution mode', manual: 'Plan mode', auto: 'Auto mode', manualTitle: 'Plan mode: review the plan before submitting generation', autoTitle: 'Auto mode: complete settings and submit generation directly', model: 'Agent model', assetGroup: 'Asset group', single: 'Single', group: 'Group', send: 'Send to Agent', closeImages: 'Close image picker', chooseImages: 'Choose images from computer', dragHint: 'You can also drag images into the Agent panel', noImages: 'No image assets yet. Choose files or drag images into the panel.', manualHelp: 'Generate after plan confirmation', autoHelp: 'Generate directly; actions still need approval', modeNote: 'Applies to future plans only', textKind: 'Text',
     },
   })
   const composerErrorId = useId()
@@ -115,17 +115,36 @@ export function AgentComposer({
   const contextKindLabel = (kind: AgentContextItem['kind']) => locale === 'en'
     ? ({ '素材': 'Asset', '结果': 'Result', '文字': 'Text', '节点': 'Node' }[kind] ?? 'Item')
     : kind
+  const mentionBadge = (item: AgentContextItem) => {
+    if (item.image) return <img src={item.image} alt="" />
+    if (item.mediaKind === 'video') return <span aria-label={copy.video}>{locale === 'en' ? 'V' : '视'}</span>
+    return <span>{contextKindLabel(item.kind).slice(0, 1)}</span>
+  }
+  const mentionMeta = (item: AgentContextItem) => {
+    if (item.kind === '文字') return copy.description
+    if (item.kind === '结果') return copy.result
+    if (item.mediaKind === 'video') return copy.video
+    return copy.asset
+  }
+  const skillMenuOpen = mentionQuery?.trigger === '/'
+  const canvasMenuOpen = mentionQuery?.trigger === '@'
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Escape' && mentionQuery) {
       event.preventDefault()
       onDismissMention()
       return
     }
-    if (event.key === 'Enter' && mentionQuery && (skillOptions[0] || mentionOptions[0])) {
-      event.preventDefault()
-      if (skillOptions[0]) onSelectSkill(skillOptions[0])
-      else onSelectMention(mentionOptions[0])
-      return
+    if (event.key === 'Enter' && mentionQuery) {
+      if (skillMenuOpen && skillOptions[0]) {
+        event.preventDefault()
+        onSelectSkill(skillOptions[0])
+        return
+      }
+      if (canvasMenuOpen && mentionOptions[0]) {
+        event.preventDefault()
+        onSelectMention(mentionOptions[0])
+        return
+      }
     }
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
@@ -141,13 +160,32 @@ export function AgentComposer({
   const canSend = Boolean(instruction.trim() || contextItems.length || mountedSkills.length)
 
   return <div className="agent-composer" role="group" aria-label={copy.input} aria-busy={planning}>
-    {contextItems.length ? <div className="agent-composer__context" aria-label={`${copy.referenced} ${contextItems.length}`}><span>{copy.referenced}</span>{contextItems.map((item) => <button key={item.id} type="button" aria-label={`${copy.remove} ${item.label}`} title={item.kind === '文字' && item.content ? `${copy.description} “${item.label}”: ${item.content}` : `${copy.remove} ${item.label}`} onClick={() => onRemoveContext(item.id)}>{item.image ? <img src={item.image} alt="" /> : <span>{contextKindLabel(item.kind).slice(0, 1)}</span>}<i aria-hidden="true">×</i></button>)}</div> : null}
-    {mountedSkills.length ? <div className="agent-composer__skills" aria-label={`${copy.mounted} ${mountedSkills.length} Skill`}><span>{copy.mounted}</span>{mountedSkills.map((skill) => <button key={skill.id} type="button" aria-label={`${copy.remove} Skill ${skill.name}`} title={`${copy.remove} ${skill.name}`} onClick={() => onRemoveMountedSkill(skill.id)}><SparkleIcon /><b>{skill.name}</b><i aria-hidden="true">×</i></button>)}</div> : null}
-    {mentionQuery ? <div className="agent-composer__mention-menu" role="group" aria-label={copy.referenceCanvas} onPointerDown={(event) => event.stopPropagation()}>
+    {contextItems.length || mountedSkills.length ? <div className="agent-composer__attachments">
+      {contextItems.length ? <div className="agent-composer__attach-row" aria-label={`${copy.referenced} ${contextItems.length}`}>
+        <span className="agent-composer__attach-label">{copy.referenced}</span>
+        <div className="agent-composer__attach-chips">
+          {contextItems.map((item) => <button key={item.id} type="button" className="agent-composer__chip is-media" aria-label={`${copy.remove} ${item.label}`} title={item.kind === '文字' && item.content ? `${copy.description} “${item.label}”: ${item.content}` : `${copy.remove} ${item.label}`} onClick={() => onRemoveContext(item.id)}>
+            {item.image ? <img src={item.image} alt="" /> : <span>{contextKindLabel(item.kind).slice(0, 1)}</span>}
+            <i aria-hidden="true">×</i>
+          </button>)}
+        </div>
+      </div> : null}
+      {mountedSkills.length ? <div className="agent-composer__attach-row" aria-label={`${copy.mounted} ${mountedSkills.length} Skill`}>
+        <span className="agent-composer__attach-label">{copy.mounted}</span>
+        <div className="agent-composer__attach-chips">
+          {mountedSkills.map((skill) => <button key={skill.id} type="button" className="agent-composer__chip is-skill" aria-label={`${copy.remove} Skill ${skill.name}`} title={`${copy.remove} ${skill.name}`} onClick={() => onRemoveMountedSkill(skill.id)}>
+            <SparkleIcon /><b>{skill.name}</b><i aria-hidden="true">×</i>
+          </button>)}
+        </div>
+      </div> : null}
+    </div> : null}
+    {skillMenuOpen ? <div className="agent-composer__mention-menu" role="group" aria-label={copy.callSkill} onPointerDown={(event) => event.stopPropagation()}>
       {skillOptions.length ? <div className="agent-composer__mention-section"><strong>{copy.callSkill}</strong>{skillOptions.map((skill) => <button key={`skill-${skill.id}`} type="button" role="option" aria-label={`${copy.callSkill} ${skill.name}`} onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onSelectSkill(skill) }}><SparkleIcon /><b>{skill.name}</b><small>{skill.source === 'system' ? copy.systemSkill : copy.projectSkill}</small></button>)}</div> : null}
       <button type="button" role="option" className="agent-composer__create-skill" aria-label={copy.createSkill} onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onCreateSkill() }}><PlusIcon /><b>{copy.createSkill}</b><small>{copy.saveRules}</small></button>
-      {mentionOptions.length ? <div className="agent-composer__mention-section"><strong>{copy.referenceCanvas}</strong>{mentionOptions.map((item) => <button key={item.id} type="button" role="option" aria-label={`${copy.referenceCanvas} ${item.label}`} title={item.content ?? item.label} onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onSelectMention(item) }}>{item.image ? <img src={item.image} alt="" /> : <span>{contextKindLabel(item.kind).slice(0, 1)}</span>}<b>{item.label}</b><small>{item.kind === '文字' ? copy.description : copy.asset}</small></button>)}</div> : null}
-      {!mentionOptions.length && !skillOptions.length ? <p>{copy.noMatch}</p> : null}
+      {!skillOptions.length ? <p>{copy.noSkillMatch}</p> : null}
+    </div> : null}
+    {canvasMenuOpen ? <div className="agent-composer__mention-menu" role="group" aria-label={copy.referenceCanvas} onPointerDown={(event) => event.stopPropagation()}>
+      {mentionOptions.length ? <div className="agent-composer__mention-section"><strong>{copy.referenceCanvas}</strong>{mentionOptions.map((item) => <button key={item.id} type="button" role="option" aria-label={`${copy.referenceCanvas} ${item.label}`} title={item.content ?? item.label} onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onSelectMention(item) }}>{mentionBadge(item)}<b>{item.label}</b><small>{mentionMeta(item)}</small></button>)}</div> : <p>{copy.noMatch}</p>}
     </div> : null}
     <textarea
       ref={textareaRef}

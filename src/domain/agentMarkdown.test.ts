@@ -1,6 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { parseAgentMarkdown, parseAgentPromptSections, resolveAgentChatPrompt, resolveAgentPromptSections } from './agentMarkdown.ts'
+import {
+  parseAgentMarkdown,
+  parseAgentPromptSections,
+  resolveAgentChatPrompt,
+  resolveAgentPromptSections,
+  splitAgentMessageSources,
+  stripAgentMarkdownHashes,
+} from './agentMarkdown.ts'
 
 test('agent markdown keeps headings, emphasis, lists and code blocks as safe blocks', () => {
   const blocks = parseAgentMarkdown('**说明**\n\n## 三个变量\n- **光线**：柔光\n- 场景\n\n---\n\n```json\n{"ok":true}\n```')
@@ -13,6 +20,28 @@ test('agent markdown keeps headings, emphasis, lists and code blocks as safe blo
   ])
 })
 
+test('#### 与 ###### 也解析成标题，文本不含 #，展示层压到 h3', () => {
+  const blocks = parseAgentMarkdown('#### 1. Lighting & Environmental Realism\n\n正文\n\n###### Deep note')
+  assert.deepEqual(blocks, [
+    { kind: 'heading', level: 3, text: '1. Lighting & Environmental Realism' },
+    { kind: 'paragraph', text: '正文' },
+    { kind: 'heading', level: 3, text: 'Deep note' },
+  ])
+  for (const block of blocks) {
+    if (block.kind === 'heading') assert.doesNotMatch(block.text, /#/)
+  }
+})
+
+test('段落行首残留井号会被剥掉，界面不露 #；末段来源收成 chips 数据', () => {
+  assert.equal(stripAgentMarkdownHashes('####NoSpaceTitle'), 'NoSpaceTitle')
+  assert.equal(stripAgentMarkdownHashes('## 有空格'), '有空格')
+  const { body, sources } = splitAgentMessageSources('结论如下。\n\n来源: 项目 Skill、画布')
+  assert.equal(body, '结论如下。')
+  assert.deepEqual(sources, ['项目 Skill', '画布'])
+  const english = splitAgentMessageSources('Done.\n\nSources: Project Skill')
+  assert.equal(english.body, 'Done.')
+  assert.deepEqual(english.sources, ['Project Skill'])
+})
 test('agent markdown does not treat html as executable markup', () => {
   const [block] = parseAgentMarkdown('<script>alert(1)</script>\n\n下一段')
   assert.equal(block?.kind, 'paragraph')

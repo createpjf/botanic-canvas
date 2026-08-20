@@ -4,6 +4,7 @@ import {
   agentTimelineToolPresentation,
   applyAgentConversationStreamEvent,
   createAgentTimeline,
+  persistAgentLiveTimeline,
   projectBotanicAgentRunOntoTimeline,
   reduceAgentTimeline,
 } from './agentTimeline.ts'
@@ -234,4 +235,18 @@ test('已知规划工具标题与服务端对齐；Run 投影只反映已持久�
     ['生成 · 主图', 'succeeded'],
     ['生成 · 变体', 'running'],
   ])
+})
+
+test('回合收口把 live 时间线落到旁路状态，并把思考标成结束', () => {
+  const live = reduceAgentTimeline(createAgentTimeline(1_000), {
+    type: 'tool',
+    step: 0,
+    toolCall: toolCall('search-1', 'web_search', '网页搜索', 'succeeded'),
+    presentation: { kind: 'search', title: '已搜索 1 个网站', count: 1 },
+    receivedAt: 1_200,
+  })
+  assert.equal(persistAgentLiveTimeline({}, 'msg-1', { blocks: [] })['msg-1'], undefined)
+  const settled = persistAgentLiveTimeline({}, 'msg-1', live, 1_400)
+  assert.equal(settled['msg-1']?.blocks.find((block) => block.type === 'thinking')?.status, 'done')
+  assert.ok(settled['msg-1']?.blocks.some((block) => block.type === 'step' && block.kind === 'search'))
 })

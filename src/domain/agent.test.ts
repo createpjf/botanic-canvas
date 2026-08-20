@@ -1133,14 +1133,26 @@ test('项目创作记忆保存类型、来源节点并去重', () => {
 
 test('Agent Composer 能识别光标前的 @ 查询并插入画布引用', () => {
   assert.deepEqual(readBotanicAgentMentionQuery('保持商品，换到 @夏日', 11), {
-    start: 8, end: 11, query: '夏日',
+    trigger: '@', start: 8, end: 11, query: '夏日',
   })
   assert.deepEqual(insertBotanicAgentMention('保持商品，换到 @夏日', {
-    start: 8, end: 11, query: '夏日',
+    trigger: '@', start: 8, end: 11, query: '夏日',
   }, '夏日窗台'), {
     value: '保持商品，换到 @夏日窗台 ', caret: 14,
   })
   assert.equal(readBotanicAgentMentionQuery('保持 @夏日 窗台', 10), undefined)
+})
+
+test('Agent Composer 用 / 挂载 Skill，且不误伤 URL 与比例', () => {
+  assert.deepEqual(readBotanicAgentMentionQuery('/电商', 3), {
+    trigger: '/', start: 0, end: 3, query: '电商',
+  })
+  assert.deepEqual(readBotanicAgentMentionQuery('先按 /套图', 6), {
+    trigger: '/', start: 3, end: 6, query: '套图',
+  })
+  assert.equal(readBotanicAgentMentionQuery('https://example.com', 19), undefined)
+  assert.equal(readBotanicAgentMentionQuery('比例 3/4', 6), undefined)
+  assert.equal(readBotanicAgentMentionQuery('先按 /套图 继续', 9), undefined)
 })
 
 test('选中 @ 引用后只消耗查询，不把名称写进提示词', () => {
@@ -1153,6 +1165,11 @@ test('选中 @ 引用后只消耗查询，不把名称写进提示词', () => {
     start: 2, end: 5, query: '夏日',
   }), {
     value: '换到 继续', caret: 3,
+  })
+  assert.deepEqual(consumeBotanicAgentMention('按 /电商 出图', {
+    start: 2, end: 5, query: '电商',
+  }), {
+    value: '按  出图', caret: 2,
   })
 })
 
