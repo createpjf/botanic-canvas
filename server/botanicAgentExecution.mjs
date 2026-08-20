@@ -154,7 +154,7 @@ function recipeForRun(run, document, parentNode, branch, resolvedInitialReferenc
   return withBranchAsset(refinementReferences(run, document), run, document, branch)
 }
 
-function rawGenerationInput(run, parentNode, recipe) {
+function rawGenerationInput(run, parentNode, recipe, { videoModel = false } = {}) {
   const kind = run.plan.intent === 'redo_from_root' || run.plan.intent === 'initial_generation'
     ? 'generation'
     : 'refinement'
@@ -167,11 +167,13 @@ function rawGenerationInput(run, parentNode, recipe) {
     settings: clone(recipe.settings),
     recipe: {
       prompt: recipe.prompt,
-      references: recipe.references.map((reference) => ({
+      references: recipe.references.map((reference, index) => ({
         name: reference.name,
         role: reference.role,
         primary: Boolean(reference.primary),
         priority: reference.priority,
+        // 视频参考必须显式声明首帧角色，否则 Provider 按参考数量猜输入模式。
+        ...(videoModel && index === 0 ? { inputRole: 'first_frame' } : {}),
         ...mediaInput(reference.image),
       })),
     },
@@ -296,15 +298,23 @@ export function prepareAgentRunExecution({
   if (!parentNode) throw new AgentToolRuntimeError('AGENT_PARENT_NOT_FOUND', 'Agent 父结果节点已不存在。', 409)
 
   const nodesById = new Map((document.nodes ?? []).map((node) => [node.id, node]))
+  const normalizedModels = (models ?? []).map((model) => typeof model === 'string' ? { id: model, provider: 'openai', mediaKind: 'image' } : model)
+  const planModelIsVideo = normalizedModels.find((model) => model.id === run.plan?.settings?.model)?.mediaKind === 'video'
   const jobs = []
   const workflows = []
   for (const [branchIndex, branch] of run.branches.entries()) {
     const jobId = jobIdForBranch(branch)
     const recipe = recipeForRun(run, document, parentNode, branch, resolvedInitialReferences)
-    const rawInput = rawGenerationInput(run, parentNode, recipe)
+    if (planModelIsVideo) {
+      // Agent 视频计划的语义是「以第一张图片为首帧生成一条视频」：多余参考会把
+      // Provider 的输入模式改成 first_last / reference，宁可裁掉；配方与提交输入保持一致。
+      recipe.references = recipe.references.slice(0, 1)
+      recipe.videoInputMode = 'first_frame'
+      recipe.batchCount = 1
+    }
+    const rawInput = rawGenerationInput(run, parentNode, recipe, { videoModel: planModelIsVideo })
     const validated = validateGenerationInput(rawInput, { models, maximumBatchCount, maximumReferenceBytes })
-    const selectedModel = models.map((model) => typeof model === 'string' ? { id: model, provider: 'openai', mediaKind: 'image' } : model)
-      .find((model) => model.id === validated.settings.model)
+    const selectedModel = normalizedModels.find((model) => model.id === validated.settings.model)
     const job = {
       id: jobId, ownerId: run.ownerId, projectId: run.projectId,
       status: 'queued', kind: validated.kind, refinementMode: validated.refinementMode,

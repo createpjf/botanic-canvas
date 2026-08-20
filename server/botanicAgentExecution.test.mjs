@@ -209,6 +209,38 @@ test('首次生成在创建工作流和 Job 前拒绝视频、文字和空结果
   }
 })
 
+test('视频计划以第一张图片为首帧提交一条视频任务', () => {
+  const videoModels = [
+    ...models,
+    { id: 'MiniMax-H3', provider: 'minimax', mediaKind: 'video', aspectRatios: ['16:9', '3:4', '9:16'], resolutions: ['2K'], durations: [5, 10, 15], defaultDuration: 5 },
+  ]
+  const run = initialGenerationRun([
+    { nodeId: 'asset-product-node', label: '球衣', kind: '素材', mediaKind: 'image', role: '商品' },
+    { nodeId: 'result-parent', label: '首图 01', kind: '结果', mediaKind: 'image' },
+  ])
+  run.plan.settings = { model: 'MiniMax-H3', aspectRatio: '3:4', resolution: '2K', duration: 10 }
+  run.plan.output = { mode: 'single', count: 1, candidatesPerItem: 1 }
+  run.plan.prompt = '以首图为起点，镜头缓慢推近，光线渐暖。'
+
+  const result = prepareAgentRunExecution({
+    run, document: initialGenerationDocument(), now: 100,
+    jobIdForBranch: (branch) => `job-${branch.id}`,
+    models: videoModels, maximumBatchCount: 8, maximumReferenceBytes: 8 * 1024 * 1024,
+  })
+
+  const job = result.jobs[0]
+  assert.equal(job.provider, 'minimax-video')
+  assert.equal(job.settings.duration, 10)
+  assert.equal(job.batchCount, 1)
+  // 只保留第一张图片作首帧，且显式声明角色；多余参考会改变 Provider 的输入模式。
+  assert.equal(job.rawInput.recipe.references.length, 1)
+  assert.equal(job.rawInput.recipe.references[0].inputRole, 'first_frame')
+  assert.equal(job.rawInput.recipe.references[0].mediaId, 'media_product')
+  // 持久化配方与提交输入一致，画布重试不会退回 first_last 模式。
+  assert.equal(job.generationRecipe.videoInputMode, 'first_frame')
+  assert.equal(job.generationRecipe.references.length, 1)
+})
+
 test('Worker 完成任务后把图片写回占位结果节点', () => {
   const prepared = prepare()
   const completed = {
