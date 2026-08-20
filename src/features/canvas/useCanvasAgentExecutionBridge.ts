@@ -262,6 +262,18 @@ export function useCanvasAgentExecutionBridge({
   }, [document.nodes, ensureAgentSession, onPrepareAgentOpen, selectNode, setSessionContext])
 
   /**
+   * 面板开着时在画布上点一张图，就等于把它交给 Agent，用户不必再 @ 一次。
+   * 只认图片素材与可用结果图：文字、生成节点和视频仍需显式引用，否则普通的画布浏览
+   * 会把无关节点堆进 composer。并入而非替换，逐张点选才能攒出一组参考。
+   */
+  const attachNodeContext = useCallback((nodeId: string) => {
+    // 可否作为图片参考是领域规则，与工作流参考共用同一份实现。
+    if (!resolveBotanicAgentWorkflowReferenceNodeIds(document.nodes, [nodeId]).length) return
+    const sessionId = useCanvasStore.getState().document.activeAgentSessionId ?? ensureAgentSession([nodeId])
+    setSessionContext(sessionId, [nodeId])
+  }, [document.nodes, ensureAgentSession, setSessionContext])
+
+  /**
    * Agent Run 在画布上的节点。任务刚提交时结果还是占位节点（没有图片），
    * 因此按 agentRun.runId 直接查图谱，而不是等 Artifact 出现。
    */
@@ -583,6 +595,7 @@ export function useCanvasAgentExecutionBridge({
     focusRequest,
     open,
     openForResult,
+    attachNodeContext,
     focusNodes,
     addUploadedImages,
     confirmAction,

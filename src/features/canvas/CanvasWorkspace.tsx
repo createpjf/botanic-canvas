@@ -2033,6 +2033,7 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
               && generationCandidates.some((candidate) => candidate.resultNodeId === node.id)
             selectNode(node.id)
             if (agentOpen) {
+              agentBridge.attachNodeContext(node.id)
               setComposerOpen(false)
               setResultComposerDraft(null)
               setBatchComposerTargetId(null)
