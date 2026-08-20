@@ -1,4 +1,4 @@
-export type WorkspaceView = 'dashboard' | 'projects' | 'canvas'
+export type WorkspaceView = 'projects' | 'canvas'
 
 export type WorkspaceLocation = {
   view: WorkspaceView
@@ -7,7 +7,8 @@ export type WorkspaceLocation = {
 
 export function workspaceLocationFromHash(hash: string): WorkspaceLocation | null {
   const path = hash.replace(/^#\/?/, '').replace(/\/+$/, '')
-  if (path === 'dashboard') return { view: 'dashboard' }
+  // 旧经营驾驶舱地址保留为项目库别名，避免历史书签失效。
+  if (path === 'dashboard') return { view: 'projects' }
   if (path === 'projects') return { view: 'projects' }
 
   const canvasMatch = path.match(/^canvas\/([^/]+)$/)

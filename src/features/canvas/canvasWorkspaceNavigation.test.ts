@@ -18,6 +18,14 @@ test('工作区路由拒绝空项目和畸形编码', () => {
   assert.equal(workspaceLocationFromHash('#/canvas/'), null)
   assert.equal(workspaceLocationFromHash('#/canvas/%E0%A4%A'), null)
   assert.equal(workspaceLocationFromHash('#/unknown'), null)
+  assert.equal(workspaceLocationFromHash('#access_token=invite&type=invite'), null)
+})
+
+test('旧经营驾驶舱地址兼容进入项目库', () => {
+  assert.deepEqual(workspaceLocationFromHash('#/dashboard'), { view: 'projects' })
+  assert.deepEqual(workspaceLocationFromHash('#/dashboard/'), { view: 'projects' })
+  assert.deepEqual(workspaceLocationFromHash('#/projects/'), { view: 'projects' })
+  assert.equal(workspaceHash({ view: 'projects' }), '#/projects')
 })
 
 test('工作区位置比较同时检查视图和项目', () => {

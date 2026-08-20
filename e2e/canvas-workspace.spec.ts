@@ -26,6 +26,78 @@ async function stubReadOnlyRuntime(page: Page) {
   })
 }
 
+test('公开产品首页进入项目库，旧经营驾驶舱地址自动兼容', async ({ page }) => {
+  await stubReadOnlyRuntime(page)
+
+  await page.goto('/')
+  await expect(page.getByRole('heading', { name: '让品牌视觉生产，成为持续生长的创作系统。' })).toBeVisible()
+  await expect(page.locator('.product-landing__login')).toContainText('登录工作台')
+  await page.locator('.product-landing__login').click()
+  await expect(page).toHaveURL(/#\/projects$/)
+  await expect(page.getByRole('heading', { name: '创意项目', exact: true })).toBeVisible()
+
+  await page.goto('/#/dashboard')
+  await expect(page).toHaveURL(/#\/projects$/)
+  await expect(page.getByRole('heading', { name: '创意项目', exact: true })).toBeVisible()
+  await expect(page.getByText('经营驾驶舱')).toHaveCount(0)
+  await expect(page.getByText('返回经营驾驶舱')).toHaveCount(0)
+})
+
+test('产品首页支持中英文切换并展示真实工作台截图', async ({ page }) => {
+  await stubReadOnlyRuntime(page)
+  await page.goto('/')
+
+  const productScreenshot = page.getByRole('img', { name: 'Botanic 工作台截图，左侧为视觉节点画布，右侧打开 Botanic Agent 面板' })
+  await expect(productScreenshot).toBeVisible()
+  expect(await productScreenshot.evaluate((image: HTMLImageElement) => image.naturalWidth > 0 && image.naturalHeight > 0)).toBe(true)
+
+  await page.getByRole('button', { name: '切换为英文' }).click()
+  await expect(page.getByRole('heading', { name: 'Turn brand visual production into a creative system that keeps growing.' })).toBeVisible()
+  await expect(page.locator('html')).toHaveAttribute('lang', 'en')
+  await expect(page.getByRole('img', { name: 'Botanic workspace with visual nodes on the canvas and the Botanic Agent panel open' })).toBeVisible()
+
+  await page.reload()
+  await expect(page.getByRole('heading', { name: 'Turn brand visual production into a creative system that keeps growing.' })).toBeVisible()
+  await page.getByRole('button', { name: 'Switch to Chinese' }).click()
+  await expect(page.getByRole('heading', { name: '让品牌视觉生产，成为持续生长的创作系统。' })).toBeVisible()
+})
+
+test('项目库和画布都可返回产品首页', async ({ page }) => {
+  await stubReadOnlyRuntime(page)
+  await page.goto('/#/projects')
+
+  await page.getByRole('button', { name: '新建项目' }).click()
+  await expect(page).toHaveURL(/#\/canvas\/project-\d+$/)
+  await page.getByRole('button', { name: '产品首页', exact: true }).click()
+  await expect(page).toHaveURL(/\/$/)
+  await expect(page.getByRole('heading', { name: '让品牌视觉生产，成为持续生长的创作系统。' })).toBeVisible()
+
+  await page.goto('/#/projects')
+  await page.reload()
+  await page.getByRole('button', { name: '产品首页', exact: true }).click()
+  await expect(page).toHaveURL(/\/$/)
+  await expect(page.getByRole('heading', { name: '让品牌视觉生产，成为持续生长的创作系统。' })).toBeVisible()
+})
+
+test('产品首页在窄屏下无横向溢出且各区块可访问', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await stubReadOnlyRuntime(page)
+  await page.goto('/')
+
+  const landing = page.locator('.product-landing')
+  expect(await landing.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true)
+  for (const heading of [
+    '让品牌视觉生产，成为持续生长的创作系统。',
+    '从一次生成，走向完整的视觉生产。',
+    '每一步都可确认，每个结果都有来路。',
+    '把下一次创作，放进一个能继续生长的工作流。',
+  ]) {
+    const sectionHeading = page.getByRole('heading', { name: heading })
+    await sectionHeading.scrollIntoViewIfNeeded()
+    await expect(sectionHeading).toBeVisible()
+  }
+})
+
 test('project to canvas and Agent surfaces stay ordered across reload', async ({ page }) => {
   const consoleErrors: string[] = []
   const pageErrors: string[] = []

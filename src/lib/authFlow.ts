@@ -29,6 +29,19 @@ export function detectProductAuthFlow(location: ProductAuthLocation): ProductAut
   return null
 }
 
+export function hasProductAuthCallbackError(location: ProductAuthLocation) {
+  const hashParams = paramsFromHash(location.hash)
+  const searchParams = new URLSearchParams(location.search ?? '')
+  return Boolean(
+    hashParams.get('error')
+    || hashParams.get('error_code')
+    || hashParams.get('error_description')
+    || searchParams.get('error')
+    || searchParams.get('error_code')
+    || searchParams.get('error_description'),
+  )
+}
+
 export function cleanProductAuthUrl(input: string) {
   const url = new URL(input)
   for (const key of ['code', 'type', 'access_token', 'refresh_token', 'expires_at', 'expires_in', 'token_type', 'error', 'error_code', 'error_description', 'state']) {

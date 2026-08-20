@@ -100,8 +100,7 @@ import templatesIcon from '../../assets/figma/icon-templates.svg'
 import historyIcon from '../../assets/figma/icon-history.svg'
 import resultImage from '../../assets/figma/result.webp'
 
-// 项目库与经营驾驶舱不参与画布编辑。按路由加载，避免直接打开画布时额外解析首页内容。
-const OperatingDashboard = lazy(() => import('../../components/WorkspaceViews').then((module) => ({ default: module.OperatingDashboard })))
+// 项目库不参与画布编辑。按路由加载，避免直接打开画布时额外解析入口内容。
 const ProjectLibrary = lazy(() => import('../../components/WorkspaceViews').then((module) => ({ default: module.ProjectLibrary })))
 const AgentWorkspace = lazy(() => import('../../features/agent/AgentWorkspace'))
 
@@ -133,8 +132,8 @@ type ViewTransitionDocument = Document & {
 
 function workspaceTransitionDirection(from: WorkspaceView, to: WorkspaceView): WorkspaceTransitionDirection {
   if (from === to) return 'replace'
-  if ((from === 'dashboard' && to === 'projects') || (from === 'projects' && to === 'canvas')) return 'forward'
-  if ((from === 'canvas' && to === 'projects') || (from === 'projects' && to === 'dashboard')) return 'backward'
+  if (from === 'projects' && to === 'canvas') return 'forward'
+  if (from === 'canvas' && to === 'projects') return 'backward'
   return 'replace'
 }
 
@@ -190,7 +189,7 @@ type ResultComposerDraft = {
 }
 
 const defaultComposerLayout: ComposerLayout = { dock: 'bottom', collapsed: false }
-const defaultWorkspaceLocation: WorkspaceLocation = { view: 'dashboard' }
+const defaultWorkspaceLocation: WorkspaceLocation = { view: 'projects' }
 function readComposerLayout(): ComposerLayout {
   if (typeof window === 'undefined') return defaultComposerLayout
   try {
@@ -657,7 +656,17 @@ function EmptyCanvasGuide({
 
 type CanvasPrimarySurface = 'assets' | 'templates' | 'history' | 'references' | 'candidates' | 'inspector' | 'delivery' | 'agent'
 
-export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUser?: ProductUser; onSignOut?: () => Promise<void> }) {
+export default function CanvasWorkspace({
+  currentUser,
+  onSignOut,
+  onReturnToLanding,
+  productHomeLabel,
+}: {
+  currentUser?: ProductUser
+  onSignOut?: () => Promise<void>
+  onReturnToLanding: () => void
+  productHomeLabel: string
+}) {
   const document = useCanvasStore((state) => state.document)
   const globalAssets = useCanvasStore((state) => state.globalAssets)
   const sharedTemplates = useCanvasStore((state) => state.sharedTemplates)
@@ -1850,10 +1859,6 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
     )
   }
 
-  if (workspaceView === 'dashboard') {
-    return <Suspense fallback={<WorkspaceViewLoading />}><OperatingDashboard onOpenProjects={() => setWorkspaceView('projects')} /></Suspense>
-  }
-
   if (workspaceView === 'projects') {
     return (
       <Suspense fallback={<WorkspaceViewLoading />}><ProjectLibrary
@@ -1861,8 +1866,9 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
         currentUser={currentUser}
         loading={workspaceProjectsLoading}
         loadError={workspaceProjectsError}
-        onBack={() => setWorkspaceView('dashboard')}
         onSignOut={onSignOut}
+        onReturnToLanding={onReturnToLanding}
+        productHomeLabel={productHomeLabel}
         onChangePassword={updateProductPassword}
         onReadMfaStatus={readProductMfaStatus}
         onEnrollMfa={enrollProductMfa}
@@ -1970,6 +1976,10 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
             aria-label="新建创意项目"
           >
             <FigmaIcon src={plusIcon} />
+          </button>
+          <button type="button" className="product-home-tab" onClick={onReturnToLanding} aria-label={productHomeLabel}>
+            <span>{productHomeLabel}</span>
+            <ArrowUpRightIcon />
           </button>
         </header>
 
