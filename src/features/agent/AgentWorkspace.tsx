@@ -44,7 +44,7 @@ import type {
   GenerationSettings,
   UploadedAssetInput,
 } from '../../domain/canvas'
-import { createProjectAgentSkill, listProjectAgentSkills, requestBotanicAgentChat, requestBotanicAgentPlan } from '../../lib/agentApi'
+import { createProjectAgentSkill, listProjectAgentSkills, requestBotanicAgentChat, requestBotanicAgentPlan, requestBotanicAgentTurn } from '../../lib/agentApi'
 import { ProductApiError } from '../../lib/productSession'
 import { maxUploadAssets, readUploadedAssetInput, validateUploadFiles } from '../../lib/uploadedAssets'
 import { useCanvasStore } from '../../store/canvasStore'
@@ -981,7 +981,81 @@ export default function AgentWorkspace({
       },
     }
 
-    const decision = decideBotanicAgentRequest(cleanInstruction, Boolean(target))
+    // 服务端回合解析器：让模型读整段对话判断意图并综合可执行 Prompt，取代浏览器端正则路由。
+    // 仅用于全新用户发送；澄清答复与“使用这段 Prompt”已有明确意图/来源，保持既有确定性路径。
+    // 服务端未配置或离线时回退到本地正则决策，保证本地开发、e2e 与无 Provider 部署不受影响。
+    const useServerTurn = !options.clarificationAnswers && !options.sourcePromptMessageId
+    let serverDecision: ReturnType<typeof decideBotanicAgentRequest> | undefined
+    let synthesizedPrompt: string | undefined
+    let synthesizedCount: number | undefined
+    let resolvedOptions = options
+    if (useServerTurn) {
+      plannerControllerRef.current?.abort()
+      const controller = new AbortController()
+      plannerControllerRef.current = controller
+      setPlanning(true)
+      const runtimeTrace = beginRuntimeTrace({
+        hasTarget: Boolean(target),
+        referenceCount: target?.rootRecipe.references.length ?? contextItems.length,
+        memoryCount: memory.length,
+        assetGroupCount: compatibleGroups.length,
+        mode: 'conversation',
+      })
+      let fallBack = false
+      try {
+        await completeRuntimeContextReads(runtimeTrace)
+        if (!isCurrentAgentProject()) return
+        setRuntimePhase('planning')
+        updateRuntimeStep('call-planner', 'running')
+        const turn = await requestBotanicAgentTurn({
+          projectId,
+          plannerModel,
+          messages: [
+            ...session.messages.map((message) => ({ role: message.role, content: message.content })),
+            { role: 'user' as const, content: options.appendUser ?? cleanInstruction },
+          ],
+          contextNodeIds: session.contextNodeIds,
+          hasTarget: Boolean(target),
+          generationModels,
+        }, controller.signal)
+        if (controller.signal.aborted) return
+        updateRuntimeStep('call-planner', 'succeeded')
+        if (turn.kind === 'chat') {
+          updateRuntimeStep('respond', 'running')
+          await yieldRuntimeFrame()
+          if (!isCurrentAgentProject()) return
+          updateRuntimeStep('respond', 'succeeded')
+          setRuntimePhase('completed')
+          setRuntimeDetailsOpen(false)
+          const sourceNote = turn.sources?.length ? `\n\n来源：${turn.sources.join('、')}` : ''
+          appendMessage({ role: 'assistant', kind: 'text', content: `${turn.answer}${sourceNote}` })
+          return
+        }
+        serverDecision = { kind: 'generation', mediaKind: turn.mediaKind, promptSource: 'instruction' }
+        synthesizedPrompt = turn.prompt
+        synthesizedCount = turn.count
+        if (turn.settingsHint && Object.keys(turn.settingsHint).length) {
+          resolvedOptions = { ...options, generationOverrides: { ...turn.settingsHint, ...options.generationOverrides } }
+        }
+      } catch (caught) {
+        if (controller.signal.aborted) return
+        // 未配置(503)、离线(0) 或项目缺失(404) 时回退本地正则；其余按 Agent 错误处理。
+        fallBack = caught instanceof ProductApiError && [0, 404, 503].includes(caught.status)
+        if (!fallBack) {
+          const message = caught instanceof Error ? caught.message : 'Agent 暂时无法回答，请稍后重试。'
+          failRuntimeTrace(message)
+          setError(message)
+          rememberFailedInstruction(failedCommand)
+          return
+        }
+      } finally {
+        if (plannerControllerRef.current === controller) plannerControllerRef.current = null
+        // 聊天结果与降级/错误分支到此收尾；生成分支保持 planning，交由下方生成流程接管。
+        if (serverDecision?.kind !== 'generation') setPlanning(false)
+      }
+    }
+
+    const decision = serverDecision ?? decideBotanicAgentRequest(cleanInstruction, Boolean(target))
     if (decision.kind === 'clarification') {
       appendMessage({
         role: 'assistant',
@@ -1051,20 +1125,28 @@ export default function AgentWorkspace({
       }
       return
     }
-    const promptResolution = resolveBotanicAgentGenerationPromptDecision(
-      cleanInstruction,
-      session.messages,
-      options.sourcePromptMessageId,
-    )
-    if (promptResolution.status === 'missing') {
-      appendMessage({
-        role: 'assistant',
-        kind: 'notice',
-        content: '没有找到你指的 Prompt。请先让 Agent 写一段 Prompt，或粘贴完整 Prompt；本次没有改动画布。',
-      })
-      return
+    let generationPrompt: string
+    let resolvedSourcePromptMessageId: string | undefined
+    if (synthesizedPrompt !== undefined) {
+      // 服务端已综合出可执行 Prompt：不再要求历史里存在字面 Prompt，也不再死胡同式拒绝。
+      generationPrompt = synthesizedPrompt
+    } else {
+      const promptResolution = resolveBotanicAgentGenerationPromptDecision(
+        cleanInstruction,
+        session.messages,
+        resolvedOptions.sourcePromptMessageId,
+      )
+      if (promptResolution.status === 'missing') {
+        appendMessage({
+          role: 'assistant',
+          kind: 'notice',
+          content: '没有找到你指的 Prompt。请先让 Agent 写一段 Prompt，或粘贴完整 Prompt；本次没有改动画布。',
+        })
+        return
+      }
+      generationPrompt = promptResolution.prompt
+      resolvedSourcePromptMessageId = promptResolution.sourceMessageId
     }
-    const generationPrompt = promptResolution.prompt
     setPlanning(true)
     const runtimeTrace = beginRuntimeTrace({
       hasTarget: Boolean(target),
@@ -1081,13 +1163,13 @@ export default function AgentWorkspace({
         cleanInstruction,
         generationModels.filter((model) => model.mediaKind !== 'video'),
       )
-      const resolvedGenerationOverrides = { ...inferredGenerationOverrides, ...options.generationOverrides }
+      const resolvedGenerationOverrides = { ...inferredGenerationOverrides, ...resolvedOptions.generationOverrides }
       const hasCompleteOutputSettings = Boolean(
         resolvedGenerationOverrides.model
         && resolvedGenerationOverrides.aspectRatio
         && resolvedGenerationOverrides.resolution,
       )
-      if (!options.clarificationAnswers && !hasCompleteOutputSettings) {
+      if (!resolvedOptions.clarificationAnswers && !hasCompleteOutputSettings) {
         updateRuntimeStep('call-planner', 'succeeded')
         await yieldRuntimeFrame()
         if (!isCurrentAgentProject()) return
@@ -1101,8 +1183,8 @@ export default function AgentWorkspace({
               generationModels.filter((model) => model.mediaKind !== 'video'),
               resolvedGenerationOverrides,
             ),
-            ...(promptResolution.sourceMessageId
-              ? { sourcePromptMessageId: promptResolution.sourceMessageId }
+            ...(resolvedSourcePromptMessageId
+              ? { sourcePromptMessageId: resolvedSourcePromptMessageId }
               : {}),
           },
           status: 'pending',
@@ -1118,6 +1200,7 @@ export default function AgentWorkspace({
             intent: 'initial_generation',
             settings: resolvedGenerationOverrides as GenerationSettings,
             contextSnapshot: createBotanicAgentContextSnapshot(contextItems),
+            ...(synthesizedCount ? { outputCount: synthesizedCount } : {}),
           }),
           plannerModel,
         }
@@ -1149,8 +1232,8 @@ export default function AgentWorkspace({
     }
     const nextPlan = await preparePlan(
       generationPrompt,
-      options.generationOverrides,
-      options.clarificationAnswers,
+      resolvedOptions.generationOverrides,
+      resolvedOptions.clarificationAnswers,
       failedCommand,
     )
     if (!nextPlan || !session || !isCurrentAgentProject()) return

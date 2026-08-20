@@ -370,6 +370,26 @@ test('首次生成计划只需有效图片上下文，不伪造父结果或根�
   assert.equal(plan.settings.model, 'gpt-image-2')
 })
 
+test('首次生成按请求数量生成多张单次候选，并裁剪到上限', () => {
+  const settings = { model: 'gpt-image-2' as const, aspectRatio: '1:1' as const, resolution: '1K' as const }
+  const contextSnapshot = [{ nodeId: 'asset-product', label: '商品图', kind: '素材' as const, mediaKind: 'image' as const, role: '商品' }]
+  const three = buildBotanicAgentPlan({
+    instruction: '海边礁石人像', intent: 'initial_generation', settings, contextSnapshot, outputCount: 3,
+  })
+  assert.deepEqual(three.output, { mode: 'single', count: 3, candidatesPerItem: 1 })
+  assert.match(three.summary, /生成 3 张新版本/)
+
+  const clamped = buildBotanicAgentPlan({
+    instruction: '海边礁石人像', intent: 'initial_generation', settings, contextSnapshot, outputCount: 99,
+  })
+  assert.equal(clamped.output.count, 8)
+
+  const defaulted = buildBotanicAgentPlan({
+    instruction: '海边礁石人像', intent: 'initial_generation', settings, contextSnapshot,
+  })
+  assert.equal(defaulted.output.count, 1)
+})
+
 test('首次生成拒绝空上下文和仅视频上下文，其他意图仍要求父结果', () => {
   const settings = { model: 'gpt-image-2' as const, aspectRatio: '1:1' as const, resolution: '1K' as const }
   assert.throws(() => buildBotanicAgentPlan({
