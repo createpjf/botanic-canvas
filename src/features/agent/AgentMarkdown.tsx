@@ -1,6 +1,7 @@
 import { Fragment, useState } from 'react'
 import type { BotanicAgentMentionCatalog } from '../../domain/agentMentions'
 import {
+  localizeAgentSourceLabel,
   parseAgentMarkdown,
   splitAgentMessageSources,
   stripAgentMarkdownHashes,
@@ -86,7 +87,7 @@ function AgentMarkdownSources({ sources }: { sources: string[] }) {
   if (!sources.length) return null
   return <div className="agent-markdown__sources" aria-label={locale === 'en' ? 'Sources' : '来源'}>
     <span>{locale === 'en' ? 'Sources' : '来源'}</span>
-    {sources.map((source) => <small key={source}>{source}</small>)}
+    {sources.map((source) => <small key={source}>{localizeAgentSourceLabel(source, locale)}</small>)}
   </div>
 }
 

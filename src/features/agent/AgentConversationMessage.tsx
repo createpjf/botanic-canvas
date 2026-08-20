@@ -11,6 +11,7 @@ import {
   shouldRestoreBotanicAgentRuntimeSteps,
   type BotanicAgentActionProposal,
   type BotanicAgentArtifact,
+  type BotanicAgentContextSnapshot,
   type BotanicAgentExecutionMode,
   type BotanicAgentMessage,
   type BotanicAgentRun,
@@ -65,7 +66,10 @@ function timelineStepTitle(block: Extract<TimelineBlock, { type: 'step' }>, loca
     if (block.status === 'failed') return `Website search failed${block.count ? ` · ${count} checked` : ''}`
     return `${count} ${count === 1 ? 'website' : 'websites'} searched`
   }
-  if (block.kind === 'fetch') return 'Fetching webpage'
+  if (block.kind === 'fetch') {
+    const host = block.title.replace(/^(?:正在)?获取网页\s*|^网页获取\s*/u, '').trim()
+    return host && !/\p{Script=Han}/u.test(host) ? `Fetching ${host}` : 'Fetching webpage'
+  }
   if (block.kind === 'read_skill') return 'Reading Skill guide'
   if (block.kind === 'connect_runtime') return 'Connecting browser runtime'
   if (block.kind === 'read') return 'Reading project data'
@@ -133,6 +137,29 @@ function AgentCollapsibleContent({ content, prompt, mentionCatalog }: { content:
   </div>
 }
 
+function AgentPlanContextChips({
+  items,
+  mentionCatalog,
+}: {
+  items: BotanicAgentContextSnapshot[]
+  mentionCatalog?: BotanicAgentMentionCatalog
+}) {
+  const { locale } = useProductI18n()
+  if (!items.length) return null
+  const kindLabel = (kind: BotanicAgentContextSnapshot['kind']) => locale === 'en'
+    ? ({ '素材': 'Asset', '结果': 'Result', '文字': 'Text', '节点': 'Node' }[kind] ?? kind)
+    : kind
+  return <div className="agent-plan__context-locks" aria-label={locale === 'en' ? 'References' : '参考'}>
+    {items.map((item) => {
+      const ref = mentionCatalog?.references?.find((candidate) => candidate.id === item.nodeId)
+      return <span key={item.nodeId} className="agent-plan__context-lock">
+        {ref?.image ? <img src={ref.image} alt="" /> : <i aria-hidden="true">{kindLabel(item.kind).slice(0, 1)}</i>}
+        <small>{ref?.label ?? item.label}</small>
+      </span>
+    })}
+  </div>
+}
+
 function AgentPlanSettingsEditor({
   settings,
   models,
@@ -178,7 +205,7 @@ function AgentPlanSettingsEditor({
     setCustomHint(applied.snapped ? `${locale === 'en' ? 'Adjusted to' : '已对齐为'} ${applied.width}×${applied.height}` : '')
     onChange(applied.settings)
   }
-  // 四列统一：标签 + 等高控件。尺寸始终用 Select，自定义宽高另开一行，避免纯文本 <b> 破坏基线。
+  // 窄栏两列：标签 + 等高控件。自定义宽高单独占一行，避免 W×H 挤进尺寸格。
   const aspectSelect = <BotanicSelect
     value={settings.aspectRatio}
     ariaLabel={locale === 'en' ? 'Select aspect ratio' : '选择画面比例'}
@@ -201,41 +228,9 @@ function AgentPlanSettingsEditor({
         }}
       />
     </label>
-    <label className="agent-plan-settings__size">
+    <label>
       <small>{locale === 'en' ? 'Size' : '尺寸'}</small>
       {aspectSelect}
-      {allowCustom ? <>
-        <div className="agent-plan-settings__custom">
-          <input
-            type="number"
-            inputMode="numeric"
-            min={16}
-            max={3840}
-            step={16}
-            value={widthDraft}
-            disabled={disabled}
-            aria-label={locale === 'en' ? 'Custom output width' : '自定义输出宽度'}
-            placeholder={locale === 'en' ? 'W' : '宽'}
-            onChange={(event) => setWidthDraft(event.target.value)}
-            onBlur={commitCustomSize}
-          />
-          <span aria-hidden="true">×</span>
-          <input
-            type="number"
-            inputMode="numeric"
-            min={16}
-            max={3840}
-            step={16}
-            value={heightDraft}
-            disabled={disabled}
-            aria-label={locale === 'en' ? 'Custom output height' : '自定义输出高度'}
-            placeholder={locale === 'en' ? 'H' : '高'}
-            onChange={(event) => setHeightDraft(event.target.value)}
-            onBlur={commitCustomSize}
-          />
-        </div>
-        {customHint ? <em>{customHint}</em> : null}
-      </> : null}
     </label>
     <label>
       <small>{locale === 'en' ? 'Resolution' : '清晰度'}</small>
@@ -251,6 +246,37 @@ function AgentPlanSettingsEditor({
       <small>{locale === 'en' ? 'Output' : '输出'}</small>
       <span className="agent-plan-settings__readonly" title={locale === 'en' ? 'Output count is set by the plan' : '张数由计划展开决定'}>{countLabel}</span>
     </span>
+    {allowCustom ? <div className="agent-plan-settings__custom">
+      <small>{locale === 'en' ? 'Custom size' : '自定义尺寸'}</small>
+      <input
+        type="number"
+        inputMode="numeric"
+        min={16}
+        max={3840}
+        step={16}
+        value={widthDraft}
+        disabled={disabled}
+        aria-label={locale === 'en' ? 'Custom output width' : '自定义输出宽度'}
+        placeholder={locale === 'en' ? 'W' : '宽'}
+        onChange={(event) => setWidthDraft(event.target.value)}
+        onBlur={commitCustomSize}
+      />
+      <span aria-hidden="true">×</span>
+      <input
+        type="number"
+        inputMode="numeric"
+        min={16}
+        max={3840}
+        step={16}
+        value={heightDraft}
+        disabled={disabled}
+        aria-label={locale === 'en' ? 'Custom output height' : '自定义输出高度'}
+        placeholder={locale === 'en' ? 'H' : '高'}
+        onChange={(event) => setHeightDraft(event.target.value)}
+        onBlur={commitCustomSize}
+      />
+      {customHint ? <em>{customHint}</em> : null}
+    </div> : null}
   </div>
 }
 
@@ -472,10 +498,12 @@ export function AgentConversationMessage({
           onRunAll={onRunComposition ? () => onRunComposition(message) : undefined}
         />
         // 计划消息的标题与 plan.summary 相同，只在计划卡上展示一次，避免主列重复。
-        : !message.plan && !message.question && (message.content || message.mentions?.length) ? (message.role === 'assistant'
+        : !message.plan && !message.question && (message.content || message.mentions?.length || streaming) ? (message.role === 'assistant'
           ? streaming
-          ? <AgentPromptResponse content={message.content} prompt={message.prompt} mentionCatalog={mentionCatalog} />
-            : <AgentCollapsibleContent content={message.content} prompt={message.prompt} mentionCatalog={mentionCatalog} />
+          ? message.content
+            ? <AgentPromptResponse content={message.content} prompt={message.prompt} mentionCatalog={mentionCatalog} />
+            : <p className="agent-message__pending">{t('正在规划这一步…', 'Planning the next step…')}</p>
+          : <AgentCollapsibleContent content={message.content} prompt={message.prompt} mentionCatalog={mentionCatalog} />
           : <AgentMessageRichContent content={message.content} mentions={message.mentions} catalogs={mentionCatalog} />) : null}
       {message.kind === 'run' && inlineRunResults.length ? <div className="agent-run-message__results" aria-label={t('本次任务结果', 'Task results')}>
         {inlineRunResults.map((artifact) => artifact.kind === 'image'
@@ -533,16 +561,17 @@ export function AgentConversationMessage({
           prompt: planSubmitted ? plan.prompt : planPrompt,
         })
         const modelLabel = modelDisplayLabel(generationModels.find((model) => model.id === plan.settings.model)) || plan.settings.model
-        const contextLock = plan.contextSnapshot?.[0]?.label
-          ? locale === 'en'
-            ? `Based on ${plan.contextSnapshot[0].label}${plan.contextSnapshot.length > 1 ? ` and ${plan.contextSnapshot.length - 1} more` : ''}`
-            : `基于 ${plan.contextSnapshot[0].label}${plan.contextSnapshot.length > 1 ? ` 等 ${plan.contextSnapshot.length} 项` : ''}`
+        const contextItems = plan.contextSnapshot ?? []
+        const contextLockLabel = contextItems[0]
+          ? `${mentionCatalog?.references?.find((item) => item.id === contextItems[0].nodeId)?.label ?? contextItems[0].label}${
+            contextItems.length > 1 ? ` +${contextItems.length - 1}` : ''
+          }`
           : null
         const recipeMeta = [
           modelLabel,
           generationSettingsSizeLabel(plan.settings),
           locale === 'en' ? planOutputDisplay(plan) : botanicAgentPlanSheetCountLabel(plan),
-          contextLock,
+          contextLockLabel ? (locale === 'en' ? `Based on ${contextLockLabel}` : `基于 ${contextLockLabel}`) : null,
         ].filter(Boolean).join(' · ')
         const recipe = <>
           {plan.toolCalls?.length ? <details
@@ -613,7 +642,7 @@ export function AgentConversationMessage({
                 disabled={submittingMessageId === message.id}
                 onChange={(settings) => onCommitPlanSettings(message, settings)}
               />
-              {contextLock ? <small className="agent-plan__context-lock">{contextLock}</small> : null}
+              {contextItems.length ? <AgentPlanContextChips items={contextItems} mentionCatalog={mentionCatalog} /> : null}
             </>}
           <AgentPlanPromptReview
             submitted={planSubmitted}

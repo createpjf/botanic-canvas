@@ -2720,6 +2720,7 @@ export default function AgentWorkspace({
         onPlannerModelChange={(model) => { if (session) onPlannerModelChange(session.id, model) }}
         onGroupChange={setGroupId}
         onSend={() => void sendInstruction()}
+        onCancelPlanning={() => plannerControllerRef.current?.abort()}
         onToggleImageContext={(itemId, selected) => { if (!session) return; onContextChange(session.id, selected ? session.contextNodeIds.filter((id) => id !== itemId) : [...session.contextNodeIds, itemId]) }}
         onExecutionModeChange={(mode) => { if (session) onExecutionModeChange(session.id, mode); setModeMenuOpen(false); requestAnimationFrame(() => modeMenuButtonRef.current?.focus()) }}
       /> : null}
