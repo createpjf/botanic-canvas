@@ -11,12 +11,14 @@ import type {
   ResultNodeData,
   TextNodeData,
 } from './canvas'
+import { customGenerationSizeFields, modelSupportsCustomSize } from './generationOutputSize.ts'
 
 export function clampBatchCount(value: number) {
   return Math.max(1, Math.round(value) || 1)
 }
 
 export function cloneGenerationSettings(settings: Partial<GenerationSettings> | undefined): GenerationSettings {
+  const customSize = customGenerationSizeFields(settings)
   return {
     model: typeof settings?.model === 'string' && settings.model.trim() ? settings.model : 'gpt-image-2',
     aspectRatio: settings?.aspectRatio === '1:1' || settings?.aspectRatio === '16:9' || settings?.aspectRatio === '4:3' || settings?.aspectRatio === '3:4' || settings?.aspectRatio === '4:5' || settings?.aspectRatio === '9:16'
@@ -28,6 +30,7 @@ export function cloneGenerationSettings(settings: Partial<GenerationSettings> | 
     ...(Number.isInteger(settings?.duration) && Number(settings?.duration) >= 4 && Number(settings?.duration) <= 15
       ? { duration: Number(settings?.duration) }
       : {}),
+    ...customSize,
   }
 }
 
@@ -57,7 +60,14 @@ export function settingsForGenerationModel(
       ? settings.duration
       : model.defaultDuration ?? model.durations?.[0] ?? 5
     : undefined
-  return { model: model.id, aspectRatio, resolution, ...(duration === undefined ? {} : { duration }) }
+  const customSize = modelSupportsCustomSize(model) ? customGenerationSizeFields(settings) : undefined
+  return {
+    model: model.id,
+    aspectRatio,
+    resolution,
+    ...(duration === undefined ? {} : { duration }),
+    ...customSize,
+  }
 }
 
 export function cloneGenerationRecipe(recipe: GenerationRecipe): GenerationRecipe {

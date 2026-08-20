@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 
 const secretPatterns = [
   { name: 'MiniMax API Key', pattern: /sk-api-[A-Za-z0-9_-]{20,}/ },
+  { name: 'Tavily API Key', pattern: /tvly-[a-z]+-[A-Za-z0-9_-]{20,}/ },
   { name: 'Supabase Secret Key', pattern: /sb_secret_[A-Za-z0-9_-]{20,}/ },
   { name: 'GitHub Token', pattern: /gh[opusr]_[A-Za-z0-9]{30,}/ },
   { name: 'Private Key', pattern: /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/ },

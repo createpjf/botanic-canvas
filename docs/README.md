@@ -19,10 +19,19 @@
 - [Prompt Pack MVP](BOTANIC_PROMPT_PACK_MVP.md)
 - [服务端迁移说明](product-server-migration.md)
 
-## 验收与历史记录
+## 进行中的设计
 
-以下文档记录特定版本或迁移阶段，不代表当前通用开发规范：
+以下规格正在本轮实现，完成后以代码与测试为准：
 
+- [批量变体：共享提示词、按支回填、尺寸与自定义像素](superpowers/specs/2026-08-19-variation-prompt-writeback-size-design.md)
+- [Agent 深度思考时间线与联网检索](superpowers/specs/2026-08-19-agent-thinking-web-search-design.md)
+
+## 评审与历史记录
+
+以下文档记录特定时点的评审、验收或迁移阶段，不代表当前通用开发规范：
+
+- [产品与代码深度评审（2026-08-16）](PRODUCT_CODE_REVIEW_2026-08-16.md)
+- [Agent AIGC 可规模化创意工作流审查](AGENT_AIGC_WORKFLOW_REVIEW.md)
 - `P0-6_MIGRATION_ACCEPTANCE.md`
 - `PR15_REVIEW.md`
 - `RELEASE_ACCEPTANCE_2026-08-04.md`

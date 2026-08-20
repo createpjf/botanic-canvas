@@ -137,3 +137,110 @@ test('流式旁白在对应工具事件前到达，工具完成后可继续追�
   ])
   assert.equal(result.answer, '找到一个夏日场景素材组。')
 })
+
+test('配置搜索密钥后对话可调用 web_search，来源记为互联网', async () => {
+  const flockBodies = []
+  const result = await chatWithBotanicAgent(input, {
+    flockApiKey: 'flock-secret',
+    flockTextModel: 'deepseek-v4-pro',
+    flockAgentModels: ['deepseek-v4-pro', 'deepseek-v4-flash', 'kimi-k3'],
+    webSearch: { apiKey: 'test-search-key' },
+  }, {
+    document,
+    fetchImpl: async (_url, init) => {
+      flockBodies.push(JSON.parse(init.body))
+      if (flockBodies.length === 1) {
+        return new Response(JSON.stringify({ choices: [{ message: {
+          content: null,
+          tool_calls: [{ id: 'call-web', type: 'function', function: {
+            name: 'web_search', arguments: JSON.stringify({ query: '和光品牌', why: '查品牌介绍' }),
+          } }],
+        } }] }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ choices: [{ message: {
+        content: '和光是灯具品牌。',
+      } }] }), { status: 200 })
+    },
+    webFetchImpl: async (url, init) => {
+      assert.equal(url, 'https://api.tavily.com/search')
+      assert.equal(init.headers.Authorization, 'Bearer test-search-key')
+      return new Response(JSON.stringify({
+        results: [{ title: '和光', url: 'https://www.andlight.cn/', content: '灯具' }],
+      }), { status: 200 })
+    },
+  })
+
+  assert.ok(flockBodies[0].tools.some((tool) => tool.function.name === 'web_search'))
+  assert.ok(flockBodies[0].tools.some((tool) => tool.function.name === 'web_fetch'))
+  assert.match(flockBodies[1].messages.at(-1).content, /andlight.cn/)
+  assert.ok(result.sources.includes('互联网'))
+})
+
+test('web_fetch 被守卫拒绝时对话继续，模型收到工具错误而不是整轮 502', async () => {
+  const flockBodies = []
+  const result = await chatWithBotanicAgent({
+    ...input,
+    messages: [{ role: 'user', content: '打开 https://[::1]/ 看看。' }],
+  }, {
+    flockApiKey: 'flock-secret',
+    flockTextModel: 'deepseek-v4-pro',
+    flockAgentModels: ['deepseek-v4-pro', 'deepseek-v4-flash', 'kimi-k3'],
+  }, {
+    document,
+    fetchImpl: async (_url, init) => {
+      flockBodies.push(JSON.parse(init.body))
+      if (flockBodies.length === 1) {
+        return new Response(JSON.stringify({ choices: [{ message: {
+          content: null,
+          tool_calls: [{ id: 'call-fetch', type: 'function', function: {
+            name: 'web_fetch', arguments: JSON.stringify({ url: 'https://[::1]/', why: '读取用户给出的地址' }),
+          } }],
+        } }] }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ choices: [{ message: {
+        content: '这个地址不能打开，它指向本机。',
+      } }] }), { status: 200 })
+    },
+    webFetchImpl: async () => {
+      throw new Error('守卫拒绝后不应再出网')
+    },
+  })
+
+  assert.match(flockBodies[1].messages.at(-1).content, /WEB_URL_NOT_ALLOWED|不能抓取内网/)
+  assert.equal(result.answer, '这个地址不能打开，它指向本机。')
+})
+
+test('联网配额用尽时对话继续，模型收到 WEB_QUOTA_EXCEEDED', async () => {
+  const flockBodies = []
+  const result = await chatWithBotanicAgent({
+    ...input,
+    messages: [{ role: 'user', content: '打开 https://www.andlight.cn/ 看看。' }],
+  }, {
+    flockApiKey: 'flock-secret',
+    flockTextModel: 'deepseek-v4-pro',
+    flockAgentModels: ['deepseek-v4-pro', 'deepseek-v4-flash', 'kimi-k3'],
+  }, {
+    document,
+    consumeWebResearchQuota: async () => ({ allowed: false, remaining: 0, retryAfterSeconds: 30 }),
+    fetchImpl: async (_url, init) => {
+      flockBodies.push(JSON.parse(init.body))
+      if (flockBodies.length === 1) {
+        return new Response(JSON.stringify({ choices: [{ message: {
+          content: null,
+          tool_calls: [{ id: 'call-fetch', type: 'function', function: {
+            name: 'web_fetch', arguments: JSON.stringify({ url: 'https://www.andlight.cn/', why: '读取官网' }),
+          } }],
+        } }] }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ choices: [{ message: {
+        content: '现在检索次数用完了，请稍后再试。',
+      } }] }), { status: 200 })
+    },
+    webFetchImpl: async () => {
+      throw new Error('配额用尽后不应再出网')
+    },
+  })
+
+  assert.match(flockBodies[1].messages.at(-1).content, /WEB_QUOTA_EXCEEDED/)
+  assert.equal(result.answer, '现在检索次数用完了，请稍后再试。')
+})

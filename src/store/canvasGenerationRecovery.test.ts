@@ -256,3 +256,70 @@ test('Agent 结果恢复会补回完整 prompt、生成节点及参考和输出�
     new Set(['reference', 'prompt', 'output']),
   )
 })
+
+test('单输出无 candidateId 的 Agent 结果仍能合回占位，且三支依次恢复不丢兄弟图', () => {
+  function agentJob(id: string, branchId: string, outputImage: string): GenerationJob {
+    return {
+      ...job(id, [{ id: `${id}-output`, image: outputImage, mediaKind: 'image' }]),
+      agentRun: { runId: 'run-variations', branchId },
+      generateNodeId: `agent-generate-${branchId}`,
+      resultNodeId: `agent-result-${branchId}`,
+    }
+  }
+  function placeholder(branchId: string, jobId: string, position: { x: number; y: number }): CanvasNode {
+    return resultNode(`agent-result-${branchId}`, position, {
+      outputOf: `agent-generate-${branchId}`,
+      jobId,
+      status: 'generating',
+      taskStatus: 'running',
+      agentRun: { runId: 'run-variations', branchId },
+    })
+  }
+  function recoveredResult(branchId: string, jobId: string, image: string, withCandidate: boolean): CanvasNode {
+    return resultNode(`agent-result-${branchId}`, { x: 0, y: 0 }, {
+      outputOf: `agent-generate-${branchId}`,
+      image,
+      jobId,
+      ...(withCandidate ? { candidateId: `${jobId}-output` } : {}),
+      status: 'ready',
+      taskStatus: 'succeeded',
+      agentRun: { runId: 'run-variations', branchId },
+    })
+  }
+
+  const current = document([
+    placeholder('sea', 'job-sea', { x: 100, y: 40 }),
+    placeholder('desert', 'job-desert', { x: 100, y: 200 }),
+    placeholder('space', 'job-space', { x: 100, y: 360 }),
+  ], [], [
+    { ...job('job-sea'), status: 'running' },
+    { ...job('job-desert'), status: 'running' },
+    { ...job('job-space'), status: 'running' },
+  ])
+
+  const afterSea = mergeRecoveredGenerationJobs(current, document(
+    [recoveredResult('sea', 'job-sea', '/api/media/sea', false)],
+    [],
+    [agentJob('job-sea', 'sea', '/api/media/sea')],
+  ))
+  assert.equal((afterSea.nodes.find((node) => node.id === 'agent-result-sea')!.data as ResultNodeData).image, '/api/media/sea')
+  assert.equal((afterSea.nodes.find((node) => node.id === 'agent-result-desert')!.data as ResultNodeData).image, undefined)
+
+  const afterDesert = mergeRecoveredGenerationJobs(afterSea, document(
+    [recoveredResult('desert', 'job-desert', '/api/media/desert', true)],
+    [],
+    [agentJob('job-desert', 'desert', '/api/media/desert')],
+  ))
+  assert.equal((afterDesert.nodes.find((node) => node.id === 'agent-result-sea')!.data as ResultNodeData).image, '/api/media/sea')
+  assert.equal((afterDesert.nodes.find((node) => node.id === 'agent-result-desert')!.data as ResultNodeData).image, '/api/media/desert')
+
+  const afterSpace = mergeRecoveredGenerationJobs(afterDesert, document(
+    [recoveredResult('space', 'job-space', '/api/media/space', true)],
+    [],
+    [agentJob('job-space', 'space', '/api/media/space')],
+  ))
+  assert.deepEqual(
+    afterSpace.nodes.filter((node) => node.type === 'result').map((node) => (node.data as ResultNodeData).image).sort(),
+    ['/api/media/desert', '/api/media/sea', '/api/media/space'],
+  )
+})

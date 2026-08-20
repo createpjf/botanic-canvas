@@ -4,6 +4,7 @@ import type {
   GenerationResolution,
   GenerationSettings,
 } from './canvas.ts'
+import { customGenerationSizeFields } from './generationOutputSize.ts'
 
 export type BotanicCreativeBriefMode = 'generation' | 'prompt'
 export type BotanicCreativeBriefSource = 'user' | 'canvas' | 'memory' | 'skill' | 'inferred' | 'default'
@@ -87,8 +88,8 @@ export type AdvanceBotanicCreativeBriefInput = {
   executionMode?: 'manual' | 'auto'
   instruction: string
   generationModels?: readonly BriefGenerationModel[]
-  inheritedSettings?: Partial<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution'>>
-  requestedSettings?: Partial<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution'>>
+  inheritedSettings?: Partial<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution' | 'outputWidth' | 'outputHeight'>>
+  requestedSettings?: Partial<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution' | 'outputWidth' | 'outputHeight'>>
   previousBrief?: BotanicCreativeBrief
   answers?: Record<string, string>
   clarificationId?: string
@@ -99,7 +100,7 @@ export type BotanicCreativeBriefTurn =
   | {
       kind: 'ready'
       brief: BotanicCreativeBrief
-      settings: Partial<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution'>>
+      settings: Partial<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution' | 'outputWidth' | 'outputHeight'>>
       prompt: string
     }
   | { kind: 'failed'; brief: BotanicCreativeBrief; code: string; message: string }
@@ -443,6 +444,7 @@ export function advanceBotanicCreativeBrief(input: AdvanceBotanicCreativeBriefIn
       ...(brief.output.model ? { model: brief.output.model } : {}),
       ...(brief.output.aspectRatio ? { aspectRatio: brief.output.aspectRatio } : {}),
       ...(brief.output.resolution ? { resolution: brief.output.resolution } : {}),
+      ...(customGenerationSizeFields(input.requestedSettings) ?? customGenerationSizeFields(input.inheritedSettings) ?? {}),
     },
     prompt: compileBriefPrompt(brief),
   }

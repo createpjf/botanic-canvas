@@ -1,8 +1,8 @@
 import type { BotanicAgentMentionQuery, BotanicCreativeBrief } from '../../domain/agent'
-import type { GenerationSettings } from '../../domain/canvas'
+import type { GenerationSizeOverride } from '../../domain/generationOutputSize'
 
 export type AgentInstructionRetryOptions = {
-  generationOverrides?: Partial<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution'>>
+  generationOverrides?: GenerationSizeOverride
   clarificationAnswers?: Record<string, string>
   creativeBrief?: BotanicCreativeBrief
   sourcePromptMessageId?: string
@@ -20,7 +20,7 @@ export type AgentComposerState = {
   lastFailedCommand?: AgentFailedInstruction
   lastFailedPlanMessageId: string
   mentionQuery?: BotanicAgentMentionQuery
-  pendingGenerationOverrides: Partial<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution'>>
+  pendingGenerationOverrides: GenerationSizeOverride
 }
 
 export const initialAgentComposerState: AgentComposerState = {

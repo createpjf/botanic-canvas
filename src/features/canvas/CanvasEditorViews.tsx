@@ -5,6 +5,7 @@ import { generationTaskErrorMessage, generationTaskFeedback, type ResultGroupPre
 import { reducedAspectRatio } from '../../domain/mediaPresentation'
 import { mediaRetryUrl } from '../../domain/mediaRecovery'
 import { primaryGenerationReference, settingsForGenerationModel } from '../../domain/generationRecipe'
+import { applyCustomGenerationSize, generationSettingsSizeLabel, modelSupportsCustomSize, withoutCustomGenerationSize } from '../../domain/generationOutputSize'
 import { videoAspectRatioPolicy } from '../../domain/videoGeneration'
 import { useMotionPresence } from '../../components/motionPresence'
 import { BotanicSelect } from '../../components/BotanicSelect'
@@ -298,6 +299,8 @@ function TextNode({ data, id, selected }: NodeProps) {
   const [draft, setDraft] = useState(text.content)
   const committedRef = useRef(text.content)
   const commitTimerRef = useRef<number | null>(null)
+  const [focused, setFocused] = useState(false)
+  const [expanded, setExpanded] = useState(false)
 
   // 协作、撤销等外部改动要同步回输入框；自己提交造成的回流不覆盖正在输入的内容。
   useEffect(() => {
@@ -320,8 +323,11 @@ function TextNode({ data, id, selected }: NodeProps) {
     updateTextNode(id, value)
   }
 
+  const longContent = draft.length > 48 || draft.split('\n').length > 2
+  const collapsed = longContent && !selected && !focused && !expanded
+
   return (
-    <div className={`graph-node text-node${selected ? ' is-selected' : ''}`}>
+    <div className={`graph-node text-node${selected ? ' is-selected' : ''}${collapsed ? ' is-collapsed' : ''}${expanded || focused ? ' is-expanded' : ''}`}>
       <span className="graph-node__port-label graph-node__port-label--out">描述</span>
       <Handle
         className="flow-handle flow-handle--graph flow-handle--source"
@@ -351,6 +357,7 @@ function TextNode({ data, id, selected }: NodeProps) {
         aria-label={`${text.label}内容`}
         placeholder="写下视觉目标或文案要求"
         onClick={(event) => event.stopPropagation()}
+        onFocus={() => setFocused(true)}
         onChange={(event) => {
           const { value } = event.target
           setDraft(value)
@@ -360,8 +367,20 @@ function TextNode({ data, id, selected }: NodeProps) {
             commitContent(value)
           }, textNodeCommitDelayMs)
         }}
-        onBlur={(event) => commitContent(event.currentTarget.value)}
+        onBlur={(event) => {
+          setFocused(false)
+          commitContent(event.currentTarget.value)
+        }}
       />
+      {longContent ? <button
+        type="button"
+        className="text-node__expand nodrag"
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => {
+          event.stopPropagation()
+          setExpanded((open) => !open)
+        }}
+      >{collapsed ? '展开全文' : expanded ? '收起' : '折叠'}</button> : null}
       <footer>连到生成节点，作为本次描述</footer>
     </div>
   )
@@ -406,8 +425,8 @@ function GenerateNode({ data, id, selected }: NodeProps) {
   const inferredVideoInputMode: VideoInputMode = generate.videoInputMode
     ?? (references.some((reference) => reference.mediaKind === 'video') ? 'reference' : references.length === 2 ? 'first_last' : 'first_frame')
   const displayedAspectRatio = mediaKind === 'video'
-    ? videoAspectRatioPolicy(inferredVideoInputMode, generate.settings.aspectRatio).controlLabel
-    : generate.settings.aspectRatio
+    ? `${videoAspectRatioPolicy(inferredVideoInputMode, generate.settings.aspectRatio).controlLabel} · ${generate.settings.resolution}`
+    : generationSettingsSizeLabel(generate.settings)
 
   return (
     <div className={`graph-node generate-node generate-node--${mediaKind}${selected ? ' is-selected' : ''}${hasVisualInput ? '' : ' is-missing-input'}`}>
@@ -430,7 +449,7 @@ function GenerateNode({ data, id, selected }: NodeProps) {
       />
       <header className="graph-node__header">
         <strong>{generateLabel}</strong>
-        <small>{references.length} 参考 · {modelLabel} · {displayedAspectRatio} · {generate.settings.resolution}{generate.settings.duration ? ` · ${generate.settings.duration}秒` : ''}</small>
+        <small>{references.length} 参考 · {modelLabel} · {displayedAspectRatio}{generate.settings.duration ? ` · ${generate.settings.duration}秒` : ''}</small>
         <button
           className="graph-node__remove nodrag"
           type="button"
@@ -521,6 +540,14 @@ export function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount,
     : [{ id: settings.model, label: settings.model, mediaKind: activeMediaKind }, ...compatibleModels]
   const selectedModel = modelOptions.find((model) => model.id === settings.model)
   const isVideoModel = selectedModel?.mediaKind === 'video'
+  const allowCustomSize = !isVideoModel && modelSupportsCustomSize(selectedModel)
+  const [customWidth, setCustomWidth] = useState(settings.outputWidth ? String(settings.outputWidth) : '')
+  const [customHeight, setCustomHeight] = useState(settings.outputHeight ? String(settings.outputHeight) : '')
+  const [customSizeHint, setCustomSizeHint] = useState('')
+  useEffect(() => {
+    setCustomWidth(settings.outputWidth ? String(settings.outputWidth) : '')
+    setCustomHeight(settings.outputHeight ? String(settings.outputHeight) : '')
+  }, [settings.outputWidth, settings.outputHeight])
   const primaryReference = references.find((reference) => reference.primary)
   const videoRatioPolicy = videoAspectRatioPolicy(videoInputMode, settings.aspectRatio)
   const videoModeCopy = videoInputMode === 'first_frame'
@@ -853,16 +880,18 @@ export function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount,
               </ComposerOptionPopover>
               <ComposerOptionPopover
                 label="输出"
-                value={`${isVideoModel && !videoRatioPolicy.ratioSelectable ? '跟随素材' : settings.aspectRatio} · ${settings.resolution}`}
+                value={isVideoModel && !videoRatioPolicy.ratioSelectable
+                  ? `跟随素材 · ${settings.resolution}`
+                  : generationSettingsSizeLabel(settings)}
                 disabled={interactionLocked}
-                width={300}
+                width={allowCustomSize ? 320 : 300}
                 className="is-output"
               >
                 {(close) => <div className="composer-output-menu">
                   <section>
                     <header><strong>画幅</strong>{isVideoModel && !videoRatioPolicy.ratioSelectable ? <small>由输入素材决定</small> : null}</header>
                     {isVideoModel && !videoRatioPolicy.ratioSelectable ? <div className="composer-output-adaptive"><AspectRatioGlyph ratio="1:1" /><span>跟随素材</span></div> : <div className="composer-aspect-grid" role="radiogroup" aria-label="选择画面比例">
-                      {(selectedModel?.aspectRatios ?? ['1:1', '3:4', '4:5', '9:16']).map((ratio) => <button key={ratio} type="button" role="radio" aria-checked={settings.aspectRatio === ratio} className={settings.aspectRatio === ratio ? 'is-selected' : ''} onClick={() => updateSettings({ aspectRatio: ratio as GenerationSettings['aspectRatio'] })}>
+                      {(selectedModel?.aspectRatios ?? ['1:1', '16:9', '4:3', '3:4', '4:5', '9:16']).map((ratio) => <button key={ratio} type="button" role="radio" aria-checked={!settings.outputWidth && settings.aspectRatio === ratio} className={!settings.outputWidth && settings.aspectRatio === ratio ? 'is-selected' : ''} onClick={() => onSettingsChange(withoutCustomGenerationSize({ ...settings, aspectRatio: ratio as GenerationSettings['aspectRatio'] }))}>
                         <AspectRatioGlyph ratio={ratio} /><span>{ratio}</span>
                       </button>)}
                     </div>}
@@ -876,6 +905,29 @@ export function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount,
                       }}>{resolution}</button>)}
                     </div>
                   </section>
+                  {allowCustomSize ? <section>
+                    <header><strong>自定义像素</strong><small>须为 16 的倍数</small></header>
+                    <div className="composer-custom-size">
+                      <label>宽<input type="number" min={16} max={3840} step={16} value={customWidth} aria-label="自定义输出宽度" onChange={(event) => setCustomWidth(event.target.value)} /></label>
+                      <span aria-hidden="true">×</span>
+                      <label>高<input type="number" min={16} max={3840} step={16} value={customHeight} aria-label="自定义输出高度" onChange={(event) => setCustomHeight(event.target.value)} /></label>
+                      <button type="button" onClick={() => {
+                        if (!customWidth.trim() && !customHeight.trim()) {
+                          setCustomSizeHint('')
+                          onSettingsChange(withoutCustomGenerationSize(settings))
+                          return
+                        }
+                        const applied = applyCustomGenerationSize(settings, Number(customWidth), Number(customHeight))
+                        if (!applied.ok || !applied.settings) {
+                          setCustomSizeHint(applied.ok ? '自定义宽高无效。' : applied.message)
+                          return
+                        }
+                        setCustomSizeHint(applied.snapped ? `已对齐为 ${applied.width}×${applied.height}` : '')
+                        onSettingsChange(applied.settings)
+                      }}>应用</button>
+                    </div>
+                    {customSizeHint ? <small className={customSizeHint.startsWith('已对齐') ? '' : 'is-error'}>{customSizeHint}</small> : null}
+                  </section> : null}
                 </div>}
               </ComposerOptionPopover>
             </div>
@@ -927,7 +979,7 @@ function PromptNode({ data, selected }: NodeProps) {
       <span className="task-node__eyebrow">01 · PROMPT</span>
       <strong>{prompt.label || (prompt.generationKind === 'refinement' ? '定向精修指令' : '视觉目标')}</strong>
       <p>{prompt.prompt}</p>
-      <footer><span>{prompt.settings.aspectRatio} · {prompt.settings.resolution}</span><i>{taskStatusLabel(prompt.status)}</i></footer>
+      <footer><span>{generationSettingsSizeLabel(prompt.settings)}</span><i>{taskStatusLabel(prompt.status)}</i></footer>
       {prompt.error ? <small title={prompt.error}>任务需要处理</small> : null}
     </div>
   )

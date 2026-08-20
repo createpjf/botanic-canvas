@@ -300,6 +300,60 @@ test('非批量计划没有分支提示词列表', () => {
   }), [])
 })
 
+test('编号清单和「一个在」不会进入共享底，沙漠支不含海边或宇宙', () => {
+  const instruction = '1. 一个在海边 2. 一个在沙漠里 3. 一个在宇宙，多图'
+  const request = resolveBotanicAgentVariationRequest({ instruction })
+  assert.equal(request.kind, 'ready')
+  assert.equal(request.spec.axes[0].key, 'scene')
+  assert.deepEqual(request.spec.axes[0].values.map((value) => value.label), ['海边', '沙漠', '宇宙'])
+  assert.match(request.spec.axes[0].values[1].promptDelta, /场景替换为沙漠/)
+
+  const inventory = [
+    '请按下面三套场景分别出图。',
+    '1. 海边日落，人物站在沙滩。',
+    '2. 沙漠正午，热浪与沙丘。',
+    '3. 宇宙星空，远处是行星。',
+  ].join('\n')
+  const shared = botanicAgentSharedVariationPrompt(inventory, instruction, request.spec)
+  assert.equal(shared.includes('海边'), false)
+  assert.equal(shared.includes('沙漠'), false)
+  assert.equal(shared.includes('宇宙'), false)
+
+  const applied = applyBotanicAgentVariationToPlan({
+    intent: 'replace_scene',
+    instruction,
+    summary: '换场景',
+    prompt: inventory,
+    constraints: [{ dimension: 'scene', mode: 'vary' }],
+    output: { mode: 'single', count: 1, candidatesPerItem: 1 },
+  }, { instruction })
+  assert.equal(applied.kind, 'plan')
+  const desert = botanicAgentPlanBranchPrompts(applied.plan as Parameters<typeof botanicAgentPlanBranchPrompts>[0])
+    .find((branch) => branch.label.includes('沙漠'))
+  assert.ok(desert)
+  assert.equal(desert.delta.includes('场景替换为沙漠'), true)
+  assert.equal(desert.prompt.includes('海边'), false)
+  assert.equal(desert.prompt.includes('宇宙'), false)
+})
+
+test('清洗后仍含多个取值时共享底回退到 fallbackPrompt', () => {
+  const instruction = '1. 一个在海边 2. 一个在沙漠里 3. 一个在宇宙，多图'
+  const inventory = '1. 海边 2. 沙漠 3. 宇宙。海边沙漠宇宙都要出图。'
+  const applied = applyBotanicAgentVariationToPlan({
+    intent: 'replace_scene',
+    instruction,
+    summary: '换场景',
+    prompt: inventory,
+    constraints: [{ dimension: 'scene', mode: 'vary' }],
+    output: { mode: 'single', count: 1, candidatesPerItem: 1 },
+  }, {
+    instruction,
+    fallbackPrompt: '保持人物身份、白裙与商品，棚拍柔光。',
+  })
+  assert.equal(applied.kind, 'plan')
+  assert.equal(applied.plan.prompt, '保持人物身份、白裙与商品，棚拍柔光。')
+})
+
 test('匹配的素材组仍走按图批量，不改成变体轴', () => {
   const applied = applyBotanicAgentVariationToPlan({
     intent: 'replace_scene',

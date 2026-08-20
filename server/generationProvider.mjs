@@ -1,4 +1,11 @@
 import { mapWithConcurrency } from './concurrency.mjs'
+import {
+  catalogAspectRatiosForModel,
+  inferAspectRatioFromPixels,
+  modelSupportsCustomSize,
+  normalizeCustomGenerationSize,
+  resolveGenerationOutputSize,
+} from './generationOutputSize.mjs'
 
 export class GenerationError extends Error {
   constructor(statusCode, code, message) {
@@ -69,7 +76,27 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
   if (model.maximumPromptLength && prompt.length > model.maximumPromptLength) {
     throw new GenerationError(400, 'INVALID_REQUEST', `该模型的创意描述不能超过 ${model.maximumPromptLength} 字符。`)
   }
-  assertEnum(settings.aspectRatio, model.aspectRatios ?? ['1:1', '3:4', '4:5', '9:16'], '画面比例')
+
+  const hasCustomWidth = settings.outputWidth !== undefined
+  const hasCustomHeight = settings.outputHeight !== undefined
+  let customSize
+  if (hasCustomWidth || hasCustomHeight) {
+    if (!hasCustomWidth || !hasCustomHeight) {
+      throw new GenerationError(400, 'INVALID_REQUEST', '自定义宽高必须同时提供。')
+    }
+    if (!modelSupportsCustomSize(model)) {
+      throw new GenerationError(400, 'INVALID_REQUEST', '当前模型不支持自定义像素。')
+    }
+    const width = Number(settings.outputWidth)
+    const height = Number(settings.outputHeight)
+    const normalized = normalizeCustomGenerationSize(width, height)
+    if (!normalized.ok) throw new GenerationError(400, 'INVALID_REQUEST', normalized.message)
+    customSize = { outputWidth: normalized.width, outputHeight: normalized.height }
+  }
+  const aspectRatio = customSize
+    ? inferAspectRatioFromPixels(customSize.outputWidth, customSize.outputHeight)
+    : settings.aspectRatio
+  assertEnum(aspectRatio, model.aspectRatios ?? catalogAspectRatiosForModel(model), '画面比例')
   assertEnum(settings.resolution, model.resolutions ?? ['1K', '2K'], '输出规格')
   const duration = model.durations
     ? Number(settings.duration)
@@ -123,9 +150,10 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
     batchCount,
     settings: {
       model: settings.model,
-      aspectRatio: settings.aspectRatio,
+      aspectRatio,
       resolution: settings.resolution,
       ...(duration === undefined ? {} : { duration }),
+      ...customSize,
     },
     references,
     parent,
@@ -230,13 +258,6 @@ export function persistedGenerationJob(job) {
   }
 }
 
-function outputSize({ aspectRatio, resolution }) {
-  return {
-    '1K': { '1:1': '1024x1024', '3:4': '960x1280', '4:5': '1024x1280', '9:16': '720x1280' },
-    '2K': { '1:1': '2048x2048', '3:4': '1536x2048', '4:5': '1600x2000', '9:16': '1152x2048' },
-  }[resolution][aspectRatio]
-}
-
 function fileExtension(mimeType) {
   if (mimeType === 'image/jpeg') return 'jpg'
   if (mimeType === 'image/webp') return 'webp'
@@ -306,7 +327,7 @@ export async function generateImages(job, {
     form.set('model', job.settings.model)
     form.set('prompt', buildProviderPrompt(job, variationIndex))
     form.set('n', String(count))
-    form.set('size', outputSize(job.settings))
+    form.set('size', resolveGenerationOutputSize(job.settings))
     form.set('quality', job.settings.resolution === '1K' ? 'low' : 'medium')
     form.set('output_format', 'png')
     form.set('moderation', 'auto')

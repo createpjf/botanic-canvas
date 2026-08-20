@@ -1,6 +1,7 @@
 import { AgentToolRuntimeError, createAgentToolRegistry } from './agentToolRuntime.mjs'
 import { botanicCreativeBriefFieldIds } from './botanicCreativeBrief.mjs'
 import { botanicAgentVariationClarificationFieldIds } from './botanicAgentVariations.mjs'
+import { createBotanicAgentWebResearchTools } from './botanicAgentWebTools.mjs'
 import { readFileSync } from 'node:fs'
 
 function readBuiltInSkill(relativePath) {
@@ -192,7 +193,7 @@ function clarificationParameters() {
   }
 }
 
-export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, finalizeClarification, onProposeAction }) {
+export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, finalizeClarification, onProposeAction, webResearch }) {
   if (!input || typeof finalizePlan !== 'function' || typeof finalizeClarification !== 'function') throw new TypeError('Agent 规划工具缺少可信上下文。')
   const projectSkills = Object.fromEntries((input.projectSkills ?? [])
     .filter((skill) => skill?.status === 'active' && typeof skill.id === 'string' && typeof skill.name === 'string' && typeof skill.instructions === 'string')
@@ -244,6 +245,7 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
         return { groups: safeClone(matches), total: matches.length }
       },
     },
+    ...createBotanicAgentWebResearchTools(webResearch),
     {
       name: 'skill_run',
       label: '调用创作 Skill',

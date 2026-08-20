@@ -228,3 +228,24 @@ test('Prompt 自动模式使用保真默认方向，不打断为追问', () => {
   assert.equal(turn.brief.creative.promptDirection, 'faithful')
   assert.equal(turn.brief.provenance.prompt_direction, 'default')
 })
+
+test('请求的自定义像素会进入 ready 生成设置', () => {
+  const turn = advanceBotanicCreativeBrief({
+    mode: 'generation',
+    executionMode: 'auto',
+    instruction: '请用 1920x1080 生成海边人像',
+    generationModels: [{
+      ...imageModels[0],
+      aspectRatios: ['1:1', '16:9', '3:4', '9:16'] as const,
+    }],
+    requestedSettings: {
+      model: 'gpt-image-2', aspectRatio: '16:9', resolution: '2K', outputWidth: 1920, outputHeight: 1080,
+    },
+  })
+
+  assert.equal(turn.kind, 'ready')
+  if (turn.kind !== 'ready') return
+  assert.equal(turn.settings.aspectRatio, '16:9')
+  assert.equal(turn.settings.outputWidth, 1920)
+  assert.equal(turn.settings.outputHeight, 1088)
+})

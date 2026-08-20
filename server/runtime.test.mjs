@@ -30,7 +30,7 @@ test('实时票据只使用独立签名密钥，不复用数据库或工作区�
 })
 
 test('安全策略支持独立配置 MFA、API 与 Agent 对话/规划限流及每日生成输出配额', () => {
-  const keys = ['SECURITY_REQUIRE_OWNER_MFA', 'SECURITY_API_REQUESTS_PER_MINUTE', 'SECURITY_MEDIA_UPLOADS_PER_MINUTE', 'SECURITY_AGENT_PLANS_PER_5_MINUTES', 'SECURITY_AGENT_CHATS_PER_5_MINUTES', 'SECURITY_GENERATION_OUTPUTS_PER_DAY']
+  const keys = ['SECURITY_REQUIRE_OWNER_MFA', 'SECURITY_API_REQUESTS_PER_MINUTE', 'SECURITY_MEDIA_UPLOADS_PER_MINUTE', 'SECURITY_AGENT_PLANS_PER_5_MINUTES', 'SECURITY_AGENT_CHATS_PER_5_MINUTES', 'SECURITY_WEB_RESEARCH_PER_MINUTE', 'SECURITY_GENERATION_OUTPUTS_PER_DAY']
   const original = new Map(keys.map((key) => [key, process.env[key]]))
   try {
     process.env.SECURITY_REQUIRE_OWNER_MFA = 'true'
@@ -38,6 +38,7 @@ test('安全策略支持独立配置 MFA、API 与 Agent 对话/规划限流及�
     process.env.SECURITY_MEDIA_UPLOADS_PER_MINUTE = '24'
     process.env.SECURITY_AGENT_PLANS_PER_5_MINUTES = '18'
     process.env.SECURITY_AGENT_CHATS_PER_5_MINUTES = '36'
+    process.env.SECURITY_WEB_RESEARCH_PER_MINUTE = '12'
     process.env.SECURITY_GENERATION_OUTPUTS_PER_DAY = '120'
 
     assert.deepEqual(runtimeConfig('/tmp/botanic-runtime-test').security, {
@@ -45,6 +46,7 @@ test('安全策略支持独立配置 MFA、API 与 Agent 对话/规划限流及�
       mediaUploadsPerMinute: 24,
       agentPlansPerFiveMinutes: 18,
       agentChatsPerFiveMinutes: 36,
+      webResearchPerMinute: 12,
       generationOutputsPerDay: 120,
       memberMutationsPerHour: 20,
       promptRefinementsPerFiveMinutes: 30,
@@ -103,6 +105,24 @@ test('Agent Planner 默认只暴露三种已确认的 Flock 模型', () => {
     const config = runtimeConfig('/tmp/botanic-runtime-test')
     assert.equal(config.flockTextModel, 'deepseek-v4-pro')
     assert.deepEqual(config.flockAgentModels, ['deepseek-v4-pro', 'deepseek-v4-flash', 'kimi-k3'])
+  } finally {
+    for (const [key, value] of original) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+})
+
+test('联网搜索默认走 Tavily REST，MCP 地址会被忽略', () => {
+  const keys = ['BOTANIC_WEB_SEARCH_API_KEY', 'BOTANIC_WEB_SEARCH_URL']
+  const original = new Map(keys.map((key) => [key, process.env[key]]))
+  try {
+    process.env.BOTANIC_WEB_SEARCH_API_KEY = 'test-search-key'
+    process.env.BOTANIC_WEB_SEARCH_URL = 'https://mcp.tavily.com/mcp/?tavilyApiKey=secret'
+    const config = runtimeConfig('/tmp/botanic-runtime-test')
+    assert.equal(config.webSearch.apiKey, 'test-search-key')
+    assert.equal(config.webSearch.searchUrl, 'https://api.tavily.com/search')
+    assert.equal(config.webSearch.extractUrl, 'https://api.tavily.com/extract')
   } finally {
     for (const [key, value] of original) {
       if (value === undefined) delete process.env[key]

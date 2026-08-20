@@ -855,6 +855,8 @@ export type BotanicAgentRunFeedbackOptions = {
   artifactCount?: number
   /** 当前 Run 已有画布来源节点的结果数。 */
   canvasOutputCount?: number
+  /** 仍处于 queued/running 的分支数；只要还有活跃分支就不能说「已生成待回填」。 */
+  activeBranchCount?: number
 }
 
 /**
@@ -869,6 +871,10 @@ export function botanicAgentRunFeedback(
 ): BotanicAgentRunFeedback {
   const terminal = status === 'completed' || status === 'partial' || status === 'failed' || status === 'cancelled'
   const timedOut = status === 'failed' && Boolean(error && /超时|timeout|timed out/i.test(error))
+  const hasActiveBranches = (options?.activeBranchCount ?? 0) > 0
+  if (hasActiveBranches && status === 'completed') {
+    return { label: '生成中', detail: '正在生成，完成后回填画布。', action: 'view_task', actionLabel: '查看任务', tone: 'progress', terminal: false }
+  }
   if (status === 'awaiting_confirmation') {
     return { label: '待确认', detail: '确认后开始生成。', action: 'view_task', actionLabel: '查看计划', tone: 'warning', terminal: false }
   }

@@ -315,7 +315,7 @@ test('服务端 Agent 只让模型解释意图与约束，节点、参数和批�
   assert.match(firstRequest.messages[0].content, /受控上下文/)
   assert.deepEqual(JSON.parse(firstRequest.messages[1].content), validInput)
   assert.deepEqual(firstRequest.tools.map((item) => item.function.name), [
-    'canvas_read', 'asset_search', 'skill_run', 'skill_create_propose', 'generation_ask_clarification', 'generation_create_plan',
+    'canvas_read', 'asset_search', 'web_fetch', 'skill_run', 'skill_create_propose', 'generation_ask_clarification', 'generation_create_plan',
   ])
   assert.equal(firstRequest.tool_choice, 'auto')
   assert.deepEqual(finalRequest.messages.filter((message) => message.role === 'tool').map((message) => message.tool_call_id), [
@@ -535,4 +535,55 @@ test('列出肤色取值后按变体轴展开，张数由展开结果决定', as
   assert.equal(result.prompt.includes('批量 Skill'), false)
   assert.equal(result.variation.axes[0].values.length, 4)
   assert.match(result.summary, /4 张/)
+})
+
+test('validateBotanicAgentPlanInput 保留 parentPrompt 并对齐自定义像素', () => {
+  const input = validateBotanicAgentPlanInput({
+    ...validInput,
+    parentPrompt: '保持人物身份、白裙与商品，棚拍柔光。',
+    settings: { ...validInput.settings, outputWidth: 1920, outputHeight: 1080 },
+    generationModels: [{
+      id: 'gpt-image-2',
+      label: 'GPT Image 2',
+      provider: 'openai',
+      mediaKind: 'image',
+      aspectRatios: ['1:1', '16:9', '4:3', '3:4', '4:5', '9:16'],
+      resolutions: ['1K', '2K'],
+      supportsCustomSize: true,
+    }],
+  })
+  assert.equal(input.parentPrompt, '保持人物身份、白裙与商品，棚拍柔光。')
+  assert.equal(input.settings.outputWidth, 1920)
+  assert.equal(input.settings.outputHeight, 1088)
+  assert.equal(input.settings.aspectRatio, '16:9')
+  assert.equal(input.generationModels[0].supportsCustomSize, true)
+})
+
+test('规划旁白加编号清单时共享底回退到 parentPrompt', async () => {
+  const result = await planBotanicGeneration({
+    ...validInput,
+    instruction: '1. 一个在海边 2. 一个在沙漠里 3. 一个在宇宙，多图',
+    requestedIntent: 'replace_scene',
+    assetGroup: undefined,
+    parentPrompt: '保持人物身份、白裙与商品，棚拍柔光。',
+  }, {
+    flockApiKey: 'flock-secret', flockTextModel: 'deepseek-v4-pro',
+  }, {
+    fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: {
+      content: null,
+      tool_calls: [{ id: 'call-plan-scene-parent', type: 'function', function: {
+        name: 'generation_create_plan', arguments: JSON.stringify({
+          intent: 'replace_scene',
+          prompt: '1. 海边 2. 沙漠 3. 宇宙。海边沙漠宇宙都要出图。',
+          summary: '替换场景，生成 1 张新版本。',
+          constraints: [{ dimension: 'person', mode: 'preserve' }, { dimension: 'scene', mode: 'vary' }],
+        }),
+      } }],
+    } }] }), { status: 200 }),
+  })
+
+  assert.equal(result.kind, undefined)
+  assert.equal(result.prompt, '保持人物身份、白裙与商品，棚拍柔光。')
+  assert.equal(result.output.mode, 'batch_by_variation')
+  assert.equal(result.output.count, 3)
 })

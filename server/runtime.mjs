@@ -9,6 +9,7 @@ import { createSupabaseObjectStore } from './supabaseObjectStore.mjs'
 import { createSupabaseAuthPostgresStore } from './supabaseAuthPostgresStore.mjs'
 import { createGenerationModelCatalog } from './generationModels.mjs'
 import { parseMcpToolConfigurations } from './mcpClient.mjs'
+import { resolveTavilyExtractUrl, resolveTavilySearchUrl } from './agentWebResearch.mjs'
 import { resolveInviteRedirectTo } from './inviteRedirect.mjs'
 import { assertProductStoreContract } from './productStoreContract.mjs'
 
@@ -99,6 +100,11 @@ export function runtimeConfig(rootDir = process.cwd()) {
     // 避免浏览器先于 Provider 报“工作区超时”。客户端仍有独立的 60 秒上限。
     agentPlannerTimeoutMs: Number(process.env.AGENT_PLANNER_TIMEOUT_MS ?? 55000),
     agentMcpTools: parseMcpToolConfigurations(process.env.BOTANIC_MCP_TOOLS_JSON),
+    webSearch: {
+      apiKey: (process.env.BOTANIC_WEB_SEARCH_API_KEY ?? '').trim(),
+      searchUrl: resolveTavilySearchUrl(process.env.BOTANIC_WEB_SEARCH_URL),
+      extractUrl: resolveTavilyExtractUrl(process.env.BOTANIC_WEB_SEARCH_URL),
+    },
     maximumBatchCount: Number(process.env.MAX_GENERATION_BATCH ?? 8),
     maximumReferenceBytes: 8 * 1024 * 1024,
     maximumRequestBytes: 32 * 1024 * 1024,
@@ -130,6 +136,7 @@ export function runtimeConfig(rootDir = process.cwd()) {
       mediaUploadsPerMinute: boundedInteger(process.env.SECURITY_MEDIA_UPLOADS_PER_MINUTE, 30, 1, 1_000),
       agentPlansPerFiveMinutes: boundedInteger(process.env.SECURITY_AGENT_PLANS_PER_5_MINUTES, 20, 1, 1_000),
       agentChatsPerFiveMinutes: boundedInteger(process.env.SECURITY_AGENT_CHATS_PER_5_MINUTES, 40, 1, 1_000),
+      webResearchPerMinute: boundedInteger(process.env.SECURITY_WEB_RESEARCH_PER_MINUTE, 20, 1, 1_000),
       generationOutputsPerDay: boundedInteger(process.env.SECURITY_GENERATION_OUTPUTS_PER_DAY, 100, 1, 10_000),
       memberMutationsPerHour: boundedInteger(process.env.SECURITY_MEMBER_MUTATIONS_PER_HOUR, 20, 1, 1_000),
       promptRefinementsPerFiveMinutes: boundedInteger(process.env.SECURITY_PROMPT_REFINEMENTS_PER_5_MINUTES, 30, 1, 1_000),

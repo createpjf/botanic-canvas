@@ -21,6 +21,7 @@
 - ProductStore 有本地、PostgreSQL、Supabase 三个 Adapter；变更接口时同步维护全部 Adapter 和契约测试。
 - 优先形成拥有明确行为的深模块；不要只为缩短文件而增加透传层。
 - 历史验收和已完成计划不是当前规范；当前入口见 [文档索引](docs/README.md)。
+- 未经维护者明确要求，不要自动创建 Pull Request；改动只提交并推送到已有工作分支。
 
 ## 修改路线
 

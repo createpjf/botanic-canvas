@@ -1,6 +1,6 @@
 import type { AgentToolCallTrace } from './agent.ts'
 
-export type TimelineStepKind = 'search' | 'read_skill' | 'connect_runtime' | 'read' | 'write' | 'other'
+export type TimelineStepKind = 'search' | 'fetch' | 'read_skill' | 'connect_runtime' | 'read' | 'write' | 'other'
 
 export type TimelineToolPresentation = {
   kind: TimelineStepKind
@@ -54,6 +54,9 @@ export function agentTimelineToolPresentation(call: AgentToolCallTrace): Timelin
   if (name === 'web_search' || name.startsWith('search_') || /(?:网页|网站|互联网|web|website).*(?:搜索|检索|search)/iu.test(copy)) {
     return { kind: 'search', title: '已搜索 1 个网站', count: 1 }
   }
+  if (name === 'web_fetch' || /(?:网页获取|获取网页|web.?fetch)/iu.test(copy)) {
+    return { kind: 'fetch', title: '正在获取网页' }
+  }
   if (/^(?:skill_read|read_skill)$/u.test(name) || (name.includes('skill') && /(?:read|search|load|mount)/u.test(name)) || /skill\.md|mounted skill|已挂载 skill|技能指南/iu.test(copy)) {
     const label = skillLabel(call)
     return { kind: 'read_skill', title: label ? `读取${label}技能指南` : '读取技能指南' }
@@ -96,9 +99,11 @@ function rawSummary(blocks: TimelineBlock[], items: AgentToolCallTrace[]) {
   const searched = searchSteps.reduce((total, step) => total + (step.count ?? 0), 0)
   const skillReads = new Set(steps.filter((step) => step.kind === 'read_skill').flatMap((step) => step.sourceToolIds)).size
   const runtimeConnections = new Set(steps.filter((step) => step.kind === 'connect_runtime').flatMap((step) => step.sourceToolIds)).size
+  const fetches = new Set(steps.filter((step) => step.kind === 'fetch').flatMap((step) => step.sourceToolIds)).size
   const reads = new Set(steps.filter((step) => step.kind === 'read').flatMap((step) => step.sourceToolIds)).size
   const writes = new Set(steps.filter((step) => step.kind === 'write').flatMap((step) => step.sourceToolIds)).size
   if (searchSteps.length) parts.push(`已搜索 ${searched} 个网站`)
+  if (fetches) parts.push(`获取 ${fetches} 个网页`)
   if (skillReads) parts.push(`读取 ${skillReads} 个技能指南`)
   if (runtimeConnections) parts.push(`连接 ${runtimeConnections} 次浏览器 runtime`)
   if (reads) parts.push(`读取 ${reads} 项内容`)
