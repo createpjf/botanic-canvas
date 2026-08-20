@@ -34,6 +34,8 @@ export function createGenerationModelCatalog({
           : ['1:1', '3:4', '4:5', '9:16'],
         resolutions: ['1K', '2K'],
         ...(gptImage2 ? { supportsCustomSize: true } : {}),
+        // OpenAI 图片模型统一走 images/edits，天然支持局部重绘蒙版。
+        supportsMask: true,
       }
     }))
   }

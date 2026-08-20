@@ -32,6 +32,8 @@ export type GenerationModelOption = {
   defaultDuration?: number
   /** gpt-image-2 允许在官方像素窗内自定义宽高；其它模型忽略。 */
   supportsCustomSize?: boolean
+  /** 支持局部重绘蒙版（images/edits 的 mask 语义）；缺省视为不支持。 */
+  supportsMask?: boolean
 }
 
 export const defaultGenerationModels: GenerationModelOption[] = [
@@ -43,6 +45,7 @@ export const defaultGenerationModels: GenerationModelOption[] = [
     aspectRatios: ['1:1', '16:9', '4:3', '3:4', '4:5', '9:16'],
     resolutions: ['1K', '2K'],
     supportsCustomSize: true,
+    supportsMask: true,
   },
 ]
 
@@ -81,6 +84,11 @@ export type GenerationRecipe = {
   settings: GenerationSettings
   /** 仅视频生成节点使用；旧配方缺省时按输入数量推导。 */
   videoInputMode?: VideoInputMode
+  /**
+   * 局部重绘蒙版（PNG，透明区域=重绘、不透明区域=保持），与 images/edits 的 mask 语义一致。
+   * 只对首个基准图（parent 或第一张参考）生效；仅支持 supportsMask 的图片模型。
+   */
+  maskImage?: string
 }
 
 export type AssetRecord = {

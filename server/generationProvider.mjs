@@ -139,6 +139,21 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
       })()
     : undefined
 
+  // 局部重绘蒙版只对首个基准图生效；透明区域=重绘。能力由模型目录声明；
+  // 旧字符串目录没有能力元数据，沿用 supportsCustomSize 的先例按 gpt-image-2 前缀识别。
+  const supportsMask = model.supportsMask === true
+    || (model.supportsMask === undefined && typeof model.id === 'string' && model.id.startsWith('gpt-image-2'))
+  const mask = recipe.mask
+    ? (() => {
+        if (!supportsMask) throw new GenerationError(400, 'INVALID_MASK', '当前模型不支持局部重绘蒙版。')
+        const media = inputMedia(recipe.mask, maximumReferenceBytes, 'image')
+        if (media.mimeType && media.mimeType !== 'image/png') {
+          throw new GenerationError(400, 'INVALID_MASK', '局部重绘蒙版必须是带透明通道的 PNG。')
+        }
+        return media
+      })()
+    : undefined
+
   if (!references.length && !parent) throw new GenerationError(400, 'INVALID_REFERENCE', '请至少传入一个画布参考素材或一张父版本图片。')
   if (kind === 'refinement' && !parent) throw new GenerationError(400, 'MISSING_PARENT', '定向精修需要一张已选首图。')
 
@@ -157,6 +172,7 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
     },
     references,
     parent,
+    ...(mask ? { mask } : {}),
   }
 }
 
@@ -180,10 +196,19 @@ export async function resolveGenerationInputMedia(input, resolveMedia) {
     }
     return { ...reference, mimeType: resolved.mimeType, buffer: resolved.buffer }
   }
+  const resolveMask = async (mask) => {
+    const resolved = await resolve(mask)
+    // mediaId 蒙版要到这里才知道字节格式；透明通道只有 PNG 能携带。
+    if (!/^image\/png$/i.test(resolved.mimeType)) {
+      throw new GenerationError(400, 'INVALID_MASK', '局部重绘蒙版必须是带透明通道的 PNG。')
+    }
+    return resolved
+  }
   return {
     ...input,
     references: await Promise.all(input.references.map(resolve)),
     parent: input.parent ? await resolve(input.parent) : undefined,
+    ...(input.mask ? { mask: await resolveMask(input.mask) } : {}),
   }
 }
 
@@ -334,6 +359,10 @@ export async function generateImages(job, {
     inputImages.forEach((reference, index) => {
       form.append('image[]', new Blob([reference.buffer], { type: reference.mimeType }), `reference-${index + 1}.${fileExtension(reference.mimeType)}`)
     })
+    if (job.mask?.buffer) {
+      // OpenAI edits：mask 应用于第一张 image；透明区域被重绘，不透明区域保持原样。
+      form.set('mask', new Blob([job.mask.buffer], { type: job.mask.mimeType }), 'mask.png')
+    }
     let response
     try {
       response = await fetch(`${apiBaseUrl}/v1/images/edits`, {

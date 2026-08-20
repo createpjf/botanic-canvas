@@ -42,8 +42,10 @@ export type SubmitGenerationInput = {
 }
 
 type SubmitGenerationPayload = Omit<SubmitGenerationInput, 'recipe' | 'parent'> & {
-  recipe: Omit<GenerationRecipe, 'references'> & {
+  recipe: Omit<GenerationRecipe, 'references' | 'maskImage'> & {
     references: MediaReferencePayload[]
+    /** 局部重绘蒙版；与参考素材同样只传 mediaId 或 dataUrl，不传画布 URL。 */
+    mask?: { dataUrl?: string; mediaId?: string }
   }
   parent?: {
     nodeId: string
@@ -231,6 +233,7 @@ async function buildPayload(input: SubmitGenerationInput): Promise<SubmitGenerat
     ...(await mediaInputPayload(reference.image, reference.mediaKind ?? 'image')),
   })))
 
+  const { maskImage, ...recipeRest } = input.recipe
   return {
     projectId: input.projectId,
     kind: input.kind,
@@ -238,8 +241,9 @@ async function buildPayload(input: SubmitGenerationInput): Promise<SubmitGenerat
     batchCount: input.batchCount,
     settings: input.settings,
     recipe: {
-      ...input.recipe,
+      ...recipeRest,
       references,
+      ...(maskImage ? { mask: await mediaInputPayload(maskImage) } : {}),
     },
     parent: input.parent
       ? {
