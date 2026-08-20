@@ -1,8 +1,10 @@
 import { AgentToolRuntimeError, agentToolObject, agentToolText, createAgentToolRegistry, runAgentToolLoop } from './agentToolRuntime.mjs'
 import { botanicAgentProviderConfig, botanicAgentProviderTemperature } from './botanicAgentPlanner.mjs'
 import { BotanicAgentChatError } from './botanicAgentChat.mjs'
+import { readStreamedChatCompletion } from './botanicAgentStream.mjs'
 import { normalizeBotanicAgentLocale, readBotanicAgentInstructions } from './agentInstructions.mjs'
-import { botanicAgentContextBriefing, buildBotanicAgentOntology, safeBotanicAgentMemory, safeBotanicAgentSkills } from './botanicAgentOntology.mjs'
+import { botanicAgentContextBriefing, buildBotanicAgentOntology, safeBotanicAgentMemory } from './botanicAgentOntology.mjs'
+import { botanicAgentMountedSkillBriefing, botanicAgentSearchableSkills, resolveBotanicAgentMountedSkills } from './botanicAgentTools.mjs'
 import {
   botanicAgentMultimodalMessages,
   botanicAgentVisionBriefing,
@@ -91,6 +93,12 @@ export function validateBotanicAgentTurnInput(raw) {
   const executionMode = input.executionMode === undefined ? undefined : requiredText(input.executionMode, '执行模式', 16)
   if (executionMode && executionMode !== 'auto' && executionMode !== 'manual') invalidRequest('执行模式不支持。')
   const generationModels = boundedGenerationModels(input.generationModels)
+  const mountedSkillIds = input.mountedSkillIds === undefined
+    ? undefined
+    : (() => {
+      if (!Array.isArray(input.mountedSkillIds) || input.mountedSkillIds.length > 16) invalidRequest('已挂载 Skill 无效。')
+      return [...new Set(input.mountedSkillIds.map((id, index) => requiredText(id, `第 ${index + 1} 个已挂载 Skill`, 160)))]
+    })()
   let maxOutputCount = DEFAULT_MAX_OUTPUT_COUNT
   if (input.maxOutputCount !== undefined) {
     const parsed = Number(input.maxOutputCount)
@@ -107,6 +115,7 @@ export function validateBotanicAgentTurnInput(raw) {
     ...(input.hasTarget === true && selectedResultLabel ? { selectedResultLabel } : {}),
     ...(executionMode ? { executionMode } : {}),
     ...(generationModels ? { generationModels } : {}),
+    ...(mountedSkillIds?.length ? { mountedSkillIds } : {}),
     maxOutputCount,
   }
 }
@@ -406,8 +415,23 @@ function askClarificationTool() {
 }
 
 function turnToolRegistry(input, { ontology, memory, skills }) {
+  const mounted = new Set(input.mountedSkillIds ?? [])
+  const readTools = createBotanicAgentReadToolDefinitions({ ontology, memory, skills }).map((tool) => {
+    if (tool.name !== 'skill_search') return tool
+    const searchSkills = tool.execute
+    return {
+      ...tool,
+      execute: async (args) => {
+        const result = await searchSkills(args)
+        return {
+          ...result,
+          skills: (result.skills ?? []).map((skill) => ({ ...skill, mounted: mounted.has(skill.id) })),
+        }
+      },
+    }
+  })
   return createAgentToolRegistry([
-    ...createBotanicAgentReadToolDefinitions({ ontology, memory, skills }),
+    ...readTools,
     generateImagesTool(input),
     // 目录里没有视频模型时不暴露视频工具，模型也就不会声称能做视频。
     ...(videoModels(input.generationModels).length ? [generateVideosTool(input)] : []),
@@ -492,6 +516,12 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
   const timeoutSignal = AbortSignal.timeout(config.timeoutMs)
   const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal
   const fetchImpl = options.fetchImpl ?? fetch
+  // 有实时通道时才向提供方请求流式；工具步仍以 loop emit 为准，禁止客户端预插成功。
+  const streaming = typeof options.onEvent === 'function'
+  const emitEvent = (event) => {
+    if (!streaming) return
+    try { options.onEvent(event) } catch { /* 展示层异常不得中断本轮回合。 */ }
+  }
   try {
     const result = await runAgentToolLoop({
       registry,
@@ -501,13 +531,14 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
       ],
       toolChoice: 'auto',
       maximumSteps: 5,
-      callModel: async ({ messages: turnMessages, tools, tool_choice }) => {
+      onEvent: emitEvent,
+      callModel: async ({ messages: turnMessages, tools, tool_choice, step }) => {
         const response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${config.apiKey}`,
             'x-litellm-api-key': config.apiKey,
-            Accept: 'application/json',
+            Accept: streaming ? 'text/event-stream' : 'application/json',
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
@@ -517,13 +548,17 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
             tool_choice,
             max_tokens: 3000,
             temperature: botanicAgentProviderTemperature(model),
-            stream: false,
+            stream: streaming,
           }),
           signal,
         })
-        const body = await response.json().catch(() => null)
         if (!response.ok) throw providerError(response.status)
-        return body
+        if (!streaming) return await response.json().catch(() => null)
+        return await readStreamedChatCompletion(response.body, {
+          onEvent: (event) => {
+            if (event.type === 'answer') emitEvent({ type: 'answer', step, delta: event.delta })
+          },
+        })
       },
     })
     if (result.output && typeof result.output === 'object' && result.output.__turnKind === 'generation') {
@@ -583,10 +618,12 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
   const config = turnConfig(runtimeConfig, input?.plannerModel)
   const baseSystem = await turnInstructions(input.locale)
   const situation = turnSituationBriefing(input, input.locale)
+  const mountedSkills = resolveBotanicAgentMountedSkills(input.mountedSkillIds, options.projectSkills)
+  const mountedBriefing = botanicAgentMountedSkillBriefing(mountedSkills, input.locale)
   if (options.signal?.aborted) throw new BotanicAgentChatError(499, 'REQUEST_CANCELLED', 'Agent 请求已取消。')
   const ontology = buildBotanicAgentOntology(options.document, input.contextNodeIds)
   const memory = safeBotanicAgentMemory(options.document)
-  const skills = safeBotanicAgentSkills(options.projectSkills)
+  const skills = botanicAgentSearchableSkills(options.projectSkills)
   const registry = turnToolRegistry(input, { ontology, memory, skills })
 
   // 原生多模态优先：引用图片直接随消息附给视觉模型，让它看着画面判断意图、综合 Prompt。
@@ -606,6 +643,7 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
         system: [
           baseSystem,
           situation,
+          mountedBriefing,
           botanicAgentContextBriefing(ontology, { visionAttached: true }),
         ].filter(Boolean).join('\n\n'),
         messages: botanicAgentMultimodalMessages(input.messages, visionParts),
@@ -633,6 +671,7 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
   const system = [
     baseSystem,
     situation,
+    mountedBriefing,
     botanicAgentContextBriefing(ontology, { visionDescribed: visionDescriptions.length > 0 }),
     botanicAgentVisionBriefing(visionDescriptions),
   ].filter(Boolean).join('\n\n')

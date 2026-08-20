@@ -61,6 +61,41 @@ test('回合请求只接收受控字段，拒绝非法消息与数量', () => {
     () => validateBotanicAgentTurnInput({ ...input, executionMode: 'turbo' }),
     (error) => error instanceof BotanicAgentChatError && error.code === 'INVALID_REQUEST',
   )
+  const mounted = validateBotanicAgentTurnInput({ ...input, mountedSkillIds: ['ecommerce_listing', 'ecommerce_listing'] })
+  assert.deepEqual(mounted.mountedSkillIds, ['ecommerce_listing'])
+  assert.throws(
+    () => validateBotanicAgentTurnInput({ ...input, mountedSkillIds: 'ecommerce_listing' }),
+    (error) => error instanceof BotanicAgentChatError && error.code === 'INVALID_REQUEST',
+  )
+})
+
+test('回合系统提示写入已挂载 Skill 正文，skill_search 能检索系统目录', async () => {
+  const requests = []
+  const fetchImpl = async (_url, init) => {
+    requests.push(JSON.parse(init.body))
+    if (requests.length === 1) {
+      return new Response(JSON.stringify({ choices: [{ message: {
+        content: null,
+        tool_calls: [{ id: 'call-skill-search', type: 'function', function: {
+          name: 'skill_search', arguments: JSON.stringify({ query: '套图' }),
+        } }],
+      } }] }), { status: 200 })
+    }
+    return new Response(JSON.stringify({ choices: [{ message: { content: '按电商套图拆方案。' } }] }), { status: 200 })
+  }
+  await resolveBotanicAgentTurn({
+    projectId: 'project-turn',
+    plannerModel: 'deepseek-v4-pro',
+    messages: [{ role: 'user', content: '出一套货架图' }],
+    contextNodeIds: [],
+    hasTarget: true,
+    selectedResultLabel: '首图 01',
+    mountedSkillIds: ['ecommerce_listing'],
+    generationModels,
+  }, runtime, { document, fetchImpl })
+  assert.match(requests[0].messages[0].content, /用户已在输入框挂载/)
+  assert.match(requests[0].messages[0].content, /电商套图/)
+  assert.match(requests[1].messages.at(-1).content, /ecommerce_listing/)
 })
 
 test('选中态与执行模式写进系统提示：模型知道在改哪张图、生成后会不会自动提交', async () => {

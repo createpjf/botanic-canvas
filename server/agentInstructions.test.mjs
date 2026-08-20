@@ -26,12 +26,50 @@ test('Agent 每种模式都加载通用人格与对应模式规则', async () =>
   assert.match(prompt, /# Prompt 生成模式/)
   assert.match(prompt, /# Prompt Refiner/)
   assert.doesNotMatch(prompt, /# Botanic Agent Planner/)
+  // Prompt 模式也走对话链路的只读工具，必须点名，不能只说「先检索」。
+  assert.match(prompt, /project_memory_search/)
+  assert.match(prompt, /skill_search/)
+
+  const research = await readBotanicAgentInstructions('research')
+  assert.match(research, /# 项目检索模式/)
+  // 检索模式的主力就是这四个只读工具，不点名等于让模型自己猜。
+  assert.match(research, /ontology_read/)
+  assert.match(research, /project_memory_search/)
+  assert.match(research, /asset_group_search/)
+  assert.match(research, /skill_search/)
 
   const generation = await readBotanicAgentInstructions('generation')
   assert.match(generation, /# Creative Brief 交互规则/)
   assert.match(generation, /# 生图规划模式/)
   assert.match(generation, /# Botanic Agent Planner/)
   assert.doesNotMatch(generation, /# Prompt Refiner/)
+})
+
+test('指令层点名结构化字段的真实落点，避免规则与工具契约脱节', async () => {
+  const conversation = await readBotanicAgentInstructions('conversation')
+  assert.match(conversation, /## 字段落点/)
+  // 多版本必须落到生成工具的 variants / axisLabel，而不是写进共享 prompt。
+  assert.match(conversation, /`variants`/)
+  assert.match(conversation, /`axisLabel`/)
+  assert.match(conversation, /`count`/)
+  // 计划工具没有数量与变体参数，写清楚才不会让模型用枚举凑多版本。
+  assert.match(conversation, /这个工具没有数量和变体参数/)
+  // 任务状态的权威是生成任务记录，只读工具读不到。
+  assert.match(conversation, /`generationJobs`/)
+  assert.match(conversation, /当前没有检索工具/)
+  // 节点自带的角色、媒介与状态是模型能用的判断依据。
+  assert.match(conversation, /`mediaKind`/)
+  assert.match(conversation, /`status`/)
+  // Composer 挂载的 Skill 是本轮已确认规则，不是还要再检索的目录项。
+  assert.match(conversation, /用户在输入框挂载的 Skill/)
+  assert.match(conversation, /skill_create_propose/)
+
+  const generation = await readBotanicAgentInstructions('generation')
+  // 变体轴与取值是 Brief 的承载字段，且确认一次长期有效。
+  assert.match(generation, /variation\.axisKey/)
+  assert.match(generation, /variation\.values/)
+  assert.match(generation, /确认一次即长期有效/)
+  assert.match(generation, /originalInstruction/)
 })
 
 test('Agent 英文界面只改变新回复语言，保留用户与项目原文', async () => {

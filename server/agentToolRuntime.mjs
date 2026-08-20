@@ -94,9 +94,33 @@ function presentationCount(output) {
 
 /**
  * 工具展示元数据只从工具名和安全结果摘要中提取，不复制参数或完整返回值。
- * 缺失时客户端领域映射仍会兜底，因此这里不改变工具执行协议。
+ * 标题像真实日志（「检索项目记忆」「起草生成计划」），不是装饰文案。
+ * 缺失时客户端领域映射仍会兜底；禁止客户端预插「成功」——running/终态只由 execute 前后 emit。
  */
-function toolEventPresentation(name, output) {
+const knownToolPresentations = Object.freeze({
+  ontology_read: { kind: 'read', title: '读取本体上下文' },
+  project_memory_search: { kind: 'search', title: '检索项目记忆' },
+  asset_group_search: { kind: 'search', title: '搜索素材组' },
+  skill_search: { kind: 'search', title: '检索技能' },
+  canvas_read: { kind: 'read', title: '读取画布上下文' },
+  asset_search: { kind: 'search', title: '搜索素材' },
+  skill_run: { kind: 'read_skill', title: '调用创作 Skill' },
+  skill_create_propose: { kind: 'write', title: '提议创建项目 Skill' },
+  mcp_propose: { kind: 'other', title: '提议 MCP 调用' },
+  generation_ask_clarification: { kind: 'other', title: '确认生成参数' },
+  generation_create_plan: { kind: 'write', title: '起草生成计划' },
+  generate_images: { kind: 'write', title: '准备图片生成' },
+  generate_videos: { kind: 'write', title: '准备视频生成' },
+  decompose_creative_brief: { kind: 'other', title: '分解创意方案' },
+  ask_clarification: { kind: 'other', title: '向用户提问' },
+  workflow_create: { kind: 'write', title: '创建画布工作流' },
+  generation_submit: { kind: 'write', title: '提交生成任务' },
+  skill_apply: { kind: 'write', title: '应用项目 Skill' },
+  skill_create: { kind: 'write', title: '创建项目 Skill' },
+  mcp_call: { kind: 'other', title: '调用外部工具' },
+})
+
+export function toolEventPresentation(name, output) {
   const normalizedName = typeof name === 'string' ? name.toLowerCase() : ''
   if (normalizedName === 'web_search' || normalizedName.startsWith('search_')) {
     const count = presentationCount(output)
@@ -116,6 +140,18 @@ function toolEventPresentation(name, output) {
   }
   if (/^(?:browser_connect|playwright_connect|cdp_attach)$/u.test(normalizedName)) {
     return { kind: 'connect_runtime', title: '连接浏览器 runtime' }
+  }
+  const known = knownToolPresentations[normalizedName]
+  if (known) {
+    if (normalizedName === 'skill_run') {
+      const skillName = safePresentationLabel(output?.skillName ?? output?.skill?.name ?? output?.name)
+      if (skillName) return { kind: 'read_skill', title: `调用${skillName}` }
+    }
+    if (normalizedName === 'asset_search' || normalizedName === 'asset_group_search' || normalizedName === 'project_memory_search') {
+      const count = presentationCount(output)
+      if (count !== undefined) return { ...known, count, title: `${known.title} · ${count} 条` }
+    }
+    return { ...known }
   }
   return undefined
 }

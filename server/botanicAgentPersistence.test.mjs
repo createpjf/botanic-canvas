@@ -143,6 +143,27 @@ test('Agent 实体验证拒绝越界类型与超长消息', () => {
   assert.throws(() => validateAgentMessageEntity({ id: 'm', role: 'user', kind: 'text', content: 'x'.repeat(64_001), createdAt: 1 }))
 })
 
+test('用户消息的 Skill / 素材引用随独立消息保留，且剥离图片地址', () => {
+  const result = validateAgentMessageEntity({
+    id: 'message-mentions', role: 'user', kind: 'text', content: '帮我出套图', createdAt: 1,
+    mentions: [
+      { kind: 'skill', id: 'ecommerce_listing', name: '电商套图' },
+      { kind: 'reference', id: 'node-mia', label: 'Mia 肖像', image: 'https://private.example.com/mia.webp' },
+      { kind: 'skill', id: 'ecommerce_listing', name: '重复挂载' },
+    ],
+  }, { now: 2 })
+
+  assert.deepEqual(result.mentions, [
+    { kind: 'skill', id: 'ecommerce_listing', name: '电商套图' },
+    { kind: 'reference', id: 'node-mia', label: 'Mia 肖像' },
+  ])
+  assert.equal(result.mentions[1].image, undefined)
+  assert.throws(() => validateAgentMessageEntity({
+    id: 'message-mentions', role: 'user', kind: 'text', content: 'x', createdAt: 1,
+    mentions: [{ kind: 'prompt', id: 'p', name: 'x' }],
+  }, { now: 2 }))
+})
+
 test('Prompt 消息的结构化结果会随独立消息保留', () => {
   const result = validateAgentMessageEntity({
     id: 'message-prompt', role: 'assistant', kind: 'text', content: '可直接使用的 Prompt',

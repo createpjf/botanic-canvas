@@ -24,6 +24,26 @@ test('回合请求只发送最近 16 条消息与去重后的上下文节点', (
   assert.equal(request.maxOutputCount, 6)
 })
 
+test('Composer 挂载的 Skill 随回合下发，空列表不占键', () => {
+  const mounted = buildBotanicAgentTurnRequest({
+    projectId: 'project-1',
+    locale: 'zh-CN',
+    messages: [{ role: 'user', content: '出一套货架图' }],
+    contextNodeIds: [],
+    mountedSkillIds: ['ecommerce_listing', 'ecommerce_listing', 'platform_pack'],
+  })
+  assert.deepEqual(mounted.mountedSkillIds, ['ecommerce_listing', 'platform_pack'])
+
+  const empty = buildBotanicAgentTurnRequest({
+    projectId: 'project-1',
+    locale: 'zh-CN',
+    messages: [{ role: 'user', content: '生成一张' }],
+    contextNodeIds: [],
+    mountedSkillIds: [],
+  })
+  assert.equal(empty.mountedSkillIds, undefined)
+})
+
 test('选中结果与执行模式随回合下发；没有选中就不带结果标签', () => {
   const selected = buildBotanicAgentTurnRequest({
     projectId: 'project-1',

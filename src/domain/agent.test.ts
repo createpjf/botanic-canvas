@@ -17,6 +17,7 @@ import {
   botanicAgentComposerGroupRole,
   botanicAgentGroupRole,
   resolveBotanicAgentIntent,
+  consumeBotanicAgentMention,
   insertBotanicAgentMention,
   mergeBotanicAgentRunSnapshot,
   upsertBotanicAgentRunSnapshot,
@@ -353,17 +354,27 @@ test('对话与检索也展示可理解的运行阶段，而不是静默等待',
   assert.equal(steps[2].label, '整理检索结果')
 })
 
-test('刷新后从服务端 Run 恢复运行时间线，而不是伪造模型过程', () => {
+test('刷新后从服务端 Run 恢复执行进度，不伪造读取/规划步骤', () => {
   const steps = restoreBotanicAgentRuntimeSteps({
-    run: { status: 'running' }, hasTarget: true, referenceCount: 1, plannerLabel: 'DeepSeek V4',
+    run: {
+      status: 'running',
+      branches: [{ id: 'b1', label: '主图', status: 'running', attempt: 0, jobIds: [], outputCount: 1, updatedAt: 1 }],
+      error: undefined,
+    },
+    hasTarget: true, referenceCount: 1, plannerLabel: 'DeepSeek V4',
   })
-  assert.equal(steps.at(-1)?.id, 'finalize-plan')
+  assert.equal(steps[0]?.id, 'exec-submit')
+  assert.equal(steps[0]?.status, 'succeeded')
+  assert.match(steps[0]?.detail ?? '', /从服务端状态恢复/)
+  assert.equal(steps.at(-1)?.id, 'exec-branch:b1')
   assert.equal(steps.at(-1)?.status, 'running')
-  assert.match(steps[0].detail, /已从服务端恢复/)
 
-  const failed = restoreBotanicAgentRuntimeSteps({ run: { status: 'failed' }, hasTarget: true })
-  assert.equal(failed.at(-1)?.status, 'failed')
-  assert.match(failed.at(-1)?.detail ?? '', /失败原因|重试/)
+  const failed = restoreBotanicAgentRuntimeSteps({
+    run: { status: 'failed', branches: [], error: undefined },
+    hasTarget: true,
+  })
+  assert.equal(failed[0]?.status, 'failed')
+  assert.match(failed[0]?.detail ?? '', /失败原因|重试|从服务端/)
 })
 
 test('Runtime 默认只呈现当前阶段与下一步，展开后仍保留完整进度', () => {
@@ -1076,13 +1087,18 @@ test('只有仍在进行的 Run 才在面板底部恢复运行轨迹', () => {
   assert.equal(shouldRestoreBotanicAgentRuntimeSteps('cancelled'), false)
   assert.equal(shouldRestoreBotanicAgentRuntimeSteps('awaiting_confirmation'), false)
 
-  // 恢复出来的上下文步骤一律是已完成状态，只有终点步骤反映 Run 的真实结果。
-  const restored = restoreBotanicAgentRuntimeSteps({ run: { status: 'running' }, hasTarget: true })
-  assert.deepEqual(
-    restored.filter((step) => step.id !== 'finalize-plan').map((step) => step.status),
-    restored.filter((step) => step.id !== 'finalize-plan').map(() => 'succeeded'),
-  )
-  assert.equal(restored.find((step) => step.id === 'finalize-plan')?.status, 'running')
+  // 恢复只投影已发生的提交/分支，不把未发生的读取步骤标成 succeeded。
+  const restored = restoreBotanicAgentRuntimeSteps({
+    run: {
+      status: 'running',
+      branches: [{ id: 'b1', label: '主图', status: 'running', attempt: 0, jobIds: [], outputCount: 1, updatedAt: 1 }],
+      error: undefined,
+    },
+    hasTarget: true,
+  })
+  assert.equal(restored.find((step) => step.id === 'exec-submit')?.status, 'succeeded')
+  assert.equal(restored.find((step) => step.id === 'exec-branch:b1')?.status, 'running')
+  assert.equal(restored.some((step) => step.id === 'read-canvas' || step.id === 'finalize-plan'), false)
 })
 
 test('Agent 行动产物回写画布后记录真实节点血缘', () => {
@@ -1125,6 +1141,19 @@ test('Agent Composer 能识别光标前的 @ 查询并插入画布引用', () =>
     value: '保持商品，换到 @夏日窗台 ', caret: 14,
   })
   assert.equal(readBotanicAgentMentionQuery('保持 @夏日 窗台', 10), undefined)
+})
+
+test('选中 @ 引用后只消耗查询，不把名称写进提示词', () => {
+  assert.deepEqual(consumeBotanicAgentMention('帮我出套图 @电', {
+    start: 6, end: 8, query: '电',
+  }), {
+    value: '帮我出套图 ', caret: 6,
+  })
+  assert.deepEqual(consumeBotanicAgentMention('换到@夏日继续', {
+    start: 2, end: 5, query: '夏日',
+  }), {
+    value: '换到 继续', caret: 3,
+  })
 })
 
 test('Agent 结果区按最新行动聚合 Artifact，避免重复展示', () => {
@@ -1480,6 +1509,7 @@ test('局部编辑语识别为 region_edit，整图替换语不受影响', () =>
   assert.equal(inferBotanicAgentIntent('只把右上角的花重画一下'), 'region_edit')
   assert.equal(inferBotanicAgentIntent('局部重绘背景'), 'region_edit')
   assert.equal(inferBotanicAgentIntent('框选的区域换成夜景'), 'region_edit')
+  assert.equal(inferBotanicAgentIntent('添加flock.io的logo'), 'continue_generation')
   assert.equal(inferBotanicAgentIntent('把场景换成海边'), 'replace_scene')
   assert.equal(inferBotanicAgentIntent('整体风格改成胶片感'), 'change_style')
 })

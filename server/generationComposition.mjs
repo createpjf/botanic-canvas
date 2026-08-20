@@ -1,54 +1,134 @@
-const roleOrder = new Map([
-  ['模特', 10],
-  ['人物', 10],
-  ['商品', 20],
-  ['场景', 30],
-  ['调性', 40],
-  ['首图', 50],
-  ['参考', 60],
-])
+/**
+ * 多图合成：images/edits 第一张是底图。标识类参考必须排在后面，
+ * 并在 Prompt 里写明「原样使用」，不能再套「不要添加品牌标识」。
+ * 与 src/domain/generationComposition.ts 的识别/排序规则保持同一份语义。
+ */
 
-function referenceOrder(reference, index) {
-  const role = typeof reference?.role === 'string' ? reference.role : '参考'
-  return [
-    reference?.primary ? 0 : 1,
-    roleOrder.get(role) ?? 90,
-    Number.isFinite(Number(reference?.priority)) ? Number(reference.priority) : index,
-    index,
-  ]
+export const generationMarkNamePattern =
+  /logo|wordmark|word[\s-]?mark|标识|徽章|勋章|胸针|领针|袖标|臂章|商标|标志|标牌|emblem|badge|crest|monogram|insignia/iu
+
+export function isGenerationMarkReference(reference) {
+  const name = typeof reference?.name === 'string' ? reference.name.trim() : ''
+  return Boolean(name) && generationMarkNamePattern.test(name)
 }
 
-/** 让主体/人物先于标识、场景等叠加参考进入供应商。 */
 export function orderCompositionReferences(references = []) {
-  return references
-    .map((reference, index) => ({ reference, index, order: referenceOrder(reference, index) }))
-    .sort((left, right) => left.order.find((value, index) => value !== right.order[index]) - right.order.find((value, index) => value !== left.order[index]))
-    .map(({ reference }) => reference)
+  if (!Array.isArray(references) || references.length < 2) return [...(references ?? [])]
+  const bases = []
+  const marks = []
+  for (const reference of references) {
+    if (isGenerationMarkReference(reference)) marks.push(reference)
+    else bases.push(reference)
+  }
+  if (!marks.length || !bases.length) return [...references]
+  return [...bases, ...marks]
 }
 
-/** 父结果已经单独作为 base image，局部重绘只继承非主参考叠加层。 */
-export function compositionOverlayReferences(references = []) {
-  return references.filter((reference) => !reference?.primary)
+export function compositionOverlayReferences(references) {
+  return (Array.isArray(references) ? references : []).filter((reference) => isGenerationMarkReference(reference))
 }
 
-function brandReference(reference) {
-  const text = `${reference?.role ?? ''} ${reference?.name ?? ''}`.toLowerCase()
-  return /logo|brand|mark|badge|seal|watermark|标识|徽标|商标|勋章|文字/.test(text)
+export const markOverlayLanguagePattern =
+  /(?:添加|加上|贴上|印上|放上|戴上|还原|严格还原|合成).{0,16}(?:logo|标识|徽章|勋章|胸针|领针|商标|标志)|(?:logo|标识|徽章|勋章|胸针|领针).{0,8}(?:贴|印|加|放|戴|还原|合成)/iu
+
+export function instructionRequestsMarkOverlay(instruction) {
+  return markOverlayLanguagePattern.test(String(instruction ?? ''))
 }
 
-/** 多图合成时明确品牌/文字参考的保真约束，防止供应商把它当普通风格参考。 */
+export function shouldUseHighFidelityCompose(input = {}) {
+  const refs = [input.parent, ...(input.references ?? [])].filter(Boolean)
+  return compositionOverlayReferences(refs).length > 0
+    || instructionRequestsMarkOverlay(input.prompt ?? '')
+}
+
+/** gpt-image-2 合成必须用 high；该模型不允许传 input_fidelity。 */
+export function gptImage2EditQuality(job) {
+  if (shouldUseHighFidelityCompose(job)) return 'high'
+  return job.settings?.resolution === '1K' ? 'low' : 'medium'
+}
+
+export function shouldPixelOverlayCompose(input = {}) {
+  if (input.composeMode !== 'overlay') return false
+  if (!input.maskRegion) return false
+  return compositionOverlayReferences(input.references).length > 0
+}
+
 export function compositionBrandGuard(references = []) {
-  if (!references.some(brandReference)) return ''
-  return '多图合成：品牌标识、徽标、勋章与文字参考必须忠实复原，保持字形、比例、位置与可识别细节，不得改写或虚构。'
+  return (Array.isArray(references) ? references : []).some((reference) => isGenerationMarkReference(reference))
+    ? '参考图中的标识、文字与图形必须原样出现，禁止替换成其他徽章或随机图案。不要添加价格、二维码或水印。'
+    : '不要添加参考图中没有的品牌标识、价格、二维码或水印。'
 }
 
-export function buildImageProviderPrompt(job, variationIndex = 0) {
-  const references = Array.isArray(job?.references) ? job.references : []
-  const composition = references.length > 1
-    ? `多图合成：按参考素材的角色组合画面；主体参考保持身份与关键外观，其他参考只用于其声明的内容。`
-    : ''
-  const variation = variationIndex > 0
-    ? `同批候选 ${variationIndex + 1}：保持主体与品牌细节一致，形成克制且可见的构图或光线差异。`
-    : ''
-  return [job?.prompt, composition, compositionBrandGuard(references), variation].filter(Boolean).join('\n')
+function describeCompositionInputs(job) {
+  const orderedRefs = orderCompositionReferences(job.references ?? [])
+  if (job.parent) {
+    return [
+      { name: job.parent.name ?? '父版本', role: job.parent.role ?? '底图', mark: isGenerationMarkReference(job.parent), base: true },
+      ...orderedRefs.map((reference) => ({
+        name: reference.name ?? '参考',
+        role: reference.role ?? '参考',
+        mark: isGenerationMarkReference(reference),
+        base: false,
+      })),
+    ]
+  }
+  return orderedRefs.map((reference, index) => ({
+    name: reference.name ?? '参考',
+    role: reference.role ?? '参考',
+    mark: isGenerationMarkReference(reference),
+    base: index === 0,
+  }))
+}
+
+function compositionIntent(job, inputs) {
+  const isComposition = inputs.length >= 2
+  const hasMask = Boolean(job.mask || job.maskRegion)
+  const hasMark = inputs.some((item) => item.mark)
+  if (job.kind === 'refinement' && job.refinementMode === 'explore') {
+    return '基于首图父版本生成探索型视觉变体；保持商品主体、人物身份与产品识别度，但主动探索不同构图、机位、光影或环境，不要只输出近似复制图。'
+  }
+  if (hasMark && isComposition) {
+    const placement = hasMask
+      ? '只改蒙版内区域，把后续 Image 中的标识原样嵌入选区；选区外保持原样。'
+      : '把后续 Image 中的标识、图形与文字原样放到 Image 1 用户指定的位置（领针、勋章、胸口、袖标等）。只改标识所在局部，人物身份、服装、构图、光影保持不变。'
+    return `GPT Image 多图编辑：按上传顺序，Image 1 是底图，后续 Image 是必须嵌入的原件，不是风格或氛围参考。${placement}禁止另造徽章、花结或把标识改写成普通印刷字。`
+  }
+  if (job.kind === 'refinement' && hasMask) {
+    return isComposition
+      ? '局部重绘：只改蒙版内区域，选区外保持原样。Image 1 是底图，后续 Image 是必须原样使用的元素，用来填进选区，不是风格或氛围参考。'
+      : '局部重绘：只改蒙版内区域，选区外保持原样。'
+  }
+  if (job.kind === 'refinement') {
+    return isComposition
+      ? '多图精修：Image 1 是底图，后续 Image 是必须原样使用的元素，不是风格或氛围参考。保留底图的人物身份、构图与产品识别度，仅按本次要求调整。'
+      : '基于首图父版本进行忠实精修；保留构图、主体和产品识别度，仅按本次要求调整。'
+  }
+  return isComposition
+    ? '多图合成：Image 1 是底图（人物、场景或已有画面），后续 Image 是必须原样使用的元素，不是风格或氛围参考。'
+    : '生成品牌时尚视觉；主体必须清晰、可识别。'
+}
+
+export function buildImageProviderPrompt(job, variationIndex) {
+  const inputs = describeCompositionInputs(job)
+  const isComposition = inputs.length >= 2
+  const imageLines = inputs.map((item, index) => {
+    const duty = item.base
+      ? '底图，作为编辑起点'
+      : item.mark
+        ? '必须忠实复原其图形与文字，禁止改成其他图案'
+        : '按提示词参与合成，保持可识别'
+    return `Image ${index + 1}（${item.role}：${item.name}）：${duty}。`
+  }).join('\n')
+  const primary = (job.references ?? []).find((reference) => reference.primary)
+  return [
+    compositionIntent(job, inputs),
+    imageLines,
+    !isComposition && primary ? `主商品参考：${primary.name}。商品外观、材质、标识应保持可信。` : '',
+    job.settings?.aspectRatio
+      ? `画面比例：${job.settings.aspectRatio}；输出规格：${job.settings.resolution ?? ''}。`
+      : '',
+    `创意目标：${job.prompt}`,
+    variationIndex === undefined ? '' : `本张为同批候选 ${variationIndex + 1}；请与同批其他候选形成可见差异，同时保持主体一致。`,
+    compositionBrandGuard([job.parent, ...(job.references ?? [])].filter(Boolean)),
+  ].filter(Boolean).join('\n')
 }

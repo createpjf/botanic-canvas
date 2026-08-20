@@ -1,7 +1,9 @@
 import { useState } from 'react'
+import type { BotanicAgentMentionCatalog } from '../../domain/agentMentions'
 import { resolveAgentPromptSections, type AgentPromptSections } from '../../domain/agentMarkdown'
 import { CopyIcon } from '../../components/BotanicIcons'
 import { AgentMarkdown } from './AgentMarkdown'
+import { AgentRichText } from './AgentMentionText'
 import { useProductMessages } from '../../i18n/react'
 
 type PromptSectionKind = 'prompt' | 'negative'
@@ -11,12 +13,14 @@ function PromptSection({
   text,
   kind,
   copied,
+  catalogs,
   onCopy,
 }: {
   label: string
   text: string
   kind: PromptSectionKind
   copied: PromptSectionKind | null
+  catalogs?: BotanicAgentMentionCatalog
   onCopy: (kind: PromptSectionKind, text: string) => void
 }) {
   const copy = useProductMessages({
@@ -36,11 +40,11 @@ function PromptSection({
         <span>{isCopied ? copy.copied : copy.copy}</span>
       </button>
     </header>
-    <pre>{text}</pre>
+    <pre className="agent-prompt-output__text"><AgentRichText text={text} catalogs={catalogs} /></pre>
   </section>
 }
 
-function PromptOutput({ sections }: { sections: AgentPromptSections }) {
+function PromptOutput({ sections, catalogs }: { sections: AgentPromptSections; catalogs?: BotanicAgentMentionCatalog }) {
   const [copied, setCopied] = useState<PromptSectionKind | null>(null)
 
   const copyText = async (kind: PromptSectionKind, text: string) => {
@@ -54,14 +58,14 @@ function PromptOutput({ sections }: { sections: AgentPromptSections }) {
   }
 
   return <div className="agent-prompt-output">
-    {sections.before ? <AgentMarkdown content={sections.before} /> : null}
-    <PromptSection label={sections.promptLabel || 'Prompt'} text={sections.prompt} kind="prompt" copied={copied} onCopy={copyText} />
-    {sections.negativePrompt ? <PromptSection label={sections.negativePromptLabel || 'Negative prompt'} text={sections.negativePrompt} kind="negative" copied={copied} onCopy={copyText} /> : null}
-    {sections.after ? <AgentMarkdown content={sections.after} /> : null}
+    {sections.before ? <AgentMarkdown content={sections.before} catalogs={catalogs} /> : null}
+    <PromptSection label={sections.promptLabel || 'Prompt'} text={sections.prompt} kind="prompt" copied={copied} catalogs={catalogs} onCopy={copyText} />
+    {sections.negativePrompt ? <PromptSection label={sections.negativePromptLabel || 'Negative prompt'} text={sections.negativePrompt} kind="negative" copied={copied} catalogs={catalogs} onCopy={copyText} /> : null}
+    {sections.after ? <AgentMarkdown content={sections.after} catalogs={catalogs} /> : null}
   </div>
 }
 
-export function AgentPromptResponse({ content, prompt }: { content: string; prompt?: string }) {
+export function AgentPromptResponse({ content, prompt, mentionCatalog }: { content: string; prompt?: string; mentionCatalog?: BotanicAgentMentionCatalog }) {
   const sections = resolveAgentPromptSections(content, prompt)
-  return sections ? <PromptOutput sections={sections} /> : <AgentMarkdown content={content} />
+  return sections ? <PromptOutput sections={sections} catalogs={mentionCatalog} /> : <AgentMarkdown content={content} catalogs={mentionCatalog} />
 }

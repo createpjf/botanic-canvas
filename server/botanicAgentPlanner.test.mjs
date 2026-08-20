@@ -321,7 +321,10 @@ test('服务端 Agent 只让模型解释意图与约束，节点、参数和批�
   const finalRequest = JSON.parse(requests[1].init.body)
   assert.match(firstRequest.messages[0].content, /受控上下文/)
   assert.match(firstRequest.messages[0].content, /Use concise, natural English/)
-  assert.deepEqual(JSON.parse(firstRequest.messages[1].content), validInput)
+  const { availableSkills, ...plannerUser } = JSON.parse(firstRequest.messages[1].content)
+  assert.deepEqual(plannerUser, validInput)
+  assert.ok(availableSkills.some((skill) => skill.id === 'ecommerce_listing'))
+  assert.ok(availableSkills.some((skill) => skill.id === 'conversation_distill'))
   assert.deepEqual(firstRequest.tools.map((item) => item.function.name), [
     'canvas_read', 'asset_search', 'web_fetch', 'skill_run', 'skill_create_propose', 'generation_ask_clarification', 'generation_create_plan',
   ])
@@ -420,6 +423,41 @@ test('Agent Planner 未配置时不会伪装成已接入智能模型', async () 
       && error.statusCode === 503
       && error.code === 'PROVIDER_NOT_CONFIGURED',
   )
+})
+
+test('Composer 挂载的系统 Skill 写入规划系统提示，未挂载的项目规则仍不进用户消息', async () => {
+  const requests = []
+  await planBotanicGeneration({
+    ...validInput,
+    mountedSkillIds: ['platform_pack'],
+    projectSkills: [{
+      id: 'skill-brand-safe',
+      name: '品牌安全首图',
+      instructions: '内部规则：不得改变瓶身标签与商标比例。',
+      status: 'active',
+    }],
+  }, {
+    flockApiKey: 'flock-secret', flockTextModel: 'deepseek-v4-pro',
+  }, {
+    fetchImpl: async (_url, init) => {
+      requests.push(JSON.parse(init.body))
+      return new Response(JSON.stringify({ choices: [{ message: {
+        content: null,
+        tool_calls: [{ id: 'call-plan-mounted', type: 'function', function: {
+          name: 'generation_create_plan', arguments: JSON.stringify({
+            intent: 'replace_scene', prompt: '保持主体，替换为海边场景。', summary: '替换场景。',
+            constraints: [{ dimension: 'person', mode: 'preserve' }, { dimension: 'scene', mode: 'vary' }],
+          }),
+        } }],
+      } }] }), { status: 200 })
+    },
+  })
+  const system = requests[0].messages[0].content
+  const user = requests[0].messages[1].content
+  assert.match(system, /mounted these Skills|用户已在输入框挂载/)
+  assert.match(system, /平台交付包/)
+  assert.match(user, /platform_pack/)
+  assert.doesNotMatch(user, /内部规则/)
 })
 
 test('项目 Skill 规则只进入受控工具，不直接暴露在模型用户消息中', async () => {

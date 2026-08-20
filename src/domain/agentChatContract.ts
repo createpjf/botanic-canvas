@@ -1,5 +1,6 @@
 import type { BotanicAgentMessage, BotanicAgentReasoningEntry } from './agent.ts'
 import { instructionRequestsBatchVariation } from './agent.ts'
+import { instructionRequestsMarkOverlay } from './generationComposition.ts'
 import type { GenerationAspectRatio, GenerationModelOption, GenerationResolution } from './canvas'
 import type { ProductLocale } from '../i18n/core'
 import {
@@ -248,7 +249,13 @@ export function decideBotanicAgentRequest(value: string, hasGenerationTarget = f
   if (mediaKind === 'video' && explicitVisualGeneration.test(text) && !hasGenerationTarget) {
     return { kind: 'clarification', reason: 'video_requires_reference' }
   }
-  if (hasContextualVisualCommand || instructionRequestsBatchVariation(text) || explicitVisualGeneration.test(text) || explicitVisualChange.test(text)) {
+  if (
+    hasContextualVisualCommand
+    || instructionRequestsBatchVariation(text)
+    || explicitVisualGeneration.test(text)
+    || explicitVisualChange.test(text)
+    || (hasGenerationTarget && instructionRequestsMarkOverlay(text))
+  ) {
     return { kind: 'generation', mediaKind, promptSource: 'instruction' }
   }
   if (hasGenerationTarget && /^(?:保持|继续|再来|重试|重新|换|替换|调整)(?!.*[?？])/iu.test(text)) {

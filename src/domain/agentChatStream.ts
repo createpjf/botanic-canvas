@@ -1,29 +1,41 @@
-import type { AgentToolCallTrace } from './agent'
+import type { AgentToolCallTrace, BotanicAgentClarificationResponse, BotanicAgentPlan, BotanicAgentReasoningEntry } from './agent'
 import type { BotanicAgentChatResponse } from './agentChatContract'
+import type { BotanicAgentTurnResult } from './agentTurnContract'
 import type { TimelineToolPresentation } from './agentTimeline'
 import type { ProductLocale } from '../i18n/core'
 
 /**
- * Agent 实时对话通道的事件契约。
+ * Agent 实时通道的事件契约（chat / turn / plan 共用）。
  *
- * `done` 携带的响应体与一次性接口完全一致——实时通道只改变“回答什么时候到”，
- * 不改变回答本身，因此下游收敛逻辑只有一套。
+ * `tool` 仅在服务端 registry.execute 前发 running、后发终态；禁止客户端预插成功。
+ * `done` 携带与一次性接口一致的业务体——实时通道只改变“什么时候到”，不改变结果本身。
+ * 原始 `reasoning_content` 默认不下发；摘要级 why 经 tool.summary 展示。
  */
-export type BotanicAgentChatStreamEvent =
+export type BotanicAgentStreamEvent =
   | { type: 'reasoning'; step: number; delta: string }
   | { type: 'answer'; step: number; delta: string }
   | { type: 'tool'; step: number; toolCall: AgentToolCallTrace; presentation?: TimelineToolPresentation }
-  | { type: 'done'; response: BotanicAgentChatResponse }
+  | {
+      type: 'done'
+      response?: BotanicAgentChatResponse
+      turn?: BotanicAgentTurnResult
+      plan?: BotanicAgentPlan
+      clarification?: BotanicAgentClarificationResponse['clarification']
+      reasoning?: BotanicAgentReasoningEntry[]
+    }
   | { type: 'error'; code?: string; message?: string }
+
+/** 对话流事件；与 BotanicAgentStreamEvent 同构，保留别名以免旧导入断裂。 */
+export type BotanicAgentChatStreamEvent = BotanicAgentStreamEvent
 
 const streamEventTypes = new Set(['reasoning', 'answer', 'tool', 'done', 'error'])
 
-function parseStreamEvent(payload: string): BotanicAgentChatStreamEvent[] {
+function parseStreamEvent(payload: string): BotanicAgentStreamEvent[] {
   try {
     const value = JSON.parse(payload) as { type?: unknown }
     if (!value || typeof value !== 'object' || typeof value.type !== 'string') return []
     if (!streamEventTypes.has(value.type)) return []
-    return [value as BotanicAgentChatStreamEvent]
+    return [value as BotanicAgentStreamEvent]
   } catch {
     // 心跳、注释或截断片段不应中断整轮读取。
     return []
@@ -62,7 +74,7 @@ export function createBotanicAgentChatStreamReader() {
   let buffer = ''
   let dataLines: string[] = []
 
-  const flushEvent = (): BotanicAgentChatStreamEvent[] => {
+  const flushEvent = (): BotanicAgentStreamEvent[] => {
     if (!dataLines.length) return []
     const payload = dataLines.join('\n')
     dataLines = []
@@ -71,9 +83,9 @@ export function createBotanicAgentChatStreamReader() {
 
   return {
     /** 送入一段已解码的文本，返回其中完整的事件。 */
-    push(chunk: string): BotanicAgentChatStreamEvent[] {
+    push(chunk: string): BotanicAgentStreamEvent[] {
       buffer += chunk
-      const events: BotanicAgentChatStreamEvent[] = []
+      const events: BotanicAgentStreamEvent[] = []
       let newlineIndex = buffer.indexOf('\n')
       while (newlineIndex !== -1) {
         const line = buffer.slice(0, newlineIndex).replace(/\r$/, '')
@@ -86,7 +98,7 @@ export function createBotanicAgentChatStreamReader() {
       return events
     },
     /** 流结束时调用；处理最后一个没有空行收尾的事件。 */
-    flush(): BotanicAgentChatStreamEvent[] {
+    flush(): BotanicAgentStreamEvent[] {
       const tail = buffer.replace(/\r$/, '')
       buffer = ''
       if (tail.startsWith('data:')) dataLines.push(tail.slice(5).replace(/^ /, ''))

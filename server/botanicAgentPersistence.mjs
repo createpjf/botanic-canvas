@@ -55,6 +55,31 @@ const messageRoles = new Set(['user', 'assistant'])
 const messageKinds = new Set(['text', 'question', 'plan', 'run', 'notice', 'composition'])
 const messageStatuses = new Set(['pending', 'answered', 'submitted', 'failed'])
 const feedbackValues = new Set(['positive', 'negative'])
+const mentionKinds = new Set(['skill', 'reference'])
+const MENTION_LIMIT = 24
+
+/**
+ * 消息引用只落 id + 展示名；图片字节/URL 由画布现况回填，不进消息实体。
+ */
+function persistAgentMentions(value) {
+  if (!Array.isArray(value) || value.length > MENTION_LIMIT) invalid('Agent 消息引用格式无效。')
+  const mentions = []
+  const seen = new Set()
+  for (const [index, item] of value.entries()) {
+    const mention = object(item, `Agent 消息引用 ${index + 1}`)
+    if (!mentionKinds.has(mention.kind)) invalid('Agent 消息引用类型无效。')
+    const id = text(mention.id, `Agent 消息引用 ${index + 1}`, 160)
+    const key = `${mention.kind}:${id}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    if (mention.kind === 'skill') {
+      mentions.push({ kind: 'skill', id, name: text(mention.name, `Agent 消息 Skill 名称 ${index + 1}`, 80) })
+      continue
+    }
+    mentions.push({ kind: 'reference', id, label: text(mention.label, `Agent 消息素材名称 ${index + 1}`, 80) })
+  }
+  return mentions
+}
 const memoryKinds = new Set(['rule', 'approved', 'avoid'])
 const runStatuses = new Set(['awaiting_confirmation', 'queued', 'executing', 'running', 'completed', 'partial', 'failed', 'cancelled'])
 
@@ -210,6 +235,10 @@ export function validateAgentMessageEntity(value, { now = Date.now() } = {}) {
     updatedAt: Math.max(createdAt, timestamp(message.updatedAt, createdAt)),
   }
   if (message.prompt !== undefined) result.prompt = text(message.prompt, 'Agent Prompt', 12_000)
+  if (message.mentions !== undefined) {
+    const mentions = persistAgentMentions(message.mentions)
+    if (mentions.length) result.mentions = mentions
+  }
   if (message.plan !== undefined) result.plan = persistedAgentPlan(message.plan)
   if (message.question !== undefined) result.question = clone(object(message.question, 'Agent 追问'))
   if (message.kind === 'composition' || message.composition !== undefined) {

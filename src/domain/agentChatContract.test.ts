@@ -211,7 +211,7 @@ test('Prompt 写作求助优先进入结构化 Prompt 模式', () => {
 })
 
 test('对象前置的常用视觉编辑语法进入生成链路', () => {
-  for (const instruction of ['把背景换成海边', '把风格改成胶片', '将模特换成男性']) {
+  for (const instruction of ['把背景换成海边', '把风格改成胶片', '将模特换成男性', '添加flock.io的logo']) {
     assert.equal(decideBotanicAgentRequest(instruction, true).kind, 'generation', instruction)
   }
 })

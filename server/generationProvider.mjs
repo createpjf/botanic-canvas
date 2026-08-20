@@ -1,5 +1,5 @@
 import { mapWithConcurrency } from './concurrency.mjs'
-import { buildImageProviderPrompt, orderCompositionReferences } from './generationComposition.mjs'
+import { buildImageProviderPrompt, gptImage2EditQuality, orderCompositionReferences } from './generationComposition.mjs'
 import {
   catalogAspectRatiosForModel,
   inferAspectRatioFromPixels,
@@ -361,7 +361,7 @@ export async function generateImages(job, {
     form.set('prompt', buildImageProviderPrompt(job, variationIndex))
     form.set('n', String(count))
     form.set('size', resolveGenerationOutputSize(job.settings))
-    form.set('quality', job.settings.resolution === '1K' ? 'low' : 'medium')
+    form.set('quality', gptImage2EditQuality(job))
     form.set('output_format', 'png')
     form.set('moderation', 'auto')
     inputImages.forEach((reference, index) => {

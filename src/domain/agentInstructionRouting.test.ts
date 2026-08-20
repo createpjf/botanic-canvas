@@ -287,6 +287,19 @@ test('局部重绘语在有可框选目标时先进入框选，选区回程后�
     messages: [],
   })
   assert.deepEqual(entry, { kind: 'select_region' })
+  // 贴标识默认走 GPT Image 2 整图精修，不先弹框。
+  const addLogo = resolveBotanicAgentInstructionEntry({
+    instruction: '添加flock.io的logo',
+    options: {},
+    hasVisualContext: true,
+    canSelectRegion: true,
+    messages: [],
+  })
+  assert.equal(addLogo.kind, 'route')
+  if (addLogo.kind === 'route') {
+    assert.equal(addLogo.useServerTurn, true)
+    assert.equal(addLogo.decision, undefined)
+  }
 
   // 没有可框选目标时不拦截：仍走正常路由（由后续链路提示先选结果图）。
   const noTarget = resolveBotanicAgentInstructionEntry({

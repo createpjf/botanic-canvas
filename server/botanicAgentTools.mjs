@@ -21,6 +21,22 @@ const skillCatalog = Object.freeze({
     label: '原配方重做',
     instructions: readBuiltInSkill('./skills/root-recipe-redo/SKILL.md'),
   },
+  ecommerce_listing: {
+    label: '电商套图',
+    instructions: readBuiltInSkill('./skills/ecommerce-listing/SKILL.md'),
+  },
+  platform_pack: {
+    label: '平台交付包',
+    instructions: readBuiltInSkill('./skills/platform-pack/SKILL.md'),
+  },
+  video_storyboard: {
+    label: '静帧转视频分镜',
+    instructions: readBuiltInSkill('./skills/video-storyboard/SKILL.md'),
+  },
+  conversation_distill: {
+    label: '对话沉淀 Skill',
+    instructions: readBuiltInSkill('./skills/conversation-distill/SKILL.md'),
+  },
 })
 
 export function botanicAgentBuiltInSkill(skillId) {
@@ -35,6 +51,62 @@ export function botanicAgentSystemSkills() {
     instructions: skill.instructions,
     source: 'system',
   }))
+}
+
+function projectSkillEntries(projectSkills = []) {
+  return (Array.isArray(projectSkills) ? projectSkills : [])
+    .filter((skill) => skill?.status === 'active' && typeof skill.id === 'string' && typeof skill.name === 'string' && typeof skill.instructions === 'string')
+    .filter((skill) => !skillCatalog[skill.id])
+    .slice(0, 30)
+    .map((skill) => [skill.id, { label: skill.name, instructions: skill.instructions, source: 'project' }])
+}
+
+/** 系统目录 + 当前项目已启用 Skill。同名 id 以系统目录为准，避免项目覆盖内置规则。 */
+export function resolveBotanicAgentAvailableSkills(projectSkills = []) {
+  return { ...skillCatalog, ...Object.fromEntries(projectSkillEntries(projectSkills)) }
+}
+
+/** Composer 挂载的 Skill：解析成带正文的列表，未知 id 直接丢掉。 */
+export function resolveBotanicAgentMountedSkills(mountedSkillIds = [], projectSkills = []) {
+  const available = resolveBotanicAgentAvailableSkills(projectSkills)
+  return [...new Set(Array.isArray(mountedSkillIds) ? mountedSkillIds : [])]
+    .map((skillId) => {
+      const skill = available[skillId]
+      return skill
+        ? { id: skillId, name: skill.label, instructions: skill.instructions, source: skill.source ?? 'system' }
+        : undefined
+    })
+    .filter(Boolean)
+    .slice(0, 8)
+}
+
+/** skill_search 用的扁平目录：系统 Skill 始终在，项目 Skill 跟在后面。 */
+export function botanicAgentSearchableSkills(projectSkills = []) {
+  const available = resolveBotanicAgentAvailableSkills(projectSkills)
+  return Object.entries(available).map(([id, skill]) => ({
+    id,
+    name: skill.label,
+    instructions: typeof skill.instructions === 'string' ? skill.instructions.trim().slice(0, 4000) : '',
+    status: 'active',
+  }))
+}
+
+/**
+ * 挂载 Skill 简报：用户在 Composer @ 选中后，正文直接进入本轮规则。
+ * 回合链路没有 skill_run，不注入就等于白挂。
+ */
+export function botanicAgentMountedSkillBriefing(mountedSkills = [], locale = 'zh-CN') {
+  if (!Array.isArray(mountedSkills) || !mountedSkills.length) return ''
+  const english = locale === 'en'
+  const header = english
+    ? 'The user mounted these Skills in the composer. Follow them for this turn. Do not skill_search just to confirm they exist, and do not skill_run them again if that tool is available.'
+    : '用户已在输入框挂载以下 Skill。本轮必须遵守；不要再检索确认它们是否存在，工具列表里有 skill_run 时也不必再调一次。'
+  const blocks = mountedSkills.map((skill) => {
+    const name = typeof skill.name === 'string' ? skill.name.trim() : skill.id
+    const body = typeof skill.instructions === 'string' ? skill.instructions.trim().slice(0, 2000) : ''
+    return `### ${name} (${skill.id})\n${body}`
+  })
+  return [header, ...blocks].join('\n\n')
 }
 
 function object(value, name) {
@@ -195,15 +267,9 @@ function clarificationParameters() {
 
 export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, finalizeClarification, onProposeAction, webResearch }) {
   if (!input || typeof finalizePlan !== 'function' || typeof finalizeClarification !== 'function') throw new TypeError('Agent 规划工具缺少可信上下文。')
-  const projectSkills = Object.fromEntries((input.projectSkills ?? [])
-    .filter((skill) => skill?.status === 'active' && typeof skill.id === 'string' && typeof skill.name === 'string' && typeof skill.instructions === 'string')
-    .filter((skill) => !skillCatalog[skill.id])
-    .slice(0, 30)
-    .map((skill) => [skill.id, { label: skill.name, instructions: skill.instructions, source: 'project' }]))
-  const availableSkills = { ...skillCatalog, ...projectSkills }
-  const mountedSkillLabels = (input.mountedSkillIds ?? [])
-    .map((skillId) => availableSkills[skillId]?.label)
-    .filter(Boolean)
+  const availableSkills = resolveBotanicAgentAvailableSkills(input.projectSkills)
+  const mountedSkillLabels = resolveBotanicAgentMountedSkills(input.mountedSkillIds, input.projectSkills)
+    .map((skill) => skill.name)
   const availableMcpTools = (input.availableMcpTools ?? [])
     .filter((item) => item && typeof item.server === 'string' && typeof item.tool === 'string')
     .slice(0, 30)

@@ -2,7 +2,7 @@ import { AgentToolRuntimeError, createAgentToolRegistry, runAgentToolLoop } from
 import { botanicAgentWebResearchSourceLabels, createBotanicAgentWebResearchTools } from './botanicAgentWebTools.mjs'
 import { botanicAgentProviderConfig, botanicAgentProviderTemperature } from './botanicAgentPlanner.mjs'
 import { normalizeBotanicAgentLocale, readBotanicAgentInstructions } from './agentInstructions.mjs'
-import { botanicAgentContextBriefing, buildBotanicAgentOntology, safeBotanicAgentMemory, safeBotanicAgentSkills } from './botanicAgentOntology.mjs'
+import { botanicAgentContextBriefing, buildBotanicAgentOntology, safeBotanicAgentMemory } from './botanicAgentOntology.mjs'
 import {
   botanicAgentMultimodalMessages,
   botanicAgentVisionBriefing,
@@ -11,6 +11,7 @@ import {
 } from './botanicAgentVision.mjs'
 import { readStreamedChatCompletion } from './botanicAgentStream.mjs'
 import { botanicAgentContextToolSourceLabels, createBotanicAgentReadToolDefinitions } from './botanicAgentContextTools.mjs'
+import { botanicAgentMountedSkillBriefing, botanicAgentSearchableSkills, resolveBotanicAgentMountedSkills } from './botanicAgentTools.mjs'
 
 const CHAT_MODES = new Set(['conversation', 'prompt', 'research'])
 const MESSAGE_ROLES = new Set(['user', 'assistant'])
@@ -241,7 +242,8 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
   if (options.signal?.aborted) throw new BotanicAgentChatError(499, 'REQUEST_CANCELLED', 'Agent 对话请求已取消。')
   const ontology = buildBotanicAgentOntology(options.document, input.contextNodeIds)
   const memory = safeBotanicAgentMemory(options.document)
-  const skills = safeBotanicAgentSkills(options.projectSkills)
+  const skills = botanicAgentSearchableSkills(options.projectSkills)
+  const mountedSkills = resolveBotanicAgentMountedSkills(input.mountedSkillIds, options.projectSkills)
   const webResearch = {
     apiKey: runtimeConfig?.webSearch?.apiKey,
     searchUrl: runtimeConfig?.webSearch?.searchUrl,
@@ -270,6 +272,7 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
         model: visionModel,
         system: [
           baseSystem,
+          botanicAgentMountedSkillBriefing(mountedSkills, input.locale),
           botanicAgentContextBriefing(ontology, { visionAttached: true }),
           chatSearchGuidance(registry),
         ].filter(Boolean).join('\n\n'),
@@ -298,6 +301,7 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
     model: config.model,
     system: [
       baseSystem,
+      botanicAgentMountedSkillBriefing(mountedSkills, input.locale),
       botanicAgentContextBriefing(ontology, { visionDescribed: visionDescriptions.length > 0 }),
       botanicAgentVisionBriefing(visionDescriptions),
       chatSearchGuidance(registry),
