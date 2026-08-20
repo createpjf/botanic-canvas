@@ -76,12 +76,26 @@ test('无素材组的批量变体请求进入生成计划，而不是写成对�
 })
 
 test('裸确认语只提交待确认计划，不当成新指令送进规划器', () => {
-  for (const instruction of ['确认生成', '确认', '生成', '开始生成', '就这样生成', '按推荐值继续', '按推荐方案继续', '确认生成。']) {
+  for (const instruction of [
+    '确认生成', '确认', '生成', '开始生成', '就这样生成', '按推荐值继续', '按推荐方案继续', '确认生成。',
+    '开始执行', '直接执行', '执行吧', '可以的 直接执行', '好的，开始生成', '马上执行',
+  ]) {
     assert.deepEqual(decideBotanicAgentRequest(instruction, true), { kind: 'confirm_pending' }, instruction)
   }
   // 带画面内容的指令仍是新的生成请求，不能被裸确认语规则吞掉。
   assert.equal(decideBotanicAgentRequest('确认生成一张海边人像', true).kind, 'generation')
   assert.equal(decideBotanicAgentRequest('生成多个肤色的任务', true).kind, 'generation')
+})
+
+test('执行链路元话语只提交已有计划，不把出图二字送进规划器', () => {
+  for (const instruction of [
+    '或让具备执行能力的 Agent（如 planner 的执行链路）接手这批待确认任务。',
+    '在画布/执行界面触发这批生成节点，执行链路会按交接计划读取 Mia 素材并出图；',
+  ]) {
+    assert.deepEqual(decideBotanicAgentRequest(instruction, true), { kind: 'confirm_pending' }, instruction)
+  }
+  assert.equal(decideBotanicAgentRequest('按白皙、小麦、黄色三档肤色出 3 张', true).kind, 'generation')
+  assert.deepEqual(decideBotanicAgentRequest('为什么没生成', true), { kind: 'chat', mode: 'conversation' })
 })
 
 test('自然语言创作请求在已有图片上下文时进入生成计划链路', () => {

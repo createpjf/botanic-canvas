@@ -209,6 +209,56 @@ test('Agent 新图名按字计长，8 个含 emoji 的字可以通过校验', ()
   }), /新图名过长/)
 })
 
+test('首次生成按变体批量不要求父结果节点', () => {
+  const input = validateAgentRunCreation({
+    projectId: 'project-1',
+    plan: {
+      intent: 'initial_generation',
+      instruction: '白皙、自然两种肤色，多图',
+      summary: '按「肤色」生成 2 张。',
+      prompt: '基于 Mia 氛围肖像，保持人物身份。',
+      settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
+      constraints: [
+        { dimension: 'person', mode: 'preserve' },
+        { dimension: 'style', mode: 'vary' },
+      ],
+      output: { mode: 'batch_by_variation', count: 2, candidatesPerItem: 1 },
+      variation: {
+        combine: false,
+        axes: [{
+          key: 'skin_tone',
+          label: '肤色',
+          values: [
+            { label: '白皙', promptDelta: '人物肤色为白皙，保持五官与身份不变。' },
+            { label: '自然', promptDelta: '人物肤色为自然，保持五官与身份不变。' },
+          ],
+        }],
+      },
+      contextSnapshot: [{ nodeId: 'asset-mia', label: 'Mia 氛围肖像', kind: '素材', mediaKind: 'image' }],
+    },
+    branches: [
+      { id: 'branch-fair', label: '白皙' },
+      { id: 'branch-natural', label: '自然' },
+    ],
+  })
+  assert.equal(input.plan.intent, 'initial_generation')
+  assert.equal(input.plan.selectedResultNodeId, undefined)
+  assert.equal(input.plan.output.mode, 'batch_by_variation')
+  assert.equal(input.plan.variation.axes[0].values.length, 2)
+
+  assert.throws(() => validateAgentRunCreation({
+    projectId: 'project-1',
+    plan: {
+      ...input.plan,
+      intent: 'batch_variation',
+    },
+    branches: [
+      { id: 'branch-fair', label: '白皙' },
+      { id: 'branch-natural', label: '自然' },
+    ],
+  }), /父结果节点不能为空/)
+})
+
 test('按变体轴批量允许无素材分支，并持久化分支增量', () => {
   const input = validateAgentRunCreation({
     ...creation,
