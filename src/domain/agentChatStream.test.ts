@@ -1,10 +1,19 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createBotanicAgentChatStreamReader } from './agentChatStream.ts'
+import { botanicAgentChatTransportErrorMessage, createBotanicAgentChatStreamReader } from './agentChatStream.ts'
 
 function sse(payload: unknown) {
   return `data: ${JSON.stringify(payload)}\n\n`
 }
+
+test('传输层把浏览器掐流的英文错误收成可重试的中文，服务端中文原样保留', () => {
+  assert.equal(botanicAgentChatTransportErrorMessage(new Error('network error')), 'Agent 对话连接中断，请重试。')
+  assert.equal(botanicAgentChatTransportErrorMessage(new Error('Failed to fetch')), 'Agent 对话连接中断，请重试。')
+  assert.equal(botanicAgentChatTransportErrorMessage(new DOMException('The user aborted a request.', 'AbortError')), 'Agent 对话连接中断，请重试。')
+  assert.equal(botanicAgentChatTransportErrorMessage(new Error('load failed'), { idleTimedOut: true }), 'Agent 对话连接中断，请重试。')
+  assert.equal(botanicAgentChatTransportErrorMessage(new Error('Agent 对话超时，请重试。')), 'Agent 对话超时，请重试。')
+  assert.equal(botanicAgentChatTransportErrorMessage('not-an-error'), 'Agent 暂时无法回答，请稍后重试。')
+})
 
 test('实时事件读取容忍跨网络块切断的行、CRLF 与注释行', () => {
   const reader = createBotanicAgentChatStreamReader()

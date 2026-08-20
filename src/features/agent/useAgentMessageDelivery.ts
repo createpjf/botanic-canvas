@@ -102,6 +102,27 @@ export function useAgentMessageDelivery({
     return messageId
   }, [flush, isCurrentProject, onAppendMessage, online, projectId, queue, session])
 
+  const persistMessage = useCallback((message: BotanicAgentMessage) => {
+    if (!session || !isCurrentProject() || !serverPersistenceEnabled) return
+    const queuedMessage: BotanicAgentMessage = {
+      ...message,
+      deliveryStatus: online ? 'queued' : 'waiting_network',
+    }
+    const queuedSession = {
+      ...session,
+      messages: session.messages.some((item) => item.id === queuedMessage.id)
+        ? session.messages.map((item) => item.id === queuedMessage.id ? queuedMessage : item)
+        : [...session.messages, queuedMessage],
+    }
+    queue.enqueue({
+      projectId,
+      session: queuedSession,
+      message: queuedMessage,
+      idempotencyKey: `agent-message-${queuedMessage.id}`,
+    })
+    if (navigator.onLine) void flush()
+  }, [flush, isCurrentProject, online, projectId, queue, session])
+
   const retryMessage = useCallback((messageId: string) => {
     const item = queue.retry(messageId)
     if (!item || !isCurrentProject()) return
@@ -109,5 +130,5 @@ export function useAgentMessageDelivery({
     if (online) void flush()
   }, [flush, isCurrentProject, onUpdateMessage, online, queue])
 
-  return { appendMessage, retryMessage }
+  return { appendMessage, persistMessage, retryMessage }
 }

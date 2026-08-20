@@ -42,7 +42,7 @@ import {
   isBotanicAgentPromptGenerationPending,
   resolveBotanicAgentGenerationPromptDecision,
 } from '../../domain/agentChatContract'
-import { advanceBotanicCreativeBrief } from '../../domain/agentCreativeBrief'
+import { advanceBotanicCreativeBrief, applyBotanicCreativeBriefAnswers } from '../../domain/agentCreativeBrief'
 import { resolveAgentChatPrompt } from '../../domain/agentMarkdown'
 import type { BotanicAgentChatStreamEvent } from '../../domain/agentChatStream'
 import { applyAgentConversationStreamEvent, createAgentTimeline, type AgentTimelineEvent, type AgentTimelineState } from '../../domain/agentTimeline'
@@ -364,7 +364,7 @@ export default function AgentWorkspace({
     () => agentMountedRef.current && useCanvasStore.getState().document.id === projectId,
     [projectId],
   )
-  const { appendMessage, retryMessage } = useAgentMessageDelivery({
+  const { appendMessage, persistMessage, retryMessage } = useAgentMessageDelivery({
     projectId,
     session,
     isCurrentProject: isCurrentAgentProject,
@@ -1627,22 +1627,35 @@ export default function AgentWorkspace({
   const answerClarification = async (message: BotanicAgentMessage, answers: Record<string, string>) => {
     if (!session || !message.question || planning || message.status === 'answered') return
     const fields = message.question.fields
-    const summary = fields
-      .map((field) => `${field.label}：${field.options.find((option) => option.value === answers[field.id])?.label ?? answers[field.id]}`)
-      .join('；')
-    onUpdateMessage(session.id, message.id, {
+    const summary = [
+      ...fields.map((field) => `${field.label}：${field.options.find((option) => option.value === answers[field.id])?.label ?? answers[field.id]}`),
+      answers.custom_direction?.trim() && !fields.some((field) => field.id === 'custom_direction')
+        ? `自定义优化方向：${answers.custom_direction.trim()}`
+        : '',
+    ].filter(Boolean).join('；')
+    const answeredMessage: BotanicAgentMessage = {
+      ...message,
       status: 'answered',
+      updatedAt: Date.now(),
       question: {
         ...message.question,
         fields: fields.map((field) => answers[field.id]
           ? { ...field, defaultValue: answers[field.id] }
           : field),
       },
+    }
+    onUpdateMessage(session.id, message.id, {
+      status: answeredMessage.status,
+      question: answeredMessage.question,
     })
+    persistMessage(answeredMessage)
     await runInstruction(message.question.originalInstruction, {
       appendUser: summary,
       clarificationAnswers: answers,
-      creativeBrief: botanicAgentBriefWithVariationAnswers(message.question.brief, answers),
+      creativeBrief: botanicAgentBriefWithVariationAnswers(
+        applyBotanicCreativeBriefAnswers(message.question.brief, answers),
+        answers,
+      ),
       sourcePromptMessageId: message.question.sourcePromptMessageId,
       generationOverrides: {
         ...(answers.model ? { model: answers.model } : {}),

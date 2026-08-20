@@ -20,7 +20,7 @@ import { agentPlannerModelLabel, modelDisplayLabel } from '../../components/gene
 import { BotanicSelect } from '../../components/BotanicSelect'
 import { AgentClarificationCard, AgentPromptDiff, agentToolStatusLabel } from './AgentWorkspaceParts'
 import { AgentPromptResponse } from './AgentPromptResponse'
-import { botanicAgentPlanBranchPrompts, botanicAgentPlanOutputLabel } from '../../domain/agentVariations'
+import { botanicAgentPlanBranchPrompts, botanicAgentPlanConfirmActionLabel, botanicAgentPlanOutputLabel, botanicAgentPlanSheetCountLabel } from '../../domain/agentVariations'
 
 /** 超过这个体量的助手回复默认折叠；阈值只影响展示，不改变消息内容。 */
 const collapsibleContentLength = 600
@@ -103,11 +103,13 @@ function AgentCollapsibleContent({ content, prompt }: { content: string; prompt?
 function AgentPlanSettingsEditor({
   settings,
   models,
+  countLabel,
   disabled,
   onChange,
 }: {
   settings: GenerationSettings
   models: GenerationModelOption[]
+  countLabel: string
   disabled: boolean
   onChange: (settings: GenerationSettings) => void
 }) {
@@ -142,43 +144,18 @@ function AgentPlanSettingsEditor({
     setCustomHint(applied.snapped ? `已对齐为 ${applied.width}×${applied.height}` : '')
     onChange(applied.settings)
   }
-
-  return <div className="agent-plan-settings is-editable" aria-label="本次生成设置">
-    <label className="agent-plan-settings__row">
-      <small>模型</small>
-      <BotanicSelect
-        value={settings.model}
-        ariaLabel="选择生成模型"
-        disabled={disabled}
-        options={modelOptions.map((model) => ({ value: model.id, label: modelDisplayLabel(model) || model.label || model.id }))}
-        onChange={(value) => {
-          const model = modelOptions.find((item) => item.id === value)
-          if (model) onChange(settingsForGenerationModel(settings, model))
-        }}
-      />
-    </label>
-    <label className="agent-plan-settings__row">
-      <small>比例</small>
-      <BotanicSelect
-        value={settings.aspectRatio}
-        ariaLabel="选择画面比例"
-        disabled={disabled}
-        options={aspectRatios.map((ratio) => ({ value: ratio, label: ratio }))}
-        onChange={(value) => onChange({ ...withoutCustomGenerationSize(settings), aspectRatio: value as GenerationSettings['aspectRatio'] })}
-      />
-    </label>
-    <label className="agent-plan-settings__row">
-      <small>清晰度</small>
-      <BotanicSelect
-        value={settings.resolution}
-        ariaLabel="选择输出清晰度"
-        disabled={disabled}
-        options={resolutions.map((resolution) => ({ value: resolution, label: resolution }))}
-        onChange={(value) => onChange({ ...settings, resolution: value as GenerationSettings['resolution'] })}
-      />
-    </label>
-    {allowCustom ? <div className="agent-plan-settings__custom">
-      <small>自定义像素</small>
+  const sizeSummary = settings.outputWidth && settings.outputHeight
+    ? `${settings.outputWidth}×${settings.outputHeight}`
+    : settings.aspectRatio
+  const aspectSelect = <BotanicSelect
+    value={settings.aspectRatio}
+    ariaLabel="选择画面比例"
+    disabled={disabled}
+    options={aspectRatios.map((ratio) => ({ value: ratio, label: ratio }))}
+    onChange={(value) => onChange({ ...withoutCustomGenerationSize(settings), aspectRatio: value as GenerationSettings['aspectRatio'] })}
+  />
+  const customFields = allowCustom ? <>
+    <div className="agent-plan-settings__custom">
       <input
         type="number"
         inputMode="numeric"
@@ -206,9 +183,92 @@ function AgentPlanSettingsEditor({
         onChange={(event) => setHeightDraft(event.target.value)}
         onBlur={commitCustomSize}
       />
-      {customHint ? <em>{customHint}</em> : null}
-    </div> : <span><small>输出</small><b>{generationSettingsSizeLabel(settings)}</b></span>}
+    </div>
+    {customHint ? <em>{customHint}</em> : null}
+  </> : null
+
+  return <div className="agent-plan-settings is-editable" aria-label="本次生成设置">
+    <label>
+      <small>模型</small>
+      <BotanicSelect
+        value={settings.model}
+        ariaLabel="选择生成模型"
+        disabled={disabled}
+        options={modelOptions.map((model) => ({ value: model.id, label: modelDisplayLabel(model) || model.label || model.id }))}
+        onChange={(value) => {
+          const model = modelOptions.find((item) => item.id === value)
+          if (model) onChange(settingsForGenerationModel(settings, model))
+        }}
+      />
+    </label>
+    {allowCustom ? <details className="agent-plan-settings__size">
+      <summary><small>尺寸</small><b>{sizeSummary}</b></summary>
+      {aspectSelect}
+      {customFields}
+    </details> : <label>
+      <small>尺寸</small>
+      {aspectSelect}
+    </label>}
+    <label>
+      <small>清晰度</small>
+      <BotanicSelect
+        value={settings.resolution}
+        ariaLabel="选择输出清晰度"
+        disabled={disabled}
+        options={resolutions.map((resolution) => ({ value: resolution, label: resolution }))}
+        onChange={(value) => onChange({ ...settings, resolution: value as GenerationSettings['resolution'] })}
+      />
+    </label>
+    <span>
+      <small>输出</small>
+      <b>{countLabel}</b>
+    </span>
   </div>
+}
+
+function AgentPlanPromptReview({
+  submitted,
+  instruction,
+  draft,
+  polished,
+  onDraftChange,
+  onCommit,
+}: {
+  submitted: boolean
+  instruction: string
+  draft: string
+  polished: string
+  onDraftChange: (value: string) => void
+  onCommit: (value: string) => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const comparable = Boolean(instruction.trim() && instruction.trim() !== draft.trim())
+  const long = draft.length > 96 || draft.split('\n').length > 3
+  return <section className="agent-prompt-review" aria-label="润色后的提示词">
+    <header>
+      <strong>{submitted ? '本次提示词' : '提示词'}</strong>
+      {!submitted && long ? <button type="button" className="agent-text-action" onClick={() => setExpanded((open) => !open)}>{expanded ? '收起' : '展开'}</button> : null}
+    </header>
+    {submitted
+      ? <div className="agent-prompt-review__submitted"><pre>{draft}</pre></div>
+      : <textarea
+        className={!expanded && long ? 'is-clamped' : undefined}
+        value={draft}
+        onChange={(event) => onDraftChange(event.target.value)}
+        onFocus={() => setExpanded(true)}
+        onBlur={(event) => onCommit(event.currentTarget.value)}
+        maxLength={6000}
+        aria-label="润色后提示词"
+      />}
+    {comparable ? <details className="agent-prompt-review__compare">
+      <summary>对照原文</summary>
+      <AgentPromptDiff original={instruction} revised={draft} />
+      {submitted ? null : <div className="agent-prompt-review__actions">
+        <button type="button" className="agent-text-action" onClick={() => { onDraftChange(instruction); onCommit(instruction) }}>用原文</button>
+        <button type="button" className="agent-text-action" onClick={() => { onDraftChange(polished); onCommit(polished) }}>恢复润色</button>
+      </div>}
+    </details> : null}
+  </section>
 }
 
 type AgentConversationMessageProps = {
@@ -399,31 +459,25 @@ export function AgentConversationMessage({
               <span><small>模型</small><b>{modelDisplayLabel(generationModels.find((model) => model.id === plan.settings.model)) || plan.settings.model}</b></span>
               <span><small>尺寸</small><b>{generationSettingsSizeLabel(plan.settings)}</b></span>
               <span><small>清晰度</small><b>{plan.settings.resolution}</b></span>
-              <span><small>输出</small><b>{botanicAgentPlanOutputLabel(plan)}</b></span>
+              <span><small>输出</small><b>{botanicAgentPlanSheetCountLabel(plan)}</b></span>
             </div>
             : <AgentPlanSettingsEditor
               settings={plan.settings}
               models={generationModels}
+              countLabel={botanicAgentPlanSheetCountLabel(plan)}
               disabled={submittingMessageId === message.id}
               onChange={(settings) => onCommitPlanSettings(message, settings)}
             />}
           {contextLabel ? <small className="agent-plan__context-lock">基于 {contextLabel}{plan.contextSnapshot && plan.contextSnapshot.length > 1 ? ` 等 ${plan.contextSnapshot.length} 项` : ''}</small> : null}
-          <section className="agent-prompt-review" aria-label="润色后的提示词">
-            <header><span><strong>{planSubmitted ? '本次提示词' : '提示词'}</strong></span><b>{planSubmitted ? '只读' : '可改'}</b></header>
-            {plan.instruction.trim() && plan.instruction.trim() !== (planSubmitted ? plan.prompt : planPrompt).trim() ? <details className="agent-prompt-review__original"><summary>对照原文</summary><p>{plan.instruction}</p></details> : null}
-            {planSubmitted
-              // 任务已按这份提示词提交，再编辑只会让记录与事实不符，因此提交后转为只读。
-              ? <div className="agent-prompt-review__submitted"><pre>{plan.prompt}</pre></div>
-              : <textarea value={planPrompt} onChange={(event) => onPromptDraftChange(message.id, event.target.value)} onBlur={(event) => onCommitPlanPrompt(message, event.currentTarget.value)} maxLength={6000} aria-label="润色后提示词" />}
-            <AgentPromptDiff original={plan.instruction} revised={planSubmitted ? plan.prompt : planPrompt} />
-            {planSubmitted ? null : <div className="agent-prompt-review__actions">
-              <button type="button" className="is-secondary" onClick={() => { onPromptDraftChange(message.id, plan.instruction); onCommitPlanPrompt(message, plan.instruction) }}>用原文</button>
-              <button type="button" className="is-secondary" onClick={() => { onPromptDraftChange(message.id, plan.prompt); onCommitPlanPrompt(message, plan.prompt) }}>恢复润色</button>
-            </div>}
-          </section>
-          {/* 批量变体一个取值就是一个分支节点：这里逐条列出，用户确认前就能核对数量与各自的提示词。 */}
-          {branchPrompts.length ? <section className="agent-plan-branches" aria-label="每个变体的独立提示词">
-            <header><strong>{branchPrompts.length} 个分支节点</strong><small>原参考图保留，各分支单独出图</small></header>
+          <AgentPlanPromptReview
+            submitted={planSubmitted}
+            instruction={plan.instruction}
+            draft={planSubmitted ? plan.prompt : planPrompt}
+            polished={plan.prompt}
+            onDraftChange={(value) => onPromptDraftChange(message.id, value)}
+            onCommit={(value) => onCommitPlanPrompt(message, value)}
+          />
+          {branchPrompts.length ? <section className="agent-plan-branches" aria-label="变体分支，原参考图保留，各分支单独出图">
             <ol>{branchPrompts.map((branch, index) => <li key={`${branch.label}-${index}`}>
               <b>{branch.label}</b>
               <p>{branch.delta || branch.prompt}</p>
@@ -431,12 +485,10 @@ export function AgentConversationMessage({
             </li>)}</ol>
           </section> : null}
           {pendingActionCount ? <details className="agent-message__route"><summary>执行路由</summary><div><span>规划</span><b>{agentPlannerModelLabel(plan.plannerModel ?? plannerModel)}</b><span>生成</span><b>{plan.settings.model}</b><span>外部行动</span><b>{pendingActionCount} 项，确认后执行</b></div></details> : null}
-          {planSubmitted ? null : <>
-            {/* 自动模式下停在这里一定有原因，必须说清楚，否则用户只会觉得“自动模式没生效”。 */}
+          {planSubmitted ? null : <div className="agent-plan__footer">
             {autoPaused ? <small className="agent-plan__auto-paused">自动模式已暂停：本次包含 {pendingActionCount} 个需要你确认的外部行动，处理完才会开始生成。</small> : null}
-            <small className="agent-plan__confirm-hint">确认后开始生成</small>
-            <button type="button" disabled={submittingMessageId === message.id || blockedByActions} onClick={() => onConfirmPlan(message)}>{submittingMessageId === message.id ? '正在提交…' : blockedByActions ? '先处理行动卡' : message.status === 'failed' ? '重新生成' : '生成'}</button>
-          </>}
+            <button type="button" className="agent-plan__confirm" disabled={submittingMessageId === message.id || blockedByActions} onClick={() => onConfirmPlan(message)}>{botanicAgentPlanConfirmActionLabel(plan, submittingMessageId === message.id ? 'submitting' : blockedByActions ? 'blocked' : message.status === 'failed' ? 'failed' : 'ready')}</button>
+          </div>}
         </>
         // 已提交的计划折叠成一行摘要：任务状态由下方的任务消息承载，细节按需展开。
         if (planSubmitted) return <details className="agent-message__plan is-submitted">

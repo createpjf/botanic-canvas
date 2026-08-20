@@ -120,6 +120,8 @@ const promptDirectionOptions: BotanicAgentClarificationOption[] = [
   { value: 'custom', label: '自定义方向' },
 ]
 
+export const botanicAgentCustomDirectionPlaceholder = '例如：克制的电影感，保留自然肤质'
+
 const deliveryRatios: Record<Exclude<BotanicDeliveryPreset, 'custom'>, GenerationAspectRatio> = {
   taobao: '1:1',
   xiaohongshu: '3:4',
@@ -240,6 +242,31 @@ function inferInstruction(brief: BotanicCreativeBrief) {
       brief.provenance.preservation_priority = 'inferred'
     }
   }
+}
+
+export function applyBotanicCreativeBriefAnswers(
+  brief: BotanicCreativeBrief | undefined,
+  answers: Record<string, string> | undefined,
+  models?: readonly BriefGenerationModel[],
+): BotanicCreativeBrief | undefined {
+  if (!brief) return brief
+  return mergeAnswers(brief, answers, models)
+}
+
+export function botanicAgentClarificationAnswersComplete(
+  fields: readonly BotanicAgentClarificationField[],
+  answers: Record<string, string>,
+) {
+  const filled = fields.every((field) => {
+    if (!field.required) return true
+    const value = answers[field.id]?.trim()
+    if (!value) return false
+    return field.control === 'text' || field.options.some((option) => option.value === value)
+  })
+  if (!filled) return false
+  const choosingDirection = fields.some((field) => field.id === 'prompt_direction')
+  if (choosingDirection && answers.prompt_direction === 'custom' && !answers.custom_direction?.trim()) return false
+  return true
 }
 
 function mergeAnswers(
@@ -413,7 +440,7 @@ export function advanceBotanicCreativeBrief(input: AdvanceBotanicCreativeBriefIn
       label: '自定义优化方向',
       required: true,
       control: 'text',
-      placeholder: '例如：克制的电影感，保留自然肤质',
+      placeholder: botanicAgentCustomDirectionPlaceholder,
       options: [],
     })
   } else if (!brief.creative.promptDirection) {
@@ -429,8 +456,7 @@ export function advanceBotanicCreativeBrief(input: AdvanceBotanicCreativeBriefIn
   if (fields.length) {
     const clarification: BotanicAgentClarification = {
       id: input.clarificationId ?? `clarification-${crypto.randomUUID()}`,
-      question: '我先确认几个会明显影响结果的设置。',
-      helper: '已知项会直接沿用；确认后先整理 Prompt 与计划，不会立即生成。',
+      question: '确认后继续整理 Prompt，不会立刻出图。',
       originalInstruction: brief.originalInstruction,
       brief,
       fields: fields.slice(0, 3),

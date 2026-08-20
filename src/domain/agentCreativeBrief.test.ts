@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { advanceBotanicCreativeBrief } from './agentCreativeBrief.ts'
+import {
+  advanceBotanicCreativeBrief,
+  applyBotanicCreativeBriefAnswers,
+  botanicAgentClarificationAnswersComplete,
+} from './agentCreativeBrief.ts'
 
 const imageModels = [{
   id: 'gpt-image-2',
@@ -62,6 +66,75 @@ test('追问答案会合并到 Brief 并编译进生成设置与 Prompt', () => 
   assert.equal(turn.brief.provenance.delivery_preset, 'user')
   assert.match(turn.prompt, /杂志氛围/)
   assert.match(turn.prompt, /小红书/)
+})
+
+test('创作设置追问只保留一句不会立刻出图的说明', () => {
+  const turn = advanceBotanicCreativeBrief({
+    mode: 'prompt',
+    instruction: '优化这段人物摄影 Prompt',
+    clarificationId: 'clarification-copy',
+  })
+
+  assert.equal(turn.kind, 'ask')
+  assert.equal(turn.clarification.question, '确认后继续整理 Prompt，不会立刻出图。')
+  assert.equal(turn.clarification.helper, undefined)
+})
+
+test('自定义 Prompt 方向与说明可以在同一轮提交并收束', () => {
+  const first = advanceBotanicCreativeBrief({
+    mode: 'prompt',
+    instruction: '优化这段人物摄影 Prompt',
+    clarificationId: 'clarification-direction',
+  })
+  assert.equal(first.kind, 'ask')
+
+  const ready = advanceBotanicCreativeBrief({
+    mode: 'prompt',
+    instruction: first.brief.originalInstruction,
+    previousBrief: first.brief,
+    answers: {
+      prompt_direction: 'custom',
+      custom_direction: '克制的电影感，保留自然肤质',
+    },
+  })
+  assert.equal(ready.kind, 'ready')
+  assert.match(ready.prompt, /克制的电影感，保留自然肤质/)
+})
+
+test('选自定义方向但未填写说明时确认卡仍未完成', () => {
+  const fields = [{
+    id: 'prompt_direction' as const,
+    label: 'Prompt 优化方向',
+    required: true,
+    control: 'single_choice' as const,
+    defaultValue: 'faithful',
+    options: [{ value: 'faithful', label: '保真自然' }, { value: 'custom', label: '自定义方向' }],
+  }]
+  assert.equal(botanicAgentClarificationAnswersComplete(fields, { prompt_direction: 'faithful' }), true)
+  assert.equal(botanicAgentClarificationAnswersComplete(fields, { prompt_direction: 'custom' }), false)
+  assert.equal(botanicAgentClarificationAnswersComplete(fields, {
+    prompt_direction: 'custom',
+    custom_direction: '克制的电影感',
+  }), true)
+})
+
+test('确认过的 Prompt 方向会沉淀到 Brief，下一轮不再追问同一字段', () => {
+  const first = advanceBotanicCreativeBrief({
+    mode: 'prompt',
+    instruction: '优化这段人物摄影 Prompt',
+    clarificationId: 'clarification-persist',
+  })
+  assert.equal(first.kind, 'ask')
+
+  const remembered = applyBotanicCreativeBriefAnswers(first.brief, { prompt_direction: 'editorial' })
+  const next = advanceBotanicCreativeBrief({
+    mode: 'prompt',
+    instruction: first.brief.originalInstruction,
+    previousBrief: remembered,
+  })
+
+  assert.equal(next.kind, 'ready')
+  assert.equal(next.brief.creative.promptDirection, 'editorial')
 })
 
 test('自定义 Prompt 方向进入第二轮文本追问并在回答后收束', () => {
