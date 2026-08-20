@@ -2051,7 +2051,7 @@ export default function AgentWorkspace({
         <div ref={messageEndRef} />
       </div>
       </div>
-      {!utilityPanelOpen ? <AgentComposer>
+      {!utilityPanelOpen ? <AgentComposer
         session={session}
         contextItems={contextItems}
         mentionQuery={mentionQuery}
