@@ -37,6 +37,8 @@ export type BotanicAgentTurnResult =
       mediaKind: 'image' | 'video'
       prompt: string
       count: number
+      /** 仅视频：时长（秒），取值来自视频模型目录。 */
+      duration?: number
       settingsHint?: BotanicAgentTurnSettingsHint
       plannerModel?: string
       toolCalls?: AgentToolCallTrace[]

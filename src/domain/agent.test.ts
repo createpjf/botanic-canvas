@@ -499,6 +499,26 @@ test('首次生成按请求数量生成多张单次候选，并裁剪到上限',
   assert.equal(defaulted.output.count, 1)
 })
 
+test('视频计划以首帧语义生成一条视频，措辞与图片计划区分', () => {
+  const contextSnapshot = [{ nodeId: 'result-mia', label: 'Mia 首图', kind: '结果' as const, mediaKind: 'image' as const }]
+  const plan = buildBotanicAgentPlan({
+    instruction: '镜头缓慢推近，光线渐暖',
+    intent: 'initial_generation',
+    settings: { model: 'MiniMax-H3', aspectRatio: '3:4', resolution: '2K', duration: 10 } as GenerationSettings,
+    contextSnapshot,
+  })
+  assert.equal(plan.settings.duration, 10)
+  assert.deepEqual(plan.output, { mode: 'single', count: 1, candidatesPerItem: 1 })
+  assert.match(plan.summary, /以参考图为首帧生成 1 条 10 秒视频/)
+  // 视频同样要求图片上下文作首帧。
+  assert.throws(() => buildBotanicAgentPlan({
+    instruction: '镜头缓慢推近',
+    intent: 'initial_generation',
+    settings: { model: 'MiniMax-H3', aspectRatio: '3:4', resolution: '2K', duration: 10 } as GenerationSettings,
+    contextSnapshot: [],
+  }))
+})
+
 test('首次生成拒绝空上下文和仅视频上下文，其他意图仍要求父结果', () => {
   const settings = { model: 'gpt-image-2' as const, aspectRatio: '1:1' as const, resolution: '1K' as const }
   assert.throws(() => buildBotanicAgentPlan({

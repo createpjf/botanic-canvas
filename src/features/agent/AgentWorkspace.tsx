@@ -1246,6 +1246,7 @@ export default function AgentWorkspace({
         : undefined
     let synthesizedPrompt: string | undefined = restoredGeneration?.prompt
     let synthesizedCount: number | undefined = restoredGeneration?.count
+    let synthesizedDuration: number | undefined = restoredGeneration?.duration
     let resolvedOptions = executionPromptMessageId
       ? { ...options, sourcePromptMessageId: executionPromptMessageId }
       : options
@@ -1305,6 +1306,7 @@ export default function AgentWorkspace({
         serverDecision = { kind: 'generation', mediaKind: turn.mediaKind, promptSource: 'instruction' }
         synthesizedPrompt = turn.prompt
         synthesizedCount = turn.count
+        synthesizedDuration = turn.duration
         if (turn.settingsHint && Object.keys(turn.settingsHint).length) {
           resolvedOptions = { ...options, generationOverrides: { ...turn.settingsHint, ...options.generationOverrides } }
         }
@@ -1333,9 +1335,11 @@ export default function AgentWorkspace({
       appendMessage({
         role: 'assistant',
         kind: 'notice',
-        content: decision.reason === 'unsupported_media'
-          ? 'Agent 对话暂未接入视频执行链。请先在画布添加「视频生成」节点；本次没有创建节点或任务。'
-          : '请明确是只需要建议，还是要我直接生成；本次没有改动画布。',
+        content: decision.reason === 'video_requires_reference'
+          ? '视频需要一张图片作首帧。请先 @ 引用一张素材或点选一张结果图，再说要生成的视频；本次没有创建任务。'
+          : decision.reason === 'unsupported_media'
+            ? 'Agent 对话暂未接入这类媒体的执行链；本次没有创建节点或任务。'
+            : '请明确是只需要建议，还是要我直接生成；本次没有改动画布。',
       })
       return
     }
@@ -1528,18 +1532,32 @@ export default function AgentWorkspace({
         mediaKind: serverDecision.mediaKind,
         prompt: synthesizedPrompt,
         ...(synthesizedCount ? { count: synthesizedCount } : {}),
+        ...(synthesizedDuration ? { duration: synthesizedDuration } : {}),
       }
       : undefined
     const clarificationCarryOver = {
       ...(resolvedSourcePromptMessageId ? { sourcePromptMessageId: resolvedSourcePromptMessageId } : {}),
       ...(resolvedGeneration ? { resolvedGeneration } : {}),
     }
-    const imageModels = generationModels.filter((model) => model.mediaKind !== 'video')
-    const inferredGenerationOverrides = inferBotanicAgentGenerationSettings(cleanInstruction, imageModels)
+    // 视频轮次用视频模型目录，图片轮次照旧；brief 的比例/清晰度追问由同一套表单驱动。
+    const isVideoGeneration = decision.kind === 'generation' && decision.mediaKind === 'video'
+    const candidateModels = isVideoGeneration
+      ? generationModels.filter((model) => model.mediaKind === 'video')
+      : generationModels.filter((model) => model.mediaKind !== 'video')
+    if (isVideoGeneration && !candidateModels.length) {
+      appendMessage({
+        role: 'assistant',
+        kind: 'notice',
+        content: '当前项目没有可用的视频生成模型，请检查模型目录；本次没有创建任务。',
+      })
+      return
+    }
+    const inferredGenerationOverrides = inferBotanicAgentGenerationSettings(cleanInstruction, candidateModels)
     const requestedGenerationOverrides = { ...inferredGenerationOverrides, ...resolvedOptions.generationOverrides }
     const variationGroup = compatibleGroups.find((group) => group.id === groupId)
     // 变体轴决定要开几个分支，必须先于比例与清晰度确认；已确认过的取值不再重复追问。
-    const pendingVariation = botanicAgentPendingVariationClarification({
+    // 视频一次一条，不进入变体展开。
+    const pendingVariation = isVideoGeneration ? undefined : botanicAgentPendingVariationClarification({
       instruction: generationPrompt,
       requestedIntent: intent,
       clarificationAnswers: resolvedOptions.clarificationAnswers,
@@ -1563,8 +1581,9 @@ export default function AgentWorkspace({
       mode: 'generation',
       executionMode: session.executionMode,
       instruction: generationPrompt,
-      generationModels: imageModels,
-      inheritedSettings: target?.rootRecipe.settings,
+      generationModels: candidateModels,
+      // 视频设置不继承图片配方：比例与清晰度必须落在视频模型自己的目录里。
+      inheritedSettings: isVideoGeneration ? undefined : target?.rootRecipe.settings,
       requestedSettings: requestedGenerationOverrides,
       previousBrief: resolvedOptions.creativeBrief,
       answers: resolvedOptions.clarificationAnswers,
@@ -1621,30 +1640,48 @@ export default function AgentWorkspace({
     if (!isCurrentAgentProject()) return
     setRuntimePhase('planning')
     updateRuntimeStep('call-planner', 'running')
-    if (!target) {
+    // 视频计划一律走首帧语义：选中的结果图并进上下文作为首帧来源，不进服务端图片规划器。
+    if (!target || isVideoGeneration) {
       const executionDecision = resolveBotanicAgentExecutionDecision({
         mode: session.executionMode,
         settingsComplete: hasCompleteOutputSettings,
         pendingActionCount: 0,
       })
       try {
+        const planContextItems = isVideoGeneration && target && !contextItems.some((item) => item.id === target.id)
+          ? [
+            { id: target.id, label: target.label, kind: '结果' as const, image: target.image, mediaKind: 'image' as const },
+            ...contextItems,
+          ]
+          : contextItems
+        const selectedVideoModel = isVideoGeneration
+          ? candidateModels.find((model) => model.id === resolvedGenerationOverrides.model)
+          : undefined
         const initialPlan = {
           ...buildBotanicAgentPlan({
             instruction: briefTurn.prompt,
             creativeBrief: briefTurn.brief,
             intent: 'initial_generation',
-            settings: resolvedGenerationOverrides as GenerationSettings,
-            contextSnapshot: createBotanicAgentContextSnapshot(contextItems),
-            ...(synthesizedCount ? { outputCount: synthesizedCount } : {}),
+            settings: {
+              ...resolvedGenerationOverrides,
+              ...(isVideoGeneration
+                ? { duration: synthesizedDuration ?? selectedVideoModel?.defaultDuration ?? selectedVideoModel?.durations?.[0] ?? 5 }
+                : {}),
+            } as GenerationSettings,
+            contextSnapshot: createBotanicAgentContextSnapshot(planContextItems),
+            ...(!isVideoGeneration && synthesizedCount ? { outputCount: synthesizedCount } : {}),
           }),
           plannerModel,
         }
-        const appliedInitial = applyBotanicAgentVariationToPlan(initialPlan, {
-          instruction: briefTurn.prompt,
-          requestedIntent: 'initial_generation',
-          clarificationAnswers: options.clarificationAnswers,
-          brief: briefTurn.brief,
-        })
+        // 视频一次一条，不做变体展开。
+        const appliedInitial = isVideoGeneration
+          ? { kind: 'plan' as const, plan: initialPlan }
+          : applyBotanicAgentVariationToPlan(initialPlan, {
+            instruction: briefTurn.prompt,
+            requestedIntent: 'initial_generation',
+            clarificationAnswers: options.clarificationAnswers,
+            brief: briefTurn.brief,
+          })
         if (appliedInitial.kind === 'clarification') {
           setRuntimePhase('waiting_clarification')
           appendMessage({

@@ -1852,6 +1852,11 @@ export function botanicAgentBatchBranchTitles(
   }))
 }
 
+/** 图片设置从不携带 duration，它就是视频计划的标记：媒体类型不需要单独字段。 */
+export function botanicAgentPlanMediaKind(plan: Pick<BotanicAgentPlan, 'settings'>): 'image' | 'video' {
+  return plan.settings.duration !== undefined ? 'video' : 'image'
+}
+
 export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): BotanicAgentPlan {
   const instruction = input.instruction.trim()
   if (!instruction) throw new Error('请描述希望 Agent 完成的修改。')
@@ -1903,10 +1908,13 @@ export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): Botani
     role: input.assetGroup.role,
   })
 
+  const isVideoPlan = botanicAgentPlanMediaKind({ settings }) === 'video'
   return {
     intent,
     instruction,
-    summary: `${intentLabel(intent)}，${output.mode === 'batch_by_asset' ? `按「${input.assetGroup?.name}」生成 ${output.count} 张` : `生成 ${output.count} 张新版本`}。`,
+    summary: isVideoPlan
+      ? `${intentLabel(intent)}，以参考图为首帧生成 ${output.count} 条 ${settings.duration} 秒视频。`
+      : `${intentLabel(intent)}，${output.mode === 'batch_by_asset' ? `按「${input.assetGroup?.name}」生成 ${output.count} 张` : `生成 ${output.count} 张新版本`}。`,
     title: summarizeBotanicAgentNodeTitle({ intent, constraints }),
     ...(input.creativeBrief ? { creativeBrief: structuredClone(input.creativeBrief) } : {}),
     ...(input.selectedResultNodeId ? { selectedResultNodeId: input.selectedResultNodeId } : {}),

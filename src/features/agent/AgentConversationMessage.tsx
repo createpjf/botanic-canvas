@@ -3,6 +3,7 @@ import {
   botanicAgentAppliedSkillName,
   botanicAgentContextSnapshotNodeIds,
   botanicAgentPendingConfirmationCount,
+  botanicAgentPlanMediaKind,
   botanicAgentMessageOffersVisualPrompt,
   creativeDimensionLabel,
   type BotanicAgentActionProposal,
@@ -459,11 +460,13 @@ export function AgentConversationMessage({
               <span><small>模型</small><b>{modelDisplayLabel(generationModels.find((model) => model.id === plan.settings.model)) || plan.settings.model}</b></span>
               <span><small>尺寸</small><b>{generationSettingsSizeLabel(plan.settings)}</b></span>
               <span><small>清晰度</small><b>{plan.settings.resolution}</b></span>
+              {plan.settings.duration ? <span><small>时长</small><b>{plan.settings.duration} 秒</b></span> : null}
               <span><small>输出</small><b>{botanicAgentPlanSheetCountLabel(plan)}</b></span>
             </div>
             : <AgentPlanSettingsEditor
               settings={plan.settings}
-              models={generationModels}
+              // 换模型不能顺便换媒体类型：视频计划带着 duration，切到图片模型会在提交时被拒。
+              models={generationModels.filter((model) => (model.mediaKind === 'video') === (botanicAgentPlanMediaKind(plan) === 'video'))}
               countLabel={botanicAgentPlanSheetCountLabel(plan)}
               disabled={submittingMessageId === message.id}
               onChange={(settings) => onCommitPlanSettings(message, settings)}
