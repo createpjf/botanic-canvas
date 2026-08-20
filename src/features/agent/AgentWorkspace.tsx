@@ -1290,6 +1290,18 @@ export default function AgentWorkspace({
           appendMessage({ role: 'assistant', kind: 'text', content: `${turn.answer}${sourceNote}` })
           return
         }
+        if (turn.kind === 'clarification') {
+          // 模型的结构化中断：这一轮在等用户补充核心信息，答案作为下一条消息自然回流
+          // 服务端回合（对话里已有提问与回答），不进入本地 brief 表单。
+          updateRuntimeStep('respond', 'succeeded')
+          if (!isCurrentAgentProject()) return
+          setRuntimePhase('waiting_clarification')
+          const optionLines = turn.options?.length
+            ? `\n\n${turn.options.map((option, index) => `${index + 1}. ${option}`).join('\n')}`
+            : ''
+          appendMessage({ role: 'assistant', kind: 'text', content: `${turn.question}${optionLines}` })
+          return
+        }
         serverDecision = { kind: 'generation', mediaKind: turn.mediaKind, promptSource: 'instruction' }
         synthesizedPrompt = turn.prompt
         synthesizedCount = turn.count

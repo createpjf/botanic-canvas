@@ -162,6 +162,40 @@ test('生成数量与非法设置被裁剪到可用范围', async () => {
   assert.equal(result.settingsHint, undefined)
 })
 
+test('核心信息缺失时模型可结构化追问，候选选项随回合返回', async () => {
+  const requests = []
+  const result = await resolveBotanicAgentTurn({
+    projectId: 'project-turn',
+    plannerModel: 'deepseek-v4-pro',
+    messages: [{ role: 'user', content: '出一张图' }],
+    contextNodeIds: [],
+    hasTarget: false,
+    generationModels,
+    maxOutputCount: 8,
+  }, runtime, {
+    document,
+    fetchImpl: async (_url, init) => {
+      requests.push(JSON.parse(init.body))
+      return new Response(JSON.stringify({ choices: [{ message: {
+        content: null,
+        tool_calls: [{ id: 'call-ask', type: 'function', function: {
+          name: 'ask_clarification',
+          arguments: JSON.stringify({
+            question: '这张图的主体是什么？',
+            options: ['Mia 肖像', '商品静物', '场景空镜'],
+            why: '缺少视觉主体',
+          }),
+        } }],
+      } }] }), { status: 200 })
+    },
+  })
+
+  assert.equal(result.kind, 'clarification')
+  assert.equal(result.question, '这张图的主体是什么？')
+  assert.deepEqual(result.options, ['Mia 肖像', '商品静物', '场景空镜'])
+  assert.ok(requests[0].tools.some((tool) => tool.function.name === 'ask_clarification'))
+})
+
 test('模型写坏生成参数时归一成 502，而不是把请求判成用户的错', async () => {
   await assert.rejects(
     resolveBotanicAgentTurn({

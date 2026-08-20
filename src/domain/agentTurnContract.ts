@@ -48,6 +48,14 @@ export type BotanicAgentTurnResult =
       sources?: string[]
       toolCalls?: AgentToolCallTrace[]
     }
+  | {
+      /** 模型判定核心信息缺失时的结构化中断；客户端据此进入等待作答，而不是当成普通回答。 */
+      kind: 'clarification'
+      question: string
+      options?: string[]
+      plannerModel?: string
+      toolCalls?: AgentToolCallTrace[]
+    }
 
 /**
  * 单条历史消息的上限，与服务端回合校验一致。助手回答可以长到 12000 字，
