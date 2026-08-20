@@ -1,4 +1,4 @@
-import { AgentToolRuntimeError, createAgentToolRegistry, runAgentToolLoop } from './agentToolRuntime.mjs'
+import { AgentToolRuntimeError, agentToolObject, agentToolText, createAgentToolRegistry, runAgentToolLoop } from './agentToolRuntime.mjs'
 import { botanicAgentProviderConfig, botanicAgentProviderTemperature } from './botanicAgentPlanner.mjs'
 import { BotanicAgentChatError } from './botanicAgentChat.mjs'
 import { readBotanicAgentInstructions } from './agentInstructions.mjs'
@@ -150,8 +150,9 @@ function generateImagesTool(input) {
       },
     },
     validate: (raw) => {
-      const value = object(raw, '生成参数')
-      const prompt = requiredText(value.prompt, '生成 Prompt', 6000)
+      // 这些参数来自模型而不是用户，写坏了要按 Provider 非法工具参数处理。
+      const value = agentToolObject(raw, '生成参数')
+      const prompt = agentToolText(value.prompt, '生成 Prompt', 6000)
       let count = 1
       if (value.count !== undefined) {
         const parsed = Number(value.count)

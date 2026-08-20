@@ -42,6 +42,29 @@ function isRecoverableToolFailure(caught) {
   return caught instanceof AgentToolRuntimeError && typeof caught.code === 'string' && caught.code.startsWith('WEB_')
 }
 
+/**
+ * 工具参数由模型产出，写坏了属于「Provider 返回了非法参数」，不是用户请求非法。
+ * 校验必须抛工具级错误，调用方才能把它归一成 502 并降级；用请求级 400 会把
+ * 「生成 Prompt 不能为空」这类内部文案当成用户的错展示出去。
+ */
+export function agentToolText(value, name, maximumLength) {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new AgentToolRuntimeError('INVALID_TOOL_ARGUMENTS', `${name}不能为空。`)
+  }
+  const result = value.trim()
+  if (result.length > maximumLength) {
+    throw new AgentToolRuntimeError('INVALID_TOOL_ARGUMENTS', `${name}过长。`)
+  }
+  return result
+}
+
+export function agentToolObject(value, name) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new AgentToolRuntimeError('INVALID_TOOL_ARGUMENTS', `${name}无效。`)
+  }
+  return value
+}
+
 function parseArguments(value) {
   if (typeof value !== 'string' || value.length > 64 * 1024) {
     throw new AgentToolRuntimeError('INVALID_TOOL_ARGUMENTS', '工具参数无效。')

@@ -1,24 +1,8 @@
-import { AgentToolRuntimeError } from './agentToolRuntime.mjs'
+import { agentToolObject as toolObject, agentToolText as toolText } from './agentToolRuntime.mjs'
 
 // 只读上下文工具是 Agent 对话与回合规划共享的深模块：把项目本体、记忆、素材组与
 // 已审核 Skill 的受控读取集中在一处，任何调用方都拿到同一套安全语义（不返回图片字节、
 // 私有媒体地址或凭据）。工具参数由模型产出，因此校验失败按“Provider 非法工具参数”处理。
-
-function invalidToolArguments(message) {
-  throw new AgentToolRuntimeError('INVALID_TOOL_ARGUMENTS', message)
-}
-
-function toolText(value, name, maximumLength) {
-  if (typeof value !== 'string' || !value.trim()) invalidToolArguments(`${name}不能为空。`)
-  const result = value.trim()
-  if (result.length > maximumLength) invalidToolArguments(`${name}过长。`)
-  return result
-}
-
-function toolObject(value, name) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) invalidToolArguments(`${name}无效。`)
-  return value
-}
 
 function searchText(value) {
   return typeof value === 'string' ? value.trim().toLocaleLowerCase('zh-CN') : ''

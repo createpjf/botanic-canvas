@@ -138,6 +138,33 @@ test('生成数量与非法设置被裁剪到可用范围', async () => {
   assert.equal(result.settingsHint, undefined)
 })
 
+test('模型写坏生成参数时归一成 502，而不是把请求判成用户的错', async () => {
+  await assert.rejects(
+    resolveBotanicAgentTurn({
+      projectId: 'project-turn',
+      plannerModel: 'deepseek-v4-pro',
+      messages: [{ role: 'user', content: '基于上面出 3 张' }],
+      contextNodeIds: [],
+      hasTarget: false,
+      generationModels,
+      maxOutputCount: 8,
+    }, runtime, {
+      document,
+      fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: {
+        content: null,
+        tool_calls: [{ id: 'call-generate', type: 'function', function: {
+          name: 'generate_images',
+          arguments: JSON.stringify({ count: 3 }),
+        } }],
+      } }] }), { status: 200 }),
+    }),
+    // 400 会让浏览器无法降级，还会把「生成 Prompt 不能为空」当成用户请求非法展示出去。
+    (error) => error instanceof BotanicAgentChatError
+      && error.statusCode === 502
+      && error.code === 'INVALID_PROVIDER_RESPONSE',
+  )
+})
+
 test('未配置 Provider 时抛出 503', async () => {
   await assert.rejects(
     resolveBotanicAgentTurn({
