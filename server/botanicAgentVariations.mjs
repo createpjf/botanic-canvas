@@ -345,14 +345,23 @@ function combineField(first, second, product) {
   }
 }
 
+function stripCreativeBriefAppendix(instruction) {
+  return String(instruction ?? '').replace(/\n{2,}创作简报：[\s\S]*$/u, '').trim()
+}
+
 export function resolveBotanicAgentVariationRequest(input) {
-  const instruction = input.instruction.trim()
+  const instruction = stripCreativeBriefAppendix(input.instruction.trim())
   const intent = resolveBotanicAgentIntent(instruction, input.requestedIntent)
   const answered = splitValueList(input.clarificationAnswers?.variation_values ?? '')
   const confirmed = answered.length ? answered : uniqueLabels(input.brief?.variation?.values ?? [])
+  const explicitBatch = instructionRequestsBatchVariation(instruction) || intent === 'batch_variation'
+  const allowCustomAxis = explicitBatch || confirmed.length >= botanicAgentVariationValueMin
   const inferred = confirmed.length ? confirmed : inferInstructionValues(instruction)
   const axes = fillAxisValues(parseAxes(instruction), inferred, input.brief?.variation?.axisKey)
-  const wantsBatch = instructionRequestsBatchVariation(instruction) || intent === 'batch_variation' || axes.some((axis) => axis.values.length >= botanicAgentVariationValueMin)
+    .filter((axis) => axis.key !== 'custom' || allowCustomAxis)
+  const wantsBatch = explicitBatch
+    || confirmed.length >= botanicAgentVariationValueMin
+    || axes.some((axis) => axis.key !== 'custom' && axis.values.length >= botanicAgentVariationValueMin)
   const group = input.assetGroup
   const groupMatches = Boolean(group?.id && group.assetCount > 0 && axes[0] && groupRoleByKey[axes[0].key] === group.role)
     || Boolean(group?.id && group.assetCount > 0 && wantsBatch && !axes.some((axis) => axis.key === 'skin_tone') && !parseAxes(instruction).length)
@@ -547,7 +556,7 @@ export function applyBotanicAgentVariationToPlan(plan, input) {
     kind: 'plan',
     plan: {
       ...plan,
-      intent: 'batch_variation',
+      intent: plan.intent === 'initial_generation' ? 'initial_generation' : 'batch_variation',
       prompt: botanicAgentSharedVariationPrompt(plan.prompt, plan.instruction, request.spec, input.fallbackPrompt),
       summary: request.spec.combine && request.spec.axes.length > 1
         ? `按「${request.spec.axes.map((item) => item.label).join('×')}」生成 ${count} 张。`

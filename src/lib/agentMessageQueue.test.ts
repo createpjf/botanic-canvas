@@ -56,6 +56,23 @@ test('按创建时间顺序重放，成功后从本地队列移除', async () =>
   assert.deepEqual(queue.list(), [])
 })
 
+test('同一消息再次入队时用最新内容覆盖尚未发送的快照', async () => {
+  const delivered: Array<{ id: string; status?: string }> = []
+  const queue = createAgentMessageQueue({
+    storage: createMemoryStorage(),
+    deliver: async (item) => { delivered.push({ id: item.message.id, status: item.message.status }) },
+  })
+  queue.enqueue(fixture('m-1', 10))
+  const updated = fixture('m-1', 10)
+  updated.message = { ...updated.message, role: 'assistant', kind: 'question', status: 'answered', updatedAt: 40, content: '确认创作设置' }
+  queue.enqueue(updated)
+
+  await queue.flush()
+
+  assert.deepEqual(delivered, [{ id: 'm-1', status: 'answered' }])
+  assert.deepEqual(queue.list(), [])
+})
+
 test('同一项目、会话和消息不会重复入队或重复提交', async () => {
   const delivered: string[] = []
   const queue = createAgentMessageQueue({

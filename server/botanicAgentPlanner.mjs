@@ -56,6 +56,8 @@ const GROUP_DIMENSIONS = new Map([
   ['场景', 'scene'], ['模特', 'person'], ['商品', 'product'], ['调性', 'style'],
 ])
 const NODE_TITLE_LIMIT = 8
+/** 单次（非素材组批量）生成的张数上限，与 BOTANIC_AGENT_MAX_SINGLE_OUTPUT 对齐。 */
+const MAX_SINGLE_OUTPUT = 8
 const VARY_TITLE = Object.freeze({
   person: '换人物', garment: '换服装', product: '换商品', scene: '换场景', style: '换风格',
   pose: '换动作', composition: '调构图', lighting: '调光线', aspect_ratio: '改比例', copy_space: '调留白',
@@ -320,6 +322,14 @@ export function validateBotanicAgentPlanInput(raw) {
 
   const parentPrompt = optionalText(input.parentPrompt, '父图提示词', 6000)
 
+  // 本轮请求的张数。素材组批量由素材数决定，这里只约束单次生成要出几张。
+  let outputCount
+  if (input.outputCount !== undefined) {
+    const parsed = Number(input.outputCount)
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_SINGLE_OUTPUT) invalidRequest('生成张数无效。')
+    outputCount = parsed
+  }
+
   return {
     projectId,
     ...(plannerModel ? { plannerModel } : {}),
@@ -338,6 +348,7 @@ export function validateBotanicAgentPlanInput(raw) {
     ...(mountedSkillIds?.length ? { mountedSkillIds } : {}),
     ...(contextSnapshot?.length ? { contextSnapshot } : {}),
     ...(parentPrompt ? { parentPrompt } : {}),
+    ...(outputCount ? { outputCount } : {}),
   }
 }
 
@@ -468,7 +479,7 @@ function normalizeProviderPlan(raw, input) {
     settings: input.settings,
     output: batchCount
       ? { mode: 'batch_by_asset', count: batchCount, candidatesPerItem: 1 }
-      : { mode: 'single', count: 1, candidatesPerItem: 1 },
+      : { mode: 'single', count: input.outputCount ?? 1, candidatesPerItem: 1 },
     ...(input.contextSnapshot?.length ? { contextSnapshot: input.contextSnapshot } : {}),
     ...(selectedAssetGroup ? { assetGroupId: selectedAssetGroup.id } : {}),
   }

@@ -52,6 +52,12 @@ test('project to canvas and Agent surfaces stay ordered across reload', async ({
   await page.getByRole('button', { name: '打开 Agent' }).click()
   await expect(page.getByRole('complementary', { name: 'Botanic Agent' })).toBeVisible()
   await expect(page.getByRole('complementary', { name: '素材库' })).toBeHidden()
+  const tabBarBox = await page.locator('.tab-bar').boundingBox()
+  const agentBox = await page.getByRole('complementary', { name: 'Botanic Agent' }).boundingBox()
+  expect(tabBarBox, '项目顶栏应可见').toBeTruthy()
+  expect(agentBox, 'Agent 面板应可见').toBeTruthy()
+  expect(agentBox!.y).toBeGreaterThanOrEqual(tabBarBox!.y + tabBarBox!.height)
+  await expect(page.getByRole('button', { name: '返回项目' })).toBeEnabled()
 
   await page.getByRole('button', { name: '换场景' }).click()
   const composer = page.getByRole('textbox', { name: 'Agent 消息' })
@@ -198,7 +204,7 @@ test('Agent 生成卡片默认收起已完成步骤与提示词差异，主内�
 
   await expect(page.getByText('提示词')).toBeVisible()
   const toolSteps = page.locator('details.agent-message__tools')
-  const promptDiff = page.locator('details.agent-prompt-review__diff')
+  const promptDiff = page.locator('details.agent-prompt-review__compare')
   await expect(toolSteps).toBeVisible()
   await expect(promptDiff).toBeVisible()
   expect(await toolSteps.evaluate((element: HTMLDetailsElement) => element.open)).toBe(false)

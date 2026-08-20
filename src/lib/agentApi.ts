@@ -1,6 +1,7 @@
 import { buildBotanicAgentPlanRequest, completeBotanicAgentPlan, type BotanicAgentPlanRequestInput, type BotanicAgentPlanResponse } from '../domain/agentPlanContract'
 import { buildBotanicAgentChatRequest, type BotanicAgentChatRequestInput, type BotanicAgentChatResponse } from '../domain/agentChatContract'
-import { createBotanicAgentChatStreamReader, type BotanicAgentChatStreamEvent } from '../domain/agentChatStream'
+import { botanicAgentChatTransportErrorMessage, createBotanicAgentChatStreamReader, type BotanicAgentChatStreamEvent } from '../domain/agentChatStream'
+import { buildBotanicAgentTurnRequest, type BotanicAgentTurnRequestInput, type BotanicAgentTurnResult } from '../domain/agentTurnContract'
 import { ProductApiError, productAuthorizationHeader, productRequest } from './productSession'
 import type { AgentToolCallTrace, BotanicAgentReasoningEntry, BotanicAgentActionProposal, BotanicAgentActionResult, BotanicAgentClarificationResponse, BotanicAgentMemoryItem, BotanicAgentMessage, BotanicAgentPlan, BotanicAgentRunSnapshot, BotanicAgentSession, BotanicAgentSkill, BotanicAgentSkillCatalogItem, BotanicIndexedArtifact } from '../domain/agent'
 import type { BotanicAgentBranchVariation } from '../domain/agentVariations'
@@ -65,6 +66,18 @@ export async function requestBotanicAgentPlan(
   return completeBotanicAgentPlan(response.plan, input)
 }
 
+export async function requestBotanicAgentTurn(input: BotanicAgentTurnRequestInput, signal?: AbortSignal) {
+  const response = await productRequest<{ turn: BotanicAgentTurnResult }>('/api/agent-intent', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(buildBotanicAgentTurnRequest(input)),
+    signal,
+    timeoutMs: 60_000,
+    timeoutMessage: 'Agent 正在理解你的意图，响应较慢，请稍后重试；当前画布内容未被修改。',
+  })
+  return response.turn
+}
+
 export async function requestBotanicAgentChat(input: BotanicAgentChatRequestInput, signal?: AbortSignal) {
   const response = await productRequest<{ response: BotanicAgentChatResponse }>('/api/agent-chat', {
     method: 'POST',
@@ -115,14 +128,17 @@ export async function streamBotanicAgentChat(
     })
     if (!response.ok || !response.body) throw new ProductApiError('Agent 实时通道不可用。', response.status)
     let settled: BotanicAgentChatResponse | undefined
-    for await (const event of readAgentChatStream(response.body)) {
-      keepAlive()
+    for await (const event of readAgentChatStream(response.body, keepAlive)) {
       received = true
       if (event.type === 'done') settled = event.response
       // error 也必须先进入展示层，让对话内正在运行的步骤明确收束为失败。
       options.onEvent?.(event)
       if (event.type === 'error') {
-        throw new ProductApiError(event.message ?? 'Agent 对话未完成，请重试。', 502, event.code)
+        throw new ProductApiError(
+          botanicAgentChatTransportErrorMessage(new Error(event.message ?? ''), { fallback: 'Agent 对话未完成，请重试。' }),
+          502,
+          event.code,
+        )
       }
     }
     if (!settled) throw new ProductApiError('Agent 实时通道意外结束。', 0)
@@ -131,7 +147,21 @@ export async function streamBotanicAgentChat(
     // 用户主动取消要如实抛出；只有实时通道本身不可用才回退。
     if (options.signal?.aborted) throw caught
     // 已经开始推送后失败是真实错误，不能悄悄用另一条通道重跑一次模型。
-    if (received) throw caught
+    if (received) {
+      const idleTimedOut = controller.signal.aborted
+      if (caught instanceof ProductApiError) {
+        throw new ProductApiError(
+          botanicAgentChatTransportErrorMessage(caught, { idleTimedOut, fallback: caught.message }),
+          caught.status,
+          caught.code,
+        )
+      }
+      throw new ProductApiError(
+        botanicAgentChatTransportErrorMessage(caught, { idleTimedOut }),
+        0,
+        idleTimedOut ? 'REQUEST_TIMEOUT' : 'STREAM_DISCONNECTED',
+      )
+    }
     return requestBotanicAgentChat(input, options.signal)
   } finally {
     window.clearTimeout(inactivityTimer)
@@ -139,7 +169,10 @@ export async function streamBotanicAgentChat(
   }
 }
 
-async function* readAgentChatStream(body: ReadableStream<Uint8Array>): AsyncGenerator<BotanicAgentChatStreamEvent> {
+async function* readAgentChatStream(
+  body: ReadableStream<Uint8Array>,
+  onActivity?: () => void,
+): AsyncGenerator<BotanicAgentChatStreamEvent> {
   const reader = body.getReader()
   const decoder = new TextDecoder()
   const stream = createBotanicAgentChatStreamReader()
@@ -147,6 +180,8 @@ async function* readAgentChatStream(body: ReadableStream<Uint8Array>): AsyncGene
     for (;;) {
       const { done, value } = await reader.read()
       if (done) break
+      // 心跳注释不算业务事件，但证明连接还活着，必须重置空闲超时。
+      onActivity?.()
       yield* stream.push(decoder.decode(value, { stream: true }))
     }
     yield* stream.flush()

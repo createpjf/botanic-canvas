@@ -370,17 +370,22 @@ test('工作流创建回执携带已持久化的节点与连线，客户端可�
 function fakeServerResponse() {
   return {
     writableEnded: false,
+    destroyed: false,
     head: undefined,
     chunks: [],
+    flushHeadersCalls: 0,
+    flushCalls: 0,
     writeHead(statusCode, headers) { this.head = { statusCode, headers } },
     write(chunk) { this.chunks.push(chunk) },
+    flushHeaders() { this.flushHeadersCalls += 1 },
+    flush() { this.flushCalls += 1 },
     end() { this.writableEnded = true },
   }
 }
 
-test('SSE 写出器只在首个事件时写响应头，并按事件边界分隔', () => {
+test('SSE 写出器打开通道时写禁用缓冲的响应头，并按事件边界分隔', () => {
   const response = fakeServerResponse()
-  const sse = createServerSentEventWriter(response)
+  const sse = createServerSentEventWriter(response, { heartbeatMs: 0 })
 
   assert.equal(sse.started, false)
   assert.equal(response.head, undefined)
@@ -389,14 +394,17 @@ test('SSE 写出器只在首个事件时写响应头，并按事件边界分隔'
   assert.equal(sse.started, true)
   assert.equal(response.head.statusCode, 200)
   assert.match(response.head.headers['Content-Type'], /text\/event-stream/)
-  assert.equal(response.head.headers['Cache-Control'], 'no-store')
-  // 反向代理缓冲会让流式退化成一次性返回。
+  assert.equal(response.head.headers['Cache-Control'], 'no-cache, no-store')
+  // HTTP/2 不允许 Connection；代理压缩会把流式缓冲成一次性返回。
+  assert.equal(response.head.headers.Connection, undefined)
+  assert.equal(response.head.headers['Content-Encoding'], 'none')
   assert.equal(response.head.headers['X-Accel-Buffering'], 'no')
 
   const firstHead = response.head
   sse.send({ type: 'done', response: { answer: '你好', mode: 'conversation' } })
   assert.equal(response.head, firstHead)
   assert.deepEqual(response.chunks, [
+    ': keep-alive\n\n',
     'data: {"type":"answer","step":0,"delta":"你好"}\n\n',
     'data: {"type":"done","response":{"answer":"你好","mode":"conversation"}}\n\n',
   ])
@@ -405,6 +413,40 @@ test('SSE 写出器只在首个事件时写响应头，并按事件边界分隔'
   assert.equal(response.writableEnded, true)
   // 响应结束后不再写出，也不会重复 end。
   assert.equal(sse.send({ type: 'answer', step: 1, delta: '晚了' }), false)
-  assert.equal(response.chunks.length, 2)
+  assert.equal(response.chunks.length, 3)
   assert.equal(sse.end(), true)
+})
+
+test('SSE 写出器在模型还没吐事件前就打开通道，并用注释心跳保持代理不断流', () => {
+  const response = fakeServerResponse()
+  const beats = []
+  let cleared
+  const sse = createServerSentEventWriter(response, {
+    heartbeatMs: 15,
+    scheduleHeartbeat(fn) {
+      beats.push(fn)
+      return 7
+    },
+    unscheduleHeartbeat(id) {
+      cleared = id
+    },
+  })
+
+  sse.start()
+  assert.equal(sse.started, true)
+  assert.equal(response.flushHeadersCalls, 1)
+  assert.deepEqual(response.chunks, [': keep-alive\n\n'])
+
+  beats[0]()
+  assert.equal(response.chunks.at(-1), ': keep-alive\n\n')
+  assert.equal(response.flushCalls, 2)
+
+  sse.send({ type: 'tool', step: 0, toolCall: { name: 'web_search' } })
+  assert.equal(response.chunks.at(-1), 'data: {"type":"tool","step":0,"toolCall":{"name":"web_search"}}\n\n')
+
+  sse.end()
+  assert.equal(cleared, 7)
+  const afterEnd = response.chunks.length
+  beats[0]()
+  assert.equal(response.chunks.length, afterEnd)
 })

@@ -1,5 +1,6 @@
 import { BotanicAgentPlannerError, planBotanicGeneration, validateBotanicAgentPlanInput } from './botanicAgentPlanner.mjs'
 import { BotanicAgentChatError, chatWithBotanicAgent, validateBotanicAgentChatInput } from './botanicAgentChat.mjs'
+import { resolveBotanicAgentTurn, validateBotanicAgentTurnInput } from './botanicAgentTurn.mjs'
 import { createAgentSkill, publicAgentSkill, validateAgentSkillCreation } from './botanicAgentSkill.mjs'
 import { cancelPersistentAgentRun, createPersistentAgentRun, prepareAgentBranchRetry, publicAgentRun, validateAgentRunCreation } from './botanicAgentRun.mjs'
 import { AgentToolRuntimeError, executeConfirmedAgentAction } from './agentToolRuntime.mjs'
@@ -15,29 +16,70 @@ import { actionArgumentsHash, agentToolPermission, assertFreshActionApproval, cr
 export { BotanicAgentPlannerError, BotanicAgentChatError }
 
 /**
- * SSE 写出器。第一次写出后响应头已定，任何失败都只能作为事件送达，
- * 因此调用方需要用 started 判断还能不能回退成普通错误响应。
+ * SSE 写出器。通道必须在模型吐出第一事件之前打开：Vercel 反代会在首字节过晚
+ * 或静默间隙把流掐断，浏览器随后报 `network error`。第一次写出后响应头已定，
+ * 任何失败都只能作为事件送达，因此调用方需要用 started 判断还能不能回退成
+ * 普通错误响应。
  */
-export function createServerSentEventWriter(response) {
+const agentChatStreamHeartbeatMs = 3_000
+
+export function createServerSentEventWriter(response, options = {}) {
   let started = false
+  let heartbeat
+  const heartbeatMs = Number.isFinite(Number(options.heartbeatMs))
+    ? Math.max(0, Number(options.heartbeatMs))
+    : agentChatStreamHeartbeatMs
+  const scheduleHeartbeat = options.scheduleHeartbeat ?? ((fn, ms) => setInterval(fn, ms))
+  const unscheduleHeartbeat = options.unscheduleHeartbeat ?? ((id) => clearInterval(id))
+
+  const stopHeartbeat = () => {
+    if (heartbeat == null) return
+    unscheduleHeartbeat(heartbeat)
+    heartbeat = undefined
+  }
+
+  const writeComment = () => {
+    if (response.writableEnded || response.destroyed) return false
+    response.write(': keep-alive\n\n')
+    response.flush?.()
+    return true
+  }
+
+  const start = () => {
+    if (response.writableEnded) return false
+    if (started) return true
+    started = true
+    response.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      // no-cache 阻止中间层把未结束的流当成可缓存完整响应。
+      'Cache-Control': 'no-cache, no-store',
+      // Vercel / gzip 中间层看到 identity/none 才不会缓冲 SSE。
+      'Content-Encoding': 'none',
+      // HTTP/2 不允许 Connection；写 keep-alive 会被 Chromium 收成 network error。
+      'X-Accel-Buffering': 'no',
+    })
+    response.flushHeaders?.()
+    writeComment()
+    if (heartbeatMs > 0) {
+      heartbeat = scheduleHeartbeat(writeComment, heartbeatMs)
+      heartbeat?.unref?.()
+    }
+    return true
+  }
+
   return {
     get started() { return started },
+    start,
     send(event) {
       if (response.writableEnded) return false
-      if (!started) {
-        started = true
-        response.writeHead(200, {
-          'Content-Type': 'text/event-stream; charset=utf-8',
-          'Cache-Control': 'no-store',
-          Connection: 'keep-alive',
-          // 反向代理默认会缓冲响应体，缓冲后流式就退化成一次性返回。
-          'X-Accel-Buffering': 'no',
-        })
-      }
+      start()
+      if (response.writableEnded || response.destroyed) return false
       response.write(`data: ${JSON.stringify(event)}\n\n`)
+      response.flush?.()
       return true
     },
     end() {
+      stopHeartbeat()
       if (!response.writableEnded) response.end()
       return true
     },
@@ -205,6 +247,8 @@ export function createAgentRouteHandler({
       response.once('close', cancelOnClosedResponse)
       if (request.aborted || response.destroyed) cancel()
       const sse = streaming ? createServerSentEventWriter(response) : undefined
+      // 先打开通道再等模型：搜索前后的静默期靠注释心跳维持反代连接。
+      sse?.start()
       try {
         const result = await chatWithBotanicAgent(input, config, {
           document: project.document,
@@ -233,6 +277,7 @@ export function createAgentRouteHandler({
         }
         throw caught
       } finally {
+        sse?.end()
         request.off('aborted', cancel)
         response.off('close', cancelOnClosedResponse)
       }
@@ -242,6 +287,36 @@ export function createAgentRouteHandler({
       if (request.method !== 'GET') return methodNotAllowed(response, '系统 Skill 目录只支持读取。', 'GET')
       await requireUser(request)
       return json(response, 200, { skills: botanicAgentSystemSkills() })
+    }
+
+    if (url.pathname === '/api/agent-intent') {
+      if (request.method !== 'POST') return methodNotAllowed(response, 'Agent 意图资源只接受提交请求。', 'POST')
+      const user = await requireUser(request)
+      if (!await enforceRateLimit(response, { scope: 'agent-chat', subject: user.id, limit: config.security.agentChatsPerFiveMinutes, windowMs: 5 * 60_000 })) return true
+      if (!config.flockApiBaseUrl || !config.flockApiKey || !config.flockTextModel) return error(response, 503, 'PROVIDER_NOT_CONFIGURED', 'Agent 服务尚未配置。')
+      const validatedInput = validateBotanicAgentTurnInput(await readJson(request, config.maximumPromptRefinementRequestBytes, 'Agent 请求过大，请精简后重试。'))
+      await requireProjectPermission(productStore, user.id, validatedInput.projectId, 'read')
+      const project = await productStore.readProject(user.id, validatedInput.projectId)
+      if (!project?.document) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
+      const projectSkills = await productStore.listAgentSkills(user.id, validatedInput.projectId) ?? []
+      const input = { ...validatedInput, projectSkills: projectSkills.map((skill) => ({ id: skill.id, name: skill.name, instructions: skill.instructions, status: skill.status })) }
+      const controller = new AbortController()
+      const cancel = () => controller.abort()
+      const cancelOnClosedResponse = () => { if (!response.writableEnded) cancel() }
+      request.once('aborted', cancel)
+      response.once('close', cancelOnClosedResponse)
+      if (request.aborted || response.destroyed) cancel()
+      try {
+        const turn = await resolveBotanicAgentTurn(input, config, { document: project.document, projectSkills, signal: controller.signal })
+        if (controller.signal.aborted || response.destroyed) return true
+        return json(response, 200, { turn })
+      } catch (caught) {
+        if (controller.signal.aborted || response.destroyed) return true
+        throw caught
+      } finally {
+        request.off('aborted', cancel)
+        response.off('close', cancelOnClosedResponse)
+      }
     }
 
     if (projectAgentSkillsMatch) {
