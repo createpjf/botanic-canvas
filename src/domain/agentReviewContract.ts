@@ -1,0 +1,43 @@
+/**
+ * 结果自评契约：Run 终态后服务端用视觉模型评审整批结果，客户端把结论展示为会话消息。
+ * 评审是派生数据，只影响展示；消息 id 按 Run 固定，重评与刷新都不会重复追加。
+ */
+
+export type BotanicAgentRunReviewItem = {
+  nodeId: string
+  branchLabel: string
+  verdict: 'pass' | 'adjust'
+  note: string
+}
+
+export type BotanicAgentRunReview = {
+  summary: string
+  bestNodeId?: string
+  items: BotanicAgentRunReviewItem[]
+}
+
+/** 评审消息的固定标识：一个 Run 只有一条评审消息。 */
+export function botanicAgentRunReviewMessageId(runId: string) {
+  return `agent-review-${runId}`
+}
+
+const verdictLabel = { pass: '达标', adjust: '建议调整' } as const
+
+/** 把结构化评审排成会话正文；措辞给出可执行的下一步，不只是打分。 */
+export function formatBotanicAgentRunReviewMessage(review: BotanicAgentRunReview): string {
+  const lines = review.items.map((item, index) => {
+    const marker = review.bestNodeId && item.nodeId === review.bestNodeId ? '★ ' : ''
+    return `${index + 1}. ${marker}「${item.branchLabel}」${verdictLabel[item.verdict]}${item.note ? ` —— ${item.note}` : ''}`
+  })
+  const best = review.bestNodeId
+    ? review.items.find((item) => item.nodeId === review.bestNodeId)
+    : undefined
+  return [
+    `已看完这轮生成的 ${review.items.length} 张结果：${review.summary}`,
+    ...lines,
+    best ? `推荐「${best.branchLabel}」。` : '',
+    review.items.some((item) => item.verdict === 'adjust')
+      ? '想调整的分支可以在任务卡上重试，或直接告诉我要改哪里。'
+      : '可以直接基于结果继续下一轮。',
+  ].filter(Boolean).join('\n')
+}

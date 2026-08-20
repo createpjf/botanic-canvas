@@ -46,6 +46,7 @@ import {
   prepareBotanicAgentGenerationDraft,
   resolveBotanicAgentInstructionEntry,
 } from '../../domain/agentInstructionRouting'
+import { botanicAgentRunReviewMessageId, formatBotanicAgentRunReviewMessage } from '../../domain/agentReviewContract'
 import { resolveAgentChatPrompt } from '../../domain/agentMarkdown'
 import type { BotanicAgentChatStreamEvent } from '../../domain/agentChatStream'
 import { applyAgentConversationStreamEvent, createAgentTimeline, type AgentTimelineEvent, type AgentTimelineState } from '../../domain/agentTimeline'
@@ -58,7 +59,7 @@ import type {
   UploadedAssetInput,
 } from '../../domain/canvas'
 import type { GenerationSizeOverride } from '../../domain/generationOutputSize'
-import { createProjectAgentSkill, listBotanicAgentSystemSkills, listProjectAgentSkills, requestBotanicAgentPlan, requestBotanicAgentTurn, streamBotanicAgentChat } from '../../lib/agentApi'
+import { createProjectAgentSkill, listBotanicAgentSystemSkills, listProjectAgentSkills, requestBotanicAgentPlan, requestBotanicAgentRunReview, requestBotanicAgentTurn, streamBotanicAgentChat } from '../../lib/agentApi'
 import {
   applyBotanicAgentVariationToPlan,
   botanicAgentBriefWithVariationAnswers,
@@ -379,6 +380,7 @@ export default function AgentWorkspace({
   // 这样结果回填后会更新同一条消息，而不会重复刷屏。
   const runNoticeStatusRef = useRef(new Map<string, string>())
   const focusedRunIdsRef = useRef(new Set<string>())
+  const requestedRunReviewsRef = useRef(new Set<string>())
   const messageEndRef = useRef<HTMLDivElement | null>(null)
   const messagesViewportRef = useRef<HTMLDivElement | null>(null)
   const messageNodesRef = useRef(new Map<string, HTMLDivElement>())
@@ -892,6 +894,30 @@ export default function AgentWorkspace({
       }
     }
   }, [artifacts, availableCanvasNodeIds, onUpdateMessage, runs, session])
+
+  // 结果自评：Run 终态且结果回填后请求一次视觉评审，以固定消息 id 追加为会话消息。
+  // 评审是派生数据：未配置、失败或结果未回填都静默跳过，绝不影响 Run 与结果本身；
+  // 结果晚于终态回填时，Run 对账会更新 updatedAt，下一次请求键随之重试。
+  useEffect(() => {
+    if (!session || !latestRun) return
+    if (latestRun.status !== 'completed' && latestRun.status !== 'partial') return
+    // 只评当前会话里的任务，不把其他会话的历史 Run 拉进来点评。
+    if (!session.messages.some((message) => message.runId === latestRun.id)) return
+    const reviewMessageId = botanicAgentRunReviewMessageId(latestRun.id)
+    if (session.messages.some((message) => message.id === reviewMessageId)) return
+    const requestKey = `${latestRun.id}:${latestRun.status}:${latestRun.updatedAt}`
+    if (requestedRunReviewsRef.current.has(requestKey)) return
+    requestedRunReviewsRef.current.add(requestKey)
+    void requestBotanicAgentRunReview(projectId, latestRun.id).then((review) => {
+      if (!review || !isCurrentAgentProject()) return
+      appendMessage({
+        id: reviewMessageId,
+        role: 'assistant',
+        kind: 'text',
+        content: formatBotanicAgentRunReviewMessage(review),
+      })
+    }).catch(() => { /* 评审失败静默：结果本身不受影响。 */ })
+  }, [appendMessage, isCurrentAgentProject, latestRun, projectId, session])
 
   // 任务开始时把视角带到正在生成的节点，且每个 Run 只带一次；之后画布归用户，
   // 结果完成不再抢视角——需要回看结果时用消息里的「定位画布」。

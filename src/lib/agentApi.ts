@@ -1,6 +1,7 @@
 import { buildBotanicAgentPlanRequest, completeBotanicAgentPlan, type BotanicAgentPlanRequestInput, type BotanicAgentPlanResponse } from '../domain/agentPlanContract'
 import { buildBotanicAgentChatRequest, type BotanicAgentChatRequestInput, type BotanicAgentChatResponse } from '../domain/agentChatContract'
 import { botanicAgentChatTransportErrorMessage, createBotanicAgentChatStreamReader, type BotanicAgentChatStreamEvent } from '../domain/agentChatStream'
+import type { BotanicAgentRunReview } from '../domain/agentReviewContract'
 import { buildBotanicAgentTurnRequest, type BotanicAgentTurnRequestInput, type BotanicAgentTurnResult } from '../domain/agentTurnContract'
 import { ProductApiError, productAuthorizationHeader, productRequest } from './productSession'
 import type { AgentToolCallTrace, BotanicAgentReasoningEntry, BotanicAgentActionProposal, BotanicAgentActionResult, BotanicAgentClarificationResponse, BotanicAgentMemoryItem, BotanicAgentMessage, BotanicAgentPlan, BotanicAgentRunSnapshot, BotanicAgentSession, BotanicAgentSkill, BotanicAgentSkillCatalogItem, BotanicIndexedArtifact } from '../domain/agent'
@@ -426,6 +427,18 @@ export async function cancelPersistentBotanicAgentRun(runId: string) {
     { method: 'POST' },
   )
   return response.run
+}
+
+export async function requestBotanicAgentRunReview(projectId: string, runId: string, signal?: AbortSignal) {
+  const response = await productRequest<{ review: BotanicAgentRunReview | null }>('/api/agent-run-reviews', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ projectId, runId }),
+    signal,
+    timeoutMs: 45_000,
+    timeoutMessage: '结果评审响应较慢，已跳过本轮点评；生成结果不受影响。',
+  })
+  return response.review
 }
 
 export async function listProjectAgentSkills(projectId: string) {

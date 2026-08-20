@@ -68,9 +68,11 @@ export function botanicAgentVisionCandidates(document, contextNodeIds = []) {
   return candidates
 }
 
-async function resolveImageDataUrl(candidate, resolveMedia) {
-  if (candidate.image.startsWith('data:image/')) return candidate.image
-  const mediaId = decodeURIComponent(MEDIA_PATH_PATTERN.exec(candidate.image)?.[1] ?? '')
+/** 把画布节点的图片引用解析为可发给视觉模型的 data URL；解析不了返回空。 */
+export async function resolveBotanicAgentImageDataUrl(image, resolveMedia) {
+  if (typeof image !== 'string' || !image) return undefined
+  if (image.startsWith('data:image/')) return image
+  const mediaId = decodeURIComponent(MEDIA_PATH_PATTERN.exec(image)?.[1] ?? '')
   if (!mediaId || typeof resolveMedia !== 'function') return undefined
   const resolved = await resolveMedia(mediaId)
   if (!resolved?.buffer?.length) return undefined
@@ -115,7 +117,7 @@ export async function describeBotanicAgentContextImages({
     const key = cacheKey(model, candidate.image)
     const cached = cache.get(key)
     if (cached) return { ...candidate, description: cached }
-    const dataUrl = await resolveImageDataUrl(candidate, resolveMedia)
+    const dataUrl = await resolveBotanicAgentImageDataUrl(candidate.image, resolveMedia)
     if (!dataUrl) return undefined
     const timeoutSignal = AbortSignal.timeout(VISION_TIMEOUT_MS)
     const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal

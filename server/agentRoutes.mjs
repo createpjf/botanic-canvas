@@ -1,5 +1,6 @@
 import { BotanicAgentPlannerError, planBotanicGeneration, validateBotanicAgentPlanInput } from './botanicAgentPlanner.mjs'
 import { BotanicAgentChatError, chatWithBotanicAgent, validateBotanicAgentChatInput } from './botanicAgentChat.mjs'
+import { reviewBotanicAgentRunResults } from './botanicAgentReview.mjs'
 import { resolveBotanicAgentTurn, validateBotanicAgentTurnInput } from './botanicAgentTurn.mjs'
 import { createAgentSkill, publicAgentSkill, validateAgentSkillCreation } from './botanicAgentSkill.mjs'
 import { cancelPersistentAgentRun, createPersistentAgentRun, prepareAgentBranchRetry, publicAgentRun, validateAgentRunCreation } from './botanicAgentRun.mjs'
@@ -110,6 +111,7 @@ export function createAgentRouteHandler({
   const visionMediaResolver = (userId, projectId) => (mediaService?.enabled
     ? (mediaId) => mediaService.readGenerationInput(userId, mediaId, projectId)
     : undefined)
+  const agentRunReviewCache = new Map()
   const agentActionExecutions = new Map()
   const methodNotAllowed = (response, message, allow) => json(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message } }, { Allow: allow })
   const observeRun = (event) => {
@@ -324,6 +326,52 @@ export function createAgentRouteHandler({
       } catch (caught) {
         if (controller.signal.aborted || response.destroyed) return true
         throw caught
+      } finally {
+        request.off('aborted', cancel)
+        response.off('close', cancelOnClosedResponse)
+      }
+    }
+
+    if (url.pathname === '/api/agent-run-reviews') {
+      if (request.method !== 'POST') return methodNotAllowed(response, 'Agent 结果评审只接受提交请求。', 'POST')
+      const user = await requireUser(request)
+      if (!await enforceRateLimit(response, { scope: 'agent-chat', subject: user.id, limit: config.security.agentChatsPerFiveMinutes, windowMs: 5 * 60_000 })) return true
+      if (!config.agentVisionModel || !config.flockApiKey) return error(response, 503, 'VISION_NOT_CONFIGURED', '结果评审需要配置视觉模型。')
+      const body = await readJson(request, 4 * 1024, 'Agent 评审请求过大。')
+      const projectId = text(body?.projectId, '项目', 160)
+      const runId = text(body?.runId, 'Agent Run', 160)
+      await requireProjectPermission(productStore, user.id, projectId, 'read')
+      const run = await productStore.readAgentRun(user.id, runId)
+      if (!run || run.projectId !== projectId) return error(response, 404, 'AGENT_RUN_NOT_FOUND', '未找到该 Agent 任务。')
+      if (run.status !== 'completed' && run.status !== 'partial') {
+        return error(response, 409, 'AGENT_RUN_NOT_SETTLED', '任务还没有可评审的结果。')
+      }
+      const project = await productStore.readProject(user.id, projectId)
+      if (!project?.document) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
+      // 评审是派生数据：同一 Run 状态只评一次，重复请求直接回缓存；失败静默为空由客户端跳过。
+      const cacheKey = `${runId}:${run.status}:${run.updatedAt}`
+      const cached = agentRunReviewCache.get(cacheKey)
+      if (cached !== undefined) return json(response, 200, { review: cached })
+      const controller = new AbortController()
+      const cancel = () => controller.abort()
+      const cancelOnClosedResponse = () => { if (!response.writableEnded) cancel() }
+      request.once('aborted', cancel)
+      response.once('close', cancelOnClosedResponse)
+      try {
+        const review = await reviewBotanicAgentRunResults({
+          run,
+          document: project.document,
+          runtimeConfig: config,
+          resolveMedia: visionMediaResolver(user.id, projectId),
+          signal: controller.signal,
+        }).catch(() => undefined)
+        if (controller.signal.aborted || response.destroyed) return true
+        if (agentRunReviewCache.size >= 256) {
+          const oldest = agentRunReviewCache.keys().next().value
+          if (oldest !== undefined) agentRunReviewCache.delete(oldest)
+        }
+        agentRunReviewCache.set(cacheKey, review ?? null)
+        return json(response, 200, { review: review ?? null })
       } finally {
         request.off('aborted', cancel)
         response.off('close', cancelOnClosedResponse)
