@@ -209,6 +209,38 @@ test('首次生成在创建工作流和 Job 前拒绝视频、文字和空结果
   }
 })
 
+test('视频计划以第一张图片为首帧提交一条视频任务', () => {
+  const videoModels = [
+    ...models,
+    { id: 'MiniMax-H3', provider: 'minimax', mediaKind: 'video', aspectRatios: ['16:9', '3:4', '9:16'], resolutions: ['2K'], durations: [5, 10, 15], defaultDuration: 5 },
+  ]
+  const run = initialGenerationRun([
+    { nodeId: 'asset-product-node', label: '球衣', kind: '素材', mediaKind: 'image', role: '商品' },
+    { nodeId: 'result-parent', label: '首图 01', kind: '结果', mediaKind: 'image' },
+  ])
+  run.plan.settings = { model: 'MiniMax-H3', aspectRatio: '3:4', resolution: '2K', duration: 10 }
+  run.plan.output = { mode: 'single', count: 1, candidatesPerItem: 1 }
+  run.plan.prompt = '以首图为起点，镜头缓慢推近，光线渐暖。'
+
+  const result = prepareAgentRunExecution({
+    run, document: initialGenerationDocument(), now: 100,
+    jobIdForBranch: (branch) => `job-${branch.id}`,
+    models: videoModels, maximumBatchCount: 8, maximumReferenceBytes: 8 * 1024 * 1024,
+  })
+
+  const job = result.jobs[0]
+  assert.equal(job.provider, 'minimax-video')
+  assert.equal(job.settings.duration, 10)
+  assert.equal(job.batchCount, 1)
+  // 只保留第一张图片作首帧，且显式声明角色；多余参考会改变 Provider 的输入模式。
+  assert.equal(job.rawInput.recipe.references.length, 1)
+  assert.equal(job.rawInput.recipe.references[0].inputRole, 'first_frame')
+  assert.equal(job.rawInput.recipe.references[0].mediaId, 'media_product')
+  // 持久化配方与提交输入一致，画布重试不会退回 first_last 模式。
+  assert.equal(job.generationRecipe.videoInputMode, 'first_frame')
+  assert.equal(job.generationRecipe.references.length, 1)
+})
+
 test('Worker 完成任务后把图片写回占位结果节点', () => {
   const prepared = prepare()
   const completed = {
@@ -425,4 +457,82 @@ test('无素材变体分支把本支增量叠到共用画面 Prompt 上', () => 
   assert.equal(result.jobs[0].rawInput.prompt, '保持人物与白裙，棚拍柔光。\n\n人物肤色为白皙，保持五官与身份不变。')
   assert.equal(result.jobs[1].rawInput.prompt, '保持人物与白裙，棚拍柔光。\n\n人物肤色为小麦，保持五官与身份不变。')
   assert.equal(result.jobs[0].rawInput.parent.mediaId, 'media_parent')
+})
+
+test('局部重绘计划只以父结果为基准图，选区随任务下发为 maskRegion', () => {
+  const run = {
+    ...persistentRun(),
+    plan: {
+      intent: 'region_edit', instruction: '只把右上角换成盛开花丛', summary: '局部重绘画面右上的区域。',
+      selectedResultNodeId: 'result-parent', prompt: '盛开的白色山茶花丛，保持光线方向。', settings,
+      constraints: [{ dimension: 'person', mode: 'preserve' }],
+      output: { mode: 'single', count: 1, candidatesPerItem: 1 },
+      region: { rect: { x: 0.6, y: 0, width: 0.4, height: 0.4 }, description: '画面右上的区域' },
+    },
+    branches: [{ id: 'branch-region', label: '局部重绘', status: 'queued', attempt: 0, jobIds: [], outputCount: 0, updatedAt: 1 }],
+  }
+  const result = prepareAgentRunExecution({
+    run, document: projectDocument(), now: 100,
+    jobIdForBranch: (branch) => `job-${branch.id}`,
+    models, maximumBatchCount: 8, maximumReferenceBytes: 8 * 1024 * 1024,
+  })
+  assert.equal(result.jobs.length, 1)
+  const job = result.jobs[0]
+  assert.equal(job.kind, 'refinement')
+  assert.deepEqual(job.rawInput.recipe.maskRegion, { x: 0.6, y: 0, width: 0.4, height: 0.4 })
+  // 局部重绘不混入其它参考：基准图只有 parent。
+  assert.deepEqual(job.rawInput.recipe.references, [])
+  assert.equal(job.rawInput.parent.mediaId, 'media_parent')
+})
+
+test('成套方案分支异构执行：图片条目按数量、视频条目切视频模型并走首帧', () => {
+  const mixedModels = [
+    ...models,
+    { id: 'MiniMax-H3', provider: 'minimax', mediaKind: 'video', aspectRatios: ['3:4', '16:9'], resolutions: ['2K'], durations: [5, 10, 15], defaultDuration: 5 },
+  ]
+  const run = {
+    ...persistentRun(),
+    plan: {
+      intent: 'initial_generation', instruction: '执行方案', summary: '成套生成 3 项。',
+      contextSnapshot: [
+        { nodeId: 'asset-product-node', label: '球衣', kind: '素材', mediaKind: 'image', role: '商品' },
+      ],
+      prompt: '主画面', settings,
+      constraints: [],
+      output: { mode: 'single', count: 3, candidatesPerItem: 1 },
+      composition: {
+        theme: '春季系列',
+        items: [
+          { index: 1, title: '主视觉', mediaKind: 'image', prompt: '主画面：盛开山茶花与球衣', count: 1 },
+          { index: 2, title: '细节', mediaKind: 'image', prompt: '细节：面料与花瓣特写', count: 2 },
+          { index: 3, title: '氛围视频', mediaKind: 'video', prompt: '镜头缓推花丛', count: 1, duration: 10 },
+        ],
+      },
+    },
+    branches: [
+      { id: 'branch-1', label: '主视觉', item: { index: 1, title: '主视觉', mediaKind: 'image', prompt: '主画面：盛开山茶花与球衣', count: 1 }, status: 'queued', attempt: 0, jobIds: [], outputCount: 0, updatedAt: 1 },
+      { id: 'branch-2', label: '细节', item: { index: 2, title: '细节', mediaKind: 'image', prompt: '细节：面料与花瓣特写', count: 2 }, status: 'queued', attempt: 0, jobIds: [], outputCount: 0, updatedAt: 1 },
+      { id: 'branch-3', label: '氛围视频', item: { index: 3, title: '氛围视频', mediaKind: 'video', prompt: '镜头缓推花丛', count: 1, duration: 10 }, status: 'queued', attempt: 0, jobIds: [], outputCount: 0, updatedAt: 1 },
+    ],
+  }
+  const result = prepareAgentRunExecution({
+    run, document: initialGenerationDocument(), now: 100,
+    jobIdForBranch: (branch) => `job-${branch.id}`,
+    models: mixedModels, maximumBatchCount: 8, maximumReferenceBytes: 8 * 1024 * 1024,
+  })
+
+  assert.equal(result.jobs.length, 3)
+  assert.deepEqual(result.jobs.map((job) => [job.rawInput.prompt, job.batchCount]), [
+    ['主画面：盛开山茶花与球衣', 1],
+    ['细节：面料与花瓣特写', 2],
+    ['镜头缓推花丛', 1],
+  ])
+  const videoJob = result.jobs[2]
+  assert.equal(videoJob.settings.model, 'MiniMax-H3')
+  assert.equal(videoJob.settings.duration, 10)
+  assert.equal(videoJob.settings.resolution, '2K')
+  assert.equal(videoJob.rawInput.recipe.references[0].inputRole, 'first_frame')
+  assert.equal(videoJob.provider, 'minimax-video')
+  // 图片条目仍用计划设置。
+  assert.equal(result.jobs[0].settings.model, 'gpt-image-2')
 })

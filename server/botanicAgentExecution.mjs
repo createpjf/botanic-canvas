@@ -151,10 +151,14 @@ function recipeForRun(run, document, parentNode, branch, resolvedInitialReferenc
     }
     return withBranchAsset(clone(rootRecipe.references), run, document, branch)
   }
+  // 局部重绘只以父结果为基准图：选区外画面由蒙版保持，不再混入其它参考。
+  if (run.plan.intent === 'region_edit') {
+    return withBranchAsset([], run, document, branch)
+  }
   return withBranchAsset(refinementReferences(run, document), run, document, branch)
 }
 
-function rawGenerationInput(run, parentNode, recipe) {
+function rawGenerationInput(run, parentNode, recipe, { videoModel = false } = {}) {
   const kind = run.plan.intent === 'redo_from_root' || run.plan.intent === 'initial_generation'
     ? 'generation'
     : 'refinement'
@@ -167,13 +171,17 @@ function rawGenerationInput(run, parentNode, recipe) {
     settings: clone(recipe.settings),
     recipe: {
       prompt: recipe.prompt,
-      references: recipe.references.map((reference) => ({
+      references: recipe.references.map((reference, index) => ({
         name: reference.name,
         role: reference.role,
         primary: Boolean(reference.primary),
         priority: reference.priority,
+        // 视频参考必须显式声明首帧角色，否则 Provider 按参考数量猜输入模式。
+        ...(videoModel && index === 0 ? { inputRole: 'first_frame' } : {}),
         ...mediaInput(reference.image),
       })),
+      // 局部重绘选区随任务下发；位图蒙版由生成 Worker 按基准图真实像素生成。
+      ...(!videoModel && run.plan.region?.rect ? { maskRegion: clone(run.plan.region.rect) } : {}),
     },
     ...(kind === 'refinement'
       ? { parent: { name: parentNode.data?.label ?? '父版本', ...mediaInput(parentNode.data?.image) } }
@@ -296,15 +304,47 @@ export function prepareAgentRunExecution({
   if (!parentNode) throw new AgentToolRuntimeError('AGENT_PARENT_NOT_FOUND', 'Agent 父结果节点已不存在。', 409)
 
   const nodesById = new Map((document.nodes ?? []).map((node) => [node.id, node]))
+  const normalizedModels = (models ?? []).map((model) => typeof model === 'string' ? { id: model, provider: 'openai', mediaKind: 'image' } : model)
+  const planModelIsVideo = normalizedModels.find((model) => model.id === run.plan?.settings?.model)?.mediaKind === 'video'
   const jobs = []
   const workflows = []
+  const catalogVideoModel = normalizedModels.find((model) => model.mediaKind === 'video')
   for (const [branchIndex, branch] of run.branches.entries()) {
     const jobId = jobIdForBranch(branch)
     const recipe = recipeForRun(run, document, parentNode, branch, resolvedInitialReferences)
-    const rawInput = rawGenerationInput(run, parentNode, recipe)
+    // 成套方案条目让分支异构：媒体类型、定稿 Prompt、数量与时长全部按条目覆盖统一计划。
+    const item = branch.item
+    if (item) {
+      recipe.prompt = item.prompt
+      recipe.batchCount = item.mediaKind === 'video' ? 1 : item.count
+      if (item.mediaKind === 'video') {
+        if (!catalogVideoModel) throw new AgentToolRuntimeError('AGENT_VIDEO_MODEL_MISSING', '方案包含视频条目，但当前没有可用的视频模型。', 409)
+        const aspectRatio = catalogVideoModel.aspectRatios?.includes(recipe.settings.aspectRatio)
+          ? recipe.settings.aspectRatio
+          : catalogVideoModel.aspectRatios?.[0] ?? recipe.settings.aspectRatio
+        recipe.settings = {
+          model: catalogVideoModel.id,
+          aspectRatio,
+          resolution: catalogVideoModel.resolutions?.[0] ?? recipe.settings.resolution,
+          duration: catalogVideoModel.durations?.includes(item.duration)
+            ? item.duration
+            : catalogVideoModel.defaultDuration ?? catalogVideoModel.durations?.[0] ?? 5,
+        }
+      }
+    }
+    const branchModelIsVideo = item
+      ? item.mediaKind === 'video'
+      : planModelIsVideo
+    if (branchModelIsVideo) {
+      // Agent 视频计划的语义是「以第一张图片为首帧生成一条视频」：多余参考会把
+      // Provider 的输入模式改成 first_last / reference，宁可裁掉；配方与提交输入保持一致。
+      recipe.references = recipe.references.slice(0, 1)
+      recipe.videoInputMode = 'first_frame'
+      recipe.batchCount = 1
+    }
+    const rawInput = rawGenerationInput(run, parentNode, recipe, { videoModel: branchModelIsVideo })
     const validated = validateGenerationInput(rawInput, { models, maximumBatchCount, maximumReferenceBytes })
-    const selectedModel = models.map((model) => typeof model === 'string' ? { id: model, provider: 'openai', mediaKind: 'image' } : model)
-      .find((model) => model.id === validated.settings.model)
+    const selectedModel = normalizedModels.find((model) => model.id === validated.settings.model)
     const job = {
       id: jobId, ownerId: run.ownerId, projectId: run.projectId,
       status: 'queued', kind: validated.kind, refinementMode: validated.refinementMode,

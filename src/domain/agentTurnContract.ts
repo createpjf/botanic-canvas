@@ -37,6 +37,8 @@ export type BotanicAgentTurnResult =
       mediaKind: 'image' | 'video'
       prompt: string
       count: number
+      /** 仅视频：时长（秒），取值来自视频模型目录。 */
+      duration?: number
       settingsHint?: BotanicAgentTurnSettingsHint
       plannerModel?: string
       toolCalls?: AgentToolCallTrace[]
@@ -46,6 +48,30 @@ export type BotanicAgentTurnResult =
       answer: string
       plannerModel?: string
       sources?: string[]
+      toolCalls?: AgentToolCallTrace[]
+    }
+  | {
+      /** 模型判定核心信息缺失时的结构化中断；客户端据此进入等待作答，而不是当成普通回答。 */
+      kind: 'clarification'
+      question: string
+      options?: string[]
+      plannerModel?: string
+      toolCalls?: AgentToolCallTrace[]
+    }
+  | {
+      /** MCoT 分解：一次多资产请求被拆成结构化方案，客户端以方案卡呈现并逐项推进。 */
+      kind: 'composition'
+      theme: string
+      items: Array<{
+        index: number
+        title: string
+        purpose?: string
+        mediaKind: 'image' | 'video'
+        prompt: string
+        count: number
+        duration?: number
+      }>
+      plannerModel?: string
       toolCalls?: AgentToolCallTrace[]
     }
 

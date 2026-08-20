@@ -97,14 +97,16 @@ test('生产 Web 回跳地址会让 Railway API 进入生产邀请保护', () =>
 })
 
 test('Agent Planner 默认只暴露三种已确认的 Flock 模型', () => {
-  const keys = ['FLOCK_TEXT_MODEL', 'FLOCK_AGENT_MODELS']
+  const keys = ['FLOCK_TEXT_MODEL', 'FLOCK_AGENT_MODELS', 'AGENT_VISION_MODEL']
   const original = new Map(keys.map((key) => [key, process.env[key]]))
   try {
     delete process.env.FLOCK_TEXT_MODEL
     delete process.env.FLOCK_AGENT_MODELS
+    delete process.env.AGENT_VISION_MODEL
     const config = runtimeConfig('/tmp/botanic-runtime-test')
     assert.equal(config.flockTextModel, 'deepseek-v4-pro')
     assert.deepEqual(config.flockAgentModels, ['deepseek-v4-pro', 'deepseek-v4-flash', 'kimi-k3'])
+    assert.equal(config.agentVisionModel, 'gemini-3.6-flash')
   } finally {
     for (const [key, value] of original) {
       if (value === undefined) delete process.env[key]

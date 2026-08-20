@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import { inferAspectRatioFromPixels, normalizeCustomGenerationSize } from './generationOutputSize.mjs'
+import { normalizeRegionRect } from './regionMaskPng.mjs'
 
 const intents = new Set([
   'initial_generation',
   'continue_generation', 'replace_scene', 'replace_person', 'replace_product',
-  'change_pose', 'change_style', 'batch_variation', 'redo_from_root',
+  'change_pose', 'change_style', 'batch_variation', 'redo_from_root', 'region_edit',
 ])
 const branchStatuses = new Set(['queued', 'running', 'succeeded', 'failed', 'cancelled'])
 const toolRisks = new Set(['read', 'write', 'costly', 'external'])
@@ -189,6 +190,55 @@ function validateContextSnapshot(rawSnapshot) {
   })
 }
 
+/** 成套方案条目：分支自带媒体类型与定稿 Prompt；归一化语义与 src/domain/agentCreativeComposition.ts 一致。 */
+function validateCompositionItem(raw, subject) {
+  if (!raw || typeof raw !== 'object') throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', `${subject}条目无效。`)
+  const mediaKind = raw.mediaKind === 'video' ? 'video' : 'image'
+  const parsedCount = Number(raw.count)
+  const parsedDuration = Number(raw.duration)
+  const index = Number(raw.index)
+  return {
+    index: Number.isInteger(index) && index >= 1 ? index : 1,
+    title: text(raw.title ?? `${subject}条目`, `${subject}标题`, 80),
+    ...(raw.purpose ? { purpose: text(raw.purpose, `${subject}用途`, 200) } : {}),
+    mediaKind,
+    prompt: text(raw.prompt, `${subject}Prompt`, 6000),
+    count: mediaKind === 'video'
+      ? 1
+      : Number.isFinite(parsedCount) ? Math.min(4, Math.max(1, Math.floor(parsedCount))) : 1,
+    ...(mediaKind === 'video' && Number.isInteger(parsedDuration) && parsedDuration > 0 && parsedDuration <= 60
+      ? { duration: parsedDuration }
+      : {}),
+  }
+}
+
+function validateComposition(raw) {
+  if (raw === undefined || raw === null) return undefined
+  if (typeof raw !== 'object' || !Array.isArray(raw.items)) {
+    throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', 'Agent 成套方案无效。')
+  }
+  const items = raw.items.slice(0, 8).map((item, index) => ({
+    ...validateCompositionItem(item, `方案第 ${index + 1} 个`),
+    index: index + 1,
+  }))
+  if (items.length < 2) throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', 'Agent 成套方案至少要有 2 个条目。')
+  return { theme: text(raw.theme, '方案主题', 200), items }
+}
+
+/** 局部重绘选区是纯数据矩形（归一化 0–1）；位图蒙版由执行层生成，不进 Run。 */
+function validateRegion(raw) {
+  if (raw === undefined || raw === null) return undefined
+  if (typeof raw !== 'object' || !raw.rect || typeof raw.rect !== 'object') {
+    throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', 'Agent 局部重绘选区无效。')
+  }
+  const rect = normalizeRegionRect(raw.rect)
+  if (!rect) throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', 'Agent 局部重绘选区无效或过小。')
+  return {
+    rect,
+    ...(raw.description ? { description: text(raw.description, '选区描述', 160) } : {}),
+  }
+}
+
 export function validateAgentRunCreation(body) {
   if (!body || typeof body !== 'object') throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', 'Agent Run 不能为空。')
   if (containsMediaPayload(body)) throw new BotanicAgentRunError(400, 'AGENT_RUN_MEDIA_FORBIDDEN', 'Agent Run 不能包含图片或媒体数据。')
@@ -213,6 +263,9 @@ export function validateAgentRunCreation(body) {
       label: text(branch?.label ?? `分支 ${index + 1}`, `第 ${index + 1} 个分支名称`, 160),
       ...(branch?.assetId ? { assetId: text(branch.assetId, `第 ${index + 1} 个分支素材`, 160) } : {}),
       ...(variation ? { variation } : {}),
+      ...(branch?.item !== undefined
+        ? { item: validateCompositionItem(branch.item, `第 ${index + 1} 个分支`) }
+        : {}),
     }
   })
   if (new Set(branches.map((branch) => branch.id)).size !== branches.length) {
@@ -236,6 +289,11 @@ export function validateAgentRunCreation(body) {
   if (output.mode === 'batch_by_variation' && !variation) {
     throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', '按变体批量时必须包含已确认的变体轴。')
   }
+  const region = validateRegion(rawPlan.region)
+  if (rawPlan.intent === 'region_edit' && !region) {
+    throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', '局部重绘计划必须携带有效选区。')
+  }
+  const composition = validateComposition(rawPlan.composition)
   return {
     projectId,
     plan: {
@@ -250,6 +308,8 @@ export function validateAgentRunCreation(body) {
       constraints: validateConstraints(rawPlan.constraints, { allowEmpty: isInitialGeneration }),
       output: { mode: output.mode, count, candidatesPerItem },
       ...(variation ? { variation } : {}),
+      ...(region ? { region } : {}),
+      ...(composition ? { composition } : {}),
       ...(contextSnapshot?.length ? { contextSnapshot } : {}),
       ...(rawPlan.assetGroupId ? { assetGroupId: text(rawPlan.assetGroupId, '素材组', 160) } : {}),
       ...(toolCalls ? { toolCalls } : {}),

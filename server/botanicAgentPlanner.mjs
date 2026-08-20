@@ -20,7 +20,7 @@ import {
 
 const INTENTS = new Set([
   'continue_generation', 'replace_scene', 'replace_person', 'replace_product',
-  'change_pose', 'change_style', 'batch_variation', 'redo_from_root',
+  'change_pose', 'change_style', 'batch_variation', 'redo_from_root', 'region_edit',
 ])
 const DIMENSIONS = new Set([
   'person', 'garment', 'product', 'scene', 'style', 'pose',
@@ -407,12 +407,17 @@ function clipNodeTitle(value) {
   return Array.from(value.replace(/[\s·.,，。:：；;、\-_/\\]+/gu, '')).slice(0, NODE_TITLE_LIMIT).join('')
 }
 
+/** 创作简报附录是给规划器的上下文，不是画面描述；与客户端 compileBriefPrompt 的格式对应。 */
+function stripCreativeBriefNotes(text) {
+  return text.replace(/\n{2,}创作简报：[\s\S]*$/u, '').trim()
+}
+
 export function visualGenerationPrompt(prompt, fallback = '') {
-  const text = typeof prompt === 'string' ? prompt.trim() : ''
+  const text = typeof prompt === 'string' ? stripCreativeBriefNotes(prompt.trim()) : ''
   const blocks = text.split(/\n{2,}/u).map((block) => block.trim()).filter(Boolean)
   const visual = blocks.filter((block) => !botanicAgentLooksLikePlannerNarration(block)).join('\n\n').trim()
   if (visual && !botanicAgentLooksLikePlannerNarration(visual)) return visual
-  const fallbackText = typeof fallback === 'string' ? fallback.trim() : ''
+  const fallbackText = typeof fallback === 'string' ? stripCreativeBriefNotes(fallback.trim()) : ''
   if (fallbackText && !botanicAgentLooksLikePlannerNarration(fallbackText)) return fallbackText
   return visual || fallbackText || text
 }

@@ -4,7 +4,7 @@ import { submitPersistentBotanicAgentMessage } from '../../lib/agentApi'
 import { createAgentMessageQueue, createLocalStorageAgentMessageQueueStorage } from '../../lib/agentMessageQueue'
 import { serverPersistenceEnabled } from '../../lib/productSession'
 
-type AgentMessagePatch = Partial<Pick<BotanicAgentMessage, 'content' | 'runId' | 'status' | 'feedback' | 'plan' | 'question' | 'deliveryStatus'>>
+type AgentMessagePatch = Partial<Pick<BotanicAgentMessage, 'content' | 'runId' | 'status' | 'feedback' | 'plan' | 'question' | 'composition' | 'deliveryStatus'>>
 
 /**
  * Agent 消息的本地追加、离线排队与联网重放模块。

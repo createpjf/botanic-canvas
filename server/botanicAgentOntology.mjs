@@ -67,6 +67,32 @@ export function buildBotanicAgentOntology(document, contextNodeIds = []) {
   }
 }
 
+/**
+ * 用户在输入框里引用的节点是本轮最强的意图信号，但它此前只躺在 ontology 的一个字段里，
+ * 模型必须自己想到去读本体才能发现。这里把引用直接写进系统提示：拿不到画面是安全边界，
+ * 拿不到名字则是缺陷——模型会转而去搜素材组，搜空后猜「素材在别的项目」。
+ */
+export function botanicAgentContextBriefing(ontology, { visionDescribed = false, visionAttached = false } = {}) {
+  const referenced = (ontology?.contextNodeIds ?? [])
+    .map((id) => ontology.nodes.find((node) => node.id === id))
+    .filter(Boolean)
+  if (!referenced.length) return ''
+  return [
+    '用户本轮引用了这些画布节点，它们就是这次任务的直接对象：',
+    ...referenced.map((node) => {
+      const details = [node.type, node.role, node.mediaKind].filter(Boolean).join(' · ')
+      return `- ${node.label}（${details}；节点 ID ${node.id}）`
+    }),
+    '它们确定存在于当前项目，不要再用素材组检索去找，也不要推测它们在别的项目里。',
+    // 原生附图 > 视觉识别描述 > 只有元数据；没有画面信息时必须明说，不要假装看过图。
+    visionAttached
+      ? '这些图片已随用户消息直接附上，你可以直接查看画面内容。'
+      : visionDescribed
+        ? '画面内容见下方的视觉识别描述。'
+        : '你只能拿到这些元数据，看不到画面本身。需要画面细节时如实说明看不到，不要假装看过图。',
+  ].join('\n')
+}
+
 export function safeBotanicAgentMemory(document) {
   return (Array.isArray(document?.agentMemory) ? document.agentMemory : [])
     .filter((item) => item && typeof item.id === 'string' && typeof item.kind === 'string' && typeof item.content === 'string')

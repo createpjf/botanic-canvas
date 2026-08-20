@@ -322,3 +322,76 @@ test('Agent Run 创建保留对齐后的自定义像素', () => {
   assert.equal(input.plan.settings.outputHeight, 1088)
   assert.equal(input.plan.settings.aspectRatio, '16:9')
 })
+
+test('局部重绘计划持久化归一化选区；缺选区或选区过小被拒', () => {
+  const regionPlan = {
+    ...creation,
+    plan: {
+      ...creation.plan,
+      intent: 'region_edit',
+      output: { mode: 'single', count: 1, candidatesPerItem: 1 },
+      assetGroupId: undefined,
+      region: { rect: { x: 0.6, y: -0.1, width: 0.5, height: 0.4 }, description: '画面右上的区域' },
+    },
+    branches: [{ id: 'branch-a', label: '局部重绘' }],
+  }
+  const input = validateAgentRunCreation(regionPlan)
+  assert.deepEqual(input.plan.region, {
+    rect: { x: 0.6, y: 0, width: 0.4, height: 0.4 },
+    description: '画面右上的区域',
+  })
+
+  assert.throws(() => validateAgentRunCreation({
+    ...regionPlan,
+    plan: { ...regionPlan.plan, region: undefined },
+  }), /局部重绘计划必须携带有效选区/)
+
+  assert.throws(() => validateAgentRunCreation({
+    ...regionPlan,
+    plan: { ...regionPlan.plan, region: { rect: { x: 0.5, y: 0.5, width: 0.001, height: 0.5 } } },
+  }), /选区无效或过小/)
+})
+
+test('成套方案随计划持久化，分支条目归一化（视频单条、数量夹取）', () => {
+  const compositionCreation = {
+    ...creation,
+    plan: {
+      ...creation.plan,
+      intent: 'initial_generation',
+      selectedResultNodeId: undefined,
+      constraints: [],
+      contextSnapshot: [
+        { nodeId: 'asset-product', label: '商品图', kind: '素材', mediaKind: 'image', role: '商品' },
+      ],
+      output: { mode: 'single', count: 3, candidatesPerItem: 1 },
+      assetGroupId: undefined,
+      composition: {
+        theme: '春季山茶花系列',
+        items: [
+          { title: '主视觉', mediaKind: 'image', prompt: '主画面', count: 99 },
+          { title: '细节', mediaKind: 'image', prompt: '细节画面', count: 2 },
+          { title: '氛围视频', mediaKind: 'video', prompt: '镜头缓推', count: 3, duration: 10 },
+        ],
+      },
+    },
+    branches: [
+      { id: 'branch-1', label: '主视觉', item: { index: 1, title: '主视觉', mediaKind: 'image', prompt: '主画面', count: 99 } },
+      { id: 'branch-2', label: '细节', item: { index: 2, title: '细节', mediaKind: 'image', prompt: '细节画面', count: 2 } },
+      { id: 'branch-3', label: '氛围视频', item: { index: 3, title: '氛围视频', mediaKind: 'video', prompt: '镜头缓推', count: 3, duration: 10 } },
+    ],
+  }
+  const input = validateAgentRunCreation(compositionCreation)
+  assert.equal(input.plan.composition.items.length, 3)
+  assert.equal(input.plan.composition.items[0].count, 4)
+  assert.deepEqual(input.branches.map((branch) => [branch.item.mediaKind, branch.item.count]), [
+    ['image', 4],
+    ['image', 2],
+    ['video', 1],
+  ])
+  assert.equal(input.branches[2].item.duration, 10)
+
+  assert.throws(() => validateAgentRunCreation({
+    ...compositionCreation,
+    plan: { ...compositionCreation.plan, composition: { theme: '只有一项', items: [{ title: 'a', mediaKind: 'image', prompt: 'x' }] } },
+  }), /至少要有 2 个条目/)
+})

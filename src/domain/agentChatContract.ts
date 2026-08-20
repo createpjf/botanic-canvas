@@ -17,7 +17,7 @@ export type BotanicAgentRequestDecision =
   | { kind: 'generation'; mediaKind: 'image' | 'video'; promptSource: 'instruction' | 'previous_prompt' }
   /** 裸确认语没有创作内容，只能去提交已存在的待确认计划，不能当成新指令送进规划器。 */
   | { kind: 'confirm_pending' }
-  | { kind: 'clarification'; reason: 'unsupported_media' | 'ambiguous_action' }
+  | { kind: 'clarification'; reason: 'unsupported_media' | 'ambiguous_action' | 'video_requires_reference' }
 
 export type BotanicAgentGenerationPromptResolution =
   | { status: 'resolved'; prompt: string; sourceMessageId?: string; delta?: string }
@@ -103,10 +103,10 @@ export function resolveBotanicAgentGenerationPrompt(
 }
 
 const acknowledgePrefix = /^(?:好的|好|嗯|行|可以的?|没问题|ok)[，,。!！~\s]*/iu
-const bareGenerationConfirmation = /^(?:确认(?:生成|执行|提交)?|生成|生成吧|开始生成|开始执行|直接执行|马上执行|执行吧?|继续执行|开始吧|就(?:这样|按这个)(?:生成|执行)|按推荐(?:值|方案)(?:继续)?)[。！!～~\s]*$/u
+const bareGenerationConfirmation = /^(?:确认(?:生成|执行|提交)?|生成|生成吧|生成一下|开始生成|直接生成|马上生成|立即生成|开始执行|直接执行|马上执行|执行吧?|继续执行|开始吧|就(?:这样|按这个)(?:生成|执行)|按推荐(?:值|方案)(?:继续)?)[。！!～~\s]*$/u
 const refersToHarnessExecution = /(?:执行链路|执行界面|接手.{0,12}待确认|待确认(?:任务|计划)|触发这批(?:生成)?节点|交接计划)/u
 const asksForAdviceOrExplanation = /(?:为什么|为何|怎么|如何|什么意思|多久|多慢|是否|用了什么|给我.{0,8}建议|分析|比较|好吗|怎么样|哪次)/iu
-const explicitVisualGeneration = /(?:帮我|请|直接|马上|按照|按|用|基于|拿)?\s*(?:生成|生图|出图|做一张|来一张|做一版|出一张|我要一张|创建一张)|(?:我想要|我希望|我需要|想要|希望|需要)\s*(?:一张|一版)?\s*[^，。！？?!]{0,40}(?:图片|图|画面|海报|人像|照片)|(?:generate|create|make|edit)\s+(?:(?:an?|this|the)\s+)?(?:image|photo|video)|(?:i\s+)?want\s+(?:an?|the)\s+(?:image|photo|picture|visual)\b/iu
+const explicitVisualGeneration = /(?:帮我|请|直接|马上|按照|按|用|基于|拿)?\s*(?:生成|生图|出图|做一张|来一张|做一版|出一张|我要一张|创建一张)|(?:做成|转成)\s*(?:一段|一条)?\s*(?:视频|动图|video)|(?:我想要|我希望|我需要|想要|希望|需要)\s*(?:一张|一版)?\s*[^，。！？?!]{0,40}(?:图片|图|画面|海报|人像|照片)|(?:generate|create|make|edit)\s+(?:(?:an?|this|the)\s+)?(?:image|photo|video)|(?:i\s+)?want\s+(?:an?|the)\s+(?:image|photo|picture|visual)\b/iu
 const explicitVisualChange = /(?:帮我|请|直接|把|将|给|我想(?:要)?|我希望|我需要).{0,8}(?:换|替换|改成|变成|变为|调整|重做).{0,16}(?:场景|背景|模特|人物|商品|动作|姿势|风格|光线|构图)|(?:换|替换|改成|变成|变为|重做).{0,8}(?:场景|背景|模特|人物|商品|动作|姿势|风格|光线|构图)|(?:把|将|给|我想(?:要)?|我希望|我需要)?\s*(?:场景|背景|模特|人物|商品|动作|姿势|风格|光线|构图|图|画面|照片).{0,8}(?:换|替换|改成|变成|变为|调整|重做)|(?:i\s+want\s+to\s+)?(?:turn|transform|change|edit)\s+(?:(?:this|the)\s+)?(?:image|photo|picture)\s+(?:into|to)\b/iu
 const cancelsVisualGeneration = /(?:先\s*)?(?:不要|不用|别|暂不)\s*(?:再\s*)?(?:生成|生图|出图|做图|创建)|(?:先\s*)?不\s*(?:再\s*)?(?:生成|生图|出图|做图)(?:了)?|(?:取消|停止|中止|暂停)(?:当前|这次|刚才的)?(?:生成|生图|出图|任务)?/iu
 const asksForPromptWork = /(?:怎么|如何).{0,16}(?:写|改|优化|润色).{0,8}(?:prompt|提示词|提示语)|(?:prompt|提示词|提示语).{0,16}(?:怎么|如何).{0,8}(?:写|改|优化|润色|更好)|(?:写|创作|生成|改写|优化|润色).{0,12}(?:prompt|提示词|提示语)/iu
@@ -227,7 +227,13 @@ export function decideBotanicAgentRequest(value: string, hasGenerationTarget = f
   const explicitlyUsesPromptForGeneration = /(?:按照|使用|用|基于|拿).{0,16}(?:prompt|提示词|提示语).{0,16}(?:生成|生图|出图|做一张|来一张)/iu.test(text)
   const usesPreviousPromptForGeneration = refersToPreviousPrompt.test(text)
   if (explicitlyUsesPromptForGeneration || usesPreviousPromptForGeneration) {
-    return { kind: 'generation', mediaKind: /视频|video/iu.test(text) ? 'video' : 'image', promptSource: 'previous_prompt' }
+    // 视频与显式生成路径同判：有图片可作首帧才进视频计划，否则请用户先指定首帧。
+    if (/视频|video/iu.test(text)) {
+      return hasGenerationTarget
+        ? { kind: 'generation', mediaKind: 'video', promptSource: 'previous_prompt' }
+        : { kind: 'clarification', reason: 'video_requires_reference' }
+    }
+    return { kind: 'generation', mediaKind: 'image', promptSource: 'previous_prompt' }
   }
   if (asksForPromptWork.test(text)) return { kind: 'chat', mode: 'prompt' }
   if (asksForAdviceOrExplanation.test(text)) return { kind: 'chat', mode: 'conversation' }
@@ -236,8 +242,9 @@ export function decideBotanicAgentRequest(value: string, hasGenerationTarget = f
   if (/(?:你是谁|你能做什么|如何使用|怎么使用|怎么用|请解释|解释一下|日常聊天|闲聊|你可以|你能)/iu.test(text)) return { kind: 'chat', mode: 'conversation' }
 
   const mediaKind = /视频|video/iu.test(text) ? 'video' as const : 'image' as const
-  if (mediaKind === 'video' && explicitVisualGeneration.test(text)) {
-    return { kind: 'clarification', reason: 'unsupported_media' }
+  // 视频以图片为首帧：有可用图片（选中结果或引用素材）才进入视频计划，否则先请用户指定首帧。
+  if (mediaKind === 'video' && explicitVisualGeneration.test(text) && !hasGenerationTarget) {
+    return { kind: 'clarification', reason: 'video_requires_reference' }
   }
   if (hasContextualVisualCommand || instructionRequestsBatchVariation(text) || explicitVisualGeneration.test(text) || explicitVisualChange.test(text)) {
     return { kind: 'generation', mediaKind, promptSource: 'instruction' }

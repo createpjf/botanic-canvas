@@ -79,6 +79,7 @@ test('裸确认语只提交待确认计划，不当成新指令送进规划器',
   for (const instruction of [
     '确认生成', '确认', '生成', '开始生成', '就这样生成', '按推荐值继续', '按推荐方案继续', '确认生成。',
     '开始执行', '直接执行', '执行吧', '可以的 直接执行', '好的，开始生成', '马上执行',
+    '直接生成', '马上生成', '立即生成', '生成一下',
   ]) {
     assert.deepEqual(decideBotanicAgentRequest(instruction, true), { kind: 'confirm_pending' }, instruction)
   }
@@ -96,6 +97,27 @@ test('执行链路元话语只提交已有计划，不把出图二字送进规�
   }
   assert.equal(decideBotanicAgentRequest('按白皙、小麦、黄色三档肤色出 3 张', true).kind, 'generation')
   assert.deepEqual(decideBotanicAgentRequest('为什么没生成', true), { kind: 'chat', mode: 'conversation' })
+})
+
+test('视频请求有图片首帧才进视频计划，沿用历史 Prompt 的路径同判', () => {
+  // 有可用图片（选中结果或引用素材）：进入视频生成计划。
+  assert.deepEqual(
+    decideBotanicAgentRequest('用这段 Prompt 生成视频', true),
+    { kind: 'generation', mediaKind: 'video', promptSource: 'previous_prompt' },
+  )
+  assert.deepEqual(
+    decideBotanicAgentRequest('把这张图做成视频', true),
+    { kind: 'generation', mediaKind: 'video', promptSource: 'instruction' },
+  )
+  // 没有图片可作首帧：先请用户指定，不产出按图片模型走的“视频”计划。
+  assert.deepEqual(
+    decideBotanicAgentRequest('用这段 Prompt 生成视频', false),
+    { kind: 'clarification', reason: 'video_requires_reference' },
+  )
+  assert.deepEqual(
+    decideBotanicAgentRequest('用这段 Prompt 生成', true),
+    { kind: 'generation', mediaKind: 'image', promptSource: 'previous_prompt' },
+  )
 })
 
 test('同样的执行链路措辞出现在提问里只是发问，不能提交待确认计划', () => {
@@ -127,9 +149,15 @@ test('自然语言创作请求在已有图片上下文时进入生成计划链�
 })
 
 test('视频执行请求不得误建图片节点', () => {
+  // 无图片首帧时提示先指定，不落成图片计划。
   assert.deepEqual(decideBotanicAgentRequest('帮我生成一个视频'), {
     kind: 'clarification',
-    reason: 'unsupported_media',
+    reason: 'video_requires_reference',
+  })
+  assert.deepEqual(decideBotanicAgentRequest('帮我生成一个视频', true), {
+    kind: 'generation',
+    mediaKind: 'video',
+    promptSource: 'instruction',
   })
 })
 
