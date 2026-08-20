@@ -2,7 +2,7 @@ import { AgentToolRuntimeError, agentToolObject, agentToolText, createAgentToolR
 import { botanicAgentProviderConfig, botanicAgentProviderTemperature } from './botanicAgentPlanner.mjs'
 import { BotanicAgentChatError } from './botanicAgentChat.mjs'
 import { readBotanicAgentInstructions } from './agentInstructions.mjs'
-import { buildBotanicAgentOntology, safeBotanicAgentMemory, safeBotanicAgentSkills } from './botanicAgentOntology.mjs'
+import { botanicAgentContextBriefing, buildBotanicAgentOntology, safeBotanicAgentMemory, safeBotanicAgentSkills } from './botanicAgentOntology.mjs'
 import { botanicAgentContextToolSourceLabels, createBotanicAgentReadToolDefinitions } from './botanicAgentContextTools.mjs'
 
 // Botanic Agent 回合解析器：把“这一句到底是聊天/建议/检索，还是要生成图片，以及要用什么
@@ -218,11 +218,13 @@ function turnConfig(runtimeConfig, requestedModel) {
 
 export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}) {
   const config = turnConfig(runtimeConfig, input?.plannerModel)
-  const system = await turnInstructions()
+  const baseSystem = await turnInstructions()
   if (options.signal?.aborted) throw new BotanicAgentChatError(499, 'REQUEST_CANCELLED', 'Agent 请求已取消。')
   const ontology = buildBotanicAgentOntology(options.document, input.contextNodeIds)
   const memory = safeBotanicAgentMemory(options.document)
   const skills = safeBotanicAgentSkills(options.projectSkills)
+  const contextBriefing = botanicAgentContextBriefing(ontology)
+  const system = contextBriefing ? `${baseSystem}\n\n${contextBriefing}` : baseSystem
   const registry = turnToolRegistry(input, { ontology, memory, skills })
   const timeoutSignal = AbortSignal.timeout(config.timeoutMs)
   const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal

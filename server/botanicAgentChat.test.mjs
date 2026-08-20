@@ -75,6 +75,46 @@ test('Agent 对话真正调用选定 Flock 模型，并通过本体工具检索�
   assert.doesNotMatch(JSON.stringify(requests), /api\/media\/private|api\/media\/result/)
 })
 
+test('输入框里引用的节点直接进入系统提示，模型不必先猜它存不存在', async () => {
+  const requests = []
+  await chatWithBotanicAgent({ ...input, mode: 'conversation', contextNodeIds: ['asset-scene'] }, {
+    flockApiKey: 'flock-secret',
+    flockTextModel: 'deepseek-v4-pro',
+    flockAgentModels: ['deepseek-v4-pro', 'deepseek-v4-flash', 'kimi-k3'],
+  }, {
+    document,
+    fetchImpl: async (_url, init) => {
+      requests.push(JSON.parse(init.body))
+      return new Response(JSON.stringify({ choices: [{ message: { content: '好的。' } }] }), { status: 200 })
+    },
+  })
+
+  const system = requests[0].messages[0].content
+  assert.match(system, /海边场景/)
+  assert.match(system, /asset-scene/)
+  // 素材组检索为空曾让模型猜「素材在别的项目」，系统提示必须先堵掉这条路。
+  assert.match(system, /不要再用素材组检索去找/)
+  // 元数据可以给，画面不能给：模型必须知道自己看不到图。
+  assert.match(system, /看不到画面/)
+  assert.doesNotMatch(JSON.stringify(requests), /api\/media\/private/)
+})
+
+test('没有引用节点时不追加引用说明', async () => {
+  const requests = []
+  await chatWithBotanicAgent({ ...input, mode: 'conversation', contextNodeIds: [] }, {
+    flockApiKey: 'flock-secret',
+    flockTextModel: 'deepseek-v4-pro',
+    flockAgentModels: ['deepseek-v4-pro', 'deepseek-v4-flash', 'kimi-k3'],
+  }, {
+    document,
+    fetchImpl: async (_url, init) => {
+      requests.push(JSON.parse(init.body))
+      return new Response(JSON.stringify({ choices: [{ message: { content: '好的。' } }] }), { status: 200 })
+    },
+  })
+  assert.doesNotMatch(requests[0].messages[0].content, /用户本轮引用了这些画布节点/)
+})
+
 test('Prompt 模式只回传对话正文，不把整段回答回填成可执行提示词', async () => {
   const result = await chatWithBotanicAgent({
     projectId: 'project-chat',

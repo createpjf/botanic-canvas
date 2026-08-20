@@ -92,6 +92,30 @@ test('模型基于既有建议直接综合可执行 Prompt 并生成多张，而
   assert.doesNotMatch(JSON.stringify(requests), /api\/media\/private/)
 })
 
+test('回合解析同样先把引用节点写进系统提示', async () => {
+  const requests = []
+  await resolveBotanicAgentTurn({
+    projectId: 'project-turn',
+    plannerModel: 'deepseek-v4-pro',
+    messages: [{ role: 'user', content: '帮这张图写个 prompt' }],
+    contextNodeIds: ['asset-mia-portrait'],
+    hasTarget: false,
+    generationModels,
+    maxOutputCount: 8,
+  }, runtime, {
+    document,
+    fetchImpl: async (_url, init) => {
+      requests.push(JSON.parse(init.body))
+      return new Response(JSON.stringify({ choices: [{ message: { content: '好的。' } }] }), { status: 200 })
+    },
+  })
+
+  const system = requests[0].messages[0].content
+  assert.match(system, /Mia 肖像/)
+  assert.match(system, /asset-mia-portrait/)
+  assert.doesNotMatch(JSON.stringify(requests), /api\/media\/private/)
+})
+
 test('模型判定为咨询时返回文字回答而不触发生成', async () => {
   const result = await resolveBotanicAgentTurn({
     projectId: 'project-turn',
