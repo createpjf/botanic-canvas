@@ -3,6 +3,7 @@ import test from 'node:test'
 import {
   applyBotanicAgentVariationToPlan,
   botanicAgentConfirmBranchDrafts,
+  botanicAgentStructuredVariationRequest,
   botanicAgentVisualGenerationPrompt,
   expandBotanicAgentVariationBranches,
   instructionRequestsBatchVariation,
@@ -72,6 +73,53 @@ test('镜像夹具：批量意图识别与 src/domain 实现一致', () => {
   for (const item of mirrorFixture.batchDetectionCases) {
     assert.equal(instructionRequestsBatchVariation(item.instruction), item.expected, item.instruction)
   }
+})
+
+test('镜像夹具：结构化变体请求与 src/domain 实现一致', () => {
+  for (const item of mirrorFixture.structuredCases) {
+    assert.deepEqual(projectVariationResolution(botanicAgentStructuredVariationRequest(item.input)), item.expected, item.name)
+  }
+})
+
+test('结构化变体声明直接展开计划，不再解析自然语言', () => {
+  const applied = applyBotanicAgentVariationToPlan({
+    intent: 'initial_generation',
+    instruction: '换一个模特肤色',
+    summary: '首次生成 1 张。',
+    prompt: '棚拍模特肖像，柔光，保持人物身份。',
+    constraints: [],
+    output: { mode: 'single', count: 1, candidatesPerItem: 1 },
+  }, {
+    instruction: '换一个模特肤色',
+    structuredVariants: [
+      { label: '白人', promptDelta: '人物肤色改为白人，保持五官与身份不变' },
+      { label: '黑人', promptDelta: '人物肤色改为黑人，保持五官与身份不变' },
+    ],
+    variationAxisLabel: '肤色',
+  })
+  assert.equal(applied.kind, 'plan')
+  assert.equal(applied.plan.output.mode, 'batch_by_variation')
+  assert.equal(applied.plan.output.count, 2)
+  const branches = expandBotanicAgentVariationBranches(applied.plan.variation)
+  assert.deepEqual(branches.map((branch) => branch.label), ['白人', '黑人'])
+  assert.ok(branches.every((branch) => branch.promptDelta.includes('保持五官与身份不变')))
+})
+
+test('结构化变体不可用时退回正则解析', () => {
+  const applied = applyBotanicAgentVariationToPlan({
+    intent: 'initial_generation',
+    instruction: '白皙、自然两种肤色，多图',
+    summary: '首次生成 1 张。',
+    prompt: '棚拍模特肖像。',
+    constraints: [],
+    output: { mode: 'single', count: 1, candidatesPerItem: 1 },
+  }, {
+    instruction: '白皙、自然两种肤色，多图',
+    structuredVariants: [{ label: '白人', promptDelta: '只有一条，声明无效' }],
+  })
+  assert.equal(applied.kind, 'plan')
+  assert.equal(applied.plan.output.mode, 'batch_by_variation')
+  assert.equal(applied.plan.output.count, 2)
 })
 
 test('成套方案的分支按条目展开，条目随分支下发（镜像）', () => {

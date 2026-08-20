@@ -133,6 +133,27 @@ function normalizeSettingsHint(raw, generationModels) {
   return hint
 }
 
+/**
+ * 模型声明的结构化变体只做确定性归一：去重、截断、条数下限。语义判断（哪几个变体、差异是什么）
+ * 完全由模型负责；归一后不足 2 条视为未声明，下游退回正则兜底。
+ */
+function normalizeTurnVariants(raw, maxCount) {
+  if (!Array.isArray(raw)) return undefined
+  const seen = new Set()
+  const variants = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+    const label = typeof item.label === 'string' ? item.label.trim() : ''
+    const promptDelta = typeof item.promptDelta === 'string' ? item.promptDelta.trim() : ''
+    if (!label || !promptDelta || Array.from(label).length > 16 || promptDelta.length > 500) continue
+    if (seen.has(label)) continue
+    seen.add(label)
+    variants.push({ label, promptDelta })
+    if (variants.length >= Math.min(maxCount, 8)) break
+  }
+  return variants.length >= 2 ? variants : undefined
+}
+
 function generateImagesTool(input) {
   const maxCount = input.maxOutputCount ?? DEFAULT_MAX_OUTPUT_COUNT
   return {
@@ -143,7 +164,13 @@ function generateImagesTool(input) {
     description: '当用户希望你直接生成 / 出图 / 做图（而不仅是给建议或写文案）时调用。'
       + 'prompt 必须是你综合整段对话（尤其是你自己刚刚给出的方向或建议）以及被引用的画布素材后，'
       + '写出的完整、可直接执行的图像提示词，不要让用户重复描述、也不要只填“基于上面”这类占位。'
-      + 'count 是需要生成的图片数量，请依据用户表达（如“3 张”）填写。',
+      + 'count 是需要生成的图片数量，请依据用户表达（如“3 张”）填写。'
+      + '用户要求同一画面的多个变体（例如换不同肤色、场景、风格，“一个白人一个黑人”）时，'
+      + '必须用 variants 逐条声明：label 是 2-8 字短名（如“白人”“海边”），'
+      + 'promptDelta 是该变体相对共享画面的完整差异描述（如“人物肤色为白人，保持五官与身份不变”）；'
+      + '此时 prompt 只写各变体共享的画面底稿，不要把变体差异或枚举写进 prompt。'
+      + 'axisLabel 是变化维度短名（如“肤色”“场景”）。'
+      + '用户提到画面比例（如 16:9）或清晰度（1K/2K）时填写 aspectRatio / resolution。',
     risk: 'costly',
     terminal: true,
     parameters: {
@@ -153,32 +180,57 @@ function generateImagesTool(input) {
       properties: {
         prompt: { type: 'string', minLength: 4, maxLength: 6000 },
         count: { type: 'integer', minimum: 1, maximum: maxCount },
-        aspectRatio: { type: 'string' },
-        resolution: { type: 'string' },
+        aspectRatio: { type: 'string', enum: [...ASPECT_RATIOS] },
+        resolution: { type: 'string', enum: [...RESOLUTIONS] },
         model: { type: 'string' },
+        axisLabel: { type: 'string', maxLength: 16 },
+        variants: {
+          type: 'array',
+          minItems: 2,
+          maxItems: Math.min(maxCount, 8),
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['label', 'promptDelta'],
+            properties: {
+              label: { type: 'string', minLength: 1, maxLength: 16 },
+              promptDelta: { type: 'string', minLength: 4, maxLength: 500 },
+            },
+          },
+        },
       },
     },
     validate: (raw) => {
       // 这些参数来自模型而不是用户，写坏了要按 Provider 非法工具参数处理。
       const value = agentToolObject(raw, '生成参数')
       const prompt = agentToolText(value.prompt, '生成 Prompt', 6000)
+      const variants = normalizeTurnVariants(value.variants, maxCount)
       let count = 1
       if (value.count !== undefined) {
         const parsed = Number(value.count)
         if (Number.isFinite(parsed)) count = Math.min(maxCount, Math.max(1, Math.floor(parsed)))
       }
+      // 声明了变体时张数以变体数为准，模型不必再分开维护两个数字。
+      if (variants) count = variants.length
+      const axisLabel = typeof value.axisLabel === 'string' && value.axisLabel.trim()
+        ? value.axisLabel.trim().slice(0, 16)
+        : undefined
       return {
         prompt,
         count,
         settingsHint: normalizeSettingsHint(value, input.generationModels),
+        ...(variants ? { variants } : {}),
+        ...(variants && axisLabel ? { axisLabel } : {}),
       }
     },
-    execute: async ({ prompt, count, settingsHint }) => ({
+    execute: async ({ prompt, count, settingsHint, variants, axisLabel }) => ({
       __turnKind: 'generation',
       mediaKind: 'image',
       prompt,
       count,
       settingsHint,
+      ...(variants ? { variants } : {}),
+      ...(axisLabel ? { axisLabel } : {}),
     }),
   }
 }
@@ -448,6 +500,8 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
         count: result.output.count,
         ...(result.output.duration ? { duration: result.output.duration } : {}),
         ...(Object.keys(result.output.settingsHint ?? {}).length ? { settingsHint: result.output.settingsHint } : {}),
+        ...(result.output.variants?.length ? { variants: result.output.variants } : {}),
+        ...(result.output.axisLabel ? { axisLabel: result.output.axisLabel } : {}),
         plannerModel: model,
         toolCalls: result.toolCalls,
       }

@@ -17,6 +17,7 @@ import {
   botanicAgentPlanOutputLabel,
   botanicAgentPlanSheetCountLabel,
   botanicAgentSharedVariationPrompt,
+  botanicAgentStructuredVariationRequest,
   expandBotanicAgentVariationBranches,
   instructionRequestsBatchVariation,
   resolveBotanicAgentVariationRequest,
@@ -584,6 +585,12 @@ test('镜像夹具：提示词清洗与 server 实现一致', () => {
 test('镜像夹具：批量意图识别与 server 实现一致', () => {
   for (const item of mirrorFixture.batchDetectionCases) {
     assert.equal(instructionRequestsBatchVariation(item.instruction), item.expected, item.instruction)
+  }
+})
+
+test('镜像夹具：结构化变体请求与 server 实现一致', () => {
+  for (const item of mirrorFixture.structuredCases) {
+    assert.deepEqual(projectVariationResolution(botanicAgentStructuredVariationRequest(item.input)), item.expected, item.name)
   }
 })
 

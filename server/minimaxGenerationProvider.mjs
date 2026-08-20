@@ -1,4 +1,5 @@
 import { mapWithConcurrency } from './concurrency.mjs'
+import { compositionBrandGuard } from './generationComposition.mjs'
 import { GenerationError } from './generationProvider.mjs'
 
 function dataUrl(media) {
@@ -44,7 +45,7 @@ function miniMaxImagePrompt(job) {
     job.prompt,
     roles ? `画布参考语义：${roles}。` : '',
     job.references.find((reference) => reference.primary) ? '保持主参考主体的关键外观与识别特征。' : '',
-    '不要添加未被要求的品牌标识、价格、二维码或水印。',
+    compositionBrandGuard(job.references),
   ].filter(Boolean).join('\n').slice(0, 1500)
 }
 

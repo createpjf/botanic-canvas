@@ -1118,6 +1118,8 @@ export default function AgentWorkspace({
     failedCommand?: AgentFailedInstruction,
     outputCount?: number,
     sourceInstruction?: string,
+    structuredVariants?: Array<{ label: string; promptDelta: string }>,
+    variationAxisLabel?: string,
   ): Promise<BotanicAgentPlan | BotanicAgentClarificationResponse | null> => {
     if (!target || !isCurrentAgentProject()) return null
     const assetGroup = compatibleGroups.find((group) => group.id === groupId)
@@ -1129,6 +1131,9 @@ export default function AgentWorkspace({
       instruction: cleanInstruction,
       // 综合 Prompt 链路里 cleanInstruction 是模型写的画面描述；变体轴必须从用户原话解析。
       ...(sourceInstruction?.trim() ? { sourceInstruction: sourceInstruction.trim() } : {}),
+      // 回合模型结构化声明的变体：规划器直接展开，不再从自然语言里挖轴。
+      ...(structuredVariants?.length ? { structuredVariants } : {}),
+      ...(structuredVariants?.length && variationAxisLabel ? { variationAxisLabel } : {}),
       requestedIntent: intent,
       selectedResultNodeId: target.id,
       selectedResultLabel: target.label,
@@ -1184,6 +1189,8 @@ export default function AgentWorkspace({
             clarificationAnswers,
             brief: creativeBrief,
             fallbackPrompt: target.rootRecipe?.prompt,
+            structuredVariants,
+            variationAxisLabel,
             assetGroup: assetGroup
               ? { id: assetGroup.id, role: assetGroup.role, assetCount: assetGroup.assetIds.length }
               : undefined,
@@ -1327,6 +1334,9 @@ export default function AgentWorkspace({
     options: AgentRunInstructionOptions = {},
   ) => {
     if (!session || planning || !isCurrentAgentProject()) return
+    // 快捷操作选的意图只作用于紧随其后的这一条指令；用完即清，
+    // 避免一次点击后的残留意图长期覆盖回合模型的判断。
+    if (intent) setIntent(undefined)
     if (options.appendUser) appendMessage({ role: 'user', kind: 'text', content: options.appendUser })
     setLiveConversation(undefined)
     setError('')
@@ -1462,6 +1472,8 @@ export default function AgentWorkspace({
     let synthesizedPrompt: string | undefined = entry.synthesizedPrompt
     let synthesizedCount: number | undefined = entry.synthesizedCount
     let synthesizedDuration: number | undefined = entry.synthesizedDuration
+    let synthesizedVariants: Array<{ label: string; promptDelta: string }> | undefined = entry.synthesizedVariants
+    let synthesizedAxisLabel: string | undefined = entry.synthesizedAxisLabel
     let resolvedOptions = entry.options
     if (entry.useServerTurn) {
       plannerControllerRef.current?.abort()
@@ -1539,6 +1551,8 @@ export default function AgentWorkspace({
         synthesizedPrompt = turn.prompt
         synthesizedCount = turn.count
         synthesizedDuration = turn.duration
+        synthesizedVariants = turn.variants
+        synthesizedAxisLabel = turn.axisLabel
         if (turn.settingsHint && Object.keys(turn.settingsHint).length) {
           resolvedOptions = { ...options, generationOverrides: { ...turn.settingsHint, ...options.generationOverrides } }
         }
@@ -1760,6 +1774,8 @@ export default function AgentWorkspace({
       synthesizedPrompt,
       synthesizedCount,
       synthesizedDuration,
+      synthesizedVariants,
+      synthesizedAxisLabel,
     })
     if (draft.kind === 'notice') {
       appendMessage({
@@ -1909,6 +1925,8 @@ export default function AgentWorkspace({
       resolvedFailedCommand,
       draft.outputCount,
       draft.instruction,
+      draft.structuredVariants,
+      draft.variationAxisLabel,
     )
     if (!nextPlan || !session || !isCurrentAgentProject()) return
     if ('kind' in nextPlan && nextPlan.kind === 'clarification') {

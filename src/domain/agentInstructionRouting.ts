@@ -54,6 +54,8 @@ export type BotanicAgentInstructionEntry =
       synthesizedPrompt?: string
       synthesizedCount?: number
       synthesizedDuration?: number
+      synthesizedVariants?: Array<{ label: string; promptDelta: string }>
+      synthesizedAxisLabel?: string
     }
 
 /**
@@ -109,6 +111,8 @@ export function resolveBotanicAgentInstructionEntry(input: {
     synthesizedPrompt: restored?.prompt,
     synthesizedCount: restored?.count,
     synthesizedDuration: restored?.duration,
+    synthesizedVariants: restored?.variants,
+    synthesizedAxisLabel: restored?.variationAxisLabel,
   }
 }
 
@@ -132,6 +136,9 @@ export type BotanicAgentGenerationDraftInput = {
   synthesizedPrompt?: string
   synthesizedCount?: number
   synthesizedDuration?: number
+  /** 回合模型结构化声明的变体；有它就跳过正则变体追问，护栏校验在计划构建时进行。 */
+  synthesizedVariants?: Array<{ label: string; promptDelta: string }>
+  synthesizedAxisLabel?: string
 }
 
 export type BotanicAgentGenerationDraft =
@@ -154,6 +161,9 @@ export type BotanicAgentGenerationDraft =
       planContextItems: BotanicAgentContextSnapshotInput[]
       outputCount?: number
       sourcePromptMessageId?: string
+      /** 回合模型结构化声明的变体；计划构建时直接展开，不再正则解析。 */
+      structuredVariants?: Array<{ label: string; promptDelta: string }>
+      variationAxisLabel?: string
       /** 追问卡必须带回下一轮的生成结论与 Prompt 来源。 */
       carryOver: { sourcePromptMessageId?: string; resolvedGeneration?: BotanicAgentResolvedGeneration }
     }
@@ -182,6 +192,8 @@ export function prepareBotanicAgentGenerationDraft(input: BotanicAgentGeneration
       prompt: input.synthesizedPrompt,
       ...(input.synthesizedCount ? { count: input.synthesizedCount } : {}),
       ...(input.synthesizedDuration ? { duration: input.synthesizedDuration } : {}),
+      ...(input.synthesizedVariants?.length ? { variants: input.synthesizedVariants } : {}),
+      ...(input.synthesizedVariants?.length && input.synthesizedAxisLabel ? { variationAxisLabel: input.synthesizedAxisLabel } : {}),
     }
     : undefined
   const carryOver = {
@@ -197,9 +209,13 @@ export function prepareBotanicAgentGenerationDraft(input: BotanicAgentGeneration
   const inferredGenerationOverrides = inferBotanicAgentGenerationSettings(instruction, candidateModels)
   const requestedGenerationOverrides = { ...inferredGenerationOverrides, ...options.generationOverrides }
   // 变体轴决定要开几个分支，必须先于比例与清晰度确认；已确认过的取值不再重复追问。
-  // 轴与取值只从用户原话解析：综合 Prompt 是模型写的画面描述，把它当指令会被正则挖成伪变体。
+  // 回合模型已结构化声明变体时语义解析完成，跳过正则追问；否则轴与取值只从用户原话解析：
+  // 综合 Prompt 是模型写的画面描述，把它当指令会被正则挖成伪变体。
   // 视频一次一条、局部重绘一次一张，都不进入变体展开。
-  const pendingVariation = isVideo || options.region ? undefined : botanicAgentPendingVariationClarification({
+  const structuredVariants = !isVideo && !options.region && input.synthesizedVariants && input.synthesizedVariants.length >= 2
+    ? input.synthesizedVariants
+    : undefined
+  const pendingVariation = isVideo || options.region || structuredVariants ? undefined : botanicAgentPendingVariationClarification({
     instruction,
     locale: input.locale,
     requestedIntent: input.requestedIntent,
@@ -261,6 +277,8 @@ export function prepareBotanicAgentGenerationDraft(input: BotanicAgentGeneration
     } as GenerationSettings,
     planContextItems,
     ...(!isVideo && input.synthesizedCount ? { outputCount: input.synthesizedCount } : {}),
+    ...(structuredVariants ? { structuredVariants } : {}),
+    ...(structuredVariants && input.synthesizedAxisLabel ? { variationAxisLabel: input.synthesizedAxisLabel } : {}),
     ...(sourcePromptMessageId ? { sourcePromptMessageId } : {}),
     carryOver,
   }
@@ -288,7 +306,7 @@ export function buildBotanicAgentInitialDraftPlan(
     contextSnapshot: createBotanicAgentContextSnapshot(draft.planContextItems),
     ...(draft.outputCount ? { outputCount: draft.outputCount } : {}),
   })
-  // 视频一次一条，不做变体展开。轴与取值从用户原话解析；综合 Prompt 只做共享画面底。
+  // 视频一次一条，不做变体展开。模型结构化声明优先；否则轴与取值从用户原话解析，综合 Prompt 只做共享画面底。
   const applied = draft.isVideo
     ? { kind: 'plan' as const, plan: initialPlan }
     : applyBotanicAgentVariationToPlan(initialPlan, {
@@ -298,6 +316,8 @@ export function buildBotanicAgentInitialDraftPlan(
       clarificationAnswers,
       brief: draft.brief,
       fallbackPrompt: draft.prompt,
+      structuredVariants: draft.structuredVariants,
+      variationAxisLabel: draft.variationAxisLabel,
     })
   if (applied.kind === 'clarification') {
     return { kind: 'clarification', clarification: { ...applied.clarification, ...draft.carryOver } }

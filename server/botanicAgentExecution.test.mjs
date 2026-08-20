@@ -459,6 +459,37 @@ test('无素材变体分支把本支增量叠到共用画面 Prompt 上', () => 
   assert.equal(result.jobs[0].rawInput.parent.mediaId, 'media_parent')
 })
 
+test('首次生成把标识类参考排到人像之后，避免 logo 当底图', () => {
+  const document = initialGenerationDocument()
+  document.nodes.push({
+    id: 'asset-logo-node', type: 'asset', position: { x: 40, y: 200 }, draggable: true,
+    data: {
+      kind: 'asset', assetId: 'asset-logo', name: 'logo-full 2',
+      image: '/api/media/media_logo', role: '商品', source: 'upload', mediaKind: 'image',
+    },
+  })
+  document.nodes.push({
+    id: 'asset-portrait-node', type: 'asset', position: { x: 40, y: 360 }, draggable: true,
+    data: {
+      kind: 'asset', assetId: 'asset-portrait', name: '棚拍人像',
+      image: '/api/media/media_portrait', role: '模特', source: 'upload', mediaKind: 'image',
+    },
+  })
+  const run = initialGenerationRun([
+    { nodeId: 'asset-logo-node', label: 'logo-full 2', kind: '素材', mediaKind: 'image', role: '商品' },
+    { nodeId: 'asset-portrait-node', label: '棚拍人像', kind: '素材', mediaKind: 'image', role: '模特' },
+  ])
+  const result = prepareAgentRunExecution({
+    run, document, now: 100,
+    jobIdForBranch: (branch) => `job-${branch.id}`,
+    models, maximumBatchCount: 8, maximumReferenceBytes: 8 * 1024 * 1024,
+  })
+  assert.deepEqual(
+    result.jobs[0].rawInput.recipe.references.map((item) => item.mediaId),
+    ['media_portrait', 'media_logo'],
+  )
+})
+
 test('局部重绘计划只以父结果为基准图，选区随任务下发为 maskRegion', () => {
   const run = {
     ...persistentRun(),
@@ -480,9 +511,62 @@ test('局部重绘计划只以父结果为基准图，选区随任务下发为 m
   const job = result.jobs[0]
   assert.equal(job.kind, 'refinement')
   assert.deepEqual(job.rawInput.recipe.maskRegion, { x: 0.6, y: 0, width: 0.4, height: 0.4 })
-  // 局部重绘不混入其它参考：基准图只有 parent。
+  // 原配方只有球衣，不是标识，因此不补参考；基准图仍是 parent。
   assert.deepEqual(job.rawInput.recipe.references, [])
   assert.equal(job.rawInput.parent.mediaId, 'media_parent')
+})
+
+test('局部重绘在本轮 @ 标识或原配方含 logo 时把标识带进参考', () => {
+  const document = projectDocument()
+  document.nodes.push({
+    id: 'asset-logo-node', type: 'asset', position: { x: 40, y: 200 }, draggable: true,
+    data: {
+      kind: 'asset', assetId: 'asset-logo', name: 'logo-full 2',
+      image: '/api/media/media_logo', role: '商品', source: 'upload', mediaKind: 'image',
+    },
+  })
+  const withMention = {
+    ...persistentRun(),
+    plan: {
+      intent: 'region_edit', instruction: '勋章还原 logo', summary: '局部重绘勋章。',
+      selectedResultNodeId: 'result-parent', prompt: '勋章图案严格还原文字标识。', settings,
+      constraints: [{ dimension: 'person', mode: 'preserve' }],
+      output: { mode: 'single', count: 1, candidatesPerItem: 1 },
+      region: { rect: { x: 0.7, y: 0.3, width: 0.1, height: 0.1 } },
+      contextSnapshot: [
+        { nodeId: 'asset-logo-node', label: 'logo-full 2', kind: '素材', mediaKind: 'image' },
+      ],
+    },
+    branches: [{ id: 'branch-region-logo', label: '局部重绘', status: 'queued', attempt: 0, jobIds: [], outputCount: 0, updatedAt: 1 }],
+  }
+  const mentioned = prepareAgentRunExecution({
+    run: withMention, document, now: 100,
+    jobIdForBranch: (branch) => `job-${branch.id}`,
+    models, maximumBatchCount: 8, maximumReferenceBytes: 8 * 1024 * 1024,
+  })
+  assert.deepEqual(mentioned.jobs[0].rawInput.recipe.references.map((item) => item.mediaId), ['media_logo'])
+
+  document.nodes[0].data.generationRecipe.references.push({
+    nodeId: 'asset-logo-node', assetId: 'asset-logo', name: 'logo-full 2',
+    image: '/api/media/media_logo', role: '商品', primary: false, priority: 2,
+  })
+  const inherited = {
+    ...persistentRun(),
+    plan: {
+      intent: 'region_edit', instruction: '只改勋章', summary: '局部重绘勋章。',
+      selectedResultNodeId: 'result-parent', prompt: '勋章图案严格还原文字标识。', settings,
+      constraints: [{ dimension: 'person', mode: 'preserve' }],
+      output: { mode: 'single', count: 1, candidatesPerItem: 1 },
+      region: { rect: { x: 0.7, y: 0.3, width: 0.1, height: 0.1 } },
+    },
+    branches: [{ id: 'branch-region-inherit', label: '局部重绘', status: 'queued', attempt: 0, jobIds: [], outputCount: 0, updatedAt: 1 }],
+  }
+  const inheritedResult = prepareAgentRunExecution({
+    run: inherited, document, now: 100,
+    jobIdForBranch: (branch) => `job-${branch.id}`,
+    models, maximumBatchCount: 8, maximumReferenceBytes: 8 * 1024 * 1024,
+  })
+  assert.deepEqual(inheritedResult.jobs[0].rawInput.recipe.references.map((item) => item.mediaId), ['media_logo'])
 })
 
 test('成套方案分支异构执行：图片条目按数量、视频条目切视频模型并走首帧', () => {

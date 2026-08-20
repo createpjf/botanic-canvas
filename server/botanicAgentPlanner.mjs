@@ -183,6 +183,22 @@ export function validateBotanicAgentPlanInput(raw) {
   const instruction = requiredText(input.instruction, '修改要求', 4000)
   // 用户原话：综合 Prompt 链路里 instruction 是模型写的画面描述，变体轴只允许从原话解析。
   const sourceInstruction = optionalText(input.sourceInstruction, '用户原话', 4000)
+  // 回合模型结构化声明的变体：有它就直接展开，不再从自然语言里挖轴。坏条目静默丢弃，剩余不足 2 条视为未声明。
+  let structuredVariants
+  if (Array.isArray(input.structuredVariants)) {
+    const seen = new Set()
+    structuredVariants = []
+    for (const item of input.structuredVariants.slice(0, 8)) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+      const label = typeof item.label === 'string' ? item.label.trim().slice(0, 16) : ''
+      const promptDelta = typeof item.promptDelta === 'string' ? item.promptDelta.trim().slice(0, 500) : ''
+      if (!label || !promptDelta || seen.has(label)) continue
+      seen.add(label)
+      structuredVariants.push({ label, promptDelta })
+    }
+    if (structuredVariants.length < 2) structuredVariants = undefined
+  }
+  const variationAxisLabel = structuredVariants ? optionalText(input.variationAxisLabel, '变体维度', 16) : undefined
   const requestedIntent = optionalText(input.requestedIntent, '操作类型', 80)
   if (requestedIntent && !INTENTS.has(requestedIntent)) invalidRequest('操作类型不支持。')
 
@@ -359,6 +375,8 @@ export function validateBotanicAgentPlanInput(raw) {
     ...(plannerModel ? { plannerModel } : {}),
     instruction,
     ...(sourceInstruction ? { sourceInstruction } : {}),
+    ...(structuredVariants ? { structuredVariants } : {}),
+    ...(variationAxisLabel ? { variationAxisLabel } : {}),
     ...(requestedIntent ? { requestedIntent } : {}),
     selectedResult,
     settings: effectiveSettings,
@@ -514,13 +532,16 @@ function normalizeProviderPlan(raw, input) {
     ...(selectedAssetGroup ? { assetGroupId: selectedAssetGroup.id } : {}),
   }
   const applied = applyBotanicAgentVariationToPlan(plan, {
-    // 变体轴只从用户原话解析；综合 Prompt 里的「两张」等字样会把模型 prose 挖成伪变体。
+    // 模型结构化声明的变体直接展开；否则变体轴只从用户原话解析，
+    // 综合 Prompt 里的「两张」等字样会把模型 prose 挖成伪变体。
     instruction: input.sourceInstruction || input.instruction,
     requestedIntent: input.requestedIntent,
     clarificationAnswers: input.clarificationAnswers,
     brief: input.creativeBrief,
     assetGroup: selectedAssetGroup ?? input.assetGroup,
     fallbackPrompt: input.parentPrompt,
+    structuredVariants: input.structuredVariants,
+    variationAxisLabel: input.variationAxisLabel,
   })
   if (applied.kind === 'clarification') return { kind: 'clarification', clarification: applied.clarification }
   return applied.plan

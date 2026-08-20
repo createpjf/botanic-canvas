@@ -43,6 +43,10 @@ export type BotanicAgentTurnResult =
       /** 仅视频：时长（秒），取值来自视频模型目录。 */
       duration?: number
       settingsHint?: BotanicAgentTurnSettingsHint
+      /** 模型结构化声明的变体：label 短名 + 相对共享画面的差异描述。有它就不再正则挖轴。 */
+      variants?: Array<{ label: string; promptDelta: string }>
+      /** 变化维度短名（如「肤色」），仅用于展示与追问文案。 */
+      axisLabel?: string
       plannerModel?: string
       toolCalls?: AgentToolCallTrace[]
     }

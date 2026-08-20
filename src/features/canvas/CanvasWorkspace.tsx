@@ -2473,7 +2473,7 @@ export default function CanvasWorkspace({
           busy={generationStatus === 'uploading' || generationStatus === 'queued' || generationStatus === 'running' || generationStatus === 'recovering'}
           onSubmit={({ rect, prompt }) => {
             const submissionProjectId = document.id
-            // 局部重绘只以选中结果为基准图；选区外画面由蒙版保持，不再混入其它参考。
+            // 选区外由蒙版保持。标识类参考由 runRefinement 从原配方补回，供选区内合成。
             void runRefinement({
               targetNodeId: regionEditTarget.id,
               prompt,

@@ -355,6 +355,44 @@ test('带蒙版的任务把 mask 作为独立表单字段发给 images/edits', a
   }
 })
 
+test('多图合成时标识参考排在人像之后发给 images/edits', async () => {
+  const originalFetch = globalThis.fetch
+  const forms = []
+  globalThis.fetch = async (_url, init) => {
+    forms.push(init.body)
+    return new Response(JSON.stringify({ data: [{ b64_json: 'iVBORw0KGgo=' }] }), {
+      status: 200, headers: { 'content-type': 'application/json' },
+    })
+  }
+  try {
+    await generateImages({
+      id: 'job-compose',
+      kind: 'generation',
+      batchCount: 1,
+      prompt: '勋章图案严格还原文字标识。',
+      settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
+      references: [
+        { name: 'logo-full 2', role: '参考', mimeType: 'image/png', buffer: Buffer.from('logo-bytes') },
+        { name: '棚拍人像', role: '模特', mimeType: 'image/png', buffer: Buffer.from('portrait-bytes') },
+      ],
+    }, {
+      apiBaseUrl: 'https://example.test',
+      apiKey: 'test-key',
+      jobId: 'job-compose',
+      persistImage: async (value) => value.dataUrl,
+    })
+    const images = forms[0].getAll('image[]')
+    assert.equal(images.length, 2)
+    assert.equal(images[0].name, 'reference-1.png')
+    assert.equal(Buffer.from(await images[0].arrayBuffer()).toString(), 'portrait-bytes')
+    assert.equal(Buffer.from(await images[1].arrayBuffer()).toString(), 'logo-bytes')
+    assert.match(forms[0].get('prompt'), /多图合成/)
+    assert.match(forms[0].get('prompt'), /必须忠实复原/)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('选区矩形在 Worker 落成与基准图同尺寸的 PNG 蒙版', async () => {
   const { buildRegionMaskPng, imagePixelSize } = await import('./regionMaskPng.mjs')
   const parentPng = buildRegionMaskPng({ width: 20, height: 10 }, { x: 0, y: 0, width: 1, height: 1 })

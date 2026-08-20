@@ -1,4 +1,5 @@
 import { generationSubmissionFailureDisposition } from '../domain/generationSubmission'
+import { withRegionEditOverlayReferences } from '../domain/generationComposition'
 import {
   buildGenerationRecipe,
   buildGraphGenerationRecipe,
@@ -495,11 +496,12 @@ export function createCanvasGenerationActions({
       const parentLabel = result.label ?? '已选首图'
       const parentImage = result.image
       const normalizedBatchCount = clampBatchCount(batchCount)
-      const recipe = inputRecipe
+      const builtRecipe = inputRecipe
         ? cloneGenerationRecipe({ ...inputRecipe, prompt: cleanPrompt, batchCount: normalizedBatchCount, settings: cloneGenerationSettings(settings) })
         : result.generationRecipe
           ? cloneGenerationRecipe({ ...result.generationRecipe, prompt: cleanPrompt, batchCount: normalizedBatchCount, settings: cloneGenerationSettings(settings) })
           : buildGenerationRecipe(document, cleanPrompt, normalizedBatchCount, settings)
+      const recipe = withRegionEditOverlayReferences(builtRecipe, result.generationRecipe ?? result.rootRecipe)
       const rootRecipe = cloneGenerationRecipe(inputRootRecipe ?? result.rootRecipe ?? result.generationRecipe ?? recipe)
       try {
         await assertGenerationServiceReady()

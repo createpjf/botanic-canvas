@@ -241,6 +241,76 @@ test('生成数量与非法设置被裁剪到可用范围', async () => {
   assert.equal(result.settingsHint, undefined)
 })
 
+test('模型结构化声明变体：归一去重后随回合返回，张数以变体数为准', async () => {
+  const result = await resolveBotanicAgentTurn({
+    projectId: 'project-turn',
+    plannerModel: 'deepseek-v4-pro',
+    messages: [{ role: 'user', content: '换一个模特肤色，一个白人一个黑人' }],
+    contextNodeIds: [],
+    hasTarget: false,
+    generationModels,
+    maxOutputCount: 8,
+  }, runtime, {
+    document,
+    fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: {
+      content: null,
+      tool_calls: [{ id: 'call-generate', type: 'function', function: {
+        name: 'generate_images',
+        arguments: JSON.stringify({
+          prompt: '棚拍模特肖像，柔光，浅景深，保持人物身份',
+          count: 5,
+          axisLabel: '肤色',
+          variants: [
+            { label: '白人', promptDelta: '人物肤色改为白人，保持五官与身份不变' },
+            { label: '黑人', promptDelta: '人物肤色改为黑人，保持五官与身份不变' },
+            { label: '白人', promptDelta: '重复标签应被去重' },
+            { label: '', promptDelta: '空标签应被丢弃' },
+          ],
+        }),
+      } }],
+    } }] }), { status: 200 }),
+  })
+
+  assert.equal(result.kind, 'generation')
+  // count=5 是模型笔误：声明了变体时张数以归一后的变体数为准。
+  assert.equal(result.count, 2)
+  assert.equal(result.axisLabel, '肤色')
+  assert.deepEqual(result.variants, [
+    { label: '白人', promptDelta: '人物肤色改为白人，保持五官与身份不变' },
+    { label: '黑人', promptDelta: '人物肤色改为黑人，保持五官与身份不变' },
+  ])
+})
+
+test('变体声明去重后不足两条视为未声明，不影响张数', async () => {
+  const result = await resolveBotanicAgentTurn({
+    projectId: 'project-turn',
+    plannerModel: 'deepseek-v4-pro',
+    messages: [{ role: 'user', content: '出两张图' }],
+    contextNodeIds: [],
+    hasTarget: false,
+    generationModels,
+    maxOutputCount: 8,
+  }, runtime, {
+    document,
+    fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: {
+      content: null,
+      tool_calls: [{ id: 'call-generate', type: 'function', function: {
+        name: 'generate_images',
+        arguments: JSON.stringify({
+          prompt: '棚拍模特肖像，柔光',
+          count: 2,
+          variants: [{ label: '白人', promptDelta: '只有一条有效声明' }],
+        }),
+      } }],
+    } }] }), { status: 200 }),
+  })
+
+  assert.equal(result.kind, 'generation')
+  assert.equal(result.count, 2)
+  assert.equal(result.variants, undefined)
+  assert.equal(result.axisLabel, undefined)
+})
+
 test('模型可把引用图片编排成视频回合，时长取自视频模型目录', async () => {
   const requests = []
   const result = await resolveBotanicAgentTurn({

@@ -3,59 +3,141 @@
   "resolveCases": [
     {
       "name": "普通单图指令不触发变体",
-      "input": { "instruction": "生成一张极简风格的植物海报" },
-      "expected": { "kind": "none" }
+      "input": {
+        "instruction": "生成一张极简风格的植物海报"
+      },
+      "expected": {
+        "kind": "none"
+      }
     },
     {
       "name": "肤色枚举齐全直接就绪展开",
-      "input": { "instruction": "白皙、自然、小麦三种肤色各出一张" },
-      "expected": { "kind": "ready", "combine": false, "branchLabels": ["白皙", "自然", "小麦"] }
+      "input": {
+        "instruction": "白皙、自然、小麦三种肤色各出一张"
+      },
+      "expected": {
+        "kind": "ready",
+        "combine": false,
+        "branchLabels": [
+          "白皙",
+          "自然",
+          "小麦"
+        ]
+      }
     },
     {
       "name": "只说多做几个版本时追问取值",
-      "input": { "instruction": "多做几个版本" },
-      "expected": { "kind": "ask", "fieldIds": ["variation_values"] }
+      "input": {
+        "instruction": "多做几个版本"
+      },
+      "expected": {
+        "kind": "ask",
+        "fieldIds": [
+          "variation_values"
+        ]
+      }
     },
     {
       "name": "两轴组合展开为笛卡尔积",
-      "input": { "instruction": "海边、森林两种场景和复古、极简两种风格组合出图" },
-      "expected": { "kind": "ready", "combine": true, "branchLabels": ["海边和复古", "海边极简", "森林和复古", "森林极简"] }
+      "input": {
+        "instruction": "海边、森林两种场景和复古、极简两种风格组合出图"
+      },
+      "expected": {
+        "kind": "ready",
+        "combine": true,
+        "branchLabels": [
+          "海边和复古",
+          "海边极简",
+          "森林和复古",
+          "森林极简"
+        ]
+      }
     },
     {
       "name": "素材组存在但没有可展开取值时仍先追问",
       "input": {
         "instruction": "批量给每个模特出一张",
-        "assetGroup": { "id": "group-models", "role": "model", "assetCount": 5 }
+        "assetGroup": {
+          "id": "group-models",
+          "role": "model",
+          "assetCount": 5
+        }
       },
-      "expected": { "kind": "ask", "fieldIds": ["variation_values"] }
+      "expected": {
+        "kind": "ask",
+        "fieldIds": [
+          "variation_values"
+        ]
+      }
     },
     {
       "name": "澄清答案回填取值后就绪",
       "input": {
         "instruction": "按肤色出多张",
-        "clarificationAnswers": { "variation_values": "白皙、自然、小麦" }
+        "clarificationAnswers": {
+          "variation_values": "白皙、自然、小麦"
+        }
       },
-      "expected": { "kind": "ready", "combine": false, "branchLabels": ["白皙", "自然", "小麦"] }
+      "expected": {
+        "kind": "ready",
+        "combine": false,
+        "branchLabels": [
+          "白皙",
+          "自然",
+          "小麦"
+        ]
+      }
     },
     {
       "name": "口语举例的多背景请求只取真实场景值",
-      "input": { "instruction": "生成在不同背景下的，比方说在海边和在沙漠" },
-      "expected": { "kind": "ready", "combine": false, "branchLabels": ["海边", "沙漠"] }
+      "input": {
+        "instruction": "生成在不同背景下的，比方说在海边和在沙漠"
+      },
+      "expected": {
+        "kind": "ready",
+        "combine": false,
+        "branchLabels": [
+          "海边",
+          "沙漠"
+        ]
+      }
     },
     {
       "name": "换模特肤色一个白人一个黑人按肤色轴展开两张",
-      "input": { "instruction": "模特换肤色，一个白人一个黑人" },
-      "expected": { "kind": "ready", "combine": false, "branchLabels": ["白人", "黑人"] }
+      "input": {
+        "instruction": "模特换肤色，一个白人一个黑人"
+      },
+      "expected": {
+        "kind": "ready",
+        "combine": false,
+        "branchLabels": [
+          "白人",
+          "黑人"
+        ]
+      }
     },
     {
       "name": "换成一个白人一个黑人剥掉计数词后按人物轴展开",
-      "input": { "instruction": "根据这张图换一下模特，换成一个白人，一个黑人" },
-      "expected": { "kind": "ready", "combine": false, "branchLabels": ["白人", "黑人"] }
+      "input": {
+        "instruction": "根据这张图换一下模特，换成一个白人，一个黑人"
+      },
+      "expected": {
+        "kind": "ready",
+        "combine": false,
+        "branchLabels": [
+          "白人",
+          "黑人"
+        ]
+      }
     },
     {
       "name": "模型综合的画面描述不是批量指令",
-      "input": { "instruction": "Mia 的氛围肖像照（海边版）：一位 20 多岁韩国女性，黑色长发自然垂落，清透裸妆，身穿燕麦色针织衫，站在海边浅滩上，背景是灰蓝色海面，柔和的自然光，视觉风格清新通透，画面比例 3:4。" },
-      "expected": { "kind": "none" }
+      "input": {
+        "instruction": "Mia 的氛围肖像照（海边版）：一位 20 多岁韩国女性，黑色长发自然垂落，清透裸妆，身穿燕麦色针织衫，站在海边浅滩上，背景是灰蓝色海面，柔和的自然光，视觉风格清新通透，画面比例 3:4。"
+      },
+      "expected": {
+        "kind": "none"
+      }
     }
   ],
   "promptCases": [
@@ -85,9 +167,90 @@
     }
   ],
   "batchDetectionCases": [
-    { "instruction": "三种肤色各来一张", "expected": true },
-    { "instruction": "保持构图不变，换个配色", "expected": false },
-    { "instruction": "多来几个不同的场景", "expected": true },
-    { "instruction": "生成一张海报", "expected": false }
+    {
+      "instruction": "三种肤色各来一张",
+      "expected": true
+    },
+    {
+      "instruction": "保持构图不变，换个配色",
+      "expected": false
+    },
+    {
+      "instruction": "多来几个不同的场景",
+      "expected": true
+    },
+    {
+      "instruction": "生成一张海报",
+      "expected": false
+    }
+  ],
+  "structuredCases": [
+    {
+      "name": "模型声明两个肤色变体直接就绪，不再挖自然语言",
+      "input": {
+        "instruction": "换一个模特肤色，一个白人一个黑人",
+        "variants": [
+          {
+            "label": "白人",
+            "promptDelta": "人物肤色改为白人，保持五官与身份不变"
+          },
+          {
+            "label": "黑人",
+            "promptDelta": "人物肤色改为黑人，保持五官与身份不变"
+          }
+        ],
+        "axisLabel": "肤色"
+      },
+      "expected": {
+        "kind": "ready",
+        "combine": false,
+        "branchLabels": [
+          "白人",
+          "黑人"
+        ]
+      }
+    },
+    {
+      "name": "口头张数与声明变体数冲突时仍追问",
+      "input": {
+        "instruction": "出三张，一个白人一个黑人",
+        "variants": [
+          {
+            "label": "白人",
+            "promptDelta": "人物肤色改为白人"
+          },
+          {
+            "label": "黑人",
+            "promptDelta": "人物肤色改为黑人"
+          }
+        ],
+        "axisLabel": "肤色"
+      },
+      "expected": {
+        "kind": "ask",
+        "fieldIds": [
+          "variation_values"
+        ]
+      }
+    },
+    {
+      "name": "去重后不足两条视为未声明",
+      "input": {
+        "instruction": "换个肤色",
+        "variants": [
+          {
+            "label": "白人",
+            "promptDelta": "人物肤色改为白人"
+          },
+          {
+            "label": "白人",
+            "promptDelta": "重复条目"
+          }
+        ]
+      },
+      "expected": {
+        "kind": "none"
+      }
+    }
   ]
 }

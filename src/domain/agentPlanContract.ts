@@ -11,6 +11,9 @@ export type BotanicAgentPlanRequestInput = {
   instruction: string
   /** 用户原话。变体轴只从它解析；instruction 在综合 Prompt 链路里是模型写的画面描述。 */
   sourceInstruction?: string
+  /** 回合模型结构化声明的变体：有它就直接展开，规划器不再从自然语言里挖轴。 */
+  structuredVariants?: Array<{ label: string; promptDelta: string }>
+  variationAxisLabel?: string
   requestedIntent?: BotanicAgentIntent
   selectedResultNodeId: string
   selectedResultLabel: string
@@ -34,6 +37,8 @@ export type BotanicAgentPlanRequest = {
   mountedSkillIds?: string[]
   instruction: string
   sourceInstruction?: string
+  structuredVariants?: Array<{ label: string; promptDelta: string }>
+  variationAxisLabel?: string
   requestedIntent?: BotanicAgentIntent
   selectedResult: { nodeId: string; label: string }
   settings: GenerationRecipe['settings']
@@ -73,6 +78,17 @@ export function buildBotanicAgentPlanRequest(input: BotanicAgentPlanRequestInput
     ...(input.mountedSkillIds?.length ? { mountedSkillIds: [...new Set(input.mountedSkillIds)].slice(0, 16) } : {}),
     instruction: input.instruction.trim(),
     ...(input.sourceInstruction?.trim() ? { sourceInstruction: input.sourceInstruction.trim() } : {}),
+    ...(input.structuredVariants?.length
+      ? {
+          structuredVariants: input.structuredVariants
+            .filter((variant) => variant.label?.trim() && variant.promptDelta?.trim())
+            .slice(0, 8)
+            .map((variant) => ({ label: variant.label.trim(), promptDelta: variant.promptDelta.trim() })),
+        }
+      : {}),
+    ...(input.structuredVariants?.length && input.variationAxisLabel?.trim()
+      ? { variationAxisLabel: input.variationAxisLabel.trim().slice(0, 16) }
+      : {}),
     ...(input.requestedIntent ? { requestedIntent: input.requestedIntent } : {}),
     selectedResult: { nodeId: input.selectedResultNodeId, label: input.selectedResultLabel },
     settings: { ...input.rootRecipe.settings, ...input.generationOverrides },

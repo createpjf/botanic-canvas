@@ -615,6 +615,71 @@ test('validateBotanicAgentPlanInput 保留 sourceInstruction 供变体解析使�
   assert.equal(input.sourceInstruction, '模特换肤色，一个白人一个黑人')
 })
 
+test('validateBotanicAgentPlanInput 归一结构化变体：去重截断，不足两条视为未声明', () => {
+  const input = validateBotanicAgentPlanInput({
+    ...validInput,
+    structuredVariants: [
+      { label: '白人', promptDelta: '人物肤色改为白人' },
+      { label: '黑人', promptDelta: '人物肤色改为黑人' },
+      { label: '白人', promptDelta: '重复标签' },
+      { label: '', promptDelta: '空标签' },
+    ],
+    variationAxisLabel: '肤色',
+  })
+  assert.deepEqual(input.structuredVariants, [
+    { label: '白人', promptDelta: '人物肤色改为白人' },
+    { label: '黑人', promptDelta: '人物肤色改为黑人' },
+  ])
+  assert.equal(input.variationAxisLabel, '肤色')
+
+  const degenerate = validateBotanicAgentPlanInput({
+    ...validInput,
+    structuredVariants: [{ label: '白人', promptDelta: '只有一条' }],
+    variationAxisLabel: '肤色',
+  })
+  assert.equal(degenerate.structuredVariants, undefined)
+  assert.equal(degenerate.variationAxisLabel, undefined)
+})
+
+test('结构化变体声明直接展开计划，规划器不再从自然语言里挖轴', async () => {
+  const synthesized = '棚拍模特肖像，柔光，浅景深，保持人物身份与构图一致。'
+  const result = await planBotanicGeneration({
+    ...validInput,
+    instruction: synthesized,
+    sourceInstruction: '换一个模特肤色',
+    structuredVariants: [
+      { label: '白人', promptDelta: '人物肤色改为白人，保持五官与身份不变' },
+      { label: '黑人', promptDelta: '人物肤色改为黑人，保持五官与身份不变' },
+    ],
+    variationAxisLabel: '肤色',
+    requestedIntent: 'replace_person',
+    assetGroup: undefined,
+  }, {
+    flockApiKey: 'flock-secret', flockTextModel: 'deepseek-v4-pro',
+  }, {
+    fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: {
+      content: null,
+      tool_calls: [{ id: 'call-plan-structured-variants', type: 'function', function: {
+        name: 'generation_create_plan', arguments: JSON.stringify({
+          intent: 'replace_person',
+          prompt: synthesized,
+          summary: '生成 2 张肤色版本。',
+          constraints: [{ dimension: 'person', mode: 'preserve' }, { dimension: 'style', mode: 'vary' }],
+        }),
+      } }],
+    } }] }), { status: 200 }),
+  })
+
+  assert.equal(result.kind, undefined)
+  assert.deepEqual(result.output, { mode: 'batch_by_variation', count: 2, candidatesPerItem: 1 })
+  assert.deepEqual(result.variation.axes[0].values.map((value) => value.label), ['白人', '黑人'])
+  assert.deepEqual(
+    result.variation.axes[0].values.map((value) => value.promptDelta),
+    ['人物肤色改为白人，保持五官与身份不变', '人物肤色改为黑人，保持五官与身份不变'],
+  )
+  assert.match(result.summary, /肤色/)
+})
+
 test('validateBotanicAgentPlanInput 保留 parentPrompt 并对齐自定义像素', () => {
   const input = validateBotanicAgentPlanInput({
     ...validInput,

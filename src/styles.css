@@ -3523,6 +3523,17 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-run-message__results { display: flex; gap: 6px; max-width: 100%; margin: 8px 0 7px; overflow-x: auto; padding-bottom: 2px; }
 .agent-run-message__results :is(img, video) { display: block; width: 82px; height: 82px; flex: 0 0 82px; object-fit: cover; border: 1px solid #cbdacc; border-radius: 7px; background: #edf3ec; }
 .agent-message__plan { display: grid; gap: 8px; margin-top: 8px; padding: 10px; border: 0; border-radius: 10px; background: #fff; box-shadow: 0 0 0 1px rgba(49, 95, 60, .08); }
+.agent-message__plan.is-submitted { gap: 12px; margin-top: 4px; padding: 0; background: transparent; box-shadow: none; }
+.agent-plan__receipt-header { display: grid; gap: 4px; min-width: 0; }
+.agent-plan__receipt-header strong { color: #2e4735; font-size: 12px; line-height: 1.45; font-weight: 760; }
+.agent-plan__receipt-header small { color: #7f8d84; font-size: 10px; line-height: 1.4; }
+.agent-plan__receipt-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.agent-plan__receipt-primary { min-height: 28px; padding: 0 10px; border: 1px solid #2d633b; border-radius: 6px; background: #2d633b; color: #fff; cursor: pointer; font-size: 10px; font-weight: 760; }
+.agent-plan__receipt-primary:hover { background: #245533; border-color: #245533; }
+.agent-plan__recipe { color: #66766b; }
+.agent-plan__recipe > summary { display: flex; min-height: 24px; align-items: center; cursor: pointer; font-size: 10px; font-weight: 720; }
+.agent-plan__recipe > summary::marker, .agent-plan__recipe > summary::-webkit-details-marker { color: #9cad9f; }
+.agent-plan__recipe-body { display: grid; gap: 8px; margin-top: 8px; padding: 10px; border-radius: 10px; background: #fff; box-shadow: 0 0 0 1px rgba(49, 95, 60, .08); }
 .agent-composition { display: grid; gap: 10px; margin-top: 2px; padding: 11px; border: 0; border-radius: 10px; background: #fff; box-shadow: 0 0 0 1px rgba(49, 95, 60, .08); }
 .agent-composition__header { display: grid; gap: 3px; }
 .agent-composition__header > small { color: #477052; font-size: 10px; font-weight: 850; letter-spacing: .1em; }
@@ -3629,15 +3640,6 @@ details.agent-timeline__thinking { display: block; padding: 0; }
 .agent-plan__footer { display: grid; gap: 6px; }
 .agent-plan__confirm { justify-self: stretch; height: 34px; padding: 0 12px; border: 1px solid #2d633b; border-radius: 7px; background: #2d633b; color: #fff; cursor: pointer; font-size: 11px; font-weight: 760; }
 .agent-plan__confirm:disabled { opacity: .5; }
-.agent-message__plan.is-submitted { padding: 0; background: #fbfdfa; }
-.agent-message__plan.is-submitted[open] { padding-bottom: 8px; }
-.agent-message__plan.is-submitted > summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; cursor: pointer; }
-.agent-message__plan.is-submitted > summary::marker, .agent-message__plan.is-submitted > summary::-webkit-details-marker { color: #9fb0a3; }
-.agent-message__plan.is-submitted > summary > span { display: grid; gap: 2px; min-width: 0; }
-.agent-message__plan.is-submitted > summary strong { overflow: hidden; color: #2e4735; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.agent-message__plan.is-submitted > summary small { color: #7f8d84; font-size: 9px; }
-.agent-message__plan.is-submitted > :not(summary) { margin-inline: 10px; }
-.agent-message__submitted { flex: 0 0 auto; padding: 3px 7px; border-radius: 5px; background: #e5efe6; color: #315d3b; font-size: 9px; font-style: normal; font-weight: 780; }
 .agent-prompt-review__submitted { display: grid; gap: 4px; }
 .agent-prompt-review__submitted small { color: #7d8a80; font-size: 9px; font-weight: 760; }
 .agent-prompt-review__submitted pre { max-height: 168px; margin: 0; overflow: auto; padding: 8px; border: 0; border-radius: 6px; background: #fff; box-shadow: inset 0 0 0 1px rgba(49, 95, 60, .10); color: #304a37; font-family: inherit; font-size: 11px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
@@ -3761,7 +3763,6 @@ details.agent-timeline__thinking { display: block; padding: 0; }
 .agent-plan-settings__custom { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
 .agent-plan-settings__custom input { width: 52px; min-height: 26px; padding: 0 5px; border: 1px solid #d5e0d6; border-radius: 6px; background: #fff; color: #3f5344; font-size: 10px; }
 .agent-plan-settings__custom em { color: #6f8676; font-size: 9px; font-style: normal; }
-.agent-message__submitted { justify-self: start; color: #397149; font-size: 11px; font-weight: 760; }
 .agent-message__route { color: #66766b; font-size: 10px; }
 .agent-message__route summary { padding-top: 6px; cursor: pointer; font-weight: 750; }
 .agent-message__route > div { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 8px; padding-top: 6px; }

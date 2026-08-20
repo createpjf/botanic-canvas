@@ -79,6 +79,9 @@ export type BotanicAgentResolvedGeneration = {
   count?: number
   /** 仅视频：时长（秒）。 */
   duration?: number
+  /** 回合模型结构化声明的变体，追问回程时随生成结论一起带回，不重新解析。 */
+  variants?: Array<{ label: string; promptDelta: string }>
+  variationAxisLabel?: string
 }
 
 export type BotanicAgentClarification = {

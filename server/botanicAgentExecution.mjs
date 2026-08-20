@@ -1,5 +1,6 @@
 import { AgentToolRuntimeError } from './agentToolRuntime.mjs'
 import { botanicAgentBranchGenerationPrompt } from './botanicAgentVariations.mjs'
+import { compositionOverlayReferences, orderCompositionReferences } from './generationComposition.mjs'
 import { validateGenerationInput } from './generationProvider.mjs'
 import { generationJobProjectionComplete, reconcileGenerationResults } from './generationResultReconciliation.mjs'
 
@@ -61,7 +62,7 @@ function initialGenerationReferences(run, document) {
     throw new AgentToolRuntimeError('AGENT_INITIAL_REFERENCE_INVALID', 'Agent 首次生成只支持已存入画布的图片素材或图片结果。', 409)
   }
   const nodesById = new Map((document.nodes ?? []).map((node) => [node.id, node]))
-  return imageSnapshot.map((item, index) => {
+  return orderCompositionReferences(imageSnapshot.map((item, index) => {
     const node = nodesById.get(item.nodeId)
     const isMediaNode = node?.type === 'asset' || node?.type === 'result'
     const isImage = node?.data?.mediaKind === undefined || node.data.mediaKind === 'image'
@@ -78,7 +79,7 @@ function initialGenerationReferences(run, document) {
       primary: Boolean(node.data.primary),
       priority: index + 1,
     }
-  })
+  })).map((reference, index) => ({ ...reference, priority: index + 1 }))
 }
 
 /** 素材组分支把本分支的素材并进参考集；同角色的旧参考被替换而不是叠加。 */
@@ -151,9 +152,17 @@ function recipeForRun(run, document, parentNode, branch, resolvedInitialReferenc
     }
     return withBranchAsset(clone(rootRecipe.references), run, document, branch)
   }
-  // 局部重绘只以父结果为基准图：选区外画面由蒙版保持，不再混入其它参考。
+  // 局部重绘：父结果是底图+蒙版。本轮 @ 的图仍要带上；没 @ 时从原配方补回标识图。
   if (run.plan.intent === 'region_edit') {
-    return withBranchAsset([], run, document, branch)
+    const thisTurn = refinementReferences(run, document)
+    const overlays = thisTurn.length
+      ? thisTurn
+      : compositionOverlayReferences(
+        parentNode.data?.generationRecipe?.references
+        ?? parentNode.data?.rootRecipe?.references
+        ?? [],
+      )
+    return withBranchAsset(overlays, run, document, branch)
   }
   return withBranchAsset(refinementReferences(run, document), run, document, branch)
 }

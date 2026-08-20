@@ -208,6 +208,38 @@ test('变体轴从用户原话解析；综合 Prompt 只做画面描述，不被
   assert.match(applied.plan.prompt, /3:4/)
 })
 
+test('回合模型结构化声明变体：跳过正则追问，初始计划按声明展开', () => {
+  const draft = prepareBotanicAgentGenerationDraft({
+    ...draftBase,
+    // 这句话在纯正则链路里会因取值凑不齐而追问；结构化声明存在时语义已定，不再追问。
+    instruction: '换一个模特肤色',
+    decision: { kind: 'generation', mediaKind: 'image', promptSource: 'instruction' },
+    options: {},
+    generationModels: [imageModel],
+    executionMode: 'auto',
+    synthesizedPrompt: '棚拍模特肖像，柔光，浅景深，保持人物身份。',
+    synthesizedCount: 2,
+    synthesizedVariants: [
+      { label: '白人', promptDelta: '人物肤色改为白人，保持五官与身份不变' },
+      { label: '黑人', promptDelta: '人物肤色改为黑人，保持五官与身份不变' },
+    ],
+    synthesizedAxisLabel: '肤色',
+  })
+  assert.equal(draft.kind, 'ready')
+  if (draft.kind !== 'ready') return
+  assert.deepEqual(draft.structuredVariants?.map((variant) => variant.label), ['白人', '黑人'])
+  // 追问回程也要带上声明的变体，回来那一轮不重新解析。
+  assert.deepEqual(draft.carryOver.resolvedGeneration?.variants?.map((variant) => variant.label), ['白人', '黑人'])
+  assert.equal(draft.carryOver.resolvedGeneration?.variationAxisLabel, '肤色')
+  const applied = buildBotanicAgentInitialDraftPlan(draft)
+  assert.equal(applied.kind, 'plan')
+  if (applied.kind !== 'plan') return
+  assert.equal(applied.plan.output.mode, 'batch_by_variation')
+  assert.equal(applied.plan.output.count, 2)
+  assert.equal(applied.plan.variation?.axes[0]?.label, '肤色')
+  assert.deepEqual(applied.plan.variation?.axes[0]?.values.map((value) => value.label), ['白人', '黑人'])
+})
+
 test('没有批量语的单图请求即使带综合 Prompt 也保持单张', () => {
   const draft = prepareBotanicAgentGenerationDraft({
     ...draftBase,

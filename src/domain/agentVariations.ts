@@ -495,6 +495,15 @@ export type BotanicAgentVariationRequestInput = {
   assetGroup?: { id: string; role?: string; assetCount: number }
   /** 参考图配方里的画面描述，共享底清洗失败时回退到这里，而不是规划器的变体清单。 */
   fallbackPrompt?: string
+  /** 回合模型已结构化声明的变体；有它就不再从自然语言里挖轴，正则只做校验兜底。 */
+  structuredVariants?: BotanicAgentStructuredVariant[]
+  /** 模型声明的变化维度短名（如「肤色」「场景」），仅用于展示与追问文案。 */
+  variationAxisLabel?: string
+}
+
+export type BotanicAgentStructuredVariant = {
+  label: string
+  promptDelta: string
 }
 
 export type BotanicAgentVariationRequest =
@@ -593,6 +602,50 @@ export function resolveBotanicAgentVariationRequest(input: BotanicAgentVariation
   }
 
   return finalizeReadySpec(instruction, { axes: readyAxes, combine: false }, locale)
+}
+
+/**
+ * 结构化变体请求：语义理解已由回合模型完成（每个变体的短名与差异描述），
+ * 这里只做确定性校验——去重、条数上限、与用户口头张数一致性。校验不过仍然追问，护栏留在代码里。
+ */
+export function botanicAgentStructuredVariationRequest(input: {
+  instruction: string
+  variants: BotanicAgentStructuredVariant[]
+  axisLabel?: string
+  brief?: BotanicCreativeBrief
+  locale?: ProductLocale
+}): BotanicAgentVariationRequest {
+  const locale = input.locale ?? 'zh-CN'
+  const instruction = stripCreativeBriefAppendix(input.instruction.trim())
+  const seen = new Set<string>()
+  const values: BotanicAgentVariationValue[] = []
+  for (const variant of input.variants) {
+    const label = clipBotanicAgentNodeTitle(variant.label?.trim() ?? '')
+    const promptDelta = variant.promptDelta?.trim() ?? ''
+    if (!label || !promptDelta || seen.has(label)) continue
+    seen.add(label)
+    values.push({ label, promptDelta })
+  }
+  if (values.length < botanicAgentVariationValueMin) return { kind: 'none' }
+  const axisLabel = clipBotanicAgentNodeTitle(input.axisLabel?.trim() ?? '') || (locale === 'en' ? 'Variants' : '变体')
+  if (values.length > botanicAgentVariationValueMax) {
+    return {
+      kind: 'ask',
+      clarification: createVariationClarification({
+        instruction,
+        brief: input.brief,
+        locale,
+        question: locale === 'en'
+          ? `At most ${botanicAgentVariationValueMax} ${axisLabel} variants can be expanded at once, but ${values.length} were listed. Please keep the most important ${botanicAgentVariationValueMax} or fewer values.`
+          : `一次最多展开 ${botanicAgentVariationValueMax} 个${axisLabel}变体，这次列了 ${values.length} 个。请挑出最重要的 ${botanicAgentVariationValueMax} 个以内取值。`,
+        fields: [valuesField({ key: 'custom', label: axisLabel }, locale)],
+      }),
+    }
+  }
+  return finalizeReadySpec(instruction, {
+    axes: [{ key: 'custom', label: axisLabel, values }],
+    combine: false,
+  }, locale)
 }
 
 function variationLabels(spec?: BotanicAgentVariationSpec) {
@@ -787,7 +840,17 @@ export function applyBotanicAgentVariationToPlan(
   plan: VariationPlanDraft,
   input: BotanicAgentVariationRequestInput,
 ): { kind: 'plan'; plan: VariationPlanDraft } | { kind: 'clarification'; clarification: BotanicAgentClarification } {
-  const request = resolveBotanicAgentVariationRequest({
+  // 模型已结构化声明变体时不再挖自然语言；声明不可用（去重后不足 2 条）则退回正则解析。
+  const structured = input.structuredVariants?.length
+    ? botanicAgentStructuredVariationRequest({
+      instruction: input.instruction || plan.instruction,
+      variants: input.structuredVariants,
+      axisLabel: input.variationAxisLabel,
+      brief: input.brief,
+      locale: input.locale,
+    })
+    : undefined
+  const request = structured && structured.kind !== 'none' ? structured : resolveBotanicAgentVariationRequest({
     instruction: input.instruction || plan.instruction,
     locale: input.locale,
     requestedIntent: input.requestedIntent ?? plan.intent,

@@ -1,4 +1,5 @@
 import { mapWithConcurrency } from './concurrency.mjs'
+import { buildImageProviderPrompt, orderCompositionReferences } from './generationComposition.mjs'
 import {
   catalogAspectRatiosForModel,
   inferAspectRatioFromPixels,
@@ -311,24 +312,6 @@ function fileExtension(mimeType) {
   return 'png'
 }
 
-function buildProviderPrompt(job, variationIndex) {
-  const primary = job.references.find((reference) => reference.primary)
-  const roles = job.references.map((reference) => `${reference.role}：${reference.name}`).join('；')
-  const intent = job.kind === 'refinement' && job.refinementMode === 'explore'
-    ? '基于首图父版本生成探索型视觉变体；保持商品主体、人物身份与产品识别度，但主动探索不同构图、机位、光影或环境，不要只输出近似复制图。'
-    : job.kind === 'refinement'
-      ? '基于首图父版本进行忠实精修；保留构图、主体和产品识别度，仅按本次要求调整。'
-    : '生成电商品牌首图；产品主体必须清晰、可识别、适合作为投放视觉。'
-  return [
-    intent,
-    primary ? `主商品参考：${primary.name}。商品外观、材质、标识应保持可信。` : '',
-    roles ? `画布参考顺序：${roles}。` : '输入：当前选中的父版本图片。',
-    `画面比例：${job.settings.aspectRatio}；输出规格：${job.settings.resolution}。`,
-    `创意目标：${job.prompt}`,
-    variationIndex === undefined ? '' : `本张为同批候选 ${variationIndex + 1}；请与同批其他候选形成可见差异，同时保持主体一致。`,
-    '不要添加未被要求的品牌标识、价格、二维码或水印。',
-  ].filter(Boolean).join('\n')
-}
 
 function providerError(response, body) {
   const requestId = response.headers.get('x-request-id')
@@ -368,11 +351,14 @@ export async function generateImages(job, {
 }) {
   if (!apiKey) throw new GenerationError(503, 'PROVIDER_NOT_CONFIGURED', '真实生图尚未配置：请设置 OPENAI_API_KEY。')
   if (typeof jobId !== 'string' || !jobId) throw new GenerationError(500, 'INVALID_JOB_ID', '生成任务缺少唯一标识。')
-  const inputImages = job.parent ? [job.parent, ...job.references.filter((reference) => !reference.buffer.equals(job.parent.buffer))] : job.references
+  const orderedReferences = orderCompositionReferences(job.references ?? [])
+  const inputImages = job.parent
+    ? [job.parent, ...orderedReferences.filter((reference) => !reference.buffer.equals(job.parent.buffer))]
+    : orderedReferences
   const submit = async (count, variationIndex) => {
     const form = new FormData()
     form.set('model', job.settings.model)
-    form.set('prompt', buildProviderPrompt(job, variationIndex))
+    form.set('prompt', buildImageProviderPrompt(job, variationIndex))
     form.set('n', String(count))
     form.set('size', resolveGenerationOutputSize(job.settings))
     form.set('quality', job.settings.resolution === '1K' ? 'low' : 'medium')
