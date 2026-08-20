@@ -36,6 +36,16 @@
         "clarificationAnswers": { "variation_values": "白皙、自然、小麦" }
       },
       "expected": { "kind": "ready", "combine": false, "branchLabels": ["白皙", "自然", "小麦"] }
+    },
+    {
+      "name": "口语举例的多背景请求只取真实场景值",
+      "input": { "instruction": "生成在不同背景下的，比方说在海边和在沙漠" },
+      "expected": { "kind": "ready", "combine": false, "branchLabels": ["海边", "沙漠"] }
+    },
+    {
+      "name": "模型综合的画面描述不是批量指令",
+      "input": { "instruction": "Mia 的氛围肖像照（海边版）：一位 20 多岁韩国女性，黑色长发自然垂落，清透裸妆，身穿燕麦色针织衫，站在海边浅滩上，背景是灰蓝色海面，柔和的自然光，视觉风格清新通透，画面比例 3:4。" },
+      "expected": { "kind": "none" }
     }
   ],
   "promptCases": [

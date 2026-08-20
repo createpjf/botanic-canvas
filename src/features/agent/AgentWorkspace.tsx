@@ -1085,7 +1085,8 @@ export default function AgentWorkspace({
             ...(outputCount ? { outputCount } : {}),
           }), plannerModel, settings: { ...target.rootRecipe.settings, ...generationOverrides } }
           const applied = applyBotanicAgentVariationToPlan(fallbackPlan, {
-            instruction: cleanInstruction,
+            // 变体轴只从用户原话解析：cleanInstruction 在综合 Prompt 链路里是模型 prose。
+            instruction: failedCommand?.instruction ?? cleanInstruction,
             requestedIntent: intent,
             clarificationAnswers,
             brief: creativeBrief,
