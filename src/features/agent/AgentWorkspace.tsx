@@ -28,7 +28,6 @@ import {
   type BotanicAgentMentionQuery,
   type BotanicAgentMessage,
   type BotanicAgentPlan,
-  type BotanicAgentResolvedGeneration,
   type BotanicAgentRun,
   type BotanicAgentRunTimelineFilter,
   type BotanicAgentSession,
@@ -39,11 +38,14 @@ import {
 } from '../../domain/agent'
 import {
   decideBotanicAgentRequest,
-  inferBotanicAgentGenerationSettings,
   isBotanicAgentPromptGenerationPending,
-  resolveBotanicAgentGenerationPromptDecision,
 } from '../../domain/agentChatContract'
 import { advanceBotanicCreativeBrief, applyBotanicCreativeBriefAnswers } from '../../domain/agentCreativeBrief'
+import {
+  buildBotanicAgentInitialDraftPlan,
+  prepareBotanicAgentGenerationDraft,
+  resolveBotanicAgentInstructionEntry,
+} from '../../domain/agentInstructionRouting'
 import { resolveAgentChatPrompt } from '../../domain/agentMarkdown'
 import type { BotanicAgentChatStreamEvent } from '../../domain/agentChatStream'
 import { applyAgentConversationStreamEvent, createAgentTimeline, type AgentTimelineEvent, type AgentTimelineState } from '../../domain/agentTimeline'
@@ -60,7 +62,6 @@ import { createProjectAgentSkill, listBotanicAgentSystemSkills, listProjectAgent
 import {
   applyBotanicAgentVariationToPlan,
   botanicAgentBriefWithVariationAnswers,
-  botanicAgentPendingVariationClarification,
 } from '../../domain/agentVariations'
 import { ProductApiError, serverPersistenceEnabled } from '../../lib/productSession'
 import { maxUploadAssets, readUploadedAssetInput, validateUploadFiles } from '../../lib/uploadedAssets'
@@ -1195,62 +1196,36 @@ export default function AgentWorkspace({
       && (item.mediaKind ?? 'image') === 'image'
     ))
     const hasVisualContext = Boolean(target) || hasImageContext
-    // 追问回程带着上一轮已判定的生成结论：此时 cleanInstruction 是画面描述而不是用户原话，
-    // 对它重新做意图分类会把这一轮判成聊天，用户答完确认卡反而拿不到计划。
-    const restoredGeneration = options.resolvedGeneration
-    const pendingDecision = restoredGeneration
-      ? undefined
-      : decideBotanicAgentRequest(cleanInstruction, hasVisualContext)
-    // 「直接生成」这类执行语没有画面信息：有待确认计划就提交它；没有计划但历史里有
-    // 定稿 Prompt，就沿用那份 Prompt——绝不能把执行语本身写进创作简报当画面描述。
-    let executionPromptMessageId: string | undefined
-    if (pendingDecision?.kind === 'confirm_pending') {
-      const pendingPlanMessage = [...session.messages].reverse()
-        .find((item) => item.kind === 'plan' && item.plan && item.status === 'pending')
-      if (pendingPlanMessage) {
-        await confirmMessagePlan(pendingPlanMessage)
-        return
-      }
-      const pendingQuestion = [...session.messages].reverse()
-        .find((item) => item.kind === 'question' && item.question && item.status === 'pending')
-      if (pendingQuestion) {
-        appendMessage({
-          role: 'assistant',
-          kind: 'notice',
-          content: '上面还有一张待回答的确认卡，请直接在卡片里选择或填写；本次没有创建任务。',
-        })
-        return
-      }
-      const promptMessage = [...session.messages].reverse()
-        .find((item) => item.role === 'assistant' && item.prompt?.trim())
-      if (!promptMessage) {
-        appendMessage({
-          role: 'assistant',
-          kind: 'notice',
-          content: '当前没有待确认的生成计划。请直接描述要生成的画面或批量取值（例如「按白皙、小麦、黄色三档肤色出 3 张」），我会先给出待确认计划。',
-        })
-        return
-      }
-      executionPromptMessageId = promptMessage.id
+    // 路由与生成前置全部是纯决策，由领域模块拥有；这里只按返回值执行副作用。
+    const entry = resolveBotanicAgentInstructionEntry({
+      instruction: cleanInstruction,
+      options,
+      hasVisualContext,
+      messages: session.messages,
+    })
+    if (entry.kind === 'confirm_plan') {
+      await confirmMessagePlan(entry.message)
+      return
+    }
+    if (entry.kind === 'notice') {
+      appendMessage({
+        role: 'assistant',
+        kind: 'notice',
+        content: entry.notice === 'answer_pending_question'
+          ? '上面还有一张待回答的确认卡，请直接在卡片里选择或填写；本次没有创建任务。'
+          : '当前没有待确认的生成计划。请直接描述要生成的画面或批量取值（例如「按白皙、小麦、黄色三档肤色出 3 张」），我会先给出待确认计划。',
+      })
+      return
     }
 
     // 服务端回合解析器：让模型读整段对话判断意图并综合可执行 Prompt，取代浏览器端正则路由。
-    // 仅用于全新用户发送；澄清答复、“使用这段 Prompt”与执行语已有明确意图/来源，保持既有确定性路径。
     // 服务端未配置或离线时回退到本地正则决策，保证本地开发、e2e 与无 Provider 部署不受影响。
-    const useServerTurn = !options.clarificationAnswers && !options.sourcePromptMessageId
-      && !restoredGeneration && !executionPromptMessageId
-    let serverDecision: ReturnType<typeof decideBotanicAgentRequest> | undefined = restoredGeneration
-      ? { kind: 'generation', mediaKind: restoredGeneration.mediaKind, promptSource: 'instruction' }
-      : executionPromptMessageId
-        ? { kind: 'generation', mediaKind: 'image', promptSource: 'previous_prompt' }
-        : undefined
-    let synthesizedPrompt: string | undefined = restoredGeneration?.prompt
-    let synthesizedCount: number | undefined = restoredGeneration?.count
-    let synthesizedDuration: number | undefined = restoredGeneration?.duration
-    let resolvedOptions = executionPromptMessageId
-      ? { ...options, sourcePromptMessageId: executionPromptMessageId }
-      : options
-    if (useServerTurn) {
+    let serverDecision: ReturnType<typeof decideBotanicAgentRequest> | undefined = entry.decision
+    let synthesizedPrompt: string | undefined = entry.synthesizedPrompt
+    let synthesizedCount: number | undefined = entry.synthesizedCount
+    let synthesizedDuration: number | undefined = entry.synthesizedDuration
+    let resolvedOptions = entry.options
+    if (entry.useServerTurn) {
       plannerControllerRef.current?.abort()
       const controller = new AbortController()
       plannerControllerRef.current = controller
@@ -1502,131 +1477,60 @@ export default function AgentWorkspace({
       }
       return
     }
-    let generationPrompt: string
-    let resolvedSourcePromptMessageId: string | undefined
-    if (synthesizedPrompt !== undefined) {
-      // 服务端已综合出可执行 Prompt：不再要求历史里存在字面 Prompt，也不再死胡同式拒绝。
-      generationPrompt = synthesizedPrompt
-    } else {
-      const promptResolution = resolveBotanicAgentGenerationPromptDecision(
-        cleanInstruction,
-        session.messages,
-        resolvedOptions.sourcePromptMessageId,
-      )
-      if (promptResolution.status === 'missing') {
-        appendMessage({
-          role: 'assistant',
-          kind: 'notice',
-          content: '没有找到你指的 Prompt。请先让 Agent 写一段 Prompt，或粘贴完整 Prompt；本次没有改动画布。',
-        })
-        return
-      }
-      generationPrompt = promptResolution.prompt
-      resolvedSourcePromptMessageId = promptResolution.sourceMessageId
-    }
-    // 服务端判定的生成结论跟着追问卡走完整轮：下一轮据此直接进入生成，
-    // 否则那时看到的只是画面描述，会被重新分类成聊天。
-    const resolvedGeneration: BotanicAgentResolvedGeneration | undefined = serverDecision?.kind === 'generation'
-      && synthesizedPrompt !== undefined
-      ? {
-        mediaKind: serverDecision.mediaKind,
-        prompt: synthesizedPrompt,
-        ...(synthesizedCount ? { count: synthesizedCount } : {}),
-        ...(synthesizedDuration ? { duration: synthesizedDuration } : {}),
-      }
-      : undefined
-    const clarificationCarryOver = {
-      ...(resolvedSourcePromptMessageId ? { sourcePromptMessageId: resolvedSourcePromptMessageId } : {}),
-      ...(resolvedGeneration ? { resolvedGeneration } : {}),
-    }
-    // 视频轮次用视频模型目录，图片轮次照旧；brief 的比例/清晰度追问由同一套表单驱动。
-    const isVideoGeneration = decision.kind === 'generation' && decision.mediaKind === 'video'
-    const candidateModels = isVideoGeneration
-      ? generationModels.filter((model) => model.mediaKind === 'video')
-      : generationModels.filter((model) => model.mediaKind !== 'video')
-    if (isVideoGeneration && !candidateModels.length) {
+    if (decision.kind !== 'generation') return
+    const variationGroup = compatibleGroups.find((group) => group.id === groupId)
+    const draft = prepareBotanicAgentGenerationDraft({
+      instruction: cleanInstruction,
+      decision,
+      options: resolvedOptions,
+      messages: session.messages,
+      generationModels,
+      executionMode: session.executionMode,
+      requestedIntent: intent,
+      target: target
+        ? { id: target.id, label: target.label, image: target.image, inheritedSettings: target.rootRecipe.settings }
+        : undefined,
+      contextItems,
+      variationAssetGroup: variationGroup
+        ? { id: variationGroup.id, role: variationGroup.role, assetCount: variationGroup.assetIds.length }
+        : undefined,
+      synthesizedPrompt,
+      synthesizedCount,
+      synthesizedDuration,
+    })
+    if (draft.kind === 'notice') {
       appendMessage({
         role: 'assistant',
         kind: 'notice',
-        content: '当前项目没有可用的视频生成模型，请检查模型目录；本次没有创建任务。',
+        content: draft.notice === 'prompt_missing'
+          ? '没有找到你指的 Prompt。请先让 Agent 写一段 Prompt，或粘贴完整 Prompt；本次没有改动画布。'
+          : '当前项目没有可用的视频生成模型，请检查模型目录；本次没有创建任务。',
       })
       return
     }
-    const inferredGenerationOverrides = inferBotanicAgentGenerationSettings(cleanInstruction, candidateModels)
-    const requestedGenerationOverrides = { ...inferredGenerationOverrides, ...resolvedOptions.generationOverrides }
-    const variationGroup = compatibleGroups.find((group) => group.id === groupId)
-    // 变体轴决定要开几个分支，必须先于比例与清晰度确认；已确认过的取值不再重复追问。
-    // 视频一次一条，不进入变体展开。
-    const pendingVariation = isVideoGeneration ? undefined : botanicAgentPendingVariationClarification({
-      instruction: generationPrompt,
-      requestedIntent: intent,
-      clarificationAnswers: resolvedOptions.clarificationAnswers,
-      brief: resolvedOptions.creativeBrief,
-      assetGroup: variationGroup
-        ? { id: variationGroup.id, role: variationGroup.role, assetCount: variationGroup.assetIds.length }
-        : undefined,
-    })
-    if (pendingVariation) {
+    if (draft.kind === 'ask') {
       setRuntimePhase('waiting_clarification')
       appendMessage({
         role: 'assistant',
         kind: 'question',
-        question: { ...pendingVariation, ...clarificationCarryOver },
+        question: draft.clarification,
         status: 'pending',
-        content: pendingVariation.question,
+        content: draft.clarification.question,
       })
       return
     }
-    const briefTurn = advanceBotanicCreativeBrief({
-      mode: 'generation',
-      executionMode: session.executionMode,
-      instruction: generationPrompt,
-      generationModels: candidateModels,
-      // 视频设置不继承图片配方：比例与清晰度必须落在视频模型自己的目录里。
-      inheritedSettings: isVideoGeneration ? undefined : target?.rootRecipe.settings,
-      requestedSettings: requestedGenerationOverrides,
-      previousBrief: resolvedOptions.creativeBrief,
-      answers: resolvedOptions.clarificationAnswers,
-    })
-    if (briefTurn.kind === 'ask') {
-      setRuntimePhase('waiting_clarification')
-      appendMessage({
-        role: 'assistant',
-        kind: 'question',
-        question: {
-          ...briefTurn.clarification,
-          brief: botanicAgentBriefWithVariationAnswers(briefTurn.clarification.brief, resolvedOptions.clarificationAnswers),
-          ...clarificationCarryOver,
-        },
-        status: 'pending',
-        content: briefTurn.clarification.question,
-      })
-      return
-    }
-    if (briefTurn.kind === 'failed') {
+    if (draft.kind === 'failed') {
       // 已经开过运行轨迹的轮次必须显式收尾，否则运行卡会一直停在“规划中”。
-      failRuntimeTrace(briefTurn.message)
-      setError(briefTurn.message)
-      return
-    }
-    const resolvedGenerationOverrides = briefTurn.settings
-    const hasCompleteOutputSettings = Boolean(
-      resolvedGenerationOverrides.model
-      && resolvedGenerationOverrides.aspectRatio
-      && resolvedGenerationOverrides.resolution,
-    )
-    if (!hasCompleteOutputSettings) {
-      const message = '当前没有可用的完整生成设置，请检查模型目录。'
-      failRuntimeTrace(message)
-      setError(message)
+      failRuntimeTrace(draft.message)
+      setError(draft.message)
       return
     }
     const resolvedFailedCommand: AgentFailedInstruction = {
       instruction: cleanInstruction,
       options: {
         ...failedCommand.options,
-        generationOverrides: resolvedGenerationOverrides,
-        creativeBrief: briefTurn.brief,
+        generationOverrides: draft.generationOverrides,
+        creativeBrief: draft.brief,
       },
     }
     setPlanning(true)
@@ -1640,60 +1544,26 @@ export default function AgentWorkspace({
     if (!isCurrentAgentProject()) return
     setRuntimePhase('planning')
     updateRuntimeStep('call-planner', 'running')
-    // 视频计划一律走首帧语义：选中的结果图并进上下文作为首帧来源，不进服务端图片规划器。
-    if (!target || isVideoGeneration) {
+    if (draft.useInitialFlow) {
       const executionDecision = resolveBotanicAgentExecutionDecision({
         mode: session.executionMode,
-        settingsComplete: hasCompleteOutputSettings,
+        settingsComplete: true,
         pendingActionCount: 0,
       })
       try {
-        const planContextItems = isVideoGeneration && target && !contextItems.some((item) => item.id === target.id)
-          ? [
-            { id: target.id, label: target.label, kind: '结果' as const, image: target.image, mediaKind: 'image' as const },
-            ...contextItems,
-          ]
-          : contextItems
-        const selectedVideoModel = isVideoGeneration
-          ? candidateModels.find((model) => model.id === resolvedGenerationOverrides.model)
-          : undefined
-        const initialPlan = {
-          ...buildBotanicAgentPlan({
-            instruction: briefTurn.prompt,
-            creativeBrief: briefTurn.brief,
-            intent: 'initial_generation',
-            settings: {
-              ...resolvedGenerationOverrides,
-              ...(isVideoGeneration
-                ? { duration: synthesizedDuration ?? selectedVideoModel?.defaultDuration ?? selectedVideoModel?.durations?.[0] ?? 5 }
-                : {}),
-            } as GenerationSettings,
-            contextSnapshot: createBotanicAgentContextSnapshot(planContextItems),
-            ...(!isVideoGeneration && synthesizedCount ? { outputCount: synthesizedCount } : {}),
-          }),
-          plannerModel,
-        }
-        // 视频一次一条，不做变体展开。
-        const appliedInitial = isVideoGeneration
-          ? { kind: 'plan' as const, plan: initialPlan }
-          : applyBotanicAgentVariationToPlan(initialPlan, {
-            instruction: briefTurn.prompt,
-            requestedIntent: 'initial_generation',
-            clarificationAnswers: options.clarificationAnswers,
-            brief: briefTurn.brief,
-          })
+        const appliedInitial = buildBotanicAgentInitialDraftPlan(draft, resolvedOptions.clarificationAnswers)
         if (appliedInitial.kind === 'clarification') {
           setRuntimePhase('waiting_clarification')
           appendMessage({
             role: 'assistant',
             kind: 'question',
-            question: { ...appliedInitial.clarification, ...clarificationCarryOver },
+            question: appliedInitial.clarification,
             status: 'pending',
             content: appliedInitial.clarification.question,
           })
           return
         }
-        const resolvedInitialPlan = { ...initialPlan, ...appliedInitial.plan }
+        const resolvedInitialPlan = { ...appliedInitial.plan, plannerModel }
         attachPlannerToolTrace(resolvedInitialPlan)
         updateRuntimeStep('call-planner', 'succeeded')
         await completeRuntimeTrace(true)
@@ -1721,12 +1591,12 @@ export default function AgentWorkspace({
       return
     }
     const nextPlan = await preparePlan(
-      briefTurn.prompt,
-      resolvedGenerationOverrides,
+      draft.prompt,
+      draft.generationOverrides,
       resolvedOptions.clarificationAnswers,
-      briefTurn.brief,
+      draft.brief,
       resolvedFailedCommand,
-      synthesizedCount,
+      draft.outputCount,
     )
     if (!nextPlan || !session || !isCurrentAgentProject()) return
     if ('kind' in nextPlan && nextPlan.kind === 'clarification') {
@@ -1734,7 +1604,7 @@ export default function AgentWorkspace({
       appendMessage({
         role: 'assistant', kind: 'question', question: {
           ...nextPlan.clarification,
-          ...clarificationCarryOver,
+          ...draft.carryOver,
         }, status: 'pending',
         content: nextPlan.clarification.question,
       })
