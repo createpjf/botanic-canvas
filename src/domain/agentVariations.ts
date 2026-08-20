@@ -123,10 +123,14 @@ function splitNumberedList(text: string) {
   return uniqueLabels(parts)
 }
 
+function parallelLocationValues(text: string) {
+  return uniqueLabels([...text.matchAll(/一个在([\u4e00-\u9fff]{1,8}?)(?=一个在|[，。,；;、\s]|$)/gu)].map((match) => match[1]))
+}
+
 function inferInstructionValues(text: string) {
   const numbered = splitNumberedList(text)
   if (numbered.length >= botanicAgentVariationValueMin) return numbered
-  const parallel = uniqueLabels([...text.matchAll(/一个在([^\s、，,。；;\d]{1,8})/gu)].map((match) => match[1]))
+  const parallel = parallelLocationValues(text)
   if (parallel.length >= botanicAgentVariationValueMin) return parallel
   return listedValuesFromText(text)
 }
@@ -140,7 +144,7 @@ function parseCountToken(token: string) {
 function statedAxisCount(text: string, names: string[]) {
   for (const name of names) {
     const patterns = [
-      new RegExp(`(\\d+|两|二|三|四|五|六|七|八|九|十)\\s*(?:种|个|档)${name}`, 'u'),
+      new RegExp(`(\\d+|两|二|三|四|五|六|七|八|九|十)\\s*(?:种|个|档)(?:不同(?:的)?)?${name}`, 'u'),
       new RegExp(`${name}[^。；\\n]{0,16}?(\\d+|两|二|三|四|五|六|七|八|九|十)\\s*(?:种|个|档)`, 'u'),
     ]
     for (const pattern of patterns) {
@@ -160,6 +164,14 @@ function axisCountMismatch(axis: BotanicAgentVariationAxis, instruction: string)
   return count != null && axis.values.length !== count
 }
 
+function statedOutputCount(text: string) {
+  for (const match of text.matchAll(/(\d+|两|二|三|四|五|六|七|八|九|十)\s*张(?:图|照片|画面)?/gu)) {
+    const count = parseCountToken(match[1])
+    if (count != null) return count
+  }
+  return null
+}
+
 function listedValuesFromText(text: string) {
   const numbered = splitNumberedList(text)
   if (numbered.length >= botanicAgentVariationValueMin) return numbered
@@ -175,11 +187,19 @@ function listedValuesFromText(text: string) {
   return []
 }
 
-function extractEnumeration(text: string, label: string) {
-  const index = text.lastIndexOf(label)
+function extractEnumeration(text: string, item: VariationAxisCatalogItem) {
+  let label = item.label
+  let index = -1
+  for (const name of item.names) {
+    const found = text.lastIndexOf(name)
+    if (found > index) {
+      index = found
+      label = name
+    }
+  }
   if (index < 0) return []
   let before = text.slice(0, index)
-  for (const other of axisCatalog.flatMap((item) => item.names)) {
+  for (const other of axisCatalog.flatMap((entry) => entry.names)) {
     if (other === label) continue
     const otherIndex = before.lastIndexOf(other)
     if (otherIndex >= 0) before = before.slice(otherIndex + other.length)
@@ -187,11 +207,14 @@ function extractEnumeration(text: string, label: string) {
   before = before.replace(/^[，,、。；:\s]+/u, '')
   const after = text.slice(index + label.length).split(/[。；\n]/u)[0]
     .replace(/^[为是用：:\s]+/u, '')
-  const fromAfter = listedValuesFromText(after)
-  const fromBefore = listedValuesFromText(before)
+  const countableAfter = after.replace(/(?:生成|出|做|来)?\s*(?:\d+|两|二|三|四|五|六|七|八|九|十)\s*张(?:图|照片|画面)?/gu, ' ')
+  const countableBefore = before.replace(/(?:生成|出|做|来)?\s*(?:\d+|两|二|三|四|五|六|七|八|九|十)\s*张(?:图|照片|画面)?/gu, ' ')
+  const fromAfter = listedValuesFromText(countableAfter)
+  const fromBefore = listedValuesFromText(countableBefore)
   if (after.includes('|') && fromAfter.length) return fromAfter
   if (fromBefore.length) return fromBefore
-  return fromAfter
+  if (fromAfter.length) return fromAfter
+  return inferInstructionValues(countableAfter)
 }
 
 function axisFromCatalog(item: VariationAxisCatalogItem, values: string[]): BotanicAgentVariationAxis {
@@ -213,6 +236,12 @@ function customAxis(values: string[]): BotanicAgentVariationAxis {
   }
 }
 
+function catalogNameIsConstraintOnly(text: string, item: VariationAxisCatalogItem) {
+  if (item.key !== 'person') return false
+  const stripped = text.replace(/同一(?:位|个)?(?:女性|男性)?人物|人物(?:要|需|必须)?(?:全身|半身|站立|出镜)|保持人物|人物身份/gu, '')
+  return !item.names.some((name) => stripped.includes(name))
+}
+
 function parseAxes(instruction: string): BotanicAgentVariationAxis[] {
   const text = instruction.trim()
   const found: BotanicAgentVariationAxis[] = []
@@ -230,7 +259,8 @@ function parseAxes(instruction: string): BotanicAgentVariationAxis[] {
   })
   for (const item of ordered) {
     if (!item.names.some((name) => text.includes(name))) continue
-    const values = extractEnumeration(text, item.label)
+    if (catalogNameIsConstraintOnly(text, item)) continue
+    const values = extractEnumeration(text, item)
     if (seen.has(item.key)) continue
     if (values.length < botanicAgentVariationValueMin && !instructionRequestsBatchVariation(text)) continue
     seen.add(item.key)
@@ -300,6 +330,23 @@ function variationCount(spec: BotanicAgentVariationSpec) {
   if (!ready.length) return 0
   if (!spec.combine) return ready[0].values.length
   return ready.reduce((total, axis) => total * axis.values.length, 1)
+}
+
+function finalizeReadySpec(instruction: string, spec: BotanicAgentVariationSpec): BotanicAgentVariationRequest {
+  const count = variationCount(spec)
+  const stated = statedOutputCount(instruction)
+  if (stated != null && count !== stated) {
+    const axisLabel = spec.axes[0]?.label ?? '变体'
+    return {
+      kind: 'ask',
+      clarification: createVariationClarification({
+        instruction,
+        question: `你说了生成 ${stated} 张，但我按当前变化轴会展开成 ${count} 张。请确认最终张数，或把每个${axisLabel}单独写清楚。`,
+        fields: [valuesField(axisLabel)],
+      }),
+    }
+  }
+  return { kind: 'ready', spec }
 }
 
 function createVariationClarification(input: {
@@ -410,7 +457,7 @@ export function resolveBotanicAgentVariationRequest(input: BotanicAgentVariation
         }),
       }
     }
-    return { kind: 'ready', spec: { axes: readyAxes, combine: true } }
+    return finalizeReadySpec(instruction, { axes: readyAxes, combine: true })
   }
 
   if (incomplete && readyAxes.length < 1) {
@@ -440,7 +487,7 @@ export function resolveBotanicAgentVariationRequest(input: BotanicAgentVariation
     }
   }
 
-  return { kind: 'ready', spec: { axes: readyAxes.length > 1 ? readyAxes : readyAxes, combine: false } }
+  return finalizeReadySpec(instruction, { axes: readyAxes, combine: false })
 }
 
 function variationLabels(spec?: BotanicAgentVariationSpec) {

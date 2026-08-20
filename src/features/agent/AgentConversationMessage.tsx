@@ -2,9 +2,11 @@ import { useEffect, useState } from 'react'
 import {
   botanicAgentAppliedSkillName,
   botanicAgentContextSnapshotNodeIds,
+  botanicAgentExecutionPauseHint,
   botanicAgentPendingConfirmationCount,
   botanicAgentMessageOffersVisualPrompt,
   creativeDimensionLabel,
+  resolveBotanicAgentExecutionDecision,
   type BotanicAgentActionProposal,
   type BotanicAgentArtifact,
   type BotanicAgentExecutionMode,
@@ -335,7 +337,19 @@ export function AgentConversationMessage({
         const plan = message.plan
         const pendingActionCount = botanicAgentPendingConfirmationCount(plan.actions)
         const blockedByActions = pendingActionCount > 0
-        const autoPaused = executionMode === 'auto' && pendingActionCount > 0
+        const executionDecision = resolveBotanicAgentExecutionDecision({
+          mode: executionMode,
+          settingsComplete: true,
+          pendingActionCount,
+          outputCount: plan.output.count,
+        })
+        const autoPauseHint = executionMode === 'auto'
+          ? botanicAgentExecutionPauseHint(executionDecision, {
+            pendingActionCount,
+            outputCount: plan.output.count,
+          })
+          : null
+        const submittedByAuto = executionMode === 'auto' && plan.output.count <= 1 && pendingActionCount === 0
         const appliedSkills = plan.actions?.filter((action) => action.toolName === 'skill_apply') ?? []
         const confirmableActions = plan.actions?.filter((action) => action.toolName !== 'skill_apply') ?? []
         const lockedConstraints = plan.constraints.filter((constraint) => constraint.mode === 'preserve')
@@ -433,7 +447,7 @@ export function AgentConversationMessage({
           {pendingActionCount ? <details className="agent-message__route"><summary>执行路由</summary><div><span>规划</span><b>{agentPlannerModelLabel(plan.plannerModel ?? plannerModel)}</b><span>生成</span><b>{plan.settings.model}</b><span>外部行动</span><b>{pendingActionCount} 项，确认后执行</b></div></details> : null}
           {planSubmitted ? null : <>
             {/* 自动模式下停在这里一定有原因，必须说清楚，否则用户只会觉得“自动模式没生效”。 */}
-            {autoPaused ? <small className="agent-plan__auto-paused">自动模式已暂停：本次包含 {pendingActionCount} 个需要你确认的外部行动，处理完才会开始生成。</small> : null}
+            {autoPauseHint ? <small className="agent-plan__auto-paused">{autoPauseHint}</small> : null}
             <small className="agent-plan__confirm-hint">确认后开始生成</small>
             <button type="button" disabled={submittingMessageId === message.id || blockedByActions} onClick={() => onConfirmPlan(message)}>{submittingMessageId === message.id ? '正在提交…' : blockedByActions ? '先处理行动卡' : message.status === 'failed' ? '重新生成' : '生成'}</button>
           </>}
@@ -442,7 +456,7 @@ export function AgentConversationMessage({
         if (planSubmitted) return <details className="agent-message__plan is-submitted">
           <summary>
             <span><strong>{plan.summary}</strong><small>{modelDisplayLabel(generationModels.find((model) => model.id === plan.settings.model)) || plan.settings.model} · {generationSettingsSizeLabel(plan.settings)} · {botanicAgentPlanOutputLabel(plan)}</small></span>
-            <em className="agent-message__submitted">{executionMode === 'auto' ? '已自动提交' : '已提交'}</em>
+            <em className="agent-message__submitted">{submittedByAuto ? '已自动提交' : '已提交'}</em>
           </summary>
           {detail}
         </details>

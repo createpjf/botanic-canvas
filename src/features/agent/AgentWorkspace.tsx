@@ -1479,11 +1479,6 @@ export default function AgentWorkspace({
     setRuntimePhase('planning')
     updateRuntimeStep('call-planner', 'running')
     if (!target) {
-      const executionDecision = resolveBotanicAgentExecutionDecision({
-        mode: session.executionMode,
-        settingsComplete: hasCompleteOutputSettings,
-        pendingActionCount: 0,
-      })
       try {
         const initialPlan = {
           ...buildBotanicAgentPlan({
@@ -1517,6 +1512,12 @@ export default function AgentWorkspace({
         updateRuntimeStep('call-planner', 'succeeded')
         await completeRuntimeTrace(true)
         if (!isCurrentAgentProject()) return
+        const executionDecision = resolveBotanicAgentExecutionDecision({
+          mode: session.executionMode,
+          settingsComplete: hasCompleteOutputSettings,
+          pendingActionCount: 0,
+          outputCount: resolvedInitialPlan.output.count,
+        })
         const planMessageId = appendMessage({
           role: 'assistant', kind: 'plan', plan: resolvedInitialPlan, status: 'pending',
           content: resolvedInitialPlan.summary,
@@ -1564,11 +1565,11 @@ export default function AgentWorkspace({
       content: resolvedPlan.summary,
     })
     if (planMessageId) setRuntimePhase('waiting_confirmation')
-    // 计划已带完整设置；这里只判断自动模式是否因为待确认行动而降级。
     const planExecutionDecision = resolveBotanicAgentExecutionDecision({
       mode: session.executionMode,
       settingsComplete: true,
       pendingActionCount: botanicAgentPendingConfirmationCount(resolvedPlan.actions),
+      outputCount: resolvedPlan.output.count,
     })
     if (planMessageId && planExecutionDecision.action === 'auto_submit') {
       await confirmMessagePlan({

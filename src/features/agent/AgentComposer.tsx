@@ -147,7 +147,7 @@ export function AgentComposer({
     <div className="agent-composer__toolbar">
       <div>
         <button ref={contextMenuButtonRef} type="button" className="agent-composer__add" onClick={onToggleContextMenu} aria-controls={contextMenuId} aria-expanded={contextMenuOpen} aria-label="添加图像素材" title="添加图像素材"><PlusIcon /></button>
-        <button ref={modeMenuButtonRef} type="button" className="agent-composer__mode" onClick={onToggleModeMenu} aria-controls={modeMenuId} aria-expanded={modeMenuOpen} aria-label={`执行模式：${executionModeLabel}`} title={session?.executionMode === 'auto' ? '自动模式：补齐设置后直接提交生成任务' : '计划模式：先给出计划，你确认后再提交'}>
+        <button ref={modeMenuButtonRef} type="button" className="agent-composer__mode" onClick={onToggleModeMenu} aria-controls={modeMenuId} aria-expanded={modeMenuOpen} aria-label={`执行模式：${executionModeLabel}`} title={session?.executionMode === 'auto' ? '自动模式：补齐设置后直接提交单张；多张仍需确认张数' : '计划模式：先给出计划，你确认后再提交'}>
           {session?.executionMode === 'auto' ? <AutoRunIcon /> : <ChecklistIcon />}<span className="agent-composer__mode-label" aria-hidden="true">{executionModeLabel}</span><ChevronDownIcon className="agent-composer__mode-chevron" />
         </button>
         <BotanicSelect
@@ -176,7 +176,7 @@ export function AgentComposer({
     </div> : null}
     {modeMenuOpen ? <div id={modeMenuId} className="agent-composer__mode-menu" role="group" aria-label="执行模式">
       <button type="button" aria-label="计划模式" aria-pressed={session?.executionMode === 'manual'} className={session?.executionMode === 'manual' ? 'is-selected' : ''} title="缺参数会询问；确认后才提交生成任务。只影响之后的新计划。" onClick={() => onExecutionModeChange('manual')}><ChecklistIcon /><span><strong>计划模式</strong><small>确认计划后再生成</small></span></button>
-      <button type="button" aria-label="自动模式" aria-pressed={session?.executionMode === 'auto'} className={session?.executionMode === 'auto' ? 'is-selected' : ''} title="自动补齐设置并提交；外部行动仍会停下来确认。只影响之后的新计划。" onClick={() => onExecutionModeChange('auto')}><AutoRunIcon /><span><strong>自动模式</strong><small>直接生成，行动需确认</small></span></button>
+      <button type="button" aria-label="自动模式" aria-pressed={session?.executionMode === 'auto'} className={session?.executionMode === 'auto' ? 'is-selected' : ''} title="自动补齐设置并提交单张；多张和外部行动仍会停下来确认。只影响之后的新计划。" onClick={() => onExecutionModeChange('auto')}><AutoRunIcon /><span><strong>自动模式</strong><small>单张直出，多张确认</small></span></button>
       <p className="agent-composer__mode-note">只影响之后的新计划</p>
     </div> : null}
   </div>

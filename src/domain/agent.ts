@@ -984,27 +984,43 @@ export type BotanicAgentExecutionMode = 'manual' | 'auto'
 export type BotanicAgentExecutionDecision =
   /** 输出设置仍然缺项，两种模式都必须先问清楚，不猜测会产生费用的参数。 */
   | { action: 'ask_settings' }
-  /** 计划里还有需要人工确认的外部行动，自动模式在此降级为手动。 */
-  | { action: 'confirm'; reason: 'manual' | 'pending_actions' }
+  /** 计划里还有需要人工确认的外部行动，或自动模式遇到多张输出，降级为手动确认。 */
+  | { action: 'confirm'; reason: 'manual' | 'pending_actions' | 'batch_count' }
   | { action: 'auto_submit' }
 
 /**
  * 执行模式的唯一判定处。计划模式与自动模式的差别在这里成为可解释的结论，
- * 而不是散落在界面里的若干 if：自动模式会自己补全可推断的输出设置并直接提交，
- * 但遇到外部行动仍然停下来，且降级原因可以被界面读出来告诉用户。
+ * 而不是散落在界面里的若干 if：自动模式会自己补全可推断的输出设置并直接提交单张，
+ * 但遇到外部行动或多张输出仍然停下来，且降级原因可以被界面读出来告诉用户。
  */
 export function resolveBotanicAgentExecutionDecision(input: {
   mode: BotanicAgentExecutionMode
   settingsComplete: boolean
   pendingActionCount: number
+  outputCount?: number
 }): BotanicAgentExecutionDecision {
   if (!input.settingsComplete) return { action: 'ask_settings' }
   if (input.pendingActionCount > 0) return { action: 'confirm', reason: 'pending_actions' }
+  if (input.mode === 'auto' && (input.outputCount ?? 1) > 1) return { action: 'confirm', reason: 'batch_count' }
   return input.mode === 'auto' ? { action: 'auto_submit' } : { action: 'confirm', reason: 'manual' }
 }
 
 export function botanicAgentExecutionModeLabel(mode: BotanicAgentExecutionMode) {
   return mode === 'auto' ? '自动模式' : '计划模式'
+}
+
+export function botanicAgentExecutionPauseHint(
+  decision: BotanicAgentExecutionDecision,
+  input: { pendingActionCount: number; outputCount: number },
+): string | null {
+  if (decision.action !== 'confirm') return null
+  if (decision.reason === 'pending_actions') {
+    return `自动模式已暂停：本次包含 ${input.pendingActionCount} 个需要你确认的外部行动，处理完才会开始生成。`
+  }
+  if (decision.reason === 'batch_count') {
+    return `自动模式已暂停：本次将生成 ${input.outputCount} 张，请确认张数后再提交。`
+  }
+  return null
 }
 
 /** 已审核 Skill 只注入本轮约束，不单独占用一次确认。 */
@@ -1560,6 +1576,7 @@ export function instructionRequestsBatchVariation(instruction: string) {
   const text = stripPreserveClauses(String(instruction ?? '').trim())
   if (!text) return false
   if (/(?:批量|多图|多张|逐一|多来几|来几个|多出几|多肤色)/u.test(text)) return true
+  if (/(?:\d+|两|二|三|四|五|六|七|八|九|十)\s*张/u.test(text)) return true
   if (new RegExp(`(?:\\d+|两|三|四|五|六|七|八|九|十)(?:种|档)(?:不同(?:的)?)?(?:${variationDimensionPattern})`, 'u').test(text)) return true
   if (new RegExp(`(?:[2-9]|[1-9]\\d|十|两|三|四|五|六|七|八|九)个(?:不同(?:的)?)?(?:[\\u4e00-\\u9fff]{0,6})?(?:${variationDimensionPattern})`, 'u').test(text)) return true
   if (new RegExp(`(?:多个|多种|几种|几个|一组|一批)(?:不同(?:的)?)?(?:${variationDimensionPattern})`, 'u').test(text)) return true
