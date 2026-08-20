@@ -35,3 +35,43 @@ test('远端已删除的同步消息不被本地旧状态复活', () => {
   ], [session({ updatedAt: 30 })])
   assert.deepEqual(merged[0].messages, [])
 })
+
+test('已回答的确认卡不被远端旧 pending 快照重新展开', () => {
+  const question = {
+    id: 'clarification-1',
+    question: '确认后继续整理 Prompt，不会立刻出图。',
+    originalInstruction: '优化这段人物摄影 Prompt',
+    fields: [{ id: 'prompt_direction' as const, label: 'Prompt 优化方向', required: true, options: [] }],
+  }
+  const merged = mergeCollaborativeAgentSessions([
+    session({
+      messages: [{
+        id: 'message-question',
+        role: 'assistant',
+        kind: 'question',
+        content: question.question,
+        createdAt: 10,
+        updatedAt: 40,
+        status: 'answered',
+        question,
+      }],
+    }),
+  ], [
+    session({
+      updatedAt: 50,
+      messages: [{
+        id: 'message-question',
+        role: 'assistant',
+        kind: 'question',
+        content: question.question,
+        createdAt: 10,
+        updatedAt: 10,
+        status: 'pending',
+        question,
+      }],
+    }),
+  ])
+
+  assert.equal(merged[0].messages[0].status, 'answered')
+  assert.equal(merged[0].messages[0].updatedAt, 40)
+})

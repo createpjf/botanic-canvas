@@ -113,7 +113,15 @@ export function createAgentMessageQueue(options: AgentMessageQueueOptions) {
   const enqueue = (input: AgentMessageQueueInput) => {
     const key = itemKey(input)
     const existing = items.find((item) => item.key === key || item.idempotencyKey === input.idempotencyKey)
-    if (existing) return structuredClone(existing)
+    if (existing) {
+      if (existing.status !== 'sending') {
+        existing.message = structuredClone(input.message)
+        existing.session = structuredClone(input.session)
+        existing.idempotencyKey = input.idempotencyKey
+        persist()
+      }
+      return structuredClone(existing)
+    }
     const item: AgentMessageQueueItem = {
       ...structuredClone(input),
       key,
