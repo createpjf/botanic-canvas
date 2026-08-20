@@ -6,6 +6,7 @@ import type {
   CreativeConstraint,
   CreativeDimension,
 } from './agent.ts'
+import type { BotanicAgentCompositionItem } from './agentCreativeComposition.ts'
 import {
   botanicAgentLooksLikePlannerNarration,
   botanicAgentVisualGenerationPrompt,
@@ -566,13 +567,22 @@ export type BotanicAgentConfirmBranchDraft = {
   label: string
   assetId?: string
   variation?: BotanicAgentBranchVariation
+  /** 成套方案条目：分支自带媒体类型与定稿 Prompt，执行层按它覆盖统一配方。 */
+  item?: BotanicAgentCompositionItem
 }
 
 export function botanicAgentConfirmBranchDrafts(
-  plan: Pick<BotanicAgentPlan, 'output' | 'title' | 'intent' | 'constraints' | 'variation'>,
+  plan: Pick<BotanicAgentPlan, 'output' | 'title' | 'intent' | 'constraints' | 'variation' | 'composition'>,
   options: { group?: { assetIds: string[]; names: string[] } } = {},
 ): BotanicAgentConfirmBranchDraft[] {
   const group = options?.group
+  // 成套方案的分支就是方案条目本身：异构（图片/视频混排）由条目携带，不进变体展开。
+  if (plan.composition?.items?.length) {
+    return plan.composition.items.map((item) => ({
+      label: clipBotanicAgentNodeTitle(item.title) || `第 ${item.index} 项`,
+      item,
+    }))
+  }
   if (plan.output.mode === 'batch_by_asset' && group?.assetIds.length) {
     return group.assetIds.map((assetId, index) => ({
       assetId,

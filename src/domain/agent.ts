@@ -1,6 +1,7 @@
 import type { AssetGroup, AssetNodeData, AssetRecord, CanvasDocument, CanvasNode, GenerationJob, GenerationRecipe, GenerationSettings, ResultNodeData } from './canvas.ts'
 import type { BotanicAgentClarification, BotanicCreativeBrief } from './agentCreativeBrief.ts'
 import type { BotanicAgentBranchVariation, BotanicAgentVariationSpec } from './agentVariations.ts'
+import type { BotanicAgentComposition } from './agentCreativeComposition.ts'
 export type {
   BotanicAgentClarification,
   BotanicAgentClarificationField,
@@ -26,6 +27,7 @@ export type BotanicAgentIntent =
   | 'change_style'
   | 'batch_variation'
   | 'redo_from_root'
+  | 'region_edit'
 
 export type CreativeDimension =
   | 'person'
@@ -756,6 +758,13 @@ export type BotanicAgentPlan = {
   variation?: BotanicAgentVariationSpec
   assetGroupId?: string
   rootRecipe?: GenerationRecipe
+  /**
+   * 局部重绘选区（基准图归一化矩形）与它的中文描述。选区是纯数据可进计划；
+   * 位图蒙版由执行层按基准图真实像素生成，不进计划 JSON。
+   */
+  region?: BotanicAgentRegionSelection
+  /** 成套方案（MCoT 分解结果）：分支按条目展开，各自携带媒体类型与定稿 Prompt。 */
+  composition?: BotanicAgentComposition
   toolCalls?: AgentToolCallTrace[]
   actions?: BotanicAgentActionProposal[]
 }
@@ -930,6 +939,52 @@ export function shouldRecoverAgentRunResults(
 }
 
 /**
+ * 一轮生成完成后，新结果就是下一轮的默认基准：创意循环里「再改一下」应当指向
+ * 刚生成的图，而不是回到上一轮的父图。按分支顺序取第一个已回填画布的图片结果；
+ * 结果尚未回填时返回空，调用方在回填到达后重算。用户显式点选其他结果时以点选为准。
+ */
+export function botanicAgentNextIterationTargetId(
+  run: Pick<BotanicAgentRun, 'id' | 'status' | 'branches'>,
+  nodes: CanvasNode[],
+): string | undefined {
+  if (run.status !== 'completed' && run.status !== 'partial') return undefined
+  const imageResultsByBranch = new Map<string, string>()
+  for (const node of nodes) {
+    if (node.type !== 'result') continue
+    const data = node.data as ResultNodeData
+    if (data.agentRun?.runId !== run.id || !data.image || (data.mediaKind ?? 'image') !== 'image') continue
+    if (data.agentRun.branchId && !imageResultsByBranch.has(data.agentRun.branchId)) {
+      imageResultsByBranch.set(data.agentRun.branchId, node.id)
+    }
+  }
+  for (const branch of run.branches) {
+    if (branch.status !== 'succeeded') continue
+    const nodeId = imageResultsByBranch.get(branch.id)
+    if (nodeId) return nodeId
+  }
+  return [...imageResultsByBranch.values()][0]
+}
+
+/**
+ * 导演回看：自动模式下值得自动重试一次的失败分支。只认首次失败（attempt 0），
+ * 重试一次仍失败就停手交还用户，绝不无限循环；用户主动取消的分支不算失败。
+ * 只处理当前会话里挂着的任务，不把其他会话的历史任务拉进来。
+ */
+export function botanicAgentAutoRetryTargets(
+  runs: Array<Pick<BotanicAgentRun, 'id' | 'branches'>>,
+  sessionRunIds: ReadonlySet<string>,
+): Array<{ runId: string; branchId: string }> {
+  return runs.flatMap((run) => {
+    if (!sessionRunIds.has(run.id)) return []
+    return run.branches.flatMap((branch) => (
+      branch.status === 'failed' && (branch.attempt ?? 0) === 0
+        ? [{ runId: run.id, branchId: branch.id }]
+        : []
+    ))
+  })
+}
+
+/**
  * 用户已确认后，Run 会先持久化，再幂等提交生成任务。如果页面在
  * 两步之间关闭，恢复器只对“仍排队且从未绑定 Job”的 Run 补做
  * 幂等执行；已绑定 Job 的正常排队任务不会重复提交。
@@ -1056,7 +1111,7 @@ export type BotanicAgentSkillCatalogItem = {
 export type BotanicAgentMessage = {
   id: string
   role: 'user' | 'assistant'
-  kind: 'text' | 'question' | 'plan' | 'run' | 'notice'
+  kind: 'text' | 'question' | 'plan' | 'run' | 'notice' | 'composition'
   content: string
   /** Prompt 对话产出的结构化结果；普通助手文字不能被当作生图 Prompt。 */
   prompt?: string
@@ -1065,6 +1120,8 @@ export type BotanicAgentMessage = {
   updatedAt?: number
   plan?: BotanicAgentPlan
   question?: BotanicAgentClarification
+  /** 成套方案卡：结构化条目随消息持久化，刷新后仍可逐项 / 整套执行。 */
+  composition?: BotanicAgentComposition
   runId?: string
   status?: 'pending' | 'answered' | 'submitted' | 'failed'
   feedback?: 'positive' | 'negative'
@@ -1504,7 +1561,7 @@ export function updateBotanicAgentSessionReadingAnchor(
 export function updateBotanicAgentMessage(
   session: BotanicAgentSession,
   messageId: string,
-  patch: Partial<Pick<BotanicAgentMessage, 'content' | 'runId' | 'status' | 'feedback' | 'plan' | 'question' | 'deliveryStatus'>>,
+  patch: Partial<Pick<BotanicAgentMessage, 'content' | 'runId' | 'status' | 'feedback' | 'plan' | 'question' | 'composition' | 'deliveryStatus'>>,
   now = Date.now(),
 ): BotanicAgentSession {
   if (!session.messages.some((message) => message.id === messageId)) return session
@@ -1550,6 +1607,14 @@ export type BuildBotanicAgentPlanInput = {
   contextSnapshot?: BotanicAgentContextSnapshot[]
   /** 无素材组的单次生成需要多张时的请求数量；服务端按 output.count 生成对应候选。 */
   outputCount?: number
+  /** 局部重绘选区；提供时计划意图固定为 region_edit。 */
+  region?: BotanicAgentRegionSelection
+}
+
+/** 局部重绘选区（基准图归一化矩形）与它的中文描述；纯数据，可进计划与消息。 */
+export type BotanicAgentRegionSelection = {
+  rect: { x: number; y: number; width: number; height: number }
+  description?: string
 }
 
 const variationDimensionPattern = '人物|模特|角色|场景|背景|画面|环境|肤色|族裔|人种|动作|姿势|姿态|风格|服装|衣服|穿搭|版本|变体'
@@ -1574,6 +1639,8 @@ export const BOTANIC_AGENT_MAX_SINGLE_OUTPUT = 8
 
 const intentPatterns: Array<[BotanicAgentIntent, RegExp]> = [
   ['redo_from_root', /(最初|原始|原配方|商品图).*(重新|重做|再做)|复用.*(最初|原始)/i],
+  // 「局部/选区/框选」以及「只改/只换/只重画某处」是局部重绘；先于整图替换意图匹配。
+  ['region_edit', /(局部|选区|框选|圈出|抠掉|inpaint)|只(?:重画|重绘|修改|改|换|调)[^，。！？?!]{0,12}(?:区域|部分|地方|这块|角落?)|(?:左上|右上|左下|右下|上方|下方|左侧|右侧|中间|角落)[^，。！？?!]{0,10}(?:重画|重绘|重新生成|改掉|换掉)/iu],
   ['replace_scene', /(换|替换|改变|更换).*(场景|背景)|(场景|背景).*(换|替换|改变|更换)/i],
   ['change_pose', /(动作|姿势|姿态|肢体)/i],
   ['replace_person', /(换|替换|改变|更换).*(人物|模特)|(人物|模特).*(换|替换|改变|更换)/i],
@@ -1669,6 +1736,7 @@ function intentLabel(intent: BotanicAgentIntent) {
     change_pose: '调整动作',
     change_style: '改变风格',
     batch_variation: '批量变体',
+    region_edit: '局部重绘',
     redo_from_root: '从原配方重做',
   }
   return labels[intent]
@@ -1789,8 +1857,8 @@ export function botanicAgentLooksLikePlannerNarration(text: string) {
     || plannerNarrationPattern.test(value)
 }
 
-export function botanicAgentMessageOffersVisualPrompt(message: Pick<BotanicAgentMessage, 'prompt' | 'content' | 'plan' | 'question'>) {
-  if (message.plan || message.question) return false
+export function botanicAgentMessageOffersVisualPrompt(message: Pick<BotanicAgentMessage, 'prompt' | 'content' | 'plan' | 'question'> & Partial<Pick<BotanicAgentMessage, 'kind' | 'composition'>>) {
+  if (message.plan || message.question || message.kind === 'composition' || message.composition) return false
   const prompt = message.prompt?.trim()
   if (!prompt) return false
   return !botanicAgentLooksLikePlannerNarration(prompt) && !botanicAgentLooksLikePlannerNarration(message.content)
@@ -1802,15 +1870,20 @@ export function botanicAgentMessageOffersVisualPrompt(message: Pick<BotanicAgent
  *
  * 取不到画面描述时返回空串：宁可让调用方继承基准图或追问，也不能把旁白当成提示词发给 Provider。
  */
+/** 创作简报附录是给规划器的上下文，不是画面描述；与 compileBriefPrompt 的拼接格式对应。 */
+function stripCreativeBriefNotes(text: string) {
+  return text.replace(/\n{2,}创作简报：[\s\S]*$/u, '').trim()
+}
+
 export function botanicAgentVisualGenerationPrompt(prompt: string, fallback = ''): string {
-  const text = prompt.trim()
+  const text = stripCreativeBriefNotes(prompt.trim())
   const blocks = text.split(/\n{2,}/u).map((block) => block.trim()).filter(Boolean)
   const visual = blocks
     .filter((block) => !botanicAgentLooksLikePlannerNarration(block))
     .join('\n\n')
     .trim()
   if (visual && !botanicAgentLooksLikePlannerNarration(visual)) return visual
-  const fallbackText = fallback.trim()
+  const fallbackText = stripCreativeBriefNotes(fallback.trim())
   if (fallbackText && !botanicAgentLooksLikePlannerNarration(fallbackText)) return fallbackText
   return ''
 }
@@ -1825,10 +1898,16 @@ export function botanicAgentBatchBranchTitles(
   }))
 }
 
+/** 图片设置从不携带 duration，它就是视频计划的标记：媒体类型不需要单独字段。 */
+export function botanicAgentPlanMediaKind(plan: Pick<BotanicAgentPlan, 'settings'>): 'image' | 'video' {
+  return plan.settings.duration !== undefined ? 'video' : 'image'
+}
+
 export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): BotanicAgentPlan {
   const instruction = input.instruction.trim()
   if (!instruction) throw new Error('请描述希望 Agent 完成的修改。')
-  const intent = input.intent ?? inferBotanicAgentIntent(instruction)
+  // 带选区时意图不再靠文字猜：选区本身就是「只改这里」的明确表达。
+  const intent = input.region ? 'region_edit' : input.intent ?? inferBotanicAgentIntent(instruction)
   const isInitialGeneration = intent === 'initial_generation'
   if (!isInitialGeneration && !input.selectedResultNodeId) throw new Error('请先选择一张已生成图片。')
   if (!isInitialGeneration && !input.rootRecipe) throw new Error('当前结果缺少可恢复的生成配方。')
@@ -1876,10 +1955,15 @@ export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): Botani
     role: input.assetGroup.role,
   })
 
+  const isVideoPlan = botanicAgentPlanMediaKind({ settings }) === 'video'
   return {
     intent,
     instruction,
-    summary: `${intentLabel(intent)}，${output.mode === 'batch_by_asset' ? `按「${input.assetGroup?.name}」生成 ${output.count} 张` : `生成 ${output.count} 张新版本`}。`,
+    summary: intent === 'region_edit' && input.region
+      ? `局部重绘${input.region.description ?? '所选区域'}，其余画面保持原样。`
+      : isVideoPlan
+        ? `${intentLabel(intent)}，以参考图为首帧生成 ${output.count} 条 ${settings.duration} 秒视频。`
+        : `${intentLabel(intent)}，${output.mode === 'batch_by_asset' ? `按「${input.assetGroup?.name}」生成 ${output.count} 张` : `生成 ${output.count} 张新版本`}。`,
     title: summarizeBotanicAgentNodeTitle({ intent, constraints }),
     ...(input.creativeBrief ? { creativeBrief: structuredClone(input.creativeBrief) } : {}),
     ...(input.selectedResultNodeId ? { selectedResultNodeId: input.selectedResultNodeId } : {}),
@@ -1891,6 +1975,7 @@ export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): Botani
     output,
     ...(input.assetGroup ? { assetGroupId: input.assetGroup.id } : {}),
     ...(input.rootRecipe ? { rootRecipe: input.rootRecipe } : {}),
+    ...(input.region ? { region: structuredClone(input.region) } : {}),
   }
 }
 

@@ -1,12 +1,21 @@
 import { buildBotanicAgentPlanRequest, completeBotanicAgentPlan, type BotanicAgentPlanRequestInput, type BotanicAgentPlanResponse } from '../domain/agentPlanContract'
 import { buildBotanicAgentChatRequest, type BotanicAgentChatRequestInput, type BotanicAgentChatResponse } from '../domain/agentChatContract'
 import { botanicAgentChatTransportErrorMessage, createBotanicAgentChatStreamReader, type BotanicAgentChatStreamEvent } from '../domain/agentChatStream'
+import type { BotanicAgentRunReview } from '../domain/agentReviewContract'
 import { buildBotanicAgentTurnRequest, type BotanicAgentTurnRequestInput, type BotanicAgentTurnResult } from '../domain/agentTurnContract'
 import { ProductApiError, productAuthorizationHeader, productRequest } from './productSession'
 import type { AgentToolCallTrace, BotanicAgentReasoningEntry, BotanicAgentActionProposal, BotanicAgentActionResult, BotanicAgentClarificationResponse, BotanicAgentMemoryItem, BotanicAgentMessage, BotanicAgentPlan, BotanicAgentRunSnapshot, BotanicAgentSession, BotanicAgentSkill, BotanicAgentSkillCatalogItem, BotanicIndexedArtifact } from '../domain/agent'
 import type { BotanicAgentBranchVariation } from '../domain/agentVariations'
+import type { BotanicAgentCompositionItem } from '../domain/agentCreativeComposition'
 
-export type AgentRunCreationBranch = { id: string; label: string; assetId?: string; variation?: BotanicAgentBranchVariation }
+export type AgentRunCreationBranch = {
+  id: string
+  label: string
+  assetId?: string
+  variation?: BotanicAgentBranchVariation
+  /** 成套方案条目：分支自带媒体类型与定稿 Prompt。 */
+  item?: BotanicAgentCompositionItem
+}
 
 function blobAsDataUrl(blob: Blob) {
   return new Promise<string>((resolve, reject) => {
@@ -218,6 +227,7 @@ export async function submitPersistentBotanicAgentMessage(input: {
         createdAt: input.message.createdAt,
         ...(input.message.plan === undefined ? {} : { plan: input.message.plan }),
         ...(input.message.question === undefined ? {} : { question: input.message.question }),
+        ...(input.message.composition === undefined ? {} : { composition: input.message.composition }),
         ...(input.message.runId === undefined ? {} : { runId: input.message.runId }),
         ...(input.message.status === undefined ? {} : { status: input.message.status }),
         ...(input.message.feedback === undefined ? {} : { feedback: input.message.feedback }),
@@ -295,6 +305,8 @@ export async function createPersistentBotanicAgentRun(input: {
         constraints: input.plan.constraints,
         output: input.plan.output,
         ...(input.plan.variation ? { variation: input.plan.variation } : {}),
+        ...(input.plan.region ? { region: input.plan.region } : {}),
+        ...(input.plan.composition ? { composition: input.plan.composition } : {}),
         assetGroupId: input.plan.assetGroupId,
         toolCalls: input.plan.toolCalls,
       },
@@ -426,6 +438,18 @@ export async function cancelPersistentBotanicAgentRun(runId: string) {
     { method: 'POST' },
   )
   return response.run
+}
+
+export async function requestBotanicAgentRunReview(projectId: string, runId: string, signal?: AbortSignal) {
+  const response = await productRequest<{ review: BotanicAgentRunReview | null }>('/api/agent-run-reviews', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ projectId, runId }),
+    signal,
+    timeoutMs: 45_000,
+    timeoutMessage: '结果评审响应较慢，已跳过本轮点评；生成结果不受影响。',
+  })
+  return response.review
 }
 
 export async function listProjectAgentSkills(projectId: string) {

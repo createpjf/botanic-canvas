@@ -1021,6 +1021,7 @@ export type ResultNodeUiData = ResultNodeData & {
     onChooseCandidate?: (groupId: string, candidateId: string, promoted: boolean) => void
     onOpenAddMenu?: (resultNodeId: string, screen: { x: number; y: number }) => void
     onOpenAgent?: (resultNodeId: string) => void
+    onOpenRegionEdit?: (resultNodeId: string) => void
   }
 }
 
@@ -1234,6 +1235,10 @@ function ResultNode({ data, id, selected }: NodeProps) {
           event.stopPropagation()
           presentation.onOpenAgent?.(targetNodeId)
         }}><SparkleIcon /> Agent 修改</button> : null}
+        {presentation.onOpenRegionEdit && result.mediaKind !== 'video' ? <button type="button" onClick={(event) => {
+          event.stopPropagation()
+          presentation.onOpenRegionEdit?.(targetNodeId)
+        }}>局部重绘</button> : null}
         <button
           type="button"
           onClick={(event) => {

@@ -13,8 +13,46 @@ function persistedAgentPlan(rawPlan) {
   void reasoning
   return plan
 }
+
+/**
+ * 方案消息只持久化主题与条目文本；不接收图片、媒体 URL 或提供方推理。
+ * 归一化语义与 src/domain/agentCreativeComposition.ts 一致。
+ */
+function persistedAgentComposition(raw) {
+  const composition = object(raw, 'Agent 成套方案')
+  if (!Array.isArray(composition.items)) invalid('Agent 成套方案无效。')
+  const items = []
+  for (const item of composition.items.slice(0, 8)) {
+    if (!item || typeof item !== 'object') continue
+    const prompt = typeof item.prompt === 'string' ? item.prompt.trim() : ''
+    if (!prompt) continue
+    const mediaKind = item.mediaKind === 'video' ? 'video' : 'image'
+    const parsedCount = Number(item.count)
+    const parsedDuration = Number(item.duration)
+    const title = typeof item.title === 'string' && item.title.trim() ? item.title.trim() : `第 ${items.length + 1} 项`
+    const purpose = typeof item.purpose === 'string' && item.purpose.trim() ? item.purpose.trim() : ''
+    items.push({
+      index: items.length + 1,
+      title: title.slice(0, 80),
+      ...(purpose ? { purpose: purpose.slice(0, 200) } : {}),
+      mediaKind,
+      prompt: prompt.slice(0, 6000),
+      count: mediaKind === 'video'
+        ? 1
+        : Number.isFinite(parsedCount) ? Math.min(4, Math.max(1, Math.floor(parsedCount))) : 1,
+      ...(mediaKind === 'video'
+        ? { duration: [5, 10, 15].includes(parsedDuration) ? parsedDuration : 5 }
+        : {}),
+    })
+  }
+  if (items.length < 2) invalid('Agent 成套方案至少要有 2 个条目。')
+  return {
+    theme: text(composition.theme, '方案主题', 200),
+    items,
+  }
+}
 const messageRoles = new Set(['user', 'assistant'])
-const messageKinds = new Set(['text', 'question', 'plan', 'run', 'notice'])
+const messageKinds = new Set(['text', 'question', 'plan', 'run', 'notice', 'composition'])
 const messageStatuses = new Set(['pending', 'answered', 'submitted', 'failed'])
 const feedbackValues = new Set(['positive', 'negative'])
 const memoryKinds = new Set(['rule', 'approved', 'avoid'])
@@ -174,6 +212,10 @@ export function validateAgentMessageEntity(value, { now = Date.now() } = {}) {
   if (message.prompt !== undefined) result.prompt = text(message.prompt, 'Agent Prompt', 12_000)
   if (message.plan !== undefined) result.plan = persistedAgentPlan(message.plan)
   if (message.question !== undefined) result.question = clone(object(message.question, 'Agent 追问'))
+  if (message.kind === 'composition' || message.composition !== undefined) {
+    if (message.composition === undefined) invalid('方案消息必须包含成套方案。')
+    result.composition = persistedAgentComposition(message.composition)
+  }
   if (message.runId !== undefined) result.runId = text(message.runId, 'Agent Run 标识', 160)
   if (message.status !== undefined) result.status = message.status
   if (message.feedback !== undefined) result.feedback = message.feedback

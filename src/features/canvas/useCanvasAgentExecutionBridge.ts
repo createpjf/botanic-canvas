@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  botanicAgentNextIterationTargetId,
   collectBotanicAgentResults,
   mergeBotanicAgentArtifactIndex,
   recordBotanicAgentCanvasWritebacks,
@@ -127,6 +128,20 @@ export function useCanvasAgentExecutionBridge({
     }
     return [...candidates.values()].sort((left, right) => right.updatedAt - left.updatedAt || right.id.localeCompare(left.id))[0]
   }, [activeSession?.messages, document.agentRuns, effectiveTargetResultId])
+
+  // 创意循环的心跳：一轮生成回填后，新结果自动成为下一轮基准，「再改一下」不再退回旧父图。
+  // 每个 Run 终态只跟随一次（结果回填可能晚于终态到达，成功设置后才记账），
+  // 之后用户点选其他结果的显式选择不会被轮询或文档刷新抢回来。
+  const followedRunTargetRef = useRef('')
+  useEffect(() => {
+    if (!latestRun) return
+    const followKey = `${latestRun.id}:${latestRun.status}`
+    if (followedRunTargetRef.current === followKey) return
+    const nextTargetId = botanicAgentNextIterationTargetId(latestRun, document.nodes)
+    if (!nextTargetId) return
+    followedRunTargetRef.current = followKey
+    setTargetResultId(nextTargetId)
+  }, [document.nodes, latestRun])
 
   const localArtifacts = useMemo(() => collectBotanicAgentResults({
     sessions: document.agentSessions,
@@ -271,6 +286,9 @@ export function useCanvasAgentExecutionBridge({
     if (!resolveBotanicAgentWorkflowReferenceNodeIds(document.nodes, [nodeId]).length) return
     const sessionId = useCanvasStore.getState().document.activeAgentSessionId ?? ensureAgentSession([nodeId])
     setSessionContext(sessionId, [nodeId])
+    // 点选结果图同时把它设为下一轮基准：用户显式指认的对象优先于自动跟随。
+    const node = document.nodes.find((item) => item.id === nodeId)
+    if (node?.type === 'result') setTargetResultId(nodeId)
   }, [document.nodes, ensureAgentSession, setSessionContext])
 
   /**
@@ -371,6 +389,7 @@ export function useCanvasAgentExecutionBridge({
       label: labels[index] ?? draft.label,
       ...(draft.assetId ? { assetId: draft.assetId } : {}),
       ...(draft.variation ? { variation: draft.variation } : {}),
+      ...(draft.item ? { item: draft.item } : {}),
     }))
     let runId: string
     if (serverPersistenceEnabled) {
@@ -407,6 +426,7 @@ export function useCanvasAgentExecutionBridge({
             label: branch.label,
             ...(branch.assetId ? { assetId: branch.assetId } : {}),
             ...(branch.variation ? { variation: branch.variation } : {}),
+            ...(branch.item ? { item: branch.item } : {}),
           })),
         })
         if (useCanvasStore.getState().document.id !== projectId) {
@@ -419,6 +439,27 @@ export function useCanvasAgentExecutionBridge({
         runId = snapshot.id
         applyAgentRunSnapshot(snapshot)
         await flushPendingCanvasDocumentWrites()
+        // 导演模式：服务端在创建时已自主建工作流并提交。快照带着 Job 绑定或终态时，
+        // 浏览器不再补打三跳，只刷新画布把服务端建好的占位拉下来并聚焦。
+        const serverSubmitted = snapshot.status === 'failed'
+          || snapshot.branches.some((branch) => branch.activeJobId || branch.jobIds.length > 0)
+        if (serverSubmitted) {
+          const started = snapshot.status !== 'failed'
+            && snapshot.branches.some((branch) => branch.activeJobId || branch.jobIds.length > 0)
+          if (useCanvasStore.getState().document.id === projectId) {
+            await refreshDocumentFromRemote().catch(() => false)
+            if (useCanvasStore.getState().document.id === projectId) {
+              const visibleNodeIds = resolveRunNodes(runId)
+              if (visibleNodeIds.length) {
+                selectNode(visibleNodeIds.at(-1)!)
+                onPrepareCanvasFocus()
+                setFocusRequest({ nodeIds: visibleNodeIds, requestId: Date.now() })
+              }
+            }
+          }
+          return { started, runId }
+        }
+        // 旧版服务端或队列暂不可用（Run 仍是空 queued）：保留浏览器三跳作幂等兜底。
         if (useCanvasStore.getState().document.id !== projectId) {
           const execution = await executePersistentBotanicAgentRun(projectId, runId)
           return { started: execution.jobIds.length > 0, runId }
@@ -497,7 +538,7 @@ export function useCanvasAgentExecutionBridge({
       return { started: false, runId }
     }
     return { started: true, runId }
-  }, [applyAgentRunSnapshot, applyAgentWorkflowPatch, createGenerateBranchFromResult, createGenerateFromResultRecipe, document.assetGroups, document.id, onPrepareCanvasFocus, refreshDocumentFromRemote, replaceMediaSources, runBatchVariation, runGraphGeneration, saveAgentPlan, selectNode, updateAgentRunStatus, updateGenerateNode])
+  }, [applyAgentRunSnapshot, applyAgentWorkflowPatch, createGenerateBranchFromResult, createGenerateFromResultRecipe, document.assetGroups, document.id, onPrepareCanvasFocus, refreshDocumentFromRemote, replaceMediaSources, resolveRunNodes, runBatchVariation, runGraphGeneration, saveAgentPlan, selectNode, updateAgentRunStatus, updateGenerateNode])
 
   const newSession = useCallback(() => {
     const sessionId = startNewAgentSession(selectedFocusNodeIds)

@@ -445,3 +445,58 @@ test('确认卡张数与生成按钮用张，不把分支节点当常驻标题',
   assert.equal(botanicAgentPlanConfirmActionLabel(batch, 'blocked'), '先处理行动卡')
   assert.equal(botanicAgentPlanConfirmActionLabel(batch, 'failed'), '重新生成')
 })
+
+// ---- 镜像一致性：与 server/botanicAgentVariations.mjs 共用一份夹具，防止两界漂移。 ----
+
+const mirrorFixture = JSON.parse(await import('node:fs/promises')
+  .then((fs) => fs.readFile(new URL('../../scripts/fixtures/agentVariationMirrorCases.json', import.meta.url), 'utf8')))
+
+function projectVariationResolution(result: ReturnType<typeof resolveBotanicAgentVariationRequest>) {
+  if (result.kind === 'ready') {
+    return {
+      kind: 'ready',
+      combine: Boolean(result.spec.combine),
+      branchLabels: expandBotanicAgentVariationBranches(result.spec).map((branch) => branch.label),
+    }
+  }
+  if (result.kind === 'ask') return { kind: 'ask', fieldIds: result.clarification.fields.map((field) => field.id) }
+  if (result.kind === 'asset_group') return { kind: 'asset_group', groupId: result.groupId, count: result.count }
+  return { kind: 'none' }
+}
+
+test('镜像夹具：变体决策与 server 实现一致', () => {
+  for (const item of mirrorFixture.resolveCases) {
+    assert.deepEqual(projectVariationResolution(resolveBotanicAgentVariationRequest(item.input)), item.expected, item.name)
+  }
+})
+
+test('镜像夹具：提示词清洗与 server 实现一致', () => {
+  for (const item of mirrorFixture.promptCases) {
+    assert.equal(botanicAgentVisualGenerationPrompt(item.prompt, item.fallback), item.expected, item.name)
+  }
+})
+
+test('镜像夹具：批量意图识别与 server 实现一致', () => {
+  for (const item of mirrorFixture.batchDetectionCases) {
+    assert.equal(instructionRequestsBatchVariation(item.instruction), item.expected, item.instruction)
+  }
+})
+
+test('成套方案的分支按条目展开，条目随分支下发', () => {
+  const drafts = botanicAgentConfirmBranchDrafts({
+    intent: 'initial_generation',
+    constraints: [],
+    output: { mode: 'single', count: 2, candidatesPerItem: 1 },
+    composition: {
+      theme: '春季系列',
+      items: [
+        { index: 1, title: '主视觉', mediaKind: 'image', prompt: '主画面', count: 1 },
+        { index: 2, title: '氛围视频', mediaKind: 'video', prompt: '镜头缓推', count: 1, duration: 10 },
+      ],
+    },
+  })
+  assert.deepEqual(drafts.map((draft) => [draft.label, draft.item?.mediaKind]), [
+    ['主视觉', 'image'],
+    ['氛围视频', 'video'],
+  ])
+})

@@ -4,6 +4,7 @@ import {
   botanicAgentBranchStatusLabel,
   botanicAgentActionReceiptMessageId,
   botanicAgentContextSnapshotNodeIds,
+  botanicAgentAutoRetryTargets,
   botanicAgentSubmissionKey,
   buildBotanicAgentRunTimeline,
   buildBotanicAgentSessionTimeline,
@@ -28,7 +29,6 @@ import {
   type BotanicAgentMentionQuery,
   type BotanicAgentMessage,
   type BotanicAgentPlan,
-  type BotanicAgentResolvedGeneration,
   type BotanicAgentRun,
   type BotanicAgentRunTimelineFilter,
   type BotanicAgentSession,
@@ -39,11 +39,15 @@ import {
 } from '../../domain/agent'
 import {
   decideBotanicAgentRequest,
-  inferBotanicAgentGenerationSettings,
   isBotanicAgentPromptGenerationPending,
-  resolveBotanicAgentGenerationPromptDecision,
 } from '../../domain/agentChatContract'
 import { advanceBotanicCreativeBrief, applyBotanicCreativeBriefAnswers } from '../../domain/agentCreativeBrief'
+import {
+  buildBotanicAgentInitialDraftPlan,
+  prepareBotanicAgentGenerationDraft,
+  resolveBotanicAgentInstructionEntry,
+} from '../../domain/agentInstructionRouting'
+import { botanicAgentRunReviewMessageId, formatBotanicAgentRunReviewMessage } from '../../domain/agentReviewContract'
 import { resolveAgentChatPrompt } from '../../domain/agentMarkdown'
 import type { BotanicAgentChatStreamEvent } from '../../domain/agentChatStream'
 import { applyAgentConversationStreamEvent, createAgentTimeline, type AgentTimelineEvent, type AgentTimelineState } from '../../domain/agentTimeline'
@@ -56,11 +60,21 @@ import type {
   UploadedAssetInput,
 } from '../../domain/canvas'
 import type { GenerationSizeOverride } from '../../domain/generationOutputSize'
-import { createProjectAgentSkill, listBotanicAgentSystemSkills, listProjectAgentSkills, requestBotanicAgentPlan, requestBotanicAgentTurn, streamBotanicAgentChat } from '../../lib/agentApi'
+import { createProjectAgentSkill, listBotanicAgentSystemSkills, listProjectAgentSkills, requestBotanicAgentPlan, requestBotanicAgentRunReview, requestBotanicAgentTurn, streamBotanicAgentChat } from '../../lib/agentApi'
+import { describeRegionRect } from '../../domain/regionMask'
+import { RegionMaskEditor } from '../canvas/RegionMaskEditor'
+import {
+  botanicAgentMessageComposition,
+  buildBotanicAgentCompositionPlan,
+  formatBotanicAgentCompositionSummary,
+  instructionRequestsCompositionRun,
+  latestBotanicAgentComposition,
+  normalizeBotanicAgentComposition,
+  resolveBotanicAgentCompositionItem,
+} from '../../domain/agentCreativeComposition'
 import {
   applyBotanicAgentVariationToPlan,
   botanicAgentBriefWithVariationAnswers,
-  botanicAgentPendingVariationClarification,
 } from '../../domain/agentVariations'
 import { ProductApiError, serverPersistenceEnabled } from '../../lib/productSession'
 import { maxUploadAssets, readUploadedAssetInput, validateUploadFiles } from '../../lib/uploadedAssets'
@@ -315,6 +329,11 @@ export default function AgentWorkspace({
     lastFailedCommand: command,
   }), [])
   const [planning, setPlanning] = useState(false)
+  /** 局部重绘语等待框选：选区回来后带 region 重放该指令。 */
+  const [pendingRegionInstruction, setPendingRegionInstruction] = useState<{
+    instruction: string
+    options: AgentInstructionRetryOptions
+  } | null>(null)
   const [liveConversation, setLiveConversation] = useState<AgentLiveConversation>()
   const [submittingMessageId, setSubmittingMessageId] = useState('')
   const [executingActionId, setExecutingActionId] = useState('')
@@ -378,6 +397,7 @@ export default function AgentWorkspace({
   // 这样结果回填后会更新同一条消息，而不会重复刷屏。
   const runNoticeStatusRef = useRef(new Map<string, string>())
   const focusedRunIdsRef = useRef(new Set<string>())
+  const requestedRunReviewsRef = useRef(new Set<string>())
   const messageEndRef = useRef<HTMLDivElement | null>(null)
   const messagesViewportRef = useRef<HTMLDivElement | null>(null)
   const messageNodesRef = useRef(new Map<string, HTMLDivElement>())
@@ -892,6 +912,46 @@ export default function AgentWorkspace({
     }
   }, [artifacts, availableCanvasNodeIds, onUpdateMessage, runs, session])
 
+  // 导演回看：自动模式下失败分支自动重试一次（attempt 0 → 1），再失败就停手交还用户。
+  // 重试端点按 attempt 幂等，取消的分支不重试；手动模式保持人工点按。
+  const autoRetriedBranchesRef = useRef(new Set<string>())
+  useEffect(() => {
+    if (session?.executionMode !== 'auto') return
+    const sessionRunIds = new Set(session.messages.flatMap((message) => (message.runId ? [message.runId] : [])))
+    for (const target of botanicAgentAutoRetryTargets(runs, sessionRunIds)) {
+      const key = `${target.runId}:${target.branchId}`
+      if (autoRetriedBranchesRef.current.has(key)) continue
+      autoRetriedBranchesRef.current.add(key)
+      void onRetryBranch(target.runId, target.branchId).catch(() => { /* 重试失败交还用户手动处理。 */ })
+    }
+  }, [onRetryBranch, runs, session?.executionMode, session?.messages])
+
+  // 结果自评：Run 终态且结果回填后请求一次视觉评审，以固定消息 id 追加为会话消息。
+  // 评审是派生数据：未配置、失败或结果未回填都静默跳过，绝不影响 Run 与结果本身；
+  // 结果晚于终态回填时，Run 对账会更新 updatedAt，下一次请求键随之重试。
+  useEffect(() => {
+    if (!session || !latestRun) return
+    if (latestRun.status !== 'completed' && latestRun.status !== 'partial') return
+    // 只评当前会话里的任务，不把其他会话的历史 Run 拉进来点评。
+    if (!session.messages.some((message) => message.runId === latestRun.id)) return
+    const reviewMessageId = botanicAgentRunReviewMessageId(latestRun.id)
+    if (session.messages.some((message) => message.id === reviewMessageId)) return
+    const requestKey = `${latestRun.id}:${latestRun.status}:${latestRun.updatedAt}`
+    if (requestedRunReviewsRef.current.has(requestKey)) return
+    requestedRunReviewsRef.current.add(requestKey)
+    void requestBotanicAgentRunReview(projectId, latestRun.id).then((review) => {
+      if (!review || !isCurrentAgentProject()) return
+      appendMessage({
+        id: reviewMessageId,
+        role: 'assistant',
+        kind: 'text',
+        content: formatBotanicAgentRunReviewMessage(review),
+      })
+      // 挑选循环闭合：评审选出的最佳结果直接成为下一轮迭代目标，替代「第一个结果」的默认跟随。
+      if (review.bestNodeId) onUseResultContext([review.bestNodeId])
+    }).catch(() => { /* 评审失败静默：结果本身不受影响。 */ })
+  }, [appendMessage, isCurrentAgentProject, latestRun, onUseResultContext, projectId, session])
+
   // 任务开始时把视角带到正在生成的节点，且每个 Run 只带一次；之后画布归用户，
   // 结果完成不再抢视角——需要回看结果时用消息里的「定位画布」。
   useEffect(() => {
@@ -1186,7 +1246,79 @@ export default function AgentWorkspace({
         ...(options.creativeBrief ? { creativeBrief: options.creativeBrief } : {}),
         ...(options.sourcePromptMessageId ? { sourcePromptMessageId: options.sourcePromptMessageId } : {}),
         ...(options.resolvedGeneration ? { resolvedGeneration: options.resolvedGeneration } : {}),
+        ...(options.region ? { region: options.region } : {}),
+        ...(options.composition ? { composition: options.composition } : {}),
       },
+    }
+
+    // 结构化方案活在会话消息上：方案卡点选带上该卡的 composition，输入「生成第 N 项」取最近一条。
+    const composition = options.composition ?? latestBotanicAgentComposition(session.messages) ?? undefined
+    if (composition && !failedCommand.options.composition) {
+      failedCommand.options = { ...failedCommand.options, composition }
+    }
+    const compositionItem = composition && !options.resolvedGeneration
+      ? resolveBotanicAgentCompositionItem(composition, cleanInstruction)
+      : null
+    if (compositionItem) {
+      options = {
+        ...options,
+        composition,
+        resolvedGeneration: {
+          mediaKind: compositionItem.mediaKind,
+          prompt: compositionItem.prompt,
+          count: compositionItem.count,
+          ...(compositionItem.duration ? { duration: compositionItem.duration } : {}),
+        },
+      }
+      failedCommand.options = {
+        ...failedCommand.options,
+        composition,
+        resolvedGeneration: options.resolvedGeneration,
+      }
+    }
+
+    // 「执行方案 / 整套生成」：分支按方案条目展开成一个异构 Run，一次确认整套推进。
+    if (composition && !options.resolvedGeneration && !compositionItem
+      && instructionRequestsCompositionRun(cleanInstruction)) {
+      const executionDecision = resolveBotanicAgentExecutionDecision({
+        mode: session.executionMode,
+        settingsComplete: true,
+        pendingActionCount: 0,
+      })
+      const imageModel = generationModels.find((model) => (model.mediaKind ?? 'image') === 'image')
+      if (!imageModel) {
+        setError('当前没有可用的图片生成模型，无法整套执行。')
+        return
+      }
+      try {
+        const compositionPlan = {
+          ...buildBotanicAgentCompositionPlan({
+            instruction: cleanInstruction,
+            composition,
+            contextSnapshot: createBotanicAgentContextSnapshot(contextItems),
+            settings: {
+              model: imageModel.id,
+              aspectRatio: imageModel.aspectRatios?.[0] ?? '3:4',
+              resolution: imageModel.resolutions?.[0] ?? '1K',
+              ...pendingGenerationOverrides,
+            } as GenerationSettings,
+          }),
+          plannerModel,
+        }
+        const planMessageId = appendMessage({
+          role: 'assistant', kind: 'plan', plan: compositionPlan, status: 'pending',
+          content: compositionPlan.summary,
+        })
+        if (planMessageId && executionDecision.action === 'auto_submit') {
+          await confirmMessagePlan({
+            id: planMessageId, role: 'assistant', kind: 'plan', content: compositionPlan.summary,
+            createdAt: Date.now(), plan: compositionPlan, status: 'pending',
+          })
+        }
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : '暂时无法创建整套生成计划。')
+      }
+      return
     }
 
     const hasImageContext = contextItems.some((item) => (
@@ -1195,26 +1327,33 @@ export default function AgentWorkspace({
       && (item.mediaKind ?? 'image') === 'image'
     ))
     const hasVisualContext = Boolean(target) || hasImageContext
-    // 追问回程带着上一轮已判定的生成结论：此时 cleanInstruction 是画面描述而不是用户原话，
-    // 对它重新做意图分类会把这一轮判成聊天，用户答完确认卡反而拿不到计划。
-    const restoredGeneration = options.resolvedGeneration
-    const pendingDecision = restoredGeneration
-      ? undefined
-      : decideBotanicAgentRequest(cleanInstruction, hasVisualContext)
-    if (pendingDecision?.kind === 'confirm_pending') {
-      // 「确认生成」只提交已存在的待确认计划。没有计划时绝不能把这两个字送进规划器凭空造一份。
-      const pendingPlanMessage = [...session.messages].reverse()
-        .find((item) => item.kind === 'plan' && item.plan && item.status === 'pending')
-      if (pendingPlanMessage) {
-        await confirmMessagePlan(pendingPlanMessage)
-        return
-      }
-      const pendingQuestion = [...session.messages].reverse()
-        .find((item) => item.kind === 'question' && item.question && item.status === 'pending')
+    // 路由与生成前置全部是纯决策，由领域模块拥有；这里只按返回值执行副作用。
+    const entry = resolveBotanicAgentInstructionEntry({
+      instruction: cleanInstruction,
+      options,
+      hasVisualContext,
+      canSelectRegion: Boolean(target?.image),
+      messages: session.messages,
+    })
+    if (entry.kind === 'confirm_plan') {
+      await confirmMessagePlan(entry.message)
+      return
+    }
+    if (entry.kind === 'select_region') {
+      // 局部重绘先框选：选区回来后带 region 重放这条指令，直接进入生成链路。
+      setPendingRegionInstruction({ instruction: cleanInstruction, options })
       appendMessage({
         role: 'assistant',
         kind: 'notice',
-        content: pendingQuestion
+        content: `请在弹出的「${target?.label ?? '当前结果'}」上框选要重绘的区域；框外画面保持原样。`,
+      })
+      return
+    }
+    if (entry.kind === 'notice') {
+      appendMessage({
+        role: 'assistant',
+        kind: 'notice',
+        content: entry.notice === 'answer_pending_question'
           ? '上面还有一张待回答的确认卡，请直接在卡片里选择或填写；本次没有创建任务。'
           : '当前没有待确认的生成计划。请直接描述要生成的画面或批量取值（例如「按白皙、小麦、黄色三档肤色出 3 张」），我会先给出待确认计划。',
       })
@@ -1222,16 +1361,13 @@ export default function AgentWorkspace({
     }
 
     // 服务端回合解析器：让模型读整段对话判断意图并综合可执行 Prompt，取代浏览器端正则路由。
-    // 仅用于全新用户发送；澄清答复与“使用这段 Prompt”已有明确意图/来源，保持既有确定性路径。
     // 服务端未配置或离线时回退到本地正则决策，保证本地开发、e2e 与无 Provider 部署不受影响。
-    const useServerTurn = !options.clarificationAnswers && !options.sourcePromptMessageId && !restoredGeneration
-    let serverDecision: ReturnType<typeof decideBotanicAgentRequest> | undefined = restoredGeneration
-      ? { kind: 'generation', mediaKind: restoredGeneration.mediaKind, promptSource: 'instruction' }
-      : undefined
-    let synthesizedPrompt: string | undefined = restoredGeneration?.prompt
-    let synthesizedCount: number | undefined = restoredGeneration?.count
-    let resolvedOptions = options
-    if (useServerTurn) {
+    let serverDecision: ReturnType<typeof decideBotanicAgentRequest> | undefined = entry.decision
+    let synthesizedPrompt: string | undefined = entry.synthesizedPrompt
+    let synthesizedCount: number | undefined = entry.synthesizedCount
+    let synthesizedDuration: number | undefined = entry.synthesizedDuration
+    let resolvedOptions = entry.options
+    if (entry.useServerTurn) {
       plannerControllerRef.current?.abort()
       const controller = new AbortController()
       plannerControllerRef.current = controller
@@ -1272,17 +1408,49 @@ export default function AgentWorkspace({
           appendMessage({ role: 'assistant', kind: 'text', content: `${turn.answer}${sourceNote}` })
           return
         }
+        if (turn.kind === 'clarification') {
+          // 模型的结构化中断：这一轮在等用户补充核心信息，答案作为下一条消息自然回流
+          // 服务端回合（对话里已有提问与回答），不进入本地 brief 表单。
+          updateRuntimeStep('respond', 'succeeded')
+          if (!isCurrentAgentProject()) return
+          setRuntimePhase('waiting_clarification')
+          const optionLines = turn.options?.length
+            ? `\n\n${turn.options.map((option, index) => `${index + 1}. ${option}`).join('\n')}`
+            : ''
+          appendMessage({ role: 'assistant', kind: 'text', content: `${turn.question}${optionLines}` })
+          return
+        }
+        if (turn.kind === 'composition') {
+          updateRuntimeStep('respond', 'succeeded')
+          if (!isCurrentAgentProject()) return
+          setRuntimePhase('completed')
+          setRuntimeDetailsOpen(false)
+          const composition = normalizeBotanicAgentComposition({ theme: turn.theme, items: turn.items })
+          if (!composition) {
+            appendMessage({ role: 'assistant', kind: 'notice', content: '这次分解没有形成可用的成套方案，请再描述一次交付项。' })
+            return
+          }
+          appendMessage({
+            role: 'assistant',
+            kind: 'composition',
+            composition,
+            content: formatBotanicAgentCompositionSummary(composition),
+          })
+          return
+        }
         serverDecision = { kind: 'generation', mediaKind: turn.mediaKind, promptSource: 'instruction' }
         synthesizedPrompt = turn.prompt
         synthesizedCount = turn.count
+        synthesizedDuration = turn.duration
         if (turn.settingsHint && Object.keys(turn.settingsHint).length) {
           resolvedOptions = { ...options, generationOverrides: { ...turn.settingsHint, ...options.generationOverrides } }
         }
       } catch (caught) {
         if (controller.signal.aborted) return
-        // 未配置(503)、离线(0)、项目缺失(404) 或模型没给出可用结论(502) 时回退本地正则；
-        // 其余按 Agent 错误处理。
-        const fallBack = caught instanceof ProductApiError && [0, 404, 502, 503].includes(caught.status)
+        // 离线(0)、项目缺失(404) 与所有 5xx（未配置、网关/代理故障、模型无可用结论）
+        // 都回退本地正则——与 preparePlan 的降级判定保持同一语义；其余按 Agent 错误处理。
+        const fallBack = caught instanceof ProductApiError
+          && (caught.status === 0 || caught.status === 404 || caught.status >= 500)
         if (!fallBack) {
           const message = caught instanceof Error ? caught.message : 'Agent 暂时无法回答，请稍后重试。'
           failRuntimeTrace(message)
@@ -1303,9 +1471,11 @@ export default function AgentWorkspace({
       appendMessage({
         role: 'assistant',
         kind: 'notice',
-        content: decision.reason === 'unsupported_media'
-          ? 'Agent 对话暂未接入视频执行链。请先在画布添加「视频生成」节点；本次没有创建节点或任务。'
-          : '请明确是只需要建议，还是要我直接生成；本次没有改动画布。',
+        content: decision.reason === 'video_requires_reference'
+          ? '视频需要一张图片作首帧。请先 @ 引用一张素材或点选一张结果图，再说要生成的视频；本次没有创建任务。'
+          : decision.reason === 'unsupported_media'
+            ? 'Agent 对话暂未接入这类媒体的执行链；本次没有创建节点或任务。'
+            : '请明确是只需要建议，还是要我直接生成；本次没有改动画布。',
       })
       return
     }
@@ -1468,116 +1638,60 @@ export default function AgentWorkspace({
       }
       return
     }
-    let generationPrompt: string
-    let resolvedSourcePromptMessageId: string | undefined
-    if (synthesizedPrompt !== undefined) {
-      // 服务端已综合出可执行 Prompt：不再要求历史里存在字面 Prompt，也不再死胡同式拒绝。
-      generationPrompt = synthesizedPrompt
-    } else {
-      const promptResolution = resolveBotanicAgentGenerationPromptDecision(
-        cleanInstruction,
-        session.messages,
-        resolvedOptions.sourcePromptMessageId,
-      )
-      if (promptResolution.status === 'missing') {
-        appendMessage({
-          role: 'assistant',
-          kind: 'notice',
-          content: '没有找到你指的 Prompt。请先让 Agent 写一段 Prompt，或粘贴完整 Prompt；本次没有改动画布。',
-        })
-        return
-      }
-      generationPrompt = promptResolution.prompt
-      resolvedSourcePromptMessageId = promptResolution.sourceMessageId
-    }
-    // 服务端判定的生成结论跟着追问卡走完整轮：下一轮据此直接进入生成，
-    // 否则那时看到的只是画面描述，会被重新分类成聊天。
-    const resolvedGeneration: BotanicAgentResolvedGeneration | undefined = serverDecision?.kind === 'generation'
-      && synthesizedPrompt !== undefined
-      ? {
-        mediaKind: serverDecision.mediaKind,
-        prompt: synthesizedPrompt,
-        ...(synthesizedCount ? { count: synthesizedCount } : {}),
-      }
-      : undefined
-    const clarificationCarryOver = {
-      ...(resolvedSourcePromptMessageId ? { sourcePromptMessageId: resolvedSourcePromptMessageId } : {}),
-      ...(resolvedGeneration ? { resolvedGeneration } : {}),
-    }
-    const imageModels = generationModels.filter((model) => model.mediaKind !== 'video')
-    const inferredGenerationOverrides = inferBotanicAgentGenerationSettings(cleanInstruction, imageModels)
-    const requestedGenerationOverrides = { ...inferredGenerationOverrides, ...resolvedOptions.generationOverrides }
+    if (decision.kind !== 'generation') return
     const variationGroup = compatibleGroups.find((group) => group.id === groupId)
-    // 变体轴决定要开几个分支，必须先于比例与清晰度确认；已确认过的取值不再重复追问。
-    const pendingVariation = botanicAgentPendingVariationClarification({
-      instruction: generationPrompt,
+    const draft = prepareBotanicAgentGenerationDraft({
+      instruction: cleanInstruction,
+      decision,
+      options: resolvedOptions,
+      messages: session.messages,
+      generationModels,
+      executionMode: session.executionMode,
       requestedIntent: intent,
-      clarificationAnswers: resolvedOptions.clarificationAnswers,
-      brief: resolvedOptions.creativeBrief,
-      assetGroup: variationGroup
+      target: target
+        ? { id: target.id, label: target.label, image: target.image, inheritedSettings: target.rootRecipe.settings }
+        : undefined,
+      contextItems,
+      variationAssetGroup: variationGroup
         ? { id: variationGroup.id, role: variationGroup.role, assetCount: variationGroup.assetIds.length }
         : undefined,
+      synthesizedPrompt,
+      synthesizedCount,
+      synthesizedDuration,
     })
-    if (pendingVariation) {
+    if (draft.kind === 'notice') {
+      appendMessage({
+        role: 'assistant',
+        kind: 'notice',
+        content: draft.notice === 'prompt_missing'
+          ? '没有找到你指的 Prompt。请先让 Agent 写一段 Prompt，或粘贴完整 Prompt；本次没有改动画布。'
+          : '当前项目没有可用的视频生成模型，请检查模型目录；本次没有创建任务。',
+      })
+      return
+    }
+    if (draft.kind === 'ask') {
       setRuntimePhase('waiting_clarification')
       appendMessage({
         role: 'assistant',
         kind: 'question',
-        question: { ...pendingVariation, ...clarificationCarryOver },
+        question: draft.clarification,
         status: 'pending',
-        content: pendingVariation.question,
+        content: draft.clarification.question,
       })
       return
     }
-    const briefTurn = advanceBotanicCreativeBrief({
-      mode: 'generation',
-      executionMode: session.executionMode,
-      instruction: generationPrompt,
-      generationModels: imageModels,
-      inheritedSettings: target?.rootRecipe.settings,
-      requestedSettings: requestedGenerationOverrides,
-      previousBrief: resolvedOptions.creativeBrief,
-      answers: resolvedOptions.clarificationAnswers,
-    })
-    if (briefTurn.kind === 'ask') {
-      setRuntimePhase('waiting_clarification')
-      appendMessage({
-        role: 'assistant',
-        kind: 'question',
-        question: {
-          ...briefTurn.clarification,
-          brief: botanicAgentBriefWithVariationAnswers(briefTurn.clarification.brief, resolvedOptions.clarificationAnswers),
-          ...clarificationCarryOver,
-        },
-        status: 'pending',
-        content: briefTurn.clarification.question,
-      })
-      return
-    }
-    if (briefTurn.kind === 'failed') {
+    if (draft.kind === 'failed') {
       // 已经开过运行轨迹的轮次必须显式收尾，否则运行卡会一直停在“规划中”。
-      failRuntimeTrace(briefTurn.message)
-      setError(briefTurn.message)
-      return
-    }
-    const resolvedGenerationOverrides = briefTurn.settings
-    const hasCompleteOutputSettings = Boolean(
-      resolvedGenerationOverrides.model
-      && resolvedGenerationOverrides.aspectRatio
-      && resolvedGenerationOverrides.resolution,
-    )
-    if (!hasCompleteOutputSettings) {
-      const message = '当前没有可用的完整生成设置，请检查模型目录。'
-      failRuntimeTrace(message)
-      setError(message)
+      failRuntimeTrace(draft.message)
+      setError(draft.message)
       return
     }
     const resolvedFailedCommand: AgentFailedInstruction = {
       instruction: cleanInstruction,
       options: {
         ...failedCommand.options,
-        generationOverrides: resolvedGenerationOverrides,
-        creativeBrief: briefTurn.brief,
+        generationOverrides: draft.generationOverrides,
+        creativeBrief: draft.brief,
       },
     }
     setPlanning(true)
@@ -1591,42 +1705,71 @@ export default function AgentWorkspace({
     if (!isCurrentAgentProject()) return
     setRuntimePhase('planning')
     updateRuntimeStep('call-planner', 'running')
-    if (!target) {
+    if (resolvedOptions.region && target) {
+      // 局部重绘：选区+指令已完全确定这次生成，本地构建计划，不经服务端图片规划器改写。
       const executionDecision = resolveBotanicAgentExecutionDecision({
         mode: session.executionMode,
-        settingsComplete: hasCompleteOutputSettings,
+        settingsComplete: true,
         pendingActionCount: 0,
       })
       try {
-        const initialPlan = {
+        const regionPlan = {
           ...buildBotanicAgentPlan({
-            instruction: briefTurn.prompt,
-            creativeBrief: briefTurn.brief,
-            intent: 'initial_generation',
-            settings: resolvedGenerationOverrides as GenerationSettings,
-            contextSnapshot: createBotanicAgentContextSnapshot(contextItems),
-            ...(synthesizedCount ? { outputCount: synthesizedCount } : {}),
+            instruction: draft.prompt,
+            creativeBrief: draft.brief,
+            selectedResultNodeId: target.id,
+            selectedResultLabel: target.label,
+            rootRecipe: target.rootRecipe,
+            contextSnapshot: createBotanicAgentContextSnapshot(draft.planContextItems),
+            region: resolvedOptions.region,
           }),
           plannerModel,
+          settings: { ...target.rootRecipe.settings, ...draft.generationOverrides },
         }
-        const appliedInitial = applyBotanicAgentVariationToPlan(initialPlan, {
-          instruction: briefTurn.prompt,
-          requestedIntent: 'initial_generation',
-          clarificationAnswers: options.clarificationAnswers,
-          brief: briefTurn.brief,
+        updateRuntimeStep('call-planner', 'succeeded')
+        await completeRuntimeTrace(true)
+        if (!isCurrentAgentProject()) return
+        const planMessageId = appendMessage({
+          role: 'assistant', kind: 'plan', plan: regionPlan, status: 'pending',
+          content: regionPlan.summary,
         })
+        if (planMessageId) setRuntimePhase('waiting_confirmation')
+        if (planMessageId && executionDecision.action === 'auto_submit') {
+          await confirmMessagePlan({
+            id: planMessageId, role: 'assistant', kind: 'plan', content: regionPlan.summary,
+            createdAt: Date.now(), plan: regionPlan, status: 'pending',
+          })
+        }
+      } catch (caught) {
+        const message = caught instanceof Error ? caught.message : '暂时无法创建局部重绘计划。'
+        failRuntimeTrace(message)
+        setError(message)
+        rememberFailedInstruction(resolvedFailedCommand)
+      } finally {
+        setPlanning(false)
+      }
+      return
+    }
+    if (draft.useInitialFlow) {
+      const executionDecision = resolveBotanicAgentExecutionDecision({
+        mode: session.executionMode,
+        settingsComplete: true,
+        pendingActionCount: 0,
+      })
+      try {
+        const appliedInitial = buildBotanicAgentInitialDraftPlan(draft, resolvedOptions.clarificationAnswers)
         if (appliedInitial.kind === 'clarification') {
           setRuntimePhase('waiting_clarification')
           appendMessage({
             role: 'assistant',
             kind: 'question',
-            question: { ...appliedInitial.clarification, ...clarificationCarryOver },
+            question: appliedInitial.clarification,
             status: 'pending',
             content: appliedInitial.clarification.question,
           })
           return
         }
-        const resolvedInitialPlan = { ...initialPlan, ...appliedInitial.plan }
+        const resolvedInitialPlan = { ...appliedInitial.plan, plannerModel }
         attachPlannerToolTrace(resolvedInitialPlan)
         updateRuntimeStep('call-planner', 'succeeded')
         await completeRuntimeTrace(true)
@@ -1654,12 +1797,12 @@ export default function AgentWorkspace({
       return
     }
     const nextPlan = await preparePlan(
-      briefTurn.prompt,
-      resolvedGenerationOverrides,
+      draft.prompt,
+      draft.generationOverrides,
       resolvedOptions.clarificationAnswers,
-      briefTurn.brief,
+      draft.brief,
       resolvedFailedCommand,
-      synthesizedCount,
+      draft.outputCount,
     )
     if (!nextPlan || !session || !isCurrentAgentProject()) return
     if ('kind' in nextPlan && nextPlan.kind === 'clarification') {
@@ -1667,7 +1810,7 @@ export default function AgentWorkspace({
       appendMessage({
         role: 'assistant', kind: 'question', question: {
           ...nextPlan.clarification,
-          ...clarificationCarryOver,
+          ...draft.carryOver,
         }, status: 'pending',
         content: nextPlan.clarification.question,
       })
@@ -2129,6 +2272,25 @@ export default function AgentWorkspace({
           onCommitPlanPrompt={commitPlanPrompt}
           onCommitPlanSettings={commitPlanSettings}
           onConfirmPlan={(targetMessage) => void confirmMessagePlan(targetMessage)}
+          onGenerateCompositionItem={(targetMessage, item) => {
+            const composition = botanicAgentMessageComposition(targetMessage)
+            if (!composition) return
+            void runInstruction(`生成第 ${item.index} 项`, {
+              appendUser: `生成第 ${item.index} 项`,
+              composition,
+              resolvedGeneration: {
+                mediaKind: item.mediaKind,
+                prompt: item.prompt,
+                count: item.count,
+                ...(item.duration ? { duration: item.duration } : {}),
+              },
+            })
+          }}
+          onRunComposition={(targetMessage) => {
+            const composition = botanicAgentMessageComposition(targetMessage)
+            if (!composition) return
+            void runInstruction('执行方案', { appendUser: '执行方案', composition })
+          }}
           onUsePrompt={usePromptForGeneration}
           onEdit={(content) => { setInstruction(content); requestAnimationFrame(() => composerTextareaRef.current?.focus()) }}
           onRetryDelivery={retryMessage}
@@ -2223,6 +2385,24 @@ export default function AgentWorkspace({
         onSend={() => void sendInstruction()}
         onToggleImageContext={(itemId, selected) => { if (!session) return; onContextChange(session.id, selected ? session.contextNodeIds.filter((id) => id !== itemId) : [...session.contextNodeIds, itemId]) }}
         onExecutionModeChange={(mode) => { if (session) onExecutionModeChange(session.id, mode); setModeMenuOpen(false); requestAnimationFrame(() => modeMenuButtonRef.current?.focus()) }}
+      /> : null}
+      {pendingRegionInstruction && target?.image ? <RegionMaskEditor
+        target={{ id: target.id, name: target.label, image: target.image }}
+        busy={planning}
+        hidePrompt
+        submitLabel="按选区继续"
+        onSubmit={({ rect }) => {
+          const request = pendingRegionInstruction
+          setPendingRegionInstruction(null)
+          void runInstruction(request.instruction, {
+            ...request.options,
+            region: { rect, description: describeRegionRect(rect) },
+          })
+        }}
+        onClose={() => {
+          setPendingRegionInstruction(null)
+          appendMessage({ role: 'assistant', kind: 'notice', content: '已取消局部重绘框选；再次发送指令时可重新框选。' })
+        }}
       /> : null}
     </aside>
   )

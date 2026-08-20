@@ -77,6 +77,8 @@ export type BotanicAgentResolvedGeneration = {
   mediaKind: 'image' | 'video'
   prompt: string
   count?: number
+  /** 仅视频：时长（秒）。 */
+  duration?: number
 }
 
 export type BotanicAgentClarification = {
@@ -169,8 +171,11 @@ const preservationLabels: Record<BotanicPreservationPriority, string> = {
 function createBrief(input: AdvanceBotanicCreativeBriefInput): BotanicCreativeBrief {
   const inherited = input.inheritedSettings ?? {}
   const requested = input.requestedSettings ?? {}
+  // 调用方按本轮媒体类型传入候选目录：视频轮次传视频模型，此时列表里没有图片模型，
+  // 默认值必须落到第一个可用模型，而不是因为找不到图片模型而空缺。
   const model = requested.model ?? inherited.model
     ?? input.generationModels?.find((item) => item.mediaKind !== 'video')?.id
+    ?? input.generationModels?.[0]?.id
   const selectedModel = input.generationModels?.find((item) => item.id === model)
   const aspectRatio = requested.aspectRatio
     ?? (inherited.aspectRatio && supportsValue(selectedModel?.aspectRatios, inherited.aspectRatio)

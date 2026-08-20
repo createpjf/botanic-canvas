@@ -7,7 +7,9 @@ import {
   collectBotanicAgentResults,
   createBotanicAgentMemoryItem,
   buildBotanicAgentPlan,
+  botanicAgentAutoRetryTargets,
   botanicAgentContextSnapshotNodeIds,
+  botanicAgentNextIterationTargetId,
   createBotanicAgentContextSnapshot,
   createBotanicAgentRun,
   createBotanicAgentSession,
@@ -304,6 +306,45 @@ test('Agent Run 只对已确认但未绑定任务的 queued 快照补执行', ()
   assert.equal(shouldResumeQueuedAgentRunExecution({ status: 'queued', branches: [] }), false)
 })
 
+test('导演回看只自动重试首次失败的分支，取消与二次失败交还用户', () => {
+  const runs = [{
+    id: 'run-1',
+    branches: [
+      { id: 'branch-first-fail', label: 'A', status: 'failed' as const, attempt: 0, jobIds: [], outputCount: 0, updatedAt: 1 },
+      { id: 'branch-retried-fail', label: 'B', status: 'failed' as const, attempt: 1, jobIds: [], outputCount: 0, updatedAt: 1 },
+      { id: 'branch-cancelled', label: 'C', status: 'cancelled' as const, attempt: 0, jobIds: [], outputCount: 0, updatedAt: 1 },
+      { id: 'branch-ok', label: 'D', status: 'succeeded' as const, attempt: 0, jobIds: ['job'], outputCount: 1, updatedAt: 1 },
+    ],
+  }, {
+    id: 'run-other-session',
+    branches: [{ id: 'branch-x', label: 'X', status: 'failed' as const, attempt: 0, jobIds: [], outputCount: 0, updatedAt: 1 }],
+  }]
+  assert.deepEqual(botanicAgentAutoRetryTargets(runs, new Set(['run-1'])), [
+    { runId: 'run-1', branchId: 'branch-first-fail' },
+  ])
+  assert.deepEqual(botanicAgentAutoRetryTargets(runs, new Set()), [])
+})
+
+test('一轮生成回填后，新结果按分支顺序成为下一轮默认基准', () => {
+  const branches = [
+    { id: 'branch-a', label: '分支 A', status: 'failed' as const, attempt: 0, jobIds: [], outputCount: 0, updatedAt: 100 },
+    { id: 'branch-b', label: '分支 B', status: 'succeeded' as const, attempt: 0, jobIds: ['job-b'], outputCount: 1, updatedAt: 110 },
+  ]
+  const nodes = [
+    { id: 'result-video', type: 'result', position: { x: 0, y: 0 }, data: { label: '视频结果', image: '/video', mediaKind: 'video', status: 'ready', agentRun: { runId: 'run-1', branchId: 'branch-b' } } },
+    { id: 'result-b', type: 'result', position: { x: 0, y: 0 }, data: { label: '成图 B', image: '/b', status: 'ready', agentRun: { runId: 'run-1', branchId: 'branch-b' } } },
+    { id: 'result-other-run', type: 'result', position: { x: 0, y: 0 }, data: { label: '别的 Run', image: '/x', status: 'ready', agentRun: { runId: 'run-2', branchId: 'branch-z' } } },
+  ] as CanvasNode[]
+
+  // 视频结果不作基准；同分支下取第一个图片结果。
+  assert.equal(botanicAgentNextIterationTargetId({ id: 'run-1', status: 'partial', branches }, nodes), 'result-b')
+  // 未到终态、或结果尚未回填（无 image）时不抢基准，等回填后重算。
+  assert.equal(botanicAgentNextIterationTargetId({ id: 'run-1', status: 'running', branches }, nodes), undefined)
+  assert.equal(botanicAgentNextIterationTargetId({ id: 'run-1', status: 'completed', branches }, [
+    { id: 'result-pending', type: 'result', position: { x: 0, y: 0 }, data: { label: '占位', status: 'loading', agentRun: { runId: 'run-1', branchId: 'branch-b' } } },
+  ] as CanvasNode[]), undefined)
+})
+
 test('对话与检索也展示可理解的运行阶段，而不是静默等待', () => {
   const steps = createBotanicAgentRuntimeSteps({ hasTarget: false, mode: 'research' })
   assert.deepEqual(steps.map((step) => step.id), ['read-canvas', 'call-planner', 'respond'])
@@ -476,6 +517,42 @@ test('首次生成按请求数量生成多张单次候选，并裁剪到上限',
     instruction: '海边礁石人像', intent: 'initial_generation', settings, contextSnapshot,
   })
   assert.equal(defaulted.output.count, 1)
+})
+
+test('创作简报附录不进入画面提示词，计划指令仍保留完整简报', () => {
+  const briefInstruction = '海边自然光人像，柔和暖调\n\n创作简报：\n- 交付用途：小红书，画面比例 3:4\n- Prompt 优化方向：保真自然'
+  assert.equal(botanicAgentVisualGenerationPrompt(briefInstruction), '海边自然光人像，柔和暖调')
+  // fallback 同样剥离；简报不是画面描述，混进 Provider 提示词会画出元话语。
+  assert.equal(botanicAgentVisualGenerationPrompt('结论：待确认计划已就绪。', briefInstruction), '海边自然光人像，柔和暖调')
+
+  const plan = buildBotanicAgentPlan({
+    instruction: briefInstruction,
+    intent: 'initial_generation',
+    settings: { model: 'gpt-image-2' as const, aspectRatio: '3:4' as const, resolution: '1K' as const },
+    contextSnapshot: [{ nodeId: 'asset-mia', label: 'Mia 肖像', kind: '素材' as const, mediaKind: 'image' as const }],
+  })
+  assert.doesNotMatch(plan.prompt, /创作简报|交付用途|优化方向/)
+  assert.match(plan.instruction, /创作简报/)
+})
+
+test('视频计划以首帧语义生成一条视频，措辞与图片计划区分', () => {
+  const contextSnapshot = [{ nodeId: 'result-mia', label: 'Mia 首图', kind: '结果' as const, mediaKind: 'image' as const }]
+  const plan = buildBotanicAgentPlan({
+    instruction: '镜头缓慢推近，光线渐暖',
+    intent: 'initial_generation',
+    settings: { model: 'MiniMax-H3', aspectRatio: '3:4', resolution: '2K', duration: 10 } as GenerationSettings,
+    contextSnapshot,
+  })
+  assert.equal(plan.settings.duration, 10)
+  assert.deepEqual(plan.output, { mode: 'single', count: 1, candidatesPerItem: 1 })
+  assert.match(plan.summary, /以参考图为首帧生成 1 条 10 秒视频/)
+  // 视频同样要求图片上下文作首帧。
+  assert.throws(() => buildBotanicAgentPlan({
+    instruction: '镜头缓慢推近',
+    intent: 'initial_generation',
+    settings: { model: 'MiniMax-H3', aspectRatio: '3:4', resolution: '2K', duration: 10 } as GenerationSettings,
+    contextSnapshot: [],
+  }))
 })
 
 test('首次生成拒绝空上下文和仅视频上下文，其他意图仍要求父结果', () => {
@@ -660,6 +737,18 @@ test('规划确认旁白不能当成可执行 Prompt，也不展示「用这段 
     content: '下面是可直接使用的画面描述。',
     prompt: '模特站在海边黄昏，白裙与构图保持不变。',
   }), true)
+  assert.equal(botanicAgentMessageOffersVisualPrompt({
+    kind: 'composition',
+    content: '已把这次需求分解为一套 2 项的创意方案：春季系列',
+    prompt: '春日主画面',
+    composition: {
+      theme: '春季系列',
+      items: [
+        { index: 1, title: '主视觉', mediaKind: 'image', prompt: '春日主画面', count: 1 },
+        { index: 2, title: '细节', mediaKind: 'image', prompt: '花瓣特写', count: 1 },
+      ],
+    },
+  }), false)
 })
 
 test('Skill 列表只展示一句用途，展开时才给完整规则且不含 YAML', () => {
@@ -841,6 +930,31 @@ test('Agent 会话保存执行模式、画布上下文与可恢复的消息时�
   const rated = updateBotanicAgentMessage(submitted, 'message-1', { feedback: 'positive' }, 140)
   assert.equal(rated.messages[0].feedback, 'positive')
   assert.equal(rated.updatedAt, 140)
+})
+
+test('成套方案作为 composition 消息进入会话时间线，更新可回填同一条', () => {
+  const composition = {
+    theme: '春季系列',
+    items: [
+      { index: 1, title: '主视觉', mediaKind: 'image' as const, prompt: '春日主画面', count: 1 },
+      { index: 2, title: '细节', mediaKind: 'image' as const, prompt: '花瓣特写', count: 2 },
+    ],
+  }
+  const session = appendBotanicAgentMessage(createBotanicAgentSession({ id: 'session-composition', now: 100 }), {
+    id: 'composition-1', role: 'assistant', kind: 'composition',
+    content: '已把这次需求分解为一套 2 项的创意方案：春季系列',
+    composition, status: 'pending', createdAt: 110,
+  })
+  assert.equal(session.messages[0].kind, 'composition')
+  assert.equal(session.messages[0].composition?.items[1].title, '细节')
+
+  const updated = updateBotanicAgentMessage(session, 'composition-1', {
+    composition: {
+      ...composition,
+      items: composition.items.map((item) => item.index === 2 ? { ...item, prompt: '花蕊特写' } : item),
+    },
+  }, 120)
+  assert.equal(updated.messages[0].composition?.items[1].prompt, '花蕊特写')
 })
 
 test('Agent 追问卡可持久化答案状态，润色后的计划也可回填到同一消息', () => {
@@ -1324,4 +1438,29 @@ test('逐条到达的工具调用按真实执行顺序排列', () => {
     { id: 'call-c', name: 'asset_group_search', label: '检索素材组', risk: 'read', status: 'succeeded', requiresConfirmation: false },
   ])
   assert.deepEqual(batched.map((step) => step.id), third.map((step) => step.id))
+})
+
+test('局部编辑语识别为 region_edit，整图替换语不受影响', () => {
+  assert.equal(inferBotanicAgentIntent('只把右上角的花重画一下'), 'region_edit')
+  assert.equal(inferBotanicAgentIntent('局部重绘背景'), 'region_edit')
+  assert.equal(inferBotanicAgentIntent('框选的区域换成夜景'), 'region_edit')
+  assert.equal(inferBotanicAgentIntent('把场景换成海边'), 'replace_scene')
+  assert.equal(inferBotanicAgentIntent('整体风格改成胶片感'), 'change_style')
+})
+
+test('带选区的计划意图固定为 region_edit，摘要与选区随计划持久化', () => {
+  const plan = buildBotanicAgentPlan({
+    instruction: '把这块换成盛开的白色山茶花丛',
+    selectedResultNodeId: 'result-1',
+    selectedResultLabel: '首图 01',
+    rootRecipe: {
+      references: [{ nodeId: 'asset-1', assetId: 'asset-1', name: '商品', image: 'https://example.test/a.png', role: '商品' }],
+      prompt: '基准描述', batchCount: 1,
+      settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
+    },
+    region: { rect: { x: 0.6, y: 0, width: 0.4, height: 0.4 }, description: '画面右上的区域' },
+  })
+  assert.equal(plan.intent, 'region_edit')
+  assert.match(plan.summary, /局部重绘画面右上的区域/)
+  assert.deepEqual(plan.region, { rect: { x: 0.6, y: 0, width: 0.4, height: 0.4 }, description: '画面右上的区域' })
 })

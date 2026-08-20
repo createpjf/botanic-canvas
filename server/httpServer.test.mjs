@@ -155,6 +155,7 @@ for (const route of [
   { name: '品牌素材库', method: 'POST', url: '/api/global-assets', allow: 'GET, PUT' },
   { name: 'Agent 规划', method: 'GET', url: '/api/agent-plans', allow: 'POST' },
   { name: 'Agent 意图', method: 'GET', url: '/api/agent-intent', allow: 'POST' },
+  { name: 'Agent 结果评审', method: 'GET', url: '/api/agent-run-reviews', allow: 'POST' },
   { name: '提示词润色', method: 'GET', url: '/api/prompt-refinements', allow: 'POST' },
   { name: '项目媒体上传', method: 'GET', url: '/api/projects/project-a/media', allow: 'POST' },
   { name: '实时票据', method: 'GET', url: '/api/realtime/ticket', allow: 'POST' },
