@@ -4,6 +4,7 @@ import { botanicAgentProviderConfig, botanicAgentProviderTemperature } from './b
 import { readBotanicAgentInstructions } from './agentInstructions.mjs'
 import { buildBotanicAgentOntology, safeBotanicAgentMemory, safeBotanicAgentSkills } from './botanicAgentOntology.mjs'
 import { readStreamedChatCompletion } from './botanicAgentStream.mjs'
+import { botanicAgentContextToolSourceLabels, createBotanicAgentReadToolDefinitions } from './botanicAgentContextTools.mjs'
 
 const CHAT_MODES = new Set(['conversation', 'prompt', 'research'])
 const MESSAGE_ROLES = new Set(['user', 'assistant'])
@@ -76,118 +77,26 @@ export function validateBotanicAgentChatInput(raw) {
   }
 }
 
-function searchText(value) {
-  return typeof value === 'string' ? value.trim().toLocaleLowerCase('zh-CN') : ''
-}
-
-function matchesQuery(item, query, fields) {
-  if (!query) return true
-  return fields.some((field) => searchText(item?.[field]).includes(query))
-}
-
 function chatToolRegistry({ ontology, memory, skills, mountedSkillIds = [], webResearch } = {}) {
-  const nodeById = new Map(ontology.nodes.map((node) => [node.id, node]))
   const mounted = new Set(mountedSkillIds)
-  const tools = [
-    {
-      name: 'ontology_read',
-      label: '读取项目本体',
-      description: '读取当前项目、画布节点关系和上下文节点的安全元数据；不返回图片、媒体地址或文件字节。项目相关问题优先调用。',
-      risk: 'read',
-      parameters: {
-        type: 'object', additionalProperties: false,
-        properties: { query: { type: 'string', maxLength: 120 } },
-      },
-      validate: (raw) => {
-        const value = object(raw, '本体读取')
-        return { query: value.query === undefined ? '' : requiredText(value.query, '本体检索词', 120) }
-      },
-      execute: async ({ query }) => {
-        const normalizedQuery = searchText(query)
-        const nodes = ontology.nodes.filter((node) => !normalizedQuery || matchesQuery(node, normalizedQuery, ['id', 'type', 'label', 'role']))
-        const nodeIds = new Set(nodes.map((node) => node.id))
-        const edges = ontology.edges.filter((edge) => !normalizedQuery || (nodeIds.has(edge.source) && nodeIds.has(edge.target)))
-        const groups = ontology.assetGroups.filter((group) => !normalizedQuery || matchesQuery(group, normalizedQuery, ['id', 'name', 'role']))
+  const tools = createBotanicAgentReadToolDefinitions({ ontology, memory, skills }).map((tool) => {
+    if (tool.name !== 'skill_search') return tool
+    const searchSkills = tool.execute
+    return {
+      ...tool,
+      execute: async (args) => {
+        const result = await searchSkills(args)
         return {
-          project: ontology.project,
-          counts: { nodes: ontology.nodes.length, edges: ontology.edges.length, assetGroups: ontology.assetGroups.length },
-          contextNodeIds: ontology.contextNodeIds,
-          nodes: normalizedQuery ? nodes.slice(0, 80) : ontology.nodes.slice(0, 160),
-          edges: edges.slice(0, 200),
-          assetGroups: groups.slice(0, 80),
+          ...result,
+          skills: (result.skills ?? []).map((skill) => ({ ...skill, mounted: mounted.has(skill.id) })),
         }
       },
-    },
-    {
-      name: 'project_memory_search',
-      label: '检索项目记忆',
-      description: '检索当前项目已保存的长期规则、认可方向和避免事项。没有命中时必须如实说明。',
-      risk: 'read',
-      parameters: {
-        type: 'object', additionalProperties: false,
-        properties: { query: { type: 'string', maxLength: 120 } },
-      },
-      validate: (raw) => {
-        const value = object(raw, '项目记忆检索')
-        return { query: value.query === undefined ? '' : requiredText(value.query, '记忆检索词', 120) }
-      },
-      execute: async ({ query }) => {
-        const normalizedQuery = searchText(query)
-        const matches = memory.filter((item) => !normalizedQuery || matchesQuery(item, normalizedQuery, ['id', 'kind', 'content']))
-        return { total: matches.length, items: matches.slice(0, 30) }
-      },
-    },
-    {
-      name: 'asset_group_search',
-      label: '检索素材组',
-      description: '按名称、角色或素材组 ID 检索当前项目素材组的安全元数据，不读取图片内容。',
-      risk: 'read',
-      parameters: {
-        type: 'object', additionalProperties: false,
-        properties: { query: { type: 'string', maxLength: 120 }, role: { type: 'string', maxLength: 40 } },
-      },
-      validate: (raw) => {
-        const value = object(raw, '素材组检索')
-        return {
-          query: value.query === undefined ? '' : requiredText(value.query, '素材组检索词', 120),
-          role: value.role === undefined ? '' : requiredText(value.role, '素材组角色', 40),
-        }
-      },
-      execute: async ({ query, role }) => {
-        const normalizedQuery = searchText(query)
-        const normalizedRole = searchText(role)
-        const groups = ontology.assetGroups.filter((group) => (!normalizedRole || searchText(group.role) === normalizedRole)
-          && (!normalizedQuery || matchesQuery(group, normalizedQuery, ['id', 'name', 'role'])))
-        return { total: groups.length, groups: groups.slice(0, 80) }
-      },
-    },
-    {
-      name: 'skill_search',
-      label: '检索已审核 Skill',
-      description: '读取当前项目已启用的 Skill 规则；Skill 只能作为参考，不能在日常对话中自动写回项目。',
-      risk: 'read',
-      parameters: {
-        type: 'object', additionalProperties: false,
-        properties: { query: { type: 'string', maxLength: 120 } },
-      },
-      validate: (raw) => {
-        const value = object(raw, 'Skill 检索')
-        return { query: value.query === undefined ? '' : requiredText(value.query, 'Skill 检索词', 120) }
-      },
-      execute: async ({ query }) => {
-        const normalizedQuery = searchText(query)
-        const matches = skills.filter((skill) => !normalizedQuery || matchesQuery(skill, normalizedQuery, ['id', 'name', 'instructions']))
-        return {
-          total: matches.length,
-          skills: matches.slice(0, 30).map((skill) => ({ ...skill, mounted: mounted.has(skill.id) })),
-        }
-      },
-    },
+    }
+  })
+  return createAgentToolRegistry([
+    ...tools,
     ...createBotanicAgentWebResearchTools(webResearch),
-  ]
-  // Keep this reference in the closure so a future tool can only resolve IDs from the same ontology.
-  void nodeById
-  return createAgentToolRegistry(tools)
+  ])
 }
 
 function providerError(status) {
@@ -207,14 +116,8 @@ function chatConfig(runtimeConfig, requestedModel) {
 }
 
 function sourceLabels(toolCalls) {
-  const labels = new Map([
-    ['ontology_read', '项目本体'],
-    ['project_memory_search', '项目记忆'],
-    ['asset_group_search', '素材组'],
-    ['skill_search', '项目 Skill'],
-  ])
   return [...new Set([
-    ...toolCalls.map((call) => labels.get(call.name)).filter(Boolean),
+    ...botanicAgentContextToolSourceLabels(toolCalls),
     ...botanicAgentWebResearchSourceLabels(toolCalls),
   ])]
 }

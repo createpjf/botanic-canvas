@@ -1547,6 +1547,8 @@ export type BuildBotanicAgentPlanInput = {
   settings?: GenerationSettings
   assetGroup?: AssetGroup
   contextSnapshot?: BotanicAgentContextSnapshot[]
+  /** 无素材组的单次生成需要多张时的请求数量；服务端按 output.count 生成对应候选。 */
+  outputCount?: number
 }
 
 const variationDimensionPattern = '人物|模特|角色|场景|背景|画面|环境|肤色|族裔|人种|动作|姿势|姿态|风格|服装|衣服|穿搭|版本|变体'
@@ -1565,6 +1567,9 @@ export function instructionRequestsBatchVariation(instruction: string) {
   if (new RegExp(`(?:多个|多种|几种|几个|一组|一批)(?:不同(?:的)?)?(?:${variationDimensionPattern})`, 'u').test(text)) return true
   return false
 }
+
+/** 单次（非素材组批量）生成允许的最大输出张数，与 MAX_GENERATION_BATCH 默认值一致。 */
+export const BOTANIC_AGENT_MAX_SINGLE_OUTPUT = 8
 
 const intentPatterns: Array<[BotanicAgentIntent, RegExp]> = [
   ['redo_from_root', /(最初|原始|原配方|商品图).*(重新|重做|再做)|复用.*(最初|原始)/i],
@@ -1840,9 +1845,13 @@ export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): Botani
   }
   const constraints = constraintsForIntent(intent, input.assetGroup)
   const batchCount = input.assetGroup?.assetIds.length ?? 0
+  const requestedSingleCount = Math.min(
+    BOTANIC_AGENT_MAX_SINGLE_OUTPUT,
+    Math.max(1, Math.floor(input.outputCount ?? 1)),
+  )
   const output = batchCount
     ? { mode: 'batch_by_asset' as const, count: batchCount, candidatesPerItem: 1 }
-    : { mode: 'single' as const, count: 1, candidatesPerItem: 1 }
+    : { mode: 'single' as const, count: requestedSingleCount, candidatesPerItem: 1 }
   const references: AgentReferenceBinding[] = isInitialGeneration
     ? imageContext.map((item) => ({
         source: 'context_node' as const,
@@ -1869,7 +1878,7 @@ export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): Botani
   return {
     intent,
     instruction,
-    summary: `${intentLabel(intent)}，${output.mode === 'batch_by_asset' ? `按「${input.assetGroup?.name}」生成 ${output.count} 张` : '生成 1 张新版本'}。`,
+    summary: `${intentLabel(intent)}，${output.mode === 'batch_by_asset' ? `按「${input.assetGroup?.name}」生成 ${output.count} 张` : `生成 ${output.count} 张新版本`}。`,
     title: summarizeBotanicAgentNodeTitle({ intent, constraints }),
     ...(input.creativeBrief ? { creativeBrief: structuredClone(input.creativeBrief) } : {}),
     ...(input.selectedResultNodeId ? { selectedResultNodeId: input.selectedResultNodeId } : {}),

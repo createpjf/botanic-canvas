@@ -1,0 +1,42 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { buildBotanicAgentTurnRequest } from './agentTurnContract.ts'
+
+test('回合请求只发送最近 16 条消息与去重后的上下文节点', () => {
+  const messages = Array.from({ length: 20 }, (_, index) => ({
+    role: index % 2 === 0 ? 'user' as const : 'assistant' as const,
+    content: `第 ${index} 条`,
+  }))
+  const request = buildBotanicAgentTurnRequest({
+    projectId: 'project-1',
+    plannerModel: 'deepseek-v4-pro',
+    messages,
+    contextNodeIds: ['a', 'a', 'b'],
+    hasTarget: true,
+    maxOutputCount: 6,
+  })
+  assert.equal(request.messages.length, 16)
+  assert.equal(request.messages[0].content, '第 4 条')
+  assert.deepEqual(request.contextNodeIds, ['a', 'b'])
+  assert.equal(request.hasTarget, true)
+  assert.equal(request.maxOutputCount, 6)
+})
+
+test('生成模型目录只携带安全字段，缺省字段不产出噪声键', () => {
+  const request = buildBotanicAgentTurnRequest({
+    projectId: 'project-1',
+    messages: [{ role: 'user', content: '生成' }],
+    contextNodeIds: [],
+    generationModels: [
+      { id: 'gpt-image-2', label: 'GPT Image 2', mediaKind: 'image', aspectRatios: ['1:1'], resolutions: ['2K'] },
+      { id: 'video-1', label: '视频', mediaKind: 'video' },
+    ],
+  })
+  assert.equal(request.hasTarget, false)
+  assert.equal(request.plannerModel, undefined)
+  assert.equal(request.maxOutputCount, undefined)
+  assert.deepEqual(request.generationModels, [
+    { id: 'gpt-image-2', label: 'GPT Image 2', mediaKind: 'image', aspectRatios: ['1:1'], resolutions: ['2K'] },
+    { id: 'video-1', label: '视频', mediaKind: 'video' },
+  ])
+})

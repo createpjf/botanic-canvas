@@ -1,6 +1,7 @@
 import { buildBotanicAgentPlanRequest, completeBotanicAgentPlan, type BotanicAgentPlanRequestInput, type BotanicAgentPlanResponse } from '../domain/agentPlanContract'
 import { buildBotanicAgentChatRequest, type BotanicAgentChatRequestInput, type BotanicAgentChatResponse } from '../domain/agentChatContract'
 import { botanicAgentChatTransportErrorMessage, createBotanicAgentChatStreamReader, type BotanicAgentChatStreamEvent } from '../domain/agentChatStream'
+import { buildBotanicAgentTurnRequest, type BotanicAgentTurnRequestInput, type BotanicAgentTurnResult } from '../domain/agentTurnContract'
 import { ProductApiError, productAuthorizationHeader, productRequest } from './productSession'
 import type { AgentToolCallTrace, BotanicAgentReasoningEntry, BotanicAgentActionProposal, BotanicAgentActionResult, BotanicAgentClarificationResponse, BotanicAgentMemoryItem, BotanicAgentMessage, BotanicAgentPlan, BotanicAgentRunSnapshot, BotanicAgentSession, BotanicAgentSkill, BotanicAgentSkillCatalogItem, BotanicIndexedArtifact } from '../domain/agent'
 import type { BotanicAgentBranchVariation } from '../domain/agentVariations'
@@ -63,6 +64,18 @@ export async function requestBotanicAgentPlan(
     return { kind: 'clarification', clarification: response.clarification } satisfies BotanicAgentClarificationResponse
   }
   return completeBotanicAgentPlan(response.plan, input)
+}
+
+export async function requestBotanicAgentTurn(input: BotanicAgentTurnRequestInput, signal?: AbortSignal) {
+  const response = await productRequest<{ turn: BotanicAgentTurnResult }>('/api/agent-intent', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(buildBotanicAgentTurnRequest(input)),
+    signal,
+    timeoutMs: 60_000,
+    timeoutMessage: 'Agent 正在理解你的意图，响应较慢，请稍后重试；当前画布内容未被修改。',
+  })
+  return response.turn
 }
 
 export async function requestBotanicAgentChat(input: BotanicAgentChatRequestInput, signal?: AbortSignal) {
