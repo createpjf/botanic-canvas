@@ -20,7 +20,7 @@ import {
 
 const INTENTS = new Set([
   'continue_generation', 'replace_scene', 'replace_person', 'replace_product',
-  'change_pose', 'change_style', 'batch_variation', 'redo_from_root',
+  'change_pose', 'change_style', 'batch_variation', 'redo_from_root', 'region_edit',
 ])
 const DIMENSIONS = new Set([
   'person', 'garment', 'product', 'scene', 'style', 'pose',

@@ -26,6 +26,7 @@ export type BotanicAgentIntent =
   | 'change_style'
   | 'batch_variation'
   | 'redo_from_root'
+  | 'region_edit'
 
 export type CreativeDimension =
   | 'person'
@@ -756,6 +757,11 @@ export type BotanicAgentPlan = {
   variation?: BotanicAgentVariationSpec
   assetGroupId?: string
   rootRecipe?: GenerationRecipe
+  /**
+   * 局部重绘选区（基准图归一化矩形）与它的中文描述。选区是纯数据可进计划；
+   * 位图蒙版由执行层按基准图真实像素生成，不进计划 JSON。
+   */
+  region?: { rect: { x: number; y: number; width: number; height: number }; description?: string }
   toolCalls?: AgentToolCallTrace[]
   actions?: BotanicAgentActionProposal[]
 }
@@ -1596,6 +1602,8 @@ export type BuildBotanicAgentPlanInput = {
   contextSnapshot?: BotanicAgentContextSnapshot[]
   /** 无素材组的单次生成需要多张时的请求数量；服务端按 output.count 生成对应候选。 */
   outputCount?: number
+  /** 局部重绘选区；提供时计划意图固定为 region_edit。 */
+  region?: { rect: { x: number; y: number; width: number; height: number }; description?: string }
 }
 
 const variationDimensionPattern = '人物|模特|角色|场景|背景|画面|环境|肤色|族裔|人种|动作|姿势|姿态|风格|服装|衣服|穿搭|版本|变体'
@@ -1620,6 +1628,8 @@ export const BOTANIC_AGENT_MAX_SINGLE_OUTPUT = 8
 
 const intentPatterns: Array<[BotanicAgentIntent, RegExp]> = [
   ['redo_from_root', /(最初|原始|原配方|商品图).*(重新|重做|再做)|复用.*(最初|原始)/i],
+  // 「局部/选区/框选」以及「只改/只换/只重画某处」是局部重绘；先于整图替换意图匹配。
+  ['region_edit', /(局部|选区|框选|圈出|抠掉|inpaint)|只(?:重画|重绘|修改|改|换|调)[^，。！？?!]{0,12}(?:区域|部分|地方|这块|角落?)|(?:左上|右上|左下|右下|上方|下方|左侧|右侧|中间|角落)[^，。！？?!]{0,10}(?:重画|重绘|重新生成|改掉|换掉)/iu],
   ['replace_scene', /(换|替换|改变|更换).*(场景|背景)|(场景|背景).*(换|替换|改变|更换)/i],
   ['change_pose', /(动作|姿势|姿态|肢体)/i],
   ['replace_person', /(换|替换|改变|更换).*(人物|模特)|(人物|模特).*(换|替换|改变|更换)/i],
@@ -1715,6 +1725,7 @@ function intentLabel(intent: BotanicAgentIntent) {
     change_pose: '调整动作',
     change_style: '改变风格',
     batch_variation: '批量变体',
+    region_edit: '局部重绘',
     redo_from_root: '从原配方重做',
   }
   return labels[intent]
@@ -1884,7 +1895,8 @@ export function botanicAgentPlanMediaKind(plan: Pick<BotanicAgentPlan, 'settings
 export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): BotanicAgentPlan {
   const instruction = input.instruction.trim()
   if (!instruction) throw new Error('请描述希望 Agent 完成的修改。')
-  const intent = input.intent ?? inferBotanicAgentIntent(instruction)
+  // 带选区时意图不再靠文字猜：选区本身就是「只改这里」的明确表达。
+  const intent = input.region ? 'region_edit' : input.intent ?? inferBotanicAgentIntent(instruction)
   const isInitialGeneration = intent === 'initial_generation'
   if (!isInitialGeneration && !input.selectedResultNodeId) throw new Error('请先选择一张已生成图片。')
   if (!isInitialGeneration && !input.rootRecipe) throw new Error('当前结果缺少可恢复的生成配方。')
@@ -1936,9 +1948,11 @@ export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): Botani
   return {
     intent,
     instruction,
-    summary: isVideoPlan
-      ? `${intentLabel(intent)}，以参考图为首帧生成 ${output.count} 条 ${settings.duration} 秒视频。`
-      : `${intentLabel(intent)}，${output.mode === 'batch_by_asset' ? `按「${input.assetGroup?.name}」生成 ${output.count} 张` : `生成 ${output.count} 张新版本`}。`,
+    summary: intent === 'region_edit' && input.region
+      ? `局部重绘${input.region.description ?? '所选区域'}，其余画面保持原样。`
+      : isVideoPlan
+        ? `${intentLabel(intent)}，以参考图为首帧生成 ${output.count} 条 ${settings.duration} 秒视频。`
+        : `${intentLabel(intent)}，${output.mode === 'batch_by_asset' ? `按「${input.assetGroup?.name}」生成 ${output.count} 张` : `生成 ${output.count} 张新版本`}。`,
     title: summarizeBotanicAgentNodeTitle({ intent, constraints }),
     ...(input.creativeBrief ? { creativeBrief: structuredClone(input.creativeBrief) } : {}),
     ...(input.selectedResultNodeId ? { selectedResultNodeId: input.selectedResultNodeId } : {}),
@@ -1950,6 +1964,7 @@ export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): Botani
     output,
     ...(input.assetGroup ? { assetGroupId: input.assetGroup.id } : {}),
     ...(input.rootRecipe ? { rootRecipe: input.rootRecipe } : {}),
+    ...(input.region ? { region: structuredClone(input.region) } : {}),
   }
 }
 

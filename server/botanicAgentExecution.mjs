@@ -151,6 +151,10 @@ function recipeForRun(run, document, parentNode, branch, resolvedInitialReferenc
     }
     return withBranchAsset(clone(rootRecipe.references), run, document, branch)
   }
+  // 局部重绘只以父结果为基准图：选区外画面由蒙版保持，不再混入其它参考。
+  if (run.plan.intent === 'region_edit') {
+    return withBranchAsset([], run, document, branch)
+  }
   return withBranchAsset(refinementReferences(run, document), run, document, branch)
 }
 
@@ -176,6 +180,8 @@ function rawGenerationInput(run, parentNode, recipe, { videoModel = false } = {}
         ...(videoModel && index === 0 ? { inputRole: 'first_frame' } : {}),
         ...mediaInput(reference.image),
       })),
+      // 局部重绘选区随任务下发；位图蒙版由生成 Worker 按基准图真实像素生成。
+      ...(!videoModel && run.plan.region?.rect ? { maskRegion: clone(run.plan.region.rect) } : {}),
     },
     ...(kind === 'refinement'
       ? { parent: { name: parentNode.data?.label ?? '父版本', ...mediaInput(parentNode.data?.image) } }

@@ -82,6 +82,9 @@ import { readCachedCanvasViewport, useCanvasInteractionCoordinator, type ScreenT
 import {
   AssetLibrary,
   BatchVariationComposer,
+} from './CanvasWorkspacePanels'
+import { RegionMaskEditor } from './RegionMaskEditor'
+import {
   BatchVariationProgress,
   ConfirmationDialog,
   DeliveryPanel,
@@ -687,6 +690,7 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
   const updateTextNode = useCanvasStore((state) => state.updateTextNode)
   const runGraphGeneration = useCanvasStore((state) => state.runGraphGeneration)
   const runBatchVariation = useCanvasStore((state) => state.runBatchVariation)
+  const runRefinement = useCanvasStore((state) => state.runRefinement)
   const retryBatchVariationItem = useCanvasStore((state) => state.retryBatchVariationItem)
   const batchVariationRuns = useCanvasStore((state) => state.document.batchVariationRuns)
   const retryAgentBranch = useCanvasStore((state) => state.retryAgentBranch)
@@ -752,6 +756,7 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
   const [composerOpen, setComposerOpen] = useState(false)
   const [resultComposerDraft, setResultComposerDraft] = useState<ResultComposerDraft | null>(null)
   const [batchComposerTargetId, setBatchComposerTargetId] = useState<string | null>(null)
+  const [regionEditTargetId, setRegionEditTargetId] = useState<string | null>(null)
   const [imagePreview, setImagePreview] = useState<{ image: string; name: string; mediaKind: GenerationMediaKind } | null>(null)
   const [historyFocusRequest, setHistoryFocusRequest] = useState<{ nodeId: string; requestId: number } | null>(null)
   const [renamingProjectTabId, setRenamingProjectTabId] = useState<string | null>(null)
@@ -879,6 +884,19 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
       settings: result.generationSettings ?? defaultGenerationSettings,
     }
   }, [batchComposerTargetId, document.nodes])
+  const regionEditTarget = useMemo(() => {
+    if (!regionEditTargetId) return null
+    const node = document.nodes.find((item) => item.id === regionEditTargetId && item.type === 'result')
+    if (!node || node.type !== 'result') return null
+    const result = node.data as ResultNodeData
+    if (!result.image || result.mediaKind === 'video') return null
+    return {
+      id: node.id,
+      name: result.label ?? '已选结果',
+      image: result.image,
+      settings: result.generationSettings ?? result.generationRecipe?.settings ?? defaultGenerationSettings,
+    }
+  }, [document.nodes, regionEditTargetId])
   const projectTemplateSaveSummary = useMemo(
     () => summarizeWorkflowTemplate(document.nodes, document.edges),
     [document.edges, document.nodes],
@@ -1439,6 +1457,7 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
             onChooseCandidate: chooseResultCandidate,
             onOpenAddMenu: openAddMenuFromResult,
             onOpenAgent: openAgentForResult,
+            onOpenRegionEdit: setRegionEditTargetId,
           },
         } as ResultNodeUiData,
       } : {}),
@@ -2405,6 +2424,33 @@ export default function CanvasWorkspace({ currentUser, onSignOut }: { currentUse
             })
           }}
           onClose={() => setBatchComposerTargetId(null)}
+        /> : null}
+
+        {regionEditTarget ? <RegionMaskEditor
+          key={regionEditTarget.id}
+          target={regionEditTarget}
+          busy={generationStatus === 'uploading' || generationStatus === 'queued' || generationStatus === 'running' || generationStatus === 'recovering'}
+          onSubmit={({ rect, prompt }) => {
+            const submissionProjectId = document.id
+            // 局部重绘只以选中结果为基准图；选区外画面由蒙版保持，不再混入其它参考。
+            void runRefinement({
+              targetNodeId: regionEditTarget.id,
+              prompt,
+              batchCount: 1,
+              settings: regionEditTarget.settings,
+              recipe: {
+                references: [],
+                prompt,
+                batchCount: 1,
+                settings: regionEditTarget.settings,
+                maskRegion: rect,
+              },
+            }).then((started) => {
+              if (useCanvasStore.getState().document.id !== submissionProjectId) return
+              if (started) setRegionEditTargetId(null)
+            })
+          }}
+          onClose={() => setRegionEditTargetId(null)}
         /> : null}
 
         {selectedEdge && edgeActionPosition ? (

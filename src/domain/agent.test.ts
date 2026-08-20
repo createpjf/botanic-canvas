@@ -1402,3 +1402,28 @@ test('逐条到达的工具调用按真实执行顺序排列', () => {
   ])
   assert.deepEqual(batched.map((step) => step.id), third.map((step) => step.id))
 })
+
+test('局部编辑语识别为 region_edit，整图替换语不受影响', () => {
+  assert.equal(inferBotanicAgentIntent('只把右上角的花重画一下'), 'region_edit')
+  assert.equal(inferBotanicAgentIntent('局部重绘背景'), 'region_edit')
+  assert.equal(inferBotanicAgentIntent('框选的区域换成夜景'), 'region_edit')
+  assert.equal(inferBotanicAgentIntent('把场景换成海边'), 'replace_scene')
+  assert.equal(inferBotanicAgentIntent('整体风格改成胶片感'), 'change_style')
+})
+
+test('带选区的计划意图固定为 region_edit，摘要与选区随计划持久化', () => {
+  const plan = buildBotanicAgentPlan({
+    instruction: '把这块换成盛开的白色山茶花丛',
+    selectedResultNodeId: 'result-1',
+    selectedResultLabel: '首图 01',
+    rootRecipe: {
+      references: [{ nodeId: 'asset-1', assetId: 'asset-1', name: '商品', image: 'https://example.test/a.png', role: '商品' }],
+      prompt: '基准描述', batchCount: 1,
+      settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
+    },
+    region: { rect: { x: 0.6, y: 0, width: 0.4, height: 0.4 }, description: '画面右上的区域' },
+  })
+  assert.equal(plan.intent, 'region_edit')
+  assert.match(plan.summary, /局部重绘画面右上的区域/)
+  assert.deepEqual(plan.region, { rect: { x: 0.6, y: 0, width: 0.4, height: 0.4 }, description: '画面右上的区域' })
+})

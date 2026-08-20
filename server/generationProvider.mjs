@@ -6,6 +6,7 @@ import {
   normalizeCustomGenerationSize,
   resolveGenerationOutputSize,
 } from './generationOutputSize.mjs'
+import { buildRegionMaskPng, imagePixelSize, normalizeRegionRect } from './regionMaskPng.mjs'
 
 export class GenerationError extends Error {
   constructor(statusCode, code, message) {
@@ -153,6 +154,15 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
         return media
       })()
     : undefined
+  // 选区矩形是位图蒙版的纯数据替代：Worker 拿到基准图字节后才按真实像素生成 PNG。
+  const maskRegion = !mask && recipe.maskRegion
+    ? (() => {
+        if (!supportsMask) throw new GenerationError(400, 'INVALID_MASK', '当前模型不支持局部重绘蒙版。')
+        const normalized = normalizeRegionRect(recipe.maskRegion)
+        if (!normalized) throw new GenerationError(400, 'INVALID_MASK', '局部重绘选区无效或过小。')
+        return normalized
+      })()
+    : undefined
 
   if (!references.length && !parent) throw new GenerationError(400, 'INVALID_REFERENCE', '请至少传入一个画布参考素材或一张父版本图片。')
   if (kind === 'refinement' && !parent) throw new GenerationError(400, 'MISSING_PARENT', '定向精修需要一张已选首图。')
@@ -173,6 +183,7 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
     references,
     parent,
     ...(mask ? { mask } : {}),
+    ...(maskRegion ? { maskRegion } : {}),
   }
 }
 
@@ -204,11 +215,22 @@ export async function resolveGenerationInputMedia(input, resolveMedia) {
     }
     return resolved
   }
+  const references = await Promise.all(input.references.map(resolve))
+  const parent = input.parent ? await resolve(input.parent) : undefined
+  let mask = input.mask ? await resolveMask(input.mask) : undefined
+  if (!mask && input.maskRegion) {
+    // 选区矩形在这里落成位图：蒙版必须与基准图（parent 优先）同像素尺寸。
+    const base = parent ?? references[0]
+    const size = base ? imagePixelSize(base.buffer) : null
+    const png = size ? buildRegionMaskPng(size, input.maskRegion) : null
+    if (!png) throw new GenerationError(400, 'INVALID_MASK', '无法按基准图生成局部重绘蒙版。')
+    mask = { mimeType: 'image/png', buffer: png }
+  }
   return {
     ...input,
-    references: await Promise.all(input.references.map(resolve)),
-    parent: input.parent ? await resolve(input.parent) : undefined,
-    ...(input.mask ? { mask: await resolveMask(input.mask) } : {}),
+    references,
+    parent,
+    ...(mask ? { mask } : {}),
   }
 }
 

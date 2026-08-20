@@ -354,3 +354,27 @@ test('带蒙版的任务把 mask 作为独立表单字段发给 images/edits', a
     globalThis.fetch = originalFetch
   }
 })
+
+test('选区矩形在 Worker 落成与基准图同尺寸的 PNG 蒙版', async () => {
+  const { buildRegionMaskPng, imagePixelSize } = await import('./regionMaskPng.mjs')
+  const parentPng = buildRegionMaskPng({ width: 20, height: 10 }, { x: 0, y: 0, width: 1, height: 1 })
+  const input = validateGenerationInput({
+    projectId: 'project-a', kind: 'refinement', prompt: '只把右半边换成夜景', batchCount: 1,
+    settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '1K' },
+    parent: { name: '父版本', mediaId: 'media_parent-1' },
+    recipe: { references: [], maskRegion: { x: 0.5, y: 0, width: 0.5, height: 1 } },
+  }, { models: ['gpt-image-2'], maximumBatchCount: 8, maximumReferenceBytes: 4096 })
+  assert.deepEqual(input.maskRegion, { x: 0.5, y: 0, width: 0.5, height: 1 })
+  assert.equal(input.mask, undefined)
+
+  const resolved = await resolveGenerationInputMedia(input, async () => ({ mimeType: 'image/png', buffer: parentPng }))
+  assert.deepEqual(imagePixelSize(resolved.mask.buffer), { width: 20, height: 10 })
+
+  // 过小或非法选区在校验阶段就被拒绝。
+  assert.throws(() => validateGenerationInput({
+    projectId: 'project-a', kind: 'refinement', prompt: 'x', batchCount: 1,
+    settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '1K' },
+    parent: { name: '父版本', dataUrl: image },
+    recipe: { references: [], maskRegion: { x: 0.9, y: 0.9, width: 0.005, height: 0.005 } },
+  }, { models: ['gpt-image-2'], maximumBatchCount: 8, maximumReferenceBytes: 1024 }), (error) => error instanceof GenerationError && error.code === 'INVALID_MASK')
+})

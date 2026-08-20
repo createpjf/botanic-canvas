@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import { inferAspectRatioFromPixels, normalizeCustomGenerationSize } from './generationOutputSize.mjs'
+import { normalizeRegionRect } from './regionMaskPng.mjs'
 
 const intents = new Set([
   'initial_generation',
   'continue_generation', 'replace_scene', 'replace_person', 'replace_product',
-  'change_pose', 'change_style', 'batch_variation', 'redo_from_root',
+  'change_pose', 'change_style', 'batch_variation', 'redo_from_root', 'region_edit',
 ])
 const branchStatuses = new Set(['queued', 'running', 'succeeded', 'failed', 'cancelled'])
 const toolRisks = new Set(['read', 'write', 'costly', 'external'])
@@ -189,6 +190,20 @@ function validateContextSnapshot(rawSnapshot) {
   })
 }
 
+/** 局部重绘选区是纯数据矩形（归一化 0–1）；位图蒙版由执行层生成，不进 Run。 */
+function validateRegion(raw) {
+  if (raw === undefined || raw === null) return undefined
+  if (typeof raw !== 'object' || !raw.rect || typeof raw.rect !== 'object') {
+    throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', 'Agent 局部重绘选区无效。')
+  }
+  const rect = normalizeRegionRect(raw.rect)
+  if (!rect) throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', 'Agent 局部重绘选区无效或过小。')
+  return {
+    rect,
+    ...(raw.description ? { description: text(raw.description, '选区描述', 160) } : {}),
+  }
+}
+
 export function validateAgentRunCreation(body) {
   if (!body || typeof body !== 'object') throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', 'Agent Run 不能为空。')
   if (containsMediaPayload(body)) throw new BotanicAgentRunError(400, 'AGENT_RUN_MEDIA_FORBIDDEN', 'Agent Run 不能包含图片或媒体数据。')
@@ -236,6 +251,10 @@ export function validateAgentRunCreation(body) {
   if (output.mode === 'batch_by_variation' && !variation) {
     throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', '按变体批量时必须包含已确认的变体轴。')
   }
+  const region = validateRegion(rawPlan.region)
+  if (rawPlan.intent === 'region_edit' && !region) {
+    throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', '局部重绘计划必须携带有效选区。')
+  }
   return {
     projectId,
     plan: {
@@ -250,6 +269,7 @@ export function validateAgentRunCreation(body) {
       constraints: validateConstraints(rawPlan.constraints, { allowEmpty: isInitialGeneration }),
       output: { mode: output.mode, count, candidatesPerItem },
       ...(variation ? { variation } : {}),
+      ...(region ? { region } : {}),
       ...(contextSnapshot?.length ? { contextSnapshot } : {}),
       ...(rawPlan.assetGroupId ? { assetGroupId: text(rawPlan.assetGroupId, '素材组', 160) } : {}),
       ...(toolCalls ? { toolCalls } : {}),

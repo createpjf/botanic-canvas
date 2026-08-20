@@ -89,6 +89,11 @@ export type GenerationRecipe = {
    * 只对首个基准图（parent 或第一张参考）生效；仅支持 supportsMask 的图片模型。
    */
   maskImage?: string
+  /**
+   * 局部重绘选区（归一化矩形，基准图坐标系）。位图蒙版由 Worker 按基准图
+   * 真实像素生成；与 maskImage 同时出现时以 maskImage 为准。
+   */
+  maskRegion?: { x: number; y: number; width: number; height: number }
 }
 
 export type AssetRecord = {

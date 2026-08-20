@@ -458,3 +458,29 @@ test('无素材变体分支把本支增量叠到共用画面 Prompt 上', () => 
   assert.equal(result.jobs[1].rawInput.prompt, '保持人物与白裙，棚拍柔光。\n\n人物肤色为小麦，保持五官与身份不变。')
   assert.equal(result.jobs[0].rawInput.parent.mediaId, 'media_parent')
 })
+
+test('局部重绘计划只以父结果为基准图，选区随任务下发为 maskRegion', () => {
+  const run = {
+    ...persistentRun(),
+    plan: {
+      intent: 'region_edit', instruction: '只把右上角换成盛开花丛', summary: '局部重绘画面右上的区域。',
+      selectedResultNodeId: 'result-parent', prompt: '盛开的白色山茶花丛，保持光线方向。', settings,
+      constraints: [{ dimension: 'person', mode: 'preserve' }],
+      output: { mode: 'single', count: 1, candidatesPerItem: 1 },
+      region: { rect: { x: 0.6, y: 0, width: 0.4, height: 0.4 }, description: '画面右上的区域' },
+    },
+    branches: [{ id: 'branch-region', label: '局部重绘', status: 'queued', attempt: 0, jobIds: [], outputCount: 0, updatedAt: 1 }],
+  }
+  const result = prepareAgentRunExecution({
+    run, document: projectDocument(), now: 100,
+    jobIdForBranch: (branch) => `job-${branch.id}`,
+    models, maximumBatchCount: 8, maximumReferenceBytes: 8 * 1024 * 1024,
+  })
+  assert.equal(result.jobs.length, 1)
+  const job = result.jobs[0]
+  assert.equal(job.kind, 'refinement')
+  assert.deepEqual(job.rawInput.recipe.maskRegion, { x: 0.6, y: 0, width: 0.4, height: 0.4 })
+  // 局部重绘不混入其它参考：基准图只有 parent。
+  assert.deepEqual(job.rawInput.recipe.references, [])
+  assert.equal(job.rawInput.parent.mediaId, 'media_parent')
+})
