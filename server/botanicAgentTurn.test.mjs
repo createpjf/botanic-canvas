@@ -364,3 +364,46 @@ test('未配置 Provider 时抛出 503', async () => {
     (error) => error instanceof BotanicAgentChatError && error.statusCode === 503,
   )
 })
+
+test('成套多资产请求经分解工具返回结构化方案，条目归一化后带序号', async () => {
+  const requests = []
+  const result = await resolveBotanicAgentTurn({
+    projectId: 'project-turn',
+    plannerModel: 'deepseek-v4-pro',
+    messages: [{ role: 'user', content: '做一套小红书投放：1 张主视觉、2 张细节图、1 条氛围视频' }],
+    contextNodeIds: ['asset-mia-portrait'],
+    hasTarget: false,
+    generationModels,
+    maxOutputCount: 8,
+  }, runtime, {
+    document,
+    fetchImpl: async (_url, init) => {
+      requests.push(JSON.parse(init.body))
+      return new Response(JSON.stringify({ choices: [{ message: {
+        content: null,
+        tool_calls: [{ id: 'call-decompose', type: 'function', function: {
+          name: 'decompose_creative_brief',
+          arguments: JSON.stringify({
+            theme: '小红书春季山茶花系列',
+            items: [
+              { title: '主视觉', purpose: '封面首图', mediaKind: 'image', prompt: '盛开山茶花与 Mia 半身像，自然光', count: 1 },
+              { title: '细节图', purpose: '第二三屏', mediaKind: 'image', prompt: '花瓣与面料质感特写，晨露微距', count: 2 },
+              { title: '氛围视频', purpose: '结尾动图', mediaKind: 'video', prompt: '镜头缓推花丛，光线渐暖', duration: 10 },
+            ],
+            why: '用户要求成套交付',
+          }),
+        } }],
+      } }] }), { status: 200 })
+    },
+  })
+
+  assert.equal(result.kind, 'composition')
+  assert.equal(result.theme, '小红书春季山茶花系列')
+  assert.deepEqual(result.items.map((item) => [item.index, item.mediaKind, item.count]), [
+    [1, 'image', 1],
+    [2, 'image', 2],
+    [3, 'video', 1],
+  ])
+  assert.equal(result.items[2].duration, 10)
+  assert.ok(requests[0].tools.some((tool) => tool.function.name === 'decompose_creative_brief'))
+})

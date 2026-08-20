@@ -64,6 +64,11 @@ import { createProjectAgentSkill, listBotanicAgentSystemSkills, listProjectAgent
 import { describeRegionRect } from '../../domain/regionMask'
 import { RegionMaskEditor } from '../canvas/RegionMaskEditor'
 import {
+  formatBotanicAgentCompositionMessage,
+  resolveBotanicAgentCompositionItem,
+  type BotanicAgentComposition,
+} from '../../domain/agentCreativeComposition'
+import {
   applyBotanicAgentVariationToPlan,
   botanicAgentBriefWithVariationAnswers,
 } from '../../domain/agentVariations'
@@ -325,6 +330,11 @@ export default function AgentWorkspace({
     instruction: string
     options: AgentInstructionRetryOptions
   } | null>(null)
+  /**
+   * 最近一次 MCoT 分解方案。方案正文已随消息持久化；这里只保留结构化数据供
+   * 「生成第 N 项」直接落到该项的 prompt，刷新丢失后用户可让 Agent 重新分解。
+   */
+  const activeCompositionRef = useRef<BotanicAgentComposition | null>(null)
   const [liveConversation, setLiveConversation] = useState<AgentLiveConversation>()
   const [submittingMessageId, setSubmittingMessageId] = useState('')
   const [executingActionId, setExecutingActionId] = useState('')
@@ -1241,6 +1251,22 @@ export default function AgentWorkspace({
       },
     }
 
+    // 「生成第 N 项」直接落到分解方案对应项：该项的 prompt/媒体类型已是定稿，不再走意图分类。
+    const compositionItem = activeCompositionRef.current && !options.resolvedGeneration
+      ? resolveBotanicAgentCompositionItem(activeCompositionRef.current, cleanInstruction)
+      : null
+    if (compositionItem) {
+      options = {
+        ...options,
+        resolvedGeneration: {
+          mediaKind: compositionItem.mediaKind,
+          prompt: compositionItem.prompt,
+          count: compositionItem.count,
+          ...(compositionItem.duration ? { duration: compositionItem.duration } : {}),
+        },
+      }
+    }
+
     const hasImageContext = contextItems.some((item) => (
       (item.kind === '素材' || item.kind === '结果')
       && Boolean(item.image)
@@ -1338,6 +1364,17 @@ export default function AgentWorkspace({
             ? `\n\n${turn.options.map((option, index) => `${index + 1}. ${option}`).join('\n')}`
             : ''
           appendMessage({ role: 'assistant', kind: 'text', content: `${turn.question}${optionLines}` })
+          return
+        }
+        if (turn.kind === 'composition') {
+          // MCoT 分解方案：正文随消息持久化，结构化数据留在会话内存供「生成第 N 项」直落。
+          updateRuntimeStep('respond', 'succeeded')
+          if (!isCurrentAgentProject()) return
+          setRuntimePhase('completed')
+          setRuntimeDetailsOpen(false)
+          const composition = { theme: turn.theme, items: turn.items }
+          activeCompositionRef.current = composition
+          appendMessage({ role: 'assistant', kind: 'text', content: formatBotanicAgentCompositionMessage(composition) })
           return
         }
         serverDecision = { kind: 'generation', mediaKind: turn.mediaKind, promptSource: 'instruction' }

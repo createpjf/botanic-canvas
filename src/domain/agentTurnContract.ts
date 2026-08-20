@@ -58,6 +58,22 @@ export type BotanicAgentTurnResult =
       plannerModel?: string
       toolCalls?: AgentToolCallTrace[]
     }
+  | {
+      /** MCoT 分解：一次多资产请求被拆成结构化方案，客户端以方案卡呈现并逐项推进。 */
+      kind: 'composition'
+      theme: string
+      items: Array<{
+        index: number
+        title: string
+        purpose?: string
+        mediaKind: 'image' | 'video'
+        prompt: string
+        count: number
+        duration?: number
+      }>
+      plannerModel?: string
+      toolCalls?: AgentToolCallTrace[]
+    }
 
 /**
  * 单条历史消息的上限，与服务端回合校验一致。助手回答可以长到 12000 字，
