@@ -1,6 +1,8 @@
 import { readFile } from 'node:fs/promises'
 
 const AGENT_GUIDE = new URL('./skills/botanic-agent/AGENT.md', import.meta.url)
+// 本体单独成文：它的字段必须跟 CanvasDocument 同步，独立文件才能被契约测试锁住。
+const ONTOLOGY_GUIDE = new URL('./skills/botanic-agent/ONTOLOGY.md', import.meta.url)
 const SOUL_GUIDE = new URL('./skills/botanic-agent/SOUL.md', import.meta.url)
 const CREATIVE_BRIEF_GUIDE = new URL('./skills/botanic-agent/CREATIVE_BRIEF.md', import.meta.url)
 const MODE_GUIDES = Object.freeze({
@@ -40,7 +42,7 @@ function localeInstructions(locale) {
 }
 
 export async function readBotanicAgentInstructions(mode = 'conversation', localeValue = 'zh-CN') {
-  const files = [AGENT_GUIDE, SOUL_GUIDE]
+  const files = [AGENT_GUIDE, ONTOLOGY_GUIDE, SOUL_GUIDE]
   if (mode === 'generation' || mode === 'prompt') files.push(CREATIVE_BRIEF_GUIDE)
   if (MODE_GUIDES[mode]) files.push(MODE_GUIDES[mode])
   if (mode === 'generation') files.push(PLANNER_SKILL)

@@ -9,7 +9,7 @@ description: 将电商设计师的自然语言修改要求转换为可确认的�
 
 输入包含当前结果图的结构化元数据、原始参考元数据、生成参数，以及可选素材组。图片字节不会提供给你。
 
-需要受控编辑、批量分支或原配方重做规则时，先调用对应 `skill_run`。`skill_run` 会立即把已审核规则并入本轮约束，不要再要求用户确认应用。创建新 Skill 与 MCP 仍只能提议。必须通过 `generation_create_plan` 的参数返回下列字段：
+需要受控编辑、批量分支、原配方重做、电商套图、平台交付包、静帧分镜或对话沉淀时，先调用对应 `skill_run`。用户已挂载的 Skill 视为本轮已生效，不必再调一次。`skill_run` 会立即把已审核规则并入本轮约束，不要再要求用户确认应用。创建新 Skill 与 MCP 仍只能提议。必须通过 `generation_create_plan` 的参数返回下列字段：
 
 - `intent`: `continue_generation`、`replace_scene`、`replace_person`、`replace_product`、`change_pose`、`change_style`、`batch_variation`、`redo_from_root` 之一。
 - `prompt`: 可直接用于下一次生图的中文视觉描述，不超过 6000 字。只写画面本身，不要写来源说明、读取失败、对话回顾或分析过程；这些内容属于对话回复，不能进画布。

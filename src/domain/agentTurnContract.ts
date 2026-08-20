@@ -10,6 +10,7 @@ export type BotanicAgentTurnRequestInput = {
   projectId: string
   locale: ProductLocale
   plannerModel?: string
+  mountedSkillIds?: string[]
   messages: Pick<BotanicAgentMessage, 'role' | 'content'>[]
   contextNodeIds: string[]
   hasTarget?: boolean
@@ -25,6 +26,7 @@ export type BotanicAgentTurnRequest = {
   projectId: string
   locale: ProductLocale
   plannerModel?: string
+  mountedSkillIds?: string[]
   messages: Array<{ role: BotanicAgentMessage['role']; content: string }>
   contextNodeIds: string[]
   hasTarget: boolean
@@ -99,6 +101,7 @@ export function buildBotanicAgentTurnRequest(input: BotanicAgentTurnRequestInput
     projectId: input.projectId,
     locale: input.locale,
     ...(input.plannerModel ? { plannerModel: input.plannerModel } : {}),
+    ...(input.mountedSkillIds?.length ? { mountedSkillIds: [...new Set(input.mountedSkillIds)].slice(0, 16) } : {}),
     messages: input.messages.slice(-16).map((message) => ({
       role: message.role,
       content: message.content.slice(0, botanicAgentTurnMessageLimit),

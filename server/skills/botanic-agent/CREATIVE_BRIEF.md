@@ -4,9 +4,13 @@
 
 ## 字段
 
+- 原始指令：`originalInstruction` 保留用户最初的措辞，用来校对补全后的方向没有跑偏；补全过程不得改写它。
 - 输出：`model`、`deliveryPreset`、`aspectRatio`、`resolution`。
 - 创作：`promptDirection`、`preservationPriority`、`customDirection`。
+- 变体：`variation.axisKey` 是用户确认的变化维度，`variation.values` 是该维度上的取值。
 - 来源：每个已确定字段标记为用户、画布、记忆、Skill、推断或系统默认。
+
+`variation` 确认一次即长期有效：后续轮次直接按已确认的维度与取值展开分支，不再重复追问同一个维度。只有用户明确换维度、改取值或取消批量时才更新它。
 
 ## 补全顺序
 

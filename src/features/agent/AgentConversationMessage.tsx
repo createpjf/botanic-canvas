@@ -8,6 +8,7 @@ import {
   botanicAgentMessageOffersVisualPrompt,
   creativeDimensionLabel,
   resolveBotanicAgentExecutionDecision,
+  shouldRestoreBotanicAgentRuntimeSteps,
   type BotanicAgentActionProposal,
   type BotanicAgentArtifact,
   type BotanicAgentExecutionMode,
@@ -23,6 +24,8 @@ import { agentPlannerModelLabel, modelDisplayLabel } from '../../components/gene
 import { BotanicSelect } from '../../components/BotanicSelect'
 import { AgentClarificationCard, AgentPromptDiff, agentToolStatusLabel } from './AgentWorkspaceParts'
 import { AgentPromptResponse } from './AgentPromptResponse'
+import { AgentMessageRichContent, AgentRichText } from './AgentMentionText'
+import type { BotanicAgentMentionCatalog } from '../../domain/agentMentions'
 import { botanicAgentPlanBranchPrompts, botanicAgentPlanConfirmActionLabel, botanicAgentPlanOutputLabel, botanicAgentPlanSheetCountLabel } from '../../domain/agentVariations'
 import {
   botanicAgentCompositionItemSpecLabel,
@@ -116,14 +119,14 @@ function AgentMessageTimeline({ timeline }: { timeline: AgentTimelineState }) {
   </div>
 }
 
-function AgentCollapsibleContent({ content, prompt }: { content: string; prompt?: string }) {
+function AgentCollapsibleContent({ content, prompt, mentionCatalog }: { content: string; prompt?: string; mentionCatalog?: BotanicAgentMentionCatalog }) {
   const { locale } = useProductI18n()
   const [expanded, setExpanded] = useState(false)
   const collapsible = content.length > collapsibleContentLength
     || content.split('\n').length > collapsibleContentLines
-  if (!collapsible) return <AgentPromptResponse content={content} prompt={prompt} />
+  if (!collapsible) return <AgentPromptResponse content={content} prompt={prompt} mentionCatalog={mentionCatalog} />
   return <div className={`agent-message__collapsible${expanded ? ' is-expanded' : ''}`}>
-    <div className="agent-message__collapsible-body"><AgentPromptResponse content={content} prompt={prompt} /></div>
+    <div className="agent-message__collapsible-body"><AgentPromptResponse content={content} prompt={prompt} mentionCatalog={mentionCatalog} /></div>
     <button type="button" className="agent-message__collapsible-toggle" aria-expanded={expanded} onClick={() => setExpanded((open) => !open)}>
       {expanded ? (locale === 'en' ? 'Collapse' : '收起') : (locale === 'en' ? 'Show full response' : '展开全文')}
     </button>
@@ -175,9 +178,7 @@ function AgentPlanSettingsEditor({
     setCustomHint(applied.snapped ? `${locale === 'en' ? 'Adjusted to' : '已对齐为'} ${applied.width}×${applied.height}` : '')
     onChange(applied.settings)
   }
-  const sizeSummary = settings.outputWidth && settings.outputHeight
-    ? `${settings.outputWidth}×${settings.outputHeight}`
-    : settings.aspectRatio
+  // 四列统一：标签 + 等高控件。尺寸始终用 Select，自定义宽高另开一行，避免纯文本 <b> 破坏基线。
   const aspectSelect = <BotanicSelect
     value={settings.aspectRatio}
     ariaLabel={locale === 'en' ? 'Select aspect ratio' : '选择画面比例'}
@@ -185,38 +186,6 @@ function AgentPlanSettingsEditor({
     options={aspectRatios.map((ratio) => ({ value: ratio, label: ratio }))}
     onChange={(value) => onChange({ ...withoutCustomGenerationSize(settings), aspectRatio: value as GenerationSettings['aspectRatio'] })}
   />
-  const customFields = allowCustom ? <>
-    <div className="agent-plan-settings__custom">
-      <input
-        type="number"
-        inputMode="numeric"
-        min={16}
-        max={3840}
-        step={16}
-        value={widthDraft}
-        disabled={disabled}
-        aria-label={locale === 'en' ? 'Custom output width' : '自定义输出宽度'}
-        placeholder={locale === 'en' ? 'W' : '宽'}
-        onChange={(event) => setWidthDraft(event.target.value)}
-        onBlur={commitCustomSize}
-      />
-      <span aria-hidden="true">×</span>
-      <input
-        type="number"
-        inputMode="numeric"
-        min={16}
-        max={3840}
-        step={16}
-        value={heightDraft}
-        disabled={disabled}
-        aria-label={locale === 'en' ? 'Custom output height' : '自定义输出高度'}
-        placeholder={locale === 'en' ? 'H' : '高'}
-        onChange={(event) => setHeightDraft(event.target.value)}
-        onBlur={commitCustomSize}
-      />
-    </div>
-    {customHint ? <em>{customHint}</em> : null}
-  </> : null
 
   return <div className="agent-plan-settings is-editable" aria-label={locale === 'en' ? 'Generation settings' : '本次生成设置'}>
     <label>
@@ -232,14 +201,42 @@ function AgentPlanSettingsEditor({
         }}
       />
     </label>
-    {allowCustom ? <details className="agent-plan-settings__size">
-      <summary><small>{locale === 'en' ? 'Size' : '尺寸'}</small><b>{sizeSummary}</b></summary>
-      {aspectSelect}
-      {customFields}
-    </details> : <label>
+    <label className="agent-plan-settings__size">
       <small>{locale === 'en' ? 'Size' : '尺寸'}</small>
       {aspectSelect}
-    </label>}
+      {allowCustom ? <>
+        <div className="agent-plan-settings__custom">
+          <input
+            type="number"
+            inputMode="numeric"
+            min={16}
+            max={3840}
+            step={16}
+            value={widthDraft}
+            disabled={disabled}
+            aria-label={locale === 'en' ? 'Custom output width' : '自定义输出宽度'}
+            placeholder={locale === 'en' ? 'W' : '宽'}
+            onChange={(event) => setWidthDraft(event.target.value)}
+            onBlur={commitCustomSize}
+          />
+          <span aria-hidden="true">×</span>
+          <input
+            type="number"
+            inputMode="numeric"
+            min={16}
+            max={3840}
+            step={16}
+            value={heightDraft}
+            disabled={disabled}
+            aria-label={locale === 'en' ? 'Custom output height' : '自定义输出高度'}
+            placeholder={locale === 'en' ? 'H' : '高'}
+            onChange={(event) => setHeightDraft(event.target.value)}
+            onBlur={commitCustomSize}
+          />
+        </div>
+        {customHint ? <em>{customHint}</em> : null}
+      </> : null}
+    </label>
     <label>
       <small>{locale === 'en' ? 'Resolution' : '清晰度'}</small>
       <BotanicSelect
@@ -252,7 +249,7 @@ function AgentPlanSettingsEditor({
     </label>
     <span>
       <small>{locale === 'en' ? 'Output' : '输出'}</small>
-      <b>{countLabel}</b>
+      <span className="agent-plan-settings__readonly" title={locale === 'en' ? 'Output count is set by the plan' : '张数由计划展开决定'}>{countLabel}</span>
     </span>
   </div>
 }
@@ -262,6 +259,7 @@ function AgentPlanPromptReview({
   instruction,
   draft,
   polished,
+  mentionCatalog,
   onDraftChange,
   onCommit,
 }: {
@@ -269,6 +267,7 @@ function AgentPlanPromptReview({
   instruction: string
   draft: string
   polished: string
+  mentionCatalog?: BotanicAgentMentionCatalog
   onDraftChange: (value: string) => void
   onCommit: (value: string) => void
 }) {
@@ -279,10 +278,10 @@ function AgentPlanPromptReview({
   return <section className="agent-prompt-review" aria-label={locale === 'en' ? 'Refined prompt' : '润色后的提示词'}>
     <header>
       <strong>{submitted ? (locale === 'en' ? 'Prompt used' : '本次提示词') : (locale === 'en' ? 'Prompt' : '提示词')}</strong>
-      {!submitted && long ? <button type="button" className="agent-text-action" onClick={() => setExpanded((open) => !open)}>{expanded ? (locale === 'en' ? 'Collapse' : '收起') : (locale === 'en' ? 'Expand' : '展开')}</button> : null}
+      {!submitted && long ? <button type="button" className="agent-prompt-review__toggle" onClick={() => setExpanded((open) => !open)}>{expanded ? (locale === 'en' ? 'Collapse' : '收起') : (locale === 'en' ? 'Expand' : '展开')}</button> : null}
     </header>
     {submitted
-      ? <div className="agent-prompt-review__submitted"><pre>{draft}</pre></div>
+      ? <div className="agent-prompt-review__submitted"><pre className="agent-prompt-output__text"><AgentRichText text={draft} catalogs={mentionCatalog} /></pre></div>
       : <textarea
         className={!expanded && long ? 'is-clamped' : undefined}
         value={draft}
@@ -306,11 +305,13 @@ function AgentPlanPromptReview({
 function AgentCompositionCard({
   composition,
   busy,
+  mentionCatalog,
   onGenerateItem,
   onRunAll,
 }: {
   composition: BotanicAgentComposition
   busy: boolean
+  mentionCatalog?: BotanicAgentMentionCatalog
   onGenerateItem?: (item: BotanicAgentCompositionItem) => void
   onRunAll?: () => void
 }) {
@@ -336,7 +337,7 @@ function AgentCompositionCard({
         {item.purpose ? <p className="agent-composition__purpose">{item.purpose}</p> : null}
         <details className="agent-composition__prompt">
           <summary>{t('提示词', 'Prompt')}</summary>
-          <pre>{item.prompt}</pre>
+          <pre className="agent-prompt-output__text"><AgentRichText text={item.prompt} catalogs={mentionCatalog} /></pre>
         </details>
         {onGenerateItem ? <button
           type="button"
@@ -360,6 +361,7 @@ type AgentConversationMessageProps = {
   runs: BotanicAgentRun[]
   artifacts: BotanicAgentArtifact[]
   contextOptionIds: string[]
+  mentionCatalog?: BotanicAgentMentionCatalog
   generationModels: GenerationModelOption[]
   executionMode: BotanicAgentExecutionMode
   planning: boolean
@@ -396,6 +398,7 @@ export function AgentConversationMessage({
   runs,
   artifacts,
   contextOptionIds,
+  mentionCatalog,
   generationModels,
   executionMode,
   planning,
@@ -435,6 +438,8 @@ export function AgentConversationMessage({
     ? (plan.output.mode === 'single' ? planCountLabel(plan) : plan.output.mode === 'batch_by_asset' ? `${plan.output.count} asset variations` : `${plan.output.count} variations`)
     : botanicAgentPlanOutputLabel(plan)
   const linkedRun = message.runId ? runs.find((run) => run.id === message.runId) : undefined
+  // 进行中的状态由 runtime feed / 底部进度条直播；对话里不画第二张「正在生成」卡。
+  if (message.kind === 'run' && linkedRun && shouldRestoreBotanicAgentRuntimeSteps(linkedRun.status)) return null
   const runArtifacts = message.runId
     ? artifacts.filter((artifact) => artifact.provenance.runId === message.runId)
     : []
@@ -458,14 +463,16 @@ export function AgentConversationMessage({
         ? <AgentCompositionCard
           composition={message.composition}
           busy={planning || submittingMessageId === message.id}
+          mentionCatalog={mentionCatalog}
           onGenerateItem={onGenerateCompositionItem ? (item) => onGenerateCompositionItem(message, item) : undefined}
           onRunAll={onRunComposition ? () => onRunComposition(message) : undefined}
         />
-        : !message.question && message.content ? (message.role === 'assistant'
+        // 计划消息的标题与 plan.summary 相同，只在计划卡上展示一次，避免主列重复。
+        : !message.plan && !message.question && (message.content || message.mentions?.length) ? (message.role === 'assistant'
           ? streaming
-          ? <AgentPromptResponse content={message.content} prompt={message.prompt} />
-            : <AgentCollapsibleContent content={message.content} prompt={message.prompt} />
-          : <p>{message.content}</p>) : null}
+          ? <AgentPromptResponse content={message.content} prompt={message.prompt} mentionCatalog={mentionCatalog} />
+            : <AgentCollapsibleContent content={message.content} prompt={message.prompt} mentionCatalog={mentionCatalog} />
+          : <AgentMessageRichContent content={message.content} mentions={message.mentions} catalogs={mentionCatalog} />) : null}
       {message.kind === 'run' && inlineRunResults.length ? <div className="agent-run-message__results" aria-label={t('本次任务结果', 'Task results')}>
         {inlineRunResults.map((artifact) => artifact.kind === 'image'
           ? <img key={artifact.id} src={artifact.url} alt={artifact.label} />
@@ -477,9 +484,12 @@ export function AgentConversationMessage({
       {message.role === 'assistant' && botanicAgentMessageOffersVisualPrompt(message) ? <div className="agent-run-message__actions" aria-label={t('Prompt 操作', 'Prompt actions')}>
         <button type="button" disabled={planning || promptUsePending} onClick={() => onUsePrompt(message)}>{promptUsePending ? t('等待确认', 'Awaiting approval') : t('用这段 Prompt 生成', 'Generate with this prompt')}</button>
       </div> : null}
-      {message.runId ? <div className="agent-run-message__actions" aria-label={t('任务与结果操作', 'Task and result actions')}>
+      {/* 任务/结果/定位画布只挂在已提交计划卡上；Run 消息只留「继续修改」，避免同一 runId 双份 pill。 */}
+      {message.kind === 'run' && message.runId && continueNodeIds.length ? <div className="agent-run-message__actions" aria-label={t('继续修改', 'Continue editing')}>
+        <button type="button" onClick={() => onContinueResultContext(continueNodeIds, outputNodeIds.length)}>{t('继续修改', 'Continue editing')}</button>
+      </div> : null}
+      {message.runId && !message.plan && message.kind !== 'run' ? <div className="agent-run-message__actions" aria-label={t('任务与结果操作', 'Task and result actions')}>
         <button type="button" onClick={() => onShowTask(message.runId!)}>{t('查看任务', 'View task')}</button>
-        {message.kind === 'run' && continueNodeIds.length ? <button type="button" onClick={() => onContinueResultContext(continueNodeIds, outputNodeIds.length)}>{t('继续修改', 'Continue editing')}</button> : null}
         {runArtifacts.length ? <button type="button" onClick={onShowResults}>{t('查看结果', 'View results')}</button> : null}
         {outputNodeIds.length ? <button type="button" onClick={() => onFocusNodes(outputNodeIds)}>{t('定位画布', 'Locate on canvas')}</button> : null}
       </div> : null}
@@ -510,7 +520,6 @@ export function AgentConversationMessage({
             outputCount: plan.output.count,
           })
           : null
-        const submittedByAuto = executionMode === 'auto' && plan.output.count <= 1 && pendingActionCount === 0
         const appliedSkills = plan.actions?.filter((action) => action.toolName === 'skill_apply') ?? []
         const confirmableActions = plan.actions?.filter((action) => action.toolName !== 'skill_apply') ?? []
         const lockedConstraints = plan.constraints.filter((constraint) => constraint.mode === 'preserve')
@@ -519,8 +528,19 @@ export function AgentConversationMessage({
           ...plan,
           prompt: planSubmitted ? plan.prompt : planPrompt,
         })
-        const contextLabel = plan.contextSnapshot?.[0]?.label
-        const detail = <>
+        const modelLabel = modelDisplayLabel(generationModels.find((model) => model.id === plan.settings.model)) || plan.settings.model
+        const contextLock = plan.contextSnapshot?.[0]?.label
+          ? locale === 'en'
+            ? `Based on ${plan.contextSnapshot[0].label}${plan.contextSnapshot.length > 1 ? ` and ${plan.contextSnapshot.length - 1} more` : ''}`
+            : `基于 ${plan.contextSnapshot[0].label}${plan.contextSnapshot.length > 1 ? ` 等 ${plan.contextSnapshot.length} 项` : ''}`
+          : null
+        const recipeMeta = [
+          modelLabel,
+          generationSettingsSizeLabel(plan.settings),
+          locale === 'en' ? planOutputDisplay(plan) : botanicAgentPlanSheetCountLabel(plan),
+          contextLock,
+        ].filter(Boolean).join(' · ')
+        const recipe = <>
           {plan.toolCalls?.length ? <details
             className="agent-message__tools"
             aria-label={t('Agent 工具调用', 'Agent tool calls')}
@@ -574,34 +594,37 @@ export function AgentConversationMessage({
           </div>
           {planSubmitted
             ? <div className="agent-plan-settings" aria-label={t('本次生成设置', 'Generation settings')}>
-              <span><small>{t('模型', 'Model')}</small><b>{modelDisplayLabel(generationModels.find((model) => model.id === plan.settings.model)) || plan.settings.model}</b></span>
+              <span><small>{t('模型', 'Model')}</small><b>{modelLabel}</b></span>
               <span><small>{t('尺寸', 'Size')}</small><b>{generationSettingsSizeLabel(plan.settings)}</b></span>
               <span><small>{t('清晰度', 'Resolution')}</small><b>{plan.settings.resolution}</b></span>
               {plan.settings.duration ? <span><small>{t('时长', 'Duration')}</small><b>{plan.settings.duration} {t('秒', 'sec')}</b></span> : null}
               <span><small>{t('输出', 'Output')}</small><b>{planCountLabel(plan)}</b></span>
             </div>
-            : <AgentPlanSettingsEditor
-              settings={plan.settings}
-              // 换模型不能顺便换媒体类型：视频计划带着 duration，切到图片模型会在提交时被拒。
-              models={generationModels.filter((model) => (model.mediaKind === 'video') === (botanicAgentPlanMediaKind(plan) === 'video'))}
-              countLabel={locale === 'en' ? planCountLabel(plan) : botanicAgentPlanSheetCountLabel(plan)}
-              disabled={submittingMessageId === message.id}
-              onChange={(settings) => onCommitPlanSettings(message, settings)}
-            />}
-          {contextLabel ? <small className="agent-plan__context-lock">{t('基于', 'Based on')} {contextLabel}{plan.contextSnapshot && plan.contextSnapshot.length > 1 ? t(` 等 ${plan.contextSnapshot.length} 项`, ` and ${plan.contextSnapshot.length - 1} more`) : ''}</small> : null}
+            : <>
+              <AgentPlanSettingsEditor
+                settings={plan.settings}
+                // 换模型不能顺便换媒体类型：视频计划带着 duration，切到图片模型会在提交时被拒。
+                models={generationModels.filter((model) => (model.mediaKind === 'video') === (botanicAgentPlanMediaKind(plan) === 'video'))}
+                countLabel={locale === 'en' ? planCountLabel(plan) : botanicAgentPlanSheetCountLabel(plan)}
+                disabled={submittingMessageId === message.id}
+                onChange={(settings) => onCommitPlanSettings(message, settings)}
+              />
+              {contextLock ? <small className="agent-plan__context-lock">{contextLock}</small> : null}
+            </>}
           <AgentPlanPromptReview
             submitted={planSubmitted}
             instruction={plan.instruction}
             draft={planSubmitted ? plan.prompt : planPrompt}
             polished={plan.prompt}
+            mentionCatalog={mentionCatalog}
             onDraftChange={(value) => onPromptDraftChange(message.id, value)}
             onCommit={(value) => onCommitPlanPrompt(message, value)}
           />
           {branchPrompts.length ? <section className="agent-plan-branches" aria-label={t('变体分支，原参考图保留，各分支单独出图', 'Variation branches; original references are preserved and each branch generates separately')}>
             <ol>{branchPrompts.map((branch, index) => <li key={`${branch.label}-${index}`}>
               <b>{branch.label}</b>
-              <p>{branch.delta || branch.prompt}</p>
-              {branch.delta ? <details className="agent-plan-branches__full"><summary>{t('完整提示词', 'Full prompt')}</summary><pre>{branch.prompt}</pre></details> : null}
+              <p><AgentRichText text={branch.delta || branch.prompt} catalogs={mentionCatalog} /></p>
+              {branch.delta ? <details className="agent-plan-branches__full"><summary>{t('完整提示词', 'Full prompt')}</summary><pre className="agent-prompt-output__text"><AgentRichText text={branch.prompt} catalogs={mentionCatalog} /></pre></details> : null}
             </li>)}</ol>
           </section> : null}
           {pendingActionCount ? <details className="agent-message__route"><summary>{t('执行路由', 'Execution route')}</summary><div><span>{t('规划', 'Planning')}</span><b>{agentPlannerModelLabel(plan.plannerModel ?? plannerModel)}</b><span>{t('生成', 'Generation')}</span><b>{plan.settings.model}</b><span>{t('外部行动', 'External actions')}</span><b>{t(`${pendingActionCount} 项，确认后执行`, `${pendingActionCount} to run after approval`)}</b></div></details> : null}
@@ -611,15 +634,24 @@ export function AgentConversationMessage({
             <button type="button" className="agent-plan__confirm" disabled={submittingMessageId === message.id || blockedByActions} onClick={() => onConfirmPlan(message)}>{locale === 'en' ? (submittingMessageId === message.id ? 'Submitting…' : blockedByActions ? 'Approve actions first' : message.status === 'failed' ? 'Retry generation' : `Generate ${plan.output.count} image${plan.output.count === 1 ? '' : 's'}`) : botanicAgentPlanConfirmActionLabel(plan, submittingMessageId === message.id ? 'submitting' : blockedByActions ? 'blocked' : message.status === 'failed' ? 'failed' : 'ready')}</button>
           </div>}
         </>
-        // 已提交的计划折叠成一行摘要：任务状态由下方的任务消息承载，细节按需展开。
-        if (planSubmitted) return <details className="agent-message__plan is-submitted">
-          <summary>
-            <span><strong>{plan.summary}</strong><small>{modelDisplayLabel(generationModels.find((model) => model.id === plan.settings.model)) || plan.settings.model} · {generationSettingsSizeLabel(plan.settings)} · {planOutputDisplay(plan)}</small></span>
-            <em className="agent-message__submitted">{submittedByAuto ? t('已自动提交', 'Auto-submitted') : t('已提交', 'Submitted')}</em>
-          </summary>
-          {detail}
-        </details>
-        return <div className="agent-message__plan">{detail}</div>
+        // 已提交：主列只留摘要、一行配方、一个主操作；锁/变与 Prompt 等进「配方」。
+        if (planSubmitted) return <div className="agent-message__plan is-submitted">
+          <header className="agent-plan__receipt-header">
+            <strong>{plan.summary}</strong>
+            <small>{recipeMeta}</small>
+          </header>
+          {message.runId ? <div className="agent-plan__receipt-actions" aria-label={t('任务与结果操作', 'Task and result actions')}>
+            {runArtifacts.length
+              ? <button type="button" className="agent-plan__receipt-primary" onClick={onShowResults}>{t('查看结果', 'View results')}</button>
+              : <button type="button" className="agent-plan__receipt-primary" onClick={() => onShowTask(message.runId!)}>{t('查看任务', 'View task')}</button>}
+            {outputNodeIds.length ? <button type="button" className="agent-text-action" onClick={() => onFocusNodes(outputNodeIds)}>{t('定位画布', 'Locate on canvas')}</button> : null}
+          </div> : null}
+          <details className="agent-plan__recipe">
+            <summary>{t('配方', 'Recipe')}</summary>
+            <div className="agent-plan__recipe-body">{recipe}</div>
+          </details>
+        </div>
+        return <div className="agent-message__plan">{recipe}</div>
       })() : null}
     </div>
     {message.role === 'user' && message.deliveryStatus === 'waiting_network' ? <small className="agent-message__delivery-status" role="status">{t('等待联网', 'Waiting for network')}</small> : null}

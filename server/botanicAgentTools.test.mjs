@@ -2,8 +2,12 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { executeConfirmedAgentAction, runAgentToolLoop } from './agentToolRuntime.mjs'
 import {
+  botanicAgentMountedSkillBriefing,
+  botanicAgentSearchableSkills,
+  botanicAgentSystemSkills,
   createBotanicAgentActionToolRegistry,
   createBotanicAgentPlanningToolRegistry,
+  resolveBotanicAgentMountedSkills,
 } from './botanicAgentTools.mjs'
 
 const input = {
@@ -17,6 +21,29 @@ const input = {
   ],
   assetGroup: { id: 'group-scenes', name: '夏日海边', role: '场景', assetCount: 10 },
 }
+
+test('系统 Skill 目录包含交付配方，Composer 挂载后能解析到正文', () => {
+  const ids = botanicAgentSystemSkills().map((skill) => skill.id)
+  assert.deepEqual(ids.includes('ecommerce_listing'), true)
+  assert.deepEqual(ids.includes('platform_pack'), true)
+  assert.deepEqual(ids.includes('video_storyboard'), true)
+  assert.deepEqual(ids.includes('conversation_distill'), true)
+  const mounted = resolveBotanicAgentMountedSkills(
+    ['ecommerce_listing', 'missing_skill', 'conversation_distill'],
+    [{ id: 'skill-scene-campaign', name: '夏日场景系列', instructions: '只换场景。', status: 'active' }],
+  )
+  assert.deepEqual(mounted.map((skill) => skill.id), ['ecommerce_listing', 'conversation_distill'])
+  assert.match(mounted[0].instructions, /电商套图/)
+  const briefing = botanicAgentMountedSkillBriefing(mounted)
+  assert.match(briefing, /用户已在输入框挂载/)
+  assert.match(briefing, /电商套图/)
+  assert.match(briefing, /对话沉淀/)
+  const searchable = botanicAgentSearchableSkills([{
+    id: 'skill-scene-campaign', name: '夏日场景系列', instructions: '只换场景。', status: 'active',
+  }])
+  assert.ok(searchable.some((skill) => skill.id === 'platform_pack'))
+  assert.ok(searchable.some((skill) => skill.id === 'skill-scene-campaign'))
+})
 
 test('Agent 规划工具可以读取画布上下文、搜索素材并调用白名单 Skill', async () => {
   const registry = createBotanicAgentPlanningToolRegistry({

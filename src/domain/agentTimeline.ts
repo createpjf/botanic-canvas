@@ -1,4 +1,4 @@
-import type { AgentToolCallTrace } from './agent.ts'
+import type { AgentToolCallTrace, BotanicAgentRun, BotanicAgentRunBranch } from './agent.ts'
 
 export type TimelineStepKind = 'search' | 'fetch' | 'read_skill' | 'connect_runtime' | 'read' | 'write' | 'other'
 
@@ -47,7 +47,31 @@ function skillLabel(call: AgentToolCallTrace) {
   return label && !/^已审核$/u.test(label) ? label : ''
 }
 
-/** 客户端兜底映射：服务端 presentation 缺失时仍只展示人话，不泄漏函数参数。 */
+/** 与服务端 toolEventPresentation 对齐的已知工具标题；只做人话，不泄漏参数。 */
+const knownTimelineToolTitles: Record<string, TimelineToolPresentation> = {
+  ontology_read: { kind: 'read', title: '读取本体上下文' },
+  project_memory_search: { kind: 'search', title: '检索项目记忆' },
+  asset_group_search: { kind: 'search', title: '搜索素材组' },
+  skill_search: { kind: 'search', title: '检索技能' },
+  canvas_read: { kind: 'read', title: '读取画布上下文' },
+  asset_search: { kind: 'search', title: '搜索素材' },
+  skill_run: { kind: 'read_skill', title: '调用创作 Skill' },
+  skill_create_propose: { kind: 'write', title: '提议创建项目 Skill' },
+  mcp_propose: { kind: 'other', title: '提议 MCP 调用' },
+  generation_ask_clarification: { kind: 'other', title: '确认生成参数' },
+  generation_create_plan: { kind: 'write', title: '起草生成计划' },
+  generate_images: { kind: 'write', title: '准备图片生成' },
+  generate_videos: { kind: 'write', title: '准备视频生成' },
+  decompose_creative_brief: { kind: 'other', title: '分解创意方案' },
+  ask_clarification: { kind: 'other', title: '向用户提问' },
+  workflow_create: { kind: 'write', title: '创建画布工作流' },
+  generation_submit: { kind: 'write', title: '提交生成任务' },
+  skill_apply: { kind: 'write', title: '应用项目 Skill' },
+  skill_create: { kind: 'write', title: '创建项目 Skill' },
+  mcp_call: { kind: 'other', title: '调用外部工具' },
+}
+
+/** 客户端兜底映射：服务端 presentation 缺失时仍只展示人话，不泄漏函数参数。禁止把未发生的步骤标成成功。 */
 export function agentTimelineToolPresentation(call: AgentToolCallTrace): TimelineToolPresentation {
   const name = call.name.toLocaleLowerCase()
   const copy = `${call.name} ${call.label} ${call.summary ?? ''}`.toLocaleLowerCase()
@@ -64,6 +88,8 @@ export function agentTimelineToolPresentation(call: AgentToolCallTrace): Timelin
   if (/^(?:browser_connect|playwright_connect|cdp_attach)$/u.test(name) || /(?:playwright|browser|cdp).*(?:connect|attach|连接)/iu.test(copy)) {
     return { kind: 'connect_runtime', title: '连接浏览器 runtime' }
   }
+  const known = knownTimelineToolTitles[name]
+  if (known) return { ...known }
   const kind: TimelineStepKind = call.risk === 'write' || call.risk === 'costly'
     ? 'write'
     : call.risk === 'read' ? 'read' : 'other'
@@ -244,4 +270,58 @@ export function reduceAgentTimeline(prev: AgentTimelineState, event: AgentTimeli
     ? { ...item, status: 'failed' as const, ...(event.message ? { error: event.message } : {}) }
     : item)
   return { blocks: withRawGroup(blocks, items, rawGroup.open) }
+}
+
+function branchStepStatus(status: BotanicAgentRunBranch['status']): TimelineStepBlock['status'] {
+  if (status === 'failed' || status === 'cancelled') return 'failed'
+  if (status === 'succeeded') return 'succeeded'
+  return 'running'
+}
+
+function runSubmitStatus(run: Pick<BotanicAgentRun, 'status'>): TimelineStepBlock['status'] {
+  if (run.status === 'failed' || run.status === 'cancelled') return 'failed'
+  if (run.status === 'awaiting_confirmation') return 'running'
+  return 'succeeded'
+}
+
+/**
+ * 把已持久化的 Run / 分支状态投影为对话时间线步骤。
+ * 只反映 Store 里的权威状态，不是动画脚本；未发生的步骤不会标成 succeeded。
+ */
+export function projectBotanicAgentRunOntoTimeline(
+  run: Pick<BotanicAgentRun, 'id' | 'status' | 'branches' | 'error'>,
+  previous: AgentTimelineState | undefined,
+  now: number,
+): AgentTimelineState {
+  const preserved = (previous?.blocks ?? []).filter((block) => {
+    if (block.type === 'thinking') return false
+    if (block.type === 'step' && block.id.startsWith('exec:')) return false
+    if (block.type === 'raw_group') return false
+    return true
+  })
+  const submit: TimelineStepBlock = {
+    id: 'exec:submit',
+    type: 'step',
+    status: runSubmitStatus(run),
+    kind: 'write',
+    title: '提交生成任务',
+    sourceToolIds: [`run:${run.id}:submit`],
+  }
+  const branchSteps: TimelineStepBlock[] = run.branches.map((branch) => ({
+    id: `exec:branch:${branch.id}`,
+    type: 'step',
+    status: branchStepStatus(branch.status),
+    kind: 'write',
+    title: branch.label.trim() ? `生成 · ${branch.label.trim()}` : '生成分支',
+    sourceToolIds: [`run:${run.id}:branch:${branch.id}`],
+  }))
+  const thinkingDone: TimelineBlock = {
+    id: 'thinking',
+    type: 'thinking',
+    status: 'done',
+    startedAt: now,
+    endedAt: now,
+    text: '',
+  }
+  return { blocks: [thinkingDone, ...preserved, submit, ...branchSteps] }
 }

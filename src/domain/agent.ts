@@ -2,6 +2,22 @@ import type { AssetGroup, AssetNodeData, AssetRecord, CanvasDocument, CanvasNode
 import type { BotanicAgentClarification, BotanicCreativeBrief } from './agentCreativeBrief.ts'
 import type { BotanicAgentBranchVariation, BotanicAgentVariationSpec } from './agentVariations.ts'
 import type { BotanicAgentComposition } from './agentCreativeComposition.ts'
+import type { BotanicAgentMessageMention } from './agentMentions.ts'
+export type {
+  BotanicAgentComposerSubmission,
+  BotanicAgentMentionCatalog,
+  BotanicAgentMessageMention,
+  BotanicAgentRichSpan,
+} from './agentMentions.ts'
+export {
+  botanicAgentMentionOnlyInstruction,
+  botanicAgentMessageRichView,
+  hydrateBotanicAgentMentions,
+  parseBotanicAgentRichText,
+  prepareBotanicAgentComposerSubmission,
+  snapshotBotanicAgentComposerMentions,
+  stripBotanicAgentResolvedMentions,
+} from './agentMentions.ts'
 export type {
   BotanicAgentClarification,
   BotanicAgentClarificationField,
@@ -101,6 +117,8 @@ export function createBotanicAgentRuntimeSteps(input: {
   plannerLabel?: string
   mode?: 'generation' | 'conversation' | 'prompt' | 'research'
 }): BotanicAgentRuntimeStep[] {
+  // 对话主路径禁止用本函数做 rAF/假进度演出；仅保留给非流式本地回退或测试脚手架。
+  // 真实工具步必须来自服务端 tool emit 或 Run/Action 状态投影。
   const mode = input.mode ?? 'generation'
   const isGeneration = mode === 'generation'
   const steps: BotanicAgentRuntimeStep[] = [
@@ -465,44 +483,66 @@ export function shouldRestoreBotanicAgentRuntimeSteps(status: BotanicAgentRunSta
 }
 
 /**
- * 从持久化 Run 快照恢复一条可理解的运行时间线。
- * 时间线不是服务端事实，只是把已持久化的任务状态映射成 UI 进度，
- * 因此刷新或跨设备打开时不会假装重放模型内部过程。
+ * 从持久化 Run 快照恢复执行进度。
+ * 只投影已发生的提交/分支状态，标明「从服务端状态恢复」；
+ * 不得把未发生的读取/规划步骤标成 succeeded。
  */
 export function restoreBotanicAgentRuntimeSteps(input: {
-  run: Pick<BotanicAgentRun, 'status'>
+  run: Pick<BotanicAgentRun, 'status' | 'branches' | 'error'>
   hasTarget: boolean
   referenceCount?: number
   memoryCount?: number
   assetGroupCount?: number
   plannerLabel?: string
 }): BotanicAgentRuntimeStep[] {
-  const steps = createBotanicAgentRuntimeSteps({
-    hasTarget: input.hasTarget,
-    referenceCount: input.referenceCount,
-    memoryCount: input.memoryCount,
-    assetGroupCount: input.assetGroupCount,
-    plannerLabel: input.plannerLabel,
-  })
-  const finalStepId = input.hasTarget ? 'finalize-plan' : 'create-workflow'
+  void input.hasTarget
+  void input.referenceCount
+  void input.memoryCount
+  void input.assetGroupCount
+  void input.plannerLabel
   const active = input.run.status === 'queued' || input.run.status === 'running' || input.run.status === 'executing'
   const failed = input.run.status === 'failed' || input.run.status === 'cancelled'
-  return steps.map((step) => {
-    if (step.id === finalStepId) {
-      return {
-        ...step,
-        status: failed ? 'failed' : active ? 'running' : 'succeeded',
-        detail: active ? '任务已恢复，正在等待生成结果' : failed ? '任务已结束，可查看失败原因或重试' : '任务已完成，结果已回填画布',
-        ...(failed ? { error: input.run.status === 'cancelled' ? '任务已取消。' : '任务未完成，请查看任务面板。' } : {}),
-      }
+  const branches = input.run.branches ?? []
+  const steps: BotanicAgentRuntimeStep[] = [{
+    id: 'exec-submit',
+    kind: 'write',
+    label: '提交生成任务',
+    detail: '从服务端状态恢复',
+    status: failed && !branches.length ? 'failed' : 'succeeded',
+    ...(failed && !branches.length
+      ? { error: input.run.status === 'cancelled' ? '任务已取消。' : (input.run.error ?? '任务未完成，请查看任务面板。') }
+      : {}),
+  }]
+  if (branches.length) {
+    for (const branch of branches) {
+      const branchFailed = branch.status === 'failed' || branch.status === 'cancelled'
+      const branchActive = branch.status === 'queued' || branch.status === 'running'
+      steps.push({
+        id: `exec-branch:${branch.id}`,
+        kind: 'write',
+        label: branch.label.trim() ? `生成 · ${branch.label.trim()}` : '生成分支',
+        detail: '从服务端状态恢复',
+        status: branchFailed ? 'failed' : branchActive ? 'running' : 'succeeded',
+        ...(branchFailed ? { error: branch.error ?? (branch.status === 'cancelled' ? '任务已取消。' : '任务未完成，请查看任务面板。') } : {}),
+      })
     }
-    // 上下文与规划步骤在 Run 落库时必然已经完成，无论 Run 最终成败。
-    return {
-      ...step,
-      status: 'succeeded',
-      detail: `${step.detail} · 已从服务端恢复`,
+  } else if (active) {
+    steps.push({
+      id: 'exec-wait',
+      kind: 'write',
+      label: '等待生成结果',
+      detail: '任务已恢复，正在等待生成结果 · 从服务端状态恢复',
+      status: 'running',
+    })
+  } else if (failed) {
+    steps[0] = {
+      ...steps[0],
+      status: 'failed',
+      detail: '任务已结束，可查看失败原因或重试 · 从服务端状态恢复',
+      error: input.run.status === 'cancelled' ? '任务已取消。' : (input.run.error ?? '任务未完成，请查看任务面板。'),
     }
-  })
+  }
+  return steps
 }
 
 function stableAgentPlanHash(value: string) {
@@ -1130,6 +1170,8 @@ export type BotanicAgentMessage = {
   role: 'user' | 'assistant'
   kind: 'text' | 'question' | 'plan' | 'run' | 'notice' | 'composition'
   content: string
+  /** Composer 本轮挂载的 Skill / 引用素材；与正文分离，不当作画面描述。 */
+  mentions?: BotanicAgentMessageMention[]
   /** Prompt 对话产出的结构化结果；普通助手文字不能被当作生图 Prompt。 */
   prompt?: string
   createdAt: number
@@ -1334,6 +1376,20 @@ export function insertBotanicAgentMention(
   return {
     value: `${value.slice(0, mention.start)}${inserted}${value.slice(mention.end)}`,
     caret: mention.start + inserted.length,
+  }
+}
+
+/** 选中 @Skill / @素材后只消耗查询，不把名称写进提示词。 */
+export function consumeBotanicAgentMention(
+  value: string,
+  mention: BotanicAgentMentionQuery,
+): { value: string; caret: number } {
+  const before = value.slice(0, mention.start)
+  const after = value.slice(mention.end)
+  const needsSpace = Boolean(before && after && !/\s$/u.test(before) && !/^\s/u.test(after))
+  return {
+    value: `${before}${needsSpace ? ' ' : ''}${after}`,
+    caret: before.length + (needsSpace ? 1 : 0),
   }
 }
 

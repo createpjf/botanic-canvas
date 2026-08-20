@@ -386,8 +386,10 @@ test('多图合成时标识参考排在人像之后发给 images/edits', async (
     assert.equal(images[0].name, 'reference-1.png')
     assert.equal(Buffer.from(await images[0].arrayBuffer()).toString(), 'portrait-bytes')
     assert.equal(Buffer.from(await images[1].arrayBuffer()).toString(), 'logo-bytes')
-    assert.match(forms[0].get('prompt'), /多图合成/)
+    assert.match(forms[0].get('prompt'), /GPT Image 多图编辑/)
     assert.match(forms[0].get('prompt'), /必须忠实复原/)
+    assert.equal(forms[0].get('quality'), 'high')
+    assert.equal(forms[0].has('input_fidelity'), false)
   } finally {
     globalThis.fetch = originalFetch
   }

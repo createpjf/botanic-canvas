@@ -1,5 +1,6 @@
 import { GenerationError, generateImages } from './generationProvider.mjs'
 import { providerForModel } from './generationModels.mjs'
+import { composeOverlayImages, jobRequestsPixelOverlay } from './imageOverlay.mjs'
 import { generateMiniMaxImages, generateMiniMaxVideos } from './minimaxGenerationProvider.mjs'
 
 function configuredModel(config, modelId) {
@@ -22,6 +23,9 @@ export async function generateMedia(job, {
   onVariant,
   completedVariants,
 }) {
+  if (jobRequestsPixelOverlay(job)) {
+    return composeOverlayImages(job, { persistImage, jobId, onVariant, completedVariants })
+  }
   const model = configuredModel(config, job.settings.model)
   if (!model) throw new GenerationError(400, 'INVALID_REQUEST', '生成模型未配置或不可用。')
   if (model.provider === 'openai') {

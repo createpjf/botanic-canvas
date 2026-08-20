@@ -80,6 +80,36 @@ test('Agent 对话真正调用选定 Flock 模型，并通过本体工具检索�
   assert.doesNotMatch(JSON.stringify(requests), /api\/media\/private|api\/media\/result/)
 })
 
+test('Composer 挂载的系统 Skill 写入对话系统提示，skill_search 也能检索到', async () => {
+  const requests = []
+  await chatWithBotanicAgent({
+    ...input,
+    mode: 'conversation',
+    mountedSkillIds: ['video_storyboard'],
+  }, {
+    flockApiKey: 'flock-secret',
+    flockTextModel: 'deepseek-v4-pro',
+    flockAgentModels: ['deepseek-v4-pro', 'deepseek-v4-flash', 'kimi-k3'],
+  }, {
+    document,
+    fetchImpl: async (_url, init) => {
+      requests.push(JSON.parse(init.body))
+      if (requests.length === 1) {
+        return new Response(JSON.stringify({ choices: [{ message: {
+          content: null,
+          tool_calls: [{ id: 'call-skill-search', type: 'function', function: {
+            name: 'skill_search', arguments: JSON.stringify({ query: '分镜' }),
+          } }],
+        } }] }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ choices: [{ message: { content: '先出分镜。' } }] }), { status: 200 })
+    },
+  })
+  assert.match(requests[0].messages[0].content, /mounted these Skills|用户已在输入框挂载/)
+  assert.match(requests[0].messages[0].content, /静帧转视频分镜/)
+  assert.match(requests[1].messages.at(-1).content, /video_storyboard/)
+})
+
 test('输入框里引用的节点直接进入系统提示，模型不必先猜它存不存在', async () => {
   const requests = []
   await chatWithBotanicAgent({ ...input, mode: 'conversation', contextNodeIds: ['asset-scene'] }, {

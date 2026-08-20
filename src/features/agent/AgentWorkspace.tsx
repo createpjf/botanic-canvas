@@ -12,11 +12,13 @@ import {
   filterBotanicAgentRunTimeline,
   buildBotanicAgentPlan,
   createBotanicAgentContextSnapshot,
-  insertBotanicAgentMention,
+  consumeBotanicAgentMention,
+  prepareBotanicAgentComposerSubmission,
   readBotanicAgentMentionQuery,
   resolveBotanicAgentExecutionDecision,
   botanicAgentPendingConfirmationCount,
   summarizeBotanicAgentRuntime,
+  shouldRestoreBotanicAgentRuntimeSteps,
   shouldShowBotanicAgentRuntimeFeed,
   type BotanicAgentActionProposal,
   type BotanicAgentActionResult,
@@ -26,8 +28,10 @@ import {
   type BotanicAgentIntent,
   type BotanicAgentMemoryItem,
   type BotanicAgentMemoryKind,
+  type BotanicAgentMentionCatalog,
   type BotanicAgentMentionQuery,
   type BotanicAgentMessage,
+  type BotanicAgentMessageMention,
   type BotanicAgentPlan,
   type BotanicAgentRun,
   type BotanicAgentRunTimelineFilter,
@@ -50,7 +54,7 @@ import {
 import { botanicAgentRunReviewMessageId, formatBotanicAgentRunReviewMessage } from '../../domain/agentReviewContract'
 import { resolveAgentChatPrompt } from '../../domain/agentMarkdown'
 import type { BotanicAgentChatStreamEvent } from '../../domain/agentChatStream'
-import { applyAgentConversationStreamEvent, createAgentTimeline, type AgentTimelineEvent, type AgentTimelineState } from '../../domain/agentTimeline'
+import { applyAgentConversationStreamEvent, createAgentTimeline, projectBotanicAgentRunOntoTimeline, type AgentTimelineEvent, type AgentTimelineState } from '../../domain/agentTimeline'
 import { nextExclusiveSurface, type ExclusiveSurfaceAction } from '../../domain/exclusiveSurface'
 import type { CollaborationActivity, CollaborationDocumentChange } from '../../domain/collaborationActivity'
 import type {
@@ -60,7 +64,8 @@ import type {
   UploadedAssetInput,
 } from '../../domain/canvas'
 import type { GenerationSizeOverride } from '../../domain/generationOutputSize'
-import { createProjectAgentSkill, listBotanicAgentSystemSkills, listProjectAgentSkills, requestBotanicAgentPlan, requestBotanicAgentRunReview, requestBotanicAgentTurn, streamBotanicAgentChat } from '../../lib/agentApi'
+import { createProjectAgentSkill, listBotanicAgentSystemSkills, listProjectAgentSkills, requestBotanicAgentPlan, requestBotanicAgentRunReview, streamBotanicAgentChat, streamBotanicAgentPlan, streamBotanicAgentTurn } from '../../lib/agentApi'
+import { botanicAgentRegionSelectNotice, instructionRequestsMarkOverlay } from '../../domain/generationComposition'
 import { describeRegionRect } from '../../domain/regionMask'
 import { RegionMaskEditor } from '../canvas/RegionMaskEditor'
 import {
@@ -127,7 +132,10 @@ import { localizeProductError, productIntlLocale, type ProductLocale } from '../
 
 type AgentTransientSurface = 'context' | 'history' | 'utility' | 'mode'
 type AgentUtilityPanel = 'result' | 'task' | 'memory' | 'skill' | 'collaboration'
-type AgentRunInstructionOptions = AgentInstructionRetryOptions & { appendUser?: string }
+type AgentRunInstructionOptions = AgentInstructionRetryOptions & {
+  appendUser?: string
+  mentions?: BotanicAgentMessageMention[]
+}
 type AgentLiveConversation = {
   sessionId: string
   message: BotanicAgentMessage
@@ -180,12 +188,6 @@ function agentQuickActions(locale: ProductLocale): Array<{ intent: BotanicAgentI
     { intent: 'replace_product', label: '换商品', instruction: '保持人物、场景和风格不变，替换服装或商品。' },
     { intent: 'redo_from_root', label: '原配方重做', instruction: '复用原始参考素材、提示词和参数，重新生成独立首图。' },
   ]
-}
-
-function AgentRunActionIcon({ action }: { action: 'view_task' | 'view_results' | 'adjust' | 'none' }) {
-  if (action === 'view_results') return <GalleryIcon />
-  if (action === 'adjust') return <AlertIcon />
-  return <ChecklistIcon />
 }
 
 function AgentTaskFilterIcon({ value }: { value: 'all' | 'active' | 'completed' | 'attention' }) {
@@ -401,6 +403,8 @@ export default function AgentWorkspace({
     options: AgentInstructionRetryOptions
   } | null>(null)
   const [liveConversation, setLiveConversation] = useState<AgentLiveConversation>()
+  /** 确认后的 Run 进度投影：keyed by 计划消息 id，只反映已持久化状态。 */
+  const [executionTimelines, setExecutionTimelines] = useState<Record<string, AgentTimelineState>>({})
   const [submittingMessageId, setSubmittingMessageId] = useState('')
   const [executingActionId, setExecutingActionId] = useState('')
   const executingActionIdRef = useRef('')
@@ -512,10 +516,18 @@ export default function AgentWorkspace({
     ))
   }, [session?.messages])
   const renderedConversationMessages = useMemo(() => {
-    if (!session || !liveConversation || liveConversation.sessionId !== session.id) return conversationMessages
-    if (conversationMessages.some((message) => message.id === liveConversation.message.id)) return conversationMessages
-    return [...conversationMessages, liveConversation.message]
-  }, [conversationMessages, liveConversation, session])
+    const base = (() => {
+      if (!session || !liveConversation || liveConversation.sessionId !== session.id) return conversationMessages
+      if (conversationMessages.some((message) => message.id === liveConversation.message.id)) return conversationMessages
+      return [...conversationMessages, liveConversation.message]
+    })()
+    // 进行中的 Run 状态由 runtime feed / 底部进度条直播，对话里不画第二张「正在生成」卡。
+    return base.filter((message) => {
+      if (message.kind !== 'run' || !message.runId) return true
+      const run = runs.find((item) => item.id === message.runId)
+      return !run || !shouldRestoreBotanicAgentRuntimeSteps(run.status)
+    })
+  }, [conversationMessages, liveConversation, runs, session])
   const pendingPromptSourceIds = useMemo(() => new Set((session?.messages ?? [])
     .filter((message) => message.question?.sourcePromptMessageId && message.kind === 'question' && message.status === 'pending')
     .map((message) => message.question!.sourcePromptMessageId!)), [session?.messages])
@@ -531,7 +543,7 @@ export default function AgentWorkspace({
   const skillOptions = useMemo<AgentSkillOption[]>(() => {
     if (!mentionQuery) return []
     const query = mentionQuery.query.trim().toLocaleLowerCase()
-    return [...systemSkills, ...skills.map((skill) => ({
+    const catalog = [...systemSkills, ...skills.map((skill) => ({
       id: skill.id,
       name: skill.name,
       instructions: skill.instructions,
@@ -539,8 +551,10 @@ export default function AgentWorkspace({
     }))]
       .filter((skill, index, items) => items.findIndex((candidate) => candidate.id === skill.id) === index)
       .filter((skill) => !query || skill.name.toLocaleLowerCase().includes(query) || skill.id.toLocaleLowerCase().includes(query))
-      .slice(0, 8)
-      .map(({ id, name, source }) => ({ id, name, source }))
+    // 系统 Skill 全量出现在 @ 菜单；项目 Skill 仍截断，避免目录把菜单撑爆。
+    const systemMatches = catalog.filter((skill) => skill.source === 'system')
+    const projectMatches = catalog.filter((skill) => skill.source !== 'system').slice(0, 8)
+    return [...systemMatches, ...projectMatches].map(({ id, name, source }) => ({ id, name, source }))
   }, [mentionQuery, skills, systemSkills])
   const mountedSkillOptions = useMemo<AgentSkillOption[]>(() => {
     const mountedIds = new Set(session?.mountedSkillIds ?? [])
@@ -553,6 +567,16 @@ export default function AgentWorkspace({
       .filter((skill, index, items) => mountedIds.has(skill.id) && items.findIndex((candidate) => candidate.id === skill.id) === index)
       .map(({ id, name, source }) => ({ id, name, source }))
   }, [session?.mountedSkillIds, skills, systemSkills])
+  const mentionCatalog = useMemo<BotanicAgentMentionCatalog>(() => ({
+    skills: [...systemSkills, ...skills]
+      .filter((skill, index, items) => items.findIndex((candidate) => candidate.id === skill.id) === index)
+      .map((skill) => ({ id: skill.id, name: skill.name })),
+    references: contextOptions.map((item) => ({
+      id: item.id,
+      label: item.label,
+      ...(item.image ? { image: item.image } : {}),
+    })),
+  }), [contextOptions, skills, systemSkills])
   const utilityPanelOpen = taskPanelOpen || skillPanelOpen || resultPanelOpen || memoryPanelOpen || collaborationPanelOpen
   const {
     runtimeSteps,
@@ -561,15 +585,10 @@ export default function AgentWorkspace({
     runtimeDetailsOpen,
     setRuntimePhase,
     setRuntimeDetailsOpen,
-    beginRuntimeTrace,
     resetRuntimeTrace,
-    updateRuntimeStep,
     attachPlannerToolTrace,
     attachRuntimeReasoning,
     appendRuntimeReasoningDelta,
-    yieldRuntimeFrame,
-    completeRuntimeContextReads,
-    completeRuntimeTrace,
     failRuntimeTrace,
   } = useAgentRuntimeTrace({
     latestRun,
@@ -650,7 +669,39 @@ export default function AgentWorkspace({
   useEffect(() => {
     resetRuntimeTrace()
     setLiveConversation(undefined)
+    setExecutionTimelines({})
   }, [resetRuntimeTrace, sessionId])
+
+  // 确认后把已持久化的 Run/分支状态投影进同款对话时间线；不发明未发生的步骤。
+  useEffect(() => {
+    if (!session?.messages.length || !runs.length) return
+    setExecutionTimelines((current) => {
+      let changed = false
+      const next = { ...current }
+      for (const message of session.messages) {
+        if (!message.runId || (message.status !== 'submitted' && message.kind !== 'run')) continue
+        const run = runs.find((item) => item.id === message.runId)
+        if (!run) continue
+        const projected = projectBotanicAgentRunOntoTimeline(run, current[message.id], run.updatedAt)
+        const previous = current[message.id]
+        const same = previous
+          && previous.blocks.length === projected.blocks.length
+          && previous.blocks.every((block, index) => {
+            const other = projected.blocks[index]
+            if (!other || block.type !== other.type) return false
+            if (block.type === 'step' && other.type === 'step') {
+              return block.id === other.id && block.status === other.status && block.title === other.title
+            }
+            return block.id === other.id
+          })
+        if (!same) {
+          next[message.id] = projected
+          changed = true
+        }
+      }
+      return changed ? next : current
+    })
+  }, [runs, session?.messages])
 
   const registerMessageNode = useCallback((messageId: string, node: HTMLDivElement | null) => {
     if (node) messageNodesRef.current.set(messageId, node)
@@ -894,16 +945,18 @@ export default function AgentWorkspace({
   useEffect(() => {
     let active = true
     setSkillError('')
+    // 系统 Skill 是静态目录，不依赖项目持久化；关掉 persistence 时 Composer @ 仍要能挂载。
+    void listBotanicAgentSystemSkills()
+      .then((items) => { if (active) setSystemSkills(items) })
+      .catch(() => { if (active) setSystemSkills([]) })
     if (!serverPersistenceEnabled) {
       setSkills([])
-      setSystemSkills([])
       return () => { active = false }
     }
-    void Promise.allSettled([listProjectAgentSkills(projectId), listBotanicAgentSystemSkills()]).then(([projectResult, systemResult]) => {
-      if (!active) return
-      if (projectResult.status === 'fulfilled') setSkills(projectResult.value)
-      else setSkillError(projectResult.reason instanceof Error ? projectResult.reason.message : (locale === 'en' ? 'Unable to load project Skills.' : '项目 Skill 列表加载失败。'))
-      if (systemResult.status === 'fulfilled') setSystemSkills(systemResult.value)
+    void listProjectAgentSkills(projectId).then((items) => {
+      if (active) setSkills(items)
+    }).catch((reason) => {
+      if (active) setSkillError(reason instanceof Error ? reason.message : (locale === 'en' ? 'Unable to load project Skills.' : '项目 Skill 列表加载失败。'))
     })
     return () => { active = false }
   }, [locale, projectId, skillPanelOpen])
@@ -1078,25 +1131,33 @@ export default function AgentWorkspace({
 
   const selectMention = (item: AgentContextItem) => {
     if (!session || !mentionQuery) return
-    const inserted = insertBotanicAgentMention(instruction, mentionQuery, item.label)
-    setInstruction(inserted.value)
+    const consumed = consumeBotanicAgentMention(instruction, mentionQuery)
+    setInstruction(consumed.value)
     if (!session.contextNodeIds.includes(item.id)) onContextChange(session.id, [...session.contextNodeIds, item.id])
     setMentionQuery(undefined)
     requestAnimationFrame(() => {
       composerTextareaRef.current?.focus()
-      composerTextareaRef.current?.setSelectionRange(inserted.caret, inserted.caret)
+      composerTextareaRef.current?.setSelectionRange(consumed.caret, consumed.caret)
     })
+  }
+
+  const toggleMountedSkill = (skillId: string, nextMounted: boolean) => {
+    if (!session) return
+    const current = session.mountedSkillIds ?? []
+    onSkillsChange(session.id, nextMounted
+      ? [...new Set([...current, skillId])]
+      : current.filter((id) => id !== skillId))
   }
 
   const selectSkill = (skill: AgentSkillOption) => {
     if (!session || !mentionQuery) return
-    const inserted = insertBotanicAgentMention(instruction, mentionQuery, skill.name)
-    setInstruction(inserted.value)
+    const consumed = consumeBotanicAgentMention(instruction, mentionQuery)
+    setInstruction(consumed.value)
     onSkillsChange(session.id, [...new Set([...(session.mountedSkillIds ?? []), skill.id])])
     setMentionQuery(undefined)
     requestAnimationFrame(() => {
       composerTextareaRef.current?.focus()
-      composerTextareaRef.current?.setSelectionRange(inserted.caret, inserted.caret)
+      composerTextareaRef.current?.setSelectionRange(consumed.caret, consumed.caret)
     })
   }
 
@@ -1121,7 +1182,7 @@ export default function AgentWorkspace({
     structuredVariants?: Array<{ label: string; promptDelta: string }>,
     variationAxisLabel?: string,
   ): Promise<BotanicAgentPlan | BotanicAgentClarificationResponse | null> => {
-    if (!target || !isCurrentAgentProject()) return null
+    if (!session || !target || !isCurrentAgentProject()) return null
     const assetGroup = compatibleGroups.find((group) => group.id === groupId)
     const input = {
       projectId,
@@ -1154,20 +1215,75 @@ export default function AgentWorkspace({
     setPlanning(true)
     setError('')
     setRuntimePhase('planning')
-    updateRuntimeStep('call-planner', 'running')
+    const liveMessageId = `agent-message-${crypto.randomUUID()}`
+    const liveStartedAt = Date.now()
+    setLiveConversation({
+      sessionId: session.id,
+      message: {
+        id: liveMessageId,
+        role: 'assistant',
+        kind: 'text',
+        content: '',
+        createdAt: liveStartedAt,
+      },
+      timeline: createAgentTimeline(liveStartedAt),
+      streaming: true,
+    })
     try {
-      const nextPlan = await requestBotanicAgentPlan(input, controller.signal, attachRuntimeReasoning)
+      const nextPlan = await streamBotanicAgentPlan(input, {
+        signal: controller.signal,
+        onReasoning: attachRuntimeReasoning,
+        onEvent: (event) => {
+          if (controller.signal.aborted) return
+          const receivedAt = Date.now()
+          setLiveConversation((current) => {
+            if (current?.sessionId !== session.id || current.message.id !== liveMessageId) return current
+            const next = applyAgentConversationStreamEvent(
+              { content: current.message.content, timeline: current.timeline },
+              agentTimelineEvent(event, receivedAt),
+            )
+            return {
+              ...current,
+              message: { ...current.message, content: next.content },
+              timeline: next.timeline,
+              streaming: event.type !== 'done' && event.type !== 'error',
+            }
+          })
+          if (event.type === 'tool') {
+            attachPlannerToolTrace({ toolCalls: [event.toolCall] } as BotanicAgentPlan)
+          }
+          if (event.type === 'reasoning') {
+            appendRuntimeReasoningDelta(event.step, event.delta)
+          }
+        },
+      })
       if (controller.signal.aborted) return null
       attachPlannerToolTrace(nextPlan)
-      updateRuntimeStep('call-planner', 'succeeded')
-      await completeRuntimeTrace(true)
+      setLiveConversation((current) => current?.message.id === liveMessageId ? undefined : current)
+      setRuntimePhase('waiting_confirmation')
       if (!isCurrentAgentProject()) return null
       return nextPlan
     } catch (planError) {
       if (controller.signal.aborted) return null
+      setLiveConversation((current) => {
+        if (current?.sessionId !== session.id || current.message.id !== liveMessageId) return current
+        const message = localizeProductError(planError, locale, { 'zh-CN': flowCopy.planningUnavailable, en: flowCopy.planningUnavailable })
+        const next = applyAgentConversationStreamEvent(
+          { content: current.message.content, timeline: current.timeline },
+          { type: 'error', message, receivedAt: Date.now() },
+        )
+        return {
+          ...current,
+          message: { ...current.message, content: message },
+          timeline: next.timeline,
+          streaming: false,
+        }
+      })
       const canUseLocalFallback = planError instanceof ProductApiError
         && (planError.status === 0 || planError.status === 404 || planError.status >= 500)
+        && !(planError.code === 'STREAM_DISCONNECTED' || planError.code === 'REQUEST_TIMEOUT')
       if (canUseLocalFallback) {
+        setLiveConversation((current) => current?.message.id === liveMessageId ? undefined : current)
         try {
           const fallbackPlan = { ...buildBotanicAgentPlan({
             instruction: cleanInstruction,
@@ -1198,8 +1314,7 @@ export default function AgentWorkspace({
           if (applied.kind === 'clarification') return applied
           const resolvedFallback = { ...fallbackPlan, ...applied.plan }
           attachPlannerToolTrace(resolvedFallback)
-          updateRuntimeStep('call-planner', 'succeeded')
-          await completeRuntimeTrace(true)
+          setRuntimePhase('waiting_confirmation')
           if (!isCurrentAgentProject()) return null
           return resolvedFallback
         } catch (fallbackError) {
@@ -1215,11 +1330,11 @@ export default function AgentWorkspace({
         rememberFailedInstruction(failedCommand ?? { instruction: cleanInstruction, options: { generationOverrides, clarificationAnswers, creativeBrief } })
       }
       failRuntimeTrace(localizeProductError(planError, locale, { 'zh-CN': flowCopy.planningUnavailable, en: flowCopy.planningUnavailable }))
+      return null
     } finally {
       if (plannerControllerRef.current === controller) plannerControllerRef.current = null
       setPlanning(false)
     }
-    return null
   }
 
   const confirmMessagePlan = async (message: BotanicAgentMessage) => {
@@ -1247,6 +1362,19 @@ export default function AgentWorkspace({
         // 参考集越改越脏。要复用同一张参考时重新 @ 引用即可。
         if (session.contextNodeIds.length) onContextChange(session.id, [])
         setGroupId('')
+        const run = runs.find((item) => item.id === submission.runId)
+        setExecutionTimelines((current) => ({
+          ...current,
+          [message.id]: projectBotanicAgentRunOntoTimeline(
+            run ?? {
+              id: submission.runId,
+              status: 'queued',
+              branches: [],
+            },
+            current[message.id] ?? liveConversation?.timeline,
+            Date.now(),
+          ),
+        }))
       }
       if (!submission.started) appendMessage({
         role: 'assistant', kind: 'text',
@@ -1337,7 +1465,12 @@ export default function AgentWorkspace({
     // 快捷操作选的意图只作用于紧随其后的这一条指令；用完即清，
     // 避免一次点击后的残留意图长期覆盖回合模型的判断。
     if (intent) setIntent(undefined)
-    if (options.appendUser) appendMessage({ role: 'user', kind: 'text', content: options.appendUser })
+    if (options.appendUser !== undefined) appendMessage({
+      role: 'user',
+      kind: 'text',
+      content: options.appendUser,
+      ...(options.mentions?.length ? { mentions: options.mentions } : {}),
+    })
     setLiveConversation(undefined)
     setError('')
     setLastFailedInstruction('')
@@ -1450,8 +1583,10 @@ export default function AgentWorkspace({
         role: 'assistant',
         kind: 'notice',
         content: locale === 'en'
-          ? `Select the area to redraw on “${target?.label ?? 'Current result'}”; everything outside it will stay unchanged.`
-          : `请在弹出的「${target?.label ?? '当前结果'}」上框选要重绘的区域；框外画面保持原样。`,
+          ? (instructionRequestsMarkOverlay(cleanInstruction)
+            ? `Box the spot on “${target?.label ?? 'Current result'}” where the logo should go. We’ll stamp the reference as-is instead of regenerating a badge.`
+            : `Select the area to redraw on “${target?.label ?? 'Current result'}”; everything outside it will stay unchanged.`)
+          : botanicAgentRegionSelectNotice(cleanInstruction, target?.label ?? '当前结果'),
       })
       return
     }
@@ -1480,22 +1615,27 @@ export default function AgentWorkspace({
       const controller = new AbortController()
       plannerControllerRef.current = controller
       setPlanning(true)
-      const runtimeTrace = beginRuntimeTrace({
-        hasTarget: Boolean(target),
-        referenceCount: target?.rootRecipe.references.length ?? contextItems.length,
-        memoryCount: memory.length,
-        assetGroupCount: compatibleGroups.length,
-        mode: 'conversation',
+      setRuntimePhase('planning')
+      const liveMessageId = `agent-message-${crypto.randomUUID()}`
+      const liveStartedAt = Date.now()
+      setLiveConversation({
+        sessionId: session.id,
+        message: {
+          id: liveMessageId,
+          role: 'assistant',
+          kind: 'text',
+          content: '',
+          createdAt: liveStartedAt,
+        },
+        timeline: createAgentTimeline(liveStartedAt),
+        streaming: true,
       })
       try {
-        await completeRuntimeContextReads(runtimeTrace)
-        if (!isCurrentAgentProject()) return
-        setRuntimePhase('planning')
-        updateRuntimeStep('call-planner', 'running')
-        const turn = await requestBotanicAgentTurn({
+        const turn = await streamBotanicAgentTurn({
           projectId,
           locale,
           plannerModel,
+          mountedSkillIds: session.mountedSkillIds,
           messages: [
             ...session.messages.map((message) => ({ role: message.role, content: message.content })),
             { role: 'user' as const, content: options.appendUser ?? cleanInstruction },
@@ -1506,43 +1646,69 @@ export default function AgentWorkspace({
           ...(target ? { selectedResultLabel: target.label } : {}),
           executionMode: session.executionMode,
           generationModels,
-        }, controller.signal)
+        }, {
+          signal: controller.signal,
+          onEvent: (event) => {
+            if (controller.signal.aborted) return
+            const receivedAt = Date.now()
+            setLiveConversation((current) => {
+              if (current?.sessionId !== session.id || current.message.id !== liveMessageId) return current
+              const next = applyAgentConversationStreamEvent(
+                { content: current.message.content, timeline: current.timeline },
+                agentTimelineEvent(event, receivedAt),
+              )
+              return {
+                ...current,
+                message: { ...current.message, content: next.content },
+                timeline: next.timeline,
+                streaming: event.type !== 'done' && event.type !== 'error',
+              }
+            })
+          },
+        })
         if (controller.signal.aborted) return
-        updateRuntimeStep('call-planner', 'succeeded')
         if (turn.kind === 'chat') {
-          updateRuntimeStep('respond', 'running')
-          await yieldRuntimeFrame()
-          if (!isCurrentAgentProject()) return
-          updateRuntimeStep('respond', 'succeeded')
           setRuntimePhase('completed')
           setRuntimeDetailsOpen(false)
           const sourceNote = turn.sources?.length ? `\n\n${copy.sources}: ${turn.sources.join(locale === 'en' ? ', ' : '、')}` : ''
-          appendMessage({ role: 'assistant', kind: 'text', content: `${turn.answer}${sourceNote}` })
+          appendMessage({
+            id: liveMessageId,
+            role: 'assistant',
+            kind: 'text',
+            content: `${turn.answer}${sourceNote}`,
+          })
+          setLiveConversation((current) => current?.message.id === liveMessageId ? undefined : current)
           return
         }
         if (turn.kind === 'clarification') {
           // 模型的结构化中断：这一轮在等用户补充核心信息，答案作为下一条消息自然回流
           // 服务端回合（对话里已有提问与回答），不进入本地 brief 表单。
-          updateRuntimeStep('respond', 'succeeded')
           if (!isCurrentAgentProject()) return
           setRuntimePhase('waiting_clarification')
           const optionLines = turn.options?.length
             ? `\n\n${turn.options.map((option, index) => `${index + 1}. ${option}`).join('\n')}`
             : ''
-          appendMessage({ role: 'assistant', kind: 'text', content: `${turn.question}${optionLines}` })
+          appendMessage({
+            id: liveMessageId,
+            role: 'assistant',
+            kind: 'text',
+            content: `${turn.question}${optionLines}`,
+          })
+          setLiveConversation((current) => current?.message.id === liveMessageId ? undefined : current)
           return
         }
         if (turn.kind === 'composition') {
-          updateRuntimeStep('respond', 'succeeded')
           if (!isCurrentAgentProject()) return
           setRuntimePhase('completed')
           setRuntimeDetailsOpen(false)
           const composition = normalizeBotanicAgentComposition({ theme: turn.theme, items: turn.items })
+          setLiveConversation((current) => current?.message.id === liveMessageId ? undefined : current)
           if (!composition) {
             appendMessage({ role: 'assistant', kind: 'notice', content: '这次分解没有形成可用的成套方案，请再描述一次交付项。' })
             return
           }
           appendMessage({
+            id: liveMessageId,
             role: 'assistant',
             kind: 'composition',
             composition,
@@ -1550,6 +1716,7 @@ export default function AgentWorkspace({
           })
           return
         }
+        setLiveConversation((current) => current?.message.id === liveMessageId ? undefined : current)
         serverDecision = { kind: 'generation', mediaKind: turn.mediaKind, promptSource: 'instruction' }
         synthesizedPrompt = turn.prompt
         synthesizedCount = turn.count
@@ -1561,10 +1728,25 @@ export default function AgentWorkspace({
         }
       } catch (caught) {
         if (controller.signal.aborted) return
+        setLiveConversation((current) => {
+          if (current?.sessionId !== session.id || current.message.id !== liveMessageId) return current
+          const message = caught instanceof Error ? caught.message : copy.unavailable
+          const next = applyAgentConversationStreamEvent(
+            { content: current.message.content, timeline: current.timeline },
+            { type: 'error', message, receivedAt: Date.now() },
+          )
+          return {
+            ...current,
+            message: { ...current.message, content: message },
+            timeline: next.timeline,
+            streaming: false,
+          }
+        })
         // 离线(0)、项目缺失(404) 与所有 5xx（未配置、网关/代理故障、模型无可用结论）
         // 都回退本地正则——与 preparePlan 的降级判定保持同一语义；其余按 Agent 错误处理。
         const fallBack = caught instanceof ProductApiError
           && (caught.status === 0 || caught.status === 404 || caught.status >= 500)
+          && !(caught.code === 'STREAM_DISCONNECTED' || caught.code === 'REQUEST_TIMEOUT')
         if (!fallBack) {
           const message = caught instanceof Error ? caught.message : copy.unavailable
           failRuntimeTrace(message)
@@ -1572,6 +1754,7 @@ export default function AgentWorkspace({
           rememberFailedInstruction(failedCommand)
           return
         }
+        setLiveConversation((current) => current?.message.id === liveMessageId ? undefined : current)
       } finally {
         if (plannerControllerRef.current === controller) plannerControllerRef.current = null
         // 生成流程自己会重新置忙。这里无条件复位：下面到追问、失败等早退分支之间没有
@@ -1633,17 +1816,7 @@ export default function AgentWorkspace({
       const controller = new AbortController()
       plannerControllerRef.current = controller
       setPlanning(true)
-      const runtimeTrace = beginRuntimeTrace({
-        hasTarget: Boolean(target),
-        referenceCount: target?.rootRecipe.references.length ?? contextItems.length,
-        memoryCount: memory.length,
-        assetGroupCount: compatibleGroups.length,
-        mode: route,
-      })
-      await completeRuntimeContextReads(runtimeTrace)
-      if (!isCurrentAgentProject()) return
       setRuntimePhase('planning')
-      updateRuntimeStep('call-planner', 'running')
       const chatMessages = [
         ...session.messages.map((message) => ({ role: message.role, content: message.content })),
         { role: 'user' as const, content: routedInstruction },
@@ -1665,7 +1838,7 @@ export default function AgentWorkspace({
       try {
         // 实时通道只改变“回答什么时候到”：思考与工具进入时间线，回答增量写入气泡正文。
         // 完整回答仍等 done 一次性落成消息，避免半截内容进入对话记录。
-        let answerStarted = false
+        // 工具步进只来自服务端 execute 前后的真实 emit，不做 rAF 假进度。
         const response = await streamBotanicAgentChat({
           projectId,
           locale,
@@ -1698,23 +1871,13 @@ export default function AgentWorkspace({
             }
             if (event.type === 'reasoning') {
               appendRuntimeReasoningDelta(event.step, event.delta)
-              return
-            }
-            if (event.type === 'answer' && !answerStarted) {
-              answerStarted = true
-              updateRuntimeStep('call-planner', 'succeeded')
-              updateRuntimeStep('respond', 'running')
             }
           },
         })
         if (controller.signal.aborted) return
         attachPlannerToolTrace({ toolCalls: response.toolCalls } as BotanicAgentPlan)
         attachRuntimeReasoning(response.reasoning)
-        updateRuntimeStep('call-planner', 'succeeded')
-        updateRuntimeStep('respond', 'running')
-        await yieldRuntimeFrame()
         if (!isCurrentAgentProject()) return
-        updateRuntimeStep('respond', 'succeeded')
         setRuntimePhase('completed')
         setRuntimeDetailsOpen(false)
         const sourceNote = route === 'research'
@@ -1816,16 +1979,7 @@ export default function AgentWorkspace({
       },
     }
     setPlanning(true)
-    const runtimeTrace = beginRuntimeTrace({
-      hasTarget: Boolean(target),
-      referenceCount: target?.rootRecipe.references.length ?? contextItems.length,
-      memoryCount: memory.length,
-      assetGroupCount: compatibleGroups.length,
-    })
-    await completeRuntimeContextReads(runtimeTrace)
-    if (!isCurrentAgentProject()) return
     setRuntimePhase('planning')
-    updateRuntimeStep('call-planner', 'running')
     if (resolvedOptions.region && target) {
       // 局部重绘：选区+指令已完全确定这次生成，本地构建计划，不经服务端图片规划器改写。
       const executionDecision = resolveBotanicAgentExecutionDecision({
@@ -1847,14 +2001,12 @@ export default function AgentWorkspace({
           plannerModel,
           settings: { ...target.rootRecipe.settings, ...draft.generationOverrides },
         }
-        updateRuntimeStep('call-planner', 'succeeded')
-        await completeRuntimeTrace(true)
         if (!isCurrentAgentProject()) return
+        setRuntimePhase('waiting_confirmation')
         const planMessageId = appendMessage({
           role: 'assistant', kind: 'plan', plan: regionPlan, status: 'pending',
           content: regionPlan.summary,
         })
-        if (planMessageId) setRuntimePhase('waiting_confirmation')
         if (planMessageId && executionDecision.action === 'auto_submit') {
           await confirmMessagePlan({
             id: planMessageId, role: 'assistant', kind: 'plan', content: regionPlan.summary,
@@ -1888,9 +2040,8 @@ export default function AgentWorkspace({
         }
         const resolvedInitialPlan = { ...appliedInitial.plan, plannerModel }
         attachPlannerToolTrace(resolvedInitialPlan)
-        updateRuntimeStep('call-planner', 'succeeded')
-        await completeRuntimeTrace(true)
         if (!isCurrentAgentProject()) return
+        setRuntimePhase('waiting_confirmation')
         const executionDecision = resolveBotanicAgentExecutionDecision({
           mode: session.executionMode,
           // draft 流程里设置不完整会提前走 clarification，到这里必然完整。
@@ -1902,7 +2053,6 @@ export default function AgentWorkspace({
           role: 'assistant', kind: 'plan', plan: resolvedInitialPlan, status: 'pending',
           content: resolvedInitialPlan.summary,
         })
-        if (planMessageId) setRuntimePhase('waiting_confirmation')
         if (planMessageId && executionDecision.action === 'auto_submit') {
           await confirmMessagePlan({
             id: planMessageId, role: 'assistant', kind: 'plan', content: resolvedInitialPlan.summary,
@@ -1994,8 +2144,13 @@ export default function AgentWorkspace({
 
   const sendInstruction = async () => {
     if (!session || planning || sendingInstructionRef.current) return
-    const cleanInstruction = instruction.replace(/\u00a0/g, ' ').trim()
-    if (!cleanInstruction) return
+    const prepared = prepareBotanicAgentComposerSubmission({
+      instruction,
+      mountedSkills: mountedSkillOptions,
+      contextItems,
+      locale,
+    })
+    if (!prepared) return
     sendingInstructionRef.current = true
     setInstruction('')
     setMentionQuery(undefined)
@@ -2003,7 +2158,11 @@ export default function AgentWorkspace({
     const generationOverrides = pendingGenerationOverrides
     setPendingGenerationOverrides({})
     try {
-      await runInstruction(cleanInstruction, { appendUser: cleanInstruction, generationOverrides })
+      await runInstruction(prepared.instruction, {
+        appendUser: prepared.content,
+        mentions: prepared.mentions,
+        generationOverrides,
+      })
     } finally {
       sendingInstructionRef.current = false
     }
@@ -2323,7 +2482,9 @@ export default function AgentWorkspace({
             instructions={skill.instructions}
             source="system"
             expanded={expandedSkillId === skill.id}
+            mounted={Boolean(session?.mountedSkillIds?.includes(skill.id))}
             onToggle={(id) => setExpandedSkillId((current) => current === id ? '' : id)}
+            onToggleMount={session ? toggleMountedSkill : undefined}
           />)}</div> : null}
           {!skillFormOpen && !skillConfirming && !skillError ? <button type="button" className="agent-skill-panel__create-entry" aria-expanded="false" onClick={() => setSkillFormOpen(true)}>{flowCopy.newSkill}</button> : <div className="agent-skill-panel__form">
               <input ref={skillNameInputRef} value={skillName} onChange={(event) => { setSkillName(event.target.value); setSkillConfirming(false); setSkillError('') }} maxLength={80} placeholder={flowCopy.skillNamePlaceholder} aria-label={flowCopy.skillName} autoFocus />
@@ -2342,7 +2503,9 @@ export default function AgentWorkspace({
               instructions={skill.instructions}
               source="project"
               expanded={expandedSkillId === skill.id}
+              mounted={Boolean(session?.mountedSkillIds?.includes(skill.id))}
               onToggle={(id) => setExpandedSkillId((current) => current === id ? '' : id)}
+              onToggleMount={session ? toggleMountedSkill : undefined}
             />)}
             {!skills.length && !skillError ? <div className="agent-panel__empty">{flowCopy.noProjectSkills}</div> : null}
           </div>
@@ -2360,6 +2523,7 @@ export default function AgentWorkspace({
           const live = liveConversation?.sessionId === session.id && liveConversation.message.id === message.id
             ? liveConversation
             : undefined
+          const executionTimeline = executionTimelines[message.id]
           return <div
             key={message.id}
             ref={(node) => registerMessageNode(message.id, node)}
@@ -2368,12 +2532,13 @@ export default function AgentWorkspace({
             data-agent-message-id={message.id}
           ><AgentConversationMessage
           message={message}
-          timeline={live?.timeline}
+          timeline={live?.timeline ?? executionTimeline}
           streaming={live?.streaming}
           sessionId={session.id}
           runs={runs}
           artifacts={artifacts}
           contextOptionIds={contextOptions.map((item) => item.id)}
+          mentionCatalog={mentionCatalog}
           generationModels={generationModels}
           executionMode={session.executionMode}
           planning={planning}
@@ -2450,12 +2615,14 @@ export default function AgentWorkspace({
             </ol> : null}
           </section>
         })() : null}
-        {!utilityPanelOpen && latestRun?.branches.length && latestRunFeedback && ['queued', 'running', 'executing'].includes(latestRun.status) ? <section className={`agent-run-card is-${latestRunFeedback.tone}`} aria-label={flowCopy.runProgress}>
-          <header><span><strong>{flowCopy.generationTask}</strong><small>{latestRunFeedback.label}</small></span><div>{latestRun.status === 'queued' || latestRun.status === 'running' || latestRun.status === 'executing' ? <button type="button" className="agent-icon-button agent-icon-button--danger" aria-label={flowCopy.cancelTask} title={flowCopy.cancelTask} disabled={cancellingRunId === latestRun.id} onClick={() => { setCancellingRunId(latestRun.id); setError(''); void onCancelRun(latestRun.id).then((ok) => { if (!ok) setError(flowCopy.cancelFailed) }).catch(() => setError(flowCopy.cancelFailed)).finally(() => setCancellingRunId('')) }}>{cancellingRunId === latestRun.id ? <span className="agent-workspace__mini-spinner" /> : <CloseIcon />}</button> : <button type="button" className="agent-run-card__feedback-action" aria-label={latestRunFeedback.actionLabel} title={latestRunFeedback.actionLabel} onClick={() => openRunFeedback(latestRun)}><AgentRunActionIcon action={latestRunFeedback.action} /></button>}<b>{latestRun.completedBranchCount}/{latestRun.branches.length}</b></div></header>
-          <p className="agent-run-card__feedback">{latestRunFeedback.detail}</p>
+        {!utilityPanelOpen && latestRun?.branches.length && latestRunFeedback && ['queued', 'running', 'executing'].includes(latestRun.status) ? <section className={`agent-run-card is-${latestRunFeedback.tone} is-compact`} aria-label={flowCopy.runProgress}>
+          <header>
+            <b aria-label={flowCopy.runProgress}>{latestRun.completedBranchCount}/{latestRun.branches.length}</b>
+            <button type="button" className="agent-icon-button agent-icon-button--danger" aria-label={flowCopy.cancelTask} title={flowCopy.cancelTask} disabled={cancellingRunId === latestRun.id} onClick={() => { setCancellingRunId(latestRun.id); setError(''); void onCancelRun(latestRun.id).then((ok) => { if (!ok) setError(flowCopy.cancelFailed) }).catch(() => setError(flowCopy.cancelFailed)).finally(() => setCancellingRunId('')) }}>{cancellingRunId === latestRun.id ? <span className="agent-workspace__mini-spinner" /> : <CloseIcon />}</button>
+          </header>
           <div className="agent-run-card__track" aria-hidden="true"><i style={{ width: `${Math.round(latestRun.completedBranchCount / latestRun.branches.length * 100)}%` }} /></div>
           <div className="agent-run-card__branches">
-            {latestRun.branches.map((branch) => <div key={branch.id}><span><strong>{branch.label}</strong><small>{branchStatusLabel(branch.status)}</small></span>{branch.status === 'failed' || branch.status === 'cancelled' ? <AgentFailureRecoveryActions
+            {latestRun.branches.map((branch) => <div key={branch.id}><span><strong>{branch.label}</strong></span>{branch.status === 'failed' || branch.status === 'cancelled' ? <AgentFailureRecoveryActions
               branch={branch}
               generationModels={generationModels}
               retrying={retryingBranchId === branch.id}

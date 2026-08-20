@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { applyAgentConversationStreamEvent, createAgentTimeline, reduceAgentTimeline } from './agentTimeline.ts'
+import {
+  agentTimelineToolPresentation,
+  applyAgentConversationStreamEvent,
+  createAgentTimeline,
+  projectBotanicAgentRunOntoTimeline,
+  reduceAgentTimeline,
+} from './agentTimeline.ts'
 
 const toolCall = (
   id: string,
@@ -198,4 +204,34 @@ test('web_fetch 展示网页获取主机名，不与搜索步骤合并', () => {
   const step = timeline.blocks.find((block) => block.type === 'step')
   assert.equal(step?.type === 'step' ? step.kind : '', 'fetch')
   assert.equal(step?.type === 'step' ? step.title : '', '网页获取 www.andlight.cn')
+})
+
+test('已知规划工具标题与服务端对齐；Run 投影只反映已持久化状态', () => {
+  assert.deepEqual(
+    agentTimelineToolPresentation(toolCall('c1', 'canvas_read', '读取画布上下文', 'running')),
+    { kind: 'read', title: '读取画布上下文' },
+  )
+  assert.deepEqual(
+    agentTimelineToolPresentation(toolCall('c2', 'generation_create_plan', '生成执行计划', 'succeeded')),
+    { kind: 'write', title: '起草生成计划' },
+  )
+  assert.deepEqual(
+    agentTimelineToolPresentation(toolCall('c3', 'project_memory_search', '检索项目记忆', 'running')),
+    { kind: 'search', title: '检索项目记忆' },
+  )
+
+  const timeline = projectBotanicAgentRunOntoTimeline({
+    id: 'run-1',
+    status: 'running',
+    branches: [
+      { id: 'b1', label: '主图', status: 'succeeded', attempt: 1, jobIds: ['j1'], outputCount: 1, updatedAt: 2 },
+      { id: 'b2', label: '变体', status: 'running', attempt: 0, jobIds: [], outputCount: 1, updatedAt: 3 },
+    ],
+  }, undefined, 1_000)
+  const steps = timeline.blocks.filter((block) => block.type === 'step')
+  assert.deepEqual(steps.map((block) => block.type === 'step' ? [block.title, block.status] : null), [
+    ['提交生成任务', 'succeeded'],
+    ['生成 · 主图', 'succeeded'],
+    ['生成 · 变体', 'running'],
+  ])
 })

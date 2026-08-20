@@ -39,7 +39,7 @@ const agentUtilityMessages = {
     batchActions: '批量操作', selectedCount: (count: number) => `已选 ${count} 项`, startNextRound: '创建下一轮', cancel: '取消', itemCount: (count: number) => `${count} 项`, notBackfilled: '未入画布', sourceConversation: '来源对话', selectAll: '全选', clearSelection: '取消全选', select: '选择', deselect: '取消选择', view: '查看',
     noToolArtifacts: '还没有 Skill / MCP 产物。', noGeneratedResults: '还没有该条件下的生成结果。', loadEarlierResults: '加载更早结果',
     memoryAria: '项目创作记忆', memoryTitle: '项目记忆', memoryDescription: '仅用于当前项目的后续规划；保存品牌规则、认可方向与禁区。', memoryType: '记忆类型', longTermRule: '长期规则', approvedDirection: '已确认方向', avoid: '避免事项', memoryPlaceholder: '例如：商品包装与品牌色不可改变', memoryContent: '项目记忆内容', saveMemory: '保存记忆', locateMemory: (content: string) => `在画布定位记忆 ${content}`, locate: '在画布定位', deleteMemory: (content: string) => `删除记忆 ${content}`, deleteMemoryTitle: '删除记忆', noMemory: '还没有项目记忆。', memoryCount: (count: number) => `${count} 条`,
-    system: '系统', project: '项目', invoke: '@调用',
+    system: '系统', project: '项目', invoke: '@调用', mount: '挂载到对话', mounted: '已挂载', unmount: '取消挂载',
   },
   en: {
     collaborationAria: 'Collaboration activity', collaborationTitle: 'Collaboration', collaborationDescription: 'Review recent changes from workspace members and jump to the related node, conversation, or task.',
@@ -55,7 +55,7 @@ const agentUtilityMessages = {
     batchActions: 'Batch actions', selectedCount: (count: number) => `${count} selected`, startNextRound: 'Start next round', cancel: 'Cancel', itemCount: (count: number) => `${count} ${count === 1 ? 'item' : 'items'}`, notBackfilled: 'Not on canvas', sourceConversation: 'Source conversation', selectAll: 'Select all', clearSelection: 'Clear selection', select: 'Select', deselect: 'Deselect', view: 'View',
     noToolArtifacts: 'No Skill or MCP outputs yet.', noGeneratedResults: 'No generated results match these filters.', loadEarlierResults: 'Load earlier results',
     memoryAria: 'Project creative memory', memoryTitle: 'Project memory', memoryDescription: 'Use project memory in future planning to preserve brand rules, approved directions, and boundaries.', memoryType: 'Memory type', longTermRule: 'Long-term rule', approvedDirection: 'Approved direction', avoid: 'Avoid', memoryPlaceholder: 'For example: Keep the product packaging and brand colors unchanged', memoryContent: 'Project memory content', saveMemory: 'Save memory', locateMemory: (content: string) => `Locate memory on canvas: ${content}`, locate: 'Locate on canvas', deleteMemory: (content: string) => `Delete memory: ${content}`, deleteMemoryTitle: 'Delete memory', noMemory: 'No project memory yet.', memoryCount: (count: number) => `${count} ${count === 1 ? 'entry' : 'entries'}`,
-    system: 'System', project: 'Project', invoke: '@mention',
+    system: 'System', project: 'Project', invoke: '@mention', mount: 'Mount in chat', mounted: 'Mounted', unmount: 'Unmount',
   },
 } as const
 
@@ -427,27 +427,32 @@ export function AgentSkillCard({
   instructions,
   source,
   expanded,
+  mounted = false,
   onToggle,
+  onToggleMount,
 }: {
   id: string
   name: string
   instructions: string
   source: 'system' | 'project'
   expanded: boolean
+  mounted?: boolean
   onToggle: (id: string) => void
+  onToggleMount?: (id: string, nextMounted: boolean) => void
 }) {
   const copy = useProductMessages(agentUtilityMessages)
   const summary = botanicAgentSkillSummary(instructions)
   const body = botanicAgentSkillBody(instructions)
-  return <article className={`agent-skill-card${expanded ? ' is-expanded' : ''}`}>
+  return <article className={`agent-skill-card${expanded ? ' is-expanded' : ''}${mounted ? ' is-mounted' : ''}`}>
     <button type="button" aria-expanded={expanded} aria-controls={`skill-body-${id}`} onClick={() => onToggle(id)}>
       <span>
         {source === 'system' ? <SparkleIcon /> : null}
         <b>{name}</b>
       </span>
-      <small>{source === 'system' ? copy.system : copy.project} · {copy.invoke}</small>
+      <small>{source === 'system' ? copy.system : copy.project} · {mounted ? copy.mounted : copy.invoke}</small>
       {!expanded && summary ? <p>{summary}</p> : null}
     </button>
+    {onToggleMount ? <button type="button" className="agent-skill-card__mount" aria-pressed={mounted} aria-label={mounted ? `${copy.unmount} ${name}` : `${copy.mount} ${name}`} onClick={() => onToggleMount(id, !mounted)}>{mounted ? copy.unmount : copy.mount}</button> : null}
     {expanded ? <pre id={`skill-body-${id}`} className="agent-skill-card__body">{body}</pre> : null}
   </article>
 }

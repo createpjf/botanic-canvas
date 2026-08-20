@@ -1,6 +1,6 @@
 import { buildBotanicAgentPlanRequest, completeBotanicAgentPlan, type BotanicAgentPlanRequestInput, type BotanicAgentPlanResponse } from '../domain/agentPlanContract'
 import { buildBotanicAgentChatRequest, type BotanicAgentChatRequestInput, type BotanicAgentChatResponse } from '../domain/agentChatContract'
-import { botanicAgentChatTransportErrorMessage, createBotanicAgentChatStreamReader, type BotanicAgentChatStreamEvent } from '../domain/agentChatStream'
+import { botanicAgentChatTransportErrorMessage, createBotanicAgentChatStreamReader, type BotanicAgentChatStreamEvent, type BotanicAgentStreamEvent } from '../domain/agentChatStream'
 import type { BotanicAgentRunReview } from '../domain/agentReviewContract'
 import { buildBotanicAgentTurnRequest, type BotanicAgentTurnRequestInput, type BotanicAgentTurnResult } from '../domain/agentTurnContract'
 import { ProductApiError, productAuthorizationHeader, productRequest } from './productSession'
@@ -100,6 +100,88 @@ export async function requestBotanicAgentTurn(input: BotanicAgentTurnRequestInpu
   return response.turn
 }
 
+function settlePlanFromStreamDone(event: Extract<BotanicAgentStreamEvent, { type: 'done' }>, input: BotanicAgentPlanRequestInput) {
+  if (event.clarification) {
+    return { kind: 'clarification', clarification: event.clarification } satisfies BotanicAgentClarificationResponse
+  }
+  if (event.plan) return completeBotanicAgentPlan(event.plan, input)
+  return undefined
+}
+
+/**
+ * 规划实时通道：工具步经 SSE 进对话时间线，done 再携带计划/澄清卡。
+ * 首事件前失败回退一次性接口；已开始推送后失败不得重跑模型。
+ */
+export async function streamBotanicAgentPlan(
+  input: BotanicAgentPlanRequestInput,
+  options: {
+    signal?: AbortSignal
+    onEvent?: (event: BotanicAgentStreamEvent) => void
+    onReasoning?: (entries: BotanicAgentReasoningEntry[]) => void
+  } = {},
+): Promise<BotanicAgentPlan | BotanicAgentClarificationResponse> {
+  const copy = agentApiCopy(input.locale)
+  let settled: BotanicAgentPlan | BotanicAgentClarificationResponse | undefined
+  try {
+    await streamBotanicAgentEndpoint({
+      path: '/api/agent-plans/stream',
+      body: JSON.stringify(buildBotanicAgentPlanRequest(input)),
+      locale: input.locale,
+      signal: options.signal,
+      onEvent: (event) => {
+        if (event.type === 'done') {
+          settled = settlePlanFromStreamDone(event, input)
+          if (event.reasoning?.length) options.onReasoning?.(event.reasoning)
+        }
+        options.onEvent?.(event)
+      },
+    })
+  } catch (caught) {
+    if (options.signal?.aborted) throw caught
+    if (settled) return settled
+    if (caught instanceof ProductApiError && (caught.code === 'STREAM_DISCONNECTED' || caught.code === 'REQUEST_TIMEOUT')) {
+      throw caught
+    }
+    return requestBotanicAgentPlan(input, options.signal, options.onReasoning)
+  }
+  if (!settled) throw new ProductApiError(copy.streamEnded, 0)
+  return settled
+}
+
+/**
+ * 回合实时通道：只读/生成意图工具步进时间线，done 携带与 /api/agent-intent 一致的 turn。
+ */
+export async function streamBotanicAgentTurn(
+  input: BotanicAgentTurnRequestInput,
+  options: { signal?: AbortSignal; onEvent?: (event: BotanicAgentStreamEvent) => void } = {},
+): Promise<BotanicAgentTurnResult> {
+  const copy = agentApiCopy(input.locale)
+  let settled: BotanicAgentTurnResult | undefined
+  try {
+    await streamBotanicAgentEndpoint({
+      path: '/api/agent-intent/stream',
+      body: JSON.stringify(buildBotanicAgentTurnRequest(input)),
+      locale: input.locale,
+      signal: options.signal,
+      onEvent: (event) => {
+        if (event.type === 'done' && event.turn) settled = event.turn
+        options.onEvent?.(event)
+      },
+    })
+  } catch (caught) {
+    if (options.signal?.aborted) throw caught
+    if (settled) return settled
+    if (caught instanceof ProductApiError && (caught.code === 'STREAM_DISCONNECTED' || caught.code === 'REQUEST_TIMEOUT')) {
+      throw caught
+    }
+    return requestBotanicAgentTurn(input, options.signal)
+  }
+  if (!settled) throw new ProductApiError(copy.streamEnded, 0)
+  return settled
+}
+
+/** 实时对话通道。它只改变“回答什么时候到”，不改变回答本身。 */
+
 export async function requestBotanicAgentChat(input: BotanicAgentChatRequestInput, signal?: AbortSignal) {
   const copy = agentApiCopy(input.locale)
   const response = await productRequest<{ response: BotanicAgentChatResponse }>('/api/agent-chat', {
@@ -117,24 +199,22 @@ export async function requestBotanicAgentChat(input: BotanicAgentChatRequestInpu
 const agentChatStreamIdleTimeoutMs = 60_000
 
 /**
- * 实时对话通道。它只改变“回答什么时候到”，不改变回答本身：done 事件携带的响应体
- * 与一次性接口完全一致，所以下游收敛逻辑只有一套。
- *
- * 任何在收到首个事件之前的失败都退回一次性接口——网关缓冲、代理不支持 SSE、
- * 部署尚未更新都属于这一类，用户不该因此拿不到回答。
+ * 共享 SSE 读取：chat / turn / plan 共用。首事件前失败由调用方决定是否回退一次性接口；
+ * 已开始推送后失败带 STREAM_DISCONNECTED，禁止悄悄重跑模型。
  */
-export async function streamBotanicAgentChat(
-  input: BotanicAgentChatRequestInput,
-  options: { signal?: AbortSignal; onEvent?: (event: BotanicAgentChatStreamEvent) => void } = {},
-): Promise<BotanicAgentChatResponse> {
+async function streamBotanicAgentEndpoint(input: {
+  path: string
+  body: string
+  locale: ProductLocale
+  signal?: AbortSignal
+  onEvent?: (event: BotanicAgentStreamEvent) => void
+}) {
   const copy = agentApiCopy(input.locale)
-  const body = JSON.stringify(buildBotanicAgentChatRequest(input))
   let received = false
-  // 静默挂起的连接必须自己超时：SSE 不像一次性请求那样有天然的结束点。
   const controller = new AbortController()
   const abortFromCaller = () => controller.abort()
-  if (options.signal?.aborted) controller.abort()
-  else options.signal?.addEventListener('abort', abortFromCaller, { once: true })
+  if (input.signal?.aborted) controller.abort()
+  else input.signal?.addEventListener('abort', abortFromCaller, { once: true })
   let inactivityTimer = window.setTimeout(() => controller.abort(), agentChatStreamIdleTimeoutMs)
   const keepAlive = () => {
     window.clearTimeout(inactivityTimer)
@@ -143,20 +223,17 @@ export async function streamBotanicAgentChat(
   try {
     const headers = new Headers({ 'Content-Type': 'application/json', Accept: 'text/event-stream', 'Accept-Language': input.locale })
     for (const [key, value] of Object.entries(await productAuthorizationHeader())) headers.set(key, value)
-    const response = await fetch('/api/agent-chat/stream', {
+    const response = await fetch(input.path, {
       method: 'POST',
       credentials: 'include',
       headers,
-      body,
+      body: input.body,
       signal: controller.signal,
     })
     if (!response.ok || !response.body) throw new ProductApiError(copy.streamUnavailable, response.status)
-    let settled: BotanicAgentChatResponse | undefined
     for await (const event of readAgentChatStream(response.body, keepAlive)) {
       received = true
-      if (event.type === 'done') settled = event.response
-      // error 也必须先进入展示层，让对话内正在运行的步骤明确收束为失败。
-      options.onEvent?.(event)
+      input.onEvent?.(event)
       if (event.type === 'error') {
         throw new ProductApiError(
           botanicAgentChatTransportErrorMessage(new Error(event.message ?? ''), { fallback: copy.chatIncomplete, locale: input.locale }),
@@ -165,19 +242,15 @@ export async function streamBotanicAgentChat(
         )
       }
     }
-    if (!settled) throw new ProductApiError(copy.streamEnded, 0)
-    return settled
   } catch (caught) {
-    // 用户主动取消要如实抛出；只有实时通道本身不可用才回退。
-    if (options.signal?.aborted) throw caught
-    // 已经开始推送后失败是真实错误，不能悄悄用另一条通道重跑一次模型。
+    if (input.signal?.aborted) throw caught
     if (received) {
       const idleTimedOut = controller.signal.aborted
       if (caught instanceof ProductApiError) {
         throw new ProductApiError(
           botanicAgentChatTransportErrorMessage(caught, { idleTimedOut, fallback: caught.message, locale: input.locale }),
           caught.status,
-          caught.code,
+          caught.code === 'STREAM_DISCONNECTED' || caught.code === 'REQUEST_TIMEOUT' ? caught.code : (idleTimedOut ? 'REQUEST_TIMEOUT' : 'STREAM_DISCONNECTED'),
         )
       }
       throw new ProductApiError(
@@ -186,11 +259,44 @@ export async function streamBotanicAgentChat(
         idleTimedOut ? 'REQUEST_TIMEOUT' : 'STREAM_DISCONNECTED',
       )
     }
-    return requestBotanicAgentChat(input, options.signal)
+    throw caught
   } finally {
     window.clearTimeout(inactivityTimer)
-    options.signal?.removeEventListener('abort', abortFromCaller)
+    input.signal?.removeEventListener('abort', abortFromCaller)
   }
+}
+
+/**
+ * 实时对话通道。done 事件携带的响应体与一次性接口完全一致。
+ * 任何在收到首个事件之前的失败都退回一次性接口。
+ */
+export async function streamBotanicAgentChat(
+  input: BotanicAgentChatRequestInput,
+  options: { signal?: AbortSignal; onEvent?: (event: BotanicAgentChatStreamEvent) => void } = {},
+): Promise<BotanicAgentChatResponse> {
+  const copy = agentApiCopy(input.locale)
+  let settled: BotanicAgentChatResponse | undefined
+  try {
+    await streamBotanicAgentEndpoint({
+      path: '/api/agent-chat/stream',
+      body: JSON.stringify(buildBotanicAgentChatRequest(input)),
+      locale: input.locale,
+      signal: options.signal,
+      onEvent: (event) => {
+        if (event.type === 'done' && event.response) settled = event.response
+        options.onEvent?.(event)
+      },
+    })
+  } catch (caught) {
+    if (options.signal?.aborted) throw caught
+    if (settled) return settled
+    if (caught instanceof ProductApiError && (caught.code === 'STREAM_DISCONNECTED' || caught.code === 'REQUEST_TIMEOUT')) {
+      throw caught
+    }
+    return requestBotanicAgentChat(input, options.signal)
+  }
+  if (!settled) throw new ProductApiError(copy.streamEnded, 0)
+  return settled
 }
 
 async function* readAgentChatStream(

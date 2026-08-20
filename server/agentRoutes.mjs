@@ -191,7 +191,9 @@ export function createAgentRouteHandler({
       agentBranchRetry: agentBranchRetryMatch,
     } = routeMatches
 
-    if (url.pathname === '/api/agent-plans') {
+    if (url.pathname === '/api/agent-plans' || url.pathname === '/api/agent-plans/stream') {
+      // 实时通道与一次性请求共用同一套鉴权、限流、校验与取消语义；工具步经 onEvent 推送。
+      const streaming = url.pathname.endsWith('/stream')
       if (request.method !== 'POST') return methodNotAllowed(response, 'Agent 规划资源只接受提交请求。', 'POST')
       const user = await requireUser(request)
       if (!await enforceRateLimit(response, { scope: 'agent-plan', subject: user.id, limit: config.security.agentPlansPerFiveMinutes, windowMs: 5 * 60_000 })) return true
@@ -210,25 +212,45 @@ export function createAgentRouteHandler({
       request.once('aborted', cancel)
       response.once('close', cancelOnClosedResponse)
       if (request.aborted || response.destroyed) cancel()
+      const sse = streaming ? createServerSentEventWriter(response) : undefined
+      sse?.start()
       try {
         const result = await planBotanicGeneration(input, config, {
           signal: controller.signal,
           consumeWebResearchQuota: consumeWebResearchQuota
             ? () => consumeWebResearchQuota(user.id)
             : undefined,
+          ...(sse ? { onEvent: (event) => sse.send(event) } : {}),
         })
         if (controller.signal.aborted || response.destroyed) return true
         // reasoning 必须留在 plan 之外：计划会被原样持久化到会话消息里，
         // 而原始推理只允许随当轮响应下发。
         const { reasoning, ...plan } = result ?? {}
         const liveReasoning = reasoning?.length ? { reasoning } : {}
-        return result?.kind === 'clarification'
-          ? json(response, 200, { clarification: result.clarification, ...liveReasoning })
-          : json(response, 200, { plan, ...liveReasoning })
+        if (!sse) {
+          return result?.kind === 'clarification'
+            ? json(response, 200, { clarification: result.clarification, ...liveReasoning })
+            : json(response, 200, { plan, ...liveReasoning })
+        }
+        if (result?.kind === 'clarification') {
+          sse.send({ type: 'done', clarification: result.clarification, ...liveReasoning })
+        } else {
+          sse.send({ type: 'done', plan, ...liveReasoning })
+        }
+        return sse.end()
       } catch (caught) {
         if (controller.signal.aborted || response.destroyed) return true
+        if (sse?.started) {
+          sse.send({
+            type: 'error',
+            code: caught?.code ?? 'AGENT_PLAN_FAILED',
+            message: typeof caught?.message === 'string' ? caught.message : 'Agent 规划未完成，请重试。',
+          })
+          return sse.end()
+        }
         throw caught
       } finally {
+        sse?.end()
         request.off('aborted', cancel)
         response.off('close', cancelOnClosedResponse)
       }
@@ -297,7 +319,8 @@ export function createAgentRouteHandler({
       return json(response, 200, { skills: botanicAgentSystemSkills() })
     }
 
-    if (url.pathname === '/api/agent-intent') {
+    if (url.pathname === '/api/agent-intent' || url.pathname === '/api/agent-intent/stream') {
+      const streaming = url.pathname.endsWith('/stream')
       if (request.method !== 'POST') return methodNotAllowed(response, 'Agent 意图资源只接受提交请求。', 'POST')
       const user = await requireUser(request)
       if (!await enforceRateLimit(response, { scope: 'agent-chat', subject: user.id, limit: config.security.agentChatsPerFiveMinutes, windowMs: 5 * 60_000 })) return true
@@ -314,19 +337,33 @@ export function createAgentRouteHandler({
       request.once('aborted', cancel)
       response.once('close', cancelOnClosedResponse)
       if (request.aborted || response.destroyed) cancel()
+      const sse = streaming ? createServerSentEventWriter(response) : undefined
+      sse?.start()
       try {
         const turn = await resolveBotanicAgentTurn(input, config, {
           document: project.document,
           projectSkills,
           signal: controller.signal,
           resolveVisionMedia: visionMediaResolver(user.id, validatedInput.projectId),
+          ...(sse ? { onEvent: (event) => sse.send(event) } : {}),
         })
         if (controller.signal.aborted || response.destroyed) return true
-        return json(response, 200, { turn })
+        if (!sse) return json(response, 200, { turn })
+        sse.send({ type: 'done', turn })
+        return sse.end()
       } catch (caught) {
         if (controller.signal.aborted || response.destroyed) return true
+        if (sse?.started) {
+          sse.send({
+            type: 'error',
+            code: caught?.code ?? 'AGENT_TURN_FAILED',
+            message: typeof caught?.message === 'string' ? caught.message : 'Agent 意图解析未完成，请重试。',
+          })
+          return sse.end()
+        }
         throw caught
       } finally {
+        sse?.end()
         request.off('aborted', cancel)
         response.off('close', cancelOnClosedResponse)
       }

@@ -1,5 +1,11 @@
 import { AgentToolRuntimeError, runAgentToolLoop } from './agentToolRuntime.mjs'
-import { createBotanicAgentPlanningToolRegistry } from './botanicAgentTools.mjs'
+import {
+  botanicAgentMountedSkillBriefing,
+  botanicAgentSearchableSkills,
+  createBotanicAgentPlanningToolRegistry,
+  resolveBotanicAgentMountedSkills,
+} from './botanicAgentTools.mjs'
+import { readStreamedChatCompletion } from './botanicAgentStream.mjs'
 import { normalizeBotanicAgentLocale, readBotanicAgentInstructions } from './agentInstructions.mjs'
 import {
   botanicCreativeBriefFieldIds,
@@ -657,21 +663,23 @@ async function plannerInstructions(locale) {
 
 function plannerModelInput(input) {
   const { projectSkills, ...safeInput } = input
-  const mountedSkillIds = new Set(input.mountedSkillIds ?? [])
+  const availableSkills = botanicAgentSearchableSkills(projectSkills).map((skill) => ({ id: skill.id, name: skill.name }))
+  const mountedSkills = resolveBotanicAgentMountedSkills(input.mountedSkillIds, projectSkills)
+    .map((skill) => ({ id: skill.id, name: skill.name, instructions: skill.instructions }))
   return {
     ...safeInput,
-    ...(Array.isArray(projectSkills) && projectSkills.length
-      ? { availableSkills: projectSkills.map((skill) => ({ id: skill.id, name: skill.name })) }
-      : {}),
-    ...(mountedSkillIds.size && Array.isArray(projectSkills)
-      ? { mountedSkills: projectSkills.filter((skill) => mountedSkillIds.has(skill.id)).map((skill) => ({ id: skill.id, name: skill.name })) }
-      : {}),
+    ...(availableSkills.length ? { availableSkills } : {}),
+    ...(mountedSkills.length ? { mountedSkills } : {}),
   }
 }
 
 export async function planBotanicGeneration(input, runtimeConfig, options = {}) {
   const config = botanicAgentProviderConfig(runtimeConfig, input?.plannerModel)
-  const system = await plannerInstructions(input.locale)
+  const mountedSkills = resolveBotanicAgentMountedSkills(input.mountedSkillIds, input.projectSkills)
+  const system = [
+    await plannerInstructions(input.locale),
+    botanicAgentMountedSkillBriefing(mountedSkills, input.locale),
+  ].filter(Boolean).join('\n\n')
   if (options.signal?.aborted) throw new BotanicAgentPlannerError(499, 'REQUEST_CANCELLED', '生图 Agent 请求已取消。')
   const timeoutSignal = AbortSignal.timeout(config.timeoutMs)
   const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal
@@ -698,6 +706,12 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
     webResearch,
   })
   const hasWebTools = Boolean(registry.get('web_search') || registry.get('web_fetch'))
+  const streaming = typeof options.onEvent === 'function'
+  const allowRawReasoning = Boolean(runtimeConfig?.agentRawReasoning)
+  const emitEvent = (event) => {
+    if (!streaming) return
+    try { options.onEvent(event) } catch { /* 展示层异常不得中断本轮规划。 */ }
+  }
   try {
     const result = await runAgentToolLoop({
       registry,
@@ -707,14 +721,15 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
       ],
       toolChoice: 'auto',
       maximumSteps: hasWebTools ? 8 : 4,
-      allowRawReasoning: Boolean(runtimeConfig?.agentRawReasoning),
-      callModel: async ({ messages, tools, tool_choice }) => {
+      allowRawReasoning,
+      onEvent: emitEvent,
+      callModel: async ({ messages, tools, tool_choice, step }) => {
         const response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${config.apiKey}`,
             'x-litellm-api-key': config.apiKey,
-            Accept: 'application/json',
+            Accept: streaming ? 'text/event-stream' : 'application/json',
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
@@ -724,13 +739,21 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
             tool_choice,
             max_tokens: 3000,
             temperature: botanicAgentProviderTemperature(config.model),
-            stream: false,
+            stream: streaming,
           }),
           signal,
         })
-        const body = await response.json().catch(() => null)
         if (!response.ok) throw botanicAgentProviderResponseError(response.status)
-        return body
+        if (!streaming) return await response.json().catch(() => null)
+        return await readStreamedChatCompletion(response.body, {
+          onEvent: (event) => {
+            if (event.type === 'reasoning') {
+              if (allowRawReasoning) emitEvent({ type: 'reasoning', step, delta: event.delta })
+              return
+            }
+            if (event.type === 'answer') emitEvent({ type: 'answer', step, delta: event.delta })
+          },
+        })
       },
     })
     const output = typeof result.output === 'string'

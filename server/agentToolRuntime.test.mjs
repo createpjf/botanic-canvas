@@ -292,3 +292,56 @@ test('搜索结果数为 0 时保留真实计数', async () => {
 
   assert.deepEqual(events[1].presentation, { kind: 'search', title: '已搜索 0 个网站', count: 0 })
 })
+
+test('规划/回合工具在 execute 前才有 running，返回后才有 succeeded，并带人话标题', async () => {
+  const registry = createAgentToolRegistry([{
+    name: 'canvas_read',
+    label: '读取画布上下文',
+    description: '读取画布。',
+    risk: 'read',
+    parameters: { type: 'object', properties: {} },
+    validate: (value) => value,
+    execute: async () => ({ nodes: 2 }),
+  }, {
+    name: 'generation_create_plan',
+    label: '生成执行计划',
+    description: '起草计划。',
+    risk: 'read',
+    terminal: true,
+    parameters: { type: 'object', properties: {} },
+    validate: (value) => value,
+    execute: async () => ({ kind: 'plan' }),
+  }])
+  const events = []
+  let modelCall = 0
+  await runAgentToolLoop({
+    registry, messages: [], onEvent: (event) => events.push(event),
+    callModel: async () => {
+      modelCall += 1
+      return modelCall === 1
+        ? { choices: [{ message: { tool_calls: [
+          { id: 'call-canvas', type: 'function', function: { name: 'canvas_read', arguments: '{}' } },
+          { id: 'call-plan', type: 'function', function: { name: 'generation_create_plan', arguments: '{}' } },
+        ] } }] }
+        : { choices: [{ message: { content: '完成' } }] }
+    },
+  })
+
+  assert.deepEqual(events.map((event) => [event.toolCall.status, event.presentation?.title]), [
+    ['running', '读取画布上下文'],
+    ['succeeded', '读取画布上下文'],
+    ['running', '起草生成计划'],
+    ['succeeded', '起草生成计划'],
+  ])
+  // 禁止未 execute 先 succeeded：每个工具的首个事件必须是 running。
+  const byId = new Map()
+  for (const event of events) {
+    const seen = byId.get(event.toolCall.id) ?? []
+    seen.push(event.toolCall.status)
+    byId.set(event.toolCall.id, seen)
+  }
+  for (const statuses of byId.values()) {
+    assert.equal(statuses[0], 'running')
+    assert.ok(statuses.includes('succeeded'))
+  }
+})
