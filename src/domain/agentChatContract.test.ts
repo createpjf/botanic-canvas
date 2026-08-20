@@ -98,6 +98,18 @@ test('执行链路元话语只提交已有计划，不把出图二字送进规�
   assert.deepEqual(decideBotanicAgentRequest('为什么没生成', true), { kind: 'chat', mode: 'conversation' })
 })
 
+test('同样的执行链路措辞出现在提问里只是发问，不能提交待确认计划', () => {
+  // 提交待确认计划会真实发起生成并花钱，提问不该有这个副作用。
+  for (const question of [
+    '为什么执行链路没有跑？',
+    '这个待确认计划怎么改',
+    '执行链路是什么意思？',
+    '触发这批生成节点会不会重复扣费？',
+  ]) {
+    assert.notEqual(decideBotanicAgentRequest(question, true).kind, 'confirm_pending', question)
+  }
+})
+
 test('自然语言创作请求在已有图片上下文时进入生成计划链路', () => {
   const requests = [
     '我想要一张 Mori Kei 风格的人像',

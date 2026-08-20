@@ -196,6 +196,15 @@ function isBareGenerationConfirmation(text: string) {
 }
 
 /**
+ * 执行链路这类词只有出现在陈述句里才是「去提交那份计划」。
+ * 同样的词出现在提问里只是在问它，据此自动提交会花掉用户没打算花的生成额度。
+ */
+function statesHarnessExecution(text: string) {
+  if (!refersToHarnessExecution.test(text)) return false
+  return !/[?？]/u.test(text) && !asksForAdviceOrExplanation.test(text)
+}
+
+/**
  * 只有明确的视觉执行请求才进入生成链路；咨询、解释和能力询问永远留在对话链路。
  * 这是防止 Agent 因一句“图片怎么改”就在画布创建空节点的单一边界。
  */
@@ -204,7 +213,7 @@ export function decideBotanicAgentRequest(value: string, hasGenerationTarget = f
   if (!text) return { kind: 'chat', mode: 'conversation' }
   // 「确认生成」这类裸确认语不含任何画面信息。把它送进规划器只会得到一份凭空编写的样板计划，
   // 唯一正确的去处是提交对话里已存在的待确认计划。
-  if (isBareGenerationConfirmation(text) || refersToHarnessExecution.test(text)) return { kind: 'confirm_pending' }
+  if (isBareGenerationConfirmation(text) || statesHarnessExecution(text)) return { kind: 'confirm_pending' }
 
   const asksAboutPreviousOutcome = /(?:没有|没|未).{0,8}(?:生成|生图|出图|结果)|(?:刚才|之前|上次)?.{0,6}(?:为什么|为何|怎么).{0,16}(?:没|未|不).{0,6}(?:成功|生成|反应|结果)/iu.test(text)
   const asksAboutCapability = /(?:你|agent).{0,8}(?:可以|能|支持).{0,12}(?:生成|生图|出图|做图|视频)|\bcan\s+you\s+(?:generate|create|make|edit)\b/iu.test(text)
