@@ -49,11 +49,20 @@ export type BotanicAgentTurnResult =
       toolCalls?: AgentToolCallTrace[]
     }
 
+/**
+ * 单条历史消息的上限，与服务端回合校验一致。助手回答可以长到 12000 字，
+ * 整段历史原样回传会被判成请求非法；这里先截断，宁可少给上文也不让整轮 400。
+ */
+export const botanicAgentTurnMessageLimit = 4000
+
 export function buildBotanicAgentTurnRequest(input: BotanicAgentTurnRequestInput): BotanicAgentTurnRequest {
   return {
     projectId: input.projectId,
     ...(input.plannerModel ? { plannerModel: input.plannerModel } : {}),
-    messages: input.messages.slice(-16).map((message) => ({ role: message.role, content: message.content })),
+    messages: input.messages.slice(-16).map((message) => ({
+      role: message.role,
+      content: message.content.slice(0, botanicAgentTurnMessageLimit),
+    })),
     contextNodeIds: [...new Set(input.contextNodeIds)].slice(0, 32),
     hasTarget: Boolean(input.hasTarget),
     ...(input.generationModels?.length
