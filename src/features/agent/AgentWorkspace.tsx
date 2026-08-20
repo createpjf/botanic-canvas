@@ -1772,7 +1772,8 @@ export default function AgentWorkspace({
         if (!isCurrentAgentProject()) return
         const executionDecision = resolveBotanicAgentExecutionDecision({
           mode: session.executionMode,
-          settingsComplete: hasCompleteOutputSettings,
+          // draft 流程里设置不完整会提前走 clarification，到这里必然完整。
+          settingsComplete: true,
           pendingActionCount: 0,
           outputCount: resolvedInitialPlan.output.count,
         })
