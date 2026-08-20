@@ -4,6 +4,7 @@ import {
   botanicAgentBranchStatusLabel,
   botanicAgentActionReceiptMessageId,
   botanicAgentContextSnapshotNodeIds,
+  botanicAgentAutoRetryTargets,
   botanicAgentSubmissionKey,
   buildBotanicAgentRunTimeline,
   buildBotanicAgentSessionTimeline,
@@ -894,6 +895,20 @@ export default function AgentWorkspace({
       }
     }
   }, [artifacts, availableCanvasNodeIds, onUpdateMessage, runs, session])
+
+  // 导演回看：自动模式下失败分支自动重试一次（attempt 0 → 1），再失败就停手交还用户。
+  // 重试端点按 attempt 幂等，取消的分支不重试；手动模式保持人工点按。
+  const autoRetriedBranchesRef = useRef(new Set<string>())
+  useEffect(() => {
+    if (session?.executionMode !== 'auto') return
+    const sessionRunIds = new Set(session.messages.flatMap((message) => (message.runId ? [message.runId] : [])))
+    for (const target of botanicAgentAutoRetryTargets(runs, sessionRunIds)) {
+      const key = `${target.runId}:${target.branchId}`
+      if (autoRetriedBranchesRef.current.has(key)) continue
+      autoRetriedBranchesRef.current.add(key)
+      void onRetryBranch(target.runId, target.branchId).catch(() => { /* 重试失败交还用户手动处理。 */ })
+    }
+  }, [onRetryBranch, runs, session?.executionMode, session?.messages])
 
   // 结果自评：Run 终态且结果回填后请求一次视觉评审，以固定消息 id 追加为会话消息。
   // 评审是派生数据：未配置、失败或结果未回填都静默跳过，绝不影响 Run 与结果本身；

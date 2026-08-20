@@ -957,6 +957,25 @@ export function botanicAgentNextIterationTargetId(
 }
 
 /**
+ * 导演回看：自动模式下值得自动重试一次的失败分支。只认首次失败（attempt 0），
+ * 重试一次仍失败就停手交还用户，绝不无限循环；用户主动取消的分支不算失败。
+ * 只处理当前会话里挂着的任务，不把其他会话的历史任务拉进来。
+ */
+export function botanicAgentAutoRetryTargets(
+  runs: Array<Pick<BotanicAgentRun, 'id' | 'branches'>>,
+  sessionRunIds: ReadonlySet<string>,
+): Array<{ runId: string; branchId: string }> {
+  return runs.flatMap((run) => {
+    if (!sessionRunIds.has(run.id)) return []
+    return run.branches.flatMap((branch) => (
+      branch.status === 'failed' && (branch.attempt ?? 0) === 0
+        ? [{ runId: run.id, branchId: branch.id }]
+        : []
+    ))
+  })
+}
+
+/**
  * 用户已确认后，Run 会先持久化，再幂等提交生成任务。如果页面在
  * 两步之间关闭，恢复器只对“仍排队且从未绑定 Job”的 Run 补做
  * 幂等执行；已绑定 Job 的正常排队任务不会重复提交。

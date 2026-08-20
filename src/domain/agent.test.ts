@@ -7,6 +7,7 @@ import {
   collectBotanicAgentResults,
   createBotanicAgentMemoryItem,
   buildBotanicAgentPlan,
+  botanicAgentAutoRetryTargets,
   botanicAgentContextSnapshotNodeIds,
   botanicAgentNextIterationTargetId,
   createBotanicAgentContextSnapshot,
@@ -303,6 +304,25 @@ test('Agent Run 只对已确认但未绑定任务的 queued 快照补执行', ()
   }), false)
   assert.equal(shouldResumeQueuedAgentRunExecution({ status: 'running', branches: [branch] }), false)
   assert.equal(shouldResumeQueuedAgentRunExecution({ status: 'queued', branches: [] }), false)
+})
+
+test('导演回看只自动重试首次失败的分支，取消与二次失败交还用户', () => {
+  const runs = [{
+    id: 'run-1',
+    branches: [
+      { id: 'branch-first-fail', label: 'A', status: 'failed' as const, attempt: 0, jobIds: [], outputCount: 0, updatedAt: 1 },
+      { id: 'branch-retried-fail', label: 'B', status: 'failed' as const, attempt: 1, jobIds: [], outputCount: 0, updatedAt: 1 },
+      { id: 'branch-cancelled', label: 'C', status: 'cancelled' as const, attempt: 0, jobIds: [], outputCount: 0, updatedAt: 1 },
+      { id: 'branch-ok', label: 'D', status: 'succeeded' as const, attempt: 0, jobIds: ['job'], outputCount: 1, updatedAt: 1 },
+    ],
+  }, {
+    id: 'run-other-session',
+    branches: [{ id: 'branch-x', label: 'X', status: 'failed' as const, attempt: 0, jobIds: [], outputCount: 0, updatedAt: 1 }],
+  }]
+  assert.deepEqual(botanicAgentAutoRetryTargets(runs, new Set(['run-1'])), [
+    { runId: 'run-1', branchId: 'branch-first-fail' },
+  ])
+  assert.deepEqual(botanicAgentAutoRetryTargets(runs, new Set()), [])
 })
 
 test('一轮生成回填后，新结果按分支顺序成为下一轮默认基准', () => {
