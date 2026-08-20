@@ -624,11 +624,36 @@ export function createAgentRouteHandler({
       if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', 'Agent Run 提交标识无效，请重试。')
       const input = validateAgentRunCreation(await readJson(request, 64 * 1024, 'Agent Run 请求过大。'))
       await requireProjectPermission(productStore, user.id, input.projectId, 'create-generation')
+
+      // 导演模式：确认计划即授权其声明的生成提交。Run 落库后服务端直接建工作流并送队列，
+      // 执行不再寄生在浏览器三跳里，关掉页面也不影响推进。配额、预算与 Job 幂等仍由
+      // agentRunGeneration 把关；权限矩阵中 create-generation 与 modify-workflow 同组出现，
+      // 能创建 Run 就能建工作流。失败时 4xx 已在内部把 Run 收口为 failed 并广播，
+      // 其余（队列暂不可用等）保持 queued，由客户端恢复器按原路径幂等兜底。
+      const readyForAutoSubmit = (run) => run.status === 'queued'
+        && run.branches.length > 0
+        && run.branches.every((branch) => !branch.activeJobId && !(branch.jobIds?.length))
+      const autoSubmitAgentRun = async (run) => {
+        if (!agentRunGeneration?.submitGeneration || !readyForAutoSubmit(run)) return run
+        try {
+          const execution = await agentRunGeneration.submitGeneration(user.id, run.projectId, run.id)
+          observeRun({ type: 'auto_submitted', requestId, projectId: run.projectId, runId: run.id, status: execution.run.status, durationMs: Date.now() - startedAt })
+          return execution.run
+        } catch {
+          const latest = await productStore.readAgentRun(user.id, run.id)
+          observeRun({ type: 'auto_submit_deferred', requestId, projectId: run.projectId, runId: run.id, status: latest?.status ?? run.status, durationMs: Date.now() - startedAt })
+          return latest ?? run
+        }
+      }
+
       const id = `agent_run_${generationJobIdForIdempotency(user.id, idempotencyKey).slice(4)}`
       const existing = await productStore.readAgentRun(user.id, id)
       if (existing) {
-        observeRun({ type: 'submission_reused', requestId, projectId: existing.projectId, runId: existing.id, status: existing.status, durationMs: Date.now() - startedAt })
-        return json(response, 200, { run: publicAgentRun(existing) })
+        // 幂等重放同样收敛到已执行状态：确认后页面立刻关闭时 Run 停在 queued，
+        // 重放这条请求应把它送进执行，而不是原样返回。
+        const resumed = await autoSubmitAgentRun(existing)
+        observeRun({ type: 'submission_reused', requestId, projectId: resumed.projectId, runId: resumed.id, status: resumed.status, durationMs: Date.now() - startedAt })
+        return json(response, 200, { run: publicAgentRun(resumed) })
       }
       const run = createPersistentAgentRun(input, { id, ownerId: user.id })
       const storedRun = await productStore.putAgentRun(user.id, run)
@@ -640,7 +665,8 @@ export function createAgentRouteHandler({
       })
       await publishAgentRunUpdated({ projectId: storedRun.projectId, run: publicAgentRun(storedRun) })
       observeRun({ type: 'created', requestId, projectId: storedRun.projectId, runId: storedRun.id, status: storedRun.status, durationMs: Date.now() - startedAt })
-      return json(response, 201, { run: publicAgentRun(storedRun) })
+      const submittedRun = await autoSubmitAgentRun(storedRun)
+      return json(response, 201, { run: publicAgentRun(submittedRun) })
     }
     if (projectAgentRunsMatch) {
       if (request.method !== 'GET') return methodNotAllowed(response, '项目 Agent Run 资源只支持读取。', 'GET')

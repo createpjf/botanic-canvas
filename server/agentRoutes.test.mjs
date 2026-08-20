@@ -47,6 +47,126 @@ test('Agent Run 首次创建返回并广播锁内持久化后的权威记录', a
   assert.equal(published[0]?.run.id, responses[0]?.body.run.id)
 })
 
+test('导演模式：创建 Run 后服务端直接提交生成，浏览器拿到已执行的快照', async () => {
+  const submitted = []
+  const events = []
+  const responses = []
+  const handler = createAgentRouteHandler({
+    config: {},
+    productStore: {
+      projectAccess: async () => ({ exists: true, role: 'owner' }),
+      readAgentRun: async () => undefined,
+      putAgentRun: async (_userId, run) => run,
+    },
+    agentRunGeneration: {
+      submitGeneration: async (userId, projectId, runId) => {
+        submitted.push({ userId, projectId, runId })
+        return {
+          run: {
+            id: runId, projectId, status: 'executing', createdAt: 1, updatedAt: 2, plan: runInput.plan,
+            branches: [{ id: 'branch-1', label: '海边人像', status: 'queued', attempt: 0, jobIds: ['job-1'], activeJobId: 'job-1', outputCount: 0, updatedAt: 2 }],
+          },
+          jobs: [{ id: 'job-1' }],
+          workflows: [],
+        }
+      },
+    },
+    json: (_response, status, body) => { responses.push({ status, body }); return true },
+    readJson: async () => runInput,
+    requireUser: async () => ({ id: 'user-1' }),
+    publishAgentRunUpdated: async () => {},
+    observeAgentRun: (event) => events.push(event),
+  })
+
+  await handler(
+    { method: 'POST', headers: { 'idempotency-key': 'agent-run-director' } },
+    {},
+    new URL('http://botanic.test/api/agent-runs'),
+    {},
+    'request-director',
+  )
+
+  assert.equal(responses[0]?.status, 201)
+  assert.equal(responses[0]?.body.run.status, 'executing')
+  assert.equal(responses[0]?.body.run.branches[0].activeJobId, 'job-1')
+  assert.equal(submitted.length, 1)
+  assert.equal(submitted[0].userId, 'user-1')
+  assert.equal(submitted[0].projectId, runInput.projectId)
+  assert.deepEqual(events.map((event) => event.type), ['created', 'auto_submitted'])
+})
+
+test('导演模式：提交暂不可用时 Run 保持 queued，由恢复器兜底；幂等重放会补提交', async () => {
+  const events = []
+  const responses = []
+  const storedQueued = {
+    id: 'agent_run_deferred', projectId: runInput.projectId, status: 'queued', createdAt: 1, updatedAt: 1,
+    plan: runInput.plan,
+    branches: [{ id: 'branch-1', label: '海边人像', status: 'queued', attempt: 0, jobIds: [], outputCount: 0, updatedAt: 1 }],
+  }
+  const shared = {
+    config: {},
+    json: (_response, status, body) => { responses.push({ status, body }); return true },
+    readJson: async () => runInput,
+    requireUser: async () => ({ id: 'user-1' }),
+    publishAgentRunUpdated: async () => {},
+    observeAgentRun: (event) => events.push(event),
+  }
+
+  // 首次创建：队列不可用，提交抛错 → 201 且 Run 仍是 queued。
+  // 创建后 catch 里会再读一次快照；让第一次读（幂等检查）为空、之后返回 queued 原样。
+  let readCount = 0
+  const failingHandler = createAgentRouteHandler({
+    ...shared,
+    productStore: {
+      projectAccess: async () => ({ exists: true, role: 'owner' }),
+      readAgentRun: async () => { readCount += 1; return readCount === 1 ? undefined : storedQueued },
+      putAgentRun: async () => storedQueued,
+    },
+    agentRunGeneration: { submitGeneration: async () => { throw new Error('QUEUE_UNAVAILABLE') } },
+  })
+  await failingHandler(
+    { method: 'POST', headers: { 'idempotency-key': 'agent-run-deferred' } },
+    {},
+    new URL('http://botanic.test/api/agent-runs'),
+    {},
+    'request-deferred',
+  )
+  assert.equal(responses[0]?.status, 201)
+  assert.equal(responses[0]?.body.run.status, 'queued')
+  assert.ok(events.some((event) => event.type === 'auto_submit_deferred'))
+
+  // 幂等重放：existing 是空 queued → 补提交并返回已执行快照。
+  const resubmitted = []
+  const reuseHandler = createAgentRouteHandler({
+    ...shared,
+    productStore: {
+      projectAccess: async () => ({ exists: true, role: 'owner' }),
+      readAgentRun: async () => storedQueued,
+      putAgentRun: async () => { throw new Error('幂等重放不应重建 Run') },
+    },
+    agentRunGeneration: {
+      submitGeneration: async (_userId, _projectId, runId) => {
+        resubmitted.push(runId)
+        return {
+          run: { ...storedQueued, status: 'executing', branches: [{ ...storedQueued.branches[0], jobIds: ['job-1'], activeJobId: 'job-1' }] },
+          jobs: [{ id: 'job-1' }],
+          workflows: [],
+        }
+      },
+    },
+  })
+  await reuseHandler(
+    { method: 'POST', headers: { 'idempotency-key': 'agent-run-deferred' } },
+    {},
+    new URL('http://botanic.test/api/agent-runs'),
+    {},
+    'request-replay',
+  )
+  assert.deepEqual(resubmitted, ['agent_run_deferred'])
+  assert.equal(responses[1]?.status, 200)
+  assert.equal(responses[1]?.body.run.status, 'executing')
+})
+
 test('Agent Run 创建与幂等复用产生不含创作内容的结构化运行事件', async () => {
   const events = []
   const stored = { id: 'agent_run_existing', projectId: runInput.projectId, status: 'queued', branches: [], createdAt: 1, updatedAt: 1, plan: runInput.plan }
