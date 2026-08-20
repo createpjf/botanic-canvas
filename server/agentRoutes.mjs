@@ -1,5 +1,6 @@
 import { BotanicAgentPlannerError, planBotanicGeneration, validateBotanicAgentPlanInput } from './botanicAgentPlanner.mjs'
 import { BotanicAgentChatError, chatWithBotanicAgent, validateBotanicAgentChatInput } from './botanicAgentChat.mjs'
+import { resolveBotanicAgentTurn, validateBotanicAgentTurnInput } from './botanicAgentTurn.mjs'
 import { createAgentSkill, publicAgentSkill, validateAgentSkillCreation } from './botanicAgentSkill.mjs'
 import { cancelPersistentAgentRun, createPersistentAgentRun, prepareAgentBranchRetry, publicAgentRun, validateAgentRunCreation } from './botanicAgentRun.mjs'
 import { AgentToolRuntimeError, executeConfirmedAgentAction } from './agentToolRuntime.mjs'
@@ -136,6 +137,36 @@ export function createAgentRouteHandler({
         const result = await chatWithBotanicAgent(input, config, { document: project.document, projectSkills, signal: controller.signal })
         if (controller.signal.aborted || response.destroyed) return true
         return json(response, 200, { response: result })
+      } catch (caught) {
+        if (controller.signal.aborted || response.destroyed) return true
+        throw caught
+      } finally {
+        request.off('aborted', cancel)
+        response.off('close', cancelOnClosedResponse)
+      }
+    }
+
+    if (url.pathname === '/api/agent-intent') {
+      if (request.method !== 'POST') return methodNotAllowed(response, 'Agent 意图资源只接受提交请求。', 'POST')
+      const user = await requireUser(request)
+      if (!await enforceRateLimit(response, { scope: 'agent-chat', subject: user.id, limit: config.security.agentChatsPerFiveMinutes, windowMs: 5 * 60_000 })) return true
+      if (!config.flockApiBaseUrl || !config.flockApiKey || !config.flockTextModel) return error(response, 503, 'PROVIDER_NOT_CONFIGURED', 'Agent 服务尚未配置。')
+      const validatedInput = validateBotanicAgentTurnInput(await readJson(request, config.maximumPromptRefinementRequestBytes, 'Agent 请求过大，请精简后重试。'))
+      await requireProjectPermission(productStore, user.id, validatedInput.projectId, 'read')
+      const project = await productStore.readProject(user.id, validatedInput.projectId)
+      if (!project?.document) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
+      const projectSkills = await productStore.listAgentSkills(user.id, validatedInput.projectId) ?? []
+      const input = { ...validatedInput, projectSkills: projectSkills.map((skill) => ({ id: skill.id, name: skill.name, instructions: skill.instructions, status: skill.status })) }
+      const controller = new AbortController()
+      const cancel = () => controller.abort()
+      const cancelOnClosedResponse = () => { if (!response.writableEnded) cancel() }
+      request.once('aborted', cancel)
+      response.once('close', cancelOnClosedResponse)
+      if (request.aborted || response.destroyed) cancel()
+      try {
+        const turn = await resolveBotanicAgentTurn(input, config, { document: project.document, projectSkills, signal: controller.signal })
+        if (controller.signal.aborted || response.destroyed) return true
+        return json(response, 200, { turn })
       } catch (caught) {
         if (controller.signal.aborted || response.destroyed) return true
         throw caught
