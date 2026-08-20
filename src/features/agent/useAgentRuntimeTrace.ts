@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   appendBotanicAgentReasoningDelta,
   createBotanicAgentRuntimeSteps,
@@ -15,6 +15,105 @@ import {
   type BotanicAgentRuntimePhase,
   type BotanicAgentRuntimeStep,
 } from '../../domain/agent'
+import { localizeProductError, type ProductLocale } from '../../i18n/core'
+import { useProductI18n } from '../../i18n/react'
+
+const runtimeErrorCopy = {
+  'zh-CN': '运行步骤未完成，请重试。',
+  en: 'This step could not be completed. Try again.',
+} as const
+
+function countLabel(count: number, singular: string, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`
+}
+
+function localizeRuntimeError(message: string | undefined, locale: ProductLocale) {
+  if (!message?.trim()) return message
+  if (locale === 'zh-CN' || !/\p{Script=Han}/u.test(message)) return message
+  if (message === '任务已取消。') return 'Task canceled.'
+  if (message === '任务未完成，请查看任务面板。') return 'Task did not complete. Review the task panel.'
+  return localizeProductError({ message }, locale, runtimeErrorCopy)
+}
+
+function localizeRuntimeSteps({
+  steps,
+  locale,
+  mode,
+  hasTarget,
+  referenceCount,
+  memoryCount,
+  assetGroupCount,
+  plannerLabel,
+}: {
+  steps: BotanicAgentRuntimeStep[]
+  locale: ProductLocale
+  mode: BotanicAgentRuntimeMode
+  hasTarget: boolean
+  referenceCount: number
+  memoryCount: number
+  assetGroupCount: number
+  plannerLabel: string
+}) {
+  if (locale === 'zh-CN') return steps
+  return steps.map((step) => {
+    const restored = step.detail.endsWith(' · 已从服务端恢复')
+    let label = step.label
+    let detail = step.detail
+    if (step.id === 'read-canvas') {
+      label = 'Read canvas context'
+      detail = mode === 'research'
+        ? 'Read verifiable project sources'
+        : hasTarget ? 'Current result, generation settings, and node relationships' : 'Current canvas and available nodes'
+    } else if (step.id === 'read-references') {
+      label = 'Read references'
+      detail = countLabel(referenceCount, 'connected reference')
+    } else if (step.id === 'read-memory') {
+      label = 'Read project memory'
+      detail = countLabel(memoryCount, 'saved rule')
+    } else if (step.id === 'search-assets') {
+      label = 'Search asset groups'
+      detail = countLabel(assetGroupCount, 'available asset group')
+    } else if (step.id === 'call-planner') {
+      label = hasTarget ? 'Call planning model' : 'Interpret creative request'
+      detail = mode === 'conversation'
+        ? 'Understand the request and conversation context'
+        : mode === 'prompt'
+          ? 'Prepare a ready-to-use prompt'
+          : mode === 'research'
+            ? 'Search project sources and verify references'
+            : hasTarget
+              ? (plannerLabel ? `${plannerLabel} · Build an execution plan` : 'Build an execution plan')
+              : 'Organize the creative request and node relationships'
+    } else if (step.id === 'finalize-plan') {
+      label = 'Prepare execution plan'
+      detail = 'Define fixed elements, variations, and output branches'
+    } else if (step.id === 'create-workflow') {
+      label = 'Create canvas workflow'
+      detail = 'Write the request into editable nodes'
+    } else if (step.id === 'respond') {
+      label = mode === 'research' ? 'Prepare research results' : mode === 'prompt' ? 'Create prompt draft' : 'Prepare response'
+      detail = mode === 'research' ? 'Separate project facts, inferences, and sources' : 'Prepare a clear next response'
+    } else if (step.id.startsWith('reasoning:')) {
+      label = 'Model activity'
+    } else if (step.id.startsWith('tool:')) {
+      detail = detail
+        .replace(/ · 读取项目数据$/, ' · Read project data')
+        .replace(/ · 调用外部工具$/, ' · Use external tool')
+        .replace(/ · 会产生生成费用$/, ' · Uses generation credits')
+        .replace(/ · 写入项目数据$/, ' · Write project data')
+    }
+
+    if (step.id === 'finalize-plan' || step.id === 'create-workflow') {
+      if (step.detail === '任务已恢复，正在等待生成结果') detail = 'Task restored. Waiting for generation results.'
+      else if (step.detail === '任务已结束，可查看失败原因或重试') detail = 'Task ended. Review the failure or retry.'
+      else if (step.detail === '任务已完成，结果已回填画布') detail = 'Task completed. Results were added to the canvas.'
+    } else if (restored) {
+      detail = `${detail} · Restored from the server`
+    }
+
+    return { ...step, label, detail, ...(step.error ? { error: localizeRuntimeError(step.error, locale) } : {}) }
+  })
+}
 
 function yieldRuntimeFrame() {
   return new Promise<void>((resolve) => {
@@ -51,6 +150,7 @@ export function useAgentRuntimeTrace({
   assetGroupCount: number
   plannerLabel: string
 }) {
+  const { locale } = useProductI18n()
   const [steps, setSteps] = useState<BotanicAgentRuntimeStep[]>([])
   const [phase, setPhase] = useState<BotanicAgentRuntimePhase>('idle')
   const [mode, setMode] = useState<BotanicAgentRuntimeMode>('generation')
@@ -61,8 +161,8 @@ export function useAgentRuntimeTrace({
     status: BotanicAgentRuntimeStep['status'],
     errorMessage?: string,
   ) => {
-    setSteps((current) => updateBotanicAgentRuntimeStep(current, stepId, status, Date.now(), errorMessage))
-  }, [])
+    setSteps((current) => updateBotanicAgentRuntimeStep(current, stepId, status, Date.now(), localizeRuntimeError(errorMessage, locale)))
+  }, [locale])
 
   const begin = useCallback((input: {
     hasTarget: boolean
@@ -138,14 +238,15 @@ export function useAgentRuntimeTrace({
   }, [updateStep])
 
   const fail = useCallback((message: string) => {
+    const localizedMessage = localizeRuntimeError(message, locale) ?? runtimeErrorCopy[locale]
     setPhase('failed')
     setSteps((current) => {
       const active = current.find((step) => step.status === 'running')
       return active
-        ? updateBotanicAgentRuntimeStep(current, active.id, 'failed', Date.now(), message)
+        ? updateBotanicAgentRuntimeStep(current, active.id, 'failed', Date.now(), localizedMessage)
         : current
     })
-  }, [])
+  }, [locale])
 
   useEffect(() => {
     if (!hasSession || !latestRun || planning) return
@@ -168,8 +269,19 @@ export function useAgentRuntimeTrace({
     setDetailsOpen(false)
   }, [assetGroupCount, hasSession, hasTarget, latestRun, memoryCount, phase, plannerLabel, planning, referenceCount, steps.length])
 
+  const localizedSteps = useMemo(() => localizeRuntimeSteps({
+    steps,
+    locale,
+    mode,
+    hasTarget,
+    referenceCount,
+    memoryCount,
+    assetGroupCount,
+    plannerLabel,
+  }), [assetGroupCount, hasTarget, locale, memoryCount, mode, plannerLabel, referenceCount, steps])
+
   return {
-    runtimeSteps: steps,
+    runtimeSteps: localizedSteps,
     runtimePhase: phase,
     runtimeMode: mode,
     runtimeDetailsOpen: detailsOpen,

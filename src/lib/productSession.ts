@@ -4,6 +4,7 @@ import { createSecurityAuditReporter } from './securityAudit'
 import type { WorkspaceAuditEvent } from '../domain/auditEvents'
 import { invalidateProductSessionIfRequired, subscribeProductSessionInvalidated } from './productSessionInvalidation'
 import { cleanProductAuthUrl, detectProductAuthFlow } from './authFlow'
+import { localizeProductError, readProductLocale } from '../i18n/core'
 
 export type ProductUser = {
   id: string
@@ -136,7 +137,7 @@ async function syncMediaSessionCookie(accessToken?: string): Promise<ProductUser
   if (inFlight) return inFlight
 
   const sync = (async () => {
-    const requestHeaders = new Headers({ Accept: 'application/json' })
+    const requestHeaders = new Headers({ Accept: 'application/json', 'Accept-Language': readProductLocale() })
     if (headers.Authorization) requestHeaders.set('Authorization', headers.Authorization)
     let lastError: ProductApiError | undefined
     for (let attempt = 1; attempt <= mediaSessionMaxAttempts; attempt += 1) {
@@ -224,6 +225,7 @@ export async function productRequest<T>(path: string, init: ProductRequestInit =
   try {
     const headers = new Headers(requestInit.headers)
     headers.set('Accept', 'application/json')
+    headers.set('Accept-Language', readProductLocale())
     for (const [key, value] of Object.entries(await authorizationHeader())) headers.set(key, value)
     response = await fetch(path, {
       ...requestInit,
@@ -232,9 +234,10 @@ export async function productRequest<T>(path: string, init: ProductRequestInit =
       signal: controller.signal,
     })
   } catch {
+    const locale = readProductLocale()
     const message = !requestInit.signal?.aborted && controller.signal.aborted
-      ? (timeoutMessage ?? '工作区服务响应超时，请稍后重试。')
-      : '无法连接工作区服务，请检查网络或稍后重试。'
+      ? locale === 'en' ? 'The workspace service timed out. Try again.' : (timeoutMessage ?? '工作区服务响应超时，请稍后重试。')
+      : locale === 'en' ? 'Unable to connect to the workspace service. Check your connection and try again.' : '无法连接工作区服务，请检查网络或稍后重试。'
     throw new ProductApiError(message, 0, controller.signal.aborted ? 'REQUEST_TIMEOUT' : undefined)
   } finally {
     window.clearTimeout(timeoutId)
@@ -244,7 +247,14 @@ export async function productRequest<T>(path: string, init: ProductRequestInit =
   if (!response.ok) {
     const error = payload as ApiErrorPayload | null
     invalidateProductSessionIfRequired({ status: response.status, code: error?.error?.code })
-    throw new ProductApiError(error?.error?.message ?? '工作区服务返回异常。', response.status, error?.error?.code)
+    throw new ProductApiError(localizeProductError({
+      status: response.status,
+      code: error?.error?.code,
+      message: error?.error?.message,
+    }, readProductLocale(), {
+      'zh-CN': '工作区服务返回异常。',
+      en: 'The workspace service returned an error. Try again.',
+    }), response.status, error?.error?.code)
   }
   return payload as T
 }

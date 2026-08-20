@@ -1,10 +1,24 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { appendBotanicAgentMessage, type BotanicAgentMessage, type BotanicAgentSession } from '../../domain/agent'
 import { submitPersistentBotanicAgentMessage } from '../../lib/agentApi'
 import { createAgentMessageQueue, createLocalStorageAgentMessageQueueStorage } from '../../lib/agentMessageQueue'
 import { serverPersistenceEnabled } from '../../lib/productSession'
+import { localizeProductError, type ProductLocale } from '../../i18n/core'
+import { useProductI18n } from '../../i18n/react'
 
 type AgentMessagePatch = Partial<Pick<BotanicAgentMessage, 'content' | 'runId' | 'status' | 'feedback' | 'plan' | 'question' | 'composition' | 'deliveryStatus'>>
+type AgentDeliveryError = Error & { status?: number; code?: string }
+
+function localizedAgentDeliveryError(error: unknown, locale: ProductLocale): AgentDeliveryError {
+  const source = error && typeof error === 'object' ? error as Partial<AgentDeliveryError> : undefined
+  const localized = new Error(localizeProductError(error, locale, {
+    'zh-CN': '消息同步失败，请重试。',
+    en: 'Unable to sync the message. Try again.',
+  })) as AgentDeliveryError
+  if (typeof source?.status === 'number') localized.status = source.status
+  if (typeof source?.code === 'string') localized.code = source.code
+  return localized
+}
 
 /**
  * Agent 消息的本地追加、离线排队与联网重放模块。
@@ -23,10 +37,19 @@ export function useAgentMessageDelivery({
   onAppendMessage: (sessionId: string, message: BotanicAgentMessage) => void
   onUpdateMessage: (sessionId: string, messageId: string, patch: AgentMessagePatch) => void
 }) {
+  const { locale } = useProductI18n()
+  const localeRef = useRef(locale)
+  useEffect(() => { localeRef.current = locale }, [locale])
   const [online, setOnline] = useState(() => typeof navigator === 'undefined' || navigator.onLine)
   const queue = useMemo(() => createAgentMessageQueue({
     storage: createLocalStorageAgentMessageQueueStorage(projectId),
-    deliver: async (item) => { await submitPersistentBotanicAgentMessage(item) },
+    deliver: async (item) => {
+      try {
+        await submitPersistentBotanicAgentMessage(item)
+      } catch (caught) {
+        throw localizedAgentDeliveryError(caught, localeRef.current)
+      }
+    },
   }), [projectId])
 
   const flush = useCallback(async () => {

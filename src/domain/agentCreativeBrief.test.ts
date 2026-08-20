@@ -322,3 +322,73 @@ test('请求的自定义像素会进入 ready 生成设置', () => {
   assert.equal(turn.settings.outputWidth, 1920)
   assert.equal(turn.settings.outputHeight, 1088)
 })
+
+test('英文模式本地追问与选项使用英文，用户指令保持原文', () => {
+  const turn = advanceBotanicCreativeBrief({
+    mode: 'generation',
+    locale: 'en',
+    executionMode: 'manual',
+    instruction: 'Create a seaside portrait',
+    generationModels: imageModels,
+    clarificationId: 'clarification-en',
+  })
+
+  assert.equal(turn.kind, 'ask')
+  if (turn.kind !== 'ask') return
+  assert.equal(turn.clarification.question, 'Confirm these settings to continue refining the prompt. No image will be generated yet.')
+  assert.deepEqual(turn.clarification.fields.map((field) => field.label), [
+    'Use and aspect ratio',
+    'Resolution',
+    'Prompt direction',
+  ])
+  assert.equal(turn.clarification.fields[0].options[0].label, 'Taobao / Tmall')
+  assert.equal(turn.clarification.fields[2].options[0].label, 'Natural and faithful')
+  assert.equal(turn.clarification.originalInstruction, 'Create a seaside portrait')
+})
+
+test('英文模式将本地创作简报编译为英文', () => {
+  const first = advanceBotanicCreativeBrief({
+    mode: 'generation',
+    locale: 'en',
+    executionMode: 'manual',
+    instruction: 'Create a seaside portrait',
+    generationModels: imageModels,
+  })
+  assert.equal(first.kind, 'ask')
+  if (first.kind !== 'ask') return
+
+  const turn = advanceBotanicCreativeBrief({
+    mode: 'generation',
+    locale: 'en',
+    executionMode: 'manual',
+    instruction: first.brief.originalInstruction,
+    generationModels: imageModels,
+    previousBrief: first.brief,
+    answers: {
+      delivery_preset: 'xiaohongshu',
+      resolution: '2K',
+      prompt_direction: 'editorial',
+    },
+  })
+
+  assert.equal(turn.kind, 'ready')
+  if (turn.kind !== 'ready') return
+  assert.match(turn.prompt, /Creative brief:/)
+  assert.match(turn.prompt, /Delivery: RED, aspect ratio 3:4/)
+  assert.match(turn.prompt, /Prompt direction: Editorial mood/)
+  assert.doesNotMatch(turn.prompt, /[\u3400-\u9fff]/u)
+})
+
+test('英文模式的本地配置错误使用英文', () => {
+  const turn = advanceBotanicCreativeBrief({
+    mode: 'generation',
+    locale: 'en',
+    instruction: 'Create a portrait',
+    generationModels: [],
+  })
+
+  assert.equal(turn.kind, 'failed')
+  if (turn.kind !== 'failed') return
+  assert.equal(turn.code, 'NO_IMAGE_MODEL')
+  assert.equal(turn.message, 'No image model is available. Check the model configuration.')
+})

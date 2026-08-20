@@ -14,6 +14,7 @@ import {
   instructionRequestsBatchVariation,
   resolveBotanicAgentIntent,
 } from './agent.ts'
+import type { ProductLocale } from '../i18n/core.ts'
 
 export { instructionRequestsBatchVariation }
 
@@ -76,6 +77,35 @@ const chineseCountByToken: Record<string, number> = {
 }
 const groupRoleByKey: Record<string, string> = {
   scene: '场景', person: '模特', garment: '商品', style: '调性',
+}
+
+const variationAxisDisplayLabels: Record<ProductLocale, Record<string, string>> = {
+  'zh-CN': {
+    skin_tone: '肤色', ethnicity: '族裔', scene: '场景', pose: '动作', style: '风格', person: '人物', garment: '服装', custom: '变体',
+  },
+  en: {
+    skin_tone: 'Skin tone', ethnicity: 'Ethnicity', scene: 'Scene', pose: 'Pose', style: 'Style', person: 'Person', garment: 'Garment', custom: 'Variation',
+  },
+}
+
+const englishVariationTitles: Record<string, string> = {
+  skin_tone: 'Skin Set',
+  ethnicity: 'Ethnic Set',
+  scene: 'Scene Set',
+  pose: 'Pose Set',
+  style: 'Style Set',
+  person: 'People',
+  garment: 'Look Set',
+  custom: 'Variants',
+}
+
+function variationAxisDisplayLabel(axis: Pick<BotanicAgentVariationAxis, 'key' | 'label'>, locale: ProductLocale) {
+  return variationAxisDisplayLabels[locale][axis.key] ?? axis.label
+}
+
+function variationPlanTitle(axis: Pick<BotanicAgentVariationAxis, 'key' | 'label'>, locale: ProductLocale) {
+  if (locale !== 'en') return clipBotanicAgentNodeTitle(`${axis.label}变体`) || '变体'
+  return clipBotanicAgentNodeTitle(englishVariationTitles[axis.key] ?? `${variationAxisDisplayLabel(axis, locale)} Set`) || 'Variants'
 }
 
 function isUsableVariationValue(label: string) {
@@ -367,7 +397,7 @@ function variationCount(spec: BotanicAgentVariationSpec) {
   return ready.reduce((total, axis) => total * axis.values.length, 1)
 }
 
-function finalizeReadySpec(instruction: string, spec: BotanicAgentVariationSpec): BotanicAgentVariationRequest {
+function finalizeReadySpec(instruction: string, spec: BotanicAgentVariationSpec, locale: ProductLocale = 'zh-CN'): BotanicAgentVariationRequest {
   const count = variationCount(spec)
   const stated = statedOutputCount(instruction)
   if (stated != null && count !== stated) {
@@ -376,8 +406,11 @@ function finalizeReadySpec(instruction: string, spec: BotanicAgentVariationSpec)
       kind: 'ask',
       clarification: createVariationClarification({
         instruction,
-        question: `你说了生成 ${stated} 张，但我按当前变化轴会展开成 ${count} 张。请确认最终张数，或把每个${axisLabel}单独写清楚。`,
-        fields: [valuesField(axisLabel)],
+        locale,
+        question: locale === 'en'
+          ? `You asked for ${stated} images, but the selected variation values expand to ${count}. Confirm the final count or list each ${axisLabel} value explicitly.`
+          : `你说了生成 ${stated} 张，但我按当前变化轴会展开成 ${count} 张。请确认最终张数，或把每个${axisLabel}单独写清楚。`,
+        fields: [valuesField(spec.axes[0] ?? { key: 'custom', label: axisLabel }, locale)],
       }),
     }
   }
@@ -391,6 +424,7 @@ function createVariationClarification(input: {
   brief?: BotanicCreativeBrief
   axisKey?: string
   fields: BotanicAgentClarification['fields']
+  locale: ProductLocale
 }): BotanicAgentClarification {
   // 追问卡带上 Brief 与本次追问的轴，用户回答后才能把取值沉淀成长期状态而不是一次性答案。
   const brief = input.brief
@@ -399,40 +433,61 @@ function createVariationClarification(input: {
   return {
     id: 'clarification-variation',
     question: input.question,
-    helper: input.helper ?? '取值需要具体到 2–8 个短词；张数由展开结果决定，不会立即生成。',
+    helper: input.helper ?? (input.locale === 'en'
+      ? 'Enter 2–8 specific short values. The expanded branches determine the image count; generation will not start yet.'
+      : '取值需要具体到 2–8 个短词；张数由展开结果决定，不会立即生成。'),
     originalInstruction: input.instruction,
     ...(brief ? { brief } : {}),
     fields: input.fields,
   }
 }
 
-function valuesField(axisLabel: string): BotanicAgentClarification['fields'][number] {
+function valuesField(
+  axis: Pick<BotanicAgentVariationAxis, 'key' | 'label'>,
+  locale: ProductLocale,
+): BotanicAgentClarification['fields'][number] {
+  const axisLabel = variationAxisDisplayLabel(axis, locale)
   return {
     id: 'variation_values',
-    label: `${axisLabel}取值`,
+    label: locale === 'en' ? `${axisLabel} values` : `${axisLabel}取值`,
     required: true,
     control: 'text',
-    placeholder: axisLabel === '肤色' ? '例如：白皙、自然、小麦、深棕' : `例如：列出 2 到 8 个${axisLabel}`,
+    placeholder: locale === 'en'
+      ? (axis.key === 'skin_tone' ? 'e.g. fair, natural, tan, deep brown' : `e.g. list 2–8 specific ${axisLabel.toLowerCase()} values`)
+      : axis.key === 'skin_tone' ? '例如：白皙、自然、小麦、深棕' : `例如：列出 2 到 8 个${axisLabel}`,
     options: [],
   }
 }
 
-function combineField(first: BotanicAgentVariationAxis, second: BotanicAgentVariationAxis, product: number) {
+function combineField(
+  first: BotanicAgentVariationAxis,
+  second: BotanicAgentVariationAxis,
+  product: number,
+  locale: ProductLocale,
+) {
+  const firstLabel = variationAxisDisplayLabel(first, locale)
+  const secondLabel = variationAxisDisplayLabel(second, locale)
   return {
     id: 'variation_combine' as const,
-    label: '是否组合',
+    label: locale === 'en' ? 'Combine axes?' : '是否组合',
     required: true,
     control: 'single_choice' as const,
     defaultValue: 'first',
-    options: [
-      { value: 'first', label: `只做${first.label} ${first.values.length} 张`, description: '默认只拆一条轴' },
-      { value: 'combine', label: `组合 ${product} 张`, description: `${first.label}×${second.label}` },
-    ],
+    options: locale === 'en'
+      ? [
+          { value: 'first', label: `${firstLabel} only · ${first.values.length} images`, description: 'Generate variations on one axis only' },
+          { value: 'combine', label: `Combine · ${product} images`, description: `${firstLabel}×${secondLabel}` },
+        ]
+      : [
+          { value: 'first', label: `只做${first.label} ${first.values.length} 张`, description: '默认只拆一条轴' },
+          { value: 'combine', label: `组合 ${product} 张`, description: `${first.label}×${second.label}` },
+        ],
   }
 }
 
 export type BotanicAgentVariationRequestInput = {
   instruction: string
+  locale?: ProductLocale
   requestedIntent?: BotanicAgentIntent
   clarificationAnswers?: Record<string, string>
   /** 已确认并沉淀在 Brief 上的变体轴与取值；有它就不再追问同一个维度。 */
@@ -449,10 +504,11 @@ export type BotanicAgentVariationRequest =
   | { kind: 'ready'; spec: BotanicAgentVariationSpec }
 
 function stripCreativeBriefAppendix(instruction: string) {
-  return instruction.replace(/\n{2,}创作简报：[\s\S]*$/u, '').trim()
+  return instruction.replace(/\n{2,}(?:创作简报：|Creative brief:)[\s\S]*$/iu, '').trim()
 }
 
 export function resolveBotanicAgentVariationRequest(input: BotanicAgentVariationRequestInput): BotanicAgentVariationRequest {
+  const locale = input.locale ?? 'zh-CN'
   const instruction = stripCreativeBriefAppendix(input.instruction.trim())
   const intent = resolveBotanicAgentIntent(instruction, input.requestedIntent)
   const answered = splitValueList(input.clarificationAnswers?.variation_values ?? '')
@@ -490,12 +546,15 @@ export function resolveBotanicAgentVariationRequest(input: BotanicAgentVariation
         clarification: createVariationClarification({
           instruction,
           brief: input.brief,
-          question: `组合后共 ${product} 张，超过单次 ${botanicAgentVariationBranchLimit} 张上限。请只拆一条轴，或减少取值。`,
-          fields: [combineField(readyAxes[0], readyAxes[1], Math.min(product, botanicAgentVariationBranchLimit))],
+          locale,
+          question: locale === 'en'
+            ? `This combination would create ${product} images, above the ${botanicAgentVariationBranchLimit}-image limit. Use one axis only or reduce the values.`
+            : `组合后共 ${product} 张，超过单次 ${botanicAgentVariationBranchLimit} 张上限。请只拆一条轴，或减少取值。`,
+          fields: [combineField(readyAxes[0], readyAxes[1], Math.min(product, botanicAgentVariationBranchLimit), locale)],
         }),
       }
     }
-    return finalizeReadySpec(instruction, { axes: readyAxes, combine: true })
+    return finalizeReadySpec(instruction, { axes: readyAxes, combine: true }, locale)
   }
 
   if (incomplete && readyAxes.length < 1) {
@@ -505,10 +564,15 @@ export function resolveBotanicAgentVariationRequest(input: BotanicAgentVariation
         instruction,
         brief: input.brief,
         axisKey: incomplete.key,
-        question: incomplete.label === '肤色'
-          ? '这次要按几种肤色出图？请列出 2 到 8 个具体取值，例如白皙、自然、小麦、深棕。'
-          : `这次要按「${incomplete.label}」出多张。请列出 2 到 8 个具体取值，不要用「各种」代替。`,
-        fields: [valuesField(incomplete.label)],
+        locale,
+        question: locale === 'en'
+          ? incomplete.key === 'skin_tone'
+            ? 'Which skin tones should be generated? List 2–8 specific values, e.g. fair, natural, tan, and deep brown.'
+            : `Create multiple images by “${variationAxisDisplayLabel(incomplete, locale)}”. List 2–8 specific values; do not use a vague term such as “various”.`
+          : incomplete.label === '肤色'
+            ? '这次要按几种肤色出图？请列出 2 到 8 个具体取值，例如白皙、自然、小麦、深棕。'
+            : `这次要按「${incomplete.label}」出多张。请列出 2 到 8 个具体取值，不要用「各种」代替。`,
+        fields: [valuesField(incomplete, locale)],
       }),
     }
   }
@@ -519,13 +583,16 @@ export function resolveBotanicAgentVariationRequest(input: BotanicAgentVariation
       clarification: createVariationClarification({
         instruction,
         brief: input.brief,
-        question: '这次要按哪一个维度出多张？请列出 2 到 8 个具体取值。',
-        fields: [valuesField('变体')],
+        locale,
+        question: locale === 'en'
+          ? 'Which variation dimension should produce multiple images? List 2–8 specific values.'
+          : '这次要按哪一个维度出多张？请列出 2 到 8 个具体取值。',
+        fields: [valuesField({ key: 'custom', label: '变体' }, locale)],
       }),
     }
   }
 
-  return finalizeReadySpec(instruction, { axes: readyAxes, combine: false })
+  return finalizeReadySpec(instruction, { axes: readyAxes, combine: false }, locale)
 }
 
 function variationLabels(spec?: BotanicAgentVariationSpec) {
@@ -722,6 +789,7 @@ export function applyBotanicAgentVariationToPlan(
 ): { kind: 'plan'; plan: VariationPlanDraft } | { kind: 'clarification'; clarification: BotanicAgentClarification } {
   const request = resolveBotanicAgentVariationRequest({
     instruction: input.instruction || plan.instruction,
+    locale: input.locale,
     requestedIntent: input.requestedIntent ?? plan.intent,
     clarificationAnswers: input.clarificationAnswers,
     brief: input.brief,
@@ -749,10 +817,14 @@ export function applyBotanicAgentVariationToPlan(
       ...plan,
       intent: plan.intent === 'initial_generation' ? 'initial_generation' : 'batch_variation',
       prompt: botanicAgentSharedVariationPrompt(plan.prompt, plan.instruction, request.spec, input.fallbackPrompt),
-      summary: request.spec.combine && request.spec.axes.length > 1
-        ? `按「${request.spec.axes.map((item) => item.label).join('×')}」生成 ${count} 张。`
-        : `按「${axis.label}」生成 ${count} 张。`,
-      title: clipBotanicAgentNodeTitle(`${axis.label}变体`) || '变体',
+      summary: input.locale === 'en'
+        ? request.spec.combine && request.spec.axes.length > 1
+          ? `Generate ${count} images across “${request.spec.axes.map((item) => variationAxisDisplayLabel(item, 'en')).join(' × ')}”.`
+          : `Generate ${count} images by “${variationAxisDisplayLabel(axis, 'en')}”.`
+        : request.spec.combine && request.spec.axes.length > 1
+          ? `按「${request.spec.axes.map((item) => item.label).join('×')}」生成 ${count} 张。`
+          : `按「${axis.label}」生成 ${count} 张。`,
+      title: variationPlanTitle(axis, input.locale ?? 'zh-CN'),
       constraints: varyConstraintForAxis(axis),
       output: { mode: 'batch_by_variation', count: branches.length, candidatesPerItem: 1 },
       variation: request.spec,

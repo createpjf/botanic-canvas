@@ -247,6 +247,9 @@ button.project-tab__main { border: 0; cursor: pointer; }
 }
 .product-home-tab:hover { border-color: #a9c0ad; background: #eef5ed; transform: translateY(-1px); }
 .product-home-tab svg { width: 14px; height: 14px; }
+.canvas-language-switcher { min-width: 38px; min-height: 34px; flex: 0 0 auto; margin-left: auto; padding: 0 9px; border: 1px solid #d7e2d6; border-radius: 9px; background: #f7faf6; color: #3f6949; font: inherit; font-size: 10px; font-weight: 760; transition: border-color 140ms ease, background 140ms ease, transform 120ms ease; }
+.canvas-language-switcher:hover { border-color: #a9c0ad; background: #eef5ed; transform: translateY(-1px); }
+.canvas-language-switcher + .product-home-tab { margin-left: 0; }
 
 .botanic-flow {
   height: calc(100% - var(--tab-bar-height)) !important;
@@ -2207,6 +2210,7 @@ button.project-tab__main { border: 0; cursor: pointer; }
   transition: border-color 150ms ease, background 150ms ease, transform 150ms ease;
 }
 .product-landing__language:hover { border-color: #9fb2a1; background: #fff; transform: translateY(-1px); }
+
 .product-landing__login,
 .product-hero__actions button,
 .product-landing__cta button {
@@ -2370,6 +2374,8 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .project-library-page__brand { display: grid; gap: 2px; padding: 0; border: 0; background: transparent; text-align: left; }
 .project-library-page__brand span { color: #3e423a; font-size: 14px; line-height: 20px; }
 .project-library-page__account-actions { display: flex; align-items: center; gap: 8px; }
+.project-library-page__language { min-width: 38px; min-height: 38px; padding: 0 9px; border: 1px solid #d9e4d8; border-radius: 11px; background: rgba(255, 255, 255, .58); color: #3f6648; font: inherit; font-size: 10px; font-weight: 760; transition: background 140ms ease, border-color 140ms ease, transform 120ms ease; }
+.project-library-page__language:hover { border-color: #adc2af; background: #fff; transform: translateY(-1px); }
 .project-library-page__home { display: inline-flex; min-height: 38px; align-items: center; gap: 7px; padding: 0 11px; border: 1px solid #d9e4d8; border-radius: 11px; background: rgba(255, 255, 255, .58); color: #3f6648; font: inherit; font-size: 10px; font-weight: 730; white-space: nowrap; transition: background 140ms ease, border-color 140ms ease, transform 120ms ease; }
 .project-library-page__home:hover { border-color: #adc2af; background: #fff; transform: translateY(-1px); }
 .project-library-page__home svg { width: 15px; height: 15px; }
@@ -2601,9 +2607,11 @@ button.project-tab__main { border: 0; cursor: pointer; }
   .project-library-page { padding: 0 20px 34px; }
   .project-library-page__header { height: 74px; }
   .project-library-page__home { width: 40px; min-height: 40px; justify-content: center; padding: 0; }
+  .project-library-page__language { min-width: 40px; min-height: 40px; padding: 0 8px; }
   .project-library-page__home span,
   .product-home-tab span { display: none; }
   .product-home-tab { width: 38px; min-height: 38px; justify-content: center; padding: 0; }
+  .canvas-language-switcher { min-width: 38px; min-height: 38px; padding: 0 7px; }
   .project-library-page__account strong { display: none; }
   .project-library-page__account { padding-right: 5px; }
   .project-library-page__content { padding-top: 34px; }
@@ -2956,7 +2964,7 @@ button.project-tab__main { border: 0; cursor: pointer; }
 /* 受保护工作区：生产环境不再把本地 IndexedDB 作为身份与项目边界。 */
 .product-access { display: grid; min-height: 100vh; place-items: center; padding: 24px; background: #f2f5f0; color: #26372a; }
 .product-access--overlay { position: fixed; z-index: 100; inset: 0; background: rgba(28, 38, 30, .34); backdrop-filter: blur(10px); animation: product-access-backdrop-in 160ms ease both; }
-.product-access > section { width: min(100%, 380px); padding: 28px; border: 1px solid #d9e3d8; border-radius: var(--radius-surface); background: #fff; box-shadow: 0 16px 36px rgba(42, 70, 47, 0.1); }
+.product-access > section { position: relative; width: min(100%, 380px); padding: 28px; border: 1px solid #d9e3d8; border-radius: var(--radius-surface); background: #fff; box-shadow: 0 16px 36px rgba(42, 70, 47, 0.1); }
 .product-access--overlay > section { box-shadow: 0 24px 70px rgba(25, 42, 29, .24); animation: product-access-dialog-in 190ms cubic-bezier(.2, .8, .2, 1) both; }
 .product-access > section > span { color: #5d8066; font-size: 10px; font-weight: 800; letter-spacing: 1.6px; }
 .product-access h1 { margin: 9px 0 6px; font-size: 24px; letter-spacing: -0.7px; }
@@ -2966,6 +2974,8 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .product-access input { min-height: 42px; padding: 0 12px; border: 1px solid #cfddcf; border-radius: 9px; background: #fcfdfb; color: #26372a; font: inherit; }
 .product-access input:focus { outline: 2px solid rgba(74, 127, 87, 0.28); border-color: #5c9368; }
 .product-access button { min-height: 42px; margin-top: 4px; border: 0; border-radius: 9px; background: #2e6a3e; color: #fff; font-size: 13px; font-weight: 800; }
+.product-access .product-access__language { position: absolute; top: 18px; right: 18px; min-width: 44px; min-height: 36px; margin: 0; padding: 0 10px; border: 1px solid #d6ddd4; border-radius: 999px; background: #f7f8f5; color: #36533e; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
+.product-access .product-access__language:hover { border-color: #adc2af; background: #fff; }
 .product-access button:disabled { cursor: not-allowed; opacity: .45; }
 .product-access .product-access__alternate { min-height: 32px; margin-top: -3px; background: transparent; color: #5d8066; font-size: 11px; font-weight: 700; }
 .product-access .product-access__alternate:hover { background: #f2f6f1; }
@@ -4183,6 +4193,7 @@ details.agent-timeline__thinking { display: block; padding: 0; }
   .canvas-pane.is-touch-tablet .tab-bar { min-height: var(--tab-bar-height); padding-right: max(12px, env(safe-area-inset-right)); padding-left: max(12px, env(safe-area-inset-left)); }
   .canvas-pane.is-touch-tablet .home-tab,
   .canvas-pane.is-touch-tablet .new-tab,
+  .canvas-pane.is-touch-tablet .canvas-language-switcher,
   .canvas-pane.is-touch-tablet .product-home-tab,
   .canvas-pane.is-touch-tablet .project-tab__close { min-width: 44px; min-height: 44px; }
   .canvas-pane.is-touch-tablet .new-tab { width: 44px; height: 44px; }

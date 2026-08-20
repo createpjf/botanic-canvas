@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { resolveAgentPromptSections, type AgentPromptSections } from '../../domain/agentMarkdown'
 import { CopyIcon } from '../../components/BotanicIcons'
 import { AgentMarkdown } from './AgentMarkdown'
+import { useProductMessages } from '../../i18n/react'
 
 type PromptSectionKind = 'prompt' | 'negative'
 
@@ -18,17 +19,21 @@ function PromptSection({
   copied: PromptSectionKind | null
   onCopy: (kind: PromptSectionKind, text: string) => void
 }) {
+  const copy = useProductMessages({
+    'zh-CN': { ready: '可直接复制', copy: '复制', copied: '已复制' },
+    en: { ready: 'Ready to copy', copy: 'Copy', copied: 'Copied' },
+  })
   const isCopied = copied === kind
 
   return <section className="agent-prompt-output__section" aria-label={label}>
     <header>
       <div>
         <strong>{label}</strong>
-        <small>可直接复制</small>
+        <small>{copy.ready}</small>
       </div>
-      <button type="button" className="agent-prompt-output__copy" onClick={() => onCopy(kind, text)} aria-label={`复制${label}`} title={`复制${label}`}>
+      <button type="button" className="agent-prompt-output__copy" onClick={() => onCopy(kind, text)} aria-label={`${copy.copy} ${label}`} title={`${copy.copy} ${label}`}>
         <CopyIcon />
-        <span>{isCopied ? '已复制' : '复制'}</span>
+        <span>{isCopied ? copy.copied : copy.copy}</span>
       </button>
     </header>
     <pre>{text}</pre>

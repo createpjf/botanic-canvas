@@ -88,6 +88,23 @@ test('各种肤色没有具体取值时必须追问，不能假装已批量', ()
   assert.match(request.clarification.question, /肤色/)
 })
 
+test('英文 locale 下本地变体追问使用英文文案且保持稳定字段值', () => {
+  const request = resolveBotanicAgentVariationRequest({
+    instruction: '多个肤色人物、多图',
+    requestedIntent: 'replace_scene',
+    locale: 'en',
+  })
+
+  assert.equal(request.kind, 'ask')
+  if (request.kind !== 'ask') return
+  assert.equal(request.clarification.originalInstruction, '多个肤色人物、多图')
+  assert.equal(request.clarification.question, 'Which skin tones should be generated? List 2–8 specific values, e.g. fair, natural, tan, and deep brown.')
+  assert.match(request.clarification.helper ?? '', /^Enter 2–8 specific short values\./)
+  assert.deepEqual(request.clarification.fields.map((field) => field.id), ['variation_values'])
+  assert.equal(request.clarification.fields[0].label, 'Skin tone values')
+  assert.equal(request.clarification.fields[0].placeholder, 'e.g. fair, natural, tan, deep brown')
+})
+
 test('斜杠分隔的短值也能展开成变体轴', () => {
   const request = resolveBotanicAgentVariationRequest({
     instruction: '浅 / 中 / 深 / 极深四档肤色，多图',
@@ -151,6 +168,25 @@ test('两轴未确认组合时只拆第一条轴，确认后才相乘且不超�
   })
   assert.equal(tooMany.kind, 'ask')
   assert.match(tooMany.clarification.question, /20/)
+})
+
+test('英文 locale 下组合超限追问的字段与选项全部本地化', () => {
+  const request = resolveBotanicAgentVariationRequest({
+    instruction: '白皙、自然、小麦、深棕、冷白五种肤色，海边、森林、棚拍、街道、夜店五个场景，请组合',
+    clarificationAnswers: { variation_combine: 'combine' },
+    locale: 'en',
+  })
+
+  assert.equal(request.kind, 'ask')
+  if (request.kind !== 'ask') return
+  assert.match(request.clarification.question, /^This combination would create 25 images/)
+  const [field] = request.clarification.fields
+  assert.equal(field.id, 'variation_combine')
+  assert.equal(field.label, 'Combine axes?')
+  assert.equal(field.defaultValue, 'first')
+  assert.deepEqual(field.options.map((option) => option.value), ['first', 'combine'])
+  assert.deepEqual(field.options.map((option) => option.label), ['Skin tone only · 5 images', 'Combine · 20 images'])
+  assert.deepEqual(field.options.map((option) => option.description), ['Generate variations on one axis only', 'Skin tone×Scene'])
 })
 
 test('追问答案里的取值可以补全模糊的肤色批量', () => {
@@ -222,6 +258,28 @@ test('无素材组时批量变体计划按展开分支出图，不回落成 1 �
   assert.equal(drafts.length, 4)
   assert.equal(drafts.every((draft) => !draft.assetId && draft.variation?.promptDelta), true)
   assert.equal(botanicAgentPlanOutputLabel(applied.plan), '4 个分支')
+})
+
+test('英文 locale 下本地变体计划使用英文摘要与标题', () => {
+  const applied = applyBotanicAgentVariationToPlan({
+    intent: 'replace_scene',
+    instruction: '白皙、自然、小麦、深棕四种肤色，多图',
+    summary: 'Replace scene; generate 1 new version.',
+    prompt: 'Keep the subject and garment unchanged.',
+    constraints: [{ dimension: 'scene', mode: 'vary' }],
+    output: { mode: 'single', count: 1, candidatesPerItem: 1 },
+  }, {
+    instruction: '白皙、自然、小麦、深棕四种肤色，多图',
+    requestedIntent: 'replace_scene',
+    locale: 'en',
+  })
+
+  assert.equal(applied.kind, 'plan')
+  if (applied.kind !== 'plan') return
+  assert.equal(applied.plan.summary, 'Generate 4 images by “Skin tone”.')
+  assert.equal(applied.plan.title, 'SkinSet')
+  assert.equal(applied.plan.variation?.axes[0].key, 'skin_tone')
+  assert.equal(applied.plan.variation?.axes[0].label, '肤色')
 })
 
 test('模糊批量在模型已给出单张计划时仍改成追问卡，不进入确认生成', () => {

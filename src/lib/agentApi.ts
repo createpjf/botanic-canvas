@@ -7,6 +7,7 @@ import { ProductApiError, productAuthorizationHeader, productRequest } from './p
 import type { AgentToolCallTrace, BotanicAgentReasoningEntry, BotanicAgentActionProposal, BotanicAgentActionResult, BotanicAgentClarificationResponse, BotanicAgentMemoryItem, BotanicAgentMessage, BotanicAgentPlan, BotanicAgentRunSnapshot, BotanicAgentSession, BotanicAgentSkill, BotanicAgentSkillCatalogItem, BotanicIndexedArtifact } from '../domain/agent'
 import type { BotanicAgentBranchVariation } from '../domain/agentVariations'
 import type { BotanicAgentCompositionItem } from '../domain/agentCreativeComposition'
+import { readProductLocale, type ProductLocale } from '../i18n/core'
 
 export type AgentRunCreationBranch = {
   id: string
@@ -17,25 +18,35 @@ export type AgentRunCreationBranch = {
   item?: BotanicAgentCompositionItem
 }
 
+function agentApiCopy(locale: ProductLocale) {
+  return locale === 'en' ? {
+    mediaRead: 'Unable to read the reference image. Add it again.', mediaType: 'Agent reference images support PNG, JPEG, or WebP only.', planTimeout: 'Agent planning is taking longer than expected. Try again shortly; the canvas was not changed.', turnTimeout: 'Agent is taking longer than expected to understand the request. Try again shortly; the canvas was not changed.', chatTimeout: 'Agent is taking longer than expected to organize the context. Try again shortly; the canvas was not changed.', streamUnavailable: 'Agent live connection is unavailable.', chatIncomplete: 'Agent did not complete the response. Try again.', streamEnded: 'Agent live connection ended unexpectedly.',
+  } : {
+    mediaRead: '参考图片读取失败，请重新添加该图片。', mediaType: 'Agent 参考图仅支持 PNG、JPEG 或 WebP。', planTimeout: 'Agent 规划响应较慢，请稍后重试；当前画布内容未被修改。', turnTimeout: 'Agent 正在理解你的意图，响应较慢，请稍后重试；当前画布内容未被修改。', chatTimeout: 'Agent 正在整理上下文，响应较慢，请稍后重试；当前画布内容未被修改。', streamUnavailable: 'Agent 实时通道不可用。', chatIncomplete: 'Agent 对话未完成，请重试。', streamEnded: 'Agent 实时通道意外结束。',
+  }
+}
+
 function blobAsDataUrl(blob: Blob) {
+  const copy = agentApiCopy(readProductLocale())
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader()
-    reader.onerror = () => reject(new Error('参考图片读取失败，请重新添加该图片。'))
+    reader.onerror = () => reject(new Error(copy.mediaRead))
     reader.onload = () => typeof reader.result === 'string'
       ? resolve(reader.result)
-      : reject(new Error('参考图片读取失败，请重新添加该图片。'))
+      : reject(new Error(copy.mediaRead))
     reader.readAsDataURL(blob)
   })
 }
 
 export async function persistAgentReferenceMedia(projectId: string, source: string) {
+  const copy = agentApiCopy(readProductLocale())
   let dataUrl = source
   if (!source.startsWith('data:image/')) {
     const response = await fetch(source, { credentials: 'include' })
-    if (!response.ok) throw new Error('参考图片暂时无法读取，请重新添加后再试。')
+    if (!response.ok) throw new Error(copy.mediaRead)
     const blob = await response.blob()
     if (!['image/png', 'image/jpeg', 'image/webp'].includes(blob.type)) {
-      throw new Error('Agent 参考图仅支持 PNG、JPEG 或 WebP。')
+      throw new Error(copy.mediaType)
     }
     dataUrl = await blobAsDataUrl(blob)
   }
@@ -60,13 +71,14 @@ export async function requestBotanicAgentPlan(
   signal?: AbortSignal,
   onReasoning?: (entries: BotanicAgentReasoningEntry[]) => void,
 ) {
+  const copy = agentApiCopy(input.locale)
   const response = await productRequest<BotanicAgentPlanResponse>('/api/agent-plans', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'Accept-Language': input.locale },
     body: JSON.stringify(buildBotanicAgentPlanRequest(input)),
     signal,
     timeoutMs: 60_000,
-    timeoutMessage: 'Agent 规划响应较慢，请稍后重试；当前画布内容未被修改。',
+    timeoutMessage: copy.planTimeout,
   })
   if (response.reasoning?.length) onReasoning?.(response.reasoning)
   if ('clarification' in response) {
@@ -76,25 +88,27 @@ export async function requestBotanicAgentPlan(
 }
 
 export async function requestBotanicAgentTurn(input: BotanicAgentTurnRequestInput, signal?: AbortSignal) {
+  const copy = agentApiCopy(input.locale)
   const response = await productRequest<{ turn: BotanicAgentTurnResult }>('/api/agent-intent', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'Accept-Language': input.locale },
     body: JSON.stringify(buildBotanicAgentTurnRequest(input)),
     signal,
     timeoutMs: 60_000,
-    timeoutMessage: 'Agent 正在理解你的意图，响应较慢，请稍后重试；当前画布内容未被修改。',
+    timeoutMessage: copy.turnTimeout,
   })
   return response.turn
 }
 
 export async function requestBotanicAgentChat(input: BotanicAgentChatRequestInput, signal?: AbortSignal) {
+  const copy = agentApiCopy(input.locale)
   const response = await productRequest<{ response: BotanicAgentChatResponse }>('/api/agent-chat', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'Accept-Language': input.locale },
     body: JSON.stringify(buildBotanicAgentChatRequest(input)),
     signal,
     timeoutMs: 60_000,
-    timeoutMessage: 'Agent 正在整理上下文，响应较慢，请稍后重试；当前画布内容未被修改。',
+    timeoutMessage: copy.chatTimeout,
   })
   return response.response
 }
@@ -113,6 +127,7 @@ export async function streamBotanicAgentChat(
   input: BotanicAgentChatRequestInput,
   options: { signal?: AbortSignal; onEvent?: (event: BotanicAgentChatStreamEvent) => void } = {},
 ): Promise<BotanicAgentChatResponse> {
+  const copy = agentApiCopy(input.locale)
   const body = JSON.stringify(buildBotanicAgentChatRequest(input))
   let received = false
   // 静默挂起的连接必须自己超时：SSE 不像一次性请求那样有天然的结束点。
@@ -126,7 +141,7 @@ export async function streamBotanicAgentChat(
     inactivityTimer = window.setTimeout(() => controller.abort(), agentChatStreamIdleTimeoutMs)
   }
   try {
-    const headers = new Headers({ 'Content-Type': 'application/json', Accept: 'text/event-stream' })
+    const headers = new Headers({ 'Content-Type': 'application/json', Accept: 'text/event-stream', 'Accept-Language': input.locale })
     for (const [key, value] of Object.entries(await productAuthorizationHeader())) headers.set(key, value)
     const response = await fetch('/api/agent-chat/stream', {
       method: 'POST',
@@ -135,7 +150,7 @@ export async function streamBotanicAgentChat(
       body,
       signal: controller.signal,
     })
-    if (!response.ok || !response.body) throw new ProductApiError('Agent 实时通道不可用。', response.status)
+    if (!response.ok || !response.body) throw new ProductApiError(copy.streamUnavailable, response.status)
     let settled: BotanicAgentChatResponse | undefined
     for await (const event of readAgentChatStream(response.body, keepAlive)) {
       received = true
@@ -144,13 +159,13 @@ export async function streamBotanicAgentChat(
       options.onEvent?.(event)
       if (event.type === 'error') {
         throw new ProductApiError(
-          botanicAgentChatTransportErrorMessage(new Error(event.message ?? ''), { fallback: 'Agent 对话未完成，请重试。' }),
+          botanicAgentChatTransportErrorMessage(new Error(event.message ?? ''), { fallback: copy.chatIncomplete, locale: input.locale }),
           502,
           event.code,
         )
       }
     }
-    if (!settled) throw new ProductApiError('Agent 实时通道意外结束。', 0)
+    if (!settled) throw new ProductApiError(copy.streamEnded, 0)
     return settled
   } catch (caught) {
     // 用户主动取消要如实抛出；只有实时通道本身不可用才回退。
@@ -160,13 +175,13 @@ export async function streamBotanicAgentChat(
       const idleTimedOut = controller.signal.aborted
       if (caught instanceof ProductApiError) {
         throw new ProductApiError(
-          botanicAgentChatTransportErrorMessage(caught, { idleTimedOut, fallback: caught.message }),
+          botanicAgentChatTransportErrorMessage(caught, { idleTimedOut, fallback: caught.message, locale: input.locale }),
           caught.status,
           caught.code,
         )
       }
       throw new ProductApiError(
-        botanicAgentChatTransportErrorMessage(caught, { idleTimedOut }),
+        botanicAgentChatTransportErrorMessage(caught, { idleTimedOut, locale: input.locale }),
         0,
         idleTimedOut ? 'REQUEST_TIMEOUT' : 'STREAM_DISCONNECTED',
       )

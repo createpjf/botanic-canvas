@@ -10,7 +10,8 @@ import {
   type CanvasProjectSummary,
 } from '../../lib/db'
 import type { WorkspaceProject } from '../../components/WorkspaceViews'
-import { nextWorkspaceProjectName, workspaceProjectsFromSummaries } from './workspaceProjectCoordinator.model'
+import { useProductI18n } from '../../i18n/react'
+import { nextWorkspaceProjectName, workspaceProjectsFromSummaries, workspaceTemplateProjectSummary } from './workspaceProjectCoordinator.model'
 
 type WorkspaceProjectCoordinatorOptions = {
   activeDocumentId: string
@@ -39,6 +40,7 @@ export function useWorkspaceProjectCoordinator({
   onProjectOpened,
   onProjectDeleted,
 }: WorkspaceProjectCoordinatorOptions) {
+  const { locale } = useProductI18n()
   const [projects, setProjects] = useState<WorkspaceProject[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -56,13 +58,13 @@ export function useWorkspaceProjectCoordinator({
     try {
       const summaries = await readCanvasProjectSummaries()
       if (!requests.isCurrent(operationToken)) return
-      setProjects(workspaceProjectsFromSummaries(summaries))
+      setProjects(workspaceProjectsFromSummaries(summaries, locale))
     } catch {
-      if (requests.isCurrent(operationToken)) setError('请检查网络或稍后重试。')
+      if (requests.isCurrent(operationToken)) setError(locale === 'en' ? 'Check your connection and try again.' : '请检查网络或稍后重试。')
     } finally {
       if (requests.isCurrent(operationToken)) setLoading(false)
     }
-  }, [requests])
+  }, [locale, requests])
 
   useEffect(() => {
     if (refreshKey) void refresh()
@@ -76,12 +78,12 @@ export function useWorkspaceProjectCoordinator({
   }, [navigationSequence, onProjectOpened, openDocument])
 
   const createProject = useCallback(async () => {
-    const project = createEmptyCanvasDocument(`project-${Date.now()}`, nextWorkspaceProjectName(projects))
+    const project = createEmptyCanvasDocument(`project-${Date.now()}`, nextWorkspaceProjectName(projects, locale))
     // 空白项目首次添加内容时才持久化，避免项目库产生不可用空卡片。
     openNewDocument(project)
     onProjectOpened(project.id)
     return true
-  }, [onProjectOpened, openNewDocument, projects])
+  }, [locale, onProjectOpened, openNewDocument, projects])
 
   const createProjectFromTemplate = useCallback(async (templateId: string, shared: boolean) => {
     const navigationRunId = navigationSequence.current
@@ -90,12 +92,14 @@ export function useWorkspaceProjectCoordinator({
     try {
       const saved = await createCanvasProject(project)
       invalidate()
+      const summaryByLocale = workspaceTemplateProjectSummary(saved.nodes.length)
       setProjects((current) => [{
         id: saved.id,
         name: saved.name,
         updatedAt: saved.updatedAt,
         cover: saved.history[0]?.image || undefined,
-        summary: `模板项目 · ${saved.nodes.length} 个节点`,
+        summary: summaryByLocale[locale],
+        summaryByLocale,
       }, ...current.filter((item) => item.id !== saved.id)])
       if (navigationRunId === navigationSequence.current) {
         openNewDocument(saved)
@@ -105,7 +109,7 @@ export function useWorkspaceProjectCoordinator({
     } catch {
       return false
     }
-  }, [createDocumentFromTemplate, invalidate, navigationSequence, onProjectOpened, openNewDocument])
+  }, [createDocumentFromTemplate, invalidate, locale, navigationSequence, onProjectOpened, openNewDocument])
 
   const renameProject = useCallback(async (projectId: string, name: string) => {
     const nextName = name.trim()

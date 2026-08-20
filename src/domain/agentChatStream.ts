@@ -1,6 +1,7 @@
 import type { AgentToolCallTrace } from './agent'
 import type { BotanicAgentChatResponse } from './agentChatContract'
 import type { TimelineToolPresentation } from './agentTimeline'
+import type { ProductLocale } from '../i18n/core'
 
 /**
  * Agent 实时对话通道的事件契约。
@@ -35,10 +36,11 @@ function parseStreamEvent(payload: string): BotanicAgentChatStreamEvent[] {
  */
 export function botanicAgentChatTransportErrorMessage(
   caught: unknown,
-  options: { idleTimedOut?: boolean; fallback?: string } = {},
+  options: { idleTimedOut?: boolean; fallback?: string; locale?: ProductLocale } = {},
 ) {
-  const fallback = options.fallback ?? 'Agent 暂时无法回答，请稍后重试。'
-  if (options.idleTimedOut) return 'Agent 对话连接中断，请重试。'
+  const fallback = options.fallback ?? (options.locale === 'en' ? 'Agent is temporarily unavailable. Try again shortly.' : 'Agent 暂时无法回答，请稍后重试。')
+  const disconnected = options.locale === 'en' ? 'Agent connection was interrupted. Try again.' : 'Agent 对话连接中断，请重试。'
+  if (options.idleTimedOut) return disconnected
   const name = caught instanceof Error ? caught.name : ''
   const message = caught instanceof Error ? caught.message.trim() : ''
   if (
@@ -46,8 +48,9 @@ export function botanicAgentChatTransportErrorMessage(
     || name === 'TimeoutError'
     || /^(network error|failed to fetch|fetch failed|load failed|the network connection was lost\.?|networkerror when attempting to fetch resource\.?|the user aborted a request\.?|the operation was aborted\.?|signal is aborted without reason)$/i.test(message)
   ) {
-    return 'Agent 对话连接中断，请重试。'
+    return disconnected
   }
+  if (options.locale === 'en') return fallback
   return message || fallback
 }
 

@@ -10,7 +10,7 @@ export function modelProviderLogo(model?: GenerationModelOption) {
 }
 
 export function modelDisplayLabel(model?: GenerationModelOption) {
-  return (model?.label ?? model?.id ?? '').replace(/\s*·\s*(?:图像|视频).*$/u, '').trim()
+  return (model?.label ?? model?.id ?? '').replace(/\s*·\s*(?:图像|视频|image|video).*$/iu, '').trim()
 }
 
 export function agentPlannerModelLabel(model: string) {

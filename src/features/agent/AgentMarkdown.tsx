@@ -1,6 +1,7 @@
 import { Fragment, useState } from 'react'
 import { parseAgentMarkdown, type AgentMarkdownBlock } from '../../domain/agentMarkdown'
 import { CopyIcon } from '../../components/BotanicIcons'
+import { useProductI18n } from '../../i18n/react'
 
 const inlinePattern = /(\*\*[^*\n]+\*\*|__[^_\n]+__|`[^`\n]+`|\*[^*\n]+\*|_[^_\n]+_|https?:\/\/[^\s<]+)/g
 
@@ -17,8 +18,10 @@ function renderInline(text: string) {
 }
 
 function CopyableCode({ language, text }: { language?: string; text: string }) {
+  const { locale } = useProductI18n()
   const [copied, setCopied] = useState(false)
-  const label = language || '代码'
+  const label = language || (locale === 'en' ? 'Code' : '代码')
+  const copyLabel = locale === 'en' ? 'Copy' : '复制'
 
   const copyText = async () => {
     if (!navigator.clipboard?.writeText) return
@@ -33,9 +36,9 @@ function CopyableCode({ language, text }: { language?: string; text: string }) {
   return <div className="agent-markdown__code">
     <header>
       <small>{label}</small>
-      <button type="button" className="agent-prompt-output__copy" onClick={() => void copyText()} aria-label={`复制${label}`} title={`复制${label}`}>
+      <button type="button" className="agent-prompt-output__copy" onClick={() => void copyText()} aria-label={`${copyLabel} ${label}`} title={`${copyLabel} ${label}`}>
         <CopyIcon />
-        <span>{copied ? '已复制' : '复制'}</span>
+        <span>{copied ? (locale === 'en' ? 'Copied' : '已复制') : copyLabel}</span>
       </button>
     </header>
     <pre data-language={language}><code>{text}</code></pre>

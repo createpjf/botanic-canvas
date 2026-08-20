@@ -1,14 +1,17 @@
 import type { UploadedAssetInput } from '../domain/canvas'
+import type { ProductLocale } from '../i18n/core'
 
 export const maxUploadAssets = 12
 const maximumUploadImageBytes = 8 * 1024 * 1024
 const supportedUploadTypes = new Set(['image/png', 'image/jpeg', 'image/webp'])
 
-export function validateUploadFiles(files: File[]) {
+export function validateUploadFiles(files: File[], locale: ProductLocale = 'zh-CN') {
   const accepted = files.filter((file) => supportedUploadTypes.has(file.type) && file.size > 0 && file.size <= maximumUploadImageBytes)
   const rejected = files.length - accepted.length
   const message = rejected
-    ? `已跳过 ${rejected} 个文件：仅支持 PNG、JPEG、WebP，单张不超过 8MB。`
+    ? locale === 'en'
+      ? `Skipped ${rejected} ${rejected === 1 ? 'file' : 'files'}. Upload PNG, JPEG, or WebP images up to 8 MB each.`
+      : `已跳过 ${rejected} 个文件：仅支持 PNG、JPEG、WebP，单张不超过 8MB。`
     : ''
   return { accepted, message }
 }

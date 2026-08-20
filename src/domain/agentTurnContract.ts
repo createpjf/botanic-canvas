@@ -1,5 +1,6 @@
 import type { AgentToolCallTrace, BotanicAgentMessage } from './agent'
 import type { GenerationAspectRatio, GenerationModelOption, GenerationResolution } from './canvas'
+import type { ProductLocale } from '../i18n/core'
 
 /**
  * Agent 回合契约：浏览器把整段对话交给服务端回合解析器，由模型判断这一步是聊天还是生成，
@@ -7,6 +8,7 @@ import type { GenerationAspectRatio, GenerationModelOption, GenerationResolution
  */
 export type BotanicAgentTurnRequestInput = {
   projectId: string
+  locale: ProductLocale
   plannerModel?: string
   messages: Pick<BotanicAgentMessage, 'role' | 'content'>[]
   contextNodeIds: string[]
@@ -17,6 +19,7 @@ export type BotanicAgentTurnRequestInput = {
 
 export type BotanicAgentTurnRequest = {
   projectId: string
+  locale: ProductLocale
   plannerModel?: string
   messages: Array<{ role: BotanicAgentMessage['role']; content: string }>
   contextNodeIds: string[]
@@ -84,6 +87,7 @@ export const botanicAgentTurnMessageLimit = 4000
 export function buildBotanicAgentTurnRequest(input: BotanicAgentTurnRequestInput): BotanicAgentTurnRequest {
   return {
     projectId: input.projectId,
+    locale: input.locale,
     ...(input.plannerModel ? { plannerModel: input.plannerModel } : {}),
     messages: input.messages.slice(-16).map((message) => ({
       role: message.role,

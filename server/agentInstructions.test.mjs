@@ -23,3 +23,10 @@ test('Agent 每种模式都加载通用人格与对应模式规则', async () =>
   assert.match(generation, /# Botanic Agent Planner/)
   assert.doesNotMatch(generation, /# Prompt Refiner/)
 })
+
+test('Agent 英文界面只改变新回复语言，保留用户与项目原文', async () => {
+  const instructions = await readBotanicAgentInstructions('generation', 'en')
+  assert.match(instructions, /Use concise, natural English/)
+  assert.match(instructions, /Preserve them in their original language/)
+  assert.match(instructions, /Do not translate stable IDs/)
+})

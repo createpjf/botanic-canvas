@@ -1,6 +1,7 @@
 import { createPortal } from 'react-dom'
 import { type KeyboardEvent as ReactKeyboardEvent, type ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
 import { ChevronDownIcon } from './BotanicIcons'
+import { useProductI18n } from '../i18n/react'
 import { useMotionPresence } from './motionPresence'
 
 export type BotanicSelectOption = { value: string; label: string }
@@ -28,6 +29,7 @@ export function BotanicSelect({
   renderTrigger?: (selected: BotanicSelectOption | undefined) => ReactNode
   renderOption?: (option: BotanicSelectOption, selected: boolean) => ReactNode
 }) {
+  const { locale } = useProductI18n()
   const menuId = useId()
   const triggerRef = useRef<HTMLButtonElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -110,7 +112,7 @@ export function BotanicSelect({
         setOpen((current) => !current)
       }}
     >
-      {renderTrigger ? renderTrigger(selected) : <span>{selected?.label ?? placeholder ?? '请选择'}</span>}
+      {renderTrigger ? renderTrigger(selected) : <span>{selected?.label ?? placeholder ?? (locale === 'en' ? 'Select' : '请选择')}</span>}
       <ChevronDownIcon className="botanic-select__chevron" />
     </button>
     {menuPresence.present && anchor && typeof document !== 'undefined' ? createPortal(

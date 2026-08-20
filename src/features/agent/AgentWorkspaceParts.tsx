@@ -18,20 +18,22 @@ import {
 import type { GenerationModelOption } from '../../domain/canvas'
 import { modelDisplayLabel, modelProviderLogo } from '../../components/generationModelPresentation'
 import { AlertIcon, CheckIcon, ChevronLeftIcon, ClockIcon, CloseIcon, EditIcon, RefreshIcon, SlidersIcon } from '../../components/BotanicIcons'
+import { useProductI18n, useProductMessages } from '../../i18n/react'
+import type { ProductLocale } from '../../i18n/core'
 
-export function agentToolStatusLabel(status: NonNullable<BotanicAgentPlan['toolCalls']>[number]['status']) {
-  if (status === 'succeeded') return '已完成'
-  if (status === 'failed') return '失败'
-  if (status === 'awaiting_confirmation') return '待确认'
-  if (status === 'running') return '执行中'
-  return '待执行'
+export function agentToolStatusLabel(status: NonNullable<BotanicAgentPlan['toolCalls']>[number]['status'], locale: ProductLocale = 'zh-CN') {
+  if (status === 'succeeded') return locale === 'en' ? 'Completed' : '已完成'
+  if (status === 'failed') return locale === 'en' ? 'Failed' : '失败'
+  if (status === 'awaiting_confirmation') return locale === 'en' ? 'Awaiting approval' : '待确认'
+  if (status === 'running') return locale === 'en' ? 'Running' : '执行中'
+  return locale === 'en' ? 'Pending' : '待执行'
 }
 
-export function agentRuntimeStepStatusLabel(status: BotanicAgentRuntimeStep['status']) {
-  if (status === 'succeeded') return '已完成'
-  if (status === 'failed') return '失败'
-  if (status === 'running') return '执行中'
-  return '待执行'
+export function agentRuntimeStepStatusLabel(status: BotanicAgentRuntimeStep['status'], locale: ProductLocale = 'zh-CN') {
+  if (status === 'succeeded') return locale === 'en' ? 'Completed' : '已完成'
+  if (status === 'failed') return locale === 'en' ? 'Failed' : '失败'
+  if (status === 'running') return locale === 'en' ? 'Running' : '执行中'
+  return locale === 'en' ? 'Pending' : '待执行'
 }
 
 export function agentRuntimeStepMarker(step: BotanicAgentRuntimeStep) {
@@ -43,10 +45,11 @@ export function agentRuntimeStepMarker(step: BotanicAgentRuntimeStep) {
   return '○'
 }
 
-export function AgentPanelBackButton({ onClick, label = '返回对话' }: { onClick: () => void; label?: string }) {
+export function AgentPanelBackButton({ onClick, label }: { onClick: () => void; label?: string }) {
+  const { locale } = useProductI18n()
   return <button type="button" className="agent-panel-back" onClick={onClick}>
     <ChevronLeftIcon />
-    <span>{label}</span>
+    <span>{label ?? (locale === 'en' ? 'Back to conversation' : '返回对话')}</span>
   </button>
 }
 
@@ -63,19 +66,19 @@ export function AgentBranchStatusIcon({ status }: { status: BotanicAgentRun['bra
   return <span className={`agent-branch-status-icon is-${status}`} aria-hidden="true">{icon}</span>
 }
 
-export function agentMemoryKindLabel(kind: BotanicAgentMemoryKind) {
-  if (kind === 'approved') return '已确认方向'
-  if (kind === 'avoid') return '避免事项'
-  return '长期规则'
+export function agentMemoryKindLabel(kind: BotanicAgentMemoryKind, locale: ProductLocale = 'zh-CN') {
+  if (kind === 'approved') return locale === 'en' ? 'Approved direction' : '已确认方向'
+  if (kind === 'avoid') return locale === 'en' ? 'Avoid' : '避免事项'
+  return locale === 'en' ? 'Long-term rule' : '长期规则'
 }
 
-export function agentArtifactKindLabel(artifact: BotanicAgentArtifact) {
-  if (artifact.kind === 'image') return '图片'
-  if (artifact.kind === 'video') return '视频'
-  if (artifact.kind === 'workflow') return '工作流'
-  if (artifact.kind === 'asset_group') return '素材组'
-  if (artifact.kind === 'file') return '文件'
-  return '文本'
+export function agentArtifactKindLabel(artifact: BotanicAgentArtifact, locale: ProductLocale = 'zh-CN') {
+  if (artifact.kind === 'image') return locale === 'en' ? 'Image' : '图片'
+  if (artifact.kind === 'video') return locale === 'en' ? 'Video' : '视频'
+  if (artifact.kind === 'workflow') return locale === 'en' ? 'Workflow' : '工作流'
+  if (artifact.kind === 'asset_group') return locale === 'en' ? 'Asset group' : '素材组'
+  if (artifact.kind === 'file') return locale === 'en' ? 'File' : '文件'
+  return locale === 'en' ? 'Text' : '文本'
 }
 
 export function agentRunOutputCount(run: BotanicAgentRun, artifacts: BotanicAgentArtifact[]) {
@@ -96,12 +99,25 @@ export function agentRunFeedback(
   run: BotanicAgentRun,
   artifacts: BotanicAgentArtifact[],
   nodeIds: Set<string>,
+  locale: ProductLocale = 'zh-CN',
 ) {
-  return botanicAgentRunFeedback(run.status, agentRunOutputCount(run, artifacts), run.error, {
+  const outputCount = agentRunOutputCount(run, artifacts)
+  const result = botanicAgentRunFeedback(run.status, outputCount, run.error, {
     artifactCount: agentRunArtifacts(run, artifacts).length,
     canvasOutputCount: agentRunCanvasOutputCount(run, artifacts, nodeIds),
     activeBranchCount: run.branches.filter((branch) => branch.status === 'queued' || branch.status === 'running').length,
   })
+  if (locale !== 'en') return result
+  const labels = { awaiting_confirmation: 'Awaiting approval', queued: 'Queued', executing: 'Generating', running: 'Generating', completed: 'Completed', partial: 'Partially completed', failed: /timeout|timed out/i.test(run.error ?? '') ? 'Timed out' : 'Generation failed', cancelled: 'Cancelled' } as const
+  const actionLabels = { view_task: 'View task', view_results: 'View results', adjust: 'Adjust and retry', none: '' } as const
+  const detail = run.status === 'awaiting_confirmation' ? 'Generation starts after approval.'
+    : run.status === 'queued' ? 'Queued and waiting to generate.'
+      : run.status === 'executing' || run.status === 'running' ? 'Generating now; results will be added to the canvas.'
+        : run.status === 'completed' ? (outputCount ? `${outputCount} result${outputCount === 1 ? '' : 's'} available.` : 'Completed with no available results yet.')
+          : run.status === 'partial' ? `${outputCount} result${outputCount === 1 ? '' : 's'} available; some branches failed.`
+            : run.status === 'cancelled' ? `Cancelled; ${outputCount} result${outputCount === 1 ? '' : 's'} kept.`
+              : /timeout|timed out/i.test(run.error ?? '') ? 'Generation timed out. Adjust the settings and retry.' : (outputCount ? `Not completed; ${outputCount} result${outputCount === 1 ? '' : 's'} kept.` : 'The task did not complete. Adjust the settings and retry.')
+  return { ...result, label: labels[run.status], detail, actionLabel: actionLabels[result.action] }
 }
 
 export function AgentClarificationCard({
@@ -115,6 +131,11 @@ export function AgentClarificationCard({
   state: 'idle' | 'submitting' | 'completed'
   onSubmit: (answers: Record<string, string>) => void
 }) {
+  const { locale } = useProductI18n()
+  const copy = useProductMessages({
+    'zh-CN': { recommended: '推荐', confirmedAria: '已确认的创作设置', confirmed: '创作设置已确认', aria: '创作设置确认', title: '确认创作设置', custom: '自定义优化方向', planning: '正在规划…', continue: '继续规划' },
+    en: { recommended: 'Recommended', confirmedAria: 'Confirmed creative settings', confirmed: 'Creative settings confirmed', aria: 'Creative settings confirmation', title: 'Confirm creative settings', custom: 'Custom direction', planning: 'Planning…', continue: 'Continue planning' },
+  })
   const [answers, setAnswers] = useState<Record<string, string>>(() => Object.fromEntries(
     clarification.fields.flatMap((field) => field.defaultValue ? [[field.id, field.defaultValue]] : []),
   ))
@@ -126,7 +147,7 @@ export function AgentClarificationCard({
         ? selectedModel.resolutions
         : undefined
     const options = values
-      ? values.map((value) => ({ value, label: value, description: value === field.defaultValue ? '推荐' : undefined }))
+      ? values.map((value) => ({ value, label: value, description: value === field.defaultValue ? copy.recommended : undefined }))
       : field.options
     return { ...field, options }
   })
@@ -170,20 +191,20 @@ export function AgentClarificationCard({
   )
   if (state === 'completed') {
     return (
-      <section className="agent-clarification-card is-complete" aria-label="已确认的创作设置" aria-live="polite">
+      <section className="agent-clarification-card is-complete" aria-label={copy.confirmedAria} aria-live="polite">
         <span className="agent-clarification-card__complete-mark" aria-hidden="true">✓</span>
         <span className="agent-clarification-card__complete-copy">
-          <strong>创作设置已确认</strong>
+          <strong>{copy.confirmed}</strong>
           {selectionSummary ? <small>{selectionSummary}</small> : null}
         </span>
       </section>
     )
   }
   return (
-    <section className="agent-clarification-card" aria-label="创作设置确认">
+    <section className="agent-clarification-card" aria-label={copy.aria}>
       <div className="agent-clarification-card__intro">
         <header>
-          <strong>确认创作设置</strong>
+          <strong>{copy.title}</strong>
           {clarification.question ? <small>{clarification.question}</small> : null}
         </header>
       </div>
@@ -216,9 +237,9 @@ export function AgentClarificationCard({
                 onClick={() => selectOption('prompt_direction', 'custom')}
               >{customDirectionOption.label}</button> : null}
               {answers.prompt_direction === 'custom' && !asksCustomText ? <textarea
-                aria-label="自定义优化方向"
+                aria-label={copy.custom}
                 value={answers.custom_direction ?? ''}
-                placeholder={botanicAgentCustomDirectionPlaceholder}
+                placeholder={locale === 'en' ? 'Describe the visual direction to strengthen' : botanicAgentCustomDirectionPlaceholder}
                 disabled={disabled}
                 maxLength={500}
                 onChange={(event) => setAnswers((current) => ({ ...current, custom_direction: event.target.value }))}
@@ -231,13 +252,14 @@ export function AgentClarificationCard({
       </div>
       <footer className={`agent-clarification-card__footer${clarification.helper ? '' : ' is-actions-only'}`}>
         {clarification.helper ? <small className="agent-clarification-card__helper">{clarification.helper}</small> : null}
-        <button type="button" className="agent-clarification-card__submit" disabled={disabled || !complete} onClick={() => onSubmit(answers)}>{disabled ? '正在规划…' : '继续规划'}</button>
+        <button type="button" className="agent-clarification-card__submit" disabled={disabled || !complete} onClick={() => onSubmit(answers)}>{disabled ? copy.planning : copy.continue}</button>
       </footer>
     </section>
   )
 }
 
 export function AgentPromptDiff({ original, revised }: { original: string; revised: string }) {
+  const { locale } = useProductI18n()
   const segments = buildBotanicAgentPromptDiff(original, revised)
   const changed = segments.some((segment) => segment.kind !== 'same')
   const renderSegment = (segment: BotanicAgentPromptDiffSegment, index: number) => {
@@ -245,8 +267,8 @@ export function AgentPromptDiff({ original, revised }: { original: string; revis
     if (segment.kind === 'removed') return <del key={`${segment.kind}-${index}`}>{segment.text}</del>
     return <span key={`${segment.kind}-${index}`}>{segment.text}</span>
   }
-  return <p className="agent-prompt-review__diff-body" aria-label={changed ? '原文与润色差异' : '原文与润色一致'}>
-    {segments.length ? segments.map(renderSegment) : '暂无提示词内容'}
+  return <p className="agent-prompt-review__diff-body" aria-label={changed ? (locale === 'en' ? 'Original and revised prompt differences' : '原文与润色差异') : (locale === 'en' ? 'Original and revised prompts match' : '原文与润色一致')}>
+    {segments.length ? segments.map(renderSegment) : (locale === 'en' ? 'No prompt content yet' : '暂无提示词内容')}
   </p>
 }
 
@@ -267,19 +289,25 @@ export function AgentFailureRecoveryActions({
   onRetry: () => void
   onPrepare: (mode: 'settings' | 'model', model?: GenerationModelOption) => void
 }) {
+  const { locale } = useProductI18n()
+  const recovery = locale === 'en' ? {
+    aria: `${branch.label} recovery actions`, retry: 'Retry current branch', retryTitle: 'Retry current branch · reuses the same task and does not create a duplicate', settings: 'Edit settings', settingsTitle: 'Edit settings · prefills the change request without submitting', model: 'Change model', modelTitle: 'Change model · prefills the model without submitting', select: 'Select recovery model', empty: 'No models available',
+  } : {
+    aria: `${branch.label} 恢复操作`, retry: '重试当前分支', retryTitle: '重试当前分支 · 复用同一任务，不会创建重复任务', settings: '修改参数', settingsTitle: '修改参数 · 只预填修改要求，不会立即提交', model: '更换模型', modelTitle: '更换模型 · 只预填模型，不会立即提交', select: '选择恢复模型', empty: '暂无可用模型',
+  }
   return (
-    <div className="agent-recovery-actions" aria-label={`${branch.label} 恢复操作`}>
-      <button type="button" className="is-retry" aria-label="重试当前分支" disabled={retrying} onClick={onRetry} title="重试当前分支 · 复用同一任务，不会创建重复任务">
+    <div className="agent-recovery-actions" aria-label={recovery.aria}>
+      <button type="button" className="is-retry" aria-label={recovery.retry} disabled={retrying} onClick={onRetry} title={recovery.retryTitle}>
         {retrying ? <span className="agent-workspace__mini-spinner" /> : <RefreshIcon />}
       </button>
-      <button type="button" aria-label="修改参数" onClick={() => onPrepare('settings')} title="修改参数 · 只预填修改要求，不会立即提交"><EditIcon /></button>
+      <button type="button" aria-label={recovery.settings} onClick={() => onPrepare('settings')} title={recovery.settingsTitle}><EditIcon /></button>
       <span className="agent-recovery-model-picker">
-        <button type="button" aria-label="更换模型" aria-expanded={menuOpen} onClick={onToggleModelMenu} title="更换模型 · 只预填模型，不会立即提交"><SlidersIcon /></button>
-        {menuOpen ? <div className="agent-recovery-model-menu" role="group" aria-label="选择恢复模型" onPointerDown={(event) => event.stopPropagation()}>
+        <button type="button" aria-label={recovery.model} aria-expanded={menuOpen} onClick={onToggleModelMenu} title={recovery.modelTitle}><SlidersIcon /></button>
+        {menuOpen ? <div className="agent-recovery-model-menu" role="group" aria-label={recovery.select} onPointerDown={(event) => event.stopPropagation()}>
           {generationModels.map((model) => <button key={model.id} type="button" onClick={() => onPrepare('model', model)}>
             <span>{modelProviderLogo(model) ? <img src={modelProviderLogo(model)} alt="" /> : null}<b>{modelDisplayLabel(model)}</b></span>
           </button>)}
-          {!generationModels.length ? <small>暂无可用模型</small> : null}
+          {!generationModels.length ? <small>{recovery.empty}</small> : null}
         </div> : null}
       </span>
     </div>

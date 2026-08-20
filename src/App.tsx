@@ -2,19 +2,19 @@
 
 import { lazy, Suspense, type FormEvent, useEffect, useRef, useState } from 'react'
 import { Analytics } from '@vercel/analytics/react'
-import { ProductLanding, type ProductLocale } from './components/ProductLanding'
+import { ProductLanding } from './components/ProductLanding'
 import { useDialogFocusTrap } from './components/useDialogFocusTrap'
 import { useRestoreFocus } from './components/motionPresence'
 import { workspaceHash, workspaceLocationFromHash } from './features/canvas/canvasWorkspaceNavigation'
 import { cleanProductAuthUrl, hasProductAuthCallbackError } from './lib/authFlow'
-import { ProductApiError, clearProductSession, completeProductPasswordSetup, createProductSession, hybridAuthEnabled, productPasswordSetupRequired, readProductSession, serverPersistenceEnabled, supabaseAuthEnabled, type ProductUser } from './lib/productSession'
+import { clearProductSession, completeProductPasswordSetup, createProductSession, hybridAuthEnabled, productPasswordSetupRequired, readProductSession, serverPersistenceEnabled, supabaseAuthEnabled, type ProductUser } from './lib/productSession'
 import { subscribeProductSessionInvalidated } from './lib/productSessionInvalidation'
+import { localizeProductError, readProductLocale } from './i18n/core'
+import { LanguageSwitcher, useProductI18n } from './i18n/react'
 
 const CanvasWorkspace = lazy(() => import('./features/canvas/CanvasWorkspace'))
 
 type ProductAppState = 'checking' | 'landing' | 'sign-in' | 'password-setup' | 'ready' | 'error'
-
-const productLocaleStorageKey = 'botanic:product-locale:v1'
 
 const productAccessCopy = {
   'zh-CN': {
@@ -83,15 +83,6 @@ const productAccessCopy = {
   },
 } as const
 
-function readProductLocale(): ProductLocale {
-  if (typeof window === 'undefined') return 'zh-CN'
-  try {
-    return window.localStorage.getItem(productLocaleStorageKey) === 'en' ? 'en' : 'zh-CN'
-  } catch {
-    return 'zh-CN'
-  }
-}
-
 function currentProductAccessCopy() {
   return productAccessCopy[readProductLocale()]
 }
@@ -117,7 +108,7 @@ function clearWorkspaceLocation() {
 }
 
 function App() {
-  const [locale, setLocale] = useState<ProductLocale>(readProductLocale)
+  const { locale } = useProductI18n()
   const [state, setState] = useState<ProductAppState>(() => {
     const workspaceRequested = typeof window !== 'undefined' && workspaceRouteRequested(window.location.hash)
     if (serverPersistenceEnabled && workspaceRequested) return 'checking'
@@ -144,20 +135,11 @@ function App() {
   const accessDialogRef = useDialogFocusTrap(accessOverlayOpen)
   useRestoreFocus(accessOverlayOpen)
 
-  useEffect(() => {
-    document.documentElement.lang = state === 'ready' ? 'zh-CN' : locale
-    try {
-      window.localStorage.setItem(productLocaleStorageKey, locale)
-    } catch {
-      // Language switching must keep working when storage is unavailable.
-    }
-  }, [locale, state])
-
   useEffect(() => subscribeProductSessionInvalidated((invalidationMessage) => {
     const location = workspaceLocationFromHash(window.location.hash)
     intendedWorkspaceHashRef.current = location ? workspaceHash(location) : null
     setUser(null)
-    setMessage(invalidationMessage)
+    setMessage(readProductLocale() === 'en' ? 'Your session expired. Sign in again.' : invalidationMessage)
     clearWorkspaceLocation()
     setAccessOverlayOpen(true)
     setState('sign-in')
@@ -231,7 +213,10 @@ function App() {
         if (!restoreIsCurrent()) return
         settled = true
         window.clearTimeout(restoreTimeout)
-        setMessage(error instanceof Error ? error.message : currentProductAccessCopy().connectionFailed)
+        setMessage(localizeProductError(error, readProductLocale(), {
+          'zh-CN': currentProductAccessCopy().connectionFailed,
+          en: productAccessCopy.en.connectionFailed,
+        }))
         if (workspaceRequestedAtStart || needsPasswordSetup || authCallbackFailed) {
           setAccessOverlayOpen(true)
           setState('sign-in')
@@ -274,7 +259,7 @@ function App() {
       setAccessOverlayOpen(false)
       setState('ready')
     } catch (error) {
-      setMessage(error instanceof ProductApiError ? error.message : accessCopy.signInFailed)
+      setMessage(localizeProductError(error, locale, { 'zh-CN': accessCopy.signInFailed, en: accessCopy.signInFailed }))
       setState('sign-in')
     }
   }
@@ -285,7 +270,7 @@ function App() {
     try {
       await clearProductSession()
     } catch (error) {
-      setMessage(error instanceof ProductApiError ? error.message : accessCopy.signOutFailed)
+      setMessage(localizeProductError(error, locale, { 'zh-CN': accessCopy.signOutFailed, en: accessCopy.signOutFailed }))
     } finally {
       setUser(null)
       intendedWorkspaceHashRef.current = null
@@ -308,7 +293,7 @@ function App() {
       openIntendedWorkspace()
       setState('ready')
     } catch (error) {
-      setMessage(error instanceof ProductApiError ? error.message : accessCopy.passwordSaveFailed)
+      setMessage(localizeProductError(error, locale, { 'zh-CN': accessCopy.passwordSaveFailed, en: accessCopy.passwordSaveFailed }))
       setState('password-setup')
     }
   }
@@ -344,7 +329,7 @@ function App() {
           currentUser={user ?? undefined}
           onSignOut={serverPersistenceEnabled ? signOut : undefined}
           onReturnToLanding={returnToLanding}
-          productHomeLabel="产品首页"
+          productHomeLabel={locale === 'en' ? 'Product home' : '产品首页'}
         />
       </Suspense>
       <Analytics />
@@ -353,8 +338,6 @@ function App() {
 
   const landing = <ProductLanding
     isAuthenticated={Boolean(user)}
-    locale={locale}
-    onLocaleChange={setLocale}
     onEnterWorkspace={enterWorkspace}
   />
 
@@ -373,6 +356,7 @@ function App() {
           aria-labelledby="product-access-title"
         >
           <span>BOTANIC</span>
+          <LanguageSwitcher className="product-access__language" />
           <h1 id="product-access-title">{state === 'checking' ? accessCopy.checkingTitle : state === 'password-setup' ? accessCopy.passwordSetupTitle : accessCopy.signInTitle}</h1>
           {state === 'checking' ? <p>{accessCopy.syncing}</p> : (
             state === 'password-setup' ? <form onSubmit={completePasswordSetup}>

@@ -13,6 +13,7 @@ import {
 test('通用 Agent 对话请求只发送有限消息与节点 ID', () => {
   const request = buildBotanicAgentChatRequest({
     projectId: 'project-chat',
+    locale: 'en',
     plannerModel: 'kimi-k3',
     mode: 'research',
     messages: Array.from({ length: 18 }, (_, index) => ({ role: index % 2 ? 'assistant' as const : 'user' as const, content: `消息 ${index}` })),
@@ -20,6 +21,7 @@ test('通用 Agent 对话请求只发送有限消息与节点 ID', () => {
   })
 
   assert.equal(request.messages.length, 16)
+  assert.equal(request.locale, 'en')
   assert.deepEqual(request.messages[0], { role: 'user', content: '消息 2' })
   assert.deepEqual(request.contextNodeIds, ['node-a', 'node-b'])
   assert.doesNotMatch(JSON.stringify(request), /image|data:image|base64|url/i)
