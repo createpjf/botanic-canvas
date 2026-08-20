@@ -4,7 +4,7 @@ import { botanicAgentExecutionModeLabel, type BotanicAgentMentionQuery, type Bot
 import type { AssetGroup } from '../../domain/canvas'
 import { AgentPlannerProviderIcon } from '../../components/AgentPlannerProviderIcon'
 import { BotanicSelect } from '../../components/BotanicSelect'
-import { ArrowUpIcon, AutoRunIcon, ChecklistIcon, ChevronDownIcon, CloseIcon, PlusIcon, SparkleIcon, UploadIcon } from '../../components/BotanicIcons'
+import { ArrowUpIcon, AutoRunIcon, ChecklistIcon, ChevronDownIcon, CloseIcon, PlusIcon, SparkleIcon, StopIcon, UploadIcon } from '../../components/BotanicIcons'
 import { agentPlannerModelLabel, agentPlannerModelShortLabel } from '../../components/generationModelPresentation'
 import type { AgentContextItem, AgentSkillOption } from './agentWorkspace.types'
 import { useProductI18n, useProductMessages } from '../../i18n/react'
@@ -50,6 +50,7 @@ type AgentComposerProps = {
   onPlannerModelChange: (model: string) => void
   onGroupChange: (groupId: string) => void
   onSend: () => void
+  onCancelPlanning: () => void
   onToggleImageContext: (itemId: string, selected: boolean) => void
   onExecutionModeChange: (mode: 'manual' | 'auto') => void
 }
@@ -95,16 +96,17 @@ export function AgentComposer({
   onPlannerModelChange,
   onGroupChange,
   onSend,
+  onCancelPlanning,
   onToggleImageContext,
   onExecutionModeChange,
 }: AgentComposerProps) {
   const { locale } = useProductI18n()
   const copy = useProductMessages({
     'zh-CN': {
-      input: 'Agent 输入', referenced: '已引用', remove: '移除', mounted: '已挂载', callSkill: '挂载 Skill', systemSkill: '系统 Skill', projectSkill: '项目 Skill', createSkill: '创建项目 Skill', saveRules: '保存一组可复用规则', referenceCanvas: '引用画布节点或图片视频', description: '补充描述', asset: '素材', result: '结果', video: '视频', noMatch: '没有匹配项，按 Esc 关闭', noSkillMatch: '没有匹配的 Skill，按 Esc 关闭', placeholder: '/ 挂载 Skill，@ 引用画布节点或图片视频；它们会显示为标签，不写入提示词', message: 'Agent 消息', promptField: '提示词', retry: '重试', addImages: '添加图像素材', executionMode: '执行模式', manual: '计划模式', auto: '自动模式', manualTitle: '计划模式：先给出计划，你确认后再提交', autoTitle: '自动模式：补齐设置后直接提交生成任务', model: 'Agent 模型', assetGroup: '素材组', single: '单张', group: '组', send: '发送给 Agent', closeImages: '关闭添加图像素材', chooseImages: '从电脑选择图片', dragHint: '也可以直接拖入 Agent 面板', noImages: '暂无图像素材，可从电脑选择或直接拖入。', manualHelp: '确认计划后再生成', autoHelp: '直接生成，行动需确认', modeNote: '只影响之后的新计划', textKind: '文字',
+      input: 'Agent 输入', referenced: '已引用', remove: '移除', mounted: '已挂载', callSkill: '挂载 Skill', systemSkill: '系统 Skill', projectSkill: '项目 Skill', createSkill: '创建项目 Skill', saveRules: '保存一组可复用规则', referenceCanvas: '引用画布节点或图片视频', description: '补充描述', asset: '素材', result: '结果', video: '视频', noMatch: '没有匹配项，按 Esc 关闭', noSkillMatch: '没有匹配的 Skill，按 Esc 关闭', placeholder: '/ 挂载 Skill，@ 引用画布节点或图片视频；它们会显示为标签，不写入提示词', message: 'Agent 消息', promptField: '提示词', retry: '重试', addImages: '添加图像素材', executionMode: '执行模式', manual: '计划模式', auto: '自动模式', manualTitle: '计划模式：先给出计划，你确认后再提交', autoTitle: '自动模式：补齐设置后直接提交生成任务', model: 'Agent 模型', assetGroup: '素材组', single: '单张', group: '组', send: '发送给 Agent', stop: '停止', closeImages: '关闭添加图像素材', chooseImages: '从电脑选择图片', dragHint: '也可以直接拖入 Agent 面板', noImages: '暂无图像素材，可从电脑选择或直接拖入。', manualHelp: '确认计划后再生成', autoHelp: '直接生成，行动需确认', modeNote: '只影响之后的新计划', textKind: '文字',
     },
     en: {
-      input: 'Agent input', referenced: 'Referenced', remove: 'Remove', mounted: 'Mounted', callSkill: 'Mount Skill', systemSkill: 'System Skill', projectSkill: 'Project Skill', createSkill: 'Create project Skill', saveRules: 'Save a reusable set of rules', referenceCanvas: 'Reference canvas nodes or media', description: 'Description', asset: 'Asset', result: 'Result', video: 'Video', noMatch: 'No matches. Press Esc to close.', noSkillMatch: 'No matching Skill. Press Esc to close.', placeholder: 'Use / to mount a Skill, @ to reference canvas nodes or media — they become chips, not prompt text.', message: 'Agent message', promptField: 'Prompt', retry: 'Retry', addImages: 'Add image assets', executionMode: 'Execution mode', manual: 'Plan mode', auto: 'Auto mode', manualTitle: 'Plan mode: review the plan before submitting generation', autoTitle: 'Auto mode: complete settings and submit generation directly', model: 'Agent model', assetGroup: 'Asset group', single: 'Single', group: 'Group', send: 'Send to Agent', closeImages: 'Close image picker', chooseImages: 'Choose images from computer', dragHint: 'You can also drag images into the Agent panel', noImages: 'No image assets yet. Choose files or drag images into the panel.', manualHelp: 'Generate after plan confirmation', autoHelp: 'Generate directly; actions still need approval', modeNote: 'Applies to future plans only', textKind: 'Text',
+      input: 'Agent input', referenced: 'Referenced', remove: 'Remove', mounted: 'Mounted', callSkill: 'Mount Skill', systemSkill: 'System Skill', projectSkill: 'Project Skill', createSkill: 'Create project Skill', saveRules: 'Save a reusable set of rules', referenceCanvas: 'Reference canvas nodes or media', description: 'Description', asset: 'Asset', result: 'Result', video: 'Video', noMatch: 'No matches. Press Esc to close.', noSkillMatch: 'No matching Skill. Press Esc to close.', placeholder: 'Use / to mount a Skill, @ to reference canvas nodes or media — they become chips, not prompt text.', message: 'Agent message', promptField: 'Prompt', retry: 'Retry', addImages: 'Add image assets', executionMode: 'Execution mode', manual: 'Plan mode', auto: 'Auto mode', manualTitle: 'Plan mode: review the plan before submitting generation', autoTitle: 'Auto mode: complete settings and submit generation directly', model: 'Agent model', assetGroup: 'Asset group', single: 'Single', group: 'Group', send: 'Send to Agent', stop: 'Stop', closeImages: 'Close image picker', chooseImages: 'Choose images from computer', dragHint: 'You can also drag images into the Agent panel', noImages: 'No image assets yet. Choose files or drag images into the panel.', manualHelp: 'Generate after plan confirmation', autoHelp: 'Generate directly; actions still need approval', modeNote: 'Applies to future plans only', textKind: 'Text',
     },
   })
   const composerErrorId = useId()
@@ -148,6 +150,7 @@ export function AgentComposer({
     }
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
+      if (planning) return
       onSend()
     }
   }
@@ -218,7 +221,9 @@ export function AgentComposer({
         />
         {compatibleGroups.length ? <BotanicSelect className="agent-composer__group-select" value={groupId} placeholder={copy.assetGroup} ariaLabel={copy.assetGroup} options={[{ value: '', label: copy.single }, ...compatibleGroups.map((group) => ({ value: group.id, label: `${group.name} · ${group.assetIds.length}` }))]} onChange={onGroupChange} renderTrigger={(selected) => <span className="agent-group-trigger" title={selected?.label ?? copy.single}><strong>{selected?.value ? copy.group : '1'}</strong></span>} /> : null}
       </div>
-      <button type="button" className="agent-composer__send" disabled={!canSend || planning || !session} onClick={onSend} aria-label={copy.send} title={copy.send}>{planning ? <span className="agent-composer__spinner" /> : <ArrowUpIcon />}</button>
+      {planning
+        ? <button type="button" className="agent-composer__send is-stop" onClick={onCancelPlanning} aria-label={copy.stop} title={copy.stop}><StopIcon /></button>
+        : <button type="button" className="agent-composer__send" disabled={!canSend || !session} onClick={onSend} aria-label={copy.send} title={copy.send}><ArrowUpIcon /></button>}
     </div>
     {contextMenuOpen ? <div id={contextMenuId} className="agent-composer__context-menu" role="menu" aria-label={copy.addImages} onPointerDown={(event) => event.stopPropagation()}>
       <header><strong>{copy.addImages}</strong><button type="button" aria-label={copy.closeImages} onClick={onCloseContextMenu}><CloseIcon /></button></header>

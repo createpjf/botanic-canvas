@@ -190,6 +190,21 @@ export function stripAgentMarkdownHashes(text: string) {
 
 const sourceLinePattern = /^(?:来源|Sources)\s*[:：]\s*(.+)\s*$/iu
 
+const sourceLabelCopy: Record<string, { 'zh-CN': string; en: string }> = {
+  互联网: { 'zh-CN': '互联网', en: 'Internet' },
+  网页: { 'zh-CN': '网页', en: 'Web' },
+  项目本体: { 'zh-CN': '项目本体', en: 'Project ontology' },
+  项目记忆: { 'zh-CN': '项目记忆', en: 'Project memory' },
+  素材组: { 'zh-CN': '素材组', en: 'Asset groups' },
+  '项目 Skill': { 'zh-CN': '项目 Skill', en: 'Project Skill' },
+  画布: { 'zh-CN': '画布', en: 'Canvas' },
+}
+
+/** 服务端来源标签是中文稳定值；展示层按界面语言翻译，不改落库正文。 */
+export function localizeAgentSourceLabel(source: string, locale: 'zh-CN' | 'en' = 'zh-CN') {
+  return sourceLabelCopy[source]?.[locale] ?? source
+}
+
 /**
  * 从正文末段抽出「来源 / Sources」行，供展示层收成 chips。
  * 不改已落库字符串；刷新后仍能认出同一段文案。

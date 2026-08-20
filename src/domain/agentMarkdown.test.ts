@@ -5,6 +5,7 @@ import {
   parseAgentPromptSections,
   resolveAgentChatPrompt,
   resolveAgentPromptSections,
+  localizeAgentSourceLabel,
   splitAgentMessageSources,
   stripAgentMarkdownHashes,
 } from './agentMarkdown.ts'
@@ -41,6 +42,11 @@ test('段落行首残留井号会被剥掉，界面不露 #；末段来源收成
   const english = splitAgentMessageSources('Done.\n\nSources: Project Skill')
   assert.equal(english.body, 'Done.')
   assert.deepEqual(english.sources, ['Project Skill'])
+  assert.equal(localizeAgentSourceLabel('互联网', 'en'), 'Internet')
+  assert.equal(localizeAgentSourceLabel('网页', 'en'), 'Web')
+  assert.equal(localizeAgentSourceLabel('项目本体', 'en'), 'Project ontology')
+  assert.equal(localizeAgentSourceLabel('画布', 'en'), 'Canvas')
+  assert.equal(localizeAgentSourceLabel('互联网', 'zh-CN'), '互联网')
 })
 test('agent markdown does not treat html as executable markup', () => {
   const [block] = parseAgentMarkdown('<script>alert(1)</script>\n\n下一段')
