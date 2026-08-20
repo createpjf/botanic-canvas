@@ -13,6 +13,7 @@ import {
   botanicAgentBriefWithVariationAnswers,
   botanicAgentPendingVariationClarification,
 } from './agentVariations.ts'
+import type { BotanicAgentComposition } from './agentCreativeComposition.ts'
 import type { GenerationModelOption, GenerationSettings } from './canvas.ts'
 import type { GenerationSizeOverride } from './generationOutputSize.ts'
 
@@ -31,6 +32,8 @@ export type BotanicAgentInstructionOptions = {
   resolvedGeneration?: BotanicAgentResolvedGeneration
   /** 用户已框选的局部重绘选区；带选区的指令是明确的生成请求，不再进服务端意图分类。 */
   region?: BotanicAgentRegionSelection
+  /** 方案卡点击或重放时指定的成套方案；缺省则取会话里最近一条 composition 消息。 */
+  composition?: BotanicAgentComposition
 }
 
 export type BotanicAgentGenerationDecision = Extract<BotanicAgentRequestDecision, { kind: 'generation' }>

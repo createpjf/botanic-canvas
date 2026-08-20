@@ -227,6 +227,7 @@ export async function submitPersistentBotanicAgentMessage(input: {
         createdAt: input.message.createdAt,
         ...(input.message.plan === undefined ? {} : { plan: input.message.plan }),
         ...(input.message.question === undefined ? {} : { question: input.message.question }),
+        ...(input.message.composition === undefined ? {} : { composition: input.message.composition }),
         ...(input.message.runId === undefined ? {} : { runId: input.message.runId }),
         ...(input.message.status === undefined ? {} : { status: input.message.status }),
         ...(input.message.feedback === undefined ? {} : { feedback: input.message.feedback }),

@@ -22,6 +22,12 @@ import { BotanicSelect } from '../../components/BotanicSelect'
 import { AgentClarificationCard, AgentPromptDiff, agentToolStatusLabel } from './AgentWorkspaceParts'
 import { AgentPromptResponse } from './AgentPromptResponse'
 import { botanicAgentPlanBranchPrompts, botanicAgentPlanConfirmActionLabel, botanicAgentPlanOutputLabel, botanicAgentPlanSheetCountLabel } from '../../domain/agentVariations'
+import {
+  botanicAgentCompositionItemSpecLabel,
+  formatBotanicAgentCompositionMessage,
+  type BotanicAgentComposition,
+  type BotanicAgentCompositionItem,
+} from '../../domain/agentCreativeComposition'
 
 /** 超过这个体量的助手回复默认折叠；阈值只影响展示，不改变消息内容。 */
 const collapsibleContentLength = 600
@@ -272,6 +278,53 @@ function AgentPlanPromptReview({
   </section>
 }
 
+function AgentCompositionCard({
+  composition,
+  busy,
+  onGenerateItem,
+  onRunAll,
+}: {
+  composition: BotanicAgentComposition
+  busy: boolean
+  onGenerateItem?: (item: BotanicAgentCompositionItem) => void
+  onRunAll?: () => void
+}) {
+  const videoCount = composition.items.filter((item) => item.mediaKind === 'video').length
+  return <section className="agent-composition" aria-label="创意方案">
+    <header className="agent-composition__header">
+      <small>创意方案</small>
+      <strong>{composition.theme}</strong>
+      <p>
+        {composition.items.length} 项
+        {videoCount ? ` · 含 ${videoCount} 条视频` : ''}
+        {' · 点条目生成，或一次执行整套'}
+      </p>
+    </header>
+    <ol className="agent-composition__items">
+      {composition.items.map((item) => <li key={`${item.index}-${item.title}`}>
+        <div className="agent-composition__item-head">
+          <b>{item.index}. {item.title}</b>
+          <small>{botanicAgentCompositionItemSpecLabel(item)}</small>
+        </div>
+        {item.purpose ? <p className="agent-composition__purpose">{item.purpose}</p> : null}
+        <details className="agent-composition__prompt">
+          <summary>提示词</summary>
+          <pre>{item.prompt}</pre>
+        </details>
+        {onGenerateItem ? <button
+          type="button"
+          className="agent-composition__item-action"
+          disabled={busy}
+          onClick={() => onGenerateItem(item)}
+        >生成此项</button> : null}
+      </li>)}
+    </ol>
+    {onRunAll ? <div className="agent-composition__footer">
+      <button type="button" className="agent-composition__run" disabled={busy} onClick={onRunAll}>执行整套</button>
+    </div> : null}
+  </section>
+}
+
 type AgentConversationMessageProps = {
   message: BotanicAgentMessage
   timeline?: AgentTimelineState
@@ -300,6 +353,8 @@ type AgentConversationMessageProps = {
   onCommitPlanPrompt: (message: BotanicAgentMessage, prompt: string) => void
   onCommitPlanSettings: (message: BotanicAgentMessage, settings: GenerationSettings) => void
   onConfirmPlan: (message: BotanicAgentMessage) => void
+  onGenerateCompositionItem?: (message: BotanicAgentMessage, item: BotanicAgentCompositionItem) => void
+  onRunComposition?: (message: BotanicAgentMessage) => void
   onUsePrompt: (message: BotanicAgentMessage) => void
   onEdit: (content: string) => void
   onRetryDelivery: (messageId: string) => void
@@ -334,6 +389,8 @@ export function AgentConversationMessage({
   onCommitPlanPrompt,
   onCommitPlanSettings,
   onConfirmPlan,
+  onGenerateCompositionItem,
+  onRunComposition,
   onUsePrompt,
   onEdit,
   onRetryDelivery,
@@ -359,11 +416,18 @@ export function AgentConversationMessage({
     <div className="agent-message__role">{message.role === 'assistant' ? <SparkleIcon /> : <span>你</span>}</div>
     <div className="agent-message__body">
       {timeline ? <AgentMessageTimeline timeline={timeline} /> : null}
-      {!message.question && message.content ? (message.role === 'assistant'
-        ? streaming
-          ? <AgentPromptResponse content={message.content} prompt={message.prompt} />
-          : <AgentCollapsibleContent content={message.content} prompt={message.prompt} />
-        : <p>{message.content}</p>) : null}
+      {message.kind === 'composition' && message.composition
+        ? <AgentCompositionCard
+          composition={message.composition}
+          busy={planning || submittingMessageId === message.id}
+          onGenerateItem={onGenerateCompositionItem ? (item) => onGenerateCompositionItem(message, item) : undefined}
+          onRunAll={onRunComposition ? () => onRunComposition(message) : undefined}
+        />
+        : !message.question && message.content ? (message.role === 'assistant'
+          ? streaming
+            ? <AgentPromptResponse content={message.content} prompt={message.prompt} />
+            : <AgentCollapsibleContent content={message.content} prompt={message.prompt} />
+          : <p>{message.content}</p>) : null}
       {message.kind === 'run' && inlineRunResults.length ? <div className="agent-run-message__results" aria-label="本次任务结果">
         {inlineRunResults.map((artifact) => artifact.kind === 'image'
           ? <img key={artifact.id} src={artifact.url} alt={artifact.label} />
@@ -515,7 +579,7 @@ export function AgentConversationMessage({
         <button type="button" className={message.feedback === 'positive' ? 'is-selected' : ''} aria-label="这个回答有帮助" title="有帮助" onClick={() => onFeedback(message, message.feedback === 'positive' ? undefined : 'positive')}><ThumbUpIcon /></button>
         <button type="button" className={message.feedback === 'negative' ? 'is-selected' : ''} aria-label="这个回答需要改进" title="需改进" onClick={() => onFeedback(message, message.feedback === 'negative' ? undefined : 'negative')}><ThumbDownIcon /></button>
       </> : null}
-      <button type="button" aria-label="复制消息" title="复制消息" onClick={() => void navigator.clipboard.writeText(message.content)}><CopyIcon /></button>
+      <button type="button" aria-label="复制消息" title="复制消息" onClick={() => void navigator.clipboard.writeText(message.composition ? formatBotanicAgentCompositionMessage(message.composition) : message.content)}><CopyIcon /></button>
     </div>}
   </article>
 }

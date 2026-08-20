@@ -1111,7 +1111,7 @@ export type BotanicAgentSkillCatalogItem = {
 export type BotanicAgentMessage = {
   id: string
   role: 'user' | 'assistant'
-  kind: 'text' | 'question' | 'plan' | 'run' | 'notice'
+  kind: 'text' | 'question' | 'plan' | 'run' | 'notice' | 'composition'
   content: string
   /** Prompt 对话产出的结构化结果；普通助手文字不能被当作生图 Prompt。 */
   prompt?: string
@@ -1120,6 +1120,8 @@ export type BotanicAgentMessage = {
   updatedAt?: number
   plan?: BotanicAgentPlan
   question?: BotanicAgentClarification
+  /** 成套方案卡：结构化条目随消息持久化，刷新后仍可逐项 / 整套执行。 */
+  composition?: BotanicAgentComposition
   runId?: string
   status?: 'pending' | 'answered' | 'submitted' | 'failed'
   feedback?: 'positive' | 'negative'
@@ -1559,7 +1561,7 @@ export function updateBotanicAgentSessionReadingAnchor(
 export function updateBotanicAgentMessage(
   session: BotanicAgentSession,
   messageId: string,
-  patch: Partial<Pick<BotanicAgentMessage, 'content' | 'runId' | 'status' | 'feedback' | 'plan' | 'question' | 'deliveryStatus'>>,
+  patch: Partial<Pick<BotanicAgentMessage, 'content' | 'runId' | 'status' | 'feedback' | 'plan' | 'question' | 'composition' | 'deliveryStatus'>>,
   now = Date.now(),
 ): BotanicAgentSession {
   if (!session.messages.some((message) => message.id === messageId)) return session
@@ -1855,8 +1857,8 @@ export function botanicAgentLooksLikePlannerNarration(text: string) {
     || plannerNarrationPattern.test(value)
 }
 
-export function botanicAgentMessageOffersVisualPrompt(message: Pick<BotanicAgentMessage, 'prompt' | 'content' | 'plan' | 'question'>) {
-  if (message.plan || message.question) return false
+export function botanicAgentMessageOffersVisualPrompt(message: Pick<BotanicAgentMessage, 'prompt' | 'content' | 'plan' | 'question'> & Partial<Pick<BotanicAgentMessage, 'kind' | 'composition'>>) {
+  if (message.plan || message.question || message.kind === 'composition' || message.composition) return false
   const prompt = message.prompt?.trim()
   if (!prompt) return false
   return !botanicAgentLooksLikePlannerNarration(prompt) && !botanicAgentLooksLikePlannerNarration(message.content)

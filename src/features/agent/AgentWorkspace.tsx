@@ -64,11 +64,13 @@ import { createProjectAgentSkill, listBotanicAgentSystemSkills, listProjectAgent
 import { describeRegionRect } from '../../domain/regionMask'
 import { RegionMaskEditor } from '../canvas/RegionMaskEditor'
 import {
+  botanicAgentMessageComposition,
   buildBotanicAgentCompositionPlan,
-  formatBotanicAgentCompositionMessage,
+  formatBotanicAgentCompositionSummary,
   instructionRequestsCompositionRun,
+  latestBotanicAgentComposition,
+  normalizeBotanicAgentComposition,
   resolveBotanicAgentCompositionItem,
-  type BotanicAgentComposition,
 } from '../../domain/agentCreativeComposition'
 import {
   applyBotanicAgentVariationToPlan,
@@ -332,11 +334,6 @@ export default function AgentWorkspace({
     instruction: string
     options: AgentInstructionRetryOptions
   } | null>(null)
-  /**
-   * 最近一次 MCoT 分解方案。方案正文已随消息持久化；这里只保留结构化数据供
-   * 「生成第 N 项」直接落到该项的 prompt，刷新丢失后用户可让 Agent 重新分解。
-   */
-  const activeCompositionRef = useRef<BotanicAgentComposition | null>(null)
   const [liveConversation, setLiveConversation] = useState<AgentLiveConversation>()
   const [submittingMessageId, setSubmittingMessageId] = useState('')
   const [executingActionId, setExecutingActionId] = useState('')
@@ -1250,16 +1247,22 @@ export default function AgentWorkspace({
         ...(options.sourcePromptMessageId ? { sourcePromptMessageId: options.sourcePromptMessageId } : {}),
         ...(options.resolvedGeneration ? { resolvedGeneration: options.resolvedGeneration } : {}),
         ...(options.region ? { region: options.region } : {}),
+        ...(options.composition ? { composition: options.composition } : {}),
       },
     }
 
-    // 「生成第 N 项」直接落到分解方案对应项：该项的 prompt/媒体类型已是定稿，不再走意图分类。
-    const compositionItem = activeCompositionRef.current && !options.resolvedGeneration
-      ? resolveBotanicAgentCompositionItem(activeCompositionRef.current, cleanInstruction)
+    // 结构化方案活在会话消息上：方案卡点选带上该卡的 composition，输入「生成第 N 项」取最近一条。
+    const composition = options.composition ?? latestBotanicAgentComposition(session.messages)
+    if (composition && !failedCommand.options.composition) {
+      failedCommand.options = { ...failedCommand.options, composition }
+    }
+    const compositionItem = composition && !options.resolvedGeneration
+      ? resolveBotanicAgentCompositionItem(composition, cleanInstruction)
       : null
     if (compositionItem) {
       options = {
         ...options,
+        composition,
         resolvedGeneration: {
           mediaKind: compositionItem.mediaKind,
           prompt: compositionItem.prompt,
@@ -1267,10 +1270,15 @@ export default function AgentWorkspace({
           ...(compositionItem.duration ? { duration: compositionItem.duration } : {}),
         },
       }
+      failedCommand.options = {
+        ...failedCommand.options,
+        composition,
+        resolvedGeneration: options.resolvedGeneration,
+      }
     }
 
     // 「执行方案 / 整套生成」：分支按方案条目展开成一个异构 Run，一次确认整套推进。
-    if (activeCompositionRef.current && !options.resolvedGeneration && !compositionItem
+    if (composition && !options.resolvedGeneration && !compositionItem
       && instructionRequestsCompositionRun(cleanInstruction)) {
       const executionDecision = resolveBotanicAgentExecutionDecision({
         mode: session.executionMode,
@@ -1286,7 +1294,7 @@ export default function AgentWorkspace({
         const compositionPlan = {
           ...buildBotanicAgentCompositionPlan({
             instruction: cleanInstruction,
-            composition: activeCompositionRef.current,
+            composition,
             contextSnapshot: createBotanicAgentContextSnapshot(contextItems),
             settings: {
               model: imageModel.id,
@@ -1413,14 +1421,21 @@ export default function AgentWorkspace({
           return
         }
         if (turn.kind === 'composition') {
-          // MCoT 分解方案：正文随消息持久化，结构化数据留在会话内存供「生成第 N 项」直落。
           updateRuntimeStep('respond', 'succeeded')
           if (!isCurrentAgentProject()) return
           setRuntimePhase('completed')
           setRuntimeDetailsOpen(false)
-          const composition = { theme: turn.theme, items: turn.items }
-          activeCompositionRef.current = composition
-          appendMessage({ role: 'assistant', kind: 'text', content: formatBotanicAgentCompositionMessage(composition) })
+          const composition = normalizeBotanicAgentComposition({ theme: turn.theme, items: turn.items })
+          if (!composition) {
+            appendMessage({ role: 'assistant', kind: 'notice', content: '这次分解没有形成可用的成套方案，请再描述一次交付项。' })
+            return
+          }
+          appendMessage({
+            role: 'assistant',
+            kind: 'composition',
+            composition,
+            content: formatBotanicAgentCompositionSummary(composition),
+          })
           return
         }
         serverDecision = { kind: 'generation', mediaKind: turn.mediaKind, promptSource: 'instruction' }
@@ -2257,6 +2272,25 @@ export default function AgentWorkspace({
           onCommitPlanPrompt={commitPlanPrompt}
           onCommitPlanSettings={commitPlanSettings}
           onConfirmPlan={(targetMessage) => void confirmMessagePlan(targetMessage)}
+          onGenerateCompositionItem={(targetMessage, item) => {
+            const composition = botanicAgentMessageComposition(targetMessage)
+            if (!composition) return
+            void runInstruction(`生成第 ${item.index} 项`, {
+              appendUser: `生成第 ${item.index} 项`,
+              composition,
+              resolvedGeneration: {
+                mediaKind: item.mediaKind,
+                prompt: item.prompt,
+                count: item.count,
+                ...(item.duration ? { duration: item.duration } : {}),
+              },
+            })
+          }}
+          onRunComposition={(targetMessage) => {
+            const composition = botanicAgentMessageComposition(targetMessage)
+            if (!composition) return
+            void runInstruction('执行方案', { appendUser: '执行方案', composition })
+          }}
           onUsePrompt={usePromptForGeneration}
           onEdit={(content) => { setInstruction(content); requestAnimationFrame(() => composerTextareaRef.current?.focus()) }}
           onRetryDelivery={retryMessage}

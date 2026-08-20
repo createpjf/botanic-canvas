@@ -1,10 +1,10 @@
-import type { BotanicAgentContextSnapshot, BotanicAgentPlan } from './agent.ts'
+import type { BotanicAgentContextSnapshot, BotanicAgentMessage, BotanicAgentPlan } from './agent.ts'
 import type { GenerationSettings } from './canvas.ts'
 
 /**
  * MCoT 式创意分解：复杂创意简报（一套多资产交付，如「1 张主视觉 + 3 张细节 + 1 条视频」）
- * 先分解为结构化方案，再逐项进入生成。方案是对话层实体：以格式化文本随消息持久化，
- * 结构化数据用于逐项执行；它不是 Run，也不是画布节点。
+ * 先分解为结构化方案，再逐项进入生成。方案是会话消息（kind: composition），
+ * 不是独立 ProductStore 实体，也不是 Run 或画布节点。
  */
 
 export type BotanicAgentCompositionItem = {
@@ -78,24 +78,55 @@ export function normalizeBotanicAgentComposition(raw: {
   return { theme, items }
 }
 
-/** 方案卡正文：随消息持久化的格式化文本，逐项可读、可被后续指令引用（“生成第 2 项”）。 */
+export function botanicAgentCompositionItemSpecLabel(
+  item: Pick<BotanicAgentCompositionItem, 'mediaKind' | 'count' | 'duration'>,
+) {
+  return item.mediaKind === 'video'
+    ? `视频 ${item.duration ?? 5} 秒`
+    : `图片 ${item.count} 张`
+}
+
+export function formatBotanicAgentCompositionSummary(composition: BotanicAgentComposition) {
+  return `已把这次需求分解为一套 ${composition.items.length} 项的创意方案：${composition.theme}`
+}
+
+/**
+ * 方案卡可读副本：复制/检索仍用这段文本；交互按钮由消息上的 composition 字段驱动。
+ */
 export function formatBotanicAgentCompositionMessage(composition: BotanicAgentComposition): string {
   const lines = [
-    `已把这次需求分解为一套 ${composition.items.length} 项的创意方案：${composition.theme}`,
+    formatBotanicAgentCompositionSummary(composition),
     '',
     ...composition.items.map((item) => {
-      const spec = item.mediaKind === 'video'
-        ? `视频 ${item.duration} 秒`
-        : `图片 ${item.count} 张`
+      const spec = botanicAgentCompositionItemSpecLabel(item)
       return [
         `${item.index}. ${item.title}（${spec}）${item.purpose ? ` — ${item.purpose}` : ''}`,
         `   ${item.prompt}`,
       ].join('\n')
     }),
     '',
-    '回复「生成第 N 项」逐项推进，或继续调整方案。',
+    '点方案卡「生成此项」或回复「生成第 N 项」逐项推进，也可「执行方案」一次整套生成。',
   ]
   return lines.join('\n')
+}
+
+/** 从一条消息取出可用方案；纯文本旧消息没有结构化字段，返回 null。 */
+export function botanicAgentMessageComposition(
+  message: Pick<BotanicAgentMessage, 'role' | 'composition'>,
+): BotanicAgentComposition | null {
+  if (message.role !== 'assistant' || !message.composition) return null
+  return normalizeBotanicAgentComposition(message.composition)
+}
+
+/** 刷新后从会话消息恢复最近一份结构化方案；旧卡仍用自己消息上的 composition。 */
+export function latestBotanicAgentComposition(
+  messages: ReadonlyArray<Pick<BotanicAgentMessage, 'role' | 'composition'>>,
+): BotanicAgentComposition | null {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const composition = botanicAgentMessageComposition(messages[index])
+    if (composition) return composition
+  }
+  return null
 }
 
 /** 一键整套执行语：「执行方案」「整套生成」「全部生成」。 */

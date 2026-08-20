@@ -233,3 +233,41 @@ test('计划落库时剥离提供方原始推理，其余字段原样保留', ()
   assert.equal(message.plan.toolCalls[0].summary, '先确认画布内容')
   assert.deepEqual(message.plan.constraints, [{ dimension: 'scene', mode: 'vary' }])
 })
+
+test('成套方案作为 composition 消息落库，刷新后仍带结构化条目', () => {
+  const message = validateAgentMessageEntity({
+    id: 'message-composition', role: 'assistant', kind: 'composition',
+    content: '已把这次需求分解为一套 2 项的创意方案：春季系列',
+    createdAt: 100,
+    composition: {
+      theme: '春季系列',
+      items: [
+        { title: '主视觉', purpose: '封面', mediaKind: 'image', prompt: '春日主画面', count: 2 },
+        { title: '氛围视频', mediaKind: 'video', prompt: '镜头缓推', count: 3, duration: 10, url: 'https://private/media.mp4' },
+      ],
+    },
+  })
+
+  assert.equal(message.kind, 'composition')
+  assert.equal(message.composition.theme, '春季系列')
+  assert.equal(message.composition.items.length, 2)
+  assert.equal(message.composition.items[0].count, 2)
+  assert.equal(message.composition.items[1].count, 1)
+  assert.equal(message.composition.items[1].duration, 10)
+  assert.equal(message.composition.items[1].url, undefined)
+})
+
+test('方案消息拒绝无效条目或缺少结构化方案', () => {
+  assert.throws(() => validateAgentMessageEntity({
+    id: 'message-composition', role: 'assistant', kind: 'composition',
+    content: '只有一项', createdAt: 1,
+    composition: { theme: '单项', items: [{ title: 'a', mediaKind: 'image', prompt: 'x' }] },
+  }))
+  assert.throws(() => validateAgentMessageEntity({
+    id: 'message-composition', role: 'assistant', kind: 'composition',
+    content: '没有方案', createdAt: 1,
+  }))
+  assert.throws(() => validateAgentMessageEntity({
+    id: 'message-unknown', role: 'assistant', kind: 'recipe', content: 'x', createdAt: 1,
+  }))
+})

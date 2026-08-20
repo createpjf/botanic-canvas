@@ -737,6 +737,18 @@ test('规划确认旁白不能当成可执行 Prompt，也不展示「用这段 
     content: '下面是可直接使用的画面描述。',
     prompt: '模特站在海边黄昏，白裙与构图保持不变。',
   }), true)
+  assert.equal(botanicAgentMessageOffersVisualPrompt({
+    kind: 'composition',
+    content: '已把这次需求分解为一套 2 项的创意方案：春季系列',
+    prompt: '春日主画面',
+    composition: {
+      theme: '春季系列',
+      items: [
+        { index: 1, title: '主视觉', mediaKind: 'image', prompt: '春日主画面', count: 1 },
+        { index: 2, title: '细节', mediaKind: 'image', prompt: '花瓣特写', count: 1 },
+      ],
+    },
+  }), false)
 })
 
 test('Skill 列表只展示一句用途，展开时才给完整规则且不含 YAML', () => {
@@ -918,6 +930,31 @@ test('Agent 会话保存执行模式、画布上下文与可恢复的消息时�
   const rated = updateBotanicAgentMessage(submitted, 'message-1', { feedback: 'positive' }, 140)
   assert.equal(rated.messages[0].feedback, 'positive')
   assert.equal(rated.updatedAt, 140)
+})
+
+test('成套方案作为 composition 消息进入会话时间线，更新可回填同一条', () => {
+  const composition = {
+    theme: '春季系列',
+    items: [
+      { index: 1, title: '主视觉', mediaKind: 'image' as const, prompt: '春日主画面', count: 1 },
+      { index: 2, title: '细节', mediaKind: 'image' as const, prompt: '花瓣特写', count: 2 },
+    ],
+  }
+  const session = appendBotanicAgentMessage(createBotanicAgentSession({ id: 'session-composition', now: 100 }), {
+    id: 'composition-1', role: 'assistant', kind: 'composition',
+    content: '已把这次需求分解为一套 2 项的创意方案：春季系列',
+    composition, status: 'pending', createdAt: 110,
+  })
+  assert.equal(session.messages[0].kind, 'composition')
+  assert.equal(session.messages[0].composition?.items[1].title, '细节')
+
+  const updated = updateBotanicAgentMessage(session, 'composition-1', {
+    composition: {
+      ...composition,
+      items: composition.items.map((item) => item.index === 2 ? { ...item, prompt: '花蕊特写' } : item),
+    },
+  }, 120)
+  assert.equal(updated.messages[0].composition?.items[1].prompt, '花蕊特写')
 })
 
 test('Agent 追问卡可持久化答案状态，润色后的计划也可回填到同一消息', () => {
