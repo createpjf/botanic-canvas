@@ -1848,15 +1848,20 @@ export function botanicAgentMessageOffersVisualPrompt(message: Pick<BotanicAgent
  *
  * 取不到画面描述时返回空串：宁可让调用方继承基准图或追问，也不能把旁白当成提示词发给 Provider。
  */
+/** 创作简报附录是给规划器的上下文，不是画面描述；与 compileBriefPrompt 的拼接格式对应。 */
+function stripCreativeBriefNotes(text: string) {
+  return text.replace(/\n{2,}创作简报：[\s\S]*$/u, '').trim()
+}
+
 export function botanicAgentVisualGenerationPrompt(prompt: string, fallback = ''): string {
-  const text = prompt.trim()
+  const text = stripCreativeBriefNotes(prompt.trim())
   const blocks = text.split(/\n{2,}/u).map((block) => block.trim()).filter(Boolean)
   const visual = blocks
     .filter((block) => !botanicAgentLooksLikePlannerNarration(block))
     .join('\n\n')
     .trim()
   if (visual && !botanicAgentLooksLikePlannerNarration(visual)) return visual
-  const fallbackText = fallback.trim()
+  const fallbackText = stripCreativeBriefNotes(fallback.trim())
   if (fallbackText && !botanicAgentLooksLikePlannerNarration(fallbackText)) return fallbackText
   return ''
 }

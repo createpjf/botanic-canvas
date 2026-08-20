@@ -519,6 +519,22 @@ test('首次生成按请求数量生成多张单次候选，并裁剪到上限',
   assert.equal(defaulted.output.count, 1)
 })
 
+test('创作简报附录不进入画面提示词，计划指令仍保留完整简报', () => {
+  const briefInstruction = '海边自然光人像，柔和暖调\n\n创作简报：\n- 交付用途：小红书，画面比例 3:4\n- Prompt 优化方向：保真自然'
+  assert.equal(botanicAgentVisualGenerationPrompt(briefInstruction), '海边自然光人像，柔和暖调')
+  // fallback 同样剥离；简报不是画面描述，混进 Provider 提示词会画出元话语。
+  assert.equal(botanicAgentVisualGenerationPrompt('结论：待确认计划已就绪。', briefInstruction), '海边自然光人像，柔和暖调')
+
+  const plan = buildBotanicAgentPlan({
+    instruction: briefInstruction,
+    intent: 'initial_generation',
+    settings: { model: 'gpt-image-2' as const, aspectRatio: '3:4' as const, resolution: '1K' as const },
+    contextSnapshot: [{ nodeId: 'asset-mia', label: 'Mia 肖像', kind: '素材' as const, mediaKind: 'image' as const }],
+  })
+  assert.doesNotMatch(plan.prompt, /创作简报|交付用途|优化方向/)
+  assert.match(plan.instruction, /创作简报/)
+})
+
 test('视频计划以首帧语义生成一条视频，措辞与图片计划区分', () => {
   const contextSnapshot = [{ nodeId: 'result-mia', label: 'Mia 首图', kind: '结果' as const, mediaKind: 'image' as const }]
   const plan = buildBotanicAgentPlan({
