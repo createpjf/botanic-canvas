@@ -28,3 +28,19 @@ test('评审正文标注最佳分支，并按结论给出可执行的下一步',
   assert.match(allPass, /可以直接基于结果继续下一轮/)
   assert.doesNotMatch(allPass, /——/)
 })
+
+test('英文评审正文使用英文结构化措辞', () => {
+  const message = formatBotanicAgentRunReviewMessage({
+    summary: 'The subject and lighting are consistent.',
+    bestNodeId: 'result-a',
+    items: [
+      { nodeId: 'result-a', branchLabel: 'Hero', verdict: 'pass', note: 'Strong identity match.' },
+      { nodeId: 'result-b', branchLabel: 'Alt', verdict: 'adjust', note: 'Warm the skin tone.' },
+    ],
+  }, 'en')
+  assert.match(message, /Reviewed 2 results from this generation/)
+  assert.match(message, /Needs adjustment/)
+  assert.match(message, /Recommended: “Hero”/)
+  assert.match(message, /Retry an adjusted branch/)
+  assert.doesNotMatch(message, /已看完|建议调整|推荐「/)
+})

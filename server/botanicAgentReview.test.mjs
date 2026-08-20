@@ -75,6 +75,27 @@ test('一次调用评整批：结果图与编号对照进请求，结论映射�
   ])
 })
 
+test('英文评审把视觉模型输出约束为英文，并使用英文请求上下文', async () => {
+  const requests = []
+  const review = await reviewBotanicAgentRunResults({
+    run,
+    document,
+    locale: 'en',
+    runtimeConfig,
+    fetchImpl: async (url, init) => {
+      requests.push({ url, body: JSON.parse(init.body) })
+      return reviewResponse({
+        summary: 'The lighting and identity hold across the set.',
+        best: 1,
+        items: [{ index: 1, verdict: 'pass', note: 'Strong identity match.' }],
+      })
+    },
+  })
+  assert.match(requests[0].body.messages[0].content, /concise natural English/)
+  assert.match(requests[0].body.messages[1].content[0].text, /Creative brief:/)
+  assert.equal(review.summary, 'The lighting and identity hold across the set.')
+})
+
 test('非终态、未配置视觉、无可评结果或模型输出不可解析时都返回空', async () => {
   const fetchImpl = async () => reviewResponse({ summary: 'x', items: [{ index: 1, verdict: 'pass', note: '' }] })
   assert.equal(await reviewBotanicAgentRunResults({
