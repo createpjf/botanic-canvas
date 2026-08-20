@@ -4,6 +4,7 @@ import { createSecurityAuditReporter } from './securityAudit'
 import type { WorkspaceAuditEvent } from '../domain/auditEvents'
 import { invalidateProductSessionIfRequired, subscribeProductSessionInvalidated } from './productSessionInvalidation'
 import { cleanProductAuthUrl, detectProductAuthFlow } from './authFlow'
+import { readProductLocale } from '../i18n/core'
 
 export type ProductUser = {
   id: string
@@ -136,7 +137,7 @@ async function syncMediaSessionCookie(accessToken?: string): Promise<ProductUser
   if (inFlight) return inFlight
 
   const sync = (async () => {
-    const requestHeaders = new Headers({ Accept: 'application/json' })
+    const requestHeaders = new Headers({ Accept: 'application/json', 'Accept-Language': readProductLocale() })
     if (headers.Authorization) requestHeaders.set('Authorization', headers.Authorization)
     let lastError: ProductApiError | undefined
     for (let attempt = 1; attempt <= mediaSessionMaxAttempts; attempt += 1) {
@@ -224,6 +225,7 @@ export async function productRequest<T>(path: string, init: ProductRequestInit =
   try {
     const headers = new Headers(requestInit.headers)
     headers.set('Accept', 'application/json')
+    headers.set('Accept-Language', readProductLocale())
     for (const [key, value] of Object.entries(await authorizationHeader())) headers.set(key, value)
     response = await fetch(path, {
       ...requestInit,

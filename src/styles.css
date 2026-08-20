@@ -2207,6 +2207,23 @@ button.project-tab__main { border: 0; cursor: pointer; }
   transition: border-color 150ms ease, background 150ms ease, transform 150ms ease;
 }
 .product-landing__language:hover { border-color: #9fb2a1; background: #fff; transform: translateY(-1px); }
+
+.product-access__language {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  min-width: 44px;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid #d6ddd4;
+  border-radius: 999px;
+  background: #f7f8f5;
+  color: #36533e;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
 .product-landing__login,
 .product-hero__actions button,
 .product-landing__cta button {

@@ -1,13 +1,10 @@
 import workbenchImage from '../assets/product/botanic-workbench-agent.webp'
 import sceneImage from '../assets/figma/scene.webp'
 import { ArrowUpRightIcon } from './BotanicIcons'
-
-export type ProductLocale = 'zh-CN' | 'en'
+import { LanguageSwitcher, useProductI18n } from '../i18n/react'
 
 type ProductLandingProps = {
   isAuthenticated: boolean
-  locale: ProductLocale
-  onLocaleChange: (locale: ProductLocale) => void
   onEnterWorkspace: () => void
 }
 
@@ -17,8 +14,6 @@ const productLandingCopy = {
     navAria: '产品介绍导航',
     capabilitiesNav: '产品能力',
     workflowNav: '工作方式',
-    languageAction: '切换为英文',
-    languageLabel: 'EN',
     signIn: '登录工作台',
     enterWorkspace: '进入工作台',
     heroEyebrow: 'AI VISUAL PRODUCTION',
@@ -63,8 +58,6 @@ const productLandingCopy = {
     navAria: 'Product introduction',
     capabilitiesNav: 'Capabilities',
     workflowNav: 'Workflow',
-    languageAction: 'Switch to Chinese',
-    languageLabel: '中文',
     signIn: 'Sign in',
     enterWorkspace: 'Open workspace',
     heroEyebrow: 'AI VISUAL PRODUCTION',
@@ -106,7 +99,8 @@ const productLandingCopy = {
   },
 } as const
 
-export function ProductLanding({ isAuthenticated, locale, onLocaleChange, onEnterWorkspace }: ProductLandingProps) {
+export function ProductLanding({ isAuthenticated, onEnterWorkspace }: ProductLandingProps) {
+  const { locale } = useProductI18n()
   const copy = productLandingCopy[locale]
   const enterLabel = isAuthenticated ? copy.enterWorkspace : copy.signIn
 
@@ -122,14 +116,7 @@ export function ProductLanding({ isAuthenticated, locale, onLocaleChange, onEnte
           <a href="#product-workflow">{copy.workflowNav}</a>
         </nav>
         <div className="product-landing__nav-actions">
-          <button
-            type="button"
-            className="product-landing__language"
-            aria-label={copy.languageAction}
-            onClick={() => onLocaleChange(locale === 'zh-CN' ? 'en' : 'zh-CN')}
-          >
-            {copy.languageLabel}
-          </button>
+          <LanguageSwitcher className="product-landing__language" />
           <button type="button" className="product-landing__login" onClick={onEnterWorkspace}>
             {enterLabel} <ArrowUpRightIcon />
           </button>

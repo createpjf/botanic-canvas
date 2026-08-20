@@ -9,6 +9,7 @@ import type {
 import { confirmTimedOutGenerationSubmission } from '../domain/generationSubmission'
 import { productAuthorizationHeader } from './productSession'
 import { invalidateProductSessionIfRequired } from './productSessionInvalidation'
+import { readProductLocale } from '../i18n/core'
 
 type MediaReferencePayload = {
   nodeId: string
@@ -123,6 +124,7 @@ async function requestJson<T>(path: string, init?: RequestInit, timeoutMs = gene
   try {
     const headers = new Headers(init?.headers)
     headers.set('Accept', 'application/json')
+    headers.set('Accept-Language', readProductLocale())
     for (const [key, value] of Object.entries(await productAuthorizationHeader())) headers.set(key, value)
     response = await fetch(path, {
       ...init,
