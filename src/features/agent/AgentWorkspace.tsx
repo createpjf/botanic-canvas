@@ -61,6 +61,8 @@ import type {
 } from '../../domain/canvas'
 import type { GenerationSizeOverride } from '../../domain/generationOutputSize'
 import { createProjectAgentSkill, listBotanicAgentSystemSkills, listProjectAgentSkills, requestBotanicAgentPlan, requestBotanicAgentRunReview, requestBotanicAgentTurn, streamBotanicAgentChat } from '../../lib/agentApi'
+import { describeRegionRect } from '../../domain/regionMask'
+import { RegionMaskEditor } from '../canvas/RegionMaskEditor'
 import {
   applyBotanicAgentVariationToPlan,
   botanicAgentBriefWithVariationAnswers,
@@ -318,6 +320,11 @@ export default function AgentWorkspace({
     lastFailedCommand: command,
   }), [])
   const [planning, setPlanning] = useState(false)
+  /** 局部重绘语等待框选：选区回来后带 region 重放该指令。 */
+  const [pendingRegionInstruction, setPendingRegionInstruction] = useState<{
+    instruction: string
+    options: AgentInstructionRetryOptions
+  } | null>(null)
   const [liveConversation, setLiveConversation] = useState<AgentLiveConversation>()
   const [submittingMessageId, setSubmittingMessageId] = useState('')
   const [executingActionId, setExecutingActionId] = useState('')
@@ -931,8 +938,10 @@ export default function AgentWorkspace({
         kind: 'text',
         content: formatBotanicAgentRunReviewMessage(review),
       })
+      // 挑选循环闭合：评审选出的最佳结果直接成为下一轮迭代目标，替代「第一个结果」的默认跟随。
+      if (review.bestNodeId) onUseResultContext([review.bestNodeId])
     }).catch(() => { /* 评审失败静默：结果本身不受影响。 */ })
-  }, [appendMessage, isCurrentAgentProject, latestRun, projectId, session])
+  }, [appendMessage, isCurrentAgentProject, latestRun, onUseResultContext, projectId, session])
 
   // 任务开始时把视角带到正在生成的节点，且每个 Run 只带一次；之后画布归用户，
   // 结果完成不再抢视角——需要回看结果时用消息里的「定位画布」。
@@ -1228,6 +1237,7 @@ export default function AgentWorkspace({
         ...(options.creativeBrief ? { creativeBrief: options.creativeBrief } : {}),
         ...(options.sourcePromptMessageId ? { sourcePromptMessageId: options.sourcePromptMessageId } : {}),
         ...(options.resolvedGeneration ? { resolvedGeneration: options.resolvedGeneration } : {}),
+        ...(options.region ? { region: options.region } : {}),
       },
     }
 
@@ -1242,10 +1252,21 @@ export default function AgentWorkspace({
       instruction: cleanInstruction,
       options,
       hasVisualContext,
+      canSelectRegion: Boolean(target?.image),
       messages: session.messages,
     })
     if (entry.kind === 'confirm_plan') {
       await confirmMessagePlan(entry.message)
+      return
+    }
+    if (entry.kind === 'select_region') {
+      // 局部重绘先框选：选区回来后带 region 重放这条指令，直接进入生成链路。
+      setPendingRegionInstruction({ instruction: cleanInstruction, options })
+      appendMessage({
+        role: 'assistant',
+        kind: 'notice',
+        content: `请在弹出的「${target?.label ?? '当前结果'}」上框选要重绘的区域；框外画面保持原样。`,
+      })
       return
     }
     if (entry.kind === 'notice') {
@@ -1586,6 +1607,51 @@ export default function AgentWorkspace({
     if (!isCurrentAgentProject()) return
     setRuntimePhase('planning')
     updateRuntimeStep('call-planner', 'running')
+    if (resolvedOptions.region && target) {
+      // 局部重绘：选区+指令已完全确定这次生成，本地构建计划，不经服务端图片规划器改写。
+      const executionDecision = resolveBotanicAgentExecutionDecision({
+        mode: session.executionMode,
+        settingsComplete: true,
+        pendingActionCount: 0,
+      })
+      try {
+        const regionPlan = {
+          ...buildBotanicAgentPlan({
+            instruction: draft.prompt,
+            creativeBrief: draft.brief,
+            selectedResultNodeId: target.id,
+            selectedResultLabel: target.label,
+            rootRecipe: target.rootRecipe,
+            contextSnapshot: createBotanicAgentContextSnapshot(draft.planContextItems),
+            region: resolvedOptions.region,
+          }),
+          plannerModel,
+          settings: { ...target.rootRecipe.settings, ...draft.generationOverrides },
+        }
+        updateRuntimeStep('call-planner', 'succeeded')
+        await completeRuntimeTrace(true)
+        if (!isCurrentAgentProject()) return
+        const planMessageId = appendMessage({
+          role: 'assistant', kind: 'plan', plan: regionPlan, status: 'pending',
+          content: regionPlan.summary,
+        })
+        if (planMessageId) setRuntimePhase('waiting_confirmation')
+        if (planMessageId && executionDecision.action === 'auto_submit') {
+          await confirmMessagePlan({
+            id: planMessageId, role: 'assistant', kind: 'plan', content: regionPlan.summary,
+            createdAt: Date.now(), plan: regionPlan, status: 'pending',
+          })
+        }
+      } catch (caught) {
+        const message = caught instanceof Error ? caught.message : '暂时无法创建局部重绘计划。'
+        failRuntimeTrace(message)
+        setError(message)
+        rememberFailedInstruction(resolvedFailedCommand)
+      } finally {
+        setPlanning(false)
+      }
+      return
+    }
     if (draft.useInitialFlow) {
       const executionDecision = resolveBotanicAgentExecutionDecision({
         mode: session.executionMode,
@@ -2202,6 +2268,24 @@ export default function AgentWorkspace({
         onSend={() => void sendInstruction()}
         onToggleImageContext={(itemId, selected) => { if (!session) return; onContextChange(session.id, selected ? session.contextNodeIds.filter((id) => id !== itemId) : [...session.contextNodeIds, itemId]) }}
         onExecutionModeChange={(mode) => { if (session) onExecutionModeChange(session.id, mode); setModeMenuOpen(false); requestAnimationFrame(() => modeMenuButtonRef.current?.focus()) }}
+      /> : null}
+      {pendingRegionInstruction && target?.image ? <RegionMaskEditor
+        target={{ id: target.id, name: target.label, image: target.image }}
+        busy={planning}
+        hidePrompt
+        submitLabel="按选区继续"
+        onSubmit={({ rect }) => {
+          const request = pendingRegionInstruction
+          setPendingRegionInstruction(null)
+          void runInstruction(request.instruction, {
+            ...request.options,
+            region: { rect, description: describeRegionRect(rect) },
+          })
+        }}
+        onClose={() => {
+          setPendingRegionInstruction(null)
+          appendMessage({ role: 'assistant', kind: 'notice', content: '已取消局部重绘框选；再次发送指令时可重新框选。' })
+        }}
       /> : null}
     </aside>
   )

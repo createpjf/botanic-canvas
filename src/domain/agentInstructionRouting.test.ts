@@ -196,3 +196,59 @@ test('首图草案按批量变体展开，视频草案不展开', () => {
   assert.equal(applied.plan.output.mode, 'batch_by_variation')
   assert.equal(applied.plan.output.count, 3)
 })
+
+test('局部重绘语在有可框选目标时先进入框选，选区回程后直接进生成', () => {
+  const entry = resolveBotanicAgentInstructionEntry({
+    instruction: '只把右上角的花重画一下',
+    options: {},
+    hasVisualContext: true,
+    canSelectRegion: true,
+    messages: [],
+  })
+  assert.deepEqual(entry, { kind: 'select_region' })
+
+  // 没有可框选目标时不拦截：仍走正常路由（由后续链路提示先选结果图）。
+  const noTarget = resolveBotanicAgentInstructionEntry({
+    instruction: '只把右上角的花重画一下',
+    options: {},
+    hasVisualContext: false,
+    canSelectRegion: false,
+    messages: [],
+  })
+  assert.equal(noTarget.kind, 'route')
+
+  // 选区回程：确定为图片生成，不再进服务端意图分类。
+  const region = { rect: { x: 0.6, y: 0, width: 0.4, height: 0.4 }, description: '画面右上的区域' }
+  const withRegion = resolveBotanicAgentInstructionEntry({
+    instruction: '只把右上角的花重画一下',
+    options: { region },
+    hasVisualContext: true,
+    canSelectRegion: true,
+    messages: [],
+  })
+  assert.equal(withRegion.kind, 'route')
+  if (withRegion.kind !== 'route') return
+  assert.equal(withRegion.useServerTurn, false)
+  assert.deepEqual(withRegion.decision, { kind: 'generation', mediaKind: 'image', promptSource: 'instruction' })
+  assert.deepEqual(withRegion.options.region, region)
+})
+
+test('带选区的生成草案一次一张：跳过变体展开与追问', () => {
+  const draft = prepareBotanicAgentGenerationDraft({
+    ...draftBase,
+    instruction: '白皙、自然、小麦三档肤色，多图',
+    decision: { kind: 'generation', mediaKind: 'image', promptSource: 'instruction' },
+    options: { region: { rect: { x: 0.1, y: 0.1, width: 0.3, height: 0.3 } } },
+    generationModels: [imageModel],
+    executionMode: 'auto',
+    target: {
+      id: 'result-1',
+      label: '首图 01',
+      image: 'https://example.test/result.png',
+      inheritedSettings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
+    },
+  })
+  assert.equal(draft.kind, 'ready')
+  if (draft.kind !== 'ready') return
+  assert.equal(draft.useInitialFlow, false)
+})

@@ -1,5 +1,5 @@
-import type { BotanicAgentContextSnapshotInput, BotanicAgentIntent, BotanicAgentMessage, BotanicAgentPlan } from './agent.ts'
-import { buildBotanicAgentPlan, createBotanicAgentContextSnapshot } from './agent.ts'
+import type { BotanicAgentContextSnapshotInput, BotanicAgentIntent, BotanicAgentMessage, BotanicAgentPlan, BotanicAgentRegionSelection } from './agent.ts'
+import { buildBotanicAgentPlan, createBotanicAgentContextSnapshot, inferBotanicAgentIntent } from './agent.ts'
 import {
   decideBotanicAgentRequest,
   inferBotanicAgentGenerationSettings,
@@ -29,6 +29,8 @@ export type BotanicAgentInstructionOptions = {
   sourcePromptMessageId?: string
   /** 上一轮已由服务端判定的生成结论；重放追问时据此直接进入生成，不再二次分类。 */
   resolvedGeneration?: BotanicAgentResolvedGeneration
+  /** 用户已框选的局部重绘选区；带选区的指令是明确的生成请求，不再进服务端意图分类。 */
+  region?: BotanicAgentRegionSelection
 }
 
 export type BotanicAgentGenerationDecision = Extract<BotanicAgentRequestDecision, { kind: 'generation' }>
@@ -36,6 +38,10 @@ export type BotanicAgentGenerationDecision = Extract<BotanicAgentRequestDecision
 export type BotanicAgentInstructionEntry =
   | { kind: 'confirm_plan'; message: BotanicAgentMessage }
   | { kind: 'notice'; notice: 'answer_pending_question' | 'nothing_to_confirm' }
+  | {
+      /** 局部重绘语但还没有选区：编排层打开框选界面，框选后带 region 重放指令。 */
+      kind: 'select_region'
+    }
   | {
       kind: 'route'
       /** 已确定的生成决策（追问回程或执行语沿用历史 Prompt）；空则由调用方继续路由。 */
@@ -55,10 +61,17 @@ export function resolveBotanicAgentInstructionEntry(input: {
   instruction: string
   options: BotanicAgentInstructionOptions
   hasVisualContext: boolean
+  /** 当前有可框选的图片目标（选中的结果图）；局部重绘语据此进入框选流程。 */
+  canSelectRegion?: boolean
   messages: BotanicAgentMessage[]
 }): BotanicAgentInstructionEntry {
   const { instruction, options, hasVisualContext, messages } = input
   const restored = options.resolvedGeneration
+  // 局部重绘语必须先有选区：没有选区就发起框选，而不是把「只改这里」交给整图链路。
+  if (!restored && !options.region && !options.clarificationAnswers && !options.sourcePromptMessageId
+    && input.canSelectRegion && inferBotanicAgentIntent(instruction) === 'region_edit') {
+    return { kind: 'select_region' }
+  }
   const pendingDecision = restored ? undefined : decideBotanicAgentRequest(instruction, hasVisualContext)
   let executionPromptMessageId: string | undefined
   if (pendingDecision?.kind === 'confirm_pending') {
@@ -74,17 +87,19 @@ export function resolveBotanicAgentInstructionEntry(input: {
     if (!promptMessage) return { kind: 'notice', notice: 'nothing_to_confirm' }
     executionPromptMessageId = promptMessage.id
   }
-  // 服务端回合解析器仅用于全新用户发送；澄清答复、“使用这段 Prompt”与执行语已有明确意图/来源。
+  // 服务端回合解析器仅用于全新用户发送；澄清答复、“使用这段 Prompt”、执行语与带选区指令已有明确意图/来源。
   const useServerTurn = !options.clarificationAnswers && !options.sourcePromptMessageId
-    && !restored && !executionPromptMessageId
+    && !restored && !executionPromptMessageId && !options.region
   return {
     kind: 'route',
     useServerTurn,
     decision: restored
       ? { kind: 'generation', mediaKind: restored.mediaKind, promptSource: 'instruction' }
-      : executionPromptMessageId
-        ? { kind: 'generation', mediaKind: 'image', promptSource: 'previous_prompt' }
-        : undefined,
+      : options.region
+        ? { kind: 'generation', mediaKind: 'image', promptSource: 'instruction' }
+        : executionPromptMessageId
+          ? { kind: 'generation', mediaKind: 'image', promptSource: 'previous_prompt' }
+          : undefined,
     options: executionPromptMessageId
       ? { ...options, sourcePromptMessageId: executionPromptMessageId }
       : options,
@@ -176,8 +191,8 @@ export function prepareBotanicAgentGenerationDraft(input: BotanicAgentGeneration
   const inferredGenerationOverrides = inferBotanicAgentGenerationSettings(instruction, candidateModels)
   const requestedGenerationOverrides = { ...inferredGenerationOverrides, ...options.generationOverrides }
   // 变体轴决定要开几个分支，必须先于比例与清晰度确认；已确认过的取值不再重复追问。
-  // 视频一次一条，不进入变体展开。
-  const pendingVariation = isVideo ? undefined : botanicAgentPendingVariationClarification({
+  // 视频一次一条、局部重绘一次一张，都不进入变体展开。
+  const pendingVariation = isVideo || options.region ? undefined : botanicAgentPendingVariationClarification({
     instruction: prompt,
     requestedIntent: input.requestedIntent,
     clarificationAnswers: options.clarificationAnswers,

@@ -20,9 +20,12 @@ function normalizedPoint(event: ReactPointerEvent, element: HTMLElement) {
  * 局部重绘选区编辑器：在基准图上拖拽框出要重绘的区域，配一句重绘说明。
  * 只产出归一化选区（纯数据）；位图蒙版由生成 Worker 按基准图真实像素生成。
  */
-export function RegionMaskEditor({ target, busy, onSubmit, onClose }: {
+export function RegionMaskEditor({ target, busy, hidePrompt, submitLabel, onSubmit, onClose }: {
   target: RegionMaskEditorTarget
   busy: boolean
+  /** Agent 链路的重绘说明已在指令里：只框选，不再要求二次输入。 */
+  hidePrompt?: boolean
+  submitLabel?: string
   onSubmit: (input: { rect: RegionRect; prompt: string }) => void
   onClose: () => void
 }) {
@@ -81,7 +84,7 @@ export function RegionMaskEditor({ target, busy, onSubmit, onClose }: {
             }}
           /> : null}
         </div>
-        <label className="region-mask-editor__prompt">
+        {hidePrompt ? null : <label className="region-mask-editor__prompt">
           <span>{rect ? `重绘${describeRegionRect(rect)}为：` : '重绘说明'}</span>
           <textarea
             value={prompt}
@@ -89,14 +92,14 @@ export function RegionMaskEditor({ target, busy, onSubmit, onClose }: {
             placeholder="例如：盛开的白色山茶花丛，保持光线方向不变"
             onChange={(event) => setPrompt(event.target.value)}
           />
-        </label>
+        </label>}
         <footer>
           <span>{rect ? describeRegionRect(rect) : '尚未框选区域'}</span>
           <button
             type="button"
-            disabled={busy || !rect || !prompt.trim()}
-            onClick={() => { if (rect && prompt.trim()) onSubmit({ rect, prompt: prompt.trim() }) }}
-          >{busy ? '已有任务运行中' : '重绘选区'}</button>
+            disabled={busy || !rect || (!hidePrompt && !prompt.trim())}
+            onClick={() => { if (rect && (hidePrompt || prompt.trim())) onSubmit({ rect, prompt: prompt.trim() }) }}
+          >{busy ? '已有任务运行中' : submitLabel ?? '重绘选区'}</button>
         </footer>
       </section>
     </div>,

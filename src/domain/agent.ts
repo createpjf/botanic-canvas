@@ -761,7 +761,7 @@ export type BotanicAgentPlan = {
    * 局部重绘选区（基准图归一化矩形）与它的中文描述。选区是纯数据可进计划；
    * 位图蒙版由执行层按基准图真实像素生成，不进计划 JSON。
    */
-  region?: { rect: { x: number; y: number; width: number; height: number }; description?: string }
+  region?: BotanicAgentRegionSelection
   toolCalls?: AgentToolCallTrace[]
   actions?: BotanicAgentActionProposal[]
 }
@@ -1603,7 +1603,13 @@ export type BuildBotanicAgentPlanInput = {
   /** 无素材组的单次生成需要多张时的请求数量；服务端按 output.count 生成对应候选。 */
   outputCount?: number
   /** 局部重绘选区；提供时计划意图固定为 region_edit。 */
-  region?: { rect: { x: number; y: number; width: number; height: number }; description?: string }
+  region?: BotanicAgentRegionSelection
+}
+
+/** 局部重绘选区（基准图归一化矩形）与它的中文描述；纯数据，可进计划与消息。 */
+export type BotanicAgentRegionSelection = {
+  rect: { x: number; y: number; width: number; height: number }
+  description?: string
 }
 
 const variationDimensionPattern = '人物|模特|角色|场景|背景|画面|环境|肤色|族裔|人种|动作|姿势|姿态|风格|服装|衣服|穿搭|版本|变体'
