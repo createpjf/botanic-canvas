@@ -21,3 +21,9 @@ test('选区中文描述：位置分带、面积分档，几乎全图按整体�
   assert.match(describeRegionRect({ x: 0.35, y: 0.4, width: 0.3, height: 0.3 }), /画面中部/)
   assert.match(describeRegionRect({ x: 0, y: 0.6, width: 0.6, height: 0.4 }), /区域/)
 })
+
+test('英文选区描述不泄漏中文位置标签', () => {
+  const description = describeRegionRect({ x: 0.7, y: 0, width: 0.25, height: 0.25 }, 'en')
+  assert.match(description, /small upper-right area/)
+  assert.doesNotMatch(description, /[一-龥]/)
+})

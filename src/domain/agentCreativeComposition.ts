@@ -1,5 +1,6 @@
 import type { BotanicAgentContextSnapshot, BotanicAgentMessage, BotanicAgentPlan } from './agent.ts'
 import type { GenerationSettings } from './canvas.ts'
+import type { ProductLocale } from '../i18n/core'
 
 /**
  * MCoT 式创意分解：复杂创意简报（一套多资产交付，如「1 张主视觉 + 3 张细节 + 1 条视频」）
@@ -80,22 +81,54 @@ export function normalizeBotanicAgentComposition(raw: {
 
 export function botanicAgentCompositionItemSpecLabel(
   item: Pick<BotanicAgentCompositionItem, 'mediaKind' | 'count' | 'duration'>,
+  locale: ProductLocale = 'zh-CN',
 ) {
+  if (locale === 'en') {
+    return item.mediaKind === 'video'
+      ? `${item.duration ?? 5}-second video`
+      : `${item.count} ${item.count === 1 ? 'image' : 'images'}`
+  }
   return item.mediaKind === 'video'
     ? `视频 ${item.duration ?? 5} 秒`
     : `图片 ${item.count} 张`
 }
 
-export function formatBotanicAgentCompositionSummary(composition: BotanicAgentComposition) {
+export function formatBotanicAgentCompositionSummary(
+  composition: BotanicAgentComposition,
+  locale: ProductLocale = 'zh-CN',
+) {
+  if (locale === 'en') {
+    return `This request is organized into a creative composition with ${composition.items.length} items: ${composition.theme}`
+  }
   return `已把这次需求分解为一套 ${composition.items.length} 项的创意方案：${composition.theme}`
 }
 
 /**
  * 方案卡可读副本：复制/检索仍用这段文本；交互按钮由消息上的 composition 字段驱动。
  */
-export function formatBotanicAgentCompositionMessage(composition: BotanicAgentComposition): string {
+export function formatBotanicAgentCompositionMessage(
+  composition: BotanicAgentComposition,
+  locale: ProductLocale = 'zh-CN',
+): string {
+  if (locale === 'en') {
+    const lines = [
+      formatBotanicAgentCompositionSummary(composition, locale),
+      '',
+      ...composition.items.map((item) => {
+        const spec = botanicAgentCompositionItemSpecLabel(item, locale)
+        const title = /^第\s*\d+\s*项$/u.test(item.title) ? `Item ${item.index}` : item.title
+        return [
+          `${item.index}. ${title} (${spec})${item.purpose ? ` — ${item.purpose}` : ''}`,
+          `   ${item.prompt}`,
+        ].join('\n')
+      }),
+      '',
+      'Select “Generate item” to continue one item at a time, or “Run full set” to generate the composition together.',
+    ]
+    return lines.join('\n')
+  }
   const lines = [
-    formatBotanicAgentCompositionSummary(composition),
+    formatBotanicAgentCompositionSummary(composition, locale),
     '',
     ...composition.items.map((item) => {
       const spec = botanicAgentCompositionItemSpecLabel(item)
@@ -143,15 +176,23 @@ export function buildBotanicAgentCompositionPlan(input: {
   composition: BotanicAgentComposition
   contextSnapshot: BotanicAgentContextSnapshot[]
   settings: GenerationSettings
+  locale?: ProductLocale
 }): BotanicAgentPlan {
+  const locale = input.locale ?? 'zh-CN'
   const imageContext = input.contextSnapshot.filter((item) =>
     item.mediaKind === 'image' && (item.kind === '素材' || item.kind === '结果'))
-  if (!imageContext.length) throw new Error('整套生成需要至少一项图片素材或图片结果作为基准，请先引用素材。')
+  if (!imageContext.length) {
+    throw new Error(locale === 'en'
+      ? 'A full-set generation needs at least one image asset or result as a visual anchor. Reference an image first.'
+      : '整套生成需要至少一项图片素材或图片结果作为基准，请先引用素材。')
+  }
   const videoCount = input.composition.items.filter((item) => item.mediaKind === 'video').length
   return {
     intent: 'initial_generation',
     instruction: input.instruction,
-    summary: `成套生成「${input.composition.theme}」，共 ${input.composition.items.length} 项${videoCount ? `（含 ${videoCount} 条视频）` : ''}。`,
+    summary: locale === 'en'
+      ? `Run the full “${input.composition.theme}” composition: ${input.composition.items.length} items${videoCount ? `, including ${videoCount} video${videoCount === 1 ? '' : 's'}` : ''}.`
+      : `成套生成「${input.composition.theme}」，共 ${input.composition.items.length} 项${videoCount ? `（含 ${videoCount} 条视频）` : ''}。`,
     contextSnapshot: input.contextSnapshot,
     references: imageContext.map((item) => ({
       source: 'context_node' as const,

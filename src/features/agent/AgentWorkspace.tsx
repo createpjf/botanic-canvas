@@ -902,7 +902,10 @@ export default function AgentWorkspace({
     void Promise.allSettled([listProjectAgentSkills(projectId), listBotanicAgentSystemSkills()]).then(([projectResult, systemResult]) => {
       if (!active) return
       if (projectResult.status === 'fulfilled') setSkills(projectResult.value)
-      else setSkillError(projectResult.reason instanceof Error ? projectResult.reason.message : (locale === 'en' ? 'Unable to load project Skills.' : '项目 Skill 列表加载失败。'))
+      else setSkillError(localizeProductError(projectResult.reason, locale, {
+        'zh-CN': '项目 Skill 列表加载失败。',
+        en: 'Unable to load project Skills.',
+      }))
       if (systemResult.status === 'fulfilled') setSystemSkills(systemResult.value)
     })
     return () => { active = false }
@@ -1026,18 +1029,18 @@ export default function AgentWorkspace({
     const requestKey = `${latestRun.id}:${latestRun.status}:${latestRun.updatedAt}`
     if (requestedRunReviewsRef.current.has(requestKey)) return
     requestedRunReviewsRef.current.add(requestKey)
-    void requestBotanicAgentRunReview(projectId, latestRun.id).then((review) => {
+    void requestBotanicAgentRunReview(projectId, latestRun.id, undefined, locale).then((review) => {
       if (!review || !isCurrentAgentProject()) return
       appendMessage({
         id: reviewMessageId,
         role: 'assistant',
         kind: 'text',
-        content: formatBotanicAgentRunReviewMessage(review),
+        content: formatBotanicAgentRunReviewMessage(review, locale),
       })
       // 挑选循环闭合：评审选出的最佳结果直接成为下一轮迭代目标，替代「第一个结果」的默认跟随。
       if (review.bestNodeId) onUseResultContext([review.bestNodeId])
     }).catch(() => { /* 评审失败静默：结果本身不受影响。 */ })
-  }, [appendMessage, isCurrentAgentProject, latestRun, onUseResultContext, projectId, session])
+  }, [appendMessage, isCurrentAgentProject, latestRun, locale, onUseResultContext, projectId, session])
 
   // 任务开始时把视角带到正在生成的节点，且每个 Run 只带一次；之后画布归用户，
   // 结果完成不再抢视角——需要回看结果时用消息里的「定位画布」。
@@ -1400,6 +1403,7 @@ export default function AgentWorkspace({
             instruction: cleanInstruction,
             composition,
             contextSnapshot: createBotanicAgentContextSnapshot(contextItems),
+            locale,
             settings: {
               model: imageModel.id,
               aspectRatio: imageModel.aspectRatios?.[0] ?? '3:4',
@@ -1420,7 +1424,10 @@ export default function AgentWorkspace({
           })
         }
       } catch (caught) {
-        setError(caught instanceof Error ? caught.message : '暂时无法创建整套生成计划。')
+        setError(localizeProductError(caught, locale, {
+          'zh-CN': '暂时无法创建整套生成计划。',
+          en: 'Unable to create the full-set generation plan. Try again shortly.',
+        }))
       }
       return
     }
@@ -1539,14 +1546,20 @@ export default function AgentWorkspace({
           setRuntimeDetailsOpen(false)
           const composition = normalizeBotanicAgentComposition({ theme: turn.theme, items: turn.items })
           if (!composition) {
-            appendMessage({ role: 'assistant', kind: 'notice', content: '这次分解没有形成可用的成套方案，请再描述一次交付项。' })
+            appendMessage({
+              role: 'assistant',
+              kind: 'notice',
+              content: locale === 'en'
+                ? 'The request did not produce a usable composition. Describe the items you want to deliver again.'
+                : '这次分解没有形成可用的成套方案，请再描述一次交付项。',
+            })
             return
           }
           appendMessage({
             role: 'assistant',
             kind: 'composition',
             composition,
-            content: formatBotanicAgentCompositionSummary(composition),
+            content: formatBotanicAgentCompositionSummary(composition, locale),
           })
           return
         }
@@ -1566,7 +1579,10 @@ export default function AgentWorkspace({
         const fallBack = caught instanceof ProductApiError
           && (caught.status === 0 || caught.status === 404 || caught.status >= 500)
         if (!fallBack) {
-          const message = caught instanceof Error ? caught.message : copy.unavailable
+          const message = localizeProductError(caught, locale, {
+            'zh-CN': copy.unavailable,
+            en: copy.unavailable,
+          })
           failRuntimeTrace(message)
           setError(message)
           rememberFailedInstruction(failedCommand)
@@ -1784,9 +1800,7 @@ export default function AgentWorkspace({
       appendMessage({
         role: 'assistant',
         kind: 'notice',
-        content: draft.notice === 'prompt_missing'
-          ? '没有找到你指的 Prompt。请先让 Agent 写一段 Prompt，或粘贴完整 Prompt；本次没有改动画布。'
-          : '当前项目没有可用的视频生成模型，请检查模型目录；本次没有创建任务。',
+        content: draft.notice === 'prompt_missing' ? flowCopy.promptMissing : copy.unsupportedVideo,
       })
       return
     }
@@ -1837,6 +1851,7 @@ export default function AgentWorkspace({
         const regionPlan = {
           ...buildBotanicAgentPlan({
             instruction: draft.prompt,
+            locale,
             creativeBrief: draft.brief,
             selectedResultNodeId: target.id,
             selectedResultLabel: target.label,
@@ -1862,7 +1877,7 @@ export default function AgentWorkspace({
           })
         }
       } catch (caught) {
-        const message = caught instanceof Error ? caught.message : '暂时无法创建局部重绘计划。'
+        const message = locale === 'en' ? flowCopy.planFailed : caught instanceof Error ? caught.message : '暂时无法创建局部重绘计划。'
         failRuntimeTrace(message)
         setError(message)
         rememberFailedInstruction(resolvedFailedCommand)
@@ -2402,8 +2417,9 @@ export default function AgentWorkspace({
           onGenerateCompositionItem={(targetMessage, item) => {
             const composition = botanicAgentMessageComposition(targetMessage)
             if (!composition) return
-            void runInstruction(`生成第 ${item.index} 项`, {
-              appendUser: `生成第 ${item.index} 项`,
+            const instruction = locale === 'en' ? `Generate item ${item.index}` : `生成第 ${item.index} 项`
+            void runInstruction(instruction, {
+              appendUser: instruction,
               composition,
               resolvedGeneration: {
                 mediaKind: item.mediaKind,
@@ -2416,7 +2432,8 @@ export default function AgentWorkspace({
           onRunComposition={(targetMessage) => {
             const composition = botanicAgentMessageComposition(targetMessage)
             if (!composition) return
-            void runInstruction('执行方案', { appendUser: '执行方案', composition })
+            const instruction = locale === 'en' ? 'Run the full composition' : '执行方案'
+            void runInstruction(instruction, { appendUser: instruction, composition })
           }}
           onUsePrompt={usePromptForGeneration}
           onEdit={(content) => { setInstruction(content); requestAnimationFrame(() => composerTextareaRef.current?.focus()) }}
@@ -2517,18 +2534,18 @@ export default function AgentWorkspace({
         target={{ id: target.id, name: target.label, image: target.image }}
         busy={planning}
         hidePrompt
-        submitLabel="按选区继续"
+        submitLabel={locale === 'en' ? 'Continue with selection' : '按选区继续'}
         onSubmit={({ rect }) => {
           const request = pendingRegionInstruction
           setPendingRegionInstruction(null)
           void runInstruction(request.instruction, {
             ...request.options,
-            region: { rect, description: describeRegionRect(rect) },
+            region: { rect, description: describeRegionRect(rect, locale) },
           })
         }}
         onClose={() => {
           setPendingRegionInstruction(null)
-          appendMessage({ role: 'assistant', kind: 'notice', content: '已取消局部重绘框选；再次发送指令时可重新框选。' })
+          appendMessage({ role: 'assistant', kind: 'notice', content: locale === 'en' ? 'Region selection cancelled. You can select an area again when you send another instruction.' : '已取消局部重绘框选；再次发送指令时可重新框选。' })
         }}
       /> : null}
     </aside>

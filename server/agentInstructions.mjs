@@ -27,7 +27,7 @@ export function normalizeBotanicAgentLocale(value) {
 function localeInstructions(locale) {
   if (locale === 'en') {
     return [
-      'Use concise, natural English for every new assistant response, clarification question, plan title and summary, tool-call label, and the user-visible why text.',
+      'Use concise, natural English for every new assistant response, clarification question, plan title and summary, tool-call label, and the user-visible why text. This language rule overrides any Chinese wording or examples in the loaded guides: do not answer in Chinese in English mode.',
       'User messages, project names, canvas labels, prompts, project memory, previous messages, Skill content, and provider/source text are source material. Preserve them in their original language unless the user explicitly asks for translation.',
       'Do not translate stable IDs, enum values, model names, Skill names, MCP names, or quoted source text. This language rule changes presentation only, never the meaning of stored user content.',
     ].join(' ')
