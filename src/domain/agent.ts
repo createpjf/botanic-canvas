@@ -11,6 +11,7 @@ export type {
 } from './agentMentions.ts'
 export {
   botanicAgentMentionOnlyInstruction,
+  botanicAgentRequestMessageContent,
   botanicAgentMessageRichView,
   hydrateBotanicAgentMentions,
   parseBotanicAgentRichText,

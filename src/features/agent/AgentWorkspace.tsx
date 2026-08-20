@@ -12,6 +12,7 @@ import {
   filterBotanicAgentRunTimeline,
   buildBotanicAgentPlan,
   createBotanicAgentContextSnapshot,
+  botanicAgentRequestMessageContent,
   consumeBotanicAgentMention,
   prepareBotanicAgentComposerSubmission,
   readBotanicAgentMentionQuery,
@@ -1644,8 +1645,8 @@ export default function AgentWorkspace({
           plannerModel,
           mountedSkillIds: session.mountedSkillIds,
           messages: [
-            ...session.messages.map((message) => ({ role: message.role, content: message.content })),
-            { role: 'user' as const, content: options.appendUser ?? cleanInstruction },
+            ...session.messages.map((message) => ({ role: message.role, content: botanicAgentRequestMessageContent(message, locale) })),
+            { role: 'user' as const, content: botanicAgentRequestMessageContent({ content: options.appendUser, mentions: options.mentions }, locale) || cleanInstruction },
           ],
           contextNodeIds: session.contextNodeIds,
           hasTarget: Boolean(target),
@@ -1834,7 +1835,7 @@ export default function AgentWorkspace({
       setPlanning(true)
       setRuntimePhase('planning')
       const chatMessages = [
-        ...session.messages.map((message) => ({ role: message.role, content: message.content })),
+        ...session.messages.map((message) => ({ role: message.role, content: botanicAgentRequestMessageContent(message, locale) })),
         { role: 'user' as const, content: routedInstruction },
       ].slice(-16)
       const liveMessageId = `agent-message-${crypto.randomUUID()}`

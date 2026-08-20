@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   botanicAgentMentionOnlyInstruction,
+  botanicAgentRequestMessageContent,
   botanicAgentMessageRichView,
   parseBotanicAgentRichText,
   prepareBotanicAgentComposerSubmission,
@@ -70,6 +71,14 @@ test('只有芯片没有正文时，指令用引用字段兜底，气泡正文�
     botanicAgentMentionOnlyInstruction([{ kind: 'reference', id: 'n', label: 'Mia' }], 'en'),
     'Use the referenced assets.',
   )
+  assert.equal(botanicAgentRequestMessageContent({
+    content: '',
+    mentions: [{ kind: 'skill', id: 'ecommerce_listing', name: '电商套图' }],
+  }), '按已挂载 Skill 执行。')
+  assert.equal(botanicAgentRequestMessageContent({
+    content: '帮我出套图',
+    mentions: [{ kind: 'skill', id: 'ecommerce_listing', name: '电商套图' }],
+  }), '帮我出套图')
 })
 
 test('没有正文也没有芯片时不能提交', () => {

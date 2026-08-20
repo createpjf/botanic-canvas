@@ -153,6 +153,18 @@ export function snapshotBotanicAgentComposerMentions(input: {
   return mentions
 }
 
+/** 发给回合/对话的正文：气泡可以只有芯片，请求不能把空字符串交给 requiredText。 */
+export function botanicAgentRequestMessageContent(
+  message: { content?: string; mentions?: readonly BotanicAgentMessageMention[] },
+  locale: 'zh-CN' | 'en' = 'zh-CN',
+): string {
+  const content = String(message.content ?? '').replace(/\u00a0/g, ' ').trim()
+  if (content) return content
+  return message.mentions?.length
+    ? botanicAgentMentionOnlyInstruction(message.mentions, locale)
+    : ''
+}
+
 export function botanicAgentMentionOnlyInstruction(
   mentions: readonly BotanicAgentMessageMention[],
   locale: 'zh-CN' | 'en' = 'zh-CN',
