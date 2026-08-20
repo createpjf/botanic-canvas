@@ -1252,7 +1252,7 @@ export default function AgentWorkspace({
     }
 
     // 结构化方案活在会话消息上：方案卡点选带上该卡的 composition，输入「生成第 N 项」取最近一条。
-    const composition = options.composition ?? latestBotanicAgentComposition(session.messages)
+    const composition = options.composition ?? latestBotanicAgentComposition(session.messages) ?? undefined
     if (composition && !failedCommand.options.composition) {
       failedCommand.options = { ...failedCommand.options, composition }
     }
