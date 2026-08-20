@@ -178,6 +178,55 @@ test('图片草案：有基准图走服务端规划器，张数随草案透传',
   assert.equal(draft.planSettings.duration, undefined)
 })
 
+const synthesizedProse = 'Mia 的氛围肖像照（海边版）：一位 20 多岁韩国女性，黑色长发自然垂落，清透裸妆，身穿燕麦色针织衫，站在海边浅滩上，背景是灰蓝色海面，柔和的自然光，视觉风格清新通透，画面比例 3:4。'
+
+test('变体轴从用户原话解析；综合 Prompt 只做画面描述，不被挖成伪变体', () => {
+  const draft = prepareBotanicAgentGenerationDraft({
+    ...draftBase,
+    instruction: '@Mia 氛围肖像 生成在不同背景下的，比方说在海边和在沙漠',
+    decision: { kind: 'generation', mediaKind: 'image', promptSource: 'instruction' },
+    options: {},
+    generationModels: [imageModel],
+    executionMode: 'auto',
+    synthesizedPrompt: synthesizedProse,
+  })
+  assert.equal(draft.kind, 'ready')
+  if (draft.kind !== 'ready') return
+  const applied = buildBotanicAgentInitialDraftPlan(draft)
+  assert.equal(applied.kind, 'plan')
+  if (applied.kind !== 'plan') return
+  // 用户要的是换背景：场景轴、海边/沙漠两个分支，场景变、人物服装锁定；@ 引用不是取值。
+  assert.equal(applied.plan.output.mode, 'batch_by_variation')
+  assert.equal(applied.plan.output.count, 2)
+  assert.equal(applied.plan.variation?.axes[0]?.key, 'scene')
+  assert.deepEqual(applied.plan.variation?.axes[0]?.values.map((value) => value.label), ['海边', '沙漠'])
+  assert.equal(applied.plan.constraints.find((item) => item.dimension === 'scene')?.mode, 'vary')
+  assert.equal(applied.plan.constraints.find((item) => item.dimension === 'person')?.mode, 'preserve')
+  // 共享 Prompt 是可读的画面描述：不带创作简报附录，也不能被值剔除腰斩成碎片。
+  assert.ok(!applied.plan.prompt.includes('创作简报'), applied.plan.prompt)
+  assert.match(applied.plan.prompt, /韩国女性/)
+  assert.match(applied.plan.prompt, /3:4/)
+})
+
+test('没有批量语的单图请求即使带综合 Prompt 也保持单张', () => {
+  const draft = prepareBotanicAgentGenerationDraft({
+    ...draftBase,
+    instruction: '生成一张 Mia 的海边氛围肖像',
+    decision: { kind: 'generation', mediaKind: 'image', promptSource: 'instruction' },
+    options: {},
+    generationModels: [imageModel],
+    executionMode: 'auto',
+    synthesizedPrompt: synthesizedProse,
+  })
+  assert.equal(draft.kind, 'ready')
+  if (draft.kind !== 'ready') return
+  const applied = buildBotanicAgentInitialDraftPlan(draft)
+  assert.equal(applied.kind, 'plan')
+  if (applied.kind !== 'plan') return
+  assert.equal(applied.plan.output.mode, 'single')
+  assert.equal(applied.plan.output.count, 1)
+})
+
 test('首图草案按批量变体展开，视频草案不展开', () => {
   const draft = prepareBotanicAgentGenerationDraft({
     ...draftBase,

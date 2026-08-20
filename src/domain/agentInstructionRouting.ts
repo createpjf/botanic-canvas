@@ -142,6 +142,8 @@ export type BotanicAgentGenerationDraft =
       isVideo: boolean
       /** 视频计划一律走首帧语义，不进服务端图片规划器。 */
       useInitialFlow: boolean
+      /** 用户原话；变体轴解析只认它，不认综合 Prompt。 */
+      instruction: string
       prompt: string
       brief: BotanicCreativeBrief
       /** 不含时长的输出设置；重试命令与图片规划请求使用它。 */
@@ -194,9 +196,10 @@ export function prepareBotanicAgentGenerationDraft(input: BotanicAgentGeneration
   const inferredGenerationOverrides = inferBotanicAgentGenerationSettings(instruction, candidateModels)
   const requestedGenerationOverrides = { ...inferredGenerationOverrides, ...options.generationOverrides }
   // 变体轴决定要开几个分支，必须先于比例与清晰度确认；已确认过的取值不再重复追问。
+  // 轴与取值只从用户原话解析：综合 Prompt 是模型写的画面描述，把它当指令会被正则挖成伪变体。
   // 视频一次一条、局部重绘一次一张，都不进入变体展开。
   const pendingVariation = isVideo || options.region ? undefined : botanicAgentPendingVariationClarification({
-    instruction: prompt,
+    instruction,
     requestedIntent: input.requestedIntent,
     clarificationAnswers: options.clarificationAnswers,
     brief: options.creativeBrief,
@@ -244,6 +247,7 @@ export function prepareBotanicAgentGenerationDraft(input: BotanicAgentGeneration
     kind: 'ready',
     isVideo,
     useInitialFlow: !target || isVideo,
+    instruction,
     prompt: briefTurn.prompt,
     brief: briefTurn.brief,
     generationOverrides,
@@ -280,14 +284,15 @@ export function buildBotanicAgentInitialDraftPlan(
     contextSnapshot: createBotanicAgentContextSnapshot(draft.planContextItems),
     ...(draft.outputCount ? { outputCount: draft.outputCount } : {}),
   })
-  // 视频一次一条，不做变体展开。
+  // 视频一次一条，不做变体展开。轴与取值从用户原话解析；综合 Prompt 只做共享画面底。
   const applied = draft.isVideo
     ? { kind: 'plan' as const, plan: initialPlan }
     : applyBotanicAgentVariationToPlan(initialPlan, {
-      instruction: draft.prompt,
+      instruction: draft.instruction,
       requestedIntent: 'initial_generation',
       clarificationAnswers,
       brief: draft.brief,
+      fallbackPrompt: draft.prompt,
     })
   if (applied.kind === 'clarification') {
     return { kind: 'clarification', clarification: { ...applied.clarification, ...draft.carryOver } }

@@ -161,6 +161,25 @@ test('追问答案里的取值可以补全模糊的肤色批量', () => {
   assert.equal(expandBotanicAgentVariationBranches(request.spec).length, 4)
 })
 
+test('共享底回退到原指令时也要剥掉创作简报附录', () => {
+  const spec = {
+    axes: [{
+      key: 'scene', label: '场景',
+      values: [
+        { label: '海边', promptDelta: '场景替换为海边，保持人物、服装与商品不变。' },
+        { label: '沙漠', promptDelta: '场景替换为沙漠，保持人物、服装与商品不变。' },
+      ],
+    }],
+    combine: false,
+  }
+  const shared = botanicAgentSharedVariationPrompt(
+    '海边、沙漠',
+    '在海边和在沙漠拍摄同一位模特\n\n创作简报：\n- Prompt 优化方向：保真自然',
+    spec,
+  )
+  assert.ok(!shared.includes('创作简报'), shared)
+})
+
 test('规划说明不能当作生图 Prompt，分支只叠加本支增量', () => {
   const narration = '当前项目没有配置批量 Skill，还缺两个字段才能批量。\n\n请确认肤色取值。'
   assert.equal(botanicAgentLooksLikePlannerNarration(narration), true)

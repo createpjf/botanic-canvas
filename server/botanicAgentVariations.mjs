@@ -77,6 +77,8 @@ const axisNameValues = new Set([
   '肤色', '族裔', '人种', '动作', '姿势', '姿态', '风格', '调性', '服装', '衣服', '穿搭', '球衣',
 ])
 const valueJunkPattern = /^(?:各种|多种|一些|任意|几个|多图|多张|变体|版本|图片|生成|层次|细节|道具|质感|细腻|更细腻|档位|字段|推荐值|说明|选项)$/u
+/** 含这些元话语的片段是指令本身而不是取值：「生成在不同背景下」不是一个背景。 */
+const valueMetaPattern = /不同|生成|出图|比方|例如|譬如/u
 const combineLanguagePattern = /组合|相乘|交叉|笛卡尔|[×x]\s*\d|全部组合|逐一组合/u
 const chineseCountByToken = {
   两: 2, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10,
@@ -87,7 +89,7 @@ const groupRoleByKey = {
 
 function isUsableVariationValue(label) {
   if (!label || Array.from(label).length > 8) return false
-  if (axisNameValues.has(label) || valueJunkPattern.test(label)) return false
+  if (axisNameValues.has(label) || valueJunkPattern.test(label) || valueMetaPattern.test(label)) return false
   if (/[更最]/.test(label) || /(?:层次|细节|道具)$/u.test(label)) return false
   return true
 }
@@ -95,6 +97,8 @@ function isUsableVariationValue(label) {
 function uniqueLabels(values) {
   const seen = new Set()
   return values.flatMap((value) => {
+    // 截断前先按原文拒绝：@ 引用与元话语片段截短后会伪装成合法取值。
+    if (value.includes('@') || valueMetaPattern.test(value)) return []
     const label = clipBotanicAgentNodeTitle(value)
     if (!isUsableVariationValue(label) || seen.has(label)) return []
     seen.add(label)
@@ -105,6 +109,7 @@ function uniqueLabels(values) {
 function normalizeVariationToken(chunk) {
   return chunk
     .replace(/[，,]\s*(?:多图|多张|多出几张).*$/u, '')
+    .replace(/^(?:比方说|比如说|比如|例如|譬如)/u, '')
     .replace(/^一个在/u, '')
     .replace(/^在(?=[\u4e00-\u9fff])/u, '')
     .replace(/里$/u, '')
@@ -115,12 +120,16 @@ function splitValueList(raw) {
   return uniqueLabels(raw.split(/[、，,;/＋+|]/u).flatMap((item) => {
     const chunk = normalizeVariationToken(item
       .replace(/(?:等)?\s*(?:\d+|两|三|四|五|六|七|八|九|十)\s*(?:种|个|档).*$/u, '')
-      .replace(/^(?:分别是|分别|包括)/u, '')
+      .replace(/^(?:分别是|分别|包括|比方说|比如说|比如|例如|譬如)/u, '')
       .replace(/^(?:换成|换为|替换为|改为|改成|使用|用)/u, '')
       .trim())
     if (!chunk || /不变|保持/.test(chunk)) return []
+    // 「和」切分只认两侧都是 ≥2 字的短词：「海边和沙漠」是枚举，「柔和的自然光」不是。
     const parts = chunk.split(/(?:(?<=\S)和(?=\S))/u).map((part) => normalizeVariationToken(part)).filter(Boolean)
-    if (parts.length === 2 && parts.every((part) => Array.from(part).length <= 8)) return parts
+    if (parts.length === 2 && parts.every((part) => {
+      const length = Array.from(part).length
+      return length >= 2 && length <= 8
+    })) return parts
     return chunk ? [chunk] : []
   }))
 }
@@ -361,9 +370,12 @@ export function resolveBotanicAgentVariationRequest(input) {
   const answered = splitValueList(input.clarificationAnswers?.variation_values ?? '')
   const confirmed = answered.length ? answered : uniqueLabels(input.brief?.variation?.values ?? [])
   const explicitBatch = instructionRequestsBatchVariation(instruction) || intent === 'batch_variation'
+  // 隐式枚举挖掘只对短指令生效：长文本是画面描述（如模型综合的 Prompt），
+  // 里面的逗号列表是句子成分而不是取值，挖出来只会产生伪变体和碎片分支。
+  const implicitMiningAllowed = explicitBatch || Array.from(instruction).length <= 40
   const allowCustomAxis = explicitBatch || confirmed.length >= botanicAgentVariationValueMin
-  const inferred = confirmed.length ? confirmed : inferInstructionValues(instruction)
-  const axes = fillAxisValues(parseAxes(instruction), inferred, input.brief?.variation?.axisKey)
+  const inferred = confirmed.length ? confirmed : implicitMiningAllowed ? inferInstructionValues(instruction) : []
+  const axes = fillAxisValues(implicitMiningAllowed ? parseAxes(instruction) : [], inferred, input.brief?.variation?.axisKey)
     .filter((axis) => axis.key !== 'custom' || allowCustomAxis)
   const wantsBatch = explicitBatch
     || confirmed.length >= botanicAgentVariationValueMin
@@ -451,7 +463,8 @@ function stripVariationInventory(text, spec) {
     if (Array.from(label).length >= 2) next = next.split(label).join('')
   }
   next = next
-    .replace(/(?:[\u4e00-\u9fffA-Za-z0-9]{1,8}[、，,]){1,7}[\u4e00-\u9fffA-Za-z0-9]{1,8}\s*(?:等)?\s*(?:\d+|两|三|四|五|六|七|八|九|十)种?[。]?/gu, '')
+    // 数字后是比例分隔符时不是「N 种」清单（如「画面比例 3:4」），不能连片吃掉。
+    .replace(/(?:[\u4e00-\u9fffA-Za-z0-9]{1,8}[、，,]){1,7}[\u4e00-\u9fffA-Za-z0-9]{1,8}\s*(?:等)?\s*(?:\d+(?![:：\d])|两|三|四|五|六|七|八|九|十)种?[。]?/gu, '')
     .replace(/(?:多图|多张|多出几张|多种|几个|各种)/gu, '')
     .replace(/(?:两|三|四|五|六|七|八|九|十|\d+)种(?:肤色|场景|动作|风格|人物|服装|变体)?/gu, '')
     .replace(/[、，,\s]{2,}/gu, '，')
@@ -462,7 +475,8 @@ function stripVariationInventory(text, spec) {
 }
 
 function usableSharedPrompt(text, spec) {
-  const stripped = stripVariationInventory(text, spec)
+  // 回退源可能是未清洗的原指令：先剥创作简报附录，否则清理折叠换行后附录会混进提示词正文。
+  const stripped = stripVariationInventory(stripCreativeBriefAppendix(text), spec)
   if (!stripped || botanicAgentLooksLikePlannerNarration(stripped) || stillEnumeratesValues(stripped, spec)) return ''
   return stripped
 }
