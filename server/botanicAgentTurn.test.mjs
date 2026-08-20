@@ -23,6 +23,9 @@ const document = {
 const generationModels = [{
   id: 'gpt-image-2', label: 'GPT Image 2', mediaKind: 'image',
   aspectRatios: ['1:1', '16:9', '3:4'], resolutions: ['1K', '2K'],
+}, {
+  id: 'MiniMax-H3', label: 'MiniMax H3', mediaKind: 'video',
+  aspectRatios: ['16:9', '3:4', '9:16'], resolutions: ['2K'], durations: [5, 10, 15], defaultDuration: 5,
 }]
 
 test('回合请求只接收受控字段，拒绝非法消息与数量', () => {
@@ -160,6 +163,59 @@ test('生成数量与非法设置被裁剪到可用范围', async () => {
   assert.equal(result.kind, 'generation')
   assert.equal(result.count, 4)
   assert.equal(result.settingsHint, undefined)
+})
+
+test('模型可把引用图片编排成视频回合，时长取自视频模型目录', async () => {
+  const requests = []
+  const result = await resolveBotanicAgentTurn({
+    projectId: 'project-turn',
+    plannerModel: 'deepseek-v4-pro',
+    messages: [{ role: 'user', content: '把 Mia 这张做成 10 秒视频，镜头缓慢推近' }],
+    contextNodeIds: ['asset-mia-portrait'],
+    hasTarget: false,
+    generationModels,
+    maxOutputCount: 8,
+  }, runtime, {
+    document,
+    fetchImpl: async (_url, init) => {
+      requests.push(JSON.parse(init.body))
+      return new Response(JSON.stringify({ choices: [{ message: {
+        content: null,
+        tool_calls: [{ id: 'call-video', type: 'function', function: {
+          name: 'generate_videos',
+          arguments: JSON.stringify({
+            prompt: 'Mia 肖像为首帧，镜头缓慢推近，柔光渐暖，发丝轻微飘动',
+            duration: 10,
+            why: '用户要求图生视频',
+          }),
+        } }],
+      } }] }), { status: 200 })
+    },
+  })
+
+  assert.equal(result.kind, 'generation')
+  assert.equal(result.mediaKind, 'video')
+  assert.equal(result.duration, 10)
+  assert.equal(result.count, 1)
+  assert.ok(requests[0].tools.some((tool) => tool.function.name === 'generate_videos'))
+
+  // 目录里没有视频模型时不暴露视频工具。
+  const imageOnly = []
+  await resolveBotanicAgentTurn({
+    projectId: 'project-turn',
+    messages: [{ role: 'user', content: '你好' }],
+    contextNodeIds: [],
+    hasTarget: false,
+    generationModels: generationModels.filter((model) => model.mediaKind !== 'video'),
+    maxOutputCount: 8,
+  }, runtime, {
+    document,
+    fetchImpl: async (_url, init) => {
+      imageOnly.push(JSON.parse(init.body))
+      return new Response(JSON.stringify({ choices: [{ message: { content: '你好。' } }] }), { status: 200 })
+    },
+  })
+  assert.ok(!imageOnly[0].tools.some((tool) => tool.function.name === 'generate_videos'))
 })
 
 test('核心信息缺失时模型可结构化追问，候选选项随回合返回', async () => {
