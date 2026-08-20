@@ -331,7 +331,11 @@ function AgentCompositionCard({
       {composition.items.map((item) => <li key={`${item.index}-${item.title}`}>
         <div className="agent-composition__item-head">
           <b>{item.index}. {item.title}</b>
-          <small>{botanicAgentCompositionItemSpecLabel(item)}</small>
+          <small>{locale === 'en'
+            ? item.mediaKind === 'video'
+              ? `${item.duration ?? 5}-second video`
+              : `${item.count} ${item.count === 1 ? 'image' : 'images'}`
+            : botanicAgentCompositionItemSpecLabel(item)}</small>
         </div>
         {item.purpose ? <p className="agent-composition__purpose">{item.purpose}</p> : null}
         <details className="agent-composition__prompt">

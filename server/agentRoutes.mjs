@@ -1,6 +1,7 @@
 import { BotanicAgentPlannerError, planBotanicGeneration, validateBotanicAgentPlanInput } from './botanicAgentPlanner.mjs'
 import { BotanicAgentChatError, chatWithBotanicAgent, validateBotanicAgentChatInput } from './botanicAgentChat.mjs'
 import { reviewBotanicAgentRunResults } from './botanicAgentReview.mjs'
+import { normalizeBotanicAgentLocale } from './agentInstructions.mjs'
 import { resolveBotanicAgentTurn, validateBotanicAgentTurnInput } from './botanicAgentTurn.mjs'
 import { createAgentSkill, publicAgentSkill, validateAgentSkillCreation } from './botanicAgentSkill.mjs'
 import { cancelPersistentAgentRun, createPersistentAgentRun, prepareAgentBranchRetry, publicAgentRun, validateAgentRunCreation } from './botanicAgentRun.mjs'
@@ -340,6 +341,8 @@ export function createAgentRouteHandler({
       const body = await readJson(request, 4 * 1024, 'Agent 评审请求过大。')
       const projectId = text(body?.projectId, '项目', 160)
       const runId = text(body?.runId, 'Agent Run', 160)
+      if (body?.locale !== undefined && body.locale !== 'zh-CN' && body.locale !== 'en') return error(response, 400, 'INVALID_LOCALE', 'Agent locale 不支持。')
+      const locale = normalizeBotanicAgentLocale(body?.locale ?? (String(request.headers['accept-language'] ?? '').toLowerCase().startsWith('en') ? 'en' : 'zh-CN'))
       await requireProjectPermission(productStore, user.id, projectId, 'read')
       const run = await productStore.readAgentRun(user.id, runId)
       if (!run || run.projectId !== projectId) return error(response, 404, 'AGENT_RUN_NOT_FOUND', '未找到该 Agent 任务。')
@@ -349,7 +352,7 @@ export function createAgentRouteHandler({
       const project = await productStore.readProject(user.id, projectId)
       if (!project?.document) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
       // 评审是派生数据：同一 Run 状态只评一次，重复请求直接回缓存；失败静默为空由客户端跳过。
-      const cacheKey = `${runId}:${run.status}:${run.updatedAt}`
+      const cacheKey = `${locale}:${runId}:${run.status}:${run.updatedAt}`
       const cached = agentRunReviewCache.get(cacheKey)
       if (cached !== undefined) return json(response, 200, { review: cached })
       const controller = new AbortController()
@@ -364,6 +367,7 @@ export function createAgentRouteHandler({
           runtimeConfig: config,
           resolveMedia: visionMediaResolver(user.id, projectId),
           signal: controller.signal,
+          locale,
         }).catch(() => undefined)
         if (controller.signal.aborted || response.destroyed) return true
         if (agentRunReviewCache.size >= 256) {

@@ -41,12 +41,25 @@ function bandIndex(center: number) {
   return 1
 }
 
-/** 给规划器与确认卡用的中文位置描述；覆盖大半画面时按整体处理。 */
-export function describeRegionRect(rect: RegionRect): string {
+/** 给规划器与确认卡用的位置描述；覆盖大半画面时按整体处理。 */
+export function describeRegionRect(rect: RegionRect, locale: 'zh-CN' | 'en' = 'zh-CN'): string {
   const area = rect.width * rect.height
-  if (area >= 0.85) return '整个画面'
+  if (area >= 0.85) return locale === 'en' ? 'the entire frame' : '整个画面'
   const vertical = verticalBands[bandIndex(rect.y + rect.height / 2)]
   const horizontal = horizontalBands[bandIndex(rect.x + rect.width / 2)]
+  if (locale === 'en') {
+    const verticalLabel = vertical === '上' ? 'upper' : vertical === '下' ? 'lower' : ''
+    const horizontalLabel = horizontal === '左' ? 'left' : horizontal === '右' ? 'right' : ''
+    const position = verticalLabel && horizontalLabel
+      ? `${verticalLabel}-${horizontalLabel} area`
+      : verticalLabel
+        ? `${verticalLabel} area`
+        : horizontalLabel
+          ? `${horizontalLabel} area`
+          : 'center of the frame'
+    const scale = area >= 0.45 ? 'large' : area >= 0.12 ? 'medium' : 'small'
+    return `${scale} ${position} (about ${Math.round(area * 100)}% of the frame)`
+  }
   const position = vertical === '中' && horizontal === '中'
     ? '画面中部'
     : `画面${vertical === '中' ? '' : vertical}${horizontal === '中' ? (vertical === '中' ? '中部' : '部') : horizontal}`

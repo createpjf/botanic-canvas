@@ -20,9 +20,9 @@ export type AgentRunCreationBranch = {
 
 function agentApiCopy(locale: ProductLocale) {
   return locale === 'en' ? {
-    mediaRead: 'Unable to read the reference image. Add it again.', mediaType: 'Agent reference images support PNG, JPEG, or WebP only.', planTimeout: 'Agent planning is taking longer than expected. Try again shortly; the canvas was not changed.', turnTimeout: 'Agent is taking longer than expected to understand the request. Try again shortly; the canvas was not changed.', chatTimeout: 'Agent is taking longer than expected to organize the context. Try again shortly; the canvas was not changed.', streamUnavailable: 'Agent live connection is unavailable.', chatIncomplete: 'Agent did not complete the response. Try again.', streamEnded: 'Agent live connection ended unexpectedly.',
+    mediaRead: 'Unable to read the reference image. Add it again.', mediaType: 'Agent reference images support PNG, JPEG, or WebP only.', planTimeout: 'Agent planning is taking longer than expected. Try again shortly; the canvas was not changed.', turnTimeout: 'Agent is taking longer than expected to understand the request. Try again shortly; the canvas was not changed.', chatTimeout: 'Agent is taking longer than expected to organize the context. Try again shortly; the canvas was not changed.', streamUnavailable: 'Agent live connection is unavailable.', chatIncomplete: 'Agent did not complete the response. Try again.', streamEnded: 'Agent live connection ended unexpectedly.', reviewTimeout: 'The result review is taking longer than expected. This round was skipped; your generated results are unaffected.',
   } : {
-    mediaRead: '参考图片读取失败，请重新添加该图片。', mediaType: 'Agent 参考图仅支持 PNG、JPEG 或 WebP。', planTimeout: 'Agent 规划响应较慢，请稍后重试；当前画布内容未被修改。', turnTimeout: 'Agent 正在理解你的意图，响应较慢，请稍后重试；当前画布内容未被修改。', chatTimeout: 'Agent 正在整理上下文，响应较慢，请稍后重试；当前画布内容未被修改。', streamUnavailable: 'Agent 实时通道不可用。', chatIncomplete: 'Agent 对话未完成，请重试。', streamEnded: 'Agent 实时通道意外结束。',
+    mediaRead: '参考图片读取失败，请重新添加该图片。', mediaType: 'Agent 参考图仅支持 PNG、JPEG 或 WebP。', planTimeout: 'Agent 规划响应较慢，请稍后重试；当前画布内容未被修改。', turnTimeout: 'Agent 正在理解你的意图，响应较慢，请稍后重试；当前画布内容未被修改。', chatTimeout: 'Agent 正在整理上下文，响应较慢，请稍后重试；当前画布内容未被修改。', streamUnavailable: 'Agent 实时通道不可用。', chatIncomplete: 'Agent 对话未完成，请重试。', streamEnded: 'Agent 实时通道意外结束。', reviewTimeout: '结果评审响应较慢，已跳过本轮点评；生成结果不受影响。',
   }
 }
 
@@ -455,14 +455,15 @@ export async function cancelPersistentBotanicAgentRun(runId: string) {
   return response.run
 }
 
-export async function requestBotanicAgentRunReview(projectId: string, runId: string, signal?: AbortSignal) {
+export async function requestBotanicAgentRunReview(projectId: string, runId: string, signal?: AbortSignal, locale: ProductLocale = readProductLocale()) {
+  const copy = agentApiCopy(locale)
   const response = await productRequest<{ review: BotanicAgentRunReview | null }>('/api/agent-run-reviews', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ projectId, runId }),
+    headers: { 'Content-Type': 'application/json', 'Accept-Language': locale },
+    body: JSON.stringify({ projectId, runId, locale }),
     signal,
     timeoutMs: 45_000,
-    timeoutMessage: '结果评审响应较慢，已跳过本轮点评；生成结果不受影响。',
+    timeoutMessage: copy.reviewTimeout,
   })
   return response.review
 }

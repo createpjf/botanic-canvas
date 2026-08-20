@@ -1026,18 +1026,18 @@ export default function AgentWorkspace({
     const requestKey = `${latestRun.id}:${latestRun.status}:${latestRun.updatedAt}`
     if (requestedRunReviewsRef.current.has(requestKey)) return
     requestedRunReviewsRef.current.add(requestKey)
-    void requestBotanicAgentRunReview(projectId, latestRun.id).then((review) => {
+    void requestBotanicAgentRunReview(projectId, latestRun.id, undefined, locale).then((review) => {
       if (!review || !isCurrentAgentProject()) return
       appendMessage({
         id: reviewMessageId,
         role: 'assistant',
         kind: 'text',
-        content: formatBotanicAgentRunReviewMessage(review),
+        content: formatBotanicAgentRunReviewMessage(review, locale),
       })
       // 挑选循环闭合：评审选出的最佳结果直接成为下一轮迭代目标，替代「第一个结果」的默认跟随。
       if (review.bestNodeId) onUseResultContext([review.bestNodeId])
     }).catch(() => { /* 评审失败静默：结果本身不受影响。 */ })
-  }, [appendMessage, isCurrentAgentProject, latestRun, onUseResultContext, projectId, session])
+  }, [appendMessage, isCurrentAgentProject, latestRun, locale, onUseResultContext, projectId, session])
 
   // 任务开始时把视角带到正在生成的节点，且每个 Run 只带一次；之后画布归用户，
   // 结果完成不再抢视角——需要回看结果时用消息里的「定位画布」。
@@ -1834,6 +1834,7 @@ export default function AgentWorkspace({
         const regionPlan = {
           ...buildBotanicAgentPlan({
             instruction: draft.prompt,
+            locale,
             creativeBrief: draft.brief,
             selectedResultNodeId: target.id,
             selectedResultLabel: target.label,
@@ -1859,7 +1860,7 @@ export default function AgentWorkspace({
           })
         }
       } catch (caught) {
-        const message = caught instanceof Error ? caught.message : '暂时无法创建局部重绘计划。'
+        const message = locale === 'en' ? flowCopy.planFailed : caught instanceof Error ? caught.message : '暂时无法创建局部重绘计划。'
         failRuntimeTrace(message)
         setError(message)
         rememberFailedInstruction(resolvedFailedCommand)
@@ -2514,18 +2515,18 @@ export default function AgentWorkspace({
         target={{ id: target.id, name: target.label, image: target.image }}
         busy={planning}
         hidePrompt
-        submitLabel="按选区继续"
+        submitLabel={locale === 'en' ? 'Continue with selection' : '按选区继续'}
         onSubmit={({ rect }) => {
           const request = pendingRegionInstruction
           setPendingRegionInstruction(null)
           void runInstruction(request.instruction, {
             ...request.options,
-            region: { rect, description: describeRegionRect(rect) },
+            region: { rect, description: describeRegionRect(rect, locale) },
           })
         }}
         onClose={() => {
           setPendingRegionInstruction(null)
-          appendMessage({ role: 'assistant', kind: 'notice', content: '已取消局部重绘框选；再次发送指令时可重新框选。' })
+          appendMessage({ role: 'assistant', kind: 'notice', content: locale === 'en' ? 'Region selection cancelled. You can select an area again when you send another instruction.' : '已取消局部重绘框选；再次发送指令时可重新框选。' })
         }}
       /> : null}
     </aside>

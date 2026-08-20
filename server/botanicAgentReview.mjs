@@ -1,4 +1,5 @@
 import { resolveBotanicAgentImageDataUrl } from './botanicAgentVision.mjs'
+import { normalizeBotanicAgentLocale } from './agentInstructions.mjs'
 
 /**
  * 结果自评：Run 到终态、结果回填画布后，用视觉模型对照创作诉求逐张评价生成结果，
@@ -14,11 +15,16 @@ const REVIEW_TIMEOUT_MS = 30_000
 const REVIEW_NOTE_LIMIT = 160
 const REVIEW_SUMMARY_LIMIT = 200
 
-const REVIEW_INSTRUCTIONS = '你是品牌视觉工作台的创意评审。对照创作诉求与执行提示词逐张评价生成结果：'
-  + '主体与身份是否保持、构图与光线是否达标、质感与风格是否符合诉求。'
-  + '只输出 JSON，格式：{"summary":"一句话总评","best":最佳图片编号,'
-  + '"items":[{"index":图片编号,"verdict":"pass"或"adjust","note":"不超过40字的评价"}]}。'
-  + '编号从 1 开始；评价基于画面可见内容，不臆测拍摄意图；不要输出 JSON 之外的任何文字。'
+function containsHan(value) {
+  return /\p{Script=Han}/u.test(value)
+}
+
+function reviewInstructions(locale) {
+  if (locale === 'en') {
+    return 'You are a creative reviewer for a brand visual workspace. Compare the creative brief and execution prompt, then evaluate each generated image: subject and identity consistency, composition and lighting, finish, and stylistic fit. Return JSON only, in this exact shape: {"summary":"one-sentence overall review in concise natural English","best":best image number,"items":[{"index":image number,"verdict":"pass" or "adjust","note":"a concise review in English, max 40 words"}]}. Number images from 1. Judge only what is visible; do not infer intent. Keep summary and note values in English unless quoting a proper name or source label. Do not output anything outside the JSON.'
+  }
+  return '你是品牌视觉工作台的创意评审。对照创作诉求与执行提示词逐张评价生成结果：主体与身份是否保持、构图与光线是否达标、质感与风格是否符合诉求。只输出 JSON，格式：{"summary":"一句话总评","best":最佳图片编号,"items":[{"index":图片编号,"verdict":"pass"或"adjust","note":"不超过40字的评价"}]}。编号从 1 开始；评价基于画面可见内容，不臆测拍摄意图；不要输出 JSON 之外的任何文字。'
+}
 
 function parseProviderJson(content) {
   if (typeof content !== 'string' || !content.trim()) return undefined
@@ -70,7 +76,9 @@ export async function reviewBotanicAgentRunResults({
   resolveMedia,
   fetchImpl = fetch,
   signal,
+  locale: localeValue = 'zh-CN',
 } = {}) {
+  const locale = normalizeBotanicAgentLocale(localeValue)
   if (!run || (run.status !== 'completed' && run.status !== 'partial')) return undefined
   const model = typeof runtimeConfig?.agentVisionModel === 'string' ? runtimeConfig.agentVisionModel.trim() : ''
   const apiKey = typeof runtimeConfig?.flockApiKey === 'string' ? runtimeConfig.flockApiKey.trim() : ''
@@ -103,13 +111,15 @@ export async function reviewBotanicAgentRunResults({
     body: JSON.stringify({
       model,
       messages: [
-        { role: 'system', content: REVIEW_INSTRUCTIONS },
+        { role: 'system', content: reviewInstructions(locale) },
         {
           role: 'user',
           content: [
             {
               type: 'text',
-              text: `创作诉求：${instruction}\n执行提示词：${prompt}\n共 ${resolved.length} 张结果，编号对应：${legend}`,
+              text: locale === 'en'
+                ? `Creative brief: ${instruction}\nExecution prompt: ${prompt}\nThere are ${resolved.length} results, numbered as follows: ${legend}`
+                : `创作诉求：${instruction}\n执行提示词：${prompt}\n共 ${resolved.length} 张结果，编号对应：${legend}`,
             },
             ...resolved.map((item) => ({ type: 'image_url', image_url: { url: item.dataUrl } })),
           ],
@@ -128,7 +138,8 @@ export async function reviewBotanicAgentRunResults({
     const index = Number(item?.index)
     const target = Number.isInteger(index) ? resolved[index - 1] : undefined
     if (!target) return []
-    const note = typeof item?.note === 'string' ? item.note.trim().slice(0, REVIEW_NOTE_LIMIT) : ''
+    const rawNote = typeof item?.note === 'string' ? item.note.trim().slice(0, REVIEW_NOTE_LIMIT) : ''
+    const note = locale === 'en' && containsHan(rawNote) ? '' : rawNote
     return [{
       nodeId: target.nodeId,
       branchLabel: target.branchLabel,
@@ -138,9 +149,10 @@ export async function reviewBotanicAgentRunResults({
   })
   if (!items.length) return undefined
   const bestIndex = Number(parsed.best)
-  const summary = typeof parsed.summary === 'string' ? parsed.summary.trim().slice(0, REVIEW_SUMMARY_LIMIT) : ''
+  const rawSummary = typeof parsed.summary === 'string' ? parsed.summary.trim().slice(0, REVIEW_SUMMARY_LIMIT) : ''
+  const summary = locale === 'en' && containsHan(rawSummary) ? '' : rawSummary
   return {
-    summary: summary || '已看完这轮结果。',
+    summary: summary || (locale === 'en' ? 'Reviewed this round of results.' : '已看完这轮结果。'),
     ...(Number.isInteger(bestIndex) && resolved[bestIndex - 1] ? { bestNodeId: resolved[bestIndex - 1].nodeId } : {}),
     items,
   }
