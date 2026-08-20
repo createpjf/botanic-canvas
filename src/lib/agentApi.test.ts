@@ -138,6 +138,29 @@ test('浏览器合成计划时保留追问后的生成参数，而不是被旧�
   assert.deepEqual(plan.settings, { model: 'minimax-h3', aspectRatio: '16:9', resolution: '2K' })
 })
 
+test('已有基准图时请求张数一路带到规划器，并按上限收敛单次生成', () => {
+  const base = {
+    projectId: 'project-agent', instruction: '基于这张再做 3 张', requestedIntent: 'continue_generation' as const,
+    selectedResultNodeId: 'result-v03', selectedResultLabel: '首图候选 01', rootRecipe: recipe,
+  }
+  assert.equal(buildBotanicAgentPlanRequest({ ...base, outputCount: 3 }).outputCount, 3)
+  assert.equal(buildBotanicAgentPlanRequest({ ...base, outputCount: 99 }).outputCount, 8)
+  assert.equal(buildBotanicAgentPlanRequest(base).outputCount, undefined)
+
+  const draft = {
+    intent: 'continue_generation' as const, instruction: base.instruction, summary: '生成新版本。',
+    selectedResultNodeId: base.selectedResultNodeId,
+    constraints: [{ dimension: 'scene' as const, mode: 'vary' as const }],
+    prompt: '海边礁石人像。', settings: recipe.settings,
+    output: { mode: 'single' as const, count: 1, candidatesPerItem: 1 },
+  }
+  // 尚未认识 outputCount 的服务端仍会回单张，计划仍要按用户要的张数收敛。
+  assert.equal(completeBotanicAgentPlan(draft, { ...base, outputCount: 3 }).output.count, 3)
+  // 素材组批量的张数由素材数决定，不能被本轮请求张数改写。
+  const batchDraft = { ...draft, output: { mode: 'batch_by_asset' as const, count: 2, candidatesPerItem: 1 } }
+  assert.equal(completeBotanicAgentPlan(batchDraft, { ...base, outputCount: 3 }).output.count, 2)
+})
+
 test('Agent 自动选择素材组后，浏览器仍能恢复对应素材组引用', () => {
   const input = {
     projectId: 'project-agent', instruction: '批量换场景', requestedIntent: 'replace_scene' as const,

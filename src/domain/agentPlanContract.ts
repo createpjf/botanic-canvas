@@ -1,5 +1,5 @@
 import type { BotanicAgentClarification, BotanicAgentContextSnapshot, BotanicAgentIntent, BotanicAgentMemoryItem, BotanicAgentPlan, BotanicAgentReasoningEntry, BotanicCreativeBrief } from './agent.ts'
-import { summarizeBotanicAgentNodeTitle } from './agent.ts'
+import { BOTANIC_AGENT_MAX_SINGLE_OUTPUT, summarizeBotanicAgentNodeTitle } from './agent.ts'
 import type { AssetGroup, GenerationModelOption, GenerationRecipe, GenerationSettings } from './canvas.ts'
 
 export type BotanicAgentPlanRequestInput = {
@@ -19,6 +19,8 @@ export type BotanicAgentPlanRequestInput = {
   clarificationAnswers?: Record<string, string>
   creativeBrief?: BotanicCreativeBrief
   contextSnapshot?: BotanicAgentContextSnapshot[]
+  /** 本轮请求的单次生成张数；素材组批量与变体展开的张数由各自规则决定，不受它影响。 */
+  outputCount?: number
 }
 
 export type BotanicAgentPlanRequest = {
@@ -38,6 +40,7 @@ export type BotanicAgentPlanRequest = {
   creativeBrief?: BotanicCreativeBrief
   contextSnapshot?: BotanicAgentContextSnapshot[]
   parentPrompt?: string
+  outputCount?: number
 }
 
 export type BotanicAgentPlanDraft = Omit<BotanicAgentPlan, 'references' | 'rootRecipe'>
@@ -50,7 +53,13 @@ export type BotanicAgentPlanResponse =
   | { plan: BotanicAgentPlanDraft; reasoning?: BotanicAgentReasoningEntry[] }
   | { clarification: BotanicAgentClarification; reasoning?: BotanicAgentReasoningEntry[] }
 
+function requestedSingleOutputCount(outputCount: number | undefined) {
+  if (typeof outputCount !== 'number' || !Number.isFinite(outputCount)) return undefined
+  return Math.max(1, Math.min(BOTANIC_AGENT_MAX_SINGLE_OUTPUT, Math.floor(outputCount)))
+}
+
 export function buildBotanicAgentPlanRequest(input: BotanicAgentPlanRequestInput): BotanicAgentPlanRequest {
+  const outputCount = requestedSingleOutputCount(input.outputCount)
   return {
     projectId: input.projectId,
     ...(input.plannerModel ? { plannerModel: input.plannerModel } : {}),
@@ -103,6 +112,7 @@ export function buildBotanicAgentPlanRequest(input: BotanicAgentPlanRequestInput
     ...(input.creativeBrief ? { creativeBrief: structuredClone(input.creativeBrief) } : {}),
     ...(input.contextSnapshot?.length ? { contextSnapshot: input.contextSnapshot } : {}),
     ...(input.rootRecipe.prompt.trim() ? { parentPrompt: input.rootRecipe.prompt } : {}),
+    ...(outputCount ? { outputCount } : {}),
   }
 }
 
@@ -113,8 +123,14 @@ export function completeBotanicAgentPlan(
   const resolvedAssetGroup = input.assetGroup
     ?? input.availableAssetGroups?.find((group) => group.id === draft.assetGroupId)
   const settings = { ...input.rootRecipe.settings, ...input.generationOverrides }
+  const outputCount = requestedSingleOutputCount(input.outputCount)
   return {
     ...draft,
+    // 尚未认识本轮张数的服务端仍会回单张；单次生成按请求张数收敛，
+    // 素材组批量与变体展开的张数由各自规则决定，不在这里改写。
+    ...(outputCount && draft.output.mode === 'single'
+      ? { output: { ...draft.output, count: outputCount } }
+      : {}),
     title: summarizeBotanicAgentNodeTitle(draft),
     ...(input.creativeBrief ? { creativeBrief: structuredClone(input.creativeBrief) } : {}),
     ...(input.contextSnapshot?.length ? { contextSnapshot: input.contextSnapshot } : {}),

@@ -28,6 +28,7 @@ import {
   type BotanicAgentMentionQuery,
   type BotanicAgentMessage,
   type BotanicAgentPlan,
+  type BotanicAgentResolvedGeneration,
   type BotanicAgentRun,
   type BotanicAgentRunTimelineFilter,
   type BotanicAgentSession,
@@ -968,6 +969,7 @@ export default function AgentWorkspace({
     clarificationAnswers?: Record<string, string>,
     creativeBrief?: BotanicCreativeBrief,
     failedCommand?: AgentFailedInstruction,
+    outputCount?: number,
   ): Promise<BotanicAgentPlan | BotanicAgentClarificationResponse | null> => {
     if (!target || !isCurrentAgentProject()) return null
     const assetGroup = compatibleGroups.find((group) => group.id === groupId)
@@ -988,6 +990,7 @@ export default function AgentWorkspace({
       clarificationAnswers,
       creativeBrief,
       contextSnapshot: createBotanicAgentContextSnapshot(contextItems),
+      ...(outputCount ? { outputCount } : {}),
     }
     plannerControllerRef.current?.abort()
     const controller = new AbortController()
@@ -1019,6 +1022,7 @@ export default function AgentWorkspace({
             assetGroup,
             creativeBrief,
             contextSnapshot: createBotanicAgentContextSnapshot(contextItems),
+            ...(outputCount ? { outputCount } : {}),
           }), plannerModel, settings: { ...target.rootRecipe.settings, ...generationOverrides } }
           const applied = applyBotanicAgentVariationToPlan(fallbackPlan, {
             instruction: cleanInstruction,
@@ -1181,6 +1185,7 @@ export default function AgentWorkspace({
         ...(options.clarificationAnswers ? { clarificationAnswers: options.clarificationAnswers } : {}),
         ...(options.creativeBrief ? { creativeBrief: options.creativeBrief } : {}),
         ...(options.sourcePromptMessageId ? { sourcePromptMessageId: options.sourcePromptMessageId } : {}),
+        ...(options.resolvedGeneration ? { resolvedGeneration: options.resolvedGeneration } : {}),
       },
     }
 
@@ -1190,8 +1195,13 @@ export default function AgentWorkspace({
       && (item.mediaKind ?? 'image') === 'image'
     ))
     const hasVisualContext = Boolean(target) || hasImageContext
-    const pendingDecision = decideBotanicAgentRequest(cleanInstruction, hasVisualContext)
-    if (pendingDecision.kind === 'confirm_pending') {
+    // 追问回程带着上一轮已判定的生成结论：此时 cleanInstruction 是画面描述而不是用户原话，
+    // 对它重新做意图分类会把这一轮判成聊天，用户答完确认卡反而拿不到计划。
+    const restoredGeneration = options.resolvedGeneration
+    const pendingDecision = restoredGeneration
+      ? undefined
+      : decideBotanicAgentRequest(cleanInstruction, hasVisualContext)
+    if (pendingDecision?.kind === 'confirm_pending') {
       // 「确认生成」只提交已存在的待确认计划。没有计划时绝不能把这两个字送进规划器凭空造一份。
       const pendingPlanMessage = [...session.messages].reverse()
         .find((item) => item.kind === 'plan' && item.plan && item.status === 'pending')
@@ -1214,10 +1224,12 @@ export default function AgentWorkspace({
     // 服务端回合解析器：让模型读整段对话判断意图并综合可执行 Prompt，取代浏览器端正则路由。
     // 仅用于全新用户发送；澄清答复与“使用这段 Prompt”已有明确意图/来源，保持既有确定性路径。
     // 服务端未配置或离线时回退到本地正则决策，保证本地开发、e2e 与无 Provider 部署不受影响。
-    const useServerTurn = !options.clarificationAnswers && !options.sourcePromptMessageId
-    let serverDecision: ReturnType<typeof decideBotanicAgentRequest> | undefined
-    let synthesizedPrompt: string | undefined
-    let synthesizedCount: number | undefined
+    const useServerTurn = !options.clarificationAnswers && !options.sourcePromptMessageId && !restoredGeneration
+    let serverDecision: ReturnType<typeof decideBotanicAgentRequest> | undefined = restoredGeneration
+      ? { kind: 'generation', mediaKind: restoredGeneration.mediaKind, promptSource: 'instruction' }
+      : undefined
+    let synthesizedPrompt: string | undefined = restoredGeneration?.prompt
+    let synthesizedCount: number | undefined = restoredGeneration?.count
     let resolvedOptions = options
     if (useServerTurn) {
       plannerControllerRef.current?.abort()
@@ -1268,8 +1280,9 @@ export default function AgentWorkspace({
         }
       } catch (caught) {
         if (controller.signal.aborted) return
-        // 未配置(503)、离线(0) 或项目缺失(404) 时回退本地正则；其余按 Agent 错误处理。
-        const fallBack = caught instanceof ProductApiError && [0, 404, 503].includes(caught.status)
+        // 未配置(503)、离线(0)、项目缺失(404) 或模型没给出可用结论(502) 时回退本地正则；
+        // 其余按 Agent 错误处理。
+        const fallBack = caught instanceof ProductApiError && [0, 404, 502, 503].includes(caught.status)
         if (!fallBack) {
           const message = caught instanceof Error ? caught.message : 'Agent 暂时无法回答，请稍后重试。'
           failRuntimeTrace(message)
@@ -1279,8 +1292,9 @@ export default function AgentWorkspace({
         }
       } finally {
         if (plannerControllerRef.current === controller) plannerControllerRef.current = null
-        // 聊天结果与降级/错误分支到此收尾；生成分支保持 planning，交由下方生成流程接管。
-        if (serverDecision?.kind !== 'generation') setPlanning(false)
+        // 生成流程自己会重新置忙。这里无条件复位：下面到追问、失败等早退分支之间没有
+        // await，用户看不到闪烁，而漏掉复位会把输入框和确认卡一起锁死。
+        setPlanning(false)
       }
     }
 
@@ -1476,6 +1490,20 @@ export default function AgentWorkspace({
       generationPrompt = promptResolution.prompt
       resolvedSourcePromptMessageId = promptResolution.sourceMessageId
     }
+    // 服务端判定的生成结论跟着追问卡走完整轮：下一轮据此直接进入生成，
+    // 否则那时看到的只是画面描述，会被重新分类成聊天。
+    const resolvedGeneration: BotanicAgentResolvedGeneration | undefined = serverDecision?.kind === 'generation'
+      && synthesizedPrompt !== undefined
+      ? {
+        mediaKind: serverDecision.mediaKind,
+        prompt: synthesizedPrompt,
+        ...(synthesizedCount ? { count: synthesizedCount } : {}),
+      }
+      : undefined
+    const clarificationCarryOver = {
+      ...(resolvedSourcePromptMessageId ? { sourcePromptMessageId: resolvedSourcePromptMessageId } : {}),
+      ...(resolvedGeneration ? { resolvedGeneration } : {}),
+    }
     const imageModels = generationModels.filter((model) => model.mediaKind !== 'video')
     const inferredGenerationOverrides = inferBotanicAgentGenerationSettings(cleanInstruction, imageModels)
     const requestedGenerationOverrides = { ...inferredGenerationOverrides, ...resolvedOptions.generationOverrides }
@@ -1495,10 +1523,7 @@ export default function AgentWorkspace({
       appendMessage({
         role: 'assistant',
         kind: 'question',
-        question: {
-          ...pendingVariation,
-          ...(resolvedSourcePromptMessageId ? { sourcePromptMessageId: resolvedSourcePromptMessageId } : {}),
-        },
+        question: { ...pendingVariation, ...clarificationCarryOver },
         status: 'pending',
         content: pendingVariation.question,
       })
@@ -1522,7 +1547,7 @@ export default function AgentWorkspace({
         question: {
           ...briefTurn.clarification,
           brief: botanicAgentBriefWithVariationAnswers(briefTurn.clarification.brief, resolvedOptions.clarificationAnswers),
-          ...(resolvedSourcePromptMessageId ? { sourcePromptMessageId: resolvedSourcePromptMessageId } : {}),
+          ...clarificationCarryOver,
         },
         status: 'pending',
         content: briefTurn.clarification.question,
@@ -1530,6 +1555,8 @@ export default function AgentWorkspace({
       return
     }
     if (briefTurn.kind === 'failed') {
+      // 已经开过运行轨迹的轮次必须显式收尾，否则运行卡会一直停在“规划中”。
+      failRuntimeTrace(briefTurn.message)
       setError(briefTurn.message)
       return
     }
@@ -1540,7 +1567,9 @@ export default function AgentWorkspace({
       && resolvedGenerationOverrides.resolution,
     )
     if (!hasCompleteOutputSettings) {
-      setError('当前没有可用的完整生成设置，请检查模型目录。')
+      const message = '当前没有可用的完整生成设置，请检查模型目录。'
+      failRuntimeTrace(message)
+      setError(message)
       return
     }
     const resolvedFailedCommand: AgentFailedInstruction = {
@@ -1591,7 +1620,7 @@ export default function AgentWorkspace({
           appendMessage({
             role: 'assistant',
             kind: 'question',
-            question: appliedInitial.clarification,
+            question: { ...appliedInitial.clarification, ...clarificationCarryOver },
             status: 'pending',
             content: appliedInitial.clarification.question,
           })
@@ -1630,6 +1659,7 @@ export default function AgentWorkspace({
       resolvedOptions.clarificationAnswers,
       briefTurn.brief,
       resolvedFailedCommand,
+      synthesizedCount,
     )
     if (!nextPlan || !session || !isCurrentAgentProject()) return
     if ('kind' in nextPlan && nextPlan.kind === 'clarification') {
@@ -1637,7 +1667,7 @@ export default function AgentWorkspace({
       appendMessage({
         role: 'assistant', kind: 'question', question: {
           ...nextPlan.clarification,
-          ...(resolvedSourcePromptMessageId ? { sourcePromptMessageId: resolvedSourcePromptMessageId } : {}),
+          ...clarificationCarryOver,
         }, status: 'pending',
         content: nextPlan.clarification.question,
       })
@@ -1742,6 +1772,7 @@ export default function AgentWorkspace({
         answers,
       ),
       sourcePromptMessageId: message.question.sourcePromptMessageId,
+      resolvedGeneration: message.question.resolvedGeneration,
       generationOverrides: {
         ...(answers.model ? { model: answers.model } : {}),
         ...(answers.aspect_ratio ? { aspectRatio: answers.aspect_ratio as GenerationSettings['aspectRatio'] } : {}),

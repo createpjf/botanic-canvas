@@ -355,6 +355,35 @@ test('服务端 Agent 只让模型解释意图与约束，节点、参数和批�
   assert.doesNotMatch(JSON.stringify([firstRequest, finalRequest]), /secret/)
 })
 
+test('单次生成按请求张数出图，素材组批量仍由素材数决定', async () => {
+  const runtime = { flockApiKey: 'flock-secret', flockTextModel: 'deepseek-v4-pro' }
+  const planResponse = () => new Response(JSON.stringify({
+    choices: [{ message: {
+      content: null,
+      tool_calls: [{
+        id: 'call-plan-1', type: 'function',
+        function: { name: 'generation_create_plan', arguments: JSON.stringify({
+          intent: 'continue_generation',
+          prompt: '保持人物身份，换成海边礁石场景，黄金时刻逆光。',
+          summary: '生成新版本。',
+          constraints: [{ dimension: 'scene', mode: 'vary' }],
+        }) },
+      }],
+    } }],
+  }), { status: 200 })
+  const withoutGroup = { ...validInput, assetGroup: undefined, assetGroups: undefined, requestedIntent: 'continue_generation' }
+
+  const single = await planBotanicGeneration({ ...withoutGroup, outputCount: 3 }, runtime, { fetchImpl: planResponse })
+  assert.deepEqual(single.output, { mode: 'single', count: 3, candidatesPerItem: 1 })
+
+  const batch = await planBotanicGeneration({ ...validInput, requestedIntent: 'continue_generation', outputCount: 3 }, runtime, { fetchImpl: planResponse })
+  assert.equal(batch.output.mode, 'batch_by_asset')
+  assert.equal(batch.output.count, 10)
+
+  assert.equal(validateBotanicAgentPlanInput({ ...validInput, outputCount: 3 }).outputCount, 3)
+  assert.throws(() => validateBotanicAgentPlanInput({ ...validInput, outputCount: 99 }))
+})
+
 test('Agent 拒绝没有可变项或结构异常的模型输出', async () => {
   await assert.rejects(
     planBotanicGeneration(validInput, {

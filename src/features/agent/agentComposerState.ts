@@ -1,4 +1,4 @@
-import type { BotanicAgentMentionQuery, BotanicCreativeBrief } from '../../domain/agent'
+import type { BotanicAgentMentionQuery, BotanicAgentResolvedGeneration, BotanicCreativeBrief } from '../../domain/agent'
 import type { GenerationSizeOverride } from '../../domain/generationOutputSize'
 
 export type AgentInstructionRetryOptions = {
@@ -6,6 +6,8 @@ export type AgentInstructionRetryOptions = {
   clarificationAnswers?: Record<string, string>
   creativeBrief?: BotanicCreativeBrief
   sourcePromptMessageId?: string
+  /** 上一轮已由服务端判定的生成结论；重放追问时据此直接进入生成，不再二次分类。 */
+  resolvedGeneration?: BotanicAgentResolvedGeneration
 }
 
 export type AgentFailedInstruction = {

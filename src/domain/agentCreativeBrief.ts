@@ -68,12 +68,24 @@ export type BotanicCreativeBrief = {
   provenance: Partial<Record<BotanicCreativeBriefFieldId, BotanicCreativeBriefSource>>
 }
 
+/**
+ * 服务端回合解析已经判定这一轮是生成，并综合出可执行 Prompt 时的结论。
+ * 追问卡必须带着它回到下一轮：`originalInstruction` 此时是画面描述而不是用户原话，
+ * 再对它做一次意图分类只会得到「聊天」，生成意图就此丢失。
+ */
+export type BotanicAgentResolvedGeneration = {
+  mediaKind: 'image' | 'video'
+  prompt: string
+  count?: number
+}
+
 export type BotanicAgentClarification = {
   id: string
   question: string
   helper?: string
   originalInstruction: string
   sourcePromptMessageId?: string
+  resolvedGeneration?: BotanicAgentResolvedGeneration
   brief?: BotanicCreativeBrief
   fields: BotanicAgentClarificationField[]
 }

@@ -7,6 +7,7 @@ export type {
   BotanicAgentClarificationFieldId,
   BotanicCreativeBriefFieldId,
   BotanicAgentClarificationOption,
+  BotanicAgentResolvedGeneration,
   BotanicCreativeBrief,
   BotanicCreativeBriefMode,
   BotanicCreativeBriefSource,
