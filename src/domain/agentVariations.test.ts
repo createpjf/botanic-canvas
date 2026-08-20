@@ -13,7 +13,9 @@ import {
   botanicAgentConfirmBranchDrafts,
   botanicAgentPendingVariationClarification,
   botanicAgentPlanBranchPrompts,
+  botanicAgentPlanConfirmActionLabel,
   botanicAgentPlanOutputLabel,
+  botanicAgentPlanSheetCountLabel,
   botanicAgentSharedVariationPrompt,
   expandBotanicAgentVariationBranches,
   instructionRequestsBatchVariation,
@@ -369,4 +371,16 @@ test('匹配的素材组仍走按图批量，不改成变体轴', () => {
   })
   assert.equal(applied.kind, 'plan')
   assert.deepEqual(applied.plan.output, { mode: 'batch_by_asset', count: 10, candidatesPerItem: 1 })
+})
+
+test('确认卡张数与生成按钮用张，不把分支节点当常驻标题', () => {
+  const single = { output: { mode: 'single' as const, count: 1, candidatesPerItem: 1 } }
+  const batch = { output: { mode: 'batch_by_variation' as const, count: 2, candidatesPerItem: 1 } }
+  assert.equal(botanicAgentPlanSheetCountLabel(single), '1 张')
+  assert.equal(botanicAgentPlanSheetCountLabel(batch), '2 张')
+  assert.equal(botanicAgentPlanConfirmActionLabel(single), '生成')
+  assert.equal(botanicAgentPlanConfirmActionLabel(batch), '生成 2 张')
+  assert.equal(botanicAgentPlanConfirmActionLabel(batch, 'submitting'), '正在提交…')
+  assert.equal(botanicAgentPlanConfirmActionLabel(batch, 'blocked'), '先处理行动卡')
+  assert.equal(botanicAgentPlanConfirmActionLabel(batch, 'failed'), '重新生成')
 })

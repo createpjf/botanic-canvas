@@ -245,12 +245,9 @@ export function AgentPromptDiff({ original, revised }: { original: string; revis
     if (segment.kind === 'removed') return <del key={`${segment.kind}-${index}`}>{segment.text}</del>
     return <span key={`${segment.kind}-${index}`}>{segment.text}</span>
   }
-  return (
-    <details className="agent-prompt-review__diff" aria-label="提示词变化">
-      <summary><span>原文与润色差异</span><b>{changed ? '已突出变化' : '未改动'}</b></summary>
-      <p>{segments.length ? segments.map(renderSegment) : '暂无提示词内容'}</p>
-    </details>
-  )
+  return <p className="agent-prompt-review__diff-body" aria-label={changed ? '原文与润色差异' : '原文与润色一致'}>
+    {segments.length ? segments.map(renderSegment) : '暂无提示词内容'}
+  </p>
 }
 
 export function AgentFailureRecoveryActions({
