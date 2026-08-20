@@ -87,6 +87,9 @@ export function validateBotanicAgentTurnInput(raw) {
   const plannerModel = optionalText(input.plannerModel, 'Agent 模型', 160)
   const messages = boundedMessages(input.messages)
   const contextNodeIds = boundedNodeIds(input.contextNodeIds)
+  const selectedResultLabel = optionalText(input.selectedResultLabel, '选中结果名称', 160)
+  const executionMode = input.executionMode === undefined ? undefined : requiredText(input.executionMode, '执行模式', 16)
+  if (executionMode && executionMode !== 'auto' && executionMode !== 'manual') invalidRequest('执行模式不支持。')
   const generationModels = boundedGenerationModels(input.generationModels)
   let maxOutputCount = DEFAULT_MAX_OUTPUT_COUNT
   if (input.maxOutputCount !== undefined) {
@@ -101,6 +104,8 @@ export function validateBotanicAgentTurnInput(raw) {
     messages,
     contextNodeIds,
     hasTarget: input.hasTarget === true,
+    ...(input.hasTarget === true && selectedResultLabel ? { selectedResultLabel } : {}),
+    ...(executionMode ? { executionMode } : {}),
     ...(generationModels ? { generationModels } : {}),
     maxOutputCount,
   }
@@ -438,6 +443,35 @@ async function turnInstructions(locale = 'zh-CN') {
   }
 }
 
+/**
+ * 当前处境简报：选中态决定这一步是改图还是新建，执行模式决定生成后是自动提交还是停在确认卡。
+ * 两者都是系统事实，模型只能据此陈述，不能自己猜或替系统承诺。
+ */
+function turnSituationBriefing(input, locale = 'zh-CN') {
+  const english = locale === 'en'
+  const lines = []
+  if (input.hasTarget) {
+    const label = input.selectedResultLabel
+    lines.push(english
+      ? `The user has a result image selected${label ? ` ("${label}")` : ''}. Treat this step as editing that image unless the user clearly asks for a new, unrelated one.`
+      : `用户当前选中了结果图${label ? `「${label}」` : ''}。默认这一步是在它的基础上继续修改，除非用户明确要新建一张与它无关的图。`)
+  } else {
+    lines.push(english
+      ? 'No result image is selected, so this step creates a new image (referenced assets may still serve as references). If the user asks to edit "this one" without selecting or referencing any image, ask which image first instead of inventing a new one.'
+      : '当前没有选中结果图，这一步是新建画面（被引用的素材仍可作参考）。用户说「改这张」却既没有选中、也没有引用任何图片时，先问清是哪一张，不要凭空新建。')
+  }
+  if (input.executionMode === 'auto') {
+    lines.push(english
+      ? 'The session is in auto mode: after you call a generation tool the system submits it automatically when a single image is requested and no external action is pending; multiple images or pending actions stop at a confirmation card. Never claim generation has started, and never ask the user to press a button the system did not show.'
+      : '当前是自动模式：你调用生成工具后，只出一张且没有待确认外部行动时系统会自动提交；出多张或有待确认行动时会停在确认卡等用户确认。不要替系统宣布「已经开始生成」，也不要让用户去点系统没有给出的按钮。')
+  } else if (input.executionMode === 'manual') {
+    lines.push(english
+      ? 'The session is in plan mode: after you call a generation tool the system always shows a plan card first, and generation starts only after the user confirms. You may say the plan is ready; do not say images are being generated.'
+      : '当前是计划模式：你调用生成工具后，系统一定会先给出待确认计划卡，用户点「确认」才开始生成。可以说计划已就绪，不要说图片正在生成。')
+  }
+  return lines.join('\n')
+}
+
 function providerError(status) {
   if (status === 401 || status === 403) return new BotanicAgentChatError(502, 'PROVIDER_AUTH_FAILED', 'Agent 服务鉴权失败。')
   if (status === 429) return new BotanicAgentChatError(429, 'PROVIDER_RATE_LIMITED', 'Agent 当前繁忙，请稍后重试。')
@@ -548,6 +582,7 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
 export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}) {
   const config = turnConfig(runtimeConfig, input?.plannerModel)
   const baseSystem = await turnInstructions(input.locale)
+  const situation = turnSituationBriefing(input, input.locale)
   if (options.signal?.aborted) throw new BotanicAgentChatError(499, 'REQUEST_CANCELLED', 'Agent 请求已取消。')
   const ontology = buildBotanicAgentOntology(options.document, input.contextNodeIds)
   const memory = safeBotanicAgentMemory(options.document)
@@ -568,7 +603,11 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
       return await executeTurnAttempt({
         config,
         model: visionModel,
-        system: [baseSystem, botanicAgentContextBriefing(ontology, { visionAttached: true })].filter(Boolean).join('\n\n'),
+        system: [
+          baseSystem,
+          situation,
+          botanicAgentContextBriefing(ontology, { visionAttached: true }),
+        ].filter(Boolean).join('\n\n'),
         messages: botanicAgentMultimodalMessages(input.messages, visionParts),
         registry,
         options,
@@ -593,6 +632,7 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
   }).catch(() => [])
   const system = [
     baseSystem,
+    situation,
     botanicAgentContextBriefing(ontology, { visionDescribed: visionDescriptions.length > 0 }),
     botanicAgentVisionBriefing(visionDescriptions),
   ].filter(Boolean).join('\n\n')

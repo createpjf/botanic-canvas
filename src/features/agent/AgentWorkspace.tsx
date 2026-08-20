@@ -1502,6 +1502,9 @@ export default function AgentWorkspace({
           ],
           contextNodeIds: session.contextNodeIds,
           hasTarget: Boolean(target),
+          // 选中态与执行模式是系统事实：模型据此判断改图还是新建，以及生成后是自动提交还是等确认。
+          ...(target ? { selectedResultLabel: target.label } : {}),
+          executionMode: session.executionMode,
           generationModels,
         }, controller.signal)
         if (controller.signal.aborted) return

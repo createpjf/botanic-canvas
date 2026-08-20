@@ -52,6 +52,50 @@ test('回合请求只接收受控字段，拒绝非法消息与数量', () => {
     () => validateBotanicAgentTurnInput({ ...input, maxOutputCount: 0 }),
     (error) => error instanceof BotanicAgentChatError && error.code === 'INVALID_REQUEST',
   )
+  // 选中结果只在真的有选中时保留；执行模式限定在受控取值内。
+  const selected = validateBotanicAgentTurnInput({ ...input, hasTarget: true, selectedResultLabel: '首图 01', executionMode: 'auto' })
+  assert.equal(selected.selectedResultLabel, '首图 01')
+  assert.equal(selected.executionMode, 'auto')
+  assert.equal(validateBotanicAgentTurnInput({ ...input, selectedResultLabel: '首图 01' }).selectedResultLabel, undefined)
+  assert.throws(
+    () => validateBotanicAgentTurnInput({ ...input, executionMode: 'turbo' }),
+    (error) => error instanceof BotanicAgentChatError && error.code === 'INVALID_REQUEST',
+  )
+})
+
+test('选中态与执行模式写进系统提示：模型知道在改哪张图、生成后会不会自动提交', async () => {
+  const requests = []
+  const fetchImpl = async (_url, init) => {
+    requests.push(JSON.parse(init.body))
+    return new Response(JSON.stringify({ choices: [{ message: { content: '好的。' } }] }), { status: 200 })
+  }
+  await resolveBotanicAgentTurn({
+    projectId: 'project-turn',
+    plannerModel: 'deepseek-v4-pro',
+    messages: [{ role: 'user', content: '换个背景' }],
+    contextNodeIds: [],
+    hasTarget: true,
+    selectedResultLabel: '首图 01',
+    executionMode: 'auto',
+    generationModels,
+  }, runtime, { document, fetchImpl })
+  const withSelection = requests[0].messages[0].content
+  assert.match(withSelection, /选中了结果图「首图 01」/)
+  assert.match(withSelection, /自动模式/)
+
+  await resolveBotanicAgentTurn({
+    projectId: 'project-turn',
+    plannerModel: 'deepseek-v4-pro',
+    messages: [{ role: 'user', content: '生成一张海边人像' }],
+    contextNodeIds: [],
+    hasTarget: false,
+    executionMode: 'manual',
+    generationModels,
+  }, runtime, { document, fetchImpl })
+  const withoutSelection = requests[1].messages[0].content
+  assert.match(withoutSelection, /没有选中结果图/)
+  assert.match(withoutSelection, /计划模式/)
+  assert.doesNotMatch(withoutSelection, /首图 01/)
 })
 
 test('模型基于既有建议直接综合可执行 Prompt 并生成多张，而非要求用户重述', async () => {

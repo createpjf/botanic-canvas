@@ -24,6 +24,33 @@ test('回合请求只发送最近 16 条消息与去重后的上下文节点', (
   assert.equal(request.maxOutputCount, 6)
 })
 
+test('选中结果与执行模式随回合下发；没有选中就不带结果标签', () => {
+  const selected = buildBotanicAgentTurnRequest({
+    projectId: 'project-1',
+    locale: 'zh-CN',
+    messages: [{ role: 'user', content: '换个背景' }],
+    contextNodeIds: [],
+    hasTarget: true,
+    selectedResultLabel: '  首图 01  ',
+    executionMode: 'auto',
+  })
+  assert.equal(selected.selectedResultLabel, '首图 01')
+  assert.equal(selected.executionMode, 'auto')
+
+  // 没有选中却带标签会让模型以为在改图，必须丢弃。
+  const unselected = buildBotanicAgentTurnRequest({
+    projectId: 'project-1',
+    locale: 'zh-CN',
+    messages: [{ role: 'user', content: '生成一张' }],
+    contextNodeIds: [],
+    hasTarget: false,
+    selectedResultLabel: '首图 01',
+    executionMode: 'manual',
+  })
+  assert.equal(unselected.selectedResultLabel, undefined)
+  assert.equal(unselected.executionMode, 'manual')
+})
+
 test('超长历史消息被截断到服务端上限，不让整轮请求被判非法', () => {
   const request = buildBotanicAgentTurnRequest({
     projectId: 'project-1',
@@ -53,6 +80,7 @@ test('生成模型目录只携带安全字段，缺省字段不产出噪声键',
   assert.equal(request.hasTarget, false)
   assert.equal(request.plannerModel, undefined)
   assert.equal(request.maxOutputCount, undefined)
+  assert.equal(request.executionMode, undefined)
   assert.deepEqual(request.generationModels, [
     { id: 'gpt-image-2', label: 'GPT Image 2', mediaKind: 'image', aspectRatios: ['1:1'], resolutions: ['2K'] },
     { id: 'video-1', label: '视频', mediaKind: 'video' },

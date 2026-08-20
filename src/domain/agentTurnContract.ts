@@ -1,4 +1,4 @@
-import type { AgentToolCallTrace, BotanicAgentMessage } from './agent'
+import type { AgentToolCallTrace, BotanicAgentExecutionMode, BotanicAgentMessage } from './agent'
 import type { GenerationAspectRatio, GenerationModelOption, GenerationResolution } from './canvas'
 import type { ProductLocale } from '../i18n/core'
 
@@ -13,6 +13,10 @@ export type BotanicAgentTurnRequestInput = {
   messages: Pick<BotanicAgentMessage, 'role' | 'content'>[]
   contextNodeIds: string[]
   hasTarget?: boolean
+  /** 选中结果图的名称。选中态决定这一步是改这张图还是新建一张，模型必须知道。 */
+  selectedResultLabel?: string
+  /** 会话执行模式。决定生成后是自动提交还是停在确认卡，模型据此陈述状态而不是猜。 */
+  executionMode?: BotanicAgentExecutionMode
   generationModels?: Pick<GenerationModelOption, 'id' | 'label' | 'mediaKind' | 'aspectRatios' | 'resolutions'>[]
   maxOutputCount?: number
 }
@@ -24,6 +28,8 @@ export type BotanicAgentTurnRequest = {
   messages: Array<{ role: BotanicAgentMessage['role']; content: string }>
   contextNodeIds: string[]
   hasTarget: boolean
+  selectedResultLabel?: string
+  executionMode?: BotanicAgentExecutionMode
   generationModels?: Array<Pick<GenerationModelOption, 'id' | 'label' | 'mediaKind' | 'aspectRatios' | 'resolutions'>>
   maxOutputCount?: number
 }
@@ -99,6 +105,11 @@ export function buildBotanicAgentTurnRequest(input: BotanicAgentTurnRequestInput
     })),
     contextNodeIds: [...new Set(input.contextNodeIds)].slice(0, 32),
     hasTarget: Boolean(input.hasTarget),
+    // 选中结果只在真的有选中时下发；没有选中却带标签会让模型以为在改图。
+    ...(input.hasTarget && input.selectedResultLabel?.trim()
+      ? { selectedResultLabel: input.selectedResultLabel.trim().slice(0, 160) }
+      : {}),
+    ...(input.executionMode ? { executionMode: input.executionMode } : {}),
     ...(input.generationModels?.length
       ? {
           generationModels: input.generationModels.slice(0, 30).map((model) => ({
