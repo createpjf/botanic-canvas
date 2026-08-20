@@ -227,7 +227,10 @@ export function decideBotanicAgentRequest(value: string, hasGenerationTarget = f
   const explicitlyUsesPromptForGeneration = /(?:按照|使用|用|基于|拿).{0,16}(?:prompt|提示词|提示语).{0,16}(?:生成|生图|出图|做一张|来一张)/iu.test(text)
   const usesPreviousPromptForGeneration = refersToPreviousPrompt.test(text)
   if (explicitlyUsesPromptForGeneration || usesPreviousPromptForGeneration) {
-    return { kind: 'generation', mediaKind: /视频|video/iu.test(text) ? 'video' : 'image', promptSource: 'previous_prompt' }
+    // 视频与显式生成路径同判：Agent 尚未接视频执行链，不能让「用这段 Prompt 生成视频」
+    // 悄悄产出一份标着 video、却按图片模型走完全程的计划。
+    if (/视频|video/iu.test(text)) return { kind: 'clarification', reason: 'unsupported_media' }
+    return { kind: 'generation', mediaKind: 'image', promptSource: 'previous_prompt' }
   }
   if (asksForPromptWork.test(text)) return { kind: 'chat', mode: 'prompt' }
   if (asksForAdviceOrExplanation.test(text)) return { kind: 'chat', mode: 'conversation' }

@@ -99,6 +99,21 @@ test('执行链路元话语只提交已有计划，不把出图二字送进规�
   assert.deepEqual(decideBotanicAgentRequest('为什么没生成', true), { kind: 'chat', mode: 'conversation' })
 })
 
+test('沿用历史 Prompt 的视频请求与显式视频请求同判，不产出图片模型的视频计划', () => {
+  assert.deepEqual(
+    decideBotanicAgentRequest('用这段 Prompt 生成视频', true),
+    { kind: 'clarification', reason: 'unsupported_media' },
+  )
+  assert.deepEqual(
+    decideBotanicAgentRequest('基于上面的提示词来一张视频', true),
+    { kind: 'clarification', reason: 'unsupported_media' },
+  )
+  assert.deepEqual(
+    decideBotanicAgentRequest('用这段 Prompt 生成', true),
+    { kind: 'generation', mediaKind: 'image', promptSource: 'previous_prompt' },
+  )
+})
+
 test('同样的执行链路措辞出现在提问里只是发问，不能提交待确认计划', () => {
   // 提交待确认计划会真实发起生成并花钱，提问不该有这个副作用。
   for (const question of [
