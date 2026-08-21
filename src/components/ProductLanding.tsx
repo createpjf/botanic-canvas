@@ -10,7 +10,6 @@ import {
   normalizePointerAxis,
   Observer,
   ScrollTrigger,
-  SplitText,
   useGSAP,
 } from './gsapMotion'
 import { LanguageSwitcher, useProductI18n } from '../i18n/react'
@@ -136,25 +135,11 @@ export function ProductLanding({ isAuthenticated, onEnterWorkspace }: ProductLan
         const hero = gsap.timeline({ defaults: { duration: botanicMotion.duration.landing, ease: botanicMotion.ease } })
         hero
           .from('.product-hero .workspace-eyebrow', { autoAlpha: 0, y: 10 }, 0)
+          .from('#product-hero-title', { y: 16 }, 0)
           .from('.product-hero__copy p', { autoAlpha: 0, y: 10 }, '>-0.22')
           .from('.product-hero__actions > *', { autoAlpha: 0, y: 8, stagger: 0.05 }, '>-0.24')
           .from('.product-hero__copy ul li', { autoAlpha: 0, y: 6, stagger: 0.04 }, '>-0.2')
           .from('.product-hero__visual', { autoAlpha: 0, y: 14, duration: 0.5 }, 0.12)
-
-        SplitText.create('#product-hero-title', {
-          type: 'lines',
-          aria: 'auto',
-          autoSplit: true,
-          linesClass: 'product-hero__title-line',
-          onSplit(self) {
-            return gsap.from(self.lines, {
-              y: 16,
-              stagger: 0.05,
-              duration: botanicMotion.duration.landing,
-              ease: botanicMotion.ease,
-            })
-          },
-        })
 
         ScrollTrigger.batch('.product-capabilities article', {
           scroller: root,
@@ -269,7 +254,7 @@ export function ProductLanding({ isAuthenticated, onEnterWorkspace }: ProductLan
         <section className="product-hero" aria-labelledby="product-hero-title">
           <div className="product-hero__copy">
             <span className="workspace-eyebrow"><i />{copy.heroEyebrow}</span>
-            <h1 id="product-hero-title" aria-label={copy.heroTitle}>{copy.heroTitle}</h1>
+            <h1 id="product-hero-title">{copy.heroTitle}</h1>
             <p>{copy.heroDescription}</p>
             <div className="product-hero__actions">
               <button type="button" onClick={onEnterWorkspace}>{enterLabel} <ArrowUpRightIcon /></button>

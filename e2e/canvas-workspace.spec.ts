@@ -175,8 +175,8 @@ test('project to canvas and Agent surfaces stay ordered across reload', async ({
   await expect(page.getByRole('button', { name: '执行模式：自动模式' })).toBeVisible()
 
   await composer.fill('@')
-  await expect(page.getByRole('group', { name: '引用画布内容' })).toBeVisible()
-  await expect(page.getByText('没有匹配的素材')).toBeVisible()
+  await expect(page.getByRole('group', { name: '引用画布节点或图片视频' })).toBeVisible()
+  await expect(page.getByText('没有匹配项，按 Esc 关闭')).toBeVisible()
 
   await page.reload()
   await expect(page).toHaveURL(new RegExp(`${canvasHash.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`))
