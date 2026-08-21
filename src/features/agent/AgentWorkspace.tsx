@@ -127,6 +127,16 @@ import {
   SparkleIcon,
   UploadIcon,
 } from '../../components/BotanicIcons'
+import {
+  botanicMotion,
+  captureFlipState,
+  gsap,
+  isFollowingLatest,
+  playSurfaceFlip,
+  prefersReducedMotion,
+  scrollElementIntoView,
+  useGSAP,
+} from '../../components/gsapMotion'
 import historyIcon from '../../assets/figma/icon-history.svg'
 import { useProductI18n, useProductMessages } from '../../i18n/react'
 import { localizeProductError, productIntlLocale, type ProductLocale } from '../../i18n/core'
@@ -469,8 +479,15 @@ export default function AgentWorkspace({
   const runNoticeStatusRef = useRef(new Map<string, string>())
   const focusedRunIdsRef = useRef(new Set<string>())
   const requestedRunReviewsRef = useRef(new Set<string>())
+  const workspaceRef = useRef<HTMLElement | null>(null)
   const messageEndRef = useRef<HTMLDivElement | null>(null)
   const messagesViewportRef = useRef<HTMLDivElement | null>(null)
+  const utilityFlipStateRef = useRef<ReturnType<typeof captureFlipState>>(null)
+  const setUtilityPanel = (panel: AgentUtilityPanel | null | ((current: AgentUtilityPanel | null) => AgentUtilityPanel | null)) => {
+    utilityFlipStateRef.current = captureFlipState(messagesViewportRef.current)
+    setActiveUtilityPanel(panel)
+  }
+  const lastAnimatedMessageIdRef = useRef('')
   const messageNodesRef = useRef(new Map<string, HTMLDivElement>())
   const taskNodesRef = useRef(new Map<string, HTMLElement>())
   const readingAnchorTimerRef = useRef<number | null>(null)
@@ -719,7 +736,8 @@ export default function AgentWorkspace({
   const revealConversationMessage = useCallback((messageId: string, behavior: ScrollBehavior = 'smooth') => {
     const node = messageNodesRef.current.get(messageId)
     if (!node) return false
-    node.scrollIntoView({ block: 'center', behavior })
+    const viewport = messagesViewportRef.current
+    if (viewport) scrollElementIntoView(viewport, node, { duration: behavior === 'auto' ? 0 : botanicMotion.duration.panel, block: 'center' })
     node.focus({ preventScroll: true })
     setLocatedMessageId(messageId)
     if (locatedMessageTimerRef.current !== null) window.clearTimeout(locatedMessageTimerRef.current)
@@ -729,7 +747,7 @@ export default function AgentWorkspace({
 
   const locateTaskSourceMessage = useCallback((source: { sessionId: string; messageId: string }) => {
     onUpdateReadingAnchor(source.sessionId, source.messageId)
-    setActiveUtilityPanel(null)
+    setUtilityPanel(null)
     if (source.sessionId !== session?.id) {
       onSelectSession(source.sessionId)
       return
@@ -745,7 +763,7 @@ export default function AgentWorkspace({
   const showTaskForRun = useCallback((runId: string) => {
     setTaskStatusFilter('all')
     setFocusedTaskRunId(runId)
-    setActiveUtilityPanel('task')
+    setUtilityPanel('task')
     setActiveTransientSurface(null)
     setMentionQuery(undefined)
   }, [])
@@ -753,11 +771,11 @@ export default function AgentWorkspace({
   const locateCollaborationActivity = useCallback((activity: CollaborationActivity) => {
     const target = activity.target
     if (!target || target.kind === 'project') {
-      setActiveUtilityPanel('collaboration')
+      setUtilityPanel('collaboration')
       setActiveTransientSurface(null)
     } else if (target.kind === 'node') {
       onFocusNodes([target.nodeId])
-      setActiveUtilityPanel(null)
+      setUtilityPanel(null)
     } else if (target.kind === 'message') {
       locateTaskSourceMessage({ sessionId: target.sessionId, messageId: target.messageId })
     } else {
@@ -772,14 +790,15 @@ export default function AgentWorkspace({
     followLatestMessagesRef.current = true
     lastReadingAnchorRef.current = latestMessageId
     setReadingRestoreNotice(false)
-    messageEndRef.current?.scrollIntoView({ block: 'end', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })
+    const viewport = messagesViewportRef.current
+    if (viewport) scrollElementIntoView(viewport, messageEndRef.current ?? 'max', { duration: botanicMotion.duration.panel, block: 'end' })
     onUpdateReadingAnchor(session.id, latestMessageId)
   }, [onUpdateReadingAnchor, session])
 
   const scheduleReadingAnchorUpdate = useCallback(() => {
     const viewport = messagesViewportRef.current
     if (!viewport) return
-    followLatestMessagesRef.current = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 96
+    followLatestMessagesRef.current = isFollowingLatest(viewport)
     if (!readingPositionRestoredRef.current || utilityPanelOpen || !session?.id) return
     if (readingAnchorTimerRef.current !== null) window.clearTimeout(readingAnchorTimerRef.current)
     readingAnchorTimerRef.current = window.setTimeout(() => {
@@ -920,7 +939,7 @@ export default function AgentWorkspace({
       } else if (runtimeDetailsOpen) {
         setRuntimeDetailsOpen(false)
       } else if (utilityPanelOpen) {
-        setActiveUtilityPanel(null)
+        setUtilityPanel(null)
         requestAnimationFrame(() => utilityButtonRef.current?.focus())
       } else {
         onClose()
@@ -982,9 +1001,13 @@ export default function AgentWorkspace({
     const frame = requestAnimationFrame(() => {
       const anchorId = session.readingAnchorMessageId
       const restored = anchorId ? revealConversationMessage(anchorId, 'auto') : false
-      if (!restored) messageEndRef.current?.scrollIntoView({ block: 'end', behavior: 'auto' })
+      if (!restored) {
+        const viewport = messagesViewportRef.current
+        if (viewport) scrollElementIntoView(viewport, messageEndRef.current ?? 'max', { duration: 0, block: 'end' })
+      }
       followLatestMessagesRef.current = !anchorId || anchorId === session.messages.at(-1)?.id
       lastReadingAnchorRef.current = anchorId ?? ''
+      lastAnimatedMessageIdRef.current = session.messages.at(-1)?.id ?? ''
       setReadingRestoreNotice(Boolean(restored && anchorId !== session.messages.at(-1)?.id))
       readingPositionRestoredRef.current = true
     })
@@ -995,7 +1018,8 @@ export default function AgentWorkspace({
     if (!taskPanelOpen || !focusedTaskRunId) return
     const frame = requestAnimationFrame(() => {
       const node = taskNodesRef.current.get(focusedTaskRunId)
-      node?.scrollIntoView({ block: 'center', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })
+      const viewport = messagesViewportRef.current
+      if (node && viewport) scrollElementIntoView(viewport, node, { duration: botanicMotion.duration.panel, block: 'center' })
       node?.focus({ preventScroll: true })
       window.setTimeout(() => setFocusedTaskRunId(''), 1800)
     })
@@ -1004,9 +1028,38 @@ export default function AgentWorkspace({
 
   useEffect(() => {
     if (!readingPositionRestoredRef.current || utilityPanelOpen || !followLatestMessagesRef.current) return
-    const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
-    messageEndRef.current?.scrollIntoView({ block: 'end', behavior })
+    const viewport = messagesViewportRef.current
+    if (viewport) scrollElementIntoView(viewport, messageEndRef.current ?? 'max', { duration: botanicMotion.duration.panel, block: 'end' })
   }, [session?.messages.length, latestRun?.updatedAt, liveConversation, planning, runtimeSteps.length, runtimeSteps[runtimeSteps.length - 1]?.status, utilityPanelOpen])
+
+  const latestRenderedMessageId = renderedConversationMessages.at(-1)?.id ?? ''
+
+  const welcomePlayedRef = useRef(false)
+  useGSAP(() => {
+    if (utilityPanelOpen || hasMessages || prefersReducedMotion() || welcomePlayedRef.current) return
+    welcomePlayedRef.current = true
+    const welcome = gsap.timeline({ defaults: { duration: botanicMotion.duration.panel, ease: botanicMotion.ease } })
+    welcome
+      .from('.agent-workspace__mark', { autoAlpha: 0, scale: 0.92 }, 0)
+      .from('.agent-workspace__welcome small', { autoAlpha: 0, y: 6 }, '>-0.12')
+      .from('.agent-workspace__welcome h2', { autoAlpha: 0, y: 8 }, '>-0.16')
+      .from('.agent-workspace__welcome p', { autoAlpha: 0, y: 6 }, '>-0.18')
+      .from('.agent-workspace__starters button', { autoAlpha: 0, y: 8, stagger: 0.05 }, '>-0.12')
+  }, { scope: workspaceRef, dependencies: [hasMessages, utilityPanelOpen, locale] })
+
+  useGSAP(() => {
+    if (!readingPositionRestoredRef.current || !latestRenderedMessageId) return
+    if (lastAnimatedMessageIdRef.current === latestRenderedMessageId) return
+    const node = messageNodesRef.current.get(latestRenderedMessageId)
+    lastAnimatedMessageIdRef.current = latestRenderedMessageId
+    if (!node || prefersReducedMotion()) return
+    gsap.from(node, { autoAlpha: 0, y: 8, duration: botanicMotion.duration.toast, ease: botanicMotion.ease })
+  }, { scope: workspaceRef, dependencies: [latestRenderedMessageId] })
+
+  useGSAP(() => {
+    playSurfaceFlip(utilityFlipStateRef.current, messagesViewportRef.current?.querySelectorAll('[data-agent-flip]') ?? null)
+    utilityFlipStateRef.current = null
+  }, { scope: workspaceRef, dependencies: [activeUtilityPanel] })
 
   useEffect(() => {
     if (!compatibleGroups.some((group) => group.id === groupId)) setGroupId('')
@@ -1014,13 +1067,13 @@ export default function AgentWorkspace({
 
   const toggleUtilityPanel = (panel: AgentUtilityPanel) => {
     utilityButtonRef.current = utilityMenuButtonRef.current
-    setActiveUtilityPanel((current) => current === panel ? null : panel)
+    setUtilityPanel((current) => current === panel ? null : panel)
     setActiveTransientSurface(null)
     setMentionQuery(undefined)
   }
 
   const closeUtilityPanel = () => {
-    setActiveUtilityPanel(null)
+    setUtilityPanel(null)
     setUtilityMenuOpen(false)
     requestAnimationFrame(() => requestAnimationFrame(() => {
       (composerTextareaRef.current ?? utilityButtonRef.current)?.focus()
@@ -1028,7 +1081,7 @@ export default function AgentWorkspace({
   }
 
   const openUtilityPanel = (panel: AgentUtilityPanel) => {
-    setActiveUtilityPanel(panel)
+    setUtilityPanel(panel)
     setActiveTransientSurface(null)
     setMentionQuery(undefined)
   }
@@ -1175,7 +1228,7 @@ export default function AgentWorkspace({
   const openSkillCreation = () => {
     setMentionQuery(undefined)
     setUtilityMenuOpen(false)
-    setActiveUtilityPanel('skill')
+    setUtilityPanel('skill')
     setSkillFormOpen(true)
     setSkillConfirming(false)
     setSkillError('')
@@ -1462,7 +1515,7 @@ export default function AgentWorkspace({
       setPendingGenerationOverrides({})
       setInstruction(flowCopy.retrySettings(run.plan.prompt))
     }
-    setActiveUtilityPanel(null)
+    setUtilityPanel(null)
     setError('')
     setLastFailedPlanMessageId('')
     requestAnimationFrame(() => composerTextareaRef.current?.focus())
@@ -2290,14 +2343,14 @@ export default function AgentWorkspace({
     setInstruction(artifactCount === 1
       ? flowCopy.nextRoundOne
       : flowCopy.nextRoundMany(artifactCount))
-    setActiveUtilityPanel(null)
+    setUtilityPanel(null)
     requestAnimationFrame(() => composerTextareaRef.current?.focus())
   }
 
   const continueFromArtifact = (artifact: BotanicAgentArtifact) => {
     onContinueArtifact(artifact)
     setInstruction(flowCopy.continueArtifact(artifact.label))
-    setActiveUtilityPanel(null)
+    setUtilityPanel(null)
     requestAnimationFrame(() => composerTextareaRef.current?.focus())
   }
 
@@ -2329,6 +2382,7 @@ export default function AgentWorkspace({
 
   return (
     <aside
+      ref={workspaceRef}
       className="agent-workspace nopan nowheel"
       aria-label="Botanic Agent"
       onDragOver={handleImageDragOver}
@@ -2417,7 +2471,7 @@ export default function AgentWorkspace({
         aria-relevant="additions text"
         onScroll={scheduleReadingAnchorUpdate}
       >
-        {resultPanelOpen ? <AgentResultPanel
+        {resultPanelOpen ? <div data-agent-flip className="agent-workspace__flip-surface"><AgentResultPanel
           artifacts={artifacts}
           runs={runs}
           latestRun={latestRun}
@@ -2433,8 +2487,8 @@ export default function AgentWorkspace({
           onLoadMoreArtifacts={onLoadMoreArtifacts}
           onLocateConversation={locateRunSourceMessage}
           onBackToConversation={closeUtilityPanel}
-        /> : null}
-        {collaborationPanelOpen ? <AgentCollaborationPanel
+        /></div> : null}
+        {collaborationPanelOpen ? <div data-agent-flip className="agent-workspace__flip-surface"><AgentCollaborationPanel
           activities={collaborationAwareness.activities}
           conflictChanges={collaborationAwareness.conflictChanges}
           persistenceStatus={persistenceStatus}
@@ -2449,16 +2503,16 @@ export default function AgentWorkspace({
           onLoadMore={onLoadMoreCollaborationActivities}
           onReload={onReloadCollaborationActivities}
           onBackToConversation={closeUtilityPanel}
-        /> : null}
-        {memoryPanelOpen ? <AgentMemoryPanel
+        /></div> : null}
+        {memoryPanelOpen ? <div data-agent-flip className="agent-workspace__flip-surface"><AgentMemoryPanel
           memory={memory}
           sourceNodeIds={session?.contextNodeIds ?? []}
           onAddMemory={onAddMemory}
           onRemoveMemory={onRemoveMemory}
           onLocateNode={onLocateNode}
           onBackToConversation={closeUtilityPanel}
-        /> : null}
-        {taskPanelOpen ? <section className="agent-task-panel" aria-label={flowCopy.tasksAria}>
+        /></div> : null}
+        {taskPanelOpen ? <div data-agent-flip className="agent-workspace__flip-surface"><section className="agent-task-panel" aria-label={flowCopy.tasksAria}>
           <header><AgentPanelBackButton onClick={closeUtilityPanel} /><div><small>AGENT RUNS</small><h2>{flowCopy.tasksTitle}</h2></div><span>{flowCopy.taskCount(runs.length)}</span></header>
           <p>{flowCopy.tasksDescription}</p>
           <div className="agent-task-panel__filters" aria-label={flowCopy.taskFilters}>
@@ -2512,8 +2566,8 @@ export default function AgentWorkspace({
             })}
             {!filteredRunTimeline.length ? <div className="agent-panel__empty">{runTimeline.length ? flowCopy.noFilteredTasks : flowCopy.noTasks}</div> : null}
           </div>
-        </section> : null}
-        {skillPanelOpen ? <section className="agent-skill-panel" aria-label={flowCopy.skillsAria}>
+        </section></div> : null}
+        {skillPanelOpen ? <div data-agent-flip className="agent-workspace__flip-surface"><section className="agent-skill-panel" aria-label={flowCopy.skillsAria}>
           <header><AgentPanelBackButton onClick={closeUtilityPanel} /><div><small>SKILL REGISTRY</small><h2>{flowCopy.skillsTitle}</h2></div><span>{flowCopy.skillCount(systemSkills.length + skills.length)}</span></header>
           <p>{flowCopy.skillsDescription}</p>
           {systemSkills.length ? <div className="agent-skill-panel__catalog"><strong>{flowCopy.systemSkills}</strong>{systemSkills.map((skill) => <AgentSkillCard
@@ -2550,8 +2604,9 @@ export default function AgentWorkspace({
             />)}
             {!skills.length && !skillError ? <div className="agent-panel__empty">{flowCopy.noProjectSkills}</div> : null}
           </div>
-        </section> : null}
-        {!utilityPanelOpen && !hasMessages ? <section className="agent-workspace__welcome">
+        </section></div> : null}
+        {!utilityPanelOpen ? <div data-agent-flip className="agent-workspace__conversation">
+        {!hasMessages ? <section className="agent-workspace__welcome">
           <span className="agent-workspace__mark"><SparkleIcon /></span>
           <small>BOTANIC AGENT</small>
           <h2>{target ? copy.welcomeTarget(agentTargetDisplayLabel(target)) : copy.welcome}</h2>
@@ -2560,7 +2615,7 @@ export default function AgentWorkspace({
             {agentQuickActions(locale).slice(0, 3).map((action) => <button key={action.intent} type="button" onClick={() => { setIntent(action.intent); setInstruction(action.instruction) }}><strong>{action.label}</strong><span>{action.instruction}</span></button>)}
           </div>
         </section> : null}
-        {!utilityPanelOpen && session ? renderedConversationMessages.map((message) => {
+        {session ? renderedConversationMessages.map((message) => {
           const live = liveConversation?.sessionId === session.id && liveConversation.message.id === message.id
             ? liveConversation
             : undefined
@@ -2591,10 +2646,10 @@ export default function AgentWorkspace({
           onContinueResultContext={(nodeIds, outputCount) => {
             onUseResultContext(nodeIds)
             setInstruction(outputCount === 1 ? flowCopy.refineOne : outputCount > 1 ? flowCopy.refineMany(outputCount) : flowCopy.continueContext)
-            setActiveUtilityPanel(null)
+            setUtilityPanel(null)
             requestAnimationFrame(() => composerTextareaRef.current?.focus())
           }}
-          onShowResults={() => setActiveUtilityPanel('result')}
+          onShowResults={() => setUtilityPanel('result')}
           onShowTask={showTaskForRun}
           onFocusNodes={onFocusNodes}
           onAnswerClarification={(targetMessage, answers) => void answerClarification(targetMessage, answers)}
@@ -2632,7 +2687,7 @@ export default function AgentWorkspace({
           onFeedback={(targetMessage, feedback) => onUpdateMessage(session.id, targetMessage.id, { feedback })}
         /></div>
         }) : null}
-        {!utilityPanelOpen && showRuntimeFeed ? (() => {
+        {showRuntimeFeed ? (() => {
           const livePhase = runtimePhase === 'reading' || runtimePhase === 'planning' || runtimePhase === 'executing'
           return <section className={`agent-runtime-feed is-${runtimeDisplaySummary.phase}${runtimeFailed ? ' is-failed' : runtimeComplete ? ' is-complete' : ''}`} data-phase={runtimeDisplaySummary.phase} role="status" aria-live={livePhase ? 'polite' : undefined} aria-label={flowCopy.runtimeAria}>
             <header className="agent-runtime-feed__header">
@@ -2658,7 +2713,7 @@ export default function AgentWorkspace({
             </ol> : null}
           </section>
         })() : null}
-        {!utilityPanelOpen && latestRun?.branches.length && latestRunFeedback && ['queued', 'running', 'executing'].includes(latestRun.status) ? <section className={`agent-run-card is-${latestRunFeedback.tone} is-compact`} aria-label={flowCopy.runProgress}>
+        {latestRun?.branches.length && latestRunFeedback && ['queued', 'running', 'executing'].includes(latestRun.status) ? <section className={`agent-run-card is-${latestRunFeedback.tone} is-compact`} aria-label={flowCopy.runProgress}>
           <header>
             <b aria-label={flowCopy.runProgress}>{latestRun.completedBranchCount}/{latestRun.branches.length}</b>
             <button type="button" className="agent-icon-button agent-icon-button--danger" aria-label={flowCopy.cancelTask} title={flowCopy.cancelTask} disabled={cancellingRunId === latestRun.id} onClick={() => { setCancellingRunId(latestRun.id); setError(''); void onCancelRun(latestRun.id).then((ok) => { if (!ok) setError(flowCopy.cancelFailed) }).catch(() => setError(flowCopy.cancelFailed)).finally(() => setCancellingRunId('')) }}>{cancellingRunId === latestRun.id ? <span className="agent-workspace__mini-spinner" /> : <CloseIcon />}</button>
@@ -2676,6 +2731,7 @@ export default function AgentWorkspace({
             /> : null}</div>)}
           </div>
         </section> : null}
+        </div> : null}
         <div ref={messageEndRef} />
       </div>
       </div>

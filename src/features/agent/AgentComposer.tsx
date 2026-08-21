@@ -1,10 +1,19 @@
-import { useId } from 'react'
+import { useId, useRef } from 'react'
 import type { ChangeEvent, KeyboardEvent, RefObject } from 'react'
 import { botanicAgentExecutionModeLabel, type BotanicAgentMentionQuery, type BotanicAgentSession } from '../../domain/agent'
 import type { AssetGroup } from '../../domain/canvas'
 import { AgentPlannerProviderIcon } from '../../components/AgentPlannerProviderIcon'
 import { BotanicSelect } from '../../components/BotanicSelect'
-import { ArrowUpIcon, AutoRunIcon, ChecklistIcon, ChevronDownIcon, CloseIcon, PlusIcon, SparkleIcon, StopIcon, UploadIcon } from '../../components/BotanicIcons'
+import { AutoRunIcon, ChecklistIcon, ChevronDownIcon, CloseIcon, PlusIcon, SparkleIcon, UploadIcon } from '../../components/BotanicIcons'
+import {
+  botanicMotion,
+  Flip,
+  gsap,
+  prefersReducedMotion,
+  sendArrowPath,
+  sendStopPath,
+  useGSAP,
+} from '../../components/gsapMotion'
 import { agentPlannerModelLabel, agentPlannerModelShortLabel } from '../../components/generationModelPresentation'
 import type { AgentContextItem, AgentSkillOption } from './agentWorkspace.types'
 import { useProductI18n, useProductMessages } from '../../i18n/react'
@@ -161,13 +170,46 @@ export function AgentComposer({
   }
 
   const canSend = Boolean(instruction.trim() || contextItems.length || mountedSkills.length)
+  const composerRef = useRef<HTMLDivElement>(null)
+  const chipFlipState = useRef<Flip.FlipState | undefined>(undefined)
+  const chipSignature = [...contextItems.map((item) => item.id), ...mountedSkills.map((skill) => skill.id)].join('|')
+  const mentionMenuKey = mentionQuery?.trigger ?? ''
 
-  return <div className="agent-composer" role="group" aria-label={copy.input} aria-busy={planning}>
+  useGSAP(() => {
+    const chips = gsap.utils.toArray<HTMLElement>('[data-flip-id]', composerRef.current)
+    const previous = chipFlipState.current
+    chipFlipState.current = Flip.getState(chips)
+    if (prefersReducedMotion()) return
+    if (!previous) {
+      if (chips.length) gsap.from(chips, { autoAlpha: 0, y: 4, scale: 0.96, stagger: 0.03, duration: botanicMotion.duration.chip })
+      return
+    }
+    Flip.from(previous, {
+      duration: botanicMotion.duration.chip,
+      ease: botanicMotion.ease,
+      nested: true,
+      absolute: false,
+      onEnter: (elements) => gsap.fromTo(elements, { autoAlpha: 0, scale: 0.94 }, {
+        autoAlpha: 1,
+        scale: 1,
+        duration: botanicMotion.duration.chip,
+        ease: botanicMotion.ease,
+      }),
+    })
+  }, { scope: composerRef, dependencies: [chipSignature] })
+
+  useGSAP(() => {
+    const menus = gsap.utils.toArray<HTMLElement>('.agent-composer__mention-menu', composerRef.current)
+    if (!menus.length || prefersReducedMotion()) return
+    gsap.from(menus, { autoAlpha: 0, y: 6, duration: botanicMotion.duration.toast })
+  }, { scope: composerRef, dependencies: [mentionMenuKey] })
+
+  return <div ref={composerRef} className="agent-composer" role="group" aria-label={copy.input} aria-busy={planning}>
     {contextItems.length || mountedSkills.length ? <div className="agent-composer__attachments">
       {contextItems.length ? <div className="agent-composer__attach-row" aria-label={`${copy.referenced} ${contextItems.length}`}>
         <span className="agent-composer__attach-label">{copy.referenced}</span>
         <div className="agent-composer__attach-chips">
-          {contextItems.map((item) => <button key={item.id} type="button" className="agent-composer__chip is-media" aria-label={`${copy.remove} ${item.label}`} title={item.kind === '文字' && item.content ? `${copy.description} “${item.label}”: ${item.content}` : `${copy.remove} ${item.label}`} onClick={() => onRemoveContext(item.id)}>
+          {contextItems.map((item) => <button key={item.id} data-flip-id={item.id} type="button" className="agent-composer__chip is-media" aria-label={`${copy.remove} ${item.label}`} title={item.kind === '文字' && item.content ? `${copy.description} “${item.label}”: ${item.content}` : `${copy.remove} ${item.label}`} onClick={() => onRemoveContext(item.id)}>
             {item.image ? <img src={item.image} alt="" /> : <span>{contextKindLabel(item.kind).slice(0, 1)}</span>}
             <i aria-hidden="true">×</i>
           </button>)}
@@ -176,7 +218,7 @@ export function AgentComposer({
       {mountedSkills.length ? <div className="agent-composer__attach-row" aria-label={`${copy.mounted} ${mountedSkills.length} Skill`}>
         <span className="agent-composer__attach-label">{copy.mounted}</span>
         <div className="agent-composer__attach-chips">
-          {mountedSkills.map((skill) => <button key={skill.id} type="button" className="agent-composer__chip is-skill" aria-label={`${copy.remove} Skill ${skill.name}`} title={`${copy.remove} ${skill.name}`} onClick={() => onRemoveMountedSkill(skill.id)}>
+          {mountedSkills.map((skill) => <button key={skill.id} data-flip-id={skill.id} type="button" className="agent-composer__chip is-skill" aria-label={`${copy.remove} Skill ${skill.name}`} title={`${copy.remove} ${skill.name}`} onClick={() => onRemoveMountedSkill(skill.id)}>
             <SparkleIcon /><b>{skill.name}</b><i aria-hidden="true">×</i>
           </button>)}
         </div>
@@ -221,9 +263,14 @@ export function AgentComposer({
         />
         {compatibleGroups.length ? <BotanicSelect className="agent-composer__group-select" value={groupId} placeholder={copy.assetGroup} ariaLabel={copy.assetGroup} options={[{ value: '', label: copy.single }, ...compatibleGroups.map((group) => ({ value: group.id, label: `${group.name} · ${group.assetIds.length}` }))]} onChange={onGroupChange} renderTrigger={(selected) => <span className="agent-group-trigger" title={selected?.label ?? copy.single}><strong>{selected?.value ? copy.group : '1'}</strong></span>} /> : null}
       </div>
-      {planning
-        ? <button type="button" className="agent-composer__send is-stop" onClick={onCancelPlanning} aria-label={copy.stop} title={copy.stop}><StopIcon /></button>
-        : <button type="button" className="agent-composer__send" disabled={!canSend || !session} onClick={onSend} aria-label={copy.send} title={copy.send}><ArrowUpIcon /></button>}
+      <ComposerSendButton
+        planning={planning}
+        disabled={!canSend || !session}
+        sendLabel={copy.send}
+        stopLabel={copy.stop}
+        onSend={onSend}
+        onCancel={onCancelPlanning}
+      />
     </div>
     {contextMenuOpen ? <div id={contextMenuId} className="agent-composer__context-menu" role="menu" aria-label={copy.addImages} onPointerDown={(event) => event.stopPropagation()}>
       <header><strong>{copy.addImages}</strong><button type="button" aria-label={copy.closeImages} onClick={onCloseContextMenu}><CloseIcon /></button></header>
@@ -241,4 +288,55 @@ export function AgentComposer({
       <p className="agent-composer__mode-note">{copy.modeNote}</p>
     </div> : null}
   </div>
+}
+
+function ComposerSendButton({
+  planning,
+  disabled,
+  sendLabel,
+  stopLabel,
+  onSend,
+  onCancel,
+}: {
+  planning: boolean
+  disabled: boolean
+  sendLabel: string
+  stopLabel: string
+  onSend: () => void
+  onCancel: () => void
+}) {
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const pathRef = useRef<SVGPathElement>(null)
+  const knownPlanning = useRef<boolean | undefined>(undefined)
+
+  useGSAP(() => {
+    const path = pathRef.current
+    const button = buttonRef.current
+    if (!path || !button) return
+    const nextPath = planning ? sendStopPath : sendArrowPath
+    if (knownPlanning.current === undefined || knownPlanning.current === planning || prefersReducedMotion()) {
+      gsap.set(path, { morphSVG: nextPath })
+      knownPlanning.current = planning
+      return
+    }
+    const tl = gsap.timeline({ defaults: { ease: botanicMotion.ease } })
+    tl.to(button, { scale: 0.92, duration: botanicMotion.duration.press }, 0)
+      .to(path, { morphSVG: nextPath, duration: botanicMotion.duration.chip }, 0)
+      .to(button, { scale: 1, duration: botanicMotion.duration.toast })
+    knownPlanning.current = planning
+  }, { scope: buttonRef, dependencies: [planning] })
+
+  return <button
+    ref={buttonRef}
+    type="button"
+    className={planning ? 'agent-composer__send is-stop' : 'agent-composer__send'}
+    disabled={planning ? false : disabled}
+    onClick={planning ? onCancel : onSend}
+    aria-label={planning ? stopLabel : sendLabel}
+    title={planning ? stopLabel : sendLabel}
+  >
+    <svg width="1em" height="1em" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path ref={pathRef} d={planning ? sendStopPath : sendArrowPath} />
+    </svg>
+  </button>
 }
