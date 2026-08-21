@@ -1,5 +1,9 @@
 type BotanicIconProps = { className?: string }
 
+function opticalClass(kind: string, className?: string) {
+  return className ? `optical-icon--${kind} ${className}` : `optical-icon--${kind}`
+}
+
 export function FigmaIcon({ src, alt = '' }: { src: string; alt?: string }) {
   return <img src={src} alt={alt} aria-hidden={alt === ''} />
 }
@@ -67,7 +71,7 @@ export function RefreshIcon({ className }: BotanicIconProps) {
 
 /** 通用完成状态 */
 export function CheckIcon({ className }: BotanicIconProps) {
-  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  return <svg className={opticalClass('check', className)} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
     <path d="m5 12.5 4.25 4.25L19 7" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 }
@@ -123,7 +127,7 @@ export function SlidersIcon({ className }: BotanicIconProps) {
 
 /** 植物学 Figma · Iconly/Sharp/Close Square（1228:231093） */
 export function CloseIcon({ className }: BotanicIconProps) {
-  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  return <svg className={opticalClass('close', className)} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
     <path d="m14.398 9.595-4.792 4.792M14.394 14.39 9.598 9.593" stroke="currentColor" strokeWidth="1.5" strokeLinecap="square" />
     <path d="M12 21.25A9.25 9.25 0 1 0 12 2.75a9.25 9.25 0 0 0 0 18.5Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
   </svg>
@@ -184,7 +188,7 @@ export function HomeIcon({ className }: BotanicIconProps) {
 
 /** 植物学 Figma · Iconly/Sharp/Star（1228:231230） */
 export function SparkleIcon({ className }: BotanicIconProps) {
-  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  return <svg className={opticalClass('sparkle', className)} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
     <path d="M12 2.75C13.17 7.287 16.713 10.83 21.25 12c-4.537 1.17-8.08 4.713-9.25 9.25C10.83 16.713 7.287 13.17 2.75 12 7.287 10.83 10.83 7.287 12 2.75Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
     <path d="M18.752 2.75c0 1.148 1.32 2.498 2.499 2.498-1.225 0-2.499 1.337-2.499 2.499 0-1.17-1.353-2.5-2.498-2.5 1.19 0 2.498-1.35 2.498-2.497Z" fill="currentColor" />
   </svg>
@@ -206,14 +210,14 @@ export function PlusSquareIcon({ className }: BotanicIconProps) {
 
 /** Agent composer · plain plus action */
 export function PlusIcon({ className }: BotanicIconProps) {
-  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  return <svg className={opticalClass('plus', className)} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
     <path d="M12 4.5v15M4.5 12h15" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
   </svg>
 }
 
 /** Agent 执行模式 · 自动执行 */
 export function AutoRunIcon({ className }: BotanicIconProps) {
-  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  return <svg className={opticalClass('play', className)} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
     <circle cx="12" cy="12" r="8.75" stroke="currentColor" strokeWidth="1.5" />
     <path d="m10 8.75 5 3.25-5 3.25V8.75Z" fill="currentColor" />
   </svg>
@@ -221,7 +225,7 @@ export function AutoRunIcon({ className }: BotanicIconProps) {
 
 /** 植物学 Figma · arrow-right-top（1228:230741） */
 export function ArrowUpRightIcon({ className }: BotanicIconProps) {
-  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  return <svg className={opticalClass('ne', className)} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
     <path d="m7.25 16.75 9.5-9.5M9.25 7.25h7.5v7.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="square" strokeLinejoin="round" />
   </svg>
 }
@@ -235,23 +239,23 @@ export function StopIcon({ className }: BotanicIconProps) {
 }
 
 export function ArrowUpIcon({ className }: BotanicIconProps) {
-  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 21.25V3.5m0 0L6.75 8.75M12 3.5l5.25 5.25" stroke="currentColor" strokeWidth="1.5" strokeLinecap="square" strokeLinejoin="round" /></svg>
+  return <svg className={opticalClass('up', className)} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 21.25V3.5m0 0L6.75 8.75M12 3.5l5.25 5.25" stroke="currentColor" strokeWidth="1.5" strokeLinecap="square" strokeLinejoin="round" /></svg>
 }
 
 export function ArrowDownIcon({ className }: BotanicIconProps) {
-  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 2.75V20.5m0 0 5.25-5.25M12 20.5l-5.25-5.25" stroke="currentColor" strokeWidth="1.5" strokeLinecap="square" strokeLinejoin="round" /></svg>
+  return <svg className={opticalClass('down', className)} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 2.75V20.5m0 0 5.25-5.25M12 20.5l-5.25-5.25" stroke="currentColor" strokeWidth="1.5" strokeLinecap="square" strokeLinejoin="round" /></svg>
 }
 
 /** 工具面板 · 返回对话 */
 export function ChevronLeftIcon({ className }: BotanicIconProps) {
-  return <svg className={className} width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+  return <svg className={opticalClass('left', className)} width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
     <path d="M10 3.5 5.5 8 10 12.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 }
 
 /** 下拉触发器 · 与文字同行垂直居中 */
 export function ChevronDownIcon({ className }: BotanicIconProps) {
-  return <svg className={className} width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+  return <svg className={opticalClass('down', className)} width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
     <path d="M2 3.5 5 6.5 8 3.5" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 }

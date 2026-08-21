@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { botanicMotion, gsap, prefersReducedMotion, useGSAP } from '../../components/gsapMotion'
 import {
   botanicAgentAppliedSkillName,
   botanicAgentContextSnapshotNodeIds,
@@ -193,6 +194,8 @@ function AgentPlanSettingsEditor({
   const [heightDraft, setHeightDraft] = useState(validCustom ? String(validCustom.outputHeight) : '')
   const [customHint, setCustomHint] = useState('')
   const [customHintError, setCustomHintError] = useState(false)
+  const customSizeRef = useRef<HTMLDivElement | null>(null)
+  const customSizeReadyRef = useRef(false)
   useEffect(() => {
     const next = customGenerationSizeFields(settings)
     if (!next) return
@@ -201,6 +204,22 @@ function AgentPlanSettingsEditor({
     setHeightDraft(String(next.outputHeight))
   }, [settings.outputWidth, settings.outputHeight])
   const allowCustom = modelSupportsCustomSize(selectedModel)
+  useGSAP(() => {
+    const node = customSizeRef.current
+    if (!node || !allowCustom) return
+    if (!customMode) {
+      gsap.set(node, { autoAlpha: 0, y: 0, display: 'none' })
+      customSizeReadyRef.current = true
+      return
+    }
+    gsap.set(node, { display: 'grid' })
+    if (!customSizeReadyRef.current || prefersReducedMotion()) {
+      gsap.set(node, { autoAlpha: 1, y: 0 })
+      customSizeReadyRef.current = true
+      return
+    }
+    gsap.fromTo(node, { autoAlpha: 0, y: 6 }, { autoAlpha: 1, y: 0, duration: botanicMotion.duration.chip, ease: botanicMotion.ease })
+  }, { dependencies: [allowCustom, customMode] })
   const aspectRatios = selectedModel.aspectRatios ?? ['1:1', '16:9', '4:3', '3:4', '4:5', '9:16']
   const resolutions = selectedModel.resolutions ?? ['1K', '2K']
   const commitCustomSize = () => {
@@ -280,7 +299,7 @@ function AgentPlanSettingsEditor({
       <small>{locale === 'en' ? 'Output' : '输出'}</small>
       <span className="agent-plan-settings__readonly" title={locale === 'en' ? 'Output count is set by the plan' : '张数由计划展开决定'}>{countLabel}</span>
     </span>
-    {allowCustom && customMode ? <div className="agent-plan-settings__custom">
+    {allowCustom ? <div ref={customSizeRef} className={`agent-plan-settings__custom${customMode ? ' is-open' : ''}`} inert={!customMode || undefined}>
       <label className="agent-plan-settings__custom-field">
         <small>{locale === 'en' ? 'Width' : '宽'}</small>
         <input
@@ -290,7 +309,7 @@ function AgentPlanSettingsEditor({
           max={3840}
           step={16}
           value={widthDraft}
-          disabled={disabled}
+          disabled={disabled || !customMode}
           aria-label={locale === 'en' ? 'Custom output width' : '自定义输出宽度'}
           placeholder="1536"
           onChange={(event) => setWidthDraft(event.target.value)}
@@ -307,7 +326,7 @@ function AgentPlanSettingsEditor({
           max={3840}
           step={16}
           value={heightDraft}
-          disabled={disabled}
+          disabled={disabled || !customMode}
           aria-label={locale === 'en' ? 'Custom output height' : '自定义输出高度'}
           placeholder="864"
           onChange={(event) => setHeightDraft(event.target.value)}

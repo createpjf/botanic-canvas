@@ -1,6 +1,17 @@
+import { useRef, type MouseEvent } from 'react'
 import workbenchImage from '../assets/product/botanic-workbench-agent.webp'
 import sceneImage from '../assets/figma/scene.webp'
 import { ArrowUpRightIcon } from './BotanicIcons'
+import {
+  botanicMotion,
+  gsap,
+  mapPointerShift,
+  motionDuration,
+  normalizePointerAxis,
+  Observer,
+  ScrollTrigger,
+  useGSAP,
+} from './gsapMotion'
 import { LanguageSwitcher, useProductI18n } from '../i18n/react'
 
 type ProductLandingProps = {
@@ -103,17 +114,133 @@ export function ProductLanding({ isAuthenticated, onEnterWorkspace }: ProductLan
   const { locale } = useProductI18n()
   const copy = productLandingCopy[locale]
   const enterLabel = isAuthenticated ? copy.enterWorkspace : copy.signIn
+  const rootRef = useRef<HTMLElement>(null)
+
+  const { contextSafe } = useGSAP(() => {
+    const root = rootRef.current
+    if (!root) return
+    const mm = gsap.matchMedia()
+    mm.add(
+      {
+        reduceMotion: '(prefers-reduced-motion: reduce)',
+        allowMotion: '(prefers-reduced-motion: no-preference)',
+        finePointer: '(hover: hover) and (pointer: fine)',
+      },
+      (context) => {
+        const reduceMotion = context.conditions?.reduceMotion
+        const allowMotion = context.conditions?.allowMotion
+        const finePointer = context.conditions?.finePointer
+        if (reduceMotion || !allowMotion) return
+
+        const hero = gsap.timeline({ defaults: { duration: botanicMotion.duration.landing, ease: botanicMotion.ease } })
+        hero
+          .from('.product-hero .workspace-eyebrow', { autoAlpha: 0, y: 10 }, 0)
+          .from('#product-hero-title', { y: 16 }, 0)
+          .from('.product-hero__copy p', { autoAlpha: 0, y: 10 }, '>-0.22')
+          .from('.product-hero__actions > *', { autoAlpha: 0, y: 8, stagger: 0.05 }, '>-0.24')
+          .from('.product-hero__copy ul li', { autoAlpha: 0, y: 6, stagger: 0.04 }, '>-0.2')
+          .from('.product-hero__visual', { autoAlpha: 0, y: 14, duration: 0.5 }, 0.12)
+
+        ScrollTrigger.batch('.product-capabilities article', {
+          scroller: root,
+          start: 'top 88%',
+          once: true,
+          interval: 0.08,
+          batchMax: 3,
+          onEnter: (batch) => gsap.fromTo(batch, { autoAlpha: 0, y: 16 }, {
+            autoAlpha: 1,
+            y: 0,
+            stagger: 0.08,
+            duration: 0.36,
+            ease: botanicMotion.ease,
+            overwrite: true,
+          }),
+        })
+
+        ScrollTrigger.batch('.product-workflow__content ol li', {
+          scroller: root,
+          start: 'top 90%',
+          once: true,
+          interval: 0.08,
+          onEnter: (batch) => gsap.fromTo(batch, { autoAlpha: 0, y: 12 }, {
+            autoAlpha: 1,
+            y: 0,
+            stagger: 0.06,
+            duration: 0.32,
+            ease: botanicMotion.ease,
+            overwrite: true,
+          }),
+        })
+
+        gsap.to('.product-workflow__media img', {
+          y: 20,
+          ease: 'none',
+          scrollTrigger: {
+            trigger: '.product-workflow',
+            scroller: root,
+            start: 'top bottom',
+            end: 'bottom top',
+            scrub: 0.6,
+          },
+        })
+
+        if (!finePointer) return
+        const visual = root.querySelector<HTMLElement>('.product-hero__visual')
+        if (!visual) return
+        visual.classList.add('is-tracking')
+        const xTo = gsap.quickTo(visual, 'x', { duration: 0.55, ease: 'power3' })
+        const yTo = gsap.quickTo(visual, 'y', { duration: 0.55, ease: 'power3' })
+        Observer.create({
+          target: visual,
+          type: 'pointer',
+          onMove: (self) => {
+            const rect = visual.getBoundingClientRect()
+            const pointerX = self.x ?? rect.left + rect.width / 2
+            const pointerY = self.y ?? rect.top + rect.height / 2
+            xTo(mapPointerShift(normalizePointerAxis(rect.left, rect.right, pointerX), -8, 8))
+            yTo(mapPointerShift(normalizePointerAxis(rect.top, rect.bottom, pointerY), -6, 6))
+          },
+          onStop: () => {
+            xTo(0)
+            yTo(0)
+          },
+          onHoverEnd: () => {
+            xTo(0)
+            yTo(0)
+          },
+        })
+        return () => visual.classList.remove('is-tracking')
+      },
+      root,
+    )
+    return () => mm.revert()
+  }, { scope: rootRef, dependencies: [locale], revertOnUpdate: true })
+
+  const handleHashNav = contextSafe((event: MouseEvent<HTMLAnchorElement>) => {
+    const href = event.currentTarget.getAttribute('href')
+    const root = rootRef.current
+    if (!href?.startsWith('#') || !root) return
+    const target = root.querySelector(href)
+    if (!(target instanceof HTMLElement)) return
+    event.preventDefault()
+    gsap.to(root, {
+      duration: motionDuration(0.58),
+      ease: botanicMotion.ease,
+      overwrite: true,
+      scrollTo: { y: target, offsetY: 72, autoKill: true },
+    })
+  })
 
   return (
-    <main className="product-landing" id="product-top" lang={locale}>
+    <main ref={rootRef} className="product-landing" id="product-top" lang={locale}>
       <header className="product-landing__nav">
-        <a className="product-landing__brand" href="#product-top" aria-label={copy.brandAria}>
+        <a className="product-landing__brand" href="#product-top" aria-label={copy.brandAria} onClick={handleHashNav}>
           <strong>Botanic</strong>
           <span>AI VISUAL PRODUCTION</span>
         </a>
         <nav aria-label={copy.navAria}>
-          <a href="#product-capabilities">{copy.capabilitiesNav}</a>
-          <a href="#product-workflow">{copy.workflowNav}</a>
+          <a href="#product-capabilities" onClick={handleHashNav}>{copy.capabilitiesNav}</a>
+          <a href="#product-workflow" onClick={handleHashNav}>{copy.workflowNav}</a>
         </nav>
         <div className="product-landing__nav-actions">
           <LanguageSwitcher className="product-landing__language" />
@@ -131,7 +258,7 @@ export function ProductLanding({ isAuthenticated, onEnterWorkspace }: ProductLan
             <p>{copy.heroDescription}</p>
             <div className="product-hero__actions">
               <button type="button" onClick={onEnterWorkspace}>{enterLabel} <ArrowUpRightIcon /></button>
-              <a href="#product-workflow">{copy.learnWorkflow}</a>
+              <a href="#product-workflow" onClick={handleHashNav}>{copy.learnWorkflow}</a>
             </div>
             <ul aria-label={copy.featuresAria}>
               {copy.features.map((feature) => <li key={feature}>{feature}</li>)}
