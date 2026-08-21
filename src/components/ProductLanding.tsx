@@ -148,7 +148,6 @@ export function ProductLanding({ isAuthenticated, onEnterWorkspace }: ProductLan
           linesClass: 'product-hero__title-line',
           onSplit(self) {
             return gsap.from(self.lines, {
-              autoAlpha: 0,
               y: 16,
               stagger: 0.05,
               duration: botanicMotion.duration.landing,
@@ -270,7 +269,7 @@ export function ProductLanding({ isAuthenticated, onEnterWorkspace }: ProductLan
         <section className="product-hero" aria-labelledby="product-hero-title">
           <div className="product-hero__copy">
             <span className="workspace-eyebrow"><i />{copy.heroEyebrow}</span>
-            <h1 id="product-hero-title">{copy.heroTitle}</h1>
+            <h1 id="product-hero-title" aria-label={copy.heroTitle}>{copy.heroTitle}</h1>
             <p>{copy.heroDescription}</p>
             <div className="product-hero__actions">
               <button type="button" onClick={onEnterWorkspace}>{enterLabel} <ArrowUpRightIcon /></button>
