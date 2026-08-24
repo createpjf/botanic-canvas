@@ -14,6 +14,7 @@ import {
   type BotanicAgentArtifact,
   type BotanicAgentContextSnapshot,
   type BotanicAgentExecutionMode,
+  type BotanicAgentMemoryKind,
   type BotanicAgentMessage,
   type BotanicAgentRun,
 } from '../../domain/agent'
@@ -476,6 +477,7 @@ type AgentConversationMessageProps = {
   onEdit: (content: string) => void
   onRetryDelivery: (messageId: string) => void
   onFeedback: (message: BotanicAgentMessage, feedback: BotanicAgentMessage['feedback']) => void
+  onSaveAsMemory?: (message: BotanicAgentMessage, kind: BotanicAgentMemoryKind, content: string) => string | null
 }
 
 export function AgentConversationMessage({
@@ -513,9 +515,20 @@ export function AgentConversationMessage({
   onEdit,
   onRetryDelivery,
   onFeedback,
+  onSaveAsMemory,
 }: AgentConversationMessageProps) {
   const { locale } = useProductI18n()
   const t = (zh: string, en: string) => locale === 'en' ? en : zh
+  const [feedbackMemoryOpen, setFeedbackMemoryOpen] = useState(false)
+  const [feedbackMemoryKind, setFeedbackMemoryKind] = useState<BotanicAgentMemoryKind>('avoid')
+  const [feedbackMemoryDraft, setFeedbackMemoryDraft] = useState('')
+  const [feedbackMemorySaved, setFeedbackMemorySaved] = useState(false)
+  useEffect(() => {
+    setFeedbackMemoryOpen(Boolean(message.feedback))
+    setFeedbackMemoryKind(message.feedback === 'positive' ? 'approved' : 'avoid')
+    setFeedbackMemoryDraft('')
+    setFeedbackMemorySaved(false)
+  }, [message.id, message.feedback])
   const dimensionLabel = (dimension: string) => locale === 'en'
     ? ({ person: 'Person', pose: 'Pose', product: 'Product', garment: 'Garment', scene: 'Scene', composition: 'Composition', style: 'Style', lighting: 'Lighting' }[dimension] ?? dimension)
     : creativeDimensionLabel(dimension as Parameters<typeof creativeDimensionLabel>[0])
@@ -758,5 +771,24 @@ export function AgentConversationMessage({
       </> : null}
       <button type="button" aria-label={t('复制消息', 'Copy message')} title={t('复制消息', 'Copy message')} onClick={() => void navigator.clipboard.writeText(message.composition ? formatBotanicAgentCompositionMessage(message.composition, locale) : message.content)}><CopyIcon /></button>
     </div>}
+    {message.role === 'assistant' && sessionId && message.feedback && onSaveAsMemory && feedbackMemoryOpen ? <form className="agent-feedback-memory" onSubmit={(event) => {
+      event.preventDefault()
+      const content = feedbackMemoryDraft.trim()
+      if (!content) return
+      const saved = onSaveAsMemory(message, feedbackMemoryKind, content)
+      if (!saved) return
+      setFeedbackMemorySaved(true)
+      setFeedbackMemoryOpen(false)
+    }}>
+      <div className="agent-feedback-memory__header"><strong>{message.feedback === 'positive' ? t('把认可方向留下来', 'Keep this approved direction') : t('把改进点留下来', 'Keep this improvement point')}</strong><button type="button" onClick={() => setFeedbackMemoryOpen(false)} aria-label={t('关闭反馈记忆', 'Close feedback memory')}>×</button></div>
+      <select value={feedbackMemoryKind} onChange={(event) => setFeedbackMemoryKind(event.target.value as BotanicAgentMemoryKind)} aria-label={t('记忆类型', 'Memory type')}>
+        <option value="approved">{t('已确认方向', 'Approved direction')}</option>
+        <option value="rule">{t('长期规则', 'Long-term rule')}</option>
+        <option value="avoid">{t('避免事项', 'Avoid')}</option>
+      </select>
+      <textarea value={feedbackMemoryDraft} onChange={(event) => setFeedbackMemoryDraft(event.target.value)} placeholder={message.feedback === 'positive' ? t('例如：保留这种克制的自然光与留白。', 'For example: Keep this restrained natural light and negative space.') : t('写下以后要避免或修正的具体点。', 'Write the specific thing to avoid or change next time.')} rows={2} />
+      <button type="submit" disabled={!feedbackMemoryDraft.trim()}>{t('保存到项目记忆', 'Save to project memory')}</button>
+    </form> : null}
+    {feedbackMemorySaved ? <small className="agent-feedback-memory__saved" role="status">{t('已保存到项目记忆。', 'Saved to project memory.')}</small> : null}
   </article>
 }

@@ -189,6 +189,8 @@ export type CanvasStore = {
   retryGeneration: () => Promise<boolean>
   retryMissingGeneration: (jobId: string) => Promise<boolean>
   clearGenerationError: () => void
+  /** 清除画布级操作反馈；反馈由工作区统一展示，不再只写入 Store。 */
+  clearAssistantMessage: () => void
   selectGenerationCandidate: (candidateId: string) => void
   undoLastAction: () => void
   createLocalDeliveries: (input: {

@@ -17,6 +17,7 @@ import { LanguageSwitcher, useProductI18n } from '../i18n/react'
 type ProductLandingProps = {
   isAuthenticated: boolean
   onEnterWorkspace: () => void
+  ariaHidden?: boolean
 }
 
 const productLandingCopy = {
@@ -110,7 +111,7 @@ const productLandingCopy = {
   },
 } as const
 
-export function ProductLanding({ isAuthenticated, onEnterWorkspace }: ProductLandingProps) {
+export function ProductLanding({ isAuthenticated, onEnterWorkspace, ariaHidden = false }: ProductLandingProps) {
   const { locale } = useProductI18n()
   const copy = productLandingCopy[locale]
   const enterLabel = isAuthenticated ? copy.enterWorkspace : copy.signIn
@@ -232,7 +233,7 @@ export function ProductLanding({ isAuthenticated, onEnterWorkspace }: ProductLan
   })
 
   return (
-    <main ref={rootRef} className="product-landing" id="product-top" lang={locale}>
+    <main ref={rootRef} className="product-landing" id="product-top" lang={locale} aria-hidden={ariaHidden || undefined} inert={ariaHidden || undefined}>
       <header className="product-landing__nav">
         <a className="product-landing__brand" href="#product-top" aria-label={copy.brandAria} onClick={handleHashNav}>
           <strong>Botanic</strong>

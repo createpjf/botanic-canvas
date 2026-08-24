@@ -303,3 +303,29 @@ test('Agent 生成卡片默认收起已完成步骤与提示词差异，主内�
   expect(await promptDiff.evaluate((element: HTMLDetailsElement) => element.open)).toBe(false)
   await expect(page.getByText('保持人物、五官、服装与姿态不变，仅将背景替换为晴朗海边。')).toBeVisible()
 })
+
+test('空画布优先提供目标入口，本地能力边界可见且不请求云端 Agent', async ({ page }) => {
+  const consoleErrors: string[] = []
+  page.on('console', (message) => { if (message.type() === 'error') consoleErrors.push(message.text()) })
+  await stubReadOnlyRuntime(page)
+  await page.goto('/#/projects')
+  await page.getByRole('button', { name: '新建项目' }).click()
+
+  await expect(page.getByRole('button', { name: '先描述目标' })).toBeVisible()
+  await page.getByRole('button', { name: '先描述目标' }).click()
+  await expect(page.getByRole('complementary', { name: 'Botanic Agent' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '关闭 Agent' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '新建对话' })).toBeVisible()
+
+  const composer = page.getByRole('textbox', { name: '提示词' })
+  await composer.fill('你好')
+  await page.getByRole('button', { name: '发送给 Agent' }).click()
+  await expect(page.getByText('本地预览模式未连接 Agent 服务')).toBeVisible()
+  await expect(page.getByRole('button', { name: '关闭 Agent' })).toBeVisible()
+  expect(consoleErrors).toEqual([])
+
+  await page.getByRole('button', { name: '关闭 Agent' }).click()
+  await expect(page.getByRole('button', { name: '打开 Agent' })).toBeVisible()
+  await page.getByRole('button', { name: '视频生成', exact: true }).click()
+  await expect(page.getByRole('status').filter({ hasText: '视频模型尚未配置' })).toBeVisible()
+})

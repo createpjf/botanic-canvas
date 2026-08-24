@@ -79,23 +79,20 @@ import { useWorkspaceProjectCoordinator } from './workspaceProjectCoordinator'
 import { useCanvasWorkspaceSynchronization } from './useCanvasWorkspaceSynchronization'
 import { useCanvasAgentExecutionBridge } from './useCanvasAgentExecutionBridge'
 import { readCachedCanvasViewport, useCanvasInteractionCoordinator, type ScreenToFlowPosition } from './useCanvasInteractionCoordinator'
-import {
-  AssetLibrary,
-  BatchVariationComposer,
-} from './CanvasWorkspacePanels'
 import { RegionMaskEditor } from './RegionMaskEditor'
-import {
-  BatchVariationProgress,
-  ConfirmationDialog,
-  DeliveryPanel,
-  GenerationPanel,
-  HistoryPanel,
-  NodeReferencePanel,
-  TemplatePanel,
-  UndoToast,
-  type BatchVariationRequest,
-  type GeneratedHistoryItem,
-} from './CanvasWorkspacePanels'
+import type { BatchVariationRequest, GeneratedHistoryItem } from './CanvasWorkspacePanels'
+
+// 画布首屏只需要节点与导航；素材、模板、历史和投放面板按需加载，避免把整组重型面板打进首屏 chunk。
+const AssetLibrary = lazy(() => import('./CanvasWorkspacePanels').then((module) => ({ default: module.AssetLibrary })))
+const BatchVariationComposer = lazy(() => import('./CanvasWorkspacePanels').then((module) => ({ default: module.BatchVariationComposer })))
+const BatchVariationProgress = lazy(() => import('./CanvasWorkspacePanels').then((module) => ({ default: module.BatchVariationProgress })))
+const ConfirmationDialog = lazy(() => import('./CanvasWorkspacePanels').then((module) => ({ default: module.ConfirmationDialog })))
+const DeliveryPanel = lazy(() => import('./CanvasWorkspacePanels').then((module) => ({ default: module.DeliveryPanel })))
+const GenerationPanel = lazy(() => import('./CanvasWorkspacePanels').then((module) => ({ default: module.GenerationPanel })))
+const HistoryPanel = lazy(() => import('./CanvasWorkspacePanels').then((module) => ({ default: module.HistoryPanel })))
+const NodeReferencePanel = lazy(() => import('./CanvasWorkspacePanels').then((module) => ({ default: module.NodeReferencePanel })))
+const TemplatePanel = lazy(() => import('./CanvasWorkspacePanels').then((module) => ({ default: module.TemplatePanel })))
+const UndoToast = lazy(() => import('./CanvasWorkspacePanels').then((module) => ({ default: module.UndoToast })))
 import { CanvasComposer, canvasNodeTypes, type ComposerLayout, type ResultGroupCandidateUi, type ResultNodeUiData } from './CanvasEditorViews'
 import plusIcon from '../../assets/figma/icon-plus.svg'
 import folderIcon from '../../assets/figma/icon-folder.svg'
@@ -110,7 +107,7 @@ const workspaceMessages = {
   'zh-CN': {
     loadingProject: '正在载入项目', loadingProjectShort: '载入项目', focusSelected: '聚焦选中节点', focusTask: '聚焦本次任务', fitAll: '适配全部节点', canvasNavigation: '画布导航', closeMinimap: '关闭小地图', openMinimap: '打开小地图', minimapNotNeeded: '节点较少，暂不需要小地图', zoomLevel: '画布缩放级别', moreTools: '更多画布工具', exitMarquee: '退出框选', marquee: '框选节点', drag: '拖动', autoLayout: '自动整理', showAll: '显示全部',
     selectedCount: (count: number) => `${count} 个节点已选中`, moveTogether: '拖动任意节点可整体移动', clearSelection: '取消选择', connected: '已连接', invalidConnection: '无法连接到这里', connectionCancelled: '已取消连线', connecting: '正在连线', dragToPort: '拖到绿色空心点', connectionHint: '素材 / 文本 / 已选图片 → 生成；输出由任务自动创建',
-    edgeActions: '已选连线操作', systemEdge: '系统输出连线', selectedEdge: '连线已选中', systemEdgeHint: '用于保留生成血缘，不可删除或重连', reconnectHint: '拖动端点可重连', delete: '删除', closeEdgeActions: '关闭连线操作', emptyGuide: '空画布引导', emptyTitle: '从一个创意目标开始', emptyDetail: '拖入商品、场景或灵感图；也可以先添加一个生成节点，逐步搭建这次项目的创作路径。', addAssets: '添加素材', imageGeneration: '图片生成', videoGeneration: '视频生成',
+    edgeActions: '已选连线操作', systemEdge: '系统输出连线', selectedEdge: '连线已选中', systemEdgeHint: '用于保留生成血缘，不可删除或重连', reconnectHint: '拖动端点可重连', delete: '删除', closeEdgeActions: '关闭连线操作', emptyGuide: '空画布引导', emptyTitle: '从一个创意目标开始', emptyDetail: '拖入商品、场景或灵感图；也可以先添加一个生成节点，逐步搭建这次项目的创作路径。', addAssets: '添加素材', imageGeneration: '图片生成', videoGeneration: '视频生成', agentStart: '先描述目标', agentStartDetail: '让 Agent 先整理商品、场景和交付规格，再决定要生成什么。', dismissNotice: '关闭操作提示',
     initFailed: '画布初始化失败', initFailedDetail: '请重试；若仍失败，请退出后重新登录。', retry: '重试', loadingCanvas: '正在加载画布', canvasLabel: (name: string) => name.endsWith('画布') ? name : `${name}画布`, backProjects: '返回项目', projects: '项目', openProjects: '已打开项目', projectName: '项目名称', openProject: (name: string) => `打开${name}`, renameProject: '双击重命名', closeProject: (name: string) => `关闭${name}`, closeTab: '关闭标签', newProject: '新建创意项目',
     minimapLabel: '画布导航地图', videoModelMissing: '视频模型尚未配置，请先检查 MiniMax H3。', canvasTools: '画布工具', addNode: '新增节点', openAssets: '打开素材库', templates: '模板', history: '画布历史', delivery: '投放交付', account: '打开账户设置', openAgent: '打开 Agent', loadingAgent: '正在载入 Agent…', language: '切换为英文',
     imageAsset: '图片素材', selectedResult: '已选结果', candidate: (index: number) => `候选 ${index}`, builtNodes: (count: number) => `已搭建 ${count} 个节点`, blankCanvasSummary: '空白画布 · 等待开始', refinedVersion: '精修版本', generatedImage: '生成图片', keyVisualVersion: '首图版本', dropToAdd: '松开即可加入画布', uploadLimits: 'PNG / JPEG / WebP，单张不超过 8MB', addCanvasNode: '添加画布节点', addFromImage: '基于此图添加', connectSelected: '连接所选节点', addNodeTitle: '添加节点', closeAddNode: '关闭添加节点', continueImage: '基于当前图片继续创作', connectToGenerate: '连接素材与描述生成图片', batchVariations: '批量变体', batchDetail: '用一个素材组逐项生成', continueVideo: '以当前画面或视频继续生成', videoReferenceDetail: '连接首帧、首尾帧或参考素材', assets: '素材', assetsDetail: '添加商品、场景或调性图', localImages: '本地图片', uploadImages: '上传图片', uploadToCanvas: '上传图片并加入画布', preview: (name: string) => `${name}预览`, downloadMedia: '下载原媒体', closePreview: '关闭媒体预览',
@@ -118,7 +115,7 @@ const workspaceMessages = {
   en: {
     loadingProject: 'Loading project', loadingProjectShort: 'Loading project', focusSelected: 'Focus selected nodes', focusTask: 'Focus current task', fitAll: 'Fit all nodes', canvasNavigation: 'Canvas navigation', closeMinimap: 'Close minimap', openMinimap: 'Open minimap', minimapNotNeeded: 'Minimap is not needed for a small canvas', zoomLevel: 'Canvas zoom level', moreTools: 'More canvas tools', exitMarquee: 'Exit marquee select', marquee: 'Select nodes', drag: 'Drag', autoLayout: 'Auto arrange', showAll: 'Show all',
     selectedCount: (count: number) => `${count} ${count === 1 ? 'node' : 'nodes'} selected`, moveTogether: 'Drag any selected node to move them together', clearSelection: 'Clear selection', connected: 'Connected', invalidConnection: 'Cannot connect here', connectionCancelled: 'Connection cancelled', connecting: 'Connecting', dragToPort: 'Drag to a green open port', connectionHint: 'Asset / text / selected image → generation; outputs are created automatically',
-    edgeActions: 'Selected connection actions', systemEdge: 'System output connection', selectedEdge: 'Connection selected', systemEdgeHint: 'Preserves generation lineage and cannot be deleted or reconnected', reconnectHint: 'Drag an endpoint to reconnect', delete: 'Delete', closeEdgeActions: 'Close connection actions', emptyGuide: 'Empty canvas guide', emptyTitle: 'Start with a creative direction', emptyDetail: 'Add a product, scene, or inspiration image, or start with a generation node and build the creative workflow step by step.', addAssets: 'Add assets', imageGeneration: 'Image generation', videoGeneration: 'Video generation',
+    edgeActions: 'Selected connection actions', systemEdge: 'System output connection', selectedEdge: 'Connection selected', systemEdgeHint: 'Preserves generation lineage and cannot be deleted or reconnected', reconnectHint: 'Drag an endpoint to reconnect', delete: 'Delete', closeEdgeActions: 'Close connection actions', emptyGuide: 'Empty canvas guide', emptyTitle: 'Start with a creative direction', emptyDetail: 'Add a product, scene, or inspiration image, or start with a generation node and build the creative workflow step by step.', addAssets: 'Add assets', imageGeneration: 'Image generation', videoGeneration: 'Video generation', agentStart: 'Describe the goal first', agentStartDetail: 'Let Agent organize the product, scene, and delivery specs before you decide what to generate.', dismissNotice: 'Dismiss operation notice',
     initFailed: 'Canvas could not start', initFailedDetail: 'Try again. If it still fails, sign out and sign in again.', retry: 'Retry', loadingCanvas: 'Loading canvas', canvasLabel: (name: string) => `${name} canvas`, backProjects: 'Back to projects', projects: 'Projects', openProjects: 'Open projects', projectName: 'Project name', openProject: (name: string) => `Open ${name}`, renameProject: 'Double-click to rename', closeProject: (name: string) => `Close ${name}`, closeTab: 'Close tab', newProject: 'New creative project',
     minimapLabel: 'Canvas navigation map', videoModelMissing: 'No video model is configured. Check MiniMax H3.', canvasTools: 'Canvas tools', addNode: 'Add node', openAssets: 'Open asset library', templates: 'Templates', history: 'Canvas history', delivery: 'Delivery', account: 'Open account settings', openAgent: 'Open Agent', loadingAgent: 'Loading Agent…', language: 'Switch to Chinese',
     imageAsset: 'Image asset', selectedResult: 'Selected result', candidate: (index: number) => `Candidate ${index}`, builtNodes: (count: number) => `${count} ${count === 1 ? 'node' : 'nodes'} built`, blankCanvasSummary: 'Blank canvas · Ready to start', refinedVersion: 'Refined version', generatedImage: 'Generated image', keyVisualVersion: 'Key visual version', dropToAdd: 'Drop to add to canvas', uploadLimits: 'PNG / JPEG / WebP, up to 8 MB each', addCanvasNode: 'Add canvas node', addFromImage: 'Add from this image', connectSelected: 'Connect selected node', addNodeTitle: 'Add node', closeAddNode: 'Close add-node menu', continueImage: 'Continue creating from this image', connectToGenerate: 'Connect assets and a description to generate an image', batchVariations: 'Batch variations', batchDetail: 'Generate once for each asset in a group', continueVideo: 'Continue from the current image or video', videoReferenceDetail: 'Connect a first frame, first and last frames, or reference assets', assets: 'Assets', assetsDetail: 'Add product, scene, or style images', localImages: 'Local images', uploadImages: 'Upload images', uploadToCanvas: 'Upload images and add to canvas', preview: (name: string) => `${name} preview`, downloadMedia: 'Download original media', closePreview: 'Close media preview',
@@ -661,12 +658,38 @@ function EdgeActions({ edge, position, onDelete, onClose }: {
   )
 }
 
+function CanvasAssistantNotice({
+  message,
+  dismissLabel,
+  onDismiss,
+}: {
+  message: string
+  dismissLabel: string
+  onDismiss: () => void
+}) {
+  useEffect(() => {
+    if (!message) return
+    const timer = window.setTimeout(onDismiss, 8_000)
+    return () => window.clearTimeout(timer)
+  }, [message, onDismiss])
+
+  if (!message) return null
+  return (
+    <div className="canvas-assistant-notice" role="status" aria-live="polite">
+      <span>{message}</span>
+      <button type="button" aria-label={dismissLabel} title={dismissLabel} onClick={onDismiss}><CloseIcon /></button>
+    </div>
+  )
+}
+
 function EmptyCanvasGuide({
   onOpenAssets,
+  onOpenAgent,
   onAddImage,
   onAddVideo,
 }: {
   onOpenAssets: () => void
+  onOpenAgent: () => void
   onAddImage: () => void
   onAddVideo: () => void
 }) {
@@ -676,6 +699,10 @@ function EmptyCanvasGuide({
       <span className="panel-eyebrow">START A PROJECT</span>
       <h2>{t.emptyTitle}</h2>
       <p>{t.emptyDetail}</p>
+      <button type="button" className="empty-canvas-guide__agent" onClick={onOpenAgent}>
+        <strong>{t.agentStart}</strong>
+        <small>{t.agentStartDetail}</small>
+      </button>
       <div>
         <button type="button" onClick={onOpenAssets}>{t.addAssets}</button>
         <button type="button" className="is-primary" onClick={onAddImage}>{t.imageGeneration}</button>
@@ -746,6 +773,7 @@ export default function CanvasWorkspace({
   const createDocumentFromTemplate = useCanvasStore((state) => state.createDocumentFromTemplate)
   const refreshSharedTemplates = useCanvasStore((state) => state.refreshSharedTemplates)
   const generationStatus = useCanvasStore((state) => state.generationStatus)
+  const assistantMessage = useCanvasStore((state) => state.assistantMessage)
   const generationError = useCanvasStore((state) => state.generationError)
   const expectedCandidateCount = useCanvasStore((state) => state.expectedCandidateCount)
   const generationCandidates = useCanvasStore((state) => state.generationCandidates)
@@ -763,6 +791,7 @@ export default function CanvasWorkspace({
   const addAgentMemory = useCanvasStore((state) => state.addAgentMemory)
   const removeAgentMemory = useCanvasStore((state) => state.removeAgentMemory)
   const clearGenerationError = useCanvasStore((state) => state.clearGenerationError)
+  const clearAssistantMessage = useCanvasStore((state) => state.clearAssistantMessage)
   const selectGenerationCandidate = useCanvasStore((state) => state.selectGenerationCandidate)
   const createLocalDeliveries = useCanvasStore((state) => state.createLocalDeliveries)
   const undoAction = useCanvasStore((state) => state.undoAction)
@@ -2162,6 +2191,7 @@ export default function CanvasWorkspace({
             <Panel position="top-left" className="empty-canvas-guide-panel">
               <EmptyCanvasGuide
                 onOpenAssets={() => openDockSurface('assets')}
+                onOpenAgent={agentBridge.open}
                 onAddImage={() => {
                   addGenerateNode({ x: 460, y: 330 }, 'image')
                   showComposer()
@@ -2234,10 +2264,10 @@ export default function CanvasWorkspace({
           />
         </ReactFlow>
 
-        {batchVariationProgressRun ? <BatchVariationProgress
+        <Suspense fallback={null}>{batchVariationProgressRun ? <BatchVariationProgress
           run={batchVariationProgressRun}
           onRetry={(runId, itemId) => retryBatchVariationItem(runId, itemId)}
-        /> : null}
+        /> : null}</Suspense>
 
         {!agentOpen ? <button ref={agentLauncherRef} type="button" className="agent-launcher" onClick={agentBridge.open} aria-label={t.openAgent} title="Agent"><SparkleIcon /></button> : null}
 
@@ -2445,7 +2475,7 @@ export default function CanvasWorkspace({
           />
         ) : null}
 
-        {batchComposerTarget ? <BatchVariationComposer
+        <Suspense fallback={null}>{batchComposerTarget ? <BatchVariationComposer
           key={batchComposerTarget.id}
           target={batchComposerTarget}
           groups={document.assetGroups}
@@ -2465,7 +2495,7 @@ export default function CanvasWorkspace({
             })
           }}
           onClose={() => setBatchComposerTargetId(null)}
-        /> : null}
+        /> : null}</Suspense>
 
         {regionEditTarget ? <RegionMaskEditor
           key={regionEditTarget.id}
@@ -2511,6 +2541,7 @@ export default function CanvasWorkspace({
           </div>
         ) : null}
         {canvasUploadMessage ? <div className="canvas-upload-message" role="status">{canvasUploadMessage}</div> : null}
+        <CanvasAssistantNotice message={assistantMessage} dismissLabel={t.dismissNotice} onDismiss={clearAssistantMessage} />
         {nodePalettePresence.present && visibleNodePalette ? (
           <div className={`node-palette is-${nodePalettePresence.phase}`} style={{ left: visibleNodePalette.screen.x, top: visibleNodePalette.screen.y }} role="dialog" aria-label={t.addCanvasNode} aria-hidden={nodePalettePresence.phase === 'exit' ? true : undefined} onPointerDown={(event) => event.stopPropagation()}>
             <div className="node-palette__title"><span>{visibleNodePalette.parentResultId ? t.addFromImage : visibleNodePalette.inputNodeId ? t.connectSelected : t.addNodeTitle}</span><button onClick={() => setNodePalette(null)} aria-label={t.closeAddNode}><CloseIcon /></button></div>
@@ -2596,7 +2627,7 @@ export default function CanvasWorkspace({
         />
 
         <CanvasPanelPresence open={assetsOpen} side="left">
-          <AssetLibrary
+          <Suspense fallback={null}><AssetLibrary
             key={document.id}
             assets={assetLibraryAssets}
             groups={document.assetGroups}
@@ -2612,10 +2643,10 @@ export default function CanvasWorkspace({
               setAssetsOpen(false)
               setAssetLibraryTargetGenerateId(null)
             }}
-          />
+          /></Suspense>
         </CanvasPanelPresence>
         <CanvasPanelPresence open={templatesOpen} side="right">
-          <TemplatePanel
+          <Suspense fallback={null}><TemplatePanel
             key={document.id}
             projectId={document.id}
             canvasDocument={document}
@@ -2638,10 +2669,10 @@ export default function CanvasWorkspace({
               setTemplatesOpen(false)
             }}
             onClose={() => setTemplatesOpen(false)}
-          />
+          /></Suspense>
         </CanvasPanelPresence>
         <CanvasPanelPresence open={historyOpen} side="right">
-          <HistoryPanel
+          <Suspense fallback={null}><HistoryPanel
             results={generatedHistoryItems}
             onPreview={(item) => {
               setImagePreview({ image: item.image, name: item.name, mediaKind: item.mediaKind })
@@ -2661,10 +2692,10 @@ export default function CanvasWorkspace({
             onSaveToLibrary={(item) => saveGeneratedImageToLibrary({ image: item.image, name: item.name, mediaKind: item.mediaKind })}
             isSaved={(item) => document.assets.some((asset) => asset.source === 'generated' && asset.image === item.image)}
             onClose={() => setHistoryOpen(false)}
-          />
+          /></Suspense>
         </CanvasPanelPresence>
         {nodeReferencesOpen && selectedGenerate ? (
-          <NodeReferencePanel
+          <Suspense fallback={null}><NodeReferencePanel
             node={{ id: selectedGenerate.id, data: selectedGenerate.data as GenerateNodeData }}
             references={canvasAssetReferences}
             connectedNodeIds={selectedGenerateReferenceNodeIds}
@@ -2672,10 +2703,10 @@ export default function CanvasWorkspace({
             onToggle={(assetNodeId, enabled) => toggleNodeReference(selectedGenerate.id, assetNodeId, enabled)}
             onSetPrimary={(assetNodeId) => setGenerateNodePrimaryInput(selectedGenerate.id, assetNodeId)}
             onClose={() => setNodeReferencesOpen(false)}
-          />
+          /></Suspense>
         ) : null}
         {candidatesOpen ? (
-          <GenerationPanel
+          <Suspense fallback={null}><GenerationPanel
             status={generationStatus}
             pendingCount={expectedCandidateCount}
             error={generationError}
@@ -2697,10 +2728,10 @@ export default function CanvasWorkspace({
               })
             }}
             onClose={() => setCandidatesOpen(false)}
-          />
+          /></Suspense>
         ) : null}
         <CanvasPanelPresence open={deliveryOpen} side="right">
-          <DeliveryPanel
+          <Suspense fallback={null}><DeliveryPanel
             target={selectedReadyResultData && selectedResult && canUseForImageDelivery(selectedReadyResultData.mediaKind) ? {
               nodeId: selectedResult.id,
               versionId: selectedReadyResultData.versionId,
@@ -2713,10 +2744,10 @@ export default function CanvasWorkspace({
             onCreate={createLocalDeliveries}
             onSelectTarget={selectNode}
             onClose={() => setDeliveryOpen(false)}
-          />
+          /></Suspense>
         </CanvasPanelPresence>
         {assetDeletePresence.present && visibleAssetToDelete ? (
-          <ConfirmationDialog
+          <Suspense fallback={null}><ConfirmationDialog
             asset={visibleAssetToDelete}
             phase={assetDeletePresence.phase}
             onConfirm={() => {
@@ -2724,7 +2755,7 @@ export default function CanvasWorkspace({
               setAssetToDelete(null)
             }}
             onCancel={() => setAssetToDelete(null)}
-          />
+          /></Suspense>
         ) : null}
         {imagePreviewPresence.present && visibleImagePreview ? (
           <div className={`image-preview-backdrop motion-overlay is-${imagePreviewPresence.phase}`} role="presentation" aria-hidden={imagePreviewPresence.phase === 'exit' ? true : undefined} onMouseDown={() => setImagePreview(null)}>
@@ -2738,7 +2769,7 @@ export default function CanvasWorkspace({
           </div>
         ) : null}
 
-        {undoPresence.present && visibleUndoAction ? <UndoToast label={visibleUndoAction.label} phase={undoPresence.phase} onUndo={undoLastAction} /> : null}
+        <Suspense fallback={null}>{undoPresence.present && visibleUndoAction ? <UndoToast label={visibleUndoAction.label} phase={undoPresence.phase} onUndo={undoLastAction} /> : null}</Suspense>
       </section>
 
       {accountMenuPresence.present && visibleAccountMenuAnchor ? <AccountMenu
