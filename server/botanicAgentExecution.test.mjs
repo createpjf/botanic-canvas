@@ -152,9 +152,13 @@ test('画布文本节点去掉旁白，生成节点不复制 Prompt', () => {
   })
   assert.equal(result.workflows[0].generateNode.data.prompt, '')
   assert.equal(result.workflows[0].promptNode.data.content, '保持人物服装，换成海边自然光')
-  assert.equal(result.jobs[0].rawInput.prompt, '保持人物服装，换成海边自然光')
-  assert.equal(result.jobs[0].rawInput.recipe.prompt, '保持人物服装，换成海边自然光')
-  assert.equal(result.jobs[0].generationRecipe.prompt, '保持人物服装，换成海边自然光')
+  assert.match(result.jobs[0].rawInput.prompt, /执行契约/u)
+  assert.match(result.jobs[0].rawInput.prompt, /保持人物服装，换成海边自然光/u)
+  assert.match(result.jobs[0].rawInput.recipe.prompt, /保持人物服装，换成海边自然光/u)
+  assert.match(result.jobs[0].rawInput.recipe.prompt, /执行契约/u)
+  assert.equal(result.jobs[0].rawInput.recipe.promptForDisplay, undefined)
+  assert.equal(result.jobs[0].generationRecipe.promptForDisplay, '保持人物服装，换成海边自然光')
+  assert.match(result.jobs[0].generationRecipe.prompt, /执行契约/u)
 })
 
 test('首次生成从权威画布解析图片上下文并复用普通 Generation Job 链路', () => {
@@ -454,8 +458,10 @@ test('无素材变体分支把本支增量叠到共用画面 Prompt 上', () => 
   })
 
   assert.equal(result.jobs.length, 2)
-  assert.equal(result.jobs[0].rawInput.prompt, '保持人物与白裙，棚拍柔光。\n\n人物肤色为白皙，保持五官与身份不变。')
-  assert.equal(result.jobs[1].rawInput.prompt, '保持人物与白裙，棚拍柔光。\n\n人物肤色为小麦，保持五官与身份不变。')
+  assert.match(result.jobs[0].rawInput.prompt, /执行契约/u)
+  assert.match(result.jobs[0].rawInput.prompt, /人物肤色为白皙，保持五官与身份不变。/u)
+  assert.match(result.jobs[1].rawInput.prompt, /人物肤色为小麦，保持五官与身份不变。/u)
+  assert.equal(result.jobs[0].generationRecipe.promptForDisplay, '保持人物与白裙，棚拍柔光。\n\n人物肤色为白皙，保持五官与身份不变。')
   assert.equal(result.jobs[0].rawInput.parent.mediaId, 'media_parent')
 })
 

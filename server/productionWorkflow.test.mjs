@@ -101,6 +101,18 @@ test('运行可暂停、恢复与取消，终态和历史版本不会被静默�
   assert.throws(() => transitionProductionWorkflowRun(cancelled, 'resume', { now: 250 }), /终态/)
 })
 
+test('开启质量门时全部生成完成后必须经过人工评审才能发布', () => {
+  const workflow = createProductionWorkflowVersion({
+    id: 'workflow-review', projectId: 'project-a', name: '需审核', definition,
+  }, { actorId: 'user-a', now: 100 })
+  const run = createProductionWorkflowRun({ id: 'run-review', workflow, itemInputs: [{ id: 'sku-a' }] }, { actorId: 'user-a', now: 200 })
+  const awaiting = applyWorkflowItemResult(transitionProductionWorkflowRun(run, 'start', { now: 210 }), 'sku-a', { status: 'succeeded', jobId: 'job-a' }, { now: 220 })
+  assert.equal(awaiting.status, 'awaiting_review')
+  assert.equal(awaiting.qualityGate.status, 'pending')
+  assert.equal(transitionProductionWorkflowRun(awaiting, 'approve-review', { now: 230 }).status, 'succeeded')
+  assert.equal(transitionProductionWorkflowRun(awaiting, 'reject-review', { now: 240 }).status, 'failed')
+})
+
 test('工作流结果血缘关联版本、运行、任务、Artifact、画布节点与来源版本', () => {
   assert.deepEqual(productionWorkflowLineage({
     workflowId: 'workflow-a', workflowVersion: 3, runId: 'run-a', itemId: 'sku-a',

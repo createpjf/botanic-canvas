@@ -108,6 +108,11 @@ FLOCK_TEXT_MODEL=deepseek-v4-pro
 FLOCK_AGENT_MODELS=deepseek-v4-pro,deepseek-v4-flash,kimi-k3
 AGENT_VISION_MODEL=gemini-3.6-flash
 AGENT_PLANNER_TIMEOUT_MS=55000
+AGENT_RUNTIME_V2=true
+AGENT_QUALITY_V2=true
+AGENT_MEMORY_V2=true
+AGENT_SKILL_GOVERNANCE_V2=true
+AGENT_FORK_COMPARE_V2=true
 BOTANIC_MCP_TOOLS_JSON=[]
 BOTANIC_WEB_SEARCH_API_KEY=
 BOTANIC_WEB_SEARCH_URL=https://api.tavily.com/search
@@ -118,6 +123,7 @@ BOTANIC_WEB_SEARCH_URL=https://api.tavily.com/search
 `BOTANIC_WEB_SEARCH_API_KEY` 是默认联网搜索（Tavily Search API）。只保存在 API 进程；浏览器不出网。不要把 `https://mcp.tavily.com/mcp/?tavilyApiKey=...` 配进 MCP 或 `BOTANIC_WEB_SEARCH_URL`，服务端会忽略这类地址并回退到 `https://api.tavily.com/search`。未配置密钥时没有 `web_search`，但仍可 `web_fetch` 用户给出的公开 HTTPS 页。`web_search` / `web_fetch` 共用每用户每分钟配额（`SECURITY_WEB_RESEARCH_PER_MINUTE`，默认 20），失败也计次。
 
 Agent 对话支持日常问答、Prompt 生成和项目内受控检索。项目本体、画布关系、素材组、项目记忆与已启用 Skill 由服务端按当前项目权限读取；配置了 Tavily 后才允许关键词联网检索。
+Agent V2 旗标默认开启，用于统一记录部署与灰度状态；生产切换前应先完成迁移与健康检查。
 API 与 Worker 必须使用相同的图像 / 视频 Provider 配置。H3 当前目录固定为 2K，画幅支持 `16:9`、`4:3`、`1:1`、`3:4` 与 `9:16`。
 
 ### 兼容 Supabase 的部署

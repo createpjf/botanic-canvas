@@ -76,12 +76,33 @@ export type GenerationReference = {
   priority?: number
 }
 
+export type GenerationConstraintSnapshot = {
+  dimension: string
+  mode: 'preserve' | 'vary'
+  sourceAssetGroupId?: string
+}
+
+export type GenerationQualityPolicy = {
+  version: number
+  requiredCriteria: string[]
+  humanDecisionRequired: boolean
+}
+
 export type GenerationRecipe = {
   primaryReferenceNodeId?: string
   references: GenerationReference[]
   prompt: string
+  /** 画布文本节点展示的用户可读 Prompt；Provider 执行 Prompt 可能包含结构化契约前缀。 */
+  promptForDisplay?: string
   batchCount: number
   settings: GenerationSettings
+  /** Agent V2 编译后的执行语义；旧画布配方缺省时保持 V1 行为。 */
+  creativeIntent?: string
+  constraints?: GenerationConstraintSnapshot[]
+  qualityPolicy?: GenerationQualityPolicy
+  sourcePlanFingerprint?: string
+  memoryBindings?: Array<{ id: string; version?: number; contentHash?: string; selectionReason?: string }>
+  skillBindings?: Array<{ id: string; version?: number; contentHash?: string; selectionReason?: string }>
   /** 仅视频生成节点使用；旧配方缺省时按输入数量推导。 */
   videoInputMode?: VideoInputMode
   /**

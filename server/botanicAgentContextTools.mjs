@@ -1,4 +1,5 @@
 import { agentToolObject as toolObject, agentToolText as toolText } from './agentToolRuntime.mjs'
+import { selectBotanicAgentMemory } from './botanicAgentMemory.mjs'
 
 // 只读上下文工具是 Agent 对话与回合规划共享的深模块：把项目本体、记忆、素材组与
 // 已审核 Skill 的受控读取集中在一处，任何调用方都拿到同一套安全语义（不返回图片字节、
@@ -70,8 +71,7 @@ export function createBotanicAgentReadToolDefinitions({ ontology, memory, skills
       },
       execute: async ({ query }) => {
         const normalizedQuery = searchText(query)
-        const matches = memory.filter((item) => !normalizedQuery || matchesQuery(item, normalizedQuery, ['id', 'kind', 'content']))
-        return { total: matches.length, items: matches.slice(0, 30) }
+        return selectBotanicAgentMemory(memory, { query: normalizedQuery, limit: 30 })
       },
     },
     {

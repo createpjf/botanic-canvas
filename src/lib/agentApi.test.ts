@@ -35,6 +35,7 @@ test('浏览器只向 Agent Planner 发送参考元数据，不发送图片与�
     ],
     projectMemory: [
       { id: 'memory-brand', kind: 'rule', content: 'Logo 与瓶身比例不可改变。', sourceNodeIds: ['asset-product'], createdAt: 1, updatedAt: 1 },
+      { id: 'memory-provisional', kind: 'avoid', content: '模型猜测的临时规则。', sourceNodeIds: [], createdAt: 1, updatedAt: 1, confidence: 'provisional' },
     ],
   })
 

@@ -67,6 +67,9 @@ function initialState() {
     globalAssetLibraries: [],
     generationJobs: [],
     agentRuns: [],
+    agentTurns: [],
+    agentTurnEvents: [],
+    agentReviews: [],
     agentSessions: [],
     agentSessionReadReceipts: [],
     collaborationActivities: [],
@@ -724,11 +727,22 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       const timestamp = now()
       const existing = state.agentSkills.find((item) => item.id === skill.id)
       if (existing && existing.projectId !== skill.projectId) throw productError('Skill 标识已被其他项目使用。', 'AGENT_SKILL_ID_CONFLICT')
+      const version = Math.max(1, Number(existing?.version ?? skill.version ?? 1) + (existing ? 1 : 0))
+      const contentHash = createHash('sha256').update(String(skill.instructions ?? '')).digest('base64url')
+      const versions = [
+        ...(Array.isArray(existing?.versions) ? existing.versions : []),
+        { version, contentHash, instructions: String(skill.instructions ?? ''), updatedAt: timestamp },
+      ].slice(-20)
       const payload = {
         ...clone(skill),
         ownerId: userId,
         createdAt: Number(existing?.createdAt ?? skill.createdAt) || timestamp,
         updatedAt: timestamp,
+        version,
+        contentHash,
+        capabilities: Array.isArray(skill.capabilities) && skill.capabilities.length ? [...new Set(skill.capabilities)].slice(0, 12) : ['read'],
+        governance: skill.governance ?? 'project-approved',
+        versions,
       }
       if (existing) Object.assign(existing, payload)
       else state.agentSkills.push(payload)
@@ -838,6 +852,109 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
         .sort((left, right) => right.updatedAt - left.updatedAt)
         .slice(0, Math.max(1, Math.min(limit, 60)))
         .map(clone)
+    },
+
+    putAgentTurn(userId, turn) {
+      const project = state.projects.find((item) => item.id === turn.projectId)
+      if (!project) throw productError('未找到项目。', 'PROJECT_NOT_FOUND')
+      assertProjectPermission(project.members.find((item) => item.userId === userId)?.role, 'read', 'PROJECT_READ_FORBIDDEN')
+      const existing = state.agentTurns.find((item) => item.id === turn.id)
+      if (existing && (existing.projectId !== turn.projectId || existing.ownerId !== userId)) {
+        throw productError('Agent Turn 标识已被其他项目使用。', 'AGENT_TURN_ID_CONFLICT')
+      }
+      const payload = { ...clone(turn), ownerId: userId, updatedAt: Number(turn.updatedAt) || now() }
+      if (existing) Object.assign(existing, payload)
+      else state.agentTurns.push(payload)
+      audit({ actorId: userId, action: `agent-turn.${turn.status}`, projectId: turn.projectId, targetId: turn.id })
+      save()
+      return clone(payload)
+    },
+
+    readAgentTurn(userId, turnId) {
+      const turn = state.agentTurns.find((item) => item.id === turnId && item.ownerId === userId)
+      if (!turn) return undefined
+      const project = state.projects.find((item) => item.id === turn.projectId)
+      return project && canAccess(project, userId) ? clone(turn) : undefined
+    },
+
+    readAgentTurnForWorker(turnId) {
+      const turn = state.agentTurns.find((item) => item.id === turnId)
+      return turn ? clone(turn) : undefined
+    },
+
+    listAgentTurnsForProject(userId, projectId, limit = 30) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project || !canAccess(project, userId)) return undefined
+      return state.agentTurns
+        .filter((turn) => turn.projectId === projectId && turn.ownerId === userId)
+        .sort((left, right) => right.updatedAt - left.updatedAt)
+        .slice(0, Math.max(1, Math.min(Number(limit) || 30, 100)))
+        .map(clone)
+    },
+
+    appendAgentTurnEvent(userId, projectId, event) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project) throw productError('未找到项目。', 'PROJECT_NOT_FOUND')
+      assertProjectPermission(project.members.find((item) => item.userId === userId)?.role, 'read', 'PROJECT_READ_FORBIDDEN')
+      const turn = state.agentTurns.find((item) => item.id === event.turnId && item.projectId === projectId && item.ownerId === userId)
+      if (!turn) throw productError('未找到 Agent Turn。', 'AGENT_TURN_NOT_FOUND')
+      const existing = state.agentTurnEvents.find((item) => item.turnId === event.turnId && item.sequence === event.sequence)
+      if (existing) return clone(existing)
+      const payload = { ...clone(event), ownerId: userId, projectId }
+      state.agentTurnEvents.push(payload)
+      if (state.agentTurnEvents.length > 100_000) state.agentTurnEvents.splice(0, state.agentTurnEvents.length - 100_000)
+      save()
+      return clone(payload)
+    },
+
+    listAgentTurnEvents(userId, projectId, turnId, limit = 200) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project || !canAccess(project, userId)) return undefined
+      return state.agentTurnEvents
+        .filter((event) => event.projectId === projectId && event.turnId === turnId && event.ownerId === userId)
+        .sort((left, right) => left.sequence - right.sequence)
+        .slice(0, Math.max(1, Math.min(Number(limit) || 200, 500)))
+        .map(clone)
+    },
+
+    putAgentReview(userId, review) {
+      const project = state.projects.find((item) => item.id === review.projectId)
+      if (!project) throw productError('未找到项目。', 'PROJECT_NOT_FOUND')
+      assertProjectPermission(project.members.find((item) => item.userId === userId)?.role, 'read', 'PROJECT_READ_FORBIDDEN')
+      const existing = state.agentReviews.find((item) => item.id === review.id)
+      if (existing && (existing.projectId !== review.projectId || existing.ownerId !== userId)) throw productError('Agent 评审标识已被其他项目使用。', 'AGENT_REVIEW_ID_CONFLICT')
+      const payload = { ...clone(review), ownerId: userId, updatedAt: Number(review.updatedAt) || now() }
+      if (existing) Object.assign(existing, payload)
+      else state.agentReviews.push(payload)
+      audit({ actorId: userId, action: existing ? 'agent-review.updated' : 'agent-review.created', projectId: review.projectId, targetId: review.id })
+      save()
+      return clone(payload)
+    },
+
+    readAgentReview(userId, projectId, runId, locale = 'zh-CN') {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project || !canAccess(project, userId)) return undefined
+      const review = state.agentReviews.find((item) => item.projectId === projectId && item.runId === runId && item.locale === locale)
+      return review && review.ownerId === userId ? clone(review) : undefined
+    },
+
+    listAgentReviewsForRun(userId, projectId, runId) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project || !canAccess(project, userId)) return undefined
+      return state.agentReviews.filter((item) => item.projectId === projectId && item.runId === runId && item.ownerId === userId).sort((left, right) => right.updatedAt - left.updatedAt).map(clone)
+    },
+
+    putAgentReviewDecision(userId, projectId, reviewId, decision, decisionNote = '') {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project) throw productError('未找到项目。', 'PROJECT_NOT_FOUND')
+      assertProjectPermission(project.members.find((item) => item.userId === userId)?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      const review = state.agentReviews.find((item) => item.id === reviewId && item.projectId === projectId)
+      if (!review) throw productError('未找到 Agent 评审。', 'AGENT_REVIEW_NOT_FOUND')
+      if (!['pending', 'accepted', 'rejected', 'retry_requested'].includes(decision)) throw productError('评审决策无效。', 'AGENT_REVIEW_DECISION_INVALID')
+      Object.assign(review, { status: decision, decisionNote: String(decisionNote ?? '').slice(0, 500), decidedBy: userId, updatedAt: now() })
+      audit({ actorId: userId, action: `agent-review.${decision}`, projectId, targetId: reviewId })
+      save()
+      return clone(review)
     },
 
     readGenerationJob(userId, jobId) {

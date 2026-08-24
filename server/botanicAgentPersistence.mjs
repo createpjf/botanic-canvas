@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+
 const SESSION_LIMIT = 80
 const MESSAGE_LIMIT = 500
 const MEMORY_LIMIT = 30
@@ -55,6 +57,7 @@ const messageRoles = new Set(['user', 'assistant'])
 const messageKinds = new Set(['text', 'question', 'plan', 'run', 'notice', 'composition'])
 const messageStatuses = new Set(['pending', 'answered', 'submitted', 'failed'])
 const feedbackValues = new Set(['positive', 'negative'])
+const reviewStatuses = new Set(['pending', 'accepted', 'rejected', 'retry_requested'])
 const mentionKinds = new Set(['skill', 'reference'])
 const MENTION_LIMIT = 24
 
@@ -80,7 +83,45 @@ function persistAgentMentions(value) {
   }
   return mentions
 }
+
+function persistedAgentReview(raw) {
+  const review = object(raw, 'Agent 评审')
+  if (!Array.isArray(review.items) || review.items.length > 20) invalid('Agent 评审条目无效。')
+  const items = review.items.map((item, index) => {
+    const entry = object(item, `Agent 评审条目 ${index + 1}`)
+    if (!['pass', 'adjust'].includes(entry.verdict)) invalid('Agent 评审结论无效。')
+    return {
+      nodeId: text(entry.nodeId, `Agent 评审结果节点 ${index + 1}`, 160),
+      branchLabel: text(entry.branchLabel, `Agent 评审分支 ${index + 1}`, 160),
+      verdict: entry.verdict,
+      note: typeof entry.note === 'string' ? entry.note.trim().slice(0, 240) : '',
+    }
+  })
+  const result = {
+    summary: text(review.summary, 'Agent 评审总结', 400),
+    items,
+  }
+  if (review.bestNodeId !== undefined) result.bestNodeId = text(review.bestNodeId, 'Agent 评审推荐结果', 160)
+  if (review.id !== undefined) result.id = text(review.id, 'Agent 评审标识', 160)
+  if (review.version !== undefined && Number(review.version) !== 2) invalid('Agent 评审版本无效。')
+  if (review.version !== undefined) result.version = 2
+  if (review.runId !== undefined) result.runId = text(review.runId, 'Agent 评审 Run', 160)
+  if (review.projectId !== undefined) result.projectId = text(review.projectId, 'Agent 评审项目', 160)
+  if (review.locale !== undefined && !['zh-CN', 'en'].includes(review.locale)) invalid('Agent 评审语言无效。')
+  if (review.locale !== undefined) result.locale = review.locale
+  if (review.status !== undefined && !reviewStatuses.has(review.status)) invalid('Agent 评审状态无效。')
+  if (review.status !== undefined) result.status = review.status
+  if (review.requiredCriteria !== undefined) result.requiredCriteria = uniqueTextList(review.requiredCriteria, 'Agent 评审标准', 20, 80)
+  if (review.decisionNote !== undefined) result.decisionNote = String(review.decisionNote).slice(0, 500)
+  if (review.decidedBy !== undefined) result.decidedBy = text(review.decidedBy, 'Agent 评审操作者', 160)
+  if (review.createdAt !== undefined) result.createdAt = timestamp(review.createdAt, Date.now())
+  if (review.updatedAt !== undefined) result.updatedAt = timestamp(review.updatedAt, result.createdAt ?? Date.now())
+  return result
+}
 const memoryKinds = new Set(['rule', 'approved', 'avoid'])
+const memoryScopes = new Set(['project', 'workspace', 'run'])
+const memorySources = new Set(['human', 'review', 'conversation', 'import'])
+const memoryConfidences = new Set(['confirmed', 'provisional'])
 const runStatuses = new Set(['awaiting_confirmation', 'queued', 'executing', 'running', 'completed', 'partial', 'failed', 'cancelled'])
 
 const clone = (value) => structuredClone(value)
@@ -248,6 +289,7 @@ export function validateAgentMessageEntity(value, { now = Date.now() } = {}) {
   if (message.runId !== undefined) result.runId = text(message.runId, 'Agent Run 标识', 160)
   if (message.status !== undefined) result.status = message.status
   if (message.feedback !== undefined) result.feedback = message.feedback
+  if (message.review !== undefined) result.review = persistedAgentReview(message.review)
   return result
 }
 
@@ -255,13 +297,32 @@ export function validateAgentMemoryEntity(value, { now = Date.now() } = {}) {
   const memory = object(value, 'Agent 记忆')
   if (!memoryKinds.has(memory.kind)) invalid('Agent 记忆类型无效。')
   const createdAt = timestamp(memory.createdAt, now)
+  const content = text(memory.content, 'Agent 记忆内容', 1000).replace(/\s+/g, ' ')
+  const version = memory.version === undefined ? 1 : Number(memory.version)
+  if (!Number.isInteger(version) || version < 1 || version > 10_000) invalid('Agent 记忆版本无效。')
+  const scope = memory.scope === undefined ? 'project' : memory.scope
+  const source = memory.source === undefined ? 'human' : memory.source
+  const confidence = memory.confidence === undefined ? 'confirmed' : memory.confidence
+  if (!memoryScopes.has(scope)) invalid('Agent 记忆作用域无效。')
+  if (!memorySources.has(source)) invalid('Agent 记忆来源无效。')
+  if (!memoryConfidences.has(confidence)) invalid('Agent 记忆可信度无效。')
+  const computedContentHash = createHash('sha256').update(content).digest('base64url')
+  const contentHash = memory.contentHash === undefined
+    ? computedContentHash
+    : text(memory.contentHash, 'Agent 记忆内容摘要', 200)
+  if (contentHash !== computedContentHash) invalid('Agent 记忆内容摘要与内容不一致。')
   return {
     id: text(memory.id, 'Agent 记忆标识', 160),
     kind: memory.kind,
-    content: text(memory.content, 'Agent 记忆内容', 1000).replace(/\s+/g, ' '),
+    content,
     sourceNodeIds: uniqueTextList(memory.sourceNodeIds, 'Agent 记忆来源节点', 12),
     createdAt,
     updatedAt: Math.max(createdAt, timestamp(memory.updatedAt, now)),
+    scope,
+    source,
+    confidence,
+    version,
+    contentHash,
   }
 }
 

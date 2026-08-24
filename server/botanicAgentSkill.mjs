@@ -1,4 +1,7 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+
+export const botanicAgentSkillCapabilities = Object.freeze(['read', 'write', 'costly', 'external'])
+const skillCapabilitySet = new Set(botanicAgentSkillCapabilities)
 
 export class BotanicAgentSkillError extends Error {
   constructor(statusCode, code, message) {
@@ -18,6 +21,21 @@ function text(value, name, maximumLength) {
   return value.trim()
 }
 
+export function normalizeBotanicAgentSkillCapabilities(value) {
+  if (value === undefined) return ['read']
+  if (!Array.isArray(value) || value.length > 12 || !value.length) {
+    throw new BotanicAgentSkillError(400, 'INVALID_AGENT_SKILL', 'Skill 能力声明无效。')
+  }
+  const capabilities = [...new Set(value.map((capability) => {
+    if (typeof capability !== 'string' || !skillCapabilitySet.has(capability)) {
+      throw new BotanicAgentSkillError(400, 'INVALID_AGENT_SKILL', `Skill 能力「${String(capability)}」不受支持。`)
+    }
+    return capability
+  }))]
+  if (!capabilities.length) throw new BotanicAgentSkillError(400, 'INVALID_AGENT_SKILL', 'Skill 能力声明无效。')
+  return capabilities
+}
+
 export function validateAgentSkillCreation(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     throw new BotanicAgentSkillError(400, 'INVALID_AGENT_SKILL', 'Skill 请求无效。')
@@ -31,7 +49,8 @@ export function validateAgentSkillCreation(body) {
   if (/https?:\/\//i.test(instructions)) {
     throw new BotanicAgentSkillError(400, 'AGENT_SKILL_EXTERNAL_URL_FORBIDDEN', 'Skill 规则不能直接包含外部地址。')
   }
-  return { projectId, name, instructions }
+  const capabilities = normalizeBotanicAgentSkillCapabilities(body.capabilities)
+  return { projectId, name, instructions, capabilities }
 }
 
 export function createAgentSkill(input, {
@@ -40,6 +59,7 @@ export function createAgentSkill(input, {
   now = Date.now(),
 } = {}) {
   if (!ownerId) throw new TypeError('项目 Skill 缺少所有者。')
+  const contentHash = createHash('sha256').update(input.instructions).digest('base64url')
   return {
     id,
     projectId: input.projectId,
@@ -49,6 +69,11 @@ export function createAgentSkill(input, {
     status: 'active',
     createdAt: now,
     updatedAt: now,
+    version: 1,
+    contentHash,
+    capabilities: normalizeBotanicAgentSkillCapabilities(input.capabilities),
+    governance: 'project-approved',
+    versions: [{ version: 1, contentHash, instructions: input.instructions, updatedAt: now }],
   }
 }
 
@@ -61,5 +86,9 @@ export function publicAgentSkill(skill) {
     status: skill.status,
     createdAt: skill.createdAt,
     updatedAt: skill.updatedAt,
+    version: skill.version ?? 1,
+    contentHash: skill.contentHash,
+    capabilities: skill.capabilities ?? ['read'],
+    governance: skill.governance ?? 'project-approved',
   } : undefined
 }

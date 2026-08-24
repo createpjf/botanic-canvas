@@ -166,6 +166,36 @@ function validateConstraints(rawConstraints, { allowEmpty = false } = {}) {
   })
 }
 
+function validateBindings(rawBindings, label) {
+  if (rawBindings === undefined) return undefined
+  if (!Array.isArray(rawBindings) || rawBindings.length > 32) throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', `${label}绑定无效。`)
+  return rawBindings.map((binding, index) => {
+    const result = { id: text(binding?.id, `${label}第 ${index + 1} 项标识`, 160) }
+    if (binding?.version !== undefined) {
+      const version = Number(binding.version)
+      if (!Number.isInteger(version) || version < 1) throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', `${label}版本无效。`)
+      result.version = version
+    }
+    if (binding?.contentHash) result.contentHash = text(binding.contentHash, `${label}内容摘要`, 200)
+    if (binding?.selectionReason) result.selectionReason = text(binding.selectionReason, `${label}使用原因`, 240)
+    return result
+  })
+}
+
+function validateLineage(rawLineage) {
+  if (rawLineage === undefined) return undefined
+  if (!rawLineage || typeof rawLineage !== 'object' || rawLineage.relation !== 'fork') {
+    throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', 'Agent Run 血缘关系无效。')
+  }
+  return {
+    relation: 'fork',
+    parentRunId: text(rawLineage.parentRunId, '父 Agent Run', 160),
+    ...(rawLineage.parentBranchId ? { parentBranchId: text(rawLineage.parentBranchId, '父 Agent 分支', 160) } : {}),
+    ...(rawLineage.rootRunId ? { rootRunId: text(rawLineage.rootRunId, '根 Agent Run', 160) } : {}),
+    ...(rawLineage.createdAt === undefined ? {} : { createdAt: Number(rawLineage.createdAt) || Date.now() }),
+  }
+}
+
 function validateContextSnapshot(rawSnapshot) {
   if (rawSnapshot === undefined) return undefined
   if (!Array.isArray(rawSnapshot) || rawSnapshot.length > 16) {
@@ -294,8 +324,12 @@ export function validateAgentRunCreation(body) {
     throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', '局部重绘计划必须携带有效选区。')
   }
   const composition = validateComposition(rawPlan.composition)
+  const memoryBindings = validateBindings(rawPlan.memoryBindings, '项目记忆')
+  const skillBindings = validateBindings(rawPlan.skillBindings, 'Skill')
+  const lineage = validateLineage(body.lineage)
   return {
     projectId,
+    ...(lineage ? { lineage } : {}),
     plan: {
       ...(rawPlan.plannerModel ? { plannerModel: text(rawPlan.plannerModel, 'Agent 模型', 160) } : {}),
       intent: rawPlan.intent,
@@ -310,6 +344,8 @@ export function validateAgentRunCreation(body) {
       ...(variation ? { variation } : {}),
       ...(region ? { region } : {}),
       ...(composition ? { composition } : {}),
+      ...(memoryBindings?.length ? { memoryBindings } : {}),
+      ...(skillBindings?.length ? { skillBindings } : {}),
       ...(contextSnapshot?.length ? { contextSnapshot } : {}),
       ...(rawPlan.assetGroupId ? { assetGroupId: text(rawPlan.assetGroupId, '素材组', 160) } : {}),
       ...(toolCalls ? { toolCalls } : {}),
@@ -337,6 +373,7 @@ export function createPersistentAgentRun(input, { id = `agent_run_${randomUUID()
     id,
     ownerId,
     projectId: input.projectId,
+    ...(input.lineage ? { lineage: structuredClone(input.lineage) } : {}),
     status: 'queued',
     plan: structuredClone(input.plan),
     branches: input.branches.map((branch) => ({

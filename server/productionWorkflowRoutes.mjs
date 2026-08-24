@@ -271,6 +271,8 @@ export function createProductionWorkflowRouteHandler({
             await productStore.putGenerationJob(user.id, persistedGenerationJob({ ...job, status: 'cancelled', updatedAt: Date.now() }))
             await redisQueue?.cancel(job.id)
           }
+        } else if (body.action === 'approve-review' || body.action === 'reject-review') {
+          run = transitionProductionWorkflowRun(run, body.action, { actorId: user.id })
         } else {
           return error(response, 400, 'INVALID_WORKFLOW_ACTION', '工作流操作不支持。')
         }

@@ -292,3 +292,20 @@ test('方案消息拒绝无效条目或缺少结构化方案', () => {
     id: 'message-unknown', role: 'assistant', kind: 'recipe', content: 'x', createdAt: 1,
   }))
 })
+
+test('评审消息只保存结构化结论并支持人工决策状态', () => {
+  const message = validateAgentMessageEntity({
+    id: 'message-review', role: 'assistant', kind: 'text', content: '已完成评审。', createdAt: 1,
+    review: {
+      id: 'review-1', version: 2, runId: 'run-1', projectId: 'project-a', locale: 'zh-CN', status: 'pending',
+      summary: '主体稳定。', bestNodeId: 'node-a', items: [{ nodeId: 'node-a', branchLabel: '首图', verdict: 'pass', note: '清晰' }],
+      requiredCriteria: ['identity'],
+    },
+  })
+  assert.equal(message.review.status, 'pending')
+  assert.equal(message.review.items[0].verdict, 'pass')
+  assert.throws(() => validateAgentMessageEntity({
+    id: 'message-review-invalid', role: 'assistant', kind: 'text', content: 'x', createdAt: 1,
+    review: { summary: 'x', items: [{ nodeId: 'node-a', branchLabel: 'a', verdict: 'bad' }] },
+  }))
+})

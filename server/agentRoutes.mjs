@@ -14,6 +14,9 @@ import { retargetGenerationJobForRetry } from './generationResultReconciliation.
 import { requireProjectPermission } from './projectAuthorization.mjs'
 import { buildAgentExecutionTrace } from './agentExecutionTrace.mjs'
 import { actionArgumentsHash, agentToolPermission, assertFreshActionApproval, createActionApprovalToken } from './agentActionGovernance.mjs'
+import { agentTurnIdForIdempotency, createBotanicAgentTurnRuntime, publicAgentTurn } from './botanicAgentTurnRuntime.mjs'
+import { compareBotanicAgentRunBranches } from './botanicAgentCompare.mjs'
+import { createForkedAgentRunInput, forkedAgentRunIdForIdempotency } from './botanicAgentFork.mjs'
 
 export { BotanicAgentPlannerError, BotanicAgentChatError }
 
@@ -112,8 +115,18 @@ export function createAgentRouteHandler({
   const visionMediaResolver = (userId, projectId) => (mediaService?.enabled
     ? (mediaId) => mediaService.readGenerationInput(userId, mediaId, projectId)
     : undefined)
-  const agentRunReviewCache = new Map()
+  const plannerSkillInput = (skill) => ({
+    id: skill.id,
+    name: skill.name,
+    instructions: skill.instructions,
+    status: skill.status,
+    ...(Number.isInteger(skill.version) ? { version: skill.version } : {}),
+    ...(typeof skill.contentHash === 'string' ? { contentHash: skill.contentHash } : {}),
+    ...(Array.isArray(skill.capabilities) ? { capabilities: skill.capabilities } : {}),
+  })
   const agentActionExecutions = new Map()
+  const agentTurnRuntime = createBotanicAgentTurnRuntime({ productStore })
+  const agentTurnControllers = new Map()
   const methodNotAllowed = (response, message, allow) => json(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message } }, { Allow: allow })
   const observeRun = (event) => {
     try { observeAgentRun(event) } catch { /* 运行日志不得阻断用户请求。 */ }
@@ -151,6 +164,50 @@ export function createAgentRouteHandler({
   const agentActionTimeoutMs = Number.isFinite(configuredActionTimeout)
     ? Math.max(1, Math.min(120_000, configuredActionTimeout))
     : 30_000
+  const bindAuthoritativeKnowledge = async (userId, input) => {
+    const [projectState, projectSkills] = await Promise.all([
+      typeof productStore.readAgentState === 'function' ? productStore.readAgentState(userId, input.projectId) : undefined,
+      typeof productStore.listAgentSkills === 'function' ? productStore.listAgentSkills(userId, input.projectId) : [],
+    ])
+    const memoriesById = new Map((projectState?.memory ?? []).map((memory) => [memory.id, memory]))
+    const skillsById = new Map((projectSkills ?? []).map((skill) => [skill.id, skill]))
+    const bind = (bindings, catalog, label) => (bindings ?? []).map((binding) => {
+      const current = catalog.get(binding.id)
+      // 系统 Skill 没有项目版本记录；项目 Memory/Skill 必须在确认瞬间仍存在且 hash 一致。
+      if (!current) {
+        if (label === 'Skill' && botanicAgentBuiltInSkill(binding.id)) return binding
+        const error = new Error(`${label}「${binding.id}」已不存在或未获项目授权。`)
+        error.statusCode = 409
+        error.code = `${label === 'Skill' ? 'AGENT_SKILL' : 'AGENT_MEMORY'}_BINDING_STALE`
+        throw error
+      }
+      if (binding.version !== undefined && Number(current.version ?? 1) !== Number(binding.version)) {
+        const error = new Error(`${label}「${binding.id}」已更新，请重新规划。`)
+        error.statusCode = 409
+        error.code = `${label === 'Skill' ? 'AGENT_SKILL' : 'AGENT_MEMORY'}_BINDING_STALE`
+        throw error
+      }
+      if (binding.contentHash && current.contentHash && binding.contentHash !== current.contentHash) {
+        const error = new Error(`${label}「${binding.id}」内容已更新，请重新规划。`)
+        error.statusCode = 409
+        error.code = `${label === 'Skill' ? 'AGENT_SKILL' : 'AGENT_MEMORY'}_BINDING_STALE`
+        throw error
+      }
+      return {
+        ...binding,
+        version: Number(current.version ?? 1),
+        ...(current.contentHash ? { contentHash: current.contentHash } : {}),
+      }
+    })
+    return {
+      ...input,
+      plan: {
+        ...input.plan,
+        ...(input.plan.memoryBindings ? { memoryBindings: bind(input.plan.memoryBindings, memoriesById, '项目记忆') } : {}),
+        ...(input.plan.skillBindings ? { skillBindings: bind(input.plan.skillBindings, skillsById, 'Skill') } : {}),
+      },
+    }
+  }
   const withActionTimeout = (promise, actionName) => new Promise((resolve, reject) => {
     let settled = false
     const timeoutId = setTimeout(() => {
@@ -187,10 +244,125 @@ export function createAgentRouteHandler({
       agentMessage: agentMessageMatch,
       agentMemory: agentMemoryMatch,
       agentRun: agentRunMatch,
+      agentRunFork: agentRunForkMatch,
+      agentRunCompare: agentRunCompareMatch,
       agentRunTrace: agentRunTraceMatch,
       agentRunCancel: agentRunCancelMatch,
       agentBranchRetry: agentBranchRetryMatch,
+      agentTurns: agentTurnsMatch,
+      agentTurnStream: agentTurnStreamMatch,
+      agentTurn: agentTurnMatch,
+      agentTurnCancel: agentTurnCancelMatch,
+      agentReviewDecision: agentReviewDecisionMatch,
     } = routeMatches
+
+    if (agentTurnsMatch || agentTurnStreamMatch) {
+      const streaming = Boolean(agentTurnStreamMatch)
+      if (request.method !== 'POST') return methodNotAllowed(response, 'Agent Turn 资源只接受提交请求。', 'POST')
+      const user = await requireUser(request)
+      if (!await enforceRateLimit(response, { scope: 'agent-chat', subject: user.id, limit: config.security.agentChatsPerFiveMinutes, windowMs: 5 * 60_000 })) return true
+      if (!config.flockApiBaseUrl || !config.flockApiKey || !config.flockTextModel) return error(response, 503, 'PROVIDER_NOT_CONFIGURED', 'Agent 服务尚未配置。')
+      const idempotencyKey = generationIdempotencyKey(request.headers['idempotency-key'])
+      if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', 'Agent Turn 提交标识无效，请重试。')
+      const validatedInput = validateBotanicAgentTurnInput(await readJson(request, config.maximumPromptRefinementRequestBytes, 'Agent Turn 请求过大，请精简后重试。'))
+      await requireProjectPermission(productStore, user.id, validatedInput.projectId, 'read')
+      const project = await productStore.readProject(user.id, validatedInput.projectId)
+      if (!project?.document) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
+      const projectSkills = await productStore.listAgentSkills(user.id, validatedInput.projectId) ?? []
+      const input = {
+        ...validatedInput,
+        projectSkills: projectSkills.map(plannerSkillInput),
+      }
+      const turnId = agentTurnIdForIdempotency(user.id, validatedInput.projectId, idempotencyKey)
+      const controller = new AbortController()
+      // 同一幂等键并发重放时复用首个解析器的取消控制器，避免后来的请求
+      // 覆盖 map，导致明确取消只能中断一个无效的重复控制器。
+      if (!agentTurnControllers.has(turnId)) agentTurnControllers.set(turnId, controller)
+      const cancel = () => controller.abort()
+      const cancelOnClosedResponse = () => { if (!response.writableEnded) cancel() }
+      request.once('aborted', cancel)
+      response.once('close', cancelOnClosedResponse)
+      if (request.aborted || response.destroyed) cancel()
+      const sse = streaming ? createServerSentEventWriter(response) : undefined
+      sse?.start()
+      try {
+        const execution = await agentTurnRuntime.execute({
+          userId: user.id,
+          projectId: validatedInput.projectId,
+          sessionId: typeof request.headers['x-agent-session-id'] === 'string' ? request.headers['x-agent-session-id'] : undefined,
+          requestId,
+          id: turnId,
+          idempotencyKey,
+          resolve: (resolveOptions) => resolveBotanicAgentTurn(input, config, resolveOptions),
+          resolveOptions: {
+            document: project.document,
+            projectSkills,
+            signal: controller.signal,
+            resolveVisionMedia: visionMediaResolver(user.id, validatedInput.projectId),
+            consumeWebResearchQuota: consumeWebResearchQuota
+              ? () => consumeWebResearchQuota(user.id)
+              : undefined,
+          },
+          onEvent: (event) => sse?.send(event),
+        })
+        if (controller.signal.aborted || response.destroyed) return true
+        // 保持旧客户端的 `turn` 业务结果形状；V2 生命周期记录单独放在 runtimeTurn，
+        // 这样迁移期间既不会把状态记录误当成生成意图，也不会破坏现有时间线渲染。
+        const turnResult = execution.result ?? execution.turn?.result
+        if (!sse) return json(response, 200, { turn: turnResult, runtimeTurn: execution.turn })
+        sse.send({ type: 'done', turn: turnResult, runtimeTurn: execution.turn })
+        return sse.end()
+      } catch (caught) {
+        if (controller.signal.aborted || response.destroyed) return true
+        const statusCode = Number.isInteger(caught?.statusCode) ? caught.statusCode : 502
+        if (sse?.started) {
+          sse.send({ type: 'error', code: caught?.code ?? 'AGENT_TURN_FAILED', message: typeof caught?.message === 'string' ? caught.message : 'Agent 回合未完成，请重试。' })
+          return sse.end()
+        }
+        return error(response, statusCode, caught?.code ?? 'AGENT_TURN_FAILED', typeof caught?.message === 'string' ? caught.message : 'Agent 回合未完成，请重试。')
+      } finally {
+        if (agentTurnControllers.get(turnId) === controller) agentTurnControllers.delete(turnId)
+        sse?.end()
+        request.off('aborted', cancel)
+        response.off('close', cancelOnClosedResponse)
+      }
+    }
+
+    if (agentTurnCancelMatch) {
+      if (request.method !== 'POST') return methodNotAllowed(response, 'Agent Turn 取消资源只接受提交请求。', 'POST')
+      const user = await requireUser(request)
+      const turnId = decodeURIComponent(agentTurnCancelMatch[1])
+      const turn = await productStore.readAgentTurn(user.id, turnId)
+      if (!turn) return error(response, 404, 'AGENT_TURN_NOT_FOUND', '未找到该 Agent Turn。')
+      await requireProjectPermission(productStore, user.id, turn.projectId, 'read')
+      agentTurnControllers.get(turnId)?.abort()
+      const cancelled = await agentTurnRuntime.cancel({ userId: user.id, projectId: turn.projectId, turnId })
+      return json(response, 200, { turn: publicAgentTurn(cancelled) })
+    }
+
+    if (agentTurnMatch) {
+      if (request.method !== 'GET') return methodNotAllowed(response, 'Agent Turn 资源只支持读取。', 'GET')
+      const user = await requireUser(request)
+      const turn = await productStore.readAgentTurn(user.id, decodeURIComponent(agentTurnMatch[1]))
+      if (!turn) return error(response, 404, 'AGENT_TURN_NOT_FOUND', '未找到该 Agent Turn。')
+      await requireProjectPermission(productStore, user.id, turn.projectId, 'read')
+      return json(response, 200, {
+        turn: publicAgentTurn(turn),
+        events: await productStore.listAgentTurnEvents(user.id, turn.projectId, turn.id) ?? [],
+      })
+    }
+
+    if (agentReviewDecisionMatch) {
+      if (request.method !== 'POST') return methodNotAllowed(response, 'Agent 评审决策只接受提交请求。', 'POST')
+      const user = await requireUser(request)
+      const body = await readJson(request, 8 * 1024, 'Agent 评审决策请求过大。')
+      const projectId = text(body?.projectId, '项目', 160)
+      const decision = text(body?.decision, '评审决策', 32)
+      if (!['accepted', 'rejected', 'retry_requested'].includes(decision)) return error(response, 400, 'AGENT_REVIEW_DECISION_INVALID', '评审决策无效。')
+      await requireProjectPermission(productStore, user.id, projectId, 'edit')
+      const review = await productStore.putAgentReviewDecision(user.id, projectId, decodeURIComponent(agentReviewDecisionMatch[1]), decision, typeof body?.note === 'string' ? body.note : '')
+      return json(response, 200, { review })
+    }
 
     if (url.pathname === '/api/agent-plans' || url.pathname === '/api/agent-plans/stream') {
       // 实时通道与一次性请求共用同一套鉴权、限流、校验与取消语义；工具步经 onEvent 推送。
@@ -202,10 +374,17 @@ export function createAgentRouteHandler({
       const validatedInput = validateBotanicAgentPlanInput(await readJson(request, config.maximumPromptRefinementRequestBytes, 'Agent 规划请求过大，请精简后重试。'))
       await requireProjectPermission(productStore, user.id, validatedInput.projectId, 'edit')
       const projectSkills = await productStore.listAgentSkills(user.id, validatedInput.projectId) ?? []
+      const projectState = await productStore.readAgentState(user.id, validatedInput.projectId)
       const input = {
         ...validatedInput,
+        // 规划器只能读取服务端当前项目记忆；客户端传入的临时/推测记忆
+        // 不具备品牌事实资格，不能绕过 Memory V2 的 confirmed 边界。
+        projectMemory: (projectState?.memory ?? [])
+          .filter((memory) => memory?.confidence !== 'provisional')
+          .slice(0, 30)
+          .map((memory) => ({ id: memory.id, kind: memory.kind, content: memory.content })),
         availableMcpTools: (config.agentMcpTools ?? []).map(({ server, tool }) => ({ server, tool })),
-        projectSkills: projectSkills.map((skill) => ({ id: skill.id, name: skill.name, instructions: skill.instructions, status: skill.status })),
+        projectSkills: projectSkills.map(plannerSkillInput),
       }
       const controller = new AbortController()
       const cancel = () => controller.abort()
@@ -269,7 +448,7 @@ export function createAgentRouteHandler({
       const project = await productStore.readProject(user.id, validatedInput.projectId)
       if (!project?.document) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
       const projectSkills = await productStore.listAgentSkills(user.id, validatedInput.projectId) ?? []
-      const input = { ...validatedInput, projectSkills: projectSkills.map((skill) => ({ id: skill.id, name: skill.name, instructions: skill.instructions, status: skill.status })) }
+      const input = { ...validatedInput, projectSkills: projectSkills.map(plannerSkillInput) }
       const controller = new AbortController()
       const cancel = () => controller.abort()
       const cancelOnClosedResponse = () => { if (!response.writableEnded) cancel() }
@@ -331,7 +510,7 @@ export function createAgentRouteHandler({
       const project = await productStore.readProject(user.id, validatedInput.projectId)
       if (!project?.document) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
       const projectSkills = await productStore.listAgentSkills(user.id, validatedInput.projectId) ?? []
-      const input = { ...validatedInput, projectSkills: projectSkills.map((skill) => ({ id: skill.id, name: skill.name, instructions: skill.instructions, status: skill.status })) }
+      const input = { ...validatedInput, projectSkills: projectSkills.map(plannerSkillInput) }
       const controller = new AbortController()
       const cancel = () => controller.abort()
       const cancelOnClosedResponse = () => { if (!response.writableEnded) cancel() }
@@ -377,7 +556,6 @@ export function createAgentRouteHandler({
       if (request.method !== 'POST') return methodNotAllowed(response, 'Agent 结果评审只接受提交请求。', 'POST')
       const user = await requireUser(request)
       if (!await enforceRateLimit(response, { scope: 'agent-chat', subject: user.id, limit: config.security.agentChatsPerFiveMinutes, windowMs: 5 * 60_000 })) return true
-      if (!config.agentVisionModel || !config.flockApiKey) return error(response, 503, 'VISION_NOT_CONFIGURED', '结果评审需要配置视觉模型。')
       const body = await readJson(request, 4 * 1024, 'Agent 评审请求过大。')
       const projectId = text(body?.projectId, '项目', 160)
       const runId = text(body?.runId, 'Agent Run', 160)
@@ -391,10 +569,10 @@ export function createAgentRouteHandler({
       }
       const project = await productStore.readProject(user.id, projectId)
       if (!project?.document) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
-      // 评审是派生数据：同一 Run 状态只评一次，重复请求直接回缓存；失败静默为空由客户端跳过。
-      const cacheKey = `${locale}:${runId}:${run.status}:${run.updatedAt}`
-      const cached = agentRunReviewCache.get(cacheKey)
-      if (cached !== undefined) return json(response, 200, { review: cached })
+      // 先读持久化质量结论；视觉模型暂时不可用时，历史评审仍应可读取。
+      const persisted = await productStore.readAgentReview(user.id, projectId, runId, locale)
+      if (persisted) return json(response, 200, { review: persisted })
+      if (!config.agentVisionModel || !config.flockApiKey) return error(response, 503, 'VISION_NOT_CONFIGURED', '结果评审需要配置视觉模型。')
       const controller = new AbortController()
       const cancel = () => controller.abort()
       const cancelOnClosedResponse = () => { if (!response.writableEnded) cancel() }
@@ -410,12 +588,21 @@ export function createAgentRouteHandler({
           locale,
         }).catch(() => undefined)
         if (controller.signal.aborted || response.destroyed) return true
-        if (agentRunReviewCache.size >= 256) {
-          const oldest = agentRunReviewCache.keys().next().value
-          if (oldest !== undefined) agentRunReviewCache.delete(oldest)
-        }
-        agentRunReviewCache.set(cacheKey, review ?? null)
-        return json(response, 200, { review: review ?? null })
+        if (!review) return json(response, 200, { review: null })
+        const timestamp = Date.now()
+        const persistedReview = await productStore.putAgentReview(user.id, {
+          ...review,
+          id: `agent-review-${runId}-${locale}`,
+          version: 2,
+          runId,
+          projectId,
+          locale,
+          status: 'pending',
+          requiredCriteria: run.plan?.qualityPolicy?.requiredCriteria ?? ['identity', 'product_structure', 'composition', 'lighting', 'brand_style'],
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        })
+        return json(response, 200, { review: persistedReview })
       } finally {
         request.off('aborted', cancel)
         response.off('close', cancelOnClosedResponse)
@@ -632,7 +819,14 @@ export function createAgentRouteHandler({
             const skills = await productStore.listAgentSkills(user.id, projectId) ?? []
             const skill = skills.find((candidate) => candidate.id === skillId && candidate.status === 'active')
             if (!skill) throw new AgentToolRuntimeError('SKILL_NOT_ALLOWED', 'Skill 不在当前项目的允许列表。', 403)
-            return { skill: { id: skill.id, name: skill.name, instructions: skill.instructions } }
+            return { skill: {
+              id: skill.id,
+              name: skill.name,
+              instructions: skill.instructions,
+              version: skill.version,
+              contentHash: skill.contentHash,
+              capabilities: skill.capabilities,
+            } }
           },
           createSkill: async (argumentsValue) => {
             const input = validateAgentSkillCreation({ projectId, ...argumentsValue })
@@ -668,6 +862,7 @@ export function createAgentRouteHandler({
       if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', 'Agent Run 提交标识无效，请重试。')
       const input = validateAgentRunCreation(await readJson(request, 64 * 1024, 'Agent Run 请求过大。'))
       await requireProjectPermission(productStore, user.id, input.projectId, 'create-generation')
+      const authoritativeInput = await bindAuthoritativeKnowledge(user.id, input)
 
       // 导演模式：确认计划即授权其声明的生成提交。Run 落库后服务端直接建工作流并送队列，
       // 执行不再寄生在浏览器三跳里，关掉页面也不影响推进。配额、预算与 Job 幂等仍由
@@ -699,7 +894,7 @@ export function createAgentRouteHandler({
         observeRun({ type: 'submission_reused', requestId, projectId: resumed.projectId, runId: resumed.id, status: resumed.status, durationMs: Date.now() - startedAt })
         return json(response, 200, { run: publicAgentRun(resumed) })
       }
-      const run = createPersistentAgentRun(input, { id, ownerId: user.id })
+      const run = createPersistentAgentRun(authoritativeInput, { id, ownerId: user.id })
       const storedRun = await productStore.putAgentRun(user.id, run)
       await recordCollaborationActivity(user, storedRun.projectId, {
         id: `agent-run-${storedRun.id}-${storedRun.updatedAt}`,
@@ -726,6 +921,39 @@ export function createAgentRouteHandler({
       if (!run) return error(response, 404, 'AGENT_RUN_NOT_FOUND', '未找到该 Agent Run。')
       await requireProjectPermission(productStore, user.id, run.projectId, 'read')
       return json(response, 200, { run: publicAgentRun(run) })
+    }
+    if (agentRunForkMatch) {
+      if (request.method !== 'POST') return methodNotAllowed(response, 'Agent Run 分叉资源只接受提交请求。', 'POST')
+      const user = await requireUser(request)
+      const sourceRunId = decodeURIComponent(agentRunForkMatch[1])
+      const sourceRun = await productStore.readAgentRun(user.id, sourceRunId)
+      if (!sourceRun) return error(response, 404, 'AGENT_RUN_NOT_FOUND', '未找到 Agent Run。')
+      await requireProjectPermission(productStore, user.id, sourceRun.projectId, 'create-generation')
+      const idempotencyKey = generationIdempotencyKey(request.headers['idempotency-key'])
+      if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', 'Agent 分叉标识无效，请重试。')
+      const body = await readJson(request, 16 * 1024, 'Agent 分叉请求过大。')
+      const input = createForkedAgentRunInput(sourceRun, { branchId: body?.branchId, promptDelta: body?.promptDelta })
+      const id = forkedAgentRunIdForIdempotency(user.id, sourceRun.id, idempotencyKey)
+      const existing = await productStore.readAgentRun(user.id, id)
+      if (existing) return json(response, 200, { run: publicAgentRun(existing), reused: true })
+      const created = createPersistentAgentRun(input, { id, ownerId: user.id })
+      const stored = await productStore.putAgentRun(user.id, created)
+      await publishAgentRunUpdated({ projectId: stored.projectId, run: publicAgentRun(stored) })
+      return json(response, 201, { run: publicAgentRun(stored), sourceRunId: sourceRun.id })
+    }
+    if (agentRunCompareMatch) {
+      if (request.method !== 'GET') return methodNotAllowed(response, 'Agent Run 比较资源只支持读取。', 'GET')
+      const user = await requireUser(request)
+      const runId = decodeURIComponent(agentRunCompareMatch[1])
+      const run = await productStore.readAgentRun(user.id, runId)
+      if (!run) return error(response, 404, 'AGENT_RUN_NOT_FOUND', '未找到 Agent Run。')
+      await requireProjectPermission(productStore, user.id, run.projectId, 'read')
+      const jobIds = [...new Set(run.branches.flatMap((branch) => branch.jobIds ?? []).filter(Boolean))]
+      const jobs = (await Promise.all(jobIds.map((jobId) => productStore.readGenerationJob(user.id, jobId)))).filter(Boolean)
+      const artifacts = (await productStore.listAgentArtifacts(user.id, run.projectId, { limit: 200 }) ?? [])
+        .filter((artifact) => artifact?.provenance?.runId === run.id)
+      const reviews = await productStore.listAgentReviewsForRun(user.id, run.projectId, run.id) ?? []
+      return json(response, 200, { comparison: compareBotanicAgentRunBranches({ run, jobs, artifacts, reviews }) })
     }
     if (agentRunTraceMatch) {
       if (request.method !== 'GET') return methodNotAllowed(response, 'Agent 执行链路只支持读取。', 'GET')

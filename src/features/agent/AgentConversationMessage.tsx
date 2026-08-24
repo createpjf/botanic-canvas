@@ -45,12 +45,36 @@ import {
 } from '../../domain/agentCreativeComposition'
 import { useProductI18n } from '../../i18n/react'
 import type { ProductLocale } from '../../i18n/core'
+import type { BotanicAgentRunReview } from '../../domain/agentReviewContract'
 
 /** 超过这个体量的助手回复默认折叠；阈值只影响展示，不改变消息内容。 */
 const collapsibleContentLength = 600
 const collapsibleContentLines = 14
 /** 单条任务消息内联展示的结果上限；更多结果去结果面板看，避免对话被结果流冲垮。 */
 const inlineRunResultLimit = 4
+
+function AgentReviewDecision({
+  review,
+  pending,
+  onDecision,
+}: {
+  review: BotanicAgentRunReview
+  pending: boolean
+  onDecision?: (decision: 'accepted' | 'rejected' | 'retry_requested') => void
+}) {
+  const { locale } = useProductI18n()
+  if (!review.id || !onDecision) return null
+  if (review.status && review.status !== 'pending') {
+    const label = review.status === 'accepted' ? (locale === 'en' ? 'Accepted' : '已接受') : review.status === 'rejected' ? (locale === 'en' ? 'Rejected' : '已退回') : (locale === 'en' ? 'Retry requested' : '已请求重试')
+    return <p className="agent-review-decision" role="status">{label}{review.decisionNote ? ` · ${review.decisionNote}` : ''}</p>
+  }
+  return <div className="agent-review-decision" aria-label={locale === 'en' ? 'Review decision' : '评审决策'}>
+    <span>{locale === 'en' ? 'Human quality gate' : '人工质量门'}</span>
+    <button type="button" disabled={pending} onClick={() => onDecision('accepted')}>{locale === 'en' ? 'Accept' : '接受'}</button>
+    <button type="button" disabled={pending} onClick={() => onDecision('retry_requested')}>{locale === 'en' ? 'Request retry' : '请求重试'}</button>
+    <button type="button" disabled={pending} onClick={() => onDecision('rejected')}>{locale === 'en' ? 'Reject' : '退回'}</button>
+  </div>
+}
 
 function timelineElapsedLabel(startedAt: number, endedAt: number, locale: ProductLocale) {
   const seconds = Math.max(0, Math.floor((endedAt - startedAt) / 1_000))
@@ -478,6 +502,8 @@ type AgentConversationMessageProps = {
   onRetryDelivery: (messageId: string) => void
   onFeedback: (message: BotanicAgentMessage, feedback: BotanicAgentMessage['feedback']) => void
   onSaveAsMemory?: (message: BotanicAgentMessage, kind: BotanicAgentMemoryKind, content: string) => string | null
+  onReviewDecision?: (message: BotanicAgentMessage, decision: 'accepted' | 'rejected' | 'retry_requested') => void
+  reviewDecisionPending?: boolean
 }
 
 export function AgentConversationMessage({
@@ -516,6 +542,8 @@ export function AgentConversationMessage({
   onRetryDelivery,
   onFeedback,
   onSaveAsMemory,
+  onReviewDecision,
+  reviewDecisionPending = false,
 }: AgentConversationMessageProps) {
   const { locale } = useProductI18n()
   const t = (zh: string, en: string) => locale === 'en' ? en : zh
@@ -587,6 +615,7 @@ export function AgentConversationMessage({
       {message.role === 'assistant' && botanicAgentMessageOffersVisualPrompt(message) ? <div className="agent-run-message__actions" aria-label={t('Prompt 操作', 'Prompt actions')}>
         <button type="button" disabled={planning || promptUsePending} onClick={() => onUsePrompt(message)}>{promptUsePending ? t('等待确认', 'Awaiting approval') : t('用这段 Prompt 生成', 'Generate with this prompt')}</button>
       </div> : null}
+      {message.review ? <AgentReviewDecision review={message.review} pending={reviewDecisionPending} onDecision={onReviewDecision ? (decision) => onReviewDecision(message, decision) : undefined} /> : null}
       {/* 任务/结果/定位画布只挂在已提交计划卡上；Run 消息只留「继续修改」，避免同一 runId 双份 pill。 */}
       {message.kind === 'run' && message.runId && continueNodeIds.length ? <div className="agent-run-message__actions" aria-label={t('继续修改', 'Continue editing')}>
         <button type="button" onClick={() => onContinueResultContext(continueNodeIds, outputNodeIds.length)}>{t('继续修改', 'Continue editing')}</button>

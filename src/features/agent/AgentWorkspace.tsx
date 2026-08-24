@@ -53,6 +53,7 @@ import {
   resolveBotanicAgentInstructionEntry,
 } from '../../domain/agentInstructionRouting'
 import { botanicAgentRunReviewMessageId, formatBotanicAgentRunReviewMessage } from '../../domain/agentReviewContract'
+import type { BotanicAgentRunReview } from '../../domain/agentReviewContract'
 import { resolveAgentChatPrompt } from '../../domain/agentMarkdown'
 import type { BotanicAgentChatStreamEvent } from '../../domain/agentChatStream'
 import { applyAgentConversationStreamEvent, createAgentTimeline, persistAgentLiveTimeline, projectBotanicAgentRunOntoTimeline, type AgentTimelineEvent, type AgentTimelineState } from '../../domain/agentTimeline'
@@ -65,7 +66,7 @@ import type {
   UploadedAssetInput,
 } from '../../domain/canvas'
 import type { GenerationSizeOverride } from '../../domain/generationOutputSize'
-import { createProjectAgentSkill, listBotanicAgentSystemSkills, listProjectAgentSkills, requestBotanicAgentPlan, requestBotanicAgentRunReview, streamBotanicAgentChat, streamBotanicAgentPlan, streamBotanicAgentTurn } from '../../lib/agentApi'
+import { createProjectAgentSkill, listBotanicAgentSystemSkills, listProjectAgentSkills, requestBotanicAgentPlan, requestBotanicAgentRunReview, submitBotanicAgentReviewDecision, streamBotanicAgentChat, streamBotanicAgentPlan, streamBotanicAgentTurn } from '../../lib/agentApi'
 import { botanicAgentRegionSelectNotice, instructionRequestsMarkOverlay } from '../../domain/generationComposition'
 import { describeRegionRect } from '../../domain/regionMask'
 import { RegionMaskEditor } from '../canvas/RegionMaskEditor'
@@ -302,7 +303,7 @@ export default function AgentWorkspace({
   onConfirmAction: (action: BotanicAgentActionProposal) => Promise<BotanicAgentActionResult>
   onUploadImages: (uploads: UploadedAssetInput[]) => void
   onAppendMessage: (sessionId: string, message: BotanicAgentMessage) => void
-  onUpdateMessage: (sessionId: string, messageId: string, patch: Partial<Pick<BotanicAgentMessage, 'content' | 'runId' | 'status' | 'feedback' | 'plan' | 'question' | 'deliveryStatus'>>) => void
+  onUpdateMessage: (sessionId: string, messageId: string, patch: Partial<Pick<BotanicAgentMessage, 'content' | 'runId' | 'status' | 'feedback' | 'plan' | 'question' | 'deliveryStatus' | 'review'>>) => void
   onUpdateAction: (sessionId: string, messageId: string, actionId: string, patch: Partial<Pick<BotanicAgentActionProposal, 'status' | 'error' | 'result'>>) => void
   onContextChange: (sessionId: string, contextNodeIds: string[]) => void
   onExecutionModeChange: (sessionId: string, mode: BotanicAgentExecutionMode) => void
@@ -452,6 +453,7 @@ export default function AgentWorkspace({
   const [skillFormOpen, setSkillFormOpen] = useState(false)
   const [skillConfirming, setSkillConfirming] = useState(false)
   const [skillSaving, setSkillSaving] = useState(false)
+  const [reviewDecisionPendingId, setReviewDecisionPendingId] = useState('')
   const [skillError, setSkillError] = useState('')
   const [expandedSkillId, setExpandedSkillId] = useState('')
   const [renamingSession, setRenamingSession] = useState(false)
@@ -1092,6 +1094,24 @@ export default function AgentWorkspace({
     openUtilityPanel(feedback.action === 'view_results' ? 'result' : 'task')
   }
 
+  const decideReview = async (message: BotanicAgentMessage, decision: 'accepted' | 'rejected' | 'retry_requested') => {
+    const review = message.review
+    if (!review?.id || !session || reviewDecisionPendingId) return
+    setReviewDecisionPendingId(review.id)
+    try {
+      const saved = await submitBotanicAgentReviewDecision({ projectId, reviewId: review.id, decision })
+      if (!isCurrentAgentProject()) return
+      onUpdateMessage(session.id, message.id, {
+        review: saved,
+        content: formatBotanicAgentRunReviewMessage(saved, locale),
+      })
+    } catch {
+      // 决策失败保留 pending 状态，用户可再次提交。
+    } finally {
+      setReviewDecisionPendingId('')
+    }
+  }
+
   useEffect(() => {
     if (!session) return
     for (const run of runs) {
@@ -1151,6 +1171,7 @@ export default function AgentWorkspace({
         role: 'assistant',
         kind: 'text',
         content: formatBotanicAgentRunReviewMessage(review, locale),
+        review,
       })
       // 挑选循环闭合：评审选出的最佳结果直接成为下一轮迭代目标，替代「第一个结果」的默认跟随。
       if (review.bestNodeId) onUseResultContext([review.bestNodeId])
@@ -2715,6 +2736,8 @@ export default function AgentWorkspace({
           onRetryDelivery={retryMessage}
           onFeedback={(targetMessage, feedback) => onUpdateMessage(session.id, targetMessage.id, { feedback })}
           onSaveAsMemory={(_targetMessage, kind, content) => onAddMemory(kind, content, session.contextNodeIds)}
+          onReviewDecision={(targetMessage, decision) => void decideReview(targetMessage, decision)}
+          reviewDecisionPending={Boolean(reviewDecisionPendingId && reviewDecisionPendingId === message.review?.id)}
         /></div>
         }) : null}
         {showRuntimeFeed ? (() => {

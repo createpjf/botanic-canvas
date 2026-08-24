@@ -19,6 +19,15 @@ export type BotanicAgentStreamEvent =
       type: 'done'
       response?: BotanicAgentChatResponse
       turn?: BotanicAgentTurnResult
+      /** Turn Runtime V2 的持久化生命周期快照；旧客户端可忽略。 */
+      runtimeTurn?: {
+        id: string
+        status: 'running' | 'completed' | 'failed' | 'cancelled'
+        projectId: string
+        updatedAt: number
+        createdAt: number
+      }
+      result?: BotanicAgentTurnResult
       plan?: BotanicAgentPlan
       clarification?: BotanicAgentClarificationResponse['clarification']
       reasoning?: BotanicAgentReasoningEntry[]

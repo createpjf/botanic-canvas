@@ -788,6 +788,8 @@ export type BotanicAgentPlan = {
   contextSnapshot?: BotanicAgentContextSnapshot[]
   references: AgentReferenceBinding[]
   constraints: CreativeConstraint[]
+  memoryBindings?: AgentKnowledgeBinding[]
+  skillBindings?: AgentKnowledgeBinding[]
   prompt: string
   settings: GenerationSettings
   output: {
@@ -808,6 +810,13 @@ export type BotanicAgentPlan = {
   composition?: BotanicAgentComposition
   toolCalls?: AgentToolCallTrace[]
   actions?: BotanicAgentActionProposal[]
+}
+
+export type AgentKnowledgeBinding = {
+  id: string
+  version?: number
+  contentHash?: string
+  selectionReason?: string
 }
 
 /** 单条文字节点带进计划的补充描述长度上限。 */
@@ -1057,6 +1066,7 @@ export type BotanicAgentRunSnapshot = {
   id: string
   projectId: string
   status: Exclude<BotanicAgentRunStatus, 'awaiting_confirmation' | 'executing'>
+  lineage?: BotanicAgentRunLineage
   plan?: Omit<BotanicAgentPlan, 'references' | 'rootRecipe' | 'actions'>
   branches: BotanicAgentRunBranch[]
   completedBranchCount: number
@@ -1069,12 +1079,21 @@ export type BotanicAgentRun = {
   id: string
   status: BotanicAgentRunStatus
   plan: BotanicAgentPlan
+  lineage?: BotanicAgentRunLineage
   createdAt: number
   updatedAt: number
   error?: string
   branches: BotanicAgentRunBranch[]
   completedBranchCount: number
   failedBranchCount: number
+}
+
+export type BotanicAgentRunLineage = {
+  relation: 'fork'
+  parentRunId: string
+  parentBranchId?: string
+  rootRunId?: string
+  createdAt?: number
 }
 
 export type BotanicAgentExecutionMode = 'manual' | 'auto'
@@ -1147,6 +1166,11 @@ export type BotanicAgentMemoryItem = {
   sourceNodeIds: string[]
   createdAt: number
   updatedAt: number
+  scope?: 'project' | 'workspace' | 'run'
+  source?: 'human' | 'review' | 'conversation' | 'import'
+  confidence?: 'confirmed' | 'provisional'
+  version?: number
+  contentHash?: string
 }
 
 export type BotanicAgentSkill = {
@@ -1157,6 +1181,10 @@ export type BotanicAgentSkill = {
   status: 'active' | 'archived'
   createdAt: number
   updatedAt: number
+  version?: number
+  contentHash?: string
+  capabilities?: string[]
+  governance?: 'project-approved' | 'system'
 }
 
 export type BotanicAgentSkillCatalogItem = {
@@ -1185,6 +1213,8 @@ export type BotanicAgentMessage = {
   runId?: string
   status?: 'pending' | 'answered' | 'submitted' | 'failed'
   feedback?: 'positive' | 'negative'
+  /** 质量评审结构化快照；与正文分离，支持人工接受/退回。 */
+  review?: import('./agentReviewContract').BotanicAgentRunReview
   /** 只用于本地离线送达状态；服务端权威消息不依赖该字段。 */
   deliveryStatus?: 'waiting_network' | 'queued' | 'syncing' | 'synced' | 'failed'
 }
@@ -1360,6 +1390,10 @@ export function createBotanicAgentMemoryItem(input: {
     sourceNodeIds: uniqueIds(input.sourceNodeIds ?? []),
     createdAt: now,
     updatedAt: now,
+    scope: 'project',
+    source: 'human',
+    confidence: 'confirmed',
+    version: 1,
   }
 }
 
@@ -1650,7 +1684,7 @@ export function updateBotanicAgentSessionReadingAnchor(
 export function updateBotanicAgentMessage(
   session: BotanicAgentSession,
   messageId: string,
-  patch: Partial<Pick<BotanicAgentMessage, 'content' | 'runId' | 'status' | 'feedback' | 'plan' | 'question' | 'composition' | 'deliveryStatus'>>,
+  patch: Partial<Pick<BotanicAgentMessage, 'content' | 'runId' | 'status' | 'feedback' | 'plan' | 'question' | 'composition' | 'deliveryStatus' | 'review'>>,
   now = Date.now(),
 ): BotanicAgentSession {
   if (!session.messages.some((message) => message.id === messageId)) return session
