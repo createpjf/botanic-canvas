@@ -110,6 +110,7 @@ import { useAgentRuntimeTrace } from './useAgentRuntimeTrace'
 import type { AgentArtifactIndexState, AgentContextItem, AgentDockTarget, AgentSkillOption } from './agentWorkspace.types'
 import { AgentCollaborationPanel, AgentMemoryPanel, AgentResultPanel, AgentSkillCard } from './AgentUtilityPanels'
 import { useAgentSkillRegistry } from './useAgentSkillRegistry'
+import { agentEscapeDismissTarget, type AgentDismissTarget } from './agentWorkspaceNavigation'
 import { AgentConversationMessage } from './AgentConversationMessage'
 import { AgentComposer } from './AgentComposer'
 import {
@@ -915,35 +916,52 @@ export default function AgentWorkspace({
   }, [mentionQuery])
 
   useEffect(() => {
-    const closeLayerOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.defaultPrevented || !escapeEnabled) return
-      if (mentionQuery) {
+    // 优先级在 agentWorkspaceNavigation 里以数据声明并有测试锁定；这里只负责把
+    // 判定结果落到 setState 与焦点归还上。
+    const dismiss: Record<AgentDismissTarget, () => void> = {
+      mention: () => {
         setMentionQuery(undefined)
         requestAnimationFrame(() => composerTextareaRef.current?.focus())
-      } else if (contextMenuOpen) {
+      },
+      contextMenu: () => {
         setContextMenuOpen(false)
         requestAnimationFrame(() => contextMenuButtonRef.current?.focus())
-      } else if (modeMenuOpen) {
+      },
+      modeMenu: () => {
         setModeMenuOpen(false)
         requestAnimationFrame(() => modeMenuButtonRef.current?.focus())
-      } else if (historyOpen) {
+      },
+      history: () => {
         setHistoryOpen(false)
         requestAnimationFrame(() => historyTriggerRef.current?.focus())
-      } else if (utilityMenuOpen) {
+      },
+      utilityMenu: () => {
         setUtilityMenuOpen(false)
         requestAnimationFrame(() => utilityMenuButtonRef.current?.focus())
-      } else if (skillRegistry.form.confirming) {
-        skillRegistry.cancelConfirm()
-      } else if (recoveryModelMenuKey) {
-        setRecoveryModelMenuKey('')
-      } else if (runtimeDetailsOpen) {
-        setRuntimeDetailsOpen(false)
-      } else if (utilityPanelOpen) {
+      },
+      // 目录自己负责把焦点还给创建按钮。
+      skillConfirm: () => skillRegistry.cancelConfirm(),
+      recoveryMenu: () => setRecoveryModelMenuKey(''),
+      runtimeDetails: () => setRuntimeDetailsOpen(false),
+      utilityPanel: () => {
         setUtilityPanel(null)
         requestAnimationFrame(() => utilityButtonRef.current?.focus())
-      } else {
-        onClose()
-      }
+      },
+      workspace: () => onClose(),
+    }
+    const closeLayerOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || !escapeEnabled) return
+      dismiss[agentEscapeDismissTarget({
+        mention: Boolean(mentionQuery),
+        contextMenu: contextMenuOpen,
+        modeMenu: modeMenuOpen,
+        history: historyOpen,
+        utilityMenu: utilityMenuOpen,
+        skillConfirm: skillRegistry.form.confirming,
+        recoveryMenu: Boolean(recoveryModelMenuKey),
+        runtimeDetails: runtimeDetailsOpen,
+        utilityPanel: utilityPanelOpen,
+      })]()
       event.preventDefault()
     }
     window.addEventListener('keydown', closeLayerOnEscape)
