@@ -84,3 +84,54 @@ test('Redis 事件总线丢弃缺少画布操作人的项目更新', async () =>
   await publisher.close()
   await subscriber.close()
 })
+
+test('取消信号跨实例投递，只携带标识不携带业务内容', async () => {
+  const cancels = []
+  const subscriber = await createAgentRunEventSubscriber('redis://test', () => {}, {
+    RedisClass: FakeRedis, onCancel: (event) => cancels.push(event),
+  })
+  const publisher = createAgentRunEventPublisher('redis://test', { RedisClass: FakeRedis })
+
+  await publisher.publishCancel({ scope: 'turn', id: 'turn-1', projectId: 'project-1', cancelVersion: 2 })
+  await publisher.publishCancel({ scope: 'run', id: 'run-1', projectId: 'project-1' })
+
+  assert.deepEqual(cancels, [
+    { scope: 'turn', id: 'turn-1', projectId: 'project-1', cancelVersion: 2 },
+    { scope: 'run', id: 'run-1', projectId: 'project-1' },
+  ])
+  await publisher.close()
+  await subscriber.close()
+})
+
+test('取消信号拒绝无效范围与缺失标识，不误触发中止', async () => {
+  const cancels = []
+  const subscriber = await createAgentRunEventSubscriber('redis://test', () => {}, {
+    RedisClass: FakeRedis, onCancel: (event) => cancels.push(event),
+  })
+  const publisher = createAgentRunEventPublisher('redis://test', { RedisClass: FakeRedis })
+
+  for (const invalid of [
+    { scope: 'job', id: 'x', projectId: 'p' },
+    { scope: 'turn', id: '', projectId: 'p' },
+    { scope: 'turn', id: 'x', projectId: '' },
+    { scope: 'turn', id: 'x' },
+    {},
+    undefined,
+  ]) {
+    await publisher.publishCancel(invalid)
+  }
+  // 一条误触发的中止会打断正在正常执行的回合，因此校验必须比其他频道更严。
+  assert.deepEqual(cancels, [])
+
+  const raw = new FakeRedis()
+  await raw.publish('botanic-agent-cancels', '{损坏')
+  assert.deepEqual(cancels, [])
+  await publisher.close()
+  await subscriber.close()
+})
+
+test('未配置 Redis 时取消发布是安全空操作', async () => {
+  const publisher = createAgentRunEventPublisher(undefined)
+  assert.equal(await publisher.publishCancel({ scope: 'turn', id: 'turn-1', projectId: 'project-1' }), undefined)
+  await publisher.close()
+})
