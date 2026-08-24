@@ -38,8 +38,6 @@ import {
   type BotanicAgentRunTimelineFilter,
   type BotanicAgentSession,
   type BotanicAgentSessionTimelineFilter,
-  type BotanicAgentSkill,
-  type BotanicAgentSkillCatalogItem,
   type BotanicCreativeBrief,
 } from '../../domain/agent'
 import {
@@ -66,7 +64,7 @@ import type {
   UploadedAssetInput,
 } from '../../domain/canvas'
 import type { GenerationSizeOverride } from '../../domain/generationOutputSize'
-import { createProjectAgentSkill, listBotanicAgentSystemSkills, listProjectAgentSkills, requestBotanicAgentPlan, requestBotanicAgentRunReview, submitBotanicAgentReviewDecision, streamBotanicAgentChat, streamBotanicAgentPlan, streamBotanicAgentTurn } from '../../lib/agentApi'
+import { requestBotanicAgentPlan, requestBotanicAgentRunReview, submitBotanicAgentReviewDecision, streamBotanicAgentChat, streamBotanicAgentPlan, streamBotanicAgentTurn } from '../../lib/agentApi'
 import { botanicAgentRegionSelectNotice, instructionRequestsMarkOverlay } from '../../domain/generationComposition'
 import { describeRegionRect } from '../../domain/regionMask'
 import { RegionMaskEditor } from '../canvas/RegionMaskEditor'
@@ -111,6 +109,7 @@ import { useAgentMessageDelivery } from './useAgentMessageDelivery'
 import { useAgentRuntimeTrace } from './useAgentRuntimeTrace'
 import type { AgentArtifactIndexState, AgentContextItem, AgentDockTarget, AgentSkillOption } from './agentWorkspace.types'
 import { AgentCollaborationPanel, AgentMemoryPanel, AgentResultPanel, AgentSkillCard } from './AgentUtilityPanels'
+import { useAgentSkillRegistry } from './useAgentSkillRegistry'
 import { AgentConversationMessage } from './AgentConversationMessage'
 import { AgentComposer } from './AgentComposer'
 import {
@@ -446,16 +445,7 @@ export default function AgentWorkspace({
   const resultPanelOpen = activeUtilityPanel === 'result'
   const memoryPanelOpen = activeUtilityPanel === 'memory'
   const collaborationPanelOpen = activeUtilityPanel === 'collaboration'
-  const [skills, setSkills] = useState<BotanicAgentSkill[]>([])
-  const [systemSkills, setSystemSkills] = useState<BotanicAgentSkillCatalogItem[]>([])
-  const [skillName, setSkillName] = useState('')
-  const [skillInstructions, setSkillInstructions] = useState('')
-  const [skillFormOpen, setSkillFormOpen] = useState(false)
-  const [skillConfirming, setSkillConfirming] = useState(false)
-  const [skillSaving, setSkillSaving] = useState(false)
   const [reviewDecisionPendingId, setReviewDecisionPendingId] = useState('')
-  const [skillError, setSkillError] = useState('')
-  const [expandedSkillId, setExpandedSkillId] = useState('')
   const [renamingSession, setRenamingSession] = useState(false)
   const [sessionTitleDraft, setSessionTitleDraft] = useState(displaySessionTitle(session?.title))
   const [persistenceAction, setPersistenceAction] = useState<'retry' | 'refresh' | ''>('')
@@ -467,6 +457,17 @@ export default function AgentWorkspace({
     () => agentMountedRef.current && useCanvasStore.getState().document.id === projectId,
     [projectId],
   )
+  const skillRegistry = useAgentSkillRegistry({
+    projectId,
+    session,
+    locale,
+    panelOpen: skillPanelOpen,
+    serverPersistenceEnabled,
+    isCurrentAgentProject,
+    onSkillsChange,
+    createFailedMessage: flowCopy.skillCreateFailed,
+  })
+  const { skills, systemSkills } = skillRegistry
   const { appendMessage, persistMessage, retryMessage } = useAgentMessageDelivery({
     projectId,
     session,
@@ -506,8 +507,6 @@ export default function AgentWorkspace({
   const contextMenuButtonRef = useRef<HTMLButtonElement | null>(null)
   const modeMenuButtonRef = useRef<HTMLButtonElement | null>(null)
   const utilityButtonRef = useRef<HTMLButtonElement | null>(null)
-  const skillCreateButtonRef = useRef<HTMLButtonElement | null>(null)
-  const skillNameInputRef = useRef<HTMLInputElement | null>(null)
   const historyMenuId = useId()
   const utilityMenuId = useId()
   const contextMenuId = useId()
@@ -933,9 +932,8 @@ export default function AgentWorkspace({
       } else if (utilityMenuOpen) {
         setUtilityMenuOpen(false)
         requestAnimationFrame(() => utilityMenuButtonRef.current?.focus())
-      } else if (skillConfirming) {
-        setSkillConfirming(false)
-        requestAnimationFrame(() => skillCreateButtonRef.current?.focus())
+      } else if (skillRegistry.form.confirming) {
+        skillRegistry.cancelConfirm()
       } else if (recoveryModelMenuKey) {
         setRecoveryModelMenuKey('')
       } else if (runtimeDetailsOpen) {
@@ -950,7 +948,7 @@ export default function AgentWorkspace({
     }
     window.addEventListener('keydown', closeLayerOnEscape)
     return () => window.removeEventListener('keydown', closeLayerOnEscape)
-  }, [contextMenuOpen, escapeEnabled, historyOpen, mentionQuery, modeMenuOpen, onClose, recoveryModelMenuKey, runtimeDetailsOpen, skillConfirming, utilityMenuOpen, utilityPanelOpen])
+  }, [contextMenuOpen, escapeEnabled, historyOpen, mentionQuery, modeMenuOpen, onClose, recoveryModelMenuKey, runtimeDetailsOpen, skillRegistry, utilityMenuOpen, utilityPanelOpen])
 
   useEffect(() => {
     // Strict Mode 会执行 setup → cleanup → setup；每次 setup 都必须恢复活动标记，
@@ -963,36 +961,6 @@ export default function AgentWorkspace({
       if (locatedMessageTimerRef.current !== null) window.clearTimeout(locatedMessageTimerRef.current)
     }
   }, [])
-
-  useEffect(() => {
-    if (!skillPanelOpen) {
-      setSkillFormOpen(false)
-      setExpandedSkillId('')
-    }
-  }, [skillPanelOpen])
-
-  useEffect(() => {
-    let active = true
-    setSkillError('')
-    if (!serverPersistenceEnabled) {
-      // 本地预览没有 Node API；不发起目录请求，避免浏览器控制台出现误导性的 500。
-      setSystemSkills([])
-      setSkills([])
-      return () => { active = false }
-    }
-    void listBotanicAgentSystemSkills()
-      .then((items) => { if (active) setSystemSkills(items) })
-      .catch(() => { if (active) setSystemSkills([]) })
-    void listProjectAgentSkills(projectId).then((items) => {
-      if (active) setSkills(items)
-    }).catch((reason) => {
-      if (active) setSkillError(localizeProductError(reason, locale, {
-        'zh-CN': '项目 Skill 列表加载失败。',
-        en: 'Unable to load project Skills.',
-      }))
-    })
-    return () => { active = false }
-  }, [locale, projectId, skillPanelOpen])
 
   useEffect(() => {
     setSessionTitleDraft(displaySessionTitle(session?.title))
@@ -1191,30 +1159,6 @@ export default function AgentWorkspace({
     }
   }, [onFocusNodes, onResolveRunNodes, runs])
 
-  const confirmSkillCreation = async () => {
-    if (!skillName.trim() || !skillInstructions.trim() || skillSaving) return
-    setSkillSaving(true)
-    setSkillError('')
-    try {
-      const result = await createProjectAgentSkill({
-        projectId,
-        name: skillName.trim(),
-        instructions: skillInstructions.trim(),
-      })
-      if (!isCurrentAgentProject()) return
-      setSkills((items) => [result.output.skill, ...items.filter((item) => item.id !== result.output.skill.id)])
-      if (session) onSkillsChange(session.id, [...new Set([...(session.mountedSkillIds ?? []), result.output.skill.id])])
-      setSkillName('')
-      setSkillInstructions('')
-      setSkillConfirming(false)
-      setSkillFormOpen(false)
-    } catch (caught) {
-      if (isCurrentAgentProject()) setSkillError(localizeProductError(caught, locale, { 'zh-CN': flowCopy.skillCreateFailed, en: flowCopy.skillCreateFailed }))
-    } finally {
-      setSkillSaving(false)
-    }
-  }
-
   const selectMention = (item: AgentContextItem) => {
     if (!session || !mentionQuery) return
     const consumed = consumeBotanicAgentMention(instruction, mentionQuery)
@@ -1225,14 +1169,6 @@ export default function AgentWorkspace({
       composerTextareaRef.current?.focus()
       composerTextareaRef.current?.setSelectionRange(consumed.caret, consumed.caret)
     })
-  }
-
-  const toggleMountedSkill = (skillId: string, nextMounted: boolean) => {
-    if (!session) return
-    const current = session.mountedSkillIds ?? []
-    onSkillsChange(session.id, nextMounted
-      ? [...new Set([...current, skillId])]
-      : current.filter((id) => id !== skillId))
   }
 
   const selectSkill = (skill: AgentSkillOption) => {
@@ -1247,14 +1183,12 @@ export default function AgentWorkspace({
     })
   }
 
+  // 导航归工作区，表单归目录：先把用户带到 Skill 面板，再让目录自己打开表单。
   const openSkillCreation = () => {
     setMentionQuery(undefined)
     setUtilityMenuOpen(false)
     setUtilityPanel('skill')
-    setSkillFormOpen(true)
-    setSkillConfirming(false)
-    setSkillError('')
-    requestAnimationFrame(() => skillNameInputRef.current?.focus())
+    skillRegistry.openForm()
   }
 
   const preparePlan = async (
@@ -2626,19 +2560,19 @@ export default function AgentWorkspace({
             name={skill.name}
             instructions={skill.instructions}
             source="system"
-            expanded={expandedSkillId === skill.id}
+            expanded={skillRegistry.expandedSkillId === skill.id}
             mounted={Boolean(session?.mountedSkillIds?.includes(skill.id))}
-            onToggle={(id) => setExpandedSkillId((current) => current === id ? '' : id)}
-            onToggleMount={session ? toggleMountedSkill : undefined}
+            onToggle={skillRegistry.toggleExpanded}
+            onToggleMount={session ? skillRegistry.toggleMounted : undefined}
           />)}</div> : null}
-          {serverPersistenceEnabled && !skillFormOpen && !skillConfirming && !skillError ? <button type="button" className="agent-skill-panel__create-entry" aria-expanded="false" onClick={() => setSkillFormOpen(true)}>{flowCopy.newSkill}</button> : serverPersistenceEnabled ? <div className="agent-skill-panel__form">
-              <input ref={skillNameInputRef} value={skillName} onChange={(event) => { setSkillName(event.target.value); setSkillConfirming(false); setSkillError('') }} maxLength={80} placeholder={flowCopy.skillNamePlaceholder} aria-label={flowCopy.skillName} autoFocus />
-              <textarea value={skillInstructions} onChange={(event) => { setSkillInstructions(event.target.value); setSkillConfirming(false); setSkillError('') }} maxLength={4000} placeholder={flowCopy.skillRulesPlaceholder} aria-label={flowCopy.skillRules} />
-              {skillConfirming ? <div className="agent-skill-panel__confirm">
+          {serverPersistenceEnabled && !skillRegistry.form.open && !skillRegistry.form.confirming && !skillRegistry.form.error ? <button type="button" className="agent-skill-panel__create-entry" aria-expanded="false" onClick={skillRegistry.openForm}>{flowCopy.newSkill}</button> : serverPersistenceEnabled ? <div className="agent-skill-panel__form">
+              <input ref={skillRegistry.nameInputRef} value={skillRegistry.form.name} onChange={(event) => skillRegistry.editName(event.target.value)} maxLength={80} placeholder={flowCopy.skillNamePlaceholder} aria-label={flowCopy.skillName} autoFocus />
+              <textarea value={skillRegistry.form.instructions} onChange={(event) => skillRegistry.editInstructions(event.target.value)} maxLength={4000} placeholder={flowCopy.skillRulesPlaceholder} aria-label={flowCopy.skillRules} />
+              {skillRegistry.form.confirming ? <div className="agent-skill-panel__confirm">
                 <span><strong>{flowCopy.createProjectSkill}</strong><small>{flowCopy.createProjectSkillDetail}</small></span>
-                <div><button type="button" autoFocus onClick={() => { setSkillConfirming(false); requestAnimationFrame(() => skillCreateButtonRef.current?.focus()) }}>{flowCopy.cancel}</button><button type="button" disabled={skillSaving} onClick={() => void confirmSkillCreation()}>{skillSaving ? flowCopy.creating : flowCopy.confirmCreate}</button></div>
-              </div> : <div className="agent-skill-panel__form-actions"><button ref={skillCreateButtonRef} type="button" className="agent-skill-panel__cancel" onClick={() => { setSkillFormOpen(false); setSkillError('') }}>{flowCopy.cancel}</button><button type="button" className="agent-skill-panel__create" disabled={!skillName.trim() || !skillInstructions.trim()} onClick={() => setSkillConfirming(true)}>{flowCopy.createSkill}</button></div>}
-              {skillError ? <p role="alert">{skillError}</p> : null}
+                <div><button type="button" autoFocus onClick={skillRegistry.cancelConfirm}>{flowCopy.cancel}</button><button type="button" disabled={skillRegistry.form.saving} onClick={() => void skillRegistry.submit()}>{skillRegistry.form.saving ? flowCopy.creating : flowCopy.confirmCreate}</button></div>
+              </div> : <div className="agent-skill-panel__form-actions"><button ref={skillRegistry.createButtonRef} type="button" className="agent-skill-panel__cancel" onClick={skillRegistry.closeForm}>{flowCopy.cancel}</button><button type="button" className="agent-skill-panel__create" disabled={!skillRegistry.form.name.trim() || !skillRegistry.form.instructions.trim()} onClick={skillRegistry.requestConfirm}>{flowCopy.createSkill}</button></div>}
+              {skillRegistry.form.error ? <p role="alert">{skillRegistry.form.error}</p> : null}
             </div> : null}
           <div className="agent-skill-panel__list">
             {skills.map((skill) => <AgentSkillCard
@@ -2647,12 +2581,12 @@ export default function AgentWorkspace({
               name={skill.name}
               instructions={skill.instructions}
               source="project"
-              expanded={expandedSkillId === skill.id}
+              expanded={skillRegistry.expandedSkillId === skill.id}
               mounted={Boolean(session?.mountedSkillIds?.includes(skill.id))}
-              onToggle={(id) => setExpandedSkillId((current) => current === id ? '' : id)}
-              onToggleMount={session ? toggleMountedSkill : undefined}
+              onToggle={skillRegistry.toggleExpanded}
+              onToggleMount={session ? skillRegistry.toggleMounted : undefined}
             />)}
-            {!skills.length && !skillError ? <div className="agent-panel__empty">{flowCopy.noProjectSkills}</div> : null}
+            {!skills.length && !skillRegistry.form.error ? <div className="agent-panel__empty">{flowCopy.noProjectSkills}</div> : null}
           </div>
         </section></div> : null}
         {!utilityPanelOpen ? <div data-agent-flip className="agent-workspace__conversation">
