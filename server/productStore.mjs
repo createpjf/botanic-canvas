@@ -855,6 +855,16 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
         .map(clone)
     },
 
+    listAgentRunsForTurn(userId, projectId, turnId, limit = 20) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project || !canAccess(project, userId)) return undefined
+      return state.agentRuns
+        .filter((run) => run.ownerId === userId && run.projectId === projectId && run.turnId === turnId)
+        .sort((left, right) => left.createdAt - right.createdAt)
+        .slice(0, Math.max(1, Math.min(limit, 60)))
+        .map(clone)
+    },
+
     putAgentTurn(userId, turn) {
       const project = state.projects.find((item) => item.id === turn.projectId)
       if (!project) throw productError('未找到项目。', 'PROJECT_NOT_FOUND')

@@ -865,3 +865,35 @@ test('陈旧 Turn 扫描跨项目、只捞非终态、按最旧优先', () => {
   // 显式 olderThan 落在两个陈旧 Turn 之间时，只捞更早的那个。
   assert.deepEqual(store.listStaleAgentTurns({ olderThan: 60 }).map((t) => t.id), ['turn_old_b'])
 })
+
+test('Run 按确认来源 Turn 反查，权威边只在 Run 上', () => {
+  // 反向不在 Turn 上写 linkedRunIds：Turn 记录在 execute() 里被整条覆盖写，
+  // 反写会被那次覆盖清掉，两侧就会不一致。
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, document('project-turn-link'), undefined)
+  const run = (turnId, id, createdAt) => store.putAgentRun(owner.id, {
+    id, ownerId: owner.id, projectId: 'project-turn-link', status: 'queued',
+    ...(turnId ? { turnId } : {}),
+    plan: { intent: 'initial_generation', summary: '测试' }, branches: [],
+    createdAt, updatedAt: createdAt,
+  })
+  run('turn-a', 'run-second', 200)
+  run('turn-a', 'run-first', 100)
+  run('turn-b', 'run-other', 150)
+  run(undefined, 'run-no-turn', 120)
+
+  const linked = store.listAgentRunsForTurn(owner.id, 'project-turn-link', 'turn-a')
+  // 按创建时间升序：确认顺序是这条边唯一有意义的排序。
+  assert.deepEqual(linked.map((item) => item.id), ['run-first', 'run-second'])
+  assert.deepEqual(store.listAgentRunsForTurn(owner.id, 'project-turn-link', 'turn-b').map((item) => item.id), ['run-other'])
+  assert.deepEqual(store.listAgentRunsForTurn(owner.id, 'project-turn-link', 'turn-missing'), [])
+})
+
+test('非成员不得按 Turn 反查 Run', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, document('project-turn-guard'), undefined)
+  const outsider = store.createUser(owner.id, { email: 'out@example.com', name: 'Out', accessToken: 'out-token' })
+  assert.equal(store.listAgentRunsForTurn(outsider.id, 'project-turn-guard', 'turn-a'), undefined)
+})

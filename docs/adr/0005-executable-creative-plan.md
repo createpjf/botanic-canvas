@@ -51,6 +51,18 @@ Agent Plan 已经能够描述 `preserve` / `vary`、变体轴和交付参数，�
 
 ## 修订记录
 
+### 2026-08-24（实施）
+
+Resolve / Compile 已落地：`server/creativePlanResolver.mjs` 承担 Resolve（引用、模型能力、分支覆盖，抛带 `stage: 'resolve'` 的具名错误），`botanicCreativePlanCompiler.mjs` 保持纯。引用解析函数是从执行期**搬**过来的而不是复制的 —— 确认期与执行期必须得到同一份引用集。
+
+三点与原文不同，按实现为准：
+
+1. **plan 级指纹只能由 Resolve 统一计算，Compiler 不得自行推导。** Compiler 一次只编译一支，它算出来的「plan 级」仍随本支的参考与 Prompt 变化，于是同一次确认的两支得到不同的 plan 指纹。现在 `compileRunCreativePlan` 按「计划本体 + 每支身份与解析出的参考身份 + 实际绑定」算一次，再传给每一支；`compileCreativePlan` 接受 `planFingerprint` 入参，缺省时才退化为按本支输入自算（单支编译与 V1 兼容路径）。
+2. **快照写在「首次执行」而非「确认」那一刻。** 客户端确认后先创建 Run、再 flush 画布写入，因此创建 Run 那一刻服务端文档里可能还没有计划引用的节点，此时编译必然因「引用不存在」失败。首次执行是文档已权威、且尚未调用 Provider 的最早时点：阻断仍发生在花钱之前，重试与恢复从此只读快照。预览（`submission: false`）只在内存编译不落库。
+3. **快照不含图片字节，执行时重新解析媒体身份。** 因此新增一条不变量的具体落点：执行时若重新解析出的引用身份与快照不一致，抛 `AGENT_PLAN_REFERENCE_DRIFT` 阻断，而不是用另一组素材顶替用户确认过的那一组还挂着原指纹。
+
+`qualityPolicy` 与 `constraints` 有意不写给 HTTP / 工作流提交：它们是 Agent 计划的语义，替一次手工生成凭空声明质量策略等于宣称用户选过它。这两条入口经过 Compiler 的收益是**指纹**（让「任一 Artifact 可反查 Plan」对画布手工生成也成立），不是改写 Prompt —— 画布提交不带创作约束，编译后的 Prompt 与提交的完全一致。
+
 ### 2026-08-24
 
 原文「决策」段要求编译器重新读取项目、参考图、预算和权限，「后果」段要求编译器是纯领域 Module。实现（`server/botanicCreativePlanCompiler.mjs`）选择了后者：它是纯函数，只接受 `models` 目录作为入参，无法校验引用有效性、预算与权限，`safeReferenceIds` 仅拷贝引用 ID 而不验证存在性。因此原文承诺的"引用失效在提交前失败"没有实现落点。

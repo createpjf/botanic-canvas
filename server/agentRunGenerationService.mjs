@@ -4,6 +4,7 @@ import { prepareAgentRunExecution, reconcileAgentGenerationJobToProject } from '
 import { AgentToolRuntimeError } from './agentToolRuntime.mjs'
 import { generationJobIdForIdempotency } from './generationIdempotency.mjs'
 import { buildGenerationUsage, reserveGenerationBudget } from './generationGovernance.mjs'
+import { agentRunCompiledPlanProvenance, compileRunCreativePlan } from './creativePlanResolver.mjs'
 
 /**
  * Agent Run 确认后的唯一生成提交模块。路由只调用这个小接口；配额、幂等、
@@ -24,11 +25,25 @@ export function createAgentRunGenerationService({
     }
     const project = await productStore.readProject(userId, projectId)
     if (!project) throw new AgentToolRuntimeError('PROJECT_NOT_FOUND', '未找到当前项目。', 404)
+    const models = config.modelOptions?.length ? config.modelOptions : config.models
+    // 首次执行时把编译快照落到 Run 上（ADR 0005 不变量一）。
+    //
+    // 为什么不在创建 Run 时编译：客户端确认后先创建 Run、再 flush 画布写入，因此
+    // 创建那一刻服务端文档里可能还没有计划引用的节点，编译会因「引用不存在」失败。
+    // 首次执行是文档已经权威、且尚未调用 Provider 的最早时点 —— 阻断仍在花钱之前，
+    // 而重试与恢复从此只读快照，不会因模型目录或绑定变动而漂移。
+    const executableRun = agentRunCompiledPlanProvenance(run) === 'compiled_v2'
+      ? run
+      : { ...run, compiledPlan: compileRunCreativePlan({ run, document: project.document, models }) }
+    // 预览不落库：它反映的文档状态可能还会变，锁死快照会把预览当成确认。
+    const storedRun = executableRun === run || !submission
+      ? executableRun
+      : await productStore.putAgentRun(userId, executableRun) ?? executableRun
     const prepared = prepareAgentRunExecution({
-      run,
+      run: storedRun,
       document: project.document,
       submission,
-      models: config.modelOptions?.length ? config.modelOptions : config.models,
+      models,
       maximumBatchCount: config.maximumBatchCount,
       maximumReferenceBytes: config.maximumReferenceBytes,
       jobIdForBranch: (branch) => generationJobIdForIdempotency(
@@ -36,7 +51,7 @@ export function createAgentRunGenerationService({
         `${run.id}:${branch.id}:attempt-${branch.attempt ?? 0}`,
       ),
     })
-    return { run, project, prepared }
+    return { run: storedRun, project, prepared }
   }
 
   async function persistWorkflow(userId, project, prepared) {

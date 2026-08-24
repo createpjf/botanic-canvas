@@ -75,6 +75,10 @@ export const productStoreCoreMethods = Object.freeze([
   'readAgentRun',
   'readAgentRunForWorker',
   'listAgentRunsForProject',
+  // 按确认来源 Turn 反查 Run。权威边是 `run.turnId`；Turn 侧的 linkedRunIds 是读时
+  // 派生，因此这条查询不能退化成「列项目全部 Run 再本地过滤」—— 那会在项目 Run 数
+  // 超过列表上限时静默漏掉更早的关联。
+  'listAgentRunsForTurn',
   'putAgentTurn',
   'readAgentTurn',
   'readAgentTurnForWorker',

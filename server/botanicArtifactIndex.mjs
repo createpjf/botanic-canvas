@@ -201,6 +201,14 @@ export function artifactsFromGenerationJob(job, { document, now = Date.now() } =
         dismissed: Array.isArray(job.dismissedOutputIds) && job.dismissedOutputIds.includes(output.id),
         savedToLibrary: assets.some((asset) => asset?.source === 'generated' && asset?.image === output.image),
         settings: clone(job.settings),
+        // 编译计划指纹随 Artifact 一起落库：这是「任一 Artifact 可反查 Plan」的落点。
+        // 顶层字段优先，回落到配方 —— 指纹上线前的历史任务只有配方里那一份。
+        ...(job.planFingerprint ?? job.generationRecipe?.planFingerprint
+          ? { planFingerprint: job.planFingerprint ?? job.generationRecipe?.planFingerprint }
+          : {}),
+        ...(job.branchFingerprint ?? job.generationRecipe?.branchFingerprint ?? job.generationRecipe?.sourcePlanFingerprint
+          ? { branchFingerprint: job.branchFingerprint ?? job.generationRecipe?.branchFingerprint ?? job.generationRecipe?.sourcePlanFingerprint }
+          : {}),
         ...(job.rawInput?.productionWorkflow
           ? { productionWorkflow: clone(job.rawInput.productionWorkflow) }
           : {}),

@@ -628,3 +628,43 @@ test('取消 Agent Run 会广播到 Worker，正在执行的生成才会真的�
   assert.equal(byId.get('job-running').billing, 'possible')
   assert.ok(written.every((job) => job.cancel.reason === 'agent-run'))
 })
+
+test('读取 Turn 时按权威边反查这次回合确认出的 Run', async () => {
+  // linkedRunIds 是读时派生：Turn 记录会被 execute() 整条覆盖写，反写会被清掉。
+  const responses = []
+  const queried = []
+  const handler = createAgentRouteHandler({
+    config: {},
+    productStore: {
+      projectAccess: async () => ({ exists: true, role: 'owner' }),
+      readAgentTurn: async () => ({
+        id: 'turn-1', version: 2, ownerId: 'user-1', projectId: 'project-1',
+        idempotencyKey: 'key-1', status: 'completed', createdAt: 1, updatedAt: 2,
+      }),
+      listAgentTurnEvents: async () => [
+        { id: 'e1', turnId: 'turn-1', sequence: 1, type: 'turn.started' },
+        { id: 'e2', turnId: 'turn-1', sequence: 4, type: 'turn.completed' },
+      ],
+      listAgentRunsForTurn: async (userId, projectId, turnId) => {
+        queried.push({ userId, projectId, turnId })
+        return [{ id: 'run-first' }, { id: 'run-second' }]
+      },
+    },
+    json: (_response, status, body) => { responses.push({ status, body }); return true },
+    requireUser: async () => ({ id: 'user-1' }),
+  })
+
+  await handler(
+    { method: 'GET', headers: {} },
+    {},
+    new URL('http://botanic.test/api/agent-turns/turn-1'),
+    { agentTurn: ['path', 'turn-1'] },
+    'request-turn',
+  )
+
+  assert.equal(responses.at(-1)?.status, 200)
+  assert.deepEqual(responses.at(-1)?.body.turn.linkedRunIds, ['run-first', 'run-second'])
+  // 续读游标同时给出，客户端不必为了知道读到哪再拉一次全部事件。
+  assert.equal(responses.at(-1)?.body.turn.lastSequence, 4)
+  assert.deepEqual(queried, [{ userId: 'user-1', projectId: 'project-1', turnId: 'turn-1' }])
+})

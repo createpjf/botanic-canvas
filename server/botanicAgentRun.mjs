@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { agentRunCompiledPlanProvenance } from './creativePlanResolver.mjs'
 import { inferAspectRatioFromPixels, normalizeCustomGenerationSize } from './generationOutputSize.mjs'
 import { normalizeRegionRect } from './regionMaskPng.mjs'
 
@@ -328,8 +329,12 @@ export function validateAgentRunCreation(body) {
   const memoryBindings = validateBindings(rawPlan.memoryBindings, '项目记忆')
   const skillBindings = validateBindings(rawPlan.skillBindings, 'Skill')
   const lineage = validateLineage(body.lineage)
+  // 确认这次 Run 的 Turn。方向是 Run → Turn：Turn 记录在 execute() 里被整条覆盖写，
+  // 反向写 linkedRunIds 会被那次覆盖清掉，因此权威边只放在 Run 上，Turn 侧读时派生。
+  const turnId = body.turnId === undefined ? undefined : text(body.turnId, '确认来源 Turn', 160)
   return {
     projectId,
+    ...(turnId ? { turnId } : {}),
     ...(lineage ? { lineage } : {}),
     plan: {
       ...(rawPlan.plannerModel ? { plannerModel: text(rawPlan.plannerModel, 'Agent 模型', 160) } : {}),
@@ -374,6 +379,7 @@ export function createPersistentAgentRun(input, { id = `agent_run_${randomUUID()
     id,
     ownerId,
     projectId: input.projectId,
+    ...(input.turnId ? { turnId: input.turnId } : {}),
     ...(input.lineage ? { lineage: structuredClone(input.lineage) } : {}),
     status: 'queued',
     plan: structuredClone(input.plan),
@@ -459,8 +465,16 @@ export function failUnsubmittedPersistentAgentRun(run, error, { now = Date.now()
   })
 }
 
+/**
+ * Run 读模型。`compiledPlanProvenance` 是读时判定：历史 Run 只有计划草案，标记为
+ * legacy 而不是伪造一份完整快照 —— 伪造出来的快照会声称「这就是当时确认的内容」，
+ * 但它不是（ADR 0005 不变量五）。
+ */
 export function publicAgentRun(run) {
   if (!run) return undefined
   const { ownerId: _ownerId, ...publicRun } = run
-  return structuredClone(publicRun)
+  return {
+    ...structuredClone(publicRun),
+    compiledPlanProvenance: agentRunCompiledPlanProvenance(run),
+  }
 }

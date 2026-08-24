@@ -101,6 +101,17 @@ export async function requestBotanicAgentPlan(
   return completeBotanicAgentPlan(response.plan, input)
 }
 
+/**
+ * 回合结果加上它的运行时身份。Run 创建时带上 `runtimeTurnId`，Turn 侧才能反查
+ * 这次确认产生了哪些 Run —— 服务端一直在返回 `runtimeTurn`，此前被客户端丢掉了。
+ */
+export type BotanicAgentTurnOutcome = BotanicAgentTurnResult & { runtimeTurnId?: string }
+
+function withRuntimeTurnId(result: BotanicAgentTurnResult, runtimeTurn: unknown): BotanicAgentTurnOutcome {
+  const id = (runtimeTurn as { id?: unknown } | undefined)?.id
+  return typeof id === 'string' && id ? Object.assign({}, result, { runtimeTurnId: id }) : result
+}
+
 export async function requestBotanicAgentTurn(input: BotanicAgentTurnRequestInput, signal?: AbortSignal, requestKey = idempotencyKey('agent-turn')) {
   const copy = agentApiCopy(input.locale)
   const response = await productRequest<{ turn: BotanicAgentTurnResult; runtimeTurn?: unknown }>('/api/agent-turns', {
@@ -111,7 +122,7 @@ export async function requestBotanicAgentTurn(input: BotanicAgentTurnRequestInpu
     timeoutMs: 60_000,
     timeoutMessage: copy.turnTimeout,
   })
-  return response.turn
+  return withRuntimeTurnId(response.turn, response.runtimeTurn)
 }
 
 function settlePlanFromStreamDone(event: Extract<BotanicAgentStreamEvent, { type: 'done' }>, input: BotanicAgentPlanRequestInput) {
@@ -168,10 +179,10 @@ export async function streamBotanicAgentPlan(
 export async function streamBotanicAgentTurn(
   input: BotanicAgentTurnRequestInput,
   options: { signal?: AbortSignal; onEvent?: (event: BotanicAgentStreamEvent) => void } = {},
-): Promise<BotanicAgentTurnResult> {
+): Promise<BotanicAgentTurnOutcome> {
   const copy = agentApiCopy(input.locale)
   const requestKey = idempotencyKey('agent-turn')
-  let settled: BotanicAgentTurnResult | undefined
+  let settled: BotanicAgentTurnOutcome | undefined
   try {
     await streamBotanicAgentEndpoint({
       path: '/api/agent-turns/stream',
@@ -180,7 +191,10 @@ export async function streamBotanicAgentTurn(
       headers: { 'Idempotency-Key': requestKey },
       signal: options.signal,
       onEvent: (event) => {
-        if (event.type === 'done' && (event.result ?? event.turn)) settled = event.result ?? event.turn
+        if (event.type === 'done') {
+          const result = event.result ?? event.turn
+          if (result) settled = withRuntimeTurnId(result, event.runtimeTurn)
+        }
         options.onEvent?.(event)
       },
     })
@@ -425,12 +439,15 @@ export async function createPersistentBotanicAgentRun(input: {
   plan: BotanicAgentPlan
   branches: AgentRunCreationBranch[]
   idempotencyKey?: string
+  /** 确认这次 Run 的回合。缺省表示这条计划不是由服务端回合提出的（本地回退路径）。 */
+  turnId?: string
 }) {
   const response = await productRequest<{ run: BotanicAgentRunSnapshot }>('/api/agent-runs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Idempotency-Key': input.idempotencyKey ?? idempotencyKey('agent-run') },
     body: JSON.stringify({
       projectId: input.projectId,
+      ...(input.turnId ? { turnId: input.turnId } : {}),
       plan: {
         plannerModel: input.plan.plannerModel,
         intent: input.plan.intent,

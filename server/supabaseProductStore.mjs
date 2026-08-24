@@ -984,6 +984,16 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       return (data ?? []).map((row) => clone(row.payload))
     },
 
+    async listAgentRunsForTurn(userId, projectId, turnId, limit = 20) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const { data, error } = await supabaseRequest(() => supabase.from('agent_runs').select('payload')
+        .eq('project_id', projectId).eq('owner_id', userId).eq('payload->>turnId', turnId)
+        // createdAt 不是独立列，只能按 payload 取；毫秒时间戳位数一致，文本序等于数值序。
+        .order('payload->>createdAt', { ascending: true }).limit(Math.max(1, Math.min(limit, 60))))
+      fail(error)
+      return (data ?? []).map((row) => clone(row.payload))
+    },
+
     async putAgentTurn(userId, turn) {
       const role = await memberRole(turn.projectId, userId)
       assertProjectPermission(role, 'read', 'PROJECT_READ_FORBIDDEN')

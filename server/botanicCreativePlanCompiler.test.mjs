@@ -66,3 +66,36 @@ test('compiler rejects conflicting constraints and unsupported settings before a
     models: [{ id: 'other', aspectRatios: ['1:1'], resolutions: ['1K'] }],
   }), (error) => error instanceof CreativePlanCompileError && error.code === 'MODEL_NOT_CONFIGURED')
 })
+
+test('同一次确认的所有分支共享 plan 级指纹，分支指纹由它派生', () => {
+  // 只有 plan 级指纹能回答「这两张图是不是同一次确认出来的」；早期指纹把分支混进
+  // 哈希，分支之间互不相关，这个问题无从回答。
+  const compileBranch = (id, valueLabel) => compileCreativePlan({
+    plan, baseRecipe,
+    branch: { id, label: valueLabel, variation: { values: [{ key: 'scene', axisLabel: '场景', valueLabel }] } },
+    models: [{ id: 'gpt-image-2', aspectRatios: ['3:4'], resolutions: ['1K'] }],
+  }).compiled
+
+  const first = compileBranch('branch-1', '海边')
+  const second = compileBranch('branch-2', '森林')
+  assert.equal(first.planFingerprint, second.planFingerprint)
+  assert.notEqual(first.branchFingerprint, second.branchFingerprint)
+  // 兼容名指向本分支，配方两侧一致。
+  assert.equal(first.sourceFingerprint, first.branchFingerprint)
+
+  // 计划本身变了就不再是同一次确认。
+  const otherPlan = compileBranch('branch-1', '海边')
+  assert.equal(otherPlan.planFingerprint, first.planFingerprint)
+  const changed = compileCreativePlan({
+    plan: { ...plan, prompt: '换成完全不同的画面描述。' }, baseRecipe,
+    branch: { id: 'branch-1', label: '海边', variation: { values: [{ key: 'scene', axisLabel: '场景', valueLabel: '海边' }] } },
+    models: [{ id: 'gpt-image-2', aspectRatios: ['3:4'], resolutions: ['1K'] }],
+  }).compiled
+  assert.notEqual(changed.planFingerprint, first.planFingerprint)
+})
+
+test('无分支编译同样给出 plan 级指纹，且与带分支的那一支可区分', () => {
+  const single = compileCreativePlan({ plan, baseRecipe }).compiled
+  assert.ok(single.planFingerprint)
+  assert.notEqual(single.branchFingerprint, single.planFingerprint)
+})

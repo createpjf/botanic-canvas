@@ -183,3 +183,62 @@ test('Agent 自动选择素材组后，浏览器仍能恢复对应素材组引�
     source: 'asset_group', id: group.id, label: group.name, role: group.role,
   })
 })
+
+test('计划绑定与规划请求取同一份清单，不漏记真正影响了计划的记忆与 Skill', () => {
+  // 绑定也进计划指纹：请求发 30 条记忆而绑定只记 12 条时，多出来的部分影响了计划
+  // 却查不到，「任一结果可反查 Memory / Skill 版本」就不成立。
+  const projectMemory = Array.from({ length: 20 }, (_, index) => ({
+    id: `memory-${index}`,
+    kind: 'brand_rule' as const,
+    scope: 'project' as const,
+    content: `品牌规则 ${index}`,
+    confidence: 'confirmed' as const,
+    version: index + 1,
+    contentHash: `hash-${index}`,
+    createdAt: 1,
+    updatedAt: 1,
+  }))
+  const mountedSkillIds = Array.from({ length: 14 }, (_, index) => `skill-${index}`)
+  const input = {
+    projectId: 'project-agent', locale: 'zh-CN' as const, instruction: '换场景',
+    requestedIntent: 'replace_scene' as const,
+    selectedResultNodeId: 'result-v03', selectedResultLabel: '首图候选 01', rootRecipe: recipe,
+    projectMemory, mountedSkillIds,
+  }
+  const request = buildBotanicAgentPlanRequest(input)
+  const plan = completeBotanicAgentPlan({
+    intent: 'replace_scene', instruction: '换场景', summary: '换个场景。',
+    selectedResultNodeId: 'result-v03', constraints: [{ dimension: 'scene', mode: 'vary' }],
+    prompt: '替换场景。', settings: recipe.settings,
+    output: { mode: 'single', count: 1, candidatesPerItem: 1 },
+  }, input)
+
+  assert.deepEqual(
+    plan.memoryBindings?.map((binding) => binding.id),
+    request.projectMemory?.map((memory) => memory.id),
+  )
+  assert.deepEqual(plan.skillBindings?.map((binding) => binding.id), request.mountedSkillIds)
+  // 绑定带上版本与内容摘要，历史结果才能反查当时的那个版本。
+  assert.equal(plan.memoryBindings?.[0].version, 1)
+  assert.equal(plan.memoryBindings?.[0].contentHash, 'hash-0')
+})
+
+test('未确认的记忆不进请求也不进绑定：它不具备品牌事实资格', () => {
+  const input = {
+    projectId: 'project-agent', locale: 'zh-CN' as const, instruction: '换场景',
+    requestedIntent: 'replace_scene' as const,
+    selectedResultNodeId: 'result-v03', selectedResultLabel: '首图候选 01', rootRecipe: recipe,
+    projectMemory: [
+      { id: 'memory-confirmed', kind: 'brand_rule' as const, scope: 'project' as const, content: '确认过的规则', confidence: 'confirmed' as const, createdAt: 1, updatedAt: 1 },
+      { id: 'memory-provisional', kind: 'brand_rule' as const, scope: 'project' as const, content: '推测的规则', confidence: 'provisional' as const, createdAt: 1, updatedAt: 1 },
+    ],
+  }
+  assert.deepEqual(buildBotanicAgentPlanRequest(input).projectMemory?.map((memory) => memory.id), ['memory-confirmed'])
+  const plan = completeBotanicAgentPlan({
+    intent: 'replace_scene', instruction: '换场景', summary: '换个场景。',
+    selectedResultNodeId: 'result-v03', constraints: [{ dimension: 'scene', mode: 'vary' }],
+    prompt: '替换场景。', settings: recipe.settings,
+    output: { mode: 'single', count: 1, candidatesPerItem: 1 },
+  }, input)
+  assert.deepEqual(plan.memoryBindings?.map((binding) => binding.id), ['memory-confirmed'])
+})

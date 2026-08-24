@@ -72,3 +72,40 @@ test('失败项原配方重试复用任务与幂等键且不重复扣费', async
   assert.equal(reservations.length, 1)
   assert.equal(consumes.length, 1)
 })
+
+test('HTTP 提交也经过 Compiler：每个 Job 都带指纹，画布结果不断链', async () => {
+  // 指纹只在 Agent 路径上有，「任一 Artifact 可反查 Plan」就只对 Agent 结果成立，
+  // 画布上手工生成的图会断链。
+  const { service, jobs } = harness()
+  const submitted = await service({ user: { id: 'user-a' }, rawInput, idempotencyKey: 'submission-fingerprint' })
+  assert.ok(submitted.job.planFingerprint)
+  assert.ok(submitted.job.branchFingerprint)
+  // 落库同样带上：Artifact 是从持久化任务派生的。
+  const stored = jobs.get(submitted.job.id)
+  assert.equal(stored.planFingerprint, submitted.job.planFingerprint)
+  assert.equal(stored.branchFingerprint, submitted.job.branchFingerprint)
+})
+
+test('同一份提交内容得到同一指纹，改了内容就换指纹', async () => {
+  const a = await harness().service({ user: { id: 'user-a' }, rawInput, idempotencyKey: 'submission-same-content-a' })
+  const b = await harness().service({ user: { id: 'user-a' }, rawInput, idempotencyKey: 'submission-same-content-b' })
+  // 指纹描述「提交了什么」，与幂等键无关。
+  assert.equal(b.job.planFingerprint, a.job.planFingerprint)
+
+  const c = await harness().service({
+    user: { id: 'user-a' },
+    rawInput: { ...rawInput, prompt: '换成完全不同的画面描述' },
+    idempotencyKey: 'submission-other-content-c',
+  })
+  assert.notEqual(c.job.planFingerprint, a.job.planFingerprint)
+})
+
+test('画布提交不带创作约束时，编译不改写用户的 Prompt', async () => {
+  // 编译对这条路径的价值是指纹，不是改写 Prompt；悄悄给 Prompt 加前缀会改变实际生成。
+  const { service } = harness()
+  const submitted = await service({ user: { id: 'user-a' }, rawInput, idempotencyKey: 'submission-prompt-intact' })
+  assert.equal(submitted.job.rawInput.prompt, '生成品牌首图')
+  // 也不给手工生成凭空声明质量策略与约束 —— 那等于宣称用户选过它们。
+  assert.equal(submitted.job.rawInput.recipe.qualityPolicy, undefined)
+  assert.equal(submitted.job.rawInput.recipe.constraints, undefined)
+})

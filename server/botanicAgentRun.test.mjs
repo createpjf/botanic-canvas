@@ -408,3 +408,15 @@ test('成套方案随计划持久化，分支条目归一化（视频单条、�
     plan: { ...compositionCreation.plan, composition: { theme: '只有一项', items: [{ title: 'a', mediaKind: 'image', prompt: 'x' }] } },
   }), /至少要有 2 个条目/)
 })
+
+test('确认来源 Turn 随 Run 持久化，缺省表示没有回合确认过它', () => {
+  const linked = createPersistentAgentRun(
+    validateAgentRunCreation({ ...creation, turnId: 'turn_abc' }),
+    { id: 'run-linked', ownerId: 'user-1', now: 100 },
+  )
+  assert.equal(linked.turnId, 'turn_abc')
+  // 本地回退路径没有服务端回合：字段缺失是「没有回合」，不是丢了来源。
+  const local = createPersistentAgentRun(validateAgentRunCreation(creation), { id: 'run-local', ownerId: 'user-1', now: 100 })
+  assert.equal('turnId' in local, false)
+  assert.throws(() => validateAgentRunCreation({ ...creation, turnId: '   ' }), /确认来源 Turn/u)
+})

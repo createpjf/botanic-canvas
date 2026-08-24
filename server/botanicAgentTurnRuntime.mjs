@@ -42,9 +42,13 @@ function eventPayload(event) {
 
 /**
  * @param {unknown} turn
- * @param {{ lastSequence?: number }} [links] 读模型补充项。`lastSequence` 是客户端
- *   续读的起点：不暴露它，客户端只能重新拉取全部事件才知道自己读到哪。当前它由
- *   事件推导而非持久化，因此需要调用方传入；落库后此参数可以移除。
+ * @param {{ lastSequence?: number, linkedRunIds?: string[] }} [links] 读模型补充项。
+ *   `lastSequence` 是客户端续读的起点：不暴露它，客户端只能重新拉取全部事件才知道
+ *   自己读到哪。当前它由事件推导而非持久化，因此需要调用方传入；落库后此参数可以移除。
+ *
+ *   `linkedRunIds` 是这次回合确认出的 Run。它**故意**不持久化在 Turn 上：`execute()`
+ *   把 `turn` 整条覆盖写回，反向写入会被那次覆盖清掉。权威边是 `run.turnId`，这里
+ *   按它派生，因此不存在两侧不一致的状态。
  */
 function publicTurn(turn, links = {}) {
   if (!turn) return undefined
@@ -60,6 +64,7 @@ function publicTurn(turn, links = {}) {
     createdAt: turn.createdAt,
     updatedAt: turn.updatedAt,
     ...(Number.isInteger(links.lastSequence) ? { lastSequence: links.lastSequence } : {}),
+    ...(Array.isArray(links.linkedRunIds) ? { linkedRunIds: [...links.linkedRunIds] } : {}),
     ...(turn.result ? { result: clone(turn.result) } : {}),
     ...(turn.error ? { error: clone(turn.error) } : {}),
   }

@@ -773,6 +773,11 @@ export function recordBotanicAgentCanvasWritebacks(
 
 export type BotanicAgentPlan = {
   plannerModel?: string
+  /**
+   * 提出这条计划的服务端回合。确认后随 Run 一起持久化，Turn 侧据此反查产出的 Run。
+   * 本地回退路径没有回合，因此是可选的 —— 缺失表示「没有回合确认过它」，不是丢了。
+   */
+  turnId?: string
   intent: BotanicAgentIntent
   instruction: string
   summary: string

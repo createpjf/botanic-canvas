@@ -15,7 +15,7 @@ import { retargetGenerationJobForRetry } from './generationResultReconciliation.
 import { requireProjectPermission } from './projectAuthorization.mjs'
 import { buildAgentExecutionTrace } from './agentExecutionTrace.mjs'
 import { actionArgumentsHash, agentToolPermission, assertFreshActionApproval, createActionApprovalToken } from './agentActionGovernance.mjs'
-import { agentTurnIdForIdempotency, createBotanicAgentTurnRuntime, publicAgentTurn } from './botanicAgentTurnRuntime.mjs'
+import { agentTurnIdForIdempotency, agentTurnLastSequence, createBotanicAgentTurnRuntime, publicAgentTurn } from './botanicAgentTurnRuntime.mjs'
 import { createLocalCancelRegistry } from './localCancelRegistry.mjs'
 import { compareBotanicAgentRunBranches } from './botanicAgentCompare.mjs'
 import { createForkedAgentRunInput, forkedAgentRunIdForIdempotency } from './botanicAgentFork.mjs'
@@ -363,9 +363,15 @@ export function createAgentRouteHandler({
       const turn = await productStore.readAgentTurn(user.id, decodeURIComponent(agentTurnMatch[1]))
       if (!turn) return error(response, 404, 'AGENT_TURN_NOT_FOUND', '未找到该 Agent Turn。')
       await requireProjectPermission(productStore, user.id, turn.projectId, 'read')
+      const turnEvents = await productStore.listAgentTurnEvents(user.id, turn.projectId, turn.id) ?? []
+      // 这次回合确认出的 Run 按权威边 `run.turnId` 反查，不写在 Turn 记录上（见 publicTurn）。
+      const linkedRuns = await productStore.listAgentRunsForTurn(user.id, turn.projectId, turn.id) ?? []
       return json(response, 200, {
-        turn: publicAgentTurn(turn),
-        events: await productStore.listAgentTurnEvents(user.id, turn.projectId, turn.id) ?? [],
+        turn: publicAgentTurn(turn, {
+          lastSequence: agentTurnLastSequence(turnEvents),
+          linkedRunIds: linkedRuns.map((run) => run.id),
+        }),
+        events: turnEvents,
       })
     }
 

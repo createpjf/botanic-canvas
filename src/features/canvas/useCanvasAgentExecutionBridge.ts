@@ -480,6 +480,7 @@ export function useCanvasAgentExecutionBridge({
           projectId,
           plan,
           idempotencyKey: submissionKey,
+          ...(plan.turnId ? { turnId: plan.turnId } : {}),
           branches: branchInputs.map((branch) => ({
             id: branch.branchId,
             label: branch.label,

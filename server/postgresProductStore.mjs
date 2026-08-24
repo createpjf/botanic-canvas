@@ -1546,6 +1546,21 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       return rows.map(asPayload)
     },
 
+    async listAgentRunsForTurn(userId, projectId, turnId, limit = 20) {
+      // 先按 project_id + owner_id 收窄（既有索引），再按 payload 里的 turnId 过滤。
+      // turnId 目前不是独立列，这在每项目 Run 量级下可接受；若后续需要跨项目反查，
+      // 应提列并建索引，而不是放开这里的项目范围。
+      const rows = await sql`
+        select r.payload from agent_runs r join project_members m on m.project_id = r.project_id
+        where r.project_id = ${projectId} and r.owner_id = ${userId} and m.user_id = ${userId}
+          and r.payload->>'turnId' = ${turnId}
+        order by case when r.payload->>'createdAt' ~ '^[0-9]+$'
+          then (r.payload->>'createdAt')::bigint else r.updated_at end asc
+        limit ${Math.max(1, Math.min(limit, 60))}
+      `
+      return rows.map(asPayload)
+    },
+
     async putAgentTurn(userId, turn) {
       const role = await memberRole(turn.projectId, userId)
       assertProjectPermission(role, 'read', 'PROJECT_READ_FORBIDDEN')

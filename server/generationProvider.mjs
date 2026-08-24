@@ -319,6 +319,9 @@ export function publicGenerationJob(job, { includeIdempotencyKey = false } = {})
     // 取消回执随任务一起返回：刷新页面后界面仍要说清费用是否可能已产生。
     cancel: job.cancel,
     agentRun: job.agentRun,
+    // 编译计划指纹：任一结果都能反查所属的那一次用户确认与那一支。
+    planFingerprint: job.planFingerprint,
+    branchFingerprint: job.branchFingerprint,
     usage: job.usage,
     budgetWarning: job.budgetWarning,
     effectiveModel: job.effectiveModel,
@@ -357,6 +360,8 @@ export function persistedGenerationJob(job) {
     projectWritebackError: job.projectWritebackError,
     projectWritebackUpdatedAt: job.projectWritebackUpdatedAt,
     agentRun: job.agentRun,
+    planFingerprint: job.planFingerprint,
+    branchFingerprint: job.branchFingerprint,
     usage: job.usage,
     budgetWarning: job.budgetWarning,
     effectiveModel: job.effectiveModel,

@@ -1664,6 +1664,9 @@ export default function AgentWorkspace({
     let synthesizedDuration: number | undefined = entry.synthesizedDuration
     let synthesizedVariants: Array<{ label: string; promptDelta: string }> | undefined = entry.synthesizedVariants
     let synthesizedAxisLabel: string | undefined = entry.synthesizedAxisLabel
+    // 提出这条计划的回合。确认后随 Run 持久化，Turn 侧据此反查产出的 Run；
+    // 追问回程不再发起新回合，所以要从 entry 带回来而不是重新取。
+    let sourceTurnId: string | undefined = entry.synthesizedTurnId
     let resolvedOptions = entry.options
     if (entry.useServerTurn) {
       if (serverPersistenceEnabled) {
@@ -1803,6 +1806,7 @@ export default function AgentWorkspace({
         synthesizedDuration = turn.duration
         synthesizedVariants = turn.variants
         synthesizedAxisLabel = turn.axisLabel
+        sourceTurnId = turn.runtimeTurnId
         if (turn.settingsHint && Object.keys(turn.settingsHint).length) {
           resolvedOptions = { ...options, generationOverrides: { ...turn.settingsHint, ...options.generationOverrides } }
         }
@@ -2037,6 +2041,7 @@ export default function AgentWorkspace({
       synthesizedDuration,
       synthesizedVariants,
       synthesizedAxisLabel,
+      synthesizedTurnId: sourceTurnId,
     })
     if (draft.kind === 'notice') {
       appendMessage({
@@ -2187,7 +2192,8 @@ export default function AgentWorkspace({
       })
       return
     }
-    const resolvedPlan = nextPlan as BotanicAgentPlan
+    const planned = nextPlan as BotanicAgentPlan
+    const resolvedPlan = sourceTurnId ? { ...planned, turnId: sourceTurnId } : planned
     const planMessageId = appendMessage({
       role: 'assistant', kind: 'plan', plan: resolvedPlan, status: 'pending',
       content: resolvedPlan.summary,
