@@ -12,7 +12,8 @@
     "check:architecture": "node scripts/architectureBoundaries.mjs",
     "check:security": "node scripts/securityGate.mjs",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "check:evals": "node scripts/evalGate.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1097.0",
