@@ -640,9 +640,9 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
     if (timeoutSignal.aborted) throw new BotanicAgentChatError(504, 'PROVIDER_TIMEOUT', 'Agent 响应超时，请重试。')
     if (options.signal?.aborted) throw new BotanicAgentChatError(499, 'REQUEST_CANCELLED', 'Agent 请求已取消。')
     if (caught instanceof AgentToolRuntimeError) {
-      throw new BotanicAgentChatError(502, 'INVALID_PROVIDER_RESPONSE', 'Agent 返回了不允许的工具调用。')
+      throw new BotanicAgentChatError(502, 'INVALID_PROVIDER_RESPONSE', 'Agent 返回了不允许的工具调用。', { cause: caught })
     }
-    throw new BotanicAgentChatError(502, 'PROVIDER_UNAVAILABLE', 'Agent 服务暂时不可用，请稍后重试。')
+    throw new BotanicAgentChatError(502, 'PROVIDER_UNAVAILABLE', 'Agent 服务暂时不可用，请稍后重试。', { cause: caught })
   }
 }
 

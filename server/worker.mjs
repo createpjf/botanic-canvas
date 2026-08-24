@@ -4,6 +4,10 @@ import { createProductRuntime, loadLocalEnv, runtimeConfig } from './runtime.mjs
 import { createAgentRunEventPublisher } from './agentRunEventBus.mjs'
 import { writeAgentRunOperationalEvent } from './agentRunObservability.mjs'
 import { createProviderHealthMonitor } from './providerHealthMonitor.mjs'
+import { createDerivedTaskQueue, createDerivedTaskWorker } from './derivedTaskQueue.mjs'
+import { createAgentTurnSweep } from './agentTurnSweep.mjs'
+import { createAgentTurnResumer } from './agentTurnResume.mjs'
+import { createBotanicAgentTurnRuntime } from './botanicAgentTurnRuntime.mjs'
 
 loadLocalEnv()
 const config = runtimeConfig()
@@ -35,6 +39,36 @@ worker.on('failed', (job, caught) => console.error(`[generation] BullMQ job ${jo
 worker.on('error', (caught) => console.error(`[generation] BullMQ worker error: ${caught.message}`))
 console.log(`Botanic generation worker started (concurrency ${config.workerConcurrency})`)
 
+// 派生任务与生成任务分队列：一类任务堆积不应拖垮另一类。当前只有孤儿 Turn 回收，
+// 新种类要和它的消费者一起加（见 derivedTaskQueue 的种类词表）。
+const derivedQueue = createDerivedTaskQueue(config.redisUrl)
+const sweepStaleAgentTurns = createAgentTurnSweep({
+  productStore: runtime.productStore,
+  observe: (event) => console.log(JSON.stringify(event)),
+  // 不传 toolRisk：工具事件自带该次调用实际适用的 risk，比按名字事后查更准，
+  // 也不必在 Worker 里构造需要运行时依赖的工具注册表。早于该字段落地的历史事件
+  // 因此判为未知能力 → 不可重放，这是安全的默认。
+  resumeTurn: createAgentTurnResumer({
+    productStore: runtime.productStore,
+    config,
+    mediaService: runtime.mediaService,
+    turnRuntime: createBotanicAgentTurnRuntime({ productStore: runtime.productStore }),
+    observe: (event) => console.log(JSON.stringify(event)),
+  }),
+})
+const derivedWorker = createDerivedTaskWorker({
+  redisUrl: config.redisUrl,
+  concurrency: 1,
+  handlers: { 'turn.reclaim': () => sweepStaleAgentTurns() },
+})
+derivedWorker.on('failed', (job, caught) => console.error(`[derived] ${job?.name ?? 'unknown'} failed: ${caught.message}`))
+derivedWorker.on('error', (caught) => console.error(`[derived] worker error: ${caught.message}`))
+// 注册幂等：BullMQ 按 repeat key 去重，多实例重复注册不会产生多份定时任务。
+await derivedQueue?.scheduleSweep('turn.reclaim', 60_000).catch((caught) => {
+  console.error(`[derived] 清扫注册失败: ${caught instanceof Error ? caught.message : String(caught)}`)
+})
+console.log('Botanic derived-task worker started (turn.reclaim sweep every 60s)')
+
 async function recoverQueuedJobs() {
   try {
     for (const queued of await runtime.productStore.recoverGenerationJobs()) await queue.enqueue(queued.id)
@@ -64,6 +98,8 @@ void reclaimInterruptedJobs()
 
 async function shutdown() {
   clearInterval(recoveryTimer)
+  await derivedWorker.close(true)
+  await derivedQueue?.close()
   // 供应商或对象流异常时，默认 close 会一直等待 active job，导致部署后旧容器
   // 仍持有 Redis lock、新 Worker 无法接手。强制关闭后 BullMQ 会将该 job 作为
   // stalled 回收，配合 90 秒 stale-running 恢复逻辑重新执行。
