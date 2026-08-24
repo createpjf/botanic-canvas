@@ -304,16 +304,17 @@ export function validateAgentRunCreation(body) {
   const toolCalls = validateToolCalls(rawPlan.toolCalls)
   const contextSnapshot = validateContextSnapshot(rawPlan.contextSnapshot)
   const isInitialGeneration = rawPlan.intent === 'initial_generation'
+  const settings = validateSettings(rawPlan.settings)
   const selectedResultNodeId = rawPlan.selectedResultNodeId === undefined
     ? undefined
     : text(rawPlan.selectedResultNodeId, '父结果节点', 160)
   if (!isInitialGeneration && !selectedResultNodeId) {
     throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', '父结果节点不能为空。')
   }
-  if (isInitialGeneration && !contextSnapshot?.some((item) => (
+  if (isInitialGeneration && settings.duration !== undefined && !contextSnapshot?.some((item) => (
     (item.kind === '素材' || item.kind === '结果') && item.mediaKind === 'image'
   ))) {
-    throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', 'Agent 首次生成需要至少一个图片素材或图片结果。')
+    throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', '视频首次生成需要至少一个图片素材或图片结果作为首帧。')
   }
   const variation = validateVariationSpec(rawPlan.variation)
   if (output.mode === 'batch_by_variation' && !variation) {
@@ -338,7 +339,7 @@ export function validateAgentRunCreation(body) {
       ...(rawPlan.title ? { title: text(rawPlan.title, 'Agent 新图名', 8, { countCodePoints: true }) } : {}),
       ...(selectedResultNodeId ? { selectedResultNodeId } : {}),
       prompt: text(rawPlan.prompt, 'Agent 生图提示词'),
-      settings: validateSettings(rawPlan.settings),
+      settings,
       constraints: validateConstraints(rawPlan.constraints, { allowEmpty: isInitialGeneration }),
       output: { mode: output.mode, count, candidatesPerItem },
       ...(variation ? { variation } : {}),

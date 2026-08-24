@@ -567,15 +567,17 @@ test('视频计划以首帧语义生成一条视频，措辞与图片计划区�
   }))
 })
 
-test('首次生成拒绝空上下文和仅视频上下文，其他意图仍要求父结果', () => {
+test('首次图片生成允许纯文字，视频仍要求图片首帧，其他意图仍要求父结果', () => {
   const settings = { model: 'gpt-image-2' as const, aspectRatio: '1:1' as const, resolution: '1K' as const }
-  assert.throws(() => buildBotanicAgentPlan({
+  const direct = buildBotanicAgentPlan({
     instruction: '生成广告图', intent: 'initial_generation', settings, contextSnapshot: [],
-  }), /图片素材或图片结果/)
+  })
+  assert.deepEqual(direct.references, [])
+  assert.match(direct.summary, /根据文字描述直接生成 1 张图片/)
   assert.throws(() => buildBotanicAgentPlan({
-    instruction: '生成广告图', intent: 'initial_generation', settings,
-    contextSnapshot: [{ nodeId: 'video-1', label: '视频', kind: '素材', mediaKind: 'video' }],
-  }), /图片素材或图片结果/)
+    instruction: '生成广告图', intent: 'initial_generation',
+    settings: { ...settings, duration: 5 }, contextSnapshot: [],
+  }), /视频首次生成需要一项图片素材或图片结果作为首帧/)
   assert.throws(() => buildBotanicAgentPlan({
     instruction: '换场景', intent: 'replace_scene', settings,
     contextSnapshot: [{ nodeId: 'asset-1', label: '图片', kind: '素材', mediaKind: 'image' }],

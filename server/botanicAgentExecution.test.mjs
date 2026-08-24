@@ -181,6 +181,19 @@ test('首次生成从权威画布解析图片上下文并复用普通 Generation
   assert.equal(result.document.edges.some((edge) => edge.data?.role === 'parent'), false)
 })
 
+test('首次图片生成没有参考图时仍创建纯文字 Generation Job', () => {
+  const result = prepareAgentRunExecution({
+    run: initialGenerationRun([]), document: initialGenerationDocument(), now: 100,
+    jobIdForBranch: (branch) => `job-${branch.id}`,
+    models, maximumBatchCount: 8, maximumReferenceBytes: 8 * 1024 * 1024,
+  })
+
+  assert.equal(result.jobs.length, 1)
+  assert.deepEqual(result.jobs[0].rawInput.recipe.references, [])
+  assert.equal(result.jobs[0].rawInput.parent, undefined)
+  assert.equal(result.document.edges.some((edge) => edge.data?.role === 'reference'), false)
+})
+
 test('首次生成忽略同一上下文中的文字和视频，只解析声明为图片的节点', () => {
   const result = prepareAgentRunExecution({
     run: initialGenerationRun([
@@ -196,7 +209,7 @@ test('首次生成忽略同一上下文中的文字和视频，只解析声明�
   assert.deepEqual(result.jobs[0].rawInput.recipe.references.map((reference) => reference.mediaId), ['media_product'])
 })
 
-test('首次生成在创建工作流和 Job 前拒绝视频、文字和空结果上下文', () => {
+test('首次生成在创建工作流和 Job 前拒绝声明错误的上下文节点', () => {
   const document = initialGenerationDocument()
   const invalidSnapshots = [
     [{ nodeId: 'asset-video-node', label: '视频', kind: '素材', mediaKind: 'image' }],

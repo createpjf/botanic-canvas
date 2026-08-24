@@ -218,7 +218,14 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
       })()
     : undefined
 
-  if (!references.length && !parent) throw new GenerationError(400, 'INVALID_REFERENCE', '请至少传入一个画布参考素材或一张父版本图片。')
+  if ((mask || maskRegion) && !references.length && !parent) {
+    throw new GenerationError(400, 'INVALID_MASK', '局部重绘需要一张基准图片。')
+  }
+  if (!references.length && !parent && (kind !== 'generation' || model.mediaKind === 'video')) {
+    throw new GenerationError(400, 'INVALID_REFERENCE', model.mediaKind === 'video'
+      ? '视频生成需要至少传入一张图片作为首帧。'
+      : '当前任务需要至少传入一个画布参考素材或一张父版本图片。')
+  }
   if (kind === 'refinement' && !parent) throw new GenerationError(400, 'MISSING_PARENT', '定向精修需要一张已选首图。')
 
   return {
@@ -410,25 +417,50 @@ export async function generateImages(job, {
     ? [job.parent, ...orderedReferences.filter((reference) => !reference.buffer.equals(job.parent.buffer))]
     : orderedReferences
   const submit = async (count, variationIndex) => {
-    const form = new FormData()
-    form.set('model', job.settings.model)
-    form.set('prompt', buildImageProviderPrompt(job, variationIndex))
-    form.set('n', String(count))
-    form.set('size', resolveGenerationOutputSize(job.settings))
-    form.set('quality', gptImage2EditQuality(job))
-    form.set('output_format', 'png')
-    form.set('moderation', 'auto')
-    inputImages.forEach((reference, index) => {
-      form.append('image[]', new Blob([reference.buffer], { type: reference.mimeType }), `reference-${index + 1}.${fileExtension(reference.mimeType)}`)
-    })
-    if (job.mask?.buffer) {
-      // OpenAI edits：mask 应用于第一张 image；透明区域被重绘，不透明区域保持原样。
-      form.set('mask', new Blob([job.mask.buffer], { type: job.mask.mimeType }), 'mask.png')
+    const prompt = buildImageProviderPrompt(job, variationIndex)
+    const outputSize = resolveGenerationOutputSize(job.settings)
+    const hasInputImages = inputImages.length > 0
+    let request
+    if (hasInputImages) {
+      const form = new FormData()
+      form.set('model', job.settings.model)
+      form.set('prompt', prompt)
+      form.set('n', String(count))
+      form.set('size', outputSize)
+      form.set('quality', gptImage2EditQuality(job))
+      form.set('output_format', 'png')
+      form.set('moderation', 'auto')
+      inputImages.forEach((reference, index) => {
+        form.append('image[]', new Blob([reference.buffer], { type: reference.mimeType }), `reference-${index + 1}.${fileExtension(reference.mimeType)}`)
+      })
+      if (job.mask?.buffer) {
+        // OpenAI edits：mask 应用于第一张 image；透明区域被重绘，不透明区域保持原样。
+        form.set('mask', new Blob([job.mask.buffer], { type: job.mask.mimeType }), 'mask.png')
+      }
+      request = { path: '/v1/images/edits', body: form, headers: {} }
+    } else {
+      // 没有参考图时走标准文生图入口；edits 端点要求至少一张输入图片。
+      request = {
+        path: '/v1/images/generations',
+        body: JSON.stringify({
+          model: job.settings.model,
+          prompt,
+          n: count,
+          size: outputSize,
+          quality: gptImage2EditQuality(job),
+          output_format: 'png',
+          moderation: 'auto',
+        }),
+        headers: { 'Content-Type': 'application/json' },
+      }
     }
     let response
     try {
-      response = await fetch(`${apiBaseUrl}/v1/images/edits`, {
-        method: 'POST', headers: { Authorization: `Bearer ${apiKey}` }, body: form, signal,
+      response = await fetch(`${apiBaseUrl}${request.path}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, ...request.headers },
+        body: request.body,
+        signal,
       })
     } catch (error) {
       if (signal?.aborted) throw error

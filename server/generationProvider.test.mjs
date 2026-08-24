@@ -40,6 +40,21 @@ test('生成配方在进入 Redis 队列前完成模型、尺寸和图片约束�
   }, { models: ['gpt-image-2'], maximumBatchCount: 8, maximumReferenceBytes: 1024 }), (error) => error instanceof GenerationError && error.code === 'INVALID_REQUEST')
 })
 
+test('纯文字图片生成允许空参考，精修与局部重绘仍需要基准图', () => {
+  const context = { models: ['gpt-image-2'], maximumBatchCount: 8, maximumReferenceBytes: 1024 }
+  const direct = validateGenerationInput({
+    projectId: 'project-a', kind: 'generation', prompt: '一张海边广告图', batchCount: 1,
+    settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
+    recipe: { references: [] },
+  }, context)
+  assert.deepEqual(direct.references, [])
+  assert.throws(() => validateGenerationInput({
+    projectId: 'project-a', kind: 'refinement', prompt: '换背景', batchCount: 1,
+    settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
+    recipe: { references: [] },
+  }, context), (error) => error instanceof GenerationError && error.code === 'INVALID_REFERENCE')
+})
+
 test('已入库的私有参考图只保存 mediaId，Worker 执行时才读取图片字节', async () => {
   const input = validateGenerationInput({
     projectId: 'project-a', kind: 'generation', prompt: '香氛商品主图', batchCount: 1,
@@ -200,6 +215,39 @@ test('gpt-image-2 自定义尺寸写入对齐后的 Provider size', async () => 
       persistImage: async (value) => value.dataUrl,
     })
     assert.equal(size, '1920x1088')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('无参考图片时使用 images/generations 纯文字入口', async () => {
+  const originalFetch = globalThis.fetch
+  let request
+  globalThis.fetch = async (url, init) => {
+    request = { url, init }
+    return new Response(JSON.stringify({ data: [{ b64_json: 'iVBORw0KGgo=' }] }), {
+      status: 200, headers: { 'content-type': 'application/json' },
+    })
+  }
+  try {
+    await generateImages({
+      id: 'job-direct', kind: 'generation', batchCount: 1,
+      prompt: '海边自然光下的香氛广告图',
+      settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '1K' },
+      references: [],
+    }, {
+      apiBaseUrl: 'https://example.test',
+      apiKey: 'test-key',
+      jobId: 'job-direct',
+      persistImage: async (value) => value.dataUrl,
+    })
+    assert.equal(request.url, 'https://example.test/v1/images/generations')
+    assert.equal(request.init.headers['Content-Type'], 'application/json')
+    const body = JSON.parse(request.init.body)
+    assert.equal(body.model, 'gpt-image-2')
+    assert.match(body.prompt, /创意目标：海边自然光下的香氛广告图/u)
+    assert.equal(body.n, 1)
+    assert.equal(body.output_format, 'png')
   } finally {
     globalThis.fetch = originalFetch
   }

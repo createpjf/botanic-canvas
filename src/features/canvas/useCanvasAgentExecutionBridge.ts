@@ -104,6 +104,7 @@ export function useCanvasAgentExecutionBridge({
   const { locale } = useProductI18n()
   const copy = canvasAgentExecutionCopy[locale]
   const updateGenerateNode = useCanvasStore((state) => state.updateGenerateNode)
+  const runGeneration = useCanvasStore((state) => state.runGeneration)
   const runGraphGeneration = useCanvasStore((state) => state.runGraphGeneration)
   const runBatchVariation = useCanvasStore((state) => state.runBatchVariation)
   const addUploadedAssetsToCanvas = useCanvasStore((state) => state.addUploadedAssetsToCanvas)
@@ -553,6 +554,28 @@ export function useCanvasAgentExecutionBridge({
     }
     if (useCanvasStore.getState().document.id !== projectId) throw new Error(copy.projectChanged)
     if (plan.intent === 'initial_generation') {
+      // 本地回退也允许无参考图的首轮文生图；视频仍交给可恢复服务处理首帧约束。
+      if (plan.output.mode === 'single' && plan.settings.duration === undefined) {
+        runId = saveAgentPlan(plan)
+        updateAgentRunStatus(runId, 'executing')
+        const started = await runGeneration({
+          prompt: plan.prompt,
+          batchCount: plan.output.count,
+          settings: plan.settings,
+          recipe: {
+            prompt: plan.prompt,
+            batchCount: plan.output.count,
+            settings: plan.settings,
+            references: [],
+          },
+          title: plan.title,
+        })
+        if (!started) {
+          updateAgentRunStatus(runId, 'failed', copy.generationNotStarted)
+          return { started: false, runId }
+        }
+        return { started: true, runId }
+      }
       throw new Error(copy.initialGenerationRequiresService)
     }
     const selectedResultNodeId = plan.selectedResultNodeId
@@ -600,7 +623,7 @@ export function useCanvasAgentExecutionBridge({
       return { started: false, runId }
     }
     return { started: true, runId }
-  }, [applyAgentRunSnapshot, applyAgentWorkflowPatch, copy.generationNotStarted, copy.initialGenerationRequiresService, copy.missingParentResult, copy.projectChanged, createGenerateBranchFromResult, createGenerateFromResultRecipe, document.assetGroups, document.id, locale, onPrepareCanvasFocus, refreshDocumentFromRemote, replaceMediaSources, resolveRunNodes, runBatchVariation, runGraphGeneration, saveAgentPlan, selectNode, updateAgentRunStatus, updateGenerateNode])
+  }, [applyAgentRunSnapshot, applyAgentWorkflowPatch, copy.generationNotStarted, copy.initialGenerationRequiresService, copy.missingParentResult, copy.projectChanged, createGenerateBranchFromResult, createGenerateFromResultRecipe, document.assetGroups, document.id, locale, onPrepareCanvasFocus, refreshDocumentFromRemote, replaceMediaSources, resolveRunNodes, runBatchVariation, runGeneration, runGraphGeneration, saveAgentPlan, selectNode, updateAgentRunStatus, updateGenerateNode])
 
   const newSession = useCallback(() => {
     const sessionId = startNewAgentSession(selectedFocusNodeIds)
