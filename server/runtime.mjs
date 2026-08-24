@@ -12,7 +12,7 @@ import { parseMcpToolConfigurations } from './mcpClient.mjs'
 import { resolveTavilyExtractUrl, resolveTavilySearchUrl } from './agentWebResearch.mjs'
 import { resolveInviteRedirectTo } from './inviteRedirect.mjs'
 import { assertProductStoreContract } from './productStoreContract.mjs'
-import { resolveAgentFeatureFlags } from './agentFeatureFlags.mjs'
+import { createRolloutFlags, resolveAgentFeatureFlags } from './featureFlags.mjs'
 
 function boundedInteger(value, fallback, minimum, maximum) {
   const parsed = Number(value)
@@ -99,6 +99,8 @@ export function runtimeConfig(rootDir = process.cwd()) {
     agentVisionModel: (process.env.AGENT_VISION_MODEL ?? 'gemini-3.6-flash').trim(),
     agentRawReasoning,
     agentFeatureFlags: resolveAgentFeatureFlags(process.env),
+    // 升级期灰度闸门。与上一行的 kill switch 语义相反：默认全关，支持按项目/用户放量。
+    rolloutFlags: createRolloutFlags(process.env),
     promptRefinementTimeoutMs: Number(process.env.PROMPT_REFINEMENT_TIMEOUT_MS ?? 30000),
     // Agent 规划与对话包含受控上下文读取和多轮工具调用；给它足够时间，
     // 避免浏览器先于 Provider 报“工作区超时”。客户端仍有独立的 60 秒上限。

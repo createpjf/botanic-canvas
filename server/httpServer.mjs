@@ -341,6 +341,9 @@ const handleRequest = async (request, response) => {
           models: config.flockAgentModels,
         },
         agentFeatures: config.agentFeatureFlags,
+        // 只回显全局开启的灰度闸门名。按项目/用户放量的白名单内容不出现在这里，
+        // 否则健康检查会泄漏参与灰度的项目与用户标识。
+        rolloutFlags: config.rolloutFlags?.enabledFor() ?? [],
         agentMcp: {
           configured: Object.keys(configuredMcpTools).length > 0,
           toolCount: Object.keys(configuredMcpTools).length,
