@@ -1,4 +1,11 @@
+// @ts-check
 import { createHash } from 'node:crypto'
+
+/**
+ * 操作者与时间注入。运行时由 `requiredText` 校验 `actorId` 必填，这里声明为可选
+ * 只为让 `= {}` 默认值能通过类型断言 —— TS 无法从 `= {}` 推出未带默认值的属性。
+ * @typedef {{ actorId?: string, now?: number }} WorkflowActorOptions
+ */
 
 const workflowRunTerminalStatuses = new Set(['succeeded', 'partially_failed', 'failed', 'cancelled'])
 const workflowItemTerminalStatuses = new Set(['succeeded', 'failed', 'cancelled'])
@@ -193,7 +200,7 @@ function reviewRequired(run) {
  * `source` 必填并已由 `resolveProductionWorkflowSource` 按项目权威文档校验；
  * 版本条目固定该来源身份，因此历史版本始终能回答"从哪个结果发布而来"。
  */
-export function createProductionWorkflowVersion(input, { actorId, now = Date.now() } = {}) {
+export function createProductionWorkflowVersion(input, { actorId, now = Date.now() } = /** @type {WorkflowActorOptions} */ ({})) {
   const id = requiredText(input?.id, '工作流标识', 160)
   const projectId = requiredText(input?.projectId, '项目标识', 160)
   const name = requiredText(input?.name, '工作流名称', 120)
@@ -228,7 +235,7 @@ export function productionWorkflowVersion(workflow, version = workflow?.currentV
   return workflow?.versions?.find((entry) => entry.version === Number(version))
 }
 
-export function createProductionWorkflowRun(input, { actorId, now = Date.now() } = {}) {
+export function createProductionWorkflowRun(input, { actorId, now = Date.now() } = /** @type {WorkflowActorOptions} */ ({})) {
   const workflow = clone(input?.workflow)
   const version = productionWorkflowVersion(workflow, input?.workflowVersion)
   if (!version) throw new Error('工作流版本不存在。')
@@ -268,7 +275,7 @@ export function createProductionWorkflowRun(input, { actorId, now = Date.now() }
   }
 }
 
-export function transitionProductionWorkflowRun(value, action, { now = Date.now(), actorId } = {}) {
+export function transitionProductionWorkflowRun(value, action, { now = Date.now(), actorId } = /** @type {WorkflowActorOptions} */ ({})) {
   const run = clone(value)
   if (workflowRunTerminalStatuses.has(run.status)) throw new Error('工作流运行已进入终态。')
   if (action === 'start' && run.status !== 'queued') throw new Error('只有排队中的工作流可以启动。')
