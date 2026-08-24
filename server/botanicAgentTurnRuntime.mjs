@@ -213,13 +213,26 @@ export function createBotanicAgentTurnRuntime({ productStore, now = () => Date.n
     const activeKey = `${userId}:${projectId}:${turnId}`
     const isActive = activeTurns.has(activeKey)
     if (isActive) cancelledTurns.add(activeKey)
-    const saved = { ...turn, status: 'cancelled', updatedAt: now(), error: { code: 'AGENT_TURN_CANCELLED', message: reason } }
+    // ADR 0004：取消先落 cancelling，由真正的执行实例中止后写终态。
+    //
+    // 这里不能直接写 cancelled：本实例的 activeTurns 是进程内的，看不到 Turn 是否
+    // 正在别的实例上执行；直接写终态会让那个实例的结果无处归属。留在 cancelling 的
+    // Turn 不会永久卡住 —— cancelling 属于非终态集合，60 秒后会被孤儿清扫收敛。
+    const saved = {
+      ...turn,
+      status: 'cancelling',
+      updatedAt: now(),
+      error: { code: 'AGENT_TURN_CANCELLED', message: reason },
+    }
     await productStore.putAgentTurn(userId, saved)
     // 活跃解析器会在收到 AbortSignal 后统一追加终态事件；这里不要抢占同一
     // sequence，否则 Postgres 的唯一约束会把真实解析错误改写成取消冲突。
     if (isActive) return publicTurn(saved, { lastSequence: await terminalSequence() })
+    // 事件类型是 cancelling 而不是 cancelled：此刻只发生了「取消请求」，终态由真正
+    // 的执行实例中止后写入，或由孤儿清扫收敛。写 cancelled 会让事件宣称一个尚未
+    // 达成的终态，而状态字段仍是 cancelling。
     const sequence = await terminalSequence()
-    await append(userId, projectId, turnId, sequence + 1, 'turn.cancelled', saved.error)
+    await append(userId, projectId, turnId, sequence + 1, 'turn.cancelling', saved.error)
     return publicTurn(saved, { lastSequence: sequence + 1 })
   }
 

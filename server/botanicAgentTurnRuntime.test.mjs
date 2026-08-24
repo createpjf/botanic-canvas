@@ -80,3 +80,47 @@ test('Turn Runtime 把取消/失败收口到可恢复终态', async () => {
   assert.equal(store.turns.get(id).status, 'cancelled')
   assert.equal(store.events.get(id).at(-1).type, 'turn.cancelled')
 })
+
+test('cancel 落中间态 cancelling，终态留给真正的执行实例或孤儿清扫', async () => {
+  const store = fakeStore()
+  const runtime = createBotanicAgentTurnRuntime({ productStore: store, now: () => 500 })
+  const id = 'turn-remote-cancel'
+  // 不在本实例执行的非终态 Turn：本实例的 activeTurns 看不到它是否跑在别处。
+  await store.putAgentTurn('u', {
+    id, version: 2, ownerId: 'u', projectId: 'p', idempotencyKey: 'k', status: 'running', createdAt: 1, updatedAt: 1,
+  })
+  await store.appendAgentTurnEvent('u', 'p', { id: 'e1', turnId: id, projectId: 'p', sequence: 1, type: 'turn.started', createdAt: 1 })
+
+  const cancelled = await runtime.cancel({ userId: 'u', projectId: 'p', turnId: id })
+
+  // 直接写 cancelled 会让远端实例的结果无处归属。
+  assert.equal(cancelled.status, 'cancelling')
+  assert.equal(store.turns.get(id).status, 'cancelling')
+  assert.equal(cancelled.error.code, 'AGENT_TURN_CANCELLED')
+  // 事件如实记录「取消请求」，不宣称尚未达成的终态。
+  assert.equal(store.events.get(id).at(-1).type, 'turn.cancelling')
+  assert.equal(cancelled.lastSequence, 2, '读模型暴露续读游标')
+})
+
+test('cancel 对已终态 Turn 是无副作用读取', async () => {
+  const store = fakeStore()
+  const runtime = createBotanicAgentTurnRuntime({ productStore: store, now: () => 500 })
+  const id = 'turn-done'
+  await store.putAgentTurn('u', {
+    id, version: 2, ownerId: 'u', projectId: 'p', idempotencyKey: 'k', status: 'completed', createdAt: 1, updatedAt: 9,
+  })
+  const result = await runtime.cancel({ userId: 'u', projectId: 'p', turnId: id })
+  assert.equal(result.status, 'completed', '已完成的回合不得被取消改写')
+  assert.equal(store.turns.get(id).updatedAt, 9, '不应发生写入')
+  assert.equal(store.events.has(id), false, '不应追加事件')
+})
+
+test('cancel 忽略不属于该项目的 Turn，避免跨项目越权取消', async () => {
+  const store = fakeStore()
+  const runtime = createBotanicAgentTurnRuntime({ productStore: store })
+  await store.putAgentTurn('u', {
+    id: 'turn-other', version: 2, ownerId: 'u', projectId: 'project-a', idempotencyKey: 'k', status: 'running', createdAt: 1, updatedAt: 1,
+  })
+  assert.equal(await runtime.cancel({ userId: 'u', projectId: 'project-b', turnId: 'turn-other' }), undefined)
+  assert.equal(store.turns.get('turn-other').status, 'running')
+})

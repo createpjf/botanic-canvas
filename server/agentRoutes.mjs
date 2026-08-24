@@ -15,6 +15,7 @@ import { requireProjectPermission } from './projectAuthorization.mjs'
 import { buildAgentExecutionTrace } from './agentExecutionTrace.mjs'
 import { actionArgumentsHash, agentToolPermission, assertFreshActionApproval, createActionApprovalToken } from './agentActionGovernance.mjs'
 import { agentTurnIdForIdempotency, createBotanicAgentTurnRuntime, publicAgentTurn } from './botanicAgentTurnRuntime.mjs'
+import { createLocalCancelRegistry } from './localCancelRegistry.mjs'
 import { compareBotanicAgentRunBranches } from './botanicAgentCompare.mjs'
 import { createForkedAgentRunInput, forkedAgentRunIdForIdempotency } from './botanicAgentFork.mjs'
 
@@ -113,6 +114,8 @@ export function createAgentRouteHandler({
   observeAgentRun = () => {},
   consumeWebResearchQuota,
   mediaService,
+  localCancelRegistry,
+  publishCancel,
 }) {
   // 看图只读当前项目内的媒体：readGenerationInput 校验归属，图片字节不离开服务端与模型网关。
   const visionMediaResolver = (userId, projectId) => (mediaService?.enabled
@@ -129,7 +132,9 @@ export function createAgentRouteHandler({
   })
   const agentActionExecutions = new Map()
   const agentTurnRuntime = createBotanicAgentTurnRuntime({ productStore })
-  const agentTurnControllers = new Map()
+  // 本实例的执行句柄表由外部注入：跨实例取消信号的订阅方需要拿到同一个表，
+  // 才能在收到别的实例发来的取消时就地中止（见 localCancelRegistry）。
+  const cancelRegistry = localCancelRegistry ?? createLocalCancelRegistry()
   const methodNotAllowed = (response, message, allow) => json(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message } }, { Allow: allow })
   const observeRun = (event) => {
     try { observeAgentRun(event) } catch { /* 运行日志不得阻断用户请求。 */ }
@@ -278,9 +283,9 @@ export function createAgentRouteHandler({
       }
       const turnId = agentTurnIdForIdempotency(user.id, validatedInput.projectId, idempotencyKey)
       const controller = new AbortController()
-      // 同一幂等键并发重放时复用首个解析器的取消控制器，避免后来的请求
-      // 覆盖 map，导致明确取消只能中断一个无效的重复控制器。
-      if (!agentTurnControllers.has(turnId)) agentTurnControllers.set(turnId, controller)
+      // 同一幂等键并发重放时复用首个解析器的取消控制器：登记表拒绝后来者覆盖，
+      // 否则明确取消只会中断一个无效的重复控制器。
+      cancelRegistry.register(turnId, controller)
       const cancel = () => controller.abort()
       const cancelOnClosedResponse = () => { if (!response.writableEnded) cancel() }
       request.once('aborted', cancel)
@@ -324,7 +329,7 @@ export function createAgentRouteHandler({
         }
         return error(response, statusCode, caught?.code ?? 'AGENT_TURN_FAILED', typeof caught?.message === 'string' ? caught.message : 'Agent 回合未完成，请重试。')
       } finally {
-        if (agentTurnControllers.get(turnId) === controller) agentTurnControllers.delete(turnId)
+        cancelRegistry.release(turnId, controller)
         sse?.end()
         request.off('aborted', cancel)
         response.off('close', cancelOnClosedResponse)
@@ -338,8 +343,12 @@ export function createAgentRouteHandler({
       const turn = await productStore.readAgentTurn(user.id, turnId)
       if (!turn) return error(response, 404, 'AGENT_TURN_NOT_FOUND', '未找到该 Agent Turn。')
       await requireProjectPermission(productStore, user.id, turn.projectId, 'read')
-      agentTurnControllers.get(turnId)?.abort()
+      cancelRegistry.abort(turnId)
       const cancelled = await agentTurnRuntime.cancel({ userId: user.id, projectId: turn.projectId, turnId })
+      // 无条件广播，不只在本实例没跑时才发：`activeTurns` 是进程内的，同一 turnId
+      // 理论上可能同时被两个实例执行，只中止本地会漏掉另一个。本地重复收到自己
+      // 发的信号无害（对已中止的控制器再 abort 一次是空操作）。
+      await publishCancel?.({ scope: 'turn', id: turnId, projectId: turn.projectId })
       return json(response, 200, { turn: publicAgentTurn(cancelled) })
     }
 
