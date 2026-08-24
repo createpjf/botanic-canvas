@@ -10,6 +10,7 @@ import { confirmTimedOutGenerationSubmission } from '../domain/generationSubmiss
 import { productAuthorizationHeader } from './productSession'
 import { invalidateProductSessionIfRequired } from './productSessionInvalidation'
 import { readProductLocale } from '../i18n/core'
+import type { GenerationCancelOutcome } from '../domain/generationCancelCopy'
 
 type MediaReferencePayload = {
   nodeId: string
@@ -317,8 +318,13 @@ export async function reconcileProjectGenerationResults(projectId: string) {
   )
 }
 
+/**
+ * `cancelOutcome` 是可选的：旧服务端不返回它。缺失时展示层应退到中性表述，
+ * 不得臆测费用是否产生（见 `generationCancelMessage`）。
+ */
 export function cancelGenerationJob(jobId: string) {
-  return requestJson<GenerationJob>(`/api/generation-jobs/${encodeURIComponent(jobId)}/cancel`, {
-    method: 'POST',
-  })
+  return requestJson<GenerationJob & { cancelOutcome?: GenerationCancelOutcome }>(
+    `/api/generation-jobs/${encodeURIComponent(jobId)}/cancel`,
+    { method: 'POST' },
+  )
 }
