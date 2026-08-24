@@ -111,7 +111,7 @@ test('取消信号拒绝无效范围与缺失标识，不误触发中止', async
   const publisher = createAgentRunEventPublisher('redis://test', { RedisClass: FakeRedis })
 
   for (const invalid of [
-    { scope: 'job', id: 'x', projectId: 'p' },
+    { scope: 'artifact', id: 'x', projectId: 'p' },
     { scope: 'turn', id: '', projectId: 'p' },
     { scope: 'turn', id: 'x', projectId: '' },
     { scope: 'turn', id: 'x' },
@@ -134,4 +134,17 @@ test('未配置 Redis 时取消发布是安全空操作', async () => {
   const publisher = createAgentRunEventPublisher(undefined)
   assert.equal(await publisher.publishCancel({ scope: 'turn', id: 'turn-1', projectId: 'project-1' }), undefined)
   await publisher.close()
+})
+
+test('job 范围的取消信号投递，供 Worker 进程就地中止 Provider 调用', async () => {
+  const cancels = []
+  const subscriber = await createAgentRunEventSubscriber('redis://test', () => {}, {
+    RedisClass: FakeRedis, onCancel: (event) => cancels.push(event),
+  })
+  const publisher = createAgentRunEventPublisher('redis://test', { RedisClass: FakeRedis })
+  // Worker 与 API 是两个进程；没有这条信号，Worker 只能等 Provider 跑完再丢弃结果。
+  await publisher.publishCancel({ scope: 'job', id: 'job-1', projectId: 'project-1' })
+  assert.deepEqual(cancels, [{ scope: 'job', id: 'job-1', projectId: 'project-1' }])
+  await publisher.close()
+  await subscriber.close()
 })

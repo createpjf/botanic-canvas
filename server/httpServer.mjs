@@ -249,6 +249,7 @@ const handleGenerationRoute = createGenerationRouteHandler({
   config,
   productStore,
   redisQueue,
+  publishCancel: (event) => agentRunEvents?.publishCancel?.(event),
   json,
   error,
   readJson,

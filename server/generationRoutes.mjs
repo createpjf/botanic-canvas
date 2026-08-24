@@ -11,6 +11,7 @@ export function createGenerationRouteHandler({
   config,
   productStore,
   redisQueue,
+  publishCancel,
   json,
   error,
   readJson,
@@ -112,7 +113,12 @@ export function createGenerationRouteHandler({
       if (job.status === 'queued' || job.status === 'running') {
         const cancelled = { ...job, status: 'cancelled', error: undefined, updatedAt: Date.now() }
         await productStore.putGenerationJob(user.id, persistedGenerationJob(cancelled))
+        // 队列里移除只对尚未派发的任务有效，那也是唯一真能省下费用的路径。
         await redisQueue?.cancel(jobId)
+        // 已在执行的任务需要通知 Worker 进程：它是独立进程，看不到这里写下的
+        // cancelled，只会等 Provider 跑完再丢弃结果。广播后它就地 abort，
+        // Provider 调用停下、worker 槽位释放。
+        await publishCancel?.({ scope: 'job', id: jobId, projectId: job.projectId })
         return json(response, 200, publicGenerationJob(cancelled, { includeIdempotencyKey: cancelled.ownerId === user.id }))
       }
       return json(response, 200, publicGenerationJob(job, { includeIdempotencyKey: job.ownerId === user.id }))

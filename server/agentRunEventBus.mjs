@@ -12,10 +12,12 @@ const cancelChannel = 'botanic-agent-cancels'
  *
  * 只传标识，不传业务内容：接收方按标识去权威存储读状态，避免把过期快照当事实。
  */
+const cancelScopes = new Set(['turn', 'run', 'job'])
+
 function validCancelEvent(event) {
   return Boolean(
     event
-    && (event.scope === 'turn' || event.scope === 'run')
+    && cancelScopes.has(event.scope)
     && typeof event.id === 'string'
     && event.id.trim()
     && typeof event.projectId === 'string'

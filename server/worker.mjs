@@ -1,13 +1,14 @@
 import { createGenerationProcessor } from './generationProcessor.mjs'
 import { createGenerationQueue, createGenerationWorker } from './generationQueue.mjs'
 import { createProductRuntime, loadLocalEnv, runtimeConfig } from './runtime.mjs'
-import { createAgentRunEventPublisher } from './agentRunEventBus.mjs'
+import { createAgentRunEventPublisher, createAgentRunEventSubscriber } from './agentRunEventBus.mjs'
 import { writeAgentRunOperationalEvent } from './agentRunObservability.mjs'
 import { createProviderHealthMonitor } from './providerHealthMonitor.mjs'
 import { createDerivedTaskQueue, createDerivedTaskWorker } from './derivedTaskQueue.mjs'
 import { createAgentTurnSweep } from './agentTurnSweep.mjs'
 import { createAgentTurnResumer } from './agentTurnResume.mjs'
 import { createBotanicAgentTurnRuntime } from './botanicAgentTurnRuntime.mjs'
+import { createLocalCancelRegistry } from './localCancelRegistry.mjs'
 
 loadLocalEnv()
 const config = runtimeConfig()
@@ -22,12 +23,22 @@ const providerHealth = createProviderHealthMonitor({
   cooldownMs: config.providerCircuitCooldownMs,
   onFallback: (caught) => console.error(`[provider-health] Redis unavailable: ${caught instanceof Error ? caught.message : String(caught)}`),
 })
+// Worker 与 API 是两个进程：API 写下 cancelled 时本进程不会知道，只能等 Provider
+// 跑完再丢弃结果。订阅取消频道后就地 abort，Provider 调用真正停下、槽位立刻释放。
+const jobCancelRegistry = createLocalCancelRegistry()
+const cancelSubscriber = await createAgentRunEventSubscriber(config.redisUrl, () => {}, {
+  onCancel: (event) => {
+    if (event.scope !== 'job') return
+    if (jobCancelRegistry.abort(event.id)) console.log(JSON.stringify({ event: 'generation.cancel.aborted', jobId: event.id }))
+  },
+})
 const worker = createGenerationWorker({
   redisUrl: config.redisUrl,
   concurrency: config.workerConcurrency,
   processJob: createGenerationProcessor({
     ...runtime,
     config,
+    cancelRegistry: jobCancelRegistry,
     publishAgentRunUpdated: agentRunEvents.publish,
     publishProjectUpdated: agentRunEvents.publishProjectUpdated,
     observeAgentRun: writeAgentRunOperationalEvent,
@@ -98,6 +109,7 @@ void reclaimInterruptedJobs()
 
 async function shutdown() {
   clearInterval(recoveryTimer)
+  await cancelSubscriber?.close()
   await derivedWorker.close(true)
   await derivedQueue?.close()
   // 供应商或对象流异常时，默认 close 会一直等待 active job，导致部署后旧容器
