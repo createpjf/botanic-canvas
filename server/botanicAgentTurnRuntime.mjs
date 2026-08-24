@@ -36,7 +36,13 @@ function eventPayload(event) {
   }
 }
 
-function publicTurn(turn) {
+/**
+ * @param {unknown} turn
+ * @param {{ lastSequence?: number }} [links] 读模型补充项。`lastSequence` 是客户端
+ *   续读的起点：不暴露它，客户端只能重新拉取全部事件才知道自己读到哪。当前它由
+ *   事件推导而非持久化，因此需要调用方传入；落库后此参数可以移除。
+ */
+function publicTurn(turn, links = {}) {
   if (!turn) return undefined
   const result = {
     id: turn.id,
@@ -49,10 +55,17 @@ function publicTurn(turn) {
     status: turn.status,
     createdAt: turn.createdAt,
     updatedAt: turn.updatedAt,
+    ...(Number.isInteger(links.lastSequence) ? { lastSequence: links.lastSequence } : {}),
     ...(turn.result ? { result: clone(turn.result) } : {}),
     ...(turn.error ? { error: clone(turn.error) } : {}),
   }
   return result
+}
+
+/** 事件列表里的最大序号。恢复与读模型共用，避免两处各写一遍 reduce。 */
+export function agentTurnLastSequence(events) {
+  return (Array.isArray(events) ? events : [])
+    .reduce((max, event) => Math.max(max, Number(event?.sequence) || 0), 0)
 }
 
 export function agentTurnIdForIdempotency(userId, projectId, idempotencyKey) {
@@ -107,7 +120,11 @@ export function createBotanicAgentTurnRuntime({ productStore, now = () => Date.n
     const existing = await productStore.readAgentTurn(userId, id)
     if (existing && existing.projectId !== projectId) throw Object.assign(new Error('Agent Turn 不属于当前项目。'), { code: 'AGENT_TURN_PROJECT_MISMATCH', statusCode: 409 })
     if (existing && terminalStatuses.has(existing.status)) {
-      return { turn: publicTurn(existing), events: await productStore.listAgentTurnEvents(userId, projectId, id) }
+      const settledEvents = await productStore.listAgentTurnEvents(userId, projectId, id)
+      return {
+        turn: publicTurn(existing, { lastSequence: agentTurnLastSequence(settledEvents) }),
+        events: settledEvents,
+      }
     }
 
     const turn = existing ?? createAgentTurnRecord({ id, ownerId: userId, projectId, sessionId, requestId, idempotencyKey, now: now() })
@@ -120,7 +137,7 @@ export function createBotanicAgentTurnRuntime({ productStore, now = () => Date.n
       await productStore.putAgentTurn(userId, turn)
     }
 
-    let sequence = ((await productStore.listAgentTurnEvents(userId, projectId, id)) ?? []).reduce((max, event) => Math.max(max, Number(event.sequence) || 0), 0)
+    let sequence = agentTurnLastSequence(await productStore.listAgentTurnEvents(userId, projectId, id))
     if (!sequence) await append(userId, projectId, id, ++sequence, 'turn.started', { status: 'running' })
     const liveEvents = []
     const pendingEventWrites = []
@@ -160,7 +177,7 @@ export function createBotanicAgentTurnRuntime({ productStore, now = () => Date.n
       await append(userId, projectId, id, ++sequence, 'turn.completed', { kind: result?.kind })
       const persistedEvents = await productStore.listAgentTurnEvents(userId, projectId, id)
       return {
-        turn: publicTurn(saved),
+        turn: publicTurn(saved, { lastSequence: sequence }),
         result: clone(result),
         // 工具步骤已在 persistedEvents 中，当前回合的 reasoning/answer 只随实时响应保留。
         events: [...(persistedEvents ?? []), ...liveEvents.filter((event) => event.type !== 'tool')],
@@ -176,7 +193,7 @@ export function createBotanicAgentTurnRuntime({ productStore, now = () => Date.n
       }
       await productStore.putAgentTurn(userId, saved)
       await append(userId, projectId, id, ++sequence, cancelled ? 'turn.cancelled' : 'turn.failed', error)
-      throw Object.assign(caught instanceof Error ? caught : new Error(error.message), { code: error.code, statusCode: caught?.statusCode ?? (cancelled ? 499 : 502), turn: publicTurn(saved), events: liveEvents })
+      throw Object.assign(caught instanceof Error ? caught : new Error(error.message), { code: error.code, statusCode: caught?.statusCode ?? (cancelled ? 499 : 502), turn: publicTurn(saved, { lastSequence: sequence }), events: liveEvents })
     }
     })()
     activeTurns.set(activeKey, run)
@@ -189,7 +206,10 @@ export function createBotanicAgentTurnRuntime({ productStore, now = () => Date.n
   async function cancel({ userId, projectId, turnId, reason = '用户取消了 Agent 回合。' } = {}) {
     const turn = await productStore.readAgentTurn(userId, turnId)
     if (!turn || turn.projectId !== projectId) return undefined
-    if (terminalStatuses.has(turn.status)) return publicTurn(turn)
+    const terminalSequence = async () => agentTurnLastSequence(
+      await productStore.listAgentTurnEvents(userId, projectId, turnId),
+    )
+    if (terminalStatuses.has(turn.status)) return publicTurn(turn, { lastSequence: await terminalSequence() })
     const activeKey = `${userId}:${projectId}:${turnId}`
     const isActive = activeTurns.has(activeKey)
     if (isActive) cancelledTurns.add(activeKey)
@@ -197,11 +217,10 @@ export function createBotanicAgentTurnRuntime({ productStore, now = () => Date.n
     await productStore.putAgentTurn(userId, saved)
     // 活跃解析器会在收到 AbortSignal 后统一追加终态事件；这里不要抢占同一
     // sequence，否则 Postgres 的唯一约束会把真实解析错误改写成取消冲突。
-    if (isActive) return publicTurn(saved)
-    const events = await productStore.listAgentTurnEvents(userId, projectId, turnId)
-    const sequence = events.reduce((max, event) => Math.max(max, Number(event.sequence) || 0), 0)
+    if (isActive) return publicTurn(saved, { lastSequence: await terminalSequence() })
+    const sequence = await terminalSequence()
     await append(userId, projectId, turnId, sequence + 1, 'turn.cancelled', saved.error)
-    return publicTurn(saved)
+    return publicTurn(saved, { lastSequence: sequence + 1 })
   }
 
   return { execute, cancel, publicTurn }

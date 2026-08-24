@@ -79,6 +79,9 @@ export function createServerSentEventWriter(response, options = {}) {
       if (response.writableEnded) return false
       start()
       if (response.writableEnded || response.destroyed) return false
+      // 只有携带稳定序号的事件才写 id:。SSE 的 id: 会成为客户端的续读锚点，
+      // 给无序事件写 id 等于让客户端把一个无法定位的位置当成可恢复点。
+      if (Number.isInteger(event?.sequence)) response.write(`id: ${event.sequence}\n`)
       response.write(`data: ${JSON.stringify(event)}\n\n`)
       response.flush?.()
       return true
