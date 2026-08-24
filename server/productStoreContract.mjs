@@ -90,6 +90,9 @@ export const productStoreCoreMethods = Object.freeze([
   'listAgentTurnEvents',
   // 评审任务（ADR 0006）。ReviewResult 与 HumanDecision 存在任务 payload 内：
   // 「每个候选都有结论才算完成」是原子判定，拆成三张表会让完成判定跨表且可能读到半态。
+  // 跨项目扫描仍有未收口工作流运行的项目（Epic 7）。与 listStaleAgentTurns 同为
+  // Worker 侧方法：推进是系统行为，没有发起它的用户。
+  'listProjectsWithActiveWorkflowRuns',
   'putAgentReviewTask',
   'readAgentReviewTask',
   'listAgentReviewTasksForRun',

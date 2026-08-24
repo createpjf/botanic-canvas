@@ -1114,6 +1114,23 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       }))
     },
 
+    // PostgREST 无法表达「jsonb 数组里存在某状态」，因此按最近更新的项目取一批再
+    // 本地筛。上限刻意保守：这条路径只服务周期清扫，不是热路径。
+    async listProjectsWithActiveWorkflowRuns({ limit = 25 } = {}) {
+      const active = new Set(['queued', 'running'])
+      const { data, error } = await supabaseRequest(() => supabase.from('projects')
+        .select('id, document, project_members!inner(user_id, role)')
+        .eq('project_members.role', 'owner')
+        .order('updated_at', { ascending: false })
+        .limit(Math.max(1, Math.min(limit * 8, 400))))
+      fail(error)
+      return (data ?? [])
+        .filter((row) => (row.document?.productionWorkflowRuns ?? []).some((run) => active.has(run?.status)))
+        .slice(0, Math.max(1, Math.min(limit, 200)))
+        .map((row) => ({ projectId: row.id, ownerId: row.project_members?.[0]?.user_id }))
+        .filter((entry) => entry.ownerId)
+    },
+
     async putAgentReviewTask(userId, task) {
       const role = await memberRole(task.projectId, userId)
       assertProjectPermission(role, 'read', 'PROJECT_READ_FORBIDDEN')

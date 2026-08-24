@@ -1,14 +1,17 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  WORKFLOW_INPUT_FIELDS,
   applyWorkflowItemResult,
-  createProductionWorkflowVersion,
   createProductionWorkflowRun,
+  createProductionWorkflowVersion,
   generationArtifactId,
+  normalizeWorkflowItemInput,
   productionWorkflowLineage,
   productionWorkflowVersionProvenance,
   resolveProductionWorkflowRecipe,
   resolveProductionWorkflowSource,
+  resolveWorkflowExecutionContract,
   retryFailedWorkflowItems,
   transitionProductionWorkflowRun,
 } from './productionWorkflow.mjs'
@@ -197,4 +200,63 @@ test('工作流结果血缘关联版本、运行、任务、Artifact、画布节
     workflowId: 'workflow-a', workflowVersion: 3, workflowRunId: 'run-a', workflowItemId: 'sku-a',
     generationJobId: 'job-a', artifactId: 'artifact-a', canvasNodeId: 'result-a', sourceVersionId: 'history-a',
   })
+})
+
+test('批量项标识来自业务身份，不是位置', () => {
+  // 位置标识在重排或补项后会指向另一行，重试就会打到错误的项上。
+  const first = normalizeWorkflowItemInput({ sku: 'SKU-001', channel: '天猫', variables: { product: '香水' } }, { index: 0 })
+  assert.equal(first.id, 'SKU-001')
+  assert.equal(first.channel, '天猫')
+  // 声明字段自动进插值上下文，Prompt 里 {{sku}} 直接可用。
+  assert.equal(first.variables.sku, 'SKU-001')
+  assert.equal(first.variables.product, '香水')
+
+  // 没有业务身份时才退回位置标识。
+  assert.equal(normalizeWorkflowItemInput({ variables: { product: '香水' } }, { index: 2 }).id, 'item-3')
+  // 显式 id 优先。
+  assert.equal(normalizeWorkflowItemInput({ id: 'custom', sku: 'SKU-001' }, { index: 0 }).id, 'custom')
+})
+
+test('同一批里重复的业务标识是输入错误，不静默去重', () => {
+  const taken = new Set()
+  normalizeWorkflowItemInput({ sku: 'SKU-001' }, { index: 0, taken })
+  assert.throws(() => normalizeWorkflowItemInput({ sku: 'SKU-001' }, { index: 1, taken }), /标识重复/u)
+})
+
+test('批量输入字段是声明式的，未声明的键只能进 variables', () => {
+  assert.deepEqual([...WORKFLOW_INPUT_FIELDS], ['sku', 'channel', 'language', 'aspectRatio', 'copy', 'assetGroupId'])
+  const item = normalizeWorkflowItemInput({ sku: 'S1', notAField: 'x', variables: { notAField: 'y' } }, { index: 0 })
+  assert.equal(item.notAField, undefined)
+  assert.equal(item.variables.notAField, 'y')
+})
+
+test('版本固定执行契约：计划指纹、绑定与质量策略随版本落库', () => {
+  // 新版本不改变历史或进行中的 Run，靠的就是运行只读版本里的这份快照。
+  const document = {
+    id: 'project-a',
+    nodes: [
+      { id: 'generate-a', type: 'generate', data: { kind: 'generate' } },
+      {
+        id: 'result-a', type: 'result',
+        data: {
+          kind: 'result', jobId: 'job-a', candidateId: 'out-1',
+          generationRecipe: {
+            planFingerprint: 'plan-fp', branchFingerprint: 'branch-fp',
+            qualityPolicy: { version: 1, requiredCriteria: ['identity'], humanDecisionRequired: true },
+            skillBindings: [{ id: 'skill-1', version: 2, contentHash: 'h' }],
+            memoryBindings: [{ id: 'memory-1', version: 3 }],
+          },
+        },
+      },
+    ],
+    agentRuns: [],
+  }
+  const contract = resolveWorkflowExecutionContract({ canvasNodeId: 'generate-a', resultNodeIds: ['result-a'] }, document)
+  assert.equal(contract.planFingerprint, 'plan-fp')
+  assert.equal(contract.branchFingerprint, 'branch-fp')
+  assert.deepEqual(contract.qualityPolicy.requiredCriteria, ['identity'])
+  assert.deepEqual(contract.skillBindings, [{ id: 'skill-1', version: 2, contentHash: 'h' }])
+  assert.deepEqual(contract.memoryBindings, [{ id: 'memory-1', version: 3 }])
+  // 取不到就不写，缺字段表示「这个版本没固定它」，而不是伪造一份。
+  assert.deepEqual(resolveWorkflowExecutionContract({ canvasNodeId: 'generate-a', resultNodeIds: [] }, document), {})
 })

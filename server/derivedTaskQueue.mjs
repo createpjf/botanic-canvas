@@ -20,6 +20,9 @@ export const DERIVED_TASK_KINDS = Object.freeze([
   // 对已到执行终态的 Run 做结果评审（ADR 0006）。评审是派生工作：它不拥有业务权威，
   // 失败不得回滚已成功的 Run 或 Job。
   'review.run',
+  // 按任务真实状态推进未收口的生产工作流运行（Epic 7）。此前只在有人打开页面发
+  // GET 时才对账，关掉页面的批量任务会永远停在 running。
+  'workflow.advance',
 ])
 
 const kindSet = new Set(DERIVED_TASK_KINDS)

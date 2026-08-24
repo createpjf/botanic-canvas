@@ -39,6 +39,7 @@ export const botanicHttpRoutePatterns = Object.freeze({
   // 派生实体，逐候选给出结论与人工决定。
   agentRunReviewTasks: /^\/api\/agent-runs\/([^/]+)\/review-tasks$/,
   agentReviewTaskDecisions: /^\/api\/agent-review-tasks\/([^/]+)\/decisions$/,
+  projectProductionWorkflowRunManifest: /^\/api\/projects\/([^/]+)\/production-workflow-runs\/([^/]+)\/manifest$/,
   globalAsset: /^\/api\/global-assets\/([^/]+)$/,
   generationJob: /^\/api\/generation-jobs\/([^/]+)(?:\/(cancel))?$/,
   media: /^\/api\/media\/([^/]+)$/,

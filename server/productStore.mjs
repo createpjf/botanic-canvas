@@ -949,6 +949,18 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
         .map(clone)
     },
 
+    listProjectsWithActiveWorkflowRuns({ limit = 25 } = {}) {
+      const active = new Set(['queued', 'running'])
+      return state.projects
+        .filter((project) => (project.document?.productionWorkflowRuns ?? []).some((run) => active.has(run?.status)))
+        .slice(0, Math.max(1, Math.min(limit, 200)))
+        .map((project) => ({
+          projectId: project.id,
+          ownerId: project.members?.find((member) => member.role === 'owner')?.userId ?? project.ownerId,
+        }))
+        .filter((entry) => entry.ownerId)
+    },
+
     putAgentReviewTask(userId, task) {
       const project = state.projects.find((item) => item.id === task.projectId)
       if (!project) throw productError('未找到项目。', 'PROJECT_NOT_FOUND')

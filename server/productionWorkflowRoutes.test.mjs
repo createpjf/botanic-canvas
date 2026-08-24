@@ -31,6 +31,7 @@ function harness(bodies, submitGeneration = async ({ idempotencyKey }) => ({
         return { document, revision, graphRevision: 1 }
       },
       readGenerationJob: async (_userId, jobId) => options.jobs?.[jobId],
+      listAgentReviewTasksForRun: async () => options.reviewTasks ?? [],
       putGenerationJob: async (_userId, job) => {
         cancelled.push(job)
         if (options.jobs?.[job.id]) options.jobs[job.id] = job
@@ -354,5 +355,42 @@ test('发布时品牌规则由服务端从权威文档派生，客户端提交�
     assert.deepEqual(published.brandRuleBindings, [
       { id: 'memory-active', version: 3, contentHash: 'hash-green', selectionReason: '用户确认的常驻项目规则' },
     ])
+  })()
+})
+
+test('交付清单只打包人工批准过的候选，并给出被排除的原因', () => {
+  return (async () => {
+    const initialDocument = {
+      id: 'project-a', nodes: [], agentMemory: [], productionWorkflows: [],
+      productionWorkflowRuns: [{
+        id: 'run-a', workflowId: 'workflow-a', workflowVersion: 1, projectId: 'project-a', status: 'awaiting_review',
+        definition: { output: { aspectRatio: '1:1', nameTemplate: '{{sku}}-{{index}}' }, planFingerprint: 'plan-fp' },
+        items: [
+          { id: 'SKU-1', input: { sku: 'SKU-1' }, jobId: 'job-1', status: 'succeeded' },
+          { id: 'SKU-2', input: { sku: 'SKU-2' }, jobId: 'job-2', status: 'succeeded' },
+        ],
+      }],
+    }
+    const { handler, responses } = harness([], undefined, {
+      initialDocument,
+      jobs: {
+        'job-1': { id: 'job-1', status: 'succeeded', settings: { model: 'gpt-image-2' }, agentRun: { runId: 'agent-run-1' }, outputs: [{ id: 'o1', mediaKind: 'image', spec: { mimeType: 'image/png', byteSize: 10, width: 8, height: 8 } }] },
+        'job-2': { id: 'job-2', status: 'succeeded', settings: { model: 'gpt-image-2' }, agentRun: { runId: 'agent-run-1' }, outputs: [{ id: 'o1', mediaKind: 'image', spec: { mimeType: 'image/png', byteSize: 10, width: 8, height: 8 } }] },
+      },
+      reviewTasks: [{
+        id: 'review_task_1', qualityPolicyFingerprint: 'policy-fp',
+        decisions: [{ artifactId: 'generation:job-1:o1', decision: 'accepted', decidedAt: 3 }],
+      }],
+    })
+    await handler({ method: 'GET' }, {}, new URL('http://test'), {
+      projectProductionWorkflowRunManifest: ['path', 'project-a', 'run-a'],
+    })
+
+    assert.equal(responses.at(-1).status, 200)
+    const manifest = responses.at(-1).body.manifest
+    assert.equal(manifest.fileCount, 1)
+    assert.equal(manifest.files[0].fileName, 'SKU-1-1.png')
+    assert.deepEqual(manifest.excluded, [{ artifactId: 'generation:job-2:o1', itemId: 'SKU-2', reason: 'not_approved' }])
+    assert.equal(manifest.files[0].lineage.planFingerprint, 'plan-fp')
   })()
 })

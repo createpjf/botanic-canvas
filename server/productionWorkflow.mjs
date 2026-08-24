@@ -27,6 +27,37 @@ function requiredText(value, label, maximum = 2_000) {
 }
 
 /**
+ * 从来源解析出这次发布要固定的执行契约（Epic 7）。
+ *
+ * 版本必须固定 Compiled Plan 指纹、Skill / Memory 绑定与质量策略：新版本不改变历史
+ * 或进行中的 Run，靠的就是「运行读版本里这份快照」而不是「运行时再去问当前状态」。
+ * 取不到就不写，缺字段在读取时表现为「这个版本没固定它」，而不是伪造一份。
+ */
+export function resolveWorkflowExecutionContract(source, document) {
+  const nodes = Array.isArray(document?.nodes) ? document.nodes : []
+  const resultNodes = (source?.resultNodeIds ?? [])
+    .map((nodeId) => nodes.find((entry) => entry?.id === nodeId))
+    .filter(Boolean)
+  const sourceNode = nodes.find((entry) => entry?.id === source?.canvasNodeId)
+  // 结果节点的配方是执行时真正用过的那一份；生成节点上的是草稿。
+  const recipe = resultNodes.map((node) => node?.data?.generationRecipe).find(Boolean)
+    ?? sourceNode?.data?.generationRecipe
+  const run = (Array.isArray(document?.agentRuns) ? document.agentRuns : [])
+    .find((entry) => entry?.id === source?.runId)
+  return {
+    ...(recipe?.planFingerprint ? { planFingerprint: recipe.planFingerprint } : {}),
+    ...(recipe?.branchFingerprint ?? recipe?.sourcePlanFingerprint
+      ? { branchFingerprint: recipe.branchFingerprint ?? recipe.sourcePlanFingerprint }
+      : {}),
+    ...(recipe?.qualityPolicy ? { qualityPolicy: clone(recipe.qualityPolicy) } : {}),
+    ...(recipe?.skillBindings?.length ? { skillBindings: clone(recipe.skillBindings) } : {}),
+    ...(recipe?.memoryBindings?.length
+      ? { memoryBindings: clone(recipe.memoryBindings) }
+      : run?.plan?.memoryBindings?.length ? { memoryBindings: clone(run.plan.memoryBindings) } : {}),
+  }
+}
+
+/**
  * 工作流版本里的品牌规则由**服务端**从权威文档派生，不采信客户端提交的那一份。
  *
  * 这里是「项目内只允许一条 Memory 读取路径」的落点之一（ADR 0006）：客户端草稿
@@ -53,6 +84,8 @@ function normalizeDefinition(value) {
   definition.brandRules = Array.isArray(definition.brandRules)
     ? definition.brandRules.map((rule) => requiredText(rule, '品牌规则', 1_000))
     : []
+  definition.planFingerprint = definition.planFingerprint ? requiredText(definition.planFingerprint, '计划指纹', 200) : undefined
+  definition.branchFingerprint = definition.branchFingerprint ? requiredText(definition.branchFingerprint, '分支指纹', 200) : undefined
   definition.brandRuleBindings = Array.isArray(definition.brandRuleBindings)
     ? definition.brandRuleBindings.map((binding) => ({
       id: requiredText(binding?.id, '品牌规则标识', 160),
@@ -65,6 +98,11 @@ function normalizeDefinition(value) {
     ? [...new Set(definition.assetGroupIds.map((id) => requiredText(id, '素材组', 160)))]
     : []
   definition.confirmationPolicy = definition.confirmationPolicy ?? 'before-submit'
+  // 质量门默认开启：一批要交付出去的图，默认应当有人过目。显式写 false 才关闭。
+  definition.output = {
+    ...definition.output,
+    reviewRequired: definition.output?.reviewRequired !== false,
+  }
   return definition
 }
 
@@ -262,6 +300,68 @@ export function productionWorkflowVersion(workflow, version = workflow?.currentV
   return workflow?.versions?.find((entry) => entry.version === Number(version))
 }
 
+/**
+ * 批量输入字段词表（Epic 7）。
+ *
+ * 声明式而不是自由 map：批量项要能按 SKU/渠道/语言重跑与对账，字段名一旦各写各的，
+ * 「重试这 2 个失败项」就无从定位是哪两个。未声明的键仍可放进 `variables` 供 Prompt
+ * 插值，但不参与身份。
+ */
+export const WORKFLOW_INPUT_FIELDS = Object.freeze(['sku', 'channel', 'language', 'aspectRatio', 'copy', 'assetGroupId'])
+
+/** 参与项标识的字段，按此顺序取第一个非空值。 */
+const identityFields = ['sku', 'channel', 'language']
+
+function safeIdentitySegment(value) {
+  return String(value ?? '').trim().replace(/[^A-Za-z0-9_-]+/gu, '-').replace(/^-+|-+$/gu, '').slice(0, 48)
+}
+
+/**
+ * 规格化一个批量输入项。
+ *
+ * 项标识优先来自业务身份（SKU → 渠道 → 语言），而不是 `item-${index}` —— 位置标识
+ * 在重排或补项之后会指向另一行，重试就会打到错误的项上。
+ *
+ * @param {any} raw
+ * @param {{ index: number, taken?: Set<string> }} context
+ */
+export function normalizeWorkflowItemInput(raw, { index, taken = new Set() } = /** @type {any} */ ({})) {
+  const value = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
+  const declared = {}
+  for (const field of WORKFLOW_INPUT_FIELDS) {
+    if (value[field] === undefined || value[field] === null || value[field] === '') continue
+    declared[field] = requiredText(value[field], `批量输入「${field}」`, 400)
+  }
+  const rawVariables = value.variables && typeof value.variables === 'object' && !Array.isArray(value.variables)
+    ? value.variables
+    : {}
+  const variables = {}
+  for (const [key, entry] of Object.entries(rawVariables).slice(0, 40)) {
+    if (entry === undefined || entry === null || entry === '') continue
+    variables[requiredText(key, '批量变量名', 60)] = requiredText(entry, `批量变量「${key}」`, 1_000)
+  }
+  // 声明字段同时进插值上下文：Prompt 里写 {{sku}} 应当直接可用，不必让用户重复填一遍。
+  for (const [field, entry] of Object.entries(declared)) if (variables[field] === undefined) variables[field] = entry
+  const explicit = value.id === undefined || value.id === null || value.id === ''
+    ? undefined
+    : requiredText(value.id, '运行项标识', 160)
+  const identity = identityFields.map((field) => safeIdentitySegment(declared[field])).filter(Boolean).join('_')
+  let id = explicit ?? (identity || `item-${index + 1}`)
+  if (taken.has(id)) {
+    // 同一 SKU 在同一批里出现两次是输入错误，不是可以静默去重的情况。
+    throw new Error(`工作流运行项标识重复：${id}`)
+  }
+  taken.add(id)
+  return {
+    id,
+    ...declared,
+    ...(Object.keys(variables).length ? { variables } : {}),
+    ...(value.rawInput !== undefined ? { rawInput: clone(value.rawInput) } : {}),
+    ...(value.recipe !== undefined ? { recipe: clone(value.recipe) } : {}),
+    ...(value.sourceVersionId ? { sourceVersionId: requiredText(value.sourceVersionId, '来源版本', 160) } : {}),
+  }
+}
+
 export function createProductionWorkflowRun(input, { actorId, now = Date.now() } = /** @type {WorkflowActorOptions} */ ({})) {
   const workflow = clone(input?.workflow)
   const version = productionWorkflowVersion(workflow, input?.workflowVersion)
@@ -271,16 +371,14 @@ export function createProductionWorkflowRun(input, { actorId, now = Date.now() }
   if (!itemInputs.length) throw new Error('工作流运行至少需要一个输入项。')
   const ids = new Set()
   const items = itemInputs.map((item, index) => {
-    const itemId = requiredText(item?.id ?? `item-${index + 1}`, '运行项标识', 160)
-    if (ids.has(itemId)) throw new Error('工作流运行项标识重复。')
-    ids.add(itemId)
+    const normalized = normalizeWorkflowItemInput(item, { index, taken: ids })
     return {
-      id: itemId,
+      id: normalized.id,
       index,
-      input: clone(item),
+      input: normalized,
       status: 'queued',
       attempt: 1,
-      idempotencyKey: workflowItemIdempotencyKey(id, itemId),
+      idempotencyKey: workflowItemIdempotencyKey(id, normalized.id),
       updatedAt: now,
     }
   })

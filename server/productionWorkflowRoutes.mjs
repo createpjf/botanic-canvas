@@ -7,10 +7,12 @@ import {
   productionWorkflowVersionProvenance,
   resolveProductionWorkflowRecipe,
   resolveWorkflowBrandRules,
+  resolveWorkflowExecutionContract,
   resolveProductionWorkflowSource,
   retryFailedWorkflowItems,
   transitionProductionWorkflowRun,
 } from './productionWorkflow.mjs'
+import { buildDeliveryManifest } from './deliveryManifest.mjs'
 import { cancelGenerationJob } from './generationCancellation.mjs'
 import { publicGenerationJob } from './generationProvider.mjs'
 import { requireProjectPermission } from './projectAuthorization.mjs'
@@ -157,6 +159,7 @@ export function createProductionWorkflowRouteHandler({
     const collectionMatch = matches.projectProductionWorkflows
     const workflowMatch = matches.projectProductionWorkflow
     const runsMatch = matches.projectProductionWorkflowRuns
+    const runManifestMatch = matches.projectProductionWorkflowRunManifest
     const runMatch = matches.projectProductionWorkflowRun
 
     if (collectionMatch) {
@@ -185,7 +188,13 @@ export function createProductionWorkflowRouteHandler({
               name: body.name,
               // 品牌规则由服务端从权威文档经同一个记忆选择器派生，客户端提交的那一份
               // 被丢弃：它绕过了激活过滤，也不带版本绑定（ADR 0006）。
-              definition: { ...body.definition, ...resolveWorkflowBrandRules(document) },
+              // 执行契约（计划指纹、Skill/Memory 绑定、质量策略）同样在这里固定：
+              // 新版本不改变历史或进行中的 Run，靠的就是运行只读版本里的这份快照。
+              definition: {
+                ...body.definition,
+                ...resolveWorkflowBrandRules(document),
+                ...resolveWorkflowExecutionContract(source, document),
+              },
               source,
               previous: existing,
             }, { actorId: user.id })
@@ -261,6 +270,32 @@ export function createProductionWorkflowRouteHandler({
       return json(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message: '工作流运行集合不支持该请求方法。' } }, { Allow: 'GET, POST' })
     }
 
+    if (runManifestMatch) {
+      if (request.method !== 'GET') return json(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message: '交付清单只支持读取。' } }, { Allow: 'GET' })
+      const user = await requireUser(request)
+      const projectId = decodeURIComponent(runManifestMatch[1])
+      const runId = decodeURIComponent(runManifestMatch[2])
+      await requireProjectPermission(productStore, user.id, projectId, 'read')
+      const project = await productStore.readProject(user.id, projectId)
+      if (!project) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
+      const run = documents(project.document).runs.find((entry) => entry.id === runId)
+      if (!run) return error(response, 404, 'PRODUCTION_WORKFLOW_RUN_NOT_FOUND', '未找到工作流运行。')
+      const jobIds = [...new Set((run.items ?? []).map((item) => item.jobId).filter(Boolean))]
+      const jobs = (await Promise.all(jobIds.map((jobId) => productStore.readGenerationJob(user.id, jobId)))).filter(Boolean)
+      // 批准记录来自评审任务；没有评审任务就等于没有批准，清单会是空的而不是全量打包。
+      const runIds = [...new Set(jobs.map((job) => job.agentRun?.runId).filter(Boolean))]
+      const reviewTasks = (await Promise.all(runIds.map((agentRunId) => (
+        productStore.listAgentReviewTasksForRun(user.id, projectId, agentRunId)
+      )))).flat().filter(Boolean)
+      try {
+        return json(response, 200, {
+          manifest: buildDeliveryManifest({ run, jobs, reviewTasks }),
+        })
+      } catch (caught) {
+        // 文件名重复等清单级冲突是可修的输入问题，不是服务端异常。
+        return error(response, 409, 'DELIVERY_MANIFEST_CONFLICT', caught instanceof Error ? caught.message : '交付清单无法生成。')
+      }
+    }
     if (runMatch) {
       const user = await requireUser(request)
       const projectId = decodeURIComponent(runMatch[1])

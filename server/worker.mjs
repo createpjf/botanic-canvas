@@ -7,6 +7,7 @@ import { createProviderHealthMonitor } from './providerHealthMonitor.mjs'
 import { createDerivedTaskQueue, createDerivedTaskWorker } from './derivedTaskQueue.mjs'
 import { createAgentTurnSweep } from './agentTurnSweep.mjs'
 import { createAgentReviewService } from './agentReviewService.mjs'
+import { createProductionWorkflowSweep } from './productionWorkflowAdvance.mjs'
 import { createAgentTurnResumer } from './agentTurnResume.mjs'
 import { createBotanicAgentTurnRuntime } from './botanicAgentTurnRuntime.mjs'
 import { createLocalCancelRegistry } from './localCancelRegistry.mjs'
@@ -80,6 +81,11 @@ const sweepStaleAgentTurns = createAgentTurnSweep({
     observe: (event) => console.log(JSON.stringify(event)),
   }),
 })
+// 工作流推进同样在 Worker 侧：此前只有「有人打开页面」才会对账批量运行的真实状态。
+const sweepProductionWorkflows = createProductionWorkflowSweep({
+  productStore: runtime.productStore,
+  observe: (event) => console.log(JSON.stringify(event)),
+})
 const derivedWorker = createDerivedTaskWorker({
   redisUrl: config.redisUrl,
   concurrency: 1,
@@ -88,17 +94,18 @@ const derivedWorker = createDerivedTaskWorker({
     'review.run': async (payload) => (payload?.sweep
       ? reviewService.sweepPendingReviewTasks()
       : reviewService.executeReviewTask(payload.ownerId, payload.taskId)),
+    'workflow.advance': () => sweepProductionWorkflows(),
   },
 })
 derivedWorker.on('failed', (job, caught) => console.error(`[derived] ${job?.name ?? 'unknown'} failed: ${caught.message}`))
 derivedWorker.on('error', (caught) => console.error(`[derived] worker error: ${caught.message}`))
 // 注册幂等：BullMQ 按 repeat key 去重，多实例重复注册不会产生多份定时任务。
-for (const [kind, everyMs] of [['turn.reclaim', 60_000], ['review.run', 120_000]]) {
+for (const [kind, everyMs] of [['turn.reclaim', 60_000], ['review.run', 120_000], ['workflow.advance', 45_000]]) {
   await derivedQueue?.scheduleSweep(kind, everyMs).catch((caught) => {
     console.error(`[derived] ${kind} 清扫注册失败: ${caught instanceof Error ? caught.message : String(caught)}`)
   })
 }
-console.log('Botanic derived-task worker started (turn.reclaim 60s, review.run 120s)')
+console.log('Botanic derived-task worker started (turn.reclaim 60s, review.run 120s, workflow.advance 45s)')
 
 async function recoverQueuedJobs() {
   try {
