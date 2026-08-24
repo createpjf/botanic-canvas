@@ -2039,6 +2039,40 @@ export function botanicAgentPlanMediaKind(plan: Pick<BotanicAgentPlan, 'settings
   return plan.settings.duration !== undefined ? 'video' : 'image'
 }
 
+/**
+ * 可作为生成输入的图片上下文：素材或结果节点，且媒体类型是图片。
+ * 引用保真、视频首帧校验和成套方案分解共用这一条规则，不各自内联一份谓词。
+ * 服务端 `botanicAgentRun.mjs` 与 `botanicAgentExecution.mjs` 保持同义镜像。
+ */
+export function botanicAgentImageContext(
+  contextSnapshot: BotanicAgentContextSnapshot[] = [],
+): BotanicAgentContextSnapshot[] {
+  return contextSnapshot.filter((item) => item.mediaKind === 'image' && (item.kind === '素材' || item.kind === '结果'))
+}
+
+export type BotanicAgentLocalInitialGenerationDecision =
+  | { ok: true }
+  | { ok: false; reason: 'reference_requires_service' | 'requires_service' }
+
+/**
+ * 未连接工作区服务时，本地回退能否安全执行首次生成。
+ *
+ * 计划带图片引用时必须拒绝：本地路径无法把上下文节点解析成稳定配方，
+ * 构造空引用配方会把用户要求的「按参考生成」静默变成纯文字生成。
+ * 只有确实没有图片引用的纯文字首轮，才允许走本地空引用配方。
+ */
+export function botanicAgentLocalInitialGenerationDecision(
+  plan: Pick<BotanicAgentPlan, 'contextSnapshot' | 'output' | 'settings'>,
+): BotanicAgentLocalInitialGenerationDecision {
+  if (botanicAgentImageContext(plan.contextSnapshot).length) {
+    return { ok: false, reason: 'reference_requires_service' }
+  }
+  if (plan.output.mode !== 'single' || plan.settings.duration !== undefined) {
+    return { ok: false, reason: 'requires_service' }
+  }
+  return { ok: true }
+}
+
 export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): BotanicAgentPlan {
   const locale = input.locale ?? 'zh-CN'
   const instruction = input.instruction.trim()
@@ -2051,8 +2085,7 @@ export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): Botani
   const settings = input.rootRecipe?.settings ?? input.settings
   if (!settings) throw new Error('请先设置生成模型与输出参数。')
   const contextSnapshot = createBotanicAgentContextSnapshot(input.contextSnapshot ?? [])
-  const imageContext = contextSnapshot.filter((item) =>
-    item.mediaKind === 'image' && (item.kind === '素材' || item.kind === '结果'))
+  const imageContext = botanicAgentImageContext(contextSnapshot)
   const isVideoPlan = botanicAgentPlanMediaKind({ settings }) === 'video'
   if (isInitialGeneration && isVideoPlan && !imageContext.length) {
     throw new Error('视频首次生成需要一项图片素材或图片结果作为首帧。')
@@ -2202,8 +2235,7 @@ export function upsertBotanicAgentRunSnapshot(
       settings: snapshot.plan.settings,
     }
   const references: AgentReferenceBinding[] = initialGeneration
-    ? (snapshot.plan.contextSnapshot ?? [])
-        .filter((item) => item.mediaKind === 'image' && (item.kind === '素材' || item.kind === '结果'))
+    ? botanicAgentImageContext(snapshot.plan.contextSnapshot)
         .map((item) => ({
           source: 'context_node', id: item.nodeId, label: item.label,
           ...(item.role ? { role: item.role } : {}),
