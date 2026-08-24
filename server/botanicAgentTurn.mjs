@@ -13,6 +13,7 @@ import {
 } from './botanicAgentVision.mjs'
 import { botanicAgentContextToolSourceLabels, createBotanicAgentReadToolDefinitions } from './botanicAgentContextTools.mjs'
 import { botanicAgentWebResearchSourceLabels, createBotanicAgentWebResearchTools } from './botanicAgentWebTools.mjs'
+import { botanicAgentOperationalSourceLabels, createBotanicAgentOperationalToolDefinitions } from './botanicAgentOperationalTools.mjs'
 
 // Botanic Agent 回合解析器：把“这一句到底是聊天/建议/检索，还是要生成图片，以及要用什么
 // Prompt、生成几张”整体交给服务端模型判断。它读整段对话（包含 Agent 自己刚给出的建议）与
@@ -415,7 +416,7 @@ function askClarificationTool() {
   }
 }
 
-function turnToolRegistry(input, { ontology, memory, skills, webResearch }) {
+function turnToolRegistry(input, { ontology, memory, skills, webResearch, operations }) {
   const mounted = new Set(input.mountedSkillIds ?? [])
   const readTools = createBotanicAgentReadToolDefinitions({ ontology, memory, skills }).map((tool) => {
     if (tool.name !== 'skill_search') return tool
@@ -433,6 +434,9 @@ function turnToolRegistry(input, { ontology, memory, skills, webResearch }) {
   })
   return createAgentToolRegistry([
     ...readTools,
+    // 运维只读工具：让模型用真实实体状态回答任务/评审/交付问题，而不是从对话里猜。
+    // 没有注入读取器时不暴露，因此对话与规划链路不受影响。
+    ...createBotanicAgentOperationalToolDefinitions(operations),
     ...createBotanicAgentWebResearchTools(webResearch),
     generateImagesTool(input),
     // 目录里没有视频模型时不暴露视频工具，模型也就不会声称能做视频。
@@ -458,6 +462,7 @@ function turnSearchGuidance(registry) {
 function turnSourceLabels(toolCalls) {
   return [...new Set([
     ...botanicAgentContextToolSourceLabels(toolCalls),
+    ...botanicAgentOperationalSourceLabels(toolCalls),
     ...botanicAgentWebResearchSourceLabels(toolCalls),
   ])]
 }
@@ -666,7 +671,7 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
     allowLocal: Boolean(runtimeConfig?.webSearch?.allowLocal),
     consumeQuota: options.consumeWebResearchQuota,
   }
-  const registry = turnToolRegistry(input, { ontology, memory, skills, webResearch })
+  const registry = turnToolRegistry(input, { ontology, memory, skills, webResearch, operations: options.operations })
   const searchGuidance = turnSearchGuidance(registry)
 
   // 原生多模态优先：引用图片直接随消息附给视觉模型，让它看着画面判断意图、综合 Prompt。

@@ -844,3 +844,45 @@ test('请求重试产生关联原 Run 与原 Artifact 的新 Run，原结果不�
   // 重试请求让候选回到待评审，不标记为拒绝，也不覆盖原结论。
   assert.equal(responses.at(-1)?.body.task.results.find((item) => item.artifactId === 'artifact-1').candidateStatus, 'pending_review')
 })
+
+test('运维只读工具接入回合：模型能拿到真实任务状态，且不含媒体地址', async () => {
+  // 「不根据对话文案猜任务状态」的落点：工具在回合注册表里，且返回结构化实体状态。
+  const { createBotanicAgentOperationalToolDefinitions } = await import('./botanicAgentOperationalTools.mjs')
+  const definitions = createBotanicAgentOperationalToolDefinitions({
+    readRun: async () => ({ id: 'run-1', status: 'partial', branches: [{ id: 'b', status: 'failed', attempt: 1 }] }),
+  })
+  assert.deepEqual(definitions.map((tool) => tool.name), ['agent_run_read'])
+  const result = await definitions[0].execute({ runId: 'run-1' })
+  assert.equal(result.run.status, 'partial')
+})
+
+test('写工具按项目角色进注册表：Viewer 一个都拿不到', async () => {
+  const { createBotanicAgentActionToolRegistry } = await import('./botanicAgentTools.mjs')
+  const executors = {
+    cancelRun: async () => ({}), decideReview: async () => ({}),
+    promoteArtifact: async () => ({}), retryWorkflowFailed: async () => ({}),
+  }
+  const viewer = createBotanicAgentActionToolRegistry({ role: 'viewer', ...executors })
+  assert.equal(viewer.get('agent_run_cancel'), undefined)
+  assert.equal(viewer.get('review_decide'), undefined)
+
+  const editor = createBotanicAgentActionToolRegistry({ role: 'editor', ...executors })
+  assert.ok(editor.get('agent_run_cancel'))
+  assert.ok(editor.get('review_decide'))
+  // 全部需要确认：会花钱或改变可交付状态的动作不能因为「Agent 说要做」就执行。
+  assert.equal(editor.get('agent_run_cancel').requiresConfirmation, true)
+  assert.equal(editor.get('review_decide').requiresConfirmation, true)
+})
+
+test('服务端权限表与工具暴露判定同源，不会出现看不到却调得动', async () => {
+  const { agentToolPermission } = await import('./agentActionGovernance.mjs')
+  const { OPERATIONAL_ACTION_TOOLS, operationalActionToolsForRole } = await import('./botanicAgentOperationalTools.mjs')
+  const { projectPermissionDecision } = await import('./authorization.mjs')
+  for (const role of ['viewer', 'editor', 'owner']) {
+    const exposed = new Set(operationalActionToolsForRole(role))
+    for (const name of OPERATIONAL_ACTION_TOOLS) {
+      const serverAllows = projectPermissionDecision(role, agentToolPermission(name)) === 'allow'
+      assert.equal(exposed.has(name), serverAllows, `${role} 对 ${name} 的暴露与放行判定不一致`)
+    }
+  }
+})

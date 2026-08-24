@@ -7,6 +7,15 @@ const permissions = Object.freeze({
   skill_apply: 'modify-workflow',
   skill_create: 'modify-workflow',
   mcp_call: 'execute-external-tool',
+  // 运维写工具（Epic 4）。权限与 botanicAgentOperationalTools 的暴露判定同源：
+  // 那边决定模型看不看得到，这边决定服务端放不放行 —— 两处必须一致，否则会出现
+  // 「看得到但一点就 403」或更糟的「看不到却调得动」。
+  agent_branch_retry: 'create-generation',
+  agent_run_cancel: 'create-generation',
+  artifact_promote: 'edit',
+  review_decide: 'edit',
+  workflow_publish: 'modify-workflow',
+  workflow_run_retry_failed: 'modify-workflow',
 })
 
 const safeAuditDetailKeys = new Set([

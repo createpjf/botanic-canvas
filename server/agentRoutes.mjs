@@ -9,6 +9,7 @@ import { AgentToolRuntimeError, executeConfirmedAgentAction } from './agentToolR
 import { botanicAgentBuiltInSkill, botanicAgentSystemSkills, createBotanicAgentActionToolRegistry } from './botanicAgentTools.mjs'
 import { decodeArtifactCursor, encodeArtifactCursor } from './botanicArtifactIndex.mjs'
 import { cancelGenerationJob } from './generationCancellation.mjs'
+import { retryFailedWorkflowItems } from './productionWorkflow.mjs'
 import { generationIdempotencyKey, generationJobIdForIdempotency } from './generationIdempotency.mjs'
 import { persistedGenerationJob, publicGenerationJob } from './generationProvider.mjs'
 import { retargetGenerationJobForRetry } from './generationResultReconciliation.mjs'
@@ -142,7 +143,11 @@ export function createAgentRouteHandler({
   const observeRun = (event) => {
     try { observeAgentRun(event) } catch { /* 运行日志不得阻断用户请求。 */ }
   }
-  const approvalRequired = new Set(['generation_submit', 'mcp_call'])
+  // 需要短期审批 Token 的行动：会花钱或触达外部系统的那些。运维写工具里
+  // 重试分支与重试工作流失败项都会真的调用 Provider，因此同样进这个集合。
+  const approvalRequired = new Set([
+    'generation_submit', 'mcp_call', 'agent_branch_retry', 'workflow_run_retry_failed',
+  ])
   const requireActionProposal = async ({ user, projectId, actionName, toolCallId, argumentsValue }) => {
     if (actionName === 'generation_submit') {
       const runId = text(argumentsValue?.planId, 'Agent Run', 160)
@@ -175,6 +180,37 @@ export function createAgentRouteHandler({
   const agentActionTimeoutMs = Number.isFinite(configuredActionTimeout)
     ? Math.max(1, Math.min(120_000, configuredActionTimeout))
     : 30_000
+  /**
+   * 运维只读工具的数据源。全部按项目权限读取，且不返回受控媒体地址 ——
+   * 工具结果会进模型上下文（Epic 4）。
+   */
+  const operationalReaders = (userId, projectId, document) => ({
+    readRun: async (runId) => {
+      const run = await productStore.readAgentRun(userId, runId)
+      // 跨项目的 Run 不能通过工具泄漏。
+      return run && run.projectId === projectId ? publicAgentRun(run) : undefined
+    },
+    readJob: async (jobId) => {
+      const job = await productStore.readGenerationJob(userId, jobId)
+      return job && job.projectId === projectId ? job : undefined
+    },
+    searchArtifacts: async ({ query, kind, limit }) => {
+      const artifacts = await productStore.listAgentArtifacts(userId, projectId, { limit: Math.min(limit * 4, 200) }) ?? []
+      const needle = String(query ?? '').trim().toLocaleLowerCase('zh-CN')
+      return artifacts
+        .filter((artifact) => (!kind || artifact.kind === kind)
+          && (!needle || `${artifact.label ?? ''} ${artifact.id ?? ''}`.toLocaleLowerCase('zh-CN').includes(needle)))
+        .slice(0, limit)
+    },
+    readReviews: async (runId) => {
+      const run = await productStore.readAgentRun(userId, runId)
+      if (!run || run.projectId !== projectId) return []
+      return (await productStore.listAgentReviewTasksForRun(userId, projectId, runId)) ?? []
+    },
+    readWorkflowRun: async (runId) => (document?.productionWorkflowRuns ?? []).find((entry) => entry?.id === runId),
+    readDeliveries: async () => document?.deliveries ?? [],
+  })
+
   const bindAuthoritativeKnowledge = async (userId, input) => {
     const [projectState, projectSkills] = await Promise.all([
       typeof productStore.readAgentState === 'function' ? productStore.readAgentState(userId, input.projectId) : undefined,
@@ -326,6 +362,7 @@ export function createAgentRouteHandler({
           resolveOptions: {
             document: project.document,
             projectSkills,
+            operations: operationalReaders(user.id, validatedInput.projectId, project.document),
             signal: controller.signal,
             resolveVisionMedia: visionMediaResolver(user.id, validatedInput.projectId),
             consumeWebResearchQuota: consumeWebResearchQuota
@@ -566,6 +603,7 @@ export function createAgentRouteHandler({
         const turn = await resolveBotanicAgentTurn(input, config, {
           document: project.document,
           projectSkills,
+          operations: operationalReaders(user.id, validatedInput.projectId, project.document),
           signal: controller.signal,
           resolveVisionMedia: visionMediaResolver(user.id, validatedInput.projectId),
           consumeWebResearchQuota: consumeWebResearchQuota
@@ -870,6 +908,95 @@ export function createAgentRouteHandler({
               contentHash: skill.contentHash,
               capabilities: skill.capabilities,
             } }
+          },
+          role: (await productStore.projectAccess(user.id, projectId))?.role,
+          cancelRun: async ({ runId }) => {
+            const run = await productStore.readAgentRun(user.id, runId)
+            if (!run || run.projectId !== projectId) throw new AgentToolRuntimeError('AGENT_RUN_NOT_FOUND', '未找到当前项目的 Agent Run。', 404)
+            const activeJobIds = [...new Set((run.branches ?? [])
+              .filter((branch) => branch.status === 'queued' || branch.status === 'running')
+              .map((branch) => branch.activeJobId).filter(Boolean))]
+            const outcomes = []
+            for (const jobId of activeJobIds) {
+              const job = await productStore.readGenerationJob(user.id, jobId)
+              if (!job) continue
+              const result = await cancelGenerationJob({
+                productStore, redisQueue, publishCancel,
+                modelOptions: config.modelOptions ?? [],
+                ownerId: user.id, job, reason: 'agent-run', requestedBy: user.id,
+                afterPersist: (cancelledJob) => agentRunGeneration.persistJobState(user.id, run.projectId, cancelledJob),
+              })
+              outcomes.push({ jobId, cancelled: result.cancelled, billing: result.outcome.billing, code: result.outcome.code })
+            }
+            const latest = await productStore.readAgentRun(user.id, runId) ?? run
+            const cancelledRun = cancelPersistentAgentRun(latest)
+            if (cancelledRun !== latest) {
+              await productStore.putAgentRun(user.id, cancelledRun)
+              await publishAgentRunUpdated({ projectId: run.projectId, run: publicAgentRun(cancelledRun) })
+            }
+            return { runId, status: cancelledRun.status, cancelledJobs: outcomes }
+          },
+          decideReview: async ({ taskId, artifactId, decision, note }) => {
+            const task = await productStore.readAgentReviewTask(user.id, taskId)
+            if (!task || task.projectId !== projectId) throw new AgentToolRuntimeError('AGENT_REVIEW_TASK_NOT_FOUND', '未找到当前项目的评审任务。', 404)
+            if (!(task.coverage?.artifactIds ?? []).includes(artifactId)) {
+              throw new AgentToolRuntimeError('AGENT_REVIEW_ARTIFACT_NOT_COVERED', '决定的候选不在本次评审覆盖范围内。', 409)
+            }
+            const humanDecision = createAgentHumanDecision({
+              taskId: task.id, projectId, artifactId, decision, note,
+              decidedBy: user.id, idempotencyKey,
+            })
+            const decisions = [...(task.decisions ?? []).filter((item) => item.id !== humanDecision.id), humanDecision]
+            const results = (task.results ?? []).map((result) => (result.artifactId === artifactId
+              ? { ...result, candidateStatus: humanDecision.candidateStatus, updatedAt: humanDecision.decidedAt }
+              : result))
+            const stored = await productStore.putAgentReviewTask(user.id, { ...task, decisions, results, updatedAt: Date.now() })
+            return { taskId: stored.id, artifactId, decision, candidateStatus: humanDecision.candidateStatus }
+          },
+          promoteArtifact: async ({ artifactId, name }) => {
+            const artifacts = await productStore.listAgentArtifacts(user.id, projectId, { limit: 200 }) ?? []
+            const artifact = artifacts.find((item) => item.id === artifactId)
+            if (!artifact?.url) throw new AgentToolRuntimeError('AGENT_ARTIFACT_NOT_FOUND', '未找到该结果，或它没有可入库的媒体。', 404)
+            const project = await productStore.readProject(user.id, projectId)
+            if (!project) throw new AgentToolRuntimeError('PROJECT_NOT_FOUND', '未找到当前项目。', 404)
+            const assetId = `asset-${generationJobIdForIdempotency(user.id, `${projectId}:${artifactId}`).slice(4, 28)}`
+            const assets = project.document.assets ?? []
+            // 已入库就直接返回：重复确认不该产生第二份素材。
+            if (assets.some((asset) => asset.id === assetId)) return { artifactId, assetId, reused: true }
+            const document = {
+              ...project.document,
+              assets: [...assets, {
+                id: assetId,
+                name: name || artifact.label || '入库结果',
+                image: artifact.url,
+                role: '参考',
+                source: 'generated',
+                mediaKind: artifact.kind === 'video' ? 'video' : 'image',
+                tags: ['Agent'],
+              }],
+            }
+            const saved = await productStore.writeProject(user.id, document, project.revision, project.graphRevision)
+            await publishProjectUpdated(saved, user.id)
+            return { artifactId, assetId, reused: false }
+          },
+          retryWorkflowFailed: async ({ runId }) => {
+            const project = await productStore.readProject(user.id, projectId)
+            if (!project) throw new AgentToolRuntimeError('PROJECT_NOT_FOUND', '未找到当前项目。', 404)
+            const workflowRun = (project.document.productionWorkflowRuns ?? []).find((entry) => entry?.id === runId)
+            if (!workflowRun) throw new AgentToolRuntimeError('PRODUCTION_WORKFLOW_RUN_NOT_FOUND', '未找到工作流运行。', 404)
+            const failedItemIds = (workflowRun.items ?? []).filter((item) => item?.status === 'failed').map((item) => item.id)
+            if (!failedItemIds.length) return { runId, retriedItemIds: [], message: 'no_failed_items' }
+            // 真正的重投由既有工作流接口完成；这里只把失败项标回排队，避免在两处
+            // 各写一份派发逻辑。已成功的项不动，因此不会重复生成。
+            const retried = retryFailedWorkflowItems(workflowRun)
+            const document = {
+              ...project.document,
+              productionWorkflowRuns: (project.document.productionWorkflowRuns ?? [])
+                .map((entry) => (entry.id === runId ? retried : entry)),
+            }
+            const saved = await productStore.writeProject(user.id, document, project.revision, project.graphRevision)
+            await publishProjectUpdated(saved, user.id)
+            return { runId, retriedItemIds: failedItemIds, status: retried.status }
           },
           createSkill: async (argumentsValue) => {
             const input = validateAgentSkillCreation({ projectId, ...argumentsValue })
