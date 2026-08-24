@@ -2,8 +2,11 @@ import {
   applyWorkflowItemResult,
   createProductionWorkflowRun,
   createProductionWorkflowVersion,
+  generationArtifactId,
   productionWorkflowVersion,
+  productionWorkflowVersionProvenance,
   resolveProductionWorkflowRecipe,
+  resolveProductionWorkflowSource,
   retryFailedWorkflowItems,
   transitionProductionWorkflowRun,
 } from './productionWorkflow.mjs'
@@ -50,6 +53,20 @@ function documents(value) {
   }
 }
 
+/**
+ * 读取时补齐每个版本的来源可信度。显式来源校验上线前发布的版本没有 `source`，
+ * 统一标记为 `legacy_unverified`，让界面能提示重新选择来源而不是假装它可信。
+ */
+function publicProductionWorkflow(workflow) {
+  return {
+    ...clone(workflow),
+    versions: (workflow.versions ?? []).map((version) => ({
+      ...clone(version),
+      provenance: productionWorkflowVersionProvenance(version),
+    })),
+  }
+}
+
 /** 生产工作流保存在项目文档的兼容扩展区；独立任务、Artifact 与画布图谱仍是权威。 */
 export function createProductionWorkflowRouteHandler({
   productStore,
@@ -87,7 +104,7 @@ export function createProductionWorkflowRouteHandler({
       // 当成未知状态写入工作流状态机，否则恢复读取会直接抛错并返回 500。
       const workflowStatus = job?.status === 'queued' ? 'running' : job?.status
       if (!job || item.status === workflowStatus) continue
-      const artifacts = (job.outputs ?? []).map((output) => `generation:${job.id}:${output.id}`)
+      const artifacts = (job.outputs ?? []).map((output) => generationArtifactId(job.id, output.id))
       const canvasNodeIds = (project.document.nodes ?? []).filter((node) => node?.type === 'result'
         && node?.data?.jobId === job.id).map((node) => node.id)
       next = applyWorkflowItemResult(next, item.id, {
@@ -141,26 +158,35 @@ export function createProductionWorkflowRouteHandler({
         await requireProjectPermission(productStore, user.id, projectId, 'read')
         const project = await productStore.readProject(user.id, projectId)
         if (!project) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
-        return json(response, 200, { workflows: documents(project.document).workflows })
+        return json(response, 200, { workflows: documents(project.document).workflows.map(publicProductionWorkflow) })
       }
       if (request.method === 'POST') {
         await requireProjectPermission(productStore, user.id, projectId, 'modify-workflow')
         const body = await readJson(request)
         let created
-        const saved = await updateProject(user.id, projectId, (document) => {
-          const state = documents(document)
-          const existing = state.workflows.find((workflow) => workflow.id === body.id)
-          created = createProductionWorkflowVersion({
-            id: body.id,
-            projectId,
-            name: body.name,
-            definition: body.definition,
-            previous: existing,
-          }, { actorId: user.id })
-          return { ...document, productionWorkflows: [...state.workflows.filter((workflow) => workflow.id !== created.id), created] }
-        })
-        if (!saved) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
-        return json(response, 201, { workflow: created })
+        try {
+          const saved = await updateProject(user.id, projectId, (document) => {
+            const state = documents(document)
+            const existing = state.workflows.find((workflow) => workflow.id === body.id)
+            // 来源校验放在这里而不是回调外：updateProject 每次冲突重试都会重新读取项目，
+            // 因此并发修改无法在校验与写入之间把来源改掉（版本未漂移）。
+            const source = resolveProductionWorkflowSource(body.source, document)
+            created = createProductionWorkflowVersion({
+              id: body.id,
+              projectId,
+              name: body.name,
+              definition: body.definition,
+              source,
+              previous: existing,
+            }, { actorId: user.id })
+            return { ...document, productionWorkflows: [...state.workflows.filter((workflow) => workflow.id !== created.id), created] }
+          })
+          if (!saved) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
+        } catch (caught) {
+          if (caught?.name !== 'ProductionWorkflowSourceError') throw caught
+          return error(response, caught.statusCode ?? 409, caught.code, caught.message)
+        }
+        return json(response, 201, { workflow: publicProductionWorkflow(created) })
       }
       return json(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message: '生产工作流集合不支持该请求方法。' } }, { Allow: 'GET, POST' })
     }
@@ -172,7 +198,7 @@ export function createProductionWorkflowRouteHandler({
       const project = await productStore.readProject(user.id, projectId)
       const workflow = project && documents(project.document).workflows.find((entry) => entry.id === decodeURIComponent(workflowMatch[2]))
       if (!workflow) return error(response, 404, 'PRODUCTION_WORKFLOW_NOT_FOUND', '未找到生产工作流。')
-      if (request.method === 'GET') return json(response, 200, { workflow })
+      if (request.method === 'GET') return json(response, 200, { workflow: publicProductionWorkflow(workflow) })
       return json(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message: '生产工作流资源只支持读取；更新请发布新版本。' } }, { Allow: 'GET' })
     }
 

@@ -34,6 +34,103 @@ function normalizeDefinition(value) {
   return definition
 }
 
+export class ProductionWorkflowSourceError extends Error {
+  constructor(code, message, statusCode = 409) {
+    super(message)
+    this.name = 'ProductionWorkflowSourceError'
+    this.code = code
+    this.statusCode = statusCode
+  }
+}
+
+/** Artifact 标识格式的唯一实现；工作流对账与来源解析共用，避免两处各拼一份。 */
+export function generationArtifactId(jobId, outputId) {
+  return `generation:${jobId}:${outputId}`
+}
+
+/**
+ * 来源字段的文本校验。必须抛具名来源错误而不是通用 Error，否则路由无法区分
+ * 「请求形状不对」（400）和「服务端异常」（500），畸形来源会被误报成 500。
+ */
+function sourceText(value, label, maximum = 160) {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new ProductionWorkflowSourceError('WORKFLOW_SOURCE_INVALID', `${label}不能为空。`, 400)
+  }
+  if (value.length > maximum) {
+    throw new ProductionWorkflowSourceError('WORKFLOW_SOURCE_INVALID', `${label}过长。`, 400)
+  }
+  return value.trim()
+}
+
+/**
+ * 校验并解析显式发布来源。来源实体必须都属于当前项目文档：画布节点存在且是生成节点，
+ * Agent Run 已进入终态，分支归属该 Run，结果节点归属同一 Run/分支并带稳定任务与候选标识。
+ * 服务端不猜来源 —— 任何一项不成立都明确拒绝，而不是退到别的节点或静默丢弃。
+ */
+export function resolveProductionWorkflowSource(source, document) {
+  if (!source || typeof source !== 'object' || Array.isArray(source)) {
+    throw new ProductionWorkflowSourceError('WORKFLOW_SOURCE_REQUIRED', '发布生产工作流必须显式指定来源。', 400)
+  }
+  const canvasNodeId = sourceText(source.canvasNodeId, '来源画布节点')
+  const nodes = Array.isArray(document?.nodes) ? document.nodes : []
+  const node = nodes.find((entry) => entry?.id === canvasNodeId)
+  if (!node) throw new ProductionWorkflowSourceError('WORKFLOW_SOURCE_NODE_NOT_FOUND', '来源画布节点不存在或已被删除，请重新选择。')
+  if (node.type !== 'generate') throw new ProductionWorkflowSourceError('WORKFLOW_SOURCE_NODE_INVALID', '来源画布节点不是生成节点。')
+
+  const runId = source.runId === undefined ? undefined : sourceText(source.runId, '来源 Agent Run')
+  const branchId = source.branchId === undefined ? undefined : sourceText(source.branchId, '来源 Agent 分支')
+  if (branchId && !runId) throw new ProductionWorkflowSourceError('WORKFLOW_SOURCE_BRANCH_WITHOUT_RUN', '来源分支必须同时指定所属 Agent Run。')
+  let run
+  if (runId) {
+    const runs = Array.isArray(document?.agentRuns) ? document.agentRuns : []
+    run = runs.find((entry) => entry?.id === runId)
+    if (!run) throw new ProductionWorkflowSourceError('WORKFLOW_SOURCE_RUN_NOT_FOUND', '来源 Agent Run 不存在或不属于当前项目，请重新选择。')
+    if (!['completed', 'partial'].includes(run.status)) {
+      throw new ProductionWorkflowSourceError('WORKFLOW_SOURCE_RUN_NOT_TERMINAL', '来源 Agent Run 尚未完成，不能发布为生产工作流。')
+    }
+    // 分支集合可能因历史快照而缺省；有记录时必须匹配，避免跨分支误发布。
+    const branches = Array.isArray(run.branches) ? run.branches : []
+    if (branchId && branches.length && !branches.some((entry) => entry?.id === branchId)) {
+      throw new ProductionWorkflowSourceError('WORKFLOW_SOURCE_BRANCH_NOT_FOUND', '来源分支不属于该 Agent Run，请重新选择。')
+    }
+  }
+
+  const resultNodeIds = Array.isArray(source.resultNodeIds) ? source.resultNodeIds : []
+  if (resultNodeIds.length > 64) throw new ProductionWorkflowSourceError('WORKFLOW_SOURCE_RESULTS_INVALID', '来源结果过多。', 400)
+  const seen = new Set()
+  const artifactIds = resultNodeIds.map((value, index) => {
+    const resultNodeId = sourceText(value, `第 ${index + 1} 个来源结果`)
+    if (seen.has(resultNodeId)) throw new ProductionWorkflowSourceError('WORKFLOW_SOURCE_RESULTS_INVALID', '来源结果重复。', 400)
+    seen.add(resultNodeId)
+    const resultNode = nodes.find((entry) => entry?.id === resultNodeId)
+    if (!resultNode || resultNode.type !== 'result') {
+      throw new ProductionWorkflowSourceError('WORKFLOW_SOURCE_RESULT_NOT_FOUND', '来源结果不存在或已被删除，请重新选择。')
+    }
+    const data = resultNode.data ?? {}
+    if (runId && (data.agentRun?.runId !== runId || (branchId && data.agentRun?.branchId !== branchId))) {
+      throw new ProductionWorkflowSourceError('WORKFLOW_SOURCE_RESULT_MISMATCH', '来源结果不属于所选 Agent Run 或分支。')
+    }
+    if (!data.jobId || !data.candidateId) {
+      throw new ProductionWorkflowSourceError('WORKFLOW_SOURCE_RESULT_UNRESOLVED', '来源结果缺少稳定任务标识，请等待生成完成后再发布。')
+    }
+    return generationArtifactId(data.jobId, data.candidateId)
+  })
+
+  return {
+    canvasNodeId,
+    ...(runId ? { runId } : {}),
+    ...(branchId ? { branchId } : {}),
+    resultNodeIds: [...seen],
+    artifactIds,
+  }
+}
+
+/** 缺少来源快照的历史版本按 `legacy_unverified` 读取；不伪造来源，也不静默再发布。 */
+export function productionWorkflowVersionProvenance(version) {
+  if (version?.provenance === 'verified' || version?.provenance === 'legacy_unverified') return version.provenance
+  return version?.source ? 'verified' : 'legacy_unverified'
+}
+
 function stableMediaId(value) {
   if (typeof value !== 'string') return undefined
   if (/^media_[A-Za-z0-9_-]+$/.test(value)) return value
@@ -92,11 +189,17 @@ function reviewRequired(run) {
 /**
  * 生产工作流定义采用只追加版本。运行只保存版本号与版本快照引用，发布新版本
  * 不会改变正在执行或历史运行的 Prompt、模型、品牌规则和确认策略。
+ *
+ * `source` 必填并已由 `resolveProductionWorkflowSource` 按项目权威文档校验；
+ * 版本条目固定该来源身份，因此历史版本始终能回答"从哪个结果发布而来"。
  */
 export function createProductionWorkflowVersion(input, { actorId, now = Date.now() } = {}) {
   const id = requiredText(input?.id, '工作流标识', 160)
   const projectId = requiredText(input?.projectId, '项目标识', 160)
   const name = requiredText(input?.name, '工作流名称', 120)
+  if (!input?.source || typeof input.source !== 'object') {
+    throw new ProductionWorkflowSourceError('WORKFLOW_SOURCE_REQUIRED', '发布生产工作流必须显式指定来源。', 400)
+  }
   const previous = input.previous ? clone(input.previous) : undefined
   if (previous && (previous.id !== id || previous.projectId !== projectId)) throw new Error('工作流版本归属不一致。')
   const version = Number(previous?.currentVersion ?? 0) + 1
@@ -105,6 +208,8 @@ export function createProductionWorkflowVersion(input, { actorId, now = Date.now
     definition: normalizeDefinition(input.definition),
     createdAt: now,
     createdBy: requiredText(actorId, '操作者', 160),
+    source: clone(input.source),
+    provenance: 'verified',
   }
   return {
     id,

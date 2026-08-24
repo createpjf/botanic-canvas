@@ -2,6 +2,7 @@ import type {
   ProductionWorkflow,
   ProductionWorkflowDefinition,
   ProductionWorkflowRun,
+  ProductionWorkflowSource,
 } from '../domain/canvas'
 import { productRequest } from './productSession'
 
@@ -19,11 +20,13 @@ export async function publishProductionWorkflow(input: {
   id: string
   name: string
   definition: ProductionWorkflowDefinition
+  /** 发布来源必须显式提交；服务端按项目权威文档校验归属后才写入版本。 */
+  source: ProductionWorkflowSource
 }) {
   return (await productRequest<{ workflow: ProductionWorkflow }>(projectPath(input.projectId), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id: input.id, name: input.name, definition: input.definition }),
+    body: JSON.stringify({ id: input.id, name: input.name, definition: input.definition, source: input.source }),
   })).workflow
 }
 

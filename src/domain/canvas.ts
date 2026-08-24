@@ -453,11 +453,27 @@ export type ProductionWorkflowDefinition = {
   recipe?: Record<string, unknown>
 }
 
+/**
+ * 发布来源的显式身份。发布命令必须指名从哪个画布节点、哪次 Agent Run 的哪个分支、
+ * 哪些结果节点提升而来；服务端按项目权威文档校验归属后才写入版本。
+ * `artifactIds` 由服务端从 `resultNodeIds` 解析后回填，客户端不拼装 Artifact 标识格式。
+ */
+export type ProductionWorkflowSource = {
+  canvasNodeId: string
+  runId?: string
+  branchId?: string
+  resultNodeIds: string[]
+  artifactIds?: string[]
+}
+
 export type ProductionWorkflowVersion = {
   version: number
   definition: ProductionWorkflowDefinition
   createdAt: number
   createdBy: string
+  /** 缺省表示该版本发布于显式来源校验之前，按 `legacy_unverified` 读取。 */
+  source?: ProductionWorkflowSource
+  provenance?: 'verified' | 'legacy_unverified'
 }
 
 /** 发布后只追加版本；历史运行始终固定到当时的版本快照。 */

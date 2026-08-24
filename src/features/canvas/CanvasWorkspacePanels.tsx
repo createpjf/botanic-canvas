@@ -5,7 +5,7 @@ import { topOverlayLayer } from '../../domain/overlayPriority'
 import { primaryGenerationReference, settingsForGenerationModel } from '../../domain/generationRecipe'
 import { withoutCustomGenerationSize } from '../../domain/generationOutputSize'
 import { summarizeWorkflowTemplate, type WorkflowTemplateSummary } from '../../domain/workflowTemplates'
-import { productionWorkflowDraftFromCanvas } from '../../domain/productionWorkflows'
+import { eligibleProductionWorkflowSources, productionWorkflowDraftFromCanvas } from '../../domain/productionWorkflows'
 import { useMotionPresence, useRestoreFocus, useRetainedValue, type MotionPhase } from '../../components/motionPresence'
 import { useDialogFocusTrap } from '../../components/useDialogFocusTrap'
 import { BotanicSelect } from '../../components/BotanicSelect'
@@ -820,11 +820,11 @@ export function AssetLibrary({
 
 const templateCopy = {
   'zh-CN': {
-    suffix: '模板', refreshError: '团队模板暂时无法更新，当前显示上次同步结果。', workflowSyncError: '生产工作流暂时无法同步，当前显示上次保存的记录。', createError: '项目未创建，请检查网络后重试。', saveWorkflowError: '生产工作流保存失败，请稍后重试。', startWorkflowError: '生产工作流启动失败，请稍后重试。', updateWorkflowError: '生产工作流操作失败，请稍后重试。', templates: '模板', saveCanvas: '保存当前画布为模板', saveHint: '添加素材、文本或生成节点后，即可保存完整工作流设置。', scope: '模板范围', teamTemplates: '团队模板', thisProject: '本项目', production: '生产', updating: '正在更新团队模板…', projectTemplates: '本项目模板', mixedWorkflow: '图片 + 视频', videoWorkflow: '视频工作流', imageWorkflow: '图片工作流', placeholder: '模板', summary: (nodes: number, prompts: number) => `${nodes} 个节点 · ${prompts} 条 Prompt`, creating: '创建中…', createFromTemplate: '从模板创建', noTeam: '还没有团队模板', noProject: '本项目还没有模板', noTeamHint: '将稳定的工作流保存为团队模板，其他项目即可复用。', noProjectHint: '保存当前画布后，可随时从相同 Prompt 和参数开始。', productionWorkflow: '生产工作流', saving: '正在保存…', saveAgent: '保存已验证 Agent 操作', saveFlow: '保存当前生成流程', productionHint: '先完成一条已连接稳定入库素材的生成流程，再保存为生产工作流。', productionLocalUnavailable: '本地预览模式不连接生产工作流服务；连接云端后可发布和运行。', versionRuns: (version: number, runs: number) => `版本 ${version} · ${runs} 次运行`, notRun: '未运行', processing: '处理中…', runCurrent: '运行当前版本', pause: '暂停', resume: '恢复', cancel: '取消', retryFailed: '重试失败项', locateResult: '定位结果', reviewDelivery: '审核与交付', noProduction: '还没有生产工作流', noProductionHint: '将已验证的 Agent 或画布生成流程保存为不可变版本，之后可批量运行与恢复。', saveAsTemplate: '保存为模板', close: '关闭', templateName: '模板名称', saveScope: '保存范围', projectOnly: '仅本项目', projectOnlyHint: '保留当前素材与完整设置', teamShared: '团队共享', teamSharedHint: '其他项目也可以使用', savedContent: '模板保存内容', willSave: '将保存', savedSummary: (nodes: number, edges: number, prompts: number) => `${nodes} 个节点 · ${edges} 条连线 · ${prompts} 条 Prompt`, privateAssets: (count: number) => `${count} 个项目私有素材不会包含，Prompt 和生成参数仍会保留。`, saveTemplate: '保存模板',
+    suffix: '模板', refreshError: '团队模板暂时无法更新，当前显示上次同步结果。', workflowSyncError: '生产工作流暂时无法同步，当前显示上次保存的记录。', createError: '项目未创建，请检查网络后重试。', saveWorkflowError: '生产工作流保存失败，请稍后重试。', startWorkflowError: '生产工作流启动失败，请稍后重试。', updateWorkflowError: '生产工作流操作失败，请稍后重试。', templates: '模板', saveCanvas: '保存当前画布为模板', saveHint: '添加素材、文本或生成节点后，即可保存完整工作流设置。', scope: '模板范围', teamTemplates: '团队模板', thisProject: '本项目', production: '生产', updating: '正在更新团队模板…', projectTemplates: '本项目模板', mixedWorkflow: '图片 + 视频', videoWorkflow: '视频工作流', imageWorkflow: '图片工作流', placeholder: '模板', summary: (nodes: number, prompts: number) => `${nodes} 个节点 · ${prompts} 条 Prompt`, creating: '创建中…', createFromTemplate: '从模板创建', noTeam: '还没有团队模板', noProject: '本项目还没有模板', noTeamHint: '将稳定的工作流保存为团队模板，其他项目即可复用。', noProjectHint: '保存当前画布后，可随时从相同 Prompt 和参数开始。', productionWorkflow: '生产工作流', saving: '正在保存…', saveAgent: '保存已验证 Agent 操作', saveFlow: '保存当前生成流程', productionHint: '先在画布上完成一条生成流程（纯文字也可以），再选择来源发布为生产工作流。', sourceLabel: '发布来源', chooseSource: '选择发布来源', sourceTextOnly: '无参考图', sourceResults: (count: number) => `${count} 张候选`, sourceNoResults: '暂无候选', sourceNotSelected: '请先选择一个发布来源。', sourceMissing: '所选来源节点已不存在，请重新选择。', sourceNotGenerate: '所选节点不是生成节点。', sourcePromptEmpty: '所选生成节点还没有提示词。', sourceRunPending: '来源 Agent 操作尚未完成，完成后即可发布。', legacySource: '来源未记录', legacySourceHint: '该版本发布于来源校验上线之前，重新选择来源并发布新版本即可恢复可追溯。', productionLocalUnavailable: '本地预览模式不连接生产工作流服务；连接云端后可发布和运行。', versionRuns: (version: number, runs: number) => `版本 ${version} · ${runs} 次运行`, notRun: '未运行', processing: '处理中…', runCurrent: '运行当前版本', pause: '暂停', resume: '恢复', cancel: '取消', retryFailed: '重试失败项', locateResult: '定位结果', reviewDelivery: '审核与交付', noProduction: '还没有生产工作流', noProductionHint: '将已验证的 Agent 或画布生成流程保存为不可变版本，之后可批量运行与恢复。', saveAsTemplate: '保存为模板', close: '关闭', templateName: '模板名称', saveScope: '保存范围', projectOnly: '仅本项目', projectOnlyHint: '保留当前素材与完整设置', teamShared: '团队共享', teamSharedHint: '其他项目也可以使用', savedContent: '模板保存内容', willSave: '将保存', savedSummary: (nodes: number, edges: number, prompts: number) => `${nodes} 个节点 · ${edges} 条连线 · ${prompts} 条 Prompt`, privateAssets: (count: number) => `${count} 个项目私有素材不会包含，Prompt 和生成参数仍会保留。`, saveTemplate: '保存模板',
     runStatuses: { queued: '排队中', running: '运行中', paused: '已暂停', succeeded: '已完成', partial: '部分完成', partially_failed: '部分失败', failed: '已失败', cancelled: '已取消' },
   },
   en: {
-    suffix: 'Template', refreshError: 'Team templates could not be updated. Showing the last synced results.', workflowSyncError: 'Production workflows could not be synced. Showing the last saved records.', createError: 'The project was not created. Check your connection and try again.', saveWorkflowError: 'The production workflow could not be saved. Try again later.', startWorkflowError: 'The production workflow could not be started. Try again later.', updateWorkflowError: 'The production workflow action failed. Try again later.', templates: 'Templates', saveCanvas: 'Save current canvas as template', saveHint: 'Add an asset, text, or generation node to save the complete workflow settings.', scope: 'Template scope', teamTemplates: 'Team templates', thisProject: 'This project', production: 'Production', updating: 'Updating team templates…', projectTemplates: 'Project templates', mixedWorkflow: 'Image + video', videoWorkflow: 'Video workflow', imageWorkflow: 'Image workflow', placeholder: 'Template', summary: (nodes: number, prompts: number) => `${nodes} ${nodes === 1 ? 'node' : 'nodes'} · ${prompts} ${prompts === 1 ? 'Prompt' : 'Prompts'}`, creating: 'Creating…', createFromTemplate: 'Create from template', noTeam: 'No team templates yet', noProject: 'No templates in this project', noTeamHint: 'Save a stable workflow as a team template so other projects can reuse it.', noProjectHint: 'Save the current canvas to restart later with the same prompts and settings.', productionWorkflow: 'Production workflows', saving: 'Saving…', saveAgent: 'Save verified Agent action', saveFlow: 'Save current generation flow', productionHint: 'Complete a generation flow connected to stable saved assets, then save it as a production workflow.', productionLocalUnavailable: 'The local preview is not connected to production workflow services. Connect the workspace service to publish and run workflows.', versionRuns: (version: number, runs: number) => `Version ${version} · ${runs} ${runs === 1 ? 'run' : 'runs'}`, notRun: 'Not run', processing: 'Processing…', runCurrent: 'Run current version', pause: 'Pause', resume: 'Resume', cancel: 'Cancel', retryFailed: 'Retry failed items', locateResult: 'Locate result', reviewDelivery: 'Review and deliver', noProduction: 'No production workflows yet', noProductionHint: 'Save a verified Agent or canvas generation flow as an immutable version for batch runs and recovery.', saveAsTemplate: 'Save as template', close: 'Close', templateName: 'Template name', saveScope: 'Save scope', projectOnly: 'This project only', projectOnlyHint: 'Keep current assets and all settings', teamShared: 'Share with team', teamSharedHint: 'Available to other projects', savedContent: 'Template contents', willSave: 'Will save', savedSummary: (nodes: number, edges: number, prompts: number) => `${nodes} ${nodes === 1 ? 'node' : 'nodes'} · ${edges} ${edges === 1 ? 'connection' : 'connections'} · ${prompts} ${prompts === 1 ? 'Prompt' : 'Prompts'}`, privateAssets: (count: number) => `${count} private project ${count === 1 ? 'asset is' : 'assets are'} excluded. Prompts and generation settings are kept.`, saveTemplate: 'Save template',
+    suffix: 'Template', refreshError: 'Team templates could not be updated. Showing the last synced results.', workflowSyncError: 'Production workflows could not be synced. Showing the last saved records.', createError: 'The project was not created. Check your connection and try again.', saveWorkflowError: 'The production workflow could not be saved. Try again later.', startWorkflowError: 'The production workflow could not be started. Try again later.', updateWorkflowError: 'The production workflow action failed. Try again later.', templates: 'Templates', saveCanvas: 'Save current canvas as template', saveHint: 'Add an asset, text, or generation node to save the complete workflow settings.', scope: 'Template scope', teamTemplates: 'Team templates', thisProject: 'This project', production: 'Production', updating: 'Updating team templates…', projectTemplates: 'Project templates', mixedWorkflow: 'Image + video', videoWorkflow: 'Video workflow', imageWorkflow: 'Image workflow', placeholder: 'Template', summary: (nodes: number, prompts: number) => `${nodes} ${nodes === 1 ? 'node' : 'nodes'} · ${prompts} ${prompts === 1 ? 'Prompt' : 'Prompts'}`, creating: 'Creating…', createFromTemplate: 'Create from template', noTeam: 'No team templates yet', noProject: 'No templates in this project', noTeamHint: 'Save a stable workflow as a team template so other projects can reuse it.', noProjectHint: 'Save the current canvas to restart later with the same prompts and settings.', productionWorkflow: 'Production workflows', saving: 'Saving…', saveAgent: 'Save verified Agent action', saveFlow: 'Save current generation flow', productionHint: 'Complete a generation flow on the canvas — text-only works too — then choose a source to publish.', sourceLabel: 'Publish source', chooseSource: 'Choose publish source', sourceTextOnly: 'no reference', sourceResults: (count: number) => `${count} ${count === 1 ? 'candidate' : 'candidates'}`, sourceNoResults: 'No candidates yet', sourceNotSelected: 'Choose a publish source first.', sourceMissing: 'The selected source node no longer exists. Choose another.', sourceNotGenerate: 'The selected node is not a generation node.', sourcePromptEmpty: 'The selected generation node has no prompt yet.', sourceRunPending: 'The source Agent action has not finished yet.', legacySource: 'Source not recorded', legacySourceHint: 'This version predates source verification. Publish a new version with an explicit source to restore traceability.', productionLocalUnavailable: 'The local preview is not connected to production workflow services. Connect the workspace service to publish and run workflows.', versionRuns: (version: number, runs: number) => `Version ${version} · ${runs} ${runs === 1 ? 'run' : 'runs'}`, notRun: 'Not run', processing: 'Processing…', runCurrent: 'Run current version', pause: 'Pause', resume: 'Resume', cancel: 'Cancel', retryFailed: 'Retry failed items', locateResult: 'Locate result', reviewDelivery: 'Review and deliver', noProduction: 'No production workflows yet', noProductionHint: 'Save a verified Agent or canvas generation flow as an immutable version for batch runs and recovery.', saveAsTemplate: 'Save as template', close: 'Close', templateName: 'Template name', saveScope: 'Save scope', projectOnly: 'This project only', projectOnlyHint: 'Keep current assets and all settings', teamShared: 'Share with team', teamSharedHint: 'Available to other projects', savedContent: 'Template contents', willSave: 'Will save', savedSummary: (nodes: number, edges: number, prompts: number) => `${nodes} ${nodes === 1 ? 'node' : 'nodes'} · ${edges} ${edges === 1 ? 'connection' : 'connections'} · ${prompts} ${prompts === 1 ? 'Prompt' : 'Prompts'}`, privateAssets: (count: number) => `${count} private project ${count === 1 ? 'asset is' : 'assets are'} excluded. Prompts and generation settings are kept.`, saveTemplate: 'Save template',
     runStatuses: { queued: 'Queued', running: 'Running', paused: 'Paused', succeeded: 'Complete', partial: 'Partially complete', partially_failed: 'Partially failed', failed: 'Failed', cancelled: 'Cancelled' },
   },
 } as const
@@ -880,7 +880,25 @@ export function TemplatePanel({
   const saveDialogRef = useDialogFocusTrap(saveOpen)
   const saveSummary = scope === 'shared' ? sharedSaveSummary : projectSaveSummary
   const visibleTemplates = activeTab === 'shared' ? sharedTemplates : templates
-  const productionDraft = useMemo(() => productionWorkflowDraftFromCanvas(canvasDocument), [canvasDocument])
+  const [productionSourceNodeId, setProductionSourceNodeId] = useState('')
+  const productionSources = useMemo(() => eligibleProductionWorkflowSources(canvasDocument), [canvasDocument])
+  // 来源由用户显式选择；不代为挑选画布上的第一个可用节点。所选节点从画布消失后
+  // 回到未选择状态，让用户重新决定，而不是静默换成别的节点。
+  const selectedProductionSource = productionSources.some((option) => option.nodeId === productionSourceNodeId)
+    ? productionSourceNodeId
+    : ''
+  const productionDraftResult = useMemo(
+    () => productionWorkflowDraftFromCanvas(canvasDocument, selectedProductionSource),
+    [canvasDocument, selectedProductionSource],
+  )
+  const productionDraft = productionDraftResult.ok ? productionDraftResult.draft : undefined
+  const productionSourceNotice = productionDraftResult.ok ? '' : ({
+    source_not_selected: t.sourceNotSelected,
+    node_not_found: t.sourceMissing,
+    not_generate_node: t.sourceNotGenerate,
+    prompt_empty: t.sourcePromptEmpty,
+    run_not_terminal: t.sourceRunPending,
+  })[productionDraftResult.reason]
 
   const refreshProductionWorkflows = async () => {
     if (!serverPersistenceEnabled) {
@@ -978,9 +996,10 @@ export function TemplatePanel({
     try {
       await publishProductionWorkflow({
         projectId,
-        id: `production-${productionDraft.sourceNodeId}`,
+        id: `production-${productionDraft.source.canvasNodeId}`,
         name: productionDraft.name,
         definition: productionDraft.definition,
+        source: productionDraft.source,
       })
       await refreshProductionWorkflows()
       setActiveTab('automation')
@@ -1072,10 +1091,27 @@ export function TemplatePanel({
         </div>
       </section> : (
         <section className="template-section production-workflow-section" aria-label={t.productionWorkflow}>
+          {productionSources.length ? (
+            <label className="production-workflow-source">
+              <span>{t.sourceLabel}</span>
+              <BotanicSelect
+                value={selectedProductionSource}
+                ariaLabel={t.chooseSource}
+                placeholder={t.chooseSource}
+                options={productionSources.map((option) => ({
+                  value: option.nodeId,
+                  label: `${option.label}${option.hasReferences ? '' : ` · ${t.sourceTextOnly}`} · ${option.resultCount ? t.sourceResults(option.resultCount) : t.sourceNoResults}`,
+                }))}
+                onChange={setProductionSourceNodeId}
+              />
+            </label>
+          ) : null}
           <button type="button" className="production-workflow-publish" disabled={!productionDraft || Boolean(productionBusy)} onClick={() => void publishAutomation()}>
             <PlusSquareIcon />{productionBusy === 'publish' ? t.saving : productionDraft?.sourceAgentRunId ? t.saveAgent : t.saveFlow}
           </button>
-          {!productionDraft ? <p className="panel-note">{t.productionHint}</p> : null}
+          {!productionSources.length
+            ? <p className="panel-note">{t.productionHint}</p>
+            : productionSourceNotice ? <p className="panel-note">{productionSourceNotice}</p> : null}
           <div className="production-workflow-list">
             {productionWorkflows.map((workflow) => {
               const runs = productionRuns.filter((run) => run.workflowId === workflow.id)
@@ -1083,7 +1119,7 @@ export function TemplatePanel({
               const resultNodeId = latestRun?.items.flatMap((item) => item.canvasNodeIds ?? [])[0]
               const hasFailed = latestRun?.items.some((item) => item.status === 'failed')
               return <article className="production-workflow-card" key={workflow.id}>
-                <header><div><strong>{workflow.name}</strong><span>{t.versionRuns(workflow.currentVersion, runs.length)}</span></div><em>{latestRun ? t.runStatuses[latestRun.status] : t.notRun}</em></header>
+                <header><div><strong>{workflow.name}</strong><span>{t.versionRuns(workflow.currentVersion, runs.length)}</span>{workflow.versions.at(-1)?.provenance === 'legacy_unverified' ? <span className="production-workflow-legacy" title={t.legacySourceHint}>{t.legacySource}</span> : null}</div><em>{latestRun ? t.runStatuses[latestRun.status] : t.notRun}</em></header>
                 <p>{workflow.versions.at(-1)?.definition.prompt}</p>
                 <small>{workflow.versions.at(-1)?.definition.model} · {String(workflow.versions.at(-1)?.definition.output?.aspectRatio ?? '')} · {String(workflow.versions.at(-1)?.definition.output?.resolution ?? '')}</small>
                 <footer>

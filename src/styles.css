@@ -1169,6 +1169,9 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .production-workflow-card footer { display: flex; flex-wrap: wrap; gap: 5px; }
 .production-workflow-card footer button { min-height: 28px; padding: 0 8px; border: 1px solid #d7e1d5; border-radius: 7px; background: #f8faf7; color: #3d6048; font-size: 8px; font-weight: 700; }
 .production-workflow-card footer button:first-child { border-color: #2a5238; background: #2a5238; color: #fff; }
+.production-workflow-source { display: grid; gap: 4px; }
+.production-workflow-source > span { color: #737a70; font-size: 9px; font-weight: 700; }
+.production-workflow-card .production-workflow-legacy { justify-self: start; padding: 2px 6px; border-radius: 999px; background: #f5ded9; color: #a45146; font-size: 8px; }
 .template-dialog-backdrop { position: fixed; z-index: 150; inset: 0; display: grid; place-items: center; padding: 22px; background: rgba(25, 34, 27, .36); backdrop-filter: blur(3px); }
 .template-dialog { width: min(460px, calc(100vw - 44px)); padding: 18px; border: 1px solid #dfe6dd; border-radius: var(--radius-surface); background: #fff; box-shadow: 0 24px 60px rgba(20, 34, 24, .25); }
 .template-dialog > header { display: flex; align-items: flex-start; justify-content: space-between; }
