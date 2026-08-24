@@ -13,6 +13,9 @@ function harness(bodies, submitGeneration = async ({ idempotencyKey }) => ({
   })
   let revision = 1
   const responses = []
+  const cancelled = []
+  const dequeued = []
+  const broadcast = []
   const handler = createProductionWorkflowRouteHandler({
     productStore: {
       projectAccess: async () => ({ exists: true, role: options.role ?? 'owner' }),
@@ -28,6 +31,10 @@ function harness(bodies, submitGeneration = async ({ idempotencyKey }) => ({
         return { document, revision, graphRevision: 1 }
       },
       readGenerationJob: async (_userId, jobId) => options.jobs?.[jobId],
+      putGenerationJob: async (_userId, job) => {
+        cancelled.push(job)
+        if (options.jobs?.[job.id]) options.jobs[job.id] = job
+      },
     },
     json: (_response, status, body) => { responses.push({ status, body }); return true },
     error: (_response, status, code, message) => { responses.push({ status, body: { error: { code, message } } }); return true },
@@ -35,8 +42,11 @@ function harness(bodies, submitGeneration = async ({ idempotencyKey }) => ({
     requireUser: async () => ({ id: 'user-a' }),
     submitGeneration,
     publishProjectUpdated: async () => undefined,
+    redisQueue: { cancel: async (jobId) => dequeued.push(jobId) },
+    publishCancel: async (event) => broadcast.push(event),
+    modelOptions: [{ id: 'gpt-image-2', provider: 'openai' }],
   })
-  return { handler, responses, document: () => document }
+  return { handler, responses, document: () => document, cancelled, dequeued, broadcast }
 }
 
 const definition = {
@@ -253,4 +263,67 @@ test('来源结果跨 Run 或分支不匹配时拒绝，未完成的 Run 也不�
     'WORKFLOW_SOURCE_RUN_NOT_TERMINAL',
     'WORKFLOW_SOURCE_BRANCH_NOT_FOUND',
   ])
+})
+
+function runningRunDocument(itemStatus = 'running') {
+  return {
+    id: 'project-a', nodes: [],
+    productionWorkflows: [{ id: 'workflow-a', currentVersion: 1, versions: [{ version: 1, definition }] }],
+    productionWorkflowRuns: [{
+      id: 'run-a', workflowId: 'workflow-a', workflowVersion: 1, status: 'running',
+      items: [
+        { id: 'sku-a', status: itemStatus, jobId: 'job-queued' },
+        { id: 'sku-b', status: itemStatus, jobId: 'job-running' },
+      ],
+    }],
+  }
+}
+
+const activeJobs = () => ({
+  'job-queued': { id: 'job-queued', projectId: 'project-a', status: 'queued', settings: { model: 'gpt-image-2' }, outputs: [] },
+  'job-running': { id: 'job-running', projectId: 'project-a', status: 'running', settings: { model: 'gpt-image-2' }, outputs: [] },
+})
+
+test('取消整批工作流会广播到 Worker，运行中的任务才会真的停下', async () => {
+  // 之前这里只写库加出队：出队对已派发的任务无效，Worker 仍会把 Provider 调用
+  // 跑完，用户取消一整批之后槽位依然被占满。
+  const { handler, responses, cancelled, dequeued, broadcast } = harness(
+    [{ action: 'cancel' }], undefined, { initialDocument: runningRunDocument(), jobs: activeJobs() },
+  )
+  await handler({ method: 'PATCH' }, {}, new URL('http://test'), { projectProductionWorkflowRun: ['path', 'project-a', 'run-a'] })
+
+  assert.equal(responses.at(-1).status, 200)
+  assert.equal(responses.at(-1).body.run.status, 'cancelled')
+  assert.deepEqual(cancelled.map((job) => job.id).sort(), ['job-queued', 'job-running'])
+  assert.ok(cancelled.every((job) => job.status === 'cancelled'))
+  assert.deepEqual(dequeued.sort(), ['job-queued', 'job-running'])
+  assert.deepEqual(broadcast.map((event) => event.id).sort(), ['job-queued', 'job-running'])
+  assert.ok(broadcast.every((event) => event.scope === 'job' && event.projectId === 'project-a' && event.requestedAt > 0))
+})
+
+test('取消回执按取消前的状态归因计费，不把两种任务混成一句话', async () => {
+  const { handler, cancelled } = harness(
+    [{ action: 'cancel' }], undefined, { initialDocument: runningRunDocument(), jobs: activeJobs() },
+  )
+  await handler({ method: 'PATCH' }, {}, new URL('http://test'), { projectProductionWorkflowRun: ['path', 'project-a', 'run-a'] })
+
+  const byId = new Map(cancelled.map((job) => [job.id, job.cancel]))
+  assert.equal(byId.get('job-queued').billing, 'none')
+  assert.equal(byId.get('job-queued').code, 'CANCELLED_BEFORE_DISPATCH')
+  assert.equal(byId.get('job-running').billing, 'possible')
+  assert.equal(byId.get('job-running').workerReleased, true)
+  assert.ok(byId.get('job-queued').requestedAt > 0)
+  assert.equal(byId.get('job-running').reason, 'workflow-cancel')
+})
+
+test('暂停只收回尚未派发的任务，不丢弃已在 Provider 侧执行的那一张', async () => {
+  const { handler, cancelled, broadcast } = harness(
+    [{ action: 'pause' }], undefined, { initialDocument: runningRunDocument(), jobs: activeJobs() },
+  )
+  await handler({ method: 'PATCH' }, {}, new URL('http://test'), { projectProductionWorkflowRun: ['path', 'project-a', 'run-a'] })
+
+  assert.deepEqual(cancelled.map((job) => job.id), ['job-queued'])
+  assert.equal(cancelled[0].cancel.reason, 'workflow-pause')
+  // 排队中的任务不需要广播就已经停住；只有它被取消，不该有第二次广播。
+  assert.deepEqual(broadcast.map((event) => event.id), ['job-queued'])
 })

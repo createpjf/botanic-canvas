@@ -570,3 +570,61 @@ test('SSE 写出器在模型还没吐事件前就打开通道，并用注释心�
   beats[0]()
   assert.equal(response.chunks.length, afterEnd)
 })
+
+test('取消 Agent Run 会广播到 Worker，正在执行的生成才会真的停下', async () => {
+  // 这里过去只写库加出队：Worker 是独立进程，看不到 cancelled，会把 Provider
+  // 调用跑完才发现结果没人要 —— 用户停掉任务后槽位仍被占着。
+  const run = {
+    id: 'run-cancel', projectId: 'project-cancel', ownerId: 'user-1', status: 'executing',
+    createdAt: 1, updatedAt: 2, plan: runInput.plan,
+    branches: [
+      { id: 'branch-1', label: '排队中', status: 'queued', attempt: 0, jobIds: ['job-queued'], activeJobId: 'job-queued', outputCount: 0, updatedAt: 2 },
+      { id: 'branch-2', label: '执行中', status: 'running', attempt: 0, jobIds: ['job-running'], activeJobId: 'job-running', outputCount: 0, updatedAt: 2 },
+    ],
+  }
+  const jobs = {
+    'job-queued': { id: 'job-queued', projectId: 'project-cancel', status: 'queued', settings: { model: 'gpt-image-2' } },
+    'job-running': { id: 'job-running', projectId: 'project-cancel', status: 'running', settings: { model: 'gpt-image-2' } },
+  }
+  const written = []
+  const persisted = []
+  const dequeued = []
+  const broadcast = []
+  const responses = []
+  const handler = createAgentRouteHandler({
+    config: { modelOptions: [{ id: 'gpt-image-2', provider: 'openai' }] },
+    productStore: {
+      projectAccess: async () => ({ exists: true, role: 'owner' }),
+      readAgentRun: async () => structuredClone(run),
+      putAgentRun: async (_userId, next) => next,
+      readGenerationJob: async (_userId, jobId) => jobs[jobId],
+      putGenerationJob: async (_userId, job) => { written.push(job) },
+    },
+    agentRunGeneration: { persistJobState: async (_userId, _projectId, job) => persisted.push(job.id) },
+    redisQueue: { cancel: async (jobId) => dequeued.push(jobId) },
+    publishCancel: async (event) => broadcast.push(event),
+    json: (_response, status, body) => { responses.push({ status, body }); return true },
+    requireUser: async () => ({ id: 'user-1' }),
+    publishAgentRunUpdated: async () => {},
+  })
+
+  await handler(
+    { method: 'POST', headers: {} },
+    {},
+    new URL('http://botanic.test/api/agent-runs/run-cancel/cancel'),
+    { agentRunCancel: ['path', 'run-cancel'] },
+    'request-cancel',
+  )
+
+  assert.equal(responses.at(-1)?.status, 200)
+  assert.deepEqual(written.map((job) => job.id).sort(), ['job-queued', 'job-running'])
+  assert.ok(written.every((job) => job.status === 'cancelled'))
+  assert.deepEqual(persisted.sort(), ['job-queued', 'job-running'])
+  assert.deepEqual(dequeued.sort(), ['job-queued', 'job-running'])
+  assert.deepEqual(broadcast.map((event) => event.id).sort(), ['job-queued', 'job-running'])
+  // 计费归因照实分开记，并标明是「停 Run」而不是用户单点某一张。
+  const byId = new Map(written.map((job) => [job.id, job.cancel]))
+  assert.equal(byId.get('job-queued').billing, 'none')
+  assert.equal(byId.get('job-running').billing, 'possible')
+  assert.ok(written.every((job) => job.cancel.reason === 'agent-run'))
+})

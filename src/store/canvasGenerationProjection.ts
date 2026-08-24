@@ -295,7 +295,14 @@ export function settleExpiredGenerationSubmissions(document: CanvasDocument) {
 }
 
 function jobForDocument(job: GenerationJob, taskNodeIds: TaskNodeIds, dismissedOutputIds: string[] = []): GenerationJob {
-  const { promptNodeId: _promptNodeId, referenceNodeId: _referenceNodeId, ...persistedJob } = job
+  // `cancelOutcome` 是取消接口对**那一次调用**的计费判定，不是任务的持久事实：
+  // 落进文档后每次读取都会把它当成历史重放，轮询同一任务却又拿不到它。
+  const {
+    promptNodeId: _promptNodeId,
+    referenceNodeId: _referenceNodeId,
+    cancelOutcome: _cancelOutcome,
+    ...persistedJob
+  } = job as GenerationJob & { cancelOutcome?: unknown }
   const outputs = job.status === 'succeeded'
     ? job.outputs?.filter((output) => !dismissedOutputIds.includes(output.id)).map((output) => ({ ...output }))
     : undefined

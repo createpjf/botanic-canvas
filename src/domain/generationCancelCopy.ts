@@ -9,6 +9,16 @@ export type GenerationCancelOutcome = {
 }
 
 /**
+ * 取消回执：服务端在取消那一刻写下的持久记录。字段是判定的超集，因此它本身
+ * 就能直接喂给文案函数 —— 刷新页面后不必再问服务端一次就能照实说明费用。
+ */
+export type GenerationCancelRecord = GenerationCancelOutcome & {
+  requestedAt: number
+  reason: string
+  requestedBy?: string
+}
+
+/**
  * 取消结果的用户可读说明。
  *
  * 这里存在的唯一理由是**不要撒谎**：当前接入的 Provider 都不支持提交后停止计费，
@@ -38,4 +48,20 @@ export function generationCancelMessage(
   return locale === 'en'
     ? 'Stopped using the result. The provider may have already run this request, so quota may have been consumed.'
     : '已停止采用结果。任务已提交给生成服务，费用可能已产生。'
+}
+
+/**
+ * 取消后写给画布助手的完整文案：计费判定 + 明确说清画布留下了什么。
+ *
+ * 取消会把任务节点改成 `cancelled` 但不删除提示词与参考组，用户看不到这一点时
+ * 会以为需要从头再来，所以这句必须跟着计费判定一起出现。
+ */
+export function generationCancelAssistantMessage(
+  outcome: GenerationCancelOutcome | undefined,
+  locale: ProductLocale = 'zh-CN',
+) {
+  const preserved = locale === 'en'
+    ? ' The canvas keeps this round of prompt, reference group and task record.'
+    : '画布保留本次的提示词、参考组与任务记录。'
+  return `${generationCancelMessage(outcome, locale)}${preserved}`
 }

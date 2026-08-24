@@ -316,6 +316,8 @@ export function publicGenerationJob(job, { includeIdempotencyKey = false } = {})
     // 仅向任务提交者返回，用于网络状态未知时确认同一次逻辑提交。
     ...(includeIdempotencyKey ? { idempotencyKey: job.idempotencyKey } : {}),
     projectWritebackPending: Boolean(job.projectWritebackPending),
+    // 取消回执随任务一起返回：刷新页面后界面仍要说清费用是否可能已产生。
+    cancel: job.cancel,
     agentRun: job.agentRun,
     usage: job.usage,
     budgetWarning: job.budgetWarning,
@@ -342,6 +344,8 @@ export function persistedGenerationJob(job) {
     outputs: job.outputs ?? [],
     variants: job.variants ?? [],
     error: job.error,
+    // 取消回执是计费归因唯一的持久记录，必须随任务落库。
+    cancel: job.cancel,
     missingOutputCount: job.missingOutputCount ?? 0,
     partialError: job.partialError,
     settings: job.settings,

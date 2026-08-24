@@ -1,5 +1,5 @@
-import { generationTimeoutForModel, providerForModel } from './generationModels.mjs'
-import { generationCancelOutcome } from './generationCancelCapability.mjs'
+import { generationTimeoutForModel } from './generationModels.mjs'
+import { cancelGenerationJob } from './generationCancellation.mjs'
 import { persistedGenerationJob, publicGenerationJob } from './generationProvider.mjs'
 import { reconcileGenerationResults } from './generationResultReconciliation.mjs'
 import { requireProjectPermission } from './projectAuthorization.mjs'
@@ -111,27 +111,17 @@ export function createGenerationRouteHandler({
       const jobId = decodeURIComponent(jobMatch[1])
       const job = await productStore.readGenerationJob(user.id, jobId)
       if (!job) return error(response, 404, 'JOB_NOT_FOUND', '未找到该真实生成任务。')
-      if (job.status === 'queued' || job.status === 'running') {
-        // 取消的真实后果按「取消前的状态」判定，必须在改写状态之前算。
-        // 界面据此照实说明费用是否可能已产生，不笼统暗示取消等于省钱。
-        const outcome = generationCancelOutcome({
-          status: job.status,
-          provider: providerForModel(config.modelOptions ?? [], job.settings?.model)?.provider,
-        })
-        const cancelled = { ...job, status: 'cancelled', error: undefined, updatedAt: Date.now() }
-        await productStore.putGenerationJob(user.id, persistedGenerationJob(cancelled))
-        // 队列里移除只对尚未派发的任务有效，那也是唯一真能省下费用的路径。
-        await redisQueue?.cancel(jobId)
-        // 已在执行的任务需要通知 Worker 进程：它是独立进程，看不到这里写下的
-        // cancelled，只会等 Provider 跑完再丢弃结果。广播后它就地 abort，
-        // Provider 调用停下、worker 槽位释放。
-        await publishCancel?.({ scope: 'job', id: jobId, projectId: job.projectId })
-        return json(response, 200, {
-          ...publicGenerationJob(cancelled, { includeIdempotencyKey: cancelled.ownerId === user.id }),
-          cancelOutcome: outcome,
-        })
-      }
-      return json(response, 200, publicGenerationJob(job, { includeIdempotencyKey: job.ownerId === user.id }))
+      // 取消的四个动作（判定、落库、出队、广播）都在这个共享实现里，
+      // 重复取消也会拿到与第一次相同的判定。
+      const result = await cancelGenerationJob({
+        productStore, redisQueue, publishCancel,
+        modelOptions: config.modelOptions ?? [],
+        ownerId: user.id, job, reason: 'user', requestedBy: user.id,
+      })
+      return json(response, 200, {
+        ...publicGenerationJob(result.job, { includeIdempotencyKey: result.job.ownerId === user.id }),
+        cancelOutcome: result.outcome,
+      })
     }
 
     return false

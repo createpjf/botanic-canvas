@@ -1,5 +1,6 @@
 import type { Edge, Node, Viewport } from '@xyflow/react'
 import type { BotanicAgentMemoryItem, BotanicAgentRun, BotanicAgentSession } from './agent'
+import type { GenerationCancelRecord } from './generationCancelCopy'
 
 export type AssetRole = '商品' | '模特' | '场景' | '调性' | '首图'
 export type AssetSource = 'brand' | 'upload' | 'generated'
@@ -397,6 +398,8 @@ export type GenerationJob = {
   resultNodeId?: string
   parentNodeId?: string
   agentRun?: { runId: string; branchId: string }
+  /** 取消回执：计费归因唯一的持久记录，刷新后界面仍据此照实说明费用。 */
+  cancel?: GenerationCancelRecord
 }
 
 export type BatchVariationItemStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'

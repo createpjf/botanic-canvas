@@ -268,6 +268,8 @@ const handleProductionWorkflowRoute = createProductionWorkflowRouteHandler({
   submitGeneration,
   redisQueue,
   publishProjectUpdated,
+  publishCancel: (event) => agentRunEvents?.publishCancel?.(event),
+  modelOptions: config.modelOptions ?? [],
 })
 
 const handleAccountRoute = createAccountRouteHandler({

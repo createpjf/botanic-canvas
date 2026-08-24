@@ -29,7 +29,11 @@ const jobCancelRegistry = createLocalCancelRegistry()
 const cancelSubscriber = await createAgentRunEventSubscriber(config.redisUrl, () => {}, {
   onCancel: (event) => {
     if (event.scope !== 'job') return
-    if (jobCancelRegistry.abort(event.id)) console.log(JSON.stringify({ event: 'generation.cancel.aborted', jobId: event.id }))
+    if (!jobCancelRegistry.abort(event.id)) return
+    // 记下「用户点取消」到「本地 abort 生效」的间隔：这是取消延迟唯一可观测的口径。
+    // 跨进程时间差包含机器间时钟偏移，只用于看分位数趋势，不用于精确归因。
+    const latencyMs = typeof event.requestedAt === 'number' ? Date.now() - event.requestedAt : undefined
+    console.log(JSON.stringify({ event: 'generation.cancel.aborted', jobId: event.id, latencyMs }))
   },
 })
 const worker = createGenerationWorker({

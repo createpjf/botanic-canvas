@@ -69,3 +69,20 @@ test('落图后结果名用短标题，不用 Prompt 原文', () => {
   assert.deepEqual(labels, ['换景调光1', '换景调光2'])
   assert.equal(labels.every((label) => Array.from(label ?? '').length <= 8), true)
 })
+
+test('取消接口的一次性计费判定不落进持久化任务', () => {
+  // cancelOutcome 只描述「这一次取消调用」；写进文档会让轮询与恢复路径
+  // 反复看到一份无法复算的计费结论。
+  const planned = createTaskFlow(baseDocument(), request())
+  const job = {
+    id: 'job-cancel', projectId: 'project-generation', kind: 'generation', status: 'cancelled',
+    prompt: '海边自然光', batchCount: 2, settings: request().settings, recipe: request().recipe!,
+    createdAt: 1, updatedAt: 2,
+    cancelOutcome: { billing: 'possible', capability: 'local-abort-only', workerReleased: true, code: 'CANCELLED_RESULT_DISCARDED' },
+  } as unknown as GenerationJob
+  const recorded = recordGenerationJob(planned.document, job, planned.taskNodeIds)
+  const persisted = recorded.generationJobs.find((item) => item.id === 'job-cancel')
+  assert.ok(persisted)
+  assert.equal(persisted.status, 'cancelled')
+  assert.ok(!('cancelOutcome' in persisted))
+})

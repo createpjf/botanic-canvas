@@ -35,6 +35,8 @@ import {
 } from './canvasGenerationProjection'
 import { hasRecoveredGenerationDelta, mergeRecoveredGenerationJobs } from './canvasGenerationRecovery'
 import type { CanvasStore, GenerationRequest, TaskNodeIds } from './canvasStore.types'
+import { generationCancelAssistantMessage, type GenerationCancelOutcome } from '../domain/generationCancelCopy'
+import { readProductLocale } from '../i18n/core'
 
 type GenerationActions = Pick<CanvasStore,
   | 'runGeneration'
@@ -140,7 +142,8 @@ export function createCanvasGenerationActions({
     return false
   }
 
-  const syncJob = (job: GenerationJob) => {
+  // `cancelOutcome` 只由取消接口返回；轮询与恢复路径拿不到它，因此是可选的。
+  const syncJob = (job: GenerationJob & { cancelOutcome?: GenerationCancelOutcome }) => {
     const request = get().lastGenerationRequest
     if (!request?.taskNodeIds || request.jobId !== job.id) return
     const recordedDocument = recordGenerationJob(get().document, job, request.taskNodeIds)
@@ -175,10 +178,14 @@ export function createCanvasGenerationActions({
       return
     }
     if (job.status === 'cancelled') {
+      // 照实说明费用是否可能已产生：当前 Provider 都不支持提交后停止计费，
+      // 只说「已取消」会让用户以为省下了生成额度。两者都拿不到（旧服务端取消的
+      // 历史任务）时退到中性表述，不臆测计费情况。
       void commitDocument(recordedDocument, {
         generationStatus: 'idle', generationProgress: 0, generationError: null,
         expectedCandidateCount: 0, generationCandidates: [],
-        assistantMessage: '已取消真实生成任务；画布保留本次的提示词、参考组与任务记录。',
+        // 取消接口会返回本次判定；轮询与刷新后只剩任务上的持久回执，两者同构。
+        assistantMessage: generationCancelAssistantMessage(job.cancelOutcome ?? job.cancel, readProductLocale()),
       }, { immediate: true })
       return
     }

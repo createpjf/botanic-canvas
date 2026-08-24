@@ -10,7 +10,8 @@ import {
   retryFailedWorkflowItems,
   transitionProductionWorkflowRun,
 } from './productionWorkflow.mjs'
-import { persistedGenerationJob, publicGenerationJob } from './generationProvider.mjs'
+import { cancelGenerationJob } from './generationCancellation.mjs'
+import { publicGenerationJob } from './generationProvider.mjs'
 import { requireProjectPermission } from './projectAuthorization.mjs'
 
 const clone = (value) => structuredClone(value)
@@ -77,7 +78,13 @@ export function createProductionWorkflowRouteHandler({
   submitGeneration,
   redisQueue,
   publishProjectUpdated,
+  publishCancel,
+  modelOptions = [],
 }) {
+  const cancelJob = (ownerId, job, reason) => cancelGenerationJob({
+    productStore, redisQueue, publishCancel, modelOptions, ownerId, job, reason, requestedBy: ownerId,
+  })
+
   async function updateProject(userId, projectId, mutate) {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const project = await productStore.readProject(userId, projectId)
@@ -282,9 +289,10 @@ export function createProductionWorkflowRouteHandler({
           run = transitionProductionWorkflowRun(run, 'pause')
           for (const item of run.items.filter((entry) => entry.jobId && entry.status === 'running')) {
             const job = await productStore.readGenerationJob(user.id, item.jobId)
+            // 暂停只收回尚未派发的任务。已在 Provider 侧执行的那一张已经产生费用，
+            // 中止它等于白付；resume 会按 jobId 重新接上它。
             if (job?.status !== 'queued') continue
-            await productStore.putGenerationJob(user.id, persistedGenerationJob({ ...job, status: 'cancelled', updatedAt: Date.now() }))
-            await redisQueue?.cancel(job.id)
+            await cancelJob(user.id, job, 'workflow-pause')
           }
         } else if (body.action === 'resume') {
           run = transitionProductionWorkflowRun(run, 'resume')
@@ -293,9 +301,10 @@ export function createProductionWorkflowRouteHandler({
           run = transitionProductionWorkflowRun(run, 'cancel')
           for (const item of run.items.filter((entry) => entry.jobId)) {
             const job = await productStore.readGenerationJob(user.id, item.jobId)
-            if (!job || !['queued', 'running'].includes(job.status)) continue
-            await productStore.putGenerationJob(user.id, persistedGenerationJob({ ...job, status: 'cancelled', updatedAt: Date.now() }))
-            await redisQueue?.cancel(job.id)
+            if (!job) continue
+            // 取消要覆盖 queued 与 running 两种：running 的那张只有广播到 Worker
+            // 才会真的停下，否则整批工作流取消后 worker 槽位仍被占满。
+            await cancelJob(user.id, job, 'workflow-cancel')
           }
         } else if (body.action === 'approve-review' || body.action === 'reject-review') {
           run = transitionProductionWorkflowRun(run, body.action, { actorId: user.id })

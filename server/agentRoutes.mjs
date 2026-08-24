@@ -8,6 +8,7 @@ import { cancelPersistentAgentRun, createPersistentAgentRun, prepareAgentBranchR
 import { AgentToolRuntimeError, executeConfirmedAgentAction } from './agentToolRuntime.mjs'
 import { botanicAgentBuiltInSkill, botanicAgentSystemSkills, createBotanicAgentActionToolRegistry } from './botanicAgentTools.mjs'
 import { decodeArtifactCursor, encodeArtifactCursor } from './botanicArtifactIndex.mjs'
+import { cancelGenerationJob } from './generationCancellation.mjs'
 import { generationIdempotencyKey, generationJobIdForIdempotency } from './generationIdempotency.mjs'
 import { persistedGenerationJob, publicGenerationJob } from './generationProvider.mjs'
 import { retargetGenerationJobForRetry } from './generationResultReconciliation.mjs'
@@ -301,6 +302,10 @@ export function createAgentRouteHandler({
           requestId,
           id: turnId,
           idempotencyKey,
+          // 只快照用户请求本身。projectSkills 与项目文档是派生上下文，恢复时应重新
+          // 读取 —— 重放一份过期的 Skill 列表或画布快照会让恢复出的回合与当前项目
+          // 不一致，而且它们体积远大于请求。
+          request: validatedInput,
           resolve: (resolveOptions) => resolveBotanicAgentTurn(input, config, resolveOptions),
           resolveOptions: {
             document: project.document,
@@ -988,12 +993,15 @@ export function createAgentRouteHandler({
       const activeJobIds = [...new Set(run.branches.filter((branch) => branch.status === 'queued' || branch.status === 'running').map((branch) => branch.activeJobId).filter(Boolean))]
       for (const jobId of activeJobIds) {
         const job = await productStore.readGenerationJob(user.id, jobId)
-        if (job?.status === 'queued' || job?.status === 'running') {
-          const cancelledJob = { ...job, status: 'cancelled', error: undefined, updatedAt: Date.now() }
-          await productStore.putGenerationJob(user.id, persistedGenerationJob(cancelledJob))
-          await agentRunGeneration.persistJobState(user.id, run.projectId, cancelledJob)
-          await redisQueue?.cancel(jobId)
-        }
+        if (!job) continue
+        // 走共享取消实现：这里过去漏了广播，Worker 会把 Provider 调用跑完才
+        // 发现结果没人要，用户停掉 Run 之后槽位仍被占着。
+        await cancelGenerationJob({
+          productStore, redisQueue, publishCancel,
+          modelOptions: config.modelOptions ?? [],
+          ownerId: user.id, job, reason: 'agent-run', requestedBy: user.id,
+          afterPersist: (cancelledJob) => agentRunGeneration.persistJobState(user.id, run.projectId, cancelledJob),
+        })
       }
       const latestRun = await productStore.readAgentRun(user.id, runId) ?? run
       const cancelledRun = cancelPersistentAgentRun(latestRun)

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { generationCancelMessage, type GenerationCancelOutcome } from './generationCancelCopy.ts'
+import { generationCancelAssistantMessage, generationCancelMessage, type GenerationCancelOutcome } from './generationCancelCopy.ts'
 
 const outcome = (extra: Partial<GenerationCancelOutcome>): GenerationCancelOutcome => ({
   billing: 'possible', capability: 'local-abort-only', workerReleased: true, code: 'CANCELLED_RESULT_DISCARDED',
@@ -44,4 +44,30 @@ test('缺少判定时退到中性表述，不臆测计费情况', () => {
     const message = generationCancelMessage(undefined, locale)
     assert.doesNotMatch(message, locale === 'en' ? /quota/u : /额度|费用/u)
   }
+})
+
+test('画布助手文案同时说清计费判定与画布留下了什么', () => {
+  // 取消只把任务节点改成 cancelled，提示词与参考组都还在；不说这一点用户会以为要从头再来。
+  const message = generationCancelAssistantMessage(outcome({}), 'zh-CN')
+  assert.match(message, /费用可能已产生/u)
+  assert.match(message, /画布保留/u)
+  const english = generationCancelAssistantMessage(outcome({}), 'en')
+  assert.match(english, /quota may have been consumed/u)
+  assert.match(english, /canvas keeps/u)
+})
+
+test('缺少判定时画布助手文案仍不臆测计费，但仍说明画布保留内容', () => {
+  const message = generationCancelAssistantMessage(undefined, 'zh-CN')
+  assert.doesNotMatch(message, /额度|费用/u)
+  assert.match(message, /画布保留/u)
+})
+
+test('持久回执可以直接当判定用：刷新后仍照实说明费用', () => {
+  // 服务端把回执写在任务上，字段是判定的超集；界面不必再问一次接口。
+  const record = { requestedAt: 1_700, reason: 'user', ...outcome({}) }
+  assert.match(generationCancelAssistantMessage(record, 'zh-CN'), /费用可能已产生/u)
+  assert.match(
+    generationCancelAssistantMessage({ requestedAt: 1, reason: 'workflow-pause', ...outcome({ billing: 'none', code: 'CANCELLED_BEFORE_DISPATCH' }) }, 'zh-CN'),
+    /未消耗生成额度/u,
+  )
 })
