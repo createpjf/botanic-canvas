@@ -439,7 +439,7 @@ export function createCanvasGenerationActions({
         ? cloneGenerationRecipe({ ...inputRecipe, prompt: cleanPrompt, batchCount: normalizedBatchCount, settings: cloneGenerationSettings(settings) })
         : buildGenerationRecipe(document, cleanPrompt, normalizedBatchCount, settings)
       const primaryProduct = primaryGenerationReference(recipe)
-      if (!primaryProduct) return setGenerationError('请在当前生成节点至少连接一张图片作为主参考。')
+      if (recipe.references.length > 0 && !primaryProduct) return setGenerationError('请在当前生成节点至少连接一张图片作为主参考。')
       try {
         await assertGenerationServiceReady()
       } catch (error) {
@@ -459,7 +459,9 @@ export function createCanvasGenerationActions({
       await commitDocument(flow.document, {
         generationStatus: 'uploading', generationProgress: 0, generationError: null,
         expectedCandidateCount: normalizedBatchCount, generationCandidates: [], lastGenerationRequest: preparedRequest,
-        assistantMessage: `正在提交真实任务：主商品「${primaryProduct.name}」与 ${recipe.references.length} 个画布参考。`,
+        assistantMessage: primaryProduct
+          ? `正在提交真实任务：主商品「${primaryProduct.name}」与 ${recipe.references.length} 个画布参考。`
+          : '正在提交真实任务：根据文字描述直接生成。',
       }, { immediate: true })
       if (get().document.id !== document.id) return false
       try {

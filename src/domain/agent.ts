@@ -456,8 +456,8 @@ export function shouldShowBotanicAgentRuntimeFeed(input: {
 }
 
 /**
- * Agent 只有拿到可用图片参考时才允许创建生成工作流。
- * 该领域规则避免对话、文字说明、视频或空结果被误转成空白生成节点。
+ * Agent 的图片首图既支持纯文字生图，也支持带参考图的受控生成；视频仍必须有首帧。
+ * 文字、视频或空结果不会被误当成图片参考写入执行配方。
  */
 export function resolveBotanicAgentWorkflowReferenceNodeIds(
   nodes: CanvasNode[],
@@ -2048,12 +2048,15 @@ export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): Botani
   const isInitialGeneration = intent === 'initial_generation'
   if (!isInitialGeneration && !input.selectedResultNodeId) throw new Error('请先选择一张已生成图片。')
   if (!isInitialGeneration && !input.rootRecipe) throw new Error('当前结果缺少可恢复的生成配方。')
+  const settings = input.rootRecipe?.settings ?? input.settings
+  if (!settings) throw new Error('请先设置生成模型与输出参数。')
   const contextSnapshot = createBotanicAgentContextSnapshot(input.contextSnapshot ?? [])
   const imageContext = contextSnapshot.filter((item) =>
     item.mediaKind === 'image' && (item.kind === '素材' || item.kind === '结果'))
-  if (isInitialGeneration && !imageContext.length) throw new Error('首次生成至少需要一项图片素材或图片结果。')
-  const settings = input.rootRecipe?.settings ?? input.settings
-  if (!settings) throw new Error('请先设置生成模型与输出参数。')
+  const isVideoPlan = botanicAgentPlanMediaKind({ settings }) === 'video'
+  if (isInitialGeneration && isVideoPlan && !imageContext.length) {
+    throw new Error('视频首次生成需要一项图片素材或图片结果作为首帧。')
+  }
   // 提示词只接受画面描述：本轮指令优先，其次继承基准图的配方；都取不到就停下追问，不拿旁白凑数。
   const visualPrompt = botanicAgentVisualGenerationPrompt(instruction)
     || botanicAgentVisualGenerationPrompt(input.rootRecipe?.prompt ?? '')
@@ -2092,7 +2095,7 @@ export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): Botani
     role: input.assetGroup.role,
   })
 
-  const isVideoPlan = botanicAgentPlanMediaKind({ settings }) === 'video'
+  const isDirectTextGeneration = isInitialGeneration && !isVideoPlan && !imageContext.length && !input.assetGroup
   return {
     intent,
     instruction,
@@ -2103,12 +2106,18 @@ export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): Botani
           ? `${intentLabel(intent, locale)}. Generate ${output.count} ${output.count === 1 ? 'video' : 'videos'} of ${settings.duration} seconds from the reference image.`
           : `${intentLabel(intent, locale)}. ${output.mode === 'batch_by_asset'
             ? `Generate ${output.count} ${output.count === 1 ? 'image' : 'images'} from “${input.assetGroup?.name}”`
-            : `Generate ${output.count} new ${output.count === 1 ? 'version' : 'versions'}`}.`
+            : isDirectTextGeneration
+              ? `Generate ${output.count} ${output.count === 1 ? 'image' : 'images'} directly from the prompt`
+              : `Generate ${output.count} new ${output.count === 1 ? 'version' : 'versions'}`}.`
       : intent === 'region_edit' && input.region
         ? `局部重绘${input.region.description ?? '所选区域'}，其余画面保持原样。`
         : isVideoPlan
           ? `${intentLabel(intent)}，以参考图为首帧生成 ${output.count} 条 ${settings.duration} 秒视频。`
-          : `${intentLabel(intent)}，${output.mode === 'batch_by_asset' ? `按「${input.assetGroup?.name}」生成 ${output.count} 张` : `生成 ${output.count} 张新版本`}。`,
+          : `${intentLabel(intent)}，${output.mode === 'batch_by_asset'
+            ? `按「${input.assetGroup?.name}」生成 ${output.count} 张`
+            : isDirectTextGeneration
+              ? `根据文字描述直接生成 ${output.count} 张图片`
+              : `生成 ${output.count} 张新版本`}。`,
     title: locale === 'en'
       ? ({ initial_generation: 'Generate', continue_generation: 'Continue', replace_scene: 'Scene', replace_person: 'Model', replace_product: 'Product', change_pose: 'Pose', change_style: 'Style', batch_variation: 'Variants', redo_from_root: 'Rebuild', region_edit: 'Region edit' } as const)[intent]
       : summarizeBotanicAgentNodeTitle({ intent, constraints }),

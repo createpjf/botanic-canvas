@@ -295,8 +295,8 @@ export type BotanicAgentInitialDraftPlanResult =
   | { kind: 'clarification'; clarification: BotanicAgentClarification }
 
 /**
- * 无基准图（或视频）的首图/首帧计划构建。可能抛出领域错误（如缺少图片上下文），
- * 由编排层收尾运行轨迹并展示。
+ * 无基准图（或视频）的首图/首帧计划构建。图片首图允许纯文字生图；视频仍会在领域层
+ * 校验首帧上下文。其他领域错误由编排层收尾运行轨迹并展示。
  */
 export function buildBotanicAgentInitialDraftPlan(
   draft: Extract<BotanicAgentGenerationDraft, { kind: 'ready' }>,

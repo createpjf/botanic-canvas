@@ -53,15 +53,15 @@ function providerName(model) {
 
 function initialGenerationReferences(run, document) {
   const snapshot = run.plan?.contextSnapshot
-  if (!Array.isArray(snapshot) || !snapshot.length) {
+  if (!Array.isArray(snapshot) || !snapshot.length) return []
+  if (snapshot.some((item) => item.mediaKind === 'image' && item.kind !== '素材' && item.kind !== '结果')) {
     throw new AgentToolRuntimeError('AGENT_INITIAL_REFERENCE_INVALID', 'Agent 首次生成只支持已存入画布的图片素材或图片结果。', 409)
   }
   const imageSnapshot = snapshot.filter((item) => (
     (item.kind === '素材' || item.kind === '结果') && item.mediaKind === 'image'
   ))
-  if (!imageSnapshot.length) {
-    throw new AgentToolRuntimeError('AGENT_INITIAL_REFERENCE_INVALID', 'Agent 首次生成只支持已存入画布的图片素材或图片结果。', 409)
-  }
+  // 纯文字生图没有参考节点；若计划声明了图片上下文，则继续严格校验其权威画布身份。
+  if (!imageSnapshot.length) return []
   const nodesById = new Map((document.nodes ?? []).map((node) => [node.id, node]))
   return orderCompositionReferences(imageSnapshot.map((item, index) => {
     const node = nodesById.get(item.nodeId)
@@ -315,9 +315,11 @@ export function prepareAgentRunExecution({
   const isInitialGeneration = run.plan?.intent === 'initial_generation'
   const resolvedInitialReferences = isInitialGeneration ? initialGenerationReferences(run, document) : undefined
   const parentNode = isInitialGeneration
-    ? (document.nodes ?? []).find((node) => node.id === resolvedInitialReferences[0].nodeId)
+    ? resolvedInitialReferences?.[0]
+      ? (document.nodes ?? []).find((node) => node.id === resolvedInitialReferences[0].nodeId)
+      : undefined
     : (document.nodes ?? []).find((node) => node.id === run.plan?.selectedResultNodeId && node.type === 'result')
-  if (!parentNode) throw new AgentToolRuntimeError('AGENT_PARENT_NOT_FOUND', 'Agent 父结果节点已不存在。', 409)
+  if (!parentNode && !isInitialGeneration) throw new AgentToolRuntimeError('AGENT_PARENT_NOT_FOUND', 'Agent 父结果节点已不存在。', 409)
 
   const nodesById = new Map((document.nodes ?? []).map((node) => [node.id, node]))
   const normalizedModels = (models ?? []).map((model) => typeof model === 'string' ? { id: model, provider: 'openai', mediaKind: 'image' } : model)
