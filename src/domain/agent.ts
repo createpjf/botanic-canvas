@@ -1173,7 +1173,19 @@ export type BotanicAgentMemoryItem = {
   updatedAt: number
   scope?: 'project' | 'workspace' | 'run'
   source?: 'human' | 'review' | 'conversation' | 'import'
+  /** 可信程度。与 `status`（是否生效）是两个概念，不能互相顶替（ADR 0006）。 */
   confidence?: 'confirmed' | 'provisional'
+  /**
+   * 激活态。只有人工保存或带已确认证据的记忆能成为 `active`；模型建议保持
+   * `proposed`。缺省表示这条记忆早于状态字段上线，按 `confidence` 兼容判定。
+   */
+  status?: 'proposed' | 'active' | 'superseded' | 'deleted'
+  /** 支撑这条规则的证据。带 `confirmedAt` 的证据才能支撑激活。 */
+  evidence?: Array<{ kind: 'artifact' | 'review' | 'message' | 'human'; ref: string; confirmedAt?: number }>
+  /** 相互矛盾的记忆标识。冲突必须显式，不能让两条矛盾规则静默进同一个 Plan。 */
+  conflictsWith?: string[]
+  /** 被谁替代。`status: 'superseded'` 时必填。 */
+  supersededBy?: string
   version?: number
   contentHash?: string
 }
@@ -1183,13 +1195,25 @@ export type BotanicAgentSkill = {
   projectId: string
   name: string
   instructions: string
+  /**
+   * 治理状态。由流程产生：`published` 只来自一次可追溯的批准动作（ADR 0006）。
+   * `status` 是它的兼容视图，既有读取路径按 active/archived 过滤。
+   */
+  lifecycle?: 'draft' | 'review' | 'published' | 'deprecated'
   status: 'active' | 'archived'
   createdAt: number
   updatedAt: number
   version?: number
   contentHash?: string
   capabilities?: string[]
+  /** 只在真的批准过时出现；缺省即「尚未批准」，不再默认成已批准。 */
   governance?: 'project-approved' | 'system'
+  publishedBy?: string
+  publishedAt?: number
+  deprecatedBy?: string
+  deprecatedAt?: number
+  /** 历史版本清单，只给身份；内容按版本单独取回，历史 Run 据此说明当时按什么执行。 */
+  versions?: Array<{ version: number; contentHash?: string; updatedAt: number; publishedBy?: string; publishedAt?: number }>
 }
 
 export type BotanicAgentSkillCatalogItem = {
@@ -1398,6 +1422,9 @@ export function createBotanicAgentMemoryItem(input: {
     scope: 'project',
     source: 'human',
     confidence: 'confirmed',
+    // 记忆面板的保存是用户的显式动作，因此直接生效；模型建议走 proposed，
+    // 由服务端校验兜底（未确认来源不得声明 active）。
+    status: 'active',
     version: 1,
   }
 }

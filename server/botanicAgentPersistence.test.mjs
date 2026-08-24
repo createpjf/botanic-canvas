@@ -309,3 +309,71 @@ test('评审消息只保存结构化结论并支持人工决策状态', () => {
     review: { summary: 'x', items: [{ nodeId: 'node-a', branchLabel: 'a', verdict: 'bad' }] },
   }))
 })
+
+test('模型建议不能直接成为生效记忆，人工保存才可以', () => {
+  // 一次对话里的猜测若立刻变成品牌事实，之后每一轮生成都会按它执行。
+  const suggested = validateAgentMemoryEntity({
+    id: 'memory-suggested', kind: 'rule', content: '模型猜的规则', source: 'conversation',
+  })
+  assert.equal(suggested.status, 'proposed')
+
+  const saved = validateAgentMemoryEntity({
+    id: 'memory-saved', kind: 'rule', content: '用户保存的规则', source: 'human',
+  })
+  assert.equal(saved.status, 'active')
+
+  // 声明 active 也不行：没有人工来源也没有已确认证据。
+  assert.throws(
+    () => validateAgentMemoryEntity({
+      id: 'memory-forced', kind: 'rule', content: '硬说自己生效', source: 'review', status: 'active',
+    }),
+    /人工来源或已确认证据/u,
+  )
+})
+
+test('已确认的证据可以支撑非人工来源的记忆生效', () => {
+  const backed = validateAgentMemoryEntity({
+    id: 'memory-evidence', kind: 'approved', content: '评审确认过的方向', source: 'review', status: 'active',
+    evidence: [{ kind: 'review', ref: 'review-1', confirmedAt: 100 }],
+  })
+  assert.equal(backed.status, 'active')
+  assert.deepEqual(backed.evidence, [{ kind: 'review', ref: 'review-1', confirmedAt: 100 }])
+
+  // 未确认的证据不算：它只是「有人提过」，不是「有人认过」。
+  assert.throws(
+    () => validateAgentMemoryEntity({
+      id: 'memory-unconfirmed', kind: 'approved', content: '只是提过', source: 'review', status: 'active',
+      evidence: [{ kind: 'review', ref: 'review-2' }],
+    }),
+    /人工来源或已确认证据/u,
+  )
+})
+
+test('激活态与可信度各自独立表达', () => {
+  // 「未确认但很可信」：状态是建议态，可信度是 confirmed。
+  const item = validateAgentMemoryEntity({
+    id: 'memory-mixed', kind: 'rule', content: '很可能对但还没人确认', source: 'review',
+    confidence: 'confirmed', status: 'proposed',
+  })
+  assert.equal(item.status, 'proposed')
+  assert.equal(item.confidence, 'confirmed')
+})
+
+test('替代关系与冲突关系必须自洽', () => {
+  assert.throws(
+    () => validateAgentMemoryEntity({ id: 'memory-x', kind: 'rule', content: '旧规则', source: 'human', status: 'superseded' }),
+    /必须指明替代者/u,
+  )
+  const superseded = validateAgentMemoryEntity({
+    id: 'memory-x', kind: 'rule', content: '旧规则', source: 'human', status: 'superseded', supersededBy: 'memory-y',
+  })
+  assert.equal(superseded.supersededBy, 'memory-y')
+  assert.throws(
+    () => validateAgentMemoryEntity({ id: 'memory-x', kind: 'rule', content: '规则', source: 'human', conflictsWith: ['memory-x'] }),
+    /不能与自身冲突/u,
+  )
+  assert.deepEqual(
+    validateAgentMemoryEntity({ id: 'memory-x', kind: 'rule', content: '规则', source: 'human', conflictsWith: ['memory-y', 'memory-y'] }).conflictsWith,
+    ['memory-y'],
+  )
+})

@@ -136,9 +136,8 @@ export function productionWorkflowDraftFromCanvas(
           ...(data.settings.duration ? { duration: data.settings.duration } : {}),
           candidates: data.batchCount,
         },
-        // 已知缺口：这里不过滤 provisional 记忆，也不保留版本绑定，因此工作流版本
-        // 无法解释用了哪条规则。归 Memory/Skill 治理（Epic 6）连同 MemoryV2 一并修。
-        brandRules: document.agentMemory.map((item) => item.content),
+        // 品牌规则不在这里派生：它要写进不可变的工作流版本，必须由服务端经唯一的
+        // 记忆选择器从权威文档取（激活过滤 + 版本绑定），客户端这份副本没有资格。
         assetGroupIds,
         confirmationPolicy: 'before-submit',
         recipe,

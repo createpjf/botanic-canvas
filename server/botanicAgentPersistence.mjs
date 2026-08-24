@@ -122,6 +122,13 @@ const memoryKinds = new Set(['rule', 'approved', 'avoid'])
 const memoryScopes = new Set(['project', 'workspace', 'run'])
 const memorySources = new Set(['human', 'review', 'conversation', 'import'])
 const memoryConfidences = new Set(['confirmed', 'provisional'])
+/**
+ * 激活态。与 `confidence`（可信程度）是两个概念，不能互相顶替（ADR 0006）：
+ * 「未确认但很可信」是 `status: 'proposed'` + `confidence: 'confirmed'`。
+ */
+const memoryStatuses = new Set(['proposed', 'active', 'superseded', 'deleted'])
+/** 证据来源。active 规则必须有人工来源或至少一条已确认证据。 */
+const memoryEvidenceKinds = new Set(['artifact', 'review', 'message', 'human'])
 const runStatuses = new Set(['awaiting_confirmation', 'queued', 'executing', 'running', 'completed', 'partial', 'failed', 'cancelled'])
 
 const clone = (value) => structuredClone(value)
@@ -306,13 +313,39 @@ export function validateAgentMemoryEntity(value, { now = Date.now() } = {}) {
   if (!memoryScopes.has(scope)) invalid('Agent 记忆作用域无效。')
   if (!memorySources.has(source)) invalid('Agent 记忆来源无效。')
   if (!memoryConfidences.has(confidence)) invalid('Agent 记忆可信度无效。')
+  const evidence = (Array.isArray(memory.evidence) ? memory.evidence : []).slice(0, 12).map((entry) => {
+    const item = object(entry, 'Agent 记忆证据')
+    if (!memoryEvidenceKinds.has(item.kind)) invalid('Agent 记忆证据类型无效。')
+    return {
+      kind: item.kind,
+      ref: text(item.ref, 'Agent 记忆证据引用', 240),
+      ...(item.confirmedAt === undefined ? {} : { confirmedAt: timestamp(item.confirmedAt, now) }),
+    }
+  })
+  // 只有人工保存或已确认证据能支撑 active。模型建议保持建议态 —— 否则一次对话里的
+  // 猜测会立刻变成品牌事实，之后每一轮生成都按它执行。
+  const humanBacked = source === 'human' || evidence.some((item) => item.confirmedAt !== undefined)
+  const status = memory.status === undefined
+    ? (humanBacked ? 'active' : 'proposed')
+    : memory.status
+  if (!memoryStatuses.has(status)) invalid('Agent 记忆状态无效。')
+  if (status === 'active' && !humanBacked) {
+    invalid('Agent 记忆需要人工来源或已确认证据才能生效。')
+  }
+  const supersededBy = memory.supersededBy === undefined
+    ? undefined
+    : text(memory.supersededBy, 'Agent 记忆替代者', 160)
+  if (status === 'superseded' && !supersededBy) invalid('被替代的 Agent 记忆必须指明替代者。')
   const computedContentHash = createHash('sha256').update(content).digest('base64url')
   const contentHash = memory.contentHash === undefined
     ? computedContentHash
     : text(memory.contentHash, 'Agent 记忆内容摘要', 200)
   if (contentHash !== computedContentHash) invalid('Agent 记忆内容摘要与内容不一致。')
+  const id = text(memory.id, 'Agent 记忆标识', 160)
+  const conflictsWith = uniqueTextList(memory.conflictsWith, 'Agent 记忆冲突关系', 12)
+  if (conflictsWith.includes(id)) invalid('Agent 记忆不能与自身冲突。')
   return {
-    id: text(memory.id, 'Agent 记忆标识', 160),
+    id,
     kind: memory.kind,
     content,
     sourceNodeIds: uniqueTextList(memory.sourceNodeIds, 'Agent 记忆来源节点', 12),
@@ -321,6 +354,10 @@ export function validateAgentMemoryEntity(value, { now = Date.now() } = {}) {
     scope,
     source,
     confidence,
+    status,
+    ...(evidence.length ? { evidence } : {}),
+    ...(conflictsWith.length ? { conflictsWith } : {}),
+    ...(supersededBy ? { supersededBy } : {}),
     version,
     contentHash,
   }

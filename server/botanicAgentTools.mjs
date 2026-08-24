@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { AgentToolRuntimeError, createAgentToolRegistry } from './agentToolRuntime.mjs'
 import { botanicCreativeBriefFieldIds } from './botanicCreativeBrief.mjs'
 import { botanicAgentVariationClarificationFieldIds } from './botanicAgentVariations.mjs'
@@ -51,9 +52,26 @@ export function botanicAgentSkillRisk(skill) {
   }, 'read')
 }
 
+/**
+ * 内置 Skill 的版本与内容摘要。内容随代码发布，因此版本固定为 1，摘要按内容算 ——
+ * Run 绑定里 version 与 contentHash 是必填（ADR 0006），内置 Skill 不能例外：
+ * 留一个「系统 Skill 免填」的口子等于允许出现无法重放的 Run。
+ */
+const builtInSkillVersion = 1
+
+function builtInSkillContentHash(instructions) {
+  return createHash('sha256').update(instructions).digest('base64url')
+}
+
 export function botanicAgentBuiltInSkill(skillId) {
   const skill = skillCatalog[skillId]
-  return skill ? { id: skillId, name: skill.label, instructions: skill.instructions } : undefined
+  return skill ? {
+    id: skillId,
+    name: skill.label,
+    instructions: skill.instructions,
+    version: builtInSkillVersion,
+    contentHash: builtInSkillContentHash(skill.instructions),
+  } : undefined
 }
 
 export function botanicAgentSystemSkills() {

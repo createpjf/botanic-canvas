@@ -327,3 +327,32 @@ test('暂停只收回尚未派发的任务，不丢弃已在 Provider 侧执行�
   // 排队中的任务不需要广播就已经停住；只有它被取消，不该有第二次广播。
   assert.deepEqual(broadcast.map((event) => event.id), ['job-queued'])
 })
+
+test('发布时品牌规则由服务端从权威文档派生，客户端提交的那份被丢弃', () => {
+  // 客户端那份绕过了激活过滤，也不带版本绑定；不可变定义不能采信它（ADR 0006）。
+  return (async () => {
+    const initialDocument = {
+      id: 'project-a',
+      nodes: [{ id: 'generate-a', type: 'generate', data: { kind: 'generate' } }],
+      agentMemory: [
+        { id: 'memory-active', kind: 'rule', content: '主色只用品牌绿', sourceNodeIds: [], source: 'human', confidence: 'confirmed', version: 3, contentHash: 'hash-green', updatedAt: 300 },
+        { id: 'memory-provisional', kind: 'rule', content: '模型猜的规则', sourceNodeIds: [], source: 'conversation', confidence: 'provisional', updatedAt: 400 },
+      ],
+      productionWorkflows: [],
+      productionWorkflowRuns: [],
+    }
+    const { handler, responses } = harness(
+      [{ id: 'workflow-a', name: '品牌首图', definition: { ...definition, brandRules: ['客户端伪造的规则'] }, source }],
+      undefined,
+      { initialDocument },
+    )
+    await handler({ method: 'POST' }, {}, new URL('http://test'), workflowCollection)
+
+    assert.equal(responses.at(-1).status, 201)
+    const published = responses.at(-1).body.workflow.versions[0].definition
+    assert.deepEqual(published.brandRules, ['主色只用品牌绿'])
+    assert.deepEqual(published.brandRuleBindings, [
+      { id: 'memory-active', version: 3, contentHash: 'hash-green', selectionReason: '用户确认的常驻项目规则' },
+    ])
+  })()
+})

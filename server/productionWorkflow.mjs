@@ -1,5 +1,6 @@
 // @ts-check
 import { createHash } from 'node:crypto'
+import { memoryBindingSnapshot } from './botanicAgentMemory.mjs'
 
 /**
  * 操作者与时间注入。运行时由 `requiredText` 校验 `actorId` 必填，这里声明为可选
@@ -25,6 +26,24 @@ function requiredText(value, label, maximum = 2_000) {
   return value.trim()
 }
 
+/**
+ * 工作流版本里的品牌规则由**服务端**从权威文档派生，不采信客户端提交的那一份。
+ *
+ * 这里是「项目内只允许一条 Memory 读取路径」的落点之一（ADR 0006）：客户端草稿
+ * 曾直接 `agentMemory.map(item => item.content)`，把未确认的记忆写进了不可变定义，
+ * 而且只存内容不存版本 —— 版本无法解释自己用了哪条规则的哪个版本。
+ *
+ * 规则内容与绑定分开存：内容供 Prompt 构造（Epic 7 消费），绑定用于解释与追溯。
+ */
+export function resolveWorkflowBrandRules(document) {
+  const bindings = memoryBindingSnapshot(document?.agentMemory ?? [], { limit: 30 })
+  const byId = new Map((document?.agentMemory ?? []).map((item) => [item?.id, item]))
+  return {
+    brandRules: bindings.map((binding) => byId.get(binding.id)?.content).filter((content) => typeof content === 'string' && content.trim()),
+    brandRuleBindings: bindings,
+  }
+}
+
 function normalizeDefinition(value) {
   const definition = clone(value ?? {})
   definition.prompt = requiredText(definition.prompt, '工作流 Prompt', 12_000)
@@ -33,6 +52,14 @@ function normalizeDefinition(value) {
   definition.output = clone(definition.output ?? {})
   definition.brandRules = Array.isArray(definition.brandRules)
     ? definition.brandRules.map((rule) => requiredText(rule, '品牌规则', 1_000))
+    : []
+  definition.brandRuleBindings = Array.isArray(definition.brandRuleBindings)
+    ? definition.brandRuleBindings.map((binding) => ({
+      id: requiredText(binding?.id, '品牌规则标识', 160),
+      ...(Number.isInteger(binding?.version) ? { version: binding.version } : {}),
+      ...(binding?.contentHash ? { contentHash: requiredText(binding.contentHash, '品牌规则内容摘要', 200) } : {}),
+      ...(binding?.selectionReason ? { selectionReason: requiredText(binding.selectionReason, '品牌规则使用原因', 240) } : {}),
+    }))
     : []
   definition.assetGroupIds = Array.isArray(definition.assetGroupIds)
     ? [...new Set(definition.assetGroupIds.map((id) => requiredText(id, '素材组', 160)))]

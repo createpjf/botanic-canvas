@@ -668,3 +668,51 @@ test('读取 Turn 时按权威边反查这次回合确认出的 Run', async () =
   assert.equal(responses.at(-1)?.body.turn.lastSequence, 4)
   assert.deepEqual(queried, [{ userId: 'user-1', projectId: 'project-1', turnId: 'turn-1' }])
 })
+
+test('Run 绑定固定 Skill 版本与内容摘要，内置 Skill 也不例外', async () => {
+  // 缺版本或摘要就等于允许出现无法重放的 Run（ADR 0006）。
+  const stored = []
+  const responses = []
+  const handler = createAgentRouteHandler({
+    config: {},
+    productStore: {
+      projectAccess: async () => ({ exists: true, role: 'owner' }),
+      readAgentRun: async () => undefined,
+      putAgentRun: async (_userId, run) => { stored.push(run); return run },
+      readAgentState: async () => ({ memory: [] }),
+      listAgentSkills: async () => [{
+        id: 'skill-project', projectId: runInput.projectId, name: '项目 Skill',
+        instructions: '锁定人物', lifecycle: 'published', status: 'active',
+        version: 4, contentHash: 'hash-skill-4',
+      }],
+    },
+    json: (_response, status, body) => { responses.push({ status, body }); return true },
+    readJson: async () => ({
+      ...runInput,
+      plan: {
+        ...runInput.plan,
+        // 客户端只提交身份；版本与摘要由服务端在确认瞬间固定。
+        skillBindings: [{ id: 'skill-project' }, { id: 'controlled_edit' }],
+      },
+    }),
+    requireUser: async () => ({ id: 'user-1' }),
+    publishAgentRunUpdated: async () => {},
+  })
+
+  await handler(
+    { method: 'POST', headers: { 'idempotency-key': 'agent-run-skill-binding' } },
+    {},
+    new URL('http://botanic.test/api/agent-runs'),
+    {},
+    'request-binding',
+  )
+
+  assert.equal(responses.at(-1)?.status, 201)
+  const bindings = stored.at(-1)?.plan?.skillBindings ?? []
+  assert.deepEqual(bindings.map((binding) => binding.id), ['skill-project', 'controlled_edit'])
+  assert.equal(bindings[0].version, 4)
+  assert.equal(bindings[0].contentHash, 'hash-skill-4')
+  // 内置 Skill 的版本与摘要随代码确定，同样写进绑定。
+  assert.equal(bindings[1].version, 1)
+  assert.ok(bindings[1].contentHash)
+})

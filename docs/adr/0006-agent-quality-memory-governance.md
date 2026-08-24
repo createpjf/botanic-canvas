@@ -85,6 +85,23 @@ Skill 有 `draft` → `review` → `publish` → `deprecate` 生命周期，**�
 
 ## 修订记录
 
+### 2026-08-24（Memory 与 Skill 部分实施）
+
+Memory 与 Skill 治理已落地（评审部分仍归 Epic 5）：
+
+- **单一读取路径。** 实施前实际有三条：规划输入就地 `filter(confidence !== 'provisional')`、`project_memory_search` 走选择器、生产工作流草稿在**客户端**直接 `agentMemory.map(item => item.content)`。现在三条都经 `selectBotanicAgentMemory`；工作流品牌规则改由服务端在发布时从权威文档派生，客户端提交的那一份被丢弃，并同时写入 `brandRuleBindings`（id/version/contentHash/selectionReason）。
+- **检索改为分档，不再用总分阈值。** 原实现 confirmed(4) + human(2) + project(1) = 7 分，阈值 8，字面命中单独给 8 —— 等价于「指令里必须出现规则原文」，置信度与来源权重是装饰品。现在分 `matched` / `standing` / `weak` 三档，`standing`（生效且人工来源）不因未命中而淘汰；`zeroHit` 与 `matchedQuery` 分开返回，「没命中但给了常驻规则」不会被说成「找到了」。
+- **status 与 confidence 分离**，历史记忆无 `status` 时按 `confidence` 兼容判定。写入侧强制「active 必须有人工来源或带 `confirmedAt` 的证据」，非人工来源默认落 `proposed`，强行声明 active 被拒绝。
+- **冲突显式且对称**：任一侧声明即成立，排序在前者胜出，落选记录在 `conflicts` 里并随工具结果返回 —— 静默丢弃会让「这条规则为什么没生效」无从解释。
+- **Skill 生命周期由流程产生。** `lifecycle: draft/review/published/deprecated`，`published` 必须带批准人与时间（当前唯一创建入口是用户确认过的 Agent 行动，路由把确认者作为批准人传入）；`governance` 只在真的批准过时出现，不再默认成 `project-approved`。新增 `updateAgentSkill` 追加新版本而非原位改写，`agentSkillVersion` 按版本取回历史指令，`publicAgentSkill` 暴露版本清单（只给身份）。
+- **Run 绑定的 version 与 contentHash 必填**，内置 Skill 也不例外：其版本随代码固定为 1、摘要按内容计算。缺任一项在确认时就以 `*_BINDING_UNREPLAYABLE` 失败，而不是存下一个无法重放的 Run。
+
+三点与原文不同：
+
+1. **`confidence` 保持二值枚举，未改成数值。** 原文 §8.6 写 `confidence: number`，但本 ADR 真正要解决的问题是「未确认但很可信无法表达」，这已由 `status: 'proposed'` + `confidence: 'confirmed'` 表达。改成数值需要迁移全部历史数据与每一处读取，且没有消费方需要连续值。
+2. **`scope` 未扩成 `project|brand|product|channel|user`。** 现有三值 `project|workspace|run` 是**包含范围**，原文那五个是**主体维度**，两者是不同的轴；直接合并成一个七值枚举会重犯 status/confidence 那类错误。等到检索真的需要按主体过滤时，应新增独立字段而不是扩这个枚举。
+3. **`dimension` 与 Skill Manifest 的输入/输出 Schema、Tool allowlist、依赖、测试未实现**：当前没有任何消费方，先加字段只会得到一批写而不读的数据。归 Epic 7（工作流消费品牌规则）与 Epic 11（Subagent 需要 Skill Schema）。
+
 ### 2026-08-24
 
 原文方向正确但只写了意图，没有给出实现所需的设计决策，而实测该 ADR 的持久化部分**完成度为 0**：

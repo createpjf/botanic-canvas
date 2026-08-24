@@ -119,9 +119,10 @@ test('可选来源列举全部合格生成节点，并排除未完成的 Run', (
   assert.equal(options[1].label, '纯文字草稿')
 })
 
-test('已知缺口：brandRules 目前不过滤未确认记忆，也不保留版本绑定（Epic 6 修）', () => {
-  // 钉住现状，避免在 MemoryV2 落地前有人误以为这条路径已经安全。
-  // 正确行为应是只取 confirmed 且携带 version/contentHash 绑定。
+test('客户端草稿不再自带品牌规则：它由服务端经唯一的记忆选择器派生', () => {
+  // 之前这里直接 agentMemory.map(item => item.content)，把未确认的猜测也写进了
+  // 不可变定义，而且只存内容不存版本 —— 版本无法解释自己用了哪条规则。
   const draft = draftOf(document, 'generate-a')
-  assert.deepEqual(draft.definition.brandRules, ['保持植物学留白', '未确认的猜测'])
+  assert.equal(draft.definition.brandRules, undefined)
+  assert.equal(draft.definition.brandRuleBindings, undefined)
 })

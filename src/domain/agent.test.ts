@@ -1181,7 +1181,8 @@ test('项目创作记忆保存类型、来源节点并去重', () => {
   }), {
     id: 'memory-brand', kind: 'rule', content: '瓶身标签、Logo 比例与主色不可改变。',
     sourceNodeIds: ['result-v03', 'asset-product'], createdAt: 100, updatedAt: 100,
-    scope: 'project', source: 'human', confidence: 'confirmed', version: 1,
+    // 记忆面板的保存是用户显式动作，直接生效；模型建议走 proposed。
+    scope: 'project', source: 'human', confidence: 'confirmed', status: 'active', version: 1,
   })
 })
 

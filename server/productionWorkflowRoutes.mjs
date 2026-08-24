@@ -6,6 +6,7 @@ import {
   productionWorkflowVersion,
   productionWorkflowVersionProvenance,
   resolveProductionWorkflowRecipe,
+  resolveWorkflowBrandRules,
   resolveProductionWorkflowSource,
   retryFailedWorkflowItems,
   transitionProductionWorkflowRun,
@@ -182,7 +183,9 @@ export function createProductionWorkflowRouteHandler({
               id: body.id,
               projectId,
               name: body.name,
-              definition: body.definition,
+              // 品牌规则由服务端从权威文档经同一个记忆选择器派生，客户端提交的那一份
+              // 被丢弃：它绕过了激活过滤，也不带版本绑定（ADR 0006）。
+              definition: { ...body.definition, ...resolveWorkflowBrandRules(document) },
               source,
               previous: existing,
             }, { actorId: user.id })

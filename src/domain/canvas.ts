@@ -450,7 +450,13 @@ export type ProductionWorkflowDefinition = {
   model: string
   settings: Record<string, unknown>
   output: Record<string, unknown>
-  brandRules: string[]
+  /**
+   * 品牌规则由服务端从权威文档经唯一的记忆选择器派生（ADR 0006），发布请求不携带；
+   * 因此在客户端草稿里是可选的，读取已发布版本时才一定有。
+   */
+  brandRules?: string[]
+  /** 规则绑定：说明用了哪条规则的哪个版本、为什么用。同由服务端派生。 */
+  brandRuleBindings?: Array<{ id: string; version?: number; contentHash?: string; selectionReason?: string }>
   assetGroupIds: string[]
   confirmationPolicy: string
   recipe?: Record<string, unknown>

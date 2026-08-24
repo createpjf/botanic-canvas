@@ -3,7 +3,7 @@ import { BotanicAgentChatError, chatWithBotanicAgent, validateBotanicAgentChatIn
 import { reviewBotanicAgentRunResults } from './botanicAgentReview.mjs'
 import { normalizeBotanicAgentLocale } from './agentInstructions.mjs'
 import { resolveBotanicAgentTurn, validateBotanicAgentTurnInput } from './botanicAgentTurn.mjs'
-import { createAgentSkill, publicAgentSkill, validateAgentSkillCreation } from './botanicAgentSkill.mjs'
+import { createAgentSkill, isUsableAgentSkill, publicAgentSkill, validateAgentSkillCreation } from './botanicAgentSkill.mjs'
 import { cancelPersistentAgentRun, createPersistentAgentRun, prepareAgentBranchRetry, publicAgentRun, validateAgentRunCreation } from './botanicAgentRun.mjs'
 import { AgentToolRuntimeError, executeConfirmedAgentAction } from './agentToolRuntime.mjs'
 import { botanicAgentBuiltInSkill, botanicAgentSystemSkills, createBotanicAgentActionToolRegistry } from './botanicAgentTools.mjs'
@@ -17,6 +17,7 @@ import { buildAgentExecutionTrace } from './agentExecutionTrace.mjs'
 import { actionArgumentsHash, agentToolPermission, assertFreshActionApproval, createActionApprovalToken } from './agentActionGovernance.mjs'
 import { agentTurnIdForIdempotency, agentTurnLastSequence, createBotanicAgentTurnRuntime, publicAgentTurn } from './botanicAgentTurnRuntime.mjs'
 import { createLocalCancelRegistry } from './localCancelRegistry.mjs'
+import { selectBotanicAgentMemory } from './botanicAgentMemory.mjs'
 import { compareBotanicAgentRunBranches } from './botanicAgentCompare.mjs'
 import { createForkedAgentRunInput, forkedAgentRunIdForIdempotency } from './botanicAgentFork.mjs'
 
@@ -182,9 +183,12 @@ export function createAgentRouteHandler({
     const skillsById = new Map((projectSkills ?? []).map((skill) => [skill.id, skill]))
     const bind = (bindings, catalog, label) => (bindings ?? []).map((binding) => {
       const current = catalog.get(binding.id)
-      // 系统 Skill 没有项目版本记录；项目 Memory/Skill 必须在确认瞬间仍存在且 hash 一致。
+      // 项目 Memory/Skill 必须在确认瞬间仍存在且 hash 一致。内置 Skill 没有项目版本
+      // 记录，但版本与摘要随代码确定，同样要写进绑定 —— 留「系统 Skill 免填」的口子
+      // 等于允许出现无法重放的 Run（ADR 0006）。
       if (!current) {
-        if (label === 'Skill' && botanicAgentBuiltInSkill(binding.id)) return binding
+        const builtIn = label === 'Skill' ? botanicAgentBuiltInSkill(binding.id) : undefined
+        if (builtIn) return { ...binding, version: builtIn.version, contentHash: builtIn.contentHash }
         const error = new Error(`${label}「${binding.id}」已不存在或未获项目授权。`)
         error.statusCode = 409
         error.code = `${label === 'Skill' ? 'AGENT_SKILL' : 'AGENT_MEMORY'}_BINDING_STALE`
@@ -202,11 +206,20 @@ export function createAgentRouteHandler({
         error.code = `${label === 'Skill' ? 'AGENT_SKILL' : 'AGENT_MEMORY'}_BINDING_STALE`
         throw error
       }
-      return {
+      const bound = {
         ...binding,
         version: Number(current.version ?? 1),
         ...(current.contentHash ? { contentHash: current.contentHash } : {}),
       }
+      // 版本与内容摘要在 Run 绑定里是必填。缺任一项都说明这条绑定无法重放，
+      // 与其存下一个不可重放的 Run，不如就地失败。
+      if (!Number.isInteger(bound.version) || !bound.contentHash) {
+        const error = new Error(`${label}「${binding.id}」缺少可重放的版本与内容摘要。`)
+        error.statusCode = 409
+        error.code = `${label === 'Skill' ? 'AGENT_SKILL' : 'AGENT_MEMORY'}_BINDING_UNREPLAYABLE`
+        throw error
+      }
+      return bound
     })
     return {
       ...input,
@@ -401,11 +414,15 @@ export function createAgentRouteHandler({
       const input = {
         ...validatedInput,
         // 规划器只能读取服务端当前项目记忆；客户端传入的临时/推测记忆
-        // 不具备品牌事实资格，不能绕过 Memory V2 的 confirmed 边界。
-        projectMemory: (projectState?.memory ?? [])
-          .filter((memory) => memory?.confidence !== 'provisional')
-          .slice(0, 30)
-          .map((memory) => ({ id: memory.id, kind: memory.kind, content: memory.content })),
+        // 不具备品牌事实资格，不能绕过 Memory V2 的激活边界。
+        //
+        // 走同一个选择器而不是就地过滤：项目内只允许一条记忆读取路径（ADR 0006），
+        // 就地过滤会让激活、范围与墓碑规则在这条路径上各自演化。
+        projectMemory: selectBotanicAgentMemory(projectState?.memory ?? [], {
+          query: validatedInput.instruction,
+          contextNodeIds: (validatedInput.contextSnapshot ?? []).map((item) => item.nodeId),
+          limit: 30,
+        }).items.map((memory) => ({ id: memory.id, kind: memory.kind, content: memory.content })),
         availableMcpTools: (config.agentMcpTools ?? []).map(({ server, tool }) => ({ server, tool })),
         projectSkills: projectSkills.map(plannerSkillInput),
       }
@@ -840,7 +857,7 @@ export function createAgentRouteHandler({
             const builtIn = botanicAgentBuiltInSkill(skillId)
             if (builtIn) return { skill: builtIn }
             const skills = await productStore.listAgentSkills(user.id, projectId) ?? []
-            const skill = skills.find((candidate) => candidate.id === skillId && candidate.status === 'active')
+            const skill = skills.find((candidate) => candidate.id === skillId && isUsableAgentSkill(candidate))
             if (!skill) throw new AgentToolRuntimeError('SKILL_NOT_ALLOWED', 'Skill 不在当前项目的允许列表。', 403)
             return { skill: {
               id: skill.id,
@@ -853,7 +870,9 @@ export function createAgentRouteHandler({
           },
           createSkill: async (argumentsValue) => {
             const input = validateAgentSkillCreation({ projectId, ...argumentsValue })
-            const skill = createAgentSkill(input, { ownerId: user.id })
+            // 批准人是确认这次行动的用户：Skill 只能由用户确认的创建动作进入
+            // published，「已批准」不能凭创建这个动作本身成立（ADR 0006）。
+            const skill = createAgentSkill(input, { ownerId: user.id, approvedBy: user.id })
             return { skill: publicAgentSkill(await productStore.putAgentSkill(user.id, skill)) }
           },
           mcpTools: configuredMcpTools,
