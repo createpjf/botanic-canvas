@@ -25,6 +25,9 @@ export default defineConfig({
       output: {
         // 稳定的基础依赖单独缓存；画布依赖升级或业务代码更新时，不必让浏览器重下全部首屏脚本。
         manualChunks(id) {
+          // CanvasEditorViews 包含节点渲染器与生成器交互，单独拆出后避免工作台入口超过
+          // Vite 的 500 kB 提示阈值，同时保留 CanvasWorkspace 的按需加载边界。
+          if (id.includes('src/features/canvas/CanvasEditorViews')) return 'canvas-editor'
           if (!id.includes('node_modules')) return undefined
           if (id.includes('@xyflow/react')) return 'canvas-flow'
           if (id.includes('@supabase/')) return 'supabase-client'
