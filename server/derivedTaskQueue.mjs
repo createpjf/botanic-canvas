@@ -17,6 +17,9 @@ const defaultJobOptions = {
 export const DERIVED_TASK_KINDS = Object.freeze([
   // 回收超过租约未推进的非终态 Turn（ADR 0004）。
   'turn.reclaim',
+  // 对已到执行终态的 Run 做结果评审（ADR 0006）。评审是派生工作：它不拥有业务权威，
+  // 失败不得回滚已成功的 Run 或 Job。
+  'review.run',
 ])
 
 const kindSet = new Set(DERIVED_TASK_KINDS)

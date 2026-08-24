@@ -1,3 +1,4 @@
+import { readMediaSpecFromDataUrl } from './mediaSpec.mjs'
 import { mapWithConcurrency } from './concurrency.mjs'
 import { buildImageProviderPrompt, gptImage2EditQuality, orderCompositionReferences } from './generationComposition.mjs'
 import {
@@ -501,6 +502,9 @@ export async function generateImages(job, {
         id: `${jobId}-output-${index + 1}`,
         image: await persistImage(image),
         mediaKind: 'image',
+        // 实测规格随输出落库：评审第 1 层（比例、分辨率、完整性）必须确定性验证，
+        // 没有它就只能判「无法验证」（ADR 0006）。在这里读是因为只有此处握有字节。
+        spec: readMediaSpecFromDataUrl(image.dataUrl),
         revisedPrompt: typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined,
       }
       await onVariant?.({ index, status: 'succeeded', output })

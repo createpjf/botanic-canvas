@@ -44,9 +44,11 @@ test('MiniMax image-01 一次请求稳定返回 N 个独立图片输出', async 
     },
   })
 
+  // 夹具是 4 字节假数据，认不出文件头：规格只报字节数与声明类型，不猜尺寸 ——
+  // 评审第 1 层据此判「无法验证」，而不是默认通过。
   assert.deepEqual(result.outputs, [
-    { id: 'job-image-output-1', image: '/api/media/1', mediaKind: 'image' },
-    { id: 'job-image-output-2', image: '/api/media/2', mediaKind: 'image' },
+    { id: 'job-image-output-1', image: '/api/media/1', mediaKind: 'image', spec: { byteSize: 4, declaredMimeType: 'image/jpeg' } },
+    { id: 'job-image-output-2', image: '/api/media/2', mediaKind: 'image', spec: { byteSize: 4, declaredMimeType: 'image/jpeg' } },
   ])
   assert.equal(result.missingOutputCount, 0)
   assert.deepEqual(persisted.map((media) => media.mimeType), ['image/jpeg', 'image/jpeg'])
@@ -110,6 +112,7 @@ test('MiniMax H3 提交异步任务、轮询完成并持久化 MP4 输出', asyn
     id: 'job-video-output-1',
     image: '/api/media/video-1',
     mediaKind: 'video',
+    spec: { byteSize: persisted[0].buffer.length, declaredMimeType: 'video/mp4' },
   }])
   assert.equal(result.missingOutputCount, 0)
   assert.equal(persisted[0].mimeType, 'video/mp4')

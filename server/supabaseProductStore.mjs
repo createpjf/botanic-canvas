@@ -1114,6 +1114,42 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       }))
     },
 
+    async putAgentReviewTask(userId, task) {
+      const role = await memberRole(task.projectId, userId)
+      assertProjectPermission(role, 'read', 'PROJECT_READ_FORBIDDEN')
+      const payload = { ...clone(task), ownerId: task.ownerId ?? userId, updatedAt: Number(task.updatedAt) || now() }
+      const { error } = await supabaseRequest(() => supabase.from('agent_review_tasks').upsert({
+        id: task.id, owner_id: payload.ownerId, project_id: task.projectId,
+        run_id: task.runId, status: task.status, updated_at: payload.updatedAt, payload,
+      }))
+      fail(error)
+      return payload
+    },
+
+    async readAgentReviewTask(userId, taskId) {
+      const { data, error } = await supabaseRequest(() => supabase.from('agent_review_tasks')
+        .select('payload, project_id').eq('id', taskId).maybeSingle())
+      fail(error)
+      if (!data) return undefined
+      return await memberRole(data.project_id, userId) ? clone(data.payload) : undefined
+    },
+
+    async listAgentReviewTasksForRun(userId, projectId, runId) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const { data, error } = await supabaseRequest(() => supabase.from('agent_review_tasks').select('payload')
+        .eq('project_id', projectId).eq('run_id', runId).order('updated_at', { ascending: false }).limit(50))
+      fail(error)
+      return (data ?? []).map((row) => clone(row.payload))
+    },
+
+    async listPendingAgentReviewTasks({ olderThan = now(), limit = 25 } = {}) {
+      const { data, error } = await supabaseRequest(() => supabase.from('agent_review_tasks').select('payload')
+        .in('status', ['queued', 'running']).lte('updated_at', olderThan)
+        .order('updated_at', { ascending: true }).limit(Math.max(1, Math.min(limit, 200))))
+      fail(error)
+      return (data ?? []).map((row) => clone(row.payload))
+    },
+
     async putAgentReview(userId, review) {
       const role = await memberRole(review.projectId, userId)
       assertProjectPermission(role, 'read', 'PROJECT_READ_FORBIDDEN')

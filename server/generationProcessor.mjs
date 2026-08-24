@@ -21,6 +21,9 @@ export function createGenerationProcessor({
   generate = generateMedia,
   // 本进程正在执行的任务的中止句柄。跨实例取消信号抵达后据此就地 abort。
   cancelRegistry,
+  // 评审是派生工作，只在 Run 到终态时请求一次；缺注入时不评审，也不影响生成。
+  ensureReviewTask,
+  enqueueDerivedTask,
 }) {
   const observeRun = (job, event) => {
     if (!job.agentRun) return
@@ -110,9 +113,27 @@ export function createGenerationProcessor({
     if (!job.agentRun || !publishAgentRunUpdated) return
     try {
       const run = await productStore.readAgentRunForWorker(job.agentRun.runId)
-      if (run) await publishAgentRunUpdated({ projectId: run.projectId, run: publicAgentRun(run) })
+      if (!run) return
+      await publishAgentRunUpdated({ projectId: run.projectId, run: publicAgentRun(run) })
+      await requestReviewForTerminalRun(run)
     } catch (caught) {
       console.error(`[agent-run] progress publish deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
+    }
+  }
+
+  /**
+   * Run 一到执行终态就请求评审（ADR 0006）。
+   *
+   * 评审是派生工作：入队失败只记日志，不能影响这次生成的落库结果，Run 的执行终态
+   * 也不等待评审完成。真正漏掉的任务由 `review.run` 周期清扫兜底。
+   */
+  async function requestReviewForTerminalRun(run) {
+    if (!enqueueDerivedTask || !['completed', 'partial'].includes(run.status)) return
+    try {
+      const task = await ensureReviewTask?.(run.ownerId, run.id)
+      if (task) await enqueueDerivedTask('review.run', task.id, { taskId: task.id, ownerId: run.ownerId })
+    } catch (caught) {
+      console.error(`[agent-review] enqueue deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
     }
   }
 

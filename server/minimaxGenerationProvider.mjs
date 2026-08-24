@@ -1,3 +1,4 @@
+import { readMediaSpec } from './mediaSpec.mjs'
 import { mapWithConcurrency } from './concurrency.mjs'
 import { compositionBrandGuard, creativeExecutionContract } from './generationComposition.mjs'
 import { GenerationError } from './generationProvider.mjs'
@@ -110,14 +111,19 @@ export async function generateMiniMaxImages(job, {
     const body = await response.json().catch(() => null)
     if (!response.ok || body?.base_resp?.status_code > 0) throw miniMaxError(response, body, '图像')
     const images = Array.isArray(body?.data?.image_base64) ? body.data.image_base64 : []
-    const persisted = await Promise.allSettled(images.slice(0, pendingIndexes.length).map(async (value, resultIndex) => ({
-      index: pendingIndexes[resultIndex],
-      output: {
-        id: `${jobId}-output-${pendingIndexes[resultIndex] + 1}`,
-        image: await persistMedia(imageMedia(value)),
-        mediaKind: 'image',
-      },
-    })))
+    const persisted = await Promise.allSettled(images.slice(0, pendingIndexes.length).map(async (value, resultIndex) => {
+      const media = imageMedia(value)
+      return {
+        index: pendingIndexes[resultIndex],
+        output: {
+          id: `${jobId}-output-${pendingIndexes[resultIndex] + 1}`,
+          image: await persistMedia(media),
+          mediaKind: 'image',
+          // 实测规格随输出落库，供评审第 1 层确定性验证（ADR 0006）。
+          spec: readMediaSpec(media.buffer, media.mimeType),
+        },
+      }
+    }))
     const outputs = new Map(previousOutputs)
     for (const result of persisted) {
       if (result.status === 'fulfilled') {
@@ -283,6 +289,8 @@ export async function generateMiniMaxVideos(job, {
         id: `${jobId}-output-${index + 1}`,
         image: await persistMedia(media),
         mediaKind: 'video',
+        // 视频的时长与容器同样属于评审第 1 层，不因「是视频」就跳过。
+        spec: readMediaSpec(media.buffer, media.mimeType),
       }
       await onVariant?.({ index, status: 'succeeded', output })
       return { status: 'fulfilled', value: { index, output } }

@@ -6,6 +6,7 @@ import { writeAgentRunOperationalEvent } from './agentRunObservability.mjs'
 import { createProviderHealthMonitor } from './providerHealthMonitor.mjs'
 import { createDerivedTaskQueue, createDerivedTaskWorker } from './derivedTaskQueue.mjs'
 import { createAgentTurnSweep } from './agentTurnSweep.mjs'
+import { createAgentReviewService } from './agentReviewService.mjs'
 import { createAgentTurnResumer } from './agentTurnResume.mjs'
 import { createBotanicAgentTurnRuntime } from './botanicAgentTurnRuntime.mjs'
 import { createLocalCancelRegistry } from './localCancelRegistry.mjs'
@@ -36,6 +37,14 @@ const cancelSubscriber = await createAgentRunEventSubscriber(config.redisUrl, ()
     console.log(JSON.stringify({ event: 'generation.cancel.aborted', jobId: event.id, latencyMs }))
   },
 })
+// 派生任务与生成任务分队列：一类任务堆积不应拖垮另一类。
+const derivedQueue = createDerivedTaskQueue(config.redisUrl)
+// 评审在 Worker 侧执行，不依赖浏览器打开。模型层暂不注入：视觉评审接入前，
+// 语义判据会照实记为「未配置视觉评审模型」的无法验证，而不是默认通过。
+const reviewService = createAgentReviewService({
+  productStore: runtime.productStore,
+  observe: (event) => console.log(JSON.stringify(event)),
+})
 const worker = createGenerationWorker({
   redisUrl: config.redisUrl,
   concurrency: config.workerConcurrency,
@@ -47,6 +56,8 @@ const worker = createGenerationWorker({
     publishProjectUpdated: agentRunEvents.publishProjectUpdated,
     observeAgentRun: writeAgentRunOperationalEvent,
     providerCircuitBreaker: providerHealth,
+    ensureReviewTask: (ownerId, runId) => reviewService.ensureReviewTaskForRun(ownerId, runId),
+    enqueueDerivedTask: (kind, dedupeId, payload) => derivedQueue?.enqueue(kind, dedupeId, payload),
   }),
 })
 
@@ -54,9 +65,7 @@ worker.on('failed', (job, caught) => console.error(`[generation] BullMQ job ${jo
 worker.on('error', (caught) => console.error(`[generation] BullMQ worker error: ${caught.message}`))
 console.log(`Botanic generation worker started (concurrency ${config.workerConcurrency})`)
 
-// 派生任务与生成任务分队列：一类任务堆积不应拖垮另一类。当前只有孤儿 Turn 回收，
 // 新种类要和它的消费者一起加（见 derivedTaskQueue 的种类词表）。
-const derivedQueue = createDerivedTaskQueue(config.redisUrl)
 const sweepStaleAgentTurns = createAgentTurnSweep({
   productStore: runtime.productStore,
   observe: (event) => console.log(JSON.stringify(event)),
@@ -74,15 +83,22 @@ const sweepStaleAgentTurns = createAgentTurnSweep({
 const derivedWorker = createDerivedTaskWorker({
   redisUrl: config.redisUrl,
   concurrency: 1,
-  handlers: { 'turn.reclaim': () => sweepStaleAgentTurns() },
+  handlers: {
+    'turn.reclaim': () => sweepStaleAgentTurns(),
+    'review.run': async (payload) => (payload?.sweep
+      ? reviewService.sweepPendingReviewTasks()
+      : reviewService.executeReviewTask(payload.ownerId, payload.taskId)),
+  },
 })
 derivedWorker.on('failed', (job, caught) => console.error(`[derived] ${job?.name ?? 'unknown'} failed: ${caught.message}`))
 derivedWorker.on('error', (caught) => console.error(`[derived] worker error: ${caught.message}`))
 // 注册幂等：BullMQ 按 repeat key 去重，多实例重复注册不会产生多份定时任务。
-await derivedQueue?.scheduleSweep('turn.reclaim', 60_000).catch((caught) => {
-  console.error(`[derived] 清扫注册失败: ${caught instanceof Error ? caught.message : String(caught)}`)
-})
-console.log('Botanic derived-task worker started (turn.reclaim sweep every 60s)')
+for (const [kind, everyMs] of [['turn.reclaim', 60_000], ['review.run', 120_000]]) {
+  await derivedQueue?.scheduleSweep(kind, everyMs).catch((caught) => {
+    console.error(`[derived] ${kind} 清扫注册失败: ${caught instanceof Error ? caught.message : String(caught)}`)
+  })
+}
+console.log('Botanic derived-task worker started (turn.reclaim 60s, review.run 120s)')
 
 async function recoverQueuedJobs() {
   try {

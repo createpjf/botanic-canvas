@@ -716,3 +716,131 @@ test('Run 绑定固定 Skill 版本与内容摘要，内置 Skill 也不例外',
   assert.equal(bindings[1].version, 1)
   assert.ok(bindings[1].contentHash)
 })
+
+function reviewTaskFixture() {
+  return {
+    id: 'review_task_1', projectId: 'project-1', ownerId: 'user-1', runId: 'run-1',
+    status: 'completed', attempt: 1,
+    qualityPolicy: { version: 1, requiredCriteria: ['identity'], humanDecisionRequired: true },
+    qualityPolicyFingerprint: 'policy-fp', planFingerprint: 'plan-fp',
+    coverage: { strategy: 'all', totalCandidates: 2, reviewedCandidates: 2, skippedCandidates: 0, artifactIds: ['artifact-1', 'artifact-2'] },
+    results: [
+      { id: 'r1', taskId: 'review_task_1', projectId: 'project-1', artifactId: 'artifact-1', verdict: 'pass', candidateStatus: 'pending_human', criteria: [] },
+      { id: 'r2', taskId: 'review_task_1', projectId: 'project-1', artifactId: 'artifact-2', verdict: 'fail', candidateStatus: 'pending_human', criteria: [] },
+    ],
+    createdAt: 1, updatedAt: 2,
+  }
+}
+
+function reviewHandler({ tasks = [reviewTaskFixture()], runs = {}, stored = [], published = [], responses = [] } = {}) {
+  return {
+    responses,
+    stored,
+    handler: createAgentRouteHandler({
+      config: {},
+      productStore: {
+        projectAccess: async () => ({ exists: true, role: 'owner' }),
+        readAgentReviewTask: async (_userId, id) => tasks.find((task) => task.id === id),
+        listAgentReviewTasksForRun: async () => tasks,
+        putAgentReviewTask: async (_userId, task) => { stored.push(task); return task },
+        readAgentRun: async (_userId, id) => runs[id],
+        putAgentRun: async (_userId, run) => { stored.push(run); return run },
+      },
+      json: (_response, status, body) => { responses.push({ status, body }); return true },
+      error: (_response, status, code, message) => { responses.push({ status, body: { error: { code, message } } }); return true },
+      readJson: async () => reviewHandler.body,
+      requireUser: async () => ({ id: 'user-1' }),
+      publishAgentRunUpdated: async (event) => { published.push(event) },
+    }),
+  }
+}
+
+test('评审任务读模型暴露覆盖策略与被跳过的候选数', async () => {
+  const { handler, responses } = reviewHandler({ runs: { 'run-1': { id: 'run-1', projectId: 'project-1' } } })
+  await handler(
+    { method: 'GET', headers: {} }, {},
+    new URL('http://botanic.test/api/agent-runs/run-1/review-tasks'),
+    { agentRunReviewTasks: ['path', 'run-1'] }, 'request-review-read',
+  )
+  assert.equal(responses.at(-1)?.status, 200)
+  const task = responses.at(-1)?.body.tasks[0]
+  assert.equal(task.coverage.strategy, 'all')
+  assert.equal(task.coverage.skippedCandidates, 0)
+  assert.equal(task.results.length, 2)
+  // ownerId 不外发。
+  assert.equal(task.ownerId, undefined)
+})
+
+test('批量人工决定逐候选落库，重复提交幂等', async () => {
+  reviewHandler.body = {
+    decisions: [
+      { artifactId: 'artifact-1', decision: 'accepted' },
+      { artifactId: 'artifact-2', decision: 'rejected', note: '背景过曝' },
+    ],
+  }
+  const stored = []
+  const { handler, responses } = reviewHandler({ stored })
+  const send = () => handler(
+    { method: 'POST', headers: { 'idempotency-key': 'review-decision-batch-1' } }, {},
+    new URL('http://botanic.test/api/agent-review-tasks/review_task_1/decisions'),
+    { agentReviewTaskDecisions: ['path', 'review_task_1'] }, 'request-decision',
+  )
+  await send()
+  assert.equal(responses.at(-1)?.status, 200)
+  const body = responses.at(-1)?.body
+  assert.deepEqual(body.decisions.map((item) => item.artifactId), ['artifact-1', 'artifact-2'])
+  // 批量共享 commandId，但逐候选各自落库。
+  assert.equal(new Set(body.decisions.map((item) => item.commandId)).size, 1)
+  assert.equal(new Set(body.decisions.map((item) => item.id)).size, 2)
+  // 候选状态被更新，但原结论与 Artifact 不被覆盖。
+  assert.equal(body.task.results.find((item) => item.artifactId === 'artifact-1').candidateStatus, 'accepted')
+  assert.equal(body.task.results.find((item) => item.artifactId === 'artifact-2').verdict, 'fail')
+
+  await send()
+  const repeated = responses.at(-1)?.body
+  assert.equal(repeated.task.decisions.length, 2)
+})
+
+test('决定的候选必须在本次评审覆盖范围内', async () => {
+  reviewHandler.body = { artifactId: 'artifact-outside', decision: 'accepted' }
+  const { handler, responses } = reviewHandler()
+  await handler(
+    { method: 'POST', headers: { 'idempotency-key': 'review-decision-outside' } }, {},
+    new URL('http://botanic.test/api/agent-review-tasks/review_task_1/decisions'),
+    { agentReviewTaskDecisions: ['path', 'review_task_1'] }, 'request-decision-outside',
+  )
+  assert.equal(responses.at(-1)?.status, 409)
+  assert.equal(responses.at(-1)?.body.error.code, 'AGENT_REVIEW_ARTIFACT_NOT_COVERED')
+})
+
+test('请求重试产生关联原 Run 与原 Artifact 的新 Run，原结果不被覆盖', async () => {
+  reviewHandler.body = { artifactId: 'artifact-1', decision: 'retry_requested' }
+  const sourceRun = {
+    id: 'run-1', projectId: 'project-1', ownerId: 'user-1', status: 'completed',
+    plan: {
+      intent: 'replace_scene', instruction: '换场景', summary: '换场景',
+      selectedResultNodeId: 'result-1', prompt: '换成海边。',
+      settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' },
+      constraints: [], output: { mode: 'single', count: 1, candidatesPerItem: 1 },
+    },
+    branches: [{ id: 'branch-a', label: '海边', status: 'succeeded', attempt: 0, jobIds: ['job-a'], outputCount: 1, updatedAt: 1 }],
+    createdAt: 1, updatedAt: 2,
+  }
+  const stored = []
+  const { handler, responses } = reviewHandler({ runs: { 'run-1': sourceRun }, stored })
+  await handler(
+    { method: 'POST', headers: { 'idempotency-key': 'review-decision-retry' } }, {},
+    new URL('http://botanic.test/api/agent-review-tasks/review_task_1/decisions'),
+    { agentReviewTaskDecisions: ['path', 'review_task_1'] }, 'request-decision-retry',
+  )
+
+  assert.equal(responses.at(-1)?.status, 200)
+  const retry = responses.at(-1)?.body.retryRuns?.[0]
+  assert.equal(retry.artifactId, 'artifact-1')
+  const created = stored.find((item) => item.id === retry.runId)
+  assert.equal(created.lineage.parentRunId, 'run-1')
+  assert.equal(created.lineage.reviewTaskId, 'review_task_1')
+  assert.equal(created.lineage.sourceArtifactId, 'artifact-1')
+  // 重试请求让候选回到待评审，不标记为拒绝，也不覆盖原结论。
+  assert.equal(responses.at(-1)?.body.task.results.find((item) => item.artifactId === 'artifact-1').candidateStatus, 'pending_review')
+})

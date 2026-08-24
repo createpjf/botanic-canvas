@@ -71,6 +71,7 @@ function initialState() {
     agentTurns: [],
     agentTurnEvents: [],
     agentReviews: [],
+    agentReviewTasks: [],
     agentSessions: [],
     agentSessionReadReceipts: [],
     collaborationActivities: [],
@@ -945,6 +946,44 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
           && (Number(turn.updatedAt) || 0) < olderThan)
         .sort((left, right) => (Number(left.updatedAt) || 0) - (Number(right.updatedAt) || 0))
         .slice(0, limit)
+        .map(clone)
+    },
+
+    putAgentReviewTask(userId, task) {
+      const project = state.projects.find((item) => item.id === task.projectId)
+      if (!project) throw productError('未找到项目。', 'PROJECT_NOT_FOUND')
+      assertProjectPermission(project.members.find((item) => item.userId === userId)?.role, 'read', 'PROJECT_READ_FORBIDDEN')
+      const existing = state.agentReviewTasks.find((item) => item.id === task.id)
+      if (existing && existing.projectId !== task.projectId) throw productError('评审任务标识已被其他项目使用。', 'AGENT_REVIEW_TASK_ID_CONFLICT')
+      const payload = { ...clone(task), ownerId: task.ownerId ?? userId, updatedAt: Number(task.updatedAt) || now() }
+      if (existing) Object.assign(existing, payload)
+      else state.agentReviewTasks.push(payload)
+      save()
+      return clone(payload)
+    },
+
+    readAgentReviewTask(userId, taskId) {
+      const task = state.agentReviewTasks.find((item) => item.id === taskId)
+      if (!task) return undefined
+      const project = state.projects.find((item) => item.id === task.projectId)
+      return project && canAccess(project, userId) ? clone(task) : undefined
+    },
+
+    listAgentReviewTasksForRun(userId, projectId, runId) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project || !canAccess(project, userId)) return undefined
+      return state.agentReviewTasks
+        .filter((item) => item.projectId === projectId && item.runId === runId)
+        .sort((left, right) => right.updatedAt - left.updatedAt)
+        .map(clone)
+    },
+
+    // Worker 侧：跨项目扫描未收口的评审任务。清扫是系统行为，没有发起它的用户。
+    listPendingAgentReviewTasks({ olderThan = now(), limit = 25 } = {}) {
+      return state.agentReviewTasks
+        .filter((item) => (item.status === 'queued' || item.status === 'running') && Number(item.updatedAt) <= olderThan)
+        .sort((left, right) => left.updatedAt - right.updatedAt)
+        .slice(0, Math.max(1, Math.min(limit, 200)))
         .map(clone)
     },
 

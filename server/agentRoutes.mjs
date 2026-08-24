@@ -4,7 +4,7 @@ import { reviewBotanicAgentRunResults } from './botanicAgentReview.mjs'
 import { normalizeBotanicAgentLocale } from './agentInstructions.mjs'
 import { resolveBotanicAgentTurn, validateBotanicAgentTurnInput } from './botanicAgentTurn.mjs'
 import { createAgentSkill, isUsableAgentSkill, publicAgentSkill, validateAgentSkillCreation } from './botanicAgentSkill.mjs'
-import { cancelPersistentAgentRun, createPersistentAgentRun, prepareAgentBranchRetry, publicAgentRun, validateAgentRunCreation } from './botanicAgentRun.mjs'
+import { cancelPersistentAgentRun, createPersistentAgentRun, createReviewRetryAgentRunInput, prepareAgentBranchRetry, publicAgentRun, validateAgentRunCreation } from './botanicAgentRun.mjs'
 import { AgentToolRuntimeError, executeConfirmedAgentAction } from './agentToolRuntime.mjs'
 import { botanicAgentBuiltInSkill, botanicAgentSystemSkills, createBotanicAgentActionToolRegistry } from './botanicAgentTools.mjs'
 import { decodeArtifactCursor, encodeArtifactCursor } from './botanicArtifactIndex.mjs'
@@ -17,6 +17,7 @@ import { buildAgentExecutionTrace } from './agentExecutionTrace.mjs'
 import { actionArgumentsHash, agentToolPermission, assertFreshActionApproval, createActionApprovalToken } from './agentActionGovernance.mjs'
 import { agentTurnIdForIdempotency, agentTurnLastSequence, createBotanicAgentTurnRuntime, publicAgentTurn } from './botanicAgentTurnRuntime.mjs'
 import { createLocalCancelRegistry } from './localCancelRegistry.mjs'
+import { createAgentHumanDecision, publicAgentReviewTask } from './agentReviewTask.mjs'
 import { selectBotanicAgentMemory } from './botanicAgentMemory.mjs'
 import { compareBotanicAgentRunBranches } from './botanicAgentCompare.mjs'
 import { createForkedAgentRunInput, forkedAgentRunIdForIdempotency } from './botanicAgentFork.mjs'
@@ -269,6 +270,8 @@ export function createAgentRouteHandler({
       agentRunFork: agentRunForkMatch,
       agentRunCompare: agentRunCompareMatch,
       agentRunTrace: agentRunTraceMatch,
+      agentRunReviewTasks: agentRunReviewTasksMatch,
+      agentReviewTaskDecisions: agentReviewTaskDecisionsMatch,
       agentRunCancel: agentRunCancelMatch,
       agentBranchRetry: agentBranchRetryMatch,
       agentTurns: agentTurnsMatch,
@@ -1007,6 +1010,87 @@ export function createAgentRouteHandler({
       const jobs = (await Promise.all(jobIds.map((jobId) => productStore.readGenerationJob(user.id, jobId)))).filter(Boolean)
       const artifacts = await productStore.listAgentArtifacts(user.id, run.projectId, { limit: 200 }) ?? []
       return json(response, 200, { trace: buildAgentExecutionTrace({ run, jobs, artifacts }) })
+    }
+    if (agentRunReviewTasksMatch) {
+      if (request.method !== 'GET') return methodNotAllowed(response, '评审任务资源只支持读取。', 'GET')
+      const user = await requireUser(request)
+      const runId = decodeURIComponent(agentRunReviewTasksMatch[1])
+      const run = await productStore.readAgentRun(user.id, runId)
+      if (!run) return error(response, 404, 'AGENT_RUN_NOT_FOUND', '未找到该 Agent Run。')
+      await requireProjectPermission(productStore, user.id, run.projectId, 'read-operational')
+      const tasks = (await productStore.listAgentReviewTasksForRun(user.id, run.projectId, run.id)) ?? []
+      return json(response, 200, { tasks: tasks.map(publicAgentReviewTask) })
+    }
+    if (agentReviewTaskDecisionsMatch) {
+      if (request.method !== 'POST') return methodNotAllowed(response, '评审决定资源只接受提交请求。', 'POST')
+      const user = await requireUser(request)
+      const taskId = decodeURIComponent(agentReviewTaskDecisionsMatch[1])
+      const task = await productStore.readAgentReviewTask(user.id, taskId)
+      if (!task) return error(response, 404, 'AGENT_REVIEW_TASK_NOT_FOUND', '未找到该评审任务。')
+      // 人工决定改变的是候选能否交付，因此按编辑权限校验，而不是只读。
+      await requireProjectPermission(productStore, user.id, task.projectId, 'edit')
+      const idempotencyKey = generationIdempotencyKey(request.headers['idempotency-key'])
+      if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', '评审决定标识无效，请重试。')
+      const body = await readJson(request, 16 * 1024, '评审决定请求过大。')
+      const requested = Array.isArray(body?.decisions) ? body.decisions : [body]
+      if (!requested.length || requested.length > 60) return error(response, 400, 'INVALID_AGENT_REVIEW', '评审决定数量无效。')
+      let decisions
+      try {
+        // 批量共享一个 commandId，但逐候选落库：给多个 Artifact 共用一个模糊状态
+        // 会让「哪一张被接受了」无法回答。
+        decisions = requested.map((entry) => createAgentHumanDecision({
+          taskId: task.id,
+          projectId: task.projectId,
+          artifactId: entry?.artifactId,
+          decision: entry?.decision,
+          note: entry?.note,
+          decidedBy: user.id,
+          commandId: requested.length > 1 ? idempotencyKey : undefined,
+          idempotencyKey,
+        }))
+      } catch (caught) {
+        if (caught?.name !== 'AgentReviewError') throw caught
+        return error(response, caught.statusCode ?? 400, caught.code, caught.message)
+      }
+      const covered = new Set(task.coverage?.artifactIds ?? [])
+      const outside = decisions.filter((decision) => !covered.has(decision.artifactId))
+      if (outside.length) {
+        return error(response, 409, 'AGENT_REVIEW_ARTIFACT_NOT_COVERED', '决定的候选不在本次评审覆盖范围内。')
+      }
+      const existing = task.decisions ?? []
+      const merged = [...existing.filter((item) => !decisions.some((decision) => decision.id === item.id)), ...decisions]
+      const results = (task.results ?? []).map((result) => {
+        const decision = decisions.find((item) => item.artifactId === result.artifactId)
+        // 接受与拒绝都不覆盖原 Artifact，只改变候选状态。
+        return decision ? { ...result, candidateStatus: decision.candidateStatus, updatedAt: decision.decidedAt } : result
+      })
+      const stored = await productStore.putAgentReviewTask(user.id, { ...task, decisions: merged, results, updatedAt: Date.now() })
+      // `retry_requested` 必须产生新的 Run 并关联原 Run/Review/Artifact；原 Artifact 不被覆盖。
+      const retries = decisions.filter((decision) => decision.decision === 'retry_requested')
+      const retryRuns = []
+      if (retries.length) {
+        const sourceRun = await productStore.readAgentRun(user.id, task.runId)
+        if (sourceRun) {
+          for (const retry of retries) {
+            // 同一份计划重跑，不改写 Prompt：改写会让重试结果无法与原结果对照。
+            const input = createReviewRetryAgentRunInput(sourceRun, {
+              reviewTaskId: task.id,
+              artifactId: retry.artifactId,
+            })
+            const id = forkedAgentRunIdForIdempotency(user.id, sourceRun.id, `${idempotencyKey}__${retry.artifactId}`)
+            const alreadyCreated = await productStore.readAgentRun(user.id, id)
+            const created = alreadyCreated
+              ?? await productStore.putAgentRun(user.id, createPersistentAgentRun(input, { id, ownerId: user.id }))
+            retryRuns.push({ artifactId: retry.artifactId, runId: created.id })
+            if (!alreadyCreated) await publishAgentRunUpdated({ projectId: created.projectId, run: publicAgentRun(created) })
+          }
+        }
+      }
+      return json(response, 200, {
+        task: publicAgentReviewTask(stored),
+        decisions,
+        ...(retryRuns.length ? { retryRuns } : {}),
+      })
     }
     if (agentRunCancelMatch) {
       if (request.method !== 'POST') return methodNotAllowed(response, 'Agent Run 取消资源只接受提交请求。', 'POST')

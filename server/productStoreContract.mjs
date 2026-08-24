@@ -88,6 +88,12 @@ export const productStoreCoreMethods = Object.freeze([
   'listStaleAgentTurns',
   'appendAgentTurnEvent',
   'listAgentTurnEvents',
+  // 评审任务（ADR 0006）。ReviewResult 与 HumanDecision 存在任务 payload 内：
+  // 「每个候选都有结论才算完成」是原子判定，拆成三张表会让完成判定跨表且可能读到半态。
+  'putAgentReviewTask',
+  'readAgentReviewTask',
+  'listAgentReviewTasksForRun',
+  'listPendingAgentReviewTasks',
   'putAgentReview',
   'readAgentReview',
   'listAgentReviewsForRun',

@@ -194,6 +194,17 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       payload jsonb,
       unique (turn_id, sequence)
     );
+    create table if not exists agent_review_tasks (
+      id text primary key,
+      owner_id text not null references app_users(id) on delete cascade,
+      project_id text not null references projects(id) on delete cascade,
+      run_id text not null references agent_runs(id) on delete cascade,
+      status text not null check (status in ('queued', 'running', 'completed', 'failed')),
+      updated_at bigint not null,
+      payload jsonb not null
+    );
+    create index if not exists agent_review_tasks_pending_idx
+      on agent_review_tasks (updated_at) where status in ('queued', 'running');
     create table if not exists agent_reviews (
       id text primary key,
       owner_id text not null references app_users(id) on delete cascade,
@@ -1660,6 +1671,47 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
         select payload from agent_turns
         where status = any(${sql.array([...nonTerminalAgentTurnStatuses])}) and updated_at < ${olderThan}
         order by updated_at asc limit ${limit}
+      `
+      return rows.map(asPayload)
+    },
+
+    async putAgentReviewTask(userId, task) {
+      const role = await memberRole(task.projectId, userId)
+      assertProjectPermission(role, 'read', 'PROJECT_READ_FORBIDDEN')
+      const payload = { ...clone(task), ownerId: task.ownerId ?? userId, updatedAt: Number(task.updatedAt) || now() }
+      await sql`
+        insert into agent_review_tasks (id, owner_id, project_id, run_id, status, updated_at, payload)
+        values (${task.id}, ${payload.ownerId}, ${task.projectId}, ${task.runId}, ${task.status}, ${payload.updatedAt}, ${sql.json(payload)}::jsonb)
+        on conflict (id) do update set status = excluded.status, updated_at = excluded.updated_at, payload = excluded.payload
+      `
+      return payload
+    },
+
+    async readAgentReviewTask(userId, taskId) {
+      const [row] = await sql`
+        select t.payload from agent_review_tasks t
+        join project_members m on m.project_id = t.project_id
+        where t.id = ${taskId} and m.user_id = ${userId}
+      `
+      return row ? asPayload(row) : undefined
+    },
+
+    async listAgentReviewTasksForRun(userId, projectId, runId) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const rows = await sql`
+        select payload from agent_review_tasks
+        where project_id = ${projectId} and run_id = ${runId}
+        order by updated_at desc limit 50
+      `
+      return rows.map(asPayload)
+    },
+
+    // Worker 侧：跨项目扫描未收口的评审任务，因此不做成员校验（与 listStaleAgentTurns 同构）。
+    async listPendingAgentReviewTasks({ olderThan = now(), limit = 25 } = {}) {
+      const rows = await sql`
+        select payload from agent_review_tasks
+        where status in ('queued', 'running') and updated_at <= ${olderThan}
+        order by updated_at asc limit ${Math.max(1, Math.min(limit, 200))}
       `
       return rows.map(asPayload)
     },

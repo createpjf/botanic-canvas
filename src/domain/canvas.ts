@@ -352,6 +352,18 @@ export type GenerationOutput = {
   image: string
   mediaKind?: GenerationMediaKind
   revisedPrompt?: string
+  /**
+   * 实测规格（只读文件头得到，不是请求参数的回声）。评审第 1 层据此确定性验证比例、
+   * 分辨率、时长与完整性；缺失时判「无法验证」，不是默认通过。
+   */
+  spec?: {
+    mimeType?: string
+    declaredMimeType?: string
+    byteSize?: number
+    width?: number
+    height?: number
+    durationSeconds?: number
+  }
 }
 
 /** 父生成任务下的独立候选子任务；每个候选可单独观察、失败和重试。 */
