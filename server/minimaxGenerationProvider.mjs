@@ -1,5 +1,5 @@
 import { mapWithConcurrency } from './concurrency.mjs'
-import { compositionBrandGuard } from './generationComposition.mjs'
+import { compositionBrandGuard, creativeExecutionContract } from './generationComposition.mjs'
 import { GenerationError } from './generationProvider.mjs'
 
 function dataUrl(media) {
@@ -43,6 +43,7 @@ function miniMaxImagePrompt(job) {
   const roles = job.references.map((reference) => `${reference.role}：${reference.name}`).join('；')
   return [
     job.prompt,
+    ...creativeExecutionContract(job),
     roles ? `画布参考语义：${roles}。` : '',
     job.references.find((reference) => reference.primary) ? '保持主参考主体的关键外观与识别特征。' : '',
     compositionBrandGuard(job.references),

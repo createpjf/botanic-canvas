@@ -57,6 +57,59 @@ function inputMedia(value, maximumReferenceBytes, mediaKind = 'image') {
   return { mimeType, buffer, mediaKind }
 }
 
+function validateRecipeMetadata(recipe) {
+  const dimensions = new Set(['person', 'garment', 'product', 'scene', 'style', 'pose', 'composition', 'lighting', 'aspect_ratio', 'copy_space'])
+  const modes = new Set(['preserve', 'vary'])
+  const constraints = recipe.constraints === undefined ? undefined : (() => {
+    if (!Array.isArray(recipe.constraints) || recipe.constraints.length > 10) throw new GenerationError(400, 'INVALID_REQUEST', '生成配方创作约束无效。')
+    const seen = new Set()
+    return recipe.constraints.map((item) => {
+      if (!dimensions.has(item?.dimension) || !modes.has(item?.mode) || seen.has(item.dimension)) {
+        throw new GenerationError(400, 'INVALID_REQUEST', '生成配方创作约束无效或重复。')
+      }
+      seen.add(item.dimension)
+      return {
+        dimension: item.dimension,
+        mode: item.mode,
+        ...(typeof item.sourceAssetGroupId === 'string' && item.sourceAssetGroupId.trim() ? { sourceAssetGroupId: item.sourceAssetGroupId.trim().slice(0, 160) } : {}),
+      }
+    })
+  })()
+  const qualityPolicy = recipe.qualityPolicy === undefined ? undefined : (() => {
+    if (!recipe.qualityPolicy || typeof recipe.qualityPolicy !== 'object' || !Array.isArray(recipe.qualityPolicy.requiredCriteria)) {
+      throw new GenerationError(400, 'INVALID_REQUEST', '生成配方质量策略无效。')
+    }
+    return {
+      version: Number.isInteger(recipe.qualityPolicy.version) ? recipe.qualityPolicy.version : 1,
+      requiredCriteria: recipe.qualityPolicy.requiredCriteria.filter((value) => typeof value === 'string').slice(0, 20),
+      humanDecisionRequired: recipe.qualityPolicy.humanDecisionRequired !== false,
+    }
+  })()
+  const binding = (value, label) => {
+    if (!Array.isArray(value)) throw new GenerationError(400, 'INVALID_REQUEST', `${label}绑定无效。`)
+    return value.slice(0, 32).map((item) => ({
+      id: assertText(item?.id, `${label}标识`, 160),
+      ...(item?.version === undefined ? {} : (() => {
+        const version = Number(item.version)
+        if (!Number.isInteger(version) || version < 1) {
+          throw new GenerationError(400, 'INVALID_REQUEST', `${label}版本无效。`)
+        }
+        return { version }
+      })()),
+      ...(item?.contentHash ? { contentHash: assertText(item.contentHash, `${label}摘要`, 200) } : {}),
+      ...(item?.selectionReason ? { selectionReason: assertText(item.selectionReason, `${label}使用原因`, 240) } : {}),
+    }))
+  }
+  return {
+    ...(recipe.creativeIntent ? { creativeIntent: assertText(recipe.creativeIntent, '创作意图', 80) } : {}),
+    ...(constraints ? { constraints } : {}),
+    ...(qualityPolicy ? { qualityPolicy } : {}),
+    ...(recipe.sourcePlanFingerprint ? { sourcePlanFingerprint: assertText(recipe.sourcePlanFingerprint, '计划指纹', 200) } : {}),
+    ...(recipe.memoryBindings ? { memoryBindings: binding(recipe.memoryBindings, '项目记忆') } : {}),
+    ...(recipe.skillBindings ? { skillBindings: binding(recipe.skillBindings, 'Skill') } : {}),
+  }
+}
+
 export function validateGenerationInput(body, { models, maximumBatchCount, maximumReferenceBytes }) {
   if (!body || typeof body !== 'object') throw new GenerationError(400, 'INVALID_REQUEST', '生成任务不能为空。')
   const projectId = assertText(body.projectId, '项目', 160)
@@ -183,6 +236,7 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
     },
     references,
     parent,
+    ...validateRecipeMetadata(recipe),
     ...(mask ? { mask } : {}),
     ...(maskRegion ? { maskRegion } : {}),
   }

@@ -69,8 +69,13 @@ function requestedSingleOutputCount(outputCount: number | undefined) {
   return Math.max(1, Math.min(BOTANIC_AGENT_MAX_SINGLE_OUTPUT, Math.floor(outputCount)))
 }
 
+function confirmedProjectMemory(memory: BotanicAgentMemoryItem[] | undefined) {
+  return (memory ?? []).filter((item) => item.confidence !== 'provisional')
+}
+
 export function buildBotanicAgentPlanRequest(input: BotanicAgentPlanRequestInput): BotanicAgentPlanRequest {
   const outputCount = requestedSingleOutputCount(input.outputCount)
+  const projectMemory = confirmedProjectMemory(input.projectMemory)
   return {
     projectId: input.projectId,
     locale: input.locale,
@@ -114,8 +119,8 @@ export function buildBotanicAgentPlanRequest(input: BotanicAgentPlanRequestInput
         assetCount: group.assetIds.length,
       })),
     } : {}),
-    ...(input.projectMemory?.length ? {
-      projectMemory: input.projectMemory.slice(0, 30).map((memory) => ({
+    ...(projectMemory.length ? {
+      projectMemory: projectMemory.slice(0, 30).map((memory) => ({
         id: memory.id,
         kind: memory.kind,
         content: memory.content,
@@ -144,6 +149,7 @@ export function completeBotanicAgentPlan(
   draft: BotanicAgentPlanDraft,
   input: BotanicAgentPlanRequestInput,
 ): BotanicAgentPlan {
+  const projectMemory = confirmedProjectMemory(input.projectMemory)
   const resolvedAssetGroup = input.assetGroup
     ?? input.availableAssetGroups?.find((group) => group.id === draft.assetGroupId)
   const settings = { ...input.rootRecipe.settings, ...input.generationOverrides }
@@ -158,6 +164,17 @@ export function completeBotanicAgentPlan(
     title: summarizeBotanicAgentNodeTitle(draft),
     ...(input.creativeBrief ? { creativeBrief: structuredClone(input.creativeBrief) } : {}),
     ...(input.contextSnapshot?.length ? { contextSnapshot: input.contextSnapshot } : {}),
+    ...(projectMemory.length ? {
+      memoryBindings: projectMemory.slice(0, 12).map((memory) => ({
+        id: memory.id,
+        ...(memory.version ? { version: memory.version } : {}),
+        ...(memory.contentHash ? { contentHash: memory.contentHash } : {}),
+        selectionReason: '规划阶段读取的项目记忆',
+      })),
+    } : {}),
+    ...(input.mountedSkillIds?.length ? {
+      skillBindings: input.mountedSkillIds.slice(0, 12).map((id) => ({ id, selectionReason: '本轮对话已挂载 Skill' })),
+    } : {}),
     settings,
     references: [
       { source: 'selected_result', id: input.selectedResultNodeId, label: input.selectedResultLabel },

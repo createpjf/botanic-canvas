@@ -13,6 +13,9 @@
 - [ADR 0001：语义化生成图谱](adr/0001-semantic-node-graph.md)
 - [ADR 0002：Agent 独立实体持久化](adr/0002-agent-entity-persistence.md)
 - [ADR 0003：项目级 Artifact Index](adr/0003-project-scoped-artifact-index.md)
+- [ADR 0004：可恢复 Agent Turn Runtime](adr/0004-agent-turn-runtime.md)
+- [ADR 0005：可执行 Creative Plan 与不可变配方](adr/0005-executable-creative-plan.md)
+- [ADR 0006：Agent 质量、记忆与 Skill 治理](adr/0006-agent-quality-memory-governance.md)
 
 ## 功能规格
 

@@ -83,6 +83,48 @@ test('项目 Skill 创建后可跨重启恢复且不会泄露到其他项目', (
   assert.ok(reloaded.listAuditEvents(owner.id, 'project-skill-a').some((event) => event.action === 'agent-skill.created'))
 })
 
+test('Agent Turn 与事件按幂等边界持久化，跨重启可恢复', () => {
+  const { path, store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, document('project-turn'), undefined)
+  const turn = {
+    id: 'turn_project_1', version: 2, ownerId: owner.id, projectId: 'project-turn',
+    idempotencyKey: 'request-1', status: 'running', createdAt: 100, updatedAt: 100,
+  }
+  store.putAgentTurn(owner.id, turn)
+  store.appendAgentTurnEvent(owner.id, 'project-turn', {
+    id: 'turn-event-1', turnId: turn.id, projectId: 'project-turn', sequence: 1,
+    type: 'turn.started', createdAt: 101, payload: { status: 'running' },
+  })
+  const completed = { ...turn, status: 'completed', updatedAt: 102, result: { kind: 'chat', answer: '完成' } }
+  store.putAgentTurn(owner.id, completed)
+  const reloaded = createProductStore({ dataPath: path, bootstrapAccessToken: 'owner-token' })
+  assert.equal(reloaded.readAgentTurn(owner.id, turn.id)?.status, 'completed')
+  assert.deepEqual(reloaded.listAgentTurnEvents(owner.id, 'project-turn', turn.id).map((event) => event.type), ['turn.started'])
+  assert.equal(reloaded.listAgentTurnsForProject(owner.id, 'project-turn')[0]?.id, turn.id)
+})
+
+test('Agent 评审结论与人工决策跨重启保留，且按项目隔离', () => {
+  const { path, store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, document('project-review'), undefined)
+  store.putAgentRun(owner.id, {
+    id: 'run-review', ownerId: owner.id, projectId: 'project-review', status: 'completed',
+    plan: { intent: 'continue_generation', prompt: '测试', constraints: [], output: { mode: 'single', count: 1, candidatesPerItem: 1 } },
+    branches: [], completedBranchCount: 0, failedBranchCount: 0, createdAt: 1, updatedAt: 1,
+  })
+  const review = store.putAgentReview(owner.id, {
+    id: 'agent-review-run-review-zh-CN', projectId: 'project-review', runId: 'run-review', locale: 'zh-CN', version: 2,
+    summary: '结果符合要求。', bestNodeId: 'result-a', items: [{ nodeId: 'result-a', branchLabel: '首图', verdict: 'pass', note: '主体稳定' }], status: 'pending', createdAt: 2, updatedAt: 2,
+  })
+  assert.equal(review.status, 'pending')
+  const decided = store.putAgentReviewDecision(owner.id, 'project-review', review.id, 'accepted', '已确认')
+  assert.equal(decided.status, 'accepted')
+  assert.equal(decided.decidedBy, owner.id)
+  const reloaded = createProductStore({ dataPath: path, bootstrapAccessToken: 'owner-token' })
+  assert.equal(reloaded.readAgentReview(owner.id, 'project-review', 'run-review')?.status, 'accepted')
+})
+
 test('Agent 行动回执按用户和项目持久化，重试可直接复用已完成结果', () => {
   const { path, store } = createStore()
   const owner = store.authenticate('owner-token')

@@ -340,6 +340,7 @@ const handleRequest = async (request, response) => {
           model: config.flockTextModel || undefined,
           models: config.flockAgentModels,
         },
+        agentFeatures: config.agentFeatureFlags,
         agentMcp: {
           configured: Object.keys(configuredMcpTools).length > 0,
           toolCount: Object.keys(configuredMcpTools).length,

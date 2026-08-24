@@ -365,6 +365,18 @@ export async function updateProductPassword(password: string) {
   await reportAccountSecurityEvent('security.password.changed')
 }
 
+/** 向当前登录入口邮箱发送 Supabase 恢复链接；不回显邮箱是否存在，避免账号枚举。 */
+export async function requestProductPasswordReset(email: string) {
+  if (!supabase) throw new ProductApiError('当前环境未启用账号密码。', 400, 'SUPABASE_AUTH_REQUIRED')
+  const normalizedEmail = email.trim()
+  if (!normalizedEmail || !normalizedEmail.includes('@')) throw new ProductApiError('请输入有效邮箱。', 400, 'INVALID_EMAIL')
+  const redirectTo = typeof window === 'undefined'
+    ? undefined
+    : `${window.location.origin}${window.location.pathname}`
+  const { error } = await supabase.auth.resetPasswordForEmail(normalizedEmail, redirectTo ? { redirectTo } : undefined)
+  if (error) throw new ProductApiError(error.message, 400, 'PASSWORD_RESET_FAILED')
+}
+
 function requireAccountSecurity() {
   if (!accountSecurity) throw new ProductApiError('当前环境未启用正式账户安全。', 400, 'SUPABASE_AUTH_REQUIRED')
   return accountSecurity

@@ -206,7 +206,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
   hydrated: false,
   persistenceStatus: 'saved',
   selectedNodeId: 'result-hero',
-  assistantMessage: '首图已生成并选中。可在下方输入描述，或使用 /、@ 继续微调。',
+  assistantMessage: '',
   generationStatus: 'idle',
   generationProgress: 0,
   generationError: null,
@@ -396,6 +396,8 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
   },
 
   ...createCanvasTemplateHistoryActions({ set, get, commit }),
+
+  clearAssistantMessage: () => set({ assistantMessage: '' }),
 
   selectGenerationCandidate: (candidateId) => {
     const candidate = get().generationCandidates.find((item) => item.id === candidateId)

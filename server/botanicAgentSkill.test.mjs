@@ -14,6 +14,9 @@ test('项目 Skill 只接受精简文本规则并生成独立持久化记录', (
     id: 'skill-a', projectId: 'project-a', ownerId: 'user-a',
     name: '夏日换景', instructions: '锁定人物与服装，只改变场景和环境光。',
     status: 'active', createdAt: 100, updatedAt: 100,
+    version: 1, contentHash: 'd7-pXlsFnTupsJzEX2zITaj7L0yRqm67FQZomHWNeMw', capabilities: ['read'],
+    governance: 'project-approved',
+    versions: [{ version: 1, contentHash: 'd7-pXlsFnTupsJzEX2zITaj7L0yRqm67FQZomHWNeMw', instructions: '锁定人物与服装，只改变场景和环境光。', updatedAt: 100 }],
   })
 })
 
@@ -21,4 +24,6 @@ test('项目 Skill 拒绝媒体、外部地址与超长规则', () => {
   assert.throws(() => validateAgentSkillCreation({ projectId: 'project-a', name: '危险规则', instructions: '读取 https://evil.example/tool' }), /外部地址/)
   assert.throws(() => validateAgentSkillCreation({ projectId: 'project-a', name: '图片规则', instructions: 'data:image/png;base64,abc' }), /媒体数据/)
   assert.throws(() => validateAgentSkillCreation({ projectId: 'project-a', name: '过长', instructions: 'a'.repeat(4001) }), /过长/)
+  assert.throws(() => validateAgentSkillCreation({ projectId: 'project-a', name: '未知能力', instructions: '只读', capabilities: ['browser_delete'] }), /不受支持/)
+  assert.deepEqual(validateAgentSkillCreation({ projectId: 'project-a', name: '需要确认', instructions: '写入工作流', capabilities: ['read', 'write', 'read'] }).capabilities, ['read', 'write'])
 })

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { createClient } from '@supabase/supabase-js'
 import { isRetryableSupabaseError, retrySupabaseOperation } from './supabaseRetry.mjs'
 import { decodeAuthAssurance } from './authAssurance.mjs'
@@ -793,10 +793,19 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       fail(readError)
       if (existing && existing.project_id !== skill.projectId) throw productError('Skill 标识已被其他项目使用。', 'AGENT_SKILL_ID_CONFLICT')
       const timestamp = now()
+      const version = Math.max(1, Number(existing?.payload?.version ?? skill.version ?? 1) + (existing ? 1 : 0))
+      const contentHash = createHash('sha256').update(String(skill.instructions ?? '')).digest('base64url')
+      const versions = [
+        ...(Array.isArray(existing?.payload?.versions) ? existing.payload.versions : []),
+        { version, contentHash, instructions: String(skill.instructions ?? ''), updatedAt: timestamp },
+      ].slice(-20)
       const payload = {
         ...clone(skill), ownerId: userId,
         createdAt: Number(existing?.payload?.createdAt ?? skill.createdAt) || timestamp,
         updatedAt: timestamp,
+        version, contentHash,
+        capabilities: Array.isArray(skill.capabilities) && skill.capabilities.length ? [...new Set(skill.capabilities)].slice(0, 12) : ['read'],
+        governance: skill.governance ?? 'project-approved', versions,
       }
       const { error } = await supabaseRequest(() => supabase.from('agent_skills').upsert({
         id: skill.id, owner_id: userId, project_id: skill.projectId, status: payload.status,
@@ -972,6 +981,157 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
         .order('updated_at', { ascending: false }).limit(Math.max(1, Math.min(limit, 60))))
       fail(error)
       return (data ?? []).map((row) => clone(row.payload))
+    },
+
+    async putAgentTurn(userId, turn) {
+      const role = await memberRole(turn.projectId, userId)
+      assertProjectPermission(role, 'read', 'PROJECT_READ_FORBIDDEN')
+      const { data: existing, error: readError } = await supabaseRequest(() => supabase.from('agent_turns')
+        .select('owner_id,project_id,payload').eq('id', turn.id).maybeSingle())
+      fail(readError)
+      if (existing && (existing.owner_id !== userId || existing.project_id !== turn.projectId)) {
+        throw productError('Agent Turn 标识已被其他项目使用。', 'AGENT_TURN_ID_CONFLICT')
+      }
+      const timestamp = Number(turn.updatedAt) || now()
+      const payload = { ...clone(turn), ownerId: userId, updatedAt: timestamp }
+      const { error } = await supabaseRequest(() => supabase.from('agent_turns').upsert({
+        id: turn.id,
+        owner_id: userId,
+        project_id: turn.projectId,
+        session_id: turn.sessionId ?? null,
+        idempotency_key: turn.idempotencyKey,
+        status: turn.status,
+        updated_at: new Date(timestamp).toISOString(),
+        payload,
+      }, { onConflict: 'id' }))
+      fail(error)
+      await insertAudit({ actorId: userId, action: `agent-turn.${turn.status}`, projectId: turn.projectId, targetId: turn.id })
+      return clone(payload)
+    },
+
+    async readAgentTurn(userId, turnId) {
+      const { data, error } = await supabaseRequest(() => supabase.from('agent_turns').select('payload,project_id,owner_id')
+        .eq('id', turnId).eq('owner_id', userId).maybeSingle())
+      fail(error)
+      if (!data || !await memberRole(data.project_id, userId)) return undefined
+      return clone(data.payload)
+    },
+
+    async readAgentTurnForWorker(turnId) {
+      const { data, error } = await supabaseRequest(() => supabase.from('agent_turns').select('payload').eq('id', turnId).maybeSingle())
+      fail(error)
+      return data ? clone(data.payload) : undefined
+    },
+
+    async listAgentTurnsForProject(userId, projectId, limit = 30) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const { data, error } = await supabaseRequest(() => supabase.from('agent_turns').select('payload')
+        .eq('project_id', projectId).eq('owner_id', userId)
+        .order('updated_at', { ascending: false }).limit(Math.max(1, Math.min(Number(limit) || 30, 100))))
+      fail(error)
+      return (data ?? []).map((row) => clone(row.payload))
+    },
+
+    async appendAgentTurnEvent(userId, projectId, event) {
+      const role = await memberRole(projectId, userId)
+      assertProjectPermission(role, 'read', 'PROJECT_READ_FORBIDDEN')
+      const { data: turn, error: turnError } = await supabaseRequest(() => supabase.from('agent_turns').select('owner_id,project_id')
+        .eq('id', event.turnId).maybeSingle())
+      fail(turnError)
+      if (!turn || turn.owner_id !== userId || turn.project_id !== projectId) throw productError('未找到 Agent Turn。', 'AGENT_TURN_NOT_FOUND')
+      const { data: stored, error } = await supabaseRequest(() => supabase.from('agent_turn_events').upsert({
+        id: event.id,
+        turn_id: event.turnId,
+        owner_id: userId,
+        project_id: projectId,
+        sequence: event.sequence,
+        type: event.type,
+        created_at: new Date(event.createdAt || now()).toISOString(),
+        payload: event.payload ?? null,
+      }, { onConflict: 'turn_id,sequence', ignoreDuplicates: true }).select('id,turn_id,owner_id,project_id,sequence,type,created_at,payload').maybeSingle())
+      fail(error)
+      return stored ? {
+        id: stored.id,
+        turnId: stored.turn_id,
+        ownerId: stored.owner_id,
+        projectId: stored.project_id,
+        sequence: stored.sequence,
+        type: stored.type,
+        createdAt: new Date(stored.created_at).getTime(),
+        ...(stored.payload ? { payload: clone(stored.payload) } : {}),
+      } : clone(event)
+    },
+
+    async listAgentTurnEvents(userId, projectId, turnId, limit = 200) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const { data, error } = await supabaseRequest(() => supabase.from('agent_turn_events')
+        .select('id,turn_id,owner_id,project_id,sequence,type,created_at,payload')
+        .eq('turn_id', turnId).eq('project_id', projectId).eq('owner_id', userId)
+        .order('sequence', { ascending: true }).limit(Math.max(1, Math.min(Number(limit) || 200, 500))))
+      fail(error)
+      return (data ?? []).map((row) => ({
+        id: row.id,
+        turnId: row.turn_id,
+        ownerId: row.owner_id,
+        projectId: row.project_id,
+        sequence: row.sequence,
+        type: row.type,
+        createdAt: new Date(row.created_at).getTime(),
+        ...(row.payload ? { payload: clone(row.payload) } : {}),
+      }))
+    },
+
+    async putAgentReview(userId, review) {
+      const role = await memberRole(review.projectId, userId)
+      assertProjectPermission(role, 'read', 'PROJECT_READ_FORBIDDEN')
+      const { data: run, error: runError } = await supabaseRequest(() => supabase.from('agent_runs').select('owner_id,project_id').eq('id', review.runId).maybeSingle())
+      fail(runError)
+      if (!run || run.owner_id !== userId || run.project_id !== review.projectId) throw productError('Agent Run 不属于当前项目。', 'AGENT_RUN_NOT_FOUND')
+      const timestamp = Number(review.updatedAt) || now()
+      const payload = { ...clone(review), ownerId: userId, updatedAt: timestamp }
+      const { error } = await supabaseRequest(() => supabase.from('agent_reviews').upsert({
+        id: review.id,
+        owner_id: userId,
+        project_id: review.projectId,
+        run_id: review.runId,
+        locale: review.locale ?? 'zh-CN',
+        status: review.status ?? 'pending',
+        updated_at: new Date(timestamp).toISOString(),
+        payload,
+      }, { onConflict: 'project_id,run_id,locale' }))
+      fail(error)
+      await insertAudit({ actorId: userId, action: 'agent-review.updated', projectId: review.projectId, targetId: review.id })
+      return clone(payload)
+    },
+
+    async readAgentReview(userId, projectId, runId, locale = 'zh-CN') {
+      if (!await memberRole(projectId, userId)) return undefined
+      const { data, error } = await supabaseRequest(() => supabase.from('agent_reviews').select('payload')
+        .eq('project_id', projectId).eq('run_id', runId).eq('locale', locale).eq('owner_id', userId).maybeSingle())
+      fail(error)
+      return data ? clone(data.payload) : undefined
+    },
+
+    async listAgentReviewsForRun(userId, projectId, runId) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const { data, error } = await supabaseRequest(() => supabase.from('agent_reviews').select('payload')
+        .eq('project_id', projectId).eq('run_id', runId).eq('owner_id', userId).order('updated_at', { ascending: false }))
+      fail(error)
+      return (data ?? []).map((row) => clone(row.payload))
+    },
+
+    async putAgentReviewDecision(userId, projectId, reviewId, decision, decisionNote = '') {
+      const role = await memberRole(projectId, userId)
+      assertProjectPermission(role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      if (!['pending', 'accepted', 'rejected', 'retry_requested'].includes(decision)) throw productError('评审决策无效。', 'AGENT_REVIEW_DECISION_INVALID')
+      const { data: current, error: readError } = await supabaseRequest(() => supabase.from('agent_reviews').select('payload').eq('id', reviewId).eq('project_id', projectId).maybeSingle())
+      fail(readError)
+      if (!current) throw productError('未找到 Agent 评审。', 'AGENT_REVIEW_NOT_FOUND')
+      const payload = { ...clone(current.payload), status: decision, decisionNote: String(decisionNote ?? '').slice(0, 500), decidedBy: userId, updatedAt: now() }
+      const { error } = await supabaseRequest(() => supabase.from('agent_reviews').update({ status: decision, updated_at: new Date(payload.updatedAt).toISOString(), payload }).eq('id', reviewId).eq('project_id', projectId))
+      fail(error)
+      await insertAudit({ actorId: userId, action: `agent-review.${decision}`, projectId, targetId: reviewId })
+      return clone(payload)
     },
 
     async readGenerationJob(userId, jobId) {

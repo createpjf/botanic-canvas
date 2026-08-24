@@ -53,6 +53,7 @@ import {
   resolveBotanicAgentInstructionEntry,
 } from '../../domain/agentInstructionRouting'
 import { botanicAgentRunReviewMessageId, formatBotanicAgentRunReviewMessage } from '../../domain/agentReviewContract'
+import type { BotanicAgentRunReview } from '../../domain/agentReviewContract'
 import { resolveAgentChatPrompt } from '../../domain/agentMarkdown'
 import type { BotanicAgentChatStreamEvent } from '../../domain/agentChatStream'
 import { applyAgentConversationStreamEvent, createAgentTimeline, persistAgentLiveTimeline, projectBotanicAgentRunOntoTimeline, type AgentTimelineEvent, type AgentTimelineState } from '../../domain/agentTimeline'
@@ -65,7 +66,7 @@ import type {
   UploadedAssetInput,
 } from '../../domain/canvas'
 import type { GenerationSizeOverride } from '../../domain/generationOutputSize'
-import { createProjectAgentSkill, listBotanicAgentSystemSkills, listProjectAgentSkills, requestBotanicAgentPlan, requestBotanicAgentRunReview, streamBotanicAgentChat, streamBotanicAgentPlan, streamBotanicAgentTurn } from '../../lib/agentApi'
+import { createProjectAgentSkill, listBotanicAgentSystemSkills, listProjectAgentSkills, requestBotanicAgentPlan, requestBotanicAgentRunReview, submitBotanicAgentReviewDecision, streamBotanicAgentChat, streamBotanicAgentPlan, streamBotanicAgentTurn } from '../../lib/agentApi'
 import { botanicAgentRegionSelectNotice, instructionRequestsMarkOverlay } from '../../domain/generationComposition'
 import { describeRegionRect } from '../../domain/regionMask'
 import { RegionMaskEditor } from '../canvas/RegionMaskEditor'
@@ -302,7 +303,7 @@ export default function AgentWorkspace({
   onConfirmAction: (action: BotanicAgentActionProposal) => Promise<BotanicAgentActionResult>
   onUploadImages: (uploads: UploadedAssetInput[]) => void
   onAppendMessage: (sessionId: string, message: BotanicAgentMessage) => void
-  onUpdateMessage: (sessionId: string, messageId: string, patch: Partial<Pick<BotanicAgentMessage, 'content' | 'runId' | 'status' | 'feedback' | 'plan' | 'question' | 'deliveryStatus'>>) => void
+  onUpdateMessage: (sessionId: string, messageId: string, patch: Partial<Pick<BotanicAgentMessage, 'content' | 'runId' | 'status' | 'feedback' | 'plan' | 'question' | 'deliveryStatus' | 'review'>>) => void
   onUpdateAction: (sessionId: string, messageId: string, actionId: string, patch: Partial<Pick<BotanicAgentActionProposal, 'status' | 'error' | 'result'>>) => void
   onContextChange: (sessionId: string, contextNodeIds: string[]) => void
   onExecutionModeChange: (sessionId: string, mode: BotanicAgentExecutionMode) => void
@@ -354,12 +355,12 @@ export default function AgentWorkspace({
     offline: { title: 'Using an offline draft', detail: 'This edit will sync when the connection is restored.', actionLabel: 'Retry sync' },
     syncError: { title: 'Canvas sync is temporarily unavailable', detail: 'Your current edits remain saved locally and can sync later.', actionLabel: 'Retry sync' },
     dropImages: 'Drop to add image assets', uploadLimits: 'PNG / JPEG / WebP, up to 8 MB each', imageLimit: (count: number) => `You can add up to ${count} images at once. Extra images were skipped.`, imageReadFailed: 'Unable to read the images. Drop or select them again.',
-    planningUnavailable: 'Unable to create the plan. Try again shortly.', confirmActionsFirst: 'Approve or skip the pending action cards before starting generation.', taskNotStarted: 'The task did not start. Check the references and generation service, then retry.', taskStartFailed: 'Unable to start the task. Try again shortly.', canvasWritten: ' Added to the canvas.', actionFailed: 'Unable to complete the action. Try again.', retryWithModel: (model: string, prompt: string) => `Regenerate with ${model}: ${prompt}`, retrySettings: (prompt: string) => `Adjust the output settings and regenerate: ${prompt}`, pendingQuestion: 'A confirmation card above still needs an answer. Select or enter a response in the card. No task was created.', noPendingPlan: 'There is no generation plan awaiting approval. Describe the image or batch values you want, and Agent will prepare a plan for review.',
+    planningUnavailable: 'Unable to create the plan. Try again shortly.', localPreviewChat: 'The local preview is not connected to Agent services. You can still use the canvas and structured prompts; connect the workspace service for chat, research, and execution.', localPreviewPrompt: (prompt: string) => `Local preview prepared this structured Prompt:\n\n${prompt}\n\nConnect the workspace service to continue with research or execution.`, confirmActionsFirst: 'Approve or skip the pending action cards before starting generation.', taskNotStarted: 'The task did not start. Check the references and generation service, then retry.', taskStartFailed: 'Unable to start the task. Try again.', canvasWritten: ' Added to the canvas.', actionFailed: 'Unable to complete the action. Try again.', retryWithModel: (model: string, prompt: string) => `Regenerate with ${model}: ${prompt}`, retrySettings: (prompt: string) => `Adjust the output settings and regenerate: ${prompt}`, pendingQuestion: 'A confirmation card above still needs an answer. Select or enter a response in the card. No task was created.', noPendingPlan: 'There is no generation plan awaiting approval. Describe the image or batch values you want, and Agent will prepare a plan for review.',
     history: 'Conversation history', historyUnread: (count: number) => `Conversation history, ${count} ${count === 1 ? 'conversation has' : 'conversations have'} updates`, conversationName: 'Conversation name', saveName: 'Save conversation name', save: 'Save', cancelName: 'Cancel editing conversation name', cancel: 'Cancel', newConversation: 'New conversation', editName: 'Edit conversation name', collaborators: (count: number) => `${count} other ${count === 1 ? 'collaborator' : 'collaborators'} online`, processing: 'Processing',
     searchConversations: 'Search conversations', searchPlaceholder: 'Search conversations, messages, or tasks', historyFilters: 'Filter collaboration history', all: 'All', unread: 'Unread', newResults: 'New results', attention: 'Needs attention', resultUpdates: (count: number) => `${count} new ${count === 1 ? 'result' : 'results'}`, updates: (count: number) => `${count} ${count === 1 ? 'update' : 'updates'}`, attentionCount: (count: number) => `${count} need${count === 1 ? 's' : ''} attention`, activeCount: (count: number) => `${count} active`, taskCount: (count: number) => `${count} ${count === 1 ? 'task' : 'tasks'}`, noConversations: 'No conversations match these filters.', noMessagesYet: 'No messages yet',
     localChangesKept: 'Local changes are preserved. Review the update.', locateChange: 'Locate this change.', latestSynced: 'Latest content synced.', closeCollaborationUpdate: 'Close collaboration update', gotIt: 'Got it', readingRestored: 'Returned to your previous reading position', jumpLatest: 'Jump to latest',
     tasksAria: 'Agent tasks and results', tasksTitle: 'Agent tasks', tasksDescription: 'Tasks started by Agent only. Failed tasks can be retried without replacing completed results.', taskFilters: 'Filter by task status', active: 'Active', completed: 'Completed', filterCount: (label: string, count: number) => `${label} · ${count} ${count === 1 ? 'item' : 'items'}`, sourceConversation: 'Source conversation', cancelling: 'Cancelling…', branchStatus: 'Branch status', branchIncomplete: 'This branch did not complete.', noFilteredTasks: 'No tasks match this filter.', noTasks: 'No Agent tasks yet.',
-    skillsAria: 'System and project Skills', skillsTitle: 'Creative skills', skillsDescription: 'Type @ in the composer to use a Skill. New project Skills are added to the current conversation automatically.', systemSkills: 'System Skills', newSkill: '+ New Skill', skillNamePlaceholder: 'Skill name, for example: Summer scene swap', skillName: 'Skill name', skillRulesPlaceholder: 'Describe what must stay fixed, what may change, and the result rules.', skillRules: 'Skill rules', createProjectSkill: 'Create project Skill', createProjectSkillDetail: 'This Skill will be saved to the current project and available to Agent.', creating: 'Creating…', confirmCreate: 'Create Skill', createSkill: 'Create Skill', skillCreateFailed: 'Unable to create the Skill. Try again shortly.', noProjectSkills: 'No project Skills yet.', skillCount: (count: number) => `${count} ${count === 1 ? 'Skill' : 'Skills'}`,
+    skillsAria: 'System and project Skills', skillsTitle: 'Creative skills', skillsDescription: 'Type @ in the composer to use a Skill. New project Skills are added to the current conversation automatically.', skillsUnavailableLocal: 'Skill registry is available when the workspace service is connected.', systemSkills: 'System Skills', newSkill: '+ New Skill', skillNamePlaceholder: 'Skill name, for example: Summer scene swap', skillName: 'Skill name', skillRulesPlaceholder: 'Describe what must stay fixed, what may change, and the result rules.', skillRules: 'Skill rules', createProjectSkill: 'Create project Skill', createProjectSkillDetail: 'This Skill will be saved to the current project and available to Agent.', creating: 'Creating…', confirmCreate: 'Create Skill', createSkill: 'Create Skill', skillCreateFailed: 'Unable to create the Skill. Try again shortly.', noProjectSkills: 'No project Skills yet.', skillCount: (count: number) => `${count} ${count === 1 ? 'Skill' : 'Skills'}`,
     refineOne: 'Continue refining this result:', refineMany: (count: number) => `Continue refining these ${count} results:`, continueContext: 'Continue creating from the current context:', runtimeAria: 'Agent run details', collapseSteps: 'Collapse run steps', viewSteps: 'View run steps', nextStep: 'Next:', runSteps: 'Run steps', runningStep: (label: string) => `Running ${label}`, runtimeStepFailed: 'This step did not complete.', runProgress: 'Agent Run progress', generationTask: 'Generation task', cancelTask: 'Cancel task', cancelFailed: 'Unable to cancel the task. Try again shortly.', retryFailed: (label: string) => `Unable to retry “${label}”. Try again shortly.`,
   } : {
     sources: '来源', noSources: '当前没有命中项目受控检索来源。', incomplete: '未完成', unavailable: 'Agent 暂时无法回答，请稍后重试。',
@@ -370,12 +371,12 @@ export default function AgentWorkspace({
     offline: { title: '正在使用离线草稿', detail: '恢复网络后会继续同步当前编辑。', actionLabel: '重试同步' },
     syncError: { title: '画布同步暂时失败', detail: '当前编辑仍在本地，稍后可以继续同步。', actionLabel: '重试同步' },
     dropImages: '松开即可添加图片素材', uploadLimits: 'PNG / JPEG / WebP，单张不超过 8MB', imageLimit: (count: number) => `最多同时添加 ${count} 张图片，超出部分已跳过。`, imageReadFailed: '图片读取失败，请重新拖入或选择图片。',
-    planningUnavailable: '暂时无法生成计划。', confirmActionsFirst: '请先确认或跳过行动卡，再执行生成计划。', taskNotStarted: '任务没有启动，请检查参考素材与生成服务后重试。', taskStartFailed: '任务未能启动，请稍后重试。', canvasWritten: ' 已写入画布。', actionFailed: '行动执行失败，请重试。', retryWithModel: (model: string, prompt: string) => `换用${model}重新生成：${prompt}`, retrySettings: (prompt: string) => `调整输出设置后重新生成：${prompt}`, pendingQuestion: '上面还有一张待回答的确认卡，请直接在卡片里选择或填写；本次没有创建任务。', noPendingPlan: '当前没有待确认的生成计划。请直接描述要生成的画面或批量取值，Agent 会先给出待确认计划。',
+    planningUnavailable: '暂时无法生成计划。', localPreviewChat: '本地预览模式未连接 Agent 服务；仍可使用画布和结构化 Prompt，连接云端后再使用对话、检索与执行。', localPreviewPrompt: (prompt: string) => `本地预览已整理出结构化 Prompt：\n\n${prompt}\n\n连接工作区服务后可继续检索或执行。`, confirmActionsFirst: '请先确认或跳过行动卡，再执行生成计划。', taskNotStarted: '任务没有启动，请检查参考素材与生成服务后重试。', taskStartFailed: '任务未能启动，请稍后重试。', canvasWritten: ' 已写入画布。', actionFailed: '行动执行失败，请重试。', retryWithModel: (model: string, prompt: string) => `换用${model}重新生成：${prompt}`, retrySettings: (prompt: string) => `调整输出设置后重新生成：${prompt}`, pendingQuestion: '上面还有一张待回答的确认卡，请直接在卡片里选择或填写；本次没有创建任务。', noPendingPlan: '当前没有待确认的生成计划。请直接描述要生成的画面或批量取值，Agent 会先给出待确认计划。',
     history: '对话历史', historyUnread: (count: number) => `对话历史，${count} 个会话有更新`, conversationName: '对话名称', saveName: '保存对话名称', save: '保存', cancelName: '取消编辑对话名称', cancel: '取消', newConversation: '新建对话', editName: '编辑对话名称', collaborators: (count: number) => `另有 ${count} 位协作者在线`, processing: '处理中',
     searchConversations: '搜索对话', searchPlaceholder: '搜索对话、消息或任务', historyFilters: '筛选协作历史', all: '全部', unread: '未读', newResults: '新结果', attention: '需处理', resultUpdates: (count: number) => `${count} 个新结果`, updates: (count: number) => `${count} 条更新`, attentionCount: (count: number) => `${count} 项需处理`, activeCount: (count: number) => `${count} 进行中`, taskCount: (count: number) => `${count} 个任务`, noConversations: '当前筛选下没有对话。', noMessagesYet: '还没有消息',
     localChangesKept: '本地改动仍保留，点击查看变更。', locateChange: '点击定位变更。', latestSynced: '最新内容已同步。', closeCollaborationUpdate: '关闭协作更新提示', gotIt: '知道了', readingRestored: '已回到上次阅读位置', jumpLatest: '跳到最新',
     tasksAria: 'Agent 任务与结果', tasksTitle: 'Agent 任务', tasksDescription: '仅 Agent 发起的任务。失败可重试，不覆盖已完成结果。', taskFilters: '按任务状态筛选', active: '进行中', completed: '已完成', filterCount: (label: string, count: number) => `${label} · ${count} 项`, sourceConversation: '来源对话', cancelling: '取消中…', branchStatus: '分支状态', branchIncomplete: '该分支未完成', noFilteredTasks: '当前筛选下没有任务。', noTasks: '还没有 Agent 任务。',
-    skillsAria: '系统与项目 Skill', skillsTitle: '创作技能', skillsDescription: '在输入框键入 @ 即可调用 Skill。新建的项目 Skill 会自动挂载到当前对话。', systemSkills: '系统 Skills', newSkill: '＋ 新建技能', skillNamePlaceholder: '技能名称，例如：夏日换景', skillName: 'Skill 名称', skillRulesPlaceholder: '描述必须保持什么、允许改变什么，以及结果规则。', skillRules: 'Skill 规则', createProjectSkill: '创建项目 Skill', createProjectSkillDetail: '将写入当前项目，之后可被 Agent 调用。', creating: '创建中…', confirmCreate: '确认创建', createSkill: '创建 Skill', skillCreateFailed: 'Skill 创建失败。', noProjectSkills: '还没有项目 Skill。', skillCount: (count: number) => `${count} 个`,
+    skillsAria: '系统与项目 Skill', skillsTitle: '创作技能', skillsDescription: '在输入框键入 @ 即可调用 Skill。新建的项目 Skill 会自动挂载到当前对话。', skillsUnavailableLocal: '本地预览模式未连接工作区服务；连接云端后可管理 Skill。', systemSkills: '系统 Skills', newSkill: '＋ 新建技能', skillNamePlaceholder: '技能名称，例如：夏日换景', skillName: 'Skill 名称', skillRulesPlaceholder: '描述必须保持什么、允许改变什么，以及结果规则。', skillRules: 'Skill 规则', createProjectSkill: '创建项目 Skill', createProjectSkillDetail: '将写入当前项目，之后可被 Agent 调用。', creating: '创建中…', confirmCreate: '确认创建', createSkill: '创建 Skill', skillCreateFailed: 'Skill 创建失败。', noProjectSkills: '还没有项目 Skill。', skillCount: (count: number) => `${count} 个`,
     refineOne: '继续优化这张结果：', refineMany: (count: number) => `继续优化这 ${count} 张结果：`, continueContext: '继续基于当前上下文创作：', runtimeAria: 'Agent 运行记录', collapseSteps: '收起运行步骤', viewSteps: '查看运行步骤', nextStep: '下一步：', runSteps: '运行步骤', runningStep: (label: string) => `正在${label}`, runtimeStepFailed: '该步骤未完成。', runProgress: 'Agent Run 实时进度', generationTask: '生成任务', cancelTask: '取消任务', cancelFailed: '任务取消失败，请稍后重试。', retryFailed: (label: string) => `「${label}」重试失败，请稍后再试。`,
   }
   const branchStatusLabel = (status: BotanicAgentRun['branches'][number]['status']) => locale === 'en'
@@ -452,6 +453,7 @@ export default function AgentWorkspace({
   const [skillFormOpen, setSkillFormOpen] = useState(false)
   const [skillConfirming, setSkillConfirming] = useState(false)
   const [skillSaving, setSkillSaving] = useState(false)
+  const [reviewDecisionPendingId, setReviewDecisionPendingId] = useState('')
   const [skillError, setSkillError] = useState('')
   const [expandedSkillId, setExpandedSkillId] = useState('')
   const [renamingSession, setRenamingSession] = useState(false)
@@ -972,14 +974,15 @@ export default function AgentWorkspace({
   useEffect(() => {
     let active = true
     setSkillError('')
-    // 系统 Skill 是静态目录，不依赖项目持久化；关掉 persistence 时 Composer @ 仍要能挂载。
-    void listBotanicAgentSystemSkills()
-      .then((items) => { if (active) setSystemSkills(items) })
-      .catch(() => { if (active) setSystemSkills([]) })
     if (!serverPersistenceEnabled) {
+      // 本地预览没有 Node API；不发起目录请求，避免浏览器控制台出现误导性的 500。
+      setSystemSkills([])
       setSkills([])
       return () => { active = false }
     }
+    void listBotanicAgentSystemSkills()
+      .then((items) => { if (active) setSystemSkills(items) })
+      .catch(() => { if (active) setSystemSkills([]) })
     void listProjectAgentSkills(projectId).then((items) => {
       if (active) setSkills(items)
     }).catch((reason) => {
@@ -1091,6 +1094,24 @@ export default function AgentWorkspace({
     openUtilityPanel(feedback.action === 'view_results' ? 'result' : 'task')
   }
 
+  const decideReview = async (message: BotanicAgentMessage, decision: 'accepted' | 'rejected' | 'retry_requested') => {
+    const review = message.review
+    if (!review?.id || !session || reviewDecisionPendingId) return
+    setReviewDecisionPendingId(review.id)
+    try {
+      const saved = await submitBotanicAgentReviewDecision({ projectId, reviewId: review.id, decision })
+      if (!isCurrentAgentProject()) return
+      onUpdateMessage(session.id, message.id, {
+        review: saved,
+        content: formatBotanicAgentRunReviewMessage(saved, locale),
+      })
+    } catch {
+      // 决策失败保留 pending 状态，用户可再次提交。
+    } finally {
+      setReviewDecisionPendingId('')
+    }
+  }
+
   useEffect(() => {
     if (!session) return
     for (const run of runs) {
@@ -1134,7 +1155,7 @@ export default function AgentWorkspace({
   // 评审是派生数据：未配置、失败或结果未回填都静默跳过，绝不影响 Run 与结果本身；
   // 结果晚于终态回填时，Run 对账会更新 updatedAt，下一次请求键随之重试。
   useEffect(() => {
-    if (!session || !latestRun) return
+    if (!serverPersistenceEnabled || !session || !latestRun) return
     if (latestRun.status !== 'completed' && latestRun.status !== 'partial') return
     // 只评当前会话里的任务，不把其他会话的历史 Run 拉进来点评。
     if (!session.messages.some((message) => message.runId === latestRun.id)) return
@@ -1150,6 +1171,7 @@ export default function AgentWorkspace({
         role: 'assistant',
         kind: 'text',
         content: formatBotanicAgentRunReviewMessage(review, locale),
+        review,
       })
       // 挑选循环闭合：评审选出的最佳结果直接成为下一轮迭代目标，替代「第一个结果」的默认跟随。
       if (review.bestNodeId) onUseResultContext([review.bestNodeId])
@@ -1294,33 +1316,46 @@ export default function AgentWorkspace({
       streaming: true,
     })
     try {
-      const nextPlan = await streamBotanicAgentPlan(input, {
-        signal: controller.signal,
-        onReasoning: attachRuntimeReasoning,
-        onEvent: (event) => {
-          if (controller.signal.aborted) return
-          const receivedAt = Date.now()
-          setLiveConversation((current) => {
-            if (current?.sessionId !== session.id || current.message.id !== liveMessageId) return current
-            const next = applyAgentConversationStreamEvent(
-              { content: current.message.content, timeline: current.timeline },
-              agentTimelineEvent(event, receivedAt),
-            )
-            return {
-              ...current,
-              message: { ...current.message, content: next.content },
-              timeline: next.timeline,
-              streaming: event.type !== 'done' && event.type !== 'error',
-            }
+      const nextPlan = serverPersistenceEnabled
+        ? await streamBotanicAgentPlan(input, {
+            signal: controller.signal,
+            onReasoning: attachRuntimeReasoning,
+            onEvent: (event) => {
+              if (controller.signal.aborted) return
+              const receivedAt = Date.now()
+              setLiveConversation((current) => {
+                if (current?.sessionId !== session.id || current.message.id !== liveMessageId) return current
+                const next = applyAgentConversationStreamEvent(
+                  { content: current.message.content, timeline: current.timeline },
+                  agentTimelineEvent(event, receivedAt),
+                )
+                return {
+                  ...current,
+                  message: { ...current.message, content: next.content },
+                  timeline: next.timeline,
+                  streaming: event.type !== 'done' && event.type !== 'error',
+                }
+              })
+              if (event.type === 'tool') {
+                attachPlannerToolTrace({ toolCalls: [event.toolCall] } as BotanicAgentPlan)
+              }
+              if (event.type === 'reasoning') {
+                appendRuntimeReasoningDelta(event.step, event.delta)
+              }
+            },
           })
-          if (event.type === 'tool') {
-            attachPlannerToolTrace({ toolCalls: [event.toolCall] } as BotanicAgentPlan)
-          }
-          if (event.type === 'reasoning') {
-            appendRuntimeReasoningDelta(event.step, event.delta)
-          }
-        },
-      })
+        : buildBotanicAgentPlan({
+            instruction: cleanInstruction,
+            locale,
+            intent,
+            selectedResultNodeId: target.id,
+            selectedResultLabel: target.label,
+            rootRecipe: target.rootRecipe,
+            assetGroup,
+            contextSnapshot: createBotanicAgentContextSnapshot(contextItems),
+            ...(outputCount ? { outputCount } : {}),
+            settings: { ...target.rootRecipe.settings, ...generationOverrides },
+          })
       if (controller.signal.aborted) return null
       attachPlannerToolTrace(nextPlan)
       setLiveConversation((current) => current?.message.id === liveMessageId ? undefined : current)
@@ -1679,6 +1714,7 @@ export default function AgentWorkspace({
     let synthesizedAxisLabel: string | undefined = entry.synthesizedAxisLabel
     let resolvedOptions = entry.options
     if (entry.useServerTurn) {
+      if (serverPersistenceEnabled) {
       plannerControllerRef.current?.abort()
       const controller = new AbortController()
       plannerControllerRef.current = controller
@@ -1856,6 +1892,7 @@ export default function AgentWorkspace({
         // await，用户看不到闪烁，而漏掉复位会把输入框和确认卡一起锁死。
         setPlanning(false)
       }
+      }
     }
 
     const decision = serverDecision ?? decideBotanicAgentRequest(cleanInstruction, hasVisualContext)
@@ -1906,6 +1943,17 @@ export default function AgentWorkspace({
           instruction: cleanInstruction,
           options: { ...failedCommand.options, creativeBrief: briefTurn.brief },
         }
+      }
+      if (!serverPersistenceEnabled) {
+        setRuntimePhase('completed')
+        setRuntimeDetailsOpen(false)
+        appendMessage({
+          role: 'assistant',
+          kind: 'text',
+          content: route === 'prompt' ? flowCopy.localPreviewPrompt(routedInstruction) : flowCopy.localPreviewChat,
+          ...(route === 'prompt' ? { prompt: routedInstruction } : {}),
+        })
+        return
       }
       plannerControllerRef.current?.abort()
       const controller = new AbortController()
@@ -2416,6 +2464,7 @@ export default function AgentWorkspace({
             disabled={Boolean(persistenceAction)}
             onClick={inspectPersistenceIssue}
           ><span aria-hidden="true">{persistenceStatus === 'conflict' ? '!' : '·'}</span></button> : null}
+          <button type="button" className="agent-workspace__close-button" aria-label={copy.close} title={copy.close} onClick={onClose}><CloseIcon /></button>
           <div ref={utilityMenuRef} className="agent-workspace__utility-menu-wrap">
             <button ref={utilityMenuButtonRef} type="button" className={`agent-workspace__utility-menu-button${utilityPanelOpen ? ' is-active' : ''}`} aria-haspopup="menu" aria-expanded={utilityMenuOpen} aria-controls={utilityMenuId} aria-label={copy.tools} title={copy.tools} onClick={() => { setUtilityMenuOpen((open) => !open); setHistoryOpen(false) }}><ChecklistIcon /></button>
             {utilityMenuOpen ? <div id={utilityMenuId} className="agent-workspace__utility-menu" role="menu" aria-label={copy.tools}>
@@ -2570,6 +2619,7 @@ export default function AgentWorkspace({
         {skillPanelOpen ? <div data-agent-flip className="agent-workspace__flip-surface"><section className="agent-skill-panel" aria-label={flowCopy.skillsAria}>
           <header><AgentPanelBackButton onClick={closeUtilityPanel} /><div><small>SKILL REGISTRY</small><h2>{flowCopy.skillsTitle}</h2></div><span>{flowCopy.skillCount(systemSkills.length + skills.length)}</span></header>
           <p>{flowCopy.skillsDescription}</p>
+          {!serverPersistenceEnabled ? <p className="agent-panel__empty agent-skill-panel__local-notice" role="status">{flowCopy.skillsUnavailableLocal}</p> : null}
           {systemSkills.length ? <div className="agent-skill-panel__catalog"><strong>{flowCopy.systemSkills}</strong>{systemSkills.map((skill) => <AgentSkillCard
             key={skill.id}
             id={skill.id}
@@ -2581,7 +2631,7 @@ export default function AgentWorkspace({
             onToggle={(id) => setExpandedSkillId((current) => current === id ? '' : id)}
             onToggleMount={session ? toggleMountedSkill : undefined}
           />)}</div> : null}
-          {!skillFormOpen && !skillConfirming && !skillError ? <button type="button" className="agent-skill-panel__create-entry" aria-expanded="false" onClick={() => setSkillFormOpen(true)}>{flowCopy.newSkill}</button> : <div className="agent-skill-panel__form">
+          {serverPersistenceEnabled && !skillFormOpen && !skillConfirming && !skillError ? <button type="button" className="agent-skill-panel__create-entry" aria-expanded="false" onClick={() => setSkillFormOpen(true)}>{flowCopy.newSkill}</button> : serverPersistenceEnabled ? <div className="agent-skill-panel__form">
               <input ref={skillNameInputRef} value={skillName} onChange={(event) => { setSkillName(event.target.value); setSkillConfirming(false); setSkillError('') }} maxLength={80} placeholder={flowCopy.skillNamePlaceholder} aria-label={flowCopy.skillName} autoFocus />
               <textarea value={skillInstructions} onChange={(event) => { setSkillInstructions(event.target.value); setSkillConfirming(false); setSkillError('') }} maxLength={4000} placeholder={flowCopy.skillRulesPlaceholder} aria-label={flowCopy.skillRules} />
               {skillConfirming ? <div className="agent-skill-panel__confirm">
@@ -2589,7 +2639,7 @@ export default function AgentWorkspace({
                 <div><button type="button" autoFocus onClick={() => { setSkillConfirming(false); requestAnimationFrame(() => skillCreateButtonRef.current?.focus()) }}>{flowCopy.cancel}</button><button type="button" disabled={skillSaving} onClick={() => void confirmSkillCreation()}>{skillSaving ? flowCopy.creating : flowCopy.confirmCreate}</button></div>
               </div> : <div className="agent-skill-panel__form-actions"><button ref={skillCreateButtonRef} type="button" className="agent-skill-panel__cancel" onClick={() => { setSkillFormOpen(false); setSkillError('') }}>{flowCopy.cancel}</button><button type="button" className="agent-skill-panel__create" disabled={!skillName.trim() || !skillInstructions.trim()} onClick={() => setSkillConfirming(true)}>{flowCopy.createSkill}</button></div>}
               {skillError ? <p role="alert">{skillError}</p> : null}
-            </div>}
+            </div> : null}
           <div className="agent-skill-panel__list">
             {skills.map((skill) => <AgentSkillCard
               key={skill.id}
@@ -2685,6 +2735,9 @@ export default function AgentWorkspace({
           onEdit={(content) => { setInstruction(content); requestAnimationFrame(() => composerTextareaRef.current?.focus()) }}
           onRetryDelivery={retryMessage}
           onFeedback={(targetMessage, feedback) => onUpdateMessage(session.id, targetMessage.id, { feedback })}
+          onSaveAsMemory={(_targetMessage, kind, content) => onAddMemory(kind, content, session.contextNodeIds)}
+          onReviewDecision={(targetMessage, decision) => void decideReview(targetMessage, decision)}
+          reviewDecisionPending={Boolean(reviewDecisionPendingId && reviewDecisionPendingId === message.review?.id)}
         /></div>
         }) : null}
         {showRuntimeFeed ? (() => {

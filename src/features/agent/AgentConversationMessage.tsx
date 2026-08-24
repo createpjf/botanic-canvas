@@ -14,6 +14,7 @@ import {
   type BotanicAgentArtifact,
   type BotanicAgentContextSnapshot,
   type BotanicAgentExecutionMode,
+  type BotanicAgentMemoryKind,
   type BotanicAgentMessage,
   type BotanicAgentRun,
 } from '../../domain/agent'
@@ -44,12 +45,36 @@ import {
 } from '../../domain/agentCreativeComposition'
 import { useProductI18n } from '../../i18n/react'
 import type { ProductLocale } from '../../i18n/core'
+import type { BotanicAgentRunReview } from '../../domain/agentReviewContract'
 
 /** 超过这个体量的助手回复默认折叠；阈值只影响展示，不改变消息内容。 */
 const collapsibleContentLength = 600
 const collapsibleContentLines = 14
 /** 单条任务消息内联展示的结果上限；更多结果去结果面板看，避免对话被结果流冲垮。 */
 const inlineRunResultLimit = 4
+
+function AgentReviewDecision({
+  review,
+  pending,
+  onDecision,
+}: {
+  review: BotanicAgentRunReview
+  pending: boolean
+  onDecision?: (decision: 'accepted' | 'rejected' | 'retry_requested') => void
+}) {
+  const { locale } = useProductI18n()
+  if (!review.id || !onDecision) return null
+  if (review.status && review.status !== 'pending') {
+    const label = review.status === 'accepted' ? (locale === 'en' ? 'Accepted' : '已接受') : review.status === 'rejected' ? (locale === 'en' ? 'Rejected' : '已退回') : (locale === 'en' ? 'Retry requested' : '已请求重试')
+    return <p className="agent-review-decision" role="status">{label}{review.decisionNote ? ` · ${review.decisionNote}` : ''}</p>
+  }
+  return <div className="agent-review-decision" aria-label={locale === 'en' ? 'Review decision' : '评审决策'}>
+    <span>{locale === 'en' ? 'Human quality gate' : '人工质量门'}</span>
+    <button type="button" disabled={pending} onClick={() => onDecision('accepted')}>{locale === 'en' ? 'Accept' : '接受'}</button>
+    <button type="button" disabled={pending} onClick={() => onDecision('retry_requested')}>{locale === 'en' ? 'Request retry' : '请求重试'}</button>
+    <button type="button" disabled={pending} onClick={() => onDecision('rejected')}>{locale === 'en' ? 'Reject' : '退回'}</button>
+  </div>
+}
 
 function timelineElapsedLabel(startedAt: number, endedAt: number, locale: ProductLocale) {
   const seconds = Math.max(0, Math.floor((endedAt - startedAt) / 1_000))
@@ -476,6 +501,9 @@ type AgentConversationMessageProps = {
   onEdit: (content: string) => void
   onRetryDelivery: (messageId: string) => void
   onFeedback: (message: BotanicAgentMessage, feedback: BotanicAgentMessage['feedback']) => void
+  onSaveAsMemory?: (message: BotanicAgentMessage, kind: BotanicAgentMemoryKind, content: string) => string | null
+  onReviewDecision?: (message: BotanicAgentMessage, decision: 'accepted' | 'rejected' | 'retry_requested') => void
+  reviewDecisionPending?: boolean
 }
 
 export function AgentConversationMessage({
@@ -513,9 +541,22 @@ export function AgentConversationMessage({
   onEdit,
   onRetryDelivery,
   onFeedback,
+  onSaveAsMemory,
+  onReviewDecision,
+  reviewDecisionPending = false,
 }: AgentConversationMessageProps) {
   const { locale } = useProductI18n()
   const t = (zh: string, en: string) => locale === 'en' ? en : zh
+  const [feedbackMemoryOpen, setFeedbackMemoryOpen] = useState(false)
+  const [feedbackMemoryKind, setFeedbackMemoryKind] = useState<BotanicAgentMemoryKind>('avoid')
+  const [feedbackMemoryDraft, setFeedbackMemoryDraft] = useState('')
+  const [feedbackMemorySaved, setFeedbackMemorySaved] = useState(false)
+  useEffect(() => {
+    setFeedbackMemoryOpen(Boolean(message.feedback))
+    setFeedbackMemoryKind(message.feedback === 'positive' ? 'approved' : 'avoid')
+    setFeedbackMemoryDraft('')
+    setFeedbackMemorySaved(false)
+  }, [message.id, message.feedback])
   const dimensionLabel = (dimension: string) => locale === 'en'
     ? ({ person: 'Person', pose: 'Pose', product: 'Product', garment: 'Garment', scene: 'Scene', composition: 'Composition', style: 'Style', lighting: 'Lighting' }[dimension] ?? dimension)
     : creativeDimensionLabel(dimension as Parameters<typeof creativeDimensionLabel>[0])
@@ -574,6 +615,7 @@ export function AgentConversationMessage({
       {message.role === 'assistant' && botanicAgentMessageOffersVisualPrompt(message) ? <div className="agent-run-message__actions" aria-label={t('Prompt 操作', 'Prompt actions')}>
         <button type="button" disabled={planning || promptUsePending} onClick={() => onUsePrompt(message)}>{promptUsePending ? t('等待确认', 'Awaiting approval') : t('用这段 Prompt 生成', 'Generate with this prompt')}</button>
       </div> : null}
+      {message.review ? <AgentReviewDecision review={message.review} pending={reviewDecisionPending} onDecision={onReviewDecision ? (decision) => onReviewDecision(message, decision) : undefined} /> : null}
       {/* 任务/结果/定位画布只挂在已提交计划卡上；Run 消息只留「继续修改」，避免同一 runId 双份 pill。 */}
       {message.kind === 'run' && message.runId && continueNodeIds.length ? <div className="agent-run-message__actions" aria-label={t('继续修改', 'Continue editing')}>
         <button type="button" onClick={() => onContinueResultContext(continueNodeIds, outputNodeIds.length)}>{t('继续修改', 'Continue editing')}</button>
@@ -758,5 +800,24 @@ export function AgentConversationMessage({
       </> : null}
       <button type="button" aria-label={t('复制消息', 'Copy message')} title={t('复制消息', 'Copy message')} onClick={() => void navigator.clipboard.writeText(message.composition ? formatBotanicAgentCompositionMessage(message.composition, locale) : message.content)}><CopyIcon /></button>
     </div>}
+    {message.role === 'assistant' && sessionId && message.feedback && onSaveAsMemory && feedbackMemoryOpen ? <form className="agent-feedback-memory" onSubmit={(event) => {
+      event.preventDefault()
+      const content = feedbackMemoryDraft.trim()
+      if (!content) return
+      const saved = onSaveAsMemory(message, feedbackMemoryKind, content)
+      if (!saved) return
+      setFeedbackMemorySaved(true)
+      setFeedbackMemoryOpen(false)
+    }}>
+      <div className="agent-feedback-memory__header"><strong>{message.feedback === 'positive' ? t('把认可方向留下来', 'Keep this approved direction') : t('把改进点留下来', 'Keep this improvement point')}</strong><button type="button" onClick={() => setFeedbackMemoryOpen(false)} aria-label={t('关闭反馈记忆', 'Close feedback memory')}>×</button></div>
+      <select value={feedbackMemoryKind} onChange={(event) => setFeedbackMemoryKind(event.target.value as BotanicAgentMemoryKind)} aria-label={t('记忆类型', 'Memory type')}>
+        <option value="approved">{t('已确认方向', 'Approved direction')}</option>
+        <option value="rule">{t('长期规则', 'Long-term rule')}</option>
+        <option value="avoid">{t('避免事项', 'Avoid')}</option>
+      </select>
+      <textarea value={feedbackMemoryDraft} onChange={(event) => setFeedbackMemoryDraft(event.target.value)} placeholder={message.feedback === 'positive' ? t('例如：保留这种克制的自然光与留白。', 'For example: Keep this restrained natural light and negative space.') : t('写下以后要避免或修正的具体点。', 'Write the specific thing to avoid or change next time.')} rows={2} />
+      <button type="submit" disabled={!feedbackMemoryDraft.trim()}>{t('保存到项目记忆', 'Save to project memory')}</button>
+    </form> : null}
+    {feedbackMemorySaved ? <small className="agent-feedback-memory__saved" role="status">{t('已保存到项目记忆。', 'Saved to project memory.')}</small> : null}
   </article>
 }

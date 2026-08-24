@@ -41,6 +41,22 @@ export function shouldUseHighFidelityCompose(input = {}) {
     || instructionRequestsMarkOverlay(input.prompt ?? '')
 }
 
+export function creativeExecutionContract(job) {
+  // CreativePlanCompiler 已把同一份契约编译进执行 Prompt；Provider 只应补充
+  // 旧版/外部工作流尚未编译的元数据，避免锁定约束在供应商提示词里重复出现。
+  const prompt = typeof job?.prompt === 'string' ? job.prompt.trim() : ''
+  if (/^(?:执行契约：|Creative execution contract:)/u.test(prompt)) return []
+  const constraints = Array.isArray(job?.constraints) ? job.constraints : []
+  const lines = constraints.map((constraint) => `${constraint.mode === 'preserve' ? '必须保持' : '允许变化'}：${constraint.dimension}${constraint.sourceAssetGroupId ? `（素材组 ${constraint.sourceAssetGroupId}）` : ''}。`)
+  const branch = typeof job?.branchPromptDelta === 'string' && job.branchPromptDelta.trim()
+    ? [`本分支变化：${job.branchPromptDelta.trim()}`]
+    : []
+  const intent = typeof job?.creativeIntent === 'string' && job.creativeIntent.trim()
+    ? [`任务意图：${job.creativeIntent.trim()}。`]
+    : []
+  return [...intent, ...lines, ...branch]
+}
+
 /** gpt-image-2 合成必须用 high；该模型不允许传 input_fidelity。 */
 export function gptImage2EditQuality(job) {
   if (shouldUseHighFidelityCompose(job)) return 'high'
@@ -127,6 +143,7 @@ export function buildImageProviderPrompt(job, variationIndex) {
     job.settings?.aspectRatio
       ? `画面比例：${job.settings.aspectRatio}；输出规格：${job.settings.resolution ?? ''}。`
       : '',
+    ...creativeExecutionContract(job),
     `创意目标：${job.prompt}`,
     variationIndex === undefined ? '' : `本张为同批候选 ${variationIndex + 1}；请与同批其他候选形成可见差异，同时保持主体一致。`,
     compositionBrandGuard([job.parent, ...(job.references ?? [])].filter(Boolean)),

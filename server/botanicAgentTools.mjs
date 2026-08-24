@@ -39,6 +39,18 @@ const skillCatalog = Object.freeze({
   },
 })
 
+const skillRiskOrder = ['read', 'write', 'costly', 'external']
+
+export function botanicAgentSkillRisk(skill) {
+  const capabilities = Array.isArray(skill?.capabilities) && skill.capabilities.length ? skill.capabilities : ['read']
+  return capabilities.reduce((risk, capability) => {
+    // 历史数据里的未知能力按最高风险处理，不能因迁移缺字段而静默放行。
+    const normalized = skillRiskOrder.includes(capability) ? capability : 'external'
+    const current = skillRiskOrder.indexOf(normalized)
+    return current > skillRiskOrder.indexOf(risk) ? normalized : risk
+  }, 'read')
+}
+
 export function botanicAgentBuiltInSkill(skillId) {
   const skill = skillCatalog[skillId]
   return skill ? { id: skillId, name: skill.label, instructions: skill.instructions } : undefined
@@ -58,7 +70,14 @@ function projectSkillEntries(projectSkills = []) {
     .filter((skill) => skill?.status === 'active' && typeof skill.id === 'string' && typeof skill.name === 'string' && typeof skill.instructions === 'string')
     .filter((skill) => !skillCatalog[skill.id])
     .slice(0, 30)
-    .map((skill) => [skill.id, { label: skill.name, instructions: skill.instructions, source: 'project' }])
+    .map((skill) => [skill.id, {
+      label: skill.name,
+      instructions: skill.instructions,
+      source: 'project',
+      ...(Number.isInteger(skill.version) ? { version: skill.version } : {}),
+      ...(typeof skill.contentHash === 'string' ? { contentHash: skill.contentHash } : {}),
+      capabilities: Array.isArray(skill.capabilities) ? skill.capabilities.slice(0, 12) : ['read'],
+    }])
 }
 
 /** 系统目录 + 当前项目已启用 Skill。同名 id 以系统目录为准，避免项目覆盖内置规则。 */
@@ -73,7 +92,12 @@ export function resolveBotanicAgentMountedSkills(mountedSkillIds = [], projectSk
     .map((skillId) => {
       const skill = available[skillId]
       return skill
-        ? { id: skillId, name: skill.label, instructions: skill.instructions, source: skill.source ?? 'system' }
+        ? {
+          id: skillId, name: skill.label, instructions: skill.instructions, source: skill.source ?? 'system',
+          ...(skill.version ? { version: skill.version } : {}),
+          ...(skill.contentHash ? { contentHash: skill.contentHash } : {}),
+          ...(skill.capabilities ? { capabilities: skill.capabilities } : {}),
+        }
         : undefined
     })
     .filter(Boolean)
@@ -329,6 +353,28 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
       },
       execute: async ({ skillId }, context) => {
         const skill = availableSkills[skillId]
+        const risk = botanicAgentSkillRisk(skill)
+        if (risk !== 'read') {
+          propose({
+            id: context?.toolCallId ?? `skill-${skillId}`,
+            kind: 'skill',
+            toolName: 'skill_apply',
+            label: `Skill · ${skill.label}`,
+            summary: `Skill「${skill.label}」声明了${risk}能力，需要确认后应用。`,
+            risk,
+            arguments: { skillId },
+            status: 'awaiting_confirmation',
+            requiresConfirmation: true,
+          })
+          return {
+            skillId,
+            name: skill.label,
+            source: skill.source ?? 'system',
+            capabilities: skill.capabilities ?? ['read'],
+            requiresConfirmation: true,
+            risk,
+          }
+        }
         propose({
           id: context?.toolCallId ?? `skill-${skillId}`,
           kind: 'skill',
@@ -339,7 +385,7 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
           arguments: { skillId },
           status: 'succeeded',
         })
-        return { skillId, ...skill }
+        return { skillId, ...skill, capabilities: skill.capabilities ?? ['read'] }
       },
     },
     {

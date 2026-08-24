@@ -7,14 +7,14 @@ import { useDialogFocusTrap } from './components/useDialogFocusTrap'
 import { useRestoreFocus } from './components/motionPresence'
 import { workspaceHash, workspaceLocationFromHash } from './features/canvas/canvasWorkspaceNavigation'
 import { cleanProductAuthUrl, hasProductAuthCallbackError } from './lib/authFlow'
-import { clearProductSession, completeProductPasswordSetup, createProductSession, hybridAuthEnabled, productPasswordSetupRequired, readProductSession, serverPersistenceEnabled, supabaseAuthEnabled, type ProductUser } from './lib/productSession'
+import { clearProductSession, completeProductPasswordSetup, createProductSession, hybridAuthEnabled, productPasswordSetupRequired, readProductSession, requestProductPasswordReset, serverPersistenceEnabled, supabaseAuthEnabled, type ProductUser } from './lib/productSession'
 import { subscribeProductSessionInvalidated } from './lib/productSessionInvalidation'
 import { localizeProductError, readProductLocale } from './i18n/core'
 import { LanguageSwitcher, useProductI18n } from './i18n/react'
 
 const CanvasWorkspace = lazy(() => import('./features/canvas/CanvasWorkspace'))
 
-type ProductAppState = 'checking' | 'landing' | 'sign-in' | 'password-setup' | 'ready' | 'error'
+type ProductAppState = 'checking' | 'landing' | 'sign-in' | 'password-reset' | 'password-setup' | 'ready' | 'error'
 
 const productAccessCopy = {
   'zh-CN': {
@@ -22,6 +22,7 @@ const productAccessCopy = {
     checkingTitle: '正在进入…',
     passwordSetupTitle: '设置登录密码',
     signInTitle: '登录工作台',
+    passwordResetTitle: '找回登录密码',
     syncing: '正在同步你的工作区。',
     inviteConfirmed: '邀请已确认。设置密码后，下次可直接使用邮箱登录。',
     newPassword: '新密码',
@@ -38,6 +39,11 @@ const productAccessCopy = {
     password: '密码',
     tokenPlaceholder: '粘贴访问令牌',
     passwordPlaceholder: '输入密码',
+    passwordResetDescription: '输入工作区邮箱，我们会发送一封安全的恢复邮件。',
+    forgotPassword: '忘记密码？',
+    sendResetLink: '发送恢复邮件',
+    backToSignIn: '返回邮箱登录',
+    passwordResetSent: '如果该邮箱已加入工作区，恢复链接将很快发送。请检查收件箱和垃圾邮件。',
     enterWorkspace: '进入工作台',
     backToEmail: '返回邮箱登录',
     useLegacyToken: '使用旧访问令牌',
@@ -54,6 +60,7 @@ const productAccessCopy = {
     checkingTitle: 'Signing in…',
     passwordSetupTitle: 'Set your password',
     signInTitle: 'Sign in to Botanic',
+    passwordResetTitle: 'Recover your password',
     syncing: 'Syncing your workspace.',
     inviteConfirmed: 'Your invitation is confirmed. Set a password to sign in with email next time.',
     newPassword: 'New password',
@@ -70,6 +77,11 @@ const productAccessCopy = {
     password: 'Password',
     tokenPlaceholder: 'Paste access token',
     passwordPlaceholder: 'Enter password',
+    passwordResetDescription: 'Enter your workspace email and we will send a secure recovery link.',
+    forgotPassword: 'Forgot password?',
+    sendResetLink: 'Send recovery email',
+    backToSignIn: 'Back to email sign-in',
+    passwordResetSent: 'If this email belongs to the workspace, a recovery link will arrive shortly. Check your inbox and spam folder.',
     enterWorkspace: 'Open workspace',
     backToEmail: 'Back to email sign-in',
     useLegacyToken: 'Use previous access token',
@@ -118,6 +130,8 @@ function App() {
   const [accessToken, setAccessToken] = useState('')
   const [password, setPassword] = useState('')
   const [passwordConfirmation, setPasswordConfirmation] = useState('')
+  const [passwordResetBusy, setPasswordResetBusy] = useState(false)
+  const [passwordResetSent, setPasswordResetSent] = useState(false)
   const [authMethod, setAuthMethod] = useState<'account' | 'legacy'>('account')
   const [needsPasswordSetup] = useState(() => productPasswordSetupRequired())
   const [authCallbackFailed] = useState(() => typeof window !== 'undefined' && hasProductAuthCallbackError(window.location))
@@ -298,6 +312,26 @@ function App() {
     }
   }
 
+  const requestPasswordReset = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!accessToken.trim() || passwordResetBusy) return
+    setPasswordResetBusy(true)
+    setPasswordResetSent(false)
+    setMessage('')
+    try {
+      await requestProductPasswordReset(accessToken)
+      setPasswordResetSent(true)
+      setMessage(accessCopy.passwordResetSent)
+    } catch (error) {
+      setMessage(localizeProductError(error, locale, {
+        'zh-CN': accessCopy.signInFailed,
+        en: accessCopy.signInFailed,
+      }))
+    } finally {
+      setPasswordResetBusy(false)
+    }
+  }
+
   const enterWorkspace = () => {
     sessionRestoreRunRef.current += 1
     setMessage('')
@@ -316,6 +350,7 @@ function App() {
     setAccessOverlayOpen(false)
     setAccessToken('')
     setPassword('')
+    setPasswordResetSent(false)
     setMessage('')
     intendedWorkspaceHashRef.current = null
     clearWorkspaceLocation()
@@ -336,14 +371,14 @@ function App() {
     </>
   )
 
+  const accessIsDialog = accessOverlayOpen && (state === 'sign-in' || state === 'password-reset' || state === 'checking' || state === 'error')
   const landing = <ProductLanding
     isAuthenticated={Boolean(user)}
     onEnterWorkspace={enterWorkspace}
+    ariaHidden={accessIsDialog}
   />
 
   if (state === 'landing') return <>{landing}<Analytics /></>
-
-  const accessIsDialog = accessOverlayOpen && (state === 'sign-in' || state === 'checking' || state === 'error')
 
   return (
     <>
@@ -357,7 +392,7 @@ function App() {
         >
           <span>BOTANIC</span>
           <LanguageSwitcher className="product-access__language" />
-          <h1 id="product-access-title">{state === 'checking' ? accessCopy.checkingTitle : state === 'password-setup' ? accessCopy.passwordSetupTitle : accessCopy.signInTitle}</h1>
+          <h1 id="product-access-title">{state === 'checking' ? accessCopy.checkingTitle : state === 'password-setup' ? accessCopy.passwordSetupTitle : state === 'password-reset' ? accessCopy.passwordResetTitle : accessCopy.signInTitle}</h1>
           {state === 'checking' ? <p>{accessCopy.syncing}</p> : (
             state === 'password-setup' ? <form onSubmit={completePasswordSetup}>
               <p>{accessCopy.inviteConfirmed}</p>
@@ -365,6 +400,15 @@ function App() {
               <label><span>{accessCopy.confirmPassword}</span><input autoComplete="new-password" type="password" minLength={8} value={passwordConfirmation} onChange={(event) => setPasswordConfirmation(event.target.value)} placeholder={accessCopy.passwordAgain} /></label>
               {passwordConfirmation && password !== passwordConfirmation ? <small role="alert">{accessCopy.passwordMismatch}</small> : message ? <small role="alert">{message}</small> : null}
               <button type="submit" disabled={password.length < 8 || password !== passwordConfirmation}>{accessCopy.saveAndEnter}</button>
+            </form> : state === 'password-reset' ? <form onSubmit={requestPasswordReset}>
+              <p>{passwordResetSent ? message : accessCopy.passwordResetDescription}</p>
+              <label>
+                <span>{accessCopy.email}</span>
+                <input autoComplete="email" type="email" value={accessToken} onChange={(event) => { setAccessToken(event.target.value); setPasswordResetSent(false); setMessage('') }} placeholder="name@company.com" />
+              </label>
+              {message && !passwordResetSent ? <small role="alert">{message}</small> : null}
+              <button type="submit" disabled={passwordResetBusy || !accessToken.trim()}>{passwordResetBusy ? accessCopy.checkingTitle : accessCopy.sendResetLink}</button>
+              <button className="product-access__alternate" type="button" onClick={() => { setState('sign-in'); setMessage(''); setPasswordResetSent(false) }}>{accessCopy.backToSignIn}</button>
             </form> : <form onSubmit={signIn}>
               <p>{useLegacyToken ? accessCopy.legacyDescription : supabaseAuthEnabled ? accessCopy.accountDescription : accessCopy.tokenDescription}</p>
               <label>
@@ -377,6 +421,7 @@ function App() {
               </label> : null}
               {message ? <small role="alert">{message}</small> : null}
               <button type="submit">{accessCopy.enterWorkspace}</button>
+              {supabaseAuthEnabled && !useLegacyToken ? <button className="product-access__alternate" type="button" onClick={() => { setState('password-reset'); setMessage(''); setPasswordResetSent(false) }}>{accessCopy.forgotPassword}</button> : null}
               {hybridAuthEnabled ? <button className="product-access__alternate" type="button" onClick={() => {
                 setAuthMethod(useLegacyToken ? 'account' : 'legacy')
                 setAccessToken('')

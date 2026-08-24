@@ -165,6 +165,39 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     alter table agent_runs drop constraint if exists agent_runs_status_check;
     alter table agent_runs add constraint agent_runs_status_check
       check (status in ('awaiting_confirmation', 'queued', 'executing', 'running', 'completed', 'partial', 'failed', 'cancelled'));
+    create table if not exists agent_turns (
+      id text primary key,
+      owner_id text not null references app_users(id) on delete cascade,
+      project_id text not null references projects(id) on delete cascade,
+      session_id text,
+      idempotency_key text not null,
+      status text not null check (status in ('running', 'completed', 'failed', 'cancelled')),
+      updated_at bigint not null,
+      payload jsonb not null,
+      unique (owner_id, project_id, idempotency_key)
+    );
+    create table if not exists agent_turn_events (
+      id text primary key,
+      turn_id text not null references agent_turns(id) on delete cascade,
+      owner_id text not null references app_users(id) on delete cascade,
+      project_id text not null references projects(id) on delete cascade,
+      sequence integer not null,
+      type text not null,
+      created_at bigint not null,
+      payload jsonb,
+      unique (turn_id, sequence)
+    );
+    create table if not exists agent_reviews (
+      id text primary key,
+      owner_id text not null references app_users(id) on delete cascade,
+      project_id text not null references projects(id) on delete cascade,
+      run_id text not null references agent_runs(id) on delete cascade,
+      locale text not null,
+      status text not null check (status in ('pending', 'accepted', 'rejected', 'retry_requested')),
+      updated_at bigint not null,
+      payload jsonb not null,
+      unique (project_id, run_id, locale)
+    );
     create table if not exists agent_sessions (
       id text primary key,
       owner_id text not null references app_users(id) on delete cascade,
@@ -276,6 +309,9 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     create index if not exists canvas_graph_updates_project_idx on canvas_graph_updates (project_id, id);
     create index if not exists jobs_status_updated_at_idx on generation_jobs (status, updated_at);
     create index if not exists agent_runs_project_updated_idx on agent_runs (project_id, updated_at desc);
+    create index if not exists agent_turns_project_updated_idx on agent_turns (project_id, updated_at desc);
+    create index if not exists agent_turn_events_turn_sequence_idx on agent_turn_events (turn_id, sequence asc);
+    create index if not exists agent_reviews_run_updated_idx on agent_reviews (project_id, run_id, updated_at desc);
     create index if not exists agent_sessions_project_updated_idx on agent_sessions (project_id, updated_at desc);
     create index if not exists agent_messages_session_updated_idx on agent_messages (session_id, updated_at asc);
     create index if not exists agent_memory_project_updated_idx on agent_memory_items (project_id, updated_at desc);
@@ -1326,10 +1362,19 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       const [existing] = await sql`select project_id as "projectId", payload from agent_skills where id = ${skill.id}`
       if (existing && existing.projectId !== skill.projectId) throw productError('Skill 标识已被其他项目使用。', 'AGENT_SKILL_ID_CONFLICT')
       const previous = asPayload(existing)
+      const version = Math.max(1, Number(previous?.version ?? skill.version ?? 1) + (existing ? 1 : 0))
+      const contentHash = createHash('sha256').update(String(skill.instructions ?? '')).digest('base64url')
+      const versions = [
+        ...(Array.isArray(previous?.versions) ? previous.versions : []),
+        { version, contentHash, instructions: String(skill.instructions ?? ''), updatedAt: timestamp },
+      ].slice(-20)
       const payload = {
         ...clone(skill), ownerId: userId,
         createdAt: Number(previous?.createdAt ?? skill.createdAt) || timestamp,
         updatedAt: timestamp,
+        version, contentHash,
+        capabilities: Array.isArray(skill.capabilities) && skill.capabilities.length ? [...new Set(skill.capabilities)].slice(0, 12) : ['read'],
+        governance: skill.governance ?? 'project-approved', versions,
       }
       await sql`
         insert into agent_skills (id, owner_id, project_id, status, updated_at, payload)
@@ -1490,6 +1535,136 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
         order by r.updated_at desc limit ${Math.max(1, Math.min(limit, 60))}
       `
       return rows.map(asPayload)
+    },
+
+    async putAgentTurn(userId, turn) {
+      const role = await memberRole(turn.projectId, userId)
+      assertProjectPermission(role, 'read', 'PROJECT_READ_FORBIDDEN')
+      const payload = { ...clone(turn), ownerId: userId, updatedAt: Number(turn.updatedAt) || now() }
+      return sql.begin(async (tx) => {
+        await tx`select pg_advisory_xact_lock(hashtextextended(${turn.id}, 1))`
+        const [existing] = await tx`
+          select owner_id as "ownerId", project_id as "projectId", payload
+          from agent_turns where id = ${turn.id} for update
+        `
+        if (existing && (existing.projectId !== turn.projectId || existing.ownerId !== userId)) {
+          throw productError('Agent Turn 标识已被其他项目使用。', 'AGENT_TURN_ID_CONFLICT')
+        }
+        await tx`
+          insert into agent_turns (id, owner_id, project_id, session_id, idempotency_key, status, updated_at, payload)
+          values (${turn.id}, ${userId}, ${turn.projectId}, ${turn.sessionId ?? null}, ${turn.idempotencyKey}, ${turn.status}, ${payload.updatedAt}, ${tx.json(payload)}::jsonb)
+          on conflict (id) do update set session_id = excluded.session_id, status = excluded.status,
+            updated_at = excluded.updated_at, payload = excluded.payload
+          where agent_turns.owner_id = excluded.owner_id
+            and agent_turns.project_id = excluded.project_id
+            and agent_turns.updated_at <= excluded.updated_at
+        `
+        const [stored] = await tx`select owner_id as "ownerId", project_id as "projectId", payload from agent_turns where id = ${turn.id}`
+        if (!stored || stored.ownerId !== userId || stored.projectId !== turn.projectId) {
+          throw productError('Agent Turn 标识已被其他项目使用。', 'AGENT_TURN_ID_CONFLICT')
+        }
+        await insertAudit(tx, { actorId: userId, action: `agent-turn.${turn.status}`, projectId: turn.projectId, targetId: turn.id })
+        return clone(asPayload(stored))
+      })
+    },
+
+    async readAgentTurn(userId, turnId) {
+      const [row] = await sql`
+        select t.payload from agent_turns t join project_members m on m.project_id = t.project_id
+        where t.id = ${turnId} and t.owner_id = ${userId} and m.user_id = ${userId}
+      `
+      return asPayload(row)
+    },
+
+    async readAgentTurnForWorker(turnId) {
+      const [row] = await sql`select payload from agent_turns where id = ${turnId}`
+      return asPayload(row)
+    },
+
+    async listAgentTurnsForProject(userId, projectId, limit = 30) {
+      const rows = await sql`
+        select t.payload from agent_turns t join project_members m on m.project_id = t.project_id
+        where t.project_id = ${projectId} and t.owner_id = ${userId} and m.user_id = ${userId}
+        order by t.updated_at desc limit ${Math.max(1, Math.min(Number(limit) || 30, 100))}
+      `
+      return rows.map(asPayload)
+    },
+
+    async appendAgentTurnEvent(userId, projectId, event) {
+      const role = await memberRole(projectId, userId)
+      assertProjectPermission(role, 'read', 'PROJECT_READ_FORBIDDEN')
+      return sql.begin(async (tx) => {
+        const [turn] = await tx`select owner_id as "ownerId", project_id as "projectId" from agent_turns where id = ${event.turnId} for share`
+        if (!turn || turn.ownerId !== userId || turn.projectId !== projectId) throw productError('未找到 Agent Turn。', 'AGENT_TURN_NOT_FOUND')
+        await tx`
+          insert into agent_turn_events (id, turn_id, owner_id, project_id, sequence, type, created_at, payload)
+          values (${event.id}, ${event.turnId}, ${userId}, ${projectId}, ${event.sequence}, ${event.type}, ${event.createdAt || now()}, ${event.payload ? tx.json(event.payload) : null}::jsonb)
+          on conflict (turn_id, sequence) do nothing
+        `
+        const [stored] = await tx`select id, turn_id as "turnId", owner_id as "ownerId", project_id as "projectId", sequence, type, created_at as "createdAt", payload from agent_turn_events where turn_id = ${event.turnId} and sequence = ${event.sequence}`
+        return clone(stored ? { ...stored, payload: asJson(stored.payload) } : event)
+      })
+    },
+
+    async listAgentTurnEvents(userId, projectId, turnId, limit = 200) {
+      const rows = await sql`
+        select e.id, e.turn_id as "turnId", e.owner_id as "ownerId", e.project_id as "projectId", e.sequence,
+          e.type, e.created_at as "createdAt", e.payload
+        from agent_turn_events e join project_members m on m.project_id = e.project_id
+        where e.turn_id = ${turnId} and e.project_id = ${projectId} and e.owner_id = ${userId} and m.user_id = ${userId}
+        order by e.sequence asc limit ${Math.max(1, Math.min(Number(limit) || 200, 500))}
+      `
+      return rows.map((row) => ({ ...row, payload: asJson(row.payload) }))
+    },
+
+    async putAgentReview(userId, review) {
+      const role = await memberRole(review.projectId, userId)
+      assertProjectPermission(role, 'read', 'PROJECT_READ_FORBIDDEN')
+      const payload = { ...clone(review), ownerId: userId, updatedAt: Number(review.updatedAt) || now() }
+      return sql.begin(async (tx) => {
+        const [run] = await tx`select project_id as "projectId", owner_id as "ownerId" from agent_runs where id = ${review.runId}`
+        if (!run || run.projectId !== review.projectId || run.ownerId !== userId) throw productError('Agent Run 不属于当前项目。', 'AGENT_RUN_NOT_FOUND')
+        await tx`
+          insert into agent_reviews (id, owner_id, project_id, run_id, locale, status, updated_at, payload)
+          values (${review.id}, ${userId}, ${review.projectId}, ${review.runId}, ${review.locale ?? 'zh-CN'}, ${review.status ?? 'pending'}, ${payload.updatedAt}, ${tx.json(payload)}::jsonb)
+          on conflict (project_id, run_id, locale) do update set status = excluded.status, updated_at = excluded.updated_at, payload = excluded.payload
+        `
+        const [stored] = await tx`select payload from agent_reviews where project_id = ${review.projectId} and run_id = ${review.runId} and locale = ${review.locale ?? 'zh-CN'}`
+        await insertAudit(tx, { actorId: userId, action: 'agent-review.updated', projectId: review.projectId, targetId: review.id })
+        return clone(asPayload(stored))
+      })
+    },
+
+    async readAgentReview(userId, projectId, runId, locale = 'zh-CN') {
+      const rows = await sql`
+        select r.payload from agent_reviews r join project_members m on m.project_id = r.project_id
+        where r.project_id = ${projectId} and r.run_id = ${runId} and r.locale = ${locale}
+          and r.owner_id = ${userId} and m.user_id = ${userId}
+      `
+      return asPayload(rows[0])
+    },
+
+    async listAgentReviewsForRun(userId, projectId, runId) {
+      const rows = await sql`
+        select r.payload from agent_reviews r join project_members m on m.project_id = r.project_id
+        where r.project_id = ${projectId} and r.run_id = ${runId} and r.owner_id = ${userId} and m.user_id = ${userId}
+        order by r.updated_at desc
+      `
+      return rows.map(asPayload)
+    },
+
+    async putAgentReviewDecision(userId, projectId, reviewId, decision, decisionNote = '') {
+      const role = await memberRole(projectId, userId)
+      assertProjectPermission(role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      return sql.begin(async (tx) => {
+        const [row] = await tx`select payload from agent_reviews where id = ${reviewId} and project_id = ${projectId} for update`
+        if (!row) throw productError('未找到 Agent 评审。', 'AGENT_REVIEW_NOT_FOUND')
+        if (!['pending', 'accepted', 'rejected', 'retry_requested'].includes(decision)) throw productError('评审决策无效。', 'AGENT_REVIEW_DECISION_INVALID')
+        const payload = { ...asPayload(row), status: decision, decisionNote: String(decisionNote ?? '').slice(0, 500), decidedBy: userId, updatedAt: now() }
+        await tx`update agent_reviews set status = ${decision}, updated_at = ${payload.updatedAt}, payload = ${tx.json(payload)}::jsonb where id = ${reviewId} and project_id = ${projectId}`
+        await insertAudit(tx, { actorId: userId, action: `agent-review.${decision}`, projectId, targetId: reviewId })
+        return clone(payload)
+      })
     },
 
     async readGenerationJob(userId, jobId) {

@@ -3,6 +3,7 @@ import { botanicAgentBranchGenerationPrompt } from './botanicAgentVariations.mjs
 import { compositionOverlayReferences, orderCompositionReferences } from './generationComposition.mjs'
 import { validateGenerationInput } from './generationProvider.mjs'
 import { generationJobProjectionComplete, reconcileGenerationResults } from './generationResultReconciliation.mjs'
+import { compileAgentBranchRecipe } from './botanicCreativePlanCompiler.mjs'
 
 function clone(value) {
   return structuredClone(value)
@@ -180,6 +181,12 @@ function rawGenerationInput(run, parentNode, recipe, { videoModel = false } = {}
     settings: clone(recipe.settings),
     recipe: {
       prompt: recipe.prompt,
+      ...(recipe.creativeIntent ? { creativeIntent: recipe.creativeIntent } : {}),
+      ...(recipe.constraints?.length ? { constraints: clone(recipe.constraints) } : {}),
+      ...(recipe.qualityPolicy ? { qualityPolicy: clone(recipe.qualityPolicy) } : {}),
+      ...(recipe.sourcePlanFingerprint ? { sourcePlanFingerprint: recipe.sourcePlanFingerprint } : {}),
+      ...(recipe.memoryBindings?.length ? { memoryBindings: clone(recipe.memoryBindings) } : {}),
+      ...(recipe.skillBindings?.length ? { skillBindings: clone(recipe.skillBindings) } : {}),
       references: recipe.references.map((reference, index) => ({
         name: reference.name,
         role: reference.role,
@@ -237,7 +244,7 @@ function workflowForBranch({ run, branch, parentNode, recipe, jobId, branchIndex
     position: { x: generateNode.position.x, y: generateNode.position.y - 172 },
     draggable: true,
     selected: false,
-    data: { kind: 'text', label: generationKind === 'refinement' ? '精修描述' : '生成描述', content: recipe.prompt },
+    data: { kind: 'text', label: generationKind === 'refinement' ? '精修描述' : '生成描述', content: recipe.promptForDisplay ?? recipe.prompt },
   }
   const resultNode = {
     id: resultNodeId,
@@ -320,7 +327,7 @@ export function prepareAgentRunExecution({
   const catalogVideoModel = normalizedModels.find((model) => model.mediaKind === 'video')
   for (const [branchIndex, branch] of run.branches.entries()) {
     const jobId = jobIdForBranch(branch)
-    const recipe = recipeForRun(run, document, parentNode, branch, resolvedInitialReferences)
+    let recipe = recipeForRun(run, document, parentNode, branch, resolvedInitialReferences)
     // 成套方案条目让分支异构：媒体类型、定稿 Prompt、数量与时长全部按条目覆盖统一计划。
     const item = branch.item
     if (item) {
@@ -351,6 +358,16 @@ export function prepareAgentRunExecution({
       recipe.videoInputMode = 'first_frame'
       recipe.batchCount = 1
     }
+    recipe = compileAgentBranchRecipe({
+      // recipeForRun 已经完成旁白清理与分支增量拼接；编译层只把这份可信画面描述
+      // 包装成执行契约，不能再次回读规划器的叙述性 plan.prompt。
+      plan: { ...run.plan, prompt: recipe.prompt, settings: recipe.settings },
+      baseRecipe: recipe,
+      branch,
+      models: normalizedModels,
+      memoryBindings: run.plan.memoryBindings,
+      skillBindings: run.plan.skillBindings,
+    })
     const rawInput = rawGenerationInput(run, parentNode, recipe, { videoModel: branchModelIsVideo })
     const validated = validateGenerationInput(rawInput, { models, maximumBatchCount, maximumReferenceBytes })
     const selectedModel = normalizedModels.find((model) => model.id === validated.settings.model)

@@ -12,6 +12,7 @@ import { parseMcpToolConfigurations } from './mcpClient.mjs'
 import { resolveTavilyExtractUrl, resolveTavilySearchUrl } from './agentWebResearch.mjs'
 import { resolveInviteRedirectTo } from './inviteRedirect.mjs'
 import { assertProductStoreContract } from './productStoreContract.mjs'
+import { resolveAgentFeatureFlags } from './agentFeatureFlags.mjs'
 
 function boundedInteger(value, fallback, minimum, maximum) {
   const parsed = Number(value)
@@ -97,6 +98,7 @@ export function runtimeConfig(rootDir = process.cwd()) {
     // 看图走同一个 Flock 网关；置空即关闭视觉识别，Agent 回到只有节点元数据的状态。
     agentVisionModel: (process.env.AGENT_VISION_MODEL ?? 'gemini-3.6-flash').trim(),
     agentRawReasoning,
+    agentFeatureFlags: resolveAgentFeatureFlags(process.env),
     promptRefinementTimeoutMs: Number(process.env.PROMPT_REFINEMENT_TIMEOUT_MS ?? 30000),
     // Agent 规划与对话包含受控上下文读取和多轮工具调用；给它足够时间，
     // 避免浏览器先于 Provider 报“工作区超时”。客户端仍有独立的 60 秒上限。

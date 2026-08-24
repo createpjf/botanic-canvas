@@ -102,6 +102,11 @@ export function safeBotanicAgentMemory(document) {
       kind: item.kind.slice(0, 32),
       content: item.content.trim().slice(0, 1000),
       sourceNodeIds: Array.isArray(item.sourceNodeIds) ? item.sourceNodeIds.filter((id) => typeof id === 'string').slice(0, 12) : [],
+      scope: ['project', 'workspace', 'run'].includes(item.scope) ? item.scope : 'project',
+      source: ['human', 'review', 'conversation', 'import'].includes(item.source) ? item.source : 'human',
+      confidence: item.confidence === 'provisional' ? 'provisional' : 'confirmed',
+      ...(Number.isInteger(item.version) ? { version: item.version } : { version: 1 }),
+      ...(typeof item.contentHash === 'string' ? { contentHash: item.contentHash.slice(0, 200) } : {}),
     }))
 }
 

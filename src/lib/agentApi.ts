@@ -18,6 +18,20 @@ export type AgentRunCreationBranch = {
   item?: BotanicAgentCompositionItem
 }
 
+export async function forkBotanicAgentRun(input: { runId: string; branchId?: string; promptDelta: string }) {
+  const response = await productRequest<{ run: BotanicAgentRunSnapshot; reused?: boolean }>(`/api/agent-runs/${encodeURIComponent(input.runId)}/fork`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey('agent-fork') },
+    body: JSON.stringify({ branchId: input.branchId, promptDelta: input.promptDelta }),
+  })
+  return response
+}
+
+export async function compareBotanicAgentRun(runId: string) {
+  const response = await productRequest<{ comparison: { runId: string; projectId: string; status: string; branches: Array<{ id: string; label: string; status: string; outputCount: number; jobCount: number }> } }>(`/api/agent-runs/${encodeURIComponent(runId)}/compare`)
+  return response.comparison
+}
+
 function agentApiCopy(locale: ProductLocale) {
   return locale === 'en' ? {
     mediaRead: 'Unable to read the reference image. Add it again.', mediaType: 'Agent reference images support PNG, JPEG, or WebP only.', planTimeout: 'Agent planning is taking longer than expected. Try again shortly; the canvas was not changed.', turnTimeout: 'Agent is taking longer than expected to understand the request. Try again shortly; the canvas was not changed.', chatTimeout: 'Agent is taking longer than expected to organize the context. Try again shortly; the canvas was not changed.', streamUnavailable: 'Agent live connection is unavailable.', chatIncomplete: 'Agent did not complete the response. Try again.', streamEnded: 'Agent live connection ended unexpectedly.', reviewTimeout: 'The result review is taking longer than expected. This round was skipped; your generated results are unaffected.',
@@ -87,11 +101,11 @@ export async function requestBotanicAgentPlan(
   return completeBotanicAgentPlan(response.plan, input)
 }
 
-export async function requestBotanicAgentTurn(input: BotanicAgentTurnRequestInput, signal?: AbortSignal) {
+export async function requestBotanicAgentTurn(input: BotanicAgentTurnRequestInput, signal?: AbortSignal, requestKey = idempotencyKey('agent-turn')) {
   const copy = agentApiCopy(input.locale)
-  const response = await productRequest<{ turn: BotanicAgentTurnResult }>('/api/agent-intent', {
+  const response = await productRequest<{ turn: BotanicAgentTurnResult; runtimeTurn?: unknown }>('/api/agent-turns', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Accept-Language': input.locale },
+    headers: { 'Content-Type': 'application/json', 'Accept-Language': input.locale, 'Idempotency-Key': requestKey },
     body: JSON.stringify(buildBotanicAgentTurnRequest(input)),
     signal,
     timeoutMs: 60_000,
@@ -156,15 +170,17 @@ export async function streamBotanicAgentTurn(
   options: { signal?: AbortSignal; onEvent?: (event: BotanicAgentStreamEvent) => void } = {},
 ): Promise<BotanicAgentTurnResult> {
   const copy = agentApiCopy(input.locale)
+  const requestKey = idempotencyKey('agent-turn')
   let settled: BotanicAgentTurnResult | undefined
   try {
     await streamBotanicAgentEndpoint({
-      path: '/api/agent-intent/stream',
+      path: '/api/agent-turns/stream',
       body: JSON.stringify(buildBotanicAgentTurnRequest(input)),
       locale: input.locale,
+      headers: { 'Idempotency-Key': requestKey },
       signal: options.signal,
       onEvent: (event) => {
-        if (event.type === 'done' && event.turn) settled = event.turn
+        if (event.type === 'done' && (event.result ?? event.turn)) settled = event.result ?? event.turn
         options.onEvent?.(event)
       },
     })
@@ -174,7 +190,7 @@ export async function streamBotanicAgentTurn(
     if (caught instanceof ProductApiError && (caught.code === 'STREAM_DISCONNECTED' || caught.code === 'REQUEST_TIMEOUT')) {
       throw caught
     }
-    return requestBotanicAgentTurn(input, options.signal)
+    return requestBotanicAgentTurn(input, options.signal, requestKey)
   }
   if (!settled) throw new ProductApiError(copy.streamEnded, 0)
   return settled
@@ -208,6 +224,7 @@ async function streamBotanicAgentEndpoint(input: {
   locale: ProductLocale
   signal?: AbortSignal
   onEvent?: (event: BotanicAgentStreamEvent) => void
+  headers?: Record<string, string>
 }) {
   const copy = agentApiCopy(input.locale)
   let received = false
@@ -222,6 +239,7 @@ async function streamBotanicAgentEndpoint(input: {
   }
   try {
     const headers = new Headers({ 'Content-Type': 'application/json', Accept: 'text/event-stream', 'Accept-Language': input.locale })
+    for (const [key, value] of Object.entries(input.headers ?? {})) headers.set(key, value)
     for (const [key, value] of Object.entries(await productAuthorizationHeader())) headers.set(key, value)
     const response = await fetch(input.path, {
       method: 'POST',
@@ -428,6 +446,8 @@ export async function createPersistentBotanicAgentRun(input: {
         ...(input.plan.variation ? { variation: input.plan.variation } : {}),
         ...(input.plan.region ? { region: input.plan.region } : {}),
         ...(input.plan.composition ? { composition: input.plan.composition } : {}),
+        ...(input.plan.memoryBindings?.length ? { memoryBindings: input.plan.memoryBindings } : {}),
+        ...(input.plan.skillBindings?.length ? { skillBindings: input.plan.skillBindings } : {}),
         assetGroupId: input.plan.assetGroupId,
         toolCalls: input.plan.toolCalls,
       },
@@ -571,6 +591,23 @@ export async function requestBotanicAgentRunReview(projectId: string, runId: str
     timeoutMs: 45_000,
     timeoutMessage: copy.reviewTimeout,
   })
+  return response.review
+}
+
+export async function submitBotanicAgentReviewDecision(input: {
+  projectId: string
+  reviewId: string
+  decision: 'accepted' | 'rejected' | 'retry_requested'
+  note?: string
+}) {
+  const response = await productRequest<{ review: BotanicAgentRunReview }>(
+    `/api/agent-reviews/${encodeURIComponent(input.reviewId)}/decision`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId: input.projectId, decision: input.decision, ...(input.note ? { note: input.note } : {}) }),
+    },
+  )
   return response.review
 }
 

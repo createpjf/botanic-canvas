@@ -156,7 +156,7 @@ export type CanvasStore = {
   ensureAgentSession: (contextNodeIds?: string[]) => string
   startNewAgentSession: (contextNodeIds?: string[]) => string
   appendAgentMessage: (sessionId: string, message: BotanicAgentMessage) => void
-  updateAgentMessage: (sessionId: string, messageId: string, patch: Partial<Pick<BotanicAgentMessage, 'content' | 'runId' | 'status' | 'feedback' | 'plan' | 'question' | 'composition' | 'deliveryStatus'>>) => void
+  updateAgentMessage: (sessionId: string, messageId: string, patch: Partial<Pick<BotanicAgentMessage, 'content' | 'runId' | 'status' | 'feedback' | 'plan' | 'question' | 'composition' | 'deliveryStatus' | 'review'>>) => void
   updateAgentAction: (sessionId: string, messageId: string, actionId: string, patch: Partial<Pick<BotanicAgentActionProposal, 'status' | 'error' | 'result'>>) => void
   setAgentSessionContext: (sessionId: string, contextNodeIds: string[]) => void
   setAgentSessionExecutionMode: (sessionId: string, mode: BotanicAgentExecutionMode) => void
@@ -189,6 +189,8 @@ export type CanvasStore = {
   retryGeneration: () => Promise<boolean>
   retryMissingGeneration: (jobId: string) => Promise<boolean>
   clearGenerationError: () => void
+  /** 清除画布级操作反馈；反馈由工作区统一展示，不再只写入 Store。 */
+  clearAssistantMessage: () => void
   selectGenerationCandidate: (candidateId: string) => void
   undoLastAction: () => void
   createLocalDeliveries: (input: {

@@ -85,6 +85,10 @@ function runStatus(items, fallback = 'running') {
   return fallback
 }
 
+function reviewRequired(run) {
+  return run?.definition?.output?.reviewRequired === true
+}
+
 /**
  * 生产工作流定义采用只追加版本。运行只保存版本号与版本快照引用，发布新版本
  * 不会改变正在执行或历史运行的 Prompt、模型、品牌规则和确认策略。
@@ -148,6 +152,10 @@ export function createProductionWorkflowRun(input, { actorId, now = Date.now() }
     projectId: workflow.projectId,
     definition: clone(version.definition),
     status: 'queued',
+    qualityGate: {
+      required: version.definition.output?.reviewRequired === true,
+      status: version.definition.output?.reviewRequired === true ? 'pending' : 'not_required',
+    },
     items,
     createdAt: now,
     createdBy: requiredText(actorId, '操作者', 160),
@@ -155,13 +163,28 @@ export function createProductionWorkflowRun(input, { actorId, now = Date.now() }
   }
 }
 
-export function transitionProductionWorkflowRun(value, action, { now = Date.now() } = {}) {
+export function transitionProductionWorkflowRun(value, action, { now = Date.now(), actorId } = {}) {
   const run = clone(value)
   if (workflowRunTerminalStatuses.has(run.status)) throw new Error('工作流运行已进入终态。')
   if (action === 'start' && run.status !== 'queued') throw new Error('只有排队中的工作流可以启动。')
   if (action === 'pause' && run.status !== 'running') throw new Error('只有执行中的工作流可以暂停。')
   if (action === 'resume' && run.status !== 'paused') throw new Error('只有暂停的工作流可以恢复。')
-  if (!['start', 'pause', 'resume', 'cancel'].includes(action)) throw new Error('工作流运行操作不支持。')
+  if (['approve-review', 'reject-review'].includes(action) && run.status !== 'awaiting_review') {
+    throw new Error('只有等待质量评审的工作流可以提交评审决策。')
+  }
+  if (!['start', 'pause', 'resume', 'cancel', 'approve-review', 'reject-review'].includes(action)) throw new Error('工作流运行操作不支持。')
+  if (action === 'approve-review' || action === 'reject-review') {
+    run.qualityGate = {
+      ...(run.qualityGate ?? { required: true }),
+      status: action === 'approve-review' ? 'accepted' : 'rejected',
+      decidedAt: now,
+      decidedBy: actorId ?? run.createdBy,
+    }
+    run.status = action === 'approve-review' ? 'succeeded' : 'failed'
+    run.completedAt = now
+    run.updatedAt = now
+    return run
+  }
   if (action === 'cancel') {
     run.status = 'cancelled'
     run.items = run.items.map((item) => workflowItemTerminalStatuses.has(item.status)
@@ -189,6 +212,10 @@ export function applyWorkflowItemResult(value, itemId, result, { now = Date.now(
   if (workflowItemTerminalStatuses.has(nextItem.status)) nextItem.completedAt = now
   run.items[itemIndex] = nextItem
   run.status = runStatus(run.items, run.status === 'queued' ? 'running' : run.status)
+  if (run.status === 'succeeded' && reviewRequired(run)) {
+    run.status = 'awaiting_review'
+    run.qualityGate = { ...(run.qualityGate ?? { required: true }), required: true, status: 'pending' }
+  }
   run.updatedAt = now
   if (workflowRunTerminalStatuses.has(run.status)) run.completedAt = now
   return run
