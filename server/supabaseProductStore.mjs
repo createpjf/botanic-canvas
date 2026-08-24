@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { nonTerminalAgentTurnStatuses, normalizeStaleTurnQuery, normalizeTurnEventPage } from './productStoreContract.mjs'
 import { createClient } from '@supabase/supabase-js'
 import { isRetryableSupabaseError, retrySupabaseOperation } from './supabaseRetry.mjs'
 import { decodeAuthAssurance } from './authAssurance.mjs'
@@ -1032,6 +1033,20 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       return (data ?? []).map((row) => clone(row.payload))
     },
 
+    /**
+     * 跨项目扫描超过租约未推进的非终态 Turn，供派生任务队列回收孤儿。
+     * 不做成员校验：清扫是系统行为，没有发起它的用户（与 readAgentTurnForWorker 同理）。
+     */
+    async listStaleAgentTurns(options = {}) {
+      const { olderThan, limit } = normalizeStaleTurnQuery(options)
+      const { data, error } = await supabaseRequest(() => supabase.from('agent_turns').select('payload')
+        .in('status', [...nonTerminalAgentTurnStatuses])
+        .lt('updated_at', olderThan)
+        .order('updated_at', { ascending: true }).limit(limit))
+      fail(error)
+      return (data ?? []).map((row) => clone(row.payload))
+    },
+
     async appendAgentTurnEvent(userId, projectId, event) {
       const role = await memberRole(projectId, userId)
       assertProjectPermission(role, 'read', 'PROJECT_READ_FORBIDDEN')
@@ -1062,12 +1077,20 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       } : clone(event)
     },
 
-    async listAgentTurnEvents(userId, projectId, turnId, limit = 200) {
+    /**
+     * `after` 是 `(turnId, sequence)` 游标：只返回该序号之后的事件，
+     * 断线重连据此续读而不必重新拉全量。
+     */
+    async listAgentTurnEvents(userId, projectId, turnId, options = {}) {
       if (!await memberRole(projectId, userId)) return undefined
-      const { data, error } = await supabaseRequest(() => supabase.from('agent_turn_events')
-        .select('id,turn_id,owner_id,project_id,sequence,type,created_at,payload')
-        .eq('turn_id', turnId).eq('project_id', projectId).eq('owner_id', userId)
-        .order('sequence', { ascending: true }).limit(Math.max(1, Math.min(Number(limit) || 200, 500))))
+      const { after, limit } = normalizeTurnEventPage(options)
+      const { data, error } = await supabaseRequest(() => {
+        const query = supabase.from('agent_turn_events')
+          .select('id,turn_id,owner_id,project_id,sequence,type,created_at,payload')
+          .eq('turn_id', turnId).eq('project_id', projectId).eq('owner_id', userId)
+        return (after === null ? query : query.gt('sequence', after))
+          .order('sequence', { ascending: true }).limit(limit)
+      })
       fail(error)
       return (data ?? []).map((row) => ({
         id: row.id,

@@ -33,6 +33,10 @@ function eventPayload(event) {
     toolName: typeof toolCall.name === 'string' ? toolCall.name.slice(0, 120) : undefined,
     toolCallId: typeof toolCall.id === 'string' ? toolCall.id.slice(0, 160) : undefined,
     status: typeof toolCall.status === 'string' ? toolCall.status : undefined,
+    // 记下该次调用实际适用的能力。恢复时据此判断可重放性，比事后按工具名查注册表
+    // 更准：工具的风险声明后来若被调整，历史事件仍反映它当时真正适用的风险。
+    // 这也让恢复不必构造需要运行时依赖的工具注册表。
+    risk: typeof toolCall.risk === 'string' ? toolCall.risk : undefined,
   }
 }
 
@@ -72,8 +76,38 @@ export function agentTurnIdForIdempotency(userId, projectId, idempotencyKey) {
   return `turn_${stableId(`${userId}:${projectId}:${idempotencyKey}`)}`
 }
 
-export function createAgentTurnRecord({ id, ownerId, projectId, sessionId, requestId, idempotencyKey, now = Date.now() }) {
+/**
+ * 请求快照里不允许出现媒体字节。图片经稳定媒体标识进入解析器，快照只存标识；
+ * 递归检查是因为上下文与 Prompt 结构是嵌套的，浅层检查挡不住。
+ * 与 `botanicAgentRun.mjs` 的 `containsMediaPayload` 同一条边界。
+ */
+function containsMediaPayload(value) {
+  if (!value || typeof value !== 'object') return false
+  for (const [key, entry] of Object.entries(value)) {
+    if (['image', 'dataurl', 'buffer', 'bytes'].includes(key.toLowerCase())) return true
+    if (containsMediaPayload(entry)) return true
+  }
+  return false
+}
+
+/**
+ * 可重放的请求快照。没有它，非终态 Turn 的恢复无从下手 —— Turn 记录原先只有身份
+ * 与生命周期字段，重建解析器输入所需的 locale、挂载 Skill、上下文节点全都不在。
+ *
+ * 只保留重建输入所需的字段，不保留解析产物：`result` 由生命周期字段承载，
+ * 原始 reasoning 始终不落盘（ADR 0004）。
+ */
+export function agentTurnRequestSnapshot(request) {
+  if (!request || typeof request !== 'object') return undefined
+  if (containsMediaPayload(request)) {
+    throw Object.assign(new TypeError('Agent Turn 请求快照不能包含媒体字节。'), { code: 'AGENT_TURN_MEDIA_FORBIDDEN' })
+  }
+  return clone(request)
+}
+
+export function createAgentTurnRecord({ id, ownerId, projectId, sessionId, requestId, idempotencyKey, request, now = Date.now() }) {
   if (!id || !ownerId || !projectId || !idempotencyKey) throw new TypeError('Agent Turn 缺少幂等边界。')
+  const snapshot = agentTurnRequestSnapshot(request)
   return {
     id,
     version: 2,
@@ -82,6 +116,7 @@ export function createAgentTurnRecord({ id, ownerId, projectId, sessionId, reque
     ...(sessionId ? { sessionId } : {}),
     ...(requestId ? { requestId } : {}),
     idempotencyKey,
+    ...(snapshot ? { request: snapshot } : {}),
     status: 'running',
     createdAt: now,
     updatedAt: now,
@@ -111,7 +146,7 @@ export function createBotanicAgentTurnRuntime({ productStore, now = () => Date.n
     return event
   }
 
-  async function execute({ userId, projectId, sessionId, requestId, id, idempotencyKey, resolve, resolveOptions = {}, onEvent } = {}) {
+  async function execute({ userId, projectId, sessionId, requestId, id, idempotencyKey, request, resolve, resolveOptions = {}, onEvent } = {}) {
     if (typeof resolve !== 'function') throw new TypeError('Agent Turn Runtime 缺少解析器。')
     const activeKey = `${userId}:${projectId}:${id}`
     const active = activeTurns.get(activeKey)
@@ -127,7 +162,7 @@ export function createBotanicAgentTurnRuntime({ productStore, now = () => Date.n
       }
     }
 
-    const turn = existing ?? createAgentTurnRecord({ id, ownerId: userId, projectId, sessionId, requestId, idempotencyKey, now: now() })
+    const turn = existing ?? createAgentTurnRecord({ id, ownerId: userId, projectId, sessionId, requestId, idempotencyKey, request, now: now() })
     if (turn.status !== 'running') {
       turn.status = 'running'
       turn.updatedAt = now()

@@ -124,3 +124,45 @@ test('cancel 忽略不属于该项目的 Turn，避免跨项目越权取消', as
   assert.equal(await runtime.cancel({ userId: 'u', projectId: 'project-b', turnId: 'turn-other' }), undefined)
   assert.equal(store.turns.get('turn-other').status, 'running')
 })
+
+test('Turn 持久化可重放的请求快照，恢复才有输入可依', async () => {
+  const store = fakeStore()
+  const runtime = createBotanicAgentTurnRuntime({ productStore: store, now: () => 100 })
+  const id = 'turn-with-request'
+  await runtime.execute({
+    userId: 'u', projectId: 'p', id, idempotencyKey: 'k',
+    request: { projectId: 'p', instruction: '换成海边场景', locale: 'zh-CN', contextNodeIds: ['node-1'], mountedSkillIds: ['skill-1'] },
+    resolve: async () => ({ kind: 'chat', answer: '好' }),
+  })
+  const stored = store.turns.get(id)
+  assert.deepEqual(stored.request, {
+    projectId: 'p', instruction: '换成海边场景', locale: 'zh-CN',
+    contextNodeIds: ['node-1'], mountedSkillIds: ['skill-1'],
+  })
+})
+
+test('请求快照拒绝媒体字节，图片只能以稳定标识进入', async () => {
+  const store = fakeStore()
+  const runtime = createBotanicAgentTurnRuntime({ productStore: store })
+  // 嵌套也要挡住：上下文与 Prompt 结构本身是嵌套的。
+  for (const request of [
+    { instruction: 'x', image: 'data:image/png;base64,AAAA' },
+    { instruction: 'x', context: [{ nodeId: 'n', dataUrl: 'data:image/png;base64,AAAA' }] },
+    { instruction: 'x', payload: { nested: { buffer: 'AAAA' } } },
+  ]) {
+    await assert.rejects(
+      () => runtime.execute({ userId: 'u', projectId: 'p', id: `t-${Math.random()}`, idempotencyKey: 'k', request, resolve: async () => ({}) }),
+      (caught) => caught.code === 'AGENT_TURN_MEDIA_FORBIDDEN',
+    )
+  }
+})
+
+test('没有请求快照时不写空字段，兼容既有 Turn 记录', async () => {
+  const store = fakeStore()
+  const runtime = createBotanicAgentTurnRuntime({ productStore: store, now: () => 100 })
+  await runtime.execute({
+    userId: 'u', projectId: 'p', id: 'turn-no-request', idempotencyKey: 'k',
+    resolve: async () => ({ kind: 'chat', answer: '好' }),
+  })
+  assert.equal('request' in store.turns.get('turn-no-request'), false)
+})

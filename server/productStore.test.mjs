@@ -807,3 +807,61 @@ test('独立画布图谱与 Yjs 更新日志可跨服务重启恢复并压缩', 
   assert.deepEqual(compacted.updates, [])
   assert.equal(compacted.graph.nodes[0].position.x, 180)
 })
+
+test('Turn 事件按游标续读，只返回序号之后的事件', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, document('project-cursor'), undefined)
+  store.putAgentTurn(owner.id, {
+    id: 'turn_cursor', version: 2, ownerId: owner.id, projectId: 'project-cursor',
+    idempotencyKey: 'cursor-1', status: 'running', createdAt: 1, updatedAt: 1,
+  })
+  for (const sequence of [1, 2, 3, 4]) {
+    store.appendAgentTurnEvent(owner.id, 'project-cursor', {
+      id: `evt-${sequence}`, turnId: 'turn_cursor', projectId: 'project-cursor',
+      sequence, type: 'turn.tool', createdAt: sequence,
+    })
+  }
+  const sequences = (options) => store
+    .listAgentTurnEvents(owner.id, 'project-cursor', 'turn_cursor', options)
+    .map((event) => event.sequence)
+
+  assert.deepEqual(sequences(), [1, 2, 3, 4], '无游标返回全部')
+  assert.deepEqual(sequences({ after: 2 }), [3, 4], '只返回游标之后的事件')
+  assert.deepEqual(sequences({ after: 4 }), [], '读到末尾返回空而不是回到开头')
+  // after: 0 是合法游标而非缺省，否则第一条事件会被重复下发。
+  assert.deepEqual(sequences({ after: 0 }), [1, 2, 3, 4])
+  assert.deepEqual(sequences({ limit: 2 }), [1, 2], '截断从最早的一条开始')
+  assert.deepEqual(sequences({ after: 1, limit: 2 }), [2, 3], '游标与上限可同时生效')
+})
+
+test('陈旧 Turn 扫描跨项目、只捞非终态、按最旧优先', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, document('project-stale-a'), undefined)
+  store.writeProject(owner.id, document('project-stale-b'), undefined)
+  const put = (id, projectId, status, updatedAt) => store.putAgentTurn(owner.id, {
+    id, version: 2, ownerId: owner.id, projectId, idempotencyKey: id,
+    status, createdAt: 1, updatedAt,
+  })
+  put('turn_old_a', 'project-stale-a', 'running', 100)
+  put('turn_old_b', 'project-stale-b', 'queued', 50)
+  put('turn_waiting', 'project-stale-a', 'waiting_user', 200)
+  put('turn_cancelling', 'project-stale-b', 'cancelling', 300)
+  put('turn_done', 'project-stale-a', 'completed', 10)
+  put('turn_failed', 'project-stale-b', 'failed', 10)
+  put('turn_fresh', 'project-stale-a', 'running', 1_000_000)
+
+  const stale = store.listStaleAgentTurns({ now: 1_000_000, leaseMs: 30_000 })
+  assert.deepEqual(
+    stale.map((turn) => turn.id),
+    ['turn_old_b', 'turn_old_a', 'turn_waiting', 'turn_cancelling'],
+    '跨项目按 updatedAt 升序返回全部非终态陈旧 Turn',
+  )
+  // 终态不该被重新拾起，租约内的也不该被抢。
+  assert.equal(stale.some((turn) => ['turn_done', 'turn_failed'].includes(turn.id)), false)
+  assert.equal(stale.some((turn) => turn.id === 'turn_fresh'), false)
+  assert.deepEqual(store.listStaleAgentTurns({ now: 1_000_000, leaseMs: 30_000, limit: 2 }).map((t) => t.id), ['turn_old_b', 'turn_old_a'])
+  // 显式 olderThan 落在两个陈旧 Turn 之间时，只捞更早的那个。
+  assert.deepEqual(store.listStaleAgentTurns({ olderThan: 60 }).map((t) => t.id), ['turn_old_b'])
+})

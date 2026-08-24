@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { nonTerminalAgentTurnStatuses, normalizeStaleTurnQuery, normalizeTurnEventPage } from './productStoreContract.mjs'
 import postgres from 'postgres'
 import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from './authorization.mjs'
 import { artifactIndexLimits, artifactsFromActionReceipt, artifactsFromAgentMessage, artifactsFromDocument, artifactsFromGenerationJob } from './botanicArtifactIndex.mjs'
@@ -176,6 +177,12 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       payload jsonb not null,
       unique (owner_id, project_id, idempotency_key)
     );
+    -- ADR 0004：Turn 需要 queued（已接受未开始）与 waiting_user（等待确认）持久态，
+    -- 否则进程在首个工具前退出会留下永久 running 的孤儿；cancelling 是取消向 Run
+    -- 传播完成前的中间态。已建库不会重跑 create table，因此必须显式改约束。
+    alter table agent_turns drop constraint if exists agent_turns_status_check;
+    alter table agent_turns add constraint agent_turns_status_check
+      check (status in ('queued', 'running', 'waiting_user', 'cancelling', 'completed', 'failed', 'cancelled'));
     create table if not exists agent_turn_events (
       id text primary key,
       turn_id text not null references agent_turns(id) on delete cascade,
@@ -310,6 +317,8 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     create index if not exists jobs_status_updated_at_idx on generation_jobs (status, updated_at);
     create index if not exists agent_runs_project_updated_idx on agent_runs (project_id, updated_at desc);
     create index if not exists agent_turns_project_updated_idx on agent_turns (project_id, updated_at desc);
+    -- 孤儿回收是跨项目扫描：按状态过滤后取最旧的一批，没有这个索引会全表扫。
+    create index if not exists agent_turns_status_updated_idx on agent_turns (status, updated_at asc);
     create index if not exists agent_turn_events_turn_sequence_idx on agent_turn_events (turn_id, sequence asc);
     create index if not exists agent_reviews_run_updated_idx on agent_reviews (project_id, run_id, updated_at desc);
     create index if not exists agent_sessions_project_updated_idx on agent_sessions (project_id, updated_at desc);
@@ -1606,15 +1615,38 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       })
     },
 
-    async listAgentTurnEvents(userId, projectId, turnId, limit = 200) {
+    /**
+     * `after` 是 `(turnId, sequence)` 游标的服务端一侧：只返回该序号之后的事件。
+     * 断线重连据此续读，不必为了知道自己读到哪而重新拉全量。
+     */
+    async listAgentTurnEvents(userId, projectId, turnId, options = {}) {
+      const { after, limit } = normalizeTurnEventPage(options)
+      // 用片段而不是 `${after} is null or ...`：裸参数在 is null 里无法被 Postgres
+      // 推断类型（42P18），而且这样生成的查询更紧、能直接走 (turn_id, sequence) 索引。
+      const cursor = after === null ? sql`` : sql`and e.sequence > ${after}`
       const rows = await sql`
         select e.id, e.turn_id as "turnId", e.owner_id as "ownerId", e.project_id as "projectId", e.sequence,
           e.type, e.created_at as "createdAt", e.payload
         from agent_turn_events e join project_members m on m.project_id = e.project_id
         where e.turn_id = ${turnId} and e.project_id = ${projectId} and e.owner_id = ${userId} and m.user_id = ${userId}
-        order by e.sequence asc limit ${Math.max(1, Math.min(Number(limit) || 200, 500))}
+          ${cursor}
+        order by e.sequence asc limit ${limit}
       `
       return rows.map((row) => ({ ...row, payload: asJson(row.payload) }))
+    },
+
+    /**
+     * 跨项目扫描超过租约未推进的非终态 Turn，供派生任务队列回收孤儿。
+     * 不做成员校验：清扫是系统行为，没有发起它的用户（与 readAgentTurnForWorker 同理）。
+     */
+    async listStaleAgentTurns(options = {}) {
+      const { olderThan, limit } = normalizeStaleTurnQuery(options)
+      const rows = await sql`
+        select payload from agent_turns
+        where status = any(${sql.array([...nonTerminalAgentTurnStatuses])}) and updated_at < ${olderThan}
+        order by updated_at asc limit ${limit}
+      `
+      return rows.map(asPayload)
     },
 
     async putAgentReview(userId, review) {

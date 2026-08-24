@@ -90,3 +90,33 @@ test('非工具事件被忽略，不误判成已执行的工具', () => {
   })
   assert.deepEqual(decision, { action: 'resume', replayedToolCount: 0 })
 })
+
+test('事件自带的 risk 优先于按工具名查找，历史风险不被后来的改动改写', () => {
+  const stale = { id: 'turn-1', status: 'running', updatedAt: 0 }
+  const event = (toolName, risk) => ({ type: 'turn.tool', payload: { toolName, status: 'succeeded', risk } })
+
+  // 事件说 read，即使当前注册表把这个名字标成了 costly，也按事件为准 ——
+  // 该次调用当时确实是只读的。
+  assert.equal(
+    turnReclaimDecision({ turn: stale, now: 10_000_000, toolRisk: () => 'costly', events: [event('renamed_tool', 'read')] }).action,
+    'resume',
+  )
+  // 反向同理：事件说 costly 就不可重放，哪怕现在查出来是 read。
+  assert.equal(
+    turnReclaimDecision({ turn: stale, now: 10_000_000, toolRisk: () => 'read', events: [event('renamed_tool', 'costly')] }).action,
+    'fail',
+  )
+})
+
+test('事件没有 risk 时回落到工具名查找，仍查不到则按未知处理', () => {
+  const stale = { id: 'turn-1', status: 'running', updatedAt: 0 }
+  const legacy = { type: 'turn.tool', payload: { toolName: 'context_read', status: 'succeeded' } }
+
+  // 早于 risk 字段落地的历史事件靠查找兜底。
+  assert.equal(
+    turnReclaimDecision({ turn: stale, now: 10_000_000, toolRisk: () => 'read', events: [legacy] }).action,
+    'resume',
+  )
+  // 两边都没有 → 未知 → 不可重放，不乐观放行。
+  assert.equal(turnReclaimDecision({ turn: stale, now: 10_000_000, events: [legacy] }).action, 'fail')
+})

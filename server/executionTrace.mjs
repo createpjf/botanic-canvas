@@ -28,6 +28,12 @@ export const EXECUTION_STAGES = Object.freeze([
 
 const stageSet = new Set(EXECUTION_STAGES)
 
+/**
+ * 声明为类型谓词，调用方才能把 `string | undefined` 窄化成阶段名 ——
+ * 否则每个用它做守卫的地方都要再断言一次。
+ * @param {unknown} value
+ * @returns {value is string}
+ */
 export function isExecutionStage(value) {
   return typeof value === 'string' && stageSet.has(value)
 }

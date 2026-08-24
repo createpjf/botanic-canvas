@@ -26,12 +26,18 @@ function assertKind(kind) {
 }
 
 /**
+ * 复合标识用 `__` 而不是 `:` 分隔：BullMQ 明确拒绝含 `:` 的自定义 jobId
+ * （Custom Id cannot contain :），因此实体标识本身也不得包含冒号。
+ */
+const compositeId = (...parts) => parts.join('__')
+
+/**
  * 周期性清扫任务的重复键。BullMQ 按该键去重，因此多个 API 实例重复注册
  * 不会产生多份定时任务。
  */
 export function derivedSweepKey(kind) {
   assertKind(kind)
-  return `sweep:${kind}`
+  return compositeId('sweep', kind)
 }
 
 /**
@@ -48,7 +54,7 @@ export function createDerivedTaskQueue(redisUrl) {
      */
     async enqueue(kind, dedupeId, payload = {}) {
       assertKind(kind)
-      const jobId = `${kind}:${dedupeId}`
+      const jobId = compositeId(kind, dedupeId)
       const existing = await queue.getJob(jobId)
       if (existing) {
         const state = await existing.getState()
