@@ -237,6 +237,32 @@ export function validateAgentSessionEntity(value, { now = Date.now() } = {}) {
     result.readingAnchorMessageId = text(session.readingAnchorMessageId, 'Agent 阅读位置', 160)
     result.readingAnchorUpdatedAt = Math.min(updatedAt, timestamp(session.readingAnchorUpdatedAt, updatedAt))
   }
+  // 线程摘要检查点（Epic 8）。它是服务端确定性派生的，因此这里只做形状与边界校验，
+  // 不接受客户端提交任意内容 —— 摘要会长期进模型上下文，客户端可写等于可注入。
+  if (session.threadSummary !== undefined) {
+    const summary = object(session.threadSummary, 'Agent 线程摘要')
+    result.threadSummary = {
+      version: 1,
+      goals: uniqueTextList(summary.goals, '线程目标', 3),
+      decisions: (Array.isArray(summary.decisions) ? summary.decisions : []).slice(0, 12).map((entry) => ({
+        messageId: text(entry?.messageId, '决策消息标识', 160),
+        ...(entry?.intent ? { intent: text(entry.intent, '决策意图', 80) } : {}),
+        summary: text(entry?.summary ?? '(无摘要)', '决策摘要', 400),
+        ...(entry?.runId ? { runId: text(entry.runId, '决策 Run', 160) } : {}),
+        ...(Number.isInteger(entry?.outputCount) ? { outputCount: entry.outputCount } : {}),
+        ...(entry?.decidedAt === undefined ? {} : { decidedAt: timestamp(entry.decidedAt, updatedAt) }),
+      })),
+      constraints: uniqueTextList(summary.constraints, '线程约束', 16),
+      openQuestions: (Array.isArray(summary.openQuestions) ? summary.openQuestions : []).slice(0, 8).map((entry) => ({
+        messageId: text(entry?.messageId, '追问消息标识', 160),
+        question: text(entry?.question ?? '(无内容)', '追问内容', 400),
+      })),
+      entityIds: uniqueTextList(summary.entityIds, '线程实体', 40),
+      coveredMessageIds: uniqueTextList(summary.coveredMessageIds, '已覆盖消息', 200),
+      coveredThrough: timestamp(summary.coveredThrough, updatedAt),
+      updatedAt: timestamp(summary.updatedAt, updatedAt),
+    }
+  }
   return result
 }
 

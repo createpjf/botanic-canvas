@@ -20,6 +20,7 @@ import { agentTurnIdForIdempotency, agentTurnLastSequence, createBotanicAgentTur
 import { createLocalCancelRegistry } from './localCancelRegistry.mjs'
 import { createAgentHumanDecision, publicAgentReviewTask } from './agentReviewTask.mjs'
 import { selectBotanicAgentMemory } from './botanicAgentMemory.mjs'
+import { buildThreadSummaryCheckpoint, shouldCompactThread } from './agentThreadSummary.mjs'
 import { compareBotanicAgentRunBranches } from './botanicAgentCompare.mjs'
 import { createForkedAgentRunInput, forkedAgentRunIdForIdempotency } from './botanicAgentFork.mjs'
 
@@ -180,6 +181,34 @@ export function createAgentRouteHandler({
   const agentActionTimeoutMs = Number.isFinite(configuredActionTimeout)
     ? Math.max(1, Math.min(120_000, configuredActionTimeout))
     : 30_000
+  /**
+   * 线程摘要检查点（Epic 8）。
+   *
+   * 回合请求只带最近一个窗口的消息，超出窗口的早期决策会彻底消失。这里从持久化的
+   * 会话消息里**确定性**派生检查点并写回会话 —— 让模型复述一遍约束，就没有任何东西
+   * 能保证它复述对了。
+   *
+   * 派生失败不能挡住回合：摘要缺失只是少一层上下文，不是这次对话不能进行。
+   */
+  const threadSummaryForSession = async (userId, projectId, sessionId) => {
+    if (!sessionId || typeof productStore.readAgentState !== 'function') return undefined
+    try {
+      const projectState = await productStore.readAgentState(userId, projectId)
+      const session = (projectState?.sessions ?? []).find((entry) => entry?.id === sessionId)
+      if (!session) return undefined
+      const messages = session.messages ?? []
+      if (!shouldCompactThread(messages)) return session.threadSummary
+      const summary = buildThreadSummaryCheckpoint({ messages, previous: session.threadSummary })
+      if (summary && summary !== session.threadSummary && typeof productStore.putAgentSession === 'function') {
+        await productStore.putAgentSession(userId, projectId, { ...session, threadSummary: summary })
+      }
+      return summary
+    } catch (caught) {
+      console.error(`[agent-thread] 摘要派生跳过: ${caught instanceof Error ? caught.message : String(caught)}`)
+      return undefined
+    }
+  }
+
   /**
    * 运维只读工具的数据源。全部按项目权限读取，且不返回受控媒体地址 ——
    * 工具结果会进模型上下文（Epic 4）。
@@ -362,6 +391,11 @@ export function createAgentRouteHandler({
           resolveOptions: {
             document: project.document,
             projectSkills,
+            threadSummary: await threadSummaryForSession(
+              user.id,
+              validatedInput.projectId,
+              typeof request.headers['x-agent-session-id'] === 'string' ? request.headers['x-agent-session-id'] : undefined,
+            ),
             operations: operationalReaders(user.id, validatedInput.projectId, project.document),
             signal: controller.signal,
             resolveVisionMedia: visionMediaResolver(user.id, validatedInput.projectId),
@@ -603,6 +637,11 @@ export function createAgentRouteHandler({
         const turn = await resolveBotanicAgentTurn(input, config, {
           document: project.document,
           projectSkills,
+          threadSummary: await threadSummaryForSession(
+            user.id,
+            validatedInput.projectId,
+            typeof request.headers['x-agent-session-id'] === 'string' ? request.headers['x-agent-session-id'] : undefined,
+          ),
           operations: operationalReaders(user.id, validatedInput.projectId, project.document),
           signal: controller.signal,
           resolveVisionMedia: visionMediaResolver(user.id, validatedInput.projectId),

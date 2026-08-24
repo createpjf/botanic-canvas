@@ -1,11 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import {
-  AgentToolRuntimeError,
-  createAgentToolRegistry,
-  executeConfirmedAgentAction,
-  runAgentToolLoop,
-} from './agentToolRuntime.mjs'
+import { AgentToolRuntimeError, createAgentToolRegistry, executeConfirmedAgentAction, freezeAgentStepSnapshot, runAgentToolLoop } from './agentToolRuntime.mjs'
 
 test('Tool Registry 以 OpenAI 兼容函数协议暴露受控工具并执行参数校验', async () => {
   const registry = createAgentToolRegistry([
@@ -344,4 +339,94 @@ test('规划/回合工具在 execute 前才有 running，返回后才有 succeed
     assert.equal(statuses[0], 'running')
     assert.ok(statuses.includes('succeeded'))
   }
+})
+
+test('工具集在进入循环前定格，中途改配置不影响已开始的这一次执行', async () => {
+  // 模型在第 1 步看到的工具与第 3 步能调用的工具必须是同一套，否则它会按一份
+  // 已经不存在的能力清单做计划。
+  const seenToolCounts = []
+  let extraRegistered = false
+  const registry = createAgentToolRegistry([
+    {
+      name: 'probe', label: '探针', description: '只读探针', risk: 'read',
+      parameters: { type: 'object', additionalProperties: false, properties: {} },
+      validate: () => ({}),
+      execute: async () => {
+        // 模拟「执行过程中有人改了配置」：注册表被重建，但本次执行不该受影响。
+        extraRegistered = true
+        return { ok: true }
+      },
+    },
+  ])
+  const snapshot = freezeAgentStepSnapshot({ registry, model: 'model-a', role: 'editor' })
+
+  let step = 0
+  const result = await runAgentToolLoop({
+    registry,
+    messages: [{ role: 'user', content: '看一下' }],
+    snapshot,
+    callModel: async ({ tools }) => {
+      seenToolCounts.push(tools.length)
+      step += 1
+      return step === 1
+        ? { choices: [{ message: { content: null, tool_calls: [{ id: 'c1', function: { name: 'probe', arguments: '{}' } }] } }] }
+        : { choices: [{ message: { content: '完成' } }] }
+    },
+  })
+
+  assert.equal(result.output, '完成')
+  assert.equal(extraRegistered, true)
+  // 两步看到的工具集完全一致。
+  assert.deepEqual(seenToolCounts, [1, 1])
+  // 每一步都记下了它执行时的能力快照。
+  assert.deepEqual(result.steps.map((entry) => entry.step), [0, 1])
+  assert.ok(result.steps.every((entry) => entry.snapshot === snapshot))
+})
+
+test('执行快照被深冻结，调用方之后改自己的对象也影响不到它', () => {
+  const bindings = [{ id: 'skill-1', version: 1, contentHash: 'h1' }]
+  const registry = createAgentToolRegistry([{
+    name: 'probe', label: '探针', description: 'x', risk: 'read',
+    parameters: { type: 'object', additionalProperties: false, properties: {} },
+    validate: () => ({}), execute: async () => ({}),
+  }])
+  const snapshot = freezeAgentStepSnapshot({ registry, model: 'model-a', skillBindings: bindings, role: 'owner' })
+  bindings[0].version = 99
+  bindings.push({ id: 'skill-2' })
+
+  assert.deepEqual(snapshot.toolNames, ['probe'])
+  assert.equal(snapshot.skillBindings.length, 1)
+  assert.equal(snapshot.skillBindings[0].version, 1)
+  assert.equal(snapshot.role, 'owner')
+  assert.equal(Object.isFrozen(snapshot), true)
+  assert.throws(() => { snapshot.model = 'model-b' }, TypeError)
+})
+
+test('工具结果驱动下一步，而不是一次调用后就收尾', async () => {
+  const calls = []
+  const registry = createAgentToolRegistry([
+    {
+      name: 'lookup', label: '查询', description: '查询', risk: 'read',
+      parameters: { type: 'object', additionalProperties: false, properties: { q: { type: 'string' } } },
+      validate: (raw) => ({ q: String(raw?.q ?? '') }),
+      execute: async ({ q }) => ({ found: q === 'second' }),
+    },
+  ])
+  let step = 0
+  const result = await runAgentToolLoop({
+    registry,
+    messages: [{ role: 'user', content: '查两次' }],
+    callModel: async ({ messages }) => {
+      step += 1
+      // 第 2 步能看到第 1 步的工具结果，据此决定再查一次。
+      if (step === 2) calls.push(messages.filter((message) => message.role === 'tool').map((message) => message.content))
+      if (step <= 2) {
+        return { choices: [{ message: { content: null, tool_calls: [{ id: `c${step}`, function: { name: 'lookup', arguments: JSON.stringify({ q: step === 1 ? 'first' : 'second' }) } }] } }] }
+      }
+      return { choices: [{ message: { content: '两次都查过了' } }] }
+    },
+  })
+  assert.equal(result.output, '两次都查过了')
+  assert.equal(result.toolCalls.length, 2)
+  assert.deepEqual(calls, [['{"found":false}']])
 })
