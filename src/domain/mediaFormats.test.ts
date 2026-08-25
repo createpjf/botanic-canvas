@@ -6,6 +6,7 @@ import {
   imageFormatSentenceList,
   imageFormatShortList,
   imageUploadAccept,
+  isUploadImageFormat,
   supportedImageFormatLabels,
   unsupportedUploadMessage,
   uploadLimitsLabel,
@@ -46,4 +47,15 @@ test('上传限制提示的格式与体积都随词表 / MEDIA_LIMITS 派生', (
   assert.equal(uploadLimitsLabel('en'), 'PNG / JPEG / WebP, up to 8 MB each')
   // 换算不写死：真的从 MEDIA_LIMITS.maxUploadBytes 算出来。
   assert.ok(uploadLimitsLabel('en').includes(`${Math.floor(MEDIA_LIMITS.maxUploadBytes / 1024 / 1024)} MB`))
+})
+
+test('isUploadImageFormat 判断词表内外的 MIME 类型', () => {
+  assert.equal(isUploadImageFormat('image/png'), true)
+  assert.equal(isUploadImageFormat('image/jpeg'), true)
+  // 大小写与首尾空白不应影响判定：浏览器给出的 blob.type 理应规范，但不能假设上游总是规范。
+  assert.equal(isUploadImageFormat('IMAGE/PNG'), true)
+  assert.equal(isUploadImageFormat('  image/webp  '), true)
+  assert.equal(isUploadImageFormat('image/heic'), false)
+  assert.equal(isUploadImageFormat(''), false)
+  assert.equal(isUploadImageFormat(undefined), false)
 })

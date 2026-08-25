@@ -25,6 +25,22 @@ export function imageUploadAccept() {
   return UPLOAD_IMAGE_FORMATS.join(',')
 }
 
+// `as const` 元组的字面量联合类型让 `Array.includes` 拒绝原始 string 入参
+// （blob.type / file.type 都是 string）。转成 Set<string> 一次性抹平这个类型摩擦，
+// 与 `src/lib/uploadedAssets.ts` 里 `supportedUploadTypes` 的写法同一手法。
+const uploadImageFormatSet = new Set<string>(UPLOAD_IMAGE_FORMATS)
+
+/**
+ * 判断某个 MIME 类型是否在用户可上传的词表内。
+ *
+ * 仅供客户端早筛（比如拒绝一个刚 fetch 回来的 blob）；真正的校验边界仍在服务端
+ * 的 `isUploadImageFormat`（`server/mediaFormats.mjs`），两者从各自词表派生，
+ * 不共享实现——架构门禁不允许 `src/` 导入 `server/`。
+ */
+export function isUploadImageFormat(mimeType: unknown) {
+  return typeof mimeType === 'string' && uploadImageFormatSet.has(mimeType.trim().toLowerCase())
+}
+
 const FORMAT_LABELS: Record<string, string> = {
   'image/png': 'PNG',
   'image/jpeg': 'JPEG',

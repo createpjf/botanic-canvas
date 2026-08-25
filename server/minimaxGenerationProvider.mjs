@@ -2,6 +2,7 @@ import { readMediaSpec } from './mediaSpec.mjs'
 import { mapWithConcurrency } from './concurrency.mjs'
 import { compositionBrandGuard, creativeExecutionContract } from './generationComposition.mjs'
 import { GenerationError } from './generationProvider.mjs'
+import { detectImageFormat, isCanonicalImageFormat } from './mediaFormats.mjs'
 
 function dataUrl(media) {
   return `data:${media.mimeType};base64,${media.buffer.toString('base64')}`
@@ -30,11 +31,10 @@ function imageMedia(value) {
     throw new GenerationError(502, 'INVALID_PROVIDER_RESPONSE', 'MiniMax 图像服务没有返回可用的图片数据。')
   }
   const bytes = Buffer.from(value.replace(/\s/g, ''), 'base64')
-  const jpeg = bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
-  const png = bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
-  const webp = bytes.length >= 12 && bytes.subarray(0, 4).toString('ascii') === 'RIFF' && bytes.subarray(8, 12).toString('ascii') === 'WEBP'
-  const mimeType = jpeg ? 'image/jpeg' : png ? 'image/png' : webp ? 'image/webp' : undefined
-  if (!mimeType) {
+  // 字节嗅探统一走权威词表：这里曾经是第五份手写 png/jpeg/webp 签名判断，
+  // 与 mediaFormats.mjs 的实现重复且不会跟着词表一起演进。
+  const mimeType = detectImageFormat(bytes)
+  if (!mimeType || !isCanonicalImageFormat(mimeType)) {
     throw new GenerationError(502, 'INVALID_PROVIDER_RESPONSE', 'MiniMax 图像服务返回的文件格式无法显示。')
   }
   return { mediaKind: 'image', mimeType, buffer: bytes }
