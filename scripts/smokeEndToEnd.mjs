@@ -83,7 +83,15 @@ async function pollUntil(describe, read, done, { timeoutMs = 180_000, intervalMs
   const deadline = Date.now() + timeoutMs
   let last
   while (Date.now() < deadline) {
-    last = await read()
+    try {
+      last = await read()
+    } catch (caught) {
+      // 「API 进程死了」与「任务还没跑完」是两种完全不同的问题，不能都表现成「超时」。
+      // 一次读取失败可能是瞬时的，因此再确认一次健康检查才下结论。
+      const alive = await fetch(`${BASE}/api/health`).then((response) => response.ok).catch(() => false)
+      if (!alive) return { ok: false, value: last, processDied: true, describe }
+      void caught
+    }
     if (done(last)) return { ok: true, value: last }
     await delay(intervalMs)
   }
@@ -247,7 +255,10 @@ async function main() {
       (job) => ['succeeded', 'failed', 'cancelled'].includes(job?.status),
       { timeoutMs: 390_000, intervalMs: 5_000 },
     )
-    if (!settled.ok) {
+    if (settled.processDied) {
+      fail('API 进程在等待期间停止响应。数据库连接抖动会抛未捕获异常直接终止进程；'
+        + '用 --verbose 看 [api] 的最后几行，或改用 --local-store 排除数据库这个变量。')
+    } else if (!settled.ok) {
       const last = settled.value ?? {}
       // 状态没到终态时，把已经攒下的诊断信息一并报出来：errorCode 与部分输出能区分
       // 「一个候选都没出来」和「出了一半卡住」。
@@ -429,7 +440,24 @@ function emptyDocument(id) {
 try {
   await main()
 } catch (caught) {
-  process.stdout.write(`\n✖ 冒烟脚本自身出错：${caught instanceof Error ? caught.stack : String(caught)}\n`)
+  // 计入 steps，否则汇总会同时输出「脚本自身出错」和「失败 0」——自相矛盾，
+  // 读的人不知道该信哪个。
+  const message = caught instanceof Error ? caught.message : String(caught)
+  steps.push({
+    name: currentStep || '冒烟脚本',
+    ok: false,
+    detail: message === 'fetch failed'
+      // fetch failed 只说明连不上，说不出为什么。这里把最可能的原因直接写出来：
+      // Postgres 连接超时会抛未捕获异常直接杀掉 API 进程（见第一次跑的日志）。
+      ? 'API 进程在中途停止响应（fetch failed）。最常见原因是数据库连接抖动——'
+        + 'Postgres 超时会抛未捕获异常直接终止进程。用 --verbose 看 [api] 的最后几行，'
+        + '或改用 --local-store 把数据库从变量里去掉。'
+      : `脚本自身出错：${message}`,
+  })
+  process.stdout.write(`\n✖ ${steps.at(-1).detail}\n`)
+  if (caught instanceof Error && caught.stack && message !== 'fetch failed') {
+    process.stdout.write(caught.stack + '\n')
+  }
   process.exitCode = 1
 } finally {
   shutdown()
