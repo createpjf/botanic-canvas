@@ -4580,3 +4580,7 @@ details.agent-timeline__thinking { display: block; padding: 0; }
 .agent-review-panel__criteria li.is-custom { padding-left: 6px; border-left: 2px solid #cbb98f; }
 .agent-review-panel__criteria li.is-custom small { color: #8a7a4a; }
 .agent-review-panel__skill-source { grid-column: 1 / -1; margin: 0; color: #9aa79c; font-size: 9px; }
+
+/* 无权限时的替代文案。按钮直接消失而不留任何说明，用户会以为功能坏了。 */
+.agent-review-panel__readonly { color: #9aa79c; font-size: 10px; }
+.panel-note.is-readonly { color: #8a7a4a; background: #fdf6e9; padding: 6px 9px; border-radius: 8px; }

@@ -37,6 +37,8 @@ import {
   type ResolvedBrandKit,
 } from '../../domain/brandKitPresentation'
 import { fetchProjectBrandKit } from '../../lib/brandKitApi'
+import { cachedProjectCapabilities } from '../../lib/db'
+import { canUseProjectEntry } from '../../domain/projectCapabilities'
 import {
   MEMORY_SUBJECT_OPTIONS,
   memoryComparisonRows,
@@ -73,7 +75,7 @@ const agentUtilityMessages = {
     reviewLoading: '正在读取评审…', reviewUnavailable: '评审暂不可用，请稍后重试。', noReviewTasks: '这次任务还没有评审记录。',
     reviewCandidate: (id: string) => `候选 ${id}`, reviewUnverified: (count: number) => `${count} 项未验证`,
     reviewRevision: '修订建议', reviewCustomCriteria: '项目自定义判据', reviewSkillSource: (version: number) => `来自项目 Skill · 版本 ${version}`, reviewAccept: '接受', reviewReject: '拒绝', reviewRetry: '请求重试',
-    reviewAwaiting: '待你决定', reviewSubmitting: '提交中…', reviewDecisionFailed: '决定提交失败，请重试。',
+    reviewAwaiting: '待你决定', reviewReadOnly: '你没有决定权限', reviewSubmitting: '提交中…', reviewDecisionFailed: '决定提交失败，请重试。',
     reviewRetryCreated: (count: number) => `已创建 ${count} 个重试任务；原结果保留。`,
     memoryConflicts: (count: number) => `有 ${count} 组规则互相矛盾，每组只有一条会生效。停用其中一条，规则才不会互相打架。`,
   },
@@ -99,7 +101,7 @@ const agentUtilityMessages = {
     reviewLoading: 'Loading review…', reviewUnavailable: 'Review is unavailable right now. Try again shortly.', noReviewTasks: 'No review has been recorded for this task yet.',
     reviewCandidate: (id: string) => `Candidate ${id}`, reviewUnverified: (count: number) => `${count} not verified`,
     reviewRevision: 'Suggested revision', reviewCustomCriteria: 'Project-defined criterion', reviewSkillSource: (version: number) => `From a project Skill · version ${version}`, reviewAccept: 'Accept', reviewReject: 'Reject', reviewRetry: 'Request retry',
-    reviewAwaiting: 'Awaiting your decision', reviewSubmitting: 'Submitting…', reviewDecisionFailed: 'The decision could not be submitted. Try again.',
+    reviewAwaiting: 'Awaiting your decision', reviewReadOnly: 'You cannot decide on this project', reviewSubmitting: 'Submitting…', reviewDecisionFailed: 'The decision could not be submitted. Try again.',
     reviewRetryCreated: (count: number) => `Created ${count} retry task(s); the original results are kept.`,
     memoryConflicts: (count: number) => `${count} pair(s) of rules contradict each other; only one of each takes effect. Retire one so the intent is unambiguous.`,
     system: 'System', project: 'Project', invoke: '@mention', mount: 'Mount in chat', mounted: 'Mounted', unmount: 'Unmount',
@@ -599,8 +601,9 @@ export function BrandKitPanel({ projectId, onBackToConversation }: {
   </section>
 }
 
-export function AgentReviewPanel({ runId, onBackToConversation }: {
+export function AgentReviewPanel({ runId, projectId, onBackToConversation }: {
   runId: string
+  projectId?: string
   onBackToConversation: () => void
 }) {
   const { locale } = useProductI18n()
@@ -609,6 +612,9 @@ export function AgentReviewPanel({ runId, onBackToConversation }: {
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
   const [pending, setPending] = useState('')
   const [notice, setNotice] = useState('')
+  // 评审决定需要 edit 能力（与服务端 review_decide 同一能力）。Viewer 不该看到这三个
+  // 按钮 —— 点了必然 403，而失败的按钮比没有按钮更让人困惑。
+  const canDecide = canUseProjectEntry(projectId ? cachedProjectCapabilities(projectId) : undefined, 'decideReview')
 
   useEffect(() => {
     let active = true
@@ -672,7 +678,7 @@ export function AgentReviewPanel({ runId, onBackToConversation }: {
           <footer>
             {row.awaitingHuman ? <small>{copy.reviewAwaiting}</small> : <small>{row.decisionLabel}</small>}
             <div>
-              {(['accepted', 'rejected', 'retry_requested'] as const).map((decision) => <button
+              {canDecide ? (['accepted', 'rejected', 'retry_requested'] as const).map((decision) => <button
                 key={decision}
                 type="button"
                 className={row.decision === decision ? 'is-active' : undefined}
@@ -680,7 +686,7 @@ export function AgentReviewPanel({ runId, onBackToConversation }: {
                 onClick={() => void decide(task.id, row.artifactId, decision)}
               >
                 {decision === 'accepted' ? copy.reviewAccept : decision === 'rejected' ? copy.reviewReject : copy.reviewRetry}
-              </button>)}
+              </button>) : <small className="agent-review-panel__readonly">{copy.reviewReadOnly}</small>}
             </div>
           </footer>
         </div>)}

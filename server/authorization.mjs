@@ -12,6 +12,22 @@ const workspacePermissions = Object.freeze({
   member: new Set(),
 })
 
+/**
+ * 一个角色在项目内拥有的全部能力。
+ *
+ * 下发给客户端的是**能力集合**，不是角色。界面若拿到角色再自己映射一遍权限，
+ * 就出现了第二份权威 —— 两份映射迟早漂移，而漂移的表现是「按钮显示了但一点就 403」
+ * 或更糟的「该藏的没藏」。这里与 `projectPermissionDecision` 读同一张表。
+ *
+ * **隐藏不是鉴权。** 服务端始终是唯一的鉴权边界；这份集合只用于不给用户看他点不动的
+ * 入口，不能被当成安全措施。
+ *
+ * @param {string | undefined} role
+ */
+export function projectCapabilities(role) {
+  return [...(projectPermissions[role] ?? [])]
+}
+
 export function projectPermissionDecision(role, permission) {
   return role && projectPermissions[role]?.has(permission) ? 'allow' : 'forbidden'
 }

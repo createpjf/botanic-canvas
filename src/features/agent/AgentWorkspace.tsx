@@ -2517,6 +2517,7 @@ export default function AgentWorkspace({
         /></div> : null}
         {reviewPanelOpen && latestRun?.id ? <div data-agent-flip className="agent-workspace__flip-surface"><AgentReviewPanel
           runId={latestRun.id}
+          projectId={projectId}
           onBackToConversation={closeUtilityPanel}
         /></div> : null}
         {brandPanelOpen ? <div data-agent-flip className="agent-workspace__flip-surface"><BrandKitPanel

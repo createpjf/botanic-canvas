@@ -42,6 +42,8 @@ import {
   startProductionWorkflowRun,
   updateProductionWorkflowRun,
 } from '../../lib/productionWorkflowApi'
+import { cachedProjectCapabilities } from '../../lib/db'
+import { canUseProjectEntry, isReadOnlyProject, readOnlyProjectNotice } from '../../domain/projectCapabilities'
 import {
   addWorkflowBatchRow,
   canSubmitWorkflowBatch,
@@ -891,6 +893,11 @@ export function TemplatePanel({
   const [batchItems, setBatchItems] = useState<Record<string, WorkflowBatchItem[]>>({})
   const [batchCsv, setBatchCsv] = useState<Record<string, string>>({})
   const [batchNotice, setBatchNotice] = useState<Record<string, string>>({})
+  // 能力集合随项目读模型下发（Epic 10）。**隐藏不是鉴权** —— 服务端仍是唯一边界；
+  // 这里只是不给用户看他点不动的入口。取不到时保守按只读处理。
+  const capabilities = cachedProjectCapabilities(projectId)
+  const canModifyWorkflow = canUseProjectEntry(capabilities, 'modifyWorkflow')
+  const canSubmitGeneration = canUseProjectEntry(capabilities, 'submitGeneration')
   const [productionError, setProductionError] = useState('')
   const saveDialogPresence = useMotionPresence(saveOpen, 140)
   useRestoreFocus(saveOpen)
@@ -1148,10 +1155,12 @@ export function TemplatePanel({
               />
             </label>
           ) : null}
-          <button type="button" className="production-workflow-publish" disabled={!productionDraft || Boolean(productionBusy)} onClick={() => void publishAutomation()}>
+          {canModifyWorkflow ? <button type="button" className="production-workflow-publish" disabled={!productionDraft || Boolean(productionBusy)} onClick={() => void publishAutomation()}>
             <PlusSquareIcon />{productionBusy === 'publish' ? t.saving : productionDraft?.sourceAgentRunId ? t.saveAgent : t.saveFlow}
-          </button>
-          {!productionSources.length
+          </button> : null}
+          {isReadOnlyProject(capabilities)
+            ? <p className="panel-note is-readonly">{readOnlyProjectNotice(locale)}</p>
+            : !productionSources.length
             ? <p className="panel-note">{t.productionHint}</p>
             : productionSourceNotice ? <p className="panel-note">{productionSourceNotice}</p> : null}
           <div className="production-workflow-list">
@@ -1225,13 +1234,13 @@ export function TemplatePanel({
                   </details>
                 })()}
                 <footer>
-                  <button type="button" disabled={Boolean(productionBusy) || Boolean(batchItems[workflow.id]?.length && !canSubmitWorkflowBatch(batchItems[workflow.id]))} onClick={() => void startAutomation(workflow)}>{productionBusy === workflow.id
+                  {canSubmitGeneration ? <button type="button" disabled={Boolean(productionBusy) || Boolean(batchItems[workflow.id]?.length && !canSubmitWorkflowBatch(batchItems[workflow.id]))} onClick={() => void startAutomation(workflow)}>{productionBusy === workflow.id
                     ? t.processing
-                    : batchItems[workflow.id]?.length ? t.batchRunCount(batchItems[workflow.id].length) : t.runCurrent}</button>
+                    : batchItems[workflow.id]?.length ? t.batchRunCount(batchItems[workflow.id].length) : t.runCurrent}</button> : null}
                   {latestRun?.status === 'running' ? <button type="button" onClick={() => void updateAutomation(latestRun, 'pause')}>{t.pause}</button> : null}
                   {latestRun?.status === 'paused' ? <button type="button" onClick={() => void updateAutomation(latestRun, 'resume')}>{t.resume}</button> : null}
                   {latestRun && ['queued', 'running', 'paused'].includes(latestRun.status) ? <button type="button" onClick={() => void updateAutomation(latestRun, 'cancel')}>{t.cancel}</button> : null}
-                  {hasFailed ? <button type="button" onClick={() => void updateAutomation(latestRun, 'retry-failed')}>{t.retryFailed}</button> : null}
+                  {hasFailed && canSubmitGeneration ? <button type="button" onClick={() => void updateAutomation(latestRun, 'retry-failed')}>{t.retryFailed}</button> : null}
                   {resultNodeId ? <button type="button" onClick={() => onLocateWorkflowNode(resultNodeId)}>{t.locateResult}</button> : null}
                   {latestRun?.items.some((item) => item.artifactIds?.length) ? <button type="button" onClick={onOpenHistory}>{t.reviewDelivery}</button> : null}
                   {latestRun?.items.some((item) => item.artifactIds?.length) ? <button type="button" disabled={productionBusy === `package-${latestRun.id}`} onClick={() => void downloadPackage(latestRun)}>{productionBusy === `package-${latestRun.id}` ? t.packaging : t.downloadPackage}</button> : null}
