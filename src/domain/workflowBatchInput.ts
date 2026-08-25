@@ -135,3 +135,109 @@ export function workflowBatchImportSummary(result: WorkflowBatchParseResult, loc
     ? `${result.items.length} 行可导入，另有 ${skipped} 行需要先修正。`
     : `${result.items.length} 行可导入。`
 }
+
+/**
+ * 表格编辑（Epic 7 遗留项）。
+ *
+ * 解析与校验早就在了，但界面上**一直发的是写死的 `items: [{ id: 'item-1' }]`** ——
+ * 也就是说整条批量能力从界面上根本用不到。补的是那一段，不只是"加个表格"。
+ *
+ * 编辑期最要紧的一条：**改动之后必须立刻重查重复标识**。批量项标识取自业务身份
+ * （SKU/渠道/语言），两行撞成同一个标识时，「10 个里 2 个失败只重试这 2 个」会打到
+ * 别的行上。等到提交才发现就晚了 —— 那时钱已经花出去了。
+ */
+
+/** 表格列：声明字段固定在前，其余变量列按出现顺序跟在后面。 */
+export function workflowBatchColumns(items: WorkflowBatchItem[], variableColumns: string[] = []) {
+  const extra = [...new Set([
+    ...variableColumns,
+    ...items.flatMap((item) => Object.keys(item.variables ?? {})),
+  ])]
+  return { fields: [...WORKFLOW_BATCH_FIELDS], variables: extra }
+}
+
+/** 一行的业务标识。与服务端派生规则同口径：显式 id 优先，其次业务身份。 */
+export function workflowBatchItemIdentity(item: WorkflowBatchItem) {
+  return item.id ?? [item.sku, item.channel, item.language].filter(Boolean).join('_')
+}
+
+/**
+ * 就地改一个单元格。空值**删除该键**而不是留下空串 —— 空串会被当成「声明了这个字段
+ * 且值为空」，进而生成 `{{sku}}` 插值出空白的 Prompt。
+ */
+export function updateWorkflowBatchCell(
+  items: WorkflowBatchItem[],
+  index: number,
+  column: { kind: 'field'; name: WorkflowBatchField } | { kind: 'variable'; name: string },
+  value: string,
+): WorkflowBatchItem[] {
+  return items.map((item, position) => {
+    if (position !== index) return item
+    const trimmed = value.trim()
+    if (column.kind === 'field') {
+      const next = { ...item }
+      if (trimmed) next[column.name] = trimmed
+      else delete next[column.name]
+      return next
+    }
+    const variables = { ...(item.variables ?? {}) }
+    if (trimmed) variables[column.name] = trimmed
+    else delete variables[column.name]
+    const next = { ...item }
+    if (Object.keys(variables).length) next.variables = variables
+    else delete next.variables
+    return next
+  })
+}
+
+export function addWorkflowBatchRow(items: WorkflowBatchItem[], { limit = 200 } = {}): WorkflowBatchItem[] {
+  return items.length >= limit ? items : [...items, {}]
+}
+
+export function removeWorkflowBatchRow(items: WorkflowBatchItem[], index: number): WorkflowBatchItem[] {
+  return items.filter((_, position) => position !== index)
+}
+
+export type WorkflowBatchRowIssue = {
+  index: number
+  code: 'duplicate_id' | 'empty_row'
+  detail: string
+}
+
+/**
+ * 提交前的实时校验。
+ *
+ * 只报**会让提交出错**的两件事：重复标识与完全空行。不校验「字段是不是都填了」——
+ * 批量项本来就允许只给部分字段，其余走工作流版本里的默认值。
+ */
+export function validateWorkflowBatchItems(items: WorkflowBatchItem[]): WorkflowBatchRowIssue[] {
+  const issues: WorkflowBatchRowIssue[] = []
+  const seen = new Map<string, number>()
+  items.forEach((item, index) => {
+    const hasValue = Object.keys(item).some((key) => (
+      key === 'variables' ? Object.keys(item.variables ?? {}).length : Boolean((item as Record<string, unknown>)[key])
+    ))
+    if (!hasValue) {
+      issues.push({ index, code: 'empty_row', detail: '这一行没有任何内容，提交前请填写或删除。' })
+      return
+    }
+    const identity = workflowBatchItemIdentity(item)
+    if (!identity) return
+    const first = seen.get(identity)
+    if (first !== undefined) {
+      issues.push({
+        index,
+        code: 'duplicate_id',
+        detail: `标识「${identity}」与第 ${first + 1} 行重复；重复标识会让失败重试打到别的行上。`,
+      })
+      return
+    }
+    seen.set(identity, index)
+  })
+  return issues
+}
+
+/** 能否提交。有任何一条问题都不能提交 —— 提交后再发现，钱已经花出去了。 */
+export function canSubmitWorkflowBatch(items: WorkflowBatchItem[]) {
+  return items.length > 0 && validateWorkflowBatchItems(items).length === 0
+}
