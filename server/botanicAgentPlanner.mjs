@@ -6,6 +6,7 @@ import {
   resolveBotanicAgentMountedSkills,
 } from './botanicAgentTools.mjs'
 import { readStreamedChatCompletion } from './botanicAgentStream.mjs'
+import { createAgentSubagentRunner } from './agentSubagentRunner.mjs'
 import { normalizeBotanicAgentLocale, readBotanicAgentInstructions } from './agentInstructions.mjs'
 import {
   botanicCreativeBriefFieldIds,
@@ -704,6 +705,12 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
       if (!proposedActions.some((item) => item.id === proposal.id)) proposedActions.push(proposal)
     },
     webResearch,
+    // 未配置 AGENT_SUBAGENT_MODEL 时这里是 undefined，派发工具整个不注册 ——
+    // 模型看不到的工具不会被它拿去向用户承诺（Epic 11）。
+    subagentRunner: createAgentSubagentRunner({
+      runtimeConfig,
+      fetchImpl: options.fetchImpl ?? fetch,
+    }),
   })
   const hasWebTools = Boolean(registry.get('web_search') || registry.get('web_fetch'))
   const streaming = typeof options.onEvent === 'function'

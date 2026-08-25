@@ -97,6 +97,10 @@ export function runtimeConfig(rootDir = process.cwd()) {
     flockAgentModels,
     // 看图走同一个 Flock 网关；置空即关闭视觉识别，Agent 回到只有节点元数据的状态。
     agentVisionModel: (process.env.AGENT_VISION_MODEL ?? 'gemini-3.6-flash').trim(),
+    // 子 Agent 并行调研（Epic 11）。**默认关闭**：一次派发会额外产生 2–3 次模型调用，
+    // 而这条路径不需要用户逐次确认。要开就得明确指定一个模型，不从主模型隐式继承 ——
+    // 隐式继承意味着任何一次配置调整都可能在无人察觉时把它打开。
+    agentSubagentModel: (process.env.AGENT_SUBAGENT_MODEL ?? '').trim(),
     agentRawReasoning,
     agentFeatureFlags: resolveAgentFeatureFlags(process.env),
     // 升级期灰度闸门。与上一行的 kill switch 语义相反：默认全关，支持按项目/用户放量。

@@ -4,6 +4,8 @@ import { createBotanicAgentOperationalActionDefinitions } from './botanicAgentOp
 import { botanicCreativeBriefFieldIds } from './botanicCreativeBrief.mjs'
 import { botanicAgentVariationClarificationFieldIds } from './botanicAgentVariations.mjs'
 import { createBotanicAgentWebResearchTools } from './botanicAgentWebTools.mjs'
+import { createAgentSubtask } from './agentSubtask.mjs'
+import { runAgentSubtaskFanout, subtaskFanoutSummary } from './agentSubtaskScheduler.mjs'
 import { readFileSync } from 'node:fs'
 
 function readBuiltInSkill(relativePath) {
@@ -308,7 +310,33 @@ function clarificationParameters() {
   }
 }
 
-export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, finalizeClarification, onProposeAction, webResearch }) {
+/**
+ * 子任务的输出 Schema（Epic 11）。
+ *
+ * 刻意保守：只要摘要、要点与置信度。子 Agent 的产出是给主 Agent 参考的，字段越多
+ * 越容易出现「看起来很详实、其实是编的」——而主 Agent 无从分辨。
+ */
+/**
+ * 允许从规划链路并行派发的角色。
+ *
+ * 是 `SUBAGENT_ROLES` 的**子集**：审阅类角色（prompt/visual/compliance）需要具体的
+ * 待审对象，规划阶段还没有，派出去只会得到一份凭空发挥的结论。
+ */
+const SUBAGENT_PARALLEL_ROLES = Object.freeze([
+  'brand_research', 'audience_research', 'competitor_research', 'creative_direction',
+])
+
+const SUBAGENT_RESEARCH_SCHEMA = Object.freeze({
+  type: 'object',
+  required: ['summary'],
+  properties: {
+    summary: { type: 'string', maxLength: 600 },
+    findings: { type: 'array', maxItems: 5, items: { type: 'string', maxLength: 200 } },
+    confidence: { type: 'string', enum: ['low', 'medium', 'high'] },
+  },
+})
+
+export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, finalizeClarification, onProposeAction, webResearch, subagentRunner }) {
   if (!input || typeof finalizePlan !== 'function' || typeof finalizeClarification !== 'function') throw new TypeError('Agent 规划工具缺少可信上下文。')
   const availableSkills = resolveBotanicAgentAvailableSkills(input.projectSkills)
   const mountedSkillLabels = resolveBotanicAgentMountedSkills(input.mountedSkillIds, input.projectSkills)
@@ -318,6 +346,7 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
     .slice(0, 30)
   const mcpToolKeys = new Set(availableMcpTools.map((item) => `${item.server}.${item.tool}`))
   const propose = typeof onProposeAction === 'function' ? onProposeAction : () => {}
+  const planningRegistryRef = { current: undefined }
   const tools = [
     {
       name: 'canvas_read',
@@ -476,6 +505,82 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
         return { proposed: true, actionId: proposal.id, tool: `${server}.${tool}` }
       },
     }] : []),
+    ...(typeof subagentRunner === 'function' ? [{
+      name: 'subagent_research',
+      label: '并行调研',
+      description: `就 2–3 个不同角度并行做一次只读调研，返回结构化提案供你参考。可用角色：${SUBAGENT_PARALLEL_ROLES.join('、')}。子任务无权修改画布、提交生成或调用外部系统；它们的结论只是建议，最终仍由你和用户决定。`,
+      risk: 'read',
+      parameters: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          tasks: {
+            type: 'array', maxItems: 3,
+            items: {
+              type: 'object', additionalProperties: false,
+              properties: {
+                role: { type: 'string', enum: [...SUBAGENT_PARALLEL_ROLES] },
+                question: { type: 'string', maxLength: 400 },
+              },
+              required: ['role', 'question'],
+            },
+          },
+        },
+        required: ['tasks'],
+      },
+      validate: (raw) => {
+        const value = object(raw, '并行调研')
+        const tasks = Array.isArray(value.tasks) ? value.tasks : []
+        if (!tasks.length || tasks.length > 3) {
+          // 上限压得比 SUBAGENT_LIMITS 更低：这条路径不需要用户确认，因此单次能花出去
+          // 的钱必须小。真要更大的扇出，应当走一次显式确认的编排，而不是从这里放宽。
+          throw new AgentToolRuntimeError('INVALID_TOOL_ARGUMENTS', '并行调研一次最多 3 个角度。')
+        }
+        return {
+          tasks: tasks.map((task, index) => {
+            const item = object(task, `第 ${index + 1} 个调研角度`)
+            if (!SUBAGENT_PARALLEL_ROLES.includes(item.role)) {
+              throw new AgentToolRuntimeError('INVALID_TOOL_ARGUMENTS', `第 ${index + 1} 个调研角度的角色无效。`)
+            }
+            return { role: item.role, question: requiredText(item.question, `第 ${index + 1} 个调研问题`, 400) }
+          }),
+        }
+      },
+      execute: async ({ tasks }, context) => {
+        const registry = planningRegistryRef.current
+        // web_search 是外呼但只读、根 Agent 调用时也不需要确认的工具，因此子任务可以
+        // 持有它；没配置联网时退回只读画布，调研仍能进行但会明说依据有限。
+        const allowedTools = registry?.get?.('web_search') ? ['web_search'] : ['canvas_read']
+        const subtasks = tasks.map((task) => createAgentSubtask({
+          parentTurnId: context?.traceId ?? context?.toolCallId ?? `plan-${input.projectId}`,
+          projectId: input.projectId,
+          ownerId: context?.userId ?? input.projectId,
+          role: task.role,
+          input: { question: task.question, projectId: input.projectId },
+          // 需要用户确认或会产生终态的工具会被 assertSubtaskToolAllowlist 拒绝，
+          // 因此这份名单写错了会在创建时就失败，而不是运行到一半才发现越权。
+          allowedTools,
+          outputSchema: SUBAGENT_RESEARCH_SCHEMA,
+          registry,
+          budget: { maxSteps: 1, maxToolCalls: 2 },
+          timeoutMs: 45_000,
+        }))
+        const outcome = await runAgentSubtaskFanout({
+          subtasks, registry, context, runSubagent: subagentRunner, maxConcurrent: 3,
+        })
+        return {
+          // 终止数与完成数并列：只报「拿到 3 份提案」会让主 Agent 在残缺输入上下结论。
+          summary: subtaskFanoutSummary(outcome),
+          proposals: outcome.completed.map((subtask) => ({
+            role: subtask.role,
+            subtaskId: subtask.id,
+            ...subtask.result.output,
+          })),
+          stopped: outcome.terminated.map((subtask) => ({
+            role: subtask.role, reason: subtask.termination?.reason, detail: subtask.termination?.detail,
+          })),
+        }
+      },
+    }] : []),
     {
       name: 'generation_ask_clarification',
       label: '确认生成参数',
@@ -512,7 +617,12 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
       execute: async (plan) => plan,
     },
   ]
-  return createAgentToolRegistry(tools)
+  // 派发工具需要引用**它自己所在的**注册表，才能把只读检索工具授予子任务。
+  // 注册表要等 tools 数组建好才能创建，因此用一个持有者在创建后回填 —— 比让调用方
+  // 再传一份注册表进来更安全：传进来的那份可能与实际生效的不是同一个。
+  const registry = createAgentToolRegistry(tools)
+  planningRegistryRef.current = registry
+  return registry
 }
 
 function actionHandler(handler, name) {
