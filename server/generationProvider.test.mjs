@@ -532,6 +532,31 @@ test('读不出尺寸时不拦', async () => {
   assert.equal(resolved.references.length, 1)
 })
 
+test('供应商拒绝时不把英文原文转述给用户，但日志留得住', async () => {
+  const { providerRejectionError } = await import('./generationProvider.mjs')
+  const upstream = 'Invalid image file or mode for image 1, please check your image file. '
+    + 'If you believe this is an error, contact us at help.openai.com and include the request ID req_abc'
+  const error = providerRejectionError(upstream, 'req_abc123')
+
+  assert.equal(error.code, 'PROVIDER_REJECTED')
+  // 用户不该被指去联系供应商 —— 他既不是客户，也无从判断该说什么。
+  assert.doesNotMatch(error.message, /help\.openai\.com/)
+  assert.doesNotMatch(error.message, /contact us/i)
+  // 但要给可执行的下一步，和一个能对上日志的请求号。
+  assert.match(error.message, /req_abc123/)
+  assert.match(error.message, /提示词|参考素材|输出规格/)
+  // 原文必须留在结构化字段里，运维要靠它诊断。
+  assert.equal(error.upstreamMessage, upstream)
+})
+
+test('没有上游原文时也给得出可执行的话', async () => {
+  const { providerRejectionError } = await import('./generationProvider.mjs')
+  const error = providerRejectionError(undefined, undefined)
+  assert.equal(error.code, 'PROVIDER_REJECTED')
+  assert.match(error.message, /提示词|参考素材|输出规格/)
+  assert.equal(error.upstreamMessage, undefined)
+})
+
 test('dataUrl 参考图像素超上限时被拒', async () => {
   // dataUrl 路径在 validateGenerationInput 时已填充 buffer，直接进 resolve 的早期分支。
   // 若不加像素守卫，12.2MP 的参考会原样通过。

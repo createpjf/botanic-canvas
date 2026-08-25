@@ -409,7 +409,8 @@ export function createGenerationProcessor({
         ? caught
         : new GenerationError(502, 'GENERATION_FAILED', '真实生图任务失败，请稍后重试。')
       const detail = caught instanceof Error ? `${caught.name}: ${caught.message}` : String(caught)
-      console.error(`[generation] ${jobId} failed (${failure.code}): ${detail}`)
+      const upstream = failure.upstreamMessage ? ` 上游原文：${failure.upstreamMessage}` : ''
+      console.error(`[generation] ${jobId} failed (${failure.code}): ${detail}${upstream}`)
       await variantWrite
       // 错误码随任务落库：失败消息是给人看的，服务端的重试策略要按码分类
       // （瞬时故障可自动重试，其余停下等用户）。只存消息的话策略永远判不出来。

@@ -431,15 +431,31 @@ function fileExtension(mimeType) {
   return 'png'
 }
 
+/**
+ * 供应商拒绝本次任务时的错误。
+ *
+ * **供应商原文不进用户可见消息。** 生产上它长这样：「Invalid image file or mode
+ * for image 1 ... contact us at help.openai.com」—— 用户既不是供应商的客户，
+ * 也无从判断该向他们说什么；而真正的答案（照片像素太大）没人告诉他。
+ *
+ * 原文留在 `upstreamMessage` 字段里给日志和运维，不丢。
+ */
+export function providerRejectionError(upstreamMessage, requestId) {
+  const suffix = requestId ? `（请求 ${requestId}）` : ''
+  const error = new GenerationError(422, 'PROVIDER_REJECTED',
+    `图像服务拒绝了本次任务，请检查提示词、参考素材与输出规格。${suffix}`)
+  if (typeof upstreamMessage === 'string' && upstreamMessage.trim()) {
+    error.upstreamMessage = upstreamMessage
+  }
+  return error
+}
 
 function providerError(response, body) {
   const requestId = response.headers.get('x-request-id')
   if (response.status === 401 || response.status === 403) return new GenerationError(502, 'PROVIDER_AUTH_FAILED', '图像服务鉴权失败，请检查 OPENAI_API_KEY 与组织验证。')
   if (response.status === 429) return new GenerationError(429, 'PROVIDER_RATE_LIMITED', '图像服务当前限流，请稍后重试。')
   if (response.status >= 500) return new GenerationError(502, 'PROVIDER_UNAVAILABLE', '图像服务暂时不可用，请稍后重试。')
-  const suffix = requestId ? `（请求 ${requestId}）` : ''
-  const upstream = typeof body?.error?.message === 'string' ? body.error.message.slice(0, 180) : '请检查提示词、参考素材与输出规格。'
-  return new GenerationError(422, 'PROVIDER_REJECTED', `图像服务拒绝了本次任务：${upstream}${suffix}`)
+  return providerRejectionError(typeof body?.error?.message === 'string' ? body.error.message : undefined, requestId)
 }
 
 function providerImage(value) {
