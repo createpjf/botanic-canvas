@@ -299,6 +299,8 @@ const handleAgentRoute = createAgentRouteHandler({
   config, productStore, redisQueue, configuredMcpTools, json, error, readJson, text,
   requireUser, enforceRateLimit, agentRunGeneration, publishAgentRunUpdated,
   enqueue, publishProjectUpdated, publishCollaborationActivity, observeAgentRun,
+  // 分支重试服务需要不写 HTTP 响应的限流原语：工具调用方没有 response 可写。
+  securityControls,
   mediaService, localCancelRegistry,
   publishCancel: (event) => agentRunEvents?.publishCancel?.(event),
   consumeWebResearchQuota: async (userId) => {

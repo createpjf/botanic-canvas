@@ -310,6 +310,7 @@ export function publicGenerationJob(job, { includeIdempotencyKey = false } = {})
     provider: job.provider ?? 'openai-images',
     model: job.settings?.model,
     error: job.error,
+    errorCode: job.errorCode,
     missingOutputCount: job.missingOutputCount ?? 0,
     partialError: job.partialError,
     outputs: job.outputs ?? [],
@@ -348,6 +349,8 @@ export function persistedGenerationJob(job) {
     outputs: job.outputs ?? [],
     variants: job.variants ?? [],
     error: job.error,
+    // 失败的错误码：服务端重试策略按码分类，只存消息就永远判不出可否重试。
+    errorCode: job.errorCode,
     // 取消回执是计费归因唯一的持久记录，必须随任务落库。
     cancel: job.cancel,
     missingOutputCount: job.missingOutputCount ?? 0,

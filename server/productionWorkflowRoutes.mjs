@@ -1,18 +1,15 @@
 import {
   applyWorkflowItemResult,
   createProductionWorkflowRun,
-  createProductionWorkflowVersion,
   generationArtifactId,
   productionWorkflowVersion,
   productionWorkflowVersionProvenance,
   resolveProductionWorkflowRecipe,
-  resolveWorkflowBrandRules,
-  resolveWorkflowExecutionContract,
-  resolveProductionWorkflowSource,
   retryFailedWorkflowItems,
   transitionProductionWorkflowRun,
 } from './productionWorkflow.mjs'
 import { buildDeliveryManifest } from './deliveryManifest.mjs'
+import { createProductionWorkflowPublishService } from './productionWorkflowPublishService.mjs'
 import { cancelGenerationJob } from './generationCancellation.mjs'
 import { publicGenerationJob } from './generationProvider.mjs'
 import { requireProjectPermission } from './projectAuthorization.mjs'
@@ -84,6 +81,11 @@ export function createProductionWorkflowRouteHandler({
   publishCancel,
   modelOptions = [],
 }) {
+  const publishProductionWorkflow = createProductionWorkflowPublishService({
+    productStore,
+    updateProject: (userId, projectId, mutate) => updateProject(userId, projectId, mutate),
+  })
+
   const cancelJob = (ownerId, job, reason) => cancelGenerationJob({
     productStore, redisQueue, publishCancel, modelOptions, ownerId, job, reason, requestedBy: ownerId,
   })
@@ -174,38 +176,12 @@ export function createProductionWorkflowRouteHandler({
       if (request.method === 'POST') {
         await requireProjectPermission(productStore, user.id, projectId, 'modify-workflow')
         const body = await readJson(request)
-        let created
-        try {
-          const saved = await updateProject(user.id, projectId, (document) => {
-            const state = documents(document)
-            const existing = state.workflows.find((workflow) => workflow.id === body.id)
-            // 来源校验放在这里而不是回调外：updateProject 每次冲突重试都会重新读取项目，
-            // 因此并发修改无法在校验与写入之间把来源改掉（版本未漂移）。
-            const source = resolveProductionWorkflowSource(body.source, document)
-            created = createProductionWorkflowVersion({
-              id: body.id,
-              projectId,
-              name: body.name,
-              // 品牌规则由服务端从权威文档经同一个记忆选择器派生，客户端提交的那一份
-              // 被丢弃：它绕过了激活过滤，也不带版本绑定（ADR 0006）。
-              // 执行契约（计划指纹、Skill/Memory 绑定、质量策略）同样在这里固定：
-              // 新版本不改变历史或进行中的 Run，靠的就是运行只读版本里的这份快照。
-              definition: {
-                ...body.definition,
-                ...resolveWorkflowBrandRules(document),
-                ...resolveWorkflowExecutionContract(source, document),
-              },
-              source,
-              previous: existing,
-            }, { actorId: user.id })
-            return { ...document, productionWorkflows: [...state.workflows.filter((workflow) => workflow.id !== created.id), created] }
-          })
-          if (!saved) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
-        } catch (caught) {
-          if (caught?.name !== 'ProductionWorkflowSourceError') throw caught
-          return error(response, caught.statusCode ?? 409, caught.code, caught.message)
-        }
-        return json(response, 201, { workflow: publicProductionWorkflow(created) })
+        // 发布只有一份实现：版本一旦写下就不可改，两条入口固定出不同执行契约无法补救。
+        const outcome = await publishProductionWorkflow({
+          userId: user.id, projectId, id: body.id, name: body.name, definition: body.definition, source: body.source,
+        })
+        if (outcome.kind === 'error') return error(response, outcome.status, outcome.code, outcome.message)
+        return json(response, 201, { workflow: publicProductionWorkflow(outcome.workflow) })
       }
       return json(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message: '生产工作流集合不支持该请求方法。' } }, { Allow: 'GET, POST' })
     }

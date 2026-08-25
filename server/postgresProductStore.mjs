@@ -1675,6 +1675,20 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       return rows.map(asPayload)
     },
 
+    // Worker 侧：找出含失败分支的 Run。用 jsonb 存在性过滤，不把全部 Run 拉回内存筛。
+    async listRunsWithFailedBranches({ limit = 25 } = {}) {
+      const rows = await sql`
+        select r.id, r.owner_id, r.project_id from agent_runs r
+        where r.status in ('partial', 'failed')
+          and exists (
+            select 1 from jsonb_array_elements(coalesce(r.payload->'branches', '[]'::jsonb)) as branch
+            where branch->>'status' = 'failed'
+          )
+        order by r.updated_at asc limit ${Math.max(1, Math.min(limit, 200))}
+      `
+      return rows.map((row) => ({ runId: row.id, ownerId: row.owner_id, projectId: row.project_id }))
+    },
+
     // Worker 侧：找出仍有未收口工作流运行的项目。用 jsonb 路径过滤而不是把全部
     // 项目拉回来在内存里筛 —— 后者在项目数增长后会把清扫变成全表扫描。
     async listProjectsWithActiveWorkflowRuns({ limit = 25 } = {}) {

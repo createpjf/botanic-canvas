@@ -19,6 +19,8 @@ import { actionArgumentsHash, agentToolPermission, assertFreshActionApproval, cr
 import { agentTurnIdForIdempotency, agentTurnLastSequence, createBotanicAgentTurnRuntime, publicAgentTurn } from './botanicAgentTurnRuntime.mjs'
 import { createLocalCancelRegistry } from './localCancelRegistry.mjs'
 import { createAgentHumanDecision, publicAgentReviewTask } from './agentReviewTask.mjs'
+import { createAgentBranchRetryService } from './agentBranchRetryService.mjs'
+import { createProductionWorkflowPublishService } from './productionWorkflowPublishService.mjs'
 import { selectBotanicAgentMemory } from './botanicAgentMemory.mjs'
 import { buildThreadSummaryCheckpoint, shouldCompactThread } from './agentThreadSummary.mjs'
 import { compareBotanicAgentRunBranches } from './botanicAgentCompare.mjs'
@@ -121,6 +123,7 @@ export function createAgentRouteHandler({
   mediaService,
   localCancelRegistry,
   publishCancel,
+  securityControls,
 }) {
   // 看图只读当前项目内的媒体：readGenerationInput 校验归属，图片字节不离开服务端与模型网关。
   const visionMediaResolver = (userId, projectId) => (mediaService?.enabled
@@ -181,6 +184,43 @@ export function createAgentRouteHandler({
   const agentActionTimeoutMs = Number.isFinite(configuredActionTimeout)
     ? Math.max(1, Math.min(120_000, configuredActionTimeout))
     : 30_000
+  /**
+   * 工作流发布的唯一实现，路由与运维工具共用。这里自带一个最小的项目写入器：
+   * 与工作流路由一样按乐观并发重试，来源校验在回调内做，因此并发修改无法在校验与
+   * 写入之间把来源改掉。
+   */
+  const publishProductionWorkflow = createProductionWorkflowPublishService({
+    productStore,
+    updateProject: async (userId, projectId, mutate) => {
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const project = await productStore.readProject(userId, projectId)
+        if (!project) return undefined
+        const document = mutate(structuredClone(project.document))
+        try {
+          const saved = await productStore.writeProject(userId, document, project.revision, project.graphRevision)
+          await publishProjectUpdated(saved, userId)
+          return saved
+        } catch (caught) {
+          if (!['PROJECT_CONFLICT', 'CANVAS_GRAPH_CONFLICT'].includes(caught?.code) || attempt === 4) throw caught
+        }
+      }
+      return undefined
+    },
+  })
+
+  // 分支重试的唯一实现，路由与运维工具共用。
+  const retryAgentBranch = createAgentBranchRetryService({
+    productStore,
+    config,
+    enqueue,
+    securityControls,
+    publishProjectUpdated,
+    publishAgentRunUpdated,
+    agentRunGeneration,
+    recordCollaborationActivity,
+    observeRun: (event) => observeAgentRun(event),
+  })
+
   /**
    * 线程摘要检查点（Epic 8）。
    *
@@ -949,6 +989,16 @@ export function createAgentRouteHandler({
             } }
           },
           role: (await productStore.projectAccess(user.id, projectId))?.role,
+          retryBranch: async ({ runId, branchId }) => {
+            // 与 HTTP 路由共用同一实现与同一幂等键，因此工具重复触发不会重复扣费。
+            const outcome = await retryAgentBranch({
+              userId: user.id, runId, branchId, idempotencyKey, requestId, actor: user,
+            })
+            if (outcome.kind === 'error') {
+              throw new AgentToolRuntimeError(outcome.code, outcome.message, outcome.status)
+            }
+            return { runId, branchId, jobId: outcome.job.id, reused: outcome.kind === 'reused', status: outcome.run?.status }
+          },
           cancelRun: async ({ runId }) => {
             const run = await productStore.readAgentRun(user.id, runId)
             if (!run || run.projectId !== projectId) throw new AgentToolRuntimeError('AGENT_RUN_NOT_FOUND', '未找到当前项目的 Agent Run。', 404)
@@ -1017,6 +1067,52 @@ export function createAgentRouteHandler({
             const saved = await productStore.writeProject(user.id, document, project.revision, project.graphRevision)
             await publishProjectUpdated(saved, user.id)
             return { artifactId, assetId, reused: false }
+          },
+          publishWorkflow: async ({ name, sourceCanvasNodeId }) => {
+            const project = await productStore.readProject(user.id, projectId)
+            if (!project) throw new AgentToolRuntimeError('PROJECT_NOT_FOUND', '未找到当前项目。', 404)
+            const node = (project.document.nodes ?? []).find((entry) => entry?.id === sourceCanvasNodeId)
+            if (!node || node.type !== 'generate') {
+              throw new AgentToolRuntimeError('WORKFLOW_SOURCE_NOT_GENERATE_NODE', '来源必须是画布上的生成节点。', 409)
+            }
+            const data = node.data ?? {}
+            // 来源结果由服务端从权威画布解析：不猜「第一条可用节点」（Epic 3B）。
+            const resultNodeIds = (project.document.nodes ?? [])
+              .filter((entry) => entry?.type === 'result' && entry?.data?.outputOf === node.id && entry?.data?.jobId && entry?.data?.candidateId)
+              .map((entry) => entry.id)
+            const outcome = await publishProductionWorkflow({
+              userId: user.id,
+              projectId,
+              id: `production-${sourceCanvasNodeId}`,
+              name,
+              definition: {
+                prompt: data.generationRecipe?.prompt ?? data.prompt,
+                model: data.settings?.model,
+                settings: { ...(data.settings ?? {}), batchCount: data.batchCount ?? 1 },
+                output: {
+                  aspectRatio: data.settings?.aspectRatio,
+                  resolution: data.settings?.resolution,
+                  ...(data.settings?.duration ? { duration: data.settings.duration } : {}),
+                  candidates: data.batchCount ?? 1,
+                },
+                assetGroupIds: [],
+                confirmationPolicy: 'before-submit',
+                ...(data.generationRecipe ? { recipe: data.generationRecipe } : {}),
+              },
+              source: {
+                canvasNodeId: sourceCanvasNodeId,
+                ...(data.agentRun?.runId ? { runId: data.agentRun.runId } : {}),
+                ...(data.agentRun?.branchId ? { branchId: data.agentRun.branchId } : {}),
+                resultNodeIds,
+              },
+            })
+            if (outcome.kind === 'error') throw new AgentToolRuntimeError(outcome.code, outcome.message, outcome.status)
+            return {
+              workflowId: outcome.workflow.id,
+              version: outcome.workflow.currentVersion,
+              sourceCanvasNodeId,
+              resultNodeCount: resultNodeIds.length,
+            }
           },
           retryWorkflowFailed: async ({ runId }) => {
             const project = await productStore.readProject(user.id, projectId)
@@ -1296,60 +1392,28 @@ export function createAgentRouteHandler({
       const user = await requireUser(request)
       const runId = decodeURIComponent(agentBranchRetryMatch[1])
       const branchId = decodeURIComponent(agentBranchRetryMatch[2])
-      const idempotencyKey = generationIdempotencyKey(request.headers['idempotency-key'])
-      if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', '分支重试标识无效，请重试。')
       const run = await productStore.readAgentRun(user.id, runId)
       if (!run) return error(response, 404, 'AGENT_RUN_NOT_FOUND', '未找到该 Agent Run。')
       await requireProjectPermission(productStore, user.id, run.projectId, 'create-generation')
-      const branch = run.branches.find((candidate) => candidate.id === branchId)
-      if (!branch) return error(response, 404, 'AGENT_BRANCH_NOT_FOUND', '未找到 Agent 分支。')
-      const previousJob = branch.activeJobId ? await productStore.readGenerationJob(user.id, branch.activeJobId) : undefined
-      if (!previousJob?.rawInput) return error(response, 409, 'AGENT_BRANCH_RETRY_SOURCE_MISSING', '该分支缺少可重试的原始生成配方。')
-      const jobId = generationJobIdForIdempotency(user.id, idempotencyKey)
-      const existingJob = await productStore.readGenerationJob(user.id, jobId)
-      if (existingJob) {
-        const currentRun = await productStore.readAgentRun(user.id, runId)
-        observeRun({ type: 'retry_reused', requestId, projectId: run.projectId, runId, branchId, jobId, status: currentRun?.status ?? run.status })
-        return json(response, 202, { run: publicAgentRun(currentRun), job: publicGenerationJob(existingJob, { includeIdempotencyKey: existingJob.ownerId === user.id }) })
-      }
-      if (!await enforceRateLimit(response, { scope: 'generation-output', subject: user.id, limit: config.security.generationOutputsPerDay, windowMs: 24 * 60 * 60_000, cost: previousJob.batchCount })) return true
-      const timestamp = Date.now()
-      const retriedRun = prepareAgentBranchRetry(run, branchId, { jobId, now: timestamp })
-      const job = { ...previousJob, id: jobId, status: 'queued', idempotencyKey, createdAt: timestamp, updatedAt: timestamp, outputs: [], error: undefined, missingOutputCount: 0, partialError: undefined, agentRun: { runId, branchId } }
-      const project = await productStore.readProject(user.id, run.projectId)
-      const retargeted = project ? retargetGenerationJobForRetry(project.document, previousJob.id, jobId, timestamp) : { changed: false }
-      if (project && retargeted.changed) {
-        try {
-          const saved = await productStore.writeProject(user.id, retargeted.document, project.revision, project.graphRevision)
-          await publishProjectUpdated(saved, user.id)
-        } catch (caught) {
-          if (caught?.code === 'PROJECT_CONFLICT' || caught?.code === 'CANVAS_GRAPH_CONFLICT') return error(response, 409, caught.code, '画布刚刚发生变化，请刷新后重试该分支。')
-          throw caught
-        }
-      }
-      await productStore.putAgentRun(user.id, retriedRun)
-      await recordCollaborationActivity(user, run.projectId, {
-        id: `agent-run-${retriedRun.id}-${retriedRun.updatedAt}`,
-        kind: 'task',
-        summary: `重试了任务「${retriedRun.plan?.summary || '生成任务'}」`,
-        target: { kind: 'task', runId: retriedRun.id },
+      // 重试逻辑只有一份实现：两份实现只要幂等键算法有一处不同，同一次重试就会
+      // 创建第二个 Job 并再扣一次额度。
+      const outcome = await retryAgentBranch({
+        userId: user.id,
+        runId,
+        branchId,
+        idempotencyKey: generationIdempotencyKey(request.headers['idempotency-key']),
+        requestId,
+        actor: user,
       })
-      await productStore.putGenerationJob(user.id, persistedGenerationJob(job))
-      try {
-        await enqueue(job.id)
-      } catch {
-        const failed = { ...job, status: 'failed', error: '生成任务无法进入队列，请检查 Redis Worker 后重试。', updatedAt: Date.now() }
-        await productStore.putGenerationJob(user.id, persistedGenerationJob(failed))
-        await agentRunGeneration.persistJobState(user.id, run.projectId, failed)
-        const failedRun = await productStore.readAgentRun(user.id, runId)
-        await publishAgentRunUpdated({ projectId: run.projectId, run: publicAgentRun(failedRun) })
-        observeRun({ type: 'retry_failed', requestId, projectId: run.projectId, runId, branchId, jobId, status: failedRun?.status ?? 'failed', code: 'QUEUE_UNAVAILABLE' })
-        return error(response, 503, 'QUEUE_UNAVAILABLE', failed.error)
+      if (outcome.kind === 'error') {
+        if (outcome.code === 'RATE_LIMITED') {
+          return json(response, 429, { error: { code: outcome.code, message: outcome.message } }, {
+            'Retry-After': String(outcome.retryAfterSeconds ?? 1),
+          })
+        }
+        return error(response, outcome.status, outcome.code, outcome.message)
       }
-      const queuedRun = await productStore.readAgentRun(user.id, runId)
-      await publishAgentRunUpdated({ projectId: run.projectId, run: publicAgentRun(queuedRun) })
-      observeRun({ type: 'retry_queued', requestId, projectId: run.projectId, runId, branchId, jobId, status: queuedRun?.status ?? 'queued' })
-      return json(response, 202, { run: publicAgentRun(queuedRun), job: publicGenerationJob(job, { includeIdempotencyKey: true }) })
+      return json(response, 202, { run: outcome.run, job: outcome.job })
     }
     return false
   }

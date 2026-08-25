@@ -7,7 +7,13 @@ import { createProviderHealthMonitor } from './providerHealthMonitor.mjs'
 import { createDerivedTaskQueue, createDerivedTaskWorker } from './derivedTaskQueue.mjs'
 import { createAgentTurnSweep } from './agentTurnSweep.mjs'
 import { createAgentReviewService } from './agentReviewService.mjs'
+import { createAgentReviewVisionJudge } from './agentReviewVision.mjs'
+import { resolveBotanicAgentImageDataUrl } from './botanicAgentVision.mjs'
 import { createProductionWorkflowSweep } from './productionWorkflowAdvance.mjs'
+import { createAgentBranchRetrySweep } from './agentBranchRetrySweep.mjs'
+import { createAgentBranchRetryService } from './agentBranchRetryService.mjs'
+import { createAgentRunGenerationService } from './agentRunGenerationService.mjs'
+import { createSecurityControls } from './securityControls.mjs'
 import { createAgentTurnResumer } from './agentTurnResume.mjs'
 import { createBotanicAgentTurnRuntime } from './botanicAgentTurnRuntime.mjs'
 import { createLocalCancelRegistry } from './localCancelRegistry.mjs'
@@ -40,10 +46,17 @@ const cancelSubscriber = await createAgentRunEventSubscriber(config.redisUrl, ()
 })
 // 派生任务与生成任务分队列：一类任务堆积不应拖垮另一类。
 const derivedQueue = createDerivedTaskQueue(config.redisUrl)
-// 评审在 Worker 侧执行，不依赖浏览器打开。模型层暂不注入：视觉评审接入前，
-// 语义判据会照实记为「未配置视觉评审模型」的无法验证，而不是默认通过。
+// 评审在 Worker 侧执行，不依赖浏览器打开。视觉层的判据全部来自计划快照的质量策略；
+// 没配置视觉模型时 judge 为 undefined，语义判据照实记为无法验证而不是默认通过。
+const reviewVisionJudge = createAgentReviewVisionJudge({
+  runtimeConfig: config,
+  resolveMedia: (image) => resolveBotanicAgentImageDataUrl(image, (mediaId) => (
+    runtime.mediaService?.enabled ? runtime.mediaService.read(mediaId) : undefined
+  )),
+})
 const reviewService = createAgentReviewService({
   productStore: runtime.productStore,
+  reviewCandidate: reviewVisionJudge,
   observe: (event) => console.log(JSON.stringify(event)),
 })
 const worker = createGenerationWorker({
@@ -86,6 +99,34 @@ const sweepProductionWorkflows = createProductionWorkflowSweep({
   productStore: runtime.productStore,
   observe: (event) => console.log(JSON.stringify(event)),
 })
+// 失败分支自动重试：策略在服务端，因此关掉浏览器后仍会按策略重试一次；
+// 不可重试错误、高成本重试与预算不足都会停下等用户，并把原因记进日志。
+const securityControls = createSecurityControls({
+  redisUrl: config.redisUrl,
+  onFallback: (caught) => console.error(`[security] Redis unavailable: ${caught instanceof Error ? caught.message : String(caught)}`),
+})
+const agentRunGeneration = createAgentRunGenerationService({
+  config,
+  productStore: runtime.productStore,
+  securityControls,
+  enqueue: (jobId) => queue.enqueue(jobId),
+  publishProjectUpdated: agentRunEvents.publishProjectUpdated,
+  publishAgentRunUpdated: agentRunEvents.publish,
+})
+const sweepFailedBranches = createAgentBranchRetrySweep({
+  productStore: runtime.productStore,
+  retryAgentBranch: createAgentBranchRetryService({
+    productStore: runtime.productStore,
+    config,
+    enqueue: (jobId) => queue.enqueue(jobId),
+    securityControls,
+    publishProjectUpdated: agentRunEvents.publishProjectUpdated,
+    publishAgentRunUpdated: agentRunEvents.publish,
+    agentRunGeneration,
+    observeRun: writeAgentRunOperationalEvent,
+  }),
+  observe: (event) => console.log(JSON.stringify(event)),
+})
 const derivedWorker = createDerivedTaskWorker({
   redisUrl: config.redisUrl,
   concurrency: 1,
@@ -95,17 +136,18 @@ const derivedWorker = createDerivedTaskWorker({
       ? reviewService.sweepPendingReviewTasks()
       : reviewService.executeReviewTask(payload.ownerId, payload.taskId)),
     'workflow.advance': () => sweepProductionWorkflows(),
+    'branch.retry': () => sweepFailedBranches(),
   },
 })
 derivedWorker.on('failed', (job, caught) => console.error(`[derived] ${job?.name ?? 'unknown'} failed: ${caught.message}`))
 derivedWorker.on('error', (caught) => console.error(`[derived] worker error: ${caught.message}`))
 // 注册幂等：BullMQ 按 repeat key 去重，多实例重复注册不会产生多份定时任务。
-for (const [kind, everyMs] of [['turn.reclaim', 60_000], ['review.run', 120_000], ['workflow.advance', 45_000]]) {
+for (const [kind, everyMs] of [['turn.reclaim', 60_000], ['review.run', 120_000], ['workflow.advance', 45_000], ['branch.retry', 90_000]]) {
   await derivedQueue?.scheduleSweep(kind, everyMs).catch((caught) => {
     console.error(`[derived] ${kind} 清扫注册失败: ${caught instanceof Error ? caught.message : String(caught)}`)
   })
 }
-console.log('Botanic derived-task worker started (turn.reclaim 60s, review.run 120s, workflow.advance 45s)')
+console.log('Botanic derived-task worker started (turn.reclaim 60s, review.run 120s, workflow.advance 45s, branch.retry 90s)')
 
 async function recoverQueuedJobs() {
   try {

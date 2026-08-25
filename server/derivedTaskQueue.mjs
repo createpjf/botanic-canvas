@@ -23,6 +23,9 @@ export const DERIVED_TASK_KINDS = Object.freeze([
   // 按任务真实状态推进未收口的生产工作流运行（Epic 7）。此前只在有人打开页面发
   // GET 时才对账，关掉页面的批量任务会永远停在 running。
   'workflow.advance',
+  // 按服务端策略自动重试失败分支（Epic 5）。此前「要不要再跑一次」由浏览器决定，
+  // 关掉页面就没有重试。
+  'branch.retry',
 ])
 
 const kindSet = new Set(DERIVED_TASK_KINDS)

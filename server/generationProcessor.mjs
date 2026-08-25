@@ -394,7 +394,16 @@ export function createGenerationProcessor({
       const detail = caught instanceof Error ? `${caught.name}: ${caught.message}` : String(caught)
       console.error(`[generation] ${jobId} failed (${failure.code}): ${detail}`)
       await variantWrite
-      const failed = { ...latest, status: 'failed', error: failure.message, variants: latest.variants ?? running.variants, updatedAt: Date.now() }
+      // 错误码随任务落库：失败消息是给人看的，服务端的重试策略要按码分类
+      // （瞬时故障可自动重试，其余停下等用户）。只存消息的话策略永远判不出来。
+      const failed = {
+        ...latest,
+        status: 'failed',
+        error: failure.message,
+        errorCode: failure.code,
+        variants: latest.variants ?? running.variants,
+        updatedAt: Date.now(),
+      }
       await productStore.putGenerationJob(failed.ownerId, persistedGenerationJob(failed), { updateAgentRun: false, recordAudit: false })
       const writebackSucceeded = await writeJobToProjectSafely(failed, { markPending: true })
       if (writebackSucceeded) await productStore.putGenerationJob(failed.ownerId, persistedGenerationJob(failed), { updateAgentRun: true })

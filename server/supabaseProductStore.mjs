@@ -1114,6 +1114,19 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       }))
     },
 
+    // 同上：PostgREST 表达不了 jsonb 数组里的存在性，按状态先收窄再本地筛。
+    async listRunsWithFailedBranches({ limit = 25 } = {}) {
+      const { data, error } = await supabaseRequest(() => supabase.from('agent_runs').select('id, owner_id, project_id, payload')
+        .in('status', ['partial', 'failed'])
+        .order('updated_at', { ascending: true })
+        .limit(Math.max(1, Math.min(limit * 8, 400))))
+      fail(error)
+      return (data ?? [])
+        .filter((row) => (row.payload?.branches ?? []).some((branch) => branch?.status === 'failed'))
+        .slice(0, Math.max(1, Math.min(limit, 200)))
+        .map((row) => ({ runId: row.id, ownerId: row.owner_id, projectId: row.project_id }))
+    },
+
     // PostgREST 无法表达「jsonb 数组里存在某状态」，因此按最近更新的项目取一批再
     // 本地筛。上限刻意保守：这条路径只服务周期清扫，不是热路径。
     async listProjectsWithActiveWorkflowRuns({ limit = 25 } = {}) {

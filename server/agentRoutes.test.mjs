@@ -861,6 +861,7 @@ test('写工具按项目角色进注册表：Viewer 一个都拿不到', async (
   const executors = {
     cancelRun: async () => ({}), decideReview: async () => ({}),
     promoteArtifact: async () => ({}), retryWorkflowFailed: async () => ({}),
+    retryBranch: async () => ({}), publishWorkflow: async () => ({}),
   }
   const viewer = createBotanicAgentActionToolRegistry({ role: 'viewer', ...executors })
   assert.equal(viewer.get('agent_run_cancel'), undefined)
@@ -884,5 +885,20 @@ test('服务端权限表与工具暴露判定同源，不会出现看不到却�
       const serverAllows = projectPermissionDecision(role, agentToolPermission(name)) === 'allow'
       assert.equal(exposed.has(name), serverAllows, `${role} 对 ${name} 的暴露与放行判定不一致`)
     }
+  }
+})
+
+test('六个运维写工具现在全部有执行器，Editor 能拿到完整一套', async () => {
+  // agent_branch_retry 与 workflow_publish 此前因为逻辑埋在路由闭包里而不暴露；
+  // 抽成共享服务后补齐，避免「声明了但永远调不到」。
+  const { createBotanicAgentActionToolRegistry } = await import('./botanicAgentTools.mjs')
+  const { OPERATIONAL_ACTION_TOOLS } = await import('./botanicAgentOperationalTools.mjs')
+  const registry = createBotanicAgentActionToolRegistry({
+    role: 'editor',
+    retryBranch: async () => ({}), cancelRun: async () => ({}), promoteArtifact: async () => ({}),
+    decideReview: async () => ({}), publishWorkflow: async () => ({}), retryWorkflowFailed: async () => ({}),
+  })
+  for (const name of OPERATIONAL_ACTION_TOOLS) {
+    assert.ok(registry.get(name), `${name} 应当可用`)
   }
 })

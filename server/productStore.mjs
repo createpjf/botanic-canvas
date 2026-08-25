@@ -949,6 +949,15 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
         .map(clone)
     },
 
+    listRunsWithFailedBranches({ limit = 25 } = {}) {
+      return state.agentRuns
+        .filter((run) => ['partial', 'failed'].includes(run?.status)
+          && (run.branches ?? []).some((branch) => branch?.status === 'failed'))
+        .sort((left, right) => Number(left.updatedAt ?? 0) - Number(right.updatedAt ?? 0))
+        .slice(0, Math.max(1, Math.min(limit, 200)))
+        .map((run) => ({ runId: run.id, ownerId: run.ownerId, projectId: run.projectId }))
+    },
+
     listProjectsWithActiveWorkflowRuns({ limit = 25 } = {}) {
       const active = new Set(['queued', 'running'])
       return state.projects

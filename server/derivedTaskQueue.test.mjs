@@ -22,6 +22,6 @@ test('复合标识不含冒号，BullMQ 拒绝含冒号的自定义 jobId', () =
 
 test('当前只声明有真实消费者的种类', () => {
   // 没有消费者的种类只是猜测；新种类要和它的消费者一起加。
-  assert.deepEqual([...DERIVED_TASK_KINDS], ['turn.reclaim', 'review.run', 'workflow.advance'])
+  assert.deepEqual([...DERIVED_TASK_KINDS], ['turn.reclaim', 'review.run', 'workflow.advance', 'branch.retry'])
   assert.equal(new Set(DERIVED_TASK_KINDS).size, DERIVED_TASK_KINDS.length)
 })

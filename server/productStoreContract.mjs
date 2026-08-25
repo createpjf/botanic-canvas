@@ -93,6 +93,9 @@ export const productStoreCoreMethods = Object.freeze([
   // 跨项目扫描仍有未收口工作流运行的项目（Epic 7）。与 listStaleAgentTurns 同为
   // Worker 侧方法：推进是系统行为，没有发起它的用户。
   'listProjectsWithActiveWorkflowRuns',
+  // 跨项目扫描含失败分支的 Run（Epic 5 自动重试）。同为 Worker 侧方法：
+  // 重试清扫是系统行为，没有发起它的用户。
+  'listRunsWithFailedBranches',
   'putAgentReviewTask',
   'readAgentReviewTask',
   'listAgentReviewTasksForRun',
