@@ -36,6 +36,17 @@ export function createAgentBranchRetrySweep({ productStore, retryAgentBranch, po
   if (!productStore) throw new TypeError('分支重试清扫缺少 ProductStore。')
   if (typeof retryAgentBranch !== 'function') throw new TypeError('分支重试清扫缺少重试实现。')
 
+  /**
+   * 已记录过的 held 原因：`${runId}:${branchId}` → reason。
+   *
+   * 清扫每 90 秒跑一次，而 `error_not_retryable` 这类原因**永远不会变** ——
+   * 生产上同一个死分支连刷了 40 分钟以上，每 90 秒一条。原因未变就不再重记。
+   *
+   * 只在进程内存里：Worker 重启后会再记一次当前状态，这是想要的行为
+   * （新进程该把它看到的状态说一次），不是缺陷。
+   */
+  const loggedHeldReasons = new Map()
+
   return async function sweepFailedBranches({ limit = 25 } = {}) {
     const runs = (await productStore.listRunsWithFailedBranches?.({ limit })) ?? []
     let retried = 0
@@ -54,10 +65,16 @@ export function createAgentBranchRetrySweep({ productStore, retryAgentBranch, po
         const outcome = branchesEligibleForRetry({ run, jobs, policy, now: now() })
         for (const entryHeld of outcome.held) {
           held += 1
-          // 停下的原因进日志：用户与运维都要能回答「它为什么没自动重试」。
+          const key = `${run.id}:${entryHeld.branchId}`
+          if (loggedHeldReasons.get(key) === entryHeld.reason) continue
+          loggedHeldReasons.set(key, entryHeld.reason)
+          // 停下的原因进日志：用户与运维都要能回答「为什么它没自动重试」。
+          // 但只在原因**变化**时记 —— 重复同一条不增加任何信息。
           observe({ event: 'agent.branch.retry.held', runId: run.id, branchId: entryHeld.branchId, reason: entryHeld.reason })
         }
         for (const candidate of outcome.eligible) {
+          // 这一支要重跑了，之前的 held 记录作废；下次再停下要重新记一条。
+          loggedHeldReasons.delete(`${run.id}:${candidate.branchId}`)
           const branch = run.branches.find((item) => item.id === candidate.branchId)
           const result = await retryAgentBranch({
             userId: run.ownerId,

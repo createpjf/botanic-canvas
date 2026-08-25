@@ -79,3 +79,65 @@ test('没有失败分支的部署不做任何事', async () => {
   assert.deepEqual(await sweep(), { scanned: 0, retried: 0, held: 0 })
   assert.deepEqual(retried, [])
 })
+
+test('同一分支同一 held 原因只记一次', async () => {
+  const { createAgentBranchRetrySweep } = await import('./agentBranchRetrySweep.mjs')
+  const run = {
+    id: 'run-1',
+    ownerId: 'user-1',
+    branches: [{ id: 'branch-1', status: 'failed', attempt: 0, activeJobId: 'job-1' }],
+  }
+  // errorCode 不在可重试白名单里 → 原因恒为 error_not_retryable，永远不会变。
+  const job = { id: 'job-1', rawInput: {}, errorCode: 'PROVIDER_REJECTED', batchCount: 1, updatedAt: 0 }
+  const events = []
+  const sweep = createAgentBranchRetrySweep({
+    productStore: {
+      listRunsWithFailedBranches: async () => [{ runId: run.id, ownerId: run.ownerId }],
+      readAgentRunForWorker: async () => run,
+      readGenerationJobForWorker: async () => job,
+      readGenerationJob: async () => undefined,
+    },
+    retryAgentBranch: async () => ({ kind: 'ok' }),
+    observe: (event) => events.push(event),
+    now: () => 10 * 60_000,
+  })
+
+  await sweep()
+  await sweep()
+  await sweep()
+
+  const held = events.filter((event) => event.event === 'agent.branch.retry.held')
+  assert.equal(held.length, 1, '同一原因连刷三轮只应记一条')
+  assert.equal(held[0].reason, 'error_not_retryable')
+})
+
+test('held 原因变化时记新的一条', async () => {
+  const { createAgentBranchRetrySweep } = await import('./agentBranchRetrySweep.mjs')
+  const run = {
+    id: 'run-2',
+    ownerId: 'user-1',
+    branches: [{ id: 'branch-2', status: 'failed', attempt: 0, activeJobId: 'job-2' }],
+  }
+  let job
+  const events = []
+  const sweep = createAgentBranchRetrySweep({
+    productStore: {
+      listRunsWithFailedBranches: async () => [{ runId: run.id, ownerId: run.ownerId }],
+      readAgentRunForWorker: async () => run,
+      readGenerationJobForWorker: async () => job,
+      readGenerationJob: async () => undefined,
+    },
+    retryAgentBranch: async () => ({ kind: 'ok' }),
+    observe: (event) => events.push(event),
+    now: () => 10 * 60_000,
+  })
+
+  job = undefined                                   // → job_missing
+  await sweep()
+  job = { id: 'job-2', rawInput: {}, errorCode: 'PROVIDER_REJECTED', batchCount: 1, updatedAt: 0 }
+  await sweep()                                     // → error_not_retryable
+  await sweep()                                     // 同上，不再记
+
+  const reasons = events.filter((event) => event.event === 'agent.branch.retry.held').map((event) => event.reason)
+  assert.deepEqual(reasons, ['job_missing', 'error_not_retryable'])
+})
