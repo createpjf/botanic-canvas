@@ -39,11 +39,36 @@ export type ProjectCapability = typeof PROJECT_CAPABILITIES[number]
  */
 export const FALLBACK_PROJECT_CAPABILITIES: ProjectCapability[] = ['read']
 
+/**
+ * 本地/离线模式下的能力集合：**全部**。
+ *
+ * 没有服务端就没有共享项目，也就没有「别人的项目我只能看」这回事 —— 本地文档的唯一
+ * 使用者就是当前用户。此时套用保守缺省会把生成、工作流、评审入口全部藏掉，
+ * 整个工作台变成只读，而没有任何人能给他授权。
+ *
+ * 这不是给鉴权开口子：本地模式压根没有服务端可绕过。
+ */
+export const LOCAL_PROJECT_CAPABILITIES: ProjectCapability[] = [...PROJECT_CAPABILITIES]
+
+/**
+ * @param capabilities 服务端下发的能力；`undefined` 表示尚未取到。
+ * @param serverAuthoritative 是否处于服务端持久化模式。**默认 true**：漏传时按更严的
+ *   一侧处理，而不是默默放行全部。
+ */
+export function resolveProjectCapabilities(
+  capabilities: readonly string[] | undefined,
+  serverAuthoritative = true,
+): readonly string[] {
+  if (!serverAuthoritative) return LOCAL_PROJECT_CAPABILITIES
+  return capabilities ?? FALLBACK_PROJECT_CAPABILITIES
+}
+
 export function hasProjectCapability(
   capabilities: readonly string[] | undefined,
   capability: ProjectCapability,
+  serverAuthoritative = true,
 ) {
-  return (capabilities ?? FALLBACK_PROJECT_CAPABILITIES).includes(capability)
+  return resolveProjectCapabilities(capabilities, serverAuthoritative).includes(capability)
 }
 
 /**
@@ -75,8 +100,12 @@ export const PROJECT_ENTRY_CAPABILITY = {
 export type ProjectEntry = keyof typeof PROJECT_ENTRY_CAPABILITY
 
 /** 某个界面入口是否该显示。 */
-export function canUseProjectEntry(capabilities: readonly string[] | undefined, entry: ProjectEntry) {
-  return hasProjectCapability(capabilities, PROJECT_ENTRY_CAPABILITY[entry])
+export function canUseProjectEntry(
+  capabilities: readonly string[] | undefined,
+  entry: ProjectEntry,
+  serverAuthoritative = true,
+) {
+  return hasProjectCapability(capabilities, PROJECT_ENTRY_CAPABILITY[entry], serverAuthoritative)
 }
 
 /**
@@ -85,8 +114,11 @@ export function canUseProjectEntry(capabilities: readonly string[] | undefined, 
  * 单独给出来是因为界面需要一处**整体提示**。逐个按钮消失而不解释原因，用户只会以为
  * 功能坏了 —— 「你对这个项目只有查看权限」是一句必须说出口的话。
  */
-export function isReadOnlyProject(capabilities: readonly string[] | undefined) {
-  const resolved = capabilities ?? FALLBACK_PROJECT_CAPABILITIES
+export function isReadOnlyProject(
+  capabilities: readonly string[] | undefined,
+  serverAuthoritative = true,
+) {
+  const resolved = resolveProjectCapabilities(capabilities, serverAuthoritative)
   return resolved.includes('read') && !resolved.includes('edit')
 }
 

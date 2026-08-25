@@ -896,8 +896,8 @@ export function TemplatePanel({
   // 能力集合随项目读模型下发（Epic 10）。**隐藏不是鉴权** —— 服务端仍是唯一边界；
   // 这里只是不给用户看他点不动的入口。取不到时保守按只读处理。
   const capabilities = cachedProjectCapabilities(projectId)
-  const canModifyWorkflow = canUseProjectEntry(capabilities, 'modifyWorkflow')
-  const canSubmitGeneration = canUseProjectEntry(capabilities, 'submitGeneration')
+  const canModifyWorkflow = canUseProjectEntry(capabilities, 'modifyWorkflow', serverPersistenceEnabled)
+  const canSubmitGeneration = canUseProjectEntry(capabilities, 'submitGeneration', serverPersistenceEnabled)
   const [productionError, setProductionError] = useState('')
   const saveDialogPresence = useMotionPresence(saveOpen, 140)
   useRestoreFocus(saveOpen)
@@ -1158,7 +1158,7 @@ export function TemplatePanel({
           {canModifyWorkflow ? <button type="button" className="production-workflow-publish" disabled={!productionDraft || Boolean(productionBusy)} onClick={() => void publishAutomation()}>
             <PlusSquareIcon />{productionBusy === 'publish' ? t.saving : productionDraft?.sourceAgentRunId ? t.saveAgent : t.saveFlow}
           </button> : null}
-          {isReadOnlyProject(capabilities)
+          {isReadOnlyProject(capabilities, serverPersistenceEnabled)
             ? <p className="panel-note is-readonly">{readOnlyProjectNotice(locale)}</p>
             : !productionSources.length
             ? <p className="panel-note">{t.productionHint}</p>
