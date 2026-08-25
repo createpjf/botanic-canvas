@@ -245,10 +245,21 @@ async function main() {
 
   step('创建冒烟项目')
   const projectId = `smoke-${Date.now()}`
+  // 画布节点必须**先建好**再提交生成。服务端只为 Agent Run 的任务凭空造节点
+  // （ensureAgentGenerationPlaceholder 第一行就是 `if (!job?.agentRun) return false`）；
+  // 普通画布生成走的是「客户端先建 generate + result 占位，服务端把图填进占位」。
+  // 往空文档直接提交，服务端不造节点是**正确行为**，此前脚本把它误判成了回写断链。
+  const generateNodeId = 'generate-smoke'
+  const resultNodeId = 'result-smoke'
   // 请求体只认 { document }，且 document 必须自带 id 与 name（projectRoutes.mjs:44）。
   const created = await api('/api/projects', {
     method: 'POST',
-    body: JSON.stringify({ document: emptyDocument(projectId) }),
+    body: JSON.stringify({
+      document: emptyDocument(projectId, {
+        generateNodeId, resultNodeId,
+        prompt: '一只陶瓷小猫摆件放在浅灰色背景上，柔和自然光，正面视角，产品摄影。',
+      }),
+    }),
   })
   if (created.status >= 300) {
     fail(`创建项目失败：${created.status} ${JSON.stringify(created.body).slice(0, 300)}`)
@@ -269,6 +280,9 @@ async function main() {
       // 纯文字生图（PR #60）：references 允许为空数组，但 recipe 本身必须存在 ——
       // 校验只看形状（generationProvider.mjs:165），不给 recipe 会被当成「缺参考图」。
       recipe: { references: [] },
+      // 把任务绑到画布节点上：服务端按 jobId / outputOf 找到占位再填图。
+      generateNodeId,
+      promptNodeId: generateNodeId,
     }),
   })
   if (submitted.status !== 202) {
@@ -314,9 +328,14 @@ async function main() {
       // 文档在 /document 子路由，响应就是 project 本身（含 .document）。
       const project = await api(`/api/projects/${encodeURIComponent(projectId)}/document`)
       const nodes = project.body?.document?.nodes ?? []
-      const resultNodes = nodes.filter((node) => node?.type === 'result')
-      if (resultNodes.length) pass(`画布上有 ${resultNodes.length} 个结果节点`)
-      else fail('生成成功但画布没有结果节点 —— 回写链路断了。')
+      const filled = nodes.filter((node) => node?.type === 'result' && node?.data?.image)
+      if (filled.length) {
+        pass(`结果已填进画布占位：${filled.length} 个结果节点带图`)
+        if (filled[0].data.jobId) pass(`结果节点回指任务 ${String(filled[0].data.jobId).slice(0, 24)}…`)
+        else fail('结果节点没有 jobId —— 之后无法从画布反查这张图是哪次生成的。')
+      } else {
+        fail(`生成成功但占位没有被填图（画布上 ${nodes.length} 个节点）—— 回写链路断了。`)
+      }
     }
   }
 
@@ -446,13 +465,29 @@ async function main() {
   }
 }
 
-function emptyDocument(id) {
+function emptyDocument(id, { generateNodeId, resultNodeId, prompt } = {}) {
+  // 与界面提交前建立的结构一致：generate 节点 + 一个尚无图片的 result 占位，
+  // 占位靠 `data.outputOf` 指回 generate 节点，服务端据此把结果填进来
+  // （generationResultReconciliation.mjs:350 的识别条件）。
+  const nodes = generateNodeId ? [
+    {
+      id: generateNodeId, type: 'generate', position: { x: 0, y: 0 },
+      data: { label: '冒烟生成', prompt, generationKind: 'generation' },
+    },
+    {
+      id: resultNodeId, type: 'result', position: { x: 320, y: 0 },
+      data: {
+        label: '冒烟结果', outputOf: generateNodeId, generationKind: 'generation',
+        taskStatus: 'queued', submittedAt: Date.now(),
+      },
+    },
+  ] : []
   return {
     schemaVersion: 25,
     id,
     name: '端到端冒烟',
-    nodes: [],
-    edges: [],
+    nodes,
+    edges: generateNodeId ? [{ id: `edge-${generateNodeId}`, source: generateNodeId, target: resultNodeId }] : [],
     viewport: { x: 0, y: 0, zoom: 1 },
     assets: [],
     assetGroups: [],
