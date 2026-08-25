@@ -28,11 +28,15 @@ loadLocalEnv()
 const dryRun = process.argv.includes('--dry-run')
 const keepProject = process.argv.includes('--keep')
 /**
- * `--local-store`：不连 Postgres，用本地文件 Adapter 跑。
+ * `--local-store` 已废弃：它**不可能**支撑这条冒烟。
  *
- * 用途是**把数据库从变量里去掉**：这条冒烟要验的是管线接线（路由、队列、Provider、
- * 回写），那部分与用哪个 Adapter 无关。Postgres Adapter 本身有独立的契约测试，
- * 且已用真实 Neon 库验过往返。
+ * 本地文件 Adapter 在启动时把状态载入内存一次、之后永不重读（productStore.mjs:100）。
+ * 而这条冒烟跑的是 API 与 Worker **两个进程**：API 创建的项目与任务只存在于它自己的
+ * 内存快照里，Worker 从 Redis 拿到任务 id 后在自己的快照里根本查不到 —— 表现是任务
+ * 一直排队，直到 API 侧的读时扫描在超时后把它判失败，而 Worker 从未开始处理。
+ *
+ * 实测就是这样：variants 为空、outputs 为 0、300 秒后被标记 failed。
+ * 这个 Adapter 在 .env.example 里写明「仅本地原型使用」，跨进程共享不在它的能力范围内。
  */
 const localStore = process.argv.includes('--local-store')
 const PORT = Number(process.env.SMOKE_PORT ?? 4788)
@@ -103,9 +107,14 @@ async function pollUntil(describe, read, done, { timeoutMs = 180_000, intervalMs
 function preflight() {
   const problems = []
   if (!TOKEN) problems.push('BOTANIC_BOOTSTRAP_ACCESS_TOKEN 未设置（本地鉴权用）。')
-  if (!localStore && !process.env.DATABASE_URL) {
-    problems.push('DATABASE_URL 未设置。想跳过数据库可以加 --local-store（用本地文件 Adapter）。')
+  if (localStore) {
+    problems.push(
+      '--local-store 不可用：本地文件 Adapter 启动时载入内存一次且永不重读，'
+      + 'API 与 Worker 是两个进程、各持一份快照，Worker 查不到 API 刚创建的任务。'
+      + '这条冒烟需要一个真正跨进程共享的存储，请配置 DATABASE_URL。',
+    )
   }
+  if (!process.env.DATABASE_URL) problems.push('DATABASE_URL 未设置。')
   if (!process.env.REDIS_URL) problems.push('REDIS_URL 未设置。本地可跑：redis-server --port 6399 --daemonize yes，然后 REDIS_URL=redis://127.0.0.1:6399')
   const hasOpenAI = Boolean(process.env.OPENAI_API_KEY)
   const hasMiniMax = Boolean(process.env.MINIMAX_API_KEY)
@@ -137,8 +146,11 @@ function launch(name, entry) {
     stream.on('data', (chunk) => {
       for (const line of String(chunk).split('\n')) {
         if (!line.trim()) continue
-        // 进程日志默认收起来；出问题时它们是唯一能说清原因的东西，因此 --verbose 时全放出来。
-        if (process.argv.includes('--verbose') || isError || /error|Error|失败|拒绝/.test(line)) {
+        // Worker 的进度日志（「references ready」这类）是判断卡在哪一步的唯一线索，
+        // 默认过滤掉等于把线索藏起来 —— 上一轮就是因此看不出 Worker 究竟有没有开始处理。
+        // 只滤掉明确无关的启动噪音。
+        const noise = /ExperimentalWarning|trace-warnings/.test(line)
+        if (!noise) {
           process.stdout.write(prefix + line + '\n')
         }
       }
