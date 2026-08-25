@@ -208,3 +208,46 @@ export function diffEvalSuites(before, after) {
     improved: changes.filter((change) => change.status === 'improved').length,
   }
 }
+
+/**
+ * 线上反馈层（Epic 12 第 4 层）。
+ *
+ * 它是**事后事实**，因此不参与发布前的 Gate 判定 —— 用线上接受率去卡发布，等于用
+ * 上一版的结果决定这一版能不能上。它的价值在趋势：接受率掉下去、修订次数升上来，
+ * 说明质量在退化，而这在 Gate 里看不出来。
+ *
+ * 数据来自已有实体，不新增埋点：人工决定来自评审任务（Epic 5），交付完整率来自
+ * 交付清单（Epic 7）。
+ *
+ * @param {{ reviewTasks?: any[], manifests?: any[] }} [input]
+ */
+export function aggregateOnlineFeedback({ reviewTasks = [], manifests = [] } = {}) {
+  const decisions = reviewTasks.flatMap((task) => task?.decisions ?? [])
+  // 同一候选可以被改主意，只算最后一次 —— 否则一次反复会被算成多次拒绝。
+  const latest = new Map()
+  for (const decision of decisions) {
+    const current = latest.get(decision?.artifactId)
+    const decidedAt = Number(decision?.decidedAt ?? 0)
+    if (!current || decidedAt >= current.decidedAt) latest.set(decision?.artifactId, { decision: decision?.decision, decidedAt })
+  }
+  const settled = [...latest.values()]
+  const accepted = settled.filter((entry) => entry.decision === 'accepted').length
+  const rejected = settled.filter((entry) => entry.decision === 'rejected').length
+  const retried = settled.filter((entry) => entry.decision === 'retry_requested').length
+  const reviewedCandidates = reviewTasks.reduce((total, task) => total + (task?.results?.length ?? 0), 0)
+  const deliveredFiles = manifests.reduce((total, manifest) => total + (manifest?.files?.length ?? 0), 0)
+  const excludedFiles = manifests.reduce((total, manifest) => total + (manifest?.excluded?.length ?? 0), 0)
+  const ratio = (numerator, denominator) => (denominator > 0 ? numerator / denominator : null)
+  return {
+    decidedCount: settled.length,
+    // 比率无样本时为 null：没人做过决定不等于接受率 0%。
+    acceptanceRate: ratio(accepted, settled.length),
+    rejectionRate: ratio(rejected, settled.length),
+    retryRequestRate: ratio(retried, settled.length),
+    // 还有多少候选没人看过。它比接受率更早暴露「评审堆积」。
+    pendingDecisionCount: Math.max(0, reviewedCandidates - settled.length),
+    deliveredFileCount: deliveredFiles,
+    // 交付完整率：进了包的 / (进了包的 + 因未批准被排除的)。
+    deliveryCompletionRate: ratio(deliveredFiles, deliveredFiles + excludedFiles),
+  }
+}

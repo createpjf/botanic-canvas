@@ -5,6 +5,7 @@ import {
   productionWorkflowVersion,
   productionWorkflowVersionProvenance,
   resolveProductionWorkflowRecipe,
+  withWorkflowBrandRules,
   retryFailedWorkflowItems,
   transitionProductionWorkflowRun,
 } from './productionWorkflow.mjs'
@@ -32,7 +33,12 @@ function workflowInput(workflow, run, item, document) {
   return {
     projectId: workflow.projectId,
     kind: override.kind ?? 'generation',
-    prompt: override.prompt ?? interpolate(definition.prompt, item.input?.variables),
+    // 品牌规则以执行契约前缀附加，而不是拼进画面描述 —— 混进描述里模型会把
+    // 「不要用饱和背景」当成要画的元素。规则来自版本快照，历史版本重跑按当时的规则。
+    prompt: withWorkflowBrandRules(
+      override.prompt ?? interpolate(definition.prompt, item.input?.variables),
+      definition,
+    ),
     batchCount: override.batchCount ?? definition.settings?.batchCount ?? 1,
     settings,
     recipe: clone(override.recipe ?? item.input?.recipe ?? resolveProductionWorkflowRecipe(definition, document)),

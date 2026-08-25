@@ -28,6 +28,7 @@ import {
   type AgentReviewTaskSnapshot,
 } from '../../domain/agentReviewPresentation'
 import { fetchAgentReviewTasks, submitAgentReviewDecisions } from '../../lib/agentApi'
+import { memoryComparisonRows, memoryConflictPairs, memoryIneffectiveReason } from '../../domain/agentMemoryComparison'
 import type { AgentArtifactIndexState, AgentContextItem } from './agentWorkspace.types'
 import { useProductI18n, useProductMessages } from '../../i18n/react'
 import { formatProductDateTime, type ProductLocale } from '../../i18n/core'
@@ -54,6 +55,7 @@ const agentUtilityMessages = {
     reviewRevision: '修订建议', reviewAccept: '接受', reviewReject: '拒绝', reviewRetry: '请求重试',
     reviewAwaiting: '待你决定', reviewSubmitting: '提交中…', reviewDecisionFailed: '决定提交失败，请重试。',
     reviewRetryCreated: (count: number) => `已创建 ${count} 个重试任务；原结果保留。`,
+    memoryConflicts: (count: number) => `有 ${count} 组规则互相矛盾，每组只有一条会生效。停用其中一条，规则才不会互相打架。`,
   },
   en: {
     collaborationAria: 'Collaboration activity', collaborationTitle: 'Collaboration', collaborationDescription: 'Review recent changes from workspace members and jump to the related node, conversation, or task.',
@@ -75,6 +77,7 @@ const agentUtilityMessages = {
     reviewRevision: 'Suggested revision', reviewAccept: 'Accept', reviewReject: 'Reject', reviewRetry: 'Request retry',
     reviewAwaiting: 'Awaiting your decision', reviewSubmitting: 'Submitting…', reviewDecisionFailed: 'The decision could not be submitted. Try again.',
     reviewRetryCreated: (count: number) => `Created ${count} retry task(s); the original results are kept.`,
+    memoryConflicts: (count: number) => `${count} pair(s) of rules contradict each other; only one of each takes effect. Retire one so the intent is unambiguous.`,
     system: 'System', project: 'Project', invoke: '@mention', mount: 'Mount in chat', mounted: 'Mounted', unmount: 'Unmount',
   },
 } as const
@@ -417,6 +420,8 @@ export function AgentMemoryPanel({ memory, sourceNodeIds, onAddMemory, onRemoveM
   const copy = useProductMessages(agentUtilityMessages)
   const [kind, setKind] = useState<BotanicAgentMemoryKind>('rule')
   const [draft, setDraft] = useState('')
+  const comparisonRows = useMemo(() => memoryComparisonRows(memory), [memory])
+  const conflictCount = useMemo(() => memoryConflictPairs(memory).length, [memory])
   const save = () => {
     if (!draft.trim()) return
     if (onAddMemory(kind, draft, sourceNodeIds)) setDraft('')
@@ -425,6 +430,7 @@ export function AgentMemoryPanel({ memory, sourceNodeIds, onAddMemory, onRemoveM
   return <section className="agent-memory-panel" aria-label={copy.memoryAria}>
     <header><AgentPanelBackButton onClick={onBackToConversation} /><div><small>PROJECT MEMORY</small><h2>{copy.memoryTitle}</h2></div><span>{copy.memoryCount(memory.length)}</span></header>
     <p>{copy.memoryDescription}</p>
+    {conflictCount ? <p className="agent-memory-panel__conflicts">{copy.memoryConflicts(conflictCount)}</p> : null}
     <div className="agent-memory-panel__form">
       <BotanicSelect value={kind} ariaLabel={copy.memoryType} options={[
         { value: 'rule', label: copy.longTermRule },
@@ -435,7 +441,23 @@ export function AgentMemoryPanel({ memory, sourceNodeIds, onAddMemory, onRemoveM
       <button type="button" disabled={!draft.trim()} onClick={save}>{copy.saveMemory}</button>
     </div>
     <div className="agent-memory-panel__list">
-      {memory.map((item) => <article key={item.id} className={`is-${item.kind}`}><span><small>{agentMemoryKindLabel(item.kind, locale)}</small><p>{item.content}</p></span><div>{item.sourceNodeIds[0] ? <button type="button" aria-label={copy.locateMemory(item.content)} title={copy.locate} onClick={() => onLocateNode(item.sourceNodeIds[0])}><FocusIcon /></button> : null}<button type="button" className="is-delete" aria-label={copy.deleteMemory(item.content)} title={copy.deleteMemoryTitle} onClick={() => onRemoveMemory(item.id)}><DeleteIcon /></button></div></article>)}
+      {comparisonRows.map((row) => {
+        const item = memory.find((entry) => entry.id === row.id)
+        if (!item) return null
+        // 不生效的原因要说出来：用户看不到冲突就永远不知道该停用哪一条。
+        const reason = memoryIneffectiveReason(row, comparisonRows, locale)
+        return <article key={item.id} className={`is-${item.kind}${row.effective ? '' : ' is-ineffective'}`}>
+          <span>
+            <small>{agentMemoryKindLabel(item.kind, locale)}</small>
+            <p>{item.content}</p>
+            {reason ? <em className="agent-memory-panel__reason">{reason}</em> : null}
+          </span>
+          <div>
+            {item.sourceNodeIds[0] ? <button type="button" aria-label={copy.locateMemory(item.content)} title={copy.locate} onClick={() => onLocateNode(item.sourceNodeIds[0])}><FocusIcon /></button> : null}
+            <button type="button" className="is-delete" aria-label={copy.deleteMemory(item.content)} title={copy.deleteMemoryTitle} onClick={() => onRemoveMemory(item.id)}><DeleteIcon /></button>
+          </div>
+        </article>
+      })}
       {!memory.length ? <div className="agent-panel__empty">{copy.noMemory}</div> : null}
     </div>
   </section>

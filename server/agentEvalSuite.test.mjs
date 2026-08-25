@@ -141,3 +141,43 @@ test('前后 Eval 差异区分回退与改善', () => {
     assert.deepEqual(diffEvalSuites(before, before).changes, [])
   })()
 })
+
+test('线上反馈从既有实体聚合，不新增埋点', async () => {
+  const { aggregateOnlineFeedback } = await import('./agentEvalSuite.mjs')
+  const feedback = aggregateOnlineFeedback({
+    reviewTasks: [{
+      id: 't1',
+      results: [{ artifactId: 'a1' }, { artifactId: 'a2' }, { artifactId: 'a3' }],
+      decisions: [
+        { artifactId: 'a1', decision: 'rejected', decidedAt: 1 },
+        // 同一候选改主意：只算最后一次，否则一次反复会被算成多次拒绝。
+        { artifactId: 'a1', decision: 'accepted', decidedAt: 9 },
+        { artifactId: 'a2', decision: 'retry_requested', decidedAt: 3 },
+      ],
+    }],
+    manifests: [{ files: [{ artifactId: 'a1' }], excluded: [{ artifactId: 'a2' }, { artifactId: 'a3' }] }],
+  })
+  assert.equal(feedback.decidedCount, 2)
+  assert.equal(feedback.acceptanceRate, 0.5)
+  assert.equal(feedback.retryRequestRate, 0.5)
+  assert.equal(feedback.rejectionRate, 0)
+  // 还没人看过的候选：比接受率更早暴露评审堆积。
+  assert.equal(feedback.pendingDecisionCount, 1)
+  assert.equal(feedback.deliveryCompletionRate, 1 / 3)
+})
+
+test('线上反馈没有样本时给 null，不冒充 0%', async () => {
+  const { aggregateOnlineFeedback } = await import('./agentEvalSuite.mjs')
+  const empty = aggregateOnlineFeedback()
+  assert.equal(empty.acceptanceRate, null)
+  assert.equal(empty.deliveryCompletionRate, null)
+  assert.equal(empty.decidedCount, 0)
+})
+
+test('线上反馈不参与发布 Gate 判定', async () => {
+  // 用上一版的线上接受率去卡这一版能不能上，是把事后事实当成发布前证据。
+  const suite = await runAgentEvalSuite({ dataset })
+  const gate = evaluateReleaseGate(suite)
+  assert.equal(gate.passed, true)
+  assert.equal(Object.keys(gate).includes('acceptanceRate'), false)
+})

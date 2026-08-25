@@ -38,12 +38,18 @@ export async function listProductionWorkflowRuns(projectId: string, workflowId: 
   return (await productRequest<{ runs: ProductionWorkflowRun[] }>(runsPath(projectId, workflowId))).runs
 }
 
+/**
+ * 启动批量运行。
+ *
+ * `items` 允许不带 `id`：服务端按业务身份（SKU → 渠道 → 语言）派生项标识，
+ * 取不到才退回位置。位置标识在重排或补项之后会指向另一行，重试就会打到错误的项上。
+ */
 export async function startProductionWorkflowRun(input: {
   projectId: string
   workflowId: string
   id: string
   workflowVersion: number
-  items: Array<Record<string, unknown> & { id: string }>
+  items: Array<Record<string, unknown> & { id?: string }>
 }) {
   return (await productRequest<{ run: ProductionWorkflowRun; reused?: boolean }>(runsPath(input.projectId, input.workflowId), {
     method: 'POST',

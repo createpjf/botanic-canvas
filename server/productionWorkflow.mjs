@@ -488,3 +488,27 @@ export function productionWorkflowLineage(input) {
     sourceVersionId: input.sourceVersionId,
   }
 }
+
+/**
+ * 把版本固定下来的品牌规则并进这一项的执行 Prompt（Epic 7）。
+ *
+ * 在此之前 `brandRules` 是**写而不读**的：发布时从权威文档派生并落库，却从不进入
+ * 任何一次生成 —— 用户以为「这条流程会遵守品牌规则」，实际不会。
+ *
+ * 两条边界：
+ * - 规则以**执行契约前缀**的形式附加，而不是拼进用户的画面描述。混进描述里模型会
+ *   把「不要用饱和背景」当成画面元素去画。
+ * - 规则来自版本快照而不是当前项目记忆：历史版本重跑时必须按**当时**的规则执行，
+ *   否则「新版本不改变进行中的运行」就不成立。
+ */
+export function withWorkflowBrandRules(prompt, definition, { locale = 'zh-CN' } = {}) {
+  const base = typeof prompt === 'string' ? prompt.trim() : ''
+  const rules = (Array.isArray(definition?.brandRules) ? definition.brandRules : [])
+    .map((rule) => (typeof rule === 'string' ? rule.trim() : ''))
+    .filter(Boolean)
+    .slice(0, 20)
+  if (!rules.length) return base
+  const header = locale === 'en' ? 'Brand rules that must hold:' : '必须遵守的品牌规则：'
+  const lines = rules.map((rule) => (locale === 'en' ? `- ${rule}` : `- ${rule}`))
+  return `${[header, ...lines].join('\n')}\n\n${base}`
+}

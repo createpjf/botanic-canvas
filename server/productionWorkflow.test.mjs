@@ -14,6 +14,7 @@ import {
   resolveWorkflowExecutionContract,
   retryFailedWorkflowItems,
   transitionProductionWorkflowRun,
+  withWorkflowBrandRules,
 } from './productionWorkflow.mjs'
 
 test('生产工作流运行时从项目权威文档解析稳定媒体且拒绝临时图片', () => {
@@ -259,4 +260,29 @@ test('版本固定执行契约：计划指纹、绑定与质量策略随版本�
   assert.deepEqual(contract.memoryBindings, [{ id: 'memory-1', version: 3 }])
   // 取不到就不写，缺字段表示「这个版本没固定它」，而不是伪造一份。
   assert.deepEqual(resolveWorkflowExecutionContract({ canvasNodeId: 'generate-a', resultNodeIds: [] }, document), {})
+})
+
+test('版本固定的品牌规则进入执行 Prompt，而不是只存不读', () => {
+  // 此前 brandRules 写而不读：用户以为「这条流程会遵守品牌规则」，实际不会。
+  const definition = { brandRules: ['主色只用品牌绿', '不要出现竞品 Logo'] }
+  const prompt = withWorkflowBrandRules('为香水 A 生成品牌首图。', definition)
+  assert.match(prompt, /必须遵守的品牌规则：/u)
+  assert.match(prompt, /- 主色只用品牌绿/u)
+  // 规则作为前缀出现，用户的画面描述原样保留在后面。
+  assert.ok(prompt.endsWith('为香水 A 生成品牌首图。'))
+})
+
+test('没有品牌规则时 Prompt 原样不动', () => {
+  assert.equal(withWorkflowBrandRules('生成首图。', {}), '生成首图。')
+  assert.equal(withWorkflowBrandRules('生成首图。', { brandRules: [] }), '生成首图。')
+  assert.equal(withWorkflowBrandRules('生成首图。', { brandRules: ['  ', ''] }), '生成首图。')
+})
+
+test('规则来自版本快照，历史版本重跑按当时的规则执行', () => {
+  // 读当前项目记忆的话，「新版本不改变进行中的运行」就不成立。
+  const oldVersion = { brandRules: ['主色用旧版蓝'] }
+  const newVersion = { brandRules: ['主色只用品牌绿'] }
+  assert.match(withWorkflowBrandRules('x', oldVersion), /旧版蓝/u)
+  assert.match(withWorkflowBrandRules('x', newVersion), /品牌绿/u)
+  assert.doesNotMatch(withWorkflowBrandRules('x', oldVersion), /品牌绿/u)
 })

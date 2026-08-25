@@ -4507,3 +4507,9 @@ details.agent-timeline__thinking { display: block; padding: 0; }
 .agent-review-panel__candidate > footer button { height: 26px; padding: 0 10px; border: 1px solid #d7e2d8; border-radius: 7px; background: #fff; color: #28442f; font-size: 11px; cursor: pointer; }
 .agent-review-panel__candidate > footer button.is-active { border-color: #2a5238; background: #2a5238; color: #fff; }
 .agent-review-panel__candidate > footer button:disabled { opacity: .5; cursor: default; }
+
+/* 记忆冲突提示（Epic 6）。不生效的规则降饱和但**不隐藏** —— 藏起来用户就永远
+   不知道自己存过一条互相矛盾的规则。 */
+.agent-memory-panel__conflicts { margin: 0; padding: 8px 10px; border-radius: 8px; background: #fdf6e7; color: #6a5220; font-size: 11px; line-height: 1.55; }
+.agent-memory-panel__list article.is-ineffective { opacity: .72; }
+.agent-memory-panel__reason { display: block; margin-top: 3px; color: #8a6a3a; font-size: 10px; font-style: normal; line-height: 1.5; }
