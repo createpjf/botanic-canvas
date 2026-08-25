@@ -421,7 +421,7 @@ export function canonicalImageDataUrlPattern() {
 - [ ] **Step 4：跑测试确认通过**
 
 Run: `node --test server/mediaFormats.test.mjs`
-Expected: PASS，10 个测试全绿
+Expected: PASS，9 个测试全绿（模块导出 10 个符号，测试是 9 个 —— 别把两个数搞混）
 
 - [ ] **Step 5：提交**
 
