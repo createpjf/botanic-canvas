@@ -4,6 +4,7 @@ import {
   buildImageProviderPrompt,
   compositionBrandGuard,
   compositionOverlayReferences,
+  creativeExecutionContract,
   gptImage2EditQuality,
   isGenerationMarkReference,
   orderCompositionReferences,
@@ -89,4 +90,17 @@ test('局部重绘带标识时，后续图是填进选区的元素', () => {
   assert.match(prompt, /Image 1（底图：已选首图）：底图/)
   assert.match(prompt, /Image 2（参考：logo-full 2）：必须忠实复原/)
   assert.match(prompt, /原样嵌入选区/)
+})
+
+test('已编译的执行契约不会在供应商 Prompt 中重复注入', () => {
+  assert.deepEqual(creativeExecutionContract({
+    prompt: '执行契约：\n必须保持：product。\n\n商品主图',
+    constraints: [{ dimension: 'product', mode: 'preserve' }],
+    creativeIntent: 'replace_scene',
+  }), [])
+  assert.deepEqual(creativeExecutionContract({
+    prompt: '商品主图',
+    constraints: [{ dimension: 'product', mode: 'preserve' }],
+    creativeIntent: 'replace_scene',
+  }), ['任务意图：replace_scene。', '必须保持：product。'])
 })

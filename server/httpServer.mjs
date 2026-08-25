@@ -10,7 +10,11 @@ import { BotanicAgentSkillError } from './botanicAgentSkill.mjs'
 import { BotanicAgentRunError } from './botanicAgentRun.mjs'
 import { AgentToolRuntimeError } from './agentToolRuntime.mjs'
 import { McpClientError } from './mcpClient.mjs'
+// 能力探测：`authAssurance` 与 `lifecycle` 两处都用它，此前漏了导入 ——
+// 结果是启用 MFA 的部署一请求就 500、且优雅关闭必抛 ReferenceError。
+import { productStoreSupports } from './productStoreContract.mjs'
 import { createAgentRunEventSubscriber } from './agentRunEventBus.mjs'
+import { createLocalCancelRegistry } from './localCancelRegistry.mjs'
 import { createCanvasRealtimeEventPublisher, createCanvasRealtimeEventSubscriber } from './canvasRealtimeEventBus.mjs'
 import { createProjectRealtimeHub } from './realtimeHub.mjs'
 import { publishProjectUpdatedSafely } from './projectUpdatePublisher.mjs'
@@ -248,6 +252,7 @@ const handleGenerationRoute = createGenerationRouteHandler({
   config,
   productStore,
   redisQueue,
+  publishCancel: (event) => agentRunEvents?.publishCancel?.(event),
   json,
   error,
   readJson,
@@ -266,6 +271,8 @@ const handleProductionWorkflowRoute = createProductionWorkflowRouteHandler({
   submitGeneration,
   redisQueue,
   publishProjectUpdated,
+  publishCancel: (event) => agentRunEvents?.publishCancel?.(event),
+  modelOptions: config.modelOptions ?? [],
 })
 
 const handleAccountRoute = createAccountRouteHandler({
@@ -288,11 +295,17 @@ const agentRunGeneration = createAgentRunGenerationService({
   publishProjectUpdated,
   publishAgentRunUpdated,
 })
+// 路由与跨实例取消订阅方共用同一张执行句柄表；两者拿不到同一个表，落在非执行
+// 实例的取消就只能事后丢弃结果而不是真正中止（ADR 0004）。
+const localCancelRegistry = createLocalCancelRegistry()
 const handleAgentRoute = createAgentRouteHandler({
   config, productStore, redisQueue, configuredMcpTools, json, error, readJson, text,
   requireUser, enforceRateLimit, agentRunGeneration, publishAgentRunUpdated,
   enqueue, publishProjectUpdated, publishCollaborationActivity, observeAgentRun,
-  mediaService,
+  // 分支重试服务需要不写 HTTP 响应的限流原语：工具调用方没有 response 可写。
+  securityControls,
+  mediaService, localCancelRegistry,
+  publishCancel: (event) => agentRunEvents?.publishCancel?.(event),
   consumeWebResearchQuota: async (userId) => {
     const result = await securityControls.consume({
       scope: 'web-research',
@@ -340,6 +353,10 @@ const handleRequest = async (request, response) => {
           model: config.flockTextModel || undefined,
           models: config.flockAgentModels,
         },
+        agentFeatures: config.agentFeatureFlags,
+        // 只回显全局开启的灰度闸门名。按项目/用户放量的白名单内容不出现在这里，
+        // 否则健康检查会泄漏参与灰度的项目与用户标识。
+        rolloutFlags: config.rolloutFlags?.enabledFor() ?? [],
         agentMcp: {
           configured: Object.keys(configuredMcpTools).length > 0,
           toolCount: Object.keys(configuredMcpTools).length,
@@ -411,6 +428,12 @@ async function start() {
         // Worker 的权威写入已完成；实时旁路失败不得形成未处理拒绝并拉垮 API 进程。
         console.error(`[realtime] worker project update deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
       }),
+      // 别的实例发来的取消：如果这个 Turn 正在本实例执行，就地中止；不在本实例
+      // 则忽略（另一个实例会处理，或由孤儿清扫收敛）。
+      onCancel: (event) => {
+        if (event.scope !== 'turn') return
+        localCancelRegistry.abort(event.id)
+      },
     },
   )
   await new Promise((resolveStart, rejectStart) => {

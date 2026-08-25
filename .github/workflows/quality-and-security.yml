@@ -17,10 +17,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 1
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -28,6 +28,10 @@ jobs:
       - run: npm test
       - run: npm run check:architecture
       - run: npm run check:security
+      # 创意质量 Gate 跑固定回归集，不读生产素材也不调用真实 Provider，
+      # 因此可以和单元测试一起跑。真实 Provider Smoke 是另一条需要独立测试项目、
+      # 明确额度与人工授权的路径，不在 CI 里。
+      - run: npm run check:evals
       - run: npm run build
       - run: npm audit --omit=dev --audit-level=high
 
@@ -35,10 +39,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 1
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm

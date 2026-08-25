@@ -1,4 +1,5 @@
 import { agentToolObject as toolObject, agentToolText as toolText } from './agentToolRuntime.mjs'
+import { selectBotanicAgentMemory } from './botanicAgentMemory.mjs'
 
 // 只读上下文工具是 Agent 对话与回合规划共享的深模块：把项目本体、记忆、素材组与
 // 已审核 Skill 的受控读取集中在一处，任何调用方都拿到同一套安全语义（不返回图片字节、
@@ -58,7 +59,7 @@ export function createBotanicAgentReadToolDefinitions({ ontology, memory, skills
     {
       name: 'project_memory_search',
       label: '检索项目记忆',
-      description: '检索当前项目已保存的长期规则、认可方向和避免事项。没有命中时必须如实说明。',
+      description: '检索当前项目已保存的长期规则、认可方向和避免事项。检索词没有命中时仍会返回当前生效的常驻规则，此时 matchedQuery 为 false，必须如实说明这些规则不是针对本次检索词的。',
       risk: 'read',
       parameters: {
         type: 'object', additionalProperties: false,
@@ -70,8 +71,16 @@ export function createBotanicAgentReadToolDefinitions({ ontology, memory, skills
       },
       execute: async ({ query }) => {
         const normalizedQuery = searchText(query)
-        const matches = memory.filter((item) => !normalizedQuery || matchesQuery(item, normalizedQuery, ['id', 'kind', 'content']))
-        return { total: matches.length, items: matches.slice(0, 30) }
+        const selected = selectBotanicAgentMemory(memory, { query: normalizedQuery, limit: 30 })
+        // 不回传 selections：里面是同一批记忆的重复副本，只会把工具结果撑大。
+        return {
+          total: selected.total,
+          items: selected.items,
+          zeroHit: selected.zeroHit,
+          matchedQuery: selected.matchedQuery,
+          // 冲突落选必须可见：静默丢弃会让「这条规则为什么没生效」无从解释。
+          ...(selected.conflicts.length ? { conflicts: selected.conflicts } : {}),
+        }
       },
     },
     {

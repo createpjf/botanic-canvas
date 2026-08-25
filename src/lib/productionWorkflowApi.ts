@@ -2,6 +2,7 @@ import type {
   ProductionWorkflow,
   ProductionWorkflowDefinition,
   ProductionWorkflowRun,
+  ProductionWorkflowSource,
 } from '../domain/canvas'
 import { productRequest } from './productSession'
 
@@ -19,11 +20,13 @@ export async function publishProductionWorkflow(input: {
   id: string
   name: string
   definition: ProductionWorkflowDefinition
+  /** 发布来源必须显式提交；服务端按项目权威文档校验归属后才写入版本。 */
+  source: ProductionWorkflowSource
 }) {
   return (await productRequest<{ workflow: ProductionWorkflow }>(projectPath(input.projectId), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id: input.id, name: input.name, definition: input.definition }),
+    body: JSON.stringify({ id: input.id, name: input.name, definition: input.definition, source: input.source }),
   })).workflow
 }
 
@@ -35,12 +38,18 @@ export async function listProductionWorkflowRuns(projectId: string, workflowId: 
   return (await productRequest<{ runs: ProductionWorkflowRun[] }>(runsPath(projectId, workflowId))).runs
 }
 
+/**
+ * 启动批量运行。
+ *
+ * `items` 允许不带 `id`：服务端按业务身份（SKU → 渠道 → 语言）派生项标识，
+ * 取不到才退回位置。位置标识在重排或补项之后会指向另一行，重试就会打到错误的项上。
+ */
 export async function startProductionWorkflowRun(input: {
   projectId: string
   workflowId: string
   id: string
   workflowVersion: number
-  items: Array<Record<string, unknown> & { id: string }>
+  items: Array<Record<string, unknown> & { id?: string }>
 }) {
   return (await productRequest<{ run: ProductionWorkflowRun; reused?: boolean }>(runsPath(input.projectId, input.workflowId), {
     method: 'POST',

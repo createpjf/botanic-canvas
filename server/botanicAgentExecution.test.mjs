@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { prepareAgentRunExecution, reconcileAgentGenerationJobToProject } from './botanicAgentExecution.mjs'
+import { compileRunCreativePlan } from './creativePlanResolver.mjs'
 
 const settings = { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' }
 const models = [{ id: 'gpt-image-2', provider: 'openai', mediaKind: 'image', aspectRatios: ['3:4'], resolutions: ['2K'] }]
@@ -152,9 +153,13 @@ test('画布文本节点去掉旁白，生成节点不复制 Prompt', () => {
   })
   assert.equal(result.workflows[0].generateNode.data.prompt, '')
   assert.equal(result.workflows[0].promptNode.data.content, '保持人物服装，换成海边自然光')
-  assert.equal(result.jobs[0].rawInput.prompt, '保持人物服装，换成海边自然光')
-  assert.equal(result.jobs[0].rawInput.recipe.prompt, '保持人物服装，换成海边自然光')
-  assert.equal(result.jobs[0].generationRecipe.prompt, '保持人物服装，换成海边自然光')
+  assert.match(result.jobs[0].rawInput.prompt, /执行契约/u)
+  assert.match(result.jobs[0].rawInput.prompt, /保持人物服装，换成海边自然光/u)
+  assert.match(result.jobs[0].rawInput.recipe.prompt, /保持人物服装，换成海边自然光/u)
+  assert.match(result.jobs[0].rawInput.recipe.prompt, /执行契约/u)
+  assert.equal(result.jobs[0].rawInput.recipe.promptForDisplay, undefined)
+  assert.equal(result.jobs[0].generationRecipe.promptForDisplay, '保持人物服装，换成海边自然光')
+  assert.match(result.jobs[0].generationRecipe.prompt, /执行契约/u)
 })
 
 test('首次生成从权威画布解析图片上下文并复用普通 Generation Job 链路', () => {
@@ -177,6 +182,19 @@ test('首次生成从权威画布解析图片上下文并复用普通 Generation
   assert.equal(result.document.edges.some((edge) => edge.data?.role === 'parent'), false)
 })
 
+test('首次图片生成没有参考图时仍创建纯文字 Generation Job', () => {
+  const result = prepareAgentRunExecution({
+    run: initialGenerationRun([]), document: initialGenerationDocument(), now: 100,
+    jobIdForBranch: (branch) => `job-${branch.id}`,
+    models, maximumBatchCount: 8, maximumReferenceBytes: 8 * 1024 * 1024,
+  })
+
+  assert.equal(result.jobs.length, 1)
+  assert.deepEqual(result.jobs[0].rawInput.recipe.references, [])
+  assert.equal(result.jobs[0].rawInput.parent, undefined)
+  assert.equal(result.document.edges.some((edge) => edge.data?.role === 'reference'), false)
+})
+
 test('首次生成忽略同一上下文中的文字和视频，只解析声明为图片的节点', () => {
   const result = prepareAgentRunExecution({
     run: initialGenerationRun([
@@ -192,7 +210,7 @@ test('首次生成忽略同一上下文中的文字和视频，只解析声明�
   assert.deepEqual(result.jobs[0].rawInput.recipe.references.map((reference) => reference.mediaId), ['media_product'])
 })
 
-test('首次生成在创建工作流和 Job 前拒绝视频、文字和空结果上下文', () => {
+test('首次生成在创建工作流和 Job 前拒绝声明错误的上下文节点', () => {
   const document = initialGenerationDocument()
   const invalidSnapshots = [
     [{ nodeId: 'asset-video-node', label: '视频', kind: '素材', mediaKind: 'image' }],
@@ -454,8 +472,10 @@ test('无素材变体分支把本支增量叠到共用画面 Prompt 上', () => 
   })
 
   assert.equal(result.jobs.length, 2)
-  assert.equal(result.jobs[0].rawInput.prompt, '保持人物与白裙，棚拍柔光。\n\n人物肤色为白皙，保持五官与身份不变。')
-  assert.equal(result.jobs[1].rawInput.prompt, '保持人物与白裙，棚拍柔光。\n\n人物肤色为小麦，保持五官与身份不变。')
+  assert.match(result.jobs[0].rawInput.prompt, /执行契约/u)
+  assert.match(result.jobs[0].rawInput.prompt, /人物肤色为白皙，保持五官与身份不变。/u)
+  assert.match(result.jobs[1].rawInput.prompt, /人物肤色为小麦，保持五官与身份不变。/u)
+  assert.equal(result.jobs[0].generationRecipe.promptForDisplay, '保持人物与白裙，棚拍柔光。\n\n人物肤色为白皙，保持五官与身份不变。')
   assert.equal(result.jobs[0].rawInput.parent.mediaId, 'media_parent')
 })
 
@@ -619,4 +639,61 @@ test('成套方案分支异构执行：图片条目按数量、视频条目切�
   assert.equal(videoJob.provider, 'minimax-video')
   // 图片条目仍用计划设置。
   assert.equal(result.jobs[0].settings.model, 'gpt-image-2')
+})
+
+test('确认后的编译快照被执行直接采用，不重新编译', () => {
+  // 重试与恢复必须只读快照：模型目录、Memory 或 Skill 之后改了，历史 Run 仍按
+  // 当时确认的语义执行（ADR 0005 不变量三）。
+  const run = persistentRun()
+  run.compiledPlan = compileRunCreativePlan({ run, document: projectDocument(), models, now: 50 })
+  const result = prepareAgentRunExecution({
+    run, document: projectDocument(), now: 100,
+    jobIdForBranch: (branch) => `job-${branch.id}`,
+    models, maximumBatchCount: 8, maximumReferenceBytes: 8 * 1024 * 1024,
+  })
+
+  assert.deepEqual(result.jobs.map((job) => job.planFingerprint), [
+    run.compiledPlan.planFingerprint,
+    run.compiledPlan.planFingerprint,
+  ])
+  assert.deepEqual(
+    result.jobs.map((job) => job.branchFingerprint),
+    run.compiledPlan.branches.map((entry) => entry.branchFingerprint),
+  )
+  // 执行用的是快照里的 Prompt，而不是此刻重新编译的结果。
+  assert.equal(result.jobs[0].generationRecipe.prompt, run.compiledPlan.branches[0].prompt)
+  assert.equal(result.jobs[0].generationRecipe.sourcePlanFingerprint, run.compiledPlan.branches[0].branchFingerprint)
+})
+
+test('快照里的绑定与设置改不动执行：模型目录换了也按当时确认的模型跑', () => {
+  const run = persistentRun()
+  run.compiledPlan = compileRunCreativePlan({ run, document: projectDocument(), models, now: 50 })
+  // 之后 plan 被改写（模拟目录/绑定变动后重放旧 Run）：执行仍用快照。
+  run.plan.prompt = '完全不同的新画面描述。'
+  const result = prepareAgentRunExecution({
+    run, document: projectDocument(), now: 100,
+    jobIdForBranch: (branch) => `job-${branch.id}`,
+    models, maximumBatchCount: 8, maximumReferenceBytes: 8 * 1024 * 1024,
+  })
+  assert.equal(result.jobs[0].generationRecipe.prompt, run.compiledPlan.branches[0].prompt)
+  assert.doesNotMatch(result.jobs[0].generationRecipe.prompt, /完全不同的新画面描述/u)
+})
+
+test('确认时的参考素材被换掉后阻断执行，不用另一组素材顶替原指纹', () => {
+  // 否则会用别的素材去执行，还挂着用户确认过的那个指纹（ADR 0005 不变量四）。
+  const run = persistentRun()
+  run.compiledPlan = compileRunCreativePlan({ run, document: projectDocument(), models, now: 50 })
+  const document = projectDocument()
+  document.assets = document.assets.map((asset) => asset.id === 'asset-scene-b'
+    ? { ...asset, id: 'asset-scene-c' }
+    : asset)
+  run.branches[1].assetId = 'asset-scene-c'
+  assert.throws(
+    () => prepareAgentRunExecution({
+      run, document, now: 100,
+      jobIdForBranch: (branch) => `job-${branch.id}`,
+      models, maximumBatchCount: 8, maximumReferenceBytes: 8 * 1024 * 1024,
+    }),
+    (error) => error.code === 'AGENT_PLAN_REFERENCE_DRIFT' && error.statusCode === 409,
+  )
 })

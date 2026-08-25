@@ -2,6 +2,7 @@ import { buildBotanicAgentPlanRequest, completeBotanicAgentPlan, type BotanicAge
 import { buildBotanicAgentChatRequest, type BotanicAgentChatRequestInput, type BotanicAgentChatResponse } from '../domain/agentChatContract'
 import { botanicAgentChatTransportErrorMessage, createBotanicAgentChatStreamReader, type BotanicAgentChatStreamEvent, type BotanicAgentStreamEvent } from '../domain/agentChatStream'
 import type { BotanicAgentRunReview } from '../domain/agentReviewContract'
+import type { AgentReviewDecision, AgentReviewTaskSnapshot } from '../domain/agentReviewPresentation'
 import { buildBotanicAgentTurnRequest, type BotanicAgentTurnRequestInput, type BotanicAgentTurnResult } from '../domain/agentTurnContract'
 import { ProductApiError, productAuthorizationHeader, productRequest } from './productSession'
 import type { AgentToolCallTrace, BotanicAgentReasoningEntry, BotanicAgentActionProposal, BotanicAgentActionResult, BotanicAgentClarificationResponse, BotanicAgentMemoryItem, BotanicAgentMessage, BotanicAgentPlan, BotanicAgentRunSnapshot, BotanicAgentSession, BotanicAgentSkill, BotanicAgentSkillCatalogItem, BotanicIndexedArtifact } from '../domain/agent'
@@ -16,6 +17,20 @@ export type AgentRunCreationBranch = {
   variation?: BotanicAgentBranchVariation
   /** 成套方案条目：分支自带媒体类型与定稿 Prompt。 */
   item?: BotanicAgentCompositionItem
+}
+
+export async function forkBotanicAgentRun(input: { runId: string; branchId?: string; promptDelta: string }) {
+  const response = await productRequest<{ run: BotanicAgentRunSnapshot; reused?: boolean }>(`/api/agent-runs/${encodeURIComponent(input.runId)}/fork`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey('agent-fork') },
+    body: JSON.stringify({ branchId: input.branchId, promptDelta: input.promptDelta }),
+  })
+  return response
+}
+
+export async function compareBotanicAgentRun(runId: string) {
+  const response = await productRequest<{ comparison: { runId: string; projectId: string; status: string; branches: Array<{ id: string; label: string; status: string; outputCount: number; jobCount: number }> } }>(`/api/agent-runs/${encodeURIComponent(runId)}/compare`)
+  return response.comparison
 }
 
 function agentApiCopy(locale: ProductLocale) {
@@ -87,17 +102,28 @@ export async function requestBotanicAgentPlan(
   return completeBotanicAgentPlan(response.plan, input)
 }
 
-export async function requestBotanicAgentTurn(input: BotanicAgentTurnRequestInput, signal?: AbortSignal) {
+/**
+ * 回合结果加上它的运行时身份。Run 创建时带上 `runtimeTurnId`，Turn 侧才能反查
+ * 这次确认产生了哪些 Run —— 服务端一直在返回 `runtimeTurn`，此前被客户端丢掉了。
+ */
+export type BotanicAgentTurnOutcome = BotanicAgentTurnResult & { runtimeTurnId?: string }
+
+function withRuntimeTurnId(result: BotanicAgentTurnResult, runtimeTurn: unknown): BotanicAgentTurnOutcome {
+  const id = (runtimeTurn as { id?: unknown } | undefined)?.id
+  return typeof id === 'string' && id ? Object.assign({}, result, { runtimeTurnId: id }) : result
+}
+
+export async function requestBotanicAgentTurn(input: BotanicAgentTurnRequestInput, signal?: AbortSignal, requestKey = idempotencyKey('agent-turn')) {
   const copy = agentApiCopy(input.locale)
-  const response = await productRequest<{ turn: BotanicAgentTurnResult }>('/api/agent-intent', {
+  const response = await productRequest<{ turn: BotanicAgentTurnResult; runtimeTurn?: unknown }>('/api/agent-turns', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Accept-Language': input.locale },
+    headers: { 'Content-Type': 'application/json', 'Accept-Language': input.locale, 'Idempotency-Key': requestKey },
     body: JSON.stringify(buildBotanicAgentTurnRequest(input)),
     signal,
     timeoutMs: 60_000,
     timeoutMessage: copy.turnTimeout,
   })
-  return response.turn
+  return withRuntimeTurnId(response.turn, response.runtimeTurn)
 }
 
 function settlePlanFromStreamDone(event: Extract<BotanicAgentStreamEvent, { type: 'done' }>, input: BotanicAgentPlanRequestInput) {
@@ -154,17 +180,22 @@ export async function streamBotanicAgentPlan(
 export async function streamBotanicAgentTurn(
   input: BotanicAgentTurnRequestInput,
   options: { signal?: AbortSignal; onEvent?: (event: BotanicAgentStreamEvent) => void } = {},
-): Promise<BotanicAgentTurnResult> {
+): Promise<BotanicAgentTurnOutcome> {
   const copy = agentApiCopy(input.locale)
-  let settled: BotanicAgentTurnResult | undefined
+  const requestKey = idempotencyKey('agent-turn')
+  let settled: BotanicAgentTurnOutcome | undefined
   try {
     await streamBotanicAgentEndpoint({
-      path: '/api/agent-intent/stream',
+      path: '/api/agent-turns/stream',
       body: JSON.stringify(buildBotanicAgentTurnRequest(input)),
       locale: input.locale,
+      headers: { 'Idempotency-Key': requestKey },
       signal: options.signal,
       onEvent: (event) => {
-        if (event.type === 'done' && event.turn) settled = event.turn
+        if (event.type === 'done') {
+          const result = event.result ?? event.turn
+          if (result) settled = withRuntimeTurnId(result, event.runtimeTurn)
+        }
         options.onEvent?.(event)
       },
     })
@@ -174,7 +205,7 @@ export async function streamBotanicAgentTurn(
     if (caught instanceof ProductApiError && (caught.code === 'STREAM_DISCONNECTED' || caught.code === 'REQUEST_TIMEOUT')) {
       throw caught
     }
-    return requestBotanicAgentTurn(input, options.signal)
+    return requestBotanicAgentTurn(input, options.signal, requestKey)
   }
   if (!settled) throw new ProductApiError(copy.streamEnded, 0)
   return settled
@@ -208,6 +239,7 @@ async function streamBotanicAgentEndpoint(input: {
   locale: ProductLocale
   signal?: AbortSignal
   onEvent?: (event: BotanicAgentStreamEvent) => void
+  headers?: Record<string, string>
 }) {
   const copy = agentApiCopy(input.locale)
   let received = false
@@ -222,6 +254,7 @@ async function streamBotanicAgentEndpoint(input: {
   }
   try {
     const headers = new Headers({ 'Content-Type': 'application/json', Accept: 'text/event-stream', 'Accept-Language': input.locale })
+    for (const [key, value] of Object.entries(input.headers ?? {})) headers.set(key, value)
     for (const [key, value] of Object.entries(await productAuthorizationHeader())) headers.set(key, value)
     const response = await fetch(input.path, {
       method: 'POST',
@@ -407,12 +440,15 @@ export async function createPersistentBotanicAgentRun(input: {
   plan: BotanicAgentPlan
   branches: AgentRunCreationBranch[]
   idempotencyKey?: string
+  /** 确认这次 Run 的回合。缺省表示这条计划不是由服务端回合提出的（本地回退路径）。 */
+  turnId?: string
 }) {
   const response = await productRequest<{ run: BotanicAgentRunSnapshot }>('/api/agent-runs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Idempotency-Key': input.idempotencyKey ?? idempotencyKey('agent-run') },
     body: JSON.stringify({
       projectId: input.projectId,
+      ...(input.turnId ? { turnId: input.turnId } : {}),
       plan: {
         plannerModel: input.plan.plannerModel,
         intent: input.plan.intent,
@@ -428,6 +464,8 @@ export async function createPersistentBotanicAgentRun(input: {
         ...(input.plan.variation ? { variation: input.plan.variation } : {}),
         ...(input.plan.region ? { region: input.plan.region } : {}),
         ...(input.plan.composition ? { composition: input.plan.composition } : {}),
+        ...(input.plan.memoryBindings?.length ? { memoryBindings: input.plan.memoryBindings } : {}),
+        ...(input.plan.skillBindings?.length ? { skillBindings: input.plan.skillBindings } : {}),
         assetGroupId: input.plan.assetGroupId,
         toolCalls: input.plan.toolCalls,
       },
@@ -574,6 +612,23 @@ export async function requestBotanicAgentRunReview(projectId: string, runId: str
   return response.review
 }
 
+export async function submitBotanicAgentReviewDecision(input: {
+  projectId: string
+  reviewId: string
+  decision: 'accepted' | 'rejected' | 'retry_requested'
+  note?: string
+}) {
+  const response = await productRequest<{ review: BotanicAgentRunReview }>(
+    `/api/agent-reviews/${encodeURIComponent(input.reviewId)}/decision`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId: input.projectId, decision: input.decision, ...(input.note ? { note: input.note } : {}) }),
+    },
+  )
+  return response.review
+}
+
 export async function listProjectAgentSkills(projectId: string) {
   const response = await productRequest<{ skills: BotanicAgentSkill[] }>(`/api/projects/${encodeURIComponent(projectId)}/agent-skills`)
   return response.skills
@@ -625,6 +680,44 @@ export async function executeProjectAgentAction(input: { projectId: string; acti
     }),
     timeoutMs: agentActionRequestTimeoutMs,
     timeoutMessage: `${input.action.label}响应超时，请稍后重试。`,
+  })
+  return response
+}
+
+/**
+ * 读取一次 Run 的评审任务。
+ *
+ * 服务端已经把覆盖策略与被跳过的候选数放进读模型；界面必须照原样展示，
+ * 不要只显示评过的那几条 —— 那会让「评了 2 张」看起来像「全评过了」。
+ */
+export async function fetchAgentReviewTasks(runId: string) {
+  const response = await productRequest<{ tasks: AgentReviewTaskSnapshot[] }>(
+    `/api/agent-runs/${encodeURIComponent(runId)}/review-tasks`,
+  )
+  return response.tasks ?? []
+}
+
+/**
+ * 提交人工决定。批量共享一个幂等键，服务端逐候选落库。
+ *
+ * 三种决定都不覆盖原结果：接受只是标记可交付，拒绝保留原因，请求重试会产生新的 Run。
+ */
+export async function submitAgentReviewDecisions(
+  taskId: string,
+  decisions: Array<{ artifactId: string; decision: AgentReviewDecision; note?: string }>,
+  options: { idempotencyKey?: string } = {},
+) {
+  const response = await productRequest<{
+    task: AgentReviewTaskSnapshot
+    decisions: Array<{ artifactId: string; decision: AgentReviewDecision }>
+    retryRuns?: Array<{ artifactId: string; runId: string }>
+  }>(`/api/agent-review-tasks/${encodeURIComponent(taskId)}/decisions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Idempotency-Key': options.idempotencyKey ?? idempotencyKey('agent-review-decision'),
+    },
+    body: JSON.stringify({ decisions }),
   })
   return response
 }

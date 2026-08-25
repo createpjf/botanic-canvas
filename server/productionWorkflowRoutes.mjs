@@ -1,13 +1,18 @@
 import {
   applyWorkflowItemResult,
   createProductionWorkflowRun,
-  createProductionWorkflowVersion,
+  generationArtifactId,
   productionWorkflowVersion,
+  productionWorkflowVersionProvenance,
   resolveProductionWorkflowRecipe,
+  withWorkflowBrandRules,
   retryFailedWorkflowItems,
   transitionProductionWorkflowRun,
 } from './productionWorkflow.mjs'
-import { persistedGenerationJob, publicGenerationJob } from './generationProvider.mjs'
+import { buildDeliveryManifest } from './deliveryManifest.mjs'
+import { createProductionWorkflowPublishService } from './productionWorkflowPublishService.mjs'
+import { cancelGenerationJob } from './generationCancellation.mjs'
+import { publicGenerationJob } from './generationProvider.mjs'
 import { requireProjectPermission } from './projectAuthorization.mjs'
 
 const clone = (value) => structuredClone(value)
@@ -28,7 +33,12 @@ function workflowInput(workflow, run, item, document) {
   return {
     projectId: workflow.projectId,
     kind: override.kind ?? 'generation',
-    prompt: override.prompt ?? interpolate(definition.prompt, item.input?.variables),
+    // 品牌规则以执行契约前缀附加，而不是拼进画面描述 —— 混进描述里模型会把
+    // 「不要用饱和背景」当成要画的元素。规则来自版本快照，历史版本重跑按当时的规则。
+    prompt: withWorkflowBrandRules(
+      override.prompt ?? interpolate(definition.prompt, item.input?.variables),
+      definition,
+    ),
     batchCount: override.batchCount ?? definition.settings?.batchCount ?? 1,
     settings,
     recipe: clone(override.recipe ?? item.input?.recipe ?? resolveProductionWorkflowRecipe(definition, document)),
@@ -39,6 +49,9 @@ function workflowInput(workflow, run, item, document) {
       workflowRunId: run.id,
       workflowItemId: item.id,
       sourceVersionId: item.input?.sourceVersionId,
+      // 版本发布时固定下来的计划指纹。批量项的结果要能归回**那一次发布**，
+      // 而不是各自按提交内容算一个互不相关的指纹（Epic 3B 验收）。
+      ...(definition.planFingerprint ? { planFingerprint: definition.planFingerprint } : {}),
     },
   }
 }
@@ -47,6 +60,20 @@ function documents(value) {
   return {
     workflows: Array.isArray(value?.productionWorkflows) ? value.productionWorkflows : [],
     runs: Array.isArray(value?.productionWorkflowRuns) ? value.productionWorkflowRuns : [],
+  }
+}
+
+/**
+ * 读取时补齐每个版本的来源可信度。显式来源校验上线前发布的版本没有 `source`，
+ * 统一标记为 `legacy_unverified`，让界面能提示重新选择来源而不是假装它可信。
+ */
+function publicProductionWorkflow(workflow) {
+  return {
+    ...clone(workflow),
+    versions: (workflow.versions ?? []).map((version) => ({
+      ...clone(version),
+      provenance: productionWorkflowVersionProvenance(version),
+    })),
   }
 }
 
@@ -60,7 +87,18 @@ export function createProductionWorkflowRouteHandler({
   submitGeneration,
   redisQueue,
   publishProjectUpdated,
+  publishCancel,
+  modelOptions = [],
 }) {
+  const publishProductionWorkflow = createProductionWorkflowPublishService({
+    productStore,
+    updateProject: (userId, projectId, mutate) => updateProject(userId, projectId, mutate),
+  })
+
+  const cancelJob = (ownerId, job, reason) => cancelGenerationJob({
+    productStore, redisQueue, publishCancel, modelOptions, ownerId, job, reason, requestedBy: ownerId,
+  })
+
   async function updateProject(userId, projectId, mutate) {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const project = await productStore.readProject(userId, projectId)
@@ -87,7 +125,7 @@ export function createProductionWorkflowRouteHandler({
       // 当成未知状态写入工作流状态机，否则恢复读取会直接抛错并返回 500。
       const workflowStatus = job?.status === 'queued' ? 'running' : job?.status
       if (!job || item.status === workflowStatus) continue
-      const artifacts = (job.outputs ?? []).map((output) => `generation:${job.id}:${output.id}`)
+      const artifacts = (job.outputs ?? []).map((output) => generationArtifactId(job.id, output.id))
       const canvasNodeIds = (project.document.nodes ?? []).filter((node) => node?.type === 'result'
         && node?.data?.jobId === job.id).map((node) => node.id)
       next = applyWorkflowItemResult(next, item.id, {
@@ -132,6 +170,7 @@ export function createProductionWorkflowRouteHandler({
     const collectionMatch = matches.projectProductionWorkflows
     const workflowMatch = matches.projectProductionWorkflow
     const runsMatch = matches.projectProductionWorkflowRuns
+    const runManifestMatch = matches.projectProductionWorkflowRunManifest
     const runMatch = matches.projectProductionWorkflowRun
 
     if (collectionMatch) {
@@ -141,26 +180,17 @@ export function createProductionWorkflowRouteHandler({
         await requireProjectPermission(productStore, user.id, projectId, 'read')
         const project = await productStore.readProject(user.id, projectId)
         if (!project) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
-        return json(response, 200, { workflows: documents(project.document).workflows })
+        return json(response, 200, { workflows: documents(project.document).workflows.map(publicProductionWorkflow) })
       }
       if (request.method === 'POST') {
         await requireProjectPermission(productStore, user.id, projectId, 'modify-workflow')
         const body = await readJson(request)
-        let created
-        const saved = await updateProject(user.id, projectId, (document) => {
-          const state = documents(document)
-          const existing = state.workflows.find((workflow) => workflow.id === body.id)
-          created = createProductionWorkflowVersion({
-            id: body.id,
-            projectId,
-            name: body.name,
-            definition: body.definition,
-            previous: existing,
-          }, { actorId: user.id })
-          return { ...document, productionWorkflows: [...state.workflows.filter((workflow) => workflow.id !== created.id), created] }
+        // 发布只有一份实现：版本一旦写下就不可改，两条入口固定出不同执行契约无法补救。
+        const outcome = await publishProductionWorkflow({
+          userId: user.id, projectId, id: body.id, name: body.name, definition: body.definition, source: body.source,
         })
-        if (!saved) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
-        return json(response, 201, { workflow: created })
+        if (outcome.kind === 'error') return error(response, outcome.status, outcome.code, outcome.message)
+        return json(response, 201, { workflow: publicProductionWorkflow(outcome.workflow) })
       }
       return json(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message: '生产工作流集合不支持该请求方法。' } }, { Allow: 'GET, POST' })
     }
@@ -172,7 +202,7 @@ export function createProductionWorkflowRouteHandler({
       const project = await productStore.readProject(user.id, projectId)
       const workflow = project && documents(project.document).workflows.find((entry) => entry.id === decodeURIComponent(workflowMatch[2]))
       if (!workflow) return error(response, 404, 'PRODUCTION_WORKFLOW_NOT_FOUND', '未找到生产工作流。')
-      if (request.method === 'GET') return json(response, 200, { workflow })
+      if (request.method === 'GET') return json(response, 200, { workflow: publicProductionWorkflow(workflow) })
       return json(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message: '生产工作流资源只支持读取；更新请发布新版本。' } }, { Allow: 'GET' })
     }
 
@@ -225,6 +255,32 @@ export function createProductionWorkflowRouteHandler({
       return json(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message: '工作流运行集合不支持该请求方法。' } }, { Allow: 'GET, POST' })
     }
 
+    if (runManifestMatch) {
+      if (request.method !== 'GET') return json(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message: '交付清单只支持读取。' } }, { Allow: 'GET' })
+      const user = await requireUser(request)
+      const projectId = decodeURIComponent(runManifestMatch[1])
+      const runId = decodeURIComponent(runManifestMatch[2])
+      await requireProjectPermission(productStore, user.id, projectId, 'read')
+      const project = await productStore.readProject(user.id, projectId)
+      if (!project) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
+      const run = documents(project.document).runs.find((entry) => entry.id === runId)
+      if (!run) return error(response, 404, 'PRODUCTION_WORKFLOW_RUN_NOT_FOUND', '未找到工作流运行。')
+      const jobIds = [...new Set((run.items ?? []).map((item) => item.jobId).filter(Boolean))]
+      const jobs = (await Promise.all(jobIds.map((jobId) => productStore.readGenerationJob(user.id, jobId)))).filter(Boolean)
+      // 批准记录来自评审任务；没有评审任务就等于没有批准，清单会是空的而不是全量打包。
+      const runIds = [...new Set(jobs.map((job) => job.agentRun?.runId).filter(Boolean))]
+      const reviewTasks = (await Promise.all(runIds.map((agentRunId) => (
+        productStore.listAgentReviewTasksForRun(user.id, projectId, agentRunId)
+      )))).flat().filter(Boolean)
+      try {
+        return json(response, 200, {
+          manifest: buildDeliveryManifest({ run, jobs, reviewTasks }),
+        })
+      } catch (caught) {
+        // 文件名重复等清单级冲突是可修的输入问题，不是服务端异常。
+        return error(response, 409, 'DELIVERY_MANIFEST_CONFLICT', caught instanceof Error ? caught.message : '交付清单无法生成。')
+      }
+    }
     if (runMatch) {
       const user = await requireUser(request)
       const projectId = decodeURIComponent(runMatch[1])
@@ -256,9 +312,10 @@ export function createProductionWorkflowRouteHandler({
           run = transitionProductionWorkflowRun(run, 'pause')
           for (const item of run.items.filter((entry) => entry.jobId && entry.status === 'running')) {
             const job = await productStore.readGenerationJob(user.id, item.jobId)
+            // 暂停只收回尚未派发的任务。已在 Provider 侧执行的那一张已经产生费用，
+            // 中止它等于白付；resume 会按 jobId 重新接上它。
             if (job?.status !== 'queued') continue
-            await productStore.putGenerationJob(user.id, persistedGenerationJob({ ...job, status: 'cancelled', updatedAt: Date.now() }))
-            await redisQueue?.cancel(job.id)
+            await cancelJob(user.id, job, 'workflow-pause')
           }
         } else if (body.action === 'resume') {
           run = transitionProductionWorkflowRun(run, 'resume')
@@ -267,10 +324,13 @@ export function createProductionWorkflowRouteHandler({
           run = transitionProductionWorkflowRun(run, 'cancel')
           for (const item of run.items.filter((entry) => entry.jobId)) {
             const job = await productStore.readGenerationJob(user.id, item.jobId)
-            if (!job || !['queued', 'running'].includes(job.status)) continue
-            await productStore.putGenerationJob(user.id, persistedGenerationJob({ ...job, status: 'cancelled', updatedAt: Date.now() }))
-            await redisQueue?.cancel(job.id)
+            if (!job) continue
+            // 取消要覆盖 queued 与 running 两种：running 的那张只有广播到 Worker
+            // 才会真的停下，否则整批工作流取消后 worker 槽位仍被占满。
+            await cancelJob(user.id, job, 'workflow-cancel')
           }
+        } else if (body.action === 'approve-review' || body.action === 'reject-review') {
+          run = transitionProductionWorkflowRun(run, body.action, { actorId: user.id })
         } else {
           return error(response, 400, 'INVALID_WORKFLOW_ACTION', '工作流操作不支持。')
         }

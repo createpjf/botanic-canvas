@@ -259,6 +259,26 @@ test('没有批量语的单图请求即使带综合 Prompt 也保持单张', () 
   assert.equal(applied.plan.output.count, 1)
 })
 
+test('无图片上下文的首图草案仍可构建纯文字计划', () => {
+  const draft = prepareBotanicAgentGenerationDraft({
+    instruction: '生成一张海边广告图',
+    decision: { kind: 'generation', mediaKind: 'image', promptSource: 'instruction' },
+    options: {},
+    messages: [],
+    generationModels: [imageModel],
+    executionMode: 'auto',
+    contextItems: [],
+    synthesizedPrompt: '海边自然光下的品牌广告图，主体清晰，留出标题空间。',
+  })
+  assert.equal(draft.kind, 'ready')
+  if (draft.kind !== 'ready') return
+  const applied = buildBotanicAgentInitialDraftPlan(draft)
+  assert.equal(applied.kind, 'plan')
+  if (applied.kind !== 'plan') return
+  assert.deepEqual(applied.plan.references, [])
+  assert.match(applied.plan.summary, /根据文字描述直接生成 1 张图片/u)
+})
+
 test('首图草案按批量变体展开，视频草案不展开', () => {
   const draft = prepareBotanicAgentGenerationDraft({
     ...draftBase,

@@ -1,5 +1,6 @@
 import type { Edge, Node, Viewport } from '@xyflow/react'
 import type { BotanicAgentMemoryItem, BotanicAgentRun, BotanicAgentSession } from './agent'
+import type { GenerationCancelRecord } from './generationCancelCopy'
 
 export type AssetRole = '商品' | '模特' | '场景' | '调性' | '首图'
 export type AssetSource = 'brand' | 'upload' | 'generated'
@@ -76,12 +77,33 @@ export type GenerationReference = {
   priority?: number
 }
 
+export type GenerationConstraintSnapshot = {
+  dimension: string
+  mode: 'preserve' | 'vary'
+  sourceAssetGroupId?: string
+}
+
+export type GenerationQualityPolicy = {
+  version: number
+  requiredCriteria: string[]
+  humanDecisionRequired: boolean
+}
+
 export type GenerationRecipe = {
   primaryReferenceNodeId?: string
   references: GenerationReference[]
   prompt: string
+  /** 画布文本节点展示的用户可读 Prompt；Provider 执行 Prompt 可能包含结构化契约前缀。 */
+  promptForDisplay?: string
   batchCount: number
   settings: GenerationSettings
+  /** Agent V2 编译后的执行语义；旧画布配方缺省时保持 V1 行为。 */
+  creativeIntent?: string
+  constraints?: GenerationConstraintSnapshot[]
+  qualityPolicy?: GenerationQualityPolicy
+  sourcePlanFingerprint?: string
+  memoryBindings?: Array<{ id: string; version?: number; contentHash?: string; selectionReason?: string }>
+  skillBindings?: Array<{ id: string; version?: number; contentHash?: string; selectionReason?: string }>
   /** 仅视频生成节点使用；旧配方缺省时按输入数量推导。 */
   videoInputMode?: VideoInputMode
   /**
@@ -330,6 +352,18 @@ export type GenerationOutput = {
   image: string
   mediaKind?: GenerationMediaKind
   revisedPrompt?: string
+  /**
+   * 实测规格（只读文件头得到，不是请求参数的回声）。评审第 1 层据此确定性验证比例、
+   * 分辨率、时长与完整性；缺失时判「无法验证」，不是默认通过。
+   */
+  spec?: {
+    mimeType?: string
+    declaredMimeType?: string
+    byteSize?: number
+    width?: number
+    height?: number
+    durationSeconds?: number
+  }
 }
 
 /** 父生成任务下的独立候选子任务；每个候选可单独观察、失败和重试。 */
@@ -376,6 +410,8 @@ export type GenerationJob = {
   resultNodeId?: string
   parentNodeId?: string
   agentRun?: { runId: string; branchId: string }
+  /** 取消回执：计费归因唯一的持久记录，刷新后界面仍据此照实说明费用。 */
+  cancel?: GenerationCancelRecord
 }
 
 export type BatchVariationItemStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
@@ -426,10 +462,29 @@ export type ProductionWorkflowDefinition = {
   model: string
   settings: Record<string, unknown>
   output: Record<string, unknown>
-  brandRules: string[]
+  /**
+   * 品牌规则由服务端从权威文档经唯一的记忆选择器派生（ADR 0006），发布请求不携带；
+   * 因此在客户端草稿里是可选的，读取已发布版本时才一定有。
+   */
+  brandRules?: string[]
+  /** 规则绑定：说明用了哪条规则的哪个版本、为什么用。同由服务端派生。 */
+  brandRuleBindings?: Array<{ id: string; version?: number; contentHash?: string; selectionReason?: string }>
   assetGroupIds: string[]
   confirmationPolicy: string
   recipe?: Record<string, unknown>
+}
+
+/**
+ * 发布来源的显式身份。发布命令必须指名从哪个画布节点、哪次 Agent Run 的哪个分支、
+ * 哪些结果节点提升而来；服务端按项目权威文档校验归属后才写入版本。
+ * `artifactIds` 由服务端从 `resultNodeIds` 解析后回填，客户端不拼装 Artifact 标识格式。
+ */
+export type ProductionWorkflowSource = {
+  canvasNodeId: string
+  runId?: string
+  branchId?: string
+  resultNodeIds: string[]
+  artifactIds?: string[]
 }
 
 export type ProductionWorkflowVersion = {
@@ -437,6 +492,9 @@ export type ProductionWorkflowVersion = {
   definition: ProductionWorkflowDefinition
   createdAt: number
   createdBy: string
+  /** 缺省表示该版本发布于显式来源校验之前，按 `legacy_unverified` 读取。 */
+  source?: ProductionWorkflowSource
+  provenance?: 'verified' | 'legacy_unverified'
 }
 
 /** 发布后只追加版本；历史运行始终固定到当时的版本快照。 */

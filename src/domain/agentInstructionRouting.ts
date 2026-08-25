@@ -56,6 +56,8 @@ export type BotanicAgentInstructionEntry =
       synthesizedDuration?: number
       synthesizedVariants?: Array<{ label: string; promptDelta: string }>
       synthesizedAxisLabel?: string
+      /** 得出上述结论的服务端回合；确认后随 Run 持久化。 */
+      synthesizedTurnId?: string
     }
 
 /**
@@ -113,6 +115,7 @@ export function resolveBotanicAgentInstructionEntry(input: {
     synthesizedDuration: restored?.duration,
     synthesizedVariants: restored?.variants,
     synthesizedAxisLabel: restored?.variationAxisLabel,
+    synthesizedTurnId: restored?.turnId,
   }
 }
 
@@ -139,6 +142,7 @@ export type BotanicAgentGenerationDraftInput = {
   /** 回合模型结构化声明的变体；有它就跳过正则变体追问，护栏校验在计划构建时进行。 */
   synthesizedVariants?: Array<{ label: string; promptDelta: string }>
   synthesizedAxisLabel?: string
+  synthesizedTurnId?: string
 }
 
 export type BotanicAgentGenerationDraft =
@@ -194,6 +198,7 @@ export function prepareBotanicAgentGenerationDraft(input: BotanicAgentGeneration
       ...(input.synthesizedDuration ? { duration: input.synthesizedDuration } : {}),
       ...(input.synthesizedVariants?.length ? { variants: input.synthesizedVariants } : {}),
       ...(input.synthesizedVariants?.length && input.synthesizedAxisLabel ? { variationAxisLabel: input.synthesizedAxisLabel } : {}),
+      ...(input.synthesizedTurnId ? { turnId: input.synthesizedTurnId } : {}),
     }
     : undefined
   const carryOver = {
@@ -295,8 +300,8 @@ export type BotanicAgentInitialDraftPlanResult =
   | { kind: 'clarification'; clarification: BotanicAgentClarification }
 
 /**
- * 无基准图（或视频）的首图/首帧计划构建。可能抛出领域错误（如缺少图片上下文），
- * 由编排层收尾运行轨迹并展示。
+ * 无基准图（或视频）的首图/首帧计划构建。图片首图允许纯文字生图；视频仍会在领域层
+ * 校验首帧上下文。其他领域错误由编排层收尾运行轨迹并展示。
  */
 export function buildBotanicAgentInitialDraftPlan(
   draft: Extract<BotanicAgentGenerationDraft, { kind: 'ready' }>,

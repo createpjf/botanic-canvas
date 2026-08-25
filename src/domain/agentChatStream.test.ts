@@ -75,3 +75,56 @@ test('tool presentation 是向后兼容的加字段，未知键不会影响事�
   assert.deepEqual(event.presentation, { kind: 'search', title: '已搜索 25 个网站', count: 25 })
   assert.equal(event.toolCall.id, 'search-1')
 })
+
+test('SSE id 行推进续读游标，事件体同时携带 sequence', () => {
+  const reader = createBotanicAgentChatStreamReader()
+  assert.equal(reader.lastEventId, '', '尚未收到可解析事件时游标为空')
+
+  const events = reader.push([
+    'id: 7',
+    'data: {"type":"answer","step":0,"delta":"你","sequence":7}',
+    '',
+    'id: 8',
+    'data: {"type":"answer","step":0,"delta":"好","sequence":8}',
+    '',
+    '',
+  ].join('\n'))
+
+  assert.equal(events.length, 2)
+  assert.equal(events[0].sequence, 7)
+  assert.equal(events[1].sequence, 8)
+  assert.equal(reader.lastEventId, '8')
+})
+
+test('解析失败的事件不推进游标，否则重连会永久跳过它', () => {
+  const reader = createBotanicAgentChatStreamReader()
+  reader.push('id: 3\ndata: {"type":"answer","step":0,"delta":"a","sequence":3}\n\n')
+  assert.equal(reader.lastEventId, '3')
+
+  // 损坏的 JSON 与未知事件类型都不该把游标推过去。
+  reader.push('id: 4\ndata: {损坏\n\n')
+  assert.equal(reader.lastEventId, '3', '损坏事件不得推进游标')
+  reader.push('id: 5\ndata: {"type":"unknown"}\n\n')
+  assert.equal(reader.lastEventId, '3', '未知类型不得推进游标')
+
+  reader.push('id: 6\ndata: {"type":"answer","step":0,"delta":"b","sequence":6}\n\n')
+  assert.equal(reader.lastEventId, '6')
+})
+
+test('没有 id 行的事件不改变游标，心跳与注释也不改变', () => {
+  const reader = createBotanicAgentChatStreamReader()
+  reader.push('id: 2\ndata: {"type":"answer","step":0,"delta":"a","sequence":2}\n\n')
+  reader.push(': keep-alive\n\n')
+  assert.equal(reader.lastEventId, '2')
+  reader.push('data: {"type":"answer","step":0,"delta":"b"}\n\n')
+  assert.equal(reader.lastEventId, '2', '缺少 id 行时保留上一个可用游标')
+})
+
+test('id 行跨网络块切断仍能正确归属到它的事件', () => {
+  const reader = createBotanicAgentChatStreamReader()
+  reader.push('id: 1')
+  reader.push('2\ndata: {"type":"answer","step":0,"del')
+  const events = reader.push('ta":"x","sequence":12}\n\n')
+  assert.equal(events.length, 1)
+  assert.equal(reader.lastEventId, '12')
+})

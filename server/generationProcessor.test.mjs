@@ -6,6 +6,7 @@ import test from 'node:test'
 import { applyGenerationJobToAgentRun, createPersistentAgentRun } from './botanicAgentRun.mjs'
 import { createGenerationProcessor } from './generationProcessor.mjs'
 import { GenerationError } from './generationProvider.mjs'
+import { createLocalCancelRegistry } from './localCancelRegistry.mjs'
 import { createProductStore } from './productStore.mjs'
 
 test('语义兼容备用 Provider 成功后按实际模型与 Provider 归因且不复制任务', async () => {
@@ -528,4 +529,84 @@ test('Artifact Index 刷新失败时保留恢复标记，不提前推进 Agent R
   assert.equal(events.includes('run-status:completed'), false)
   assert.equal(events.includes('published:completed'), false)
   assert.equal(document.nodes.find((node) => node.type === 'result')?.data.image, '/api/media/output-a')
+})
+
+/** 取消相关用例共用的最小 Worker 夹具：只保留状态读写与 Provider 桩。 */
+function cancelHarness(status, generate) {
+  let storedJob = {
+    id: 'job-cancel', ownerId: 'user-a', projectId: 'project-a', status, kind: 'generation',
+    createdAt: Date.now(), updatedAt: Date.now(), batchCount: 1,
+    settings: { model: 'primary-image', aspectRatio: '1:1', resolution: '1K' },
+    outputs: [],
+    rawInput: {
+      projectId: 'project-a', kind: 'generation', prompt: '生成品牌首图', batchCount: 1,
+      settings: { model: 'primary-image', aspectRatio: '1:1', resolution: '1K' },
+      recipe: { references: [] },
+    },
+  }
+  const writes = []
+  const cancelRegistry = createLocalCancelRegistry()
+  const processJob = createGenerationProcessor({
+    productStore: {
+      async readGenerationJobForWorker() { return structuredClone(storedJob) },
+      async putGenerationJob(_ownerId, job) { storedJob = structuredClone(job); writes.push(job.status) },
+      async readProject() { return undefined },
+      async refreshGenerationArtifacts() { return true },
+    },
+    mediaService: { async readGenerationInput() { throw new Error('不应读取媒体标识') } },
+    providerCircuitBreaker: {
+      async canRequest() { return { allowed: true, state: 'closed' } },
+      async recordSuccess() {}, async recordFailure() {},
+    },
+    config: {
+      modelOptions: [{ id: 'primary-image', provider: 'primary', mediaKind: 'image', aspectRatios: ['1:1'], resolutions: ['1K'], inputRoles: [] }],
+      maximumBatchCount: 4, maximumReferenceBytes: 1024,
+    },
+    cancelRegistry,
+    generate,
+  })
+  return { processJob, writes, cancelRegistry, job: () => storedJob }
+}
+
+test('Worker 重启后取到已取消的任务：不调用 Provider，也不改写状态', async () => {
+  // 唯一真能省下费用的路径就是「派发前取消」；Worker 必须在调用 Provider 之前认出它。
+  const { processJob, writes } = cancelHarness('cancelled', async () => {
+    throw new Error('已取消的任务不得调用 Provider')
+  })
+  await processJob('job-cancel')
+  assert.deepEqual(writes, [])
+})
+
+test('Provider 返回后才发现已取消：结果丢弃，不覆盖成成功', async () => {
+  // 迟到结果永不写回是 Epic 1 的正确性收益，优先于省钱。
+  let flip = () => {}
+  const { processJob, writes, job } = cancelHarness('queued', async () => {
+    flip()
+    return { outputs: [{ id: 'output-late', image: '/api/media/output-late' }], missingOutputCount: 0 }
+  })
+  flip = () => { Object.assign(job(), { status: 'cancelled' }) }
+  await processJob('job-cancel')
+
+  assert.equal(job().status, 'cancelled')
+  assert.deepEqual(job().outputs, [])
+  assert.ok(!writes.includes('succeeded'))
+})
+
+test('取消广播先于取消入口落库时：就地中止，不报超时也不覆盖成失败', async () => {
+  // 广播比数据库写入先到是真实竞态（两者由不同进程发起）。此时任务在库里还是
+  // running，只有靠 signal.aborted 才能分清「取消」和「超时」—— 取消与超时
+  // abort 的是同一个控制器，混淆会让用户看到错误的失败原因。
+  const { processJob, writes, cancelRegistry, job } = cancelHarness('queued', async (_input, { signal }) => {
+    assert.ok(signal, 'Provider Adapter 必须收到统一的 AbortSignal')
+    assert.equal(cancelRegistry.abort('job-cancel'), true)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const aborted = new Error('The operation was aborted')
+    aborted.name = 'AbortError'
+    throw aborted
+  })
+  await processJob('job-cancel')
+
+  assert.equal(job().status, 'running')
+  assert.ok(!writes.includes('failed'))
+  assert.ok(!job().error)
 })

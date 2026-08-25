@@ -1,3 +1,4 @@
+import { readMediaSpecFromDataUrl } from './mediaSpec.mjs'
 import { mapWithConcurrency } from './concurrency.mjs'
 import { buildImageProviderPrompt, gptImage2EditQuality, orderCompositionReferences } from './generationComposition.mjs'
 import {
@@ -55,6 +56,59 @@ function inputMedia(value, maximumReferenceBytes, mediaKind = 'image') {
   if (value?.mediaId) return mediaReference(value.mediaId, mediaKind)
   const { mimeType, buffer } = mediaDataUrl(value?.dataUrl, maximumReferenceBytes, mediaKind)
   return { mimeType, buffer, mediaKind }
+}
+
+function validateRecipeMetadata(recipe) {
+  const dimensions = new Set(['person', 'garment', 'product', 'scene', 'style', 'pose', 'composition', 'lighting', 'aspect_ratio', 'copy_space'])
+  const modes = new Set(['preserve', 'vary'])
+  const constraints = recipe.constraints === undefined ? undefined : (() => {
+    if (!Array.isArray(recipe.constraints) || recipe.constraints.length > 10) throw new GenerationError(400, 'INVALID_REQUEST', '生成配方创作约束无效。')
+    const seen = new Set()
+    return recipe.constraints.map((item) => {
+      if (!dimensions.has(item?.dimension) || !modes.has(item?.mode) || seen.has(item.dimension)) {
+        throw new GenerationError(400, 'INVALID_REQUEST', '生成配方创作约束无效或重复。')
+      }
+      seen.add(item.dimension)
+      return {
+        dimension: item.dimension,
+        mode: item.mode,
+        ...(typeof item.sourceAssetGroupId === 'string' && item.sourceAssetGroupId.trim() ? { sourceAssetGroupId: item.sourceAssetGroupId.trim().slice(0, 160) } : {}),
+      }
+    })
+  })()
+  const qualityPolicy = recipe.qualityPolicy === undefined ? undefined : (() => {
+    if (!recipe.qualityPolicy || typeof recipe.qualityPolicy !== 'object' || !Array.isArray(recipe.qualityPolicy.requiredCriteria)) {
+      throw new GenerationError(400, 'INVALID_REQUEST', '生成配方质量策略无效。')
+    }
+    return {
+      version: Number.isInteger(recipe.qualityPolicy.version) ? recipe.qualityPolicy.version : 1,
+      requiredCriteria: recipe.qualityPolicy.requiredCriteria.filter((value) => typeof value === 'string').slice(0, 20),
+      humanDecisionRequired: recipe.qualityPolicy.humanDecisionRequired !== false,
+    }
+  })()
+  const binding = (value, label) => {
+    if (!Array.isArray(value)) throw new GenerationError(400, 'INVALID_REQUEST', `${label}绑定无效。`)
+    return value.slice(0, 32).map((item) => ({
+      id: assertText(item?.id, `${label}标识`, 160),
+      ...(item?.version === undefined ? {} : (() => {
+        const version = Number(item.version)
+        if (!Number.isInteger(version) || version < 1) {
+          throw new GenerationError(400, 'INVALID_REQUEST', `${label}版本无效。`)
+        }
+        return { version }
+      })()),
+      ...(item?.contentHash ? { contentHash: assertText(item.contentHash, `${label}摘要`, 200) } : {}),
+      ...(item?.selectionReason ? { selectionReason: assertText(item.selectionReason, `${label}使用原因`, 240) } : {}),
+    }))
+  }
+  return {
+    ...(recipe.creativeIntent ? { creativeIntent: assertText(recipe.creativeIntent, '创作意图', 80) } : {}),
+    ...(constraints ? { constraints } : {}),
+    ...(qualityPolicy ? { qualityPolicy } : {}),
+    ...(recipe.sourcePlanFingerprint ? { sourcePlanFingerprint: assertText(recipe.sourcePlanFingerprint, '计划指纹', 200) } : {}),
+    ...(recipe.memoryBindings ? { memoryBindings: binding(recipe.memoryBindings, '项目记忆') } : {}),
+    ...(recipe.skillBindings ? { skillBindings: binding(recipe.skillBindings, 'Skill') } : {}),
+  }
 }
 
 export function validateGenerationInput(body, { models, maximumBatchCount, maximumReferenceBytes }) {
@@ -165,7 +219,14 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
       })()
     : undefined
 
-  if (!references.length && !parent) throw new GenerationError(400, 'INVALID_REFERENCE', '请至少传入一个画布参考素材或一张父版本图片。')
+  if ((mask || maskRegion) && !references.length && !parent) {
+    throw new GenerationError(400, 'INVALID_MASK', '局部重绘需要一张基准图片。')
+  }
+  if (!references.length && !parent && (kind !== 'generation' || model.mediaKind === 'video')) {
+    throw new GenerationError(400, 'INVALID_REFERENCE', model.mediaKind === 'video'
+      ? '视频生成需要至少传入一张图片作为首帧。'
+      : '当前任务需要至少传入一个画布参考素材或一张父版本图片。')
+  }
   if (kind === 'refinement' && !parent) throw new GenerationError(400, 'MISSING_PARENT', '定向精修需要一张已选首图。')
 
   return {
@@ -183,6 +244,7 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
     },
     references,
     parent,
+    ...validateRecipeMetadata(recipe),
     ...(mask ? { mask } : {}),
     ...(maskRegion ? { maskRegion } : {}),
   }
@@ -248,6 +310,7 @@ export function publicGenerationJob(job, { includeIdempotencyKey = false } = {})
     provider: job.provider ?? 'openai-images',
     model: job.settings?.model,
     error: job.error,
+    errorCode: job.errorCode,
     missingOutputCount: job.missingOutputCount ?? 0,
     partialError: job.partialError,
     outputs: job.outputs ?? [],
@@ -255,7 +318,12 @@ export function publicGenerationJob(job, { includeIdempotencyKey = false } = {})
     // 仅向任务提交者返回，用于网络状态未知时确认同一次逻辑提交。
     ...(includeIdempotencyKey ? { idempotencyKey: job.idempotencyKey } : {}),
     projectWritebackPending: Boolean(job.projectWritebackPending),
+    // 取消回执随任务一起返回：刷新页面后界面仍要说清费用是否可能已产生。
+    cancel: job.cancel,
     agentRun: job.agentRun,
+    // 编译计划指纹：任一结果都能反查所属的那一次用户确认与那一支。
+    planFingerprint: job.planFingerprint,
+    branchFingerprint: job.branchFingerprint,
     usage: job.usage,
     budgetWarning: job.budgetWarning,
     effectiveModel: job.effectiveModel,
@@ -281,6 +349,10 @@ export function persistedGenerationJob(job) {
     outputs: job.outputs ?? [],
     variants: job.variants ?? [],
     error: job.error,
+    // 失败的错误码：服务端重试策略按码分类，只存消息就永远判不出可否重试。
+    errorCode: job.errorCode,
+    // 取消回执是计费归因唯一的持久记录，必须随任务落库。
+    cancel: job.cancel,
     missingOutputCount: job.missingOutputCount ?? 0,
     partialError: job.partialError,
     settings: job.settings,
@@ -292,6 +364,8 @@ export function persistedGenerationJob(job) {
     projectWritebackError: job.projectWritebackError,
     projectWritebackUpdatedAt: job.projectWritebackUpdatedAt,
     agentRun: job.agentRun,
+    planFingerprint: job.planFingerprint,
+    branchFingerprint: job.branchFingerprint,
     usage: job.usage,
     budgetWarning: job.budgetWarning,
     effectiveModel: job.effectiveModel,
@@ -356,25 +430,50 @@ export async function generateImages(job, {
     ? [job.parent, ...orderedReferences.filter((reference) => !reference.buffer.equals(job.parent.buffer))]
     : orderedReferences
   const submit = async (count, variationIndex) => {
-    const form = new FormData()
-    form.set('model', job.settings.model)
-    form.set('prompt', buildImageProviderPrompt(job, variationIndex))
-    form.set('n', String(count))
-    form.set('size', resolveGenerationOutputSize(job.settings))
-    form.set('quality', gptImage2EditQuality(job))
-    form.set('output_format', 'png')
-    form.set('moderation', 'auto')
-    inputImages.forEach((reference, index) => {
-      form.append('image[]', new Blob([reference.buffer], { type: reference.mimeType }), `reference-${index + 1}.${fileExtension(reference.mimeType)}`)
-    })
-    if (job.mask?.buffer) {
-      // OpenAI edits：mask 应用于第一张 image；透明区域被重绘，不透明区域保持原样。
-      form.set('mask', new Blob([job.mask.buffer], { type: job.mask.mimeType }), 'mask.png')
+    const prompt = buildImageProviderPrompt(job, variationIndex)
+    const outputSize = resolveGenerationOutputSize(job.settings)
+    const hasInputImages = inputImages.length > 0
+    let request
+    if (hasInputImages) {
+      const form = new FormData()
+      form.set('model', job.settings.model)
+      form.set('prompt', prompt)
+      form.set('n', String(count))
+      form.set('size', outputSize)
+      form.set('quality', gptImage2EditQuality(job))
+      form.set('output_format', 'png')
+      form.set('moderation', 'auto')
+      inputImages.forEach((reference, index) => {
+        form.append('image[]', new Blob([reference.buffer], { type: reference.mimeType }), `reference-${index + 1}.${fileExtension(reference.mimeType)}`)
+      })
+      if (job.mask?.buffer) {
+        // OpenAI edits：mask 应用于第一张 image；透明区域被重绘，不透明区域保持原样。
+        form.set('mask', new Blob([job.mask.buffer], { type: job.mask.mimeType }), 'mask.png')
+      }
+      request = { path: '/v1/images/edits', body: form, headers: {} }
+    } else {
+      // 没有参考图时走标准文生图入口；edits 端点要求至少一张输入图片。
+      request = {
+        path: '/v1/images/generations',
+        body: JSON.stringify({
+          model: job.settings.model,
+          prompt,
+          n: count,
+          size: outputSize,
+          quality: gptImage2EditQuality(job),
+          output_format: 'png',
+          moderation: 'auto',
+        }),
+        headers: { 'Content-Type': 'application/json' },
+      }
     }
     let response
     try {
-      response = await fetch(`${apiBaseUrl}/v1/images/edits`, {
-        method: 'POST', headers: { Authorization: `Bearer ${apiKey}` }, body: form, signal,
+      response = await fetch(`${apiBaseUrl}${request.path}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, ...request.headers },
+        body: request.body,
+        signal,
       })
     } catch (error) {
       if (signal?.aborted) throw error
@@ -406,6 +505,9 @@ export async function generateImages(job, {
         id: `${jobId}-output-${index + 1}`,
         image: await persistImage(image),
         mediaKind: 'image',
+        // 实测规格随输出落库：评审第 1 层（比例、分辨率、完整性）必须确定性验证，
+        // 没有它就只能判「无法验证」（ADR 0006）。在这里读是因为只有此处握有字节。
+        spec: readMediaSpecFromDataUrl(image.dataUrl),
         revisedPrompt: typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined,
       }
       await onVariant?.({ index, status: 'succeeded', output })

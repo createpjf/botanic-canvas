@@ -17,3 +17,15 @@ test('路由匹配严格限制层级，不把未知子路径误交给动态处�
   const matches = matchBotanicHttpRoutes('/api/projects/project-1/document/unknown')
   assert.equal(Object.values(matches).some(Boolean), false)
 })
+
+test('Agent Turn V2 路由区分集合、流式、读取与取消资源', () => {
+  assert.ok(matchBotanicHttpRoutes('/api/agent-turns').agentTurns)
+  assert.ok(matchBotanicHttpRoutes('/api/agent-turns/stream').agentTurnStream)
+  assert.deepEqual(matchBotanicHttpRoutes('/api/agent-turns/turn-1').agentTurn?.slice(1), ['turn-1'])
+  assert.deepEqual(matchBotanicHttpRoutes('/api/agent-turns/turn-1/cancel').agentTurnCancel?.slice(1), ['turn-1'])
+})
+
+test('Agent Run V2 路由提供分叉与比较资源', () => {
+  assert.deepEqual(matchBotanicHttpRoutes('/api/agent-runs/run-1/fork').agentRunFork?.slice(1), ['run-1'])
+  assert.deepEqual(matchBotanicHttpRoutes('/api/agent-runs/run-1/compare').agentRunCompare?.slice(1), ['run-1'])
+})

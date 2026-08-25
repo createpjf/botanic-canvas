@@ -1,13 +1,20 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  WORKFLOW_INPUT_FIELDS,
   applyWorkflowItemResult,
-  createProductionWorkflowVersion,
   createProductionWorkflowRun,
+  createProductionWorkflowVersion,
+  generationArtifactId,
+  normalizeWorkflowItemInput,
   productionWorkflowLineage,
+  productionWorkflowVersionProvenance,
   resolveProductionWorkflowRecipe,
+  resolveProductionWorkflowSource,
+  resolveWorkflowExecutionContract,
   retryFailedWorkflowItems,
   transitionProductionWorkflowRun,
+  withWorkflowBrandRules,
 } from './productionWorkflow.mjs'
 
 test('生产工作流运行时从项目权威文档解析稳定媒体且拒绝临时图片', () => {
@@ -37,13 +44,86 @@ const definition = {
   confirmationPolicy: 'before-external-action',
 }
 
+const source = { canvasNodeId: 'generate-a', runId: 'run-a', branchId: 'branch-a', resultNodeIds: [], artifactIds: [] }
+
+const sourceDocument = {
+  nodes: [
+    { id: 'generate-a', type: 'generate', data: { kind: 'generate' } },
+    { id: 'asset-a', type: 'asset', data: { kind: 'asset' } },
+    { id: 'result-a', type: 'result', data: { kind: 'result', jobId: 'job-a', candidateId: 'candidate-a', agentRun: { runId: 'run-a', branchId: 'branch-a' } } },
+    { id: 'result-pending', type: 'result', data: { kind: 'result', agentRun: { runId: 'run-a', branchId: 'branch-a' } } },
+  ],
+  agentRuns: [{ id: 'run-a', status: 'completed', branches: [{ id: 'branch-a' }] }],
+}
+
+test('显式来源按项目权威文档解析，Artifact 标识只由服务端生成', () => {
+  const resolved = resolveProductionWorkflowSource({
+    canvasNodeId: 'generate-a', runId: 'run-a', branchId: 'branch-a', resultNodeIds: ['result-a'],
+  }, sourceDocument)
+  assert.deepEqual(resolved, {
+    canvasNodeId: 'generate-a', runId: 'run-a', branchId: 'branch-a',
+    resultNodeIds: ['result-a'], artifactIds: [generationArtifactId('job-a', 'candidate-a')],
+  })
+  // 纯文字来源没有引用也没有结果时同样可解析。
+  assert.deepEqual(resolveProductionWorkflowSource({ canvasNodeId: 'generate-a', resultNodeIds: [] }, sourceDocument), {
+    canvasNodeId: 'generate-a', resultNodeIds: [], artifactIds: [],
+  })
+})
+
+test('来源缺失或实体不成立时拒绝发布，服务端不退到别的节点', () => {
+  const cases = [
+    [undefined, 'WORKFLOW_SOURCE_REQUIRED'],
+    [{ canvasNodeId: 'ghost', resultNodeIds: [] }, 'WORKFLOW_SOURCE_NODE_NOT_FOUND'],
+    [{ canvasNodeId: 'asset-a', resultNodeIds: [] }, 'WORKFLOW_SOURCE_NODE_INVALID'],
+    [{ canvasNodeId: 'generate-a', branchId: 'branch-a', resultNodeIds: [] }, 'WORKFLOW_SOURCE_BRANCH_WITHOUT_RUN'],
+    [{ canvasNodeId: 'generate-a', runId: 'ghost', resultNodeIds: [] }, 'WORKFLOW_SOURCE_RUN_NOT_FOUND'],
+    [{ canvasNodeId: 'generate-a', runId: 'run-a', branchId: 'ghost', resultNodeIds: [] }, 'WORKFLOW_SOURCE_BRANCH_NOT_FOUND'],
+    [{ canvasNodeId: 'generate-a', resultNodeIds: ['ghost'] }, 'WORKFLOW_SOURCE_RESULT_NOT_FOUND'],
+    [{ canvasNodeId: 'generate-a', resultNodeIds: ['asset-a'] }, 'WORKFLOW_SOURCE_RESULT_NOT_FOUND'],
+    [{ canvasNodeId: 'generate-a', resultNodeIds: ['result-pending'] }, 'WORKFLOW_SOURCE_RESULT_UNRESOLVED'],
+    [{ canvasNodeId: 'generate-a', resultNodeIds: ['result-a', 'result-a'] }, 'WORKFLOW_SOURCE_RESULTS_INVALID'],
+  ]
+  for (const [input, code] of cases) {
+    assert.throws(() => resolveProductionWorkflowSource(input, sourceDocument), (caught) => {
+      assert.equal(caught.code, code, `来源 ${JSON.stringify(input)} 应返回 ${code}，实际 ${caught.code}`)
+      return true
+    })
+  }
+})
+
+test('未完成的 Agent Run 不能作为发布来源', () => {
+  const running = { ...sourceDocument, agentRuns: [{ id: 'run-a', status: 'running', branches: [] }] }
+  assert.throws(
+    () => resolveProductionWorkflowSource({ canvasNodeId: 'generate-a', runId: 'run-a', resultNodeIds: [] }, running),
+    (caught) => caught.code === 'WORKFLOW_SOURCE_RUN_NOT_TERMINAL',
+  )
+})
+
+test('缺少来源快照的历史版本按 legacy_unverified 读取，不伪造来源', () => {
+  assert.equal(productionWorkflowVersionProvenance({ version: 1, definition }), 'legacy_unverified')
+  assert.equal(productionWorkflowVersionProvenance({ version: 1, definition, source }), 'verified')
+  assert.equal(productionWorkflowVersionProvenance(undefined), 'legacy_unverified')
+  const published = createProductionWorkflowVersion({
+    id: 'workflow-a', projectId: 'project-a', name: '来源可查', definition, source,
+  }, { actorId: 'user-a', now: 100 })
+  assert.equal(productionWorkflowVersionProvenance(published.versions[0]), 'verified')
+  assert.deepEqual(published.versions[0].source, source)
+})
+
+test('发布必须携带来源，缺失时明确失败而不是写入无来源版本', () => {
+  assert.throws(() => createProductionWorkflowVersion({
+    id: 'workflow-a', projectId: 'project-a', name: '无来源', definition,
+  }, { actorId: 'user-a', now: 100 }), (caught) => caught.code === 'WORKFLOW_SOURCE_REQUIRED')
+})
+
 test('工作流版本保存完整生产设置，升级不会改变旧版本', () => {
   const first = createProductionWorkflowVersion({
-    id: 'workflow-a', projectId: 'project-a', name: '夏日场景', definition,
+    id: 'workflow-a', projectId: 'project-a', name: '夏日场景', definition, source,
   }, { actorId: 'user-a', now: 100 })
   const second = createProductionWorkflowVersion({
     id: 'workflow-a', projectId: 'project-a', name: '夏日场景',
     definition: { ...definition, prompt: '替换为海边晨光。' },
+    source: { ...source, canvasNodeId: 'generate-b' },
     previous: first,
   }, { actorId: 'user-a', now: 200 })
 
@@ -57,7 +137,7 @@ test('工作流版本保存完整生产设置，升级不会改变旧版本', ()
 
 test('批量运行固定工作流版本，支持部分失败、失败项重试和刷新恢复', () => {
   const workflow = createProductionWorkflowVersion({
-    id: 'workflow-a', projectId: 'project-a', name: '批量首图', definition,
+    id: 'workflow-a', projectId: 'project-a', name: '批量首图', definition, source,
   }, { actorId: 'user-a', now: 100 })
   const run = createProductionWorkflowRun({
     id: 'workflow-run-a', workflow, itemInputs: [
@@ -87,7 +167,7 @@ test('批量运行固定工作流版本，支持部分失败、失败项重试�
 
 test('运行可暂停、恢复与取消，终态和历史版本不会被静默重写', () => {
   const workflow = createProductionWorkflowVersion({
-    id: 'workflow-a', projectId: 'project-a', name: '批量首图', definition,
+    id: 'workflow-a', projectId: 'project-a', name: '批量首图', definition, source,
   }, { actorId: 'user-a', now: 100 })
   const run = createProductionWorkflowRun({ id: 'run-a', workflow, itemInputs: [{ id: 'sku-a' }] }, { actorId: 'user-a', now: 200 })
   const paused = transitionProductionWorkflowRun(transitionProductionWorkflowRun(run, 'start', { now: 210 }), 'pause', { now: 220 })
@@ -101,6 +181,18 @@ test('运行可暂停、恢复与取消，终态和历史版本不会被静默�
   assert.throws(() => transitionProductionWorkflowRun(cancelled, 'resume', { now: 250 }), /终态/)
 })
 
+test('开启质量门时全部生成完成后必须经过人工评审才能发布', () => {
+  const workflow = createProductionWorkflowVersion({
+    id: 'workflow-review', projectId: 'project-a', name: '需审核', definition, source,
+  }, { actorId: 'user-a', now: 100 })
+  const run = createProductionWorkflowRun({ id: 'run-review', workflow, itemInputs: [{ id: 'sku-a' }] }, { actorId: 'user-a', now: 200 })
+  const awaiting = applyWorkflowItemResult(transitionProductionWorkflowRun(run, 'start', { now: 210 }), 'sku-a', { status: 'succeeded', jobId: 'job-a' }, { now: 220 })
+  assert.equal(awaiting.status, 'awaiting_review')
+  assert.equal(awaiting.qualityGate.status, 'pending')
+  assert.equal(transitionProductionWorkflowRun(awaiting, 'approve-review', { now: 230 }).status, 'succeeded')
+  assert.equal(transitionProductionWorkflowRun(awaiting, 'reject-review', { now: 240 }).status, 'failed')
+})
+
 test('工作流结果血缘关联版本、运行、任务、Artifact、画布节点与来源版本', () => {
   assert.deepEqual(productionWorkflowLineage({
     workflowId: 'workflow-a', workflowVersion: 3, runId: 'run-a', itemId: 'sku-a',
@@ -109,4 +201,88 @@ test('工作流结果血缘关联版本、运行、任务、Artifact、画布节
     workflowId: 'workflow-a', workflowVersion: 3, workflowRunId: 'run-a', workflowItemId: 'sku-a',
     generationJobId: 'job-a', artifactId: 'artifact-a', canvasNodeId: 'result-a', sourceVersionId: 'history-a',
   })
+})
+
+test('批量项标识来自业务身份，不是位置', () => {
+  // 位置标识在重排或补项后会指向另一行，重试就会打到错误的项上。
+  const first = normalizeWorkflowItemInput({ sku: 'SKU-001', channel: '天猫', variables: { product: '香水' } }, { index: 0 })
+  assert.equal(first.id, 'SKU-001')
+  assert.equal(first.channel, '天猫')
+  // 声明字段自动进插值上下文，Prompt 里 {{sku}} 直接可用。
+  assert.equal(first.variables.sku, 'SKU-001')
+  assert.equal(first.variables.product, '香水')
+
+  // 没有业务身份时才退回位置标识。
+  assert.equal(normalizeWorkflowItemInput({ variables: { product: '香水' } }, { index: 2 }).id, 'item-3')
+  // 显式 id 优先。
+  assert.equal(normalizeWorkflowItemInput({ id: 'custom', sku: 'SKU-001' }, { index: 0 }).id, 'custom')
+})
+
+test('同一批里重复的业务标识是输入错误，不静默去重', () => {
+  const taken = new Set()
+  normalizeWorkflowItemInput({ sku: 'SKU-001' }, { index: 0, taken })
+  assert.throws(() => normalizeWorkflowItemInput({ sku: 'SKU-001' }, { index: 1, taken }), /标识重复/u)
+})
+
+test('批量输入字段是声明式的，未声明的键只能进 variables', () => {
+  assert.deepEqual([...WORKFLOW_INPUT_FIELDS], ['sku', 'channel', 'language', 'aspectRatio', 'copy', 'assetGroupId'])
+  const item = normalizeWorkflowItemInput({ sku: 'S1', notAField: 'x', variables: { notAField: 'y' } }, { index: 0 })
+  assert.equal(item.notAField, undefined)
+  assert.equal(item.variables.notAField, 'y')
+})
+
+test('版本固定执行契约：计划指纹、绑定与质量策略随版本落库', () => {
+  // 新版本不改变历史或进行中的 Run，靠的就是运行只读版本里的这份快照。
+  const document = {
+    id: 'project-a',
+    nodes: [
+      { id: 'generate-a', type: 'generate', data: { kind: 'generate' } },
+      {
+        id: 'result-a', type: 'result',
+        data: {
+          kind: 'result', jobId: 'job-a', candidateId: 'out-1',
+          generationRecipe: {
+            planFingerprint: 'plan-fp', branchFingerprint: 'branch-fp',
+            qualityPolicy: { version: 1, requiredCriteria: ['identity'], humanDecisionRequired: true },
+            skillBindings: [{ id: 'skill-1', version: 2, contentHash: 'h' }],
+            memoryBindings: [{ id: 'memory-1', version: 3 }],
+          },
+        },
+      },
+    ],
+    agentRuns: [],
+  }
+  const contract = resolveWorkflowExecutionContract({ canvasNodeId: 'generate-a', resultNodeIds: ['result-a'] }, document)
+  assert.equal(contract.planFingerprint, 'plan-fp')
+  assert.equal(contract.branchFingerprint, 'branch-fp')
+  assert.deepEqual(contract.qualityPolicy.requiredCriteria, ['identity'])
+  assert.deepEqual(contract.skillBindings, [{ id: 'skill-1', version: 2, contentHash: 'h' }])
+  assert.deepEqual(contract.memoryBindings, [{ id: 'memory-1', version: 3 }])
+  // 取不到就不写，缺字段表示「这个版本没固定它」，而不是伪造一份。
+  assert.deepEqual(resolveWorkflowExecutionContract({ canvasNodeId: 'generate-a', resultNodeIds: [] }, document), {})
+})
+
+test('版本固定的品牌规则进入执行 Prompt，而不是只存不读', () => {
+  // 此前 brandRules 写而不读：用户以为「这条流程会遵守品牌规则」，实际不会。
+  const definition = { brandRules: ['主色只用品牌绿', '不要出现竞品 Logo'] }
+  const prompt = withWorkflowBrandRules('为香水 A 生成品牌首图。', definition)
+  assert.match(prompt, /必须遵守的品牌规则：/u)
+  assert.match(prompt, /- 主色只用品牌绿/u)
+  // 规则作为前缀出现，用户的画面描述原样保留在后面。
+  assert.ok(prompt.endsWith('为香水 A 生成品牌首图。'))
+})
+
+test('没有品牌规则时 Prompt 原样不动', () => {
+  assert.equal(withWorkflowBrandRules('生成首图。', {}), '生成首图。')
+  assert.equal(withWorkflowBrandRules('生成首图。', { brandRules: [] }), '生成首图。')
+  assert.equal(withWorkflowBrandRules('生成首图。', { brandRules: ['  ', ''] }), '生成首图。')
+})
+
+test('规则来自版本快照，历史版本重跑按当时的规则执行', () => {
+  // 读当前项目记忆的话，「新版本不改变进行中的运行」就不成立。
+  const oldVersion = { brandRules: ['主色用旧版蓝'] }
+  const newVersion = { brandRules: ['主色只用品牌绿'] }
+  assert.match(withWorkflowBrandRules('x', oldVersion), /旧版蓝/u)
+  assert.match(withWorkflowBrandRules('x', newVersion), /品牌绿/u)
+  assert.doesNotMatch(withWorkflowBrandRules('x', oldVersion), /品牌绿/u)
 })

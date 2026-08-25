@@ -456,8 +456,8 @@ export function shouldShowBotanicAgentRuntimeFeed(input: {
 }
 
 /**
- * Agent 只有拿到可用图片参考时才允许创建生成工作流。
- * 该领域规则避免对话、文字说明、视频或空结果被误转成空白生成节点。
+ * Agent 的图片首图既支持纯文字生图，也支持带参考图的受控生成；视频仍必须有首帧。
+ * 文字、视频或空结果不会被误当成图片参考写入执行配方。
  */
 export function resolveBotanicAgentWorkflowReferenceNodeIds(
   nodes: CanvasNode[],
@@ -773,6 +773,11 @@ export function recordBotanicAgentCanvasWritebacks(
 
 export type BotanicAgentPlan = {
   plannerModel?: string
+  /**
+   * 提出这条计划的服务端回合。确认后随 Run 一起持久化，Turn 侧据此反查产出的 Run。
+   * 本地回退路径没有回合，因此是可选的 —— 缺失表示「没有回合确认过它」，不是丢了。
+   */
+  turnId?: string
   intent: BotanicAgentIntent
   instruction: string
   summary: string
@@ -788,6 +793,8 @@ export type BotanicAgentPlan = {
   contextSnapshot?: BotanicAgentContextSnapshot[]
   references: AgentReferenceBinding[]
   constraints: CreativeConstraint[]
+  memoryBindings?: AgentKnowledgeBinding[]
+  skillBindings?: AgentKnowledgeBinding[]
   prompt: string
   settings: GenerationSettings
   output: {
@@ -808,6 +815,13 @@ export type BotanicAgentPlan = {
   composition?: BotanicAgentComposition
   toolCalls?: AgentToolCallTrace[]
   actions?: BotanicAgentActionProposal[]
+}
+
+export type AgentKnowledgeBinding = {
+  id: string
+  version?: number
+  contentHash?: string
+  selectionReason?: string
 }
 
 /** 单条文字节点带进计划的补充描述长度上限。 */
@@ -1057,6 +1071,7 @@ export type BotanicAgentRunSnapshot = {
   id: string
   projectId: string
   status: Exclude<BotanicAgentRunStatus, 'awaiting_confirmation' | 'executing'>
+  lineage?: BotanicAgentRunLineage
   plan?: Omit<BotanicAgentPlan, 'references' | 'rootRecipe' | 'actions'>
   branches: BotanicAgentRunBranch[]
   completedBranchCount: number
@@ -1069,12 +1084,21 @@ export type BotanicAgentRun = {
   id: string
   status: BotanicAgentRunStatus
   plan: BotanicAgentPlan
+  lineage?: BotanicAgentRunLineage
   createdAt: number
   updatedAt: number
   error?: string
   branches: BotanicAgentRunBranch[]
   completedBranchCount: number
   failedBranchCount: number
+}
+
+export type BotanicAgentRunLineage = {
+  relation: 'fork'
+  parentRunId: string
+  parentBranchId?: string
+  rootRunId?: string
+  createdAt?: number
 }
 
 export type BotanicAgentExecutionMode = 'manual' | 'auto'
@@ -1147,6 +1171,23 @@ export type BotanicAgentMemoryItem = {
   sourceNodeIds: string[]
   createdAt: number
   updatedAt: number
+  scope?: 'project' | 'workspace' | 'run'
+  source?: 'human' | 'review' | 'conversation' | 'import'
+  /** 可信程度。与 `status`（是否生效）是两个概念，不能互相顶替（ADR 0006）。 */
+  confidence?: 'confirmed' | 'provisional'
+  /**
+   * 激活态。只有人工保存或带已确认证据的记忆能成为 `active`；模型建议保持
+   * `proposed`。缺省表示这条记忆早于状态字段上线，按 `confidence` 兼容判定。
+   */
+  status?: 'proposed' | 'active' | 'superseded' | 'deleted'
+  /** 支撑这条规则的证据。带 `confirmedAt` 的证据才能支撑激活。 */
+  evidence?: Array<{ kind: 'artifact' | 'review' | 'message' | 'human'; ref: string; confirmedAt?: number }>
+  /** 相互矛盾的记忆标识。冲突必须显式，不能让两条矛盾规则静默进同一个 Plan。 */
+  conflictsWith?: string[]
+  /** 被谁替代。`status: 'superseded'` 时必填。 */
+  supersededBy?: string
+  version?: number
+  contentHash?: string
 }
 
 export type BotanicAgentSkill = {
@@ -1154,9 +1195,25 @@ export type BotanicAgentSkill = {
   projectId: string
   name: string
   instructions: string
+  /**
+   * 治理状态。由流程产生：`published` 只来自一次可追溯的批准动作（ADR 0006）。
+   * `status` 是它的兼容视图，既有读取路径按 active/archived 过滤。
+   */
+  lifecycle?: 'draft' | 'review' | 'published' | 'deprecated'
   status: 'active' | 'archived'
   createdAt: number
   updatedAt: number
+  version?: number
+  contentHash?: string
+  capabilities?: string[]
+  /** 只在真的批准过时出现；缺省即「尚未批准」，不再默认成已批准。 */
+  governance?: 'project-approved' | 'system'
+  publishedBy?: string
+  publishedAt?: number
+  deprecatedBy?: string
+  deprecatedAt?: number
+  /** 历史版本清单，只给身份；内容按版本单独取回，历史 Run 据此说明当时按什么执行。 */
+  versions?: Array<{ version: number; contentHash?: string; updatedAt: number; publishedBy?: string; publishedAt?: number }>
 }
 
 export type BotanicAgentSkillCatalogItem = {
@@ -1185,6 +1242,8 @@ export type BotanicAgentMessage = {
   runId?: string
   status?: 'pending' | 'answered' | 'submitted' | 'failed'
   feedback?: 'positive' | 'negative'
+  /** 质量评审结构化快照；与正文分离，支持人工接受/退回。 */
+  review?: import('./agentReviewContract').BotanicAgentRunReview
   /** 只用于本地离线送达状态；服务端权威消息不依赖该字段。 */
   deliveryStatus?: 'waiting_network' | 'queued' | 'syncing' | 'synced' | 'failed'
 }
@@ -1360,6 +1419,13 @@ export function createBotanicAgentMemoryItem(input: {
     sourceNodeIds: uniqueIds(input.sourceNodeIds ?? []),
     createdAt: now,
     updatedAt: now,
+    scope: 'project',
+    source: 'human',
+    confidence: 'confirmed',
+    // 记忆面板的保存是用户的显式动作，因此直接生效；模型建议走 proposed，
+    // 由服务端校验兜底（未确认来源不得声明 active）。
+    status: 'active',
+    version: 1,
   }
 }
 
@@ -1650,7 +1716,7 @@ export function updateBotanicAgentSessionReadingAnchor(
 export function updateBotanicAgentMessage(
   session: BotanicAgentSession,
   messageId: string,
-  patch: Partial<Pick<BotanicAgentMessage, 'content' | 'runId' | 'status' | 'feedback' | 'plan' | 'question' | 'composition' | 'deliveryStatus'>>,
+  patch: Partial<Pick<BotanicAgentMessage, 'content' | 'runId' | 'status' | 'feedback' | 'plan' | 'question' | 'composition' | 'deliveryStatus' | 'review'>>,
   now = Date.now(),
 ): BotanicAgentSession {
   if (!session.messages.some((message) => message.id === messageId)) return session
@@ -2005,6 +2071,40 @@ export function botanicAgentPlanMediaKind(plan: Pick<BotanicAgentPlan, 'settings
   return plan.settings.duration !== undefined ? 'video' : 'image'
 }
 
+/**
+ * 可作为生成输入的图片上下文：素材或结果节点，且媒体类型是图片。
+ * 引用保真、视频首帧校验和成套方案分解共用这一条规则，不各自内联一份谓词。
+ * 服务端 `botanicAgentRun.mjs` 与 `botanicAgentExecution.mjs` 保持同义镜像。
+ */
+export function botanicAgentImageContext(
+  contextSnapshot: BotanicAgentContextSnapshot[] = [],
+): BotanicAgentContextSnapshot[] {
+  return contextSnapshot.filter((item) => item.mediaKind === 'image' && (item.kind === '素材' || item.kind === '结果'))
+}
+
+export type BotanicAgentLocalInitialGenerationDecision =
+  | { ok: true }
+  | { ok: false; reason: 'reference_requires_service' | 'requires_service' }
+
+/**
+ * 未连接工作区服务时，本地回退能否安全执行首次生成。
+ *
+ * 计划带图片引用时必须拒绝：本地路径无法把上下文节点解析成稳定配方，
+ * 构造空引用配方会把用户要求的「按参考生成」静默变成纯文字生成。
+ * 只有确实没有图片引用的纯文字首轮，才允许走本地空引用配方。
+ */
+export function botanicAgentLocalInitialGenerationDecision(
+  plan: Pick<BotanicAgentPlan, 'contextSnapshot' | 'output' | 'settings'>,
+): BotanicAgentLocalInitialGenerationDecision {
+  if (botanicAgentImageContext(plan.contextSnapshot).length) {
+    return { ok: false, reason: 'reference_requires_service' }
+  }
+  if (plan.output.mode !== 'single' || plan.settings.duration !== undefined) {
+    return { ok: false, reason: 'requires_service' }
+  }
+  return { ok: true }
+}
+
 export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): BotanicAgentPlan {
   const locale = input.locale ?? 'zh-CN'
   const instruction = input.instruction.trim()
@@ -2014,12 +2114,14 @@ export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): Botani
   const isInitialGeneration = intent === 'initial_generation'
   if (!isInitialGeneration && !input.selectedResultNodeId) throw new Error('请先选择一张已生成图片。')
   if (!isInitialGeneration && !input.rootRecipe) throw new Error('当前结果缺少可恢复的生成配方。')
-  const contextSnapshot = createBotanicAgentContextSnapshot(input.contextSnapshot ?? [])
-  const imageContext = contextSnapshot.filter((item) =>
-    item.mediaKind === 'image' && (item.kind === '素材' || item.kind === '结果'))
-  if (isInitialGeneration && !imageContext.length) throw new Error('首次生成至少需要一项图片素材或图片结果。')
   const settings = input.rootRecipe?.settings ?? input.settings
   if (!settings) throw new Error('请先设置生成模型与输出参数。')
+  const contextSnapshot = createBotanicAgentContextSnapshot(input.contextSnapshot ?? [])
+  const imageContext = botanicAgentImageContext(contextSnapshot)
+  const isVideoPlan = botanicAgentPlanMediaKind({ settings }) === 'video'
+  if (isInitialGeneration && isVideoPlan && !imageContext.length) {
+    throw new Error('视频首次生成需要一项图片素材或图片结果作为首帧。')
+  }
   // 提示词只接受画面描述：本轮指令优先，其次继承基准图的配方；都取不到就停下追问，不拿旁白凑数。
   const visualPrompt = botanicAgentVisualGenerationPrompt(instruction)
     || botanicAgentVisualGenerationPrompt(input.rootRecipe?.prompt ?? '')
@@ -2058,7 +2160,7 @@ export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): Botani
     role: input.assetGroup.role,
   })
 
-  const isVideoPlan = botanicAgentPlanMediaKind({ settings }) === 'video'
+  const isDirectTextGeneration = isInitialGeneration && !isVideoPlan && !imageContext.length && !input.assetGroup
   return {
     intent,
     instruction,
@@ -2069,12 +2171,18 @@ export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): Botani
           ? `${intentLabel(intent, locale)}. Generate ${output.count} ${output.count === 1 ? 'video' : 'videos'} of ${settings.duration} seconds from the reference image.`
           : `${intentLabel(intent, locale)}. ${output.mode === 'batch_by_asset'
             ? `Generate ${output.count} ${output.count === 1 ? 'image' : 'images'} from “${input.assetGroup?.name}”`
-            : `Generate ${output.count} new ${output.count === 1 ? 'version' : 'versions'}`}.`
+            : isDirectTextGeneration
+              ? `Generate ${output.count} ${output.count === 1 ? 'image' : 'images'} directly from the prompt`
+              : `Generate ${output.count} new ${output.count === 1 ? 'version' : 'versions'}`}.`
       : intent === 'region_edit' && input.region
         ? `局部重绘${input.region.description ?? '所选区域'}，其余画面保持原样。`
         : isVideoPlan
           ? `${intentLabel(intent)}，以参考图为首帧生成 ${output.count} 条 ${settings.duration} 秒视频。`
-          : `${intentLabel(intent)}，${output.mode === 'batch_by_asset' ? `按「${input.assetGroup?.name}」生成 ${output.count} 张` : `生成 ${output.count} 张新版本`}。`,
+          : `${intentLabel(intent)}，${output.mode === 'batch_by_asset'
+            ? `按「${input.assetGroup?.name}」生成 ${output.count} 张`
+            : isDirectTextGeneration
+              ? `根据文字描述直接生成 ${output.count} 张图片`
+              : `生成 ${output.count} 张新版本`}。`,
     title: locale === 'en'
       ? ({ initial_generation: 'Generate', continue_generation: 'Continue', replace_scene: 'Scene', replace_person: 'Model', replace_product: 'Product', change_pose: 'Pose', change_style: 'Style', batch_variation: 'Variants', redo_from_root: 'Rebuild', region_edit: 'Region edit' } as const)[intent]
       : summarizeBotanicAgentNodeTitle({ intent, constraints }),
@@ -2159,8 +2267,7 @@ export function upsertBotanicAgentRunSnapshot(
       settings: snapshot.plan.settings,
     }
   const references: AgentReferenceBinding[] = initialGeneration
-    ? (snapshot.plan.contextSnapshot ?? [])
-        .filter((item) => item.mediaKind === 'image' && (item.kind === '素材' || item.kind === '结果'))
+    ? botanicAgentImageContext(snapshot.plan.contextSnapshot)
         .map((item) => ({
           source: 'context_node', id: item.nodeId, label: item.label,
           ...(item.role ? { role: item.role } : {}),

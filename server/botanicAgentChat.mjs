@@ -17,8 +17,13 @@ const CHAT_MODES = new Set(['conversation', 'prompt', 'research'])
 const MESSAGE_ROLES = new Set(['user', 'assistant'])
 
 export class BotanicAgentChatError extends Error {
-  constructor(statusCode, code, message) {
-    super(message)
+  /**
+   * `cause` 只用于服务端诊断。兜底分支原先把原始错误整个吞掉，只留一句
+   * 「服务暂时不可用」，线上排障无从下手。它不进 HTTP 响应也不进持久化 ——
+   * 对外暴露的仍然只有 code 与用户可读的 message。
+   */
+  constructor(statusCode, code, message, options) {
+    super(message, options)
     this.name = 'BotanicAgentChatError'
     this.statusCode = statusCode
     this.code = code

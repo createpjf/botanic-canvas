@@ -99,6 +99,7 @@ test('Agent 规划工具可调用当前项目已审核 Skill，但不能跨项�
   assert.deepEqual(skill, {
     skillId: 'skill-scene-campaign', label: '夏日场景系列',
     instructions: '锁定人物与服装，只替换场景与环境光线。', source: 'project',
+    capabilities: ['read'],
   })
   await assert.rejects(registry.execute('skill_run', { skillId: 'skill-other-project' }, {}), /不在允许列表/)
 })
@@ -142,6 +143,29 @@ test('Planner 调用 Skill 后立即生效，MCP 仍转为待确认行动', asyn
     registry.execute('mcp_propose', { server: 'unknown', tool: 'delete', arguments: {}, reason: '删除' }, { toolCallId: 'bad' }),
     /不在允许列表/,
   )
+})
+
+test('声明写入能力的项目 Skill 不会在规划阶段静默生效', async () => {
+  const proposals = []
+  const registry = createBotanicAgentPlanningToolRegistry({
+    input: {
+      ...input,
+      projectSkills: [{
+        id: 'skill-workflow-write', name: '工作流写入', instructions: '允许写入工作流。', status: 'active', capabilities: ['read', 'write'],
+      }],
+    },
+    finalizePlan: (raw) => raw,
+    finalizeClarification: (raw) => raw,
+    onProposeAction: (proposal) => proposals.push(proposal),
+  })
+  const result = await registry.execute('skill_run', { skillId: 'skill-workflow-write' }, { toolCallId: 'call-skill-write' })
+  assert.deepEqual(result, {
+    skillId: 'skill-workflow-write', name: '工作流写入', source: 'project',
+    capabilities: ['read', 'write'], requiresConfirmation: true, risk: 'write',
+  })
+  assert.equal(proposals[0].status, 'awaiting_confirmation')
+  assert.equal(proposals[0].requiresConfirmation, true)
+  assert.equal(proposals[0].risk, 'write')
 })
 
 test('Planner 可以提议创建可复用项目 Skill，但不会在规划阶段直接写入', async () => {

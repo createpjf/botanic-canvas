@@ -14,6 +14,18 @@ export type BotanicAgentRunReview = {
   summary: string
   bestNodeId?: string
   items: BotanicAgentRunReviewItem[]
+  /** V2 持久化质量门：不影响旧格式读取。 */
+  id?: string
+  version?: 2
+  runId?: string
+  projectId?: string
+  locale?: 'zh-CN' | 'en'
+  status?: 'pending' | 'accepted' | 'rejected' | 'retry_requested'
+  requiredCriteria?: string[]
+  decisionNote?: string
+  decidedBy?: string
+  createdAt?: number
+  updatedAt?: number
 }
 
 /** 评审消息的固定标识：一个 Run 只有一条评审消息。 */

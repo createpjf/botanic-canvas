@@ -1,8 +1,8 @@
 import { AgentToolRuntimeError } from './agentToolRuntime.mjs'
-import { botanicAgentBranchGenerationPrompt } from './botanicAgentVariations.mjs'
-import { compositionOverlayReferences, orderCompositionReferences } from './generationComposition.mjs'
 import { validateGenerationInput } from './generationProvider.mjs'
 import { generationJobProjectionComplete, reconcileGenerationResults } from './generationResultReconciliation.mjs'
+import { compileAgentBranchRecipe } from './botanicCreativePlanCompiler.mjs'
+import { compiledBranchFromRun, normalizeResolverModels, resolveCreativePlan } from './creativePlanResolver.mjs'
 
 function clone(value) {
   return structuredClone(value)
@@ -50,123 +50,6 @@ function providerName(model) {
   return 'openai-images'
 }
 
-function initialGenerationReferences(run, document) {
-  const snapshot = run.plan?.contextSnapshot
-  if (!Array.isArray(snapshot) || !snapshot.length) {
-    throw new AgentToolRuntimeError('AGENT_INITIAL_REFERENCE_INVALID', 'Agent 首次生成只支持已存入画布的图片素材或图片结果。', 409)
-  }
-  const imageSnapshot = snapshot.filter((item) => (
-    (item.kind === '素材' || item.kind === '结果') && item.mediaKind === 'image'
-  ))
-  if (!imageSnapshot.length) {
-    throw new AgentToolRuntimeError('AGENT_INITIAL_REFERENCE_INVALID', 'Agent 首次生成只支持已存入画布的图片素材或图片结果。', 409)
-  }
-  const nodesById = new Map((document.nodes ?? []).map((node) => [node.id, node]))
-  return orderCompositionReferences(imageSnapshot.map((item, index) => {
-    const node = nodesById.get(item.nodeId)
-    const isMediaNode = node?.type === 'asset' || node?.type === 'result'
-    const isImage = node?.data?.mediaKind === undefined || node.data.mediaKind === 'image'
-    const image = node?.data?.image
-    if (!isMediaNode || !isImage || typeof image !== 'string' || !image) {
-      throw new AgentToolRuntimeError('AGENT_INITIAL_REFERENCE_INVALID', 'Agent 首次生成只支持已存入画布的图片素材或图片结果。', 409)
-    }
-    return {
-      nodeId: node.id,
-      ...(node.data.assetId ? { assetId: node.data.assetId } : {}),
-      name: node.data.name ?? node.data.label ?? `参考图 ${index + 1}`,
-      image,
-      role: node.data.role ?? '参考',
-      primary: Boolean(node.data.primary),
-      priority: index + 1,
-    }
-  })).map((reference, index) => ({ ...reference, priority: index + 1 }))
-}
-
-/** 素材组分支把本分支的素材并进参考集；同角色的旧参考被替换而不是叠加。 */
-function withBranchAsset(references, run, document, branch) {
-  const recipeTail = {
-    prompt: botanicAgentBranchGenerationPrompt(run.plan.prompt, branch.variation?.promptDelta, run.plan.instruction),
-    batchCount: run.plan.output.mode === 'single' ? run.plan.output.count : run.plan.output.candidatesPerItem,
-    settings: clone(run.plan.settings),
-  }
-  if (!branch.assetId) return { references, ...recipeTail }
-  const asset = (document.assets ?? []).find((candidate) => candidate.id === branch.assetId)
-  if (!asset) throw new AgentToolRuntimeError('AGENT_BRANCH_ASSET_MISSING', `分支素材「${branch.label}」已不存在。`, 409)
-  const kept = references.filter((reference) => reference.role !== asset.role)
-  kept.push({
-    assetId: asset.id,
-    name: asset.name,
-    image: asset.image,
-    role: asset.role ?? '参考',
-    primary: Boolean(asset.primary),
-    priority: kept.length + 1,
-  })
-  return { references: kept, ...recipeTail }
-}
-
-/**
- * 继续生成时“这一轮”的参考集：只取用户本轮锁定的画布图片素材/结果。
- * 父结果本身通过 parent 单独传入，不重复进参考集。
- */
-function refinementReferences(run, document) {
-  const snapshot = run.plan?.contextSnapshot
-  if (!Array.isArray(snapshot) || !snapshot.length) return []
-  const nodesById = new Map((document.nodes ?? []).map((node) => [node.id, node]))
-  const parentNodeId = run.plan?.selectedResultNodeId
-  return snapshot.flatMap((item, index) => {
-    if (item.kind !== '素材' && item.kind !== '结果') return []
-    if (item.mediaKind !== 'image') return []
-    if (item.nodeId === parentNodeId) return []
-    const node = nodesById.get(item.nodeId)
-    const isMediaNode = node?.type === 'asset' || node?.type === 'result'
-    const isImage = node?.data?.mediaKind === undefined || node.data.mediaKind === 'image'
-    const image = node?.data?.image
-    if (!isMediaNode || !isImage || typeof image !== 'string' || !image) return []
-    return [{
-      nodeId: node.id,
-      ...(node.data.assetId ? { assetId: node.data.assetId } : {}),
-      name: node.data.name ?? node.data.label ?? `参考图 ${index + 1}`,
-      image,
-      role: node.data.role ?? '参考',
-      primary: Boolean(node.data.primary),
-      priority: index + 1,
-    }]
-  })
-}
-
-/**
- * 每一轮的参考集由 intent 决定，三条路径互不污染：
- * - 首次生成：用户这次锁定的画布图片。
- * - 从原配方重做：语义就是复用最初那次配方，因此只有它读 rootRecipe。
- * - 其余继续生成：只带用户本轮重新指定的参考；上一轮结果通过 parent 单独传入。
- *   不再沿用最初那次的参考，否则改得越多参考越脏，画面会被最初的素材拖回去。
- */
-function recipeForRun(run, document, parentNode, branch, resolvedInitialReferences) {
-  if (run.plan.intent === 'initial_generation') {
-    return withBranchAsset(clone(resolvedInitialReferences), run, document, branch)
-  }
-  if (run.plan.intent === 'redo_from_root') {
-    const rootRecipe = parentNode.data?.rootRecipe ?? parentNode.data?.generationRecipe
-    if (!rootRecipe || !Array.isArray(rootRecipe.references)) {
-      throw new AgentToolRuntimeError('AGENT_RECIPE_MISSING', '父结果缺少可追溯的生成配方。', 409)
-    }
-    return withBranchAsset(clone(rootRecipe.references), run, document, branch)
-  }
-  // 局部重绘：父结果是底图+蒙版。本轮 @ 的图仍要带上；没 @ 时从原配方补回标识图。
-  if (run.plan.intent === 'region_edit') {
-    const thisTurn = refinementReferences(run, document)
-    const overlays = thisTurn.length
-      ? thisTurn
-      : compositionOverlayReferences(
-        parentNode.data?.generationRecipe?.references
-        ?? parentNode.data?.rootRecipe?.references
-        ?? [],
-      )
-    return withBranchAsset(overlays, run, document, branch)
-  }
-  return withBranchAsset(refinementReferences(run, document), run, document, branch)
-}
-
 function rawGenerationInput(run, parentNode, recipe, { videoModel = false } = {}) {
   const kind = run.plan.intent === 'redo_from_root' || run.plan.intent === 'initial_generation'
     ? 'generation'
@@ -180,6 +63,12 @@ function rawGenerationInput(run, parentNode, recipe, { videoModel = false } = {}
     settings: clone(recipe.settings),
     recipe: {
       prompt: recipe.prompt,
+      ...(recipe.creativeIntent ? { creativeIntent: recipe.creativeIntent } : {}),
+      ...(recipe.constraints?.length ? { constraints: clone(recipe.constraints) } : {}),
+      ...(recipe.qualityPolicy ? { qualityPolicy: clone(recipe.qualityPolicy) } : {}),
+      ...(recipe.sourcePlanFingerprint ? { sourcePlanFingerprint: recipe.sourcePlanFingerprint } : {}),
+      ...(recipe.memoryBindings?.length ? { memoryBindings: clone(recipe.memoryBindings) } : {}),
+      ...(recipe.skillBindings?.length ? { skillBindings: clone(recipe.skillBindings) } : {}),
       references: recipe.references.map((reference, index) => ({
         name: reference.name,
         role: reference.role,
@@ -237,7 +126,7 @@ function workflowForBranch({ run, branch, parentNode, recipe, jobId, branchIndex
     position: { x: generateNode.position.x, y: generateNode.position.y - 172 },
     draggable: true,
     selected: false,
-    data: { kind: 'text', label: generationKind === 'refinement' ? '精修描述' : '生成描述', content: recipe.prompt },
+    data: { kind: 'text', label: generationKind === 'refinement' ? '精修描述' : '生成描述', content: recipe.promptForDisplay ?? recipe.prompt },
   }
   const resultNode = {
     id: resultNodeId,
@@ -295,6 +184,47 @@ function publicJobRecord(job, workflow) {
   }
 }
 
+/** 引用身份：快照存不了图片字节，只能存这几个标识，比对也只能按它们来。 */
+function referenceIdentity(reference) {
+  return `${reference?.nodeId ?? ''}|${reference?.assetId ?? ''}|${reference?.role ?? ''}`
+}
+
+/**
+ * 用确认时的编译快照执行这一支。
+ *
+ * 快照里没有图片字节（媒体不进快照），所以图片仍由 Resolve 从权威文档重新取；
+ * 创作语义（Prompt、设置、约束、质量策略、绑定与指纹）全部来自快照。
+ *
+ * 如果重新解析出的引用身份与快照不一致，就地阻断：继续执行等于用另一组素材去
+ * 顶替用户确认过的那一组，还挂着原来的指纹（ADR 0005 不变量四）。
+ */
+function recipeFromCompiledBranch(baseRecipe, compiledBranch) {
+  const resolved = (baseRecipe.references ?? []).map(referenceIdentity)
+  const confirmed = (compiledBranch.references ?? []).map(referenceIdentity)
+  if (resolved.length !== confirmed.length || resolved.some((value, index) => value !== confirmed[index])) {
+    throw new AgentToolRuntimeError(
+      'AGENT_PLAN_REFERENCE_DRIFT',
+      '确认时使用的参考素材已发生变化，请重新确认这次生成。',
+      409,
+    )
+  }
+  return {
+    ...baseRecipe,
+    prompt: compiledBranch.prompt,
+    promptForDisplay: baseRecipe.prompt,
+    batchCount: compiledBranch.batchCount ?? baseRecipe.batchCount,
+    settings: clone(compiledBranch.settings),
+    constraints: clone(compiledBranch.constraints ?? []),
+    creativeIntent: compiledBranch.taskIntent,
+    qualityPolicy: clone(compiledBranch.qualityPolicy),
+    sourcePlanFingerprint: compiledBranch.branchFingerprint,
+    planFingerprint: compiledBranch.planFingerprint,
+    branchFingerprint: compiledBranch.branchFingerprint,
+    ...(compiledBranch.memoryBindings?.length ? { memoryBindings: clone(compiledBranch.memoryBindings) } : {}),
+    ...(compiledBranch.skillBindings?.length ? { skillBindings: clone(compiledBranch.skillBindings) } : {}),
+  }
+}
+
 export function prepareAgentRunExecution({
   run, document, now = Date.now(), jobIdForBranch,
   models, maximumBatchCount, maximumReferenceBytes, submission = true,
@@ -302,55 +232,32 @@ export function prepareAgentRunExecution({
   if (!run || !document || typeof jobIdForBranch !== 'function') {
     throw new TypeError('Agent 服务端执行缺少可信上下文。')
   }
-  if (run.projectId !== document.id) {
-    throw new AgentToolRuntimeError('AGENT_PROJECT_MISMATCH', 'Agent Run 不属于当前画布。', 409)
-  }
-  const isInitialGeneration = run.plan?.intent === 'initial_generation'
-  const resolvedInitialReferences = isInitialGeneration ? initialGenerationReferences(run, document) : undefined
-  const parentNode = isInitialGeneration
-    ? (document.nodes ?? []).find((node) => node.id === resolvedInitialReferences[0].nodeId)
-    : (document.nodes ?? []).find((node) => node.id === run.plan?.selectedResultNodeId && node.type === 'result')
-  if (!parentNode) throw new AgentToolRuntimeError('AGENT_PARENT_NOT_FOUND', 'Agent 父结果节点已不存在。', 409)
-
+  // 引用解析与分支覆盖由 Resolve 阶段拥有（ADR 0005）：确认时编译快照和这里执行
+  // 必须得到同一份引用集，因此只有一份实现。
+  const resolved = resolveCreativePlan({ run, document, models })
+  const { parentNode } = resolved
   const nodesById = new Map((document.nodes ?? []).map((node) => [node.id, node]))
-  const normalizedModels = (models ?? []).map((model) => typeof model === 'string' ? { id: model, provider: 'openai', mediaKind: 'image' } : model)
-  const planModelIsVideo = normalizedModels.find((model) => model.id === run.plan?.settings?.model)?.mediaKind === 'video'
+  const normalizedModels = resolved.models
   const jobs = []
   const workflows = []
-  const catalogVideoModel = normalizedModels.find((model) => model.mediaKind === 'video')
   for (const [branchIndex, branch] of run.branches.entries()) {
     const jobId = jobIdForBranch(branch)
-    const recipe = recipeForRun(run, document, parentNode, branch, resolvedInitialReferences)
-    // 成套方案条目让分支异构：媒体类型、定稿 Prompt、数量与时长全部按条目覆盖统一计划。
-    const item = branch.item
-    if (item) {
-      recipe.prompt = item.prompt
-      recipe.batchCount = item.mediaKind === 'video' ? 1 : item.count
-      if (item.mediaKind === 'video') {
-        if (!catalogVideoModel) throw new AgentToolRuntimeError('AGENT_VIDEO_MODEL_MISSING', '方案包含视频条目，但当前没有可用的视频模型。', 409)
-        const aspectRatio = catalogVideoModel.aspectRatios?.includes(recipe.settings.aspectRatio)
-          ? recipe.settings.aspectRatio
-          : catalogVideoModel.aspectRatios?.[0] ?? recipe.settings.aspectRatio
-        recipe.settings = {
-          model: catalogVideoModel.id,
-          aspectRatio,
-          resolution: catalogVideoModel.resolutions?.[0] ?? recipe.settings.resolution,
-          duration: catalogVideoModel.durations?.includes(item.duration)
-            ? item.duration
-            : catalogVideoModel.defaultDuration ?? catalogVideoModel.durations?.[0] ?? 5,
-        }
-      }
-    }
-    const branchModelIsVideo = item
-      ? item.mediaKind === 'video'
-      : planModelIsVideo
-    if (branchModelIsVideo) {
-      // Agent 视频计划的语义是「以第一张图片为首帧生成一条视频」：多余参考会把
-      // Provider 的输入模式改成 first_last / reference，宁可裁掉；配方与提交输入保持一致。
-      recipe.references = recipe.references.slice(0, 1)
-      recipe.videoInputMode = 'first_frame'
-      recipe.batchCount = 1
-    }
+    const { recipe: baseRecipe, isVideo: branchModelIsVideo } = resolved.branches[branchIndex]
+    // 确认时已经编译过就直接用那份快照：重试与恢复不得重新编译，否则模型目录、
+    // Memory 或 Skill 改动会让历史 Run 漂移（ADR 0005 不变量三）。
+    const compiledBranch = compiledBranchFromRun(run, branch.id)
+    const recipe = compiledBranch
+      ? recipeFromCompiledBranch(baseRecipe, compiledBranch)
+      : compileAgentBranchRecipe({
+        // Resolve 已完成旁白清理与分支增量拼接；编译层只把这份可信画面描述
+        // 包装成执行契约，不能再次回读规划器的叙述性 plan.prompt。
+        plan: { ...run.plan, prompt: baseRecipe.prompt, settings: baseRecipe.settings },
+        baseRecipe,
+        branch,
+        models: normalizedModels,
+        memoryBindings: run.plan.memoryBindings,
+        skillBindings: run.plan.skillBindings,
+      })
     const rawInput = rawGenerationInput(run, parentNode, recipe, { videoModel: branchModelIsVideo })
     const validated = validateGenerationInput(rawInput, { models, maximumBatchCount, maximumReferenceBytes })
     const selectedModel = normalizedModels.find((model) => model.id === validated.settings.model)
@@ -362,6 +269,10 @@ export function prepareAgentRunExecution({
       idempotencyKey: `${run.id}:${branch.id}:attempt-${branch.attempt ?? 0}`,
       outputs: [], error: undefined, rawInput,
       agentRun: { runId: run.id, branchId: branch.id },
+      // 指纹提到任务顶层：Artifact 要能反查「这张图属于哪一次确认的哪一支」，
+      // 埋在 generationRecipe 里则每个读取方都得自己往下挖一层。
+      ...(recipe.planFingerprint ? { planFingerprint: recipe.planFingerprint } : {}),
+      ...(recipe.branchFingerprint ? { branchFingerprint: recipe.branchFingerprint } : {}),
     }
     const workflow = workflowForBranch({ run, branch, parentNode, recipe, jobId, branchIndex, now, submission, nodesById })
     job.generateNodeId = workflow.generateNodeId

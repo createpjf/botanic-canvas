@@ -1,4 +1,6 @@
+import { createHash } from 'node:crypto'
 import { AgentToolRuntimeError, createAgentToolRegistry } from './agentToolRuntime.mjs'
+import { createBotanicAgentOperationalActionDefinitions } from './botanicAgentOperationalTools.mjs'
 import { botanicCreativeBriefFieldIds } from './botanicCreativeBrief.mjs'
 import { botanicAgentVariationClarificationFieldIds } from './botanicAgentVariations.mjs'
 import { createBotanicAgentWebResearchTools } from './botanicAgentWebTools.mjs'
@@ -39,9 +41,38 @@ const skillCatalog = Object.freeze({
   },
 })
 
+const skillRiskOrder = ['read', 'write', 'costly', 'external']
+
+export function botanicAgentSkillRisk(skill) {
+  const capabilities = Array.isArray(skill?.capabilities) && skill.capabilities.length ? skill.capabilities : ['read']
+  return capabilities.reduce((risk, capability) => {
+    // 历史数据里的未知能力按最高风险处理，不能因迁移缺字段而静默放行。
+    const normalized = skillRiskOrder.includes(capability) ? capability : 'external'
+    const current = skillRiskOrder.indexOf(normalized)
+    return current > skillRiskOrder.indexOf(risk) ? normalized : risk
+  }, 'read')
+}
+
+/**
+ * 内置 Skill 的版本与内容摘要。内容随代码发布，因此版本固定为 1，摘要按内容算 ——
+ * Run 绑定里 version 与 contentHash 是必填（ADR 0006），内置 Skill 不能例外：
+ * 留一个「系统 Skill 免填」的口子等于允许出现无法重放的 Run。
+ */
+const builtInSkillVersion = 1
+
+function builtInSkillContentHash(instructions) {
+  return createHash('sha256').update(instructions).digest('base64url')
+}
+
 export function botanicAgentBuiltInSkill(skillId) {
   const skill = skillCatalog[skillId]
-  return skill ? { id: skillId, name: skill.label, instructions: skill.instructions } : undefined
+  return skill ? {
+    id: skillId,
+    name: skill.label,
+    instructions: skill.instructions,
+    version: builtInSkillVersion,
+    contentHash: builtInSkillContentHash(skill.instructions),
+  } : undefined
 }
 
 export function botanicAgentSystemSkills() {
@@ -58,7 +89,14 @@ function projectSkillEntries(projectSkills = []) {
     .filter((skill) => skill?.status === 'active' && typeof skill.id === 'string' && typeof skill.name === 'string' && typeof skill.instructions === 'string')
     .filter((skill) => !skillCatalog[skill.id])
     .slice(0, 30)
-    .map((skill) => [skill.id, { label: skill.name, instructions: skill.instructions, source: 'project' }])
+    .map((skill) => [skill.id, {
+      label: skill.name,
+      instructions: skill.instructions,
+      source: 'project',
+      ...(Number.isInteger(skill.version) ? { version: skill.version } : {}),
+      ...(typeof skill.contentHash === 'string' ? { contentHash: skill.contentHash } : {}),
+      capabilities: Array.isArray(skill.capabilities) ? skill.capabilities.slice(0, 12) : ['read'],
+    }])
 }
 
 /** 系统目录 + 当前项目已启用 Skill。同名 id 以系统目录为准，避免项目覆盖内置规则。 */
@@ -73,7 +111,12 @@ export function resolveBotanicAgentMountedSkills(mountedSkillIds = [], projectSk
     .map((skillId) => {
       const skill = available[skillId]
       return skill
-        ? { id: skillId, name: skill.label, instructions: skill.instructions, source: skill.source ?? 'system' }
+        ? {
+          id: skillId, name: skill.label, instructions: skill.instructions, source: skill.source ?? 'system',
+          ...(skill.version ? { version: skill.version } : {}),
+          ...(skill.contentHash ? { contentHash: skill.contentHash } : {}),
+          ...(skill.capabilities ? { capabilities: skill.capabilities } : {}),
+        }
         : undefined
     })
     .filter(Boolean)
@@ -329,6 +372,28 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
       },
       execute: async ({ skillId }, context) => {
         const skill = availableSkills[skillId]
+        const risk = botanicAgentSkillRisk(skill)
+        if (risk !== 'read') {
+          propose({
+            id: context?.toolCallId ?? `skill-${skillId}`,
+            kind: 'skill',
+            toolName: 'skill_apply',
+            label: `Skill · ${skill.label}`,
+            summary: `Skill「${skill.label}」声明了${risk}能力，需要确认后应用。`,
+            risk,
+            arguments: { skillId },
+            status: 'awaiting_confirmation',
+            requiresConfirmation: true,
+          })
+          return {
+            skillId,
+            name: skill.label,
+            source: skill.source ?? 'system',
+            capabilities: skill.capabilities ?? ['read'],
+            requiresConfirmation: true,
+            risk,
+          }
+        }
         propose({
           id: context?.toolCallId ?? `skill-${skillId}`,
           kind: 'skill',
@@ -339,7 +404,7 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
           arguments: { skillId },
           status: 'succeeded',
         })
-        return { skillId, ...skill }
+        return { skillId, ...skill, capabilities: skill.capabilities ?? ['read'] }
       },
     },
     {
@@ -462,12 +527,18 @@ export function createBotanicAgentActionToolRegistry({
   applySkill,
   createSkill,
   mcpTools = {},
+  // 运维写工具（Epic 4）：按项目角色暴露，全部需要确认。缺执行器或权限不足时
+  // 不进注册表 —— 模型看不到的工具不会被它拿去向用户承诺。
+  role,
+  ...operationalExecutors
 } = {}) {
   const workflowHandler = actionHandler(createWorkflow, '工作流创建工具')
   const generationHandler = actionHandler(submitGeneration, '生成提交工具')
   const applySkillHandler = actionHandler(applySkill, 'Skill 应用工具')
   const skillHandler = actionHandler(createSkill, 'Skill 创建工具')
+  const operationalActions = createBotanicAgentOperationalActionDefinitions({ role, ...operationalExecutors })
   return createAgentToolRegistry([
+    ...operationalActions,
     {
       name: 'workflow_create', label: '创建画布工作流',
       description: '在当前项目中创建新的文字、参考和生成节点，不覆盖已有节点。',

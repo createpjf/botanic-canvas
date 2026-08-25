@@ -62,7 +62,7 @@ test('Agent Run 创建请求只持久化计划元数据与独立分支', () => {
   assert.equal(run.branches[0].assetId, 'asset-scene-a')
 })
 
-test('首次生成允许没有父结果，但必须携带图片素材或图片结果上下文', () => {
+test('首次图片生成允许纯文字，视频仍要求图片首帧', () => {
   const input = validateAgentRunCreation({
     ...creation,
     plan: {
@@ -83,15 +83,28 @@ test('首次生成允许没有父结果，但必须携带图片素材或图片�
     { nodeId: 'asset-product-node', label: '商品图', kind: '素材', mediaKind: 'image', role: '商品' },
   ])
 
+  const direct = validateAgentRunCreation({
+    ...creation,
+    plan: {
+      ...creation.plan,
+      intent: 'initial_generation',
+      selectedResultNodeId: undefined,
+      constraints: [],
+      contextSnapshot: [],
+    },
+  })
+  assert.deepEqual(direct.plan.contextSnapshot, undefined)
+
   assert.throws(() => validateAgentRunCreation({
     ...creation,
     plan: {
       ...creation.plan,
       intent: 'initial_generation',
       selectedResultNodeId: undefined,
-      contextSnapshot: [{ nodeId: 'asset-video', label: '视频', kind: '素材', mediaKind: 'video' }],
+      settings: { ...creation.plan.settings, duration: 5 },
+      contextSnapshot: [],
     },
-  }), /图片素材或图片结果/)
+  }), /视频首次生成需要至少一个图片素材或图片结果作为首帧/)
 })
 
 test('生成 Job 状态驱动 Agent Run 分支与整体进度', () => {
@@ -394,4 +407,16 @@ test('成套方案随计划持久化，分支条目归一化（视频单条、�
     ...compositionCreation,
     plan: { ...compositionCreation.plan, composition: { theme: '只有一项', items: [{ title: 'a', mediaKind: 'image', prompt: 'x' }] } },
   }), /至少要有 2 个条目/)
+})
+
+test('确认来源 Turn 随 Run 持久化，缺省表示没有回合确认过它', () => {
+  const linked = createPersistentAgentRun(
+    validateAgentRunCreation({ ...creation, turnId: 'turn_abc' }),
+    { id: 'run-linked', ownerId: 'user-1', now: 100 },
+  )
+  assert.equal(linked.turnId, 'turn_abc')
+  // 本地回退路径没有服务端回合：字段缺失是「没有回合」，不是丢了来源。
+  const local = createPersistentAgentRun(validateAgentRunCreation(creation), { id: 'run-local', ownerId: 'user-1', now: 100 })
+  assert.equal('turnId' in local, false)
+  assert.throws(() => validateAgentRunCreation({ ...creation, turnId: '   ' }), /确认来源 Turn/u)
 })

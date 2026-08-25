@@ -1,4 +1,5 @@
 import { generationTimeoutForModel } from './generationModels.mjs'
+import { cancelGenerationJob } from './generationCancellation.mjs'
 import { persistedGenerationJob, publicGenerationJob } from './generationProvider.mjs'
 import { reconcileGenerationResults } from './generationResultReconciliation.mjs'
 import { requireProjectPermission } from './projectAuthorization.mjs'
@@ -11,6 +12,7 @@ export function createGenerationRouteHandler({
   config,
   productStore,
   redisQueue,
+  publishCancel,
   json,
   error,
   readJson,
@@ -109,13 +111,17 @@ export function createGenerationRouteHandler({
       const jobId = decodeURIComponent(jobMatch[1])
       const job = await productStore.readGenerationJob(user.id, jobId)
       if (!job) return error(response, 404, 'JOB_NOT_FOUND', '未找到该真实生成任务。')
-      if (job.status === 'queued' || job.status === 'running') {
-        const cancelled = { ...job, status: 'cancelled', error: undefined, updatedAt: Date.now() }
-        await productStore.putGenerationJob(user.id, persistedGenerationJob(cancelled))
-        await redisQueue?.cancel(jobId)
-        return json(response, 200, publicGenerationJob(cancelled, { includeIdempotencyKey: cancelled.ownerId === user.id }))
-      }
-      return json(response, 200, publicGenerationJob(job, { includeIdempotencyKey: job.ownerId === user.id }))
+      // 取消的四个动作（判定、落库、出队、广播）都在这个共享实现里，
+      // 重复取消也会拿到与第一次相同的判定。
+      const result = await cancelGenerationJob({
+        productStore, redisQueue, publishCancel,
+        modelOptions: config.modelOptions ?? [],
+        ownerId: user.id, job, reason: 'user', requestedBy: user.id,
+      })
+      return json(response, 200, {
+        ...publicGenerationJob(result.job, { includeIdempotencyKey: result.job.ownerId === user.id }),
+        cancelOutcome: result.outcome,
+      })
     }
 
     return false

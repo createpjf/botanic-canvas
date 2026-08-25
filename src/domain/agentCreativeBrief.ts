@@ -82,6 +82,8 @@ export type BotanicAgentResolvedGeneration = {
   /** 回合模型结构化声明的变体，追问回程时随生成结论一起带回，不重新解析。 */
   variants?: Array<{ label: string; promptDelta: string }>
   variationAxisLabel?: string
+  /** 得出这个结论的服务端回合。追问回程不再发起新回合，来源身份只能靠它带过去。 */
+  turnId?: string
 }
 
 export type BotanicAgentClarification = {

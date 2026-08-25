@@ -69,13 +69,36 @@ function requestedSingleOutputCount(outputCount: number | undefined) {
   return Math.max(1, Math.min(BOTANIC_AGENT_MAX_SINGLE_OUTPUT, Math.floor(outputCount)))
 }
 
+function confirmedProjectMemory(memory: BotanicAgentMemoryItem[] | undefined) {
+  return (memory ?? []).filter((item) => item.confidence !== 'provisional')
+}
+
+/**
+ * 规划请求与计划绑定必须取**同一份**清单。
+ *
+ * 绑定记录的是「这次规划实际读到了什么」，也进计划指纹；两边各写一套上限或去重，
+ * 绑定就会漏记真正影响了计划的条目 —— 之前请求发 30 条记忆 / 16 个 Skill，绑定
+ * 只记 12 条，多出来的部分影响了计划却查不到。
+ */
+const plannerMemoryLimit = 30
+const plannerSkillLimit = 16
+
+function plannerProjectMemory(memory: BotanicAgentMemoryItem[] | undefined) {
+  return confirmedProjectMemory(memory).slice(0, plannerMemoryLimit)
+}
+
+function plannerMountedSkillIds(ids: string[] | undefined) {
+  return [...new Set(ids ?? [])].slice(0, plannerSkillLimit)
+}
+
 export function buildBotanicAgentPlanRequest(input: BotanicAgentPlanRequestInput): BotanicAgentPlanRequest {
   const outputCount = requestedSingleOutputCount(input.outputCount)
+  const projectMemory = plannerProjectMemory(input.projectMemory)
   return {
     projectId: input.projectId,
     locale: input.locale,
     ...(input.plannerModel ? { plannerModel: input.plannerModel } : {}),
-    ...(input.mountedSkillIds?.length ? { mountedSkillIds: [...new Set(input.mountedSkillIds)].slice(0, 16) } : {}),
+    ...(input.mountedSkillIds?.length ? { mountedSkillIds: plannerMountedSkillIds(input.mountedSkillIds) } : {}),
     instruction: input.instruction.trim(),
     ...(input.sourceInstruction?.trim() ? { sourceInstruction: input.sourceInstruction.trim() } : {}),
     ...(input.structuredVariants?.length
@@ -114,8 +137,8 @@ export function buildBotanicAgentPlanRequest(input: BotanicAgentPlanRequestInput
         assetCount: group.assetIds.length,
       })),
     } : {}),
-    ...(input.projectMemory?.length ? {
-      projectMemory: input.projectMemory.slice(0, 30).map((memory) => ({
+    ...(projectMemory.length ? {
+      projectMemory: projectMemory.map((memory) => ({
         id: memory.id,
         kind: memory.kind,
         content: memory.content,
@@ -144,6 +167,7 @@ export function completeBotanicAgentPlan(
   draft: BotanicAgentPlanDraft,
   input: BotanicAgentPlanRequestInput,
 ): BotanicAgentPlan {
+  const projectMemory = plannerProjectMemory(input.projectMemory)
   const resolvedAssetGroup = input.assetGroup
     ?? input.availableAssetGroups?.find((group) => group.id === draft.assetGroupId)
   const settings = { ...input.rootRecipe.settings, ...input.generationOverrides }
@@ -158,6 +182,17 @@ export function completeBotanicAgentPlan(
     title: summarizeBotanicAgentNodeTitle(draft),
     ...(input.creativeBrief ? { creativeBrief: structuredClone(input.creativeBrief) } : {}),
     ...(input.contextSnapshot?.length ? { contextSnapshot: input.contextSnapshot } : {}),
+    ...(projectMemory.length ? {
+      memoryBindings: projectMemory.map((memory) => ({
+        id: memory.id,
+        ...(memory.version ? { version: memory.version } : {}),
+        ...(memory.contentHash ? { contentHash: memory.contentHash } : {}),
+        selectionReason: '规划阶段读取的项目记忆',
+      })),
+    } : {}),
+    ...(input.mountedSkillIds?.length ? {
+      skillBindings: plannerMountedSkillIds(input.mountedSkillIds).map((id) => ({ id, selectionReason: '本轮对话已挂载 Skill' })),
+    } : {}),
     settings,
     references: [
       { source: 'selected_result', id: input.selectedResultNodeId, label: input.selectedResultLabel },

@@ -7,6 +7,10 @@ import { createBotanicHttpServer } from './httpServer.mjs'
 
 loadLocalEnv()
 const config = runtimeConfig()
+// 灰度选择器写错会静默变成「该项目没开」，排查起来很费时；启动时一次性报出来。
+for (const { name, entry } of config.rolloutFlags?.invalidSelectors() ?? []) {
+  console.warn(`[rollout] ${name} 的选择器「${entry}」无法识别，已忽略；格式应为 project:<id> 或 user:<id>。`)
+}
 const runtime = await createProductRuntime(config)
 const redisQueue = createGenerationQueue(config.redisUrl)
 const agentRunEvents = createAgentRunEventPublisher(config.redisUrl)
