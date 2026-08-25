@@ -272,6 +272,7 @@ const handleProductionWorkflowRoute = createProductionWorkflowRouteHandler({
   redisQueue,
   publishProjectUpdated,
   publishCancel: (event) => agentRunEvents?.publishCancel?.(event),
+  mediaService,
   modelOptions: config.modelOptions ?? [],
 })
 
