@@ -118,6 +118,18 @@ function preflight() {
     )
   }
   if (!process.env.DATABASE_URL) problems.push('DATABASE_URL 未设置。')
+  // 没有对象存储时，生成的图会以 data: URL **整个塞进数据库的任务负载**
+  // （1.7MB 图 → base64 约 2.25MB → 写 jsonb）。本地原型跑几十 KB 的假图没问题，
+  // 真实生成一定会把这条写入撑爆或拖死 —— 而表现是「任务停在 running」，
+  // 看不出跟存储有关。这是这条冒烟绕了很久才定位到的根因，因此列为硬性前置。
+  const hasS3 = process.env.BOTANIC_STORAGE_PROVIDER === 's3' && process.env.S3_BUCKET && process.env.S3_ACCESS_KEY_ID
+  const hasSupabaseStorage = Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SECRET_KEY)
+  if (!hasS3 && !hasSupabaseStorage) {
+    problems.push(
+      '没有配置对象存储：生成的图会以 data: URL 整个写进数据库任务负载，真实尺寸的图会把写入拖死，'
+      + '表现是任务停在 running。跑 ./scripts/smokeLocalStack.sh up 起一个本地 MinIO，或配置 S3_* / SUPABASE_*。',
+    )
+  }
   if (!process.env.REDIS_URL) problems.push('REDIS_URL 未设置。本地可跑：redis-server --port 6399 --daemonize yes，然后 REDIS_URL=redis://127.0.0.1:6399')
   const hasOpenAI = Boolean(process.env.OPENAI_API_KEY)
   const hasMiniMax = Boolean(process.env.MINIMAX_API_KEY)
@@ -202,11 +214,13 @@ async function main() {
   process.stdout.write('==================\n')
   process.stdout.write(`模型：${model}${supportsMask ? '（gpt-image-2，支持蒙版）' : '（MiniMax，不支持蒙版）'}\n`)
   process.stdout.write('预计真实生成：3 张图（1 张单图 + 2 项批量）。\n')
-  process.stdout.write(`存储：${localStore ? '本地文件 Adapter（--local-store，不连数据库）' : 'PostgreSQL（DATABASE_URL）'}\n`)
+  process.stdout.write(`存储：PostgreSQL（DATABASE_URL）+ ${
+    process.env.BOTANIC_STORAGE_PROVIDER === 's3' ? `S3（${process.env.S3_ENDPOINT ?? '默认端点'}）` : 'Supabase Storage'
+  }\n`)
   process.stdout.write('\n覆盖：提交 → 队列 → Provider → 画布回写 → 实测规格 →\n')
   process.stdout.write('      工作流发布（来源校验）→ 批量业务标识 → Worker 侧推进 → 交付清单 → 打包接口。\n')
   // 覆盖范围要说全，包括**没覆盖**的部分。只列做到了什么，读的人会以为剩下的也验过了。
-  process.stdout.write('不覆盖：Agent 规划/确认链路、评审的视觉判定、局部重绘蒙版、真实对象存储。\n')
+  process.stdout.write('不覆盖：Agent 规划/确认链路、评审的视觉判定、局部重绘蒙版。\n')
   process.stdout.write('        这些要么需要额外配置，要么需要人工决定，不适合放进一条无人值守脚本。\n')
 
   if (problems.length) {
