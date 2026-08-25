@@ -43,6 +43,9 @@ function workflowInput(workflow, run, item, document) {
       workflowRunId: run.id,
       workflowItemId: item.id,
       sourceVersionId: item.input?.sourceVersionId,
+      // 版本发布时固定下来的计划指纹。批量项的结果要能归回**那一次发布**，
+      // 而不是各自按提交内容算一个互不相关的指纹（Epic 3B 验收）。
+      ...(definition.planFingerprint ? { planFingerprint: definition.planFingerprint } : {}),
     },
   }
 }

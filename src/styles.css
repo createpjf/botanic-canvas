@@ -4470,3 +4470,40 @@ details.agent-timeline__thinking { display: block; padding: 0; }
   .account-menu__actions > button:focus-visible,
   .account-dialog button:focus-visible { outline: 2px solid #285f38; outline-offset: 2px; }
 }
+
+/* 结果评审面板（Epic 5）。判定色只用于区分三种结论，`未验证` 刻意不用绿也不用红 ——
+   它既不是通过也不是失败，用任一种颜色都会误导。 */
+.agent-review-panel { display: grid; align-content: start; gap: 12px; }
+.agent-review-panel > header { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 12px; }
+.agent-review-panel > header small { color: #68816e; font-size: 9px; font-weight: 800; letter-spacing: .12em; }
+.agent-review-panel > header h2 { margin: 3px 0 0; color: #203d28; font-size: 21px; }
+.agent-review-panel > p { margin: 0; color: #76877a; font-size: 11px; line-height: 1.6; }
+.agent-review-panel__notice { margin: 0; padding: 8px 10px; border-radius: 8px; background: #eef5ef; color: #2a5238; font-size: 11px; }
+.agent-review-panel__task { display: grid; gap: 10px; padding: 10px; border: 1px solid #d4e1d5; border-radius: 10px; background: #fff; }
+.agent-review-panel__coverage { margin: 0; color: #28442f; font-size: 11px; font-weight: 600; }
+.agent-review-panel__status { margin: 0; color: #8a6a3a; font-size: 11px; }
+.agent-review-panel__candidate { display: grid; gap: 8px; padding: 9px; border: 1px solid #e3ece4; border-radius: 9px; background: #fbfcfa; }
+.agent-review-panel__candidate > header { display: flex; align-items: center; gap: 8px; }
+.agent-review-panel__candidate > header strong { color: #203d28; font-size: 12px; }
+.agent-review-panel__candidate > header small { color: #8a7a4a; font-size: 10px; }
+.agent-review-panel__verdict { padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 700; }
+.agent-review-panel__verdict.is-pass { background: #e4f2e6; color: #2a5238; }
+.agent-review-panel__verdict.is-fail { background: #f7e4e4; color: #8a3a3a; }
+.agent-review-panel__verdict.is-unverifiable { background: #eceef1; color: #5b6570; }
+.agent-review-panel__criteria { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.agent-review-panel__criteria li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: baseline; gap: 6px; }
+.agent-review-panel__criteria li p { grid-column: 1 / -1; margin: 0; color: #76877a; font-size: 11px; line-height: 1.5; }
+.agent-review-panel__criteria small { color: #68816e; font-size: 9px; font-weight: 800; letter-spacing: .08em; }
+.agent-review-panel__criteria span { color: #28442f; font-size: 11px; }
+.agent-review-panel__criteria em { font-style: normal; font-size: 10px; font-weight: 700; }
+.agent-review-panel__criteria li.is-pass em { color: #2a5238; }
+.agent-review-panel__criteria li.is-fail em { color: #8a3a3a; }
+.agent-review-panel__criteria li.is-unverifiable em { color: #5b6570; }
+.agent-review-panel__revision { margin: 0; padding: 7px 9px; border-radius: 8px; background: #fdf6e7; color: #6a5220; font-size: 11px; line-height: 1.5; }
+.agent-review-panel__revision small { display: block; color: #8a6a3a; font-size: 9px; font-weight: 800; letter-spacing: .08em; }
+.agent-review-panel__candidate > footer { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.agent-review-panel__candidate > footer small { color: #76877a; font-size: 10px; }
+.agent-review-panel__candidate > footer div { display: flex; gap: 6px; }
+.agent-review-panel__candidate > footer button { height: 26px; padding: 0 10px; border: 1px solid #d7e2d8; border-radius: 7px; background: #fff; color: #28442f; font-size: 11px; cursor: pointer; }
+.agent-review-panel__candidate > footer button.is-active { border-color: #2a5238; background: #2a5238; color: #fff; }
+.agent-review-panel__candidate > footer button:disabled { opacity: .5; cursor: default; }

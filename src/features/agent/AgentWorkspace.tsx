@@ -108,7 +108,7 @@ import {
 import { useAgentMessageDelivery } from './useAgentMessageDelivery'
 import { useAgentRuntimeTrace } from './useAgentRuntimeTrace'
 import type { AgentArtifactIndexState, AgentContextItem, AgentDockTarget, AgentSkillOption } from './agentWorkspace.types'
-import { AgentCollaborationPanel, AgentMemoryPanel, AgentResultPanel, AgentSkillCard } from './AgentUtilityPanels'
+import { AgentCollaborationPanel, AgentMemoryPanel, AgentResultPanel, AgentReviewPanel, AgentSkillCard } from './AgentUtilityPanels'
 import { useAgentSkillRegistry } from './useAgentSkillRegistry'
 import { agentEscapeDismissTarget, type AgentDismissTarget } from './agentWorkspaceNavigation'
 import { AgentConversationMessage } from './AgentConversationMessage'
@@ -143,7 +143,7 @@ import { useProductI18n, useProductMessages } from '../../i18n/react'
 import { localizeProductError, productIntlLocale, type ProductLocale } from '../../i18n/core'
 
 type AgentTransientSurface = 'context' | 'history' | 'utility' | 'mode'
-type AgentUtilityPanel = 'result' | 'task' | 'memory' | 'skill' | 'collaboration'
+type AgentUtilityPanel = 'result' | 'task' | 'memory' | 'skill' | 'collaboration' | 'review'
 type AgentRunInstructionOptions = AgentInstructionRetryOptions & {
   appendUser?: string
   mentions?: BotanicAgentMessageMention[]
@@ -336,12 +336,12 @@ export default function AgentWorkspace({
   const { locale } = useProductI18n()
   const copy = useProductMessages({
     'zh-CN': {
-      tools: 'Agent 工具', back: '返回对话', results: '结果与文件', tasks: 'Agent 任务', memory: '项目记忆', skills: '创作技能', collaboration: '协作动态', close: '关闭 Agent',
+      tools: 'Agent 工具', back: '返回对话', results: '结果与文件', tasks: 'Agent 任务', review: '结果评审', memory: '项目记忆', skills: '创作技能', collaboration: '协作动态', close: '关闭 Agent',
       welcome: '今天一起创作什么？', welcomeTarget: (name: string) => `继续优化「${name}」`, welcomeBody: '可以日常对话、生成 Prompt、检索项目，也可以直接描述生图目标。', welcomeTargetBody: '保留当前画面与原始配方，仅调整你刚提出的内容。',
       sources: '来源', unavailable: 'Agent 暂时无法回答，请稍后重试。', unsupportedVideo: 'Agent 对话暂未接入视频执行链。请先在画布添加「视频生成」节点；本次没有创建节点或任务。', clarifyAction: '请明确是只需要建议，还是要我直接生成；本次没有改动画布。',
     },
     en: {
-      tools: 'Agent tools', back: 'Back to conversation', results: 'Results & files', tasks: 'Agent tasks', memory: 'Project memory', skills: 'Creative skills', collaboration: 'Collaboration', close: 'Close Agent',
+      tools: 'Agent tools', back: 'Back to conversation', results: 'Results & files', tasks: 'Agent tasks', review: 'Result review', memory: 'Project memory', skills: 'Creative skills', collaboration: 'Collaboration', close: 'Close Agent',
       welcome: 'What shall we create today?', welcomeTarget: (name: string) => `Continue refining “${name}”`, welcomeBody: 'Chat, create prompts, search this project, or describe the image you want to make.', welcomeTargetBody: 'Keep the current visual and original recipe, and change only what you just requested.',
       sources: 'Sources', unavailable: 'Agent is temporarily unavailable. Try again shortly.', unsupportedVideo: 'Video execution is not available in Agent chat yet. Add a Video Generation node on the canvas; no node or task was created.', clarifyAction: 'Please clarify whether you only want advice or want me to generate it. The canvas was not changed.',
     },
@@ -445,6 +445,7 @@ export default function AgentWorkspace({
   const taskPanelOpen = activeUtilityPanel === 'task'
   const resultPanelOpen = activeUtilityPanel === 'result'
   const memoryPanelOpen = activeUtilityPanel === 'memory'
+  const reviewPanelOpen = activeUtilityPanel === 'review'
   const collaborationPanelOpen = activeUtilityPanel === 'collaboration'
   const [reviewDecisionPendingId, setReviewDecisionPendingId] = useState('')
   const [renamingSession, setRenamingSession] = useState(false)
@@ -604,7 +605,7 @@ export default function AgentWorkspace({
       ...(item.image ? { image: item.image } : {}),
     })),
   }), [contextOptions, skills, systemSkills])
-  const utilityPanelOpen = taskPanelOpen || skillPanelOpen || resultPanelOpen || memoryPanelOpen || collaborationPanelOpen
+  const utilityPanelOpen = taskPanelOpen || skillPanelOpen || resultPanelOpen || memoryPanelOpen || collaborationPanelOpen || reviewPanelOpen
   const {
     runtimeSteps,
     runtimePhase,
@@ -2429,6 +2430,7 @@ export default function AgentWorkspace({
               {utilityPanelOpen ? <button type="button" role="menuitem" onClick={closeUtilityPanel}><ChevronLeftIcon /><span>{copy.back}</span></button> : null}
               <button type="button" role="menuitem" className={resultPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('result')}><GalleryIcon /><span>{copy.results}</span></button>
               <button type="button" role="menuitem" className={taskPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('task')}><ChecklistIcon /><span>{copy.tasks}</span></button>
+              {latestRun?.id ? <button type="button" role="menuitem" className={reviewPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('review')}><ChecklistIcon /><span>{copy.review}</span></button> : null}
               <button type="button" role="menuitem" className={memoryPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('memory')}><BookmarkIcon /><span>{copy.memory}</span></button>
               <button type="button" role="menuitem" className={skillPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('skill')}><SparkleIcon /><span>{copy.skills}</span></button>
               <button type="button" role="menuitem" className={collaborationPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('collaboration')}><ChecklistIcon /><span>{copy.collaboration}</span>{collaborationAwareness.unreadActivityCount ? <b>{Math.min(collaborationAwareness.unreadActivityCount, 99)}</b> : null}</button>
@@ -2509,6 +2511,10 @@ export default function AgentWorkspace({
           historyErrorAction={collaborationAwareness.historyErrorAction}
           onLoadMore={onLoadMoreCollaborationActivities}
           onReload={onReloadCollaborationActivities}
+          onBackToConversation={closeUtilityPanel}
+        /></div> : null}
+        {reviewPanelOpen && latestRun?.id ? <div data-agent-flip className="agent-workspace__flip-surface"><AgentReviewPanel
+          runId={latestRun.id}
           onBackToConversation={closeUtilityPanel}
         /></div> : null}
         {memoryPanelOpen ? <div data-agent-flip className="agent-workspace__flip-surface"><AgentMemoryPanel

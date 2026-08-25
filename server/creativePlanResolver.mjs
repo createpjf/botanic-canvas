@@ -327,7 +327,7 @@ export function compiledBranchFromRun(run, branchId) {
  * 有意不给这条路径写 `qualityPolicy` 与 `constraints`：它们是 Agent 计划的语义，
  * 替一次手工生成凭空声明一份质量策略，等于宣称用户选过它。
  */
-export function compileSubmissionCreativePlan({ input, models = [], locale = 'zh-CN' }) {
+export function compileSubmissionCreativePlan({ input, models = [], locale = 'zh-CN', productionWorkflow }) {
   if (!input || typeof input !== 'object') throw new TypeError('提交编译缺少已校验输入。')
   const baseRecipe = {
     prompt: input.prompt,
@@ -345,13 +345,23 @@ export function compileSubmissionCreativePlan({ input, models = [], locale = 'zh
     constraints: input.recipe?.constraints,
     output: { mode: 'single', count: input.batchCount, candidatesPerItem: 1 },
   }
+  // 工作流提交的 plan 级指纹来自**版本发布时固定的那一个**，不按本次提交内容重算：
+  // 同一次发布展开的所有批量项必须能归回那一次发布，否则「结果与原 Compiled Plan
+  // 指纹一致」无从验证（Epic 3B 验收）。分支身份取批量项标识，因此各项仍可区分。
+  const pinnedPlanFingerprint = typeof productionWorkflow?.planFingerprint === 'string'
+    ? productionWorkflow.planFingerprint
+    : undefined
   const { compiled } = compileCreativePlan({
     plan,
     baseRecipe,
+    ...(productionWorkflow?.workflowItemId
+      ? { branch: { id: productionWorkflow.workflowItemId, label: productionWorkflow.workflowItemId } }
+      : {}),
     models: normalizeResolverModels(models),
     memoryBindings: input.recipe?.memoryBindings,
     skillBindings: input.recipe?.skillBindings,
     locale,
+    ...(pinnedPlanFingerprint ? { planFingerprint: pinnedPlanFingerprint } : {}),
   })
   return {
     planFingerprint: compiled.planFingerprint,

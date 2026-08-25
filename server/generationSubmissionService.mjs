@@ -67,7 +67,12 @@ export function createGenerationSubmissionService({ config, productStore, securi
 
     // 三个提交入口共用同一对 Resolve / Compile：这里补上 HTTP 与工作流的编译，
     // 让每个 Job 都带指纹，Artifact 才能一律反查到所属计划。
-    const compiled = compileSubmissionCreativePlan({ input, models: config.modelOptions ?? [] })
+    const compiled = compileSubmissionCreativePlan({
+      input,
+      models: config.modelOptions ?? [],
+      // 工作流提交沿用版本发布时固定的计划指纹，不按本次提交内容重算。
+      productionWorkflow: rawInput?.productionWorkflow,
+    })
     const timestamp = Date.now()
     const usage = buildGenerationUsage(input, {
       jobId: id,

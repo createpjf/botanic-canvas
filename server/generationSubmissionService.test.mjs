@@ -109,3 +109,28 @@ test('画布提交不带创作约束时，编译不改写用户的 Prompt', asyn
   assert.equal(submitted.job.rawInput.recipe.qualityPolicy, undefined)
   assert.equal(submitted.job.rawInput.recipe.constraints, undefined)
 })
+
+test('工作流提交沿用版本发布时固定的计划指纹，各项仍可区分', async () => {
+  // 「纯文字 Run 可发布、执行并生成与原 Compiled Plan 指纹一致的结果」靠这条成立：
+  // 各项按本次提交内容各算一个指纹的话，结果就归不回那一次发布。
+  const workflowInput = (itemId) => ({
+    ...rawInput,
+    productionWorkflow: {
+      workflowId: 'wf-1', workflowVersion: 2, workflowRunId: 'wf-run-1',
+      workflowItemId: itemId, planFingerprint: 'published-plan-fp',
+    },
+  })
+  const first = await harness().service({ user: { id: 'user-a' }, rawInput: workflowInput('SKU-1'), idempotencyKey: 'workflow_run-a_sku-1' })
+  const second = await harness().service({ user: { id: 'user-a' }, rawInput: workflowInput('SKU-2'), idempotencyKey: 'workflow_run-a_sku-2' })
+
+  assert.equal(first.job.planFingerprint, 'published-plan-fp')
+  assert.equal(second.job.planFingerprint, 'published-plan-fp')
+  // 分支指纹按批量项身份派生，因此两项互不相同但都归回同一次发布。
+  assert.notEqual(first.job.branchFingerprint, second.job.branchFingerprint)
+})
+
+test('没有工作流来源的提交仍按提交内容算指纹', async () => {
+  const plain = await harness().service({ user: { id: 'user-a' }, rawInput, idempotencyKey: 'submission-plain-fingerprint' })
+  assert.ok(plain.job.planFingerprint)
+  assert.notEqual(plain.job.planFingerprint, 'published-plan-fp')
+})
