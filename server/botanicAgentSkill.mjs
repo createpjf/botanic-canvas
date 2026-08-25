@@ -1,6 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto'
 
+/**
+ * 能力词表，**顺序即风险高低**。风险语义归 Skill 模块所有，`botanicAgentTools`
+ * 从这里取 —— 两处各写一份顺序的话，某天新增一档就会出现「工具侧算高风险、
+ * Skill 侧算低风险」，而低的那一侧决定要不要弹确认。
+ */
 export const botanicAgentSkillCapabilities = Object.freeze(['read', 'write', 'costly', 'external'])
+export const skillRiskOrder = botanicAgentSkillCapabilities
 const skillCapabilitySet = new Set(botanicAgentSkillCapabilities)
 
 /**
@@ -59,6 +65,147 @@ export function normalizeBotanicAgentSkillCapabilities(value) {
   return capabilities
 }
 
+/**
+ * Skill Manifest（Epic 6 遗留项，消费方由 Epic 11 提供）。
+ *
+ * 当初推迟它的理由是「先加字段只会得到一批写而不读的数据」。现在有了真实落点，
+ * 而且它补的是一个**已经存在的洞**：
+ *
+ * `capabilities` 一直是 Skill 的**自称**。`skill_run` 按它算风险 —— 声明 `['read']`
+ * 就直接应用、不需要用户确认。但没有任何东西约束这个声明：一个项目 Skill 可以一边
+ * 声明自己只读，一边在 instructions 里让 Agent 去做别的。
+ *
+ * `toolAllowlist` 把声明变成**可核对**的：风险取「自称」与「允许的工具实际是什么风险」
+ * 两者的**较高者**，因此少报能力不再能换来跳过确认。
+ *
+ * 有意不做 `inputSchema` / `outputSchema`：Skill 的产出是指令文本，不是结构化输出，
+ * 到今天仍然没有消费方 —— 加了还是写而不读（已复核 `skill_run` / `skill_apply`）。
+ */
+export const botanicAgentSkillManifestVersion = 1
+
+const TOOL_NAME = /^[a-z][a-z0-9_]{1,63}$/
+
+/**
+ * 归一 Skill Manifest。
+ *
+ * @param {any} raw
+ */
+export function normalizeAgentSkillManifest(raw) {
+  if (raw === undefined || raw === null) return undefined
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new BotanicAgentSkillError(400, 'INVALID_AGENT_SKILL_MANIFEST', 'Skill Manifest 无效。')
+  }
+  const toolAllowlist = raw.toolAllowlist === undefined ? [] : raw.toolAllowlist
+  if (!Array.isArray(toolAllowlist) || toolAllowlist.length > 12) {
+    throw new BotanicAgentSkillError(400, 'INVALID_AGENT_SKILL_MANIFEST', 'Skill 工具白名单无效。')
+  }
+  const tools = [...new Set(toolAllowlist.map((name) => {
+    if (typeof name !== 'string' || !TOOL_NAME.test(name)) {
+      throw new BotanicAgentSkillError(400, 'INVALID_AGENT_SKILL_MANIFEST', `Skill 工具名「${String(name)}」无效。`)
+    }
+    return name
+  }))]
+  const dependencies = raw.dependencies === undefined ? [] : raw.dependencies
+  if (!Array.isArray(dependencies) || dependencies.length > 8) {
+    throw new BotanicAgentSkillError(400, 'INVALID_AGENT_SKILL_MANIFEST', 'Skill 依赖声明无效。')
+  }
+  return {
+    version: botanicAgentSkillManifestVersion,
+    toolAllowlist: tools,
+    dependencies: dependencies.map((dependency) => {
+      const skillId = text(dependency?.skillId, 'Skill 依赖标识', 160)
+      const version = dependency?.version === undefined ? undefined : Number(dependency.version)
+      if (version !== undefined && (!Number.isInteger(version) || version < 1)) {
+        throw new BotanicAgentSkillError(400, 'INVALID_AGENT_SKILL_MANIFEST', `Skill 依赖「${skillId}」的版本无效。`)
+      }
+      return { skillId, ...(version === undefined ? {} : { version }) }
+    }),
+  }
+}
+
+/**
+ * 白名单里的工具实际是什么风险。
+ *
+ * **查不到的工具按最高风险处理**，与既有的「未知能力按最高风险」同一判断：
+ * 一个不在当前注册表里的工具名，可能是拼错，也可能是别处的写工具 —— 两种情况都不该
+ * 因为「这里查不到」而被当成只读放行。
+ *
+ * @param {any} manifest
+ * @param {(name: string) => (string | undefined)} riskOf
+ */
+export function agentSkillManifestRisk(manifest, riskOf) {
+  const tools = Array.isArray(manifest?.toolAllowlist) ? manifest.toolAllowlist : []
+  if (!tools.length) return 'read'
+  return tools.reduce((risk, name) => {
+    const declared = typeof riskOf === 'function' ? riskOf(name) : undefined
+    const normalized = skillRiskOrder.includes(declared) ? declared : 'external'
+    return skillRiskOrder.indexOf(normalized) > skillRiskOrder.indexOf(risk) ? normalized : risk
+  }, 'read')
+}
+
+/**
+ * 声明的能力必须**覆盖**白名单实际的风险。
+ *
+ * 少报直接拒绝，而不是悄悄按较高者执行：少报要么是写错了、要么是想绕过确认，
+ * 两种都该在发布时被指出来，而不是留到运行时靠取最大值兜底。
+ * （运行时仍然取最大值兜底 —— 存量 Skill 没有 Manifest，那条路径必须继续安全。）
+ *
+ * @param {{ capabilities?: string[], manifest?: any }} skill
+ * @param {(name: string) => (string | undefined)} riskOf
+ */
+export function assertAgentSkillManifestConsistent(skill, riskOf) {
+  const manifest = skill?.manifest
+  if (!manifest?.toolAllowlist?.length) return
+  const declared = normalizeBotanicAgentSkillCapabilities(skill?.capabilities)
+  const declaredRisk = declared.reduce((risk, capability) => (
+    skillRiskOrder.indexOf(capability) > skillRiskOrder.indexOf(risk) ? capability : risk
+  ), 'read')
+  const actual = agentSkillManifestRisk(manifest, riskOf)
+  if (skillRiskOrder.indexOf(actual) > skillRiskOrder.indexOf(declaredRisk)) {
+    throw new BotanicAgentSkillError(
+      409,
+      'AGENT_SKILL_CAPABILITY_UNDERSTATED',
+      `Skill 声明了「${declaredRisk}」能力，但它允许的工具实际需要「${actual}」；请修正能力声明或收窄工具白名单。`,
+    )
+  }
+}
+
+/**
+ * 解析 Skill 依赖，找出**不可用**的那些。
+ *
+ * 依赖一个已弃用或不存在的 Skill，本身就说明这条 Skill 的规则已经不完整了。
+ * 静默照跑会得到一份少了半截约束的执行 —— 而用户以为整套规则都在生效。
+ *
+ * 自依赖与环也在这里挡住：环会让「解析依赖」变成无限递归。
+ *
+ * @param {any} skill
+ * @param {any[]} catalog
+ */
+export function resolveAgentSkillDependencies(skill, catalog = []) {
+  const byId = new Map((catalog ?? []).filter((entry) => entry?.id).map((entry) => [entry.id, entry]))
+  const missing = []
+  const unusable = []
+  const cyclic = []
+  const seen = new Set([skill?.id])
+  const queue = [...(skill?.manifest?.dependencies ?? [])]
+  while (queue.length) {
+    const dependency = queue.shift()
+    if (dependency.skillId === skill?.id) { cyclic.push(dependency.skillId); continue }
+    if (seen.has(dependency.skillId)) { cyclic.push(dependency.skillId); continue }
+    seen.add(dependency.skillId)
+    const target = byId.get(dependency.skillId)
+    if (!target) { missing.push(dependency.skillId); continue }
+    if (!isUsableAgentSkill(target)) { unusable.push(dependency.skillId); continue }
+    // 声明了版本却取不到那个版本，等同依赖缺失：按「当前版本」顶替会让规则悄悄变了。
+    if (dependency.version !== undefined && !agentSkillVersion(target, dependency.version)) {
+      missing.push(`${dependency.skillId}@${dependency.version}`)
+      continue
+    }
+    queue.push(...(target.manifest?.dependencies ?? []))
+  }
+  return { ok: !missing.length && !unusable.length && !cyclic.length, missing, unusable, cyclic }
+}
+
 export function validateAgentSkillCreation(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     throw new BotanicAgentSkillError(400, 'INVALID_AGENT_SKILL', 'Skill 请求无效。')
@@ -73,7 +220,8 @@ export function validateAgentSkillCreation(body) {
     throw new BotanicAgentSkillError(400, 'AGENT_SKILL_EXTERNAL_URL_FORBIDDEN', 'Skill 规则不能直接包含外部地址。')
   }
   const capabilities = normalizeBotanicAgentSkillCapabilities(body.capabilities)
-  return { projectId, name, instructions, capabilities }
+  const manifest = normalizeAgentSkillManifest(body.manifest)
+  return { projectId, name, instructions, capabilities, ...(manifest ? { manifest } : {}) }
 }
 
 /**
@@ -87,9 +235,13 @@ export function createAgentSkill(input, {
   id = `agent_skill_${randomUUID()}`,
   ownerId,
   approvedBy,
+  riskOf,
   now = Date.now(),
 } = {}) {
   if (!ownerId) throw new TypeError('项目 Skill 缺少所有者。')
+  const manifest = normalizeAgentSkillManifest(input.manifest)
+  // 少报能力在**发布时**就指出来，不留到运行时靠取最大值兜底。
+  assertAgentSkillManifestConsistent({ capabilities: input.capabilities, manifest }, riskOf)
   const contentHash = createHash('sha256').update(input.instructions).digest('base64url')
   const lifecycle = approvedBy ? 'published' : 'draft'
   return {
@@ -105,6 +257,7 @@ export function createAgentSkill(input, {
     version: 1,
     contentHash,
     capabilities: normalizeBotanicAgentSkillCapabilities(input.capabilities),
+    ...(manifest ? { manifest } : {}),
     ...(approvedBy ? { governance: 'project-approved', publishedBy: approvedBy, publishedAt: now } : {}),
     versions: [{
       version: 1, contentHash, instructions: input.instructions, updatedAt: now,
@@ -119,9 +272,16 @@ export function createAgentSkill(input, {
  * 已发布版本原位可改的话，持有 `version: N` 的历史 Run 会突然按新内容执行，
  * 「历史 Run 仍引用旧版本」就是一句无法验证的声明（ADR 0006）。
  */
-export function updateAgentSkill(existing, input, { actorId, approvedBy, now = Date.now() } = {}) {
+export function updateAgentSkill(existing, input, { actorId, approvedBy, riskOf, now = Date.now() } = {}) {
   if (!existing?.id) throw new TypeError('Skill 更新缺少原始记录。')
   if (!actorId) throw new TypeError('Skill 更新缺少操作者。')
+  const manifest = input?.manifest === undefined
+    ? normalizeAgentSkillManifest(existing.manifest)
+    : normalizeAgentSkillManifest(input.manifest)
+  assertAgentSkillManifestConsistent({
+    capabilities: input?.capabilities === undefined ? existing.capabilities : input.capabilities,
+    manifest,
+  }, riskOf)
   const instructions = text(input?.instructions ?? existing.instructions, 'Skill 规则', 4000)
   const contentHash = createHash('sha256').update(instructions).digest('base64url')
   const versions = Array.isArray(existing.versions) ? [...existing.versions] : []
@@ -134,6 +294,7 @@ export function updateAgentSkill(existing, input, { actorId, approvedBy, now = D
     capabilities: input?.capabilities === undefined
       ? normalizeBotanicAgentSkillCapabilities(existing.capabilities)
       : normalizeBotanicAgentSkillCapabilities(input.capabilities),
+    ...(manifest ? { manifest } : {}),
     lifecycle,
     status: statusForLifecycle(lifecycle),
     version,
@@ -192,6 +353,7 @@ export function publicAgentSkill(skill) {
     version: skill.version ?? 1,
     contentHash: skill.contentHash,
     capabilities: skill.capabilities ?? ['read'],
+    ...(skill.manifest ? { manifest: skill.manifest } : {}),
     // 治理状态只在真的批准过时才出现；缺省即「尚未批准」，不再默认成已批准。
     ...(skill.governance ? { governance: skill.governance } : {}),
     ...(skill.publishedBy ? { publishedBy: skill.publishedBy, publishedAt: skill.publishedAt } : {}),

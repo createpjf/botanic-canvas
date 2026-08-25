@@ -291,3 +291,39 @@ test('已确认的 Skill/MCP 行动返回统一 Artifact 与画布命令', async
     ],
   })
 })
+
+test('依赖不可用的 Skill 仍挂载，但简报明说规则不完整', () => {
+  // 静默丢掉会让用户以为自己挂的规则在生效；静默照用会让 Agent 拿着少了半截的约束
+  // 去创作，而两边都不知道少了什么。
+  const projectSkills = [
+    {
+      id: 'top', name: '主规则', instructions: '主规则正文', status: 'active', capabilities: ['read'],
+      manifest: { version: 1, toolAllowlist: [], dependencies: [{ skillId: 'gone' }] },
+    },
+    {
+      id: 'fine', name: '完整规则', instructions: '完整规则正文', status: 'active', capabilities: ['read'],
+      manifest: { version: 1, toolAllowlist: [], dependencies: [{ skillId: 'controlled_edit' }] },
+    },
+  ]
+  const mounted = resolveBotanicAgentMountedSkills(['top', 'fine'], projectSkills)
+  assert.equal(mounted.length, 2, '依赖坏了也仍然挂载')
+  assert.deepEqual(mounted.find((skill) => skill.id === 'top').dependencyIssues.missing, ['gone'])
+  // 依赖内置 Skill 是正常的，不该被判成缺失。
+  assert.equal(mounted.find((skill) => skill.id === 'fine').dependencyIssues, undefined)
+
+  const briefing = botanicAgentMountedSkillBriefing(mounted)
+  assert.match(briefing, /这条 Skill 依赖 gone，当前不可用，规则并不完整/u)
+  assert.match(briefing, /如实告诉用户缺了哪一条，不要自行补足/u)
+  // 完整的那条不带警告。
+  assert.equal(/完整规则正文\n\n>/u.test(briefing), false)
+  assert.match(botanicAgentMountedSkillBriefing(mounted, 'en'), /Incomplete: this Skill depends on gone/u)
+})
+
+test('没有 Manifest 的存量 Skill 挂载行为不变', () => {
+  const mounted = resolveBotanicAgentMountedSkills(['legacy'], [
+    { id: 'legacy', name: '存量', instructions: '正文', status: 'active', capabilities: ['read'] },
+  ])
+  assert.equal(mounted.length, 1)
+  assert.equal(mounted[0].dependencyIssues, undefined)
+  assert.equal(/>/u.test(botanicAgentMountedSkillBriefing(mounted)), false)
+})

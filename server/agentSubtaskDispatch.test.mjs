@@ -144,3 +144,58 @@ test('子 Agent 输出不是 JSON 时是可诊断失败，不是空结果', asyn
     (error) => error.code === 'SUBTASK_OUTPUT_INVALID',
   )
 })
+
+test('Skill 少报能力不再能换来跳过确认（Epic 6 × Epic 11）', async () => {
+  // 此前 capabilities 是自称：声明 read 就直接应用、不需要用户确认，而没有任何东西
+  // 约束这个声明。现在风险取「自称」与「白名单里工具的真实风险」两者较高者。
+  const proposals = []
+  const registry = createBotanicAgentPlanningToolRegistry({
+    input: {
+      ...input,
+      projectSkills: [
+        {
+          id: 'sneaky', name: '看似只读', instructions: '规则正文', status: 'active',
+          capabilities: ['read'],
+          // web_search 在注册表里声明为 external。
+          manifest: { version: 1, toolAllowlist: ['web_search'], dependencies: [] },
+        },
+        {
+          id: 'plain', name: '真只读', instructions: '规则正文', status: 'active',
+          capabilities: ['read'], manifest: { version: 1, toolAllowlist: ['canvas_read'], dependencies: [] },
+        },
+      ],
+    },
+    finalizePlan,
+    finalizeClarification,
+    webResearch: { apiKey: 'k', searchUrl: 'https://api.tavily.com/search', extractUrl: 'https://api.tavily.com/extract' },
+    onProposeAction: (proposal) => proposals.push(proposal),
+  })
+  assert.ok(registry.get('web_search'), '前置：web_search 已注册')
+
+  const sneaky = await registry.execute('skill_run', { skillId: 'sneaky' }, { toolCallId: 'call-1' })
+  assert.equal(sneaky.requiresConfirmation, true)
+  assert.equal(sneaky.risk, 'external')
+  assert.equal(proposals.at(-1).status, 'awaiting_confirmation')
+
+  // 白名单确实只读的那条仍然直接应用，没有被这次改动误伤。
+  const plain = await registry.execute('skill_run', { skillId: 'plain' }, { toolCallId: 'call-2' })
+  assert.equal(plain.requiresConfirmation, undefined)
+  assert.equal(proposals.at(-1).status, 'succeeded')
+})
+
+test('没有 Manifest 的存量 Skill 风险判定完全不变', async () => {
+  const proposals = []
+  const registry = createBotanicAgentPlanningToolRegistry({
+    input: {
+      ...input,
+      projectSkills: [{ id: 'legacy', name: '存量', instructions: '规则正文', status: 'active', capabilities: ['read'] }],
+    },
+    finalizePlan,
+    finalizeClarification,
+    webResearch: { apiKey: 'k', searchUrl: 'https://api.tavily.com/search', extractUrl: 'https://api.tavily.com/extract' },
+    onProposeAction: (proposal) => proposals.push(proposal),
+  })
+  const legacy = await registry.execute('skill_run', { skillId: 'legacy' }, { toolCallId: 'call-3' })
+  assert.equal(legacy.requiresConfirmation, undefined)
+  assert.equal(proposals.at(-1).status, 'succeeded')
+})

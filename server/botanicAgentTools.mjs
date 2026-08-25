@@ -4,6 +4,7 @@ import { createBotanicAgentOperationalActionDefinitions } from './botanicAgentOp
 import { botanicCreativeBriefFieldIds } from './botanicCreativeBrief.mjs'
 import { botanicAgentVariationClarificationFieldIds } from './botanicAgentVariations.mjs'
 import { createBotanicAgentWebResearchTools } from './botanicAgentWebTools.mjs'
+import { agentSkillManifestRisk, resolveAgentSkillDependencies, skillRiskOrder } from './botanicAgentSkill.mjs'
 import { createAgentSubtask } from './agentSubtask.mjs'
 import { runAgentSubtaskFanout, subtaskFanoutSummary } from './agentSubtaskScheduler.mjs'
 import { readFileSync } from 'node:fs'
@@ -43,16 +44,32 @@ const skillCatalog = Object.freeze({
   },
 })
 
-const skillRiskOrder = ['read', 'write', 'costly', 'external']
-
-export function botanicAgentSkillRisk(skill) {
+/**
+ * Skill 的实际风险。
+ *
+ * 取「自称的能力」与「Manifest 白名单里的工具实际是什么风险」两者的**较高者**。
+ *
+ * 只按自称算的话，`capabilities` 是一句没人核对的话：一个项目 Skill 声明 `['read']`
+ * 就会被直接应用、不需要用户确认（见下方 `skill_run`）。取较高者之后，少报能力
+ * 不再能换来跳过确认。
+ *
+ * `riskOf` 由调用方从当前工具注册表提供；不给时退化为只按自称算 —— 那正是存量
+ * Skill（没有 Manifest）今天的行为，不能因为这次改动而变得更宽松或更严格。
+ *
+ * @param {any} skill
+ * @param {(name: string) => (string | undefined)} [riskOf]
+ */
+export function botanicAgentSkillRisk(skill, riskOf) {
   const capabilities = Array.isArray(skill?.capabilities) && skill.capabilities.length ? skill.capabilities : ['read']
-  return capabilities.reduce((risk, capability) => {
+  const declared = capabilities.reduce((risk, capability) => {
     // 历史数据里的未知能力按最高风险处理，不能因迁移缺字段而静默放行。
     const normalized = skillRiskOrder.includes(capability) ? capability : 'external'
     const current = skillRiskOrder.indexOf(normalized)
     return current > skillRiskOrder.indexOf(risk) ? normalized : risk
   }, 'read')
+  if (!skill?.manifest?.toolAllowlist?.length) return declared
+  const actual = agentSkillManifestRisk(skill.manifest, riskOf)
+  return skillRiskOrder.indexOf(actual) > skillRiskOrder.indexOf(declared) ? actual : declared
 }
 
 /**
@@ -98,6 +115,8 @@ function projectSkillEntries(projectSkills = []) {
       ...(Number.isInteger(skill.version) ? { version: skill.version } : {}),
       ...(typeof skill.contentHash === 'string' ? { contentHash: skill.contentHash } : {}),
       capabilities: Array.isArray(skill.capabilities) ? skill.capabilities.slice(0, 12) : ['read'],
+      // Manifest 要跟着进目录：`skill_run` 算风险时读它，不带过来就等于没有 Manifest。
+      ...(skill.manifest ? { manifest: skill.manifest } : {}),
     }])
 }
 
@@ -106,20 +125,35 @@ export function resolveBotanicAgentAvailableSkills(projectSkills = []) {
   return { ...skillCatalog, ...Object.fromEntries(projectSkillEntries(projectSkills)) }
 }
 
-/** Composer 挂载的 Skill：解析成带正文的列表，未知 id 直接丢掉。 */
+/**
+ * Composer 挂载的 Skill：解析成带正文的列表，未知 id 直接丢掉。
+ *
+ * 依赖不可用的 Skill **仍然挂载，但带上 `dependencyIssues`**（Epic 6 Manifest 的依赖项）。
+ * 两种更简单的做法都不对：静默丢掉会让用户以为自己挂的规则在生效；静默照用会让
+ * Agent 拿着少了半截的约束去创作，而两边都不知道少了什么。带标记挂载之后，
+ * 简报会明说哪一条依赖不可用（见 `botanicAgentMountedSkillBriefing`）。
+ */
 export function resolveBotanicAgentMountedSkills(mountedSkillIds = [], projectSkills = []) {
   const available = resolveBotanicAgentAvailableSkills(projectSkills)
+  // `resolveAgentSkillDependencies` 按 id 查目录，因此这里摊成带 id 的数组。
+  // 内置 Skill 没有 lifecycle，按已发布处理 —— 它们随代码发布，不存在「未批准」。
+  const catalog = Object.entries(available).map(([id, skill]) => ({
+    id, lifecycle: skill.source === 'project' ? undefined : 'published',
+    status: 'active', manifest: skill.manifest, versions: skill.version ? [{ version: skill.version }] : [],
+  }))
   return [...new Set(Array.isArray(mountedSkillIds) ? mountedSkillIds : [])]
     .map((skillId) => {
       const skill = available[skillId]
-      return skill
-        ? {
-          id: skillId, name: skill.label, instructions: skill.instructions, source: skill.source ?? 'system',
-          ...(skill.version ? { version: skill.version } : {}),
-          ...(skill.contentHash ? { contentHash: skill.contentHash } : {}),
-          ...(skill.capabilities ? { capabilities: skill.capabilities } : {}),
-        }
-        : undefined
+      if (!skill) return undefined
+      const dependencies = resolveAgentSkillDependencies({ id: skillId, manifest: skill.manifest }, catalog)
+      return {
+        id: skillId, name: skill.label, instructions: skill.instructions, source: skill.source ?? 'system',
+        ...(skill.version ? { version: skill.version } : {}),
+        ...(skill.contentHash ? { contentHash: skill.contentHash } : {}),
+        ...(skill.capabilities ? { capabilities: skill.capabilities } : {}),
+        ...(skill.manifest ? { manifest: skill.manifest } : {}),
+        ...(dependencies.ok ? {} : { dependencyIssues: dependencies }),
+      }
     })
     .filter(Boolean)
     .slice(0, 8)
@@ -149,7 +183,19 @@ export function botanicAgentMountedSkillBriefing(mountedSkills = [], locale = 'z
   const blocks = mountedSkills.map((skill) => {
     const name = typeof skill.name === 'string' ? skill.name.trim() : skill.id
     const body = typeof skill.instructions === 'string' ? skill.instructions.trim().slice(0, 2000) : ''
-    return `### ${name} (${skill.id})\n${body}`
+    // 依赖不可用要**明说**：不说的话 Agent 会拿着少了半截的约束照常创作，
+    // 而用户以为整套规则都在生效。
+    const broken = [
+      ...(skill.dependencyIssues?.missing ?? []),
+      ...(skill.dependencyIssues?.unusable ?? []),
+      ...(skill.dependencyIssues?.cyclic ?? []),
+    ]
+    const warning = broken.length
+      ? (english
+        ? `\n\n> Incomplete: this Skill depends on ${broken.join(', ')}, which is unavailable. Follow what is written here, and tell the user the ruleset is incomplete rather than filling the gap yourself.`
+        : `\n\n> 这条 Skill 依赖 ${broken.join('、')}，当前不可用，规则并不完整。按这里写到的执行，并如实告诉用户缺了哪一条，不要自行补足。`)
+      : ''
+    return `### ${name} (${skill.id})\n${body}${warning}`
   })
   return [header, ...blocks].join('\n\n')
 }
@@ -401,7 +447,9 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
       },
       execute: async ({ skillId }, context) => {
         const skill = availableSkills[skillId]
-        const risk = botanicAgentSkillRisk(skill)
+        // 风险按**当前注册表**里工具的真实声明算，不只按 Skill 自称的能力。
+        // 查不到的工具名在 agentSkillManifestRisk 里按最高风险处理。
+        const risk = botanicAgentSkillRisk(skill, (name) => planningRegistryRef.current?.get?.(name)?.risk)
         if (risk !== 'read') {
           propose({
             id: context?.toolCallId ?? `skill-${skillId}`,

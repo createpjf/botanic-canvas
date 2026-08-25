@@ -1137,7 +1137,13 @@ export function createAgentRouteHandler({
             const input = validateAgentSkillCreation({ projectId, ...argumentsValue })
             // 批准人是确认这次行动的用户：Skill 只能由用户确认的创建动作进入
             // published，「已批准」不能凭创建这个动作本身成立（ADR 0006）。
-            const skill = createAgentSkill(input, { ownerId: user.id, approvedBy: user.id })
+            // riskOf 取自**当前行动注册表**：Skill 少报能力（声明只读却把写工具放进
+            // Manifest 白名单）在这里就被拒绝，不留到运行时靠取最大值兜底。
+            const skill = createAgentSkill(input, {
+              ownerId: user.id,
+              approvedBy: user.id,
+              riskOf: (name) => registry.get?.(name)?.risk,
+            })
             return { skill: publicAgentSkill(await productStore.putAgentSkill(user.id, skill)) }
           },
           mcpTools: configuredMcpTools,

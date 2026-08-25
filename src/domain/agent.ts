@@ -1206,6 +1206,16 @@ export type BotanicAgentSkill = {
   version?: number
   contentHash?: string
   capabilities?: string[]
+  /**
+   * Skill Manifest。`toolAllowlist` 让 `capabilities` 从**自称**变成可核对的：
+   * 实际风险取「自称」与「白名单里工具的真实风险」两者较高者，少报能力不再能换来
+   * 跳过用户确认。依赖不可用时 Skill 仍可挂载，但简报会明说规则不完整。
+   */
+  manifest?: {
+    version: 1
+    toolAllowlist: string[]
+    dependencies: Array<{ skillId: string; version?: number }>
+  }
   /** 只在真的批准过时出现；缺省即「尚未批准」，不再默认成已批准。 */
   governance?: 'project-approved' | 'system'
   publishedBy?: string
