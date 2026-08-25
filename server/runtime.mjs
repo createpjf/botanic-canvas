@@ -33,7 +33,10 @@ export function loadLocalEnv(rootDir = process.cwd()) {
     const line = rawLine.trim()
     if (!line || line.startsWith('#')) continue
     const match = line.match(/^([A-Z][A-Z0-9_]*)=(.*)$/)
-    if (!match || process.env[match[1]]) continue
+    // 已显式设置的变量不被 .env 覆盖，**包括显式设成空串**：`FOO= node ...` 的意思是
+    // 「这次不要 FOO」，而不是「请从 .env 里补一个」。此前用真值判断，空串会被当成
+    // 没设过，于是没有任何办法在不改文件的前提下临时关掉某个配置。
+    if (!match || process.env[match[1]] !== undefined) continue
     process.env[match[1]] = match[2].trim().replace(/^("|')(.*)\1$/, '$2')
   }
 }

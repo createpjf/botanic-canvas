@@ -27,6 +27,14 @@ loadLocalEnv()
 
 const dryRun = process.argv.includes('--dry-run')
 const keepProject = process.argv.includes('--keep')
+/**
+ * `--local-store`：不连 Postgres，用本地文件 Adapter 跑。
+ *
+ * 用途是**把数据库从变量里去掉**：这条冒烟要验的是管线接线（路由、队列、Provider、
+ * 回写），那部分与用哪个 Adapter 无关。Postgres Adapter 本身有独立的契约测试，
+ * 且已用真实 Neon 库验过往返。
+ */
+const localStore = process.argv.includes('--local-store')
 const PORT = Number(process.env.SMOKE_PORT ?? 4788)
 const BASE = `http://127.0.0.1:${PORT}`
 const TOKEN = process.env.BOTANIC_BOOTSTRAP_ACCESS_TOKEN
@@ -87,7 +95,9 @@ async function pollUntil(describe, read, done, { timeoutMs = 180_000, intervalMs
 function preflight() {
   const problems = []
   if (!TOKEN) problems.push('BOTANIC_BOOTSTRAP_ACCESS_TOKEN 未设置（本地鉴权用）。')
-  if (!process.env.DATABASE_URL) problems.push('DATABASE_URL 未设置。')
+  if (!localStore && !process.env.DATABASE_URL) {
+    problems.push('DATABASE_URL 未设置。想跳过数据库可以加 --local-store（用本地文件 Adapter）。')
+  }
   if (!process.env.REDIS_URL) problems.push('REDIS_URL 未设置。本地可跑：redis-server --port 6399 --daemonize yes，然后 REDIS_URL=redis://127.0.0.1:6399')
   const hasOpenAI = Boolean(process.env.OPENAI_API_KEY)
   const hasMiniMax = Boolean(process.env.MINIMAX_API_KEY)
@@ -108,7 +118,9 @@ const children = []
 
 function launch(name, entry) {
   const child = spawn(process.execPath, [entry], {
-    env: { ...process.env, PORT: String(PORT) },
+    // 显式空串 = 「这次不要连 Postgres」。runtime 的 loadLocalEnv 尊重显式设置，
+    // 因此不会再从 .env 把它补回来。
+    env: { ...process.env, PORT: String(PORT), ...(localStore ? { DATABASE_URL: '' } : {}) },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   const prefix = `  [${name}] `
@@ -159,6 +171,7 @@ async function main() {
   process.stdout.write('==================\n')
   process.stdout.write(`模型：${model}${supportsMask ? '（gpt-image-2，支持蒙版）' : '（MiniMax，不支持蒙版）'}\n`)
   process.stdout.write('预计真实生成：3 张图（1 张单图 + 2 项批量）。\n')
+  process.stdout.write(`存储：${localStore ? '本地文件 Adapter（--local-store，不连数据库）' : 'PostgreSQL（DATABASE_URL）'}\n`)
   process.stdout.write('\n覆盖：提交 → 队列 → Provider → 画布回写 → 实测规格 →\n')
   process.stdout.write('      工作流发布（来源校验）→ 批量业务标识 → Worker 侧推进 → 交付清单 → 打包接口。\n')
   // 覆盖范围要说全，包括**没覆盖**的部分。只列做到了什么，读的人会以为剩下的也验过了。
