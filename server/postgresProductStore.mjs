@@ -87,6 +87,23 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     },
   })
 
+  // 启动时先探一次连接。不探的话，连不上会在建表事务里以驱动原始堆栈冒出来
+  // （`write CONNECT_TIMEOUT undefined:undefined`），既看不出是哪个主机、
+  // 也看不出该改什么。启动失败可以接受，说不清原因不行。
+  try {
+    await sql`select 1`
+  } catch (caught) {
+    const host = (() => {
+      try { return new URL(databaseUrl).host } catch { return '（无法解析的 DATABASE_URL）' }
+    })()
+    const error = new Error(
+      `无法连接数据库 ${host}：${/** @type {any} */ (caught)?.code ?? caught}。`
+      + '请检查 DATABASE_URL、网络可达性与代理规则（TUN/fake-ip 代理常会让 TCP 建立但握手超时）。',
+    )
+    error.cause = caught
+    throw error
+  }
+
   await sql.begin(async (tx) => {
     await tx`set local client_min_messages = warning`
     await tx`select pg_advisory_xact_lock(72695837)`

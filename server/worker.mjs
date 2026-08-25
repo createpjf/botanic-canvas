@@ -7,6 +7,7 @@ import { createProviderHealthMonitor } from './providerHealthMonitor.mjs'
 import { createDerivedTaskQueue, createDerivedTaskWorker } from './derivedTaskQueue.mjs'
 import { createAgentTurnSweep } from './agentTurnSweep.mjs'
 import { createAgentReviewService } from './agentReviewService.mjs'
+import { installDatabaseResilience } from './databaseResilience.mjs'
 import { createEvaluatorSkillRunner } from './agentReviewSkillEvaluator.mjs'
 import { createAgentReviewVisionJudge } from './agentReviewVision.mjs'
 import { resolveBotanicAgentImageDataUrl } from './botanicAgentVision.mjs'
@@ -20,6 +21,8 @@ import { createBotanicAgentTurnRuntime } from './botanicAgentTurnRuntime.mjs'
 import { createLocalCancelRegistry } from './localCancelRegistry.mjs'
 
 loadLocalEnv()
+// 与 API 同一处理：Worker 崩掉的后果更隐蔽 —— 队列还在，任务永远停在 running。
+installDatabaseResilience()
 const config = runtimeConfig()
 if (!config.production) console.warn('Botanic Worker 正在以本地配置运行；生产环境必须使用 PostgreSQL、Redis 与对象存储。')
 const runtime = await createProductRuntime(config)

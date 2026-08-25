@@ -166,7 +166,9 @@ function shutdown() {
 }
 
 async function waitForApi() {
-  for (let attempt = 0; attempt < 40; attempt += 1) {
+  // 60 秒而不是 20 秒：连 Neon 建表（含 advisory lock）本身要十几秒，
+  // 经代理还会更慢。等太短会把「启动慢」误报成「启动失败」。
+  for (let attempt = 0; attempt < 120; attempt += 1) {
     try {
       const response = await fetch(`${BASE}/api/health`)
       if (response.ok || response.status === 404 || response.status === 401) return true
@@ -207,7 +209,7 @@ async function main() {
   launch('api', 'server/index.mjs')
   launch('worker', 'server/worker.mjs')
   if (!await waitForApi()) {
-    fail('API 未能在 20 秒内响应。用 --verbose 看进程日志。')
+    fail('API 未能在 60 秒内响应。用 --verbose 看 [api] 日志；数据库连不上会在启动探针处给出主机名与原因。')
     return
   }
   pass(`API 已监听 ${BASE}`)

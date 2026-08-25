@@ -2,10 +2,15 @@ import { createGenerationQueue } from './generationQueue.mjs'
 import { createConfiguredMcpTools } from './mcpClient.mjs'
 import { createAgentRunEventPublisher } from './agentRunEventBus.mjs'
 import { createProductRuntime, loadLocalEnv, runtimeConfig } from './runtime.mjs'
+import { installDatabaseResilience } from './databaseResilience.mjs'
 import { createSecurityControls } from './securityControls.mjs'
 import { createBotanicHttpServer } from './httpServer.mjs'
 
 loadLocalEnv()
+// 数据库连接层的抖动不属于任何一次请求，因此没有 5xx 可返回，只会变成未捕获异常并
+// 终止整个进程。这里容忍瞬时故障（连接池下一次查询即可自愈），但连续故障仍然退出 ——
+// 「活着但每个请求都 500」比直接重启更难被发现，因为健康检查会一直显示正常。
+installDatabaseResilience()
 const config = runtimeConfig()
 // 灰度选择器写错会静默变成「该项目没开」，排查起来很费时；启动时一次性报出来。
 for (const { name, entry } of config.rolloutFlags?.invalidSelectors() ?? []) {
