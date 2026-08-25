@@ -39,6 +39,9 @@ const keepProject = process.argv.includes('--keep')
  * 这个 Adapter 在 .env.example 里写明「仅本地原型使用」，跨进程共享不在它的能力范围内。
  */
 const localStore = process.argv.includes('--local-store')
+const startedAt = Date.now()
+/** 相对秒数。没有它就无法回答「Provider 调用到底花了多久」——上一轮正是卡在这个问题上。 */
+const elapsed = () => `+${((Date.now() - startedAt) / 1000).toFixed(1)}s`
 const PORT = Number(process.env.SMOKE_PORT ?? 4788)
 const BASE = `http://127.0.0.1:${PORT}`
 const TOKEN = process.env.BOTANIC_BOOTSTRAP_ACCESS_TOKEN
@@ -54,12 +57,12 @@ function step(name) {
 
 function pass(detail) {
   steps.push({ name: currentStep, ok: true, detail })
-  process.stdout.write(`  ✔ ${detail}\n`)
+  process.stdout.write(`${elapsed().padStart(8)}   ✔ ${detail}\n`)
 }
 
 function fail(detail) {
   steps.push({ name: currentStep, ok: false, detail })
-  process.stdout.write(`  ✖ ${detail}\n`)
+  process.stdout.write(`${elapsed().padStart(8)}   ✖ ${detail}\n`)
 }
 
 function skip(detail) {
@@ -151,7 +154,7 @@ function launch(name, entry) {
         // 只滤掉明确无关的启动噪音。
         const noise = /ExperimentalWarning|trace-warnings/.test(line)
         if (!noise) {
-          process.stdout.write(prefix + line + '\n')
+          process.stdout.write(`${elapsed().padStart(8)} ${prefix}${line}\n`)
         }
       }
     })
