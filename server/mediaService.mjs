@@ -1,4 +1,4 @@
-import { canonicalImageDataUrlPattern, detectImageFormat } from './mediaFormats.mjs'
+import { canonicalImageDataUrlPattern, detectImageFormat, imageFormatLabel } from './mediaFormats.mjs'
 
 function mediaValidationError(message) {
   const error = new Error(message)
@@ -15,7 +15,12 @@ function parseImageDataUrl(dataUrl, maximumUploadBytes) {
   if (bytes.length > maximumUploadBytes) throw mediaValidationError(`单个素材不能超过 ${Math.ceil(maximumUploadBytes / 1024 / 1024)}MB。`)
   const contentType = match[1].toLowerCase()
   // 以实际字节为准：声明 PNG 实际是别的东西，本身就是要抓的完整性问题。
-  if (detectImageFormat(bytes) !== contentType) throw mediaValidationError('图片内容与文件类型不匹配。')
+  const detected = detectImageFormat(bytes)
+  if (detected !== contentType) {
+    throw mediaValidationError(detected
+      ? `图片内容是 ${imageFormatLabel(detected)}，与声明的 ${imageFormatLabel(contentType)} 不一致。`
+      : '图片内容无法识别，文件可能已损坏。')
+  }
   return { contentType, bytes }
 }
 
