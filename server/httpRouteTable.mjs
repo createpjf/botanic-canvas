@@ -40,6 +40,9 @@ export const botanicHttpRoutePatterns = Object.freeze({
   agentRunReviewTasks: /^\/api\/agent-runs\/([^/]+)\/review-tasks$/,
   agentReviewTaskDecisions: /^\/api\/agent-review-tasks\/([^/]+)\/decisions$/,
   projectProductionWorkflowRunManifest: /^\/api\/projects\/([^/]+)\/production-workflow-runs\/([^/]+)\/manifest$/,
+  // 项目当前生效的品牌规则（Epic 9.1）。解析在服务端做，界面不重算覆盖优先级 ——
+  // 两份实现对不上时的表现是「界面说这条生效，生成却没按它来」。
+  projectBrandKit: /^\/api\/projects\/([^/]+)\/brand-kit$/,
   globalAsset: /^\/api\/global-assets\/([^/]+)$/,
   generationJob: /^\/api\/generation-jobs\/([^/]+)(?:\/(cancel))?$/,
   media: /^\/api\/media\/([^/]+)$/,

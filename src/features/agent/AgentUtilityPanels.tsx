@@ -28,6 +28,14 @@ import {
   type AgentReviewTaskSnapshot,
 } from '../../domain/agentReviewPresentation'
 import { fetchAgentReviewTasks, submitAgentReviewDecisions } from '../../lib/agentApi'
+import {
+  brandKitSummary,
+  brandProposalRows,
+  effectiveBrandRuleRows,
+  overriddenBrandRuleRows,
+  type ResolvedBrandKit,
+} from '../../domain/brandKitPresentation'
+import { fetchProjectBrandKit } from '../../lib/brandKitApi'
 import { memoryComparisonRows, memoryConflictPairs, memoryIneffectiveReason } from '../../domain/agentMemoryComparison'
 import type { AgentArtifactIndexState, AgentContextItem } from './agentWorkspace.types'
 import { useProductI18n, useProductMessages } from '../../i18n/react'
@@ -49,6 +57,10 @@ const agentUtilityMessages = {
     noToolArtifacts: '还没有 Skill / MCP 产物。', noGeneratedResults: '还没有该条件下的生成结果。', loadEarlierResults: '加载更早结果',
     memoryAria: '项目创作记忆', memoryTitle: '项目记忆', memoryDescription: '仅用于当前项目的后续规划；保存品牌规则、认可方向与禁区。', memoryType: '记忆类型', longTermRule: '长期规则', approvedDirection: '已确认方向', avoid: '避免事项', memoryPlaceholder: '例如：商品包装与品牌色不可改变', memoryContent: '项目记忆内容', saveMemory: '保存记忆', locateMemory: (content: string) => `在画布定位记忆 ${content}`, locate: '在画布定位', deleteMemory: (content: string) => `删除记忆 ${content}`, deleteMemoryTitle: '删除记忆', noMemory: '还没有项目记忆。', memoryCount: (count: number) => `${count} 条`,
     system: '系统', project: '项目', invoke: '@调用', mount: '挂载到对话', mounted: '已挂载', unmount: '取消挂载',
+    brandAria: '品牌规则', brandTitle: '品牌规则', brandDescription: '生成前会把这些规则编译进执行提示词，生成后逐条复核。规则分全局品牌、项目 Creative Spec、本次运行覆盖三层，同一槽位由更靠近本次运行的那一层生效。',
+    brandLoading: '正在读取品牌规则…', brandUnavailable: '品牌规则暂不可用，请稍后重试。',
+    brandUnbound: '当前项目未绑定品牌，没有任何品牌规则参与生成。', brandEffective: '生效中', brandPending: '待确认建议', brandOverridden: '被覆盖的规则',
+    brandConfirm: '确认启用', brandSourceRef: (ref: string) => `出处：${ref}`,
     reviewAria: '结果评审', reviewTitle: '结果评审', reviewDescription: '逐条判据说明结果是否符合这次确认的计划；自动评审不代表品牌批准，仍需你来决定。',
     reviewLoading: '正在读取评审…', reviewUnavailable: '评审暂不可用，请稍后重试。', noReviewTasks: '这次任务还没有评审记录。',
     reviewCandidate: (id: string) => `候选 ${id}`, reviewUnverified: (count: number) => `${count} 项未验证`,
@@ -71,6 +83,10 @@ const agentUtilityMessages = {
     batchActions: 'Batch actions', selectedCount: (count: number) => `${count} selected`, startNextRound: 'Start next round', cancel: 'Cancel', itemCount: (count: number) => `${count} ${count === 1 ? 'item' : 'items'}`, notBackfilled: 'Not on canvas', sourceConversation: 'Source conversation', selectAll: 'Select all', clearSelection: 'Clear selection', select: 'Select', deselect: 'Deselect', view: 'View',
     noToolArtifacts: 'No Skill or MCP outputs yet.', noGeneratedResults: 'No generated results match these filters.', loadEarlierResults: 'Load earlier results',
     memoryAria: 'Project creative memory', memoryTitle: 'Project memory', memoryDescription: 'Use project memory in future planning to preserve brand rules, approved directions, and boundaries.', memoryType: 'Memory type', longTermRule: 'Long-term rule', approvedDirection: 'Approved direction', avoid: 'Avoid', memoryPlaceholder: 'For example: Keep the product packaging and brand colors unchanged', memoryContent: 'Project memory content', saveMemory: 'Save memory', locateMemory: (content: string) => `Locate memory on canvas: ${content}`, locate: 'Locate on canvas', deleteMemory: (content: string) => `Delete memory: ${content}`, deleteMemoryTitle: 'Delete memory', noMemory: 'No project memory yet.', memoryCount: (count: number) => `${count} ${count === 1 ? 'entry' : 'entries'}`,
+    brandAria: 'Brand rules', brandTitle: 'Brand rules', brandDescription: 'These rules are compiled into the execution prompt before generation and checked one by one afterwards. They come from three layers — global brand, project creative spec, and this run’s override — and for any one slot the layer closest to this run wins.',
+    brandLoading: 'Loading brand rules…', brandUnavailable: 'Brand rules are unavailable right now. Try again shortly.',
+    brandUnbound: 'This project is not bound to a brand, so no brand rules take part in generation.', brandEffective: 'In effect', brandPending: 'Awaiting confirmation', brandOverridden: 'Overridden rules',
+    brandConfirm: 'Confirm and activate', brandSourceRef: (ref: string) => `Source: ${ref}`,
     reviewAria: 'Result review', reviewTitle: 'Result review', reviewDescription: 'Per-criterion findings on whether results match the plan you confirmed. An automatic pass is not brand approval — the call is still yours.',
     reviewLoading: 'Loading review…', reviewUnavailable: 'Review is unavailable right now. Try again shortly.', noReviewTasks: 'No review has been recorded for this task yet.',
     reviewCandidate: (id: string) => `Candidate ${id}`, reviewUnverified: (count: number) => `${count} not verified`,
@@ -470,6 +486,77 @@ export function AgentMemoryPanel({ memory, sourceNodeIds, onAddMemory, onRemoveM
  * 覆盖摘要必须带被跳过的候选数；`未验证` 与 `不符合` 是两个词；
  * 没有人工决定的候选一律显示为「待你决定」——自动结论不代替品牌批准。
  */
+/**
+ * 品牌规则面板（Epic 9.1）。
+ *
+ * 解析由服务端完成，与生成时同一实现 —— 界面显示生效的那条，就是生成时会用的那条。
+ * 这里只负责把三段分开摆出来：生效中、待确认（**不生效**）、被覆盖（不隐藏）。
+ */
+export function BrandKitPanel({ projectId, onBackToConversation }: {
+  projectId: string
+  onBackToConversation: () => void
+}) {
+  const { locale } = useProductI18n()
+  const copy = useProductMessages(agentUtilityMessages)
+  const [kit, setKit] = useState<ResolvedBrandKit | null>(null)
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
+
+  useEffect(() => {
+    let active = true
+    setStatus('loading')
+    fetchProjectBrandKit(projectId)
+      .then((loaded) => { if (active) { setKit(loaded); setStatus('ready') } })
+      .catch(() => { if (active) setStatus('error') })
+    return () => { active = false }
+  }, [projectId])
+
+  const effective = useMemo(() => effectiveBrandRuleRows(kit ?? undefined, locale), [kit, locale])
+  const overridden = useMemo(() => overriddenBrandRuleRows(kit ?? undefined, locale), [kit, locale])
+  const proposals = useMemo(() => brandProposalRows(kit?.pending, locale), [kit, locale])
+
+  return <section className="agent-brand-panel" aria-label={copy.brandAria}>
+    <header><AgentPanelBackButton onClick={onBackToConversation} /><div><small>BRAND KIT</small><h2>{copy.brandTitle}</h2></div></header>
+    <p>{copy.brandDescription}</p>
+    {status === 'loading' ? <div className="agent-panel__empty">{copy.brandLoading}</div> : null}
+    {status === 'error' ? <div className="agent-panel__empty">{copy.brandUnavailable}</div> : null}
+    {/* 未绑定品牌与「绑定了但没有规则」是两回事；后者说得出「0 条生效」，前者要说没绑定。 */}
+    {status === 'ready' && !kit ? <div className="agent-panel__empty">{copy.brandUnbound}</div> : null}
+    {status === 'ready' && kit ? <>
+      <p className="agent-brand-panel__summary">{brandKitSummary(kit, locale)}</p>
+      <h3>{copy.brandEffective}</h3>
+      <ul className="agent-brand-panel__rules">
+        {effective.map((row) => <li key={row.slot} className={`is-${row.enforcement}`}>
+          <header><small>{row.facetLabel}</small><b>{row.enforcementLabel}</b></header>
+          <p>{row.statement}</p>
+          <small className="agent-brand-panel__provenance">{row.provenance}</small>
+        </li>)}
+      </ul>
+      {proposals.length ? <>
+        <h3>{copy.brandPending}</h3>
+        <ul className="agent-brand-panel__proposals">
+          {proposals.map((proposal) => <li key={proposal.id} className={proposal.needsFacet ? 'needs-facet' : ''}>
+            <header><small>{proposal.facetLabel}</small></header>
+            <p>{proposal.statement}</p>
+            {/* 建议看起来和真规则一模一样，因此每条都要写明它当前不生效。 */}
+            <small className="agent-brand-panel__hint">{proposal.hint}</small>
+            {proposal.sourceRef ? <small>{copy.brandSourceRef(proposal.sourceRef)}</small> : null}
+          </li>)}
+        </ul>
+      </> : null}
+      {overridden.length ? <>
+        <h3>{copy.brandOverridden}</h3>
+        <ul className="agent-brand-panel__rules is-overridden">
+          {overridden.map((row) => <li key={row.id}>
+            <header><small>{row.facetLabel}</small></header>
+            <p>{row.statement}</p>
+            <small className="agent-brand-panel__provenance">{row.provenance}</small>
+          </li>)}
+        </ul>
+      </> : null}
+    </> : null}
+  </section>
+}
+
 export function AgentReviewPanel({ runId, onBackToConversation }: {
   runId: string
   onBackToConversation: () => void
