@@ -12,6 +12,7 @@ import {
   isCanonicalImageFormat,
   isUploadImageFormat,
 } from './mediaFormats.mjs'
+import { gptImage2CustomSizeLimits } from './generationOutputSize.mjs'
 
 function pngBytes(width, height) {
   const buffer = Buffer.alloc(33)
@@ -42,6 +43,20 @@ function webpVp8xBytes(width, height) {
   buffer.write('VP8X', 12, 'ascii')
   buffer.writeUIntLE(width - 1, 24, 3)
   buffer.writeUIntLE(height - 1, 27, 3)
+  return buffer
+}
+
+/** VP8（有损）chunk：起始码 0x9d012a 在偏移 23-25，之后是 14 位宽高。 */
+function webpVp8Bytes(width, height, { corruptStartCode = false } = {}) {
+  const buffer = Buffer.alloc(30)
+  buffer.write('RIFF', 0, 'ascii')
+  buffer.write('WEBP', 8, 'ascii')
+  buffer.write('VP8 ', 12, 'ascii')
+  buffer[23] = corruptStartCode ? 0x00 : 0x9d
+  buffer[24] = 0x01
+  buffer[25] = 0x2a
+  buffer.writeUInt16LE(width, 26)
+  buffer.writeUInt16LE(height, 28)
   return buffer
 }
 
@@ -76,7 +91,10 @@ test('canonical 是 upload 的子集', () => {
 
 test('上限是具名常量', () => {
   assert.equal(MEDIA_LIMITS.maxCanonicalLongEdge, 2048)
-  assert.equal(MEDIA_LIMITS.maxCanonicalPixels, 4_000_000)
+  // 凡是我们自己能生成的尺寸，就必须能被重新接收：拒绝阈值直接派生自
+  // gpt-image-2 自定义尺寸窗的像素上限，不是另一个独立猜测的数字。
+  assert.equal(MEDIA_LIMITS.maxCanonicalPixels, gptImage2CustomSizeLimits.maxPixels)
+  assert.equal(MEDIA_LIMITS.maxCanonicalPixels, 8_294_400)
   assert.equal(MEDIA_LIMITS.maxUploadBytes, 8 * 1024 * 1024)
   assert.equal(MEDIA_LIMITS.maxDecodePixels, 80_000_000)
   assert.equal(MEDIA_LIMITS.maxDocumentPages, 200)
@@ -112,6 +130,19 @@ test('读像素尺寸，认不出返回 null', () => {
   assert.deepEqual(imagePixelSize(webpVp8xBytes(4, 6)), { width: 4, height: 6 })
   assert.equal(imagePixelSize(Buffer.from('not an image, definitely')), null)
   assert.equal(imagePixelSize('not a buffer'), null)
+})
+
+test('VP8 有损 WebP 校验关键帧起始码，损坏时不编造尺寸', () => {
+  // 收编字节嗅探时保留了 JPEG 更健壮的实现，却换成了 WebP 更弱的实现——
+  // 旧 mediaSpec.mjs 的 webpDimensions 在读宽高前会校验 0x9d012a 起始码，
+  // 这份没有校验就直接读，会在损坏的有损 WebP 上产出一对看似合法的假尺寸。
+  const valid = webpVp8Bytes(12, 8)
+  assert.deepEqual(imagePixelSize(valid), { width: 12, height: 8 })
+
+  const corrupt = webpVp8Bytes(12, 8, { corruptStartCode: true })
+  // 读不出必须老实返回 null，而不是编造宽高——下游评审第 1 层靠这个区分
+  // 「确定性验证失败」与「unverifiable」。
+  assert.equal(imagePixelSize(corrupt), null)
 })
 
 test('谓词与标签', () => {

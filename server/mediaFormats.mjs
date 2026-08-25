@@ -1,5 +1,7 @@
 // @ts-check
 
+import { gptImage2CustomSizeLimits } from './generationOutputSize.mjs'
+
 /**
  * 媒体格式的唯一权威词表。
  *
@@ -42,13 +44,20 @@ export const UPLOAD_DOCUMENT_FORMATS = Object.freeze([
 /**
  * 所有上限收成具名常量。
  *
- * `maxCanonicalPixels` **是保守猜测，未钉死**：生产实测只知道 2.2 MP 能过、
- * 12.2 MP 被拒，真实阈值在两者之间，钉它需要一次真实供应商调用去二分。
- * 因此它是一处常量、一处修改，而不是散在校验逻辑里的魔法数字。
+ * `maxCanonicalPixels`：凡是我们自己能生成的尺寸，就必须能被重新接收——精修、
+ * 局部重绘都会把上一次的生成结果原样传回来当 parent。所以这里不是另猜一个
+ * 数字，而是直接复用 `gptImage2CustomSizeLimits.maxPixels`（8,294,400，
+ * gpt-image-2 自定义尺寸窗的像素上限）：生成端能吐出的最大像素数，接收端就
+ * 必须能吃回去。只有这一处引用，改生成端上限时这里自动跟着变。
  */
 export const MEDIA_LIMITS = Object.freeze({
+  maxCanonicalPixels: gptImage2CustomSizeLimits.maxPixels,
+  // 注意：这不是准入门槛的一部分。它只是后续 PR 里归一化器的下采样目标——
+  // 超过 maxCanonicalPixels 但长边不超此值的图会被下采样，而不是被拒绝。
+  // 曾经把它错当拒绝判据的一个连接词（"且长边 ≤ 2048"），直接把 App 自己生成
+  // 的 2048×2048（2K + 1:1 预设，也是默认分辨率）挡在门外，导致对自己最常见
+  // 输出的精修全部失败。不要在 assertImagePixelBudget 里再次引用这个字段。
   maxCanonicalLongEdge: 2048,
-  maxCanonicalPixels: 4_000_000,
   maxUploadBytes: 8 * 1024 * 1024,
   // 生产存储里存在 96 MP（8488×11317）JPEG，解成 RGBA 约 384 MB。解压炸弹防线。
   maxDecodePixels: 80_000_000,
@@ -65,7 +74,8 @@ const FTYP_BRANDS = Object.freeze({
   avif: 'image/avif', avis: 'image/avif',
 })
 
-const FORMAT_LABELS = Object.freeze({
+/** 导出供 `scripts/mediaFormatContract.test.mjs` 与 `src/domain/mediaFormats.ts` 的副本逐项比对。 */
+export const FORMAT_LABELS = Object.freeze({
   'image/png': 'PNG',
   'image/jpeg': 'JPEG',
   'image/webp': 'WebP',
@@ -165,6 +175,10 @@ function webpPixelSize(buffer) {
     return { width: buffer.readUIntLE(24, 3) + 1, height: buffer.readUIntLE(27, 3) + 1 }
   }
   if (chunk === 'VP8 ' && buffer.length >= 30) {
+    // 关键帧起始码 0x9d012a（偏移 23-25）不校验就直接读宽高，会在损坏的有损
+    // WebP 上编造出一对看似合法的数字，而不是老实说"读不出"——这两者的下游
+    // 后果不同：前者喂给评审第 1 层是自信的错判，后者是 unverifiable。
+    if (buffer[23] !== 0x9d || buffer[24] !== 0x01 || buffer[25] !== 0x2a) return undefined
     return { width: buffer.readUInt16LE(26) & 0x3fff, height: buffer.readUInt16LE(28) & 0x3fff }
   }
   if (chunk === 'VP8L' && buffer.length >= 25) {

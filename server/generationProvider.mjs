@@ -11,6 +11,7 @@ import {
 import { buildRegionMaskPng, normalizeRegionRect } from './regionMaskPng.mjs'
 import {
   CANONICAL_IMAGE_FORMATS,
+  canonicalImageDataUrlPattern,
   detectImageFormat,
   imageFormatLabel,
   imagePixelSize,
@@ -39,9 +40,13 @@ function assertEnum(value, allowed, name) {
 
 function mediaDataUrl(value, maximumReferenceBytes, mediaKind = 'image') {
   if (typeof value !== 'string') throw new GenerationError(400, 'INVALID_REFERENCE', '参考素材格式无效。')
-  const alternatives = CANONICAL_IMAGE_FORMATS.map((format) => format.replace('image/', '')).join('|')
-  const mimePattern = mediaKind === 'video' ? 'video\\/mp4' : `image\\/(?:${alternatives})`
-  const match = value.match(new RegExp(`^data:(${mimePattern});base64,([A-Za-z0-9+/=\\s]+)$`, 'i'))
+  // 图片分支委托给权威正则：自建的版本曾经漏掉 `[+]` 转义，image/svg+xml 成为
+  // canonical 的那天会悄悄坏掉。视频不是 CANONICAL_IMAGE_FORMATS 的成员，
+  // canonicalImageDataUrlPattern() 天然覆盖不到，只能保留内联构造。
+  const pattern = mediaKind === 'video'
+    ? /^data:(video\/mp4);base64,([A-Za-z0-9+/=\s]+)$/i
+    : canonicalImageDataUrlPattern()
+  const match = value.match(pattern)
   if (!match) {
     throw new GenerationError(400, 'INVALID_REFERENCE', mediaKind === 'video'
       ? '视频参考仅支持 MP4。'
@@ -262,22 +267,29 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
 /**
  * 参考图像素量是否在供应商能接受的范围内。
  *
- * `maxCanonicalPixels` 是**保守猜测**：生产实测只知道 2.2 MP 能过、12.2 MP 被拒，
- * 真实阈值在两者之间。钉死它需要一次真实供应商调用去二分，因此这里只引用
- * `MEDIA_LIMITS` 的常量，不写死数字。
+ * 拒绝判据**只看像素总数**，不看长边。此前的实现是
+ * `pixels <= maxCanonicalPixels && longEdge <= maxCanonicalLongEdge`——那个
+ * `&&` 把一个归一化目标（`maxCanonicalLongEdge`，供后续 PR 的下采样器用作
+ * 下采样"到"的尺寸）当成了拒绝阈值。2048×2048（2K + 1:1 目录预设，也是默认
+ * 分辨率）是 4.19 MP、长边正好 2048，就被这条规则拒了——而长边已经是 2048，
+ * 用户没有任何能做的下一步。生成结果又会被原样传回来当精修 / 局部重绘的
+ * parent，于是 App 对自己最常见输出的精修全部失败。
+ *
+ * 凡是我们自己能生成的尺寸，就必须能被重新接收：`MEDIA_LIMITS.maxCanonicalPixels`
+ * 直接派生自 `gptImage2CustomSizeLimits.maxPixels`（生成端自定义尺寸窗的像素
+ * 上限），不是另一个独立猜测的数字——两端永远同步，见 `mediaFormats.mjs`。
  *
  * 读不出尺寸时**不拦**：读不出不等于超限，拦住会误杀一类正常输入。
  */
 function assertImagePixelBudget(buffer) {
   const size = imagePixelSize(buffer)
   if (!size) return
-  const { maxCanonicalPixels, maxCanonicalLongEdge } = MEDIA_LIMITS
+  const { maxCanonicalPixels } = MEDIA_LIMITS
   const pixels = size.width * size.height
-  const longEdge = Math.max(size.width, size.height)
-  if (pixels <= maxCanonicalPixels && longEdge <= maxCanonicalLongEdge) return
+  if (pixels <= maxCanonicalPixels) return
   throw new GenerationError(400, 'IMAGE_TOO_LARGE_PIXELS',
-    `参考图 ${size.width}×${size.height} 超过 ${Math.round(maxCanonicalPixels / 10_000)} 万像素上限。`
-    + `请缩小到长边 ${maxCanonicalLongEdge} 以内后重试。`)
+    `参考图 ${size.width}×${size.height}（约 ${Math.round(pixels / 10_000)} 万像素）`
+    + `超过 ${Math.round(maxCanonicalPixels / 10_000)} 万像素上限，请压缩后重试。`)
 }
 
 /**
@@ -439,11 +451,15 @@ function fileExtension(mimeType) {
  * 也无从判断该向他们说什么；而真正的答案（照片像素太大）没人告诉他。
  *
  * 原文留在 `upstreamMessage` 字段里给日志和运维，不丢。
+ *
+ * `subject` 只影响用户可见前缀（如 OpenAI 的「图像」、MiniMax 的「MiniMax 图像」/
+ * 「MiniMax 视频」）——供应商名字对用户有用，供应商的英文原文没用。这两者是本函数
+ * 存在的唯一理由，所有供应商适配器都必须走这一处，而不是各自转述一份。
  */
-export function providerRejectionError(upstreamMessage, requestId) {
+export function providerRejectionError(upstreamMessage, requestId, subject = '图像') {
   const suffix = requestId ? `（请求 ${requestId}）` : ''
   const error = new GenerationError(422, 'PROVIDER_REJECTED',
-    `图像服务拒绝了本次任务，请检查提示词、参考素材与输出规格。${suffix}`)
+    `${subject}服务拒绝了本次任务，请检查提示词、参考素材与输出规格。${suffix}`)
   if (typeof upstreamMessage === 'string' && upstreamMessage.trim()) {
     error.upstreamMessage = upstreamMessage
   }

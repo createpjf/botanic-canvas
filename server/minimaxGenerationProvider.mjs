@@ -1,7 +1,7 @@
 import { readMediaSpec } from './mediaSpec.mjs'
 import { mapWithConcurrency } from './concurrency.mjs'
 import { compositionBrandGuard, creativeExecutionContract } from './generationComposition.mjs'
-import { GenerationError } from './generationProvider.mjs'
+import { GenerationError, providerRejectionError } from './generationProvider.mjs'
 import { detectImageFormat, isCanonicalImageFormat } from './mediaFormats.mjs'
 
 function dataUrl(media) {
@@ -18,12 +18,16 @@ function miniMaxError(response, body, mediaLabel) {
   if (response.status >= 500) {
     return new GenerationError(502, 'PROVIDER_UNAVAILABLE', `MiniMax ${mediaLabel}服务暂时不可用，请稍后重试。`)
   }
-  const detail = typeof body?.error?.message === 'string'
-    ? body.error.message.slice(0, 180)
+  // 拒绝原因走 generationProvider 的 providerRejectionError：供应商英文原文
+  // 不进用户可见消息，只挂在 upstreamMessage 给日志/运维——这是本分支的
+  // 不变式，OpenAI 与 MiniMax 两个适配器必须共用同一处实现，而不是各转述一份。
+  const upstreamMessage = typeof body?.error?.message === 'string'
+    ? body.error.message
     : typeof body?.base_resp?.status_msg === 'string'
-      ? body.base_resp.status_msg.slice(0, 180)
-      : '请检查提示词、参考素材与输出参数。'
-  return new GenerationError(422, 'PROVIDER_REJECTED', `MiniMax ${mediaLabel}服务拒绝了本次任务：${detail}`)
+      ? body.base_resp.status_msg
+      : undefined
+  const requestId = response.headers.get('x-request-id')
+  return providerRejectionError(upstreamMessage, requestId, `MiniMax ${mediaLabel}`)
 }
 
 function imageMedia(value) {

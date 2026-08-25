@@ -481,11 +481,12 @@ test('选区矩形在 Worker 落成与基准图同尺寸的 PNG 蒙版', async (
   }, { models: ['gpt-image-2'], maximumBatchCount: 8, maximumReferenceBytes: 1024 }), (error) => error instanceof GenerationError && error.code === 'INVALID_MASK')
 })
 
-test('参考图像素超上限时被拒，并说清怎么办', async () => {
+test('参考图像素超上限时被拒，理由是像素总数而不是长边', async () => {
   const { resolveGenerationInputMedia, GenerationError } = await import('./generationProvider.mjs')
-  const { imagePixelSize } = await import('./mediaFormats.mjs')
+  const { imagePixelSize, MEDIA_LIMITS } = await import('./mediaFormats.mjs')
 
-  // 4032×3024 = 12.2 MP，正是生产上被供应商拒掉的那张 iPhone 原图的尺寸。
+  // 4032×3024 = 12.2 MP，正是生产上被供应商拒掉的那张 iPhone 原图的尺寸——
+  // 这是本分支存在的理由，任何改动都不能让它重新通过。
   const oversized = pngOfSize(4032, 3024)
   assert.deepEqual(imagePixelSize(oversized), { width: 4032, height: 3024 })
 
@@ -501,9 +502,11 @@ test('参考图像素超上限时被拒，并说清怎么办', async () => {
     (error) => {
       assert.ok(error instanceof GenerationError)
       assert.equal(error.code, 'IMAGE_TOO_LARGE_PIXELS')
-      // 必须报出实际尺寸和可执行的下一步，而不是转述供应商英文。
+      // 必须报出实际尺寸和真正被违反的上限（像素总数），而不是转述供应商英文。
       assert.match(error.message, /4032×3024/)
-      assert.match(error.message, /2048/)
+      assert.match(error.message, new RegExp(String(Math.round(MEDIA_LIMITS.maxCanonicalPixels / 10_000))))
+      // 拒绝判据只看像素总数：文案不能再指向长边，那不是这条规则判的。
+      assert.doesNotMatch(error.message, /长边/)
       return true
     },
   )
@@ -519,6 +522,30 @@ test('像素在上限内的参考图正常通过', async () => {
   )
   assert.equal(resolved.references.length, 1)
   assert.equal(resolved.references[0].mimeType, 'image/png')
+})
+
+test('App 自己能生成的尺寸必须能被重新接收：2048×2048 与 3840×2160', async () => {
+  const { resolveGenerationInputMedia } = await import('./generationProvider.mjs')
+
+  // 2048×2048 = 4.19 MP：2K + 1:1 目录预设，也是默认分辨率（见
+  // CanvasWorkspace.tsx）。精修 / 局部重绘会把上一次生成结果原样传回来当
+  // parent —— 旧的「长边 ≤ 2048」判据会把这个尺寸自己拒了，且长边已经是
+  // 2048，用户没有任何能做的下一步。这条是那次生产 bug 的回归钉子。
+  const square2K = pngOfSize(2048, 2048)
+  const resolvedSquare = await resolveGenerationInputMedia(
+    { references: [{ mediaId: 'media_2k_square', mediaKind: 'image' }] },
+    async () => ({ mimeType: 'image/png', buffer: square2K }),
+  )
+  assert.equal(resolvedSquare.references.length, 1)
+
+  // 3840×2160 = 8.29 MP：落在自定义尺寸窗内、供应商会实际生成的尺寸，
+  // 像素数恰好等于 gptImage2CustomSizeLimits.maxPixels——新上限的来源。
+  const wide = pngOfSize(3840, 2160)
+  const resolvedWide = await resolveGenerationInputMedia(
+    { references: [{ mediaId: 'media_wide', mediaKind: 'image' }] },
+    async () => ({ mimeType: 'image/png', buffer: wide }),
+  )
+  assert.equal(resolvedWide.references.length, 1)
 })
 
 test('读不出尺寸时不拦', async () => {
@@ -561,7 +588,7 @@ test('dataUrl 参考图像素超上限时被拒', async () => {
   // dataUrl 路径在 validateGenerationInput 时已填充 buffer，直接进 resolve 的早期分支。
   // 若不加像素守卫，12.2MP 的参考会原样通过。
   const { resolveGenerationInputMedia, GenerationError } = await import('./generationProvider.mjs')
-  const { imagePixelSize } = await import('./mediaFormats.mjs')
+  const { imagePixelSize, MEDIA_LIMITS } = await import('./mediaFormats.mjs')
 
   const oversized = pngOfSize(4032, 3024)
   assert.deepEqual(imagePixelSize(oversized), { width: 4032, height: 3024 })
@@ -578,7 +605,8 @@ test('dataUrl 参考图像素超上限时被拒', async () => {
       assert.ok(error instanceof GenerationError)
       assert.equal(error.code, 'IMAGE_TOO_LARGE_PIXELS')
       assert.match(error.message, /4032×3024/)
-      assert.match(error.message, /2048/)
+      assert.match(error.message, new RegExp(String(Math.round(MEDIA_LIMITS.maxCanonicalPixels / 10_000))))
+      assert.doesNotMatch(error.message, /长边/)
       return true
     },
   )
@@ -587,7 +615,7 @@ test('dataUrl 参考图像素超上限时被拒', async () => {
 test('dataUrl 父版本图像素超上限时被拒', async () => {
   // 精修任务会从客户端拿 parent，也走 dataUrl 路径。
   const { resolveGenerationInputMedia, GenerationError } = await import('./generationProvider.mjs')
-  const { imagePixelSize } = await import('./mediaFormats.mjs')
+  const { imagePixelSize, MEDIA_LIMITS } = await import('./mediaFormats.mjs')
 
   const oversized = pngOfSize(4032, 3024)
   assert.deepEqual(imagePixelSize(oversized), { width: 4032, height: 3024 })
@@ -604,7 +632,8 @@ test('dataUrl 父版本图像素超上限时被拒', async () => {
       assert.ok(error instanceof GenerationError)
       assert.equal(error.code, 'IMAGE_TOO_LARGE_PIXELS')
       assert.match(error.message, /4032×3024/)
-      assert.match(error.message, /2048/)
+      assert.match(error.message, new RegExp(String(Math.round(MEDIA_LIMITS.maxCanonicalPixels / 10_000))))
+      assert.doesNotMatch(error.message, /长边/)
       return true
     },
   )
