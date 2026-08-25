@@ -1182,6 +1182,16 @@ export type BotanicAgentMemoryItem = {
    */
   confidenceScore?: number
   /**
+   * 适用主体（Epic 6 §8.6）。与 `scope` 是**两个轴**：`scope` 是包含范围、影响排序；
+   * `subject` 是适用条件、决定这条规则参不参与某一次生成。
+   *
+   * 缺省 `project` 表示全项目生效（等于此前的行为）。其余四值必须配 `subjectValue`：
+   * 例如 `{ subject: 'channel', subjectValue: 'tmall' }` 只在天猫渠道的生成里生效。
+   * 不适用时**排除而不是降权**，且落选原因可见。
+   */
+  subject?: 'project' | 'brand' | 'product' | 'channel' | 'user'
+  subjectValue?: string
+  /**
    * 激活态。只有人工保存或带已确认证据的记忆能成为 `active`；模型建议保持
    * `proposed`。缺省表示这条记忆早于状态字段上线，按 `confidence` 兼容判定。
    */
@@ -1424,10 +1434,17 @@ export function createBotanicAgentMemoryItem(input: {
   kind: BotanicAgentMemoryKind
   content: string
   sourceNodeIds?: string[]
+  subject?: BotanicAgentMemoryItem['subject']
+  subjectValue?: string
 }): BotanicAgentMemoryItem {
   const now = input.now ?? Date.now()
   const content = input.content.trim().replace(/\s+/g, ' ')
   if (!content) throw new Error('项目记忆不能为空。')
+  const subject = input.subject ?? 'project'
+  const subjectValue = input.subjectValue?.trim() ?? ''
+  // 限定了主体却没给取值，这条规则永远匹配不上任何一次执行 —— 用户却以为存了一条
+  // 生效的规则。在保存时就拒绝，而不是让它静默躺在列表里。
+  if (subject !== 'project' && !subjectValue) throw new Error('限定适用范围的项目记忆必须填写具体取值。')
   return {
     id: input.id ?? `agent-memory-${crypto.randomUUID()}`,
     kind: input.kind,
@@ -1436,6 +1453,7 @@ export function createBotanicAgentMemoryItem(input: {
     createdAt: now,
     updatedAt: now,
     scope: 'project',
+    ...(subject !== 'project' ? { subject, subjectValue } : {}),
     source: 'human',
     confidence: 'confirmed',
     // 记忆面板的保存是用户的显式动作，因此直接生效；模型建议走 proposed，

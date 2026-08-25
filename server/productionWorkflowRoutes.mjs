@@ -39,6 +39,9 @@ function workflowInput(workflow, run, item, document) {
     prompt: withWorkflowBrandRules(
       override.prompt ?? interpolate(definition.prompt, item.input?.variables),
       definition,
+      // 按本项的渠道/产品挑适用的品牌规则子集：一次 Campaign 里天猫项与京东项
+      // 各自遵守各自的规范。此前所有规则无差别进每一项。
+      { context: { channel: item.input?.channel, sku: item.input?.sku, brandId: document?.brandId } },
     ),
     batchCount: override.batchCount ?? definition.settings?.batchCount ?? 1,
     settings,

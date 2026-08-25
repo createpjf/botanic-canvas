@@ -4564,3 +4564,11 @@ details.agent-timeline__thinking { display: block; padding: 0; }
 /* 重复标识会让「只重试失败那 2 项」打到别的行上，因此这一行要一眼看得出来。 */
 .production-batch__table tr.is-invalid input { background: #fdf6f6; border-color: #e6c9c9; }
 .production-batch__issue { margin: 0; color: #8a3a3a; font-size: 10px; line-height: 1.5; }
+
+/* 记忆的适用范围（Epic 6）。限定范围的规则**不会**进入每一次生成，
+   因此这条说明必须和内容一样显眼 —— 用户以为它总是生效的话，
+   会在别的渠道下疑惑「我明明写了这条规则」。 */
+.agent-memory-panel__subject { display: grid; grid-template-columns: minmax(0, auto) minmax(0, 1fr); gap: 6px; align-items: center; }
+.agent-memory-panel__subject input { padding: 5px 7px; border: 1px solid #d4e1d5; border-radius: 7px; background: #fff; color: #28442f; font-size: 11px; font-family: inherit; }
+.agent-memory-panel__subject input:focus { border-color: #a9c6ae; outline: none; }
+.agent-memory-panel__subject-note { display: block; margin-top: 2px; color: #8a7a4a; font-size: 10px; font-style: normal; line-height: 1.5; }

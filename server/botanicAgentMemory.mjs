@@ -21,6 +21,87 @@ export const MEMORY_SELECTION_TIERS = Object.freeze(['matched', 'standing', 'wea
 
 const tierRank = Object.freeze({ matched: 2, standing: 1, weak: 0 })
 
+/**
+ * 适用主体（Epic 6 §8.6 的五值 `scope`）。
+ *
+ * 它与既有的 `scope` 是**两个轴**，不能合成一个七值枚举：`scope` 是包含范围
+ * （run/project/workspace，影响排序权重），这里是**适用条件**（这条规则该不该
+ * 参与这一次生成）。合并会重犯 status/confidence 那类错误。
+ *
+ * 解决的是一个正在发生的缺陷：今天所有 active 记忆进入**每一次**生成，`scope` 只
+ * 影响排序、从不排除。于是「天猫主图顶部留 20% 安全区」会同样作用在京东项上，
+ * 用户只能把「（仅天猫）」写进正文，指望模型自己注意到。
+ *
+ * 顺序即具体程度，越靠后越具体（用于同分时排序）。
+ */
+export const MEMORY_SUBJECTS = Object.freeze(['project', 'brand', 'product', 'channel', 'user'])
+
+/** 每个主体从执行上下文的哪个字段取值。四个来源都已存在，不需要新基础设施。 */
+const subjectContextKey = Object.freeze({
+  brand: 'brandId',      // Epic 9.1：document.brandId
+  product: 'sku',        // Epic 7：批量项 input.sku
+  channel: 'channel',    // Epic 7：批量项 input.channel
+  user: 'userId',        // Run 的 ownerId
+})
+
+const subjectLabels = Object.freeze({
+  brand: '品牌', product: '产品', channel: '渠道', user: '用户', project: '项目',
+})
+
+/**
+ * 一条记忆是否适用于本次执行。
+ *
+ * 三种结果，**必须分开**：
+ * - `applies`：适用（缺省的 project 主体永远适用，等于今天的行为）。
+ * - `context_missing`：本次执行根本没有那个维度（例如画布手工生成没有渠道）。
+ * - `context_mismatch`：有那个维度但取值不同（本次是京东、规则限定天猫）。
+ *
+ * 后两者的修法完全不同：一个是「这次生成没有渠道信息」，一个是「这条规则不适用于
+ * 京东」。合并成一句「未生效」，用户无从判断该改规则还是改这次运行。
+ *
+ * `context_missing` 判**不适用**而不是放行：用户写「仅天猫」就是这个意思，把它用在
+ * 没有渠道的场景等于应用了一条他说过不要应用的规则。代价是画布生成可能一条规则都
+ * 不剩 —— 所以落选必须可见，这与冲突消解是同一个原则。
+ *
+ * @param {{ subject?: string, subjectValue?: string }} item
+ * @param {Record<string, string | undefined>} context
+ */
+export function memorySubjectApplicability(item, context = {}) {
+  const subject = typeof item?.subject === 'string' ? item.subject : 'project'
+  if (!MEMORY_SUBJECTS.includes(subject)) {
+    // 未知主体按最保守处理：不适用。未知值可能来自更新的写侧，放行等于凭空扩大适用面。
+    return { applies: false, code: 'subject_unknown', detail: `未知的适用主体「${subject}」。` }
+  }
+  if (subject === 'project') return { applies: true }
+  const value = typeof item?.subjectValue === 'string' ? item.subjectValue.trim() : ''
+  if (!value) {
+    // 限定了主体却没给取值，规则本身是残缺的。
+    return { applies: false, code: 'subject_value_missing', detail: `限定了${subjectLabels[subject]}但没有指定具体取值。` }
+  }
+  const actual = context?.[subjectContextKey[subject]]
+  if (typeof actual !== 'string' || !actual.trim()) {
+    return {
+      applies: false,
+      code: 'context_missing',
+      detail: `这条规则限定${subjectLabels[subject]}「${value}」，但本次生成没有${subjectLabels[subject]}信息。`,
+    }
+  }
+  if (actual.trim() !== value) {
+    return {
+      applies: false,
+      code: 'context_mismatch',
+      detail: `这条规则限定${subjectLabels[subject]}「${value}」，本次是「${actual.trim()}」。`,
+    }
+  }
+  return { applies: true, subject, value }
+}
+
+/** 主体越具体，同分时越靠前。 */
+function subjectWeight(item) {
+  const index = MEMORY_SUBJECTS.indexOf(typeof item?.subject === 'string' ? item.subject : 'project')
+  return index > 0 ? index : 0
+}
+
 function normalized(value) {
   return typeof value === 'string' ? value.trim().toLocaleLowerCase('zh-CN') : ''
 }
@@ -90,6 +171,8 @@ function selectionOf(item, query, contextNodeIds) {
   score += memoryConfidenceScore(item) * 4
   if (item.source === 'human') score += 2
   score += scopeWeight(item.scope)
+  // 主体越具体越靠前：一条限定渠道的规则比一条全项目规则更针对本次执行。
+  score += subjectWeight(item)
   return {
     item,
     tier,
@@ -104,26 +187,50 @@ function selectionOf(item, query, contextNodeIds) {
 
 /**
  * @param {Array} memory 项目记忆原始集合。
- * @param {{ query?: string, contextNodeIds?: string[], limit?: number }} options
+ * @param {{
+ *   query?: string, contextNodeIds?: string[], limit?: number,
+ *   context?: { brandId?: string, sku?: string, channel?: string, userId?: string },
+ * }} options
+ *   `context` 是本次执行的身份维度。不给等于「没有任何维度信息」，于是所有限定了
+ *   主体的规则都会落进 `filtered` —— 这是有意的：调用方没有把上下文传进来时，
+ *   宁可少用规则并说明，也不要按「碰巧适用」放行。
  * @returns {{
  *   total: number,
  *   items: Array,
  *   selections: Array<{ item: any, tier: string, score: number, reason: string }>,
  *   conflicts: Array<{ keptId: string, droppedId: string }>,
+ *   filtered: Array<{ id: string, code: string, detail: string }>,
  *   zeroHit: boolean,
  *   matchedQuery: boolean,
  * }}
  *   `zeroHit` 表示一条都没返回；`matchedQuery` 单独表示本轮查询是否真的命中过 ——
  *   两者必须分开，否则「没命中但给了常驻规则」只能被说成「找到了」，读者无从判断
  *   这些规则是不是针对他这次问题的。
+ *   `filtered` 是因适用范围不符而落选的规则**及其原因**，与冲突落选同一原则：
+ *   静默丢弃会让「为什么这条规则没生效」无从解释。
  */
-export function selectBotanicAgentMemory(memory = [], { query = '', contextNodeIds = [], limit = 12 } = {}) {
+export function selectBotanicAgentMemory(memory = [], {
+  query = '', contextNodeIds = [], limit = 12, context = {}, applySubjectFilter = true,
+} = {}) {
   const normalizedQuery = normalized(query)
   const nodeIds = [...new Set((contextNodeIds ?? []).filter((id) => typeof id === 'string'))]
+  /** @type {Array<{ id: string, code: string, detail: string }>} */
+  const filtered = []
   const ranked = (Array.isArray(memory) ? memory : [])
     .filter((item) => item && typeof item.id === 'string' && typeof item.content === 'string')
     // 未激活的记忆只作为人工审核候选保留，不可被 Planner/执行层当成品牌事实。
     .filter(isActiveMemory)
+    // 适用范围过滤。**排除而不是降权**：降权只是让它排在后面，限额一满照样进 Prompt。
+    .filter((item) => {
+      // 唯一允许关掉它的场景是**固定工作流版本**：那一刻还没有批量项，也就没有
+      // 渠道/产品可比，此时过滤会把限定渠道的规则挡在版本之外，执行期再也挑不出来。
+      // 除此之外一律不要关 —— 关掉等于让规则回到「无差别进每一次生成」。
+      if (!applySubjectFilter) return true
+      const applicability = memorySubjectApplicability(item, context)
+      if (applicability.applies) return true
+      filtered.push({ id: item.id, code: applicability.code, detail: applicability.detail })
+      return false
+    })
     .map((item) => selectionOf(item, normalizedQuery, nodeIds))
     // 有查询时才淘汰，且只淘汰 weak；standing 是用户确认过的规则，不因措辞未命中而落选。
     .filter((selection) => !normalizedQuery || selection.tier !== 'weak')
@@ -150,6 +257,7 @@ export function selectBotanicAgentMemory(memory = [], { query = '', contextNodeI
     items: selections.map((selection) => selection.item),
     selections,
     conflicts,
+    filtered,
     zeroHit: selections.length === 0,
     matchedQuery: selections.some((selection) => selection.tier === 'matched'),
   }

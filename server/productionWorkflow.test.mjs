@@ -11,6 +11,7 @@ import {
   productionWorkflowVersionProvenance,
   resolveProductionWorkflowRecipe,
   resolveProductionWorkflowSource,
+  resolveWorkflowBrandRules,
   resolveWorkflowExecutionContract,
   retryFailedWorkflowItems,
   transitionProductionWorkflowRun,
@@ -285,4 +286,56 @@ test('规则来自版本快照，历史版本重跑按当时的规则执行', ()
   assert.match(withWorkflowBrandRules('x', oldVersion), /旧版蓝/u)
   assert.match(withWorkflowBrandRules('x', newVersion), /品牌绿/u)
   assert.doesNotMatch(withWorkflowBrandRules('x', oldVersion), /品牌绿/u)
+})
+
+test('一次批量里天猫项与京东项各自遵守各自的规范', () => {
+  // 这是适用主体要解决的实际问题：此前所有规则无差别进每一项，用户只能把
+  // 「（仅天猫）」写进规则正文，指望模型自己注意到。
+  const document = {
+    id: 'p-1',
+    agentMemory: [
+      { id: 'all', kind: 'rule', content: '主色只用品牌绿', sourceNodeIds: [], createdAt: 1, updatedAt: 1, source: 'human', status: 'active' },
+      { id: 'tmall', kind: 'rule', content: '天猫主图顶部留 20% 安全区', sourceNodeIds: [], createdAt: 1, updatedAt: 2, source: 'human', status: 'active', subject: 'channel', subjectValue: 'tmall' },
+      { id: 'jd', kind: 'rule', content: '京东主图不加促销角标', sourceNodeIds: [], createdAt: 1, updatedAt: 3, source: 'human', status: 'active', subject: 'channel', subjectValue: 'jd' },
+    ],
+  }
+  // 发布时固定的是全集：此刻还没有批量项，也就没有渠道可比。
+  const definition = resolveWorkflowBrandRules(document)
+  assert.equal(definition.brandRules.length, 3, '版本固定全部三条')
+  assert.deepEqual(
+    definition.brandRuleBindings.filter((binding) => binding.subject).map((binding) => `${binding.id}:${binding.subjectValue}`).sort(),
+    ['jd:jd', 'tmall:tmall'],
+  )
+  // 内容与绑定必须同序：执行期按下标对应，错位会让规则张冠李戴。
+  definition.brandRuleBindings.forEach((binding, index) => {
+    const item = document.agentMemory.find((entry) => entry.id === binding.id)
+    assert.equal(definition.brandRules[index], item.content, `第 ${index} 条内容与绑定对应`)
+  })
+
+  const tmallPrompt = withWorkflowBrandRules('生成首图。', definition, { context: { channel: 'tmall' } })
+  assert.match(tmallPrompt, /主色只用品牌绿/u)
+  assert.match(tmallPrompt, /天猫主图顶部留 20% 安全区/u)
+  assert.equal(/京东主图不加促销角标/u.test(tmallPrompt), false)
+
+  const jdPrompt = withWorkflowBrandRules('生成首图。', definition, { context: { channel: 'jd' } })
+  assert.match(jdPrompt, /京东主图不加促销角标/u)
+  assert.equal(/天猫主图顶部留 20% 安全区/u.test(jdPrompt), false)
+})
+
+test('发布于适用主体上线之前的历史版本，执行语义完全不变', () => {
+  // 没有绑定就一律保留：历史版本的执行不能因为这次改动而变。
+  const legacy = { brandRules: ['主色只用品牌绿', '不要出现竞品'] }
+  const prompt = withWorkflowBrandRules('生成首图。', legacy, { context: { channel: 'tmall' } })
+  assert.match(prompt, /主色只用品牌绿/u)
+  assert.match(prompt, /不要出现竞品/u)
+})
+
+test('没有渠道信息时限定渠道的规则不生效', () => {
+  const definition = {
+    brandRules: ['全项目规则', '天猫规则'],
+    brandRuleBindings: [{ id: 'all' }, { id: 'tmall', subject: 'channel', subjectValue: 'tmall' }],
+  }
+  const prompt = withWorkflowBrandRules('生成首图。', definition, {})
+  assert.match(prompt, /全项目规则/u)
+  assert.equal(/天猫规则/u.test(prompt), false)
 })

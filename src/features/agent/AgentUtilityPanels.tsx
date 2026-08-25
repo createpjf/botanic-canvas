@@ -36,7 +36,14 @@ import {
   type ResolvedBrandKit,
 } from '../../domain/brandKitPresentation'
 import { fetchProjectBrandKit } from '../../lib/brandKitApi'
-import { memoryComparisonRows, memoryConflictPairs, memoryIneffectiveReason } from '../../domain/agentMemoryComparison'
+import {
+  MEMORY_SUBJECT_OPTIONS,
+  memoryComparisonRows,
+  memoryConflictPairs,
+  memoryIneffectiveReason,
+  memorySubjectDescription,
+  memorySubjectLabel,
+} from '../../domain/agentMemoryComparison'
 import type { AgentArtifactIndexState, AgentContextItem } from './agentWorkspace.types'
 import { useProductI18n, useProductMessages } from '../../i18n/react'
 import { formatProductDateTime, type ProductLocale } from '../../i18n/core'
@@ -55,7 +62,7 @@ const agentUtilityMessages = {
     all: '全部', images: '图片', videos: '视频', libraryFilter: '按入库状态筛选', anyLibraryStatus: '不限入库', unsaved: '未入库', modelFilter: '按生成模型筛选', allModels: '全部模型',
     batchActions: '批量操作', selectedCount: (count: number) => `已选 ${count} 项`, startNextRound: '创建下一轮', cancel: '取消', itemCount: (count: number) => `${count} 项`, notBackfilled: '未入画布', sourceConversation: '来源对话', selectAll: '全选', clearSelection: '取消全选', select: '选择', deselect: '取消选择', view: '查看',
     noToolArtifacts: '还没有 Skill / MCP 产物。', noGeneratedResults: '还没有该条件下的生成结果。', loadEarlierResults: '加载更早结果',
-    memoryAria: '项目创作记忆', memoryTitle: '项目记忆', memoryDescription: '仅用于当前项目的后续规划；保存品牌规则、认可方向与禁区。', memoryType: '记忆类型', longTermRule: '长期规则', approvedDirection: '已确认方向', avoid: '避免事项', memoryPlaceholder: '例如：商品包装与品牌色不可改变', memoryContent: '项目记忆内容', saveMemory: '保存记忆', locateMemory: (content: string) => `在画布定位记忆 ${content}`, locate: '在画布定位', deleteMemory: (content: string) => `删除记忆 ${content}`, deleteMemoryTitle: '删除记忆', noMemory: '还没有项目记忆。', memoryCount: (count: number) => `${count} 条`,
+    memoryAria: '项目创作记忆', memoryTitle: '项目记忆', memoryDescription: '仅用于当前项目的后续规划；保存品牌规则、认可方向与禁区。', memoryType: '记忆类型', longTermRule: '长期规则', approvedDirection: '已确认方向', avoid: '避免事项', memoryPlaceholder: '例如：商品包装与品牌色不可改变', memoryScope: '适用范围', memoryScopeValue: '适用取值', memoryScopeValuePlaceholder: '例如 tmall', memoryContent: '项目记忆内容', saveMemory: '保存记忆', locateMemory: (content: string) => `在画布定位记忆 ${content}`, locate: '在画布定位', deleteMemory: (content: string) => `删除记忆 ${content}`, deleteMemoryTitle: '删除记忆', noMemory: '还没有项目记忆。', memoryCount: (count: number) => `${count} 条`,
     system: '系统', project: '项目', invoke: '@调用', mount: '挂载到对话', mounted: '已挂载', unmount: '取消挂载',
     brandAria: '品牌规则', brandTitle: '品牌规则', brandDescription: '生成前会把这些规则编译进执行提示词，生成后逐条复核。规则分全局品牌、项目 Creative Spec、本次运行覆盖三层，同一槽位由更靠近本次运行的那一层生效。',
     brandLoading: '正在读取品牌规则…', brandUnavailable: '品牌规则暂不可用，请稍后重试。',
@@ -82,7 +89,7 @@ const agentUtilityMessages = {
     all: 'All', images: 'Images', videos: 'Videos', libraryFilter: 'Filter by library status', anyLibraryStatus: 'Any library status', unsaved: 'Not saved', modelFilter: 'Filter by generation model', allModels: 'All models',
     batchActions: 'Batch actions', selectedCount: (count: number) => `${count} selected`, startNextRound: 'Start next round', cancel: 'Cancel', itemCount: (count: number) => `${count} ${count === 1 ? 'item' : 'items'}`, notBackfilled: 'Not on canvas', sourceConversation: 'Source conversation', selectAll: 'Select all', clearSelection: 'Clear selection', select: 'Select', deselect: 'Deselect', view: 'View',
     noToolArtifacts: 'No Skill or MCP outputs yet.', noGeneratedResults: 'No generated results match these filters.', loadEarlierResults: 'Load earlier results',
-    memoryAria: 'Project creative memory', memoryTitle: 'Project memory', memoryDescription: 'Use project memory in future planning to preserve brand rules, approved directions, and boundaries.', memoryType: 'Memory type', longTermRule: 'Long-term rule', approvedDirection: 'Approved direction', avoid: 'Avoid', memoryPlaceholder: 'For example: Keep the product packaging and brand colors unchanged', memoryContent: 'Project memory content', saveMemory: 'Save memory', locateMemory: (content: string) => `Locate memory on canvas: ${content}`, locate: 'Locate on canvas', deleteMemory: (content: string) => `Delete memory: ${content}`, deleteMemoryTitle: 'Delete memory', noMemory: 'No project memory yet.', memoryCount: (count: number) => `${count} ${count === 1 ? 'entry' : 'entries'}`,
+    memoryAria: 'Project creative memory', memoryTitle: 'Project memory', memoryDescription: 'Use project memory in future planning to preserve brand rules, approved directions, and boundaries.', memoryType: 'Memory type', longTermRule: 'Long-term rule', approvedDirection: 'Approved direction', avoid: 'Avoid', memoryPlaceholder: 'For example: Keep the product packaging and brand colors unchanged', memoryScope: 'Applies to', memoryScopeValue: 'Value', memoryScopeValuePlaceholder: 'e.g. tmall', memoryContent: 'Project memory content', saveMemory: 'Save memory', locateMemory: (content: string) => `Locate memory on canvas: ${content}`, locate: 'Locate on canvas', deleteMemory: (content: string) => `Delete memory: ${content}`, deleteMemoryTitle: 'Delete memory', noMemory: 'No project memory yet.', memoryCount: (count: number) => `${count} ${count === 1 ? 'entry' : 'entries'}`,
     brandAria: 'Brand rules', brandTitle: 'Brand rules', brandDescription: 'These rules are compiled into the execution prompt before generation and checked one by one afterwards. They come from three layers — global brand, project creative spec, and this run’s override — and for any one slot the layer closest to this run wins.',
     brandLoading: 'Loading brand rules…', brandUnavailable: 'Brand rules are unavailable right now. Try again shortly.',
     brandUnbound: 'This project is not bound to a brand, so no brand rules take part in generation.', brandEffective: 'In effect', brandPending: 'Awaiting confirmation', brandOverridden: 'Overridden rules',
@@ -427,7 +434,12 @@ export function AgentResultPanel({
 export function AgentMemoryPanel({ memory, sourceNodeIds, onAddMemory, onRemoveMemory, onLocateNode, onBackToConversation }: {
   memory: BotanicAgentMemoryItem[]
   sourceNodeIds: string[]
-  onAddMemory: (kind: BotanicAgentMemoryKind, content: string, sourceNodeIds?: string[]) => string | null
+  onAddMemory: (
+    kind: BotanicAgentMemoryKind,
+    content: string,
+    sourceNodeIds?: string[],
+    options?: { subject?: BotanicAgentMemoryItem['subject']; subjectValue?: string },
+  ) => string | null
   onRemoveMemory: (memoryId: string) => void
   onLocateNode: (nodeId: string) => void
   onBackToConversation: () => void
@@ -436,11 +448,19 @@ export function AgentMemoryPanel({ memory, sourceNodeIds, onAddMemory, onRemoveM
   const copy = useProductMessages(agentUtilityMessages)
   const [kind, setKind] = useState<BotanicAgentMemoryKind>('rule')
   const [draft, setDraft] = useState('')
+  const [subject, setSubject] = useState<BotanicAgentMemoryItem['subject']>('project')
+  const [subjectValue, setSubjectValue] = useState('')
   const comparisonRows = useMemo(() => memoryComparisonRows(memory), [memory])
   const conflictCount = useMemo(() => memoryConflictPairs(memory).length, [memory])
   const save = () => {
     if (!draft.trim()) return
-    if (onAddMemory(kind, draft, sourceNodeIds)) setDraft('')
+    // 限定了范围却没填取值时不提交：那条规则永远匹配不上任何一次执行。
+    if (subject !== 'project' && !subjectValue.trim()) return
+    if (onAddMemory(kind, draft, sourceNodeIds, { subject, subjectValue: subjectValue.trim() })) {
+      setDraft('')
+      setSubjectValue('')
+      setSubject('project')
+    }
   }
 
   return <section className="agent-memory-panel" aria-label={copy.memoryAria}>
@@ -454,7 +474,23 @@ export function AgentMemoryPanel({ memory, sourceNodeIds, onAddMemory, onRemoveM
         { value: 'avoid', label: copy.avoid },
       ]} onChange={(value) => setKind(value as BotanicAgentMemoryKind)} />
       <textarea value={draft} maxLength={500} onChange={(event) => setDraft(event.target.value)} placeholder={copy.memoryPlaceholder} aria-label={copy.memoryContent} />
-      <button type="button" disabled={!draft.trim()} onClick={save}>{copy.saveMemory}</button>
+      {/* 适用范围：限定后这条规则只在匹配的生成里生效，其余不带上它。 */}
+      <div className="agent-memory-panel__subject">
+        <BotanicSelect
+          value={subject ?? 'project'}
+          ariaLabel={copy.memoryScope}
+          options={MEMORY_SUBJECT_OPTIONS.map((option) => ({ value: option, label: memorySubjectLabel(option, locale) }))}
+          onChange={(value) => { setSubject(value as BotanicAgentMemoryItem['subject']); if (value === 'project') setSubjectValue('') }}
+        />
+        {subject !== 'project' ? <input
+          value={subjectValue}
+          maxLength={80}
+          aria-label={copy.memoryScopeValue}
+          placeholder={copy.memoryScopeValuePlaceholder}
+          onChange={(event) => setSubjectValue(event.target.value)}
+        /> : null}
+      </div>
+      <button type="button" disabled={!draft.trim() || (subject !== 'project' && !subjectValue.trim())} onClick={save}>{copy.saveMemory}</button>
     </div>
     <div className="agent-memory-panel__list">
       {comparisonRows.map((row) => {
@@ -466,6 +502,11 @@ export function AgentMemoryPanel({ memory, sourceNodeIds, onAddMemory, onRemoveM
           <span>
             <small>{agentMemoryKindLabel(item.kind, locale)}</small>
             <p>{item.content}</p>
+            {/* 限定范围的规则不会进入每一次生成；不说清楚，用户会在别的渠道下
+                疑惑「我明明写了这条规则」。 */}
+            {item.subject && item.subject !== 'project'
+              ? <em className="agent-memory-panel__subject-note">{memorySubjectDescription(item, locale)}</em>
+              : null}
             {reason ? <em className="agent-memory-panel__reason">{reason}</em> : null}
           </span>
           <div>

@@ -523,8 +523,14 @@ export function createAgentRouteHandler({
       if (!config.flockApiBaseUrl || !config.flockApiKey || !config.flockTextModel) return error(response, 503, 'PROVIDER_NOT_CONFIGURED', '生图 Agent 规划服务尚未配置。')
       const validatedInput = validateBotanicAgentPlanInput(await readJson(request, config.maximumPromptRefinementRequestBytes, 'Agent 规划请求过大，请精简后重试。'))
       await requireProjectPermission(productStore, user.id, validatedInput.projectId, 'edit')
-      const projectSkills = await productStore.listAgentSkills(user.id, validatedInput.projectId) ?? []
-      const projectState = await productStore.readAgentState(user.id, validatedInput.projectId)
+      // 三次读取并行：加读项目是为了拿 brandId（记忆的适用主体要按它判定），
+      // 串行会白白多一次往返的延迟。
+      const [projectSkillsRaw, projectState, project] = await Promise.all([
+        productStore.listAgentSkills(user.id, validatedInput.projectId),
+        productStore.readAgentState(user.id, validatedInput.projectId),
+        productStore.readProject(user.id, validatedInput.projectId),
+      ])
+      const projectSkills = projectSkillsRaw ?? []
       const input = {
         ...validatedInput,
         // 规划器只能读取服务端当前项目记忆；客户端传入的临时/推测记忆
@@ -536,6 +542,9 @@ export function createAgentRouteHandler({
           query: validatedInput.instruction,
           contextNodeIds: (validatedInput.contextSnapshot ?? []).map((item) => item.nodeId),
           limit: 30,
+          // 规划阶段能确定的身份维度只有品牌与操作人。渠道/产品要到批量项才有，
+          // 因此限定渠道的规则在这里会落进 filtered 并说明原因，而不是「碰巧适用」。
+          context: { brandId: project?.document?.brandId, userId: user.id },
         }).items.map((memory) => ({ id: memory.id, kind: memory.kind, content: memory.content })),
         availableMcpTools: (config.agentMcpTools ?? []).map(({ server, tool }) => ({ server, tool })),
         projectSkills: projectSkills.map(plannerSkillInput),
