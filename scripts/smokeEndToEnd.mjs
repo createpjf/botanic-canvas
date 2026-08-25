@@ -411,13 +411,16 @@ async function main() {
     const advanced = await pollUntil(
       '工作流运行收口',
       async () => (await api(`/api/projects/${encodeURIComponent(projectId)}/production-workflow-runs/${encodeURIComponent(runId)}`)).body?.run,
-      (run) => ['succeeded', 'partially_failed', 'failed', 'cancelled'].includes(run?.status),
+      // `awaiting_review` 是**质量门开启时的正确终点**：所有项都跑完了，等人工评审。
+      // 把它排除在外会让一次完全正常的运行被报成「未收口」——上一轮就是这么误判的，
+      // 而紧接着的交付清单步骤明明正确地报出了「0 个文件、2 个被排除（未批准）」。
+      (run) => ['succeeded', 'partially_failed', 'failed', 'cancelled', 'awaiting_review'].includes(run?.status),
       { timeoutMs: 300_000, intervalMs: 5_000 },
     )
     if (!advanced.ok) {
       fail(`5 分钟内未收口，最后状态 ${advanced.value?.status ?? '未知'} —— workflow.advance 派生任务可能没在跑。`)
     } else {
-      pass(`运行收口为 ${advanced.value.status}`)
+      pass(`运行收口为 ${advanced.value.status}${advanced.value.status === 'awaiting_review' ? '（质量门开启，等待人工评审）' : ''}`)
       const failedItems = (advanced.value.items ?? []).filter((item) => item.status === 'failed')
       if (failedItems.length) fail(`${failedItems.length} 项失败：${failedItems.map((item) => item.error?.code).join(', ')}`)
     }
