@@ -146,6 +146,12 @@ function launch(name, entry) {
 }
 
 function shutdown() {
+  // Worker 被杀时，正在跑的任务会**永远停在 running** —— 没有人再去收口它。
+  // 这不是脚本能避免的（等在途任务跑完可能要很久），但必须说出来，
+  // 否则事后看到一个 running 的任务会以为是产品 bug。
+  if (steps.some((entry) => entry.ok === false)) {
+    process.stdout.write('\n注意：Worker 即将被关闭。若此刻仍有任务在途，它会留在 running 状态且不会自行收口。\n')
+  }
   for (const child of children) {
     try { child.kill('SIGTERM') } catch { /* 已经退了 */ }
   }
@@ -232,13 +238,26 @@ async function main() {
     const jobId = submitted.body?.id
     pass(`已入队 job=${jobId}`)
 
+    // 轮询上限必须**长于服务端的 Provider 超时**（generationTimeoutMs 默认 5 分钟）。
+    // 短于它的话，「模型慢」和「卡死了」在输出里长得一模一样 —— 而上一次就是这么
+    // 误判的：3 分钟等不到就说「Worker 可能没消费队列」，其实 Worker 早就在跑了。
     const settled = await pollUntil(
       '生成任务到终态',
       async () => (await api(`/api/generation-jobs/${encodeURIComponent(jobId)}`)).body,
       (job) => ['succeeded', 'failed', 'cancelled'].includes(job?.status),
+      { timeoutMs: 390_000, intervalMs: 5_000 },
     )
     if (!settled.ok) {
-      fail(`任务 180 秒内未到终态，最后状态：${settled.value?.status ?? '未知'}。Worker 可能没消费队列。`)
+      const last = settled.value ?? {}
+      // 状态没到终态时，把已经攒下的诊断信息一并报出来：errorCode 与部分输出能区分
+      // 「一个候选都没出来」和「出了一半卡住」。
+      const diagnosis = [
+        `最后状态 ${last.status ?? '未知'}`,
+        last.errorCode ? `errorCode=${last.errorCode}` : '',
+        last.failureStage ? `阶段=${last.failureStage}` : '',
+        `已产出 ${(last.outputs ?? []).length}/${last.batchCount ?? '?'} 个输出`,
+      ].filter(Boolean).join('，')
+      fail(`任务 6.5 分钟内未到终态：${diagnosis}。已超过服务端 Provider 超时（5 分钟），说明卡在收口而不是模型慢。`)
     } else if (settled.value.status !== 'succeeded') {
       fail(`任务终态是 ${settled.value.status}：${settled.value.error ?? ''}`)
     } else {
@@ -371,8 +390,13 @@ async function main() {
   }
 
   step('清理')
-  if (keepProject) {
-    skip(`--keep：保留项目 ${projectId} 供你手工检查（删除项目会连带清掉工作流与运行记录）`)
+  const hadFailure = steps.some((entry) => entry.ok === false)
+  if (keepProject || hadFailure) {
+    // 失败时**不删项目**。上一次就是这么把证据弄没的：任务卡在 running，清理把项目
+    // 连同任务记录一起删了，之后再也查不到它究竟停在哪一步。
+    skip(hadFailure && !keepProject
+      ? `有步骤失败，保留项目 ${projectId} 以便追查（任务记录随项目一起保留）`
+      : `--keep：保留项目 ${projectId} 供你手工检查`)
   } else {
     const deleted = await api(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'DELETE' })
     if (deleted.status < 300) pass('冒烟项目已删除')
