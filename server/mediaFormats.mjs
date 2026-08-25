@@ -193,6 +193,18 @@ export function imageFormatLabel(mimeType) {
   return FORMAT_LABELS[normalized(mimeType)] ?? String(mimeType)
 }
 
+/**
+ * canonical 格式的句子式枚举，如「PNG、JPEG 或 WebP」。
+ *
+ * 服务端错误文案目前只有中文，故不带 locale 参数 —— 客户端双语版在
+ * `src/domain/mediaFormats.ts` 的 `imageFormatSentenceList`。两处从各自的
+ * 词表派生，靠 `scripts/mediaFormatContract.test.mjs` 保证词表本身一致。
+ */
+export function canonicalImageFormatSentenceList() {
+  const labels = CANONICAL_IMAGE_FORMATS.map((format) => FORMAT_LABELS[format] ?? format)
+  return labels.length > 1 ? `${labels.slice(0, -1).join('、')} 或 ${labels.at(-1)}` : labels.join('')
+}
+
 /** canonical 图片 data URL 的正则。每次新建，避免共享 lastIndex。 */
 export function canonicalImageDataUrlPattern() {
   const alternatives = CANONICAL_IMAGE_FORMATS

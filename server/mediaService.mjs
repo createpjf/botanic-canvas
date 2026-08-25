@@ -1,4 +1,4 @@
-import { canonicalImageDataUrlPattern, detectImageFormat, imageFormatLabel } from './mediaFormats.mjs'
+import { CANONICAL_IMAGE_FORMATS, canonicalImageDataUrlPattern, canonicalImageFormatSentenceList, detectImageFormat, imageFormatLabel } from './mediaFormats.mjs'
 
 function mediaValidationError(message) {
   const error = new Error(message)
@@ -113,7 +113,7 @@ export function createMediaService({ productStore, objectStore, maximumUploadByt
 
   async function persistDataUrl({ ownerId, projectId, dataUrl }) {
     const image = parseImageDataUrl(dataUrl, maximumUploadBytes)
-    if (!image) throw mediaValidationError('仅支持 PNG、JPEG 或 WebP 图片存入对象存储。')
+    if (!image) throw mediaValidationError(`仅支持 ${canonicalImageFormatSentenceList()} 图片存入对象存储。`)
     return persistBytes({ ownerId, projectId, bytes: image.bytes, contentType: image.contentType })
   }
 
@@ -122,7 +122,7 @@ export function createMediaService({ productStore, objectStore, maximumUploadByt
   }
 
   async function persistProviderMedia({ ownerId, projectId, media }) {
-    if (!Buffer.isBuffer(media?.buffer) || !media.buffer.length || !['image/png', 'image/jpeg', 'image/webp', 'video/mp4'].includes(media.mimeType)) {
+    if (!Buffer.isBuffer(media?.buffer) || !media.buffer.length || ![...CANONICAL_IMAGE_FORMATS, 'video/mp4'].includes(media.mimeType)) {
       throw new Error('供应商返回了不支持的媒体文件。')
     }
     return persistBytes({ ownerId, projectId, bytes: media.buffer, contentType: media.mimeType })
