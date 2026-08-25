@@ -1,6 +1,7 @@
 import { type DragEvent, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { buildDeliveryPreviewArtifacts, resolveDeliveryDraft, type DeliveryPanelTarget } from '../../domain/deliveryPresentation'
+import { imageUploadAccept } from '../../domain/mediaFormats'
 import { topOverlayLayer } from '../../domain/overlayPriority'
 import { primaryGenerationReference, settingsForGenerationModel } from '../../domain/generationRecipe'
 import { withoutCustomGenerationSize } from '../../domain/generationOutputSize'
@@ -519,7 +520,7 @@ export function AssetLibrary({
         ref={fileInputRef}
         className="asset-file-input"
         type="file"
-        accept="image/png,image/jpeg,image/webp"
+        accept={imageUploadAccept()}
         multiple
         aria-label={t.bulkImages}
         onChange={(event) => {
@@ -532,7 +533,7 @@ export function AssetLibrary({
         ref={folderInputRef}
         className="asset-file-input"
         type="file"
-        accept="image/png,image/jpeg,image/webp"
+        accept={imageUploadAccept()}
         multiple
         {...({ webkitdirectory: '', directory: '' } as Record<string, string>)}
         aria-label={t.bulkFolder}

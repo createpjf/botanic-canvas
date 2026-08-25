@@ -23,6 +23,7 @@ import { defaultGenerationModels } from '../../domain/canvas'
 import { settingsForGenerationModel } from '../../domain/generationRecipe'
 import { generationTaskErrorMessage, generationTaskFeedback, planResultGroupPresentation, traceCanvasLineage, type ResultGroupPresentation } from '../../domain/canvasPresentation'
 import { buildDeliveryPreviewArtifacts, canUseForImageDelivery, resolveDeliveryDraft, type DeliveryPanelTarget } from '../../domain/deliveryPresentation'
+import { imageUploadAccept } from '../../domain/mediaFormats'
 import { reducedAspectRatio } from '../../domain/mediaPresentation'
 import { mediaRetryUrl } from '../../domain/mediaRecovery'
 import { videoAspectRatioPolicy } from '../../domain/videoGeneration'
@@ -2616,7 +2617,7 @@ export default function CanvasWorkspace({
           ref={nodeFileInputRef}
           className="asset-file-input"
           type="file"
-          accept="image/png,image/jpeg,image/webp"
+          accept={imageUploadAccept()}
           multiple
           aria-label={t.uploadToCanvas}
           onChange={(event) => {
