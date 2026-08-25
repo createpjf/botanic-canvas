@@ -221,6 +221,9 @@ async function main() {
       prompt: '一只陶瓷小猫摆件放在浅灰色背景上，柔和自然光，正面视角，产品摄影。',
       batchCount: 1,
       settings: { model, aspectRatio: '1:1', resolution: '1K' },
+      // 纯文字生图（PR #60）：references 允许为空数组，但 recipe 本身必须存在 ——
+      // 校验只看形状（generationProvider.mjs:165），不给 recipe 会被当成「缺参考图」。
+      recipe: { references: [] },
     }),
   })
   if (submitted.status !== 202) {
