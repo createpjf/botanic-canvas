@@ -1176,6 +1176,12 @@ export type BotanicAgentMemoryItem = {
   /** 可信程度。与 `status`（是否生效）是两个概念，不能互相顶替（ADR 0006）。 */
   confidence?: 'confirmed' | 'provisional'
   /**
+   * 可信程度的数值口径（0–1，Epic 6 §8.6）。**可选且叠加**：不给就按 `confidence`
+   * 枚举读时派生，因此没有历史数据迁移。有了它，检索排序才能在同一档内分出高低。
+   * 越界值按「没给」处理，不夹到边界 —— 夹了之后一个写错的 42 会变成最高可信度。
+   */
+  confidenceScore?: number
+  /**
    * 激活态。只有人工保存或带已确认证据的记忆能成为 `active`；模型建议保持
    * `proposed`。缺省表示这条记忆早于状态字段上线，按 `confidence` 兼容判定。
    */

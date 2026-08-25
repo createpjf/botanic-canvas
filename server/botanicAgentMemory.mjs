@@ -56,6 +56,26 @@ function conflictsBetween(left, right) {
   return Boolean(left.conflictsWith?.includes(right.id) || right.conflictsWith?.includes(left.id))
 }
 
+/**
+ * 可信程度的数值口径（Epic 6 §8.6 的 `confidence: number`）。
+ *
+ * **不改存储、不迁移历史数据**：仍以枚举为准，数值是读时派生的。原先推迟这一项的
+ * 理由是「改数值要迁移全部历史数据与每处读取」—— 那说的是把枚举换成数值。这里是
+ * 叠加：写侧可选给 `confidenceScore`，没给就按枚举派生，两条路径得到同一个量纲。
+ *
+ * 有了数值，排序才能在**同一档内**分出高低：此前 `confirmed` 一律加 4 分，两条都
+ * 确认过的记忆完全平手，谁在前只取决于数组顺序。
+ *
+ * @param {{ confidence?: string, confidenceScore?: number }} item
+ */
+export function memoryConfidenceScore(item) {
+  const explicit = Number(item?.confidenceScore)
+  // 写侧显式给的分数优先，但必须落在 [0,1]：越界值按「没给」处理，
+  // 而不是夹到边界 —— 夹了之后一个写错的 42 会变成「最高可信度」。
+  if (Number.isFinite(explicit) && explicit >= 0 && explicit <= 1) return explicit
+  return item?.confidence === 'provisional' ? 0.4 : 0.85
+}
+
 function selectionOf(item, query, contextNodeIds) {
   const text = normalized(`${item.id} ${item.kind} ${item.content}`)
   const literalHit = Boolean(query) && text.includes(query)
@@ -64,7 +84,10 @@ function selectionOf(item, query, contextNodeIds) {
   let score = 0
   if (literalHit) score += 8
   if (contextHit) score += 5
-  if (item.confidence === 'confirmed') score += 4
+  // 可信程度按数值计入，同一档内也能分出高低（此前 confirmed 一律 +4，两条都确认过的
+  // 记忆完全平手，谁在前只取决于数组顺序）。系数保持 4，`confirmed` 仍得约 3.4 分，
+  // 与改动前的相对排序基本一致，不会让既有选择结果整体翻盘。
+  score += memoryConfidenceScore(item) * 4
   if (item.source === 'human') score += 2
   score += scopeWeight(item.scope)
   return {

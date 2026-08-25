@@ -130,3 +130,70 @@ test('渲染出的摘要明确标注是早前结论，不是本轮输入', () =>
   assert.equal(renderThreadSummary(undefined), '')
   assert.equal(renderThreadSummary({ version: 1 }), '')
 })
+
+test('artifact_reference 层存的是目录，不是结果内容', () => {
+  // 此前这一层只体现为实体标识，没有可回读的指针：结果被挤出窗口后，模型既不知道
+  // 有过这些产出，也就不会想到去 artifact_search 回读，「上次那版在哪」是凭空作答。
+  const checkpoint = buildThreadSummaryCheckpoint({
+    messages: [
+      { id: 'm-1', role: 'user', kind: 'text', content: '做一版香水首图', updatedAt: 1 },
+      {
+        id: 'm-2', role: 'assistant', kind: 'text', content: '好了', updatedAt: 2,
+        artifacts: [
+          { id: 'generation:job-1:out-1', kind: 'image', label: '香水首图 A', url: '/api/media/m1', content: '不该进摘要' },
+          { id: 'generation:job-1:out-2', kind: 'image', label: '香水首图 B', metadata: { prompt: '不该进摘要' } },
+        ],
+      },
+    ],
+    now: 5,
+  })
+  assert.deepEqual(checkpoint.artifacts, [
+    { id: 'generation:job-1:out-1', kind: 'image', label: '香水首图 A' },
+    { id: 'generation:job-1:out-2', kind: 'image', label: '香水首图 B' },
+  ])
+  // 内容、地址与元数据都不进摘要 —— 那才是「把结果重新塞回上下文」。
+  const serialized = JSON.stringify(checkpoint)
+  assert.equal(serialized.includes('不该进摘要'), false)
+  assert.equal(serialized.includes('/api/media/'), false)
+})
+
+test('渲染时必须写明只有标识、内容要用工具回读', () => {
+  // 不写的话模型会拿标签当成它看过的内容直接描述画面 —— 比不给这份目录更糟。
+  const rendered = renderThreadSummary({
+    artifacts: [{ id: 'generation:job-1:out-1', kind: 'image', label: '香水首图 A' }],
+  })
+  assert.match(rendered, /只有标识/u)
+  assert.match(rendered, /不要凭这行描述画面/u)
+  assert.match(rendered, /香水首图 A（generation:job-1:out-1）/u)
+  assert.match(renderThreadSummary({ artifacts: [{ id: 'a', kind: 'image', label: 'A' }] }, { locale: 'en' }),
+    /identifiers only.*do not describe them from memory/u)
+})
+
+test('产出目录有上限且去重，留最近的', () => {
+  const many = Array.from({ length: 20 }, (_, index) => ({
+    id: 'm-' + index, role: 'assistant', kind: 'text', content: 'x', updatedAt: index,
+    artifacts: [{ id: `artifact-${index}`, kind: 'image', label: `图 ${index}` }],
+  }))
+  const checkpoint = buildThreadSummaryCheckpoint({ messages: many, now: 5 })
+  assert.equal(checkpoint.artifacts.length, 12)
+  // 早期结果更可能已被后续版本取代，因此留最近的。
+  assert.equal(checkpoint.artifacts.at(-1).id, 'artifact-19')
+
+  // 同一产出在多条消息里重复出现时只留一份。
+  const deduped = buildThreadSummaryCheckpoint({
+    messages: [
+      { id: 'a', role: 'assistant', kind: 'text', content: 'x', updatedAt: 1, artifacts: [{ id: 'same', kind: 'image', label: '图' }] },
+      { id: 'b', role: 'assistant', kind: 'text', content: 'x', updatedAt: 2, artifacts: [{ id: 'same', kind: 'image', label: '图' }] },
+    ],
+    now: 5,
+  })
+  assert.equal(deduped.artifacts.length, 1)
+})
+
+test('没有产出时不写这个键，摘要形状与改动前一致', () => {
+  const checkpoint = buildThreadSummaryCheckpoint({
+    messages: [{ id: 'm-1', role: 'user', kind: 'text', content: '目标', updatedAt: 1 }], now: 5,
+  })
+  assert.equal('artifacts' in checkpoint, false)
+  assert.equal(/产出/u.test(renderThreadSummary(checkpoint)), false)
+})

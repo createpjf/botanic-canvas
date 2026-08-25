@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { MEMORY_SELECTION_TIERS, isActiveMemory, memoryBindingSnapshot, selectBotanicAgentMemory } from './botanicAgentMemory.mjs'
+import { MEMORY_SELECTION_TIERS, isActiveMemory, memoryBindingSnapshot, memoryConfidenceScore, selectBotanicAgentMemory } from './botanicAgentMemory.mjs'
 
 const memory = [
   { id: 'human-rule', kind: 'rule', content: '瓶身比例不可改变', sourceNodeIds: ['product'], source: 'human', confidence: 'confirmed', scope: 'project', version: 2, contentHash: 'hash-1', updatedAt: 300 },
@@ -136,4 +136,26 @@ test('命中本轮查询的一方在冲突中胜出，与写入时间无关', ()
   const result = selectBotanicAgentMemory(conflicting, { query: '海边' })
   assert.deepEqual(result.items.map((item) => item.id), ['rule-old-hit'])
   assert.deepEqual(result.conflicts, [{ keptId: 'rule-old-hit', droppedId: 'rule-new-miss' }])
+})
+
+test('可信程度是读时派生的数值，不改存储也不迁移历史', () => {
+  // 原先推迟这一项的理由是「改数值要迁移全部历史数据与每处读取」——那说的是把枚举
+  // 换成数值。这里是叠加：没给分数就按枚举派生，两条路径同一个量纲。
+  assert.equal(memoryConfidenceScore({ confidence: 'confirmed' }), 0.85)
+  assert.equal(memoryConfidenceScore({ confidence: 'provisional' }), 0.4)
+  assert.equal(memoryConfidenceScore({}), 0.85, '没有 confidence 的历史记忆按已确认处理')
+  assert.equal(memoryConfidenceScore({ confidence: 'confirmed', confidenceScore: 0.6 }), 0.6, '显式分数优先')
+  // 越界值按「没给」处理而不是夹到边界：夹了之后一个写错的 42 会变成最高可信度。
+  assert.equal(memoryConfidenceScore({ confidence: 'provisional', confidenceScore: 42 }), 0.4)
+  assert.equal(memoryConfidenceScore({ confidence: 'provisional', confidenceScore: -1 }), 0.4)
+})
+
+test('同一档内可信度更高的排在前面', () => {
+  // 此前 confirmed 一律 +4，两条都确认过的记忆完全平手，谁在前只取决于数组顺序。
+  const base = { kind: 'rule', sourceNodeIds: [], createdAt: 1, updatedAt: 1, source: 'human', status: 'active', confidence: 'confirmed' }
+  const selected = selectBotanicAgentMemory([
+    { ...base, id: 'lower', content: '较低可信', confidenceScore: 0.5 },
+    { ...base, id: 'higher', content: '较高可信', confidenceScore: 0.95 },
+  ], {})
+  assert.deepEqual(selected.selections.map((entry) => entry.item.id), ['higher', 'lower'])
 })
