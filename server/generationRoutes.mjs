@@ -1,4 +1,4 @@
-import { generationTimeoutForModel } from './generationModels.mjs'
+import { generationJobTimedOut, generationTimeoutForModel, timedOutGenerationJobPatch } from './generationModels.mjs'
 import { cancelGenerationJob } from './generationCancellation.mjs'
 import { persistedGenerationJob, publicGenerationJob } from './generationProvider.mjs'
 import { reconcileGenerationResults } from './generationResultReconciliation.mjs'
@@ -92,13 +92,10 @@ export function createGenerationRouteHandler({
         imageTimeoutMs: config.generationTimeoutMs ?? 5 * 60_000,
         videoTimeoutMs: config.videoGenerationTimeoutMs ?? 20 * 60_000,
       })
-      if ((job.status === 'queued' || job.status === 'running') && Date.now() - job.createdAt >= maximumTaskDurationMs) {
-        const failed = {
-          ...job,
-          status: 'failed',
-          error: '生成任务超过模型等待时限，已停止，请稍后重试。',
-          updatedAt: Date.now(),
-        }
+      // 判定与补丁都在 generationModels：同一条超时语义有两个产生点，
+      // 就地各写一份迟早会漂移（此前这一份就漏了 errorCode）。
+      if (generationJobTimedOut(job, { maximumTaskDurationMs })) {
+        const failed = { ...job, ...timedOutGenerationJobPatch() }
         await productStore.putGenerationJob(user.id, persistedGenerationJob(failed))
         if (job.status === 'queued') await redisQueue?.cancel(job.id)
         return json(response, 200, publicGenerationJob(failed, { includeIdempotencyKey: failed.ownerId === user.id }))

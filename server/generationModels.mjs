@@ -72,3 +72,32 @@ export function generationTimeoutForModel(catalog, modelId, { imageTimeoutMs, vi
     ? videoTimeoutMs
     : imageTimeoutMs
 }
+
+/**
+ * 读时超时收口：一个仍在排队/执行、但已经超过模型等待时限的任务，应当被判为失败。
+ *
+ * 抽成纯函数是因为**同一条超时消息有两个产生点**：Worker 侧的 `PROVIDER_TIMEOUT`
+ * 和这条读时收口。此前只有前者带错误码，后者只写了 error 文案 —— 于是走到这条路径的
+ * 任务 `errorCode` 是 `undefined`，`agentBranchRetryPolicy` 返回 `error_code_unknown`
+ * 停在待人工，**永远不会自动重试**。而 `PROVIDER_TIMEOUT` 恰恰在可重试白名单里。
+ *
+ * 端到端冒烟实测到了这一条：任务在 300 秒后收口为 failed，errorCode 却是空的。
+ *
+ * @param {{ status?: string, createdAt?: number }} job
+ * @param {{ maximumTaskDurationMs: number, now?: number }} input
+ */
+export function generationJobTimedOut(job, { maximumTaskDurationMs, now = Date.now() }) {
+  if (job?.status !== 'queued' && job?.status !== 'running') return false
+  if (!Number.isFinite(Number(maximumTaskDurationMs))) return false
+  return now - Number(job.createdAt ?? 0) >= Number(maximumTaskDurationMs)
+}
+
+/** 超时收口后的任务补丁。错误码与 Worker 侧同一个值，重试策略据此判定。 */
+export function timedOutGenerationJobPatch({ now = Date.now() } = {}) {
+  return {
+    status: 'failed',
+    errorCode: 'PROVIDER_TIMEOUT',
+    error: '生成任务超过模型等待时限，已停止，请稍后重试。',
+    updatedAt: now,
+  }
+}
