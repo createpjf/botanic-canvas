@@ -286,23 +286,30 @@ function assertImagePixelBudget(buffer) {
  */
 export async function resolveGenerationInputMedia(input, resolveMedia) {
   const resolve = async (reference) => {
-    if (reference.buffer) return reference
-    if (!reference.mediaId) throw new GenerationError(400, 'INVALID_REFERENCE', '参考素材缺少图片数据。')
-    const resolved = await resolveMedia(reference.mediaId)
-    if (!resolved?.buffer?.length || typeof resolved.mimeType !== 'string') {
-      throw new GenerationError(404, 'MEDIA_NOT_FOUND', '生成参考素材已不存在或没有访问权限。')
-    }
-    if (reference.mediaKind === 'video' && resolved.mimeType !== 'video/mp4') {
-      throw new GenerationError(400, 'INVALID_REFERENCE', '视频参考素材必须是 MP4。')
-    }
-    if (reference.mediaKind !== 'video' && !isCanonicalImageFormat(resolved.mimeType)) {
-      throw new GenerationError(400, 'INVALID_REFERENCE',
-        `参考素材格式为 ${imageFormatLabel(resolved.mimeType)}，仅支持 ${CANONICAL_IMAGE_FORMATS.map(imageFormatLabel).join('、')}。`)
+    let resolved
+    if (reference.buffer) {
+      // dataUrl 路径：buffer 已在 validateGenerationInput 时由 mediaDataUrl 提前填充。
+      resolved = reference
+    } else {
+      // mediaId 路径：需要通过 resolveMedia 取出字节。
+      if (!reference.mediaId) throw new GenerationError(400, 'INVALID_REFERENCE', '参考素材缺少图片数据。')
+      const fetched = await resolveMedia(reference.mediaId)
+      if (!fetched?.buffer?.length || typeof fetched.mimeType !== 'string') {
+        throw new GenerationError(404, 'MEDIA_NOT_FOUND', '生成参考素材已不存在或没有访问权限。')
+      }
+      if (reference.mediaKind === 'video' && fetched.mimeType !== 'video/mp4') {
+        throw new GenerationError(400, 'INVALID_REFERENCE', '视频参考素材必须是 MP4。')
+      }
+      if (reference.mediaKind !== 'video' && !isCanonicalImageFormat(fetched.mimeType)) {
+        throw new GenerationError(400, 'INVALID_REFERENCE',
+          `参考素材格式为 ${imageFormatLabel(fetched.mimeType)}，仅支持 ${CANONICAL_IMAGE_FORMATS.map(imageFormatLabel).join('、')}。`)
+      }
+      resolved = fetched
     }
     // 像素守卫。此前只卡字节（8MB），一张 2.8MB 的 12.2MP 手机原图轻松过关，
     // 然后被供应商以 "Invalid image file or mode for image 1" 拒掉 —— 而那句话
     // 会原样转述给用户，让他去 email 供应商。手机照片是最常见的参考素材来源，
-    // 所以这条路径上的每个用户都会撞到。
+    // 所以这条路径上的每个用户都会撞到。dataUrl 与 mediaId 都须通过此处。
     if (reference.mediaKind !== 'video') {
       assertImagePixelBudget(resolved.buffer)
     }

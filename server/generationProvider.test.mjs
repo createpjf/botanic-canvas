@@ -531,3 +531,56 @@ test('读不出尺寸时不拦', async () => {
   )
   assert.equal(resolved.references.length, 1)
 })
+
+test('dataUrl 参考图像素超上限时被拒', async () => {
+  // dataUrl 路径在 validateGenerationInput 时已填充 buffer，直接进 resolve 的早期分支。
+  // 若不加像素守卫，12.2MP 的参考会原样通过。
+  const { resolveGenerationInputMedia, GenerationError } = await import('./generationProvider.mjs')
+  const { imagePixelSize } = await import('./mediaFormats.mjs')
+
+  const oversized = pngOfSize(4032, 3024)
+  assert.deepEqual(imagePixelSize(oversized), { width: 4032, height: 3024 })
+
+  const input = {
+    references: [{ buffer: oversized, mimeType: 'image/png', mediaKind: 'image' }],
+    parent: undefined,
+    mask: undefined,
+  }
+
+  await assert.rejects(
+    () => resolveGenerationInputMedia(input, async () => { throw new Error('should not be called') }),
+    (error) => {
+      assert.ok(error instanceof GenerationError)
+      assert.equal(error.code, 'IMAGE_TOO_LARGE_PIXELS')
+      assert.match(error.message, /4032×3024/)
+      assert.match(error.message, /2048/)
+      return true
+    },
+  )
+})
+
+test('dataUrl 父版本图像素超上限时被拒', async () => {
+  // 精修任务会从客户端拿 parent，也走 dataUrl 路径。
+  const { resolveGenerationInputMedia, GenerationError } = await import('./generationProvider.mjs')
+  const { imagePixelSize } = await import('./mediaFormats.mjs')
+
+  const oversized = pngOfSize(4032, 3024)
+  assert.deepEqual(imagePixelSize(oversized), { width: 4032, height: 3024 })
+
+  const input = {
+    references: [],
+    parent: { buffer: oversized, mimeType: 'image/png', mediaKind: 'image' },
+    mask: undefined,
+  }
+
+  await assert.rejects(
+    () => resolveGenerationInputMedia(input, async () => { throw new Error('should not be called') }),
+    (error) => {
+      assert.ok(error instanceof GenerationError)
+      assert.equal(error.code, 'IMAGE_TOO_LARGE_PIXELS')
+      assert.match(error.message, /4032×3024/)
+      assert.match(error.message, /2048/)
+      return true
+    },
+  )
+})
