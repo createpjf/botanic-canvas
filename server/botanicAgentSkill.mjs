@@ -83,7 +83,73 @@ export function normalizeBotanicAgentSkillCapabilities(value) {
  */
 export const botanicAgentSkillManifestVersion = 1
 
+/**
+ * Skill 的执行形态。
+ *
+ * - `guidance`（缺省，就是今天）：正文注入 Prompt，产出是指令文本。
+ * - `evaluator`：作为**受治理的子任务**运行（Epic 11 那套），逐候选给出结构化结论，
+ *   进入结果评审的判据集合。
+ *
+ * 这是 `outputSchema` 的消费方 —— 上一轮我说它「至今没有消费方」，是因为 Skill 只有
+ * guidance 一种形态。加了第二种形态之后它才成立。
+ */
+export const BOTANIC_AGENT_SKILL_KINDS = Object.freeze(['guidance', 'evaluator'])
+
+/** 评审结论词表。与 `agentReviewDeterministic.REVIEW_VERDICTS` 同一份，不另立。 */
+const EVALUATOR_VERDICTS = Object.freeze(['pass', 'fail', 'unverifiable'])
+
 const TOOL_NAME = /^[a-z][a-z0-9_]{1,63}$/
+
+/**
+ * 校验 evaluator 的输出 Schema。
+ *
+ * 硬性要求它能产出一个**评审结论**：必填 `verdict`，取值限于 pass/fail/unverifiable。
+ * 不要求的话，一条 evaluator Skill 可以返回任意形状的 JSON，而评审层拿到它既没法
+ * 汇总也没法展示 —— 那就又变成一个写而不读的字段。
+ *
+ * guidance 形态**不允许**带 outputSchema：它的产出是指令文本，声明一个没人校验的
+ * 输出形状只会让人以为它被校验过。
+ *
+ * @param {any} raw
+ * @param {string} kind
+ */
+function normalizeEvaluatorOutputSchema(raw, kind) {
+  if (kind !== 'evaluator') {
+    if (raw !== undefined) {
+      throw new BotanicAgentSkillError(
+        400, 'INVALID_AGENT_SKILL_MANIFEST',
+        '只有 evaluator 形态的 Skill 才有输出 Schema；guidance 的产出是指令文本。',
+      )
+    }
+    return undefined
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || raw.type !== 'object') {
+    throw new BotanicAgentSkillError(400, 'INVALID_AGENT_SKILL_MANIFEST', 'evaluator Skill 必须声明对象形状的输出 Schema。')
+  }
+  const properties = raw.properties && typeof raw.properties === 'object' ? raw.properties : {}
+  const required = Array.isArray(raw.required) ? raw.required : []
+  if (!required.includes('verdict')) {
+    throw new BotanicAgentSkillError(400, 'AGENT_SKILL_EVALUATOR_VERDICT_REQUIRED', 'evaluator Skill 的输出 Schema 必须把 verdict 列为必填。')
+  }
+  const verdict = properties.verdict
+  const values = Array.isArray(verdict?.enum) ? verdict.enum : []
+  if (verdict?.type !== 'string' || !values.length || values.some((value) => !EVALUATOR_VERDICTS.includes(value))) {
+    throw new BotanicAgentSkillError(
+      400, 'AGENT_SKILL_EVALUATOR_VERDICT_INVALID',
+      `evaluator Skill 的 verdict 取值只能来自 ${EVALUATOR_VERDICTS.join(' / ')}。`,
+    )
+  }
+  if (Object.keys(properties).length > 6) {
+    // 字段越多越容易出现「看起来很详实、其实是编的」，而评审层无从分辨。
+    throw new BotanicAgentSkillError(400, 'INVALID_AGENT_SKILL_MANIFEST', 'evaluator Skill 的输出字段过多。')
+  }
+  return structuredClone(raw)
+}
+
+/** 这条 Skill 是否作为评审判据执行。缺省 guidance —— 存量 Skill 行为不变。 */
+export function isEvaluatorSkill(skill) {
+  return skill?.manifest?.kind === 'evaluator' && Boolean(skill.manifest.outputSchema)
+}
 
 /**
  * 归一 Skill Manifest。
@@ -105,12 +171,19 @@ export function normalizeAgentSkillManifest(raw) {
     }
     return name
   }))]
+  const kind = raw.kind === undefined ? 'guidance' : raw.kind
+  if (!BOTANIC_AGENT_SKILL_KINDS.includes(kind)) {
+    throw new BotanicAgentSkillError(400, 'INVALID_AGENT_SKILL_MANIFEST', `Skill 形态「${String(kind)}」不受支持。`)
+  }
+  const outputSchema = normalizeEvaluatorOutputSchema(raw.outputSchema, kind)
   const dependencies = raw.dependencies === undefined ? [] : raw.dependencies
   if (!Array.isArray(dependencies) || dependencies.length > 8) {
     throw new BotanicAgentSkillError(400, 'INVALID_AGENT_SKILL_MANIFEST', 'Skill 依赖声明无效。')
   }
   return {
     version: botanicAgentSkillManifestVersion,
+    kind,
+    ...(outputSchema ? { outputSchema } : {}),
     toolAllowlist: tools,
     dependencies: dependencies.map((dependency) => {
       const skillId = text(dependency?.skillId, 'Skill 依赖标识', 160)

@@ -55,6 +55,10 @@ export function createAgentRunGenerationService({
           // 只在项目确实绑定了品牌时才去读全局套件：未绑定的项目不该为品牌库多付一次
           // 存储往返，更不该被套上一份它没选过的「默认品牌」。
           globalBrandKit: await readGlobalBrandKit(userId, project.document?.brandId),
+          // evaluator Skill 作为自定义评审判据固定进质量策略（Epic 6 × Epic 11）。
+          // 存储没实现这个读取口时按「没有自定义判据」处理，而不是让整条提交路径挂掉 ——
+          // 自定义判据是增量能力，它不可用不该阻断生成本身。
+          projectSkills: await productStore.listAgentSkills?.(userId, projectId) ?? [],
         }),
       }
     // 预览不落库：它反映的文档状态可能还会变，锁死快照会把预览当成确认。

@@ -23,6 +23,7 @@ import { agentArtifactKindLabel, agentMemoryKindLabel, agentRunFeedback, AgentPa
 import {
   agentReviewCandidateRows,
   agentReviewCoverageSummary,
+  agentReviewEvaluatorCostNote,
   agentReviewTaskStatusNote,
   type AgentReviewDecision,
   type AgentReviewTaskSnapshot,
@@ -71,7 +72,7 @@ const agentUtilityMessages = {
     reviewAria: '结果评审', reviewTitle: '结果评审', reviewDescription: '逐条判据说明结果是否符合这次确认的计划；自动评审不代表品牌批准，仍需你来决定。',
     reviewLoading: '正在读取评审…', reviewUnavailable: '评审暂不可用，请稍后重试。', noReviewTasks: '这次任务还没有评审记录。',
     reviewCandidate: (id: string) => `候选 ${id}`, reviewUnverified: (count: number) => `${count} 项未验证`,
-    reviewRevision: '修订建议', reviewAccept: '接受', reviewReject: '拒绝', reviewRetry: '请求重试',
+    reviewRevision: '修订建议', reviewCustomCriteria: '项目自定义判据', reviewSkillSource: (version: number) => `来自项目 Skill · 版本 ${version}`, reviewAccept: '接受', reviewReject: '拒绝', reviewRetry: '请求重试',
     reviewAwaiting: '待你决定', reviewSubmitting: '提交中…', reviewDecisionFailed: '决定提交失败，请重试。',
     reviewRetryCreated: (count: number) => `已创建 ${count} 个重试任务；原结果保留。`,
     memoryConflicts: (count: number) => `有 ${count} 组规则互相矛盾，每组只有一条会生效。停用其中一条，规则才不会互相打架。`,
@@ -97,7 +98,7 @@ const agentUtilityMessages = {
     reviewAria: 'Result review', reviewTitle: 'Result review', reviewDescription: 'Per-criterion findings on whether results match the plan you confirmed. An automatic pass is not brand approval — the call is still yours.',
     reviewLoading: 'Loading review…', reviewUnavailable: 'Review is unavailable right now. Try again shortly.', noReviewTasks: 'No review has been recorded for this task yet.',
     reviewCandidate: (id: string) => `Candidate ${id}`, reviewUnverified: (count: number) => `${count} not verified`,
-    reviewRevision: 'Suggested revision', reviewAccept: 'Accept', reviewReject: 'Reject', reviewRetry: 'Request retry',
+    reviewRevision: 'Suggested revision', reviewCustomCriteria: 'Project-defined criterion', reviewSkillSource: (version: number) => `From a project Skill · version ${version}`, reviewAccept: 'Accept', reviewReject: 'Reject', reviewRetry: 'Request retry',
     reviewAwaiting: 'Awaiting your decision', reviewSubmitting: 'Submitting…', reviewDecisionFailed: 'The decision could not be submitted. Try again.',
     reviewRetryCreated: (count: number) => `Created ${count} retry task(s); the original results are kept.`,
     memoryConflicts: (count: number) => `${count} pair(s) of rules contradict each other; only one of each takes effect. Retire one so the intent is unambiguous.`,
@@ -645,6 +646,10 @@ export function AgentReviewPanel({ runId, onBackToConversation }: {
       return <article key={task.id} className="agent-review-panel__task">
         <p className="agent-review-panel__coverage">{agentReviewCoverageSummary(task, locale)}</p>
         {statusNote ? <p className="agent-review-panel__status">{statusNote}</p> : null}
+        {/* 自定义判据的成本必须在这里就说清楚：评审完再说已经晚了，钱已经花掉。 */}
+        {agentReviewEvaluatorCostNote(task, locale)
+          ? <p className="agent-review-panel__cost">{agentReviewEvaluatorCostNote(task, locale)}</p>
+          : null}
         {agentReviewCandidateRows(task, locale).map((row) => <div key={row.artifactId} className={`agent-review-panel__candidate is-${row.verdict}`}>
           <header>
             <strong>{copy.reviewCandidate(row.artifactId.split(':').at(-1) ?? row.artifactId)}</strong>
@@ -652,11 +657,13 @@ export function AgentReviewPanel({ runId, onBackToConversation }: {
             {row.unverifiedCount ? <small>{copy.reviewUnverified(row.unverifiedCount)}</small> : null}
           </header>
           <ul className="agent-review-panel__criteria">
-            {row.criteria.map((criterion) => <li key={criterion.id} className={`is-${criterion.verdict}`}>
-              <small>{criterion.layerLabel}</small>
+            {row.criteria.map((criterion) => <li key={criterion.id} className={`is-${criterion.verdict}${criterion.skillId ? ' is-custom' : ''}`}>
+              <small>{criterion.skillId ? copy.reviewCustomCriteria : criterion.layerLabel}</small>
               <span>{criterion.id}</span>
               <em>{criterion.verdictLabel}</em>
               {criterion.evidence ? <p>{criterion.evidence}</p> : null}
+              {/* Skill 版本不可变：历史评审要说得清当时按哪一版判的。 */}
+              {criterion.skillId ? <p className="agent-review-panel__skill-source">{copy.reviewSkillSource(criterion.skillVersion ?? 1)}</p> : null}
             </li>)}
           </ul>
           {row.revisionSuggestion

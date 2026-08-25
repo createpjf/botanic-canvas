@@ -7,6 +7,7 @@ import { createProviderHealthMonitor } from './providerHealthMonitor.mjs'
 import { createDerivedTaskQueue, createDerivedTaskWorker } from './derivedTaskQueue.mjs'
 import { createAgentTurnSweep } from './agentTurnSweep.mjs'
 import { createAgentReviewService } from './agentReviewService.mjs'
+import { createEvaluatorSkillRunner } from './agentReviewSkillEvaluator.mjs'
 import { createAgentReviewVisionJudge } from './agentReviewVision.mjs'
 import { resolveBotanicAgentImageDataUrl } from './botanicAgentVision.mjs'
 import { createProductionWorkflowSweep } from './productionWorkflowAdvance.mjs'
@@ -54,9 +55,18 @@ const reviewVisionJudge = createAgentReviewVisionJudge({
     runtime.mediaService?.enabled ? runtime.mediaService.read(mediaId) : undefined
   )),
 })
+// 项目自定义判据（evaluator Skill）。与内置判据共用同一个视觉模型与取图口径，
+// 但 Prompt 与输出形状来自 Skill 自己 —— 复用内置那份会让两类判据互相牵连。
+const evaluatorSkillJudge = createEvaluatorSkillRunner({
+  runtimeConfig: config,
+  resolveMedia: (image) => resolveBotanicAgentImageDataUrl(image, (mediaId) => (
+    runtime.mediaService?.enabled ? runtime.mediaService.read(mediaId) : undefined
+  )),
+})
 const reviewService = createAgentReviewService({
   productStore: runtime.productStore,
   reviewCandidate: reviewVisionJudge,
+  judgeWith: evaluatorSkillJudge,
   observe: (event) => console.log(JSON.stringify(event)),
 })
 const worker = createGenerationWorker({

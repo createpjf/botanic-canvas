@@ -4572,3 +4572,11 @@ details.agent-timeline__thinking { display: block; padding: 0; }
 .agent-memory-panel__subject input { padding: 5px 7px; border: 1px solid #d4e1d5; border-radius: 7px; background: #fff; color: #28442f; font-size: 11px; font-family: inherit; }
 .agent-memory-panel__subject input:focus { border-color: #a9c6ae; outline: none; }
 .agent-memory-panel__subject-note { display: block; margin-top: 2px; color: #8a7a4a; font-size: 10px; font-style: normal; line-height: 1.5; }
+
+/* 项目自定义评审判据（Epic 6 × Epic 11）。与内置判据视觉上分开：来源不同、
+   可信度也不同 —— 内置判据是产品保证的，自定义判据是项目自己写的指令。
+   成本提示单独一行且显眼：用户加了 3 条判据却不知道费用翻了 3 倍是最容易造成的伤害。 */
+.agent-review-panel__cost { margin: 0; padding: 6px 9px; border-radius: 8px; background: #fdf6e9; color: #8a6a3a; font-size: 11px; font-weight: 600; }
+.agent-review-panel__criteria li.is-custom { padding-left: 6px; border-left: 2px solid #cbb98f; }
+.agent-review-panel__criteria li.is-custom small { color: #8a7a4a; }
+.agent-review-panel__skill-source { grid-column: 1 / -1; margin: 0; color: #9aa79c; font-size: 9px; }

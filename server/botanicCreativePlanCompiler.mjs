@@ -1,5 +1,6 @@
 import { canonicalHash } from './canonicalHash.mjs'
 import { brandConstraintLines, brandKitFingerprint, brandReviewCriteria } from './brandKit.mjs'
+import { evaluatorSkillCriteria } from './agentReviewSkillEvaluator.mjs'
 
 const dimensions = new Set([
   'person', 'garment', 'product', 'scene', 'style', 'pose',
@@ -125,7 +126,7 @@ export function buildCreativeConstraintPrompt({ prompt, constraints = [], branch
   return meaningful.length ? `${meaningful.join('\n')}\n\n${base}` : base
 }
 
-function qualityPolicy(constraints, settings, brandKit) {
+function qualityPolicy(constraints, settings, brandKit, evaluatorSkills) {
   const requiredCriteria = new Set(['identity', 'product_structure', 'composition', 'lighting', 'brand_style'])
   for (const constraint of constraints) {
     if (criteria[constraint.dimension]) requiredCriteria.add(criteria[constraint.dimension])
@@ -134,10 +135,14 @@ function qualityPolicy(constraints, settings, brandKit) {
   // 品牌判据逐条列出（Epic 9.1）。此前 `brand_style` 是一道**没有答案的必答题**：
   // 它从上线起就在必查判据里，但评审层拿不到任何一条真实品牌规则，只能凭空作答。
   const brandCriteria = brandReviewCriteria(brandKit)
+  // 项目自定义判据在**编译期**固定：之后新发布的 Skill 不会回头去评判一个已经跑完的
+  // Run —— 那会让「结果符合用户确认的约束」变成一个移动靶。
+  const evaluators = evaluatorSkillCriteria(evaluatorSkills)
   return {
     version: 1,
     requiredCriteria: [...requiredCriteria],
     ...(brandCriteria.length ? { brandCriteria } : {}),
+    ...(evaluators.length ? { evaluatorSkills: evaluators } : {}),
     humanDecisionRequired: true,
   }
 }
@@ -175,6 +180,7 @@ export function compileCreativePlan({
   memoryBindings,
   skillBindings,
   brandKit,
+  evaluatorSkills,
   locale = 'zh-CN',
   planFingerprint: providedPlanFingerprint,
 } = {}) {
@@ -237,7 +243,7 @@ export function compileCreativePlan({
   if (compiledPrompt.length > 6000) throw new CreativePlanCompileError('COMPILED_PROMPT_TOO_LONG', '编译后的执行提示词过长，请减少约束或补充描述。', 409)
   const lockedDimensions = constraints.filter((item) => item.mode === 'preserve').map((item) => item.dimension)
   const variedDimensions = constraints.filter((item) => item.mode === 'vary').map((item) => item.dimension)
-  const quality = qualityPolicy(constraints, settings, brandKit)
+  const quality = qualityPolicy(constraints, settings, brandKit, evaluatorSkills)
   const compiled = {
     version: 2,
     taskIntent: plan.intent ?? 'continue_generation',

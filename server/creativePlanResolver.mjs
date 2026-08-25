@@ -264,7 +264,7 @@ export function resolveCreativePlan({ run, document, models }) {
  * 保存它的意义是重试与恢复不再重新 Resolve：模型目录、Memory、Skill 之后改了，
  * 历史 Run 重试仍按当时确认的语义执行。
  */
-export function compileRunCreativePlan({ run, document, models, globalBrandKit, locale = 'zh-CN', now = Date.now() }) {
+export function compileRunCreativePlan({ run, document, models, globalBrandKit, projectSkills, locale = 'zh-CN', now = Date.now() }) {
   const resolved = resolveCreativePlan({ run, document, models })
   if (!resolved.branches.length) throw resolveError('AGENT_PLAN_NOT_COMPILABLE', 'Agent 计划没有可编译的分支。')
   const brandKit = resolveRunBrandKit({ run, document, globalBrandKit })
@@ -322,6 +322,8 @@ export function compileRunCreativePlan({ run, document, models, globalBrandKit, 
       memoryBindings: run.plan.memoryBindings,
       skillBindings: run.plan.skillBindings,
       brandKit,
+      // 自定义评审判据在确认时固定：之后新发布的 Skill 不回头评判已跑完的 Run。
+      evaluatorSkills: projectSkills,
       locale,
       planFingerprint,
     })

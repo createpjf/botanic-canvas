@@ -124,12 +124,18 @@ export function createAgentReviewTask({
   const brandCriteria = [...(qualityPolicy.brandCriteria ?? [])]
     .map((item) => ({ id: item.id, statement: item.statement, enforcement: item.enforcement }))
     .sort((left, right) => String(left.id).localeCompare(String(right.id)))
+  // 自定义判据同理：判据标识已带 Skill 版本，Skill 改了版本就换标识、指纹随之改变，
+  // 因此重新评审不会命中旧任务。同样只在存在时才加键，避免改变存量策略的指纹。
+  const evaluatorSkills = [...(qualityPolicy.evaluatorSkills ?? [])]
+    .map((item) => ({ id: item.id, contentHash: item.contentHash }))
+    .sort((left, right) => String(left.id).localeCompare(String(right.id)))
   const qualityPolicyFingerprint = createHash('sha256')
     .update(JSON.stringify({
       version: qualityPolicy.version ?? 1,
       requiredCriteria: [...qualityPolicy.requiredCriteria].sort(),
       humanDecisionRequired: qualityPolicy.humanDecisionRequired !== false,
       ...(brandCriteria.length ? { brandCriteria } : {}),
+      ...(evaluatorSkills.length ? { evaluatorSkills } : {}),
     }))
     .digest('base64url')
   return {
