@@ -9,6 +9,8 @@ import {
   buildBotanicAgentPlan,
   botanicAgentAutoRetryTargets,
   botanicAgentContextSnapshotNodeIds,
+  botanicAgentImageContext,
+  botanicAgentLocalInitialGenerationDecision,
   botanicAgentNextIterationTargetId,
   createBotanicAgentContextSnapshot,
   createBotanicAgentRun,
@@ -584,6 +586,55 @@ test('首次图片生成允许纯文字，视频仍要求图片首帧，其他�
   }), /先选择一张已生成图片/)
 })
 
+test('图片上下文只认素材与结果节点，且必须是图片媒体', () => {
+  assert.deepEqual(botanicAgentImageContext([
+    { nodeId: 'asset-1', label: '商品', kind: '素材', mediaKind: 'image' },
+    { nodeId: 'result-1', label: '首图', kind: '结果', mediaKind: 'image' },
+    { nodeId: 'video-1', label: '样片', kind: '结果', mediaKind: 'video' },
+    { nodeId: 'text-1', label: '说明', kind: '文字' },
+    { nodeId: 'node-1', label: '生成节点', kind: '节点', mediaKind: 'image' },
+  ]).map((item) => item.nodeId), ['asset-1', 'result-1'])
+  assert.deepEqual(botanicAgentImageContext(), [])
+  assert.deepEqual(botanicAgentImageContext(undefined), [])
+})
+
+test('本地回退只放行确实无引用的纯文字首轮，带引用必须阻断而不是降级成文生图', () => {
+  const settings = { model: 'gpt-image-2' as const, aspectRatio: '1:1' as const, resolution: '1K' as const }
+  const output = { mode: 'single' as const, count: 1, candidatesPerItem: 1 }
+
+  // 纯文字首轮：本地回退可以安全构造空引用配方。
+  assert.deepEqual(botanicAgentLocalInitialGenerationDecision({ contextSnapshot: [], output, settings }), { ok: true })
+  assert.deepEqual(botanicAgentLocalInitialGenerationDecision({ output, settings }), { ok: true })
+  // 文字节点不是图片引用，仍属纯文字首轮。
+  assert.deepEqual(botanicAgentLocalInitialGenerationDecision({
+    contextSnapshot: [{ nodeId: 'text-1', label: '说明', kind: '文字' }], output, settings,
+  }), { ok: true })
+
+  // 带图片引用：必须阻断。本地路径无法保留参考，放行就会把「按参考生成」变成纯文字生成。
+  for (const contextSnapshot of [
+    [{ nodeId: 'asset-1', label: '商品', kind: '素材' as const, mediaKind: 'image' as const }],
+    [{ nodeId: 'result-1', label: '首图', kind: '结果' as const, mediaKind: 'image' as const }],
+  ]) {
+    assert.deepEqual(
+      botanicAgentLocalInitialGenerationDecision({ contextSnapshot, output, settings }),
+      { ok: false, reason: 'reference_requires_service' },
+    )
+  }
+
+  // 批量与视频继续交给可恢复服务，理由与引用缺失区分开。
+  assert.deepEqual(botanicAgentLocalInitialGenerationDecision({
+    contextSnapshot: [], output: { ...output, mode: 'batch_by_variation' }, settings,
+  }), { ok: false, reason: 'requires_service' })
+  assert.deepEqual(botanicAgentLocalInitialGenerationDecision({
+    contextSnapshot: [], output, settings: { ...settings, duration: 5 },
+  }), { ok: false, reason: 'requires_service' })
+  // 引用检查优先于模式检查：带引用的视频首轮报的是引用原因，不是笼统的"需要服务"。
+  assert.deepEqual(botanicAgentLocalInitialGenerationDecision({
+    contextSnapshot: [{ nodeId: 'asset-1', label: '商品', kind: '素材', mediaKind: 'image' }],
+    output, settings: { ...settings, duration: 5 },
+  }), { ok: false, reason: 'reference_requires_service' })
+})
+
 test('首次生成提交键包含排序后的上下文节点，顺序不影响键但上下文变化会影响键', () => {
   const base = buildBotanicAgentPlan({
     instruction: '生成广告图', intent: 'initial_generation',
@@ -1130,7 +1181,8 @@ test('项目创作记忆保存类型、来源节点并去重', () => {
   }), {
     id: 'memory-brand', kind: 'rule', content: '瓶身标签、Logo 比例与主色不可改变。',
     sourceNodeIds: ['result-v03', 'asset-product'], createdAt: 100, updatedAt: 100,
-    scope: 'project', source: 'human', confidence: 'confirmed', version: 1,
+    // 记忆面板的保存是用户显式动作，直接生效；模型建议走 proposed。
+    scope: 'project', source: 'human', confidence: 'confirmed', status: 'active', version: 1,
   })
 })
 

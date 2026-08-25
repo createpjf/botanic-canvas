@@ -39,6 +39,14 @@ function hash(value) {
   return createHash('sha256').update(JSON.stringify(canonicalize(value))).digest('base64url')
 }
 
+/**
+ * 计划指纹的唯一哈希实现。键序无关（canonicalize），因此同一份内容的不同书写顺序
+ * 得到同一指纹 —— 否则「重试是否漂移」会被字段顺序这种无意义差异触发。
+ */
+export function creativePlanHash(value) {
+  return hash(value)
+}
+
 function text(value, name, maximum = 6000) {
   if (typeof value !== 'string' || !value.trim()) throw new CreativePlanCompileError('PLAN_FIELD_MISSING', `${name}不能为空。`, 400)
   const result = value.trim()
@@ -172,6 +180,7 @@ export function compileCreativePlan({
   memoryBindings,
   skillBindings,
   locale = 'zh-CN',
+  planFingerprint: providedPlanFingerprint,
 } = {}) {
   if (!plan || typeof plan !== 'object') throw new CreativePlanCompileError('PLAN_MISSING', 'Agent 计划不能为空。', 400)
   if (!baseRecipe || typeof baseRecipe !== 'object') throw new CreativePlanCompileError('RECIPE_MISSING', '生成配方不能为空。', 409)
@@ -183,7 +192,15 @@ export function compileCreativePlan({
   modelSupportsSettings(selectedModel, settings)
   const normalizedMemoryBindings = normalizeBindings(memoryBindings, '项目记忆')
   const normalizedSkillBindings = normalizeBindings(skillBindings, 'Skill')
-  const sourceFingerprint = hash({
+  // 两级指纹。分支级由 plan 级与分支身份派生，于是任一分支都能归回同一次确认
+  // （ADR 0005）。早期只有一个把分支混进哈希的指纹，分支之间互不相关，无法回答
+  // 「这两张图是不是同一次确认出来的」。
+  //
+  // plan 级指纹**只能由调用方给**：这个函数一次只编译一支，看不到同一次确认的其他
+  // 分支，自己算出来的「plan 级」仍会随本支的参考与 Prompt 变化。整次确认的指纹由
+  // `compileRunCreativePlan` 统一计算并传进来；不传时退化为「按本支输入算」，仅供
+  // 单支编译与 V1 兼容路径使用。
+  const planFingerprint = providedPlanFingerprint ?? hash({
     plan: {
       intent: plan.intent,
       instruction: plan.instruction,
@@ -195,17 +212,20 @@ export function compileCreativePlan({
       variation: plan.variation,
       creativeBrief: plan.creativeBrief,
     },
-    branch: branch ? {
-      id: branch.id,
-      label: branch.label,
-      assetId: branch.assetId,
-      variation: branch.variation,
-      item: branch.item ? { title: branch.item.title, prompt: branch.item.prompt, mediaKind: branch.item.mediaKind, count: branch.item.count, duration: branch.item.duration } : undefined,
-    } : undefined,
     recipe: { references: safeReferenceIds(baseRecipe), batchCount: baseRecipe.batchCount },
     memoryBindings: normalizedMemoryBindings,
     skillBindings: normalizedSkillBindings,
   })
+  const branchIdentity = branch ? {
+    id: branch.id,
+    label: branch.label,
+    assetId: branch.assetId,
+    variation: branch.variation,
+    item: branch.item ? { title: branch.item.title, prompt: branch.item.prompt, mediaKind: branch.item.mediaKind, count: branch.item.count, duration: branch.item.duration } : undefined,
+  } : undefined
+  const branchFingerprint = hash({ planFingerprint, branch: branchIdentity })
+  // 兼容名：既有配方与 Job 用 sourceFingerprint/sourcePlanFingerprint 指向「这一支的指纹」。
+  const sourceFingerprint = branchFingerprint
   const compiledPrompt = buildCreativeConstraintPrompt({
     prompt,
     constraints,
@@ -220,6 +240,8 @@ export function compileCreativePlan({
   const compiled = {
     version: 2,
     taskIntent: plan.intent ?? 'continue_generation',
+    planFingerprint,
+    branchFingerprint,
     sourceFingerprint,
     lockedDimensions,
     variedDimensions,
@@ -244,6 +266,8 @@ export function compileCreativePlan({
       creativeIntent: compiled.taskIntent,
       qualityPolicy: quality,
       sourcePlanFingerprint: sourceFingerprint,
+      planFingerprint,
+      branchFingerprint,
       ...(normalizedMemoryBindings.length ? { memoryBindings: normalizedMemoryBindings } : {}),
       ...(normalizedSkillBindings.length ? { skillBindings: normalizedSkillBindings } : {}),
     },
@@ -256,4 +280,9 @@ export function compileAgentBranchRecipe(input) {
 
 export function creativePlanFingerprint(input) {
   return compileCreativePlan(input).compiled.sourceFingerprint
+}
+
+/** 这一次用户确认的 plan 级指纹；同一次确认的所有分支共享它。 */
+export function compiledPlanFingerprint(input) {
+  return compileCreativePlan(input).compiled.planFingerprint
 }

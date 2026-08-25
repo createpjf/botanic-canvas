@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { nonTerminalAgentTurnStatuses, normalizeStaleTurnQuery, normalizeTurnEventPage } from './productStoreContract.mjs'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from './authorization.mjs'
@@ -70,6 +71,7 @@ function initialState() {
     agentTurns: [],
     agentTurnEvents: [],
     agentReviews: [],
+    agentReviewTasks: [],
     agentSessions: [],
     agentSessionReadReceipts: [],
     collaborationActivities: [],
@@ -854,6 +856,16 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
         .map(clone)
     },
 
+    listAgentRunsForTurn(userId, projectId, turnId, limit = 20) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project || !canAccess(project, userId)) return undefined
+      return state.agentRuns
+        .filter((run) => run.ownerId === userId && run.projectId === projectId && run.turnId === turnId)
+        .sort((left, right) => left.createdAt - right.createdAt)
+        .slice(0, Math.max(1, Math.min(limit, 60)))
+        .map(clone)
+    },
+
     putAgentTurn(userId, turn) {
       const project = state.projects.find((item) => item.id === turn.projectId)
       if (!project) throw productError('未找到项目。', 'PROJECT_NOT_FOUND')
@@ -907,13 +919,92 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       return clone(payload)
     },
 
-    listAgentTurnEvents(userId, projectId, turnId, limit = 200) {
+    /**
+     * `after` 是 `(turnId, sequence)` 游标：只返回该序号之后的事件，
+     * 断线重连据此续读而不必重新拉全量。
+     */
+    listAgentTurnEvents(userId, projectId, turnId, options = {}) {
       const project = state.projects.find((item) => item.id === projectId)
       if (!project || !canAccess(project, userId)) return undefined
+      const { after, limit } = normalizeTurnEventPage(options)
       return state.agentTurnEvents
         .filter((event) => event.projectId === projectId && event.turnId === turnId && event.ownerId === userId)
+        .filter((event) => after === null || Number(event.sequence) > after)
         .sort((left, right) => left.sequence - right.sequence)
-        .slice(0, Math.max(1, Math.min(Number(limit) || 200, 500)))
+        .slice(0, limit)
+        .map(clone)
+    },
+
+    /**
+     * 跨项目扫描超过租约未推进的非终态 Turn，供派生任务队列回收孤儿。
+     * 不做成员校验：清扫是系统行为，没有发起它的用户（与 readAgentTurnForWorker 同理）。
+     */
+    listStaleAgentTurns(options = {}) {
+      const { olderThan, limit } = normalizeStaleTurnQuery(options)
+      return state.agentTurns
+        .filter((turn) => nonTerminalAgentTurnStatuses.includes(turn.status)
+          && (Number(turn.updatedAt) || 0) < olderThan)
+        .sort((left, right) => (Number(left.updatedAt) || 0) - (Number(right.updatedAt) || 0))
+        .slice(0, limit)
+        .map(clone)
+    },
+
+    listRunsWithFailedBranches({ limit = 25 } = {}) {
+      return state.agentRuns
+        .filter((run) => ['partial', 'failed'].includes(run?.status)
+          && (run.branches ?? []).some((branch) => branch?.status === 'failed'))
+        .sort((left, right) => Number(left.updatedAt ?? 0) - Number(right.updatedAt ?? 0))
+        .slice(0, Math.max(1, Math.min(limit, 200)))
+        .map((run) => ({ runId: run.id, ownerId: run.ownerId, projectId: run.projectId }))
+    },
+
+    listProjectsWithActiveWorkflowRuns({ limit = 25 } = {}) {
+      const active = new Set(['queued', 'running'])
+      return state.projects
+        .filter((project) => (project.document?.productionWorkflowRuns ?? []).some((run) => active.has(run?.status)))
+        .slice(0, Math.max(1, Math.min(limit, 200)))
+        .map((project) => ({
+          projectId: project.id,
+          ownerId: project.members?.find((member) => member.role === 'owner')?.userId ?? project.ownerId,
+        }))
+        .filter((entry) => entry.ownerId)
+    },
+
+    putAgentReviewTask(userId, task) {
+      const project = state.projects.find((item) => item.id === task.projectId)
+      if (!project) throw productError('未找到项目。', 'PROJECT_NOT_FOUND')
+      assertProjectPermission(project.members.find((item) => item.userId === userId)?.role, 'read', 'PROJECT_READ_FORBIDDEN')
+      const existing = state.agentReviewTasks.find((item) => item.id === task.id)
+      if (existing && existing.projectId !== task.projectId) throw productError('评审任务标识已被其他项目使用。', 'AGENT_REVIEW_TASK_ID_CONFLICT')
+      const payload = { ...clone(task), ownerId: task.ownerId ?? userId, updatedAt: Number(task.updatedAt) || now() }
+      if (existing) Object.assign(existing, payload)
+      else state.agentReviewTasks.push(payload)
+      save()
+      return clone(payload)
+    },
+
+    readAgentReviewTask(userId, taskId) {
+      const task = state.agentReviewTasks.find((item) => item.id === taskId)
+      if (!task) return undefined
+      const project = state.projects.find((item) => item.id === task.projectId)
+      return project && canAccess(project, userId) ? clone(task) : undefined
+    },
+
+    listAgentReviewTasksForRun(userId, projectId, runId) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project || !canAccess(project, userId)) return undefined
+      return state.agentReviewTasks
+        .filter((item) => item.projectId === projectId && item.runId === runId)
+        .sort((left, right) => right.updatedAt - left.updatedAt)
+        .map(clone)
+    },
+
+    // Worker 侧：跨项目扫描未收口的评审任务。清扫是系统行为，没有发起它的用户。
+    listPendingAgentReviewTasks({ olderThan = now(), limit = 25 } = {}) {
+      return state.agentReviewTasks
+        .filter((item) => (item.status === 'queued' || item.status === 'running') && Number(item.updatedAt) <= olderThan)
+        .sort((left, right) => left.updatedAt - right.updatedAt)
+        .slice(0, Math.max(1, Math.min(limit, 200)))
         .map(clone)
     },
 

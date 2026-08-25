@@ -122,6 +122,13 @@ const memoryKinds = new Set(['rule', 'approved', 'avoid'])
 const memoryScopes = new Set(['project', 'workspace', 'run'])
 const memorySources = new Set(['human', 'review', 'conversation', 'import'])
 const memoryConfidences = new Set(['confirmed', 'provisional'])
+/**
+ * 激活态。与 `confidence`（可信程度）是两个概念，不能互相顶替（ADR 0006）：
+ * 「未确认但很可信」是 `status: 'proposed'` + `confidence: 'confirmed'`。
+ */
+const memoryStatuses = new Set(['proposed', 'active', 'superseded', 'deleted'])
+/** 证据来源。active 规则必须有人工来源或至少一条已确认证据。 */
+const memoryEvidenceKinds = new Set(['artifact', 'review', 'message', 'human'])
 const runStatuses = new Set(['awaiting_confirmation', 'queued', 'executing', 'running', 'completed', 'partial', 'failed', 'cancelled'])
 
 const clone = (value) => structuredClone(value)
@@ -230,6 +237,32 @@ export function validateAgentSessionEntity(value, { now = Date.now() } = {}) {
     result.readingAnchorMessageId = text(session.readingAnchorMessageId, 'Agent 阅读位置', 160)
     result.readingAnchorUpdatedAt = Math.min(updatedAt, timestamp(session.readingAnchorUpdatedAt, updatedAt))
   }
+  // 线程摘要检查点（Epic 8）。它是服务端确定性派生的，因此这里只做形状与边界校验，
+  // 不接受客户端提交任意内容 —— 摘要会长期进模型上下文，客户端可写等于可注入。
+  if (session.threadSummary !== undefined) {
+    const summary = object(session.threadSummary, 'Agent 线程摘要')
+    result.threadSummary = {
+      version: 1,
+      goals: uniqueTextList(summary.goals, '线程目标', 3),
+      decisions: (Array.isArray(summary.decisions) ? summary.decisions : []).slice(0, 12).map((entry) => ({
+        messageId: text(entry?.messageId, '决策消息标识', 160),
+        ...(entry?.intent ? { intent: text(entry.intent, '决策意图', 80) } : {}),
+        summary: text(entry?.summary ?? '(无摘要)', '决策摘要', 400),
+        ...(entry?.runId ? { runId: text(entry.runId, '决策 Run', 160) } : {}),
+        ...(Number.isInteger(entry?.outputCount) ? { outputCount: entry.outputCount } : {}),
+        ...(entry?.decidedAt === undefined ? {} : { decidedAt: timestamp(entry.decidedAt, updatedAt) }),
+      })),
+      constraints: uniqueTextList(summary.constraints, '线程约束', 16),
+      openQuestions: (Array.isArray(summary.openQuestions) ? summary.openQuestions : []).slice(0, 8).map((entry) => ({
+        messageId: text(entry?.messageId, '追问消息标识', 160),
+        question: text(entry?.question ?? '(无内容)', '追问内容', 400),
+      })),
+      entityIds: uniqueTextList(summary.entityIds, '线程实体', 40),
+      coveredMessageIds: uniqueTextList(summary.coveredMessageIds, '已覆盖消息', 200),
+      coveredThrough: timestamp(summary.coveredThrough, updatedAt),
+      updatedAt: timestamp(summary.updatedAt, updatedAt),
+    }
+  }
   return result
 }
 
@@ -306,13 +339,39 @@ export function validateAgentMemoryEntity(value, { now = Date.now() } = {}) {
   if (!memoryScopes.has(scope)) invalid('Agent 记忆作用域无效。')
   if (!memorySources.has(source)) invalid('Agent 记忆来源无效。')
   if (!memoryConfidences.has(confidence)) invalid('Agent 记忆可信度无效。')
+  const evidence = (Array.isArray(memory.evidence) ? memory.evidence : []).slice(0, 12).map((entry) => {
+    const item = object(entry, 'Agent 记忆证据')
+    if (!memoryEvidenceKinds.has(item.kind)) invalid('Agent 记忆证据类型无效。')
+    return {
+      kind: item.kind,
+      ref: text(item.ref, 'Agent 记忆证据引用', 240),
+      ...(item.confirmedAt === undefined ? {} : { confirmedAt: timestamp(item.confirmedAt, now) }),
+    }
+  })
+  // 只有人工保存或已确认证据能支撑 active。模型建议保持建议态 —— 否则一次对话里的
+  // 猜测会立刻变成品牌事实，之后每一轮生成都按它执行。
+  const humanBacked = source === 'human' || evidence.some((item) => item.confirmedAt !== undefined)
+  const status = memory.status === undefined
+    ? (humanBacked ? 'active' : 'proposed')
+    : memory.status
+  if (!memoryStatuses.has(status)) invalid('Agent 记忆状态无效。')
+  if (status === 'active' && !humanBacked) {
+    invalid('Agent 记忆需要人工来源或已确认证据才能生效。')
+  }
+  const supersededBy = memory.supersededBy === undefined
+    ? undefined
+    : text(memory.supersededBy, 'Agent 记忆替代者', 160)
+  if (status === 'superseded' && !supersededBy) invalid('被替代的 Agent 记忆必须指明替代者。')
   const computedContentHash = createHash('sha256').update(content).digest('base64url')
   const contentHash = memory.contentHash === undefined
     ? computedContentHash
     : text(memory.contentHash, 'Agent 记忆内容摘要', 200)
   if (contentHash !== computedContentHash) invalid('Agent 记忆内容摘要与内容不一致。')
+  const id = text(memory.id, 'Agent 记忆标识', 160)
+  const conflictsWith = uniqueTextList(memory.conflictsWith, 'Agent 记忆冲突关系', 12)
+  if (conflictsWith.includes(id)) invalid('Agent 记忆不能与自身冲突。')
   return {
-    id: text(memory.id, 'Agent 记忆标识', 160),
+    id,
     kind: memory.kind,
     content,
     sourceNodeIds: uniqueTextList(memory.sourceNodeIds, 'Agent 记忆来源节点', 12),
@@ -321,6 +380,10 @@ export function validateAgentMemoryEntity(value, { now = Date.now() } = {}) {
     scope,
     source,
     confidence,
+    status,
+    ...(evidence.length ? { evidence } : {}),
+    ...(conflictsWith.length ? { conflictsWith } : {}),
+    ...(supersededBy ? { supersededBy } : {}),
     version,
     contentHash,
   }

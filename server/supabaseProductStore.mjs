@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { nonTerminalAgentTurnStatuses, normalizeStaleTurnQuery, normalizeTurnEventPage } from './productStoreContract.mjs'
 import { createClient } from '@supabase/supabase-js'
 import { isRetryableSupabaseError, retrySupabaseOperation } from './supabaseRetry.mjs'
 import { decodeAuthAssurance } from './authAssurance.mjs'
@@ -983,6 +984,16 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       return (data ?? []).map((row) => clone(row.payload))
     },
 
+    async listAgentRunsForTurn(userId, projectId, turnId, limit = 20) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const { data, error } = await supabaseRequest(() => supabase.from('agent_runs').select('payload')
+        .eq('project_id', projectId).eq('owner_id', userId).eq('payload->>turnId', turnId)
+        // createdAt 不是独立列，只能按 payload 取；毫秒时间戳位数一致，文本序等于数值序。
+        .order('payload->>createdAt', { ascending: true }).limit(Math.max(1, Math.min(limit, 60))))
+      fail(error)
+      return (data ?? []).map((row) => clone(row.payload))
+    },
+
     async putAgentTurn(userId, turn) {
       const role = await memberRole(turn.projectId, userId)
       assertProjectPermission(role, 'read', 'PROJECT_READ_FORBIDDEN')
@@ -1032,6 +1043,20 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       return (data ?? []).map((row) => clone(row.payload))
     },
 
+    /**
+     * 跨项目扫描超过租约未推进的非终态 Turn，供派生任务队列回收孤儿。
+     * 不做成员校验：清扫是系统行为，没有发起它的用户（与 readAgentTurnForWorker 同理）。
+     */
+    async listStaleAgentTurns(options = {}) {
+      const { olderThan, limit } = normalizeStaleTurnQuery(options)
+      const { data, error } = await supabaseRequest(() => supabase.from('agent_turns').select('payload')
+        .in('status', [...nonTerminalAgentTurnStatuses])
+        .lt('updated_at', olderThan)
+        .order('updated_at', { ascending: true }).limit(limit))
+      fail(error)
+      return (data ?? []).map((row) => clone(row.payload))
+    },
+
     async appendAgentTurnEvent(userId, projectId, event) {
       const role = await memberRole(projectId, userId)
       assertProjectPermission(role, 'read', 'PROJECT_READ_FORBIDDEN')
@@ -1062,12 +1087,20 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       } : clone(event)
     },
 
-    async listAgentTurnEvents(userId, projectId, turnId, limit = 200) {
+    /**
+     * `after` 是 `(turnId, sequence)` 游标：只返回该序号之后的事件，
+     * 断线重连据此续读而不必重新拉全量。
+     */
+    async listAgentTurnEvents(userId, projectId, turnId, options = {}) {
       if (!await memberRole(projectId, userId)) return undefined
-      const { data, error } = await supabaseRequest(() => supabase.from('agent_turn_events')
-        .select('id,turn_id,owner_id,project_id,sequence,type,created_at,payload')
-        .eq('turn_id', turnId).eq('project_id', projectId).eq('owner_id', userId)
-        .order('sequence', { ascending: true }).limit(Math.max(1, Math.min(Number(limit) || 200, 500))))
+      const { after, limit } = normalizeTurnEventPage(options)
+      const { data, error } = await supabaseRequest(() => {
+        const query = supabase.from('agent_turn_events')
+          .select('id,turn_id,owner_id,project_id,sequence,type,created_at,payload')
+          .eq('turn_id', turnId).eq('project_id', projectId).eq('owner_id', userId)
+        return (after === null ? query : query.gt('sequence', after))
+          .order('sequence', { ascending: true }).limit(limit)
+      })
       fail(error)
       return (data ?? []).map((row) => ({
         id: row.id,
@@ -1079,6 +1112,72 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
         createdAt: new Date(row.created_at).getTime(),
         ...(row.payload ? { payload: clone(row.payload) } : {}),
       }))
+    },
+
+    // 同上：PostgREST 表达不了 jsonb 数组里的存在性，按状态先收窄再本地筛。
+    async listRunsWithFailedBranches({ limit = 25 } = {}) {
+      const { data, error } = await supabaseRequest(() => supabase.from('agent_runs').select('id, owner_id, project_id, payload')
+        .in('status', ['partial', 'failed'])
+        .order('updated_at', { ascending: true })
+        .limit(Math.max(1, Math.min(limit * 8, 400))))
+      fail(error)
+      return (data ?? [])
+        .filter((row) => (row.payload?.branches ?? []).some((branch) => branch?.status === 'failed'))
+        .slice(0, Math.max(1, Math.min(limit, 200)))
+        .map((row) => ({ runId: row.id, ownerId: row.owner_id, projectId: row.project_id }))
+    },
+
+    // PostgREST 无法表达「jsonb 数组里存在某状态」，因此按最近更新的项目取一批再
+    // 本地筛。上限刻意保守：这条路径只服务周期清扫，不是热路径。
+    async listProjectsWithActiveWorkflowRuns({ limit = 25 } = {}) {
+      const active = new Set(['queued', 'running'])
+      const { data, error } = await supabaseRequest(() => supabase.from('projects')
+        .select('id, document, project_members!inner(user_id, role)')
+        .eq('project_members.role', 'owner')
+        .order('updated_at', { ascending: false })
+        .limit(Math.max(1, Math.min(limit * 8, 400))))
+      fail(error)
+      return (data ?? [])
+        .filter((row) => (row.document?.productionWorkflowRuns ?? []).some((run) => active.has(run?.status)))
+        .slice(0, Math.max(1, Math.min(limit, 200)))
+        .map((row) => ({ projectId: row.id, ownerId: row.project_members?.[0]?.user_id }))
+        .filter((entry) => entry.ownerId)
+    },
+
+    async putAgentReviewTask(userId, task) {
+      const role = await memberRole(task.projectId, userId)
+      assertProjectPermission(role, 'read', 'PROJECT_READ_FORBIDDEN')
+      const payload = { ...clone(task), ownerId: task.ownerId ?? userId, updatedAt: Number(task.updatedAt) || now() }
+      const { error } = await supabaseRequest(() => supabase.from('agent_review_tasks').upsert({
+        id: task.id, owner_id: payload.ownerId, project_id: task.projectId,
+        run_id: task.runId, status: task.status, updated_at: payload.updatedAt, payload,
+      }))
+      fail(error)
+      return payload
+    },
+
+    async readAgentReviewTask(userId, taskId) {
+      const { data, error } = await supabaseRequest(() => supabase.from('agent_review_tasks')
+        .select('payload, project_id').eq('id', taskId).maybeSingle())
+      fail(error)
+      if (!data) return undefined
+      return await memberRole(data.project_id, userId) ? clone(data.payload) : undefined
+    },
+
+    async listAgentReviewTasksForRun(userId, projectId, runId) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const { data, error } = await supabaseRequest(() => supabase.from('agent_review_tasks').select('payload')
+        .eq('project_id', projectId).eq('run_id', runId).order('updated_at', { ascending: false }).limit(50))
+      fail(error)
+      return (data ?? []).map((row) => clone(row.payload))
+    },
+
+    async listPendingAgentReviewTasks({ olderThan = now(), limit = 25 } = {}) {
+      const { data, error } = await supabaseRequest(() => supabase.from('agent_review_tasks').select('payload')
+        .in('status', ['queued', 'running']).lte('updated_at', olderThan)
+        .order('updated_at', { ascending: true }).limit(Math.max(1, Math.min(limit, 200))))
+      fail(error)
+      return (data ?? []).map((row) => clone(row.payload))
     },
 
     async putAgentReview(userId, review) {

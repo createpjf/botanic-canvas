@@ -35,6 +35,11 @@ export const botanicHttpRoutePatterns = Object.freeze({
   agentTurn: /^\/api\/agent-turns\/([^/]+)$/,
   agentTurnCancel: /^\/api\/agent-turns\/([^/]+)\/cancel$/,
   agentReviewDecision: /^\/api\/agent-reviews\/([^/]+)\/decision$/,
+  // 评审任务（ADR 0006）。与上面按 Run+locale 的展示型 review 不同：任务是可恢复的
+  // 派生实体，逐候选给出结论与人工决定。
+  agentRunReviewTasks: /^\/api\/agent-runs\/([^/]+)\/review-tasks$/,
+  agentReviewTaskDecisions: /^\/api\/agent-review-tasks\/([^/]+)\/decisions$/,
+  projectProductionWorkflowRunManifest: /^\/api\/projects\/([^/]+)\/production-workflow-runs\/([^/]+)\/manifest$/,
   globalAsset: /^\/api\/global-assets\/([^/]+)$/,
   generationJob: /^\/api\/generation-jobs\/([^/]+)(?:\/(cancel))?$/,
   media: /^\/api\/media\/([^/]+)$/,

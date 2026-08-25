@@ -1,4 +1,5 @@
 import type { BotanicAgentContextSnapshot, BotanicAgentMessage, BotanicAgentPlan } from './agent.ts'
+import { botanicAgentImageContext } from './agent.ts'
 import type { GenerationSettings } from './canvas.ts'
 import type { ProductLocale } from '../i18n/core'
 
@@ -179,8 +180,7 @@ export function buildBotanicAgentCompositionPlan(input: {
   locale?: ProductLocale
 }): BotanicAgentPlan {
   const locale = input.locale ?? 'zh-CN'
-  const imageContext = input.contextSnapshot.filter((item) =>
-    item.mediaKind === 'image' && (item.kind === '素材' || item.kind === '结果'))
+  const imageContext = botanicAgentImageContext(input.contextSnapshot)
   if (!imageContext.length) {
     throw new Error(locale === 'en'
       ? 'A full-set generation needs at least one image asset or result as a visual anchor. Reference an image first.'

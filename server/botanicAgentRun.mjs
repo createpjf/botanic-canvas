@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { agentRunCompiledPlanProvenance } from './creativePlanResolver.mjs'
 import { inferAspectRatioFromPixels, normalizeCustomGenerationSize } from './generationOutputSize.mjs'
 import { normalizeRegionRect } from './regionMaskPng.mjs'
 
@@ -182,17 +183,70 @@ function validateBindings(rawBindings, label) {
   })
 }
 
+/**
+ * Run 之间的血缘关系。
+ *
+ * - `fork`：带明确变化的再创作，Prompt 会被改写。
+ * - `review_retry`：评审后「请求重试」，**同一份计划重跑**，不改写 Prompt；
+ *   必须能追回原 Run、原评审任务与被重试的那个 Artifact（ADR 0006）。
+ */
+export const AGENT_RUN_LINEAGE_RELATIONS = Object.freeze(['fork', 'review_retry'])
+const lineageRelations = new Set(AGENT_RUN_LINEAGE_RELATIONS)
+
 function validateLineage(rawLineage) {
   if (rawLineage === undefined) return undefined
-  if (!rawLineage || typeof rawLineage !== 'object' || rawLineage.relation !== 'fork') {
+  if (!rawLineage || typeof rawLineage !== 'object' || !lineageRelations.has(rawLineage.relation)) {
     throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', 'Agent Run 血缘关系无效。')
   }
   return {
-    relation: 'fork',
+    relation: rawLineage.relation,
     parentRunId: text(rawLineage.parentRunId, '父 Agent Run', 160),
     ...(rawLineage.parentBranchId ? { parentBranchId: text(rawLineage.parentBranchId, '父 Agent 分支', 160) } : {}),
     ...(rawLineage.rootRunId ? { rootRunId: text(rawLineage.rootRunId, '根 Agent Run', 160) } : {}),
+    ...(rawLineage.reviewTaskId ? { reviewTaskId: text(rawLineage.reviewTaskId, '评审任务', 160) } : {}),
+    ...(rawLineage.sourceArtifactId ? { sourceArtifactId: text(rawLineage.sourceArtifactId, '被重试的 Artifact', 240) } : {}),
     ...(rawLineage.createdAt === undefined ? {} : { createdAt: Number(rawLineage.createdAt) || Date.now() }),
+  }
+}
+
+/**
+ * 评审「请求重试」产生的 Run 输入：**同一份计划重跑**。
+ *
+ * 不复用 fork：fork 的语义是「带一句明确变化再做一次」，会改写 Prompt；重试要的是
+ * 按用户原本确认的计划重来一次，改写 Prompt 会让重试结果无法与原结果对照。
+ */
+export function createReviewRetryAgentRunInput(sourceRun, { branchId, reviewTaskId, artifactId, now = Date.now() } = {}) {
+  if (!sourceRun?.plan) throw new BotanicAgentRunError(409, 'AGENT_RUN_NOT_RETRYABLE', '源 Agent Run 缺少可重跑的计划。')
+  const sourceBranch = sourceRun.branches?.find((branch) => branch.id === branchId)
+    ?? sourceRun.branches?.find((branch) => branch.status === 'succeeded')
+    ?? sourceRun.branches?.[0]
+  if (!sourceBranch) throw new BotanicAgentRunError(409, 'AGENT_RUN_NOT_RETRYABLE', '源 Agent Run 没有可重跑的分支。')
+  const plan = structuredClone(sourceRun.plan)
+  return {
+    projectId: sourceRun.projectId,
+    lineage: {
+      relation: 'review_retry',
+      parentRunId: sourceRun.id,
+      parentBranchId: sourceBranch.id,
+      rootRunId: sourceRun.lineage?.rootRunId ?? sourceRun.id,
+      ...(reviewTaskId ? { reviewTaskId } : {}),
+      ...(artifactId ? { sourceArtifactId: artifactId } : {}),
+      createdAt: now,
+    },
+    plan: {
+      ...plan,
+      // 重试只跑这一支，不重复展开整批。
+      output: { mode: 'single', count: 1, candidatesPerItem: 1 },
+      actions: undefined,
+      toolCalls: undefined,
+    },
+    branches: [{
+      id: `retry-${sourceBranch.id}-${String(artifactId ?? '').slice(-12).replace(/[^A-Za-z0-9_-]/g, '') || 'candidate'}`,
+      label: sourceBranch.label ?? '重试',
+      ...(sourceBranch.assetId ? { assetId: sourceBranch.assetId } : {}),
+      ...(sourceBranch.variation ? { variation: structuredClone(sourceBranch.variation) } : {}),
+      ...(sourceBranch.item ? { item: structuredClone(sourceBranch.item) } : {}),
+    }],
   }
 }
 
@@ -328,8 +382,12 @@ export function validateAgentRunCreation(body) {
   const memoryBindings = validateBindings(rawPlan.memoryBindings, '项目记忆')
   const skillBindings = validateBindings(rawPlan.skillBindings, 'Skill')
   const lineage = validateLineage(body.lineage)
+  // 确认这次 Run 的 Turn。方向是 Run → Turn：Turn 记录在 execute() 里被整条覆盖写，
+  // 反向写 linkedRunIds 会被那次覆盖清掉，因此权威边只放在 Run 上，Turn 侧读时派生。
+  const turnId = body.turnId === undefined ? undefined : text(body.turnId, '确认来源 Turn', 160)
   return {
     projectId,
+    ...(turnId ? { turnId } : {}),
     ...(lineage ? { lineage } : {}),
     plan: {
       ...(rawPlan.plannerModel ? { plannerModel: text(rawPlan.plannerModel, 'Agent 模型', 160) } : {}),
@@ -374,6 +432,7 @@ export function createPersistentAgentRun(input, { id = `agent_run_${randomUUID()
     id,
     ownerId,
     projectId: input.projectId,
+    ...(input.turnId ? { turnId: input.turnId } : {}),
     ...(input.lineage ? { lineage: structuredClone(input.lineage) } : {}),
     status: 'queued',
     plan: structuredClone(input.plan),
@@ -459,8 +518,16 @@ export function failUnsubmittedPersistentAgentRun(run, error, { now = Date.now()
   })
 }
 
+/**
+ * Run 读模型。`compiledPlanProvenance` 是读时判定：历史 Run 只有计划草案，标记为
+ * legacy 而不是伪造一份完整快照 —— 伪造出来的快照会声称「这就是当时确认的内容」，
+ * 但它不是（ADR 0005 不变量五）。
+ */
 export function publicAgentRun(run) {
   if (!run) return undefined
   const { ownerId: _ownerId, ...publicRun } = run
-  return structuredClone(publicRun)
+  return {
+    ...structuredClone(publicRun),
+    compiledPlanProvenance: agentRunCompiledPlanProvenance(run),
+  }
 }

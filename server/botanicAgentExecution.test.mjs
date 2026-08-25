@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { prepareAgentRunExecution, reconcileAgentGenerationJobToProject } from './botanicAgentExecution.mjs'
+import { compileRunCreativePlan } from './creativePlanResolver.mjs'
 
 const settings = { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' }
 const models = [{ id: 'gpt-image-2', provider: 'openai', mediaKind: 'image', aspectRatios: ['3:4'], resolutions: ['2K'] }]
@@ -638,4 +639,61 @@ test('成套方案分支异构执行：图片条目按数量、视频条目切�
   assert.equal(videoJob.provider, 'minimax-video')
   // 图片条目仍用计划设置。
   assert.equal(result.jobs[0].settings.model, 'gpt-image-2')
+})
+
+test('确认后的编译快照被执行直接采用，不重新编译', () => {
+  // 重试与恢复必须只读快照：模型目录、Memory 或 Skill 之后改了，历史 Run 仍按
+  // 当时确认的语义执行（ADR 0005 不变量三）。
+  const run = persistentRun()
+  run.compiledPlan = compileRunCreativePlan({ run, document: projectDocument(), models, now: 50 })
+  const result = prepareAgentRunExecution({
+    run, document: projectDocument(), now: 100,
+    jobIdForBranch: (branch) => `job-${branch.id}`,
+    models, maximumBatchCount: 8, maximumReferenceBytes: 8 * 1024 * 1024,
+  })
+
+  assert.deepEqual(result.jobs.map((job) => job.planFingerprint), [
+    run.compiledPlan.planFingerprint,
+    run.compiledPlan.planFingerprint,
+  ])
+  assert.deepEqual(
+    result.jobs.map((job) => job.branchFingerprint),
+    run.compiledPlan.branches.map((entry) => entry.branchFingerprint),
+  )
+  // 执行用的是快照里的 Prompt，而不是此刻重新编译的结果。
+  assert.equal(result.jobs[0].generationRecipe.prompt, run.compiledPlan.branches[0].prompt)
+  assert.equal(result.jobs[0].generationRecipe.sourcePlanFingerprint, run.compiledPlan.branches[0].branchFingerprint)
+})
+
+test('快照里的绑定与设置改不动执行：模型目录换了也按当时确认的模型跑', () => {
+  const run = persistentRun()
+  run.compiledPlan = compileRunCreativePlan({ run, document: projectDocument(), models, now: 50 })
+  // 之后 plan 被改写（模拟目录/绑定变动后重放旧 Run）：执行仍用快照。
+  run.plan.prompt = '完全不同的新画面描述。'
+  const result = prepareAgentRunExecution({
+    run, document: projectDocument(), now: 100,
+    jobIdForBranch: (branch) => `job-${branch.id}`,
+    models, maximumBatchCount: 8, maximumReferenceBytes: 8 * 1024 * 1024,
+  })
+  assert.equal(result.jobs[0].generationRecipe.prompt, run.compiledPlan.branches[0].prompt)
+  assert.doesNotMatch(result.jobs[0].generationRecipe.prompt, /完全不同的新画面描述/u)
+})
+
+test('确认时的参考素材被换掉后阻断执行，不用另一组素材顶替原指纹', () => {
+  // 否则会用别的素材去执行，还挂着用户确认过的那个指纹（ADR 0005 不变量四）。
+  const run = persistentRun()
+  run.compiledPlan = compileRunCreativePlan({ run, document: projectDocument(), models, now: 50 })
+  const document = projectDocument()
+  document.assets = document.assets.map((asset) => asset.id === 'asset-scene-b'
+    ? { ...asset, id: 'asset-scene-c' }
+    : asset)
+  run.branches[1].assetId = 'asset-scene-c'
+  assert.throws(
+    () => prepareAgentRunExecution({
+      run, document, now: 100,
+      jobIdForBranch: (branch) => `job-${branch.id}`,
+      models, maximumBatchCount: 8, maximumReferenceBytes: 8 * 1024 * 1024,
+    }),
+    (error) => error.code === 'AGENT_PLAN_REFERENCE_DRIFT' && error.statusCode === 409,
+  )
 })

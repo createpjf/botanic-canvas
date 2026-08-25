@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "_note": "发布 Gate 的固定回归集。样本只含实测规格与人工金标，不引用任何真实媒体或生产项目素材——依赖生产素材会让 Gate 因为与质量无关的原因变红或变绿。",
+  "cases": [
+    {
+      "id": "square-1k-compliant",
+      "label": "1:1 / 1K 合规图片",
+      "settings": { "model": "gpt-image-2", "aspectRatio": "1:1", "resolution": "1K" },
+      "output": { "id": "out-1", "mediaKind": "image", "spec": { "mimeType": "image/png", "byteSize": 524288, "width": 1024, "height": 1024 } },
+      "humanAccepted": true,
+      "expect": { "verdict": "pass" }
+    },
+    {
+      "id": "portrait-2k-compliant",
+      "label": "3:4 / 2K 合规图片",
+      "settings": { "model": "gpt-image-2", "aspectRatio": "3:4", "resolution": "2K" },
+      "output": { "id": "out-1", "mediaKind": "image", "spec": { "mimeType": "image/png", "byteSize": 1048576, "width": 1536, "height": 2048 } },
+      "humanAccepted": true,
+      "expect": { "verdict": "pass" }
+    },
+    {
+      "id": "aspect-ratio-drift",
+      "label": "比例漂移：声明 3:4 实际 1:1",
+      "settings": { "model": "gpt-image-2", "aspectRatio": "3:4", "resolution": "2K" },
+      "output": { "id": "out-1", "mediaKind": "image", "spec": { "mimeType": "image/png", "byteSize": 1048576, "width": 2048, "height": 2048 } },
+      "expect": { "verdict": "fail" }
+    },
+    {
+      "id": "resolution-below-tier",
+      "label": "分辨率低于档位下限",
+      "settings": { "model": "gpt-image-2", "aspectRatio": "1:1", "resolution": "2K" },
+      "output": { "id": "out-1", "mediaKind": "image", "spec": { "mimeType": "image/png", "byteSize": 262144, "width": 768, "height": 768 } },
+      "expect": { "verdict": "fail" }
+    },
+    {
+      "id": "declared-type-mismatch",
+      "label": "声明类型与文件头不一致",
+      "settings": { "model": "gpt-image-2", "aspectRatio": "1:1", "resolution": "1K" },
+      "output": { "id": "out-1", "mediaKind": "image", "spec": { "mimeType": "image/png", "declaredMimeType": "video/mp4", "byteSize": 524288, "width": 1024, "height": 1024 } },
+      "expect": { "verdict": "fail" }
+    },
+    {
+      "id": "video-duration-compliant",
+      "label": "视频时长符合声明",
+      "settings": { "model": "minimax-h3", "aspectRatio": "9:16", "resolution": "1080P", "duration": 5 },
+      "output": { "id": "out-1", "mediaKind": "video", "spec": { "mimeType": "video/mp4", "byteSize": 4194304, "durationSeconds": 5.04 } },
+      "humanAccepted": true,
+      "expect": { "verdict": "pass" }
+    },
+    {
+      "id": "video-duration-short",
+      "label": "视频时长明显不足",
+      "settings": { "model": "minimax-h3", "aspectRatio": "9:16", "resolution": "1080P", "duration": 10 },
+      "output": { "id": "out-1", "mediaKind": "video", "spec": { "mimeType": "video/mp4", "byteSize": 2097152, "durationSeconds": 3.1 } },
+      "expect": { "verdict": "fail" }
+    },
+    {
+      "id": "missing-spec-unverifiable",
+      "label": "没有实测规格：无法验证而不是默认通过",
+      "settings": { "model": "gpt-image-2", "aspectRatio": "1:1", "resolution": "1K" },
+      "output": { "id": "out-1", "mediaKind": "image" },
+      "expect": { "verdict": "unverifiable" }
+    },
+    {
+      "id": "human-rejected-compliant-file",
+      "label": "规格全合规但人工判否",
+      "settings": { "model": "gpt-image-2", "aspectRatio": "1:1", "resolution": "1K" },
+      "output": { "id": "out-1", "mediaKind": "image", "spec": { "mimeType": "image/png", "byteSize": 524288, "width": 1024, "height": 1024 } },
+      "humanAccepted": false,
+      "expect": { "verdict": "fail" }
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-import { AgentToolRuntimeError, agentToolObject, agentToolText, createAgentToolRegistry, runAgentToolLoop } from './agentToolRuntime.mjs'
+import { AgentToolRuntimeError, agentToolObject, agentToolText, createAgentToolRegistry, freezeAgentStepSnapshot, runAgentToolLoop } from './agentToolRuntime.mjs'
 import { botanicAgentProviderConfig, botanicAgentProviderTemperature } from './botanicAgentPlanner.mjs'
 import { BotanicAgentChatError } from './botanicAgentChat.mjs'
 import { readStreamedChatCompletion } from './botanicAgentStream.mjs'
@@ -13,6 +13,8 @@ import {
 } from './botanicAgentVision.mjs'
 import { botanicAgentContextToolSourceLabels, createBotanicAgentReadToolDefinitions } from './botanicAgentContextTools.mjs'
 import { botanicAgentWebResearchSourceLabels, createBotanicAgentWebResearchTools } from './botanicAgentWebTools.mjs'
+import { botanicAgentOperationalSourceLabels, createBotanicAgentOperationalToolDefinitions } from './botanicAgentOperationalTools.mjs'
+import { renderThreadSummary } from './agentThreadSummary.mjs'
 
 // Botanic Agent 回合解析器：把“这一句到底是聊天/建议/检索，还是要生成图片，以及要用什么
 // Prompt、生成几张”整体交给服务端模型判断。它读整段对话（包含 Agent 自己刚给出的建议）与
@@ -415,7 +417,7 @@ function askClarificationTool() {
   }
 }
 
-function turnToolRegistry(input, { ontology, memory, skills, webResearch }) {
+function turnToolRegistry(input, { ontology, memory, skills, webResearch, operations }) {
   const mounted = new Set(input.mountedSkillIds ?? [])
   const readTools = createBotanicAgentReadToolDefinitions({ ontology, memory, skills }).map((tool) => {
     if (tool.name !== 'skill_search') return tool
@@ -433,6 +435,9 @@ function turnToolRegistry(input, { ontology, memory, skills, webResearch }) {
   })
   return createAgentToolRegistry([
     ...readTools,
+    // 运维只读工具：让模型用真实实体状态回答任务/评审/交付问题，而不是从对话里猜。
+    // 没有注入读取器时不暴露，因此对话与规划链路不受影响。
+    ...createBotanicAgentOperationalToolDefinitions(operations),
     ...createBotanicAgentWebResearchTools(webResearch),
     generateImagesTool(input),
     // 目录里没有视频模型时不暴露视频工具，模型也就不会声称能做视频。
@@ -458,6 +463,7 @@ function turnSearchGuidance(registry) {
 function turnSourceLabels(toolCalls) {
   return [...new Set([
     ...botanicAgentContextToolSourceLabels(toolCalls),
+    ...botanicAgentOperationalSourceLabels(toolCalls),
     ...botanicAgentWebResearchSourceLabels(toolCalls),
   ])]
 }
@@ -538,7 +544,7 @@ function withTurnReasoning(result, reasoning) {
   return reasoning?.length ? { ...result, reasoning } : result
 }
 
-async function executeTurnAttempt({ config, model, system, messages, registry, options, allowRawReasoning }) {
+async function executeTurnAttempt({ config, model, system, messages, registry, options, allowRawReasoning, snapshot }) {
   const timeoutSignal = AbortSignal.timeout(config.timeoutMs)
   const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal
   const fetchImpl = options.fetchImpl ?? fetch
@@ -551,6 +557,7 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
   try {
     const result = await runAgentToolLoop({
       registry,
+      snapshot,
       messages: [
         { role: 'system', content: system },
         ...messages,
@@ -640,9 +647,9 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
     if (timeoutSignal.aborted) throw new BotanicAgentChatError(504, 'PROVIDER_TIMEOUT', 'Agent 响应超时，请重试。')
     if (options.signal?.aborted) throw new BotanicAgentChatError(499, 'REQUEST_CANCELLED', 'Agent 请求已取消。')
     if (caught instanceof AgentToolRuntimeError) {
-      throw new BotanicAgentChatError(502, 'INVALID_PROVIDER_RESPONSE', 'Agent 返回了不允许的工具调用。')
+      throw new BotanicAgentChatError(502, 'INVALID_PROVIDER_RESPONSE', 'Agent 返回了不允许的工具调用。', { cause: caught })
     }
-    throw new BotanicAgentChatError(502, 'PROVIDER_UNAVAILABLE', 'Agent 服务暂时不可用，请稍后重试。')
+    throw new BotanicAgentChatError(502, 'PROVIDER_UNAVAILABLE', 'Agent 服务暂时不可用，请稍后重试。', { cause: caught })
   }
 }
 
@@ -653,6 +660,9 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
   const situation = turnSituationBriefing(input, input.locale)
   const mountedSkills = resolveBotanicAgentMountedSkills(input.mountedSkillIds, options.projectSkills)
   const mountedBriefing = botanicAgentMountedSkillBriefing(mountedSkills, input.locale)
+  // 线程摘要是独立的上下文层：请求只带最近一个窗口，早前已经定下的目标、决策与约束
+  // 靠它带回来，否则超出窗口的内容会彻底消失（Epic 8）。
+  const threadBriefing = renderThreadSummary(options.threadSummary, { locale: input.locale })
   if (options.signal?.aborted) throw new BotanicAgentChatError(499, 'REQUEST_CANCELLED', 'Agent 请求已取消。')
   const ontology = buildBotanicAgentOntology(options.document, input.contextNodeIds)
   const memory = safeBotanicAgentMemory(options.document)
@@ -666,8 +676,17 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
     allowLocal: Boolean(runtimeConfig?.webSearch?.allowLocal),
     consumeQuota: options.consumeWebResearchQuota,
   }
-  const registry = turnToolRegistry(input, { ontology, memory, skills, webResearch })
+  const registry = turnToolRegistry(input, { ontology, memory, skills, webResearch, operations: options.operations })
   const searchGuidance = turnSearchGuidance(registry)
+  // 这一次执行的能力快照：模型、工具集、Skill/Memory 绑定与角色在进入循环前定格
+  // （Epic 8）。中途改配置不该改变已经开始的这一次。
+  const stepSnapshot = freezeAgentStepSnapshot({
+    registry,
+    model: config.model,
+    skillBindings: mountedSkills.map((skill) => ({ id: skill.id, version: skill.version, contentHash: skill.contentHash })),
+    memoryBindings: (memory ?? []).map((item) => ({ id: item.id, version: item.version, contentHash: item.contentHash })),
+    role: options.role,
+  })
 
   // 原生多模态优先：引用图片直接随消息附给视觉模型，让它看着画面判断意图、综合 Prompt。
   const visionModel = typeof runtimeConfig?.agentVisionModel === 'string' ? runtimeConfig.agentVisionModel.trim() : ''
@@ -686,12 +705,14 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
         system: [
           baseSystem,
           situation,
+          threadBriefing,
           mountedBriefing,
           botanicAgentContextBriefing(ontology, { visionAttached: true }),
           searchGuidance,
         ].filter(Boolean).join('\n\n'),
         messages: botanicAgentMultimodalMessages(input.messages, visionParts),
         registry,
+        snapshot: stepSnapshot,
         options,
         allowRawReasoning,
       })
@@ -716,6 +737,7 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
   const system = [
     baseSystem,
     situation,
+    threadBriefing,
     mountedBriefing,
     botanicAgentContextBriefing(ontology, { visionDescribed: visionDescriptions.length > 0 }),
     botanicAgentVisionBriefing(visionDescriptions),
@@ -724,6 +746,7 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
   return executeTurnAttempt({
     config,
     model: config.model,
+    snapshot: stepSnapshot,
     system,
     messages: input.messages,
     registry,

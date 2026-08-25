@@ -3,6 +3,7 @@ import { providerForModel } from './generationModels.mjs'
 import { GenerationError, persistedGenerationJob, validateGenerationInput } from './generationProvider.mjs'
 import { requireProjectPermission } from './projectAuthorization.mjs'
 import { buildGenerationUsage, reserveGenerationBudget } from './generationGovernance.mjs'
+import { compileSubmissionCreativePlan } from './creativePlanResolver.mjs'
 
 /**
  * 真实生成任务的单一提交入口。HTTP、Agent 与生产工作流都必须经过这里，避免
@@ -64,6 +65,14 @@ export function createGenerationSubmissionService({ config, productStore, securi
       throw failure
     }
 
+    // 三个提交入口共用同一对 Resolve / Compile：这里补上 HTTP 与工作流的编译，
+    // 让每个 Job 都带指纹，Artifact 才能一律反查到所属计划。
+    const compiled = compileSubmissionCreativePlan({
+      input,
+      models: config.modelOptions ?? [],
+      // 工作流提交沿用版本发布时固定的计划指纹，不按本次提交内容重算。
+      productionWorkflow: rawInput?.productionWorkflow,
+    })
     const timestamp = Date.now()
     const usage = buildGenerationUsage(input, {
       jobId: id,
@@ -82,6 +91,8 @@ export function createGenerationSubmissionService({ config, productStore, securi
       refinementMode: input.refinementMode,
       idempotencyKey,
       outputs: [], error: undefined, rawInput, agentRun, usage,
+      planFingerprint: compiled.planFingerprint,
+      branchFingerprint: compiled.branchFingerprint,
       budgetWarning: budget.warning ? '生成额度接近上限。' : undefined,
     }
     await productStore.putGenerationJob(user.id, persistedGenerationJob(job))

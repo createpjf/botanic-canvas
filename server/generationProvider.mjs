@@ -1,3 +1,4 @@
+import { readMediaSpecFromDataUrl } from './mediaSpec.mjs'
 import { mapWithConcurrency } from './concurrency.mjs'
 import { buildImageProviderPrompt, gptImage2EditQuality, orderCompositionReferences } from './generationComposition.mjs'
 import {
@@ -309,6 +310,7 @@ export function publicGenerationJob(job, { includeIdempotencyKey = false } = {})
     provider: job.provider ?? 'openai-images',
     model: job.settings?.model,
     error: job.error,
+    errorCode: job.errorCode,
     missingOutputCount: job.missingOutputCount ?? 0,
     partialError: job.partialError,
     outputs: job.outputs ?? [],
@@ -316,7 +318,12 @@ export function publicGenerationJob(job, { includeIdempotencyKey = false } = {})
     // 仅向任务提交者返回，用于网络状态未知时确认同一次逻辑提交。
     ...(includeIdempotencyKey ? { idempotencyKey: job.idempotencyKey } : {}),
     projectWritebackPending: Boolean(job.projectWritebackPending),
+    // 取消回执随任务一起返回：刷新页面后界面仍要说清费用是否可能已产生。
+    cancel: job.cancel,
     agentRun: job.agentRun,
+    // 编译计划指纹：任一结果都能反查所属的那一次用户确认与那一支。
+    planFingerprint: job.planFingerprint,
+    branchFingerprint: job.branchFingerprint,
     usage: job.usage,
     budgetWarning: job.budgetWarning,
     effectiveModel: job.effectiveModel,
@@ -342,6 +349,10 @@ export function persistedGenerationJob(job) {
     outputs: job.outputs ?? [],
     variants: job.variants ?? [],
     error: job.error,
+    // 失败的错误码：服务端重试策略按码分类，只存消息就永远判不出可否重试。
+    errorCode: job.errorCode,
+    // 取消回执是计费归因唯一的持久记录，必须随任务落库。
+    cancel: job.cancel,
     missingOutputCount: job.missingOutputCount ?? 0,
     partialError: job.partialError,
     settings: job.settings,
@@ -353,6 +364,8 @@ export function persistedGenerationJob(job) {
     projectWritebackError: job.projectWritebackError,
     projectWritebackUpdatedAt: job.projectWritebackUpdatedAt,
     agentRun: job.agentRun,
+    planFingerprint: job.planFingerprint,
+    branchFingerprint: job.branchFingerprint,
     usage: job.usage,
     budgetWarning: job.budgetWarning,
     effectiveModel: job.effectiveModel,
@@ -492,6 +505,9 @@ export async function generateImages(job, {
         id: `${jobId}-output-${index + 1}`,
         image: await persistImage(image),
         mediaKind: 'image',
+        // 实测规格随输出落库：评审第 1 层（比例、分辨率、完整性）必须确定性验证，
+        // 没有它就只能判「无法验证」（ADR 0006）。在这里读是因为只有此处握有字节。
+        spec: readMediaSpecFromDataUrl(image.dataUrl),
         revisedPrompt: typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined,
       }
       await onVariant?.({ index, status: 'succeeded', output })

@@ -80,3 +80,89 @@ test('Turn Runtime 把取消/失败收口到可恢复终态', async () => {
   assert.equal(store.turns.get(id).status, 'cancelled')
   assert.equal(store.events.get(id).at(-1).type, 'turn.cancelled')
 })
+
+test('cancel 落中间态 cancelling，终态留给真正的执行实例或孤儿清扫', async () => {
+  const store = fakeStore()
+  const runtime = createBotanicAgentTurnRuntime({ productStore: store, now: () => 500 })
+  const id = 'turn-remote-cancel'
+  // 不在本实例执行的非终态 Turn：本实例的 activeTurns 看不到它是否跑在别处。
+  await store.putAgentTurn('u', {
+    id, version: 2, ownerId: 'u', projectId: 'p', idempotencyKey: 'k', status: 'running', createdAt: 1, updatedAt: 1,
+  })
+  await store.appendAgentTurnEvent('u', 'p', { id: 'e1', turnId: id, projectId: 'p', sequence: 1, type: 'turn.started', createdAt: 1 })
+
+  const cancelled = await runtime.cancel({ userId: 'u', projectId: 'p', turnId: id })
+
+  // 直接写 cancelled 会让远端实例的结果无处归属。
+  assert.equal(cancelled.status, 'cancelling')
+  assert.equal(store.turns.get(id).status, 'cancelling')
+  assert.equal(cancelled.error.code, 'AGENT_TURN_CANCELLED')
+  // 事件如实记录「取消请求」，不宣称尚未达成的终态。
+  assert.equal(store.events.get(id).at(-1).type, 'turn.cancelling')
+  assert.equal(cancelled.lastSequence, 2, '读模型暴露续读游标')
+})
+
+test('cancel 对已终态 Turn 是无副作用读取', async () => {
+  const store = fakeStore()
+  const runtime = createBotanicAgentTurnRuntime({ productStore: store, now: () => 500 })
+  const id = 'turn-done'
+  await store.putAgentTurn('u', {
+    id, version: 2, ownerId: 'u', projectId: 'p', idempotencyKey: 'k', status: 'completed', createdAt: 1, updatedAt: 9,
+  })
+  const result = await runtime.cancel({ userId: 'u', projectId: 'p', turnId: id })
+  assert.equal(result.status, 'completed', '已完成的回合不得被取消改写')
+  assert.equal(store.turns.get(id).updatedAt, 9, '不应发生写入')
+  assert.equal(store.events.has(id), false, '不应追加事件')
+})
+
+test('cancel 忽略不属于该项目的 Turn，避免跨项目越权取消', async () => {
+  const store = fakeStore()
+  const runtime = createBotanicAgentTurnRuntime({ productStore: store })
+  await store.putAgentTurn('u', {
+    id: 'turn-other', version: 2, ownerId: 'u', projectId: 'project-a', idempotencyKey: 'k', status: 'running', createdAt: 1, updatedAt: 1,
+  })
+  assert.equal(await runtime.cancel({ userId: 'u', projectId: 'project-b', turnId: 'turn-other' }), undefined)
+  assert.equal(store.turns.get('turn-other').status, 'running')
+})
+
+test('Turn 持久化可重放的请求快照，恢复才有输入可依', async () => {
+  const store = fakeStore()
+  const runtime = createBotanicAgentTurnRuntime({ productStore: store, now: () => 100 })
+  const id = 'turn-with-request'
+  await runtime.execute({
+    userId: 'u', projectId: 'p', id, idempotencyKey: 'k',
+    request: { projectId: 'p', instruction: '换成海边场景', locale: 'zh-CN', contextNodeIds: ['node-1'], mountedSkillIds: ['skill-1'] },
+    resolve: async () => ({ kind: 'chat', answer: '好' }),
+  })
+  const stored = store.turns.get(id)
+  assert.deepEqual(stored.request, {
+    projectId: 'p', instruction: '换成海边场景', locale: 'zh-CN',
+    contextNodeIds: ['node-1'], mountedSkillIds: ['skill-1'],
+  })
+})
+
+test('请求快照拒绝媒体字节，图片只能以稳定标识进入', async () => {
+  const store = fakeStore()
+  const runtime = createBotanicAgentTurnRuntime({ productStore: store })
+  // 嵌套也要挡住：上下文与 Prompt 结构本身是嵌套的。
+  for (const request of [
+    { instruction: 'x', image: 'data:image/png;base64,AAAA' },
+    { instruction: 'x', context: [{ nodeId: 'n', dataUrl: 'data:image/png;base64,AAAA' }] },
+    { instruction: 'x', payload: { nested: { buffer: 'AAAA' } } },
+  ]) {
+    await assert.rejects(
+      () => runtime.execute({ userId: 'u', projectId: 'p', id: `t-${Math.random()}`, idempotencyKey: 'k', request, resolve: async () => ({}) }),
+      (caught) => caught.code === 'AGENT_TURN_MEDIA_FORBIDDEN',
+    )
+  }
+})
+
+test('没有请求快照时不写空字段，兼容既有 Turn 记录', async () => {
+  const store = fakeStore()
+  const runtime = createBotanicAgentTurnRuntime({ productStore: store, now: () => 100 })
+  await runtime.execute({
+    userId: 'u', projectId: 'p', id: 'turn-no-request', idempotencyKey: 'k',
+    resolve: async () => ({ kind: 'chat', answer: '好' }),
+  })
+  assert.equal('request' in store.turns.get('turn-no-request'), false)
+})

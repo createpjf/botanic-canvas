@@ -7,6 +7,7 @@ import {
   resolveBotanicAgentWorkflowReferenceNodeIds,
   resolveBotanicAgentCanvasCommands,
   botanicAgentBatchBranchTitles,
+  botanicAgentLocalInitialGenerationDecision,
   type BotanicAgentActionProposal,
   type BotanicAgentActionResult,
   type BotanicAgentArtifact,
@@ -52,6 +53,7 @@ const canvasAgentExecutionCopy = {
     actionFailed: 'Agent 操作执行失败，请稍后重试。',
     runPersistenceFailed: 'Agent Run 无法持久化，请稍后重试。',
     initialGenerationRequiresService: '首次生成需要连接工作区服务，以创建可恢复任务；当前未修改画布。',
+    initialGenerationReferenceRequiresService: '按参考图首次生成需要连接工作区服务。本地回退无法保留参考素材，已停止以免变成纯文字生成；当前未修改画布。',
     missingParentResult: '当前计划缺少父结果，未创建画布节点。',
     generationNotStarted: '生成任务未启动，请检查参考素材与生成服务。',
   },
@@ -66,6 +68,7 @@ const canvasAgentExecutionCopy = {
     actionFailed: 'Unable to complete the Agent action. Try again.',
     runPersistenceFailed: 'Unable to save the Agent run. Try again.',
     initialGenerationRequiresService: 'Connect to the workspace service to create a recoverable first-generation task. The canvas was not changed.',
+    initialGenerationReferenceRequiresService: 'Reference-based first generation needs the workspace service. The local fallback cannot preserve reference assets, so it stopped rather than generating from text only. The canvas was not changed.',
     missingParentResult: 'This plan has no parent result, so no canvas node was created.',
     generationNotStarted: 'The generation task did not start. Check the reference assets and generation service.',
   },
@@ -477,6 +480,7 @@ export function useCanvasAgentExecutionBridge({
           projectId,
           plan,
           idempotencyKey: submissionKey,
+          ...(plan.turnId ? { turnId: plan.turnId } : {}),
           branches: branchInputs.map((branch) => ({
             id: branch.branchId,
             label: branch.label,
@@ -554,29 +558,34 @@ export function useCanvasAgentExecutionBridge({
     }
     if (useCanvasStore.getState().document.id !== projectId) throw new Error(copy.projectChanged)
     if (plan.intent === 'initial_generation') {
-      // 本地回退也允许无参考图的首轮文生图；视频仍交给可恢复服务处理首帧约束。
-      if (plan.output.mode === 'single' && plan.settings.duration === undefined) {
-        runId = saveAgentPlan(plan)
-        updateAgentRunStatus(runId, 'executing')
-        const started = await runGeneration({
+      // 本地回退只允许确实无图片引用的首轮文生图。带引用时必须阻断：下面构造的是
+      // 空引用配方，静默走下去会把用户要求的「按参考生成」变成纯文字生成。
+      // 视频仍交给可恢复服务处理首帧约束。
+      const fallback = botanicAgentLocalInitialGenerationDecision(plan)
+      if (!fallback.ok) {
+        throw new Error(fallback.reason === 'reference_requires_service'
+          ? copy.initialGenerationReferenceRequiresService
+          : copy.initialGenerationRequiresService)
+      }
+      runId = saveAgentPlan(plan)
+      updateAgentRunStatus(runId, 'executing')
+      const started = await runGeneration({
+        prompt: plan.prompt,
+        batchCount: plan.output.count,
+        settings: plan.settings,
+        recipe: {
           prompt: plan.prompt,
           batchCount: plan.output.count,
           settings: plan.settings,
-          recipe: {
-            prompt: plan.prompt,
-            batchCount: plan.output.count,
-            settings: plan.settings,
-            references: [],
-          },
-          title: plan.title,
-        })
-        if (!started) {
-          updateAgentRunStatus(runId, 'failed', copy.generationNotStarted)
-          return { started: false, runId }
-        }
-        return { started: true, runId }
+          references: [],
+        },
+        title: plan.title,
+      })
+      if (!started) {
+        updateAgentRunStatus(runId, 'failed', copy.generationNotStarted)
+        return { started: false, runId }
       }
-      throw new Error(copy.initialGenerationRequiresService)
+      return { started: true, runId }
     }
     const selectedResultNodeId = plan.selectedResultNodeId
     if (!selectedResultNodeId) throw new Error(copy.missingParentResult)

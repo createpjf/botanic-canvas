@@ -20,6 +20,15 @@ import { CopyIcon, DeleteIcon, FocusIcon, SparkleIcon } from '../../components/B
 import type { CollaborationActivity, CollaborationDocumentChange } from '../../domain/collaborationActivity'
 import { downloadMedia } from '../../lib/mediaDownload'
 import { agentArtifactKindLabel, agentMemoryKindLabel, agentRunFeedback, AgentPanelBackButton } from './AgentWorkspaceParts'
+import {
+  agentReviewCandidateRows,
+  agentReviewCoverageSummary,
+  agentReviewTaskStatusNote,
+  type AgentReviewDecision,
+  type AgentReviewTaskSnapshot,
+} from '../../domain/agentReviewPresentation'
+import { fetchAgentReviewTasks, submitAgentReviewDecisions } from '../../lib/agentApi'
+import { memoryComparisonRows, memoryConflictPairs, memoryIneffectiveReason } from '../../domain/agentMemoryComparison'
 import type { AgentArtifactIndexState, AgentContextItem } from './agentWorkspace.types'
 import { useProductI18n, useProductMessages } from '../../i18n/react'
 import { formatProductDateTime, type ProductLocale } from '../../i18n/core'
@@ -40,6 +49,13 @@ const agentUtilityMessages = {
     noToolArtifacts: '还没有 Skill / MCP 产物。', noGeneratedResults: '还没有该条件下的生成结果。', loadEarlierResults: '加载更早结果',
     memoryAria: '项目创作记忆', memoryTitle: '项目记忆', memoryDescription: '仅用于当前项目的后续规划；保存品牌规则、认可方向与禁区。', memoryType: '记忆类型', longTermRule: '长期规则', approvedDirection: '已确认方向', avoid: '避免事项', memoryPlaceholder: '例如：商品包装与品牌色不可改变', memoryContent: '项目记忆内容', saveMemory: '保存记忆', locateMemory: (content: string) => `在画布定位记忆 ${content}`, locate: '在画布定位', deleteMemory: (content: string) => `删除记忆 ${content}`, deleteMemoryTitle: '删除记忆', noMemory: '还没有项目记忆。', memoryCount: (count: number) => `${count} 条`,
     system: '系统', project: '项目', invoke: '@调用', mount: '挂载到对话', mounted: '已挂载', unmount: '取消挂载',
+    reviewAria: '结果评审', reviewTitle: '结果评审', reviewDescription: '逐条判据说明结果是否符合这次确认的计划；自动评审不代表品牌批准，仍需你来决定。',
+    reviewLoading: '正在读取评审…', reviewUnavailable: '评审暂不可用，请稍后重试。', noReviewTasks: '这次任务还没有评审记录。',
+    reviewCandidate: (id: string) => `候选 ${id}`, reviewUnverified: (count: number) => `${count} 项未验证`,
+    reviewRevision: '修订建议', reviewAccept: '接受', reviewReject: '拒绝', reviewRetry: '请求重试',
+    reviewAwaiting: '待你决定', reviewSubmitting: '提交中…', reviewDecisionFailed: '决定提交失败，请重试。',
+    reviewRetryCreated: (count: number) => `已创建 ${count} 个重试任务；原结果保留。`,
+    memoryConflicts: (count: number) => `有 ${count} 组规则互相矛盾，每组只有一条会生效。停用其中一条，规则才不会互相打架。`,
   },
   en: {
     collaborationAria: 'Collaboration activity', collaborationTitle: 'Collaboration', collaborationDescription: 'Review recent changes from workspace members and jump to the related node, conversation, or task.',
@@ -55,6 +71,13 @@ const agentUtilityMessages = {
     batchActions: 'Batch actions', selectedCount: (count: number) => `${count} selected`, startNextRound: 'Start next round', cancel: 'Cancel', itemCount: (count: number) => `${count} ${count === 1 ? 'item' : 'items'}`, notBackfilled: 'Not on canvas', sourceConversation: 'Source conversation', selectAll: 'Select all', clearSelection: 'Clear selection', select: 'Select', deselect: 'Deselect', view: 'View',
     noToolArtifacts: 'No Skill or MCP outputs yet.', noGeneratedResults: 'No generated results match these filters.', loadEarlierResults: 'Load earlier results',
     memoryAria: 'Project creative memory', memoryTitle: 'Project memory', memoryDescription: 'Use project memory in future planning to preserve brand rules, approved directions, and boundaries.', memoryType: 'Memory type', longTermRule: 'Long-term rule', approvedDirection: 'Approved direction', avoid: 'Avoid', memoryPlaceholder: 'For example: Keep the product packaging and brand colors unchanged', memoryContent: 'Project memory content', saveMemory: 'Save memory', locateMemory: (content: string) => `Locate memory on canvas: ${content}`, locate: 'Locate on canvas', deleteMemory: (content: string) => `Delete memory: ${content}`, deleteMemoryTitle: 'Delete memory', noMemory: 'No project memory yet.', memoryCount: (count: number) => `${count} ${count === 1 ? 'entry' : 'entries'}`,
+    reviewAria: 'Result review', reviewTitle: 'Result review', reviewDescription: 'Per-criterion findings on whether results match the plan you confirmed. An automatic pass is not brand approval — the call is still yours.',
+    reviewLoading: 'Loading review…', reviewUnavailable: 'Review is unavailable right now. Try again shortly.', noReviewTasks: 'No review has been recorded for this task yet.',
+    reviewCandidate: (id: string) => `Candidate ${id}`, reviewUnverified: (count: number) => `${count} not verified`,
+    reviewRevision: 'Suggested revision', reviewAccept: 'Accept', reviewReject: 'Reject', reviewRetry: 'Request retry',
+    reviewAwaiting: 'Awaiting your decision', reviewSubmitting: 'Submitting…', reviewDecisionFailed: 'The decision could not be submitted. Try again.',
+    reviewRetryCreated: (count: number) => `Created ${count} retry task(s); the original results are kept.`,
+    memoryConflicts: (count: number) => `${count} pair(s) of rules contradict each other; only one of each takes effect. Retire one so the intent is unambiguous.`,
     system: 'System', project: 'Project', invoke: '@mention', mount: 'Mount in chat', mounted: 'Mounted', unmount: 'Unmount',
   },
 } as const
@@ -397,6 +420,8 @@ export function AgentMemoryPanel({ memory, sourceNodeIds, onAddMemory, onRemoveM
   const copy = useProductMessages(agentUtilityMessages)
   const [kind, setKind] = useState<BotanicAgentMemoryKind>('rule')
   const [draft, setDraft] = useState('')
+  const comparisonRows = useMemo(() => memoryComparisonRows(memory), [memory])
+  const conflictCount = useMemo(() => memoryConflictPairs(memory).length, [memory])
   const save = () => {
     if (!draft.trim()) return
     if (onAddMemory(kind, draft, sourceNodeIds)) setDraft('')
@@ -405,6 +430,7 @@ export function AgentMemoryPanel({ memory, sourceNodeIds, onAddMemory, onRemoveM
   return <section className="agent-memory-panel" aria-label={copy.memoryAria}>
     <header><AgentPanelBackButton onClick={onBackToConversation} /><div><small>PROJECT MEMORY</small><h2>{copy.memoryTitle}</h2></div><span>{copy.memoryCount(memory.length)}</span></header>
     <p>{copy.memoryDescription}</p>
+    {conflictCount ? <p className="agent-memory-panel__conflicts">{copy.memoryConflicts(conflictCount)}</p> : null}
     <div className="agent-memory-panel__form">
       <BotanicSelect value={kind} ariaLabel={copy.memoryType} options={[
         { value: 'rule', label: copy.longTermRule },
@@ -415,9 +441,116 @@ export function AgentMemoryPanel({ memory, sourceNodeIds, onAddMemory, onRemoveM
       <button type="button" disabled={!draft.trim()} onClick={save}>{copy.saveMemory}</button>
     </div>
     <div className="agent-memory-panel__list">
-      {memory.map((item) => <article key={item.id} className={`is-${item.kind}`}><span><small>{agentMemoryKindLabel(item.kind, locale)}</small><p>{item.content}</p></span><div>{item.sourceNodeIds[0] ? <button type="button" aria-label={copy.locateMemory(item.content)} title={copy.locate} onClick={() => onLocateNode(item.sourceNodeIds[0])}><FocusIcon /></button> : null}<button type="button" className="is-delete" aria-label={copy.deleteMemory(item.content)} title={copy.deleteMemoryTitle} onClick={() => onRemoveMemory(item.id)}><DeleteIcon /></button></div></article>)}
+      {comparisonRows.map((row) => {
+        const item = memory.find((entry) => entry.id === row.id)
+        if (!item) return null
+        // 不生效的原因要说出来：用户看不到冲突就永远不知道该停用哪一条。
+        const reason = memoryIneffectiveReason(row, comparisonRows, locale)
+        return <article key={item.id} className={`is-${item.kind}${row.effective ? '' : ' is-ineffective'}`}>
+          <span>
+            <small>{agentMemoryKindLabel(item.kind, locale)}</small>
+            <p>{item.content}</p>
+            {reason ? <em className="agent-memory-panel__reason">{reason}</em> : null}
+          </span>
+          <div>
+            {item.sourceNodeIds[0] ? <button type="button" aria-label={copy.locateMemory(item.content)} title={copy.locate} onClick={() => onLocateNode(item.sourceNodeIds[0])}><FocusIcon /></button> : null}
+            <button type="button" className="is-delete" aria-label={copy.deleteMemory(item.content)} title={copy.deleteMemoryTitle} onClick={() => onRemoveMemory(item.id)}><DeleteIcon /></button>
+          </div>
+        </article>
+      })}
       {!memory.length ? <div className="agent-panel__empty">{copy.noMemory}</div> : null}
     </div>
+  </section>
+}
+
+/**
+ * 结果评审面板（Epic 5）。
+ *
+ * 三条展示约束由 `agentReviewPresentation` 保证，组件只负责渲染：
+ * 覆盖摘要必须带被跳过的候选数；`未验证` 与 `不符合` 是两个词；
+ * 没有人工决定的候选一律显示为「待你决定」——自动结论不代替品牌批准。
+ */
+export function AgentReviewPanel({ runId, onBackToConversation }: {
+  runId: string
+  onBackToConversation: () => void
+}) {
+  const { locale } = useProductI18n()
+  const copy = useProductMessages(agentUtilityMessages)
+  const [tasks, setTasks] = useState<AgentReviewTaskSnapshot[]>([])
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [pending, setPending] = useState('')
+  const [notice, setNotice] = useState('')
+
+  useEffect(() => {
+    let active = true
+    setStatus('loading')
+    fetchAgentReviewTasks(runId)
+      .then((loaded) => { if (active) { setTasks(loaded); setStatus('ready') } })
+      .catch(() => { if (active) setStatus('error') })
+    return () => { active = false }
+  }, [runId])
+
+  const decide = async (taskId: string, artifactId: string, decision: AgentReviewDecision) => {
+    setPending(`${taskId}:${artifactId}`)
+    setNotice('')
+    try {
+      const result = await submitAgentReviewDecisions(taskId, [{ artifactId, decision }])
+      setTasks((current) => current.map((task) => (task.id === taskId ? result.task : task)))
+      // 请求重试会产生新的 Run；照实说明原结果没有被覆盖。
+      if (result.retryRuns?.length) setNotice(copy.reviewRetryCreated(result.retryRuns.length))
+    } catch {
+      setNotice(copy.reviewDecisionFailed)
+    } finally {
+      setPending('')
+    }
+  }
+
+  return <section className="agent-review-panel" aria-label={copy.reviewAria}>
+    <header><AgentPanelBackButton onClick={onBackToConversation} /><div><small>RESULT REVIEW</small><h2>{copy.reviewTitle}</h2></div></header>
+    <p>{copy.reviewDescription}</p>
+    {status === 'loading' ? <div className="agent-panel__empty">{copy.reviewLoading}</div> : null}
+    {status === 'error' ? <div className="agent-panel__empty">{copy.reviewUnavailable}</div> : null}
+    {status === 'ready' && !tasks.length ? <div className="agent-panel__empty">{copy.noReviewTasks}</div> : null}
+    {notice ? <p className="agent-review-panel__notice">{notice}</p> : null}
+    {tasks.map((task) => {
+      const statusNote = agentReviewTaskStatusNote(task, locale)
+      return <article key={task.id} className="agent-review-panel__task">
+        <p className="agent-review-panel__coverage">{agentReviewCoverageSummary(task, locale)}</p>
+        {statusNote ? <p className="agent-review-panel__status">{statusNote}</p> : null}
+        {agentReviewCandidateRows(task, locale).map((row) => <div key={row.artifactId} className={`agent-review-panel__candidate is-${row.verdict}`}>
+          <header>
+            <strong>{copy.reviewCandidate(row.artifactId.split(':').at(-1) ?? row.artifactId)}</strong>
+            <span className={`agent-review-panel__verdict is-${row.verdict}`}>{row.verdictLabel}</span>
+            {row.unverifiedCount ? <small>{copy.reviewUnverified(row.unverifiedCount)}</small> : null}
+          </header>
+          <ul className="agent-review-panel__criteria">
+            {row.criteria.map((criterion) => <li key={criterion.id} className={`is-${criterion.verdict}`}>
+              <small>{criterion.layerLabel}</small>
+              <span>{criterion.id}</span>
+              <em>{criterion.verdictLabel}</em>
+              {criterion.evidence ? <p>{criterion.evidence}</p> : null}
+            </li>)}
+          </ul>
+          {row.revisionSuggestion
+            ? <p className="agent-review-panel__revision"><small>{copy.reviewRevision}</small>{row.revisionSuggestion}</p>
+            : null}
+          <footer>
+            {row.awaitingHuman ? <small>{copy.reviewAwaiting}</small> : <small>{row.decisionLabel}</small>}
+            <div>
+              {(['accepted', 'rejected', 'retry_requested'] as const).map((decision) => <button
+                key={decision}
+                type="button"
+                className={row.decision === decision ? 'is-active' : undefined}
+                disabled={pending === `${task.id}:${row.artifactId}`}
+                onClick={() => void decide(task.id, row.artifactId, decision)}
+              >
+                {decision === 'accepted' ? copy.reviewAccept : decision === 'rejected' ? copy.reviewReject : copy.reviewRetry}
+              </button>)}
+            </div>
+          </footer>
+        </div>)}
+      </article>
+    })}
   </section>
 }
 

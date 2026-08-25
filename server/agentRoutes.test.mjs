@@ -570,3 +570,335 @@ test('SSE 写出器在模型还没吐事件前就打开通道，并用注释心�
   beats[0]()
   assert.equal(response.chunks.length, afterEnd)
 })
+
+test('取消 Agent Run 会广播到 Worker，正在执行的生成才会真的停下', async () => {
+  // 这里过去只写库加出队：Worker 是独立进程，看不到 cancelled，会把 Provider
+  // 调用跑完才发现结果没人要 —— 用户停掉任务后槽位仍被占着。
+  const run = {
+    id: 'run-cancel', projectId: 'project-cancel', ownerId: 'user-1', status: 'executing',
+    createdAt: 1, updatedAt: 2, plan: runInput.plan,
+    branches: [
+      { id: 'branch-1', label: '排队中', status: 'queued', attempt: 0, jobIds: ['job-queued'], activeJobId: 'job-queued', outputCount: 0, updatedAt: 2 },
+      { id: 'branch-2', label: '执行中', status: 'running', attempt: 0, jobIds: ['job-running'], activeJobId: 'job-running', outputCount: 0, updatedAt: 2 },
+    ],
+  }
+  const jobs = {
+    'job-queued': { id: 'job-queued', projectId: 'project-cancel', status: 'queued', settings: { model: 'gpt-image-2' } },
+    'job-running': { id: 'job-running', projectId: 'project-cancel', status: 'running', settings: { model: 'gpt-image-2' } },
+  }
+  const written = []
+  const persisted = []
+  const dequeued = []
+  const broadcast = []
+  const responses = []
+  const handler = createAgentRouteHandler({
+    config: { modelOptions: [{ id: 'gpt-image-2', provider: 'openai' }] },
+    productStore: {
+      projectAccess: async () => ({ exists: true, role: 'owner' }),
+      readAgentRun: async () => structuredClone(run),
+      putAgentRun: async (_userId, next) => next,
+      readGenerationJob: async (_userId, jobId) => jobs[jobId],
+      putGenerationJob: async (_userId, job) => { written.push(job) },
+    },
+    agentRunGeneration: { persistJobState: async (_userId, _projectId, job) => persisted.push(job.id) },
+    redisQueue: { cancel: async (jobId) => dequeued.push(jobId) },
+    publishCancel: async (event) => broadcast.push(event),
+    json: (_response, status, body) => { responses.push({ status, body }); return true },
+    requireUser: async () => ({ id: 'user-1' }),
+    publishAgentRunUpdated: async () => {},
+  })
+
+  await handler(
+    { method: 'POST', headers: {} },
+    {},
+    new URL('http://botanic.test/api/agent-runs/run-cancel/cancel'),
+    { agentRunCancel: ['path', 'run-cancel'] },
+    'request-cancel',
+  )
+
+  assert.equal(responses.at(-1)?.status, 200)
+  assert.deepEqual(written.map((job) => job.id).sort(), ['job-queued', 'job-running'])
+  assert.ok(written.every((job) => job.status === 'cancelled'))
+  assert.deepEqual(persisted.sort(), ['job-queued', 'job-running'])
+  assert.deepEqual(dequeued.sort(), ['job-queued', 'job-running'])
+  assert.deepEqual(broadcast.map((event) => event.id).sort(), ['job-queued', 'job-running'])
+  // 计费归因照实分开记，并标明是「停 Run」而不是用户单点某一张。
+  const byId = new Map(written.map((job) => [job.id, job.cancel]))
+  assert.equal(byId.get('job-queued').billing, 'none')
+  assert.equal(byId.get('job-running').billing, 'possible')
+  assert.ok(written.every((job) => job.cancel.reason === 'agent-run'))
+})
+
+test('读取 Turn 时按权威边反查这次回合确认出的 Run', async () => {
+  // linkedRunIds 是读时派生：Turn 记录会被 execute() 整条覆盖写，反写会被清掉。
+  const responses = []
+  const queried = []
+  const handler = createAgentRouteHandler({
+    config: {},
+    productStore: {
+      projectAccess: async () => ({ exists: true, role: 'owner' }),
+      readAgentTurn: async () => ({
+        id: 'turn-1', version: 2, ownerId: 'user-1', projectId: 'project-1',
+        idempotencyKey: 'key-1', status: 'completed', createdAt: 1, updatedAt: 2,
+      }),
+      listAgentTurnEvents: async () => [
+        { id: 'e1', turnId: 'turn-1', sequence: 1, type: 'turn.started' },
+        { id: 'e2', turnId: 'turn-1', sequence: 4, type: 'turn.completed' },
+      ],
+      listAgentRunsForTurn: async (userId, projectId, turnId) => {
+        queried.push({ userId, projectId, turnId })
+        return [{ id: 'run-first' }, { id: 'run-second' }]
+      },
+    },
+    json: (_response, status, body) => { responses.push({ status, body }); return true },
+    requireUser: async () => ({ id: 'user-1' }),
+  })
+
+  await handler(
+    { method: 'GET', headers: {} },
+    {},
+    new URL('http://botanic.test/api/agent-turns/turn-1'),
+    { agentTurn: ['path', 'turn-1'] },
+    'request-turn',
+  )
+
+  assert.equal(responses.at(-1)?.status, 200)
+  assert.deepEqual(responses.at(-1)?.body.turn.linkedRunIds, ['run-first', 'run-second'])
+  // 续读游标同时给出，客户端不必为了知道读到哪再拉一次全部事件。
+  assert.equal(responses.at(-1)?.body.turn.lastSequence, 4)
+  assert.deepEqual(queried, [{ userId: 'user-1', projectId: 'project-1', turnId: 'turn-1' }])
+})
+
+test('Run 绑定固定 Skill 版本与内容摘要，内置 Skill 也不例外', async () => {
+  // 缺版本或摘要就等于允许出现无法重放的 Run（ADR 0006）。
+  const stored = []
+  const responses = []
+  const handler = createAgentRouteHandler({
+    config: {},
+    productStore: {
+      projectAccess: async () => ({ exists: true, role: 'owner' }),
+      readAgentRun: async () => undefined,
+      putAgentRun: async (_userId, run) => { stored.push(run); return run },
+      readAgentState: async () => ({ memory: [] }),
+      listAgentSkills: async () => [{
+        id: 'skill-project', projectId: runInput.projectId, name: '项目 Skill',
+        instructions: '锁定人物', lifecycle: 'published', status: 'active',
+        version: 4, contentHash: 'hash-skill-4',
+      }],
+    },
+    json: (_response, status, body) => { responses.push({ status, body }); return true },
+    readJson: async () => ({
+      ...runInput,
+      plan: {
+        ...runInput.plan,
+        // 客户端只提交身份；版本与摘要由服务端在确认瞬间固定。
+        skillBindings: [{ id: 'skill-project' }, { id: 'controlled_edit' }],
+      },
+    }),
+    requireUser: async () => ({ id: 'user-1' }),
+    publishAgentRunUpdated: async () => {},
+  })
+
+  await handler(
+    { method: 'POST', headers: { 'idempotency-key': 'agent-run-skill-binding' } },
+    {},
+    new URL('http://botanic.test/api/agent-runs'),
+    {},
+    'request-binding',
+  )
+
+  assert.equal(responses.at(-1)?.status, 201)
+  const bindings = stored.at(-1)?.plan?.skillBindings ?? []
+  assert.deepEqual(bindings.map((binding) => binding.id), ['skill-project', 'controlled_edit'])
+  assert.equal(bindings[0].version, 4)
+  assert.equal(bindings[0].contentHash, 'hash-skill-4')
+  // 内置 Skill 的版本与摘要随代码确定，同样写进绑定。
+  assert.equal(bindings[1].version, 1)
+  assert.ok(bindings[1].contentHash)
+})
+
+function reviewTaskFixture() {
+  return {
+    id: 'review_task_1', projectId: 'project-1', ownerId: 'user-1', runId: 'run-1',
+    status: 'completed', attempt: 1,
+    qualityPolicy: { version: 1, requiredCriteria: ['identity'], humanDecisionRequired: true },
+    qualityPolicyFingerprint: 'policy-fp', planFingerprint: 'plan-fp',
+    coverage: { strategy: 'all', totalCandidates: 2, reviewedCandidates: 2, skippedCandidates: 0, artifactIds: ['artifact-1', 'artifact-2'] },
+    results: [
+      { id: 'r1', taskId: 'review_task_1', projectId: 'project-1', artifactId: 'artifact-1', verdict: 'pass', candidateStatus: 'pending_human', criteria: [] },
+      { id: 'r2', taskId: 'review_task_1', projectId: 'project-1', artifactId: 'artifact-2', verdict: 'fail', candidateStatus: 'pending_human', criteria: [] },
+    ],
+    createdAt: 1, updatedAt: 2,
+  }
+}
+
+function reviewHandler({ tasks = [reviewTaskFixture()], runs = {}, stored = [], published = [], responses = [] } = {}) {
+  return {
+    responses,
+    stored,
+    handler: createAgentRouteHandler({
+      config: {},
+      productStore: {
+        projectAccess: async () => ({ exists: true, role: 'owner' }),
+        readAgentReviewTask: async (_userId, id) => tasks.find((task) => task.id === id),
+        listAgentReviewTasksForRun: async () => tasks,
+        putAgentReviewTask: async (_userId, task) => { stored.push(task); return task },
+        readAgentRun: async (_userId, id) => runs[id],
+        putAgentRun: async (_userId, run) => { stored.push(run); return run },
+      },
+      json: (_response, status, body) => { responses.push({ status, body }); return true },
+      error: (_response, status, code, message) => { responses.push({ status, body: { error: { code, message } } }); return true },
+      readJson: async () => reviewHandler.body,
+      requireUser: async () => ({ id: 'user-1' }),
+      publishAgentRunUpdated: async (event) => { published.push(event) },
+    }),
+  }
+}
+
+test('评审任务读模型暴露覆盖策略与被跳过的候选数', async () => {
+  const { handler, responses } = reviewHandler({ runs: { 'run-1': { id: 'run-1', projectId: 'project-1' } } })
+  await handler(
+    { method: 'GET', headers: {} }, {},
+    new URL('http://botanic.test/api/agent-runs/run-1/review-tasks'),
+    { agentRunReviewTasks: ['path', 'run-1'] }, 'request-review-read',
+  )
+  assert.equal(responses.at(-1)?.status, 200)
+  const task = responses.at(-1)?.body.tasks[0]
+  assert.equal(task.coverage.strategy, 'all')
+  assert.equal(task.coverage.skippedCandidates, 0)
+  assert.equal(task.results.length, 2)
+  // ownerId 不外发。
+  assert.equal(task.ownerId, undefined)
+})
+
+test('批量人工决定逐候选落库，重复提交幂等', async () => {
+  reviewHandler.body = {
+    decisions: [
+      { artifactId: 'artifact-1', decision: 'accepted' },
+      { artifactId: 'artifact-2', decision: 'rejected', note: '背景过曝' },
+    ],
+  }
+  const stored = []
+  const { handler, responses } = reviewHandler({ stored })
+  const send = () => handler(
+    { method: 'POST', headers: { 'idempotency-key': 'review-decision-batch-1' } }, {},
+    new URL('http://botanic.test/api/agent-review-tasks/review_task_1/decisions'),
+    { agentReviewTaskDecisions: ['path', 'review_task_1'] }, 'request-decision',
+  )
+  await send()
+  assert.equal(responses.at(-1)?.status, 200)
+  const body = responses.at(-1)?.body
+  assert.deepEqual(body.decisions.map((item) => item.artifactId), ['artifact-1', 'artifact-2'])
+  // 批量共享 commandId，但逐候选各自落库。
+  assert.equal(new Set(body.decisions.map((item) => item.commandId)).size, 1)
+  assert.equal(new Set(body.decisions.map((item) => item.id)).size, 2)
+  // 候选状态被更新，但原结论与 Artifact 不被覆盖。
+  assert.equal(body.task.results.find((item) => item.artifactId === 'artifact-1').candidateStatus, 'accepted')
+  assert.equal(body.task.results.find((item) => item.artifactId === 'artifact-2').verdict, 'fail')
+
+  await send()
+  const repeated = responses.at(-1)?.body
+  assert.equal(repeated.task.decisions.length, 2)
+})
+
+test('决定的候选必须在本次评审覆盖范围内', async () => {
+  reviewHandler.body = { artifactId: 'artifact-outside', decision: 'accepted' }
+  const { handler, responses } = reviewHandler()
+  await handler(
+    { method: 'POST', headers: { 'idempotency-key': 'review-decision-outside' } }, {},
+    new URL('http://botanic.test/api/agent-review-tasks/review_task_1/decisions'),
+    { agentReviewTaskDecisions: ['path', 'review_task_1'] }, 'request-decision-outside',
+  )
+  assert.equal(responses.at(-1)?.status, 409)
+  assert.equal(responses.at(-1)?.body.error.code, 'AGENT_REVIEW_ARTIFACT_NOT_COVERED')
+})
+
+test('请求重试产生关联原 Run 与原 Artifact 的新 Run，原结果不被覆盖', async () => {
+  reviewHandler.body = { artifactId: 'artifact-1', decision: 'retry_requested' }
+  const sourceRun = {
+    id: 'run-1', projectId: 'project-1', ownerId: 'user-1', status: 'completed',
+    plan: {
+      intent: 'replace_scene', instruction: '换场景', summary: '换场景',
+      selectedResultNodeId: 'result-1', prompt: '换成海边。',
+      settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' },
+      constraints: [], output: { mode: 'single', count: 1, candidatesPerItem: 1 },
+    },
+    branches: [{ id: 'branch-a', label: '海边', status: 'succeeded', attempt: 0, jobIds: ['job-a'], outputCount: 1, updatedAt: 1 }],
+    createdAt: 1, updatedAt: 2,
+  }
+  const stored = []
+  const { handler, responses } = reviewHandler({ runs: { 'run-1': sourceRun }, stored })
+  await handler(
+    { method: 'POST', headers: { 'idempotency-key': 'review-decision-retry' } }, {},
+    new URL('http://botanic.test/api/agent-review-tasks/review_task_1/decisions'),
+    { agentReviewTaskDecisions: ['path', 'review_task_1'] }, 'request-decision-retry',
+  )
+
+  assert.equal(responses.at(-1)?.status, 200)
+  const retry = responses.at(-1)?.body.retryRuns?.[0]
+  assert.equal(retry.artifactId, 'artifact-1')
+  const created = stored.find((item) => item.id === retry.runId)
+  assert.equal(created.lineage.parentRunId, 'run-1')
+  assert.equal(created.lineage.reviewTaskId, 'review_task_1')
+  assert.equal(created.lineage.sourceArtifactId, 'artifact-1')
+  // 重试请求让候选回到待评审，不标记为拒绝，也不覆盖原结论。
+  assert.equal(responses.at(-1)?.body.task.results.find((item) => item.artifactId === 'artifact-1').candidateStatus, 'pending_review')
+})
+
+test('运维只读工具接入回合：模型能拿到真实任务状态，且不含媒体地址', async () => {
+  // 「不根据对话文案猜任务状态」的落点：工具在回合注册表里，且返回结构化实体状态。
+  const { createBotanicAgentOperationalToolDefinitions } = await import('./botanicAgentOperationalTools.mjs')
+  const definitions = createBotanicAgentOperationalToolDefinitions({
+    readRun: async () => ({ id: 'run-1', status: 'partial', branches: [{ id: 'b', status: 'failed', attempt: 1 }] }),
+  })
+  assert.deepEqual(definitions.map((tool) => tool.name), ['agent_run_read'])
+  const result = await definitions[0].execute({ runId: 'run-1' })
+  assert.equal(result.run.status, 'partial')
+})
+
+test('写工具按项目角色进注册表：Viewer 一个都拿不到', async () => {
+  const { createBotanicAgentActionToolRegistry } = await import('./botanicAgentTools.mjs')
+  const executors = {
+    cancelRun: async () => ({}), decideReview: async () => ({}),
+    promoteArtifact: async () => ({}), retryWorkflowFailed: async () => ({}),
+    retryBranch: async () => ({}), publishWorkflow: async () => ({}),
+  }
+  const viewer = createBotanicAgentActionToolRegistry({ role: 'viewer', ...executors })
+  assert.equal(viewer.get('agent_run_cancel'), undefined)
+  assert.equal(viewer.get('review_decide'), undefined)
+
+  const editor = createBotanicAgentActionToolRegistry({ role: 'editor', ...executors })
+  assert.ok(editor.get('agent_run_cancel'))
+  assert.ok(editor.get('review_decide'))
+  // 全部需要确认：会花钱或改变可交付状态的动作不能因为「Agent 说要做」就执行。
+  assert.equal(editor.get('agent_run_cancel').requiresConfirmation, true)
+  assert.equal(editor.get('review_decide').requiresConfirmation, true)
+})
+
+test('服务端权限表与工具暴露判定同源，不会出现看不到却调得动', async () => {
+  const { agentToolPermission } = await import('./agentActionGovernance.mjs')
+  const { OPERATIONAL_ACTION_TOOLS, operationalActionToolsForRole } = await import('./botanicAgentOperationalTools.mjs')
+  const { projectPermissionDecision } = await import('./authorization.mjs')
+  for (const role of ['viewer', 'editor', 'owner']) {
+    const exposed = new Set(operationalActionToolsForRole(role))
+    for (const name of OPERATIONAL_ACTION_TOOLS) {
+      const serverAllows = projectPermissionDecision(role, agentToolPermission(name)) === 'allow'
+      assert.equal(exposed.has(name), serverAllows, `${role} 对 ${name} 的暴露与放行判定不一致`)
+    }
+  }
+})
+
+test('六个运维写工具现在全部有执行器，Editor 能拿到完整一套', async () => {
+  // agent_branch_retry 与 workflow_publish 此前因为逻辑埋在路由闭包里而不暴露；
+  // 抽成共享服务后补齐，避免「声明了但永远调不到」。
+  const { createBotanicAgentActionToolRegistry } = await import('./botanicAgentTools.mjs')
+  const { OPERATIONAL_ACTION_TOOLS } = await import('./botanicAgentOperationalTools.mjs')
+  const registry = createBotanicAgentActionToolRegistry({
+    role: 'editor',
+    retryBranch: async () => ({}), cancelRun: async () => ({}), promoteArtifact: async () => ({}),
+    decideReview: async () => ({}), publishWorkflow: async () => ({}), retryWorkflowFailed: async () => ({}),
+  })
+  for (const name of OPERATIONAL_ACTION_TOOLS) {
+    assert.ok(registry.get(name), `${name} 应当可用`)
+  }
+})

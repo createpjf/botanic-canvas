@@ -1,0 +1,32 @@
+{
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.server.tsbuildinfo",
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "skipLibCheck": true,
+    "noEmit": true,
+    "allowJs": true,
+    // 逐文件 opt-in：只有顶部写了 `// @ts-check` 的模块参与检查。
+    //
+    // 不全局开 checkJs 是量过的决定：对当前无标注的 server/ 全量开启会产出 536 条
+    // 诊断，抽样核对后绝大多数是「解构参数无标注 → TS 只从有默认值的属性推断参数
+    // 类型」这类推断产物，不是真缺陷（例如 providerHealthMonitor 的 redisUrl 被报
+    // 不存在，实际签名接受它）。因此全局开启只会制造需要逐条压制的噪音。
+    //
+    // 真正的价值是前向的：承载新契约的模块补齐 JSDoc 后加上 `// @ts-check`，此后
+    // 三个 ProductStore Adapter 之间的契约漂移就能被编译期拦住。新增契约代码应
+    // 默认 opt-in；存量模块按接触到再补，不做一次性大改。
+    "checkJs": false,
+    "resolveJsonModule": true,
+    "strict": true,
+    // 参数标注不是目标。要防的是三个 ProductStore Adapter 之间的契约漂移，那只需要
+    // 契约形状被声明并在构造/消费点检查；要求每个内部工具函数的参数都标注会把
+    // opt-in 成本推到每文件 50+ 处，反而拖慢采纳。其余 strict 检查全部保留。
+    "noImplicitAny": false,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["server"]
+}

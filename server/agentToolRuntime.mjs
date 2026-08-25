@@ -187,6 +187,10 @@ export function createAgentToolRegistry(definitions) {
     get(name) {
       return tools.get(name)
     },
+    /** 已注册工具名。执行快照据此定格「这一次能用哪些工具」。 */
+    names() {
+      return [...tools.keys()]
+    },
     async execute(name, rawArguments, context) {
       const tool = tools.get(name)
       if (!tool) throw new AgentToolRuntimeError('TOOL_NOT_ALLOWED', `Agent 无权调用工具：${name}。`, 403)
@@ -231,6 +235,29 @@ export async function executeConfirmedAgentAction({
   }
 }
 
+/**
+ * 冻结一次执行的能力快照（Epic 8）。
+ *
+ * 工具集在**进入循环前**取一次并全程复用：中途重建注册表或改配置都不该改变已经开始
+ * 的这一次执行 —— 模型在第 1 步看到的工具与第 3 步能调用的工具必须是同一套，否则
+ * 它会按一份已经不存在的能力清单做计划。
+ *
+ * 快照本身深拷贝并冻结：调用方之后修改自己的对象也影响不到它。
+ */
+export function freezeAgentStepSnapshot({ registry, model, skillBindings, memoryBindings, role } = {}) {
+  return Object.freeze({
+    model: model ?? undefined,
+    toolNames: Object.freeze((registry?.names?.() ?? []).slice()),
+    skillBindings: Object.freeze((skillBindings ?? []).map((binding) => Object.freeze({
+      id: binding?.id, version: binding?.version, contentHash: binding?.contentHash,
+    }))),
+    memoryBindings: Object.freeze((memoryBindings ?? []).map((binding) => Object.freeze({
+      id: binding?.id, version: binding?.version, contentHash: binding?.contentHash,
+    }))),
+    role: role ?? undefined,
+  })
+}
+
 export async function runAgentToolLoop({
   registry,
   messages,
@@ -240,8 +267,13 @@ export async function runAgentToolLoop({
   context,
   allowRawReasoning = false,
   onEvent,
+  snapshot,
 }) {
   const conversation = [...messages]
+  // 工具定义在循环开始前定格一次，之后每一步都用同一份。
+  const frozenTools = registry.openAITools()
+  const frozenSnapshot = snapshot ?? freezeAgentStepSnapshot({ registry })
+  const steps = []
   const toolCalls = []
   let reasoning = []
   const emit = (event) => {
@@ -249,9 +281,10 @@ export async function runAgentToolLoop({
     try { onEvent(event) } catch { /* 展示层异常不得中断工具循环。 */ }
   }
   for (let step = 0; step < maximumSteps; step += 1) {
+    steps.push({ step, snapshot: frozenSnapshot })
     const response = await callModel({
       messages: conversation,
-      tools: registry.openAITools(),
+      tools: frozenTools,
       tool_choice: toolChoice,
       step,
     })
@@ -262,7 +295,7 @@ export async function runAgentToolLoop({
       text: extractProviderReasoning(message, { allowRaw: allowRawReasoning }),
     })
     const calls = Array.isArray(message?.tool_calls) ? message.tool_calls : []
-    if (!calls.length) return { output: message?.content, toolCalls, reasoning }
+    if (!calls.length) return { output: message?.content, toolCalls, reasoning, steps }
 
     conversation.push({
       role: 'assistant',
@@ -322,7 +355,7 @@ export async function runAgentToolLoop({
         ...(succeededPresentation ? { presentation: succeededPresentation } : {}),
       })
       toolCalls.push(trace)
-      if (tool.terminal) return { output, toolCalls, reasoning }
+      if (tool.terminal) return { output, toolCalls, reasoning, steps }
       conversation.push({ role: 'tool', tool_call_id: trace.id, content: JSON.stringify(output) })
     }
   }

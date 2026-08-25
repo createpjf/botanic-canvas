@@ -19,6 +19,11 @@ export function createGenerationProcessor({
     cooldownMs: config.providerCircuitCooldownMs,
   }),
   generate = generateMedia,
+  // 本进程正在执行的任务的中止句柄。跨实例取消信号抵达后据此就地 abort。
+  cancelRegistry,
+  // 评审是派生工作，只在 Run 到终态时请求一次；缺注入时不评审，也不影响生成。
+  ensureReviewTask,
+  enqueueDerivedTask,
 }) {
   const observeRun = (job, event) => {
     if (!job.agentRun) return
@@ -108,9 +113,27 @@ export function createGenerationProcessor({
     if (!job.agentRun || !publishAgentRunUpdated) return
     try {
       const run = await productStore.readAgentRunForWorker(job.agentRun.runId)
-      if (run) await publishAgentRunUpdated({ projectId: run.projectId, run: publicAgentRun(run) })
+      if (!run) return
+      await publishAgentRunUpdated({ projectId: run.projectId, run: publicAgentRun(run) })
+      await requestReviewForTerminalRun(run)
     } catch (caught) {
       console.error(`[agent-run] progress publish deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
+    }
+  }
+
+  /**
+   * Run 一到执行终态就请求评审（ADR 0006）。
+   *
+   * 评审是派生工作：入队失败只记日志，不能影响这次生成的落库结果，Run 的执行终态
+   * 也不等待评审完成。真正漏掉的任务由 `review.run` 周期清扫兜底。
+   */
+  async function requestReviewForTerminalRun(run) {
+    if (!enqueueDerivedTask || !['completed', 'partial'].includes(run.status)) return
+    try {
+      const task = await ensureReviewTask?.(run.ownerId, run.id)
+      if (task) await enqueueDerivedTask('review.run', task.id, { taskId: task.id, ownerId: run.ownerId })
+    } catch (caught) {
+      console.error(`[agent-review] enqueue deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
     }
   }
 
@@ -199,9 +222,17 @@ export function createGenerationProcessor({
         throw new GenerationError(504, 'PROVIDER_TIMEOUT', '生成任务超过模型等待时限，已停止，请稍后重试。')
       }
       const controller = new AbortController()
+      // 登记到本进程的中止表：Worker 与 API 是两个进程，API 写下 cancelled 时
+      // 这里不会知道。跨实例取消信号抵达后靠这张表就地 abort，Provider 调用才会
+      // 真正停下、worker 槽位才会释放 —— 否则只能等它跑完再丢弃结果。
+      cancelRegistry?.register(jobId, controller)
       // 从任务创建开始计时，而非从 Worker 取到任务后重新计时，排队不会无限延长用户等待。
       const timeoutMs = Math.max(1, remainingGenerationMs)
-      const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+      // 记下是哪一种 abort。取消与超时都会 abort 同一个控制器，但结果完全不同：
+      // 超时是失败，取消不是 —— 把取消报成超时会让用户看到错误的原因，而且会用
+      // 失败状态覆盖取消入口已经写下的 cancelled。
+      let timedOut = false
+      const timeoutId = setTimeout(() => { timedOut = true; controller.abort() }, timeoutMs)
       // Provider 回调可能由多个子任务同时触发，串行化状态写入避免最后完成的
       // 子任务覆盖其他子任务的进度。图片请求本身仍保持受控并发。
       const onVariant = (update) => {
@@ -308,10 +339,17 @@ export function createGenerationProcessor({
         }
         await variantWrite
       } catch (caught) {
-        if (controller.signal.aborted) throw new GenerationError(504, 'PROVIDER_TIMEOUT', '生成服务响应超时，任务已停止，请稍后重试。')
+        if (timedOut) throw new GenerationError(504, 'PROVIDER_TIMEOUT', '生成服务响应超时，任务已停止，请稍后重试。')
+        if (controller.signal.aborted) {
+          // 用户取消：状态已由取消入口写成 cancelled，这里直接收工。抛错会把它
+          // 覆盖成失败，用户看到的就不是自己发起的取消了。
+          console.info(`[generation] ${jobId} aborted by cancel`)
+          return
+        }
         throw caught
       } finally {
         clearTimeout(timeoutId)
+        cancelRegistry?.release(jobId, controller)
       }
       console.info(`[generation] ${jobId} provider completed (${result.outputs.length} output(s))`)
       const latest = await productStore.readGenerationJobForWorker(jobId)
@@ -356,7 +394,16 @@ export function createGenerationProcessor({
       const detail = caught instanceof Error ? `${caught.name}: ${caught.message}` : String(caught)
       console.error(`[generation] ${jobId} failed (${failure.code}): ${detail}`)
       await variantWrite
-      const failed = { ...latest, status: 'failed', error: failure.message, variants: latest.variants ?? running.variants, updatedAt: Date.now() }
+      // 错误码随任务落库：失败消息是给人看的，服务端的重试策略要按码分类
+      // （瞬时故障可自动重试，其余停下等用户）。只存消息的话策略永远判不出来。
+      const failed = {
+        ...latest,
+        status: 'failed',
+        error: failure.message,
+        errorCode: failure.code,
+        variants: latest.variants ?? running.variants,
+        updatedAt: Date.now(),
+      }
       await productStore.putGenerationJob(failed.ownerId, persistedGenerationJob(failed), { updateAgentRun: false, recordAudit: false })
       const writebackSucceeded = await writeJobToProjectSafely(failed, { markPending: true })
       if (writebackSucceeded) await productStore.putGenerationJob(failed.ownerId, persistedGenerationJob(failed), { updateAgentRun: true })
