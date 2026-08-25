@@ -15,6 +15,7 @@ import {
   imageFormatLabel,
   imagePixelSize,
   isCanonicalImageFormat,
+  MEDIA_LIMITS,
 } from './mediaFormats.mjs'
 
 export class GenerationError extends Error {
@@ -259,6 +260,27 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
 }
 
 /**
+ * 参考图像素量是否在供应商能接受的范围内。
+ *
+ * `maxCanonicalPixels` 是**保守猜测**：生产实测只知道 2.2 MP 能过、12.2 MP 被拒，
+ * 真实阈值在两者之间。钉死它需要一次真实供应商调用去二分，因此这里只引用
+ * `MEDIA_LIMITS` 的常量，不写死数字。
+ *
+ * 读不出尺寸时**不拦**：读不出不等于超限，拦住会误杀一类正常输入。
+ */
+function assertImagePixelBudget(buffer) {
+  const size = imagePixelSize(buffer)
+  if (!size) return
+  const { maxCanonicalPixels, maxCanonicalLongEdge } = MEDIA_LIMITS
+  const pixels = size.width * size.height
+  const longEdge = Math.max(size.width, size.height)
+  if (pixels <= maxCanonicalPixels && longEdge <= maxCanonicalLongEdge) return
+  throw new GenerationError(400, 'IMAGE_TOO_LARGE_PIXELS',
+    `参考图 ${size.width}×${size.height} 超过 ${Math.round(maxCanonicalPixels / 10_000)} 万像素上限。`
+    + `请缩小到长边 ${maxCanonicalLongEdge} 以内后重试。`)
+}
+
+/**
  * 任务请求可只保存私有媒体 ID；Worker 执行时才在已校验的用户上下文中读取图片字节。
  * 这样轮询与任务状态写入不会重复携带 Base64 原图。
  */
@@ -276,6 +298,13 @@ export async function resolveGenerationInputMedia(input, resolveMedia) {
     if (reference.mediaKind !== 'video' && !isCanonicalImageFormat(resolved.mimeType)) {
       throw new GenerationError(400, 'INVALID_REFERENCE',
         `参考素材格式为 ${imageFormatLabel(resolved.mimeType)}，仅支持 ${CANONICAL_IMAGE_FORMATS.map(imageFormatLabel).join('、')}。`)
+    }
+    // 像素守卫。此前只卡字节（8MB），一张 2.8MB 的 12.2MP 手机原图轻松过关，
+    // 然后被供应商以 "Invalid image file or mode for image 1" 拒掉 —— 而那句话
+    // 会原样转述给用户，让他去 email 供应商。手机照片是最常见的参考素材来源，
+    // 所以这条路径上的每个用户都会撞到。
+    if (reference.mediaKind !== 'video') {
+      assertImagePixelBudget(resolved.buffer)
     }
     return { ...reference, mimeType: resolved.mimeType, buffer: resolved.buffer }
   }

@@ -4,6 +4,19 @@ import { generateImages, GenerationError, persistedGenerationJob, publicGenerati
 
 const image = 'data:image/png;base64,iVBORw0KGgo='
 
+/**
+ * 构造 PNG 文件头包含指定尺寸。用于测试像素校验。
+ */
+function pngOfSize(width, height) {
+  const buffer = Buffer.alloc(33)
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(buffer, 0)
+  buffer.writeUInt32BE(13, 8)
+  buffer.write('IHDR', 12, 'ascii')
+  buffer.writeUInt32BE(width, 16)
+  buffer.writeUInt32BE(height, 20)
+  return buffer
+}
+
 test('生成任务持久化保留幂等键，公开状态只按需返回提交者幂等键', () => {
   const job = {
     id: 'job-agent', ownerId: 'user-a', projectId: 'project-a', status: 'queued', kind: 'generation',
@@ -466,4 +479,55 @@ test('选区矩形在 Worker 落成与基准图同尺寸的 PNG 蒙版', async (
     parent: { name: '父版本', dataUrl: image },
     recipe: { references: [], maskRegion: { x: 0.9, y: 0.9, width: 0.005, height: 0.005 } },
   }, { models: ['gpt-image-2'], maximumBatchCount: 8, maximumReferenceBytes: 1024 }), (error) => error instanceof GenerationError && error.code === 'INVALID_MASK')
+})
+
+test('参考图像素超上限时被拒，并说清怎么办', async () => {
+  const { resolveGenerationInputMedia, GenerationError } = await import('./generationProvider.mjs')
+  const { imagePixelSize } = await import('./mediaFormats.mjs')
+
+  // 4032×3024 = 12.2 MP，正是生产上被供应商拒掉的那张 iPhone 原图的尺寸。
+  const oversized = pngOfSize(4032, 3024)
+  assert.deepEqual(imagePixelSize(oversized), { width: 4032, height: 3024 })
+
+  const input = {
+    references: [{ mediaId: 'media_oversized', mediaKind: 'image' }],
+    parent: undefined,
+    mask: undefined,
+  }
+  const resolveMedia = async () => ({ mimeType: 'image/png', buffer: oversized })
+
+  await assert.rejects(
+    () => resolveGenerationInputMedia(input, resolveMedia),
+    (error) => {
+      assert.ok(error instanceof GenerationError)
+      assert.equal(error.code, 'IMAGE_TOO_LARGE_PIXELS')
+      // 必须报出实际尺寸和可执行的下一步，而不是转述供应商英文。
+      assert.match(error.message, /4032×3024/)
+      assert.match(error.message, /2048/)
+      return true
+    },
+  )
+})
+
+test('像素在上限内的参考图正常通过', async () => {
+  const { resolveGenerationInputMedia } = await import('./generationProvider.mjs')
+  // 1280×1707 = 2.2 MP，生产上实测通过的那张。
+  const ok = pngOfSize(1280, 1707)
+  const resolved = await resolveGenerationInputMedia(
+    { references: [{ mediaId: 'media_ok', mediaKind: 'image' }] },
+    async () => ({ mimeType: 'image/png', buffer: ok }),
+  )
+  assert.equal(resolved.references.length, 1)
+  assert.equal(resolved.references[0].mimeType, 'image/png')
+})
+
+test('读不出尺寸时不拦', async () => {
+  // 尺寸读不出来不代表超限。拦住它会把一类正常输入误杀。
+  const { resolveGenerationInputMedia } = await import('./generationProvider.mjs')
+  const opaque = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), Buffer.alloc(40)])
+  const resolved = await resolveGenerationInputMedia(
+    { references: [{ mediaId: 'media_opaque', mediaKind: 'image' }] },
+    async () => ({ mimeType: 'image/jpeg', buffer: opaque }),
+  )
+  assert.equal(resolved.references.length, 1)
 })
