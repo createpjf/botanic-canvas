@@ -3,6 +3,7 @@ import { validateGenerationInput } from './generationProvider.mjs'
 import { generationJobProjectionComplete, reconcileGenerationResults } from './generationResultReconciliation.mjs'
 import { compileAgentBranchRecipe } from './botanicCreativePlanCompiler.mjs'
 import { compiledBranchFromRun, normalizeResolverModels, resolveCreativePlan } from './creativePlanResolver.mjs'
+import { canonicalImageDataUrlPattern } from './mediaFormats.mjs'
 
 function clone(value) {
   return structuredClone(value)
@@ -14,7 +15,7 @@ function mediaInput(image) {
   }
   const mediaMatch = image.match(/^\/api\/media\/(media_[A-Za-z0-9_-]+)$/)
   if (mediaMatch) return { mediaId: mediaMatch[1] }
-  if (/^data:image\/(?:png|jpeg|webp);base64,/i.test(image)) return { dataUrl: image }
+  if (canonicalImageDataUrlPattern().test(image)) return { dataUrl: image }
   throw new AgentToolRuntimeError('AGENT_REFERENCE_INVALID', 'Agent 参考图片尚未存入受控媒体库。', 409)
 }
 

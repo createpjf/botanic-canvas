@@ -132,3 +132,18 @@ test('canonical data URL 正则只认三个格式', () => {
   assert.equal(pattern.test('data:image/heic;base64,AAAA'), false)
   assert.equal(pattern.test('data:video/mp4;base64,AAAA'), false)
 })
+
+test('JPEG 尺寸读取保留健壮版实现', () => {
+  // 原 regionMaskPng.mjs 的 jpegSize 遇到非 0xff 字节就返回 null，且不跳 RSTn。
+  // 收编时若误用那一份，这条会红。
+  const withPadding = Buffer.concat([
+    Buffer.from([0xff, 0xd8]),
+    Buffer.from([0xff, 0xd0]),          // RST0：无长度字段
+    Buffer.from([0x00, 0x00, 0x00]),    // 非 0xff 填充
+    Buffer.from([0xff, 0xe0, 0x00, 0x04, 0x00, 0x00]), // APP0，长度 4
+    Buffer.from([0xff, 0xc0, 0x00, 0x11, 0x08]),
+    (() => { const b = Buffer.alloc(4); b.writeUInt16BE(11317, 0); b.writeUInt16BE(8488, 2); return b })(),
+    Buffer.alloc(9),
+  ])
+  assert.deepEqual(imagePixelSize(withPadding), { width: 8488, height: 11317 })
+})

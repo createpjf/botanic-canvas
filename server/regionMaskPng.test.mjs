@@ -2,10 +2,10 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   buildRegionMaskPng,
-  imagePixelSize,
   normalizeRegionRect,
   regionMaskAlphaAt,
 } from './regionMaskPng.mjs'
+import { imagePixelSize } from './mediaFormats.mjs'
 
 test('选区归一化：越界被夹取、过小与非法输入返回 null', () => {
   assert.deepEqual(normalizeRegionRect({ x: -0.2, y: 0.5, width: 0.6, height: 0.8 }), { x: 0, y: 0.5, width: 0.6, height: 0.5 })

@@ -444,7 +444,8 @@ test('多图合成时标识参考排在人像之后发给 images/edits', async (
 })
 
 test('选区矩形在 Worker 落成与基准图同尺寸的 PNG 蒙版', async () => {
-  const { buildRegionMaskPng, imagePixelSize } = await import('./regionMaskPng.mjs')
+  const { buildRegionMaskPng } = await import('./regionMaskPng.mjs')
+  const { imagePixelSize } = await import('./mediaFormats.mjs')
   const parentPng = buildRegionMaskPng({ width: 20, height: 10 }, { x: 0, y: 0, width: 1, height: 1 })
   const input = validateGenerationInput({
     projectId: 'project-a', kind: 'refinement', prompt: '只把右半边换成夜景', batchCount: 1,

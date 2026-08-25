@@ -12,69 +12,7 @@
  * 不是默认通过。
  */
 
-const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
-
-/** PNG 的尺寸固定在第一个 IHDR 块，位置确定，无需扫描。 */
-function pngDimensions(buffer) {
-  if (buffer.length < 24 || !buffer.subarray(0, 8).equals(PNG_SIGNATURE)) return undefined
-  if (buffer.subarray(12, 16).toString('latin1') !== 'IHDR') return undefined
-  return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) }
-}
-
-/** JPEG 要跳段找 SOF：段长自描述，因此按长度前进而不是逐字节扫。 */
-function jpegDimensions(buffer) {
-  if (buffer.length < 4 || buffer[0] !== 0xff || buffer[1] !== 0xd8) return undefined
-  let offset = 2
-  while (offset + 9 < buffer.length) {
-    if (buffer[offset] !== 0xff) {
-      offset += 1
-      continue
-    }
-    const marker = buffer[offset + 1]
-    // SOI/EOI/RSTn/TEM 没有长度字段。
-    if (marker === 0xd8 || marker === 0xd9 || (marker >= 0xd0 && marker <= 0xd7) || marker === 0x01) {
-      offset += 2
-      continue
-    }
-    const length = buffer.readUInt16BE(offset + 2)
-    // SOF0..SOF15，跳过 DHT(c4)/JPG(c8)/DAC(cc)：它们不是帧头。
-    const isFrameHeader = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc
-    if (isFrameHeader) {
-      return { height: buffer.readUInt16BE(offset + 5), width: buffer.readUInt16BE(offset + 7) }
-    }
-    if (length < 2) return undefined
-    offset += 2 + length
-  }
-  return undefined
-}
-
-/** WebP：VP8X 有显式画布尺寸；VP8（有损）与 VP8L（无损）各自的位布局不同。 */
-function webpDimensions(buffer) {
-  if (buffer.length < 30) return undefined
-  if (buffer.subarray(0, 4).toString('latin1') !== 'RIFF') return undefined
-  if (buffer.subarray(8, 12).toString('latin1') !== 'WEBP') return undefined
-  const chunk = buffer.subarray(12, 16).toString('latin1')
-  if (chunk === 'VP8X') {
-    return {
-      width: buffer.readUIntLE(24, 3) + 1,
-      height: buffer.readUIntLE(27, 3) + 1,
-    }
-  }
-  if (chunk === 'VP8 ') {
-    // 关键帧起始码 0x9d012a 之后是 14 位宽高。
-    const start = 20
-    if (buffer[start + 3] !== 0x9d || buffer[start + 4] !== 0x01 || buffer[start + 5] !== 0x2a) return undefined
-    return {
-      width: buffer.readUInt16LE(start + 6) & 0x3fff,
-      height: buffer.readUInt16LE(start + 8) & 0x3fff,
-    }
-  }
-  if (chunk === 'VP8L') {
-    const bits = buffer.readUInt32LE(21)
-    return { width: (bits & 0x3fff) + 1, height: ((bits >> 14) & 0x3fff) + 1 }
-  }
-  return undefined
-}
+import { detectImageFormat, imagePixelSize } from './mediaFormats.mjs'
 
 /**
  * MP4 时长：`moov` → `mvhd` 里的 timescale 与 duration。
@@ -121,12 +59,10 @@ function mp4DurationSeconds(buffer) {
  */
 export function readMediaSpec(buffer, mimeType) {
   if (!Buffer.isBuffer(buffer) || !buffer.length) return { byteSize: 0, ...(mimeType ? { declaredMimeType: mimeType } : {}) }
-  const png = pngDimensions(buffer)
-  const jpeg = png ? undefined : jpegDimensions(buffer)
-  const webp = png || jpeg ? undefined : webpDimensions(buffer)
-  const detected = png ? 'image/png' : jpeg ? 'image/jpeg' : webp ? 'image/webp' : undefined
-  const dimensions = png ?? jpeg ?? webp
-  if (dimensions && detected) {
+  const detected = detectImageFormat(buffer)
+  const dimensions = imagePixelSize(buffer)
+  // 只有能同时读出格式与尺寸才算实测到规格；读不出就不猜。
+  if (detected && dimensions) {
     return {
       mimeType: detected,
       ...(mimeType && mimeType !== detected ? { declaredMimeType: mimeType } : {}),

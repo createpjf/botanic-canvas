@@ -8,7 +8,14 @@ import {
   normalizeCustomGenerationSize,
   resolveGenerationOutputSize,
 } from './generationOutputSize.mjs'
-import { buildRegionMaskPng, imagePixelSize, normalizeRegionRect } from './regionMaskPng.mjs'
+import { buildRegionMaskPng, normalizeRegionRect } from './regionMaskPng.mjs'
+import {
+  CANONICAL_IMAGE_FORMATS,
+  detectImageFormat,
+  imageFormatLabel,
+  imagePixelSize,
+  isCanonicalImageFormat,
+} from './mediaFormats.mjs'
 
 export class GenerationError extends Error {
   constructor(statusCode, code, message) {
@@ -31,16 +38,17 @@ function assertEnum(value, allowed, name) {
 
 function mediaDataUrl(value, maximumReferenceBytes, mediaKind = 'image') {
   if (typeof value !== 'string') throw new GenerationError(400, 'INVALID_REFERENCE', '参考素材格式无效。')
-  const mimePattern = mediaKind === 'video' ? 'video\\/mp4' : 'image\\/(?:png|jpeg|webp)'
+  const alternatives = CANONICAL_IMAGE_FORMATS.map((format) => format.replace('image/', '')).join('|')
+  const mimePattern = mediaKind === 'video' ? 'video\\/mp4' : `image\\/(?:${alternatives})`
   const match = value.match(new RegExp(`^data:(${mimePattern});base64,([A-Za-z0-9+/=\\s]+)$`, 'i'))
   if (!match) {
     throw new GenerationError(400, 'INVALID_REFERENCE', mediaKind === 'video'
       ? '视频参考仅支持 MP4。'
-      : '仅支持 PNG、JPEG 或 WebP 参考素材。')
+      : `参考素材仅支持 ${CANONICAL_IMAGE_FORMATS.map(imageFormatLabel).join('、')}。`)
   }
   const buffer = Buffer.from(match[2], 'base64')
   if (!buffer.length || buffer.length > maximumReferenceBytes) {
-    throw new GenerationError(413, 'REFERENCE_TOO_LARGE', '单张参考素材不能超过 8MB。')
+    throw new GenerationError(413, 'REFERENCE_TOO_LARGE', `单张参考素材不能超过 ${Math.ceil(maximumReferenceBytes / 1024 / 1024)}MB。`)
   }
   return { mimeType: match[1].toLowerCase(), buffer }
 }
@@ -265,8 +273,9 @@ export async function resolveGenerationInputMedia(input, resolveMedia) {
     if (reference.mediaKind === 'video' && resolved.mimeType !== 'video/mp4') {
       throw new GenerationError(400, 'INVALID_REFERENCE', '视频参考素材必须是 MP4。')
     }
-    if (reference.mediaKind !== 'video' && !/^image\/(?:png|jpeg|webp)$/i.test(resolved.mimeType)) {
-      throw new GenerationError(400, 'INVALID_REFERENCE', '图片参考素材格式无效。')
+    if (reference.mediaKind !== 'video' && !isCanonicalImageFormat(resolved.mimeType)) {
+      throw new GenerationError(400, 'INVALID_REFERENCE',
+        `参考素材格式为 ${imageFormatLabel(resolved.mimeType)}，仅支持 ${CANONICAL_IMAGE_FORMATS.map(imageFormatLabel).join('、')}。`)
     }
     return { ...reference, mimeType: resolved.mimeType, buffer: resolved.buffer }
   }
@@ -404,11 +413,10 @@ function providerImage(value) {
     throw new GenerationError(502, 'INVALID_PROVIDER_RESPONSE', '图像服务返回了无效的图片编码。')
   }
   const bytes = Buffer.from(base64, 'base64')
-  const png = bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
-  const jpeg = bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
-  const webp = bytes.length >= 12 && bytes.subarray(0, 4).toString('ascii') === 'RIFF' && bytes.subarray(8, 12).toString('ascii') === 'WEBP'
-  const mimeType = png ? 'image/png' : jpeg ? 'image/jpeg' : webp ? 'image/webp' : null
-  if (!mimeType) throw new GenerationError(502, 'INVALID_PROVIDER_RESPONSE', '图像服务返回的文件格式无法显示。')
+  const mimeType = detectImageFormat(bytes)
+  if (!mimeType || !isCanonicalImageFormat(mimeType)) {
+    throw new GenerationError(502, 'INVALID_PROVIDER_RESPONSE', '图像服务返回的文件格式无法显示。')
+  }
   return { mimeType, dataUrl: `data:${mimeType};base64,${base64}` }
 }
 
