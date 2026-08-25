@@ -151,3 +151,52 @@ test('Artifact Index 对账报告区分缺失、历史保留与重复输入', ()
     retainedHistoryIds: ['artifact-history'],
   })
 })
+
+test('精修结果在 Artifact 上留下父版本身份，节点删除后仍能回到原件', () => {
+  // 「不覆盖原件」本来就成立：每次精修是新 Job、新 Artifact 标识。断的是另一半 ——
+  // 父子关系只记在 Job 上，而 Artifact Index 不随节点删除而级联删除，节点一删就回不去了。
+  const document = {
+    nodes: [
+      { id: 'node-parent', type: 'result', data: { jobId: 'job-1', candidateId: 'out-1' } },
+      { id: 'node-child', type: 'result', data: { jobId: 'job-2', candidateId: 'out-9' } },
+    ],
+    assets: [],
+  }
+  const [artifact] = artifactsFromGenerationJob({
+    id: 'job-2', status: 'succeeded', parentNodeId: 'node-parent',
+    outputs: [{ id: 'out-9', image: 'https://example.com/child.png' }],
+  }, { document, now: 5 })
+  assert.equal(artifact.metadata.parentArtifactId, 'generation:job-1:out-1')
+  assert.equal(artifact.metadata.parentNodeId, 'node-parent')
+
+  // 父节点被删除之后，血缘已经落在 Artifact 上，不依赖画布现查。
+  const [afterDeletion] = artifactsFromGenerationJob({
+    id: 'job-2', status: 'succeeded', parentNodeId: 'node-parent',
+    outputs: [{ id: 'out-9', image: 'https://example.com/child.png' }],
+  }, { document: { nodes: [], assets: [] }, now: 5 })
+  assert.equal(afterDeletion.metadata.parentNodeId, 'node-parent')
+  // 但这时构造不出父 Artifact 标识，如实缺省而不是猜一个。
+  assert.equal(afterDeletion.metadata.parentArtifactId, undefined)
+})
+
+test('早期单输出父节点没有 candidateId 时不猜父 Artifact', () => {
+  // 猜错会把血缘指到同一次任务的另一张图上，比缺失更糟。
+  const [artifact] = artifactsFromGenerationJob({
+    id: 'job-2', status: 'succeeded', parentNodeId: 'node-parent',
+    outputs: [{ id: 'out-9', image: 'https://example.com/child.png' }],
+  }, {
+    document: { nodes: [{ id: 'node-parent', type: 'result', data: { jobId: 'job-1' } }], assets: [] },
+    now: 5,
+  })
+  assert.equal(artifact.metadata.parentArtifactId, undefined)
+  assert.equal(artifact.metadata.parentNodeId, 'node-parent')
+})
+
+test('首次生成没有父版本，不写空血缘字段', () => {
+  const [artifact] = artifactsFromGenerationJob({
+    id: 'job-1', status: 'succeeded',
+    outputs: [{ id: 'out-1', image: 'https://example.com/a.png' }],
+  }, { document: { nodes: [], assets: [] }, now: 5 })
+  assert.equal('parentNodeId' in artifact.metadata, false)
+  assert.equal('parentArtifactId' in artifact.metadata, false)
+})

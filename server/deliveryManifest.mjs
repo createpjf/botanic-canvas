@@ -1,5 +1,6 @@
 // @ts-check
 import { createHash } from 'node:crypto'
+import { checkCampaignConsistency } from './campaignConsistency.mjs'
 
 /**
  * 交付清单（Epic 7）。
@@ -136,6 +137,21 @@ export function buildDeliveryManifest({ run, jobs = [], reviewTasks = [], nameTe
     // 同名文件在打包时会互相覆盖，交付出去就是少了几张。宁可拒绝生成清单。
     throw new Error(`交付文件名重复：${[...new Set(duplicates)].join('、')}`)
   }
+  // 跨输出一致性（Epic 9.3）。**报告而不阻断**：一整套物料里比例本来就按渠道不同，
+  // 而参考或品牌规则不一致虽然几乎肯定不是一套，也可能是用户有意为之。交付包照出，
+  // 但清单上写明它们不是同一套 —— 静默出包才是真正的问题，因为收到文件的人无从知道。
+  const consistency = checkCampaignConsistency({
+    outputs: files.map((file) => {
+      const job = jobById.get(file.jobId)
+      return {
+        artifactId: file.artifactId,
+        planFingerprint: file.lineage.planFingerprint,
+        brandKitFingerprint: job?.brandKitFingerprint ?? job?.generationRecipe?.brandKitFingerprint,
+        settings: job?.settings,
+        recipe: job?.generationRecipe,
+      }
+    }),
+  })
   return {
     version: 1,
     runId: run.id,
@@ -145,6 +161,7 @@ export function buildDeliveryManifest({ run, jobs = [], reviewTasks = [], nameTe
     generatedAt: now,
     fileCount: files.length,
     files,
+    consistency,
     // 被排除的候选与原因一起给出：静默少几张比报错更难查。
     excluded,
     approvals: reviewTasks.flatMap((task) => (task?.decisions ?? []).map((decision) => ({

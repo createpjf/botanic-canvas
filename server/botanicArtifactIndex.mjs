@@ -168,6 +168,22 @@ export function artifactsFromGenerationJob(job, { document, now = Date.now() } =
     : []
   const nodes = Array.isArray(document?.nodes) ? document.nodes : []
   const assets = Array.isArray(document?.assets) ? document.assets : []
+  // 精修血缘（Epic 9.2「任一精修可回到父版本」）。
+  //
+  // 「不覆盖原件」本来就成立：每次精修是一个新 Job，产出新的 Artifact 标识。断的是
+  // 另一半 —— 父子关系只记在 Job 的 `parentNodeId` 上，而 Artifact Index 是历史血缘
+  // 目录、且**明确不随画布节点删除而级联删除**。节点一删，从 Artifact 就再也回不到
+  // 父版本了，尽管两份原件都还在。
+  //
+  // 因此在这里把父版本身份**落到 Artifact 上**，而不是每次去画布上现查。
+  const parentNode = job?.parentNodeId
+    ? nodes.find((node) => node?.id === job.parentNodeId && node?.type === 'result')
+    : undefined
+  const parentArtifactId = parentNode?.data?.jobId && parentNode?.data?.candidateId
+    ? `generation:${parentNode.data.jobId}:${parentNode.data.candidateId}`
+    // 早期单输出结果节点没有 candidateId，此时构造不出唯一的 Artifact 标识。
+    // 宁可只留 parentNodeId，也不猜一个 —— 猜错会把血缘指到同一次任务的另一张图上。
+    : undefined
   return collectSafely(outputs, (output) => {
     const resultNode = nodes.find((node) => node?.type === 'result'
       && node?.data?.jobId === job.id
@@ -212,6 +228,9 @@ export function artifactsFromGenerationJob(job, { document, now = Date.now() } =
         ...(job.rawInput?.productionWorkflow
           ? { productionWorkflow: clone(job.rawInput.productionWorkflow) }
           : {}),
+        // 父版本身份随 Artifact 落库，节点删除后仍能回到原件。
+        ...(job.parentNodeId ? { parentNodeId: job.parentNodeId } : {}),
+        ...(parentArtifactId ? { parentArtifactId } : {}),
       },
       provenance: {
         actionId: `generation:${job.id}`,

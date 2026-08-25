@@ -118,3 +118,42 @@ test('没有任何批准时给出空清单而不是报错', () => {
   assert.equal(manifest.fileCount, 0)
   assert.equal(manifest.excluded.length, 2)
 })
+
+test('交付清单带上跨输出一致性结论', () => {
+  // 静默出包才是真正的问题：收到文件的人无从知道这几张不是一套。
+  const run = {
+    id: 'run-1', workflowId: 'wf-1', workflowVersion: 1, projectId: 'p-1',
+    definition: { planFingerprint: 'plan-1' },
+    items: [
+      { id: 'item-1', jobId: 'job-1', input: { sku: 'A' } },
+      { id: 'item-2', jobId: 'job-2', input: { sku: 'B' } },
+    ],
+  }
+  const jobs = [
+    {
+      id: 'job-1', settings: { model: 'gpt-image-2' }, brandKitFingerprint: 'brand-1',
+      generationRecipe: { references: [{ assetId: 'asset-1' }] },
+      outputs: [{ id: 'out-1', spec: { mimeType: 'image/png', byteSize: 10 } }],
+    },
+    {
+      id: 'job-2', settings: { model: 'gpt-image-2' }, brandKitFingerprint: 'brand-9',
+      generationRecipe: { references: [{ assetId: 'asset-1' }] },
+      outputs: [{ id: 'out-2', spec: { mimeType: 'image/png', byteSize: 10 } }],
+    },
+  ]
+  const reviewTasks = [{
+    id: 't-1', qualityPolicyFingerprint: 'qp-1',
+    decisions: [
+      { artifactId: 'generation:job-1:out-1', decision: 'accepted', decidedAt: 1 },
+      { artifactId: 'generation:job-2:out-2', decision: 'accepted', decidedAt: 1 },
+    ],
+  }]
+  const manifest = buildDeliveryManifest({ run, jobs, reviewTasks, nameTemplate: '{{sku}}-{{index}}', now: 5 })
+  assert.equal(manifest.fileCount, 2)
+  // 品牌规则不同 —— 报告出来，但不阻断出包。
+  assert.equal(manifest.consistency.verdict, 'fail')
+  assert.equal(manifest.consistency.checks.find((check) => check.dimension === 'brand_kit').verdict, 'fail')
+  assert.equal(manifest.consistency.groups.brand_kit.length, 2)
+  // 参考素材一致的那一项仍判通过。
+  assert.equal(manifest.consistency.checks.find((check) => check.dimension === 'reference_pack').verdict, 'pass')
+})
