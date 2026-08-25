@@ -1,4 +1,5 @@
-import { createHash } from 'node:crypto'
+import { canonicalHash } from './canonicalHash.mjs'
+import { brandConstraintLines, brandKitFingerprint, brandReviewCriteria } from './brandKit.mjs'
 
 const dimensions = new Set([
   'person', 'garment', 'product', 'scene', 'style', 'pose',
@@ -27,24 +28,11 @@ export class CreativePlanCompileError extends Error {
   }
 }
 
-function canonicalize(value) {
-  if (Array.isArray(value)) return value.map(canonicalize)
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalize(value[key])]))
-  }
-  return value
-}
+const hash = canonicalHash
 
-function hash(value) {
-  return createHash('sha256').update(JSON.stringify(canonicalize(value))).digest('base64url')
-}
-
-/**
- * 计划指纹的唯一哈希实现。键序无关（canonicalize），因此同一份内容的不同书写顺序
- * 得到同一指纹 —— 否则「重试是否漂移」会被字段顺序这种无意义差异触发。
- */
+/** 计划指纹。哈希实现见 `canonicalHash.mjs`；这里只是计划语义下的具名入口。 */
 export function creativePlanHash(value) {
-  return hash(value)
+  return canonicalHash(value)
 }
 
 function text(value, name, maximum = 6000) {
@@ -119,7 +107,7 @@ function constraintLine(constraint) {
   return `${constraint.mode === 'preserve' ? '必须保持' : '允许变化'}：${constraint.dimension}${constraint.sourceAssetGroupId ? `（素材组 ${constraint.sourceAssetGroupId}）` : ''}。`
 }
 
-export function buildCreativeConstraintPrompt({ prompt, constraints = [], branch, creativeBrief, locale = 'zh-CN' }) {
+export function buildCreativeConstraintPrompt({ prompt, constraints = [], branch, creativeBrief, brandKit, locale = 'zh-CN' }) {
   const base = text(prompt, 'Agent 生图提示词')
   const normalized = normalizeConstraints(constraints)
   const deltas = branchDelta(branch).filter((delta) => !base.includes(delta))
@@ -130,19 +118,26 @@ export function buildCreativeConstraintPrompt({ prompt, constraints = [], branch
   const prefix = contractLines.length
     ? (locale === 'en' ? ['Creative execution contract:', ...contractLines] : ['执行契约：', ...contractLines])
     : []
-  const meaningful = prefix.filter(Boolean)
+  // 品牌规则排在执行契约**之前**：它跨所有 Run 成立，是这一次创作的外层边界，
+  // 而执行契约只描述本次要保持/变化什么。顺序颠倒会让模型把品牌规则读成本次的
+  // 临时要求，从而在与本次约束冲突时优先放弃品牌。
+  const meaningful = [...brandConstraintLines(brandKit, locale), ...prefix].filter(Boolean)
   return meaningful.length ? `${meaningful.join('\n')}\n\n${base}` : base
 }
 
-function qualityPolicy(constraints, settings) {
+function qualityPolicy(constraints, settings, brandKit) {
   const requiredCriteria = new Set(['identity', 'product_structure', 'composition', 'lighting', 'brand_style'])
   for (const constraint of constraints) {
     if (criteria[constraint.dimension]) requiredCriteria.add(criteria[constraint.dimension])
   }
   if (settings?.aspectRatio) requiredCriteria.add('delivery_spec')
+  // 品牌判据逐条列出（Epic 9.1）。此前 `brand_style` 是一道**没有答案的必答题**：
+  // 它从上线起就在必查判据里，但评审层拿不到任何一条真实品牌规则，只能凭空作答。
+  const brandCriteria = brandReviewCriteria(brandKit)
   return {
     version: 1,
     requiredCriteria: [...requiredCriteria],
+    ...(brandCriteria.length ? { brandCriteria } : {}),
     humanDecisionRequired: true,
   }
 }
@@ -179,6 +174,7 @@ export function compileCreativePlan({
   models = [],
   memoryBindings,
   skillBindings,
+  brandKit,
   locale = 'zh-CN',
   planFingerprint: providedPlanFingerprint,
 } = {}) {
@@ -192,6 +188,9 @@ export function compileCreativePlan({
   modelSupportsSettings(selectedModel, settings)
   const normalizedMemoryBindings = normalizeBindings(memoryBindings, '项目记忆')
   const normalizedSkillBindings = normalizeBindings(skillBindings, 'Skill')
+  // 品牌规则进指纹：换一套品牌规则重跑，语义上就不是同一次执行了。不进指纹的话
+  // 「结果与当时确认的计划一致」会在品牌改动后继续成立，而画面其实已经按新规则生成。
+  const resolvedBrandFingerprint = brandKit?.rules?.length ? brandKitFingerprint(brandKit.rules) : undefined
   // 两级指纹。分支级由 plan 级与分支身份派生，于是任一分支都能归回同一次确认
   // （ADR 0005）。早期只有一个把分支混进哈希的指纹，分支之间互不相关，无法回答
   // 「这两张图是不是同一次确认出来的」。
@@ -215,6 +214,7 @@ export function compileCreativePlan({
     recipe: { references: safeReferenceIds(baseRecipe), batchCount: baseRecipe.batchCount },
     memoryBindings: normalizedMemoryBindings,
     skillBindings: normalizedSkillBindings,
+    brandKit: resolvedBrandFingerprint,
   })
   const branchIdentity = branch ? {
     id: branch.id,
@@ -231,18 +231,20 @@ export function compileCreativePlan({
     constraints,
     branch,
     creativeBrief: plan.creativeBrief,
+    brandKit,
     locale,
   })
   if (compiledPrompt.length > 6000) throw new CreativePlanCompileError('COMPILED_PROMPT_TOO_LONG', '编译后的执行提示词过长，请减少约束或补充描述。', 409)
   const lockedDimensions = constraints.filter((item) => item.mode === 'preserve').map((item) => item.dimension)
   const variedDimensions = constraints.filter((item) => item.mode === 'vary').map((item) => item.dimension)
-  const quality = qualityPolicy(constraints, settings)
+  const quality = qualityPolicy(constraints, settings, brandKit)
   const compiled = {
     version: 2,
     taskIntent: plan.intent ?? 'continue_generation',
     planFingerprint,
     branchFingerprint,
     sourceFingerprint,
+    ...(resolvedBrandFingerprint ? { brandKitFingerprint: resolvedBrandFingerprint, brandId: brandKit.brandId } : {}),
     lockedDimensions,
     variedDimensions,
     constraints,
@@ -268,6 +270,7 @@ export function compileCreativePlan({
       sourcePlanFingerprint: sourceFingerprint,
       planFingerprint,
       branchFingerprint,
+      ...(resolvedBrandFingerprint ? { brandKitFingerprint: resolvedBrandFingerprint, brandId: brandKit.brandId } : {}),
       ...(normalizedMemoryBindings.length ? { memoryBindings: normalizedMemoryBindings } : {}),
       ...(normalizedSkillBindings.length ? { skillBindings: normalizedSkillBindings } : {}),
     },

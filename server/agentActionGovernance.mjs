@@ -1,5 +1,6 @@
-import { createHash, createHmac, timingSafeEqual } from 'node:crypto'
+import { createHmac, timingSafeEqual } from 'node:crypto'
 import { AgentToolRuntimeError } from './agentToolRuntime.mjs'
+import { canonicalHash } from './canonicalHash.mjs'
 
 const permissions = Object.freeze({
   generation_submit: 'create-generation',
@@ -25,16 +26,12 @@ const safeAuditDetailKeys = new Set([
 
 export const actionApprovalTtlMs = 15 * 60_000
 
-function canonicalize(value) {
-  if (Array.isArray(value)) return value.map(canonicalize)
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalize(value[key])]))
-  }
-  return value
-}
-
+/**
+ * 审批 Token 绑定的参数摘要。缺省参数归一成 `{}`，否则「没带参数」与「带了空对象」
+ * 会得到两个摘要，同一次确认在重放时对不上。
+ */
 export function actionArgumentsHash(argumentsValue) {
-  return createHash('sha256').update(JSON.stringify(canonicalize(argumentsValue ?? {}))).digest('base64url')
+  return canonicalHash(argumentsValue ?? {})
 }
 
 function sign(payload, secret) {
