@@ -1,6 +1,6 @@
 // @ts-check
 import { createHash } from 'node:crypto'
-import { memoryBindingSnapshot } from './botanicAgentMemory.mjs'
+import { memoryBindingSnapshot, memorySubjectApplicability } from './botanicAgentMemory.mjs'
 
 /**
  * 操作者与时间注入。运行时由 `requiredText` 校验 `actorId` 必填，这里声明为可选
@@ -67,11 +67,29 @@ export function resolveWorkflowExecutionContract(source, document) {
  * 规则内容与绑定分开存：内容供 Prompt 构造（Epic 7 消费），绑定用于解释与追溯。
  */
 export function resolveWorkflowBrandRules(document) {
-  const bindings = memoryBindingSnapshot(document?.agentMemory ?? [], { limit: 30 })
   const byId = new Map((document?.agentMemory ?? []).map((item) => [item?.id, item]))
+  // 发布时固定的是**全集**（不带执行上下文，因此不做主体过滤）：此刻还没有批量项，
+  // 也就没有渠道/产品可比。按渠道挑子集发生在执行期，用的仍是这份固定下来的全集，
+  // 所以「新版本不改变进行中的运行」依然成立。
+  const bindings = memoryBindingSnapshot(document?.agentMemory ?? [], {
+    limit: 30,
+    // 固定全集，不做主体过滤：过滤会把限定渠道的规则挡在版本之外，
+    // 执行期就再也挑不出来了（有测试钉住三条规则全部进版本）。
+    applySubjectFilter: false,
+  })
+  // 内容与绑定从**同一份过滤后的列表**派生。此前两者各自 filter，内容为空的绑定会
+  // 让两个数组错位 —— 一旦按下标去对应（执行期过滤就要这么做），规则会张冠李戴。
+  const usable = bindings
+    .map((binding) => ({ binding, item: byId.get(binding.id) }))
+    .filter(({ item }) => typeof item?.content === 'string' && item.content.trim())
   return {
-    brandRules: bindings.map((binding) => byId.get(binding.id)?.content).filter((content) => typeof content === 'string' && content.trim()),
-    brandRuleBindings: bindings,
+    brandRules: usable.map(({ item }) => item.content),
+    brandRuleBindings: usable.map(({ binding, item }) => ({
+      ...binding,
+      // 适用主体随绑定固定下来，执行期据此按批量项的渠道/产品挑子集。
+      ...(item.subject && item.subject !== 'project' ? { subject: item.subject } : {}),
+      ...(item.subjectValue ? { subjectValue: item.subjectValue } : {}),
+    })),
   }
 }
 
@@ -501,11 +519,22 @@ export function productionWorkflowLineage(input) {
  * - 规则来自版本快照而不是当前项目记忆：历史版本重跑时必须按**当时**的规则执行，
  *   否则「新版本不改变进行中的运行」就不成立。
  */
-export function withWorkflowBrandRules(prompt, definition, { locale = 'zh-CN' } = {}) {
+/**
+ * @param {string} prompt
+ * @param {any} definition
+ * @param {{ locale?: string, context?: { brandId?: string, sku?: string, channel?: string, userId?: string } }} [options]
+ *   `context` 是本批量项的身份维度；不给等于「没有维度信息」，限定主体的规则一律不适用。
+ */
+export function withWorkflowBrandRules(prompt, definition, { locale = 'zh-CN', context } = {}) {
   const base = typeof prompt === 'string' ? prompt.trim() : ''
+  const bindings = Array.isArray(definition?.brandRuleBindings) ? definition.brandRuleBindings : []
   const rules = (Array.isArray(definition?.brandRules) ? definition.brandRules : [])
-    .map((rule) => (typeof rule === 'string' ? rule.trim() : ''))
-    .filter(Boolean)
+    .map((rule, index) => ({ rule: typeof rule === 'string' ? rule.trim() : '', binding: bindings[index] }))
+    .filter(({ rule }) => rule)
+    // 按批量项的渠道/产品挑适用子集。没有绑定（发布于主体上线之前的历史版本）时
+    // 一律保留 —— 历史版本的执行语义不能因为这次改动而变。
+    .filter(({ binding }) => !binding || memorySubjectApplicability(binding, context ?? {}).applies)
+    .map(({ rule }) => rule)
     .slice(0, 20)
   if (!rules.length) return base
   const header = locale === 'en' ? 'Brand rules that must hold:' : '必须遵守的品牌规则：'

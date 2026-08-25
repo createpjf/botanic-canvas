@@ -4513,3 +4513,74 @@ details.agent-timeline__thinking { display: block; padding: 0; }
 .agent-memory-panel__conflicts { margin: 0; padding: 8px 10px; border-radius: 8px; background: #fdf6e7; color: #6a5220; font-size: 11px; line-height: 1.55; }
 .agent-memory-panel__list article.is-ineffective { opacity: .72; }
 .agent-memory-panel__reason { display: block; margin-top: 3px; color: #8a6a3a; font-size: 10px; font-style: normal; line-height: 1.5; }
+
+/* 品牌规则面板（Epic 9.1）。三段必须视觉上分得开：
+   生效中、待确认（不生效）、被覆盖（不隐藏）。
+   待确认那一段刻意用与生效不同的底色与虚线边框 —— 解析出来的建议和真规则长得
+   一模一样，看起来一致就会被当成已经在管用。 */
+.agent-brand-panel { display: grid; align-content: start; gap: 12px; }
+.agent-brand-panel > header { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 12px; }
+.agent-brand-panel > header small { color: #68816e; font-size: 9px; font-weight: 800; letter-spacing: .12em; }
+.agent-brand-panel > header h2 { margin: 3px 0 0; color: #203d28; font-size: 21px; }
+.agent-brand-panel > p { margin: 0; color: #76877a; font-size: 11px; line-height: 1.6; }
+.agent-brand-panel h3 { margin: 2px 0 0; color: #28442f; font-size: 11px; font-weight: 800; letter-spacing: .06em; }
+.agent-brand-panel__summary { margin: 0; color: #28442f; font-size: 11px; font-weight: 600; }
+.agent-brand-panel__rules, .agent-brand-panel__proposals { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.agent-brand-panel__rules li { display: grid; gap: 4px; padding: 9px; border: 1px solid #d4e1d5; border-radius: 9px; background: #fff; }
+.agent-brand-panel__rules li > header { display: flex; align-items: baseline; gap: 8px; }
+.agent-brand-panel__rules li > header small { color: #68816e; font-size: 9px; font-weight: 800; letter-spacing: .08em; }
+.agent-brand-panel__rules li > header b { color: #2a5238; font-size: 10px; font-weight: 700; }
+.agent-brand-panel__rules li.is-should > header b { color: #8a7a4a; }
+.agent-brand-panel__rules li p { margin: 0; color: #28442f; font-size: 12px; line-height: 1.55; }
+.agent-brand-panel__provenance { color: #76877a; font-size: 10px; line-height: 1.5; }
+/* 被覆盖的规则保留在页面上但明确降级：它没生效，可它确实被写过。 */
+.agent-brand-panel__rules.is-overridden li { background: #f6f7f5; border-style: dashed; opacity: .78; }
+.agent-brand-panel__rules.is-overridden li p { text-decoration: line-through; text-decoration-color: #b6c1b7; }
+.agent-brand-panel__proposals li { display: grid; gap: 4px; padding: 9px; border: 1px dashed #cbb98f; border-radius: 9px; background: #fdfaf2; }
+.agent-brand-panel__proposals li > header small { color: #8a7a4a; font-size: 9px; font-weight: 800; letter-spacing: .08em; }
+.agent-brand-panel__proposals li p { margin: 0; color: #4a4230; font-size: 12px; line-height: 1.55; }
+.agent-brand-panel__proposals li small { color: #8a7a4a; font-size: 10px; line-height: 1.5; }
+.agent-brand-panel__proposals li.needs-facet { border-color: #c9a25f; }
+.agent-brand-panel__hint { font-weight: 700; }
+
+/* 批量输入表格（Epic 7）。此前界面上发的一直是写死的 item-1，整条批量能力用不到。
+   有问题的行必须**逐行标出来**：只在提交时弹一句「有错」，用户不知道该改哪一行。 */
+.production-batch { display: grid; gap: 8px; padding: 8px 9px; border: 1px solid #e3ece4; border-radius: 9px; background: #fbfcfa; }
+.production-batch > summary { cursor: pointer; color: #28442f; font-size: 11px; font-weight: 700; }
+.production-batch__hint, .production-batch__empty { margin: 0; color: #76877a; font-size: 10px; line-height: 1.5; }
+.production-batch__import { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: start; }
+.production-batch__import textarea { min-height: 54px; padding: 6px 7px; border: 1px solid #d4e1d5; border-radius: 7px; background: #fff; color: #28442f; font-size: 11px; font-family: inherit; resize: vertical; }
+.production-batch__import button, .production-batch > button { padding: 5px 10px; border: 1px solid #d4e1d5; border-radius: 7px; background: #fff; color: #28442f; font-size: 11px; cursor: pointer; }
+.production-batch__notice { margin: 0; color: #28442f; font-size: 10px; font-weight: 600; }
+.production-batch__table-wrap { overflow-x: auto; }
+.production-batch__table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.production-batch__table th, .production-batch__table td { padding: 3px 4px; border-bottom: 1px solid #edf2ed; text-align: left; }
+.production-batch__table thead th { color: #68816e; font-size: 9px; font-weight: 800; letter-spacing: .06em; white-space: nowrap; }
+.production-batch__table tbody th { color: #9aa79c; font-size: 10px; font-weight: 600; }
+.production-batch__table input { width: 100%; min-width: 72px; padding: 3px 5px; border: 1px solid transparent; border-radius: 5px; background: #fff; color: #28442f; font-size: 11px; font-family: inherit; }
+.production-batch__table input:focus { border-color: #a9c6ae; outline: none; }
+.production-batch__table td button { padding: 1px 6px; border: none; border-radius: 5px; background: transparent; color: #9aa79c; font-size: 13px; line-height: 1; cursor: pointer; }
+.production-batch__table td button:hover { color: #8a3a3a; background: #f7e4e4; }
+/* 重复标识会让「只重试失败那 2 项」打到别的行上，因此这一行要一眼看得出来。 */
+.production-batch__table tr.is-invalid input { background: #fdf6f6; border-color: #e6c9c9; }
+.production-batch__issue { margin: 0; color: #8a3a3a; font-size: 10px; line-height: 1.5; }
+
+/* 记忆的适用范围（Epic 6）。限定范围的规则**不会**进入每一次生成，
+   因此这条说明必须和内容一样显眼 —— 用户以为它总是生效的话，
+   会在别的渠道下疑惑「我明明写了这条规则」。 */
+.agent-memory-panel__subject { display: grid; grid-template-columns: minmax(0, auto) minmax(0, 1fr); gap: 6px; align-items: center; }
+.agent-memory-panel__subject input { padding: 5px 7px; border: 1px solid #d4e1d5; border-radius: 7px; background: #fff; color: #28442f; font-size: 11px; font-family: inherit; }
+.agent-memory-panel__subject input:focus { border-color: #a9c6ae; outline: none; }
+.agent-memory-panel__subject-note { display: block; margin-top: 2px; color: #8a7a4a; font-size: 10px; font-style: normal; line-height: 1.5; }
+
+/* 项目自定义评审判据（Epic 6 × Epic 11）。与内置判据视觉上分开：来源不同、
+   可信度也不同 —— 内置判据是产品保证的，自定义判据是项目自己写的指令。
+   成本提示单独一行且显眼：用户加了 3 条判据却不知道费用翻了 3 倍是最容易造成的伤害。 */
+.agent-review-panel__cost { margin: 0; padding: 6px 9px; border-radius: 8px; background: #fdf6e9; color: #8a6a3a; font-size: 11px; font-weight: 600; }
+.agent-review-panel__criteria li.is-custom { padding-left: 6px; border-left: 2px solid #cbb98f; }
+.agent-review-panel__criteria li.is-custom small { color: #8a7a4a; }
+.agent-review-panel__skill-source { grid-column: 1 / -1; margin: 0; color: #9aa79c; font-size: 9px; }
+
+/* 无权限时的替代文案。按钮直接消失而不留任何说明，用户会以为功能坏了。 */
+.agent-review-panel__readonly { color: #9aa79c; font-size: 10px; }
+.panel-note.is-readonly { color: #8a7a4a; background: #fdf6e9; padding: 6px 9px; border-radius: 8px; }

@@ -19,7 +19,16 @@ const terminalRunStatuses = new Set(['completed', 'partial'])
  *   now?: () => number,
  * }} input
  */
-export function createAgentReviewService({ productStore, reviewCandidate, observe = () => {}, now = () => Date.now() }) {
+/**
+ * @param {{
+ *   productStore: any,
+ *   reviewCandidate?: (input: { candidate: any, task: any }) => Promise<any>,
+ *   judgeWith?: (input: { criterion: any, candidate: any }) => any,
+ *   observe?: (event: any) => void,
+ *   now?: () => number,
+ * }} input
+ */
+export function createAgentReviewService({ productStore, reviewCandidate, judgeWith, observe = () => {}, now = () => Date.now() }) {
   if (!productStore) throw new TypeError('评审服务缺少 ProductStore。')
 
   async function jobsForRun(userId, run) {
@@ -68,6 +77,8 @@ export function createAgentReviewService({ productStore, reviewCandidate, observ
       // 断点续评：已产出的结论不重评，避免重复调用视觉模型。
       existingResults: task.results ?? [],
       reviewCandidate,
+      // 项目自定义判据（evaluator Skill）。未注入时它们记为「无法验证」而不是通过。
+      judgeWith,
       now,
     })
     const stored = await productStore.putAgentReviewTask(userId, outcome.task)

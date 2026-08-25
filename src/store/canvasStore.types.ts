@@ -3,6 +3,7 @@ import type {
   BotanicAgentActionProposal,
   BotanicAgentActionResult,
   BotanicAgentExecutionMode,
+  BotanicAgentMemoryItem,
   BotanicAgentMemoryKind,
   BotanicAgentMessage,
   BotanicAgentPlan,
@@ -165,7 +166,12 @@ export type CanvasStore = {
   renameAgentSession: (sessionId: string, title: string) => void
   setAgentSessionReadingAnchor: (sessionId: string, messageId: string, updatedAt?: number) => void
   setActiveAgentSession: (sessionId: string) => void
-  addAgentMemory: (kind: BotanicAgentMemoryKind, content: string, sourceNodeIds?: string[]) => string | null
+  addAgentMemory: (
+    kind: BotanicAgentMemoryKind,
+    content: string,
+    sourceNodeIds?: string[],
+    options?: { subject?: BotanicAgentMemoryItem['subject']; subjectValue?: string },
+  ) => string | null
   removeAgentMemory: (memoryId: string) => void
   resumeBatchVariations: () => void
   setAssetReferenceEnabled: (nodeId: string, referenceEnabled: boolean) => void

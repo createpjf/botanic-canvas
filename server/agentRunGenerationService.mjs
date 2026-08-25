@@ -5,6 +5,7 @@ import { AgentToolRuntimeError } from './agentToolRuntime.mjs'
 import { generationJobIdForIdempotency } from './generationIdempotency.mjs'
 import { buildGenerationUsage, reserveGenerationBudget } from './generationGovernance.mjs'
 import { agentRunCompiledPlanProvenance, compileRunCreativePlan } from './creativePlanResolver.mjs'
+import { findBrandKit, globalBrandKitLibraryId } from './brandKit.mjs'
 
 /**
  * Agent Run 确认后的唯一生成提交模块。路由只调用这个小接口；配额、幂等、
@@ -18,6 +19,17 @@ export function createAgentRunGenerationService({
   publishProjectUpdated,
   publishAgentRunUpdated,
 }) {
+  /**
+   * 读取工作区全局品牌套件。品牌库读失败**不阻断生成**：那会让一次存储抖动
+   * 变成「所有生成都提交不了」。但也不能静默按无品牌继续 —— 那是悄悄丢掉品牌约束。
+   * 折中是让它按缺失处理并抛出可诊断错误，交由上层阻断；这里只负责取。
+   */
+  async function readGlobalBrandKit(userId, brandId) {
+    if (typeof brandId !== 'string' || !brandId.trim()) return undefined
+    const library = await productStore.readGlobalAssetLibrary(userId, globalBrandKitLibraryId)
+    return findBrandKit(library, brandId)
+  }
+
   async function prepareProjectExecution(userId, projectId, runId, { submission }) {
     const run = await productStore.readAgentRun(userId, runId)
     if (!run || run.projectId !== projectId) {
@@ -34,7 +46,21 @@ export function createAgentRunGenerationService({
     // 而重试与恢复从此只读快照，不会因模型目录或绑定变动而漂移。
     const executableRun = agentRunCompiledPlanProvenance(run) === 'compiled_v2'
       ? run
-      : { ...run, compiledPlan: compileRunCreativePlan({ run, document: project.document, models }) }
+      : {
+        ...run,
+        compiledPlan: compileRunCreativePlan({
+          run,
+          document: project.document,
+          models,
+          // 只在项目确实绑定了品牌时才去读全局套件：未绑定的项目不该为品牌库多付一次
+          // 存储往返，更不该被套上一份它没选过的「默认品牌」。
+          globalBrandKit: await readGlobalBrandKit(userId, project.document?.brandId),
+          // evaluator Skill 作为自定义评审判据固定进质量策略（Epic 6 × Epic 11）。
+          // 存储没实现这个读取口时按「没有自定义判据」处理，而不是让整条提交路径挂掉 ——
+          // 自定义判据是增量能力，它不可用不该阻断生成本身。
+          projectSkills: await productStore.listAgentSkills?.(userId, projectId) ?? [],
+        }),
+      }
     // 预览不落库：它反映的文档状态可能还会变，锁死快照会把预览当成确认。
     const storedRun = executableRun === run || !submission
       ? executableRun

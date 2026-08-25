@@ -9,6 +9,7 @@ import {
 } from './agentReviewTask.mjs'
 import { generationArtifactId } from './productionWorkflow.mjs'
 import { compiledBranchFromRun } from './creativePlanResolver.mjs'
+import { runEvaluatorSkillCriterion } from './agentReviewSkillEvaluator.mjs'
 
 /**
  * 评审执行器：把一个已到执行终态的 Run 评完（ADR 0006）。
@@ -76,11 +77,14 @@ export function buildReviewTaskForRun({ run, jobs = [], coverage, now = Date.now
  *   candidates?: Array<any>,
  *   existingResults?: Array<any>,
  *   reviewCandidate?: (input: { candidate: any, task: any }) => Promise<{ criteria?: Array<any>, revisionProposal?: any }>,
+ *   judgeWith?: (input: { criterion: any, candidate: any }) => any,
+ *   registry?: any, context?: any,
  *   now?: () => number,
  * }} input
  */
 export async function runAgentReviewTask({
-  task, candidates = [], existingResults = [], reviewCandidate, now = () => Date.now(),
+  task, candidates = [], existingResults = [], reviewCandidate,
+  judgeWith, registry, context, now = () => Date.now(),
 }) {
   const started = settleAgentReviewTask(task, { status: 'running', now: now() })
   const byArtifactId = new Map(candidates.map((candidate) => [candidate.artifactId, candidate]))
@@ -104,7 +108,7 @@ export async function runAgentReviewTask({
       continue
     }
     const deterministic = reviewDeterministicLayer({ output: candidate.output, settings: candidate.settings })
-    /** @type {Array<{ id: string, layer: string, verdict: string, evidence?: string }>} */
+    /** @type {Array<{ id: string, layer: string, verdict: string, evidence?: string, skillId?: string, skillVersion?: number }>} */
     const criteria = [...deterministic.criteria]
     let revisionProposal
     if (shouldRunModelLayer(deterministic)) {
@@ -125,6 +129,22 @@ export async function runAgentReviewTask({
           criteria.push({ id: 'semantic_review', layer: 'model', verdict: 'unverifiable', evidence: `${code}` })
         }
       }
+    }
+    // 项目自定义判据（evaluator Skill）。跑在内置判据之后：内置层已经判 fail 时
+    // 不必再为自定义判据多花几次模型调用。
+    for (const criterion of started.qualityPolicy?.evaluatorSkills ?? []) {
+      if (!shouldRunModelLayer(deterministic)) break
+      if (typeof judgeWith !== 'function') {
+        criteria.push({
+          id: criterion.id, layer: 'model', verdict: 'unverifiable',
+          evidence: '未配置视觉评审模型，自定义判据未执行。',
+          skillId: criterion.skillId, skillVersion: criterion.version,
+        })
+        continue
+      }
+      criteria.push(await runEvaluatorSkillCriterion({
+        criterion, candidate, task: started, judgeWith, registry, context, now,
+      }))
     }
     results.push(createAgentReviewResult({
       taskId: started.id,

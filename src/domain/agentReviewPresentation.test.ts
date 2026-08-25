@@ -3,8 +3,10 @@ import test from 'node:test'
 import {
   agentReviewCandidateRows,
   agentReviewCoverageSummary,
+  agentReviewEvaluatorCostNote,
   agentReviewTaskStatusNote,
   agentReviewVerdictLabel,
+  isEvaluatorCriterion,
   type AgentReviewTaskSnapshot,
 } from './agentReviewPresentation.ts'
 
@@ -88,4 +90,47 @@ test('任务失败要能被诊断，不只显示「评审失败」', () => {
 test('空任务不炸', () => {
   assert.deepEqual(agentReviewCandidateRows(undefined), [])
   assert.deepEqual(agentReviewCandidateRows({ ...task, results: undefined, decisions: undefined }), [])
+})
+
+test('自定义判据的成本必须在评审开始前就能显示', () => {
+  // 评审完再说已经晚了，钱已经花掉。用户加了 3 条判据却不知道费用翻了 3 倍，
+  // 是这个功能最容易造成的伤害。
+  const task = {
+    id: 't', runId: 'r', status: 'queued' as const,
+    coverage: { totalCandidates: 5, reviewedCandidates: 5, skippedCandidates: 0 },
+    qualityPolicy: {
+      requiredCriteria: ['identity'],
+      evaluatorSkills: [
+        { id: 'skill.a@1', skillId: 'a', version: 1 },
+        { id: 'skill.b@2', skillId: 'b', version: 2 },
+      ],
+    },
+  }
+  assert.equal(agentReviewEvaluatorCostNote(task), '2 条自定义判据 × 5 个候选 = 额外 10 次模型调用。')
+  assert.match(agentReviewEvaluatorCostNote(task, 'en'), /2 project-defined criteria × 5 candidates = 10 extra model call\(s\)\./u)
+  // 没有自定义判据时不显示这一行。
+  assert.equal(agentReviewEvaluatorCostNote({ ...task, qualityPolicy: { requiredCriteria: ['identity'] } }), '')
+  assert.equal(agentReviewEvaluatorCostNote(undefined), '')
+})
+
+test('自定义判据与内置判据能分开，且带 Skill 版本', () => {
+  // Skill 版本不可变：历史评审要说得清当时按哪一版判的。
+  const rows = agentReviewCandidateRows({
+    id: 't', runId: 'r', status: 'completed',
+    results: [{
+      artifactId: 'a-1',
+      criteria: [
+        { id: 'identity', layer: 'model', verdict: 'pass' },
+        { id: 'skill.compliance@3', layer: 'model', verdict: 'fail', evidence: '出现「最」字', skillId: 'compliance', skillVersion: 3 },
+      ],
+    }],
+  })
+  const custom = rows[0].criteria.find((item) => item.id === 'skill.compliance@3')!
+  assert.equal(custom.skillId, 'compliance')
+  assert.equal(custom.skillVersion, 3)
+  assert.equal(isEvaluatorCriterion(custom), true)
+  // 内置判据没有 Skill 溯源。
+  const builtin = rows[0].criteria.find((item) => item.id === 'identity')!
+  assert.equal(builtin.skillId, undefined)
+  assert.equal(isEvaluatorCriterion(builtin), false)
 })

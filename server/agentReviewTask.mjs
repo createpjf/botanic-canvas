@@ -1,5 +1,6 @@
 // @ts-check
 import { createHash, randomUUID } from 'node:crypto'
+import { isBrandConcession } from './brandKit.mjs'
 
 /**
  * 评审任务实体（ADR 0006）。
@@ -113,11 +114,28 @@ export function createAgentReviewTask({
   if (!qualityPolicy || !Array.isArray(qualityPolicy.requiredCriteria) || !qualityPolicy.requiredCriteria.length) {
     throw new AgentReviewError(409, 'AGENT_REVIEW_POLICY_MISSING', '评审判据必须来自计划快照的质量策略。')
   }
+  // 品牌判据必须进指纹（Epic 9.1）。任务标识由 (runId, qualityPolicyFingerprint) 决定，
+  // 品牌规则改了却不改指纹，重新评审会命中旧任务直接返回 —— 用户以为「按新品牌规则
+  // 复核过了」，实际拿到的是旧规则下的结论。
+  //
+  // 但**没有品牌判据时这个键必须整个缺席**，不能写成空数组：写空数组会改变所有存量
+  // 策略的指纹，于是每个已评审完的 Run 都会算出一个新任务标识、再评审一次，
+  // 白付一遍视觉模型的钱。
+  const brandCriteria = [...(qualityPolicy.brandCriteria ?? [])]
+    .map((item) => ({ id: item.id, statement: item.statement, enforcement: item.enforcement }))
+    .sort((left, right) => String(left.id).localeCompare(String(right.id)))
+  // 自定义判据同理：判据标识已带 Skill 版本，Skill 改了版本就换标识、指纹随之改变，
+  // 因此重新评审不会命中旧任务。同样只在存在时才加键，避免改变存量策略的指纹。
+  const evaluatorSkills = [...(qualityPolicy.evaluatorSkills ?? [])]
+    .map((item) => ({ id: item.id, contentHash: item.contentHash }))
+    .sort((left, right) => String(left.id).localeCompare(String(right.id)))
   const qualityPolicyFingerprint = createHash('sha256')
     .update(JSON.stringify({
       version: qualityPolicy.version ?? 1,
       requiredCriteria: [...qualityPolicy.requiredCriteria].sort(),
       humanDecisionRequired: qualityPolicy.humanDecisionRequired !== false,
+      ...(brandCriteria.length ? { brandCriteria } : {}),
+      ...(evaluatorSkills.length ? { evaluatorSkills } : {}),
     }))
     .digest('base64url')
   return {
@@ -149,7 +167,10 @@ export function agentReviewResultId(taskId, artifactId) {
  * @param {{
  *   taskId: string, projectId: string, artifactId: string,
  *   branchFingerprint?: string, qualityPolicyFingerprint?: string,
- *   criteria?: Array<{ id?: string, layer?: string, verdict?: string, evidence?: string }>,
+ *   criteria?: Array<{
+ *     id?: string, layer?: string, verdict?: string, evidence?: string,
+ *     brandRuleId?: string, brandFacet?: string, brandLayer?: string, enforcement?: string,
+ *   }>,
  *   verdict?: string, revisionProposal?: any, now?: number,
  * }} input
  */
@@ -159,13 +180,22 @@ export function createAgentReviewResult({
 }) {
   const task = requireText(taskId, '评审任务标识', 160)
   const artifact = requireText(artifactId, 'Artifact 标识', 240)
-  const safeCriteria = criteria.slice(0, 24).map((item) => ({
-    id: requireText(item?.id, '评审判据标识', 80),
+  // 上限要容得下通用判据 + 逐条品牌规则（Epic 9.1）。原来的 24 是按只有通用判据定的，
+  // 品牌规则一多就会静默截断 —— 被截掉的判据看起来像「没这条要求」，而不是「没评」。
+  const safeCriteria = criteria.slice(0, 120).map((item) => ({
+    id: requireText(item?.id, '评审判据标识', 120),
     layer: item?.layer === 'model' || item?.layer === 'human' ? item.layer : 'deterministic',
     verdict: item?.verdict === 'pass' || item?.verdict === 'fail' ? item.verdict : 'unverifiable',
     ...(item?.evidence ? { evidence: String(item.evidence).slice(0, 400) } : {}),
+    // 品牌判据的溯源字段必须留下：只有判据名的话，用户看到 fail 也不知道违反了
+    // 哪条品牌规则、来自哪一层（验收要求「QA 逐条关联品牌规则」）。
+    ...(item?.brandRuleId ? { brandRuleId: String(item.brandRuleId).slice(0, 160) } : {}),
+    ...(item?.brandFacet ? { brandFacet: String(item.brandFacet).slice(0, 40) } : {}),
+    ...(item?.brandLayer ? { brandLayer: String(item.brandLayer).slice(0, 40) } : {}),
+    ...(item?.enforcement === 'should' || item?.enforcement === 'must' ? { enforcement: item.enforcement } : {}),
   }))
-  const resolved = verdict ?? (safeCriteria.some((item) => item.verdict === 'fail')
+  // 「尽量」不满足是让步，不是不合格；判定口径与品牌 QA 摘要共用同一实现。
+  const resolved = verdict ?? (safeCriteria.some((item) => item.verdict === 'fail' && !isBrandConcession(item))
     ? 'fail'
     : safeCriteria.some((item) => item.verdict === 'unverifiable') ? 'unverifiable' : 'pass')
   return {

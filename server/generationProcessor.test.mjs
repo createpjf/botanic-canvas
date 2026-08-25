@@ -610,3 +610,33 @@ test('取消广播先于取消入口落库时：就地中止，不报超时也�
   assert.ok(!writes.includes('failed'))
   assert.ok(!job().error)
 })
+
+test('超时判失败后 Provider 才成功：不改写终态，但留下可观察记录', async () => {
+  // 此前是静默 return —— 丢掉的是一张**已经付过费**的图，事后没有任何地方能看出它
+  // 存在过，运维也无从判断超时阈值是不是设短了。端到端冒烟就撞上了这一条：
+  // 日志显示 provider completed (1 output)，任务却是「超过模型等待时限」。
+  const warnings = []
+  const originalWarn = console.warn
+  console.warn = (message) => warnings.push(String(message))
+  try {
+    let flip = () => {}
+    const { processJob, writes, job } = cancelHarness('queued', async () => {
+      flip()
+      return { outputs: [{ id: 'output-late', image: '/api/media/output-late' }], missingOutputCount: 0 }
+    })
+    flip = () => { Object.assign(job(), { status: 'failed', error: '生成任务超过模型等待时限，已停止，请稍后重试。' }) }
+    await processJob('job-cancel')
+
+    // 终态不翻案：超时是对用户做过的承诺，事后改写会让「它到底成没成」变得不确定。
+    assert.equal(job().status, 'failed')
+    assert.deepEqual(job().outputs, [])
+    assert.ok(!writes.includes('succeeded'))
+    // 但必须留下记录。
+    assert.ok(
+      warnings.some((line) => /结果迟到被丢弃/u.test(line) && /已产生费用/u.test(line)),
+      `应记录迟到丢弃，实际：${JSON.stringify(warnings)}`,
+    )
+  } finally {
+    console.warn = originalWarn
+  }
+})

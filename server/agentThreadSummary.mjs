@@ -38,6 +38,8 @@ const DECISION_LIMIT = 12
 const CONSTRAINT_LIMIT = 16
 const QUESTION_LIMIT = 8
 const ENTITY_LIMIT = 40
+const ARTIFACT_LIMIT = 12
+const ARTIFACT_LABEL_LIMIT = 60
 const TEXT_LIMIT = 400
 
 /**
@@ -137,6 +139,25 @@ export function buildThreadSummaryCheckpoint({ messages = [], previous, now = Da
     ...fresh.map((message) => message.runId).filter(Boolean),
     ...fresh.flatMap((message) => (message.mentions ?? []).map((mention) => mention?.nodeId ?? mention?.id)),
   ], ENTITY_LIMIT)
+  // `artifact_reference` 层此前只体现为实体标识，没有任何可回读的指针 —— 结果一旦被
+  // 挤出窗口，模型既不知道有过这些产出，也就不会想到去 `artifact_search` 回读它们，
+  // 于是「上次那版在哪」是凭空作答的。
+  //
+  // 这里存的是**目录**：标识 + 标签 + 类型，各自截断。刻意**不存** `content` / `url` /
+  // `metadata` —— 那才是「把结果内容重新塞回上下文」，正是 compaction 要避免的事。
+  const artifacts = [
+    ...(previous?.artifacts ?? []),
+    ...fresh.flatMap((message) => (message.artifacts ?? [])
+      .filter((artifact) => typeof artifact?.id === 'string' && artifact.id.trim())
+      .map((artifact) => ({
+        id: artifact.id.trim().slice(0, 200),
+        kind: artifact.kind ?? 'file',
+        label: redactSummaryText(artifact.label ?? '').slice(0, ARTIFACT_LABEL_LIMIT),
+      }))),
+  ]
+    .filter((artifact, index, all) => all.findIndex((entry) => entry.id === artifact.id) === index)
+    // 留最近的：早期结果更可能已经被后续版本取代。
+    .slice(-ARTIFACT_LIMIT)
   return {
     version: 1,
     goals,
@@ -144,6 +165,7 @@ export function buildThreadSummaryCheckpoint({ messages = [], previous, now = Da
     constraints: uniqueList(constraints, CONSTRAINT_LIMIT),
     openQuestions,
     entityIds,
+    ...(artifacts.length ? { artifacts } : {}),
     coveredMessageIds: [...covered, ...fresh.map((message) => message.id)].slice(-200),
     coveredThrough: Math.max(
       Number(previous?.coveredThrough ?? 0),
@@ -184,6 +206,14 @@ export function renderThreadSummary(summary, { locale = 'zh-CN' } = {}) {
   }
   if (summary.entityIds?.length) {
     lines.push(en ? `Referenced entities: ${summary.entityIds.join(', ')}` : `涉及实体：${summary.entityIds.join('、')}`)
+  }
+  if (summary.artifacts?.length) {
+    // 必须写明「只有标识、内容要用工具回读」：不写的话模型会拿标签当成它看过的内容，
+    // 直接据此描述画面 —— 那比不给这份目录更糟。
+    const rendered = summary.artifacts.map((artifact) => `${artifact.label || artifact.kind}（${artifact.id}）`)
+    lines.push(en
+      ? `Earlier results (identifiers only — read details with the artifact lookup tool, do not describe them from memory): ${rendered.join(' / ')}`
+      : `早前的产出（**只有标识**，内容需用结果检索工具回读，不要凭这行描述画面）：${rendered.join('；')}`)
   }
   if (!lines.length) return ''
   const header = en

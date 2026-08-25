@@ -10,6 +10,7 @@ import {
   transitionProductionWorkflowRun,
 } from './productionWorkflow.mjs'
 import { buildDeliveryManifest } from './deliveryManifest.mjs'
+import { createDeliveryPackage } from './deliveryPackage.mjs'
 import { createProductionWorkflowPublishService } from './productionWorkflowPublishService.mjs'
 import { cancelGenerationJob } from './generationCancellation.mjs'
 import { publicGenerationJob } from './generationProvider.mjs'
@@ -38,6 +39,9 @@ function workflowInput(workflow, run, item, document) {
     prompt: withWorkflowBrandRules(
       override.prompt ?? interpolate(definition.prompt, item.input?.variables),
       definition,
+      // 按本项的渠道/产品挑适用的品牌规则子集：一次 Campaign 里天猫项与京东项
+      // 各自遵守各自的规范。此前所有规则无差别进每一项。
+      { context: { channel: item.input?.channel, sku: item.input?.sku, brandId: document?.brandId } },
     ),
     batchCount: override.batchCount ?? definition.settings?.batchCount ?? 1,
     settings,
@@ -88,6 +92,7 @@ export function createProductionWorkflowRouteHandler({
   redisQueue,
   publishProjectUpdated,
   publishCancel,
+  mediaService,
   modelOptions = [],
 }) {
   const publishProductionWorkflow = createProductionWorkflowPublishService({
@@ -171,6 +176,7 @@ export function createProductionWorkflowRouteHandler({
     const workflowMatch = matches.projectProductionWorkflow
     const runsMatch = matches.projectProductionWorkflowRuns
     const runManifestMatch = matches.projectProductionWorkflowRunManifest
+    const runPackageMatch = matches.projectProductionWorkflowRunPackage
     const runMatch = matches.projectProductionWorkflowRun
 
     if (collectionMatch) {
@@ -255,16 +261,14 @@ export function createProductionWorkflowRouteHandler({
       return json(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message: '工作流运行集合不支持该请求方法。' } }, { Allow: 'GET, POST' })
     }
 
-    if (runManifestMatch) {
-      if (request.method !== 'GET') return json(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message: '交付清单只支持读取。' } }, { Allow: 'GET' })
-      const user = await requireUser(request)
-      const projectId = decodeURIComponent(runManifestMatch[1])
-      const runId = decodeURIComponent(runManifestMatch[2])
+    // 清单与交付包读的是同一份运行、任务与评审记录。两处各查一遍迟早会出现
+    // 「清单里有 12 张、包里只有 10 张」，而两边都说自己是对的。
+    const loadDeliveryContext = async (user, projectId, runId) => {
       await requireProjectPermission(productStore, user.id, projectId, 'read')
       const project = await productStore.readProject(user.id, projectId)
-      if (!project) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
+      if (!project) return { kind: 'error', status: 404, code: 'PROJECT_NOT_FOUND', message: '未找到项目或你没有访问权限。' }
       const run = documents(project.document).runs.find((entry) => entry.id === runId)
-      if (!run) return error(response, 404, 'PRODUCTION_WORKFLOW_RUN_NOT_FOUND', '未找到工作流运行。')
+      if (!run) return { kind: 'error', status: 404, code: 'PRODUCTION_WORKFLOW_RUN_NOT_FOUND', message: '未找到工作流运行。' }
       const jobIds = [...new Set((run.items ?? []).map((item) => item.jobId).filter(Boolean))]
       const jobs = (await Promise.all(jobIds.map((jobId) => productStore.readGenerationJob(user.id, jobId)))).filter(Boolean)
       // 批准记录来自评审任务；没有评审任务就等于没有批准，清单会是空的而不是全量打包。
@@ -272,14 +276,60 @@ export function createProductionWorkflowRouteHandler({
       const reviewTasks = (await Promise.all(runIds.map((agentRunId) => (
         productStore.listAgentReviewTasksForRun(user.id, projectId, agentRunId)
       )))).flat().filter(Boolean)
+      return { kind: 'ok', run, jobs, reviewTasks }
+    }
+
+    if (runManifestMatch) {
+      if (request.method !== 'GET') return json(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message: '交付清单只支持读取。' } }, { Allow: 'GET' })
+      const user = await requireUser(request)
+      const context = await loadDeliveryContext(user, decodeURIComponent(runManifestMatch[1]), decodeURIComponent(runManifestMatch[2]))
+      if (context.kind === 'error') return error(response, context.status, context.code, context.message)
       try {
         return json(response, 200, {
-          manifest: buildDeliveryManifest({ run, jobs, reviewTasks }),
+          manifest: buildDeliveryManifest({ run: context.run, jobs: context.jobs, reviewTasks: context.reviewTasks }),
         })
       } catch (caught) {
         // 文件名重复等清单级冲突是可修的输入问题，不是服务端异常。
         return error(response, 409, 'DELIVERY_MANIFEST_CONFLICT', caught instanceof Error ? caught.message : '交付清单无法生成。')
       }
+    }
+
+    if (runPackageMatch) {
+      if (request.method !== 'GET') return json(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message: '交付包只支持下载。' } }, { Allow: 'GET' })
+      const user = await requireUser(request)
+      const projectId = decodeURIComponent(runPackageMatch[1])
+      const context = await loadDeliveryContext(user, projectId, decodeURIComponent(runPackageMatch[2]))
+      if (context.kind === 'error') return error(response, context.status, context.code, context.message)
+      let deliveryPackage
+      try {
+        deliveryPackage = createDeliveryPackage({
+          run: context.run, jobs: context.jobs, reviewTasks: context.reviewTasks,
+          // 走带项目归属校验的读取口：不能借交付包把别的项目的媒体打包出去。
+          readMedia: (mediaId) => mediaService.readGenerationInput(user.id, mediaId, projectId),
+        })
+      } catch (caught) {
+        const code = caught?.code ?? 'DELIVERY_PACKAGE_FAILED'
+        return error(response, caught?.statusCode ?? 409, code, caught instanceof Error ? caught.message : '交付包无法生成。')
+      }
+      // 响应头在写第一个字节之前发出。之后再失败只能断流 —— 因此清单级问题
+      // （文件名冲突、无已批准候选）必须在上面就暴露出来。
+      response.writeHead(200, {
+        'Content-Type': 'application/zip',
+        'Content-Disposition': `attachment; filename="${deliveryPackage.fileName}"`,
+        'Cache-Control': 'no-store',
+        'X-Delivery-Manifest-Checksum': deliveryPackage.manifest.checksum,
+      })
+      try {
+        for await (const chunk of deliveryPackage.stream()) {
+          if (!response.write(chunk)) await new Promise((resolve) => response.once('drain', resolve))
+        }
+        response.end()
+      } catch (caught) {
+        // 已经开始写字节，改不了状态码。**销毁连接**而不是正常结束：正常结束会让
+        // 客户端拿到一个截断但「下载成功」的 zip，解压时才发现少东西。
+        response.destroy(caught instanceof Error ? caught : new Error('交付包写出失败。'))
+      }
+      return true
     }
     if (runMatch) {
       const user = await requireUser(request)

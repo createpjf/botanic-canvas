@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  MEMORY_SUBJECT_OPTIONS,
   memoryComparisonRows,
   memoryConflictPairs,
   memoryIneffectiveReason,
+  memorySubjectDescription,
+  memorySubjectLabel,
 } from './agentMemoryComparison.ts'
 import type { BotanicAgentMemoryItem } from './agent.ts'
 
@@ -73,4 +76,22 @@ test('历史记忆没有 status 时按 confidence 兼容判定', () => {
 test('空集合不炸', () => {
   assert.deepEqual(memoryComparisonRows([]), [])
   assert.deepEqual(memoryConflictPairs([]), [])
+})
+
+test('适用范围说明把「全项目」与「限定范围」分开说', () => {
+  // 限定范围的规则不会进入每一次生成；用户若以为它总是生效，就会在别的渠道下
+  // 疑惑「我明明写了这条规则」。
+  assert.equal(memorySubjectDescription({}), '本项目每一次生成都适用。')
+  assert.equal(memorySubjectDescription({ subject: 'project' }), '本项目每一次生成都适用。')
+  assert.equal(
+    memorySubjectDescription({ subject: 'channel', subjectValue: 'tmall' }),
+    '只在渠道为「tmall」时适用，其余生成不会带上它。',
+  )
+  assert.match(
+    memorySubjectDescription({ subject: 'user', subjectValue: 'u-1' }, 'en'),
+    /Only applies when just me is “u-1”\. It does not take part in other generations\./u,
+  )
+  assert.deepEqual([...MEMORY_SUBJECT_OPTIONS], ['project', 'brand', 'product', 'channel', 'user'])
+  assert.equal(memorySubjectLabel('channel'), '渠道')
+  assert.equal(memorySubjectLabel(undefined), '全项目')
 })

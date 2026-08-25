@@ -437,9 +437,23 @@ async function serializeRemoteMediaValue(value: unknown): Promise<unknown> {
   return next
 }
 
+/**
+ * 当前用户在各项目里的能力集合（Epic 10）。随项目读模型下发，界面据此隐藏点不动的入口。
+ *
+ * **隐藏不是鉴权** —— 服务端始终是唯一的鉴权边界；这里只是不给用户看他做不了的事。
+ */
+const projectCapabilityCache = new Map<string, string[]>()
+
+export function cachedProjectCapabilities(id: string) {
+  return projectCapabilityCache.get(id)
+}
+
 async function readRemoteCanvasDocument(id: string) {
   try {
-    const response = await productRequest<{ document: CanvasDocument; revision: number; graphRevision: number }>(`/api/projects/${encodeURIComponent(id)}/document`)
+    const response = await productRequest<{
+      document: CanvasDocument; revision: number; graphRevision: number; capabilities?: string[]
+    }>(`/api/projects/${encodeURIComponent(id)}/document`)
+    if (Array.isArray(response.capabilities)) projectCapabilityCache.set(id, response.capabilities)
     rememberRemoteDocument(id, response)
     return remoteDocuments.get(id) ?? response.document
   } catch (error) {
@@ -447,6 +461,7 @@ async function readRemoteCanvasDocument(id: string) {
       remoteRevisions.delete(id)
       remoteGraphRevisions.delete(id)
       remoteDocuments.delete(id)
+      projectCapabilityCache.delete(id)
       return undefined
     }
     throw error

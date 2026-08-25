@@ -292,16 +292,20 @@ export function createCanvasAgentActions({
       commitAgentSessionDocument({ ...document, activeAgentSessionId: sessionId })
     },
 
-    addAgentMemory: (kind, content, sourceNodeIds = []) => {
+    addAgentMemory: (kind, content, sourceNodeIds = [], options = {}) => {
       const document = get().document
       let memory
       try {
-        memory = createBotanicAgentMemoryItem({ kind, content, sourceNodeIds })
+        memory = createBotanicAgentMemoryItem({ kind, content, sourceNodeIds, ...options })
       } catch (caught) {
         set({ assistantMessage: caught instanceof Error ? caught.message : '项目记忆无法保存。' })
         return null
       }
-      const duplicate = document.agentMemory.find((item) => item.kind === memory.kind && item.content === memory.content)
+      // 同内容但适用范围不同不是重复：「天猫留白 20%」与「京东留白 20%」是两条规则。
+      const duplicate = document.agentMemory.find((item) => item.kind === memory.kind
+        && item.content === memory.content
+        && (item.subject ?? 'project') === (memory.subject ?? 'project')
+        && (item.subjectValue ?? '') === (memory.subjectValue ?? ''))
       if (duplicate) return duplicate.id
       void commitDocument({ ...document, agentMemory: [memory, ...document.agentMemory].slice(0, 30) })
       return memory.id

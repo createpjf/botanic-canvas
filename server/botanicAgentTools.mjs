@@ -4,6 +4,9 @@ import { createBotanicAgentOperationalActionDefinitions } from './botanicAgentOp
 import { botanicCreativeBriefFieldIds } from './botanicCreativeBrief.mjs'
 import { botanicAgentVariationClarificationFieldIds } from './botanicAgentVariations.mjs'
 import { createBotanicAgentWebResearchTools } from './botanicAgentWebTools.mjs'
+import { agentSkillManifestRisk, resolveAgentSkillDependencies, skillRiskOrder } from './botanicAgentSkill.mjs'
+import { createAgentSubtask } from './agentSubtask.mjs'
+import { runAgentSubtaskFanout, subtaskFanoutSummary } from './agentSubtaskScheduler.mjs'
 import { readFileSync } from 'node:fs'
 
 function readBuiltInSkill(relativePath) {
@@ -41,16 +44,32 @@ const skillCatalog = Object.freeze({
   },
 })
 
-const skillRiskOrder = ['read', 'write', 'costly', 'external']
-
-export function botanicAgentSkillRisk(skill) {
+/**
+ * Skill 的实际风险。
+ *
+ * 取「自称的能力」与「Manifest 白名单里的工具实际是什么风险」两者的**较高者**。
+ *
+ * 只按自称算的话，`capabilities` 是一句没人核对的话：一个项目 Skill 声明 `['read']`
+ * 就会被直接应用、不需要用户确认（见下方 `skill_run`）。取较高者之后，少报能力
+ * 不再能换来跳过确认。
+ *
+ * `riskOf` 由调用方从当前工具注册表提供；不给时退化为只按自称算 —— 那正是存量
+ * Skill（没有 Manifest）今天的行为，不能因为这次改动而变得更宽松或更严格。
+ *
+ * @param {any} skill
+ * @param {(name: string) => (string | undefined)} [riskOf]
+ */
+export function botanicAgentSkillRisk(skill, riskOf) {
   const capabilities = Array.isArray(skill?.capabilities) && skill.capabilities.length ? skill.capabilities : ['read']
-  return capabilities.reduce((risk, capability) => {
+  const declared = capabilities.reduce((risk, capability) => {
     // 历史数据里的未知能力按最高风险处理，不能因迁移缺字段而静默放行。
     const normalized = skillRiskOrder.includes(capability) ? capability : 'external'
     const current = skillRiskOrder.indexOf(normalized)
     return current > skillRiskOrder.indexOf(risk) ? normalized : risk
   }, 'read')
+  if (!skill?.manifest?.toolAllowlist?.length) return declared
+  const actual = agentSkillManifestRisk(skill.manifest, riskOf)
+  return skillRiskOrder.indexOf(actual) > skillRiskOrder.indexOf(declared) ? actual : declared
 }
 
 /**
@@ -96,6 +115,8 @@ function projectSkillEntries(projectSkills = []) {
       ...(Number.isInteger(skill.version) ? { version: skill.version } : {}),
       ...(typeof skill.contentHash === 'string' ? { contentHash: skill.contentHash } : {}),
       capabilities: Array.isArray(skill.capabilities) ? skill.capabilities.slice(0, 12) : ['read'],
+      // Manifest 要跟着进目录：`skill_run` 算风险时读它，不带过来就等于没有 Manifest。
+      ...(skill.manifest ? { manifest: skill.manifest } : {}),
     }])
 }
 
@@ -104,20 +125,35 @@ export function resolveBotanicAgentAvailableSkills(projectSkills = []) {
   return { ...skillCatalog, ...Object.fromEntries(projectSkillEntries(projectSkills)) }
 }
 
-/** Composer 挂载的 Skill：解析成带正文的列表，未知 id 直接丢掉。 */
+/**
+ * Composer 挂载的 Skill：解析成带正文的列表，未知 id 直接丢掉。
+ *
+ * 依赖不可用的 Skill **仍然挂载，但带上 `dependencyIssues`**（Epic 6 Manifest 的依赖项）。
+ * 两种更简单的做法都不对：静默丢掉会让用户以为自己挂的规则在生效；静默照用会让
+ * Agent 拿着少了半截的约束去创作，而两边都不知道少了什么。带标记挂载之后，
+ * 简报会明说哪一条依赖不可用（见 `botanicAgentMountedSkillBriefing`）。
+ */
 export function resolveBotanicAgentMountedSkills(mountedSkillIds = [], projectSkills = []) {
   const available = resolveBotanicAgentAvailableSkills(projectSkills)
+  // `resolveAgentSkillDependencies` 按 id 查目录，因此这里摊成带 id 的数组。
+  // 内置 Skill 没有 lifecycle，按已发布处理 —— 它们随代码发布，不存在「未批准」。
+  const catalog = Object.entries(available).map(([id, skill]) => ({
+    id, lifecycle: skill.source === 'project' ? undefined : 'published',
+    status: 'active', manifest: skill.manifest, versions: skill.version ? [{ version: skill.version }] : [],
+  }))
   return [...new Set(Array.isArray(mountedSkillIds) ? mountedSkillIds : [])]
     .map((skillId) => {
       const skill = available[skillId]
-      return skill
-        ? {
-          id: skillId, name: skill.label, instructions: skill.instructions, source: skill.source ?? 'system',
-          ...(skill.version ? { version: skill.version } : {}),
-          ...(skill.contentHash ? { contentHash: skill.contentHash } : {}),
-          ...(skill.capabilities ? { capabilities: skill.capabilities } : {}),
-        }
-        : undefined
+      if (!skill) return undefined
+      const dependencies = resolveAgentSkillDependencies({ id: skillId, manifest: skill.manifest }, catalog)
+      return {
+        id: skillId, name: skill.label, instructions: skill.instructions, source: skill.source ?? 'system',
+        ...(skill.version ? { version: skill.version } : {}),
+        ...(skill.contentHash ? { contentHash: skill.contentHash } : {}),
+        ...(skill.capabilities ? { capabilities: skill.capabilities } : {}),
+        ...(skill.manifest ? { manifest: skill.manifest } : {}),
+        ...(dependencies.ok ? {} : { dependencyIssues: dependencies }),
+      }
     })
     .filter(Boolean)
     .slice(0, 8)
@@ -147,7 +183,19 @@ export function botanicAgentMountedSkillBriefing(mountedSkills = [], locale = 'z
   const blocks = mountedSkills.map((skill) => {
     const name = typeof skill.name === 'string' ? skill.name.trim() : skill.id
     const body = typeof skill.instructions === 'string' ? skill.instructions.trim().slice(0, 2000) : ''
-    return `### ${name} (${skill.id})\n${body}`
+    // 依赖不可用要**明说**：不说的话 Agent 会拿着少了半截的约束照常创作，
+    // 而用户以为整套规则都在生效。
+    const broken = [
+      ...(skill.dependencyIssues?.missing ?? []),
+      ...(skill.dependencyIssues?.unusable ?? []),
+      ...(skill.dependencyIssues?.cyclic ?? []),
+    ]
+    const warning = broken.length
+      ? (english
+        ? `\n\n> Incomplete: this Skill depends on ${broken.join(', ')}, which is unavailable. Follow what is written here, and tell the user the ruleset is incomplete rather than filling the gap yourself.`
+        : `\n\n> 这条 Skill 依赖 ${broken.join('、')}，当前不可用，规则并不完整。按这里写到的执行，并如实告诉用户缺了哪一条，不要自行补足。`)
+      : ''
+    return `### ${name} (${skill.id})\n${body}${warning}`
   })
   return [header, ...blocks].join('\n\n')
 }
@@ -308,7 +356,33 @@ function clarificationParameters() {
   }
 }
 
-export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, finalizeClarification, onProposeAction, webResearch }) {
+/**
+ * 子任务的输出 Schema（Epic 11）。
+ *
+ * 刻意保守：只要摘要、要点与置信度。子 Agent 的产出是给主 Agent 参考的，字段越多
+ * 越容易出现「看起来很详实、其实是编的」——而主 Agent 无从分辨。
+ */
+/**
+ * 允许从规划链路并行派发的角色。
+ *
+ * 是 `SUBAGENT_ROLES` 的**子集**：审阅类角色（prompt/visual/compliance）需要具体的
+ * 待审对象，规划阶段还没有，派出去只会得到一份凭空发挥的结论。
+ */
+const SUBAGENT_PARALLEL_ROLES = Object.freeze([
+  'brand_research', 'audience_research', 'competitor_research', 'creative_direction',
+])
+
+const SUBAGENT_RESEARCH_SCHEMA = Object.freeze({
+  type: 'object',
+  required: ['summary'],
+  properties: {
+    summary: { type: 'string', maxLength: 600 },
+    findings: { type: 'array', maxItems: 5, items: { type: 'string', maxLength: 200 } },
+    confidence: { type: 'string', enum: ['low', 'medium', 'high'] },
+  },
+})
+
+export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, finalizeClarification, onProposeAction, webResearch, subagentRunner }) {
   if (!input || typeof finalizePlan !== 'function' || typeof finalizeClarification !== 'function') throw new TypeError('Agent 规划工具缺少可信上下文。')
   const availableSkills = resolveBotanicAgentAvailableSkills(input.projectSkills)
   const mountedSkillLabels = resolveBotanicAgentMountedSkills(input.mountedSkillIds, input.projectSkills)
@@ -318,6 +392,7 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
     .slice(0, 30)
   const mcpToolKeys = new Set(availableMcpTools.map((item) => `${item.server}.${item.tool}`))
   const propose = typeof onProposeAction === 'function' ? onProposeAction : () => {}
+  const planningRegistryRef = { current: undefined }
   const tools = [
     {
       name: 'canvas_read',
@@ -372,7 +447,9 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
       },
       execute: async ({ skillId }, context) => {
         const skill = availableSkills[skillId]
-        const risk = botanicAgentSkillRisk(skill)
+        // 风险按**当前注册表**里工具的真实声明算，不只按 Skill 自称的能力。
+        // 查不到的工具名在 agentSkillManifestRisk 里按最高风险处理。
+        const risk = botanicAgentSkillRisk(skill, (name) => planningRegistryRef.current?.get?.(name)?.risk)
         if (risk !== 'read') {
           propose({
             id: context?.toolCallId ?? `skill-${skillId}`,
@@ -476,6 +553,82 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
         return { proposed: true, actionId: proposal.id, tool: `${server}.${tool}` }
       },
     }] : []),
+    ...(typeof subagentRunner === 'function' ? [{
+      name: 'subagent_research',
+      label: '并行调研',
+      description: `就 2–3 个不同角度并行做一次只读调研，返回结构化提案供你参考。可用角色：${SUBAGENT_PARALLEL_ROLES.join('、')}。子任务无权修改画布、提交生成或调用外部系统；它们的结论只是建议，最终仍由你和用户决定。`,
+      risk: 'read',
+      parameters: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          tasks: {
+            type: 'array', maxItems: 3,
+            items: {
+              type: 'object', additionalProperties: false,
+              properties: {
+                role: { type: 'string', enum: [...SUBAGENT_PARALLEL_ROLES] },
+                question: { type: 'string', maxLength: 400 },
+              },
+              required: ['role', 'question'],
+            },
+          },
+        },
+        required: ['tasks'],
+      },
+      validate: (raw) => {
+        const value = object(raw, '并行调研')
+        const tasks = Array.isArray(value.tasks) ? value.tasks : []
+        if (!tasks.length || tasks.length > 3) {
+          // 上限压得比 SUBAGENT_LIMITS 更低：这条路径不需要用户确认，因此单次能花出去
+          // 的钱必须小。真要更大的扇出，应当走一次显式确认的编排，而不是从这里放宽。
+          throw new AgentToolRuntimeError('INVALID_TOOL_ARGUMENTS', '并行调研一次最多 3 个角度。')
+        }
+        return {
+          tasks: tasks.map((task, index) => {
+            const item = object(task, `第 ${index + 1} 个调研角度`)
+            if (!SUBAGENT_PARALLEL_ROLES.includes(item.role)) {
+              throw new AgentToolRuntimeError('INVALID_TOOL_ARGUMENTS', `第 ${index + 1} 个调研角度的角色无效。`)
+            }
+            return { role: item.role, question: requiredText(item.question, `第 ${index + 1} 个调研问题`, 400) }
+          }),
+        }
+      },
+      execute: async ({ tasks }, context) => {
+        const registry = planningRegistryRef.current
+        // web_search 是外呼但只读、根 Agent 调用时也不需要确认的工具，因此子任务可以
+        // 持有它；没配置联网时退回只读画布，调研仍能进行但会明说依据有限。
+        const allowedTools = registry?.get?.('web_search') ? ['web_search'] : ['canvas_read']
+        const subtasks = tasks.map((task) => createAgentSubtask({
+          parentTurnId: context?.traceId ?? context?.toolCallId ?? `plan-${input.projectId}`,
+          projectId: input.projectId,
+          ownerId: context?.userId ?? input.projectId,
+          role: task.role,
+          input: { question: task.question, projectId: input.projectId },
+          // 需要用户确认或会产生终态的工具会被 assertSubtaskToolAllowlist 拒绝，
+          // 因此这份名单写错了会在创建时就失败，而不是运行到一半才发现越权。
+          allowedTools,
+          outputSchema: SUBAGENT_RESEARCH_SCHEMA,
+          registry,
+          budget: { maxSteps: 1, maxToolCalls: 2 },
+          timeoutMs: 45_000,
+        }))
+        const outcome = await runAgentSubtaskFanout({
+          subtasks, registry, context, runSubagent: subagentRunner, maxConcurrent: 3,
+        })
+        return {
+          // 终止数与完成数并列：只报「拿到 3 份提案」会让主 Agent 在残缺输入上下结论。
+          summary: subtaskFanoutSummary(outcome),
+          proposals: outcome.completed.map((subtask) => ({
+            role: subtask.role,
+            subtaskId: subtask.id,
+            ...subtask.result.output,
+          })),
+          stopped: outcome.terminated.map((subtask) => ({
+            role: subtask.role, reason: subtask.termination?.reason, detail: subtask.termination?.detail,
+          })),
+        }
+      },
+    }] : []),
     {
       name: 'generation_ask_clarification',
       label: '确认生成参数',
@@ -512,7 +665,12 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
       execute: async (plan) => plan,
     },
   ]
-  return createAgentToolRegistry(tools)
+  // 派发工具需要引用**它自己所在的**注册表，才能把只读检索工具授予子任务。
+  // 注册表要等 tools 数组建好才能创建，因此用一个持有者在创建后回填 —— 比让调用方
+  // 再传一份注册表进来更安全：传进来的那份可能与实际生效的不是同一个。
+  const registry = createAgentToolRegistry(tools)
+  planningRegistryRef.current = registry
+  return registry
 }
 
 function actionHandler(handler, name) {

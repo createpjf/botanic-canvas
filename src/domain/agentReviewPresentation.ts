@@ -20,6 +20,12 @@ export type AgentReviewCriterion = {
   layer?: 'deterministic' | 'model' | 'human'
   verdict?: AgentReviewVerdict
   evidence?: string
+  /** 品牌判据的溯源（Epic 9.1）。 */
+  brandRuleId?: string
+  brandLayer?: string
+  /** 自定义判据（evaluator Skill）的溯源：**必须带版本**，Skill 版本不可变。 */
+  skillId?: string
+  skillVersion?: number
 }
 
 export type AgentReviewCandidate = {
@@ -36,6 +42,12 @@ export type AgentReviewTaskSnapshot = {
   status: 'queued' | 'running' | 'completed' | 'failed'
   qualityPolicyFingerprint?: string
   planFingerprint?: string
+  qualityPolicy?: {
+    requiredCriteria?: string[]
+    brandCriteria?: Array<{ id: string }>
+    /** 项目自定义判据。每条都乘以候选数，因此成本必须能提前算出来。 */
+    evaluatorSkills?: Array<{ id: string; skillId: string; version: number; name?: string }>
+  }
   error?: { code: string; message?: string }
   coverage?: {
     strategy?: string
@@ -68,6 +80,30 @@ const decisionLabels: Record<AgentReviewDecision, Record<ProductLocale, string>>
 
 export function agentReviewVerdictLabel(verdict: AgentReviewVerdict | undefined, locale: ProductLocale = 'zh-CN') {
   return verdictLabels[verdict ?? 'unverifiable'][locale]
+}
+
+/**
+ * 自定义判据的成本提示。
+ *
+ * **必须在评审开始前就能显示**：评审完再说已经晚了，钱已经花掉。用户加了 3 条判据
+ * 却不知道费用翻了 3 倍，是这个功能最容易造成的伤害。
+ */
+export function agentReviewEvaluatorCostNote(
+  task: AgentReviewTaskSnapshot | undefined,
+  locale: ProductLocale = 'zh-CN',
+) {
+  const criteria = task?.qualityPolicy?.evaluatorSkills?.length ?? 0
+  if (!criteria) return ''
+  const candidates = Number(task?.coverage?.reviewedCandidates ?? 0)
+  const calls = criteria * candidates
+  return locale === 'en'
+    ? `${criteria} project-defined criteria × ${candidates} candidates = ${calls} extra model call(s).`
+    : `${criteria} 条自定义判据 × ${candidates} 个候选 = 额外 ${calls} 次模型调用。`
+}
+
+/** 一条判据是不是项目自定义的。自定义与内置必须分开展示：来源不同、可信度也不同。 */
+export function isEvaluatorCriterion(criterion: { id?: string }) {
+  return typeof criterion?.id === 'string' && criterion.id.startsWith('skill.')
 }
 
 export function agentReviewLayerLabel(layer: string | undefined, locale: ProductLocale = 'zh-CN') {
@@ -118,7 +154,11 @@ export type AgentReviewCandidateRow = {
   decision?: AgentReviewDecision
   decisionLabel?: string
   awaitingHuman: boolean
-  criteria: Array<{ id: string; layer: string; layerLabel: string; verdict: AgentReviewVerdict; verdictLabel: string; evidence: string }>
+  criteria: Array<{
+    id: string; layer: string; layerLabel: string; verdict: AgentReviewVerdict; verdictLabel: string; evidence: string
+    /** 自定义判据的来源 Skill 与版本；内置判据没有。 */
+    skillId?: string; skillVersion?: number
+  }>
   /** 未被验证的判据数。单独给出来，不混进「不符合」。 */
   unverifiedCount: number
   revisionSuggestion?: string
@@ -151,6 +191,8 @@ export function agentReviewCandidateRows(
         verdict: criterionVerdict,
         verdictLabel: agentReviewVerdictLabel(criterionVerdict, locale),
         evidence: item.evidence ?? '',
+        // Skill 版本不可变，历史评审必须说得清当时按哪一版判的。
+        ...(item.skillId ? { skillId: item.skillId, skillVersion: item.skillVersion } : {}),
       }
     })
     return {

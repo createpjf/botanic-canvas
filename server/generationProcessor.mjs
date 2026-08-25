@@ -353,7 +353,24 @@ export function createGenerationProcessor({
       }
       console.info(`[generation] ${jobId} provider completed (${result.outputs.length} output(s))`)
       const latest = await productStore.readGenerationJobForWorker(jobId)
-      if (!latest || latest.status === 'cancelled' || latest.status === 'failed') return
+      if (!latest || latest.status === 'cancelled' || latest.status === 'failed') {
+        // 结果**迟到**了：任务已经被取消或被超时扫描判失败，而 Provider 这边刚成功。
+        //
+        // 仍然不改写终态 —— 取消与超时都是对用户做过的承诺，事后翻案会让「我点了取消」
+        // 变成一件不确定的事。但**必须留下记录**：这里丢掉的是一张已经付过费的图，
+        // 静默 return 之后没有任何地方能看出它存在过，运维也无从判断超时阈值是不是设短了。
+        observeRun(latest ?? running, {
+          type: 'worker_discarded_late_result',
+          status: latest?.status ?? 'missing',
+          outputCount: result.outputs.length,
+          durationMs: Math.max(0, Date.now() - (latest?.createdAt ?? running.createdAt)),
+        })
+        console.warn(
+          `[generation] ${jobId} 结果迟到被丢弃：任务已是 ${latest?.status ?? '不存在'}，`
+          + `但 Provider 成功返回了 ${result.outputs.length} 个输出（已产生费用）。`,
+        )
+        return
+      }
       const completed = {
         ...latest,
         status: 'succeeded',

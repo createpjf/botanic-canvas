@@ -1,3 +1,4 @@
+import { MEMORY_SUBJECTS } from './botanicAgentMemory.mjs'
 import { createHash } from 'node:crypto'
 
 const SESSION_LIMIT = 80
@@ -370,6 +371,21 @@ export function validateAgentMemoryEntity(value, { now = Date.now() } = {}) {
   const id = text(memory.id, 'Agent 记忆标识', 160)
   const conflictsWith = uniqueTextList(memory.conflictsWith, 'Agent 记忆冲突关系', 12)
   if (conflictsWith.includes(id)) invalid('Agent 记忆不能与自身冲突。')
+  // 适用主体（Epic 6 §8.6）。与 `scope` 是两个轴：scope 是包含范围、影响排序；
+  // subject 是适用条件、决定这条规则参不参与某一次生成。
+  const subject = memory.subject === undefined ? 'project' : memory.subject
+  if (!MEMORY_SUBJECTS.includes(subject)) invalid('Agent 记忆适用主体无效。')
+  // 限定了主体却不给取值，规则是残缺的：它永远不会匹配任何一次执行，
+  // 而用户以为自己存了一条生效的规则。写入时就拒绝，不留到读取时才发现。
+  const subjectValue = memory.subjectValue === undefined
+    ? undefined
+    : text(memory.subjectValue, 'Agent 记忆适用取值', 160)
+  if (subject !== 'project' && !subjectValue) invalid('限定适用主体的 Agent 记忆必须指定具体取值。')
+  if (subject === 'project' && subjectValue) invalid('全项目生效的 Agent 记忆不应指定适用取值。')
+  const confidenceScore = memory.confidenceScore === undefined ? undefined : Number(memory.confidenceScore)
+  if (confidenceScore !== undefined && (!Number.isFinite(confidenceScore) || confidenceScore < 0 || confidenceScore > 1)) {
+    invalid('Agent 记忆可信程度必须是 0 到 1 之间的数值。')
+  }
   return {
     id,
     kind: memory.kind,
@@ -381,6 +397,8 @@ export function validateAgentMemoryEntity(value, { now = Date.now() } = {}) {
     source,
     confidence,
     status,
+    ...(subject !== 'project' ? { subject, subjectValue } : {}),
+    ...(confidenceScore === undefined ? {} : { confidenceScore }),
     ...(evidence.length ? { evidence } : {}),
     ...(conflictsWith.length ? { conflictsWith } : {}),
     ...(supersededBy ? { supersededBy } : {}),

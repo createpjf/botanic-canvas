@@ -70,16 +70,26 @@ test('项目 Skill 创建后可跨重启恢复且不会泄露到其他项目', (
     name: '夏日场景系列',
     instructions: '锁定人物和服装，只替换场景与环境光线。',
     status: 'active',
+    capabilities: ['read'],
+    manifest: { version: 1, toolAllowlist: ['canvas_read'], dependencies: [{ skillId: 'controlled_edit' }] },
     createdAt: 100,
     updatedAt: 100,
   })
 
   assert.equal(created.name, '夏日场景系列')
+  // Manifest 必须真的落库：它决定 skill_run 要不要弹用户确认。字段在持久化边界上被
+  // 悄悄丢掉的话，单元测试仍然全绿，而线上会退回「只按自称算风险」。
+  assert.deepEqual(created.manifest.toolAllowlist, ['canvas_read'])
   assert.deepEqual(store.listAgentSkills(owner.id, 'project-skill-a').map((skill) => skill.id), ['skill-scene-campaign'])
   assert.deepEqual(store.listAgentSkills(owner.id, 'project-skill-b'), [])
 
   const reloaded = createProductStore({ dataPath: path, bootstrapAccessToken: 'owner-token' })
   assert.equal(reloaded.listAgentSkills(owner.id, 'project-skill-a')[0]?.instructions, '锁定人物和服装，只替换场景与环境光线。')
+  assert.deepEqual(
+    reloaded.listAgentSkills(owner.id, 'project-skill-a')[0]?.manifest?.dependencies,
+    [{ skillId: 'controlled_edit' }],
+    'Manifest 跨重启仍在',
+  )
   assert.ok(reloaded.listAuditEvents(owner.id, 'project-skill-a').some((event) => event.action === 'agent-skill.created'))
 })
 

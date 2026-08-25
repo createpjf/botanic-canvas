@@ -2,6 +2,7 @@ import { AgentToolRuntimeError } from './agentToolRuntime.mjs'
 import { botanicAgentBranchGenerationPrompt } from './botanicAgentVariations.mjs'
 import { compositionOverlayReferences, orderCompositionReferences } from './generationComposition.mjs'
 import { compileCreativePlan, creativePlanHash } from './botanicCreativePlanCompiler.mjs'
+import { resolveBrandKit } from './brandKit.mjs'
 
 /**
  * Resolve 阶段（ADR 0005）。这是唯一读取权威状态的一侧：它按项目权威文档与运行时
@@ -145,6 +146,40 @@ export function resolveBranchBaseRecipe(run, document, parentNode, branch, resol
   return withBranchAsset(refinementReferences(run, document), run, document, branch)
 }
 
+/**
+ * 解析这一次 Run 生效的品牌规则（Epic 9.1）。
+ *
+ * 放在 Resolve 而不是 Compile：三层输入分别来自工作区全局套件、项目权威文档与
+ * 本次计划，都是**权威状态**，而 Compile 必须保持纯函数（ADR 0005）。
+ *
+ * 项目没有绑定品牌时返回 `undefined`，编译退回今天的行为 —— 不给未绑定品牌的项目
+ * 凭空套一份「默认品牌」，那等于声称用户选过它。
+ *
+ * @param {{ run?: any, document?: any, globalBrandKit?: any }} input
+ */
+export function resolveRunBrandKit({ run, document, globalBrandKit } = {}) {
+  const brandId = document?.brandId
+  if (typeof brandId !== 'string' || !brandId.trim()) return undefined
+  const globalKit = globalBrandKit?.brandId === brandId ? globalBrandKit : undefined
+  try {
+    const resolved = resolveBrandKit({
+      brandId: brandId.trim(),
+      global: globalKit,
+      project: document?.brandKit,
+      run: run?.plan?.brandKitOverride,
+    })
+    return resolved.rules.length ? resolved : undefined
+  } catch (caught) {
+    // 品牌配置错误必须在执行前阻断并说清是哪一层错了。放行等于按一套残缺的品牌规则
+    // 生成，而用户以为规则生效了 —— 这正是 Brand Kit 要解决的问题本身。
+    throw resolveError(
+      /** @type {any} */ (caught)?.code ?? 'BRAND_KIT_UNRESOLVABLE',
+      caught instanceof Error ? caught.message : '品牌规则无法解析。',
+      /** @type {any} */ (caught)?.statusCode ?? 409,
+    )
+  }
+}
+
 export function normalizeResolverModels(models) {
   return (models ?? []).map((model) => typeof model === 'string'
     ? { id: model, provider: 'openai', mediaKind: 'image' }
@@ -229,9 +264,10 @@ export function resolveCreativePlan({ run, document, models }) {
  * 保存它的意义是重试与恢复不再重新 Resolve：模型目录、Memory、Skill 之后改了，
  * 历史 Run 重试仍按当时确认的语义执行。
  */
-export function compileRunCreativePlan({ run, document, models, locale = 'zh-CN', now = Date.now() }) {
+export function compileRunCreativePlan({ run, document, models, globalBrandKit, projectSkills, locale = 'zh-CN', now = Date.now() }) {
   const resolved = resolveCreativePlan({ run, document, models })
   if (!resolved.branches.length) throw resolveError('AGENT_PLAN_NOT_COMPILABLE', 'Agent 计划没有可编译的分支。')
+  const brandKit = resolveRunBrandKit({ run, document, globalBrandKit })
   // 整次确认的指纹在这里算一次，再传给每一支。
   //
   // 不能让 Compiler 自己算：它一次只看一支，算出来的「plan 级」仍会随本支的参考与
@@ -272,6 +308,8 @@ export function compileRunCreativePlan({ run, document, models, locale = 'zh-CN'
     })),
     memoryBindings: run.plan?.memoryBindings,
     skillBindings: run.plan?.skillBindings,
+    // 品牌规则是「用户确认了什么」的一部分：换一套品牌重跑不是同一次确认。
+    brandKit: brandKit?.fingerprint,
   })
   const branches = resolved.branches.map(({ branch, recipe, isVideo }) => {
     const { compiled } = compileCreativePlan({
@@ -283,6 +321,9 @@ export function compileRunCreativePlan({ run, document, models, locale = 'zh-CN'
       models: resolved.models,
       memoryBindings: run.plan.memoryBindings,
       skillBindings: run.plan.skillBindings,
+      brandKit,
+      // 自定义评审判据在确认时固定：之后新发布的 Skill 不回头评判已跑完的 Run。
+      evaluatorSkills: projectSkills,
       locale,
       planFingerprint,
     })
@@ -296,6 +337,9 @@ export function compileRunCreativePlan({ run, document, models, locale = 'zh-CN'
     planFingerprint,
     compiledAt: now,
     locale,
+    // 生效的品牌规则随快照存下来（含每条的来源与它压住了谁）。快照必须自洽：
+    // 重试与恢复只读它，不重新解析 —— 品牌规则事后改了，历史 Run 重试仍按当时的执行。
+    ...(brandKit ? { brandKit } : {}),
     branches,
   }
 }

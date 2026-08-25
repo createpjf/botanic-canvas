@@ -29,12 +29,28 @@ function optionalBudget(value) {
 export function loadLocalEnv(rootDir = process.cwd()) {
   const envPath = resolve(rootDir, '.env')
   if (!existsSync(envPath)) return
+  // 同一个键在 .env 里出现多次时，**先出现的胜出**（下面遇到已设置的就跳过）。
+  // 这与 shell 的直觉相反，而且完全静默 —— 往文件末尾追加一份新配置的人会看到
+  // 「我改了但没生效」，且没有任何线索。实测踩过：追加了本地 DATABASE_URL，
+  // 上面那行 Neon 的仍然生效，本地库一张表都没建。至少要报出来。
+  const seen = new Set()
+  const duplicates = new Set()
   for (const rawLine of readFileSync(envPath, 'utf8').split(/\r?\n/)) {
     const line = rawLine.trim()
     if (!line || line.startsWith('#')) continue
     const match = line.match(/^([A-Z][A-Z0-9_]*)=(.*)$/)
-    if (!match || process.env[match[1]]) continue
+    if (match) {
+      if (seen.has(match[1])) duplicates.add(match[1])
+      seen.add(match[1])
+    }
+    // 已显式设置的变量不被 .env 覆盖，**包括显式设成空串**：`FOO= node ...` 的意思是
+    // 「这次不要 FOO」，而不是「请从 .env 里补一个」。此前用真值判断，空串会被当成
+    // 没设过，于是没有任何办法在不改文件的前提下临时关掉某个配置。
+    if (!match || process.env[match[1]] !== undefined) continue
     process.env[match[1]] = match[2].trim().replace(/^("|')(.*)\1$/, '$2')
+  }
+  for (const key of duplicates) {
+    console.warn(`[env] .env 里 ${key} 出现多次，**以最先出现的那行为准**；后面的被忽略。`)
   }
 }
 
@@ -97,6 +113,10 @@ export function runtimeConfig(rootDir = process.cwd()) {
     flockAgentModels,
     // 看图走同一个 Flock 网关；置空即关闭视觉识别，Agent 回到只有节点元数据的状态。
     agentVisionModel: (process.env.AGENT_VISION_MODEL ?? 'gemini-3.6-flash').trim(),
+    // 子 Agent 并行调研（Epic 11）。**默认关闭**：一次派发会额外产生 2–3 次模型调用，
+    // 而这条路径不需要用户逐次确认。要开就得明确指定一个模型，不从主模型隐式继承 ——
+    // 隐式继承意味着任何一次配置调整都可能在无人察觉时把它打开。
+    agentSubagentModel: (process.env.AGENT_SUBAGENT_MODEL ?? '').trim(),
     agentRawReasoning,
     agentFeatureFlags: resolveAgentFeatureFlags(process.env),
     // 升级期灰度闸门。与上一行的 kill switch 语义相反：默认全关，支持按项目/用户放量。

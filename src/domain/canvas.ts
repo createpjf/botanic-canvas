@@ -457,6 +457,36 @@ export type DeliveryArtifact = {
   createdAt: number
 }
 
+/**
+ * 品牌规则（Epic 9.1）。三层共用同一形状：全局品牌套件、项目 Creative Spec、
+ * 单次 Run 覆盖。`facet` + `key` 是**槽位**，高层同槽位覆盖低层。
+ *
+ * 服务端 `server/brandKit.mjs` 是校验与解析的权威实现；这里只是传输与展示的形状。
+ */
+export type BrandRule = {
+  id: string
+  facet: 'logo' | 'color' | 'typography' | 'tone' | 'photography' | 'layout' | 'prohibition'
+  /** 槽位名，缺省 `default`。同层同槽位重复是错误，不是去重。 */
+  key?: string
+  statement: string
+  /** `must` 不满足即品牌 QA 判不合格；`should` 不满足只记让步。禁用规则恒为 `must`。 */
+  enforcement?: 'must' | 'should'
+  /** `proposed` 不进入任何一次生成，必须人工确认后才变 `active`。 */
+  status?: 'proposed' | 'active' | 'retired'
+  source?: 'human' | 'document_import'
+  /** 出处，例如品牌手册页码。 */
+  sourceRef?: string
+  confirmedBy?: string
+  confirmedAt?: number
+}
+
+export type ProjectBrandKit = {
+  brandId: string
+  name?: string
+  rules: BrandRule[]
+  updatedAt?: number
+}
+
 export type ProductionWorkflowDefinition = {
   prompt: string
   model: string
@@ -561,6 +591,13 @@ export type CanvasDocument = {
   agentSessions: BotanicAgentSession[]
   /** 当前项目批准的创作规则、视觉方向与禁用项；不会跨项目自动共享。 */
   agentMemory: BotanicAgentMemoryItem[]
+  /**
+   * 项目绑定的品牌。**缺省表示未绑定**，品牌规则完全不参与生成 —— 不给没选过品牌的
+   * 项目套一份「默认品牌」，那等于替用户做了他没做过的决定。
+   */
+  brandId?: string
+  /** 项目级 Creative Spec：在全局品牌之上的项目覆盖层（Epic 9.1）。 */
+  brandKit?: ProjectBrandKit
   /** 生产工作流是项目级版本目录；生成任务与 Artifact 仍是执行结果权威。 */
   productionWorkflows?: ProductionWorkflow[]
   productionWorkflowRuns?: ProductionWorkflowRun[]

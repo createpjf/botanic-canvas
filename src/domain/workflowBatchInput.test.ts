@@ -2,7 +2,13 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   WORKFLOW_BATCH_FIELDS,
+  addWorkflowBatchRow,
+  canSubmitWorkflowBatch,
   parseWorkflowBatchCsv,
+  removeWorkflowBatchRow,
+  updateWorkflowBatchCell,
+  validateWorkflowBatchItems,
+  workflowBatchColumns,
   workflowBatchImportSummary,
 } from './workflowBatchInput.ts'
 
@@ -86,4 +92,57 @@ test('空输入与超限都不炸', () => {
   assert.deepEqual(parseWorkflowBatchCsv(undefined as unknown as string).items, [])
   const many = ['sku', ...Array.from({ length: 30 }, (_, index) => `SKU-${index}`)].join('\n')
   assert.equal(parseWorkflowBatchCsv(many, { limit: 10 }).items.length, 10)
+})
+
+test('表格列固定字段在前，变量列按出现顺序跟随', () => {
+  const items = [{ sku: 'A', variables: { 产品名: '香水' } }, { sku: 'B', variables: { season: '夏' } }]
+  const columns = workflowBatchColumns(items, ['产品名'])
+  assert.deepEqual(columns.fields, ['sku', 'channel', 'language', 'aspectRatio', 'copy', 'assetGroupId'])
+  assert.deepEqual(columns.variables, ['产品名', 'season'])
+})
+
+test('清空单元格删除该键，不留空串', () => {
+  // 空串会被当成「声明了这个字段且值为空」，进而生成 {{sku}} 插值出空白的 Prompt。
+  const items = [{ sku: 'A', channel: 'tmall' }]
+  const cleared = updateWorkflowBatchCell(items, 0, { kind: 'field', name: 'channel' }, '  ')
+  assert.deepEqual(cleared[0], { sku: 'A' })
+  assert.equal('channel' in cleared[0], false)
+  // 变量同理，清空最后一个变量时连 variables 一起去掉。
+  const withVariable = updateWorkflowBatchCell(items, 0, { kind: 'variable', name: '产品名' }, '香水')
+  assert.deepEqual(withVariable[0].variables, { 产品名: '香水' })
+  assert.equal('variables' in updateWorkflowBatchCell(withVariable, 0, { kind: 'variable', name: '产品名' }, ''), false)
+  // 不改其他行。
+  assert.equal(updateWorkflowBatchCell([{ sku: 'A' }, { sku: 'B' }], 0, { kind: 'field', name: 'sku' }, 'X')[1].sku, 'B')
+})
+
+test('编辑出重复标识时立刻报出来，并指向先出现的那一行', () => {
+  // 等到提交才发现就晚了：那时钱已经花出去了。
+  const issues = validateWorkflowBatchItems([
+    { sku: 'A', channel: 'tmall' },
+    { sku: 'B', channel: 'tmall' },
+    { sku: 'A', channel: 'tmall' },
+  ])
+  assert.equal(issues.length, 1)
+  assert.equal(issues[0].index, 2)
+  assert.equal(issues[0].code, 'duplicate_id')
+  assert.match(issues[0].detail, /与第 1 行重复/u)
+  assert.match(issues[0].detail, /重复标识会让失败重试打到别的行上/u)
+  // 渠道不同就不是同一项。
+  assert.deepEqual(validateWorkflowBatchItems([{ sku: 'A', channel: 'tmall' }, { sku: 'A', channel: 'jd' }]), [])
+})
+
+test('空行报出来但不校验「字段是否都填了」', () => {
+  // 批量项本来就允许只给部分字段，其余走工作流版本里的默认值。
+  assert.deepEqual(validateWorkflowBatchItems([{ sku: 'A' }]), [])
+  assert.deepEqual(validateWorkflowBatchItems([{ variables: {} }]).map((issue) => issue.code), ['empty_row'])
+  assert.deepEqual(validateWorkflowBatchItems([{}]).map((issue) => issue.code), ['empty_row'])
+})
+
+test('增删行与提交闸门', () => {
+  assert.equal(addWorkflowBatchRow([{ sku: 'A' }]).length, 2)
+  assert.equal(addWorkflowBatchRow(Array.from({ length: 200 }, () => ({})), { limit: 200 }).length, 200)
+  assert.deepEqual(removeWorkflowBatchRow([{ sku: 'A' }, { sku: 'B' }], 0), [{ sku: 'B' }])
+  assert.equal(canSubmitWorkflowBatch([{ sku: 'A' }]), true)
+  assert.equal(canSubmitWorkflowBatch([]), false, '一行都没有时不能提交')
+  assert.equal(canSubmitWorkflowBatch([{ sku: 'A' }, { sku: 'A' }]), false, '有重复标识时不能提交')
 })

@@ -108,3 +108,39 @@ export function memoryIneffectiveReason(
   }
   return locale === 'en' ? 'Not active.' : '当前未生效。'
 }
+
+/** 适用主体的展示标签。顺序与服务端 `MEMORY_SUBJECTS` 一致。 */
+const subjectLabels: Record<string, Record<ProductLocale, string>> = {
+  project: { 'zh-CN': '全项目', en: 'Whole project' },
+  brand: { 'zh-CN': '品牌', en: 'Brand' },
+  product: { 'zh-CN': '产品', en: 'Product' },
+  channel: { 'zh-CN': '渠道', en: 'Channel' },
+  user: { 'zh-CN': '仅我', en: 'Just me' },
+}
+
+export const MEMORY_SUBJECT_OPTIONS = ['project', 'brand', 'product', 'channel', 'user'] as const
+
+export function memorySubjectLabel(subject: string | undefined, locale: ProductLocale = 'zh-CN') {
+  return subjectLabels[subject ?? 'project']?.[locale] ?? subject ?? ''
+}
+
+/**
+ * 一条规则的适用范围说明。
+ *
+ * 「全项目」与「限定了范围」必须一眼分得开：限定范围的规则**不会**进入每一次生成，
+ * 用户如果以为它总是生效，就会在别的渠道下疑惑「我明明写了这条规则」。
+ */
+export function memorySubjectDescription(
+  item: Pick<BotanicAgentMemoryItem, 'subject' | 'subjectValue'>,
+  locale: ProductLocale = 'zh-CN',
+) {
+  const subject = item.subject ?? 'project'
+  if (subject === 'project') {
+    return locale === 'en' ? 'Applies to every generation in this project.' : '本项目每一次生成都适用。'
+  }
+  const label = memorySubjectLabel(subject, locale)
+  const value = item.subjectValue ?? ''
+  return locale === 'en'
+    ? `Only applies when ${label.toLowerCase()} is “${value}”. It does not take part in other generations.`
+    : `只在${label}为「${value}」时适用，其余生成不会带上它。`
+}

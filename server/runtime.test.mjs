@@ -1,6 +1,9 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { runtimeConfig } from './runtime.mjs'
+import { loadLocalEnv, runtimeConfig } from './runtime.mjs'
 
 test('实时票据只使用独立签名密钥，不复用数据库或工作区凭据', () => {
   const keys = [
@@ -130,5 +133,41 @@ test('联网搜索默认走 Tavily REST，MCP 地址会被忽略', () => {
       if (value === undefined) delete process.env[key]
       else process.env[key] = value
     }
+  }
+})
+
+test('.env 里同名键重复时以最先出现的为准，并且必须报出来', async () => {
+  // 这与 shell 的直觉相反，而且原本完全静默：往文件末尾追加一份新配置的人会看到
+  // 「我改了但没生效」且没有任何线索。实测踩过——追加了本地 DATABASE_URL，
+  // 上面那行 Neon 的仍然生效，本地库一张表都没建。
+  const dir = mkdtempSync(join(tmpdir(), 'botanic-env-'))
+  writeFileSync(join(dir, '.env'), [
+    'SMOKE_DUP_KEY=first',
+    '# 注释里的 SMOKE_DUP_KEY=ignored 不算',
+    'SMOKE_DUP_KEY=second',
+    'SMOKE_ONLY_ONCE=value',
+  ].join('\n'))
+  const warnings = []
+  const originalWarn = console.warn
+  console.warn = (message) => warnings.push(String(message))
+  const previous = process.env.SMOKE_DUP_KEY
+  try {
+    delete process.env.SMOKE_DUP_KEY
+    delete process.env.SMOKE_ONLY_ONCE
+    loadLocalEnv(dir)
+    assert.equal(process.env.SMOKE_DUP_KEY, 'first', '先出现的胜出')
+    assert.equal(process.env.SMOKE_ONLY_ONCE, 'value')
+    assert.ok(
+      warnings.some((line) => /SMOKE_DUP_KEY/u.test(line) && /最先出现/u.test(line)),
+      `重复必须被报出来，实际：${JSON.stringify(warnings)}`,
+    )
+    // 只出现一次的键不该被误报。
+    assert.equal(warnings.some((line) => /SMOKE_ONLY_ONCE/u.test(line)), false)
+  } finally {
+    console.warn = originalWarn
+    if (previous === undefined) delete process.env.SMOKE_DUP_KEY
+    else process.env.SMOKE_DUP_KEY = previous
+    delete process.env.SMOKE_ONLY_ONCE
+    rmSync(dir, { recursive: true, force: true })
   }
 })

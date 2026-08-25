@@ -57,11 +57,31 @@ export function reviewCriteriaBriefing(requiredCriteria = []) {
   return requiredCriteria.map((id) => `${id}：${CRITERION_LABELS[id] ?? '按该判据名判断是否满足'}`)
 }
 
-export function reviewVisionInstructions(requiredCriteria = []) {
+/**
+ * 品牌判据的说明行（Epic 9.1）。
+ *
+ * 每一行带上**规则原文**，模型才有可判之据。此前 `brand_style` 只给了一句
+ * 「是否符合品牌风格与禁用表达」—— 那道判据从上线起就是没有答案的必答题，
+ * pass 与 fail 同样不可信。
+ *
+ * `must` 与 `should` 要让模型看得出区别，否则它无从判断哪条可以让步。
+ */
+export function brandCriteriaBriefing(brandCriteria = []) {
+  return brandCriteria.map((item) => {
+    const strength = item?.enforcement === 'should' ? '（尽量满足）' : '（必须满足）'
+    return `${item?.id}${strength}：${item?.statement ?? ''}`
+  })
+}
+
+export function reviewVisionInstructions(requiredCriteria = [], brandCriteria = []) {
+  const brandLines = brandCriteriaBriefing(brandCriteria)
   return [
     '你是品牌视觉工作台的结果评审。只依据画面可见内容判断，不臆测拍摄意图。',
     '逐条给出下列判据的结论，不要增加判据，也不要遗漏：',
     ...reviewCriteriaBriefing(requiredCriteria).map((line) => `- ${line}`),
+    ...(brandLines.length
+      ? ['下列是该品牌的具体规则，同样逐条判定（判据名即括号前的标识）：', ...brandLines.map((line) => `- ${line}`)]
+      : []),
     '只输出 JSON，格式：{"criteria":[{"id":"判据名","verdict":"pass"或"fail"或"unverifiable","evidence":"不超过40字的依据"}],"revision":"若有不符，给出一句可执行的修订建议；否则空字符串"}。',
     '看不出来的判据必须给 unverifiable，不要为了凑齐而猜 pass。',
     '不要输出 JSON 之外的任何文字。',
@@ -109,21 +129,25 @@ export function createAgentReviewVisionJudge({ runtimeConfig, resolveMedia, call
 
   return async function reviewCandidate({ candidate, task }) {
     const requiredCriteria = task?.qualityPolicy?.requiredCriteria ?? []
+    const brandCriteria = task?.qualityPolicy?.brandCriteria ?? []
     if (!requiredCriteria.length) {
       // 没有判据就没有可评的东西。这不是模型故障，因此不抛错，如实返回无法验证。
       return { criteria: [{ id: 'semantic_review', layer: 'model', verdict: 'unverifiable', evidence: '质量策略没有声明判据。' }] }
     }
+    // 品牌判据与通用判据一起问同一次，不额外发一轮请求：一张图问两遍是两份钱，
+    // 而且两次判定可能互相矛盾，无从裁决。
+    const answerable = [...requiredCriteria, ...brandCriteria.map((item) => item.id)]
     const dataUrl = typeof resolveMedia === 'function' ? await resolveMedia(candidate?.output?.image) : undefined
     if (!dataUrl) {
       // 取不到画面就无法做视觉判定；照实说，不拿一张空图去问模型。
-      return { criteria: requiredCriteria.map((id) => ({ id, layer: 'model', verdict: 'unverifiable', evidence: '无法读取该候选的画面。' })) }
+      return { criteria: answerable.map((id) => ({ id, layer: 'model', verdict: 'unverifiable', evidence: '无法读取该候选的画面。' })) }
     }
     let payload
     try {
       payload = await invoke({
         model,
         messages: [
-          { role: 'system', content: reviewVisionInstructions(requiredCriteria) },
+          { role: 'system', content: reviewVisionInstructions(requiredCriteria, brandCriteria) },
           { role: 'user', content: [{ type: 'image_url', image_url: { url: dataUrl } }] },
         ],
         signal: AbortSignal.timeout(REVIEW_TIMEOUT_MS),
@@ -139,13 +163,20 @@ export function createAgentReviewVisionJudge({ runtimeConfig, resolveMedia, call
     const byId = new Map(parsed.criteria
       .filter((entry) => typeof entry?.id === 'string')
       .map((entry) => [entry.id, entry]))
-    const criteria = requiredCriteria.map((id) => {
+    const brandRuleByCriterionId = new Map(brandCriteria.map((item) => [item.id, item]))
+    const criteria = answerable.map((id) => {
       const entry = byId.get(id)
       const verdict = entry?.verdict === 'pass' || entry?.verdict === 'fail' ? entry.verdict : 'unverifiable'
+      const brandRule = brandRuleByCriterionId.get(id)
       return {
         id,
         layer: 'model',
         verdict,
+        // 品牌判据回带它源自哪条规则的哪一层，验收要求的「QA 逐条关联品牌规则」
+        // 就落在这里；只有判据名的话，用户看到 fail 也不知道违反了什么。
+        ...(brandRule
+          ? { brandRuleId: brandRule.ruleId, brandFacet: brandRule.facet, brandLayer: brandRule.layer, enforcement: brandRule.enforcement }
+          : {}),
         // 模型漏答的判据判「无法验证」，不按通过处理 —— 漏答不是合格。
         evidence: typeof entry?.evidence === 'string' && entry.evidence.trim()
           ? entry.evidence.trim().slice(0, EVIDENCE_LIMIT)
