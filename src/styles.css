@@ -4656,3 +4656,6 @@ details.agent-timeline__thinking { display: block; padding: 0; }
 /* 无权限时的替代文案。按钮直接消失而不留任何说明，用户会以为功能坏了。 */
 .agent-review-panel__readonly { color: #9aa79c; font-size: 10px; }
 .panel-note.is-readonly { color: #8a7a4a; background: #fdf6e9; padding: 6px 9px; border-radius: 8px; }
+
+/* 失败步骤的原因。只显示「失败」而不说为什么，看的人不知道该改什么。 */
+.agent-timeline__step-error { grid-column: 1 / -1; margin: 2px 0 0; color: #8a3a3a; font-size: 11px; line-height: 1.5; }

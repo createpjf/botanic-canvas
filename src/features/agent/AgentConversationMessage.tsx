@@ -175,6 +175,9 @@ function AgentMessageTimeline({ timeline }: { timeline: AgentTimelineState }) {
           <span className="agent-timeline__step-icon" aria-hidden="true"><TimelineStepMarker block={block} toolItems={toolItems} /></span>
           <strong>{title}</strong>
           <small>{statusLabel}</small>
+          {/* 失败必须说清原因。只显示「失败」的话，看的人不知道该改什么 —— 线上就撞上过：
+              两个写类工具调用连续失败，界面上只有两个红叉。 */}
+          {block.status === 'failed' && block.error ? <p className="agent-timeline__step-error">{block.error}</p> : null}
         </div>
       }
       return <details key={block.id} className="agent-timeline__raw" open={block.open || undefined}>
