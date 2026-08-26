@@ -52,28 +52,43 @@ test('纯文本剪贴板得到空数组', () => {
 test('没有媒体文件时一律 ignore —— 文本粘贴绝不被劫持', () => {
   for (const insideAgentPanel of [true, false]) {
     for (const insideTextEntry of [true, false]) {
-      assert.equal(
-        pasteTarget({ hasMediaFiles: false, insideAgentPanel, insideTextEntry }),
-        'ignore',
-        `hasMediaFiles=false 时必须 ignore（panel=${insideAgentPanel} text=${insideTextEntry}）`,
-      )
+      for (const modalOpen of [true, false]) {
+        assert.equal(
+          pasteTarget({ hasMediaFiles: false, insideAgentPanel, insideTextEntry, modalOpen }),
+          'ignore',
+          `hasMediaFiles=false 时必须 ignore（panel=${insideAgentPanel} text=${insideTextEntry} modal=${modalOpen}）`,
+        )
+      }
     }
   }
 })
 
-test('焦点在对话框内 → composer，即便那是个文本框', () => {
+test('焦点在对话框内 → composer，即便那是个文本框，也不受模态弹层影响', () => {
   // 对话框的文本区是唯一「在文本输入里粘贴图片」有明确意图的地方。
-  assert.equal(pasteTarget({ hasMediaFiles: true, insideAgentPanel: true, insideTextEntry: true }), 'composer')
-  assert.equal(pasteTarget({ hasMediaFiles: true, insideAgentPanel: true, insideTextEntry: false }), 'composer')
+  assert.equal(pasteTarget({ hasMediaFiles: true, insideAgentPanel: true, insideTextEntry: true, modalOpen: false }), 'composer')
+  assert.equal(pasteTarget({ hasMediaFiles: true, insideAgentPanel: true, insideTextEntry: false, modalOpen: false }), 'composer')
+  // Agent 面板本身不是模态弹层：别处开着弹层（如账户设置）不该连累到 composer 粘贴。
+  assert.equal(pasteTarget({ hasMediaFiles: true, insideAgentPanel: true, insideTextEntry: true, modalOpen: true }), 'composer')
+  assert.equal(pasteTarget({ hasMediaFiles: true, insideAgentPanel: true, insideTextEntry: false, modalOpen: true }), 'composer')
 })
 
 test('画布上的文本输入里粘贴图片 → ignore', () => {
   // 用户正在改节点标题时粘贴，凭空多出一个画布节点是惊吓不是惊喜。
-  assert.equal(pasteTarget({ hasMediaFiles: true, insideAgentPanel: false, insideTextEntry: true }), 'ignore')
+  assert.equal(pasteTarget({ hasMediaFiles: true, insideAgentPanel: false, insideTextEntry: true, modalOpen: false }), 'ignore')
 })
 
-test('画布空白处粘贴图片 → canvas', () => {
-  assert.equal(pasteTarget({ hasMediaFiles: true, insideAgentPanel: false, insideTextEntry: false }), 'canvas')
+test('画布空白处粘贴图片 → canvas（模态弹层关闭时，判定与之前完全一致）', () => {
+  assert.equal(pasteTarget({ hasMediaFiles: true, insideAgentPanel: false, insideTextEntry: false, modalOpen: false }), 'canvas')
+})
+
+test('模态弹层打开时，画布空白处粘贴 → ignore，避免素材落在弹层背后无人可见', () => {
+  // 账户设置、确认框、模板/项目对话框等打开时，视口中心被弹层盖住；
+  // 素材静默落地在看不见的地方，是这整个功能一直在避免的那类问题。
+  assert.equal(pasteTarget({ hasMediaFiles: true, insideAgentPanel: false, insideTextEntry: false, modalOpen: true }), 'ignore')
+})
+
+test('模态弹层打开且焦点在画布文本输入里 → 仍是 ignore（原因不同，结果不变）', () => {
+  assert.equal(pasteTarget({ hasMediaFiles: true, insideAgentPanel: false, insideTextEntry: true, modalOpen: true }), 'ignore')
 })
 
 test('拖放来源的命名行为完全不变', () => {

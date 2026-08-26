@@ -1511,8 +1511,11 @@ export default function CanvasWorkspace({
       const insideTextEntry = Boolean(
         element?.closest('input, textarea, [contenteditable="true"]'),
       )
+      // 用「文档里是否存在打开的模态对话框」而不是从事件目标 closest() 向上找——
+      // 焦点常常停在弹层的遮罩或 document.body 上，closest() 会完全漏掉它。
+      const modalOpen = Boolean(window.document.querySelector('[role="dialog"][aria-modal="true"]'))
       const files = clipboardMediaFiles(Array.from(event.clipboardData?.items ?? []))
-      if (pasteTarget({ hasMediaFiles: files.length > 0, insideAgentPanel, insideTextEntry }) !== 'canvas') return
+      if (pasteTarget({ hasMediaFiles: files.length > 0, insideAgentPanel, insideTextEntry, modalOpen }) !== 'canvas') return
       event.preventDefault()
       pasteFilesToCanvasCenter(files)
     }

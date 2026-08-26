@@ -44,26 +44,33 @@ export function clipboardMediaFiles(items: readonly ClipboardItemLike[]): File[]
 /**
  * 这次粘贴该落到哪。
  *
- * 三条规则，顺序不能换：
+ * 四条规则，顺序不能换：
  *
  * 1. 没有媒体文件 → `ignore`。**文本粘贴绝不被劫持**，这是最容易造成回归的地方。
  * 2. 焦点在对话框内 → `composer`。对话框的文本区是唯一「在文本输入里粘贴图片」
- *    有明确意图的地方，所以这条要排在文本输入判定之前。
+ *    有明确意图的地方，所以这条要排在文本输入判定和弹层判定之前——Agent 面板
+ *    本身不是模态弹层，别处开着弹层不该连累到composer 粘贴。
  * 3. 画布上的文本输入里（节点标题、搜索框）→ `ignore`。用户正在改标题时粘贴，
  *    凭空多出一个画布节点是惊吓不是惊喜。
+ * 4. 有模态弹层打开（账户设置、确认框、模板/项目对话框等）→ `ignore`。这些弹层
+ *    盖住整个画布，落在视口中心的素材会藏在弹层后面，用户看不到任何反馈，
+ *    过后发现一个来源不明的节点——静默失败正是这个功能一直在避免的那类问题。
  */
 export function pasteTarget({
   hasMediaFiles,
   insideAgentPanel,
   insideTextEntry,
+  modalOpen,
 }: {
   hasMediaFiles: boolean
   insideAgentPanel: boolean
   insideTextEntry: boolean
+  modalOpen: boolean
 }): PasteTarget {
   if (!hasMediaFiles) return 'ignore'
   if (insideAgentPanel) return 'composer'
   if (insideTextEntry) return 'ignore'
+  if (modalOpen) return 'ignore'
   return 'canvas'
 }
 
