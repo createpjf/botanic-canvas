@@ -10,3 +10,4 @@ server/.data
 .gstack/
 .vercel
 .DS_Store
+.playwright-mcp/

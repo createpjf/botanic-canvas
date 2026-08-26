@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { resolveAgentThinkingOrbState } from './AgentThinkingOrb.tsx'
+import { resolveAgentThinkingOrbState } from './agentThinkingOrbState.ts'
 import type { AgentTimelineState } from '../domain/agentTimeline.ts'
 
 test('无时间线时默认 composing', () => {

@@ -1,5 +1,8 @@
-import { ThinkingOrb, type OrbState } from 'thinking-orbs'
+import { ThinkingOrb } from 'thinking-orbs'
 import type { AgentTimelineState } from '../domain/agentTimeline'
+import { resolveAgentThinkingOrbState } from './agentThinkingOrbState'
+
+export { resolveAgentThinkingOrbState } from './agentThinkingOrbState'
 
 /**
  * Agent 思考 pill 内的 thinking-orbs 封装。
@@ -11,16 +14,6 @@ export type AgentThinkingOrbProps = {
   timeline?: AgentTimelineState
   label?: string
   className?: string
-}
-
-export function resolveAgentThinkingOrbState(timeline?: AgentTimelineState): OrbState {
-  if (!timeline) return 'composing'
-  const searching = timeline.blocks.some((block) => (
-    block.type === 'step'
-    && block.status === 'running'
-    && (block.kind === 'search' || block.kind === 'fetch')
-  ))
-  return searching ? 'searching' : 'composing'
 }
 
 export function AgentThinkingOrb({ timeline, label, className }: AgentThinkingOrbProps) {

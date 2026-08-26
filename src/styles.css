@@ -1704,8 +1704,8 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .result-node__task-state--generating { position: relative; isolation: isolate; overflow: hidden; background: radial-gradient(circle at 50% 0%, #f6fbf6, #e5eee5 64%, #dce8dc); }
 .result-node__task-state--generating::before { content: ''; position: absolute; z-index: 0; inset: -38% -72%; pointer-events: none; background: linear-gradient(100deg, transparent 38%, rgba(255, 255, 255, .62) 49%, transparent 60%); opacity: 0; animation: result-task-sheen 2.6s ease-in-out infinite; }
 .result-node__task-state--generating > * { position: relative; z-index: 1; }
-.liquid-progress-bar { display: block; width: min(168px, 72%); margin: 2px auto 4px; pointer-events: none; }
-.liquid-progress-bar.is-compact { width: min(132px, 68%); margin-bottom: 2px; }
+.liquid-progress-bar { display: block; width: 168px; max-width: 100%; margin: 2px auto 4px; pointer-events: none; justify-self: center; }
+.liquid-progress-bar.is-compact { width: 132px; margin-bottom: 2px; }
 .liquid-progress-bar__canvas { display: block; width: 100%; height: auto; border-radius: 999px; }
 .result-node__task-action { justify-self: center; min-height: 24px; padding: 0 8px; border: 1px solid #c5d8c7; border-radius: 6px; background: rgba(255, 255, 255, 0.72); color: #456c4d; font-size: 8px; font-weight: 700; }
 .result-node__task-action:hover { border-color: #8fb796; background: #f8fcf8; color: #245f35; }
@@ -3669,7 +3669,7 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-message__tools > div { display: grid; gap: 2px; margin-top: 3px; }
 .agent-message.has-timeline .agent-message__body { display: grid; gap: 8px; }
 .agent-timeline { display: grid; min-width: 0; gap: 7px; color: #52665a; }
-.agent-timeline__thinking { display: flex; width: fit-content; min-height: 27px; align-items: center; padding: 0 9px; border: 1px solid #d4e1d5; border-radius: 999px; background: #f8fbf7; color: #607267; font-size: 10px; font-variant-numeric: tabular-nums; font-weight: 690; }
+.agent-timeline__thinking { display: flex; width: fit-content; min-height: 27px; align-items: center; gap: 6px; padding: 0 9px; border: 1px solid #d4e1d5; border-radius: 999px; background: #f8fbf7; color: #607267; font-size: 10px; font-variant-numeric: tabular-nums; font-weight: 690; }
 details.agent-timeline__thinking { display: block; padding: 0; }
 .agent-timeline__thinking > summary { display: flex; min-height: 27px; align-items: center; gap: 6px; padding: 0 9px; cursor: pointer; list-style: none; }
 .agent-timeline__thinking > summary::-webkit-details-marker { display: none; }
