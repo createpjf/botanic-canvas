@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
   emptyBobSaysPlayCounts,
+  markBobHappyPlayed,
   markBobSaysPlayed,
   type BobPresentationSays,
   type BobSaysPlayCounts,
@@ -15,13 +16,21 @@ export function useBobSaysPlays(key: string) {
     setPlays(playsByKey.get(key) ?? emptyBobSaysPlayCounts())
   }, [key])
 
-  const markPlayed = (says: BobPresentationSays) => {
+  const markPlayed = useCallback((says: BobPresentationSays) => {
     setPlays((current) => {
       const next = markBobSaysPlayed(current, says)
       playsByKey.set(key, next)
       return next
     })
-  }
+  }, [key])
 
-  return { plays, markPlayed }
+  const markHappy = useCallback(() => {
+    setPlays((current) => {
+      const next = markBobHappyPlayed(current)
+      playsByKey.set(key, next)
+      return next
+    })
+  }, [key])
+
+  return { plays, markPlayed, markHappy }
 }

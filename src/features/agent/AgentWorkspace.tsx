@@ -1,4 +1,4 @@
-import { type DragEvent, useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from 'react'
+import { type DragEvent, useCallback, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
 import {
   botanicAgentComposerGroupRole,
   botanicAgentBranchStatusLabel,
@@ -115,6 +115,8 @@ import { AgentConversationMessage } from './AgentConversationMessage'
 import { AgentComposer } from './AgentComposer'
 import { BobCharacter } from '../../components/bob/BobCharacter'
 import { bobWelcomePresentation } from '../../domain/bobPresentation'
+import type { BobLauncherPoint } from '../../domain/bobLauncher'
+import { useBobLookAt } from './useBobLookAt'
 import { useBobSaysPlays } from './useBobSaysPlays'
 import {
   AlertIcon,
@@ -1030,7 +1032,31 @@ export default function AgentWorkspace({
   const latestAssistantMessageId = [...renderedConversationMessages].reverse().find((message) => message.role === 'assistant')?.id
   const agentBusy = planning || Boolean(liveConversation?.streaming)
   const welcomeSays = useBobSaysPlays(`welcome:${session?.id ?? projectId}`)
-  const welcomeBob = bobWelcomePresentation(prefersReducedMotion() ? { hmm: 1, wow: 0 } : welcomeSays.plays)
+  const welcomeBob = bobWelcomePresentation(prefersReducedMotion() ? { hmm: 1, wow: 0, happy: 0 } : welcomeSays.plays)
+  const composerTyping = instruction.trim().length > 0
+  const [composerPoint, setComposerPoint] = useState<BobLauncherPoint | undefined>()
+  const welcomeLook = useBobLookAt(!hasMessages, composerPoint)
+  useLayoutEffect(() => {
+    const measure = () => {
+      const node = composerTextareaRef.current
+      if (!node) return
+      const box = node.getBoundingClientRect()
+      const next = { x: box.left + box.width / 2, y: box.top + 8 }
+      setComposerPoint((current) => (
+        current && Math.abs(current.x - next.x) < 1 && Math.abs(current.y - next.y) < 1
+          ? current
+          : next
+      ))
+    }
+    measure()
+    const viewport = messagesViewportRef.current
+    viewport?.addEventListener('scroll', measure)
+    window.addEventListener('resize', measure)
+    return () => {
+      viewport?.removeEventListener('scroll', measure)
+      window.removeEventListener('resize', measure)
+    }
+  }, [hasMessages, instruction, session?.messages.length, utilityPanelOpen])
 
   const welcomePlayedRef = useRef(false)
   useGSAP(() => {
@@ -2635,7 +2661,17 @@ export default function AgentWorkspace({
         </section></div> : null}
         {!utilityPanelOpen ? <div data-agent-flip className="agent-workspace__conversation">
         {!hasMessages ? <section className="agent-workspace__welcome">
-          <span className="agent-workspace__mark" data-bob-mood={welcomeBob.mood} data-bob-says={welcomeBob.says}><BobCharacter mood={welcomeBob.mood} says={welcomeBob.says} saysCycles={welcomeBob.cycles} onSaysComplete={() => welcomeSays.markPlayed(welcomeBob.says)} /></span>
+          <div
+            className="agent-workspace__mark"
+            ref={welcomeLook.ref}
+            data-bob-mood={welcomeBob.mood}
+            data-bob-says={welcomeBob.says}
+            data-bob-look-x={welcomeLook.lookAt ? welcomeLook.lookAt.x.toFixed(2) : undefined}
+            data-bob-look-y={welcomeLook.lookAt ? welcomeLook.lookAt.y.toFixed(2) : undefined}
+            onPointerEnter={welcomeLook.onPointerEnter}
+            onPointerMove={welcomeLook.onPointerMove}
+            onPointerLeave={welcomeLook.onPointerLeave}
+          ><BobCharacter mood={welcomeBob.mood} says={welcomeBob.says} saysCycles={welcomeBob.cycles} lookAt={welcomeLook.lookAt} onSaysComplete={() => welcomeSays.markPlayed(welcomeBob.says)} /></div>
           <small>BOTANIC AGENT</small>
           <h2>{target ? copy.welcomeTarget(agentTargetDisplayLabel(target)) : copy.welcome}</h2>
           <p>{target ? copy.welcomeTargetBody : copy.welcomeBody}</p>
@@ -2660,6 +2696,8 @@ export default function AgentWorkspace({
           streaming={live?.streaming}
           isLatestAssistant={message.id === latestAssistantMessageId}
           agentBusy={agentBusy}
+          composerTyping={composerTyping}
+          composerPoint={composerPoint}
           sessionId={session.id}
           runs={runs}
           artifacts={artifacts}

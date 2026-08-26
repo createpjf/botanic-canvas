@@ -1,10 +1,11 @@
 export const BOB_LARGE_REPLY_MIN_CHARS = 200
 export const BOB_LARGE_AVATAR_GROW_CHARS = 80
 export const BOB_SAYS_MAX_PLAYS = 1
+export const BOB_POST_WOW_HAPPY_MS = 1200
 export const BOB_MESSAGE_AVATAR_PX = 28
 export const BOB_LARGE_REPLY_AVATAR_PX = 72
 
-export type BobPresentationMood = 'idle' | 'listening' | 'thinking' | 'confused' | 'excited'
+export type BobPresentationMood = 'idle' | 'listening' | 'thinking' | 'confused' | 'excited' | 'curious' | 'happy'
 export type BobPresentationSays = 'none' | 'question' | 'hmm' | 'wow'
 
 export const BOB_SAYS_MOTION = {
@@ -17,18 +18,37 @@ export const BOB_SAYS_MOTION = {
 export type BobSaysPlayCounts = {
   hmm: number
   wow: number
+  happy: number
 }
 
+export type BobMessageFeedback = 'positive' | 'negative'
+
 export function emptyBobSaysPlayCounts(): BobSaysPlayCounts {
-  return { hmm: 0, wow: 0 }
+  return { hmm: 0, wow: 0, happy: 0 }
+}
+
+export function bobMessageFailed(message: {
+  status?: string
+  deliveryStatus?: string
+}) {
+  return message.status === 'failed' || message.deliveryStatus === 'failed'
 }
 
 export function bobAssistantMessageMood(input: {
   streaming: boolean
   isLatestAssistant: boolean
   agentBusy: boolean
+  composerTyping?: boolean
+  feedback?: BobMessageFeedback
+  failed?: boolean
+  postWowHappy?: boolean
 }): BobPresentationMood {
   if (input.streaming || (input.isLatestAssistant && input.agentBusy)) return 'thinking'
+  if (input.failed) return 'confused'
+  if (input.feedback === 'positive') return 'happy'
+  if (input.feedback === 'negative') return 'confused'
+  if (input.postWowHappy) return 'happy'
+  if (input.isLatestAssistant && input.composerTyping) return 'curious'
   if (input.isLatestAssistant) return 'listening'
   return 'idle'
 }
@@ -86,6 +106,9 @@ export function bobReplyPresentation(input: {
   isLatestAssistant: boolean
   agentBusy: boolean
   plays: BobSaysPlayCounts
+  composerTyping?: boolean
+  feedback?: BobMessageFeedback
+  failed?: boolean
   maxPlays?: number
 }): {
   mood: BobPresentationMood
@@ -93,7 +116,17 @@ export function bobReplyPresentation(input: {
   cycles: number
 } {
   const maxPlays = input.maxPlays ?? BOB_SAYS_MAX_PLAYS
-  const mood = bobAssistantMessageMood(input)
+  const happyCount = input.plays.happy ?? 0
+  const postWowHappy = input.allowsSays && !input.streaming && (input.plays.wow ?? 0) >= maxPlays && happyCount < 1
+  const mood = bobAssistantMessageMood({
+    streaming: input.streaming,
+    isLatestAssistant: input.isLatestAssistant,
+    agentBusy: input.agentBusy,
+    composerTyping: input.composerTyping,
+    feedback: input.feedback,
+    failed: input.failed,
+    postWowHappy,
+  })
   if (!input.allowsSays) return { mood, says: 'none', cycles: 0 }
   if (input.streaming) {
     if (input.plays.hmm < maxPlays) return { mood: BOB_SAYS_MOTION.hmm, says: 'hmm', cycles: 1 }
@@ -107,4 +140,8 @@ export function markBobSaysPlayed(plays: BobSaysPlayCounts, says: BobPresentatio
   if (says === 'hmm') return { ...plays, hmm: plays.hmm + 1 }
   if (says === 'wow') return { ...plays, wow: plays.wow + 1 }
   return plays
+}
+
+export function markBobHappyPlayed(plays: BobSaysPlayCounts): BobSaysPlayCounts {
+  return { ...plays, happy: (plays.happy ?? 0) + 1 }
 }
