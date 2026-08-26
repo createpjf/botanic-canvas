@@ -4,13 +4,13 @@
  * 这是占位动效，不映射业务百分比。
  */
 
-export const GENERATION_DOTS_BACKGROUND = '#000000'
+export const GENERATION_DOTS_BACKGROUND = '#101810'
 
 export const GENERATION_DOTS_PRESET = {
-  speed: 1,
-  brightness: 1,
-  tint: [1, 1, 1] as const,
-  background: [0, 0, 0] as const,
+  speed: 0.36,
+  brightness: 1.08,
+  tint: [0.812, 0.91, 0.831] as const,
+  background: [0.063, 0.094, 0.063] as const,
   dotSize: 2,
   gridDensity: 1.5,
   patternScale: 0.7,
