@@ -1707,29 +1707,29 @@ button.project-tab__main { border: 0; cursor: pointer; }
   overflow: hidden;
   place-content: center;
   gap: 8px;
-  background: #212124;
-  color: #e8f0ff;
+  background: #000;
+  color: #f6f2ea;
 }
 .result-node__task-state--generating strong {
   color: #fff;
-  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.55);
+  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.7);
 }
 .result-node__task-state--generating small {
-  color: rgba(214, 224, 240, 0.78);
-  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.45);
+  color: rgba(246, 242, 234, 0.78);
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.6);
 }
 .result-node__task-state--generating .result-node__task-action {
-  border-color: rgba(124, 165, 138, 0.35);
-  background: rgba(10, 20, 14, 0.55);
-  color: #d7eadc;
+  border-color: rgba(255, 255, 255, 0.28);
+  background: rgba(0, 0, 0, 0.55);
+  color: #f4f4f4;
 }
 .result-node__task-state--generating .result-node__task-action:hover {
-  border-color: rgba(200, 235, 208, 0.55);
-  background: rgba(45, 99, 59, 0.42);
+  border-color: rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.12);
   color: #fff;
 }
-.result-node__task-state--generating > *:not(.liquid-progress-fill) { position: relative; z-index: 1; }
-.liquid-progress-fill {
+.result-node__task-state--generating > *:not(.generation-dots-fill) { position: relative; z-index: 1; }
+.generation-dots-fill {
   position: absolute;
   inset: 0;
   z-index: 0;
@@ -1738,7 +1738,7 @@ button.project-tab__main { border: 0; cursor: pointer; }
   height: 100%;
   pointer-events: none;
 }
-.liquid-progress-fill__canvas { display: block; width: 100%; height: 100%; }
+.generation-dots-fill__canvas { display: block; width: 100%; height: 100%; }
 .result-node__task-action { justify-self: center; min-height: 24px; padding: 0 8px; border: 1px solid #c5d8c7; border-radius: 6px; background: rgba(255, 255, 255, 0.72); color: #456c4d; font-size: 8px; font-weight: 700; }
 .result-node__task-action:hover { border-color: #8fb796; background: #f8fcf8; color: #245f35; }
 .result-node__task-state--failed .result-node__task-action { border-color: #e2c4bc; color: #95584d; }
