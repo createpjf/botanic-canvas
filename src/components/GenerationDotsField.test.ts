@@ -43,8 +43,8 @@ test('flow 点阵有亮点和近黑底，时间变化会改锋面', () => {
   }
   assert.ok(brightest > 0.28)
   assert.ok(darkest < 0.14)
-  assert.ok(peak[1] > peak[0] + 0.03)
-  assert.ok(peak[1] > peak[2] + 0.02)
+  assert.ok(peak[1] > peak[0] + 0.08)
+  assert.ok(peak[1] > peak[2] + 0.06)
 })
 
 test('减少动效时同一时刻画面不变', () => {

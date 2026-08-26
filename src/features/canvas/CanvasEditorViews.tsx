@@ -1254,6 +1254,7 @@ function ResultNode({ data, id, selected }: NodeProps) {
             {isGenerating ? (
               <GenerationDotsField compact={displayedAspectRatio === '16:9'} />
             ) : null}
+            <div className="result-node__task-copy">
             <strong aria-live="polite">{imageFailed ? t.mediaUnavailable : isGenerating ? taskFeedback.title : result.status === 'failed' ? t.taskIncomplete : result.status === 'cancelled' ? t.taskCancelled : t.waitingResult}</strong>
             <small>{imageFailed ? t.mediaError : isGenerating ? (isSlowTask ? elapsedTaskLabel(elapsedSeconds, locale) : taskFeedback.detail) : (result.error ? localizeProductError(new Error(generationTaskErrorMessage(result.error) ?? result.error), locale, { 'zh-CN': generationTaskErrorMessage(result.error) ?? result.error, en: t.generationConnectionError }) : undefined) ?? (result.status === 'ready' ? t.waitingService : t.realStatus)}</small>
             {imageFailed ? <button className="result-node__task-action nodrag nowheel" type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void recoverMedia() }}>{t.reload}</button> : null}
@@ -1264,6 +1265,7 @@ function ResultNode({ data, id, selected }: NodeProps) {
               <button className="result-node__task-action is-danger" type="button" onClick={(event) => { event.stopPropagation(); removeNodeFromCanvas(targetNodeId) }}>{t.deleteTask}</button>
             </div> : null}
             {result.status === 'cancelled' ? <button className="result-node__task-action nodrag nowheel is-danger" type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); removeNodeFromCanvas(targetNodeId) }}>{t.deleteTask}</button> : null}
+            </div>
           </div>
         )}
         {missingOutputCount ? <div className="result-node__partial nodrag nowheel" onPointerDown={(event) => event.stopPropagation()}>

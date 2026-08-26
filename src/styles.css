@@ -1710,36 +1710,34 @@ button.project-tab__main { border: 0; cursor: pointer; }
   background: #101810;
   color: #f3f8f3;
 }
-.result-node__task-state--generating::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  pointer-events: none;
-  background: radial-gradient(ellipse 74% 40% at 50% 50%, rgba(10, 18, 13, 0.9) 0%, rgba(10, 18, 13, 0.72) 36%, rgba(10, 18, 13, 0.28) 62%, transparent 78%);
+.result-node__task-copy {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+}
+.result-node__task-state--generating .result-node__task-copy {
+  z-index: 2;
+  max-width: 86%;
+  padding: 10px 12px 9px;
+  border-radius: 10px;
+  background: rgba(8, 16, 11, 0.82);
+  box-shadow: 0 10px 24px rgba(8, 16, 11, 0.38);
 }
 .result-node__task-state--generating strong {
-  padding: 2px 8px;
-  border-radius: 6px;
-  background: rgba(10, 18, 13, 0.42);
   color: #f7fbf6;
-  text-shadow: 0 1px 2px rgba(8, 16, 11, 0.95), 0 0 14px rgba(8, 16, 11, 0.8);
+  text-shadow: 0 1px 2px rgba(8, 16, 11, 0.9);
 }
 .result-node__task-state--generating small {
-  padding: 1px 7px;
-  border-radius: 5px;
-  background: rgba(10, 18, 13, 0.36);
-  color: #e4f0e6;
-  text-shadow: 0 1px 2px rgba(8, 16, 11, 0.9), 0 0 10px rgba(8, 16, 11, 0.7);
+  color: #dceadf;
 }
 .result-node__task-state--generating .result-node__task-action {
-  border-color: rgba(143, 183, 150, 0.5);
-  background: rgba(16, 32, 22, 0.88);
+  border-color: rgba(143, 183, 150, 0.55);
+  background: rgba(20, 40, 28, 0.92);
   color: #f3f8f3;
 }
 .result-node__task-state--generating .result-node__task-action:hover {
-  border-color: rgba(200, 230, 206, 0.7);
-  background: rgba(45, 91, 58, 0.78);
+  border-color: rgba(200, 230, 206, 0.75);
+  background: rgba(45, 91, 58, 0.88);
   color: #fff;
 }
 .result-node__task-state--generating > .generation-dots-fill { z-index: 0; }

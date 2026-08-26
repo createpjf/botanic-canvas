@@ -14,6 +14,7 @@ test('生成中结果节点铺满 flow 点阵并尊重减少动效设置', () =>
   assert.doesNotMatch(resultNode, /LiquidProgressBar/)
   assert.doesNotMatch(resultNode, /liquid-progress/)
   assert.match(resultNode, /<GenerationDotsField\b/)
+  assert.match(resultNode, /result-node__task-copy/)
   assert.doesNotMatch(resultNode, /generationProgress/)
   assert.doesNotMatch(resultNode, /taskStatus=\{result.taskStatus\}/)
   assert.doesNotMatch(resultNode, /submittedAt=\{result.submittedAt\}/)
@@ -29,7 +30,7 @@ test('生成中结果节点铺满 flow 点阵并尊重减少动效设置', () =>
   assert.match(dotsField, /patternScale:\s*0\.7/)
   assert.match(dotsField, /vignette:\s*1\.45/)
   assert.match(dotsField, /0\.02 \//)
-  assert.match(styles, /\.result-node__task-state--generating::after\s*{[^}]*radial-gradient/s)
+  assert.match(styles, /\.result-node__task-state--generating \.result-node__task-copy\s*{[^}]*background:/s)
   assert.match(styles, /\.agent-run-card__track::after\s*{[^}]*animation:\s*agent-run-track-flow/s)
   assert.match(styles, /@keyframes\s+agent-run-track-flow/)
   assert.match(

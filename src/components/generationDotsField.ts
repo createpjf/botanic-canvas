@@ -8,8 +8,8 @@ export const GENERATION_DOTS_BACKGROUND = '#101810'
 
 export const GENERATION_DOTS_PRESET = {
   speed: 0.36,
-  brightness: 1.08,
-  tint: [0.812, 0.91, 0.831] as const,
+  brightness: 1.12,
+  tint: [0.659, 0.831, 0.698] as const,
   background: [0.063, 0.094, 0.063] as const,
   dotSize: 2,
   gridDensity: 1.5,
