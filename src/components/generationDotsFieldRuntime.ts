@@ -7,9 +7,9 @@ import {
   GENERATION_DOTS_BACKGROUND,
   fillGenerationDotsPixels,
   generationDotsBufferSize,
-} from './generationDotsField.ts'
+} from './generationDotsMath.ts'
 
-export { GENERATION_DOTS_BACKGROUND } from './generationDotsField.ts'
+export { GENERATION_DOTS_BACKGROUND } from './generationDotsMath.ts'
 
 export type DotsSubscriber = {
   canvas: HTMLCanvasElement

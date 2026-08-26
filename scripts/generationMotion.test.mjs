@@ -5,7 +5,7 @@ import test from 'node:test'
 const styles = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8')
 const resultNode = readFileSync(new URL('../src/features/canvas/CanvasEditorViews.tsx', import.meta.url), 'utf8')
 const dotsRuntime = readFileSync(new URL('../src/components/generationDotsFieldRuntime.ts', import.meta.url), 'utf8')
-const dotsField = readFileSync(new URL('../src/components/generationDotsField.ts', import.meta.url), 'utf8')
+const dotsField = readFileSync(new URL('../src/components/generationDotsMath.ts', import.meta.url), 'utf8')
 
 test('生成中结果节点铺满 flow 点阵并尊重减少动效设置', () => {
   assert.match(styles, /\.generation-dots-fill\s*{[^}]*position:\s*absolute/s)
