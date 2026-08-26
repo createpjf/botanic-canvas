@@ -192,7 +192,7 @@ export function AgentClarificationCard({
   if (state === 'completed') {
     return (
       <section className="agent-clarification-card is-complete" aria-label={copy.confirmedAria} aria-live="polite">
-        <span className="agent-clarification-card__complete-mark" aria-hidden="true">✓</span>
+        <span className="agent-clarification-card__complete-mark" aria-hidden="true"><CheckIcon /></span>
         <span className="agent-clarification-card__complete-copy">
           <strong>{copy.confirmed}</strong>
           {selectionSummary ? <small>{selectionSummary}</small> : null}

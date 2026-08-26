@@ -815,10 +815,13 @@ export function AgentConversationMessage({
             {runArtifacts.length
               ? <button type="button" className="agent-plan__receipt-primary" onClick={onShowResults}>{t('查看结果', 'View results')}</button>
               : <button type="button" className="agent-plan__receipt-primary" onClick={() => onShowTask(message.runId!)}>{t('查看任务', 'View task')}</button>}
-            {outputNodeIds.length ? <button type="button" className="agent-text-action" onClick={() => onFocusNodes(outputNodeIds)}>{t('定位画布', 'Locate on canvas')}</button> : null}
+            {outputNodeIds.length ? <button type="button" className="agent-plan__receipt-secondary" onClick={() => onFocusNodes(outputNodeIds)}>{t('定位画布', 'Locate on canvas')}</button> : null}
           </div> : null}
           <details className="agent-plan__recipe">
-            <summary>{t('配方', 'Recipe')}</summary>
+            <summary className="agent-plan__recipe-toggle">
+              <ChevronDownIcon />
+              <span>{t('配方', 'Recipe')}</span>
+            </summary>
             <div className="agent-plan__recipe-body">{recipe}</div>
           </details>
         </div>
