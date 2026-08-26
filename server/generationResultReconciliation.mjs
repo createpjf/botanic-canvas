@@ -370,7 +370,12 @@ export function reconcileGenerationResults(document, jobs, { ensureAgentPlacehol
     let groupChanged = false
     const usedTargetNodeIds = new Set()
     for (const [index, output] of (job.outputs ?? []).entries()) {
+      // 已在画布上落图的输出是既成历史，不允许重复投影：占位节点被错配上旧任务号时，
+      // 按「任务号 + 候选号」会命中持有旧图的历史节点，用占位节点的参数快照（base）
+      // 覆写它就是篡改历史（画框比例、分辨率、模型、血缘全被换成下游任务的）。
+      if (outputIsProjected(nodes, job, output)) continue
       const target = nodes.find((node) => node.type === 'result'
+        && !node.data?.image
         && node.data?.jobId === job.id
         && node.data?.candidateId === output.id)
         ?? groupNodes.find((node) => !usedTargetNodeIds.has(node.id) && node.data?.variant === index)

@@ -42,6 +42,46 @@ test('历史成功任务会把空结果节点回填为独立图片节点', () =>
   assert.deepEqual(reconciled.nodes.filter((node) => node.type === 'result').map((node) => node.data.image), ['/api/media/one', '/api/media/two'])
 })
 
+test('占位节点被错配旧任务号时，对账不得用它的参数覆写已落图的历史节点', () => {
+  // 「篡改历史」回归：上游 r1 已持有 job-1 的输出（3:4·2K），下游占位节点被兜底
+  // 恢复错打上 job-1 且标成 succeeded。旧行为会按「任务号 + 候选号」命中 r1，
+  // 用占位节点的 4:3·1K 参数快照与血缘覆写它；现在必须原样保留。
+  const parentSettings = { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' }
+  const document = {
+    id: 'project-hijack',
+    nodes: [
+      { id: 'g1', type: 'generate', position: { x: 0, y: 0 }, data: { kind: 'generate', jobId: 'job-1', generationKind: 'refinement', settings: parentSettings } },
+      {
+        id: 'r1', type: 'result', position: { x: 400, y: 0 },
+        data: {
+          kind: 'result', label: '定向精修', outputOf: 'g1', image: '/api/media/calbee', jobId: 'job-1', candidateId: 'out-1',
+          taskGroupId: 'r1', taskStatus: 'succeeded', status: 'ready', generationKind: 'refinement',
+          generationSettings: parentSettings,
+        },
+      },
+      {
+        id: 'pending', type: 'result', position: { x: 800, y: 0 },
+        data: {
+          kind: 'result', label: '定向精修 · 图像 01', outputOf: 'g2', jobId: 'job-1',
+          taskGroupId: 'pending', taskStatus: 'succeeded', status: 'ready', generationKind: 'refinement',
+          generationSettings: { model: 'minimax-image-01', aspectRatio: '4:3', resolution: '1K' },
+        },
+      },
+    ],
+    edges: [], generationJobs: [], updatedAt: 1,
+  }
+  const parentBefore = JSON.stringify(document.nodes[1])
+  const { document: reconciled, changed } = reconcileGenerationResults(document, [{
+    id: 'job-1', status: 'succeeded', kind: 'refinement', batchCount: 1, createdAt: 1_000, updatedAt: 1_100,
+    settings: parentSettings, outputs: [{ id: 'out-1', image: '/api/media/calbee' }],
+  }])
+
+  assert.equal(changed, false)
+  assert.equal(JSON.stringify(reconciled.nodes[1]), parentBefore)
+  assert.equal(reconciled.nodes[1].data.generationSettings.aspectRatio, '3:4')
+  assert.equal(reconciled.nodes[1].data.outputOf, 'g1')
+})
+
 test('误标为无结果失败的历史节点仍可由权威任务结果纠正', () => {
   const document = {
     id: 'project-b', nodes: [
