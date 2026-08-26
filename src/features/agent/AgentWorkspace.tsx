@@ -114,6 +114,8 @@ import { agentEscapeDismissTarget, type AgentDismissTarget } from './agentWorksp
 import { AgentConversationMessage } from './AgentConversationMessage'
 import { AgentComposer } from './AgentComposer'
 import { BobCharacter } from '../../components/bob/BobCharacter'
+import { bobWelcomePresentation } from '../../domain/bobPresentation'
+import { useBobSaysPlays } from './useBobSaysPlays'
 import {
   AlertIcon,
   BookmarkIcon,
@@ -1025,6 +1027,10 @@ export default function AgentWorkspace({
   }, [session?.messages.length, latestRun?.updatedAt, liveConversation, planning, runtimeSteps.length, runtimeSteps[runtimeSteps.length - 1]?.status, utilityPanelOpen])
 
   const latestRenderedMessageId = renderedConversationMessages.at(-1)?.id ?? ''
+  const latestAssistantMessageId = [...renderedConversationMessages].reverse().find((message) => message.role === 'assistant')?.id
+  const agentBusy = planning || Boolean(liveConversation?.streaming)
+  const welcomeSays = useBobSaysPlays(`welcome:${session?.id ?? projectId}`)
+  const welcomeBob = bobWelcomePresentation(prefersReducedMotion() ? { hmm: 1, wow: 0 } : welcomeSays.plays)
 
   const welcomePlayedRef = useRef(false)
   useGSAP(() => {
@@ -2629,7 +2635,7 @@ export default function AgentWorkspace({
         </section></div> : null}
         {!utilityPanelOpen ? <div data-agent-flip className="agent-workspace__conversation">
         {!hasMessages ? <section className="agent-workspace__welcome">
-          <span className="agent-workspace__mark"><BobCharacter mood="confused" says="question" /></span>
+          <span className="agent-workspace__mark" data-bob-mood={welcomeBob.mood} data-bob-says={welcomeBob.says}><BobCharacter mood={welcomeBob.mood} says={welcomeBob.says} saysCycles={welcomeBob.cycles} onSaysComplete={() => welcomeSays.markPlayed(welcomeBob.says)} /></span>
           <small>BOTANIC AGENT</small>
           <h2>{target ? copy.welcomeTarget(agentTargetDisplayLabel(target)) : copy.welcome}</h2>
           <p>{target ? copy.welcomeTargetBody : copy.welcomeBody}</p>
@@ -2652,6 +2658,8 @@ export default function AgentWorkspace({
           message={message}
           timeline={live?.timeline ?? executionTimeline}
           streaming={live?.streaming}
+          isLatestAssistant={message.id === latestAssistantMessageId}
+          agentBusy={agentBusy}
           sessionId={session.id}
           runs={runs}
           artifacts={artifacts}

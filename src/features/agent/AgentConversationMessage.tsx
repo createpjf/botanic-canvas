@@ -30,6 +30,8 @@ import {
 } from '../../domain/generationOutputSize'
 import { settingsForGenerationModel } from '../../domain/generationRecipe'
 import { BobCharacter } from '../../components/bob/BobCharacter'
+import { bobMessageAllowsSays, bobMessageIsLargeReply, bobReplyPresentation } from '../../domain/bobPresentation'
+import { useBobSaysPlays } from './useBobSaysPlays'
 import { AlertIcon, BookIcon, ChecklistIcon, ChevronDownIcon, ClockIcon, CopyIcon, EditIcon, FocusIcon, GlobeIcon, SearchIcon, ThumbDownIcon, ThumbUpIcon } from '../../components/BotanicIcons'
 import { AgentThinkingOrb } from '../../components/AgentThinkingOrb'
 import { AgentToolOrb } from '../../components/AgentToolOrb'
@@ -509,6 +511,8 @@ type AgentConversationMessageProps = {
   message: BotanicAgentMessage
   timeline?: AgentTimelineState
   streaming?: boolean
+  isLatestAssistant?: boolean
+  agentBusy?: boolean
   sessionId?: string
   runs: BotanicAgentRun[]
   artifacts: BotanicAgentArtifact[]
@@ -549,6 +553,8 @@ export function AgentConversationMessage({
   message,
   timeline,
   streaming = false,
+  isLatestAssistant = false,
+  agentBusy = false,
   sessionId,
   runs,
   artifacts,
@@ -606,6 +612,7 @@ export function AgentConversationMessage({
     ? (plan.output.mode === 'single' ? planCountLabel(plan) : plan.output.mode === 'batch_by_asset' ? `${plan.output.count} asset variations` : `${plan.output.count} variations`)
     : botanicAgentPlanOutputLabel(plan)
   const linkedRun = message.runId ? runs.find((run) => run.id === message.runId) : undefined
+  const bobPlays = useBobSaysPlays(`message:${message.id}`)
   // 进行中的状态由 runtime feed / 底部进度条直播；对话里不画第二张「正在生成」卡。
   if (message.kind === 'run' && linkedRun && shouldRestoreBotanicAgentRuntimeSteps(linkedRun.status)) return null
   const runArtifacts = message.runId
@@ -622,9 +629,22 @@ export function AgentConversationMessage({
   const inlineRunResults = runMediaArtifacts.slice(0, inlineRunResultLimit)
 
   const liveStatus = isLiveRunMessage || streaming
+  const allowsSays = message.role === 'assistant' && bobMessageAllowsSays({
+    isLatestAssistant,
+    isLargeReply: bobMessageIsLargeReply(message),
+  })
+  const bob = message.role === 'assistant'
+    ? bobReplyPresentation({
+      allowsSays: allowsSays && !prefersReducedMotion(),
+      streaming,
+      isLatestAssistant,
+      agentBusy,
+      plays: bobPlays.plays,
+    })
+    : null
 
-  return <article className={`agent-message is-${message.role} is-${message.kind}${timeline ? ' has-timeline' : ''}`} role={liveStatus ? 'status' : undefined} aria-live={liveStatus ? 'polite' : undefined} aria-busy={streaming || undefined}>
-    <div className="agent-message__role">{message.role === 'assistant' ? <BobCharacter mood={streaming ? 'thinking' : 'idle'} /> : <span>{t('你', 'You')}</span>}</div>
+  return <article className={`agent-message is-${message.role} is-${message.kind}${timeline ? ' has-timeline' : ''}${allowsSays ? ' is-bob-large' : ''}`} role={liveStatus ? 'status' : undefined} aria-live={liveStatus ? 'polite' : undefined} aria-busy={streaming || undefined}>
+    <div className="agent-message__role" data-bob-mood={bob?.mood} data-bob-says={bob?.says}>{bob ? <BobCharacter mood={bob.mood} says={bob.says} saysCycles={bob.cycles} onSaysComplete={() => bobPlays.markPlayed(bob.says)} /> : <span>{t('你', 'You')}</span>}</div>
     <div className="agent-message__body">
       {timeline ? <AgentMessageTimeline timeline={timeline} /> : null}
       {message.kind === 'composition' && message.composition

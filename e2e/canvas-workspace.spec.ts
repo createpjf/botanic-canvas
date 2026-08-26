@@ -26,6 +26,28 @@ async function stubReadOnlyRuntime(page: Page) {
   })
 }
 
+async function injectAssistantMessage(page: Page, message: { id: string; content: string; kind?: 'text' | 'notice' | 'run' }) {
+  await page.evaluate(async ({ id, content, kind }) => {
+    const loadStore = new Function('return import("/src/store/canvasStore.ts")') as () => Promise<{
+      useCanvasStore: { getState: () => {
+        ensureAgentSession: () => string
+        appendAgentMessage: (sessionId: string, message: unknown) => void
+      } }
+    }>
+    const { useCanvasStore } = await loadStore()
+    const store = useCanvasStore.getState()
+    const sessionId = store.ensureAgentSession()
+    store.appendAgentMessage(sessionId, {
+      id,
+      role: 'assistant',
+      kind: kind ?? 'text',
+      status: 'pending',
+      createdAt: Date.now(),
+      content,
+    })
+  }, message)
+}
+
 test('公开产品首页进入项目库，旧经营驾驶舱地址自动兼容', async ({ page }) => {
   await stubReadOnlyRuntime(page)
 
@@ -360,6 +382,10 @@ test('折叠 Bob 可拖可点，欢迎页是大号问号 Bob', async ({ page }) 
   await expect(agent.getByRole('heading', { name: '今天一起创作什么？' })).toBeVisible()
   const mark = agent.locator('.agent-workspace__mark')
   await expect(mark.locator('svg')).toBeVisible()
+  await expect(mark).toHaveAttribute('data-bob-says', 'hmm')
+  await expect(mark).toHaveAttribute('data-bob-mood', 'thinking')
+  await expect(mark).toHaveAttribute('data-bob-says', 'question', { timeout: 12_000 })
+  await expect(mark).toHaveAttribute('data-bob-mood', 'confused')
   const markBox = await mark.boundingBox()
   expect(markBox, '欢迎页 Bob 应比旧方标大').toBeTruthy()
   expect(markBox!.height).toBeGreaterThan(80)
@@ -375,4 +401,40 @@ test('折叠 Bob 可拖可点，欢迎页是大号问号 Bob', async ({ page }) 
   await expect.poll(async () => Number(await launcher.getAttribute('data-bob-x'))).toBe(afterX)
   await expect.poll(async () => Number(await launcher.getAttribute('data-bob-y'))).toBe(afterY)
   await expect(agent).toBeHidden()
+})
+
+test('最新短消息只 mood，大回复限次 wow 且 28px 不出字', async ({ page }) => {
+  await stubReadOnlyRuntime(page)
+  await page.goto('/#/projects')
+  await page.getByRole('button', { name: '新建项目' }).click()
+  await page.getByRole('button', { name: '打开 Bob' }).click()
+
+  const agent = page.getByRole('complementary', { name: 'Botanic Agent' })
+  await expect(agent.getByRole('heading', { name: '今天一起创作什么？' })).toBeVisible()
+
+  await injectAssistantMessage(page, { id: 'bob-short-reply', content: '先从构图开始。' })
+  const shortRole = agent.locator('[data-agent-message-id="bob-short-reply"] .agent-message__role')
+  await expect(shortRole).toHaveAttribute('data-bob-mood', 'listening')
+  await expect(shortRole).toHaveAttribute('data-bob-says', 'none')
+  await expect(agent.locator('[data-agent-message-id="bob-short-reply"] .agent-message')).not.toHaveClass(/is-bob-large/)
+  const shortBox = await shortRole.boundingBox()
+  expect(shortBox, '短消息头像应保持 28px').toBeTruthy()
+  expect(shortBox!.width).toBeLessThan(40)
+
+  const longReply = `${'这是一段足够长的助手回复，用来触发大回复 Bob。'.repeat(8)}`
+  await injectAssistantMessage(page, { id: 'bob-large-reply', content: longReply })
+  const largeAnchor = agent.locator('[data-agent-message-id="bob-large-reply"]')
+  const largeRole = largeAnchor.locator('.agent-message__role')
+  await expect(largeAnchor.locator('.agent-message')).toHaveClass(/is-bob-large/)
+  await expect(largeRole).toHaveAttribute('data-bob-says', 'wow')
+  await expect(largeRole).toHaveAttribute('data-bob-mood', 'excited')
+  const largeBox = await largeRole.boundingBox()
+  expect(largeBox, '大回复头像应放大').toBeTruthy()
+  expect(largeBox!.height).toBeGreaterThan(70)
+
+  await expect(shortRole).toHaveAttribute('data-bob-mood', 'idle')
+  await expect(shortRole).toHaveAttribute('data-bob-says', 'none')
+
+  await expect(largeRole).toHaveAttribute('data-bob-says', 'none', { timeout: 12_000 })
+  await expect(largeRole).toHaveAttribute('data-bob-mood', 'listening')
 })
