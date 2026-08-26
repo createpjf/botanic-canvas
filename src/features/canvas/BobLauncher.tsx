@@ -88,12 +88,14 @@ export function BobLauncher({
 
   const onPointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
     if (event.button !== 0) return
+    event.preventDefault()
     dragRef.current = {
       pointerId: event.pointerId,
       start: { x: event.clientX, y: event.clientY },
       origin: pointRef.current,
       committed: false,
     }
+    event.currentTarget.setPointerCapture(event.pointerId)
   }
 
   const onPointerMove = (event: ReactPointerEvent<HTMLButtonElement>) => {
@@ -103,7 +105,6 @@ export function BobLauncher({
       if (!drag.committed && bobLauncherDragCommitted(distance)) {
         drag.committed = true
         setDragging(true)
-        event.currentTarget.setPointerCapture(event.pointerId)
       }
       if (drag.committed) {
         const next = clampBobLauncherPoint({
@@ -130,6 +131,9 @@ export function BobLauncher({
       skipClickRef.current = true
       writeStoredPoint(projectId, pointRef.current)
       setDragging(false)
+      window.setTimeout(() => {
+        skipClickRef.current = false
+      }, 0)
     }
   }
 
@@ -139,6 +143,8 @@ export function BobLauncher({
       type="button"
       className={dragging ? 'agent-launcher is-dragging' : 'agent-launcher'}
       style={{ left: point.x, top: point.y }}
+      data-bob-x={Math.round(point.x)}
+      data-bob-y={Math.round(point.y)}
       aria-label={label}
       title="Bob"
       onPointerDown={onPointerDown}

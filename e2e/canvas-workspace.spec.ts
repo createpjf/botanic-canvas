@@ -329,3 +329,50 @@ test('空画布优先提供目标入口，本地能力边界可见且不请求�
   await page.getByRole('button', { name: '视频生成', exact: true }).click()
   await expect(page.getByRole('status').filter({ hasText: '视频模型尚未配置' })).toBeVisible()
 })
+
+test('折叠 Bob 可拖可点，欢迎页是大号问号 Bob', async ({ page }) => {
+  await stubReadOnlyRuntime(page)
+  await page.goto('/#/projects')
+  await page.getByRole('button', { name: '新建项目' }).click()
+
+  const launcher = page.getByRole('button', { name: '打开 Bob' })
+  await expect(launcher).toBeVisible()
+  const beforeX = Number(await launcher.getAttribute('data-bob-x'))
+  const beforeY = Number(await launcher.getAttribute('data-bob-y'))
+  expect(beforeX).toBeGreaterThan(0)
+  expect(beforeY).toBeGreaterThan(0)
+
+  await launcher.hover()
+  const box = await launcher.boundingBox()
+  expect(box, '折叠 Bob 应有命中盒').toBeTruthy()
+  await page.mouse.down()
+  await page.mouse.move(box!.x - 160, box!.y + 110, { steps: 16 })
+  await page.mouse.up()
+
+  await expect.poll(async () => Number(await launcher.getAttribute('data-bob-x'))).toBeLessThan(beforeX - 80)
+  const afterX = Number(await launcher.getAttribute('data-bob-x'))
+  const afterY = Number(await launcher.getAttribute('data-bob-y'))
+  expect(afterY).toBeGreaterThan(beforeY + 40)
+
+  await launcher.click()
+  const agent = page.getByRole('complementary', { name: 'Botanic Agent' })
+  await expect(agent).toBeVisible()
+  await expect(agent.getByRole('heading', { name: '今天一起创作什么？' })).toBeVisible()
+  const mark = agent.locator('.agent-workspace__mark')
+  await expect(mark.locator('svg')).toBeVisible()
+  const markBox = await mark.boundingBox()
+  expect(markBox, '欢迎页 Bob 应比旧方标大').toBeTruthy()
+  expect(markBox!.height).toBeGreaterThan(80)
+  const markChrome = await mark.evaluate((element) => {
+    const style = getComputedStyle(element)
+    return { background: style.backgroundColor, borderWidth: style.borderWidth }
+  })
+  expect(markChrome.background).toMatch(/rgba\(\s*0,\s*0,\s*0,\s*0\s*\)|transparent/)
+  expect(Number.parseFloat(markChrome.borderWidth)).toBe(0)
+
+  await page.getByRole('button', { name: '关闭 Agent' }).click()
+  await expect(launcher).toBeVisible()
+  await expect.poll(async () => Number(await launcher.getAttribute('data-bob-x'))).toBe(afterX)
+  await expect.poll(async () => Number(await launcher.getAttribute('data-bob-y'))).toBe(afterY)
+  await expect(agent).toBeHidden()
+})
