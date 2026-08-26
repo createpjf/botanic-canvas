@@ -1,0 +1,98 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { clipboardMediaFiles, pastedAssetName, pasteTarget } from './clipboardMedia.ts'
+
+function item(kind: string, type: string, file: File | null) {
+  return { kind, type, getAsFile: () => file }
+}
+
+const png = new File(['x'], 'shot.png', { type: 'image/png' })
+const mp4 = new File(['x'], 'clip.mp4', { type: 'video/mp4' })
+
+test('只挑出文件类的媒体条目', () => {
+  const files = clipboardMediaFiles([
+    item('string', 'text/html', null),
+    item('string', 'text/uri-list', null),
+    item('file', 'image/png', png),
+  ])
+  assert.deepEqual(files, [png])
+})
+
+test('网页复制的图片同时带 text/html，仍只取文件', () => {
+  // 从网页右键复制图片时，剪贴板里同时有 text/html（一个 <img src>）。
+  // 抓那个远端 URL 会引入 SSRF 面，且那是「粘贴链接」而非「粘贴图片」。
+  const files = clipboardMediaFiles([
+    item('string', 'text/html', null),
+    item('file', 'image/png', png),
+  ])
+  assert.equal(files.length, 1)
+})
+
+test('视频文件同样通过 —— 不写图片专属过滤', () => {
+  // 不加过滤比加过滤代码更少；从 Finder 复制视频粘贴会正常工作。
+  assert.deepEqual(clipboardMediaFiles([item('file', 'video/mp4', mp4)]), [mp4])
+})
+
+test('getAsFile 返回 null 的条目被跳过而不是塞进 null', () => {
+  assert.deepEqual(clipboardMediaFiles([item('file', 'image/png', null)]), [])
+})
+
+test('纯文本剪贴板得到空数组', () => {
+  assert.deepEqual(clipboardMediaFiles([item('string', 'text/plain', null)]), [])
+})
+
+test('没有媒体文件时一律 ignore —— 文本粘贴绝不被劫持', () => {
+  for (const insideAgentPanel of [true, false]) {
+    for (const insideTextEntry of [true, false]) {
+      assert.equal(
+        pasteTarget({ hasMediaFiles: false, insideAgentPanel, insideTextEntry }),
+        'ignore',
+        `hasMediaFiles=false 时必须 ignore（panel=${insideAgentPanel} text=${insideTextEntry}）`,
+      )
+    }
+  }
+})
+
+test('焦点在对话框内 → composer，即便那是个文本框', () => {
+  // 对话框的文本区是唯一「在文本输入里粘贴图片」有明确意图的地方。
+  assert.equal(pasteTarget({ hasMediaFiles: true, insideAgentPanel: true, insideTextEntry: true }), 'composer')
+  assert.equal(pasteTarget({ hasMediaFiles: true, insideAgentPanel: true, insideTextEntry: false }), 'composer')
+})
+
+test('画布上的文本输入里粘贴图片 → ignore', () => {
+  // 用户正在改节点标题时粘贴，凭空多出一个画布节点是惊吓不是惊喜。
+  assert.equal(pasteTarget({ hasMediaFiles: true, insideAgentPanel: false, insideTextEntry: true }), 'ignore')
+})
+
+test('画布空白处粘贴图片 → canvas', () => {
+  assert.equal(pasteTarget({ hasMediaFiles: true, insideAgentPanel: false, insideTextEntry: false }), 'canvas')
+})
+
+test('拖放来源的命名行为完全不变', () => {
+  // 回归钉子：拖放的文件一定带真实文件名，覆盖它是错的。
+  assert.equal(pastedAssetName('product-hero.png'), 'product-hero')
+  assert.equal(pastedAssetName('product-hero.png', { source: 'drop' }), 'product-hero')
+  // 即便名字是通用的，拖放来源也不回落 —— 用户确实有个叫 image.png 的文件。
+  assert.equal(pastedAssetName('image.png', { source: 'drop' }), 'image')
+})
+
+test('粘贴来源且文件名无意义时用带时间戳的回落名', () => {
+  // 截图进剪贴板时 name 常是空串或通用的 image，直接用会得到空素材名，
+  // 或者一列无法区分的「image」—— 素材库很快就没法用了。
+  const now = new Date(2026, 7, 26, 14, 30)
+  assert.equal(pastedAssetName('', { source: 'paste', now }), '粘贴的图片 14:30')
+  assert.equal(pastedAssetName('image.png', { source: 'paste', now }), '粘贴的图片 14:30')
+  assert.equal(pastedAssetName('  ', { source: 'paste', now }), '粘贴的图片 14:30')
+  assert.equal(pastedAssetName('Untitled.png', { source: 'paste', now }), '粘贴的图片 14:30')
+})
+
+test('回落名补零且双语', () => {
+  const now = new Date(2026, 7, 26, 9, 5)
+  assert.equal(pastedAssetName('', { source: 'paste', now }), '粘贴的图片 09:05')
+  assert.equal(pastedAssetName('', { source: 'paste', now, locale: 'en' }), 'Pasted image 09:05')
+})
+
+test('粘贴来源但文件名有意义时保留原名', () => {
+  // 从 Finder 复制的文件带真实文件名，不能被覆盖。
+  assert.equal(pastedAssetName('brand-guide.png', { source: 'paste' }), 'brand-guide')
+})
