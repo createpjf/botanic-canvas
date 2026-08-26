@@ -110,10 +110,10 @@ export function liquidWaveOffset(uvY: number, warp: number, amplitude: number) {
   const { ripple, churn } = LIQUID_PROGRESS_PRESET
   const y = uvY * ripple
   const t = warp * churn
-  const swell = Math.sin(y * 17.5 + t * 1.48) * 0.52
-    + Math.sin(y * 29.4 - t * 1.08 + 1.15) * 0.26
-    + Math.sin(y * 7.8 + t * 0.58) * 0.44
-    + (fbm(y * 2.45, t * 0.4, 3) - 0.5) * 1.08
+  const swell = Math.sin(y * 17.5 + t * 1.48) * 0.46
+    + Math.sin(y * 29.4 - t * 1.08 + 1.15) * 0.28
+    + Math.sin(y * 7.8 + t * 0.58) * 0.38
+    + (fbm(y * 2.8, t * 0.46, 3) - 0.5) * 1.35
   return swell * amplitude
 }
 
@@ -184,8 +184,8 @@ export function shadeLiquidProgressPixel(
       : liquidWaveOffset(uvY, warp - k * LIQUID_PROGRESS_PRESET.lag, amplitude * (1 + k * 0.2))
     const trailDistance = px - (front + echoWave - k * (LIQUID_PROGRESS_PRESET.echo + 0.028 * alive))
     const absDistance = Math.abs(trailDistance)
-    addRgb(color, TRAIL, Math.exp(-absDistance * Math.max(0.5, 14.5 - k * 3.1) * falloff) * (0.32 / k) * LIQUID_PROGRESS_PRESET.trailGlow)
-    addRgb(color, TRAIL_HOT, Math.exp(-absDistance * Math.max(0.5, 38 - k * 6.6) * falloff) * (0.15 / k) * bloom * LIQUID_PROGRESS_PRESET.trailGlow)
+    addRgb(color, TRAIL, Math.exp(-absDistance * Math.max(0.5, 13.2 - k * 2.8) * falloff) * (0.4 / k) * LIQUID_PROGRESS_PRESET.trailGlow)
+    addRgb(color, TRAIL_HOT, Math.exp(-absDistance * Math.max(0.5, 34 - k * 6.2) * falloff) * (0.2 / k) * bloom * LIQUID_PROGRESS_PRESET.trailGlow)
   }
 
   const haze = fbm(
