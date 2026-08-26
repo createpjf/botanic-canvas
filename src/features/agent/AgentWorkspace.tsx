@@ -55,6 +55,7 @@ import type { BotanicAgentRunReview } from '../../domain/agentReviewContract'
 import { resolveAgentChatPrompt } from '../../domain/agentMarkdown'
 import type { BotanicAgentChatStreamEvent } from '../../domain/agentChatStream'
 import { applyAgentConversationStreamEvent, createAgentTimeline, persistAgentLiveTimeline, projectBotanicAgentRunOntoTimeline, type AgentTimelineEvent, type AgentTimelineState } from '../../domain/agentTimeline'
+import { botanicAgentLatestEvaluableMessageId } from '../../domain/agentMessageUtilities'
 import { nextExclusiveSurface, type ExclusiveSurfaceAction } from '../../domain/exclusiveSurface'
 import { uploadLimitsLabel } from '../../domain/mediaFormats'
 import { clipboardHasPlainText, clipboardMediaFiles, pasteTarget } from '../../domain/clipboardMedia'
@@ -555,6 +556,10 @@ export default function AgentWorkspace({
       return !run || !shouldRestoreBotanicAgentRuntimeSteps(run.status)
     })
   }, [conversationMessages, liveConversation, runs, session])
+  const latestEvaluableMessageId = useMemo(
+    () => botanicAgentLatestEvaluableMessageId(renderedConversationMessages),
+    [renderedConversationMessages],
+  )
   const pendingPromptSourceIds = useMemo(() => new Set((session?.messages ?? [])
     .filter((message) => message.question?.sourcePromptMessageId && message.kind === 'question' && message.status === 'pending')
     .map((message) => message.question!.sourcePromptMessageId!)), [session?.messages])
@@ -2687,6 +2692,7 @@ export default function AgentWorkspace({
           streaming={live?.streaming}
           isLatestAssistant={message.id === latestAssistantMessageId}
           agentBusy={agentBusy}
+          isLatestEvaluable={message.id === latestEvaluableMessageId}
           sessionId={session.id}
           runs={runs}
           artifacts={artifacts}
