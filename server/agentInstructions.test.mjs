@@ -54,9 +54,12 @@ test('指令层点名结构化字段的真实落点，避免规则与工具契�
   assert.match(conversation, /`count`/)
   // 计划工具没有数量与变体参数，写清楚才不会让模型用枚举凑多版本。
   assert.match(conversation, /这个工具没有数量和变体参数/)
-  // 任务状态的权威是生成任务记录，只读工具读不到。
+  // 任务状态的权威是持久化记录：本轮有对应读取工具就先查，没有才请用户看面板。
+  // 指令必须是条件式——运维工具只在注入读取器的链路（回合）存在，对话链路没有。
   assert.match(conversation, /`generationJobs`/)
-  assert.match(conversation, /当前没有检索工具/)
+  assert.doesNotMatch(conversation, /当前没有检索工具/)
+  assert.match(conversation, /agent_run_read/)
+  assert.match(conversation, /任务状态与运维/)
   // 节点自带的角色、媒介与状态是模型能用的判断依据。
   assert.match(conversation, /`mediaKind`/)
   assert.match(conversation, /`status`/)
