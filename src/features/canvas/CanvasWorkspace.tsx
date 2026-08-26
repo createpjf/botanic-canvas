@@ -28,6 +28,7 @@ import { reducedAspectRatio } from '../../domain/mediaPresentation'
 import { mediaRetryUrl } from '../../domain/mediaRecovery'
 import { videoAspectRatioPolicy } from '../../domain/videoGeneration'
 import { canvasNodeBounds } from '../../domain/canvasNodeLayout'
+import { clipboardMediaFiles, pasteTarget } from '../../domain/clipboardMedia'
 import { nextExclusiveSurface, type ExclusiveSurfaceAction } from '../../domain/exclusiveSurface'
 import { topOverlayLayer } from '../../domain/overlayPriority'
 import { summarizeWorkflowTemplate, type WorkflowTemplateSummary } from '../../domain/workflowTemplates'
@@ -1487,6 +1488,7 @@ export default function CanvasWorkspace({
     onCanvasFileDragLeave,
     isFlowDropTarget,
     addDroppedFilesToCanvas,
+    pasteFilesToCanvasCenter,
     renderedEdges,
     onConnect,
     onReconnect,
@@ -1498,6 +1500,25 @@ export default function CanvasWorkspace({
     clearConnectionSelection,
   } = canvasInteraction
   const canvasDropPresence = useMotionPresence(canvasInteraction.isCanvasFileDragging, 100)
+
+  useEffect(() => {
+    const onPaste = (event: globalThis.ClipboardEvent) => {
+      const target = event.target
+      const element = target instanceof Element ? target : null
+      // 对话框内部的粘贴由 AgentWorkspace 的 onPaste 处理。两个监听器各管一块
+      // 互不重叠的区域、用同一个判定式界定，因此不依赖事件触发顺序。
+      const insideAgentPanel = Boolean(element?.closest('.agent-workspace'))
+      const insideTextEntry = Boolean(
+        element?.closest('input, textarea, [contenteditable="true"]'),
+      )
+      const files = clipboardMediaFiles(Array.from(event.clipboardData?.items ?? []))
+      if (pasteTarget({ hasMediaFiles: files.length > 0, insideAgentPanel, insideTextEntry }) !== 'canvas') return
+      event.preventDefault()
+      pasteFilesToCanvasCenter(files)
+    }
+    window.addEventListener('paste', onPaste)
+    return () => window.removeEventListener('paste', onPaste)
+  }, [pasteFilesToCanvasCenter])
 
   const renderedNodes = useMemo(() => document.nodes.map((node) => {
     const entryIndex = revealingResultNodeIds.get(node.id)

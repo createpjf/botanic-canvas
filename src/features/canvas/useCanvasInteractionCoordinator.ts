@@ -194,6 +194,23 @@ export function useCanvasInteractionCoordinator({
     }
   }, [addUploadedAssetsToCanvas, document.id, document.nodes, locale])
 
+  /**
+   * 把文件加到当前视口中心。
+   *
+   * 粘贴不是指针事件，没有 `clientX/Y` 可用 —— `onCanvasDrop` 正是靠它。
+   * 记录最后指针位置需要新增状态，且指针从未进过画布时仍要回落；视口中心
+   * 可预测、无新状态：用户粘贴后，东西出现在他正在看的地方。
+   */
+  const pasteFilesToCanvasCenter = useCallback((files: File[]) => {
+    const mapper = screenToFlowPositionRef.current
+    if (!mapper) return
+    const surface = window.document.querySelector('.react-flow')
+    if (!surface) return
+    const rect = surface.getBoundingClientRect()
+    const position = mapper({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 })
+    void addDroppedFilesToCanvas(files, position)
+  }, [addDroppedFilesToCanvas, screenToFlowPositionRef])
+
   const onCanvasDragOver = useCallback((event: DragEvent<HTMLElement>) => {
     event.preventDefault()
     event.dataTransfer.dropEffect = 'copy'
@@ -413,6 +430,7 @@ export function useCanvasInteractionCoordinator({
     onCanvasFileDragLeave,
     isFlowDropTarget,
     addDroppedFilesToCanvas,
+    pasteFilesToCanvasCenter,
     renderedEdges,
     onConnect,
     onReconnect,
