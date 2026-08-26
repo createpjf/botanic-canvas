@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  BOB_LARGE_AVATAR_GROW_CHARS,
   BOB_LARGE_REPLY_MIN_CHARS,
   bobAssistantMessageMood,
   bobMessageAllowsSays,
   bobMessageIsLargeReply,
   bobMessageReplyText,
+  bobMessageUsesLargeAvatar,
   bobReplyPresentation,
   bobWelcomePresentation,
   emptyBobSaysPlayCounts,
@@ -82,6 +84,50 @@ test('最新大回复：流式限次 hmm，完成后限次 wow，再回到 mood 
   })
   assert.equal(afterWow.says, 'none')
   assert.equal(afterWow.mood, 'listening')
+})
+
+test('流式最新正文先放大头像，满 200 字才允许 says', () => {
+  const growing = { role: 'assistant', kind: 'text', content: '字'.repeat(BOB_LARGE_AVATAR_GROW_CHARS) }
+  assert.equal(bobMessageUsesLargeAvatar({
+    isLatestAssistant: true,
+    streaming: true,
+    message: growing,
+  }), true)
+  assert.equal(bobMessageAllowsSays({
+    isLatestAssistant: true,
+    isLargeReply: bobMessageIsLargeReply(growing),
+  }), false)
+
+  const stillShort = { role: 'assistant', kind: 'text', content: '还在写。' }
+  assert.equal(bobMessageUsesLargeAvatar({
+    isLatestAssistant: true,
+    streaming: true,
+    message: stillShort,
+  }), false)
+
+  const doneShort = { role: 'assistant', kind: 'text', content: '字'.repeat(BOB_LARGE_AVATAR_GROW_CHARS) }
+  assert.equal(bobMessageUsesLargeAvatar({
+    isLatestAssistant: true,
+    streaming: false,
+    message: doneShort,
+  }), false)
+
+  const large = { role: 'assistant', kind: 'text', content: '字'.repeat(BOB_LARGE_REPLY_MIN_CHARS) }
+  assert.equal(bobMessageUsesLargeAvatar({
+    isLatestAssistant: true,
+    streaming: false,
+    message: large,
+  }), true)
+  assert.equal(bobMessageUsesLargeAvatar({
+    isLatestAssistant: false,
+    streaming: true,
+    message: large,
+  }), false)
+  assert.equal(bobMessageUsesLargeAvatar({
+    isLatestAssistant: true,
+    streaming: true,
+    message: { role: 'assistant', kind: 'notice', content: '字'.repeat(BOB_LARGE_REPLY_MIN_CHARS) },
+  }), false)
 })
 
 test('非大回复或非最新消息即使流式也不出字', () => {

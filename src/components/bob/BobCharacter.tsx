@@ -101,6 +101,12 @@ const TEXTURE_SLOTS = 4
 const TEXTURE_POOL = ['tex0', 'tex1', 'tex2', 'tex3'] as const
 const DROP_POOL = Array.from({ length: BOB_IMPRESSION_DROP_SLOTS }, (_, index) => `imp-d${index}`)
 const LOOK_GAIN = 22
+const COMPACT_EYES = {
+  eyeWidth: 1.38,
+  eyeHeight: 0.55,
+  eyeSpacing: 0.72,
+  eyeRaise: -2,
+} as const
 
 export type BobMood = 'idle' | 'listening' | 'thinking' | 'curious' | 'excited' | 'happy' | 'confused'
 export type BobSays = 'none' | 'question' | 'hmm' | 'wow'
@@ -229,6 +235,7 @@ export function BobCharacter({
   lookAt,
   saysCycles,
   onSaysComplete,
+  compact = false,
   className,
 }: {
   mood?: BobMood
@@ -236,6 +243,7 @@ export function BobCharacter({
   lookAt?: BobLookAt
   saysCycles?: number
   onSaysComplete?: () => void
+  compact?: boolean
   className?: string
 }) {
   const uid = useId().replace(/[^a-zA-Z0-9]/g, '')
@@ -251,7 +259,9 @@ export function BobCharacter({
   const impression = speaking ? BOB_IMPRESSIONS[says] : null
   const cycleLimit = saysCycles ?? defaultSaysCycles(says)
   const cycleMs = impression ? impression.plan.setT + IMPRESSION_TAIL_MS : 0
-  const config = { ...BOB_CONFIG, motionId: mood }
+  const config = compact
+    ? { ...BOB_CONFIG, motionId: mood, ...COMPACT_EYES }
+    : { ...BOB_CONFIG, motionId: mood }
   const style = EYE_STYLE_BY_ID[config.eyeStyleId]
   const motion = MOTION_BY_ID[config.motionId] ?? MOTION_BY_ID.idle
   const topper = topperById(config.topperId, DETAIL)

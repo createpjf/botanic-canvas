@@ -1,4 +1,5 @@
 export const BOB_LARGE_REPLY_MIN_CHARS = 200
+export const BOB_LARGE_AVATAR_GROW_CHARS = 80
 export const BOB_SAYS_MAX_PLAYS = 1
 export const BOB_MESSAGE_AVATAR_PX = 28
 export const BOB_LARGE_REPLY_AVATAR_PX = 72
@@ -53,6 +54,21 @@ export function bobMessageAllowsSays(input: {
   isLargeReply: boolean
 }) {
   return input.isLatestAssistant && input.isLargeReply
+}
+
+export function bobMessageUsesLargeAvatar(input: {
+  isLatestAssistant: boolean
+  streaming: boolean
+  message: { content?: string; kind?: string; role?: string }
+  minChars?: number
+  growChars?: number
+}) {
+  if (!input.isLatestAssistant) return false
+  if (input.message.role && input.message.role !== 'assistant') return false
+  const chars = bobMessageReplyText(input.message).length
+  if (chars >= (input.minChars ?? BOB_LARGE_REPLY_MIN_CHARS)) return true
+  if (!input.streaming) return false
+  return chars >= (input.growChars ?? BOB_LARGE_AVATAR_GROW_CHARS)
 }
 
 export function bobWelcomePresentation(plays: BobSaysPlayCounts, maxPlays = BOB_SAYS_MAX_PLAYS): {

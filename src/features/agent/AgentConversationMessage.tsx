@@ -30,7 +30,7 @@ import {
 } from '../../domain/generationOutputSize'
 import { settingsForGenerationModel } from '../../domain/generationRecipe'
 import { BobCharacter } from '../../components/bob/BobCharacter'
-import { bobMessageAllowsSays, bobMessageIsLargeReply, bobReplyPresentation } from '../../domain/bobPresentation'
+import { bobMessageAllowsSays, bobMessageIsLargeReply, bobMessageUsesLargeAvatar, bobReplyPresentation } from '../../domain/bobPresentation'
 import { useBobSaysPlays } from './useBobSaysPlays'
 import { AlertIcon, BookIcon, ChecklistIcon, ChevronDownIcon, ClockIcon, CopyIcon, EditIcon, FocusIcon, GlobeIcon, SearchIcon, ThumbDownIcon, ThumbUpIcon } from '../../components/BotanicIcons'
 import { AgentThinkingOrb } from '../../components/AgentThinkingOrb'
@@ -629,9 +629,15 @@ export function AgentConversationMessage({
   const inlineRunResults = runMediaArtifacts.slice(0, inlineRunResultLimit)
 
   const liveStatus = isLiveRunMessage || streaming
+  const isLargeReply = bobMessageIsLargeReply(message)
   const allowsSays = message.role === 'assistant' && bobMessageAllowsSays({
     isLatestAssistant,
-    isLargeReply: bobMessageIsLargeReply(message),
+    isLargeReply,
+  })
+  const usesLargeAvatar = message.role === 'assistant' && bobMessageUsesLargeAvatar({
+    isLatestAssistant,
+    streaming,
+    message,
   })
   const bob = message.role === 'assistant'
     ? bobReplyPresentation({
@@ -643,8 +649,8 @@ export function AgentConversationMessage({
     })
     : null
 
-  return <article className={`agent-message is-${message.role} is-${message.kind}${timeline ? ' has-timeline' : ''}${allowsSays ? ' is-bob-large' : ''}`} role={liveStatus ? 'status' : undefined} aria-live={liveStatus ? 'polite' : undefined} aria-busy={streaming || undefined}>
-    <div className="agent-message__role" data-bob-mood={bob?.mood} data-bob-says={bob?.says}>{bob ? <BobCharacter mood={bob.mood} says={bob.says} saysCycles={bob.cycles} onSaysComplete={() => bobPlays.markPlayed(bob.says)} /> : <span>{t('你', 'You')}</span>}</div>
+  return <article className={`agent-message is-${message.role} is-${message.kind}${timeline ? ' has-timeline' : ''}${usesLargeAvatar ? ' is-bob-large' : ''}`} role={liveStatus ? 'status' : undefined} aria-live={liveStatus ? 'polite' : undefined} aria-busy={streaming || undefined}>
+    <div className="agent-message__role" data-bob-mood={bob?.mood} data-bob-says={bob?.says} data-bob-size={bob ? (usesLargeAvatar ? 'large' : 'compact') : undefined}>{bob ? <BobCharacter compact={!usesLargeAvatar} mood={bob.mood} says={bob.says} saysCycles={bob.cycles} onSaysComplete={() => bobPlays.markPlayed(bob.says)} /> : <span>{t('你', 'You')}</span>}</div>
     <div className="agent-message__body">
       {timeline ? <AgentMessageTimeline timeline={timeline} /> : null}
       {message.kind === 'composition' && message.composition
