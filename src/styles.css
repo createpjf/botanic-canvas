@@ -4209,7 +4209,7 @@ details.agent-timeline__thinking { display: block; padding: 0; }
 .agent-memory-panel__list button { width: 36px; height: 36px; border-radius: var(--radius-control); }
 .agent-composer { gap: 10px; padding: 14px; }
 .agent-composer__attachments { gap: 8px; }
-.agent-composer__chip.is-media { width: 34px; height: 34px; flex-basis: 34px; border-radius: var(--radius-control); }
+.agent-composer__chip.is-media { width: 32px; height: 32px; flex-basis: 32px; border-radius: var(--radius-control); }
 .agent-composer__chip:focus-visible,
 .agent-composer__add:focus-visible,
 .agent-composer__mode:focus-visible,
@@ -4248,9 +4248,8 @@ details.agent-timeline__thinking { display: block; padding: 0; }
 .agent-composer__attachments { display: grid; gap: 8px; min-width: 0; }
 .agent-composer__attach-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 5px; min-width: 0; }
 .agent-composer__attach-label { color: #849087; font-size: 9px; font-weight: 720; line-height: var(--line-single); }
-.agent-composer__attach-chips { display: flex; min-width: 0; align-items: center; gap: 8px; overflow-x: auto; padding: 6px 6px 2px 0; scrollbar-width: none; }
-.agent-composer__attach-chips::-webkit-scrollbar { display: none; }
-.agent-composer__chip { position: relative; display: inline-flex; flex: 0 0 auto; align-items: center; gap: 4px; border: 1px solid oklch(0 0 0 / 0.1); background: #f1f7f0; color: #41634a; cursor: pointer; }
+.agent-composer__attach-chips { display: flex; flex-wrap: wrap; min-width: 0; align-items: center; gap: 8px; overflow: visible; }
+.agent-composer__chip { position: relative; display: inline-flex; flex: 0 0 auto; align-items: center; overflow: visible; appearance: none; -webkit-appearance: none; gap: 4px; border: 1px solid oklch(0 0 0 / 0.1); background: #f1f7f0; color: #41634a; cursor: pointer; }
 .agent-composer__chip.is-media { width: 32px; height: 32px; justify-content: center; padding: 3px; border-radius: 7px; background: #f5f8f4; }
 .agent-composer__chip.is-media img,
 .agent-composer__chip.is-media > span { width: 24px; height: 24px; border-radius: 5px; object-fit: cover; }
@@ -4259,7 +4258,7 @@ details.agent-timeline__thinking { display: block; padding: 0; }
 .agent-composer__chip.is-skill > svg { width: 12px; height: 12px; flex: 0 0 auto; }
 .agent-composer__chip.is-skill > b { overflow: hidden; padding-block: 2px; font-size: 9px; font-weight: 700; line-height: var(--line-single); text-overflow: ellipsis; white-space: nowrap; }
 .agent-composer__chip > i { display: grid; width: 14px; height: 14px; flex: 0 0 auto; place-items: center; border-radius: 50%; background: rgba(38, 63, 45, .12); color: #56705c; font-size: 11px; font-style: normal; line-height: 1; transform: translateY(-0.5px); }
-.agent-composer__chip.is-media > i { position: absolute; z-index: 1; top: -4px; right: -4px; width: 16px; height: 16px; background: rgba(38, 63, 45, .78); color: #fff; font-size: 12px; }
+.agent-composer__chip.is-media > i { position: absolute; z-index: 1; top: 0; right: 0; width: 16px; height: 16px; transform: none; background: rgba(38, 63, 45, .78); color: #fff; font-size: 12px; }
 .agent-composer__chip:hover { border-color: #8faf94; background: #e8f2e8; }
 .agent-composer__chip:hover > i { background: rgba(38, 63, 45, .88); color: #fff; }
 .agent-composer textarea { width: 100%; min-height: 56px; max-height: 180px; resize: none; border: 0; outline: 0; color: #263f2d; font-size: 12px; line-height: 1.6; box-sizing: border-box; overflow-y: auto; }
