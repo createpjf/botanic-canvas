@@ -83,7 +83,13 @@ test('截图粘进对话框，成为上下文 chip 且名称不是空的', async
   await page.getByRole('button', { name: '打开 Bob' }).click()
   await expect(page.getByRole('complementary', { name: 'Botanic Agent' })).toBeVisible()
 
-  await pasteInto(page, 'aside.agent-workspace', screenshotPaste)
+  // 必须派发到 textarea，不能派发到 aside.agent-workspace。
+  // handlePaste 挂在 aside 上（AgentWorkspace.tsx:2437），但实测以 aside 自身为 target
+  // 派发合成事件时 React 不会触发它（defaultPrevented 恒为 false、chip 不出现）。
+  // 派发到 textarea 才走通，而这也正是真实操作的形态：用户在输入框里按 ⌘V。
+  const composer = page.locator('aside.agent-workspace textarea').first()
+  await expect(composer).toBeVisible()
+  await pasteInto(page, 'aside.agent-workspace textarea', screenshotPaste)
 
   // chip 不渲染名字文本（内容只有 <img> 与 ×），名字只进 aria-label，所以只能读无障碍名。
   // 断言时间戳形状，同时守住 pastedAssetName 的回落语义 —— 截图的 name 是 image.png，
@@ -94,20 +100,43 @@ test('截图粘进对话框，成为上下文 chip 且名称不是空的', async
 })
 
 test('在节点标题输入框里粘贴文字，文字照常粘贴且不产生素材', async ({ page }) => {
-  // 这是整套里最重要的一条：文本粘贴被劫持是本功能唯一会破坏既有输入行为的失败模式。
+  // 钉住 pasteTarget 的规则 1（无媒体文件一律 ignore）：文本粘贴被劫持是本功能
+  // 唯一会破坏既有输入行为的失败模式。
+  // 注意它**不**钉住规则 3（insideTextEntry）—— 纯文字在规则 1 就返回了，走不到规则 3。
+  // 规则 3 由下一条「标题输入框里粘图片」覆盖，两条缺一不可。
   await openBlankCanvas(page)
   await pasteInto(page, '.react-flow', screenshotPaste)
   await expect(page.locator('.react-flow__node-asset')).toHaveCount(1)
 
   const title = page.locator('.image-node__title input')
   await expect(title).toBeVisible()
-  await title.click()
+  // 用 focus() 而非 click()：节点的「从画布移除」按钮悬在标题上方，
+  // click() 会被它的命中盒截走而超时。这里只需要焦点在输入框里。
+  await title.focus()
 
   const result = await pasteInto(page, '.image-node__title input', { text: '一段说明文字' })
 
   // 不 preventDefault 才意味着浏览器的默认粘贴仍然发生。
   expect(result.defaultPrevented).toBe(false)
   // 而且不能凭空多出素材 —— 劫持发生时正是这个现象。
+  await expect(page.locator('.react-flow__node-asset')).toHaveCount(1)
+})
+
+test('在节点标题输入框里粘贴图片，不会凭空多出素材节点', async ({ page }) => {
+  // 钉住 pasteTarget 的规则 3（insideTextEntry → ignore）。这是规则 3 唯一能被观察到的
+  // 场景：用户先复制了截图，再点进节点标题改名，然后按 ⌘V —— 意图是改标题，
+  // 此时画布中央冒出一个新节点是惊吓。上一条用纯文字测不到这里（规则 1 先命中）。
+  await openBlankCanvas(page)
+  await pasteInto(page, '.react-flow', screenshotPaste)
+  await expect(page.locator('.react-flow__node-asset')).toHaveCount(1)
+
+  const title = page.locator('.image-node__title input')
+  await expect(title).toBeVisible()
+  await title.focus()
+
+  const result = await pasteInto(page, '.image-node__title input', screenshotPaste)
+
+  expect(result.defaultPrevented).toBe(false)
   await expect(page.locator('.react-flow__node-asset')).toHaveCount(1)
 })
 

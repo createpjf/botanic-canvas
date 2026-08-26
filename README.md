@@ -4,7 +4,20 @@ Botanic 是面向品牌视觉生产的无限画布工作台。图片、文本和
 
 线上体验：[botanic-canvas.vercel.app](https://botanic-canvas.vercel.app/)
 
-开发前请从 [Agent 开发入口](AGENTS.md) 开始，并阅读 [产品架构文档](docs/PRODUCT_ARCHITECTURE.md)、[代码地图](docs/CODEMAP.md)、[模块接口与依赖方向](docs/ARCHITECTURE.md) 与 [版本及 PR 流程](docs/DEVELOPMENT_WORKFLOW.md)。其中产品架构文档第 3.2 节内置 Agent Ontology 语义定义，覆盖意图、创作维度、素材组、Memory、Skill、Plan、Run 与执行血缘。核心原则是：UI 只表达交互，任务与持久化结果才是生成状态的权威来源。
+## 文档导航
+
+开发前请从 [AGENTS.md](AGENTS.md) 开始，它是所有代码改动的入口约定。
+
+| 文档 | 回答什么问题 |
+| --- | --- |
+| [AGENTS.md](AGENTS.md) | 改代码前要遵守什么：分层边界、验证门禁、提交与 PR 约定 |
+| [docs/PRODUCT_ARCHITECTURE.md](docs/PRODUCT_ARCHITECTURE.md) | 产品由哪些概念构成。第 3.2 节是 Agent Ontology 语义定义，覆盖意图、创作维度、素材组、Memory、Skill、Plan、Run 与执行血缘 |
+| [docs/CODEMAP.md](docs/CODEMAP.md) | 某个行为的权威实现在哪个文件 |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 模块接口与依赖方向，哪些依赖是被禁止的 |
+| [docs/DEVELOPMENT_WORKFLOW.md](docs/DEVELOPMENT_WORKFLOW.md) | 版本与 PR 流程 |
+| [docs/SECURITY_OPERATIONS.md](docs/SECURITY_OPERATIONS.md) | 上线验收、告警阈值、备份恢复与发布门禁 |
+
+**贯穿全局的一条原则：UI 只表达交互，任务与持久化结果才是生成状态的权威来源。** 读代码时如果发现某个状态由组件内部推断得出，那通常是缺陷而不是设计。
 
 ## 当前能力
 
@@ -14,6 +27,7 @@ Botanic 是面向品牌视觉生产的无限画布工作台。图片、文本和
 - 提示词润色：服务端通过 Flock API 调用配置的文本模型，密钥不进入浏览器。
 - 候选与历史：候选卡片就地展开，图片和视频分类查看、预览、定位、下载与入库。
 - 素材库：本地批量上传、文件夹上传、合集路径、搜索筛选与批量操作。
+- 素材入画：文件拖放到画布或对话框；截图与网页图片可直接粘贴，画布粘贴落在视口中心，对话框粘贴成为上下文引用。文本粘贴、非媒体文件与弹层打开时一律不拦截，避免凭空多出节点。
 - 工作流模板：保存可编辑节点、连线、Prompt 与当前生成设置，不保存任务和生成结果。
 - 离线与同步：IndexedDB 本地草稿、远端版本冲突保护、历史任务结果回填。
 - 实时协作：项目级 WebSocket 推送与 Yjs 节点/连线增量；独立图谱和更新日志可跨 API 重启恢复。
@@ -40,6 +54,27 @@ Railway API ── PostgreSQL（项目、画布图谱、Yjs 日志、任务、�
 - 正式用户鉴权使用 Supabase Auth；用户角色、状态、项目、任务与媒体数据保存在 Railway PostgreSQL / S3。
 
 详细依赖方向见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+
+## 仓库结构
+
+分层不是审美偏好，而是由 `npm run check:architecture` 强制执行的：`src/` 不得 import `server/`，UI 不得直接依赖数据库、队列、Worker 或 Provider。
+
+```text
+src/
+  domain/     纯函数与判定规则。不碰 DOM、不发请求，因此可在 node:test 里穷举
+  lib/        机制层。依赖注入形式包裹浏览器 API（FileReader、Image、剪贴板）
+  store/      Zustand 状态
+  features/   React 组件，按功能域分（canvas / agent）
+  i18n/       全量中英双语文案
+server/       裸 Node .mjs。API、Worker、Provider 适配与权威词表
+scripts/      门禁脚本（架构、安全、评测）与冒烟工具
+e2e/          Playwright 用例
+docs/         架构、产品与运维文档
+```
+
+**为什么判定逻辑集中在 `src/domain/`：** 这个项目没有 React 测试渲染器。凡是需要断言的规则都要写成不依赖 DOM 的纯函数，机制层则薄到没有逻辑可测。跨越前后端边界的词表（如图片格式）在两侧各有一份声明，由契约测试以文本方式读取 TS 源码来保证一致——因为架构门禁禁止 `src/` 直接 import `server/`。
+
+**同一行为只保留一个权威实现。** 曾经有六份各自独立的图片字节嗅探代码，格式支持因此长期不一致；现已收编到 `server/mediaFormats.mjs`。新增此类逻辑前先查 [docs/CODEMAP.md](docs/CODEMAP.md)。
 
 ## 本地开发
 
@@ -134,7 +169,9 @@ API 与 Worker 必须使用相同的图像 / 视频 Provider 配置。H3 当前�
 
 - Redis 同时承载跨 API 实例的请求限流；用户级润色、实时票据、成员变更、联网检索与每日生成候选配额相互独立。
 - 同一生成任务的幂等重试先读取已有任务，不重复消耗生成配额。
-- 上传素材校验单文件大小、MIME 与 PNG / JPEG / WebP 文件签名；媒体 Cookie 只能读取媒体，不能执行写操作。
+- 上传素材校验单文件大小（8 MB）、MIME 与 PNG / JPEG / WebP 文件签名；媒体 Cookie 只能读取媒体，不能执行写操作。格式白名单与字节嗅探由 `server/mediaFormats.mjs` 单一来源提供。
+- 参考图有像素上限 8.29 MP（`MEDIA_LIMITS.maxCanonicalPixels`）。这条上限取自 GPT Image 2 的最大输出像素数，表达的不变量是「凡是本产品自己能生成的图，就必须能被重新摄入」。曾有一版守卫额外要求「长边 ≤ 2048」，把应用默认输出的 2048×2048 挡在门外，导致对最常见输出的精修全部失败——所以这里只按像素数判定，不要再加长边条件。
+- 解码有独立上限 80 MP（`maxDecodePixels`），防解压炸弹：生产存储里存在 96 MP JPEG，解成 RGBA 约 384 MB。
 - Vercel 与 Nginx 配置 CSP、HSTS、禁止 iframe 嵌入、权限策略和内容嗅探防护。
 - 账户安全支持 TOTP 二步验证与“退出其他设备”。Owner 完成 TOTP 设置后，再把 Railway API 的 `SECURITY_REQUIRE_OWNER_MFA` 改为 `true`，即可强制邀请成员、修改权限和删除项目使用 AAL2 会话。
 - 对象级授权由统一权限矩阵决定：工作区 Owner 管理成员、共享素材和工作区审计；项目 Owner / Editor / Viewer 分别对应管理、编辑和只读权限。实时票据、画布、润色和生成入口使用同一授权入口。
@@ -147,25 +184,50 @@ API 与 Worker 必须使用相同的图像 / 视频 Provider 配置。H3 当前�
 
 ## 验证
 
+合并前必须全绿：
+
 ```bash
-npm test
-npm run check:architecture
-npm run check:security
-npm run build
-npm run test:e2e
-git diff --check
+npm test                      # 199 个测试文件，node:test
+npm run check:architecture    # 分层边界
+npm run check:security        # 凭据与密钥文件
+npm run check:evals           # Agent 回归集
+npm run build                 # tsc -b && vite build
+npm run test:e2e              # Playwright，16 个用例
+git diff --check              # 行尾空白
 ```
 
-`npm test` 覆盖生成模型目录、任务幂等与恢复、媒体持久化、历史结果回填、WebSocket 鉴权、Yjs 增量和重启恢复，以及画布、素材、模板和投放交付的纯领域规则。`check:architecture` 阻止 UI 直接依赖数据库、队列、Worker 或 Provider。`test:e2e` 使用本地持久化与伪健康接口验证项目、画布、Agent 与面板顺序，不调用真实生成 Provider。
+`npm test` 覆盖生成模型目录、任务幂等与恢复、媒体持久化、历史结果回填、WebSocket 鉴权、Yjs 增量和重启恢复，以及画布、素材、模板和投放交付的纯领域规则。`.ts` 测试通过 `--experimental-strip-types` 直接运行，无需构建步骤。
 
-普通 UI 变更不得调用真实生图服务；真实 Provider 冒烟测试需要单独授权并明确允许消耗额度。
+`check:architecture` 阻止 UI 直接依赖数据库、队列、Worker 或 Provider。`check:evals` 的确定性层里有一批**本来就该失败**的样本，输出「失败 N 条」属正常；未跑视觉层的判据记为「无法验证」而不是「通过」。
+
+`test:e2e` 使用本地持久化（`VITE_PERSISTENCE_MODE=local`）与伪健康接口，不调用真实生成 Provider。
+
+`npm run smoke:e2e` 会打真实 Provider，需要单独授权并明确允许消耗额度。普通 UI 变更不得调用真实生图服务。
+
+### 断言要能失败
+
+计数为零、状态未变这类断言，在「功能坏掉」和「什么都没发生」两种情况下都会绿。新增测试后请逐条破坏被测规则，确认**只有对应那条**变红。
+
+这不是形式主义。粘贴功能的 e2e 曾经六条全绿，而破坏 `insideTextEntry` 守卫后仍然全绿——因为往输入框里粘的是纯文字，在更早的一条规则就返回了，根本走不到被测分支。真正的用例（焦点在输入框时粘**图片**）当时并不存在。
+
+同一套测试还暴露过另一种假象：手写的 PNG base64 头部合法但浏览器解不开，读尺寸失败后整条链路静默返回，测试以「什么都没发生」的形式失败，看起来像功能坏了。图片夹具请用 `encodeRgbaPng` 生成真实字节。
 
 ## 发布流程
 
-1. 从最新 `main` 创建 `codex/<功能>` 分支。
-2. 完成本地测试、生产构建、架构检查与差异检查。
-3. 推送分支并通过 PR 合并到 `main`。
-4. Vercel 自动部署 Web；Railway 的 API / Worker 服务从同一 GitHub 仓库部署。
+1. 从最新 `main` 创建工作分支，前缀表明变更性质：`feat/`、`fix/`、`docs/`、`refactor/`。
+2. 跑完上一节的全部门禁。
+3. 推送分支并通过 PR 合并到 `main`。仓库使用 **squash merge**。
+4. Vercel 自动部署 Web；Railway 的 API / Worker 服务从同一 GitHub 仓库部署。只有 `main` 会触发生产部署，功能分支不会。
 5. 发布后验证线上页面、`/api/health`、登录、项目恢复，以及图片 / 视频历史是否可重新打开。
 
 不要把 GitHub 构建成功当作上线完成；最终以线上 HTML、健康接口与真实页面行为为准。
+
+### 分支清理
+
+PR 合并后请删除源分支。由于用的是 squash merge，被合并的分支相对 `main` 仍会显示「领先若干提交」——**`git branch --merged` 和 `git branch -r --contains` 在这里都会给出错误答案**，判断是否可删除请以 PR 的合并状态为准：
+
+```bash
+gh pr list --state all --limit 300 --json number,headRefName,state,mergedAt
+```
+
+要确认某个提交的内容是否已进入 `main`，用 patch-id 而非提交哈希比对（squash 后哈希必然不同）。
