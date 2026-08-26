@@ -1,32 +1,24 @@
-import { ThinkingOrb } from 'thinking-orbs'
 import type { AgentTimelineState } from '../domain/agentTimeline'
-import { resolveAgentThinkingOrbState } from './agentThinkingOrbState'
-
-export { resolveAgentThinkingOrbState } from './agentThinkingOrbState'
+import { agentTimelineOrbState } from '../domain/agentTimeline'
+import { AgentToolOrb } from './AgentToolOrb'
 
 /**
- * Agent 思考 pill 内的 thinking-orbs 封装。
- * 仅由 UI 决定 state；不进 domain，不碰 Store。
+ * Agent 思考 pill 内的球体。固定 solving；文案仍是「思考了 Ns」。
+ * 工具行各自用 AgentToolOrb，不在这里抢 searching。
  */
 
 export type AgentThinkingOrbProps = {
-  /** 有 running 的 search/fetch 步时用 searching，否则 composing（贴近 MetalForge converge）。 */
   timeline?: AgentTimelineState
   label?: string
   className?: string
 }
 
-export function AgentThinkingOrb({ timeline, label, className }: AgentThinkingOrbProps) {
-  const state = resolveAgentThinkingOrbState(timeline)
+export function AgentThinkingOrb({ className }: AgentThinkingOrbProps) {
   return (
-    <span className={['agent-thinking-orb', className].filter(Boolean).join(' ')} aria-hidden="true">
-      <ThinkingOrb
-        state={state}
-        size={20}
-        theme="light"
-        speed={1.5}
-        aria-label={label}
-      />
-    </span>
+    <AgentToolOrb
+      state={agentTimelineOrbState({ surface: 'thinking' })}
+      className={['agent-thinking-orb', className].filter(Boolean).join(' ')}
+      speed={1.5}
+    />
   )
 }

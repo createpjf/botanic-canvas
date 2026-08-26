@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  agentTimelineOrbState,
+  agentTimelineStepToolName,
   agentTimelineToolPresentation,
   applyAgentConversationStreamEvent,
   createAgentTimeline,
@@ -235,6 +237,44 @@ test('已知规划工具标题与服务端对齐；Run 投影只反映已持久�
     ['生成 · 主图', 'succeeded'],
     ['生成 · 变体', 'running'],
   ])
+})
+
+test('球体动画态只映射动作，不改工具标题', () => {
+  assert.equal(agentTimelineOrbState({ surface: 'thinking' }), 'solving')
+  assert.equal(agentTimelineOrbState({ kind: 'search', toolName: 'web_search' }), 'searching')
+  assert.equal(agentTimelineOrbState({ kind: 'search' }), 'searching')
+  assert.equal(agentTimelineOrbState({ kind: 'fetch', toolName: 'web_fetch' }), 'connecting')
+  assert.equal(agentTimelineOrbState({ kind: 'connect_runtime' }), 'connecting')
+  assert.equal(agentTimelineOrbState({ kind: 'read', toolName: 'canvas_read' }), 'working')
+  assert.equal(agentTimelineOrbState({ kind: 'read_skill', toolName: 'skill_run' }), 'weaving')
+  assert.equal(agentTimelineOrbState({ kind: 'write', toolName: 'generation_create_plan' }), 'composing')
+  assert.equal(agentTimelineOrbState({ kind: 'other', toolName: 'decompose_creative_brief' }), 'composing')
+  assert.equal(agentTimelineOrbState({ kind: 'write', toolName: 'generation_submit' }), 'shaping')
+  assert.equal(agentTimelineOrbState({ kind: 'write', toolName: 'generate_images' }), 'shaping')
+  assert.equal(agentTimelineOrbState({ kind: 'other', toolName: 'mcp_call' }), 'connecting')
+  assert.equal(agentTimelineOrbState({ kind: 'other', toolName: 'ask_clarification' }), 'listening')
+  assert.equal(agentTimelineOrbState({ kind: 'write' }), 'working')
+
+  const step = {
+    id: 'step:search-1',
+    type: 'step' as const,
+    status: 'running' as const,
+    kind: 'search' as const,
+    title: '正在搜索网站',
+    sourceToolIds: ['search-1'],
+  }
+  assert.equal(
+    agentTimelineStepToolName(step, [toolCall('search-1', 'web_search', '网页搜索', 'running')]),
+    'web_search',
+  )
+  assert.equal(agentTimelineStepToolName(step, []), undefined)
+  assert.equal(
+    agentTimelineOrbState({
+      kind: step.kind,
+      toolName: agentTimelineStepToolName(step, [toolCall('search-1', 'web_search', '网页搜索', 'running')]),
+    }),
+    'searching',
+  )
 })
 
 test('回合收口把 live 时间线落到旁路状态，并把思考标成结束', () => {

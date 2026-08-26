@@ -3705,8 +3705,10 @@ details.agent-timeline__thinking { display: block; padding: 0; }
 .agent-timeline__thinking > summary::-webkit-details-marker { display: none; }
 .agent-timeline__thinking > svg,
 .agent-timeline__thinking > summary svg { width: 13px; height: 13px; flex: 0 0 13px; color: #719079; }
-.agent-thinking-orb { display: grid; width: 20px; height: 20px; flex: 0 0 20px; place-items: center; pointer-events: none; }
-.agent-thinking-orb canvas { display: block; width: 20px; height: 20px; }
+.agent-thinking-orb { display: grid; width: 20px; height: 20px; flex: 0 0 20px; place-items: center; pointer-events: none; color: #2a5238; }
+.agent-thinking-orb canvas,
+.agent-tool-orb canvas { display: block; width: 20px; height: 20px; }
+.agent-tool-orb { display: grid; width: 20px; height: 20px; place-items: center; pointer-events: none; color: #2a5238; }
 .agent-timeline__thinking.is-running > svg,
 .agent-timeline__thinking.is-running > summary svg { animation: agent-runtime-pulse 1.2s ease-in-out infinite; }
 .agent-timeline__thinking > p { max-width: 540px; max-height: 150px; margin: 0 8px 8px; overflow: auto; padding: 7px 8px; border-radius: 7px; background: #edf4ed; color: #607267; font-size: 10px; line-height: 1.55; white-space: pre-wrap; }
@@ -3714,9 +3716,10 @@ details.agent-timeline__thinking { display: block; padding: 0; }
 .agent-timeline__step { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; min-height: 28px; align-items: center; gap: 7px; padding: 0 2px; }
 .agent-timeline__step-icon { display: grid; width: 22px; height: 22px; place-items: center; border-radius: 50%; background: #edf4ed; color: #628069; }
 .agent-timeline__step-icon svg { width: 13px; height: 13px; }
+.agent-timeline__step-icon .agent-tool-orb { width: 20px; height: 20px; }
 .agent-timeline__step strong { overflow: hidden; color: #52685a; font-size: 11px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .agent-timeline__step small { color: #93a098; font-size: 9px; white-space: nowrap; }
-.agent-timeline__step.is-running .agent-timeline__step-icon { animation: agent-runtime-pulse 1.2s ease-in-out infinite; background: #deebdf; color: #315b3b; }
+.agent-timeline__step.is-running .agent-timeline__step-icon { background: #deebdf; color: #315b3b; }
 .agent-timeline__step.is-running strong { color: #315b3b; font-weight: 760; }
 .agent-timeline__step.is-succeeded .agent-timeline__step-icon { color: #3e774b; }
 .agent-timeline__step.is-failed .agent-timeline__step-icon { background: #f6e4df; color: #a65349; }
