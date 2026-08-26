@@ -1251,7 +1251,14 @@ function ResultNode({ data, id, selected }: NodeProps) {
             : <img src={mediaSource} alt={resultName} className="result-node__image" draggable={false} decoding="async" onError={handleMediaError} />
           : (
           <div className={`result-node__task-state result-node__task-state--${result.status}`}>
-            {isGenerating ? <LiquidProgressBar compact={displayedAspectRatio === '16:9'} /> : null}
+            {isGenerating ? (
+              <LiquidProgressBar
+                compact={displayedAspectRatio === '16:9'}
+                taskStatus={result.taskStatus}
+                submittedAt={result.submittedAt}
+                mediaKind={mediaKind}
+              />
+            ) : null}
             <strong aria-live="polite">{imageFailed ? t.mediaUnavailable : isGenerating ? taskFeedback.title : result.status === 'failed' ? t.taskIncomplete : result.status === 'cancelled' ? t.taskCancelled : t.waitingResult}</strong>
             <small>{imageFailed ? t.mediaError : isGenerating ? (isSlowTask ? elapsedTaskLabel(elapsedSeconds, locale) : taskFeedback.detail) : (result.error ? localizeProductError(new Error(generationTaskErrorMessage(result.error) ?? result.error), locale, { 'zh-CN': generationTaskErrorMessage(result.error) ?? result.error, en: t.generationConnectionError }) : undefined) ?? (result.status === 'ready' ? t.waitingService : t.realStatus)}</small>
             {imageFailed ? <button className="result-node__task-action nodrag nowheel" type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void recoverMedia() }}>{t.reload}</button> : null}

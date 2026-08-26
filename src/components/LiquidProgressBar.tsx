@@ -1,29 +1,37 @@
 import { useEffect, useRef } from 'react'
+import type { CanvasGenerationTaskStatus, GenerationMediaKind } from '../domain/canvas'
+import { isGenerationLiquidRunningStatus } from '../domain/generationLiquidTravel'
 import {
+  applyLiquidProgressDrive,
   ensureLiquidProgressLoop,
   prefersLiquidReducedMotion,
-  liquidProgressElapsedMs,
   paintLiquidProgressFrame,
   registerLiquidProgressSubscriber,
   type LiquidSubscriber,
 } from './liquidProgressBarRuntime'
 
-export { liquidProgressBarDebugState, liquidIndeterminateTravel } from './liquidProgressBarRuntime'
+export { liquidProgressBarDebugState } from './liquidProgressBarRuntime'
+export { generationLiquidTravel } from '../domain/generationLiquidTravel'
 
 export type LiquidProgressBarProps = {
   /** 矮节点降低着色缓冲像素上限。 */
   compact?: boolean
+  taskStatus?: CanvasGenerationTaskStatus
+  submittedAt?: number
+  mediaKind?: GenerationMediaKind
   className?: string
   'aria-hidden'?: boolean | 'true' | 'false'
 }
 
 /**
- * 铺满结果节点媒体区（跟卡片原比例），液面从左到右波浪推进。
- * 父级 `.result-node__task-state` 需铺满节点内容区。
- * 画面由逐像素 SDF 前沿着色，不在 UI 里画多边形切面。
+ * 铺满结果节点媒体区（跟卡片原比例），液面单次从左到右推进。
+ * 推进量跟任务阶段和 submittedAt 对齐，不循环，不显示百分比。
  */
 export function LiquidProgressBar({
   compact = false,
+  taskStatus,
+  submittedAt,
+  mediaKind,
   className,
   'aria-hidden': ariaHidden = true,
 }: LiquidProgressBarProps) {
@@ -36,11 +44,17 @@ export function LiquidProgressBar({
     const host = hostRef.current
     if (!canvas || !host) return
 
+    const now = Date.now()
     const sub: LiquidSubscriber = {
       canvas,
       visible: true,
       reducedMotion: prefersLiquidReducedMotion(),
       compact,
+      taskStatus,
+      submittedAt,
+      mediaKind,
+      mountAt: now,
+      runClockStart: isGenerationLiquidRunningStatus(taskStatus) ? (submittedAt ?? now) : undefined,
     }
     subRef.current = sub
 
@@ -65,7 +79,7 @@ export function LiquidProgressBar({
     const resizeObserver = typeof ResizeObserver !== 'undefined'
       ? new ResizeObserver(() => {
         if (!sub.visible) return
-        paintLiquidProgressFrame(sub, liquidProgressElapsedMs())
+        paintLiquidProgressFrame(sub)
       })
       : null
     resizeObserver?.observe(host)
@@ -86,8 +100,11 @@ export function LiquidProgressBar({
   }, [compact])
 
   useEffect(() => {
-    if (subRef.current) subRef.current.compact = compact
-  }, [compact])
+    const sub = subRef.current
+    if (!sub) return
+    sub.compact = compact
+    applyLiquidProgressDrive(sub, { taskStatus, submittedAt, mediaKind })
+  }, [compact, mediaKind, submittedAt, taskStatus])
 
   return (
     <span

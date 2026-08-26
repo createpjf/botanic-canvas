@@ -1,8 +1,13 @@
 /**
- * 结果节点媒体区全幅 liquid：跟卡片原比例铺满，液面从左到右波浪推进。
- * 不定进度，不伪造业务百分比。逐像素着色在 liquidProgressShader。
+ * 结果节点媒体区全幅 liquid：跟卡片原比例铺满。
+ * 推进量由 generationLiquidTravel 决定：单次从左到右，跟任务阶段对齐，不循环。
  */
 
+import type { CanvasGenerationTaskStatus, GenerationMediaKind } from '../domain/canvas.ts'
+import {
+  generationLiquidTravel,
+  isGenerationLiquidRunningStatus,
+} from '../domain/generationLiquidTravel.ts'
 import {
   LIQUID_PROGRESS_BACKGROUND,
   fillLiquidProgressPixels,
@@ -10,44 +15,70 @@ import {
 } from './liquidProgressShader.ts'
 
 export { LIQUID_PROGRESS_BACKGROUND } from './liquidProgressShader.ts'
+export { generationLiquidTravel } from '../domain/generationLiquidTravel.ts'
 
 /** 与 .result-node 圆角一致 */
 export const LIQUID_PROGRESS_NODE_RADIUS = 10
 
-export type LiquidSubscriber = {
+export type LiquidProgressDrive = {
+  taskStatus?: CanvasGenerationTaskStatus
+  submittedAt?: number
+  mediaKind?: GenerationMediaKind
+}
+
+export type LiquidSubscriber = LiquidProgressDrive & {
   canvas: HTMLCanvasElement
   visible: boolean
   reducedMotion: boolean
   compact: boolean
   image?: ImageData
+  mountAt: number
+  runClockStart?: number
 }
 
 const subscribers = new Set<LiquidSubscriber>()
 let rafId = 0
-let startedAt = 0
 
 export function prefersLiquidReducedMotion() {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
   return window.matchMedia('(prefers-reduced-motion: reduce)').matches
 }
 
-/**
- * 不定进度：只从左往右单向推进，到近右端后复位再来一轮。
- * 不映射业务百分比，也不回扫。
- */
-export function liquidIndeterminateTravel(elapsedSeconds: number, reducedMotion: boolean) {
-  if (reducedMotion) return 0.55
-  // 约 5.5s 走完一轮（0.12 → 0.92），再瞬间回到左侧。
-  const cycle = (elapsedSeconds * 0.18) % 1
-  return 0.12 + cycle * 0.8
+export function applyLiquidProgressDrive(
+  sub: LiquidSubscriber,
+  drive: LiquidProgressDrive,
+  now = Date.now(),
+) {
+  const previous = sub.taskStatus
+  const next = drive.taskStatus
+  if (
+    isGenerationLiquidRunningStatus(next)
+    && previous !== undefined
+    && !isGenerationLiquidRunningStatus(previous)
+  ) {
+    sub.runClockStart = now
+  } else if (sub.runClockStart == null && isGenerationLiquidRunningStatus(next)) {
+    sub.runClockStart = drive.submittedAt ?? sub.mountAt
+  } else if (!isGenerationLiquidRunningStatus(next)) {
+    sub.runClockStart = undefined
+  }
+  sub.taskStatus = next
+  sub.submittedAt = drive.submittedAt
+  sub.mediaKind = drive.mediaKind
 }
 
-export function liquidProgressElapsedMs(now = typeof performance !== 'undefined' ? performance.now() : Date.now()) {
-  if (!startedAt) startedAt = now
-  return now - startedAt
+export function liquidRunningElapsedSeconds(sub: LiquidSubscriber, now = Date.now()) {
+  if (!isGenerationLiquidRunningStatus(sub.taskStatus)) return 0
+  const origin = sub.runClockStart ?? sub.submittedAt ?? sub.mountAt
+  return Math.max(0, (now - origin) / 1000)
 }
 
-export function paintLiquidProgressFrame(sub: LiquidSubscriber, elapsedMs: number) {
+export function liquidWaveClockSeconds(sub: LiquidSubscriber, now = Date.now()) {
+  const origin = sub.submittedAt ?? sub.mountAt
+  return Math.max(0, (now - origin) / 1000)
+}
+
+export function paintLiquidProgressFrame(sub: LiquidSubscriber, nowMs = Date.now()) {
   const canvas = sub.canvas
   const host = canvas.parentElement
   if (!host) return
@@ -69,10 +100,15 @@ export function paintLiquidProgressFrame(sub: LiquidSubscriber, elapsedMs: numbe
     sub.image = ctx.createImageData(width, height)
   }
 
-  const time = sub.reducedMotion ? 1.2 : elapsedMs / 1000
+  const elapsed = liquidRunningElapsedSeconds(sub, nowMs)
+  const warp = sub.reducedMotion ? 1.2 : liquidWaveClockSeconds(sub, nowMs)
   fillLiquidProgressPixels(sub.image.data, width, height, {
-    progress: liquidIndeterminateTravel(time, sub.reducedMotion),
-    warp: time,
+    progress: generationLiquidTravel({
+      taskStatus: sub.taskStatus,
+      elapsedSeconds: elapsed,
+      mediaKind: sub.mediaKind,
+    }),
+    warp,
     alive: sub.reducedMotion ? 0 : 1,
   })
   ctx.putImageData(sub.image, 0, 0)
@@ -86,11 +122,11 @@ function anyShouldAnimate() {
   return false
 }
 
-function tick(now: number) {
-  const elapsed = liquidProgressElapsedMs(now)
+function tick() {
+  const now = Date.now()
   for (const sub of subscribers) {
     if (!sub.visible) continue
-    paintLiquidProgressFrame(sub, elapsed)
+    paintLiquidProgressFrame(sub, now)
   }
   if (anyShouldAnimate()) {
     rafId = window.requestAnimationFrame(tick)
@@ -102,9 +138,9 @@ function tick(now: number) {
 export function ensureLiquidProgressLoop() {
   if (rafId || !anyShouldAnimate()) {
     if (!rafId) {
-      const elapsed = liquidProgressElapsedMs()
+      const now = Date.now()
       for (const sub of subscribers) {
-        if (sub.visible) paintLiquidProgressFrame(sub, elapsed)
+        if (sub.visible) paintLiquidProgressFrame(sub, now)
       }
     }
     return
@@ -120,7 +156,6 @@ export function registerLiquidProgressSubscriber(sub: LiquidSubscriber) {
     if (subscribers.size === 0 && rafId) {
       window.cancelAnimationFrame(rafId)
       rafId = 0
-      startedAt = 0
     }
   }
 }
