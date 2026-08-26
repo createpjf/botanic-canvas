@@ -1,14 +1,11 @@
 /**
- * 结果节点生成态的横向 liquid 进度卡（贴近 MetalForge progress / 参考图）。
- * 从左到右填充，波浪前沿；不伪造业务百分比。
+ * 结果节点媒体区全幅 liquid：跟卡片原比例铺满，液面从左到右波浪推进。
+ * 不定进度，不伪造业务百分比。
  */
 
-export const LIQUID_PROGRESS_PALETTE = ['#090B16', '#0B194A', '#0E4FC7', '#1354C2', '#338FE0', '#42B8FA', '#A3EDFF'] as const
 export const LIQUID_PROGRESS_BACKGROUND = '#212124'
-/** MetalForge aspect=3.6 */
-export const LIQUID_PROGRESS_ASPECT = 3.6
-/** MetalForge corner=0.144，相对短边 */
-export const LIQUID_PROGRESS_CORNER_RATIO = 0.144
+/** 与 .result-node 圆角一致 */
+export const LIQUID_PROGRESS_NODE_RADIUS = 10
 
 export type LiquidSubscriber = {
   canvas: HTMLCanvasElement
@@ -24,31 +21,6 @@ let startedAt = 0
 export function prefersLiquidReducedMotion() {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
   return window.matchMedia('(prefers-reduced-motion: reduce)').matches
-}
-
-function hexToRgb(hex: string) {
-  const value = hex.replace('#', '')
-  const n = Number.parseInt(value, 16)
-  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 }
-}
-
-function mixRgb(a: { r: number; g: number; b: number }, b: { r: number; g: number; b: number }, t: number) {
-  const u = Math.min(1, Math.max(0, t))
-  return {
-    r: Math.round(a.r + (b.r - a.r) * u),
-    g: Math.round(a.g + (b.g - a.g) * u),
-    b: Math.round(a.b + (b.b - a.b) * u),
-  }
-}
-
-function paletteAt(t: number) {
-  const clamped = ((t % 1) + 1) % 1
-  const scaled = clamped * (LIQUID_PROGRESS_PALETTE.length - 1)
-  const i = Math.floor(scaled)
-  const f = scaled - i
-  const a = hexToRgb(LIQUID_PROGRESS_PALETTE[i]!)
-  const b = hexToRgb(LIQUID_PROGRESS_PALETTE[Math.min(i + 1, LIQUID_PROGRESS_PALETTE.length - 1)]!)
-  return mixRgb(a, b, f)
 }
 
 function roundRectPath(
@@ -70,22 +42,20 @@ function roundRectPath(
 }
 
 /**
- * 不定进度：从左到右缓慢推进后回扫，落在约 12%–78%。
+ * 不定进度：从左到右缓慢推进后回扫，约 18%–82%。
  * 不映射业务百分比。
  */
 export function liquidIndeterminateTravel(elapsedSeconds: number, reducedMotion: boolean) {
-  if (reducedMotion) return 0.42
-  const cycle = (elapsedSeconds * 0.22) % 1
-  // 三角波：0→1→0，再映射到可见区间
+  if (reducedMotion) return 0.55
+  const cycle = (elapsedSeconds * 0.18) % 1
   const tri = cycle < 0.5 ? cycle * 2 : (1 - cycle) * 2
-  return 0.12 + tri * 0.66
+  return 0.18 + tri * 0.64
 }
 
 function frontWaveX(baseX: number, y: number, height: number, time: number, amount: number) {
-  // 参考图：竖直有机波浪前沿，多频叠加
-  const n1 = Math.sin(y / height * Math.PI * 1.8 + time * 2.4) * amount * height * 0.22
-  const n2 = Math.sin(y / height * Math.PI * 4.6 - time * 1.7) * amount * height * 0.1
-  const n3 = Math.sin(y / height * Math.PI * 0.7 + time * 0.9) * amount * height * 0.06
+  const n1 = Math.sin(y / height * Math.PI * 1.8 + time * 2.4) * amount * height * 0.14
+  const n2 = Math.sin(y / height * Math.PI * 4.6 - time * 1.7) * amount * height * 0.07
+  const n3 = Math.sin(y / height * Math.PI * 0.7 + time * 0.9) * amount * height * 0.04
   return baseX + n1 + n2 + n3
 }
 
@@ -111,7 +81,7 @@ export function paintLiquidProgressFrame(sub: LiquidSubscriber, elapsedMs: numbe
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   ctx.clearRect(0, 0, cssWidth, cssHeight)
 
-  const radius = cssHeight / 2
+  const radius = LIQUID_PROGRESS_NODE_RADIUS
   roundRectPath(ctx, 0, 0, cssWidth, cssHeight, radius)
   ctx.fillStyle = LIQUID_PROGRESS_BACKGROUND
   ctx.fill()
@@ -123,8 +93,9 @@ export function paintLiquidProgressFrame(sub: LiquidSubscriber, elapsedMs: numbe
   const fill = liquidIndeterminateTravel(time, sub.reducedMotion)
   const frontBase = cssWidth * fill
   const amount = 0.085
+  const steps = Math.max(36, Math.floor(cssHeight / 3))
 
-  // 从左到右的液面主体
+  // 从左到右铺满高度的液面
   const body = ctx.createLinearGradient(0, 0, Math.max(frontBase, 1), 0)
   body.addColorStop(0, '#090B16')
   body.addColorStop(0.18, '#0B194A')
@@ -135,7 +106,6 @@ export function paintLiquidProgressFrame(sub: LiquidSubscriber, elapsedMs: numbe
 
   ctx.beginPath()
   ctx.moveTo(0, 0)
-  const steps = Math.max(32, Math.floor(cssHeight / 2))
   for (let i = 0; i <= steps; i += 1) {
     const y = (i / steps) * cssHeight
     const x = sub.reducedMotion ? frontBase : frontWaveX(frontBase, y, cssHeight, time, amount)
@@ -147,21 +117,19 @@ export function paintLiquidProgressFrame(sub: LiquidSubscriber, elapsedMs: numbe
   ctx.fillStyle = body
   ctx.fill()
 
-  // 内部 haze / plasma
   if (!sub.reducedMotion) {
     const haze = ctx.createRadialGradient(
       frontBase * 0.55, cssHeight * 0.45, 0,
-      frontBase * 0.55, cssHeight * 0.5, Math.max(frontBase, cssHeight) * 0.7,
+      frontBase * 0.55, cssHeight * 0.5, Math.max(frontBase, cssHeight) * 0.65,
     )
-    haze.addColorStop(0, 'rgba(163,237,255,0.28)')
-    haze.addColorStop(0.4, 'rgba(66,184,250,0.12)')
+    haze.addColorStop(0, 'rgba(163,237,255,0.26)')
+    haze.addColorStop(0.4, 'rgba(66,184,250,0.1)')
     haze.addColorStop(1, 'rgba(14,79,199,0)')
     ctx.globalAlpha = 0.9
     ctx.fillStyle = haze
     ctx.fillRect(0, 0, frontBase + 8, cssHeight)
 
-    // lag echo
-    const lagFront = frontBase - cssWidth * 0.045
+    const lagFront = frontBase - cssWidth * 0.04
     ctx.beginPath()
     ctx.moveTo(0, 0)
     for (let i = 0; i <= steps; i += 1) {
@@ -170,64 +138,58 @@ export function paintLiquidProgressFrame(sub: LiquidSubscriber, elapsedMs: numbe
     }
     ctx.lineTo(0, cssHeight)
     ctx.closePath()
-    ctx.globalAlpha = 0.2
+    ctx.globalAlpha = 0.18
     ctx.fillStyle = '#42B8FA'
     ctx.fill()
   }
 
-  // 前沿 bloom（参考图电青光边）
+  // 前沿 bloom
   const bloom = ctx.createRadialGradient(
     frontBase, cssHeight * 0.5, 0,
-    frontBase, cssHeight * 0.5, cssHeight * 0.85,
+    frontBase, cssHeight * 0.5, Math.min(cssWidth, cssHeight) * 0.55,
   )
-  bloom.addColorStop(0, 'rgba(163,237,255,0.65)')
-  bloom.addColorStop(0.35, 'rgba(66,184,250,0.28)')
+  bloom.addColorStop(0, 'rgba(163,237,255,0.55)')
+  bloom.addColorStop(0.35, 'rgba(66,184,250,0.22)')
   bloom.addColorStop(1, 'rgba(66,184,250,0)')
   ctx.globalAlpha = 1
   ctx.fillStyle = bloom
-  ctx.fillRect(frontBase - cssHeight * 0.6, 0, cssHeight * 1.2, cssHeight)
+  ctx.fillRect(frontBase - cssWidth * 0.12, 0, cssWidth * 0.24, cssHeight)
 
-  // 竖直高光带扫过液面
   if (!sub.reducedMotion) {
-    const sheenX = ((time * 0.35) % 1.2) * frontBase
-    const sheen = ctx.createLinearGradient(sheenX - 12, 0, sheenX + 18, 0)
+    const sheenX = ((time * 0.32) % 1.15) * frontBase
+    const sheen = ctx.createLinearGradient(sheenX - 14, 0, sheenX + 20, 0)
     sheen.addColorStop(0, 'rgba(255,255,255,0)')
-    sheen.addColorStop(0.5, 'rgba(163,237,255,0.22)')
+    sheen.addColorStop(0.5, 'rgba(163,237,255,0.2)')
     sheen.addColorStop(1, 'rgba(255,255,255,0)')
-    ctx.globalAlpha = 0.8
+    ctx.globalAlpha = 0.75
     ctx.fillStyle = sheen
     ctx.fillRect(0, 0, frontBase, cssHeight)
   }
 
-  // 极轻 grain
+  // vignette：压角，叠字更清晰
+  const vignette = ctx.createRadialGradient(
+    cssWidth * 0.5, cssHeight * 0.42, Math.min(cssWidth, cssHeight) * 0.18,
+    cssWidth * 0.5, cssHeight * 0.5, Math.max(cssWidth, cssHeight) * 0.7,
+  )
+  vignette.addColorStop(0, 'rgba(0,0,0,0)')
+  vignette.addColorStop(1, 'rgba(9,11,22,0.32)')
+  ctx.globalAlpha = 1
+  ctx.fillStyle = vignette
+  ctx.fillRect(0, 0, cssWidth, cssHeight)
+
   if (!sub.reducedMotion) {
-    const grains = sub.compact ? 20 : 40
+    const grains = sub.compact ? 36 : 72
     ctx.globalAlpha = 0.03
     for (let i = 0; i < grains; i += 1) {
       const x = ((i * 47 + time * 36) % cssWidth + cssWidth) % cssWidth
       const y = ((i * 19 + time * 15) % cssHeight + cssHeight) % cssHeight
       ctx.fillStyle = i % 2 ? '#A3EDFF' : '#090B16'
-      ctx.fillRect(x, y, 1, 1)
+      ctx.fillRect(x, y, 1.2, 1.2)
     }
-  }
-
-  // 未填充区微纹理（参考图炭黑底）
-  ctx.globalAlpha = 0.04
-  ctx.fillStyle = '#090B16'
-  for (let i = 0; i < 12; i += 1) {
-    const x = frontBase + 6 + ((i * 37) % Math.max(1, cssWidth - frontBase))
-    const y = (i * 23 + time * 8) % cssHeight
-    ctx.fillRect(x, y, 1, 1)
   }
 
   ctx.restore()
   ctx.globalAlpha = 1
-
-  // 外沿极轻描边，贴近参考卡
-  roundRectPath(ctx, 0.5, 0.5, cssWidth - 1, cssHeight - 1, radius)
-  ctx.strokeStyle = 'rgba(255,255,255,0.06)'
-  ctx.lineWidth = 1
-  ctx.stroke()
 }
 
 function anyShouldAnimate() {

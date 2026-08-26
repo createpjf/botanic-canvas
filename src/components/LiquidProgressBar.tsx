@@ -17,8 +17,8 @@ export type LiquidProgressBarProps = {
 }
 
 /**
- * 横向 liquid 进度卡的画布层。
- * 父级应为 `.liquid-progress-card`（定宽高）；本组件绝对铺满该卡。
+ * 铺满结果节点媒体区（跟卡片原比例），液面从左到右波浪推进。
+ * 父级 `.result-node__task-state` 需铺满节点内容区。
  */
 export function LiquidProgressBar({
   compact = false,

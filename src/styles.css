@@ -1702,19 +1702,23 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .result-node--recovering { border-color: #9a7b43; box-shadow: 0 0 0 3px rgba(154, 123, 67, 0.12), 0 12px 28px rgba(86, 65, 28, 0.12); }
 .result-node--recovering .result-node__task-state { background: radial-gradient(circle at 50% 0%, #fffdf7, #f3eee1 64%, #e9e1ce); color: #69552d; }
 .result-node__task-state--generating {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  justify-content: center;
-  gap: 12px;
-  padding: 18px 14px;
-  background:
-    radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.06) 1px, transparent 0) 0 0 / 10px 10px,
-    #121214;
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  place-content: center;
+  gap: 8px;
+  background: #212124;
   color: #e8f0ff;
 }
+.result-node__task-state--generating strong {
+  color: #fff;
+  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.55);
+}
+.result-node__task-state--generating small {
+  color: rgba(214, 224, 240, 0.78);
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.45);
+}
 .result-node__task-state--generating .result-node__task-action {
-  align-self: center;
   border-color: rgba(163, 237, 255, 0.28);
   background: rgba(9, 11, 22, 0.55);
   color: #cfe8ff;
@@ -1724,17 +1728,7 @@ button.project-tab__main { border: 0; cursor: pointer; }
   background: rgba(14, 79, 199, 0.35);
   color: #fff;
 }
-.liquid-progress-card {
-  position: relative;
-  display: block;
-  width: 100%;
-  flex: 0 0 auto;
-  aspect-ratio: 3.6 / 1;
-  overflow: hidden;
-  border-radius: 999px;
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
-}
-.liquid-progress-card.is-compact { aspect-ratio: 4.2 / 1; }
+.result-node__task-state--generating > *:not(.liquid-progress-fill) { position: relative; z-index: 1; }
 .liquid-progress-fill {
   position: absolute;
   inset: 0;
@@ -1745,36 +1739,6 @@ button.project-tab__main { border: 0; cursor: pointer; }
   pointer-events: none;
 }
 .liquid-progress-fill__canvas { display: block; width: 100%; height: 100%; }
-.liquid-progress-card__copy {
-  position: absolute;
-  z-index: 1;
-  top: 50%;
-  left: 0;
-  display: grid;
-  gap: 3px;
-  justify-items: start;
-  max-width: 70%;
-  padding: 0 16px;
-  text-align: start;
-  transform: translateY(-50%);
-  pointer-events: none;
-}
-.liquid-progress-card__copy strong {
-  color: #fff;
-  font-size: 12px;
-  font-weight: 780;
-  letter-spacing: 0.04em;
-  line-height: 1.2;
-  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.45);
-}
-.liquid-progress-card__copy small {
-  color: rgba(214, 224, 240, 0.72);
-  font-size: 9px;
-  font-weight: 620;
-  letter-spacing: 0.03em;
-  line-height: 1.3;
-  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.4);
-}
 .result-node__task-action { justify-self: center; min-height: 24px; padding: 0 8px; border: 1px solid #c5d8c7; border-radius: 6px; background: rgba(255, 255, 255, 0.72); color: #456c4d; font-size: 8px; font-weight: 700; }
 .result-node__task-action:hover { border-color: #8fb796; background: #f8fcf8; color: #245f35; }
 .result-node__task-state--failed .result-node__task-action { border-color: #e2c4bc; color: #95584d; }
