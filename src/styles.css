@@ -1715,8 +1715,10 @@ button.project-tab__main { border: 0; cursor: pointer; }
   gap: 8px;
 }
 .result-node--generating + .result-node__task-copy {
-  justify-items: start;
-  gap: 2px;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
   width: 100%;
   margin: 4px 0 0;
   padding: 0 2px;
@@ -1732,6 +1734,8 @@ button.project-tab__main { border: 0; cursor: pointer; }
 }
 .result-node--generating + .result-node__task-copy small {
   color: #667268;
+  font-size: 10px;
+  line-height: 14px;
 }
 .result-node__task-state--generating .result-node__task-action {
   position: absolute;
@@ -1739,9 +1743,13 @@ button.project-tab__main { border: 0; cursor: pointer; }
   right: 8px;
   bottom: 8px;
   justify-self: unset;
+  min-height: 32px;
+  padding: 0 14px;
+  border-radius: 8px;
   border-color: rgba(143, 183, 150, 0.55);
   background: rgba(16, 32, 22, 0.82);
   color: #f3f8f3;
+  font-size: 11px;
 }
 .result-node__task-state--generating .result-node__task-action:hover {
   border-color: rgba(200, 230, 206, 0.75);

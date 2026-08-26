@@ -1130,7 +1130,6 @@ function ResultNode({ data, id, selected }: NodeProps) {
   const elapsedSeconds = result.submittedAt && isGenerating
     ? Math.max(0, Math.floor((currentTime - result.submittedAt) / 1_000))
     : 0
-  const isSlowTask = elapsedSeconds >= 12
   const mediaSource = result.image ? mediaRetryUrl(result.image, mediaRetryAttempt) : undefined
 
   const recoverMedia = useCallback(async () => {
@@ -1287,7 +1286,7 @@ function ResultNode({ data, id, selected }: NodeProps) {
       {isGenerating ? (
         <div className="result-node__task-copy">
           <strong aria-live="polite">{taskFeedback.title}</strong>
-          <small>{isSlowTask ? elapsedTaskLabel(elapsedSeconds, locale) : taskFeedback.detail}</small>
+          <small>{elapsedTaskLabel(elapsedSeconds, locale)}</small>
         </div>
       ) : null}
       {resultGroup?.representative && resultGroup.expanded && groupCandidates.length ? <section className="result-node__candidate-popover nodrag nowheel" aria-label={t.candidateCount(resultGroup.total)} onPointerDown={(event) => event.stopPropagation()}>
