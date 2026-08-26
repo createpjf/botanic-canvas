@@ -42,14 +42,14 @@ function roundRectPath(
 }
 
 /**
- * 不定进度：从左到右缓慢推进后回扫，约 18%–82%。
- * 不映射业务百分比。
+ * 不定进度：只从左往右单向推进，到近右端后复位再来一轮。
+ * 不映射业务百分比，也不回扫。
  */
 export function liquidIndeterminateTravel(elapsedSeconds: number, reducedMotion: boolean) {
   if (reducedMotion) return 0.55
+  // 约 5.5s 走完一轮（0.12 → 0.92），再瞬间回到左侧。
   const cycle = (elapsedSeconds * 0.18) % 1
-  const tri = cycle < 0.5 ? cycle * 2 : (1 - cycle) * 2
-  return 0.18 + tri * 0.64
+  return 0.12 + cycle * 0.8
 }
 
 function frontWaveX(baseX: number, y: number, height: number, time: number, amount: number) {
