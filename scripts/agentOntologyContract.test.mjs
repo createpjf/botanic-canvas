@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { createBotanicAgentOperationalToolDefinitions } from '../server/botanicAgentOperationalTools.mjs'
 
 const canvas = readFileSync(new URL('../src/domain/canvas.ts', import.meta.url), 'utf8')
 const ontology = readFileSync(new URL('../server/skills/botanic-agent/ONTOLOGY.md', import.meta.url), 'utf8')
@@ -49,10 +50,35 @@ test('本体的豁免名单不会随字段改名失效', () => {
   assert.deepEqual(stale, [], `豁免名单里的字段已经不存在：${stale.join('、')}`)
 })
 
-test('没有检索工具的实体必须在本体里写明读不到，避免模型声称查过', () => {
-  const paragraph = ontology.slice(ontology.indexOf('只读工具只覆盖'))
-  assert.ok(paragraph, '本体缺少只读工具覆盖范围说明')
-  for (const field of ['generationJobs', 'agentRuns', 'templates', 'deliveries', 'productionWorkflows']) {
-    assert.match(paragraph, new RegExp(`\`${field}\``), `${field} 没有检索工具，必须写明读不到`)
+test('本体对检索能力的描述与运维只读工具目录一致，且保持条件式', () => {
+  const start = ontology.indexOf('检索能力以本轮工具列表为准')
+  assert.notEqual(start, -1, '本体缺少检索能力说明段')
+  const paragraph = ontology.slice(start)
+
+  // 运维工具只在注入读取器的链路（回合）存在，对话链路没有。因此本体必须写成
+  // 「本轮给出对应工具时可查」的条件式，不得断言这些工具恒在或恒不在 ——
+  // 硬枚举「没有检索工具」正是 Epic 4 之后烂掉的那句。
+  assert.doesNotMatch(paragraph, /当前没有检索工具/)
+  assert.match(paragraph, /本轮/)
+
+  // 全部读取器就位时暴露的工具名必须逐一出现在本体里；新增运维只读工具而没同步
+  // ONTOLOGY.md 时这里会失败。文档写规则，工具列表写存在性，两边不许脱节。
+  const readers = {
+    readRun: async () => undefined,
+    readJob: async () => undefined,
+    searchArtifacts: async () => [],
+    readReviews: async () => [],
+    readWorkflowRun: async () => undefined,
+    readDeliveries: async () => [],
+  }
+  const toolNames = createBotanicAgentOperationalToolDefinitions(readers).map((tool) => tool.name)
+  assert.ok(toolNames.length >= 6, `运维只读工具少于预期：${toolNames.length}`)
+  for (const name of toolNames) {
+    assert.match(paragraph, new RegExp(name), `运维工具 ${name} 没有写进本体的检索能力说明`)
+  }
+
+  // 仍然没有读取工具的实体必须写明只有系统主动给出时才可知，避免模型声称查过。
+  for (const field of ['batchVariationRuns', 'templates', 'history', 'brandKit', 'productionWorkflows']) {
+    assert.match(paragraph, new RegExp(`\`${field}\``), `${field} 没有检索工具，必须写明只有系统给出时才可知`)
   }
 })
