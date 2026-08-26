@@ -67,7 +67,7 @@ test('产品首页支持中英文切换并展示真实工作台截图', async ({
   await page.getByRole('button', { name: 'Close generator' }).click()
   await page.getByRole('button', { name: 'Open asset library' }).click()
   await expect(page.getByRole('complementary', { name: 'Asset library' })).toBeVisible()
-  await page.getByRole('button', { name: 'Open Agent' }).click()
+  await page.getByRole('button', { name: 'Open Bob' }).click()
   await expect(page.getByRole('complementary', { name: 'Botanic Agent' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'New conversation' })).toBeVisible()
   await expect(page.getByRole('complementary', { name: 'Asset library' })).toBeHidden()
@@ -141,7 +141,7 @@ test('project to canvas and Agent surfaces stay ordered across reload', async ({
 
   await page.getByRole('button', { name: '打开素材库' }).click()
   await expect(page.getByRole('complementary', { name: '素材库' })).toBeVisible()
-  await page.getByRole('button', { name: '打开 Agent' }).click()
+  await page.getByRole('button', { name: '打开 Bob' }).click()
   await expect(page.getByRole('complementary', { name: 'Botanic Agent' })).toBeVisible()
   await expect(page.getByRole('complementary', { name: '素材库' })).toBeHidden()
   const tabBarBox = await page.locator('.tab-bar').boundingBox()
@@ -180,7 +180,7 @@ test('project to canvas and Agent surfaces stay ordered across reload', async ({
 
   await page.reload()
   await expect(page).toHaveURL(new RegExp(`${canvasHash.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`))
-  await expect(page.getByRole('button', { name: '打开 Agent' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '打开 Bob' })).toBeVisible()
   await expect(page.getByRole('button', { name: '从画布移除 图像生成' })).toBeVisible()
 
   expect(pageErrors).toEqual([])
@@ -262,7 +262,7 @@ test('Agent 生成卡片默认收起已完成步骤与提示词差异，主内�
   await stubReadOnlyRuntime(page)
   await page.goto('/#/projects')
   await page.getByRole('button', { name: '新建项目' }).click()
-  await page.getByRole('button', { name: '打开 Agent' }).click()
+  await page.getByRole('button', { name: '打开 Bob' }).click()
 
   await page.evaluate(async () => {
     const loadStore = new Function('return import("/src/store/canvasStore.ts")') as () => Promise<{
@@ -325,7 +325,7 @@ test('空画布优先提供目标入口，本地能力边界可见且不请求�
   expect(consoleErrors).toEqual([])
 
   await page.getByRole('button', { name: '关闭 Agent' }).click()
-  await expect(page.getByRole('button', { name: '打开 Agent' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '打开 Bob' })).toBeVisible()
   await page.getByRole('button', { name: '视频生成', exact: true }).click()
   await expect(page.getByRole('status').filter({ hasText: '视频模型尚未配置' })).toBeVisible()
 })
