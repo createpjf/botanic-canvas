@@ -44,7 +44,15 @@ function PromptSection({
   </section>
 }
 
-function PromptOutput({ sections, catalogs }: { sections: AgentPromptSections; catalogs?: BotanicAgentMentionCatalog }) {
+function PromptOutput({
+  sections,
+  catalogs,
+  showSources = true,
+}: {
+  sections: AgentPromptSections
+  catalogs?: BotanicAgentMentionCatalog
+  showSources?: boolean
+}) {
   const [copied, setCopied] = useState<PromptSectionKind | null>(null)
 
   const copyText = async (kind: PromptSectionKind, text: string) => {
@@ -58,14 +66,26 @@ function PromptOutput({ sections, catalogs }: { sections: AgentPromptSections; c
   }
 
   return <div className="agent-prompt-output">
-    {sections.before ? <AgentMarkdown content={sections.before} catalogs={catalogs} /> : null}
+    {sections.before ? <AgentMarkdown content={sections.before} catalogs={catalogs} showSources={showSources} /> : null}
     <PromptSection label={sections.promptLabel || 'Prompt'} text={sections.prompt} kind="prompt" copied={copied} catalogs={catalogs} onCopy={copyText} />
     {sections.negativePrompt ? <PromptSection label={sections.negativePromptLabel || 'Negative prompt'} text={sections.negativePrompt} kind="negative" copied={copied} catalogs={catalogs} onCopy={copyText} /> : null}
-    {sections.after ? <AgentMarkdown content={sections.after} catalogs={catalogs} /> : null}
+    {sections.after ? <AgentMarkdown content={sections.after} catalogs={catalogs} showSources={showSources} /> : null}
   </div>
 }
 
-export function AgentPromptResponse({ content, prompt, mentionCatalog }: { content: string; prompt?: string; mentionCatalog?: BotanicAgentMentionCatalog }) {
+export function AgentPromptResponse({
+  content,
+  prompt,
+  mentionCatalog,
+  showSources = true,
+}: {
+  content: string
+  prompt?: string
+  mentionCatalog?: BotanicAgentMentionCatalog
+  showSources?: boolean
+}) {
   const sections = resolveAgentPromptSections(content, prompt)
-  return sections ? <PromptOutput sections={sections} catalogs={mentionCatalog} /> : <AgentMarkdown content={content} catalogs={mentionCatalog} />
+  return sections
+    ? <PromptOutput sections={sections} catalogs={mentionCatalog} showSources={showSources} />
+    : <AgentMarkdown content={content} catalogs={mentionCatalog} showSources={showSources} />
 }

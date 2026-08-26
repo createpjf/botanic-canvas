@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  agentMessageNeedsCollapse,
   parseAgentMarkdown,
   parseAgentPromptSections,
   resolveAgentChatPrompt,
@@ -47,6 +48,14 @@ test('段落行首残留井号会被剥掉，界面不露 #；末段来源收成
   assert.equal(localizeAgentSourceLabel('项目本体', 'en'), 'Project ontology')
   assert.equal(localizeAgentSourceLabel('画布', 'en'), 'Canvas')
   assert.equal(localizeAgentSourceLabel('互联网', 'zh-CN'), '互联网')
+})
+
+test('回复折叠按抽出源后的正文判断，1600 字 / 28 行才裁', () => {
+  assert.equal(agentMessageNeedsCollapse('短结论。\n\n来源: 互联网、网页'), false)
+  assert.equal(agentMessageNeedsCollapse(`${'一段调研。'.repeat(40)}\n\n来源: 互联网`), false)
+  assert.equal(agentMessageNeedsCollapse(`${'一段调研结论。'.repeat(240)}\n\n来源: 互联网、网页`), true)
+  assert.equal(agentMessageNeedsCollapse(`${Array.from({ length: 29 }, (_, index) => `行 ${index + 1}`).join('\n')}\n\n来源: 画布`), true)
+  assert.equal(agentMessageNeedsCollapse(Array.from({ length: 28 }, (_, index) => `行 ${index + 1}`).join('\n')), false)
 })
 test('agent markdown does not treat html as executable markup', () => {
   const [block] = parseAgentMarkdown('<script>alert(1)</script>\n\n下一段')

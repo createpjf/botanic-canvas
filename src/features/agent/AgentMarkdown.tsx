@@ -82,7 +82,7 @@ function renderBlock(block: AgentMarkdownBlock, index: number, catalogs?: Botani
   return <p key={index}>{renderInline(block.text, catalogs)}</p>
 }
 
-function AgentMarkdownSources({ sources }: { sources: string[] }) {
+export function AgentMarkdownSources({ sources }: { sources: string[] }) {
   const { locale } = useProductI18n()
   if (!sources.length) return null
   return <div className="agent-markdown__sources" aria-label={locale === 'en' ? 'Sources' : '来源'}>
@@ -91,10 +91,18 @@ function AgentMarkdownSources({ sources }: { sources: string[] }) {
   </div>
 }
 
-export function AgentMarkdown({ content, catalogs }: { content: string; catalogs?: BotanicAgentMentionCatalog }) {
+export function AgentMarkdown({
+  content,
+  catalogs,
+  showSources = true,
+}: {
+  content: string
+  catalogs?: BotanicAgentMentionCatalog
+  showSources?: boolean
+}) {
   const { body, sources } = splitAgentMessageSources(content)
   return <div className="agent-markdown">
     {parseAgentMarkdown(body).map((block, index) => renderBlock(block, index, catalogs))}
-    <AgentMarkdownSources sources={sources} />
+    {showSources ? <AgentMarkdownSources sources={sources} /> : null}
   </div>
 }
