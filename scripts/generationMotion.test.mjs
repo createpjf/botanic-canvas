@@ -31,6 +31,7 @@ test('生成中结果节点铺满 flow 点阵并尊重减少动效设置', () =>
   assert.match(dotsField, /vignette:\s*1\.45/)
   assert.match(dotsField, /0\.02 \//)
   assert.match(styles, /\.result-node__task-state--generating \.result-node__task-copy\s*{[^}]*background:/s)
+  assert.match(styles, /\.result-node__task-state--generating strong,\s*\.result-node__task-state--generating small\s*{[^}]*white-space:\s*nowrap/s)
   assert.match(styles, /\.agent-run-card__track::after\s*{[^}]*animation:\s*agent-run-track-flow/s)
   assert.match(styles, /@keyframes\s+agent-run-track-flow/)
   assert.match(

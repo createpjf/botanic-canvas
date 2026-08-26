@@ -1717,11 +1717,16 @@ button.project-tab__main { border: 0; cursor: pointer; }
 }
 .result-node__task-state--generating .result-node__task-copy {
   z-index: 2;
-  max-width: 86%;
-  padding: 10px 12px 9px;
+  width: max-content;
+  max-width: none;
+  padding: 10px 14px 9px;
   border-radius: 10px;
   background: rgba(8, 16, 11, 0.82);
   box-shadow: 0 10px 24px rgba(8, 16, 11, 0.38);
+}
+.result-node__task-state--generating strong,
+.result-node__task-state--generating small {
+  white-space: nowrap;
 }
 .result-node__task-state--generating strong {
   color: #f7fbf6;
