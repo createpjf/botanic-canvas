@@ -30,9 +30,7 @@ import {
 } from '../../domain/generationOutputSize'
 import { settingsForGenerationModel } from '../../domain/generationRecipe'
 import { BobCharacter } from '../../components/bob/BobCharacter'
-import { BOB_POST_WOW_HAPPY_MS, bobMessageAllowsSays, bobMessageFailed, bobMessageIsLargeReply, bobMessageUsesLargeAvatar, bobReplyPresentation } from '../../domain/bobPresentation'
-import type { BobLauncherPoint } from '../../domain/bobLauncher'
-import { useBobLookAt } from './useBobLookAt'
+import { bobMessageAllowsSays, bobMessageIsLargeReply, bobReplyPresentation } from '../../domain/bobPresentation'
 import { useBobSaysPlays } from './useBobSaysPlays'
 import { AlertIcon, BookIcon, ChecklistIcon, ChevronDownIcon, ClockIcon, CopyIcon, EditIcon, FocusIcon, GlobeIcon, MoreIcon, SearchIcon, ThumbDownIcon, ThumbUpIcon } from '../../components/BotanicIcons'
 import { AgentThinkingOrb } from '../../components/AgentThinkingOrb'
@@ -722,43 +720,6 @@ export function AgentConversationMessage({
     : botanicAgentPlanOutputLabel(plan)
   const linkedRun = message.runId ? runs.find((run) => run.id === message.runId) : undefined
   const bobPlays = useBobSaysPlays(`message:${message.id}`)
-  const isLargeReply = bobMessageIsLargeReply(message)
-  const allowsSays = message.role === 'assistant' && bobMessageAllowsSays({
-    isLatestAssistant,
-    isLargeReply,
-  })
-  const usesLargeAvatar = message.role === 'assistant' && bobMessageUsesLargeAvatar({
-    isLatestAssistant,
-    streaming,
-    message,
-  })
-  const failed = bobMessageFailed(message)
-  const look = useBobLookAt(usesLargeAvatar, composerPoint)
-  const bob = message.role === 'assistant'
-    ? bobReplyPresentation({
-      allowsSays: allowsSays && !prefersReducedMotion(),
-      streaming,
-      isLatestAssistant,
-      agentBusy,
-      plays: prefersReducedMotion()
-        ? { ...bobPlays.plays, happy: Math.max(bobPlays.plays.happy ?? 0, 1) }
-        : bobPlays.plays,
-      composerTyping,
-      feedback: message.feedback,
-      failed,
-    })
-    : null
-  const markHappy = bobPlays.markHappy
-  useEffect(() => {
-    if (bob?.mood !== 'happy' || message.feedback || failed) return
-    if ((bobPlays.plays.happy ?? 0) >= 1) return
-    if (prefersReducedMotion()) {
-      markHappy()
-      return
-    }
-    const timer = window.setTimeout(() => markHappy(), BOB_POST_WOW_HAPPY_MS)
-    return () => window.clearTimeout(timer)
-  }, [bob?.mood, bobPlays.plays.happy, failed, markHappy, message.feedback])
   // 进行中的状态由 runtime feed / 底部进度条直播；对话里不画第二张「正在生成」卡。
   if (message.kind === 'run' && linkedRun && shouldRestoreBotanicAgentRuntimeSteps(linkedRun.status)) return null
   const runArtifacts = message.runId

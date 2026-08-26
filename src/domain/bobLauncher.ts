@@ -67,28 +67,16 @@ export function bobLauncherPointerDistance(
   return Math.hypot(current.x - start.x, current.y - start.y)
 }
 
-export function bobLookAtToward(
-  origin: BobLauncherPoint,
-  target: BobLauncherPoint,
-  radius = BOB_LAUNCHER_SIZE / 2,
-): BobLauncherLookAt {
-  const reach = Math.max(radius, 1)
-  return {
-    x: clamp((target.x - origin.x) / reach, -1, 1),
-    y: clamp((target.y - origin.y) / reach, -1, 1),
-  }
-}
-
 export function bobLauncherLookAt(
   point: BobLauncherPoint,
   pointer: BobLauncherPoint,
   size = BOB_LAUNCHER_SIZE,
 ): BobLauncherLookAt {
-  return bobLookAtToward(
-    { x: point.x + size / 2, y: point.y + size / 2 },
-    pointer,
-    size / 2,
-  )
+  const radius = Math.max(size / 2, 1)
+  return {
+    x: clamp((pointer.x - (point.x + size / 2)) / radius, -1, 1),
+    y: clamp((pointer.y - (point.y + size / 2)) / radius, -1, 1),
+  }
 }
 
 export function parseBobLauncherPoint(value: unknown): BobLauncherPoint | null {
