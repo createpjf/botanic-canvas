@@ -240,7 +240,7 @@ test('已知规划工具标题与服务端对齐；Run 投影只反映已持久�
 })
 
 test('球体动画态只映射动作，不改工具标题', () => {
-  assert.equal(agentTimelineOrbState({ surface: 'thinking' }), 'solving')
+  assert.equal(agentTimelineOrbState({ surface: 'thinking' }), 'breathing')
   assert.equal(agentTimelineOrbState({ kind: 'search', toolName: 'web_search' }), 'searching')
   assert.equal(agentTimelineOrbState({ kind: 'search' }), 'searching')
   assert.equal(agentTimelineOrbState({ kind: 'fetch', toolName: 'web_fetch' }), 'connecting')

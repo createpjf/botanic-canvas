@@ -114,13 +114,14 @@ export function agentTimelineToolPresentation(call: AgentToolCallTrace): Timelin
 /**
  * 工具行 / 思考 pill 的球体动画态。
  * 只映射「播哪段动画」；标题、状态词、失败原因仍走 presentation / searchTitle。
+ * 思考 pill 固定 breathing（MetalForge thinking-orbs `style=breathe`），不随工具步改态。
  */
 export function agentTimelineOrbState(input: {
   surface?: 'thinking' | 'step'
   kind?: TimelineStepKind
   toolName?: string
 } = {}): AgentTimelineOrbState {
-  if (input.surface === 'thinking') return 'solving'
+  if (input.surface === 'thinking') return 'breathing'
   const name = input.toolName?.trim().toLocaleLowerCase() ?? ''
   if (
     name === 'web_search'

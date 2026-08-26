@@ -3699,7 +3699,7 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-message__tools > div { display: grid; gap: 2px; margin-top: 3px; }
 .agent-message.has-timeline .agent-message__body { display: grid; gap: 8px; }
 .agent-timeline { display: grid; min-width: 0; gap: 7px; color: #52665a; }
-.agent-timeline__thinking { display: flex; width: fit-content; min-height: 27px; align-items: center; gap: 6px; padding: 0 9px; border: 1px solid #d4e1d5; border-radius: 999px; background: #f8fbf7; color: #607267; font-size: 10px; font-variant-numeric: tabular-nums; font-weight: 690; }
+.agent-timeline__thinking { display: flex; width: fit-content; min-height: 27px; align-items: center; gap: 6px; padding: 0 9px; border: 1px solid #d4e1d5; border-radius: var(--radius-control); background: #f8fbf7; color: #607267; font-size: 10px; font-variant-numeric: tabular-nums; font-weight: 690; }
 details.agent-timeline__thinking { display: block; padding: 0; }
 .agent-timeline__thinking > summary { display: flex; min-height: 27px; align-items: center; gap: 6px; padding: 0 9px; cursor: pointer; list-style: none; }
 .agent-timeline__thinking > summary::-webkit-details-marker { display: none; }
