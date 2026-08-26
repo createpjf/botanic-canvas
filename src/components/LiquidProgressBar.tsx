@@ -10,15 +10,15 @@ import {
 export { liquidProgressBarDebugState, liquidIndeterminateTravel } from './liquidProgressBarRuntime'
 
 export type LiquidProgressBarProps = {
-  /** 矮节点（如 16:9）降低 grain 密度。 */
+  /** 矮节点降低 grain 密度。 */
   compact?: boolean
   className?: string
   'aria-hidden'?: boolean | 'true' | 'false'
 }
 
 /**
- * 铺满结果节点媒体区的不定进度画面。
- * 父级 `.result-node__task-state` 需 `position: relative`；本组件绝对定位 inset 0。
+ * 横向 liquid 进度卡的画布层。
+ * 父级应为 `.liquid-progress-card`（定宽高）；本组件绝对铺满该卡。
  */
 export function LiquidProgressBar({
   compact = false,
