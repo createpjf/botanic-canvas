@@ -4,8 +4,8 @@ import {
   BOB_IMPRESSION_DROP_SLOTS,
   BOB_IMPRESSION_INK,
   BOB_IMPRESSION_RIM,
-  BOB_QUESTION_IMPRESSION,
-} from './bobQuestionImpression'
+  BOB_IMPRESSIONS,
+} from './bobImpressions'
 import {
   bodyPaint,
   computeFrame,
@@ -103,8 +103,16 @@ const DROP_POOL = Array.from({ length: BOB_IMPRESSION_DROP_SLOTS }, (_, index) =
 const LOOK_GAIN = 22
 
 export type BobMood = 'idle' | 'listening' | 'thinking' | 'curious' | 'excited' | 'happy' | 'confused'
-export type BobSays = 'none' | 'question'
+export type BobSays = 'none' | 'question' | 'hmm' | 'wow'
 export type BobLookAt = { x: number; y: number }
+
+const IMPRESSION_TAIL_MS = 3000
+
+function defaultSaysCycles(says: BobSays) {
+  if (says === 'none') return 0
+  if (says === 'question') return Number.POSITIVE_INFINITY
+  return 1
+}
 
 type BobRefs = Record<string, SVGElement | null>
 
@@ -219,11 +227,15 @@ export function BobCharacter({
   mood = 'idle',
   says = 'none',
   lookAt,
+  saysCycles,
+  onSaysComplete,
   className,
 }: {
   mood?: BobMood
   says?: BobSays
   lookAt?: BobLookAt
+  saysCycles?: number
+  onSaysComplete?: () => void
   className?: string
 }) {
   const uid = useId().replace(/[^a-zA-Z0-9]/g, '')
@@ -235,8 +247,10 @@ export function BobCharacter({
   const rimId = `bob-rim-${uid}`
   const gooId = `bob-goo-${uid}`
 
-  const speaking = says === 'question' && !prefersReducedMotion()
-  const impression = speaking ? BOB_QUESTION_IMPRESSION : null
+  const speaking = says !== 'none' && !prefersReducedMotion()
+  const impression = speaking ? BOB_IMPRESSIONS[says] : null
+  const cycleLimit = saysCycles ?? defaultSaysCycles(says)
+  const cycleMs = impression ? impression.plan.setT + IMPRESSION_TAIL_MS : 0
   const config = { ...BOB_CONFIG, motionId: mood }
   const style = EYE_STYLE_BY_ID[config.eyeStyleId]
   const motion = MOTION_BY_ID[config.motionId] ?? MOTION_BY_ID.idle
@@ -263,12 +277,18 @@ export function BobCharacter({
   inputRef.current = { config, style, topper, drag: lookDrag(lookAt) }
   const impressionRef = useRef(impression?.plan ?? null)
   impressionRef.current = impression?.plan ?? null
+  const cycleRef = useRef({ limit: cycleLimit, ms: cycleMs })
+  cycleRef.current = { limit: cycleLimit, ms: cycleMs }
   const impressionStart = useRef(0)
   const impressionKey = useRef(says)
+  const saysCompleteRef = useRef(onSaysComplete)
+  saysCompleteRef.current = onSaysComplete
+  const saysFinishedRef = useRef(false)
   if (!impressionStart.current) impressionStart.current = performance.now()
   if (impressionKey.current !== says) {
     impressionKey.current = says
     impressionStart.current = performance.now()
+    saysFinishedRef.current = false
   }
 
   if (!avatarRef.current) {
@@ -294,8 +314,16 @@ export function BobCharacter({
       applyEye(current.eyeC, current.irisC, current.pupC, current.glintC, frame.eyeC)
       applyFlush(current, frame, paint, `url(#${blushId})`)
       applyTexture(current, frame)
-      if (impressionRef.current) applyImpression(current, impressionRef.current, now - impressionStart.current)
+      const elapsed = now - impressionStart.current
+      const plan = impressionRef.current
+      const { limit, ms } = cycleRef.current
+      const expired = Number.isFinite(limit) && ms > 0 && elapsed >= ms * limit
+      if (plan && !expired) applyImpression(current, plan, elapsed)
       else applyImpression(current, null, 0)
+      if (expired && !saysFinishedRef.current) {
+        saysFinishedRef.current = true
+        saysCompleteRef.current?.()
+      }
     }
 
     paintFrame(performance.now())
