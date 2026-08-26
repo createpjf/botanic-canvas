@@ -1,6 +1,6 @@
 import { readMediaSpecFromDataUrl } from './mediaSpec.mjs'
 import { mapWithConcurrency } from './concurrency.mjs'
-import { buildImageProviderPrompt, gptImage2EditQuality, orderCompositionReferences } from './generationComposition.mjs'
+import { buildImageProviderPrompt, gptImage2EditQuality, orderCompositionReferences, providerInputImages } from './generationComposition.mjs'
 import {
   catalogAspectRatiosForModel,
   inferAspectRatioFromPixels,
@@ -346,8 +346,11 @@ export async function resolveGenerationInputMedia(input, resolveMedia) {
   const parent = input.parent ? await resolve(input.parent) : undefined
   let mask = input.mask ? await resolveMask(input.mask) : undefined
   if (!mask && input.maskRegion) {
-    // 选区矩形在这里落成位图：蒙版必须与基准图（parent 优先）同像素尺寸。
-    const base = parent ?? references[0]
+    // 选区矩形在这里落成位图：蒙版必须与供应商实际收到的第一张图同像素尺寸。
+    // providerInputImages 计算这个值（parent 优先，否则排序后的 references），
+    // 与 generateImages 使用同一份源，保证两者在参考再排序时不会错配。
+    const inputImages = providerInputImages({ parent, references })
+    const base = inputImages[0]
     const size = base ? imagePixelSize(base.buffer) : null
     const png = size ? buildRegionMaskPng(size, input.maskRegion) : null
     if (!png) throw new GenerationError(400, 'INVALID_MASK', '无法按基准图生成局部重绘蒙版。')
@@ -508,10 +511,7 @@ export async function generateImages(job, {
 }) {
   if (!apiKey) throw new GenerationError(503, 'PROVIDER_NOT_CONFIGURED', '真实生图尚未配置：请设置 OPENAI_API_KEY。')
   if (typeof jobId !== 'string' || !jobId) throw new GenerationError(500, 'INVALID_JOB_ID', '生成任务缺少唯一标识。')
-  const orderedReferences = orderCompositionReferences(job.references ?? [])
-  const inputImages = job.parent
-    ? [job.parent, ...orderedReferences.filter((reference) => !reference.buffer.equals(job.parent.buffer))]
-    : orderedReferences
+  const inputImages = providerInputImages(job)
   const submit = async (count, variationIndex) => {
     const prompt = buildImageProviderPrompt(job, variationIndex)
     const outputSize = resolveGenerationOutputSize(job.settings)

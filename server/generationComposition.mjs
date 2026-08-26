@@ -24,6 +24,21 @@ export function orderCompositionReferences(references = []) {
   return [...bases, ...marks]
 }
 
+/**
+ * 计算供应商实际接收的输入图像。这是 images/edits 端点的接收顺序：
+ * parent 优先（若存在），否则使用排序后的 references。parent 出现在
+ * references 里时需去重（按 buffer 相等性）。蒙版物化点与 generateImages
+ * 都必须调用此函数，确保它们对「首张输入图」的理解同源，防止参考再排序时
+ * 蒙版与实际传出的首图尺寸错配。
+ */
+export function providerInputImages(job) {
+  const orderedReferences = orderCompositionReferences(job.references ?? [])
+  if (job.parent) {
+    return [job.parent, ...orderedReferences.filter((reference) => !reference.buffer.equals(job.parent.buffer))]
+  }
+  return orderedReferences
+}
+
 export function compositionOverlayReferences(references) {
   return (Array.isArray(references) ? references : []).filter((reference) => isGenerationMarkReference(reference))
 }

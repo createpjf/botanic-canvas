@@ -683,3 +683,141 @@ test('mediaId 提交阶段没有字节可查，像素守卫仍只能留给 Worke
   assert.equal(input.references[0].mediaId, 'media_oversized-1')
   assert.equal(input.references[0].buffer, undefined)
 })
+
+test('无 parent 且标识参考排在首位时，蒙版按重排后的底图定尺寸', async () => {
+  // 缺陷：物化点按 references[0] 定尺寸，而供应商收到的首图是
+  // orderCompositionReferences 重排后的 —— 标识图会被挪到队尾。
+  // 两者不一致时，发出去的是「蒙版尺寸 ≠ image[]#1 尺寸」这对无效组合。
+  const { validateGenerationInput, resolveGenerationInputMedia } = await import('./generationProvider.mjs')
+  const { imagePixelSize } = await import('./mediaFormats.mjs')
+  const { regionMaskAlphaAt } = await import('./regionMaskPng.mjs')
+
+  const references = [
+    { name: '品牌 Logo.png', mediaId: 'media_logo' },      // 命中标识正则，会被排到队尾
+    { name: '棚拍人像', mediaId: 'media_portrait' },        // 真正的底图
+  ]
+  const input = validateGenerationInput({
+    projectId: 'project-mask-order',
+    kind: 'generation',                                    // 不能是 refinement：那会在 :251 要求 parent
+    prompt: '把右半边换成纯色',
+    batchCount: 1,                                         // 注意：batchCount 在 body 顶层，不在 recipe 里
+    settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' },
+    recipe: { references, maskRegion: { x: 0.5, y: 0, width: 0.5, height: 1 } },
+  }, {
+    models: [{ id: 'gpt-image-2', provider: 'openai', mediaKind: 'image', aspectRatios: ['1:1'], resolutions: ['1K'], supportsMask: true }],
+    maximumBatchCount: 4,
+    maximumReferenceBytes: 8 * 1024 * 1024,
+  })
+
+  // 按 mediaId 分发不同尺寸 —— 常量返回会让两张图尺寸相同，测试永远绿。
+  const bytes = { media_logo: pngOfSize(64, 64), media_portrait: pngOfSize(20, 10) }
+  const resolved = await resolveGenerationInputMedia(input, async (mediaId) => ({
+    mimeType: 'image/png',
+    buffer: bytes[mediaId],
+  }))
+
+  // 主观察点：蒙版尺寸必须取自人像（20×10），不是 Logo（64×64）。
+  assert.deepEqual(imagePixelSize(resolved.mask.buffer), { width: 20, height: 10 })
+  // 辅观察点：右半透明（重绘）、左半不透明（保持）。
+  // 正确基准宽 20，右半从 x=10 起，列 15 应透明；错误基准宽 64，右半从 x=32 起，列 15 会是不透明。
+  assert.equal(regionMaskAlphaAt(resolved.mask.buffer, 15, 0), 0)
+  assert.equal(regionMaskAlphaAt(resolved.mask.buffer, 5, 0), 255)
+})
+
+test('标识参考不在首位时行为不变', async () => {
+  // 守护用例：修复前后恒绿，锁住 orderCompositionReferences 的稳定分桶 ——
+  // 底图本来就在队首时，重排不该改变任何东西。
+  const { validateGenerationInput, resolveGenerationInputMedia } = await import('./generationProvider.mjs')
+  const { imagePixelSize } = await import('./mediaFormats.mjs')
+
+  const references = [
+    { name: '棚拍人像', mediaId: 'media_portrait' },
+    { name: '品牌 Logo.png', mediaId: 'media_logo' },
+  ]
+  const input = validateGenerationInput({
+    projectId: 'project-mask-order-2',
+    kind: 'generation',
+    prompt: '把右半边换成纯色',
+    batchCount: 1,
+    settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' },
+    recipe: { references, maskRegion: { x: 0.5, y: 0, width: 0.5, height: 1 } },
+  }, {
+    models: [{ id: 'gpt-image-2', provider: 'openai', mediaKind: 'image', aspectRatios: ['1:1'], resolutions: ['1K'], supportsMask: true }],
+    maximumBatchCount: 4,
+    maximumReferenceBytes: 8 * 1024 * 1024,
+  })
+
+  const bytes = { media_logo: pngOfSize(64, 64), media_portrait: pngOfSize(20, 10) }
+  const resolved = await resolveGenerationInputMedia(input, async (mediaId) => ({
+    mimeType: 'image/png',
+    buffer: bytes[mediaId],
+  }))
+  assert.deepEqual(imagePixelSize(resolved.mask.buffer), { width: 20, height: 10 })
+})
+
+test('蒙版尺寸必须与提交给供应商的第一张图相匹配', async () => {
+  // 交叉测试：确保 resolveGenerationInputMedia 与 generateImages 对「首张输入图」
+  // 的理解同源。都调用 providerInputImages，防止后续对参考排序的改动导致错配。
+  // 这是对 orderCompositionReferences 变化的早期预警 —— 任何改动都会同时违反
+  // 蒙版与供应商两侧的断言。
+  const { validateGenerationInput, resolveGenerationInputMedia, generateImages } = await import('./generationProvider.mjs')
+  const { imagePixelSize } = await import('./mediaFormats.mjs')
+
+  const references = [
+    { name: '品牌 Logo.png', mediaId: 'media_logo' },      // 标识图，会被排到队尾
+    { name: '棚拍人像', mediaId: 'media_portrait' },        // 真正的底图
+  ]
+  const input = validateGenerationInput({
+    projectId: 'project-crossing-test',
+    kind: 'generation',
+    prompt: '把右半边换成纯色',
+    batchCount: 1,
+    settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' },
+    recipe: { references, maskRegion: { x: 0.5, y: 0, width: 0.5, height: 1 } },
+  }, {
+    models: [{ id: 'gpt-image-2', provider: 'openai', mediaKind: 'image', aspectRatios: ['1:1'], resolutions: ['1K'], supportsMask: true }],
+    maximumBatchCount: 4,
+    maximumReferenceBytes: 8 * 1024 * 1024,
+  })
+
+  const bytes = { media_logo: pngOfSize(64, 64), media_portrait: pngOfSize(20, 10) }
+  const resolved = await resolveGenerationInputMedia(input, async (mediaId) => ({
+    mimeType: 'image/png',
+    buffer: bytes[mediaId],
+  }))
+
+  // 捕获 generateImages 实际发往供应商的内容
+  const originalFetch = globalThis.fetch
+  let capturedForm
+  globalThis.fetch = async (_url, init) => {
+    capturedForm = init.body
+    return new Response(JSON.stringify({ data: [{ b64_json: 'iVBORw0KGgo=' }] }), {
+      status: 200, headers: { 'content-type': 'application/json' },
+    })
+  }
+  try {
+    await generateImages(resolved, {
+      apiBaseUrl: 'https://example.test',
+      apiKey: 'test-key',
+      jobId: 'job-crossing',
+      persistImage: async (value) => value.dataUrl,
+    })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+
+  // 提取供应商实际收到的蒙版与第一张图
+  const maskBlob = capturedForm.get('mask')
+  const imageBlobs = capturedForm.getAll('image[]')
+  assert.ok(maskBlob, '蒙版应该被提交')
+  assert.ok(imageBlobs.length > 0, '至少应该有一张参考图')
+
+  const maskBuffer = Buffer.from(await maskBlob.arrayBuffer())
+  const firstImageBuffer = Buffer.from(await imageBlobs[0].arrayBuffer())
+
+  // 主断言：蒙版尺寸必须与第一张图相同
+  const maskSize = imagePixelSize(maskBuffer)
+  const firstImageSize = imagePixelSize(firstImageBuffer)
+  assert.deepEqual(maskSize, firstImageSize, '蒙版尺寸应该与供应商收到的第一张图相同')
+  assert.deepEqual(maskSize, { width: 20, height: 10 }, '应该按人像（20×10）而非 Logo（64×64）定尺寸')
+})
