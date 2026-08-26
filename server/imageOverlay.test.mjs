@@ -8,6 +8,7 @@ import {
   jobRequestsPixelOverlay,
   knockoutMarkBackground,
 } from './imageOverlay.mjs'
+import { GenerationError } from './generationProvider.mjs'
 
 function solidPng(width, height, rgba) {
   const pixels = Buffer.alloc(width * height * 4)
@@ -70,6 +71,17 @@ test('没有选区或没有标识时不走像素贴图', () => {
     maskRegion: { x: 0.6, y: 0, width: 0.4, height: 0.4 },
     references: [{ name: 'logo-full 2' }],
   }), false)
+})
+
+test('非 PNG 字节喂给 decodeRgbaImage 时报错文案保持不变', () => {
+  // 格式判定改走 detectImageFormat 之后，这条错误路径必须还认得出「不是 PNG」，
+  // 报错文案也不能变——贴标识功能本身只承诺支持 PNG。
+  assert.throws(
+    () => decodeRgbaImage(Buffer.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24])),
+    (error) => error instanceof GenerationError
+      && error.code === 'INVALID_REFERENCE'
+      && error.message === '贴标识无法读取该图片，请使用 PNG。',
+  )
 })
 
 test('像素贴图任务直接持久化 PNG，不调用供应商', async () => {

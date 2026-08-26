@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Edge } from '@xyflow/react'
-import { canvasZoomMode, generationResultNodeLabel, generationTaskErrorMessage, generationTaskFeedback, generationTaskResultLabel, planResultGroupPresentation, traceCanvasLineage } from './canvasPresentation.ts'
+import { canvasZoomMode, generationJobErrorCopy, generationResultNodeLabel, generationTaskErrorMessage, generationTaskFeedback, generationTaskResultLabel, planResultGroupPresentation, traceCanvasLineage } from './canvasPresentation.ts'
 
 test('canvasZoomMode applies stable semantic zoom bands', () => {
   assert.equal(canvasZoomMode(1), 'detail')
@@ -74,6 +74,33 @@ test('generationTaskErrorMessage hides raw network errors while preserving actio
   assert.equal(generationTaskErrorMessage('Failed to fetch'), '生成服务连接中断，请重试。')
   assert.equal(generationTaskErrorMessage('fetch failed'), '生成服务连接中断，请重试。')
   assert.equal(generationTaskErrorMessage('图像服务当前限流，请稍后重试。'), '图像服务当前限流，请稍后重试。')
+})
+
+test('已登记错误码按 locale 返回双语文案，两种语言都不是服务端原文', () => {
+  const serverMessage = '图片像素超过 4096x4096 上限，请压缩后重试。'
+  assert.equal(
+    generationTaskErrorMessage(serverMessage, 'IMAGE_TOO_LARGE_PIXELS', 'zh-CN'),
+    '图片像素过大，请压缩后重试。',
+  )
+  assert.equal(
+    generationTaskErrorMessage(serverMessage, 'IMAGE_TOO_LARGE_PIXELS', 'en'),
+    'The image resolution is too large. Resize it and try again.',
+  )
+})
+
+test('未登记错误码维持旧行为：原样透传服务端文案，不受新增参数影响', () => {
+  assert.equal(
+    generationTaskErrorMessage('图像服务当前限流，请稍后重试。', 'SOME_UNKNOWN_CODE', 'en'),
+    '图像服务当前限流，请稍后重试。',
+  )
+  // 不传错误码时（旧调用方式）行为必须和加参数前完全一致。
+  assert.equal(generationTaskErrorMessage('fetch failed'), '生成服务连接中断，请重试。')
+})
+
+test('generationJobErrorCopy 未登记错误码或缺失错误码时返回 undefined，调用方据此退回旧逻辑', () => {
+  assert.equal(generationJobErrorCopy(undefined, 'zh-CN'), undefined)
+  assert.equal(generationJobErrorCopy('SOME_UNKNOWN_CODE', 'en'), undefined)
+  assert.equal(generationJobErrorCopy('IMAGE_TOO_LARGE_PIXELS', 'en'), 'The image resolution is too large. Resize it and try again.')
 })
 
 test('traceCanvasLineage keeps the selected branch and excludes sibling branches', () => {

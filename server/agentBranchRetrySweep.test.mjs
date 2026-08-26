@@ -141,3 +141,45 @@ test('held 原因变化时记新的一条', async () => {
   const reasons = events.filter((event) => event.event === 'agent.branch.retry.held').map((event) => event.reason)
   assert.deepEqual(reasons, ['job_missing', 'error_not_retryable'])
 })
+
+test('分支在清扫之外被手动重试后，同一 held 原因要在新尝试上重新记一条', async () => {
+  // dedup 键只带 runId:branchId 会在这里漏记：手动重试把 attempt 从 0 推到 1，
+  // 分支带着同一个不可重试错误再次失败，如果键不跟着 attempt 变，第二次会被
+  // 误判成「原因没变」而静默丢掉——运维看到的是清扫又停了一次却没有日志。
+  const { createAgentBranchRetrySweep } = await import('./agentBranchRetrySweep.mjs')
+  let run = {
+    id: 'run-3',
+    ownerId: 'user-1',
+    branches: [{ id: 'branch-3', status: 'failed', attempt: 0, activeJobId: 'job-3a' }],
+  }
+  const job = { rawInput: {}, errorCode: 'PROVIDER_REJECTED', batchCount: 1, updatedAt: 0 }
+  const jobsById = { 'job-3a': { id: 'job-3a', ...job }, 'job-3b': { id: 'job-3b', ...job } }
+  const events = []
+  const sweep = createAgentBranchRetrySweep({
+    productStore: {
+      listRunsWithFailedBranches: async () => [{ runId: run.id, ownerId: run.ownerId }],
+      readAgentRunForWorker: async () => run,
+      readGenerationJobForWorker: async (jobId) => jobsById[jobId],
+      readGenerationJob: async () => undefined,
+    },
+    retryAgentBranch: async () => ({ kind: 'ok' }),
+    observe: (event) => events.push(event),
+    now: () => 10 * 60_000,
+    // 把尝试次数上限抬高，让 attempt 1 仍然走到「错误码不可重试」判定而不是
+    // 「尝试次数耗尽」——这样才能验证同一个 held 原因在新 attempt 上会重新记录。
+    policy: { maximumAutomaticAttempts: 5 },
+  })
+
+  await sweep()                                     // attempt 0 → error_not_retryable，记一条
+  await sweep()                                     // 同一 attempt，不再记
+
+  // 分支在清扫之外被手动重试：attempt 前进，指向新的 activeJobId。
+  run = { ...run, branches: [{ id: 'branch-3', status: 'failed', attempt: 1, activeJobId: 'job-3b' }] }
+  await sweep()                                     // attempt 1，同样的原因，必须重新记一条
+  await sweep()                                     // 同一 attempt 又不再记
+
+  const reasons = events
+    .filter((event) => event.event === 'agent.branch.retry.held')
+    .map((event) => event.reason)
+  assert.deepEqual(reasons, ['error_not_retryable', 'error_not_retryable'])
+})

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import { FORMAT_LABELS, MEDIA_LIMITS, UPLOAD_IMAGE_FORMATS } from '../server/mediaFormats.mjs'
+import { CANONICAL_IMAGE_FORMATS, FORMAT_LABELS, MEDIA_LIMITS, UPLOAD_IMAGE_FORMATS } from '../server/mediaFormats.mjs'
 
 /**
  * 客户端格式词表必须与服务端一致。
@@ -25,6 +25,12 @@ function domainList(name) {
 test('两份上传格式词表逐项一致（含顺序）', () => {
   // 顺序也要一致：accept= 的顺序决定文件选择器里的分组顺序。
   assert.deepEqual(domainList('UPLOAD_IMAGE_FORMATS'), [...UPLOAD_IMAGE_FORMATS])
+})
+
+test('两份 canonical 格式词表逐项一致（含顺序）', () => {
+  // canonical 是供应商约束，不是 UPLOAD 的别名——即便当前两份词表恰好同值，
+  // 也要各自校验，否则 PR-B 放宽 UPLOAD 时不会有任何测试发现两者已经分叉。
+  assert.deepEqual(domainList('CANONICAL_IMAGE_FORMATS'), [...CANONICAL_IMAGE_FORMATS])
 })
 
 /**

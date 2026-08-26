@@ -9,7 +9,7 @@ import type { AgentToolCallTrace, BotanicAgentReasoningEntry, BotanicAgentAction
 import type { BotanicAgentBranchVariation } from '../domain/agentVariations'
 import type { BotanicAgentCompositionItem } from '../domain/agentCreativeComposition'
 import { readProductLocale, type ProductLocale } from '../i18n/core'
-import { imageFormatSentenceList, isUploadImageFormat } from '../domain/mediaFormats'
+import { canonicalImageFormatSentenceList, isCanonicalImageFormat } from '../domain/mediaFormats'
 
 export type AgentRunCreationBranch = {
   id: string
@@ -36,9 +36,9 @@ export async function compareBotanicAgentRun(runId: string) {
 
 function agentApiCopy(locale: ProductLocale) {
   return locale === 'en' ? {
-    mediaRead: 'Unable to read the reference image. Add it again.', mediaType: `Agent reference images support ${imageFormatSentenceList('en')} only.`, planTimeout: 'Agent planning is taking longer than expected. Try again shortly; the canvas was not changed.', turnTimeout: 'Agent is taking longer than expected to understand the request. Try again shortly; the canvas was not changed.', chatTimeout: 'Agent is taking longer than expected to organize the context. Try again shortly; the canvas was not changed.', streamUnavailable: 'Agent live connection is unavailable.', chatIncomplete: 'Agent did not complete the response. Try again.', streamEnded: 'Agent live connection ended unexpectedly.', reviewTimeout: 'The result review is taking longer than expected. This round was skipped; your generated results are unaffected.',
+    mediaRead: 'Unable to read the reference image. Add it again.', mediaType: `Agent reference images support ${canonicalImageFormatSentenceList('en')} only.`, planTimeout: 'Agent planning is taking longer than expected. Try again shortly; the canvas was not changed.', turnTimeout: 'Agent is taking longer than expected to understand the request. Try again shortly; the canvas was not changed.', chatTimeout: 'Agent is taking longer than expected to organize the context. Try again shortly; the canvas was not changed.', streamUnavailable: 'Agent live connection is unavailable.', chatIncomplete: 'Agent did not complete the response. Try again.', streamEnded: 'Agent live connection ended unexpectedly.', reviewTimeout: 'The result review is taking longer than expected. This round was skipped; your generated results are unaffected.',
   } : {
-    mediaRead: '参考图片读取失败，请重新添加该图片。', mediaType: `Agent 参考图仅支持 ${imageFormatSentenceList('zh-CN')}。`, planTimeout: 'Agent 规划响应较慢，请稍后重试；当前画布内容未被修改。', turnTimeout: 'Agent 正在理解你的意图，响应较慢，请稍后重试；当前画布内容未被修改。', chatTimeout: 'Agent 正在整理上下文，响应较慢，请稍后重试；当前画布内容未被修改。', streamUnavailable: 'Agent 实时通道不可用。', chatIncomplete: 'Agent 对话未完成，请重试。', streamEnded: 'Agent 实时通道意外结束。', reviewTimeout: '结果评审响应较慢，已跳过本轮点评；生成结果不受影响。',
+    mediaRead: '参考图片读取失败，请重新添加该图片。', mediaType: `Agent 参考图仅支持 ${canonicalImageFormatSentenceList('zh-CN')}。`, planTimeout: 'Agent 规划响应较慢，请稍后重试；当前画布内容未被修改。', turnTimeout: 'Agent 正在理解你的意图，响应较慢，请稍后重试；当前画布内容未被修改。', chatTimeout: 'Agent 正在整理上下文，响应较慢，请稍后重试；当前画布内容未被修改。', streamUnavailable: 'Agent 实时通道不可用。', chatIncomplete: 'Agent 对话未完成，请重试。', streamEnded: 'Agent 实时通道意外结束。', reviewTimeout: '结果评审响应较慢，已跳过本轮点评；生成结果不受影响。',
   }
 }
 
@@ -61,7 +61,10 @@ export async function persistAgentReferenceMedia(projectId: string, source: stri
     const response = await fetch(source, { credentials: 'include' })
     if (!response.ok) throw new Error(copy.mediaRead)
     const blob = await response.blob()
-    if (!isUploadImageFormat(blob.type)) {
+    // 这里的字节即将被发去生成接口——校验应该按 canonical 词表而不是 upload
+    // 词表，即便当前两者恰好相同。误用 upload 词表是个哨兵地雷：以后放宽
+    // upload（PR-B）而不动 canonical 时，这里会静默跟着放宽，等接口拒绝。
+    if (!isCanonicalImageFormat(blob.type)) {
       throw new Error(copy.mediaType)
     }
     dataUrl = await blobAsDataUrl(blob)

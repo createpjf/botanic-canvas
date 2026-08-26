@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  CANONICAL_IMAGE_FORMATS,
   MEDIA_LIMITS,
   UPLOAD_IMAGE_FORMATS,
+  canonicalImageFormatSentenceList,
   imageFormatSentenceList,
   imageFormatShortList,
   imageUploadAccept,
+  isCanonicalImageFormat,
   isUploadImageFormat,
   supportedImageFormatLabels,
   unsupportedUploadMessage,
@@ -39,7 +42,7 @@ test('简短场景的格式提示用斜杠分隔，不分语言', () => {
 
 test('句子里嵌入的格式枚举按语言选连接词', () => {
   assert.equal(imageFormatSentenceList('zh-CN'), 'PNG、JPEG 或 WebP')
-  assert.equal(imageFormatSentenceList('en'), 'PNG, JPEG or WebP')
+  assert.equal(imageFormatSentenceList('en'), 'PNG, JPEG, or WebP')
 })
 
 test('上传限制提示的格式与体积都随词表 / MEDIA_LIMITS 派生', () => {
@@ -58,4 +61,28 @@ test('isUploadImageFormat 判断词表内外的 MIME 类型', () => {
   assert.equal(isUploadImageFormat('image/heic'), false)
   assert.equal(isUploadImageFormat(''), false)
   assert.equal(isUploadImageFormat(undefined), false)
+})
+
+test('isCanonicalImageFormat 判断词表内外的 MIME 类型', () => {
+  assert.equal(isCanonicalImageFormat('image/png'), true)
+  assert.equal(isCanonicalImageFormat('image/jpeg'), true)
+  assert.equal(isCanonicalImageFormat('image/webp'), true)
+  // 与 isUploadImageFormat 同样不应受大小写/空白影响——字节最终去往生成接口，
+  // 判定必须和上传早筛一样稳健。
+  assert.equal(isCanonicalImageFormat('IMAGE/PNG'), true)
+  assert.equal(isCanonicalImageFormat('  image/webp  '), true)
+  assert.equal(isCanonicalImageFormat('image/heic'), false)
+  assert.equal(isCanonicalImageFormat(''), false)
+  assert.equal(isCanonicalImageFormat(undefined), false)
+})
+
+test('canonical 词表句子式枚举按语言选连接词', () => {
+  // 当前 CANONICAL 与 UPLOAD 逐项相同，所以文案也恰好一致；这条测试独立校验
+  // canonical 自己的函数，不是在验证两者相等——分叉那天这里会先炸。
+  assert.equal(canonicalImageFormatSentenceList('zh-CN'), 'PNG、JPEG 或 WebP')
+  assert.equal(canonicalImageFormatSentenceList('en'), 'PNG, JPEG, or WebP')
+})
+
+test('CANONICAL_IMAGE_FORMATS 词表内容', () => {
+  assert.deepEqual([...CANONICAL_IMAGE_FORMATS], ['image/png', 'image/jpeg', 'image/webp'])
 })

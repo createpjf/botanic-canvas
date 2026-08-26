@@ -16,6 +16,21 @@ export const UPLOAD_IMAGE_FORMATS = [
   'image/webp',
 ] as const
 
+/**
+ * 我们存储、并交给供应商的格式——这是供应商约束，不是偏好。
+ *
+ * PR-A 内刻意等于 `UPLOAD_IMAGE_FORMATS`（两者当前逐项相同），但含义不同，
+ * 不能合并成一份：`UPLOAD_*` 回答「用户能交给我们什么」，这里回答「我们能
+ * 转交给供应商什么」。任何只吃字节、并把字节送往生成接口的路径都该按这份
+ * 词表校验——按 UPLOAD 词表校验只是巧合地等价，放宽 UPLOAD 词表那天就会
+ * 悄悄跟着放宽本不该放宽的供应商准入。
+ */
+export const CANONICAL_IMAGE_FORMATS = [
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+] as const
+
 export const MEDIA_LIMITS = {
   maxUploadBytes: 8 * 1024 * 1024,
 } as const
@@ -29,6 +44,7 @@ export function imageUploadAccept() {
 // （blob.type / file.type 都是 string）。转成 Set<string> 一次性抹平这个类型摩擦，
 // 与 `src/lib/uploadedAssets.ts` 里 `supportedUploadTypes` 的写法同一手法。
 const uploadImageFormatSet = new Set<string>(UPLOAD_IMAGE_FORMATS)
+const canonicalImageFormatSet = new Set<string>(CANONICAL_IMAGE_FORMATS)
 
 /**
  * 判断某个 MIME 类型是否在用户可上传的词表内。
@@ -39,6 +55,17 @@ const uploadImageFormatSet = new Set<string>(UPLOAD_IMAGE_FORMATS)
  */
 export function isUploadImageFormat(mimeType: unknown) {
   return typeof mimeType === 'string' && uploadImageFormatSet.has(mimeType.trim().toLowerCase())
+}
+
+/**
+ * 判断某个 MIME 类型是否在 canonical 词表内。
+ *
+ * 给「字节最终会被发去生成接口」的路径用——例如 Agent 参考图在客户端读完
+ * blob 之后、上传前的早筛。不要在这类路径上误用 `isUploadImageFormat`：
+ * 两个词表当前恰好相同，但含义不同，PR-B 放宽 UPLOAD 词表时两者会分叉。
+ */
+export function isCanonicalImageFormat(mimeType: unknown) {
+  return typeof mimeType === 'string' && canonicalImageFormatSet.has(mimeType.trim().toLowerCase())
 }
 
 const FORMAT_LABELS: Record<string, string> = {
@@ -72,18 +99,45 @@ export function imageFormatShortList() {
   return supportedImageFormatLabels().join(' / ')
 }
 
+/** 把一组格式短名拼成从句，英文按串列逗号（Oxford comma），中文按顿号+或。 */
+function joinFormatSentence(labels: string[], locale: ProductLocale) {
+  if (labels.length <= 1) return labels.join('')
+  // 英文用串列逗号：多于两项时最后一个连接词前也要有逗号，否则
+  // "PNG, JPEG or WebP" 在语法上会被读成两项并列，与中文的顿号+或不对称。
+  return locale === 'en'
+    ? labels.length > 2
+      ? `${labels.slice(0, -1).join(', ')}, or ${labels.at(-1)}`
+      : `${labels.slice(0, -1).join(', ')} or ${labels.at(-1)}`
+    : `${labels.slice(0, -1).join('、')} 或 ${labels.at(-1)}`
+}
+
 /**
- * 完整句子里嵌入的格式枚举，如「PNG、JPEG 或 WebP」/ `PNG, JPEG or WebP`。
+ * 完整句子里嵌入的格式枚举，如「PNG、JPEG 或 WebP」/ `PNG, JPEG, or WebP`。
  *
  * 与 `unsupportedUploadMessage` 内部的顿号连写是两种场合：那里是「仅支持 A、B、C」
  * 的清单式收尾，这里是需要语法完整的从句，写死任一种都会在另一种场合读起来别扭。
+ *
+ * 列的是 **upload** 词表——给「提示用户能上传什么」的场合用。字节最终要被
+ * 转交给生成接口的场合请用 `canonicalImageFormatSentenceList`。
  */
 export function imageFormatSentenceList(locale: ProductLocale = 'zh-CN') {
-  const labels = supportedImageFormatLabels()
-  if (labels.length <= 1) return labels.join('')
-  return locale === 'en'
-    ? `${labels.slice(0, -1).join(', ')} or ${labels.at(-1)}`
-    : `${labels.slice(0, -1).join('、')} 或 ${labels.at(-1)}`
+  return joinFormatSentence(supportedImageFormatLabels(), locale)
+}
+
+/** canonical 词表的人话短名，供需要自己拼句子的调用方用。 */
+function canonicalImageFormatLabels() {
+  return CANONICAL_IMAGE_FORMATS.map((format) => FORMAT_LABELS[format] ?? format)
+}
+
+/**
+ * canonical 词表的句子式枚举，如「PNG、JPEG 或 WebP」/ `PNG, JPEG, or WebP`。
+ *
+ * 给「字节最终会被发去生成接口」的提示用——目前是 Agent 参考图上传前的早筛
+ * 报错。与 `imageFormatSentenceList` 是同一句式，仅词表来源不同；当前两份
+ * 词表逐项相同所以文案恰好一致，但含义各自独立，不应合并成一个函数。
+ */
+export function canonicalImageFormatSentenceList(locale: ProductLocale = 'zh-CN') {
+  return joinFormatSentence(canonicalImageFormatLabels(), locale)
 }
 
 /**

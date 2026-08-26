@@ -638,3 +638,48 @@ test('dataUrl 父版本图像素超上限时被拒', async () => {
     },
   )
 })
+
+test('提交时携带 dataUrl 的超限参考图在 validateGenerationInput 阶段就被拒，不必等 Worker 才发现', () => {
+  // 像素守卫原本只在 Worker 侧的 resolveGenerationInputMedia 里跑；dataUrl 提交在
+  // validateGenerationInput 阶段就已经解出 buffer，能在这里查就不该拖到 Worker 才建一个
+  // 注定失败的 Job。这条测试锁的是提交阶段的行为，上面几条锁的是 Worker 侧的兜底。
+  const oversizedDataUrl = `data:image/png;base64,${pngOfSize(4032, 3024).toString('base64')}`
+  assert.throws(() => validateGenerationInput({
+    projectId: 'project-a', kind: 'generation', prompt: '香氛商品主图', batchCount: 1,
+    settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '1K' },
+    recipe: { references: [{ name: '主商品', dataUrl: oversizedDataUrl }] },
+  }, { models: ['gpt-image-2'], maximumBatchCount: 8, maximumReferenceBytes: 1024 * 1024 }),
+  (error) => error instanceof GenerationError && error.code === 'IMAGE_TOO_LARGE_PIXELS')
+})
+
+test('提交时携带 dataUrl 的超限父版本图在 validateGenerationInput 阶段就被拒', () => {
+  const oversizedDataUrl = `data:image/png;base64,${pngOfSize(4032, 3024).toString('base64')}`
+  assert.throws(() => validateGenerationInput({
+    projectId: 'project-a', kind: 'refinement', prompt: '换背景', batchCount: 1,
+    settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '1K' },
+    parent: { name: '父版本', dataUrl: oversizedDataUrl },
+    recipe: { references: [] },
+  }, { models: ['gpt-image-2'], maximumBatchCount: 8, maximumReferenceBytes: 1024 * 1024 }),
+  (error) => error instanceof GenerationError && error.code === 'IMAGE_TOO_LARGE_PIXELS')
+})
+
+test('提交时携带 dataUrl 的超限局部重绘蒙版在 validateGenerationInput 阶段就被拒', () => {
+  const oversizedDataUrl = `data:image/png;base64,${pngOfSize(4032, 3024).toString('base64')}`
+  assert.throws(() => validateGenerationInput({
+    projectId: 'project-a', kind: 'refinement', prompt: '只重绘选区为夜景', batchCount: 1,
+    settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '1K' },
+    parent: { name: '父版本', dataUrl: image },
+    recipe: { references: [], mask: { dataUrl: oversizedDataUrl } },
+  }, { models: ['gpt-image-2'], maximumBatchCount: 8, maximumReferenceBytes: 1024 * 1024 }),
+  (error) => error instanceof GenerationError && error.code === 'IMAGE_TOO_LARGE_PIXELS')
+})
+
+test('mediaId 提交阶段没有字节可查，像素守卫仍只能留给 Worker 侧兜底——预期的不对称，不是遗漏', () => {
+  const input = validateGenerationInput({
+    projectId: 'project-a', kind: 'generation', prompt: '香氛商品主图', batchCount: 1,
+    settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '1K' },
+    recipe: { references: [{ name: '主商品', mediaId: 'media_oversized-1' }] },
+  }, { models: ['gpt-image-2'], maximumBatchCount: 8, maximumReferenceBytes: 1024 })
+  assert.equal(input.references[0].mediaId, 'media_oversized-1')
+  assert.equal(input.references[0].buffer, undefined)
+})

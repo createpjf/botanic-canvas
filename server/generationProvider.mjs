@@ -193,6 +193,10 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
         ? ['reference_video']
         : ['first_frame', 'last_frame', 'reference_image'], '视频输入角色')
     const media = inputMedia(reference, maximumReferenceBytes, mediaKind)
+    // 提交时就能拦的（dataUrl 已解出 buffer）现在拦，不必等到 Worker 才发现超限。
+    // mediaId 提交这里还没有字节，只能沿用 resolveGenerationInputMedia 里的 Worker 侧校验——
+    // 这是预期的不对称，不是遗漏。
+    if (mediaKind !== 'video' && media.buffer) assertImagePixelBudget(media.buffer)
     return {
       name: assertText(reference.name ?? `参考素材 ${index + 1}`, '参考素材名称', 160),
       role: typeof reference.role === 'string' ? reference.role : '参考',
@@ -205,7 +209,9 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
 
   const parent = body.parent
     ? (() => {
-        return { name: assertText(body.parent.name ?? '父版本', '父版本名称', 160), ...inputMedia(body.parent, maximumReferenceBytes, 'image') }
+        const media = inputMedia(body.parent, maximumReferenceBytes, 'image')
+        if (media.buffer) assertImagePixelBudget(media.buffer)
+        return { name: assertText(body.parent.name ?? '父版本', '父版本名称', 160), ...media }
       })()
     : undefined
 
@@ -217,6 +223,7 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
     ? (() => {
         if (!supportsMask) throw new GenerationError(400, 'INVALID_MASK', '当前模型不支持局部重绘蒙版。')
         const media = inputMedia(recipe.mask, maximumReferenceBytes, 'image')
+        if (media.buffer) assertImagePixelBudget(media.buffer)
         if (media.mimeType && media.mimeType !== 'image/png') {
           throw new GenerationError(400, 'INVALID_MASK', '局部重绘蒙版必须是带透明通道的 PNG。')
         }
