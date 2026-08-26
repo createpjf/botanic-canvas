@@ -30,6 +30,7 @@ import {
 } from '../../domain/generationOutputSize'
 import { settingsForGenerationModel } from '../../domain/generationRecipe'
 import { AlertIcon, BookIcon, ChecklistIcon, ClockIcon, CopyIcon, EditIcon, FocusIcon, GlobeIcon, SearchIcon, SparkleIcon, ThumbDownIcon, ThumbUpIcon } from '../../components/BotanicIcons'
+import { AgentThinkingOrb } from '../../components/AgentThinkingOrb'
 import { agentPlannerModelLabel, modelDisplayLabel } from '../../components/generationModelPresentation'
 import { BotanicSelect } from '../../components/BotanicSelect'
 import { AgentClarificationCard, AgentPromptDiff, agentToolStatusLabel } from './AgentWorkspaceParts'
@@ -125,7 +126,10 @@ function AgentMessageTimeline({ timeline }: { timeline: AgentTimelineState }) {
     {timeline.blocks.map((block) => {
       if (block.type === 'thinking') {
         const label = timelineElapsedLabel(block.startedAt, block.endedAt ?? now, locale)
-        const summary = <><ClockIcon /><span>{label}</span></>
+        const marker = block.status === 'running'
+          ? <AgentThinkingOrb timeline={timeline} label={label} />
+          : <ClockIcon />
+        const summary = <>{marker}<span>{label}</span></>
         return block.text ? <details key={block.id} className={`agent-timeline__thinking is-${block.status}`}>
           <summary>{summary}</summary>
           <p>{block.text}</p>
