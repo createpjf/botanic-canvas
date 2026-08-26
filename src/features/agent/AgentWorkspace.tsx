@@ -1,4 +1,4 @@
-import { type DragEvent, useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from 'react'
+import { type ClipboardEvent, type DragEvent, useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from 'react'
 import {
   botanicAgentComposerGroupRole,
   botanicAgentBranchStatusLabel,
@@ -57,6 +57,7 @@ import type { BotanicAgentChatStreamEvent } from '../../domain/agentChatStream'
 import { applyAgentConversationStreamEvent, createAgentTimeline, persistAgentLiveTimeline, projectBotanicAgentRunOntoTimeline, type AgentTimelineEvent, type AgentTimelineState } from '../../domain/agentTimeline'
 import { nextExclusiveSurface, type ExclusiveSurfaceAction } from '../../domain/exclusiveSurface'
 import { uploadLimitsLabel } from '../../domain/mediaFormats'
+import { clipboardMediaFiles } from '../../domain/clipboardMedia'
 import type { CollaborationActivity, CollaborationDocumentChange } from '../../domain/collaborationActivity'
 import type {
   AssetGroup,
@@ -828,13 +829,13 @@ export default function AgentWorkspace({
     }, 700)
   }, [onUpdateReadingAnchor, session?.id, utilityPanelOpen])
 
-  const importImageFiles = async (files: File[]) => {
+  const importImageFiles = async (files: File[], source: 'drop' | 'paste' = 'drop') => {
     const { accepted, message } = validateUploadFiles(files, locale)
     const imageFiles = accepted.slice(0, maxUploadAssets)
     const limitMessage = accepted.length > maxUploadAssets ? flowCopy.imageLimit(maxUploadAssets) : ''
     if (message || limitMessage) setError([message, limitMessage].filter(Boolean).join(' '))
     if (!imageFiles.length) return
-    const loaded = await Promise.allSettled(imageFiles.map((file) => readUploadedAssetInput(file, '场景')))
+    const loaded = await Promise.allSettled(imageFiles.map((file) => readUploadedAssetInput(file, '场景', { source, locale })))
     const uploads = loaded
       .filter((result): result is PromiseFulfilledResult<UploadedAssetInput> => result.status === 'fulfilled')
       .map((result) => result.value)
@@ -868,6 +869,15 @@ export default function AgentWorkspace({
     event.stopPropagation()
     setIsImageDropActive(false)
     void importImageFiles(Array.from(event.dataTransfer.files))
+  }
+
+  const handlePaste = (event: ClipboardEvent<HTMLElement>) => {
+    const items = Array.from(event.clipboardData?.items ?? [])
+    const files = clipboardMediaFiles(items)
+    // 没有媒体文件就原样放行 —— 用户可能正在往文本区粘贴文字。
+    if (!files.length) return
+    event.preventDefault()
+    void importImageFiles(files, 'paste')
   }
 
   useEffect(() => {
@@ -2404,6 +2414,7 @@ export default function AgentWorkspace({
       onDragOver={handleImageDragOver}
       onDragLeave={handleImageDragLeave}
       onDrop={handleImageDrop}
+      onPaste={handlePaste}
     >
       {isImageDropActive ? <div className="agent-workspace__drop-hint" aria-hidden="true"><UploadIcon /><strong>{flowCopy.dropImages}</strong><small>{flowCopy.uploadLimits}</small></div> : null}
       <header className="agent-workspace__header">
