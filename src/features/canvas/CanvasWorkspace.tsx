@@ -2581,7 +2581,7 @@ export default function CanvasWorkspace({
         {canvasUploadMessage ? <div className="canvas-upload-message" role="status">{canvasUploadMessage}</div> : null}
         <CanvasAssistantNotice message={assistantMessage} dismissLabel={t.dismissNotice} onDismiss={clearAssistantMessage} />
         {nodePalettePresence.present && visibleNodePalette ? (
-          <div className={`node-palette is-${nodePalettePresence.phase}`} style={{ left: visibleNodePalette.screen.x, top: visibleNodePalette.screen.y }} role="dialog" aria-modal="true" aria-label={t.addCanvasNode} aria-hidden={nodePalettePresence.phase === 'exit' ? true : undefined} onPointerDown={(event) => event.stopPropagation()}>
+          <div className={`node-palette is-${nodePalettePresence.phase}`} style={{ left: visibleNodePalette.screen.x, top: visibleNodePalette.screen.y }} role="dialog" aria-label={t.addCanvasNode} aria-hidden={nodePalettePresence.phase === 'exit' ? true : undefined} onPointerDown={(event) => event.stopPropagation()}>
             <div className="node-palette__title"><span>{visibleNodePalette.parentResultId ? t.addFromImage : visibleNodePalette.inputNodeId ? t.connectSelected : t.addNodeTitle}</span><button onClick={() => setNodePalette(null)} aria-label={t.closeAddNode}><CloseIcon /></button></div>
             <button onClick={() => {
               const parentNode = visibleNodePalette.parentResultId
