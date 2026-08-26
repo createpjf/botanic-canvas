@@ -2,6 +2,18 @@ import type { AgentToolCallTrace, BotanicAgentRun, BotanicAgentRunBranch } from 
 
 export type TimelineStepKind = 'search' | 'fetch' | 'read_skill' | 'connect_runtime' | 'read' | 'write' | 'other'
 
+/** thinking-orbs 的九态；只决定动画，不决定界面文案。 */
+export type AgentTimelineOrbState =
+  | 'working'
+  | 'searching'
+  | 'solving'
+  | 'listening'
+  | 'connecting'
+  | 'weaving'
+  | 'composing'
+  | 'breathing'
+  | 'shaping'
+
 export type TimelineToolPresentation = {
   kind: TimelineStepKind
   title: string
@@ -97,6 +109,69 @@ export function agentTimelineToolPresentation(call: AgentToolCallTrace): Timelin
     kind,
     title: call.summary?.trim() ? `${call.label} · ${call.summary.trim()}` : call.label,
   }
+}
+
+/**
+ * 工具行 / 思考 pill 的球体动画态。
+ * 只映射「播哪段动画」；标题、状态词、失败原因仍走 presentation / searchTitle。
+ * 思考 pill 固定 breathing（MetalForge thinking-orbs `style=breathe`），不随工具步改态。
+ */
+export function agentTimelineOrbState(input: {
+  surface?: 'thinking' | 'step'
+  kind?: TimelineStepKind
+  toolName?: string
+} = {}): AgentTimelineOrbState {
+  if (input.surface === 'thinking') return 'breathing'
+  const name = input.toolName?.trim().toLocaleLowerCase() ?? ''
+  if (
+    name === 'web_search'
+    || name.startsWith('search_')
+    || /(?:^|_)(?:project_memory_search|asset_group_search|asset_search|skill_search|artifact_search)$/u.test(name)
+  ) {
+    return 'searching'
+  }
+  if (name === 'web_fetch' || name.startsWith('mcp_') || /^(?:browser_connect|playwright_connect|cdp_attach)$/u.test(name)) {
+    return 'connecting'
+  }
+  if (name === 'subagent_research' || /^(?:skill_run|skill_read|read_skill|skill_apply)$/u.test(name)) {
+    return 'weaving'
+  }
+  if (name === 'generation_create_plan' || name === 'decompose_creative_brief') return 'composing'
+  if (
+    name === 'generation_submit'
+    || name === 'workflow_create'
+    || name.startsWith('generate_')
+  ) {
+    return 'shaping'
+  }
+  if (name === 'ask_clarification' || name === 'generation_ask_clarification') return 'listening'
+
+  switch (input.kind) {
+    case 'search':
+      return 'searching'
+    case 'fetch':
+    case 'connect_runtime':
+      return 'connecting'
+    case 'read_skill':
+      return 'weaving'
+    case 'read':
+    case 'write':
+    case 'other':
+    default:
+      return 'working'
+  }
+}
+
+/** 从时间线 raw 工具列表解析步骤主工具名，供球体映射；没有则只按 kind。 */
+export function agentTimelineStepToolName(
+  block: Extract<TimelineBlock, { type: 'step' }>,
+  items: AgentToolCallTrace[] = [],
+) {
+  for (const id of block.sourceToolIds) {
+    const name = items.find((item) => item.id === id)?.name?.trim()
+    if (name) return name
+  }
+  return undefined
 }
 
 function stepStatus(status: AgentToolCallTrace['status']): TimelineStepBlock['status'] {

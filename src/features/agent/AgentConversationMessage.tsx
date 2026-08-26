@@ -10,6 +10,7 @@ import {
   creativeDimensionLabel,
   resolveBotanicAgentExecutionDecision,
   shouldRestoreBotanicAgentRuntimeSteps,
+  type AgentToolCallTrace,
   type BotanicAgentActionProposal,
   type BotanicAgentArtifact,
   type BotanicAgentContextSnapshot,
@@ -18,7 +19,6 @@ import {
   type BotanicAgentMessage,
   type BotanicAgentRun,
 } from '../../domain/agent'
-import type { AgentTimelineState, TimelineBlock, TimelineStepKind } from '../../domain/agentTimeline'
 import type { GenerationModelOption, GenerationSettings } from '../../domain/canvas'
 import {
   applyCustomGenerationSize,
@@ -31,6 +31,7 @@ import {
 import { settingsForGenerationModel } from '../../domain/generationRecipe'
 import { AlertIcon, BookIcon, ChecklistIcon, ClockIcon, CopyIcon, EditIcon, FocusIcon, GlobeIcon, SearchIcon, SparkleIcon, ThumbDownIcon, ThumbUpIcon } from '../../components/BotanicIcons'
 import { AgentThinkingOrb } from '../../components/AgentThinkingOrb'
+import { AgentToolOrb } from '../../components/AgentToolOrb'
 import { agentPlannerModelLabel, modelDisplayLabel } from '../../components/generationModelPresentation'
 import { BotanicSelect } from '../../components/BotanicSelect'
 import { AgentClarificationCard, AgentPromptDiff, agentToolStatusLabel } from './AgentWorkspaceParts'
@@ -47,6 +48,13 @@ import {
 import { useProductI18n } from '../../i18n/react'
 import type { ProductLocale } from '../../i18n/core'
 import type { BotanicAgentRunReview } from '../../domain/agentReviewContract'
+import {
+  agentTimelineOrbState,
+  agentTimelineStepToolName,
+  type AgentTimelineState,
+  type TimelineBlock,
+  type TimelineStepKind,
+} from '../../domain/agentTimeline'
 
 /** 超过这个体量的助手回复默认折叠；阈值只影响展示，不改变消息内容。 */
 const collapsibleContentLength = 600
@@ -92,6 +100,27 @@ function TimelineStepIcon({ kind }: { kind: TimelineStepKind }) {
   return <ChecklistIcon />
 }
 
+function TimelineStepMarker({
+  block,
+  toolItems,
+}: {
+  block: Extract<TimelineBlock, { type: 'step' }>
+  toolItems: AgentToolCallTrace[]
+}) {
+  if (block.status === 'failed') return <AlertIcon />
+  if (block.status === 'running') {
+    return (
+      <AgentToolOrb
+        state={agentTimelineOrbState({
+          kind: block.kind,
+          toolName: agentTimelineStepToolName(block, toolItems),
+        })}
+      />
+    )
+  }
+  return <TimelineStepIcon kind={block.kind} />
+}
+
 function timelineStepTitle(block: Extract<TimelineBlock, { type: 'step' }>, locale: ProductLocale) {
   if (locale !== 'en' || !/\p{Script=Han}/u.test(block.title)) return block.title
   if (block.kind === 'search') {
@@ -115,6 +144,7 @@ function AgentMessageTimeline({ timeline }: { timeline: AgentTimelineState }) {
   const { locale } = useProductI18n()
   const running = timeline.blocks.some((block) => block.type === 'thinking' && block.status === 'running')
   const [now, setNow] = useState(() => Date.now())
+  const toolItems = timeline.blocks.find((block) => block.type === 'raw_group')?.items ?? []
 
   useEffect(() => {
     if (!running) return
@@ -127,7 +157,7 @@ function AgentMessageTimeline({ timeline }: { timeline: AgentTimelineState }) {
       if (block.type === 'thinking') {
         const label = timelineElapsedLabel(block.startedAt, block.endedAt ?? now, locale)
         const marker = block.status === 'running'
-          ? <AgentThinkingOrb timeline={timeline} label={label} />
+          ? <AgentThinkingOrb label={label} />
           : <ClockIcon />
         const summary = <>{marker}<span>{label}</span></>
         return block.text ? <details key={block.id} className={`agent-timeline__thinking is-${block.status}`}>
@@ -140,7 +170,7 @@ function AgentMessageTimeline({ timeline }: { timeline: AgentTimelineState }) {
         const statusLabel = block.status === 'running' ? (locale === 'en' ? 'Running' : '进行中') : block.status === 'succeeded' ? (locale === 'en' ? 'Completed' : '已完成') : (locale === 'en' ? 'Failed' : '失败')
         const title = timelineStepTitle(block, locale)
         return <div key={block.id} className={`agent-timeline__step is-${block.status}`} aria-label={`${title}, ${statusLabel}`}>
-          <span className="agent-timeline__step-icon" aria-hidden="true">{block.status === 'failed' ? <AlertIcon /> : <TimelineStepIcon kind={block.kind} />}</span>
+          <span className="agent-timeline__step-icon" aria-hidden="true"><TimelineStepMarker block={block} toolItems={toolItems} /></span>
           <strong>{title}</strong>
           <small>{statusLabel}</small>
         </div>
