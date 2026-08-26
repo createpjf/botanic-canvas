@@ -269,6 +269,102 @@ function ensureAgentGenerationPlaceholder(next, job) {
   return changed
 }
 
+function jobSubmissionSettings(job) {
+  const settings = job?.settings ?? job?.rawInput?.settings
+  return settings && typeof settings.model === 'string' && settings.aspectRatio ? settings : undefined
+}
+
+function settingsMatchSubmission(snapshot, settings) {
+  if (!snapshot) return false
+  return snapshot.model === settings.model
+    && snapshot.aspectRatio === settings.aspectRatio
+    && (snapshot.resolution ?? null) === (settings.resolution ?? null)
+}
+
+/**
+ * 一次性数据修复（幂等）：旧版恢复兜底曾把已落图任务的任务号错配进新占位节点，
+ * 随后的对账又用占位节点的参数快照覆写了持有旧图的历史节点。任务存储里的提交
+ * 参数是权威，据此：
+ * - 持图节点的参数快照与产出它的任务不一致时，按任务提交参数回填（含血缘）；
+ * - 占位节点声称的任务已在其他节点完整落图时，交还给真正以它为落点的任务，
+ *   找不到原任务就如实标记失败，不再永远显示「等待生成结果」。
+ */
+function repairMisattributedGenerationHistory(next, jobs) {
+  let changed = false
+  const jobById = new Map((jobs ?? []).map((job) => [job.id, job]))
+  const outputSourceByTarget = new Map()
+  for (const edge of next.edges) {
+    if (edge?.data?.role === 'output' && edge.source && edge.target) outputSourceByTarget.set(edge.target, edge.source)
+  }
+  const generateNodeIds = new Set(next.nodes.filter((node) => node.type === 'generate').map((node) => node.id))
+
+  for (const node of next.nodes) {
+    if (node.type !== 'result') continue
+    const data = node.data ?? {}
+    const job = data.jobId ? jobById.get(data.jobId) : undefined
+    if (!job) continue
+
+    if (data.image) {
+      if (job.status !== 'succeeded') continue
+      const settings = jobSubmissionSettings(job)
+      if (!settings) continue
+      const output = (job.outputs ?? []).find((item) => item.id === data.candidateId)
+        ?? ((job.outputs ?? []).length === 1 && !data.candidateId ? job.outputs[0] : undefined)
+      // 只在能确认「这个节点持有的正是这个任务的这份输出」时修复，身份对不上一律不动。
+      if (!output || output.image !== data.image) continue
+      if (settingsMatchSubmission(data.generationSettings, settings)) continue
+      const recipe = recoveredRecipe(job)
+      const edgeSource = outputSourceByTarget.get(node.id)
+      node.data = {
+        ...data,
+        generationSettings: { ...settings },
+        ...(recipe ? { generationRecipe: recipe } : {}),
+        generationKind: job.kind ?? data.generationKind,
+        refinementMode: job.refinementMode ?? data.refinementMode,
+        // 血缘按画布上的系统输出连线恢复；被覆写的分组指针指向别的任务根，
+        // 回归自身可避免旧任务根的批量状态更新再次波及本节点。
+        outputOf: edgeSource && generateNodeIds.has(edgeSource) ? edgeSource : data.outputOf,
+        taskGroupId: node.id,
+        taskNodeId: node.id,
+        submittedAt: job.createdAt ?? data.submittedAt,
+      }
+      changed = true
+      continue
+    }
+
+    if (job.status !== 'succeeded' || !(job.outputs ?? []).length) continue
+    const stolen = job.outputs.every((output) => outputIsProjected(next.nodes, job, output))
+    if (!stolen) continue
+    const reclaimed = (jobs ?? []).find((candidate) => candidate.id !== job.id
+      && (candidate.resultNodeId === node.id || (data.taskGroupId && candidate.resultNodeId === data.taskGroupId))
+      && !(candidate.status === 'succeeded' && (candidate.outputs ?? []).length
+        && candidate.outputs.every((output) => outputIsProjected(next.nodes, candidate, output))))
+    if (reclaimed) {
+      node.data = {
+        ...data,
+        jobId: reclaimed.id,
+        status: reclaimed.status === 'succeeded'
+          ? 'ready'
+          : reclaimed.status === 'failed'
+            ? 'failed'
+            : reclaimed.status === 'cancelled' ? 'cancelled' : 'generating',
+        taskStatus: reclaimed.status,
+        error: reclaimed.error,
+      }
+    } else {
+      node.data = {
+        ...data,
+        jobId: undefined,
+        status: 'failed',
+        taskStatus: 'failed',
+        error: '任务恢复时被错误关联到旧任务，且找不到原任务记录；请重新生成。',
+      }
+    }
+    changed = true
+  }
+  return changed
+}
+
 function matchingJob({ result, generate, jobs, usedJobIds }) {
   const explicitId = result.jobId ?? generate?.data?.jobId
   if (explicitId) return jobs.find((job) => job.id === explicitId && job.status === 'succeeded' && job.outputs?.length)
@@ -343,6 +439,9 @@ export function reconcileGenerationResults(document, jobs, { ensureAgentPlacehol
   if (ensureAgentPlaceholders) {
     for (const job of jobs ?? []) changed = ensureAgentGenerationPlaceholder(next, job) || changed
   }
+  // 先修复被错配恢复污染的节点，再做常规回填：被交还真实任务的占位节点
+  // 可以在同一次对账里直接拿到自己的输出。
+  changed = repairMisattributedGenerationHistory(next, jobs) || changed
   const nodeById = new Map(nodes.map((node) => [node.id, node]))
   const usedJobIds = new Set(nodes
     .filter((node) => node.type === 'result' && node.data?.image && node.data?.jobId)
