@@ -182,6 +182,7 @@ function ComposerOptionPopover({ label, value, valueIcon, disabled = false, widt
         className={`composer-option-menu ${className} is-${menuPresence.phase}`.trim()}
         style={{ left: anchor.left, bottom: anchor.bottom, width }}
         role="dialog"
+        aria-modal="true"
         aria-label={t.options(label)}
         aria-hidden={menuPresence.phase === 'exit' ? true : undefined}
         onKeyDown={moveMenuFocus}

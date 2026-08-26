@@ -57,7 +57,7 @@ import type { BotanicAgentChatStreamEvent } from '../../domain/agentChatStream'
 import { applyAgentConversationStreamEvent, createAgentTimeline, persistAgentLiveTimeline, projectBotanicAgentRunOntoTimeline, type AgentTimelineEvent, type AgentTimelineState } from '../../domain/agentTimeline'
 import { nextExclusiveSurface, type ExclusiveSurfaceAction } from '../../domain/exclusiveSurface'
 import { uploadLimitsLabel } from '../../domain/mediaFormats'
-import { clipboardMediaFiles } from '../../domain/clipboardMedia'
+import { clipboardHasPlainText, clipboardMediaFiles, pasteTarget } from '../../domain/clipboardMedia'
 import type { CollaborationActivity, CollaborationDocumentChange } from '../../domain/collaborationActivity'
 import type {
   AssetGroup,
@@ -874,9 +874,24 @@ export default function AgentWorkspace({
   const handlePaste = (event: ClipboardEvent<HTMLElement>) => {
     const items = Array.from(event.clipboardData?.items ?? [])
     const files = clipboardMediaFiles(items)
-    // 没有媒体文件就原样放行 —— 用户可能正在往文本区粘贴文字。
-    if (!files.length) return
-    event.preventDefault()
+    const target = event.target
+    const element = target instanceof Element ? target : null
+    // 与 CanvasWorkspace 的 window 粘贴监听器共用同一份判定式（同一个 pasteTarget）。
+    // 这里的 onPaste 挂在 .agent-workspace 上，本身只会在事件冒泡经过面板的
+    // React 子树时触发；但 Agent 对话里发起的局部重绘编辑器也用 createPortal
+    // 挂到 document.body——冒泡仍会经过这个 onPaste（React 按组件树而非 DOM
+    // 树冒泡），可 DOM 上它已经不在 .agent-workspace 之下。不重新计算
+    // insideAgentPanel/modalOpen，会让这次粘贴被误当成「composer 有焦点」，
+    // 静默把图片塞进被弹层挡住、用户看不到的输入框。
+    const agentPanelMounted = Boolean(window.document.querySelector('.agent-workspace'))
+    const insideAgentPanel = Boolean(element?.closest('.agent-workspace'))
+      || (agentPanelMounted && Boolean(element?.closest('.botanic-select__menu')))
+    const insideTextEntry = Boolean(element?.closest('input, textarea, [contenteditable="true"]'))
+    const modalOpen = Boolean(window.document.querySelector('[aria-modal="true"]'))
+    if (pasteTarget({ hasMediaFiles: files.length > 0, insideAgentPanel, insideTextEntry, modalOpen }) !== 'composer') return
+    // 表格单元格复制这类混合内容会同时带一段文本；不分情况地 preventDefault
+    // 会把这段文本一起吞掉。只在剪贴板没有纯文本时才拦截默认粘贴，图片始终正常导入。
+    if (!clipboardHasPlainText(items)) event.preventDefault()
     void importImageFiles(files, 'paste')
   }
 

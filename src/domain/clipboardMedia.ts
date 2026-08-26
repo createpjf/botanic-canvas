@@ -74,6 +74,17 @@ export function pasteTarget({
   return 'canvas'
 }
 
+/**
+ * 剪贴板条目里是否还带着一段纯文本。
+ *
+ * 表格单元格复制这类混合内容，会同时给一个图片条目和一个 `text/plain` 条目。
+ * Composer 粘贴图片时如果不分情况地拦掉默认行为，这段文本会被一起吞掉——
+ * 用户明明在剪贴板里看得到的文字，粘贴后却什么都没落进文本框。
+ */
+export function clipboardHasPlainText(items: readonly ClipboardItemLike[]): boolean {
+  return items.some((item) => item.kind === 'string' && item.type === 'text/plain')
+}
+
 /** 截图进剪贴板时常见的无意义文件名。 */
 const genericPastedNames = new Set(['', 'image', 'untitled', '未命名'])
 

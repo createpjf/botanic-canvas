@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { clipboardMediaFiles, pastedAssetName, pasteTarget } from './clipboardMedia.ts'
+import { clipboardHasPlainText, clipboardMediaFiles, pastedAssetName, pasteTarget } from './clipboardMedia.ts'
 
 function item(kind: string, type: string, file: File | null) {
   return { kind, type, getAsFile: () => file }
@@ -47,6 +47,31 @@ test('getAsFile 返回 null 的条目被跳过而不是塞进 null', () => {
 
 test('纯文本剪贴板得到空数组', () => {
   assert.deepEqual(clipboardMediaFiles([item('string', 'text/plain', null)]), [])
+})
+
+test('剪贴板里同时有图片和纯文本时能识别出文本', () => {
+  // 表格单元格复制：一个 image 条目 + 一个 text/plain 条目。
+  assert.equal(
+    clipboardHasPlainText([item('file', 'image/png', png), item('string', 'text/plain', null)]),
+    true,
+  )
+})
+
+test('只有图片、没有纯文本时识别为没有文本', () => {
+  // 截图场景：剪贴板里只有一个 file 条目，没有 text/plain。
+  assert.equal(clipboardHasPlainText([item('file', 'image/png', png)]), false)
+})
+
+test('text/html 不算纯文本 —— 只认 text/plain', () => {
+  // 网页复制图片时常带 text/html，但那不是用户能看到、期望原样粘贴的文字。
+  assert.equal(
+    clipboardHasPlainText([item('file', 'image/png', png), item('string', 'text/html', null)]),
+    false,
+  )
+})
+
+test('空剪贴板没有纯文本', () => {
+  assert.equal(clipboardHasPlainText([]), false)
 })
 
 test('没有媒体文件时一律 ignore —— 文本粘贴绝不被劫持', () => {

@@ -1505,19 +1505,31 @@ export default function CanvasWorkspace({
     const onPaste = (event: globalThis.ClipboardEvent) => {
       const target = event.target
       const element = target instanceof Element ? target : null
-      // 对话框内部的粘贴由 AgentWorkspace 的 onPaste 处理。两个监听器各管一块
-      // 互不重叠的区域、用同一个判定式界定，因此不依赖事件触发顺序。
+      // Agent 面板内部的粘贴由 AgentWorkspace 自己的 onPaste 处理（同一份判定式）。
+      // 两个监听器管的是同一次事件，靠这个判定式互斥而不是互不重叠——
+      // BotanicSelect 的下拉菜单用 createPortal 挂到 document.body，DOM 上不再
+      // 是 .agent-workspace 的子孙，光靠 closest() 会漏判成「不在面板里」，
+      // 导致这次粘贴被两边同时接了一遍。Agent 面板与画布侧的其它面板
+      // （素材库、模板、批量变体等）互斥，同一时刻最多挂载一个，所以「面板已挂载」
+      // 加上「粘贴目标在某个下拉菜单里」就能安全地反推出这个菜单属于 Agent 面板，
+      // 不必去猜它具体是哪个 BotanicSelect 实例。
+      const agentPanelMounted = Boolean(window.document.querySelector('.agent-workspace'))
       const insideAgentPanel = Boolean(element?.closest('.agent-workspace'))
+        || (agentPanelMounted && Boolean(element?.closest('.botanic-select__menu')))
       const insideTextEntry = Boolean(
         element?.closest('input, textarea, [contenteditable="true"]'),
       )
-      // 用「文档里是否存在打开的模态对话框」而不是从事件目标 closest() 向上找——
+      // 用「文档里是否存在打开的模态弹层」而不是从事件目标 closest() 向上找——
       // 焦点常常停在弹层的遮罩或 document.body 上，closest() 会完全漏掉它。
-      const modalOpen = Boolean(window.document.querySelector('[role="dialog"][aria-modal="true"]'))
+      // 只认 [aria-modal="true"]，不强制搭配 role="dialog"：alertdialog 之类的
+      // 确认框也算模态，这与 Escape 键那条守卫用的是同一套口径。
+      const modalOpen = Boolean(window.document.querySelector('[aria-modal="true"]'))
       const files = clipboardMediaFiles(Array.from(event.clipboardData?.items ?? []))
       if (pasteTarget({ hasMediaFiles: files.length > 0, insideAgentPanel, insideTextEntry, modalOpen }) !== 'canvas') return
+      // 落点算不出来（React Flow 还没挂载，比如素材库/加载视图）就不要拦截默认行为——
+      // 静默吞掉这次粘贴却什么都不做，正是这个功能一直在避免的那类问题。
+      if (!pasteFilesToCanvasCenter(files)) return
       event.preventDefault()
-      pasteFilesToCanvasCenter(files)
     }
     window.addEventListener('paste', onPaste)
     return () => window.removeEventListener('paste', onPaste)
@@ -2569,7 +2581,7 @@ export default function CanvasWorkspace({
         {canvasUploadMessage ? <div className="canvas-upload-message" role="status">{canvasUploadMessage}</div> : null}
         <CanvasAssistantNotice message={assistantMessage} dismissLabel={t.dismissNotice} onDismiss={clearAssistantMessage} />
         {nodePalettePresence.present && visibleNodePalette ? (
-          <div className={`node-palette is-${nodePalettePresence.phase}`} style={{ left: visibleNodePalette.screen.x, top: visibleNodePalette.screen.y }} role="dialog" aria-label={t.addCanvasNode} aria-hidden={nodePalettePresence.phase === 'exit' ? true : undefined} onPointerDown={(event) => event.stopPropagation()}>
+          <div className={`node-palette is-${nodePalettePresence.phase}`} style={{ left: visibleNodePalette.screen.x, top: visibleNodePalette.screen.y }} role="dialog" aria-modal="true" aria-label={t.addCanvasNode} aria-hidden={nodePalettePresence.phase === 'exit' ? true : undefined} onPointerDown={(event) => event.stopPropagation()}>
             <div className="node-palette__title"><span>{visibleNodePalette.parentResultId ? t.addFromImage : visibleNodePalette.inputNodeId ? t.connectSelected : t.addNodeTitle}</span><button onClick={() => setNodePalette(null)} aria-label={t.closeAddNode}><CloseIcon /></button></div>
             <button onClick={() => {
               const parentNode = visibleNodePalette.parentResultId
