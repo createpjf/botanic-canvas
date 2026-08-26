@@ -24,8 +24,10 @@ export type PasteTarget = 'composer' | 'canvas' | 'ignore'
  * （macOS 的 Cmd+Shift+Ctrl+4）、网页右键复制图片、图像编辑器复制，
  * 都只在 `items` 里给一个 blob。只认 `files` 会漏掉最常见的截图场景。
  *
- * 不筛具体格式：格式与体积由 `validateUploadFiles` 统一判定，在这里再写一遍
- * 就会出现两份词表。也不筛图片/视频 —— 不写过滤比写过滤代码更少。
+ * **不筛具体格式，但过滤非媒体类型**：具体的格式与体积由 `validateUploadFiles`
+ * 统一判定，在这里再写一遍就会出现两份词表。但 PDF 等非媒体类型会被默认拒绝，
+ * 这避免将用户可能无意的内容变成「仅支持 PNG、JPEG、WebP」的错误提示。
+ * 过滤使用宽泛的类别前缀（image/、video/）而不是具体的 MIME 列表，保持检查轻量。
  */
 export function clipboardMediaFiles(items: readonly ClipboardItemLike[]): File[] {
   const files: File[] = []

@@ -29,8 +29,16 @@ test('网页复制的图片同时带 text/html，仍只取文件', () => {
 })
 
 test('视频文件同样通过 —— 不写图片专属过滤', () => {
-  // 不加过滤比加过滤代码更少；从 Finder 复制视频粘贴会正常工作。
+  // 视频通过这一层，但被下游 validateUploadFiles 拒绝，因为 video 不在
+  // UPLOAD_IMAGE_FORMATS 里。这个行为是本任务的预期 —— 视频上传超出范围。
   assert.deepEqual(clipboardMediaFiles([item('file', 'video/mp4', mp4)]), [mp4])
+})
+
+test('非媒体文件类型被过滤', () => {
+  // PDF 等非媒体类型被这里默认拒绝，不产生错误消息噪音。
+  // 一个用户可能没有打算上传的内容不会变成「仅支持 PNG、JPEG、WebP」的错误。
+  const pdf = new File(['x'], 'doc.pdf', { type: 'application/pdf' })
+  assert.deepEqual(clipboardMediaFiles([item('file', 'application/pdf', pdf)]), [])
 })
 
 test('getAsFile 返回 null 的条目被跳过而不是塞进 null', () => {
@@ -95,4 +103,17 @@ test('回落名补零且双语', () => {
 test('粘贴来源但文件名有意义时保留原名', () => {
   // 从 Finder 复制的文件带真实文件名，不能被覆盖。
   assert.equal(pastedAssetName('brand-guide.png', { source: 'paste' }), 'brand-guide')
+})
+
+test('回落名检测规范化大小写和空白', () => {
+  // 'IMAGE' 和前导尾随空白的 'image' 也是通用名，应该回落。
+  const now = new Date(2026, 7, 26, 14, 30)
+  assert.equal(pastedAssetName('IMAGE.PNG', { source: 'paste', now }), '粘贴的图片 14:30')
+  assert.equal(pastedAssetName('  image.png  ', { source: 'paste', now }), '粘贴的图片 14:30')
+})
+
+test('粘贴来源且 now 选项缺省时用当前时间', () => {
+  // options.now ?? new Date() 的默认路径：检查形状而不是具体时间。
+  const result = pastedAssetName('', { source: 'paste' })
+  assert.match(result, /^粘贴的图片 \d{2}:\d{2}$/)
 })
