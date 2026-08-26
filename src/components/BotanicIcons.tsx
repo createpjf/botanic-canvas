@@ -194,11 +194,6 @@ export function SparkleIcon({ className }: BotanicIconProps) {
   </svg>
 }
 
-/** Botanic Agent 形象 · Bob（四角星 + 右上微光） */
-export function BobIcon({ className }: BotanicIconProps) {
-  return <SparkleIcon className={className} />
-}
-
 /** 植物学 Figma · Iconly/Sharp/Folder（1228:230858） */
 export function FolderOutlineIcon({ className }: BotanicIconProps) {
   return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">

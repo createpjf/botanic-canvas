@@ -29,7 +29,8 @@ import {
   withoutCustomGenerationSize,
 } from '../../domain/generationOutputSize'
 import { settingsForGenerationModel } from '../../domain/generationRecipe'
-import { AlertIcon, BookIcon, ChecklistIcon, ChevronDownIcon, ClockIcon, CopyIcon, EditIcon, FocusIcon, GlobeIcon, SearchIcon, SparkleIcon, ThumbDownIcon, ThumbUpIcon } from '../../components/BotanicIcons'
+import { BobCharacter } from '../../components/bob/BobCharacter'
+import { AlertIcon, BookIcon, ChecklistIcon, ChevronDownIcon, ClockIcon, CopyIcon, EditIcon, FocusIcon, GlobeIcon, SearchIcon, ThumbDownIcon, ThumbUpIcon } from '../../components/BotanicIcons'
 import { AgentThinkingOrb } from '../../components/AgentThinkingOrb'
 import { AgentToolOrb } from '../../components/AgentToolOrb'
 import { agentPlannerModelLabel, modelDisplayLabel } from '../../components/generationModelPresentation'
@@ -623,7 +624,7 @@ export function AgentConversationMessage({
   const liveStatus = isLiveRunMessage || streaming
 
   return <article className={`agent-message is-${message.role} is-${message.kind}${timeline ? ' has-timeline' : ''}`} role={liveStatus ? 'status' : undefined} aria-live={liveStatus ? 'polite' : undefined} aria-busy={streaming || undefined}>
-    <div className="agent-message__role">{message.role === 'assistant' ? <SparkleIcon /> : <span>{t('你', 'You')}</span>}</div>
+    <div className="agent-message__role">{message.role === 'assistant' ? <BobCharacter mood={streaming ? 'thinking' : 'idle'} /> : <span>{t('你', 'You')}</span>}</div>
     <div className="agent-message__body">
       {timeline ? <AgentMessageTimeline timeline={timeline} /> : null}
       {message.kind === 'composition' && message.composition

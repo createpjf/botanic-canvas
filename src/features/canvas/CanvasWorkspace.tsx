@@ -67,7 +67,8 @@ import { refinePrompt } from '../../lib/promptRefinementApi'
 import { enrollProductMfa, inviteWorkspaceMember, listWorkspaceAuditEvents, listWorkspaceMembers, readProductMfaStatus, refreshProductMediaSession, removeProductMfa, resendWorkspaceMemberInvite, signOutOtherProductSessions, updateProductPassword, updateWorkspaceMember, verifyProductMfa, type ProductUser } from '../../lib/productSession'
 import { useCanvasStore } from '../../store/canvasStore'
 import type { WorkspaceProject } from '../../components/WorkspaceViews'
-import { ArrowUpRightIcon, BobIcon, CloseIcon, DeleteIcon, DownloadIcon, FigmaIcon, FocusIcon, FolderOutlineIcon, HomeIcon, MapIcon, MoreIcon, PlusSquareIcon, SparkleIcon, UploadIcon } from '../../components/BotanicIcons'
+import { BobCharacter } from '../../components/bob/BobCharacter'
+import { ArrowUpRightIcon, CloseIcon, DeleteIcon, DownloadIcon, FigmaIcon, FocusIcon, FolderOutlineIcon, HomeIcon, MapIcon, MoreIcon, PlusSquareIcon, SparkleIcon, UploadIcon } from '../../components/BotanicIcons'
 import {
   sameWorkspaceLocation,
   workspaceHash,
@@ -2269,7 +2270,7 @@ export default function CanvasWorkspace({
           onRetry={(runId, itemId) => retryBatchVariationItem(runId, itemId)}
         /> : null}</Suspense>
 
-        {!agentOpen ? <button ref={agentLauncherRef} type="button" className="agent-launcher" onClick={agentBridge.open} aria-label={t.openAgent} title="Bob"><BobIcon /></button> : null}
+        {!agentOpen ? <button ref={agentLauncherRef} type="button" className="agent-launcher" onClick={agentBridge.open} aria-label={t.openAgent} title="Bob"><BobCharacter mood="idle" /></button> : null}
 
         {agentOpen ? <Suspense fallback={<aside className="agent-workspace" aria-label="Botanic Agent"><div className="workspace-loading-indicator" role="status">{t.loadingAgent}</div></aside>}><AgentWorkspace
           key={`${document.id}:${agentBridge.activeSession?.id ?? 'none'}`}
