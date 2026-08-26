@@ -8,7 +8,7 @@ import { primaryGenerationReference, settingsForGenerationModel } from '../../do
 import { applyCustomGenerationSize, generationSettingsSizeLabel, modelSupportsCustomSize, withoutCustomGenerationSize } from '../../domain/generationOutputSize'
 import { videoAspectRatioPolicy } from '../../domain/videoGeneration'
 import { useMotionPresence } from '../../components/motionPresence'
-import { LiquidProgressBar } from '../../components/LiquidProgressBar'
+import { GenerationDotsField } from '../../components/GenerationDotsField'
 import { BotanicSelect } from '../../components/BotanicSelect'
 import { modelDisplayLabel, modelProviderLogo } from '../../components/generationModelPresentation'
 import type { AssetNodeData, AssetRole, AssetSource, CanvasNode, GenerateNodeData, GenerationMediaKind, GenerationModelOption, GenerationSettings, PromptNodeData, ReferenceGroupNodeData, RefinementMode, ResultNodeData, TextNodeData, VideoInputMode } from '../../domain/canvas'
@@ -1130,7 +1130,6 @@ function ResultNode({ data, id, selected }: NodeProps) {
   const elapsedSeconds = result.submittedAt && isGenerating
     ? Math.max(0, Math.floor((currentTime - result.submittedAt) / 1_000))
     : 0
-  const isSlowTask = elapsedSeconds >= 12
   const mediaSource = result.image ? mediaRetryUrl(result.image, mediaRetryAttempt) : undefined
 
   const recoverMedia = useCallback(async () => {
@@ -1252,23 +1251,24 @@ function ResultNode({ data, id, selected }: NodeProps) {
           : (
           <div className={`result-node__task-state result-node__task-state--${result.status}`}>
             {isGenerating ? (
-              <LiquidProgressBar
-                compact={displayedAspectRatio === '16:9'}
-                taskStatus={result.taskStatus}
-                submittedAt={result.submittedAt}
-                mediaKind={mediaKind}
-              />
+              <GenerationDotsField compact={displayedAspectRatio === '16:9'} />
             ) : null}
-            <strong aria-live="polite">{imageFailed ? t.mediaUnavailable : isGenerating ? taskFeedback.title : result.status === 'failed' ? t.taskIncomplete : result.status === 'cancelled' ? t.taskCancelled : t.waitingResult}</strong>
-            <small>{imageFailed ? t.mediaError : isGenerating ? (isSlowTask ? elapsedTaskLabel(elapsedSeconds, locale) : taskFeedback.detail) : (result.error ? localizeProductError(new Error(generationTaskErrorMessage(result.error) ?? result.error), locale, { 'zh-CN': generationTaskErrorMessage(result.error) ?? result.error, en: t.generationConnectionError }) : undefined) ?? (result.status === 'ready' ? t.waitingService : t.realStatus)}</small>
+            {isGenerating ? (
+              isSubmissionUnknown
+                ? <button className="result-node__task-action nodrag nowheel" type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void recoverUnknownGenerationSubmission() }}>{t.confirmNow}</button>
+                : <button className="result-node__task-action nodrag nowheel" type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); cancelGeneration() }}>{t.cancel}</button>
+            ) : (
+            <div className="result-node__task-copy">
+            <strong aria-live="polite">{imageFailed ? t.mediaUnavailable : result.status === 'failed' ? t.taskIncomplete : result.status === 'cancelled' ? t.taskCancelled : t.waitingResult}</strong>
+            <small>{imageFailed ? t.mediaError : (result.error ? localizeProductError(new Error(generationTaskErrorMessage(result.error) ?? result.error), locale, { 'zh-CN': generationTaskErrorMessage(result.error) ?? result.error, en: t.generationConnectionError }) : undefined) ?? (result.status === 'ready' ? t.waitingService : t.realStatus)}</small>
             {imageFailed ? <button className="result-node__task-action nodrag nowheel" type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void recoverMedia() }}>{t.reload}</button> : null}
-            {isSubmissionUnknown ? <button className="result-node__task-action nodrag nowheel" type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void recoverUnknownGenerationSubmission() }}>{t.confirmNow}</button> : null}
-            {result.status === 'generating' && !isSubmissionUnknown ? <button className="result-node__task-action nodrag nowheel" type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); cancelGeneration() }}>{t.cancel}</button> : null}
             {result.status === 'failed' ? <div className="result-node__task-actions nodrag nowheel" onPointerDown={(event) => event.stopPropagation()}>
               <button className="result-node__task-action" type="button" onClick={(event) => { event.stopPropagation(); void retryGeneration() }}>{t.retryRecipe}</button>
               <button className="result-node__task-action is-danger" type="button" onClick={(event) => { event.stopPropagation(); removeNodeFromCanvas(targetNodeId) }}>{t.deleteTask}</button>
             </div> : null}
             {result.status === 'cancelled' ? <button className="result-node__task-action nodrag nowheel is-danger" type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); removeNodeFromCanvas(targetNodeId) }}>{t.deleteTask}</button> : null}
+            </div>
+            )}
           </div>
         )}
         {missingOutputCount ? <div className="result-node__partial nodrag nowheel" onPointerDown={(event) => event.stopPropagation()}>
@@ -1283,6 +1283,12 @@ function ResultNode({ data, id, selected }: NodeProps) {
           onClick={(event) => { event.stopPropagation(); presentation?.onToggleGroup?.(resultGroup.groupId) }}
         >{resultGroup.index}/{resultGroup.total} {t.candidates} <span>{resultGroup.expanded ? '⌃' : '⌄'}</span></button> : null}
       </div>
+      {isGenerating ? (
+        <div className="result-node__task-copy">
+          <strong aria-live="polite">{taskFeedback.title}</strong>
+          <small>{elapsedTaskLabel(elapsedSeconds, locale)}</small>
+        </div>
+      ) : null}
       {resultGroup?.representative && resultGroup.expanded && groupCandidates.length ? <section className="result-node__candidate-popover nodrag nowheel" aria-label={t.candidateCount(resultGroup.total)} onPointerDown={(event) => event.stopPropagation()}>
         <header><strong>{t.candidatesThisRun}</strong><span>{t.chooseCandidateHint}</span><button type="button" aria-label={t.collapseCandidates} onClick={(event) => { event.stopPropagation(); presentation?.onToggleGroup?.(resultGroup.groupId) }}><CloseIcon /></button></header>
         <div className="result-node__candidate-grid">
