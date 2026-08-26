@@ -7,7 +7,7 @@ const resultNode = readFileSync(new URL('../src/features/canvas/CanvasEditorView
 const dotsRuntime = readFileSync(new URL('../src/components/generationDotsFieldRuntime.ts', import.meta.url), 'utf8')
 const dotsField = readFileSync(new URL('../src/components/generationDotsField.ts', import.meta.url), 'utf8')
 
-test('生成中结果节点铺满 snake 点阵并尊重减少动效设置', () => {
+test('生成中结果节点铺满 flow 点阵并尊重减少动效设置', () => {
   assert.match(styles, /\.generation-dots-fill\s*{[^}]*position:\s*absolute/s)
   assert.match(styles, /\.generation-dots-fill\s*{[^}]*inset:\s*0/s)
   assert.doesNotMatch(styles, /\.liquid-progress/)
@@ -23,6 +23,12 @@ test('生成中结果节点铺满 snake 点阵并尊重减少动效设置', () =
   assert.doesNotMatch(dotsRuntime, /generationProgress/)
   assert.doesNotMatch(dotsField, /generationProgress/)
   assert.doesNotMatch(dotsField, /taskStatus/)
+  assert.match(dotsField, /dotSize:\s*2/)
+  assert.match(dotsField, /gridDensity:\s*1\.5/)
+  assert.match(dotsField, /patternScale:\s*0\.7/)
+  assert.match(dotsField, /vignette:\s*1\.45/)
+  assert.match(dotsField, /brightness:\s*1,/)
+  assert.match(dotsField, /0\.02 \//)
   assert.match(styles, /\.agent-run-card__track::after\s*{[^}]*animation:\s*agent-run-track-flow/s)
   assert.match(styles, /@keyframes\s+agent-run-track-flow/)
   assert.match(

@@ -17,7 +17,7 @@ export type GenerationDotsFieldProps = {
 }
 
 /**
- * 铺满结果节点媒体区的 snake 点阵场。
+ * 铺满结果节点媒体区的 flow 点阵场。
  * 父级 `.result-node__task-state` 需铺满节点内容区。
  */
 export function GenerationDotsField({

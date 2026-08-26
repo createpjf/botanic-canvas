@@ -13,7 +13,7 @@ test('GenerationDotsField 运行时默认无订阅', () => {
   assert.equal(state.rafActive, false)
 })
 
-test('snake 点阵有亮点和近黑底，时间变化会改相位', () => {
+test('flow 点阵有亮点和近黑底，时间变化会改锋面', () => {
   const width = 300
   const height = 400
   let maxChange = 0

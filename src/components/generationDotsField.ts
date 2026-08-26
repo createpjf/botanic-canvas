@@ -1,6 +1,6 @@
 /**
- * 生成中结果节点的 snake 点阵场。
- * 每个格子是一颗软点；亮度沿格子上的流向相位滑动，形成拖尾。
+ * 生成中结果节点的 flow 点阵场。
+ * 每个格子是一颗软点；亮度沿旋度场的锋面滑动。
  * 这是占位动效，不映射业务百分比。
  */
 
@@ -8,13 +8,13 @@ export const GENERATION_DOTS_BACKGROUND = '#000000'
 
 export const GENERATION_DOTS_PRESET = {
   speed: 1,
-  brightness: 1.35,
+  brightness: 1,
   tint: [1, 1, 1] as const,
   background: [0, 0, 0] as const,
-  dotSize: 1,
-  gridDensity: 1,
-  patternScale: 1,
-  vignette: 1,
+  dotSize: 2,
+  gridDensity: 1.5,
+  patternScale: 0.7,
+  vignette: 1.45,
 } as const
 
 function clamp01(value: number) {
@@ -48,25 +48,24 @@ export function shadeGenerationDotsPixel(
   const py = y + 0.5
   const uvX = (px - width * 0.5) / height
   const uvY = (py - height * 0.5) / height
-  const grid = 0.018 / Math.max(gridDensity, 0.01)
+  const grid = 0.02 / Math.max(gridDensity, 0.01)
   const cellX = roundAwayFromZero(uvX / grid) * grid
   const cellY = roundAwayFromZero(uvY / grid) * grid
   const dist = Math.hypot(uvX - cellX, uvY - cellY)
-  const radius = (1.5 / Math.max(height, 1)) * dotSize
+  const radius = (1.4 / Math.max(height, 1)) * dotSize
   const mask = smoothstep(radius * 1.4, radius * 0.6, dist)
 
   const clock = time * speed
   const scale = patternScale
-  const angle = Math.sin(cellX * 4 * scale + clock * 0.6) * 1.2
-    + Math.cos(cellY * 4 * scale - clock * 0.5) * 1.2
-    + Math.sin((cellX + cellY) * 3 * scale + clock * 0.9)
-  const phase = (cellX * Math.cos(angle) + cellY * Math.sin(angle)) * 12 * scale - clock * 4
-  const pulse = (0.5 + 0.5 * Math.sin(phase)) ** 4
+  const swirl = Math.sin(cellX * 3 * scale + clock * 0.4) * Math.cos(cellY * 3 * scale - clock * 0.35)
+    + 0.5 * Math.sin(cellX * 7 * scale - clock * 0.6) * Math.sin(cellY * 7 * scale + clock * 0.55)
+  const fronts = Math.sin(swirl * 6 + Math.hypot(cellX, cellY) * 8 * scale - clock * 1.8)
+  const pulse = Math.max(fronts, 0) ** 1.8
 
   const vigX = (px - width * 0.5) / width
   const vigY = (py - height * 0.5) / height
-  const vig = clamp01(1 - (vigX * vigX + vigY * vigY) * 0.7 * vignette)
-  const intensity = clamp01(mask * (0.1 + 1.1 * pulse) * vig)
+  const vig = clamp01(1 - (vigX * vigX + vigY * vigY) * 0.85 * vignette)
+  const intensity = clamp01(mask * (0.1 + pulse) * vig)
 
   return [
     background[0] + (tint[0] * brightness - background[0]) * intensity,
