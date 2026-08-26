@@ -3290,8 +3290,6 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-launcher {
   position: fixed;
   z-index: 82;
-  top: 50%;
-  right: 10px;
   display: grid;
   width: 56px;
   height: 56px;
@@ -3300,12 +3298,13 @@ button.project-tab__main { border: 0; cursor: pointer; }
   border: 0;
   background: transparent;
   color: #2d633b;
-  cursor: pointer;
-  transform: translateY(-50%);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
 }
-.agent-launcher:hover { transform: translateY(-50%) scale(1.06); }
+.agent-launcher.is-dragging { cursor: grabbing; }
 .agent-launcher:focus-visible { outline: 3px solid rgba(79, 133, 91, .2); outline-offset: 2px; border-radius: 18px; }
-.agent-launcher svg { width: 56px; height: 56px; overflow: visible; }
+.agent-launcher svg { width: 56px; height: 56px; overflow: visible; pointer-events: none; }
 
 .agent-workspace {
   position: absolute;
@@ -3534,8 +3533,8 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-reading-restore button { min-height: 26px; padding: 0 9px; border: 0; border-radius: 999px; background: #eaf3ea; color: #315f3c; cursor: pointer; font: inherit; font-weight: 760; }
 .agent-reading-restore button:hover { background: #dfece0; }
 .agent-workspace__welcome { display: grid; min-height: auto; align-content: start; gap: 8px; padding: 20px 0 36px; }
-.agent-workspace__mark { display: grid; width: 42px; height: 42px; place-items: center; border: 1px solid #c9dccb; border-radius: 10px; background: #eef5ee; color: #2d633b; }
-.agent-workspace__mark svg { width: 22px; height: 22px; }
+.agent-workspace__mark { display: grid; width: 112px; height: 148px; place-items: center; color: #2d633b; }
+.agent-workspace__mark svg { width: 112px; height: 148px; overflow: visible; }
 .agent-workspace__welcome > small { margin-top: 8px; color: #6d7e72; font-size: 10px; font-weight: 800; letter-spacing: .11em; text-box: trim-both cap alphabetic; }
 .agent-workspace__welcome h2 { margin: 0; margin-inline-start: -1px; color: #1f3826; font-size: 25px; line-height: 1.25; letter-spacing: -.02em; text-box: trim-start cap; }
 .agent-workspace__welcome p { max-width: 380px; margin: 0; color: #69786e; font-size: 12px; line-height: 1.65; }
@@ -4327,7 +4326,6 @@ details.agent-timeline__thinking { display: block; padding: 0; }
 .agent-runtime-feed__toggle:hover { border-color: #cbdccc; background: #f1f7f1; }
 
 @media (max-width: 900px) {
-  .agent-launcher { right: 10px; }
   .canvas-pane { --agent-workspace-gap: 8px; --agent-workspace-width: 440px; }
   .agent-workspace { width: min(var(--agent-workspace-width), calc(100% - 16px)); }
   .agent-workspace__starters { grid-template-columns: 1fr; }

@@ -1,14 +1,23 @@
 import { useEffect, useId, useRef } from 'react'
 import { prefersReducedMotion } from '../gsapMotion'
 import {
+  BOB_IMPRESSION_DROP_SLOTS,
+  BOB_IMPRESSION_INK,
+  BOB_IMPRESSION_RIM,
+  BOB_QUESTION_IMPRESSION,
+} from './bobQuestionImpression'
+import {
   bodyPaint,
   computeFrame,
   contentExtent,
   createAvatar,
   EYE_STYLE_BY_ID,
+  impressionFrame,
+  impressionReach,
   MOTION_BY_ID,
   play,
   svgFrame,
+  svgImpression,
   topperById,
   type BobRuntimeEye,
   type BobRuntimePaint,
@@ -90,8 +99,12 @@ const OVERLAY_SLOTS = 6
 const OVERLAY_POOL = ['ov0', 'ov1', 'ov2', 'ov3', 'ov4', 'ov5'] as const
 const TEXTURE_SLOTS = 4
 const TEXTURE_POOL = ['tex0', 'tex1', 'tex2', 'tex3'] as const
+const DROP_POOL = Array.from({ length: BOB_IMPRESSION_DROP_SLOTS }, (_, index) => `imp-d${index}`)
+const LOOK_GAIN = 22
 
-export type BobMood = 'idle' | 'listening' | 'thinking' | 'curious' | 'excited' | 'happy'
+export type BobMood = 'idle' | 'listening' | 'thinking' | 'curious' | 'excited' | 'happy' | 'confused'
+export type BobSays = 'none' | 'question'
+export type BobLookAt = { x: number; y: number }
 
 type BobRefs = Record<string, SVGElement | null>
 
@@ -159,11 +172,58 @@ function applyTexture(nodes: BobRefs, frame: ReturnType<typeof svgFrame>) {
   }
 }
 
+function applyImpression(nodes: BobRefs, plan: unknown, elapsed: number) {
+  if (!plan) {
+    for (let index = 0; index < BOB_IMPRESSION_DROP_SLOTS; index += 1) {
+      nodes[`imp-d${index}`]?.setAttribute('r', '0')
+    }
+    nodes['imp-glyph']?.setAttribute('opacity', '0')
+    return
+  }
+  const frame = svgImpression(impressionFrame(plan, {
+    rim: BOB_IMPRESSION_RIM,
+    size: 1,
+    height: 1,
+    drops: 1,
+    t: elapsed,
+  }))
+  for (let index = 0; index < BOB_IMPRESSION_DROP_SLOTS; index += 1) {
+    const node = nodes[`imp-d${index}`]
+    if (!node) continue
+    const drop = frame.drops[index]
+    if (!drop) {
+      node.setAttribute('r', '0')
+      continue
+    }
+    node.setAttribute('cx', drop.cx)
+    node.setAttribute('cy', drop.cy)
+    node.setAttribute('r', drop.r)
+  }
+  const glyph = nodes['imp-glyph']
+  if (glyph) {
+    glyph.setAttribute('d', frame.glyphD || 'M0 0')
+    glyph.setAttribute('opacity', frame.glyphD ? frame.glyphOpacity : '0')
+  }
+}
+
+function lookDrag(lookAt: BobLookAt | undefined) {
+  if (!lookAt) return { x: 0, y: 0, active: false }
+  return {
+    x: -lookAt.y * LOOK_GAIN,
+    y: lookAt.x * LOOK_GAIN,
+    active: true,
+  }
+}
+
 export function BobCharacter({
   mood = 'idle',
+  says = 'none',
+  lookAt,
   className,
 }: {
   mood?: BobMood
+  says?: BobSays
+  lookAt?: BobLookAt
   className?: string
 }) {
   const uid = useId().replace(/[^a-zA-Z0-9]/g, '')
@@ -173,7 +233,10 @@ export function BobCharacter({
   const blushId = `bob-blush-${uid}`
   const glossId = `bob-gloss-${uid}`
   const rimId = `bob-rim-${uid}`
+  const gooId = `bob-goo-${uid}`
 
+  const speaking = says === 'question' && !prefersReducedMotion()
+  const impression = speaking ? BOB_QUESTION_IMPRESSION : null
   const config = { ...BOB_CONFIG, motionId: mood }
   const style = EYE_STYLE_BY_ID[config.eyeStyleId]
   const motion = MOTION_BY_ID[config.motionId] ?? MOTION_BY_ID.idle
@@ -182,15 +245,31 @@ export function BobCharacter({
   const gradientTransform = `scale(${paint.scaleX} ${paint.scaleY})`
   const extent = contentExtent(BOB_SPEC, config, topper, motion)
   const pad = Math.max(8, extent * 0.08)
-  const viewBox = `${-extent - pad} ${-extent - pad} ${(extent + pad) * 2} ${(extent + pad) * 2}`
+  const impressionReserve = speaking
+    ? impressionReach({ rim: BOB_IMPRESSION_RIM, size: 1.3, height: 1.25 }) / Math.max(config.size, 1e-6)
+    : 0
+  const top = Math.max(extent + pad, impressionReserve)
+  const half = speaking ? (top + extent) / 2 : extent + pad
+  const viewBox = speaking
+    ? `${-half} ${-top} ${half * 2} ${top + extent}`
+    : `${-extent - pad} ${-extent - pad} ${(extent + pad) * 2} ${(extent + pad) * 2}`
 
   const nodes = useRef<BobRefs>({})
   const setRef = (key: string) => (node: SVGElement | null) => {
     nodes.current[key] = node
   }
   const avatarRef = useRef<ReturnType<typeof createAvatar> | null>(null)
-  const inputRef = useRef({ config, style, topper, drag: { x: 0, y: 0, active: false } })
-  inputRef.current = { config, style, topper, drag: { x: 0, y: 0, active: false } }
+  const inputRef = useRef({ config, style, topper, drag: lookDrag(lookAt) })
+  inputRef.current = { config, style, topper, drag: lookDrag(lookAt) }
+  const impressionRef = useRef(impression?.plan ?? null)
+  impressionRef.current = impression?.plan ?? null
+  const impressionStart = useRef(0)
+  const impressionKey = useRef(says)
+  if (!impressionStart.current) impressionStart.current = performance.now()
+  if (impressionKey.current !== says) {
+    impressionKey.current = says
+    impressionStart.current = performance.now()
+  }
 
   if (!avatarRef.current) {
     avatarRef.current = createAvatar(BOB_SPEC, motion, true, 4.3, DETAIL)
@@ -215,6 +294,8 @@ export function BobCharacter({
       applyEye(current.eyeC, current.irisC, current.pupC, current.glintC, frame.eyeC)
       applyFlush(current, frame, paint, `url(#${blushId})`)
       applyTexture(current, frame)
+      if (impressionRef.current) applyImpression(current, impressionRef.current, now - impressionStart.current)
+      else applyImpression(current, null, 0)
     }
 
     paintFrame(performance.now())
@@ -239,6 +320,12 @@ export function BobCharacter({
         <filter id={blushId} x="-60%" y="-60%" width="220%" height="220%">
           <feGaussianBlur stdDeviation="4.5" />
         </filter>
+        {speaking ? (
+          <filter id={gooId} filterUnits="userSpaceOnUse" x={-top * 1.7} y={-top * 1.7} width={top * 3.4} height={top * 3.4}>
+            <feGaussianBlur in="SourceGraphic" stdDeviation="4.5" />
+            <feColorMatrix type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 24 -11" />
+          </filter>
+        ) : null}
         <radialGradient id={gradId} gradientUnits="userSpaceOnUse" cx={paint.cx} cy={paint.cy} r={paint.r} gradientTransform={gradientTransform}>
           {paint.stops
             ? paint.stops.map((stop, index) => (
@@ -265,6 +352,14 @@ export function BobCharacter({
         ) : null}
       </defs>
       <g ref={setRef('group')}>
+        {speaking ? (
+          <g filter={`url(#${gooId})`}>
+            {DROP_POOL.map((key) => (
+              <circle key={key} ref={setRef(key)} r="0" fill={BOB_IMPRESSION_INK} />
+            ))}
+            <path ref={setRef('imp-glyph')} d="" fill={BOB_IMPRESSION_INK} opacity="0" />
+          </g>
+        ) : null}
         <use href={`#${headId}`} fill={`url(#${gradId})`} stroke={paint.seam !== false ? `url(#${gradId})` : 'none'} />
         <g clipPath={`url(#${clipId})`}>
           {TEXTURE_POOL.map((key) => (

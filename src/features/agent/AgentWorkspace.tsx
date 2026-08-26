@@ -113,6 +113,7 @@ import { useAgentSkillRegistry } from './useAgentSkillRegistry'
 import { agentEscapeDismissTarget, type AgentDismissTarget } from './agentWorkspaceNavigation'
 import { AgentConversationMessage } from './AgentConversationMessage'
 import { AgentComposer } from './AgentComposer'
+import { BobCharacter } from '../../components/bob/BobCharacter'
 import {
   AlertIcon,
   BookmarkIcon,
@@ -2628,7 +2629,7 @@ export default function AgentWorkspace({
         </section></div> : null}
         {!utilityPanelOpen ? <div data-agent-flip className="agent-workspace__conversation">
         {!hasMessages ? <section className="agent-workspace__welcome">
-          <span className="agent-workspace__mark"><SparkleIcon /></span>
+          <span className="agent-workspace__mark"><BobCharacter mood="confused" says="question" /></span>
           <small>BOTANIC AGENT</small>
           <h2>{target ? copy.welcomeTarget(agentTargetDisplayLabel(target)) : copy.welcome}</h2>
           <p>{target ? copy.welcomeTargetBody : copy.welcomeBody}</p>

@@ -57,3 +57,14 @@ export declare function svgFrame(frame: unknown): BobRuntimeFrame
 export declare function bodyPaint(config: unknown, spec: unknown): BobRuntimePaint
 export declare function topperById(id: string, detail?: number): unknown
 export declare function contentExtent(spec: unknown, config: unknown, topper: unknown, motion: unknown): number
+export declare function impressionFrame(plan: unknown, input: { rim: number; size: number; height: number; drops?: number; t: number }): {
+  drops: Array<{ x: number; y: number; r: number }>
+  glyph: unknown
+  glyphOpacity: number
+}
+export declare function impressionReach(input: { rim: number; size: number; height: number }): number
+export declare function svgImpression(frame: unknown): {
+  drops: Array<{ cx: string; cy: string; r: string }>
+  glyphD: string
+  glyphOpacity: string
+}
