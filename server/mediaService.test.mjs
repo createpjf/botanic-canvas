@@ -146,11 +146,25 @@ test('上传图片必须同时通过 MIME 与真实文件签名校验', async ()
     productStore: {},
     objectStore: { async putMedia() { throw new Error('不应写入伪装文件') } },
   })
-  const disguised = `data:image/png;base64,${Buffer.from('<script>alert(1)</script>').toString('base64')}`
+  // 声明 PNG，字节签名其实是 JPEG：报错要点名这两个格式，不能只说一句「不匹配」。
+  const disguised = `data:image/png;base64,${Buffer.from([0xff, 0xd8, 0xff, 0xe0]).toString('base64')}`
 
   await assert.rejects(
     media.normalizeDocument({ image: disguised }, { ownerId: 'owner', projectId: 'project-a' }),
-    /图片内容与文件类型不匹配/,
+    /图片内容是 JPEG，与声明的 PNG 不一致/,
+  )
+})
+
+test('上传图片字节完全无法识别时报「可能已损坏」，不误报成某个具体格式', async () => {
+  const media = createMediaService({
+    productStore: {},
+    objectStore: { async putMedia() { throw new Error('不应写入伪装文件') } },
+  })
+  const garbage = `data:image/png;base64,${Buffer.from('<script>alert(1)</script>').toString('base64')}`
+
+  await assert.rejects(
+    media.normalizeDocument({ image: garbage }, { ownerId: 'owner', projectId: 'project-a' }),
+    /图片内容无法识别，文件可能已损坏/,
   )
 })
 

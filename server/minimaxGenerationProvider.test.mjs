@@ -54,6 +54,47 @@ test('MiniMax image-01 一次请求稳定返回 N 个独立图片输出', async 
   assert.deepEqual(persisted.map((media) => media.mimeType), ['image/jpeg', 'image/jpeg'])
 })
 
+test('MiniMax 图像拒绝任务时不把供应商原文转述给用户，但日志留得住', async () => {
+  // 镜像 generationProvider.test.mjs 里 OpenAI 路径的同名测试：两个供应商
+  // 适配器必须共用同一处 providerRejectionError，行为不能各写各的。
+  await assert.rejects(() => generateMiniMaxImages({
+    kind: 'generation',
+    prompt: '香氛商品置于夏日窗台',
+    batchCount: 1,
+    settings: { model: 'image-01', aspectRatio: '3:4', resolution: '2K' },
+    references: [{
+      name: '模特',
+      role: '模特',
+      primary: true,
+      mimeType: 'image/jpeg',
+      buffer: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+    }],
+  }, {
+    apiBaseUrl: 'https://api.minimax.io',
+    apiKey: 'test-key',
+    jobId: 'job-rejected',
+    fetchImpl: async () => new Response(JSON.stringify({
+      base_resp: {
+        status_code: 2013,
+        status_msg: 'invalid params: prompt contains sensitive content, contact support@minimax.io for review',
+      },
+    }), { status: 400, headers: { 'x-request-id': 'req_minimax_1' } }),
+    persistMedia: async () => { throw new Error('should not persist') },
+  }), (error) => {
+    assert.equal(error.code, 'PROVIDER_REJECTED')
+    // 供应商原文（联系方式、内部措辞）不进用户可见消息，但要保留 MiniMax 归属前缀——
+    // 供应商名字对用户有用，供应商的英文原文没用。
+    assert.match(error.message, /^MiniMax 图像服务拒绝了本次任务/)
+    assert.doesNotMatch(error.message, /support@minimax\.io/)
+    assert.doesNotMatch(error.message, /sensitive content/)
+    assert.match(error.message, /req_minimax_1/)
+    assert.match(error.message, /提示词|参考素材|输出规格/)
+    // 原文必须留在结构化字段里给日志/运维，和 OpenAI 路径一致。
+    assert.equal(error.upstreamMessage, 'invalid params: prompt contains sensitive content, contact support@minimax.io for review')
+    return true
+  })
+})
+
 test('MiniMax H3 提交异步任务、轮询完成并持久化 MP4 输出', async () => {
   const requests = []
   const persisted = []

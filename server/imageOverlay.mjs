@@ -2,8 +2,12 @@ import { crc32, deflateSync, inflateSync } from 'node:zlib'
 import jpeg from 'jpeg-js'
 import { GenerationError } from './generationProvider.mjs'
 import { compositionOverlayReferences, shouldPixelOverlayCompose } from './generationComposition.mjs'
+import { detectImageFormat } from './mediaFormats.mjs'
 import { normalizeRegionRect } from './regionMaskPng.mjs'
 
+// 只用于 encodeRgbaPng 的写路径（构造输出字节）。读路径的格式判定改走权威的
+// detectImageFormat——这是第六份手写 PNG 魔数比较，此前 4 份已收编进
+// mediaFormats.mjs，读路径不该再单独维护一份。
 const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
 
 function pngChunk(type, data) {
@@ -26,7 +30,7 @@ function paeth(a, b, c) {
 }
 
 function readPngChunks(buffer) {
-  if (!Buffer.isBuffer(buffer) || buffer.length < 24 || !buffer.subarray(0, 8).equals(pngSignature)) return null
+  if (!Buffer.isBuffer(buffer) || buffer.length < 24 || detectImageFormat(buffer) !== 'image/png') return null
   const chunks = []
   let offset = 8
   while (offset + 12 <= buffer.length) {

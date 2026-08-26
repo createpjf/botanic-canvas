@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import type { CanvasDocument, GenerationJob } from '../domain/canvas.ts'
+import type { CanvasDocument, GenerationJob, ResultNodeData } from '../domain/canvas.ts'
 import type { GenerationRequest } from './canvasStore.types.ts'
-import { createTaskFlow, materializeGenerationOutputs, recordGenerationJob } from './canvasGenerationProjection.ts'
+import { applyGenerationJobToDocument, createTaskFlow, materializeGenerationOutputs, recordGenerationJob } from './canvasGenerationProjection.ts'
 
 function baseDocument(): CanvasDocument {
   return {
@@ -85,4 +85,69 @@ test('取消接口的一次性计费判定不落进持久化任务', () => {
   assert.ok(persisted)
   assert.equal(persisted.status, 'cancelled')
   assert.ok(!('cancelOutcome' in persisted))
+})
+
+test('子分支任务从创建到落图，全程不改动上游已生成结果节点的参数快照', () => {
+  // 用户报告的「篡改历史」回归：上游 3:4·2K 结果作为父节点，下游分支改成 4:3·1K 生成，
+  // 上游节点的 generationSettings / generationRecipe 必须逐字节保持不变。
+  const parentSettings = { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' } as const
+  const childSettings = { model: 'minimax-image-01', aspectRatio: '4:3', resolution: '1K' } as const
+  const parentRecipe = { prompt: '定向精修原始提示', batchCount: 1, settings: { ...parentSettings }, references: [] }
+  const document: CanvasDocument = {
+    ...baseDocument(),
+    nodes: [
+      {
+        id: 'g1', type: 'generate', position: { x: 0, y: 0 },
+        data: { kind: 'generate', label: '定向精修', prompt: '', batchCount: 1, settings: { ...parentSettings }, status: 'succeeded', generationKind: 'refinement', jobId: 'job-1' },
+      },
+      {
+        id: 'r1', type: 'result', position: { x: 400, y: 0 },
+        data: {
+          kind: 'result', label: '定向精修', outputOf: 'g1', image: 'media://calbee.webp', mediaKind: 'image',
+          status: 'ready', taskStatus: 'succeeded', submittedAt: 1_000, jobId: 'job-1', candidateId: 'out-1',
+          taskGroupId: 'r1', taskNodeId: 'r1', variant: 0, generationKind: 'refinement',
+          generationSettings: { ...parentSettings }, generationRecipe: parentRecipe, rootRecipe: parentRecipe,
+        },
+      },
+      {
+        id: 'g2', type: 'generate', position: { x: 800, y: 0 },
+        data: { kind: 'generate', label: '定向精修 · 图像 01', prompt: '背景放在超市里', batchCount: 1, settings: { ...childSettings }, generationKind: 'refinement' },
+      },
+    ],
+    edges: [
+      { id: 'e-g1-r1', source: 'g1', target: 'r1', data: { system: true, role: 'output' } },
+      { id: 'e-r1-g2', source: 'r1', target: 'g2' },
+    ],
+    generationJobs: [{
+      id: 'job-1', kind: 'refinement', status: 'succeeded', batchCount: 1,
+      outputs: [{ id: 'out-1', image: 'media://calbee.webp', mediaKind: 'image' }],
+      createdAt: 1_000, updatedAt: 1_100, generateNodeId: 'g1', resultNodeId: 'r1', idempotencyKey: 'k1',
+    } as GenerationJob],
+  }
+  const parentBefore = JSON.stringify(document.nodes.find((node) => node.id === 'r1')!.data)
+
+  const childRequest: GenerationRequest = {
+    kind: 'refinement', prompt: '背景放在超市里', batchCount: 1,
+    settings: { ...childSettings },
+    recipe: { prompt: '背景放在超市里', batchCount: 1, settings: { ...childSettings }, references: [] },
+    rootRecipe: parentRecipe, targetNodeId: 'r1', parentImage: 'media://calbee.webp', parentLabel: '定向精修',
+    idempotencyKey: 'k2', sourceGraphNodeId: 'g2',
+  }
+  const flow = createTaskFlow(document, childRequest, document.nodes.find((node) => node.id === 'r1'))
+  assert.equal(JSON.stringify(flow.document.nodes.find((node) => node.id === 'r1')!.data), parentBefore)
+
+  const job2 = {
+    id: 'job-2', kind: 'refinement', status: 'succeeded', batchCount: 1,
+    outputs: [{ id: 'out-2', image: 'media://supermarket.webp', mediaKind: 'image' }],
+    createdAt: 2_000, updatedAt: 2_100,
+    generateNodeId: flow.taskNodeIds.generateNodeId, resultNodeId: flow.taskNodeIds.resultNodeId, idempotencyKey: 'k2',
+  } as GenerationJob
+  const done = applyGenerationJobToDocument(flow.document, job2, { ...childRequest, jobId: 'job-2', taskNodeIds: flow.taskNodeIds })
+
+  assert.equal(JSON.stringify(done.nodes.find((node) => node.id === 'r1')!.data), parentBefore)
+  const child = done.nodes.find((node) => node.id === flow.taskNodeIds.resultNodeId)!.data as ResultNodeData
+  assert.equal(child.image, 'media://supermarket.webp')
+  assert.equal(child.generationSettings?.aspectRatio, '4:3')
+  const parent = done.nodes.find((node) => node.id === 'r1')!.data as ResultNodeData
+  assert.notEqual(parent.generationSettings, child.generationSettings, '父子 settings 不应共享引用')
 })

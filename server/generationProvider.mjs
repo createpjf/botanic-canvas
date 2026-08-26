@@ -1,6 +1,6 @@
 import { readMediaSpecFromDataUrl } from './mediaSpec.mjs'
 import { mapWithConcurrency } from './concurrency.mjs'
-import { buildImageProviderPrompt, gptImage2EditQuality, orderCompositionReferences } from './generationComposition.mjs'
+import { buildImageProviderPrompt, gptImage2EditQuality, orderCompositionReferences, providerInputImages } from './generationComposition.mjs'
 import {
   catalogAspectRatiosForModel,
   inferAspectRatioFromPixels,
@@ -8,7 +8,16 @@ import {
   normalizeCustomGenerationSize,
   resolveGenerationOutputSize,
 } from './generationOutputSize.mjs'
-import { buildRegionMaskPng, imagePixelSize, normalizeRegionRect } from './regionMaskPng.mjs'
+import { buildRegionMaskPng, normalizeRegionRect } from './regionMaskPng.mjs'
+import {
+  CANONICAL_IMAGE_FORMATS,
+  canonicalImageDataUrlPattern,
+  detectImageFormat,
+  imageFormatLabel,
+  imagePixelSize,
+  isCanonicalImageFormat,
+  MEDIA_LIMITS,
+} from './mediaFormats.mjs'
 
 export class GenerationError extends Error {
   constructor(statusCode, code, message) {
@@ -31,16 +40,21 @@ function assertEnum(value, allowed, name) {
 
 function mediaDataUrl(value, maximumReferenceBytes, mediaKind = 'image') {
   if (typeof value !== 'string') throw new GenerationError(400, 'INVALID_REFERENCE', '参考素材格式无效。')
-  const mimePattern = mediaKind === 'video' ? 'video\\/mp4' : 'image\\/(?:png|jpeg|webp)'
-  const match = value.match(new RegExp(`^data:(${mimePattern});base64,([A-Za-z0-9+/=\\s]+)$`, 'i'))
+  // 图片分支委托给权威正则：自建的版本曾经漏掉 `[+]` 转义，image/svg+xml 成为
+  // canonical 的那天会悄悄坏掉。视频不是 CANONICAL_IMAGE_FORMATS 的成员，
+  // canonicalImageDataUrlPattern() 天然覆盖不到，只能保留内联构造。
+  const pattern = mediaKind === 'video'
+    ? /^data:(video\/mp4);base64,([A-Za-z0-9+/=\s]+)$/i
+    : canonicalImageDataUrlPattern()
+  const match = value.match(pattern)
   if (!match) {
     throw new GenerationError(400, 'INVALID_REFERENCE', mediaKind === 'video'
       ? '视频参考仅支持 MP4。'
-      : '仅支持 PNG、JPEG 或 WebP 参考素材。')
+      : `参考素材仅支持 ${CANONICAL_IMAGE_FORMATS.map(imageFormatLabel).join('、')}。`)
   }
   const buffer = Buffer.from(match[2], 'base64')
   if (!buffer.length || buffer.length > maximumReferenceBytes) {
-    throw new GenerationError(413, 'REFERENCE_TOO_LARGE', '单张参考素材不能超过 8MB。')
+    throw new GenerationError(413, 'REFERENCE_TOO_LARGE', `单张参考素材不能超过 ${Math.ceil(maximumReferenceBytes / 1024 / 1024)}MB。`)
   }
   return { mimeType: match[1].toLowerCase(), buffer }
 }
@@ -179,6 +193,10 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
         ? ['reference_video']
         : ['first_frame', 'last_frame', 'reference_image'], '视频输入角色')
     const media = inputMedia(reference, maximumReferenceBytes, mediaKind)
+    // 提交时就能拦的（dataUrl 已解出 buffer）现在拦，不必等到 Worker 才发现超限。
+    // mediaId 提交这里还没有字节，只能沿用 resolveGenerationInputMedia 里的 Worker 侧校验——
+    // 这是预期的不对称，不是遗漏。
+    if (mediaKind !== 'video' && media.buffer) assertImagePixelBudget(media.buffer)
     return {
       name: assertText(reference.name ?? `参考素材 ${index + 1}`, '参考素材名称', 160),
       role: typeof reference.role === 'string' ? reference.role : '参考',
@@ -191,7 +209,9 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
 
   const parent = body.parent
     ? (() => {
-        return { name: assertText(body.parent.name ?? '父版本', '父版本名称', 160), ...inputMedia(body.parent, maximumReferenceBytes, 'image') }
+        const media = inputMedia(body.parent, maximumReferenceBytes, 'image')
+        if (media.buffer) assertImagePixelBudget(media.buffer)
+        return { name: assertText(body.parent.name ?? '父版本', '父版本名称', 160), ...media }
       })()
     : undefined
 
@@ -203,6 +223,7 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
     ? (() => {
         if (!supportsMask) throw new GenerationError(400, 'INVALID_MASK', '当前模型不支持局部重绘蒙版。')
         const media = inputMedia(recipe.mask, maximumReferenceBytes, 'image')
+        if (media.buffer) assertImagePixelBudget(media.buffer)
         if (media.mimeType && media.mimeType !== 'image/png') {
           throw new GenerationError(400, 'INVALID_MASK', '局部重绘蒙版必须是带透明通道的 PNG。')
         }
@@ -251,22 +272,65 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
 }
 
 /**
+ * 参考图像素量是否在供应商能接受的范围内。
+ *
+ * 拒绝判据**只看像素总数**，不看长边。此前的实现是
+ * `pixels <= maxCanonicalPixels && longEdge <= maxCanonicalLongEdge`——那个
+ * `&&` 把一个归一化目标（`maxCanonicalLongEdge`，供后续 PR 的下采样器用作
+ * 下采样"到"的尺寸）当成了拒绝阈值。2048×2048（2K + 1:1 目录预设，也是默认
+ * 分辨率）是 4.19 MP、长边正好 2048，就被这条规则拒了——而长边已经是 2048，
+ * 用户没有任何能做的下一步。生成结果又会被原样传回来当精修 / 局部重绘的
+ * parent，于是 App 对自己最常见输出的精修全部失败。
+ *
+ * 凡是我们自己能生成的尺寸，就必须能被重新接收：`MEDIA_LIMITS.maxCanonicalPixels`
+ * 直接派生自 `gptImage2CustomSizeLimits.maxPixels`（生成端自定义尺寸窗的像素
+ * 上限），不是另一个独立猜测的数字——两端永远同步，见 `mediaFormats.mjs`。
+ *
+ * 读不出尺寸时**不拦**：读不出不等于超限，拦住会误杀一类正常输入。
+ */
+function assertImagePixelBudget(buffer) {
+  const size = imagePixelSize(buffer)
+  if (!size) return
+  const { maxCanonicalPixels } = MEDIA_LIMITS
+  const pixels = size.width * size.height
+  if (pixels <= maxCanonicalPixels) return
+  throw new GenerationError(400, 'IMAGE_TOO_LARGE_PIXELS',
+    `参考图 ${size.width}×${size.height}（约 ${Math.round(pixels / 10_000)} 万像素）`
+    + `超过 ${Math.round(maxCanonicalPixels / 10_000)} 万像素上限，请压缩后重试。`)
+}
+
+/**
  * 任务请求可只保存私有媒体 ID；Worker 执行时才在已校验的用户上下文中读取图片字节。
  * 这样轮询与任务状态写入不会重复携带 Base64 原图。
  */
 export async function resolveGenerationInputMedia(input, resolveMedia) {
   const resolve = async (reference) => {
-    if (reference.buffer) return reference
-    if (!reference.mediaId) throw new GenerationError(400, 'INVALID_REFERENCE', '参考素材缺少图片数据。')
-    const resolved = await resolveMedia(reference.mediaId)
-    if (!resolved?.buffer?.length || typeof resolved.mimeType !== 'string') {
-      throw new GenerationError(404, 'MEDIA_NOT_FOUND', '生成参考素材已不存在或没有访问权限。')
+    let resolved
+    if (reference.buffer) {
+      // dataUrl 路径：buffer 已在 validateGenerationInput 时由 mediaDataUrl 提前填充。
+      resolved = reference
+    } else {
+      // mediaId 路径：需要通过 resolveMedia 取出字节。
+      if (!reference.mediaId) throw new GenerationError(400, 'INVALID_REFERENCE', '参考素材缺少图片数据。')
+      const fetched = await resolveMedia(reference.mediaId)
+      if (!fetched?.buffer?.length || typeof fetched.mimeType !== 'string') {
+        throw new GenerationError(404, 'MEDIA_NOT_FOUND', '生成参考素材已不存在或没有访问权限。')
+      }
+      if (reference.mediaKind === 'video' && fetched.mimeType !== 'video/mp4') {
+        throw new GenerationError(400, 'INVALID_REFERENCE', '视频参考素材必须是 MP4。')
+      }
+      if (reference.mediaKind !== 'video' && !isCanonicalImageFormat(fetched.mimeType)) {
+        throw new GenerationError(400, 'INVALID_REFERENCE',
+          `参考素材格式为 ${imageFormatLabel(fetched.mimeType)}，仅支持 ${CANONICAL_IMAGE_FORMATS.map(imageFormatLabel).join('、')}。`)
+      }
+      resolved = fetched
     }
-    if (reference.mediaKind === 'video' && resolved.mimeType !== 'video/mp4') {
-      throw new GenerationError(400, 'INVALID_REFERENCE', '视频参考素材必须是 MP4。')
-    }
-    if (reference.mediaKind !== 'video' && !/^image\/(?:png|jpeg|webp)$/i.test(resolved.mimeType)) {
-      throw new GenerationError(400, 'INVALID_REFERENCE', '图片参考素材格式无效。')
+    // 像素守卫。此前只卡字节（8MB），一张 2.8MB 的 12.2MP 手机原图轻松过关，
+    // 然后被供应商以 "Invalid image file or mode for image 1" 拒掉 —— 而那句话
+    // 会原样转述给用户，让他去 email 供应商。手机照片是最常见的参考素材来源，
+    // 所以这条路径上的每个用户都会撞到。dataUrl 与 mediaId 都须通过此处。
+    if (reference.mediaKind !== 'video') {
+      assertImagePixelBudget(resolved.buffer)
     }
     return { ...reference, mimeType: resolved.mimeType, buffer: resolved.buffer }
   }
@@ -282,8 +346,11 @@ export async function resolveGenerationInputMedia(input, resolveMedia) {
   const parent = input.parent ? await resolve(input.parent) : undefined
   let mask = input.mask ? await resolveMask(input.mask) : undefined
   if (!mask && input.maskRegion) {
-    // 选区矩形在这里落成位图：蒙版必须与基准图（parent 优先）同像素尺寸。
-    const base = parent ?? references[0]
+    // 选区矩形在这里落成位图：蒙版必须与供应商实际收到的第一张图同像素尺寸。
+    // providerInputImages 计算这个值（parent 优先，否则排序后的 references），
+    // 与 generateImages 使用同一份源，保证两者在参考再排序时不会错配。
+    const inputImages = providerInputImages({ parent, references })
+    const base = inputImages[0]
     const size = base ? imagePixelSize(base.buffer) : null
     const png = size ? buildRegionMaskPng(size, input.maskRegion) : null
     if (!png) throw new GenerationError(400, 'INVALID_MASK', '无法按基准图生成局部重绘蒙版。')
@@ -386,15 +453,35 @@ function fileExtension(mimeType) {
   return 'png'
 }
 
+/**
+ * 供应商拒绝本次任务时的错误。
+ *
+ * **供应商原文不进用户可见消息。** 生产上它长这样：「Invalid image file or mode
+ * for image 1 ... contact us at help.openai.com」—— 用户既不是供应商的客户，
+ * 也无从判断该向他们说什么；而真正的答案（照片像素太大）没人告诉他。
+ *
+ * 原文留在 `upstreamMessage` 字段里给日志和运维，不丢。
+ *
+ * `subject` 只影响用户可见前缀（如 OpenAI 的「图像」、MiniMax 的「MiniMax 图像」/
+ * 「MiniMax 视频」）——供应商名字对用户有用，供应商的英文原文没用。这两者是本函数
+ * 存在的唯一理由，所有供应商适配器都必须走这一处，而不是各自转述一份。
+ */
+export function providerRejectionError(upstreamMessage, requestId, subject = '图像') {
+  const suffix = requestId ? `（请求 ${requestId}）` : ''
+  const error = new GenerationError(422, 'PROVIDER_REJECTED',
+    `${subject}服务拒绝了本次任务，请检查提示词、参考素材与输出规格。${suffix}`)
+  if (typeof upstreamMessage === 'string' && upstreamMessage.trim()) {
+    error.upstreamMessage = upstreamMessage
+  }
+  return error
+}
 
 function providerError(response, body) {
   const requestId = response.headers.get('x-request-id')
   if (response.status === 401 || response.status === 403) return new GenerationError(502, 'PROVIDER_AUTH_FAILED', '图像服务鉴权失败，请检查 OPENAI_API_KEY 与组织验证。')
   if (response.status === 429) return new GenerationError(429, 'PROVIDER_RATE_LIMITED', '图像服务当前限流，请稍后重试。')
   if (response.status >= 500) return new GenerationError(502, 'PROVIDER_UNAVAILABLE', '图像服务暂时不可用，请稍后重试。')
-  const suffix = requestId ? `（请求 ${requestId}）` : ''
-  const upstream = typeof body?.error?.message === 'string' ? body.error.message.slice(0, 180) : '请检查提示词、参考素材与输出规格。'
-  return new GenerationError(422, 'PROVIDER_REJECTED', `图像服务拒绝了本次任务：${upstream}${suffix}`)
+  return providerRejectionError(typeof body?.error?.message === 'string' ? body.error.message : undefined, requestId)
 }
 
 function providerImage(value) {
@@ -404,11 +491,10 @@ function providerImage(value) {
     throw new GenerationError(502, 'INVALID_PROVIDER_RESPONSE', '图像服务返回了无效的图片编码。')
   }
   const bytes = Buffer.from(base64, 'base64')
-  const png = bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
-  const jpeg = bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
-  const webp = bytes.length >= 12 && bytes.subarray(0, 4).toString('ascii') === 'RIFF' && bytes.subarray(8, 12).toString('ascii') === 'WEBP'
-  const mimeType = png ? 'image/png' : jpeg ? 'image/jpeg' : webp ? 'image/webp' : null
-  if (!mimeType) throw new GenerationError(502, 'INVALID_PROVIDER_RESPONSE', '图像服务返回的文件格式无法显示。')
+  const mimeType = detectImageFormat(bytes)
+  if (!mimeType || !isCanonicalImageFormat(mimeType)) {
+    throw new GenerationError(502, 'INVALID_PROVIDER_RESPONSE', '图像服务返回的文件格式无法显示。')
+  }
   return { mimeType, dataUrl: `data:${mimeType};base64,${base64}` }
 }
 
@@ -425,10 +511,7 @@ export async function generateImages(job, {
 }) {
   if (!apiKey) throw new GenerationError(503, 'PROVIDER_NOT_CONFIGURED', '真实生图尚未配置：请设置 OPENAI_API_KEY。')
   if (typeof jobId !== 'string' || !jobId) throw new GenerationError(500, 'INVALID_JOB_ID', '生成任务缺少唯一标识。')
-  const orderedReferences = orderCompositionReferences(job.references ?? [])
-  const inputImages = job.parent
-    ? [job.parent, ...orderedReferences.filter((reference) => !reference.buffer.equals(job.parent.buffer))]
-    : orderedReferences
+  const inputImages = providerInputImages(job)
   const submit = async (count, variationIndex) => {
     const prompt = buildImageProviderPrompt(job, variationIndex)
     const outputSize = resolveGenerationOutputSize(job.settings)

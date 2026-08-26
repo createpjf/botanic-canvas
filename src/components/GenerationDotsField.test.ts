@@ -5,7 +5,7 @@ import {
   fillGenerationDotsPixels,
   generationDotsLuma,
   shadeGenerationDotsPixel,
-} from './generationDotsField.ts'
+} from './generationDotsMath.ts'
 
 test('GenerationDotsField 运行时默认无订阅', () => {
   const state = generationDotsFieldDebugState()

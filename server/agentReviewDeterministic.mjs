@@ -1,5 +1,6 @@
 // @ts-check
 import { aspectRatioLabel } from './mediaSpec.mjs'
+import { isCanonicalImageFormat } from './mediaFormats.mjs'
 
 /**
  * 评审第 1 层：确定性硬规格检查，**不调用模型**（ADR 0006）。
@@ -26,8 +27,6 @@ export const DETERMINISTIC_CRITERIA = Object.freeze([
 function criterion(id, verdict, evidence) {
   return { id, layer: 'deterministic', verdict, ...(evidence ? { evidence } : {}) }
 }
-
-const imageMimeTypes = new Set(['image/png', 'image/jpeg', 'image/webp'])
 
 function expectedMediaKind(settings) {
   return settings?.duration === undefined ? 'image' : 'video'
@@ -66,7 +65,9 @@ export function reviewDeterministicLayer({ output, settings } = /** @type {any} 
   if (!actualMimeType) {
     criteria.push(criterion('media_kind', 'unverifiable', `无法从文件头判定类型（声明 ${spec.declaredMimeType ?? '未知'}）。`))
   } else {
-    const actualKind = actualMimeType === 'video/mp4' ? 'video' : imageMimeTypes.has(actualMimeType) ? 'image' : 'unknown'
+    // 这里校验的是 output.spec —— 生成结果的实测字节，不是用户上传，所以用
+    // canonical（我们存储并交给供应商的格式），不是 upload 词表。
+    const actualKind = actualMimeType === 'video/mp4' ? 'video' : isCanonicalImageFormat(actualMimeType) ? 'image' : 'unknown'
     const mismatchedDeclaration = spec.declaredMimeType && spec.declaredMimeType !== actualMimeType
     criteria.push(actualKind === wantedKind && !mismatchedDeclaration
       ? criterion('media_kind', 'pass', actualMimeType)

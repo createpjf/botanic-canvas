@@ -174,7 +174,11 @@ export function useCanvasInteractionCoordinator({
     screenToFlowPositionRef.current = mapper
   }, [screenToFlowPositionRef])
 
-  const addDroppedFilesToCanvas = useCallback(async (files: File[], position: { x: number; y: number }) => {
+  const addDroppedFilesToCanvas = useCallback(async (
+    files: File[],
+    position: { x: number; y: number },
+    source: 'drop' | 'paste' = 'drop',
+  ) => {
     const projectId = document.id
     const { accepted, message } = validateUploadFiles(files, locale)
     const imageFiles = accepted.slice(0, 12)
@@ -184,6 +188,7 @@ export function useCanvasInteractionCoordinator({
     const loaded = await Promise.allSettled(imageFiles.map((file, index) => readUploadedAssetInput(
       file,
       !hasProduct && index === 0 ? '商品' : '场景',
+      { source, locale },
     )))
     const uploads = loaded
       .filter((result): result is PromiseFulfilledResult<UploadedAssetInput> => result.status === 'fulfilled')
@@ -193,6 +198,27 @@ export function useCanvasInteractionCoordinator({
       if (!message) setCanvasUploadMessage(locale === 'en' ? 'Added to the canvas and saved to the asset library.' : '已加入画布并存入素材库。')
     }
   }, [addUploadedAssetsToCanvas, document.id, document.nodes, locale])
+
+  /**
+   * 把文件加到当前视口中心。
+   *
+   * 粘贴不是指针事件，没有 `clientX/Y` 可用 —— `onCanvasDrop` 正是靠它。
+   * 记录最后指针位置需要新增状态，且指针从未进过画布时仍要回落；视口中心
+   * 可预测、无新状态：用户粘贴后，东西出现在他正在看的地方。
+   *
+   * 返回是否成功算出了落点。调用方（`CanvasWorkspace` 的 window 粘贴监听器）
+   * 在拿到 `false` 时不会 `preventDefault()`——落点算不出来时应该让浏览器按
+   * 默认行为处理这次粘贴，而不是悄悄吞掉它却什么都不做。
+   */
+  const pasteFilesToCanvasCenter = useCallback((files: File[]) => {
+    const mapper = screenToFlowPositionRef.current
+    const surface = window.document.querySelector('.react-flow')
+    if (!mapper || !surface) return false
+    const rect = surface.getBoundingClientRect()
+    const position = mapper({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 })
+    void addDroppedFilesToCanvas(files, position, 'paste')
+    return true
+  }, [addDroppedFilesToCanvas, screenToFlowPositionRef])
 
   const onCanvasDragOver = useCallback((event: DragEvent<HTMLElement>) => {
     event.preventDefault()
@@ -413,6 +439,7 @@ export function useCanvasInteractionCoordinator({
     onCanvasFileDragLeave,
     isFlowDropTarget,
     addDroppedFilesToCanvas,
+    pasteFilesToCanvasCenter,
     renderedEdges,
     onConnect,
     onReconnect,

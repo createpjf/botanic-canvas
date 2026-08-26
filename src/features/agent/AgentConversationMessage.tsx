@@ -34,7 +34,7 @@ import { BOB_POST_WOW_HAPPY_MS, bobMessageAllowsSays, bobMessageFailed, bobMessa
 import type { BobLauncherPoint } from '../../domain/bobLauncher'
 import { useBobLookAt } from './useBobLookAt'
 import { useBobSaysPlays } from './useBobSaysPlays'
-import { AlertIcon, BookIcon, ChecklistIcon, ChevronDownIcon, ClockIcon, CopyIcon, EditIcon, FocusIcon, GlobeIcon, SearchIcon, ThumbDownIcon, ThumbUpIcon } from '../../components/BotanicIcons'
+import { AlertIcon, BookIcon, ChecklistIcon, ChevronDownIcon, ClockIcon, CopyIcon, EditIcon, FocusIcon, GlobeIcon, MoreIcon, SearchIcon, ThumbDownIcon, ThumbUpIcon } from '../../components/BotanicIcons'
 import { AgentThinkingOrb } from '../../components/AgentThinkingOrb'
 import { AgentToolOrb } from '../../components/AgentToolOrb'
 import { agentPlannerModelLabel, modelDisplayLabel } from '../../components/generationModelPresentation'
@@ -45,6 +45,11 @@ import { AgentPromptResponse } from './AgentPromptResponse'
 import { AgentMessageRichContent, AgentRichText } from './AgentMentionText'
 import { agentMessageNeedsCollapse, splitAgentMessageSources } from '../../domain/agentMarkdown'
 import type { BotanicAgentMentionCatalog } from '../../domain/agentMentions'
+import {
+  botanicAgentMessageHasUtilities,
+  botanicAgentMessageUtilityActions,
+  type BotanicAgentMessageUtilityActions,
+} from '../../domain/agentMessageUtilities'
 import { botanicAgentPlanBranchPrompts, botanicAgentPlanConfirmActionLabel, botanicAgentPlanOutputLabel, botanicAgentPlanSheetCountLabel } from '../../domain/agentVariations'
 import {
   botanicAgentCompositionItemSpecLabel,
@@ -65,6 +70,102 @@ import {
 
 /** 单条任务消息内联展示的结果上限；更多结果去结果面板看，避免对话被结果流冲垮。 */
 const inlineRunResultLimit = 4
+const justFinishedRevealMs = 1200
+const copiedStatusMs = 1200
+
+function useAgentMessageUtilitySurface(input: { streaming: boolean; isLatestEvaluable: boolean; messageId: string }) {
+  const [open, setOpen] = useState(false)
+  const [justFinished, setJustFinished] = useState(false)
+  const wasStreamingRef = useRef(input.streaming)
+  useEffect(() => {
+    setOpen(false)
+  }, [input.messageId])
+  useEffect(() => {
+    const wasStreaming = wasStreamingRef.current
+    wasStreamingRef.current = input.streaming
+    if (input.streaming) {
+      setJustFinished(false)
+      return
+    }
+    if (!wasStreaming || !input.isLatestEvaluable || prefersReducedMotion()) return
+    setJustFinished(true)
+    const timer = window.setTimeout(() => setJustFinished(false), justFinishedRevealMs)
+    return () => window.clearTimeout(timer)
+  }, [input.isLatestEvaluable, input.messageId, input.streaming])
+  return {
+    open,
+    setOpen,
+    className: `${input.isLatestEvaluable ? ' is-latest-evaluable' : ''}${open ? ' is-utilities-open' : ''}${justFinished ? ' is-just-finished' : ''}`,
+  }
+}
+
+function AgentMessageUtilities({
+  message,
+  sessionId,
+  actions,
+  isLatestEvaluable,
+  open,
+  onOpenChange,
+  locale,
+  t,
+  onEdit,
+  onFeedback,
+}: {
+  message: BotanicAgentMessage
+  sessionId?: string
+  actions: BotanicAgentMessageUtilityActions
+  isLatestEvaluable: boolean
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  locale: ProductLocale
+  t: (zh: string, en: string) => string
+  onEdit: (content: string) => void
+  onFeedback: (message: BotanicAgentMessage, feedback: BotanicAgentMessage['feedback']) => void
+}) {
+  const [copied, setCopied] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+  const copiedTimerRef = useRef(0)
+  useEffect(() => () => window.clearTimeout(copiedTimerRef.current), [])
+  useEffect(() => {
+    if (!open) return
+    const onPointerDown = (event: PointerEvent) => {
+      if (rootRef.current?.contains(event.target as Node)) return
+      onOpenChange(false)
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    return () => document.removeEventListener('pointerdown', onPointerDown)
+  }, [onOpenChange, open])
+
+  const copy = () => {
+    void navigator.clipboard.writeText(message.composition ? formatBotanicAgentCompositionMessage(message.composition, locale) : message.content)
+    setCopied(true)
+    window.clearTimeout(copiedTimerRef.current)
+    copiedTimerRef.current = window.setTimeout(() => setCopied(false), copiedStatusMs)
+  }
+
+  return <div
+    ref={rootRef}
+    className="agent-message__utility-layer"
+    onKeyDown={(event) => {
+      if (event.key !== 'Escape' || !open) return
+      event.stopPropagation()
+      event.preventDefault()
+      onOpenChange(false)
+    }}
+  >
+    {actions.feedback && message.feedback ? <span className="agent-message__utility-mark" aria-hidden="true">{message.feedback === 'positive' ? <ThumbUpIcon /> : <ThumbDownIcon />}</span> : null}
+    {isLatestEvaluable && (actions.feedback || actions.copy) ? <button type="button" className="agent-message__utility-more" aria-expanded={open} aria-haspopup="true" aria-label={t('消息操作', 'Message actions')} title={t('消息操作', 'Message actions')} onClick={() => onOpenChange(!open)}><MoreIcon /></button> : null}
+    <div className="agent-message__utilities">
+      {actions.edit ? <button type="button" aria-label={t('编辑消息', 'Edit message')} title={t('编辑消息', 'Edit message')} onClick={() => onEdit(message.content)}><EditIcon /></button> : null}
+      {actions.feedback && sessionId ? <>
+        <button type="button" className={message.feedback === 'positive' ? 'is-selected' : ''} aria-pressed={message.feedback === 'positive'} aria-label={t('这个回答有帮助', 'This response was helpful')} title={t('有帮助', 'Helpful')} onClick={() => onFeedback(message, message.feedback === 'positive' ? undefined : 'positive')}><ThumbUpIcon /></button>
+        <button type="button" className={message.feedback === 'negative' ? 'is-selected' : ''} aria-pressed={message.feedback === 'negative'} aria-label={t('这个回答需要改进', 'This response needs improvement')} title={t('需改进', 'Needs improvement')} onClick={() => onFeedback(message, message.feedback === 'negative' ? undefined : 'negative')}><ThumbDownIcon /></button>
+      </> : null}
+      {actions.copy ? <button type="button" aria-label={copied ? t('已复制', 'Copied') : t('复制消息', 'Copy message')} title={t('复制消息', 'Copy message')} onClick={copy}><CopyIcon /></button> : null}
+      {copied ? <small className="agent-message__copied" role="status">{t('已复制', 'Copied')}</small> : null}
+    </div>
+  </div>
+}
 
 function AgentReviewDecision({
   review,
@@ -177,6 +278,9 @@ function AgentMessageTimeline({ timeline }: { timeline: AgentTimelineState }) {
           <span className="agent-timeline__step-icon" aria-hidden="true"><TimelineStepMarker block={block} toolItems={toolItems} /></span>
           <strong>{title}</strong>
           <small>{statusLabel}</small>
+          {/* 失败必须说清原因。只显示「失败」的话，看的人不知道该改什么 —— 线上就撞上过：
+              两个写类工具调用连续失败，界面上只有两个红叉。 */}
+          {block.status === 'failed' && block.error ? <p className="agent-timeline__step-error">{block.error}</p> : null}
         </div>
       }
       return <details key={block.id} className="agent-timeline__raw" open={block.open || undefined}>
@@ -515,8 +619,7 @@ type AgentConversationMessageProps = {
   streaming?: boolean
   isLatestAssistant?: boolean
   agentBusy?: boolean
-  composerTyping?: boolean
-  composerPoint?: BobLauncherPoint
+  isLatestEvaluable?: boolean
   sessionId?: string
   runs: BotanicAgentRun[]
   artifacts: BotanicAgentArtifact[]
@@ -559,8 +662,7 @@ export function AgentConversationMessage({
   streaming = false,
   isLatestAssistant = false,
   agentBusy = false,
-  composerTyping = false,
-  composerPoint,
+  isLatestEvaluable = false,
   sessionId,
   runs,
   artifacts,
@@ -608,6 +710,7 @@ export function AgentConversationMessage({
     setFeedbackMemoryDraft('')
     setFeedbackMemorySaved(false)
   }, [message.id, message.feedback])
+  const utilitySurface = useAgentMessageUtilitySurface({ streaming, isLatestEvaluable, messageId: message.id })
   const dimensionLabel = (dimension: string) => locale === 'en'
     ? ({ person: 'Person', pose: 'Pose', product: 'Product', garment: 'Garment', scene: 'Scene', composition: 'Composition', style: 'Style', lighting: 'Lighting' }[dimension] ?? dimension)
     : creativeDimensionLabel(dimension as Parameters<typeof creativeDimensionLabel>[0])
@@ -672,20 +775,24 @@ export function AgentConversationMessage({
   const inlineRunResults = runMediaArtifacts.slice(0, inlineRunResultLimit)
 
   const liveStatus = isLiveRunMessage || streaming
+  const allowsSays = message.role === 'assistant' && bobMessageAllowsSays({
+    isLatestAssistant,
+    isLargeReply: bobMessageIsLargeReply(message),
+  })
+  const bob = message.role === 'assistant'
+    ? bobReplyPresentation({
+      allowsSays: allowsSays && !prefersReducedMotion(),
+      streaming,
+      isLatestAssistant,
+      agentBusy,
+      plays: bobPlays.plays,
+    })
+    : null
+  const utilityActions = botanicAgentMessageUtilityActions(message)
+  const showUtilities = !timeline && !streaming && botanicAgentMessageHasUtilities(utilityActions)
 
-  return <article className={`agent-message is-${message.role} is-${message.kind}${timeline ? ' has-timeline' : ''}${usesLargeAvatar ? ' is-bob-large' : ''}`} role={liveStatus ? 'status' : undefined} aria-live={liveStatus ? 'polite' : undefined} aria-busy={streaming || undefined}>
-    <div
-      className="agent-message__role"
-      ref={look.ref}
-      data-bob-mood={bob?.mood}
-      data-bob-says={bob?.says}
-      data-bob-size={bob ? (usesLargeAvatar ? 'large' : 'compact') : undefined}
-      data-bob-look-x={usesLargeAvatar && look.lookAt ? look.lookAt.x.toFixed(2) : undefined}
-      data-bob-look-y={usesLargeAvatar && look.lookAt ? look.lookAt.y.toFixed(2) : undefined}
-      onPointerEnter={look.onPointerEnter}
-      onPointerMove={look.onPointerMove}
-      onPointerLeave={look.onPointerLeave}
-    >{bob ? <BobCharacter compact={!usesLargeAvatar} mood={bob.mood} says={bob.says} saysCycles={bob.cycles} lookAt={usesLargeAvatar ? look.lookAt : undefined} onSaysComplete={() => bobPlays.markPlayed(bob.says)} /> : <span>{t('你', 'You')}</span>}</div>
+  return <article className={`agent-message is-${message.role} is-${message.kind}${timeline ? ' has-timeline' : ''}${allowsSays ? ' is-bob-large' : ''}${showUtilities ? utilitySurface.className : ''}`} role={liveStatus ? 'status' : undefined} aria-live={liveStatus ? 'polite' : undefined} aria-busy={streaming || undefined}>
+    <div className="agent-message__role" data-bob-mood={bob?.mood} data-bob-says={bob?.says}>{bob ? <BobCharacter mood={bob.mood} says={bob.says} saysCycles={bob.cycles} onSaysComplete={() => bobPlays.markPlayed(bob.says)} /> : <span>{t('你', 'You')}</span>}</div>
     <div className="agent-message__body">
       {timeline ? <AgentMessageTimeline timeline={timeline} /> : null}
       {message.kind === 'composition' && message.composition
@@ -895,14 +1002,18 @@ export function AgentConversationMessage({
     {message.role === 'user' && message.deliveryStatus === 'syncing' ? <small className="agent-message__delivery-status" role="status">{t('正在同步', 'Syncing')}</small> : null}
     {message.role === 'user' && message.deliveryStatus === 'synced' ? <small className="agent-message__delivery-status is-synced" role="status">{t('已同步', 'Synced')}</small> : null}
     {message.role === 'user' && message.deliveryStatus === 'failed' ? <small className="agent-message__delivery-status is-failed" role="alert">{t('同步失败', 'Sync failed')} <button type="button" onClick={() => onRetryDelivery(message.id)}>{t('重试', 'Retry')}</button></small> : null}
-    {timeline ? null : <div className="agent-message__utilities">
-      {message.role === 'user' ? <button type="button" aria-label={t('编辑消息', 'Edit message')} title={t('编辑消息', 'Edit message')} onClick={() => onEdit(message.content)}><EditIcon /></button> : null}
-      {message.role === 'assistant' && sessionId ? <>
-        <button type="button" className={message.feedback === 'positive' ? 'is-selected' : ''} aria-label={t('这个回答有帮助', 'This response was helpful')} title={t('有帮助', 'Helpful')} onClick={() => onFeedback(message, message.feedback === 'positive' ? undefined : 'positive')}><ThumbUpIcon /></button>
-        <button type="button" className={message.feedback === 'negative' ? 'is-selected' : ''} aria-label={t('这个回答需要改进', 'This response needs improvement')} title={t('需改进', 'Needs improvement')} onClick={() => onFeedback(message, message.feedback === 'negative' ? undefined : 'negative')}><ThumbDownIcon /></button>
-      </> : null}
-      <button type="button" aria-label={t('复制消息', 'Copy message')} title={t('复制消息', 'Copy message')} onClick={() => void navigator.clipboard.writeText(message.composition ? formatBotanicAgentCompositionMessage(message.composition, locale) : message.content)}><CopyIcon /></button>
-    </div>}
+    {showUtilities ? <AgentMessageUtilities
+      message={message}
+      sessionId={sessionId}
+      actions={utilityActions}
+      isLatestEvaluable={isLatestEvaluable}
+      open={utilitySurface.open}
+      onOpenChange={utilitySurface.setOpen}
+      locale={locale}
+      t={t}
+      onEdit={onEdit}
+      onFeedback={onFeedback}
+    /> : null}
     {message.role === 'assistant' && sessionId && message.feedback && onSaveAsMemory && feedbackMemoryOpen ? <form className="agent-feedback-memory" onSubmit={(event) => {
       event.preventDefault()
       const content = feedbackMemoryDraft.trim()

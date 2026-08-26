@@ -23,10 +23,12 @@ import { defaultGenerationModels } from '../../domain/canvas'
 import { settingsForGenerationModel } from '../../domain/generationRecipe'
 import { generationTaskErrorMessage, generationTaskFeedback, planResultGroupPresentation, traceCanvasLineage, type ResultGroupPresentation } from '../../domain/canvasPresentation'
 import { buildDeliveryPreviewArtifacts, canUseForImageDelivery, resolveDeliveryDraft, type DeliveryPanelTarget } from '../../domain/deliveryPresentation'
+import { imageUploadAccept, uploadLimitsLabel } from '../../domain/mediaFormats'
 import { reducedAspectRatio } from '../../domain/mediaPresentation'
 import { mediaRetryUrl } from '../../domain/mediaRecovery'
 import { videoAspectRatioPolicy } from '../../domain/videoGeneration'
 import { canvasNodeBounds } from '../../domain/canvasNodeLayout'
+import { clipboardMediaFiles, pasteTarget } from '../../domain/clipboardMedia'
 import { nextExclusiveSurface, type ExclusiveSurfaceAction } from '../../domain/exclusiveSurface'
 import { topOverlayLayer } from '../../domain/overlayPriority'
 import { summarizeWorkflowTemplate, type WorkflowTemplateSummary } from '../../domain/workflowTemplates'
@@ -111,7 +113,7 @@ const workspaceMessages = {
     edgeActions: '已选连线操作', systemEdge: '系统输出连线', selectedEdge: '连线已选中', systemEdgeHint: '用于保留生成血缘，不可删除或重连', reconnectHint: '拖动端点可重连', delete: '删除', closeEdgeActions: '关闭连线操作', emptyGuide: '空画布引导', emptyTitle: '从一个创意目标开始', emptyDetail: '拖入商品、场景或灵感图；也可以先添加一个生成节点，逐步搭建这次项目的创作路径。', addAssets: '添加素材', imageGeneration: '图片生成', videoGeneration: '视频生成', agentStart: '先描述目标', agentStartDetail: '让 Agent 先整理商品、场景和交付规格，再决定要生成什么。', dismissNotice: '关闭操作提示',
     initFailed: '画布初始化失败', initFailedDetail: '请重试；若仍失败，请退出后重新登录。', retry: '重试', loadingCanvas: '正在加载画布', canvasLabel: (name: string) => name.endsWith('画布') ? name : `${name}画布`, backProjects: '返回项目', projects: '项目', openProjects: '已打开项目', projectName: '项目名称', openProject: (name: string) => `打开${name}`, renameProject: '双击重命名', closeProject: (name: string) => `关闭${name}`, closeTab: '关闭标签', newProject: '新建创意项目',
     minimapLabel: '画布导航地图', videoModelMissing: '视频模型尚未配置，请先检查 MiniMax H3。', canvasTools: '画布工具', addNode: '新增节点', openAssets: '打开素材库', templates: '模板', history: '画布历史', delivery: '投放交付', account: '打开账户设置', openAgent: '打开 Bob', loadingAgent: '正在载入 Agent…', language: '切换为英文',
-    imageAsset: '图片素材', selectedResult: '已选结果', candidate: (index: number) => `候选 ${index}`, builtNodes: (count: number) => `已搭建 ${count} 个节点`, blankCanvasSummary: '空白画布 · 等待开始', refinedVersion: '精修版本', generatedImage: '生成图片', keyVisualVersion: '首图版本', dropToAdd: '松开即可加入画布', uploadLimits: 'PNG / JPEG / WebP，单张不超过 8MB', addCanvasNode: '添加画布节点', addFromImage: '基于此图添加', connectSelected: '连接所选节点', addNodeTitle: '添加节点', closeAddNode: '关闭添加节点', continueImage: '基于当前图片继续创作', connectToGenerate: '连接素材与描述生成图片', batchVariations: '批量变体', batchDetail: '用一个素材组逐项生成', continueVideo: '以当前画面或视频继续生成', videoReferenceDetail: '连接首帧、首尾帧或参考素材', assets: '素材', assetsDetail: '添加商品、场景或调性图', localImages: '本地图片', uploadImages: '上传图片', uploadToCanvas: '上传图片并加入画布', preview: (name: string) => `${name}预览`, downloadMedia: '下载原媒体', closePreview: '关闭媒体预览',
+    imageAsset: '图片素材', selectedResult: '已选结果', candidate: (index: number) => `候选 ${index}`, builtNodes: (count: number) => `已搭建 ${count} 个节点`, blankCanvasSummary: '空白画布 · 等待开始', refinedVersion: '精修版本', generatedImage: '生成图片', keyVisualVersion: '首图版本', dropToAdd: '松开即可加入画布', uploadLimits: uploadLimitsLabel('zh-CN'), addCanvasNode: '添加画布节点', addFromImage: '基于此图添加', connectSelected: '连接所选节点', addNodeTitle: '添加节点', closeAddNode: '关闭添加节点', continueImage: '基于当前图片继续创作', connectToGenerate: '连接素材与描述生成图片', batchVariations: '批量变体', batchDetail: '用一个素材组逐项生成', continueVideo: '以当前画面或视频继续生成', videoReferenceDetail: '连接首帧、首尾帧或参考素材', assets: '素材', assetsDetail: '添加商品、场景或调性图', localImages: '本地图片', uploadImages: '上传图片', uploadToCanvas: '上传图片并加入画布', preview: (name: string) => `${name}预览`, downloadMedia: '下载原媒体', closePreview: '关闭媒体预览',
   },
   en: {
     loadingProject: 'Loading project', loadingProjectShort: 'Loading project', focusSelected: 'Focus selected nodes', focusTask: 'Focus current task', fitAll: 'Fit all nodes', canvasNavigation: 'Canvas navigation', closeMinimap: 'Close minimap', openMinimap: 'Open minimap', minimapNotNeeded: 'Minimap is not needed for a small canvas', zoomLevel: 'Canvas zoom level', moreTools: 'More canvas tools', exitMarquee: 'Exit marquee select', marquee: 'Select nodes', drag: 'Drag', autoLayout: 'Auto arrange', showAll: 'Show all',
@@ -119,7 +121,7 @@ const workspaceMessages = {
     edgeActions: 'Selected connection actions', systemEdge: 'System output connection', selectedEdge: 'Connection selected', systemEdgeHint: 'Preserves generation lineage and cannot be deleted or reconnected', reconnectHint: 'Drag an endpoint to reconnect', delete: 'Delete', closeEdgeActions: 'Close connection actions', emptyGuide: 'Empty canvas guide', emptyTitle: 'Start with a creative direction', emptyDetail: 'Add a product, scene, or inspiration image, or start with a generation node and build the creative workflow step by step.', addAssets: 'Add assets', imageGeneration: 'Image generation', videoGeneration: 'Video generation', agentStart: 'Describe the goal first', agentStartDetail: 'Let Agent organize the product, scene, and delivery specs before you decide what to generate.', dismissNotice: 'Dismiss operation notice',
     initFailed: 'Canvas could not start', initFailedDetail: 'Try again. If it still fails, sign out and sign in again.', retry: 'Retry', loadingCanvas: 'Loading canvas', canvasLabel: (name: string) => `${name} canvas`, backProjects: 'Back to projects', projects: 'Projects', openProjects: 'Open projects', projectName: 'Project name', openProject: (name: string) => `Open ${name}`, renameProject: 'Double-click to rename', closeProject: (name: string) => `Close ${name}`, closeTab: 'Close tab', newProject: 'New creative project',
     minimapLabel: 'Canvas navigation map', videoModelMissing: 'No video model is configured. Check MiniMax H3.', canvasTools: 'Canvas tools', addNode: 'Add node', openAssets: 'Open asset library', templates: 'Templates', history: 'Canvas history', delivery: 'Delivery', account: 'Open account settings', openAgent: 'Open Bob', loadingAgent: 'Loading Agent…', language: 'Switch to Chinese',
-    imageAsset: 'Image asset', selectedResult: 'Selected result', candidate: (index: number) => `Candidate ${index}`, builtNodes: (count: number) => `${count} ${count === 1 ? 'node' : 'nodes'} built`, blankCanvasSummary: 'Blank canvas · Ready to start', refinedVersion: 'Refined version', generatedImage: 'Generated image', keyVisualVersion: 'Key visual version', dropToAdd: 'Drop to add to canvas', uploadLimits: 'PNG / JPEG / WebP, up to 8 MB each', addCanvasNode: 'Add canvas node', addFromImage: 'Add from this image', connectSelected: 'Connect selected node', addNodeTitle: 'Add node', closeAddNode: 'Close add-node menu', continueImage: 'Continue creating from this image', connectToGenerate: 'Connect assets and a description to generate an image', batchVariations: 'Batch variations', batchDetail: 'Generate once for each asset in a group', continueVideo: 'Continue from the current image or video', videoReferenceDetail: 'Connect a first frame, first and last frames, or reference assets', assets: 'Assets', assetsDetail: 'Add product, scene, or style images', localImages: 'Local images', uploadImages: 'Upload images', uploadToCanvas: 'Upload images and add to canvas', preview: (name: string) => `${name} preview`, downloadMedia: 'Download original media', closePreview: 'Close media preview',
+    imageAsset: 'Image asset', selectedResult: 'Selected result', candidate: (index: number) => `Candidate ${index}`, builtNodes: (count: number) => `${count} ${count === 1 ? 'node' : 'nodes'} built`, blankCanvasSummary: 'Blank canvas · Ready to start', refinedVersion: 'Refined version', generatedImage: 'Generated image', keyVisualVersion: 'Key visual version', dropToAdd: 'Drop to add to canvas', uploadLimits: uploadLimitsLabel('en'), addCanvasNode: 'Add canvas node', addFromImage: 'Add from this image', connectSelected: 'Connect selected node', addNodeTitle: 'Add node', closeAddNode: 'Close add-node menu', continueImage: 'Continue creating from this image', connectToGenerate: 'Connect assets and a description to generate an image', batchVariations: 'Batch variations', batchDetail: 'Generate once for each asset in a group', continueVideo: 'Continue from the current image or video', videoReferenceDetail: 'Connect a first frame, first and last frames, or reference assets', assets: 'Assets', assetsDetail: 'Add product, scene, or style images', localImages: 'Local images', uploadImages: 'Upload images', uploadToCanvas: 'Upload images and add to canvas', preview: (name: string) => `${name} preview`, downloadMedia: 'Download original media', closePreview: 'Close media preview',
   },
 } as const
 
@@ -1486,6 +1488,7 @@ export default function CanvasWorkspace({
     onCanvasFileDragLeave,
     isFlowDropTarget,
     addDroppedFilesToCanvas,
+    pasteFilesToCanvasCenter,
     renderedEdges,
     onConnect,
     onReconnect,
@@ -1497,6 +1500,40 @@ export default function CanvasWorkspace({
     clearConnectionSelection,
   } = canvasInteraction
   const canvasDropPresence = useMotionPresence(canvasInteraction.isCanvasFileDragging, 100)
+
+  useEffect(() => {
+    const onPaste = (event: globalThis.ClipboardEvent) => {
+      const target = event.target
+      const element = target instanceof Element ? target : null
+      // Agent 面板内部的粘贴由 AgentWorkspace 自己的 onPaste 处理（同一份判定式）。
+      // 两个监听器管的是同一次事件，靠这个判定式互斥而不是互不重叠——
+      // BotanicSelect 的下拉菜单用 createPortal 挂到 document.body，DOM 上不再
+      // 是 .agent-workspace 的子孙，光靠 closest() 会漏判成「不在面板里」，
+      // 导致这次粘贴被两边同时接了一遍。Agent 面板与画布侧的其它面板
+      // （素材库、模板、批量变体等）互斥，同一时刻最多挂载一个，所以「面板已挂载」
+      // 加上「粘贴目标在某个下拉菜单里」就能安全地反推出这个菜单属于 Agent 面板，
+      // 不必去猜它具体是哪个 BotanicSelect 实例。
+      const agentPanelMounted = Boolean(window.document.querySelector('.agent-workspace'))
+      const insideAgentPanel = Boolean(element?.closest('.agent-workspace'))
+        || (agentPanelMounted && Boolean(element?.closest('.botanic-select__menu')))
+      const insideTextEntry = Boolean(
+        element?.closest('input, textarea, [contenteditable="true"]'),
+      )
+      // 用「文档里是否存在打开的模态弹层」而不是从事件目标 closest() 向上找——
+      // 焦点常常停在弹层的遮罩或 document.body 上，closest() 会完全漏掉它。
+      // 只认 [aria-modal="true"]，不强制搭配 role="dialog"：alertdialog 之类的
+      // 确认框也算模态，这与 Escape 键那条守卫用的是同一套口径。
+      const modalOpen = Boolean(window.document.querySelector('[aria-modal="true"]'))
+      const files = clipboardMediaFiles(Array.from(event.clipboardData?.items ?? []))
+      if (pasteTarget({ hasMediaFiles: files.length > 0, insideAgentPanel, insideTextEntry, modalOpen }) !== 'canvas') return
+      // 落点算不出来（React Flow 还没挂载，比如素材库/加载视图）就不要拦截默认行为——
+      // 静默吞掉这次粘贴却什么都不做，正是这个功能一直在避免的那类问题。
+      if (!pasteFilesToCanvasCenter(files)) return
+      event.preventDefault()
+    }
+    window.addEventListener('paste', onPaste)
+    return () => window.removeEventListener('paste', onPaste)
+  }, [pasteFilesToCanvasCenter])
 
   const renderedNodes = useMemo(() => document.nodes.map((node) => {
     const entryIndex = revealingResultNodeIds.get(node.id)
@@ -2616,7 +2653,7 @@ export default function CanvasWorkspace({
           ref={nodeFileInputRef}
           className="asset-file-input"
           type="file"
-          accept="image/png,image/jpeg,image/webp"
+          accept={imageUploadAccept()}
           multiple
           aria-label={t.uploadToCanvas}
           onChange={(event) => {

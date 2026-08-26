@@ -212,12 +212,13 @@ export function updateTaskNodes(
   status: CanvasGenerationTaskStatus,
   jobId?: string,
   error?: string,
+  errorCode?: string,
 ) {
   const nodes = document.nodes.map((node) => {
     if (node.id === taskNodeIds.generateNodeId && node.type === 'generate') {
       return {
         ...node,
-        data: { ...(node.data as GenerateNodeData), status, jobId, error },
+        data: { ...(node.data as GenerateNodeData), status, jobId, error, errorCode },
       }
     }
     if (node.type === 'result') {
@@ -236,6 +237,7 @@ export function updateTaskNodes(
           taskGroupId: taskNodeIds.resultNodeId,
           taskNodeId: taskNodeIds.resultNodeId,
           error,
+          errorCode,
           label: generationTaskResultLabel({
             generationKind: result.generationKind,
             status,
@@ -318,7 +320,7 @@ function jobForDocument(job: GenerationJob, taskNodeIds: TaskNodeIds, dismissedO
 }
 
 export function recordGenerationJob(document: CanvasDocument, job: GenerationJob, taskNodeIds: TaskNodeIds) {
-  const taskDocument = updateTaskNodes(document, taskNodeIds, job.status, job.id, job.error)
+  const taskDocument = updateTaskNodes(document, taskNodeIds, job.status, job.id, job.error, job.errorCode)
   const priorJob = document.generationJobs.find((item) => item.id === job.id)
   const dismissedOutputIds = [...new Set([...(priorJob?.dismissedOutputIds ?? []), ...(job.dismissedOutputIds ?? [])])]
   const persistedJob = jobForDocument(job, taskNodeIds, dismissedOutputIds)
@@ -509,7 +511,7 @@ export function applyGenerationJobToDocument(document: CanvasDocument, job: Gene
       : updateTaskNodes(recordedDocument, request.taskNodeIds, 'failed', job.id, '生成服务没有返回结果，请重试。')
   }
   if (job.status === 'failed') {
-    return updateTaskNodes(recordedDocument, request.taskNodeIds, 'failed', job.id, job.error ?? '真实生成任务失败，请重试。')
+    return updateTaskNodes(recordedDocument, request.taskNodeIds, 'failed', job.id, job.error ?? '真实生成任务失败，请重试。', job.errorCode)
   }
   if (job.status === 'cancelled') {
     return updateTaskNodes(recordedDocument, request.taskNodeIds, 'cancelled', job.id, job.error)
