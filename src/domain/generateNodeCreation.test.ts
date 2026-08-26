@@ -100,6 +100,21 @@ test('从已选文本创建图片节点时使用文本端口并递增同来源�
   assert.equal(result.edges[0]?.targetHandle, 'input')
 })
 
+test('新生成节点持有独立 settings 快照，不与调用方共享引用', () => {
+  const input: GenerationSettings = { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' }
+  const result = planGenerateNodeCreation({
+    nodes: [],
+    nodeId: 'generate-clone-1',
+    position: { x: 0, y: 0 },
+    mediaKind: 'image',
+    settings: input,
+  })
+
+  assert.notEqual(result.node.data.settings, input)
+  input.aspectRatio = '16:9'
+  assert.equal(result.node.data.settings.aspectRatio, '3:4')
+})
+
 test('局部布局只为新分支寻找空位，不移动已有节点', () => {
   const existing = [
     generateNode('generate-1', '已有分支 · 图像 01'),

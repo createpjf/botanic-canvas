@@ -8,6 +8,7 @@ import {
   cloneGenerationSettings,
   primaryGenerationReference,
 } from '../domain/generationRecipe'
+import { matchUnresolvedGenerationTaskJobs } from '../domain/generationRecovery'
 import { assignVideoInputRoles } from '../domain/videoGeneration'
 import type { CanvasDocument, CanvasNode, GenerateNodeData, GenerationJob, GenerationRecipe, ResultNodeData } from '../domain/canvas'
 import { writeCanvasDocument } from '../lib/db'
@@ -143,8 +144,13 @@ export function createCanvasGenerationActions({
   }
 
   // `cancelOutcome` 只由取消接口返回；轮询与恢复路径拿不到它，因此是可选的。
-  const syncJob = (job: GenerationJob & { cancelOutcome?: GenerationCancelOutcome }) => {
-    const request = get().lastGenerationRequest
+  // 恢复已终结的历史任务时通过 `requestOverride` 传入请求，不改写 `lastGenerationRequest`：
+  // 那是当前活动任务的专属状态，被历史任务覆盖会让正在轮询的任务因请求不匹配而丢结果。
+  const syncJob = (
+    job: GenerationJob & { cancelOutcome?: GenerationCancelOutcome },
+    requestOverride?: GenerationRequest,
+  ) => {
+    const request = requestOverride ?? get().lastGenerationRequest
     if (!request?.taskNodeIds || request.jobId !== job.id) return
     const recordedDocument = recordGenerationJob(get().document, job, request.taskNodeIds)
     const existingJob = get().document.generationJobs.find((item) => item.id === job.id)
@@ -277,38 +283,41 @@ export function createCanvasGenerationActions({
     for (const request of requests.values()) {
       void getGenerationJob(request.jobId!).then((job) => {
         if (get().document.id !== documentId) return
-        set({ lastGenerationRequest: request })
-        syncJob(job)
-        if (job.status === 'queued' || job.status === 'running') pollJob(job.id)
+        if (job.status === 'queued' || job.status === 'running') {
+          // 只有仍在执行、需要接管轮询的任务才成为“当前任务”。
+          set({ lastGenerationRequest: request })
+          syncJob(job)
+          pollJob(job.id)
+          return
+        }
+        // 已终结的任务只补投影，不改写 lastGenerationRequest。
+        syncJob(job, request)
       }).catch(() => undefined)
     }
-    const unresolvedTaskNodes = document.nodes.filter((node) => {
+    const hasUnresolvedTaskNodes = document.nodes.some((node) => {
       if (node.type !== 'result') return false
       const result = node.data as ResultNodeData
-      return !result.image && (!result.taskGroupId || node.id === result.taskGroupId)
+      return !result.image && !result.jobId && (!result.taskGroupId || node.id === result.taskGroupId)
     })
-    if (!unresolvedTaskNodes.length) return
+    if (!hasUnresolvedTaskNodes) return
     void listProjectGenerationJobs(documentId).then((jobs) => {
       if (get().document.id !== documentId) return
-      const usedJobIds = new Set(requests.keys())
-      const candidates = jobs
-        .filter((job) => !usedJobIds.has(job.id) && job.status === 'succeeded' && Boolean(job.outputs?.length))
-        .sort((left, right) => left.createdAt - right.createdAt)
-      for (const taskResultNode of unresolvedTaskNodes) {
-        const result = taskResultNode.data as ResultNodeData
-        const kind = result.generationKind ?? 'generation'
-        const matching = candidates
-          .filter((job) => !usedJobIds.has(job.id) && job.kind === kind)
-          .sort((left, right) => Math.abs(left.createdAt - (result.submittedAt ?? left.createdAt)) - Math.abs(right.createdAt - (result.submittedAt ?? right.createdAt)))[0]
-        if (!matching) continue
-        const request = requestFromGenerationTaskNode(get().document, {
+      // 匹配规则（含「已落图任务不得再错配」的历史保护）由领域函数统一持有。
+      const matches = matchUnresolvedGenerationTaskJobs({
+        nodes: get().document.nodes,
+        jobs,
+        reservedJobIds: requests.keys(),
+      })
+      for (const [taskNodeId, matching] of matches) {
+        const currentDocument = get().document
+        const taskResultNode = currentDocument.nodes.find((node) => node.id === taskNodeId && node.type === 'result')
+        if (!taskResultNode) continue
+        const request = requestFromGenerationTaskNode(currentDocument, {
           ...taskResultNode,
-          data: { ...result, jobId: matching.id },
+          data: { ...(taskResultNode.data as ResultNodeData), jobId: matching.id },
         } as CanvasNode)
         if (!request?.jobId) continue
-        usedJobIds.add(matching.id)
-        set({ lastGenerationRequest: request })
-        syncJob(matching)
+        syncJob(matching, request)
       }
     }).catch(() => undefined)
   }

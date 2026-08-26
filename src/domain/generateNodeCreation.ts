@@ -1,4 +1,5 @@
 import type { Edge, XYPosition } from '@xyflow/react'
+import { cloneGenerationSettings } from './generationRecipe.ts'
 import type {
   AssetNodeData,
   CanvasNode,
@@ -100,7 +101,8 @@ export function planGenerateNodeCreation(input: PlanGenerateNodeCreationInput): 
       label: nextGenerateLabel(input.nodes, inputs, input.mediaKind),
       prompt: '',
       batchCount: 1,
-      settings: input.settings,
+      // 新节点必须持有独立的 settings 快照；与调用方共享引用会让后续参数修改波及来源对象。
+      settings: cloneGenerationSettings(input.settings),
       ...(inputOrder.length ? { inputOrder } : {}),
       ...(primaryAsset ? { primaryInputId: primaryAsset.id } : {}),
     },

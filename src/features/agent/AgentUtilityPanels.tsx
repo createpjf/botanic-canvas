@@ -38,6 +38,7 @@ import {
 } from '../../domain/brandKitPresentation'
 import { fetchProjectBrandKit } from '../../lib/brandKitApi'
 import { cachedProjectCapabilities } from '../../lib/db'
+import { serverPersistenceEnabled } from '../../lib/productSession'
 import { canUseProjectEntry } from '../../domain/projectCapabilities'
 import {
   MEMORY_SUBJECT_OPTIONS,
@@ -614,7 +615,11 @@ export function AgentReviewPanel({ runId, projectId, onBackToConversation }: {
   const [notice, setNotice] = useState('')
   // 评审决定需要 edit 能力（与服务端 review_decide 同一能力）。Viewer 不该看到这三个
   // 按钮 —— 点了必然 403，而失败的按钮比没有按钮更让人困惑。
-  const canDecide = canUseProjectEntry(projectId ? cachedProjectCapabilities(projectId) : undefined, 'decideReview')
+  const canDecide = canUseProjectEntry(
+    projectId ? cachedProjectCapabilities(projectId) : undefined,
+    'decideReview',
+    serverPersistenceEnabled,
+  )
 
   useEffect(() => {
     let active = true

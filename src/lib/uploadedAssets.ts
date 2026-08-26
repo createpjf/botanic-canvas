@@ -1,19 +1,19 @@
 import type { UploadedAssetInput } from '../domain/canvas'
 import type { ProductLocale } from '../i18n/core'
+// 显式 .ts 后缀：本文件被 uploadedAssets.test.ts 用 node --experimental-strip-types
+// 直接加载执行（不经 Vite 打包），Node 的 ESM 解析不会像 Vite 那样补全省略的扩展名。
+import { MEDIA_LIMITS, UPLOAD_IMAGE_FORMATS, unsupportedUploadMessage } from '../domain/mediaFormats.ts'
+import { pastedAssetName } from '../domain/clipboardMedia.ts'
 
 export const maxUploadAssets = 12
-const maximumUploadImageBytes = 8 * 1024 * 1024
-const supportedUploadTypes = new Set(['image/png', 'image/jpeg', 'image/webp'])
+const supportedUploadTypes = new Set<string>(UPLOAD_IMAGE_FORMATS)
 
 export function validateUploadFiles(files: File[], locale: ProductLocale = 'zh-CN') {
-  const accepted = files.filter((file) => supportedUploadTypes.has(file.type) && file.size > 0 && file.size <= maximumUploadImageBytes)
+  const accepted = files.filter((file) => (
+    supportedUploadTypes.has(file.type) && file.size > 0 && file.size <= MEDIA_LIMITS.maxUploadBytes
+  ))
   const rejected = files.length - accepted.length
-  const message = rejected
-    ? locale === 'en'
-      ? `Skipped ${rejected} ${rejected === 1 ? 'file' : 'files'}. Upload PNG, JPEG, or WebP images up to 8 MB each.`
-      : `已跳过 ${rejected} 个文件：仅支持 PNG、JPEG、WebP，单张不超过 8MB。`
-    : ''
-  return { accepted, message }
+  return { accepted, message: rejected ? unsupportedUploadMessage(rejected, locale) : '' }
 }
 
 function readFileAsDataUrl(file: File) {
@@ -37,6 +37,7 @@ function readImageDimensions(source: string) {
 export async function readUploadedAssetInput(
   file: File,
   role: UploadedAssetInput['role'],
+  options: { source?: 'drop' | 'paste'; now?: Date; locale?: ProductLocale } = {},
 ): Promise<UploadedAssetInput> {
   const image = await readFileAsDataUrl(file)
   const { width: imageWidth, height: imageHeight } = await readImageDimensions(image)
@@ -44,7 +45,7 @@ export async function readUploadedAssetInput(
   const folderName = pathSegments[0]
   const collection = pathSegments.length > 1 ? pathSegments.slice(0, -1).join(' / ') : undefined
   return {
-    name: file.name.replace(/\.[^.]+$/, ''),
+    name: pastedAssetName(file.name, options),
     image,
     imageWidth,
     imageHeight,

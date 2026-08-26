@@ -2,12 +2,14 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   FALLBACK_PROJECT_CAPABILITIES,
+  LOCAL_PROJECT_CAPABILITIES,
   PROJECT_CAPABILITIES,
   PROJECT_ENTRY_CAPABILITY,
   canUseProjectEntry,
   hasProjectCapability,
   isReadOnlyProject,
   readOnlyProjectNotice,
+  resolveProjectCapabilities,
 } from './projectCapabilities.ts'
 
 // 与服务端 authorization.mjs 的三个角色一致。
@@ -71,4 +73,25 @@ test('每个入口都声明了它需要的能力，且能力都在词表里', ()
       `入口 ${entry} 声明了词表外的能力 ${capability}`,
     )
   }
+})
+
+test('本地模式下能力不受限：没有服务端就没有「别人的项目」', () => {
+  // 这是我引入的一个真 bug：本地持久化模式根本不发 /document 请求，能力集合永远为空，
+  // 于是保守缺省把生成、工作流、评审入口全部藏掉 —— 整个工作台变成只读，
+  // 而没有任何人能给他授权。UI e2e 正是跑在这个模式下。
+  assert.equal(canUseProjectEntry(undefined, 'submitGeneration', false), true)
+  assert.equal(canUseProjectEntry(undefined, 'modifyWorkflow', false), true)
+  assert.equal(canUseProjectEntry(undefined, 'decideReview', false), true)
+  assert.equal(isReadOnlyProject(undefined, false), false)
+  assert.deepEqual([...LOCAL_PROJECT_CAPABILITIES].sort(), [...PROJECT_CAPABILITIES].sort())
+})
+
+test('服务端模式是默认值：漏传按更严的一侧处理', () => {
+  // 漏传时默默放行全部，比藏错入口危险得多。
+  assert.equal(canUseProjectEntry(undefined, 'submitGeneration'), false)
+  assert.equal(canUseProjectEntry(undefined, 'submitGeneration', true), false)
+  assert.deepEqual(resolveProjectCapabilities(undefined), FALLBACK_PROJECT_CAPABILITIES)
+  // 服务端模式下即使拿到了能力，也仍以服务端下发的为准。
+  assert.equal(canUseProjectEntry(['read'], 'submitGeneration', true), false)
+  assert.equal(canUseProjectEntry(['read', 'create-generation'], 'submitGeneration', true), true)
 })

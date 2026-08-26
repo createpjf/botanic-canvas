@@ -1,4 +1,4 @@
-import { type DragEvent, useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from 'react'
+import { type ClipboardEvent, type DragEvent, useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from 'react'
 import {
   botanicAgentComposerGroupRole,
   botanicAgentBranchStatusLabel,
@@ -55,7 +55,10 @@ import type { BotanicAgentRunReview } from '../../domain/agentReviewContract'
 import { resolveAgentChatPrompt } from '../../domain/agentMarkdown'
 import type { BotanicAgentChatStreamEvent } from '../../domain/agentChatStream'
 import { applyAgentConversationStreamEvent, createAgentTimeline, persistAgentLiveTimeline, projectBotanicAgentRunOntoTimeline, type AgentTimelineEvent, type AgentTimelineState } from '../../domain/agentTimeline'
+import { botanicAgentLatestEvaluableMessageId } from '../../domain/agentMessageUtilities'
 import { nextExclusiveSurface, type ExclusiveSurfaceAction } from '../../domain/exclusiveSurface'
+import { uploadLimitsLabel } from '../../domain/mediaFormats'
+import { clipboardHasPlainText, clipboardMediaFiles, pasteTarget } from '../../domain/clipboardMedia'
 import type { CollaborationActivity, CollaborationDocumentChange } from '../../domain/collaborationActivity'
 import type {
   AssetGroup,
@@ -357,7 +360,7 @@ export default function AgentWorkspace({
     conflict: { title: 'A newer canvas version is available', detail: 'Your local draft and generation results are preserved.', actionLabel: 'Review changes' },
     offline: { title: 'Using an offline draft', detail: 'This edit will sync when the connection is restored.', actionLabel: 'Retry sync' },
     syncError: { title: 'Canvas sync is temporarily unavailable', detail: 'Your current edits remain saved locally and can sync later.', actionLabel: 'Retry sync' },
-    dropImages: 'Drop to add image assets', uploadLimits: 'PNG / JPEG / WebP, up to 8 MB each', imageLimit: (count: number) => `You can add up to ${count} images at once. Extra images were skipped.`, imageReadFailed: 'Unable to read the images. Drop or select them again.',
+    dropImages: 'Drop to add image assets', uploadLimits: uploadLimitsLabel('en'), imageLimit: (count: number) => `You can add up to ${count} images at once. Extra images were skipped.`, imageReadFailed: 'Unable to read the images. Drop or select them again.',
     planningUnavailable: 'Unable to create the plan. Try again shortly.', localPreviewChat: 'The local preview is not connected to Agent services. You can still use the canvas and structured prompts; connect the workspace service for chat, research, and execution.', localPreviewPrompt: (prompt: string) => `Local preview prepared this structured Prompt:\n\n${prompt}\n\nConnect the workspace service to continue with research or execution.`, confirmActionsFirst: 'Approve or skip the pending action cards before starting generation.', taskNotStarted: 'The task did not start. Check the references and generation service, then retry.', taskStartFailed: 'Unable to start the task. Try again.', canvasWritten: ' Added to the canvas.', actionFailed: 'Unable to complete the action. Try again.', retryWithModel: (model: string, prompt: string) => `Regenerate with ${model}: ${prompt}`, retrySettings: (prompt: string) => `Adjust the output settings and regenerate: ${prompt}`, pendingQuestion: 'A confirmation card above still needs an answer. Select or enter a response in the card. No task was created.', noPendingPlan: 'There is no generation plan awaiting approval. Describe the image or batch values you want, and Agent will prepare a plan for review.',
     history: 'Conversation history', historyUnread: (count: number) => `Conversation history, ${count} ${count === 1 ? 'conversation has' : 'conversations have'} updates`, conversationName: 'Conversation name', saveName: 'Save conversation name', save: 'Save', cancelName: 'Cancel editing conversation name', cancel: 'Cancel', newConversation: 'New conversation', editName: 'Edit conversation name', collaborators: (count: number) => `${count} other ${count === 1 ? 'collaborator' : 'collaborators'} online`, processing: 'Processing',
     searchConversations: 'Search conversations', searchPlaceholder: 'Search conversations, messages, or tasks', historyFilters: 'Filter collaboration history', all: 'All', unread: 'Unread', newResults: 'New results', attention: 'Needs attention', resultUpdates: (count: number) => `${count} new ${count === 1 ? 'result' : 'results'}`, updates: (count: number) => `${count} ${count === 1 ? 'update' : 'updates'}`, attentionCount: (count: number) => `${count} need${count === 1 ? 's' : ''} attention`, activeCount: (count: number) => `${count} active`, taskCount: (count: number) => `${count} ${count === 1 ? 'task' : 'tasks'}`, noConversations: 'No conversations match these filters.', noMessagesYet: 'No messages yet',
@@ -373,7 +376,7 @@ export default function AgentWorkspace({
     conflict: { title: '画布有新的云端版本', detail: '本地草稿仍保留，生成任务与结果不会丢失。', actionLabel: '查看变更' },
     offline: { title: '正在使用离线草稿', detail: '恢复网络后会继续同步当前编辑。', actionLabel: '重试同步' },
     syncError: { title: '画布同步暂时失败', detail: '当前编辑仍在本地，稍后可以继续同步。', actionLabel: '重试同步' },
-    dropImages: '松开即可添加图片素材', uploadLimits: 'PNG / JPEG / WebP，单张不超过 8MB', imageLimit: (count: number) => `最多同时添加 ${count} 张图片，超出部分已跳过。`, imageReadFailed: '图片读取失败，请重新拖入或选择图片。',
+    dropImages: '松开即可添加图片素材', uploadLimits: uploadLimitsLabel('zh-CN'), imageLimit: (count: number) => `最多同时添加 ${count} 张图片，超出部分已跳过。`, imageReadFailed: '图片读取失败，请重新拖入或选择图片。',
     planningUnavailable: '暂时无法生成计划。', localPreviewChat: '本地预览模式未连接 Agent 服务；仍可使用画布和结构化 Prompt，连接云端后再使用对话、检索与执行。', localPreviewPrompt: (prompt: string) => `本地预览已整理出结构化 Prompt：\n\n${prompt}\n\n连接工作区服务后可继续检索或执行。`, confirmActionsFirst: '请先确认或跳过行动卡，再执行生成计划。', taskNotStarted: '任务没有启动，请检查参考素材与生成服务后重试。', taskStartFailed: '任务未能启动，请稍后重试。', canvasWritten: ' 已写入画布。', actionFailed: '行动执行失败，请重试。', retryWithModel: (model: string, prompt: string) => `换用${model}重新生成：${prompt}`, retrySettings: (prompt: string) => `调整输出设置后重新生成：${prompt}`, pendingQuestion: '上面还有一张待回答的确认卡，请直接在卡片里选择或填写；本次没有创建任务。', noPendingPlan: '当前没有待确认的生成计划。请直接描述要生成的画面或批量取值，Agent 会先给出待确认计划。',
     history: '对话历史', historyUnread: (count: number) => `对话历史，${count} 个会话有更新`, conversationName: '对话名称', saveName: '保存对话名称', save: '保存', cancelName: '取消编辑对话名称', cancel: '取消', newConversation: '新建对话', editName: '编辑对话名称', collaborators: (count: number) => `另有 ${count} 位协作者在线`, processing: '处理中',
     searchConversations: '搜索对话', searchPlaceholder: '搜索对话、消息或任务', historyFilters: '筛选协作历史', all: '全部', unread: '未读', newResults: '新结果', attention: '需处理', resultUpdates: (count: number) => `${count} 个新结果`, updates: (count: number) => `${count} 条更新`, attentionCount: (count: number) => `${count} 项需处理`, activeCount: (count: number) => `${count} 进行中`, taskCount: (count: number) => `${count} 个任务`, noConversations: '当前筛选下没有对话。', noMessagesYet: '还没有消息',
@@ -553,6 +556,10 @@ export default function AgentWorkspace({
       return !run || !shouldRestoreBotanicAgentRuntimeSteps(run.status)
     })
   }, [conversationMessages, liveConversation, runs, session])
+  const latestEvaluableMessageId = useMemo(
+    () => botanicAgentLatestEvaluableMessageId(renderedConversationMessages),
+    [renderedConversationMessages],
+  )
   const pendingPromptSourceIds = useMemo(() => new Set((session?.messages ?? [])
     .filter((message) => message.question?.sourcePromptMessageId && message.kind === 'question' && message.status === 'pending')
     .map((message) => message.question!.sourcePromptMessageId!)), [session?.messages])
@@ -827,13 +834,13 @@ export default function AgentWorkspace({
     }, 700)
   }, [onUpdateReadingAnchor, session?.id, utilityPanelOpen])
 
-  const importImageFiles = async (files: File[]) => {
+  const importImageFiles = async (files: File[], source: 'drop' | 'paste' = 'drop') => {
     const { accepted, message } = validateUploadFiles(files, locale)
     const imageFiles = accepted.slice(0, maxUploadAssets)
     const limitMessage = accepted.length > maxUploadAssets ? flowCopy.imageLimit(maxUploadAssets) : ''
     if (message || limitMessage) setError([message, limitMessage].filter(Boolean).join(' '))
     if (!imageFiles.length) return
-    const loaded = await Promise.allSettled(imageFiles.map((file) => readUploadedAssetInput(file, '场景')))
+    const loaded = await Promise.allSettled(imageFiles.map((file) => readUploadedAssetInput(file, '场景', { source, locale })))
     const uploads = loaded
       .filter((result): result is PromiseFulfilledResult<UploadedAssetInput> => result.status === 'fulfilled')
       .map((result) => result.value)
@@ -867,6 +874,30 @@ export default function AgentWorkspace({
     event.stopPropagation()
     setIsImageDropActive(false)
     void importImageFiles(Array.from(event.dataTransfer.files))
+  }
+
+  const handlePaste = (event: ClipboardEvent<HTMLElement>) => {
+    const items = Array.from(event.clipboardData?.items ?? [])
+    const files = clipboardMediaFiles(items)
+    const target = event.target
+    const element = target instanceof Element ? target : null
+    // 与 CanvasWorkspace 的 window 粘贴监听器共用同一份判定式（同一个 pasteTarget）。
+    // 这里的 onPaste 挂在 .agent-workspace 上，本身只会在事件冒泡经过面板的
+    // React 子树时触发；但 Agent 对话里发起的局部重绘编辑器也用 createPortal
+    // 挂到 document.body——冒泡仍会经过这个 onPaste（React 按组件树而非 DOM
+    // 树冒泡），可 DOM 上它已经不在 .agent-workspace 之下。不重新计算
+    // insideAgentPanel/modalOpen，会让这次粘贴被误当成「composer 有焦点」，
+    // 静默把图片塞进被弹层挡住、用户看不到的输入框。
+    const agentPanelMounted = Boolean(window.document.querySelector('.agent-workspace'))
+    const insideAgentPanel = Boolean(element?.closest('.agent-workspace'))
+      || (agentPanelMounted && Boolean(element?.closest('.botanic-select__menu')))
+    const insideTextEntry = Boolean(element?.closest('input, textarea, [contenteditable="true"]'))
+    const modalOpen = Boolean(window.document.querySelector('[aria-modal="true"]'))
+    if (pasteTarget({ hasMediaFiles: files.length > 0, insideAgentPanel, insideTextEntry, modalOpen }) !== 'composer') return
+    // 表格单元格复制这类混合内容会同时带一段文本；不分情况地 preventDefault
+    // 会把这段文本一起吞掉。只在剪贴板没有纯文本时才拦截默认粘贴，图片始终正常导入。
+    if (!clipboardHasPlainText(items)) event.preventDefault()
+    void importImageFiles(files, 'paste')
   }
 
   useEffect(() => {
@@ -2403,6 +2434,7 @@ export default function AgentWorkspace({
       onDragOver={handleImageDragOver}
       onDragLeave={handleImageDragLeave}
       onDrop={handleImageDrop}
+      onPaste={handlePaste}
     >
       {isImageDropActive ? <div className="agent-workspace__drop-hint" aria-hidden="true"><UploadIcon /><strong>{flowCopy.dropImages}</strong><small>{flowCopy.uploadLimits}</small></div> : null}
       <header className="agent-workspace__header">
@@ -2660,6 +2692,7 @@ export default function AgentWorkspace({
           streaming={live?.streaming}
           isLatestAssistant={message.id === latestAssistantMessageId}
           agentBusy={agentBusy}
+          isLatestEvaluable={message.id === latestEvaluableMessageId}
           sessionId={session.id}
           runs={runs}
           artifacts={artifacts}

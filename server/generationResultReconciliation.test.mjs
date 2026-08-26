@@ -42,6 +42,120 @@ test('历史成功任务会把空结果节点回填为独立图片节点', () =>
   assert.deepEqual(reconciled.nodes.filter((node) => node.type === 'result').map((node) => node.data.image), ['/api/media/one', '/api/media/two'])
 })
 
+test('占位节点被错配旧任务号时，对账不覆写已落图历史节点，并把僵尸占位如实标记失败', () => {
+  // 「篡改历史」回归：上游 r1 已持有 job-1 的输出（3:4·2K），下游占位节点被兜底
+  // 恢复错打上 job-1 且标成 succeeded。旧行为会按「任务号 + 候选号」命中 r1，
+  // 用占位节点的 4:3·1K 参数快照与血缘覆写它；现在 r1 必须原样保留，而占位节点
+  // 声称的任务已在别处完整落图、又找不到真正以它为落点的任务，应如实转为失败。
+  const parentSettings = { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' }
+  const document = {
+    id: 'project-hijack',
+    nodes: [
+      { id: 'g1', type: 'generate', position: { x: 0, y: 0 }, data: { kind: 'generate', jobId: 'job-1', generationKind: 'refinement', settings: parentSettings } },
+      {
+        id: 'r1', type: 'result', position: { x: 400, y: 0 },
+        data: {
+          kind: 'result', label: '定向精修', outputOf: 'g1', image: '/api/media/calbee', jobId: 'job-1', candidateId: 'out-1',
+          taskGroupId: 'r1', taskStatus: 'succeeded', status: 'ready', generationKind: 'refinement',
+          generationSettings: parentSettings,
+        },
+      },
+      {
+        id: 'pending', type: 'result', position: { x: 800, y: 0 },
+        data: {
+          kind: 'result', label: '定向精修 · 图像 01', outputOf: 'g2', jobId: 'job-1',
+          taskGroupId: 'pending', taskStatus: 'succeeded', status: 'ready', generationKind: 'refinement',
+          generationSettings: { model: 'minimax-image-01', aspectRatio: '4:3', resolution: '1K' },
+        },
+      },
+    ],
+    edges: [], generationJobs: [], updatedAt: 1,
+  }
+  const parentBefore = JSON.stringify(document.nodes[1])
+  const { document: reconciled, changed } = reconcileGenerationResults(document, [{
+    id: 'job-1', status: 'succeeded', kind: 'refinement', batchCount: 1, createdAt: 1_000, updatedAt: 1_100,
+    settings: parentSettings, outputs: [{ id: 'out-1', image: '/api/media/calbee' }],
+  }])
+
+  assert.equal(changed, true)
+  const parent = reconciled.nodes.find((node) => node.id === 'r1')
+  assert.equal(JSON.stringify(parent), parentBefore)
+  assert.equal(parent.data.generationSettings.aspectRatio, '3:4')
+  assert.equal(parent.data.outputOf, 'g1')
+  const pending = reconciled.nodes.find((node) => node.id === 'pending')
+  assert.equal(pending.data.image, undefined)
+  assert.equal(pending.data.taskStatus, 'failed')
+  assert.equal(pending.data.jobId, undefined)
+})
+
+test('存量污染文档：被覆写的历史节点按任务提交参数回填，僵尸占位交还真实任务并在同一次对账落图', () => {
+  // 修复前的存量现场：r1 的参数快照/血缘已被下游占位节点的 4:3·1K 覆写，
+  // 下游占位节点带着 job-1 的任务号卡在「等待生成结果」，真正的 job-2 结果无处可去。
+  const parentSettings = { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' }
+  const childSettings = { model: 'minimax-image-01', aspectRatio: '4:3', resolution: '1K' }
+  const document = {
+    id: 'project-corrupted',
+    nodes: [
+      { id: 'g1', type: 'generate', position: { x: 0, y: 0 }, data: { kind: 'generate', jobId: 'job-1', generationKind: 'refinement', settings: parentSettings } },
+      {
+        id: 'r1', type: 'result', position: { x: 400, y: 0 },
+        data: {
+          kind: 'result', label: '定向精修', outputOf: 'g2', image: '/api/media/calbee', jobId: 'job-1', candidateId: 'out-1',
+          taskGroupId: 'pending', taskNodeId: 'r1', taskStatus: 'succeeded', status: 'ready', generationKind: 'refinement',
+          generationSettings: { ...childSettings },
+          generationRecipe: { prompt: '背景放在超市里', batchCount: 1, settings: { ...childSettings }, references: [] },
+        },
+      },
+      { id: 'g2', type: 'generate', position: { x: 800, y: 0 }, data: { kind: 'generate', generationKind: 'refinement', settings: childSettings } },
+      {
+        id: 'pending', type: 'result', position: { x: 1200, y: 0 },
+        data: {
+          kind: 'result', label: '定向精修 · 图像 01', outputOf: 'g2', jobId: 'job-1',
+          taskGroupId: 'pending', taskStatus: 'succeeded', status: 'ready', generationKind: 'refinement',
+          generationSettings: { ...childSettings },
+          generationRecipe: { prompt: '背景放在超市里', batchCount: 1, settings: { ...childSettings }, references: [] },
+        },
+      },
+    ],
+    edges: [
+      { id: 'e-g1-r1', source: 'g1', target: 'r1', data: { system: true, role: 'output' } },
+      { id: 'e-r1-g2', source: 'r1', target: 'g2' },
+      { id: 'e-g2-pending', source: 'g2', target: 'pending', data: { system: true, role: 'output' } },
+    ],
+    generationJobs: [], updatedAt: 1,
+  }
+  const { document: reconciled, changed } = reconcileGenerationResults(document, [
+    {
+      id: 'job-1', status: 'succeeded', kind: 'refinement', batchCount: 1, createdAt: 1_000, updatedAt: 1_100,
+      settings: parentSettings,
+      generationRecipe: { prompt: '定向精修原始提示', batchCount: 1, settings: parentSettings, references: [] },
+      generateNodeId: 'g1', resultNodeId: 'r1',
+      outputs: [{ id: 'out-1', image: '/api/media/calbee' }],
+    },
+    {
+      id: 'job-2', status: 'succeeded', kind: 'refinement', batchCount: 1, createdAt: 2_000, updatedAt: 2_100,
+      settings: childSettings,
+      generateNodeId: 'g2', resultNodeId: 'pending',
+      outputs: [{ id: 'out-2', image: '/api/media/supermarket' }],
+    },
+  ])
+
+  assert.equal(changed, true)
+  const parent = reconciled.nodes.find((node) => node.id === 'r1')
+  // 历史节点按 job-1 的提交参数回填：3:4·2K·GPT，血缘回到 g1，保留原图与原标题
+  assert.equal(parent.data.image, '/api/media/calbee')
+  assert.equal(parent.data.label, '定向精修')
+  assert.deepEqual(parent.data.generationSettings, parentSettings)
+  assert.equal(parent.data.generationRecipe.prompt, '定向精修原始提示')
+  assert.equal(parent.data.outputOf, 'g1')
+  assert.equal(parent.data.taskGroupId, 'r1')
+  // 僵尸占位节点交还给 job-2，并在同一次对账里拿到自己的输出，参数保持 4:3·1K
+  const pending = reconciled.nodes.find((node) => node.id === 'pending')
+  assert.equal(pending.data.jobId, 'job-2')
+  assert.equal(pending.data.image, '/api/media/supermarket')
+  assert.equal(pending.data.generationSettings.aspectRatio, '4:3')
+})
+
 test('误标为无结果失败的历史节点仍可由权威任务结果纠正', () => {
   const document = {
     id: 'project-b', nodes: [

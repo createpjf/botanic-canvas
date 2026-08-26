@@ -23,7 +23,17 @@ export type TimelineToolPresentation = {
 export type TimelineBlock =
   | { id: string; type: 'thinking'; status: 'running' | 'done'; startedAt: number; endedAt?: number; text: string }
   | { id: string; type: 'narration'; text: string }
-  | { id: string; type: 'step'; status: 'running' | 'succeeded' | 'failed'; kind: TimelineStepKind; title: string; count?: number; sourceToolIds: string[] }
+  | {
+    id: string; type: 'step'; status: 'running' | 'succeeded' | 'failed'; kind: TimelineStepKind
+    title: string; count?: number; sourceToolIds: string[]
+    /**
+     * 失败原因。**没有它，界面只能显示一个「失败」**，看的人无从判断该改什么。
+     * 实测线上就撞上了：两个写类工具调用连续失败，界面上只有两个红叉与
+     * 「Writing project data · Failed」，测试的人完全不知道发生了什么。
+     * 原始工具调用列表一直带着 `error`，只是这条时间线路径把它丢了。
+     */
+    error?: string
+  }
   | { id: string; type: 'raw_group'; summary: string; open: boolean; items: AgentToolCallTrace[] }
 
 export type AgentTimelineState = { blocks: TimelineBlock[] }
@@ -36,6 +46,19 @@ export type AgentTimelineEvent =
   | { type: 'error'; message?: string; receivedAt: number }
 
 type TimelineStepBlock = Extract<TimelineBlock, { type: 'step' }>
+
+/**
+ * 一个步骤当前的失败原因。
+ *
+ * 一个步骤可能聚合多个工具调用（例如多次搜索）。取**第一条失败的**原因而不是拼接
+ * 全部：连着显示三条错误既读不完也帮不上忙，而第一条通常就是根因。
+ */
+function stepFailureReason(items: AgentToolCallTrace[], sourceToolIds: string[]) {
+  const failed = sourceToolIds
+    .map((id) => items.find((item) => item.id === id))
+    .find((item) => item?.status === 'failed' && item.error?.trim())
+  return failed?.error?.trim()
+}
 type TimelineRawGroupBlock = Extract<TimelineBlock, { type: 'raw_group' }>
 
 function timelineRawGroup(blocks: TimelineBlock[]) {
@@ -257,6 +280,8 @@ function reduceToolEvent(state: AgentTimelineState, event: Extract<AgentTimeline
       kind: presentation.kind,
       title: presentation.kind === 'search' ? searchTitle(status, nextCount) : presentation.title,
       ...(nextCount === undefined ? {} : { count: nextCount }),
+      // 恢复成功时清掉上一次的失败原因，否则一条已经跑通的步骤会一直挂着旧错误。
+      ...(stepFailureReason(items, existing.sourceToolIds) ? { error: stepFailureReason(items, existing.sourceToolIds) } : { error: undefined }),
     }
     blocks[existingIndex] = next
     return { blocks: withRawGroup(blocks, items, rawGroup?.open ?? false) }
@@ -273,6 +298,7 @@ function reduceToolEvent(state: AgentTimelineState, event: Extract<AgentTimeline
       status,
       title: searchTitle(status, nextCount),
       ...(nextCount === undefined ? {} : { count: nextCount }),
+      ...(stepFailureReason(items, sourceToolIds) ? { error: stepFailureReason(items, sourceToolIds) } : { error: undefined }),
     }
   } else {
     const count = presentation.kind === 'search' && incomingStatus !== 'succeeded'
@@ -286,6 +312,7 @@ function reduceToolEvent(state: AgentTimelineState, event: Extract<AgentTimeline
       title: presentation.kind === 'search' ? searchTitle(incomingStatus, count) : presentation.title,
       ...(count === undefined ? {} : { count }),
       sourceToolIds: [event.toolCall.id],
+      ...(event.toolCall.error?.trim() ? { error: event.toolCall.error.trim() } : {}),
     })
   }
   return { blocks: withRawGroup(blocks, items, rawGroup?.open ?? false) }

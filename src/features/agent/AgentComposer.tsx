@@ -2,6 +2,7 @@ import { useId, useRef } from 'react'
 import type { ChangeEvent, KeyboardEvent, RefObject } from 'react'
 import { botanicAgentExecutionModeLabel, type BotanicAgentMentionQuery, type BotanicAgentSession } from '../../domain/agent'
 import type { AssetGroup } from '../../domain/canvas'
+import { imageUploadAccept } from '../../domain/mediaFormats'
 import { AgentPlannerProviderIcon } from '../../components/AgentPlannerProviderIcon'
 import { BotanicSelect } from '../../components/BotanicSelect'
 import { AutoRunIcon, ChecklistIcon, ChevronDownIcon, CloseIcon, PlusIcon, SparkleIcon, UploadIcon } from '../../components/BotanicIcons'
@@ -244,7 +245,7 @@ export function AgentComposer({
       aria-describedby={error ? composerErrorId : undefined}
     />
     {error ? <div id={composerErrorId} className="agent-composer__error" role="alert"><span>{error}</span>{canRetry ? <button type="button" onClick={onRetry} disabled={retrying}>{copy.retry}</button> : null}</div> : null}
-    <input ref={fileInputRef} className="asset-file-input" type="file" accept="image/png,image/jpeg,image/webp" multiple aria-label={copy.addImages} onChange={handleFiles} />
+    <input ref={fileInputRef} className="asset-file-input" type="file" accept={imageUploadAccept()} multiple aria-label={copy.addImages} onChange={handleFiles} />
     <div className="agent-composer__toolbar">
       <div>
         <button ref={contextMenuButtonRef} type="button" className="agent-composer__add" onClick={onToggleContextMenu} aria-controls={contextMenuId} aria-expanded={contextMenuOpen} aria-label={copy.addImages} title={copy.addImages}><PlusIcon /></button>

@@ -1,6 +1,7 @@
 import type { Edge } from '@xyflow/react'
 import { botanicAgentNodeTitleLimit, clipBotanicAgentNodeTitle } from './agent.ts'
 import type { CanvasGenerationTaskStatus } from './canvas'
+import type { ProductLocale } from '../i18n/core'
 
 export type CanvasZoomMode = 'detail' | 'compact' | 'overview'
 
@@ -71,7 +72,34 @@ export function generationTaskFeedback(status?: CanvasGenerationTaskStatus) {
   return { title: '正在生成', detail: '可继续编辑画布', recoverable: false }
 }
 
-export function generationTaskErrorMessage(error?: string) {
+/**
+ * 服务端错误码 → 双语文案，只收「这条分支引入、且已确认会透传给用户」的错误码。
+ *
+ * `IMAGE_TOO_LARGE_PIXELS` 是目前唯一一个（`git log -p` 追溯过 `PROVIDER_REJECTED`
+ * ——它是这条分支之前就有的码，分支内只改了文案，不算新引入）。不要为每个
+ * job.error 都加一条：未登记的错误码继续走下面「服务端原始文案直传」的旧路径，
+ * 这是有意的兜底范围控制，不是遗漏。
+ *
+ * 像素上限报错的服务端原文带具体像素数（如「超过 4096x4096」），这里换成不带
+ * 数字的静态双语文案——判断力取舍：数字对中文用户本来能看到，换成静态文案后
+ * 中文侧也损失了这点精确度，但两语言各自维护一条动态插值文案超出了本次范围。
+ */
+const GENERATION_JOB_ERROR_MESSAGES: Partial<Record<string, Record<ProductLocale, string>>> = {
+  IMAGE_TOO_LARGE_PIXELS: {
+    'zh-CN': '图片像素过大，请压缩后重试。',
+    en: 'The image resolution is too large. Resize it and try again.',
+  },
+}
+
+/** 已登记错误码的双语文案；未登记返回 undefined，调用方应退回旧的直传逻辑。 */
+export function generationJobErrorCopy(errorCode: string | undefined, locale: ProductLocale) {
+  if (!errorCode) return undefined
+  return GENERATION_JOB_ERROR_MESSAGES[errorCode]?.[locale]
+}
+
+export function generationTaskErrorMessage(error?: string, errorCode?: string, locale: ProductLocale = 'zh-CN') {
+  const known = generationJobErrorCopy(errorCode, locale)
+  if (known) return known
   const message = error?.trim()
   if (!message) return undefined
   if (/^(failed to fetch|fetch failed|networkerror when attempting to fetch resource\.?)$/i.test(message)) {

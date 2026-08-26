@@ -25,51 +25,7 @@ export function normalizeRegionRect(rect) {
   return { x, y, width, height }
 }
 
-/** 从 PNG/JPEG/WebP 字节读像素尺寸；无法识别时返回 null。 */
-export function imagePixelSize(buffer) {
-  if (!Buffer.isBuffer(buffer) || buffer.length < 16) return null
-  if (buffer.subarray(0, 8).equals(pngSignature)) {
-    if (buffer.length < 24) return null
-    return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) }
-  }
-  if (buffer[0] === 0xff && buffer[1] === 0xd8) return jpegSize(buffer)
-  if (buffer.subarray(0, 4).toString('ascii') === 'RIFF' && buffer.subarray(8, 12).toString('ascii') === 'WEBP') {
-    return webpSize(buffer)
-  }
-  return null
-}
-
-function jpegSize(buffer) {
-  let offset = 2
-  while (offset + 9 < buffer.length) {
-    if (buffer[offset] !== 0xff) return null
-    const marker = buffer[offset + 1]
-    // SOF0–SOF15（跳过 DHT/DAC/RST 等非帧标记）携带尺寸。
-    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
-      return { width: buffer.readUInt16BE(offset + 7), height: buffer.readUInt16BE(offset + 5) }
-    }
-    offset += 2 + buffer.readUInt16BE(offset + 2)
-  }
-  return null
-}
-
-function webpSize(buffer) {
-  const format = buffer.subarray(12, 16).toString('ascii')
-  if (format === 'VP8X' && buffer.length >= 30) {
-    return {
-      width: 1 + (buffer[24] | (buffer[25] << 8) | (buffer[26] << 16)),
-      height: 1 + (buffer[27] | (buffer[28] << 8) | (buffer[29] << 16)),
-    }
-  }
-  if (format === 'VP8 ' && buffer.length >= 30) {
-    return { width: buffer.readUInt16LE(26) & 0x3fff, height: buffer.readUInt16LE(28) & 0x3fff }
-  }
-  if (format === 'VP8L' && buffer.length >= 25) {
-    const bits = buffer.readUInt32LE(21)
-    return { width: (bits & 0x3fff) + 1, height: ((bits >> 14) & 0x3fff) + 1 }
-  }
-  return null
-}
+// 像素尺寸读取已收编到 server/mediaFormats.mjs —— 同一行为只保留一个权威实现。
 
 function pngChunk(type, data) {
   const header = Buffer.alloc(8)

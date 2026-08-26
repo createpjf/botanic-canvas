@@ -1,9 +1,4 @@
-function matchesImageSignature(contentType, bytes) {
-  if (contentType === 'image/png') return bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
-  if (contentType === 'image/jpeg') return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
-  if (contentType === 'image/webp') return bytes.length >= 12 && bytes.subarray(0, 4).toString('ascii') === 'RIFF' && bytes.subarray(8, 12).toString('ascii') === 'WEBP'
-  return false
-}
+import { CANONICAL_IMAGE_FORMATS, canonicalImageDataUrlPattern, canonicalImageFormatSentenceList, detectImageFormat, imageFormatLabel } from './mediaFormats.mjs'
 
 function mediaValidationError(message) {
   const error = new Error(message)
@@ -13,13 +8,19 @@ function mediaValidationError(message) {
 
 function parseImageDataUrl(dataUrl, maximumUploadBytes) {
   if (typeof dataUrl !== 'string') return undefined
-  const match = dataUrl.match(/^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=\s]+)$/i)
+  const match = dataUrl.match(canonicalImageDataUrlPattern())
   if (!match) return undefined
   const bytes = Buffer.from(match[2], 'base64')
   if (!bytes.length) return undefined
   if (bytes.length > maximumUploadBytes) throw mediaValidationError(`单个素材不能超过 ${Math.ceil(maximumUploadBytes / 1024 / 1024)}MB。`)
   const contentType = match[1].toLowerCase()
-  if (!matchesImageSignature(contentType, bytes)) throw mediaValidationError('图片内容与文件类型不匹配。')
+  // 以实际字节为准：声明 PNG 实际是别的东西，本身就是要抓的完整性问题。
+  const detected = detectImageFormat(bytes)
+  if (detected !== contentType) {
+    throw mediaValidationError(detected
+      ? `图片内容是 ${imageFormatLabel(detected)}，与声明的 ${imageFormatLabel(contentType)} 不一致。`
+      : '图片内容无法识别，文件可能已损坏。')
+  }
   return { contentType, bytes }
 }
 
@@ -112,7 +113,7 @@ export function createMediaService({ productStore, objectStore, maximumUploadByt
 
   async function persistDataUrl({ ownerId, projectId, dataUrl }) {
     const image = parseImageDataUrl(dataUrl, maximumUploadBytes)
-    if (!image) throw mediaValidationError('仅支持 PNG、JPEG 或 WebP 图片存入对象存储。')
+    if (!image) throw mediaValidationError(`仅支持 ${canonicalImageFormatSentenceList()} 图片存入对象存储。`)
     return persistBytes({ ownerId, projectId, bytes: image.bytes, contentType: image.contentType })
   }
 
@@ -121,7 +122,7 @@ export function createMediaService({ productStore, objectStore, maximumUploadByt
   }
 
   async function persistProviderMedia({ ownerId, projectId, media }) {
-    if (!Buffer.isBuffer(media?.buffer) || !media.buffer.length || !['image/png', 'image/jpeg', 'image/webp', 'video/mp4'].includes(media.mimeType)) {
+    if (!Buffer.isBuffer(media?.buffer) || !media.buffer.length || ![...CANONICAL_IMAGE_FORMATS, 'video/mp4'].includes(media.mimeType)) {
       throw new Error('供应商返回了不支持的媒体文件。')
     }
     return persistBytes({ ownerId, projectId, bytes: media.buffer, contentType: media.mimeType })

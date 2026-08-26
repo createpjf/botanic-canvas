@@ -1,7 +1,7 @@
 import { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
-import { generationTaskErrorMessage, generationTaskFeedback, type ResultGroupPresentation } from '../../domain/canvasPresentation'
+import { generationJobErrorCopy, generationTaskErrorMessage, generationTaskFeedback, type ResultGroupPresentation } from '../../domain/canvasPresentation'
 import { reducedAspectRatio } from '../../domain/mediaPresentation'
 import { mediaRetryUrl } from '../../domain/mediaRecovery'
 import { primaryGenerationReference, settingsForGenerationModel } from '../../domain/generationRecipe'
@@ -1260,7 +1260,11 @@ function ResultNode({ data, id, selected }: NodeProps) {
             ) : (
             <div className="result-node__task-copy">
             <strong aria-live="polite">{imageFailed ? t.mediaUnavailable : result.status === 'failed' ? t.taskIncomplete : result.status === 'cancelled' ? t.taskCancelled : t.waitingResult}</strong>
-            <small>{imageFailed ? t.mediaError : (result.error ? localizeProductError(new Error(generationTaskErrorMessage(result.error) ?? result.error), locale, { 'zh-CN': generationTaskErrorMessage(result.error) ?? result.error, en: t.generationConnectionError }) : undefined) ?? (result.status === 'ready' ? t.waitingService : t.realStatus)}</small>
+            {/* 已登记错误码（如 IMAGE_TOO_LARGE_PIXELS）已经是按 locale 解析好的双语文案，
+                直接用；不走 localizeProductError——那条路径把 Error 对象当容器传 code，
+                这里没有 code 可传，走了也只会落回英文兜底文案，白白丢掉刚解析出的正确译文。
+                未登记错误码维持原有行为不变。 */}
+            <small>{imageFailed ? t.mediaError : (result.error ? (generationJobErrorCopy(result.errorCode, locale) ?? localizeProductError(new Error(generationTaskErrorMessage(result.error) ?? result.error), locale, { 'zh-CN': generationTaskErrorMessage(result.error) ?? result.error, en: t.generationConnectionError })) : undefined) ?? (result.status === 'ready' ? t.waitingService : t.realStatus)}</small>
             {imageFailed ? <button className="result-node__task-action nodrag nowheel" type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void recoverMedia() }}>{t.reload}</button> : null}
             {result.status === 'failed' ? <div className="result-node__task-actions nodrag nowheel" onPointerDown={(event) => event.stopPropagation()}>
               <button className="result-node__task-action" type="button" onClick={(event) => { event.stopPropagation(); void retryGeneration() }}>{t.retryRecipe}</button>

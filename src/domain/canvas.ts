@@ -237,6 +237,8 @@ export type GenerateNodeData = {
   /** 未拿到 jobId 前仍需保留 Agent 分支归属。 */
   agentRun?: { runId: string; branchId: string }
   error?: string
+  /** 服务端错误码；配合 `generationTaskErrorMessage` 按码给出双语文案，不是每次都有。 */
+  errorCode?: string
 }
 
 export type ResultNodeData = {
@@ -261,6 +263,8 @@ export type ResultNodeData = {
   submissionKey?: string
   agentRun?: { runId: string; branchId: string }
   error?: string
+  /** 服务端错误码；配合 `generationTaskErrorMessage` 按码给出双语文案，不是每次都有。 */
+  errorCode?: string
   candidateId?: string
   versionId?: string
   parentVersionId?: string
@@ -390,6 +394,9 @@ export type GenerationJob = {
   provider: string
   model: GenerationModelId
   error?: string
+  /** 服务端错误分类码（如 `IMAGE_TOO_LARGE_PIXELS`）；服务端 `publicGenerationJob` 已透传，
+   * 客户端配合 `generationTaskErrorMessage` 按码给出双语文案，未登记的码继续用 `error` 原文。 */
+  errorCode?: string
   /** 供应商返回不足时任务仍可部分完成；缺口可单独补生成。 */
   missingOutputCount?: number
   partialError?: string

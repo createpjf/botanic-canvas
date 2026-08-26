@@ -290,3 +290,48 @@ test('回合收口把 live 时间线落到旁路状态，并把思考标成结�
   assert.equal(settled['msg-1']?.blocks.find((block) => block.type === 'thinking')?.status, 'done')
   assert.ok(settled['msg-1']?.blocks.some((block) => block.type === 'step' && block.kind === 'search'))
 })
+
+
+const failingCall = (id: string, name: string, status: 'failed' | 'succeeded', error?: string) => ({
+  id, name, label: '提交生成任务', risk: 'costly' as const, status, requiresConfirmation: false,
+  ...(error ? { error } : {}),
+})
+
+test('失败的步骤必须带上原因，恢复成功后清掉', () => {
+  // 线上实测：两个写类工具调用连续失败，界面上只有两个红叉与「Writing project data ·
+  // Failed」，测试的人完全不知道发生了什么。原始工具调用列表一直带着 error，
+  // 只是这条实时时间线路径把它丢了。
+  const failed = reduceAgentTimeline(createAgentTimeline(1_000), {
+    type: 'tool',
+    step: 0,
+    toolCall: failingCall('call-1', 'generation_submit', 'failed', '生成额度不足，请降低输出规格。'),
+    receivedAt: 1_100,
+  })
+  const step = failed.blocks.find((block) => block.type === 'step')
+  assert.equal(step?.status, 'failed')
+  assert.equal(step?.error, '生成额度不足，请降低输出规格。')
+
+  // 同一个调用后来成功了，旧的失败原因不能继续挂着。
+  const recovered = reduceAgentTimeline(failed, {
+    type: 'tool',
+    step: 0,
+    toolCall: failingCall('call-1', 'generation_submit', 'succeeded'),
+    receivedAt: 1_200,
+  })
+  const healed = recovered.blocks.find((block) => block.type === 'step')
+  assert.equal(healed?.status, 'succeeded')
+  assert.equal(healed?.error, undefined)
+})
+
+test('没有错误文案时不编造一个', () => {
+  // 失败但没带原因是另一回事：如实留空，由界面回落到通用状态文案。
+  const state = reduceAgentTimeline(createAgentTimeline(1_000), {
+    type: 'tool',
+    step: 0,
+    toolCall: failingCall('call-2', 'workflow_create', 'failed'),
+    receivedAt: 1_100,
+  })
+  const step = state.blocks.find((block) => block.type === 'step')
+  assert.equal(step?.status, 'failed')
+  assert.equal(step?.error, undefined)
+})
