@@ -95,14 +95,15 @@ export function paintLiquidProgressFrame(sub: LiquidSubscriber, elapsedMs: numbe
   const amount = 0.085
   const steps = Math.max(36, Math.floor(cssHeight / 3))
 
-  // 从左到右铺满高度的液面
+  // Botanic 叶绿液面：深林底 → 品牌绿 → 嫩芽高光（替代 MetalForge 默认蓝青）
   const body = ctx.createLinearGradient(0, 0, Math.max(frontBase, 1), 0)
-  body.addColorStop(0, '#090B16')
-  body.addColorStop(0.18, '#0B194A')
-  body.addColorStop(0.45, '#0E4FC7')
-  body.addColorStop(0.72, '#338FE0')
-  body.addColorStop(0.9, '#42B8FA')
-  body.addColorStop(1, '#A3EDFF')
+  body.addColorStop(0, '#0A140E')
+  body.addColorStop(0.16, '#14301F')
+  body.addColorStop(0.38, '#1F4A2E')
+  body.addColorStop(0.58, '#2D633B')
+  body.addColorStop(0.78, '#4B7B56')
+  body.addColorStop(0.92, '#7CA58A')
+  body.addColorStop(1, '#C8EBD0')
 
   ctx.beginPath()
   ctx.moveTo(0, 0)
@@ -122,9 +123,9 @@ export function paintLiquidProgressFrame(sub: LiquidSubscriber, elapsedMs: numbe
       frontBase * 0.55, cssHeight * 0.45, 0,
       frontBase * 0.55, cssHeight * 0.5, Math.max(frontBase, cssHeight) * 0.65,
     )
-    haze.addColorStop(0, 'rgba(163,237,255,0.26)')
-    haze.addColorStop(0.4, 'rgba(66,184,250,0.1)')
-    haze.addColorStop(1, 'rgba(14,79,199,0)')
+    haze.addColorStop(0, 'rgba(200,235,208,0.28)')
+    haze.addColorStop(0.4, 'rgba(124,165,138,0.12)')
+    haze.addColorStop(1, 'rgba(45,99,59,0)')
     ctx.globalAlpha = 0.9
     ctx.fillStyle = haze
     ctx.fillRect(0, 0, frontBase + 8, cssHeight)
@@ -139,18 +140,18 @@ export function paintLiquidProgressFrame(sub: LiquidSubscriber, elapsedMs: numbe
     ctx.lineTo(0, cssHeight)
     ctx.closePath()
     ctx.globalAlpha = 0.18
-    ctx.fillStyle = '#42B8FA'
+    ctx.fillStyle = '#7CA58A'
     ctx.fill()
   }
 
-  // 前沿 bloom
+  // 前沿 bloom：嫩芽青绿，不是电青
   const bloom = ctx.createRadialGradient(
     frontBase, cssHeight * 0.5, 0,
     frontBase, cssHeight * 0.5, Math.min(cssWidth, cssHeight) * 0.55,
   )
-  bloom.addColorStop(0, 'rgba(163,237,255,0.55)')
-  bloom.addColorStop(0.35, 'rgba(66,184,250,0.22)')
-  bloom.addColorStop(1, 'rgba(66,184,250,0)')
+  bloom.addColorStop(0, 'rgba(200,235,208,0.55)')
+  bloom.addColorStop(0.35, 'rgba(107,155,118,0.24)')
+  bloom.addColorStop(1, 'rgba(75,123,86,0)')
   ctx.globalAlpha = 1
   ctx.fillStyle = bloom
   ctx.fillRect(frontBase - cssWidth * 0.12, 0, cssWidth * 0.24, cssHeight)
@@ -159,7 +160,7 @@ export function paintLiquidProgressFrame(sub: LiquidSubscriber, elapsedMs: numbe
     const sheenX = ((time * 0.32) % 1.15) * frontBase
     const sheen = ctx.createLinearGradient(sheenX - 14, 0, sheenX + 20, 0)
     sheen.addColorStop(0, 'rgba(255,255,255,0)')
-    sheen.addColorStop(0.5, 'rgba(163,237,255,0.2)')
+    sheen.addColorStop(0.5, 'rgba(232,246,236,0.22)')
     sheen.addColorStop(1, 'rgba(255,255,255,0)')
     ctx.globalAlpha = 0.75
     ctx.fillStyle = sheen
@@ -172,7 +173,7 @@ export function paintLiquidProgressFrame(sub: LiquidSubscriber, elapsedMs: numbe
     cssWidth * 0.5, cssHeight * 0.5, Math.max(cssWidth, cssHeight) * 0.7,
   )
   vignette.addColorStop(0, 'rgba(0,0,0,0)')
-  vignette.addColorStop(1, 'rgba(9,11,22,0.32)')
+  vignette.addColorStop(1, 'rgba(10,20,14,0.34)')
   ctx.globalAlpha = 1
   ctx.fillStyle = vignette
   ctx.fillRect(0, 0, cssWidth, cssHeight)
@@ -183,7 +184,7 @@ export function paintLiquidProgressFrame(sub: LiquidSubscriber, elapsedMs: numbe
     for (let i = 0; i < grains; i += 1) {
       const x = ((i * 47 + time * 36) % cssWidth + cssWidth) % cssWidth
       const y = ((i * 19 + time * 15) % cssHeight + cssHeight) % cssHeight
-      ctx.fillStyle = i % 2 ? '#A3EDFF' : '#090B16'
+      ctx.fillStyle = i % 2 ? '#C8EBD0' : '#0A140E'
       ctx.fillRect(x, y, 1.2, 1.2)
     }
   }

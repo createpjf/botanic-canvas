@@ -1719,13 +1719,13 @@ button.project-tab__main { border: 0; cursor: pointer; }
   text-shadow: 0 1px 8px rgba(0, 0, 0, 0.45);
 }
 .result-node__task-state--generating .result-node__task-action {
-  border-color: rgba(163, 237, 255, 0.28);
-  background: rgba(9, 11, 22, 0.55);
-  color: #cfe8ff;
+  border-color: rgba(124, 165, 138, 0.35);
+  background: rgba(10, 20, 14, 0.55);
+  color: #d7eadc;
 }
 .result-node__task-state--generating .result-node__task-action:hover {
-  border-color: rgba(163, 237, 255, 0.55);
-  background: rgba(14, 79, 199, 0.35);
+  border-color: rgba(200, 235, 208, 0.55);
+  background: rgba(45, 99, 59, 0.42);
   color: #fff;
 }
 .result-node__task-state--generating > *:not(.liquid-progress-fill) { position: relative; z-index: 1; }
