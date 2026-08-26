@@ -13,8 +13,9 @@ test('生成中结果节点与任务卡提供真实动效并尊重减少动效�
   assert.doesNotMatch(resultNode, /liquid-progress-card/)
   assert.match(resultNode, /<LiquidProgressBar\b/)
   assert.match(liquidRuntime, /liquidIndeterminateTravel/)
-  assert.match(liquidRuntime, /frontWaveX/)
+  assert.match(liquidRuntime, /fillLiquidProgressPixels/)
   assert.match(liquidRuntime, /reducedMotion/)
+  assert.match(liquidRuntime, /alive/)
   assert.match(styles, /\.agent-run-card__track::after\s*{[^}]*animation:\s*agent-run-track-flow/s)
   assert.match(styles, /@keyframes\s+agent-run-track-flow/)
   assert.match(

@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import {
   ensureLiquidProgressLoop,
   prefersLiquidReducedMotion,
+  liquidProgressElapsedMs,
   paintLiquidProgressFrame,
   registerLiquidProgressSubscriber,
   type LiquidSubscriber,
@@ -10,7 +11,7 @@ import {
 export { liquidProgressBarDebugState, liquidIndeterminateTravel } from './liquidProgressBarRuntime'
 
 export type LiquidProgressBarProps = {
-  /** 矮节点降低 grain 密度。 */
+  /** 矮节点降低着色缓冲像素上限。 */
   compact?: boolean
   className?: string
   'aria-hidden'?: boolean | 'true' | 'false'
@@ -19,6 +20,7 @@ export type LiquidProgressBarProps = {
 /**
  * 铺满结果节点媒体区（跟卡片原比例），液面从左到右波浪推进。
  * 父级 `.result-node__task-state` 需铺满节点内容区。
+ * 画面由逐像素 SDF 前沿着色，不在 UI 里画多边形切面。
  */
 export function LiquidProgressBar({
   compact = false,
@@ -63,8 +65,7 @@ export function LiquidProgressBar({
     const resizeObserver = typeof ResizeObserver !== 'undefined'
       ? new ResizeObserver(() => {
         if (!sub.visible) return
-        const now = typeof performance !== 'undefined' ? performance.now() : Date.now()
-        paintLiquidProgressFrame(sub, now)
+        paintLiquidProgressFrame(sub, liquidProgressElapsedMs())
       })
       : null
     resizeObserver?.observe(host)
