@@ -1701,20 +1701,20 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .result-node--generating { border-color: #4b7b56; box-shadow: 0 0 0 3px rgba(76, 128, 88, 0.12), 0 12px 28px rgba(34, 70, 42, 0.13); }
 .result-node--recovering { border-color: #9a7b43; box-shadow: 0 0 0 3px rgba(154, 123, 67, 0.12), 0 12px 28px rgba(86, 65, 28, 0.12); }
 .result-node--recovering .result-node__task-state { background: radial-gradient(circle at 50% 0%, #fffdf7, #f3eee1 64%, #e9e1ce); color: #69552d; }
-.result-node__task-state--generating { position: relative; isolation: isolate; overflow: hidden; background: radial-gradient(circle at 50% 0%, #f6fbf6, #e5eee5 64%, #dce8dc); }
-.result-node__task-state--generating::before { content: ''; position: absolute; z-index: 0; inset: -38% -72%; pointer-events: none; background: linear-gradient(100deg, transparent 38%, rgba(255, 255, 255, .62) 49%, transparent 60%); opacity: 0; animation: result-task-sheen 2.6s ease-in-out infinite; }
-.result-node__task-state--generating > * { position: relative; z-index: 1; }
-.liquid-progress-bar { display: block; width: 168px; max-width: 100%; margin: 2px auto 4px; pointer-events: none; justify-self: center; }
-.liquid-progress-bar.is-compact { width: 132px; margin-bottom: 2px; }
-.liquid-progress-bar__canvas { display: block; width: 100%; height: auto; border-radius: 999px; }
+.result-node__task-state--generating { position: relative; isolation: isolate; overflow: hidden; background: #212124; color: #e8f0ff; }
+.result-node__task-state--generating strong { color: #f4f8ff; }
+.result-node__task-state--generating small { color: rgba(196, 214, 240, 0.78); }
+.result-node__task-state--generating .result-node__task-action { border-color: rgba(163, 237, 255, 0.28); background: rgba(9, 11, 22, 0.55); color: #cfe8ff; }
+.result-node__task-state--generating .result-node__task-action:hover { border-color: rgba(163, 237, 255, 0.55); background: rgba(14, 79, 199, 0.35); color: #fff; }
+.result-node__task-state--generating > *:not(.liquid-progress-fill) { position: relative; z-index: 1; }
+.liquid-progress-fill { position: absolute; inset: 0; z-index: 0; display: block; width: 100%; height: 100%; pointer-events: none; }
+.liquid-progress-fill__canvas { display: block; width: 100%; height: 100%; }
 .result-node__task-action { justify-self: center; min-height: 24px; padding: 0 8px; border: 1px solid #c5d8c7; border-radius: 6px; background: rgba(255, 255, 255, 0.72); color: #456c4d; font-size: 8px; font-weight: 700; }
 .result-node__task-action:hover { border-color: #8fb796; background: #f8fcf8; color: #245f35; }
 .result-node__task-state--failed .result-node__task-action { border-color: #e2c4bc; color: #95584d; }
 .botanic-flow .react-flow__edge.task-edge--active .react-flow__edge-path { stroke: #5d9469; stroke-dasharray: 7 6; animation: task-edge-flow 900ms linear infinite; }
-@keyframes result-task-sheen { 0% { opacity: 0; transform: translate3d(-38%, 0, 0); } 20% { opacity: .46; } 72% { opacity: .32; } 100% { opacity: 0; transform: translate3d(38%, 0, 0); } }
 @keyframes task-edge-flow { to { stroke-dashoffset: -26; } }
 @media (prefers-reduced-motion: reduce) {
-  .result-node__task-state--generating::before,
   .botanic-flow .react-flow__edge.task-edge--active .react-flow__edge-path { animation: none; }
 }
 

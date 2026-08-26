@@ -1,16 +1,18 @@
 /**
- * LiquidProgressBar 共享渲染时钟。多节点生成时共用一个 rAF，不伪造业务百分比。
+ * 结果节点生成占位的全幅 liquid 画面。
+ * 铺满媒体区，不定进度液面在整幅里流动；不伪造业务百分比。
  */
 
-export const LIQUID_PROGRESS_PALETTE = ['#0B194A', '#0E4FC7', '#338FE0', '#42B8FA', '#A3EDFF'] as const
+export const LIQUID_PROGRESS_PALETTE = ['#090B16', '#0B194A', '#0E4FC7', '#42B8FA', '#A3EDFF', '#1354C2', '#338FE0'] as const
 export const LIQUID_PROGRESS_BACKGROUND = '#212124'
-export const LIQUID_PROGRESS_ASPECT = 3.6
+/** 相对短边的圆角比例，贴近 MetalForge corner=0.144，同时不超过节点 10px 观感。 */
 export const LIQUID_PROGRESS_CORNER_RATIO = 0.144
 
 export type LiquidSubscriber = {
   canvas: HTMLCanvasElement
   visible: boolean
   reducedMotion: boolean
+  /** 矮节点降低 grain / churn 密度。 */
   compact: boolean
 }
 
@@ -66,13 +68,25 @@ function roundRectPath(
   ctx.closePath()
 }
 
+/** 不定进度填充量（0–1），在轨道上往返，不映射业务百分比。 */
+export function liquidIndeterminateTravel(elapsedSeconds: number, reducedMotion: boolean) {
+  if (reducedMotion) return 0.58
+  return 0.42 + 0.28 * (0.5 + 0.5 * Math.sin(elapsedSeconds * 0.85))
+}
+
+function frontWaveX(baseX: number, y: number, height: number, time: number, amount: number) {
+  const n1 = Math.sin(y / height * Math.PI * 2.2 + time * 2.1) * amount * 18
+  const n2 = Math.sin(y / height * Math.PI * 5.1 - time * 1.4) * amount * 8
+  return baseX + n1 + n2
+}
+
 export function paintLiquidProgressFrame(sub: LiquidSubscriber, elapsedMs: number) {
   const canvas = sub.canvas
-  const parent = canvas.parentElement
-  if (!parent) return
+  const host = canvas.parentElement
+  if (!host) return
 
-  const cssWidth = Math.max(1, parent.clientWidth)
-  const cssHeight = Math.max(1, Math.round(cssWidth / LIQUID_PROGRESS_ASPECT))
+  const cssWidth = Math.max(1, host.clientWidth)
+  const cssHeight = Math.max(1, host.clientHeight)
   const dpr = Math.min(typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1, 2)
   const pixelW = Math.round(cssWidth * dpr)
   const pixelH = Math.round(cssHeight * dpr)
@@ -80,15 +94,18 @@ export function paintLiquidProgressFrame(sub: LiquidSubscriber, elapsedMs: numbe
     canvas.width = pixelW
     canvas.height = pixelH
   }
-  canvas.style.width = `${cssWidth}px`
-  canvas.style.height = `${cssHeight}px`
+  canvas.style.width = '100%'
+  canvas.style.height = '100%'
 
   const ctx = canvas.getContext('2d')
   if (!ctx) return
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   ctx.clearRect(0, 0, cssWidth, cssHeight)
 
-  const radius = Math.min(cssHeight * LIQUID_PROGRESS_CORNER_RATIO * 2.2, cssHeight / 2)
+  const radius = Math.min(
+    Math.min(cssWidth, cssHeight) * LIQUID_PROGRESS_CORNER_RATIO,
+    10,
+  )
   roundRectPath(ctx, 0, 0, cssWidth, cssHeight, radius)
   ctx.fillStyle = LIQUID_PROGRESS_BACKGROUND
   ctx.fill()
@@ -96,42 +113,94 @@ export function paintLiquidProgressFrame(sub: LiquidSubscriber, elapsedMs: numbe
   roundRectPath(ctx, 0, 0, cssWidth, cssHeight, radius)
   ctx.clip()
 
-  const time = sub.reducedMotion ? 0.42 : elapsedMs / 1000
-  // 不定进度：液面前沿在轨道上往返，不映射业务百分比。
-  const travel = sub.reducedMotion ? 0.62 : 0.58 + 0.28 * Math.sin(time * 1.15)
-  const pulse = sub.reducedMotion ? 0.34 : 0.32 + 0.1 * Math.sin(time * 2.8)
-  const bandWidth = cssWidth * (0.52 + pulse)
-  const liquidLeft = travel * cssWidth - bandWidth / 2
+  const time = sub.reducedMotion ? 0.8 : elapsedMs / 1000
+  const fill = liquidIndeterminateTravel(time, sub.reducedMotion)
+  const frontBase = cssWidth * fill
+  const amount = 0.085
 
-  // 左侧暗蓝 → 右侧亮青，保证不定进度条在浅色节点底上仍可读。
-  const gradient = ctx.createLinearGradient(liquidLeft, 0, liquidLeft + bandWidth, 0)
+  // 整幅液面：从左侧铺到波浪前沿
+  const body = ctx.createLinearGradient(0, 0, frontBase, 0)
   for (let i = 0; i < LIQUID_PROGRESS_PALETTE.length; i += 1) {
     const stop = i / (LIQUID_PROGRESS_PALETTE.length - 1)
-    const rgb = paletteAt(stop)
-    gradient.addColorStop(stop, `rgb(${rgb.r},${rgb.g},${rgb.b})`)
+    const rgb = paletteAt(stop * 0.85 + (sub.reducedMotion ? 0 : (time * 0.04) % 0.15))
+    body.addColorStop(stop, `rgb(${rgb.r},${rgb.g},${rgb.b})`)
   }
 
+  ctx.beginPath()
+  ctx.moveTo(0, 0)
+  const steps = Math.max(24, Math.floor(cssHeight / 4))
+  for (let i = 0; i <= steps; i += 1) {
+    const y = (i / steps) * cssHeight
+    const x = sub.reducedMotion
+      ? frontBase
+      : frontWaveX(frontBase, y, cssHeight, time, amount)
+    if (i === 0) ctx.lineTo(x, y)
+    else ctx.lineTo(x, y)
+  }
+  ctx.lineTo(0, cssHeight)
+  ctx.closePath()
   ctx.globalAlpha = 1
-  ctx.fillStyle = gradient
-  roundRectPath(ctx, liquidLeft, 1, bandWidth, cssHeight - 2, Math.max(2, radius - 1))
+  ctx.fillStyle = body
   ctx.fill()
 
-  // 前沿高光，强化 liquid 边缘
-  const tip = liquidLeft + bandWidth * 0.82
-  const tipGlow = ctx.createRadialGradient(tip, cssHeight / 2, 0, tip, cssHeight / 2, cssHeight * 0.9)
-  tipGlow.addColorStop(0, 'rgba(163,237,255,0.55)')
-  tipGlow.addColorStop(1, 'rgba(163,237,255,0)')
-  ctx.globalAlpha = 0.85
-  ctx.fillStyle = tipGlow
-  ctx.fillRect(liquidLeft, 0, bandWidth, cssHeight)
+  // lag / echo：滞后半透明前沿
+  if (!sub.reducedMotion) {
+    const lagFront = frontBase - cssWidth * 0.06
+    ctx.beginPath()
+    ctx.moveTo(0, 0)
+    for (let i = 0; i <= steps; i += 1) {
+      const y = (i / steps) * cssHeight
+      const x = frontWaveX(lagFront, y, cssHeight, time * 0.9 - 0.4, amount * 1.2)
+      ctx.lineTo(Math.max(0, x), y)
+    }
+    ctx.lineTo(0, cssHeight)
+    ctx.closePath()
+    ctx.globalAlpha = 0.22
+    ctx.fillStyle = body
+    ctx.fill()
+  }
 
-  if (!sub.reducedMotion && !sub.compact) {
-    ctx.globalAlpha = 0.04
-    for (let i = 0; i < 18; i += 1) {
-      const x = ((i * 47 + time * 30) % cssWidth + cssWidth) % cssWidth
-      const y = ((i * 19 + time * 11) % cssHeight + cssHeight) % cssHeight
+  // 垂直色带微扰（churn）
+  if (!sub.reducedMotion) {
+    const churn = ctx.createLinearGradient(0, 0, 0, cssHeight)
+    churn.addColorStop(0, 'rgba(163,237,255,0.08)')
+    churn.addColorStop(0.45 + 0.1 * Math.sin(time * 1.7), 'rgba(14,79,199,0)')
+    churn.addColorStop(1, 'rgba(9,11,22,0.18)')
+    ctx.globalAlpha = 0.55
+    ctx.fillStyle = churn
+    ctx.fillRect(0, 0, frontBase + 12, cssHeight)
+  }
+
+  // 前沿 bloom
+  const bloomX = frontBase
+  const bloom = ctx.createRadialGradient(bloomX, cssHeight * 0.5, 0, bloomX, cssHeight * 0.5, cssHeight * 0.55)
+  bloom.addColorStop(0, 'rgba(163,237,255,0.42)')
+  bloom.addColorStop(0.45, 'rgba(66,184,250,0.16)')
+  bloom.addColorStop(1, 'rgba(66,184,250,0)')
+  ctx.globalAlpha = 0.9
+  ctx.fillStyle = bloom
+  ctx.fillRect(bloomX - cssWidth * 0.12, 0, cssWidth * 0.24, cssHeight)
+
+  // 轻 vignette，压住四角，文案更易读
+  const vignette = ctx.createRadialGradient(
+    cssWidth * 0.5, cssHeight * 0.45, Math.min(cssWidth, cssHeight) * 0.2,
+    cssWidth * 0.5, cssHeight * 0.5, Math.max(cssWidth, cssHeight) * 0.72,
+  )
+  vignette.addColorStop(0, 'rgba(0,0,0,0)')
+  vignette.addColorStop(1, 'rgba(9,11,22,0.38)')
+  ctx.globalAlpha = 1
+  ctx.fillStyle = vignette
+  ctx.fillRect(0, 0, cssWidth, cssHeight)
+
+  // grain
+  if (!sub.reducedMotion) {
+    const grains = sub.compact ? 28 : 56
+    ctx.globalAlpha = 0.035
+    for (let i = 0; i < grains; i += 1) {
+      const x = ((i * 47 + time * 40) % cssWidth + cssWidth) % cssWidth
+      const y = ((i * 19 + time * 17) % cssHeight + cssHeight) % cssHeight
       ctx.fillStyle = i % 2 ? '#A3EDFF' : '#090B16'
-      ctx.fillRect(x, y, 1, 1)
+      ctx.fillRect(x, y, 1.2, 1.2)
     }
   }
 
@@ -190,10 +259,4 @@ export function registerLiquidProgressSubscriber(sub: LiquidSubscriber) {
 /** 测试用：当前订阅数与是否有活跃 rAF。 */
 export function liquidProgressBarDebugState() {
   return { subscriberCount: subscribers.size, rafActive: rafId !== 0 }
-}
-
-/** 不定进度液面位置（0–1），不映射业务百分比。 */
-export function liquidIndeterminateTravel(elapsedSeconds: number, reducedMotion: boolean) {
-  if (reducedMotion) return 0.62
-  return 0.58 + 0.28 * Math.sin(elapsedSeconds * 1.15)
 }
