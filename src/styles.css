@@ -1705,39 +1705,42 @@ button.project-tab__main { border: 0; cursor: pointer; }
   position: relative;
   isolation: isolate;
   overflow: hidden;
-  place-content: center;
-  gap: 8px;
+  padding: 0;
+  place-content: unset;
   background: #101810;
-  color: #f3f8f3;
 }
 .result-node__task-copy {
   display: grid;
   justify-items: center;
   gap: 8px;
 }
-.result-node__task-state--generating .result-node__task-copy {
-  z-index: 2;
-  width: max-content;
-  max-width: none;
-  padding: 10px 14px 9px;
-  border-radius: 10px;
-  background: rgba(8, 16, 11, 0.82);
-  box-shadow: 0 10px 24px rgba(8, 16, 11, 0.38);
+.result-node--generating + .result-node__task-copy {
+  justify-items: start;
+  gap: 2px;
+  width: 100%;
+  margin: 4px 0 0;
+  padding: 0 2px;
 }
-.result-node__task-state--generating strong,
-.result-node__task-state--generating small {
+.result-node--generating + .result-node__task-copy strong,
+.result-node--generating + .result-node__task-copy small {
   white-space: nowrap;
 }
-.result-node__task-state--generating strong {
-  color: #f7fbf6;
-  text-shadow: 0 1px 2px rgba(8, 16, 11, 0.9);
+.result-node--generating + .result-node__task-copy strong {
+  color: #284433;
+  font-size: 12px;
+  line-height: 16px;
 }
-.result-node__task-state--generating small {
-  color: #dceadf;
+.result-node--generating + .result-node__task-copy small {
+  color: #667268;
 }
 .result-node__task-state--generating .result-node__task-action {
+  position: absolute;
+  z-index: 2;
+  right: 8px;
+  bottom: 8px;
+  justify-self: unset;
   border-color: rgba(143, 183, 150, 0.55);
-  background: rgba(20, 40, 28, 0.92);
+  background: rgba(16, 32, 22, 0.82);
   color: #f3f8f3;
 }
 .result-node__task-state--generating .result-node__task-action:hover {
@@ -1746,7 +1749,6 @@ button.project-tab__main { border: 0; cursor: pointer; }
   color: #fff;
 }
 .result-node__task-state--generating > .generation-dots-fill { z-index: 0; }
-.result-node__task-state--generating > *:not(.generation-dots-fill) { position: relative; z-index: 2; }
 .generation-dots-fill {
   position: absolute;
   inset: 0;
