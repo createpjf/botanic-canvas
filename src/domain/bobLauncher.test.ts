@@ -5,7 +5,6 @@ import {
   BOB_LAUNCHER_SIZE,
   bobLauncherDragCommitted,
   bobLauncherLookAt,
-  bobLookAtToward,
   bobLauncherPointerDistance,
   clampBobLauncherPoint,
   defaultBobLauncherPoint,
@@ -58,12 +57,6 @@ test('hover lookAt 把指针映射到相对中心的 -1..1', () => {
   assert.deepEqual(bobLauncherLookAt(point, { x: 128, y: 128 }), { x: 0, y: 0 })
   assert.deepEqual(bobLauncherLookAt(point, { x: 156, y: 100 }), { x: 1, y: -1 })
   assert.deepEqual(bobLauncherLookAt(point, { x: 100, y: 200 }), { x: -1, y: 1 })
-})
-
-test('看向目标点：从中心映射到 -1..1', () => {
-  assert.deepEqual(bobLookAtToward({ x: 40, y: 40 }, { x: 40, y: 40 }), { x: 0, y: 0 })
-  assert.deepEqual(bobLookAtToward({ x: 40, y: 40 }, { x: 80, y: 40 }, 20), { x: 1, y: 0 })
-  assert.deepEqual(bobLookAtToward({ x: 40, y: 40 }, { x: 40, y: 80 }, 20), { x: 0, y: 1 })
 })
 
 test('本机位置只接受有限数字，坏数据回落到默认', () => {
