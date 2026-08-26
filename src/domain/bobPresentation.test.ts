@@ -1,14 +1,18 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  BOB_LARGE_AVATAR_GROW_CHARS,
   BOB_LARGE_REPLY_MIN_CHARS,
   bobAssistantMessageMood,
   bobMessageAllowsSays,
   bobMessageIsLargeReply,
   bobMessageReplyText,
+  bobMessageUsesLargeAvatar,
+  bobMessageFailed,
   bobReplyPresentation,
   bobWelcomePresentation,
   emptyBobSaysPlayCounts,
+  markBobHappyPlayed,
   markBobSaysPlayed,
 } from './bobPresentation.ts'
 
@@ -17,6 +21,21 @@ test('消息行：流式或 Agent 忙碌时思考，最新空闲时聆听，旧�
   assert.equal(bobAssistantMessageMood({ streaming: false, isLatestAssistant: true, agentBusy: true }), 'thinking')
   assert.equal(bobAssistantMessageMood({ streaming: false, isLatestAssistant: true, agentBusy: false }), 'listening')
   assert.equal(bobAssistantMessageMood({ streaming: false, isLatestAssistant: false, agentBusy: false }), 'idle')
+  assert.equal(bobAssistantMessageMood({
+    streaming: false, isLatestAssistant: true, agentBusy: false, composerTyping: true,
+  }), 'curious')
+  assert.equal(bobAssistantMessageMood({
+    streaming: false, isLatestAssistant: true, agentBusy: false, feedback: 'positive',
+  }), 'happy')
+  assert.equal(bobAssistantMessageMood({
+    streaming: false, isLatestAssistant: false, agentBusy: false, feedback: 'negative',
+  }), 'confused')
+  assert.equal(bobAssistantMessageMood({
+    streaming: false, isLatestAssistant: true, agentBusy: false, failed: true,
+  }), 'confused')
+  assert.equal(bobAssistantMessageMood({
+    streaming: true, isLatestAssistant: true, agentBusy: true, failed: true,
+  }), 'thinking')
 })
 
 test('28px 消息行默认不出字：不是最新大回复就不允许 says', () => {
@@ -81,7 +100,100 @@ test('最新大回复：流式限次 hmm，完成后限次 wow，再回到 mood 
     plays: markBobSaysPlayed(markBobSaysPlayed(emptyBobSaysPlayCounts(), 'hmm'), 'wow'),
   })
   assert.equal(afterWow.says, 'none')
-  assert.equal(afterWow.mood, 'listening')
+  assert.equal(afterWow.mood, 'happy')
+
+  const settledPlays = markBobHappyPlayed(markBobSaysPlayed(markBobSaysPlayed(emptyBobSaysPlayCounts(), 'hmm'), 'wow'))
+  const afterHappy = bobReplyPresentation({
+    allowsSays: true,
+    streaming: false,
+    isLatestAssistant: true,
+    agentBusy: false,
+    plays: settledPlays,
+  })
+  assert.equal(afterHappy.says, 'none')
+  assert.equal(afterHappy.mood, 'listening')
+
+  const afterHappyTyping = bobReplyPresentation({
+    allowsSays: true,
+    streaming: false,
+    isLatestAssistant: true,
+    agentBusy: false,
+    composerTyping: true,
+    plays: settledPlays,
+  })
+  assert.equal(afterHappyTyping.mood, 'curious')
+  assert.equal(afterHappyTyping.says, 'none')
+})
+
+test('反馈、失败和打字只改 mood，28px 仍不出字', () => {
+  const liked = bobReplyPresentation({
+    allowsSays: false,
+    streaming: false,
+    isLatestAssistant: false,
+    agentBusy: false,
+    feedback: 'positive',
+    plays: emptyBobSaysPlayCounts(),
+  })
+  assert.deepEqual(liked, { mood: 'happy', says: 'none', cycles: 0 })
+
+  const failed = bobReplyPresentation({
+    allowsSays: false,
+    streaming: false,
+    isLatestAssistant: true,
+    agentBusy: false,
+    failed: true,
+    composerTyping: true,
+    plays: emptyBobSaysPlayCounts(),
+  })
+  assert.equal(failed.mood, 'confused')
+  assert.equal(failed.says, 'none')
+  assert.equal(bobMessageFailed({ status: 'failed' }), true)
+  assert.equal(bobMessageFailed({ deliveryStatus: 'failed' }), true)
+  assert.equal(bobMessageFailed({ status: 'pending' }), false)
+})
+
+test('流式最新正文先放大头像，满 200 字才允许 says', () => {
+  const growing = { role: 'assistant', kind: 'text', content: '字'.repeat(BOB_LARGE_AVATAR_GROW_CHARS) }
+  assert.equal(bobMessageUsesLargeAvatar({
+    isLatestAssistant: true,
+    streaming: true,
+    message: growing,
+  }), true)
+  assert.equal(bobMessageAllowsSays({
+    isLatestAssistant: true,
+    isLargeReply: bobMessageIsLargeReply(growing),
+  }), false)
+
+  const stillShort = { role: 'assistant', kind: 'text', content: '还在写。' }
+  assert.equal(bobMessageUsesLargeAvatar({
+    isLatestAssistant: true,
+    streaming: true,
+    message: stillShort,
+  }), false)
+
+  const doneShort = { role: 'assistant', kind: 'text', content: '字'.repeat(BOB_LARGE_AVATAR_GROW_CHARS) }
+  assert.equal(bobMessageUsesLargeAvatar({
+    isLatestAssistant: true,
+    streaming: false,
+    message: doneShort,
+  }), false)
+
+  const large = { role: 'assistant', kind: 'text', content: '字'.repeat(BOB_LARGE_REPLY_MIN_CHARS) }
+  assert.equal(bobMessageUsesLargeAvatar({
+    isLatestAssistant: true,
+    streaming: false,
+    message: large,
+  }), true)
+  assert.equal(bobMessageUsesLargeAvatar({
+    isLatestAssistant: false,
+    streaming: true,
+    message: large,
+  }), false)
+  assert.equal(bobMessageUsesLargeAvatar({
+    isLatestAssistant: true,
+    streaming: true,
+    message: { role: 'assistant', kind: 'notice', content: '字'.repeat(BOB_LARGE_REPLY_MIN_CHARS) },
+  }), false)
 })
 
 test('非大回复或非最新消息即使流式也不出字', () => {

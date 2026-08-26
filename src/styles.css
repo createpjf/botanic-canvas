@@ -3549,10 +3549,15 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-message.is-user { grid-template-columns: minmax(0, 1fr); }
 .agent-message.is-user .agent-message__role { display: none; }
 .agent-message.is-bob-large { grid-template-columns: 72px minmax(0, 1fr); }
-.agent-message__role { display: grid; width: 28px; height: 28px; place-items: center; background: transparent; color: #2d633b; }
-.agent-message__role svg { width: 28px; height: 28px; overflow: visible; }
+.agent-message__role { display: grid; width: 28px; height: 28px; place-items: center; background: transparent; color: #2d633b; transition: width .28s cubic-bezier(.2, .82, .2, 1), height .28s cubic-bezier(.2, .82, .2, 1); }
+.agent-message__role svg { width: 28px; height: 28px; overflow: visible; transition: width .28s cubic-bezier(.2, .82, .2, 1), height .28s cubic-bezier(.2, .82, .2, 1); }
 .agent-message.is-bob-large .agent-message__role { width: 72px; height: 96px; align-self: start; }
 .agent-message.is-bob-large .agent-message__role svg { width: 72px; height: 96px; }
+@media (prefers-reduced-motion: reduce) {
+  .agent-message,
+  .agent-message__role,
+  .agent-message__role svg { transition: none; }
+}
 .agent-message__body { min-width: 0; }
 .agent-message__body > p { margin: 2px 0 0; color: #344b3a; font-size: 12px; line-height: 1.7; white-space: pre-wrap; }
 .agent-markdown { display: grid; gap: 8px; margin-top: 2px; color: #344b3a; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }

@@ -26,8 +26,14 @@ async function stubReadOnlyRuntime(page: Page) {
   })
 }
 
-async function injectAssistantMessage(page: Page, message: { id: string; content: string; kind?: 'text' | 'notice' | 'run' }) {
-  await page.evaluate(async ({ id, content, kind }) => {
+async function injectAssistantMessage(page: Page, message: {
+  id: string
+  content: string
+  kind?: 'text' | 'notice' | 'run'
+  status?: 'pending' | 'failed'
+  deliveryStatus?: 'failed'
+}) {
+  await page.evaluate(async ({ id, content, kind, status, deliveryStatus }) => {
     const loadStore = new Function('return import("/src/store/canvasStore.ts")') as () => Promise<{
       useCanvasStore: { getState: () => {
         ensureAgentSession: () => string
@@ -41,7 +47,8 @@ async function injectAssistantMessage(page: Page, message: { id: string; content
       id,
       role: 'assistant',
       kind: kind ?? 'text',
-      status: 'pending',
+      status: status ?? 'pending',
+      deliveryStatus,
       createdAt: Date.now(),
       content,
     })
@@ -411,21 +418,46 @@ test('最新短消息只 mood，大回复限次 wow 且 28px 不出字', async (
 
   const agent = page.getByRole('complementary', { name: 'Botanic Agent' })
   await expect(agent.getByRole('heading', { name: '今天一起创作什么？' })).toBeVisible()
+  const mark = agent.locator('.agent-workspace__mark')
+  await mark.hover()
+  await expect(mark).toHaveAttribute('data-bob-look-x', /^-?\d+\.\d{2}$/)
 
   await injectAssistantMessage(page, { id: 'bob-short-reply', content: '先从构图开始。' })
-  const shortRole = agent.locator('[data-agent-message-id="bob-short-reply"] .agent-message__role')
+  const shortAnchor = agent.locator('[data-agent-message-id="bob-short-reply"]')
+  const shortRole = shortAnchor.locator('.agent-message__role')
   await expect(shortRole).toHaveAttribute('data-bob-mood', 'listening')
   await expect(shortRole).toHaveAttribute('data-bob-says', 'none')
-  await expect(agent.locator('[data-agent-message-id="bob-short-reply"] .agent-message')).not.toHaveClass(/is-bob-large/)
+  await expect(shortRole).not.toHaveAttribute('data-bob-look-x')
+  await agent.getByRole('textbox', { name: '提示词' }).fill('继续')
+  await expect(shortRole).toHaveAttribute('data-bob-mood', 'curious')
+  await agent.getByRole('textbox', { name: '提示词' }).fill('')
+  await expect(shortRole).toHaveAttribute('data-bob-mood', 'listening')
+  await shortAnchor.locator('.agent-message').hover()
+  await shortAnchor.getByRole('button', { name: '这个回答有帮助' }).click()
+  await expect(shortRole).toHaveAttribute('data-bob-mood', 'happy')
+  await expect(shortRole).toHaveAttribute('data-bob-says', 'none')
+  await shortAnchor.getByRole('button', { name: '这个回答需要改进' }).click()
+  await expect(shortRole).toHaveAttribute('data-bob-mood', 'confused')
+  await shortAnchor.getByRole('button', { name: '这个回答需要改进' }).click()
+  await expect(shortRole).toHaveAttribute('data-bob-mood', 'listening')
+  await expect(shortRole).toHaveAttribute('data-bob-size', 'compact')
+  await expect(shortAnchor.locator('.agent-message')).not.toHaveClass(/is-bob-large/)
   const shortBox = await shortRole.boundingBox()
   expect(shortBox, '短消息头像应保持 28px').toBeTruthy()
   expect(shortBox!.width).toBeLessThan(40)
+
+  await injectAssistantMessage(page, { id: 'bob-mid-reply', content: '字'.repeat(80) })
+  const midRole = agent.locator('[data-agent-message-id="bob-mid-reply"] .agent-message__role')
+  await expect(midRole).toHaveAttribute('data-bob-size', 'compact')
+  await expect(midRole).toHaveAttribute('data-bob-says', 'none')
+  await expect(agent.locator('[data-agent-message-id="bob-mid-reply"] .agent-message')).not.toHaveClass(/is-bob-large/)
 
   const longReply = `${'这是一段足够长的助手回复，用来触发大回复 Bob。'.repeat(8)}`
   await injectAssistantMessage(page, { id: 'bob-large-reply', content: longReply })
   const largeAnchor = agent.locator('[data-agent-message-id="bob-large-reply"]')
   const largeRole = largeAnchor.locator('.agent-message__role')
   await expect(largeAnchor.locator('.agent-message')).toHaveClass(/is-bob-large/)
+  await expect(largeRole).toHaveAttribute('data-bob-size', 'large')
   await expect(largeRole).toHaveAttribute('data-bob-says', 'wow')
   await expect(largeRole).toHaveAttribute('data-bob-mood', 'excited')
   const largeBox = await largeRole.boundingBox()
@@ -435,6 +467,15 @@ test('最新短消息只 mood，大回复限次 wow 且 28px 不出字', async (
   await expect(shortRole).toHaveAttribute('data-bob-mood', 'idle')
   await expect(shortRole).toHaveAttribute('data-bob-says', 'none')
 
+  await largeRole.hover()
+  await expect(largeRole).toHaveAttribute('data-bob-look-x', /^-?\d+\.\d{2}$/)
   await expect(largeRole).toHaveAttribute('data-bob-says', 'none', { timeout: 12_000 })
-  await expect(largeRole).toHaveAttribute('data-bob-mood', 'listening')
+  await expect(largeRole).toHaveAttribute('data-bob-mood', 'happy')
+  await expect(largeRole).toHaveAttribute('data-bob-mood', 'listening', { timeout: 12_000 })
+
+  await injectAssistantMessage(page, { id: 'bob-failed-reply', content: '没发出去。', status: 'failed' })
+  const failedRole = agent.locator('[data-agent-message-id="bob-failed-reply"] .agent-message__role')
+  await expect(failedRole).toHaveAttribute('data-bob-mood', 'confused')
+  await expect(failedRole).toHaveAttribute('data-bob-says', 'none')
+  await expect(failedRole).toHaveAttribute('data-bob-size', 'compact')
 })
