@@ -227,6 +227,19 @@ export function splitAgentMessageSources(source: string): { body: string; source
   return { body, sources }
 }
 
+/** 超过这个体量的助手回复默认折叠；阈值只影响展示，不改变消息内容。 */
+export const AGENT_MESSAGE_COLLAPSE = {
+  maxLength: 1_600,
+  maxLines: 28,
+} as const
+
+/** 按抽出「来源」后的正文判断是否折叠；来源行本身不触发裁切。 */
+export function agentMessageNeedsCollapse(content: string) {
+  const { body } = splitAgentMessageSources(content)
+  if (body.length > AGENT_MESSAGE_COLLAPSE.maxLength) return true
+  return body.split('\n').length > AGENT_MESSAGE_COLLAPSE.maxLines
+}
+
 /**
  * A deliberately small, safe Markdown subset for assistant messages.
  * It keeps the UI deterministic and never interprets arbitrary HTML.

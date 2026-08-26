@@ -29,14 +29,16 @@ import {
   withoutCustomGenerationSize,
 } from '../../domain/generationOutputSize'
 import { settingsForGenerationModel } from '../../domain/generationRecipe'
-import { AlertIcon, BookIcon, ChecklistIcon, ClockIcon, CopyIcon, EditIcon, FocusIcon, GlobeIcon, SearchIcon, SparkleIcon, ThumbDownIcon, ThumbUpIcon } from '../../components/BotanicIcons'
+import { AlertIcon, BookIcon, ChecklistIcon, ChevronDownIcon, ClockIcon, CopyIcon, EditIcon, FocusIcon, GlobeIcon, SearchIcon, SparkleIcon, ThumbDownIcon, ThumbUpIcon } from '../../components/BotanicIcons'
 import { AgentThinkingOrb } from '../../components/AgentThinkingOrb'
 import { AgentToolOrb } from '../../components/AgentToolOrb'
 import { agentPlannerModelLabel, modelDisplayLabel } from '../../components/generationModelPresentation'
 import { BotanicSelect } from '../../components/BotanicSelect'
 import { AgentClarificationCard, AgentPromptDiff, agentToolStatusLabel } from './AgentWorkspaceParts'
+import { AgentMarkdownSources } from './AgentMarkdown'
 import { AgentPromptResponse } from './AgentPromptResponse'
 import { AgentMessageRichContent, AgentRichText } from './AgentMentionText'
+import { agentMessageNeedsCollapse, splitAgentMessageSources } from '../../domain/agentMarkdown'
 import type { BotanicAgentMentionCatalog } from '../../domain/agentMentions'
 import { botanicAgentPlanBranchPrompts, botanicAgentPlanConfirmActionLabel, botanicAgentPlanOutputLabel, botanicAgentPlanSheetCountLabel } from '../../domain/agentVariations'
 import {
@@ -56,9 +58,6 @@ import {
   type TimelineStepKind,
 } from '../../domain/agentTimeline'
 
-/** 超过这个体量的助手回复默认折叠；阈值只影响展示，不改变消息内容。 */
-const collapsibleContentLength = 600
-const collapsibleContentLines = 14
 /** 单条任务消息内联展示的结果上限；更多结果去结果面板看，避免对话被结果流冲垮。 */
 const inlineRunResultLimit = 4
 
@@ -193,13 +192,18 @@ function AgentMessageTimeline({ timeline }: { timeline: AgentTimelineState }) {
 function AgentCollapsibleContent({ content, prompt, mentionCatalog }: { content: string; prompt?: string; mentionCatalog?: BotanicAgentMentionCatalog }) {
   const { locale } = useProductI18n()
   const [expanded, setExpanded] = useState(false)
-  const collapsible = content.length > collapsibleContentLength
-    || content.split('\n').length > collapsibleContentLines
-  if (!collapsible) return <AgentPromptResponse content={content} prompt={prompt} mentionCatalog={mentionCatalog} />
+  const { body, sources } = splitAgentMessageSources(content)
+  if (!agentMessageNeedsCollapse(content)) {
+    return <AgentPromptResponse content={content} prompt={prompt} mentionCatalog={mentionCatalog} />
+  }
   return <div className={`agent-message__collapsible${expanded ? ' is-expanded' : ''}`}>
-    <div className="agent-message__collapsible-body"><AgentPromptResponse content={content} prompt={prompt} mentionCatalog={mentionCatalog} /></div>
+    <div className="agent-message__collapsible-body">
+      <AgentPromptResponse content={body} prompt={prompt} mentionCatalog={mentionCatalog} showSources={false} />
+    </div>
+    <AgentMarkdownSources sources={sources} />
     <button type="button" className="agent-message__collapsible-toggle" aria-expanded={expanded} onClick={() => setExpanded((open) => !open)}>
-      {expanded ? (locale === 'en' ? 'Collapse' : '收起') : (locale === 'en' ? 'Show full response' : '展开全文')}
+      <ChevronDownIcon />
+      <span>{expanded ? (locale === 'en' ? 'Collapse' : '收起') : (locale === 'en' ? 'Show full response' : '展开全文')}</span>
     </button>
   </div>
 }
