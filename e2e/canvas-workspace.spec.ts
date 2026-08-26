@@ -26,6 +26,28 @@ async function stubReadOnlyRuntime(page: Page) {
   })
 }
 
+async function injectAssistantMessage(page: Page, message: { id: string; content: string; kind?: 'text' | 'notice' | 'run' }) {
+  await page.evaluate(async ({ id, content, kind }) => {
+    const loadStore = new Function('return import("/src/store/canvasStore.ts")') as () => Promise<{
+      useCanvasStore: { getState: () => {
+        ensureAgentSession: () => string
+        appendAgentMessage: (sessionId: string, message: unknown) => void
+      } }
+    }>
+    const { useCanvasStore } = await loadStore()
+    const store = useCanvasStore.getState()
+    const sessionId = store.ensureAgentSession()
+    store.appendAgentMessage(sessionId, {
+      id,
+      role: 'assistant',
+      kind: kind ?? 'text',
+      status: 'pending',
+      createdAt: Date.now(),
+      content,
+    })
+  }, message)
+}
+
 test('公开产品首页进入项目库，旧经营驾驶舱地址自动兼容', async ({ page }) => {
   await stubReadOnlyRuntime(page)
 
@@ -67,7 +89,7 @@ test('产品首页支持中英文切换并展示真实工作台截图', async ({
   await page.getByRole('button', { name: 'Close generator' }).click()
   await page.getByRole('button', { name: 'Open asset library' }).click()
   await expect(page.getByRole('complementary', { name: 'Asset library' })).toBeVisible()
-  await page.getByRole('button', { name: 'Open Agent' }).click()
+  await page.getByRole('button', { name: 'Open Bob' }).click()
   await expect(page.getByRole('complementary', { name: 'Botanic Agent' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'New conversation' })).toBeVisible()
   await expect(page.getByRole('complementary', { name: 'Asset library' })).toBeHidden()
@@ -141,7 +163,7 @@ test('project to canvas and Agent surfaces stay ordered across reload', async ({
 
   await page.getByRole('button', { name: '打开素材库' }).click()
   await expect(page.getByRole('complementary', { name: '素材库' })).toBeVisible()
-  await page.getByRole('button', { name: '打开 Agent' }).click()
+  await page.getByRole('button', { name: '打开 Bob' }).click()
   await expect(page.getByRole('complementary', { name: 'Botanic Agent' })).toBeVisible()
   await expect(page.getByRole('complementary', { name: '素材库' })).toBeHidden()
   const tabBarBox = await page.locator('.tab-bar').boundingBox()
@@ -180,7 +202,7 @@ test('project to canvas and Agent surfaces stay ordered across reload', async ({
 
   await page.reload()
   await expect(page).toHaveURL(new RegExp(`${canvasHash.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`))
-  await expect(page.getByRole('button', { name: '打开 Agent' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '打开 Bob' })).toBeVisible()
   await expect(page.getByRole('button', { name: '从画布移除 图像生成' })).toBeVisible()
 
   expect(pageErrors).toEqual([])
@@ -262,7 +284,7 @@ test('Agent 生成卡片默认收起已完成步骤与提示词差异，主内�
   await stubReadOnlyRuntime(page)
   await page.goto('/#/projects')
   await page.getByRole('button', { name: '新建项目' }).click()
-  await page.getByRole('button', { name: '打开 Agent' }).click()
+  await page.getByRole('button', { name: '打开 Bob' }).click()
 
   await page.evaluate(async () => {
     const loadStore = new Function('return import("/src/store/canvasStore.ts")') as () => Promise<{
@@ -325,7 +347,94 @@ test('空画布优先提供目标入口，本地能力边界可见且不请求�
   expect(consoleErrors).toEqual([])
 
   await page.getByRole('button', { name: '关闭 Agent' }).click()
-  await expect(page.getByRole('button', { name: '打开 Agent' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '打开 Bob' })).toBeVisible()
   await page.getByRole('button', { name: '视频生成', exact: true }).click()
   await expect(page.getByRole('status').filter({ hasText: '视频模型尚未配置' })).toBeVisible()
+})
+
+test('折叠 Bob 可拖可点，欢迎页是大号问号 Bob', async ({ page }) => {
+  await stubReadOnlyRuntime(page)
+  await page.goto('/#/projects')
+  await page.getByRole('button', { name: '新建项目' }).click()
+
+  const launcher = page.getByRole('button', { name: '打开 Bob' })
+  await expect(launcher).toBeVisible()
+  const beforeX = Number(await launcher.getAttribute('data-bob-x'))
+  const beforeY = Number(await launcher.getAttribute('data-bob-y'))
+  expect(beforeX).toBeGreaterThan(0)
+  expect(beforeY).toBeGreaterThan(0)
+
+  await launcher.hover()
+  const box = await launcher.boundingBox()
+  expect(box, '折叠 Bob 应有命中盒').toBeTruthy()
+  await page.mouse.down()
+  await page.mouse.move(box!.x - 160, box!.y + 110, { steps: 16 })
+  await page.mouse.up()
+
+  await expect.poll(async () => Number(await launcher.getAttribute('data-bob-x'))).toBeLessThan(beforeX - 80)
+  const afterX = Number(await launcher.getAttribute('data-bob-x'))
+  const afterY = Number(await launcher.getAttribute('data-bob-y'))
+  expect(afterY).toBeGreaterThan(beforeY + 40)
+
+  await launcher.click()
+  const agent = page.getByRole('complementary', { name: 'Botanic Agent' })
+  await expect(agent).toBeVisible()
+  await expect(agent.getByRole('heading', { name: '今天一起创作什么？' })).toBeVisible()
+  const mark = agent.locator('.agent-workspace__mark')
+  await expect(mark.locator('svg')).toBeVisible()
+  await expect(mark).toHaveAttribute('data-bob-says', 'hmm')
+  await expect(mark).toHaveAttribute('data-bob-mood', 'thinking')
+  await expect(mark).toHaveAttribute('data-bob-says', 'question', { timeout: 12_000 })
+  await expect(mark).toHaveAttribute('data-bob-mood', 'confused')
+  const markBox = await mark.boundingBox()
+  expect(markBox, '欢迎页 Bob 应比旧方标大').toBeTruthy()
+  expect(markBox!.height).toBeGreaterThan(80)
+  const markChrome = await mark.evaluate((element) => {
+    const style = getComputedStyle(element)
+    return { background: style.backgroundColor, borderWidth: style.borderWidth }
+  })
+  expect(markChrome.background).toMatch(/rgba\(\s*0,\s*0,\s*0,\s*0\s*\)|transparent/)
+  expect(Number.parseFloat(markChrome.borderWidth)).toBe(0)
+
+  await page.getByRole('button', { name: '关闭 Agent' }).click()
+  await expect(launcher).toBeVisible()
+  await expect.poll(async () => Number(await launcher.getAttribute('data-bob-x'))).toBe(afterX)
+  await expect.poll(async () => Number(await launcher.getAttribute('data-bob-y'))).toBe(afterY)
+  await expect(agent).toBeHidden()
+})
+
+test('最新短消息只 mood，大回复限次 wow 且 28px 不出字', async ({ page }) => {
+  await stubReadOnlyRuntime(page)
+  await page.goto('/#/projects')
+  await page.getByRole('button', { name: '新建项目' }).click()
+  await page.getByRole('button', { name: '打开 Bob' }).click()
+
+  const agent = page.getByRole('complementary', { name: 'Botanic Agent' })
+  await expect(agent.getByRole('heading', { name: '今天一起创作什么？' })).toBeVisible()
+
+  await injectAssistantMessage(page, { id: 'bob-short-reply', content: '先从构图开始。' })
+  const shortRole = agent.locator('[data-agent-message-id="bob-short-reply"] .agent-message__role')
+  await expect(shortRole).toHaveAttribute('data-bob-mood', 'listening')
+  await expect(shortRole).toHaveAttribute('data-bob-says', 'none')
+  await expect(agent.locator('[data-agent-message-id="bob-short-reply"] .agent-message')).not.toHaveClass(/is-bob-large/)
+  const shortBox = await shortRole.boundingBox()
+  expect(shortBox, '短消息头像应保持 28px').toBeTruthy()
+  expect(shortBox!.width).toBeLessThan(40)
+
+  const longReply = `${'这是一段足够长的助手回复，用来触发大回复 Bob。'.repeat(8)}`
+  await injectAssistantMessage(page, { id: 'bob-large-reply', content: longReply })
+  const largeAnchor = agent.locator('[data-agent-message-id="bob-large-reply"]')
+  const largeRole = largeAnchor.locator('.agent-message__role')
+  await expect(largeAnchor.locator('.agent-message')).toHaveClass(/is-bob-large/)
+  await expect(largeRole).toHaveAttribute('data-bob-says', 'wow')
+  await expect(largeRole).toHaveAttribute('data-bob-mood', 'excited')
+  const largeBox = await largeRole.boundingBox()
+  expect(largeBox, '大回复头像应放大').toBeTruthy()
+  expect(largeBox!.height).toBeGreaterThan(70)
+
+  await expect(shortRole).toHaveAttribute('data-bob-mood', 'idle')
+  await expect(shortRole).toHaveAttribute('data-bob-says', 'none')
+
+  await expect(largeRole).toHaveAttribute('data-bob-says', 'none', { timeout: 12_000 })
+  await expect(largeRole).toHaveAttribute('data-bob-mood', 'listening')
 })

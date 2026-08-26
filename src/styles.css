@@ -3290,25 +3290,21 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-launcher {
   position: fixed;
   z-index: 82;
-  top: 50%;
-  right: 14px;
   display: grid;
-  width: 44px;
-  height: 44px;
+  width: 56px;
+  height: 56px;
   place-items: center;
   padding: 0;
-  border: 1px solid #b8cfbc;
-  border-radius: 10px;
-  background: rgba(252, 254, 251, .96);
-  box-shadow: 0 10px 28px rgba(30, 58, 36, .16);
+  border: 0;
+  background: transparent;
   color: #2d633b;
-  cursor: pointer;
-  transform: translateY(-50%);
-  backdrop-filter: blur(16px);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
 }
-.agent-launcher:hover { border-color: #5e9068; background: #edf5ed; }
-.agent-launcher:focus-visible { outline: 3px solid rgba(79, 133, 91, .2); outline-offset: 2px; }
-.agent-launcher svg { width: 21px; height: 21px; }
+.agent-launcher.is-dragging { cursor: grabbing; }
+.agent-launcher:focus-visible { outline: 3px solid rgba(79, 133, 91, .2); outline-offset: 2px; border-radius: 18px; }
+.agent-launcher svg { width: 56px; height: 56px; overflow: visible; pointer-events: none; }
 
 .agent-workspace {
   position: absolute;
@@ -3537,8 +3533,8 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-reading-restore button { min-height: 26px; padding: 0 9px; border: 0; border-radius: 999px; background: #eaf3ea; color: #315f3c; cursor: pointer; font: inherit; font-weight: 760; }
 .agent-reading-restore button:hover { background: #dfece0; }
 .agent-workspace__welcome { display: grid; min-height: auto; align-content: start; gap: 8px; padding: 20px 0 36px; }
-.agent-workspace__mark { display: grid; width: 42px; height: 42px; place-items: center; border: 1px solid #c9dccb; border-radius: 10px; background: #eef5ee; color: #2d633b; }
-.agent-workspace__mark svg { width: 22px; height: 22px; }
+.agent-workspace__mark { display: grid; width: 112px; height: 148px; place-items: center; color: #2d633b; }
+.agent-workspace__mark svg { width: 112px; height: 148px; overflow: visible; }
 .agent-workspace__welcome > small { margin-top: 8px; color: #6d7e72; font-size: 10px; font-weight: 800; letter-spacing: .11em; text-box: trim-both cap alphabetic; }
 .agent-workspace__welcome h2 { margin: 0; margin-inline-start: -1px; color: #1f3826; font-size: 25px; line-height: 1.25; letter-spacing: -.02em; text-box: trim-start cap; }
 .agent-workspace__welcome p { max-width: 380px; margin: 0; color: #69786e; font-size: 12px; line-height: 1.65; }
@@ -3550,8 +3546,11 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-message { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 9px; margin-bottom: 18px; }
 .agent-message.is-user { grid-template-columns: minmax(0, 1fr); }
 .agent-message.is-user .agent-message__role { display: none; }
-.agent-message__role { display: grid; width: 28px; height: 28px; place-items: center; border-radius: 7px; background: #e9f2ea; color: #2d633b; }
-.agent-message__role svg { width: 15px; height: 15px; }
+.agent-message.is-bob-large { grid-template-columns: 72px minmax(0, 1fr); }
+.agent-message__role { display: grid; width: 28px; height: 28px; place-items: center; background: transparent; color: #2d633b; }
+.agent-message__role svg { width: 28px; height: 28px; overflow: visible; }
+.agent-message.is-bob-large .agent-message__role { width: 72px; height: 96px; align-self: start; }
+.agent-message.is-bob-large .agent-message__role svg { width: 72px; height: 96px; }
 .agent-message__body { min-width: 0; }
 .agent-message__body > p { margin: 2px 0 0; color: #344b3a; font-size: 12px; line-height: 1.7; white-space: pre-wrap; }
 .agent-markdown { display: grid; gap: 8px; margin-top: 2px; color: #344b3a; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
@@ -4337,7 +4336,6 @@ details.agent-timeline__thinking { display: block; padding: 0; }
 .agent-runtime-feed__toggle:hover { border-color: #cbdccc; background: #f1f7f1; }
 
 @media (max-width: 900px) {
-  .agent-launcher { right: 10px; }
   .canvas-pane { --agent-workspace-gap: 8px; --agent-workspace-width: 440px; }
   .agent-workspace { width: min(var(--agent-workspace-width), calc(100% - 16px)); }
   .agent-workspace__starters { grid-template-columns: 1fr; }
