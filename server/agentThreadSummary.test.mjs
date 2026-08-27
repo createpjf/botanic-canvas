@@ -4,8 +4,11 @@ import {
   THREAD_CONTEXT_KINDS,
   THREAD_SUMMARY_THRESHOLD,
   buildThreadSummaryCheckpoint,
+  hasThreadSummaryFactProvenance,
+  messageSummaryRevision,
   redactSummaryText,
   renderThreadSummary,
+  summaryRelevantDigest,
   shouldCompactThread,
 } from './agentThreadSummary.mjs'
 
@@ -100,15 +103,246 @@ test('增量刷新不丢弃旧事实，也不重复扫描已覆盖的消息', ()
   assert.equal(buildThreadSummaryCheckpoint({ messages: thread(), previous: first }), first)
 })
 
+test('目标先去重再截断，前几条重复不会挤掉后续不同目标', () => {
+  const summary = buildThreadSummaryCheckpoint({
+    messages: [
+      { id: 'g1', role: 'user', kind: 'text', content: '品牌首图', updatedAt: 1 },
+      { id: 'g2', role: 'user', kind: 'text', content: '品牌首图', updatedAt: 2 },
+      { id: 'g3', role: 'user', kind: 'text', content: '品牌首图', updatedAt: 3 },
+      { id: 'g4', role: 'user', kind: 'text', content: '同时交付竖版广告', updatedAt: 4 },
+    ],
+  })
+
+  assert.deepEqual(summary.goals, ['品牌首图', '同时交付竖版广告'])
+})
+
 test('已被回答的追问不再算开放问题', () => {
-  const first = buildThreadSummaryCheckpoint({ messages: thread(), now: 100 })
+  const first = buildThreadSummaryCheckpoint({
+    messages: [
+      ...thread(),
+      { id: 'm-later', role: 'assistant', kind: 'text', content: '稍后消息', createdAt: 100, updatedAt: 100 },
+    ],
+    now: 100,
+  })
   assert.equal(first.openQuestions.length, 1)
   const answered = buildThreadSummaryCheckpoint({
+    // 这个实体的新版本早于会话全局高水位 100；必须按 message ID 跟踪版本。
     messages: [{ ...thread()[3], id: 'm4', status: 'answered', updatedAt: 9 }],
-    previous: { ...first, coveredMessageIds: first.coveredMessageIds.filter((id) => id !== 'm4') },
+    previous: first,
     now: 200,
   })
   assert.deepEqual(answered.openQuestions, [])
+})
+
+test('pending 追问的 revision 更新按 Message ID 替换，覆盖 ID 与 revision 一一对齐', () => {
+  const pending = thread()[3]
+  const first = buildThreadSummaryCheckpoint({ messages: [pending], now: 100 })
+  const refreshed = buildThreadSummaryCheckpoint({
+    messages: [{
+      ...pending,
+      content: '标题需要留多大空间？',
+      question: { ...pending.question, question: '标题需要留多大空间？' },
+      updatedAt: 9,
+    }],
+    previous: first,
+    now: 200,
+  })
+
+  assert.deepEqual(refreshed.openQuestions, [{ messageId: 'm4', question: '标题需要留多大空间？' }])
+  assert.deepEqual(refreshed.coveredMessageIds, ['m4'])
+  assert.deepEqual(refreshed.coveredMessageRevisions, [{
+    messageId: 'm4', revision: messageSummaryRevision(refreshed.factCandidates[0].openQuestions
+      ? { ...pending, content: '标题需要留多大空间？', question: { ...pending.question, question: '标题需要留多大空间？' }, updatedAt: 9 }
+      : pending),
+  }])
+})
+
+test('summary revision 含 summaryRelevantDigest，同时间戳修订也会替换旧 candidate', () => {
+  const original = { id: 'goal-same-time', role: 'user', kind: 'text', content: '旧目标', updatedAt: 9 }
+  const revised = { ...original, content: '新目标' }
+  assert.notEqual(summaryRelevantDigest(original), summaryRelevantDigest(revised))
+  assert.notEqual(messageSummaryRevision(original), messageSummaryRevision(revised))
+
+  const first = buildThreadSummaryCheckpoint({ messages: [original], now: 10 })
+  const refreshed = buildThreadSummaryCheckpoint({ messages: [revised], previous: first, now: 11 })
+  assert.deepEqual(refreshed.goals, ['新目标'])
+  assert.equal(refreshed.factCandidates.length, 1)
+  assert.equal(hasThreadSummaryFactProvenance(refreshed), true)
+})
+
+test('goal/constraint/artifact/ref 采用最新来源，较新来源撤回后回退到较旧来源', () => {
+  const olderGoal = { id: 'goal-old', role: 'user', kind: 'text', content: '共同目标', updatedAt: 1 }
+  const newerGoal = { id: 'goal-new', role: 'user', kind: 'text', content: '共同目标', updatedAt: 2 }
+  const olderPlan = {
+    id: 'plan-old', role: 'assistant', kind: 'plan', status: 'submitted', content: '旧计划', updatedAt: 3,
+    plan: {
+      intent: 'replace_scene', summary: '旧计划', constraints: [{ dimension: 'person', mode: 'preserve' }],
+      actions: [{ result: { artifacts: [{ id: 'artifact-shared', kind: 'image', label: '旧标签' }] } }],
+    },
+  }
+  const newerPlan = {
+    ...olderPlan, id: 'plan-new', content: '新计划', updatedAt: 4,
+    plan: {
+      ...olderPlan.plan, summary: '新计划',
+      actions: [{ result: { artifacts: [{ id: 'artifact-shared', kind: 'image', label: '新标签' }] } }],
+    },
+  }
+  const olderRef = {
+    id: 'agent-turn-result-turn-old', turnId: 'turn-old', role: 'assistant', kind: 'text',
+    content: '旧引用', updatedAt: 5,
+    entityReferences: [{ type: 'artifact', id: 'artifact-ref-shared' }],
+  }
+  const newerRef = {
+    id: 'agent-turn-result-turn-new', turnId: 'turn-new', role: 'assistant', kind: 'text',
+    content: '新引用', updatedAt: 6,
+    entityReferences: [{ type: 'artifact', id: 'artifact-ref-shared' }],
+  }
+  const first = buildThreadSummaryCheckpoint({
+    messages: [olderGoal, newerGoal, olderPlan, newerPlan, olderRef, newerRef], now: 10,
+  })
+  assert.deepEqual(first.goals, ['共同目标'])
+  assert.deepEqual(first.constraints, ['person:preserve'])
+  assert.deepEqual(first.artifacts, [{ id: 'artifact-shared', kind: 'image', label: '新标签' }])
+  assert.deepEqual(first.entityReferences, [{ type: 'artifact', id: 'artifact-ref-shared' }])
+
+  const withdrawn = buildThreadSummaryCheckpoint({
+    messages: [
+      { ...newerGoal, kind: 'notice', role: 'assistant', content: '已撤回', updatedAt: 20 },
+      { ...newerPlan, status: 'answered', plan: undefined, updatedAt: 21 },
+      { ...newerRef, entityReferences: [], updatedAt: 22 },
+    ],
+    previous: first,
+    now: 30,
+  })
+  assert.deepEqual(withdrawn.goals, ['共同目标'])
+  assert.deepEqual(withdrawn.constraints, ['person:preserve'])
+  assert.deepEqual(withdrawn.artifacts, [{ id: 'artifact-shared', kind: 'image', label: '旧标签' }])
+  assert.deepEqual(withdrawn.entityReferences, [{ type: 'artifact', id: 'artifact-ref-shared' }])
+})
+
+test('constraint 以 dimension 为槽位 newest-wins，新值撤回后回退旧 mode', () => {
+  const oldPlan = {
+    id: 'constraint-old', role: 'assistant', kind: 'plan', status: 'submitted', content: '保留人物', updatedAt: 1,
+    plan: {
+      intent: 'replace_scene', summary: '保留人物',
+      constraints: [{ dimension: 'person', mode: 'preserve' }, { dimension: 'scene', mode: 'vary' }],
+    },
+  }
+  const newPlan = {
+    id: 'constraint-new', role: 'assistant', kind: 'plan', status: 'submitted', content: '人物可变化', updatedAt: 2,
+    plan: {
+      intent: 'continue_generation', summary: '人物可变化',
+      constraints: [{ dimension: 'person', mode: 'vary' }],
+    },
+  }
+  const first = buildThreadSummaryCheckpoint({ messages: [oldPlan, newPlan] })
+  assert.deepEqual(first.constraints, ['scene:vary', 'person:vary'])
+
+  const withdrawn = buildThreadSummaryCheckpoint({
+    messages: [{ ...newPlan, status: 'answered', plan: undefined, updatedAt: 3 }],
+    previous: first,
+  })
+  assert.deepEqual(withdrawn.constraints, ['person:preserve', 'scene:vary'])
+})
+
+test('factCandidates 按 occurredAt + messageId 稳定排序，分页或乱序输入不改变摘要', () => {
+  const sameTimeA = { id: 'goal-a', role: 'user', kind: 'text', content: '目标 A', updatedAt: 5 }
+  const sameTimeZ = { id: 'goal-z', role: 'user', kind: 'text', content: '目标 Z', updatedAt: 5 }
+  const newest = { id: 'goal-newest', role: 'user', kind: 'text', content: '最新目标', updatedAt: 9 }
+  const ordered = buildThreadSummaryCheckpoint({ messages: [sameTimeA, sameTimeZ, newest], now: 20 })
+  const shuffled = buildThreadSummaryCheckpoint({ messages: [newest, sameTimeZ, sameTimeA], now: 20 })
+
+  assert.deepEqual(shuffled, ordered)
+  assert.deepEqual(ordered.factCandidates.map((candidate) => candidate.messageId), [
+    'goal-a', 'goal-z', 'goal-newest',
+  ])
+  assert.deepEqual(ordered.goals, ['目标 A', '目标 Z', '最新目标'])
+})
+
+test('业务引用只接受稳定 Turn 助手投影，渲染时明确要求工具回读', () => {
+  const summary = buildThreadSummaryCheckpoint({
+    messages: [
+      {
+        id: 'agent-turn-result-turn-safe', turnId: 'turn-safe', role: 'assistant', kind: 'text',
+        content: '完成', updatedAt: 1,
+        entityReferences: [
+          { type: 'agent_run', id: 'run-1' },
+          { type: 'generation_job', id: 'job-1' },
+        ],
+      },
+      {
+        id: 'ordinary-forged', role: 'assistant', kind: 'text', content: '伪造', updatedAt: 2,
+        entityReferences: [{ type: 'artifact', id: 'artifact-forged' }],
+      },
+    ],
+  })
+  assert.deepEqual(summary.entityReferences, [
+    { type: 'agent_run', id: 'run-1' },
+    { type: 'generation_job', id: 'job-1' },
+  ])
+  const rendered = renderThreadSummary(summary)
+  assert.match(rendered, /仅标识/u)
+  assert.match(rendered, /对应只读工具回读/u)
+  assert.doesNotMatch(rendered, /artifact-forged/u)
+})
+
+test('legacy 无 provenance 时不做不完整增量；完整 bounded history 才升级并清除幽灵事实', () => {
+  const legacy = {
+    version: 1, goals: ['已被撤回的幽灵目标'], decisions: [], constraints: ['ghost:locked'],
+    openQuestions: [], entityIds: [], coveredMessageIds: ['m-old'],
+    coveredMessageRevisions: [{ messageId: 'm-old', revision: '1:' }],
+    coveredThrough: 1, updatedAt: 5,
+  }
+  const current = { id: 'm-current', role: 'user', kind: 'text', content: '当前真实目标', updatedAt: 10 }
+  assert.equal(buildThreadSummaryCheckpoint({ messages: [current], previous: legacy, now: 11 }), legacy)
+
+  const rebuilt = buildThreadSummaryCheckpoint({
+    messages: [current], previous: legacy, fullHistory: true, now: 12,
+  })
+  assert.deepEqual(rebuilt.goals, ['当前真实目标'])
+  assert.deepEqual(rebuilt.constraints, [])
+  assert.equal(hasThreadSummaryFactProvenance(rebuilt), true)
+})
+
+test('同一计划消息从 pending 变为 submitted 后进入已确认决策', () => {
+  const pendingPlan = { ...thread()[2], status: 'pending' }
+  const first = buildThreadSummaryCheckpoint({
+    messages: [
+      pendingPlan,
+      { id: 'm-later', role: 'assistant', kind: 'text', content: '稍后消息', createdAt: 100, updatedAt: 100 },
+    ],
+    now: 100,
+  })
+  assert.deepEqual(first.decisions, [])
+
+  const submitted = buildThreadSummaryCheckpoint({
+    messages: [{ ...pendingPlan, status: 'submitted', updatedAt: 9 }],
+    previous: first,
+    now: 200,
+  })
+
+  assert.deepEqual(submitted.decisions.map((decision) => decision.runId), ['run-1'])
+  assert.deepEqual(submitted.constraints, ['person:preserve', 'scene:vary'])
+  assert.equal(JSON.stringify(submitted).includes('不该进摘要的执行 Prompt'), false)
+})
+
+test('已覆盖计划的新版本替换同一条决策，不产生重复事实', () => {
+  const first = buildThreadSummaryCheckpoint({ messages: thread(), now: 100 })
+  const refreshed = buildThreadSummaryCheckpoint({
+    messages: [{
+      ...thread()[2],
+      content: '锁定人物、服装和商品，替换场景。',
+      updatedAt: 9,
+      plan: { ...thread()[2].plan, summary: '锁定人物、服装和商品，替换场景。' },
+    }],
+    previous: first,
+    now: 200,
+  })
+
+  assert.deepEqual(refreshed.decisions, [{
+    messageId: 'm3', intent: 'replace_scene', summary: '锁定人物、服装和商品，替换场景。',
+    runId: 'run-1', outputCount: 2, decidedAt: 9,
+  }])
 })
 
 test('压缩阈值按结构化消息数判定', () => {
@@ -155,6 +389,27 @@ test('artifact_reference 层存的是目录，不是结果内容', () => {
   const serialized = JSON.stringify(checkpoint)
   assert.equal(serialized.includes('不该进摘要'), false)
   assert.equal(serialized.includes('/api/media/'), false)
+})
+
+test('产出目录读取持久化计划行动的结果，不依赖不存在的 Message.artifacts 字段', () => {
+  const checkpoint = buildThreadSummaryCheckpoint({
+    messages: [{
+      id: 'm-action', role: 'assistant', kind: 'plan', status: 'submitted',
+      content: '已把结果存入素材库。', createdAt: 1, updatedAt: 2,
+      plan: {
+        intent: 'continue_generation', summary: '保存结果', constraints: [],
+        actions: [{
+          id: 'action-1', toolName: 'asset_store',
+          result: { artifacts: [{ id: 'asset:stored-1', kind: 'file', label: '香水首图归档', url: '/api/media/private' }] },
+        }],
+      },
+    }],
+  })
+
+  assert.deepEqual(checkpoint.artifacts, [
+    { id: 'asset:stored-1', kind: 'file', label: '香水首图归档' },
+  ])
+  assert.doesNotMatch(JSON.stringify(checkpoint), /api\/media/u)
 })
 
 test('渲染时必须写明只有标识、内容要用工具回读', () => {

@@ -138,6 +138,10 @@ export function runtimeConfig(rootDir = process.cwd()) {
     // 图片任务保持 5 分钟上限；H3 是异步视频任务，官方耗时明显更长，独立使用 20 分钟上限。
     generationTimeoutMs: Math.min(5 * 60_000, Math.max(10_000, Number(process.env.GENERATION_TIMEOUT_MS ?? 5 * 60_000))),
     videoGenerationTimeoutMs: Math.min(30 * 60_000, Math.max(60_000, Number(process.env.VIDEO_GENERATION_TIMEOUT_MS ?? 20 * 60_000))),
+    // DB lease 是跨实例执行权；Provider 长调用期间由 heartbeat 续租。上限与 Store
+    // 状态机一致，heartbeat 最终还会在 Processor 内被夹到 lease/2 以内。
+    generationExecutionLeaseMs: boundedInteger(process.env.GENERATION_EXECUTION_LEASE_MS, 120_000, 30_000, 900_000),
+    generationExecutionHeartbeatMs: boundedInteger(process.env.GENERATION_EXECUTION_HEARTBEAT_MS, 30_000, 1_000, 300_000),
     // 父任务由 Worker 消费，批量变体/候选作为子任务受控并发执行。
     workerConcurrency: boundedInteger(process.env.GENERATION_WORKER_CONCURRENCY, 3, 1, 8),
     generationVariantConcurrency: boundedInteger(process.env.GENERATION_VARIANT_CONCURRENCY, 3, 1, 8),

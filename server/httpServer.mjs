@@ -9,6 +9,8 @@ import { BotanicAgentChatError } from './botanicAgentChat.mjs'
 import { BotanicAgentSkillError } from './botanicAgentSkill.mjs'
 import { BotanicAgentRunError } from './botanicAgentRun.mjs'
 import { AgentToolRuntimeError } from './agentToolRuntime.mjs'
+import { AgentActionExecutionError } from './agentActionExecution.mjs'
+import { AgentActionReconciliationError } from './agentActionReconciliation.mjs'
 import { McpClientError } from './mcpClient.mjs'
 // 能力探测：`authAssurance` 与 `lifecycle` 两处都用它，此前漏了导入 ——
 // 结果是启用 MFA 的部署一请求就 500、且优雅关闭必抛 ReferenceError。
@@ -34,6 +36,9 @@ import { createPromptMediaRouteHandler } from './promptMediaRoutes.mjs'
 import { createAgentRouteHandler } from './agentRoutes.mjs'
 import { createAgentRunGenerationService } from './agentRunGenerationService.mjs'
 import { writeAgentRunOperationalEvent } from './agentRunObservability.mjs'
+import { AgentDelegationFenceError } from './agentCancellationService.mjs'
+import { abortMatchingGenerationJobCancellation } from './generationCancellation.mjs'
+import { createGenerationRecoverySweep } from './generationRecoverySweep.mjs'
 
 export function createBotanicHttpServer({
   config,
@@ -48,6 +53,21 @@ let realtimeHub
 let agentRunEventSubscriber
 let canvasRealtimeEventPublisher
 let canvasRealtimeEventSubscriber
+// API 本地原型与跨实例订阅共用句柄表；生产由 Redis 信号触发，local prototype
+// 则由同一 publish seam 直接触发，二者保持相同取消语义。
+const localJobCancelRegistry = createLocalCancelRegistry()
+const localTurnCancelRegistry = createLocalCancelRegistry()
+async function publishAgentCancellation(event) {
+  if (event?.scope === 'job') {
+    await abortMatchingGenerationJobCancellation({
+      productStore,
+      cancelRegistry: localJobCancelRegistry,
+      event,
+    })
+  }
+  if (event?.scope === 'turn') localTurnCancelRegistry.abort(event.id)
+  await agentRunEvents?.publishCancel?.(event)
+}
 async function publishAgentRunUpdated(event) {
   if (config.redisUrl) return agentRunEvents.publish(event)
   realtimeHub?.publishAgentRunUpdated(event)
@@ -61,7 +81,13 @@ async function publishGenerationProjectUpdated(event) {
   return realtimeHub?.publishProjectUpdated(event)
 }
 const localProcessor = !redisQueue && !config.production
-  ? createGenerationProcessor({ productStore, mediaService, config, publishAgentRunUpdated, publishProjectUpdated: publishGenerationProjectUpdated, observeAgentRun })
+  ? createGenerationProcessor({
+      productStore, mediaService, config,
+      cancelRegistry: localJobCancelRegistry,
+      publishAgentRunUpdated,
+      publishProjectUpdated: publishGenerationProjectUpdated,
+      observeAgentRun,
+    })
   : undefined
 if (config.production && !redisQueue) throw new Error('生产环境必须配置 REDIS_URL；内存任务队列只用于本地原型。')
 if (!config.realtimeTicketSecret) throw new Error('实时服务必须配置 REALTIME_TICKET_SECRET。')
@@ -179,6 +205,16 @@ async function enqueue(jobId) {
   queueMicrotask(() => void localProcessor(jobId))
 }
 
+let sweepRecoverableGenerationJobs
+function generationRecoverySweep() {
+  sweepRecoverableGenerationJobs ??= createGenerationRecoverySweep({
+    productStore,
+    enqueue,
+    observe: (event) => console.error(JSON.stringify(event)),
+  })
+  return sweepRecoverableGenerationJobs
+}
+
 async function streamMedia(response, media) {
   response.writeHead(200, {
     'Content-Type': media.contentType ?? 'application/octet-stream',
@@ -253,7 +289,7 @@ const handleGenerationRoute = createGenerationRouteHandler({
   config,
   productStore,
   redisQueue,
-  publishCancel: (event) => agentRunEvents?.publishCancel?.(event),
+  publishCancel: publishAgentCancellation,
   json,
   error,
   readJson,
@@ -272,7 +308,7 @@ const handleProductionWorkflowRoute = createProductionWorkflowRouteHandler({
   submitGeneration,
   redisQueue,
   publishProjectUpdated,
-  publishCancel: (event) => agentRunEvents?.publishCancel?.(event),
+  publishCancel: publishAgentCancellation,
   mediaService,
   modelOptions: config.modelOptions ?? [],
 })
@@ -299,15 +335,14 @@ const agentRunGeneration = createAgentRunGenerationService({
 })
 // 路由与跨实例取消订阅方共用同一张执行句柄表；两者拿不到同一个表，落在非执行
 // 实例的取消就只能事后丢弃结果而不是真正中止（ADR 0004）。
-const localCancelRegistry = createLocalCancelRegistry()
 const handleAgentRoute = createAgentRouteHandler({
   config, productStore, redisQueue, configuredMcpTools, json, error, readJson, text,
   requireUser, enforceRateLimit, agentRunGeneration, publishAgentRunUpdated,
   enqueue, publishProjectUpdated, publishCollaborationActivity, observeAgentRun,
   // 分支重试服务需要不写 HTTP 响应的限流原语：工具调用方没有 response 可写。
   securityControls,
-  mediaService, localCancelRegistry,
-  publishCancel: (event) => agentRunEvents?.publishCancel?.(event),
+  mediaService, localCancelRegistry: localTurnCancelRegistry,
+  publishCancel: publishAgentCancellation,
   consumeWebResearchQuota: async (userId) => {
     const result = await securityControls.consume({
       scope: 'web-research',
@@ -381,7 +416,7 @@ const handleRequest = async (request, response) => {
     return error(response, 404, 'NOT_FOUND', '接口不存在。')
   } catch (caught) {
     const agentEntityFailure = agentEntityHttpError(caught)
-    const failure = caught instanceof HttpError || caught instanceof ProjectAuthorizationError || caught instanceof GenerationError || caught instanceof PromptRefinementError || caught instanceof BotanicAgentPlannerError || caught instanceof BotanicAgentChatError || caught instanceof BotanicAgentRunError || caught instanceof BotanicAgentSkillError || caught instanceof AgentToolRuntimeError || caught instanceof McpClientError
+    const failure = caught instanceof HttpError || caught instanceof ProjectAuthorizationError || caught instanceof GenerationError || caught instanceof PromptRefinementError || caught instanceof BotanicAgentPlannerError || caught instanceof BotanicAgentChatError || caught instanceof BotanicAgentRunError || caught instanceof BotanicAgentSkillError || caught instanceof AgentToolRuntimeError || caught instanceof AgentActionExecutionError || caught instanceof AgentActionReconciliationError || caught instanceof McpClientError || caught instanceof AgentDelegationFenceError
       ? caught
       : agentEntityFailure
         ? agentEntityFailure
@@ -402,9 +437,7 @@ const server = createServer(handleRequest)
 
 async function start() {
   try {
-    for (const queued of await productStore.recoverGenerationJobs()) {
-      await enqueue(queued.id)
-    }
+    await generationRecoverySweep()()
   } catch (caught) {
     // 队列恢复不是 API 启动前置条件；数据库短暂波动不能让登录、项目与媒体服务整体不可用。
     console.error(`[generation] queue recovery deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
@@ -434,7 +467,7 @@ async function start() {
       // 则忽略（另一个实例会处理，或由孤儿清扫收敛）。
       onCancel: (event) => {
         if (event.scope !== 'turn') return
-        localCancelRegistry.abort(event.id)
+        localTurnCancelRegistry.abort(event.id)
       },
     },
   )

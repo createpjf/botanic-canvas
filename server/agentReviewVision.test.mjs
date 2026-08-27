@@ -108,6 +108,28 @@ test('模型不可用与输出不可解析是两种不同的失败', async () =>
   )
 })
 
+test('执行租约丢失时外部 AbortSignal 会中止正在进行的视觉调用', async () => {
+  const controller = new AbortController()
+  let receivedSignal
+  const judge = createAgentReviewVisionJudge({
+    runtimeConfig: { agentVisionModel: 'v', flockApiKey: 'k' },
+    resolveMedia,
+    callModel: async ({ signal }) => {
+      receivedSignal = signal
+      return new Promise((resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+      })
+    },
+  })
+  const pending = judge({ candidate, task, signal: controller.signal })
+  await Promise.resolve()
+  const stale = Object.assign(new Error('lease lost'), { code: 'AGENT_REVIEW_EXECUTION_STALE' })
+  controller.abort(stale)
+
+  await assert.rejects(pending, (caught) => caught === stale)
+  assert.equal(receivedSignal.aborted, true)
+})
+
 test('取不到画面时不拿空图去问模型', async () => {
   let called = false
   const judge = createAgentReviewVisionJudge({

@@ -56,7 +56,12 @@ export type AgentReviewTaskSnapshot = {
     skippedCandidates?: number
   }
   results?: AgentReviewCandidate[]
-  decisions?: Array<{ artifactId: string; decision: AgentReviewDecision; decidedAt?: number }>
+  decisions?: Array<{
+    artifactId: string
+    decision: AgentReviewDecision
+    decidedAt?: number
+    decisionRevision?: number
+  }>
 }
 
 const verdictLabels: Record<AgentReviewVerdict, Record<ProductLocale, string>> = {
@@ -173,11 +178,19 @@ export function agentReviewCandidateRows(
   task: AgentReviewTaskSnapshot | undefined,
   locale: ProductLocale = 'zh-CN',
 ): AgentReviewCandidateRow[] {
-  const latestDecision = new Map<string, { decision: AgentReviewDecision; decidedAt: number }>()
+  const latestDecision = new Map<string, {
+    decision: AgentReviewDecision
+    decisionRevision: number
+    decidedAt: number
+  }>()
   for (const entry of task?.decisions ?? []) {
     const current = latestDecision.get(entry.artifactId)
+    const decisionRevision = Number(entry.decisionRevision ?? 0)
     const decidedAt = Number(entry.decidedAt ?? 0)
-    if (!current || decidedAt >= current.decidedAt) latestDecision.set(entry.artifactId, { decision: entry.decision, decidedAt })
+    if (!current || decisionRevision > current.decisionRevision
+      || (decisionRevision === current.decisionRevision && decidedAt >= current.decidedAt)) {
+      latestDecision.set(entry.artifactId, { decision: entry.decision, decisionRevision, decidedAt })
+    }
   }
   return (task?.results ?? []).map((result) => {
     const verdict = result.verdict ?? 'unverifiable'

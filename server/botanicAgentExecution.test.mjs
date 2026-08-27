@@ -93,8 +93,8 @@ test('服务端从持久化 Agent Run 创建独立工作流占位与可执行 Ge
   const result = prepare()
   assert.equal(result.jobs.length, 2)
   assert.deepEqual(result.jobs.map((job) => job.agentRun), [
-    { runId: 'agent-run-1', branchId: 'branch-a' },
-    { runId: 'agent-run-1', branchId: 'branch-b' },
+    { runId: 'agent-run-1', branchId: 'branch-a', attempt: 0 },
+    { runId: 'agent-run-1', branchId: 'branch-b', attempt: 0 },
   ])
   assert.equal(result.jobs[0].rawInput.parent.mediaId, 'media_parent')
   assert.equal(result.jobs[0].rawInput.recipe.references.at(-1).mediaId, 'media_scene_a')
@@ -106,7 +106,11 @@ test('服务端从持久化 Agent Run 创建独立工作流占位与可执行 Ge
     assert.equal(workflow.promptNode.type, 'text')
     assert.equal(workflow.promptNode.data.content, persistentRun().plan.prompt)
     assert.equal(workflow.generateNode.data.prompt, '')
-    assert.deepEqual(workflow.generateNode.data.agentRun, { runId: 'agent-run-1', branchId: persistentRun().branches[index].id })
+    assert.deepEqual(workflow.generateNode.data.agentRun, {
+      runId: 'agent-run-1',
+      branchId: persistentRun().branches[index].id,
+      attempt: 0,
+    })
     assert.deepEqual(workflow.resultNode.data.agentRun, workflow.generateNode.data.agentRun)
     assert.equal(result.document.edges.some((edge) => edge.data?.role === 'prompt'
       && edge.source === workflow.promptNodeId

@@ -34,6 +34,11 @@ export type BotanicAgentInstructionOptions = {
   region?: BotanicAgentRegionSelection
   /** 方案卡点击或重放时指定的成套方案；缺省则取会话里最近一条 composition 消息。 */
   composition?: BotanicAgentComposition
+  /**
+   * 服务端 Turn 固定的父结果；null 表示这轮原本就没有选中结果。
+   * 字段存在时禁止回退到当前 UI 选中。
+   */
+  targetNodeId?: string | null
 }
 
 export type BotanicAgentGenerationDecision = Extract<BotanicAgentRequestDecision, { kind: 'generation' }>

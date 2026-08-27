@@ -15,6 +15,7 @@ const permissions = Object.freeze({
   agent_run_cancel: 'create-generation',
   artifact_promote: 'edit',
   review_decide: 'edit',
+  review_retry: 'create-generation',
   workflow_publish: 'modify-workflow',
   workflow_run_retry_failed: 'modify-workflow',
 })

@@ -83,13 +83,14 @@ export function evaluatorCallEstimate(qualityPolicy, candidateCount) {
  * @param {{
  *   criterion: any, candidate: any, task: any,
  *   judgeWith: (input: { criterion: any, candidate: any }) => any,
- *   registry?: any, context?: any, timeoutMs?: number, now?: () => number,
+ *   registry?: any, context?: any, timeoutMs?: number, signal?: AbortSignal, now?: () => number,
  * }} input
  */
 export async function runEvaluatorSkillCriterion({
   criterion, candidate, task, judgeWith, registry, context,
-  timeoutMs = EVALUATOR_TIMEOUT_MS, now = () => Date.now(),
+  timeoutMs = EVALUATOR_TIMEOUT_MS, signal, now = () => Date.now(),
 }) {
+  if (signal?.aborted) throw signal.reason
   let subtask
   try {
     subtask = createAgentSubtask({
@@ -119,14 +120,21 @@ export async function runEvaluatorSkillCriterion({
       skillVersion: criterion.version,
     }
   }
+  const runSubagent = judgeWith({ criterion, candidate })
   const settled = await runAgentSubtask({
     subtask,
     registry,
     context,
     // 工厂按 (判据, 候选) 闭包出这一次的执行器。
-    runSubagent: judgeWith({ criterion, candidate }),
+    runSubagent: signal
+      ? (input) => runSubagent({
+          ...input,
+          signal: AbortSignal.any([input.signal, signal]),
+        })
+      : runSubagent,
     now,
   })
+  if (signal?.aborted) throw signal.reason
   if (settled.status !== 'completed') {
     // 终止原因原样带出来：超时、预算用尽与越权是三种不同的运维问题。
     return {

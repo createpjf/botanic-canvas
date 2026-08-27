@@ -153,16 +153,18 @@ test('线上反馈从既有实体聚合，不新增埋点', async () => {
         // 同一候选改主意：只算最后一次，否则一次反复会被算成多次拒绝。
         { artifactId: 'a1', decision: 'accepted', decidedAt: 9 },
         { artifactId: 'a2', decision: 'retry_requested', decidedAt: 3 },
+        { artifactId: 'a3', decision: 'accepted', decidedAt: 999, decisionRevision: 1 },
+        { artifactId: 'a3', decision: 'rejected', decidedAt: 1, decisionRevision: 2 },
       ],
     }],
     manifests: [{ files: [{ artifactId: 'a1' }], excluded: [{ artifactId: 'a2' }, { artifactId: 'a3' }] }],
   })
-  assert.equal(feedback.decidedCount, 2)
-  assert.equal(feedback.acceptanceRate, 0.5)
-  assert.equal(feedback.retryRequestRate, 0.5)
-  assert.equal(feedback.rejectionRate, 0)
+  assert.equal(feedback.decidedCount, 3)
+  assert.equal(feedback.acceptanceRate, 1 / 3)
+  assert.equal(feedback.retryRequestRate, 1 / 3)
+  assert.equal(feedback.rejectionRate, 1 / 3)
   // 还没人看过的候选：比接受率更早暴露评审堆积。
-  assert.equal(feedback.pendingDecisionCount, 1)
+  assert.equal(feedback.pendingDecisionCount, 0)
   assert.equal(feedback.deliveryCompletionRate, 1 / 3)
 })
 

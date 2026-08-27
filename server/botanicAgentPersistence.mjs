@@ -1,5 +1,7 @@
 import { MEMORY_SUBJECTS } from './botanicAgentMemory.mjs'
 import { createHash } from 'node:crypto'
+import { redactSummaryText } from './agentThreadSummary.mjs'
+import { validateAgentEntityReferences } from './agentEntityReferences.mjs'
 
 const SESSION_LIMIT = 80
 const MESSAGE_LIMIT = 500
@@ -59,8 +61,14 @@ const messageKinds = new Set(['text', 'question', 'plan', 'run', 'notice', 'comp
 const messageStatuses = new Set(['pending', 'answered', 'submitted', 'failed'])
 const feedbackValues = new Set(['positive', 'negative'])
 const reviewStatuses = new Set(['pending', 'accepted', 'rejected', 'retry_requested'])
+const summaryArtifactKinds = new Set(['image', 'video', 'text', 'workflow', 'asset_group', 'file'])
 const mentionKinds = new Set(['skill', 'reference'])
 const MENTION_LIMIT = 24
+const TURN_CONTEXT_LIMIT = 32
+const TURN_SKILL_LIMIT = 16
+const TURN_MODEL_LIMIT = 30
+const turnAspectRatios = new Set(['1:1', '16:9', '4:3', '3:4', '4:5', '9:16'])
+const turnResolutions = new Set(['1K', '2K'])
 
 /**
  * 消息引用只落 id + 展示名；图片字节/URL 由画布现况回填，不进消息实体。
@@ -83,6 +91,76 @@ function persistAgentMentions(value) {
     mentions.push({ kind: 'reference', id, label: text(mention.label, `Agent 消息素材名称 ${index + 1}`, 80) })
   }
   return mentions
+}
+
+function persistedAgentTurnRequestSnapshot(value) {
+  const snapshot = object(value, 'Agent Turn 请求快照')
+  if (snapshot.locale !== 'zh-CN' && snapshot.locale !== 'en') invalid('Agent Turn 请求快照 locale 无效。')
+  if (typeof snapshot.hasTarget !== 'boolean') invalid('Agent Turn 请求快照选中态无效。')
+  if (!Array.isArray(snapshot.contextNodeIds) || snapshot.contextNodeIds.length > TURN_CONTEXT_LIMIT) {
+    invalid('Agent Turn 请求快照上下文无效。')
+  }
+  const contextNodeIds = [...new Set(snapshot.contextNodeIds.map((id) => text(id, '上下文节点', 160)))]
+  const result = {
+    locale: snapshot.locale,
+    contextNodeIds,
+    hasTarget: snapshot.hasTarget,
+    selectedResultNodeId: snapshot.hasTarget
+      ? text(snapshot.selectedResultNodeId, '选中结果节点', 160)
+      : null,
+  }
+  if (!snapshot.hasTarget && snapshot.selectedResultNodeId !== null) {
+    invalid('无选中结果的 Turn 快照不得携带节点身份。')
+  }
+  if (snapshot.plannerModel !== undefined) result.plannerModel = text(snapshot.plannerModel, 'Agent 模型', 160)
+  if (snapshot.mountedSkillIds !== undefined) {
+    if (!Array.isArray(snapshot.mountedSkillIds) || snapshot.mountedSkillIds.length > TURN_SKILL_LIMIT) {
+      invalid('Agent Turn 请求快照 Skill 无效。')
+    }
+    result.mountedSkillIds = [...new Set(snapshot.mountedSkillIds.map((id) => text(id, 'Skill', 160)))]
+  }
+  if (snapshot.hasTarget && snapshot.selectedResultLabel !== undefined) {
+    result.selectedResultLabel = text(snapshot.selectedResultLabel, '选中结果名称', 160)
+  }
+  if (snapshot.executionMode !== undefined) {
+    if (!sessionModes.has(snapshot.executionMode)) invalid('Agent Turn 请求快照执行模式无效。')
+    result.executionMode = snapshot.executionMode
+  }
+  if (snapshot.generationModels !== undefined) {
+    if (!Array.isArray(snapshot.generationModels) || snapshot.generationModels.length > TURN_MODEL_LIMIT) {
+      invalid('Agent Turn 请求快照生成模型无效。')
+    }
+    result.generationModels = snapshot.generationModels.map((rawModel) => {
+      const model = object(rawModel, '生成模型')
+      const persisted = {
+        id: text(model.id, '生成模型标识', 160),
+        label: text(model.label, '生成模型名称', 160),
+      }
+      if (model.mediaKind !== undefined) {
+        if (model.mediaKind !== 'image' && model.mediaKind !== 'video') invalid('生成模型类型无效。')
+        persisted.mediaKind = model.mediaKind
+      }
+      if (model.aspectRatios !== undefined) {
+        if (!Array.isArray(model.aspectRatios) || model.aspectRatios.some((ratio) => !turnAspectRatios.has(ratio))) {
+          invalid('生成模型比例无效。')
+        }
+        persisted.aspectRatios = [...new Set(model.aspectRatios)]
+      }
+      if (model.resolutions !== undefined) {
+        if (!Array.isArray(model.resolutions) || model.resolutions.some((resolution) => !turnResolutions.has(resolution))) {
+          invalid('生成模型分辨率无效。')
+        }
+        persisted.resolutions = [...new Set(model.resolutions)]
+      }
+      return persisted
+    })
+  }
+  if (snapshot.maxOutputCount !== undefined) {
+    const count = Number(snapshot.maxOutputCount)
+    if (!Number.isInteger(count) || count < 1 || count > 50) invalid('Agent Turn 请求快照输出数量无效。')
+    result.maxOutputCount = count
+  }
+  return result
 }
 
 function persistedAgentReview(raw) {
@@ -242,24 +320,115 @@ export function validateAgentSessionEntity(value, { now = Date.now() } = {}) {
   // 不接受客户端提交任意内容 —— 摘要会长期进模型上下文，客户端可写等于可注入。
   if (session.threadSummary !== undefined) {
     const summary = object(session.threadSummary, 'Agent 线程摘要')
-    result.threadSummary = {
-      version: 1,
-      goals: uniqueTextList(summary.goals, '线程目标', 3),
-      decisions: (Array.isArray(summary.decisions) ? summary.decisions : []).slice(0, 12).map((entry) => ({
+    const persistSummaryArtifacts = (value, name = '线程 Artifact') => {
+      if (value !== undefined && (!Array.isArray(value) || value.length > 12)) {
+        invalid(`${name}目录格式无效。`)
+      }
+      return (value ?? []).map((rawArtifact, index) => {
+      const artifact = object(rawArtifact, `线程 Artifact ${index + 1}`)
+      const kind = artifact.kind ?? 'file'
+      if (!summaryArtifactKinds.has(kind)) invalid('线程 Artifact 类型无效。')
+      return {
+        id: text(artifact.id, `线程 Artifact 标识 ${index + 1}`, 200),
+        kind,
+        label: redactSummaryText(artifact.label ?? '').slice(0, 60),
+      }
+      })
+    }
+    const persistSummaryRevision = (value, name) => {
+      const revision = text(value, name, 80)
+      if (!/^\d+(?:\.\d+)?:(?:pending|answered|submitted|failed)?(?::[A-Za-z0-9_-]{43})?$/u.test(revision)) {
+        invalid(`${name}无效。`)
+      }
+      return revision
+    }
+    const persistSummaryDecisions = (value, maximum = 12) => (
+      (Array.isArray(value) ? value : []).slice(0, maximum).map((entry) => ({
         messageId: text(entry?.messageId, '决策消息标识', 160),
         ...(entry?.intent ? { intent: text(entry.intent, '决策意图', 80) } : {}),
         summary: text(entry?.summary ?? '(无摘要)', '决策摘要', 400),
         ...(entry?.runId ? { runId: text(entry.runId, '决策 Run', 160) } : {}),
         ...(Number.isInteger(entry?.outputCount) ? { outputCount: entry.outputCount } : {}),
         ...(entry?.decidedAt === undefined ? {} : { decidedAt: timestamp(entry.decidedAt, updatedAt) }),
-      })),
-      constraints: uniqueTextList(summary.constraints, '线程约束', 16),
-      openQuestions: (Array.isArray(summary.openQuestions) ? summary.openQuestions : []).slice(0, 8).map((entry) => ({
+      }))
+    )
+    const persistSummaryQuestions = (value, maximum = 8) => (
+      (Array.isArray(value) ? value : []).slice(0, maximum).map((entry) => ({
         messageId: text(entry?.messageId, '追问消息标识', 160),
         question: text(entry?.question ?? '(无内容)', '追问内容', 400),
-      })),
+      }))
+    )
+    const artifacts = persistSummaryArtifacts(summary.artifacts)
+    if (summary.coveredMessageRevisions !== undefined
+      && (!Array.isArray(summary.coveredMessageRevisions) || summary.coveredMessageRevisions.length > 200)) {
+      invalid('线程消息版本格式无效。')
+    }
+    const coveredMessageRevisions = (summary.coveredMessageRevisions ?? []).map((rawRevision, index) => {
+      const revision = object(rawRevision, `线程消息版本 ${index + 1}`)
+      return {
+        messageId: text(revision.messageId, `线程消息标识 ${index + 1}`, 160),
+        revision: persistSummaryRevision(revision.revision, `线程消息版本 ${index + 1}`),
+      }
+    })
+    if (summary.factCandidates !== undefined
+      && (!Array.isArray(summary.factCandidates) || summary.factCandidates.length > 200)) {
+      invalid('线程事实来源候选格式无效。')
+    }
+    const candidateIds = new Set()
+    const factCandidates = (summary.factCandidates ?? []).map((rawCandidate, index) => {
+      const candidate = object(rawCandidate, `线程事实来源候选 ${index + 1}`)
+      const messageId = text(candidate.messageId, `线程事实来源消息 ${index + 1}`, 160)
+      if (candidateIds.has(messageId)) invalid('线程事实来源候选消息重复。')
+      candidateIds.add(messageId)
+      const goals = uniqueTextList(candidate.goals, '线程候选目标', 3, 400)
+        .map(redactSummaryText).filter(Boolean)
+      const decisions = persistSummaryDecisions(candidate.decisions, 1)
+      const constraints = uniqueTextList(candidate.constraints, '线程候选约束', 16, 160)
+      const openQuestions = persistSummaryQuestions(candidate.openQuestions, 1)
+      const entityIds = uniqueTextList(candidate.entityIds, '线程候选实体', 40)
+      const candidateArtifacts = persistSummaryArtifacts(candidate.artifacts, '线程候选 Artifact')
+      const entityReferences = candidate.entityReferences === undefined
+        ? []
+        : validateAgentEntityReferences(candidate.entityReferences)
+      return {
+        messageId,
+        revision: persistSummaryRevision(candidate.revision, `线程事实来源版本 ${index + 1}`),
+        occurredAt: timestamp(candidate.occurredAt, updatedAt),
+        ...(goals.length ? { goals } : {}),
+        ...(decisions.length ? { decisions } : {}),
+        ...(constraints.length ? { constraints } : {}),
+        ...(openQuestions.length ? { openQuestions } : {}),
+        ...(entityIds.length ? { entityIds } : {}),
+        ...(candidateArtifacts.length ? { artifacts: candidateArtifacts } : {}),
+        ...(entityReferences.length ? { entityReferences } : {}),
+      }
+    })
+    if (summary.factCandidates !== undefined) {
+      const revisionByMessageId = new Map(
+        coveredMessageRevisions.map((entry) => [entry.messageId, entry.revision]),
+      )
+      if (
+        factCandidates.some((candidate) => (
+          revisionByMessageId.has(candidate.messageId)
+          && revisionByMessageId.get(candidate.messageId) !== candidate.revision
+        ))
+      ) invalid('线程事实来源候选与消息版本 provenance 不一致。')
+    }
+    const entityReferences = summary.entityReferences === undefined
+      ? []
+      : validateAgentEntityReferences(summary.entityReferences)
+    result.threadSummary = {
+      version: 1,
+      goals: uniqueTextList(summary.goals, '线程目标', 3),
+      decisions: persistSummaryDecisions(summary.decisions),
+      constraints: uniqueTextList(summary.constraints, '线程约束', 16),
+      openQuestions: persistSummaryQuestions(summary.openQuestions),
       entityIds: uniqueTextList(summary.entityIds, '线程实体', 40),
+      ...(artifacts.length ? { artifacts } : {}),
+      ...(entityReferences.length ? { entityReferences } : {}),
+      ...(summary.factCandidates !== undefined ? { factCandidates } : {}),
       coveredMessageIds: uniqueTextList(summary.coveredMessageIds, '已覆盖消息', 200),
+      ...(coveredMessageRevisions.length ? { coveredMessageRevisions } : {}),
       coveredThrough: timestamp(summary.coveredThrough, updatedAt),
       updatedAt: timestamp(summary.updatedAt, updatedAt),
     }
@@ -321,6 +490,27 @@ export function validateAgentMessageEntity(value, { now = Date.now() } = {}) {
     result.composition = persistedAgentComposition(message.composition)
   }
   if (message.runId !== undefined) result.runId = text(message.runId, 'Agent Run 标识', 160)
+  if (message.turnId !== undefined) result.turnId = text(message.turnId, 'Agent Turn 标识', 160)
+  if (message.entityReferences !== undefined) {
+    if (
+      result.role !== 'assistant'
+      || !result.turnId
+      || result.id !== `agent-turn-result-${result.turnId}`
+    ) {
+      invalid('只有稳定 Agent Turn 助手投影可以携带业务引用。')
+    }
+    result.entityReferences = validateAgentEntityReferences(message.entityReferences)
+  }
+  if (message.turnCancellationRequestedAt !== undefined) {
+    result.turnCancellationRequestedAt = validateAgentEntityWriteTimestamp(
+      message.turnCancellationRequestedAt,
+      { now },
+    )
+  }
+  if (message.turnRequestSnapshot !== undefined) {
+    if (message.role !== 'user') invalid('只有用户消息可以携带 Agent Turn 请求快照。')
+    result.turnRequestSnapshot = persistedAgentTurnRequestSnapshot(message.turnRequestSnapshot)
+  }
   if (message.status !== undefined) result.status = message.status
   if (message.feedback !== undefined) result.feedback = message.feedback
   if (message.review !== undefined) result.review = persistedAgentReview(message.review)
@@ -414,7 +604,9 @@ export function agentStateFromDocument(document, { now = Date.now() } = {}) {
     const session = validateAgentSessionEntity(rawSession, { now })
     sessions.push(session)
     for (const rawMessage of Array.isArray(rawSession?.messages) ? rawSession.messages.slice(-MESSAGE_LIMIT) : []) {
-      const message = validateAgentMessageEntity(rawMessage, { now })
+      const compatibilityMessage = clone(object(rawMessage, 'Agent 消息'))
+      delete compatibilityMessage.entityReferences
+      const message = validateAgentMessageEntity(compatibilityMessage, { now })
       messages.push({
         sessionId: session.id,
         updatedAt: message.updatedAt,

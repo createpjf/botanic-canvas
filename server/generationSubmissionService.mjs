@@ -4,6 +4,22 @@ import { GenerationError, persistedGenerationJob, validateGenerationInput } from
 import { requireProjectPermission } from './projectAuthorization.mjs'
 import { buildGenerationUsage, reserveGenerationBudget } from './generationGovernance.mjs'
 import { compileSubmissionCreativePlan } from './creativePlanResolver.mjs'
+import { compareAndSetGenerationJob } from './generationJobCas.mjs'
+import { createIdempotencyRequestBinding, matchingIdempotencyRequestBinding } from './idempotencyRequestBinding.mjs'
+
+const generationSubmissionScope = 'generation.submit'
+
+function generationSubmissionBinding(rawInput, input, agentRun) {
+  return createIdempotencyRequestBinding({
+    scope: generationSubmissionScope,
+    projectId: input.projectId,
+    request: { rawInput, ...(agentRun ? { agentRun } : {}) },
+  })
+}
+
+function generationIdempotencyConflict() {
+  return new GenerationError(409, 'IDEMPOTENCY_KEY_CONFLICT', '同一提交标识已绑定到另一份生成请求，请使用新的提交标识。')
+}
 
 /**
  * 真实生成任务的单一提交入口。HTTP、Agent 与生产工作流都必须经过这里，避免
@@ -31,33 +47,62 @@ export function createGenerationSubmissionService({ config, productStore, securi
       }
       const run = await productStore.readAgentRun(user.id, runId)
       if (!run || run.projectId !== input.projectId) throw new GenerationError(404, 'AGENT_RUN_NOT_FOUND', '未找到当前项目的 Agent Run。')
-      if (!run.branches.some((branch) => branch.id === branchId)) throw new GenerationError(404, 'AGENT_BRANCH_NOT_FOUND', '未找到 Agent 分支。')
-      agentRun = { runId, branchId }
+      const branch = run.branches.find((candidate) => candidate.id === branchId)
+      if (!branch) throw new GenerationError(404, 'AGENT_BRANCH_NOT_FOUND', '未找到 Agent 分支。')
+      agentRun = { runId, branchId, attempt: Number(branch.attempt) || 0 }
     }
 
+    const binding = generationSubmissionBinding(rawInput, input, agentRun)
     const id = generationJobIdForIdempotency(user.id, idempotencyKey)
     const existing = await productStore.readGenerationJob(user.id, id)
+    if (existing) {
+      // Legacy Job 没有 endpoint scope。仅无 Agent Run 关联的旧通用提交可从其 immutable
+      // rawInput 安全派生；带 Run 的旧记录可能来自 branch retry，无法判明来源时 fail closed。
+      const storedBinding = existing.idempotencyBinding ?? (!existing.agentRun && existing.rawInput
+        ? generationSubmissionBinding(existing.rawInput, { projectId: existing.projectId }, undefined)
+        : undefined)
+      if (!matchingIdempotencyRequestBinding(storedBinding, binding)) throw generationIdempotencyConflict()
+    }
     if (existing && (!retryExisting || !['failed', 'cancelled'].includes(existing.status))) return { job: existing, existing: true }
     if (existing && retryExisting) {
       const retried = {
         ...existing,
         status: 'queued',
         error: undefined,
+        errorCode: undefined,
+        cancel: undefined,
         partialError: undefined,
+        projectWritebackPending: undefined,
+        projectWritebackAttempts: undefined,
+        projectWritebackError: undefined,
+        projectWritebackUpdatedAt: undefined,
         variants: (existing.variants ?? []).map((variant) => variant.status === 'succeeded'
           ? variant
           : { ...variant, status: 'queued', error: undefined, completedAt: undefined }),
         updatedAt: Date.now(),
       }
-      await productStore.putGenerationJob(user.id, persistedGenerationJob(retried))
-      await enqueue(retried.id)
-      return { job: retried, existing: true, retried: true }
+      const reset = await compareAndSetGenerationJob(productStore, user.id, existing, retried, { clearExecution: true })
+      if (!reset?.changed) return { job: reset?.job ?? existing, existing: true }
+      const queued = reset.job
+      try {
+        await enqueue(queued.id)
+      } catch {
+        const failed = { ...queued, status: 'failed', error: '生成任务无法进入队列，请检查 Redis Worker 后重试。', updatedAt: Date.now() }
+        const failure = await compareAndSetGenerationJob(productStore, user.id, queued, failed)
+        if (!failure?.changed) return { job: failure?.job ?? queued, existing: true, retried: true }
+        throw new GenerationError(503, 'QUEUE_UNAVAILABLE', failed.error)
+      }
+      return { job: queued, existing: true, retried: true }
     }
 
-    const rate = await securityControls.consume({
-      scope: 'generation-output', subject: user.id,
-      limit: config.security.generationOutputsPerDay, windowMs: 24 * 60 * 60_000,
-      cost: input.batchCount,
+    const rate = await securityControls.reserveMany({
+      reservationId: `generation-output:${user.id}:${input.projectId}:${id}`,
+      windowMs: 24 * 60 * 60_000,
+      entries: [{
+        scope: 'generation-output', subject: user.id,
+        limit: config.security.generationOutputsPerDay,
+        cost: input.batchCount,
+      }],
     })
     if (!rate.allowed) {
       const failure = new GenerationError(429, 'RATE_LIMITED', '操作过于频繁，请稍后重试。')
@@ -90,20 +135,24 @@ export function createGenerationSubmissionService({ config, productStore, securi
         : 'openai-images',
       refinementMode: input.refinementMode,
       idempotencyKey,
-      outputs: [], error: undefined, rawInput, agentRun, usage,
+      outputs: [], error: undefined, rawInput, agentRun, usage, idempotencyBinding: binding,
       planFingerprint: compiled.planFingerprint,
       branchFingerprint: compiled.branchFingerprint,
       budgetWarning: budget.warning ? '生成额度接近上限。' : undefined,
     }
-    await productStore.putGenerationJob(user.id, persistedGenerationJob(job))
+    const queued = await productStore.putGenerationJob(user.id, persistedGenerationJob(job)) ?? persistedGenerationJob(job)
+    if (!matchingIdempotencyRequestBinding(queued.idempotencyBinding, binding)) throw generationIdempotencyConflict()
+    // guarded put 可能返回并发请求已 claim/settle 的权威 Job。此时重复 enqueue
+    // 没有价值；更不能把网络失败解释成 running→failed，终结真实 Worker。
+    if (queued.status !== 'queued' || queued.execution) return { job: queued, existing: true }
     try {
-      await enqueue(job.id)
+      await enqueue(queued.id)
     } catch {
-      const failed = { ...job, status: 'failed', error: '生成任务无法进入队列，请检查 Redis Worker 后重试。', updatedAt: Date.now() }
-      await productStore.putGenerationJob(user.id, persistedGenerationJob(failed))
+      const failed = { ...queued, status: 'failed', error: '生成任务无法进入队列，请检查 Redis Worker 后重试。', updatedAt: Date.now() }
+      const failure = await compareAndSetGenerationJob(productStore, user.id, queued, failed)
+      if (!failure?.changed) return { job: failure?.job ?? queued, existing: true }
       throw new GenerationError(503, 'QUEUE_UNAVAILABLE', failed.error)
     }
-    return { job, existing: false }
+    return { job: queued, existing: false }
   }
 }
-

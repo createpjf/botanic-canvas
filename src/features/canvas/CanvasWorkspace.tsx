@@ -613,7 +613,9 @@ function TaskFlowFocus({ taskKey, nodes }: { taskKey?: string; nodes: CanvasNode
  */
 function useFocusOnRequest(requestId: number, focus: () => void) {
   const focusRef = useRef(focus)
-  focusRef.current = focus
+  useLayoutEffect(() => {
+    focusRef.current = focus
+  }, [focus])
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => focusRef.current())
     return () => window.cancelAnimationFrame(frame)
@@ -785,6 +787,7 @@ export default function CanvasWorkspace({
   const cancelGeneration = useCanvasStore((state) => state.cancelGeneration)
   const retryGeneration = useCanvasStore((state) => state.retryGeneration)
   const appendAgentMessage = useCanvasStore((state) => state.appendAgentMessage)
+  const upsertAgentMessage = useCanvasStore((state) => state.upsertAgentMessage)
   const updateAgentMessage = useCanvasStore((state) => state.updateAgentMessage)
   const updateAgentAction = useCanvasStore((state) => state.updateAgentAction)
   const setAgentSessionContext = useCanvasStore((state) => state.setAgentSessionContext)
@@ -1854,7 +1857,9 @@ export default function CanvasWorkspace({
     onPrepareAgentOpen: prepareAgentOpen,
     onPrepareCanvasFocus: prepareAgentCanvasFocus,
   })
-  openAgentForResultRef.current = agentBridge.openForResult
+  useLayoutEffect(() => {
+    openAgentForResultRef.current = agentBridge.openForResult
+  }, [agentBridge.openForResult])
   useEffect(() => {
     refreshAgentSessionMessagesRef.current = agentBridge.refreshAgentSessionMessages
   }, [agentBridge.refreshAgentSessionMessages])
@@ -2364,7 +2369,9 @@ export default function CanvasWorkspace({
           onConfirmAction={agentBridge.confirmAction}
           onUploadImages={agentBridge.addUploadedImages}
           onPrepareVisionContext={agentBridge.prepareConversationVisionContext}
+          onResolveTarget={agentBridge.resolveTarget}
           onAppendMessage={appendAgentMessage}
+          onUpsertMessage={upsertAgentMessage}
           onUpdateMessage={updateAgentMessage}
           onUpdateAction={updateAgentAction}
           onContextChange={setAgentSessionContext}

@@ -35,6 +35,12 @@ const SOURCE_LABELS = new Map([
   ['delivery_read', '投放交付'],
 ])
 
+const REVIEW_TASK_LIMIT = 8
+const REVIEW_RESULT_LIMIT = 12
+const REVIEW_CRITERION_LIMIT = 8
+const REVIEW_DECISION_LIMIT = 20
+const REVIEW_EVIDENCE_TEXT_LIMIT = 300
+
 export function botanicAgentOperationalSourceLabels(toolCalls) {
   return [...new Set((toolCalls ?? []).map((call) => SOURCE_LABELS.get(call.name)).filter(Boolean))]
 }
@@ -121,7 +127,20 @@ function artifactSummary(artifact) {
 
 /** 评审任务摘要。覆盖策略与被跳过数必须出现，否则截断看起来像全评过了。 */
 function reviewSummary(task) {
-  return {
+  const allResults = Array.isArray(task?.results) ? task.results : []
+  const selectedResults = allResults.slice(0, REVIEW_RESULT_LIMIT)
+  const allDecisions = Array.isArray(task?.decisions) ? task.decisions : []
+  const omitted = {
+    results: Math.max(0, allResults.length - selectedResults.length),
+    criteria: allResults.reduce((total, result, index) => {
+      const criteria = Array.isArray(result?.criteria) ? result.criteria : []
+      return total + (index < REVIEW_RESULT_LIMIT
+        ? Math.max(0, criteria.length - REVIEW_CRITERION_LIMIT)
+        : criteria.length)
+    }, 0),
+    decisions: Math.max(0, allDecisions.length - REVIEW_DECISION_LIMIT),
+  }
+  const summary = {
     id: task?.id,
     runId: task?.runId,
     status: task?.status,
@@ -134,19 +153,27 @@ function reviewSummary(task) {
       reviewedCandidates: Number(task?.coverage?.reviewedCandidates ?? 0),
       skippedCandidates: Number(task?.coverage?.skippedCandidates ?? 0),
     },
-    ...(task?.error ? { error: task.error } : {}),
-    results: (task?.results ?? []).map((result) => ({
+    ...(task?.error ? { error: String(task.error).slice(0, REVIEW_EVIDENCE_TEXT_LIMIT) } : {}),
+    results: selectedResults.map((result) => ({
       artifactId: result?.artifactId,
       verdict: result?.verdict,
       candidateStatus: result?.candidateStatus,
-      criteria: (result?.criteria ?? []).map((item) => ({
-        id: item?.id, layer: item?.layer, verdict: item?.verdict, evidence: item?.evidence,
+      criteria: (Array.isArray(result?.criteria) ? result.criteria : [])
+        .slice(0, REVIEW_CRITERION_LIMIT)
+        .map((item) => ({
+        id: item?.id,
+        layer: item?.layer,
+        verdict: item?.verdict,
+        ...(typeof item?.evidence === 'string'
+          ? { evidence: item.evidence.slice(0, REVIEW_EVIDENCE_TEXT_LIMIT) }
+          : {}),
       })),
     })),
-    decisions: (task?.decisions ?? []).map((decision) => ({
+    decisions: allDecisions.slice(0, REVIEW_DECISION_LIMIT).map((decision) => ({
       artifactId: decision?.artifactId, decision: decision?.decision, decidedAt: decision?.decidedAt,
     })),
   }
+  return { summary, omitted }
 }
 
 function workflowRunSummary(run) {
@@ -268,7 +295,28 @@ export function createBotanicAgentOperationalToolDefinitions(operations = {}) {
       validate: (raw) => ({ runId: toolText(toolObject(raw, '评审读取').runId, 'Run 标识', 160) }),
       execute: async ({ runId }) => {
         const tasks = (await required(operations.readReviews)(runId)) ?? []
-        return { total: tasks.length, tasks: tasks.map(reviewSummary) }
+        const selectedTasks = tasks.slice(0, REVIEW_TASK_LIMIT)
+        const projected = selectedTasks.map(reviewSummary)
+        const omittedTasks = tasks.slice(REVIEW_TASK_LIMIT)
+        const omitted = {
+          tasks: Math.max(0, tasks.length - selectedTasks.length),
+          results: omittedTasks.reduce((total, task) => total + (task?.results ?? []).length, 0),
+          criteria: omittedTasks.reduce((total, task) => total + (task?.results ?? []).reduce(
+            (taskTotal, result) => taskTotal + (result?.criteria ?? []).length,
+            0,
+          ), 0),
+          decisions: omittedTasks.reduce((total, task) => total + (task?.decisions ?? []).length, 0),
+        }
+        for (const entry of projected) {
+          omitted.results += entry.omitted.results
+          omitted.criteria += entry.omitted.criteria
+          omitted.decisions += entry.omitted.decisions
+        }
+        return {
+          total: tasks.length,
+          tasks: projected.map((entry) => entry.summary),
+          omitted,
+        }
       },
     },
     {
@@ -302,7 +350,7 @@ export function createBotanicAgentOperationalToolDefinitions(operations = {}) {
 /**
  * 每个写工具需要的项目权限与执行器。
  *
- * Viewer 只有 `read`，因此这里六个工具对它一个都不暴露 —— 不是「点了会失败」，
+ * Viewer 只有 `read`，因此这里七个工具对它一个都不暴露 —— 不是「点了会失败」，
  * 而是**根本看不到**：模型看不到的工具不会被它拿去向用户承诺。
  */
 const OPERATIONAL_ACTIONS = Object.freeze({
@@ -310,6 +358,7 @@ const OPERATIONAL_ACTIONS = Object.freeze({
   agent_run_cancel: { permission: 'create-generation', executor: 'cancelRun', risk: 'write' },
   artifact_promote: { permission: 'edit', executor: 'promoteArtifact', risk: 'write' },
   review_decide: { permission: 'edit', executor: 'decideReview', risk: 'write' },
+  review_retry: { permission: 'create-generation', executor: 'retryReview', risk: 'costly' },
   workflow_publish: { permission: 'modify-workflow', executor: 'publishWorkflow', risk: 'write' },
   workflow_run_retry_failed: { permission: 'modify-workflow', executor: 'retryWorkflowFailed', risk: 'costly' },
 })
@@ -385,14 +434,14 @@ export function createBotanicAgentOperationalActionDefinitions({ role, ...execut
     {
       name: 'review_decide',
       label: '提交评审决定',
-      description: '对一个已评审的候选提交接受、拒绝或请求重试。三者都不覆盖原结果。',
+      description: '对一个已评审的候选提交接受或拒绝。决定不会覆盖原结果。',
       risk: 'write', requiresConfirmation: true, terminal: true,
       parameters: {
         type: 'object', additionalProperties: false,
         properties: {
           taskId: { type: 'string', maxLength: 160 },
           artifactId: { type: 'string', maxLength: 240 },
-          decision: { type: 'string', enum: ['accepted', 'rejected', 'retry_requested'] },
+          decision: { type: 'string', enum: ['accepted', 'rejected'] },
           note: { type: 'string', maxLength: 500 },
         },
         required: ['taskId', 'artifactId', 'decision'],
@@ -400,8 +449,8 @@ export function createBotanicAgentOperationalActionDefinitions({ role, ...execut
       validate: (raw) => {
         const value = toolObject(raw, '评审决定')
         const decision = toolText(value.decision, '评审决定', 32)
-        if (!['accepted', 'rejected', 'retry_requested'].includes(decision)) {
-          throw new AgentToolRuntimeError('INVALID_TOOL_ARGUMENTS', '评审决定必须是接受、拒绝或请求重试。', 400)
+        if (!['accepted', 'rejected'].includes(decision)) {
+          throw new AgentToolRuntimeError('INVALID_TOOL_ARGUMENTS', '评审决定必须是接受或拒绝。', 400)
         }
         return {
           taskId: toolText(value.taskId, '评审任务标识', 160),
@@ -411,6 +460,30 @@ export function createBotanicAgentOperationalActionDefinitions({ role, ...execut
         }
       },
       execute: (args, context) => executors.decideReview(args, context),
+    },
+    {
+      name: 'review_retry',
+      label: '请求重试评审候选',
+      description: '为一个已评审候选创建关联原 Run 与原 Artifact 的新生成 Run；原结果不会被覆盖。',
+      risk: 'costly', requiresConfirmation: true, terminal: true,
+      parameters: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          taskId: { type: 'string', maxLength: 160 },
+          artifactId: { type: 'string', maxLength: 240 },
+          note: { type: 'string', maxLength: 500 },
+        },
+        required: ['taskId', 'artifactId'],
+      },
+      validate: (raw) => {
+        const value = toolObject(raw, '评审重试')
+        return {
+          taskId: toolText(value.taskId, '评审任务标识', 160),
+          artifactId: toolText(value.artifactId, 'Artifact 标识', 240),
+          note: optionalText(value.note, '决定说明', 500),
+        }
+      },
+      execute: (args, context) => executors.retryReview(args, context),
     },
     {
       name: 'workflow_publish',

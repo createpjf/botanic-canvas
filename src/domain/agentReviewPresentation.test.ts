@@ -75,6 +75,15 @@ test('没有人工决定的候选一律算等人：自动结论不代替批准',
   assert.equal(rows[1].awaitingHuman, false)
   assert.equal(rows[1].decision, 'accepted')
   assert.equal(rows[1].decisionLabel, '已接受')
+
+  const revisionWins = agentReviewCandidateRows({
+    ...task,
+    decisions: [
+      { artifactId: 'a2', decision: 'rejected', decidedAt: 999, decisionRevision: 1 },
+      { artifactId: 'a2', decision: 'accepted', decidedAt: 1, decisionRevision: 2 },
+    ],
+  })
+  assert.equal(revisionWins[1].decision, 'accepted', '锁内 revision 必须压过客户端时钟')
 })
 
 test('任务失败要能被诊断，不只显示「评审失败」', () => {

@@ -4,6 +4,7 @@ import test from 'node:test'
 
 const migrationUrl = new URL('../supabase/migrations/20260806120000_agent_run_authority.sql', import.meta.url)
 const migration = readFileSync(migrationUrl, 'utf8')
+const derivedFieldMigration = readFileSync(new URL('../supabase/migrations/20260827180000_agent_thread_summary_cas.sql', import.meta.url), 'utf8')
 const readReceiptMigration = readFileSync(new URL('../supabase/migrations/20260807120000_agent_session_read_receipts.sql', import.meta.url), 'utf8')
 const postgresStore = readFileSync(new URL('../server/postgresProductStore.mjs', import.meta.url), 'utf8')
 const supabaseStore = readFileSync(new URL('../server/supabaseProductStore.mjs', import.meta.url), 'utf8')
@@ -28,13 +29,15 @@ test('Postgres 与 Supabase 都使 Memory 墓碑在同时戳冲突时胜出', ()
   const tombstoneRule = /updated_at < excluded\.updated_at[\s\S]*updated_at = excluded\.updated_at[\s\S]*deleted_at is null/iu
   assert.match(migration, tombstoneRule)
   assert.match(postgresStore, tombstoneRule)
-  assert.match(supabaseStore, /tombstoneWinsTie:\s*table === 'agent_memory_items'/u)
+  assert.match(derivedFieldMigration, tombstoneRule)
 })
 
 test('CanvasDocument 只迁移缺失 Agent Run，独立实体状态保持权威', () => {
   assert.match(migration, /insert into public\.agent_runs[\s\S]*on conflict \(id\) do nothing/iu)
+  assert.match(derivedFieldMigration, /insert into public\.agent_runs[\s\S]*on conflict \(id\) do nothing/iu)
   assert.match(postgresStore, /insert into agent_runs[\s\S]*on conflict \(id\) do nothing/iu)
-  assert.match(supabaseStore, /table === 'agent_runs'\) return !existing/u)
+  assert.match(supabaseStore, /p_preserve_thread_summary:\s*true/u)
+  assert.match(supabaseStore, /AGENT_DERIVED_FIELDS_ATOMIC_WRITE_REQUIRED/u)
 })
 
 test('Supabase 显式 Agent Run 写入原子拒绝旧快照和待确认回退', () => {

@@ -41,6 +41,11 @@ export function useAgentSkillRegistry(input: {
   const [expandedSkillId, setExpandedSkillId] = useState('')
   const nameInputRef = useRef<HTMLInputElement | null>(null)
   const createButtonRef = useRef<HTMLButtonElement | null>(null)
+  const pendingSubmissionRef = useRef<{
+    fingerprint: string
+    submissionKey: string
+    toolCallId: string
+  } | null>(null)
 
   useEffect(() => {
     if (panelOpen) return
@@ -98,11 +103,24 @@ export function useAgentSkillRegistry(input: {
   const submit = useCallback(async () => {
     if (!canSubmitAgentSkillForm(form)) return
     dispatch({ type: 'submitStarted' })
+    const name = form.name.trim()
+    const instructions = form.instructions.trim()
+    const fingerprint = JSON.stringify([projectId, name, instructions])
+    if (pendingSubmissionRef.current?.fingerprint !== fingerprint) {
+      const logicalRequestId = crypto.randomUUID()
+      pendingSubmissionRef.current = {
+        fingerprint,
+        submissionKey: `agent-skill-${logicalRequestId}`,
+        toolCallId: `call-skill-create-${logicalRequestId}`,
+      }
+    }
     try {
       const result = await createProjectAgentSkill({
         projectId,
-        name: form.name.trim(),
-        instructions: form.instructions.trim(),
+        name,
+        instructions,
+        submissionKey: pendingSubmissionRef.current.submissionKey,
+        toolCallId: pendingSubmissionRef.current.toolCallId,
       })
       if (!isCurrentAgentProject()) return
       setSkills((items) => [result.output.skill, ...items.filter((item) => item.id !== result.output.skill.id)])
@@ -110,6 +128,7 @@ export function useAgentSkillRegistry(input: {
       if (session) {
         onSkillsChange(session.id, nextMountedSkillIds(session.mountedSkillIds ?? [], result.output.skill.id, true))
       }
+      pendingSubmissionRef.current = null
       dispatch({ type: 'submitSucceeded' })
     } catch (caught) {
       if (!isCurrentAgentProject()) return

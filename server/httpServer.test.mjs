@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { Readable } from 'node:stream'
 import test from 'node:test'
 import { createBotanicHttpServer } from './httpServer.mjs'
+import { agentActionReconciliationIdentity } from './agentActionReconciliation.mjs'
 
 function testDependencies() {
   return {
@@ -69,6 +70,18 @@ function testRequest({ method, url, body }) {
   })
 }
 
+function skillApplyAgentState() {
+  return { sessions: [{
+    id: 'session-action-http',
+    messages: [{ id: 'message-action-http', plan: { actions: [{
+      id: 'call-1',
+      toolName: 'skill_apply',
+      arguments: { skillId: 'skill-1' },
+      status: 'running',
+    }] } }],
+  }] }
+}
+
 test('可注入 HTTP Server 无需启动生产运行时即可响应健康检查', async () => {
   const application = createBotanicHttpServer(testDependencies())
   const { headers, response } = testResponse()
@@ -82,6 +95,46 @@ test('可注入 HTTP Server 无需启动生产运行时即可响应健康检查'
   assert.equal(response.statusCode, 200)
   assert.equal(JSON.parse(response.body).status, 'ok')
   assert.equal(headers['Cache-Control'], 'no-store')
+})
+
+test('HTTP 启动恢复使用有界 Generation keyset sweep，单个 poison Job 不阻塞同页任务', async () => {
+  const dependencies = testDependencies()
+  const listed = []
+  const enqueued = []
+  dependencies.runtime.productStore = {
+    async listRecoverableGenerationJobs(input) {
+      listed.push(structuredClone(input))
+      return [
+        { id: 'job-poison', updatedAt: 10 },
+        { id: 'job-ok', updatedAt: 20 },
+      ]
+    },
+  }
+  dependencies.runtime.mediaService.close = async () => {}
+  dependencies.redisQueue = {
+    async enqueue(jobId) {
+      if (jobId === 'job-poison') throw new Error('poison enqueue')
+      enqueued.push(jobId)
+    },
+    async close() {},
+  }
+  const application = createBotanicHttpServer(dependencies)
+  application.server.listen = (_port, _host, onListening) => {
+    onListening()
+    return application.server
+  }
+  const originalConsoleError = console.error
+  const errors = []
+  console.error = (...args) => { errors.push(args.map(String).join(' ')) }
+  try {
+    await application.start()
+    assert.deepEqual(listed, [{ after: null, limit: 25 }])
+    assert.deepEqual(enqueued, ['job-ok'])
+    assert.ok(errors.some((line) => /generation\.recovery\.enqueue\.failed/u.test(line)))
+  } finally {
+    console.error = originalConsoleError
+    await application.close()
+  }
 })
 
 test('会话资源对不支持的方法返回 405 和允许的方法目录', async () => {
@@ -132,6 +185,276 @@ test('项目路由返回业务错误后不会继续写第二次响应', async ()
 
   assert.equal(response.statusCode, 400)
   assert.equal(JSON.parse(response.body).error.code, 'INVALID_DOCUMENT')
+})
+
+test('Agent 行动执行中冲突经过统一 HTTP 层保留 409 与业务码', async () => {
+  const dependencies = testDependencies()
+  dependencies.runtime.productStore = {
+    async authenticate() { return { id: 'user-1' } },
+    async projectAccess() { return { exists: true, role: 'owner' } },
+    async readAgentState() { return skillApplyAgentState() },
+    async readAgentActionReceipt() { return undefined },
+    async claimAgentActionReceipt() { return { kind: 'in_progress', receipt: { status: 'running' } } },
+    async settleAgentActionReceipt() { throw new Error('不应结算未取得租约的行动') },
+  }
+  const application = createBotanicHttpServer(dependencies)
+  const { response } = testResponse()
+
+  const request = testRequest({
+    method: 'POST',
+    url: '/api/agent-actions',
+    body: {
+      projectId: 'project-1',
+      name: 'skill_apply',
+      toolCallId: 'call-1',
+      confirmed: true,
+      arguments: { skillId: 'skill-1' },
+    },
+  })
+  request.headers['idempotency-key'] = 'agent-action-call-1-skill_apply'
+  await application.handleRequest(request, response)
+
+  assert.equal(response.statusCode, 409)
+  assert.equal(JSON.parse(response.body).error.code, 'AGENT_ACTION_IN_PROGRESS')
+})
+
+test('Agent 行动调和错误经过统一 HTTP 层保留状态码与业务码', async () => {
+  const action = {
+    id: 'action-http-reconciliation',
+    toolName: 'skill_apply',
+    arguments: { skillId: 'controlled_edit' },
+    status: 'running',
+  }
+  const dependencies = testDependencies()
+  dependencies.runtime.productStore = {
+    async authenticate() { return { id: 'user-1' } },
+    async projectAccess() { return { exists: true, role: 'owner' } },
+    async readAgentState() {
+      return { sessions: [{ id: 'session-1', messages: [{ id: 'message-1', plan: { actions: [action] } }] }] }
+    },
+    async readAgentActionReceipt() { return undefined },
+    async resolveAgentActionReceipt() { throw new Error('不应写入') },
+    async consumeAgentActionManualRetryAuthorization() { throw new Error('不应消费') },
+  }
+  const application = createBotanicHttpServer(dependencies)
+  const { response } = testResponse()
+  const request = testRequest({
+    method: 'POST',
+    url: '/api/agent-actions/status',
+    body: {
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      messageId: 'message-1',
+      actionId: action.id,
+      name: action.toolName,
+      toolCallId: action.id,
+      arguments: action.arguments,
+    },
+  })
+  request.headers['idempotency-key'] = `agent-action-${action.id}-${action.toolName}`
+
+  await application.handleRequest(request, response)
+
+  assert.equal(response.statusCode, 404)
+  assert.equal(JSON.parse(response.body).error.code, 'AGENT_ACTION_RECONCILIATION_NOT_FOUND')
+})
+
+test('Action Adapter 的缺 RPC、权限与 invalid 调和错误不得降成 INTERNAL_ERROR', async (context) => {
+  const action = {
+    id: 'action-http-adapter-error',
+    toolName: 'skill_apply',
+    arguments: { skillId: 'controlled_edit' },
+    status: 'uncertain',
+  }
+  const requestBody = {
+    projectId: 'project-1',
+    sessionId: 'session-adapter-error',
+    messageId: 'message-adapter-error',
+    actionId: action.id,
+    name: action.toolName,
+    toolCallId: action.id,
+    arguments: action.arguments,
+    decision: 'confirmed_applied',
+  }
+  const idempotencyKey = `agent-action-${action.id}-${action.toolName}`
+  const identity = agentActionReconciliationIdentity({
+    userId: 'user-1',
+    ...requestBody,
+    idempotencyKey,
+  })
+  const receipt = {
+    id: identity.receiptId,
+    ownerId: 'user-1',
+    projectId: requestBody.projectId,
+    toolCallId: action.id,
+    actionName: action.toolName,
+    intentHash: identity.intentHash,
+    actionBindingHash: identity.actionBindingHash,
+    replayPolicy: 'never',
+    status: 'uncertain',
+    createdAt: 1,
+    updatedAt: 1,
+  }
+  const scenarios = [
+    ['AGENT_ACTION_RECONCILIATION_REQUIRED', 503],
+    ['PROJECT_WRITE_FORBIDDEN', 403],
+    ['AGENT_ACTION_RECONCILIATION_INVALID', 422],
+  ]
+
+  await context.test('缺少原子 reconciliation RPC', async () => {
+    const dependencies = testDependencies()
+    dependencies.runtime.productStore = {
+      async authenticate() { return { id: 'user-1' } },
+      async projectAccess() { return { exists: true, role: 'owner' } },
+      async readAgentState() {
+        return { sessions: [{
+          id: requestBody.sessionId,
+          messages: [{ id: requestBody.messageId, plan: { actions: [action] } }],
+        }] }
+      },
+      async readAgentActionReceipt() { return structuredClone(receipt) },
+      async consumeAgentActionManualRetryAuthorization() { throw new Error('不应消费') },
+    }
+    const application = createBotanicHttpServer(dependencies)
+    const { response } = testResponse()
+    const request = testRequest({ method: 'POST', url: '/api/agent-actions/resolve', body: requestBody })
+    request.headers['idempotency-key'] = idempotencyKey
+
+    await application.handleRequest(request, response)
+
+    assert.equal(response.statusCode, 503)
+    assert.equal(JSON.parse(response.body).error.code, 'AGENT_ACTION_RECONCILIATION_REQUIRED')
+  })
+
+  for (const [adapterCode, expectedStatus] of scenarios) {
+    await context.test(String(adapterCode), async () => {
+      const dependencies = testDependencies()
+      dependencies.runtime.productStore = {
+        async authenticate() { return { id: 'user-1' } },
+        async projectAccess() { return { exists: true, role: 'owner' } },
+        async readAgentState() {
+          return { sessions: [{
+            id: requestBody.sessionId,
+            messages: [{ id: requestBody.messageId, plan: { actions: [action] } }],
+          }] }
+        },
+        async readAgentActionReceipt() { return structuredClone(receipt) },
+        async resolveAgentActionReceipt() {
+          throw Object.assign(new Error('adapter failure'), { code: adapterCode })
+        },
+        async consumeAgentActionManualRetryAuthorization() { throw new Error('不应消费') },
+      }
+      const application = createBotanicHttpServer(dependencies)
+      const { response } = testResponse()
+      const request = testRequest({ method: 'POST', url: '/api/agent-actions/resolve', body: requestBody })
+      request.headers['idempotency-key'] = idempotencyKey
+
+      await application.handleRequest(request, response)
+
+      assert.equal(response.statusCode, expectedStatus)
+      assert.equal(JSON.parse(response.body).error.code, adapterCode)
+    })
+  }
+})
+
+test('Turn delegation cancel fence 经过统一 HTTP 层保留 409 与业务码', async () => {
+  const dependencies = testDependencies()
+  dependencies.runtime.productStore = {
+    async authenticate() { return { id: 'user-1' } },
+    async projectAccess() { return { exists: true, role: 'owner' } },
+    async readAgentTurn() {
+      return { id: 'turn-cancelled', ownerId: 'user-1', projectId: 'project-1', status: 'cancelling' }
+    },
+  }
+  const application = createBotanicHttpServer(dependencies)
+  const { response } = testResponse()
+  const request = testRequest({
+    method: 'POST',
+    url: '/api/agent-runs',
+    body: {
+      projectId: 'project-1',
+      turnId: 'turn-cancelled',
+      plan: {
+        intent: 'initial_generation', instruction: '生成首图', summary: '首图', prompt: '自然光首图',
+        settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' },
+        constraints: [], output: { mode: 'single', count: 1, candidatesPerItem: 1 },
+        contextSnapshot: [{ nodeId: 'asset-1', label: '商品', kind: '素材', mediaKind: 'image' }],
+      },
+      branches: [{ id: 'branch-1', label: '首图' }],
+    },
+  })
+  request.headers['idempotency-key'] = 'cancelled-turn-run'
+
+  await application.handleRequest(request, response)
+
+  assert.equal(response.statusCode, 409)
+  assert.equal(JSON.parse(response.body).error.code, 'AGENT_TURN_DELEGATION_CANCELLED')
+})
+
+test('Agent 行动无法取得执行权时统一 HTTP 层保留 503 与业务码', async () => {
+  const dependencies = testDependencies()
+  dependencies.runtime.productStore = {
+    async authenticate() { return { id: 'user-1' } },
+    async projectAccess() { return { exists: true, role: 'owner' } },
+    async readAgentState() { return skillApplyAgentState() },
+    async readAgentActionReceipt() { return undefined },
+    async claimAgentActionReceipt() { return undefined },
+    async settleAgentActionReceipt() { throw new Error('不应结算未取得租约的行动') },
+  }
+  const application = createBotanicHttpServer(dependencies)
+  const { response } = testResponse()
+  const request = testRequest({
+    method: 'POST',
+    url: '/api/agent-actions',
+    body: {
+      projectId: 'project-1',
+      name: 'skill_apply',
+      toolCallId: 'call-1',
+      confirmed: true,
+      arguments: { skillId: 'skill-1' },
+    },
+  })
+  request.headers['idempotency-key'] = 'agent-action-call-1-skill_apply'
+
+  await application.handleRequest(request, response)
+
+  assert.equal(response.statusCode, 503)
+  assert.equal(JSON.parse(response.body).error.code, 'AGENT_ACTION_CLAIM_FAILED')
+})
+
+test('Agent 行动执行超时时统一 HTTP 层保留 504 与业务码', async () => {
+  const dependencies = testDependencies()
+  dependencies.config.agentActionTimeoutMs = 5
+  dependencies.runtime.productStore = {
+    async authenticate() { return { id: 'user-1' } },
+    async projectAccess() { return { exists: true, role: 'owner' } },
+    async readAgentState() { return skillApplyAgentState() },
+    async readAgentActionReceipt() { return undefined },
+    async claimAgentActionReceipt(_userId, claim) {
+      return { kind: 'claimed', receipt: { ...claim, status: 'running' } }
+    },
+    async settleAgentActionReceipt(_userId, settlement) { return settlement },
+    async listAgentSkills() { return new Promise(() => {}) },
+  }
+  const application = createBotanicHttpServer(dependencies)
+  const { response } = testResponse()
+  const request = testRequest({
+    method: 'POST',
+    url: '/api/agent-actions',
+    body: {
+      projectId: 'project-1',
+      name: 'skill_apply',
+      toolCallId: 'call-1',
+      confirmed: true,
+      arguments: { skillId: 'skill-1' },
+    },
+  })
+  request.headers['idempotency-key'] = 'agent-action-call-1-skill_apply'
+
+  await application.handleRequest(request, response)
+
+  assert.equal(response.statusCode, 504)
+  assert.equal(JSON.parse(response.body).error.code, 'AGENT_ACTION_TIMEOUT')
 })
 
 test('生成任务集合资源对不支持的方法返回 405 和允许的方法目录', async () => {

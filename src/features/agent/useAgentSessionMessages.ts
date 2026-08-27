@@ -1,18 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { BotanicAgentMessage } from '../../domain/agent'
+import { mergeAgentMessages } from '../../domain/agentMessageReadModel'
 import { listPersistentBotanicAgentSessionMessages } from '../../lib/agentApi'
 import { serverPersistenceEnabled } from '../../lib/productSession'
-
-function mergeAgentMessages(apiMessages: BotanicAgentMessage[], storeMessages: BotanicAgentMessage[]) {
-  const byId = new Map(apiMessages.map((message) => [message.id, message]))
-  for (const message of storeMessages) {
-    const existing = byId.get(message.id)
-    const messageTime = Number(message.updatedAt ?? message.createdAt ?? 0)
-    const existingTime = Number(existing?.updatedAt ?? existing?.createdAt ?? 0)
-    if (!existing || messageTime >= existingTime) byId.set(message.id, message)
-  }
-  return [...byId.values()].sort((left, right) => Number(left.createdAt ?? 0) - Number(right.createdAt ?? 0) || left.id.localeCompare(right.id))
-}
 
 export function useAgentSessionMessages(
   projectId: string,
@@ -27,7 +17,9 @@ export function useAgentSessionMessages(
   const [nextBefore, setNextBefore] = useState<string | undefined>()
   const [error, setError] = useState<string | undefined>()
   const sessionIdRef = useRef(sessionId)
-  sessionIdRef.current = sessionId
+  useEffect(() => {
+    sessionIdRef.current = sessionId
+  }, [sessionId])
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     if (!enabled || !sessionId || !serverPersistenceEnabled) {

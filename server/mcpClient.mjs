@@ -1,6 +1,13 @@
 import { randomUUID } from 'node:crypto'
 
 const NAME = /^[a-z][a-z0-9_-]{1,79}$/
+const ACTION_INTENT = /^[A-Za-z0-9_-]{16,128}$/
+
+function actionIntentHeader(value) {
+  if (typeof value !== 'string') return undefined
+  const normalized = value.trim()
+  return ACTION_INTENT.test(normalized) ? normalized : undefined
+}
 
 export class McpClientError extends Error {
   constructor(code, message, statusCode = 502) {
@@ -46,8 +53,11 @@ export function createConfiguredMcpTools(configurations, {
   fetchImpl = fetch,
   idFactory = randomUUID,
 } = {}) {
-  return Object.fromEntries(configurations.map((configuration) => [configuration.key, async (argumentsValue) => {
-    const signal = AbortSignal.timeout(configuration.timeoutMs)
+  return Object.fromEntries(configurations.map((configuration) => [configuration.key, async (argumentsValue, context = {}) => {
+    const timeoutSignal = AbortSignal.timeout(configuration.timeoutMs)
+    const outerSignal = context?.signal instanceof AbortSignal ? context.signal : undefined
+    const signal = outerSignal ? AbortSignal.any([outerSignal, timeoutSignal]) : timeoutSignal
+    const actionIntent = actionIntentHeader(context?.actionIntentHash)
     let response
     try {
       response = await fetchImpl(configuration.url, {
@@ -56,6 +66,7 @@ export function createConfiguredMcpTools(configurations, {
           Accept: 'application/json',
           'Content-Type': 'application/json',
           ...(configuration.authToken ? { Authorization: `Bearer ${configuration.authToken}` } : {}),
+          ...(actionIntent ? { 'X-Botanic-Action-Intent': actionIntent } : {}),
         },
         body: JSON.stringify({
           jsonrpc: '2.0', id: idFactory(), method: 'tools/call',
@@ -64,7 +75,8 @@ export function createConfiguredMcpTools(configurations, {
         signal,
       })
     } catch (caught) {
-      throw new McpClientError('MCP_UNAVAILABLE', signal.aborted ? 'MCP 工具调用超时。' : 'MCP 工具暂时不可用。')
+      if (outerSignal?.aborted) throw new McpClientError('REQUEST_CANCELLED', 'MCP 工具调用已取消。', 499)
+      throw new McpClientError('MCP_UNAVAILABLE', timeoutSignal.aborted ? 'MCP 工具调用超时。' : 'MCP 工具暂时不可用。')
     }
     let body
     try { body = await response.json() } catch { throw new McpClientError('MCP_INVALID_RESPONSE', 'MCP 工具响应无效。') }

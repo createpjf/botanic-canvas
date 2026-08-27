@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { GenerationError, persistedGenerationJob, resolveGenerationInputMedia, validateGenerationInput } from './generationProvider.mjs'
 import { generationTimeoutForModel } from './generationModels.mjs'
 import { providerForModel } from './generationModels.mjs'
@@ -5,6 +6,8 @@ import { generateMedia } from './generationService.mjs'
 import { publicAgentRun } from './botanicAgentRun.mjs'
 import { reconcileAgentGenerationJobToProject } from './botanicAgentExecution.mjs'
 import { compatibleFallbackModel, ProviderCircuitBreaker } from './generationGovernance.mjs'
+import { cancelGenerationJob } from './generationCancellation.mjs'
+import { matchingIdempotencyRequestBinding } from './idempotencyRequestBinding.mjs'
 
 export function createGenerationProcessor({
   productStore,
@@ -24,7 +27,108 @@ export function createGenerationProcessor({
   // 评审是派生工作，只在 Run 到终态时请求一次；缺注入时不评审，也不影响生成。
   ensureReviewTask,
   enqueueDerivedTask,
+  setIntervalFn = setInterval,
+  clearIntervalFn = clearInterval,
+  leaseTokenFactory = randomUUID,
 }) {
+  class GenerationJobExecutionLost extends Error {
+    constructor(job) {
+      super(`Generation Job ${job?.id ?? ''} 的执行租约已失效。`)
+      this.name = 'GenerationJobExecutionLost'
+      this.code = 'GENERATION_JOB_LEASE_STALE'
+      this.job = job
+    }
+  }
+
+  function executionCommand(job, options = {}, fence = job?.execution) {
+    if (!fence?.leaseToken || !Number.isInteger(Number(fence.generation))) {
+      throw new GenerationJobExecutionLost(job)
+    }
+    return {
+      id: job.id,
+      projectId: job.projectId,
+      leaseToken: fence.leaseToken,
+      executionGeneration: Number(fence.generation),
+      status: job.status,
+      job: persistedGenerationJob(job),
+      updateAgentRun: options.updateAgentRun !== false,
+      recordAudit: options.recordAudit !== false,
+    }
+  }
+
+  async function commitExecutionJob(job, options = {}, fence = job?.execution) {
+    if (typeof productStore.commitGenerationJobExecution !== 'function') {
+      throw new TypeError('ProductStore 缺少 Generation Job fenced commit 能力。')
+    }
+    const decision = await productStore.commitGenerationJobExecution(job.ownerId, executionCommand(job, options, fence))
+    if (!decision?.changed || decision.kind !== 'committed') {
+      throw new GenerationJobExecutionLost(decision?.job ?? job)
+    }
+    return decision.job
+  }
+
+  async function heartbeatExecution(job, fence = job?.execution) {
+    if (!fence?.leaseToken || !Number.isInteger(Number(fence.generation))) {
+      throw new GenerationJobExecutionLost(job)
+    }
+    let decision = await productStore.commitGenerationJobExecution(job.ownerId, {
+      id: job.id,
+      projectId: job.projectId,
+      leaseToken: fence.leaseToken,
+      executionGeneration: Number(fence.generation),
+      status: job.status === 'cancelled' ? 'cancelled' : 'running',
+      ...(job.status === 'cancelled' && job.cancel?.signalId
+        ? { signalId: job.cancel.signalId }
+        : {}),
+      updateAgentRun: false,
+      recordAudit: false,
+    })
+    // 取消可能恰好落在 running heartbeat 的锁内。第一次返回只提供 durable
+    // signal，不能续租；原 Worker 随即用同一 immutable fence + signal 再提交。
+    if (decision?.kind === 'cancellation_required'
+      && decision.job?.cancel?.signalRequired === true
+      && decision.job.cancel.signalId) {
+      decision = await productStore.commitGenerationJobExecution(job.ownerId, {
+        id: job.id,
+        projectId: job.projectId,
+        leaseToken: fence.leaseToken,
+        executionGeneration: Number(fence.generation),
+        status: 'cancelled',
+        signalId: decision.job.cancel.signalId,
+        updateAgentRun: false,
+        recordAudit: false,
+      })
+    }
+    if (!decision?.changed
+      || !['committed', 'cancellation_heartbeat'].includes(decision.kind)) {
+      throw new GenerationJobExecutionLost(decision?.job ?? job)
+    }
+    return decision.job
+  }
+
+  async function acknowledgeWorkerExit(jobId, fence) {
+    if (typeof productStore.acknowledgeGenerationJobCancellation !== 'function') return
+    try {
+      const latest = await productStore.readGenerationJobForWorker(jobId)
+      if (latest?.status !== 'cancelled'
+        || latest.cancel?.signalRequired !== true
+        || typeof latest.cancel?.signalId !== 'string'
+        || Number(latest.cancel?.signalAcknowledgedAt) > 0
+        || Number(latest.execution?.generation) !== Number(fence?.generation)) return
+      await productStore.acknowledgeGenerationJobCancellation(latest.ownerId, {
+        id: latest.id,
+        projectId: latest.projectId,
+        signalId: latest.cancel.signalId,
+        executionGeneration: Number(fence.generation),
+        leaseToken: fence.leaseToken,
+        releaseBasis: 'worker_exit',
+      })
+    } catch (caught) {
+      // Job 已经是 cancelled；ack 是可恢复的释放证明。失败时保留 pending，Turn
+      // sweep 会按同一 signalId 重发，绝不能让 BullMQ 因 ack 旁路故障重跑 Provider。
+      console.error(`[generation] cancellation acknowledgement deferred for ${jobId}: ${caught instanceof Error ? caught.message : String(caught)}`)
+    }
+  }
   const observeRun = (job, event) => {
     if (!job.agentRun) return
     try {
@@ -88,6 +192,11 @@ export function createGenerationProcessor({
     try {
       // 画布或 Artifact 尚未回写时不能把 Agent Run 推进到终态；否则前端会在产出落盘前
       // 收到 completed/failed，并过早执行一次恢复。
+      if (pending.execution) {
+        return await commitExecutionJob(pending, { updateAgentRun: false, recordAudit: false })
+      }
+      // 部署前已进入终态的 legacy Job 没有 execution；只允许它补偿画布写回，
+      // 新执行路径一律经过 generation + leaseToken fence。
       await productStore.putGenerationJob(pending.ownerId, persistedGenerationJob(pending), { updateAgentRun: false, recordAudit: false })
     } catch (persistError) {
       console.error(`[generation] project writeback marker deferred: ${persistError instanceof Error ? persistError.message : String(persistError)}`)
@@ -97,16 +206,52 @@ export function createGenerationProcessor({
 
   async function clearProjectWriteback(job) {
     if (!job.projectWritebackPending) return job
+    // 先让 Run 观察到仍带 pending 的终态，再单独清补偿标记。Supabase 的 Job RPC
+    // 与 Run 投影不在同一事务；若进程在二者之间退出，pending 仍会把任务捞回恢复器。
+    let projected = job
+    if (job.execution) {
+      projected = await commitExecutionJob(
+        { ...job, updatedAt: Date.now() },
+        { updateAgentRun: true },
+        job.execution,
+      )
+    } else {
+      projected = await productStore.putGenerationJob(
+        job.ownerId,
+        persistedGenerationJob({ ...job, updatedAt: Date.now() }),
+        { updateAgentRun: true },
+      ) ?? job
+    }
     const cleared = {
-      ...job,
+      ...projected,
       projectWritebackPending: undefined,
       projectWritebackAttempts: undefined,
       projectWritebackError: undefined,
       projectWritebackUpdatedAt: undefined,
       updatedAt: Date.now(),
     }
-    await productStore.putGenerationJob(cleared.ownerId, persistedGenerationJob(cleared))
-    return cleared
+    if (cleared.execution) {
+      return commitExecutionJob(
+        cleared,
+        { updateAgentRun: false, recordAudit: false },
+        projected.execution,
+      )
+    }
+    return await productStore.putGenerationJob(
+      cleared.ownerId,
+      persistedGenerationJob(cleared),
+      { updateAgentRun: false, recordAudit: false },
+    ) ?? cleared
+  }
+
+  async function finalizeProjectWriteback(job) {
+    try {
+      return { job: await clearProjectWriteback(job), ready: true }
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught)
+      console.error(`[generation] Agent Run projection deferred: ${message}`)
+      return { job: await markProjectWritebackPending(job, message), ready: false }
+    }
   }
 
   async function publishRun(job) {
@@ -167,39 +312,198 @@ export function createGenerationProcessor({
     }
   }
 
+  /**
+   * Generation Job 入队与 Worker 取任务之间可能跨进程崩溃。因此不能只信任
+   * 提交层的事前检查；对 Agent Run 关联任务，Worker 自己在接单和 Provider
+   * 调用前各复读一次 durable Turn / Run fence。
+   */
+  async function delegationBlock(job) {
+    if (!job.agentRun) return undefined
+    if (typeof productStore.readAgentRunForWorker !== 'function') {
+      throw new TypeError('Agent Generation Worker 缺少 Run 权威读取能力。')
+    }
+    const run = await productStore.readAgentRunForWorker(job.agentRun.runId)
+    if (!run || run.projectId !== job.projectId || run.ownerId !== job.ownerId) {
+      return { code: 'AGENT_RUN_NOT_FOUND', message: '关联 Agent Run 不存在或已越界。' }
+    }
+    if (run.status === 'cancelled' || run.status === 'failed') {
+      return { code: 'AGENT_RUN_DELEGATION_CANCELLED', message: 'Agent Run 已终止。' }
+    }
+    const branch = run.branches?.find((candidate) => candidate.id === job.agentRun.branchId)
+    if (!branch || branch.activeJobId !== job.id) {
+      return { code: 'AGENT_BRANCH_EXECUTION_STALE', message: '该任务已不是 Agent 分支的活动执行实例。' }
+    }
+    if (Number.isInteger(job.agentRun.attempt)) {
+      if (Number(branch.attempt) !== job.agentRun.attempt) {
+        return { code: 'AGENT_BRANCH_EXECUTION_STALE', message: '该任务的 Agent 分支执行世代已失效。' }
+      }
+      if (job.agentRun.attempt > 0 && (!branch.retryClaim
+        || branch.retryClaim.jobId !== job.id
+        || branch.retryClaim.sourceAttempt !== job.agentRun.attempt - 1
+        || !matchingIdempotencyRequestBinding(
+          branch.retryClaim.idempotencyBinding,
+          job.idempotencyBinding,
+        ))) {
+        return { code: 'AGENT_BRANCH_EXECUTION_STALE', message: '该重试任务缺少权威执行身份。' }
+      }
+    }
+    if (!run.turnId) return undefined
+    if (typeof productStore.readAgentTurn !== 'function') {
+      throw new TypeError('Agent Generation Worker 缺少 Turn 权威读取能力。')
+    }
+    const turn = await productStore.readAgentTurn(job.ownerId, run.turnId)
+    if (!turn || turn.projectId !== job.projectId || turn.status !== 'completed') {
+      return {
+        code: ['cancelling', 'cancelled'].includes(turn?.status)
+          ? 'AGENT_TURN_DELEGATION_CANCELLED'
+          : 'AGENT_TURN_DELEGATION_NOT_READY',
+        message: '关联 Agent Turn 未处于可执行终态。',
+      }
+    }
+    return undefined
+  }
+
+  async function stopFencedDelegation(job) {
+    const block = await delegationBlock(job)
+    if (!block) return false
+    const latest = await productStore.readGenerationJobForWorker(job.id)
+    if (!latest || ['cancelled', 'succeeded', 'failed'].includes(latest.status)) return true
+    const cancelled = await cancelGenerationJob({
+      productStore,
+      modelOptions: config.modelOptions ?? [],
+      ownerId: latest.ownerId,
+      job: latest,
+      reason: 'agent-run',
+      requestedBy: latest.ownerId,
+    })
+    await writeJobToProjectSafely(cancelled.job)
+    await publishRun(cancelled.job)
+    observeRun(cancelled.job, { type: 'worker_delegation_fenced', status: 'cancelled', code: block.code })
+    return true
+  }
+
   return async function processGenerationJob(jobId) {
     const stored = await productStore.readGenerationJobForWorker(jobId)
     if (!stored) return
     // 终态任务只在画布回写待处理时重新入队；不会再次调用真实 Provider。
     if (stored.projectWritebackPending) {
-      const recovered = await writeJobToProjectSafely(stored)
+      let recoveryJob = stored
+      if (stored.execution) {
+        const recoveryFence = Object.freeze({
+          leaseToken: stored.execution.leaseToken,
+          generation: Number(stored.execution.generation),
+        })
+        try {
+          // 恢复 Worker 也必须先证明这仍是自己观察到的终态 generation，才能把
+          // 旧输出投影到 Canvas/Artifact。显式 retry 清掉 lease 后，迟到恢复在此止步。
+          recoveryJob = await commitExecutionJob(
+            stored,
+            { updateAgentRun: false, recordAudit: false },
+            recoveryFence,
+          )
+        } catch (caught) {
+          if (caught instanceof GenerationJobExecutionLost) return
+          throw caught
+        }
+      }
+      const recovered = await writeJobToProjectSafely(recoveryJob)
       if (!recovered) {
-        await publishRun(stored)
+        await publishRun(recoveryJob)
         return
       }
-      if (stored.status === 'succeeded') {
-        const artifactReady = await refreshGenerationArtifacts(stored)
-        if (stored.agentRun && !artifactReady) {
-          const pending = await markProjectWritebackPending(stored, 'Artifact Index 尚未完成回写。')
+      // 失败任务也可能已产生部分输出；它们同样属于历史 Artifact 血缘，恢复时
+      // 必须先补齐索引，才能清 pending 并把关联 Run 推进到 failed。
+      if (recoveryJob.outputs?.length) {
+        const artifactReady = await refreshGenerationArtifacts(recoveryJob)
+        if (recoveryJob.agentRun && !artifactReady) {
+          const pending = await markProjectWritebackPending(recoveryJob, 'Artifact Index 尚未完成回写。')
           await publishRun(pending)
           return
         }
       }
-      const cleared = await clearProjectWriteback(stored)
-      await publishRun(cleared)
+      const finalized = await finalizeProjectWriteback(recoveryJob)
+      await publishRun(finalized.job)
       return
     }
     if (['cancelled', 'succeeded', 'failed'].includes(stored.status)) return
+    // 恢复队列可能拿到「Job 已落库，提交进程在后置 fence 前崩溃」的孤儿。
+    // 先收口 durable 状态，绝不让它因 Worker 恢复而穿透到 Provider。
+    if (await stopFencedDelegation(stored)) return
+    if (typeof productStore.claimGenerationJobExecution !== 'function') {
+      throw new TypeError('ProductStore 缺少 Generation Job 原子 claim 能力。')
+    }
+    const leaseDurationMs = Math.max(30_000, Math.min(
+      Number(config.generationExecutionLeaseMs) || 120_000,
+      900_000,
+    ))
+    const claim = await productStore.claimGenerationJobExecution(jobId, {
+      leaseToken: leaseTokenFactory(),
+      leaseDurationMs,
+      allowTakeover: true,
+    })
+    if (claim?.kind !== 'claimed' || claim.changed !== true) return
+    // 权限来自 claim 返回的不可变 fence。后续 read 只提供数据基线；若把 latest.execution
+    // 当权限，旧 Worker 会在 takeover 后“捡到”新 token 并污染新执行者。
+    const executionFence = Object.freeze({
+      leaseToken: claim.job.execution?.leaseToken,
+      generation: Number(claim.job.execution?.generation),
+    })
     console.info(`[generation] ${jobId} started`)
-    const initialVariants = Array.from({ length: stored.batchCount }, (_, index) => {
-      const previous = stored.variants?.find((variant) => variant.index === index)
+    const controller = new AbortController()
+    if (cancelRegistry && !cancelRegistry.register(jobId, controller)) {
+      // DB 已把过期 lease 接管给当前 generation，但旧 Provider 可能仍忽略 AbortSignal
+      // 并占着本实例句柄。先中止旧执行；当前 generation 不与它并跑，也不伪造终态
+      // 或 worker-exit ack，保留 running lease 供到期后的 recovery 安全接管。
+      cancelRegistry.abort(jobId)
+      return
+    }
+    const initialVariants = Array.from({ length: claim.job.batchCount }, (_, index) => {
+      const previous = claim.job.variants?.find((variant) => variant.index === index)
       return previous ?? { index, status: 'queued' }
     })
-    const running = { ...stored, status: 'running', error: undefined, variants: initialVariants, updatedAt: Date.now() }
-    await productStore.putGenerationJob(running.ownerId, persistedGenerationJob(running))
+    let running
+    try {
+      running = await commitExecutionJob({
+        ...claim.job,
+        status: 'running',
+        error: undefined,
+        variants: initialVariants,
+        updatedAt: Date.now(),
+      }, {}, executionFence)
+    } catch (caught) {
+      cancelRegistry?.release(jobId, controller)
+      await acknowledgeWorkerExit(jobId, executionFence)
+      if (caught instanceof GenerationJobExecutionLost) return
+      throw caught
+    }
     await writeJobToProjectSafely(running)
     await publishRun(running)
     observeRun(running, { type: 'worker_started', status: 'running', queueDurationMs: Math.max(0, running.updatedAt - running.createdAt) })
+    let leaseLost = false
+    let heartbeatWrite = Promise.resolve()
+    const maintainLease = () => {
+      heartbeatWrite = heartbeatWrite.then(async () => {
+        if (leaseLost) return
+        const renewed = await heartbeatExecution(running, executionFence)
+        if (renewed.status === 'cancelled' && renewed.cancel?.signalRequired === true) {
+          running = renewed
+          controller.abort()
+          return
+        }
+        if (renewed.status !== 'running') throw new GenerationJobExecutionLost(renewed)
+        running = renewed
+      }).catch((caught) => {
+        leaseLost = true
+        controller.abort()
+        observeRun(running, { type: 'worker_lease_lost', status: 'cancelled', code: caught?.code ?? 'GENERATION_JOB_LEASE_STALE' })
+      })
+      return heartbeatWrite
+    }
+    const heartbeatMs = Math.max(1_000, Math.min(
+      Number(config.generationExecutionHeartbeatMs) || Math.floor(leaseDurationMs / 3),
+      Math.max(1_000, Math.floor(leaseDurationMs / 2)),
+    ))
+    const heartbeatId = setIntervalFn(() => { void maintainLease() }, heartbeatMs)
     let variantWrite = Promise.resolve()
     try {
       const maximumTaskDurationMs = generationTimeoutForModel(config.modelOptions ?? [], running.settings?.model, {
@@ -221,24 +525,21 @@ export function createGenerationProcessor({
       if (remainingGenerationMs <= 0) {
         throw new GenerationError(504, 'PROVIDER_TIMEOUT', '生成任务超过模型等待时限，已停止，请稍后重试。')
       }
-      const controller = new AbortController()
-      // 登记到本进程的中止表：Worker 与 API 是两个进程，API 写下 cancelled 时
-      // 这里不会知道。跨实例取消信号抵达后靠这张表就地 abort，Provider 调用才会
-      // 真正停下、worker 槽位才会释放 —— 否则只能等它跑完再丢弃结果。
-      cancelRegistry?.register(jobId, controller)
       // 从任务创建开始计时，而非从 Worker 取到任务后重新计时，排队不会无限延长用户等待。
       const timeoutMs = Math.max(1, remainingGenerationMs)
       // 记下是哪一种 abort。取消与超时都会 abort 同一个控制器，但结果完全不同：
       // 超时是失败，取消不是 —— 把取消报成超时会让用户看到错误的原因，而且会用
       // 失败状态覆盖取消入口已经写下的 cancelled。
       let timedOut = false
-      const timeoutId = setTimeout(() => { timedOut = true; controller.abort() }, timeoutMs)
+      let timeoutId
       // Provider 回调可能由多个子任务同时触发，串行化状态写入避免最后完成的
       // 子任务覆盖其他子任务的进度。图片请求本身仍保持受控并发。
       const onVariant = (update) => {
         variantWrite = variantWrite.then(async () => {
           const latest = await productStore.readGenerationJobForWorker(jobId)
-          if (!latest || latest.status === 'cancelled') return
+          // timeout/cancel/CAS 已经作出的任何终态承诺都不可被迟到的 Provider
+          // variant 回调继续修改；部分输出只在当前 execution 仍 running 时归并。
+          if (!latest || latest.status !== 'running') return
           const variants = Array.from({ length: latest.batchCount }, (_, index) => {
             const previous = latest.variants?.find((variant) => variant.index === index)
             return previous ?? { index, status: 'queued' }
@@ -263,13 +564,28 @@ export function createGenerationProcessor({
             missingOutputCount: Math.max(0, latest.batchCount - outputs.length),
             updatedAt: Date.now(),
           }
-          await productStore.putGenerationJob(next.ownerId, persistedGenerationJob(next))
-          await publishRun(next)
+          try {
+            const committed = await commitExecutionJob(next, {}, executionFence)
+            await publishRun(committed)
+          } catch (caught) {
+            if (caught instanceof GenerationJobExecutionLost) {
+              leaseLost = true
+              controller.abort()
+              return
+            }
+            throw caught
+          }
         })
         return variantWrite
       }
       let result
       try {
+        // 注册本地 abort 句柄后再复读一次。检查之后到达的取消，要么在这里
+        // durable 收口，要么由随后的跨进程 cancel signal 中止 Provider。
+        if (await stopFencedDelegation(running)) return
+        await maintainLease()
+        if (leaseLost) return
+        timeoutId = setTimeout(() => { timedOut = true; controller.abort() }, timeoutMs)
         console.info(`[generation] ${jobId} requesting provider`)
         const model = providerForModel(config.modelOptions ?? [], input.settings.model)
         const provider = model?.provider ?? running.provider ?? 'unknown'
@@ -280,7 +596,7 @@ export function createGenerationProcessor({
             model: effectiveModel,
             startedAt: Date.now(),
           }
-          await productStore.putGenerationJob(running.ownerId, persistedGenerationJob({
+          const attempted = await commitExecutionJob({
             ...latestJob,
             effectiveModel,
             usage: latestJob.usage ? {
@@ -290,7 +606,12 @@ export function createGenerationProcessor({
             } : latestJob.usage,
             providerAttempts: [...(latestJob.providerAttempts ?? []), attempt],
             updatedAt: Date.now(),
-          }))
+          }, {}, executionFence)
+          running = attempted
+          if (leaseLost || controller.signal.aborted) throw new GenerationJobExecutionLost(attempted)
+          // Provider attempt 记录本身也是一次 await；在它与上一轮 delegation check 之间，
+          // 另一重试可能已原子切换 Branch active identity。花钱前最后复读一次 Run。
+          if (await stopFencedDelegation(attempted)) throw new GenerationJobExecutionLost(attempted)
           try {
             const generated = await generate(effectiveInput, {
               config,
@@ -339,6 +660,7 @@ export function createGenerationProcessor({
         }
         await variantWrite
       } catch (caught) {
+        if (caught instanceof GenerationJobExecutionLost || leaseLost) return
         if (timedOut) throw new GenerationError(504, 'PROVIDER_TIMEOUT', '生成服务响应超时，任务已停止，请稍后重试。')
         if (controller.signal.aborted) {
           // 用户取消：状态已由取消入口写成 cancelled，这里直接收工。抛错会把它
@@ -348,10 +670,39 @@ export function createGenerationProcessor({
         }
         throw caught
       } finally {
-        clearTimeout(timeoutId)
-        cancelRegistry?.release(jobId, controller)
+        if (timeoutId) clearTimeout(timeoutId)
+      }
+      await maintainLease()
+      if (leaseLost) {
+        const latest = await productStore.readGenerationJobForWorker(jobId)
+        if (latest && ['cancelled', 'failed', 'succeeded'].includes(latest.status)) {
+          observeRun(latest, {
+            type: 'worker_discarded_late_result', status: latest.status,
+            outputCount: result?.outputs?.length ?? 0,
+            durationMs: Math.max(0, Date.now() - (latest.createdAt ?? running.createdAt)),
+          })
+          console.warn(
+            `[generation] ${jobId} 结果迟到被丢弃：任务已是 ${latest.status}，`
+            + `但 Provider 成功返回了 ${result?.outputs?.length ?? 0} 个输出（已产生费用）。`,
+          )
+        }
+        return
       }
       console.info(`[generation] ${jobId} provider completed (${result.outputs.length} output(s))`)
+      // cancel signal 是可恢复旁路，不是状态权威。Redis 暂时失败或 Job→Run 投影
+      // 恰好在跨库窗口中断时，Provider 可能没有及时 abort；结果落库前必须再读
+      // durable Turn / Run fence，否则迟到成功会把已 cancelled Run 反向复活。
+      if (await stopFencedDelegation(running)) {
+        observeRun(running, {
+          type: 'worker_discarded_fenced_result', status: 'cancelled', outputCount: result.outputs.length,
+          durationMs: Math.max(0, Date.now() - running.createdAt),
+        })
+        console.warn(`[generation] ${jobId} 结果因 durable delegation fence 被丢弃（已产生费用）。`)
+        return
+      }
+      clearIntervalFn(heartbeatId)
+      await heartbeatWrite
+      if (leaseLost) return
       const latest = await productStore.readGenerationJobForWorker(jobId)
       if (!latest || latest.status === 'cancelled' || latest.status === 'failed') {
         // 结果**迟到**了：任务已经被取消或被超时扫描判失败，而 Provider 这边刚成功。
@@ -371,7 +722,7 @@ export function createGenerationProcessor({
         )
         return
       }
-      const completed = {
+      let completed = await commitExecutionJob({
         ...latest,
         status: 'succeeded',
         outputs: result.outputs,
@@ -379,14 +730,16 @@ export function createGenerationProcessor({
         missingOutputCount: result.missingOutputCount,
         partialError: result.partialError,
         error: undefined,
+        // 终态先带补偿标记落库：进程若在 Canvas / Artifact 写回之间崩溃，
+        // 恢复任务只做 writeback，不会再次调用 Provider。
+        projectWritebackPending: true,
         updatedAt: Date.now(),
-      }
+      }, { updateAgentRun: false, recordAudit: false }, executionFence)
       // 先持久化任务产出但暂不推进 Run；只有画布与 Artifact 都写好后，
       // 才发布可观察的 Agent Run 终态。
-      await productStore.putGenerationJob(completed.ownerId, persistedGenerationJob(completed), { updateAgentRun: false, recordAudit: false })
       const writebackSucceeded = await writeJobToProjectSafely(completed, { markPending: true })
       let terminalReady = writebackSucceeded
-      let finalJob = writebackSucceeded ? completed : { ...completed, projectWritebackPending: true }
+      let finalJob = completed
       if (terminalReady) {
         const artifactReady = await refreshGenerationArtifacts(completed)
         if (completed.agentRun && !artifactReady) {
@@ -395,7 +748,10 @@ export function createGenerationProcessor({
         }
       }
       if (terminalReady) {
-        await productStore.putGenerationJob(completed.ownerId, persistedGenerationJob(completed), { updateAgentRun: true })
+        const finalized = await finalizeProjectWriteback(completed)
+        completed = finalized.job
+        finalJob = completed
+        terminalReady = finalized.ready
       }
       await publishRun(finalJob)
       observeRun(completed, {
@@ -403,6 +759,13 @@ export function createGenerationProcessor({
         durationMs: Math.max(0, completed.updatedAt - completed.createdAt), projectWritebackPending: !terminalReady,
       })
     } catch (caught) {
+      clearIntervalFn(heartbeatId)
+      await heartbeatWrite
+      if (caught instanceof GenerationJobExecutionLost || leaseLost) return
+      // Provider 可以在不 await 最后一次 onVariant 的情况下抛错。先排空串行写入，
+      // 再读取权威快照，否则失败终态会用旧 outputs 覆盖刚落库的部分成功结果。
+      await variantWrite
+      if (leaseLost) return
       const latest = await productStore.readGenerationJobForWorker(jobId)
       if (!latest || latest.status === 'cancelled') return
       const failure = caught instanceof GenerationError
@@ -411,25 +774,41 @@ export function createGenerationProcessor({
       const detail = caught instanceof Error ? `${caught.name}: ${caught.message}` : String(caught)
       const upstream = failure.upstreamMessage ? ` 上游原文：${failure.upstreamMessage}` : ''
       console.error(`[generation] ${jobId} failed (${failure.code}): ${detail}${upstream}`)
-      await variantWrite
       // 错误码随任务落库：失败消息是给人看的，服务端的重试策略要按码分类
       // （瞬时故障可自动重试，其余停下等用户）。只存消息的话策略永远判不出来。
-      const failed = {
+      let failed = await commitExecutionJob({
         ...latest,
         status: 'failed',
         error: failure.message,
         errorCode: failure.code,
         variants: latest.variants ?? running.variants,
+        projectWritebackPending: true,
         updatedAt: Date.now(),
-      }
-      await productStore.putGenerationJob(failed.ownerId, persistedGenerationJob(failed), { updateAgentRun: false, recordAudit: false })
+      }, { updateAgentRun: false, recordAudit: false }, executionFence)
       const writebackSucceeded = await writeJobToProjectSafely(failed, { markPending: true })
-      if (writebackSucceeded) await productStore.putGenerationJob(failed.ownerId, persistedGenerationJob(failed), { updateAgentRun: true })
-      await publishRun(writebackSucceeded ? failed : { ...failed, projectWritebackPending: true })
+      let terminalReady = writebackSucceeded
+      if (terminalReady && failed.outputs?.length) {
+        const artifactReady = await refreshGenerationArtifacts(failed)
+        if (failed.agentRun && !artifactReady) {
+          failed = await markProjectWritebackPending(failed, 'Artifact Index 尚未完成回写。')
+          terminalReady = false
+        }
+      }
+      if (terminalReady) {
+        const finalized = await finalizeProjectWriteback(failed)
+        failed = finalized.job
+        terminalReady = finalized.ready
+      }
+      await publishRun(failed)
       observeRun(failed, {
         type: 'worker_failed', status: 'failed', code: failure.code,
-        durationMs: Math.max(0, failed.updatedAt - failed.createdAt), projectWritebackPending: !writebackSucceeded,
+        durationMs: Math.max(0, failed.updatedAt - failed.createdAt), projectWritebackPending: !terminalReady,
       })
+    } finally {
+      clearIntervalFn(heartbeatId)
+      await heartbeatWrite
+      cancelRegistry?.release(jobId, controller)
+      await acknowledgeWorkerExit(jobId, executionFence)
     }
   }
 }

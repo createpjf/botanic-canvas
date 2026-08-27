@@ -426,6 +426,8 @@ export function persistedGenerationJob(job) {
     provider: job.provider,
     rawInput: job.rawInput,
     idempotencyKey: job.idempotencyKey,
+    // 服务端私有：同一确定性 Job ID 只能重放完全相同的 endpoint/project/request。
+    idempotencyBinding: job.idempotencyBinding,
     projectWritebackPending: job.projectWritebackPending,
     projectWritebackAttempts: job.projectWritebackAttempts,
     projectWritebackError: job.projectWritebackError,
@@ -437,6 +439,9 @@ export function persistedGenerationJob(job) {
     budgetWarning: job.budgetWarning,
     effectiveModel: job.effectiveModel,
     providerAttempts: job.providerAttempts,
+    // Worker 私有 fencing token。只进 Store payload，不得进入 publicGenerationJob。
+    executionVersion: job.executionVersion,
+    execution: job.execution,
     generateNodeId: job.generateNodeId,
     promptNodeId: job.promptNodeId,
     resultNodeId: job.resultNodeId,

@@ -110,6 +110,26 @@ test('Agent 会话的模型、挂载 Skill 和自定义标题会持久化', () =
   assert.equal(persistedSessions.length, 4)
 })
 
+test('full Message upsert 替换同 ID 旧副本，API 更新时间不再压住本地终态', () => {
+  const { actions, getState } = createDelayedPersistenceHarness()
+  const sessionId = actions.ensureAgentSession()
+  actions.appendAgentMessage(sessionId, {
+    id: 'message-stable', role: 'assistant', kind: 'notice', content: '旧投影',
+    createdAt: 10, updatedAt: 100, status: 'pending',
+  })
+
+  actions.upsertAgentMessage(sessionId, {
+    id: 'message-stable', role: 'assistant', kind: 'notice', content: '权威终态',
+    createdAt: 10, updatedAt: 501, status: 'failed', turnId: 'turn-stable',
+  })
+
+  const stored = getState().document.agentSessions[0].messages[0]
+  assert.equal(stored.content, '权威终态')
+  assert.equal(stored.status, 'failed')
+  assert.equal(stored.updatedAt, 501)
+  assert.equal(stored.turnId, 'turn-stable')
+})
+
 test('Agent 工作流回执立即补入 prompt、生成节点与连线，且不重复写回服务端', async () => {
   const { actions, pendingDocuments, getState } = createDelayedPersistenceHarness()
 

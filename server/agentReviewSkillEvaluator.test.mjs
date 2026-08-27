@@ -124,6 +124,21 @@ test('子任务超时按 unverifiable 收口并带出原因', async () => {
   assert.equal(result.skillVersion, 2, '超时也要说得清是哪一版判的')
 })
 
+test('执行租约丢失会通过外部 signal 中止正在进行的 evaluator 调用', async () => {
+  const controller = new AbortController()
+  const stale = Object.assign(new Error('lease lost'), { code: 'AGENT_REVIEW_EXECUTION_STALE' })
+  const judgeWith = () => ({ signal }) => new Promise((resolve, reject) => {
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+  })
+  const pending = runEvaluatorSkillCriterion({
+    criterion: evaluatorSkillCriteria([skill()])[0], candidate, task, judgeWith, registry,
+    signal: controller.signal, timeoutMs: 1_000, now: () => 1,
+  })
+  await Promise.resolve()
+  controller.abort(stale)
+  await assert.rejects(pending, (caught) => caught === stale)
+})
+
 test('未配置视觉模型时不返回执行器', () => {
   // 拿一个永远失败的执行器去跑，会把「没配模型」变成一串看不懂的失败。
   assert.equal(createEvaluatorSkillRunner({ runtimeConfig: {} }), undefined)

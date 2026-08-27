@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { createIdempotencyRequestBinding } from './idempotencyRequestBinding.mjs'
 import { agentRunCompiledPlanProvenance } from './creativePlanResolver.mjs'
 import { inferAspectRatioFromPixels, normalizeCustomGenerationSize } from './generationOutputSize.mjs'
 import { normalizeRegionRect } from './regionMaskPng.mjs'
@@ -413,6 +414,46 @@ export function validateAgentRunCreation(body) {
   }
 }
 
+export const agentRunSubmissionScope = 'agent-run.create'
+
+/** @param {any} input */
+export function agentRunSubmissionBinding(input) {
+  return createIdempotencyRequestBinding({
+    scope: agentRunSubmissionScope,
+    projectId: input.projectId,
+    request: {
+      projectId: input.projectId,
+      ...(input.turnId ? { turnId: input.turnId } : {}),
+      ...(input.lineage ? { lineage: input.lineage } : {}),
+      plan: input.plan,
+      branches: input.branches,
+    },
+  })
+}
+
+/**
+ * Legacy Run 没有 binding，但 Run 主体本身已完整保留首次确认的 immutable input。
+ * 只从这些字段派生；status/attempt/jobIds 等执行态绝不能进入请求摘要。
+ * @param {any} run
+ */
+export function storedAgentRunSubmissionBinding(run) {
+  if (run?.idempotencyBinding) return run.idempotencyBinding
+  if (!run?.projectId || !run?.plan || !Array.isArray(run?.branches)) return undefined
+  return agentRunSubmissionBinding({
+    projectId: run.projectId,
+    ...(run.turnId ? { turnId: run.turnId } : {}),
+    ...(run.lineage ? { lineage: run.lineage } : {}),
+    plan: run.plan,
+    branches: run.branches.map((branch) => ({
+      id: branch.id,
+      label: branch.label,
+      ...(branch.assetId ? { assetId: branch.assetId } : {}),
+      ...(branch.variation ? { variation: branch.variation } : {}),
+      ...(branch.item !== undefined ? { item: branch.item } : {}),
+    })),
+  })
+}
+
 function progress(run) {
   const completedBranchCount = run.branches.filter((branch) => branch.status === 'succeeded').length
   const failedBranchCount = run.branches.filter((branch) => branch.status === 'failed' || branch.status === 'cancelled').length
@@ -426,12 +467,18 @@ function progress(run) {
   return { ...run, status, completedBranchCount, failedBranchCount }
 }
 
-export function createPersistentAgentRun(input, { id = `agent_run_${randomUUID()}`, ownerId, now = Date.now() } = {}) {
+export function createPersistentAgentRun(input, {
+  id = `agent_run_${randomUUID()}`,
+  ownerId,
+  now = Date.now(),
+  idempotencyBinding,
+} = {}) {
   if (!ownerId) throw new TypeError('Agent Run 缺少所有者。')
   return progress({
     id,
     ownerId,
     projectId: input.projectId,
+    ...(idempotencyBinding ? { idempotencyBinding: structuredClone(idempotencyBinding) } : {}),
     ...(input.turnId ? { turnId: input.turnId } : {}),
     ...(input.lineage ? { lineage: structuredClone(input.lineage) } : {}),
     status: 'queued',
@@ -454,16 +501,104 @@ export function applyGenerationJobToAgentRun(run, job) {
   const branchIndex = run.branches.findIndex((branch) => branch.id === job.agentRun.branchId)
   if (branchIndex < 0 || !branchStatuses.has(job.status)) return run
   const now = Number(job.updatedAt) || Date.now()
+  const currentBranch = run.branches[branchIndex]
+  // activeJobId 是分支当前 execution identity。新 retry 已切换 identity 后，旧 Job
+  // 即便 terminal 投影更晚到达，也只能留在 jobIds 历史，不能夺回活动分支。
+  if (currentBranch.activeJobId && currentBranch.activeJobId !== job.id) return run
+  const currentUpdatedAt = Number(currentBranch.updatedAt) || 0
+  if (currentUpdatedAt > now
+    || (currentUpdatedAt === now
+      && ['succeeded', 'failed', 'cancelled'].includes(currentBranch.status)
+      && ['queued', 'running'].includes(job.status))) {
+    return run
+  }
+  const projectedOutputCount = Array.isArray(job.outputs) ? job.outputs.length : currentBranch.outputCount ?? 0
+  if (currentUpdatedAt === now
+    && currentBranch.activeJobId === job.id
+    && currentBranch.status === job.status
+    && (currentBranch.outputCount ?? 0) === projectedOutputCount
+    && (currentBranch.error ?? undefined) === (job.error ?? undefined)) return run
   const branches = run.branches.map((branch, index) => index !== branchIndex ? branch : {
     ...branch,
     status: job.status,
     activeJobId: job.id,
     jobIds: [...new Set([...(branch.jobIds ?? []), job.id])],
-    outputCount: Array.isArray(job.outputs) ? job.outputs.length : branch.outputCount ?? 0,
+    outputCount: projectedOutputCount,
     ...(job.error ? { error: job.error } : { error: undefined }),
     updatedAt: now,
   })
   return progress({ ...run, branches, updatedAt: now })
+}
+
+/**
+ * 普通整 Run 写入的分支级合并。
+ *
+ * 一个调用方可能只更新 A 分支，却携带读取时的旧 B 快照；仅按 Run.updatedAt LWW
+ * 会把 B 的并发 terminal Generation 投影覆盖掉。attempt 先确定 retry 世代，同世代
+ * 再按分支 updatedAt/terminal 优先合并，最后统一重算 Run 进度。
+ */
+export function mergeAgentRunForWrite(existing, incoming) {
+  if (!existing || existing.id !== incoming?.id) return incoming
+  let candidateRun = incoming
+  if (existing.idempotencyBinding) {
+    candidateRun = structuredClone(incoming)
+    for (const field of [
+      'id', 'ownerId', 'projectId', 'createdAt', 'turnId', 'lineage', 'plan', 'idempotencyBinding',
+    ]) {
+      if (Object.hasOwn(existing, field)) candidateRun[field] = structuredClone(existing[field])
+      else delete candidateRun[field]
+    }
+    const incomingBranches = new Map((incoming.branches ?? []).map((branch) => [branch.id, branch]))
+    candidateRun.branches = (existing.branches ?? []).map((stored) => {
+      const candidate = structuredClone(incomingBranches.get(stored.id) ?? stored)
+      for (const field of ['id', 'label', 'assetId', 'variation', 'item']) {
+        if (Object.hasOwn(stored, field)) candidate[field] = structuredClone(stored[field])
+        else delete candidate[field]
+      }
+      return candidate
+    })
+  }
+  if (!(existing.branches?.length) && !(candidateRun.branches?.length)) {
+    // awaiting_confirmation 等尚未展开分支的 Run 仍由实体 LWW 管理；空集合不能按
+    // “全部分支成功”误算成 completed。
+    return {
+      ...existing,
+      ...candidateRun,
+      updatedAt: Math.max(Number(existing.updatedAt) || 0, Number(candidateRun.updatedAt) || 0),
+    }
+  }
+  const existingBranches = new Map((existing.branches ?? []).map((branch) => [branch.id, branch]))
+  const seen = new Set()
+  const branches = (candidateRun.branches ?? []).map((candidate) => {
+    seen.add(candidate.id)
+    const stored = existingBranches.get(candidate.id)
+    if (!stored) return candidate
+    const storedAttempt = Number(stored.attempt) || 0
+    const candidateAttempt = Number(candidate.attempt) || 0
+    if (storedAttempt > candidateAttempt) return stored
+    if (candidateAttempt > storedAttempt) return candidate
+    if (stored.activeJobId && stored.activeJobId !== candidate.activeJobId) {
+      // 同一 attempt 出现两个 identity 是冲突快照；保留行锁内权威分支，避免旧整行写
+      // 凭更大的 Run.updatedAt 偷换或清空 execution identity。
+      return stored
+    }
+    const storedUpdatedAt = Number(stored.updatedAt) || 0
+    const candidateUpdatedAt = Number(candidate.updatedAt) || 0
+    if (storedUpdatedAt > candidateUpdatedAt) return stored
+    if (candidateUpdatedAt > storedUpdatedAt) return candidate
+    if (['succeeded', 'failed', 'cancelled'].includes(stored.status)
+      && ['queued', 'running'].includes(candidate.status)) return stored
+    return candidate
+  })
+  for (const stored of existing.branches ?? []) {
+    if (!seen.has(stored.id)) branches.push(stored)
+  }
+  const updatedAt = Math.max(
+    Number(existing.updatedAt) || 0,
+    Number(candidateRun.updatedAt) || 0,
+    ...branches.map((branch) => Number(branch.updatedAt) || 0),
+  )
+  return progress({ ...existing, ...candidateRun, branches, updatedAt })
 }
 
 export function prepareAgentBranchRetry(run, branchId, { jobId, now = Date.now() }) {

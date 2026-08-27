@@ -27,6 +27,8 @@ const job = {
   error: '生成服务响应超时，任务已停止，请稍后重试。', createdAt: 1, updatedAt: 2,
   planFingerprint: 'plan-fp', branchFingerprint: 'branch-fp-b',
   providerAttempts: [{ provider: 'openai', model: 'gpt-image-2', startedAt: 5 }],
+  executionVersion: 7,
+  execution: { generation: 7, leaseToken: 'PRIVATE_GENERATION_LEASE', leaseExpiresAt: 99 },
   rawInput: { prompt: '不该出现的 Prompt', recipe: { references: [{ dataUrl: 'data:image/png;base64,SECRET' }] } },
   cancel: { requestedAt: 9, reason: 'user', billing: 'possible', capability: 'local-abort-only', code: 'CANCELLED_RESULT_DISCARDED' },
 }
@@ -108,6 +110,8 @@ test('任务失败原因给错误码与 Provider 尝试，不给原始回包或 
   assert.equal(serialized.includes('不该出现的 Prompt'), false)
   assert.equal(serialized.includes('data:image'), false)
   assert.equal(serialized.includes('SECRET'), false)
+  assert.equal(serialized.includes('PRIVATE_GENERATION_LEASE'), false)
+  assert.equal(serialized.includes('executionVersion'), false)
 })
 
 test('历史结果检索不返回媒体地址', async () => {
@@ -141,6 +145,42 @@ test('评审读取暴露覆盖策略与被跳过数，逐条判据可见', async
   assert.equal(JSON.stringify(result).includes('decidedBy'), false)
 })
 
+test('review_read 对任务、结果、判据和决定分层有界，并准确报告 omitted', async () => {
+  const reviewTasks = Array.from({ length: 10 }, (_, taskIndex) => ({
+    id: `task-${taskIndex + 1}`, runId: 'run-many', status: 'completed',
+    results: Array.from({ length: 15 }, (_, resultIndex) => ({
+      artifactId: `artifact-${taskIndex + 1}-${resultIndex + 1}`,
+      verdict: 'pass', candidateStatus: 'reviewed',
+      criteria: Array.from({ length: 10 }, (_, criterionIndex) => ({
+        id: `criterion-${criterionIndex + 1}`, layer: 'visual', verdict: 'pass',
+        evidence: '证'.repeat(1_000),
+      })),
+    })),
+    decisions: Array.from({ length: 25 }, (_, decisionIndex) => ({
+      artifactId: `artifact-${taskIndex + 1}-${decisionIndex + 1}`,
+      decision: 'accepted', decidedAt: decisionIndex + 1,
+    })),
+  }))
+
+  const result = await tools({ readReviews: async () => reviewTasks })
+    .get('review_read').execute({ runId: 'run-many' })
+
+  assert.equal(result.total, 10)
+  assert.equal(result.tasks.length, 8)
+  assert.ok(result.tasks.every((task) => task.results.length === 12))
+  assert.ok(result.tasks.every((task) => task.results.every((entry) => entry.criteria.length === 8)))
+  assert.ok(result.tasks.every((task) => task.decisions.length === 20))
+  assert.ok(result.tasks.every((task) => task.results.every((entry) => (
+    entry.criteria.every((criterion) => criterion.evidence.length === 300)
+  ))))
+  assert.deepEqual(result.omitted, {
+    tasks: 2,
+    results: 54,
+    criteria: 732,
+    decisions: 90,
+  })
+})
+
 test('工作流运行逐项给出成败与错误码', async () => {
   const result = await tools().get('workflow_run_read').execute({ runId: 'wf-run-1' })
   assert.equal(result.run.status, 'partially_failed')
@@ -167,11 +207,12 @@ const executors = {
   cancelRun: async (args) => ({ cancelled: args }),
   promoteArtifact: async (args) => ({ promoted: args }),
   decideReview: async (args) => ({ decided: args }),
+  retryReview: async (args) => ({ retryRequested: args }),
   publishWorkflow: async (args) => ({ published: args }),
   retryWorkflowFailed: async (args) => ({ retried: args }),
 }
 
-test('Viewer 看不到任何写工具，Editor 与 Owner 按权限看到全部六个', () => {
+test('Viewer 看不到任何写工具，Editor 与 Owner 按权限看到全部七个', () => {
   // 不是「点了会失败」，而是根本看不到：模型看不到的工具不会被它拿去向用户承诺。
   assert.deepEqual(operationalActionToolsForRole('viewer'), [])
   assert.deepEqual(createBotanicAgentOperationalActionDefinitions({ role: 'viewer', ...executors }), [])
@@ -182,12 +223,13 @@ test('Viewer 看不到任何写工具，Editor 与 Owner 按权限看到全部�
 
 test('写工具全部需要确认，并按真实代价声明风险', () => {
   const definitions = createBotanicAgentOperationalActionDefinitions({ role: 'editor', ...executors })
-  assert.equal(definitions.length, 6)
+  assert.equal(definitions.length, 7)
   assert.ok(definitions.every((tool) => tool.requiresConfirmation === true))
   const byName = new Map(definitions.map((tool) => [tool.name, tool]))
   // 会调用 Provider 的两个声明 costly，其余是 write。
   assert.equal(byName.get('agent_branch_retry').risk, 'costly')
   assert.equal(byName.get('workflow_run_retry_failed').risk, 'costly')
+  assert.equal(byName.get('review_retry').risk, 'costly')
   assert.equal(byName.get('agent_run_cancel').risk, 'write')
   assert.equal(byName.get('review_decide').risk, 'write')
 })
@@ -197,14 +239,20 @@ test('缺执行器的写工具同样不暴露', () => {
   assert.deepEqual(definitions.map((tool) => tool.name), ['agent_run_cancel'])
 })
 
-test('评审决定只接受三种声明过的决定', () => {
+test('评审标记与付费重试拆成两个权限和风险不同的工具', () => {
   const decide = createBotanicAgentOperationalActionDefinitions({ role: 'editor', ...executors })
     .find((tool) => tool.name === 'review_decide')
   assert.deepEqual(
     decide.validate({ taskId: 't1', artifactId: 'a1', decision: 'accepted', note: ' 很好 ' }),
     { taskId: 't1', artifactId: 'a1', decision: 'accepted', note: '很好' },
   )
-  assert.throws(() => decide.validate({ taskId: 't1', artifactId: 'a1', decision: 'approve' }), /接受、拒绝或请求重试/u)
+  assert.throws(() => decide.validate({ taskId: 't1', artifactId: 'a1', decision: 'retry_requested' }), /接受或拒绝/u)
+  const retry = createBotanicAgentOperationalActionDefinitions({ role: 'editor', ...executors })
+    .find((tool) => tool.name === 'review_retry')
+  assert.deepEqual(
+    retry.validate({ taskId: 't1', artifactId: 'a1', note: ' 再来一张 ' }),
+    { taskId: 't1', artifactId: 'a1', note: '再来一张' },
+  )
 })
 
 test('分支重试与工作流发布的参数是显式标识，不让模型自由发挥', () => {

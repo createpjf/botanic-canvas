@@ -26,6 +26,9 @@ export const DERIVED_TASK_KINDS = Object.freeze([
   // 按服务端策略自动重试失败分支（Epic 5）。此前「要不要再跑一次」由浏览器决定，
   // 关掉页面就没有重试。
   'branch.retry',
+  // 恢复「Run 已落库，进程在首个 Generation Job 前崩溃」的提交窗口。
+  // 它只调用幂等提交服务，不自行创建 Job。
+  'run.submit',
 ])
 
 const kindSet = new Set(DERIVED_TASK_KINDS)

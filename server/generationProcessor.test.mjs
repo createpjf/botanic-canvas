@@ -4,10 +4,91 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { applyGenerationJobToAgentRun, createPersistentAgentRun } from './botanicAgentRun.mjs'
-import { createGenerationProcessor } from './generationProcessor.mjs'
+import { createGenerationProcessor as createRuntimeGenerationProcessor } from './generationProcessor.mjs'
 import { GenerationError } from './generationProvider.mjs'
 import { createLocalCancelRegistry } from './localCancelRegistry.mjs'
 import { createProductStore } from './productStore.mjs'
+
+/** 旧测试夹具只实现 read/put；在测试边界补齐与真实 Adapter 同形的原子 seam。 */
+function createGenerationProcessor(input) {
+  const source = input.productStore
+  if (typeof source.claimGenerationJobExecution === 'function') return createRuntimeGenerationProcessor(input)
+  let lock = Promise.resolve()
+  const serialized = (operation) => {
+    const result = lock.then(operation)
+    lock = result.catch(() => undefined)
+    return result
+  }
+  const productStore = {
+    ...source,
+    claimGenerationJobExecution(jobId, claim) {
+      return serialized(async () => {
+        const current = await source.readGenerationJobForWorker(jobId)
+        if (!current) return { kind: 'missing', changed: false }
+        if (current.status !== 'queued') return { kind: 'in_progress', changed: false, job: structuredClone(current) }
+        const job = {
+          ...current, status: 'running',
+          executionVersion: (Number(current.executionVersion) || 0) + 1,
+          execution: {
+            generation: (Number(current.executionVersion) || 0) + 1,
+            leaseToken: claim.leaseToken,
+            leaseDurationMs: claim.leaseDurationMs,
+            leaseExpiresAt: Date.now() + claim.leaseDurationMs,
+          },
+        }
+        await source.putGenerationJob(job.ownerId, job)
+        return { kind: 'claimed', changed: true, job: structuredClone(job) }
+      })
+    },
+    commitGenerationJobExecution(ownerId, command) {
+      return serialized(async () => {
+        const current = await source.readGenerationJobForWorker(command.id)
+        const sameLease = current?.execution?.leaseToken === command.leaseToken
+          && Number(current?.execution?.generation) === Number(command.executionGeneration)
+        if (!sameLease || current.status === 'cancelled') return { kind: 'stale', changed: false, job: structuredClone(current) }
+        if (['succeeded', 'failed'].includes(current.status) && current.status !== command.status) {
+          return { kind: 'stale', changed: false, job: structuredClone(current) }
+        }
+        const job = {
+          ...(command.job ? structuredClone(command.job) : current),
+          status: command.status,
+          executionVersion: Number(current.execution.generation),
+          execution: {
+            ...current.execution,
+            ...(command.status === 'running'
+              ? { leaseExpiresAt: Date.now() + current.execution.leaseDurationMs, lastHeartbeatAt: Date.now() }
+              : { settledAt: Date.now() }),
+          },
+        }
+        await source.putGenerationJob(ownerId, job, {
+          updateAgentRun: command.updateAgentRun,
+          recordAudit: command.recordAudit,
+        })
+        const stored = await source.readGenerationJobForWorker(command.id) ?? job
+        return { kind: 'committed', changed: true, job: structuredClone(stored) }
+      })
+    },
+    cancelGenerationJobExecution(ownerId, command) {
+      return serialized(async () => {
+        const current = await source.readGenerationJobForWorker(command.id)
+        if (!current || !['queued', 'running'].includes(current.status)) {
+          return { kind: 'replay', changed: false, job: structuredClone(current) }
+        }
+        const outcome = command.outcomes[current.status]
+        const job = {
+          ...current, status: 'cancelled', error: undefined,
+          cancel: {
+            requestedAt: command.requestedAt, reason: command.reason,
+            ...(command.requestedBy ? { requestedBy: command.requestedBy } : {}), ...outcome,
+          },
+        }
+        await source.putGenerationJob(ownerId, job)
+        return { kind: 'cancelled', changed: true, job: structuredClone(job) }
+      })
+    },
+  }
+  return createRuntimeGenerationProcessor({ ...input, productStore })
+}
 
 test('语义兼容备用 Provider 成功后按实际模型与 Provider 归因且不复制任务', async () => {
   let storedJob = {
@@ -119,7 +200,7 @@ test('普通生成任务也由服务端把生命周期状态权威回写到项�
     settings: { model: 'gpt-image-2' },
     outputs: [],
     rawInput: { prompt: '不应进入运行日志的私密提示词' },
-    agentRun: { runId: 'agent-run-direct', branchId: 'branch-direct' },
+    agentRun: { runId: 'agent-run-direct', branchId: 'branch-direct', attempt: 0 },
   }
   let document = {
     id: 'project-a',
@@ -133,6 +214,12 @@ test('普通生成任务也由服务端把生命周期状态权威回写到项�
   const productStore = {
     async readGenerationJobForWorker() { return storedJob },
     async putGenerationJob(_ownerId, job) { storedJob = job },
+    async readAgentRunForWorker() {
+      return {
+        id: 'agent-run-direct', ownerId: 'user-a', projectId: 'project-a', status: 'queued',
+        branches: [{ id: 'branch-direct', status: 'queued', attempt: 0, activeJobId: 'job-direct' }],
+      }
+    },
     async readProject() { return { document, revision, graphRevision: revision } },
     async writeProject(_ownerId, nextDocument) {
       document = nextDocument
@@ -421,7 +508,7 @@ test('成功任务只在画布回写与 Artifact 刷新后推进 Agent Run 终�
       settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' },
       recipe: { references: [{ name: '主素材', role: '商品', primary: true, dataUrl: 'data:image/png;base64,iVBORw0KGgo=' }] },
     },
-    agentRun: { runId: 'run-terminal-order', branchId: 'branch-terminal-order' },
+    agentRun: { runId: 'run-terminal-order', branchId: 'branch-terminal-order', attempt: 0 },
   }
   let storedRun = createPersistentAgentRun({
     projectId: 'project-a',
@@ -432,6 +519,7 @@ test('成功任务只在画布回写与 Artifact 刷新后推进 Agent Run 终�
     },
     branches: [{ id: 'branch-terminal-order', label: '主分支' }],
   }, { id: 'run-terminal-order', ownerId: 'user-a', now: createdAt })
+  storedRun = applyGenerationJobToAgentRun(storedRun, storedJob)
   const document = {
     id: 'project-a',
     nodes: [
@@ -447,6 +535,7 @@ test('成功任务只在画布回写与 Artifact 刷新后推进 Agent Run 终�
       if (options.updateAgentRun !== false && job.agentRun) {
         storedRun = applyGenerationJobToAgentRun(storedRun, job)
         events.push(`run-status:${storedRun.status}`)
+        events.push(`run-projection-pending:${Boolean(job.projectWritebackPending)}`)
       }
     },
     async readProject() { return { document, revision: 1, graphRevision: 1 } },
@@ -467,6 +556,180 @@ test('成功任务只在画布回写与 Artifact 刷新后推进 Agent Run 终�
   const terminalIndex = events.indexOf('run-status:completed')
   assert.ok(terminalIndex > events.lastIndexOf('canvas-writeback'))
   assert.ok(terminalIndex > events.lastIndexOf('artifact-refresh'))
+  assert.equal(events[terminalIndex + 1], 'run-projection-pending:true')
+  assert.equal(storedJob.projectWritebackPending, undefined)
+})
+
+test('终态 Job 已 durable 但 Run 投影失败时保留 succeeded pending，恢复不重跑 Provider', async () => {
+  const createdAt = Date.now()
+  let generated = 0
+  let failTerminalRunProjection = true
+  let storedJob = {
+    id: 'job-run-projection-recovery', ownerId: 'user-a', projectId: 'project-a', status: 'queued', kind: 'generation',
+    createdAt, updatedAt: createdAt, batchCount: 1,
+    settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' }, outputs: [],
+    rawInput: {
+      projectId: 'project-a', kind: 'generation', prompt: '生成一张结果图', batchCount: 1,
+      settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' }, recipe: { references: [] },
+    },
+    agentRun: { runId: 'run-projection-recovery', branchId: 'branch-a', attempt: 0 },
+  }
+  let storedRun = createPersistentAgentRun({
+    projectId: 'project-a',
+    plan: {
+      intent: 'initial_generation', instruction: '生成一张结果图', summary: '生成结果', prompt: '生成一张结果图',
+      settings: storedJob.settings, constraints: [], output: { mode: 'single', count: 1, candidatesPerItem: 1 },
+    },
+    branches: [{ id: 'branch-a', label: '主分支' }],
+  }, { id: 'run-projection-recovery', ownerId: 'user-a', now: createdAt })
+  storedRun = applyGenerationJobToAgentRun(storedRun, storedJob)
+  const productStore = {
+    async readGenerationJobForWorker() { return structuredClone(storedJob) },
+    async putGenerationJob(_ownerId, job, options = {}) {
+      storedJob = structuredClone(job)
+      if (options.updateAgentRun !== false && job.agentRun) {
+        if (job.status === 'succeeded' && failTerminalRunProjection) {
+          failTerminalRunProjection = false
+          throw new Error('Agent Run 数据库暂不可用')
+        }
+        storedRun = applyGenerationJobToAgentRun(storedRun, job)
+      }
+    },
+    async readProject() { return undefined },
+    async refreshGenerationArtifacts() { return true },
+    async readAgentRunForWorker() { return structuredClone(storedRun) },
+  }
+  const processJob = createGenerationProcessor({
+    productStore,
+    mediaService: {},
+    config: { modelOptions: [{ id: 'gpt-image-2', provider: 'openai', mediaKind: 'image', aspectRatios: ['1:1'], resolutions: ['1K'] }] },
+    generate: async () => {
+      generated += 1
+      return { outputs: [{ id: 'output-a', image: '/api/media/output-a' }], missingOutputCount: 0 }
+    },
+  })
+
+  await processJob(storedJob.id)
+
+  assert.equal(storedJob.status, 'succeeded')
+  assert.equal(storedJob.projectWritebackPending, true)
+  assert.notEqual(storedRun.status, 'completed')
+
+  await processJob(storedJob.id)
+
+  assert.equal(generated, 1)
+  assert.equal(storedJob.status, 'succeeded')
+  assert.equal(storedJob.projectWritebackPending, undefined)
+  assert.equal(storedRun.status, 'completed')
+})
+
+test('失败任务有部分输出时，Artifact 未完成不得清恢复标记或推进 Run', async () => {
+  const createdAt = Date.now()
+  let storedJob = {
+    id: 'job-failed-partial-artifact', ownerId: 'user-a', projectId: 'project-a', status: 'queued', kind: 'generation',
+    createdAt, updatedAt: createdAt, batchCount: 2,
+    settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' },
+    outputs: [],
+    rawInput: {
+      projectId: 'project-a', kind: 'generation', prompt: '生成两张结果图', batchCount: 2,
+      settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' },
+      recipe: { references: [{ name: '主素材', role: '商品', primary: true, dataUrl: 'data:image/png;base64,iVBORw0KGgo=' }] },
+    },
+    agentRun: { runId: 'run-failed-partial-artifact', branchId: 'branch-a', attempt: 0 },
+  }
+  let storedRun = createPersistentAgentRun({
+    projectId: 'project-a',
+    plan: {
+      intent: 'initial_generation', instruction: '生成两张结果图', summary: '生成结果', prompt: '生成两张结果图',
+      settings: storedJob.settings, constraints: [], output: { mode: 'single', count: 1, candidatesPerItem: 2 },
+    },
+    branches: [{ id: 'branch-a', label: '主分支' }],
+  }, { id: 'run-failed-partial-artifact', ownerId: 'user-a', now: createdAt })
+  storedRun = applyGenerationJobToAgentRun(storedRun, storedJob)
+  let refreshCount = 0
+  let artifactReady = false
+  let generated = 0
+  const productStore = {
+    async readGenerationJobForWorker() { return structuredClone(storedJob) },
+    async putGenerationJob(_ownerId, job, options = {}) {
+      storedJob = structuredClone(job)
+      if (options.updateAgentRun !== false && job.agentRun) {
+        storedRun = applyGenerationJobToAgentRun(storedRun, job)
+      }
+    },
+    async readProject() { return undefined },
+    async refreshGenerationArtifacts() { refreshCount += 1; return artifactReady },
+    async readAgentRunForWorker() { return structuredClone(storedRun) },
+  }
+  const processJob = createGenerationProcessor({
+    productStore,
+    mediaService: {},
+    config: { modelOptions: [{ id: 'gpt-image-2', provider: 'openai', mediaKind: 'image', aspectRatios: ['1:1'], resolutions: ['1K'] }] },
+    generate: async (_input, { onVariant }) => {
+      generated += 1
+      await onVariant({ index: 0, status: 'succeeded', output: { id: 'partial-a', image: '/api/media/partial-a' } })
+      throw new GenerationError(502, 'GENERATION_FAILED', '第二张生成失败。')
+    },
+  })
+
+  await processJob(storedJob.id)
+
+  assert.equal(refreshCount, 1)
+  assert.equal(storedJob.status, 'failed')
+  assert.equal(storedJob.outputs.length, 1)
+  assert.equal(storedJob.projectWritebackPending, true)
+  assert.notEqual(storedRun.status, 'failed')
+
+  artifactReady = true
+  await processJob(storedJob.id)
+
+  assert.equal(refreshCount, 2)
+  assert.equal(generated, 1)
+  assert.equal(storedJob.projectWritebackPending, undefined)
+  assert.equal(storedRun.status, 'failed')
+})
+
+test('Provider 失败前未 await 的最后一个成功 variant 仍保留在失败任务中', async () => {
+  const createdAt = Date.now()
+  let storedJob = {
+    id: 'job-failed-inflight-partial', ownerId: 'user-a', projectId: 'project-a', status: 'queued', kind: 'generation',
+    createdAt, updatedAt: createdAt, batchCount: 2,
+    settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' },
+    outputs: [],
+    rawInput: {
+      projectId: 'project-a', kind: 'generation', prompt: '生成两张结果图', batchCount: 2,
+      settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' }, recipe: { references: [] },
+    },
+  }
+  let delayedVariantWrite = false
+  const productStore = {
+    async readGenerationJobForWorker() { return structuredClone(storedJob) },
+    async putGenerationJob(_ownerId, job) {
+      if (!delayedVariantWrite && job.status === 'running' && job.outputs?.length === 1) {
+        delayedVariantWrite = true
+        // 让 failure catch 有机会在该写入完成前运行，稳定复现旧实现先读旧快照的竞态。
+        await new Promise((resolve) => setImmediate(resolve))
+      }
+      storedJob = structuredClone(job)
+    },
+    async readProject() { return undefined },
+    async refreshGenerationArtifacts() { return true },
+  }
+  const processJob = createGenerationProcessor({
+    productStore,
+    mediaService: {},
+    config: { modelOptions: [{ id: 'gpt-image-2', provider: 'openai', mediaKind: 'image', aspectRatios: ['1:1'], resolutions: ['1K'] }] },
+    generate: async (_input, { onVariant }) => {
+      void onVariant({ index: 0, status: 'succeeded', output: { id: 'partial-inflight', image: '/api/media/partial-inflight' } })
+      throw new GenerationError(502, 'GENERATION_FAILED', '第二张生成失败。')
+    },
+  })
+
+  await processJob(storedJob.id)
+
+  assert.equal(delayedVariantWrite, true)
+  assert.equal(storedJob.status, 'failed')
+  assert.deepEqual(storedJob.outputs, [{ id: 'partial-inflight', image: '/api/media/partial-inflight' }])
 })
 
 test('Artifact Index 刷新失败时保留恢复标记，不提前推进 Agent Run 终态', async () => {
@@ -482,7 +745,7 @@ test('Artifact Index 刷新失败时保留恢复标记，不提前推进 Agent R
       settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' },
       recipe: { references: [{ name: '主素材', role: '商品', primary: true, dataUrl: 'data:image/png;base64,iVBORw0KGgo=' }] },
     },
-    agentRun: { runId: 'run-artifact-pending', branchId: 'branch-artifact-pending' },
+    agentRun: { runId: 'run-artifact-pending', branchId: 'branch-artifact-pending', attempt: 0 },
   }
   let storedRun = createPersistentAgentRun({
     projectId: 'project-a',
@@ -492,6 +755,7 @@ test('Artifact Index 刷新失败时保留恢复标记，不提前推进 Agent R
     },
     branches: [{ id: 'branch-artifact-pending', label: '主分支' }],
   }, { id: 'run-artifact-pending', ownerId: 'user-a', now: createdAt })
+  storedRun = applyGenerationJobToAgentRun(storedRun, storedJob)
   let document = {
     id: 'project-a',
     nodes: [
@@ -529,6 +793,140 @@ test('Artifact Index 刷新失败时保留恢复标记，不提前推进 Agent R
   assert.equal(events.includes('run-status:completed'), false)
   assert.equal(events.includes('published:completed'), false)
   assert.equal(document.nodes.find((node) => node.type === 'result')?.data.image, '/api/media/output-a')
+})
+
+test('Worker 恢复到 Turn 已取消的孤儿 Job 时 durable 取消且不调用 Provider', async () => {
+  const createdAt = Date.now()
+  let generated = 0
+  let storedJob = {
+    id: 'job-cancelled-turn-fence', ownerId: 'user-a', projectId: 'project-a', status: 'queued', kind: 'generation',
+    createdAt, updatedAt: createdAt, batchCount: 1,
+    settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' },
+    outputs: [], rawInput: {},
+    agentRun: { runId: 'run-cancelled-turn-fence', branchId: 'branch-a', attempt: 0 },
+  }
+  const run = {
+    id: 'run-cancelled-turn-fence', ownerId: 'user-a', projectId: 'project-a', turnId: 'turn-cancelled',
+    status: 'queued', branches: [{ id: 'branch-a', status: 'queued', attempt: 0, activeJobId: storedJob.id }],
+  }
+  const productStore = {
+    async readGenerationJobForWorker() { return structuredClone(storedJob) },
+    async putGenerationJob(_ownerId, job) { storedJob = structuredClone(job) },
+    async readAgentRunForWorker() { return structuredClone(run) },
+    async readAgentTurn() { return { id: 'turn-cancelled', projectId: 'project-a', status: 'cancelled' } },
+    async readProject() { return undefined },
+  }
+  const processJob = createGenerationProcessor({
+    productStore,
+    mediaService: {},
+    config: { modelOptions: [{ id: 'gpt-image-2', provider: 'openai', mediaKind: 'image' }] },
+    generate: async () => { generated += 1; return { outputs: [], missingOutputCount: 1 } },
+  })
+
+  await processJob(storedJob.id)
+
+  assert.equal(storedJob.status, 'cancelled')
+  assert.equal(storedJob.cancel?.reason, 'agent-run')
+  assert.equal(generated, 0)
+})
+
+test('Worker 在 Provider 前复读 Turn fence，封住首次检查后到达的取消', async () => {
+  const createdAt = Date.now()
+  let generated = 0
+  let turnReads = 0
+  let storedJob = {
+    id: 'job-late-turn-fence', ownerId: 'user-a', projectId: 'project-a', status: 'queued', kind: 'generation',
+    createdAt, updatedAt: createdAt, batchCount: 1,
+    settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' },
+    outputs: [],
+    rawInput: {
+      projectId: 'project-a', kind: 'generation', prompt: '生成一张图', batchCount: 1,
+      settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' }, recipe: { references: [] },
+    },
+    agentRun: { runId: 'run-late-turn-fence', branchId: 'branch-a', attempt: 0 },
+  }
+  const run = {
+    id: 'run-late-turn-fence', ownerId: 'user-a', projectId: 'project-a', turnId: 'turn-late-cancel',
+    status: 'queued', branches: [{ id: 'branch-a', status: 'queued', attempt: 0, activeJobId: storedJob.id }],
+  }
+  const productStore = {
+    async readGenerationJobForWorker() { return structuredClone(storedJob) },
+    async putGenerationJob(_ownerId, job) { storedJob = structuredClone(job) },
+    async readAgentRunForWorker() { return structuredClone(run) },
+    async readAgentTurn() {
+      turnReads += 1
+      return { id: 'turn-late-cancel', projectId: 'project-a', status: turnReads === 1 ? 'completed' : 'cancelling' }
+    },
+    async readProject() { return undefined },
+  }
+  const processJob = createGenerationProcessor({
+    productStore,
+    mediaService: {},
+    config: {
+      modelOptions: [{ id: 'gpt-image-2', provider: 'openai', mediaKind: 'image', aspectRatios: ['1:1'], resolutions: ['1K'] }],
+      maximumBatchCount: 4, maximumReferenceBytes: 1024,
+    },
+    generate: async () => { generated += 1; return { outputs: [], missingOutputCount: 1 } },
+  })
+
+  await processJob(storedJob.id)
+
+  assert.equal(turnReads, 2)
+  assert.equal(storedJob.status, 'cancelled')
+  assert.equal(generated, 0)
+})
+
+test('Provider 执行期间漏掉 cancel signal 时，结果落库前的 durable fence 不让 Run 复活', async () => {
+  const createdAt = Date.now()
+  let generated = 0
+  let turnReads = 0
+  let storedJob = {
+    id: 'job-post-provider-turn-fence', ownerId: 'user-a', projectId: 'project-a', status: 'queued', kind: 'generation',
+    createdAt, updatedAt: createdAt, batchCount: 1,
+    settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' },
+    outputs: [],
+    rawInput: {
+      projectId: 'project-a', kind: 'generation', prompt: '生成一张图', batchCount: 1,
+      settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' }, recipe: { references: [] },
+    },
+    agentRun: { runId: 'run-post-provider-turn-fence', branchId: 'branch-a', attempt: 0 },
+  }
+  const run = {
+    id: 'run-post-provider-turn-fence', ownerId: 'user-a', projectId: 'project-a', turnId: 'turn-post-provider-cancel',
+    status: 'running', branches: [{ id: 'branch-a', status: 'running', attempt: 0, activeJobId: storedJob.id }],
+  }
+  const productStore = {
+    async readGenerationJobForWorker() { return structuredClone(storedJob) },
+    async putGenerationJob(_ownerId, job) { storedJob = structuredClone(job) },
+    async readAgentRunForWorker() { return structuredClone(run) },
+    async readAgentTurn() {
+      turnReads += 1
+      return {
+        id: 'turn-post-provider-cancel', projectId: 'project-a',
+        status: turnReads < 4 ? 'completed' : 'cancelling',
+      }
+    },
+    async readProject() { return undefined },
+  }
+  const processJob = createGenerationProcessor({
+    productStore,
+    mediaService: {},
+    config: {
+      modelOptions: [{ id: 'gpt-image-2', provider: 'openai', mediaKind: 'image', aspectRatios: ['1:1'], resolutions: ['1K'] }],
+      maximumBatchCount: 4, maximumReferenceBytes: 1024,
+    },
+    generate: async () => {
+      generated += 1
+      return { outputs: [{ id: 'paid-output', image: '/api/media/paid-output' }], missingOutputCount: 0 }
+    },
+  })
+
+  await processJob(storedJob.id)
+
+  assert.equal(generated, 1)
+  assert.equal(turnReads, 4)
+  assert.equal(storedJob.status, 'cancelled')
+  assert.deepEqual(storedJob.outputs, [])
 })
 
 /** 取消相关用例共用的最小 Worker 夹具：只保留状态读写与 Provider 桩。 */
@@ -639,4 +1037,24 @@ test('超时判失败后 Provider 才成功：不改写终态，但留下可观�
   } finally {
     console.warn = originalWarn
   }
+})
+
+test('外部超时已落 failed 后，迟到 variant 回调不得再改写终态 outputs', async () => {
+  let flip = () => {}
+  const { processJob, job } = cancelHarness('queued', async (_input, { onVariant }) => {
+    flip()
+    await onVariant({ index: 0, status: 'succeeded', output: { id: 'late-variant', image: '/api/media/late-variant' } })
+    return { outputs: [{ id: 'late-variant', image: '/api/media/late-variant' }], missingOutputCount: 0 }
+  })
+  flip = () => {
+    Object.assign(job(), {
+      status: 'failed',
+      error: '生成任务超过模型等待时限，已停止，请稍后重试。',
+    })
+  }
+
+  await processJob('job-cancel')
+
+  assert.equal(job().status, 'failed')
+  assert.deepEqual(job().outputs, [])
 })

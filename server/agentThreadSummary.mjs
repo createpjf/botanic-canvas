@@ -1,5 +1,8 @@
 // @ts-check
 
+import { canonicalHash } from './canonicalHash.mjs'
+import { validateAgentEntityReferences } from './agentEntityReferences.mjs'
+
 /**
  * 线程摘要检查点（Epic 8）。
  *
@@ -41,6 +44,9 @@ const ENTITY_LIMIT = 40
 const ARTIFACT_LIMIT = 12
 const ARTIFACT_LABEL_LIMIT = 60
 const TEXT_LIMIT = 400
+const COVERED_MESSAGE_LIMIT = 200
+const FACT_CANDIDATE_LIMIT = COVERED_MESSAGE_LIMIT
+const SUMMARY_ARTIFACT_KINDS = new Set(['image', 'video', 'text', 'workflow', 'asset_group', 'file'])
 
 /**
  * 摘要里的每一段文本都要过这里。
@@ -75,6 +81,17 @@ function uniqueList(values, limit) {
 const CONFIRMED_PLAN_STATUS = 'submitted'
 
 /**
+ * 同一消息实体会原地从 pending 更新为 answered/submitted，ID 不会变化。
+ * 因此增量检查点必须跟踪实体版本，不能把「见过这个 ID」误当成「见过它的最新状态」。
+ * 这里只记录时间戳和状态，不复制 Prompt、媒体或消息内容。
+ */
+export function messageSummaryRevision(message) {
+  const updatedAt = Number(message?.updatedAt ?? message?.createdAt) || 0
+  const status = typeof message?.status === 'string' ? message.status : ''
+  return `${updatedAt}:${status}:${summaryRelevantDigest(message)}`
+}
+
+/**
  * 从一条已确认的计划消息里取出决策事实。
  *
  * 只取结构字段，不取 Prompt 原文：Prompt 可能很长，而且它是执行细节，不是「用户决定了
@@ -93,83 +110,240 @@ function decisionFromMessage(message) {
   }
 }
 
+function artifactReferencesFromMessage(message) {
+  return [
+    ...(Array.isArray(message?.artifacts) ? message.artifacts : []),
+    ...(Array.isArray(message?.plan?.actions)
+      ? message.plan.actions.flatMap((action) => (Array.isArray(action?.result?.artifacts) ? action.result.artifacts : []))
+      : []),
+  ]
+}
+
+function sanitizedArtifactReferences(message) {
+  return artifactReferencesFromMessage(message)
+    .filter((artifact) => typeof artifact?.id === 'string' && artifact.id.trim())
+    .map((artifact) => ({
+      id: artifact.id.trim().slice(0, 200),
+      kind: SUMMARY_ARTIFACT_KINDS.has(artifact.kind) ? artifact.kind : 'file',
+      label: redactSummaryText(artifact.label ?? '').slice(0, ARTIFACT_LABEL_LIMIT),
+    }))
+}
+
+function trustedEntityReferencesFromMessage(message) {
+  if (
+    message?.role !== 'assistant'
+    || typeof message?.turnId !== 'string'
+    || message.id !== `agent-turn-result-${message.turnId}`
+    || message.entityReferences === undefined
+  ) return []
+  return validateAgentEntityReferences(message.entityReferences)
+}
+
+function summaryFactsFromMessage(message) {
+  const confirmedPlan = message?.kind === 'plan' && message?.status === CONFIRMED_PLAN_STATUS
+  const goal = message?.role === 'user' && message?.kind === 'text'
+    ? redactSummaryText(message.content)
+    : ''
+  const decision = confirmedPlan ? decisionFromMessage(message) : undefined
+  const openQuestion = message?.kind === 'question' && message?.status === 'pending'
+    ? {
+        messageId: message.id,
+        question: redactSummaryText(message.question?.question ?? message.content),
+      }
+    : undefined
+  return {
+    goals: goal ? [goal] : [],
+    decisions: decision ? [decision] : [],
+    constraints: confirmedPlan
+      ? (message.plan?.constraints ?? []).map((constraint) => `${constraint.dimension}:${constraint.mode}`)
+      : [],
+    openQuestions: openQuestion?.question ? [openQuestion] : [],
+    entityIds: uniqueList([
+      message?.runId,
+      ...(message?.mentions ?? []).map((mention) => mention?.nodeId ?? mention?.id),
+    ], ENTITY_LIMIT),
+    artifacts: sanitizedArtifactReferences(message),
+    entityReferences: trustedEntityReferencesFromMessage(message),
+  }
+}
+
+/**
+ * 只覆盖会改变 summary 事实的字段。同一 updatedAt/status 下发生内容改写时，digest
+ * 仍会让增量检查点识别到 revision；Prompt、URL、raw output 不进入哈希输入。
+ */
+export function summaryRelevantDigest(message) {
+  return canonicalHash(summaryFactsFromMessage(message))
+}
+
+function factCandidateFromMessage(message) {
+  const facts = summaryFactsFromMessage(message)
+  return {
+    messageId: message.id,
+    revision: messageSummaryRevision(message),
+    occurredAt: Number(message.updatedAt ?? message.createdAt) || 0,
+    ...(facts.goals.length ? { goals: facts.goals } : {}),
+    ...(facts.decisions.length ? { decisions: facts.decisions } : {}),
+    ...(facts.constraints.length ? { constraints: facts.constraints } : {}),
+    ...(facts.openQuestions.length ? { openQuestions: facts.openQuestions } : {}),
+    ...(facts.entityIds.length ? { entityIds: facts.entityIds } : {}),
+    ...(facts.artifacts.length ? { artifacts: facts.artifacts } : {}),
+    ...(facts.entityReferences.length ? { entityReferences: facts.entityReferences } : {}),
+  }
+}
+
+function hasCandidateFacts(candidate) {
+  return [
+    'goals', 'decisions', 'constraints', 'openQuestions',
+    'entityIds', 'artifacts', 'entityReferences',
+  ].some((field) => Array.isArray(candidate?.[field]) && candidate[field].length > 0)
+}
+
+/** legacy v1 没有逐 Message provenance，不能安全做撤回/修订。 */
+export function hasThreadSummaryFactProvenance(summary) {
+  if (!Array.isArray(summary?.factCandidates) || !Array.isArray(summary?.coveredMessageRevisions)) return false
+  const revisions = new Map()
+  for (const entry of summary.coveredMessageRevisions) {
+    if (
+      typeof entry?.messageId !== 'string'
+      || typeof entry?.revision !== 'string'
+      || revisions.has(entry.messageId)
+    ) return false
+    revisions.set(entry.messageId, entry.revision)
+  }
+  const candidates = new Set()
+  return summary.factCandidates.every((candidate) => {
+    if (
+      typeof candidate?.messageId !== 'string'
+      || typeof candidate?.revision !== 'string'
+      || candidates.has(candidate.messageId)
+      || (revisions.has(candidate.messageId) && revisions.get(candidate.messageId) !== candidate.revision)
+    ) return false
+    candidates.add(candidate.messageId)
+    return true
+  })
+}
+
+function newestCandidateValues(candidates, field, keyOf, limit) {
+  const selected = []
+  const seen = new Set()
+  outer: for (let index = candidates.length - 1; index >= 0; index -= 1) {
+    const values = Array.isArray(candidates[index]?.[field]) ? candidates[index][field] : []
+    for (let valueIndex = values.length - 1; valueIndex >= 0; valueIndex -= 1) {
+      const value = values[valueIndex]
+      const key = keyOf(value)
+      if (!key || seen.has(key)) continue
+      seen.add(key)
+      selected.push(value)
+      if (selected.length >= limit) break outer
+    }
+  }
+  return selected.reverse()
+}
+
+function stableMessageOrder(left, right) {
+  const timeDifference = (Number(left?.occurredAt ?? left?.updatedAt ?? left?.createdAt) || 0)
+    - (Number(right?.occurredAt ?? right?.updatedAt ?? right?.createdAt) || 0)
+  if (timeDifference) return timeDifference
+  const leftId = String(left?.messageId ?? left?.id ?? '')
+  const rightId = String(right?.messageId ?? right?.id ?? '')
+  return leftId < rightId ? -1 : leftId > rightId ? 1 : 0
+}
+
 /**
  * 建立/刷新线程摘要检查点。
  *
- * `previous` 存在时做增量：已覆盖的消息不再重复扫描，且旧检查点里的事实不被丢弃 ——
- * 检查点只增不改写历史，否则「早期决策」会随着新一轮压缩而悄悄消失。
+ * `previous` 存在且带逐 Message provenance 时做增量：revision 变化会先移除该 Message
+ * 的旧 candidate，再用新版本重建。这样修订/撤回不会留下幽灵事实，重复事实的较新来源
+ * 撤回后，较旧来源又能确定性回退。
  *
- * @param {{ messages?: any[], previous?: any, now?: number }} input
+ * legacy v1 没有 factCandidates，只有调用方证明 `fullHistory` 后才允许从零升级；否则
+ * 原样沿用旧摘要且不写回，避免拿不完整分页覆盖早期事实。
+ *
+ * @param {{ messages?: any[], previous?: any, now?: number, fullHistory?: boolean }} input
  */
-export function buildThreadSummaryCheckpoint({ messages = [], previous, now = Date.now() } = {}) {
-  const covered = new Set(previous?.coveredMessageIds ?? [])
-  const fresh = messages.filter((message) => message?.id && !covered.has(message.id))
-  if (!fresh.length) return previous
-  const goals = uniqueList([
-    ...(previous?.goals ?? []),
-    ...fresh.filter((message) => message.role === 'user' && message.kind === 'text')
-      .slice(0, GOAL_LIMIT)
-      .map((message) => redactSummaryText(message.content)),
-  ], GOAL_LIMIT)
-  const decisions = [
-    ...(previous?.decisions ?? []),
-    ...fresh.filter((message) => message.kind === 'plan' && message.status === CONFIRMED_PLAN_STATUS)
-      .map(decisionFromMessage)
-      .filter(Boolean),
-  ].slice(-DECISION_LIMIT)
-  const constraints = [
-    ...(previous?.constraints ?? []),
-    ...fresh.flatMap((message) => (message.kind === 'plan' && message.status === CONFIRMED_PLAN_STATUS
-      ? (message.plan?.constraints ?? []).map((constraint) => `${constraint.dimension}:${constraint.mode}`)
-      : [])),
-  ]
-  const openQuestions = [
-    // 已经答过的追问不再是开放问题：上一轮的 pending 在这一轮可能已经 answered。
-    ...(previous?.openQuestions ?? []).filter((entry) => !fresh.some((message) => (
-      message.id === entry.messageId && message.status !== 'pending'
-    ))),
-    ...fresh.filter((message) => message.kind === 'question' && message.status === 'pending')
-      .map((message) => ({
-        messageId: message.id,
-        question: redactSummaryText(message.question?.question ?? message.content),
+export function buildThreadSummaryCheckpoint({ messages = [], previous, now = Date.now(), fullHistory = false } = {}) {
+  if (previous && !hasThreadSummaryFactProvenance(previous)) {
+    if (!fullHistory) return previous
+    previous = undefined
+  }
+  const covered = new Set([
+    ...(previous?.coveredMessageIds ?? []),
+    ...(previous?.factCandidates ?? []).map((candidate) => candidate?.messageId).filter(Boolean),
+  ])
+  const previousRevisions = new Map(
+    [
+      ...(previous?.coveredMessageRevisions ?? []),
+      ...(previous?.factCandidates ?? []).map((candidate) => ({
+        messageId: candidate?.messageId,
+        revision: candidate?.revision,
       })),
-  ].slice(-QUESTION_LIMIT)
-  const entityIds = uniqueList([
-    ...(previous?.entityIds ?? []),
-    ...fresh.map((message) => message.runId).filter(Boolean),
-    ...fresh.flatMap((message) => (message.mentions ?? []).map((mention) => mention?.nodeId ?? mention?.id)),
-  ], ENTITY_LIMIT)
-  // `artifact_reference` 层此前只体现为实体标识，没有任何可回读的指针 —— 结果一旦被
-  // 挤出窗口，模型既不知道有过这些产出，也就不会想到去 `artifact_search` 回读它们，
-  // 于是「上次那版在哪」是凭空作答的。
-  //
-  // 这里存的是**目录**：标识 + 标签 + 类型，各自截断。刻意**不存** `content` / `url` /
-  // `metadata` —— 那才是「把结果内容重新塞回上下文」，正是 compaction 要避免的事。
-  const artifacts = [
-    ...(previous?.artifacts ?? []),
-    ...fresh.flatMap((message) => (message.artifacts ?? [])
-      .filter((artifact) => typeof artifact?.id === 'string' && artifact.id.trim())
-      .map((artifact) => ({
-        id: artifact.id.trim().slice(0, 200),
-        kind: artifact.kind ?? 'file',
-        label: redactSummaryText(artifact.label ?? '').slice(0, ARTIFACT_LABEL_LIMIT),
-      }))),
-  ]
-    .filter((artifact, index, all) => all.findIndex((entry) => entry.id === artifact.id) === index)
-    // 留最近的：早期结果更可能已经被后续版本取代。
-    .slice(-ARTIFACT_LIMIT)
+    ]
+      .filter((entry) => typeof entry?.messageId === 'string' && typeof entry?.revision === 'string')
+      .map((entry) => [entry.messageId, entry.revision]),
+  )
+  const fresh = messages.filter((message) => (
+    message?.id
+    && (!covered.has(message.id) || previousRevisions.get(message.id) !== messageSummaryRevision(message))
+  ))
+  if (!fresh.length) return previous
+  const orderedFresh = [...fresh].sort(stableMessageOrder)
+  const candidateByMessageId = new Map(
+    (previous?.factCandidates ?? []).map((candidate) => [candidate.messageId, candidate]),
+  )
+  for (const message of orderedFresh) {
+    candidateByMessageId.delete(message.id)
+    const candidate = factCandidateFromMessage(message)
+    if (hasCandidateFacts(candidate)) candidateByMessageId.set(message.id, candidate)
+  }
+  const factCandidates = [...candidateByMessageId.values()]
+    .sort(stableMessageOrder)
+    .slice(-FACT_CANDIDATE_LIMIT)
+  const goals = newestCandidateValues(factCandidates, 'goals', (value) => value, GOAL_LIMIT)
+  const decisions = newestCandidateValues(
+    factCandidates, 'decisions', (value) => value?.messageId, DECISION_LIMIT,
+  )
+  const constraints = newestCandidateValues(
+    factCandidates,
+    'constraints',
+    (value) => typeof value === 'string' ? value.split(':', 1)[0] : '',
+    CONSTRAINT_LIMIT,
+  )
+  const openQuestions = newestCandidateValues(
+    factCandidates, 'openQuestions', (value) => value?.messageId, QUESTION_LIMIT,
+  )
+  const entityIds = newestCandidateValues(factCandidates, 'entityIds', (value) => value, ENTITY_LIMIT)
+  const artifacts = newestCandidateValues(factCandidates, 'artifacts', (value) => value?.id, ARTIFACT_LIMIT)
+  const entityReferences = newestCandidateValues(
+    factCandidates,
+    'entityReferences',
+    (value) => value?.type && value?.id ? `${value.type}:${value.id}` : '',
+    24,
+  )
+  for (const message of orderedFresh) previousRevisions.set(message.id, messageSummaryRevision(message))
+  const freshMessageIds = [...new Set(orderedFresh.map((message) => message.id))]
+  const freshMessageIdSet = new Set(freshMessageIds)
+  const coveredMessageIds = [
+    ...(previous?.coveredMessageIds ?? []).filter((messageId) => !freshMessageIdSet.has(messageId)),
+    ...freshMessageIds,
+  ].slice(-COVERED_MESSAGE_LIMIT)
   return {
     version: 1,
     goals,
     decisions,
-    constraints: uniqueList(constraints, CONSTRAINT_LIMIT),
+    constraints,
     openQuestions,
     entityIds,
     ...(artifacts.length ? { artifacts } : {}),
-    coveredMessageIds: [...covered, ...fresh.map((message) => message.id)].slice(-200),
+    ...(entityReferences.length ? { entityReferences } : {}),
+    factCandidates,
+    coveredMessageIds,
+    coveredMessageRevisions: coveredMessageIds.flatMap((messageId) => {
+      const revision = previousRevisions.get(messageId)
+      return revision === undefined ? [] : [{ messageId, revision }]
+    }),
     coveredThrough: Math.max(
       Number(previous?.coveredThrough ?? 0),
-      ...fresh.map((message) => Number(message.updatedAt ?? message.createdAt) || 0),
+      ...orderedFresh.map((message) => Number(message.updatedAt ?? message.createdAt) || 0),
     ),
     updatedAt: now,
   }
@@ -214,6 +388,12 @@ export function renderThreadSummary(summary, { locale = 'zh-CN' } = {}) {
     lines.push(en
       ? `Earlier results (identifiers only — read details with the artifact lookup tool, do not describe them from memory): ${rendered.join(' / ')}`
       : `早前的产出（**只有标识**，内容需用结果检索工具回读，不要凭这行描述画面）：${rendered.join('；')}`)
+  }
+  if (summary.entityReferences?.length) {
+    const rendered = summary.entityReferences.map((reference) => `${reference.type}:${reference.id}`)
+    lines.push(en
+      ? `Earlier entity references (identifiers only — use the matching read tool): ${rendered.join(', ')}`
+      : `早前业务引用（仅标识，需用对应只读工具回读）：${rendered.join('、')}`)
   }
   if (!lines.length) return ''
   const header = en

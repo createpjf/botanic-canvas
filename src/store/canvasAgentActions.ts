@@ -10,6 +10,7 @@ import {
   updateBotanicAgentSessionReadingAnchor,
   updateBotanicAgentAction,
   updateBotanicAgentMessage,
+  upsertBotanicAgentMessage,
   updateBotanicAgentRun,
   upsertBotanicAgentRunSnapshot,
   mergeBotanicAgentCanvasPatch,
@@ -28,6 +29,7 @@ type AgentStoreActions = Pick<CanvasStore,
   | 'ensureAgentSession'
   | 'startNewAgentSession'
   | 'appendAgentMessage'
+  | 'upsertAgentMessage'
   | 'updateAgentMessage'
   | 'updateAgentAction'
   | 'setAgentSessionContext'
@@ -186,6 +188,19 @@ export function createCanvasAgentActions({
         ...document,
         agentSessions: document.agentSessions.map((candidate) => candidate.id === sessionId
           ? appendBotanicAgentMessage(candidate, message)
+          : candidate),
+        activeAgentSessionId: sessionId,
+      })
+    },
+
+    upsertAgentMessage: (sessionId, message) => {
+      const document = get().document
+      const session = document.agentSessions.find((item) => item.id === sessionId)
+      if (!session) return
+      commitAgentSessionDocument({
+        ...document,
+        agentSessions: document.agentSessions.map((candidate) => candidate.id === sessionId
+          ? upsertBotanicAgentMessage(candidate, message)
           : candidate),
         activeAgentSessionId: sessionId,
       })

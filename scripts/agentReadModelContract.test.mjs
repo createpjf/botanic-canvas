@@ -44,3 +44,17 @@ test('writeProject 落库前剥离 agentSessions 内嵌消息', () => {
     assert.match(source, /stripAgentMessagesFromDocument/)
   }
 })
+
+test('独立 Message 写入保留 mentions 与 updatedAt，供权威线程按原身份回放', () => {
+  const apiSource = readFileSync(new URL('../src/lib/agentApi.ts', import.meta.url), 'utf8')
+  const submitMessage = apiSource.slice(
+    apiSource.indexOf('export async function submitPersistentBotanicAgentMessage'),
+    apiSource.indexOf('export async function submitPersistentBotanicAgentSession'),
+  )
+  const bodySource = readFileSync(new URL('../src/domain/agentMessagePersistence.ts', import.meta.url), 'utf8')
+  assert.match(submitMessage, /persistentBotanicAgentMessageBody\(input\.message\)/u)
+  assert.match(bodySource, /message\.mentions/u)
+  assert.match(bodySource, /message\.updatedAt/u)
+  assert.match(bodySource, /message\.turnId/u)
+  assert.match(bodySource, /message\.turnCancellationRequestedAt/u)
+})

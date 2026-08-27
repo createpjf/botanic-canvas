@@ -1,6 +1,7 @@
 // @ts-check
 import { branchesEligibleForRetry } from './agentBranchRetryPolicy.mjs'
 import { generationIdempotencyKey } from './generationIdempotency.mjs'
+import { boundedSweepPageSize, nextUpdatedAtIdSweepCursor } from './updatedAtIdSweepCursor.mjs'
 
 /**
  * 失败分支自动重试的周期清扫（Epic 5）。
@@ -46,9 +47,17 @@ export function createAgentBranchRetrySweep({ productStore, retryAgentBranch, po
    * （新进程该把它看到的状态说一次），不是缺陷。
    */
   const loggedHeldReasons = new Map()
+  let after = null
 
   return async function sweepFailedBranches({ limit = 25 } = {}) {
-    const runs = (await productStore.listRunsWithFailedBranches({ limit })) ?? []
+    const pageLimit = boundedSweepPageSize(limit)
+    const requestedAfter = after
+    const runs = (await productStore.listRunsWithFailedBranches({ after: requestedAfter, limit: pageLimit })) ?? []
+    const progression = nextUpdatedAtIdSweepCursor({ after: requestedAfter, page: runs, limit: pageLimit })
+    after = progression.after
+    if (progression.stalled) {
+      observe({ event: 'agent.branch.retry.sweep.cursor_stalled', after: requestedAfter })
+    }
     let retried = 0
     let held = 0
     for (const entry of runs) {

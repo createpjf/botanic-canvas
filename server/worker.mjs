@@ -19,6 +19,10 @@ import { createSecurityControls } from './securityControls.mjs'
 import { createAgentTurnResumer } from './agentTurnResume.mjs'
 import { createBotanicAgentTurnRuntime } from './botanicAgentTurnRuntime.mjs'
 import { createLocalCancelRegistry } from './localCancelRegistry.mjs'
+import { createAgentCancellationService } from './agentCancellationService.mjs'
+import { createAgentRunSubmissionSweep } from './agentRunSubmissionSweep.mjs'
+import { abortMatchingGenerationJobCancellation } from './generationCancellation.mjs'
+import { createGenerationRecoverySweep } from './generationRecoverySweep.mjs'
 
 loadLocalEnv()
 // 与 API 同一处理：Worker 崩掉的后果更隐蔽 —— 队列还在，任务永远停在 running。
@@ -38,14 +42,33 @@ const providerHealth = createProviderHealthMonitor({
 // Worker 与 API 是两个进程：API 写下 cancelled 时本进程不会知道，只能等 Provider
 // 跑完再丢弃结果。订阅取消频道后就地 abort，Provider 调用真正停下、槽位立刻释放。
 const jobCancelRegistry = createLocalCancelRegistry()
+const turnCancelRegistry = createLocalCancelRegistry()
 const cancelSubscriber = await createAgentRunEventSubscriber(config.redisUrl, () => {}, {
   onCancel: (event) => {
+    const logAbort = () => {
+      // 记下「用户点取消」到「本地 abort 生效」的间隔：这是取消延迟唯一可观测的口径。
+      // 跨进程时间差包含机器间时钟偏移，只用于看分位数趋势，不用于精确归因。
+      const latencyMs = typeof event.requestedAt === 'number' ? Date.now() - event.requestedAt : undefined
+      console.log(JSON.stringify({
+        event: event.scope === 'turn' ? 'agent.turn.cancel.aborted' : 'generation.cancel.aborted',
+        ...(event.scope === 'turn' ? { turnId: event.id } : { jobId: event.id }),
+        latencyMs,
+      }))
+    }
+    if (event.scope === 'turn') {
+      if (turnCancelRegistry.abort(event.id)) logAbort()
+      return
+    }
     if (event.scope !== 'job') return
-    if (!jobCancelRegistry.abort(event.id)) return
-    // 记下「用户点取消」到「本地 abort 生效」的间隔：这是取消延迟唯一可观测的口径。
-    // 跨进程时间差包含机器间时钟偏移，只用于看分位数趋势，不用于精确归因。
-    const latencyMs = typeof event.requestedAt === 'number' ? Date.now() - event.requestedAt : undefined
-    console.log(JSON.stringify({ event: 'generation.cancel.aborted', jobId: event.id, latencyMs }))
+    void abortMatchingGenerationJobCancellation({
+      productStore: runtime.productStore,
+      cancelRegistry: jobCancelRegistry,
+      event,
+    }).then((aborted) => {
+      if (aborted) logAbort()
+    }).catch((caught) => {
+      console.error(`[generation] cancel signal verification deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
+    })
   },
 })
 // 派生任务与生成任务分队列：一类任务堆积不应拖垮另一类。
@@ -93,6 +116,11 @@ worker.on('error', (caught) => console.error(`[generation] BullMQ worker error: 
 console.log(`Botanic generation worker started (concurrency ${config.workerConcurrency})`)
 
 // 新种类要和它的消费者一起加（见 derivedTaskQueue 的种类词表）。
+const durableTurnRuntime = createBotanicAgentTurnRuntime({
+  productStore: runtime.productStore,
+  localCancelRegistry: turnCancelRegistry,
+})
+let cancelStaleAgentTurn
 const sweepStaleAgentTurns = createAgentTurnSweep({
   productStore: runtime.productStore,
   observe: (event) => console.log(JSON.stringify(event)),
@@ -103,9 +131,12 @@ const sweepStaleAgentTurns = createAgentTurnSweep({
     productStore: runtime.productStore,
     config,
     mediaService: runtime.mediaService,
-    turnRuntime: createBotanicAgentTurnRuntime({ productStore: runtime.productStore }),
+    turnRuntime: durableTurnRuntime,
     observe: (event) => console.log(JSON.stringify(event)),
   }),
+  settleTurn: (turn, error) => durableTurnRuntime.fail({ turn, error }),
+  // cancelling 不是可恢复执行。交给深取消编排，统一收口 linked Run / Job。
+  cancelTurn: (turn) => cancelStaleAgentTurn(turn),
 })
 // 工作流推进同样在 Worker 侧：此前只有「有人打开页面」才会对账批量运行的真实状态。
 const sweepProductionWorkflows = createProductionWorkflowSweep({
@@ -125,6 +156,34 @@ const agentRunGeneration = createAgentRunGenerationService({
   enqueue: (jobId) => queue.enqueue(jobId),
   publishProjectUpdated: agentRunEvents.publishProjectUpdated,
   publishAgentRunUpdated: agentRunEvents.publish,
+})
+const agentCancellation = createAgentCancellationService({
+  productStore: runtime.productStore,
+  cancelTurn: (command) => durableTurnRuntime.cancel(command),
+  finalizeTurn: (command) => durableTurnRuntime.finalizeCancellation(command),
+  redisQueue: queue,
+  publishCancel: agentRunEvents.publishCancel,
+  modelOptions: config.modelOptions ?? [],
+  afterGenerationJobPersist: ({ userId, projectId, job }) => (
+    agentRunGeneration.persistJobState(userId, projectId, job)
+  ),
+})
+// Run 已持久化后、首个 Job 落库前仍有进程崩溃窗口。周期恢复只调用既有幂等提交
+// 与深取消服务，不在 Worker 组合根复制 Job 创建或取消规则。
+const sweepQueuedAgentRuns = createAgentRunSubmissionSweep({
+  productStore: runtime.productStore,
+  submitGeneration: (userId, projectId, runId) => (
+    agentRunGeneration.submitGeneration(userId, projectId, runId)
+  ),
+  cancelAgentRun: (input) => agentCancellation.cancelAgentRun(input),
+  observe: (event) => console.log(JSON.stringify(event)),
+})
+cancelStaleAgentTurn = (turn) => agentCancellation.cancelAgentTurn({
+  userId: turn.ownerId,
+  projectId: turn.projectId,
+  turnId: turn.id,
+  requestedBy: turn.ownerId,
+  reason: 'Agent Turn 取消恢复。',
 })
 const sweepFailedBranches = createAgentBranchRetrySweep({
   productStore: runtime.productStore,
@@ -150,21 +209,27 @@ const derivedWorker = createDerivedTaskWorker({
       : reviewService.executeReviewTask(payload.ownerId, payload.taskId)),
     'workflow.advance': () => sweepProductionWorkflows(),
     'branch.retry': () => sweepFailedBranches(),
+    'run.submit': () => sweepQueuedAgentRuns(),
   },
 })
 derivedWorker.on('failed', (job, caught) => console.error(`[derived] ${job?.name ?? 'unknown'} failed: ${caught.message}`))
 derivedWorker.on('error', (caught) => console.error(`[derived] worker error: ${caught.message}`))
 // 注册幂等：BullMQ 按 repeat key 去重，多实例重复注册不会产生多份定时任务。
-for (const [kind, everyMs] of [['turn.reclaim', 60_000], ['review.run', 120_000], ['workflow.advance', 45_000], ['branch.retry', 90_000]]) {
+for (const [kind, everyMs] of [['turn.reclaim', 60_000], ['review.run', 120_000], ['workflow.advance', 45_000], ['branch.retry', 90_000], ['run.submit', 30_000]]) {
   await derivedQueue?.scheduleSweep(kind, everyMs).catch((caught) => {
     console.error(`[derived] ${kind} 清扫注册失败: ${caught instanceof Error ? caught.message : String(caught)}`)
   })
 }
-console.log('Botanic derived-task worker started (turn.reclaim 60s, review.run 120s, workflow.advance 45s, branch.retry 90s)')
+console.log('Botanic derived-task worker started (turn.reclaim 60s, review.run 120s, workflow.advance 45s, branch.retry 90s, run.submit 30s)')
 
+const sweepRecoverableGenerationJobs = createGenerationRecoverySweep({
+  productStore: runtime.productStore,
+  enqueue: (jobId) => queue.enqueue(jobId),
+  observe: (event) => console.error(JSON.stringify(event)),
+})
 async function recoverQueuedJobs() {
   try {
-    for (const queued of await runtime.productStore.recoverGenerationJobs()) await queue.enqueue(queued.id)
+    await sweepRecoverableGenerationJobs()
   } catch (caught) {
     // Worker 后续会周期性重试；短暂的恢复查询失败不能造成进程反复重启或遗留队列任务。
     console.error(`[generation] worker recovery deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
@@ -176,10 +241,9 @@ const recoveryTimer = setInterval(() => void recoverQueuedJobs(), 30_000)
 recoveryTimer.unref()
 
 async function reclaimInterruptedJobs() {
-  // 等待旧 Worker 的 Redis lock 到期，避免与尚在关闭中的实例并发处理同一任务。
-  await new Promise((resolve) => setTimeout(resolve, 35_000))
   try {
-    const stale = await runtime.productStore.recoverStaleGenerationJobs?.()
+    const staleAfterMs = Math.max(30_000, Number(config.generationExecutionLeaseMs) || 120_000)
+    const stale = await runtime.productStore.recoverStaleGenerationJobs?.(staleAfterMs)
     for (const job of stale ?? []) {
       if (await queue.reclaimStaleActive(job.id)) console.warn(`[generation] ${job.id} reclaimed after interrupted worker`)
     }
@@ -187,10 +251,15 @@ async function reclaimInterruptedJobs() {
     console.error(`[generation] stale recovery deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
   }
 }
+// BullMQ lock 精确检查 + DB lease 共同判定；周期执行，覆盖「Worker 启动时租约尚
+// 未过期、随后才成为 stalled」的窗口。单次启动清扫会永久漏掉这一类 Job。
 void reclaimInterruptedJobs()
+const interruptedRecoveryTimer = setInterval(() => void reclaimInterruptedJobs(), 60_000)
+interruptedRecoveryTimer.unref()
 
 async function shutdown() {
   clearInterval(recoveryTimer)
+  clearInterval(interruptedRecoveryTimer)
   await cancelSubscriber?.close()
   await derivedWorker.close(true)
   await derivedQueue?.close()

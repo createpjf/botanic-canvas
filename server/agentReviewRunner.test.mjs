@@ -6,6 +6,10 @@ import { planReviewCoverage } from './agentReviewTask.mjs'
 const settings = { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' }
 const qualityPolicy = { version: 1, requiredCriteria: ['identity', 'composition'], humanDecisionRequired: true }
 const spec = { mimeType: 'image/png', byteSize: 2048, width: 1024, height: 1024 }
+const durableCheckpoint = {
+  prepareCandidate: async () => {},
+  commitCandidateResult: async () => {},
+}
 
 function run() {
   return {
@@ -66,6 +70,7 @@ test('第 1 层失败的候选不进模型层，且任务仍能完成', async ()
   const asked = []
   const outcome = await runAgentReviewTask({
     ...built,
+    ...durableCheckpoint,
     reviewCandidate: async ({ candidate }) => {
       asked.push(candidate.artifactId)
       return { criteria: [{ id: 'identity', layer: 'model', verdict: 'pass', evidence: '主体一致' }] }
@@ -86,7 +91,7 @@ test('第 1 层失败的候选不进模型层，且任务仍能完成', async ()
 
 test('没有模型层时照实记「无法验证」，不把没评当成评过', async () => {
   const built = buildReviewTaskForRun({ run: run(), jobs: jobs(), now: 100 })
-  const outcome = await runAgentReviewTask({ ...built, now: () => 200 })
+  const outcome = await runAgentReviewTask({ ...built, ...durableCheckpoint, now: () => 200 })
   const first = outcome.results.find((item) => item.artifactId === 'generation:job-a:out-1')
   assert.equal(first.verdict, 'unverifiable')
   assert.equal(first.criteria.find((item) => item.layer === 'model').evidence, '未配置视觉评审模型。')
@@ -98,6 +103,7 @@ test('模型不可用与输出不可解析被分开记录，任务仍收口', as
   let call = 0
   const outcome = await runAgentReviewTask({
     ...built,
+    ...durableCheckpoint,
     reviewCandidate: async () => {
       call += 1
       const error = new Error(call === 1 ? '网关不可用' : '模型输出不是 JSON')
@@ -115,7 +121,7 @@ test('模型不可用与输出不可解析被分开记录，任务仍收口', as
 test('覆盖清单里的候选找不到输出时判无法验证，不静默跳过', async () => {
   const built = buildReviewTaskForRun({ run: run(), jobs: jobs(), now: 100 })
   const outcome = await runAgentReviewTask({
-    task: built.task, candidates: [], now: () => 200,
+    task: built.task, candidates: [], ...durableCheckpoint, now: () => 200,
   })
   assert.equal(outcome.results.length, 3)
   assert.ok(outcome.results.every((item) => item.verdict === 'unverifiable'))
@@ -128,6 +134,7 @@ test('已有结论不重复评审，断点续评后才收 completed', async () =
   const partial = await runAgentReviewTask({
     task: { ...built.task, coverage: planReviewCoverage({ candidates: built.candidates.slice(0, 1) }) },
     candidates: built.candidates,
+    ...durableCheckpoint,
     reviewCandidate: async ({ candidate }) => {
       asked.push(candidate.artifactId)
       return { criteria: [{ id: 'identity', layer: 'model', verdict: 'pass' }] }
@@ -138,6 +145,7 @@ test('已有结论不重复评审，断点续评后才收 completed', async () =
 
   const resumed = await runAgentReviewTask({
     ...built,
+    ...durableCheckpoint,
     existingResults: partial.results,
     reviewCandidate: async ({ candidate }) => {
       asked.push(candidate.artifactId)

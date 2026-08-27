@@ -1,6 +1,8 @@
 // @ts-check
+import { randomUUID } from 'node:crypto'
+import { agentReviewPreparedCheckpoint } from './agentReviewExecution.mjs'
 import { buildReviewTaskForRun, runAgentReviewTask } from './agentReviewRunner.mjs'
-import { settleAgentReviewTask } from './agentReviewTask.mjs'
+import { boundedSweepPageSize, nextUpdatedAtIdSweepCursor } from './updatedAtIdSweepCursor.mjs'
 
 /**
  * 评审任务的持久化编排。
@@ -11,14 +13,14 @@ import { settleAgentReviewTask } from './agentReviewTask.mjs'
 
 const terminalRunStatuses = new Set(['completed', 'partial'])
 
-/**
- * @param {{
- *   productStore: any,
- *   reviewCandidate?: (input: { candidate: any, task: any }) => Promise<any>,
- *   observe?: (event: any) => void,
- *   now?: () => number,
- * }} input
- */
+class AgentReviewExecutionError extends Error {
+  constructor(code, message) {
+    super(message)
+    this.name = 'AgentReviewExecutionError'
+    this.code = code
+  }
+}
+
 /**
  * @param {{
  *   productStore: any,
@@ -26,10 +28,45 @@ const terminalRunStatuses = new Set(['completed', 'partial'])
  *   judgeWith?: (input: { criterion: any, candidate: any }) => any,
  *   observe?: (event: any) => void,
  *   now?: () => number,
+ *   leaseMs?: number,
+ *   heartbeatMs?: number,
+ *   setIntervalFn?: (callback: () => any, delay: number) => any,
+ *   clearIntervalFn?: (handle: any) => void,
  * }} input
  */
-export function createAgentReviewService({ productStore, reviewCandidate, judgeWith, observe = () => {}, now = () => Date.now() }) {
+export function createAgentReviewService({
+  productStore,
+  reviewCandidate,
+  judgeWith,
+  observe = () => {},
+  now = () => Date.now(),
+  leaseMs = 300_000,
+  heartbeatMs,
+  setIntervalFn = (callback, delay) => setInterval(callback, delay),
+  clearIntervalFn = (handle) => clearInterval(handle),
+}) {
   if (!productStore) throw new TypeError('评审服务缺少 ProductStore。')
+  const boundedLeaseMs = Math.max(30_000, Math.min(Number(leaseMs) || 300_000, 900_000))
+  const boundedHeartbeatMs = Math.max(
+    1_000,
+    Math.min(Number(heartbeatMs) || Math.floor(boundedLeaseMs / 3), Math.floor(boundedLeaseMs / 2)),
+  )
+  let pendingReviewAfter = null
+
+  function assertExecutionStore() {
+    if (typeof productStore.claimAgentReviewExecution !== 'function'
+      || typeof productStore.commitAgentReviewExecution !== 'function') {
+      throw new TypeError('评审服务缺少 ProductStore 原子执行权 Interface。')
+    }
+  }
+
+  function committedTask(decision, operation) {
+    if (decision?.kind === 'committed' || decision?.kind === 'replay') return decision.task
+    throw new AgentReviewExecutionError(
+      decision?.kind === 'stale' ? 'AGENT_REVIEW_EXECUTION_STALE' : 'AGENT_REVIEW_EXECUTION_CONFLICT',
+      `Agent Review ${operation} 未取得当前执行 fence。`,
+    )
+  }
 
   async function jobsForRun(userId, run) {
     const jobIds = [...new Set((run.branches ?? []).flatMap((branch) => branch.jobIds ?? []).filter(Boolean))]
@@ -57,42 +94,159 @@ export function createAgentReviewService({ productStore, reviewCandidate, judgeW
     return stored
   }
 
-  /** 执行一个评审任务并落库。任务本身的失败是可诊断、可重试的失败。 */
+  /** 执行一个评审任务并逐候选落库。所有写入都绑定原子 claim 返回的 generation fence。 */
   async function executeReviewTask(userId, taskId) {
-    const task = await productStore.readAgentReviewTask(userId, taskId)
-    if (!task || task.status === 'completed') return task
-    const run = await productStore.readAgentRun(task.ownerId ?? userId, task.runId)
-    if (!run) {
-      const failed = settleAgentReviewTask(task, {
-        status: 'failed',
-        error: { code: 'AGENT_RUN_NOT_FOUND', message: '评审任务对应的 Run 已不存在。' },
-        now: now(),
+    assertExecutionStore()
+    // 预读只用于取得不可变 projectId；是否能执行仍由后续原子 claim 决定。
+    const observed = await productStore.readAgentReviewTask(userId, taskId)
+    if (!observed) return undefined
+    const leaseToken = `agent_review_lease_${randomUUID()}`
+    const claim = await productStore.claimAgentReviewExecution(userId, {
+      id: observed.id,
+      projectId: observed.projectId,
+      leaseToken,
+      leaseDurationMs: boundedLeaseMs,
+      observedAt: now(),
+      allowTakeover: true,
+    })
+    if (['replay', 'terminal', 'outcome_unknown', 'in_progress', 'stale'].includes(claim?.kind)) {
+      observe({
+        event: 'agent.review.claim.skipped',
+        taskId: observed.id,
+        projectId: observed.projectId,
+        reason: claim.kind,
       })
-      return productStore.putAgentReviewTask(userId, failed)
+      return claim.task
     }
-    const built = buildReviewTaskForRun({ run, jobs: await jobsForRun(task.ownerId ?? userId, run), now: now() })
-    const outcome = await runAgentReviewTask({
-      task,
-      candidates: built?.candidates ?? [],
-      // 断点续评：已产出的结论不重评，避免重复调用视觉模型。
-      existingResults: task.results ?? [],
-      reviewCandidate,
-      // 项目自定义判据（evaluator Skill）。未注入时它们记为「无法验证」而不是通过。
-      judgeWith,
-      now,
+    if (claim?.kind === 'missing') return undefined
+    if (claim?.kind !== 'claimed' || !claim.task?.execution) {
+      throw new AgentReviewExecutionError('AGENT_REVIEW_CLAIM_FAILED', 'Agent Review 无法取得执行权。')
+    }
+    const task = claim.task
+    const executionGeneration = Number(task.execution.generation)
+    const commit = (command) => productStore.commitAgentReviewExecution(userId, {
+      id: task.id,
+      projectId: task.projectId,
+      leaseToken,
+      executionGeneration,
+      ...command,
+      observedAt: now(),
     })
-    const stored = await productStore.putAgentReviewTask(userId, outcome.task)
-    observe({
-      event: 'agent.review.settled',
-      taskId: stored.id,
-      runId: stored.runId,
-      projectId: stored.projectId,
-      status: stored.status,
-      reviewed: outcome.results.length,
-      skipped: stored.coverage?.skippedCandidates ?? 0,
-      failures: outcome.failures.length,
-    })
-    return stored
+    const controller = new AbortController()
+    let heartbeatStopped = false
+    let heartbeatFailure
+    let heartbeatTail = Promise.resolve()
+
+    function executionStale(caught) {
+      if (caught instanceof AgentReviewExecutionError && caught.code === 'AGENT_REVIEW_EXECUTION_STALE') return caught
+      return new AgentReviewExecutionError(
+        'AGENT_REVIEW_EXECUTION_STALE',
+        `Agent Review heartbeat 已失去执行权：${caught instanceof Error ? caught.message : String(caught)}`,
+      )
+    }
+
+    function assertExecutionActive() {
+      if (heartbeatFailure) throw heartbeatFailure
+      if (controller.signal.aborted) throw controller.signal.reason
+    }
+
+    function heartbeat() {
+      const next = heartbeatTail.then(async () => {
+        if (heartbeatStopped || heartbeatFailure) return
+        const decision = await commit({ status: 'running' })
+        committedTask(decision, 'heartbeat')
+      }).catch((caught) => {
+        if (heartbeatFailure) return
+        heartbeatFailure = executionStale(caught)
+        controller.abort(heartbeatFailure)
+        observe({
+          event: 'agent.review.heartbeat.lost',
+          taskId: task.id,
+          projectId: task.projectId,
+          code: heartbeatFailure.code,
+        })
+      })
+      heartbeatTail = next
+      return next
+    }
+
+    const heartbeatHandle = setIntervalFn(heartbeat, boundedHeartbeatMs)
+    heartbeatHandle?.unref?.()
+    async function stopHeartbeat() {
+      if (!heartbeatStopped) {
+        heartbeatStopped = true
+        clearIntervalFn(heartbeatHandle)
+      }
+      // 定时器回调可能正在 Adapter CAS 中；terminal 之前先排空，避免终态之后
+      // 才把一个预先排队的 running heartbeat 判成失租并误 abort 已完成执行。
+      await heartbeatTail
+    }
+    try {
+      const run = await productStore.readAgentRun(task.ownerId ?? userId, task.runId)
+      assertExecutionActive()
+      if (!run) {
+        await stopHeartbeat()
+        assertExecutionActive()
+        const failed = await commit({
+          status: 'failed',
+          error: { code: 'AGENT_RUN_NOT_FOUND', message: '评审任务对应的 Run 已不存在。' },
+        })
+        return committedTask(failed, 'failed commit')
+      }
+      const built = buildReviewTaskForRun({ run, jobs: await jobsForRun(task.ownerId ?? userId, run), now: now() })
+      assertExecutionActive()
+      const outcome = await runAgentReviewTask({
+        task,
+        candidates: built?.candidates ?? [],
+        // 断点续评：已产出的结论不重评，避免重复调用视觉模型。
+        existingResults: task.results ?? [],
+        reviewCandidate,
+        // 项目自定义判据（evaluator Skill）。未注入时它们记为「无法验证」而不是通过。
+        judgeWith,
+        prepareCandidate: async ({ artifactId }) => {
+          assertExecutionActive()
+          const prepared = await commit({
+            status: 'running',
+            checkpoint: agentReviewPreparedCheckpoint({ artifactId, preparedAt: now() }),
+          })
+          committedTask(prepared, 'prepared commit')
+          assertExecutionActive()
+        },
+        commitCandidateResult: async (result) => {
+          assertExecutionActive()
+          const committed = await commit({
+            status: 'running',
+            result,
+            checkpoint: null,
+          })
+          committedTask(committed, 'result commit')
+          assertExecutionActive()
+        },
+        signal: controller.signal,
+        now,
+      })
+      assertExecutionActive()
+      await stopHeartbeat()
+      assertExecutionActive()
+      const settled = await commit({
+        status: outcome.task.status,
+        ...(outcome.task.status === 'failed' ? { error: outcome.task.error } : {}),
+      })
+      const stored = committedTask(settled, 'terminal commit')
+      observe({
+        event: 'agent.review.settled',
+        taskId: stored.id,
+        runId: stored.runId,
+        projectId: stored.projectId,
+        status: stored.status,
+        reviewed: stored.results?.length ?? outcome.results.length,
+        skipped: stored.coverage?.skippedCandidates ?? 0,
+        failures: outcome.failures.length,
+      })
+      return stored
+    } finally {
+      await stopHeartbeat()
+    }
   }
 
   /**
@@ -100,7 +254,18 @@ export function createAgentReviewService({ productStore, reviewCandidate, judgeW
    */
   /** @param {{ olderThan?: number, limit?: number }} [input] */
   async function sweepPendingReviewTasks({ olderThan, limit = 25 } = {}) {
-    const pending = (await productStore.listPendingAgentReviewTasks({ olderThan: olderThan ?? now(), limit })) ?? []
+    const pageLimit = boundedSweepPageSize(limit)
+    const requestedAfter = pendingReviewAfter
+    const pending = (await productStore.listPendingAgentReviewTasks({
+      olderThan: olderThan ?? now(),
+      after: requestedAfter,
+      limit: pageLimit,
+    })) ?? []
+    const progression = nextUpdatedAtIdSweepCursor({ after: requestedAfter, page: pending, limit: pageLimit })
+    pendingReviewAfter = progression.after
+    if (progression.stalled) {
+      observe({ event: 'agent.review.sweep.cursor_stalled', after: requestedAfter })
+    }
     const settled = []
     for (const task of pending) {
       try {

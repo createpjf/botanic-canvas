@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { appendBotanicAgentMessage, type BotanicAgentMessage, type BotanicAgentSession } from '../../domain/agent'
 import { submitPersistentBotanicAgentMessage } from '../../lib/agentApi'
-import { createAgentMessageQueue, createLocalStorageAgentMessageQueueStorage } from '../../lib/agentMessageQueue'
+import { assertAgentMessageQueueItemDelivered, createAgentMessageQueue, createLocalStorageAgentMessageQueueStorage } from '../../lib/agentMessageQueue'
 import { serverPersistenceEnabled } from '../../lib/productSession'
 import { localizeProductError, type ProductLocale } from '../../i18n/core'
 import { useProductI18n } from '../../i18n/react'
 
-type AgentMessagePatch = Partial<Pick<BotanicAgentMessage, 'content' | 'runId' | 'status' | 'feedback' | 'plan' | 'question' | 'composition' | 'deliveryStatus'>>
+type AgentMessagePatch = Partial<Pick<BotanicAgentMessage, 'kind' | 'content' | 'runId' | 'status' | 'feedback' | 'plan' | 'question' | 'composition' | 'deliveryStatus' | 'turnId' | 'turnCancellationRequestedAt' | 'turnRequestSnapshot'>>
 type AgentDeliveryError = Error & { status?: number; code?: string }
 
 function localizedAgentDeliveryError(error: unknown, locale: ProductLocale): AgentDeliveryError {
@@ -64,6 +64,7 @@ export function useAgentMessageDelivery({
       const sessionId = queued.get(messageId)
       if (sessionId) onUpdateMessage(sessionId, messageId, { deliveryStatus: 'failed' })
     }
+    return result
   }, [isCurrentProject, onUpdateMessage, queue])
 
   useEffect(() => {
@@ -153,5 +154,12 @@ export function useAgentMessageDelivery({
     if (online) void flush()
   }, [flush, isCurrentProject, onUpdateMessage, online, queue])
 
-  return { appendMessage, persistMessage, retryMessage }
+  const ensureMessageDurable = useCallback(async (message: BotanicAgentMessage) => {
+    // 恢复路径也重新 enqueue 完整 snapshot，不依赖上次本地队列恰好还在。
+    persistMessage(message)
+    await flush()
+    assertAgentMessageQueueItemDelivered(queue, message.id)
+  }, [flush, persistMessage, queue])
+
+  return { appendMessage, persistMessage, retryMessage, ensureMessageDurable }
 }

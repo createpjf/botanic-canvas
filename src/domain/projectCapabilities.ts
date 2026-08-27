@@ -85,6 +85,8 @@ export const PROJECT_ENTRY_CAPABILITY = {
   publishSkill: 'modify-workflow',
   /** 对评审候选做人工决定。与服务端 `review_decide` 同一能力。 */
   decideReview: 'edit',
+  /** 为评审候选创建新的生成 Run。与服务端 `review_retry` 同一能力。 */
+  retryReview: 'create-generation',
   /** 发布或修改生产工作流。与服务端 `workflow_publish` / `workflow_create` 同一能力。 */
   modifyWorkflow: 'modify-workflow',
   /** 编辑画布内容。 */

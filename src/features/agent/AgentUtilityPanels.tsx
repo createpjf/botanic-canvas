@@ -613,11 +613,15 @@ export function AgentReviewPanel({ runId, projectId, onBackToConversation }: {
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
   const [pending, setPending] = useState('')
   const [notice, setNotice] = useState('')
-  // 评审决定需要 edit 能力（与服务端 review_decide 同一能力）。Viewer 不该看到这三个
-  // 按钮 —— 点了必然 403，而失败的按钮比没有按钮更让人困惑。
+  // 接受/拒绝只改评审状态；请求重试会创建生成 Run，分别对齐服务端两个能力。
   const canDecide = canUseProjectEntry(
     projectId ? cachedProjectCapabilities(projectId) : undefined,
     'decideReview',
+    serverPersistenceEnabled,
+  )
+  const canRetry = canUseProjectEntry(
+    projectId ? cachedProjectCapabilities(projectId) : undefined,
+    'retryReview',
     serverPersistenceEnabled,
   )
 
@@ -683,15 +687,24 @@ export function AgentReviewPanel({ runId, projectId, onBackToConversation }: {
           <footer>
             {row.awaitingHuman ? <small>{copy.reviewAwaiting}</small> : <small>{row.decisionLabel}</small>}
             <div>
-              {canDecide ? (['accepted', 'rejected', 'retry_requested'] as const).map((decision) => <button
+              {canDecide ? (['accepted', 'rejected'] as const).map((decision) => <button
                 key={decision}
                 type="button"
                 className={row.decision === decision ? 'is-active' : undefined}
                 disabled={pending === `${task.id}:${row.artifactId}`}
                 onClick={() => void decide(task.id, row.artifactId, decision)}
               >
-                {decision === 'accepted' ? copy.reviewAccept : decision === 'rejected' ? copy.reviewReject : copy.reviewRetry}
-              </button>) : <small className="agent-review-panel__readonly">{copy.reviewReadOnly}</small>}
+                {decision === 'accepted' ? copy.reviewAccept : copy.reviewReject}
+              </button>) : null}
+              {canRetry ? <button
+                type="button"
+                className={row.decision === 'retry_requested' ? 'is-active' : undefined}
+                disabled={pending === `${task.id}:${row.artifactId}`}
+                onClick={() => void decide(task.id, row.artifactId, 'retry_requested')}
+              >
+                {copy.reviewRetry}
+              </button> : null}
+              {!canDecide && !canRetry ? <small className="agent-review-panel__readonly">{copy.reviewReadOnly}</small> : null}
             </div>
           </footer>
         </div>)}

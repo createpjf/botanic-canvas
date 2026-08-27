@@ -24,6 +24,8 @@ test('生成任务持久化保留幂等键，公开状态只按需返回提交�
     rawInput: { projectId: 'project-a' }, agentRun: { runId: 'run-a', branchId: 'branch-a' },
     promptNodeId: 'prompt-a', generateNodeId: 'generate-a', resultNodeId: 'result-a', parentNodeId: 'parent-a',
     idempotencyKey: 'gen_test_key_123456', projectWritebackPending: true,
+    executionVersion: 2,
+    execution: { generation: 2, leaseToken: 'private-lease', leaseExpiresAt: 99 },
   }
   assert.deepEqual(persistedGenerationJob(job).agentRun, job.agentRun)
   assert.equal(persistedGenerationJob(job).generateNodeId, 'generate-a')
@@ -36,6 +38,11 @@ test('生成任务持久化保留幂等键，公开状态只按需返回提交�
   assert.equal(publicGenerationJob(job).idempotencyKey, undefined)
   assert.equal(publicGenerationJob(job, { includeIdempotencyKey: true }).idempotencyKey, job.idempotencyKey)
   assert.equal(publicGenerationJob(job).projectWritebackPending, true)
+  assert.deepEqual(persistedGenerationJob(job).execution, job.execution)
+  assert.equal(persistedGenerationJob(job).executionVersion, 2)
+  assert.equal(publicGenerationJob(job).execution, undefined)
+  assert.equal(publicGenerationJob(job).executionVersion, undefined)
+  assert.equal(JSON.stringify(publicGenerationJob(job)).includes('private-lease'), false)
 })
 
 test('生成配方在进入 Redis 队列前完成模型、尺寸和图片约束校验', () => {
