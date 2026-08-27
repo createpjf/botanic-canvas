@@ -6,7 +6,9 @@ import { decodeAuthAssurance } from './authAssurance.mjs'
 import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from './authorization.mjs'
 import { artifactIndexLimits, artifactsFromActionReceipt, artifactsFromAgentMessage, artifactsFromDocument, artifactsFromGenerationJob } from './botanicArtifactIndex.mjs'
 import { applyGenerationJobToAgentRun } from './botanicAgentRun.mjs'
-import { agentStateFromDocument, applyAgentSessionReadReceipts, mergeAgentStateIntoDocument, shouldApplyAgentEntityWrite, validateAgentEntityWriteTimestamp, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity, validateAgentSessionReadReceipt } from './botanicAgentPersistence.mjs'
+import { agentStateFromDocument, applyAgentSessionReadReceipts, mergeAgentStateIntoDocument, shouldApplyAgentEntityWrite, stripAgentMessagesFromDocument, validateAgentEntityWriteTimestamp, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity, validateAgentSessionReadReceipt } from './botanicAgentPersistence.mjs'
+import { agentMessageListOptions, encodeAgentMessageCursor, normalizeAgentSessionListLimit } from './agentMessagePersistence.mjs'
+import { observeProductStoreRead, timedProductStoreRead } from './productStoreMetrics.mjs'
 import { collaborationActivitiesForMember, collaborationActivityListOptions, validateCollaborationActivity } from './collaborationActivityPersistence.mjs'
 
 const now = () => Date.now()
@@ -150,11 +152,13 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
     return { data: rows, error: undefined }
   }
 
-  async function readAgentStateRows(projectId, userId) {
+  async function readAgentStateRows(projectId, userId, options = {}) {
+    const includeMessages = options.includeMessages !== false
     const results = await Promise.all([
       supabaseRequest(() => supabase.from('agent_sessions').select('payload').eq('project_id', projectId).order('updated_at', { ascending: false }).limit(80)),
-      // 降序分页：超过分页上限时保留最近的消息而不是最旧的；每会话上限在合并层裁剪。
-      collectSupabaseRows(() => supabase.from('agent_messages').select('session_id,updated_at,payload').eq('project_id', projectId).order('updated_at', { ascending: false })),
+      includeMessages
+        ? collectSupabaseRows(() => supabase.from('agent_messages').select('session_id,updated_at,payload').eq('project_id', projectId).order('updated_at', { ascending: false }))
+        : Promise.resolve({ data: [], error: undefined }),
       supabaseRequest(() => supabase.from('agent_memory_items').select('id,deleted_at,payload').eq('project_id', projectId).order('updated_at', { ascending: false }).limit(200)),
       supabaseRequest(() => supabase.from('agent_runs').select('payload').eq('project_id', projectId).order('updated_at', { ascending: false }).limit(60)),
       userId
@@ -392,27 +396,30 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
     },
 
     async readProject(userId, projectId) {
-      const role = await memberRole(projectId, userId)
-      if (!role) return undefined
-      const [{ data, error }, graphResult, agentState] = await Promise.all([
-        supabase.from('projects').select('document, revision, updated_at').eq('id', projectId).maybeSingle(),
-        supabase.from('canvas_graphs').select('graph, revision, updated_at').eq('project_id', projectId).maybeSingle(),
-        readAgentStateRows(projectId, userId),
-      ])
-      fail(error)
-      fail(graphResult.error)
-      if (!data) return undefined
-      const graph = graphResult.data?.graph ?? canvasGraph(data.document)
-      const updatedAt = Math.max(
-        Number(data.document.updatedAt ?? 0),
-        data.updated_at ? new Date(data.updated_at).getTime() : 0,
-        graphResult.data?.updated_at ? new Date(graphResult.data.updated_at).getTime() : 0,
-      )
-      return {
-        document: mergeAgentStateIntoDocument({ ...clone(data.document), ...clone(graph), updatedAt }, agentState),
-        revision: data.revision,
-        graphRevision: graphResult.data?.revision ?? 1,
-      }
+      return timedProductStoreRead('readProject', { projectId, userId }, async () => {
+        const role = await memberRole(projectId, userId)
+        if (!role) return undefined
+        const [{ data, error }, graphResult, agentState] = await Promise.all([
+          supabase.from('projects').select('document, revision, updated_at').eq('id', projectId).maybeSingle(),
+          supabase.from('canvas_graphs').select('graph, revision, updated_at').eq('project_id', projectId).maybeSingle(),
+          readAgentStateRows(projectId, userId, { includeMessages: false }),
+        ])
+        fail(error)
+        fail(graphResult.error)
+        if (!data) return undefined
+        const graph = graphResult.data?.graph ?? canvasGraph(data.document)
+        const updatedAt = Math.max(
+          Number(data.document.updatedAt ?? 0),
+          data.updated_at ? new Date(data.updated_at).getTime() : 0,
+          graphResult.data?.updated_at ? new Date(graphResult.data.updated_at).getTime() : 0,
+        )
+        return {
+          document: mergeAgentStateIntoDocument({ ...clone(data.document), ...clone(graph), updatedAt }, agentState, { includeMessages: false }),
+          revision: data.revision,
+          graphRevision: graphResult.data?.revision ?? 1,
+          readMetrics: { messageRowCount: 0, sessionCount: agentState.sessions?.length ?? 0 },
+        }
+      })
     },
 
     async projectAccess(userId, projectId) {
@@ -434,7 +441,7 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       fail(previousError)
       const { data, error } = await supabase.rpc('botanic_write_project_document', {
         p_actor: userId,
-        p_document: document,
+        p_document: stripAgentMessagesFromDocument(document),
         p_expected_revision: Number.isInteger(expectedRevision) ? expectedRevision : null,
         p_expected_graph_revision: Number.isInteger(expectedGraphRevision) ? expectedGraphRevision : null,
       }).single()
@@ -570,6 +577,47 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       const state = await readAgentStateRows(projectId, userId)
       const hydrated = mergeAgentStateIntoDocument({ agentSessions: [], agentMemory: [], agentRuns: [] }, state)
       return { sessions: hydrated.agentSessions, memory: hydrated.agentMemory, runs: hydrated.agentRuns }
+    },
+
+    async listAgentSessions(userId, projectId, options = {}) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const limit = normalizeAgentSessionListLimit(options.limit)
+      const state = await readAgentStateRows(projectId, userId, { includeMessages: false })
+      return state.sessions.slice(0, limit).map((session) => ({ ...session, messages: [] }))
+    },
+
+    async listAgentSessionMessages(userId, projectId, sessionId, options = {}) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const { data: sessionRow, error: sessionError } = await supabase.from('agent_sessions').select('id').eq('project_id', projectId).eq('id', sessionId).maybeSingle()
+      fail(sessionError)
+      if (!sessionRow) return undefined
+      const page = agentMessageListOptions(options)
+      let messageQuery = supabase.from('agent_messages')
+        .select('id,updated_at,payload')
+        .eq('project_id', projectId)
+        .eq('session_id', sessionId)
+        .order('updated_at', { ascending: false })
+        .order('id', { ascending: false })
+        .limit(page.limit)
+      if (page.before) {
+        const beforeTimestamp = new Date(page.before.updatedAt).toISOString()
+        messageQuery = messageQuery.or(`updated_at.lt.${beforeTimestamp},and(updated_at.eq.${beforeTimestamp},id.lt.${postgrestQuotedValue(page.before.id)})`)
+      }
+      const { data: rows, error } = await supabaseRequest(() => messageQuery)
+      fail(error)
+      const messages = (rows ?? []).map((row) => clone(row.payload)).reverse()
+      const oldest = rows?.at(-1)
+      return {
+        messages,
+        nextBefore: rows?.length === page.limit && oldest
+          ? encodeAgentMessageCursor({
+            id: oldest.id,
+            updatedAt: new Date(oldest.updated_at).getTime(),
+            createdAt: new Date(oldest.updated_at).getTime(),
+          })
+          : undefined,
+        readMetrics: { messageCount: messages.length },
+      }
     },
 
     async listCollaborationActivities(userId, projectId, options = 100) {

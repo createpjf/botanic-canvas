@@ -5,7 +5,9 @@ import { dirname, resolve } from 'node:path'
 import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from './authorization.mjs'
 import { artifactIndexLimits, artifactsFromActionReceipt, artifactsFromAgentMessage, artifactsFromDocument, artifactsFromGenerationJob } from './botanicArtifactIndex.mjs'
 import { applyGenerationJobToAgentRun } from './botanicAgentRun.mjs'
-import { agentStateFromDocument, applyAgentSessionReadReceipts, mergeAgentStateIntoDocument, shouldApplyAgentEntityWrite, shouldApplyAgentRunWrite, validateAgentEntityWriteTimestamp, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity, validateAgentSessionReadReceipt } from './botanicAgentPersistence.mjs'
+import { agentStateFromDocument, applyAgentSessionReadReceipts, mergeAgentStateIntoDocument, shouldApplyAgentEntityWrite, shouldApplyAgentRunWrite, stripAgentMessagesFromDocument, validateAgentEntityWriteTimestamp, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity, validateAgentSessionReadReceipt } from './botanicAgentPersistence.mjs'
+import { agentMessageListOptions, encodeAgentMessageCursor, normalizeAgentSessionListLimit } from './agentMessagePersistence.mjs'
+import { observeProductStoreRead } from './productStoreMetrics.mjs'
 import { collaborationActivitiesForMember, nextCollaborationReceipt, validateCollaborationActivity } from './collaborationActivityPersistence.mjs'
 
 const schemaVersion = 1
@@ -134,16 +136,19 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
     return member && allowedRoles.includes(member.role) ? member : undefined
   }
 
-  function agentStateForProject(projectId, userId) {
+  function agentStateForProject(projectId, userId, options = {}) {
+    const includeMessages = options.includeMessages !== false
     const sessions = state.agentSessions.filter((item) => item.projectId === projectId).map((item) => clone(item.payload))
     const receipts = userId
       ? state.agentSessionReadReceipts.filter((item) => item.projectId === projectId && item.userId === userId).map((item) => clone(item.payload))
       : []
     return {
       sessions: userId ? applyAgentSessionReadReceipts(sessions, receipts) : sessions,
-      messages: state.agentMessages.filter((item) => item.projectId === projectId).map((item) => ({
-        sessionId: item.sessionId, updatedAt: item.updatedAt, message: clone(item.payload),
-      })),
+      messages: includeMessages
+        ? state.agentMessages.filter((item) => item.projectId === projectId).map((item) => ({
+          sessionId: item.sessionId, updatedAt: item.updatedAt, message: clone(item.payload),
+        }))
+        : [],
       memory: state.agentMemoryItems.filter((item) => item.projectId === projectId && !item.deletedAt).map((item) => clone(item.payload)),
       deletedMemoryIds: state.agentMemoryItems.filter((item) => item.projectId === projectId && item.deletedAt).map((item) => item.id),
       runs: state.agentRuns.filter((item) => item.projectId === projectId).map(clone),
@@ -346,19 +351,30 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
     },
 
     readProject(userId, projectId) {
+      const startedAt = Date.now()
       const project = state.projects.find((item) => item.id === projectId)
       if (!project || !canAccess(project, userId)) return undefined
       project.lastAccessedBy = userId
       const graph = ensureCanvasGraph(project)
-      return {
+      const agentState = agentStateForProject(projectId, userId, { includeMessages: false })
+      const result = {
         document: mergeAgentStateIntoDocument({
           ...clone(project.document),
           ...clone(graph.graph),
           updatedAt: Math.max(project.document.updatedAt ?? 0, project.updatedAt, graph.updatedAt ?? 0),
-        }, agentStateForProject(projectId, userId)),
+        }, agentState, { includeMessages: false }),
         revision: project.revision,
         graphRevision: graph.graphRevision,
       }
+      observeProductStoreRead('readProject', {
+        projectId,
+        userId,
+        durationMs: Date.now() - startedAt,
+        ok: true,
+        messageRowCount: 0,
+        sessionCount: agentState.sessions.length,
+      })
+      return result
     },
 
     projectAccess(userId, projectId) {
@@ -400,7 +416,7 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
         }
         const previousDocument = existing.document
         syncAgentStateFromDocument(userId, document, previousDocument)
-        existing.document = clone(document)
+        existing.document = stripAgentMessagesFromDocument(clone(document))
         existing.name = document.name
         existing.updatedAt = now()
         existing.revision += 1
@@ -417,7 +433,7 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       const project = {
         id: document.id,
         name: document.name,
-        document: clone(document),
+        document: stripAgentMessagesFromDocument(clone(document)),
         members: [{ userId, role: 'owner', addedAt: now() }],
         revision: 1,
         createdAt: now(),
@@ -565,6 +581,37 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
         sessions: hydrated.agentSessions,
         memory: hydrated.agentMemory,
         runs: hydrated.agentRuns,
+      }
+    },
+
+    listAgentSessions(userId, projectId, options = {}) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project || !canAccess(project, userId)) return undefined
+      const limit = normalizeAgentSessionListLimit(options.limit)
+      const stateSlice = agentStateForProject(projectId, userId, { includeMessages: false })
+      return stateSlice.sessions.slice(0, limit).map((session) => ({ ...session, messages: [] }))
+    },
+
+    listAgentSessionMessages(userId, projectId, sessionId, options = {}) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project || !canAccess(project, userId)) return undefined
+      if (!state.agentSessions.some((item) => item.projectId === projectId && item.id === sessionId)) return undefined
+      const page = agentMessageListOptions(options)
+      const filtered = state.agentMessages
+        .filter((item) => item.projectId === projectId && item.sessionId === sessionId)
+        .filter((item) => !page.before
+          || item.updatedAt < page.before.updatedAt
+          || (item.updatedAt === page.before.updatedAt && item.id.localeCompare(page.before.id) < 0))
+        .sort((left, right) => right.updatedAt - left.updatedAt || right.id.localeCompare(left.id))
+        .slice(0, page.limit)
+      const messages = filtered.map((item) => clone(item.payload)).reverse()
+      const oldest = filtered.at(-1)
+      return {
+        messages,
+        nextBefore: filtered.length === page.limit && oldest
+          ? encodeAgentMessageCursor({ id: oldest.id, updatedAt: oldest.updatedAt, createdAt: oldest.updatedAt })
+          : undefined,
+        readMetrics: { messageCount: messages.length },
       }
     },
 

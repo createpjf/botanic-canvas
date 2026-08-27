@@ -573,6 +573,30 @@ export async function readPersistentBotanicAgentState(projectId: string) {
   }>(`/api/projects/${encodeURIComponent(projectId)}/agent-state`)
 }
 
+export async function listPersistentBotanicAgentSessions(projectId: string, options: { limit?: number } = {}) {
+  const query = new URLSearchParams()
+  if (options.limit !== undefined) query.set('limit', String(options.limit))
+  const suffix = query.size ? `?${query.toString()}` : ''
+  return productRequest<{ sessions: BotanicAgentSession[] }>(
+    `/api/projects/${encodeURIComponent(projectId)}/agent-sessions${suffix}`,
+  )
+}
+
+export async function listPersistentBotanicAgentSessionMessages(
+  projectId: string,
+  sessionId: string,
+  options: { limit?: number; before?: string; signal?: AbortSignal } = {},
+) {
+  const query = new URLSearchParams()
+  if (options.limit !== undefined) query.set('limit', String(options.limit))
+  if (options.before !== undefined) query.set('before', String(options.before))
+  const suffix = query.size ? `?${query.toString()}` : ''
+  return productRequest<{ messages: BotanicAgentMessage[]; nextBefore?: string }>(
+    `/api/projects/${encodeURIComponent(projectId)}/agent-sessions/${encodeURIComponent(sessionId)}/messages${suffix}`,
+    { signal: options.signal },
+  )
+}
+
 export async function listProjectAgentArtifacts(
   projectId: string,
   options: { limit?: number; before?: string; signal?: AbortSignal } = {},

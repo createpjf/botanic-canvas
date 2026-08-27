@@ -9,6 +9,7 @@ import {
   renameCanvasProject,
   type CanvasProjectSummary,
 } from '../../lib/db'
+import { markProjectOpenStarted } from '../../lib/productPerformance'
 import type { WorkspaceProject } from '../../components/WorkspaceViews'
 import { useProductI18n } from '../../i18n/react'
 import { nextWorkspaceProjectName, workspaceProjectsFromSummaries, workspaceTemplateProjectSummary } from './workspaceProjectCoordinator.model'
@@ -72,6 +73,7 @@ export function useWorkspaceProjectCoordinator({
 
   const openProject = useCallback(async (projectId: string) => {
     const navigationRunId = navigationSequence.current
+    markProjectOpenStarted(projectId)
     const opened = await openDocument(projectId)
     if (opened && navigationRunId === navigationSequence.current) onProjectOpened(projectId)
     return opened

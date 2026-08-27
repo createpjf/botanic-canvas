@@ -7,7 +7,7 @@ import { createAgentSkill, isUsableAgentSkill, publicAgentSkill, validateAgentSk
 import { cancelPersistentAgentRun, createPersistentAgentRun, createReviewRetryAgentRunInput, prepareAgentBranchRetry, publicAgentRun, validateAgentRunCreation } from './botanicAgentRun.mjs'
 import { AgentToolRuntimeError, executeConfirmedAgentAction } from './agentToolRuntime.mjs'
 import { botanicAgentBuiltInSkill, botanicAgentSystemSkills, createBotanicAgentActionToolRegistry } from './botanicAgentTools.mjs'
-import { decodeArtifactCursor, encodeArtifactCursor } from './botanicArtifactIndex.mjs'
+import { decodeAgentMessageCursor, encodeAgentMessageCursor } from './agentMessagePersistence.mjs'
 import { cancelGenerationJob } from './generationCancellation.mjs'
 import { retryFailedWorkflowItems } from './productionWorkflow.mjs'
 import { generationIdempotencyKey, generationJobIdForIdempotency } from './generationIdempotency.mjs'
@@ -366,6 +366,8 @@ export function createAgentRouteHandler({
       projectAgentSkills: projectAgentSkillsMatch,
       agentSkillCatalog: agentSkillCatalogMatch,
       projectAgentState: projectAgentStateMatch,
+      projectAgentSessions: projectAgentSessionsMatch,
+      agentSessionMessages: agentSessionMessagesMatch,
       projectAgentArtifacts: projectAgentArtifactsMatch,
       agentSession: agentSessionMatch,
       agentSessionReadingAnchor: agentSessionReadingAnchorMatch,
@@ -785,6 +787,32 @@ export function createAgentRouteHandler({
       await requireProjectPermission(productStore, user.id, projectId, 'read')
       const skills = await productStore.listAgentSkills(user.id, projectId) ?? []
       return json(response, 200, { skills: skills.map(publicAgentSkill) })
+    }
+    if (projectAgentSessionsMatch) {
+      if (request.method !== 'GET') return methodNotAllowed(response, 'Agent 会话列表只支持读取。', 'GET')
+      const user = await requireUser(request)
+      const projectId = decodeURIComponent(projectAgentSessionsMatch[1])
+      await requireProjectPermission(productStore, user.id, projectId, 'read')
+      const sessions = await productStore.listAgentSessions(user.id, projectId, {
+        limit: url.searchParams.get('limit') ?? undefined,
+      })
+      if (!sessions) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
+      return json(response, 200, { sessions })
+    }
+    if (agentSessionMessagesMatch) {
+      if (request.method !== 'GET') return methodNotAllowed(response, 'Agent 消息资源只支持读取。', 'GET')
+      const user = await requireUser(request)
+      const projectId = decodeURIComponent(agentSessionMessagesMatch[1])
+      const sessionId = decodeURIComponent(agentSessionMessagesMatch[2])
+      await requireProjectPermission(productStore, user.id, projectId, 'read')
+      const limit = Math.max(1, Math.min(Number(url.searchParams.get('limit')) || 50, 200))
+      let before
+      try { before = decodeAgentMessageCursor(url.searchParams.get('before') ?? undefined) } catch {
+        return error(response, 400, 'INVALID_AGENT_MESSAGE_CURSOR', 'Agent 消息分页游标无效。')
+      }
+      const page = await productStore.listAgentSessionMessages(user.id, projectId, sessionId, { limit, before })
+      if (!page) return error(response, 404, 'AGENT_SESSION_NOT_FOUND', '未找到该 Agent 对话。')
+      return json(response, 200, { messages: page.messages, nextBefore: page.nextBefore })
     }
     if (projectAgentStateMatch) {
       if (request.method !== 'GET') return methodNotAllowed(response, 'Agent 状态资源只支持读取。', 'GET')

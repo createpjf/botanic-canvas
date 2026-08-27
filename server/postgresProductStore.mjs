@@ -4,8 +4,9 @@ import postgres from 'postgres'
 import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from './authorization.mjs'
 import { artifactIndexLimits, artifactsFromActionReceipt, artifactsFromAgentMessage, artifactsFromDocument, artifactsFromGenerationJob } from './botanicArtifactIndex.mjs'
 import { applyGenerationJobToAgentRun } from './botanicAgentRun.mjs'
-import { agentEntityLimits, agentStateFromDocument, applyAgentSessionReadReceipts, mergeAgentStateIntoDocument, shouldApplyAgentEntityWrite, shouldApplyAgentRunWrite, validateAgentEntityWriteTimestamp, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity, validateAgentSessionReadReceipt } from './botanicAgentPersistence.mjs'
-import { collaborationActivitiesForMember, collaborationActivityListOptions, nextCollaborationReceipt, validateCollaborationActivity } from './collaborationActivityPersistence.mjs'
+import { agentEntityLimits, agentStateFromDocument, applyAgentSessionReadReceipts, mergeAgentStateIntoDocument, shouldApplyAgentEntityWrite, shouldApplyAgentRunWrite, stripAgentMessagesFromDocument, validateAgentEntityWriteTimestamp, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity, validateAgentSessionReadReceipt } from './botanicAgentPersistence.mjs'
+import { agentMessageListOptions, encodeAgentMessageCursor, normalizeAgentSessionListLimit } from './agentMessagePersistence.mjs'
+import { observeProductStoreRead, timedProductStoreRead } from './productStoreMetrics.mjs'
 
 const now = () => Date.now()
 const hashAccessToken = (token) => createHash('sha256').update(token).digest('hex')
@@ -683,20 +684,21 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     `
   }
 
-  async function readAgentStateRows(query, projectId, userId) {
+  async function readAgentStateRows(query, projectId, userId, options = {}) {
+    const includeMessages = options.includeMessages !== false
     const [sessionRows, messageRows, memoryRows, runRows, receiptRows] = await Promise.all([
       query`select payload from agent_sessions where project_id = ${projectId} order by updated_at desc limit 80`,
-      // 每会话只取最近 MESSAGE_LIMIT 条，与写侧抽取和读合并的上限同源。
-      // 单个会话膨胀到几万条时，无差别 limit 会让一个会话独占整个配额并顶满语句超时。
-      query`
-        select session_id as "sessionId", updated_at as "updatedAt", payload from (
-          select session_id, updated_at, payload,
-            row_number() over (partition by session_id order by updated_at desc) as recency
-          from agent_messages where project_id = ${projectId}
-        ) ranked
-        where recency <= ${agentEntityLimits.messagesPerSession}
-        order by updated_at asc
-      `,
+      includeMessages
+        ? query`
+            select session_id as "sessionId", updated_at as "updatedAt", payload from (
+              select session_id, updated_at, payload,
+                row_number() over (partition by session_id order by updated_at desc) as recency
+              from agent_messages where project_id = ${projectId}
+            ) ranked
+            where recency <= ${agentEntityLimits.messagesPerSession}
+            order by updated_at asc
+          `
+        : [],
       query`select id, deleted_at as "deletedAt", payload from agent_memory_items where project_id = ${projectId} order by updated_at desc limit 200`,
       query`select payload from agent_runs where project_id = ${projectId} order by updated_at desc limit 60`,
       userId
@@ -944,9 +946,10 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     },
 
     async listProjects(userId) {
-      // 列表只要封面和节点计数。摘要直接在 SQL 里算：整份 graph（节点带 image、
-      // prompt）随项目数放大后，光是传输和 JSON 解析就能把项目库首屏拖成秒级。
-      const rows = await sql`
+      return timedProductStoreRead('listProjects', { userId }, async () => {
+        // 列表只要封面和节点计数。摘要直接在 SQL 里算：整份 graph（节点带 image、
+        // prompt）随项目数放大后，光是传输和 JSON 解析就能把项目库首屏拖成秒级。
+        const rows = await sql`
         select p.id, p.name, greatest(p.updated_at, coalesce(c.updated_at, p.updated_at)) as "updatedAt",
           p.revision, m.role, c.revision as "graphRevision",
           coalesce(jsonb_array_length(c.graph->'nodes'), 0)::int as "nodeCount",
@@ -977,30 +980,37 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
         revision: Number(row.revision),
         graphRevision: Number(row.graphRevision ?? 1),
       }))
+      })
     },
 
     async readProject(userId, projectId) {
-      const [row] = await sql`
-        select p.document, p.revision, p.updated_at as "projectUpdatedAt", c.graph,
-          c.revision as "graphRevision", c.updated_at as "graphUpdatedAt"
-        from projects p join project_members m on m.project_id = p.id
-        left join canvas_graphs c on c.project_id = p.id
-        where p.id = ${projectId} and m.user_id = ${userId}
-      `
-      if (!row) return undefined
-      const document = asJson(row.document)
-      const graph = row.graph ? asJson(row.graph) : canvasGraph(document)
-      const agentState = await readAgentStateRows(sql, projectId, userId)
-      const updatedAt = Math.max(
-        Number(document.updatedAt ?? 0),
-        Number(row.projectUpdatedAt ?? 0),
-        Number(row.graphUpdatedAt ?? 0),
-      )
-      return {
-        document: mergeAgentStateIntoDocument({ ...document, ...graph, updatedAt }, agentState),
-        revision: Number(row.revision),
-        graphRevision: Number(row.graphRevision ?? 1),
-      }
+      return timedProductStoreRead('readProject', { projectId, userId }, async () => {
+        const [row] = await sql`
+          select p.document, p.revision, p.updated_at as "projectUpdatedAt", c.graph,
+            c.revision as "graphRevision", c.updated_at as "graphUpdatedAt"
+          from projects p join project_members m on m.project_id = p.id
+          left join canvas_graphs c on c.project_id = p.id
+          where p.id = ${projectId} and m.user_id = ${userId}
+        `
+        if (!row) return undefined
+        const document = asJson(row.document)
+        const graph = row.graph ? asJson(row.graph) : canvasGraph(document)
+        const agentState = await readAgentStateRows(sql, projectId, userId, { includeMessages: false })
+        const updatedAt = Math.max(
+          Number(document.updatedAt ?? 0),
+          Number(row.projectUpdatedAt ?? 0),
+          Number(row.graphUpdatedAt ?? 0),
+        )
+        return {
+          document: mergeAgentStateIntoDocument({ ...document, ...graph, updatedAt }, agentState, { includeMessages: false }),
+          revision: Number(row.revision),
+          graphRevision: Number(row.graphRevision ?? 1),
+          readMetrics: {
+            messageRowCount: 0,
+            sessionCount: agentState.sessions?.length ?? 0,
+          },
+        }
+      })
     },
 
     async projectAccess(userId, projectId) {
@@ -1043,7 +1053,8 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
           }
           const revision = Number(existing.revision) + 1
           await syncAgentState(tx, userId, document, asJson(existing.document))
-          await tx`update projects set name = ${document.name}, document = ${tx.json(document)}::jsonb, revision = ${revision}, updated_at = ${timestamp} where id = ${document.id}`
+          const persistedDocument = stripAgentMessagesFromDocument(document)
+          await tx`update projects set name = ${document.name}, document = ${tx.json(persistedDocument)}::jsonb, revision = ${revision}, updated_at = ${timestamp} where id = ${document.id}`
           let graphRevision = Number(currentGraphEntry.revision)
           if (graphChanged) {
             const [savedGraph] = await tx`
@@ -1058,7 +1069,7 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
           return { document: { ...clone(document), ...(graphChanged ? nextGraph : currentGraph) }, revision, graphRevision, created: false }
         }
 
-        await tx`insert into projects (id, name, document, revision, created_at, updated_at) values (${document.id}, ${document.name}, ${tx.json(document)}::jsonb, 1, ${timestamp}, ${timestamp})`
+        await tx`insert into projects (id, name, document, revision, created_at, updated_at) values (${document.id}, ${document.name}, ${tx.json(stripAgentMessagesFromDocument(document))}::jsonb, 1, ${timestamp}, ${timestamp})`
         await tx`insert into project_members (project_id, user_id, role, added_at) values (${document.id}, ${userId}, 'owner', ${timestamp})`
         await tx`
           insert into canvas_graphs (project_id, graph, revision, updated_at)
@@ -1209,6 +1220,42 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       const state = await readAgentStateRows(sql, projectId, userId)
       const hydrated = mergeAgentStateIntoDocument({ agentSessions: [], agentMemory: [], agentRuns: [] }, state)
       return { sessions: hydrated.agentSessions, memory: hydrated.agentMemory, runs: hydrated.agentRuns }
+    },
+
+    async listAgentSessions(userId, projectId, options = {}) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const limit = normalizeAgentSessionListLimit(options.limit)
+      const state = await readAgentStateRows(sql, projectId, userId, { includeMessages: false })
+      return state.sessions.slice(0, limit).map((session) => ({ ...session, messages: [] }))
+    },
+
+    async listAgentSessionMessages(userId, projectId, sessionId, options = {}) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const [sessionRow] = await sql`select 1 from agent_sessions where project_id = ${projectId} and id = ${sessionId}`
+      if (!sessionRow) return undefined
+      const page = agentMessageListOptions(options)
+      const rows = page.before
+        ? await sql`
+            select id, updated_at as "updatedAt", payload from agent_messages
+            where project_id = ${projectId} and session_id = ${sessionId}
+              and (updated_at < ${page.before.updatedAt}
+                or (updated_at = ${page.before.updatedAt} and id < ${page.before.id}))
+            order by updated_at desc, id desc limit ${page.limit}
+          `
+        : await sql`
+            select id, updated_at as "updatedAt", payload from agent_messages
+            where project_id = ${projectId} and session_id = ${sessionId}
+            order by updated_at desc, id desc limit ${page.limit}
+          `
+      const messages = rows.map((row) => asPayload(row)).reverse()
+      const oldest = rows.at(-1)
+      return {
+        messages,
+        nextBefore: rows.length === page.limit && oldest
+          ? encodeAgentMessageCursor({ id: oldest.id, updatedAt: Number(oldest.updatedAt), createdAt: Number(oldest.updatedAt) })
+          : undefined,
+        readMetrics: { messageCount: messages.length },
+      }
     },
 
     async listCollaborationActivities(userId, projectId, options = 100) {

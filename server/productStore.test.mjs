@@ -510,8 +510,8 @@ test('Agent 消息按 ID 增量追加，旧文档快照不会覆盖另一设备�
     id: 'message-device-b', role: 'user', kind: 'text', content: '设备 B', createdAt: 12,
   })
 
-  const project = store.readProject(owner.id, 'project-agent-concurrent')
-  assert.deepEqual(project.document.agentSessions[0].messages.map((item) => item.id), ['message-device-a', 'message-device-b'])
+  const state = store.readAgentState(owner.id, 'project-agent-concurrent')
+  assert.deepEqual(state.sessions[0].messages.map((item) => item.id), ['message-device-a', 'message-device-b'])
 })
 
 test('Agent 消息按 updatedAt 幂等合并，迟到的旧版本不覆盖新内容', () => {

@@ -10,7 +10,7 @@ import {
   type CollaborationDocumentChange,
 } from '../../domain/collaborationActivity'
 import { shouldRefreshFromRealtimeEvent } from '../../domain/realtimeSync'
-import { executePersistentBotanicAgentRun, listPersistentBotanicAgentRuns, readPersistentBotanicAgentState } from '../../lib/agentApi'
+import { executePersistentBotanicAgentRun, listPersistentBotanicAgentRuns, listPersistentBotanicAgentSessions, readPersistentBotanicAgentState } from '../../lib/agentApi'
 import { listProjectCollaborationActivities, updateProjectCollaborationActivityReceipt } from '../../lib/collaborationApi'
 import { flushPendingCanvasDocumentWrites, previewRemoteCanvasDocument, refreshCanvasDocumentFromRemote, syncPendingCanvasDrafts } from '../../lib/db'
 import { connectCanvasCollaboration, type CanvasCollaboration } from '../../lib/projectCollaboration'
@@ -78,6 +78,7 @@ function localizeCollaborationChange<T extends CollaborationDocumentChange>(chan
 type CanvasWorkspaceSynchronizationOptions = {
   workspaceActive: boolean
   currentUserId?: string
+  refreshAgentSessionMessagesRef?: { current: () => Promise<void> }
 }
 
 export type CollaborationAwareness = {
@@ -104,7 +105,11 @@ const emptyCollaborationAwareness: CollaborationAwareness = {
  * 画布工作区的远端同步、协作连接与 Agent Run 恢复协调器。
  * UI 只消费重试入口，不直接组合网络恢复时序。
  */
-export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUserId }: CanvasWorkspaceSynchronizationOptions) {
+export function useCanvasWorkspaceSynchronization({
+  workspaceActive,
+  currentUserId,
+  refreshAgentSessionMessagesRef,
+}: CanvasWorkspaceSynchronizationOptions) {
   const { locale } = useProductI18n()
   const copy = canvasSynchronizationCopy[locale]
   const documentId = useCanvasStore((state) => state.document.id)
@@ -261,10 +266,19 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
   const refreshAgentEntitiesFromRemote = useCallback(async () => {
     const projectId = useCanvasStore.getState().document.id
     if (!serverPersistenceEnabled || projectId === 'workspace-placeholder') return
-    const state = await readPersistentBotanicAgentState(projectId)
+    const [{ sessions: remoteSessions }, state] = await Promise.all([
+      listPersistentBotanicAgentSessions(projectId),
+      readPersistentBotanicAgentState(projectId),
+    ])
     if (useCanvasStore.getState().document.id !== projectId) return
+    const localSessions = useCanvasStore.getState().document.agentSessions
+    const localById = new Map(localSessions.map((session) => [session.id, session]))
+    const remoteSessionsForMerge = remoteSessions.map((remote) => ({
+      ...remote,
+      messages: localById.get(remote.id)?.messages ?? [],
+    }))
     useCanvasStore.setState((current) => {
-      const agentSessions = mergeCollaborativeAgentSessions(current.document.agentSessions, state.sessions)
+      const agentSessions = mergeCollaborativeAgentSessions(current.document.agentSessions, remoteSessionsForMerge)
       const activeAgentSessionId = agentSessions.some((session) => session.id === current.document.activeAgentSessionId)
         ? current.document.activeAgentSessionId
         : agentSessions[0]?.id
@@ -278,7 +292,8 @@ export function useCanvasWorkspaceSynchronization({ workspaceActive, currentUser
       }
     })
     state.runs.forEach((run) => applyAgentRunSnapshot(run))
-  }, [applyAgentRunSnapshot])
+    await refreshAgentSessionMessagesRef?.current?.()
+  }, [applyAgentRunSnapshot, refreshAgentSessionMessagesRef])
 
   const retryCollaborationHistory = useCallback(async () => {
     if (collaborationAwareness.historyErrorAction === 'read') return dismissRemoteChange()

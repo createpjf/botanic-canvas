@@ -86,6 +86,14 @@ test('读合并对每会话消息套用 MESSAGE_LIMIT，保留最新的一段', 
   assert.equal(messages.at(-1).id, `message-${total - 1}`)
 })
 
+test('mergeAgentStateIntoDocument 可在读路径跳过消息嵌套', () => {
+  const merged = mergeAgentStateIntoDocument({ agentSessions: [], agentMemory: [], agentRuns: [] }, {
+    sessions: [session('session-a', 20)],
+    messages: [{ sessionId: 'session-a', updatedAt: 11, message: message('message-a', '第一条', 11) }],
+  }, { includeMessages: false })
+  assert.equal(merged.agentSessions[0].messages.length, 0)
+})
+
 test('仅存在于独立实体表的 Agent Run 会进入兼容文档', () => {
   const merged = mergeAgentStateIntoDocument({
     agentSessions: [], agentMemory: [], agentRuns: [],

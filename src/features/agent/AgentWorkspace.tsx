@@ -277,6 +277,9 @@ export default function AgentWorkspace({
   onClearCollaborationActivities,
   onLoadMoreCollaborationActivities,
   onReloadCollaborationActivities,
+  onLoadOlderMessages,
+  hasOlderMessages = false,
+  loadingOlderMessages = false,
   persistenceStatus,
   onClose,
 }: {
@@ -337,6 +340,9 @@ export default function AgentWorkspace({
   onClearCollaborationActivities: () => Promise<void>
   onLoadMoreCollaborationActivities: () => Promise<void>
   onReloadCollaborationActivities: () => Promise<void>
+  onLoadOlderMessages?: () => void
+  hasOlderMessages?: boolean
+  loadingOlderMessages?: boolean
   onClose: () => void
 }) {
   const { locale } = useProductI18n()
@@ -833,6 +839,14 @@ export default function AgentWorkspace({
       onUpdateReadingAnchor(session.id, messageId)
     }, 700)
   }, [onUpdateReadingAnchor, session?.id, utilityPanelOpen])
+
+  const handleMessagesScroll = useCallback(() => {
+    scheduleReadingAnchorUpdate()
+    const viewport = messagesViewportRef.current
+    if (!viewport || !hasOlderMessages || loadingOlderMessages || !onLoadOlderMessages) return
+    if (viewport.scrollTop > 96) return
+    onLoadOlderMessages()
+  }, [hasOlderMessages, loadingOlderMessages, onLoadOlderMessages, scheduleReadingAnchorUpdate])
 
   const importImageFiles = async (files: File[], source: 'drop' | 'paste' = 'drop') => {
     const { accepted, message } = validateUploadFiles(files, locale)
@@ -2519,8 +2533,9 @@ export default function AgentWorkspace({
         role="log"
         aria-live="polite"
         aria-relevant="additions text"
-        onScroll={scheduleReadingAnchorUpdate}
+        onScroll={handleMessagesScroll}
       >
+        {loadingOlderMessages ? <div className="agent-workspace__history-loading" role="status">{flowCopy.processing}</div> : null}
         {resultPanelOpen ? <div data-agent-flip className="agent-workspace__flip-surface"><AgentResultPanel
           artifacts={artifacts}
           runs={runs}

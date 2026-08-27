@@ -38,6 +38,7 @@ import { serverPersistenceEnabled } from '../../lib/productSession'
 import { localizeProductError } from '../../i18n/core'
 import { useProductI18n } from '../../i18n/react'
 import { useCanvasStore } from '../../store/canvasStore'
+import { useAgentSessionMessages } from '../agent/useAgentSessionMessages'
 import type { AgentArtifactIndexState, AgentContextItem, AgentDockTarget } from '../agent/agentWorkspace.types'
 import { canvasSystemLabel } from './canvasI18n'
 
@@ -139,7 +140,16 @@ export function useCanvasAgentExecutionBridge({
   const [focusRequest, setFocusRequest] = useState<{ nodeIds: string[]; requestId: number } | null>(null)
   const readingAnchorWritesRef = useRef(new Map<string, Promise<void>>())
 
-  const activeSession = document.agentSessions.find((session) => session.id === document.activeAgentSessionId)
+  const sessionMeta = document.agentSessions.find((session) => session.id === document.activeAgentSessionId)
+  const sessionMessages = useAgentSessionMessages(
+    document.id,
+    document.activeAgentSessionId,
+    sessionMeta?.messages ?? [],
+    agentOpen && Boolean(document.activeAgentSessionId),
+  )
+  const activeSession = sessionMeta
+    ? { ...sessionMeta, messages: sessionMessages.messages }
+    : undefined
   const activeContextNodeIds = activeSession?.contextNodeIds ?? selectedFocusNodeIds
   const contextualResultId = activeContextNodeIds.find((nodeId) => {
     const node = document.nodes.find((item) => item.id === nodeId && item.type === 'result')
@@ -727,6 +737,11 @@ export function useCanvasAgentExecutionBridge({
     resolveRunNodes,
     artifactIndexStatus: artifactIndex.projectId === document.id ? artifactIndex.status : 'idle' as const,
     artifactIndexHasMore: artifactIndex.projectId === document.id && artifactIndex.nextBefore !== undefined,
+    loadOlderAgentMessages: sessionMessages.loadOlderMessages,
+    hasOlderAgentMessages: sessionMessages.hasOlderMessages,
+    loadingOlderAgentMessages: sessionMessages.loadingOlder,
+    refreshAgentSessionMessages: sessionMessages.refresh,
+    agentMessagesLoading: sessionMessages.loading,
     focusRequest,
     open,
     openForResult,
