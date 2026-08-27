@@ -12,11 +12,11 @@ test('英文模式打开与创建项目不回落中文助手文案', () => {
   )
   assert.equal(
     canvasDocumentLifecycleAssistantMessage({ kind: 'created', name: 'Creative project 1', locale: 'en' }),
-    '“Creative project 1” was created. Start from assets or a short brief.',
+    '“Creative project 1” created. Start from assets or a brief.',
   )
   assert.equal(
     canvasDocumentReadyAssistantMessage({ name: 'Blank', nodes: [] }, 'en'),
-    '“Blank” was created. Start from assets or a short brief.',
+    '“Blank” created. Start from assets or a brief.',
   )
   assert.equal(
     canvasDocumentReadyAssistantMessage({ name: 'Blank', nodes: [{}] }, 'en'),
@@ -38,7 +38,7 @@ test('中文模式保留原项目打开与创建措辞', () => {
 test('同步与重命名助手文案跟随语言', () => {
   assert.equal(
     canvasDocumentLifecycleAssistantMessage({ kind: 'synced', locale: 'en' }),
-    'Synced updates from another device.',
+    'Synced from another device.',
   )
   assert.equal(
     canvasDocumentLifecycleAssistantMessage({ kind: 'renaming', name: 'Lookbook', locale: 'en' }),
@@ -46,11 +46,11 @@ test('同步与重命名助手文案跟随语言', () => {
   )
   assert.equal(
     canvasDocumentLifecycleAssistantMessage({ kind: 'renamed', name: 'Lookbook', locale: 'en' }),
-    'Project renamed to “Lookbook”.',
+    'Renamed to “Lookbook”.',
   )
   assert.match(
     canvasDocumentLifecycleAssistantMessage({ kind: 'renameFailed', locale: 'en' }),
-    /could not be renamed/u,
+    /Couldn’t rename/u,
   )
   assert.equal(
     canvasDocumentLifecycleAssistantMessage({ kind: 'synced', locale: 'zh-CN' }),

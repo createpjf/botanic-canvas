@@ -12,11 +12,11 @@ function canvasDocumentLifecycleCopy(locale: ProductLocale) {
   return locale === 'en'
     ? {
       opened: (name: string) => `Opened “${name}”.`,
-      created: (name: string) => `“${name}” was created. Start from assets or a short brief.`,
-      synced: 'Synced updates from another device.',
+      created: (name: string) => `“${name}” created. Start from assets or a brief.`,
+      synced: 'Synced from another device.',
       renaming: (name: string) => `Renaming to “${name}”…`,
-      renamed: (name: string) => `Project renamed to “${name}”.`,
-      renameFailed: 'The project could not be renamed. Check your connection and try again.',
+      renamed: (name: string) => `Renamed to “${name}”.`,
+      renameFailed: 'Couldn’t rename. Check the connection and retry.',
     }
     : {
       opened: (name: string) => `已打开「${name}」。`,

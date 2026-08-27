@@ -35,9 +35,9 @@ const projectLibraryMessages = {
   },
   en: {
     pageAria: 'Creative projects', studio: 'Creative studio', productHome: 'Product home', openAccount: 'Open account settings', localWorkspace: 'Local workspace',
-    title: 'Creative projects', description: 'Open a dedicated canvas for each product and creative goal.', updating: 'Updating…',
+    title: 'Creative projects', description: 'One canvas per product and brief.', updating: 'Updating…',
     loadTitle: 'Projects are temporarily unavailable', loadError: 'Check your connection and try again.', retry: 'Try again', loadingAria: 'Loading projects',
-    newProject: 'New project', newProjectDescription: 'Start with a blank canvas', noCover: 'No cover generated yet',
+    newProject: 'New project', newProjectDescription: 'Blank canvas', noCover: 'No cover yet',
     renameTitle: 'Rename project', projectName: 'Project name', cancel: 'Cancel', save: 'Save', deleteTitle: 'Delete project',
     deleteDescription: 'The project canvas, generated outputs, and private project assets will be permanently deleted.', confirmDelete: 'Delete project',
     renameError: 'The project name was not saved. Check your connection and try again.', deleteError: 'The project could not be deleted. Try again shortly.', createError: 'The project could not be created. Check your connection and try again.',
