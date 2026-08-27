@@ -3783,11 +3783,12 @@ details.agent-timeline__thinking { display: block; padding: 0; }
 .agent-timeline__step.is-failed .agent-timeline__step-icon { background: #f6e4df; color: #a65349; }
 .agent-timeline__step.is-failed strong,
 .agent-timeline__step.is-failed small { color: #a65349; }
-.agent-timeline__search { display: grid; min-width: 0; gap: 6px; }
-.agent-timeline__search > details { display: grid; min-width: 0; gap: 6px; }
-.agent-timeline__search > details > summary { list-style: none; cursor: pointer; }
-.agent-timeline__search > details > summary::-webkit-details-marker { display: none; }
-.agent-timeline-search-sources { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 2px 29px; padding: 0; list-style: none; }
+.agent-timeline__search { display: grid; min-width: 0; }
+.agent-timeline__search-toggle { width: 100%; border: 0; background: transparent; color: inherit; font: inherit; text-align: start; cursor: pointer; grid-template-columns: 22px minmax(0, 1fr) auto 11px; }
+.agent-timeline__search-toggle > svg { width: 10px; height: 10px; color: #9aa89e; justify-self: end; transition: transform 180ms cubic-bezier(.2, .82, .2, 1); }
+.agent-timeline__search.is-open .agent-timeline__search-toggle > svg { transform: rotate(180deg); }
+.agent-timeline__search-panel { overflow: hidden; height: 0; opacity: 0; }
+.agent-timeline-search-sources { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 2px 29px; padding: 0; list-style: none; }
 .agent-timeline-search-source { display: inline-flex; max-width: 180px; min-height: 22px; align-items: center; gap: 5px; padding: 2px 8px 2px 4px; border: 1px solid #b9ccbb; border-radius: 999px; background: #eef4ee; color: #334c3a; font-size: 10px; font-weight: 620; text-decoration: none; }
 .agent-timeline-search-source:hover { background: #e4eee5; color: #2f4a38; }
 .agent-timeline-search-source--static { cursor: default; }
@@ -4253,6 +4254,7 @@ details.agent-timeline__thinking { display: block; padding: 0; }
   .agent-timeline__thinking.is-running > svg,
   .agent-timeline__thinking.is-running > summary svg,
   .agent-timeline__step.is-running .agent-timeline__step-icon { animation: none; }
+  .agent-timeline__search-toggle > svg { transition: none; }
 }
 .agent-composer { position: relative; display: grid; gap: 8px; margin: 0 18px 16px; padding: 12px 14px 11px; border: 1px solid #d1dfd2; border-radius: var(--radius-surface); background: rgba(255, 255, 255, .96); box-shadow: 0 8px 28px rgba(35, 66, 42, .08); }
 .agent-composer:focus-within { border-color: #8daf94; box-shadow: 0 0 0 3px rgba(79, 133, 91, .1); }

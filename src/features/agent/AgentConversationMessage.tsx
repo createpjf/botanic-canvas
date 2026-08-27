@@ -254,16 +254,66 @@ function AgentTimelineSearchStep({
   toolItems: AgentToolCallTrace[]
   error: ReactNode
 }) {
-  const [open, setOpen] = useState(true)
-  return <div className={`agent-timeline__search is-${block.status}`}>
-    <details open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
-      <summary className={`agent-timeline__step is-${block.status}`} aria-label={`${title}, ${statusLabel}`}>
-        <span className="agent-timeline__step-icon" aria-hidden="true"><TimelineStepMarker block={block} toolItems={toolItems} /></span>
-        <strong>{title}</strong>
-        <small>{statusLabel}</small>
-      </summary>
+  const rootRef = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const readyRef = useRef(false)
+  const [open, setOpen] = useState(false)
+  const sourceCount = block.sources?.length ?? 0
+
+  useGSAP(() => {
+    const panel = panelRef.current
+    if (!panel) return
+    const duration = prefersReducedMotion() ? 0 : botanicMotion.duration.panel
+    if (!readyRef.current) {
+      readyRef.current = true
+      gsap.set(panel, open
+        ? { height: 'auto', autoAlpha: 1, y: 0 }
+        : { height: 0, autoAlpha: 0, y: 0 })
+      return
+    }
+    if (!open) {
+      gsap.to(panel, {
+        height: 0,
+        autoAlpha: 0,
+        y: prefersReducedMotion() ? 0 : -4,
+        duration,
+        ease: botanicMotion.ease,
+      })
+      return
+    }
+    const from = panel.getBoundingClientRect().height
+    gsap.set(panel, { height: 'auto' })
+    const to = panel.scrollHeight
+    gsap.fromTo(panel, {
+      height: from,
+      autoAlpha: from > 1 ? 1 : 0,
+      y: from > 1 || prefersReducedMotion() ? 0 : -4,
+    }, {
+      height: to,
+      autoAlpha: 1,
+      y: 0,
+      duration,
+      ease: botanicMotion.ease,
+      onComplete() { gsap.set(panel, { height: 'auto' }) },
+    })
+  }, { dependencies: [open, sourceCount], scope: rootRef })
+
+  return <div ref={rootRef} className={`agent-timeline__search is-${block.status}${open ? ' is-open' : ''}`}>
+    <button
+      type="button"
+      className={`agent-timeline__step agent-timeline__search-toggle is-${block.status}`}
+      aria-expanded={open}
+      aria-label={`${title}, ${statusLabel}`}
+      onClick={() => setOpen((value) => !value)}
+    >
+      <span className="agent-timeline__step-icon" aria-hidden="true"><TimelineStepMarker block={block} toolItems={toolItems} /></span>
+      <strong>{title}</strong>
+      <small>{statusLabel}</small>
+      <ChevronDownIcon />
+    </button>
+    <div ref={panelRef} className="agent-timeline__search-panel">
       <AgentWebSourcePills sources={timelineSearchPills(block.sources ?? [])} />
-    </details>
+    </div>
     {error}
   </div>
 }
