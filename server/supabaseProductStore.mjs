@@ -360,9 +360,10 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
     },
 
     async listProjects(userId) {
+      // 与 Postgres Adapter 一样：列表只读图谱，不拉整份 document JSONB。
       const { data, error } = await supabase
         .from('project_members')
-        .select('role, projects!inner(id, name, updated_at, revision, document)')
+        .select('role, projects!inner(id, name, updated_at, revision)')
         .eq('user_id', userId)
       fail(error)
       const projectIds = (data ?? []).map((row) => row.projects.id)
@@ -373,7 +374,7 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       const graphByProject = new Map((graphResult.data ?? []).map((entry) => [entry.project_id, entry]))
       return (data ?? []).map((row) => {
         const entry = graphByProject.get(row.projects.id)
-        const document = { ...row.projects.document, ...(entry?.graph ?? canvasGraph(row.projects.document)) }
+        const graph = entry?.graph ?? { nodes: [], edges: [] }
         return {
           id: row.projects.id,
           name: row.projects.name,
@@ -383,7 +384,7 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
           ),
           revision: row.projects.revision,
           graphRevision: entry?.revision ?? 1,
-          ...projectDocumentSummary(document),
+          ...projectDocumentSummary(graph),
           role: row.role,
         }
       }).sort((a, b) => b.updatedAt - a.updatedAt)

@@ -103,7 +103,8 @@ export function createCanvasDocumentLifecycleActions({
 
     openDocument: async (documentId) => {
       const operationToken = openDocumentOperations.begin()
-      await flushPendingCanvasDocumentWrites().catch(() => undefined)
+      // 上一项目的远端保存继续在后台跑；打开当前项目不能被它的 15s 超时堵住。
+      void flushPendingCanvasDocumentWrites().catch(() => undefined)
       if (!openDocumentOperations.isCurrent(operationToken)) return false
       const stored = await readCanvasDocument(documentId, {
         onRemoteDocument: ({ cachedDocument, remoteDocument }) => (

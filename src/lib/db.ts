@@ -45,6 +45,9 @@ const mediaReferencePrefix = 'media://'
 const mediaObjectUrls = new Map<string, string>()
 const objectUrlToMediaId = new Map<string, string>()
 const dataUrlToMediaId = new Map<string, string>()
+/** 打开项目时只水合画布可见媒体。Agent / 任务集合走独立实体，整树递归会堵死 IndexedDB 队列。 */
+export const canvasDocumentMediaRoots = ['nodes', 'assets', 'history', 'templates', 'deliveries'] as const
+const remoteDocumentReadTimeoutMs = 45_000
 
 class BotanicCanvasDatabase extends Dexie {
   documents!: Table<CanvasDocument, string>
@@ -348,7 +351,11 @@ async function resolveMediaValue(value: unknown): Promise<unknown> {
 }
 
 async function hydrateDocumentMedia(document: CanvasDocument) {
-  return resolveMediaValue(document) as Promise<CanvasDocument>
+  const next = { ...document }
+  await Promise.all(canvasDocumentMediaRoots.map(async (key) => {
+    next[key] = await resolveMediaValue(document[key]) as never
+  }))
+  return next
 }
 
 async function persistLocalDocument(document: CanvasDocument, queueForSync = false) {
@@ -452,7 +459,10 @@ async function readRemoteCanvasDocument(id: string) {
   try {
     const response = await productRequest<{
       document: CanvasDocument; revision: number; graphRevision: number; capabilities?: string[]
-    }>(`/api/projects/${encodeURIComponent(id)}/document`)
+    }>(`/api/projects/${encodeURIComponent(id)}/document`, {
+      timeoutMs: remoteDocumentReadTimeoutMs,
+      timeoutMessage: '项目文档较大，读取超时。请稍后重试。',
+    })
     if (Array.isArray(response.capabilities)) projectCapabilityCache.set(id, response.capabilities)
     rememberRemoteDocument(id, response)
     return remoteDocuments.get(id) ?? response.document
