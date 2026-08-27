@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { BotanicAgentMessage } from '../../domain/agent'
 import { listPersistentBotanicAgentSessionMessages } from '../../lib/agentApi'
 import { serverPersistenceEnabled } from '../../lib/productSession'
@@ -21,39 +21,50 @@ export function useAgentSessionMessages(
   enabled = true,
 ) {
   const [apiMessages, setApiMessages] = useState<BotanicAgentMessage[]>([])
+  const [loadedSessionId, setLoadedSessionId] = useState<string>()
   const [loading, setLoading] = useState(false)
   const [loadingOlder, setLoadingOlder] = useState(false)
   const [nextBefore, setNextBefore] = useState<string | undefined>()
   const [error, setError] = useState<string | undefined>()
+  const sessionIdRef = useRef(sessionId)
+  sessionIdRef.current = sessionId
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (signal?: AbortSignal) => {
     if (!enabled || !sessionId || !serverPersistenceEnabled) {
       setApiMessages([])
+      setLoadedSessionId(undefined)
       setNextBefore(undefined)
       return
     }
     setLoading(true)
     setError(undefined)
     try {
-      const page = await listPersistentBotanicAgentSessionMessages(projectId, sessionId, { limit: 50 })
+      const page = await listPersistentBotanicAgentSessionMessages(projectId, sessionId, { limit: 50, signal })
+      if (signal?.aborted || sessionIdRef.current !== sessionId) return
       setApiMessages(page.messages)
+      setLoadedSessionId(sessionId)
       setNextBefore(page.nextBefore)
     } catch (caught) {
+      if (signal?.aborted || (caught instanceof Error && caught.name === 'AbortError')) return
       setError(caught instanceof Error ? caught.message : String(caught))
     } finally {
-      setLoading(false)
+      if (!signal?.aborted) setLoading(false)
     }
   }, [enabled, projectId, sessionId])
 
   useEffect(() => {
-    void refresh()
+    const controller = new AbortController()
+    void refresh(controller.signal)
+    return () => controller.abort()
   }, [refresh])
 
   const loadOlderMessages = useCallback(async () => {
     if (!enabled || !sessionId || !serverPersistenceEnabled || !nextBefore || loadingOlder) return
+    const requestedSessionId = sessionId
     setLoadingOlder(true)
     try {
-      const page = await listPersistentBotanicAgentSessionMessages(projectId, sessionId, { limit: 50, before: nextBefore })
+      const page = await listPersistentBotanicAgentSessionMessages(projectId, requestedSessionId, { limit: 50, before: nextBefore })
+      if (sessionIdRef.current !== requestedSessionId) return
       setApiMessages((current) => mergeAgentMessages(current, page.messages))
       setNextBefore(page.nextBefore)
     } catch (caught) {
@@ -64,15 +75,15 @@ export function useAgentSessionMessages(
   }, [enabled, loadingOlder, nextBefore, projectId, sessionId])
 
   const messages = useMemo(
-    () => mergeAgentMessages(apiMessages, storeMessages),
-    [apiMessages, storeMessages],
+    () => mergeAgentMessages(loadedSessionId === sessionId ? apiMessages : [], storeMessages),
+    [apiMessages, loadedSessionId, sessionId, storeMessages],
   )
 
   return {
     messages,
     loading,
     loadingOlder,
-    hasOlderMessages: Boolean(nextBefore),
+    hasOlderMessages: Boolean(nextBefore) && loadedSessionId === sessionId,
     loadOlderMessages,
     error,
     refresh,

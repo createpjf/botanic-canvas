@@ -151,12 +151,14 @@ export function ProjectLibrary({
 
   const submitRename = async () => {
     if (!editingProject || !projectName.trim()) return
+    const target = editingProject
+    const nextName = projectName.trim()
     setSubmitting(true)
     setOperationError('')
+    // 与删除一致：先关对话框，卡片名由协调器乐观更新，不让 PATCH 阻塞项目页。
+    setEditingProject(null)
     try {
-      const renamed = await onRenameProject(editingProject.id, projectName)
-      if (renamed) setEditingProject(null)
-      else setOperationError(copy.renameError)
+      if (!await onRenameProject(target.id, nextName)) setOperationError(copy.renameError)
     } catch {
       setOperationError(copy.renameError)
     } finally {

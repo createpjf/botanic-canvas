@@ -114,16 +114,6 @@ export function collaborationChangeFromDocuments(before, after) {
   }
   if (JSON.stringify(before?.edges ?? []) !== JSON.stringify(after?.edges ?? [])) return { kind: 'canvas', summary: '调整了画布连线' }
   if (before?.name !== after?.name) return { kind: 'project', summary: `将项目重命名为「${after?.name ?? '未命名项目'}」`, target: { kind: 'project' } }
-  const beforeSessions = new Map((before?.agentSessions ?? []).map((session) => [session.id, session]))
-  for (const session of after?.agentSessions ?? []) {
-    const knownMessageIds = new Set((beforeSessions.get(session.id)?.messages ?? []).map((message) => message.id))
-    const message = [...(session.messages ?? [])].reverse().find((candidate) => !knownMessageIds.has(candidate.id))
-    if (message) return {
-      kind: 'conversation',
-      summary: `更新了对话「${session.title || '新建对话'}」`,
-      target: { kind: 'message', sessionId: session.id, messageId: message.id },
-    }
-  }
   const beforeRuns = new Map((before?.agentRuns ?? []).map((run) => [run.id, run]))
   const run = (after?.agentRuns ?? []).find((candidate) => {
     const previous = beforeRuns.get(candidate.id)

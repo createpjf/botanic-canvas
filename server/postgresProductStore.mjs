@@ -685,7 +685,9 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
   }
 
   async function readAgentStateRows(query, projectId, userId, options = {}) {
+    const startedAt = Date.now()
     const includeMessages = options.includeMessages !== false
+    try {
     const [sessionRows, messageRows, memoryRows, runRows, receiptRows] = await Promise.all([
       query`select payload from agent_sessions where project_id = ${projectId} order by updated_at desc limit 80`,
       includeMessages
@@ -705,7 +707,7 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
         ? query`select session_id as "sessionId", message_id as "messageId", updated_at as "updatedAt" from agent_session_read_receipts where project_id = ${projectId} and user_id = ${userId}`
         : [],
     ])
-    return {
+    const result = {
       sessions: applyAgentSessionReadReceipts(sessionRows.map(asPayload), receiptRows.map((row) => ({
         sessionId: row.sessionId,
         messageId: row.messageId,
@@ -715,6 +717,27 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       memory: memoryRows.filter((row) => row.deletedAt === null).map(asPayload),
       deletedMemoryIds: memoryRows.filter((row) => row.deletedAt !== null).map((row) => row.id),
       runs: runRows.map(asPayload),
+    }
+    observeProductStoreRead('readAgentStateRows', {
+      projectId,
+      userId,
+      includeMessages,
+      durationMs: Date.now() - startedAt,
+      ok: true,
+      sessionCount: result.sessions.length,
+      messageRowCount: result.messages.length,
+    })
+    return result
+    } catch (error) {
+      observeProductStoreRead('readAgentStateRows', {
+        projectId,
+        userId,
+        includeMessages,
+        durationMs: Date.now() - startedAt,
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      throw error
     }
   }
 
@@ -1066,7 +1089,7 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
             graphRevision = Number(savedGraph.revision)
           }
           await insertAudit(tx, { actorId: userId, action: 'project.updated', projectId: document.id, detail: { revision } })
-          return { document: { ...clone(document), ...(graphChanged ? nextGraph : currentGraph) }, revision, graphRevision, created: false }
+          return { document: { ...stripAgentMessagesFromDocument(clone(document)), ...(graphChanged ? nextGraph : currentGraph) }, revision, graphRevision, created: false }
         }
 
         await tx`insert into projects (id, name, document, revision, created_at, updated_at) values (${document.id}, ${document.name}, ${tx.json(stripAgentMessagesFromDocument(document))}::jsonb, 1, ${timestamp}, ${timestamp})`
@@ -1077,7 +1100,7 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
         `
         await syncAgentState(tx, userId, document)
         await insertAudit(tx, { actorId: userId, action: 'project.created', projectId: document.id })
-        return { document: clone(document), revision: 1, graphRevision: 1, created: true }
+        return { document: stripAgentMessagesFromDocument(clone(document)), revision: 1, graphRevision: 1, created: true }
       })
     },
 
@@ -1215,9 +1238,9 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       })
     },
 
-    async readAgentState(userId, projectId) {
+    async readAgentState(userId, projectId, options = {}) {
       if (!await memberRole(projectId, userId)) return undefined
-      const state = await readAgentStateRows(sql, projectId, userId)
+      const state = await readAgentStateRows(sql, projectId, userId, options)
       const hydrated = mergeAgentStateIntoDocument({ agentSessions: [], agentMemory: [], agentRuns: [] }, state)
       return { sessions: hydrated.agentSessions, memory: hydrated.agentMemory, runs: hydrated.agentRuns }
     },

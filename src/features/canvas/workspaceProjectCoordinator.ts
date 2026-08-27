@@ -12,7 +12,7 @@ import {
 import { markProjectOpenStarted } from '../../lib/productPerformance'
 import type { WorkspaceProject } from '../../components/WorkspaceViews'
 import { useProductI18n } from '../../i18n/react'
-import { nextWorkspaceProjectName, workspaceProjectsFromSummaries, workspaceTemplateProjectSummary } from './workspaceProjectCoordinator.model'
+import { nextWorkspaceProjectName, reconcileWorkspaceProjects, workspaceProjectsFromSummaries, workspaceTemplateProjectSummary } from './workspaceProjectCoordinator.model'
 
 type WorkspaceProjectCoordinatorOptions = {
   activeDocumentId: string
@@ -59,7 +59,7 @@ export function useWorkspaceProjectCoordinator({
     try {
       const summaries = await readCanvasProjectSummaries()
       if (!requests.isCurrent(operationToken)) return
-      setProjects(workspaceProjectsFromSummaries(summaries, locale))
+      setProjects((current) => reconcileWorkspaceProjects(current, workspaceProjectsFromSummaries(summaries, locale)))
     } catch {
       if (requests.isCurrent(operationToken)) setError(locale === 'en' ? 'Check your connection and try again.' : '请检查网络或稍后重试。')
     } finally {
@@ -116,16 +116,24 @@ export function useWorkspaceProjectCoordinator({
   const renameProject = useCallback(async (projectId: string, name: string) => {
     const nextName = name.trim()
     if (!nextName) return false
+    let previousName = ''
+    setProjects((current) => current.map((project) => {
+      if (project.id !== projectId) return project
+      previousName = project.name
+      return { ...project, name: nextName, updatedAt: Date.now() }
+    }))
     invalidate()
     try {
       if (projectId === activeDocumentId) await renameDocument(nextName)
       else await renameCanvasProject(projectId, nextName)
     } catch {
+      if (previousName) {
+        setProjects((current) => current.map((project) => project.id === projectId
+          ? { ...project, name: previousName }
+          : project))
+      }
       return false
     }
-    setProjects((current) => current.map((project) => project.id === projectId
-      ? { ...project, name: nextName, updatedAt: Date.now() }
-      : project))
     return true
   }, [activeDocumentId, invalidate, renameDocument])
 

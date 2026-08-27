@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { shouldRecoverAgentRunResults, shouldResumeQueuedAgentRunExecution } from '../../domain/agent'
-import { mergeCollaborativeAgentSessions } from '../../domain/agentCollaboration'
+import { mergeCollaborativeAgentSessions, overlayLocalAgentSessionMessages } from '../../domain/agentCollaboration'
 import {
   appendCollaborationActivity,
   collaborationDocumentChange,
@@ -268,15 +268,11 @@ export function useCanvasWorkspaceSynchronization({
     if (!serverPersistenceEnabled || projectId === 'workspace-placeholder') return
     const [{ sessions: remoteSessions }, state] = await Promise.all([
       listPersistentBotanicAgentSessions(projectId),
-      readPersistentBotanicAgentState(projectId),
+      readPersistentBotanicAgentState(projectId, { includeMessages: false }),
     ])
     if (useCanvasStore.getState().document.id !== projectId) return
     const localSessions = useCanvasStore.getState().document.agentSessions
-    const localById = new Map(localSessions.map((session) => [session.id, session]))
-    const remoteSessionsForMerge = remoteSessions.map((remote) => ({
-      ...remote,
-      messages: localById.get(remote.id)?.messages ?? [],
-    }))
+    const remoteSessionsForMerge = overlayLocalAgentSessionMessages(remoteSessions, localSessions)
     useCanvasStore.setState((current) => {
       const agentSessions = mergeCollaborativeAgentSessions(current.document.agentSessions, remoteSessionsForMerge)
       const activeAgentSessionId = agentSessions.some((session) => session.id === current.document.activeAgentSessionId)

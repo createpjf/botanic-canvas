@@ -1729,7 +1729,12 @@ export default function CanvasWorkspace({
   const canvasClassName = `app-shell app-shell--agent-${agentOpen ? 'open' : 'closed'}`
   const workspaceTabs = useMemo(() => {
     const projectsById = new Map(workspaceProjects.map((project) => [project.id, project]))
-    if (!projectsById.has(document.id)) {
+    const listed = projectsById.get(document.id)
+    if (listed) {
+      if (listed.name !== document.name) {
+        projectsById.set(document.id, { ...listed, name: document.name, updatedAt: Math.max(listed.updatedAt, document.updatedAt) })
+      }
+    } else {
       projectsById.set(document.id, {
         id: document.id,
         name: document.name,
@@ -2358,6 +2363,7 @@ export default function CanvasWorkspace({
           onConfirm={agentBridge.confirmPlan}
           onConfirmAction={agentBridge.confirmAction}
           onUploadImages={agentBridge.addUploadedImages}
+          onPrepareVisionContext={agentBridge.prepareConversationVisionContext}
           onAppendMessage={appendAgentMessage}
           onUpdateMessage={updateAgentMessage}
           onUpdateAction={updateAgentAction}

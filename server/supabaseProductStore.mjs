@@ -153,7 +153,9 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
   }
 
   async function readAgentStateRows(projectId, userId, options = {}) {
+    const startedAt = Date.now()
     const includeMessages = options.includeMessages !== false
+    try {
     const results = await Promise.all([
       supabaseRequest(() => supabase.from('agent_sessions').select('payload').eq('project_id', projectId).order('updated_at', { ascending: false }).limit(80)),
       includeMessages
@@ -166,13 +168,16 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
         : Promise.resolve({ data: [], error: undefined }),
     ])
     if (results.slice(0, 4).some((result) => missingAgentEntityTable(result.error))) {
+      observeProductStoreRead('readAgentStateRows', {
+        projectId, userId, includeMessages, durationMs: Date.now() - startedAt, ok: true, sessionCount: 0, messageRowCount: 0,
+      })
       return { sessions: [], messages: [], memory: [], deletedMemoryIds: [], runs: [] }
     }
     results.slice(0, 4).forEach((result) => fail(result.error))
     if (results[4].error && !missingAgentEntityTable(results[4].error)) fail(results[4].error)
     const [sessions, messages, memory, runs] = results.map((result) => result.data ?? [])
     const receipts = results[4].error ? [] : results[4].data ?? []
-    return {
+    const result = {
       sessions: applyAgentSessionReadReceipts(sessions.map((row) => clone(row.payload)), receipts.map((row) => ({
         sessionId: row.session_id,
         messageId: row.message_id,
@@ -182,6 +187,27 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       memory: memory.filter((row) => !row.deleted_at).map((row) => clone(row.payload)),
       deletedMemoryIds: memory.filter((row) => row.deleted_at).map((row) => row.id),
       runs: runs.map((row) => clone(row.payload)),
+    }
+    observeProductStoreRead('readAgentStateRows', {
+      projectId,
+      userId,
+      includeMessages,
+      durationMs: Date.now() - startedAt,
+      ok: true,
+      sessionCount: result.sessions.length,
+      messageRowCount: result.messages.length,
+    })
+    return result
+    } catch (error) {
+      observeProductStoreRead('readAgentStateRows', {
+        projectId,
+        userId,
+        includeMessages,
+        durationMs: Date.now() - startedAt,
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      throw error
     }
   }
 
@@ -365,6 +391,7 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
     },
 
     async listProjects(userId) {
+      return timedProductStoreRead('listProjects', { userId }, async () => {
       // 与 Postgres Adapter 一样：列表只读图谱，不拉整份 document JSONB。
       const { data, error } = await supabase
         .from('project_members')
@@ -393,6 +420,7 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
           role: row.role,
         }
       }).sort((a, b) => b.updatedAt - a.updatedAt)
+      })
     },
 
     async readProject(userId, projectId) {
@@ -572,9 +600,9 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       return { deleted, library: clone(library) }
     },
 
-    async readAgentState(userId, projectId) {
+    async readAgentState(userId, projectId, options = {}) {
       if (!await memberRole(projectId, userId)) return undefined
-      const state = await readAgentStateRows(projectId, userId)
+      const state = await readAgentStateRows(projectId, userId, options)
       const hydrated = mergeAgentStateIntoDocument({ agentSessions: [], agentMemory: [], agentRuns: [] }, state)
       return { sessions: hydrated.agentSessions, memory: hydrated.agentMemory, runs: hydrated.agentRuns }
     },

@@ -28,6 +28,7 @@ function emptyDocument(): CanvasDocument {
 function createDelayedPersistenceHarness() {
   let state = { document: emptyDocument(), persistenceStatus: 'saving' } as CanvasStore
   const pendingDocuments: CanvasDocument[] = []
+  const persistedSessions: Array<{ projectId: string; title: string }> = []
   const actions = createCanvasAgentActions({
     set: (patch) => { state = { ...state, ...patch } },
     get: () => state,
@@ -37,9 +38,12 @@ function createDelayedPersistenceHarness() {
       cancelRun: async () => { throw new Error('测试未调用远程任务取消') },
     },
     persistAcknowledgedRemotePatch: async () => {},
+    persistAgentSession: async (projectId, session) => {
+      persistedSessions.push({ projectId, title: session.title })
+    },
   })
   state = { ...state, ...actions }
-  return { actions, pendingDocuments, getState: () => state }
+  return { actions, pendingDocuments, persistedSessions, getState: () => state }
 }
 
 test('首次打开 Agent 时连续确保会话、添加上下文和消息仍落入同一会话', () => {
@@ -82,7 +86,7 @@ test('Agent 阅读位置先更新本地会话，不触发整份画布文档写�
 })
 
 test('Agent 会话的模型、挂载 Skill 和自定义标题会持久化', () => {
-  const { actions, pendingDocuments } = createDelayedPersistenceHarness()
+  const { actions, pendingDocuments, persistedSessions } = createDelayedPersistenceHarness()
   const sessionId = actions.ensureAgentSession()
 
   actions.setAgentSessionPlannerModel(sessionId, 'kimi-k3')
@@ -102,6 +106,8 @@ test('Agent 会话的模型、挂载 Skill 和自定义标题会持久化', () =
   assert.equal(session?.plannerModel, 'kimi-k3')
   assert.deepEqual(session?.mountedSkillIds, ['controlled_edit', 'project-night-scene'])
   assert.equal(session?.title, '夜景生成方案')
+  assert.ok(persistedSessions.some((item) => item.title === '夜景生成方案'))
+  assert.equal(persistedSessions.length, 4)
 })
 
 test('Agent 工作流回执立即补入 prompt、生成节点与连线，且不重复写回服务端', async () => {

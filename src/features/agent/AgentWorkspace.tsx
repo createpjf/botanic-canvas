@@ -248,6 +248,7 @@ export default function AgentWorkspace({
   onConfirm,
   onConfirmAction,
   onUploadImages,
+  onPrepareVisionContext,
   onAppendMessage,
   onUpdateMessage,
   onUpdateAction,
@@ -311,6 +312,7 @@ export default function AgentWorkspace({
   onConfirm: (plan: BotanicAgentPlan, submissionKey?: string) => Promise<{ started: boolean; runId: string }>
   onConfirmAction: (action: BotanicAgentActionProposal) => Promise<BotanicAgentActionResult>
   onUploadImages: (uploads: UploadedAssetInput[]) => void
+  onPrepareVisionContext?: (sessionId: string) => Promise<string[]>
   onAppendMessage: (sessionId: string, message: BotanicAgentMessage) => void
   onUpdateMessage: (sessionId: string, messageId: string, patch: Partial<Pick<BotanicAgentMessage, 'content' | 'runId' | 'status' | 'feedback' | 'plan' | 'question' | 'deliveryStatus' | 'review'>>) => void
   onUpdateAction: (sessionId: string, messageId: string, actionId: string, patch: Partial<Pick<BotanicAgentActionProposal, 'status' | 'error' | 'result'>>) => void
@@ -1745,6 +1747,9 @@ export default function AgentWorkspace({
         streaming: true,
       })
       try {
+        const contextNodeIds = onPrepareVisionContext
+          ? await onPrepareVisionContext(session.id)
+          : session.contextNodeIds
         const turn = await streamBotanicAgentTurn({
           projectId,
           locale,
@@ -1754,7 +1759,7 @@ export default function AgentWorkspace({
             ...session.messages.map((message) => ({ role: message.role, content: botanicAgentRequestMessageContent(message, locale) })),
             { role: 'user' as const, content: botanicAgentRequestMessageContent({ content: options.appendUser, mentions: options.mentions }, locale) || cleanInstruction },
           ],
-          contextNodeIds: session.contextNodeIds,
+          contextNodeIds,
           hasTarget: Boolean(target),
           // 选中态与执行模式是系统事实：模型据此判断改图还是新建，以及生成后是自动提交还是等确认。
           ...(target ? { selectedResultLabel: target.label } : {}),
@@ -1992,6 +1997,9 @@ export default function AgentWorkspace({
         // 实时通道只改变“回答什么时候到”：思考与工具进入时间线，回答增量写入气泡正文。
         // 完整回答仍等 done 一次性落成消息，避免半截内容进入对话记录。
         // 工具步进只来自服务端 execute 前后的真实 emit，不做 rAF 假进度。
+        const contextNodeIds = onPrepareVisionContext
+          ? await onPrepareVisionContext(session.id)
+          : session.contextNodeIds
         const response = await streamBotanicAgentChat({
           projectId,
           locale,
@@ -1999,7 +2007,7 @@ export default function AgentWorkspace({
           mountedSkillIds: session.mountedSkillIds,
           mode: route,
           messages: chatMessages,
-          contextNodeIds: session.contextNodeIds,
+          contextNodeIds,
         }, {
           signal: controller.signal,
           onEvent: (event) => {

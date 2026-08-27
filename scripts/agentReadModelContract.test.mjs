@@ -10,6 +10,34 @@ test('readProject 读路径不合并 Agent 消息', () => {
   }
 })
 
+test('阅读锚点路由不再先读全量 Agent 状态', () => {
+  const source = readFileSync(new URL('../server/agentRoutes.mjs', import.meta.url), 'utf8')
+  const handler = source.slice(source.indexOf('if (agentSessionReadingAnchorMatch)'), source.indexOf('if (agentSessionMatch)'))
+  assert.match(handler, /putAgentSessionReadReceipt/)
+  assert.doesNotMatch(handler, /readAgentState/)
+})
+
+test('会话与消息写入的协作摘要不再全量读消息', () => {
+  const source = readFileSync(new URL('../server/agentRoutes.mjs', import.meta.url), 'utf8')
+  const sessionHandler = source.slice(source.indexOf('if (agentSessionMatch)'), source.indexOf('if (agentMessageMatch)'))
+  const messageHandler = source.slice(source.indexOf('if (agentMessageMatch)'), source.indexOf('if (agentMemoryMatch)'))
+  assert.match(sessionHandler, /includeMessages:\s*false/)
+  assert.match(messageHandler, /includeMessages:\s*false/)
+})
+
+test('规划与知识绑定只读记忆，不拉会话消息', () => {
+  const source = readFileSync(new URL('../server/agentRoutes.mjs', import.meta.url), 'utf8')
+  assert.match(source, /readAgentState\(userId, input\.projectId, \{ includeMessages: false \}\)/)
+  assert.match(source, /readAgentState\(user\.id, validatedInput\.projectId, \{ includeMessages: false \}\)/)
+})
+
+test('Artifact 分页游标实现仍从 botanicArtifactIndex 导入', () => {
+  const source = readFileSync(new URL('../server/agentRoutes.mjs', import.meta.url), 'utf8')
+  assert.match(source, /decodeArtifactCursor/)
+  assert.match(source, /encodeArtifactCursor/)
+  assert.match(source, /botanicArtifactIndex/)
+})
+
 test('writeProject 落库前剥离 agentSessions 内嵌消息', () => {
   for (const path of ['../server/postgresProductStore.mjs', '../server/supabaseProductStore.mjs', '../server/productStore.mjs']) {
     const source = readFileSync(new URL(path, import.meta.url), 'utf8')

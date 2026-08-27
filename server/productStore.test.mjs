@@ -533,6 +533,41 @@ test('Agent 消息按 updatedAt 幂等合并，迟到的旧版本不覆盖新内
   assert.equal(message.updatedAt, 300)
 })
 
+test('readProject 不再嵌套 Agent 消息，分页接口才返回历史', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, { ...document('project-agent-read-model'), agentSessions: [], agentMemory: [], agentRuns: [] }, undefined)
+  store.putAgentSession(owner.id, 'project-agent-read-model', {
+    id: 'session-read-model', title: '分页会话', executionMode: 'manual', contextNodeIds: [], createdAt: 10, updatedAt: 10,
+  })
+  store.putAgentMessage(owner.id, 'project-agent-read-model', 'session-read-model', {
+    id: 'message-older', role: 'user', kind: 'text', content: '更早', createdAt: 11, updatedAt: 11,
+  })
+  store.putAgentMessage(owner.id, 'project-agent-read-model', 'session-read-model', {
+    id: 'message-newer', role: 'user', kind: 'text', content: '更新', createdAt: 12, updatedAt: 12,
+  })
+
+  const project = store.readProject(owner.id, 'project-agent-read-model')
+  assert.deepEqual(project.document.agentSessions[0].messages, [])
+  const page = store.listAgentSessionMessages(owner.id, 'project-agent-read-model', 'session-read-model', { limit: 1 })
+  assert.deepEqual(page.messages.map((item) => item.id), ['message-newer'])
+  assert.ok(page.nextBefore)
+  const older = store.listAgentSessionMessages(owner.id, 'project-agent-read-model', 'session-read-model', {
+    limit: 1,
+    before: { updatedAt: 12, id: 'message-newer' },
+  })
+  assert.deepEqual(older.messages.map((item) => item.id), ['message-older'])
+
+  const saved = store.writeProject(owner.id, {
+    ...project.document,
+    agentSessions: [{
+      ...project.document.agentSessions[0],
+      messages: [{ id: 'message-local', role: 'user', kind: 'text', content: '不应回传', createdAt: 13 }],
+    }],
+  }, project.revision)
+  assert.deepEqual(saved.document.agentSessions[0].messages, [])
+})
+
 test('Agent 会话按 updatedAt 幂等合并，迟到的旧设备标题不回退', () => {
   const { store } = createStore()
   const owner = store.authenticate('owner-token')

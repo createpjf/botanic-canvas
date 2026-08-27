@@ -341,13 +341,21 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
     },
 
     listProjects(userId) {
-      return state.projects
+      const startedAt = Date.now()
+      const projects = state.projects
         .filter((project) => canAccess(project, userId))
         .sort((left, right) => right.updatedAt - left.updatedAt)
         .map((project) => ({
           ...publicProject(project),
           role: canAccess(project, userId)?.role,
         }))
+      observeProductStoreRead('listProjects', {
+        userId,
+        durationMs: Date.now() - startedAt,
+        ok: true,
+        projectCount: projects.length,
+      })
+      return projects
     },
 
     readProject(userId, projectId) {
@@ -573,10 +581,10 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       return { deleted, library: clone(libraryEntry.library) }
     },
 
-    readAgentState(userId, projectId) {
+    readAgentState(userId, projectId, options = {}) {
       const project = state.projects.find((item) => item.id === projectId)
       if (!project || !canAccess(project, userId)) return undefined
-      const hydrated = mergeAgentStateIntoDocument({ agentSessions: [], agentMemory: [], agentRuns: [] }, agentStateForProject(projectId, userId))
+      const hydrated = mergeAgentStateIntoDocument({ agentSessions: [], agentMemory: [], agentRuns: [] }, agentStateForProject(projectId, userId, options))
       return {
         sessions: hydrated.agentSessions,
         memory: hydrated.agentMemory,

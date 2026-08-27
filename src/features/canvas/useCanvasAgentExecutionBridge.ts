@@ -14,7 +14,7 @@ import {
   type BotanicAgentCanvasWriteback,
   type BotanicAgentPlan,
 } from '../../domain/agent'
-import { collectAgentMediaSources, prepareAgentMediaSources } from '../../domain/agentMedia'
+import { collectAgentMediaSources, collectAgentVisionMediaSources, prepareAgentMediaSources } from '../../domain/agentMedia'
 import {
   type AssetNodeData,
   type CanvasDocument,
@@ -373,6 +373,25 @@ export function useCanvasAgentExecutionBridge({
     setFocusRequest({ nodeIds: validNodeIds, requestId: Date.now() })
   }, [document.nodes, onPrepareCanvasFocus, selectNode])
 
+  /**
+   * 对话/回合看图读的是服务端文档。聊天框刚放下的参考图还只在本机 data URL 里，
+   * 不先入库并冲刷，视觉模型只能拿到节点名，只能猜画面。
+   */
+  const prepareConversationVisionContext = useCallback(async (sessionId: string) => {
+    const activeDocument = useCanvasStore.getState().document
+    const contextNodeIds = activeDocument.agentSessions.find((item) => item.id === sessionId)?.contextNodeIds ?? []
+    if (!serverPersistenceEnabled || !contextNodeIds.length) return contextNodeIds
+    const sources = collectAgentVisionMediaSources(activeDocument, contextNodeIds)
+    try {
+      const replacements = await prepareAgentMediaSources(sources, (source) => persistAgentReferenceMedia(activeDocument.id, source))
+      if (Object.keys(replacements).length) await replaceMediaSources(replacements)
+    } catch { /* 入库失败仍尝试冲刷已排队的画布写入。 */ }
+    try {
+      await flushPendingCanvasDocumentWrites()
+    } catch { /* 冲刷失败不挡住本轮对话；服务端会按当前文档决定能否看图。 */ }
+    return contextNodeIds
+  }, [replaceMediaSources])
+
   const addUploadedImages = useCallback((uploads: UploadedAssetInput[]) => {
     if (!uploads.length) return
     const projectId = document.id
@@ -665,7 +684,7 @@ export function useCanvasAgentExecutionBridge({
     const currentDocument = useCanvasStore.getState().document
     if (currentDocument.id !== document.id) return
     const session = currentDocument.agentSessions.find((candidate) => candidate.id === sessionId)
-    if (!session?.messages.some((message) => message.id === messageId)) return
+    if (!session) return
     if (session.readingAnchorMessageId === messageId) return
     setAgentSessionReadingAnchor(sessionId, messageId)
     if (!serverPersistenceEnabled) return
@@ -748,6 +767,7 @@ export function useCanvasAgentExecutionBridge({
     attachNodeContext,
     focusNodes,
     addUploadedImages,
+    prepareConversationVisionContext,
     confirmAction,
     confirmPlan,
     newSession,

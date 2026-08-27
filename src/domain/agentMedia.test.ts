@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { collectAgentMediaSources, prepareAgentMediaSources, replaceMediaSources } from './agentMedia.ts'
+import { collectAgentMediaSources, collectAgentVisionMediaSources, prepareAgentMediaSources, replaceMediaSources } from './agentMedia.ts'
 import type { CanvasDocument } from './canvas.ts'
 
 function documentFixture(): CanvasDocument {
@@ -38,6 +38,28 @@ test('Agent 执行前找出结果图、原始参考与批量素材', () => {
     '/assets/result.webp',
     '/assets/model.webp',
     '/api/media/media_scene',
+  ])
+})
+
+test('看图只收集当前引用的图片节点，跳过视频', () => {
+  const document = documentFixture()
+  document.nodes.push(
+    {
+      id: 'asset-ref',
+      type: 'asset',
+      position: { x: 0, y: 0 },
+      data: { kind: 'asset', assetId: 'asset-ref', name: '参考', role: '场景', image: 'data:image/png;base64,QUJD', mediaKind: 'image' },
+    },
+    {
+      id: 'asset-video',
+      type: 'asset',
+      position: { x: 0, y: 0 },
+      data: { kind: 'asset', assetId: 'asset-video', name: '视频', role: '场景', image: '/api/media/media_video', mediaKind: 'video' },
+    },
+  )
+  assert.deepEqual(collectAgentVisionMediaSources(document, ['asset-ref', 'asset-video', 'result-1', 'missing']), [
+    '/assets/result.webp',
+    'data:image/png;base64,QUJD',
   ])
 })
 

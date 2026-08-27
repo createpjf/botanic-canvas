@@ -1,3 +1,4 @@
+import { reconcileAgentSessionsAfterDocumentSync } from './agentCollaboration.ts'
 import type { CanvasDocument } from './canvas.ts'
 
 export type RemoteDocumentConflict = {
@@ -42,5 +43,11 @@ export function resolveRemoteCanvasRefresh({
     || remote.updatedAt <= current.updatedAt) {
     return { document: current, applied: false }
   }
-  return { document: remote, applied: true }
+  return {
+    document: {
+      ...remote,
+      agentSessions: reconcileAgentSessionsAfterDocumentSync(current.agentSessions, remote.agentSessions),
+    },
+    applied: true,
+  }
 }

@@ -565,12 +565,16 @@ export async function readPersistentBotanicAgentExecutionTrace(runId: string) {
 }
 
 /** 读取独立 Agent 实体权威状态，用于其他设备消息、记忆与任务的增量失效恢复。 */
-export async function readPersistentBotanicAgentState(projectId: string) {
+export async function readPersistentBotanicAgentState(
+  projectId: string,
+  options: { includeMessages?: boolean } = {},
+) {
+  const suffix = options.includeMessages === false ? '?includeMessages=0' : ''
   return productRequest<{
     sessions: BotanicAgentSession[]
     memory: BotanicAgentMemoryItem[]
     runs: BotanicAgentRunSnapshot[]
-  }>(`/api/projects/${encodeURIComponent(projectId)}/agent-state`)
+  }>(`/api/projects/${encodeURIComponent(projectId)}/agent-state${suffix}`)
 }
 
 export async function listPersistentBotanicAgentSessions(projectId: string, options: { limit?: number } = {}) {

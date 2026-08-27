@@ -305,7 +305,6 @@ test('Agent 阅读位置增量更新写入当前成员回执，不修改共享�
     config: {},
     productStore: {
       projectAccess: async () => ({ exists: true, role: 'owner' }),
-      readAgentState: async () => ({ sessions: [remoteSession] }),
       putAgentSessionReadReceipt: async (userId, projectId, sessionId, receipt) => {
         storedReceipts.push({ userId, projectId, sessionId, receipt })
         return { sessionId, ...receipt }
