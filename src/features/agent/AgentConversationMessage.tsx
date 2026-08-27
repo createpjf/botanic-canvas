@@ -29,7 +29,13 @@ import {
   modelSupportsCustomSize,
   withoutCustomGenerationSize,
 } from '../../domain/generationOutputSize'
-import { settingsForGenerationModel } from '../../domain/generationRecipe'
+import {
+  applyClarityBoost,
+  clarityBoostModel,
+  clearClarityBoost,
+  everydayResolutions,
+  settingsForGenerationModel,
+} from '../../domain/generationRecipe'
 import { BobCharacter } from '../../components/bob/BobCharacter'
 import { bobMessageAllowsSays, bobMessageIsLargeReply, bobReplyPresentation } from '../../domain/bobPresentation'
 import { useBobSaysPlays } from './useBobSaysPlays'
@@ -391,7 +397,8 @@ function AgentPlanSettingsEditor({
     gsap.fromTo(node, { autoAlpha: 0, y: 6 }, { autoAlpha: 1, y: 0, duration: botanicMotion.duration.chip, ease: botanicMotion.ease })
   }, { dependencies: [allowCustom, customMode] })
   const aspectRatios = selectedModel.aspectRatios ?? ['1:1', '16:9', '4:3', '3:4', '4:5', '9:16']
-  const resolutions = selectedModel.resolutions ?? ['1K', '2K']
+  const resolutions = everydayResolutions(selectedModel)
+  const boostModel = clarityBoostModel(models)
   const commitCustomSize = () => {
     if (!allowCustom || !customMode) return
     if (!widthDraft.trim() && !heightDraft.trim()) {
@@ -458,7 +465,8 @@ function AgentPlanSettingsEditor({
     <label>
       <small>{locale === 'en' ? 'Resolution' : '清晰度'}</small>
       <BotanicSelect
-        value={settings.resolution}
+        value={resolutions.includes(settings.resolution) ? settings.resolution : ''}
+        placeholder={settings.resolution === '4K' ? '4K' : undefined}
         ariaLabel={locale === 'en' ? 'Select output resolution' : '选择输出清晰度'}
         disabled={disabled}
         options={resolutions.map((resolution) => ({ value: resolution, label: resolution }))}
@@ -469,6 +477,40 @@ function AgentPlanSettingsEditor({
       <small>{locale === 'en' ? 'Output' : '输出'}</small>
       <span className="agent-plan-settings__readonly" title={locale === 'en' ? 'Output count is set by the plan' : '张数由计划展开决定'}>{countLabel}</span>
     </span>
+    {boostModel ? (
+      <button
+        type="button"
+        className={`agent-plan-settings__boost${settings.resolution === '4K' ? ' is-selected' : ''}`}
+        disabled={disabled}
+        onClick={() => onChange(settings.resolution === '4K' ? clearClarityBoost(settings, models) : applyClarityBoost(settings, models))}
+      >{locale === 'en' ? 'Sharper · 4K' : '提高清晰度'}</button>
+    ) : null}
+    {selectedModel.supportsSearchGrounding ? (
+      <label>
+        <small>{locale === 'en' ? 'Search grounding' : '联网参考'}</small>
+        <button
+          type="button"
+          className={`agent-plan-settings__toggle${settings.searchGrounding !== false ? ' is-selected' : ''}`}
+          disabled={disabled}
+          onClick={() => onChange({ ...settings, searchGrounding: settings.searchGrounding === false })}
+        >{settings.searchGrounding === false ? (locale === 'en' ? 'Off' : '关闭') : (locale === 'en' ? 'On' : '开启')}</button>
+      </label>
+    ) : null}
+    {selectedModel.thinkingLevels?.length ? (
+      <label>
+        <small>{locale === 'en' ? 'Thinking' : '思考'}</small>
+        <BotanicSelect
+          value={settings.thinkingLevel ?? 'high'}
+          ariaLabel={locale === 'en' ? 'Select thinking level' : '选择思考强度'}
+          disabled={disabled}
+          options={[
+            ...(selectedModel.thinkingLevels.includes('high') ? [{ value: 'high', label: locale === 'en' ? 'High' : '充分' }] : []),
+            ...(selectedModel.thinkingLevels.includes('minimal') ? [{ value: 'minimal', label: locale === 'en' ? 'Minimal' : '精简' }] : []),
+          ]}
+          onChange={(value) => onChange({ ...settings, thinkingLevel: value as GenerationSettings['thinkingLevel'] })}
+        />
+      </label>
+    ) : null}
     {allowCustom ? <div ref={customSizeRef} className={`agent-plan-settings__custom${customMode ? ' is-open' : ''}`} inert={!customMode || undefined}>
       <label className="agent-plan-settings__custom-field">
         <small>{locale === 'en' ? 'Width' : '宽'}</small>

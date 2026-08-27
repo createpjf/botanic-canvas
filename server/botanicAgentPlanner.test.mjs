@@ -740,6 +740,29 @@ test('validateBotanicAgentPlanInput 保留 parentPrompt 并对齐自定义像素
   assert.equal(input.generationModels[0].supportsCustomSize, true)
 })
 
+test('规划器接受含 21:9 与 4K 的 Nano Banana 目录', () => {
+  const input = validateBotanicAgentPlanInput({
+    ...validInput,
+    settings: { model: 'gemini-3.1-pro-preview', aspectRatio: '21:9', resolution: '4K' },
+    generationModels: [{
+      id: 'gemini-3.1-pro-preview',
+      label: 'Nano Banana',
+      provider: 'flock',
+      mediaKind: 'image',
+      aspectRatios: ['1:1', '16:9', '4:3', '3:4', '4:5', '9:16', '3:2', '2:3', '5:4', '21:9'],
+      resolutions: ['1K', '2K', '4K'],
+      supportsMask: false,
+      supportsSearchGrounding: true,
+      thinkingLevels: ['minimal', 'high'],
+      maximumReferences: 14,
+    }],
+  })
+  assert.equal(input.settings.model, 'gemini-3.1-pro-preview')
+  assert.equal(input.settings.aspectRatio, '21:9')
+  assert.equal(input.settings.resolution, '4K')
+  assert.deepEqual(input.generationModels[0].resolutions, ['1K', '2K', '4K'])
+})
+
 test('规划旁白加编号清单时共享底回退到 parentPrompt', async () => {
   const result = await planBotanicGeneration({
     ...validInput,

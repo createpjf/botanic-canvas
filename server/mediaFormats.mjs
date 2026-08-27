@@ -1,7 +1,5 @@
 // @ts-check
 
-import { gptImage2CustomSizeLimits } from './generationOutputSize.mjs'
-
 /**
  * 媒体格式的唯一权威词表。
  *
@@ -45,19 +43,18 @@ export const UPLOAD_DOCUMENT_FORMATS = Object.freeze([
  * 所有上限收成具名常量。
  *
  * `maxCanonicalPixels`：凡是我们自己能生成的尺寸，就必须能被重新接收——精修、
- * 局部重绘都会把上一次的生成结果原样传回来当 parent。所以这里不是另猜一个
- * 数字，而是直接复用 `gptImage2CustomSizeLimits.maxPixels`（8,294,400，
- * gpt-image-2 自定义尺寸窗的像素上限）：生成端能吐出的最大像素数，接收端就
- * 必须能吃回去。只有这一处引用，改生成端上限时这里自动跟着变。
+ * 局部重绘都会把上一次的生成结果原样传回来当 parent。接收预算按当前最大
+ * 可生成输出（Nano Banana 4K 方图 4096×4096）计，不再绑死 gpt-image-2
+ * 自定义像素窗（那是 OpenAI 自己的 8.29MP 限制）。
  */
 export const MEDIA_LIMITS = Object.freeze({
-  maxCanonicalPixels: gptImage2CustomSizeLimits.maxPixels,
+  maxCanonicalPixels: 4096 * 4096,
   // 注意：这不是准入门槛的一部分。它只是后续 PR 里归一化器的下采样目标——
   // 超过 maxCanonicalPixels 但长边不超此值的图会被下采样，而不是被拒绝。
   // 曾经把它错当拒绝判据的一个连接词（"且长边 ≤ 2048"），直接把 App 自己生成
   // 的 2048×2048（2K + 1:1 预设，也是默认分辨率）挡在门外，导致对自己最常见
   // 输出的精修全部失败。不要在 assertImagePixelBudget 里再次引用这个字段。
-  maxCanonicalLongEdge: 2048,
+  maxCanonicalLongEdge: 4096,
   maxUploadBytes: 8 * 1024 * 1024,
   // 生产存储里存在 96 MP（8488×11317）JPEG，解成 RGBA 约 384 MB。解压炸弹防线。
   maxDecodePixels: 80_000_000,

@@ -120,8 +120,9 @@ VIDEO_GENERATION_TIMEOUT_MS=1200000
 FLOCK_API_BASE_URL=https://api.flock.io/v1
 FLOCK_API_KEY=...
 FLOCK_TEXT_MODEL=deepseek-v4-pro
-FLOCK_AGENT_MODELS=deepseek-v4-pro,deepseek-v4-flash,kimi-k3,gemini-3.6-flash,glm-5
-AGENT_VISION_MODEL=gemini-3.6-flash
+FLOCK_AGENT_MODELS=deepseek-v4-pro,deepseek-v4-flash,deepseek-v4-flash-vision-exp,kimi-k3,gemini-3.7-flash,glm-5
+FLOCK_IMAGE_MODELS=gemini-3.1-pro-preview
+AGENT_VISION_MODEL=gemini-3.7-flash
 AGENT_PLANNER_TIMEOUT_MS=55000
 AGENT_RUNTIME_V2=true
 AGENT_QUALITY_V2=true
@@ -150,7 +151,7 @@ API 与 Worker 必须使用相同的图像 / 视频 Provider 配置。H3 当前�
 - Redis 同时承载跨 API 实例的请求限流；用户级润色、实时票据、成员变更、联网检索与每日生成候选配额相互独立。
 - 同一生成任务的幂等重试先读取已有任务，不重复消耗生成配额。
 - 上传素材校验单文件大小（8 MB）、MIME 与 PNG / JPEG / WebP 文件签名；媒体 Cookie 只能读取媒体，不能执行写操作。格式白名单与字节嗅探由 `server/mediaFormats.mjs` 单一来源提供。
-- 参考图有像素上限 8.29 MP（`MEDIA_LIMITS.maxCanonicalPixels`）。这条上限取自 GPT Image 2 的最大输出像素数，表达的不变量是「凡是本产品自己能生成的图，就必须能被重新摄入」。曾有一版守卫额外要求「长边 ≤ 2048」，把应用默认输出的 2048×2048 挡在门外，导致对最常见输出的精修全部失败——所以这里只按像素数判定，不要再加长边条件。
+- 参考图有像素上限 16.78 MP（`MEDIA_LIMITS.maxCanonicalPixels`，4096×4096）。这条上限是接收预算：凡是本产品自己能生成的图（含 Nano Banana 4K 方图），就必须能被重新摄入。它不再绑死 GPT Image 2 的自定义像素窗（仍是 8.29 MP）。准入只按像素数判定，不要再加长边条件。
 - 解码有独立上限 80 MP（`maxDecodePixels`），防解压炸弹：生产存储里存在 96 MP JPEG，解成 RGBA 约 384 MB。
 - Vercel 与 Nginx 配置 CSP、HSTS、禁止 iframe 嵌入、权限策略和内容嗅探防护。
 - 账户安全支持 TOTP 二步验证与“退出其他设备”。Owner 完成 TOTP 设置后，再把 Railway API 的 `SECURITY_REQUIRE_OWNER_MFA` 改为 `true`，即可强制邀请成员、修改权限和删除项目使用 AAL2 会话。

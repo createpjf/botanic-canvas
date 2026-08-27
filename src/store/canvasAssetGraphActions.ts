@@ -9,6 +9,7 @@ import {
   clampBatchCount,
   cloneGenerationSettings,
   connectedGenerateInputs,
+  defaultImageGenerationModel,
   defaultSettingsForModel,
   normalizeGenerateNodeInputs,
 } from '../domain/generationRecipe'
@@ -575,7 +576,7 @@ export function createCanvasAssetGraphActions({
     addGenerateNode: (position, mediaKind = 'image', inputNodeIds) => {
       const document = get().document
       const nodeId = `generate-${Date.now()}`
-      const matchingModel = get().availableModels.find((model) => (model.mediaKind ?? 'image') === mediaKind)
+      const matchingModel = defaultImageGenerationModel(get().availableModels, mediaKind)
       if (!matchingModel && mediaKind === 'video') {
         set({ assistantMessage: '视频模型尚未配置，请先检查 MiniMax H3。' })
         return null
@@ -585,7 +586,7 @@ export function createCanvasAssetGraphActions({
         nodeId,
         position: position ?? { x: 470, y: 240 },
         mediaKind,
-        settings: defaultSettingsForModel(matchingModel),
+        settings: defaultSettingsForModel(matchingModel ?? defaultImageGenerationModel(get().availableModels, mediaKind)),
         inputNodeIds,
       })
       void commitDocument({

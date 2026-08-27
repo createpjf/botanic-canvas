@@ -492,10 +492,10 @@ test('参考图像素超上限时被拒，理由是像素总数而不是长边',
   const { resolveGenerationInputMedia, GenerationError } = await import('./generationProvider.mjs')
   const { imagePixelSize, MEDIA_LIMITS } = await import('./mediaFormats.mjs')
 
-  // 4032×3024 = 12.2 MP，正是生产上被供应商拒掉的那张 iPhone 原图的尺寸——
-  // 这是本分支存在的理由，任何改动都不能让它重新通过。
-  const oversized = pngOfSize(4032, 3024)
-  assert.deepEqual(imagePixelSize(oversized), { width: 4032, height: 3024 })
+  // 5000×4000 = 20 MP，超过 4096×4096 接收预算。12.2 MP 的 iPhone 原图现在
+  // 低于 Nano Banana 4K 方图，必须能被重新接收，不能再当超限夹具。
+  const oversized = pngOfSize(5000, 4000)
+  assert.deepEqual(imagePixelSize(oversized), { width: 5000, height: 4000 })
 
   const input = {
     references: [{ mediaId: 'media_oversized', mediaKind: 'image' }],
@@ -510,7 +510,7 @@ test('参考图像素超上限时被拒，理由是像素总数而不是长边',
       assert.ok(error instanceof GenerationError)
       assert.equal(error.code, 'IMAGE_TOO_LARGE_PIXELS')
       // 必须报出实际尺寸和真正被违反的上限（像素总数），而不是转述供应商英文。
-      assert.match(error.message, /4032×3024/)
+      assert.match(error.message, /5000×4000/)
       assert.match(error.message, new RegExp(String(Math.round(MEDIA_LIMITS.maxCanonicalPixels / 10_000))))
       // 拒绝判据只看像素总数：文案不能再指向长边，那不是这条规则判的。
       assert.doesNotMatch(error.message, /长边/)
@@ -531,7 +531,7 @@ test('像素在上限内的参考图正常通过', async () => {
   assert.equal(resolved.references[0].mimeType, 'image/png')
 })
 
-test('App 自己能生成的尺寸必须能被重新接收：2048×2048 与 3840×2160', async () => {
+test('App 自己能生成的尺寸必须能被重新接收：2K、8.29MP 自定义窗与 4K 方图', async () => {
   const { resolveGenerationInputMedia } = await import('./generationProvider.mjs')
 
   // 2048×2048 = 4.19 MP：2K + 1:1 目录预设，也是默认分辨率（见
@@ -545,14 +545,29 @@ test('App 自己能生成的尺寸必须能被重新接收：2048×2048 与 3840
   )
   assert.equal(resolvedSquare.references.length, 1)
 
-  // 3840×2160 = 8.29 MP：落在自定义尺寸窗内、供应商会实际生成的尺寸，
-  // 像素数恰好等于 gptImage2CustomSizeLimits.maxPixels——新上限的来源。
+  // 3840×2160 = 8.29 MP：落在 gpt-image-2 自定义尺寸窗内。
   const wide = pngOfSize(3840, 2160)
   const resolvedWide = await resolveGenerationInputMedia(
     { references: [{ mediaId: 'media_wide', mediaKind: 'image' }] },
     async () => ({ mimeType: 'image/png', buffer: wide }),
   )
   assert.equal(resolvedWide.references.length, 1)
+
+  // 4096×4096 = 16.78 MP：Nano Banana 4K 方图，必须能被重新接收。
+  const square4K = pngOfSize(4096, 4096)
+  const resolved4K = await resolveGenerationInputMedia(
+    { references: [{ mediaId: 'media_4k_square', mediaKind: 'image' }] },
+    async () => ({ mimeType: 'image/png', buffer: square4K }),
+  )
+  assert.equal(resolved4K.references.length, 1)
+
+  // 4032×3024 = 12.2 MP：曾经当超限夹具的 iPhone 原图，现在低于 4K 接收预算。
+  const iphone = pngOfSize(4032, 3024)
+  const resolvedIphone = await resolveGenerationInputMedia(
+    { references: [{ mediaId: 'media_iphone', mediaKind: 'image' }] },
+    async () => ({ mimeType: 'image/png', buffer: iphone }),
+  )
+  assert.equal(resolvedIphone.references.length, 1)
 })
 
 test('读不出尺寸时不拦', async () => {
@@ -593,12 +608,12 @@ test('没有上游原文时也给得出可执行的话', async () => {
 
 test('dataUrl 参考图像素超上限时被拒', async () => {
   // dataUrl 路径在 validateGenerationInput 时已填充 buffer，直接进 resolve 的早期分支。
-  // 若不加像素守卫，12.2MP 的参考会原样通过。
+  // 若不加像素守卫，超过接收预算的参考会原样通过。
   const { resolveGenerationInputMedia, GenerationError } = await import('./generationProvider.mjs')
   const { imagePixelSize, MEDIA_LIMITS } = await import('./mediaFormats.mjs')
 
-  const oversized = pngOfSize(4032, 3024)
-  assert.deepEqual(imagePixelSize(oversized), { width: 4032, height: 3024 })
+  const oversized = pngOfSize(5000, 4000)
+  assert.deepEqual(imagePixelSize(oversized), { width: 5000, height: 4000 })
 
   const input = {
     references: [{ buffer: oversized, mimeType: 'image/png', mediaKind: 'image' }],
@@ -611,7 +626,7 @@ test('dataUrl 参考图像素超上限时被拒', async () => {
     (error) => {
       assert.ok(error instanceof GenerationError)
       assert.equal(error.code, 'IMAGE_TOO_LARGE_PIXELS')
-      assert.match(error.message, /4032×3024/)
+      assert.match(error.message, /5000×4000/)
       assert.match(error.message, new RegExp(String(Math.round(MEDIA_LIMITS.maxCanonicalPixels / 10_000))))
       assert.doesNotMatch(error.message, /长边/)
       return true
@@ -624,8 +639,8 @@ test('dataUrl 父版本图像素超上限时被拒', async () => {
   const { resolveGenerationInputMedia, GenerationError } = await import('./generationProvider.mjs')
   const { imagePixelSize, MEDIA_LIMITS } = await import('./mediaFormats.mjs')
 
-  const oversized = pngOfSize(4032, 3024)
-  assert.deepEqual(imagePixelSize(oversized), { width: 4032, height: 3024 })
+  const oversized = pngOfSize(5000, 4000)
+  assert.deepEqual(imagePixelSize(oversized), { width: 5000, height: 4000 })
 
   const input = {
     references: [],
@@ -638,7 +653,7 @@ test('dataUrl 父版本图像素超上限时被拒', async () => {
     (error) => {
       assert.ok(error instanceof GenerationError)
       assert.equal(error.code, 'IMAGE_TOO_LARGE_PIXELS')
-      assert.match(error.message, /4032×3024/)
+      assert.match(error.message, /5000×4000/)
       assert.match(error.message, new RegExp(String(Math.round(MEDIA_LIMITS.maxCanonicalPixels / 10_000))))
       assert.doesNotMatch(error.message, /长边/)
       return true
@@ -650,7 +665,7 @@ test('提交时携带 dataUrl 的超限参考图在 validateGenerationInput 阶�
   // 像素守卫原本只在 Worker 侧的 resolveGenerationInputMedia 里跑；dataUrl 提交在
   // validateGenerationInput 阶段就已经解出 buffer，能在这里查就不该拖到 Worker 才建一个
   // 注定失败的 Job。这条测试锁的是提交阶段的行为，上面几条锁的是 Worker 侧的兜底。
-  const oversizedDataUrl = `data:image/png;base64,${pngOfSize(4032, 3024).toString('base64')}`
+  const oversizedDataUrl = `data:image/png;base64,${pngOfSize(5000, 4000).toString('base64')}`
   assert.throws(() => validateGenerationInput({
     projectId: 'project-a', kind: 'generation', prompt: '香氛商品主图', batchCount: 1,
     settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '1K' },
@@ -660,7 +675,7 @@ test('提交时携带 dataUrl 的超限参考图在 validateGenerationInput 阶�
 })
 
 test('提交时携带 dataUrl 的超限父版本图在 validateGenerationInput 阶段就被拒', () => {
-  const oversizedDataUrl = `data:image/png;base64,${pngOfSize(4032, 3024).toString('base64')}`
+  const oversizedDataUrl = `data:image/png;base64,${pngOfSize(5000, 4000).toString('base64')}`
   assert.throws(() => validateGenerationInput({
     projectId: 'project-a', kind: 'refinement', prompt: '换背景', batchCount: 1,
     settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '1K' },
@@ -671,7 +686,7 @@ test('提交时携带 dataUrl 的超限父版本图在 validateGenerationInput �
 })
 
 test('提交时携带 dataUrl 的超限局部重绘蒙版在 validateGenerationInput 阶段就被拒', () => {
-  const oversizedDataUrl = `data:image/png;base64,${pngOfSize(4032, 3024).toString('base64')}`
+  const oversizedDataUrl = `data:image/png;base64,${pngOfSize(5000, 4000).toString('base64')}`
   assert.throws(() => validateGenerationInput({
     projectId: 'project-a', kind: 'refinement', prompt: '只重绘选区为夜景', batchCount: 1,
     settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '1K' },
@@ -827,4 +842,61 @@ test('蒙版尺寸必须与提交给供应商的第一张图相匹配', async ()
   const firstImageSize = imagePixelSize(firstImageBuffer)
   assert.deepEqual(maskSize, firstImageSize, '蒙版尺寸应该与供应商收到的第一张图相同')
   assert.deepEqual(maskSize, { width: 20, height: 10 }, '应该按人像（20×10）而非 Logo（64×64）定尺寸')
+})
+
+test('参考上限按模型：gpt-image-2 第 9 张拒，Nano Banana 允许 14', () => {
+  const references = Array.from({ length: 9 }, (_, index) => ({
+    name: `参考 ${index + 1}`, role: '场景', dataUrl: image,
+  }))
+  assert.throws(() => validateGenerationInput({
+    projectId: 'project-a', kind: 'generation', prompt: '香氛主图', batchCount: 1,
+    settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
+    recipe: { references },
+  }, { models: ['gpt-image-2'], maximumBatchCount: 8, maximumReferenceBytes: 1024 }), (error) => (
+    error instanceof GenerationError && error.code === 'INVALID_REFERENCE' && /8/.test(error.message)
+  ))
+
+  const fourteen = Array.from({ length: 14 }, (_, index) => ({
+    name: `参考 ${index + 1}`, role: '场景', dataUrl: image,
+  }))
+  const input = validateGenerationInput({
+    projectId: 'project-a', kind: 'generation', prompt: '香氛主图', batchCount: 1,
+    settings: {
+      model: 'gemini-3.1-pro-preview', aspectRatio: '21:9', resolution: '4K',
+      searchGrounding: true, thinkingLevel: 'high',
+    },
+    recipe: { references: fourteen },
+  }, {
+    models: [{
+      id: 'gemini-3.1-pro-preview', provider: 'flock', mediaKind: 'image',
+      aspectRatios: ['1:1', '16:9', '4:3', '3:4', '4:5', '9:16', '3:2', '2:3', '5:4', '21:9'],
+      resolutions: ['1K', '2K', '4K'],
+      supportsMask: false,
+      supportsSearchGrounding: true,
+      thinkingLevels: ['minimal', 'high'],
+      maximumReferences: 14,
+    }],
+    maximumBatchCount: 8,
+    maximumReferenceBytes: 1024,
+  })
+  assert.equal(input.references.length, 14)
+  assert.equal(input.settings.aspectRatio, '21:9')
+  assert.equal(input.settings.resolution, '4K')
+  assert.equal(input.settings.searchGrounding, true)
+  assert.equal(input.settings.thinkingLevel, 'high')
+})
+
+test('Nano Banana 明确不支持蒙版', () => {
+  assert.throws(() => validateGenerationInput({
+    projectId: 'project-a', kind: 'generation', prompt: '局部重绘', batchCount: 1,
+    settings: { model: 'gemini-3.1-pro-preview', aspectRatio: '3:4', resolution: '2K' },
+    recipe: { references: [{ name: '主商品', role: '商品', dataUrl: image }], mask: { dataUrl: image } },
+  }, {
+    models: [{
+      id: 'gemini-3.1-pro-preview', provider: 'flock', mediaKind: 'image',
+      aspectRatios: ['1:1', '3:4'], resolutions: ['1K', '2K', '4K'], supportsMask: false,
+    }],
+    maximumBatchCount: 8,
+    maximumReferenceBytes: 1024,
+  }), (error) => error instanceof GenerationError && error.code === 'INVALID_MASK')
 })

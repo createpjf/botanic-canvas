@@ -132,7 +132,9 @@ export function createGenerationSubmissionService({ config, productStore, securi
       createdAt: timestamp, updatedAt: timestamp, batchCount: input.batchCount, settings: input.settings,
       provider: selectedModel.provider === 'minimax'
         ? selectedModel.mediaKind === 'video' ? 'minimax-video' : 'minimax-image'
-        : 'openai-images',
+        : selectedModel.provider === 'flock'
+          ? 'flock-image'
+          : 'openai-images',
       refinementMode: input.refinementMode,
       idempotencyKey,
       outputs: [], error: undefined, rawInput, agentRun, usage, idempotencyBinding: binding,

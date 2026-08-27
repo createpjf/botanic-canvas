@@ -6,6 +6,7 @@ import {
   clampBatchCount,
   cloneGenerationRecipe,
   cloneGenerationSettings,
+  maximumReferencesForModel,
   primaryGenerationReference,
 } from '../domain/generationRecipe'
 import { matchUnresolvedGenerationTaskJobs } from '../domain/generationRecovery'
@@ -358,8 +359,11 @@ export function createCanvasGenerationActions({
       if (!graphRecipe.prompt.trim()) return setGenerationError('请填写生成描述。')
       if (graphRecipe.hasUnselectedResultInput) return setGenerationError('上游结果尚未选图；请先在候选中选中一张首图，再继续生成。')
       if (!graphRecipe.recipe.references.length && !graphRecipe.parent) return setGenerationError('请至少连接一张商品图片、参考素材或已选首图。')
-      if (graphRecipe.recipe.references.length > 8) return setGenerationError('单个生成节点最多连接 8 个参考素材。')
       const selectedModel = get().availableModels.find((model) => model.id === graphRecipe.recipe.settings.model)
+      const maximumReferences = maximumReferencesForModel(selectedModel)
+      if (graphRecipe.recipe.references.length > maximumReferences) {
+        return setGenerationError(`单个生成节点最多连接 ${maximumReferences} 个参考素材。`)
+      }
       const isVideoModel = selectedModel?.mediaKind === 'video'
       let preparedRecipe: GenerationRecipe = graphRecipe.recipe
       if (isVideoModel) {

@@ -10,8 +10,58 @@ import type {
   GenerateNodeData,
   ResultNodeData,
   TextNodeData,
-} from './canvas'
-import { customGenerationSizeFields, modelSupportsCustomSize } from './generationOutputSize.ts'
+} from './canvas.ts'
+import {
+  GENERATION_ASPECT_RATIOS,
+  GENERATION_RESOLUTIONS,
+  NANO_BANANA_MODEL_ID,
+} from './canvas.ts'
+import { customGenerationSizeFields, modelSupportsCustomSize, withoutCustomGenerationSize } from './generationOutputSize.ts'
+
+export function maximumReferencesForModel(model: Pick<GenerationModelOption, 'maximumReferences'> | undefined) {
+  const value = Number(model?.maximumReferences)
+  return Number.isInteger(value) && value > 0 ? value : 8
+}
+
+export function everydayResolutions(model: Pick<GenerationModelOption, 'resolutions'> | undefined) {
+  const resolutions = model?.resolutions?.length ? model.resolutions : ['1K', '2K'] as const
+  return resolutions.filter((resolution) => resolution !== '4K')
+}
+
+export function defaultImageGenerationModel(
+  catalog: readonly Pick<GenerationModelOption, 'id' | 'provider' | 'mediaKind'>[] | undefined,
+  mediaKind: GenerationModelOption['mediaKind'] = 'image',
+) {
+  const matching = (catalog ?? []).filter((model) => (model.mediaKind ?? 'image') === mediaKind)
+  if (mediaKind === 'image') {
+    const flock = matching.find((model) => model.provider === 'flock' || model.id === NANO_BANANA_MODEL_ID)
+    if (flock) return flock
+  }
+  return matching[0]
+}
+
+export function clarityBoostModel(catalog: readonly GenerationModelOption[] | undefined) {
+  return (catalog ?? []).find((model) => (
+    (model.mediaKind ?? 'image') === 'image' && model.resolutions?.includes('4K')
+  ))
+}
+
+export function applyClarityBoost(settings: GenerationSettings, catalog: readonly GenerationModelOption[] | undefined): GenerationSettings {
+  const model = clarityBoostModel(catalog)
+  if (!model) return settings
+  return settingsForGenerationModel({
+    ...withoutCustomGenerationSize(settings),
+    model: model.id,
+    resolution: '4K',
+  }, model)
+}
+
+export function clearClarityBoost(settings: GenerationSettings, catalog: readonly GenerationModelOption[] | undefined): GenerationSettings {
+  const model = catalog?.find((item) => item.id === settings.model)
+  const everyday = everydayResolutions(model)
+  const resolution = everyday.includes('2K') ? '2K' : everyday[0] ?? '2K'
+  return { ...settings, resolution }
+}
 
 export function clampBatchCount(value: number) {
   return Math.max(1, Math.round(value) || 1)
@@ -21,27 +71,49 @@ export function cloneGenerationSettings(settings: Partial<GenerationSettings> | 
   const customSize = customGenerationSizeFields(settings)
   return {
     model: typeof settings?.model === 'string' && settings.model.trim() ? settings.model : 'gpt-image-2',
-    aspectRatio: settings?.aspectRatio === '1:1' || settings?.aspectRatio === '16:9' || settings?.aspectRatio === '4:3' || settings?.aspectRatio === '3:4' || settings?.aspectRatio === '4:5' || settings?.aspectRatio === '9:16'
-      ? settings.aspectRatio
+    aspectRatio: (GENERATION_ASPECT_RATIOS as readonly string[]).includes(settings?.aspectRatio ?? '')
+      ? settings!.aspectRatio!
       : '3:4',
-    resolution: settings?.resolution === '1K' || settings?.resolution === '2K'
-      ? settings.resolution
+    resolution: (GENERATION_RESOLUTIONS as readonly string[]).includes(settings?.resolution ?? '')
+      ? settings!.resolution!
       : '2K',
     ...(Number.isInteger(settings?.duration) && Number(settings?.duration) >= 4 && Number(settings?.duration) <= 15
       ? { duration: Number(settings?.duration) }
+      : {}),
+    ...(typeof settings?.searchGrounding === 'boolean' ? { searchGrounding: settings.searchGrounding } : {}),
+    ...(settings?.thinkingLevel === 'minimal' || settings?.thinkingLevel === 'high'
+      ? { thinkingLevel: settings.thinkingLevel }
       : {}),
     ...customSize,
   }
 }
 
+function flockImageSettings(model: GenerationModelOption | undefined, settings?: Partial<GenerationSettings>) {
+  if (!model?.supportsSearchGrounding && !model?.thinkingLevels?.length) return {}
+  return {
+    ...(model.supportsSearchGrounding
+      ? { searchGrounding: typeof settings?.searchGrounding === 'boolean' ? settings.searchGrounding : true }
+      : {}),
+    ...(model.thinkingLevels?.length
+      ? {
+        thinkingLevel: settings?.thinkingLevel && model.thinkingLevels.includes(settings.thinkingLevel)
+          ? settings.thinkingLevel
+          : 'high' as const,
+      }
+      : {}),
+  }
+}
+
 export function defaultSettingsForModel(model: GenerationModelOption | undefined): GenerationSettings {
+  const everyday = everydayResolutions(model)
   return {
     model: model?.id ?? 'gpt-image-2',
     aspectRatio: model?.aspectRatios?.includes('3:4') ? '3:4' : model?.aspectRatios?.[0] ?? '3:4',
-    resolution: model?.resolutions?.includes('2K') ? '2K' : model?.resolutions?.[0] ?? '2K',
+    resolution: everyday.includes('2K') ? '2K' : everyday[0] ?? '2K',
     ...(model?.mediaKind === 'video'
       ? { duration: model.defaultDuration ?? model.durations?.[0] ?? 5 }
       : {}),
+    ...flockImageSettings(model),
   }
 }
 
@@ -52,9 +124,10 @@ export function settingsForGenerationModel(
   const aspectRatio = model.aspectRatios?.includes(settings.aspectRatio)
     ? settings.aspectRatio
     : model.aspectRatios?.[0] ?? settings.aspectRatio
+  const everyday = everydayResolutions(model)
   const resolution = model.resolutions?.includes(settings.resolution)
     ? settings.resolution
-    : model.resolutions?.[0] ?? settings.resolution
+    : everyday.includes('2K') ? '2K' : model.resolutions?.[0] ?? settings.resolution
   const duration = model.mediaKind === 'video'
     ? model.durations?.includes(settings.duration ?? -1)
       ? settings.duration
@@ -66,6 +139,7 @@ export function settingsForGenerationModel(
     aspectRatio,
     resolution,
     ...(duration === undefined ? {} : { duration }),
+    ...flockImageSettings(model, settings),
     ...customSize,
   }
 }

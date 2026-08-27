@@ -1,4 +1,5 @@
-import type { GenerationAspectRatio, GenerationModelOption, GenerationResolution, GenerationSettings } from './canvas'
+import type { GenerationAspectRatio, GenerationModelOption, GenerationResolution, GenerationSettings } from './canvas.ts'
+import { GENERATION_ASPECT_RATIOS } from './canvas.ts'
 
 /** gpt-image-2 官方自定义尺寸窗：边长为 16 的倍数，长短边比不超过 3:1。 */
 export const gptImage2CustomSizeLimits = {
@@ -29,7 +30,7 @@ const catalogSizes: Record<GenerationResolution, Partial<Record<GenerationAspect
   },
 }
 
-const catalogAspectRatios: GenerationAspectRatio[] = ['1:1', '16:9', '4:3', '3:4', '4:5', '9:16']
+const catalogAspectRatios: GenerationAspectRatio[] = [...GENERATION_ASPECT_RATIOS]
 
 export type GenerationSizeOverride = Partial<Pick<GenerationSettings, 'model' | 'aspectRatio' | 'resolution' | 'outputWidth' | 'outputHeight'>>
 

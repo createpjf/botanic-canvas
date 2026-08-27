@@ -20,7 +20,14 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { defaultGenerationModels } from '../../domain/canvas'
-import { settingsForGenerationModel } from '../../domain/generationRecipe'
+import {
+  applyClarityBoost,
+  clarityBoostModel,
+  defaultImageGenerationModel,
+  defaultSettingsForModel,
+  maximumReferencesForModel,
+  settingsForGenerationModel,
+} from '../../domain/generationRecipe'
 import { generationTaskErrorMessage, generationTaskFeedback, planResultGroupPresentation, traceCanvasLineage, type ResultGroupPresentation } from '../../domain/canvasPresentation'
 import { buildDeliveryPreviewArtifacts, canUseForImageDelivery, resolveDeliveryDraft, type DeliveryPanelTarget } from '../../domain/deliveryPresentation'
 import { imageUploadAccept, uploadLimitsLabel } from '../../domain/mediaFormats'
@@ -114,7 +121,7 @@ const workspaceMessages = {
     edgeActions: '已选连线操作', systemEdge: '系统输出连线', selectedEdge: '连线已选中', systemEdgeHint: '用于保留生成血缘，不可删除或重连', reconnectHint: '拖动端点可重连', delete: '删除', closeEdgeActions: '关闭连线操作', emptyGuide: '空画布引导', emptyTitle: '从一个创意目标开始', emptyDetail: '拖入商品、场景或灵感图；也可以先添加一个生成节点，逐步搭建这次项目的创作路径。', addAssets: '添加素材', imageGeneration: '图片生成', videoGeneration: '视频生成', agentStart: '先描述目标', agentStartDetail: '让 Agent 先整理商品、场景和交付规格，再决定要生成什么。', dismissNotice: '关闭操作提示',
     initFailed: '画布初始化失败', initFailedDetail: '请重试；若仍失败，请退出后重新登录。', retry: '重试', loadingCanvas: '正在加载画布', canvasLabel: (name: string) => name.endsWith('画布') ? name : `${name}画布`, backProjects: '返回项目', projects: '项目', openProjects: '已打开项目', projectName: '项目名称', openProject: (name: string) => `打开${name}`, renameProject: '双击重命名', closeProject: (name: string) => `关闭${name}`, closeTab: '关闭标签', newProject: '新建创意项目',
     minimapLabel: '画布导航地图', videoModelMissing: '视频模型尚未配置，请先检查 MiniMax H3。', canvasTools: '画布工具', addNode: '新增节点', openAssets: '打开素材库', templates: '模板', history: '画布历史', delivery: '投放交付', account: '打开账户设置', openAgent: '打开 Bob', loadingAgent: '正在载入 Agent…', language: '切换为英文',
-    imageAsset: '图片素材', selectedResult: '已选结果', candidate: (index: number) => `候选 ${index}`, builtNodes: (count: number) => `已搭建 ${count} 个节点`, blankCanvasSummary: '空白画布 · 等待开始', refinedVersion: '精修版本', generatedImage: '生成图片', keyVisualVersion: '首图版本', dropToAdd: '松开即可加入画布', uploadLimits: uploadLimitsLabel('zh-CN'), addCanvasNode: '添加画布节点', addFromImage: '基于此图添加', connectSelected: '连接所选节点', addNodeTitle: '添加节点', closeAddNode: '关闭添加节点', continueImage: '基于当前图片继续创作', connectToGenerate: '连接素材与描述生成图片', batchVariations: '批量变体', batchDetail: '用一个素材组逐项生成', continueVideo: '以当前画面或视频继续生成', videoReferenceDetail: '连接首帧、首尾帧或参考素材', assets: '素材', assetsDetail: '添加商品、场景或调性图', localImages: '本地图片', uploadImages: '上传图片', uploadToCanvas: '上传图片并加入画布', preview: (name: string) => `${name}预览`, downloadMedia: '下载原媒体', closePreview: '关闭媒体预览',
+    imageAsset: '图片素材', selectedResult: '已选结果', candidate: (index: number) => `候选 ${index}`, builtNodes: (count: number) => `已搭建 ${count} 个节点`, blankCanvasSummary: '空白画布 · 等待开始', refinedVersion: '精修版本', generatedImage: '生成图片', keyVisualVersion: '首图版本', dropToAdd: '松开即可加入画布', uploadLimits: uploadLimitsLabel('zh-CN'), addCanvasNode: '添加画布节点', addFromImage: '基于此图添加', connectSelected: '连接所选节点', addNodeTitle: '添加节点', closeAddNode: '关闭添加节点', continueImage: '基于当前图片继续创作', connectToGenerate: '连接素材与描述生成图片', clarityBoost: '提高清晰度', clarityBoostDetail: '用 Nano Banana 出 4K，保持构图与主体', clarityBoostPrompt: '提高清晰度，保持构图、主体与识别特征不变。', batchVariations: '批量变体', batchDetail: '用一个素材组逐项生成', continueVideo: '以当前画面或视频继续生成', videoReferenceDetail: '连接首帧、首尾帧或参考素材', assets: '素材', assetsDetail: '添加商品、场景或调性图', localImages: '本地图片', uploadImages: '上传图片', uploadToCanvas: '上传图片并加入画布', preview: (name: string) => `${name}预览`, downloadMedia: '下载原媒体', closePreview: '关闭媒体预览',
   },
   en: {
     loadingProject: 'Loading project', loadingProjectShort: 'Loading project', focusSelected: 'Focus selected nodes', focusTask: 'Focus current task', fitAll: 'Fit all nodes', canvasNavigation: 'Canvas navigation', closeMinimap: 'Close minimap', openMinimap: 'Open minimap', minimapNotNeeded: 'Minimap is not needed for a small canvas', zoomLevel: 'Canvas zoom level', moreTools: 'More canvas tools', exitMarquee: 'Exit marquee select', marquee: 'Select nodes', drag: 'Drag', autoLayout: 'Auto arrange', showAll: 'Show all',
@@ -122,7 +129,7 @@ const workspaceMessages = {
     edgeActions: 'Selected connection actions', systemEdge: 'System output connection', selectedEdge: 'Connection selected', systemEdgeHint: 'Preserves generation lineage and cannot be deleted or reconnected', reconnectHint: 'Drag an endpoint to reconnect', delete: 'Delete', closeEdgeActions: 'Close connection actions', emptyGuide: 'Empty canvas guide', emptyTitle: 'Start with a creative direction', emptyDetail: 'Add a product, scene, or inspiration image, or start with a generation node and build the creative workflow step by step.', addAssets: 'Add assets', imageGeneration: 'Image generation', videoGeneration: 'Video generation', agentStart: 'Describe the goal first', agentStartDetail: 'Let Agent organize the product, scene, and delivery specs before you decide what to generate.', dismissNotice: 'Dismiss operation notice',
     initFailed: 'Canvas could not start', initFailedDetail: 'Try again. If it still fails, sign out and sign in again.', retry: 'Retry', loadingCanvas: 'Loading canvas', canvasLabel: (name: string) => `${name} canvas`, backProjects: 'Back to projects', projects: 'Projects', openProjects: 'Open projects', projectName: 'Project name', openProject: (name: string) => `Open ${name}`, renameProject: 'Double-click to rename', closeProject: (name: string) => `Close ${name}`, closeTab: 'Close tab', newProject: 'New creative project',
     minimapLabel: 'Canvas navigation map', videoModelMissing: 'No video model is configured. Check MiniMax H3.', canvasTools: 'Canvas tools', addNode: 'Add node', openAssets: 'Open asset library', templates: 'Templates', history: 'Canvas history', delivery: 'Delivery', account: 'Open account settings', openAgent: 'Open Bob', loadingAgent: 'Loading Agent…', language: 'Switch to Chinese',
-    imageAsset: 'Image asset', selectedResult: 'Selected result', candidate: (index: number) => `Candidate ${index}`, builtNodes: (count: number) => `${count} ${count === 1 ? 'node' : 'nodes'} built`, blankCanvasSummary: 'Blank canvas · Ready to start', refinedVersion: 'Refined version', generatedImage: 'Generated image', keyVisualVersion: 'Key visual version', dropToAdd: 'Drop to add to canvas', uploadLimits: uploadLimitsLabel('en'), addCanvasNode: 'Add canvas node', addFromImage: 'Add from this image', connectSelected: 'Connect selected node', addNodeTitle: 'Add node', closeAddNode: 'Close add-node menu', continueImage: 'Continue creating from this image', connectToGenerate: 'Connect assets and a description to generate an image', batchVariations: 'Batch variations', batchDetail: 'Generate once for each asset in a group', continueVideo: 'Continue from the current image or video', videoReferenceDetail: 'Connect a first frame, first and last frames, or reference assets', assets: 'Assets', assetsDetail: 'Add product, scene, or style images', localImages: 'Local images', uploadImages: 'Upload images', uploadToCanvas: 'Upload images and add to canvas', preview: (name: string) => `${name} preview`, downloadMedia: 'Download original media', closePreview: 'Close media preview',
+    imageAsset: 'Image asset', selectedResult: 'Selected result', candidate: (index: number) => `Candidate ${index}`, builtNodes: (count: number) => `${count} ${count === 1 ? 'node' : 'nodes'} built`, blankCanvasSummary: 'Blank canvas · Ready to start', refinedVersion: 'Refined version', generatedImage: 'Generated image', keyVisualVersion: 'Key visual version', dropToAdd: 'Drop to add to canvas', uploadLimits: uploadLimitsLabel('en'), addCanvasNode: 'Add canvas node', addFromImage: 'Add from this image', connectSelected: 'Connect selected node', addNodeTitle: 'Add node', closeAddNode: 'Close add-node menu', continueImage: 'Continue creating from this image', connectToGenerate: 'Connect assets and a description to generate an image', clarityBoost: 'Sharper · 4K', clarityBoostDetail: 'Faithful 4K refine with Nano Banana', clarityBoostPrompt: 'Increase sharpness and clarity. Keep composition, subject, and identifying details unchanged.', batchVariations: 'Batch variations', batchDetail: 'Generate once for each asset in a group', continueVideo: 'Continue from the current image or video', videoReferenceDetail: 'Connect a first frame, first and last frames, or reference assets', assets: 'Assets', assetsDetail: 'Add product, scene, or style images', localImages: 'Local images', uploadImages: 'Upload images', uploadToCanvas: 'Upload images and add to canvas', preview: (name: string) => `${name} preview`, downloadMedia: 'Download original media', closePreview: 'Close media preview',
   },
 } as const
 
@@ -193,10 +200,8 @@ function runWorkspaceTransition(direction: WorkspaceTransitionDirection, update:
   })
 }
 
-const defaultGenerationSettings: GenerationSettings = {
-  model: 'gpt-image-2',
-  aspectRatio: '3:4',
-  resolution: '2K',
+function fallbackGenerationSettings(models: GenerationModelOption[] = defaultGenerationModels): GenerationSettings {
+  return defaultSettingsForModel(defaultImageGenerationModel(models, 'image'))
 }
 
 const canvasMinZoom = 0.1
@@ -958,9 +963,9 @@ export default function CanvasWorkspace({
       id: node.id,
       name: result.label ? canvasSystemLabel(result.label, locale) : t.selectedResult,
       image: result.image,
-      settings: result.generationSettings ?? defaultGenerationSettings,
+      settings: result.generationSettings ?? fallbackGenerationSettings(availableModels),
     }
-  }, [batchComposerTargetId, document.nodes, locale, t.selectedResult])
+  }, [availableModels, batchComposerTargetId, document.nodes, locale, t.selectedResult])
   const regionEditTarget = useMemo(() => {
     if (!regionEditTargetId) return null
     const node = document.nodes.find((item) => item.id === regionEditTargetId && item.type === 'result')
@@ -971,9 +976,9 @@ export default function CanvasWorkspace({
       id: node.id,
       name: result.label ? canvasSystemLabel(result.label, locale) : t.selectedResult,
       image: result.image,
-      settings: result.generationSettings ?? result.generationRecipe?.settings ?? defaultGenerationSettings,
+      settings: result.generationSettings ?? result.generationRecipe?.settings ?? fallbackGenerationSettings(availableModels),
     }
-  }, [document.nodes, locale, regionEditTargetId, t.selectedResult])
+  }, [availableModels, document.nodes, locale, regionEditTargetId, t.selectedResult])
   const projectTemplateSaveSummary = useMemo(
     () => summarizeWorkflowTemplate(document.nodes, document.edges),
     [document.edges, document.nodes],
@@ -2626,13 +2631,9 @@ export default function CanvasWorkspace({
                 ? document.nodes.find((node) => node.id === visibleNodePalette.parentResultId && node.type === 'result')
                 : undefined
               const parentMediaKind = parentNode?.type === 'result' ? (parentNode.data as ResultNodeData).mediaKind ?? 'image' : 'image'
-              const imageModel = availableModels.find((model) => (model.mediaKind ?? 'image') === 'image')
+              const imageModel = defaultImageGenerationModel(availableModels, 'image')
               const imageSettings = parentMediaKind === 'video' && imageModel
-                ? settingsForGenerationModel({
-                    model: imageModel.id,
-                    aspectRatio: '3:4',
-                    resolution: '2K',
-                  }, imageModel)
+                ? defaultSettingsForModel(imageModel)
                 : undefined
               const branchId = visibleNodePalette.parentResultId
                 ? createGenerateBranchFromResult(visibleNodePalette.parentResultId, imageSettings ? { settings: imageSettings } : undefined)
@@ -2643,6 +2644,28 @@ export default function CanvasWorkspace({
             }}>
               <b><SparkleIcon /></b><span><strong>{t.imageGeneration}</strong><small>{visibleNodePalette.parentResultId ? t.continueImage : t.connectToGenerate}</small></span>
             </button>
+            {visibleNodePalette.parentResultId && clarityBoostModel(availableModels) && document.nodes.some((node) => node.id === visibleNodePalette.parentResultId && node.type === 'result' && (node.data as ResultNodeData).mediaKind !== 'video') ? <button onClick={() => {
+              const parentNode = document.nodes.find((node) => node.id === visibleNodePalette.parentResultId && node.type === 'result')
+              const parentResult = parentNode?.type === 'result' ? parentNode.data as ResultNodeData : undefined
+              const currentSettings = parentResult?.generationSettings ?? parentResult?.generationRecipe?.settings ?? fallbackGenerationSettings(availableModels)
+              const branchId = createGenerateBranchFromResult(visibleNodePalette.parentResultId, {
+                prompt: t.clarityBoostPrompt,
+                settings: applyClarityBoost(currentSettings, availableModels),
+                refinementMode: 'faithful',
+                batchCount: 1,
+              })
+              if (branchId) {
+                skipAutoComposerNodeIdRef.current = branchId
+                const submissionProjectId = document.id
+                void runGraphGeneration(branchId).then((started) => {
+                  if (useCanvasStore.getState().document.id !== submissionProjectId) return
+                  if (started) setCandidatesOpen(true)
+                })
+              }
+              setNodePalette(null)
+            }}>
+              <b>4K</b><span><strong>{t.clarityBoost}</strong><small>{t.clarityBoostDetail}</small></span>
+            </button> : null}
             {visibleNodePalette.parentResultId ? <button onClick={() => {
               setBatchComposerTargetId(visibleNodePalette.parentResultId ?? null)
               setNodePalette(null)
@@ -2775,6 +2798,7 @@ export default function CanvasWorkspace({
             node={{ id: selectedGenerate.id, data: selectedGenerate.data as GenerateNodeData }}
             references={canvasAssetReferences}
             connectedNodeIds={selectedGenerateReferenceNodeIds}
+            maximumReferences={maximumReferencesForModel(selectedGenerateModel)}
             disabled={generationStatus === 'uploading' || generationStatus === 'queued' || generationStatus === 'running' || generationStatus === 'recovering'}
             onToggle={(assetNodeId, enabled) => toggleNodeReference(selectedGenerate.id, assetNodeId, enabled)}
             onSetPrimary={(assetNodeId) => setGenerateNodePrimaryInput(selectedGenerate.id, assetNodeId)}

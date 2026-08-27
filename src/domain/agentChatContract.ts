@@ -1,7 +1,9 @@
 import type { BotanicAgentMessage, BotanicAgentReasoningEntry } from './agent.ts'
 import { instructionRequestsBatchVariation } from './agent.ts'
 import { instructionRequestsMarkOverlay } from './generationComposition.ts'
-import type { GenerationAspectRatio, GenerationModelOption, GenerationResolution } from './canvas'
+import type { GenerationAspectRatio, GenerationModelOption, GenerationResolution } from './canvas.ts'
+import { GENERATION_ASPECT_RATIOS, NANO_BANANA_MODEL_ID } from './canvas.ts'
+import { defaultImageGenerationModel } from './generationRecipe.ts'
 import type { ProductLocale } from '../i18n/core'
 import {
   customGenerationSizeFields,
@@ -120,7 +122,7 @@ function normalizedModelSearchValue(value: string) {
 
 export function inferBotanicAgentGenerationSettings(
   value: string,
-  models: Pick<GenerationModelOption, 'id' | 'label' | 'aspectRatios' | 'resolutions' | 'supportsCustomSize'>[],
+  models: Pick<GenerationModelOption, 'id' | 'label' | 'provider' | 'mediaKind' | 'aspectRatios' | 'resolutions' | 'supportsCustomSize'>[],
 ): BotanicAgentGenerationSettingsHint {
   const normalizedText = normalizedModelSearchValue(value)
   const selectedModel = models.find((model) => {
@@ -129,10 +131,19 @@ export function inferBotanicAgentGenerationSettings(
       .filter((candidate) => candidate.length >= 3)
     return candidates.some((candidate) => normalizedText.includes(candidate))
   })
-  const ratioMatch = value.match(/\b(1|3|4|9|16)\s*[:：]\s*(1|3|4|5|9|16)\b/u)
-  const ratio = ratioMatch ? `${ratioMatch[1]}:${ratioMatch[2]}` as GenerationAspectRatio : undefined
-  const resolutionMatch = value.match(/\b(1|2)\s*k\b/iu)
-  const resolution = resolutionMatch ? `${resolutionMatch[1]}K` as GenerationResolution : undefined
+  const ratioMatch = value.match(/\b(1|2|3|4|5|9|16|21)\s*[:：]\s*(1|2|3|4|5|9|16)\b/u)
+  const ratioCandidate = ratioMatch ? `${ratioMatch[1]}:${ratioMatch[2]}` : undefined
+  const ratio = ratioCandidate && (GENERATION_ASPECT_RATIOS as readonly string[]).includes(ratioCandidate)
+    ? ratioCandidate as GenerationAspectRatio
+    : undefined
+  const wantsClarityBoost = /提高清晰度|更清晰|sharper/iu.test(value)
+  const resolutionMatch = value.match(/\b(1|2|4)\s*k\b/iu)
+  const resolution = wantsClarityBoost
+    ? '4K' as GenerationResolution
+    : resolutionMatch ? `${resolutionMatch[1]}K` as GenerationResolution : undefined
+  const boostModel = wantsClarityBoost || resolution === '4K'
+    ? models.find((model) => model.id === NANO_BANANA_MODEL_ID || model.resolutions?.includes('4K'))
+    : undefined
   const supportedRatios = selectedModel?.aspectRatios?.length
     ? selectedModel.aspectRatios
     : [...new Set(models.flatMap((model) => model.aspectRatios ?? []))]
@@ -151,9 +162,11 @@ export function inferBotanicAgentGenerationSettings(
       ? ratio
       : undefined
   return {
-    ...(selectedModel ? { model: selectedModel.id } : {}),
+    ...(selectedModel ? { model: selectedModel.id } : boostModel ? { model: boostModel.id } : {}),
     ...(aspectRatio ? { aspectRatio } : {}),
-    ...(resolution && (!supportedResolutions.length || supportedResolutions.includes(resolution)) ? { resolution } : {}),
+    ...(resolution && (!supportedResolutions.length || supportedResolutions.includes(resolution) || resolution === '4K')
+      ? { resolution }
+      : {}),
     ...(customSize?.ok ? { outputWidth: customSize.width, outputHeight: customSize.height } : {}),
   }
 }
@@ -164,15 +177,18 @@ export function inferBotanicAgentGenerationSettings(
  */
 export function completeBotanicAgentGenerationSettings(
   hint: BotanicAgentGenerationSettingsHint,
-  models: Pick<GenerationModelOption, 'id' | 'label' | 'aspectRatios' | 'resolutions' | 'supportsCustomSize'>[],
+  models: Pick<GenerationModelOption, 'id' | 'label' | 'provider' | 'mediaKind' | 'aspectRatios' | 'resolutions' | 'supportsCustomSize'>[],
 ): BotanicAgentGenerationSettingsHint {
-  const model = models.find((item) => item.id === hint.model) ?? models[0]
+  const model = models.find((item) => item.id === hint.model)
+    ?? defaultImageGenerationModel(models)
+    ?? models[0]
   if (!model) return hint
   const customSize = modelSupportsCustomSize(model) ? customGenerationSizeFields(hint) : undefined
   const aspectRatio = customSize
     ? inferAspectRatioFromPixels(customSize.outputWidth, customSize.outputHeight)
-    : hint.aspectRatio ?? model.aspectRatios?.[0]
-  const resolution = hint.resolution ?? model.resolutions?.[0]
+    : hint.aspectRatio ?? (model.aspectRatios?.includes('3:4') ? '3:4' : model.aspectRatios?.[0])
+  const everyday = (model.resolutions ?? []).filter((item) => item !== '4K')
+  const resolution = hint.resolution ?? (everyday.includes('2K') ? '2K' : everyday[0] ?? model.resolutions?.[0])
   return {
     model: model.id,
     ...(aspectRatio ? { aspectRatio } : {}),

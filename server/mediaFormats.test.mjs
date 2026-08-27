@@ -90,11 +90,11 @@ test('canonical 是 upload 的子集', () => {
 })
 
 test('上限是具名常量', () => {
-  assert.equal(MEDIA_LIMITS.maxCanonicalLongEdge, 2048)
-  // 凡是我们自己能生成的尺寸，就必须能被重新接收：拒绝阈值直接派生自
-  // gpt-image-2 自定义尺寸窗的像素上限，不是另一个独立猜测的数字。
-  assert.equal(MEDIA_LIMITS.maxCanonicalPixels, gptImage2CustomSizeLimits.maxPixels)
-  assert.equal(MEDIA_LIMITS.maxCanonicalPixels, 8_294_400)
+  assert.equal(MEDIA_LIMITS.maxCanonicalLongEdge, 4096)
+  // 接收预算按当前最大可生成输出（Nano Banana 4K 方图），不再绑死 gpt-image-2 自定义窗。
+  assert.equal(MEDIA_LIMITS.maxCanonicalPixels, 4096 * 4096)
+  assert.equal(gptImage2CustomSizeLimits.maxPixels, 8_294_400)
+  assert.ok(MEDIA_LIMITS.maxCanonicalPixels > gptImage2CustomSizeLimits.maxPixels)
   assert.equal(MEDIA_LIMITS.maxUploadBytes, 8 * 1024 * 1024)
   assert.equal(MEDIA_LIMITS.maxDecodePixels, 80_000_000)
   assert.equal(MEDIA_LIMITS.maxDocumentPages, 200)

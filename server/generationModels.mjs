@@ -1,3 +1,10 @@
+import {
+  DEFAULT_FLOCK_IMAGE_MODELS,
+  NANO_BANANA_ASPECT_RATIOS,
+  NANO_BANANA_MODEL_ID,
+  NANO_BANANA_RESOLUTIONS,
+} from './generationVocabulary.mjs'
+
 const h3Durations = [5, 10, 15]
 
 function unique(values) {
@@ -9,6 +16,7 @@ function labelForModel(model) {
   if (model === 'image-01') return 'MiniMax Image 01'
   if (model === 'image-01-live') return 'MiniMax Image 01 Live'
   if (model === 'MiniMax-H3') return 'MiniMax H3'
+  if (model === NANO_BANANA_MODEL_ID) return 'Nano Banana'
   return model
 }
 
@@ -19,6 +27,8 @@ export function createGenerationModelCatalog({
   miniMaxApiKey,
   miniMaxImageModels = [],
   miniMaxVideoModels = [],
+  flockApiKey,
+  flockImageModels = DEFAULT_FLOCK_IMAGE_MODELS,
 }) {
   const catalog = []
   if (openAIApiKey) {
@@ -58,6 +68,21 @@ export function createGenerationModelCatalog({
       resolutions: ['2K'],
       durations: h3Durations,
       defaultDuration: 5,
+    })))
+  }
+  if (flockApiKey) {
+    catalog.push(...unique(flockImageModels).map((id) => ({
+      id,
+      label: labelForModel(id),
+      provider: 'flock',
+      mediaKind: 'image',
+      aspectRatios: [...NANO_BANANA_ASPECT_RATIOS],
+      resolutions: [...NANO_BANANA_RESOLUTIONS],
+      supportsMask: false,
+      supportsCustomSize: false,
+      supportsSearchGrounding: true,
+      thinkingLevels: ['minimal', 'high'],
+      maximumReferences: 14,
     })))
   }
   return catalog

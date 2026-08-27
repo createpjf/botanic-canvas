@@ -28,3 +28,18 @@ test('显式 overlay 贴标识走像素合成，不调用 OpenAI', async () => {
   assert.equal(result.outputs[0].id, 'job-overlay-gate-output-1')
   assert.match(result.outputs[0].image, /^data:image\/png;base64,/)
 })
+
+test('Flock 模型走 flock Adapter，未配置密钥时失败可见', async () => {
+  await assert.rejects(() => generateMedia({
+    prompt: '海边主视觉',
+    batchCount: 1,
+    settings: { model: 'gemini-3.1-pro-preview', aspectRatio: '3:4', resolution: '2K' },
+  }, {
+    config: {
+      modelOptions: [{ id: 'gemini-3.1-pro-preview', provider: 'flock', mediaKind: 'image' }],
+      flockApiBaseUrl: 'https://api.flock.io/v1',
+    },
+    jobId: 'job-flock-route',
+    persistImage: async () => '/x',
+  }), (error) => error.code === 'PROVIDER_NOT_CONFIGURED')
+})

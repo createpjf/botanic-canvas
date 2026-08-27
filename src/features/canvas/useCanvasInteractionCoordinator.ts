@@ -23,6 +23,7 @@ import type {
 import { readUploadedAssetInput, validateUploadFiles } from '../../lib/uploadedAssets'
 import { useProductI18n } from '../../i18n/react'
 import { useCanvasStore } from '../../store/canvasStore'
+import { maximumReferencesForModel } from '../../domain/generationRecipe'
 
 export type ScreenToFlowPosition = (position: { x: number; y: number }) => { x: number; y: number }
 
@@ -297,7 +298,9 @@ export function useCanvasInteractionCoordinator({
       const connectedImages = existingEdges.filter((edge) => edge.target === targetId)
         .map((edge) => document.nodes.find((node) => node.id === edge.source))
         .filter((node) => node?.type === 'asset')
-      if (connectedImages.length >= 8) return false
+      const targetModelId = (target.data as GenerateNodeData).settings?.model
+      const targetModel = useCanvasStore.getState().availableModels.find((model) => model.id === targetModelId)
+      if (connectedImages.length >= maximumReferencesForModel(targetModel)) return false
     }
     if (source.type === 'result') {
       const connectedResults = existingEdges.filter((edge) => edge.target === targetId)

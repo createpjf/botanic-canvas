@@ -1,7 +1,45 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { CanvasDocument } from './canvas.ts'
-import { buildGraphGenerationRecipe, cloneGenerationRecipe, settingsForGenerationModel } from './generationRecipe.ts'
+import type { GenerationModelOption } from './canvas.ts'
+import { NANO_BANANA_MODEL_ID } from './canvas.ts'
+import {
+  applyClarityBoost,
+  buildGraphGenerationRecipe,
+  clarityBoostModel,
+  clearClarityBoost,
+  cloneGenerationRecipe,
+  cloneGenerationSettings,
+  defaultImageGenerationModel,
+  defaultSettingsForModel,
+  everydayResolutions,
+  maximumReferencesForModel,
+  settingsForGenerationModel,
+} from './generationRecipe.ts'
+
+const nanoBanana: GenerationModelOption = {
+  id: NANO_BANANA_MODEL_ID,
+  label: 'Nano Banana',
+  provider: 'flock',
+  mediaKind: 'image',
+  aspectRatios: ['1:1', '16:9', '4:3', '3:4', '4:5', '9:16', '3:2', '2:3', '5:4', '21:9'],
+  resolutions: ['1K', '2K', '4K'],
+  supportsMask: false,
+  supportsSearchGrounding: true,
+  thinkingLevels: ['minimal', 'high'],
+  maximumReferences: 14,
+}
+
+const gptImage2: GenerationModelOption = {
+  id: 'gpt-image-2',
+  label: 'GPT Image 2',
+  provider: 'openai',
+  mediaKind: 'image',
+  aspectRatios: ['1:1', '16:9', '4:3', '3:4', '4:5', '9:16'],
+  resolutions: ['1K', '2K'],
+  supportsCustomSize: true,
+  supportsMask: true,
+}
 
 const settings = { model: 'gpt-image-2', aspectRatio: '3:4' as const, resolution: '2K' as const }
 
@@ -96,4 +134,67 @@ test('复制配方保留 gpt-image-2 自定义像素，换到不支持的模型�
   }, { id: 'gpt-image-2', label: 'GPT Image 2', provider: 'openai', mediaKind: 'image', supportsCustomSize: true, aspectRatios: ['1:1', '16:9'], resolutions: ['1K', '2K'] })
   assert.equal(gpt.outputWidth, 1920)
   assert.equal(gpt.outputHeight, 1088)
+})
+
+test('复制设置保住 21:9、4K、search 与 thinking', () => {
+  const copy = cloneGenerationSettings({
+    model: NANO_BANANA_MODEL_ID,
+    aspectRatio: '21:9',
+    resolution: '4K',
+    searchGrounding: false,
+    thinkingLevel: 'minimal',
+  })
+  assert.deepEqual(copy, {
+    model: NANO_BANANA_MODEL_ID,
+    aspectRatio: '21:9',
+    resolution: '4K',
+    searchGrounding: false,
+    thinkingLevel: 'minimal',
+  })
+})
+
+test('切回 gpt-image-2 时剥掉 search 与 thinking，日常默认仍是 2K', () => {
+  const next = settingsForGenerationModel({
+    model: NANO_BANANA_MODEL_ID,
+    aspectRatio: '21:9',
+    resolution: '4K',
+    searchGrounding: true,
+    thinkingLevel: 'high',
+  }, gptImage2)
+  assert.equal(next.model, 'gpt-image-2')
+  assert.equal(next.aspectRatio, '1:1')
+  assert.equal(next.resolution, '2K')
+  assert.equal('searchGrounding' in next, false)
+  assert.equal('thinkingLevel' in next, false)
+})
+
+test('有 Nano Banana 时默认生图模型指向它，没 key 时仍是 gpt-image-2', () => {
+  assert.equal(defaultImageGenerationModel([gptImage2, nanoBanana])?.id, NANO_BANANA_MODEL_ID)
+  assert.equal(defaultImageGenerationModel([gptImage2])?.id, 'gpt-image-2')
+  const defaults = defaultSettingsForModel(nanoBanana)
+  assert.equal(defaults.model, NANO_BANANA_MODEL_ID)
+  assert.equal(defaults.aspectRatio, '3:4')
+  assert.equal(defaults.resolution, '2K')
+  assert.equal(defaults.searchGrounding, true)
+  assert.equal(defaults.thinkingLevel, 'high')
+})
+
+test('提高清晰度写入 Nano Banana + 4K，再按回到日常 2K', () => {
+  assert.deepEqual(everydayResolutions(nanoBanana), ['1K', '2K'])
+  assert.equal(clarityBoostModel([gptImage2, nanoBanana])?.id, NANO_BANANA_MODEL_ID)
+  assert.equal(maximumReferencesForModel(nanoBanana), 14)
+  assert.equal(maximumReferencesForModel(gptImage2), 8)
+  const boosted = applyClarityBoost({
+    model: 'gpt-image-2',
+    aspectRatio: '3:4',
+    resolution: '2K',
+    outputWidth: 1920,
+    outputHeight: 1088,
+  }, [gptImage2, nanoBanana])
+  assert.equal(boosted.model, NANO_BANANA_MODEL_ID)
+  assert.equal(boosted.resolution, '4K')
+  assert.equal('outputWidth' in boosted, false)
+  const cleared = clearClarityBoost(boosted, [gptImage2, nanoBanana])
+  assert.equal(cleared.resolution, '2K')
+  assert.equal(cleared.model, NANO_BANANA_MODEL_ID)
 })

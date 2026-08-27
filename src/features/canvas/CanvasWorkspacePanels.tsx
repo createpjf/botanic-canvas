@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { buildDeliveryPreviewArtifacts, resolveDeliveryDraft, type DeliveryPanelTarget } from '../../domain/deliveryPresentation'
 import { imageFormatShortList, imageFormatSentenceList, imageUploadAccept } from '../../domain/mediaFormats'
 import { topOverlayLayer } from '../../domain/overlayPriority'
-import { primaryGenerationReference, settingsForGenerationModel } from '../../domain/generationRecipe'
+import { everydayResolutions, maximumReferencesForModel, primaryGenerationReference, settingsForGenerationModel } from '../../domain/generationRecipe'
 import { withoutCustomGenerationSize } from '../../domain/generationOutputSize'
 import { summarizeWorkflowTemplate, type WorkflowTemplateSummary } from '../../domain/workflowTemplates'
 import { eligibleProductionWorkflowSources, productionWorkflowDraftFromCanvas } from '../../domain/productionWorkflows'
@@ -228,7 +228,11 @@ export function BatchVariationComposer({
   const [settings, setSettings] = useState(() => {
     const imageModel = models.find((model) => model.id === target.settings.model && (model.mediaKind ?? 'image') === 'image')
       ?? models.find((model) => (model.mediaKind ?? 'image') === 'image')
-    return imageModel ? settingsForGenerationModel(target.settings, imageModel) : target.settings
+    const next = imageModel ? settingsForGenerationModel(target.settings, imageModel) : target.settings
+    const everyday = everydayResolutions(imageModel)
+    return everyday.includes(next.resolution)
+      ? next
+      : { ...next, resolution: everyday.includes('2K') ? '2K' as const : everyday[0] ?? '2K' }
   })
   const selectedModel = models.find((model) => model.id === settings.model)
   const total = (activeGroup?.assetIds.length ?? 0) * candidatesPerAsset
@@ -258,10 +262,16 @@ export function BatchVariationComposer({
           <div className="batch-variation-parameters">
             <label><span>{t.model}</span><BotanicSelect value={settings.model} ariaLabel={t.chooseModel} menuWidth={180} options={models.filter((model) => (model.mediaKind ?? 'image') === 'image').map((model) => ({ value: model.id, label: model.label }))} onChange={(value) => {
               const model = models.find((item) => item.id === value)
-              if (model) setSettings((current) => settingsForGenerationModel(current, model))
+              if (model) setSettings((current) => {
+                const next = settingsForGenerationModel(current, model)
+                const everyday = everydayResolutions(model)
+                return everyday.includes(next.resolution)
+                  ? next
+                  : { ...next, resolution: everyday.includes('2K') ? '2K' as const : everyday[0] ?? '2K' }
+              })
             }} /></label>
             <label><span>{t.ratio}</span><BotanicSelect value={settings.aspectRatio} ariaLabel={t.chooseRatio} options={(selectedModel?.aspectRatios ?? ['1:1', '16:9', '4:3', '3:4', '4:5', '9:16']).map((ratio) => ({ value: ratio, label: ratio }))} onChange={(value) => setSettings((current) => withoutCustomGenerationSize({ ...current, aspectRatio: value as GenerationSettings['aspectRatio'] }))} /></label>
-            <label><span>{t.resolution}</span><BotanicSelect value={settings.resolution} ariaLabel={t.chooseResolution} options={(selectedModel?.resolutions ?? ['1K', '2K']).map((resolution) => ({ value: resolution, label: resolution }))} onChange={(value) => setSettings((current) => ({ ...current, resolution: value as GenerationSettings['resolution'] }))} /></label>
+            <label><span>{t.resolution}</span><BotanicSelect value={everydayResolutions(selectedModel).includes(settings.resolution) ? settings.resolution : (everydayResolutions(selectedModel).includes('2K') ? '2K' : everydayResolutions(selectedModel)[0] ?? '2K')} ariaLabel={t.chooseResolution} options={everydayResolutions(selectedModel).map((resolution) => ({ value: resolution, label: resolution }))} onChange={(value) => setSettings((current) => ({ ...current, resolution: value as GenerationSettings['resolution'] }))} /></label>
             <label><span>{t.each}</span><input type="number" min={1} max={maximumCandidates} value={candidatesPerAsset} onChange={(event) => setCandidatesPerAsset(Math.min(maximumCandidates, Math.max(1, Math.round(Number(event.target.value)) || 1)))} /></label>
           </div>
           <footer><span className={overLimit ? 'is-error' : ''}>{t.total(activeGroup?.assetIds.length ?? 0, candidatesPerAsset, total, overLimit)}</span><button type="button" disabled={busy || overLimit || !prompt.trim()} onClick={() => activeGroup && onSubmit({ groupId: activeGroup.id, prompt, candidatesPerAsset, settings })}>{busy ? t.taskRunning : t.generate(total)}</button></footer>
@@ -1399,11 +1409,11 @@ type CanvasReferenceControl = {
 
 const generationPanelCopy = {
   'zh-CN': {
-    referenceInput: (name: string) => `${name}的参考输入`, referenceTitle: (name: string, count: number) => `${name} · ${count} 个参考`, referenceHint: '选择要连入当前节点的素材；主商品决定生成主体。', availableAssets: '可连接的画布素材', toggleReference: (connected: boolean, asset: string, node: string) => `${connected ? '断开' : '连接'} ${asset} 到 ${node}`, connected: '已连入节点', limit: '最多 8 张', connect: '连接到节点', primary: '主商品', setPrimary: '设为主商品', emptyReferences: '先把素材加入画布，才能连接到此节点',
+    referenceInput: (name: string) => `${name}的参考输入`, referenceTitle: (name: string, count: number) => `${name} · ${count} 个参考`, referenceHint: '选择要连入当前节点的素材；主商品决定生成主体。', availableAssets: '可连接的画布素材', toggleReference: (connected: boolean, asset: string, node: string) => `${connected ? '断开' : '连接'} ${asset} 到 ${node}`, connected: '已连入节点', limit: (count: number) => `最多 ${count} 张`, connect: '连接到节点', primary: '主商品', setPrimary: '设为主商品', emptyReferences: '先把素材加入画布，才能连接到此节点',
     recovering: '正在确认任务，请勿重复提交', uploading: '正在上传画布参考素材', queued: '生成服务已接收任务，正在排队', running: '生成服务正在处理', candidatesAria: '真实生成候选', needsAttention: '生成需要处理', candidateTitle: (refinement: boolean, count: string | number) => `${refinement ? '精修' : '首图'}候选 · ${count}`, refinementHint: '候选会继承父版本配方；选择后写入同一条“素材/文本 → 生成 → 结果”图谱，并可在历史中一键回退。', selectedReferencesHint: (names: string) => `真实任务以已选参考「${names}」为依据，并固定主商品。`, selectKeyVisualHint: '选择一张首图会写入结果节点、生成版本分支，并进入素材库的“生成入库”。', recipe: '候选生成配方', primaryName: (name: string) => `主商品 · ${name}`, inheritParent: '继承父版本', referenceCount: (count: number) => `${count} 个参考`, generatingAria: (count: number) => `正在真实生成 ${count} 个候选`, targetCount: (count: number) => `目标 ${count} 个`, cancelGeneration: '取消生成', errorFallback: '生成失败，请重试。', retry: '重试', partial: (ready: number, missing: number) => `已有 ${ready} 张可用，缺少 ${missing} 张。`, fillMissing: (count: number) => `补生成 ${count} 张`, compare: '父版本与精修候选对比', parentVersion: '父版本', selectedKeyVisual: '已选首图', emptyCandidates: '先在下方输入描述并发起真实生成', refinedFrom: (name: string) => `精修自 ${name}`, unlocked: '未锁定',
   },
   en: {
-    referenceInput: (name: string) => `Reference inputs for ${name}`, referenceTitle: (name: string, count: number) => `${name} · ${count} ${count === 1 ? 'reference' : 'references'}`, referenceHint: 'Choose assets to connect to this node. The primary product determines the generated subject.', availableAssets: 'Available canvas assets', toggleReference: (connected: boolean, asset: string, node: string) => `${connected ? 'Disconnect' : 'Connect'} ${asset} ${connected ? 'from' : 'to'} ${node}`, connected: 'Connected to node', limit: '8 maximum', connect: 'Connect to node', primary: 'Primary product', setPrimary: 'Set as primary product', emptyReferences: 'Add assets to the canvas before connecting them to this node.',
+    referenceInput: (name: string) => `Reference inputs for ${name}`, referenceTitle: (name: string, count: number) => `${name} · ${count} ${count === 1 ? 'reference' : 'references'}`, referenceHint: 'Choose assets to connect to this node. The primary product determines the generated subject.', availableAssets: 'Available canvas assets', toggleReference: (connected: boolean, asset: string, node: string) => `${connected ? 'Disconnect' : 'Connect'} ${asset} ${connected ? 'from' : 'to'} ${node}`, connected: 'Connected to node', limit: (count: number) => `${count} maximum`, connect: 'Connect to node', primary: 'Primary product', setPrimary: 'Set as primary product', emptyReferences: 'Add assets to the canvas before connecting them to this node.',
     recovering: 'Confirming task. Do not submit again.', uploading: 'Uploading canvas reference assets', queued: 'The generation service received the task and queued it', running: 'The generation service is processing', candidatesAria: 'Generation candidates', needsAttention: 'Generation needs attention', candidateTitle: (refinement: boolean, count: string | number) => `${refinement ? 'Refinement' : 'Key visual'} candidates · ${count}`, refinementHint: 'Candidates inherit the parent recipe. Selecting one writes it to the same asset/text → generation → result graph and keeps it available in history.', selectedReferencesHint: (names: string) => `The task uses the selected references ${names} and locks the primary product.`, selectKeyVisualHint: 'Selecting a key visual writes a result node and version branch, then saves it to generated assets.', recipe: 'Candidate recipe', primaryName: (name: string) => `Primary product · ${name}`, inheritParent: 'Inherited from parent', referenceCount: (count: number) => `${count} ${count === 1 ? 'reference' : 'references'}`, generatingAria: (count: number) => `Generating ${count} candidates`, targetCount: (count: number) => `Target: ${count}`, cancelGeneration: 'Cancel generation', errorFallback: 'Generation failed. Try again.', retry: 'Retry', partial: (ready: number, missing: number) => `${ready} available, ${missing} missing.`, fillMissing: (count: number) => `Generate ${count} missing`, compare: 'Compare parent and refined candidate', parentVersion: 'Parent version', selectedKeyVisual: 'Selected key visual', emptyCandidates: 'Enter a description below and start generation.', refinedFrom: (name: string) => `Refined from ${name}`, unlocked: 'Not locked',
   },
 } as const
@@ -1413,6 +1423,7 @@ export function NodeReferencePanel({
   node,
   references,
   connectedNodeIds,
+  maximumReferences,
   disabled,
   onToggle,
   onSetPrimary,
@@ -1421,6 +1432,7 @@ export function NodeReferencePanel({
   node: { id: string; data: GenerateNodeData }
   references: CanvasReferenceControl[]
   connectedNodeIds: Set<string>
+  maximumReferences?: number
   disabled: boolean
   onToggle: (assetNodeId: string, enabled: boolean) => void
   onSetPrimary: (assetNodeId: string) => void
@@ -1436,7 +1448,8 @@ export function NodeReferencePanel({
       return (leftIndex < 0 ? Number.MAX_SAFE_INTEGER : leftIndex) - (rightIndex < 0 ? Number.MAX_SAFE_INTEGER : rightIndex)
     })
   const primary = connectedReferences.find((reference) => reference.nodeId === node.data.primaryInputId)
-  const atLimit = connectedReferences.length >= 8
+  const referenceLimit = maximumReferencesForModel({ maximumReferences })
+  const atLimit = connectedReferences.length >= referenceLimit
   const nodeLabel = canvasSystemLabel(node.data.label, locale)
   return (
     <aside className="workbench-panel reference-panel node-reference-panel" aria-label={t.referenceInput(nodeLabel)}>
@@ -1463,7 +1476,7 @@ export function NodeReferencePanel({
                     onChange={(event) => onToggle(reference.nodeId, event.target.checked)}
                     aria-label={t.toggleReference(connected, reference.name, nodeLabel)}
                   />
-                  <span>{connected ? t.connected : atLimit ? t.limit : t.connect}</span>
+                  <span>{connected ? t.connected : atLimit ? t.limit(referenceLimit) : t.connect}</span>
                 </label>
                 {connected && reference.role === '商品' ? (
                   isPrimary

@@ -18,6 +18,7 @@ import {
   isCanonicalImageFormat,
   MEDIA_LIMITS,
 } from './mediaFormats.mjs'
+import { maximumReferencesForModel } from './generationVocabulary.mjs'
 
 export class GenerationError extends Error {
   constructor(statusCode, code, message) {
@@ -179,7 +180,10 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
   if (!recipe || typeof recipe !== 'object' || !Array.isArray(recipe.references)) {
     throw new GenerationError(400, 'INVALID_REQUEST', '请传入画布参考素材或父版本图片。')
   }
-  if (recipe.references.length > 8) throw new GenerationError(400, 'INVALID_REFERENCE', '单次最多使用 8 张参考素材。')
+  const maximumReferences = maximumReferencesForModel(model)
+  if (recipe.references.length > maximumReferences) {
+    throw new GenerationError(400, 'INVALID_REFERENCE', `单次最多使用 ${maximumReferences} 张参考素材。`)
+  }
 
   const references = recipe.references.map((reference, index) => {
     if (!reference || typeof reference !== 'object') throw new GenerationError(400, 'INVALID_REFERENCE', `第 ${index + 1} 张参考素材无效。`)
@@ -261,6 +265,12 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
       aspectRatio,
       resolution: settings.resolution,
       ...(duration === undefined ? {} : { duration }),
+      ...(typeof settings.searchGrounding === 'boolean' && model.supportsSearchGrounding
+        ? { searchGrounding: settings.searchGrounding }
+        : {}),
+      ...(model.thinkingLevels?.includes(settings.thinkingLevel)
+        ? { thinkingLevel: settings.thinkingLevel }
+        : {}),
       ...customSize,
     },
     references,
@@ -283,8 +293,7 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
  * parent，于是 App 对自己最常见输出的精修全部失败。
  *
  * 凡是我们自己能生成的尺寸，就必须能被重新接收：`MEDIA_LIMITS.maxCanonicalPixels`
- * 直接派生自 `gptImage2CustomSizeLimits.maxPixels`（生成端自定义尺寸窗的像素
- * 上限），不是另一个独立猜测的数字——两端永远同步，见 `mediaFormats.mjs`。
+ * 按当前最大可生成输出（Nano Banana 4K 方图）计，不再绑死 gpt-image-2 自定义窗。
  *
  * 读不出尺寸时**不拦**：读不出不等于超限，拦住会误杀一类正常输入。
  */
