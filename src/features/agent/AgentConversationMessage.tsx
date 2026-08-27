@@ -271,30 +271,12 @@ function AgentTimelineSearchStep({
         : { height: 0, autoAlpha: 0, y: 0 })
       return
     }
-    if (!open) {
-      gsap.to(panel, {
-        height: 0,
-        autoAlpha: 0,
-        y: prefersReducedMotion() ? 0 : -4,
-        duration,
-        ease: botanicMotion.ease,
-      })
-      return
-    }
-    const from = panel.getBoundingClientRect().height
-    gsap.set(panel, { height: 'auto' })
-    const to = panel.scrollHeight
-    gsap.fromTo(panel, {
-      height: from,
-      autoAlpha: from > 1 ? 1 : 0,
-      y: from > 1 || prefersReducedMotion() ? 0 : -4,
-    }, {
-      height: to,
-      autoAlpha: 1,
-      y: 0,
+    gsap.to(panel, {
+      height: open ? 'auto' : 0,
+      autoAlpha: open ? 1 : 0,
+      y: open || prefersReducedMotion() ? 0 : -4,
       duration,
       ease: botanicMotion.ease,
-      onComplete() { gsap.set(panel, { height: 'auto' }) },
     })
   }, { dependencies: [open, sourceCount], scope: rootRef })
 
