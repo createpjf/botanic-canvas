@@ -4,7 +4,7 @@ import postgres from 'postgres'
 import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from './authorization.mjs'
 import { artifactIndexLimits, artifactsFromActionReceipt, artifactsFromAgentMessage, artifactsFromDocument, artifactsFromGenerationJob } from './botanicArtifactIndex.mjs'
 import { applyGenerationJobToAgentRun } from './botanicAgentRun.mjs'
-import { agentStateFromDocument, applyAgentSessionReadReceipts, mergeAgentStateIntoDocument, shouldApplyAgentEntityWrite, shouldApplyAgentRunWrite, validateAgentEntityWriteTimestamp, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity, validateAgentSessionReadReceipt } from './botanicAgentPersistence.mjs'
+import { agentEntityLimits, agentStateFromDocument, applyAgentSessionReadReceipts, mergeAgentStateIntoDocument, shouldApplyAgentEntityWrite, shouldApplyAgentRunWrite, validateAgentEntityWriteTimestamp, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity, validateAgentSessionReadReceipt } from './botanicAgentPersistence.mjs'
 import { collaborationActivitiesForMember, collaborationActivityListOptions, nextCollaborationReceipt, validateCollaborationActivity } from './collaborationActivityPersistence.mjs'
 
 const now = () => Date.now()
@@ -41,14 +41,6 @@ function asJson(value) {
 
 function asPayload(row) {
   return row ? asJson(row.payload) : undefined
-}
-
-function projectDocumentSummary(document) {
-  const nodes = Array.isArray(document?.nodes) ? document.nodes : []
-  const images = nodes
-    .filter((node) => node?.type === 'result' && typeof node?.data?.image === 'string')
-    .map((node) => node.data.image)
-  return { nodeCount: nodes.length, resultCount: images.length, coverImage: images.at(-1) }
 }
 
 function canvasGraph(document) {
@@ -694,7 +686,17 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
   async function readAgentStateRows(query, projectId, userId) {
     const [sessionRows, messageRows, memoryRows, runRows, receiptRows] = await Promise.all([
       query`select payload from agent_sessions where project_id = ${projectId} order by updated_at desc limit 80`,
-      query`select session_id as "sessionId", updated_at as "updatedAt", payload from agent_messages where project_id = ${projectId} order by updated_at asc limit 40000`,
+      // 每会话只取最近 MESSAGE_LIMIT 条，与写侧抽取和读合并的上限同源。
+      // 单个会话膨胀到几万条时，无差别 limit 会让一个会话独占整个配额并顶满语句超时。
+      query`
+        select session_id as "sessionId", updated_at as "updatedAt", payload from (
+          select session_id, updated_at, payload,
+            row_number() over (partition by session_id order by updated_at desc) as recency
+          from agent_messages where project_id = ${projectId}
+        ) ranked
+        where recency <= ${agentEntityLimits.messagesPerSession}
+        order by updated_at asc
+      `,
       query`select id, deleted_at as "deletedAt", payload from agent_memory_items where project_id = ${projectId} order by updated_at desc limit 200`,
       query`select payload from agent_runs where project_id = ${projectId} order by updated_at desc limit 60`,
       userId
@@ -942,28 +944,39 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     },
 
     async listProjects(userId) {
-      // 列表只要封面和节点计数。整份 document JSONB 含 Agent 兼容视图，
-      // 按项目数放大后会把打开项目库拖成秒级，甚至顶满 15s 语句超时。
+      // 列表只要封面和节点计数。摘要直接在 SQL 里算：整份 graph（节点带 image、
+      // prompt）随项目数放大后，光是传输和 JSON 解析就能把项目库首屏拖成秒级。
       const rows = await sql`
         select p.id, p.name, greatest(p.updated_at, coalesce(c.updated_at, p.updated_at)) as "updatedAt",
-          p.revision, m.role, c.graph, c.revision as "graphRevision"
+          p.revision, m.role, c.revision as "graphRevision",
+          coalesce(jsonb_array_length(c.graph->'nodes'), 0)::int as "nodeCount",
+          (
+            select count(*)::int
+            from jsonb_array_elements(coalesce(c.graph->'nodes', '[]'::jsonb)) as node
+            where node->>'type' = 'result' and jsonb_typeof(node->'data'->'image') = 'string'
+          ) as "resultCount",
+          (
+            select node->'data'->>'image'
+            from jsonb_array_elements(coalesce(c.graph->'nodes', '[]'::jsonb)) with ordinality as entry(node, position)
+            where node->>'type' = 'result' and jsonb_typeof(node->'data'->'image') = 'string'
+            order by entry.position desc limit 1
+          ) as "coverImage"
         from projects p join project_members m on m.project_id = p.id
         left join canvas_graphs c on c.project_id = p.id
         where m.user_id = ${userId}
         order by greatest(p.updated_at, coalesce(c.updated_at, p.updated_at)) desc
       `
-      return rows.map((row) => {
-        const graph = row.graph ? asJson(row.graph) : { nodes: [], edges: [] }
-        return {
-          id: row.id,
-          name: row.name,
-          role: row.role,
-          ...projectDocumentSummary(graph),
-          updatedAt: Number(row.updatedAt),
-          revision: Number(row.revision),
-          graphRevision: Number(row.graphRevision ?? 1),
-        }
-      })
+      return rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        role: row.role,
+        nodeCount: Number(row.nodeCount ?? 0),
+        resultCount: Number(row.resultCount ?? 0),
+        ...(row.coverImage ? { coverImage: row.coverImage } : {}),
+        updatedAt: Number(row.updatedAt),
+        revision: Number(row.revision),
+        graphRevision: Number(row.graphRevision ?? 1),
+      }))
     },
 
     async readProject(userId, projectId) {

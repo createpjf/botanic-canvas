@@ -112,15 +112,14 @@ export function createProjectRouteHandler({
     if (documentMatch && request.method === 'GET') {
       const user = await requireUser(request)
       const projectId = decodeURIComponent(documentMatch[1])
-      await requireProjectPermission(productStore, user.id, projectId, 'read')
-      const project = await productStore.readProject(user.id, projectId)
-      if (!project) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
       // 随读模型下发**调用者在本项目的能力集合**（Epic 10）。此前客户端只知道工作区
       // 角色（owner/member），不知道自己在某个项目里是不是 viewer，因此无法隐藏
       // 点不动的入口。给能力而不是角色：界面拿角色再映射一遍就成了第二份权威。
       //
-      // 在路由这一层算，不动 ProductStore 契约 —— `projectAccess` 已经在契约里了。
-      const access = await productStore.projectAccess(user.id, projectId)
+      // 权限守卫已经查过一次成员表并返回 access，直接复用，不再重复查询。
+      const access = await requireProjectPermission(productStore, user.id, projectId, 'read')
+      const project = await productStore.readProject(user.id, projectId)
+      if (!project) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
       return json(response, 200, {
         ...project,
         capabilities: projectCapabilities(access?.role),

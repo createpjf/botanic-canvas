@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  agentEntityLimits,
   agentStateFromDocument,
   mergeAgentStateIntoDocument,
   shouldApplyAgentEntityWrite,
@@ -68,6 +69,21 @@ test('独立实体按 ID 合并，不因旧文档缺少并发新增消息而丢�
 
   assert.deepEqual(merged.agentSessions[0].messages.map((item) => item.id), ['message-a', 'message-b'])
   assert.equal(merged.agentSessions[0].updatedAt, 30)
+})
+
+test('读合并对每会话消息套用 MESSAGE_LIMIT，保留最新的一段', () => {
+  const total = agentEntityLimits.messagesPerSession + 40
+  const merged = mergeAgentStateIntoDocument({ agentSessions: [session('session-big', 20)], agentMemory: [], agentRuns: [] }, {
+    messages: Array.from({ length: total }, (_, index) => ({
+      sessionId: 'session-big',
+      updatedAt: index + 1,
+      message: message(`message-${index}`, `第 ${index} 条`, index + 1),
+    })),
+  })
+  const messages = merged.agentSessions[0].messages
+  assert.equal(messages.length, agentEntityLimits.messagesPerSession)
+  assert.equal(messages[0].id, 'message-40')
+  assert.equal(messages.at(-1).id, `message-${total - 1}`)
 })
 
 test('仅存在于独立实体表的 Agent Run 会进入兼容文档', () => {

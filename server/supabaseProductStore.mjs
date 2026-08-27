@@ -153,7 +153,8 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
   async function readAgentStateRows(projectId, userId) {
     const results = await Promise.all([
       supabaseRequest(() => supabase.from('agent_sessions').select('payload').eq('project_id', projectId).order('updated_at', { ascending: false }).limit(80)),
-      collectSupabaseRows(() => supabase.from('agent_messages').select('session_id,updated_at,payload').eq('project_id', projectId).order('updated_at', { ascending: true })),
+      // 降序分页：超过分页上限时保留最近的消息而不是最旧的；每会话上限在合并层裁剪。
+      collectSupabaseRows(() => supabase.from('agent_messages').select('session_id,updated_at,payload').eq('project_id', projectId).order('updated_at', { ascending: false })),
       supabaseRequest(() => supabase.from('agent_memory_items').select('id,deleted_at,payload').eq('project_id', projectId).order('updated_at', { ascending: false }).limit(200)),
       supabaseRequest(() => supabase.from('agent_runs').select('payload').eq('project_id', projectId).order('updated_at', { ascending: false }).limit(60)),
       userId

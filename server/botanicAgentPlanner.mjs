@@ -92,7 +92,7 @@ const VARY_SHORT_TITLE = Object.freeze({
   person: '换人', garment: '换装', product: '换品', scene: '换景', style: '换风',
   pose: '换姿', composition: '构图', lighting: '调光', aspect_ratio: '比例', copy_space: '留白',
 })
-const DEFAULT_AGENT_MODELS = ['deepseek-v4-pro', 'deepseek-v4-flash', 'kimi-k3']
+const DEFAULT_AGENT_MODELS = ['deepseek-v4-pro', 'deepseek-v4-flash', 'kimi-k3', 'gemini-3.6-flash', 'glm-5']
 
 export class BotanicAgentPlannerError extends Error {
   constructor(statusCode, code, message) {

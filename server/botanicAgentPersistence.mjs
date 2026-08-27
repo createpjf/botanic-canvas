@@ -458,14 +458,18 @@ export function mergeAgentStateIntoDocument(document, state = {}) {
     }
     messageBySession.set(entry.sessionId, messages)
   }
+  // 读侧与写侧共用同一个每会话上限：写入抽取时只保留最近 MESSAGE_LIMIT 条，
+  // 读合并如果不设限，单个会话膨胀后 GET /document 会顶满语句超时。保留最新的一段。
+  const cappedSessionMessages = (sessionId) => [...(messageBySession.get(sessionId)?.values() ?? [])]
+    .map((entry) => entry.message)
+    .sort((left, right) => Number(left.createdAt ?? 0) - Number(right.createdAt ?? 0))
+    .slice(-MESSAGE_LIMIT)
   const sessions = [...sessionById.values()]
     .map((session) => {
       const projected = projectedSessionById.get(session.id)
       if (!projected) return {
         ...session,
-        messages: [...(messageBySession.get(session.id)?.values() ?? [])]
-          .map((entry) => entry.message)
-          .sort((left, right) => Number(left.createdAt ?? 0) - Number(right.createdAt ?? 0)),
+        messages: cappedSessionMessages(session.id),
       }
       const { readingAnchorMessageId: _legacyMessageId, readingAnchorUpdatedAt: _legacyUpdatedAt, ...shared } = session
       return {
@@ -474,9 +478,7 @@ export function mergeAgentStateIntoDocument(document, state = {}) {
           readingAnchorMessageId: projected.readingAnchorMessageId,
           readingAnchorUpdatedAt: projected.readingAnchorUpdatedAt,
         } : {}),
-        messages: [...(messageBySession.get(session.id)?.values() ?? [])]
-          .map((entry) => entry.message)
-          .sort((left, right) => Number(left.createdAt ?? 0) - Number(right.createdAt ?? 0)),
+        messages: cappedSessionMessages(session.id),
       }
     })
     .sort((left, right) => Number(right.updatedAt ?? 0) - Number(left.updatedAt ?? 0))
