@@ -1367,8 +1367,9 @@ test('SSE fallback 先 durable cancelling；Provider 退出 ack 后重试 Stop �
     const accepted = responses.at(-1)
     const turnId = accepted.body.runtimeTurn.id
     // 202 已经返回；随后即使 Provider 刚开始占用连接，客户端仍已拿到可取消身份。
-    for (let attempt = 0; attempt < 20 && !providerStarted; attempt += 1) {
-      await new Promise((resolve) => setImmediate(resolve))
+    const providerStartDeadline = Date.now() + 5_000
+    while (!providerStarted && Date.now() < providerStartDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5))
     }
     const returnedBeforeProviderSettlement = !providerAborted
 
@@ -1392,9 +1393,10 @@ test('SSE fallback 先 durable cancelling；Provider 退出 ack 后重试 Stop �
 
     // abort 只代表信号已送达；Runtime 必须等 Provider 与本地句柄真正退出后，才用
     // 原 signal/generation/lease 写 durable worker_exit ack。首次 Stop 不得提前终态化。
-    for (let attempt = 0; attempt < 40
-      && turns.get(turnId)?.cancellation?.workerReleased !== true; attempt += 1) {
-      await new Promise((resolve) => setImmediate(resolve))
+    const workerReleaseDeadline = Date.now() + 5_000
+    while (turns.get(turnId)?.cancellation?.workerReleased !== true
+      && Date.now() < workerReleaseDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5))
     }
     assert.equal(turns.get(turnId)?.cancellation?.workerReleased, true)
     assert.equal(turns.get(turnId)?.cancellation?.releaseBasis, 'worker_exit')

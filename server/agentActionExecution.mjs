@@ -170,7 +170,6 @@ export function createAgentActionExecution(dependencies) {
         controller.abort(timeoutError)
         reject(timeoutError)
       }, boundedTimeoutMs)
-      timeoutId.unref?.()
     })
 
     try {
