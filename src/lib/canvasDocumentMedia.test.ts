@@ -12,3 +12,11 @@ test('打开项目只水合画布可见媒体，不走 Agent / 任务整树', ()
     assert.equal(roots.includes(key), false)
   }
 })
+
+test('本地序列化与水合走同一组媒体根，不做整树递归', () => {
+  const source = readFileSync(new URL('./db.ts', import.meta.url), 'utf8')
+  const serializeBody = source.match(/async function serializeDocumentMedia\(document: CanvasDocument\) \{([\s\S]*?)\n\}/)
+  assert.ok(serializeBody, '找不到 serializeDocumentMedia')
+  assert.match(serializeBody[1], /canvasDocumentMediaRoots\.map/)
+  assert.doesNotMatch(serializeBody[1], /serializeMediaValue\(document,/)
+})

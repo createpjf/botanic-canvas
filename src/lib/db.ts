@@ -324,7 +324,12 @@ async function serializeMediaValue(value: unknown, pendingMedia: Map<string, Can
 
 async function serializeDocumentMedia(document: CanvasDocument) {
   const pendingMedia = new Map<string, CanvasMediaRecord>()
-  const serialized = await serializeMediaValue(document, pendingMedia) as CanvasDocument
+  // 与水合同一组根：blob/data URL 只出现在画布可见媒体里，
+  // 整树递归会把 Agent 消息、任务集合也拖进每次本地保存。
+  const serialized = { ...document }
+  await Promise.all(canvasDocumentMediaRoots.map(async (key) => {
+    serialized[key] = await serializeMediaValue(document[key], pendingMedia) as never
+  }))
   return { document: serialized, media: [...pendingMedia.values()] }
 }
 
@@ -364,12 +369,11 @@ async function persistLocalDocument(document: CanvasDocument, queueForSync = fal
       canvasDb.documents.get(document.id),
       serializeDocumentMedia(document),
     ])
-    const preparedBackup = previous ? await serializeDocumentMedia(previous) : undefined
     await canvasDb.transaction('rw', canvasDb.documents, canvasDb.documentBackups, canvasDb.media, canvasDb.pendingSync, async () => {
-      const media = [...prepared.media, ...(preparedBackup?.media ?? [])]
-      if (media.length) await canvasDb.media.bulkPut(media)
-      if (preparedBackup) {
-        await canvasDb.documentBackups.put({ id: document.id, document: preparedBackup.document, updatedAt: Date.now() })
+      if (prepared.media.length) await canvasDb.media.bulkPut(prepared.media)
+      // documents 表里存的已经是媒体引用形态，备份原样落表即可，再序列化一遍是纯浪费。
+      if (previous) {
+        await canvasDb.documentBackups.put({ id: document.id, document: previous, updatedAt: Date.now() })
       }
       await canvasDb.documents.put(prepared.document)
       if (queueForSync) {
@@ -482,7 +486,10 @@ async function readRemoteCanvasDocument(id: string) {
 export async function previewRemoteCanvasDocument(id: string) {
   if (!serverPersistenceEnabled) return undefined
   try {
-    const response = await productRequest<{ document: CanvasDocument }>(`/api/projects/${encodeURIComponent(id)}/document`)
+    const response = await productRequest<{ document: CanvasDocument }>(`/api/projects/${encodeURIComponent(id)}/document`, {
+      timeoutMs: remoteDocumentReadTimeoutMs,
+      timeoutMessage: '项目文档较大，读取超时。请稍后重试。',
+    })
     return response.document
   } catch (error) {
     if (error instanceof ProductApiError && error.status === 404) return undefined
@@ -608,7 +615,8 @@ export async function renameCanvasProject(id: string, name: string) {
 
   // 重命名是一个独立的 PATCH。先清空该项目已有的延迟画布写入，避免旧快照在
   // PATCH 成功后才携带新 revision 写回，把刚保存的名称覆盖成旧名称。
-  await flushPendingCanvasDocumentWrites()
+  // 只冲刷本项目：等待其他项目的远端写入会让重命名被无关的慢请求拖住。
+  await flushRemoteDocumentWrite(id)
   const send = (revision?: number) => productRequest<{ document: CanvasDocument; revision: number; graphRevision: number }>(`/api/projects/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     headers: {
