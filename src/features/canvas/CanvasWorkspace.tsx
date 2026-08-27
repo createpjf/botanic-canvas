@@ -1122,7 +1122,7 @@ export default function CanvasWorkspace({
       setWorkspaceView(view, projectId, 'replace')
     }
     // 无论浏览器存储或第三方请求处于何种异常状态，首次路由恢复都必须可退出。
-    const restoreTimeout = window.setTimeout(() => finishRestore('projects'), 10_000)
+    const restoreTimeout = window.setTimeout(() => finishRestore('projects'), 45_000)
     const restoreWorkspaceLocation = async () => {
       let location = workspaceLocationFromHash(window.location.hash) ?? initialWorkspaceLocation
 
@@ -1193,6 +1193,13 @@ export default function CanvasWorkspace({
         }
 
         let opened = false
+        const openTimeout = window.setTimeout(() => {
+          if (!active) return
+          if (sameWorkspaceLocation(location, workspaceLocationFromHash(window.location.hash))) {
+            setWorkspaceView('projects', undefined, 'replace')
+            setWorkspaceRestoring(false)
+          }
+        }, 45_000)
         try {
           opened = await openDocument(location.projectId!)
         } catch {
@@ -1201,6 +1208,8 @@ export default function CanvasWorkspace({
             setWorkspaceRestoring(false)
           }
           continue
+        } finally {
+          window.clearTimeout(openTimeout)
         }
         if (!active) break
 

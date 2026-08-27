@@ -276,6 +276,7 @@ test('项目列表返回真实结果封面与画布摘要', () => {
   }, undefined)
 
   const [summary] = store.listProjects(owner.id)
+  assert.equal(summary.document, undefined)
   assert.deepEqual({
     id: summary.id,
     name: summary.name,

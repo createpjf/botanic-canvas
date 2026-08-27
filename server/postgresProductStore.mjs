@@ -351,6 +351,7 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     create index if not exists agent_reviews_run_updated_idx on agent_reviews (project_id, run_id, updated_at desc);
     create index if not exists agent_sessions_project_updated_idx on agent_sessions (project_id, updated_at desc);
     create index if not exists agent_messages_session_updated_idx on agent_messages (session_id, updated_at asc);
+    create index if not exists agent_messages_project_updated_idx on agent_messages (project_id, updated_at asc);
     create index if not exists agent_memory_project_updated_idx on agent_memory_items (project_id, updated_at desc);
     create index if not exists agent_artifacts_project_created_idx on agent_artifacts (project_id, created_at desc, id);
     create index if not exists agent_artifacts_run_idx on agent_artifacts (project_id, run_id) where run_id is not null;
@@ -941,25 +942,26 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     },
 
     async listProjects(userId) {
+      // 列表只要封面和节点计数。整份 document JSONB 含 Agent 兼容视图，
+      // 按项目数放大后会把打开项目库拖成秒级，甚至顶满 15s 语句超时。
       const rows = await sql`
         select p.id, p.name, greatest(p.updated_at, coalesce(c.updated_at, p.updated_at)) as "updatedAt",
-          p.revision, p.document, m.role, c.graph, c.revision as "graphRevision"
+          p.revision, m.role, c.graph, c.revision as "graphRevision"
         from projects p join project_members m on m.project_id = p.id
         left join canvas_graphs c on c.project_id = p.id
         where m.user_id = ${userId}
         order by greatest(p.updated_at, coalesce(c.updated_at, p.updated_at)) desc
       `
       return rows.map((row) => {
-        const document = asJson(row.document)
-        const graph = row.graph ? asJson(row.graph) : canvasGraph(document)
+        const graph = row.graph ? asJson(row.graph) : { nodes: [], edges: [] }
         return {
-          ...row,
-          ...projectDocumentSummary({ ...document, ...graph }),
+          id: row.id,
+          name: row.name,
+          role: row.role,
+          ...projectDocumentSummary(graph),
           updatedAt: Number(row.updatedAt),
           revision: Number(row.revision),
           graphRevision: Number(row.graphRevision ?? 1),
-          document: undefined,
-          graph: undefined,
         }
       })
     },
