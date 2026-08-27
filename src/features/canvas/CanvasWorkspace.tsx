@@ -1389,8 +1389,8 @@ export default function CanvasWorkspace({
     setNodePalette({
       flow: mapper(screenPoint),
       screen: {
-        x: Math.max(94, Math.min(paneRect.width - 262, screenPoint.x - paneRect.left + 8)),
-        y: Math.max(70, Math.min(paneRect.height - 268, screenPoint.y - paneRect.top + 8)),
+        x: Math.max(94, Math.min(paneRect.width - 328, screenPoint.x - paneRect.left + 8)),
+        y: Math.max(70, Math.min(paneRect.height - 300, screenPoint.y - paneRect.top + 8)),
       },
       parentResultId: resultNodeId,
     })
@@ -1705,8 +1705,8 @@ export default function CanvasWorkspace({
       : undefined
     const screenPoint = {
       x: fromDock
-        ? Math.max(paneRect.left + 172, Math.min(paneRect.right - 176, event.clientX + 132))
-        : Math.max(paneRect.left + 94, Math.min(paneRect.right - 176, event.clientX)),
+        ? Math.max(paneRect.left + 172, Math.min(paneRect.right - 200, event.clientX + 132))
+        : Math.max(paneRect.left + 94, Math.min(paneRect.right - 200, event.clientX)),
       y: Math.max(paneRect.top + 92, Math.min(paneRect.bottom - 158, event.clientY)),
     }
     closeWorkbenchPanels()
@@ -1718,8 +1718,8 @@ export default function CanvasWorkspace({
     setNodePalette({
       flow: mapper(screenPoint),
       screen: {
-        x: Math.max(94, Math.min(paneRect.width - 262, screenPoint.x - paneRect.left + 8)),
-        y: Math.max(70, Math.min(paneRect.height - 268, screenPoint.y - paneRect.top + 8)),
+        x: Math.max(94, Math.min(paneRect.width - 328, screenPoint.x - paneRect.left + 8)),
+        y: Math.max(70, Math.min(paneRect.height - 300, screenPoint.y - paneRect.top + 8)),
       },
       parentResultId: contextualResultId,
       inputNodeId: contextualInputNodeId,
