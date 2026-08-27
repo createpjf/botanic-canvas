@@ -6,7 +6,13 @@ import { resolveBotanicAgentTurn, validateBotanicAgentTurnInput } from './botani
 const runtime = {
   flockApiKey: 'flock-secret',
   flockTextModel: 'deepseek-v4-pro',
-  flockAgentModels: ['deepseek-v4-pro', 'deepseek-v4-flash', 'kimi-k3'],
+  flockAgentModels: [
+    'deepseek-v4-pro',
+    'deepseek-v4-flash',
+    'deepseek-v4-flash-vision-exp',
+    'kimi-k3',
+    'gemini-3.7-flash',
+  ],
 }
 
 const document = {
@@ -375,11 +381,11 @@ test('模型基于既有建议直接综合可执行 Prompt 并生成多张，而
   assert.doesNotMatch(JSON.stringify(requests), /api\/media\/private/)
 })
 
-test('原生多模态：引用图片直接随消息附给视觉模型，模型看着画面推理', async () => {
+test('原生多模态：引用图片直接随消息附给所选看图模型', async () => {
   const requests = []
   await resolveBotanicAgentTurn({
     projectId: 'project-turn',
-    plannerModel: 'deepseek-v4-pro',
+    plannerModel: 'gemini-3.7-flash',
     messages: [
       { role: 'assistant', content: '可以试试海边场景。' },
       { role: 'user', content: '基于这张图出 3 张' },
@@ -388,7 +394,7 @@ test('原生多模态：引用图片直接随消息附给视觉模型，模型�
     hasTarget: false,
     generationModels,
     maxOutputCount: 8,
-  }, { ...runtime, agentVisionModel: 'gemini-flash' }, {
+  }, { ...runtime, agentVisionModel: 'gemini-3.7-flash' }, {
     document: {
       ...document,
       nodes: document.nodes.map((node) => node.id === 'asset-mia-portrait'
@@ -402,8 +408,8 @@ test('原生多模态：引用图片直接随消息附给视觉模型，模型�
   })
 
   assert.equal(requests.length, 1)
-  // 视觉轮次主轮切到视觉模型，最后一条用户消息升级为多模态。
-  assert.equal(requests[0].model, 'gemini-flash')
+  // 视觉轮次打所选看图模型，最后一条用户消息升级为多模态。
+  assert.equal(requests[0].model, 'gemini-3.7-flash')
   const lastUser = requests[0].messages.at(-1)
   assert.equal(lastUser.role, 'user')
   assert.ok(Array.isArray(lastUser.content))
@@ -413,9 +419,10 @@ test('原生多模态：引用图片直接随消息附给视觉模型，模型�
   assert.match(requests[0].messages[0].content, /已随用户消息直接附上/)
 })
 
-test('视觉模型被网关拒绝时回退 caption 描述 + 文本模型，超时不重试', async () => {
+test('所选纯文本模型有引用图时不劫持规划模型，只走 caption', async () => {
   const models = []
-  const result = await resolveBotanicAgentTurn({
+  const visionBodies = []
+  await resolveBotanicAgentTurn({
     projectId: 'project-turn',
     plannerModel: 'deepseek-v4-pro',
     messages: [{ role: 'user', content: '基于这张图出 3 张' }],
@@ -423,7 +430,39 @@ test('视觉模型被网关拒绝时回退 caption 描述 + 文本模型，超�
     hasTarget: false,
     generationModels,
     maxOutputCount: 8,
-  }, { ...runtime, agentVisionModel: 'gemini-flash' }, {
+  }, { ...runtime, agentVisionModel: 'gemini-3.7-flash' }, {
+    document: {
+      ...document,
+      nodes: document.nodes.map((node) => node.id === 'asset-mia-portrait'
+        ? { ...node, data: { ...node.data, image: 'data:image/png;base64,TUlB' } }
+        : node),
+    },
+    visionCache: new Map(),
+    visionFetchImpl: async (_url, init) => {
+      visionBodies.push(JSON.parse(init.body))
+      return new Response(JSON.stringify({ choices: [{ message: { content: '自然光半身人像，盘发。' } }] }), { status: 200 })
+    },
+    fetchImpl: async (_url, init) => {
+      const body = JSON.parse(init.body)
+      models.push(body.model)
+      return new Response(JSON.stringify({ choices: [{ message: { content: '好的。' } }] }), { status: 200 })
+    },
+  })
+  assert.deepEqual(models, ['deepseek-v4-pro'])
+  assert.equal(visionBodies[0].model, 'gemini-3.7-flash')
+})
+
+test('看图模型被网关拒绝时回退 caption 描述 + 所选模型，超时不重试', async () => {
+  const models = []
+  const result = await resolveBotanicAgentTurn({
+    projectId: 'project-turn',
+    plannerModel: 'gemini-3.7-flash',
+    messages: [{ role: 'user', content: '基于这张图出 3 张' }],
+    contextNodeIds: ['asset-mia-portrait'],
+    hasTarget: false,
+    generationModels,
+    maxOutputCount: 8,
+  }, { ...runtime, agentVisionModel: 'gemini-3.7-flash' }, {
     document: {
       ...document,
       nodes: document.nodes.map((node) => node.id === 'asset-mia-portrait'
@@ -438,12 +477,14 @@ test('视觉模型被网关拒绝时回退 caption 描述 + 文本模型，超�
       const body = JSON.parse(init.body)
       models.push(body.model)
       // 视觉模型的 tool-calling 被网关拒绝；文本模型正常。
-      if (body.model === 'gemini-flash') return new Response('unsupported', { status: 422 })
+      if (models.length === 1 && Array.isArray(body.messages.at(-1)?.content)) {
+        return new Response('unsupported', { status: 422 })
+      }
       return new Response(JSON.stringify({ choices: [{ message: { content: '好的。' } }] }), { status: 200 })
     },
   })
 
-  assert.deepEqual(models, ['gemini-flash', 'deepseek-v4-pro'])
+  assert.deepEqual(models, ['gemini-3.7-flash', 'gemini-3.7-flash'])
   assert.equal(result.kind, 'chat')
   // 回退轮的系统提示带 caption 描述；图片字节不进文本模型请求（models 记录已证明只发了两轮）。
 })
@@ -1115,7 +1156,7 @@ test('视觉与文本 attempt 各自冻结实际模型；视觉跨过 Checkpoint
   }
   const input = {
     projectId: 'project-turn',
-    plannerModel: 'deepseek-v4-pro',
+    plannerModel: 'gemini-3.7-flash',
     messages: [{ role: 'user', content: '看图核对 Skill 后继续' }],
     contextNodeIds: ['asset-mia-portrait'],
     hasTarget: false,
@@ -1123,7 +1164,7 @@ test('视觉与文本 attempt 各自冻结实际模型；视觉跨过 Checkpoint
   }
   const checkpoints = []
   const models = []
-  await assert.rejects(resolveBotanicAgentTurn(input, { ...runtime, agentVisionModel: 'gemini-flash' }, {
+  await assert.rejects(resolveBotanicAgentTurn(input, { ...runtime, agentVisionModel: 'gemini-3.7-flash' }, {
     document: visionDocument,
     saveCheckpoint: async (checkpoint) => { checkpoints.push(structuredClone(checkpoint)) },
     fetchImpl: async (_url, init) => {
@@ -1141,12 +1182,15 @@ test('视觉与文本 attempt 各自冻结实际模型；视觉跨过 Checkpoint
     },
   }), (error) => error instanceof BotanicAgentChatError && error.code === 'PROVIDER_REJECTED')
 
-  assert.deepEqual(models, ['gemini-flash', 'gemini-flash'])
+  assert.deepEqual(models, ['gemini-3.7-flash', 'gemini-3.7-flash'])
   assert.equal(checkpoints[0].attempt.id, 'vision')
-  assert.equal(checkpoints[0].attempt.model, 'gemini-flash')
+  assert.equal(checkpoints[0].attempt.model, 'gemini-3.7-flash')
   assert.equal(checkpoints[0].attempt.snapshotHash.length, 43)
 
-  await assert.rejects(resolveBotanicAgentTurn(input, { ...runtime, agentVisionModel: 'gemini-flash-v2' }, {
+  await assert.rejects(resolveBotanicAgentTurn({
+    ...input,
+    plannerModel: 'deepseek-v4-flash-vision-exp',
+  }, { ...runtime, agentVisionModel: 'gemini-3.7-flash' }, {
     document: visionDocument,
     resumeCheckpoint: checkpoints.at(-1),
     saveCheckpoint: async () => { throw new Error('视觉模型漂移应在保存前失败') },
@@ -1156,7 +1200,7 @@ test('视觉与文本 attempt 各自冻结实际模型；视觉跨过 Checkpoint
     && error.code === 'AGENT_TURN_CHECKPOINT_SNAPSHOT_MISMATCH')
 
   let textCheckpoint
-  await resolveBotanicAgentTurn({ ...input, contextNodeIds: [] }, runtime, {
+  await resolveBotanicAgentTurn({ ...input, plannerModel: 'deepseek-v4-pro', contextNodeIds: [] }, runtime, {
     document,
     saveCheckpoint: async (checkpoint) => { textCheckpoint = structuredClone(checkpoint) },
     fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: { content: '文本执行完成。' } }] }), { status: 200 }),

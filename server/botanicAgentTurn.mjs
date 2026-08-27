@@ -11,12 +11,14 @@ import {
   describeBotanicAgentContextImages,
   resolveBotanicAgentVisionParts,
 } from './botanicAgentVision.mjs'
+import { captionAgentVisionModel, nativeAgentVisionModel } from './botanicAgentVisionCapability.mjs'
 import { botanicAgentContextToolSourceLabels, createBotanicAgentReadToolDefinitions } from './botanicAgentContextTools.mjs'
 import { botanicAgentWebResearchSourceLabels, createBotanicAgentWebResearchTools } from './botanicAgentWebTools.mjs'
 import { botanicAgentOperationalSourceLabels, createBotanicAgentOperationalToolDefinitions } from './botanicAgentOperationalTools.mjs'
 import { renderThreadSummary } from './agentThreadSummary.mjs'
 import { canonicalHash } from './canonicalHash.mjs'
 import { estimateAgentContextTokens, truncateAgentContextText } from './agentContextBudget.mjs'
+import { GENERATION_ASPECT_RATIOS, GENERATION_RESOLUTIONS } from './generationVocabulary.mjs'
 
 // Botanic Agent 回合解析器：把“这一句到底是聊天/建议/检索，还是要生成图片，以及要用什么
 // Prompt、生成几张”整体交给服务端模型判断。它读整段对话（包含 Agent 自己刚给出的建议）与
@@ -27,8 +29,8 @@ const MESSAGE_ROLES = new Set(['user', 'assistant'])
 const MENTION_KINDS = new Set(['skill', 'reference'])
 const DEFAULT_MAX_OUTPUT_COUNT = 8
 const CURRENT_INPUT_TEXT_LIMIT = 64 * 1024
-const ASPECT_RATIOS = new Set(['1:1', '16:9', '4:3', '3:4', '4:5', '9:16'])
-const RESOLUTIONS = new Set(['1K', '2K'])
+const ASPECT_RATIOS = new Set(GENERATION_ASPECT_RATIOS)
+const RESOLUTIONS = new Set(GENERATION_RESOLUTIONS)
 const GENERATE_TOOL_NAME = 'generate_images'
 const GENERATE_VIDEO_TOOL_NAME = 'generate_videos'
 const OVERFLOW_RETRY_TOKEN_BUDGET = 6_000
@@ -947,9 +949,10 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
     role: options.role,
   })
 
-  // 原生多模态优先：引用图片直接随消息附给视觉模型，让它看着画面判断意图、综合 Prompt。
-  const visionModel = typeof runtimeConfig?.agentVisionModel === 'string' ? runtimeConfig.agentVisionModel.trim() : ''
-  const visionParts = visionModel
+  // 原生多模态只跟 Composer 所选走；不能看图的规划模型走 caption，不劫持整轮。
+  const nativeVisionModel = nativeAgentVisionModel(config.model)
+  const captionVisionModel = captionAgentVisionModel(runtimeConfig)
+  const visionParts = nativeVisionModel || captionVisionModel
     ? await resolveBotanicAgentVisionParts({
       document: options.document,
       contextNodeIds: input.contextNodeIds,
@@ -960,15 +963,15 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
   if (options.resumeCheckpoint && !['vision', 'text'].includes(resumeAttemptId)) {
     throw new BotanicAgentChatError(409, 'AGENT_TURN_CHECKPOINT_INVALID', 'Agent Turn Checkpoint 的执行 attempt 无效。')
   }
-  if (resumeAttemptId === 'vision' && !visionParts.length) {
+  if (resumeAttemptId === 'vision' && (!visionParts.length || !nativeVisionModel)) {
     throw new BotanicAgentChatError(
       409,
       'AGENT_TURN_CHECKPOINT_SNAPSHOT_MISMATCH',
       '视觉执行所需的模型或媒体上下文已经变化，不能静默切换到文本执行。',
     )
   }
-  if (visionParts.length && resumeAttemptId !== 'text') {
-    const visionSnapshot = stepSnapshotFor(visionModel)
+  if (visionParts.length && nativeVisionModel && resumeAttemptId !== 'text') {
+    const visionSnapshot = stepSnapshotFor(nativeVisionModel)
     let visionCheckpointBoundaryReached = Boolean(options.resumeCheckpoint)
     const visionOptions = typeof options.saveCheckpoint === 'function'
       ? {
@@ -984,7 +987,7 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
     try {
       return withTurnSelectedResult(await executeTurnAttempt({
         config,
-        model: visionModel,
+        model: nativeVisionModel,
         system: [
           baseSystem,
           situation,
@@ -995,7 +998,7 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
         messages: botanicAgentMultimodalMessages(turnMessages, visionParts),
         registry,
         snapshot: visionSnapshot,
-        attempt: turnAttempt('vision', visionModel, visionSnapshot),
+        attempt: turnAttempt('vision', nativeVisionModel, visionSnapshot),
         options: visionOptions,
         allowRawReasoning,
       }), input)

@@ -9,6 +9,7 @@ import {
   describeBotanicAgentContextImages,
   resolveBotanicAgentVisionParts,
 } from './botanicAgentVision.mjs'
+import { captionAgentVisionModel, nativeAgentVisionModel } from './botanicAgentVisionCapability.mjs'
 import { readStreamedChatCompletion } from './botanicAgentStream.mjs'
 import { botanicAgentContextToolSourceLabels, createBotanicAgentReadToolDefinitions } from './botanicAgentContextTools.mjs'
 import { botanicAgentMountedSkillBriefing, botanicAgentSearchableSkills, resolveBotanicAgentMountedSkills } from './botanicAgentTools.mjs'
@@ -260,21 +261,22 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
   const registry = chatToolRegistry({ ontology, memory, skills, mountedSkillIds: input.mountedSkillIds, webResearch })
   const attemptShared = { input, config, registry, options, allowRawReasoning, emitEvent, streaming }
 
-  // 原生多模态优先：引用图片直接随消息附给视觉模型。失败且尚未发出任何流事件时
-  // 回退「caption 描述 + 文本模型」；已经开始推送就只能把失败作为事件送达，不能重放。
-  const visionModel = typeof runtimeConfig?.agentVisionModel === 'string' ? runtimeConfig.agentVisionModel.trim() : ''
-  const visionParts = visionModel
+  // 原生多模态只跟 Composer 所选走：所选模型能看图才把图片附给它。
+  // 失败且尚未发出任何流事件时回退 caption + 所选文本模型。
+  const nativeVisionModel = nativeAgentVisionModel(config.model)
+  const captionVisionModel = captionAgentVisionModel(runtimeConfig)
+  const visionParts = nativeVisionModel || captionVisionModel
     ? await resolveBotanicAgentVisionParts({
       document: options.document,
       contextNodeIds: input.contextNodeIds,
       resolveMedia: options.resolveVisionMedia,
     }).catch(() => [])
     : []
-  if (visionParts.length) {
+  if (visionParts.length && nativeVisionModel) {
     try {
       return await executeChatAttempt({
         ...attemptShared,
-        model: visionModel,
+        model: nativeVisionModel,
         system: [
           baseSystem,
           botanicAgentMountedSkillBriefing(mountedSkills, input.locale),
