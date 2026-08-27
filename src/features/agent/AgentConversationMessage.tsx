@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { botanicMotion, gsap, prefersReducedMotion, useGSAP } from '../../components/gsapMotion'
 import {
   botanicAgentAppliedSkillName,
@@ -241,6 +241,33 @@ function timelineSearchPills(sources: TimelineWebSource[]) {
   })
 }
 
+function AgentTimelineSearchStep({
+  block,
+  title,
+  statusLabel,
+  toolItems,
+  error,
+}: {
+  block: Extract<TimelineBlock, { type: 'step' }>
+  title: string
+  statusLabel: string
+  toolItems: AgentToolCallTrace[]
+  error: ReactNode
+}) {
+  const [open, setOpen] = useState(true)
+  return <div className={`agent-timeline__search is-${block.status}`}>
+    <details open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <summary className={`agent-timeline__step is-${block.status}`} aria-label={`${title}, ${statusLabel}`}>
+        <span className="agent-timeline__step-icon" aria-hidden="true"><TimelineStepMarker block={block} toolItems={toolItems} /></span>
+        <strong>{title}</strong>
+        <small>{statusLabel}</small>
+      </summary>
+      <AgentWebSourcePills sources={timelineSearchPills(block.sources ?? [])} />
+    </details>
+    {error}
+  </div>
+}
+
 function timelineStepTitle(block: Extract<TimelineBlock, { type: 'step' }>, locale: ProductLocale) {
   if (locale !== 'en' || !/\p{Script=Han}/u.test(block.title)) return block.title
   if (block.kind === 'search') {
@@ -292,24 +319,20 @@ function AgentMessageTimeline({ timeline }: { timeline: AgentTimelineState }) {
         const stepError = block.status === 'failed' && block.error
           ? <p className="agent-timeline__step-error">{block.error}</p>
           : null
-        const row = <>
+        if (block.kind === 'search' && timelineStepShowsWebSources(block, toolItems)) {
+          return <AgentTimelineSearchStep
+            key={block.id}
+            block={block}
+            title={title}
+            statusLabel={statusLabel}
+            toolItems={toolItems}
+            error={stepError}
+          />
+        }
+        return <div key={block.id} className={`agent-timeline__step is-${block.status}`} aria-label={`${title}, ${statusLabel}`}>
           <span className="agent-timeline__step-icon" aria-hidden="true"><TimelineStepMarker block={block} toolItems={toolItems} /></span>
           <strong>{title}</strong>
           <small>{statusLabel}</small>
-        </>
-        if (block.kind === 'search' && timelineStepShowsWebSources(block, toolItems)) {
-          return <div key={block.id} className={`agent-timeline__search is-${block.status}`}>
-            <details defaultOpen>
-              <summary className={`agent-timeline__step is-${block.status}`} aria-label={`${title}, ${statusLabel}`}>
-                {row}
-              </summary>
-              <AgentWebSourcePills sources={timelineSearchPills(block.sources ?? [])} />
-            </details>
-            {stepError}
-          </div>
-        }
-        return <div key={block.id} className={`agent-timeline__step is-${block.status}`} aria-label={`${title}, ${statusLabel}`}>
-          {row}
           {/* 失败必须说清原因。只显示「失败」的话，看的人不知道该改什么 —— 线上就撞上过：
               两个写类工具调用连续失败，界面上只有两个红叉。 */}
           {stepError}
