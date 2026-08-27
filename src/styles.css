@@ -3788,8 +3788,8 @@ details.agent-timeline__thinking { display: block; padding: 0; }
 .agent-timeline__search > details > summary { list-style: none; cursor: pointer; }
 .agent-timeline__search > details > summary::-webkit-details-marker { display: none; }
 .agent-timeline-search-sources { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 2px 29px; padding: 0; list-style: none; }
-.agent-timeline-search-source { display: inline-flex; max-width: 180px; min-height: 22px; align-items: center; gap: 5px; padding: 2px 8px 2px 4px; border: 1px solid #d4e1d5; border-radius: 999px; background: #f8fbf7; color: #52665a; font-size: 10px; font-weight: 620; text-decoration: none; }
-.agent-timeline-search-source:hover { background: #edf4ed; color: #315b3b; }
+.agent-timeline-search-source { display: inline-flex; max-width: 180px; min-height: 22px; align-items: center; gap: 5px; padding: 2px 8px 2px 4px; border: 1px solid #b9ccbb; border-radius: 999px; background: #eef4ee; color: #334c3a; font-size: 10px; font-weight: 620; text-decoration: none; }
+.agent-timeline-search-source:hover { background: #e4eee5; color: #2f4a38; }
 .agent-timeline-search-source--static { cursor: default; }
 .agent-timeline-search-source span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-web-source-favicon { width: 14px; height: 14px; flex: 0 0 14px; border-radius: 3px; object-fit: contain; }
