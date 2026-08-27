@@ -7,6 +7,7 @@ import { createAgentSkill, isUsableAgentSkill, publicAgentSkill, validateAgentSk
 import { cancelPersistentAgentRun, createPersistentAgentRun, createReviewRetryAgentRunInput, prepareAgentBranchRetry, publicAgentRun, validateAgentRunCreation } from './botanicAgentRun.mjs'
 import { AgentToolRuntimeError, executeConfirmedAgentAction } from './agentToolRuntime.mjs'
 import { botanicAgentBuiltInSkill, botanicAgentSystemSkills, createBotanicAgentActionToolRegistry } from './botanicAgentTools.mjs'
+import { decodeAgentMessageCursor } from './agentMessagePersistence.mjs'
 import { decodeArtifactCursor, encodeArtifactCursor } from './botanicArtifactIndex.mjs'
 import { cancelGenerationJob } from './generationCancellation.mjs'
 import { retryFailedWorkflowItems } from './productionWorkflow.mjs'
@@ -282,7 +283,7 @@ export function createAgentRouteHandler({
 
   const bindAuthoritativeKnowledge = async (userId, input) => {
     const [projectState, projectSkills] = await Promise.all([
-      typeof productStore.readAgentState === 'function' ? productStore.readAgentState(userId, input.projectId) : undefined,
+      typeof productStore.readAgentState === 'function' ? productStore.readAgentState(userId, input.projectId, { includeMessages: false }) : undefined,
       typeof productStore.listAgentSkills === 'function' ? productStore.listAgentSkills(userId, input.projectId) : [],
     ])
     const memoriesById = new Map((projectState?.memory ?? []).map((memory) => [memory.id, memory]))
@@ -366,6 +367,8 @@ export function createAgentRouteHandler({
       projectAgentSkills: projectAgentSkillsMatch,
       agentSkillCatalog: agentSkillCatalogMatch,
       projectAgentState: projectAgentStateMatch,
+      projectAgentSessions: projectAgentSessionsMatch,
+      agentSessionMessages: agentSessionMessagesMatch,
       projectAgentArtifacts: projectAgentArtifactsMatch,
       agentSession: agentSessionMatch,
       agentSessionReadingAnchor: agentSessionReadingAnchorMatch,
@@ -527,7 +530,7 @@ export function createAgentRouteHandler({
       // 串行会白白多一次往返的延迟。
       const [projectSkillsRaw, projectState, project] = await Promise.all([
         productStore.listAgentSkills(user.id, validatedInput.projectId),
-        productStore.readAgentState(user.id, validatedInput.projectId),
+        productStore.readAgentState(user.id, validatedInput.projectId, { includeMessages: false }),
         productStore.readProject(user.id, validatedInput.projectId),
       ])
       const projectSkills = projectSkillsRaw ?? []
@@ -786,12 +789,39 @@ export function createAgentRouteHandler({
       const skills = await productStore.listAgentSkills(user.id, projectId) ?? []
       return json(response, 200, { skills: skills.map(publicAgentSkill) })
     }
+    if (projectAgentSessionsMatch) {
+      if (request.method !== 'GET') return methodNotAllowed(response, 'Agent 会话列表只支持读取。', 'GET')
+      const user = await requireUser(request)
+      const projectId = decodeURIComponent(projectAgentSessionsMatch[1])
+      await requireProjectPermission(productStore, user.id, projectId, 'read')
+      const sessions = await productStore.listAgentSessions(user.id, projectId, {
+        limit: url.searchParams.get('limit') ?? undefined,
+      })
+      if (!sessions) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
+      return json(response, 200, { sessions })
+    }
+    if (agentSessionMessagesMatch) {
+      if (request.method !== 'GET') return methodNotAllowed(response, 'Agent 消息资源只支持读取。', 'GET')
+      const user = await requireUser(request)
+      const projectId = decodeURIComponent(agentSessionMessagesMatch[1])
+      const sessionId = decodeURIComponent(agentSessionMessagesMatch[2])
+      await requireProjectPermission(productStore, user.id, projectId, 'read')
+      const limit = Math.max(1, Math.min(Number(url.searchParams.get('limit')) || 50, 200))
+      let before
+      try { before = decodeAgentMessageCursor(url.searchParams.get('before') ?? undefined) } catch {
+        return error(response, 400, 'INVALID_AGENT_MESSAGE_CURSOR', 'Agent 消息分页游标无效。')
+      }
+      const page = await productStore.listAgentSessionMessages(user.id, projectId, sessionId, { limit, before })
+      if (!page) return error(response, 404, 'AGENT_SESSION_NOT_FOUND', '未找到该 Agent 对话。')
+      return json(response, 200, { messages: page.messages, nextBefore: page.nextBefore })
+    }
     if (projectAgentStateMatch) {
       if (request.method !== 'GET') return methodNotAllowed(response, 'Agent 状态资源只支持读取。', 'GET')
       const user = await requireUser(request)
       const projectId = decodeURIComponent(projectAgentStateMatch[1])
       await requireProjectPermission(productStore, user.id, projectId, 'read')
-      const state = await productStore.readAgentState(user.id, projectId)
+      const includeMessages = url.searchParams.get('includeMessages') !== '0'
+      const state = await productStore.readAgentState(user.id, projectId, { includeMessages })
       return state ? json(response, 200, state) : error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
     }
     if (projectAgentArtifactsMatch) {
@@ -814,12 +844,6 @@ export function createAgentRouteHandler({
       await requireProjectPermission(productStore, user.id, projectId, 'read')
       const body = await readJson(request, 4 * 1024, 'Agent 阅读位置请求过大。')
       const messageId = text(body?.messageId, 'Agent 阅读位置', 160)
-      const state = await productStore.readAgentState(user.id, projectId)
-      const session = state?.sessions?.find((candidate) => candidate.id === sessionId)
-      if (!session) return error(response, 404, 'AGENT_SESSION_NOT_FOUND', '未找到该 Agent 对话。')
-      if (!session.messages?.some((message) => message.id === messageId)) {
-        return error(response, 409, 'AGENT_MESSAGE_NOT_FOUND', '目标消息已不存在，请刷新对话后重试。')
-      }
       const updatedAt = Date.now()
       return json(response, 200, { receipt: await productStore.putAgentSessionReadReceipt(user.id, projectId, sessionId, {
         messageId,
@@ -836,7 +860,7 @@ export function createAgentRouteHandler({
       if (body?.id !== sessionId) return error(response, 400, 'INVALID_AGENT_ENTITY', 'Agent 会话标识不一致。')
       let previous
       try {
-        const before = await productStore.readAgentState(user.id, projectId)
+        const before = await productStore.readAgentState(user.id, projectId, { includeMessages: false })
         previous = before?.sessions?.find((candidate) => candidate.id === sessionId)
       } catch { /* 差异判断失败时仍应完成权威 Session 写入。 */ }
       const session = await productStore.putAgentSession(user.id, projectId, body)
@@ -865,7 +889,7 @@ export function createAgentRouteHandler({
       const message = await productStore.putAgentMessage(user.id, projectId, sessionId, body)
       let sessionTitle = '新建对话'
       try {
-        const state = await productStore.readAgentState(user.id, projectId)
+        const state = await productStore.readAgentState(user.id, projectId, { includeMessages: false })
         sessionTitle = state?.sessions?.find((candidate) => candidate.id === sessionId)?.title || sessionTitle
       } catch { /* 标题只用于协作历史，不得阻断消息权威写入。 */ }
       await recordCollaborationActivity(user, projectId, {

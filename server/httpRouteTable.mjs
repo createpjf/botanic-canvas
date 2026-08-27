@@ -18,6 +18,8 @@ export const botanicHttpRoutePatterns = Object.freeze({
   projectAgentSkills: /^\/api\/projects\/([^/]+)\/agent-skills$/,
   agentSkillCatalog: /^\/api\/agent-skill-catalog$/,
   projectAgentState: /^\/api\/projects\/([^/]+)\/agent-state$/,
+  projectAgentSessions: /^\/api\/projects\/([^/]+)\/agent-sessions$/,
+  agentSessionMessages: /^\/api\/projects\/([^/]+)\/agent-sessions\/([^/]+)\/messages$/,
   projectAgentArtifacts: /^\/api\/projects\/([^/]+)\/agent-artifacts$/,
   agentSession: /^\/api\/projects\/([^/]+)\/agent-sessions\/([^/]+)$/,
   agentSessionReadingAnchor: /^\/api\/projects\/([^/]+)\/agent-sessions\/([^/]+)\/reading-anchor$/,

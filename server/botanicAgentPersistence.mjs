@@ -434,7 +434,16 @@ export function agentStateFromDocument(document, { now = Date.now() } = {}) {
   return { sessions, messages, memory, runs }
 }
 
-export function mergeAgentStateIntoDocument(document, state = {}) {
+export function stripAgentMessagesFromDocument(document) {
+  if (!Array.isArray(document?.agentSessions)) return document
+  return {
+    ...document,
+    agentSessions: document.agentSessions.map((session) => ({ ...session, messages: [] })),
+  }
+}
+
+export function mergeAgentStateIntoDocument(document, state = {}, options = {}) {
+  const includeMessages = options.includeMessages !== false
   const legacySessions = Array.isArray(document?.agentSessions) ? document.agentSessions : []
   const projectedSessionById = new Map((Array.isArray(state.sessions) ? state.sessions : []).map((session) => [session.id, session]))
   const sessionById = newerById([
@@ -460,10 +469,12 @@ export function mergeAgentStateIntoDocument(document, state = {}) {
   }
   // 读侧与写侧共用同一个每会话上限：写入抽取时只保留最近 MESSAGE_LIMIT 条，
   // 读合并如果不设限，单个会话膨胀后 GET /document 会顶满语句超时。保留最新的一段。
-  const cappedSessionMessages = (sessionId) => [...(messageBySession.get(sessionId)?.values() ?? [])]
-    .map((entry) => entry.message)
-    .sort((left, right) => Number(left.createdAt ?? 0) - Number(right.createdAt ?? 0))
-    .slice(-MESSAGE_LIMIT)
+  const cappedSessionMessages = includeMessages
+    ? (sessionId) => [...(messageBySession.get(sessionId)?.values() ?? [])]
+        .map((entry) => entry.message)
+        .sort((left, right) => Number(left.createdAt ?? 0) - Number(right.createdAt ?? 0))
+        .slice(-MESSAGE_LIMIT)
+    : () => []
   const sessions = [...sessionById.values()]
     .map((session) => {
       const projected = projectedSessionById.get(session.id)

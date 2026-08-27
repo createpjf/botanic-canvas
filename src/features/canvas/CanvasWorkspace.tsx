@@ -64,6 +64,7 @@ import type {
 import { deliveryPresets, downloadDeliveryPackage } from '../../lib/deliveryExport'
 import { downloadMedia } from '../../lib/mediaDownload'
 import { maxUploadAssets } from '../../lib/uploadedAssets'
+import { observeProjectOpenCanvasVisible, markProjectOpenStarted } from '../../lib/productPerformance'
 import { getGenerationServiceHealth } from '../../lib/generationApi'
 import { refinePrompt } from '../../lib/promptRefinementApi'
 import { enrollProductMfa, inviteWorkspaceMember, listWorkspaceAuditEvents, listWorkspaceMembers, readProductMfaStatus, refreshProductMediaSession, removeProductMfa, resendWorkspaceMemberInvite, signOutOtherProductSessions, updateProductPassword, updateWorkspaceMember, verifyProductMfa, type ProductUser } from '../../lib/productSession'
@@ -917,6 +918,7 @@ export default function CanvasWorkspace({
   const [closingWorkspaceTabId, setClosingWorkspaceTabId] = useState<string | null>(null)
   const [viewportRestoring, setViewportRestoring] = useState(initialWorkspaceLocation.view === 'canvas')
   const workspaceView = workspaceLocation.view
+  const refreshAgentSessionMessagesRef = useRef(async () => {})
   const {
     canvasHydrationFailed,
     hydrateCanvas,
@@ -930,6 +932,7 @@ export default function CanvasWorkspace({
   } = useCanvasWorkspaceSynchronization({
     workspaceActive: workspaceRestored && workspaceView === 'canvas',
     currentUserId: currentUser?.id,
+    refreshAgentSessionMessagesRef,
   })
   const workspaceDocumentMismatch = workspaceView === 'canvas'
     && Boolean(workspaceLocation.projectId)
@@ -1134,6 +1137,7 @@ export default function CanvasWorkspace({
 
         let opened = false
         try {
+          markProjectOpenStarted(location.projectId!)
           opened = await openDocument(location.projectId!)
         } catch {
           // 项目读取失败时不能一直保留“正在恢复”遮罩；退回项目页，由列表提供重试入口。
@@ -1201,6 +1205,7 @@ export default function CanvasWorkspace({
           }
         }, 45_000)
         try {
+          markProjectOpenStarted(location.projectId!)
           opened = await openDocument(location.projectId!)
         } catch {
           if (sameWorkspaceLocation(location, workspaceLocationFromHash(window.location.hash))) {
@@ -1724,7 +1729,12 @@ export default function CanvasWorkspace({
   const canvasClassName = `app-shell app-shell--agent-${agentOpen ? 'open' : 'closed'}`
   const workspaceTabs = useMemo(() => {
     const projectsById = new Map(workspaceProjects.map((project) => [project.id, project]))
-    if (!projectsById.has(document.id)) {
+    const listed = projectsById.get(document.id)
+    if (listed) {
+      if (listed.name !== document.name) {
+        projectsById.set(document.id, { ...listed, name: document.name, updatedAt: Math.max(listed.updatedAt, document.updatedAt) })
+      }
+    } else {
       projectsById.set(document.id, {
         id: document.id,
         name: document.name,
@@ -1845,7 +1855,15 @@ export default function CanvasWorkspace({
     onPrepareCanvasFocus: prepareAgentCanvasFocus,
   })
   openAgentForResultRef.current = agentBridge.openForResult
+  useEffect(() => {
+    refreshAgentSessionMessagesRef.current = agentBridge.refreshAgentSessionMessages
+  }, [agentBridge.refreshAgentSessionMessages])
   const batchVariationProgressRun = batchVariationRuns.find((run) => run.status !== 'succeeded' && run.status !== 'cancelled')
+
+  useEffect(() => {
+    if (!hydrated || workspaceView !== 'canvas' || workspaceRestoring || workspaceDocumentMismatch) return
+    observeProjectOpenCanvasVisible(document.id)
+  }, [document.id, hydrated, workspaceDocumentMismatch, workspaceRestoring, workspaceView])
 
   useEffect(() => {
     if (!hydrated) return
@@ -2345,6 +2363,7 @@ export default function CanvasWorkspace({
           onConfirm={agentBridge.confirmPlan}
           onConfirmAction={agentBridge.confirmAction}
           onUploadImages={agentBridge.addUploadedImages}
+          onPrepareVisionContext={agentBridge.prepareConversationVisionContext}
           onAppendMessage={appendAgentMessage}
           onUpdateMessage={updateAgentMessage}
           onUpdateAction={updateAgentAction}
@@ -2369,6 +2388,9 @@ export default function CanvasWorkspace({
           onUseResultContext={agentBridge.useResultContext}
           onRetryPersistence={retryAgentCanvasPersistence}
           onRefreshRemote={refreshAgentCanvasFromRemote}
+          onLoadOlderMessages={agentBridge.loadOlderAgentMessages}
+          hasOlderMessages={agentBridge.hasOlderAgentMessages}
+          loadingOlderMessages={agentBridge.loadingOlderAgentMessages}
           onDismissRemoteChange={dismissRemoteChange}
           onClearCollaborationActivities={clearCollaborationActivities}
           onLoadMoreCollaborationActivities={loadMoreCollaborationActivities}

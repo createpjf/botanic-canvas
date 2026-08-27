@@ -56,6 +56,8 @@ export const productStoreCoreMethods = Object.freeze([
   'writeGlobalAssetLibrary',
   'deleteGlobalAsset',
   'readAgentState',
+  'listAgentSessions',
+  'listAgentSessionMessages',
   'putAgentSessionReadReceipt',
   'listCollaborationActivities',
   'putCollaborationActivity',

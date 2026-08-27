@@ -7,6 +7,7 @@ import {
   normalizeGenerateNodeInputs,
   primaryGenerationReference,
 } from '../domain/generationRecipe'
+import { reconcileAgentSessionsAfterDocumentSync } from '../domain/agentCollaboration'
 import { isRemoteDocumentConflict } from '../domain/remoteDocumentSync'
 import { createLatestOperation } from '../domain/latestOperation'
 import type {
@@ -24,7 +25,8 @@ import {
   persistAcknowledgedRemoteCanvasPatch,
   writeCanvasDocument,
 } from '../lib/db'
-import { cancelPersistentBotanicAgentRun, retryPersistentBotanicAgentBranch } from '../lib/agentApi'
+import { cancelPersistentBotanicAgentRun, retryPersistentBotanicAgentBranch, submitPersistentBotanicAgentSession } from '../lib/agentApi'
+import { serverPersistenceEnabled } from '../lib/productSession'
 import { ProductApiError } from '../lib/productSession'
 import type { CanvasStore, GenerationRequest } from './canvasStore.types'
 import { createCanvasAgentActions } from './canvasAgentActions'
@@ -133,8 +135,16 @@ function commit(
   set({ document: nextDocument, persistenceStatus: 'saving', ...scrubRevokedStoreExtra(extra) })
   const persistence = writeCanvasDocument(nextDocument, { immediate: options.immediate })
     .then((savedDocument) => {
-      if (nextDocument.id === useCanvasStore.getState().document.id && persistenceOperations.isCurrent(operationToken)) {
-        set({ document: savedDocument ?? nextDocument, persistenceStatus: 'saved' })
+      const current = useCanvasStore.getState().document
+      if (nextDocument.id === current.id && persistenceOperations.isCurrent(operationToken)) {
+        const incoming = savedDocument ?? nextDocument
+        set({
+          document: {
+            ...incoming,
+            agentSessions: reconcileAgentSessionsAfterDocumentSync(current.agentSessions, incoming.agentSessions),
+          },
+          persistenceStatus: 'saved',
+        })
       }
     })
     .catch(async (error) => {
@@ -232,6 +242,10 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
       cancelRun: cancelPersistentBotanicAgentRun,
     },
     persistAcknowledgedRemotePatch: persistAcknowledgedRemoteCanvasPatch,
+    persistAgentSession: async (projectId, session) => {
+      if (!serverPersistenceEnabled || projectId === 'workspace-placeholder') return
+      await submitPersistentBotanicAgentSession(projectId, session)
+    },
   }),
 
   ...createCanvasBatchVariationActions({

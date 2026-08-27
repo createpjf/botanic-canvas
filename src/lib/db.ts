@@ -8,6 +8,7 @@ import {
   type GlobalWorkflowTemplateLibrary,
 } from '../domain/canvas'
 import { normalizeAssetRecord } from '../domain/assets'
+import { reconcileAgentSessionsAfterDocumentSync, stripAgentSessionMessages } from '../domain/agentCollaboration'
 import { isRemoteDocumentConflict } from '../domain/remoteDocumentSync'
 import { ProductApiError, productRequest, serverPersistenceEnabled } from './productSession'
 import { discardLocalDraftAndRefreshRemote, persistAcceptedRemoteRefresh } from './remoteDocumentRefresh'
@@ -548,6 +549,7 @@ function createCanvasDocumentPatch(previous: CanvasDocument, next: CanvasDocumen
 }
 
 async function writeRemoteCanvasDocument(document: CanvasDocument) {
+  const persistable = stripAgentSessionMessages(document)
   // 本地优先打开的项目可能尚未完成后台版本读取。首次写入前补齐 revision，
   // 让 PATCH 仍受 If-Match 保护，而不是用无条件 PUT 覆盖远端版本。
   if (!remoteDocuments.has(document.id) && !remoteRevisions.has(document.id)) {
@@ -555,7 +557,7 @@ async function writeRemoteCanvasDocument(document: CanvasDocument) {
   }
   const revision = remoteRevisions.get(document.id)
   const previous = remoteDocuments.get(document.id)
-  const patch = previous ? createCanvasDocumentPatch(previous, document) : undefined
+  const patch = previous ? createCanvasDocumentPatch(previous, persistable) : undefined
   const send = async (payload: CanvasDocumentPatch | CanvasDocument, method: 'PATCH' | 'PUT', expectedRevision?: number) => {
     const prepared = await serializeRemoteMediaValue(payload)
     return productRequest<{ document: CanvasDocument; revision: number; graphRevision: number }>(`/api/projects/${encodeURIComponent(document.id)}/document`, {
@@ -573,7 +575,7 @@ async function writeRemoteCanvasDocument(document: CanvasDocument) {
   let conflictAttempts = 0
   while (true) {
     try {
-      response = await send(patch ?? document, patch ? 'PATCH' : 'PUT', conflictAttempts ? remoteRevisions.get(document.id) : revision)
+      response = await send(patch ?? persistable, patch ? 'PATCH' : 'PUT', conflictAttempts ? remoteRevisions.get(document.id) : revision)
       break
     } catch (error) {
       if (!isRemoteDocumentConflict(error) || !patch || conflictAttempts >= 3) throw error
@@ -583,9 +585,16 @@ async function writeRemoteCanvasDocument(document: CanvasDocument) {
       await readRemoteCanvasDocument(document.id)
     }
   }
-  rememberRemoteDocument(document.id, response)
-  await persistLocalDocument(response.document)
-  return response.document
+  rememberRemoteDocument(document.id, {
+    ...response,
+    document: stripAgentSessionMessages(response.document),
+  })
+  const retained = {
+    ...response.document,
+    agentSessions: reconcileAgentSessionsAfterDocumentSync(document.agentSessions, response.document.agentSessions),
+  }
+  await persistLocalDocument(retained)
+  return retained
 }
 
 export async function createCanvasProject(document: CanvasDocument) {
@@ -593,7 +602,7 @@ export async function createCanvasProject(document: CanvasDocument) {
     await writeCanvasDocument(document)
     return document
   }
-  const prepared = await serializeRemoteMediaValue(document) as CanvasDocument
+  const prepared = await serializeRemoteMediaValue(stripAgentSessionMessages(document)) as CanvasDocument
   const response = await productRequest<{ document: CanvasDocument; revision: number; graphRevision: number }>('/api/projects', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -639,7 +648,19 @@ export async function renameCanvasProject(id: string, name: string) {
       await readRemoteCanvasDocument(id)
     }
   }
-  rememberRemoteDocument(id, response)
+  rememberRemoteDocument(id, {
+    ...response,
+    document: { ...response.document, name: response.document.name },
+  })
+  await enqueuePersistence(async () => {
+    const stored = await canvasDb.documents.get(id)
+    if (!stored || stored.name === response.document.name) return
+    await canvasDb.documents.put({
+      ...stored,
+      name: response.document.name,
+      updatedAt: Math.max(stored.updatedAt, response.document.updatedAt),
+    })
+  })
   return response.document
 }
 

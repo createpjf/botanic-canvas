@@ -565,12 +565,40 @@ export async function readPersistentBotanicAgentExecutionTrace(runId: string) {
 }
 
 /** 读取独立 Agent 实体权威状态，用于其他设备消息、记忆与任务的增量失效恢复。 */
-export async function readPersistentBotanicAgentState(projectId: string) {
+export async function readPersistentBotanicAgentState(
+  projectId: string,
+  options: { includeMessages?: boolean } = {},
+) {
+  const suffix = options.includeMessages === false ? '?includeMessages=0' : ''
   return productRequest<{
     sessions: BotanicAgentSession[]
     memory: BotanicAgentMemoryItem[]
     runs: BotanicAgentRunSnapshot[]
-  }>(`/api/projects/${encodeURIComponent(projectId)}/agent-state`)
+  }>(`/api/projects/${encodeURIComponent(projectId)}/agent-state${suffix}`)
+}
+
+export async function listPersistentBotanicAgentSessions(projectId: string, options: { limit?: number } = {}) {
+  const query = new URLSearchParams()
+  if (options.limit !== undefined) query.set('limit', String(options.limit))
+  const suffix = query.size ? `?${query.toString()}` : ''
+  return productRequest<{ sessions: BotanicAgentSession[] }>(
+    `/api/projects/${encodeURIComponent(projectId)}/agent-sessions${suffix}`,
+  )
+}
+
+export async function listPersistentBotanicAgentSessionMessages(
+  projectId: string,
+  sessionId: string,
+  options: { limit?: number; before?: string; signal?: AbortSignal } = {},
+) {
+  const query = new URLSearchParams()
+  if (options.limit !== undefined) query.set('limit', String(options.limit))
+  if (options.before !== undefined) query.set('before', String(options.before))
+  const suffix = query.size ? `?${query.toString()}` : ''
+  return productRequest<{ messages: BotanicAgentMessage[]; nextBefore?: string }>(
+    `/api/projects/${encodeURIComponent(projectId)}/agent-sessions/${encodeURIComponent(sessionId)}/messages${suffix}`,
+    { signal: options.signal },
+  )
 }
 
 export async function listProjectAgentArtifacts(

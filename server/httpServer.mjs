@@ -165,6 +165,7 @@ function enumValue(value, allowed, name) {
 function agentEntityHttpError(caught) {
   if (caught?.code === 'INVALID_AGENT_ENTITY') return new HttpError(400, caught.code, caught.message)
   if (caught?.code === 'AGENT_SESSION_NOT_FOUND') return new HttpError(404, caught.code, caught.message)
+  if (caught?.code === 'AGENT_MESSAGE_NOT_FOUND') return new HttpError(409, caught.code, caught.message)
   if (caught?.code === 'AGENT_MEMORY_DELETED') return new HttpError(409, caught.code, caught.message)
   if (typeof caught?.code === 'string' && /^(AGENT_(SESSION|MESSAGE|MEMORY|RUN|ENTITY)_ID_CONFLICT)$/.test(caught.code)) {
     return new HttpError(409, caught.code, caught.message)

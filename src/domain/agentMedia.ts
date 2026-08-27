@@ -1,4 +1,4 @@
-import type { CanvasDocument, GenerationRecipe, ResultNodeData } from './canvas.ts'
+import type { AssetNodeData, CanvasDocument, GenerationRecipe, ResultNodeData } from './canvas.ts'
 
 export function isControlledAgentMediaSource(source: string) {
   return /^\/api\/media\/media_[A-Za-z0-9_-]+$/.test(source)
@@ -19,6 +19,17 @@ export function collectAgentMediaSources(document: CanvasDocument, resultNodeId:
     ...recipeSources(result?.rootRecipe),
     ...document.assets.filter((asset) => groupAssetIds.has(asset.id)).map((asset) => asset.image),
   ].filter((source): source is string => Boolean(source)))]
+}
+
+/** 对话/回合看图只收集当前引用的图片节点，不把视频或未引用节点带去视觉模型。 */
+export function collectAgentVisionMediaSources(document: CanvasDocument, contextNodeIds: string[]) {
+  const wanted = new Set(contextNodeIds)
+  return [...new Set(document.nodes.flatMap((node) => {
+    if (!wanted.has(node.id) || (node.type !== 'asset' && node.type !== 'result')) return []
+    const data = node.data as AssetNodeData | ResultNodeData
+    if ((data.mediaKind ?? 'image') !== 'image' || !data.image) return []
+    return [data.image]
+  }))]
 }
 
 export async function prepareAgentMediaSources(

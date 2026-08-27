@@ -14,7 +14,7 @@ import {
   upsertBotanicAgentRunSnapshot,
   mergeBotanicAgentCanvasPatch,
 } from '../domain/agent.ts'
-import type { BotanicAgentRunSnapshot } from '../domain/agent.ts'
+import type { BotanicAgentRunSnapshot, BotanicAgentSession } from '../domain/agent.ts'
 import type { CanvasDocument, ResultNodeData } from '../domain/canvas.ts'
 import type { CanvasStore } from './canvasStore.types.ts'
 
@@ -52,6 +52,8 @@ type PersistentAgentRunApi = {
   cancelRun: (runId: string) => Promise<BotanicAgentRunSnapshot>
 }
 
+type PersistAgentSession = (projectId: string, session: BotanicAgentSession) => Promise<unknown>
+
 /**
  * CanvasStore 内的 Agent 实体命令模块。
  * Session、Message、Memory 与 Run 的兼容双写都经同一个提交端口完成。
@@ -62,18 +64,23 @@ export function createCanvasAgentActions({
   commitDocument,
   persistentAgentRunApi,
   persistAcknowledgedRemotePatch,
+  persistAgentSession = async () => {},
 }: {
   set: (next: Partial<CanvasStore>) => void
   get: () => CanvasStore
   commitDocument: CommitDocument
   persistentAgentRunApi: PersistentAgentRunApi
   persistAcknowledgedRemotePatch: (document: CanvasDocument, revision: number, graphRevision: number) => Promise<void>
+  persistAgentSession?: PersistAgentSession
 }): AgentStoreActions {
-  const commitAgentSessionDocument = (document: CanvasDocument) => {
+  const commitAgentSessionDocument = (document: CanvasDocument, options: { persistSession?: boolean } = {}) => {
     // Session 创建后的首条消息/上下文可能与持久化同一帧发生；
     // 先更新本地权威快照，后续命令才能稳定命中同一 Session。
     set({ document })
     void commitDocument(document)
+    if (!options.persistSession) return
+    const session = document.agentSessions.find((item) => item.id === document.activeAgentSessionId)
+    if (session) void persistAgentSession(document.id, session).catch(() => undefined)
   }
 
   return {
@@ -167,7 +174,7 @@ export function createCanvasAgentActions({
         ...document,
         agentSessions: [session, ...document.agentSessions],
         activeAgentSessionId: session.id,
-      })
+      }, { persistSession: true })
       return session.id
     },
 
@@ -217,7 +224,7 @@ export function createCanvasAgentActions({
           ? replaceBotanicAgentSessionContext(session, contextNodeIds)
           : session),
         activeAgentSessionId: sessionId,
-      })
+      }, { persistSession: true })
     },
 
     setAgentSessionExecutionMode: (sessionId, mode) => {
@@ -229,7 +236,7 @@ export function createCanvasAgentActions({
           ? { ...session, executionMode: mode, updatedAt: Date.now() }
           : session),
         activeAgentSessionId: sessionId,
-      })
+      }, { persistSession: true })
     },
 
     setAgentSessionPlannerModel: (sessionId, plannerModel) => {
@@ -242,7 +249,7 @@ export function createCanvasAgentActions({
         ...document,
         agentSessions: document.agentSessions.map((candidate) => candidate.id === sessionId ? updatedSession : candidate),
         activeAgentSessionId: sessionId,
-      })
+      }, { persistSession: true })
     },
 
     setAgentSessionSkills: (sessionId, mountedSkillIds) => {
@@ -255,7 +262,7 @@ export function createCanvasAgentActions({
         ...document,
         agentSessions: document.agentSessions.map((candidate) => candidate.id === sessionId ? updatedSession : candidate),
         activeAgentSessionId: sessionId,
-      })
+      }, { persistSession: true })
     },
 
     renameAgentSession: (sessionId, title) => {
@@ -268,7 +275,7 @@ export function createCanvasAgentActions({
         ...document,
         agentSessions: document.agentSessions.map((candidate) => candidate.id === sessionId ? updatedSession : candidate),
         activeAgentSessionId: sessionId,
-      })
+      }, { persistSession: true })
     },
 
     setAgentSessionReadingAnchor: (sessionId, messageId, updatedAt = Date.now()) => {

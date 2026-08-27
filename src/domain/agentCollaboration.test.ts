@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { BotanicAgentSession } from './agent.ts'
-import { mergeCollaborativeAgentSessions } from './agentCollaboration.ts'
+import { mergeCollaborativeAgentSessions, overlayLocalAgentSessionMessages, reconcileAgentSessionsAfterDocumentSync, stripAgentSessionMessages } from './agentCollaboration.ts'
 
 const session = (overrides: Partial<BotanicAgentSession> = {}): BotanicAgentSession => ({
   id: 'session-1', title: '对话', executionMode: 'auto', contextNodeIds: [], messages: [], createdAt: 1, updatedAt: 2,
@@ -74,4 +74,50 @@ test('已回答的确认卡不被远端旧 pending 快照重新展开', () => {
 
   assert.equal(merged[0].messages[0].status, 'answered')
   assert.equal(merged[0].messages[0].updatedAt, 40)
+})
+
+test('本机更新的会话标题不被较旧的远端快照回退', () => {
+  const merged = mergeCollaborativeAgentSessions(
+    [session({ title: '夜景方案', updatedAt: 80 })],
+    [session({ title: '新建对话', updatedAt: 20 })],
+  )
+  assert.equal(merged[0].title, '夜景方案')
+  assert.equal(merged[0].updatedAt, 80)
+
+  const tied = mergeCollaborativeAgentSessions(
+    [session({ title: '夜景方案', updatedAt: 20 })],
+    [session({ title: '新建对话', updatedAt: 20 })],
+  )
+  assert.equal(tied[0].title, '夜景方案')
+})
+
+test('文档读模型无消息时叠回本机消息，有消息时不覆盖远端权威', () => {
+  const local = [session({ messages: [
+    { id: 'message-local', role: 'user', kind: 'text', content: '本机', createdAt: 10, deliveryStatus: 'syncing' },
+  ] })]
+  const emptyRemote = overlayLocalAgentSessionMessages([session({ title: '远端', updatedAt: 30 })], local)
+  assert.equal(emptyRemote[0].messages[0].id, 'message-local')
+
+  const populatedRemote = overlayLocalAgentSessionMessages([
+    session({ messages: [{ id: 'message-remote', role: 'assistant', kind: 'text', content: '远端', createdAt: 15 }] }),
+  ], local)
+  assert.deepEqual(populatedRemote[0].messages.map((message) => message.id), ['message-remote'])
+})
+
+test('保存回写后的文档同步保留本机尚未送达的消息', () => {
+  const local = [session({ messages: [
+    { id: 'message-pending', role: 'user', kind: 'text', content: '草稿', createdAt: 20, deliveryStatus: 'waiting_network' },
+  ] })]
+  const reconciled = reconcileAgentSessionsAfterDocumentSync(local, [session({ title: '已保存', updatedAt: 40 })])
+  assert.equal(reconciled[0].title, '已保存')
+  assert.equal(reconciled[0].messages[0].id, 'message-pending')
+})
+
+test('剥离文档内嵌消息只清空 messages', () => {
+  const stripped = stripAgentSessionMessages({
+    id: 'project-1',
+    agentSessions: [session({ messages: [{ id: 'message-1', role: 'user', kind: 'text', content: '旧', createdAt: 1 }] })],
+  })
+  assert.deepEqual(stripped.agentSessions[0].messages, [])
+  assert.equal(stripped.agentSessions[0].id, 'session-1')
 })
