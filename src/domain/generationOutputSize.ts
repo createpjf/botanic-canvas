@@ -11,7 +11,7 @@ export const gptImage2CustomSizeLimits = {
   maxRatio: 3,
 } as const
 
-const catalogSizes: Record<GenerationResolution, Partial<Record<GenerationAspectRatio, string>>> = {
+const catalogSizes: Partial<Record<GenerationResolution, Partial<Record<GenerationAspectRatio, string>>>> = {
   '1K': {
     '1:1': '1024x1024',
     '16:9': '1536x864',

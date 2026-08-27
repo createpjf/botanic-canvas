@@ -2645,10 +2645,12 @@ export default function CanvasWorkspace({
               <b><SparkleIcon /></b><span><strong>{t.imageGeneration}</strong><small>{visibleNodePalette.parentResultId ? t.continueImage : t.connectToGenerate}</small></span>
             </button>
             {visibleNodePalette.parentResultId && clarityBoostModel(availableModels) && document.nodes.some((node) => node.id === visibleNodePalette.parentResultId && node.type === 'result' && (node.data as ResultNodeData).mediaKind !== 'video') ? <button onClick={() => {
-              const parentNode = document.nodes.find((node) => node.id === visibleNodePalette.parentResultId && node.type === 'result')
+              const parentResultId = visibleNodePalette.parentResultId
+              if (!parentResultId) return
+              const parentNode = document.nodes.find((node) => node.id === parentResultId && node.type === 'result')
               const parentResult = parentNode?.type === 'result' ? parentNode.data as ResultNodeData : undefined
               const currentSettings = parentResult?.generationSettings ?? parentResult?.generationRecipe?.settings ?? fallbackGenerationSettings(availableModels)
-              const branchId = createGenerateBranchFromResult(visibleNodePalette.parentResultId, {
+              const branchId = createGenerateBranchFromResult(parentResultId, {
                 prompt: t.clarityBoostPrompt,
                 settings: applyClarityBoost(currentSettings, availableModels),
                 refinementMode: 'faithful',

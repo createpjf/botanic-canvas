@@ -6,6 +6,7 @@ import type {
   GenerationModelOption,
   GenerationRecipe,
   GenerationReference,
+  GenerationResolution,
   GenerationSettings,
   GenerateNodeData,
   ResultNodeData,
@@ -23,15 +24,15 @@ export function maximumReferencesForModel(model: Pick<GenerationModelOption, 'ma
   return Number.isInteger(value) && value > 0 ? value : 8
 }
 
-export function everydayResolutions(model: Pick<GenerationModelOption, 'resolutions'> | undefined) {
+export function everydayResolutions(model: Pick<GenerationModelOption, 'resolutions'> | undefined): GenerationResolution[] {
   const resolutions = model?.resolutions?.length ? model.resolutions : ['1K', '2K'] as const
   return resolutions.filter((resolution) => resolution !== '4K')
 }
 
-export function defaultImageGenerationModel(
-  catalog: readonly Pick<GenerationModelOption, 'id' | 'provider' | 'mediaKind'>[] | undefined,
+export function defaultImageGenerationModel<T extends Pick<GenerationModelOption, 'id' | 'provider' | 'mediaKind'>>(
+  catalog: readonly T[] | undefined,
   mediaKind: GenerationModelOption['mediaKind'] = 'image',
-) {
+): T | undefined {
   const matching = (catalog ?? []).filter((model) => (model.mediaKind ?? 'image') === mediaKind)
   if (mediaKind === 'image') {
     const flock = matching.find((model) => model.provider === 'flock' || model.id === NANO_BANANA_MODEL_ID)
