@@ -6,7 +6,9 @@ export function AgentPlannerProviderIcon({ model }: { model: string }) {
   return <span className={`agent-provider-icon is-${provider}`} aria-hidden="true">
     {provider === 'deepseek' ? <img src="/provider-logos/deepseek.ico" alt="" draggable="false" />
       : provider === 'kimi' ? <img src="/provider-logos/kimi.ico" alt="" draggable="false" />
-        : provider === 'minimax' ? <span className="agent-provider-icon__letter">M</span>
-          : <span className="agent-provider-icon__letter">AI</span>}
+        : provider === 'gemini' ? <img src="/provider-logos/gemini.png" alt="" draggable="false" />
+          : provider === 'glm' ? <img src="/provider-logos/glm.png" alt="" draggable="false" />
+            : provider === 'minimax' ? <span className="agent-provider-icon__letter">M</span>
+              : <span className="agent-provider-icon__letter">AI</span>}
   </span>
 }

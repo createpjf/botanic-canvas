@@ -4332,6 +4332,8 @@ details.agent-timeline__thinking { display: block; padding: 0; }
 .agent-provider-icon img { width: 18px; height: 18px; object-fit: contain; }
 .agent-provider-icon.is-deepseek { background: #edf1ff; }
 .agent-provider-icon.is-kimi { background: #eef1f4; }
+.agent-provider-icon.is-gemini { background: #eef3fb; }
+.agent-provider-icon.is-glm { background: #f3f0ff; }
 .agent-provider-icon.is-minimax { background: #f7e9e9; color: #a94d4d; }
 .agent-provider-icon.is-other { background: #edf0ed; color: #657368; }
 .agent-provider-icon__letter { font-size: 9px; font-weight: 800; letter-spacing: -.04em; }

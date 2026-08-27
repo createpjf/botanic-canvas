@@ -65,7 +65,7 @@ export function runtimeConfig(rootDir = process.cwd()) {
     .split(',').map((model) => model.trim()).filter(Boolean))]
   const miniMaxVideoModels = [...new Set((process.env.MINIMAX_VIDEO_MODELS ?? 'MiniMax-H3')
     .split(',').map((model) => model.trim()).filter(Boolean))]
-  const flockAgentModels = [...new Set((process.env.FLOCK_AGENT_MODELS ?? 'deepseek-v4-pro,deepseek-v4-flash,kimi-k3')
+  const flockAgentModels = [...new Set((process.env.FLOCK_AGENT_MODELS ?? 'deepseek-v4-pro,deepseek-v4-flash,kimi-k3,gemini-3.6-flash,glm-5')
     .split(',').map((model) => model.trim()).filter(Boolean))]
   const flockTextModel = (process.env.FLOCK_TEXT_MODEL ?? flockAgentModels[0] ?? '').trim()
   // 提供方回传的 reasoning_content 是完整思维链，不是摘要。默认关闭；打开后也只随
