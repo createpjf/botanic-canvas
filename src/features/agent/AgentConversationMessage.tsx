@@ -35,6 +35,7 @@ import { useBobSaysPlays } from './useBobSaysPlays'
 import { AlertIcon, BookIcon, ChecklistIcon, ChevronDownIcon, ClockIcon, CopyIcon, EditIcon, FocusIcon, GlobeIcon, MoreIcon, SearchIcon, ThumbDownIcon, ThumbUpIcon } from '../../components/BotanicIcons'
 import { AgentThinkingOrb } from '../../components/AgentThinkingOrb'
 import { AgentToolOrb } from '../../components/AgentToolOrb'
+import { AgentWebSourcePills } from '../../components/AgentWebSourcePills'
 import { agentPlannerModelLabel, modelDisplayLabel } from '../../components/generationModelPresentation'
 import { BotanicSelect } from '../../components/BotanicSelect'
 import { AgentClarificationCard, AgentPromptDiff, agentToolStatusLabel } from './AgentWorkspaceParts'
@@ -61,9 +62,14 @@ import type { BotanicAgentRunReview } from '../../domain/agentReviewContract'
 import {
   agentTimelineOrbState,
   agentTimelineStepToolName,
+  displayWebSourceHostname,
+  timelineRawDisplayItems,
+  timelineStepShowsWebSources,
+  timelineWebSourceHref,
   type AgentTimelineState,
   type TimelineBlock,
   type TimelineStepKind,
+  type TimelineWebSource,
 } from '../../domain/agentTimeline'
 
 /** 单条任务消息内联展示的结果上限；更多结果去结果面板看，避免对话被结果流冲垮。 */
@@ -224,6 +230,17 @@ function TimelineStepMarker({
   return <TimelineStepIcon kind={block.kind} />
 }
 
+function timelineSearchPills(sources: TimelineWebSource[]) {
+  return sources.map((source) => {
+    const href = timelineWebSourceHref(source)
+    return {
+      hostname: displayWebSourceHostname(source.hostname),
+      ...(href ? { href } : {}),
+      ...(source.title ? { title: source.title } : {}),
+    }
+  })
+}
+
 function timelineStepTitle(block: Extract<TimelineBlock, { type: 'step' }>, locale: ProductLocale) {
   if (locale !== 'en' || !/\p{Script=Han}/u.test(block.title)) return block.title
   if (block.kind === 'search') {
@@ -272,19 +289,38 @@ function AgentMessageTimeline({ timeline }: { timeline: AgentTimelineState }) {
       if (block.type === 'step') {
         const statusLabel = block.status === 'running' ? (locale === 'en' ? 'Running' : '进行中') : block.status === 'succeeded' ? (locale === 'en' ? 'Completed' : '已完成') : (locale === 'en' ? 'Failed' : '失败')
         const title = timelineStepTitle(block, locale)
-        return <div key={block.id} className={`agent-timeline__step is-${block.status}`} aria-label={`${title}, ${statusLabel}`}>
+        const stepError = block.status === 'failed' && block.error
+          ? <p className="agent-timeline__step-error">{block.error}</p>
+          : null
+        const row = <>
           <span className="agent-timeline__step-icon" aria-hidden="true"><TimelineStepMarker block={block} toolItems={toolItems} /></span>
           <strong>{title}</strong>
           <small>{statusLabel}</small>
+        </>
+        if (block.kind === 'search' && timelineStepShowsWebSources(block, toolItems)) {
+          return <div key={block.id} className={`agent-timeline__search is-${block.status}`}>
+            <details defaultOpen>
+              <summary className={`agent-timeline__step is-${block.status}`} aria-label={`${title}, ${statusLabel}`}>
+                {row}
+              </summary>
+              <AgentWebSourcePills sources={timelineSearchPills(block.sources ?? [])} />
+            </details>
+            {stepError}
+          </div>
+        }
+        return <div key={block.id} className={`agent-timeline__step is-${block.status}`} aria-label={`${title}, ${statusLabel}`}>
+          {row}
           {/* 失败必须说清原因。只显示「失败」的话，看的人不知道该改什么 —— 线上就撞上过：
               两个写类工具调用连续失败，界面上只有两个红叉。 */}
-          {block.status === 'failed' && block.error ? <p className="agent-timeline__step-error">{block.error}</p> : null}
+          {stepError}
         </div>
       }
+      const rawItems = timelineRawDisplayItems(block.items)
+      if (!rawItems.length) return null
       return <details key={block.id} className="agent-timeline__raw" open={block.open || undefined}>
-        <summary><span>{locale === 'en' ? `${block.items.length} tool ${block.items.length === 1 ? 'call' : 'calls'}` : block.summary}</span><small>{block.items.length} {locale === 'en' ? 'items' : '项'}</small></summary>
+        <summary><span>{locale === 'en' ? `${rawItems.length} tool ${rawItems.length === 1 ? 'call' : 'calls'}` : block.summary}</span><small>{rawItems.length} {locale === 'en' ? 'items' : '项'}</small></summary>
         <div className="agent-timeline__raw-list">
-          {block.items.map((item) => <div key={item.id} className={`is-${item.status}`}>
+          {rawItems.map((item) => <div key={item.id} className={`is-${item.status}`}>
             <span><strong>{item.label}</strong><code>{item.name}</code></span>
             <small>{agentToolStatusLabel(item.status, locale)}</small>
             {item.summary ? <p>{item.summary}</p> : null}

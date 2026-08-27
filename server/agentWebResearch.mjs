@@ -119,6 +119,46 @@ export function classifyPublicHttpUrl(raw, { allowLocal = false } = {}) {
   }
 }
 
+/**
+ * 时间线可展示的站点摘要：公开 hostname，可选 url/title。
+ * 不传 snippet、query；字符串 sources 只用于计数，不能当成网站。
+ */
+export function presentationWebSources(output, limit = MAX_SEARCH_HITS) {
+  if (!output || typeof output !== 'object' || Array.isArray(output)) return []
+  const cap = Number.isInteger(limit) && limit >= 0 ? limit : MAX_SEARCH_HITS
+  if (cap === 0) return []
+  const collected = []
+  const seen = new Set()
+
+  const pushHit = (item) => {
+    if (collected.length >= cap) return
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return
+    const classified = classifyPublicHttpUrl(typeof item.url === 'string' ? item.url : '')
+    if (!classified.ok) return
+    const hostname = String(classified.hostname || '').trim()
+    const key = hostname.replace(/^www\./iu, '').toLocaleLowerCase()
+    if (!key || seen.has(key)) return
+    seen.add(key)
+    const title = typeof item.title === 'string' ? item.title.trim().slice(0, MAX_TITLE) : ''
+    collected.push({
+      hostname,
+      url: classified.href,
+      ...(title ? { title } : {}),
+    })
+  }
+
+  if (Array.isArray(output.hits)) output.hits.forEach(pushHit)
+  if (Array.isArray(output.results)) output.results.forEach(pushHit)
+  if (collected.length === 0) {
+    pushHit({
+      url: output.url,
+      hostname: output.hostname,
+      title: output.title,
+    })
+  }
+  return collected
+}
+
 export function normalizeWebSearchHits(results, limit = MAX_SEARCH_HITS) {
   if (!Array.isArray(results)) return []
   const hits = []

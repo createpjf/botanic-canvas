@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { AgentToolRuntimeError, createAgentToolRegistry, executeConfirmedAgentAction, freezeAgentStepSnapshot, runAgentToolLoop } from './agentToolRuntime.mjs'
+import { AgentToolRuntimeError, createAgentToolRegistry, executeConfirmedAgentAction, freezeAgentStepSnapshot, runAgentToolLoop, toolEventPresentation } from './agentToolRuntime.mjs'
 
 test('Tool Registry 以 OpenAI 兼容函数协议暴露受控工具并执行参数校验', async () => {
   const registry = createAgentToolRegistry([
@@ -265,6 +265,43 @@ test('WEB_ 工具失败回传给模型，不中断整轮对话', async () => {
   assert.equal(result.toolCalls[0].status, 'failed')
   assert.equal(result.toolCalls[0].error, '不能抓取内网或本机地址。')
   assert.deepEqual(events.map((event) => event.toolCall.status), ['running', 'failed'])
+})
+
+test('web_search 从 hits 对象下发去重站点，字符串 sources 只用于计数', () => {
+  assert.deepEqual(toolEventPresentation('web_search', {
+    hitCount: 25,
+    sources: Array.from({ length: 25 }, (_, index) => `source-${index}`),
+  }), { kind: 'search', title: '已搜索 25 个网站', count: 25 })
+
+  const presentation = toolEventPresentation('web_search', {
+    query: '秘密检索词',
+    hits: [
+      { title: '和光', url: 'https://www.andlight.cn/', hostname: 'www.andlight.cn', snippet: '不要下发' },
+      { title: '重复', url: 'https://andlight.cn/about', hostname: 'andlight.cn', snippet: '同一站' },
+    ],
+  })
+  assert.deepEqual(presentation, {
+    kind: 'search',
+    title: '已搜索 2 个网站',
+    count: 2,
+    sources: [{ hostname: 'www.andlight.cn', url: 'https://www.andlight.cn/', title: '和光' }],
+  })
+  assert.equal(JSON.stringify(presentation).includes('秘密检索词'), false)
+  assert.equal(JSON.stringify(presentation).includes('snippet'), false)
+
+  assert.equal(toolEventPresentation('project_memory_search', {
+    hits: [{ title: '记忆', url: 'https://www.andlight.cn/', hostname: 'www.andlight.cn' }],
+  })?.sources, undefined)
+
+  assert.deepEqual(toolEventPresentation('web_fetch', {
+    url: 'https://fcbarcelona.com/',
+    hostname: 'fcbarcelona.com',
+    title: 'Barça',
+  }), {
+    kind: 'fetch',
+    title: '网页获取 fcbarcelona.com',
+    sources: [{ hostname: 'fcbarcelona.com', url: 'https://fcbarcelona.com/', title: 'Barça' }],
+  })
 })
 
 test('搜索结果数为 0 时保留真实计数', async () => {
