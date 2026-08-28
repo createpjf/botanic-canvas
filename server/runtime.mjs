@@ -67,7 +67,7 @@ export function runtimeConfig(rootDir = process.cwd()) {
     .split(',').map((model) => model.trim()).filter(Boolean))]
   const flockImageModels = [...new Set((process.env.FLOCK_IMAGE_MODELS ?? 'gemini-3.1-pro-preview')
     .split(',').map((model) => model.trim()).filter(Boolean))]
-  const flockAgentModels = [...new Set((process.env.FLOCK_AGENT_MODELS ?? 'deepseek-v4-pro,deepseek-v4-flash,deepseek-v4-flash-vision-exp,kimi-k3,gemini-3.7-flash,glm-5')
+  const flockAgentModels = [...new Set((process.env.FLOCK_AGENT_MODELS ?? 'deepseek-v4-flash-vision-exp,kimi-k3,gemini-3.7-flash,glm-5')
     .split(',').map((model) => model.trim()).filter(Boolean))]
   const flockTextModel = (process.env.FLOCK_TEXT_MODEL ?? flockAgentModels[0] ?? '').trim()
   // 提供方回传的 reasoning_content 是完整思维链，不是摘要。默认关闭；打开后也只随

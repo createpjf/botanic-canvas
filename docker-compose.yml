@@ -27,8 +27,8 @@ services:
       FLOCK_API_BASE_URL: ${FLOCK_API_BASE_URL:-https://api.flock.io/v1}
       FLOCK_API_KEY: ${FLOCK_API_KEY:-}
       FLOCK_TEXT_MODEL: ${FLOCK_TEXT_MODEL:-}
-      FLOCK_AGENT_MODELS: ${FLOCK_AGENT_MODELS:-deepseek-v4-pro,deepseek-v4-flash,kimi-k3}
-      AGENT_VISION_MODEL: ${AGENT_VISION_MODEL:-gemini-3.6-flash}
+      FLOCK_AGENT_MODELS: ${FLOCK_AGENT_MODELS:-deepseek-v4-flash-vision-exp,kimi-k3,gemini-3.7-flash,glm-5}
+      AGENT_VISION_MODEL: ${AGENT_VISION_MODEL:-gemini-3.7-flash}
       PROMPT_REFINEMENT_TIMEOUT_MS: ${PROMPT_REFINEMENT_TIMEOUT_MS:-30000}
       SUPABASE_URL: ${SUPABASE_URL:?请在 .env 配置 SUPABASE_URL}
       SUPABASE_SECRET_KEY: ${SUPABASE_SECRET_KEY:?请在 .env 配置仅服务端可用的 SUPABASE_SECRET_KEY}

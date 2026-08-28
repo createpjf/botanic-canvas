@@ -483,7 +483,7 @@ function AgentPlanSettingsEditor({
         className={`agent-plan-settings__boost${settings.resolution === '4K' ? ' is-selected' : ''}`}
         disabled={disabled}
         onClick={() => onChange(settings.resolution === '4K' ? clearClarityBoost(settings, models) : applyClarityBoost(settings, models))}
-      >{locale === 'en' ? 'Sharper · 4K' : '提高清晰度'}</button>
+      >4K</button>
     ) : null}
     {selectedModel.supportsSearchGrounding ? (
       <label>

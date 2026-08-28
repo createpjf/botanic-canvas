@@ -5,8 +5,6 @@ import miniMaxProviderLogo from '../assets/providers/minimax.png'
 const geminiProviderLogo = '/provider-logos/gemini.png'
 
 export const defaultAgentPlannerModels = [
-  'deepseek-v4-pro',
-  'deepseek-v4-flash',
   'deepseek-v4-flash-vision-exp',
   'kimi-k3',
   'gemini-3.7-flash',

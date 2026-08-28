@@ -179,7 +179,7 @@ test('有 Nano Banana 时默认生图模型指向它，没 key 时仍是 gpt-ima
   assert.equal(defaults.thinkingLevel, 'high')
 })
 
-test('提高清晰度写入 Nano Banana + 4K，再按回到日常 2K', () => {
+test('4K 按钮写入 Nano Banana + 4K，再按回到日常 2K', () => {
   assert.deepEqual(everydayResolutions(nanoBanana), ['1K', '2K'])
   assert.equal(clarityBoostModel([gptImage2, nanoBanana])?.id, NANO_BANANA_MODEL_ID)
   assert.equal(maximumReferencesForModel(nanoBanana), 14)

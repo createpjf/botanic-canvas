@@ -9,8 +9,6 @@ test('defaultAgentPlannerModels 包含 Gemini 与 GLM', () => {
   assert.ok(match, '找不到 defaultAgentPlannerModels')
   const models = [...match[1].matchAll(/'([^']+)'/g)].map((item) => item[1])
   assert.deepEqual(models, [
-    'deepseek-v4-pro',
-    'deepseek-v4-flash',
     'deepseek-v4-flash-vision-exp',
     'kimi-k3',
     'gemini-3.7-flash',

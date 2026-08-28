@@ -107,10 +107,8 @@ test('Agent Planner 默认暴露含看图型号的 Flock 模型', () => {
     delete process.env.FLOCK_AGENT_MODELS
     delete process.env.AGENT_VISION_MODEL
     const config = runtimeConfig('/tmp/botanic-runtime-test')
-    assert.equal(config.flockTextModel, 'deepseek-v4-pro')
+    assert.equal(config.flockTextModel, 'deepseek-v4-flash-vision-exp')
     assert.deepEqual(config.flockAgentModels, [
-      'deepseek-v4-pro',
-      'deepseek-v4-flash',
       'deepseek-v4-flash-vision-exp',
       'kimi-k3',
       'gemini-3.7-flash',

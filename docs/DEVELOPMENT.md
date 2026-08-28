@@ -119,8 +119,8 @@ VIDEO_GENERATION_TIMEOUT_MS=1200000
 
 FLOCK_API_BASE_URL=https://api.flock.io/v1
 FLOCK_API_KEY=...
-FLOCK_TEXT_MODEL=deepseek-v4-pro
-FLOCK_AGENT_MODELS=deepseek-v4-pro,deepseek-v4-flash,deepseek-v4-flash-vision-exp,kimi-k3,gemini-3.7-flash,glm-5
+FLOCK_TEXT_MODEL=deepseek-v4-flash-vision-exp
+FLOCK_AGENT_MODELS=deepseek-v4-flash-vision-exp,kimi-k3,gemini-3.7-flash,glm-5
 FLOCK_IMAGE_MODELS=gemini-3.1-pro-preview
 AGENT_VISION_MODEL=gemini-3.7-flash
 AGENT_PLANNER_TIMEOUT_MS=55000
