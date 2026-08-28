@@ -1,8 +1,8 @@
-import { BotanicAgentPlannerError, planBotanicGeneration, validateBotanicAgentPlanInput } from './botanicAgentPlanner.mjs'
-import { BotanicAgentChatError, chatWithBotanicAgent, validateBotanicAgentChatInput } from './botanicAgentChat.mjs'
+import { BotanicAgentPlannerError, validateBotanicAgentPlanInput } from './botanicAgentPlanner.mjs'
+import { BotanicAgentChatError, validateBotanicAgentChatInput } from './botanicAgentChat.mjs'
 import { reviewBotanicAgentRunResults } from './botanicAgentReview.mjs'
 import { normalizeBotanicAgentLocale } from './agentInstructions.mjs'
-import { resolveBotanicAgentTurn, validateBotanicAgentTurnInput } from './botanicAgentTurn.mjs'
+import { validateBotanicAgentTurnInput } from './botanicAgentTurn.mjs'
 import { createAgentSkill, isUsableAgentSkill, publicAgentSkill, validateAgentSkillCreation } from './botanicAgentSkill.mjs'
 import { agentRunSubmissionBinding, createPersistentAgentRun, prepareAgentBranchRetry, publicAgentRun, storedAgentRunSubmissionBinding, validateAgentRunCreation } from './botanicAgentRun.mjs'
 import { AgentToolRuntimeError, executeConfirmedAgentAction } from './agentToolRuntime.mjs'
@@ -47,6 +47,13 @@ import {
 import { AgentDelegationFenceError, assertTurnAllowsDelegation, createAgentCancellationService } from './agentCancellationService.mjs'
 import { matchingIdempotencyRequestBinding } from './idempotencyRequestBinding.mjs'
 import { validateAgentEntityReferences } from './agentEntityReferences.mjs'
+import {
+  agentCompatibilityIdempotencyKey,
+  agentCompatibilityResult,
+  createAgentCompatibilityRuntimeRequest,
+  resolveBotanicAgentRuntimeRequest,
+} from './agentRuntimeRequest.mjs'
+import { createAgentOperationalReaders } from './agentOperationalReaders.mjs'
 
 export { BotanicAgentPlannerError, BotanicAgentChatError }
 
@@ -304,6 +311,157 @@ export function createAgentRouteHandler({
   // HTTP 连接只是观察者；Runtime 与跨实例取消订阅方共用这张执行句柄表。
   const cancelRegistry = localCancelRegistry ?? createLocalCancelRegistry()
   const agentTurnRuntime = createBotanicAgentTurnRuntime({ productStore, localCancelRegistry: cancelRegistry })
+
+  /**
+   * plan/chat/intent 的旧 URL 只负责兼容响应形状。它们与主 `/api/agent-turns`
+   * 一样先取得 durable Turn，再执行解析器；HTTP close 不拥有 Runtime 的 AbortSignal。
+   */
+  const executeCompatibilityTurn = async ({
+    operation,
+    request,
+    response,
+    user,
+    projectId,
+    sessionId,
+    requestId,
+    input,
+    resolveOptions,
+    sse,
+  }) => {
+    let detach
+    let observerDetached = false
+    const detached = new Promise((resolve) => {
+      detach = () => {
+        if (observerDetached) return
+        observerDetached = true
+        resolve({ kind: 'detached' })
+      }
+    })
+    const detachOnAbortedRequest = () => detach()
+    const detachOnClosedResponse = () => {
+      if (!response.writableEnded) detach()
+    }
+    request.once('aborted', detachOnAbortedRequest)
+    response.once('close', detachOnClosedResponse)
+    if (request.aborted || response.destroyed) detach()
+    const idempotencyKey = agentCompatibilityIdempotencyKey(
+      operation,
+      input,
+      request.headers['idempotency-key'],
+      requestId,
+    )
+    const runtimeRequest = createAgentCompatibilityRuntimeRequest(operation, input)
+    const turnId = agentTurnIdForIdempotency(user.id, projectId, idempotencyKey)
+    const pendingTurnEvents = []
+    let acceptedSent = false
+    const executionPromise = agentTurnRuntime.execute({
+      userId: user.id,
+      projectId,
+      ...(sessionId ? { sessionId } : {}),
+      requestId,
+      id: turnId,
+      idempotencyKey,
+      request: runtimeRequest,
+      resolve: (runtimeOptions) => resolveBotanicAgentRuntimeRequest(runtimeRequest, config, runtimeOptions),
+      resolveOptions,
+      onEvent: (event) => {
+        if (!sse || observerDetached) return
+        if (!acceptedSent) pendingTurnEvents.push(event)
+        else sse.send(event)
+      },
+    })
+    // Runtime 已脱离传输层；响应断开时仍需消费 rejection，避免后台 Promise 变成
+    // unhandled rejection。原 Promise 仍由下方 await 收敛正常请求。
+    void executionPromise.catch(() => undefined)
+    const candidate = createAgentTurnRecord({
+      id: turnId,
+      ownerId: user.id,
+      projectId,
+      ...(sessionId ? { sessionId } : {}),
+      requestId,
+      idempotencyKey,
+      request: runtimeRequest,
+    })
+    try {
+      const durableOutcome = await Promise.race([
+        awaitDurableAgentTurnBeforeAccepted({
+          productStore,
+          userId: user.id,
+          candidate,
+          executionPromise,
+        }).then((turn) => ({ kind: 'durable', turn })),
+        detached,
+      ])
+      if (durableOutcome.kind === 'detached') return { detached: true }
+      const durableTurn = durableOutcome.turn
+      if (sse && !response.destroyed) {
+        sse.send({
+          type: 'accepted',
+          turnId,
+          runtimeTurn: { id: turnId, projectId },
+          observer: { url: `/api/agent-turns/${encodeURIComponent(turnId)}?after=0` },
+        })
+        acceptedSent = true
+        for (const event of pendingTurnEvents.splice(0)) sse.send(event)
+      }
+      const durableResult = durableTurn.result
+      if (durableResult) {
+        return {
+          body: agentCompatibilityResult(operation, durableResult),
+          runtimeTurn: publicAgentTurn(durableTurn),
+        }
+      }
+      const prefer = String(request.headers.prefer ?? '').toLowerCase()
+      if (!sse && prefer.split(',').some((item) => item.trim() === 'respond-async')) {
+        return {
+          pending: true,
+          runtimeTurn: publicAgentTurn(durableTurn),
+          observer: { url: `/api/agent-turns/${encodeURIComponent(turnId)}?after=0` },
+        }
+      }
+      const executionOutcome = await Promise.race([
+        executionPromise.then((execution) => ({ kind: 'execution', execution })),
+        detached,
+      ])
+      if (executionOutcome.kind === 'detached') return { detached: true }
+      let execution = executionOutcome.execution
+      let result = execution.result ?? execution.turn?.result
+      // 同 key 落到另一 API 实例时 claim 会返回 in_progress。兼容入口继续按 durable
+      // Turn 观察，不把旧 200/done 契约降级为需要调用方理解的 425。
+      const observationDeadline = Date.now() + 65_000
+      while (!result && Date.now() < observationDeadline) {
+        const wait = await Promise.race([
+          new Promise((resolve) => setTimeout(() => resolve({ kind: 'tick' }), 250)),
+          detached,
+        ])
+        if (wait.kind === 'detached') return { detached: true }
+        const observed = await productStore.readAgentTurn(user.id, turnId)
+        if (!observed) continue
+        execution = { ...execution, turn: publicAgentTurn(observed) }
+        result = observed.result
+        if (observed.status === 'failed' || observed.status === 'cancelled') {
+          throw Object.assign(new Error(observed.error?.message ?? 'Agent Runtime 未完成。'), {
+            code: observed.error?.code ?? (observed.status === 'cancelled' ? 'AGENT_TURN_CANCELLED' : 'AGENT_TURN_FAILED'),
+            statusCode: observed.status === 'cancelled' ? 499 : 502,
+          })
+        }
+      }
+      if (!result) {
+        throw Object.assign(new Error('Agent Runtime 仍在执行，请使用同一提交键继续观察。'), {
+          code: 'AGENT_RUNTIME_IN_PROGRESS',
+          statusCode: 425,
+          runtimeTurn: execution.turn ?? publicAgentTurn(durableTurn),
+        })
+      }
+      return {
+        body: agentCompatibilityResult(operation, result),
+        runtimeTurn: execution.turn ?? publicAgentTurn(durableTurn),
+      }
+    } finally {
+      request.off('aborted', detachOnAbortedRequest)
+      response.off('close', detachOnClosedResponse)
+    }
+  }
   let agentCancellation
   const cancellationService = () => {
     agentCancellation ??= createAgentCancellationService({
@@ -560,37 +718,6 @@ export function createAgentRouteHandler({
     return summary
   }
 
-  /**
-   * 运维只读工具的数据源。全部按项目权限读取，且不返回受控媒体地址 ——
-   * 工具结果会进模型上下文（Epic 4）。
-   */
-  const operationalReaders = (userId, projectId, document) => ({
-    readRun: async (runId) => {
-      const run = await productStore.readAgentRun(userId, runId)
-      // 跨项目的 Run 不能通过工具泄漏。
-      return run && run.projectId === projectId ? publicAgentRun(run) : undefined
-    },
-    readJob: async (jobId) => {
-      const job = await productStore.readGenerationJob(userId, jobId)
-      return job && job.projectId === projectId ? job : undefined
-    },
-    searchArtifacts: async ({ query, kind, limit }) => {
-      const artifacts = await productStore.listAgentArtifacts(userId, projectId, { limit: Math.min(limit * 4, 200) }) ?? []
-      const needle = String(query ?? '').trim().toLocaleLowerCase('zh-CN')
-      return artifacts
-        .filter((artifact) => (!kind || artifact.kind === kind)
-          && (!needle || `${artifact.label ?? ''} ${artifact.id ?? ''}`.toLocaleLowerCase('zh-CN').includes(needle)))
-        .slice(0, limit)
-    },
-    readReviews: async (runId) => {
-      const run = await productStore.readAgentRun(userId, runId)
-      if (!run || run.projectId !== projectId) return []
-      return (await productStore.listAgentReviewTasksForRun(userId, projectId, runId)) ?? []
-    },
-    readWorkflowRun: async (runId) => (document?.productionWorkflowRuns ?? []).find((entry) => entry?.id === runId),
-    readDeliveries: async () => document?.deliveries ?? [],
-  })
-
   const bindAuthoritativeKnowledge = async (userId, input) => {
     const [projectState, projectSkills] = await Promise.all([
       typeof productStore.readAgentState === 'function' ? productStore.readAgentState(userId, input.projectId, { includeMessages: false }) : undefined,
@@ -786,12 +913,17 @@ export function createAgentRouteHandler({
           // 快照保存服务端投影后的有界消息，而不是浏览器自报历史；projectSkills 与
           // 项目文档仍在恢复时重新读取，避免重放过期的派生上下文。
           request: canonicalInput,
-          resolve: (resolveOptions) => resolveBotanicAgentTurn(input, config, resolveOptions),
+          resolve: (resolveOptions) => resolveBotanicAgentRuntimeRequest(input, config, resolveOptions),
           resolveOptions: {
             document: project.document,
             projectSkills,
             ...(threadSummary ? { threadSummary } : {}),
-            operations: operationalReaders(user.id, validatedInput.projectId, project.document),
+            operations: createAgentOperationalReaders({
+              productStore,
+              userId: user.id,
+              projectId: validatedInput.projectId,
+              document: project.document,
+            }),
             resolveVisionMedia: visionMediaResolver(user.id, validatedInput.projectId),
             consumeWebResearchQuota: consumeWebResearchQuota
               ? () => consumeWebResearchQuota(user.id)
@@ -980,42 +1112,37 @@ export function createAgentRouteHandler({
           context: { brandId: project?.document?.brandId, userId: user.id },
         }).items.map((memory) => ({ id: memory.id, kind: memory.kind, content: memory.content })),
         availableMcpTools: (config.agentMcpTools ?? []).map(({ server, tool }) => ({ server, tool })),
-        projectSkills: projectSkills.map(plannerSkillInput),
       }
-      const controller = new AbortController()
-      const cancel = () => controller.abort()
-      const cancelOnClosedResponse = () => { if (!response.writableEnded) cancel() }
-      request.once('aborted', cancel)
-      response.once('close', cancelOnClosedResponse)
-      if (request.aborted || response.destroyed) cancel()
       const sse = streaming ? createServerSentEventWriter(response) : undefined
       sse?.start()
       try {
-        const result = await planBotanicGeneration(input, config, {
-          signal: controller.signal,
-          consumeWebResearchQuota: consumeWebResearchQuota
-            ? () => consumeWebResearchQuota(user.id)
-            : undefined,
-          ...(sse ? { onEvent: (event) => sse.send(event) } : {}),
+        const execution = await executeCompatibilityTurn({
+          operation: 'plan',
+          request,
+          response,
+          user,
+          projectId: validatedInput.projectId,
+          requestId,
+          input,
+          sse,
+          resolveOptions: {
+            document: project?.document,
+            projectSkills,
+            consumeWebResearchQuota: consumeWebResearchQuota
+              ? () => consumeWebResearchQuota(user.id)
+              : undefined,
+          },
         })
-        if (controller.signal.aborted || response.destroyed) return true
-        // reasoning 必须留在 plan 之外：计划会被原样持久化到会话消息里，
-        // 而原始推理只允许随当轮响应下发。
-        const { reasoning, ...plan } = result ?? {}
-        const liveReasoning = reasoning?.length ? { reasoning } : {}
-        if (!sse) {
-          return result?.kind === 'clarification'
-            ? json(response, 200, { clarification: result.clarification, ...liveReasoning })
-            : json(response, 200, { plan, ...liveReasoning })
-        }
-        if (result?.kind === 'clarification') {
-          sse.send({ type: 'done', clarification: result.clarification, ...liveReasoning })
-        } else {
-          sse.send({ type: 'done', plan, ...liveReasoning })
-        }
+        if (execution.detached) return true
+        if (execution.pending) return json(response, 202, {
+          runtimeTurn: execution.runtimeTurn,
+          observer: execution.observer,
+        })
+        if (!sse) return json(response, 200, { ...execution.body, runtimeTurn: execution.runtimeTurn })
+        sse.send({ type: 'done', ...execution.body, runtimeTurn: execution.runtimeTurn })
         return sse.end()
       } catch (caught) {
-        if (controller.signal.aborted || response.destroyed) return true
+        if (response.destroyed) return true
         if (sse?.started) {
           sse.send({
             type: 'error',
@@ -1027,8 +1154,6 @@ export function createAgentRouteHandler({
         throw caught
       } finally {
         sse?.end()
-        request.off('aborted', cancel)
-        response.off('close', cancelOnClosedResponse)
       }
     }
 
@@ -1044,34 +1169,40 @@ export function createAgentRouteHandler({
       const project = await productStore.readProject(user.id, validatedInput.projectId)
       if (!project?.document) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
       const projectSkills = await productStore.listAgentSkills(user.id, validatedInput.projectId) ?? []
-      const input = { ...validatedInput, projectSkills: projectSkills.map(plannerSkillInput) }
-      const controller = new AbortController()
-      const cancel = () => controller.abort()
-      const cancelOnClosedResponse = () => { if (!response.writableEnded) cancel() }
-      request.once('aborted', cancel)
-      response.once('close', cancelOnClosedResponse)
-      if (request.aborted || response.destroyed) cancel()
+      const input = validatedInput
       const sse = streaming ? createServerSentEventWriter(response) : undefined
       // 先打开通道再等模型：搜索前后的静默期靠注释心跳维持反代连接。
       sse?.start()
       try {
-        const result = await chatWithBotanicAgent(input, config, {
-          document: project.document,
-          projectSkills,
-          signal: controller.signal,
-          resolveVisionMedia: visionMediaResolver(user.id, validatedInput.projectId),
-          consumeWebResearchQuota: consumeWebResearchQuota
-            ? () => consumeWebResearchQuota(user.id)
-            : undefined,
-          ...(sse ? { onEvent: (event) => sse.send(event) } : {}),
+        const execution = await executeCompatibilityTurn({
+          operation: 'chat',
+          request,
+          response,
+          user,
+          projectId: validatedInput.projectId,
+          requestId,
+          input,
+          sse,
+          resolveOptions: {
+            document: project.document,
+            projectSkills,
+            resolveVisionMedia: visionMediaResolver(user.id, validatedInput.projectId),
+            consumeWebResearchQuota: consumeWebResearchQuota
+              ? () => consumeWebResearchQuota(user.id)
+              : undefined,
+          },
         })
-        if (controller.signal.aborted || response.destroyed) return true
-        if (!sse) return json(response, 200, { response: result })
+        if (execution.detached) return true
+        if (execution.pending) return json(response, 202, {
+          runtimeTurn: execution.runtimeTurn,
+          observer: execution.observer,
+        })
+        if (!sse) return json(response, 200, { ...execution.body, runtimeTurn: execution.runtimeTurn })
         // done 事件携带与非流式完全一致的响应体，客户端据此收敛这一轮。
-        sse.send({ type: 'done', response: result })
+        sse.send({ type: 'done', ...execution.body, runtimeTurn: execution.runtimeTurn })
         return sse.end()
       } catch (caught) {
-        if (controller.signal.aborted || response.destroyed) return true
+        if (response.destroyed) return true
         // 已经开始推送就不能再改状态码，只能把失败作为事件送达。
         if (sse?.started) {
           sse.send({
@@ -1084,8 +1215,6 @@ export function createAgentRouteHandler({
         throw caught
       } finally {
         sse?.end()
-        request.off('aborted', cancel)
-        response.off('close', cancelOnClosedResponse)
       }
     }
 
@@ -1116,7 +1245,11 @@ export function createAgentRouteHandler({
           locale: validatedInput.locale,
           inputMessage: { ...validatedInput.inputMessage, role: 'user' },
         })
-        canonicalInput = { ...validatedInput, messages: threadContext.messages }
+        canonicalInput = {
+          ...validatedInput,
+          messages: threadContext.messages,
+          threadContextSnapshot: structuredClone(threadContext.threadContextSnapshot),
+        }
         threadSummary = threadContext.threadSummary
       } else {
         threadSummary = await threadSummaryForSession(
@@ -1124,35 +1257,55 @@ export function createAgentRouteHandler({
           validatedInput.projectId,
           typeof request.headers['x-agent-session-id'] === 'string' ? request.headers['x-agent-session-id'] : undefined,
         )
+        canonicalInput = {
+          ...canonicalInput,
+          threadContextSnapshot: {
+            version: 1,
+            messages: structuredClone(canonicalInput.messages ?? []),
+            ...(threadSummary ? { threadSummary: structuredClone(threadSummary) } : {}),
+          },
+        }
       }
-      const input = { ...canonicalInput, projectSkills: projectSkills.map(plannerSkillInput) }
-      const controller = new AbortController()
-      const cancel = () => controller.abort()
-      const cancelOnClosedResponse = () => { if (!response.writableEnded) cancel() }
-      request.once('aborted', cancel)
-      response.once('close', cancelOnClosedResponse)
-      if (request.aborted || response.destroyed) cancel()
+      const input = canonicalInput
       const sse = streaming ? createServerSentEventWriter(response) : undefined
       sse?.start()
       try {
-        const turn = await resolveBotanicAgentTurn(input, config, {
-          document: project.document,
-          projectSkills,
-          ...(threadSummary ? { threadSummary } : {}),
-          operations: operationalReaders(user.id, validatedInput.projectId, project.document),
-          signal: controller.signal,
-          resolveVisionMedia: visionMediaResolver(user.id, validatedInput.projectId),
-          consumeWebResearchQuota: consumeWebResearchQuota
-            ? () => consumeWebResearchQuota(user.id)
-            : undefined,
-          ...(sse ? { onEvent: (event) => sse.send(event) } : {}),
+        const execution = await executeCompatibilityTurn({
+          operation: 'intent',
+          request,
+          response,
+          user,
+          projectId: validatedInput.projectId,
+          sessionId: validatedInput.sessionId,
+          requestId,
+          input,
+          sse,
+          resolveOptions: {
+            document: project.document,
+            projectSkills,
+            ...(threadSummary ? { threadSummary } : {}),
+            operations: createAgentOperationalReaders({
+              productStore,
+              userId: user.id,
+              projectId: validatedInput.projectId,
+              document: project.document,
+            }),
+            resolveVisionMedia: visionMediaResolver(user.id, validatedInput.projectId),
+            consumeWebResearchQuota: consumeWebResearchQuota
+              ? () => consumeWebResearchQuota(user.id)
+              : undefined,
+          },
         })
-        if (controller.signal.aborted || response.destroyed) return true
-        if (!sse) return json(response, 200, { turn })
-        sse.send({ type: 'done', turn })
+        if (execution.detached) return true
+        if (execution.pending) return json(response, 202, {
+          runtimeTurn: execution.runtimeTurn,
+          observer: execution.observer,
+        })
+        if (!sse) return json(response, 200, { ...execution.body, runtimeTurn: execution.runtimeTurn })
+        sse.send({ type: 'done', ...execution.body, runtimeTurn: execution.runtimeTurn })
         return sse.end()
       } catch (caught) {
-        if (controller.signal.aborted || response.destroyed) return true
+        if (response.destroyed) return true
         if (sse?.started) {
           sse.send({
             type: 'error',
@@ -1164,8 +1317,6 @@ export function createAgentRouteHandler({
         throw caught
       } finally {
         sse?.end()
-        request.off('aborted', cancel)
-        response.off('close', cancelOnClosedResponse)
       }
     }
 

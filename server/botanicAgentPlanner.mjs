@@ -1,4 +1,4 @@
-import { AgentToolRuntimeError, runAgentToolLoop } from './agentToolRuntime.mjs'
+import { AgentToolRuntimeError, freezeAgentStepSnapshot, runAgentToolLoop } from './agentToolRuntime.mjs'
 import {
   botanicAgentMountedSkillBriefing,
   botanicAgentSearchableSkills,
@@ -24,6 +24,7 @@ import {
   modelSupportsCustomSize,
   normalizeCustomGenerationSize,
 } from './generationOutputSize.mjs'
+import { canonicalHash } from './canonicalHash.mjs'
 
 const INTENTS = new Set([
   'continue_generation', 'replace_scene', 'replace_person', 'replace_product',
@@ -715,6 +716,18 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
   const hasWebTools = Boolean(registry.get('web_search') || registry.get('web_fetch'))
   const streaming = typeof options.onEvent === 'function'
   const allowRawReasoning = Boolean(runtimeConfig?.agentRawReasoning)
+  const snapshot = freezeAgentStepSnapshot({
+    registry,
+    model: config.model,
+    skillBindings: mountedSkills,
+    memoryBindings: input.projectMemory,
+    role: 'generation_planner',
+  })
+  const attempt = {
+    id: 'plan',
+    model: config.model,
+    snapshotHash: canonicalHash(snapshot),
+  }
   const emitEvent = (event) => {
     if (!streaming) return
     try { options.onEvent(event) } catch { /* 展示层异常不得中断本轮规划。 */ }
@@ -722,6 +735,8 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
   try {
     const result = await runAgentToolLoop({
       registry,
+      snapshot,
+      attempt,
       messages: [
         { role: 'system', content: system },
         { role: 'user', content: JSON.stringify(plannerModelInput(input)) },
@@ -730,6 +745,9 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
       maximumSteps: hasWebTools ? 8 : 4,
       allowRawReasoning,
       onEvent: emitEvent,
+      resumeCheckpoint: options.resumeCheckpoint,
+      saveCheckpoint: options.saveCheckpoint,
+      recoverToolCall: options.recoverToolCall,
       callModel: async ({ messages, tools, tool_choice, step }) => {
         const response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
           method: 'POST',
@@ -797,6 +815,12 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
     }
   } catch (caught) {
     if (caught instanceof BotanicAgentPlannerError) throw caught
+    if (typeof caught?.code === 'string'
+      && (caught.code.startsWith('AGENT_TURN_CHECKPOINT_')
+        || caught.code === 'AGENT_TURN_NOT_REPLAYABLE'
+        || caught.code.startsWith('AGENT_ACTION_'))) {
+      throw new BotanicAgentPlannerError(caught.statusCode ?? 409, caught.code, caught.message)
+    }
     if (timeoutSignal.aborted) throw new BotanicAgentPlannerError(504, 'PROVIDER_TIMEOUT', '生图 Agent 规划超时，请重试。')
     if (options.signal?.aborted) throw new BotanicAgentPlannerError(499, 'REQUEST_CANCELLED', '生图 Agent 请求已取消。')
     if (caught instanceof AgentToolRuntimeError) {

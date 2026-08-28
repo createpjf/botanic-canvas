@@ -1,4 +1,4 @@
-import { AgentToolRuntimeError, createAgentToolRegistry, runAgentToolLoop } from './agentToolRuntime.mjs'
+import { AgentToolRuntimeError, createAgentToolRegistry, freezeAgentStepSnapshot, runAgentToolLoop } from './agentToolRuntime.mjs'
 import { botanicAgentWebResearchSourceLabels, createBotanicAgentWebResearchTools } from './botanicAgentWebTools.mjs'
 import { botanicAgentProviderConfig, botanicAgentProviderTemperature } from './botanicAgentPlanner.mjs'
 import { normalizeBotanicAgentLocale, readBotanicAgentInstructions } from './agentInstructions.mjs'
@@ -12,6 +12,7 @@ import {
 import { readStreamedChatCompletion } from './botanicAgentStream.mjs'
 import { botanicAgentContextToolSourceLabels, createBotanicAgentReadToolDefinitions } from './botanicAgentContextTools.mjs'
 import { botanicAgentMountedSkillBriefing, botanicAgentSearchableSkills, resolveBotanicAgentMountedSkills } from './botanicAgentTools.mjs'
+import { canonicalHash } from './canonicalHash.mjs'
 
 const CHAT_MODES = new Set(['conversation', 'prompt', 'research'])
 const MESSAGE_ROLES = new Set(['user', 'assistant'])
@@ -136,15 +137,28 @@ function sourceLabels(toolCalls) {
   ])]
 }
 
-async function executeChatAttempt({ input, config, model, system, messages, registry, options, allowRawReasoning, emitEvent, streaming }) {
+async function executeChatAttempt({ input, config, model, system, messages, registry, mountedSkills, attemptId, options, allowRawReasoning, emitEvent, streaming }) {
   const hasWebSearch = Boolean(registry.get('web_search'))
   const hasWebFetch = Boolean(registry.get('web_fetch'))
   const timeoutSignal = AbortSignal.timeout(config.timeoutMs)
   const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal
   const fetchImpl = options.fetchImpl ?? fetch
+  const snapshot = freezeAgentStepSnapshot({
+    registry,
+    model,
+    skillBindings: mountedSkills,
+    role: 'compatibility_chat',
+  })
+  const attempt = {
+    id: attemptId,
+    model,
+    snapshotHash: canonicalHash(snapshot),
+  }
   try {
     const result = await runAgentToolLoop({
       registry,
+      snapshot,
+      attempt,
       messages: [
         { role: 'system', content: system },
         ...messages,
@@ -153,6 +167,9 @@ async function executeChatAttempt({ input, config, model, system, messages, regi
       maximumSteps: hasWebSearch || hasWebFetch ? 8 : 5,
       allowRawReasoning: allowRawReasoning,
       onEvent: emitEvent,
+      resumeCheckpoint: options.resumeCheckpoint,
+      saveCheckpoint: options.saveCheckpoint,
+      recoverToolCall: options.recoverToolCall,
       callModel: async ({ messages: turnMessages, tools, tool_choice, step }) => {
         const response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
           method: 'POST',
@@ -204,6 +221,12 @@ async function executeChatAttempt({ input, config, model, system, messages, regi
     }
   } catch (caught) {
     if (caught instanceof BotanicAgentChatError) throw caught
+    if (typeof caught?.code === 'string'
+      && (caught.code.startsWith('AGENT_TURN_CHECKPOINT_')
+        || caught.code === 'AGENT_TURN_NOT_REPLAYABLE'
+        || caught.code.startsWith('AGENT_ACTION_'))) {
+      throw new BotanicAgentChatError(caught.statusCode ?? 409, caught.code, caught.message)
+    }
     if (timeoutSignal.aborted) throw new BotanicAgentChatError(504, 'PROVIDER_TIMEOUT', 'Agent 对话超时，请重试。')
     if (options.signal?.aborted) throw new BotanicAgentChatError(499, 'REQUEST_CANCELLED', 'Agent 对话请求已取消。')
     if (caught instanceof AgentToolRuntimeError) {
@@ -258,7 +281,30 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
     consumeQuota: options.consumeWebResearchQuota,
   }
   const registry = chatToolRegistry({ ontology, memory, skills, mountedSkillIds: input.mountedSkillIds, webResearch })
-  const attemptShared = { input, config, registry, options, allowRawReasoning, emitEvent, streaming }
+  const resumeAttemptId = options.resumeCheckpoint?.attempt?.id
+  if (resumeAttemptId && !['chat_vision', 'chat_text'].includes(resumeAttemptId)) {
+    throw new BotanicAgentChatError(409, 'AGENT_TURN_CHECKPOINT_SNAPSHOT_MISMATCH', 'Agent 对话恢复检查点与当前执行阶段不匹配。')
+  }
+  let checkpointBoundaryReached = Boolean(options.resumeCheckpoint)
+  const checkpointOptions = typeof options.saveCheckpoint === 'function'
+    ? {
+        ...options,
+        saveCheckpoint: async (checkpoint) => {
+          checkpointBoundaryReached = true
+          return options.saveCheckpoint(checkpoint)
+        },
+      }
+    : options
+  const attemptShared = {
+    input,
+    config,
+    registry,
+    mountedSkills,
+    options: checkpointOptions,
+    allowRawReasoning,
+    emitEvent,
+    streaming,
+  }
 
   // 原生多模态优先：引用图片直接随消息附给视觉模型。失败且尚未发出任何流事件时
   // 回退「caption 描述 + 文本模型」；已经开始推送就只能把失败作为事件送达，不能重放。
@@ -270,10 +316,11 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
       resolveMedia: options.resolveVisionMedia,
     }).catch(() => [])
     : []
-  if (visionParts.length) {
+  if (visionParts.length && resumeAttemptId !== 'chat_text') {
     try {
       return await executeChatAttempt({
         ...attemptShared,
+        attemptId: 'chat_vision',
         model: visionModel,
         system: [
           baseSystem,
@@ -287,8 +334,12 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
       const recoverable = caught instanceof BotanicAgentChatError
         && [422, 429, 502].includes(caught.statusCode)
         && emittedEvents === 0
+        && !checkpointBoundaryReached
       if (!recoverable) throw caught
     }
+  }
+  if (resumeAttemptId === 'chat_vision' && !visionParts.length) {
+    throw new BotanicAgentChatError(409, 'AGENT_TURN_CHECKPOINT_SNAPSHOT_MISMATCH', '原视觉对话上下文已不可用，无法安全恢复。')
   }
 
   // 降级路径：看图失败不弄坏整轮对话；识别结果只进当轮系统提示，不进任何持久化实体。
@@ -303,6 +354,7 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
   }).catch(() => [])
   return executeChatAttempt({
     ...attemptShared,
+    attemptId: 'chat_text',
     model: config.model,
     system: [
       baseSystem,

@@ -60,8 +60,47 @@ test('派生上下文重新读取，只有用户请求来自快照', async () =>
   // 项目文档来自当前读取，不来自快照。
   assert.deepEqual(call.resolveOptions.document, { id: 'project-a', nodes: [], edges: [] })
   assert.equal(call.resolveOptions.projectSkills.length, 1)
+  assert.equal(typeof call.resolveOptions.operations.readRun, 'function')
+  assert.equal(typeof call.resolveOptions.operations.searchArtifacts, 'function')
   // 请求快照原样传回，供 execute 再次持久化。
   assert.deepEqual(call.request, turn().request)
+})
+
+test('Worker 恢复兼容 operation 时保留 envelope，并从嵌套快照读取线程摘要', async () => {
+  const threadSummary = {
+    version: 1, goals: ['继续规划'], decisions: [], constraints: [], openQuestions: [],
+    entityIds: [], coveredMessageIds: ['m-1'], coveredThrough: 1, updatedAt: 10,
+  }
+  const request = {
+    runtimeOperation: 'intent',
+    input: {
+      projectId: 'project-a', locale: 'zh-CN', messages: [{ role: 'user', content: '继续' }],
+      threadContextSnapshot: { version: 1, messages: [], threadSummary },
+    },
+  }
+  const d = deps()
+
+  await createAgentTurnResumer(d)(turn({ request }))
+
+  assert.deepEqual(d.executions[0].request, request)
+  assert.deepEqual(d.executions[0].resolveOptions.threadSummary, threadSummary)
+})
+
+test('Worker 恢复联网工具复用共享配额；缺依赖时显式 fail closed', async () => {
+  const consumed = []
+  const configured = deps({
+    consumeWebResearchQuota: async (userId) => {
+      consumed.push(userId)
+      return { allowed: true }
+    },
+  })
+  await createAgentTurnResumer(configured)(turn())
+  assert.deepEqual(await configured.executions[0].resolveOptions.consumeWebResearchQuota(), { allowed: true })
+  assert.deepEqual(consumed, ['user-a'])
+
+  const missing = deps()
+  await createAgentTurnResumer(missing)(turn())
+  assert.deepEqual(await missing.executions[0].resolveOptions.consumeWebResearchQuota(), { allowed: false })
 })
 
 test('恢复只注入 Turn 中不可变的 thread context snapshot，不读取最新线程摘要', async () => {

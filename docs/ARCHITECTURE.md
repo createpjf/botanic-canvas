@@ -113,6 +113,12 @@ API 重启后用快照与增量重建房间；累计 64 条后压缩，避免日
 `commitAgentTurnExecution` 提交。旧实例租约过期后即使继续返回，也不能覆盖新实例的 Checkpoint 或终态。本地、PostgreSQL、
 Supabase 三个 Adapter 实现同一契约，数据库 Adapter 使用数据库时钟和事务锁裁决多实例竞争。
 
+`server/agentRuntimeRequest.mjs` 是 Runtime operation 的单一 dispatcher。主 `/api/agent-turns` 与兼容期的
+`/api/agent-plans|chat|intent` 都先建立同一种 durable Turn；旧 URL 只还原原响应形状，不再拥有 Provider 调用或
+AbortController。显式提交键按 operation 隔离；无键旧请求按 transport requestId 保持“一次 POST 一次请求”。Planner/Chat
+同样冻结模型、工具、Skill/Memory 快照并写步骤 Checkpoint，Worker 按存储的 operation 恢复；恢复时运维只读工具复用
+`agentOperationalReaders.mjs`，联网工具必须重新消费共享配额，缺少配额服务时 fail closed。
+
 `server/agentTurnCheckpoint.mjs` 在模型返回工具调用、任何副作用发生前持久化 prepared 步骤，完成后再推进步骤游标。
 Checkpoint 只保存固定模型/工具快照和安全恢复意图：只读调用保存可重放参数；写入、计费和外部调用只保存 Receipt 引用；
 不保存工具输出、媒体字节、Provider 原始回包或完整推理。`turnReclaim.mjs` 先读 Checkpoint 再决定继续、等待回执或明确失败，
@@ -126,6 +132,10 @@ ID 相同，只要 request binding 不同就明确冲突；Message 已绑定但 
 Message 的 `turnId` 重挂 GET observer，以 `after` 游标与单调去重补齐丢帧，排空事件页后才按 Turn 终态用稳定结果
 Message ID 投影。accepted 前断网时，持久化的 pending Message 只用同一稳定键退避重提；原始 reasoning/answer 只属于
 当次实时连接，无序号且不持久化。
+
+兼容 Plan/Chat 客户端收到 SSE `accepted` 后也切换到同一 GET observer；流断开不会再发起第二次模型调用。非流客户端可用
+`Prefer: respond-async` 获得 `202 + runtimeTurn + observer`。Planner 子 Turn 的稳定键由来源根 Turn 派生，刷新后重新进入生成
+continuation 时只观察同一计划；Stop 在身份返回前保留取消意图，返回后走 durable cancel。
 
 `server/agentContextBudget.mjs` 和 `agentThreadContext.mjs` 共同把 Summary 与最近 Message 限在 8k token；Summary 最多 2k，最近窗口
 最多 16 条，当前输入本身超过总预算返回 413，不通过丢弃当前输入来“成功”。`agentToolRuntime.mjs` 把单个工具结果限在 2k、单轮

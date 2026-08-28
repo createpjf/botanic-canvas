@@ -81,7 +81,7 @@ test('权威 Thread Context 与 legacy Route 都经 CAS 写回，缺能力时 fa
   const legacy = methodSlice(
     agentRoutes,
     'const threadSummaryForSession = async (userId, projectId, sessionId)',
-    'const operationalReaders = (userId, projectId, document)',
+    'const bindAuthoritativeKnowledge = async (userId, input)',
   )
   assert.match(legacy, /typeof productStore\.compareAndSetAgentThreadSummary !== 'function'/u)
   assert.match(legacy, /compareAndSetDerivedAgentThreadSummary/u)

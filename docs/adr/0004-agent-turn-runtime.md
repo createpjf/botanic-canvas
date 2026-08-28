@@ -14,7 +14,7 @@ Botanic 已有 Session、Message、Run、GenerationJob 和 Artifact 等独立实
 
 增加项目级 Agent Turn 与追加式 Turn Event。Turn 只拥有一次控制权循环和事件顺序，不复制 Session、Message、Run、Job 或 Artifact 的业务权威。每个 Item 只保存对现有实体的类型化引用。
 
-Runtime 通过一个小 Interface 提供 `execute`、`cancel` 与事件补读；新的 `/api/agent-turns` HTTP/SSE 入口只做 Adapter。旧的 chat、intent、plan 路径在兼容期内保留旧响应形状，但复用同一回合解析器；待客户端迁移完成后移除兼容入口。
+Runtime 通过一个小 Interface 提供 `execute`、`cancel` 与事件补读；新的 `/api/agent-turns` HTTP/SSE 入口只做 Adapter。旧的 chat、intent、plan 路径在兼容期内保留旧响应形状，但通过 `agentRuntimeRequest.mjs` 的 operation envelope 进入同一 durable Runtime；它们不再直接调用 Provider，也不再把 HTTP close 当取消。Planner/Chat 使用与主 Turn 相同的冻结快照、步骤 Checkpoint、Worker 恢复、accepted/observer 与深取消语义；待客户端迁移完成后移除兼容入口。
 
 浏览器只提交 `sessionId` 与本轮稳定 `inputMessage`；历史消息由服务端从独立 Session/Message 实体重建。迁移期即使请求仍带 `messages`，新路径也必须用服务端投影覆盖，不能把客户端自报的 assistant 历史送进模型或 Turn 快照。相同 Message ID 已持久化时服务端版本胜出。
 
@@ -81,6 +81,11 @@ SSE `accepted` 或返回普通 HTTP `202 + observer`；持久事件用 `sequence
 Worker 崩溃只能等待数据库时钟确认旧 lease 过期。Ack 完成后才原子写 `cancelled` 事件和终态；Run 创建及 Job 提交前后均有
 delegation fence 与补偿取消。
 
+兼容 Plan/Chat 的显式幂等键按 operation 命名空间隔离；无键旧调用按 requestId 保留每次 POST 独立执行。SSE 客户端在
+`accepted` 后按 Turn 游标续读，不用非流 fallback 重跑模型；`Prefer: respond-async` 的非流客户端直接取得
+`202 + runtimeTurn + observer`。Planner continuation 以来源根 Turn 派生稳定子 Turn key。API 与 Worker 恢复共用同一运维只读工具
+实现；Worker 的联网检索必须重新消费共享配额，配额能力缺失时 fail closed。
+
 Action `uncertain` 通过服务端权威 Proposal 定位。状态查询不执行工具；确认生效不伪造结果；确认未生效前，客户端先持久化
 非敏感 retry key，服务端 v2 授权把该 key 对应的 retry Receipt 原子预留，响应不下发 raw token。新尝试必须使用同一 key 和
 fresh approval。授权消费原子绑定 `consumedByReceiptId`；若消费后、retry claim 前进程退出，客户端只能在用户再次明确点击后恢复
@@ -127,6 +132,7 @@ Worker 的恢复任务不使用 offset 或固定首页。Supabase 为 Turn、失
 
 ### 2026-08-28
 
+- chat、intent、plan 全部改为 durable operation dispatcher；兼容 URL 只负责响应 presenter，Plan/Chat 补齐 Checkpoint、Worker 恢复、accepted/observer、稳定键和深取消。
 - 浏览器在创建 Turn 前先持久化完整 pending Message 请求快照；服务端按权威上下文 claim/binding 后才 link Message 并交付 accepted/202。
 - Thread Context、Summary 与工具输出增加确定性 token 预算；当前输入超限 413，Provider overflow 只允许同一步骤、工具前的一次严格裁剪重试。
 - 工具业务引用改为白名单路径提取并设置 8/工具、24/Turn 上限；只由稳定 Turn 结果 Message 向 Summary 传播，sticky merge 对漂移 fail closed。

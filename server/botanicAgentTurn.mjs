@@ -876,7 +876,9 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
   } catch (caught) {
     if (caught instanceof BotanicAgentChatError) throw caught
     if (typeof caught?.code === 'string'
-      && (caught.code.startsWith('AGENT_TURN_CHECKPOINT_') || caught.code === 'AGENT_TURN_NOT_REPLAYABLE')) {
+      && (caught.code.startsWith('AGENT_TURN_CHECKPOINT_')
+        || caught.code === 'AGENT_TURN_NOT_REPLAYABLE'
+        || caught.code.startsWith('AGENT_ACTION_'))) {
       // Checkpoint 漂移/不可重放是恢复契约冲突，不是 Provider 返回异常；保留业务码，
       // 禁止被归一成「服务不可用」后静默切换 attempt。
       throw new BotanicAgentChatError(caught.statusCode ?? 409, caught.code, caught.message, { cause: caught })

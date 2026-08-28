@@ -73,6 +73,26 @@ const cancelSubscriber = await createAgentRunEventSubscriber(config.redisUrl, ()
 })
 // 派生任务与生成任务分队列：一类任务堆积不应拖垮另一类。
 const derivedQueue = createDerivedTaskQueue(config.redisUrl)
+const securityControls = createSecurityControls({
+  redisUrl: config.redisUrl,
+  onFallback: (caught) => console.error(`[security] Redis unavailable: ${caught instanceof Error ? caught.message : String(caught)}`),
+})
+const consumeWebResearchQuota = async (userId) => {
+  const result = await securityControls.consume({
+    scope: 'web-research',
+    subject: userId,
+    limit: config.security.webResearchPerMinute,
+    windowMs: 60_000,
+  })
+  if (!result.allowed) {
+    console.warn(JSON.stringify({
+      event: 'security.rate_limited',
+      scope: 'web-research',
+      retryAfterSeconds: result.retryAfterSeconds,
+    }))
+  }
+  return result
+}
 // 评审在 Worker 侧执行，不依赖浏览器打开。视觉层的判据全部来自计划快照的质量策略；
 // 没配置视觉模型时 judge 为 undefined，语义判据照实记为无法验证而不是默认通过。
 const reviewVisionJudge = createAgentReviewVisionJudge({
@@ -132,6 +152,7 @@ const sweepStaleAgentTurns = createAgentTurnSweep({
     config,
     mediaService: runtime.mediaService,
     turnRuntime: durableTurnRuntime,
+    consumeWebResearchQuota,
     observe: (event) => console.log(JSON.stringify(event)),
   }),
   settleTurn: (turn, error) => durableTurnRuntime.fail({ turn, error }),
@@ -145,10 +166,6 @@ const sweepProductionWorkflows = createProductionWorkflowSweep({
 })
 // 失败分支自动重试：策略在服务端，因此关掉浏览器后仍会按策略重试一次；
 // 不可重试错误、高成本重试与预算不足都会停下等用户，并把原因记进日志。
-const securityControls = createSecurityControls({
-  redisUrl: config.redisUrl,
-  onFallback: (caught) => console.error(`[security] Redis unavailable: ${caught instanceof Error ? caught.message : String(caught)}`),
-})
 const agentRunGeneration = createAgentRunGenerationService({
   config,
   productStore: runtime.productStore,

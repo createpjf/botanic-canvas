@@ -1447,6 +1447,7 @@ export default function AgentWorkspace({
     sourceInstruction?: string,
     structuredVariants?: Array<{ label: string; promptDelta: string }>,
     variationAxisLabel?: string,
+    runtimeRequestKey?: string,
   ): Promise<BotanicAgentPlan | BotanicAgentClarificationResponse | null> => {
     if (!session || !target || !isCurrentAgentProject()) return null
     const assetGroup = compatibleGroups.find((group) => group.id === groupId)
@@ -1483,6 +1484,7 @@ export default function AgentWorkspace({
     setRuntimePhase('planning')
     const liveMessageId = `agent-message-${crypto.randomUUID()}`
     const liveStartedAt = Date.now()
+    let runtimeTurnId = ''
     setLiveConversation({
       sessionId: session.id,
       message: {
@@ -1495,10 +1497,26 @@ export default function AgentWorkspace({
       timeline: createAgentTimeline(liveStartedAt),
       streaming: true,
     })
+    if (serverPersistenceEnabled) awaitingTurnIdentityRef.current = true
     try {
       const nextPlan = serverPersistenceEnabled
         ? await streamBotanicAgentPlan(input, {
             signal: controller.signal,
+            ...(runtimeRequestKey ? { requestKey: runtimeRequestKey } : {}),
+            onAccepted: (turnId) => {
+              runtimeTurnId = turnId
+              awaitingTurnIdentityRef.current = false
+              activeTurnIdRef.current = turnId
+              if (cancelWhenAcceptedRef.current) {
+                cancelWhenAcceptedRef.current = false
+                void ensureDeepTurnCancellation(turnId, controller.signal).catch((caught) => {
+                  if (!controller.signal.aborted) setError(localizeProductError(caught, locale, {
+                    'zh-CN': '暂时无法取消本轮 Agent 规划，请重试。',
+                    en: 'Unable to cancel this Agent planning turn. Try again.',
+                  }))
+                })
+              }
+            },
             onReasoning: attachRuntimeReasoning,
             onEvent: (event) => {
               if (controller.signal.aborted) return
@@ -1611,6 +1629,8 @@ export default function AgentWorkspace({
       failRuntimeTrace(localizeProductError(planError, locale, { 'zh-CN': flowCopy.planningUnavailable, en: flowCopy.planningUnavailable }))
       return null
     } finally {
+      awaitingTurnIdentityRef.current = false
+      if (runtimeTurnId && activeTurnIdRef.current === runtimeTurnId) activeTurnIdRef.current = ''
       if (plannerControllerRef.current === controller) plannerControllerRef.current = null
       setPlanning(false)
     }
@@ -2631,6 +2651,7 @@ export default function AgentWorkspace({
       ].slice(-16)
       const liveMessageId = `agent-message-${crypto.randomUUID()}`
       const liveStartedAt = Date.now()
+      let runtimeTurnId = ''
       setLiveConversation({
         sessionId: session.id,
         message: {
@@ -2643,6 +2664,7 @@ export default function AgentWorkspace({
         timeline: createAgentTimeline(liveStartedAt),
         streaming: true,
       })
+      awaitingTurnIdentityRef.current = true
       try {
         // 实时通道只改变“回答什么时候到”：思考与工具进入时间线，回答增量写入气泡正文。
         // 完整回答仍等 done 一次性落成消息，避免半截内容进入对话记录。
@@ -2660,6 +2682,21 @@ export default function AgentWorkspace({
           contextNodeIds,
         }, {
           signal: controller.signal,
+          requestKey: `agent-chat:${sourceTurnId ?? appendedUserMessageId ?? liveMessageId}`,
+          onAccepted: (turnId) => {
+            runtimeTurnId = turnId
+            awaitingTurnIdentityRef.current = false
+            activeTurnIdRef.current = turnId
+            if (cancelWhenAcceptedRef.current) {
+              cancelWhenAcceptedRef.current = false
+              void ensureDeepTurnCancellation(turnId, controller.signal).catch((caught) => {
+                if (!controller.signal.aborted) setError(localizeProductError(caught, locale, {
+                  'zh-CN': '暂时无法取消本轮 Agent 对话，请重试。',
+                  en: 'Unable to cancel this Agent chat turn. Try again.',
+                }))
+              })
+            }
+          },
           onEvent: (event) => {
             if (controller.signal.aborted) return
             const receivedAt = Date.now()
@@ -2725,6 +2762,8 @@ export default function AgentWorkspace({
         setLastFailedPlanMessageId('')
         rememberFailedInstruction(routedFailedCommand)
       } finally {
+        awaitingTurnIdentityRef.current = false
+        if (runtimeTurnId && activeTurnIdRef.current === runtimeTurnId) activeTurnIdRef.current = ''
         if (plannerControllerRef.current === controller) plannerControllerRef.current = null
         setPlanning(false)
       }
@@ -2905,6 +2944,7 @@ export default function AgentWorkspace({
       draft.instruction,
       draft.structuredVariants,
       draft.variationAxisLabel,
+      sourceTurnId ? `agent-plan:${sourceTurnId}` : undefined,
     )
     if (!nextPlan || !session || !isCurrentAgentProject()) return
     if ('kind' in nextPlan && nextPlan.kind === 'clarification') {

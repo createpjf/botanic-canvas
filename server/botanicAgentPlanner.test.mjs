@@ -768,3 +768,68 @@ test('规划旁白加编号清单时共享底回退到 parentPrompt', async () =
   assert.equal(result.output.mode, 'batch_by_variation')
   assert.equal(result.output.count, 3)
 })
+
+test('Agent Planner 持久化 plan attempt Checkpoint，并可从同一 attempt 恢复', async () => {
+  const runtime = {
+    flockApiKey: 'flock-secret',
+    flockTextModel: 'deepseek-v4-pro',
+    flockAgentModels: ['deepseek-v4-pro', 'deepseek-v4-flash'],
+  }
+  const checkpointStore = {
+    writes: [],
+    async save(checkpoint) {
+      this.writes.push(structuredClone(checkpoint))
+    },
+  }
+  const providerPlan = {
+    intent: 'replace_scene',
+    prompt: '保持人物身份与球衣不变，替换为海边柔光场景。',
+    summary: '锁定人物与商品，只替换场景。',
+    constraints: [
+      { dimension: 'person', mode: 'preserve' },
+      { dimension: 'product', mode: 'preserve' },
+      { dimension: 'scene', mode: 'vary' },
+    ],
+  }
+  let providerCalls = 0
+
+  const first = await planBotanicGeneration(validInput, runtime, {
+    saveCheckpoint: (checkpoint) => checkpointStore.save(checkpoint),
+    fetchImpl: async () => {
+      providerCalls += 1
+      return new Response(JSON.stringify({ choices: [{ message: {
+        content: null,
+        tool_calls: [{ id: 'call-plan-checkpoint', type: 'function', function: {
+          name: 'generation_create_plan', arguments: JSON.stringify(providerPlan),
+        } }],
+      } }] }), { status: 200 })
+    },
+  })
+
+  assert.equal(first.prompt, providerPlan.prompt)
+  assert.equal(checkpointStore.writes.length, 2)
+  const prepared = checkpointStore.writes[0]
+  const completed = checkpointStore.writes[1]
+  assert.equal(prepared.attempt.id, 'plan')
+  assert.equal(prepared.attempt.model, 'deepseek-v4-flash')
+  assert.match(prepared.attempt.snapshotHash, /^[A-Za-z0-9_-]{43}$/u)
+  assert.deepEqual(prepared.pendingStep.calls[0], {
+    id: 'call-plan-checkpoint',
+    name: 'generation_create_plan',
+    risk: 'read',
+    recovery: 'reexecute',
+    terminal: true,
+    arguments: providerPlan,
+  })
+  assert.equal(completed.pendingStep, undefined)
+  assert.deepEqual(completed.completedSteps[0].calls, prepared.pendingStep.calls)
+
+  const resumed = await planBotanicGeneration(validInput, runtime, {
+    resumeCheckpoint: completed,
+    saveCheckpoint: async () => { throw new Error('已完成 terminal 工具恢复不应再次保存 Checkpoint') },
+    fetchImpl: async () => { throw new Error('同 attempt 恢复不应再次请求 Provider') },
+  })
+
+  assert.equal(resumed.prompt, providerPlan.prompt)
+  assert.equal(providerCalls, 1)
+})

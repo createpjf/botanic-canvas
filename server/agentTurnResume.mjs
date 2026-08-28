@@ -1,6 +1,7 @@
 // @ts-check
-import { resolveBotanicAgentTurn } from './botanicAgentTurn.mjs'
 import { validateAgentTurnCheckpoint } from './agentTurnCheckpoint.mjs'
+import { resolveBotanicAgentRuntimeRequest } from './agentRuntimeRequest.mjs'
+import { createAgentOperationalReaders } from './agentOperationalReaders.mjs'
 
 const RECEIPT_TEXT_KEYS = new Set(['message', 'status', 'kind', 'type', 'label', 'name'])
 const RECEIPT_BOOLEAN_KEYS = new Set(['ok', 'reused', 'created', 'updated', 'deleted', 'cancelled'])
@@ -101,18 +102,6 @@ function receiptCallsFromCheckpoint(checkpointValue) {
 }
 
 /** 与路由层同一份映射：Skill 只把可解释字段交给规划器，不交内部记录。 */
-function plannerSkillInput(skill) {
-  return {
-    id: skill.id,
-    name: skill.name,
-    instructions: skill.instructions,
-    status: skill.status,
-    ...(Number.isInteger(skill.version) ? { version: skill.version } : {}),
-    ...(typeof skill.contentHash === 'string' ? { contentHash: skill.contentHash } : {}),
-    ...(Array.isArray(skill.capabilities) ? { capabilities: skill.capabilities } : {}),
-  }
-}
-
 export class AgentTurnResumeError extends Error {
   constructor(code, message, statusCode = 409) {
     super(message)
@@ -137,9 +126,10 @@ export class AgentTurnResumeError extends Error {
  *   mediaService?: any,
  *   turnRuntime: { execute: (input: any) => Promise<any> },
  *   observe?: (event: any) => void,
+ *   consumeWebResearchQuota?: (userId: string) => Promise<any>,
  * }} deps
  */
-export function createAgentTurnResumer({ productStore, config, mediaService, turnRuntime, observe }) {
+export function createAgentTurnResumer({ productStore, config, mediaService, turnRuntime, observe, consumeWebResearchQuota }) {
   if (!productStore) throw new TypeError('Turn 恢复缺少 ProductStore。')
   if (!turnRuntime?.execute) throw new TypeError('Turn 恢复缺少 Turn Runtime。')
 
@@ -232,8 +222,9 @@ export function createAgentTurnResumer({ productStore, config, mediaService, tur
 
     // 恢复自带独立的取消控制器：它与原请求的 HTTP 连接无关，那条连接早已断开。
     const controller = new AbortController()
-    const input = { ...turn.request, projectSkills: projectSkills.map(plannerSkillInput) }
-    const threadContextSnapshot = turn.request.threadContextSnapshot
+    const threadContextSnapshot = turn.request.runtimeOperation
+      ? turn.request.input?.threadContextSnapshot
+      : turn.request.threadContextSnapshot
     const immutableThreadSummary = threadContextSnapshot?.version === 1
       && threadContextSnapshot.threadSummary
       && typeof threadContextSnapshot.threadSummary === 'object'
@@ -251,13 +242,24 @@ export function createAgentTurnResumer({ productStore, config, mediaService, tur
       idempotencyKey: turn.idempotencyKey,
       request: turn.request,
       allowTakeover: true,
-      resolve: (resolveOptions) => resolveBotanicAgentTurn(input, config, resolveOptions),
+      resolve: (resolveOptions) => resolveBotanicAgentRuntimeRequest(turn.request, config, resolveOptions),
       resolveOptions: {
         document: project.document,
         projectSkills,
+        operations: createAgentOperationalReaders({
+          productStore,
+          userId: turn.ownerId,
+          projectId: turn.projectId,
+          document: project.document,
+        }),
         ...(immutableThreadSummary ? { threadSummary: immutableThreadSummary } : {}),
         signal: controller.signal,
         recoverToolCall,
+        // Worker 恢复不能绕过 API 的联网配额。缺少共享配额服务时 fail closed，
+        // 让模型改走非联网路径或明确失败，绝不无计量重放外部检索。
+        consumeWebResearchQuota: typeof consumeWebResearchQuota === 'function'
+          ? () => consumeWebResearchQuota(turn.ownerId)
+          : async () => ({ allowed: false }),
         // 看图只读当前项目内的媒体；图片字节不离开服务端与模型网关。
         resolveVisionMedia: mediaService?.enabled
           ? (mediaId) => mediaService.readGenerationInput(turn.ownerId, mediaId, turn.projectId)

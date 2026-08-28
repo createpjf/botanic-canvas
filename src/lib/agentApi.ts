@@ -105,21 +105,40 @@ export async function requestBotanicAgentPlan(
   input: BotanicAgentPlanRequestInput,
   signal?: AbortSignal,
   onReasoning?: (entries: BotanicAgentReasoningEntry[]) => void,
+  requestKey = idempotencyKey('agent-plan'),
+  onAccepted?: (turnId: string) => void,
+  onEvent?: (event: BotanicAgentStreamEvent) => void,
 ) {
   const copy = agentApiCopy(input.locale)
-  const response = await productRequest<BotanicAgentPlanResponse>('/api/agent-plans', {
+  const response = await productRequest<{
+    plan?: Extract<BotanicAgentPlanResponse, { plan: unknown }>['plan']
+    clarification?: BotanicAgentClarificationResponse['clarification']
+    reasoning?: BotanicAgentReasoningEntry[]
+    runtimeTurn?: BotanicAgentObservedTurn<PersistentAgentPlanResult>
+  }>('/api/agent-plans', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Accept-Language': input.locale },
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept-Language': input.locale,
+      'Idempotency-Key': requestKey,
+      Prefer: 'respond-async',
+    },
     body: JSON.stringify(buildBotanicAgentPlanRequest(input)),
     signal,
     timeoutMs: 60_000,
     timeoutMessage: copy.planTimeout,
   })
+  const runtimeTurnId = response.runtimeTurn?.id?.trim()
+  if (runtimeTurnId) onAccepted?.(runtimeTurnId)
   if (response.reasoning?.length) onReasoning?.(response.reasoning)
-  if ('clarification' in response) {
+  if (response.clarification) {
     return { kind: 'clarification', clarification: response.clarification } satisfies BotanicAgentClarificationResponse
   }
-  return completeBotanicAgentPlan(response.plan, input)
+  if (response.plan) return completeBotanicAgentPlan(response.plan, input)
+  if (runtimeTurnId) {
+    return observePersistentAgentPlan(runtimeTurnId, input, { signal, onEvent })
+  }
+  throw new ProductApiError(copy.streamEnded, 0, 'AGENT_TURN_RESULT_MISSING')
 }
 
 /**
@@ -127,6 +146,24 @@ export async function requestBotanicAgentPlan(
  * 这次确认产生了哪些 Run —— 服务端一直在返回 `runtimeTurn`，此前被客户端丢掉了。
  */
 export type BotanicAgentTurnOutcome = BotanicAgentTurnResult & { runtimeTurnId?: string }
+
+type PersistentAgentPlanResult =
+  | {
+      kind: 'plan'
+      runtimeOperation: 'plan'
+      plan: Extract<BotanicAgentPlanResponse, { plan: unknown }>['plan']
+    }
+  | {
+      kind: 'clarification'
+      runtimeOperation: 'plan'
+      clarification: BotanicAgentClarificationResponse['clarification']
+    }
+
+type PersistentAgentChatResult = {
+  kind: 'chat'
+  runtimeOperation: 'chat'
+  response: BotanicAgentChatResponse
+}
 
 function withRuntimeTurnId(result: BotanicAgentTurnResult, runtimeTurn: unknown): BotanicAgentTurnOutcome {
   const id = (runtimeTurn as { id?: unknown } | undefined)?.id
@@ -155,7 +192,7 @@ function retryableTurnObservationError(caught: unknown) {
 }
 
 /** SSE 只是观察通道；断线后从持久化 Turn 事件游标续读，绝不重新执行模型。 */
-async function observeBotanicAgentTurn(input: {
+async function observeAgentRuntimeResult<TResult>(input: {
   turnId: string
   projectId: string
   signal?: AbortSignal
@@ -163,14 +200,14 @@ async function observeBotanicAgentTurn(input: {
   onEvent?: (event: BotanicAgentStreamEvent) => void
   missingTurnError?: ProductApiError
   missingTurnTimeoutMs?: number
-}): Promise<BotanicAgentTurnOutcome> {
+}): Promise<{ result: TResult; turn: BotanicAgentObservedTurn<TResult> }> {
   let after = Number.isInteger(input.after) ? Number(input.after) : 0
   const startedAt = Date.now()
   for (;;) {
     if (input.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError')
-    let page: BotanicAgentTurnObservationPage
+    let page: BotanicAgentTurnObservationPage<TResult>
     try {
-      page = await productRequest<BotanicAgentTurnObservationPage>(
+      page = await productRequest<BotanicAgentTurnObservationPage<TResult>>(
         `/api/agent-turns/${encodeURIComponent(input.turnId)}?after=${after}&limit=200`,
         { signal: input.signal },
       )
@@ -208,8 +245,7 @@ async function observeBotanicAgentTurn(input: {
     after = Math.max(deliveredSequence, Number(page.cursor.after) || 0)
     const settlement = settleAgentTurnObservation(page)
     if (settlement.kind === 'resolved') {
-      input.onEvent?.({ type: 'done', result: settlement.result })
-      return withRuntimeTurnId(settlement.result, page.turn)
+      return { result: settlement.result, turn: page.turn }
     }
     if (settlement.kind === 'failed') {
       input.onEvent?.({ type: 'error', code: settlement.code, message: settlement.message })
@@ -217,6 +253,78 @@ async function observeBotanicAgentTurn(input: {
     }
     if (!page.cursor.hasMore) await waitForAgentTurnObservation(input.signal)
   }
+}
+
+async function observeBotanicAgentTurn(input: {
+  turnId: string
+  projectId: string
+  signal?: AbortSignal
+  after?: number
+  onEvent?: (event: BotanicAgentStreamEvent) => void
+  missingTurnError?: ProductApiError
+  missingTurnTimeoutMs?: number
+}): Promise<BotanicAgentTurnOutcome> {
+  const observed = await observeAgentRuntimeResult<BotanicAgentTurnResult>(input)
+  input.onEvent?.({ type: 'done', result: observed.result })
+  return withRuntimeTurnId(observed.result, observed.turn)
+}
+
+function planFromPersistentRuntimeResult(
+  result: PersistentAgentPlanResult,
+  input: BotanicAgentPlanRequestInput,
+) {
+  if (result.runtimeOperation !== 'plan') {
+    throw new ProductApiError('Agent 规划回合身份校验失败。', 409, 'AGENT_TURN_OPERATION_MISMATCH')
+  }
+  return result.kind === 'clarification'
+    ? ({ kind: 'clarification', clarification: result.clarification } satisfies BotanicAgentClarificationResponse)
+    : completeBotanicAgentPlan(result.plan, input)
+}
+
+async function observePersistentAgentPlan(
+  turnId: string,
+  input: BotanicAgentPlanRequestInput,
+  options: {
+    signal?: AbortSignal
+    after?: number
+    onEvent?: (event: BotanicAgentStreamEvent) => void
+    missingTurnError?: ProductApiError
+  } = {},
+) {
+  const observed = await observeAgentRuntimeResult<PersistentAgentPlanResult>({
+    turnId,
+    projectId: input.projectId,
+    ...options,
+  })
+  const result = planFromPersistentRuntimeResult(observed.result, input)
+  if ('kind' in result && result.kind === 'clarification') {
+    options.onEvent?.({ type: 'done', clarification: result.clarification })
+  } else {
+    options.onEvent?.({ type: 'done', plan: result as BotanicAgentPlan })
+  }
+  return result
+}
+
+async function observePersistentAgentChat(
+  turnId: string,
+  input: BotanicAgentChatRequestInput,
+  options: {
+    signal?: AbortSignal
+    after?: number
+    onEvent?: (event: BotanicAgentStreamEvent) => void
+    missingTurnError?: ProductApiError
+  } = {},
+) {
+  const observed = await observeAgentRuntimeResult<PersistentAgentChatResult>({
+    turnId,
+    projectId: input.projectId,
+    ...options,
+  })
+  if (observed.result.kind !== 'chat' || observed.result.runtimeOperation !== 'chat') {
+    throw new ProductApiError('Agent 对话回合身份校验失败。', 409, 'AGENT_TURN_OPERATION_MISMATCH')
+  }
+  options.onEvent?.({ type: 'done', response: observed.result.response })
+  return observed.result.response
 }
 
 export function observePersistentBotanicAgentTurn(
@@ -291,17 +399,40 @@ export async function streamBotanicAgentPlan(
     signal?: AbortSignal
     onEvent?: (event: BotanicAgentStreamEvent) => void
     onReasoning?: (entries: BotanicAgentReasoningEntry[]) => void
+    requestKey?: string
+    onAccepted?: (turnId: string) => void
   } = {},
 ): Promise<BotanicAgentPlan | BotanicAgentClarificationResponse> {
   const copy = agentApiCopy(input.locale)
+  const requestKey = options.requestKey ?? idempotencyKey('agent-plan')
   let settled: BotanicAgentPlan | BotanicAgentClarificationResponse | undefined
+  let accepted: Extract<BotanicAgentStreamEvent, { type: 'accepted' }> | undefined
+  let lastSequence = 0
+  let streamFailure: ProductApiError | undefined
   try {
     await streamBotanicAgentEndpoint({
       path: '/api/agent-plans/stream',
       body: JSON.stringify(buildBotanicAgentPlanRequest(input)),
       locale: input.locale,
       signal: options.signal,
+      headers: { 'Idempotency-Key': requestKey },
       onEvent: (event) => {
+        if (event.type === 'accepted') {
+          accepted = event
+          options.onAccepted?.(event.turnId)
+          return
+        }
+        const decision = monotonicAgentTurnEventDecision(lastSequence, event)
+        if (!decision.deliver) return
+        lastSequence = decision.lastSequence
+        if (event.type === 'error' && accepted) {
+          streamFailure = new ProductApiError(
+            event.message ?? copy.chatIncomplete,
+            agentTurnStreamFailureMustReject(event.code) ? 409 : 502,
+            event.code,
+          )
+          return
+        }
         if (event.type === 'done') {
           settled = settlePlanFromStreamDone(event, input)
           if (event.reasoning?.length) options.onReasoning?.(event.reasoning)
@@ -312,10 +443,33 @@ export async function streamBotanicAgentPlan(
   } catch (caught) {
     if (options.signal?.aborted) throw caught
     if (settled) return settled
-    if (caught instanceof ProductApiError && (caught.code === 'STREAM_DISCONNECTED' || caught.code === 'REQUEST_TIMEOUT')) {
-      throw caught
+    if (accepted) {
+      if (agentTurnStreamFailureMustReject(streamFailure?.code)) throw streamFailure
+      return observePersistentAgentPlan(accepted.turnId, input, {
+        signal: options.signal,
+        after: lastSequence,
+        onEvent: options.onEvent,
+        missingTurnError: streamFailure,
+      })
     }
-    return requestBotanicAgentPlan(input, options.signal, options.onReasoning)
+    // accepted 前也复用同一提交键；respond-async 返回 durable 身份后直接进入 observer。
+    return requestBotanicAgentPlan(
+      input,
+      options.signal,
+      options.onReasoning,
+      requestKey,
+      options.onAccepted,
+      options.onEvent,
+    )
+  }
+  if (!settled && accepted) {
+    if (agentTurnStreamFailureMustReject(streamFailure?.code)) throw streamFailure
+    return observePersistentAgentPlan(accepted.turnId, input, {
+      signal: options.signal,
+      after: lastSequence,
+      onEvent: options.onEvent,
+      missingTurnError: streamFailure,
+    })
   }
   if (!settled) throw new ProductApiError(copy.streamEnded, 0)
   return settled
@@ -406,17 +560,35 @@ export async function streamBotanicAgentTurn(
 
 /** 实时对话通道。它只改变“回答什么时候到”，不改变回答本身。 */
 
-export async function requestBotanicAgentChat(input: BotanicAgentChatRequestInput, signal?: AbortSignal) {
+export async function requestBotanicAgentChat(
+  input: BotanicAgentChatRequestInput,
+  signal?: AbortSignal,
+  requestKey = idempotencyKey('agent-chat'),
+  onAccepted?: (turnId: string) => void,
+  onEvent?: (event: BotanicAgentStreamEvent) => void,
+) {
   const copy = agentApiCopy(input.locale)
-  const response = await productRequest<{ response: BotanicAgentChatResponse }>('/api/agent-chat', {
+  const response = await productRequest<{
+    response?: BotanicAgentChatResponse
+    runtimeTurn?: BotanicAgentObservedTurn<PersistentAgentChatResult>
+  }>('/api/agent-chat', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Accept-Language': input.locale },
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept-Language': input.locale,
+      'Idempotency-Key': requestKey,
+      Prefer: 'respond-async',
+    },
     body: JSON.stringify(buildBotanicAgentChatRequest(input)),
     signal,
     timeoutMs: 60_000,
     timeoutMessage: copy.chatTimeout,
   })
-  return response.response
+  const runtimeTurnId = response.runtimeTurn?.id?.trim()
+  if (runtimeTurnId) onAccepted?.(runtimeTurnId)
+  if (response.response) return response.response
+  if (runtimeTurnId) return observePersistentAgentChat(runtimeTurnId, input, { signal, onEvent })
+  throw new ProductApiError(copy.streamEnded, 0, 'AGENT_TURN_RESULT_MISSING')
 }
 
 /** 实时通道的静默上限：这么久没有任何事件就判定连接已死，回退或报错。 */
@@ -498,17 +670,43 @@ async function streamBotanicAgentEndpoint(input: {
  */
 export async function streamBotanicAgentChat(
   input: BotanicAgentChatRequestInput,
-  options: { signal?: AbortSignal; onEvent?: (event: BotanicAgentChatStreamEvent) => void } = {},
+  options: {
+    signal?: AbortSignal
+    onEvent?: (event: BotanicAgentChatStreamEvent) => void
+    requestKey?: string
+    onAccepted?: (turnId: string) => void
+  } = {},
 ): Promise<BotanicAgentChatResponse> {
   const copy = agentApiCopy(input.locale)
+  const requestKey = options.requestKey ?? idempotencyKey('agent-chat')
   let settled: BotanicAgentChatResponse | undefined
+  let accepted: Extract<BotanicAgentStreamEvent, { type: 'accepted' }> | undefined
+  let lastSequence = 0
+  let streamFailure: ProductApiError | undefined
   try {
     await streamBotanicAgentEndpoint({
       path: '/api/agent-chat/stream',
       body: JSON.stringify(buildBotanicAgentChatRequest(input)),
       locale: input.locale,
       signal: options.signal,
+      headers: { 'Idempotency-Key': requestKey },
       onEvent: (event) => {
+        if (event.type === 'accepted') {
+          accepted = event
+          options.onAccepted?.(event.turnId)
+          return
+        }
+        const decision = monotonicAgentTurnEventDecision(lastSequence, event)
+        if (!decision.deliver) return
+        lastSequence = decision.lastSequence
+        if (event.type === 'error' && accepted) {
+          streamFailure = new ProductApiError(
+            event.message ?? copy.chatIncomplete,
+            agentTurnStreamFailureMustReject(event.code) ? 409 : 502,
+            event.code,
+          )
+          return
+        }
         if (event.type === 'done' && event.response) settled = event.response
         options.onEvent?.(event)
       },
@@ -516,10 +714,31 @@ export async function streamBotanicAgentChat(
   } catch (caught) {
     if (options.signal?.aborted) throw caught
     if (settled) return settled
-    if (caught instanceof ProductApiError && (caught.code === 'STREAM_DISCONNECTED' || caught.code === 'REQUEST_TIMEOUT')) {
-      throw caught
+    if (accepted) {
+      if (agentTurnStreamFailureMustReject(streamFailure?.code)) throw streamFailure
+      return observePersistentAgentChat(accepted.turnId, input, {
+        signal: options.signal,
+        after: lastSequence,
+        onEvent: options.onEvent,
+        missingTurnError: streamFailure,
+      })
     }
-    return requestBotanicAgentChat(input, options.signal)
+    return requestBotanicAgentChat(
+      input,
+      options.signal,
+      requestKey,
+      options.onAccepted,
+      options.onEvent,
+    )
+  }
+  if (!settled && accepted) {
+    if (agentTurnStreamFailureMustReject(streamFailure?.code)) throw streamFailure
+    return observePersistentAgentChat(accepted.turnId, input, {
+      signal: options.signal,
+      after: lastSequence,
+      onEvent: options.onEvent,
+      missingTurnError: streamFailure,
+    })
   }
   if (!settled) throw new ProductApiError(copy.streamEnded, 0)
   return settled
