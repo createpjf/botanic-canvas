@@ -40,7 +40,7 @@ const systemLabelPatterns: Array<[RegExp, (...matches: string[]) => string]> = [
   [/^(图像生成|视频生成) (\d+)$/, (kind, sequence) => `${kind === '视频生成' ? 'Video generation' : 'Image generation'} ${sequence}`],
   [/^(.+) · (图像|视频) (\d+)$/, (source, kind, sequence) => `${source} · ${kind === '视频' ? 'Video' : 'Image'} ${sequence}`],
   [/^(首图|精修)候选(?: · (.+))?$/, (kind, status = '') => {
-    const prefix = kind === '精修' ? 'Refinement candidate' : 'Key visual candidate'
+    const prefix = kind === '精修' ? 'Refinement' : 'Key visual'
     const statuses: Record<string, string> = {
       '等待选择': 'Awaiting selection',
       '等待确认': 'Awaiting confirmation',
