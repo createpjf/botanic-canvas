@@ -83,3 +83,27 @@ test('画布文档规范化保留生产工作流版本与历史运行血缘', ()
   assert.deepEqual(normalized.productionWorkflowRuns?.[0].items[0].artifactIds, ['artifact-a'])
   assert.deepEqual(normalized.productionWorkflowRuns?.[0].items[0].canvasNodeIds, ['node-a'])
 })
+
+test('旧提示词节点名「视觉目标」迁移为「描述」', () => {
+  const stored: CanvasDocument = {
+    id: 'prompt-rename',
+    name: '提示词',
+    schemaVersion: 25,
+    nodes: [
+      {
+        id: 'prompt-a', type: 'prompt', position: { x: 0, y: 0 },
+        data: {
+          kind: 'prompt', status: 'queued', generationKind: 'generation', prompt: '', batchCount: 1,
+          settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' },
+          label: '视觉目标',
+        },
+      },
+    ],
+    edges: [], viewport: { x: 0, y: 0, zoom: 1 }, assets: [], assetGroups: [],
+    templates: [], history: [], deliveries: [], generationJobs: [], batchVariationRuns: [],
+    agentSessions: [], agentMemory: [], agentRuns: [], updatedAt: 1,
+  }
+
+  const normalized = normalizeCanvasDocumentBase(stored, stored)
+  assert.equal((normalized.nodes[0].data as { label?: string }).label, '描述')
+})

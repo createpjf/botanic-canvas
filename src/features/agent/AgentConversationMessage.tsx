@@ -487,7 +487,7 @@ function AgentPlanSettingsEditor({
     ) : null}
     {selectedModel.supportsSearchGrounding ? (
       <label>
-        <small>{locale === 'en' ? 'Search grounding' : '联网参考'}</small>
+        <small>{locale === 'en' ? 'Web reference' : '参考网页'}</small>
         <button
           type="button"
           className={`agent-plan-settings__toggle${settings.searchGrounding !== false ? ' is-selected' : ''}`}

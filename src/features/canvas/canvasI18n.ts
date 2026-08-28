@@ -20,7 +20,8 @@ const systemLabels: Record<string, string> = {
   '视频生成': 'Video generation',
   '定向精修': 'Directed refinement',
   'Agent 生成': 'Agent generation',
-  '视觉目标': 'Creative direction',
+  '视觉目标': 'Prompt',
+  '描述': 'Prompt',
   '视觉描述': 'Visual description',
   '生成描述': 'Generation brief',
   '精修描述': 'Refinement brief',
@@ -54,7 +55,7 @@ const systemLabelPatterns: Array<[RegExp, (...matches: string[]) => string]> = [
 
 /** Translate only Botanic-owned stable labels. User-authored names remain untouched. */
 export function canvasSystemLabel(value: string, locale: ProductLocale) {
-  if (locale !== 'en') return value
+  if (locale !== 'en') return value === '视觉目标' ? '描述' : value
   const direct = systemLabels[value]
   if (direct) return direct
   for (const [pattern, format] of systemLabelPatterns) {

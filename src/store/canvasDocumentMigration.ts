@@ -50,6 +50,11 @@ function cleanGenerateNodeLabel(value: string | undefined) {
   return label === '首图生成' ? '图像生成' : label
 }
 
+function cleanPromptNodeLabel(value: string | undefined, fallback: string) {
+  const label = cleanDisplayName(value, fallback)
+  return label === '视觉目标' ? '描述' : label
+}
+
 export function canvasNodeDisplayName(node: CanvasNode) {
   if (node.type === 'asset') return (node.data as AssetNodeData).name
   if (node.type === 'text') return (node.data as TextNodeData).label
@@ -99,7 +104,7 @@ function normalizeLegacyCopyNodes(nodes: CanvasNode[]): CanvasNode[] {
         ...node,
         data: {
           ...data,
-          label: cleanDisplayName(data.label, data.generationKind === 'refinement' ? '定向精修指令' : '视觉目标'),
+          label: cleanPromptNodeLabel(data.label, data.generationKind === 'refinement' ? '定向精修指令' : '描述'),
         },
       }
     }
