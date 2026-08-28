@@ -65,6 +65,33 @@ test('compiler rejects conflicting constraints and unsupported settings before a
     baseRecipe,
     models: [{ id: 'other', aspectRatios: ['1:1'], resolutions: ['1K'] }],
   }), (error) => error instanceof CreativePlanCompileError && error.code === 'MODEL_NOT_CONFIGURED')
+  assert.throws(() => compileCreativePlan({
+    plan: { ...plan, settings: { ...plan.settings, searchGrounding: true } },
+    baseRecipe,
+    models: [{ id: 'gpt-image-2', aspectRatios: ['3:4'], resolutions: ['1K'] }],
+  }), (error) => error instanceof CreativePlanCompileError && error.code === 'MODEL_SEARCH_GROUNDING_UNSUPPORTED')
+  assert.throws(() => compileCreativePlan({
+    plan: { ...plan, settings: { ...plan.settings, thinkingLevel: 'high' } },
+    baseRecipe,
+    models: [{ id: 'gpt-image-2', aspectRatios: ['3:4'], resolutions: ['1K'] }],
+  }), (error) => error instanceof CreativePlanCompileError && error.code === 'MODEL_THINKING_LEVEL_UNSUPPORTED')
+})
+
+test('compiler keeps Nano Banana search and thinking settings in the immutable recipe', () => {
+  const nanoSettings = {
+    model: 'gemini-3.1-pro-preview', aspectRatio: '3:4', resolution: '2K',
+    searchGrounding: true, thinkingLevel: 'high',
+  }
+  const result = compileCreativePlan({
+    plan: { ...plan, settings: nanoSettings },
+    baseRecipe: { ...baseRecipe, settings: nanoSettings },
+    models: [{
+      id: 'gemini-3.1-pro-preview', aspectRatios: ['3:4'], resolutions: ['2K'],
+      supportsSearchGrounding: true, thinkingLevels: ['minimal', 'high'],
+    }],
+  })
+  assert.equal(result.recipe.settings.searchGrounding, true)
+  assert.equal(result.recipe.settings.thinkingLevel, 'high')
 })
 
 test('同一次确认的所有分支共享 plan 级指纹，分支指纹由它派生', () => {

@@ -67,9 +67,11 @@ export function runtimeConfig(rootDir = process.cwd()) {
     .split(',').map((model) => model.trim()).filter(Boolean))]
   const miniMaxVideoModels = [...new Set((process.env.MINIMAX_VIDEO_MODELS ?? 'MiniMax-H3')
     .split(',').map((model) => model.trim()).filter(Boolean))]
-  const flockAgentModels = [...new Set((process.env.FLOCK_AGENT_MODELS ?? 'deepseek-v4-pro,deepseek-v4-flash,kimi-k3,gemini-3.6-flash,glm-5')
+  const flockImageModels = [...new Set((process.env.FLOCK_IMAGE_MODELS ?? 'gemini-3.1-pro-preview')
     .split(',').map((model) => model.trim()).filter(Boolean))]
-  const flockTextModel = (process.env.FLOCK_TEXT_MODEL ?? flockAgentModels[0] ?? '').trim()
+  const flockAgentModels = [...new Set((process.env.FLOCK_AGENT_MODELS ?? 'deepseek-v4-flash-vision-exp,kimi-k3,gemini-3.7-flash,glm-5')
+    .split(',').map((model) => model.trim()).filter(Boolean))]
+  const flockTextModel = (process.env.FLOCK_TEXT_MODEL ?? '').trim() || flockAgentModels[0] || ''
   // 提供方回传的 reasoning_content 是完整思维链，不是摘要。默认关闭；打开后也只随
   // 当轮响应下发用于实时展示，不写入任何持久化记录。
   const agentRawReasoning = (process.env.AGENT_RAW_REASONING ?? '').trim().toLowerCase() === 'true'
@@ -84,6 +86,8 @@ export function runtimeConfig(rootDir = process.cwd()) {
     miniMaxApiKey: process.env.MINIMAX_API_KEY,
     miniMaxImageModels,
     miniMaxVideoModels,
+    flockApiKey: process.env.FLOCK_API_KEY,
+    flockImageModels,
   })
   return {
     rootDir,
@@ -114,7 +118,7 @@ export function runtimeConfig(rootDir = process.cwd()) {
     flockTextModel,
     flockAgentModels,
     // 看图走同一个 Flock 网关；置空即关闭视觉识别，Agent 回到只有节点元数据的状态。
-    agentVisionModel: (process.env.AGENT_VISION_MODEL ?? 'gemini-3.6-flash').trim(),
+    agentVisionModel: (process.env.AGENT_VISION_MODEL ?? 'gemini-3.7-flash').trim(),
     // 子 Agent 并行调研（Epic 11）。**默认关闭**：一次派发会额外产生 2–3 次模型调用，
     // 而这条路径不需要用户逐次确认。要开就得明确指定一个模型，不从主模型隐式继承 ——
     // 隐式继承意味着任何一次配置调整都可能在无人察觉时把它打开。

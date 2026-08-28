@@ -60,6 +60,7 @@ export function RegionMaskEditor({ target, busy, hidePrompt, submitLabel, onSubm
 
   const activeRect = draftRect ?? rect
   const copy = locale === 'en' ? {
+    eyebrow: 'Region',
     label: 'Redraw region',
     close: 'Close region redraw',
     hint: `Drag over “${target.name}” to select the area to redraw; everything outside the selection stays unchanged.`,
@@ -69,6 +70,7 @@ export function RegionMaskEditor({ target, busy, hidePrompt, submitLabel, onSubm
     busy: 'A task is already running',
     submit: 'Redraw selection',
   } : {
+    eyebrow: '局部重绘',
     label: '局部重绘',
     close: '关闭局部重绘',
     hint: `在「${target.name}」上拖拽框出要重绘的区域；框外画面保持原样。`,
@@ -83,7 +85,7 @@ export function RegionMaskEditor({ target, busy, hidePrompt, submitLabel, onSubm
     <div className="region-mask-backdrop" role="presentation" onPointerDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
       <section ref={dialogRef} className="region-mask-editor" role="dialog" aria-modal="true" aria-label={copy.label}>
         <header>
-          <div><span>REGION EDIT</span><h2>{copy.label}</h2></div>
+          <div><span>{copy.eyebrow}</span><h2>{copy.label}</h2></div>
           <button type="button" onClick={onClose} aria-label={copy.close}><CloseIcon /></button>
         </header>
         <p className="region-mask-editor__hint">{copy.hint}</p>

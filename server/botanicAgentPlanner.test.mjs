@@ -9,7 +9,7 @@ import {
 const validInput = {
   projectId: 'project-agent',
   locale: 'en',
-  plannerModel: 'deepseek-v4-flash',
+  plannerModel: 'deepseek-v4-flash-vision-exp',
   instruction: '保持人物和服装不变，把场景换成海边，并让环境光更柔和。',
   requestedIntent: 'replace_scene',
   selectedResult: { nodeId: 'result-v03', label: '首图候选 01' },
@@ -65,7 +65,7 @@ test('Agent 计划只保留安全的上下文快照元数据，并拒绝重复�
 
 test('Agent Planner 只允许服务端目录中的 Flock 模型，并按请求选择模型', async () => {
   const requests = []
-  await planBotanicGeneration(validInput, {
+  await planBotanicGeneration({ ...validInput, plannerModel: 'deepseek-v4-flash' }, {
     flockApiKey: 'flock-secret',
     flockTextModel: 'deepseek-v4-pro',
     flockAgentModels: ['deepseek-v4-pro', 'deepseek-v4-flash', 'kimi-k3'],
@@ -98,7 +98,7 @@ test('Agent Planner 只允许服务端目录中的 Flock 模型，并按请求�
 
 test('Agent Planner 归一明确 context overflow，且无 Model Context 时不自行重试', async () => {
   let providerCalls = 0
-  await assert.rejects(planBotanicGeneration(validInput, {
+  await assert.rejects(planBotanicGeneration({ ...validInput, plannerModel: 'deepseek-v4-flash' }, {
     flockApiKey: 'flock-secret',
     flockTextModel: 'deepseek-v4-flash',
     flockAgentModels: ['deepseek-v4-flash'],
@@ -119,7 +119,7 @@ test('Agent Planner 优先使用注入的 Durable Subagent Runner，并绑定权
   const dispatched = []
   const runnerContexts = []
   let providerCalls = 0
-  const result = await planBotanicGeneration(validInput, {
+  const result = await planBotanicGeneration({ ...validInput, plannerModel: 'deepseek-v4-flash' }, {
     flockApiKey: 'flock-secret',
     flockTextModel: 'deepseek-v4-flash',
     flockAgentModels: ['deepseek-v4-flash'],
@@ -416,7 +416,7 @@ test('服务端 Agent 只让模型解释意图与约束，节点、参数和批�
     'call-canvas-1', 'call-assets-1', 'call-skill-1',
   ])
   assert.deepEqual(result, {
-    plannerModel: 'deepseek-v4-flash',
+    plannerModel: 'deepseek-v4-flash-vision-exp',
     intent: 'replace_scene',
     instruction: validInput.instruction,
     summary: '锁定人物与服装，批量替换 10 个场景。',
@@ -823,6 +823,29 @@ test('validateBotanicAgentPlanInput 保留 parentPrompt 并对齐自定义像素
   assert.equal(input.generationModels[0].supportsCustomSize, true)
 })
 
+test('规划器接受含 21:9 与 4K 的 Nano Banana 目录', () => {
+  const input = validateBotanicAgentPlanInput({
+    ...validInput,
+    settings: { model: 'gemini-3.1-pro-preview', aspectRatio: '21:9', resolution: '4K' },
+    generationModels: [{
+      id: 'gemini-3.1-pro-preview',
+      label: 'Nano Banana',
+      provider: 'flock',
+      mediaKind: 'image',
+      aspectRatios: ['1:1', '16:9', '4:3', '3:4', '4:5', '9:16', '3:2', '2:3', '5:4', '21:9'],
+      resolutions: ['1K', '2K', '4K'],
+      supportsMask: false,
+      supportsSearchGrounding: true,
+      thinkingLevels: ['minimal', 'high'],
+      maximumReferences: 14,
+    }],
+  })
+  assert.equal(input.settings.model, 'gemini-3.1-pro-preview')
+  assert.equal(input.settings.aspectRatio, '21:9')
+  assert.equal(input.settings.resolution, '4K')
+  assert.deepEqual(input.generationModels[0].resolutions, ['1K', '2K', '4K'])
+})
+
 test('规划旁白加编号清单时共享底回退到 parentPrompt', async () => {
   const result = await planBotanicGeneration({
     ...validInput,
@@ -876,7 +899,7 @@ test('Agent Planner 持久化 plan attempt Checkpoint，并可从同一 attempt 
   }
   let providerCalls = 0
 
-  const first = await planBotanicGeneration(validInput, runtime, {
+  const first = await planBotanicGeneration({ ...validInput, plannerModel: 'deepseek-v4-flash' }, runtime, {
     saveCheckpoint: (checkpoint) => checkpointStore.save(checkpoint),
     fetchImpl: async () => {
       providerCalls += 1
@@ -907,7 +930,7 @@ test('Agent Planner 持久化 plan attempt Checkpoint，并可从同一 attempt 
   assert.equal(completed.pendingStep, undefined)
   assert.deepEqual(completed.completedSteps[0].calls, prepared.pendingStep.calls)
 
-  const resumed = await planBotanicGeneration(validInput, runtime, {
+  const resumed = await planBotanicGeneration({ ...validInput, plannerModel: 'deepseek-v4-flash' }, runtime, {
     resumeCheckpoint: completed,
     saveCheckpoint: async () => { throw new Error('已完成 terminal 工具恢复不应再次保存 Checkpoint') },
     fetchImpl: async () => { throw new Error('同 attempt 恢复不应再次请求 Provider') },

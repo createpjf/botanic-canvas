@@ -13,20 +13,27 @@ type GenerationTaskResultLabelInput = {
   currentLabel?: string
 }
 
+/** 旧结果节点名「首图候选 / 精修候选」只改展示与打开时迁移，不碰幂等键。 */
+export function displayGenerationResultLabel(value: string) {
+  const match = value.match(/^(首图|精修)候选(?: · (.+))?$/)
+  if (!match) return value
+  return match[2] ? `${match[1]} · ${match[2]}` : match[1]
+}
+
 export function generationTaskResultLabel(input: GenerationTaskResultLabelInput) {
   const prefix = input.generationKind === 'refinement' ? '精修' : '首图'
-  if (input.status === 'succeeded') return input.currentLabel?.trim() || `${prefix}候选 · 等待选择`
-  if (input.status === 'submission_unknown') return `${prefix}候选 · 等待确认`
-  if (input.status !== 'failed') return input.currentLabel ?? `${prefix}候选`
+  if (input.status === 'succeeded') return input.currentLabel?.trim() || `${prefix} · 等待选择`
+  if (input.status === 'submission_unknown') return `${prefix} · 等待确认`
+  if (input.status !== 'failed') return input.currentLabel ?? prefix
 
   const error = input.error?.trim() ?? ''
   if (/请先登录|登录状态.*失效|重新登录/.test(error)) {
-    return `${prefix}候选 · 登录已失效`
+    return `${prefix} · 登录已失效`
   }
   if (input.previousTaskStatus === 'uploading' && /(提交|等待).*(超时|超过.*分钟|停止等待)/.test(error)) {
-    return `${prefix}候选 · 提交超时`
+    return `${prefix} · 提交超时`
   }
-  return input.currentLabel ?? `${prefix}候选`
+  return input.currentLabel ?? prefix
 }
 
 const genericGenerateLabels = new Set(['图像生成', '视频生成', '定向精修', 'Agent 生成'])

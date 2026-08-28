@@ -401,12 +401,12 @@ export function summarizeBotanicAgentRuntime(input: {
     },
     executing: {
       label: '生成任务处理中',
-      detail: '任务已提交，结果完成后会直接回填画布。',
+      detail: '任务已提交，结果完成后会直接放到画布。',
       nextAction: '查看任务',
     },
     completed: {
       label: 'Agent 已完成',
-      detail: '结果已回填画布，可以继续修改或定位结果。',
+      detail: '结果已放到画布，可以继续修改或定位结果。',
       nextAction: '继续修改',
     },
     failed: {
@@ -1060,7 +1060,7 @@ export function botanicAgentRunFeedback(
   const timedOut = status === 'failed' && Boolean(error && /超时|timeout|timed out/i.test(error))
   const hasActiveBranches = (options?.activeBranchCount ?? 0) > 0
   if (hasActiveBranches && status === 'completed') {
-    return { label: '生成中', detail: '正在生成，完成后回填画布。', action: 'view_task', actionLabel: '查看任务', tone: 'progress', terminal: false }
+    return { label: '生成中', detail: '正在生成，完成后放到画布。', action: 'view_task', actionLabel: '查看任务', tone: 'progress', terminal: false }
   }
   if (status === 'awaiting_confirmation') {
     return { label: '待确认', detail: '确认后开始生成。', action: 'view_task', actionLabel: '查看计划', tone: 'warning', terminal: false }
@@ -1069,21 +1069,21 @@ export function botanicAgentRunFeedback(
     return { label: '排队中', detail: '已入队，等待生成。', action: 'view_task', actionLabel: '查看任务', tone: 'progress', terminal: false }
   }
   if (status === 'executing' || status === 'running') {
-    return { label: '生成中', detail: '正在生成，完成后回填画布。', action: 'view_task', actionLabel: '查看任务', tone: 'progress', terminal: false }
+    return { label: '生成中', detail: '正在生成，完成后放到画布。', action: 'view_task', actionLabel: '查看任务', tone: 'progress', terminal: false }
   }
   if (status === 'completed') {
     if (outputCount > 0 && options && (options.artifactCount ?? 0) === 0) {
       return { label: '已完成', detail: '已完成，结果整理中。', action: 'view_task', actionLabel: '查看任务', tone: 'warning', terminal }
     }
     if (outputCount > 0 && options && (options.canvasOutputCount ?? 0) < (options.artifactCount ?? 0)) {
-      return { label: '已完成', detail: '结果已生成，正在回填画布。', action: 'view_results', actionLabel: '查看结果', tone: 'warning', terminal }
+      return { label: '已完成', detail: '结果已生成，正在放到画布。', action: 'view_results', actionLabel: '查看结果', tone: 'warning', terminal }
     }
     return outputCount > 0
-      ? { label: '已完成', detail: `已回填画布 · ${outputCount} 项`, action: 'view_results', actionLabel: '查看结果', tone: 'success', terminal }
+      ? { label: '已完成', detail: `已放到画布 · ${outputCount} 项`, action: 'view_results', actionLabel: '查看结果', tone: 'success', terminal }
       : { label: '已完成', detail: '已完成，暂无可用结果。', action: 'view_task', actionLabel: '查看任务', tone: 'warning', terminal }
   }
   if (status === 'partial') {
-    return { label: '部分完成', detail: `已回填 ${outputCount} 项，有分支失败。`, action: 'view_task', actionLabel: '查看失败分支', tone: 'warning', terminal }
+    return { label: '部分完成', detail: `已放到 ${outputCount} 项，有分支失败。`, action: 'view_task', actionLabel: '查看失败分支', tone: 'warning', terminal }
   }
   if (status === 'cancelled') {
     return { label: '已取消', detail: `已取消，保留 ${outputCount} 项结果。`, action: 'adjust', actionLabel: '调整后重试', tone: 'warning', terminal }
@@ -2049,7 +2049,7 @@ export function instructionRequestsBatchVariation(instruction: string) {
 export const BOTANIC_AGENT_MAX_SINGLE_OUTPUT = 8
 
 const intentPatterns: Array<[BotanicAgentIntent, RegExp]> = [
-  ['redo_from_root', /(最初|原始|原配方|商品图).*(重新|重做|再做)|复用.*(最初|原始)/i],
+  ['redo_from_root', /(最初|原始|原配方|原参数|商品图).*(重新|重做|再做)|复用.*(最初|原始)/i],
   // 「局部/选区/框选」以及「只改/只换/只重画某处」是局部重绘；先于整图替换意图匹配。
   ['region_edit', /(局部|选区|框选|圈出|抠掉|inpaint)|只(?:重画|重绘|修改|改|换|调)[^，。！？?!]{0,12}(?:区域|部分|地方|这块|角落?)|(?:左上|右上|左下|右下|上方|下方|左侧|右侧|中间|角落)[^，。！？?!]{0,10}(?:重画|重绘|重新生成|改掉|换掉)/iu],
   ['replace_scene', /(换|替换|改变|更换).*(场景|背景)|(场景|背景).*(换|替换|改变|更换)/i],
@@ -2148,7 +2148,7 @@ function intentLabel(intent: BotanicAgentIntent, locale: 'zh-CN' | 'en' = 'zh-CN
     change_style: 'Change style',
     batch_variation: 'Batch variation',
     region_edit: 'Region edit',
-    redo_from_root: 'Rebuild from original recipe',
+    redo_from_root: 'Rebuild from original settings',
   } : {
     initial_generation: '首次生成',
     continue_generation: '继续生成',
@@ -2159,7 +2159,7 @@ function intentLabel(intent: BotanicAgentIntent, locale: 'zh-CN' | 'en' = 'zh-CN
     change_style: '改变风格',
     batch_variation: '批量变体',
     region_edit: '局部重绘',
-    redo_from_root: '从原配方重做',
+    redo_from_root: '从原参数重做',
   }
   return labels[intent]
 }
@@ -2367,7 +2367,7 @@ export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): Botani
   const intent = input.region ? 'region_edit' : input.intent ?? inferBotanicAgentIntent(instruction)
   const isInitialGeneration = intent === 'initial_generation'
   if (!isInitialGeneration && !input.selectedResultNodeId) throw new Error('请先选择一张已生成图片。')
-  if (!isInitialGeneration && !input.rootRecipe) throw new Error('当前结果缺少可恢复的生成配方。')
+  if (!isInitialGeneration && !input.rootRecipe) throw new Error('当前结果缺少可恢复的生成参数。')
   const settings = input.rootRecipe?.settings ?? input.settings
   if (!settings) throw new Error('请先设置生成模型与输出参数。')
   const contextSnapshot = createBotanicAgentContextSnapshot(input.contextSnapshot ?? [])

@@ -11,12 +11,18 @@ import {
   describeBotanicAgentContextImages,
   resolveBotanicAgentVisionParts,
 } from './botanicAgentVision.mjs'
+import { captionAgentVisionModel, nativeAgentVisionModel } from './botanicAgentVisionCapability.mjs'
 import { botanicAgentContextToolSourceLabels, createBotanicAgentReadToolDefinitions } from './botanicAgentContextTools.mjs'
 import { botanicAgentWebResearchSourceLabels, createBotanicAgentWebResearchTools } from './botanicAgentWebTools.mjs'
 import { botanicAgentOperationalSourceLabels, createBotanicAgentOperationalToolDefinitions } from './botanicAgentOperationalTools.mjs'
 import { renderThreadSummary } from './agentThreadSummary.mjs'
 import { canonicalHash } from './canonicalHash.mjs'
 import { estimateAgentContextTokens, truncateAgentContextText } from './agentContextBudget.mjs'
+import {
+  GENERATION_ASPECT_RATIOS,
+  GENERATION_RESOLUTIONS,
+  NANO_BANANA_MODEL_ID,
+} from './generationVocabulary.mjs'
 import { throwIfAgentProviderContextOverflow } from './agentProviderContextOverflow.mjs'
 import { outboundAgentTraceHeaders } from './agentTraceContext.mjs'
 import {
@@ -33,8 +39,8 @@ const MESSAGE_ROLES = new Set(['user', 'assistant'])
 const MENTION_KINDS = new Set(['skill', 'reference'])
 const DEFAULT_MAX_OUTPUT_COUNT = 8
 const CURRENT_INPUT_TEXT_LIMIT = 64 * 1024
-const ASPECT_RATIOS = new Set(['1:1', '16:9', '4:3', '3:4', '4:5', '9:16'])
-const RESOLUTIONS = new Set(['1K', '2K'])
+const ASPECT_RATIOS = new Set(GENERATION_ASPECT_RATIOS)
+const RESOLUTIONS = new Set(GENERATION_RESOLUTIONS)
 const GENERATE_TOOL_NAME = 'generate_images'
 const GENERATE_VIDEO_TOOL_NAME = 'generate_videos'
 const OVERFLOW_RETRY_TOKEN_BUDGET = 6_000
@@ -204,7 +210,16 @@ function normalizeSettingsHint(raw, generationModels) {
   const models = imageModels(generationModels)
   const hint = {}
   const requestedModel = typeof raw?.model === 'string' ? raw.model.trim() : ''
-  if (requestedModel && models.some((model) => model.id === requestedModel)) hint.model = requestedModel
+  const requestedResolution = typeof raw?.resolution === 'string' ? raw.resolution.trim().toUpperCase() : ''
+  if (requestedResolution === '4K') {
+    const fourKModels = models.filter((model) => model.resolutions?.includes('4K'))
+    const fourKModel = fourKModels.find((model) => model.id === NANO_BANANA_MODEL_ID) ?? fourKModels[0]
+    // 4K 是模型能力约束，不允许模型同时返回「GPT + 4K」后被归一成一个
+    // 实际无法执行的计划；目录没有 4K 能力时两者都省略，由下游默认设置接管。
+    if (fourKModel) hint.model = fourKModel.id
+  } else if (requestedModel && models.some((model) => model.id === requestedModel)) {
+    hint.model = requestedModel
+  }
   const selectedModel = models.find((model) => model.id === (hint.model ?? ''))
   const supportedRatios = selectedModel?.aspectRatios?.length
     ? selectedModel.aspectRatios
@@ -216,7 +231,6 @@ function normalizeSettingsHint(raw, generationModels) {
   if (requestedRatio && ASPECT_RATIOS.has(requestedRatio) && (!supportedRatios.length || supportedRatios.includes(requestedRatio))) {
     hint.aspectRatio = requestedRatio
   }
-  const requestedResolution = typeof raw?.resolution === 'string' ? raw.resolution.trim().toUpperCase() : ''
   if (requestedResolution && RESOLUTIONS.has(requestedResolution) && (!supportedResolutions.length || supportedResolutions.includes(requestedResolution))) {
     hint.resolution = requestedResolution
   }
@@ -1016,9 +1030,10 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
       : { ...options, modelContext: contextBinding.modelContext }
   )
 
-  // 原生多模态优先：引用图片直接随消息附给视觉模型，让它看着画面判断意图、综合 Prompt。
-  const visionModel = typeof runtimeConfig?.agentVisionModel === 'string' ? runtimeConfig.agentVisionModel.trim() : ''
-  const visionParts = visionModel
+  // 原生多模态只跟 Composer 所选走；不能看图的规划模型走 caption，不劫持整轮。
+  const nativeVisionModel = nativeAgentVisionModel(config.model)
+  const captionVisionModel = captionAgentVisionModel(runtimeConfig)
+  const visionParts = nativeVisionModel || captionVisionModel
     ? await resolveBotanicAgentVisionParts({
       document: options.document,
       contextNodeIds,
@@ -1029,21 +1044,19 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
   if (options.resumeCheckpoint && !['vision', 'text'].includes(resumeAttemptId)) {
     throw new BotanicAgentChatError(409, 'AGENT_TURN_CHECKPOINT_INVALID', 'Agent Turn Checkpoint 的执行 attempt 无效。')
   }
-  if (resumeAttemptId === 'vision' && !visionParts.length) {
+  if (resumeAttemptId === 'vision' && (!visionParts.length || !nativeVisionModel)) {
     throw new BotanicAgentChatError(
       409,
       'AGENT_TURN_CHECKPOINT_SNAPSHOT_MISMATCH',
       '视觉执行所需的模型或媒体上下文已经变化，不能静默切换到文本执行。',
     )
   }
-  const visionContextBinding = visionParts.length
-    ? turnModelContextBinding(options, visionModel)
-    : undefined
-  // V2 必须让每个实际 Provider model 经过自己的 Context Runtime；factory 没有
-  // 对应视觉模型时直接走已冻结的 primary text attempt，不能把它静默当 legacy。
-  const canAttemptVision = visionParts.length && (!contextV2 || visionContextBinding?.modelContext)
+  // 原生看图模型就是 Composer 所选的主模型，因此复用同一份冻结 Context V2
+  // binding。不能为同一 attempt 重新解析一份可能漂移的 runtime。
+  const visionContextBinding = nativeVisionModel ? primaryContextBinding : undefined
+  const canAttemptVision = visionParts.length > 0 && Boolean(nativeVisionModel)
   if (canAttemptVision && resumeAttemptId !== 'text') {
-    const visionSnapshot = stepSnapshotFor(visionModel, visionContextBinding)
+    const visionSnapshot = stepSnapshotFor(nativeVisionModel, visionContextBinding)
     const boundVisionOptions = optionsForContext(visionContextBinding)
     let visionCheckpointBoundaryReached = Boolean(options.resumeCheckpoint)
     const visionOptions = typeof boundVisionOptions.saveCheckpoint === 'function'
@@ -1060,7 +1073,7 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
     try {
       return withTurnSelectedResult(await executeTurnAttempt({
         config,
-        model: visionModel,
+        model: nativeVisionModel,
         system: [
           baseSystem,
           situation,
@@ -1075,7 +1088,7 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
         messages: botanicAgentMultimodalMessages(turnMessages, visionParts),
         registry,
         snapshot: visionSnapshot,
-        attempt: turnAttempt('vision', visionModel, visionSnapshot),
+        attempt: turnAttempt('vision', nativeVisionModel, visionSnapshot),
         options: visionOptions,
         allowRawReasoning,
       }), input)

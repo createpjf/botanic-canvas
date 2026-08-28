@@ -469,15 +469,15 @@ test('Run 状态统一提供下一步反馈，并兼容超时错误', () => {
     action: 'view_task', actionLabel: '查看任务', tone: 'progress', terminal: false,
   })
   assert.equal(botanicAgentRunFeedback('running').label, '生成中')
-  assert.equal(botanicAgentRunFeedback('running').detail, '正在生成，完成后回填画布。')
-  assert.equal(botanicAgentRunFeedback('completed', 2).detail, '已回填画布 · 2 项')
-  assert.equal(botanicAgentRunFeedback('completed', 1, undefined, { artifactCount: 1, canvasOutputCount: 0 }).detail, '结果已生成，正在回填画布。')
+  assert.equal(botanicAgentRunFeedback('running').detail, '正在生成，完成后放到画布。')
+  assert.equal(botanicAgentRunFeedback('completed', 2).detail, '已放到画布 · 2 项')
+  assert.equal(botanicAgentRunFeedback('completed', 1, undefined, { artifactCount: 1, canvasOutputCount: 0 }).detail, '结果已生成，正在放到画布。')
   assert.equal(botanicAgentRunFeedback('completed', 1, undefined, {
     artifactCount: 1, canvasOutputCount: 0, activeBranchCount: 2,
-  }).detail, '正在生成，完成后回填画布。')
+  }).detail, '正在生成，完成后放到画布。')
   assert.equal(botanicAgentRunFeedback('completed', 0).actionLabel, '查看任务')
   assert.equal(botanicAgentRunFeedback('partial', 1).actionLabel, '查看失败分支')
-  assert.equal(botanicAgentRunFeedback('partial', 1).detail, '已回填 1 项，有分支失败。')
+  assert.equal(botanicAgentRunFeedback('partial', 1).detail, '已放到 1 项，有分支失败。')
   assert.equal(botanicAgentRunFeedback('failed', 0, '工作区数据库响应超时').label, '响应超时')
   assert.equal(botanicAgentRunFeedback('cancelled', 1).detail, '已取消，保留 1 项结果。')
   assert.deepEqual([
@@ -748,6 +748,8 @@ test('Botanic Agent 能从自然语言识别高频生图意图', () => {
   assert.equal(inferBotanicAgentIntent('换成海边场景'), 'replace_scene')
   assert.equal(inferBotanicAgentIntent('人物和背景不变，调整一下动作'), 'change_pose')
   assert.equal(inferBotanicAgentIntent('复用最初商品图重新做首图'), 'redo_from_root')
+  assert.equal(inferBotanicAgentIntent('从原参数重做'), 'redo_from_root')
+  assert.equal(inferBotanicAgentIntent('从原配方重做'), 'redo_from_root')
   assert.equal(inferBotanicAgentIntent('保持多个细节不变，把背景换成海边黄昏'), 'replace_scene')
   assert.equal(inferBotanicAgentIntent('模特换一组更自然的姿态'), 'change_pose')
   assert.equal(resolveBotanicAgentIntent('画面里加2个道具，保持人物不变', 'replace_scene'), 'replace_scene')
@@ -1162,11 +1164,11 @@ test('运行摘要按本轮路由取词，对话轮次不谎称已回填画布',
   const steps = createBotanicAgentRuntimeSteps({ hasTarget: false, mode: 'conversation' })
   const generation = summarizeBotanicAgentRuntime({ steps, phase: 'completed' })
   assert.equal(generation.label, 'Agent 已完成')
-  assert.match(generation.detail, /回填画布/)
+  assert.match(generation.detail, /放到画布/)
 
   const conversation = summarizeBotanicAgentRuntime({ steps, phase: 'completed', mode: 'conversation' })
   assert.equal(conversation.label, '已回复')
-  assert.doesNotMatch(conversation.detail, /回填画布/)
+  assert.doesNotMatch(conversation.detail, /放到画布/)
 
   assert.equal(summarizeBotanicAgentRuntime({ steps, phase: 'completed', mode: 'prompt' }).label, 'Prompt 已生成')
   assert.equal(summarizeBotanicAgentRuntime({ steps, phase: 'completed', mode: 'research' }).label, '检索完成')

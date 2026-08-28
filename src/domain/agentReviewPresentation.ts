@@ -122,7 +122,7 @@ export function agentReviewEvaluatorCostNote(
   const calls = criteria * candidates
   return locale === 'en'
     ? `${criteria} project-defined criteria × ${candidates} candidates = ${calls} extra model call(s).`
-    : `${criteria} 条自定义判据 × ${candidates} 个候选 = 额外 ${calls} 次模型调用。`
+    : `${criteria} 条自定义判据 × ${candidates} 张图 = 额外 ${calls} 次模型调用。`
 }
 
 /** 一条判据是不是项目自定义的。自定义与内置必须分开展示：来源不同、可信度也不同。 */
@@ -145,14 +145,14 @@ export function agentReviewCoverageSummary(task: AgentReviewTaskSnapshot | undef
   const total = Number(task?.coverage?.totalCandidates ?? 0)
   const reviewed = Number(task?.coverage?.reviewedCandidates ?? 0)
   const skipped = Number(task?.coverage?.skippedCandidates ?? 0)
-  if (!total) return locale === 'en' ? 'No candidates to review.' : '没有可评审的候选。'
+  if (!total) return locale === 'en' ? 'No candidates to review.' : '没有可评审的结果。'
   const base = locale === 'en'
     ? `Reviewed ${reviewed} of ${total} candidates`
-    : `已评审 ${total} 个候选中的 ${reviewed} 个`
+    : `${total} 张图中已评审 ${reviewed} 张`
   if (!skipped) return locale === 'en' ? `${base}.` : `${base}。`
   return locale === 'en'
     ? `${base}; ${skipped} skipped by the coverage strategy and not judged.`
-    : `${base}；另有 ${skipped} 个按覆盖策略跳过，未做判断。`
+    : `${base}；另有 ${skipped} 张按覆盖策略跳过，未做判断。`
 }
 
 /** 任务本身的失败要能被诊断，不能只显示「评审失败」。 */

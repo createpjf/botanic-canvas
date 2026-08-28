@@ -73,7 +73,7 @@ export function createTaskFlow(
       })
   const recipe = request.recipe ? cloneGenerationRecipe(request.recipe) : undefined
 
-  if (!recipe) throw new Error('生成配方缺失。')
+  if (!recipe) throw new Error('生成参数缺失。')
   const parentRootRecipe = parentNode?.type === 'result'
     ? (parentNode.data as ResultNodeData).rootRecipe ?? (parentNode.data as ResultNodeData).generationRecipe
     : undefined
@@ -511,7 +511,7 @@ export function applyGenerationJobToDocument(document: CanvasDocument, job: Gene
       : updateTaskNodes(recordedDocument, request.taskNodeIds, 'failed', job.id, '生成服务没有返回结果，请重试。')
   }
   if (job.status === 'failed') {
-    return updateTaskNodes(recordedDocument, request.taskNodeIds, 'failed', job.id, job.error ?? '真实生成任务失败，请重试。', job.errorCode)
+    return updateTaskNodes(recordedDocument, request.taskNodeIds, 'failed', job.id, job.error ?? '生成任务失败，请重试。', job.errorCode)
   }
   if (job.status === 'cancelled') {
     return updateTaskNodes(recordedDocument, request.taskNodeIds, 'cancelled', job.id, job.error)

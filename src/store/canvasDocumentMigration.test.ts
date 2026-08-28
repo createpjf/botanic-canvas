@@ -83,3 +83,52 @@ test('画布文档规范化保留生产工作流版本与历史运行血缘', ()
   assert.deepEqual(normalized.productionWorkflowRuns?.[0].items[0].artifactIds, ['artifact-a'])
   assert.deepEqual(normalized.productionWorkflowRuns?.[0].items[0].canvasNodeIds, ['node-a'])
 })
+
+test('旧提示词节点名「视觉目标」迁移为「描述」', () => {
+  const stored: CanvasDocument = {
+    id: 'prompt-rename',
+    name: '提示词',
+    schemaVersion: 25,
+    nodes: [
+      {
+        id: 'prompt-a', type: 'prompt', position: { x: 0, y: 0 },
+        data: {
+          kind: 'prompt', status: 'queued', generationKind: 'generation', prompt: '', batchCount: 1,
+          settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' },
+          label: '视觉目标',
+        },
+      },
+    ],
+    edges: [], viewport: { x: 0, y: 0, zoom: 1 }, assets: [], assetGroups: [],
+    templates: [], history: [], deliveries: [], generationJobs: [], batchVariationRuns: [],
+    agentSessions: [], agentMemory: [], agentRuns: [], updatedAt: 1,
+  }
+
+  const normalized = normalizeCanvasDocumentBase(stored, stored)
+  assert.equal((normalized.nodes[0].data as { label?: string }).label, '描述')
+})
+
+test('旧结果节点名「首图候选 · 状态」迁移为「首图 · 状态」', () => {
+  const stored: CanvasDocument = {
+    id: 'result-rename',
+    name: '结果名',
+    schemaVersion: 25,
+    nodes: [
+      {
+        id: 'result-a', type: 'result', position: { x: 0, y: 0 },
+        data: { kind: 'result', label: '首图候选 · 等待确认', status: 'ready', image: '/result.webp' },
+      },
+      {
+        id: 'result-b', type: 'result', position: { x: 400, y: 0 },
+        data: { kind: 'result', label: '首图候选 01', status: 'ready', image: '/result-2.webp' },
+      },
+    ],
+    edges: [], viewport: { x: 0, y: 0, zoom: 1 }, assets: [], assetGroups: [],
+    templates: [], history: [], deliveries: [], generationJobs: [], batchVariationRuns: [],
+    agentSessions: [], agentMemory: [], agentRuns: [], updatedAt: 1,
+  }
+
+  const normalized = normalizeCanvasDocumentBase(stored, stored)
+  assert.equal((normalized.nodes[0].data as { label?: string }).label, '首图 · 等待确认')
+  assert.equal((normalized.nodes[1].data as { label?: string }).label, '首图候选 01')
+})

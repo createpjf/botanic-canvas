@@ -1,3 +1,5 @@
+import { GENERATION_ASPECT_RATIOS, GENERATION_RESOLUTIONS } from './generationVocabulary.mjs'
+
 export const botanicCreativeBriefFieldIds = Object.freeze([
   'model',
   'delivery_preset',
@@ -12,8 +14,8 @@ const fieldIds = new Set(botanicCreativeBriefFieldIds)
 const modes = new Set(['generation', 'prompt'])
 const deliveryPresets = new Set(['taobao', 'xiaohongshu', 'douyin', 'custom'])
 const deliveryRatios = new Map([['taobao', '1:1'], ['xiaohongshu', '3:4'], ['douyin', '9:16']])
-const aspectRatios = new Set(['1:1', '16:9', '4:3', '3:4', '4:5', '9:16'])
-const resolutions = new Set(['1K', '2K'])
+const aspectRatios = new Set(GENERATION_ASPECT_RATIOS)
+const resolutions = new Set(GENERATION_RESOLUTIONS)
 const promptDirections = new Set(['faithful', 'commercial', 'editorial', 'social', 'custom'])
 const preservationPriorities = new Set(['identity', 'product', 'garment', 'balanced'])
 const sources = new Set(['user', 'canvas', 'memory', 'skill', 'inferred', 'default'])

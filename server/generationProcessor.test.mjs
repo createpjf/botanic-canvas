@@ -90,6 +90,116 @@ function createGenerationProcessor(input) {
   return createRuntimeGenerationProcessor({ ...input, productStore })
 }
 
+test('Flock 高内存许可在输入媒体物化前取得，并在任务结束后释放', async () => {
+  const events = []
+  let storedJob = {
+    id: 'job-flock-admission', ownerId: 'user-a', projectId: 'project-a', status: 'queued', kind: 'generation',
+    createdAt: Date.now(), updatedAt: Date.now(), batchCount: 1,
+    settings: { model: 'nano', aspectRatio: '1:1', resolution: '1K' }, outputs: [],
+    rawInput: {
+      projectId: 'project-a', kind: 'generation', prompt: '生成品牌首图', batchCount: 1,
+      settings: { model: 'nano', aspectRatio: '1:1', resolution: '1K' },
+      recipe: { references: [{ name: '商品', role: '商品', primary: true, mediaId: 'media_ref' }] },
+    },
+  }
+  const processJob = createGenerationProcessor({
+    productStore: {
+      async readGenerationJobForWorker() { return structuredClone(storedJob) },
+      async putGenerationJob(_ownerId, job) { storedJob = structuredClone(job) },
+      async readProject() { return undefined },
+      async refreshGenerationArtifacts() { return true },
+    },
+    mediaService: {
+      async readGenerationInput() {
+        events.push('read-media')
+        return { mimeType: 'image/png', buffer: Buffer.from('not-a-real-png') }
+      },
+    },
+    config: {
+      modelOptions: [{
+        id: 'nano', provider: 'flock', mediaKind: 'image',
+        aspectRatios: ['1:1'], resolutions: ['1K'], maximumReferences: 14,
+      }],
+      maximumBatchCount: 4,
+      maximumReferenceBytes: 1024,
+    },
+    acquireProviderAdmission: async ({ providers }) => {
+      assert.deepEqual(providers, ['flock'])
+      events.push('admission')
+      return () => events.push('release')
+    },
+    generate: async () => {
+      events.push('generate')
+      return { outputs: [{ id: 'output-a', image: '/api/media/output-a' }], missingOutputCount: 0 }
+    },
+  })
+
+  await processJob(storedJob.id)
+
+  assert.equal(storedJob.status, 'succeeded')
+  assert.deepEqual(events, ['admission', 'read-media', 'generate', 'release'])
+})
+
+test('跨 Provider fallback 只在真正进入 Flock 前重新物化，并持有许可到任务结束', async () => {
+  const runScenario = async ({ primary, fallback }) => {
+    const events = []
+    let storedJob = {
+      id: `job-${primary}-to-${fallback}`, ownerId: 'user-a', projectId: 'project-a', status: 'queued', kind: 'generation',
+      createdAt: Date.now(), updatedAt: Date.now(), batchCount: 1,
+      settings: { model: primary, aspectRatio: '1:1', resolution: '1K' }, outputs: [],
+      rawInput: {
+        projectId: 'project-a', kind: 'generation', prompt: '生成品牌首图', batchCount: 1,
+        settings: { model: primary, aspectRatio: '1:1', resolution: '1K' },
+        recipe: { references: [{ name: '商品', role: '商品', primary: true, mediaId: 'media_ref' }] },
+      },
+    }
+    const processJob = createGenerationProcessor({
+      productStore: {
+        async readGenerationJobForWorker() { return structuredClone(storedJob) },
+        async putGenerationJob(_ownerId, job) { storedJob = structuredClone(job) },
+        async readProject() { return undefined },
+        async refreshGenerationArtifacts() { return true },
+      },
+      mediaService: {
+        async readGenerationInput() {
+          events.push(`read:${events.filter((event) => event.startsWith('read:')).length + 1}`)
+          return { mimeType: 'image/png', buffer: Buffer.from('image') }
+        },
+      },
+      config: {
+        modelOptions: [
+          { id: 'openai', provider: 'openai', mediaKind: 'image', aspectRatios: ['1:1'], resolutions: ['1K'], maximumReferences: 8 },
+          { id: 'flock', provider: 'flock', mediaKind: 'image', aspectRatios: ['1:1'], resolutions: ['1K'], maximumReferences: 14 },
+        ],
+        providerFallbackModelIds: [fallback],
+        maximumBatchCount: 4,
+        maximumReferenceBytes: 1024,
+      },
+      acquireProviderAdmission: async ({ providers }) => {
+        events.push(`admission:${providers[0]}`)
+        return () => events.push('release')
+      },
+      generate: async (input) => {
+        events.push(`generate:${input.settings.model}`)
+        if (input.settings.model === primary) {
+          throw new GenerationError(502, 'PROVIDER_UNAVAILABLE', '主 Provider 暂不可用。')
+        }
+        return { outputs: [{ id: 'output-a', image: '/api/media/output-a' }], missingOutputCount: 0 }
+      },
+    })
+    await processJob(storedJob.id)
+    assert.equal(storedJob.status, 'succeeded')
+    return events
+  }
+
+  assert.deepEqual(await runScenario({ primary: 'openai', fallback: 'flock' }), [
+    'read:1', 'generate:openai', 'admission:flock', 'read:2', 'generate:flock', 'release',
+  ])
+  assert.deepEqual(await runScenario({ primary: 'flock', fallback: 'openai' }), [
+    'admission:flock', 'read:1', 'generate:flock', 'generate:openai', 'release',
+  ])
+})
+
 test('语义兼容备用 Provider 成功后按实际模型与 Provider 归因且不复制任务', async () => {
   let storedJob = {
     id: 'job-provider-fallback', ownerId: 'user-a', projectId: 'project-a', status: 'queued', kind: 'generation',

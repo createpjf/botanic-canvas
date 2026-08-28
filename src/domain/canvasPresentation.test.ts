@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Edge } from '@xyflow/react'
-import { canvasZoomMode, generationJobErrorCopy, generationResultNodeLabel, generationTaskErrorMessage, generationTaskFeedback, generationTaskResultLabel, planResultGroupPresentation, traceCanvasLineage } from './canvasPresentation.ts'
+import { canvasZoomMode, displayGenerationResultLabel, generationJobErrorCopy, generationResultNodeLabel, generationTaskErrorMessage, generationTaskFeedback, generationTaskResultLabel, planResultGroupPresentation, traceCanvasLineage } from './canvasPresentation.ts'
 
 test('canvasZoomMode applies stable semantic zoom bands', () => {
   assert.equal(canvasZoomMode(1), 'detail')
@@ -11,6 +11,13 @@ test('canvasZoomMode applies stable semantic zoom bands', () => {
   assert.equal(canvasZoomMode(0.35), 'overview')
 })
 
+test('旧结果节点名去掉「候选」，编号名保持原样', () => {
+  assert.equal(displayGenerationResultLabel('首图候选 · 等待确认'), '首图 · 等待确认')
+  assert.equal(displayGenerationResultLabel('精修候选'), '精修')
+  assert.equal(displayGenerationResultLabel('首图 · 等待选择'), '首图 · 等待选择')
+  assert.equal(displayGenerationResultLabel('首图候选 01'), '首图候选 01')
+})
+
 test('generationTaskResultLabel distinguishes expired login from a real submission timeout', () => {
   assert.equal(generationTaskResultLabel({
     generationKind: 'generation',
@@ -18,7 +25,7 @@ test('generationTaskResultLabel distinguishes expired login from a real submissi
     previousTaskStatus: 'uploading',
     error: '请先登录 Botanic 工作区。',
     currentLabel: '首图候选 01',
-  }), '首图候选 · 登录已失效')
+  }), '首图 · 登录已失效')
 
   assert.equal(generationTaskResultLabel({
     generationKind: 'generation',
@@ -26,7 +33,7 @@ test('generationTaskResultLabel distinguishes expired login from a real submissi
     previousTaskStatus: 'uploading',
     error: '任务提交超过 5 分钟，未进入生成队列。请重试。',
     currentLabel: '首图候选 01',
-  }), '首图候选 · 提交超时')
+  }), '首图 · 提交超时')
 })
 
 test('提交成功后保留已有新图名，不用状态文案覆盖', () => {
@@ -61,7 +68,7 @@ test('提交状态未知时保持可恢复状态，不误报任务失败', () =>
     generationKind: 'generation',
     status: 'submission_unknown',
     currentLabel: '首图候选 01',
-  }), '首图候选 · 等待确认')
+  }), '首图 · 等待确认')
 
   assert.deepEqual(generationTaskFeedback('submission_unknown'), {
     title: '正在恢复任务',

@@ -4,7 +4,14 @@ import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { generationJobErrorCopy, generationTaskErrorMessage, generationTaskFeedback, type ResultGroupPresentation } from '../../domain/canvasPresentation'
 import { reducedAspectRatio } from '../../domain/mediaPresentation'
 import { mediaRetryUrl } from '../../domain/mediaRecovery'
-import { primaryGenerationReference, settingsForGenerationModel } from '../../domain/generationRecipe'
+import {
+  applyClarityBoost,
+  clarityBoostModel,
+  clearClarityBoost,
+  everydayResolutions,
+  primaryGenerationReference,
+  settingsForGenerationModel,
+} from '../../domain/generationRecipe'
 import { applyCustomGenerationSize, generationSettingsSizeLabel, modelSupportsCustomSize, withoutCustomGenerationSize } from '../../domain/generationOutputSize'
 import { videoAspectRatioPolicy } from '../../domain/videoGeneration'
 import { useMotionPresence } from '../../components/motionPresence'
@@ -25,7 +32,7 @@ const editorMessages = {
   'zh-CN': {
     options: (label: string) => `${label}选项`, imageName: '图片名称', rename: '点击重命名', removeFromCanvas: (name: string) => `从画布移除 ${name}`,
     connectFrom: (name: string) => `从 ${name} 连线`, dragToGenerator: '从这里拖到生成节点的输入端', description: '描述', content: (name: string) => `${name}内容`,
-    textPlaceholder: '写下视觉目标或文案要求', expandAll: '展开全文', collapse: '收起', fold: '折叠', textFooter: '连到生成节点，作为本次描述',
+    textPlaceholder: '写下描述或文案要求', expandAll: '展开全文', collapse: '收起', fold: '折叠', textFooter: '连到生成节点，作为本次描述',
     upstreamOutput: '上游输出', inputPort: (name: string) => `${name} 输入端`, connectVisual: '将图片或已选首图连到这里', autoOutput: (name: string) => `${name} 自动输出端`, autoOutputHint: '任务完成后，系统会自动创建输出图片',
     references: (count: number) => `${count} 参考`, connectedReferences: (count: number) => `已连接 ${count} 个参考`, connectReferences: '连接参考素材后即可生成', textConnected: '描述已连到文本节点', editGeneration: '点击节点，编辑本次生成描述与参数', editThis: '点击编辑本次生成', connectPrimary: '先连接主商品后生成',
     firstFrameTitle: '保持首帧', firstFrameDetail: '保持起始画面，比例跟随素材', firstLastTitle: '首尾帧', firstLastDetail: '补间两张图片，比例跟随素材', referenceTitle: '扩展画面', referenceDetail: '按所选比例智能补全，画面可能略有变化',
@@ -34,34 +41,34 @@ const editorMessages = {
     dragComposer: '拖动移动生成器', manageReferences: (count: number) => `管理本次 ${count} 个参考`, manageReferenceTitle: '管理参考', addReferenceAsset: '添加参考素材', addReferenceShort: '添加参考', collapseComposer: '折叠生成器', expandComposer: '展开生成器', closeComposer: '关闭生成器', close: '关闭',
     promptLabel: (name: string) => `${name}描述`, imagePrompt: '描述商品、场景、构图、光线与留白要求', videoPrompt: '描述主体动作、镜头运动、节奏与场景变化', refined: 'Botanic 结构润色已应用', refinePrompt: (video: boolean) => `润色${video ? '视频' : '图像'}生成描述`, refineTitle: '润色描述', refining: '正在按 Botanic 结构润色…', refineFallback: '润色失败，原文未修改。',
     videoInputMode: '视频输入模式', videoInput: '视频输入', chooseVideoInput: '选择视频输入方式', firstFrame: '首帧', firstLast: '首尾帧', referenceAsset: '参考素材', continuationMode: '继续生成方式', faithful: '忠实精修', explore: '探索变体', faithfulDetail: '保留构图与主体，仅执行描述中的改动。', exploreDetail: '保留主体，主动探索构图、机位与光影。',
-    commonSettings: '常用生成参数', model: '模型', chooseModel: '选择生成模型', duration: '时长', chooseDuration: '选择视频时长', candidates: '候选数', chooseCandidateCount: '选择候选数', output: '输出', followAsset: '跟随素材', frame: '画幅', decidedByInput: '由输入素材决定', chooseRatio: '选择画面比例', resolution: '清晰度', chooseResolution: '选择输出清晰度', customPixels: '自定义像素', multiple16: '须为 16 的倍数', width: '宽', height: '高', customWidth: '自定义输出宽度', customHeight: '自定义输出高度', invalidSize: '自定义宽高无效。', snapped: (width: number, height: number) => `已对齐为 ${width}×${height}`, apply: '应用',
+    commonSettings: '常用生成参数', model: '模型', chooseModel: '选择生成模型', duration: '时长', chooseDuration: '选择视频时长', candidates: '张数', chooseCandidateCount: '选择张数', resultSet: (index: number, total: number) => `${index}/${total} 张`, output: '输出', followAsset: '跟随素材', frame: '画幅', decidedByInput: '由输入素材决定', chooseRatio: '选择画面比例', resolution: '清晰度', chooseResolution: '选择输出清晰度', clarityBoost: '4K', searchGrounding: '参考网页', thinking: '思考', thinkingHigh: '充分', thinkingMinimal: '精简', customPixels: '自定义像素', multiple16: '须为 16 的倍数', width: '宽', height: '高', customWidth: '自定义输出宽度', customHeight: '自定义输出高度', invalidSize: '自定义宽高无效。', snapped: (width: number, height: number) => `已对齐为 ${width}×${height}`, apply: '应用',
     recovering: '正在确认任务，请勿重复提交…', uploading: '正在上传参考素材…', queued: '任务已入队…', serviceGenerating: (video: boolean) => `${video ? '视频' : '图像'}服务正在生成…`, primaryReference: (name: string) => `主参考 · ${name}`, ready: '参数已准备好，提交后会在画布中创建新的结果节点。', modeNeeds: (title: string, requirement: string) => `${title}模式需要${requirement}`, twoImages: '按顺序连接 2 张图片', oneImage: '连接 1 张图片', oneReference: '连接至少 1 个图片或视频参考', setPrimary: '连接并设置主商品后即可生成。', generating: '生成中…', generate: '生成',
-    taskStatuses: { uploading: '提交素材', submission_unknown: '等待确认', queued: '任务排队', running: '真实生成中', succeeded: '候选待选', failed: '任务失败', cancelled: '已取消' }, waitedSeconds: (seconds: number) => `已等待 ${seconds} 秒`, waitedMinutes: (minutes: number, seconds: number) => seconds ? `已等待 ${minutes} 分 ${seconds} 秒` : `已等待 ${minutes} 分`,
-    promptInput: '视觉目标输入端', promptOutput: '从视觉目标连线', refinementBrief: '定向精修指令', creativeDirection: '视觉目标', taskAttention: '任务需要处理', referenceInput: '参考组输入端', referenceOutput: '从参考组连线', primaryProduct: (name: string) => `主商品 · ${name}`, noPrimary: '未锁定主商品',
+    taskStatuses: { uploading: '提交素材', submission_unknown: '等待确认', queued: '任务排队', running: '生成中', succeeded: '待挑选', failed: '任务失败', cancelled: '已取消' }, waitedSeconds: (seconds: number) => `已等待 ${seconds} 秒`, waitedMinutes: (minutes: number, seconds: number) => seconds ? `已等待 ${minutes} 分 ${seconds} 秒` : `已等待 ${minutes} 分`,
+    promptInput: '描述输入端', promptOutput: '从描述连线', refinementBrief: '定向精修指令', creativeDirection: '描述', taskAttention: '任务需要处理', referenceInput: '参考组输入端', referenceOutput: '从参考组连线', primaryProduct: (name: string) => `主商品 · ${name}`, noPrimary: '未锁定主商品',
     refinedVersion: '精修版本', generatedVersion: '生成版本', automaticOutput: '自动输出端', writtenAutomatically: '由生成节点在任务完成后自动写入', connectResult: '从结果连线', connectVideoResult: '连接到 H3 节点作为参考视频', connectImageResult: '将这张生成结果连到下一生成节点', connectPendingResult: '任务完成后可将生成结果连到下一节点',
     deleteResult: (name: string) => `删除 ${name}`, deleteResultTitle: '删除这个结果节点', download: (name: string) => `下载 ${name}`, downloadOriginal: '下载原图', savedLabel: (name: string) => `${name} 已入库`, saveLabel: (name: string) => `将 ${name} 入库`, saved: '已入库', save: '入库', saveTitle: '存入素材库',
-    mediaUnavailable: '媒体无法显示', taskIncomplete: '任务未完成', taskCancelled: '任务已取消', waitingResult: '等待生成结果', mediaError: '媒体读取失败，可能是登录状态或网络中断。', waitingService: '等待生成服务返回结果。', realStatus: '生成服务的真实状态会在此同步。', reload: '重新加载', confirmNow: '立即确认', cancel: '取消', retryRecipe: '原配方重试', deleteTask: '删除任务', fillMissing: (count: number) => `补 ${count} 张`, collapseCandidates: '收起候选', viewCandidates: (count: number) => `查看 ${count} 个候选`, candidateCount: (count: number) => `${count} 个候选`, candidatesThisRun: '本次候选', chooseCandidateHint: '选择后在当前节点查看', waiting: '等待结果', branched: '已形成分支', current: '当前', view: '查看', agentEdit: 'Agent 修改', addNode: '添加节点',
+    mediaUnavailable: '媒体无法显示', taskIncomplete: '任务未完成', taskCancelled: '任务已取消', waitingResult: '等待生成结果', mediaError: '媒体读取失败，可能是登录状态或网络中断。', waitingService: '等待生成服务返回结果。', realStatus: '生成服务的真实状态会在此同步。', reload: '重新加载', confirmNow: '立即确认', cancel: '取消', retryRecipe: '用原参数重试', deleteTask: '删除任务', fillMissing: (count: number) => `补 ${count} 张`, collapseCandidates: '收起结果', viewCandidates: (count: number) => `查看 ${count} 张`, candidateCount: (count: number) => `${count} 张`, candidatesThisRun: '本次结果', chooseCandidateHint: '点一张在当前节点查看', waiting: '等待结果', branched: '已形成分支', current: '当前', view: '查看', agentEdit: 'Agent 修改', addNode: '添加节点',
     restoringTask: '正在恢复任务', noResubmit: '请勿重复提交，联网后自动确认', preparing: '准备生成', lockingReferences: '正在锁定参考', generatingTask: '正在生成', enteredQueue: '已进入队列', keepEditing: '可继续编辑画布', generationConnectionError: '生成服务连接中断，请重试。',
   },
   en: {
     options: (label: string) => `${label} options`, imageName: 'Image name', rename: 'Click to rename', removeFromCanvas: (name: string) => `Remove ${name} from canvas`,
     connectFrom: (name: string) => `Connect from ${name}`, dragToGenerator: 'Drag to a generation node input', description: 'Description', content: (name: string) => `${name} content`,
-    textPlaceholder: 'Describe the creative direction or copy requirements', expandAll: 'Show all', collapse: 'Collapse', fold: 'Fold', textFooter: 'Connect to a generation node as its description',
-    upstreamOutput: 'Upstream output', inputPort: (name: string) => `${name} input`, connectVisual: 'Connect an image or selected key visual here', autoOutput: (name: string) => `${name} automatic output`, autoOutputHint: 'The system creates an output automatically when the task finishes',
-    references: (count: number) => `${count} ${count === 1 ? 'reference' : 'references'}`, connectedReferences: (count: number) => `${count} ${count === 1 ? 'reference' : 'references'} connected`, connectReferences: 'Connect reference assets to generate', textConnected: 'Description connected to a text node', editGeneration: 'Select the node to edit its description and settings', editThis: 'Select to edit this generation', connectPrimary: 'Connect a primary product to generate',
-    firstFrameTitle: 'Keep first frame', firstFrameDetail: 'Keep the opening frame and follow the source ratio', firstLastTitle: 'First and last frames', firstLastDetail: 'Interpolate between two images and follow their ratio', referenceTitle: 'Extend frame', referenceDetail: 'Extend intelligently to the selected ratio; the image may change slightly',
+    textPlaceholder: 'Prompt or copy notes', expandAll: 'Show all', collapse: 'Collapse', fold: 'Fold', textFooter: 'Connect to a generation node as the prompt',
+    upstreamOutput: 'Upstream output', inputPort: (name: string) => `${name} input`, connectVisual: 'Connect an image or selected key visual', autoOutput: (name: string) => `${name} automatic output`, autoOutputHint: 'Created automatically when the task finishes',
+    references: (count: number) => `${count} ${count === 1 ? 'reference' : 'references'}`, connectedReferences: (count: number) => `${count} ${count === 1 ? 'reference' : 'references'} connected`, connectReferences: 'Connect refs to generate', textConnected: 'Prompt connected to a text node', editGeneration: 'Select to edit prompt and settings', editThis: 'Select to edit this generation', connectPrimary: 'Connect a primary product first',
+    firstFrameTitle: 'Keep first frame', firstFrameDetail: 'Keep the opening frame; ratio follows the source', firstLastTitle: 'First and last frames', firstLastDetail: 'Interpolate two images; ratio follows the source', referenceTitle: 'Extend frame', referenceDetail: 'Fill to the selected ratio. The frame may shift.',
     addTail: 'Add an ending frame', addFirstLast: 'Add first and ending frames', addFirst: 'Add a first frame', addReference: 'Add a reference asset', firstBadge: 'F', lastBadge: 'L',
     refineFailed: 'Refinement failed.', unchanged: (detail: string) => `${detail.replace(/[.!?]+$/, '')}. The original text was not changed.`, composerLabel: (result: boolean, name: string) => `${result ? 'Continue from this image' : 'Generator'}: ${name}`,
     dragComposer: 'Drag to move generator', manageReferences: (count: number) => `Manage ${count} ${count === 1 ? 'reference' : 'references'}`, manageReferenceTitle: 'Manage references', addReferenceAsset: 'Add reference asset', addReferenceShort: 'Add reference', collapseComposer: 'Collapse generator', expandComposer: 'Expand generator', closeComposer: 'Close generator', close: 'Close',
-    promptLabel: (name: string) => `${name} description`, imagePrompt: 'Describe the product, scene, composition, lighting, and negative space', videoPrompt: 'Describe subject motion, camera movement, pacing, and scene changes', refined: 'Botanic structured refinement applied', refinePrompt: (video: boolean) => `Refine ${video ? 'video' : 'image'} prompt`, refineTitle: 'Refine prompt', refining: 'Refining with Botanic structure…', refineFallback: 'Refinement failed. The original text was not changed.',
-    videoInputMode: 'Video input mode', videoInput: 'Video input', chooseVideoInput: 'Choose a video input method', firstFrame: 'First frame', firstLast: 'First + last', referenceAsset: 'Reference asset', continuationMode: 'Continuation mode', faithful: 'Faithful edit', explore: 'Explore variations', faithfulDetail: 'Keep the composition and subject; apply only the requested edits.', exploreDetail: 'Keep the subject while exploring composition, camera angle, and lighting.',
-    commonSettings: 'Generation settings', model: 'Model', chooseModel: 'Choose generation model', duration: 'Duration', chooseDuration: 'Choose video duration', candidates: 'Candidates', chooseCandidateCount: 'Choose candidate count', output: 'Output', followAsset: 'Follow source', frame: 'Aspect ratio', decidedByInput: 'Determined by input assets', chooseRatio: 'Choose aspect ratio', resolution: 'Resolution', chooseResolution: 'Choose output resolution', customPixels: 'Custom pixels', multiple16: 'Must be a multiple of 16', width: 'W', height: 'H', customWidth: 'Custom output width', customHeight: 'Custom output height', invalidSize: 'Invalid custom dimensions.', snapped: (width: number, height: number) => `Adjusted to ${width}×${height}`, apply: 'Apply',
-    recovering: 'Confirming task. Do not submit again…', uploading: 'Uploading reference assets…', queued: 'Task queued…', serviceGenerating: (video: boolean) => `${video ? 'Video' : 'Image'} service is generating…`, primaryReference: (name: string) => `Primary reference · ${name}`, ready: 'Ready to submit. A new result node will be created on the canvas.', modeNeeds: (title: string, requirement: string) => `${title} mode requires ${requirement}`, twoImages: '2 images connected in order', oneImage: '1 connected image', oneReference: 'at least 1 image or video reference', setPrimary: 'Connect and set a primary product to generate.', generating: 'Generating…', generate: 'Generate',
-    taskStatuses: { uploading: 'Uploading assets', submission_unknown: 'Awaiting confirmation', queued: 'Queued', running: 'Generating', succeeded: 'Candidates ready', failed: 'Failed', cancelled: 'Cancelled' }, waitedSeconds: (seconds: number) => `Waiting ${seconds}s`, waitedMinutes: (minutes: number, seconds: number) => seconds ? `Waiting ${minutes}m ${seconds}s` : `Waiting ${minutes}m`,
-    promptInput: 'Creative direction input', promptOutput: 'Connect from creative direction', refinementBrief: 'Directed refinement brief', creativeDirection: 'Creative direction', taskAttention: 'Task needs attention', referenceInput: 'Reference group input', referenceOutput: 'Connect from reference group', primaryProduct: (name: string) => `Primary product · ${name}`, noPrimary: 'No primary product',
+    promptLabel: (name: string) => `${name} description`, imagePrompt: 'Product, scene, composition, light, and negative space', videoPrompt: 'Subject motion, camera, pacing, and scene change', refined: 'Botanic structure applied', refinePrompt: (video: boolean) => `Refine ${video ? 'video' : 'image'} prompt`, refineTitle: 'Refine prompt', refining: 'Refining with Botanic structure…', refineFallback: 'Refinement failed. Original text kept.',
+    videoInputMode: 'Video input mode', videoInput: 'Video input', chooseVideoInput: 'Choose video input', firstFrame: 'First frame', firstLast: 'First + last', referenceAsset: 'Reference asset', continuationMode: 'Continuation mode', faithful: 'Faithful edit', explore: 'Explore variations', faithfulDetail: 'Keep composition and subject. Apply only the requested edits.', exploreDetail: 'Keep the subject. Explore framing, camera, and light.',
+    commonSettings: 'Generation settings', model: 'Model', chooseModel: 'Choose generation model', duration: 'Duration', chooseDuration: 'Choose video duration', candidates: 'Images', chooseCandidateCount: 'Choose image count', resultSet: (index: number, total: number) => `${index}/${total}`, output: 'Output', followAsset: 'Follow source', frame: 'Aspect ratio', decidedByInput: 'Determined by input assets', chooseRatio: 'Choose aspect ratio', resolution: 'Resolution', chooseResolution: 'Choose output resolution', clarityBoost: '4K', searchGrounding: 'Web reference', thinking: 'Thinking', thinkingHigh: 'High', thinkingMinimal: 'Minimal', customPixels: 'Custom pixels', multiple16: 'Must be a multiple of 16', width: 'W', height: 'H', customWidth: 'Custom output width', customHeight: 'Custom output height', invalidSize: 'Invalid custom dimensions.', snapped: (width: number, height: number) => `Adjusted to ${width}×${height}`, apply: 'Apply',
+    recovering: 'Confirming task. Do not submit again…', uploading: 'Uploading refs…', queued: 'Task queued…', serviceGenerating: (video: boolean) => `${video ? 'Video' : 'Image'} service is generating…`, primaryReference: (name: string) => `Primary reference · ${name}`, ready: 'Ready. Submit to create a result node.', modeNeeds: (title: string, requirement: string) => `${title} mode needs ${requirement}`, twoImages: '2 images in order', oneImage: '1 connected image', oneReference: 'at least 1 image or video ref', setPrimary: 'Set a primary product to generate.', generating: 'Generating…', generate: 'Generate',
+    taskStatuses: { uploading: 'Uploading assets', submission_unknown: 'Awaiting confirmation', queued: 'Queued', running: 'Generating', succeeded: 'Ready to pick', failed: 'Failed', cancelled: 'Cancelled' }, waitedSeconds: (seconds: number) => `Waiting ${seconds}s`, waitedMinutes: (minutes: number, seconds: number) => seconds ? `Waiting ${minutes}m ${seconds}s` : `Waiting ${minutes}m`,
+    promptInput: 'Prompt input', promptOutput: 'Connect from prompt', refinementBrief: 'Directed refinement brief', creativeDirection: 'Prompt', taskAttention: 'Task needs attention', referenceInput: 'Reference group input', referenceOutput: 'Connect from reference group', primaryProduct: (name: string) => `Primary product · ${name}`, noPrimary: 'No primary product',
     refinedVersion: 'Refined version', generatedVersion: 'Generated version', automaticOutput: 'Automatic output', writtenAutomatically: 'Written automatically when the generation task finishes', connectResult: 'Connect from result', connectVideoResult: 'Connect to an H3 node as a video reference', connectImageResult: 'Connect this result to the next generation node', connectPendingResult: 'Connect this result to the next node when the task finishes',
     deleteResult: (name: string) => `Delete ${name}`, deleteResultTitle: 'Delete this result node', download: (name: string) => `Download ${name}`, downloadOriginal: 'Download original', savedLabel: (name: string) => `${name} saved`, saveLabel: (name: string) => `Save ${name} to library`, saved: 'Saved', save: 'Save', saveTitle: 'Save to asset library',
-    mediaUnavailable: 'Media unavailable', taskIncomplete: 'Task incomplete', taskCancelled: 'Task cancelled', waitingResult: 'Waiting for result', mediaError: 'The media could not be loaded. Your session or network may have been interrupted.', waitingService: 'Waiting for the generation service to return a result.', realStatus: 'The confirmed generation status will appear here.', reload: 'Reload', confirmNow: 'Confirm now', cancel: 'Cancel', retryRecipe: 'Retry recipe', deleteTask: 'Delete task', fillMissing: (count: number) => `Generate ${count} missing`, collapseCandidates: 'Collapse candidates', viewCandidates: (count: number) => `View ${count} candidates`, candidateCount: (count: number) => `${count} candidates`, candidatesThisRun: 'Candidates from this run', chooseCandidateHint: 'Select one to view it in the current node', waiting: 'Waiting', branched: 'Branched', current: 'Current', view: 'View', agentEdit: 'Edit with Agent', addNode: 'Add node',
+    mediaUnavailable: 'Media unavailable', taskIncomplete: 'Task incomplete', taskCancelled: 'Task cancelled', waitingResult: 'Waiting for result', mediaError: 'The media could not be loaded. Your session or network may have been interrupted.', waitingService: 'Waiting for the generation service to return a result.', realStatus: 'The confirmed generation status will appear here.', reload: 'Reload', confirmNow: 'Confirm now', cancel: 'Cancel', retryRecipe: 'Retry with original settings', deleteTask: 'Delete task', fillMissing: (count: number) => `Generate ${count} missing`, collapseCandidates: 'Collapse results', viewCandidates: (count: number) => `View ${count} ${count === 1 ? 'image' : 'images'}`, candidateCount: (count: number) => `${count} ${count === 1 ? 'image' : 'images'}`, candidatesThisRun: 'This run', chooseCandidateHint: 'Select one to view it on this node', waiting: 'Waiting', branched: 'Branched', current: 'Current', view: 'View', agentEdit: 'Edit with Agent', addNode: 'Add node',
     restoringTask: 'Restoring task', noResubmit: 'Do not submit again. It will be confirmed when you reconnect.', preparing: 'Preparing generation', lockingReferences: 'Locking references', generatingTask: 'Generating', enteredQueue: 'Entered queue', keepEditing: 'You can keep editing the canvas', generationConnectionError: 'The generation service connection was interrupted. Try again.',
   },
 } as const
@@ -465,7 +472,7 @@ function GenerateNode({ data, id, selected }: NodeProps) {
     }
     if (node.type === 'result') {
       const result = node.data as ResultNodeData
-      return result.image ? [{ id: node.id, image: result.image, name: result.label ?? t.upstreamOutput, mediaKind: result.mediaKind ?? 'image' }] : []
+      return result.image ? [{ id: node.id, image: result.image, name: result.label ? canvasSystemLabel(result.label, locale) : t.upstreamOutput, mediaKind: result.mediaKind ?? 'image' }] : []
     }
     return []
   })
@@ -958,12 +965,49 @@ export function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount,
                   <section>
                     <header><strong>{t.resolution}</strong></header>
                     <div className="composer-resolution-grid" role="radiogroup" aria-label={t.chooseResolution}>
-                      {(selectedModel?.resolutions ?? ['1K', '2K']).map((resolution) => <button key={resolution} type="button" role="radio" aria-checked={settings.resolution === resolution} className={settings.resolution === resolution ? 'is-selected' : ''} onClick={() => {
+                      {everydayResolutions(selectedModel).map((resolution) => <button key={resolution} type="button" role="radio" aria-checked={settings.resolution === resolution} className={settings.resolution === resolution ? 'is-selected' : ''} onClick={() => {
                         updateSettings({ resolution: resolution as GenerationSettings['resolution'] })
                         close()
                       }}>{resolution}</button>)}
+                      {clarityBoostModel(models) ? (
+                        <button
+                          type="button"
+                          role="radio"
+                          aria-checked={settings.resolution === '4K'}
+                          className={settings.resolution === '4K' ? 'is-selected' : ''}
+                          disabled={interactionLocked}
+                          onClick={() => {
+                            onSettingsChange(settings.resolution === '4K'
+                              ? clearClarityBoost(settings, models)
+                              : applyClarityBoost(settings, models))
+                            close()
+                          }}
+                        >{t.clarityBoost}</button>
+                      ) : null}
                     </div>
                   </section>
+                  {selectedModel?.supportsSearchGrounding || selectedModel?.thinkingLevels?.length ? (
+                    <section>
+                      <header><strong>{t.searchGrounding}</strong></header>
+                      <div className="composer-resolution-grid">
+                        {selectedModel.supportsSearchGrounding ? (
+                          <button type="button" className={settings.searchGrounding !== false ? 'is-selected' : ''} onClick={() => updateSettings({ searchGrounding: settings.searchGrounding === false })}>
+                            {t.searchGrounding}
+                          </button>
+                        ) : null}
+                        {selectedModel.thinkingLevels?.includes('high') ? (
+                          <button type="button" className={(settings.thinkingLevel ?? 'high') === 'high' ? 'is-selected' : ''} onClick={() => updateSettings({ thinkingLevel: 'high' })}>
+                            {t.thinkingHigh}
+                          </button>
+                        ) : null}
+                        {selectedModel.thinkingLevels?.includes('minimal') ? (
+                          <button type="button" className={settings.thinkingLevel === 'minimal' ? 'is-selected' : ''} onClick={() => updateSettings({ thinkingLevel: 'minimal' })}>
+                            {t.thinkingMinimal}
+                          </button>
+                        ) : null}
+                      </div>
+                    </section>
+                  ) : null}
                   {allowCustomSize ? <section>
                     <header><strong>{t.customPixels}</strong><small>{t.multiple16}</small></header>
                     <div className="composer-custom-size">
@@ -1285,7 +1329,7 @@ function ResultNode({ data, id, selected }: NodeProps) {
           aria-label={resultGroup.expanded ? t.collapseCandidates : t.viewCandidates(resultGroup.total)}
           onPointerDown={(event) => event.stopPropagation()}
           onClick={(event) => { event.stopPropagation(); presentation?.onToggleGroup?.(resultGroup.groupId) }}
-        >{resultGroup.index}/{resultGroup.total} {t.candidates} <span>{resultGroup.expanded ? '⌃' : '⌄'}</span></button> : null}
+        >{t.resultSet(resultGroup.index, resultGroup.total)} <span>{resultGroup.expanded ? '⌃' : '⌄'}</span></button> : null}
       </div>
       {isGenerating ? (
         <div className="result-node__task-copy">

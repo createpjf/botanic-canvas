@@ -48,6 +48,7 @@ function mergeWorkflowNodes(items, additions, submission) {
 function providerName(model) {
   if (!model) throw new AgentToolRuntimeError('AGENT_MODEL_NOT_CONFIGURED', 'Agent 计划使用的生成模型尚未配置。', 503)
   if (model.provider === 'minimax') return model.mediaKind === 'video' ? 'minimax-video' : 'minimax-image'
+  if (model.provider === 'flock') return 'flock-image'
   return 'openai-images'
 }
 

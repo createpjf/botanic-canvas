@@ -32,7 +32,7 @@ UI（App / features / components）
 | Adapter | `server/*Store.mjs`、`server/objectStore.mjs` 等 | 产品存储、媒体、队列、第三方图像能力 | 各自外部系统；由 `server/runtime.mjs` 选择并组装 |
 
 模型能力由 `server/generationModels.mjs` 统一声明，Worker 只能经
-`server/generationService.mjs` 路由到 OpenAI、MiniMax Image 或 MiniMax H3。
+`server/generationService.mjs` 路由到 OpenAI、MiniMax Image、MiniMax H3 或 Flock 生图。
 所有供应商输出都先转成 `{ mediaKind, mimeType, buffer }`，再由媒体服务持久化；
 H3 的 MP4 与历史图片共用授权 URL，但历史缺少 `mediaKind` 时始终按图片兼容读取。
 
@@ -42,7 +42,7 @@ H3 的 MP4 与历史图片共用授权 URL，但历史缺少 `mediaKind` 时始�
 
 `canvasDocumentMigration.ts` 与 `canvasDocumentAssets.ts` 分别拥有版本迁移、引用清理及模板快照，不发起 I/O；`canvasGenerationProjection.ts` 只把任务与批量分支投影为画布文档；`canvasGenerationActions.ts` 自持普通生成的幂等提交、轮询、取消与恢复；`canvasDocumentLifecycleActions.ts` 统一项目打开、远端刷新、新建与重命名；`canvasAssetGraphActions.ts` 统一画布图谱、参考素材、素材组和可编辑节点命令；模板/历史、Agent、批量变体分别由对应 Actions 模块拥有。本地持久化模式不发起服务端生成结果对账。
 
-`src/features/canvas/workspaceProjectCoordinator.ts` 统一拥有项目摘要读取、过期请求失效、模板建项、重命名与乐观删除；`useCanvasWorkspaceSynchronization.ts` 统一拥有本地草稿同步、页面恢复、Realtime/Yjs 协作和 Agent Run 追踪；`useCanvasAgentExecutionBridge.ts` 统一 Agent 上下文、Run、Artifact 与画布写回；`useCanvasInteractionCoordinator.ts` 统一 React Flow 变更、视口、连线、边操作和文件拖放。`CanvasWorkspace.tsx` 只组合导航、面板与上述协调器。
+`src/features/canvas/workspaceProjectCoordinator.ts` 统一拥有项目摘要读取、过期请求失效、模板建项、重命名与乐观删除；`useCanvasWorkspaceSynchronization.ts` 统一拥有本地草稿同步、页面恢复、Realtime/Yjs 协作和 Agent Run 追踪；`useCanvasAgentExecutionBridge.ts` 统一 Agent 上下文、Run、Artifact 与画布写回；`useCanvasInteractionCoordinator.ts` 统一 React Flow 变更、视口、连线、边操作和文件拖放；`canvasGenerationInteraction.ts` 统一 4K 分支配方、提交竞态与结果导航。`CanvasWorkspace.tsx` 只组合导航、面板与上述协调器。
 
 ## 受保护的稳定接口
 
@@ -295,6 +295,11 @@ Store 行锁内按 branch attempt、`activeJobId`、分支时间和终态优先�
 语义完全兼容时才切换备用模型；否则返回明确的不可安全切换提示。重试和备用模型继续使用原任务 ID 与幂等键，不能创建
 第二个任务或第二次预算预留。备用 Provider 真正接管后，任务的 `effectiveModel`、尝试记录与消耗归因同时更新为实际执行方，
 不会把备用模型消耗误记到原模型。
+
+Flock 图生图在 `generationProviderAdmission.mjs` 取得进程级高内存许可后才解码 data URL 或读取媒体 ID；等待许可受同一任务
+deadline 与取消信号约束，跨 Provider fallback 只有真正进入 Flock 时才重新物化输入。许可覆盖 Provider、输出持久化与仍持有
+输入 Buffer 的 fallback 区间，避免 Worker 并发把 48MB 单任务预算放大为进程 OOM。用户上传仍限制 8MB；Provider 图片统一按
+32MB 输出契约保存，并可作为下一轮受控媒体 ID 输入，单任务全部参考、父图与蒙版仍共用 48MB 总预算。
 
 ## 版本化生产工作流
 

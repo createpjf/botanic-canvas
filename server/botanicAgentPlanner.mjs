@@ -14,6 +14,7 @@ import {
   BotanicCreativeBriefValidationError,
   validateBotanicCreativeBrief,
 } from './botanicCreativeBrief.mjs'
+import { GENERATION_ASPECT_RATIOS, GENERATION_RESOLUTIONS } from './generationVocabulary.mjs'
 import {
   applyBotanicAgentVariationToPlan,
   botanicAgentLooksLikePlannerNarration,
@@ -38,8 +39,8 @@ const DIMENSIONS = new Set([
   'composition', 'lighting', 'aspect_ratio', 'copy_space',
 ])
 const MODES = new Set(['preserve', 'vary'])
-const ASPECT_RATIOS = ['1:1', '16:9', '4:3', '3:4', '4:5', '9:16']
-const RESOLUTIONS = ['1K', '2K']
+const ASPECT_RATIOS = [...GENERATION_ASPECT_RATIOS]
+const RESOLUTIONS = [...GENERATION_RESOLUTIONS]
 const CLARIFICATION_FIELDS = new Set([...botanicCreativeBriefFieldIds, ...botanicAgentVariationClarificationFieldIds])
 const DELIVERY_OPTIONS = [
   { value: 'taobao', label: '淘宝 / 天猫', description: '1:1 · 800×800' },
@@ -96,7 +97,7 @@ const VARY_SHORT_TITLE = Object.freeze({
   person: '换人', garment: '换装', product: '换品', scene: '换景', style: '换风',
   pose: '换姿', composition: '构图', lighting: '调光', aspect_ratio: '比例', copy_space: '留白',
 })
-const DEFAULT_AGENT_MODELS = ['deepseek-v4-pro', 'deepseek-v4-flash', 'kimi-k3', 'gemini-3.6-flash', 'glm-5']
+const DEFAULT_AGENT_MODELS = ['deepseek-v4-flash-vision-exp', 'kimi-k3', 'gemini-3.7-flash', 'glm-5']
 
 export class BotanicAgentPlannerError extends Error {
   constructor(statusCode, code, message) {

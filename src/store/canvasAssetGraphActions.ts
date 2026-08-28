@@ -9,7 +9,9 @@ import {
   clampBatchCount,
   cloneGenerationSettings,
   connectedGenerateInputs,
+  defaultImageGenerationModel,
   defaultSettingsForModel,
+  maximumReferencesForModel,
   normalizeGenerateNodeInputs,
 } from '../domain/generationRecipe'
 import type { CanvasGenerationReference } from '../domain/generationRecipe'
@@ -321,10 +323,15 @@ export function createCanvasAssetGraphActions({
         },
       }
       const target = connectToGenerateId ? document.nodes.find((item) => item.id === connectToGenerateId && item.type === 'generate') : undefined
-      const connectedAssetCount = target
-        ? document.edges.filter((edge) => edge.target === target.id && document.nodes.some((item) => item.id === edge.source && item.type === 'asset')).length
+      const targetData = target?.type === 'generate' ? target.data as GenerateNodeData : undefined
+      const targetModel = targetData
+        ? get().availableModels.find((model) => model.id === targetData.settings.model)
+        : undefined
+      const maximumReferences = maximumReferencesForModel(targetModel)
+      const connectedReferenceCount = target
+        ? connectedGenerateInputs(document, target.id).filter((item) => item.type === 'asset' || item.type === 'result').length
         : 0
-      const canConnect = Boolean(target && connectedAssetCount < 8)
+      const canConnect = Boolean(target && connectedReferenceCount < maximumReferences)
       const edges = canConnect && target
         ? [...document.edges, {
             id: `graph-edge-${nodeId}-${target.id}-${Date.now()}`,
@@ -341,7 +348,7 @@ export function createCanvasAssetGraphActions({
         assistantMessage: canConnect
           ? `已将「${asset.name}」加入画布，并连接到「${(target!.data as GenerateNodeData).label}」。`
           : target
-            ? `已将「${asset.name}」加入画布；「${(target.data as GenerateNodeData).label}」最多可连接 8 张图片。`
+            ? `已将「${asset.name}」加入画布；「${(target.data as GenerateNodeData).label}」最多可连接 ${maximumReferences} 个参考素材。`
             : `已将「${asset.name}」加入画布，可拖拽调整位置。`,
       })
     },
@@ -366,7 +373,7 @@ export function createCanvasAssetGraphActions({
         ...document,
         assets: [...assets, ...document.assets],
         assetGroups: upsertCollectionGroups(document.assetGroups, assets, timestamp),
-      }, { assistantMessage: `已将 ${assets.length} 张本地素材存入当前项目素材库。拖入画布后，可将它们作为真实生成参考。` })
+      }, { assistantMessage: `已将 ${assets.length} 张本地素材存入当前项目素材库。拖入画布后，可将它们作为生成参考。` })
     },
 
     addUploadedAssetsToCanvas: (uploads, dropPosition) => {
@@ -575,7 +582,7 @@ export function createCanvasAssetGraphActions({
     addGenerateNode: (position, mediaKind = 'image', inputNodeIds) => {
       const document = get().document
       const nodeId = `generate-${Date.now()}`
-      const matchingModel = get().availableModels.find((model) => (model.mediaKind ?? 'image') === mediaKind)
+      const matchingModel = defaultImageGenerationModel(get().availableModels, mediaKind)
       if (!matchingModel && mediaKind === 'video') {
         set({ assistantMessage: '视频模型尚未配置，请先检查 MiniMax H3。' })
         return null
@@ -585,7 +592,7 @@ export function createCanvasAssetGraphActions({
         nodeId,
         position: position ?? { x: 470, y: 240 },
         mediaKind,
-        settings: defaultSettingsForModel(matchingModel),
+        settings: defaultSettingsForModel(matchingModel ?? defaultImageGenerationModel(get().availableModels, mediaKind)),
         inputNodeIds,
       })
       void commitDocument({
@@ -738,7 +745,7 @@ export function createCanvasAssetGraphActions({
         selectedNodeId: nodeId,
         assistantMessage: missingReferenceCount
           ? `已从「${result.label ?? '已选输出'}」新建独立首图节点，恢复 ${restoredInputs.length} 个原始参考；${missingReferenceCount} 个素材已不在画布中。`
-          : `已从「${result.label ?? '已选输出'}」新建独立首图节点，并恢复原始配方与 ${restoredInputs.length} 个参考。`,
+          : `已从「${result.label ?? '已选输出'}」新建独立首图节点，并恢复原始参数与 ${restoredInputs.length} 个参考。`,
       })
       return nodeId
     },

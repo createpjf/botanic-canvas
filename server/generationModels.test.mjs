@@ -42,6 +42,44 @@ test('gpt-image-2 打开 16:9 / 4:3 与自定义像素，其它 GPT 模型保持
   assert.equal(catalog.find((model) => model.id === 'gpt-image-1')?.supportsCustomSize, undefined)
 })
 
+test('有 Flock key 才出现 Nano Banana，并声明十档比例、4K 与 14 张参考', () => {
+  const withoutKey = createGenerationModelCatalog({
+    openAIApiKey: 'openai-key',
+    openAIModels: ['gpt-image-2'],
+    flockApiKey: '',
+    flockImageModels: ['gemini-3.1-pro-preview'],
+  })
+  assert.equal(withoutKey.some((model) => model.id === 'gemini-3.1-pro-preview'), false)
+
+  const catalog = createGenerationModelCatalog({
+    openAIApiKey: 'openai-key',
+    openAIModels: ['gpt-image-2'],
+    flockApiKey: 'flock-key',
+    flockImageModels: ['gemini-3.1-pro-preview'],
+  })
+  const nanoBanana = catalog.find((model) => model.id === 'gemini-3.1-pro-preview')
+  assert.equal(nanoBanana?.label, 'Nano Banana')
+  assert.equal(nanoBanana?.provider, 'flock')
+  assert.equal(nanoBanana?.supportsMask, false)
+  assert.equal(nanoBanana?.supportsCustomSize, false)
+  assert.equal(nanoBanana?.supportsSearchGrounding, true)
+  assert.deepEqual(nanoBanana?.thinkingLevels, ['minimal', 'high'])
+  assert.equal(nanoBanana?.maximumReferences, 14)
+  assert.deepEqual(nanoBanana?.aspectRatios, [
+    '1:1', '16:9', '4:3', '3:4', '4:5', '9:16', '3:2', '2:3', '5:4', '21:9',
+  ])
+  assert.deepEqual(nanoBanana?.resolutions, ['1K', '2K', '4K'])
+  assert.equal(catalog[0].id, 'gpt-image-2')
+})
+
+test('未知 Flock 型号不会冒充 Nano Banana 能力进入目录', () => {
+  const catalog = createGenerationModelCatalog({
+    flockApiKey: 'flock-key',
+    flockImageModels: ['unknown-image-model', 'gemini-3.1-pro-preview'],
+  })
+  assert.deepEqual(catalog.map((model) => model.id), ['gemini-3.1-pro-preview'])
+})
+
 test('读时超时收口写 errorCode，重试策略才分类得了', () => {
   // 端到端冒烟实测到的缺陷：任务 300 秒后收口为 failed，errorCode 却是 undefined。
   // agentBranchRetryPolicy 于是返回 error_code_unknown 停在待人工，永远不自动重试 ——

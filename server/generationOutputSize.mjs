@@ -27,7 +27,7 @@ const catalogSizes = {
   },
 }
 
-const catalogAspectRatios = ['1:1', '16:9', '4:3', '3:4', '4:5', '9:16']
+const catalogAspectRatios = ['1:1', '16:9', '4:3', '3:4', '4:5', '9:16', '3:2', '2:3', '5:4', '21:9']
 export const gptImage2CatalogAspectRatios = ['1:1', '16:9', '4:3', '3:4', '4:5', '9:16']
 export const gptImage1CatalogAspectRatios = ['1:1', '3:4', '4:5', '9:16']
 

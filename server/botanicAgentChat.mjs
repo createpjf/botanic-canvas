@@ -9,6 +9,7 @@ import {
   describeBotanicAgentContextImages,
   resolveBotanicAgentVisionParts,
 } from './botanicAgentVision.mjs'
+import { captionAgentVisionModel, nativeAgentVisionModel } from './botanicAgentVisionCapability.mjs'
 import { readStreamedChatCompletion } from './botanicAgentStream.mjs'
 import { botanicAgentContextToolSourceLabels, createBotanicAgentReadToolDefinitions } from './botanicAgentContextTools.mjs'
 import { botanicAgentMountedSkillBriefing, botanicAgentSearchableSkills, resolveBotanicAgentMountedSkills } from './botanicAgentTools.mjs'
@@ -333,22 +334,23 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
     streaming,
   }
 
-  // 原生多模态优先：引用图片直接随消息附给视觉模型。失败且尚未发出任何流事件时
-  // 回退「caption 描述 + 文本模型」；已经开始推送就只能把失败作为事件送达，不能重放。
-  const visionModel = typeof runtimeConfig?.agentVisionModel === 'string' ? runtimeConfig.agentVisionModel.trim() : ''
-  const visionParts = visionModel
+  // 原生多模态只跟 Composer 所选走：所选模型能看图才把图片附给它。
+  // 失败且尚未发出任何流事件时回退 caption + 所选文本模型。
+  const nativeVisionModel = nativeAgentVisionModel(config.model)
+  const captionVisionModel = captionAgentVisionModel(runtimeConfig)
+  const visionParts = nativeVisionModel || captionVisionModel
     ? await resolveBotanicAgentVisionParts({
       document: options.document,
       contextNodeIds: input.contextNodeIds,
       resolveMedia: options.resolveVisionMedia,
     }).catch(() => [])
     : []
-  if (visionParts.length && resumeAttemptId !== 'chat_text') {
+  if (visionParts.length && nativeVisionModel && resumeAttemptId !== 'chat_text') {
     try {
       return await executeChatAttempt({
         ...attemptShared,
         attemptId: 'chat_vision',
-        model: visionModel,
+        model: nativeVisionModel,
         system: [
           baseSystem,
           botanicAgentMountedSkillBriefing(mountedSkills, input.locale),
@@ -365,7 +367,7 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
       if (!recoverable) throw caught
     }
   }
-  if (resumeAttemptId === 'chat_vision' && !visionParts.length) {
+  if (resumeAttemptId === 'chat_vision' && (!nativeVisionModel || !visionParts.length)) {
     throw new BotanicAgentChatError(409, 'AGENT_TURN_CHECKPOINT_SNAPSHOT_MISMATCH', '原视觉对话上下文已不可用，无法安全恢复。')
   }
 
