@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { AgentToolRuntimeError, createAgentToolRegistry, executeConfirmedAgentAction, freezeAgentStepSnapshot, runAgentToolLoop, toolEventPresentation } from './agentToolRuntime.mjs'
+import { estimateAgentContextTokens } from './agentContextBudget.mjs'
 
 test('Tool Registry 以 OpenAI 兼容函数协议暴露受控工具并执行参数校验', async () => {
   const registry = createAgentToolRegistry([
@@ -95,6 +96,187 @@ test('Agent Tool Loop 执行模型函数调用并保留可展示的工具轨迹'
   }])
 })
 
+test('未提供 Model Context 时保持 legacy callModel 请求形状', async () => {
+  const registry = createAgentToolRegistry([])
+  let request
+  const result = await runAgentToolLoop({
+    registry,
+    messages: [{ role: 'user', content: '你好' }],
+    callModel: async (input) => {
+      request = input
+      return { choices: [{ message: { role: 'assistant', content: '你好' } }] }
+    },
+  })
+
+  assert.equal(result.output, '你好')
+  assert.deepEqual(Object.keys(request), ['messages', 'tools', 'tool_choice', 'step'])
+  assert.deepEqual(request, {
+    messages: [{ role: 'user', content: '你好' }],
+    tools: [],
+    tool_choice: 'auto',
+    step: 0,
+  })
+})
+
+test('Model Context 每步 prepare，模型响应后 observe 归一化 usage', async () => {
+  const registry = createAgentToolRegistry([{
+    name: 'probe', label: '探针', description: '读取探针。', risk: 'read',
+    parameters: { type: 'object', properties: {} },
+    validate: (value) => value,
+    execute: async () => ({ ok: true }),
+  }])
+  const attempt = { id: 'attempt-context-1' }
+  const order = []
+  const prepareInputs = []
+  const modelRequests = []
+  const observations = []
+  const preparedValues = [{ key: 'prepared-0' }, { key: 'prepared-1' }]
+  const modelContext = {
+    prepare: async (input) => {
+      order.push(`prepare:${input.step}`)
+      prepareInputs.push(input)
+      if (input.step === 0) {
+        return {
+          messages: [...input.messages, { role: 'system', content: 'prepared-step-0' }],
+          tools: input.tools.map((tool) => ({ ...tool, preparedForStep: 0 })),
+          prepared: preparedValues[0],
+        }
+      }
+      return { prepared: preparedValues[1] }
+    },
+    observe: async (input) => {
+      order.push(`observe:${input.step}`)
+      observations.push(input)
+    },
+  }
+  let modelCall = 0
+  const result = await runAgentToolLoop({
+    registry,
+    messages: [{ role: 'user', content: '检查' }],
+    attempt,
+    maxOutputTokens: 512,
+    modelContext,
+    callModel: async (request) => {
+      order.push(`model:${request.step}`)
+      modelRequests.push(request)
+      modelCall += 1
+      return modelCall === 1
+        ? {
+            choices: [{ message: { tool_calls: [{
+              id: 'call-context-probe', type: 'function', function: { name: 'probe', arguments: '{}' },
+            }] } }],
+            usage: { prompt_tokens: 12, completion_tokens: 3, total_tokens: 15, raw: '不透传' },
+          }
+        : {
+            choices: [{ message: { content: '完成' } }],
+            usage: { input_tokens: 20, output_tokens: 4 },
+          }
+    },
+  })
+
+  assert.equal(result.output, '完成')
+  assert.deepEqual(order, [
+    'prepare:0', 'model:0', 'observe:0',
+    'prepare:1', 'model:1', 'observe:1',
+  ])
+  assert.equal(prepareInputs[0].attempt, attempt)
+  assert.equal(prepareInputs[0].maxOutputTokens, 512)
+  assert.equal(prepareInputs[0].trigger, 'pre_step')
+  assert.equal(modelRequests[0].messages.at(-1).content, 'prepared-step-0')
+  assert.equal(modelRequests[0].tools[0].preparedForStep, 0)
+  assert.equal(modelRequests[1].messages, prepareInputs[1].messages)
+  assert.equal(modelRequests[1].tools, prepareInputs[1].tools)
+  assert.equal(observations[0].prepared, preparedValues[0])
+  assert.equal(observations[1].prepared, preparedValues[1])
+  assert.deepEqual(observations.map((entry) => entry.responseUsage), [
+    { inputTokens: 12, outputTokens: 3, totalTokens: 15 },
+    { inputTokens: 20, outputTokens: 4, totalTokens: 24 },
+  ])
+  assert.equal('response' in observations[0], false)
+})
+
+test('Model Context 在明确 overflow 后强制 prepare，并只重试同一步一次', async () => {
+  const registry = createAgentToolRegistry([])
+  const preparations = []
+  const requests = []
+  const observations = []
+  const overflow = new Error('context overflow')
+  overflow.code = 'AGENT_CONTEXT_OVERFLOW'
+  const result = await runAgentToolLoop({
+    registry,
+    messages: [{ role: 'user', content: '很长的请求' }],
+    maxOutputTokens: 3000,
+    modelContext: {
+      prepare: async (input) => {
+        preparations.push(input)
+        if (input.force === true) {
+          return {
+            changed: true,
+            messages: [{ role: 'user', content: '强制压缩后的请求' }],
+            prepared: 'overflow-prepared',
+          }
+        }
+        return { prepared: 'initial-prepared' }
+      },
+      observe: async (input) => { observations.push(input) },
+    },
+    callModel: async (request) => {
+      requests.push(request)
+      if (requests.length === 1) throw overflow
+      return {
+        choices: [{ message: { content: '完成' } }],
+        usage: { prompt_tokens: 8, completion_tokens: 2 },
+      }
+    },
+  })
+
+  assert.equal(result.output, '完成')
+  assert.equal(requests.length, 2)
+  assert.deepEqual(requests.map((request) => request.step), [0, 0])
+  assert.equal(requests[1].messages[0].content, '强制压缩后的请求')
+  assert.equal(preparations[0].trigger, 'pre_step')
+  assert.equal(Object.hasOwn(preparations[0], 'force'), false)
+  assert.equal(preparations[1].trigger, 'overflow')
+  assert.equal(preparations[1].force, true)
+  assert.equal(preparations[1].maxOutputTokens, 3000)
+  assert.deepEqual(observations, [{
+    attempt: undefined,
+    step: 0,
+    prepared: 'overflow-prepared',
+    responseUsage: { inputTokens: 8, outputTokens: 2, totalTokens: 10 },
+  }])
+})
+
+test('Model Context overflow 未产生变化或重试仍失败时不继续请求', async () => {
+  const overflow = () => Object.assign(new Error('context overflow'), { code: 'AGENT_CONTEXT_OVERFLOW' })
+  for (const scenario of ['unchanged', 'retry_failed']) {
+    let modelCalls = 0
+    let observes = 0
+    const forcedPreparations = []
+    await assert.rejects(runAgentToolLoop({
+      registry: createAgentToolRegistry([]),
+      messages: [{ role: 'user', content: scenario }],
+      modelContext: {
+        prepare: async (input) => {
+          if (input.force) forcedPreparations.push(input)
+          return input.force
+            ? { changed: scenario === 'retry_failed', prepared: 'forced' }
+            : { prepared: 'initial' }
+        },
+        observe: async () => { observes += 1 },
+      },
+      callModel: async () => {
+        modelCalls += 1
+        throw overflow()
+      },
+    }), (error) => error?.code === 'AGENT_CONTEXT_OVERFLOW')
+
+    assert.equal(modelCalls, scenario === 'unchanged' ? 1 : 2, scenario)
+    assert.equal(forcedPreparations.length, 1, scenario)
+    assert.equal(observes, 0, scenario)
+  }
+})
+
 test('Agent Tool Loop 拒绝未知工具、损坏参数与无休止调用', async () => {
   const registry = createAgentToolRegistry([])
   await assert.rejects(
@@ -118,7 +300,7 @@ test('受控行动必须携带明确确认，执行结果包含可持久化工�
 
   await assert.rejects(
     executeConfirmedAgentAction({ registry, name: 'skill_create', arguments: { name: '夏日' }, toolCallId: 'call-1', confirmed: false }),
-    /需要用户确认/,
+    (caught) => /需要用户确认/u.test(caught?.message) && caught?.outcomeKnown === true,
   )
   const action = await executeConfirmedAgentAction({
     registry, name: 'skill_create', arguments: { name: '夏日' }, toolCallId: 'call-1', confirmed: true,
@@ -130,6 +312,31 @@ test('受控行动必须携带明确确认，执行结果包含可持久化工�
       status: 'succeeded', requiresConfirmation: true,
     },
   })
+})
+
+test('确认后的 terminal/write 工具只返回 allowlist 固定路径上的业务引用', async () => {
+  const registry = createAgentToolRegistry([{
+    name: 'generation_submit', label: '提交生成任务', description: '提交生成任务。',
+    risk: 'costly', requiresConfirmation: true, terminal: true,
+    parameters: { type: 'object', properties: {} },
+    validate: (value) => value,
+    execute: async () => ({
+      run: { id: 'run-submit' },
+      jobIds: ['job-submit-1', 'job-submit-2'],
+      rawOutput: { artifactId: 'artifact-forged-raw' },
+    }),
+  }])
+  const action = await executeConfirmedAgentAction({
+    registry, name: 'generation_submit', arguments: {},
+    toolCallId: 'call-generation-submit', confirmed: true,
+  })
+  const expected = [
+    { type: 'agent_run', id: 'run-submit' },
+    { type: 'generation_job', id: 'job-submit-1' },
+    { type: 'generation_job', id: 'job-submit-2' },
+  ]
+  assert.deepEqual(action.entityReferences, expected)
+  assert.deepEqual(action.toolCall.entityReferences, expected)
 })
 
 test('规划工具执行时收到稳定的模型调用标识，供行动提议与确认关联', async () => {
@@ -169,7 +376,7 @@ test('工具事件用可选 presentation 暴露安全的人话标题和结果计
   const registry = createAgentToolRegistry(definitions)
   const events = []
   let modelCall = 0
-  await runAgentToolLoop({
+  const result = await runAgentToolLoop({
     registry, messages: [], onEvent: (event) => events.push(event),
     callModel: async () => {
       modelCall += 1
@@ -420,23 +627,53 @@ test('工具集在进入循环前定格，中途改配置不影响已开始的�
   assert.ok(result.steps.every((entry) => entry.snapshot === snapshot))
 })
 
-test('执行快照被深冻结，调用方之后改自己的对象也影响不到它', () => {
+test('执行快照被深冻结，并绑定 Model Context Policy 哈希', () => {
   const bindings = [{ id: 'skill-1', version: 1, contentHash: 'h1' }]
+  const parameters = { type: 'object', additionalProperties: false, properties: { query: { type: 'string' } } }
   const registry = createAgentToolRegistry([{
     name: 'probe', label: '探针', description: 'x', risk: 'read',
-    parameters: { type: 'object', additionalProperties: false, properties: {} },
+    parameters,
     validate: () => ({}), execute: async () => ({}),
   }])
-  const snapshot = freezeAgentStepSnapshot({ registry, model: 'model-a', skillBindings: bindings, role: 'owner' })
+  const snapshot = freezeAgentStepSnapshot({
+    registry,
+    model: 'model-a',
+    skillBindings: bindings,
+    contextPolicyHash: 'policy-hash-1',
+    role: 'owner',
+  })
   bindings[0].version = 99
   bindings.push({ id: 'skill-2' })
+  parameters.properties.query.type = 'number'
 
   assert.deepEqual(snapshot.toolNames, ['probe'])
+  assert.equal(snapshot.toolBindings.length, 1)
+  assert.equal(snapshot.toolBindings[0].name, 'probe')
+  assert.equal(snapshot.toolBindings[0].recovery, 'reexecute')
+  assert.equal(Object.isFrozen(snapshot.toolBindings), true)
+  assert.equal(Object.isFrozen(snapshot.toolBindings[0]), true)
+  assert.equal(registry.openAITools()[0].function.parameters.properties.query.type, 'string')
   assert.equal(snapshot.skillBindings.length, 1)
   assert.equal(snapshot.skillBindings[0].version, 1)
+  assert.equal(snapshot.contextPolicyHash, 'policy-hash-1')
   assert.equal(snapshot.role, 'owner')
   assert.equal(Object.isFrozen(snapshot), true)
   assert.throws(() => { snapshot.model = 'model-b' }, TypeError)
+  assert.equal(Object.hasOwn(freezeAgentStepSnapshot({ registry }), 'contextPolicyHash'), false)
+})
+
+test('能力快照绑定工具 schema 与治理声明，而不只记录工具名', () => {
+  const registryFor = (type, recovery = 'reexecute') => createAgentToolRegistry([{
+    name: 'probe', label: '探针', description: '读取探针。', risk: 'read', recovery,
+    parameters: { type: 'object', properties: { query: { type } } },
+    validate: () => ({}), execute: async () => ({}),
+  }])
+  const original = freezeAgentStepSnapshot({ registry: registryFor('string'), model: 'model-a' })
+  const schemaChanged = freezeAgentStepSnapshot({ registry: registryFor('number'), model: 'model-a' })
+  const recoveryChanged = freezeAgentStepSnapshot({ registry: registryFor('string', 'never'), model: 'model-a' })
+
+  assert.notEqual(original.toolBindings[0].contentHash, schemaChanged.toolBindings[0].contentHash)
+  assert.notEqual(original.toolBindings[0].contentHash, recoveryChanged.toolBindings[0].contentHash)
 })
 
 test('工具结果驱动下一步，而不是一次调用后就收尾', async () => {
@@ -466,4 +703,507 @@ test('工具结果驱动下一步，而不是一次调用后就收尾', async ()
   assert.equal(result.output, '两次都查过了')
   assert.equal(result.toolCalls.length, 2)
   assert.deepEqual(calls, [['{"found":false}']])
+})
+
+test('单个工具长输出受 token 上限约束，仅保留稳定回读指针与内容哈希', async () => {
+  const registry = createAgentToolRegistry([{
+    name: 'artifact_lookup', label: '读取产出', description: '读取稳定产出。', risk: 'read',
+    parameters: { type: 'object', properties: { artifactId: { type: 'string' } } },
+    validate: (value) => value,
+    execute: async () => ({
+      artifactId: 'artifact-stable-1', runId: 'run-stable-1',
+      payload: '长'.repeat(12_000),
+    }),
+  }])
+  let modelCall = 0
+  let projected
+
+  const result = await runAgentToolLoop({
+    registry, messages: [{ role: 'user', content: '回读产出' }], maximumSteps: 2,
+    callModel: async ({ messages }) => {
+      modelCall += 1
+      if (modelCall === 1) {
+        return { choices: [{ message: { tool_calls: [{
+          id: 'call-artifact-1', type: 'function', function: {
+            name: 'artifact_lookup', arguments: '{"artifactId":"artifact-stable-1"}',
+          },
+        }] } }] }
+      }
+      projected = structuredClone(messages)
+      return { choices: [{ message: { content: '完成' } }] }
+    },
+  })
+
+  const assistant = projected.at(-2)
+  const tool = projected.at(-1)
+  assert.equal(assistant.tool_calls[0].id, 'call-artifact-1')
+  assert.equal(tool.role, 'tool')
+  assert.equal(tool.tool_call_id, 'call-artifact-1')
+  assert.ok(estimateAgentContextTokens(tool.content) <= 2_000)
+  const envelope = JSON.parse(tool.content)
+  assert.equal(envelope._botanicTruncation.truncated, true)
+  assert.equal(envelope._botanicTruncation.reread.tool, 'artifact_lookup')
+  assert.equal(envelope._botanicTruncation.reread.source, 'preceding_assistant_tool_call')
+  assert.match(envelope._botanicTruncation.contentHash, /^[A-Za-z0-9_-]{43}$/u)
+  assert.equal('references' in envelope._botanicTruncation, false, '未经工具+路径 allowlist 不派生业务引用')
+  assert.ok(envelope._botanicTruncation.omittedCharacters > 0)
+  assert.deepEqual(result.entityReferences, [])
+  assert.equal('entityReferences' in result.toolCalls[0], false)
+})
+
+test('显式工具引用进入 completed Checkpoint 与 Turn 聚合，terminal 恢复不重执行也不漂移', async () => {
+  let persisted
+  let modelCalls = 0
+  let executions = 0
+  const registry = createAgentToolRegistry([{
+    name: 'artifact_search', label: '检索历史结果', description: '检索结果。', risk: 'read',
+    parameters: { type: 'object', properties: {} },
+    validate: (value) => value,
+    execute: async () => {
+      executions += 1
+      return {
+        artifacts: Array.from({ length: 12 }, (_, index) => ({
+          id: `artifact-${index + 1}`,
+          ...(index === 0 ? {
+            provenance: { runId: 'run-1' },
+            prompt: { artifactId: 'artifact-forged-prompt' },
+          } : {}),
+        })),
+        rawOutput: { jobId: 'job-forged-raw' },
+      }
+    },
+  }])
+  const first = await runAgentToolLoop({
+    registry,
+    messages: [{ role: 'user', content: '查历史结果' }],
+    attempt: checkpointAttempt,
+    saveCheckpoint: async (checkpoint) => { persisted = structuredClone(checkpoint) },
+    callModel: async () => {
+      modelCalls += 1
+      return modelCalls === 1
+        ? { choices: [{ message: { tool_calls: [{
+          id: 'call-artifact-search', type: 'function', function: {
+            name: 'artifact_search', arguments: '{}',
+          },
+        }] } }] }
+        : { choices: [{ message: { content: '已找到历史结果。' } }] }
+    },
+  })
+
+  const expected = Array.from({ length: 8 }, (_, index) => ({
+    type: 'artifact', id: `artifact-${index + 1}`,
+  }))
+  assert.deepEqual(first.entityReferences, expected)
+  assert.deepEqual(first.toolCalls[0].entityReferences, expected)
+  assert.deepEqual(persisted.completedSteps[0].calls[0].entityReferences, expected)
+  assert.equal(persisted.terminalContent, '已找到历史结果。')
+
+  const resumed = await runAgentToolLoop({
+    registry,
+    messages: [{ role: 'user', content: '查历史结果' }],
+    attempt: checkpointAttempt,
+    resumeCheckpoint: persisted,
+    saveCheckpoint: async () => { throw new Error('terminal 恢复不应再写 checkpoint') },
+    callModel: async () => { throw new Error('terminal 恢复不应再调模型') },
+  })
+  assert.deepEqual(resumed.entityReferences, expected)
+  assert.equal(executions, 1)
+  assert.equal(modelCalls, 2)
+})
+
+test('多个工具输出共享累计预算，每个 assistant tool_call 仍有唯一配对 tool message', async () => {
+  const registry = createAgentToolRegistry([{
+    name: 'bulk_lookup', label: '批量读取', description: '读取记录。', risk: 'read',
+    parameters: { type: 'object', properties: { index: { type: 'number' } } },
+    validate: (value) => value,
+    execute: async ({ index }) => ({
+      artifactId: `artifact-${index}`,
+      payload: `${index}:${'数'.repeat(7_000)}`,
+    }),
+  }])
+  let modelCall = 0
+  let projected
+
+  await runAgentToolLoop({
+    registry, messages: [], maximumSteps: 2,
+    callModel: async ({ messages }) => {
+      modelCall += 1
+      if (modelCall === 1) {
+        return { choices: [{ message: { tool_calls: Array.from({ length: 6 }, (_, index) => ({
+          id: `call-bulk-${index + 1}`, type: 'function', function: {
+            name: 'bulk_lookup', arguments: JSON.stringify({ index: index + 1 }),
+          },
+        })) } }] }
+      }
+      projected = structuredClone(messages)
+      return { choices: [{ message: { content: '完成' } }] }
+    },
+  })
+
+  const assistant = projected.find((entry) => entry.role === 'assistant' && entry.tool_calls)
+  const toolMessages = projected.filter((entry) => entry.role === 'tool')
+  assert.equal(toolMessages.length, assistant.tool_calls.length)
+  assert.deepEqual(
+    toolMessages.map((entry) => entry.tool_call_id),
+    assistant.tool_calls.map((entry) => entry.id),
+  )
+  assert.ok(toolMessages.every((entry) => estimateAgentContextTokens(entry.content) <= 2_000))
+  assert.ok(toolMessages.reduce((sum, entry) => sum + estimateAgentContextTokens(entry.content), 0) <= 6_000)
+  assert.ok(toolMessages.some((entry) => JSON.parse(entry.content)._botanicTruncation.reason === 'cumulative_budget'))
+})
+
+const checkpointAttempt = Object.freeze({
+  id: 'turn-attempt-1',
+  model: 'planner-model',
+  snapshotHash: 'snapshot-hash-1',
+})
+
+test('Registry 按工具能力推导 recovery，并拒绝未知恢复模式', () => {
+  const registry = createAgentToolRegistry([{
+    name: 'read_default', label: '默认只读', description: '读取', risk: 'read',
+    parameters: { type: 'object', properties: {} }, validate: (value) => value, execute: async () => ({}),
+  }, {
+    name: 'write_default', label: '默认写入', description: '写入', risk: 'write',
+    parameters: { type: 'object', properties: {} }, validate: (value) => value, execute: async () => ({}),
+  }, {
+    name: 'receipt_action', label: '回执行动', description: '写入', risk: 'external', recovery: 'receipt',
+    receipt: ({ id }) => ({ receiptId: `receipt-${id}`, intentHash: `intent-${id}` }),
+    parameters: { type: 'object', properties: {} }, validate: (value) => value, execute: async () => ({}),
+  }])
+
+  assert.equal(registry.get('read_default').recovery, 'reexecute')
+  assert.equal(registry.get('write_default').recovery, 'never')
+  assert.equal(registry.get('receipt_action').recovery, 'receipt')
+  assert.throws(() => createAgentToolRegistry([{
+    name: 'bad_recovery', label: '无效', description: '无效', risk: 'read', recovery: 'sometimes',
+    parameters: { type: 'object', properties: {} }, validate: (value) => value, execute: async () => ({}),
+  }]), /recovery/u)
+})
+
+test('prepared Checkpoint 持久化失败时一个工具也不执行', async () => {
+  let executed = 0
+  let prepared
+  const registry = createAgentToolRegistry([{
+    name: 'read_before_effect', label: '读取', description: '读取', risk: 'read',
+    parameters: { type: 'object', properties: { query: { type: 'string' } } },
+    validate: (value) => value,
+    execute: async () => { executed += 1; return { ok: true } },
+  }])
+
+  await assert.rejects(runAgentToolLoop({
+    registry,
+    messages: [],
+    attempt: checkpointAttempt,
+    saveCheckpoint: async (checkpoint) => {
+      prepared = structuredClone(checkpoint)
+      throw new Error('checkpoint store unavailable')
+    },
+    callModel: async () => ({ choices: [{ message: { tool_calls: [{
+      id: 'call-before-effect', type: 'function', function: {
+        name: 'read_before_effect', arguments: '{"query":"context"}',
+      },
+    }] } }] }),
+  }), /checkpoint store unavailable/u)
+
+  assert.equal(executed, 0)
+  assert.equal(prepared.pendingStep.calls[0].recovery, 'reexecute')
+  assert.deepEqual(prepared.pendingStep.calls[0].arguments, { query: 'context' })
+})
+
+test('同一步全部 call 校验通过前不执行前面的工具', async () => {
+  let firstExecuted = 0
+  let checkpointWrites = 0
+  const registry = createAgentToolRegistry([{
+    name: 'valid_first', label: '第一个工具', description: '只读', risk: 'read',
+    parameters: { type: 'object', properties: {} }, validate: (value) => value,
+    execute: async () => { firstExecuted += 1; return { ok: true } },
+  }, {
+    name: 'invalid_second', label: '第二个工具', description: '只读', risk: 'read',
+    parameters: { type: 'object', properties: {} },
+    validate: () => { throw new AgentToolRuntimeError('INVALID_TOOL_ARGUMENTS', '第二个调用无效。') },
+    execute: async () => ({ ok: true }),
+  }])
+
+  await assert.rejects(runAgentToolLoop({
+    registry,
+    messages: [],
+    attempt: checkpointAttempt,
+    saveCheckpoint: async () => { checkpointWrites += 1 },
+    callModel: async () => ({ choices: [{ message: { tool_calls: [{
+      id: 'call-valid-first', type: 'function', function: { name: 'valid_first', arguments: '{}' },
+    }, {
+      id: 'call-invalid-second', type: 'function', function: { name: 'invalid_second', arguments: '{}' },
+    }] } }] }),
+  }), (caught) => caught?.code === 'INVALID_TOOL_ARGUMENTS' && caught?.outcomeKnown === true)
+
+  assert.equal(firstExecuted, 0)
+  assert.equal(checkpointWrites, 0, '坏 call 不得进入 prepared checkpoint')
+})
+
+test('completed Checkpoint 恢复时不重复调用已完成步骤的模型', async () => {
+  let persisted
+  let modelCalls = 0
+  let executions = 0
+  const firstEvents = []
+  const registry = createAgentToolRegistry([{
+    name: 'resume_read', label: '恢复读取', description: '读取', risk: 'read',
+    parameters: { type: 'object', properties: { query: { type: 'string' } } },
+    validate: (value) => value,
+    execute: async ({ query }) => { executions += 1; return { query, version: executions } },
+  }])
+
+  await assert.rejects(runAgentToolLoop({
+    registry,
+    messages: [{ role: 'user', content: '继续' }],
+    attempt: checkpointAttempt,
+    onEvent: (event) => firstEvents.push(event),
+    saveCheckpoint: async (checkpoint) => {
+      persisted = structuredClone(checkpoint)
+      if (checkpoint.completedSteps.length === 1 && !checkpoint.pendingStep) {
+        throw new Error('process crashed after durable complete')
+      }
+    },
+    callModel: async ({ step }) => {
+      modelCalls += 1
+      assert.equal(step, 0)
+      return { choices: [{ message: { tool_calls: [{
+        id: 'call-resume-read', type: 'function', function: {
+          name: 'resume_read', arguments: '{"query":"canvas"}',
+        },
+      }] } }] }
+    },
+  }), /process crashed/u)
+
+  const resumedEvents = []
+  const result = await runAgentToolLoop({
+    registry,
+    messages: [{ role: 'user', content: '继续' }],
+    attempt: checkpointAttempt,
+    resumeCheckpoint: persisted,
+    saveCheckpoint: async (checkpoint) => { persisted = structuredClone(checkpoint) },
+    onEvent: (event) => resumedEvents.push(event),
+    callModel: async ({ step, messages }) => {
+      modelCalls += 1
+      assert.equal(step, 1)
+      assert.equal(messages.at(-1).role, 'tool')
+      assert.match(messages.at(-1).content, /canvas/u)
+      return { choices: [{ message: { content: '恢复完成。' } }] }
+    },
+  })
+
+  assert.equal(result.output, '恢复完成。')
+  assert.equal(modelCalls, 2, '恢复时只调用下一步模型')
+  assert.equal(executions, 2, '只读工具为重建内存对话可重执行')
+  assert.deepEqual(firstEvents.map((event) => event.toolCall.status), ['running', 'succeeded'])
+  assert.deepEqual(resumedEvents, [], '重建已完成步骤不重复推送工具事件')
+  assert.equal(persisted.terminalContent, '恢复完成。')
+})
+
+test('工具调用预算包含 completed Checkpoint 已消费的调用', async () => {
+  let executions = 0
+  let modelCalls = 0
+  const registry = createAgentToolRegistry([{
+    name: 'budgeted_resume_read', label: '预算内恢复读取', description: '读取', risk: 'read',
+    parameters: { type: 'object', properties: {} }, validate: (value) => value,
+    execute: async () => { executions += 1; return { ok: true } },
+  }])
+  const checkpoint = {
+    version: 1,
+    attempt: checkpointAttempt,
+    completedSteps: [{
+      step: 0,
+      calls: [{
+        id: 'call-already-spent', name: 'budgeted_resume_read', risk: 'read',
+        recovery: 'reexecute', terminal: false, arguments: {},
+      }],
+    }],
+  }
+
+  await assert.rejects(runAgentToolLoop({
+    registry,
+    messages: [],
+    maximumSteps: 3,
+    maximumToolCalls: 1,
+    attempt: checkpointAttempt,
+    resumeCheckpoint: checkpoint,
+    saveCheckpoint: async () => {},
+    callModel: async () => {
+      modelCalls += 1
+      return { choices: [{ message: { tool_calls: [{
+        id: 'call-over-budget', type: 'function',
+        function: { name: 'budgeted_resume_read', arguments: '{}' },
+      }] } }] }
+    },
+  }), (error) => error?.code === 'TOOL_CALL_LIMIT_REACHED' && error?.outcomeKnown === true)
+
+  assert.equal(executions, 1, '已完成只读步骤只为上下文重建执行一次')
+  assert.equal(modelCalls, 1)
+})
+
+test('terminal Checkpoint 恢复时直接返回最终回答，不再调用模型', async () => {
+  let persisted
+  let modelCalls = 0
+  const registry = createAgentToolRegistry([])
+  const first = await runAgentToolLoop({
+    registry,
+    messages: [{ role: 'user', content: '你好' }],
+    attempt: checkpointAttempt,
+    saveCheckpoint: async (checkpoint) => { persisted = structuredClone(checkpoint) },
+    callModel: async () => {
+      modelCalls += 1
+      return { choices: [{ message: { content: '已经完成。' } }] }
+    },
+  })
+  const resumed = await runAgentToolLoop({
+    registry,
+    messages: [{ role: 'user', content: '你好' }],
+    attempt: checkpointAttempt,
+    resumeCheckpoint: persisted,
+    saveCheckpoint: async () => { throw new Error('终态恢复不应再写 checkpoint') },
+    callModel: async () => { throw new Error('终态恢复不应再调模型') },
+  })
+
+  assert.equal(first.output, '已经完成。')
+  assert.equal(resumed.output, '已经完成。')
+  assert.equal(modelCalls, 1)
+})
+
+test('receipt 步骤恢复只读持久化回执，绝不调用原工具 executor', async () => {
+  let persisted
+  let originalExecutions = 0
+  let recoveryCalls = 0
+  let modelCalls = 0
+  const registry = createAgentToolRegistry([{
+    name: 'receipt_write', label: '外部写入', description: '外部写入', risk: 'external',
+    recovery: 'receipt', terminal: true,
+    receipt: ({ id, arguments: argumentsValue }) => ({
+      receiptId: `receipt-${id}`,
+      intentHash: `intent-${argumentsValue.target}`,
+    }),
+    parameters: { type: 'object', properties: { target: { type: 'string' } } },
+    validate: (value) => value,
+    execute: async () => { originalExecutions += 1; return { externalId: 'should-not-run' } },
+  }])
+
+  await assert.rejects(runAgentToolLoop({
+    registry,
+    messages: [],
+    attempt: checkpointAttempt,
+    saveCheckpoint: async (checkpoint) => {
+      persisted = structuredClone(checkpoint)
+      if (checkpoint.pendingStep) throw new Error('crash after prepared')
+    },
+    callModel: async () => {
+      modelCalls += 1
+      return { choices: [{ message: { tool_calls: [{
+        id: 'call-receipt', type: 'function', function: {
+          name: 'receipt_write', arguments: '{"target":"page-1"}',
+        },
+      }] } }] }
+    },
+  }), /crash after prepared/u)
+
+  const result = await runAgentToolLoop({
+    registry,
+    messages: [],
+    attempt: checkpointAttempt,
+    resumeCheckpoint: persisted,
+    saveCheckpoint: async (checkpoint) => { persisted = structuredClone(checkpoint) },
+    recoverToolCall: async ({ toolCall }) => {
+      recoveryCalls += 1
+      assert.equal(toolCall.receiptId, 'receipt-call-receipt')
+      assert.equal(toolCall.intentHash, 'intent-page-1')
+      return { externalId: 'persisted-page-1' }
+    },
+    callModel: async () => { throw new Error('pending prepared 恢复不应重复调模型') },
+  })
+
+  assert.deepEqual(result.output, { externalId: 'persisted-page-1' })
+  assert.equal(modelCalls, 1)
+  assert.equal(originalExecutions, 0)
+  assert.equal(recoveryCalls, 1)
+  assert.equal(JSON.stringify(persisted).includes('persisted-page-1'), false, 'checkpoint 不保存工具输出')
+})
+
+test('receipt 无法在执行前解析可信身份时拒绝执行', async () => {
+  let executed = 0
+  const registry = createAgentToolRegistry([{
+    name: 'receipt_missing', label: '缺少回执', description: '外部行动', risk: 'external', recovery: 'receipt',
+    parameters: { type: 'object', properties: {} }, validate: (value) => value,
+    execute: async () => { executed += 1; return { ok: true } },
+  }])
+
+  await assert.rejects(runAgentToolLoop({
+    registry,
+    messages: [],
+    attempt: checkpointAttempt,
+    saveCheckpoint: async () => {},
+    callModel: async () => ({ choices: [{ message: { tool_calls: [{
+      id: 'call-missing-receipt', type: 'function', function: { name: 'receipt_missing', arguments: '{}' },
+    }] } }] }),
+  }), (caught) => caught?.code === 'AGENT_TURN_CHECKPOINT_RECEIPT_REQUIRED')
+
+  assert.equal(executed, 0)
+})
+
+test('receipt 身份解析器必须是无 I/O 的同步函数', async () => {
+  let executed = 0
+  const registry = createAgentToolRegistry([{
+    name: 'receipt_async', label: '异步回执', description: '外部行动', risk: 'external', recovery: 'receipt',
+    receipt: async () => ({ receiptId: 'receipt-async', intentHash: 'intent-async' }),
+    parameters: { type: 'object', properties: {} }, validate: (value) => value,
+    execute: async () => { executed += 1; return { ok: true } },
+  }])
+
+  await assert.rejects(runAgentToolLoop({
+    registry,
+    messages: [],
+    attempt: checkpointAttempt,
+    saveCheckpoint: async () => {},
+    callModel: async () => ({ choices: [{ message: { tool_calls: [{
+      id: 'call-async-receipt', type: 'function', function: { name: 'receipt_async', arguments: '{}' },
+    }] } }] }),
+  }), (caught) => caught?.code === 'AGENT_TURN_CHECKPOINT_RECEIPT_REQUIRED' && caught?.outcomeKnown === true)
+
+  assert.equal(executed, 0)
+})
+
+test('never 步骤可以首次执行，但 prepared 恢复必须明确拒绝重放', async () => {
+  let persisted
+  let executed = 0
+  let modelCalls = 0
+  const registry = createAgentToolRegistry([{
+    name: 'never_write', label: '不可重放写入', description: '写入', risk: 'write',
+    parameters: { type: 'object', properties: {} }, validate: (value) => value,
+    execute: async () => { executed += 1; return { ok: true } },
+  }])
+
+  await assert.rejects(runAgentToolLoop({
+    registry,
+    messages: [],
+    attempt: checkpointAttempt,
+    saveCheckpoint: async (checkpoint) => {
+      persisted = structuredClone(checkpoint)
+      if (checkpoint.pendingStep) throw new Error('crash before never executor')
+    },
+    callModel: async () => {
+      modelCalls += 1
+      return { choices: [{ message: { tool_calls: [{
+        id: 'call-never', type: 'function', function: { name: 'never_write', arguments: '{}' },
+      }] } }] }
+    },
+  }), /crash before never executor/u)
+  assert.equal(executed, 0)
+
+  await assert.rejects(runAgentToolLoop({
+    registry,
+    messages: [],
+    attempt: checkpointAttempt,
+    resumeCheckpoint: persisted,
+    saveCheckpoint: async () => {},
+    callModel: async () => { throw new Error('never 恢复不应调模型') },
+  }), (caught) => caught?.code === 'AGENT_TURN_NOT_REPLAYABLE')
+
+  assert.equal(modelCalls, 1)
+  assert.equal(executed, 0)
 })

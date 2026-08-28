@@ -44,6 +44,18 @@ export function workspaceProjectsFromSummaries(summaries: CanvasProjectSummary[]
     })
 }
 
+/** 列表刷新不得用更旧的远端摘要盖掉本机刚改的项目名。 */
+export function reconcileWorkspaceProjects(current: WorkspaceProject[], incoming: WorkspaceProject[]) {
+  const currentById = new Map(current.map((project) => [project.id, project]))
+  return incoming.map((project) => {
+    const local = currentById.get(project.id)
+    if (local && local.updatedAt > project.updatedAt && local.name !== project.name) {
+      return { ...project, name: local.name, updatedAt: local.updatedAt }
+    }
+    return project
+  })
+}
+
 export function nextWorkspaceProjectName(projects: Array<Pick<WorkspaceProject, 'id'>>, locale: ProductLocale = 'zh-CN') {
   const ordinal = projects.filter((item) => item.id.startsWith('project-')).length + 1
   return locale === 'en' ? `Creative project ${ordinal}` : `创意项目 ${ordinal}`

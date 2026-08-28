@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { requestedGenerationJobCancellation } from './generationJobExecution.mjs'
 import { createProductionWorkflowRouteHandler } from './productionWorkflowRoutes.mjs'
 
 function harness(bodies, submitGeneration = async ({ idempotencyKey }) => ({
@@ -32,6 +33,14 @@ function harness(bodies, submitGeneration = async ({ idempotencyKey }) => ({
       },
       readGenerationJob: async (_userId, jobId) => options.jobs?.[jobId],
       listAgentReviewTasksForRun: async () => options.reviewTasks ?? [],
+      cancelGenerationJobExecution: async (_userId, command) => {
+        const decision = requestedGenerationJobCancellation(options.jobs?.[command.id], command)
+        if (decision.changed) {
+          options.jobs[command.id] = structuredClone(decision.job)
+          cancelled.push(structuredClone(decision.job))
+        }
+        return decision
+      },
       putGenerationJob: async (_userId, job) => {
         cancelled.push(job)
         if (options.jobs?.[job.id]) options.jobs[job.id] = job
@@ -312,7 +321,10 @@ test('取消回执按取消前的状态归因计费，不把两种任务混成�
   assert.equal(byId.get('job-queued').billing, 'none')
   assert.equal(byId.get('job-queued').code, 'CANCELLED_BEFORE_DISPATCH')
   assert.equal(byId.get('job-running').billing, 'possible')
-  assert.equal(byId.get('job-running').workerReleased, true)
+  assert.equal(byId.get('job-running').workerReleaseExpected, true)
+  assert.equal(byId.get('job-running').workerReleased, false)
+  assert.equal(byId.get('job-running').signalRequired, true)
+  assert.match(byId.get('job-running').signalId, /^generation-cancel:job-running:0:/u)
   assert.ok(byId.get('job-queued').requestedAt > 0)
   assert.equal(byId.get('job-running').reason, 'workflow-cancel')
 })

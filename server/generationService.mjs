@@ -2,6 +2,7 @@ import { GenerationError, generateImages } from './generationProvider.mjs'
 import { providerForModel } from './generationModels.mjs'
 import { composeOverlayImages, jobRequestsPixelOverlay } from './imageOverlay.mjs'
 import { generateMiniMaxImages, generateMiniMaxVideos } from './minimaxGenerationProvider.mjs'
+import { generateFlockImages } from './flockGenerationProvider.mjs'
 
 function configuredModel(config, modelId) {
   const declared = providerForModel(config.modelOptions ?? [], modelId)
@@ -57,6 +58,18 @@ export async function generateMedia(job, {
       apiKey: config.miniMaxApiKey,
       signal,
       persistMedia,
+      jobId,
+      onVariant,
+      completedVariants,
+    })
+  }
+  if (model.provider === 'flock') {
+    return generateFlockImages(job, {
+      apiBaseUrl: config.flockApiBaseUrl,
+      apiKey: config.flockApiKey,
+      signal,
+      persistMedia,
+      persistImage,
       jobId,
       onVariant,
       completedVariants,

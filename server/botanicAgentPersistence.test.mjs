@@ -36,6 +36,26 @@ test('Agent 文档状态被拆成独立 Session、Message、Memory 与 Run 实�
   assert.equal(state.runs[0].id, 'run-a')
 })
 
+test('CanvasDocument 兼容提取不接受客户端 entityReferences，直接 Message 权威写仍保留', () => {
+  const stableProjection = {
+    id: 'agent-turn-result-turn-canvas-refs', role: 'assistant', kind: 'text', content: '完成',
+    turnId: 'turn-canvas-refs', createdAt: 11, updatedAt: 12,
+    entityReferences: [{ type: 'artifact', id: 'artifact-authoritative' }],
+  }
+
+  const state = agentStateFromDocument({
+    agentSessions: [session('session-canvas-refs', 20, [stableProjection])],
+    agentMemory: [],
+    agentRuns: [],
+  })
+
+  assert.equal('entityReferences' in state.messages[0].message, false)
+  assert.deepEqual(
+    validateAgentMessageEntity(stableProjection, { now: 20 }).entityReferences,
+    [{ type: 'artifact', id: 'artifact-authoritative' }],
+  )
+})
+
 test('Agent 会话阅读锚点会进入独立实体并在跨设备读取时保留', () => {
   const state = agentStateFromDocument({
     agentSessions: [{
@@ -84,6 +104,14 @@ test('读合并对每会话消息套用 MESSAGE_LIMIT，保留最新的一段', 
   assert.equal(messages.length, agentEntityLimits.messagesPerSession)
   assert.equal(messages[0].id, 'message-40')
   assert.equal(messages.at(-1).id, `message-${total - 1}`)
+})
+
+test('mergeAgentStateIntoDocument 可在读路径跳过消息嵌套', () => {
+  const merged = mergeAgentStateIntoDocument({ agentSessions: [], agentMemory: [], agentRuns: [] }, {
+    sessions: [session('session-a', 20)],
+    messages: [{ sessionId: 'session-a', updatedAt: 11, message: message('message-a', '第一条', 11) }],
+  }, { includeMessages: false })
+  assert.equal(merged.agentSessions[0].messages.length, 0)
 })
 
 test('仅存在于独立实体表的 Agent Run 会进入兼容文档', () => {
@@ -159,6 +187,123 @@ test('Agent 实体验证拒绝越界类型与超长消息', () => {
   assert.throws(() => validateAgentMessageEntity({ id: 'm', role: 'user', kind: 'text', content: 'x'.repeat(64_001), createdAt: 1 }))
 })
 
+test('Subagent 会话有独立类型与父会话绑定，普通会话不能伪造关联', () => {
+  const session = validateAgentSessionEntity({
+    id: 'agent-subagent-session-subagent-1',
+    title: '品牌调研',
+    executionMode: 'manual',
+    contextNodeIds: [],
+    kind: 'subagent',
+    subagentId: 'subagent-1',
+    parentSessionId: 'primary-session-1',
+    createdAt: 10,
+    updatedAt: 10,
+  }, { now: 10 })
+  assert.equal(session.kind, 'subagent')
+  assert.equal(session.subagentId, 'subagent-1')
+  assert.equal(session.parentSessionId, 'primary-session-1')
+  assert.throws(() => validateAgentSessionEntity({
+    id: 'primary-session', title: '主会话', subagentId: 'forged-subagent',
+  }), /普通 Agent 会话/u)
+  assert.throws(() => validateAgentSessionEntity({
+    id: 'subagent-session', title: '子会话', kind: 'subagent',
+  }), /Subagent 标识/u)
+})
+
+test('pending Message 持久化完整 Turn request snapshot，目标身份不能缺失', () => {
+  const base = {
+    id: 'message-turn-snapshot', role: 'user', kind: 'text', content: '换背景', createdAt: 10,
+    status: 'pending',
+    turnRequestSnapshot: {
+      locale: 'zh-CN', plannerModel: 'planner-a', mountedSkillIds: ['skill-a'],
+      contextNodeIds: ['result-b'], hasTarget: true,
+      selectedResultNodeId: 'result-b', selectedResultLabel: '结果 B', executionMode: 'auto',
+      generationModels: [{ id: 'image-a', label: '图像 A', mediaKind: 'image', aspectRatios: ['3:4'], resolutions: ['2K'] }],
+      maxOutputCount: 6,
+    },
+  }
+  const persisted = validateAgentMessageEntity(base, { now: 20 })
+  assert.deepEqual(persisted.turnRequestSnapshot, base.turnRequestSnapshot)
+  assert.throws(() => validateAgentMessageEntity({
+    ...base,
+    turnRequestSnapshot: { ...base.turnRequestSnapshot, selectedResultNodeId: undefined },
+  }, { now: 20 }))
+  assert.throws(() => validateAgentMessageEntity({
+    ...base,
+    role: 'assistant',
+  }, { now: 20 }), /用户消息/)
+})
+
+test('线程摘要只持久化 Artifact 目录和消息版本，不带结果内容或地址', () => {
+  const result = validateAgentSessionEntity({
+    id: 'session-summary', title: '摘要会话', executionMode: 'manual', contextNodeIds: [], createdAt: 1, updatedAt: 20,
+    threadSummary: {
+      version: 1,
+      goals: ['制作香水首图'], decisions: [], constraints: [], openQuestions: [], entityIds: [],
+      artifacts: [{
+        id: 'generation:job-1:out-1', kind: 'image', label: '香水首图 A',
+        url: '/api/media/private-result', content: '不该持久化的结果内容', metadata: { prompt: '不该持久化的 Prompt' },
+      }],
+      coveredMessageIds: ['message-1'],
+      coveredMessageRevisions: [{ messageId: 'message-1', revision: '9:submitted' }],
+      coveredThrough: 9,
+      updatedAt: 20,
+    },
+  }, { now: 20 })
+
+  assert.deepEqual(result.threadSummary.artifacts, [
+    { id: 'generation:job-1:out-1', kind: 'image', label: '香水首图 A' },
+  ])
+  assert.deepEqual(result.threadSummary.coveredMessageRevisions, [
+    { messageId: 'message-1', revision: '9:submitted' },
+  ])
+  const serialized = JSON.stringify(result.threadSummary)
+  assert.equal(serialized.includes('/api/media/'), false)
+  assert.equal(serialized.includes('不该持久化'), false)
+})
+
+test('线程摘要持久化逐 Message factCandidates、digest revision 与 typed refs，并校验 provenance 对齐', () => {
+  const revision = `9:answered:${'a'.repeat(43)}`
+  const summary = {
+    version: 1,
+    goals: [], decisions: [], constraints: [], openQuestions: [], entityIds: [],
+    entityReferences: [{ type: 'agent_run', id: 'run-1' }],
+    factCandidates: [{
+      messageId: 'message-refs', revision, occurredAt: 9,
+      artifacts: [{
+        id: 'artifact-1', kind: 'image', label: '结果 A',
+        url: 'https://private.test/a', content: '不该持久化',
+      }],
+      entityReferences: [{ type: 'agent_run', id: 'run-1' }],
+    }],
+    coveredMessageIds: ['message-refs'],
+    coveredMessageRevisions: [{ messageId: 'message-refs', revision }],
+    coveredThrough: 9,
+    updatedAt: 20,
+  }
+  const result = validateAgentSessionEntity({
+    id: 'session-provenance', title: '摘要会话', executionMode: 'manual', contextNodeIds: [],
+    createdAt: 1, updatedAt: 20, threadSummary: summary,
+  }, { now: 20 })
+
+  assert.deepEqual(result.threadSummary.entityReferences, [{ type: 'agent_run', id: 'run-1' }])
+  assert.deepEqual(result.threadSummary.factCandidates, [{
+    messageId: 'message-refs', revision, occurredAt: 9,
+    artifacts: [{ id: 'artifact-1', kind: 'image', label: '结果 A' }],
+    entityReferences: [{ type: 'agent_run', id: 'run-1' }],
+  }])
+  assert.doesNotMatch(JSON.stringify(result.threadSummary), /private|不该持久化/u)
+
+  assert.throws(() => validateAgentSessionEntity({
+    id: 'session-provenance-invalid', title: '摘要会话', executionMode: 'manual', contextNodeIds: [],
+    createdAt: 1, updatedAt: 20,
+    threadSummary: {
+      ...summary,
+      factCandidates: [{ ...summary.factCandidates[0], revision: `9:answered:${'b'.repeat(43)}` }],
+    },
+  }, { now: 20 }), /provenance|来源|候选/u)
+})
+
 test('用户消息的 Skill / 素材引用随独立消息保留，且剥离图片地址', () => {
   const result = validateAgentMessageEntity({
     id: 'message-mentions', role: 'user', kind: 'text', content: '帮我出套图', createdAt: 1,
@@ -178,6 +323,54 @@ test('用户消息的 Skill / 素材引用随独立消息保留，且剥离图�
     id: 'message-mentions', role: 'user', kind: 'text', content: 'x', createdAt: 1,
     mentions: [{ kind: 'prompt', id: 'p', name: 'x' }],
   }, { now: 2 }))
+})
+
+test('Message 安全保存来源 Turn 身份，供刷新后重挂接且拒绝空身份', () => {
+  const result = validateAgentMessageEntity({
+    id: 'message-turn-link', role: 'user', kind: 'text', content: '继续生成', createdAt: 1,
+    turnId: 'turn-stable-1',
+    turnCancellationRequestedAt: 2,
+  }, { now: 2 })
+
+  assert.equal(result.turnId, 'turn-stable-1')
+  assert.equal(result.turnCancellationRequestedAt, 2)
+  assert.throws(() => validateAgentMessageEntity({
+    id: 'message-turn-link-invalid', role: 'user', kind: 'text', content: '继续生成', createdAt: 1,
+    turnId: '   ',
+  }, { now: 2 }))
+  for (const turnCancellationRequestedAt of [1.5, '2', -1, 300_003]) {
+    assert.throws(() => validateAgentMessageEntity({
+      id: 'message-turn-cancel-invalid', role: 'user', kind: 'text', content: '停止', createdAt: 1,
+      turnCancellationRequestedAt,
+    }, { now: 2 }))
+  }
+})
+
+test('稳定 Turn 助手投影只持久化有界 typed entityReferences，其他消息不得携带', () => {
+  const stable = validateAgentMessageEntity({
+    id: 'agent-turn-result-turn-refs', role: 'assistant', kind: 'text', content: '完成',
+    turnId: 'turn-refs', createdAt: 1,
+    entityReferences: [
+      { type: 'agent_run', id: 'run-1' },
+      { type: 'artifact', id: 'artifact-1' },
+    ],
+  }, { now: 2 })
+
+  assert.deepEqual(stable.entityReferences, [
+    { type: 'agent_run', id: 'run-1' },
+    { type: 'artifact', id: 'artifact-1' },
+  ])
+  for (const invalid of [
+    { ...stable, id: 'ordinary-assistant' },
+    { ...stable, role: 'user' },
+    { ...stable, entityReferences: [{ type: 'artifact', id: 'https://evil.test/a' }] },
+    { ...stable, entityReferences: [{ type: 'artifact', id: 'artifact-1', url: 'https://evil.test/a' }] },
+  ]) {
+    assert.throws(
+      () => validateAgentMessageEntity(invalid, { now: 2 }),
+      (caught) => ['INVALID_AGENT_ENTITY', 'AGENT_ENTITY_REFERENCES_INVALID'].includes(caught?.code),
+    )
+  }
 })
 
 test('Prompt 消息的结构化结果会随独立消息保留', () => {

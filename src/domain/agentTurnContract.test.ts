@@ -1,6 +1,51 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { botanicAgentTurnMessageLimit, buildBotanicAgentTurnRequest } from './agentTurnContract.ts'
+import {
+  botanicAgentTurnMessageLimit,
+  botanicAgentTurnRequestFromSnapshot,
+  botanicAgentTurnRequestSnapshot,
+  buildBotanicAgentTurnRequest,
+} from './agentTurnContract.ts'
+
+test('回合请求携带权威会话与本轮稳定消息身份', () => {
+  const request = buildBotanicAgentTurnRequest({
+    projectId: 'project-1',
+    sessionId: 'session-1',
+    locale: 'zh-CN',
+    inputMessage: {
+      id: 'agent-message-stable',
+      content: '按品牌规范生成主图',
+      mentions: [
+        { kind: 'skill', id: 'skill-brand', name: '品牌规范' },
+        { kind: 'reference', id: 'asset-product', label: '商品正面图' },
+      ],
+    },
+    messages: [{ role: 'assistant', content: '旧历史仅用于兼容' }],
+    contextNodeIds: [],
+  })
+
+  assert.equal(request.sessionId, 'session-1')
+  assert.deepEqual(request.inputMessage, {
+    id: 'agent-message-stable',
+    content: '按品牌规范生成主图',
+    mentions: [
+      { kind: 'skill', id: 'skill-brand', name: '品牌规范' },
+      { kind: 'reference', id: 'asset-product', label: '商品正面图' },
+    ],
+  })
+})
+
+test('权威消息请求不再要求浏览器重传整段历史', () => {
+  const request = buildBotanicAgentTurnRequest({
+    projectId: 'project-1',
+    sessionId: 'session-1',
+    locale: 'zh-CN',
+    inputMessage: { id: 'agent-message-stable', content: '继续完成主图' },
+    contextNodeIds: [],
+  })
+
+  assert.equal(request.messages, undefined)
+})
 
 test('回合请求只发送最近 16 条消息与去重后的上下文节点', () => {
   const messages = Array.from({ length: 20 }, (_, index) => ({
@@ -51,9 +96,11 @@ test('选中结果与执行模式随回合下发；没有选中就不带结果�
     messages: [{ role: 'user', content: '换个背景' }],
     contextNodeIds: [],
     hasTarget: true,
+    selectedResultNodeId: 'result-selected',
     selectedResultLabel: '  首图 01  ',
     executionMode: 'auto',
   })
+  assert.equal(selected.selectedResultNodeId, 'result-selected')
   assert.equal(selected.selectedResultLabel, '首图 01')
   assert.equal(selected.executionMode, 'auto')
 
@@ -64,9 +111,11 @@ test('选中结果与执行模式随回合下发；没有选中就不带结果�
     messages: [{ role: 'user', content: '生成一张' }],
     contextNodeIds: [],
     hasTarget: false,
+    selectedResultNodeId: 'result-must-not-leak',
     selectedResultLabel: '首图 01',
     executionMode: 'manual',
   })
+  assert.equal(unselected.selectedResultNodeId, undefined)
   assert.equal(unselected.selectedResultLabel, undefined)
   assert.equal(unselected.executionMode, 'manual')
 })
@@ -84,6 +133,15 @@ test('超长历史消息被截断到服务端上限，不让整轮请求被判�
   })
   assert.equal(request.messages[0].content.length, botanicAgentTurnMessageLimit)
   assert.equal(request.messages[1].content, '按这个出 3 张')
+
+  const authoritative = buildBotanicAgentTurnRequest({
+    projectId: 'project-1',
+    sessionId: 'session-1',
+    locale: 'zh-CN',
+    inputMessage: { id: 'message-long', content: '长'.repeat(12_000) },
+    contextNodeIds: [],
+  })
+  assert.equal(authoritative.inputMessage?.content.length, botanicAgentTurnMessageLimit)
 })
 
 test('生成模型目录只携带安全字段，缺省字段不产出噪声键', () => {
@@ -105,4 +163,37 @@ test('生成模型目录只携带安全字段，缺省字段不产出噪声键',
     { id: 'gpt-image-2', label: 'GPT Image 2', mediaKind: 'image', aspectRatios: ['1:1'], resolutions: ['2K'] },
     { id: 'video-1', label: '视频', mediaKind: 'video' },
   ])
+})
+
+test('POST 未到服务端时，刷新恢复只用 Message 里的完整 request snapshot', () => {
+  const original = {
+    projectId: 'project-1', sessionId: 'session-1',
+    inputMessage: { id: 'message-stable', content: '给这张换背景' },
+    locale: 'zh-CN' as const,
+    plannerModel: 'planner-original',
+    mountedSkillIds: ['skill-original'],
+    contextNodeIds: ['result-original', 'asset-reference'],
+    hasTarget: true,
+    selectedResultNodeId: 'result-original',
+    selectedResultLabel: '原结果',
+    executionMode: 'manual' as const,
+    generationModels: [{ id: 'image-original', label: '原模型', mediaKind: 'image' as const }],
+    maxOutputCount: 6,
+  }
+  const snapshot = botanicAgentTurnRequestSnapshot(original)
+  const restored = botanicAgentTurnRequestFromSnapshot({
+    projectId: 'project-1', sessionId: 'session-1',
+    inputMessage: { id: 'message-stable', content: '给这张换背景' },
+    snapshot,
+  })
+
+  assert.equal(restored.selectedResultNodeId, 'result-original')
+  assert.equal(restored.plannerModel, 'planner-original')
+  assert.equal(restored.executionMode, 'manual')
+  assert.deepEqual(restored.contextNodeIds, ['result-original', 'asset-reference'])
+  assert.deepEqual(restored.generationModels?.map((model) => model.id), ['image-original'])
+  assert.throws(
+    () => botanicAgentTurnRequestSnapshot({ ...original, selectedResultNodeId: undefined }),
+    (error: unknown) => (error as { code?: string }).code === 'AGENT_TURN_TARGET_IDENTITY_MISSING',
+  )
 })

@@ -6,6 +6,9 @@ import { generationJobIdForIdempotency } from './generationIdempotency.mjs'
 import { buildGenerationUsage, reserveGenerationBudget } from './generationGovernance.mjs'
 import { agentRunCompiledPlanProvenance, compileRunCreativePlan } from './creativePlanResolver.mjs'
 import { findBrandKit, globalBrandKitLibraryId } from './brandKit.mjs'
+import { AgentDelegationFenceError, assertTurnAllowsDelegation } from './agentCancellationService.mjs'
+import { cancelGenerationJob } from './generationCancellation.mjs'
+import { compareAndSetGenerationJob } from './generationJobCas.mjs'
 
 /**
  * Agent Run 确认后的唯一生成提交模块。路由只调用这个小接口；配额、幂等、
@@ -19,6 +22,32 @@ export function createAgentRunGenerationService({
   publishProjectUpdated,
   publishAgentRunUpdated,
 }) {
+  const sameAgentRunBranch = (left, right) => left?.runId === right?.runId && left?.branchId === right?.branchId
+
+  /**
+   * 乐观写冲突只在另一提交者已经落下同一组确定性工作流时可当成幂等成功。
+   * 只看节点 id 不够：用户也可能创建同名节点；Job、Run/branch 边与生成/结果节点
+   * 必须同时吻合。状态允许继续推进，不能用整对象相等把 running/succeeded 误判成冲突。
+   */
+  function containsPreparedWorkflow(document, prepared) {
+    if (!prepared.jobs.length || prepared.jobs.length !== prepared.workflows.length) return false
+    const jobs = new Map((document?.generationJobs ?? []).map((job) => [job.id, job]))
+    const nodes = new Map((document?.nodes ?? []).map((node) => [node.id, node]))
+    return prepared.jobs.every((job, index) => {
+      const storedJob = jobs.get(job.id)
+      const workflow = prepared.workflows[index]
+      const generateNode = nodes.get(workflow?.generateNodeId)
+      const resultNode = nodes.get(workflow?.resultNodeId)
+      const promptNode = nodes.get(workflow?.promptNodeId)
+      return sameAgentRunBranch(storedJob?.agentRun, job.agentRun)
+        && generateNode?.data?.jobId === job.id
+        && resultNode?.data?.jobId === job.id
+        && sameAgentRunBranch(generateNode?.data?.agentRun, job.agentRun)
+        && sameAgentRunBranch(resultNode?.data?.agentRun, job.agentRun)
+        && Boolean(promptNode)
+    })
+  }
+
   /**
    * 读取工作区全局品牌套件。品牌库读失败**不阻断生成**：那会让一次存储抖动
    * 变成「所有生成都提交不了」。但也不能静默按无品牌继续 —— 那是悄悄丢掉品牌约束。
@@ -92,6 +121,8 @@ export function createAgentRunGenerationService({
       return saved
     } catch (caught) {
       if (caught?.code === 'PROJECT_CONFLICT' || caught?.code === 'CANVAS_GRAPH_CONFLICT') {
+        const latest = await productStore.readProject(userId, project.document.id)
+        if (latest && containsPreparedWorkflow(latest.document, prepared)) return latest
         throw new AgentToolRuntimeError(caught.code, '画布刚刚发生变化，请刷新后重新执行 Agent 计划。', 409)
       }
       throw caught
@@ -120,17 +151,58 @@ export function createAgentRunGenerationService({
     throw new AgentToolRuntimeError('AGENT_WRITEBACK_CONFLICT', '任务状态回写连续冲突，请刷新画布后重试。', 409)
   }
 
+  async function enforceDelegationAfterJobPut(userId, projectId, run, job) {
+    try {
+      if (run.turnId) {
+        await assertTurnAllowsDelegation({ productStore, userId, projectId, turnId: run.turnId })
+      }
+      const latestRun = await productStore.readAgentRun(userId, run.id)
+      if (!latestRun || latestRun.projectId !== projectId) {
+        throw new AgentToolRuntimeError('AGENT_RUN_NOT_FOUND', '未找到当前项目的 Agent Run。', 404)
+      }
+      if (latestRun.status === 'cancelled') {
+        throw new AgentDelegationFenceError(
+          'AGENT_RUN_DELEGATION_CANCELLED',
+          'Agent Run 已取消，不能再提交关联 Generation Job。',
+          409,
+        )
+      }
+      return job
+    } catch (caught) {
+      // 这个 Job 还没有 enqueue，不需要撤队列或广播 Worker；先把权威 Job durable
+      // 收口为 cancelled，再抛原 fence 错误，避免 Turn/Run 已取消后留下孤儿 queued Job。
+      const cancelled = await cancelGenerationJob({
+        productStore,
+        ownerId: userId,
+        job,
+        reason: 'agent-run',
+        requestedBy: userId,
+      })
+      // 画布是兼容投影，不得让它的冲突覆盖权威取消错误；后续对账仍可重建。
+      await persistJobState(userId, projectId, cancelled.job).catch(() => undefined)
+      throw caught
+    }
+  }
+
   async function submitGenerationOnce(userId, projectId, runId) {
     const { run, project, prepared } = await prepareProjectExecution(userId, projectId, runId, { submission: true })
+    if (run.turnId) {
+      await assertTurnAllowsDelegation({ productStore, userId, projectId, turnId: run.turnId })
+    }
     const existingJobs = new Map()
     for (const job of prepared.jobs) existingJobs.set(job.id, await productStore.readGenerationJob(userId, job.id))
     const pendingJobs = prepared.jobs.filter((job) => !existingJobs.get(job.id))
     const outputCost = pendingJobs.reduce((total, job) => total + job.batchCount, 0)
     if (outputCost) {
-      const quota = await securityControls.consume({
-        scope: 'generation-output', subject: userId,
-        limit: config.security.generationOutputsPerDay, windowMs: 24 * 60 * 60_000,
-        cost: outputCost,
+      const quota = await securityControls.reserveMany({
+        reservationId: `agent-run-generation-output:${userId}:${projectId}:${run.id}`,
+        windowMs: 24 * 60 * 60_000,
+        entries: [{
+          scope: 'generation-output',
+          subject: userId,
+          limit: config.security.generationOutputsPerDay,
+          cost: outputCost,
+        }],
       })
       if (!quota.allowed) throw new AgentToolRuntimeError('RATE_LIMITED', '今日生成额度已用完，请稍后重试。', 429)
     }
@@ -150,14 +222,29 @@ export function createAgentRunGenerationService({
     await persistWorkflow(userId, project, prepared)
     const queueFailures = []
     for (const job of pendingJobs) {
-      await productStore.putGenerationJob(userId, persistedGenerationJob(job))
+      // 每个 Job 写入前都重读 durable fence。至少首个提交必须被挡住；逐个检查还能
+      // 在多分支提交途中收到取消时停止创建后续 Job，已创建的由深取消收口。
+      if (run.turnId) {
+        await assertTurnAllowsDelegation({ productStore, userId, projectId, turnId: run.turnId })
+      }
+      const storedJob = await productStore.putGenerationJob(userId, persistedGenerationJob(job))
+        ?? persistedGenerationJob(job)
+      Object.assign(job, storedJob)
+      await enforceDelegationAfterJobPut(userId, projectId, run, storedJob)
+      // 同一确定性 Job 的并发提交可能已经被另一请求入队并 claim/settle。
+      // guarded put 返回的权威状态不是 queued 时无需重复入队，更不能把网络失败
+      // 误解释成 running→failed。
+      if (storedJob.status !== 'queued' || storedJob.execution) continue
       try {
-        await enqueue(job.id)
+        await enqueue(storedJob.id)
       } catch {
-        const failed = { ...job, status: 'failed', error: '生成任务无法进入队列，请检查 Redis Worker 后重试。', updatedAt: Date.now() }
-        await productStore.putGenerationJob(userId, persistedGenerationJob(failed))
-        await persistJobState(userId, projectId, failed)
-        queueFailures.push(failed)
+        const failed = { ...storedJob, status: 'failed', error: '生成任务无法进入队列，请检查 Redis Worker 后重试。', updatedAt: Date.now() }
+        const failure = await compareAndSetGenerationJob(productStore, userId, storedJob, failed)
+        const authoritative = failure?.job ?? storedJob
+        Object.assign(job, authoritative)
+        await persistJobState(userId, projectId, authoritative)
+        // enqueue 的响应可能丢失，但 Job 已被 Worker claim。CAS 输掉时以 Store 为准。
+        if (failure?.changed) queueFailures.push(authoritative)
       }
     }
     const latestRun = await productStore.readAgentRun(userId, run.id) ?? run

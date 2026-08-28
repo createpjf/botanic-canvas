@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { GENERATION_CANCEL_REASONS, cancelGenerationJob, recordedGenerationCancelOutcome } from './generationCancellation.mjs'
+import {
+  GENERATION_CANCEL_REASONS,
+  abortMatchingGenerationJobCancellation,
+  cancelGenerationJob,
+  recordedGenerationCancelOutcome,
+} from './generationCancellation.mjs'
+import { requestedGenerationJobCancellation } from './generationJobExecution.mjs'
 
 function harness(job) {
   const written = []
@@ -12,7 +18,16 @@ function harness(job) {
     stored: () => stored,
     deps: {
       productStore: {
-        putGenerationJob: async (ownerId, next) => { written.push({ ownerId, job: next }); stored = next },
+        cancelGenerationJobExecution: async (ownerId, command) => {
+          const decision = requestedGenerationJobCancellation(stored, {
+            ...command,
+            observedAt: command.requestedAt,
+          })
+          if (!decision.changed) return structuredClone(decision)
+          stored = structuredClone(decision.job)
+          written.push({ ownerId, job: structuredClone(stored) })
+          return structuredClone(decision)
+        },
       },
       redisQueue: { cancel: async (jobId) => dequeued.push(jobId) },
       publishCancel: async (event) => broadcast.push(event),
@@ -26,6 +41,42 @@ const queuedJob = {
   id: 'job-1', projectId: 'project-1', ownerId: 'user-1', status: 'queued',
   settings: { model: 'gpt-image-2' },
 }
+
+test('Worker subscriber 只 abort 与 durable signalId 匹配的当前 generation，不直接写 ack', async () => {
+  const current = {
+    ...queuedJob,
+    status: 'cancelled',
+    execution: { generation: 2, leaseToken: 'lease-current' },
+    cancel: {
+      signalRequired: true,
+      signalId: 'generation-cancel:job-1:2:3000',
+      workerReleased: false,
+    },
+  }
+  const aborted = []
+  const deps = {
+    productStore: { async readGenerationJobForWorker() { return structuredClone(current) } },
+    cancelRegistry: { abort(id) { aborted.push(id); return true } },
+  }
+
+  assert.equal(await abortMatchingGenerationJobCancellation({
+    ...deps,
+    event: {
+      scope: 'job', id: current.id, projectId: current.projectId,
+      signalId: 'generation-cancel:job-1:1:2000',
+    },
+  }), false)
+  assert.deepEqual(aborted, [])
+
+  assert.equal(await abortMatchingGenerationJobCancellation({
+    ...deps,
+    event: {
+      scope: 'job', id: current.id, projectId: current.projectId,
+      signalId: current.cancel.signalId,
+    },
+  }), true)
+  assert.deepEqual(aborted, ['job-1'])
+})
 
 test('派发前取消：出队即真省钱，并把判定写成持久回执', async () => {
   const { deps, written, dequeued, broadcast } = harness(queuedJob)
@@ -50,11 +101,46 @@ test('运行中取消：必须广播到 Worker，且照实记为费用可能已�
   const result = await cancelGenerationJob({ ...deps, job: runningJob, reason: 'workflow-cancel', requestedAt: 2_000 })
 
   assert.equal(result.outcome.billing, 'possible')
-  assert.equal(result.outcome.workerReleased, true)
+  assert.equal(result.outcome.workerReleased, false)
+  assert.equal(result.job.cancel.workerReleaseExpected, true)
   assert.equal(written[0].job.cancel.reason, 'workflow-cancel')
   assert.equal(written[0].job.cancel.code, 'CANCELLED_RESULT_DISCARDED')
   // 请求时刻随广播传出，Worker 据此报出取消延迟。
-  assert.deepEqual(broadcast, [{ scope: 'job', id: 'job-1', projectId: 'project-1', requestedAt: 2_000 }])
+  assert.deepEqual(broadcast, [{
+    scope: 'job', id: 'job-1', projectId: 'project-1', requestedAt: 2_000,
+    signalId: 'generation-cancel:job-1:0:2000',
+  }])
+})
+
+test('运行中 Job 首次 publish 失败后，重复取消会按 durable signalId 强制重发', async () => {
+  const runningJob = { ...queuedJob, status: 'running' }
+  const state = harness(runningJob)
+  let publishAttempts = 0
+  const publishCancel = async (event) => {
+    publishAttempts += 1
+    if (publishAttempts === 1) throw new Error('Redis publish failed')
+    state.broadcast.push(event)
+  }
+
+  await assert.rejects(
+    cancelGenerationJob({
+      ...state.deps, publishCancel, job: runningJob, reason: 'agent-run', requestedAt: 2_500,
+    }),
+    /Redis publish failed/u,
+  )
+  assert.equal(state.stored().status, 'cancelled')
+  assert.equal(state.stored().cancel.signalAcknowledgedAt, undefined)
+
+  const replay = await cancelGenerationJob({
+    ...state.deps, publishCancel, job: state.stored(), reason: 'agent-run', requestedAt: 9_999,
+  })
+
+  assert.equal(replay.cancelled, false)
+  assert.equal(publishAttempts, 2)
+  assert.deepEqual(state.broadcast, [{
+    scope: 'job', id: 'job-1', projectId: 'project-1', requestedAt: 2_500,
+    signalId: 'generation-cancel:job-1:0:2500',
+  }])
 })
 
 test('重复取消幂等：不再改写任务，并返回与第一次相同的判定', async () => {
@@ -100,7 +186,18 @@ test('afterPersist 拿到已带回执的任务，且在出队与广播之前执�
   const seen = []
   const running = { ...queuedJob, status: 'running' }
   await cancelGenerationJob({
-    productStore: { putGenerationJob: async () => order.push('persist') },
+    productStore: {
+      cancelGenerationJobExecution: async (_ownerId, command) => {
+        order.push('persist')
+        return {
+          kind: 'cancelled', changed: true,
+          job: {
+            ...running, status: 'cancelled',
+            cancel: { requestedAt: command.requestedAt, reason: command.reason, ...command.outcomes.running },
+          },
+        }
+      },
+    },
     redisQueue: { cancel: async () => order.push('dequeue') },
     publishCancel: async () => order.push('broadcast'),
     modelOptions: [], ownerId: 'user-1', job: running, reason: 'agent-run',
@@ -114,4 +211,46 @@ test('afterPersist 拿到已带回执的任务，且在出队与广播之前执�
 test('未取消过的任务没有回执，不得凭空造一个判定', () => {
   assert.equal(recordedGenerationCancelOutcome({ status: 'cancelled' }), undefined)
   assert.equal(recordedGenerationCancelOutcome(undefined), undefined)
+})
+
+test('取消不信任调用方旧快照：Store 锁内看到 running 时记录 running 后果', async () => {
+  const staleQueuedSnapshot = { ...queuedJob, status: 'queued' }
+  const authoritativeRunning = {
+    ...queuedJob,
+    status: 'running',
+    execution: { generation: 1, leaseToken: 'lease-worker' },
+  }
+  let command
+  const result = await cancelGenerationJob({
+    productStore: {
+      async cancelGenerationJobExecution(_ownerId, incoming) {
+        command = incoming
+        return {
+          kind: 'cancelled', changed: true, priorStatus: 'running',
+          job: {
+            ...authoritativeRunning,
+            status: 'cancelled',
+            cancel: {
+              requestedAt: incoming.requestedAt,
+              reason: incoming.reason,
+              billing: incoming.outcomes.running.billing,
+              capability: incoming.outcomes.running.capability,
+              workerReleased: incoming.outcomes.running.workerReleased,
+              code: incoming.outcomes.running.code,
+            },
+          },
+        }
+      },
+    },
+    modelOptions: [{ id: 'gpt-image-2', provider: 'openai' }],
+    ownerId: 'user-1',
+    job: staleQueuedSnapshot,
+    reason: 'user',
+    requestedAt: 3_000,
+  })
+
+  assert.equal(command.outcomes.queued.code, 'CANCELLED_BEFORE_DISPATCH')
+  assert.equal(command.outcomes.running.code, 'CANCELLED_RESULT_DISCARDED')
+  assert.equal(result.job.cancel.code, 'CANCELLED_RESULT_DISCARDED')
+  assert.equal(result.outcome.billing, 'possible')
 })

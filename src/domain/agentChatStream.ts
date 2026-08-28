@@ -17,6 +17,12 @@ import type { ProductLocale } from '../i18n/core'
  * 解析而不是原生 EventSource，`Last-Event-ID` 需要我们自己带上去。
  */
 export type BotanicAgentStreamEvent = ({ sequence?: number }) & (
+  | {
+      type: 'accepted'
+      turnId: string
+      runtimeTurn: { id: string; projectId: string }
+      observer: { url: string }
+    }
   | { type: 'reasoning'; step: number; delta: string }
   | { type: 'answer'; step: number; delta: string }
   | { type: 'tool'; step: number; toolCall: AgentToolCallTrace; presentation?: TimelineToolPresentation }
@@ -27,7 +33,7 @@ export type BotanicAgentStreamEvent = ({ sequence?: number }) & (
       /** Turn Runtime V2 的持久化生命周期快照；旧客户端可忽略。 */
       runtimeTurn?: {
         id: string
-        status: 'running' | 'completed' | 'failed' | 'cancelled'
+        status: 'queued' | 'running' | 'waiting_user' | 'cancelling' | 'completed' | 'failed' | 'cancelled'
         projectId: string
         updatedAt: number
         createdAt: number
@@ -43,7 +49,7 @@ export type BotanicAgentStreamEvent = ({ sequence?: number }) & (
 /** 对话流事件；与 BotanicAgentStreamEvent 同构，保留别名以免旧导入断裂。 */
 export type BotanicAgentChatStreamEvent = BotanicAgentStreamEvent
 
-const streamEventTypes = new Set(['reasoning', 'answer', 'tool', 'done', 'error'])
+const streamEventTypes = new Set(['accepted', 'reasoning', 'answer', 'tool', 'done', 'error'])
 
 function parseStreamEvent(payload: string): BotanicAgentStreamEvent[] {
   try {

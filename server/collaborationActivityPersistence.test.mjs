@@ -14,15 +14,13 @@ test('持久化协作历史不会为无意义自动保存制造记录', () => {
   assert.equal(collaborationChangeFromDocuments(document(), document()), undefined)
 })
 
-test('持久化协作历史保留对话和任务定位', () => {
-  const conversation = collaborationChangeFromDocuments(document(), document({
+test('持久化协作历史不再从文档内嵌消息派生对话记录', () => {
+  assert.equal(collaborationChangeFromDocuments(document(), document({
     agentSessions: [{ id: 'session-1', title: '海边方向', messages: [{ id: 'message-1' }] }],
-  }))
-  assert.deepEqual(conversation, {
-    kind: 'conversation', summary: '更新了对话「海边方向」',
-    target: { kind: 'message', sessionId: 'session-1', messageId: 'message-1' },
-  })
+  })), undefined)
+})
 
+test('持久化协作历史保留任务定位', () => {
   const task = collaborationChangeFromDocuments(document(), document({
     agentRuns: [{ id: 'run-1', status: 'running', updatedAt: 2, plan: { summary: '海边生成' } }],
   }))

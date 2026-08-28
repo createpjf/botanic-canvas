@@ -5,6 +5,7 @@ import {
   cancelPersistentAgentRun,
   createPersistentAgentRun,
   failUnsubmittedPersistentAgentRun,
+  mergeAgentRunForWrite,
   prepareAgentBranchRetry,
   validateAgentRunCreation,
 } from './botanicAgentRun.mjs'
@@ -129,6 +130,87 @@ test('生成 Job 状态驱动 Agent Run 分支与整体进度', () => {
   assert.equal(run.branches[1].error, '供应商失败')
 })
 
+test('迟到的 Generation 投影不得把 Agent Run terminal 分支倒退为 running', () => {
+  let run = createPersistentAgentRun(validateAgentRunCreation(creation), { id: 'run-1', ownerId: 'user-1', now: 100 })
+  run = applyGenerationJobToAgentRun(run, {
+    id: 'job-a', status: 'succeeded', agentRun: { runId: 'run-1', branchId: 'branch-a' },
+    outputs: [{ id: 'output-a' }], updatedAt: 300,
+  })
+  const stale = applyGenerationJobToAgentRun(run, {
+    id: 'job-a', status: 'running', agentRun: { runId: 'run-1', branchId: 'branch-a' }, updatedAt: 200,
+  })
+  const sameMillisecond = applyGenerationJobToAgentRun(run, {
+    id: 'job-a', status: 'running', agentRun: { runId: 'run-1', branchId: 'branch-a' }, updatedAt: 300,
+  })
+
+  assert.equal(stale.branches[0].status, 'succeeded')
+  assert.equal(sameMillisecond.branches[0].status, 'succeeded')
+  assert.equal(stale.status, run.status)
+})
+
+test('旧 Job 终态投影不得覆盖已指向新 retry Job 的分支，即使时间戳更新或同毫秒', () => {
+  let run = createPersistentAgentRun(validateAgentRunCreation(creation), { id: 'run-1', ownerId: 'user-1', now: 100 })
+  run = applyGenerationJobToAgentRun(run, {
+    id: 'job-old', status: 'failed', agentRun: { runId: 'run-1', branchId: 'branch-a' }, updatedAt: 200,
+  })
+  run = prepareAgentBranchRetry(run, 'branch-a', { jobId: 'job-retry', now: 300 })
+
+  const sameMillisecond = applyGenerationJobToAgentRun(run, {
+    id: 'job-old', status: 'succeeded', outputs: [{ id: 'old-output' }],
+    agentRun: { runId: 'run-1', branchId: 'branch-a' }, updatedAt: 300,
+  })
+  const apparentlyNewer = applyGenerationJobToAgentRun(run, {
+    id: 'job-old', status: 'succeeded', outputs: [{ id: 'old-output' }],
+    agentRun: { runId: 'run-1', branchId: 'branch-a' }, updatedAt: 400,
+  })
+
+  for (const candidate of [sameMillisecond, apparentlyNewer]) {
+    assert.equal(candidate.branches[0].activeJobId, 'job-retry')
+    assert.equal(candidate.branches[0].status, 'queued')
+    assert.equal(candidate.branches[0].outputCount, 0)
+  }
+})
+
+test('整 Run 写入按分支合并，重试一个分支不丢另一分支的并发终态', () => {
+  let base = createPersistentAgentRun(validateAgentRunCreation(creation), { id: 'run-1', ownerId: 'user-1', now: 100 })
+  base = applyGenerationJobToAgentRun(base, {
+    id: 'job-a', status: 'failed', agentRun: { runId: 'run-1', branchId: 'branch-a' }, updatedAt: 200,
+  })
+  base = applyGenerationJobToAgentRun(base, {
+    id: 'job-b', status: 'running', agentRun: { runId: 'run-1', branchId: 'branch-b' }, updatedAt: 200,
+  })
+  const staleRetryWrite = prepareAgentBranchRetry(base, 'branch-a', { jobId: 'job-a-retry', now: 400 })
+  const concurrentlyProjected = applyGenerationJobToAgentRun(base, {
+    id: 'job-b', status: 'succeeded', outputs: [{ id: 'output-b' }],
+    agentRun: { runId: 'run-1', branchId: 'branch-b' }, updatedAt: 300,
+  })
+
+  const merged = mergeAgentRunForWrite(concurrentlyProjected, staleRetryWrite)
+
+  assert.equal(merged.branches[0].activeJobId, 'job-a-retry')
+  assert.equal(merged.branches[0].status, 'queued')
+  assert.equal(merged.branches[1].activeJobId, 'job-b')
+  assert.equal(merged.branches[1].status, 'succeeded')
+  assert.equal(merged.branches[1].outputCount, 1)
+})
+
+test('同 attempt 的旧整 Run 快照不能清空已分配的 activeJobId', () => {
+  let stored = createPersistentAgentRun(validateAgentRunCreation(creation), { id: 'run-1', ownerId: 'user-1', now: 100 })
+  stored = applyGenerationJobToAgentRun(stored, {
+    id: 'job-a', status: 'running', agentRun: { runId: 'run-1', branchId: 'branch-a' }, updatedAt: 200,
+  })
+  const stale = structuredClone(stored)
+  delete stale.branches[0].activeJobId
+  stale.branches[0].status = 'cancelled'
+  stale.branches[0].updatedAt = 300
+  stale.updatedAt = 300
+
+  const merged = mergeAgentRunForWrite(stored, stale)
+
+  assert.equal(merged.branches[0].activeJobId, 'job-a')
+  assert.equal(merged.branches[0].status, 'running')
+})
+
 test('只重试失败分支并保留历史 Job 追溯', () => {
   let run = createPersistentAgentRun(validateAgentRunCreation(creation), { id: 'run-1', ownerId: 'user-1', now: 100 })
   run = applyGenerationJobToAgentRun(run, {
@@ -176,6 +258,28 @@ test('仅在尚未建立生成 Job 时收口确定性提交失败', () => {
     id: 'job-a', status: 'queued', agentRun: { runId: 'run-1', branchId: 'branch-a' }, updatedAt: 150,
   })
   assert.equal(failUnsubmittedPersistentAgentRun(withJob, '不应覆盖', { now: 300 }), withJob)
+})
+
+test('Gemini 超长工具调用标识压缩后仍可创建 Run，且共享前缀不碰撞', () => {
+  const longId = `call-${'g'.repeat(200)}-first`
+  const input = validateAgentRunCreation({
+    ...creation,
+    plan: {
+      ...creation.plan,
+      toolCalls: [{ ...creation.plan.toolCalls[0], id: longId }],
+    },
+  })
+  assert.equal(input.plan.toolCalls[0].id.length, 160)
+  assert.notEqual(input.plan.toolCalls[0].id, longId.slice(0, 160))
+
+  const sibling = validateAgentRunCreation({
+    ...creation,
+    plan: {
+      ...creation.plan,
+      toolCalls: [{ ...creation.plan.toolCalls[0], id: `${longId}-second` }],
+    },
+  })
+  assert.notEqual(input.plan.toolCalls[0].id, sibling.plan.toolCalls[0].id)
 })
 
 test('Agent Run 拒绝图片数据与重复分支标识', () => {

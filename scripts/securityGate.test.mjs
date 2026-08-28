@@ -18,3 +18,16 @@ test('安全门禁拒绝环境文件、私钥和常见生产凭据', () => {
   const findings = securityGateFindings([...content.keys()], (file) => content.get(file) ?? '')
   assert.equal(findings.length, 5)
 })
+
+test('安全门禁拒绝注入到产品源码的本地 Agent 调试回传', () => {
+  const debugHeader = ['X-Debug', 'Session-Id'].join('-')
+  const debugUrl = ['http://127.0.0.1:7691', 'ingest', 'session'].join('/')
+  const content = new Map([
+    ['server/runtime.mjs', `fetch('${debugUrl}', { headers: { '${debugHeader}': 'debug' } })`],
+    ['src/Workspace.tsx', `// #region ${['agent', 'log'].join(' ')}`],
+    ['docs/debug-example.md', debugUrl],
+  ])
+  const findings = securityGateFindings([...content.keys()], (file) => content.get(file) ?? '')
+  assert.equal(findings.length, 3)
+  assert.equal(findings.some((entry) => entry.startsWith('docs/')), false)
+})

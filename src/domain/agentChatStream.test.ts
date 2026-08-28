@@ -76,6 +76,21 @@ test('tool presentation 是向后兼容的加字段，未知键不会影响事�
   assert.equal(event.toolCall.id, 'search-1')
 })
 
+test('Turn accepted 事件暴露稳定身份与续读地址，但不伪装成 done', () => {
+  const reader = createBotanicAgentChatStreamReader()
+  assert.deepEqual(reader.push(sse({
+    type: 'accepted',
+    turnId: 'turn-1',
+    runtimeTurn: { id: 'turn-1', projectId: 'project-1' },
+    observer: { url: '/api/agent-turns/turn-1?after=0' },
+  })), [{
+    type: 'accepted',
+    turnId: 'turn-1',
+    runtimeTurn: { id: 'turn-1', projectId: 'project-1' },
+    observer: { url: '/api/agent-turns/turn-1?after=0' },
+  }])
+})
+
 test('SSE id 行推进续读游标，事件体同时携带 sequence', () => {
   const reader = createBotanicAgentChatStreamReader()
   assert.equal(reader.lastEventId, '', '尚未收到可解析事件时游标为空')

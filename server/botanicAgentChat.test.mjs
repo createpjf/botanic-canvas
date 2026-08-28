@@ -41,6 +41,26 @@ test('通用 Agent 对话请求只接收受控模式、消息和节点 ID', () =
   )
 })
 
+test('Agent Chat 归一明确 context overflow，且无 Model Context 时不自行重试', async () => {
+  let providerCalls = 0
+  await assert.rejects(chatWithBotanicAgent(input, {
+    flockApiKey: 'flock-secret',
+    flockTextModel: 'deepseek-v4-flash',
+    flockAgentModels: ['deepseek-v4-flash'],
+  }, {
+    document,
+    fetchImpl: async () => {
+      providerCalls += 1
+      return new Response(JSON.stringify({
+        error: { code: 'context_length_exceeded', message: 'maximum context length exceeded' },
+      }), { status: 422 })
+    },
+  }), (error) => error instanceof BotanicAgentChatError
+    && error.statusCode === 422
+    && error.code === 'AGENT_CONTEXT_OVERFLOW')
+  assert.equal(providerCalls, 1)
+})
+
 test('Agent 对话真正调用选定 Flock 模型，并通过本体工具检索素材组', async () => {
   const requests = []
   const result = await chatWithBotanicAgent(input, {
@@ -134,13 +154,18 @@ test('输入框里引用的节点直接进入系统提示，模型不必先猜�
   assert.doesNotMatch(JSON.stringify(requests), /api\/media\/private/)
 })
 
-test('配置视觉模型后，引用图片直接随消息附给视觉模型（原生多模态）', async () => {
+test('所选看图模型时，引用图片直接随消息附给该模型（原生多模态）', async () => {
   const bodies = []
-  await chatWithBotanicAgent({ ...input, mode: 'conversation', contextNodeIds: ['asset-scene'] }, {
+  await chatWithBotanicAgent({
+    ...input,
+    plannerModel: 'gemini-3.7-flash',
+    mode: 'conversation',
+    contextNodeIds: ['asset-scene'],
+  }, {
     flockApiKey: 'flock-secret',
     flockTextModel: 'deepseek-v4-pro',
-    flockAgentModels: ['deepseek-v4-pro', 'deepseek-v4-flash', 'kimi-k3'],
-    agentVisionModel: 'gemini-flash',
+    flockAgentModels: ['deepseek-v4-pro', 'deepseek-v4-flash', 'gemini-3.7-flash', 'deepseek-v4-flash-vision-exp', 'kimi-k3'],
+    agentVisionModel: 'gemini-3.7-flash',
   }, {
     document: {
       ...document,
@@ -155,7 +180,7 @@ test('配置视觉模型后，引用图片直接随消息附给视觉模型（�
   })
 
   assert.equal(bodies.length, 1)
-  assert.equal(bodies[0].model, 'gemini-flash')
+  assert.equal(bodies[0].model, 'gemini-3.7-flash')
   const system = bodies[0].messages[0].content
   assert.match(system, /已随用户消息直接附上/)
   assert.doesNotMatch(system, /看不到画面本身/)
@@ -165,14 +190,46 @@ test('配置视觉模型后，引用图片直接随消息附给视觉模型（�
   assert.equal(lastUser.content[1].image_url.url, 'data:image/png;base64,U0NFTkU=')
 })
 
-test('视觉模型失败且未开始推送时回退 caption 描述 + 文本模型', async () => {
-  const models = []
-  const visionBodies = []
-  const result = await chatWithBotanicAgent({ ...input, mode: 'conversation', contextNodeIds: ['asset-scene'] }, {
+test('所选 Vision Exp 时原生看图打所选模型，不换成环境变量', async () => {
+  const bodies = []
+  await chatWithBotanicAgent({
+    ...input,
+    plannerModel: 'deepseek-v4-flash-vision-exp',
+    mode: 'conversation',
+    contextNodeIds: ['asset-scene'],
+  }, {
     flockApiKey: 'flock-secret',
     flockTextModel: 'deepseek-v4-pro',
-    flockAgentModels: ['deepseek-v4-pro', 'deepseek-v4-flash', 'kimi-k3'],
-    agentVisionModel: 'gemini-flash',
+    flockAgentModels: ['deepseek-v4-pro', 'deepseek-v4-flash-vision-exp', 'gemini-3.7-flash'],
+    agentVisionModel: 'gemini-3.7-flash',
+  }, {
+    document: {
+      ...document,
+      nodes: document.nodes.map((node) => node.id === 'asset-scene'
+        ? { ...node, data: { ...node.data, image: 'data:image/png;base64,U0NFTkU=' } }
+        : node),
+    },
+    fetchImpl: async (_url, init) => {
+      bodies.push(JSON.parse(init.body))
+      return new Response(JSON.stringify({ choices: [{ message: { content: '好的。' } }] }), { status: 200 })
+    },
+  })
+  assert.equal(bodies[0].model, 'deepseek-v4-flash-vision-exp')
+})
+
+test('所选纯文本模型有引用图时不劫持规划模型，只走 caption', async () => {
+  const models = []
+  const visionBodies = []
+  const result = await chatWithBotanicAgent({
+    ...input,
+    plannerModel: 'kimi-k3',
+    mode: 'conversation',
+    contextNodeIds: ['asset-scene'],
+  }, {
+    flockApiKey: 'flock-secret',
+    flockTextModel: 'deepseek-v4-pro',
+    flockAgentModels: ['deepseek-v4-pro', 'kimi-k3', 'gemini-3.7-flash'],
+    agentVisionModel: 'gemini-3.7-flash',
   }, {
     document: {
       ...document,
@@ -188,14 +245,53 @@ test('视觉模型失败且未开始推送时回退 caption 描述 + 文本模�
     fetchImpl: async (_url, init) => {
       const body = JSON.parse(init.body)
       models.push(body.model)
-      if (body.model === 'gemini-flash') return new Response('unsupported', { status: 422 })
       return new Response(JSON.stringify({ choices: [{ message: { content: '好的。' } }] }), { status: 200 })
     },
   })
 
-  assert.deepEqual(models, ['gemini-flash', 'deepseek-v4-flash'])
+  assert.deepEqual(models, ['kimi-k3'])
+  assert.equal(visionBodies[0].model, 'gemini-3.7-flash')
+  assert.equal(result.plannerModel, 'kimi-k3')
+})
+
+test('看图模型被网关拒绝且未开始推送时回退 caption 描述 + 所选模型', async () => {
+  const models = []
+  const visionBodies = []
+  const result = await chatWithBotanicAgent({
+    ...input,
+    plannerModel: 'gemini-3.7-flash',
+    mode: 'conversation',
+    contextNodeIds: ['asset-scene'],
+  }, {
+    flockApiKey: 'flock-secret',
+    flockTextModel: 'deepseek-v4-pro',
+    flockAgentModels: ['deepseek-v4-pro', 'gemini-3.7-flash'],
+    agentVisionModel: 'gemini-3.7-flash',
+  }, {
+    document: {
+      ...document,
+      nodes: document.nodes.map((node) => node.id === 'asset-scene'
+        ? { ...node, data: { ...node.data, image: 'data:image/png;base64,U0NFTkU=' } }
+        : node),
+    },
+    visionCache: new Map(),
+    visionFetchImpl: async (_url, init) => {
+      visionBodies.push(JSON.parse(init.body))
+      return new Response(JSON.stringify({ choices: [{ message: { content: '海边夕阳场景，暖调，空镜。' } }] }), { status: 200 })
+    },
+    fetchImpl: async (_url, init) => {
+      const body = JSON.parse(init.body)
+      models.push(body.model)
+      if (models.length === 1 && Array.isArray(body.messages.at(-1)?.content)) {
+        return new Response('unsupported', { status: 422 })
+      }
+      return new Response(JSON.stringify({ choices: [{ message: { content: '好的。' } }] }), { status: 200 })
+    },
+  })
+
+  assert.deepEqual(models, ['gemini-3.7-flash', 'gemini-3.7-flash'])
   assert.equal(visionBodies.length, 1)
-  assert.equal(result.plannerModel, 'deepseek-v4-flash')
+  assert.equal(result.plannerModel, 'gemini-3.7-flash')
   assert.match(result.answer, /好的/)
 })
 
@@ -383,4 +479,96 @@ test('联网配额用尽时对话继续，模型收到 WEB_QUOTA_EXCEEDED', asyn
 
   assert.match(flockBodies[1].messages.at(-1).content, /WEB_QUOTA_EXCEEDED/)
   assert.equal(result.answer, '现在检索次数用完了，请稍后再试。')
+})
+
+test('Agent 对话区分 vision/text attempt，视觉越过 Checkpoint 后失败不回退文本', async () => {
+  const runtime = {
+    flockApiKey: 'flock-secret',
+    flockTextModel: 'deepseek-v4-pro',
+    flockAgentModels: ['deepseek-v4-pro', 'deepseek-v4-flash', 'gemini-3.7-flash', 'deepseek-v4-flash-vision-exp'],
+    agentVisionModel: 'gemini-3.7-flash',
+  }
+  const visionDocument = {
+    ...document,
+    nodes: document.nodes.map((node) => node.id === 'asset-scene'
+      ? { ...node, data: { ...node.data, image: 'data:image/png;base64,U0NFTkU=' } }
+      : node),
+  }
+  const checkpointStore = {
+    writes: [],
+    async save(checkpoint) {
+      this.writes.push(structuredClone(checkpoint))
+    },
+  }
+  const models = []
+
+  await assert.rejects(chatWithBotanicAgent({
+    ...input,
+    plannerModel: 'gemini-3.7-flash',
+    mode: 'conversation',
+    contextNodeIds: ['asset-scene'],
+  }, runtime, {
+    document: visionDocument,
+    saveCheckpoint: (checkpoint) => checkpointStore.save(checkpoint),
+    fetchImpl: async (_url, init) => {
+      const request = JSON.parse(init.body)
+      models.push(request.model)
+      if (models.length === 1) {
+        return new Response(JSON.stringify({ choices: [{ message: {
+          content: null,
+          tool_calls: [{ id: 'call-vision-checkpoint', type: 'function', function: {
+            name: 'asset_group_search', arguments: JSON.stringify({ role: '场景', query: '夏日' }),
+          } }],
+        } }] }), { status: 200 })
+      }
+      return new Response('vision provider rejected', { status: 422 })
+    },
+  }), (error) => error instanceof BotanicAgentChatError
+    && error.statusCode === 422
+    && error.code === 'PROVIDER_REJECTED')
+
+  assert.deepEqual(models, ['gemini-3.7-flash', 'gemini-3.7-flash'])
+  assert.equal(checkpointStore.writes.length, 2)
+  const visionCheckpoint = checkpointStore.writes.at(-1)
+  assert.equal(visionCheckpoint.attempt.id, 'chat_vision')
+  assert.equal(visionCheckpoint.attempt.model, 'gemini-3.7-flash')
+  assert.match(visionCheckpoint.attempt.snapshotHash, /^[A-Za-z0-9_-]{43}$/u)
+  assert.equal(visionCheckpoint.completedSteps.length, 1)
+
+  await assert.rejects(chatWithBotanicAgent({
+    ...input,
+    plannerModel: 'deepseek-v4-flash-vision-exp',
+    mode: 'conversation',
+    contextNodeIds: ['asset-scene'],
+  }, runtime, {
+    document: visionDocument,
+    resumeCheckpoint: visionCheckpoint,
+    saveCheckpoint: async () => { throw new Error('attempt 漂移应在保存前失败') },
+    fetchImpl: async () => { throw new Error('attempt 漂移应在 Provider 前失败') },
+  }), (error) => error instanceof BotanicAgentChatError
+    && error.statusCode === 409
+    && error.code === 'AGENT_TURN_CHECKPOINT_SNAPSHOT_MISMATCH')
+
+  let textCheckpoint
+  const textResult = await chatWithBotanicAgent({
+    ...input,
+    mode: 'conversation',
+    contextNodeIds: [],
+  }, {
+    flockApiKey: 'flock-secret',
+    flockTextModel: 'deepseek-v4-pro',
+    flockAgentModels: ['deepseek-v4-pro', 'deepseek-v4-flash'],
+  }, {
+    document,
+    saveCheckpoint: async (checkpoint) => { textCheckpoint = structuredClone(checkpoint) },
+    fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: {
+      content: '文本执行完成。',
+    } }] }), { status: 200 }),
+  })
+
+  assert.equal(textResult.answer, '文本执行完成。')
+  assert.equal(textCheckpoint.attempt.id, 'chat_text')
+  assert.equal(textCheckpoint.attempt.model, 'deepseek-v4-flash')
+  assert.match(textCheckpoint.attempt.snapshotHash, /^[A-Za-z0-9_-]{43}$/u)
+  assert.notEqual(visionCheckpoint.attempt.snapshotHash, textCheckpoint.attempt.snapshotHash)
 })

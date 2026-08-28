@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
+import { createAgentThreadContext } from './agentThreadContext.mjs'
+import { canonicalHash } from './canonicalHash.mjs'
+import { agentTurnRequestHash } from './agentTurnRequestIdentity.mjs'
+import { createAgentSkill, deprecateAgentSkill, updateAgentSkill } from './botanicAgentSkill.mjs'
+import { createAgentTurnRecord } from './botanicAgentTurnRuntime.mjs'
 import { createProductStore } from './productStore.mjs'
 
 function document(id, name = '测试项目') {
@@ -58,37 +63,55 @@ test('项目、成员授权和审计会持久化到服务端数据文件', () =>
   assert.ok(reloaded.listAuditEvents(owner.id, 'project-a').some((event) => event.action === 'project.updated'))
 })
 
-test('项目 Skill 创建后可跨重启恢复且不会泄露到其他项目', () => {
+test('项目 Skill 版本由领域快照权威生成，幂等重放不造新版本且弃用后仍可读历史', () => {
   const { path, store } = createStore()
   const owner = store.authenticate('owner-token')
   store.writeProject(owner.id, document('project-skill-a'), undefined)
   store.writeProject(owner.id, document('project-skill-b'), undefined)
 
-  const created = store.putAgentSkill(owner.id, {
-    id: 'skill-scene-campaign',
+  const domainSkill = createAgentSkill({
     projectId: 'project-skill-a',
     name: '夏日场景系列',
     instructions: '锁定人物和服装，只替换场景与环境光线。',
-    status: 'active',
     capabilities: ['read'],
     manifest: { version: 1, toolAllowlist: ['canvas_read'], dependencies: [{ skillId: 'controlled_edit' }] },
-    createdAt: 100,
-    updatedAt: 100,
+  }, {
+    id: 'skill-scene-campaign', ownerId: owner.id, approvedBy: owner.id, now: 100,
+    riskOf: (name) => (name === 'canvas_read' ? 'read' : undefined),
   })
+  const created = store.putAgentSkill(owner.id, domainSkill)
+  const replayed = store.putAgentSkill(owner.id, domainSkill)
 
   assert.equal(created.name, '夏日场景系列')
+  assert.equal(replayed.version, 1)
+  assert.equal(replayed.versions.length, 1, '同一领域快照重放不得追加版本')
   // Manifest 必须真的落库：它决定 skill_run 要不要弹用户确认。字段在持久化边界上被
   // 悄悄丢掉的话，单元测试仍然全绿，而线上会退回「只按自称算风险」。
   assert.deepEqual(created.manifest.toolAllowlist, ['canvas_read'])
   assert.deepEqual(store.listAgentSkills(owner.id, 'project-skill-a').map((skill) => skill.id), ['skill-scene-campaign'])
   assert.deepEqual(store.listAgentSkills(owner.id, 'project-skill-b'), [])
 
+  const revised = updateAgentSkill(created, {
+    instructions: '锁定人物、服装与商品，只替换场景。',
+  }, {
+    actorId: owner.id, approvedBy: owner.id, now: 200,
+    riskOf: (name) => (name === 'canvas_read' ? 'read' : undefined),
+  })
+  const storedRevision = store.putAgentSkill(owner.id, revised)
+  store.putAgentSkill(owner.id, deprecateAgentSkill(storedRevision, { actorId: owner.id, now: 300 }))
+
+  assert.deepEqual(store.listAgentSkills(owner.id, 'project-skill-a'), [], '弃用 Skill 不再进入活动目录')
+  assert.equal(store.readAgentSkillVersion(owner.id, 'project-skill-a', created.id, 1)?.instructions, created.instructions)
+  assert.equal(store.readAgentSkillVersion(owner.id, 'project-skill-a', created.id, 2)?.instructions, revised.instructions)
+  assert.equal(store.readAgentSkillVersion(owner.id, 'project-skill-a', created.id, 3), undefined)
+  assert.equal(store.readAgentSkillVersion(owner.id, 'project-skill-b', created.id, 1), undefined)
+
   const reloaded = createProductStore({ dataPath: path, bootstrapAccessToken: 'owner-token' })
-  assert.equal(reloaded.listAgentSkills(owner.id, 'project-skill-a')[0]?.instructions, '锁定人物和服装，只替换场景与环境光线。')
+  assert.equal(reloaded.readAgentSkillVersion(owner.id, 'project-skill-a', created.id, 1)?.instructions, created.instructions)
   assert.deepEqual(
-    reloaded.listAgentSkills(owner.id, 'project-skill-a')[0]?.manifest?.dependencies,
-    [{ skillId: 'controlled_edit' }],
-    'Manifest 跨重启仍在',
+    reloaded.readAgentSkillVersion(owner.id, 'project-skill-a', created.id, 2),
+    { projectId: 'project-skill-a', skillId: created.id, ...revised.versions[1] },
+    '完整历史版本跨重启仍在',
   )
   assert.ok(reloaded.listAuditEvents(owner.id, 'project-skill-a').some((event) => event.action === 'agent-skill.created'))
 })
@@ -112,6 +135,346 @@ test('Agent Turn 与事件按幂等边界持久化，跨重启可恢复', () => 
   assert.equal(reloaded.readAgentTurn(owner.id, turn.id)?.status, 'completed')
   assert.deepEqual(reloaded.listAgentTurnEvents(owner.id, 'project-turn', turn.id).map((event) => event.type), ['turn.started'])
   assert.equal(reloaded.listAgentTurnsForProject(owner.id, 'project-turn')[0]?.id, turn.id)
+})
+
+function durableSubagentDescriptor(overrides = {}) {
+  return {
+    role: 'brand_research',
+    model: 'subagent-model',
+    instructionsVersion: 'botanic-subagent-v2',
+    outputKind: 'proposal',
+    outputSchema: {
+      type: 'object',
+      required: ['summary'],
+      properties: { summary: { type: 'string', maxLength: 2_000 } },
+    },
+    allowedTools: ['web_search'],
+    budget: { maxSteps: 4, maxToolCalls: 8, timeoutMs: 60_000, maxActivations: 3 },
+    capabilityHash: 'B'.repeat(43),
+    ...overrides,
+  }
+}
+
+function durableSubagentStartCommand(projectId, suffix = '1', overrides = {}) {
+  const content = overrides.input?.content ?? '研究品牌在年轻市场的视觉机会。'
+  return {
+    kind: 'start',
+    projectId,
+    rootTurnId: `root-turn-${suffix}`,
+    sourceTurnId: `root-turn-${suffix}`,
+    parentSessionId: `primary-session-${suffix}`,
+    idempotencyKey: `subagent-start-${suffix}`,
+    input: { content },
+    descriptor: durableSubagentDescriptor(),
+    turn: {
+      idempotencyKey: `subagent-turn-start-${suffix}`,
+      request: { runtimeOperation: 'subagent', input: {} },
+    },
+    ...overrides,
+  }
+}
+
+function putDurableSubagentRootTurn(store, ownerId, projectId, suffix = '1') {
+  const turn = {
+    id: `root-turn-${suffix}`,
+    version: 2,
+    ownerId,
+    projectId,
+    idempotencyKey: `root-turn-request-${suffix}`,
+    status: 'completed',
+    request: { runtimeOperation: 'plan', input: {} },
+    createdAt: 90,
+    updatedAt: 100,
+  }
+  store.putAgentTurn(ownerId, turn)
+  return turn
+}
+
+function completeStoredTurn(store, ownerId, turn, suffix = '1') {
+  const claimed = store.claimAgentTurnExecution(ownerId, {
+    turn,
+    leaseToken: `turn-lease-${suffix}`,
+    leaseDurationMs: 30_000,
+  })
+  assert.equal(claimed.kind, 'claimed')
+  const completed = store.commitAgentTurnExecution(ownerId, {
+    id: turn.id,
+    projectId: turn.projectId,
+    leaseToken: `turn-lease-${suffix}`,
+    executionGeneration: claimed.turn.execution.generation,
+    status: 'completed',
+    result: { answer: `Subagent 结果 ${suffix}` },
+  })
+  assert.equal(completed.kind, 'committed')
+  return completed.turn
+}
+
+test('Durable Subagent start 原子创建 descriptor/FIFO/Session/Message/Turn，public 与 worker 读面隔离', () => {
+  const { path, store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, document('project-subagent-a'), undefined)
+  store.writeProject(owner.id, document('project-subagent-b'), undefined)
+  putDurableSubagentRootTurn(store, owner.id, 'project-subagent-a')
+
+  const started = store.enqueueAgentSubagentActivation(
+    owner.id,
+    durableSubagentStartCommand('project-subagent-a'),
+  )
+  assert.equal(started.kind, 'enqueued')
+  assert.equal(started.activation.sequence, 1)
+  assert.equal(started.subagent.ownerId, undefined)
+  assert.equal(started.subagent.requestHash, undefined)
+  assert.equal(started.activation.requestHash, undefined)
+
+  const raw = store.readAgentSubagentForWorker(started.subagent.id)
+  assert.equal(raw.ownerId, owner.id)
+  assert.equal(typeof raw.requestHash, 'string')
+  assert.equal(store.readAgentSubagent(owner.id, raw.id).requestHash, undefined)
+  assert.deepEqual(store.listAgentSessions(owner.id, 'project-subagent-a'), [])
+  assert.equal(store.listAgentSessions(owner.id, 'project-subagent-a', { includeSubagents: true })[0].kind, 'subagent')
+  assert.equal(store.readAgentState(owner.id, 'project-subagent-a').sessions.length, 0)
+  assert.equal(store.readAgentState(owner.id, 'project-subagent-a', { includeSubagents: true }).sessions.length, 1)
+
+  const workerItems = store.listAgentSubagentActivationsForWorker(raw.id)
+  assert.equal(workerItems.length, 1)
+  assert.equal(workerItems[0].activation.sequence, 1)
+  assert.equal(workerItems[0].turn.request.input.activationSequence, 1)
+  assert.equal(workerItems[0].turn.request.input.cancelGeneration, 0)
+  assert.equal(workerItems[0].turn.request.input.sessionId, raw.sessionId)
+  assert.equal(workerItems[0].turn.request.input.inputMessage.id, workerItems[0].activation.inputMessageId)
+  assert.equal(workerItems[0].turn.request.input.inputMessage.content, '研究品牌在年轻市场的视觉机会。')
+  assert.equal(store.listAgentSubagentActivations(owner.id, raw.id)[0].execution, undefined)
+
+  const member = store.createUser(owner.id, {
+    email: 'subagent-member@example.com', name: 'Subagent Member', accessToken: 'subagent-member-token',
+  })
+  store.addProjectMember(owner.id, 'project-subagent-a', member.id, 'editor')
+  assert.equal(store.readAgentSubagent(member.id, raw.id).id, raw.id, '项目成员可读取 public descriptor')
+  const memberFollowup = store.enqueueAgentSubagentActivation(member.id, {
+    kind: 'followup', projectId: 'project-subagent-a', subagentId: raw.id,
+    sourceTurnId: 'root-turn-member-followup', idempotencyKey: 'member-followup',
+    input: { content: '由项目 Editor 继续补充调研。' },
+    turn: { idempotencyKey: 'member-followup-turn', request: { runtimeOperation: 'subagent', input: {} } },
+  })
+  assert.equal(memberFollowup.kind, 'enqueued')
+  assert.equal(memberFollowup.activation.sequence, 2)
+  assert.equal(store.listAgentSubagentActivations(member.id, raw.id).length, 2)
+  assert.equal(store.readAgentSubagentForWorker(raw.id).ownerId, owner.id, 'Editor 操作不转移 descriptor owner')
+  assert.deepEqual(
+    store.listAgentSubagentsForRootTurnPage(owner.id, 'project-subagent-a', 'root-turn-1').map((item) => item.id),
+    [raw.id],
+  )
+  assert.equal(store.enqueueAgentSubagentActivation(owner.id, {
+    kind: 'followup', projectId: 'project-subagent-b', subagentId: raw.id,
+    sourceTurnId: 'root-turn-other', idempotencyKey: 'cross-project-followup',
+    input: { content: '跨项目继续。' },
+    turn: { idempotencyKey: 'cross-project-turn', request: { runtimeOperation: 'subagent', input: {} } },
+  }).kind, 'missing')
+
+  const reloaded = createProductStore({ dataPath: path, bootstrapAccessToken: 'owner-token' })
+  assert.equal(reloaded.readAgentSubagentForWorker(raw.id).lastEnqueuedSequence, 2)
+  assert.equal(reloaded.listAgentSubagentActivationsForWorker(raw.id)[0].turn.id, workerItems[0].turn.id)
+})
+
+test('Durable Subagent root execution fence 拒绝旧 executor，takeover 后新 executor 可幂等重放', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  const projectId = 'project-subagent-root-fence'
+  store.writeProject(owner.id, document(projectId), undefined)
+  const source = createAgentTurnRecord({
+    id: 'root-turn-fence',
+    ownerId: owner.id,
+    projectId,
+    idempotencyKey: 'root-turn-fence-request',
+    request: { runtimeOperation: 'plan', input: {} },
+    now: 100,
+  })
+  store.putAgentTurn(owner.id, {
+    ...source,
+    status: 'running',
+    execution: {
+      generation: 3,
+      leaseToken: 'root-lease-old',
+      leaseDurationMs: 30_000,
+      leaseExpiresAt: 0,
+      claimedAt: 100,
+      lastHeartbeatAt: 100,
+    },
+  })
+  const command = durableSubagentStartCommand(projectId, 'fence', {
+    rootExecution: { generation: 3, leaseToken: 'root-lease-old' },
+  })
+  const started = store.enqueueAgentSubagentActivation(owner.id, command)
+  assert.equal(started.kind, 'enqueued')
+
+  const takeover = store.claimAgentTurnExecution(owner.id, {
+    turn: source,
+    leaseToken: 'root-lease-new',
+    allowTakeover: true,
+  })
+  assert.equal(takeover.kind, 'claimed')
+  assert.equal(takeover.turn.execution.generation, 4)
+  assert.throws(
+    () => store.enqueueAgentSubagentActivation(owner.id, command),
+    (caught) => caught?.code === 'AGENT_SUBAGENT_ROOT_EXECUTION_STALE',
+  )
+  assert.equal(store.enqueueAgentSubagentActivation(owner.id, {
+    ...command,
+    rootExecution: { generation: 4, leaseToken: 'root-lease-new' },
+  }).kind, 'replay')
+
+  store.writeProject(owner.id, document('project-subagent-root-completed'), undefined)
+  putDurableSubagentRootTurn(store, owner.id, 'project-subagent-root-completed', 'completed-external')
+  assert.equal(store.enqueueAgentSubagentActivation(owner.id, durableSubagentStartCommand(
+    'project-subagent-root-completed',
+    'completed-external',
+  )).kind, 'enqueued')
+  assert.throws(
+    () => store.enqueueAgentSubagentActivation(owner.id, durableSubagentStartCommand(
+      'project-subagent-root-completed',
+      'completed-external',
+      { rootExecution: { generation: 4, leaseToken: 'root-lease-new' } },
+    )),
+    (caught) => caught?.code === 'AGENT_SUBAGENT_ROOT_EXECUTION_STALE',
+  )
+
+  store.writeProject(owner.id, document('project-subagent-root-queued'), undefined)
+  const queuedRoot = createAgentTurnRecord({
+    id: 'root-turn-queued', ownerId: owner.id, projectId: 'project-subagent-root-queued',
+    idempotencyKey: 'root-turn-queued-request', request: { runtimeOperation: 'plan', input: {} }, now: 100,
+  })
+  store.putAgentTurn(owner.id, queuedRoot)
+  assert.throws(
+    () => store.enqueueAgentSubagentActivation(owner.id, durableSubagentStartCommand(
+      'project-subagent-root-queued',
+      'queued',
+    )),
+    (caught) => caught?.code === 'AGENT_SUBAGENT_ROOT_TURN_NOT_READY',
+  )
+})
+
+test('Durable Subagent followup 重放/冲突保持 gapless，settle 原子写 assistant Message 并 handoff 下一项', () => {
+  const { path, store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, document('project-subagent-followup'), undefined)
+  putDurableSubagentRootTurn(store, owner.id, 'project-subagent-followup', 'followup')
+  const started = store.enqueueAgentSubagentActivation(
+    owner.id,
+    durableSubagentStartCommand('project-subagent-followup', 'followup'),
+  )
+  const followupCommand = {
+    kind: 'followup',
+    projectId: 'project-subagent-followup',
+    subagentId: started.subagent.id,
+    sourceTurnId: 'root-turn-followup-2',
+    idempotencyKey: 'subagent-followup-2',
+    input: { content: '继续比较竞品 B。' },
+    turn: {
+      idempotencyKey: 'subagent-turn-followup-2',
+      request: { runtimeOperation: 'subagent', input: {} },
+    },
+  }
+  const followup = store.enqueueAgentSubagentActivation(owner.id, followupCommand)
+  assert.equal(followup.kind, 'enqueued')
+  assert.equal(followup.activation.sequence, 2)
+  assert.equal(store.enqueueAgentSubagentActivation(owner.id, followupCommand).kind, 'replay')
+  assert.equal(store.enqueueAgentSubagentActivation(owner.id, {
+    ...followupCommand,
+    input: { content: '同一个 key 改成不同输入。' },
+  }).kind, 'conflict')
+  assert.deepEqual(
+    store.listAgentSubagentActivationsForWorker(started.subagent.id).map((item) => item.activation.sequence),
+    [1, 2],
+  )
+
+  const claimed = store.claimAgentSubagentActivation({
+    subagentId: started.subagent.id,
+    activationId: started.activation.id,
+    leaseToken: 'activation-lease-1',
+    leaseDurationMs: 30_000,
+  })
+  assert.equal(claimed.kind, 'claimed')
+  completeStoredTurn(store, owner.id, claimed.turn, 'followup-1')
+  const settled = store.settleAgentSubagentActivation({
+    subagentId: started.subagent.id,
+    activationId: started.activation.id,
+    leaseToken: 'activation-lease-1',
+    executionGeneration: claimed.activation.execution.generation,
+    cancelGeneration: claimed.subagent.cancelGeneration,
+  })
+  assert.equal(settled.kind, 'settled')
+  assert.equal(settled.subagent.settledThroughSequence, 1)
+  assert.equal(settled.nextActivation.activation.sequence, 2)
+  assert.equal(settled.nextActivation.turn.id, followup.turn.id)
+
+  const messages = store.listAgentSessionMessages(
+    owner.id,
+    'project-subagent-followup',
+    store.readAgentSubagentForWorker(started.subagent.id).sessionId,
+    { includeSubagents: true },
+  ).messages
+  assert.deepEqual(messages.map((message) => message.role), ['user', 'user', 'assistant'])
+  assert.equal(messages.at(-1).id, `agent-turn-result-${claimed.turn.id}`)
+
+  const reloaded = createProductStore({ dataPath: path, bootstrapAccessToken: 'owner-token' })
+  assert.equal(reloaded.readAgentSubagentForWorker(started.subagent.id).settledThroughSequence, 1)
+  assert.equal(reloaded.listAgentSessionMessages(
+    owner.id,
+    'project-subagent-followup',
+    reloaded.readAgentSubagentForWorker(started.subagent.id).sessionId,
+    { includeSubagents: true },
+  ).messages.at(-1).content, 'Subagent 结果 followup-1')
+})
+
+test('Durable Subagent 取消 generation fence 可恢复，finalize 原子收口 terminal Turn 投影', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, document('project-subagent-cancel'), undefined)
+  putDurableSubagentRootTurn(store, owner.id, 'project-subagent-cancel', 'cancel')
+  const started = store.enqueueAgentSubagentActivation(
+    owner.id,
+    durableSubagentStartCommand('project-subagent-cancel', 'cancel'),
+  )
+  const claimed = store.claimAgentSubagentActivation({
+    subagentId: started.subagent.id,
+    activationId: started.activation.id,
+    leaseToken: 'activation-cancel-lease',
+  })
+  completeStoredTurn(store, owner.id, claimed.turn, 'cancel-race')
+
+  const requested = store.requestAgentSubagentCancellation(owner.id, {
+    subagentId: started.subagent.id,
+    projectId: 'project-subagent-cancel',
+    signalId: 'cancel-signal-local',
+    expectedCancelGeneration: 0,
+  })
+  assert.equal(requested.kind, 'requested')
+  const rawCancelling = store.readAgentSubagentForWorker(started.subagent.id)
+  assert.equal(rawCancelling.cancelGeneration, 1)
+  assert.equal(rawCancelling.dispatch, undefined)
+  assert.equal(store.listRunnableAgentSubagents().some((entry) => entry.subagent.id === started.subagent.id), true,
+    '崩溃后 cancelling descriptor 仍可被恢复队列捞起')
+  assert.equal(store.settleAgentSubagentActivation({
+    subagentId: started.subagent.id,
+    activationId: started.activation.id,
+    leaseToken: 'activation-cancel-lease',
+    executionGeneration: claimed.activation.execution.generation,
+    cancelGeneration: 0,
+  }).kind, 'cancelling')
+
+  const finalized = store.finalizeAgentSubagentCancellation(owner.id, {
+    subagentId: started.subagent.id,
+    projectId: 'project-subagent-cancel',
+    signalId: 'cancel-signal-local',
+    cancelGeneration: 1,
+  })
+  assert.equal(finalized.kind, 'finalized')
+  assert.equal(finalized.subagent.status, 'cancelled')
+  assert.equal(finalized.subagent.settledThroughSequence, 1)
+  assert.equal(store.listRunnableAgentSubagents().some((entry) => entry.subagent.id === started.subagent.id), false)
+  const workerItem = store.listAgentSubagentActivationsForWorker(started.subagent.id)[0]
+  assert.equal(workerItem.activation.status, 'completed')
+  assert.equal(workerItem.activation.cancelGeneration, 1)
 })
 
 test('Agent 评审结论与人工决策跨重启保留，且按项目隔离', () => {
@@ -152,6 +515,432 @@ test('Agent 行动回执按用户和项目持久化，重试可直接复用已�
 
   const reloaded = createProductStore({ dataPath: path, bootstrapAccessToken: 'owner-token' })
   assert.equal(reloaded.readAgentActionReceipt(owner.id, receipt.id)?.output.message, '已完成')
+})
+
+test('Agent 行动回执在副作用前原子 claim，并用租约 Token 收口唯一结果', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, document('project-action-claim'), undefined)
+  const claim = {
+    id: 'agent_action_claim_1', projectId: 'project-action-claim', toolCallId: 'call-claim-1',
+    actionName: 'mcp_call', intentHash: 'intent-1', replayPolicy: 'never', status: 'running',
+    leaseToken: 'lease-1', leaseExpiresAt: 200, createdAt: 100, updatedAt: 100,
+  }
+
+  assert.equal(store.claimAgentActionReceipt(owner.id, claim).kind, 'claimed')
+  assert.throws(
+    () => store.claimAgentActionReceipt(owner.id, { ...claim, id: 'agent_action_missing_lease', leaseToken: '' }),
+    (caught) => caught?.code === 'AGENT_ACTION_RECEIPT_INVALID',
+  )
+  assert.equal(store.claimAgentActionReceipt(owner.id, { ...claim, leaseToken: 'lease-2', updatedAt: 110 }).kind, 'in_progress')
+  assert.equal(store.claimAgentActionReceipt(owner.id, { ...claim, intentHash: 'intent-other', updatedAt: 110 }).kind, 'conflict')
+
+  const contextual = {
+    ...claim, id: 'agent_action_contextual', actionBindingHash: 'binding-message-a',
+    leaseToken: 'lease-contextual',
+  }
+  assert.equal(store.claimAgentActionReceipt(owner.id, contextual).kind, 'claimed')
+  assert.equal(store.readAgentActionReceipt(owner.id, contextual.id).actionBindingHash, 'binding-message-a')
+  assert.equal(store.claimAgentActionReceipt(owner.id, {
+    ...contextual, actionBindingHash: 'binding-message-b', leaseToken: 'lease-forged',
+  }).kind, 'conflict')
+  assert.equal(store.claimAgentActionReceipt(owner.id, {
+    ...contextual, actionBindingHash: undefined, leaseToken: 'lease-legacy',
+  }).kind, 'conflict')
+  assert.throws(
+    () => store.settleAgentActionReceipt(owner.id, {
+      id: claim.id, projectId: claim.projectId, leaseToken: 'lease-other', status: 'succeeded', result: { ok: true }, updatedAt: 120,
+    }),
+    (caught) => caught?.code === 'AGENT_ACTION_LEASE_STALE',
+  )
+  assert.throws(
+    () => store.settleAgentActionReceipt(owner.id, {
+      id: claim.id, projectId: claim.projectId, leaseToken: '', status: 'succeeded', result: { ok: true }, updatedAt: 120,
+    }),
+    (caught) => caught?.code === 'AGENT_ACTION_RECEIPT_INVALID',
+  )
+
+  const legacyDuringRun = store.putAgentActionReceipt(owner.id, {
+    id: claim.id, projectId: claim.projectId, toolCallId: claim.toolCallId,
+    result: { output: { pageId: 'legacy-overwrite' } }, createdAt: 120,
+  })
+  assert.equal(legacyDuringRun.status, 'running')
+  assert.equal(store.readAgentActionReceipt(owner.id, claim.id).leaseToken, claim.leaseToken)
+
+  const settled = store.settleAgentActionReceipt(owner.id, {
+    id: claim.id, projectId: claim.projectId, leaseToken: claim.leaseToken,
+    status: 'succeeded', result: { output: { pageId: 'page-1' } }, updatedAt: 130,
+  })
+  assert.equal(settled.status, 'succeeded')
+  assert.equal(store.claimAgentActionReceipt(owner.id, { ...claim, leaseToken: 'lease-3', updatedAt: 140 }).kind, 'replay')
+  assert.equal(store.readAgentActionReceipt(owner.id, claim.id).result.output.pageId, 'page-1')
+  const immutableSuccess = store.putAgentActionReceipt(owner.id, {
+    id: claim.id, projectId: claim.projectId, toolCallId: claim.toolCallId,
+    result: { output: { pageId: 'legacy-overwrite' } }, createdAt: 150,
+  })
+  assert.equal(immutableSuccess.result.output.pageId, 'page-1')
+
+  const expired = { ...claim, id: 'agent_action_expired', leaseToken: 'lease-expired', leaseExpiresAt: 150 }
+  assert.equal(store.claimAgentActionReceipt(owner.id, expired).kind, 'claimed')
+  const uncertain = store.claimAgentActionReceipt(owner.id, { ...expired, leaseToken: 'lease-new', updatedAt: 151 })
+  assert.equal(uncertain.kind, 'uncertain')
+  assert.equal(uncertain.receipt.status, 'uncertain')
+  assert.equal(uncertain.receipt.error.code, 'AGENT_ACTION_OUTCOME_UNKNOWN')
+
+  const safe = { ...claim, id: 'agent_action_safe_retry', replayPolicy: 'safe' }
+  assert.equal(store.claimAgentActionReceipt(owner.id, safe).kind, 'claimed')
+  store.settleAgentActionReceipt(owner.id, {
+    id: safe.id, projectId: safe.projectId, leaseToken: safe.leaseToken,
+    status: 'failed', error: { code: 'VALIDATION_FAILED', message: '明确失败' }, updatedAt: 120,
+  })
+  const retried = store.claimAgentActionReceipt(owner.id, {
+    ...safe, leaseToken: 'lease-retry', leaseExpiresAt: 260, updatedAt: 160,
+  })
+  assert.equal(retried.kind, 'claimed')
+  assert.equal(retried.receipt.leaseToken, 'lease-retry')
+  assert.equal(retried.receipt.error, undefined)
+
+  const editor = store.createUser(owner.id, {
+    email: 'action-editor@example.com', name: 'Action Editor', accessToken: 'action-editor-token',
+  })
+  store.addProjectMember(owner.id, claim.projectId, editor.id, 'editor')
+  const revoked = { ...claim, id: 'agent_action_revoked_after_claim', leaseToken: 'lease-revoked' }
+  assert.equal(store.claimAgentActionReceipt(editor.id, revoked).kind, 'claimed')
+  store.addProjectMember(owner.id, claim.projectId, editor.id, 'viewer')
+  assert.equal(store.settleAgentActionReceipt(editor.id, {
+    id: revoked.id, projectId: revoked.projectId, leaseToken: revoked.leaseToken,
+    status: 'succeeded', result: { output: { ok: true } }, updatedAt: 180,
+  }).status, 'succeeded', 'claim 后撤权仍必须允许原租约持有者收口已发生的副作用')
+})
+
+test('Agent 行动 uncertain 决议与一次性重试授权在本地 Store 原子持久化', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  const projectId = 'project-action-reconcile'
+  store.writeProject(owner.id, document(projectId), undefined)
+  const claim = {
+    id: 'receipt-reconcile-1', projectId, toolCallId: 'call-1', actionName: 'mcp_call',
+    intentHash: 'intent-1', replayPolicy: 'never', leaseToken: 'lease-1', leaseDurationMs: 60_000,
+  }
+  store.claimAgentActionReceipt(owner.id, claim)
+  store.settleAgentActionReceipt(owner.id, {
+    id: claim.id, projectId, leaseToken: claim.leaseToken, status: 'uncertain',
+    error: { code: 'AGENT_ACTION_OUTCOME_UNKNOWN', message: '未知' },
+  })
+  const resolution = {
+    id: claim.id, projectId, toolCallId: claim.toolCallId, actionName: claim.actionName,
+    intentHash: claim.intentHash, actionBindingHash: 'binding-1', decision: 'confirmed_not_applied',
+    manualRetryAuthorization: {
+      version: 1, id: 'auth-1', receiptId: claim.id, intentHash: claim.intentHash,
+      actionBindingHash: 'binding-1', userId: owner.id, projectId, actionId: 'action-1',
+      tokenHash: 'token-hash-1', tokenHint: 'abcd', issuedAt: 100, expiresAt: 1_100,
+    },
+  }
+
+  const resolved = store.resolveAgentActionReceipt(owner.id, resolution)
+  assert.equal(resolved.kind, 'resolved')
+  assert.equal(resolved.receipt.status, 'failed')
+  assert.equal(store.resolveAgentActionReceipt(owner.id, resolution).kind, 'replay')
+  const consumption = {
+    id: claim.id, projectId, actionId: 'action-1', toolCallId: claim.toolCallId,
+    actionName: claim.actionName, intentHash: claim.intentHash, actionBindingHash: 'binding-1',
+    tokenHash: 'token-hash-1', retryReceiptId: 'receipt-retry-1',
+  }
+  assert.equal(store.consumeAgentActionManualRetryAuthorization(owner.id, consumption).kind, 'consumed')
+  assert.equal(store.consumeAgentActionManualRetryAuthorization(owner.id, consumption).kind, 'replay')
+  assert.equal(store.consumeAgentActionManualRetryAuthorization(owner.id, {
+    ...consumption, retryReceiptId: 'receipt-retry-2',
+  }).kind, 'already_consumed')
+
+  const malformedClaim = { ...claim, id: 'receipt-reconcile-malformed', leaseToken: 'lease-malformed' }
+  store.claimAgentActionReceipt(owner.id, malformedClaim)
+  store.settleAgentActionReceipt(owner.id, {
+    id: malformedClaim.id, projectId, leaseToken: malformedClaim.leaseToken, status: 'uncertain',
+    error: { code: 'AGENT_ACTION_OUTCOME_UNKNOWN', message: '未知' },
+  })
+  const malformedAuthorization = { ...resolution.manualRetryAuthorization, receiptId: malformedClaim.id }
+  delete malformedAuthorization.issuedAt
+  assert.equal(store.resolveAgentActionReceipt(owner.id, {
+    ...resolution, id: malformedClaim.id, manualRetryAuthorization: malformedAuthorization,
+  }).kind, 'invalid', 'Adapter 不能用默认 TTL 把缺 issuedAt 的授权修成合法授权')
+
+  const audit = store.listAuditEvents(owner.id, projectId)
+  assert.equal(audit.some((event) => event.action === 'agent-action.reconciled'), true)
+  assert.equal(audit.some((event) => event.action === 'agent-action.manual-retry-consumed'), true)
+  assert.equal(JSON.stringify(audit).includes('token-hash-1'), false, 'Audit 不得保存授权摘要')
+})
+
+test('Agent 行动 v2 重试授权由 Store 时钟预绑定新 Receipt 并支持 tokenless 恢复', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  const projectId = 'project-action-reconcile-v2'
+  store.writeProject(owner.id, document(projectId), undefined)
+  const claim = {
+    id: 'receipt-reconcile-v2', projectId, toolCallId: 'call-v2', actionName: 'mcp_call',
+    intentHash: 'intent-v2', actionBindingHash: 'binding-v2', replayPolicy: 'never',
+    leaseToken: 'lease-v2', leaseDurationMs: 60_000,
+  }
+  store.claimAgentActionReceipt(owner.id, claim)
+  store.settleAgentActionReceipt(owner.id, {
+    id: claim.id, projectId, leaseToken: claim.leaseToken, status: 'uncertain',
+    error: { code: 'AGENT_ACTION_OUTCOME_UNKNOWN', message: '未知' },
+  })
+  const requestedTtlMs = 10_000
+  const resolved = store.resolveAgentActionReceipt(owner.id, {
+    id: claim.id, projectId, toolCallId: claim.toolCallId, actionName: claim.actionName,
+    intentHash: claim.intentHash, actionBindingHash: claim.actionBindingHash,
+    decision: 'confirmed_not_applied',
+    manualRetryAuthorization: {
+      version: 2, id: 'auth-v2', receiptId: claim.id, intentHash: claim.intentHash,
+      actionBindingHash: claim.actionBindingHash, userId: owner.id, projectId,
+      actionId: 'action-v2', boundRetryReceiptId: 'receipt-retry-v2',
+      reservedAt: 100, expiresAt: 100 + requestedTtlMs,
+    },
+  })
+  assert.equal(resolved.kind, 'resolved')
+  const authorization = resolved.receipt.manualRetryAuthorization
+  assert.equal(authorization.version, 2)
+  assert.equal(authorization.boundRetryReceiptId, 'receipt-retry-v2')
+  assert.equal(authorization.expiresAt - authorization.reservedAt, requestedTtlMs)
+  assert.equal(authorization.issuedAt, undefined)
+  assert.equal(authorization.tokenHash, undefined)
+
+  const consumption = {
+    id: claim.id, projectId, actionId: 'action-v2', toolCallId: claim.toolCallId,
+    actionName: claim.actionName, intentHash: claim.intentHash,
+    actionBindingHash: claim.actionBindingHash, retryReceiptId: 'receipt-retry-v2',
+  }
+  assert.equal(store.consumeAgentActionManualRetryAuthorization(owner.id, consumption).kind, 'consumed')
+  assert.equal(store.consumeAgentActionManualRetryAuthorization(owner.id, consumption).kind, 'replay')
+  assert.equal(store.consumeAgentActionManualRetryAuthorization(owner.id, {
+    ...consumption, retryReceiptId: 'receipt-retry-v2-other',
+  }).kind, 'already_consumed')
+  assert.equal(JSON.stringify(store.listAuditEvents(owner.id, projectId)).includes('tokenHash'), false)
+})
+
+test('Agent Turn 用原子 claim 与 fenced commit 保存 checkpoint、事件和唯一终态', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, document('project-turn-claim'), undefined)
+  const turn = {
+    id: 'turn-claim-1', version: 2, ownerId: owner.id, projectId: 'project-turn-claim',
+    idempotencyKey: 'turn-intent-1', requestHash: 'request-1', status: 'queued',
+    createdAt: 100, updatedAt: 100,
+  }
+  const first = store.claimAgentTurnExecution(owner.id, {
+    turn, leaseToken: 'turn-lease-1', leaseDurationMs: 120_000,
+  })
+  assert.equal(first.kind, 'claimed')
+  assert.equal(first.turn.execution.generation, 1)
+  assert.equal(store.claimAgentTurnExecution(owner.id, {
+    turn, leaseToken: 'turn-lease-2', leaseDurationMs: 120_000,
+  }).kind, 'in_progress')
+
+  const event = {
+    id: 'turn-event-1', turnId: turn.id, projectId: turn.projectId,
+    type: 'turn.tool', createdAt: 200,
+    payload: { toolName: 'project_read', status: 'succeeded', risk: 'read' },
+  }
+  const checkpointed = store.commitAgentTurnExecution(owner.id, {
+    id: turn.id, projectId: turn.projectId, leaseToken: 'turn-lease-1', executionGeneration: 1,
+    status: 'running', checkpoint: { version: 1, nextStep: 1 }, event,
+  })
+  assert.equal(checkpointed.kind, 'committed')
+  assert.equal(checkpointed.turn.checkpoint.nextStep, 1)
+  assert.equal(checkpointed.event.sequence, 1)
+  assert.equal(store.listAgentTurnEvents(owner.id, turn.projectId, turn.id)[0].id, event.id)
+
+  const stale = store.commitAgentTurnExecution(owner.id, {
+    id: turn.id, projectId: turn.projectId, leaseToken: 'turn-lease-old', executionGeneration: 1,
+    status: 'completed', result: { kind: 'chat' },
+  })
+  assert.equal(stale.kind, 'stale')
+  assert.equal(store.readAgentTurn(owner.id, turn.id).status, 'running')
+
+  const completed = store.commitAgentTurnExecution(owner.id, {
+    id: turn.id, projectId: turn.projectId, leaseToken: 'turn-lease-1', executionGeneration: 1,
+    status: 'completed', result: { kind: 'chat', answer: '完成' },
+  })
+  assert.equal(completed.kind, 'committed')
+  assert.equal(store.readAgentTurn(owner.id, turn.id).result.answer, '完成')
+  assert.equal(store.commitAgentTurnExecution(owner.id, {
+    id: turn.id, projectId: turn.projectId, leaseToken: 'turn-lease-1', executionGeneration: 1,
+    status: 'completed', result: { kind: 'chat', answer: '不能覆盖' },
+  }).turn.result.answer, '完成', '终态重试只能重放第一次提交')
+})
+
+test('本地 Adapter 在 claim 内从 legacy Turn 请求回填摘要并拒绝新意图', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  const projectId = 'project-turn-legacy-hash'
+  store.writeProject(owner.id, document(projectId), undefined)
+  const storedRequest = {
+    projectId, sessionId: 'session-1',
+    inputMessage: { id: 'message-1', content: '原始输入' },
+    messages: [{ role: 'user', content: '首次窗口' }],
+  }
+  const legacy = {
+    id: 'turn-local-legacy-hash', version: 2, ownerId: owner.id, projectId,
+    idempotencyKey: 'legacy-key', request: storedRequest,
+    status: 'queued', createdAt: 100, updatedAt: 100,
+  }
+  store.putAgentTurn(owner.id, legacy)
+  const replayRequest = { ...storedRequest, messages: [{ role: 'assistant', content: '后续窗口' }] }
+  const candidate = {
+    ...legacy,
+    request: replayRequest,
+    requestHash: agentTurnRequestHash(replayRequest, 2),
+    requestHashVersion: 2,
+  }
+
+  const claimed = store.claimAgentTurnExecution(owner.id, { turn: candidate, leaseToken: 'lease-1' })
+  assert.equal(claimed.kind, 'claimed')
+  assert.equal(store.readAgentTurn(owner.id, legacy.id).requestHash, candidate.requestHash)
+  assert.deepEqual(store.readAgentTurn(owner.id, legacy.id).request, storedRequest)
+
+  const conflictingRequest = {
+    ...storedRequest,
+    inputMessage: { ...storedRequest.inputMessage, content: '另一条新输入' },
+  }
+  assert.equal(store.claimAgentTurnExecution(owner.id, {
+    turn: {
+      ...candidate,
+      request: conflictingRequest,
+      requestHash: agentTurnRequestHash(conflictingRequest, 2),
+    },
+    leaseToken: 'lease-2',
+  }).kind, 'conflict')
+})
+
+test('Agent Turn waiting_user 可取消并由独立原子方法收口 cancelled', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  const projectId = 'project-turn-finalize-cancel'
+  store.writeProject(owner.id, document(projectId), undefined)
+  const turn = {
+    id: 'turn-finalize-cancel-1', version: 2, projectId, idempotencyKey: 'turn-finalize-1',
+    requestHash: 'turn-finalize-request', requestHashVersion: 2,
+    status: 'queued', createdAt: 100, updatedAt: 100,
+  }
+  const claimed = store.claimAgentTurnExecution(owner.id, { turn, leaseToken: 'lease-1' })
+  const waiting = store.commitAgentTurnExecution(owner.id, {
+    id: turn.id, projectId, leaseToken: 'lease-1', executionGeneration: claimed.turn.execution.generation,
+    status: 'waiting_user', result: { kind: 'clarification', question: '请选择' },
+  })
+  assert.equal(waiting.turn.status, 'waiting_user')
+  assert.equal(store.claimAgentTurnExecution(owner.id, { turn, leaseToken: 'lease-2' }).kind, 'waiting_user')
+
+  store.requestAgentTurnCancellation(owner.id, {
+    id: turn.id, projectId,
+    event: { id: 'turn-cancelling-1', turnId: turn.id, projectId, type: 'turn.cancelling' },
+  })
+  const finalized = store.finalizeAgentTurnCancellation(owner.id, {
+    id: turn.id, projectId,
+    event: { id: 'turn-cancelled-1', turnId: turn.id, projectId, type: 'turn.cancelled' },
+  })
+  assert.equal(finalized.kind, 'finalized')
+  assert.equal(finalized.turn.status, 'cancelled')
+  assert.equal(finalized.event.sequence, 2)
+  assert.equal(store.commitAgentTurnExecution(owner.id, {
+    id: turn.id, projectId, leaseToken: 'lease-1', executionGeneration: claimed.turn.execution.generation,
+    status: 'completed', result: { kind: 'chat', answer: '迟到结果' },
+  }).kind, 'stale')
+  const eventCount = store.listAgentTurnEvents(owner.id, projectId, turn.id).length
+  const replay = store.finalizeAgentTurnCancellation(owner.id, {
+    id: turn.id, projectId,
+    event: { id: 'turn-cancelled-other', turnId: turn.id, projectId, type: 'turn.cancelled' },
+  })
+  assert.equal(replay.kind, 'replay')
+  assert.equal(replay.event, undefined)
+  assert.equal(store.listAgentTurnEvents(owner.id, projectId, turn.id).length, eventCount)
+})
+
+test('本地 Adapter durable 保存 cancelling heartbeat 与 worker_exit ack，错误 fence 不写且 ack 后才收口', async () => {
+  const { path, store } = createStore()
+  const owner = store.authenticate('owner-token')
+  const projectId = 'project-turn-cancellation-ack'
+  store.writeProject(owner.id, document(projectId), undefined)
+  const turn = {
+    id: 'turn-cancellation-ack-1', version: 2, projectId,
+    idempotencyKey: 'turn-cancellation-ack-key', requestHash: 'turn-cancellation-ack-request',
+    requestHashVersion: 2, status: 'queued', createdAt: 100, updatedAt: 100,
+  }
+  const claimed = store.claimAgentTurnExecution(owner.id, {
+    turn, leaseToken: 'turn-cancellation-lease', leaseDurationMs: 30_000,
+  })
+  const generation = claimed.turn.execution.generation
+  const requested = store.requestAgentTurnCancellation(owner.id, {
+    id: turn.id, projectId,
+    event: { id: 'turn-cancelling-ack-1', turnId: turn.id, projectId, type: 'turn.cancelling' },
+  })
+  const signalId = requested.turn.cancellation.signalId
+  const beforeInvalidCommits = store.readAgentTurn(owner.id, turn.id)
+
+  for (const invalidFence of [
+    { signalId: 'wrong-signal', leaseToken: 'turn-cancellation-lease', executionGeneration: generation },
+    { signalId, leaseToken: 'wrong-token', executionGeneration: generation },
+    { signalId, leaseToken: 'turn-cancellation-lease', executionGeneration: generation + 1 },
+  ]) {
+    assert.equal(store.commitAgentTurnExecution(owner.id, {
+      id: turn.id, projectId, status: 'running', ...invalidFence,
+    }).kind, 'stale')
+    assert.deepEqual(store.readAgentTurn(owner.id, turn.id), beforeInvalidCommits)
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, 2))
+  const heartbeat = store.commitAgentTurnExecution(owner.id, {
+    id: turn.id, projectId, status: 'running', signalId,
+    leaseToken: 'turn-cancellation-lease', executionGeneration: generation,
+    event: { id: 'turn-heartbeat-must-not-persist', turnId: turn.id, projectId, type: 'turn.tool' },
+  })
+  assert.equal(heartbeat.kind, 'cancellation_heartbeat')
+  assert.ok(heartbeat.turn.execution.leaseExpiresAt > beforeInvalidCommits.execution.leaseExpiresAt)
+  const afterHeartbeat = createProductStore({ dataPath: path, bootstrapAccessToken: 'owner-token' })
+  assert.equal(afterHeartbeat.readAgentTurn(owner.id, turn.id).execution.leaseExpiresAt, heartbeat.turn.execution.leaseExpiresAt)
+  assert.equal(afterHeartbeat.readAgentTurn(owner.id, turn.id).cancellation.lastHeartbeatAt, heartbeat.turn.cancellation.lastHeartbeatAt)
+  assert.deepEqual(afterHeartbeat.listAgentTurnEvents(owner.id, projectId, turn.id).map((event) => event.id), ['turn-cancelling-ack-1'])
+
+  const pending = afterHeartbeat.finalizeAgentTurnCancellation(owner.id, {
+    id: turn.id, projectId,
+    event: { id: 'turn-cancelled-too-early', turnId: turn.id, projectId, type: 'turn.cancelled' },
+  })
+  assert.equal(pending.kind, 'pending')
+  assert.equal(afterHeartbeat.readAgentTurn(owner.id, turn.id).status, 'cancelling')
+  const auditsBeforeAck = afterHeartbeat.listAuditEvents(owner.id, projectId).length
+
+  const acknowledged = afterHeartbeat.commitAgentTurnExecution(owner.id, {
+    id: turn.id, projectId, status: 'running', signalId, releaseBasis: 'worker_exit',
+    leaseToken: 'turn-cancellation-lease', executionGeneration: generation,
+    event: { id: 'turn-ack-must-not-persist', turnId: turn.id, projectId, type: 'turn.tool' },
+  })
+  assert.equal(acknowledged.kind, 'cancellation_acknowledged')
+  const afterAck = createProductStore({ dataPath: path, bootstrapAccessToken: 'owner-token' })
+  assert.equal(afterAck.readAgentTurn(owner.id, turn.id).cancellation.workerReleased, true)
+  assert.equal(afterAck.readAgentTurn(owner.id, turn.id).cancellation.releaseBasis, 'worker_exit')
+  assert.equal(afterAck.listAuditEvents(owner.id, projectId).length, auditsBeforeAck)
+  assert.deepEqual(afterAck.listAgentTurnEvents(owner.id, projectId, turn.id).map((event) => event.id), ['turn-cancelling-ack-1'])
+  const acknowledgedSnapshot = afterAck.readAgentTurn(owner.id, turn.id)
+  assert.equal(afterAck.commitAgentTurnExecution(owner.id, {
+    id: turn.id, projectId, status: 'running', signalId, releaseBasis: 'worker_exit',
+    leaseToken: 'turn-cancellation-lease', executionGeneration: generation,
+  }).kind, 'replay')
+  assert.equal(afterAck.commitAgentTurnExecution(owner.id, {
+    id: turn.id, projectId, status: 'running', signalId,
+    leaseToken: 'turn-cancellation-lease', executionGeneration: generation,
+  }).kind, 'stale')
+  assert.deepEqual(afterAck.readAgentTurn(owner.id, turn.id), acknowledgedSnapshot)
+
+  const finalized = afterAck.finalizeAgentTurnCancellation(owner.id, {
+    id: turn.id, projectId,
+    event: { id: 'turn-cancelled-after-ack', turnId: turn.id, projectId, type: 'turn.cancelled' },
+  })
+  assert.equal(finalized.kind, 'finalized')
+  const recovered = createProductStore({ dataPath: path, bootstrapAccessToken: 'owner-token' })
+  assert.equal(recovered.readAgentTurn(owner.id, turn.id).status, 'cancelled')
+  assert.deepEqual(
+    recovered.listAgentTurnEvents(owner.id, projectId, turn.id).map((event) => event.id),
+    ['turn-cancelling-ack-1', 'turn-cancelled-after-ack'],
+  )
 })
 
 test('工作区所有者可管理成员，停用后会话立即失效但项目保留', () => {
@@ -401,6 +1190,52 @@ test('putAgentRun 拒绝迟到旧快照和待确认状态回退', () => {
   assert.equal(store.readAgentRun(owner.id, base.id)?.status, 'running')
 })
 
+test('putAgentRun 行内按分支合并：重试 A 不覆盖并发完成的 B', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  assert.ok(owner)
+  store.writeProject(owner.id, { ...document('project-agent-run-merge'), agentRuns: [] }, undefined)
+  const base = {
+    id: 'run-branch-merge', ownerId: owner.id, projectId: 'project-agent-run-merge',
+    status: 'running', plan: { id: 'plan-merge' }, createdAt: 1, updatedAt: 200,
+    completedBranchCount: 0, failedBranchCount: 1,
+    branches: [
+      { id: 'branch-a', status: 'failed', attempt: 0, activeJobId: 'job-a-1', jobIds: ['job-a-1'], outputCount: 0, updatedAt: 200 },
+      { id: 'branch-b', status: 'running', attempt: 0, activeJobId: 'job-b-1', jobIds: ['job-b-1'], outputCount: 0, updatedAt: 200 },
+    ],
+  }
+  store.putAgentRun(owner.id, base)
+  const staleRetryWrite = {
+    ...structuredClone(base),
+    status: 'queued',
+    updatedAt: 400,
+    branches: [
+      { ...base.branches[0], status: 'queued', attempt: 1, activeJobId: 'job-a-2', jobIds: ['job-a-1', 'job-a-2'], updatedAt: 400 },
+      structuredClone(base.branches[1]),
+    ],
+  }
+  store.putAgentRun(owner.id, {
+    ...structuredClone(base),
+    status: 'partial',
+    updatedAt: 300,
+    completedBranchCount: 1,
+    branches: [
+      structuredClone(base.branches[0]),
+      { ...base.branches[1], status: 'succeeded', outputCount: 1, updatedAt: 300 },
+    ],
+  })
+
+  const merged = store.putAgentRun(owner.id, staleRetryWrite)
+
+  assert.equal(merged.branches[0].attempt, 1)
+  assert.equal(merged.branches[0].activeJobId, 'job-a-2')
+  assert.equal(merged.branches[0].status, 'queued')
+  assert.equal(merged.branches[1].activeJobId, 'job-b-1')
+  assert.equal(merged.branches[1].status, 'succeeded')
+  assert.equal(merged.branches[1].outputCount, 1)
+  assert.equal(merged.status, 'queued')
+})
+
 test('Agent Session、Message 与 Memory 从旧文档双写到独立实体并跨重启恢复', () => {
   const { path, store } = createStore()
   const owner = store.authenticate('owner-token')
@@ -510,8 +1345,8 @@ test('Agent 消息按 ID 增量追加，旧文档快照不会覆盖另一设备�
     id: 'message-device-b', role: 'user', kind: 'text', content: '设备 B', createdAt: 12,
   })
 
-  const project = store.readProject(owner.id, 'project-agent-concurrent')
-  assert.deepEqual(project.document.agentSessions[0].messages.map((item) => item.id), ['message-device-a', 'message-device-b'])
+  const state = store.readAgentState(owner.id, 'project-agent-concurrent')
+  assert.deepEqual(state.sessions[0].messages.map((item) => item.id), ['message-device-a', 'message-device-b'])
 })
 
 test('Agent 消息按 updatedAt 幂等合并，迟到的旧版本不覆盖新内容', () => {
@@ -533,6 +1368,41 @@ test('Agent 消息按 updatedAt 幂等合并，迟到的旧版本不覆盖新内
   assert.equal(message.updatedAt, 300)
 })
 
+test('readProject 不再嵌套 Agent 消息，分页接口才返回历史', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, { ...document('project-agent-read-model'), agentSessions: [], agentMemory: [], agentRuns: [] }, undefined)
+  store.putAgentSession(owner.id, 'project-agent-read-model', {
+    id: 'session-read-model', title: '分页会话', executionMode: 'manual', contextNodeIds: [], createdAt: 10, updatedAt: 10,
+  })
+  store.putAgentMessage(owner.id, 'project-agent-read-model', 'session-read-model', {
+    id: 'message-older', role: 'user', kind: 'text', content: '更早', createdAt: 11, updatedAt: 11,
+  })
+  store.putAgentMessage(owner.id, 'project-agent-read-model', 'session-read-model', {
+    id: 'message-newer', role: 'user', kind: 'text', content: '更新', createdAt: 12, updatedAt: 12,
+  })
+
+  const project = store.readProject(owner.id, 'project-agent-read-model')
+  assert.deepEqual(project.document.agentSessions[0].messages, [])
+  const page = store.listAgentSessionMessages(owner.id, 'project-agent-read-model', 'session-read-model', { limit: 1 })
+  assert.deepEqual(page.messages.map((item) => item.id), ['message-newer'])
+  assert.ok(page.nextBefore)
+  const older = store.listAgentSessionMessages(owner.id, 'project-agent-read-model', 'session-read-model', {
+    limit: 1,
+    before: { updatedAt: 12, id: 'message-newer' },
+  })
+  assert.deepEqual(older.messages.map((item) => item.id), ['message-older'])
+
+  const saved = store.writeProject(owner.id, {
+    ...project.document,
+    agentSessions: [{
+      ...project.document.agentSessions[0],
+      messages: [{ id: 'message-local', role: 'user', kind: 'text', content: '不应回传', createdAt: 13 }],
+    }],
+  }, project.revision)
+  assert.deepEqual(saved.document.agentSessions[0].messages, [])
+})
+
 test('Agent 会话按 updatedAt 幂等合并，迟到的旧设备标题不回退', () => {
   const { store } = createStore()
   const owner = store.authenticate('owner-token')
@@ -549,6 +1419,403 @@ test('Agent 会话按 updatedAt 幂等合并，迟到的旧设备标题不回退
   assert.equal(session.executionMode, 'auto')
   assert.deepEqual(session.contextNodeIds, ['node-b'])
   assert.equal(session.updatedAt, 300)
+})
+
+test('Agent 会话设置更新不会删除服务端线程摘要', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, { ...document('project-agent-session-summary'), agentSessions: [], agentMemory: [], agentRuns: [] }, undefined)
+  const threadSummary = {
+    version: 1,
+    goals: ['制作夏季 Campaign'],
+    decisions: [],
+    constraints: [],
+    openQuestions: [],
+    entityIds: [],
+    coveredMessageIds: ['message-1'],
+    coveredThrough: 20,
+    updatedAt: 20,
+  }
+  store.putAgentSession(owner.id, 'project-agent-session-summary', {
+    id: 'session-summary', title: '原始标题', executionMode: 'manual', contextNodeIds: [],
+    threadSummary, createdAt: 10, updatedAt: 20,
+  })
+  store.putAgentSession(owner.id, 'project-agent-session-summary', {
+    id: 'session-summary', title: '新标题', executionMode: 'auto', contextNodeIds: ['node-a'],
+    createdAt: 10, updatedAt: 30,
+  })
+
+  const [session] = store.readAgentState(owner.id, 'project-agent-session-summary').sessions
+  assert.equal(session.title, '新标题')
+  assert.deepEqual(session.threadSummary, threadSummary)
+})
+
+test('Thread Summary CAS 在并发设置更新后只 patch 摘要，并阻止第二个 compactor 回退', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  const projectId = 'project-agent-session-summary-cas'
+  store.writeProject(owner.id, { ...document(projectId), agentSessions: [], agentMemory: [], agentRuns: [] }, undefined)
+  store.putAgentSession(owner.id, projectId, {
+    id: 'session-summary-cas', title: '初始标题', executionMode: 'manual', contextNodeIds: [],
+    createdAt: 10, updatedAt: 20,
+  })
+  // Compactor 读完旧 Session 后，设置写先落库。
+  store.putAgentSession(owner.id, projectId, {
+    id: 'session-summary-cas', title: '并发新标题', executionMode: 'auto', contextNodeIds: ['node-new'],
+    createdAt: 10, updatedAt: 30,
+  })
+  const summary = {
+    version: 1, goals: ['稳定摘要'], decisions: [], constraints: [], openQuestions: [], entityIds: [],
+    coveredMessageIds: ['message-1'], coveredThrough: 25, updatedAt: 100,
+  }
+
+  const first = store.compareAndSetAgentThreadSummary(owner.id, {
+    sessionId: 'session-summary-cas', expectedUpdatedAt: null, summary,
+  })
+  const stale = store.compareAndSetAgentThreadSummary(owner.id, {
+    sessionId: 'session-summary-cas', expectedUpdatedAt: null,
+    summary: { ...summary, goals: ['迟到摘要'], updatedAt: 90 },
+  })
+  const [session] = store.listAgentSessions(owner.id, projectId)
+
+  assert.equal(first.kind, 'updated')
+  assert.equal(stale.kind, 'conflict')
+  assert.equal(session.title, '并发新标题')
+  assert.equal(session.executionMode, 'auto')
+  assert.deepEqual(session.contextNodeIds, ['node-new'])
+  assert.equal(session.updatedAt, 30, '摘要写入不得改变 Session 列表排序')
+  assert.deepEqual(session.threadSummary, summary)
+})
+
+test('非 CAS Session 与 CanvasDocument 迟到写始终保留已提交 Thread Summary', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  const projectId = 'project-agent-summary-writer-race'
+  const sessionId = 'session-summary-writer-race'
+  store.writeProject(owner.id, { ...document(projectId), agentSessions: [], agentMemory: [], agentRuns: [] }, undefined)
+  store.putAgentSession(owner.id, projectId, {
+    id: sessionId, title: '初始标题', executionMode: 'manual', contextNodeIds: [], createdAt: 10, updatedAt: 20,
+  })
+  const currentSummary = {
+    version: 1, goals: ['当前摘要'], decisions: [], constraints: [], openQuestions: [], entityIds: [],
+    coveredMessageIds: [], coveredThrough: 20, updatedAt: 100,
+  }
+  const staleSummary = { ...currentSummary, goals: ['迟到摘要'], updatedAt: 90 }
+  assert.equal(store.compareAndSetAgentThreadSummary(owner.id, {
+    sessionId, expectedUpdatedAt: null, summary: currentSummary,
+  }).kind, 'updated')
+
+  // Compactor 提交后，两个非 CAS writer 手上仍是旧 Session 快照。
+  store.putAgentSession(owner.id, projectId, {
+    id: sessionId, title: '设置写', executionMode: 'auto', contextNodeIds: [],
+    threadSummary: staleSummary, createdAt: 10, updatedAt: 200,
+  })
+  store.writeProject(owner.id, {
+    ...document(projectId),
+    agentSessions: [{
+      id: sessionId, title: '画布兼容写', executionMode: 'auto', contextNodeIds: [],
+      threadSummary: staleSummary, messages: [], createdAt: 10, updatedAt: 300,
+    }],
+    agentMemory: [], agentRuns: [],
+  }, 1)
+
+  const [stored] = store.listAgentSessions(owner.id, projectId)
+  assert.equal(stored.title, '画布兼容写')
+  assert.deepEqual(stored.threadSummary, currentSummary)
+})
+
+test('Message turnId 一旦绑定就不能被迟到 PUT 或 CanvasDocument 写入清空与改绑', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  const projectId = 'project-agent-message-turn-binding'
+  const sessionId = 'session-message-turn-binding'
+  const messageId = 'message-turn-binding'
+  store.writeProject(owner.id, { ...document(projectId), agentSessions: [], agentMemory: [], agentRuns: [] }, undefined)
+  store.putAgentSession(owner.id, projectId, {
+    id: sessionId, title: '会话', executionMode: 'manual', contextNodeIds: [], createdAt: 10, updatedAt: 10,
+  })
+  const base = { id: messageId, role: 'user', kind: 'text', content: '继续', createdAt: 20 }
+  store.putAgentMessage(owner.id, projectId, sessionId, { ...base, turnId: 'turn-authoritative', updatedAt: 20 })
+  store.putAgentMessage(owner.id, projectId, sessionId, {
+    ...base, content: '请求取消', turnCancellationRequestedAt: 50, updatedAt: 30,
+  })
+  store.putAgentMessage(owner.id, projectId, sessionId, { ...base, content: '迟到缺字段更新', updatedAt: 40 })
+  store.putAgentMessage(owner.id, projectId, sessionId, {
+    ...base, content: '迟到更晚取消', turnCancellationRequestedAt: 80, updatedAt: 50,
+  })
+  store.putAgentMessage(owner.id, projectId, sessionId, {
+    ...base, content: '先发生的取消补到', turnCancellationRequestedAt: 40, updatedAt: 60,
+  })
+  store.putAgentMessage(owner.id, projectId, sessionId, {
+    ...base, content: '更旧的正文不应回退', turnCancellationRequestedAt: 35, updatedAt: 25,
+  })
+  let storedMessage = store.listAgentSessionMessages(owner.id, projectId, sessionId).messages[0]
+  assert.equal(storedMessage.turnId, 'turn-authoritative')
+  assert.equal(storedMessage.content, '先发生的取消补到', '旧快照只能合并 sticky 字段')
+  assert.equal(storedMessage.updatedAt, 60, '旧快照不得回退 Message 版本')
+  assert.equal(storedMessage.turnCancellationRequestedAt, 35, '取消意图独立于正文 LWW，取最早有效时间')
+
+  assert.throws(() => store.putAgentMessage(owner.id, projectId, sessionId, {
+    ...base, turnId: 'turn-conflict', updatedAt: 40,
+  }), (error) => error?.code === 'AGENT_MESSAGE_TURN_ID_CONFLICT')
+
+  store.writeProject(owner.id, {
+    ...document(projectId),
+    agentSessions: [{
+      id: sessionId, title: '会话', executionMode: 'manual', contextNodeIds: [], createdAt: 10, updatedAt: 50,
+      messages: [{ ...base, content: '画布迟到更新', turnCancellationRequestedAt: 70, updatedAt: 70 }],
+    }],
+    agentMemory: [], agentRuns: [],
+  }, 1)
+  storedMessage = store.listAgentSessionMessages(owner.id, projectId, sessionId).messages[0]
+  assert.equal(storedMessage.turnId, 'turn-authoritative')
+  assert.equal(storedMessage.turnCancellationRequestedAt, 35)
+
+  store.writeProject(owner.id, {
+    ...document(projectId),
+    agentSessions: [{
+      id: sessionId, title: '会话', executionMode: 'manual', contextNodeIds: [], createdAt: 10, updatedAt: 80,
+      messages: [{ ...base, content: '画布补到更早取消', turnCancellationRequestedAt: 30, updatedAt: 80 }],
+    }],
+    agentMemory: [], agentRuns: [],
+  }, 2)
+  storedMessage = store.listAgentSessionMessages(owner.id, projectId, sessionId).messages[0]
+  assert.equal(storedMessage.turnCancellationRequestedAt, 30)
+
+  store.writeProject(owner.id, {
+    ...document(projectId),
+    agentSessions: [{
+      id: sessionId, title: '会话', executionMode: 'manual', contextNodeIds: [], createdAt: 10, updatedAt: 90,
+      messages: [{ ...base, content: '画布旧正文不应回退', turnCancellationRequestedAt: 20, updatedAt: 25 }],
+    }],
+    agentMemory: [], agentRuns: [],
+  }, 3)
+  storedMessage = store.listAgentSessionMessages(owner.id, projectId, sessionId).messages[0]
+  assert.equal(storedMessage.content, '画布补到更早取消')
+  assert.equal(storedMessage.updatedAt, 80)
+  assert.equal(storedMessage.turnCancellationRequestedAt, 20)
+
+  assert.throws(() => store.writeProject(owner.id, {
+    ...document(projectId),
+    agentSessions: [{
+      id: sessionId, title: '会话', executionMode: 'manual', contextNodeIds: [], createdAt: 10, updatedAt: 60,
+      messages: [{ ...base, turnId: 'turn-canvas-conflict', updatedAt: 60 }],
+    }],
+    agentMemory: [], agentRuns: [],
+  }, 4), (error) => error?.code === 'AGENT_MESSAGE_TURN_ID_CONFLICT')
+})
+
+test('稳定 Turn 结果投影跨 PUT 与 Canvas sync 保持 failed 终态且时间单调', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  const projectId = 'project-agent-message-terminal-lww'
+  const sessionId = 'session-agent-message-terminal-lww'
+  const turnId = 'turn-terminal-lww'
+  const messageId = `agent-turn-result-${turnId}`
+  store.writeProject(owner.id, { ...document(projectId), agentSessions: [], agentMemory: [], agentRuns: [] }, undefined)
+  store.putAgentSession(owner.id, projectId, {
+    id: sessionId, title: '会话', executionMode: 'manual', contextNodeIds: [], createdAt: 10, updatedAt: 10,
+  })
+  const base = { id: messageId, role: 'assistant', kind: 'notice', turnId, createdAt: 20 }
+
+  store.putAgentMessage(owner.id, projectId, sessionId, {
+    ...base, content: '未来时钟的成功', status: 'answered', updatedAt: 9_000,
+  })
+  let stored = store.putAgentMessage(owner.id, projectId, sessionId, {
+    ...base, content: '权威取消', status: 'failed', updatedAt: 100,
+  })
+  assert.equal(stored.status, 'failed')
+  assert.equal(stored.content, '权威取消')
+  assert.equal(stored.updatedAt, 9_000)
+
+  stored = store.putAgentMessage(owner.id, projectId, sessionId, {
+    ...base, content: '迟到成功', status: 'answered', updatedAt: 10_000,
+  })
+  assert.equal(stored.status, 'failed')
+  assert.equal(stored.content, '权威取消')
+  assert.equal(stored.updatedAt, 10_000)
+
+  assert.throws(() => store.putAgentMessage(owner.id, projectId, sessionId, {
+    ...base, role: 'user', content: '借换角色绕过终态', status: 'answered', createdAt: 99_000, updatedAt: 99_000,
+  }), (error) => error?.code === 'AGENT_MESSAGE_ROLE_CONFLICT')
+
+  store.writeProject(owner.id, {
+    ...document(projectId),
+    agentSessions: [{
+      id: sessionId, title: '会话', executionMode: 'manual', contextNodeIds: [], createdAt: 10, updatedAt: 10_500,
+      messages: [{ ...base, content: 'Canvas 迟到成功', status: 'answered', updatedAt: 10_500 }],
+    }],
+    agentMemory: [], agentRuns: [],
+  }, 1)
+  stored = store.listAgentSessionMessages(owner.id, projectId, sessionId).messages[0]
+  assert.equal(stored.status, 'failed')
+  assert.equal(stored.content, '权威取消')
+  assert.equal(stored.updatedAt, 10_500)
+  assert.equal(stored.createdAt, 20)
+  assert.equal(store.listAgentSessions(owner.id, projectId)[0].updatedAt, 10_500)
+})
+
+test('Local CanvasDocument 写入不能首次绑定或替换 entityReferences，权威 Message 回填仍 sticky', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  const projectId = 'project-canvas-untrusted-refs'
+  const sessionId = 'session-canvas-untrusted-refs'
+  const turnId = 'turn-canvas-untrusted-refs'
+  const messageId = `agent-turn-result-${turnId}`
+  const stable = {
+    id: messageId, role: 'assistant', kind: 'text', content: '完成', turnId,
+    status: 'answered', createdAt: 20, updatedAt: 20,
+  }
+  const ordinary = {
+    id: 'ordinary-canvas-message', role: 'assistant', kind: 'text', content: '普通消息',
+    createdAt: 21, updatedAt: 21,
+  }
+  const canvasDocument = (revisionUpdatedAt, messages) => ({
+    ...document(projectId),
+    agentSessions: [{
+      id: sessionId, title: '会话', executionMode: 'manual', contextNodeIds: [],
+      createdAt: 10, updatedAt: revisionUpdatedAt, messages,
+    }],
+    agentMemory: [],
+    agentRuns: [],
+  })
+
+  store.writeProject(owner.id, { ...document(projectId), agentSessions: [], agentMemory: [], agentRuns: [] }, undefined)
+  store.writeProject(owner.id, canvasDocument(30, [
+    { ...stable, entityReferences: [{ type: 'artifact', id: 'artifact-forged-first' }] },
+    { ...ordinary, entityReferences: [{ type: 'artifact', id: 'artifact-forged-ordinary' }] },
+  ]), 1)
+
+  let stored = store.listAgentSessionMessages(owner.id, projectId, sessionId).messages
+  assert.equal('entityReferences' in stored.find((item) => item.id === messageId), false)
+  assert.equal('entityReferences' in stored.find((item) => item.id === ordinary.id), false)
+
+  const authoritative = [{ type: 'artifact', id: 'artifact-authoritative' }]
+  store.putAgentMessage(owner.id, projectId, sessionId, {
+    ...stable, content: '权威回填', updatedAt: 40, entityReferences: authoritative,
+  })
+  store.writeProject(owner.id, canvasDocument(50, [
+    { ...stable, content: 'Canvas 迟到正文', updatedAt: 50, entityReferences: [{ type: 'artifact', id: 'artifact-forged-replacement' }] },
+    { ...ordinary, updatedAt: 50, entityReferences: [{ type: 'artifact', id: 'artifact-forged-ordinary' }] },
+  ]), 2)
+
+  stored = store.listAgentSessionMessages(owner.id, projectId, sessionId).messages
+  assert.deepEqual(stored.find((item) => item.id === messageId).entityReferences, authoritative)
+  assert.equal('entityReferences' in stored.find((item) => item.id === ordinary.id), false)
+})
+
+test('turnRequestSnapshot 跨 PUT 与 Canvas sync once-bound，遗漏保留且冲突拒绝', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  const projectId = 'project-agent-message-request-snapshot'
+  const sessionId = 'session-agent-message-request-snapshot'
+  const messageId = 'message-agent-request-snapshot'
+  const snapshot = {
+    locale: 'zh-CN', contextNodeIds: ['result-a'], hasTarget: true,
+    selectedResultNodeId: 'result-a', selectedResultLabel: '结果 A', executionMode: 'auto',
+  }
+  store.writeProject(owner.id, { ...document(projectId), agentSessions: [], agentMemory: [], agentRuns: [] }, undefined)
+  store.putAgentSession(owner.id, projectId, {
+    id: sessionId, title: '会话', executionMode: 'auto', contextNodeIds: [], createdAt: 10, updatedAt: 10,
+  })
+  const base = {
+    id: messageId, role: 'user', kind: 'text', content: '继续', createdAt: 20,
+    mentions: [{ kind: 'skill', id: 'skill-a', name: 'Skill A' }],
+  }
+
+  store.putAgentMessage(owner.id, projectId, sessionId, { ...base, updatedAt: 300 })
+  for (const mismatchedFirstBinding of [
+    { ...base, content: '另一条请求正文', turnRequestSnapshot: snapshot, updatedAt: 90 },
+    {
+      ...base,
+      mentions: [{ kind: 'skill', id: 'skill-b', name: 'Skill B' }],
+      turnRequestSnapshot: snapshot,
+      updatedAt: 90,
+    },
+  ]) {
+    assert.throws(() => store.putAgentMessage(owner.id, projectId, sessionId, mismatchedFirstBinding), (error) => (
+      error?.code === 'AGENT_MESSAGE_TURN_REQUEST_CONFLICT'
+    ))
+  }
+  let stored = store.putAgentMessage(owner.id, projectId, sessionId, {
+    ...base, turnRequestSnapshot: snapshot, updatedAt: 100,
+  })
+  assert.equal(stored.content, '继续')
+  assert.deepEqual(stored.turnRequestSnapshot, snapshot)
+  assert.equal(stored.updatedAt, 300)
+
+  stored = store.putAgentMessage(owner.id, projectId, sessionId, {
+    ...base, status: 'pending', updatedAt: 400,
+  })
+  assert.equal(stored.content, '继续')
+  assert.equal(stored.status, 'pending')
+  assert.deepEqual(stored.turnRequestSnapshot, snapshot)
+
+  for (const drift of [
+    { ...base, content: '漂移正文', updatedAt: 420 },
+    { ...base, mentions: [{ kind: 'skill', id: 'skill-b', name: 'Skill B' }], updatedAt: 420 },
+  ]) {
+    assert.throws(() => store.putAgentMessage(owner.id, projectId, sessionId, drift), (error) => (
+      error?.code === 'AGENT_MESSAGE_TURN_REQUEST_CONFLICT'
+    ))
+  }
+
+  assert.throws(() => store.putAgentMessage(owner.id, projectId, sessionId, {
+    ...base, role: 'assistant', kind: 'notice', content: '试图把快照粘到 assistant', updatedAt: 450,
+  }), (error) => error?.code === 'AGENT_MESSAGE_ROLE_CONFLICT')
+
+  assert.throws(() => store.writeProject(owner.id, {
+    ...document(projectId),
+    agentSessions: [{
+      id: sessionId, title: '会话', executionMode: 'auto', contextNodeIds: [], createdAt: 10, updatedAt: 500,
+      messages: [{
+        ...base, updatedAt: 500,
+        turnRequestSnapshot: { ...snapshot, contextNodeIds: ['result-b'], selectedResultNodeId: 'result-b' },
+      }],
+    }],
+    agentMemory: [], agentRuns: [],
+  }, 1), (error) => error?.code === 'AGENT_MESSAGE_TURN_REQUEST_CONFLICT')
+
+  assert.throws(() => store.writeProject(owner.id, {
+    ...document(projectId),
+    agentSessions: [{
+      id: sessionId, title: '会话', executionMode: 'auto', contextNodeIds: [], createdAt: 10, updatedAt: 520,
+      messages: [{ ...base, content: 'Canvas 正文漂移', updatedAt: 520 }],
+    }],
+    agentMemory: [], agentRuns: [],
+  }, 1), (error) => error?.code === 'AGENT_MESSAGE_TURN_REQUEST_CONFLICT')
+
+  stored = store.listAgentSessionMessages(owner.id, projectId, sessionId).messages[0]
+  assert.equal(stored.content, '继续', 'Canvas 冲突必须在任何兼容状态写入前回滚')
+  assert.deepEqual(stored.turnRequestSnapshot, snapshot)
+})
+
+test('权威线程上下文用 CAS 写回摘要且不改变 Session 主更新时间', async () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  const projectId = 'project-agent-thread-checkpoint'
+  store.writeProject(owner.id, { ...document(projectId), agentSessions: [], agentMemory: [], agentRuns: [] }, undefined)
+  store.putAgentSession(owner.id, projectId, {
+    id: 'session-checkpoint', title: '长会话', executionMode: 'manual', contextNodeIds: [], createdAt: 1, updatedAt: 10,
+  })
+  for (let index = 1; index <= 9; index += 1) {
+    store.putAgentMessage(owner.id, projectId, 'session-checkpoint', {
+      id: `message-${index}`, role: 'user', kind: 'text', content: `目标 ${index}`,
+      createdAt: 10 + index, updatedAt: 10 + index,
+    })
+  }
+
+  await createAgentThreadContext({ productStore: store, now: () => 100 }).resolve({
+    userId: owner.id,
+    projectId,
+    sessionId: 'session-checkpoint',
+    inputMessage: { id: 'message-10', role: 'user', kind: 'text', content: '继续', createdAt: 20 },
+  })
+
+  const [session] = store.listAgentSessions(owner.id, projectId)
+  assert.equal(session.updatedAt, 19)
+  assert.equal(session.threadSummary.updatedAt, 100)
+  assert.deepEqual(session.threadSummary.coveredMessageIds, Array.from({ length: 9 }, (_, index) => `message-${index + 1}`))
 })
 
 test('Agent Memory 删除墓碑阻止旧设备增量 PUT 复活同 ID 记忆', () => {
@@ -730,7 +1997,7 @@ test('Artifact 分页不会漏掉同一 createdAt 下的后续记录', () => {
   assert.deepEqual(second.map((item) => item.id), ['artifact-c'])
 })
 
-test('服务重启保留排队任务，并把执行中的任务标记为可重试失败', () => {
+test('服务重启只返回需恢复任务，不会无条件改写仍可能在运行的任务', () => {
   const { store } = createStore()
   const owner = store.authenticate('owner-token')
   assert.ok(owner)
@@ -772,7 +2039,8 @@ test('服务重启保留排队任务，并把执行中的任务标记为可重�
   })
 
   assert.deepEqual(store.recoverGenerationJobs().map((job) => job.id), ['queued-job', 'pending-writeback-job'])
-  assert.equal(store.readGenerationJob(owner.id, 'running-job')?.status, 'failed')
+  assert.equal(store.readGenerationJob(owner.id, 'running-job')?.status, 'running')
+  assert.deepEqual(store.recoverStaleGenerationJobs().map((job) => job.id), [])
 })
 
 test('独立画布图谱与 Yjs 更新日志可跨服务重启恢复并压缩', () => {
@@ -846,7 +2114,7 @@ test('Turn 事件按游标续读，只返回序号之后的事件', () => {
   assert.deepEqual(sequences({ after: 1, limit: 2 }), [2, 3], '游标与上限可同时生效')
 })
 
-test('陈旧 Turn 扫描跨项目、只捞非终态、按最旧优先', () => {
+test('陈旧 Turn 扫描排除 waiting_user，并以 updatedAt/id 稳定游标避免 poison row 饥饿', () => {
   const { store } = createStore()
   const owner = store.authenticate('owner-token')
   store.writeProject(owner.id, document('project-stale-a'), undefined)
@@ -856,8 +2124,12 @@ test('陈旧 Turn 扫描跨项目、只捞非终态、按最旧优先', () => {
     status, createdAt: 1, updatedAt,
   })
   put('turn_old_a', 'project-stale-a', 'running', 100)
+  put('turn_old_c', 'project-stale-a', 'running', 100)
   put('turn_old_b', 'project-stale-b', 'queued', 50)
   put('turn_waiting', 'project-stale-a', 'waiting_user', 200)
+  for (let index = 0; index < 10; index += 1) {
+    put(`turn_waiting_${index}`, 'project-stale-a', 'waiting_user', index + 1)
+  }
   put('turn_cancelling', 'project-stale-b', 'cancelling', 300)
   put('turn_done', 'project-stale-a', 'completed', 10)
   put('turn_failed', 'project-stale-b', 'failed', 10)
@@ -866,13 +2138,19 @@ test('陈旧 Turn 扫描跨项目、只捞非终态、按最旧优先', () => {
   const stale = store.listStaleAgentTurns({ now: 1_000_000, leaseMs: 30_000 })
   assert.deepEqual(
     stale.map((turn) => turn.id),
-    ['turn_old_b', 'turn_old_a', 'turn_waiting', 'turn_cancelling'],
-    '跨项目按 updatedAt 升序返回全部非终态陈旧 Turn',
+    ['turn_old_b', 'turn_old_a', 'turn_old_c', 'turn_cancelling'],
+    '跨项目按 updatedAt/id 升序返回全部可回收陈旧 Turn，waiting_user 不占批次',
   )
   // 终态不该被重新拾起，租约内的也不该被抢。
   assert.equal(stale.some((turn) => ['turn_done', 'turn_failed'].includes(turn.id)), false)
   assert.equal(stale.some((turn) => turn.id === 'turn_fresh'), false)
   assert.deepEqual(store.listStaleAgentTurns({ now: 1_000_000, leaseMs: 30_000, limit: 2 }).map((t) => t.id), ['turn_old_b', 'turn_old_a'])
+  assert.deepEqual(store.listStaleAgentTurns({
+    now: 1_000_000,
+    leaseMs: 30_000,
+    limit: 2,
+    after: { updatedAt: 100, id: 'turn_old_a' },
+  }).map((turn) => turn.id), ['turn_old_c', 'turn_cancelling'], '游标能越过固定失败的 poison row')
   // 显式 olderThan 落在两个陈旧 Turn 之间时，只捞更早的那个。
   assert.deepEqual(store.listStaleAgentTurns({ olderThan: 60 }).map((t) => t.id), ['turn_old_b'])
 })
@@ -907,4 +2185,231 @@ test('非成员不得按 Turn 反查 Run', () => {
   store.writeProject(owner.id, document('project-turn-guard'), undefined)
   const outsider = store.createUser(owner.id, { email: 'out@example.com', name: 'Out', accessToken: 'out-token' })
   assert.equal(store.listAgentRunsForTurn(outsider.id, 'project-turn-guard', 'turn-a'), undefined)
+})
+
+test('Run/Job 深取消与 queued Run 恢复都按 id ASC 稳定分页', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  const projectId = 'project-recovery-pages'
+  store.writeProject(owner.id, document(projectId), undefined)
+  const putRun = (id, status, turnId = 'turn-page') => store.putAgentRun(owner.id, {
+    id, ownerId: owner.id, projectId, status, turnId,
+    plan: { intent: 'initial_generation', summary: '分页测试' }, branches: [],
+    createdAt: 100, updatedAt: 100,
+  })
+  putRun('run-c', 'queued')
+  putRun('run-a', 'queued')
+  putRun('run-b', 'queued')
+  putRun('run-done', 'completed')
+  putRun('run-other-turn', 'queued', 'turn-other')
+  putRun('run-Z', 'queued')
+
+  assert.deepEqual(store.listAgentRunsForTurnPage(owner.id, projectId, 'turn-page', {
+    limit: 2,
+  }).map((run) => run.id), ['run-a', 'run-b'])
+  assert.deepEqual(store.listAgentRunsForTurnPage(owner.id, projectId, 'turn-page', {
+    afterId: 'run-b', limit: 2,
+  }).map((run) => run.id), ['run-c', 'run-done'])
+  assert.deepEqual(store.listAgentRunsForTurnPage(owner.id, projectId, 'turn-page', {
+    afterId: 'run-done', limit: 2,
+  }).map((run) => run.id), ['run-Z'], 'filter 与 localeCompare sort 必须使用同一比较器')
+  assert.deepEqual(store.listQueuedAgentRunsForRecovery({ limit: 2 }).map((run) => run.id), ['run-a', 'run-b'])
+  assert.deepEqual(store.listQueuedAgentRunsForRecovery({ afterId: 'run-b', limit: 10 }).map((run) => run.id), [
+    'run-c', 'run-other-turn', 'run-Z',
+  ])
+
+  const putJob = (id, runId) => store.putGenerationJob(owner.id, {
+    id, ownerId: owner.id, projectId, status: 'queued', prompt: '测试', settings: {}, batchCount: 1,
+    agentRun: { runId, branchId: 'branch-1' }, createdAt: 100, updatedAt: 100,
+  }, { updateAgentRun: false, recordAudit: false })
+  putJob('job-c', 'run-a')
+  putJob('job-a', 'run-a')
+  putJob('job-b', 'run-a')
+  putJob('job-other', 'run-b')
+  putJob('job-Z', 'run-a')
+  assert.deepEqual(store.listGenerationJobsForAgentRunPage(owner.id, projectId, 'run-a', {
+    limit: 2,
+  }).map((job) => job.id), ['job-a', 'job-b'])
+  assert.deepEqual(store.listGenerationJobsForAgentRunPage(owner.id, projectId, 'run-a', {
+    afterId: 'job-b', limit: 2,
+  }).map((job) => job.id), ['job-c', 'job-Z'])
+  assert.deepEqual(store.listGenerationJobsForAgentRunPage(owner.id, projectId, 'run-a', {
+    afterId: 'job-c', limit: 2,
+  }).map((job) => job.id), ['job-Z'])
+})
+
+test('Recovery Adapter 按 (updatedAt,id) ASC 稳定分页且返回权威游标字段', (t) => {
+  let clock = 100
+  t.mock.method(Date, 'now', () => clock)
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  const projectId = 'project-recovery-keyset'
+  store.writeProject(owner.id, document(projectId), undefined)
+
+  const putRun = (id, updatedAt, status = 'failed', branchStatus = 'failed') => store.putAgentRun(owner.id, {
+    id,
+    ownerId: owner.id,
+    projectId,
+    status,
+    plan: { intent: 'initial_generation', summary: '恢复分页' },
+    branches: [{ id: `${id}-branch`, status: branchStatus }],
+    createdAt: updatedAt,
+    updatedAt,
+  })
+  putRun('run-b', 200)
+  putRun('run-a', 200)
+  putRun('run-c', 300)
+  putRun('run-ok', 150, 'completed', 'succeeded')
+
+  assert.deepEqual(store.listRunsWithFailedBranches({ limit: 2 }), [
+    { id: 'run-a', runId: 'run-a', ownerId: owner.id, projectId, updatedAt: 200 },
+    { id: 'run-b', runId: 'run-b', ownerId: owner.id, projectId, updatedAt: 200 },
+  ])
+  assert.deepEqual(store.listRunsWithFailedBranches({
+    after: { updatedAt: 200, id: 'run-a' },
+    limit: 2,
+  }).map((item) => item.id), ['run-b', 'run-c'])
+
+  const putTask = (id, updatedAt, status = 'queued') => {
+    clock = updatedAt
+    return store.putAgentReviewTask(owner.id, {
+      id,
+      ownerId: owner.id,
+      projectId,
+      runId: 'run-a',
+      status,
+      attempt: 0,
+      qualityPolicyFingerprint: 'quality-v1',
+      coverage: { artifactIds: [`generation:${id}:output`] },
+      results: [],
+      createdAt: updatedAt,
+      updatedAt,
+    })
+  }
+  putTask('task-b', 400)
+  putTask('task-a', 400)
+  putTask('task-c', 500)
+  assert.deepEqual(store.listPendingAgentReviewTasks({ olderThan: 450, limit: 2 }).map((task) => task.id), [
+    'task-a', 'task-b',
+  ])
+  assert.deepEqual(store.listPendingAgentReviewTasks({
+    olderThan: 600,
+    after: { updatedAt: 400, id: 'task-a' },
+    limit: 2,
+  }).map((task) => task.id), ['task-b', 'task-c'])
+
+  const putJob = (id, updatedAt, status = 'queued', projectWritebackPending = false) => {
+    clock = updatedAt
+    return store.putGenerationJob(owner.id, {
+      id,
+      ownerId: owner.id,
+      projectId,
+      status,
+      kind: 'generation',
+      batchCount: 1,
+      settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' },
+      rawInput: { projectId },
+      outputs: [],
+      projectWritebackPending,
+      createdAt: updatedAt,
+      updatedAt,
+    }, { updateAgentRun: false, recordAudit: false })
+  }
+  putJob('job-b', 600)
+  putJob('job-a', 600)
+  putJob('job-c', 700, 'succeeded', true)
+  putJob('job-running', 650, 'running')
+  assert.deepEqual(store.listRecoverableGenerationJobs({ limit: 2 }).map((job) => job.id), ['job-a', 'job-b'])
+  assert.deepEqual(store.listRecoverableGenerationJobs({
+    after: { updatedAt: 600, id: 'job-a' },
+    limit: 2,
+  }).map((job) => job.id), ['job-b', 'job-c'])
+})
+
+test('Agent Context V2 持久化 usage anchor、CAS head 与 append-only compaction ledger', () => {
+  const { path, store } = createStore()
+  const owner = store.authenticate('owner-token')
+  const projectId = 'project-context-v2'
+  const sessionId = 'session-context-v2'
+  store.writeProject(owner.id, { ...document(projectId), agentSessions: [], agentMemory: [], agentRuns: [] }, undefined)
+  store.putAgentSession(owner.id, projectId, {
+    id: sessionId, title: 'Context V2', executionMode: 'manual', contextNodeIds: [], createdAt: 10, updatedAt: 10,
+  })
+  store.putAgentMessage(owner.id, projectId, sessionId, {
+    id: 'context-message-1', role: 'user', kind: 'text', content: '原始消息不得删除', createdAt: 11, updatedAt: 11,
+  })
+  const editor = store.createUser(owner.id, {
+    email: 'context-editor@example.com', name: 'Context Editor', accessToken: 'context-editor-token',
+  })
+  const viewer = store.createUser(owner.id, {
+    email: 'context-viewer@example.com', name: 'Context Viewer', accessToken: 'context-viewer-token',
+  })
+  store.addProjectMember(owner.id, projectId, editor.id, 'editor')
+  store.addProjectMember(owner.id, projectId, viewer.id, 'viewer')
+
+  assert.deepEqual(store.readAgentContextState(viewer.id, projectId, sessionId), {
+    version: 2, sessionId, projectId, revision: 0, updatedAt: 0,
+  })
+  assert.throws(() => store.compareAndSetAgentContextState(viewer.id, {
+    projectId, sessionId, expectedRevision: 0, idempotencyKey: 'viewer-write',
+    usageAnchor: {
+      version: 1, provider: 'openai', model: 'gpt-5', surfaceHash: 'surface-1', staticHash: 'static-1',
+      inputTokens: 100, outputTokens: 10, heuristicInputTokens: 90, observedAt: 100,
+    },
+  }), (error) => error?.code === 'PROJECT_WRITE_FORBIDDEN')
+
+  const anchorCommand = {
+    projectId, sessionId, expectedRevision: 0, idempotencyKey: 'anchor-1',
+    usageAnchor: {
+      version: 1, provider: 'openai', model: 'gpt-5', surfaceHash: 'surface-1', staticHash: 'static-1',
+      inputTokens: 100, outputTokens: 10, heuristicInputTokens: 90, observedAt: 100, turnId: 'turn-1', step: 1,
+    },
+  }
+  const anchored = store.compareAndSetAgentContextState(owner.id, anchorCommand)
+  assert.equal(anchored.kind, 'updated')
+  assert.equal(anchored.state.revision, 1)
+  assert.deepEqual(store.listAgentContextCompactions(owner.id, projectId, sessionId).compactions, [],
+    'usage-only ledger 不应被读成 compaction')
+
+  const compaction = {
+    id: 'compaction-1', version: 2, trigger: 'pre_step',
+    sourceSurfaceHash: 'surface-1', resultSurfaceHash: 'surface-2',
+    replacedMessageRevisions: [{ messageId: 'context-message-1', revision: 'revision-1' }],
+    checkpoint: {
+      role: 'user', content: '已压缩上下文', contentHash: canonicalHash('已压缩上下文'),
+    },
+    policy: { id: 'context-policy-1', hash: 'policy-hash-1', model: 'gpt-5' },
+    meterBefore: { totalTokens: 7_000 }, meterAfter: { totalTokens: 1_000 },
+  }
+  const compacted = store.compareAndSetAgentContextState(editor.id, {
+    projectId, sessionId, expectedRevision: 1, idempotencyKey: 'compact-1', compaction,
+  })
+  assert.equal(compacted.kind, 'updated')
+  assert.equal(compacted.state.revision, 2)
+  assert.equal(compacted.state.headCompactionId, compaction.id)
+  assert.equal(compacted.state.headCompactionSequence, 2)
+  assert.deepEqual(compacted.state.usageAnchor, anchorCommand.usageAnchor)
+  assert.deepEqual(store.listAgentContextCompactions(viewer.id, projectId, sessionId, {
+    afterSequence: 0, limit: 10,
+  }).compactions, [{ ...compaction, sequence: 2, createdAt: compacted.state.updatedAt }])
+
+  const replay = store.compareAndSetAgentContextState(owner.id, { ...anchorCommand, expectedRevision: 2 })
+  assert.equal(replay.kind, 'replay')
+  assert.equal(replay.state.revision, 1, '历史键返回原始响应快照')
+  assert.equal(store.compareAndSetAgentContextState(owner.id, {
+    ...anchorCommand,
+    usageAnchor: { ...anchorCommand.usageAnchor, inputTokens: 101 },
+  }).kind, 'conflict')
+  assert.equal(store.compareAndSetAgentContextState(owner.id, {
+    ...anchorCommand, idempotencyKey: 'stale-new-key',
+  }).kind, 'conflict')
+  assert.equal(store.listAgentSessionMessages(owner.id, projectId, sessionId).messages[0].content,
+    '原始消息不得删除')
+
+  const persisted = JSON.parse(readFileSync(path, 'utf8'))
+  assert.equal(persisted.agentContextStates[0].ownerId, owner.id, 'Editor 推进 head 不得改绑 owner')
+  assert.equal(persisted.agentContextCompactions.length, 2, '失败/replay CAS 不追加 ledger')
+  const reloaded = createProductStore({ dataPath: path, bootstrapAccessToken: 'owner-token' })
+  assert.equal(reloaded.readAgentContextState(owner.id, projectId, sessionId).revision, 2)
+  assert.equal(reloaded.listAgentContextCompactions(owner.id, projectId, sessionId).compactions.length, 1)
 })

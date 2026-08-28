@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises'
+import { outboundAgentTraceHeaders } from './agentTraceContext.mjs'
 
 const PROMPT_REFINER_SKILL = new URL('./skills/prompt-refiner/SKILL.md', import.meta.url)
 const BOTANIC_FASHION_SKILL = new URL('./skills/botanic-fashion-prompt/SKILL.md', import.meta.url)
@@ -215,6 +216,7 @@ export async function refinePrompt(input, runtimeConfig, options = {}) {
     response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
+        ...outboundAgentTraceHeaders(),
         Authorization: `Bearer ${config.apiKey}`,
         'x-litellm-api-key': config.apiKey,
         Accept: 'application/json',

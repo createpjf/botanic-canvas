@@ -2,6 +2,7 @@
 import { createAgentSubtask } from './agentSubtask.mjs'
 import { runAgentSubtask } from './agentSubtaskScheduler.mjs'
 import { isEvaluatorSkill } from './botanicAgentSkill.mjs'
+import { outboundAgentTraceHeaders } from './agentTraceContext.mjs'
 
 /**
  * 评审第 3 类判据：**项目自定义的 evaluator Skill**（Epic 6 × Epic 11）。
@@ -83,13 +84,14 @@ export function evaluatorCallEstimate(qualityPolicy, candidateCount) {
  * @param {{
  *   criterion: any, candidate: any, task: any,
  *   judgeWith: (input: { criterion: any, candidate: any }) => any,
- *   registry?: any, context?: any, timeoutMs?: number, now?: () => number,
+ *   registry?: any, context?: any, timeoutMs?: number, signal?: AbortSignal, now?: () => number,
  * }} input
  */
 export async function runEvaluatorSkillCriterion({
   criterion, candidate, task, judgeWith, registry, context,
-  timeoutMs = EVALUATOR_TIMEOUT_MS, now = () => Date.now(),
+  timeoutMs = EVALUATOR_TIMEOUT_MS, signal, now = () => Date.now(),
 }) {
+  if (signal?.aborted) throw signal.reason
   let subtask
   try {
     subtask = createAgentSubtask({
@@ -119,14 +121,21 @@ export async function runEvaluatorSkillCriterion({
       skillVersion: criterion.version,
     }
   }
+  const runSubagent = judgeWith({ criterion, candidate })
   const settled = await runAgentSubtask({
     subtask,
     registry,
     context,
     // 工厂按 (判据, 候选) 闭包出这一次的执行器。
-    runSubagent: judgeWith({ criterion, candidate }),
+    runSubagent: signal
+      ? (input) => runSubagent({
+          ...input,
+          signal: AbortSignal.any([input.signal, signal]),
+        })
+      : runSubagent,
     now,
   })
+  if (signal?.aborted) throw signal.reason
   if (settled.status !== 'completed') {
     // 终止原因原样带出来：超时、预算用尽与越权是三种不同的运维问题。
     return {
@@ -172,7 +181,7 @@ export function createEvaluatorSkillRunner({ runtimeConfig, resolveMedia, callMo
         : 'https://api.flock.io/v1'
       const response = await fetchImpl(`${baseUrl}/chat/completions`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${apiKey}`, 'x-litellm-api-key': apiKey, 'Content-Type': 'application/json' },
+        headers: { ...outboundAgentTraceHeaders(), Authorization: `Bearer ${apiKey}`, 'x-litellm-api-key': apiKey, 'Content-Type': 'application/json' },
         body: JSON.stringify({ model, messages, max_tokens: 500, temperature: 0.2 }),
         signal,
       })

@@ -4,6 +4,7 @@ import {
   agentReviewCandidateRows,
   agentReviewCoverageSummary,
   agentReviewEvaluatorCostNote,
+  agentReviewRequiresReconciliation,
   agentReviewTaskStatusNote,
   agentReviewVerdictLabel,
   isEvaluatorCriterion,
@@ -43,16 +44,16 @@ test('「未验证」与「不符合」必须是两个词', () => {
   assert.equal(agentReviewVerdictLabel('unverifiable', 'en'), 'Not verified')
 })
 
-test('覆盖摘要必须说出被跳过的候选数', () => {
+test('覆盖摘要必须说出被跳过的结果数', () => {
   // 不说的话「评了 2 张」看起来就像「全评过了」。
   const summary = agentReviewCoverageSummary(task)
-  assert.match(summary, /已评审 5 个候选中的 2 个/u)
-  assert.match(summary, /另有 3 个按覆盖策略跳过/u)
+  assert.match(summary, /5 张图中已评审 2 张/u)
+  assert.match(summary, /另有 3 张按覆盖策略跳过/u)
   assert.match(agentReviewCoverageSummary(task, 'en'), /3 skipped by the coverage strategy/u)
 
   const full = agentReviewCoverageSummary({ ...task, coverage: { totalCandidates: 2, reviewedCandidates: 2, skippedCandidates: 0 } })
   assert.doesNotMatch(full, /跳过/u)
-  assert.match(agentReviewCoverageSummary(undefined), /没有可评审的候选/u)
+  assert.match(agentReviewCoverageSummary(undefined), /没有可评审的结果/u)
 })
 
 test('逐条判据带分层与证据摘要', () => {
@@ -75,6 +76,15 @@ test('没有人工决定的候选一律算等人：自动结论不代替批准',
   assert.equal(rows[1].awaitingHuman, false)
   assert.equal(rows[1].decision, 'accepted')
   assert.equal(rows[1].decisionLabel, '已接受')
+
+  const revisionWins = agentReviewCandidateRows({
+    ...task,
+    decisions: [
+      { artifactId: 'a2', decision: 'rejected', decidedAt: 999, decisionRevision: 1 },
+      { artifactId: 'a2', decision: 'accepted', decidedAt: 1, decisionRevision: 2 },
+    ],
+  })
+  assert.equal(revisionWins[1].decision, 'accepted', '锁内 revision 必须压过客户端时钟')
 })
 
 test('任务失败要能被诊断，不只显示「评审失败」', () => {
@@ -83,6 +93,17 @@ test('任务失败要能被诊断，不只显示「评审失败」', () => {
   // 评审失败不改变已生成的结果，这一点必须说清楚。
   assert.match(failed, /已生成的结果不受影响/u)
   assert.match(agentReviewTaskStatusNote({ ...task, status: 'running' }), /仍在后台进行/u)
+  assert.match(agentReviewTaskStatusNote({ ...task, status: 'cancelling' }), /Worker 退出或租约过期/u)
+  assert.match(agentReviewTaskStatusNote({ ...task, status: 'cancelled' }), /已取消/u)
+  const outcomeUnknown = {
+    ...task,
+    status: 'failed' as const,
+    error: { code: 'AGENT_REVIEW_OUTCOME_UNKNOWN' },
+  }
+  assert.equal(agentReviewRequiresReconciliation(outcomeUnknown), true)
+  assert.match(agentReviewTaskStatusNote(outcomeUnknown), /未自动重试/u)
+  assert.match(agentReviewTaskStatusNote(outcomeUnknown, 'en'), /not retried automatically/u)
+  assert.equal(agentReviewRequiresReconciliation(task), false)
   assert.equal(agentReviewTaskStatusNote({ ...task, status: 'completed' }), '')
   assert.equal(agentReviewTaskStatusNote(undefined), '')
 })
@@ -106,7 +127,7 @@ test('自定义判据的成本必须在评审开始前就能显示', () => {
       ],
     },
   }
-  assert.equal(agentReviewEvaluatorCostNote(task), '2 条自定义判据 × 5 个候选 = 额外 10 次模型调用。')
+  assert.equal(agentReviewEvaluatorCostNote(task), '2 条自定义判据 × 5 张图 = 额外 10 次模型调用。')
   assert.match(agentReviewEvaluatorCostNote(task, 'en'), /2 project-defined criteria × 5 candidates = 10 extra model call\(s\)\./u)
   // 没有自定义判据时不显示这一行。
   assert.equal(agentReviewEvaluatorCostNote({ ...task, qualityPolicy: { requiredCriteria: ['identity'] } }), '')

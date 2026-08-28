@@ -14,6 +14,7 @@ import type { ProductLocale } from '../i18n/core'
 
 export type AgentReviewVerdict = 'pass' | 'fail' | 'unverifiable'
 export type AgentReviewDecision = 'accepted' | 'rejected' | 'retry_requested'
+export type AgentReviewReconciliationAction = 'continue_unverifiable' | 'retry_once'
 
 export type AgentReviewCriterion = {
   id: string
@@ -39,7 +40,7 @@ export type AgentReviewCandidate = {
 export type AgentReviewTaskSnapshot = {
   id: string
   runId: string
-  status: 'queued' | 'running' | 'completed' | 'failed'
+  status: 'queued' | 'running' | 'cancelling' | 'cancelled' | 'completed' | 'failed'
   qualityPolicyFingerprint?: string
   planFingerprint?: string
   qualityPolicy?: {
@@ -56,7 +57,30 @@ export type AgentReviewTaskSnapshot = {
     skippedCandidates?: number
   }
   results?: AgentReviewCandidate[]
-  decisions?: Array<{ artifactId: string; decision: AgentReviewDecision; decidedAt?: number }>
+  decisions?: Array<{
+    artifactId: string
+    decision: AgentReviewDecision
+    decidedAt?: number
+    decisionRevision?: number
+  }>
+  cancel?: {
+    status?: 'cancelling' | 'cancelled'
+    requestedAt?: number
+    releaseBasis?: 'not_started' | 'worker_exit' | 'lease_expired'
+  }
+  reconciliation?: {
+    version?: number
+    retryCount?: number
+    resolutions?: Array<{
+      action: AgentReviewReconciliationAction
+      resolvedAt?: number
+      risk?: { code?: string }
+    }>
+  }
+}
+
+export function agentReviewRequiresReconciliation(task: AgentReviewTaskSnapshot | undefined) {
+  return task?.status === 'failed' && task.error?.code === 'AGENT_REVIEW_OUTCOME_UNKNOWN'
 }
 
 const verdictLabels: Record<AgentReviewVerdict, Record<ProductLocale, string>> = {
@@ -98,7 +122,7 @@ export function agentReviewEvaluatorCostNote(
   const calls = criteria * candidates
   return locale === 'en'
     ? `${criteria} project-defined criteria × ${candidates} candidates = ${calls} extra model call(s).`
-    : `${criteria} 条自定义判据 × ${candidates} 个候选 = 额外 ${calls} 次模型调用。`
+    : `${criteria} 条自定义判据 × ${candidates} 张图 = 额外 ${calls} 次模型调用。`
 }
 
 /** 一条判据是不是项目自定义的。自定义与内置必须分开展示：来源不同、可信度也不同。 */
@@ -121,24 +145,37 @@ export function agentReviewCoverageSummary(task: AgentReviewTaskSnapshot | undef
   const total = Number(task?.coverage?.totalCandidates ?? 0)
   const reviewed = Number(task?.coverage?.reviewedCandidates ?? 0)
   const skipped = Number(task?.coverage?.skippedCandidates ?? 0)
-  if (!total) return locale === 'en' ? 'No candidates to review.' : '没有可评审的候选。'
+  if (!total) return locale === 'en' ? 'No candidates to review.' : '没有可评审的结果。'
   const base = locale === 'en'
     ? `Reviewed ${reviewed} of ${total} candidates`
-    : `已评审 ${total} 个候选中的 ${reviewed} 个`
+    : `${total} 张图中已评审 ${reviewed} 张`
   if (!skipped) return locale === 'en' ? `${base}.` : `${base}。`
   return locale === 'en'
     ? `${base}; ${skipped} skipped by the coverage strategy and not judged.`
-    : `${base}；另有 ${skipped} 个按覆盖策略跳过，未做判断。`
+    : `${base}；另有 ${skipped} 张按覆盖策略跳过，未做判断。`
 }
 
 /** 任务本身的失败要能被诊断，不能只显示「评审失败」。 */
 export function agentReviewTaskStatusNote(task: AgentReviewTaskSnapshot | undefined, locale: ProductLocale = 'zh-CN') {
   if (!task) return ''
+  if (agentReviewRequiresReconciliation(task)) {
+    return locale === 'en'
+      ? 'The model-call outcome cannot be proven. It was not retried automatically; choose whether to continue as not verified or authorize one risk-aware retry.'
+      : '模型调用结果无法确认，系统未自动重试；请选择按「未验证」继续，或明确授权一次有重复调用风险的重试。'
+  }
   if (task.status === 'failed') {
     const code = task.error?.code ?? 'REVIEW_FAILED'
     return locale === 'en'
       ? `Review did not finish (${code}). It can be retried; generated results are unaffected.`
       : `评审未完成（${code}），可以重试；已生成的结果不受影响。`
+  }
+  if (task.status === 'cancelling') {
+    return locale === 'en'
+      ? 'Stopping the active review. It remains in progress until the worker exits or its lease expires.'
+      : '正在停止评审；只有执行 Worker 退出或租约过期后，任务才会确认取消。'
+  }
+  if (task.status === 'cancelled') {
+    return locale === 'en' ? 'Review was cancelled; generated results are unaffected.' : '评审已取消；已生成的结果不受影响。'
   }
   if (task.status === 'queued' || task.status === 'running') {
     return locale === 'en' ? 'Review is still running in the background.' : '评审仍在后台进行。'
@@ -173,11 +210,19 @@ export function agentReviewCandidateRows(
   task: AgentReviewTaskSnapshot | undefined,
   locale: ProductLocale = 'zh-CN',
 ): AgentReviewCandidateRow[] {
-  const latestDecision = new Map<string, { decision: AgentReviewDecision; decidedAt: number }>()
+  const latestDecision = new Map<string, {
+    decision: AgentReviewDecision
+    decisionRevision: number
+    decidedAt: number
+  }>()
   for (const entry of task?.decisions ?? []) {
     const current = latestDecision.get(entry.artifactId)
+    const decisionRevision = Number(entry.decisionRevision ?? 0)
     const decidedAt = Number(entry.decidedAt ?? 0)
-    if (!current || decidedAt >= current.decidedAt) latestDecision.set(entry.artifactId, { decision: entry.decision, decidedAt })
+    if (!current || decisionRevision > current.decisionRevision
+      || (decisionRevision === current.decisionRevision && decidedAt >= current.decidedAt)) {
+      latestDecision.set(entry.artifactId, { decision: entry.decision, decisionRevision, decidedAt })
+    }
   }
   return (task?.results ?? []).map((result) => {
     const verdict = result.verdict ?? 'unverifiable'

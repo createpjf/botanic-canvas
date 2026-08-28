@@ -52,6 +52,10 @@ test('同一候选多次决定以最后一次为准', () => {
     { artifactId, decision: 'rejected', decidedAt: 5 },
     { artifactId, decision: 'accepted', decidedAt: 9 },
   ])), true)
+  assert.equal(isApprovedForDelivery(artifactId, approvals([
+    { artifactId, decision: 'accepted', decidedAt: 999, decisionRevision: 1 },
+    { artifactId, decision: 'rejected', decidedAt: 1, decisionRevision: 2 },
+  ])), false, '锁内 revision 决定最新人工状态，不能信任客户端 decidedAt')
   assert.equal(isApprovedForDelivery(artifactId, approvals([])), false)
   assert.equal(isApprovedForDelivery(artifactId, []), false)
 })

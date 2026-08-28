@@ -1,14 +1,19 @@
-import { BotanicAgentPlannerError, planBotanicGeneration, validateBotanicAgentPlanInput } from './botanicAgentPlanner.mjs'
-import { BotanicAgentChatError, chatWithBotanicAgent, validateBotanicAgentChatInput } from './botanicAgentChat.mjs'
+import { BotanicAgentPlannerError, validateBotanicAgentPlanInput } from './botanicAgentPlanner.mjs'
+import { BotanicAgentChatError, validateBotanicAgentChatInput } from './botanicAgentChat.mjs'
 import { reviewBotanicAgentRunResults } from './botanicAgentReview.mjs'
 import { normalizeBotanicAgentLocale } from './agentInstructions.mjs'
-import { resolveBotanicAgentTurn, validateBotanicAgentTurnInput } from './botanicAgentTurn.mjs'
+import { validateBotanicAgentTurnInput } from './botanicAgentTurn.mjs'
 import { createAgentSkill, isUsableAgentSkill, publicAgentSkill, validateAgentSkillCreation } from './botanicAgentSkill.mjs'
-import { cancelPersistentAgentRun, createPersistentAgentRun, createReviewRetryAgentRunInput, prepareAgentBranchRetry, publicAgentRun, validateAgentRunCreation } from './botanicAgentRun.mjs'
+import { agentRunSubmissionBinding, createPersistentAgentRun, prepareAgentBranchRetry, publicAgentRun, storedAgentRunSubmissionBinding, validateAgentRunCreation } from './botanicAgentRun.mjs'
 import { AgentToolRuntimeError, executeConfirmedAgentAction } from './agentToolRuntime.mjs'
-import { botanicAgentBuiltInSkill, botanicAgentSystemSkills, createBotanicAgentActionToolRegistry } from './botanicAgentTools.mjs'
+import {
+  botanicAgentBuiltInSkill,
+  botanicAgentSkillToolRisk,
+  botanicAgentSystemSkills,
+  createBotanicAgentActionToolRegistry,
+} from './botanicAgentTools.mjs'
+import { decodeAgentMessageCursor } from './agentMessagePersistence.mjs'
 import { decodeArtifactCursor, encodeArtifactCursor } from './botanicArtifactIndex.mjs'
-import { cancelGenerationJob } from './generationCancellation.mjs'
 import { retryFailedWorkflowItems } from './productionWorkflow.mjs'
 import { generationIdempotencyKey, generationJobIdForIdempotency } from './generationIdempotency.mjs'
 import { persistedGenerationJob, publicGenerationJob } from './generationProvider.mjs'
@@ -16,17 +21,129 @@ import { retargetGenerationJobForRetry } from './generationResultReconciliation.
 import { requireProjectPermission } from './projectAuthorization.mjs'
 import { buildAgentExecutionTrace } from './agentExecutionTrace.mjs'
 import { actionArgumentsHash, agentToolPermission, assertFreshActionApproval, createActionApprovalToken } from './agentActionGovernance.mjs'
-import { agentTurnIdForIdempotency, agentTurnLastSequence, createBotanicAgentTurnRuntime, publicAgentTurn } from './botanicAgentTurnRuntime.mjs'
+import {
+  agentTurnIdForIdempotency,
+  agentTurnLastSequence,
+  createAgentTurnRecord,
+  createBotanicAgentTurnRuntime,
+  publicAgentTurn,
+} from './botanicAgentTurnRuntime.mjs'
+import {
+  agentTurnRequestHash,
+  agentTurnRequestHashVersion,
+  storedAgentTurnRequestBinding,
+} from './agentTurnRequestIdentity.mjs'
 import { createLocalCancelRegistry } from './localCancelRegistry.mjs'
-import { createAgentHumanDecision, publicAgentReviewTask } from './agentReviewTask.mjs'
+import { publicAgentReviewTask } from './agentReviewTask.mjs'
+import { AgentReviewDecisionServiceError, createAgentReviewDecisionService } from './agentReviewDecisionService.mjs'
+import { createAgentReviewService } from './agentReviewService.mjs'
 import { createAgentBranchRetryService } from './agentBranchRetryService.mjs'
 import { createProductionWorkflowPublishService } from './productionWorkflowPublishService.mjs'
 import { selectBotanicAgentMemory } from './botanicAgentMemory.mjs'
 import { buildThreadSummaryCheckpoint, shouldCompactThread } from './agentThreadSummary.mjs'
+import { compareAndSetDerivedAgentThreadSummary, createAgentThreadContext } from './agentThreadContext.mjs'
+import { createAgentContextCoordinator } from './agentContextCoordinator.mjs'
+import { resolveAgentContextRollout } from './agentContextRollout.mjs'
+import { createAgentContextObserver } from './agentContextObservability.mjs'
+import {
+  AgentManualContextCompactionServiceError,
+  createAgentManualContextCompactionService,
+} from './agentManualContextCompactionService.mjs'
 import { compareBotanicAgentRunBranches } from './botanicAgentCompare.mjs'
 import { createForkedAgentRunInput, forkedAgentRunIdForIdempotency } from './botanicAgentFork.mjs'
+import { createAgentActionExecution } from './agentActionExecution.mjs'
+import {
+  agentActionReconciliationIdentity,
+  agentActionReconciliationStoreError,
+  createAgentActionReconciliation,
+} from './agentActionReconciliation.mjs'
+import { AgentDelegationFenceError, assertTurnAllowsDelegation, createAgentCancellationService } from './agentCancellationService.mjs'
+import { matchingIdempotencyRequestBinding } from './idempotencyRequestBinding.mjs'
+import { validateAgentEntityReferences } from './agentEntityReferences.mjs'
+import {
+  agentCompatibilityIdempotencyKey,
+  agentCompatibilityResult,
+  createAgentCompatibilityRuntimeRequest,
+  resolveBotanicAgentRuntimeRequest,
+} from './agentRuntimeRequest.mjs'
+import { createAgentOperationalReaders } from './agentOperationalReaders.mjs'
+import { AgentSubagentServiceError } from './agentSubagentService.mjs'
+import { createDurableAgentSubagentRunner } from './agentSubagentBroker.mjs'
+import {
+  AgentSubagentPersistenceError,
+  publicAgentSubagent,
+  publicAgentSubagentActivation,
+} from './agentSubagentPersistence.mjs'
 
 export { BotanicAgentPlannerError, BotanicAgentChatError }
+
+const editableAgentSessionFields = new Set([
+  'id', 'title', 'executionMode', 'plannerModel', 'mountedSkillIds', 'contextNodeIds', 'createdAt', 'updatedAt',
+])
+
+const agentSubagentStartBodyFields = new Set(['rootTurnId', 'role', 'content'])
+const agentSubagentFollowupBodyFields = new Set(['sourceTurnId', 'content'])
+const agentSubagentCancelBodyFields = new Set(['reason'])
+const agentSubagentAuthorityFieldPattern = /prompt|instruction|capabilit|tool|model|schema|budget/iu
+
+function agentSubagentBodyFailure(body, allowedFields, label) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return { statusCode: 400, code: 'AGENT_SUBAGENT_REQUEST_INVALID', message: `${label}格式无效。` }
+  }
+  const unsupported = Object.keys(body).find((key) => !allowedFields.has(key))
+  if (!unsupported) return undefined
+  if (agentSubagentAuthorityFieldPattern.test(unsupported)) {
+    return {
+      statusCode: 403,
+      code: 'AGENT_SUBAGENT_AUTHORITY_FORBIDDEN',
+      message: '客户端不能提交 Subagent 系统指令、模型或能力定义。',
+    }
+  }
+  return {
+    statusCode: 400,
+    code: 'AGENT_SUBAGENT_REQUEST_INVALID',
+    message: `${label}包含未声明字段：${unsupported}。`,
+  }
+}
+
+function publicAgentSubagentMutation(outcome) {
+  const subagent = publicAgentSubagent(outcome?.subagent)
+  const activation = publicAgentSubagentActivation(outcome?.activation)
+  return {
+    kind: outcome?.kind,
+    changed: outcome?.changed === true,
+    ...(subagent ? { subagent } : {}),
+    ...(activation ? { activation } : {}),
+  }
+}
+
+function publicAgentSubagentMessage(message) {
+  if (!message || typeof message !== 'object' || Array.isArray(message)
+    || typeof message.id !== 'string' || typeof message.content !== 'string') return undefined
+  return {
+    id: message.id,
+    role: message.role,
+    kind: message.kind,
+    content: message.content,
+    createdAt: message.createdAt,
+    updatedAt: message.updatedAt,
+    ...(typeof message.turnId === 'string' ? { turnId: message.turnId } : {}),
+    ...(typeof message.status === 'string' ? { status: message.status } : {}),
+    ...(Array.isArray(message.entityReferences)
+      ? { entityReferences: structuredClone(message.entityReferences) }
+      : {}),
+  }
+}
+
+function isAuthorizedAgentMediaUrl(value) {
+  if (typeof value !== 'string' || !value.startsWith('/api/media/') || value.length > 2048) return false
+  try {
+    const parsed = new URL(value, 'http://botanic.internal')
+    return parsed.origin === 'http://botanic.internal' && parsed.pathname.startsWith('/api/media/')
+  } catch {
+    return false
+  }
+}
 
 /**
  * SSE 写出器。通道必须在模型吐出第一事件之前打开：Vercel 反代会在首字节过晚
@@ -35,6 +152,143 @@ export { BotanicAgentPlannerError, BotanicAgentChatError }
  * 普通错误响应。
  */
 const agentChatStreamHeartbeatMs = 3_000
+
+function matchingAgentTurnRequestBinding(stored, candidate) {
+  if (!stored || !candidate
+    || stored.id !== candidate.id
+    || stored.ownerId !== candidate.ownerId
+    || stored.projectId !== candidate.projectId
+    || stored.idempotencyKey !== candidate.idempotencyKey) return false
+  if (typeof stored.requestHash === 'string' && stored.requestHash.trim()) {
+    return Boolean(agentTurnRequestHashVersion(stored)) && stored.requestHash === candidate.requestHash
+  }
+  const storedBinding = storedAgentTurnRequestBinding(stored)
+  const candidateBinding = storedAgentTurnRequestBinding(candidate)
+  return Boolean(storedBinding && candidateBinding
+    && candidateBinding.requestHash === candidate.requestHash
+    && agentTurnRequestHash(candidate.request, storedBinding.requestHashVersion) === storedBinding.requestHash)
+}
+
+function agentTurnIntentConflict() {
+  return Object.assign(new Error('同一回合提交标识已绑定到不同请求。'), {
+    code: 'AGENT_TURN_INTENT_CONFLICT',
+    statusCode: 409,
+  })
+}
+
+/**
+ * claim 已 durable、Message link 尚未写入时进程可能退出。相同稳定 key 的补提交
+ * 只能恢复 Turn 内不可变的 v2 request；当前页面的选中态、模型与执行模式都可能
+ * 已经变化，拿它们重建 candidate 会把一次恢复误变成新意图。
+ */
+function recoverableStoredAgentTurnRequest(stored, identity) {
+  if (!stored
+    || stored.id !== identity.id
+    || stored.ownerId !== identity.ownerId
+    || stored.projectId !== identity.projectId
+    || stored.sessionId !== identity.sessionId
+    || stored.idempotencyKey !== identity.idempotencyKey
+    || agentTurnRequestHashVersion(stored) !== 2
+    || !stored.request
+    || typeof stored.request !== 'object'
+    || Array.isArray(stored.request)) return undefined
+  const binding = storedAgentTurnRequestBinding(stored)
+  if (!binding
+    || binding.requestHashVersion !== 2
+    || typeof stored.requestHash !== 'string'
+    || stored.requestHash !== binding.requestHash) return undefined
+  const request = stored.request
+  if (request.projectId !== identity.projectId
+    || request.sessionId !== identity.sessionId
+    || !request.inputMessage
+    || typeof request.inputMessage !== 'object'
+    || Array.isArray(request.inputMessage)
+    || request.inputMessage.id !== identity.inputMessageId) return undefined
+  return structuredClone(request)
+}
+
+function assertAgentTurnSelectedResult(document, input) {
+  if (!input?.hasTarget) return
+  const targetId = typeof input.selectedResultNodeId === 'string'
+    ? input.selectedResultNodeId.trim()
+    : ''
+  const target = targetId
+    ? (document?.nodes ?? []).find((node) => node?.id === targetId)
+    : undefined
+  if (target?.type === 'result') return
+  throw Object.assign(new Error('原 Agent 回合选择的结果已不存在，不能安全续跑。'), {
+    code: 'AGENT_TURN_TARGET_NOT_FOUND',
+    statusCode: 409,
+  })
+}
+
+/**
+ * Message PUT 是新 Turn 的第一条 durable 边界。只要权威用户消息已经携带
+ * request snapshot，POST 当前页面的 target/context/model/mode 就不再有写权限；
+ * Route 从 snapshot + 权威 Message 身份重建同一个规范请求。
+ */
+function canonicalAgentTurnInputFromMessageSnapshot(validatedInput, authoritativeInputMessage, messages) {
+  const snapshot = authoritativeInputMessage?.turnRequestSnapshot
+  if (!snapshot || !validatedInput.sessionId) return { ...validatedInput, messages }
+  const { selectedResultNodeId, ...stableFields } = snapshot
+  return validateBotanicAgentTurnInput({
+    projectId: validatedInput.projectId,
+    sessionId: validatedInput.sessionId,
+    inputMessage: {
+      id: authoritativeInputMessage.id,
+      content: authoritativeInputMessage.content,
+      ...(authoritativeInputMessage.mentions?.length
+        ? { mentions: structuredClone(authoritativeInputMessage.mentions) }
+        : {}),
+    },
+    ...structuredClone(stableFields),
+    ...(stableFields.hasTarget ? { selectedResultNodeId } : {}),
+    messages,
+  })
+}
+
+/**
+ * SSE accepted 是客户端可恢复承诺：发送前必须确认同一请求绑定的 Turn 已 durable 可读。
+ * execute 与读取并行，既不让慢 Provider 阻塞 accepted，也不把只存在于进程内的身份交给浏览器。
+ */
+async function awaitDurableAgentTurnBeforeAccepted({ productStore, userId, candidate, executionPromise }) {
+  let polling = true
+  const executionOutcome = executionPromise.then(
+    (execution) => ({ kind: 'resolved', execution }),
+    (caught) => ({ kind: 'rejected', caught }),
+  )
+  const durableObservation = (async () => {
+    while (polling) {
+      const stored = await productStore.readAgentTurn(userId, candidate.id)
+      if (stored) {
+        return matchingAgentTurnRequestBinding(stored, candidate)
+          ? { kind: 'durable', turn: stored }
+          : { kind: 'conflict' }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+    return { kind: 'stopped' }
+  })()
+  const ready = await Promise.race([durableObservation, executionOutcome])
+  polling = false
+  if (ready.kind === 'durable') return ready.turn
+  if (ready.kind === 'conflict') throw agentTurnIntentConflict()
+  if (ready.kind === 'resolved') {
+    const stored = await productStore.readAgentTurn(userId, candidate.id)
+    if (matchingAgentTurnRequestBinding(stored, candidate)) return stored
+    throw agentTurnIntentConflict()
+  }
+  if (ready.kind === 'rejected') {
+    // Resolver 可能在 claim 后立刻失败；只要相同绑定已 durable，仍先交付 accepted，
+    // 随后的 error 便能由刷新 observer 重放。claim 前失败则绝不作恢复承诺。
+    const stored = await productStore.readAgentTurn(userId, candidate.id)
+    if (matchingAgentTurnRequestBinding(stored, candidate)) return stored
+    throw ready.caught
+  }
+  throw Object.assign(new Error('Agent Turn 尚未持久化。'), {
+    code: 'AGENT_TURN_DURABILITY_UNAVAILABLE', statusCode: 503,
+  })
+}
 
 export function createServerSentEventWriter(response, options = {}) {
   let started = false
@@ -59,7 +313,7 @@ export function createServerSentEventWriter(response, options = {}) {
   }
 
   const start = () => {
-    if (response.writableEnded) return false
+    if (response.writableEnded || response.destroyed) return false
     if (started) return true
     started = true
     response.writeHead(200, {
@@ -96,7 +350,7 @@ export function createServerSentEventWriter(response, options = {}) {
     },
     end() {
       stopHeartbeat()
-      if (!response.writableEnded) response.end()
+      if (!response.writableEnded && !response.destroyed) response.end()
       return true
     },
   }
@@ -124,6 +378,8 @@ export function createAgentRouteHandler({
   localCancelRegistry,
   publishCancel,
   securityControls,
+  agentSubagentService,
+  agentManualContextCompactionService,
 }) {
   // 看图只读当前项目内的媒体：readGenerationInput 校验归属，图片字节不离开服务端与模型网关。
   const visionMediaResolver = (userId, projectId) => (mediaService?.enabled
@@ -137,39 +393,412 @@ export function createAgentRouteHandler({
     ...(Number.isInteger(skill.version) ? { version: skill.version } : {}),
     ...(typeof skill.contentHash === 'string' ? { contentHash: skill.contentHash } : {}),
     ...(Array.isArray(skill.capabilities) ? { capabilities: skill.capabilities } : {}),
+    ...(typeof skill.lifecycle === 'string' ? { lifecycle: skill.lifecycle } : {}),
+    ...(skill.manifest ? { manifest: structuredClone(skill.manifest) } : {}),
+    ...(Array.isArray(skill.versions) ? { versions: structuredClone(skill.versions) } : {}),
   })
-  const agentActionExecutions = new Map()
-  const agentTurnRuntime = createBotanicAgentTurnRuntime({ productStore })
-  // 本实例的执行句柄表由外部注入：跨实例取消信号的订阅方需要拿到同一个表，
-  // 才能在收到别的实例发来的取消时就地中止（见 localCancelRegistry）。
+  const configuredMcpCatalog = () => (
+    typeof configuredMcpTools?.catalog === 'function' ? configuredMcpTools.catalog() : []
+  )
+  // HTTP 连接只是观察者；Runtime 与跨实例取消订阅方共用这张执行句柄表。
   const cancelRegistry = localCancelRegistry ?? createLocalCancelRegistry()
+  const agentTurnRuntime = createBotanicAgentTurnRuntime({ productStore, localCancelRegistry: cancelRegistry })
+  // 正式 HTTP 入口绝不回退到进程内 Subagent：未完整配置时显式注入 undefined，
+  // Planner 会直接隐藏派发工具；配置完整时则统一走 descriptor/queue/Turn Runtime。
+  const durableSubagentRunner = agentSubagentService
+    && config?.agentSubagentModel
+    && config?.flockApiKey
+    ? createDurableAgentSubagentRunner({ service: agentSubagentService })
+    : undefined
+
+  /**
+   * plan/chat/intent 的旧 URL 只负责兼容响应形状。它们与主 `/api/agent-turns`
+   * 一样先取得 durable Turn，再执行解析器；HTTP close 不拥有 Runtime 的 AbortSignal。
+   */
+  const executeCompatibilityTurn = async ({
+    operation,
+    request,
+    response,
+    user,
+    projectId,
+    sessionId,
+    requestId,
+    input,
+    resolveOptions,
+    sse,
+  }) => {
+    let detach
+    let observerDetached = false
+    const detached = new Promise((resolve) => {
+      detach = () => {
+        if (observerDetached) return
+        observerDetached = true
+        resolve({ kind: 'detached' })
+      }
+    })
+    const detachOnAbortedRequest = () => detach()
+    const detachOnClosedResponse = () => {
+      if (!response.writableEnded) detach()
+    }
+    request.once('aborted', detachOnAbortedRequest)
+    response.once('close', detachOnClosedResponse)
+    if (request.aborted || response.destroyed) detach()
+    const idempotencyKey = agentCompatibilityIdempotencyKey(
+      operation,
+      input,
+      request.headers['idempotency-key'],
+      requestId,
+    )
+    const runtimeRequest = createAgentCompatibilityRuntimeRequest(operation, input)
+    const turnId = agentTurnIdForIdempotency(user.id, projectId, idempotencyKey)
+    const pendingTurnEvents = []
+    let acceptedSent = false
+    const executionPromise = agentTurnRuntime.execute({
+      userId: user.id,
+      projectId,
+      ...(sessionId ? { sessionId } : {}),
+      requestId,
+      id: turnId,
+      idempotencyKey,
+      request: runtimeRequest,
+      resolve: (runtimeOptions) => resolveBotanicAgentRuntimeRequest(runtimeRequest, config, runtimeOptions),
+      resolveOptions: {
+        ...resolveOptions,
+        subagentRunner: durableSubagentRunner,
+        observeAgentContext,
+        ...(sessionId ? {
+          persistAgentContextUsageAnchor: persistAgentContextUsageAnchor({
+            userId: user.id,
+            projectId,
+            sessionId,
+          }),
+        } : {}),
+      },
+      onEvent: (event) => {
+        if (!sse || observerDetached) return
+        if (!acceptedSent) pendingTurnEvents.push(event)
+        else sse.send(event)
+      },
+    })
+    // Runtime 已脱离传输层；响应断开时仍需消费 rejection，避免后台 Promise 变成
+    // unhandled rejection。原 Promise 仍由下方 await 收敛正常请求。
+    void executionPromise.catch(() => undefined)
+    const candidate = createAgentTurnRecord({
+      id: turnId,
+      ownerId: user.id,
+      projectId,
+      ...(sessionId ? { sessionId } : {}),
+      requestId,
+      idempotencyKey,
+      request: runtimeRequest,
+    })
+    try {
+      const durableOutcome = await Promise.race([
+        awaitDurableAgentTurnBeforeAccepted({
+          productStore,
+          userId: user.id,
+          candidate,
+          executionPromise,
+        }).then((turn) => ({ kind: 'durable', turn })),
+        detached,
+      ])
+      if (durableOutcome.kind === 'detached') return { detached: true }
+      const durableTurn = durableOutcome.turn
+      if (sse && !response.destroyed) {
+        sse.send({
+          type: 'accepted',
+          turnId,
+          runtimeTurn: { id: turnId, projectId },
+          observer: { url: `/api/agent-turns/${encodeURIComponent(turnId)}?after=0` },
+        })
+        acceptedSent = true
+        for (const event of pendingTurnEvents.splice(0)) sse.send(event)
+      }
+      const durableResult = durableTurn.result
+      if (durableResult) {
+        return {
+          body: agentCompatibilityResult(operation, durableResult),
+          runtimeTurn: publicAgentTurn(durableTurn),
+        }
+      }
+      const prefer = String(request.headers.prefer ?? '').toLowerCase()
+      if (!sse && prefer.split(',').some((item) => item.trim() === 'respond-async')) {
+        return {
+          pending: true,
+          runtimeTurn: publicAgentTurn(durableTurn),
+          observer: { url: `/api/agent-turns/${encodeURIComponent(turnId)}?after=0` },
+        }
+      }
+      const executionOutcome = await Promise.race([
+        executionPromise.then((execution) => ({ kind: 'execution', execution })),
+        detached,
+      ])
+      if (executionOutcome.kind === 'detached') return { detached: true }
+      let execution = executionOutcome.execution
+      let result = execution.result ?? execution.turn?.result
+      // 同 key 落到另一 API 实例时 claim 会返回 in_progress。兼容入口继续按 durable
+      // Turn 观察，不把旧 200/done 契约降级为需要调用方理解的 425。
+      const observationDeadline = Date.now() + 65_000
+      while (!result && Date.now() < observationDeadline) {
+        const wait = await Promise.race([
+          new Promise((resolve) => setTimeout(() => resolve({ kind: 'tick' }), 250)),
+          detached,
+        ])
+        if (wait.kind === 'detached') return { detached: true }
+        const observed = await productStore.readAgentTurn(user.id, turnId)
+        if (!observed) continue
+        execution = { ...execution, turn: publicAgentTurn(observed) }
+        result = observed.result
+        if (observed.status === 'failed' || observed.status === 'cancelled') {
+          throw Object.assign(new Error(observed.error?.message ?? 'Agent Runtime 未完成。'), {
+            code: observed.error?.code ?? (observed.status === 'cancelled' ? 'AGENT_TURN_CANCELLED' : 'AGENT_TURN_FAILED'),
+            statusCode: observed.status === 'cancelled' ? 499 : 502,
+          })
+        }
+      }
+      if (!result) {
+        throw Object.assign(new Error('Agent Runtime 仍在执行，请使用同一提交键继续观察。'), {
+          code: 'AGENT_RUNTIME_IN_PROGRESS',
+          statusCode: 425,
+          runtimeTurn: execution.turn ?? publicAgentTurn(durableTurn),
+        })
+      }
+      return {
+        body: agentCompatibilityResult(operation, result),
+        runtimeTurn: execution.turn ?? publicAgentTurn(durableTurn),
+      }
+    } finally {
+      request.off('aborted', detachOnAbortedRequest)
+      response.off('close', detachOnClosedResponse)
+    }
+  }
+  let agentCancellation
+  const cancellationService = () => {
+    agentCancellation ??= createAgentCancellationService({
+      productStore,
+      cancelTurn: (command) => agentTurnRuntime.cancel(command),
+      finalizeTurn: (command) => agentTurnRuntime.finalizeCancellation(command),
+      cancelSubagent: (command) => {
+        if (typeof agentSubagentService?.cancel !== 'function') {
+          throw new AgentSubagentServiceError(
+            'AGENT_SUBAGENT_CANCELLATION_UNAVAILABLE',
+            'Subagent 取消服务尚未配置。',
+            503,
+          )
+        }
+        return agentSubagentService.cancel(command)
+      },
+      redisQueue,
+      publishCancel,
+      modelOptions: config?.modelOptions ?? [],
+      afterGenerationJobPersist: agentRunGeneration?.persistJobState
+        ? ({ userId, projectId, job }) => agentRunGeneration.persistJobState(userId, projectId, job)
+        : undefined,
+    })
+    return agentCancellation
+  }
+  // pre-put fence 只能收窄竞态，不能消灭「检查通过 → Turn 被取消 → Run 落库」的
+  // TOCTOU。落库后再读一次权威 Turn；若 fence 已关闭，立刻用同一深取消服务补偿
+  // 新 Run（包括尚无 Job 的 queued Run），再把稳定的 delegation 错误交给调用方。
+  const enforceDelegationAfterPut = async (userId, run) => {
+    if (!run?.turnId) return run
+    try {
+      await assertTurnAllowsDelegation({
+        productStore, userId, projectId: run.projectId, turnId: run.turnId,
+      })
+      return run
+    } catch (caught) {
+      if (!(caught instanceof AgentDelegationFenceError)) throw caught
+      await cancellationService().cancelAgentRun({
+        userId, projectId: run.projectId, runId: run.id, requestedBy: userId,
+      })
+      const cancelledRun = await productStore.readAgentRun(userId, run.id) ?? run
+      await Promise.allSettled([
+        publishAgentRunUpdated?.({ projectId: run.projectId, run: publicAgentRun(cancelledRun) }),
+      ])
+      throw caught
+    }
+  }
+  let agentActionExecution
+  const durableAgentActionExecution = () => {
+    agentActionExecution ??= createAgentActionExecution({
+      productStore,
+      timeoutMs: agentActionTimeoutMs,
+    })
+    return agentActionExecution
+  }
+  let agentActionReconciliation
+  const durableAgentActionReconciliation = () => {
+    agentActionReconciliation ??= createAgentActionReconciliation({ productStore })
+    return agentActionReconciliation
+  }
+  let agentThreadContext
+  let agentContextCoordinator
+  let manualAgentContextCompaction = agentManualContextCompactionService
+  const observeAgentContext = createAgentContextObserver()
+  const durableAgentContextCoordinator = () => {
+    agentContextCoordinator ??= createAgentContextCoordinator({
+      productStore,
+      policies: config.agentModelContextPolicies,
+      observe: observeAgentContext,
+    })
+    return agentContextCoordinator
+  }
+  const persistAgentContextUsageAnchor = ({ userId, projectId, sessionId }) => async (usageAnchor) => (
+    durableAgentContextCoordinator().persistUsageAnchor({
+      userId,
+      projectId,
+      sessionId,
+      usageAnchor,
+    })
+  )
+  const compactAgentContextManually = () => {
+    manualAgentContextCompaction ??= createAgentManualContextCompactionService({
+      productStore,
+      policies: config.agentModelContextPolicies,
+      defaultModel: config.flockTextModel,
+      observe: observeAgentContext,
+    })
+    return manualAgentContextCompaction
+  }
+  const authoritativeThreadContext = () => {
+    agentThreadContext ??= createAgentThreadContext({
+      productStore,
+      contextV2: {
+        resolveRollout: ({ userId, projectId }) => resolveAgentContextRollout({
+          featureFlags: config.agentFeatureFlags,
+          rolloutFlags: config.rolloutFlags,
+          userId,
+          projectId,
+        }),
+        policies: config.agentModelContextPolicies,
+        observe: observeAgentContext,
+      },
+    })
+    return agentThreadContext
+  }
   const methodNotAllowed = (response, message, allow) => json(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message } }, { Allow: allow })
+  const hasAgentSubagentService = () => ['start', 'followup', 'read', 'cancel']
+    .every((name) => typeof agentSubagentService?.[name] === 'function')
+  const callAgentSubagentService = async (response, operation) => {
+    try {
+      return { outcome: await operation() }
+    } catch (caught) {
+      if (!(caught instanceof AgentSubagentServiceError)
+        && !(caught instanceof AgentSubagentPersistenceError)) throw caught
+      return { handled: error(response, caught.statusCode, caught.code, caught.message) }
+    }
+  }
+  const agentSubagentEnqueueResponse = (response, outcome) => {
+    if (outcome?.kind === 'missing') {
+      return error(response, 404, 'AGENT_SUBAGENT_NOT_FOUND', '未找到该 Subagent。')
+    }
+    if (outcome?.kind === 'inactive') {
+      return error(response, 409, 'AGENT_SUBAGENT_INACTIVE', 'Subagent 已停止，不能继续追加消息。')
+    }
+    if (outcome?.kind === 'conflict') {
+      return error(response, 409, 'AGENT_SUBAGENT_IDEMPOTENCY_CONFLICT', '同一提交标识已绑定到不同请求。')
+    }
+    if (!['enqueued', 'replay'].includes(outcome?.kind) || !outcome?.subagent || !outcome?.activation) {
+      return error(response, 503, 'AGENT_SUBAGENT_ENQUEUE_FAILED', 'Subagent 请求暂未可靠入队，请稍后重试。')
+    }
+    return json(response, outcome.kind === 'enqueued' ? 202 : 200, publicAgentSubagentMutation(outcome))
+  }
   const observeRun = (event) => {
     try { observeAgentRun(event) } catch { /* 运行日志不得阻断用户请求。 */ }
   }
   // 需要短期审批 Token 的行动：会花钱或触达外部系统的那些。运维写工具里
   // 重试分支与重试工作流失败项都会真的调用 Provider，因此同样进这个集合。
   const approvalRequired = new Set([
-    'generation_submit', 'mcp_call', 'agent_branch_retry', 'workflow_run_retry_failed',
+    'generation_submit', 'mcp_call', 'agent_branch_retry', 'review_retry', 'workflow_run_retry_failed',
   ])
-  const requireActionProposal = async ({ user, projectId, actionName, toolCallId, argumentsValue }) => {
+  // 这些动作有稳定自有身份且重放无新增副作用；其余（MCP、创建 Skill、
+  // 发布 Workflow、提交/重试计费任务）出现未知结果时一律停下，不自动再执行。
+  const safelyReplayableAgentActions = new Set([
+    'workflow_create', 'skill_apply', 'agent_run_cancel', 'artifact_promote',
+    'review_decide', 'review_retry', 'workflow_run_retry_failed',
+  ])
+  // 这三条路径在存量客户端中本来就不属于 Message Proposal：
+  // Run 确认的工作流/生成提交，以及 Skill Registry 直接创建。
+  // 其他 HTTP Action 即使省略 context，也必须反查到唯一权威 Proposal。
+  const standaloneAgentActions = new Set(['workflow_create', 'generation_submit', 'skill_create'])
+  const projectAgentActionIdempotencyKey = (action) => {
+    const actionKey = `${action.id}-${action.toolName}`.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 112)
+    return `agent-action-${actionKey}`
+  }
+  const actionHasContext = (body) => ['sessionId', 'messageId', 'actionId']
+    .some((field) => typeof body?.[field] === 'string' && body[field].trim())
+  const requireActionProposal = async ({
+    user, projectId, actionName, toolCallId, argumentsValue, body, requireExactContext = false,
+  }) => {
+    const contextual = requireExactContext || actionHasContext(body)
+    if (contextual) {
+      const sessionId = text(body?.sessionId, '会话', 160)
+      const messageId = text(body?.messageId, '消息', 160)
+      const actionId = text(body?.actionId, '行动', 160)
+      const state = await productStore.readAgentState(user.id, projectId)
+      const session = state?.sessions?.find((candidate) => candidate.id === sessionId)
+      const message = session?.messages?.find((candidate) => candidate.id === messageId)
+      const proposal = message?.plan?.actions?.find((candidate) => candidate.id === actionId)
+      if (!proposal
+        || proposal.id !== toolCallId
+        || proposal.toolName !== actionName
+        || proposal.status === 'dismissed') {
+        throw new AgentToolRuntimeError('ACTION_PROPOSAL_NOT_FOUND', '该行动不属于指定的会话或消息，请重新规划。', 409)
+      }
+      if (actionArgumentsHash(proposal.arguments) !== actionArgumentsHash(argumentsValue)) {
+        throw new AgentToolRuntimeError('ACTION_PROPOSAL_MISMATCH', '行动参数已变化，请重新确认。', 409)
+      }
+      return { session, message, proposal, contextual: true }
+    }
     if (actionName === 'generation_submit') {
       const runId = text(argumentsValue?.planId, 'Agent Run', 160)
       const run = await productStore.readAgentRun(user.id, runId)
       if (!run || run.projectId !== projectId || !['awaiting_confirmation', 'queued', 'executing', 'running'].includes(run.status)) {
         throw new AgentToolRuntimeError('ACTION_PROPOSAL_NOT_FOUND', '该生成行动已不存在或已完成，请重新规划。', 409)
       }
-      return
+      return { contextual: false }
     }
     const state = await productStore.readAgentState(user.id, projectId)
-    const proposal = state?.sessions?.flatMap((session) => session.messages ?? [])
-      .flatMap((message) => message.plan?.actions ?? [])
-      .find((action) => action.id === toolCallId && action.toolName === actionName)
-    if (!proposal || !['awaiting_confirmation', 'failed'].includes(proposal.status)) {
+    const matches = (state?.sessions ?? []).flatMap((session) => (
+      (session.messages ?? []).flatMap((message) => (
+        (message.plan?.actions ?? [])
+          .filter((action) => action.id === toolCallId
+            && action.toolName === actionName
+            && action.status !== 'dismissed')
+          .map((proposal) => ({ session, message, proposal }))
+      ))
+    ))
+    // 不用 find：历史数据如果有重复 action id，省略 context 时不能猜一条执行。
+    if (matches.length !== 1) {
       throw new AgentToolRuntimeError('ACTION_PROPOSAL_NOT_FOUND', '该行动已不存在或已处理，请重新规划。', 409)
     }
+    const { session, message, proposal } = matches[0]
     if (actionArgumentsHash(proposal.arguments) !== actionArgumentsHash(argumentsValue)) {
       throw new AgentToolRuntimeError('ACTION_PROPOSAL_MISMATCH', '行动参数已变化，请重新确认。', 409)
+    }
+    return { session, message, proposal, contextual: true, inferredContext: true }
+  }
+  const authoritativeActionAttempt = ({ user, projectId, proposalContext, idempotencyKey }) => {
+    const { session, message, proposal } = proposalContext
+    const originalIdempotencyKey = projectAgentActionIdempotencyKey(proposal)
+    const action = {
+      userId: user.id,
+      projectId,
+      sessionId: session.id,
+      messageId: message.id,
+      actionId: proposal.id,
+      toolCallId: proposal.id,
+      name: proposal.toolName,
+      arguments: proposal.arguments,
+      idempotencyKey,
+    }
+    const originalAction = { ...action, idempotencyKey: originalIdempotencyKey }
+    return {
+      action,
+      originalAction,
+      originalIdempotencyKey,
+      manualRetry: idempotencyKey !== originalIdempotencyKey,
     }
   }
   const recordCollaborationActivity = async (user, projectId, input) => {
@@ -220,6 +849,28 @@ export function createAgentRouteHandler({
     recordCollaborationActivity,
     observeRun: (event) => observeAgentRun(event),
   })
+  let agentReviewDecision
+  const reviewDecisionService = () => {
+    agentReviewDecision ??= createAgentReviewDecisionService({ productStore })
+    return agentReviewDecision
+  }
+  let agentReviewOperations
+  const reviewOperationsService = () => {
+    agentReviewOperations ??= createAgentReviewService({
+      productStore,
+      publishCancel,
+      observe: (event) => observeRun(event),
+    })
+    return agentReviewOperations
+  }
+  const commitAgentReviewAction = async (command) => {
+    try {
+      return await reviewDecisionService()(command)
+    } catch (caught) {
+      if (!(caught instanceof AgentReviewDecisionServiceError)) throw caught
+      throw new AgentToolRuntimeError(caught.code, caught.message, caught.statusCode)
+    }
+  }
 
   /**
    * 线程摘要检查点（Epic 8）。
@@ -228,61 +879,43 @@ export function createAgentRouteHandler({
    * 会话消息里**确定性**派生检查点并写回会话 —— 让模型复述一遍约束，就没有任何东西
    * 能保证它复述对了。
    *
-   * 派生失败不能挡住回合：摘要缺失只是少一层上下文，不是这次对话不能进行。
+   * CAS 冲突代表已有更新者胜出，可以继续；权限、Store 与契约错误必须 fail closed，
+   * 否则当前回合会在无法证明摘要版本的情况下继续执行。
    */
   const threadSummaryForSession = async (userId, projectId, sessionId) => {
     if (!sessionId || typeof productStore.readAgentState !== 'function') return undefined
-    try {
-      const projectState = await productStore.readAgentState(userId, projectId)
-      const session = (projectState?.sessions ?? []).find((entry) => entry?.id === sessionId)
-      if (!session) return undefined
-      const messages = session.messages ?? []
-      if (!shouldCompactThread(messages)) return session.threadSummary
-      const summary = buildThreadSummaryCheckpoint({ messages, previous: session.threadSummary })
-      if (summary && summary !== session.threadSummary && typeof productStore.putAgentSession === 'function') {
-        await productStore.putAgentSession(userId, projectId, { ...session, threadSummary: summary })
-      }
-      return summary
-    } catch (caught) {
-      console.error(`[agent-thread] 摘要派生跳过: ${caught instanceof Error ? caught.message : String(caught)}`)
-      return undefined
+    if (typeof productStore.compareAndSetAgentThreadSummary !== 'function') {
+      throw new TypeError('Agent Thread Summary CAS Interface 缺失。')
     }
+    const projectState = await productStore.readAgentState(userId, projectId)
+    const session = (projectState?.sessions ?? []).find((entry) => entry?.id === sessionId)
+    if (!session) return undefined
+    const messages = session.messages ?? []
+    if (!shouldCompactThread(messages)) return session.threadSummary
+    // 摘要有独立 CAS 版本；Session 主更新时间不会因 compaction 改变，因此增量版本
+    // 必须同时晚于旧摘要。兼容旧客户端的路径也不能复用/回退摘要时间戳。
+    const checkpointAt = Math.max(
+      (Number(session.updatedAt) || 0) + 1,
+      (Number(session.threadSummary?.updatedAt) || 0) + 1,
+      Date.now(),
+    )
+    const summary = buildThreadSummaryCheckpoint({
+      messages,
+      previous: session.threadSummary,
+      now: checkpointAt,
+      // readAgentState 返回 Adapter 的完整有界会话窗口（messagesPerSession），因此
+      // legacy v1 可在这条兼容路径从零升级 provenance；不完整分页路径由 ThreadContext 处理。
+      fullHistory: true,
+    })
+    if (summary && summary !== session.threadSummary) {
+      await compareAndSetDerivedAgentThreadSummary({ productStore, userId, session, summary })
+    }
+    return summary
   }
-
-  /**
-   * 运维只读工具的数据源。全部按项目权限读取，且不返回受控媒体地址 ——
-   * 工具结果会进模型上下文（Epic 4）。
-   */
-  const operationalReaders = (userId, projectId, document) => ({
-    readRun: async (runId) => {
-      const run = await productStore.readAgentRun(userId, runId)
-      // 跨项目的 Run 不能通过工具泄漏。
-      return run && run.projectId === projectId ? publicAgentRun(run) : undefined
-    },
-    readJob: async (jobId) => {
-      const job = await productStore.readGenerationJob(userId, jobId)
-      return job && job.projectId === projectId ? job : undefined
-    },
-    searchArtifacts: async ({ query, kind, limit }) => {
-      const artifacts = await productStore.listAgentArtifacts(userId, projectId, { limit: Math.min(limit * 4, 200) }) ?? []
-      const needle = String(query ?? '').trim().toLocaleLowerCase('zh-CN')
-      return artifacts
-        .filter((artifact) => (!kind || artifact.kind === kind)
-          && (!needle || `${artifact.label ?? ''} ${artifact.id ?? ''}`.toLocaleLowerCase('zh-CN').includes(needle)))
-        .slice(0, limit)
-    },
-    readReviews: async (runId) => {
-      const run = await productStore.readAgentRun(userId, runId)
-      if (!run || run.projectId !== projectId) return []
-      return (await productStore.listAgentReviewTasksForRun(userId, projectId, runId)) ?? []
-    },
-    readWorkflowRun: async (runId) => (document?.productionWorkflowRuns ?? []).find((entry) => entry?.id === runId),
-    readDeliveries: async () => document?.deliveries ?? [],
-  })
 
   const bindAuthoritativeKnowledge = async (userId, input) => {
     const [projectState, projectSkills] = await Promise.all([
-      typeof productStore.readAgentState === 'function' ? productStore.readAgentState(userId, input.projectId) : undefined,
+      typeof productStore.readAgentState === 'function' ? productStore.readAgentState(userId, input.projectId, { includeMessages: false }) : undefined,
       typeof productStore.listAgentSkills === 'function' ? productStore.listAgentSkills(userId, input.projectId) : [],
     ])
     const memoriesById = new Map((projectState?.memory ?? []).map((memory) => [memory.id, memory]))
@@ -336,36 +969,16 @@ export function createAgentRouteHandler({
       },
     }
   }
-  const withActionTimeout = (promise, actionName) => new Promise((resolve, reject) => {
-    let settled = false
-    const timeoutId = setTimeout(() => {
-      if (settled) return
-      settled = true
-      const label = actionName === 'skill_apply' ? 'Skill 执行超时，请稍后重试。' : 'Agent 行动执行超时，请稍后重试。'
-      reject(new AgentToolRuntimeError('AGENT_ACTION_TIMEOUT', label, 504))
-    }, agentActionTimeoutMs)
-    Promise.resolve(promise).then(
-      (value) => {
-        if (settled) return
-        settled = true
-        clearTimeout(timeoutId)
-        resolve(value)
-      },
-      (caught) => {
-        if (settled) return
-        settled = true
-        clearTimeout(timeoutId)
-        reject(caught)
-      },
-    )
-  })
-
   return async function handleAgentRoute(request, response, url, routeMatches, requestId) {
     const {
       projectAgentRuns: projectAgentRunsMatch,
       projectAgentSkills: projectAgentSkillsMatch,
+      projectAgentSkillVersion: projectAgentSkillVersionMatch,
       agentSkillCatalog: agentSkillCatalogMatch,
       projectAgentState: projectAgentStateMatch,
+      projectAgentSessions: projectAgentSessionsMatch,
+      agentSessionContextCompactions: agentSessionContextCompactionsMatch,
+      agentSessionMessages: agentSessionMessagesMatch,
       projectAgentArtifacts: projectAgentArtifactsMatch,
       agentSession: agentSessionMatch,
       agentSessionReadingAnchor: agentSessionReadingAnchorMatch,
@@ -377,14 +990,165 @@ export function createAgentRouteHandler({
       agentRunTrace: agentRunTraceMatch,
       agentRunReviewTasks: agentRunReviewTasksMatch,
       agentReviewTaskDecisions: agentReviewTaskDecisionsMatch,
+      agentReviewTaskCancel: agentReviewTaskCancelMatch,
+      agentReviewTaskReconciliation: agentReviewTaskReconciliationMatch,
       agentRunCancel: agentRunCancelMatch,
       agentBranchRetry: agentBranchRetryMatch,
       agentTurns: agentTurnsMatch,
       agentTurnStream: agentTurnStreamMatch,
       agentTurn: agentTurnMatch,
       agentTurnCancel: agentTurnCancelMatch,
+      projectAgentSubagents: projectAgentSubagentsMatch,
+      agentSubagent: agentSubagentMatch,
+      agentSubagentFollowups: agentSubagentFollowupsMatch,
+      agentSubagentCancel: agentSubagentCancelMatch,
       agentReviewDecision: agentReviewDecisionMatch,
     } = routeMatches
+
+    if (projectAgentSubagentsMatch) {
+      if (request.method !== 'POST') return methodNotAllowed(response, '项目 Subagent 资源只接受提交请求。', 'POST')
+      const user = await requireUser(request)
+      if (!hasAgentSubagentService()) {
+        return error(response, 503, 'AGENT_SUBAGENT_SERVICE_UNAVAILABLE', 'Subagent 服务暂不可用。')
+      }
+      const idempotencyKey = generationIdempotencyKey(request.headers['idempotency-key'])
+      if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', 'Subagent 提交标识无效，请重试。')
+      const body = await readJson(request, 256 * 1024, 'Subagent 请求过大，请精简后重试。')
+      const bodyFailure = agentSubagentBodyFailure(body, agentSubagentStartBodyFields, 'Subagent start 请求')
+      if (bodyFailure) return error(response, bodyFailure.statusCode, bodyFailure.code, bodyFailure.message)
+      const projectId = decodeURIComponent(projectAgentSubagentsMatch[1])
+      await requireProjectPermission(productStore, user.id, projectId, 'edit')
+      const serviceCall = await callAgentSubagentService(response, () => agentSubagentService.start({
+        userId: user.id,
+        projectId,
+        rootTurnId: body.rootTurnId,
+        role: body.role,
+        content: body.content,
+        idempotencyKey,
+        requestId,
+      }))
+      if ('handled' in serviceCall) return serviceCall.handled
+      return agentSubagentEnqueueResponse(response, serviceCall.outcome)
+    }
+
+    if (agentSubagentFollowupsMatch) {
+      if (request.method !== 'POST') return methodNotAllowed(response, 'Subagent Followup 资源只接受提交请求。', 'POST')
+      const user = await requireUser(request)
+      if (!hasAgentSubagentService()) {
+        return error(response, 503, 'AGENT_SUBAGENT_SERVICE_UNAVAILABLE', 'Subagent 服务暂不可用。')
+      }
+      const idempotencyKey = generationIdempotencyKey(request.headers['idempotency-key'])
+      if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', 'Subagent Followup 提交标识无效，请重试。')
+      const body = await readJson(request, 256 * 1024, 'Subagent Followup 请求过大，请精简后重试。')
+      const bodyFailure = agentSubagentBodyFailure(body, agentSubagentFollowupBodyFields, 'Subagent followup 请求')
+      if (bodyFailure) return error(response, bodyFailure.statusCode, bodyFailure.code, bodyFailure.message)
+      const subagentId = decodeURIComponent(agentSubagentFollowupsMatch[1])
+      const current = await productStore.readAgentSubagent(user.id, subagentId)
+      if (!current) return error(response, 404, 'AGENT_SUBAGENT_NOT_FOUND', '未找到该 Subagent。')
+      await requireProjectPermission(productStore, user.id, current.projectId, 'edit')
+      const serviceCall = await callAgentSubagentService(response, () => agentSubagentService.followup({
+        userId: user.id,
+        subagentId,
+        sourceTurnId: body.sourceTurnId,
+        content: body.content,
+        idempotencyKey,
+        requestId,
+      }))
+      if ('handled' in serviceCall) return serviceCall.handled
+      return agentSubagentEnqueueResponse(response, serviceCall.outcome)
+    }
+
+    if (agentSubagentCancelMatch) {
+      if (request.method !== 'POST') return methodNotAllowed(response, 'Subagent 取消资源只接受提交请求。', 'POST')
+      const user = await requireUser(request)
+      if (!hasAgentSubagentService()) {
+        return error(response, 503, 'AGENT_SUBAGENT_SERVICE_UNAVAILABLE', 'Subagent 服务暂不可用。')
+      }
+      const idempotencyKey = generationIdempotencyKey(request.headers['idempotency-key'])
+      if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', 'Subagent 取消标识无效，请重试。')
+      const body = await readJson(request, 8 * 1024, 'Subagent 取消请求过大。')
+      const bodyFailure = agentSubagentBodyFailure(body, agentSubagentCancelBodyFields, 'Subagent cancel 请求')
+      if (bodyFailure) return error(response, bodyFailure.statusCode, bodyFailure.code, bodyFailure.message)
+      if (body.reason !== undefined && (typeof body.reason !== 'string' || body.reason.length > 500)) {
+        return error(response, 400, 'AGENT_SUBAGENT_REQUEST_INVALID', 'Subagent 取消原因格式无效。')
+      }
+      const subagentId = decodeURIComponent(agentSubagentCancelMatch[1])
+      const current = await productStore.readAgentSubagent(user.id, subagentId)
+      if (!current) return error(response, 404, 'AGENT_SUBAGENT_NOT_FOUND', '未找到该 Subagent。')
+      await requireProjectPermission(productStore, user.id, current.projectId, 'edit')
+      const serviceCall = await callAgentSubagentService(response, () => agentSubagentService.cancel({
+        userId: user.id,
+        projectId: current.projectId,
+        subagentId,
+        idempotencyKey,
+        ...(body.reason?.trim() ? { reason: body.reason.trim() } : {}),
+      }))
+      if ('handled' in serviceCall) return serviceCall.handled
+      const outcome = serviceCall.outcome
+      if (outcome?.kind === 'missing') return error(response, 404, 'AGENT_SUBAGENT_NOT_FOUND', '未找到该 Subagent。')
+      if (['conflict', 'stale', 'not_cancelling'].includes(outcome?.kind)) {
+        return error(response, 409, 'AGENT_SUBAGENT_CANCELLATION_CONFLICT', 'Subagent 取消请求与当前状态冲突。')
+      }
+      const stored = await productStore.readAgentSubagent(user.id, subagentId)
+      if (!stored) return error(response, 404, 'AGENT_SUBAGENT_NOT_FOUND', '未找到该 Subagent。')
+      if (!['cancelling', 'cancelled'].includes(stored.status)) {
+        return error(response, 409, 'AGENT_SUBAGENT_NOT_CANCELLABLE', '该 Subagent 当前不可取消。')
+      }
+      return json(response, stored.status === 'cancelling' ? 202 : 200, {
+        kind: outcome?.kind,
+        changed: outcome?.changed === true,
+        subagent: publicAgentSubagent(stored),
+      })
+    }
+
+    if (agentSubagentMatch) {
+      if (request.method !== 'GET') return methodNotAllowed(response, 'Subagent 资源只支持读取。', 'GET')
+      const user = await requireUser(request)
+      if (!hasAgentSubagentService()) {
+        return error(response, 503, 'AGENT_SUBAGENT_SERVICE_UNAVAILABLE', 'Subagent 服务暂不可用。')
+      }
+      const subagentId = decodeURIComponent(agentSubagentMatch[1])
+      const current = await productStore.readAgentSubagent(user.id, subagentId)
+      if (!current) return error(response, 404, 'AGENT_SUBAGENT_NOT_FOUND', '未找到该 Subagent。')
+      await requireProjectPermission(productStore, user.id, current.projectId, 'read')
+      const rawAfterSequence = url.searchParams.get('afterSequence')
+      const rawLimit = url.searchParams.get('limit')
+      if (rawAfterSequence !== null && !/^\d+$/.test(rawAfterSequence)) {
+        return error(response, 400, 'INVALID_AGENT_SUBAGENT_CURSOR', 'Subagent Activation 游标无效。')
+      }
+      if (rawLimit !== null && !/^\d+$/.test(rawLimit)) {
+        return error(response, 400, 'INVALID_AGENT_SUBAGENT_LIMIT', 'Subagent Activation 数量无效。')
+      }
+      const afterSequence = rawAfterSequence === null ? 0 : Number(rawAfterSequence)
+      const limit = rawLimit === null ? 50 : Number(rawLimit)
+      if (!Number.isSafeInteger(afterSequence) || afterSequence < 0
+        || !Number.isSafeInteger(limit) || limit < 1 || limit > 200) {
+        return error(response, 400, 'INVALID_AGENT_SUBAGENT_CURSOR', 'Subagent Activation 续读参数无效。')
+      }
+      const serviceCall = await callAgentSubagentService(response, () => agentSubagentService.read(
+        user.id,
+        subagentId,
+        { afterSequence, limit },
+      ))
+      if ('handled' in serviceCall) return serviceCall.handled
+      const snapshot = serviceCall.outcome
+      if (!snapshot?.subagent) return error(response, 404, 'AGENT_SUBAGENT_NOT_FOUND', '未找到该 Subagent。')
+      const activations = (Array.isArray(snapshot.activations) ? snapshot.activations : [])
+        .map(publicAgentSubagentActivation)
+        .filter(Boolean)
+      const messages = (Array.isArray(snapshot.messages) ? snapshot.messages : [])
+        .map(publicAgentSubagentMessage)
+        .filter(Boolean)
+      return json(response, 200, {
+        subagent: publicAgentSubagent(snapshot.subagent),
+        activations,
+        messages,
+        cursor: {
+          afterSequence: activations.at(-1)?.sequence ?? afterSequence,
+          hasMore: activations.length === limit,
+        },
+      })
+    }
 
     if (agentTurnsMatch || agentTurnStreamMatch) {
       const streaming = Boolean(agentTurnStreamMatch)
@@ -399,61 +1163,196 @@ export function createAgentRouteHandler({
       const project = await productStore.readProject(user.id, validatedInput.projectId)
       if (!project?.document) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
       const projectSkills = await productStore.listAgentSkills(user.id, validatedInput.projectId) ?? []
-      const input = {
-        ...validatedInput,
-        projectSkills: projectSkills.map(plannerSkillInput),
-      }
-      const turnId = agentTurnIdForIdempotency(user.id, validatedInput.projectId, idempotencyKey)
-      const controller = new AbortController()
-      // 同一幂等键并发重放时复用首个解析器的取消控制器：登记表拒绝后来者覆盖，
-      // 否则明确取消只会中断一个无效的重复控制器。
-      cancelRegistry.register(turnId, controller)
-      const cancel = () => controller.abort()
-      const cancelOnClosedResponse = () => { if (!response.writableEnded) cancel() }
-      request.once('aborted', cancel)
-      response.once('close', cancelOnClosedResponse)
-      if (request.aborted || response.destroyed) cancel()
-      const sse = streaming ? createServerSentEventWriter(response) : undefined
-      sse?.start()
-      try {
-        const execution = await agentTurnRuntime.execute({
+      const legacySessionId = typeof request.headers['x-agent-session-id'] === 'string'
+        ? request.headers['x-agent-session-id']
+        : undefined
+      let canonicalInput = validatedInput
+      let threadSummary
+      let authoritativeInputMessage
+      if (validatedInput.sessionId && validatedInput.inputMessage) {
+        const threadContext = await authoritativeThreadContext().resolve({
           userId: user.id,
           projectId: validatedInput.projectId,
-          sessionId: typeof request.headers['x-agent-session-id'] === 'string' ? request.headers['x-agent-session-id'] : undefined,
+          sessionId: validatedInput.sessionId,
+          locale: validatedInput.locale,
+          model: validatedInput.plannerModel || config.flockTextModel,
+          // 角色是服务端事实；客户端 DTO 无权声明 assistant/system。
+          inputMessage: { ...validatedInput.inputMessage, role: 'user' },
+        })
+        // 即使迁移期客户端仍附带 messages，也只用服务端投影覆盖它。
+        canonicalInput = canonicalAgentTurnInputFromMessageSnapshot(
+          validatedInput,
+          threadContext.inputMessage,
+          threadContext.messages,
+        )
+        canonicalInput = {
+          ...canonicalInput,
+          threadContextSnapshot: structuredClone(threadContext.threadContextSnapshot),
+        }
+        threadSummary = threadContext.threadSummary
+        authoritativeInputMessage = threadContext.inputMessage
+      } else {
+        threadSummary = await threadSummaryForSession(
+          user.id,
+          validatedInput.projectId,
+          legacySessionId,
+        )
+        canonicalInput = {
+          ...canonicalInput,
+          threadContextSnapshot: {
+            version: 1,
+            messages: structuredClone(canonicalInput.messages ?? []),
+            ...(threadSummary ? { threadSummary: structuredClone(threadSummary) } : {}),
+          },
+        }
+      }
+      const turnId = agentTurnIdForIdempotency(user.id, validatedInput.projectId, idempotencyKey)
+      if (validatedInput.sessionId && authoritativeInputMessage) {
+        if (authoritativeInputMessage.turnId && authoritativeInputMessage.turnId !== turnId) {
+          return error(response, 409, 'AGENT_MESSAGE_TURN_CONFLICT', '当前消息已绑定另一 Agent Turn，不能重新执行。')
+        }
+        const existingTurn = await productStore.readAgentTurn(user.id, turnId)
+        if (authoritativeInputMessage.turnId && !existingTurn) {
+          // 旧版 link→claim 顺序可能留下指向不存在 Turn 的 Message。这里没有 immutable
+          // request snapshot 可恢复；用当前 target/context/model 重建会把旧请求漂移成新意图。
+          return error(response, 409, 'AGENT_MESSAGE_TURN_ORPHANED', '当前消息关联的 Agent Turn 不存在，不能安全重建。')
+        }
+        if (existingTurn) {
+          const storedRequest = recoverableStoredAgentTurnRequest(existingTurn, {
+            id: turnId,
+            ownerId: user.id,
+            projectId: validatedInput.projectId,
+            sessionId: validatedInput.sessionId,
+            inputMessageId: authoritativeInputMessage.id,
+            idempotencyKey,
+          })
+          if (!storedRequest) {
+            return error(response, 409, 'AGENT_TURN_INTENT_CONFLICT', '同一回合提交标识已绑定到不同请求。')
+          }
+          canonicalInput = storedRequest
+        }
+      }
+      // 恢复时必须校验 immutable request 里的原目标，而不是当前 UI 重提交的选中态。
+      try {
+        assertAgentTurnSelectedResult(project.document, canonicalInput)
+      } catch (caught) {
+        return error(
+          response,
+          Number.isInteger(caught?.statusCode) ? caught.statusCode : 409,
+          caught?.code ?? 'AGENT_TURN_TARGET_NOT_FOUND',
+          typeof caught?.message === 'string' ? caught.message : '原 Agent 回合的目标不可用。',
+        )
+      }
+      const input = {
+        ...canonicalInput,
+        projectSkills: projectSkills.map(plannerSkillInput),
+      }
+      const sse = streaming ? createServerSentEventWriter(response) : undefined
+      sse?.start()
+      const pendingTurnEvents = []
+      let acceptedSent = false
+      try {
+        const executionPromise = agentTurnRuntime.execute({
+          userId: user.id,
+          projectId: validatedInput.projectId,
+          sessionId: validatedInput.sessionId ?? legacySessionId,
           requestId,
           id: turnId,
           idempotencyKey,
-          // 只快照用户请求本身。projectSkills 与项目文档是派生上下文，恢复时应重新
-          // 读取 —— 重放一份过期的 Skill 列表或画布快照会让恢复出的回合与当前项目
-          // 不一致，而且它们体积远大于请求。
-          request: validatedInput,
-          resolve: (resolveOptions) => resolveBotanicAgentTurn(input, config, resolveOptions),
+          // 快照保存服务端投影后的有界消息，而不是浏览器自报历史；projectSkills 与
+          // 项目文档仍在恢复时重新读取，避免重放过期的派生上下文。
+          request: canonicalInput,
+          resolve: (resolveOptions) => resolveBotanicAgentRuntimeRequest(input, config, resolveOptions),
           resolveOptions: {
+            subagentRunner: durableSubagentRunner,
+            observeAgentContext,
             document: project.document,
             projectSkills,
-            threadSummary: await threadSummaryForSession(
-              user.id,
-              validatedInput.projectId,
-              typeof request.headers['x-agent-session-id'] === 'string' ? request.headers['x-agent-session-id'] : undefined,
-            ),
-            operations: operationalReaders(user.id, validatedInput.projectId, project.document),
-            signal: controller.signal,
+            ...((validatedInput.sessionId ?? legacySessionId) ? {
+              persistAgentContextUsageAnchor: persistAgentContextUsageAnchor({
+                userId: user.id,
+                projectId: validatedInput.projectId,
+                sessionId: validatedInput.sessionId ?? legacySessionId,
+              }),
+            } : {}),
+            ...(threadSummary ? { threadSummary } : {}),
+            operations: createAgentOperationalReaders({
+              productStore,
+              userId: user.id,
+              projectId: validatedInput.projectId,
+              document: project.document,
+            }),
             resolveVisionMedia: visionMediaResolver(user.id, validatedInput.projectId),
             consumeWebResearchQuota: consumeWebResearchQuota
               ? () => consumeWebResearchQuota(user.id)
               : undefined,
           },
-          onEvent: (event) => sse?.send(event),
+          // claim durable 与 accepted 之间若 Resolver 已产生事件，先保存在本请求内；
+          // accepted 永远是第一条数据事件，随后才按原顺序交付 durable 工具轨迹。
+          onEvent: (event) => {
+            if (!sse) return
+            if (!acceptedSent) pendingTurnEvents.push(event)
+            else sse.send(event)
+          },
         })
-        if (controller.signal.aborted || response.destroyed) return true
+        // 路由可能在 link 或响应写出时失败；Runtime 已与 HTTP 生命周期分离，提前
+        // 挂拒绝处理器避免后台终态变成 unhandled rejection，原 Promise 仍可正常 await。
+        void executionPromise.catch(() => undefined)
+        const candidate = createAgentTurnRecord({
+          id: turnId,
+          ownerId: user.id,
+          projectId: validatedInput.projectId,
+          sessionId: validatedInput.sessionId ?? legacySessionId,
+          requestId,
+          idempotencyKey,
+          request: canonicalInput,
+        })
+        const durableTurn = await awaitDurableAgentTurnBeforeAccepted({
+          productStore, userId: user.id, candidate, executionPromise,
+        })
+        if (validatedInput.sessionId && authoritativeInputMessage && !authoritativeInputMessage.turnId) {
+          const linkedAt = Date.now()
+          // durable request binding 在前，Message link 在后；冲突或 claim 失败绝不留下
+          // 指向不存在/错误 Turn 的恢复身份。link 完成后才允许向客户端交接 observer。
+          await productStore.putAgentMessage(user.id, validatedInput.projectId, validatedInput.sessionId, {
+            ...authoritativeInputMessage,
+            role: 'user',
+            kind: 'text',
+            createdAt: Number(authoritativeInputMessage.createdAt) || linkedAt,
+            updatedAt: Math.max(Number(authoritativeInputMessage.updatedAt) || 0, linkedAt),
+            turnId,
+          })
+        }
+        if (!sse) {
+          return json(response, 202, {
+            runtimeTurn: publicAgentTurn(durableTurn),
+            observer: { url: `/api/agent-turns/${encodeURIComponent(turnId)}?after=0` },
+          })
+        }
+        if (sse) {
+          sse.send({
+            type: 'accepted',
+            turnId,
+            runtimeTurn: { id: turnId, projectId: validatedInput.projectId },
+            observer: { url: `/api/agent-turns/${encodeURIComponent(turnId)}?after=0` },
+          })
+          acceptedSent = true
+          for (const event of pendingTurnEvents.splice(0)) sse.send(event)
+        }
+        const execution = await executionPromise
+        // HTTP 中断只代表观察者 detach。Runtime 已继续执行并持久化；此时不再写响应。
+        if (response.destroyed) return true
         // 保持旧客户端的 `turn` 业务结果形状；V2 生命周期记录单独放在 runtimeTurn，
         // 这样迁移期间既不会把状态记录误当成生成意图，也不会破坏现有时间线渲染。
         const turnResult = execution.result ?? execution.turn?.result
-        if (!sse) return json(response, 200, { turn: turnResult, runtimeTurn: execution.turn })
+        const observing = execution.inProgress || execution.recoveryRequired || execution.waitingUser || execution.cancelling
+        const observer = {
+          url: `/api/agent-turns/${encodeURIComponent(turnId)}?after=${execution.turn?.lastSequence ?? 0}`,
+        }
         sse.send({ type: 'done', turn: turnResult, runtimeTurn: execution.turn })
         return sse.end()
       } catch (caught) {
-        if (controller.signal.aborted || response.destroyed) return true
+        if (response.destroyed) return true
         const statusCode = Number.isInteger(caught?.statusCode) ? caught.statusCode : 502
         if (sse?.started) {
           sse.send({ type: 'error', code: caught?.code ?? 'AGENT_TURN_FAILED', message: typeof caught?.message === 'string' ? caught.message : 'Agent 回合未完成，请重试。' })
@@ -461,10 +1360,7 @@ export function createAgentRouteHandler({
         }
         return error(response, statusCode, caught?.code ?? 'AGENT_TURN_FAILED', typeof caught?.message === 'string' ? caught.message : 'Agent 回合未完成，请重试。')
       } finally {
-        cancelRegistry.release(turnId, controller)
         sse?.end()
-        request.off('aborted', cancel)
-        response.off('close', cancelOnClosedResponse)
       }
     }
 
@@ -475,13 +1371,17 @@ export function createAgentRouteHandler({
       const turn = await productStore.readAgentTurn(user.id, turnId)
       if (!turn) return error(response, 404, 'AGENT_TURN_NOT_FOUND', '未找到该 Agent Turn。')
       await requireProjectPermission(productStore, user.id, turn.projectId, 'read')
-      cancelRegistry.abort(turnId)
-      const cancelled = await agentTurnRuntime.cancel({ userId: user.id, projectId: turn.projectId, turnId })
-      // 无条件广播，不只在本实例没跑时才发：`activeTurns` 是进程内的，同一 turnId
-      // 理论上可能同时被两个实例执行，只中止本地会漏掉另一个。本地重复收到自己
-      // 发的信号无害（对已中止的控制器再 abort 一次是空操作）。
-      await publishCancel?.({ scope: 'turn', id: turnId, projectId: turn.projectId })
-      return json(response, 200, { turn: publicAgentTurn(cancelled) })
+      const cancellation = await cancellationService().cancelAgentTurn({
+        userId: user.id, projectId: turn.projectId, turnId, requestedBy: user.id,
+      })
+      const cancelled = await productStore.readAgentTurn(user.id, turnId) ?? turn
+      // 深取消可能收口多个 linked Run；逐个发布权威快照，实时层不接收局部状态猜测。
+      const linkedRuns = await productStore.listAgentRunsForTurn(user.id, turn.projectId, turnId) ?? []
+      await Promise.allSettled(linkedRuns.map((run) => publishAgentRunUpdated?.({
+        projectId: turn.projectId,
+        run: publicAgentRun(run),
+      })))
+      return json(response, 200, { turn: publicAgentTurn(cancelled), cancellation })
     }
 
     if (agentTurnMatch) {
@@ -490,7 +1390,23 @@ export function createAgentRouteHandler({
       const turn = await productStore.readAgentTurn(user.id, decodeURIComponent(agentTurnMatch[1]))
       if (!turn) return error(response, 404, 'AGENT_TURN_NOT_FOUND', '未找到该 Agent Turn。')
       await requireProjectPermission(productStore, user.id, turn.projectId, 'read')
-      const turnEvents = await productStore.listAgentTurnEvents(user.id, turn.projectId, turn.id) ?? []
+      const rawAfter = url.searchParams.get('after')
+      const rawLimit = url.searchParams.get('limit')
+      if (rawAfter !== null && !/^\d+$/.test(rawAfter)) {
+        return error(response, 400, 'INVALID_AGENT_TURN_CURSOR', 'Agent Turn 事件游标无效。')
+      }
+      if (rawLimit !== null && !/^\d+$/.test(rawLimit)) {
+        return error(response, 400, 'INVALID_AGENT_TURN_LIMIT', 'Agent Turn 事件数量无效。')
+      }
+      const after = rawAfter === null ? undefined : Number(rawAfter)
+      const limit = rawLimit === null ? 100 : Number(rawLimit)
+      if (!Number.isSafeInteger(after ?? 0) || !Number.isSafeInteger(limit) || limit < 1 || limit > 200) {
+        return error(response, 400, 'INVALID_AGENT_TURN_CURSOR', 'Agent Turn 续读参数无效。')
+      }
+      const turnEvents = await productStore.listAgentTurnEvents(user.id, turn.projectId, turn.id, {
+        ...(after !== undefined ? { after } : {}),
+        limit,
+      }) ?? []
       // 这次回合确认出的 Run 按权威边 `run.turnId` 反查，不写在 Turn 记录上（见 publicTurn）。
       const linkedRuns = await productStore.listAgentRunsForTurn(user.id, turn.projectId, turn.id) ?? []
       return json(response, 200, {
@@ -499,6 +1415,11 @@ export function createAgentRouteHandler({
           linkedRunIds: linkedRuns.map((run) => run.id),
         }),
         events: turnEvents,
+        cursor: {
+          after: turnEvents.length ? agentTurnLastSequence(turnEvents) : (after ?? 0),
+          hasMore: turnEvents.length === limit
+            && agentTurnLastSequence(turnEvents) < Number(turn.lastSequence ?? Number.MAX_SAFE_INTEGER),
+        },
       })
     }
 
@@ -508,7 +1429,9 @@ export function createAgentRouteHandler({
       const body = await readJson(request, 8 * 1024, 'Agent 评审决策请求过大。')
       const projectId = text(body?.projectId, '项目', 160)
       const decision = text(body?.decision, '评审决策', 32)
-      if (!['accepted', 'rejected', 'retry_requested'].includes(decision)) return error(response, 400, 'AGENT_REVIEW_DECISION_INVALID', '评审决策无效。')
+      // 旧版 Run 级 Review 没有 Artifact/Job 输出身份，无法安全物化重试 Run。
+      // 新请求只允许状态决定；重试必须走 ReviewTask 的原子决定资源。
+      if (!['accepted', 'rejected'].includes(decision)) return error(response, 400, 'AGENT_REVIEW_DECISION_INVALID', '旧版评审只支持接受或拒绝；请求重试请使用候选评审任务。')
       await requireProjectPermission(productStore, user.id, projectId, 'edit')
       const review = await productStore.putAgentReviewDecision(user.id, projectId, decodeURIComponent(agentReviewDecisionMatch[1]), decision, typeof body?.note === 'string' ? body.note : '')
       return json(response, 200, { review })
@@ -527,7 +1450,7 @@ export function createAgentRouteHandler({
       // 串行会白白多一次往返的延迟。
       const [projectSkillsRaw, projectState, project] = await Promise.all([
         productStore.listAgentSkills(user.id, validatedInput.projectId),
-        productStore.readAgentState(user.id, validatedInput.projectId),
+        productStore.readAgentState(user.id, validatedInput.projectId, { includeMessages: false }),
         productStore.readProject(user.id, validatedInput.projectId),
       ])
       const projectSkills = projectSkillsRaw ?? []
@@ -546,43 +1469,39 @@ export function createAgentRouteHandler({
           // 因此限定渠道的规则在这里会落进 filtered 并说明原因，而不是「碰巧适用」。
           context: { brandId: project?.document?.brandId, userId: user.id },
         }).items.map((memory) => ({ id: memory.id, kind: memory.kind, content: memory.content })),
-        availableMcpTools: (config.agentMcpTools ?? []).map(({ server, tool }) => ({ server, tool })),
-        projectSkills: projectSkills.map(plannerSkillInput),
+        availableMcpTools: configuredMcpCatalog(),
       }
-      const controller = new AbortController()
-      const cancel = () => controller.abort()
-      const cancelOnClosedResponse = () => { if (!response.writableEnded) cancel() }
-      request.once('aborted', cancel)
-      response.once('close', cancelOnClosedResponse)
-      if (request.aborted || response.destroyed) cancel()
       const sse = streaming ? createServerSentEventWriter(response) : undefined
       sse?.start()
       try {
-        const result = await planBotanicGeneration(input, config, {
-          signal: controller.signal,
-          consumeWebResearchQuota: consumeWebResearchQuota
-            ? () => consumeWebResearchQuota(user.id)
-            : undefined,
-          ...(sse ? { onEvent: (event) => sse.send(event) } : {}),
+        const execution = await executeCompatibilityTurn({
+          operation: 'plan',
+          request,
+          response,
+          user,
+          projectId: validatedInput.projectId,
+          requestId,
+          input,
+          sse,
+          resolveOptions: {
+            document: project?.document,
+            projectSkills,
+            observeAgentContext,
+            consumeWebResearchQuota: consumeWebResearchQuota
+              ? () => consumeWebResearchQuota(user.id)
+              : undefined,
+          },
         })
-        if (controller.signal.aborted || response.destroyed) return true
-        // reasoning 必须留在 plan 之外：计划会被原样持久化到会话消息里，
-        // 而原始推理只允许随当轮响应下发。
-        const { reasoning, ...plan } = result ?? {}
-        const liveReasoning = reasoning?.length ? { reasoning } : {}
-        if (!sse) {
-          return result?.kind === 'clarification'
-            ? json(response, 200, { clarification: result.clarification, ...liveReasoning })
-            : json(response, 200, { plan, ...liveReasoning })
-        }
-        if (result?.kind === 'clarification') {
-          sse.send({ type: 'done', clarification: result.clarification, ...liveReasoning })
-        } else {
-          sse.send({ type: 'done', plan, ...liveReasoning })
-        }
+        if (execution.detached) return true
+        if (execution.pending) return json(response, 202, {
+          runtimeTurn: execution.runtimeTurn,
+          observer: execution.observer,
+        })
+        if (!sse) return json(response, 200, { ...execution.body, runtimeTurn: execution.runtimeTurn })
+        sse.send({ type: 'done', ...execution.body, runtimeTurn: execution.runtimeTurn })
         return sse.end()
       } catch (caught) {
-        if (controller.signal.aborted || response.destroyed) return true
+        if (response.destroyed) return true
         if (sse?.started) {
           sse.send({
             type: 'error',
@@ -594,8 +1513,6 @@ export function createAgentRouteHandler({
         throw caught
       } finally {
         sse?.end()
-        request.off('aborted', cancel)
-        response.off('close', cancelOnClosedResponse)
       }
     }
 
@@ -611,34 +1528,41 @@ export function createAgentRouteHandler({
       const project = await productStore.readProject(user.id, validatedInput.projectId)
       if (!project?.document) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
       const projectSkills = await productStore.listAgentSkills(user.id, validatedInput.projectId) ?? []
-      const input = { ...validatedInput, projectSkills: projectSkills.map(plannerSkillInput) }
-      const controller = new AbortController()
-      const cancel = () => controller.abort()
-      const cancelOnClosedResponse = () => { if (!response.writableEnded) cancel() }
-      request.once('aborted', cancel)
-      response.once('close', cancelOnClosedResponse)
-      if (request.aborted || response.destroyed) cancel()
+      const input = validatedInput
       const sse = streaming ? createServerSentEventWriter(response) : undefined
       // 先打开通道再等模型：搜索前后的静默期靠注释心跳维持反代连接。
       sse?.start()
       try {
-        const result = await chatWithBotanicAgent(input, config, {
-          document: project.document,
-          projectSkills,
-          signal: controller.signal,
-          resolveVisionMedia: visionMediaResolver(user.id, validatedInput.projectId),
-          consumeWebResearchQuota: consumeWebResearchQuota
-            ? () => consumeWebResearchQuota(user.id)
-            : undefined,
-          ...(sse ? { onEvent: (event) => sse.send(event) } : {}),
+        const execution = await executeCompatibilityTurn({
+          operation: 'chat',
+          request,
+          response,
+          user,
+          projectId: validatedInput.projectId,
+          requestId,
+          input,
+          sse,
+          resolveOptions: {
+            document: project.document,
+            projectSkills,
+            observeAgentContext,
+            resolveVisionMedia: visionMediaResolver(user.id, validatedInput.projectId),
+            consumeWebResearchQuota: consumeWebResearchQuota
+              ? () => consumeWebResearchQuota(user.id)
+              : undefined,
+          },
         })
-        if (controller.signal.aborted || response.destroyed) return true
-        if (!sse) return json(response, 200, { response: result })
+        if (execution.detached) return true
+        if (execution.pending) return json(response, 202, {
+          runtimeTurn: execution.runtimeTurn,
+          observer: execution.observer,
+        })
+        if (!sse) return json(response, 200, { ...execution.body, runtimeTurn: execution.runtimeTurn })
         // done 事件携带与非流式完全一致的响应体，客户端据此收敛这一轮。
-        sse.send({ type: 'done', response: result })
+        sse.send({ type: 'done', ...execution.body, runtimeTurn: execution.runtimeTurn })
         return sse.end()
       } catch (caught) {
-        if (controller.signal.aborted || response.destroyed) return true
+        if (response.destroyed) return true
         // 已经开始推送就不能再改状态码，只能把失败作为事件送达。
         if (sse?.started) {
           sse.send({
@@ -651,8 +1575,6 @@ export function createAgentRouteHandler({
         throw caught
       } finally {
         sse?.end()
-        request.off('aborted', cancel)
-        response.off('close', cancelOnClosedResponse)
       }
     }
 
@@ -673,38 +1595,79 @@ export function createAgentRouteHandler({
       const project = await productStore.readProject(user.id, validatedInput.projectId)
       if (!project?.document) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
       const projectSkills = await productStore.listAgentSkills(user.id, validatedInput.projectId) ?? []
-      const input = { ...validatedInput, projectSkills: projectSkills.map(plannerSkillInput) }
-      const controller = new AbortController()
-      const cancel = () => controller.abort()
-      const cancelOnClosedResponse = () => { if (!response.writableEnded) cancel() }
-      request.once('aborted', cancel)
-      response.once('close', cancelOnClosedResponse)
-      if (request.aborted || response.destroyed) cancel()
+      let canonicalInput = validatedInput
+      let threadSummary
+      if (validatedInput.sessionId && validatedInput.inputMessage) {
+        const threadContext = await authoritativeThreadContext().resolve({
+          userId: user.id,
+          projectId: validatedInput.projectId,
+          sessionId: validatedInput.sessionId,
+          locale: validatedInput.locale,
+          model: validatedInput.plannerModel || config.flockTextModel,
+          inputMessage: { ...validatedInput.inputMessage, role: 'user' },
+        })
+        canonicalInput = {
+          ...validatedInput,
+          messages: threadContext.messages,
+          threadContextSnapshot: structuredClone(threadContext.threadContextSnapshot),
+        }
+        threadSummary = threadContext.threadSummary
+      } else {
+        threadSummary = await threadSummaryForSession(
+          user.id,
+          validatedInput.projectId,
+          typeof request.headers['x-agent-session-id'] === 'string' ? request.headers['x-agent-session-id'] : undefined,
+        )
+        canonicalInput = {
+          ...canonicalInput,
+          threadContextSnapshot: {
+            version: 1,
+            messages: structuredClone(canonicalInput.messages ?? []),
+            ...(threadSummary ? { threadSummary: structuredClone(threadSummary) } : {}),
+          },
+        }
+      }
+      const input = canonicalInput
       const sse = streaming ? createServerSentEventWriter(response) : undefined
       sse?.start()
       try {
-        const turn = await resolveBotanicAgentTurn(input, config, {
-          document: project.document,
-          projectSkills,
-          threadSummary: await threadSummaryForSession(
-            user.id,
-            validatedInput.projectId,
-            typeof request.headers['x-agent-session-id'] === 'string' ? request.headers['x-agent-session-id'] : undefined,
-          ),
-          operations: operationalReaders(user.id, validatedInput.projectId, project.document),
-          signal: controller.signal,
-          resolveVisionMedia: visionMediaResolver(user.id, validatedInput.projectId),
-          consumeWebResearchQuota: consumeWebResearchQuota
-            ? () => consumeWebResearchQuota(user.id)
-            : undefined,
-          ...(sse ? { onEvent: (event) => sse.send(event) } : {}),
+        const execution = await executeCompatibilityTurn({
+          operation: 'intent',
+          request,
+          response,
+          user,
+          projectId: validatedInput.projectId,
+          sessionId: validatedInput.sessionId,
+          requestId,
+          input,
+          sse,
+          resolveOptions: {
+            document: project.document,
+            projectSkills,
+            observeAgentContext,
+            ...(threadSummary ? { threadSummary } : {}),
+            operations: createAgentOperationalReaders({
+              productStore,
+              userId: user.id,
+              projectId: validatedInput.projectId,
+              document: project.document,
+            }),
+            resolveVisionMedia: visionMediaResolver(user.id, validatedInput.projectId),
+            consumeWebResearchQuota: consumeWebResearchQuota
+              ? () => consumeWebResearchQuota(user.id)
+              : undefined,
+          },
         })
-        if (controller.signal.aborted || response.destroyed) return true
-        if (!sse) return json(response, 200, { turn })
-        sse.send({ type: 'done', turn })
+        if (execution.detached) return true
+        if (execution.pending) return json(response, 202, {
+          runtimeTurn: execution.runtimeTurn,
+          observer: execution.observer,
+        })
+        if (!sse) return json(response, 200, { ...execution.body, runtimeTurn: execution.runtimeTurn })
+        sse.send({ type: 'done', ...execution.body, runtimeTurn: execution.runtimeTurn })
         return sse.end()
       } catch (caught) {
-        if (controller.signal.aborted || response.destroyed) return true
+        if (response.destroyed) return true
         if (sse?.started) {
           sse.send({
             type: 'error',
@@ -716,8 +1679,6 @@ export function createAgentRouteHandler({
         throw caught
       } finally {
         sse?.end()
-        request.off('aborted', cancel)
-        response.off('close', cancelOnClosedResponse)
       }
     }
 
@@ -778,6 +1739,33 @@ export function createAgentRouteHandler({
       }
     }
 
+    if (projectAgentSkillVersionMatch) {
+      if (request.method !== 'GET') return methodNotAllowed(response, 'Skill 历史版本只支持读取。', 'GET')
+      const user = await requireUser(request)
+      const projectId = decodeURIComponent(projectAgentSkillVersionMatch[1])
+      const skillId = decodeURIComponent(projectAgentSkillVersionMatch[2])
+      const rawVersion = decodeURIComponent(projectAgentSkillVersionMatch[3])
+      if (!/^\d+$/.test(rawVersion) || !Number.isSafeInteger(Number(rawVersion)) || Number(rawVersion) < 1) {
+        return error(response, 400, 'INVALID_AGENT_SKILL_VERSION', 'Skill 历史版本无效。')
+      }
+      await requireProjectPermission(productStore, user.id, projectId, 'read')
+      const version = await productStore.readAgentSkillVersion(user.id, projectId, skillId, Number(rawVersion))
+      if (!version) return error(response, 404, 'AGENT_SKILL_VERSION_NOT_FOUND', '未找到该 Skill 历史版本。')
+      return json(response, 200, {
+        version: {
+          skillId,
+          version: version.version,
+          contentHash: version.contentHash,
+          instructions: version.instructions,
+          updatedAt: version.updatedAt,
+          ...(version.name ? { name: version.name } : {}),
+          ...(version.capabilities ? { capabilities: version.capabilities } : {}),
+          ...(version.manifest ? { manifest: version.manifest } : {}),
+          ...(version.publishedBy ? { publishedBy: version.publishedBy } : {}),
+          ...(version.publishedAt ? { publishedAt: version.publishedAt } : {}),
+        },
+      })
+    }
     if (projectAgentSkillsMatch) {
       if (request.method !== 'GET') return methodNotAllowed(response, '项目 Skill 资源只支持读取。', 'GET')
       const user = await requireUser(request)
@@ -786,12 +1774,74 @@ export function createAgentRouteHandler({
       const skills = await productStore.listAgentSkills(user.id, projectId) ?? []
       return json(response, 200, { skills: skills.map(publicAgentSkill) })
     }
+    if (projectAgentSessionsMatch) {
+      if (request.method !== 'GET') return methodNotAllowed(response, 'Agent 会话列表只支持读取。', 'GET')
+      const user = await requireUser(request)
+      const projectId = decodeURIComponent(projectAgentSessionsMatch[1])
+      await requireProjectPermission(productStore, user.id, projectId, 'read')
+      const sessions = await productStore.listAgentSessions(user.id, projectId, {
+        limit: url.searchParams.get('limit') ?? undefined,
+      })
+      if (!sessions) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
+      return json(response, 200, { sessions })
+    }
+    if (agentSessionContextCompactionsMatch) {
+      if (request.method !== 'POST') {
+        return methodNotAllowed(response, 'Agent Context 压缩资源只接受提交请求。', 'POST')
+      }
+      const user = await requireUser(request)
+      const projectId = decodeURIComponent(agentSessionContextCompactionsMatch[1])
+      const sessionId = decodeURIComponent(agentSessionContextCompactionsMatch[2])
+      const contextRollout = resolveAgentContextRollout({
+        featureFlags: config.agentFeatureFlags,
+        rolloutFlags: config.rolloutFlags,
+        userId: user.id,
+        projectId,
+      })
+      if (contextRollout.mode !== 'active') {
+        return error(response, 404, 'AGENT_CONTEXT_COMPACTION_DISABLED', 'Agent Context Compaction V2 尚未对该项目开放。')
+      }
+      const body = await readJson(request, 4 * 1024, 'Agent Context 压缩请求过大。')
+      if (!body || typeof body !== 'object' || Array.isArray(body)
+        || Object.keys(body).some((field) => field !== 'locale')) {
+        return error(response, 400, 'AGENT_CONTEXT_MANUAL_REQUEST_INVALID', 'Agent Context 压缩请求包含未声明字段。')
+      }
+      try {
+        const outcome = await compactAgentContextManually()({
+          userId: user.id,
+          projectId,
+          sessionId,
+          idempotencyKey: request.headers['idempotency-key'],
+          ...(body.locale === undefined ? {} : { locale: body.locale }),
+        })
+        return json(response, 200, { contextCompaction: outcome })
+      } catch (caught) {
+        if (!(caught instanceof AgentManualContextCompactionServiceError)) throw caught
+        return error(response, caught.statusCode, caught.code, caught.message)
+      }
+    }
+    if (agentSessionMessagesMatch) {
+      if (request.method !== 'GET') return methodNotAllowed(response, 'Agent 消息资源只支持读取。', 'GET')
+      const user = await requireUser(request)
+      const projectId = decodeURIComponent(agentSessionMessagesMatch[1])
+      const sessionId = decodeURIComponent(agentSessionMessagesMatch[2])
+      await requireProjectPermission(productStore, user.id, projectId, 'read')
+      const limit = Math.max(1, Math.min(Number(url.searchParams.get('limit')) || 50, 200))
+      let before
+      try { before = decodeAgentMessageCursor(url.searchParams.get('before') ?? undefined) } catch {
+        return error(response, 400, 'INVALID_AGENT_MESSAGE_CURSOR', 'Agent 消息分页游标无效。')
+      }
+      const page = await productStore.listAgentSessionMessages(user.id, projectId, sessionId, { limit, before })
+      if (!page) return error(response, 404, 'AGENT_SESSION_NOT_FOUND', '未找到该 Agent 对话。')
+      return json(response, 200, { messages: page.messages, nextBefore: page.nextBefore })
+    }
     if (projectAgentStateMatch) {
       if (request.method !== 'GET') return methodNotAllowed(response, 'Agent 状态资源只支持读取。', 'GET')
       const user = await requireUser(request)
       const projectId = decodeURIComponent(projectAgentStateMatch[1])
       await requireProjectPermission(productStore, user.id, projectId, 'read')
-      const state = await productStore.readAgentState(user.id, projectId)
+      const includeMessages = url.searchParams.get('includeMessages') !== '0'
+      const state = await productStore.readAgentState(user.id, projectId, { includeMessages })
       return state ? json(response, 200, state) : error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
     }
     if (projectAgentArtifactsMatch) {
@@ -814,12 +1864,6 @@ export function createAgentRouteHandler({
       await requireProjectPermission(productStore, user.id, projectId, 'read')
       const body = await readJson(request, 4 * 1024, 'Agent 阅读位置请求过大。')
       const messageId = text(body?.messageId, 'Agent 阅读位置', 160)
-      const state = await productStore.readAgentState(user.id, projectId)
-      const session = state?.sessions?.find((candidate) => candidate.id === sessionId)
-      if (!session) return error(response, 404, 'AGENT_SESSION_NOT_FOUND', '未找到该 Agent 对话。')
-      if (!session.messages?.some((message) => message.id === messageId)) {
-        return error(response, 409, 'AGENT_MESSAGE_NOT_FOUND', '目标消息已不存在，请刷新对话后重试。')
-      }
       const updatedAt = Date.now()
       return json(response, 200, { receipt: await productStore.putAgentSessionReadReceipt(user.id, projectId, sessionId, {
         messageId,
@@ -834,12 +1878,20 @@ export function createAgentRouteHandler({
       await requireProjectPermission(productStore, user.id, projectId, 'edit')
       const body = await readJson(request, 64 * 1024, 'Agent 会话请求过大。')
       if (body?.id !== sessionId) return error(response, 400, 'INVALID_AGENT_ENTITY', 'Agent 会话标识不一致。')
+      const unsupportedFields = Object.keys(body ?? {}).filter((field) => !editableAgentSessionFields.has(field))
+      if (unsupportedFields.length) {
+        return error(response, 400, 'INVALID_AGENT_SESSION_FIELDS', 'Agent 会话请求包含不可由客户端写入的字段。')
+      }
       let previous
       try {
-        const before = await productStore.readAgentState(user.id, projectId)
+        const before = await productStore.readAgentState(user.id, projectId, { includeMessages: false })
         previous = before?.sessions?.find((candidate) => candidate.id === sessionId)
       } catch { /* 差异判断失败时仍应完成权威 Session 写入。 */ }
-      const session = await productStore.putAgentSession(user.id, projectId, body)
+      // ThreadSummary 是服务端从权威消息派生的上下文检查点。设置 Route 只提交普通
+      // Session 字段；Adapter 会保留当前摘要，避免 read 后并发压缩出的新版被旧快照覆盖。
+      const mergedSession = previous ? { ...previous, ...body } : body
+      const { threadSummary: _threadSummary, messages: _messages, ...sessionInput } = mergedSession
+      const session = await productStore.putAgentSession(user.id, projectId, sessionInput)
       const settingsChanged = !previous
         || previous.title !== session.title
         || previous.executionMode !== session.executionMode
@@ -862,10 +1914,56 @@ export function createAgentRouteHandler({
       await requireProjectPermission(productStore, user.id, projectId, 'edit')
       const body = await readJson(request, 96 * 1024, 'Agent 消息请求过大。')
       if (body?.id !== messageId) return error(response, 400, 'INVALID_AGENT_ENTITY', 'Agent 消息标识不一致。')
-      const message = await productStore.putAgentMessage(user.id, projectId, sessionId, body)
+      const messagePage = typeof productStore.listAgentSessionMessages === 'function'
+        ? await productStore.listAgentSessionMessages(user.id, projectId, sessionId, { limit: 200 })
+        : undefined
+      const existingMessage = (messagePage?.messages ?? (Array.isArray(messagePage) ? messagePage : []))
+        .find((candidate) => candidate.id === messageId)
+      if (existingMessage?.turnId && body.turnId && existingMessage.turnId !== body.turnId) {
+        return error(response, 409, 'AGENT_MESSAGE_TURN_CONFLICT', '当前消息已绑定另一 Agent Turn。')
+      }
+      let linkedTurn
+      if (body.turnId && !existingMessage?.turnId) {
+        linkedTurn = await productStore.readAgentTurn(user.id, body.turnId)
+        if (!linkedTurn || linkedTurn.projectId !== projectId || linkedTurn.sessionId !== sessionId) {
+          return error(response, 409, 'AGENT_MESSAGE_TURN_INVALID', '消息关联的 Agent Turn 不属于当前会话。')
+        }
+      }
+      const linkedTurnId = existingMessage?.turnId ?? body.turnId
+      const stableTurnProjection = Boolean(
+        linkedTurnId
+        && body.role === 'assistant'
+        && messageId === `agent-turn-result-${linkedTurnId}`
+      )
+      if (stableTurnProjection && !linkedTurn) {
+        linkedTurn = await productStore.readAgentTurn(user.id, linkedTurnId)
+        if (!linkedTurn || linkedTurn.projectId !== projectId || linkedTurn.sessionId !== sessionId) {
+          return error(response, 409, 'AGENT_MESSAGE_TURN_INVALID', '消息关联的 Agent Turn 不属于当前会话。')
+        }
+      }
+      const authoritativeEntityReferences = stableTurnProjection
+        && linkedTurn?.result?.entityReferences !== undefined
+        ? validateAgentEntityReferences(linkedTurn.result.entityReferences)
+        : undefined
+      // Turn Route 可能先于初始消息的离线队列重放完成绑定。迟到 PUT 只能更新正文/投影，
+      // 不能把 durable reattach 身份清掉；显式改绑同样 fail closed。
+      // 业务引用只接受 durable Turn result；无论客户端提交什么都先剥离，再由服务端覆盖。
+      const { entityReferences: _clientEntityReferences, ...clientBody } = body
+      const messageInput = {
+        ...clientBody,
+        ...(existingMessage?.turnId && body.turnId === undefined ? { turnId: existingMessage.turnId } : {}),
+        ...(existingMessage?.turnCancellationRequestedAt !== undefined
+          && body.turnCancellationRequestedAt === undefined
+          ? { turnCancellationRequestedAt: existingMessage.turnCancellationRequestedAt }
+          : {}),
+        ...(authoritativeEntityReferences === undefined
+          ? {}
+          : { entityReferences: authoritativeEntityReferences }),
+      }
+      const message = await productStore.putAgentMessage(user.id, projectId, sessionId, messageInput)
       let sessionTitle = '新建对话'
       try {
-        const state = await productStore.readAgentState(user.id, projectId)
+        const state = await productStore.readAgentState(user.id, projectId, { includeMessages: false })
         sessionTitle = state?.sessions?.find((candidate) => candidate.id === sessionId)?.title || sessionTitle
       } catch { /* 标题只用于协作历史，不得阻断消息权威写入。 */ }
       await recordCollaborationActivity(user, projectId, {
@@ -906,6 +2004,62 @@ export function createAgentRouteHandler({
       return methodNotAllowed(response, 'Agent 记忆资源不支持该请求方法。', 'PUT, DELETE')
     }
 
+    if (url.pathname === '/api/agent-actions/status' || url.pathname === '/api/agent-actions/resolve') {
+      const resolving = url.pathname.endsWith('/resolve')
+      if (request.method !== 'POST') {
+        return methodNotAllowed(response, resolving ? 'Agent 行动调和资源只接受提交请求。' : 'Agent 行动状态资源只接受查询请求。', 'POST')
+      }
+      const user = await requireUser(request)
+      const idempotencyKey = generationIdempotencyKey(request.headers['idempotency-key'])
+      if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', 'Agent 行动回执标识无效，请重试。')
+      const body = await readJson(request, 16 * 1024, resolving ? 'Agent 行动调和请求过大。' : 'Agent 行动状态请求过大。')
+      const projectId = text(body?.projectId, '项目', 160)
+      const actionName = text(body?.name, '工具名称', 80)
+      const toolCallId = text(body?.toolCallId, '工具调用标识', 160)
+      await requireProjectPermission(productStore, user.id, projectId, agentToolPermission(actionName))
+      const proposalContext = await requireActionProposal({
+        user, projectId, actionName, toolCallId, argumentsValue: body?.arguments,
+        body, requireExactContext: true,
+      })
+      const attempt = authoritativeActionAttempt({ user, projectId, proposalContext, idempotencyKey })
+      const retryOptions = attempt.manualRetry ? { manualRetryOf: attempt.originalAction } : undefined
+      const reconciliation = durableAgentActionReconciliation()
+      if (resolving) {
+        const resolution = await reconciliation.resolve({
+          action: attempt.action,
+          decision: body?.decision,
+          ...(body?.preparedRetryIdempotencyKey !== undefined
+            ? { preparedRetryIdempotencyKey: body.preparedRetryIdempotencyKey }
+            : {}),
+          ...(retryOptions ?? {}),
+        })
+        return json(response, 200, resolution)
+      }
+      const status = await reconciliation.readStatus(attempt.action, retryOptions)
+      let execution
+      if (status.status === 'succeeded') {
+        const identity = agentActionReconciliationIdentity(attempt.action)
+        let receipt
+        try {
+          receipt = await productStore.readAgentActionReceipt(user.id, identity.receiptId)
+        } catch (caught) {
+          throw agentActionReconciliationStoreError(caught)
+        }
+        const identityMatches = receipt?.id === identity.receiptId
+          && receipt?.ownerId === identity.userId
+          && receipt?.projectId === identity.projectId
+          && receipt?.toolCallId === identity.toolCallId
+          && receipt?.actionName === identity.actionName
+          && receipt?.intentHash === identity.intentHash
+          && receipt?.actionBindingHash === identity.actionBindingHash
+        // 只回读已持久化的成功结果；人工 confirmed_applied 没有 result，因而不会伪造 execution。
+        if (identityMatches && receipt.status === 'succeeded' && receipt.result !== undefined) {
+          execution = structuredClone(receipt.result)
+        }
+      }
+      return json(response, 200, { status, ...(execution !== undefined ? { execution } : {}) })
+    }
+
     if (url.pathname === '/api/agent-action-approvals') {
       if (request.method !== 'POST') return methodNotAllowed(response, 'Agent 行动审批资源只接受提交请求。', 'POST')
       const user = await requireUser(request)
@@ -917,7 +2071,7 @@ export function createAgentRouteHandler({
       const toolCallId = text(body?.toolCallId, '工具调用标识', 160)
       if (!approvalRequired.has(actionName)) return error(response, 400, 'ACTION_APPROVAL_NOT_REQUIRED', '该行动不需要审批凭据。')
       await requireProjectPermission(productStore, user.id, projectId, agentToolPermission(actionName))
-      await requireActionProposal({ user, projectId, actionName, toolCallId, argumentsValue: body?.arguments })
+      await requireActionProposal({ user, projectId, actionName, toolCallId, argumentsValue: body?.arguments, body })
       if (!config.agentActionApprovalSecret) return error(response, 503, 'ACTION_APPROVAL_UNAVAILABLE', '当前行动审批服务尚未配置，请稍后重试。')
       return json(response, 200, {
         approval: createActionApprovalToken({
@@ -942,6 +2096,34 @@ export function createAgentRouteHandler({
       const actionName = text(body?.name, '工具名称', 80)
       const toolCallId = text(body?.toolCallId, '工具调用标识', 160)
       await requireProjectPermission(productStore, user.id, projectId, agentToolPermission(actionName))
+      const contextual = actionHasContext(body)
+      const proposalContext = contextual
+        ? await requireActionProposal({
+            user, projectId, actionName, toolCallId, argumentsValue: body?.arguments,
+            body, requireExactContext: true,
+          })
+        : standaloneAgentActions.has(actionName)
+          ? undefined
+          : await requireActionProposal({
+              user, projectId, actionName, toolCallId, argumentsValue: body?.arguments, body,
+            })
+      const attempt = proposalContext
+        ? authoritativeActionAttempt({ user, projectId, proposalContext, idempotencyKey })
+        : undefined
+      const attemptIdentity = attempt ? agentActionReconciliationIdentity(attempt.action) : undefined
+      const executionArguments = proposalContext?.proposal?.arguments ?? body?.arguments
+      let manualRetryToken = ''
+      if (attempt?.manualRetry) {
+        manualRetryToken = typeof body?.manualRetryAuthorization?.token === 'string'
+          ? body.manualRetryAuthorization.token.trim()
+          : ''
+      } else if (attempt && body?.manualRetryAuthorization !== undefined) {
+        throw new AgentToolRuntimeError(
+          'AGENT_ACTION_MANUAL_RETRY_IDEMPOTENCY_REUSED',
+          '手动重试必须使用新的行动提交标识。',
+          409,
+        )
+      }
       if (approvalRequired.has(actionName)) {
         assertFreshActionApproval(body, {
           secret: config.agentActionApprovalSecret,
@@ -949,14 +2131,42 @@ export function createAgentRouteHandler({
           projectId,
           actionName,
           toolCallId,
-          argumentsValue: body?.arguments,
+          argumentsValue: executionArguments,
           idempotencyKey,
         })
       }
-      const receiptId = `agent_action_${generationJobIdForIdempotency(user.id, `${projectId}:${idempotencyKey}`).slice(4)}`
-      const persistedReceipt = await productStore.readAgentActionReceipt(user.id, receiptId)
-      if (persistedReceipt) return json(response, 200, persistedReceipt.result)
-      const execute = async () => {
+      const receiptId = attemptIdentity?.receiptId
+        ?? `agent_action_${generationJobIdForIdempotency(user.id, `${projectId}:${idempotencyKey}`).slice(4)}`
+      if (attempt?.manualRetry) {
+        const authorization = await durableAgentActionReconciliation().consumeManualRetryAuthorization({
+          action: attempt.originalAction,
+          ...(manualRetryToken ? { token: manualRetryToken } : {}),
+          retryIdempotencyKey: idempotencyKey,
+        })
+        if (authorization.retryReceiptId !== receiptId) {
+          throw new AgentToolRuntimeError(
+            'AGENT_ACTION_MANUAL_RETRY_SCOPE_MISMATCH',
+            '手动重试授权与当前回执不匹配。',
+            409,
+          )
+        }
+      } else if (attempt && !attempt.manualRetry) {
+        const originalIdentity = agentActionReconciliationIdentity(attempt.originalAction)
+        let originalReceipt
+        try {
+          originalReceipt = await productStore.readAgentActionReceipt(user.id, originalIdentity.receiptId)
+        } catch (caught) {
+          throw agentActionReconciliationStoreError(caught)
+        }
+        if (originalReceipt?.resolution || originalReceipt?.status === 'uncertain') {
+          throw new AgentToolRuntimeError(
+            'AGENT_ACTION_RECONCILIATION_REQUIRED',
+            '该行动已进入人工调和或结果未知状态，不能直接重放。',
+            409,
+          )
+        }
+      }
+      const execute = async ({ signal, intentHash }) => {
         const registry = createBotanicAgentActionToolRegistry({
           createWorkflow: async ({ planId }) => {
             const { project, prepared } = await agentRunGeneration.prepareProjectExecution(user.id, projectId, planId, { submission: false })
@@ -1011,50 +2221,61 @@ export function createAgentRouteHandler({
           cancelRun: async ({ runId }) => {
             const run = await productStore.readAgentRun(user.id, runId)
             if (!run || run.projectId !== projectId) throw new AgentToolRuntimeError('AGENT_RUN_NOT_FOUND', '未找到当前项目的 Agent Run。', 404)
-            const activeJobIds = [...new Set((run.branches ?? [])
-              .filter((branch) => branch.status === 'queued' || branch.status === 'running')
-              .map((branch) => branch.activeJobId).filter(Boolean))]
-            const outcomes = []
-            for (const jobId of activeJobIds) {
-              const job = await productStore.readGenerationJob(user.id, jobId)
-              if (!job) continue
-              const result = await cancelGenerationJob({
-                productStore, redisQueue, publishCancel,
-                modelOptions: config.modelOptions ?? [],
-                ownerId: user.id, job, reason: 'agent-run', requestedBy: user.id,
-                afterPersist: (cancelledJob) => agentRunGeneration.persistJobState(user.id, run.projectId, cancelledJob),
-              })
-              outcomes.push({ jobId, cancelled: result.cancelled, billing: result.outcome.billing, code: result.outcome.code })
+            const cancellation = await cancellationService().cancelAgentRun({
+              userId: user.id, projectId, runId, requestedBy: user.id,
+            })
+            const cancelledRun = await productStore.readAgentRun(user.id, runId) ?? run
+            try {
+              await publishAgentRunUpdated?.({ projectId, run: publicAgentRun(cancelledRun) })
+            } catch { /* durable 取消已完成，实时旁路失败不能反向伪造行动失败。 */ }
+            return {
+              runId,
+              status: cancelledRun.status,
+              cancelledJobCount: cancellation.cancelledJobCount,
+              failures: cancellation.failures,
             }
-            const latest = await productStore.readAgentRun(user.id, runId) ?? run
-            const cancelledRun = cancelPersistentAgentRun(latest)
-            if (cancelledRun !== latest) {
-              await productStore.putAgentRun(user.id, cancelledRun)
-              await publishAgentRunUpdated({ projectId: run.projectId, run: publicAgentRun(cancelledRun) })
-            }
-            return { runId, status: cancelledRun.status, cancelledJobs: outcomes }
           },
           decideReview: async ({ taskId, artifactId, decision, note }) => {
-            const task = await productStore.readAgentReviewTask(user.id, taskId)
-            if (!task || task.projectId !== projectId) throw new AgentToolRuntimeError('AGENT_REVIEW_TASK_NOT_FOUND', '未找到当前项目的评审任务。', 404)
-            if (!(task.coverage?.artifactIds ?? []).includes(artifactId)) {
-              throw new AgentToolRuntimeError('AGENT_REVIEW_ARTIFACT_NOT_COVERED', '决定的候选不在本次评审覆盖范围内。', 409)
-            }
-            const humanDecision = createAgentHumanDecision({
-              taskId: task.id, projectId, artifactId, decision, note,
-              decidedBy: user.id, idempotencyKey,
+            const committed = await commitAgentReviewAction({
+              actorId: user.id, expectedProjectId: projectId, taskId, idempotencyKey,
+              entries: [{ artifactId, decision, note }],
             })
-            const decisions = [...(task.decisions ?? []).filter((item) => item.id !== humanDecision.id), humanDecision]
-            const results = (task.results ?? []).map((result) => (result.artifactId === artifactId
-              ? { ...result, candidateStatus: humanDecision.candidateStatus, updatedAt: humanDecision.decidedAt }
-              : result))
-            const stored = await productStore.putAgentReviewTask(user.id, { ...task, decisions, results, updatedAt: Date.now() })
-            return { taskId: stored.id, artifactId, decision, candidateStatus: humanDecision.candidateStatus }
+            const storedDecision = committed.decisions[0]
+            return {
+              taskId: committed.task.id,
+              artifactId,
+              decision: storedDecision.decision,
+              candidateStatus: storedDecision.candidateStatus,
+            }
+          },
+          retryReview: async ({ taskId, artifactId, note }) => {
+            const committed = await commitAgentReviewAction({
+              actorId: user.id, expectedProjectId: projectId, taskId, idempotencyKey,
+              entries: [{ artifactId, decision: 'retry_requested', note }],
+            })
+            const run = committed.retryRuns[0]
+            if (!run) throw new AgentToolRuntimeError('AGENT_REVIEW_RETRY_COMMIT_INVALID', '评审重试没有返回权威 Run。', 409)
+            try {
+              await publishAgentRunUpdated?.({ projectId: run.projectId, run: publicAgentRun(run) })
+            } catch { /* queued Run 已原子落库，实时广播失败不能伪造提交失败。 */ }
+            return {
+              taskId: committed.task.id,
+              artifactId,
+              decision: 'retry_requested',
+              candidateStatus: committed.decisions[0].candidateStatus,
+              runId: run.id,
+              status: run.status,
+            }
           },
           promoteArtifact: async ({ artifactId, name }) => {
             const artifacts = await productStore.listAgentArtifacts(user.id, projectId, { limit: 200 }) ?? []
             const artifact = artifacts.find((item) => item.id === artifactId)
             if (!artifact?.url) throw new AgentToolRuntimeError('AGENT_ARTIFACT_NOT_FOUND', '未找到该结果，或它没有可入库的媒体。', 404)
+            // 历史 Artifact 允许保留外链用于只读追溯，但入库会把 URL 变成项目可用媒体，
+            // 因此这里只接受已经过本项目媒体授权边界的同源资源。
+            if (!isAuthorizedAgentMediaUrl(artifact.url)) {
+              throw new AgentToolRuntimeError('AGENT_ARTIFACT_MEDIA_NOT_AUTHORIZED', '该结果不是已授权的项目媒体，不能入库。', 403)
+            }
             const project = await productStore.readProject(user.id, projectId)
             if (!project) throw new AgentToolRuntimeError('PROJECT_NOT_FOUND', '未找到当前项目。', 404)
             const assetId = `asset-${generationJobIdForIdempotency(user.id, `${projectId}:${artifactId}`).slice(4, 28)}`
@@ -1148,32 +2369,42 @@ export function createAgentRouteHandler({
             // published，「已批准」不能凭创建这个动作本身成立（ADR 0006）。
             // riskOf 取自**当前行动注册表**：Skill 少报能力（声明只读却把写工具放进
             // Manifest 白名单）在这里就被拒绝，不留到运行时靠取最大值兜底。
+            const projectSkillCatalog = [
+              ...botanicAgentSystemSkills(),
+              ...(await productStore.listAgentSkills(user.id, projectId) ?? []),
+            ]
             const skill = createAgentSkill(input, {
               ownerId: user.id,
               approvedBy: user.id,
-              riskOf: (name) => registry.get?.(name)?.risk,
+              riskOf: (name) => botanicAgentSkillToolRisk(name, registry),
+              skillCatalog: projectSkillCatalog,
             })
             return { skill: publicAgentSkill(await productStore.putAgentSkill(user.id, skill)) }
           },
-          mcpTools: configuredMcpTools,
+          mcpRuntime: configuredMcpTools,
         })
         const result = await executeConfirmedAgentAction({
           registry,
           name: actionName,
-          arguments: body?.arguments,
+          arguments: executionArguments,
           toolCallId,
           confirmed: body?.confirmed,
-          context: { projectId, userId: user.id, requestId },
+          context: { projectId, userId: user.id, requestId, signal, actionIntentHash: intentHash },
         })
-        await productStore.putAgentActionReceipt(user.id, { id: receiptId, projectId, toolCallId: result.toolCall.id, result, createdAt: Date.now() })
         return result
       }
-      let execution = agentActionExecutions.get(receiptId)
-      if (!execution) {
-        execution = withActionTimeout(execute(), actionName).finally(() => agentActionExecutions.delete(receiptId))
-        agentActionExecutions.set(receiptId, execution)
-      }
-      return json(response, 200, await execution)
+      const execution = await durableAgentActionExecution().execute({
+        userId: user.id,
+        projectId,
+        receiptId,
+        toolCallId,
+        name: actionName,
+        arguments: executionArguments,
+        ...(attemptIdentity ? { actionBindingHash: attemptIdentity.actionBindingHash } : {}),
+        replayPolicy: attempt?.manualRetry ? 'never' : safelyReplayableAgentActions.has(actionName) ? 'safe' : 'never',
+        executor: execute,
+      })
+      return json(response, 200, execution)
     }
 
     if (url.pathname === '/api/agent-runs') {
@@ -1185,6 +2416,12 @@ export function createAgentRouteHandler({
       const input = validateAgentRunCreation(await readJson(request, 64 * 1024, 'Agent Run 请求过大。'))
       await requireProjectPermission(productStore, user.id, input.projectId, 'create-generation')
       const authoritativeInput = await bindAuthoritativeKnowledge(user.id, input)
+      const idempotencyBinding = agentRunSubmissionBinding(authoritativeInput)
+      if (authoritativeInput.turnId) {
+        await assertTurnAllowsDelegation({
+          productStore, userId: user.id, projectId: authoritativeInput.projectId, turnId: authoritativeInput.turnId,
+        })
+      }
 
       // 导演模式：确认计划即授权其声明的生成提交。Run 落库后服务端直接建工作流并送队列，
       // 执行不再寄生在浏览器三跳里，关掉页面也不影响推进。配额、预算与 Job 幂等仍由
@@ -1200,7 +2437,10 @@ export function createAgentRouteHandler({
           const execution = await agentRunGeneration.submitGeneration(user.id, run.projectId, run.id)
           observeRun({ type: 'auto_submitted', requestId, projectId: run.projectId, runId: run.id, status: execution.run.status, durationMs: Date.now() - startedAt })
           return execution.run
-        } catch {
+        } catch (caught) {
+          // durable cancel fence 是业务冲突，不是「队列暂不可用」。吞掉它会把取消后的
+          // linked Run 留在 queued，随后恢复器仍可能再次尝试提交。
+          if (['AGENT_TURN_DELEGATION_CANCELLED', 'AGENT_TURN_DELEGATION_NOT_READY', 'AGENT_TURN_NOT_FOUND'].includes(caught?.code)) throw caught
           const latest = await productStore.readAgentRun(user.id, run.id)
           observeRun({ type: 'auto_submit_deferred', requestId, projectId: run.projectId, runId: run.id, status: latest?.status ?? run.status, durationMs: Date.now() - startedAt })
           return latest ?? run
@@ -1210,14 +2450,35 @@ export function createAgentRouteHandler({
       const id = `agent_run_${generationJobIdForIdempotency(user.id, idempotencyKey).slice(4)}`
       const existing = await productStore.readAgentRun(user.id, id)
       if (existing) {
+        if (!matchingIdempotencyRequestBinding(storedAgentRunSubmissionBinding(existing), idempotencyBinding)) {
+          throw Object.assign(new Error('同一提交标识已绑定到另一份 Agent Run 请求，请使用新的提交标识。'), {
+            code: 'AGENT_RUN_IDEMPOTENCY_CONFLICT',
+            statusCode: 409,
+          })
+        }
+        await enforceDelegationAfterPut(user.id, existing)
         // 幂等重放同样收敛到已执行状态：确认后页面立刻关闭时 Run 停在 queued，
         // 重放这条请求应把它送进执行，而不是原样返回。
         const resumed = await autoSubmitAgentRun(existing)
         observeRun({ type: 'submission_reused', requestId, projectId: resumed.projectId, runId: resumed.id, status: resumed.status, durationMs: Date.now() - startedAt })
         return json(response, 200, { run: publicAgentRun(resumed) })
       }
-      const run = createPersistentAgentRun(authoritativeInput, { id, ownerId: user.id })
+      const run = createPersistentAgentRun(authoritativeInput, { id, ownerId: user.id, idempotencyBinding })
+      // 绑定知识与幂等读取可能经历多次存储往返；写入前再读一次 fence，尽量收窄
+      // 「第一次检查后刚好取消」的窗口。Job 提交层还会再次检查。
+      if (run.turnId) {
+        await assertTurnAllowsDelegation({
+          productStore, userId: user.id, projectId: run.projectId, turnId: run.turnId,
+        })
+      }
       const storedRun = await productStore.putAgentRun(user.id, run)
+      if (!matchingIdempotencyRequestBinding(storedAgentRunSubmissionBinding(storedRun), idempotencyBinding)) {
+        throw Object.assign(new Error('同一提交标识已绑定到另一份 Agent Run 请求，请使用新的提交标识。'), {
+          code: 'AGENT_RUN_IDEMPOTENCY_CONFLICT',
+          statusCode: 409,
+        })
+      }
+      await enforceDelegationAfterPut(user.id, storedRun)
       await recordCollaborationActivity(user, storedRun.projectId, {
         id: `agent-run-${storedRun.id}-${storedRun.updatedAt}`,
         kind: 'task',
@@ -1257,9 +2518,18 @@ export function createAgentRouteHandler({
       const input = createForkedAgentRunInput(sourceRun, { branchId: body?.branchId, promptDelta: body?.promptDelta })
       const id = forkedAgentRunIdForIdempotency(user.id, sourceRun.id, idempotencyKey)
       const existing = await productStore.readAgentRun(user.id, id)
-      if (existing) return json(response, 200, { run: publicAgentRun(existing), reused: true })
+      if (existing) {
+        await enforceDelegationAfterPut(user.id, existing)
+        return json(response, 200, { run: publicAgentRun(existing), reused: true })
+      }
       const created = createPersistentAgentRun(input, { id, ownerId: user.id })
+      if (created.turnId) {
+        await assertTurnAllowsDelegation({
+          productStore, userId: user.id, projectId: created.projectId, turnId: created.turnId,
+        })
+      }
       const stored = await productStore.putAgentRun(user.id, created)
+      await enforceDelegationAfterPut(user.id, stored)
       await publishAgentRunUpdated({ projectId: stored.projectId, run: publicAgentRun(stored) })
       return json(response, 201, { run: publicAgentRun(stored), sourceRunId: sourceRun.id })
     }
@@ -1298,74 +2568,123 @@ export function createAgentRouteHandler({
       const tasks = (await productStore.listAgentReviewTasksForRun(user.id, run.projectId, run.id)) ?? []
       return json(response, 200, { tasks: tasks.map(publicAgentReviewTask) })
     }
+    if (agentReviewTaskCancelMatch) {
+      if (request.method !== 'POST') return methodNotAllowed(response, '评审取消资源只接受提交请求。', 'POST')
+      const user = await requireUser(request)
+      const taskId = decodeURIComponent(agentReviewTaskCancelMatch[1])
+      const task = await productStore.readAgentReviewTask(user.id, taskId)
+      if (!task) return error(response, 404, 'AGENT_REVIEW_TASK_NOT_FOUND', '未找到该评审任务。')
+      await requireProjectPermission(productStore, user.id, task.projectId, 'edit')
+      const idempotencyKey = generationIdempotencyKey(request.headers['idempotency-key'])
+      if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', '评审取消标识无效，请重试。')
+      const body = await readJson(request, 8 * 1024, '评审取消请求过大。')
+      if (!body || typeof body !== 'object' || Array.isArray(body)
+        || Object.keys(body).some((key) => key !== 'reason')
+        || (body.reason !== undefined && (typeof body.reason !== 'string' || body.reason.length > 500))) {
+        return error(response, 400, 'INVALID_AGENT_REVIEW_CANCELLATION', '评审取消请求字段无效。')
+      }
+      const decision = await reviewOperationsService().requestReviewCancellation({
+        userId: user.id,
+        taskId: task.id,
+        projectId: task.projectId,
+        idempotencyKey,
+        requestedBy: user.id,
+        ...(body.reason?.trim() ? { reason: body.reason.trim() } : {}),
+      })
+      if (!decision?.task) return error(response, 404, 'AGENT_REVIEW_TASK_NOT_FOUND', '未找到该评审任务。')
+      if (decision.kind === 'conflict') {
+        return error(response, 409, 'AGENT_REVIEW_CANCELLATION_CONFLICT', '同一评审取消标识已绑定到不同请求。')
+      }
+      if (!['cancelling', 'cancelled'].includes(decision.task.status)) {
+        return error(response, 409, 'AGENT_REVIEW_NOT_CANCELLABLE', '该评审任务当前不可取消。')
+      }
+      return json(response, decision.task.status === 'cancelling' ? 202 : 200, {
+        task: publicAgentReviewTask(decision.task),
+      })
+    }
+    if (agentReviewTaskReconciliationMatch) {
+      if (request.method !== 'POST') return methodNotAllowed(response, '评审结果核对资源只接受提交请求。', 'POST')
+      const user = await requireUser(request)
+      const taskId = decodeURIComponent(agentReviewTaskReconciliationMatch[1])
+      const task = await productStore.readAgentReviewTask(user.id, taskId)
+      if (!task) return error(response, 404, 'AGENT_REVIEW_TASK_NOT_FOUND', '未找到该评审任务。')
+      await requireProjectPermission(productStore, user.id, task.projectId, 'edit')
+      const idempotencyKey = generationIdempotencyKey(request.headers['idempotency-key'])
+      if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', '评审结果核对标识无效，请重试。')
+      const body = await readJson(request, 8 * 1024, '评审结果核对请求过大。')
+      const action = body?.action
+      if (!body || typeof body !== 'object' || Array.isArray(body)
+        || Object.keys(body).length !== 1
+        || !['continue_unverifiable', 'retry_once'].includes(action)) {
+        return error(response, 400, 'INVALID_AGENT_REVIEW_RECONCILIATION', '评审结果核对动作无效。')
+      }
+      // retry_once 会再次调用 Provider；只有明确具备生成权限的人才能选择这条有成本路径。
+      if (action === 'retry_once') {
+        await requireProjectPermission(productStore, user.id, task.projectId, 'create-generation')
+      }
+      const decision = await reviewOperationsService().reconcileReviewOutcome({
+        userId: user.id,
+        taskId: task.id,
+        projectId: task.projectId,
+        idempotencyKey,
+        action,
+      })
+      if (!decision?.task) return error(response, 404, 'AGENT_REVIEW_TASK_NOT_FOUND', '未找到该评审任务。')
+      if (decision.kind === 'conflict') {
+        return error(response, 409, 'AGENT_REVIEW_RECONCILIATION_CONFLICT', '同一核对标识已绑定到不同动作。')
+      }
+      if (decision.kind === 'retry_limit') {
+        return error(response, 409, 'AGENT_REVIEW_RETRY_LIMIT', '该未知结果已使用过唯一一次显式重试。')
+      }
+      if (decision.kind === 'not_reconcilable') {
+        return error(response, 409, 'AGENT_REVIEW_NOT_RECONCILABLE', '该评审任务当前不需要结果核对。')
+      }
+      return json(response, action === 'retry_once' && decision.task.status === 'queued' ? 202 : 200, {
+        task: publicAgentReviewTask(decision.task),
+      })
+    }
     if (agentReviewTaskDecisionsMatch) {
       if (request.method !== 'POST') return methodNotAllowed(response, '评审决定资源只接受提交请求。', 'POST')
       const user = await requireUser(request)
       const taskId = decodeURIComponent(agentReviewTaskDecisionsMatch[1])
       const task = await productStore.readAgentReviewTask(user.id, taskId)
       if (!task) return error(response, 404, 'AGENT_REVIEW_TASK_NOT_FOUND', '未找到该评审任务。')
-      // 人工决定改变的是候选能否交付，因此按编辑权限校验，而不是只读。
-      await requireProjectPermission(productStore, user.id, task.projectId, 'edit')
       const idempotencyKey = generationIdempotencyKey(request.headers['idempotency-key'])
       if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', '评审决定标识无效，请重试。')
       const body = await readJson(request, 16 * 1024, '评审决定请求过大。')
       const requested = Array.isArray(body?.decisions) ? body.decisions : [body]
       if (!requested.length || requested.length > 60) return error(response, 400, 'INVALID_AGENT_REVIEW', '评审决定数量无效。')
-      let decisions
+      // 接受/拒绝只改变交付状态；请求重试会创建可进入生成队列的新 Run，必须额外具备
+      // create-generation 权限。Adapter 在事务内再次校验，避免检查后的成员角色竞态。
+      await requireProjectPermission(productStore, user.id, task.projectId, 'edit')
+      if (requested.some((entry) => entry?.decision === 'retry_requested')) {
+        await requireProjectPermission(productStore, user.id, task.projectId, 'create-generation')
+      }
+      let committed
       try {
-        // 批量共享一个 commandId，但逐候选落库：给多个 Artifact 共用一个模糊状态
-        // 会让「哪一张被接受了」无法回答。
-        decisions = requested.map((entry) => createAgentHumanDecision({
+        committed = await reviewDecisionService()({
+          actorId: user.id,
+          expectedProjectId: task.projectId,
           taskId: task.id,
-          projectId: task.projectId,
-          artifactId: entry?.artifactId,
-          decision: entry?.decision,
-          note: entry?.note,
-          decidedBy: user.id,
-          commandId: requested.length > 1 ? idempotencyKey : undefined,
           idempotencyKey,
-        }))
+          entries: requested,
+        })
       } catch (caught) {
-        if (caught?.name !== 'AgentReviewError') throw caught
-        return error(response, caught.statusCode ?? 400, caught.code, caught.message)
+        if (!(caught instanceof AgentReviewDecisionServiceError)) throw caught
+        return error(response, caught.statusCode, caught.code, caught.message)
       }
-      const covered = new Set(task.coverage?.artifactIds ?? [])
-      const outside = decisions.filter((decision) => !covered.has(decision.artifactId))
-      if (outside.length) {
-        return error(response, 409, 'AGENT_REVIEW_ARTIFACT_NOT_COVERED', '决定的候选不在本次评审覆盖范围内。')
-      }
-      const existing = task.decisions ?? []
-      const merged = [...existing.filter((item) => !decisions.some((decision) => decision.id === item.id)), ...decisions]
-      const results = (task.results ?? []).map((result) => {
-        const decision = decisions.find((item) => item.artifactId === result.artifactId)
-        // 接受与拒绝都不覆盖原 Artifact，只改变候选状态。
-        return decision ? { ...result, candidateStatus: decision.candidateStatus, updatedAt: decision.decidedAt } : result
-      })
-      const stored = await productStore.putAgentReviewTask(user.id, { ...task, decisions: merged, results, updatedAt: Date.now() })
-      // `retry_requested` 必须产生新的 Run 并关联原 Run/Review/Artifact；原 Artifact 不被覆盖。
-      const retries = decisions.filter((decision) => decision.decision === 'retry_requested')
-      const retryRuns = []
-      if (retries.length) {
-        const sourceRun = await productStore.readAgentRun(user.id, task.runId)
-        if (sourceRun) {
-          for (const retry of retries) {
-            // 同一份计划重跑，不改写 Prompt：改写会让重试结果无法与原结果对照。
-            const input = createReviewRetryAgentRunInput(sourceRun, {
-              reviewTaskId: task.id,
-              artifactId: retry.artifactId,
-            })
-            const id = forkedAgentRunIdForIdempotency(user.id, sourceRun.id, `${idempotencyKey}__${retry.artifactId}`)
-            const alreadyCreated = await productStore.readAgentRun(user.id, id)
-            const created = alreadyCreated
-              ?? await productStore.putAgentRun(user.id, createPersistentAgentRun(input, { id, ownerId: user.id }))
-            retryRuns.push({ artifactId: retry.artifactId, runId: created.id })
-            if (!alreadyCreated) await publishAgentRunUpdated({ projectId: created.projectId, run: publicAgentRun(created) })
-          }
-        }
-      }
+      const retryArtifactIds = committed.decisions
+        .filter((decision) => decision.decision === 'retry_requested')
+        .map((decision) => decision.artifactId)
+      const retryRuns = committed.retryRuns.map((run, index) => ({
+        artifactId: retryArtifactIds[index], runId: run.id,
+      }))
+      await Promise.allSettled(committed.retryRuns.map((run) => (
+        publishAgentRunUpdated?.({ projectId: run.projectId, run: publicAgentRun(run) })
+      )))
       return json(response, 200, {
-        task: publicAgentReviewTask(stored),
-        decisions,
+        task: publicAgentReviewTask(committed.task),
+        decisions: committed.decisions,
         ...(retryRuns.length ? { retryRuns } : {}),
       })
     }
@@ -1376,31 +2695,27 @@ export function createAgentRouteHandler({
       const run = await productStore.readAgentRun(user.id, runId)
       if (!run) return error(response, 404, 'AGENT_RUN_NOT_FOUND', '未找到该 Agent Run。')
       await requireProjectPermission(productStore, user.id, run.projectId, 'create-generation')
-      const activeJobIds = [...new Set(run.branches.filter((branch) => branch.status === 'queued' || branch.status === 'running').map((branch) => branch.activeJobId).filter(Boolean))]
-      for (const jobId of activeJobIds) {
-        const job = await productStore.readGenerationJob(user.id, jobId)
-        if (!job) continue
-        // 走共享取消实现：这里过去漏了广播，Worker 会把 Provider 调用跑完才
-        // 发现结果没人要，用户停掉 Run 之后槽位仍被占着。
-        await cancelGenerationJob({
-          productStore, redisQueue, publishCancel,
-          modelOptions: config.modelOptions ?? [],
-          ownerId: user.id, job, reason: 'agent-run', requestedBy: user.id,
-          afterPersist: (cancelledJob) => agentRunGeneration.persistJobState(user.id, run.projectId, cancelledJob),
-        })
+      const cancellation = await cancellationService().cancelAgentRun({
+        userId: user.id, projectId: run.projectId, runId, requestedBy: user.id,
+      })
+      if (cancellation.kind === 'failed') {
+        return error(response, 503, 'AGENT_RUN_CANCEL_FAILED', 'Agent Run 取消暂未完成，请重试。')
       }
-      const latestRun = await productStore.readAgentRun(user.id, runId) ?? run
-      const cancelledRun = cancelPersistentAgentRun(latestRun)
-      if (cancelledRun !== latestRun) await productStore.putAgentRun(user.id, cancelledRun)
-      if (cancelledRun !== latestRun) await recordCollaborationActivity(user, run.projectId, {
+      const cancelledRun = await productStore.readAgentRun(user.id, runId) ?? run
+      if (cancelledRun.status === 'cancelled' && run.status !== 'cancelled') await recordCollaborationActivity(user, run.projectId, {
         id: `agent-run-${cancelledRun.id}-${cancelledRun.updatedAt}`,
         kind: 'task',
         summary: `取消了任务「${cancelledRun.plan?.summary || '生成任务'}」`,
         target: { kind: 'task', runId: cancelledRun.id },
       })
-      await publishAgentRunUpdated({ projectId: run.projectId, run: publicAgentRun(cancelledRun) })
-      observeRun({ type: 'cancelled', requestId, projectId: run.projectId, runId, status: cancelledRun.status, activeJobCount: activeJobIds.length })
-      return json(response, 200, { run: publicAgentRun(cancelledRun) })
+      try {
+        await publishAgentRunUpdated?.({ projectId: run.projectId, run: publicAgentRun(cancelledRun) })
+      } catch { /* durable 取消已完成，实时旁路失败不能改变 HTTP 结果。 */ }
+      observeRun({
+        type: 'cancelled', requestId, projectId: run.projectId, runId,
+        status: cancelledRun.status, activeJobCount: cancellation.cancelledJobCount,
+      })
+      return json(response, 200, { run: publicAgentRun(cancelledRun), cancellation })
     }
     if (agentBranchRetryMatch) {
       if (request.method !== 'POST') return methodNotAllowed(response, 'Agent 分支重试资源只接受提交请求。', 'POST')

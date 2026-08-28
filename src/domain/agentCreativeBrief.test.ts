@@ -14,6 +14,23 @@ const imageModels = [{
   resolutions: ['1K', '2K'] as const,
 }]
 
+test('未点名图片模型时，Agent Brief 与画布统一默认 Nano Banana', () => {
+  const turn = advanceBotanicCreativeBrief({
+    mode: 'generation',
+    executionMode: 'manual',
+    instruction: '生成一张海边人像',
+    generationModels: [
+      ...imageModels,
+      {
+        id: 'gemini-3.1-pro-preview', label: 'Nano Banana', mediaKind: 'image' as const,
+        aspectRatios: ['3:4'] as const, resolutions: ['1K', '2K', '4K'] as const,
+      },
+    ],
+  })
+  assert.equal(turn.brief.output.model, 'gemini-3.1-pro-preview')
+  assert.equal(turn.brief.provenance.model, 'default')
+})
+
 test('手动生成缺少关键信息时只追问用途、清晰度和 Prompt 方向', () => {
   const turn = advanceBotanicCreativeBrief({
     mode: 'generation',

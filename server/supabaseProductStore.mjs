@@ -1,13 +1,28 @@
-import { createHash, randomUUID } from 'node:crypto'
-import { nonTerminalAgentTurnStatuses, normalizeStaleTurnQuery, normalizeTurnEventPage } from './productStoreContract.mjs'
+import { randomUUID } from 'node:crypto'
+import { agentThreadSummaryCompareAndSetDecision, normalizeAgentEntityIdPage, normalizePendingAgentReviewRecoveryPage, normalizeStaleTurnQuery, normalizeTurnEventPage, normalizeUpdatedAtIdRecoveryPage, persistedAgentSkillVersion } from './productStoreContract.mjs'
 import { createClient } from '@supabase/supabase-js'
 import { isRetryableSupabaseError, retrySupabaseOperation } from './supabaseRetry.mjs'
 import { decodeAuthAssurance } from './authAssurance.mjs'
 import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from './authorization.mjs'
 import { artifactIndexLimits, artifactsFromActionReceipt, artifactsFromAgentMessage, artifactsFromDocument, artifactsFromGenerationJob } from './botanicArtifactIndex.mjs'
-import { applyGenerationJobToAgentRun } from './botanicAgentRun.mjs'
-import { agentStateFromDocument, applyAgentSessionReadReceipts, mergeAgentStateIntoDocument, shouldApplyAgentEntityWrite, validateAgentEntityWriteTimestamp, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity, validateAgentSessionReadReceipt } from './botanicAgentPersistence.mjs'
+import { agentStateFromDocument, applyAgentSessionReadReceipts, mergeAgentStateIntoDocument, shouldApplyAgentEntityWrite, stripAgentMessagesFromDocument, validateAgentEntityWriteTimestamp, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity, validateAgentSessionReadReceipt } from './botanicAgentPersistence.mjs'
+import { agentMessageListOptions, encodeAgentMessageCursor, normalizeAgentSessionListLimit } from './agentMessagePersistence.mjs'
+import { observeProductStoreRead, timedProductStoreRead } from './productStoreMetrics.mjs'
 import { collaborationActivitiesForMember, collaborationActivityListOptions, validateCollaborationActivity } from './collaborationActivityPersistence.mjs'
+import {
+  agentSubagentEnqueueDecision,
+  materializeAgentSubagentEnqueueCommand,
+  normalizeAgentSubagentActivationPage,
+  normalizeRunnableAgentSubagentPage,
+  publicAgentSubagent,
+  publicAgentSubagentActivation,
+} from './agentSubagentPersistence.mjs'
+import {
+  materializeAgentContextCommand,
+  normalizeAgentContextCompactionPage,
+  publicAgentContextCompaction,
+} from './agentContextPersistence.mjs'
+import { BotanicAgentSkillError } from './botanicAgentSkill.mjs'
 
 const now = () => Date.now()
 const clone = (value) => structuredClone(value)
@@ -30,6 +45,91 @@ function fail(error, fallback = 'Supabase 数据操作失败。') {
 
 function userFromProfile(profile) {
   return profile ? { id: profile.id, email: profile.email, name: profile.display_name, role: profile.workspace_role } : undefined
+}
+
+function agentSubagentFromSupabaseRow(row, { includeLease = true } = {}) {
+  if (!row) return undefined
+  const dispatch = row.dispatch_activation_sequence === null || row.dispatch_activation_sequence === undefined
+    ? undefined
+    : {
+        ...(row.payload?.dispatch ?? {}),
+        generation: Number(row.dispatch_generation),
+        activationSequence: Number(row.dispatch_activation_sequence),
+        ...(includeLease ? { leaseToken: row.dispatch_lease_token } : {}),
+        leaseExpiresAt: new Date(row.dispatch_lease_expires_at).getTime(),
+      }
+  return {
+    ...clone(row.payload ?? {}),
+    id: row.id,
+    ownerId: row.owner_id,
+    projectId: row.project_id,
+    rootTurnId: row.root_turn_id,
+    ...(row.parent_session_id ? { parentSessionId: row.parent_session_id } : {}),
+    sessionId: row.session_id,
+    status: row.status,
+    cancelGeneration: Number(row.cancel_generation),
+    lastEnqueuedSequence: Number(row.last_enqueued_sequence),
+    settledThroughSequence: Number(row.settled_through_sequence),
+    ...(dispatch ? { dispatch } : {}),
+    createdAt: new Date(row.created_at).getTime(),
+    updatedAt: new Date(row.updated_at).getTime(),
+  }
+}
+
+function agentSubagentActivationFromSupabaseRow(row, { includeLease = true } = {}) {
+  if (!row) return undefined
+  const stored = clone(row.payload ?? {})
+  const { execution: storedExecution, ...payload } = stored
+  const execution = row.execution_lease_token
+    ? {
+        ...(storedExecution ?? {}),
+        generation: Number(row.execution_generation),
+        cancelGeneration: Number(row.execution_cancel_generation),
+        ...(includeLease ? { leaseToken: row.execution_lease_token } : {}),
+        leaseExpiresAt: new Date(row.execution_lease_expires_at).getTime(),
+      }
+    : undefined
+  return {
+    ...payload,
+    subagentId: row.subagent_id,
+    sequence: Number(row.sequence),
+    turnId: row.turn_id,
+    inputMessageId: row.input_message_id,
+    resultMessageId: row.result_message_id,
+    sourceTurnId: row.source_turn_id,
+    idempotencyKey: row.idempotency_key,
+    requestHash: row.request_hash,
+    cancelGeneration: Number(row.subagent_generation),
+    ...(execution ? { execution } : {}),
+    createdAt: new Date(row.created_at).getTime(),
+    updatedAt: new Date(row.updated_at).getTime(),
+    ...(row.settled_at ? { settledAt: new Date(row.settled_at).getTime() } : {}),
+  }
+}
+
+function publicAgentSubagentTurn(turn) {
+  if (!turn) return undefined
+  return {
+    id: turn.id,
+    version: turn.version,
+    projectId: turn.projectId,
+    ...(turn.sessionId ? { sessionId: turn.sessionId } : {}),
+    status: turn.status,
+    createdAt: turn.createdAt,
+    updatedAt: turn.updatedAt,
+    ...(turn.result ? { result: clone(turn.result) } : {}),
+    ...(turn.error ? { error: clone(turn.error) } : {}),
+  }
+}
+
+function publicAgentSubagentDecision(value) {
+  return {
+    kind: value?.kind,
+    subagent: publicAgentSubagent(value?.subagent),
+    activation: publicAgentSubagentActivation(value?.activation),
+    ...(value?.turn ? { turn: publicAgentSubagentTurn(value.turn) } : {}),
+    changed: value?.changed === true,
+  }
 }
 
 function projectDocumentSummary(document) {
@@ -150,11 +250,21 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
     return { data: rows, error: undefined }
   }
 
-  async function readAgentStateRows(projectId, userId) {
+  async function readAgentStateRows(projectId, userId, options = {}) {
+    const startedAt = Date.now()
+    const includeMessages = options.includeMessages !== false
+    const includeSubagents = options.includeSubagents === true
+    try {
+    const sessionQuery = () => {
+      let query = supabase.from('agent_sessions').select('payload').eq('project_id', projectId)
+      if (!includeSubagents) query = query.or('payload->>kind.is.null,payload->>kind.neq.subagent')
+      return query.order('updated_at', { ascending: false }).limit(80)
+    }
     const results = await Promise.all([
-      supabaseRequest(() => supabase.from('agent_sessions').select('payload').eq('project_id', projectId).order('updated_at', { ascending: false }).limit(80)),
-      // 降序分页：超过分页上限时保留最近的消息而不是最旧的；每会话上限在合并层裁剪。
-      collectSupabaseRows(() => supabase.from('agent_messages').select('session_id,updated_at,payload').eq('project_id', projectId).order('updated_at', { ascending: false })),
+      supabaseRequest(sessionQuery),
+      includeMessages
+        ? collectSupabaseRows(() => supabase.from('agent_messages').select('session_id,updated_at,payload').eq('project_id', projectId).order('updated_at', { ascending: false }))
+        : Promise.resolve({ data: [], error: undefined }),
       supabaseRequest(() => supabase.from('agent_memory_items').select('id,deleted_at,payload').eq('project_id', projectId).order('updated_at', { ascending: false }).limit(200)),
       supabaseRequest(() => supabase.from('agent_runs').select('payload').eq('project_id', projectId).order('updated_at', { ascending: false }).limit(60)),
       userId
@@ -162,13 +272,20 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
         : Promise.resolve({ data: [], error: undefined }),
     ])
     if (results.slice(0, 4).some((result) => missingAgentEntityTable(result.error))) {
+      observeProductStoreRead('readAgentStateRows', {
+        projectId, userId, includeMessages, durationMs: Date.now() - startedAt, ok: true, sessionCount: 0, messageRowCount: 0,
+      })
       return { sessions: [], messages: [], memory: [], deletedMemoryIds: [], runs: [] }
     }
     results.slice(0, 4).forEach((result) => fail(result.error))
     if (results[4].error && !missingAgentEntityTable(results[4].error)) fail(results[4].error)
-    const [sessions, messages, memory, runs] = results.map((result) => result.data ?? [])
+    const [sessions, rawMessages, memory, runs] = results.map((result) => result.data ?? [])
+    const visibleSessionIds = new Set(sessions.map((row) => row.payload?.id).filter(Boolean))
+    const messages = includeSubagents
+      ? rawMessages
+      : rawMessages.filter((row) => visibleSessionIds.has(row.session_id))
     const receipts = results[4].error ? [] : results[4].data ?? []
-    return {
+    const result = {
       sessions: applyAgentSessionReadReceipts(sessions.map((row) => clone(row.payload)), receipts.map((row) => ({
         sessionId: row.session_id,
         messageId: row.message_id,
@@ -178,6 +295,27 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       memory: memory.filter((row) => !row.deleted_at).map((row) => clone(row.payload)),
       deletedMemoryIds: memory.filter((row) => row.deleted_at).map((row) => row.id),
       runs: runs.map((row) => clone(row.payload)),
+    }
+    observeProductStoreRead('readAgentStateRows', {
+      projectId,
+      userId,
+      includeMessages,
+      durationMs: Date.now() - startedAt,
+      ok: true,
+      sessionCount: result.sessions.length,
+      messageRowCount: result.messages.length,
+    })
+    return result
+    } catch (error) {
+      observeProductStoreRead('readAgentStateRows', {
+        projectId,
+        userId,
+        includeMessages,
+        durationMs: Date.now() - startedAt,
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      throw error
     }
   }
 
@@ -261,7 +399,8 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
     const deletedAt = new Date().toISOString()
     const deletedMemoryRows = removedIds.map((id) => ({ id, deleted_at: deletedAt }))
 
-    // 新项目通过 RPC 在单个事务中完成 LWW 合并。旧项目未迁移时才走下方兼容路径。
+    // 派生字段必须由数据库在同一事务中保留；两个能力标记使旧的同名
+    // 7/8 参数 RPC 不会被 PostgREST 误匹配，缺迁移时拒绝非原子降级。
     const { error: rpcError } = await supabaseRequest(() => supabase.rpc('botanic_sync_agent_entities', {
       p_owner_id: userId,
       p_project_id: document.id,
@@ -270,57 +409,232 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       p_memory: memoryRows,
       p_runs: runRows,
       p_deleted_memory: deletedMemoryRows,
+      p_preserve_thread_summary: true,
+      p_preserve_entity_references: true,
     }))
-    if (!rpcError) {
-      await syncLegacyReadingReceipts(userId, document.id, extracted)
-      await upsertArtifactRecords(userId, document.id, artifactsFromDocument(document))
-      return
-    }
-    if (!missingAgentEntityRpc(rpcError)) fail(rpcError)
-
-    for (const [table, rows] of [
-      ['agent_sessions', sessionRows], ['agent_messages', messageRows],
-      ['agent_memory_items', memoryRows], ['agent_runs', runRows],
-    ]) {
-      if (!rows.length) continue
-      for (let offset = 0; offset < rows.length; offset += 500) {
-        const batch = rows.slice(offset, offset + 500)
-        const existingColumns = table === 'agent_messages'
-          ? 'id,project_id,session_id,updated_at'
-          : table === 'agent_memory_items'
-            ? 'id,project_id,updated_at,deleted_at'
-            : 'id,project_id,updated_at'
-        const { data: existingRows, error: conflictError } = await supabaseRequest(() => supabase.from(table).select(existingColumns).in('id', batch.map((row) => row.id)))
-        if (missingAgentEntityTable(conflictError)) return
-        fail(conflictError)
-        if ((existingRows ?? []).some((row) => row.project_id !== document.id
-          || (table === 'agent_messages' && row.session_id !== batch.find((item) => item.id === row.id)?.session_id))) {
-          throw productError('Agent 实体标识已被其他项目使用。', 'AGENT_ENTITY_ID_CONFLICT')
-        }
-        const existingById = new Map((existingRows ?? []).map((row) => [row.id, row]))
-        const safeRows = batch.filter((row) => {
-          const existing = existingById.get(row.id)
-          if (table === 'agent_runs') return !existing
-          return shouldApplyAgentEntityWrite(existing, row, {
-            tombstoneWinsTie: table === 'agent_memory_items',
-          })
-        })
-        if (!safeRows.length) continue
-        const { error } = await supabaseRequest(() => supabase.from(table).upsert(safeRows, { onConflict: 'id' }))
-        if (missingAgentEntityTable(error)) return
-        fail(error)
+    if (rpcError) {
+      if (missingAgentEntityRpc(rpcError)) {
+        throw productError('Agent 派生字段原子写入迁移尚未部署。', 'AGENT_DERIVED_FIELDS_ATOMIC_WRITE_REQUIRED')
       }
-    }
-    if (removedIds.length) {
-      const { error } = await supabaseRequest(() => supabase.from('agent_memory_items')
-        .update({ deleted_at: deletedAt, updated_at: deletedAt })
-        .eq('project_id', document.id)
-        .in('id', removedIds)
-        .lte('updated_at', deletedAt))
-      if (!missingAgentEntityTable(error)) fail(error)
+      if (rpcError.code === '23514' && String(rpcError.message).includes('AGENT_MESSAGE_TURN_ID_CONFLICT')) {
+        throw productError('Agent 消息已绑定其他 Turn。', 'AGENT_MESSAGE_TURN_ID_CONFLICT')
+      }
+      if (rpcError.code === '23514' && String(rpcError.message).includes('AGENT_MESSAGE_ROLE_CONFLICT')) {
+        throw productError('Agent 消息作者角色不可改绑。', 'AGENT_MESSAGE_ROLE_CONFLICT')
+      }
+      if (rpcError.code === '23514' && String(rpcError.message).includes('AGENT_MESSAGE_TURN_REQUEST_CONFLICT')) {
+        throw productError('Agent 消息已绑定其他 Turn 请求快照。', 'AGENT_MESSAGE_TURN_REQUEST_CONFLICT')
+      }
+      if (rpcError.code === '23514' && String(rpcError.message).includes('AGENT_MESSAGE_ENTITY_REFERENCES_CONFLICT')) {
+        throw productError('Agent Turn 结果业务引用发生冲突。', 'AGENT_MESSAGE_ENTITY_REFERENCES_CONFLICT')
+      }
+      fail(rpcError)
     }
     await syncLegacyReadingReceipts(userId, document.id, extracted)
     await upsertArtifactRecords(userId, document.id, artifactsFromDocument(document))
+  }
+
+  async function assertAgentDerivedFieldWriterAvailable(userId, projectId) {
+    const { error } = await supabaseRequest(() => supabase.rpc('botanic_sync_agent_entities', {
+      p_owner_id: userId,
+      p_project_id: projectId,
+      p_sessions: [],
+      p_messages: [],
+      p_memory: [],
+      p_runs: [],
+      p_deleted_memory: [],
+      p_preserve_thread_summary: true,
+      p_preserve_entity_references: true,
+    }))
+    if (missingAgentEntityRpc(error)) {
+      throw productError('Agent 派生字段原子写入迁移尚未部署。', 'AGENT_DERIVED_FIELDS_ATOMIC_WRITE_REQUIRED')
+    }
+    fail(error)
+  }
+
+  async function generationFenceRpc(name, args) {
+    const { data, error } = await supabaseRequest(() => supabase.rpc(name, args))
+    if (error) {
+      if (missingAgentEntityRpc(error)) {
+        throw productError('Generation Job 执行围栏迁移尚未部署。', 'GENERATION_JOB_ATOMIC_FENCE_REQUIRED')
+      }
+      if (error.code === '22023') {
+        throw productError('Generation Job 状态转换参数无效。', 'GENERATION_JOB_TRANSITION_INVALID')
+      }
+      fail(error)
+    }
+    return clone(data)
+  }
+
+  async function agentReviewFenceRpc(name, args) {
+    const { data, error } = await supabaseRequest(() => supabase.rpc(name, args))
+    if (error) {
+      if (missingAgentEntityRpc(error) || missingAgentEntityTable(error)) {
+        throw productError('Agent Review 执行围栏迁移尚未部署。', 'AGENT_REVIEW_ATOMIC_FENCE_REQUIRED')
+      }
+      if (error.code === '22023') {
+        throw productError('Agent Review 状态转换参数无效。', 'AGENT_REVIEW_TRANSITION_INVALID')
+      }
+      fail(error)
+    }
+    return clone(data)
+  }
+
+  async function agentReviewHumanDecisionRpc(name, args) {
+    const { data, error } = await supabaseRequest(() => supabase.rpc(name, args))
+    if (error) {
+      if (missingAgentEntityRpc(error) || missingAgentEntityTable(error)) {
+        throw productError(
+          'Agent Review retry 原子提交迁移尚未部署。',
+          'AGENT_REVIEW_RETRY_ATOMIC_REQUIRED',
+        )
+      }
+      if (error.code === '42501') {
+        throw productError('你没有提交该评审决定的权限。', 'PROJECT_WRITE_FORBIDDEN')
+      }
+      if (error.code === '22023') {
+        throw productError('Agent Review 状态转换参数无效。', 'AGENT_REVIEW_TRANSITION_INVALID')
+      }
+      fail(error)
+    }
+    if (!data || typeof data !== 'object' || !Array.isArray(data.retryRuns)) {
+      throw productError(
+        'Agent Review retry 原子提交响应格式无效。',
+        'AGENT_REVIEW_RETRY_ATOMIC_RESPONSE_INVALID',
+      )
+    }
+    return clone(data)
+  }
+
+  async function agentSubagentRpc(name, args) {
+    const { data, error } = await supabaseRequest(() => supabase.rpc(name, args))
+    if (error) {
+      if (missingAgentEntityRpc(error) || missingAgentEntityTable(error)) {
+        throw productError('AgentSubagent 原子运行时迁移尚未部署。', 'AGENT_SUBAGENT_ATOMIC_RUNTIME_REQUIRED')
+      }
+      if (error.code === '42501') {
+        throw productError('你没有操作该 Subagent 的权限。', 'PROJECT_WRITE_FORBIDDEN')
+      }
+      if (error.code === '22023') {
+        throw productError('AgentSubagent 状态转换参数无效。', 'AGENT_SUBAGENT_TRANSITION_INVALID')
+      }
+      if (error.code === 'PSS05') {
+        throw productError('Subagent 根 Turn 不存在。', 'AGENT_SUBAGENT_ROOT_TURN_NOT_FOUND')
+      }
+      if (error.code === 'PSS06') {
+        throw productError(
+          'Agent Turn 已进入取消或失败状态，不能再派发 Subagent。',
+          'AGENT_TURN_DELEGATION_CANCELLED',
+        )
+      }
+      if (error.code === 'PSS07') {
+        throw productError('Agent Turn 执行权已过期，不能派发 Subagent。', 'AGENT_SUBAGENT_ROOT_EXECUTION_STALE')
+      }
+      if (error.code === 'PSS08') {
+        throw productError('Agent Turn 尚未取得执行权，不能派发 Subagent。', 'AGENT_SUBAGENT_ROOT_TURN_NOT_READY')
+      }
+      if (['PSS01', 'PSS03'].includes(error.code)) {
+        throw productError(error.message || 'AgentSubagent 持久化冲突。', 'AGENT_SUBAGENT_PERSISTENCE_CONFLICT')
+      }
+      fail(error)
+    }
+    return clone(data)
+  }
+
+  const agentSubagentColumns = [
+    'id', 'owner_id', 'project_id', 'root_turn_id', 'parent_session_id', 'session_id',
+    'status', 'cancel_generation', 'last_enqueued_sequence', 'settled_through_sequence',
+    'dispatch_generation', 'dispatch_activation_sequence', 'dispatch_lease_token',
+    'dispatch_lease_expires_at', 'idempotency_key', 'request_hash', 'payload',
+    'created_at', 'updated_at',
+  ].join(',')
+  const agentSubagentActivationColumns = [
+    'subagent_id', 'sequence', 'turn_id', 'input_message_id', 'result_message_id',
+    'source_turn_id', 'idempotency_key', 'request_hash', 'subagent_generation',
+    'execution_generation', 'execution_cancel_generation', 'execution_lease_token',
+    'execution_lease_expires_at',
+    'payload', 'created_at', 'updated_at', 'settled_at',
+  ].join(',')
+
+  async function readSupabaseSubagentForRuntime(subagentId) {
+    const { data, error } = await supabaseRequest(() => supabase.from('agent_subagents')
+      .select(agentSubagentColumns).eq('id', subagentId).maybeSingle())
+    if (missingAgentEntityTable(error)) {
+      throw productError('AgentSubagent 原子运行时迁移尚未部署。', 'AGENT_SUBAGENT_ATOMIC_RUNTIME_REQUIRED')
+    }
+    fail(error)
+    return data ? agentSubagentFromSupabaseRow(data) : undefined
+  }
+
+  async function recoveryKeysetRpc(name, args) {
+    const { data, error } = await supabaseRequest(() => supabase.rpc(name, args))
+    if (error) {
+      if (missingAgentEntityRpc(error) || missingAgentEntityTable(error)) {
+        throw productError('Agent Recovery 稳定分页迁移尚未部署。', 'AGENT_RECOVERY_KEYSET_REQUIRED')
+      }
+      if (error.code === '22023') {
+        throw productError('Agent Recovery 分页参数无效。', 'AGENT_RECOVERY_CURSOR_INVALID')
+      }
+      fail(error)
+    }
+    if (!Array.isArray(data)) {
+      throw productError('Agent Recovery 分页响应格式无效。', 'AGENT_RECOVERY_KEYSET_RESPONSE_INVALID')
+    }
+    return data.map(clone)
+  }
+
+  async function projectGenerationJob(userId, job, options = {}) {
+    const { updateAgentRun = true, recordAudit = true, syncArtifacts = true } = options
+    let artifactReady = true
+    if (syncArtifacts) {
+      try {
+        const [{ data: project, error: projectError }, { data: graph, error: graphError }] = await Promise.all([
+          supabaseRequest(() => supabase.from('projects').select('document').eq('id', job.projectId).maybeSingle()),
+          supabaseRequest(() => supabase.from('canvas_graphs').select('graph').eq('project_id', job.projectId).maybeSingle()),
+        ])
+        fail(projectError)
+        fail(graphError)
+        const document = project?.document
+          ? { ...clone(project.document), ...clone(graph?.graph ?? {}) }
+          : undefined
+        await upsertArtifactRecords(userId, job.projectId, artifactsFromGenerationJob(job, { document }))
+      } catch (caught) {
+        artifactReady = false
+        console.warn(`[artifact-index] generation sync deferred for ${job.id}: ${caught instanceof Error ? caught.message : String(caught)}`)
+      }
+    }
+    const terminalNeedsArtifacts = ['succeeded', 'failed'].includes(job.status) && Boolean(job.outputs?.length)
+    if (updateAgentRun && job.agentRun?.runId && (!terminalNeedsArtifacts || !syncArtifacts || artifactReady)) {
+      const { data, error } = await supabaseRequest(() => supabase.rpc('botanic_project_generation_job_to_agent_run', {
+        p_owner_id: userId,
+        p_project_id: job.projectId,
+        p_job: clone(job),
+      }))
+      if (error) {
+        if (missingAgentEntityRpc(error)) {
+          throw productError('Generation Job 的 Agent Run 原子投影迁移尚未部署。', 'GENERATION_JOB_ATOMIC_FENCE_REQUIRED')
+        }
+        if (error.code === '42501') throw productError('你没有更新该 Agent Run 的权限。', 'PROJECT_WRITE_FORBIDDEN')
+        if (error.code === '22023') throw productError('Generation Job 的 Agent Run 投影参数无效。', 'GENERATION_JOB_TRANSITION_INVALID')
+        fail(error)
+      }
+      if (!data) throw productError('未找到关联的 Agent Run。', 'AGENT_RUN_NOT_FOUND')
+    }
+    // 审计不可用不能让已成功的原子状态转换在客户端表现为失败。
+    if (recordAudit) {
+      try {
+        await insertAudit({
+          actorId: userId,
+          action: `generation.${job.status}`,
+          projectId: job.projectId,
+          targetId: job.id,
+          detail: { model: job.settings?.model, batchCount: job.batchCount },
+        })
+      } catch (error) {
+        console.warn(`[generation] audit deferred for ${job.id}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    return clone(job)
   }
 
   return {
@@ -361,6 +675,7 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
     },
 
     async listProjects(userId) {
+      return timedProductStoreRead('listProjects', { userId }, async () => {
       // 与 Postgres Adapter 一样：列表只读图谱，不拉整份 document JSONB。
       const { data, error } = await supabase
         .from('project_members')
@@ -389,30 +704,34 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
           role: row.role,
         }
       }).sort((a, b) => b.updatedAt - a.updatedAt)
+      })
     },
 
     async readProject(userId, projectId) {
-      const role = await memberRole(projectId, userId)
-      if (!role) return undefined
-      const [{ data, error }, graphResult, agentState] = await Promise.all([
-        supabase.from('projects').select('document, revision, updated_at').eq('id', projectId).maybeSingle(),
-        supabase.from('canvas_graphs').select('graph, revision, updated_at').eq('project_id', projectId).maybeSingle(),
-        readAgentStateRows(projectId, userId),
-      ])
-      fail(error)
-      fail(graphResult.error)
-      if (!data) return undefined
-      const graph = graphResult.data?.graph ?? canvasGraph(data.document)
-      const updatedAt = Math.max(
-        Number(data.document.updatedAt ?? 0),
-        data.updated_at ? new Date(data.updated_at).getTime() : 0,
-        graphResult.data?.updated_at ? new Date(graphResult.data.updated_at).getTime() : 0,
-      )
-      return {
-        document: mergeAgentStateIntoDocument({ ...clone(data.document), ...clone(graph), updatedAt }, agentState),
-        revision: data.revision,
-        graphRevision: graphResult.data?.revision ?? 1,
-      }
+      return timedProductStoreRead('readProject', { projectId, userId }, async () => {
+        const role = await memberRole(projectId, userId)
+        if (!role) return undefined
+        const [{ data, error }, graphResult, agentState] = await Promise.all([
+          supabase.from('projects').select('document, revision, updated_at').eq('id', projectId).maybeSingle(),
+          supabase.from('canvas_graphs').select('graph, revision, updated_at').eq('project_id', projectId).maybeSingle(),
+          readAgentStateRows(projectId, userId, { includeMessages: false }),
+        ])
+        fail(error)
+        fail(graphResult.error)
+        if (!data) return undefined
+        const graph = graphResult.data?.graph ?? canvasGraph(data.document)
+        const updatedAt = Math.max(
+          Number(data.document.updatedAt ?? 0),
+          data.updated_at ? new Date(data.updated_at).getTime() : 0,
+          graphResult.data?.updated_at ? new Date(graphResult.data.updated_at).getTime() : 0,
+        )
+        return {
+          document: mergeAgentStateIntoDocument({ ...clone(data.document), ...clone(graph), updatedAt }, agentState, { includeMessages: false }),
+          revision: data.revision,
+          graphRevision: graphResult.data?.revision ?? 1,
+          readMetrics: { messageRowCount: 0, sessionCount: agentState.sessions?.length ?? 0 },
+        }
+      })
     },
 
     async projectAccess(userId, projectId) {
@@ -430,11 +749,14 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
     },
 
     async writeProject(userId, document, expectedRevision, expectedGraphRevision) {
+      // 项目 RPC 一旦成功就不能回滚；先证明派生字段安全同步能力已部署，
+      // 避免缺迁移时先把带旧 Summary 的兼容文档写成功再报错。
+      await assertAgentDerivedFieldWriterAvailable(userId, document.id)
       const { data: previous, error: previousError } = await supabaseRequest(() => supabase.from('projects').select('document').eq('id', document.id).maybeSingle())
       fail(previousError)
       const { data, error } = await supabase.rpc('botanic_write_project_document', {
         p_actor: userId,
-        p_document: document,
+        p_document: stripAgentMessagesFromDocument(document),
         p_expected_revision: Number.isInteger(expectedRevision) ? expectedRevision : null,
         p_expected_graph_revision: Number.isInteger(expectedGraphRevision) ? expectedGraphRevision : null,
       }).single()
@@ -445,6 +767,8 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       try {
         await syncAgentStateFromDocument(userId, document, previous?.document)
       } catch (caught) {
+        if (caught?.code === 'AGENT_DERIVED_FIELDS_ATOMIC_WRITE_REQUIRED'
+          || caught?.code === 'AGENT_MESSAGE_TURN_ID_CONFLICT') throw caught
         // Supabase RPC 已原子保存兼容文档；实体双写失败不能把已成功的项目保存
         // 伪装成失败。读取仍会回退旧字段，下一次写入继续补偿。
         console.warn(`[agent-persistence] entity sync deferred for ${document.id}: ${caught instanceof Error ? caught.message : String(caught)}`)
@@ -565,11 +889,55 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       return { deleted, library: clone(library) }
     },
 
-    async readAgentState(userId, projectId) {
+    async readAgentState(userId, projectId, options = {}) {
       if (!await memberRole(projectId, userId)) return undefined
-      const state = await readAgentStateRows(projectId, userId)
+      const state = await readAgentStateRows(projectId, userId, options)
       const hydrated = mergeAgentStateIntoDocument({ agentSessions: [], agentMemory: [], agentRuns: [] }, state)
       return { sessions: hydrated.agentSessions, memory: hydrated.agentMemory, runs: hydrated.agentRuns }
+    },
+
+    async listAgentSessions(userId, projectId, options = {}) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const limit = normalizeAgentSessionListLimit(options.limit)
+      const state = await readAgentStateRows(projectId, userId, {
+        includeMessages: false,
+        includeSubagents: options.includeSubagents === true,
+      })
+      return state.sessions.slice(0, limit).map((session) => ({ ...session, messages: [] }))
+    },
+
+    async listAgentSessionMessages(userId, projectId, sessionId, options = {}) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const { data: sessionRow, error: sessionError } = await supabase.from('agent_sessions').select('id').eq('project_id', projectId).eq('id', sessionId).maybeSingle()
+      fail(sessionError)
+      if (!sessionRow) return undefined
+      const page = agentMessageListOptions(options)
+      let messageQuery = supabase.from('agent_messages')
+        .select('id,updated_at,payload')
+        .eq('project_id', projectId)
+        .eq('session_id', sessionId)
+        .order('updated_at', { ascending: false })
+        .order('id', { ascending: false })
+        .limit(page.limit)
+      if (page.before) {
+        const beforeTimestamp = new Date(page.before.updatedAt).toISOString()
+        messageQuery = messageQuery.or(`updated_at.lt.${beforeTimestamp},and(updated_at.eq.${beforeTimestamp},id.lt.${postgrestQuotedValue(page.before.id)})`)
+      }
+      const { data: rows, error } = await supabaseRequest(() => messageQuery)
+      fail(error)
+      const messages = (rows ?? []).map((row) => clone(row.payload)).reverse()
+      const oldest = rows?.at(-1)
+      return {
+        messages,
+        nextBefore: rows?.length === page.limit && oldest
+          ? encodeAgentMessageCursor({
+            id: oldest.id,
+            updatedAt: new Date(oldest.updated_at).getTime(),
+            createdAt: new Date(oldest.updated_at).getTime(),
+          })
+          : undefined,
+        readMetrics: { messageCount: messages.length },
+      }
     },
 
     async listCollaborationActivities(userId, projectId, options = 100) {
@@ -671,51 +1039,162 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       assertProjectPermission(await memberRole(projectId, userId), 'edit', 'PROJECT_WRITE_FORBIDDEN')
       const timestampValue = now()
       const session = validateAgentSessionEntity({ ...input, updatedAt: timestampValue }, { now: timestampValue })
-      const { data: existing, error: readError } = await supabaseRequest(() => supabase.from('agent_sessions').select('project_id').eq('id', session.id).maybeSingle())
-      fail(readError)
-      if (existing && existing.project_id !== projectId) throw productError('Agent 会话标识已被其他项目使用。', 'AGENT_SESSION_ID_CONFLICT')
-      const { error } = await supabaseRequest(() => supabase.from('agent_sessions').upsert({
-        id: session.id, owner_id: userId, project_id: projectId,
-        updated_at: new Date(timestampValue).toISOString(), payload: session,
-      }, { onConflict: 'id' }))
+      const { data, error } = await supabaseRequest(() => supabase.rpc('botanic_put_agent_session', {
+        p_actor_id: userId,
+        p_project_id: projectId,
+        p_session: session,
+        p_updated_at: new Date(timestampValue).toISOString(),
+      }))
+      if (error) {
+        if (missingAgentEntityRpc(error)) {
+          throw productError('Agent 派生字段原子写入迁移尚未部署。', 'AGENT_DERIVED_FIELDS_ATOMIC_WRITE_REQUIRED')
+        }
+        if (error.code === '23505') throw productError('Agent 会话标识已被其他项目使用。', 'AGENT_SESSION_ID_CONFLICT')
+        if (error.code === '42501') throw productError('你没有编辑该项目的权限。', 'PROJECT_WRITE_FORBIDDEN')
+        fail(error)
+      }
+      const stored = data?.payload ?? data
+      await insertAudit({ actorId: userId, action: data?.created ? 'agent-session.created' : 'agent-session.updated', projectId, targetId: session.id })
+      return clone(stored)
+    },
+
+    async compareAndSetAgentThreadSummary(userId, command) {
+      const inputDecision = agentThreadSummaryCompareAndSetDecision(undefined, command)
+      if (inputDecision.kind === 'invalid') return clone(inputDecision)
+      const { data, error } = await supabaseRequest(() => supabase.rpc('botanic_compare_and_set_agent_thread_summary', {
+        p_actor_id: userId,
+        p_session_id: command?.sessionId,
+        p_expected_updated_at: command?.expectedUpdatedAt ?? null,
+        p_summary: command?.summary,
+      }))
+      if (error) {
+        if (missingAgentEntityRpc(error)) {
+          throw productError('Agent Thread Summary CAS 迁移尚未部署。', 'AGENT_THREAD_SUMMARY_CAS_REQUIRED')
+        }
+        if (error.code === '42501') throw productError('你没有更新该 Agent 会话摘要的权限。', 'PROJECT_WRITE_FORBIDDEN')
+        if (error.code === '22023') return { kind: 'invalid', changed: false }
+        fail(error)
+      }
+      return clone(data)
+    },
+
+    async readAgentContextState(userId, projectId, sessionId) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const { data: session, error: sessionError } = await supabaseRequest(() => supabase
+        .from('agent_sessions').select('id').eq('id', sessionId).eq('project_id', projectId).maybeSingle())
+      fail(sessionError)
+      if (!session) return undefined
+      const { data, error } = await supabaseRequest(() => supabase
+        .from('agent_context_states').select('payload')
+        .eq('session_id', sessionId).eq('project_id', projectId).maybeSingle())
+      if (error && missingAgentEntityTable(error)) {
+        throw productError('Agent Context V2 迁移尚未部署。', 'AGENT_CONTEXT_PERSISTENCE_REQUIRED')
+      }
       fail(error)
-      await insertAudit({ actorId: userId, action: existing ? 'agent-session.updated' : 'agent-session.created', projectId, targetId: session.id })
-      return clone(session)
+      return data?.payload ? clone(data.payload) : {
+        version: 2, sessionId, projectId, revision: 0, updatedAt: 0,
+      }
+    },
+
+    async listAgentContextCompactions(userId, projectId, sessionId, options = {}) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const { data: session, error: sessionError } = await supabaseRequest(() => supabase
+        .from('agent_sessions').select('id').eq('id', sessionId).eq('project_id', projectId).maybeSingle())
+      fail(sessionError)
+      if (!session) return undefined
+      const page = normalizeAgentContextCompactionPage(options)
+      const { data, error } = await supabaseRequest(() => supabase
+        .from('agent_context_compactions')
+        .select('sequence,created_at,payload')
+        .eq('project_id', projectId)
+        .eq('session_id', sessionId)
+        .not('compaction_id', 'is', null)
+        .gt('sequence', page.afterSequence)
+        .order('sequence', { ascending: true })
+        .limit(page.limit))
+      if (error && missingAgentEntityTable(error)) {
+        throw productError('Agent Context V2 迁移尚未部署。', 'AGENT_CONTEXT_PERSISTENCE_REQUIRED')
+      }
+      fail(error)
+      const compactions = (data ?? [])
+        .map((row) => publicAgentContextCompaction({
+          ...clone(row.payload),
+          sequence: Number(row.sequence),
+          createdAt: new Date(row.created_at).getTime(),
+        }))
+        .filter(Boolean)
+      return {
+        compactions,
+        ...(compactions.length === page.limit
+          ? { nextAfterSequence: compactions.at(-1)?.sequence }
+          : {}),
+      }
+    },
+
+    async compareAndSetAgentContextState(userId, rawCommand) {
+      let command
+      try {
+        command = materializeAgentContextCommand(rawCommand)
+      } catch {
+        return { kind: 'invalid', changed: false }
+      }
+      const { data, error } = await supabaseRequest(() => supabase.rpc(
+        'botanic_compare_and_set_agent_context_state',
+        { p_actor_id: userId, p_command: command },
+      ))
+      if (error) {
+        if (missingAgentEntityRpc(error)) {
+          throw productError('Agent Context V2 原子 CAS 迁移尚未部署。', 'AGENT_CONTEXT_PERSISTENCE_REQUIRED')
+        }
+        if (error.code === '42501') {
+          throw productError('你没有更新该 Agent Context 的权限。', 'PROJECT_WRITE_FORBIDDEN')
+        }
+        fail(error)
+      }
+      return clone(data)
     },
 
     async putAgentMessage(userId, projectId, sessionId, input) {
       assertProjectPermission(await memberRole(projectId, userId), 'edit', 'PROJECT_WRITE_FORBIDDEN')
       const timestampValue = now()
       const message = validateAgentMessageEntity(input, { now: timestampValue })
-      const [{ data: session, error: sessionError }, { data: existing, error: readError }] = await Promise.all([
-        supabaseRequest(() => supabase.from('agent_sessions').select('payload').eq('id', sessionId).eq('project_id', projectId).maybeSingle()),
-        supabaseRequest(() => supabase.from('agent_messages').select('project_id,session_id').eq('id', message.id).maybeSingle()),
-      ])
-      fail(sessionError)
-      fail(readError)
-      if (!session) throw productError('未找到 Agent 会话。', 'AGENT_SESSION_NOT_FOUND')
-      if (existing && (existing.project_id !== projectId || existing.session_id !== sessionId)) {
-        throw productError('Agent 消息标识已被其他会话使用。', 'AGENT_MESSAGE_ID_CONFLICT')
+      const { data, error } = await supabaseRequest(() => supabase.rpc('botanic_put_agent_message', {
+        p_actor_id: userId,
+        p_project_id: projectId,
+        p_session_id: sessionId,
+        p_message: message,
+        p_updated_at: new Date(message.updatedAt).toISOString(),
+        p_preserve_entity_references: true,
+      }))
+      if (error) {
+        if (missingAgentEntityRpc(error)) {
+          throw productError('Agent 派生字段原子写入迁移尚未部署。', 'AGENT_DERIVED_FIELDS_ATOMIC_WRITE_REQUIRED')
+        }
+        if (error.code === '23514' && String(error.message).includes('AGENT_MESSAGE_TURN_ID_CONFLICT')) {
+          throw productError('Agent 消息已绑定其他 Turn。', 'AGENT_MESSAGE_TURN_ID_CONFLICT')
+        }
+        if (error.code === '23514' && String(error.message).includes('AGENT_MESSAGE_ROLE_CONFLICT')) {
+          throw productError('Agent 消息作者角色不可改绑。', 'AGENT_MESSAGE_ROLE_CONFLICT')
+        }
+        if (error.code === '23514' && String(error.message).includes('AGENT_MESSAGE_TURN_REQUEST_CONFLICT')) {
+          throw productError('Agent 消息已绑定其他 Turn 请求快照。', 'AGENT_MESSAGE_TURN_REQUEST_CONFLICT')
+        }
+        if (error.code === '23514' && String(error.message).includes('AGENT_MESSAGE_ENTITY_REFERENCES_CONFLICT')) {
+          throw productError('Agent Turn 结果业务引用发生冲突。', 'AGENT_MESSAGE_ENTITY_REFERENCES_CONFLICT')
+        }
+        if (error.code === '23503') throw productError('未找到 Agent 会话。', 'AGENT_SESSION_NOT_FOUND')
+        if (error.code === '23505') throw productError('Agent 消息标识已被其他会话使用。', 'AGENT_MESSAGE_ID_CONFLICT')
+        if (error.code === '42501') throw productError('你没有编辑该项目的权限。', 'PROJECT_WRITE_FORBIDDEN')
+        fail(error)
       }
-      const timestampIso = new Date(timestampValue).toISOString()
-      const [{ error }, { error: sessionWriteError }] = await Promise.all([
-        supabaseRequest(() => supabase.from('agent_messages').upsert({
-          id: message.id, owner_id: userId, project_id: projectId, session_id: sessionId,
-          updated_at: timestampIso, payload: message,
-        }, { onConflict: 'id' })),
-        supabaseRequest(() => supabase.from('agent_sessions').update({
-          updated_at: timestampIso, payload: { ...session.payload, updatedAt: timestampValue },
-        }).eq('id', sessionId).eq('project_id', projectId)),
-      ])
-      fail(error)
-      fail(sessionWriteError)
+      const stored = data?.payload ?? data
       try {
-        await upsertArtifactRecords(userId, projectId, artifactsFromAgentMessage(message, { sessionId, updatedAt: timestampValue }))
+        await upsertArtifactRecords(userId, projectId, artifactsFromAgentMessage(stored, { sessionId, updatedAt: stored.updatedAt }))
       } catch (caught) {
         console.warn(`[artifact-index] message sync deferred for ${message.id}: ${caught instanceof Error ? caught.message : String(caught)}`)
       }
-      await insertAudit({ actorId: userId, action: existing ? 'agent-message.updated' : 'agent-message.created', projectId, targetId: message.id, detail: { sessionId } })
-      return clone(message)
+      await insertAudit({ actorId: userId, action: data?.created ? 'agent-message.created' : 'agent-message.updated', projectId, targetId: message.id, detail: { sessionId } })
+      return clone(stored)
     },
 
     async putAgentMemoryItem(userId, projectId, input) {
@@ -790,33 +1269,40 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
     },
 
     async putAgentSkill(userId, skill) {
-      const role = await memberRole(skill.projectId, userId)
-      assertProjectPermission(role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
-      const { data: existing, error: readError } = await supabaseRequest(() => supabase.from('agent_skills').select('project_id,payload').eq('id', skill.id).maybeSingle())
-      fail(readError)
-      if (existing && existing.project_id !== skill.projectId) throw productError('Skill 标识已被其他项目使用。', 'AGENT_SKILL_ID_CONFLICT')
-      const timestamp = now()
-      const version = Math.max(1, Number(existing?.payload?.version ?? skill.version ?? 1) + (existing ? 1 : 0))
-      const contentHash = createHash('sha256').update(String(skill.instructions ?? '')).digest('base64url')
-      const versions = [
-        ...(Array.isArray(existing?.payload?.versions) ? existing.payload.versions : []),
-        { version, contentHash, instructions: String(skill.instructions ?? ''), updatedAt: timestamp },
-      ].slice(-20)
-      const payload = {
-        ...clone(skill), ownerId: userId,
-        createdAt: Number(existing?.payload?.createdAt ?? skill.createdAt) || timestamp,
-        updatedAt: timestamp,
-        version, contentHash,
-        capabilities: Array.isArray(skill.capabilities) && skill.capabilities.length ? [...new Set(skill.capabilities)].slice(0, 12) : ['read'],
-        governance: skill.governance ?? 'project-approved', versions,
+      const { data, error } = await supabaseRequest(() => supabase.rpc('botanic_put_agent_skill', {
+        p_actor_id: userId,
+        p_skill: skill,
+      }))
+      if (error) {
+        if (missingAgentEntityRpc(error)) {
+          throw new BotanicAgentSkillError(
+            503,
+            'AGENT_SKILL_ATOMIC_PERSISTENCE_REQUIRED',
+            'Agent Skill 原子版本写入迁移尚未部署。',
+          )
+        }
+        if (error.code === '42501') {
+          throw new BotanicAgentSkillError(403, 'PROJECT_WRITE_FORBIDDEN', '你没有编辑该项目 Skill 的权限。')
+        }
+        fail(error)
       }
-      const { error } = await supabaseRequest(() => supabase.from('agent_skills').upsert({
-        id: skill.id, owner_id: userId, project_id: skill.projectId, status: payload.status,
-        updated_at: new Date(timestamp).toISOString(), payload,
-      }, { onConflict: 'id' }))
-      fail(error)
-      await insertAudit({ actorId: userId, action: existing ? 'agent-skill.updated' : 'agent-skill.created', projectId: skill.projectId, targetId: skill.id })
-      return clone(payload)
+      if (data?.kind === 'conflict' || data?.kind === 'invalid') {
+        const messages = {
+          AGENT_SKILL_ID_CONFLICT: 'Skill 标识已被其他项目使用。',
+          AGENT_SKILL_VERSION_STALE: 'Skill 写入版本已过期。',
+          AGENT_SKILL_VERSION_CONFLICT: 'Skill 同一版本不得改写执行内容。',
+          AGENT_SKILL_HISTORY_CONFLICT: 'Skill 历史版本不得覆盖、截断或跳号。',
+          AGENT_SKILL_VERSION_HASH_MISMATCH: 'Skill 版本快照与内容摘要不一致。',
+          INVALID_AGENT_SKILL_VERSION: 'Skill 持久化快照无效。',
+        }
+        const code = typeof data.code === 'string' ? data.code : 'INVALID_AGENT_SKILL_VERSION'
+        const statusCode = code === 'INVALID_AGENT_SKILL_VERSION' ? 400 : 409
+        throw new BotanicAgentSkillError(statusCode, code, messages[code] ?? messages.INVALID_AGENT_SKILL_VERSION)
+      }
+      if (!data?.payload || !['write', 'replay'].includes(data.kind)) {
+        throw productError('Agent Skill 原子写入未返回权威快照。', 'AGENT_SKILL_ATOMIC_WRITE_INVALID')
+      }
+      return clone(data.payload)
     },
 
     async listAgentSkills(userId, projectId) {
@@ -827,23 +1313,34 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       return (data ?? []).map((row) => clone(row.payload))
     },
 
+    async readAgentSkillVersion(userId, projectId, skillId, version) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const { data, error } = await supabaseRequest(() => supabase.from('agent_skills').select('payload')
+        .eq('project_id', projectId).eq('id', skillId).maybeSingle())
+      fail(error)
+      const snapshot = persistedAgentSkillVersion(data?.payload, version)
+      return snapshot ? clone({ projectId, skillId, ...snapshot }) : undefined
+    },
+
     async putAgentActionReceipt(userId, receipt) {
       const role = await memberRole(receipt.projectId, userId)
       assertProjectPermission(role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
-      const { data: existing, error: readError } = await supabaseRequest(() => supabase.from('agent_action_receipts')
-        .select('owner_id,project_id').eq('id', receipt.id).maybeSingle())
-      fail(readError)
-      if (existing && (existing.owner_id !== userId || existing.project_id !== receipt.projectId)) {
-        throw productError('Agent 行动回执冲突。', 'AGENT_ACTION_RECEIPT_CONFLICT')
-      }
       const payload = { ...clone(receipt), ownerId: userId }
-      const { error } = await supabaseRequest(() => supabase.from('agent_action_receipts').upsert({
+      // 旧完成写入只允许首次 insert；唯一键负责与新 claim 竞争，绝不 upsert 覆盖。
+      const { error } = await supabaseRequest(() => supabase.from('agent_action_receipts').insert({
         id: receipt.id,
         owner_id: userId,
         project_id: receipt.projectId,
         created_at: new Date(receipt.createdAt).toISOString(),
         payload,
-      }, { onConflict: 'id' }))
+      }))
+      if (error?.code === '23505') {
+        const { data: existing, error: readError } = await supabaseRequest(() => supabase.from('agent_action_receipts')
+          .select('payload').eq('id', receipt.id).eq('owner_id', userId).eq('project_id', receipt.projectId).maybeSingle())
+        fail(readError)
+        if (!existing) throw productError('Agent 行动回执冲突。', 'AGENT_ACTION_RECEIPT_CONFLICT')
+        return clone(existing.payload)
+      }
       fail(error)
       try {
         await upsertArtifactRecords(userId, receipt.projectId, artifactsFromActionReceipt(receipt))
@@ -866,48 +1363,158 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       return clone(data.payload)
     },
 
+    async claimAgentActionReceipt(userId, claim) {
+      const { data, error } = await supabaseRequest(() => supabase.rpc('botanic_claim_agent_action_receipt', {
+        p_owner_id: userId,
+        p_receipt_id: claim.id,
+        p_project_id: claim.projectId,
+        p_claim: claim,
+      }))
+      if (error) {
+        if (missingAgentEntityRpc(error)) {
+          throw productError('Agent 行动原子 claim 迁移尚未部署。', 'AGENT_ACTION_ATOMIC_CLAIM_REQUIRED')
+        }
+        if (error.code === '42501') throw productError('你没有执行该 Agent 行动的权限。', 'PROJECT_WRITE_FORBIDDEN')
+        if (error.code === '22023') throw productError('Agent 行动回执格式无效。', 'AGENT_ACTION_RECEIPT_INVALID')
+        fail(error)
+      }
+      return clone(data)
+    },
+
+    async settleAgentActionReceipt(userId, settlement) {
+      const { data, error } = await supabaseRequest(() => supabase.rpc('botanic_settle_agent_action_receipt', {
+        p_owner_id: userId,
+        p_receipt_id: settlement.id,
+        p_project_id: settlement.projectId,
+        p_settlement: settlement,
+      }))
+      if (error) {
+        if (missingAgentEntityRpc(error)) {
+          throw productError('Agent 行动原子 settle 迁移尚未部署。', 'AGENT_ACTION_ATOMIC_CLAIM_REQUIRED')
+        }
+        if (error.code === 'PAA01') throw productError('Agent 行动执行租约已失效。', 'AGENT_ACTION_LEASE_STALE')
+        if (error.code === 'PAA02') throw productError('未找到 Agent 行动回执。', 'AGENT_ACTION_RECEIPT_NOT_FOUND')
+        if (error.code === '22023') throw productError('Agent 行动回执格式无效。', 'AGENT_ACTION_RECEIPT_INVALID')
+        fail(error)
+      }
+      return clone(data)
+    },
+
+    async resolveAgentActionReceipt(userId, command) {
+      const { data, error } = await supabaseRequest(() => supabase.rpc('botanic_resolve_agent_action_receipt', {
+        p_owner_id: userId,
+        p_receipt_id: command?.id,
+        p_project_id: command?.projectId,
+        p_command: command,
+      }))
+      if (error) {
+        if (missingAgentEntityRpc(error)) {
+          throw productError('Agent 行动人工调和迁移尚未部署。', 'AGENT_ACTION_RECONCILIATION_REQUIRED')
+        }
+        if (error.code === '42501') throw productError('你没有调和该 Agent 行动的权限。', 'PROJECT_WRITE_FORBIDDEN')
+        if (error.code === '22023') throw productError('Agent 行动调和参数无效。', 'AGENT_ACTION_RECONCILIATION_INVALID')
+        fail(error)
+      }
+      return clone(data)
+    },
+
+    async consumeAgentActionManualRetryAuthorization(userId, command) {
+      const { data, error } = await supabaseRequest(() => supabase.rpc('botanic_consume_agent_action_manual_retry', {
+        p_owner_id: userId,
+        p_receipt_id: command?.id,
+        p_project_id: command?.projectId,
+        p_command: command,
+      }))
+      if (error) {
+        if (missingAgentEntityRpc(error)) {
+          throw productError('Agent 行动人工重试迁移尚未部署。', 'AGENT_ACTION_RECONCILIATION_REQUIRED')
+        }
+        if (error.code === '42501') throw productError('你没有重试该 Agent 行动的权限。', 'PROJECT_WRITE_FORBIDDEN')
+        if (error.code === '22023') throw productError('Agent 行动重试授权参数无效。', 'AGENT_ACTION_MANUAL_RETRY_INVALID')
+        fail(error)
+      }
+      return clone(data)
+    },
+
     async putGenerationJob(userId, job, { updateAgentRun = true, recordAudit = true } = {}) {
-      const payload = { ...clone(job), ownerId: userId, updatedAt: now() }
-      const { error } = await supabaseRequest(() => supabase.from('generation_jobs').upsert({
-        id: job.id, owner_id: userId, project_id: job.projectId, status: job.status,
-        updated_at: new Date(payload.updatedAt).toISOString(), payload,
-      }, { onConflict: 'id' }))
-      fail(error)
-      if (updateAgentRun && payload.agentRun?.runId) {
-        const { data: runRow, error: runReadError } = await supabaseRequest(() => supabase.from('agent_runs').select('payload').eq('id', payload.agentRun.runId).eq('owner_id', userId).maybeSingle())
-        fail(runReadError)
-        if (runRow) {
-          const run = applyGenerationJobToAgentRun(clone(runRow.payload), payload)
-          const { error: runWriteError } = await supabaseRequest(() => supabase.from('agent_runs').update({
-            status: run.status,
-            updated_at: new Date(run.updatedAt).toISOString(),
-            payload: run,
-          }).eq('id', run.id).eq('owner_id', userId))
-          fail(runWriteError)
-        }
+      const decision = await generationFenceRpc('botanic_put_generation_job_guarded', {
+        p_owner_id: userId,
+        p_job_id: job.id,
+        p_project_id: job.projectId,
+        p_job: clone(job),
+      })
+      if (decision?.changed) {
+        await projectGenerationJob(userId, decision.job, { updateAgentRun, recordAudit, syncArtifacts: true })
       }
-      try {
-        const [{ data: project, error: projectError }, { data: graph, error: graphError }] = await Promise.all([
-          supabase.from('projects').select('document').eq('id', job.projectId).maybeSingle(),
-          supabase.from('canvas_graphs').select('graph').eq('project_id', job.projectId).maybeSingle(),
-        ])
-        fail(projectError)
-        fail(graphError)
-        const document = project?.document
-          ? { ...clone(project.document), ...clone(graph?.graph ?? {}) }
-          : undefined
-        await upsertArtifactRecords(userId, job.projectId, artifactsFromGenerationJob(payload, { document }))
-      } catch (caught) {
-        console.warn(`[artifact-index] generation sync deferred for ${job.id}: ${caught instanceof Error ? caught.message : String(caught)}`)
+      return clone(decision?.job)
+    },
+
+    async claimGenerationJobExecution(jobId, claim) {
+      const decision = await generationFenceRpc('botanic_claim_generation_job_execution', {
+        p_job_id: jobId,
+        p_claim: clone(claim),
+      })
+      if (decision?.changed) {
+        await projectGenerationJob(decision.job.ownerId, decision.job, {
+          updateAgentRun: false,
+          recordAudit: false,
+          syncArtifacts: false,
+        })
       }
-      // 审计不可用不能让已成功幂等写入的生成任务在客户端表现为失败。
-      if (recordAudit) {
-        try {
-          await insertAudit({ actorId: userId, action: `generation.${job.status}`, projectId: job.projectId, targetId: job.id, detail: { model: job.settings?.model, batchCount: job.batchCount } })
-        } catch (error) {
-          console.warn(`[generation] audit deferred for ${job.id}: ${error instanceof Error ? error.message : String(error)}`)
-        }
+      return decision
+    },
+
+    async commitGenerationJobExecution(userId, command) {
+      const decision = await generationFenceRpc('botanic_commit_generation_job_execution', {
+        p_owner_id: userId,
+        p_job_id: command?.id,
+        p_project_id: command?.projectId,
+        p_command: clone(command),
+      })
+      if (decision?.changed) {
+        await projectGenerationJob(userId, decision.job, {
+          updateAgentRun: command.updateAgentRun !== false,
+          recordAudit: command.recordAudit !== false,
+          syncArtifacts: false,
+        })
       }
+      return decision
+    },
+
+    async cancelGenerationJobExecution(userId, command) {
+      const decision = await generationFenceRpc('botanic_cancel_generation_job_execution', {
+        p_owner_id: userId,
+        p_job_id: command?.id,
+        p_project_id: command?.projectId,
+        p_command: clone(command),
+      })
+      if (decision?.changed) await projectGenerationJob(userId, decision.job)
+      return decision
+    },
+
+    async acknowledgeGenerationJobCancellation(userId, command) {
+      return generationFenceRpc('botanic_acknowledge_generation_job_cancellation', {
+        p_owner_id: userId,
+        p_job_id: command?.id,
+        p_project_id: command?.projectId,
+        p_command: clone(command),
+      })
+    },
+
+    async compareAndSetGenerationJob(userId, command) {
+      const decision = await generationFenceRpc('botanic_compare_and_set_generation_job', {
+        p_owner_id: userId,
+        p_job_id: command?.id,
+        p_project_id: command?.projectId,
+        p_command: clone(command),
+      })
+      if (decision?.changed) {
+        await projectGenerationJob(userId, decision.job, {
+          updateAgentRun: command.updateAgentRun !== false,
+          recordAudit: command.recordAudit !== false,
+        })
+      }
+      return decision
     },
 
     async refreshGenerationArtifacts(userId, jobId) {
@@ -977,6 +1584,45 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       return data ? clone(data.payload) : undefined
     },
 
+    async claimAgentBranchRetry(userId, command) {
+      const role = await memberRole(command?.projectId, userId)
+      assertProjectPermission(role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      const { data, error } = await supabaseRequest(() => supabase.rpc('botanic_claim_agent_branch_retry', {
+        p_owner_id: userId,
+        p_command: clone(command),
+      }))
+      if (error) {
+        if (missingAgentEntityRpc(error)) {
+          throw productError('Agent 分支重试原子迁移尚未部署。', 'AGENT_BRANCH_RETRY_ATOMIC_WRITE_REQUIRED')
+        }
+        if (error.code === '42501') throw productError('你没有重试该 Agent 分支的权限。', 'PROJECT_WRITE_FORBIDDEN')
+        if (error.code === '22023') throw productError('Agent 分支重试身份无效。', 'AGENT_BRANCH_RETRY_INVALID')
+        fail(error)
+      }
+      if (data?.changed) {
+        try {
+          await insertAudit({
+            actorId: userId,
+            action: 'agent-run.branch-retry-claimed',
+            projectId: command.projectId,
+            targetId: command.runId,
+          })
+        } catch (caught) {
+          console.warn(`[agent-run] branch retry audit deferred for ${command.runId}: ${caught instanceof Error ? caught.message : String(caught)}`)
+        }
+      }
+      return clone(data)
+    },
+
+    async listQueuedAgentRunsForRecovery(options = {}) {
+      const { afterId, limit } = normalizeAgentEntityIdPage(options)
+      let query = supabase.from('agent_runs').select('payload').eq('status', 'queued')
+      if (afterId !== null) query = query.gt('id', afterId)
+      const { data, error } = await supabaseRequest(() => query.order('id', { ascending: true }).limit(limit))
+      fail(error)
+      return (data ?? []).map((row) => clone(row.payload))
+    },
+
     async listAgentRunsForProject(userId, projectId, limit = 30) {
       if (!await memberRole(projectId, userId)) return undefined
       const { data, error } = await supabaseRequest(() => supabase.from('agent_runs').select('payload')
@@ -996,30 +1642,117 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       return (data ?? []).map((row) => clone(row.payload))
     },
 
+    async listAgentRunsForTurnPage(userId, projectId, turnId, options = {}) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const { afterId, limit } = normalizeAgentEntityIdPage(options)
+      let query = supabase.from('agent_runs').select('payload')
+        .eq('project_id', projectId).eq('owner_id', userId).eq('payload->>turnId', turnId)
+      if (afterId !== null) query = query.gt('id', afterId)
+      const { data, error } = await supabaseRequest(() => query.order('id', { ascending: true }).limit(limit))
+      fail(error)
+      return (data ?? []).map((row) => clone(row.payload))
+    },
+
+    async claimAgentTurnExecution(userId, claim) {
+      const { data, error } = await supabaseRequest(() => supabase.rpc('botanic_claim_agent_turn_execution', {
+        p_owner_id: userId,
+        p_turn_id: claim?.turn?.id,
+        p_project_id: claim?.turn?.projectId,
+        p_claim: claim,
+      }))
+      if (error) {
+        if (missingAgentEntityRpc(error)) {
+          throw productError('Agent Turn 原子 claim 迁移尚未部署。', 'AGENT_TURN_ATOMIC_CLAIM_REQUIRED')
+        }
+        if (error.code === '42501') throw productError('你没有执行该 Agent Turn 的权限。', 'PROJECT_READ_FORBIDDEN')
+        if (error.code === '22023') throw productError('Agent Turn 执行参数无效。', 'AGENT_TURN_EXECUTION_INVALID')
+        fail(error)
+      }
+      return clone(data)
+    },
+
+    async commitAgentTurnExecution(userId, command) {
+      const { data, error } = await supabaseRequest(() => supabase.rpc('botanic_commit_agent_turn_execution', {
+        p_owner_id: userId,
+        p_turn_id: command?.id,
+        p_project_id: command?.projectId,
+        p_command: command,
+      }))
+      if (error) {
+        if (missingAgentEntityRpc(error)) {
+          throw productError('Agent Turn 原子 commit 迁移尚未部署。', 'AGENT_TURN_ATOMIC_CLAIM_REQUIRED')
+        }
+        if (error.code === 'PAT01') throw productError('Agent Turn 执行租约已失效。', 'AGENT_TURN_LEASE_STALE')
+        if (error.code === 'PAT02') throw productError('未找到 Agent Turn。', 'AGENT_TURN_NOT_FOUND')
+        if (error.code === 'PAT03') throw productError('Agent Turn 事件标识冲突。', 'AGENT_TURN_EVENT_CONFLICT')
+        if (error.code === '22023') throw productError('Agent Turn 执行参数无效。', 'AGENT_TURN_EXECUTION_INVALID')
+        fail(error)
+      }
+      return clone(data)
+    },
+
+    async requestAgentTurnCancellation(userId, request) {
+      const { data, error } = await supabaseRequest(() => supabase.rpc('botanic_request_agent_turn_cancellation', {
+        p_owner_id: userId,
+        p_turn_id: request?.id,
+        p_project_id: request?.projectId,
+        p_request: request,
+      }))
+      if (error) {
+        if (missingAgentEntityRpc(error)) {
+          throw productError('Agent Turn 原子取消迁移尚未部署。', 'AGENT_TURN_ATOMIC_CLAIM_REQUIRED')
+        }
+        if (error.code === 'PAT02') throw productError('未找到 Agent Turn。', 'AGENT_TURN_NOT_FOUND')
+        if (error.code === 'PAT03') throw productError('Agent Turn 事件标识冲突。', 'AGENT_TURN_EVENT_CONFLICT')
+        if (error.code === '42501') throw productError('你没有取消该 Agent Turn 的权限。', 'PROJECT_READ_FORBIDDEN')
+        if (error.code === '22023') throw productError('Agent Turn 取消参数无效。', 'AGENT_TURN_EXECUTION_INVALID')
+        fail(error)
+      }
+      return clone(data)
+    },
+
+    async finalizeAgentTurnCancellation(userId, command) {
+      const { data, error } = await supabaseRequest(() => supabase.rpc('botanic_finalize_agent_turn_cancellation', {
+        p_owner_id: userId,
+        p_turn_id: command?.id,
+        p_project_id: command?.projectId,
+        p_command: command,
+      }))
+      if (error) {
+        if (missingAgentEntityRpc(error)) {
+          throw productError('Agent Turn 取消收口迁移尚未部署。', 'AGENT_TURN_ATOMIC_CLAIM_REQUIRED')
+        }
+        if (error.code === 'PAT02') throw productError('未找到 Agent Turn。', 'AGENT_TURN_NOT_FOUND')
+        if (error.code === 'PAT03') throw productError('Agent Turn 事件标识冲突。', 'AGENT_TURN_EVENT_CONFLICT')
+        if (error.code === '22023') throw productError('Agent Turn 取消收口参数无效。', 'AGENT_TURN_EXECUTION_INVALID')
+        fail(error)
+      }
+      return clone(data)
+    },
+
     async putAgentTurn(userId, turn) {
       const role = await memberRole(turn.projectId, userId)
       assertProjectPermission(role, 'read', 'PROJECT_READ_FORBIDDEN')
-      const { data: existing, error: readError } = await supabaseRequest(() => supabase.from('agent_turns')
-        .select('owner_id,project_id,payload').eq('id', turn.id).maybeSingle())
-      fail(readError)
-      if (existing && (existing.owner_id !== userId || existing.project_id !== turn.projectId)) {
-        throw productError('Agent Turn 标识已被其他项目使用。', 'AGENT_TURN_ID_CONFLICT')
-      }
       const timestamp = Number(turn.updatedAt) || now()
       const payload = { ...clone(turn), ownerId: userId, updatedAt: timestamp }
-      const { error } = await supabaseRequest(() => supabase.from('agent_turns').upsert({
-        id: turn.id,
-        owner_id: userId,
-        project_id: turn.projectId,
-        session_id: turn.sessionId ?? null,
-        idempotency_key: turn.idempotencyKey,
-        status: turn.status,
-        updated_at: new Date(timestamp).toISOString(),
-        payload,
-      }, { onConflict: 'id' }))
-      fail(error)
-      await insertAudit({ actorId: userId, action: `agent-turn.${turn.status}`, projectId: turn.projectId, targetId: turn.id })
-      return clone(payload)
+      // generic/legacy put 与 claim 共用数据库锁；先读再 REST upsert 会在两个调用间
+      // 抹掉并发建立的 execution token/generation，因此缺 RPC 时必须失败关闭。
+      const { data, error } = await supabaseRequest(() => supabase.rpc('botanic_put_agent_turn_compatible', {
+        p_owner_id: userId,
+        p_turn_id: turn.id,
+        p_project_id: turn.projectId,
+        p_turn: payload,
+      }))
+      if (error) {
+        if (missingAgentEntityRpc(error)) {
+          throw productError('Agent Turn 原子兼容写入迁移尚未部署。', 'AGENT_TURN_ATOMIC_WRITE_REQUIRED')
+        }
+        if (error.code === 'PAT04') throw productError('Agent Turn 标识或请求绑定冲突。', 'AGENT_TURN_ID_CONFLICT')
+        if (error.code === '42501') throw productError('你没有读取该项目的权限。', 'PROJECT_READ_FORBIDDEN')
+        if (error.code === '22023') throw productError('Agent Turn 兼容写入参数无效。', 'AGENT_TURN_EXECUTION_INVALID')
+        fail(error)
+      }
+      return clone(data)
     },
 
     async readAgentTurn(userId, turnId) {
@@ -1050,13 +1783,20 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
      * 不做成员校验：清扫是系统行为，没有发起它的用户（与 readAgentTurnForWorker 同理）。
      */
     async listStaleAgentTurns(options = {}) {
-      const { olderThan, limit } = normalizeStaleTurnQuery(options)
-      const { data, error } = await supabaseRequest(() => supabase.from('agent_turns').select('payload')
-        .in('status', [...nonTerminalAgentTurnStatuses])
-        .lt('updated_at', olderThan)
-        .order('updated_at', { ascending: true }).limit(limit))
-      fail(error)
-      return (data ?? []).map((row) => clone(row.payload))
+      const { olderThan, after, limit } = normalizeStaleTurnQuery(options)
+      const { data, error } = await supabaseRequest(() => supabase.rpc('botanic_list_stale_agent_turns', {
+        p_older_than_ms: olderThan,
+        p_after_updated_at_ms: after?.updatedAt ?? null,
+        p_after_id: after?.id ?? null,
+        p_limit: limit,
+      }))
+      if (error) {
+        if (missingAgentEntityRpc(error)) {
+          throw productError('Agent Turn 稳定恢复分页迁移尚未部署。', 'AGENT_TURN_RECOVERY_PAGINATION_REQUIRED')
+        }
+        fail(error)
+      }
+      return (data ?? []).map(clone)
     },
 
     async appendAgentTurnEvent(userId, projectId, event) {
@@ -1116,17 +1856,185 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       }))
     },
 
-    // 同上：PostgREST 表达不了 jsonb 数组里的存在性，按状态先收窄再本地筛。
-    async listRunsWithFailedBranches({ limit = 25 } = {}) {
-      const { data, error } = await supabaseRequest(() => supabase.from('agent_runs').select('id, owner_id, project_id, payload')
-        .in('status', ['partial', 'failed'])
-        .order('updated_at', { ascending: true })
-        .limit(Math.max(1, Math.min(limit * 8, 400))))
+    async enqueueAgentSubagentActivation(userId, rawCommand) {
+      const start = rawCommand?.kind === 'start'
+        ? materializeAgentSubagentEnqueueCommand(userId, rawCommand)
+        : undefined
+      const subagentId = start?.subagentId ?? rawCommand?.subagentId ?? ''
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        const existingSubagent = await readSupabaseSubagentForRuntime(subagentId)
+        let existingActivation
+        if (existingSubagent) {
+          const { data, error } = await supabaseRequest(() => supabase.from('agent_subagent_activations')
+            .select(agentSubagentActivationColumns)
+            .eq('subagent_id', subagentId)
+            .eq('idempotency_key', rawCommand?.idempotencyKey ?? '')
+            .maybeSingle())
+          fail(error)
+          existingActivation = data ? agentSubagentActivationFromSupabaseRow(data) : undefined
+        }
+        const sequence = existingActivation?.sequence
+          ?? (Number(existingSubagent?.lastEnqueuedSequence) + 1 || 1)
+        const materialized = start ?? materializeAgentSubagentEnqueueCommand(
+          existingSubagent?.ownerId ?? userId,
+          {
+            ...clone(rawCommand),
+            sequence,
+            cancelGeneration: Number(existingSubagent?.cancelGeneration) || 0,
+          },
+        )
+        let existingTurn
+        if (existingActivation) {
+          const { data, error } = await supabaseRequest(() => supabase.from('agent_turns')
+            .select('payload').eq('id', existingActivation.turnId).maybeSingle())
+          fail(error)
+          existingTurn = data?.payload
+        }
+        const materialization = agentSubagentEnqueueDecision(
+          existingSubagent,
+          existingActivation,
+          { ...materialized, existingTurn },
+        )
+        if (['missing', 'inactive'].includes(materialization.kind)) {
+          return publicAgentSubagentDecision(materialization)
+        }
+        const rpcCommand = {
+          ...materialized,
+          subagent: materialization.subagent ?? existingSubagent ?? {},
+          activation: materialization.activation ?? existingActivation ?? {},
+          session: materialization.session ?? {},
+          inputMessage: materialization.inputMessage ?? {},
+          turn: materialization.turn ?? existingTurn ?? materialized.candidate.turn,
+        }
+        const outcome = await agentSubagentRpc('botanic_enqueue_agent_subagent_activation', {
+          p_actor_id: userId,
+          p_command: rpcCommand,
+        })
+        if (outcome?.kind !== 'retry') return publicAgentSubagentDecision(outcome)
+      }
+      throw productError('Subagent 并发入队未能取得稳定序号，请重试。', 'AGENT_SUBAGENT_PERSISTENCE_CONFLICT')
+    },
+
+    async claimAgentSubagentActivation(command) {
+      return agentSubagentRpc('botanic_claim_agent_subagent_activation', { p_command: command })
+    },
+
+    async settleAgentSubagentActivation(command) {
+      return agentSubagentRpc('botanic_settle_agent_subagent_activation', { p_command: command })
+    },
+
+    async readAgentSubagent(userId, subagentId) {
+      const raw = await readSupabaseSubagentForRuntime(subagentId)
+      if (!raw || !await memberRole(raw.projectId, userId)) return undefined
+      return publicAgentSubagent(raw)
+    },
+
+    async readAgentSubagentForWorker(subagentId) {
+      return readSupabaseSubagentForRuntime(subagentId)
+    },
+
+    async listAgentSubagentsForRootTurnPage(userId, projectId, rootTurnId, options = {}) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const { afterId, limit } = normalizeAgentEntityIdPage(options)
+      const { data, error } = await supabaseRequest(() => supabase.rpc(
+        'botanic_list_agent_subagents_for_root_turn',
+        {
+          p_actor_id: userId,
+          p_project_id: projectId,
+          p_root_turn_id: rootTurnId,
+          p_after_id: afterId,
+          p_limit: limit,
+        },
+      ))
+      if (error?.code === '42501') return undefined
+      if (missingAgentEntityRpc(error) || missingAgentEntityTable(error)) {
+        throw productError(
+          'AgentSubagent 根 Turn 分页迁移尚未部署。',
+          'AGENT_SUBAGENT_ROOT_TURN_PAGE_REQUIRED',
+        )
+      }
       fail(error)
-      return (data ?? [])
-        .filter((row) => (row.payload?.branches ?? []).some((branch) => branch?.status === 'failed'))
-        .slice(0, Math.max(1, Math.min(limit, 200)))
-        .map((row) => ({ runId: row.id, ownerId: row.owner_id, projectId: row.project_id }))
+      if (!Array.isArray(data)) {
+        throw productError(
+          'AgentSubagent 根 Turn 分页响应格式无效。',
+          'AGENT_SUBAGENT_ROOT_TURN_PAGE_INVALID',
+        )
+      }
+      return data.map(publicAgentSubagent)
+    },
+
+    async listAgentSubagentActivations(userId, subagentId, options = {}) {
+      const subagent = await readSupabaseSubagentForRuntime(subagentId)
+      if (!subagent || !await memberRole(subagent.projectId, userId)) return undefined
+      const { afterSequence, limit } = normalizeAgentSubagentActivationPage(options)
+      const { data, error } = await supabaseRequest(() => supabase.from('agent_subagent_activations')
+        .select(agentSubagentActivationColumns)
+        .eq('subagent_id', subagentId)
+        .gt('sequence', afterSequence)
+        .order('sequence', { ascending: true })
+        .limit(limit))
+      fail(error)
+      return (data ?? []).map((row) => publicAgentSubagentActivation(
+        agentSubagentActivationFromSupabaseRow(row),
+      ))
+    },
+
+    async listAgentSubagentActivationsForWorker(subagentId, options = {}) {
+      if (!await readSupabaseSubagentForRuntime(subagentId)) return undefined
+      const { afterSequence, limit } = normalizeAgentSubagentActivationPage(options)
+      const { data, error } = await supabaseRequest(() => supabase.from('agent_subagent_activations')
+        .select(agentSubagentActivationColumns)
+        .eq('subagent_id', subagentId)
+        .gt('sequence', afterSequence)
+        .order('sequence', { ascending: true })
+        .limit(limit))
+      fail(error)
+      const activations = (data ?? []).map(agentSubagentActivationFromSupabaseRow)
+      if (!activations.length) return []
+      const { data: turns, error: turnError } = await supabaseRequest(() => supabase.from('agent_turns')
+        .select('id,payload').in('id', activations.map((activation) => activation.turnId)))
+      fail(turnError)
+      const turnById = new Map((turns ?? []).map((row) => [row.id, clone(row.payload)]))
+      return activations.map((activation) => ({ activation, turn: turnById.get(activation.turnId) }))
+    },
+
+    async listRunnableAgentSubagents(options = {}) {
+      const page = normalizeRunnableAgentSubagentPage(options)
+      const data = await agentSubagentRpc('botanic_list_runnable_agent_subagents', {
+        p_older_than_ms: page.now,
+        p_after_updated_at_ms: page.after?.updatedAt ?? null,
+        p_after_id: page.after?.id ?? null,
+        p_limit: page.limit,
+      })
+      if (!Array.isArray(data)) {
+        throw productError('AgentSubagent 恢复分页响应格式无效。', 'AGENT_SUBAGENT_RECOVERY_RESPONSE_INVALID')
+      }
+      return data
+    },
+
+    async requestAgentSubagentCancellation(userId, command) {
+      const result = await agentSubagentRpc('botanic_request_agent_subagent_cancellation', {
+        p_actor_id: userId,
+        p_command: command,
+      })
+      return publicAgentSubagentDecision(result)
+    },
+
+    async finalizeAgentSubagentCancellation(userId, command) {
+      const result = await agentSubagentRpc('botanic_finalize_agent_subagent_cancellation', {
+        p_actor_id: userId,
+        p_command: command,
+      })
+      return publicAgentSubagentDecision(result)
+    },
+
+    async listRunsWithFailedBranches(options = {}) {
+      const { after, limit } = normalizeUpdatedAtIdRecoveryPage(options)
+      return recoveryKeysetRpc('botanic_list_runs_with_failed_branches', {
+        p_after_updated_at_ms: after?.updatedAt ?? null,
+        p_after_id: after?.id ?? null,
+        p_limit: limit,
+      })
     },
 
     // PostgREST 无法表达「jsonb 数组里存在某状态」，因此按最近更新的项目取一批再
@@ -1149,13 +2057,68 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
     async putAgentReviewTask(userId, task) {
       const role = await memberRole(task.projectId, userId)
       assertProjectPermission(role, 'read', 'PROJECT_READ_FORBIDDEN')
-      const payload = { ...clone(task), ownerId: task.ownerId ?? userId, updatedAt: Number(task.updatedAt) || now() }
-      const { error } = await supabaseRequest(() => supabase.from('agent_review_tasks').upsert({
-        id: task.id, owner_id: payload.ownerId, project_id: task.projectId,
-        run_id: task.runId, status: task.status, updated_at: payload.updatedAt, payload,
-      }))
-      fail(error)
-      return payload
+      const decision = await agentReviewFenceRpc('botanic_put_agent_review_task_guarded', {
+        p_owner_id: task.ownerId ?? userId,
+        p_task_id: task.id,
+        p_project_id: task.projectId,
+        p_task: clone(task),
+      })
+      return clone(decision?.task)
+    },
+
+    async claimAgentReviewExecution(userId, command) {
+      return agentReviewFenceRpc('botanic_claim_agent_review_execution', {
+        p_owner_id: userId,
+        p_task_id: command?.id,
+        p_project_id: command?.projectId,
+        p_claim: clone(command),
+      })
+    },
+
+    async commitAgentReviewExecution(userId, command) {
+      return agentReviewFenceRpc('botanic_commit_agent_review_execution', {
+        p_owner_id: userId,
+        p_task_id: command?.id,
+        p_project_id: command?.projectId,
+        p_command: clone(command),
+      })
+    },
+
+    async requestAgentReviewCancellation(userId, command) {
+      return agentReviewFenceRpc('botanic_request_agent_review_cancellation', {
+        p_actor_id: userId,
+        p_task_id: command?.id,
+        p_project_id: command?.projectId,
+        p_command: { ...clone(command), requestedBy: userId },
+      })
+    },
+
+    async finalizeAgentReviewCancellation(userId, command) {
+      return agentReviewFenceRpc('botanic_finalize_agent_review_cancellation', {
+        p_owner_id: userId,
+        p_task_id: command?.id,
+        p_project_id: command?.projectId,
+        p_command: clone(command),
+      })
+    },
+
+    async resolveAgentReviewOutcomeUnknown(userId, command) {
+      return agentReviewFenceRpc('botanic_resolve_agent_review_outcome_unknown', {
+        p_actor_id: userId,
+        p_task_id: command?.id,
+        p_project_id: command?.projectId,
+        p_command: { ...clone(command), actorId: userId },
+      })
+    },
+
+    async commitAgentReviewHumanDecisions(userId, command) {
+      return agentReviewHumanDecisionRpc('botanic_commit_agent_review_human_decisions', {
+        p_actor_id: userId,
+        p_task_id: command?.id,
+        p_project_id: command?.projectId,
+        p_command: clone(command),
+        p_contract_version: 2,
+      })
     },
 
     async readAgentReviewTask(userId, taskId) {
@@ -1166,6 +2129,13 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       return await memberRole(data.project_id, userId) ? clone(data.payload) : undefined
     },
 
+    async readAgentReviewTaskForWorker(taskId) {
+      const { data, error } = await supabaseRequest(() => supabase.from('agent_review_tasks')
+        .select('payload').eq('id', taskId).maybeSingle())
+      fail(error)
+      return data ? clone(data.payload) : undefined
+    },
+
     async listAgentReviewTasksForRun(userId, projectId, runId) {
       if (!await memberRole(projectId, userId)) return undefined
       const { data, error } = await supabaseRequest(() => supabase.from('agent_review_tasks').select('payload')
@@ -1174,12 +2144,14 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       return (data ?? []).map((row) => clone(row.payload))
     },
 
-    async listPendingAgentReviewTasks({ olderThan = now(), limit = 25 } = {}) {
-      const { data, error } = await supabaseRequest(() => supabase.from('agent_review_tasks').select('payload')
-        .in('status', ['queued', 'running']).lte('updated_at', olderThan)
-        .order('updated_at', { ascending: true }).limit(Math.max(1, Math.min(limit, 200))))
-      fail(error)
-      return (data ?? []).map((row) => clone(row.payload))
+    async listPendingAgentReviewTasks(options = {}) {
+      const { olderThan, after, limit } = normalizePendingAgentReviewRecoveryPage(options)
+      return recoveryKeysetRpc('botanic_list_pending_agent_review_tasks', {
+        p_older_than_ms: olderThan,
+        p_after_updated_at_ms: after?.updatedAt ?? null,
+        p_after_id: after?.id ?? null,
+        p_limit: limit,
+      })
     },
 
     async putAgentReview(userId, review) {
@@ -1250,10 +2222,31 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       return (data ?? []).map((row) => clone(row.payload))
     },
 
+    async listGenerationJobsForAgentRunPage(userId, projectId, runId, options = {}) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const { afterId, limit } = normalizeAgentEntityIdPage(options)
+      let query = supabase.from('generation_jobs').select('payload')
+        .eq('project_id', projectId).eq('owner_id', userId)
+        .eq('payload->agentRun->>runId', runId)
+      if (afterId !== null) query = query.gt('id', afterId)
+      const { data, error } = await supabaseRequest(() => query.order('id', { ascending: true }).limit(limit))
+      fail(error)
+      return (data ?? []).map((row) => clone(row.payload))
+    },
+
     async readGenerationJobForWorker(jobId) {
       const { data, error } = await supabaseRequest(() => supabase.from('generation_jobs').select('payload').eq('id', jobId).maybeSingle())
       fail(error)
       return data ? clone(data.payload) : undefined
+    },
+
+    async listRecoverableGenerationJobs(options = {}) {
+      const { after, limit } = normalizeUpdatedAtIdRecoveryPage(options)
+      return recoveryKeysetRpc('botanic_list_recoverable_generation_jobs', {
+        p_after_updated_at_ms: after?.updatedAt ?? null,
+        p_after_id: after?.id ?? null,
+        p_limit: limit,
+      })
     },
 
     async recoverGenerationJobs() {
@@ -1268,11 +2261,10 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
     },
 
     async recoverStaleGenerationJobs(staleAfterMs = 90_000) {
-      const staleBefore = new Date(now() - Math.max(30_000, staleAfterMs)).toISOString()
-      const { data, error } = await supabaseRequest(() => supabase
-        .from('generation_jobs').select('payload').eq('status', 'running').lte('updated_at', staleBefore).order('updated_at', { ascending: true }))
-      fail(error)
-      return (data ?? []).map((row) => clone(row.payload))
+      const jobs = await generationFenceRpc('botanic_recover_stale_generation_jobs', {
+        p_stale_after_ms: Math.max(30_000, staleAfterMs),
+      })
+      return Array.isArray(jobs) ? jobs.map(clone) : []
     },
 
     async createMediaObject(ownerId, projectId, { id, storageKey, contentType, byteSize }) {

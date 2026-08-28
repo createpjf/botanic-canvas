@@ -2,7 +2,6 @@
 
 import { generationCancelOutcome } from './generationCancelCapability.mjs'
 import { providerForModel } from './generationModels.mjs'
-import { persistedGenerationJob } from './generationProvider.mjs'
 
 /**
  * 取消一个生成任务的唯一权威实现。
@@ -55,12 +54,34 @@ export function recordedGenerationCancelOutcome(job) {
 }
 
 /**
+ * Worker 侧取消订阅只负责中止当前本地执行，不负责 durable ack。
+ * 先复读 Job 并比对完整 signalId，避免旧 generation 的迟到 Redis 消息中止新 retry。
+ * Provider/heartbeat 真正退出后由 Generation Processor 写 release ack。
+ */
+export async function abortMatchingGenerationJobCancellation({ productStore, cancelRegistry, event }) {
+  if (event?.scope !== 'job'
+    || typeof event.id !== 'string'
+    || typeof event.projectId !== 'string'
+    || typeof event.signalId !== 'string'
+    || !event.signalId) return false
+  if (typeof productStore?.readGenerationJobForWorker !== 'function'
+    || typeof cancelRegistry?.abort !== 'function') return false
+  const job = await productStore.readGenerationJobForWorker(event.id)
+  if (!job
+    || job.projectId !== event.projectId
+    || job.status !== 'cancelled'
+    || job.cancel?.signalRequired !== true
+    || job.cancel?.signalId !== event.signalId) return false
+  return cancelRegistry.abort(event.id) === true
+}
+
+/**
  * 取消单个生成任务。已终态的任务不再改写，但仍返回可用于文案的判定。
  *
  * @param {{
  *   productStore: any,
  *   redisQueue?: any,
- *   publishCancel?: (event: { scope: string, id: string, projectId?: string, requestedAt?: number }) => Promise<any> | any,
+ *   publishCancel?: (event: { scope: string, id: string, projectId?: string, requestedAt?: number, signalId?: string }) => Promise<any> | any,
  *   modelOptions?: any[],
  *   ownerId: string,
  *   job: any,
@@ -86,31 +107,54 @@ export async function cancelGenerationJob({
   if (!GENERATION_CANCEL_REASONS.includes(reason)) {
     throw new Error(`未声明的取消来源：${reason}`)
   }
-  // 判定必须在改写状态之前算：queued 与 running 的计费后果完全不同。
-  const outcome = generationCancelOutcome({
-    status: job.status,
-    provider: providerForModel(modelOptions, job.settings?.model)?.provider,
-  })
-  if (job.status !== 'queued' && job.status !== 'running') {
-    return { cancelled: false, job, outcome: recordedGenerationCancelOutcome(job) ?? outcome }
+  if (typeof productStore?.cancelGenerationJobExecution !== 'function') {
+    throw new TypeError('ProductStore 缺少 Generation Job 原子取消能力。')
   }
-  /** @type {GenerationCancelRecord} */
-  const record = {
+  const provider = providerForModel(modelOptions, job.settings?.model)?.provider
+  // queued/running 的真实状态只能在 Store 的行锁内判定。两个候选后果都传入，
+  // Adapter 以锁内状态选择，避免 stale queued 快照把已派发任务误记成“不计费”。
+  const outcomes = {
+    queued: generationCancelOutcome({ status: 'queued', provider }),
+    running: generationCancelOutcome({ status: 'running', provider }),
+  }
+  const decision = await productStore.cancelGenerationJobExecution(ownerId, {
+    id: job.id,
+    projectId: job.projectId,
     requestedAt,
     reason,
     ...(requestedBy ? { requestedBy } : {}),
-    billing: outcome.billing,
-    capability: outcome.capability,
-    workerReleased: outcome.workerReleased,
-    code: outcome.code,
+    outcomes,
+  })
+  const authoritative = decision?.job ?? job
+  const outcome = recordedGenerationCancelOutcome(authoritative)
+    ?? generationCancelOutcome({ status: authoritative.status, provider })
+  const pendingSignal = authoritative.status === 'cancelled'
+    && authoritative.cancel?.signalRequired === true
+    && typeof authoritative.cancel?.signalId === 'string'
+    && authoritative.cancel.signalId
+    && !Number(authoritative.cancel?.signalAcknowledgedAt)
+  if (!decision?.changed) {
+    // 第一次 publish 可能在 Job durable 之后失败。重复取消必须按同一 signalId
+    // 重发，不能因状态已是 cancelled 就早退；收到实际 Worker ack 后才停止。
+    if (pendingSignal) {
+      await publishCancel?.({
+        scope: 'job',
+        id: authoritative.id,
+        projectId: authoritative.projectId,
+        requestedAt: authoritative.cancel.requestedAt,
+        signalId: authoritative.cancel.signalId,
+      })
+    }
+    return { cancelled: false, job: authoritative, outcome }
   }
-  const cancelled = { ...job, status: 'cancelled', error: undefined, cancel: record, updatedAt: requestedAt }
-  await productStore.putGenerationJob(ownerId, persistedGenerationJob(cancelled))
-  await afterPersist?.(cancelled)
+  await afterPersist?.(authoritative)
   // 只对尚未派发的任务有效，也正因如此它是唯一真省钱的路径。
   await redisQueue?.cancel(job.id)
   // Worker 是独立进程：不广播它就会等 Provider 跑完再丢弃结果，槽位白占。
   // 带上请求时刻，Worker 才能报出「点取消 → 本地 abort」的延迟分位数。
-  await publishCancel?.({ scope: 'job', id: job.id, projectId: job.projectId, requestedAt })
-  return { cancelled: true, job: cancelled, outcome }
+  await publishCancel?.({
+    scope: 'job', id: job.id, projectId: job.projectId, requestedAt,
+    ...(pendingSignal ? { signalId: authoritative.cancel.signalId } : {}),
+  })
+  return { cancelled: true, job: authoritative, outcome }
 }

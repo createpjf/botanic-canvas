@@ -12,10 +12,10 @@ const cancelChannel = 'botanic-agent-cancels'
  *
  * 只传标识，不传业务内容：接收方按标识去权威存储读状态，避免把过期快照当事实。
  */
-const cancelScopes = new Set(['turn', 'run', 'job'])
+const cancelScopes = new Set(['turn', 'run', 'job', 'review'])
 
 function validCancelEvent(event) {
-  return Boolean(
+  const base = Boolean(
     event
     && cancelScopes.has(event.scope)
     && typeof event.id === 'string'
@@ -23,6 +23,16 @@ function validCancelEvent(event) {
     && typeof event.projectId === 'string'
     && event.projectId.trim(),
   )
+  if (!base) return false
+  // Review signal 必须绑定执行 generation。否则 Redis 中一条延迟消息可能中止
+  // 已接管同一 task 的新 Worker；turn/job 有各自的权威补读 fence。
+  if (event.scope === 'review') {
+    return typeof event.signalId === 'string'
+      && Boolean(event.signalId.trim())
+      && Number.isInteger(event.executionGeneration)
+      && event.executionGeneration > 0
+  }
+  return true
 }
 
 function validAgentRunEvent(event) {

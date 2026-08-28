@@ -8,6 +8,19 @@ function extension(contentType) {
   return 'png'
 }
 
+export async function downloadSupabaseObject(fileApi, storageKey, { signal } = {}) {
+  const { data, error } = await fileApi.download(
+    storageKey,
+    {},
+    signal ? { signal } : {},
+  )
+  if (signal?.aborted) throw signal.reason ?? new Error('Supabase Storage 下载已取消。')
+  if (error || !data) throw new Error(error?.message ?? 'Supabase Storage 未返回媒体文件。')
+  const body = Buffer.from(await data.arrayBuffer())
+  if (signal?.aborted) throw signal.reason ?? new Error('Supabase Storage 下载已取消。')
+  return { body, contentType: data.type }
+}
+
 /** Supabase Storage Adapter。Bucket 保持 private，读取必须经过 API 或 Storage RLS。 */
 export function createSupabaseObjectStore({ url, secretKey, bucket = 'botanic-media' }) {
   if (!url || !secretKey) throw new Error('SUPABASE_URL 与 SUPABASE_SECRET_KEY 未配置。')
@@ -24,10 +37,8 @@ export function createSupabaseObjectStore({ url, secretKey, bucket = 'botanic-me
   return {
     putMedia,
     putImage: putMedia,
-    async get(storageKey) {
-      const { data, error } = await supabase.storage.from(bucket).download(storageKey)
-      if (error || !data) throw new Error(error?.message ?? 'Supabase Storage 未返回媒体文件。')
-      return { body: Buffer.from(await data.arrayBuffer()), contentType: data.type }
+    async get(storageKey, { signal } = {}) {
+      return downloadSupabaseObject(supabase.storage.from(bucket), storageKey, { signal })
     },
     async createSignedUrl(storageKey, expiresIn) {
       const { data, error } = await supabase.storage.from(bucket).createSignedUrl(storageKey, expiresIn)

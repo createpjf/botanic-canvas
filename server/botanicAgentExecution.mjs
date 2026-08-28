@@ -48,6 +48,7 @@ function mergeWorkflowNodes(items, additions, submission) {
 function providerName(model) {
   if (!model) throw new AgentToolRuntimeError('AGENT_MODEL_NOT_CONFIGURED', 'Agent 计划使用的生成模型尚未配置。', 503)
   if (model.provider === 'minimax') return model.mediaKind === 'video' ? 'minimax-video' : 'minimax-image'
+  if (model.provider === 'flock') return 'flock-image'
   return 'openai-images'
 }
 
@@ -118,7 +119,7 @@ function workflowForBranch({ run, branch, parentNode, recipe, jobId, branchIndex
       kind: 'generate', label: clipBranchLabel(branch.label), prompt: '',
       batchCount: recipe.batchCount, settings: clone(recipe.settings), status: submission ? 'queued' : 'idle',
       generationKind, refinementMode: 'faithful', jobId,
-      agentRun: { runId: run.id, branchId: branch.id },
+      agentRun: { runId: run.id, branchId: branch.id, attempt: branch.attempt ?? 0 },
     },
   }
   const promptNode = {
@@ -141,7 +142,7 @@ function workflowForBranch({ run, branch, parentNode, recipe, jobId, branchIndex
       ...(submission ? { submittedAt: now } : {}),
       jobId, taskGroupId: resultNodeId, taskNodeId: resultNodeId, variant: 0,
       generationKind, refinementMode: 'faithful', generationSettings: clone(recipe.settings),
-      agentRun: { runId: run.id, branchId: branch.id },
+      agentRun: { runId: run.id, branchId: branch.id, attempt: branch.attempt ?? 0 },
       generationRecipe: clone(recipe),
       ...(run.plan.intent === 'initial_generation'
         ? { rootRecipe: clone(recipe) }
@@ -269,7 +270,7 @@ export function prepareAgentRunExecution({
       settings: clone(validated.settings), provider: providerName(selectedModel),
       idempotencyKey: `${run.id}:${branch.id}:attempt-${branch.attempt ?? 0}`,
       outputs: [], error: undefined, rawInput,
-      agentRun: { runId: run.id, branchId: branch.id },
+      agentRun: { runId: run.id, branchId: branch.id, attempt: branch.attempt ?? 0 },
       // 指纹提到任务顶层：Artifact 要能反查「这张图属于哪一次确认的哪一支」，
       // 埋在 generationRecipe 里则每个读取方都得自己往下挖一层。
       ...(recipe.planFingerprint ? { planFingerprint: recipe.planFingerprint } : {}),

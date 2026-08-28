@@ -29,19 +29,88 @@ function persistentRun() {
   }
 }
 
-function harness({ run = persistentRun(), document = projectDocument(), consumeError } = {}) {
+function harness({
+  run = persistentRun(),
+  document = projectDocument(),
+  consumeError,
+  turn,
+  afterWriteProject,
+  afterPutGenerationJob,
+  putGenerationJobImpl,
+  enqueueImpl,
+  concurrentWorkflowWrites = false,
+  unrelatedWorkflowConflict = false,
+} = {}) {
   let activeRun = run
   let project = { document, revision: 1, graphRevision: 1 }
   const jobs = new Map()
   const queued = []
   const quotaCosts = []
+  const quotaReservations = []
+  const chargedReservations = new Set()
+  let chargedOutputCount = 0
+  let waitingWrite
+  let releaseWaitingWrite
+  let injectedUnrelatedConflict = false
   const productStore = {
     async readAgentRun() { return activeRun },
+    async readAgentTurn() { return turn },
     async putAgentRun(_userId, nextRun) { activeRun = nextRun; return nextRun },
     async readProject() { return project },
-    async writeProject(_userId, document) { project = { document, revision: project.revision + 1, graphRevision: 1 }; return project },
+    async writeProject(_userId, document, expectedRevision) {
+      if (concurrentWorkflowWrites && expectedRevision === 1) {
+        if (!waitingWrite) {
+          waitingWrite = new Promise((resolve) => { releaseWaitingWrite = resolve })
+          await waitingWrite
+        } else {
+          releaseWaitingWrite?.()
+        }
+      }
+      if (unrelatedWorkflowConflict && !injectedUnrelatedConflict) {
+        injectedUnrelatedConflict = true
+        project = {
+          ...project,
+          document: { ...project.document, name: '另一项并发修改' },
+          revision: project.revision + 1,
+        }
+        throw Object.assign(new Error('project changed'), { code: 'PROJECT_CONFLICT' })
+      }
+      if (expectedRevision !== project.revision) {
+        throw Object.assign(new Error('project changed'), { code: 'PROJECT_CONFLICT' })
+      }
+      project = { document, revision: project.revision + 1, graphRevision: 1 }
+      await afterWriteProject?.()
+      return project
+    },
     async readGenerationJob(_userId, id) { return jobs.get(id) },
-    async putGenerationJob(_userId, job) { jobs.set(job.id, job) },
+    async putGenerationJob(userId, job) {
+      if (putGenerationJobImpl) return putGenerationJobImpl(userId, job, jobs)
+      jobs.set(job.id, job)
+      await afterPutGenerationJob?.({ job, run: activeRun, turn })
+      return job
+    },
+    async compareAndSetGenerationJob(_userId, command) {
+      const current = jobs.get(command.id)
+      const generation = current?.execution ? Number(current.execution.generation) : null
+      if (!current || current.status !== command.expectedStatus || generation !== command.expectedExecutionGeneration) {
+        return { kind: 'stale', changed: false, job: structuredClone(current) }
+      }
+      jobs.set(command.id, structuredClone(command.job))
+      return { kind: 'updated', changed: true, job: structuredClone(command.job) }
+    },
+    async cancelGenerationJobExecution(_userId, command) {
+      const current = jobs.get(command.id)
+      if (!current || !['queued', 'running'].includes(current.status)) {
+        return { kind: 'replay', changed: false, job: structuredClone(current) }
+      }
+      const outcome = command.outcomes[current.status]
+      const cancelled = {
+        ...current, status: 'cancelled', error: undefined,
+        cancel: { requestedAt: command.requestedAt, reason: command.reason, ...outcome },
+      }
+      jobs.set(command.id, cancelled)
+      return { kind: 'cancelled', changed: true, job: structuredClone(cancelled) }
+    },
   }
   const service = createAgentRunGenerationService({
     config: { modelOptions: models, models: ['gpt-image-2'], maximumBatchCount: 8, maximumReferenceBytes: 8 * 1024 * 1024, security: { generationOutputsPerDay: 10 } },
@@ -52,16 +121,35 @@ function harness({ run = persistentRun(), document = projectDocument(), consumeE
         if (consumeError) throw consumeError
         return { allowed: true }
       },
+      async reserveMany(input) {
+        quotaReservations.push(structuredClone(input))
+        const cost = input.entries?.find((entry) => entry.scope === 'generation-output')?.cost ?? 0
+        const reused = chargedReservations.has(input.reservationId)
+        if (!reused) {
+          chargedReservations.add(input.reservationId)
+          chargedOutputCount += cost
+        }
+        if (consumeError) throw consumeError
+        return { allowed: true, reused, remaining: 10 - chargedOutputCount }
+      },
     },
-    async enqueue(jobId) { queued.push(jobId) },
+    async enqueue(jobId) { queued.push(jobId); await enqueueImpl?.(jobId, jobs) },
     async publishProjectUpdated() {},
     async publishAgentRunUpdated() {},
   })
-  return { service, jobs, queued, quotaCosts, readRun: () => activeRun }
+  return {
+    service,
+    jobs,
+    queued,
+    quotaCosts,
+    quotaReservations,
+    chargedOutputCount: () => chargedOutputCount,
+    readRun: () => activeRun,
+  }
 }
 
 test('Agent Run 提交按新输出计费并让同一任务重试复用既有 Job', async () => {
-  const { service, jobs, queued, quotaCosts } = harness()
+  const { service, jobs, queued, quotaCosts, quotaReservations } = harness()
 
   const first = await service.submitGeneration('user-1', 'project-1', 'agent-run-1')
   const second = await service.submitGeneration('user-1', 'project-1', 'agent-run-1')
@@ -70,7 +158,8 @@ test('Agent Run 提交按新输出计费并让同一任务重试复用既有 Job
   assert.equal(second.jobs[0].id, first.jobs[0].id)
   assert.equal(jobs.size, 1)
   assert.deepEqual(queued, [first.jobs[0].id])
-  assert.deepEqual(quotaCosts, [1])
+  assert.deepEqual(quotaCosts, [])
+  assert.deepEqual(quotaReservations.map((reservation) => reservation.entries[0].cost), [1])
 })
 
 test('首次生成通过原有提交服务幂等入队并按 N 输出计费', async () => {
@@ -88,7 +177,7 @@ test('首次生成通过原有提交服务幂等入队并按 N 输出计费', as
     output: { mode: 'single', count: 2, candidatesPerItem: 1 },
   }
   run.branches = [{ id: 'branch-initial', label: '商品首图', status: 'queued', attempt: 0, jobIds: [], outputCount: 0, updatedAt: 1 }]
-  const { service, jobs, queued, quotaCosts } = harness({ run, document })
+  const { service, jobs, queued, quotaCosts, quotaReservations } = harness({ run, document })
 
   const first = await service.submitGeneration('user-1', 'project-1', 'agent-run-initial')
   const second = await service.submitGeneration('user-1', 'project-1', 'agent-run-initial')
@@ -96,8 +185,59 @@ test('首次生成通过原有提交服务幂等入队并按 N 输出计费', as
   assert.equal(first.jobs[0].batchCount, 2)
   assert.equal(jobs.size, 1)
   assert.deepEqual(queued, [first.jobs[0].id])
-  assert.deepEqual(quotaCosts, [2])
+  assert.deepEqual(quotaCosts, [])
+  assert.deepEqual(quotaReservations.map((reservation) => reservation.entries[0].cost), [2])
   assert.equal(second.jobs[0].id, first.jobs[0].id)
+})
+
+test('Run 配额预留后进程崩溃，恢复提交复用稳定 Run reservation 且只扣一次', async () => {
+  let crashed = false
+  const { service, jobs, quotaReservations, chargedOutputCount } = harness({
+    afterWriteProject: async () => {
+      if (crashed) return
+      crashed = true
+      throw new Error('simulated crash after quota reservation')
+    },
+  })
+
+  await assert.rejects(
+    service.submitGeneration('user-1', 'project-1', 'agent-run-1'),
+    /simulated crash/u,
+  )
+  const recovered = await service.submitGeneration('user-1', 'project-1', 'agent-run-1')
+
+  assert.equal(recovered.jobs.length, 1)
+  assert.equal(jobs.size, 1)
+  assert.equal(quotaReservations.length, 2)
+  assert.equal(quotaReservations[0].reservationId, quotaReservations[1].reservationId)
+  assert.match(quotaReservations[0].reservationId, /agent-run-1/u)
+  assert.equal(chargedOutputCount(), 1)
+})
+
+test('HTTP 与 sweep 并发提交同一 Run 时，工作流冲突按确定性身份幂等收敛', async () => {
+  const { service, jobs, readRun } = harness({ concurrentWorkflowWrites: true })
+
+  const outcomes = await Promise.allSettled([
+    service.submitGeneration('user-1', 'project-1', 'agent-run-1'),
+    service.submitGeneration('user-1', 'project-1', 'agent-run-1'),
+  ])
+
+  assert.deepEqual(outcomes.map((outcome) => outcome.status), ['fulfilled', 'fulfilled'])
+  assert.equal(jobs.size, 1)
+  assert.equal([...jobs.values()][0].status, 'queued')
+  assert.notEqual(readRun().status, 'failed')
+})
+
+test('非同源画布冲突仍拒绝提交并收口空 Run', async () => {
+  const { service, jobs, readRun } = harness({ unrelatedWorkflowConflict: true })
+
+  await assert.rejects(
+    service.submitGeneration('user-1', 'project-1', 'agent-run-1'),
+    (caught) => caught?.code === 'PROJECT_CONFLICT' && caught?.statusCode === 409,
+  )
+
+  assert.equal(jobs.size, 0)
+  assert.equal(readRun().status, 'failed')
 })
 
 test('确定性校验失败会收口空 queued Run，避免恢复器无限重打', async () => {
@@ -127,4 +267,109 @@ test('未知服务错误保留空 queued Run，供后续幂等确认', async () 
   )
   assert.equal(readRun().status, 'queued')
   assert.equal(readRun().branches[0].status, 'queued')
+})
+
+test('linked Turn 在首个 Job 持久化前进入 cancelling 时，delegation fence 禁止创建 Job', async () => {
+  const run = { ...persistentRun(), turnId: 'turn-cancelled-before-job' }
+  const turn = {
+    id: run.turnId, ownerId: 'user-1', projectId: 'project-1', status: 'completed',
+  }
+  const { service, jobs, queued } = harness({
+    run,
+    turn,
+    // 模拟工作流落画布后、首个 durable Job 前，另一个实例写入取消 fence。
+    afterWriteProject: async () => { turn.status = 'cancelling' },
+  })
+
+  await assert.rejects(
+    service.submitGeneration('user-1', 'project-1', run.id),
+    (caught) => caught?.code === 'AGENT_TURN_DELEGATION_CANCELLED' && caught?.statusCode === 409,
+  )
+  assert.equal(jobs.size, 0)
+  assert.deepEqual(queued, [])
+})
+
+test('Job 落库后 Turn 才取消时，提交层 durable 收口 Job 且绝不 enqueue', async () => {
+  const run = { ...persistentRun(), turnId: 'turn-cancelled-after-job-put' }
+  const turn = {
+    id: run.turnId, ownerId: 'user-1', projectId: 'project-1', status: 'completed',
+  }
+  const { service, jobs, queued } = harness({
+    run,
+    turn,
+    afterPutGenerationJob: async ({ job }) => {
+      if (job.status === 'queued') turn.status = 'cancelling'
+    },
+  })
+
+  await assert.rejects(
+    service.submitGeneration('user-1', 'project-1', run.id),
+    (caught) => caught?.code === 'AGENT_TURN_DELEGATION_CANCELLED' && caught?.statusCode === 409,
+  )
+  assert.equal(jobs.size, 1)
+  assert.equal([...jobs.values()][0].status, 'cancelled')
+  assert.equal([...jobs.values()][0].cancel.reason, 'agent-run')
+  assert.deepEqual(queued, [])
+})
+
+test('Job 落库后 Run 才取消时，提交层 durable 收口 Job 且绝不 enqueue', async () => {
+  const run = { ...persistentRun(), turnId: 'turn-run-cancelled-after-job-put' }
+  const turn = {
+    id: run.turnId, ownerId: 'user-1', projectId: 'project-1', status: 'completed',
+  }
+  const { service, jobs, queued } = harness({
+    run,
+    turn,
+    afterPutGenerationJob: async ({ job, run: storedRun }) => {
+      if (job.status === 'queued') storedRun.status = 'cancelled'
+    },
+  })
+
+  await assert.rejects(
+    service.submitGeneration('user-1', 'project-1', run.id),
+    (caught) => caught?.code === 'AGENT_RUN_DELEGATION_CANCELLED' && caught?.statusCode === 409,
+  )
+  assert.equal(jobs.size, 1)
+  assert.equal([...jobs.values()][0].status, 'cancelled')
+  assert.deepEqual(queued, [])
+})
+
+test('Agent Run enqueue 响应丢失但 Job 已 claim 时不以 stale failed 覆盖执行者', async () => {
+  const { service, jobs } = harness({
+    enqueueImpl: async (jobId, storedJobs) => {
+      const queued = storedJobs.get(jobId)
+      storedJobs.set(jobId, {
+        ...queued, status: 'running',
+        execution: { generation: 1, leaseToken: 'lease-worker' },
+      })
+      throw new Error('Redis response lost')
+    },
+  })
+
+  const result = await service.submitGeneration('user-1', 'project-1', 'agent-run-1')
+
+  assert.equal(result.jobs.length, 1)
+  assert.equal(jobs.get(result.jobs[0].id).status, 'running')
+  assert.equal(jobs.get(result.jobs[0].id).execution.leaseToken, 'lease-worker')
+})
+
+test('Agent Run guarded put 返回并发 running 时不再重复 enqueue 或终结 Worker', async () => {
+  const { service, jobs, queued } = harness({
+    putGenerationJobImpl: async (_userId, job, storedJobs) => {
+      const running = {
+        ...structuredClone(job), status: 'running', executionVersion: 1,
+        execution: { generation: 1, leaseToken: 'lease-concurrent-agent-run' },
+      }
+      storedJobs.set(job.id, running)
+      return structuredClone(running)
+    },
+    enqueueImpl: async () => { throw new Error('重复 enqueue 不应发生') },
+  })
+
+  const result = await service.submitGeneration('user-1', 'project-1', 'agent-run-1')
+
+  assert.equal(result.jobs.length, 1)
+  assert.equal(result.jobs[0].status, 'running')
+  assert.equal(jobs.get(result.jobs[0].id).execution.leaseToken, 'lease-concurrent-agent-run')
+  assert.deepEqual(queued, [])
 })

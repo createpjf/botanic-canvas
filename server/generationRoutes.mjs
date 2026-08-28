@@ -1,8 +1,9 @@
 import { generationJobTimedOut, generationTimeoutForModel, timedOutGenerationJobPatch } from './generationModels.mjs'
 import { cancelGenerationJob } from './generationCancellation.mjs'
-import { persistedGenerationJob, publicGenerationJob } from './generationProvider.mjs'
+import { publicGenerationJob } from './generationProvider.mjs'
 import { reconcileGenerationResults } from './generationResultReconciliation.mjs'
 import { requireProjectPermission } from './projectAuthorization.mjs'
+import { compareAndSetGenerationJob } from './generationJobCas.mjs'
 
 /**
  * 生成任务的提交、查询、取消与项目级结果对账模块。
@@ -87,7 +88,7 @@ export function createGenerationRouteHandler({
     if (jobMatch && request.method === 'GET' && !jobMatch[2]) {
       const user = await requireUser(request)
       const job = await productStore.readGenerationJob(user.id, decodeURIComponent(jobMatch[1]))
-      if (!job) return error(response, 404, 'JOB_NOT_FOUND', '未找到该真实生成任务。')
+      if (!job) return error(response, 404, 'JOB_NOT_FOUND', '未找到该生成任务。')
       const maximumTaskDurationMs = generationTimeoutForModel(config.modelOptions ?? [], job.settings?.model, {
         imageTimeoutMs: config.generationTimeoutMs ?? 5 * 60_000,
         videoTimeoutMs: config.videoGenerationTimeoutMs ?? 20 * 60_000,
@@ -95,10 +96,13 @@ export function createGenerationRouteHandler({
       // 判定与补丁都在 generationModels：同一条超时语义有两个产生点，
       // 就地各写一份迟早会漂移（此前这一份就漏了 errorCode）。
       if (generationJobTimedOut(job, { maximumTaskDurationMs })) {
-        const failed = { ...job, ...timedOutGenerationJobPatch() }
-        await productStore.putGenerationJob(user.id, persistedGenerationJob(failed))
-        if (job.status === 'queued') await redisQueue?.cancel(job.id)
-        return json(response, 200, publicGenerationJob(failed, { includeIdempotencyKey: failed.ownerId === user.id }))
+        // 超时 CAS 可能终结一个已有部分输出的 running Job。先只 durable Job 并
+        // 保留恢复标记；Canvas / Artifact 完成后再由 Processor 推进关联 Run。
+        const failed = { ...job, ...timedOutGenerationJobPatch(), projectWritebackPending: true }
+        const timeout = await compareAndSetGenerationJob(productStore, user.id, job, failed, { updateAgentRun: false })
+        const authoritative = timeout?.job ?? job
+        if (timeout?.changed && job.status === 'queued') await redisQueue?.cancel(job.id)
+        return json(response, 200, publicGenerationJob(authoritative, { includeIdempotencyKey: authoritative.ownerId === user.id }))
       }
       return json(response, 200, publicGenerationJob(job, { includeIdempotencyKey: job.ownerId === user.id }))
     }
@@ -107,7 +111,7 @@ export function createGenerationRouteHandler({
       const user = await requireUser(request)
       const jobId = decodeURIComponent(jobMatch[1])
       const job = await productStore.readGenerationJob(user.id, jobId)
-      if (!job) return error(response, 404, 'JOB_NOT_FOUND', '未找到该真实生成任务。')
+      if (!job) return error(response, 404, 'JOB_NOT_FOUND', '未找到该生成任务。')
       // 取消的四个动作（判定、落库、出队、广播）都在这个共享实现里，
       // 重复取消也会拿到与第一次相同的判定。
       const result = await cancelGenerationJob({

@@ -155,6 +155,13 @@ function modelSupportsSettings(model, settings) {
   if (Array.isArray(model.resolutions) && model.resolutions.length && !model.resolutions.includes(settings.resolution)) {
     throw new CreativePlanCompileError('MODEL_RESOLUTION_UNSUPPORTED', `模型「${model.id}」不支持分辨率 ${settings.resolution}。`, 409)
   }
+  if (typeof settings.searchGrounding === 'boolean' && model.supportsSearchGrounding !== true) {
+    throw new CreativePlanCompileError('MODEL_SEARCH_GROUNDING_UNSUPPORTED', `模型「${model.id}」不支持参考网页。`, 409)
+  }
+  if (typeof settings.thinkingLevel === 'string'
+    && (!Array.isArray(model.thinkingLevels) || !model.thinkingLevels.includes(settings.thinkingLevel))) {
+    throw new CreativePlanCompileError('MODEL_THINKING_LEVEL_UNSUPPORTED', `模型「${model.id}」不支持思考级别 ${settings.thinkingLevel}。`, 409)
+  }
 }
 
 function safeReferenceIds(recipe) {
@@ -185,7 +192,7 @@ export function compileCreativePlan({
   planFingerprint: providedPlanFingerprint,
 } = {}) {
   if (!plan || typeof plan !== 'object') throw new CreativePlanCompileError('PLAN_MISSING', 'Agent 计划不能为空。', 400)
-  if (!baseRecipe || typeof baseRecipe !== 'object') throw new CreativePlanCompileError('RECIPE_MISSING', '生成配方不能为空。', 409)
+  if (!baseRecipe || typeof baseRecipe !== 'object') throw new CreativePlanCompileError('RECIPE_MISSING', '生成参数不能为空。', 409)
   const prompt = text(plan.prompt ?? baseRecipe.prompt, 'Agent 生图提示词')
   const constraints = normalizeConstraints(plan.constraints)
   const settings = { ...baseRecipe.settings, ...plan.settings }

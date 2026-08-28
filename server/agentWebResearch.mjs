@@ -1,8 +1,12 @@
+import { BlockList, isIP } from 'node:net'
+
 const DEFAULT_TAVILY_SEARCH_URL = 'https://api.tavily.com/search'
 const DEFAULT_TAVILY_EXTRACT_URL = 'https://api.tavily.com/extract'
 const MAX_SEARCH_HITS = 5
 const MAX_SNIPPET = 400
 const MAX_TITLE = 160
+const MAX_PRESENTATION_URL = 2048
+const MAX_PRESENTATION_HOSTNAME = 253
 const MAX_FETCH_TEXT = 4000
 const MAX_QUERY = 200
 
@@ -12,6 +16,48 @@ const blockedHostnames = new Set([
   'metadata.google.internal',
   'metadata.internal',
 ])
+
+// SSRF 边界按「真正的 global-unicast」放行；RFC1918 之外，云元数据常用的
+// 100.64/10、基准测试、文档、组播与保留地址同样不能成为服务端出口目标。
+const nonPublicIpv4Ranges = new BlockList()
+for (const [network, prefix] of [
+  ['0.0.0.0', 8],
+  ['10.0.0.0', 8],
+  ['100.64.0.0', 10],
+  ['127.0.0.0', 8],
+  ['169.254.0.0', 16],
+  ['172.16.0.0', 12],
+  ['192.0.0.0', 24],
+  ['192.0.2.0', 24],
+  ['192.88.99.0', 24],
+  ['192.168.0.0', 16],
+  ['198.18.0.0', 15],
+  ['198.51.100.0', 24],
+  ['203.0.113.0', 24],
+  ['224.0.0.0', 4],
+  ['240.0.0.0', 4],
+]) nonPublicIpv4Ranges.addSubnet(network, prefix, 'ipv4')
+const nonPublicIpv6Ranges = new BlockList()
+const globalUnicastIpv6Ranges = new BlockList()
+globalUnicastIpv6Ranges.addSubnet('2000::', 3, 'ipv6')
+for (const [network, prefix] of [
+  ['::', 96],
+  ['::', 128],
+  ['::1', 128],
+  ['::ffff:0.0.0.0', 96],
+  ['64:ff9b::', 96],
+  ['64:ff9b:1::', 48],
+  ['100::', 64],
+  ['2001::', 23],
+  ['2001:db8::', 32],
+  ['2002::', 16],
+  ['3fff::', 20],
+  ['5f00::', 16],
+  ['fc00::', 7],
+  ['fe80::', 10],
+  ['fec0::', 10],
+  ['ff00::', 8],
+]) nonPublicIpv6Ranges.addSubnet(network, prefix, 'ipv6')
 
 export function clampWebSearchQuery(value) {
   if (typeof value !== 'string') return ''
@@ -56,34 +102,23 @@ function canonicalHost(value) {
   return lowered.startsWith('[') && lowered.endsWith(']') ? lowered.slice(1, -1) : lowered
 }
 
-function ipv4MappedFromIpv6(host) {
-  const dotted = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i.exec(host)
-  if (dotted) return ipv4FromHostname(dotted[1])
-  const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(host)
-  if (!hex) return undefined
-  const high = Number.parseInt(hex[1], 16)
-  const low = Number.parseInt(hex[2], 16)
-  return [(high >> 8) & 255, high & 255, (low >> 8) & 255, low & 255]
-}
-
 export function isPrivateIpv4(octets) {
-  const [first, second] = octets
-  if (first === 0 || first === 10 || first === 127) return true
-  if (first === 169 && second === 254) return true
-  if (first === 172 && second >= 16 && second <= 31) return true
-  if (first === 192 && second === 168) return true
-  return false
+  if (!Array.isArray(octets) || octets.length !== 4 || octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return true
+  return nonPublicIpv4Ranges.check(octets.join('.'), 'ipv4')
 }
 
 export function isPrivateIpAddress(value) {
   const host = canonicalHost(value)
-  const ipv4 = ipv4FromHostname(host)
-  if (ipv4) return isPrivateIpv4(ipv4)
-  if (!host.includes(':')) return false
-  if (host === '::1' || host === '::' || host === '0:0:0:0:0:0:0:1' || host === '0:0:0:0:0:0:0:0') return true
-  if (host.startsWith('fe80:') || host.startsWith('fc') || host.startsWith('fd') || host.startsWith('ff')) return true
-  const mapped = ipv4MappedFromIpv6(host)
-  return mapped ? isPrivateIpv4(mapped) : false
+  const family = isIP(host)
+  if (family === 4) return nonPublicIpv4Ranges.check(host, 'ipv4')
+  if (family === 6) {
+    // IPv6 地址空间仍有大量尚未分配或仅供特殊用途的前缀。denylist 很容易在
+    // IANA 分配变化时漏放，因此先限定当前公网单播总段 2000::/3，再排除其中
+    // 文档、隧道等特殊用途子段。
+    return !globalUnicastIpv6Ranges.check(host, 'ipv6')
+      || nonPublicIpv6Ranges.check(host, 'ipv6')
+  }
+  return false
 }
 
 export function classifyPublicHttpUrl(raw, { allowLocal = false } = {}) {
@@ -125,7 +160,7 @@ export function classifyPublicHttpUrl(raw, { allowLocal = false } = {}) {
  */
 export function presentationWebSources(output, limit = MAX_SEARCH_HITS) {
   if (!output || typeof output !== 'object' || Array.isArray(output)) return []
-  const cap = Number.isInteger(limit) && limit >= 0 ? limit : MAX_SEARCH_HITS
+  const cap = Number.isInteger(limit) && limit >= 0 ? Math.min(limit, MAX_SEARCH_HITS) : MAX_SEARCH_HITS
   if (cap === 0) return []
   const collected = []
   const seen = new Set()
@@ -133,13 +168,18 @@ export function presentationWebSources(output, limit = MAX_SEARCH_HITS) {
   const pushHit = (item) => {
     if (collected.length >= cap) return
     if (!item || typeof item !== 'object' || Array.isArray(item)) return
-    const classified = classifyPublicHttpUrl(typeof item.url === 'string' ? item.url : '')
+    const rawUrl = typeof item.url === 'string' ? item.url.trim() : ''
+    if (!rawUrl || rawUrl.length > MAX_PRESENTATION_URL) return
+    const classified = classifyPublicHttpUrl(rawUrl)
     if (!classified.ok) return
     const hostname = String(classified.hostname || '').trim()
+    if (!hostname || hostname.length > MAX_PRESENTATION_HOSTNAME) return
     const key = hostname.replace(/^www\./iu, '').toLocaleLowerCase()
     if (!key || seen.has(key)) return
     seen.add(key)
-    const title = typeof item.title === 'string' ? item.title.trim().slice(0, MAX_TITLE) : ''
+    const title = typeof item.title === 'string'
+      ? item.title.replace(/[\u0000-\u001f\u007f]/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, MAX_TITLE)
+      : ''
     collected.push({
       hostname,
       url: classified.href,
@@ -147,8 +187,9 @@ export function presentationWebSources(output, limit = MAX_SEARCH_HITS) {
     })
   }
 
-  if (Array.isArray(output.hits)) output.hits.forEach(pushHit)
-  if (Array.isArray(output.results)) output.results.forEach(pushHit)
+  const candidateLimit = MAX_SEARCH_HITS * 4
+  if (Array.isArray(output.hits)) output.hits.slice(0, candidateLimit).forEach(pushHit)
+  if (Array.isArray(output.results)) output.results.slice(0, candidateLimit).forEach(pushHit)
   if (collected.length === 0) {
     pushHit({
       url: output.url,

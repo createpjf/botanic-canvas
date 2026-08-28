@@ -47,6 +47,10 @@ import {
   botanicAgentExecutionPauseHint,
   botanicAgentPendingConfirmationCount,
   botanicAgentActionRequiresUserConfirmation,
+  botanicAgentActionFailureStatus,
+  botanicAgentActionReconciliationPatch,
+  botanicAgentCanResumeManualRetry,
+  botanicAgentCanUseManualRetryAuthorization,
   botanicAgentAppliedSkillName,
   clipBotanicAgentNodeTitle,
   summarizeBotanicAgentNodeTitle,
@@ -76,6 +80,9 @@ import {
   filterBotanicAgentRunTimeline,
   updateBotanicAgentSessionReadingAnchor,
   botanicAgentActionReceiptMessageId,
+  botanicAgentPreparedRetryIdempotencyKey,
+  pendingBotanicAgentAutoSubmission,
+  shouldRetryBotanicAgentAutoSubmission,
 } from './agent.ts'
 
 const rootRecipe: GenerationRecipe = {
@@ -462,15 +469,15 @@ test('Run 状态统一提供下一步反馈，并兼容超时错误', () => {
     action: 'view_task', actionLabel: '查看任务', tone: 'progress', terminal: false,
   })
   assert.equal(botanicAgentRunFeedback('running').label, '生成中')
-  assert.equal(botanicAgentRunFeedback('running').detail, '正在生成，完成后回填画布。')
-  assert.equal(botanicAgentRunFeedback('completed', 2).detail, '已回填画布 · 2 项')
-  assert.equal(botanicAgentRunFeedback('completed', 1, undefined, { artifactCount: 1, canvasOutputCount: 0 }).detail, '结果已生成，正在回填画布。')
+  assert.equal(botanicAgentRunFeedback('running').detail, '正在生成，完成后放到画布。')
+  assert.equal(botanicAgentRunFeedback('completed', 2).detail, '已放到画布 · 2 项')
+  assert.equal(botanicAgentRunFeedback('completed', 1, undefined, { artifactCount: 1, canvasOutputCount: 0 }).detail, '结果已生成，正在放到画布。')
   assert.equal(botanicAgentRunFeedback('completed', 1, undefined, {
     artifactCount: 1, canvasOutputCount: 0, activeBranchCount: 2,
-  }).detail, '正在生成，完成后回填画布。')
+  }).detail, '正在生成，完成后放到画布。')
   assert.equal(botanicAgentRunFeedback('completed', 0).actionLabel, '查看任务')
   assert.equal(botanicAgentRunFeedback('partial', 1).actionLabel, '查看失败分支')
-  assert.equal(botanicAgentRunFeedback('partial', 1).detail, '已回填 1 项，有分支失败。')
+  assert.equal(botanicAgentRunFeedback('partial', 1).detail, '已放到 1 项，有分支失败。')
   assert.equal(botanicAgentRunFeedback('failed', 0, '工作区数据库响应超时').label, '响应超时')
   assert.equal(botanicAgentRunFeedback('cancelled', 1).detail, '已取消，保留 1 项结果。')
   assert.deepEqual([
@@ -490,6 +497,47 @@ test('同一确认消息与计划生成稳定提交键，修改提示词后才�
   assert.equal(first, botanicAgentSubmissionKey('message-1', plan))
   assert.notEqual(first, botanicAgentSubmissionKey('message-1', { ...plan, prompt: `${plan.prompt}，更自然。` }))
   assert.match(first, /^agent-plan-message-1-/)
+})
+
+test('自动模式刷新后按顺序续提交带 turnId 的 pending 单张计划', () => {
+  const firstPlan = { ...buildBotanicAgentPlan({
+    instruction: '生成海边广告图', intent: 'initial_generation',
+    settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' },
+    contextSnapshot: [{ nodeId: 'asset-product', label: '商品', kind: '素材', mediaKind: 'image' }],
+  }), turnId: 'turn-auto-1' }
+  const secondPlan = { ...firstPlan, instruction: '生成第二张', prompt: '第二张', turnId: 'turn-auto-2' }
+  const first = {
+    id: 'agent-turn-result-turn-auto-1', role: 'assistant' as const, kind: 'plan' as const,
+    content: firstPlan.summary, createdAt: 1, turnId: 'turn-auto-1', status: 'pending' as const, plan: firstPlan,
+  }
+  const second = {
+    id: 'agent-turn-result-turn-auto-2', role: 'assistant' as const, kind: 'plan' as const,
+    content: secondPlan.summary, createdAt: 2, turnId: 'turn-auto-2', status: 'pending' as const, plan: secondPlan,
+  }
+
+  assert.equal(pendingBotanicAgentAutoSubmission([first, second], 'auto')?.id, first.id)
+  assert.equal(pendingBotanicAgentAutoSubmission([{ ...first, status: 'submitted' }, second], 'auto')?.id, second.id)
+  assert.equal(pendingBotanicAgentAutoSubmission([first], 'manual'), undefined)
+  assert.equal(pendingBotanicAgentAutoSubmission([{ ...first, turnId: undefined }], 'auto'), undefined)
+})
+
+test('自动计划 Run POST 响应丢失时保持 pending 并复用同键恢复，语义失败才收口 failed', () => {
+  const plan = { ...buildBotanicAgentPlan({
+    instruction: '生成海边广告图', intent: 'initial_generation',
+    settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' },
+    contextSnapshot: [{ nodeId: 'asset-product', label: '商品', kind: '素材', mediaKind: 'image' }],
+  }), turnId: 'turn-auto-response-loss' }
+  const message = {
+    id: 'agent-turn-result-turn-auto-response-loss', role: 'assistant' as const, kind: 'plan' as const,
+    content: plan.summary, createdAt: 1, turnId: plan.turnId, status: 'pending' as const, plan,
+  }
+
+  assert.equal(shouldRetryBotanicAgentAutoSubmission(message, 'auto', { status: 0 }), true)
+  assert.equal(shouldRetryBotanicAgentAutoSubmission(message, 'auto', { status: 0, code: 'REQUEST_TIMEOUT' }), true)
+  assert.equal(shouldRetryBotanicAgentAutoSubmission(message, 'auto', { status: 503 }), true)
+  assert.equal(shouldRetryBotanicAgentAutoSubmission(message, 'auto', { status: 409, code: 'AGENT_RUN_INTENT_CONFLICT' }), false)
+  assert.equal(shouldRetryBotanicAgentAutoSubmission(message, 'manual', { status: 0 }), false)
+  assert.equal(shouldRetryBotanicAgentAutoSubmission({ ...message, status: 'failed' }, 'auto', { status: 0 }), false)
 })
 
 test('首次生成计划只需有效图片上下文，不伪造父结果或根配方', () => {
@@ -700,6 +748,8 @@ test('Botanic Agent 能从自然语言识别高频生图意图', () => {
   assert.equal(inferBotanicAgentIntent('换成海边场景'), 'replace_scene')
   assert.equal(inferBotanicAgentIntent('人物和背景不变，调整一下动作'), 'change_pose')
   assert.equal(inferBotanicAgentIntent('复用最初商品图重新做首图'), 'redo_from_root')
+  assert.equal(inferBotanicAgentIntent('从原参数重做'), 'redo_from_root')
+  assert.equal(inferBotanicAgentIntent('从原配方重做'), 'redo_from_root')
   assert.equal(inferBotanicAgentIntent('保持多个细节不变，把背景换成海边黄昏'), 'replace_scene')
   assert.equal(inferBotanicAgentIntent('模特换一组更自然的姿态'), 'change_pose')
   assert.equal(resolveBotanicAgentIntent('画面里加2个道具，保持人物不变', 'replace_scene'), 'replace_scene')
@@ -1114,11 +1164,11 @@ test('运行摘要按本轮路由取词，对话轮次不谎称已回填画布',
   const steps = createBotanicAgentRuntimeSteps({ hasTarget: false, mode: 'conversation' })
   const generation = summarizeBotanicAgentRuntime({ steps, phase: 'completed' })
   assert.equal(generation.label, 'Agent 已完成')
-  assert.match(generation.detail, /回填画布/)
+  assert.match(generation.detail, /放到画布/)
 
   const conversation = summarizeBotanicAgentRuntime({ steps, phase: 'completed', mode: 'conversation' })
   assert.equal(conversation.label, '已回复')
-  assert.doesNotMatch(conversation.detail, /回填画布/)
+  assert.doesNotMatch(conversation.detail, /放到画布/)
 
   assert.equal(summarizeBotanicAgentRuntime({ steps, phase: 'completed', mode: 'prompt' }).label, 'Prompt 已生成')
   assert.equal(summarizeBotanicAgentRuntime({ steps, phase: 'completed', mode: 'research' }).label, '检索完成')
@@ -1393,6 +1443,90 @@ test('应用已审核 Skill 不计入需用户确认的外部行动', () => {
     }),
     { action: 'auto_submit' },
   )
+})
+
+test('行动请求错误区分仍在执行、结果未知与明确失败', () => {
+  assert.equal(botanicAgentActionFailureStatus('REQUEST_TIMEOUT'), 'running')
+  assert.equal(botanicAgentActionFailureStatus('AGENT_ACTION_IN_PROGRESS'), 'running')
+  assert.equal(botanicAgentActionFailureStatus('AGENT_ACTION_TIMEOUT'), 'uncertain')
+  assert.equal(botanicAgentActionFailureStatus('AGENT_ACTION_OUTCOME_UNKNOWN'), 'uncertain')
+  assert.equal(botanicAgentActionFailureStatus('TOOL_ARGUMENTS_INVALID'), 'failed')
+})
+
+test('行动调和只投影权威状态，不为人工确认成功伪造结果', () => {
+  const identity = {
+    sessionId: 'session-1', messageId: 'message-1', actionId: 'action-1',
+    toolCallId: 'action-1', name: 'mcp_call',
+  }
+  assert.deepEqual(botanicAgentActionReconciliationPatch({
+    action: identity,
+    status: 'succeeded',
+    canResolve: false,
+    resolution: { decision: 'confirmed_applied', resolvedAt: 200 },
+    updatedAt: 200,
+  }), { status: 'succeeded', manualRetryResumeAvailable: undefined, error: undefined, result: undefined })
+  assert.deepEqual(botanicAgentActionReconciliationPatch({
+    action: identity,
+    status: 'uncertain',
+    canResolve: true,
+    error: { code: 'AGENT_ACTION_OUTCOME_UNKNOWN', message: '  请人工核对。  ' },
+    updatedAt: 100,
+  }), { status: 'uncertain', manualRetryResumeAvailable: undefined, error: '请人工核对。', result: undefined })
+})
+
+test('一次性手动重试只对 failed 卡片的未过期组件内凭据开放', () => {
+  const authorization = {
+    token: 'one-shot-token', expiresAt: 2_000, retryIdempotencyKey: 'agent-action-retry-1',
+  }
+  assert.equal(botanicAgentCanUseManualRetryAuthorization({ status: 'failed' }, authorization, 1_999), true)
+  assert.equal(botanicAgentCanUseManualRetryAuthorization({ status: 'uncertain' }, authorization, 1_999), false)
+  assert.equal(botanicAgentCanUseManualRetryAuthorization({ status: 'failed' }, authorization, 2_000), false)
+  assert.equal(botanicAgentCanUseManualRetryAuthorization({ status: 'failed' }, {
+    ...authorization, token: '',
+  }, 1_999), false)
+})
+
+test('一次性授权消费后只能恢复同一持久化 retry key', () => {
+  assert.equal(botanicAgentCanResumeManualRetry({
+    status: 'failed',
+    receiptIdempotencyKey: 'agent-action-manual-retry-1',
+    manualRetryResumeAvailable: true,
+  }), true)
+  assert.equal(botanicAgentCanResumeManualRetry({
+    status: 'failed',
+    manualRetryResumeAvailable: true,
+  }), false)
+  assert.equal(botanicAgentCanResumeManualRetry({
+    status: 'uncertain',
+    receiptIdempotencyKey: 'agent-action-manual-retry-1',
+    manualRetryResumeAvailable: true,
+  }), false)
+})
+
+test('v2 retry key 只由稳定行动身份派生，持久化或响应丢失后仍可重算', () => {
+  const identity = {
+    projectId: 'project-1',
+    sessionId: 'session-1',
+    messageId: 'message-1',
+    actionId: 'action-1',
+    originalIdempotencyKey: 'agent-action-action-1-mcp_call',
+  }
+  const beforePersist = botanicAgentPreparedRetryIdempotencyKey(identity)
+  const afterPersistenceFailure = botanicAgentPreparedRetryIdempotencyKey(structuredClone(identity))
+  const afterResolveResponseLoss = botanicAgentPreparedRetryIdempotencyKey(structuredClone(identity))
+
+  assert.equal(afterPersistenceFailure, beforePersist)
+  assert.equal(afterResolveResponseLoss, beforePersist)
+  assert.match(beforePersist, /^agent-action-manual-retry-action-1-/u)
+  for (const [field, value] of [
+    ['projectId', 'project-2'],
+    ['sessionId', 'session-2'],
+    ['messageId', 'message-2'],
+    ['actionId', 'action-2'],
+    ['originalIdempotencyKey', 'agent-action-other'],
+  ] as const) {
+    assert.notEqual(botanicAgentPreparedRetryIdempotencyKey({ ...identity, [field]: value }), beforePersist)
+  }
 })
 
 test('执行模式是可解释的领域决策，自动模式遇到外部行动会降级并说明原因', () => {

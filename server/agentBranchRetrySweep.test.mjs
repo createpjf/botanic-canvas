@@ -183,3 +183,74 @@ test('分支在清扫之外被手动重试后，同一 held 原因要在新尝�
     .map((event) => event.reason)
   assert.deepEqual(reasons, ['error_not_retryable', 'error_not_retryable'])
 })
+
+test('跨 sweep keyset 会越过 poison 前缀访问后页，并在尾页后 wrap', async () => {
+  const runs = Array.from({ length: 5 }, (_, index) => ({
+    id: `run-${index + 1}`,
+    ownerId: 'user-1',
+    projectId: 'project-1',
+    updatedAt: (index + 1) * 10,
+    status: 'partial',
+    branches: [],
+  }))
+  const listedAfter = []
+  const visited = []
+  const sweep = createAgentBranchRetrySweep({
+    productStore: {
+      listRunsWithFailedBranches: async ({ after, limit }) => {
+        listedAfter.push(after ? structuredClone(after) : null)
+        return runs
+          .filter((run) => !after || run.updatedAt > after.updatedAt
+            || (run.updatedAt === after.updatedAt && run.id.localeCompare(after.id) > 0))
+          .slice(0, limit)
+          .map((run) => ({
+            runId: run.id, ownerId: run.ownerId, projectId: run.projectId, updatedAt: run.updatedAt,
+          }))
+      },
+      readAgentRunForWorker: async (runId) => {
+        visited.push(runId)
+        if (runId === 'run-1') throw new Error('poison run')
+        return runs.find((run) => run.id === runId)
+      },
+    },
+    retryAgentBranch: async () => ({ kind: 'reused' }),
+  })
+
+  await sweep({ limit: 2 })
+  await sweep({ limit: 2 })
+  await sweep({ limit: 2 })
+  await sweep({ limit: 2 })
+
+  assert.deepEqual(listedAfter, [
+    null,
+    { updatedAt: 20, id: 'run-2' },
+    { updatedAt: 40, id: 'run-4' },
+    null,
+  ])
+  assert.deepEqual(visited.slice(0, 5), ['run-1', 'run-2', 'run-3', 'run-4', 'run-5'])
+})
+
+test('Adapter 返回同一满页导致游标停滞时，下轮会 fail-safe wrap', async () => {
+  const page = [
+    { runId: 'run-a', ownerId: 'user-1', projectId: 'project-1', updatedAt: 10 },
+    { runId: 'run-b', ownerId: 'user-1', projectId: 'project-1', updatedAt: 20 },
+  ]
+  const listedAfter = []
+  const sweep = createAgentBranchRetrySweep({
+    productStore: {
+      listRunsWithFailedBranches: async ({ after }) => {
+        listedAfter.push(after ? structuredClone(after) : null)
+        return page
+      },
+      readAgentRunForWorker: async (runId) => ({
+        id: runId, ownerId: 'user-1', projectId: 'project-1', branches: [],
+      }),
+    },
+    retryAgentBranch: async () => ({ kind: 'reused' }),
+  })
+
+  await sweep({ limit: 2 })
+  await sweep({ limit: 2 })
+  await sweep({ limit: 2 })
+  assert.deepEqual(listedAfter, [null, { updatedAt: 20, id: 'run-b' }, null])
+})

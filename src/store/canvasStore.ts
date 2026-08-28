@@ -7,6 +7,7 @@ import {
   normalizeGenerateNodeInputs,
   primaryGenerationReference,
 } from '../domain/generationRecipe'
+import { reconcileAgentSessionsAfterDocumentSync } from '../domain/agentCollaboration'
 import { isRemoteDocumentConflict } from '../domain/remoteDocumentSync'
 import { createLatestOperation } from '../domain/latestOperation'
 import type {
@@ -24,7 +25,8 @@ import {
   persistAcknowledgedRemoteCanvasPatch,
   writeCanvasDocument,
 } from '../lib/db'
-import { cancelPersistentBotanicAgentRun, retryPersistentBotanicAgentBranch } from '../lib/agentApi'
+import { cancelPersistentBotanicAgentRun, retryPersistentBotanicAgentBranch, submitPersistentBotanicAgentSession } from '../lib/agentApi'
+import { serverPersistenceEnabled } from '../lib/productSession'
 import { ProductApiError } from '../lib/productSession'
 import type { CanvasStore, GenerationRequest } from './canvasStore.types'
 import { createCanvasAgentActions } from './canvasAgentActions'
@@ -133,8 +135,16 @@ function commit(
   set({ document: nextDocument, persistenceStatus: 'saving', ...scrubRevokedStoreExtra(extra) })
   const persistence = writeCanvasDocument(nextDocument, { immediate: options.immediate })
     .then((savedDocument) => {
-      if (nextDocument.id === useCanvasStore.getState().document.id && persistenceOperations.isCurrent(operationToken)) {
-        set({ document: savedDocument ?? nextDocument, persistenceStatus: 'saved' })
+      const current = useCanvasStore.getState().document
+      if (nextDocument.id === current.id && persistenceOperations.isCurrent(operationToken)) {
+        const incoming = savedDocument ?? nextDocument
+        set({
+          document: {
+            ...incoming,
+            agentSessions: reconcileAgentSessionsAfterDocumentSync(current.agentSessions, incoming.agentSessions),
+          },
+          persistenceStatus: 'saved',
+        })
       }
     })
     .catch(async (error) => {
@@ -232,6 +242,10 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
       cancelRun: cancelPersistentBotanicAgentRun,
     },
     persistAcknowledgedRemotePatch: persistAcknowledgedRemoteCanvasPatch,
+    persistAgentSession: async (projectId, session) => {
+      if (!serverPersistenceEnabled || projectId === 'workspace-placeholder') return
+      await submitPersistentBotanicAgentSession(projectId, session)
+    },
   }),
 
   ...createCanvasBatchVariationActions({
@@ -329,7 +343,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
             generationCandidates: activeCandidates,
             lastGenerationRequest: nextActiveRequest,
             assistantMessage: deleted
-              ? `已从全局品牌素材库删除「${globalAsset.name}」，并同步清理 ${documents.length} 个项目中的画布、模板与历史配方引用。`
+              ? `已从全局品牌素材库删除「${globalAsset.name}」，并同步清理 ${documents.length} 个项目中的画布、模板与历史参数引用。`
               : `「${globalAsset.name}」已不在全局品牌素材库，当前项目引用已同步移除。`,
             undoAction: null,
             undoSnapshot: null,
@@ -371,7 +385,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
       selectedNodeId: null,
       generationCandidates,
       lastGenerationRequest: nextLastGenerationRequest,
-      assistantMessage: `已从当前项目删除「${asset.name}」，并撤销它在当前画布、模板与历史配方中的后续复用。`,
+      assistantMessage: `已从当前项目删除「${asset.name}」，并撤销它在当前画布、模板与历史参数中的后续复用。`,
       undoAction: { id: undoId, label: `已删除「${asset.name}」` },
       undoSnapshot: document,
     })
@@ -492,7 +506,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
         '真实生成',
         candidate.provider ?? 'openai-images',
         `${candidate.settings.aspectRatio}`,
-        primaryGenerationReference(candidate.recipe) ? `主商品 · ${primaryGenerationReference(candidate.recipe)!.name}` : '继承父版本配方',
+        primaryGenerationReference(candidate.recipe) ? `主商品 · ${primaryGenerationReference(candidate.recipe)!.name}` : '继承父版本参数',
         candidate.kind === 'refinement' ? '定向精修' : candidate.sourceAssetNames?.length ? '基于画布参考' : '已选中',
       ],
     }
@@ -527,8 +541,8 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
       selectedNodeId: resultNodeId,
       generationCandidates: get().generationCandidates.map((item) => ({ ...item, selected: item.id === candidateId })),
       assistantMessage: candidate.kind === 'refinement'
-        ? `已选中「${candidate.name}」，并从「${candidate.parentLabel ?? '父版本'}」创建 ${historyEntry.name}。其他候选仍可保留为分支。`
-        : `已选中「${candidate.name}」，并从当前画布创建 ${historyEntry.name}。其他候选仍可保留为分支。`,
+        ? `已选中「${candidate.name}」，并从「${candidate.parentLabel ?? '父版本'}」创建 ${historyEntry.name}。其他结果仍可保留为分支。`
+        : `已选中「${candidate.name}」，并从当前画布创建 ${historyEntry.name}。其他结果仍可保留为分支。`,
     })
   },
 

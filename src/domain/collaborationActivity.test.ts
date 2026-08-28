@@ -73,7 +73,7 @@ test('移动节点和更新节点内容使用不同摘要', () => {
   })
 })
 
-test('对话和任务变化保留定位目标', () => {
+test('文档不再从内嵌消息派生对话变更', () => {
   const base = document({
     agentSessions: [{ id: 'session-1', title: '海边创作', executionMode: 'manual', contextNodeIds: [], messages: [], createdAt: 1, updatedAt: 1 }],
   })
@@ -84,8 +84,7 @@ test('对话和任务变化保留定位目标', () => {
     }],
   })
   assert.deepEqual(collaborationDocumentChange(base, next), {
-    kind: 'conversation', summary: '更新了对话「海边创作」',
-    target: { kind: 'message', sessionId: 'session-1', messageId: 'message-1' },
+    kind: 'project', summary: '更新了项目内容', target: { kind: 'project' },
   })
 })
 

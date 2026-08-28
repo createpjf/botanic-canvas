@@ -1,5 +1,9 @@
 // @ts-check
 import { Queue, Worker } from 'bullmq'
+import {
+  attachAgentTraceContext,
+  withExtractedAgentTraceContext,
+} from './agentTraceContext.mjs'
 
 const queueName = 'botanic-derived'
 const defaultJobOptions = {
@@ -26,6 +30,9 @@ export const DERIVED_TASK_KINDS = Object.freeze([
   // 按服务端策略自动重试失败分支（Epic 5）。此前「要不要再跑一次」由浏览器决定，
   // 关掉页面就没有重试。
   'branch.retry',
+  // 恢复「Run 已落库，进程在首个 Generation Job 前崩溃」的提交窗口。
+  // 它只调用幂等提交服务，不自行创建 Job。
+  'run.submit',
 ])
 
 const kindSet = new Set(DERIVED_TASK_KINDS)
@@ -51,10 +58,11 @@ export function derivedSweepKey(kind) {
 
 /**
  * @param {string | undefined} redisUrl
+ * @param {{ QueueImpl?: any }} [options]
  */
-export function createDerivedTaskQueue(redisUrl) {
+export function createDerivedTaskQueue(redisUrl, { QueueImpl = Queue } = {}) {
   if (!redisUrl) return undefined
-  const queue = new Queue(queueName, { connection: { url: redisUrl }, defaultJobOptions })
+  const queue = new QueueImpl(queueName, { connection: { url: redisUrl }, defaultJobOptions })
   return {
     /**
      * 入队一个针对具体实体的派生任务。`dedupeId` 参与 BullMQ jobId，因此同一实体
@@ -71,13 +79,13 @@ export function createDerivedTaskQueue(redisUrl) {
         if (state === 'failed' || state === 'completed') await existing.remove()
         else return false
       }
-      await queue.add(kind, { kind, ...payload }, { jobId })
+      await queue.add(kind, attachAgentTraceContext({ kind, ...payload }), { jobId })
       return true
     },
     /** 注册周期性清扫。重复调用幂等，由 BullMQ 按 repeat key 去重。 */
     async scheduleSweep(kind, everyMs) {
       assertKind(kind)
-      await queue.add(kind, { kind, sweep: true }, {
+      await queue.add(kind, attachAgentTraceContext({ kind, sweep: true }), {
         repeat: { every: Math.max(10_000, Number(everyMs) || 60_000), key: derivedSweepKey(kind) },
         jobId: derivedSweepKey(kind),
       })
@@ -89,18 +97,18 @@ export function createDerivedTaskQueue(redisUrl) {
 }
 
 /**
- * @param {{ redisUrl?: string, concurrency?: number, handlers: Record<string, (payload: any) => Promise<unknown>> }} input
+ * @param {{ redisUrl?: string, concurrency?: number, handlers: Record<string, (payload: any) => Promise<unknown>>, WorkerImpl?: any }} input
  */
-export function createDerivedTaskWorker({ redisUrl, concurrency, handlers }) {
+export function createDerivedTaskWorker({ redisUrl, concurrency, handlers, WorkerImpl = Worker }) {
   if (!redisUrl) throw new Error('REDIS_URL 未配置，无法启动派生任务 Worker。')
   for (const kind of Object.keys(handlers ?? {})) assertKind(kind)
-  return new Worker(queueName, async (job) => {
-    const handler = handlers?.[job.data?.kind]
+  return new WorkerImpl(queueName, async (job) => withExtractedAgentTraceContext(job.data, (data) => {
+    const handler = handlers?.[data?.kind]
     // 没有处理器的种类直接跳过而不是抛错：一次滚动发布中新旧 Worker 并存时，
     // 旧 Worker 会看到还不认识的种类，抛错只会把它标记失败并触发无意义重试。
-    if (!handler) return { skipped: true, kind: job.data?.kind }
-    return handler(job.data)
-  }, {
+    if (!handler) return { skipped: true, kind: data?.kind }
+    return handler(data)
+  }), {
     connection: { url: redisUrl, maxRetriesPerRequest: null },
     concurrency: Math.max(1, concurrency || 1),
     maxStalledCount: 1,

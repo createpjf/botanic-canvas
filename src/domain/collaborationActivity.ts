@@ -1,4 +1,4 @@
-import type { BotanicAgentMessage, BotanicAgentRun, BotanicAgentSession } from './agent.ts'
+import type { BotanicAgentRun } from './agent.ts'
 import type { CanvasDocument, CanvasNode } from './canvas.ts'
 
 export type CollaborationActivityKind = 'canvas' | 'conversation' | 'task' | 'project'
@@ -37,21 +37,8 @@ function contentSignature(node: CanvasNode) {
   return JSON.stringify({ ...rest, data })
 }
 
-function latestMessage(before: BotanicAgentSession | undefined, after: BotanicAgentSession) {
-  const known = new Set((before?.messages ?? []).map((message) => message.id))
-  return [...after.messages].reverse().find((message) => !known.has(message.id))
-}
-
 function changedRun(before: BotanicAgentRun | undefined, after: BotanicAgentRun) {
   return !before || before.updatedAt !== after.updatedAt || before.status !== after.status
-}
-
-function messageTarget(session: BotanicAgentSession, message: BotanicAgentMessage): CollaborationDocumentChange {
-  return {
-    kind: 'conversation',
-    summary: `更新了对话「${session.title}」`,
-    target: { kind: 'message', sessionId: session.id, messageId: message.id },
-  }
 }
 
 /**
@@ -86,12 +73,6 @@ export function collaborationDocumentChange(before: CanvasDocument, after: Canva
     }
   }
   if (changed.length > 1) return { kind: 'canvas', summary: `更新了 ${changed.length} 个画布节点`, target: { kind: 'node', nodeId: changed[0].id } }
-
-  const beforeSessions = new Map(before.agentSessions.map((session) => [session.id, session]))
-  for (const session of after.agentSessions) {
-    const message = latestMessage(beforeSessions.get(session.id), session)
-    if (message) return messageTarget(session, message)
-  }
 
   const beforeRuns = new Map(before.agentRuns.map((run) => [run.id, run]))
   const run = after.agentRuns.find((candidate) => changedRun(beforeRuns.get(candidate.id), candidate))

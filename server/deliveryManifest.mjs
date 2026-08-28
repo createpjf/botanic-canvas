@@ -57,7 +57,10 @@ export function isApprovedForDelivery(artifactId, reviewTasks = []) {
     const decision = (task?.decisions ?? [])
       .filter((entry) => entry?.artifactId === artifactId)
       // 同一候选可被多次决定，以最后一次为准。
-      .sort((left, right) => Number(left.decidedAt ?? 0) - Number(right.decidedAt ?? 0))
+      .sort((left, right) => (
+        Number(left.decisionRevision ?? 0) - Number(right.decisionRevision ?? 0)
+        || Number(left.decidedAt ?? 0) - Number(right.decidedAt ?? 0)
+      ))
       .at(-1)
     if (decision) return decision.decision === 'accepted'
   }

@@ -10,6 +10,7 @@ import {
   persistAgentLiveTimeline,
   projectBotanicAgentRunOntoTimeline,
   reduceAgentTimeline,
+  safeTimelineWebSources,
   timelineRawDisplayItems,
   timelineStepShowsWebSources,
   timelineWebSourceHref,
@@ -199,18 +200,24 @@ test('搜索结果数为 0 时不用调用次数冒充站点数', () => {
   assert.equal(rawGroup?.type === 'raw_group' ? rawGroup.summary : '', '已搜索 0 个网站')
 })
 
-test('web_fetch 展示网页获取主机名，不与搜索步骤合并', () => {
+test('web_fetch 展示网页获取主机名和来源 pill，不与搜索步骤合并', () => {
   let timeline = createAgentTimeline(1_000)
   timeline = reduceAgentTimeline(timeline, {
     type: 'tool',
     step: 0,
     toolCall: toolCall('fetch-1', 'web_fetch', '网页获取', 'succeeded'),
-    presentation: { kind: 'fetch', title: '网页获取 www.andlight.cn' },
+    presentation: {
+      kind: 'fetch',
+      title: '网页获取 www.andlight.cn',
+      sources: [{ hostname: 'www.andlight.cn', url: 'https://www.andlight.cn/' }],
+    },
     receivedAt: 1_100,
   })
   const step = timeline.blocks.find((block) => block.type === 'step')
   assert.equal(step?.type === 'step' ? step.kind : '', 'fetch')
   assert.equal(step?.type === 'step' ? step.title : '', '网页获取 www.andlight.cn')
+  const rawItems = timeline.blocks.find((block) => block.type === 'raw_group')?.items ?? []
+  assert.equal(step?.type === 'step' && timelineStepShowsWebSources(step, rawItems), true)
 })
 
 test('已知规划工具标题与服务端对齐；Run 投影只反映已持久化状态', () => {
@@ -396,7 +403,7 @@ test('连续搜索按 hostname 去重累加站点；项目检索即使带 hits �
   )
 })
 
-test('raw 只收起网页搜索行，保留 web_fetch；href 只放行公开 HTTPS', () => {
+test('raw 只收起网页搜索行，保留 web_fetch；客户端只解析有界 HTTPS 来源形状', () => {
   assert.deepEqual(timelineRawDisplayItems([
     { ...toolCall('s1', 'web_search', '网页搜索', 'succeeded') },
     { ...toolCall('s2', 'search_related', '关联搜索', 'succeeded') },
@@ -407,9 +414,18 @@ test('raw 只收起网页搜索行，保留 web_fetch；href 只放行公开 HTT
   assert.equal(displayWebSourceHostname('www.andlight.cn'), 'andlight.cn')
   assert.equal(timelineWebSourceHref({ hostname: 'andlight.cn', url: 'https://www.andlight.cn/about' }), 'https://www.andlight.cn/about')
   assert.equal(timelineWebSourceHref({ hostname: 'example.com', url: 'http://example.com' }), null)
-  assert.equal(timelineWebSourceHref({ hostname: 'local', url: 'https://127.0.0.1/' }), null)
   assert.equal(timelineWebSourceHref({ hostname: 'example.com', url: 'https://user:pass@example.com/' }), null)
-  assert.equal(timelineWebSourceHref({ hostname: 'intranet', url: 'https://192.168.1.8/admin' }), null)
+  assert.equal(timelineWebSourceHref({ hostname: 'local', url: 'https://127.0.0.1/' }), 'https://127.0.0.1/')
+  assert.equal(timelineWebSourceHref({ hostname: 'oversized', url: `https://example.com/${'a'.repeat(2048)}` }), null)
+  assert.deepEqual(safeTimelineWebSources([
+    { hostname: 'www.andlight.cn', url: 'https://www.andlight.cn/', title: '和光' },
+    { hostname: 'bad-http', url: 'http://example.com/' },
+    { hostname: 'oversized', url: `https://example.com/${'a'.repeat(2048)}` },
+    { hostname: 'fcbarcelona.com', url: 'https://fcbarcelona.com/', title: 'x'.repeat(161) },
+  ]), [
+    { hostname: 'www.andlight.cn', url: 'https://www.andlight.cn/', title: '和光' },
+    { hostname: 'fcbarcelona.com', url: 'https://fcbarcelona.com/' },
+  ])
 })
 
 test('没有错误文案时不编造一个', () => {

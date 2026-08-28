@@ -3,6 +3,7 @@ import {
   isCollapsedWebSearchToolName,
   isWebSourceToolName,
   mergeTimelineWebSources,
+  safeTimelineWebSources,
   type TimelineWebSource,
 } from './agentTimelineWebSources.ts'
 
@@ -12,6 +13,7 @@ export {
   isCollapsedWebSearchToolName,
   isWebSourceToolName,
   mergeTimelineWebSources,
+  safeTimelineWebSources,
   timelineWebSourceHref,
 } from './agentTimelineWebSources.ts'
 

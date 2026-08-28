@@ -76,17 +76,27 @@ export function buildReviewTaskForRun({ run, jobs = [], coverage, now = Date.now
  *   task: any,
  *   candidates?: Array<any>,
  *   existingResults?: Array<any>,
- *   reviewCandidate?: (input: { candidate: any, task: any }) => Promise<{ criteria?: Array<any>, revisionProposal?: any }>,
+ *   reviewCandidate?: (input: { candidate: any, task: any, signal?: AbortSignal }) => Promise<{ criteria?: Array<any>, revisionProposal?: any }>,
  *   judgeWith?: (input: { criterion: any, candidate: any }) => any,
+ *   prepareCandidate: (input: { artifactId: string, candidate?: any, task: any }) => Promise<any>,
+ *   commitCandidateResult: (result: any) => Promise<any>,
  *   registry?: any, context?: any,
+ *   signal?: AbortSignal,
  *   now?: () => number,
  * }} input
  */
 export async function runAgentReviewTask({
   task, candidates = [], existingResults = [], reviewCandidate,
-  judgeWith, registry, context, now = () => Date.now(),
+  judgeWith, prepareCandidate, commitCandidateResult,
+  registry, context, signal, now = () => Date.now(),
 }) {
-  const started = settleAgentReviewTask(task, { status: 'running', now: now() })
+  if (typeof prepareCandidate !== 'function' || typeof commitCandidateResult !== 'function') {
+    throw new TypeError('Agent Review Runner 缺少 durable candidate checkpoint Interface。')
+  }
+  // attempt/generation 只能由 Store 的原子 claim 推进。保留 queued 输入仅用于领域测试兼容。
+  const started = task?.status === 'running'
+    ? structuredClone(task)
+    : settleAgentReviewTask(task, { status: 'running', now: now() })
   const byArtifactId = new Map(candidates.map((candidate) => [candidate.artifactId, candidate]))
   /** @type {any[]} */
   const results = [...existingResults.filter((item) => item.taskId === task.id)]
@@ -94,12 +104,32 @@ export async function runAgentReviewTask({
   /** @type {Array<{ artifactId: string, code: string, message: string }>} */
   const failures = []
 
+  function throwIfAborted() {
+    if (signal?.aborted) {
+      throw signal.reason ?? new Error('Agent Review execution 已失去租约。')
+    }
+  }
+
+  async function recordResult(result) {
+    // 结果必须先和 prepared checkpoint 在 Store 内同 CAS 落盘，再进入本地聚合。
+    throwIfAborted()
+    await commitCandidateResult(result)
+    throwIfAborted()
+    results.push(result)
+    done.add(result.artifactId)
+  }
+
   for (const artifactId of started.coverage?.artifactIds ?? []) {
+    throwIfAborted()
     if (done.has(artifactId)) continue
     const candidate = byArtifactId.get(artifactId)
+    // 所有候选先建立 durable prepared：视觉调用绝不会先于它发生；确定性结论也只能
+    // 与同一 prepared 在一个 fenced CAS 中提交，不能绕开逐候选 checkpoint。
+    await prepareCandidate({ artifactId, candidate, task: started })
+    throwIfAborted()
     if (!candidate) {
       // 覆盖清单里有、候选里没有：说明结果被删或对不上，照实记为无法验证而不是跳过。
-      results.push(createAgentReviewResult({
+      await recordResult(createAgentReviewResult({
         taskId: started.id, projectId: started.projectId, artifactId,
         qualityPolicyFingerprint: started.qualityPolicyFingerprint,
         criteria: [{ id: 'file_integrity', layer: 'deterministic', verdict: 'unverifiable', evidence: '找不到对应的输出记录。' }],
@@ -117,10 +147,12 @@ export async function runAgentReviewTask({
         criteria.push({ id: 'semantic_review', layer: 'model', verdict: 'unverifiable', evidence: '未配置视觉评审模型。' })
       } else {
         try {
-          const judged = await reviewCandidate({ candidate, task: started })
+          const judged = await reviewCandidate({ candidate, task: started, signal })
+          throwIfAborted()
           criteria.push(...(judged?.criteria ?? []))
           revisionProposal = judged?.revisionProposal
         } catch (caught) {
+          throwIfAborted()
           // 区分「模型不可用」与「输出不可解析」：两者都要能被诊断，不能收敛成空结果。
           const code = /** @type {any} */ (caught)?.code === 'REVIEW_OUTPUT_UNPARSABLE'
             ? 'REVIEW_OUTPUT_UNPARSABLE'
@@ -133,6 +165,7 @@ export async function runAgentReviewTask({
     // 项目自定义判据（evaluator Skill）。跑在内置判据之后：内置层已经判 fail 时
     // 不必再为自定义判据多花几次模型调用。
     for (const criterion of started.qualityPolicy?.evaluatorSkills ?? []) {
+      throwIfAborted()
       if (!shouldRunModelLayer(deterministic)) break
       if (typeof judgeWith !== 'function') {
         criteria.push({
@@ -143,10 +176,11 @@ export async function runAgentReviewTask({
         continue
       }
       criteria.push(await runEvaluatorSkillCriterion({
-        criterion, candidate, task: started, judgeWith, registry, context, now,
+        criterion, candidate, task: started, judgeWith, registry, context, signal, now,
       }))
+      throwIfAborted()
     }
-    results.push(createAgentReviewResult({
+    await recordResult(createAgentReviewResult({
       taskId: started.id,
       projectId: started.projectId,
       artifactId,

@@ -227,8 +227,12 @@ export function aggregateOnlineFeedback({ reviewTasks = [], manifests = [] } = {
   const latest = new Map()
   for (const decision of decisions) {
     const current = latest.get(decision?.artifactId)
+    const decisionRevision = Number(decision?.decisionRevision ?? 0)
     const decidedAt = Number(decision?.decidedAt ?? 0)
-    if (!current || decidedAt >= current.decidedAt) latest.set(decision?.artifactId, { decision: decision?.decision, decidedAt })
+    if (!current || decisionRevision > current.decisionRevision
+      || (decisionRevision === current.decisionRevision && decidedAt >= current.decidedAt)) {
+      latest.set(decision?.artifactId, { decision: decision?.decision, decisionRevision, decidedAt })
+    }
   }
   const settled = [...latest.values()]
   const accepted = settled.filter((entry) => entry.decision === 'accepted').length

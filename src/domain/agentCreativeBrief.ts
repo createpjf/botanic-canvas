@@ -4,6 +4,7 @@ import type {
   GenerationResolution,
   GenerationSettings,
 } from './canvas.ts'
+import { defaultImageGenerationModel } from './generationRecipe.ts'
 import { customGenerationSizeFields } from './generationOutputSize.ts'
 
 export type BotanicCreativeBriefMode = 'generation' | 'prompt'
@@ -218,9 +219,10 @@ function createBrief(input: AdvanceBotanicCreativeBriefInput): BotanicCreativeBr
   const requested = input.requestedSettings ?? {}
   // 调用方按本轮媒体类型传入候选目录：视频轮次传视频模型，此时列表里没有图片模型，
   // 默认值必须落到第一个可用模型，而不是因为找不到图片模型而空缺。
+  const defaultModel = defaultImageGenerationModel(input.generationModels, 'image')
+    ?? input.generationModels?.[0]
   const model = requested.model ?? inherited.model
-    ?? input.generationModels?.find((item) => item.mediaKind !== 'video')?.id
-    ?? input.generationModels?.[0]?.id
+    ?? defaultModel?.id
   const selectedModel = input.generationModels?.find((item) => item.id === model)
   const aspectRatio = requested.aspectRatio
     ?? (inherited.aspectRatio && supportsValue(selectedModel?.aspectRatios, inherited.aspectRatio)

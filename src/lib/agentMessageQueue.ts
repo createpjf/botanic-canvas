@@ -17,6 +17,7 @@ export type AgentMessageQueueItem = AgentMessageQueueInput & {
   lastAttemptAt?: number
   error?: string
   errorCode?: string
+  errorStatus?: number
 }
 
 export type AgentMessageQueueFlushResult = {
@@ -114,12 +115,12 @@ export function createAgentMessageQueue(options: AgentMessageQueueOptions) {
     const key = itemKey(input)
     const existing = items.find((item) => item.key === key || item.idempotencyKey === input.idempotencyKey)
     if (existing) {
-      if (existing.status !== 'sending') {
-        existing.message = structuredClone(input.message)
-        existing.session = structuredClone(input.session)
-        existing.idempotencyKey = input.idempotencyKey
-        persist()
-      }
+      // 发送中的快照可能只是 running；后续终态必须留在同一队列项中，
+      // 当前请求完成后再补送新版，刷新也能从本地队列恢复最后状态。
+      existing.message = structuredClone(input.message)
+      existing.session = structuredClone(input.session)
+      existing.idempotencyKey = input.idempotencyKey
+      persist()
       return structuredClone(existing)
     }
     const item: AgentMessageQueueItem = {
@@ -142,32 +143,50 @@ export function createAgentMessageQueue(options: AgentMessageQueueOptions) {
         .filter((item) => item.status !== 'failed')
         .sort(compareQueueItems)
 
+      let stopFlush = false
       for (const current of ordered) {
-        const item = items.find((candidate) => candidate.key === current.key)
-        if (!item || item.status === 'failed') continue
-        item.status = 'sending'
-        item.attempts += 1
-        item.lastAttemptAt = now()
-        item.error = undefined
-        item.errorCode = undefined
-        persist()
-        try {
-          await options.deliver(structuredClone(item))
-          delivered.push(item.message.id)
-          items = items.filter((candidate) => candidate.key !== item.key)
+        let sendLatest = true
+        while (sendLatest) {
+          sendLatest = false
+          const item = items.find((candidate) => candidate.key === current.key)
+          if (!item || item.status === 'failed') break
+          item.status = 'sending'
+          item.attempts += 1
+          item.lastAttemptAt = now()
+          item.error = undefined
+          item.errorCode = undefined
           persist()
-        } catch (error) {
-          const candidate = error as Partial<QueueError> | undefined
-          item.error = error instanceof Error ? error.message : '消息发送失败。'
-          item.errorCode = candidate?.code
-          if (isRetryableError(error)) {
-            item.status = 'queued'
+          const deliverySnapshot = structuredClone(item)
+          try {
+            await options.deliver(deliverySnapshot)
+            const latest = items.find((candidate) => candidate.key === item.key)
+            if (!latest) break
+            if (JSON.stringify(latest.message) !== JSON.stringify(deliverySnapshot.message)) {
+              latest.status = 'queued'
+              persist()
+              sendLatest = true
+              continue
+            }
+            delivered.push(latest.message.id)
+            items = items.filter((candidate) => candidate.key !== latest.key)
             persist()
-            break
+          } catch (error) {
+            const latest = items.find((candidate) => candidate.key === item.key) ?? item
+            const candidate = error as Partial<QueueError> | undefined
+            latest.error = error instanceof Error ? error.message : '消息发送失败。'
+            latest.errorCode = candidate?.code
+            latest.errorStatus = typeof candidate?.status === 'number' ? candidate.status : undefined
+            if (isRetryableError(error)) {
+              latest.status = 'queued'
+              persist()
+              stopFlush = true
+              break
+            }
+            latest.status = 'failed'
+            persist()
           }
-          item.status = 'failed'
-          persist()
         }
+        if (stopFlush) break
       }
 
       const result: AgentMessageQueueFlushResult = {
@@ -187,6 +206,7 @@ export function createAgentMessageQueue(options: AgentMessageQueueOptions) {
       item.status = 'queued'
       item.error = undefined
       item.errorCode = undefined
+      item.errorStatus = undefined
       persist()
     }
     return structuredClone(item)
@@ -206,3 +226,15 @@ export function createAgentMessageQueue(options: AgentMessageQueueOptions) {
 }
 
 export type AgentMessageQueue = ReturnType<typeof createAgentMessageQueue>
+
+/** Turn POST 的 durable 栅栏：只有目标 Message 已从队列移除才表示 PUT 成功。 */
+export function assertAgentMessageQueueItemDelivered(queue: AgentMessageQueue, messageId: string) {
+  const pending = queue.list().find((item) => item.message.id === messageId)
+  if (!pending) return
+  const error = new Error(pending.error || 'Agent 消息尚未持久化，已暂停提交 Turn。') as QueueError
+  error.status = pending.errorStatus ?? 0
+  error.code = error.status === 0
+    ? 'AGENT_MESSAGE_NOT_DURABLE'
+    : pending.errorCode || 'AGENT_MESSAGE_NOT_DURABLE'
+  throw error
+}

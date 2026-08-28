@@ -5,6 +5,81 @@ export type TimelineWebSource = {
 }
 
 const MAX_MERGED_WEB_SOURCES = 30
+const MAX_PRESENTATION_WEB_SOURCES = 5
+const MAX_SOURCE_CANDIDATES = 30
+const MAX_SOURCE_HOSTNAME = 253
+const MAX_SOURCE_URL = 2048
+const MAX_SOURCE_TITLE = 160
+
+function safeSourceText(value: unknown, maximumLength: number) {
+  if (typeof value !== 'string') return undefined
+  const clean = value.replace(/[\u0000-\u001f\u007f]/gu, ' ').replace(/\s+/gu, ' ').trim()
+  return clean && clean.length <= maximumLength ? clean : undefined
+}
+
+function safeSourceUrl(value: unknown) {
+  const raw = safeSourceText(value, MAX_SOURCE_URL)
+  if (!raw) return undefined
+  try {
+    const parsed = new URL(raw)
+    if (parsed.protocol !== 'https:' || parsed.username || parsed.password) return undefined
+    if (parsed.port && parsed.port !== '443') return undefined
+    return parsed.href
+  } catch {
+    return undefined
+  }
+}
+
+function safeSourceHostname(value: unknown) {
+  const hostname = safeSourceText(value, MAX_SOURCE_HOSTNAME)
+  if (!hostname) return undefined
+  try {
+    const parsed = new URL(`https://${hostname}/`)
+    return sourceKey(parsed.hostname) === sourceKey(hostname) ? hostname : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function safeTimelineWebSource(value: unknown): TimelineWebSource | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const raw = value as Record<string, unknown>
+  const hostname = safeSourceHostname(raw.hostname)
+  if (!hostname) return undefined
+  const source: TimelineWebSource = { hostname }
+  if (raw.url !== undefined) {
+    const url = safeSourceUrl(raw.url)
+    if (!url) return undefined
+    if (sourceKey(new URL(url).hostname) !== sourceKey(hostname)) return undefined
+    source.url = url
+  }
+  const title = safeSourceText(raw.title, MAX_SOURCE_TITLE)
+  if (title) source.title = title
+  return source
+}
+
+/** 网络/恢复数据只接受有界展示形状；公开地址判定仍由服务端出网边界负责。 */
+export function safeTimelineWebSources(
+  value: unknown,
+  maximumSources = MAX_PRESENTATION_WEB_SOURCES,
+): TimelineWebSource[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const cap = Number.isInteger(maximumSources) && maximumSources > 0
+    ? Math.min(maximumSources, MAX_MERGED_WEB_SOURCES)
+    : MAX_PRESENTATION_WEB_SOURCES
+  const sources: TimelineWebSource[] = []
+  const seen = new Set<string>()
+  for (const item of value.slice(0, MAX_SOURCE_CANDIDATES)) {
+    const source = safeTimelineWebSource(item)
+    if (!source) continue
+    const key = sourceKey(source.hostname)
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    sources.push(source)
+    if (sources.length >= cap) break
+  }
+  return sources.length ? sources : undefined
+}
 
 function sourceKey(hostname: string) {
   return displayWebSourceHostname(hostname).toLocaleLowerCase()
@@ -34,74 +109,21 @@ export function mergeTimelineWebSources(
   if (!existing?.length && !incoming?.length) return undefined
   const merged: TimelineWebSource[] = []
   const seen = new Set<string>()
-  for (const source of [...(existing ?? []), ...(incoming ?? [])]) {
-    const hostname = source.hostname?.trim()
-    if (!hostname) continue
-    const key = sourceKey(hostname)
+  const candidates = [
+    ...(existing ?? []).slice(0, MAX_MERGED_WEB_SOURCES),
+    ...(incoming ?? []).slice(0, MAX_MERGED_WEB_SOURCES),
+  ]
+  for (const source of safeTimelineWebSources(candidates, MAX_MERGED_WEB_SOURCES) ?? []) {
+    const key = sourceKey(source.hostname)
     if (!key || seen.has(key)) continue
     seen.add(key)
-    const next: TimelineWebSource = { hostname }
-    const url = source.url?.trim()
-    if (url) next.url = url
-    const title = source.title?.trim()
-    if (title) next.title = title
-    merged.push(next)
+    merged.push(source)
     if (merged.length >= MAX_MERGED_WEB_SOURCES) break
   }
   return merged.length ? merged : undefined
 }
 
-function ipv4FromHostname(hostname: string) {
-  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname)
-  if (!match) return undefined
-  const octets = match.slice(1).map(Number)
-  if (octets.some((part) => part > 255)) return undefined
-  return octets
-}
-
-function isPrivateIpv4(octets: number[]) {
-  const [first, second] = octets
-  if (first === 0 || first === 10 || first === 127) return true
-  if (first === 169 && second === 254) return true
-  if (first === 172 && second >= 16 && second <= 31) return true
-  if (first === 192 && second === 168) return true
-  return false
-}
-
-function isBlockedHost(host: string) {
-  if (
-    host === 'localhost'
-    || host === 'localhost.localdomain'
-    || host === 'metadata.google.internal'
-    || host === 'metadata.internal'
-    || host.endsWith('.local')
-    || host.endsWith('.internal')
-    || host.endsWith('.localhost')
-  ) {
-    return true
-  }
-  const ipv4 = ipv4FromHostname(host)
-  if (ipv4 && isPrivateIpv4(ipv4)) return true
-  if (!host.includes(':')) return false
-  if (host === '::1' || host === '::' || host === '0:0:0:0:0:0:0:1' || host === '0:0:0:0:0:0:0:0') return true
-  if (host.startsWith('fe80:') || host.startsWith('fc') || host.startsWith('fd') || host.startsWith('ff')) return true
-  if (/^::ffff:/iu.test(host)) return true
-  return false
-}
-
-/** 点 pill 只打开已校验的公开 HTTPS；http、凭据、内网一律拒绝。 */
+/** 点 pill 只打开有界 HTTPS；公网/私网判定由服务端权威校验，不在浏览器复制安全规则。 */
 export function timelineWebSourceHref(source: TimelineWebSource): string | null {
-  const raw = source.url?.trim() ?? ''
-  if (!raw) return null
-  try {
-    const parsed = new URL(raw)
-    if (parsed.protocol !== 'https:') return null
-    if (parsed.username || parsed.password) return null
-    if (parsed.port && parsed.port !== '443') return null
-    const host = parsed.hostname.replace(/^\[|\]$/g, '').toLocaleLowerCase()
-    if (!host || isBlockedHost(host)) return null
-    return parsed.href
-  } catch {
-    return null
-  }
+  return safeSourceUrl(source.url) ?? null
 }

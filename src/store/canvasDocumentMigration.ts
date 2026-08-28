@@ -23,6 +23,7 @@ import type {
   ResultNodeData,
   TextNodeData,
 } from '../domain/canvas.ts'
+import { displayGenerationResultLabel } from '../domain/canvasPresentation.ts'
 import {
   cloneEdges,
   cloneNodes,
@@ -48,6 +49,11 @@ function cleanGenerateNodeLabel(value: string | undefined) {
   const label = cleanDisplayName(value, '图像生成')
   // 将旧版本的通用名称统一迁移，避免分支与独立生成都被误称为“首图”。
   return label === '首图生成' ? '图像生成' : label
+}
+
+function cleanPromptNodeLabel(value: string | undefined, fallback: string) {
+  const label = cleanDisplayName(value, fallback)
+  return label === '视觉目标' ? '描述' : label
 }
 
 export function canvasNodeDisplayName(node: CanvasNode) {
@@ -99,7 +105,7 @@ function normalizeLegacyCopyNodes(nodes: CanvasNode[]): CanvasNode[] {
         ...node,
         data: {
           ...data,
-          label: cleanDisplayName(data.label, data.generationKind === 'refinement' ? '定向精修指令' : '视觉目标'),
+          label: cleanPromptNodeLabel(data.label, data.generationKind === 'refinement' ? '定向精修指令' : '描述'),
         },
       }
     }
@@ -125,7 +131,9 @@ function normalizeLegacyCopyNodes(nodes: CanvasNode[]): CanvasNode[] {
       ...node,
       data: {
         ...data,
-        label: data.label ? cleanDisplayName(data.label, data.generationKind === 'refinement' ? '定向精修结果' : '首图结果') : data.label,
+        label: data.label
+          ? displayGenerationResultLabel(cleanDisplayName(data.label, data.generationKind === 'refinement' ? '定向精修结果' : '首图结果'))
+          : data.label,
         generationRecipe,
         rootRecipe,
       },

@@ -12,6 +12,7 @@ import {
   createAgentReviewTask,
   memoryProposalFromRejection,
   planReviewCoverage,
+  publicAgentReviewTask,
   reviewTaskIdFor,
   settleAgentReviewTask,
 } from './agentReviewTask.mjs'
@@ -49,6 +50,44 @@ test('同一 Run 同一质量策略只有一个评审任务', () => {
   assert.equal(taskOf(planReviewCoverage({ candidates })).id, taskOf(planReviewCoverage({ candidates })).id)
   assert.notEqual(reviewTaskIdFor('run-1', 'fp-a'), reviewTaskIdFor('run-1', 'fp-b'))
   assert.notEqual(reviewTaskIdFor('run-1', 'fp-a'), reviewTaskIdFor('run-2', 'fp-a'))
+})
+
+test('评审公共读模型不泄露 ownerId 与 Worker execution lease', () => {
+  const task = {
+    ...taskOf(planReviewCoverage({ candidates })),
+    status: 'cancelled',
+    execution: { generation: 2, leaseToken: 'worker-secret', leaseExpiresAt: 999 },
+    cancel: {
+      signalId: 'cancel-secret', idempotencyKey: 'cancel-key', requestedBy: 'user-secret',
+      requestedAt: 200, releaseBasis: 'worker_exit', executionGeneration: 2,
+    },
+    reconciliation: {
+      version: 1,
+      retryCount: 1,
+      resolutions: [{
+        idempotencyKey: 'reconcile-key', actorId: 'user-secret', action: 'retry_once', resolvedAt: 180,
+        prior: { executionGeneration: 1, results: [{ id: 'private-prior' }] },
+        risk: { code: 'AGENT_REVIEW_RETRY_MAY_DUPLICATE_PROVIDER_CALL', message: '内部风险明细' },
+      }],
+    },
+    results: [{
+      id: 'result-1', taskId: 'task-1', projectId: 'project-1', artifactId: 'artifact-1',
+      resolution: { kind: 'human_resolution', action: 'continue_unverifiable', resolvedBy: 'user-secret', resolvedAt: 180 },
+    }],
+  }
+  const publicTask = publicAgentReviewTask(task)
+  assert.equal(publicTask.ownerId, undefined)
+  assert.equal(publicTask.execution, undefined)
+  assert.deepEqual(publicTask.cancel, { status: 'cancelled', requestedAt: 200, releaseBasis: 'worker_exit' })
+  assert.deepEqual(publicTask.reconciliation, {
+    version: 1,
+    retryCount: 1,
+    resolutions: [{
+      action: 'retry_once', resolvedAt: 180,
+      risk: { code: 'AGENT_REVIEW_RETRY_MAY_DUPLICATE_PROVIDER_CALL' },
+    }],
+  })
+  assert.equal(publicTask.results[0].resolution.resolvedBy, undefined)
 })
 
 test('默认覆盖每个候选，抽样与上限都必须显式声明', () => {
@@ -116,10 +155,12 @@ test('评审失败必须可诊断，不接受空错误', () => {
   const failed = settleAgentReviewTask(task, { status: 'failed', error: { code: 'REVIEW_MODEL_UNAVAILABLE', message: '视觉模型不可用。' } })
   assert.equal(failed.status, 'failed')
   assert.equal(failed.error.code, 'REVIEW_MODEL_UNAVAILABLE')
-  assert.throws(() => settleAgentReviewTask(task, { status: 'cancelled' }), /未声明的评审任务状态/u)
+  const cancelled = settleAgentReviewTask(failed, { status: 'cancelled' })
+  assert.equal(cancelled.status, 'cancelled')
+  assert.equal(cancelled.error, undefined)
   // 进入 running 时累加尝试次数，重试可被观察。
   assert.equal(settleAgentReviewTask(task, { status: 'running' }).attempt, 1)
-  assert.deepEqual([...REVIEW_TASK_STATUSES], ['queued', 'running', 'completed', 'failed'])
+  assert.deepEqual([...REVIEW_TASK_STATUSES], ['queued', 'running', 'cancelling', 'completed', 'failed', 'cancelled'])
 })
 
 test('人工决定逐候选幂等，批量共享 commandId 也各自落库', () => {

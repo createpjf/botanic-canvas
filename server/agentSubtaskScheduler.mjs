@@ -76,8 +76,6 @@ export async function runAgentSubtask({ subtask, runSubagent, registry, context,
   let current = { ...subtask, status: 'running', startedAt: now(), updatedAt: now() }
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), current.timeoutMs)
-  // Node 里未 unref 的定时器会拖住进程退出；子任务提前完成时必须清掉。
-  if (typeof timer.unref === 'function') timer.unref()
 
   /** 工具调用要同时受白名单与预算约束，两者都在这里执行而不是靠子 Agent 自觉。 */
   const callTool = async (name, argumentsValue) => {

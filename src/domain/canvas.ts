@@ -11,10 +11,15 @@ export type GenerationMediaKind = 'image' | 'video'
 export type VideoInputMode = 'first_frame' | 'first_last' | 'reference'
 export type GenerationInputRole = 'first_frame' | 'last_frame' | 'reference_image' | 'reference_video'
 export type DeliveryPresetId = 'taobao' | 'xiaohongshu' | 'douyin'
-export type GenerationAspectRatio = '1:1' | '16:9' | '4:3' | '3:4' | '4:5' | '9:16'
+export const GENERATION_ASPECT_RATIOS = ['1:1', '16:9', '4:3', '3:4', '4:5', '9:16', '3:2', '2:3', '5:4', '21:9'] as const
+export type GenerationAspectRatio = (typeof GENERATION_ASPECT_RATIOS)[number]
+export const EVERYDAY_GENERATION_RESOLUTIONS = ['1K', '2K'] as const
+export const GENERATION_RESOLUTIONS = ['1K', '2K', '4K'] as const
+export const NANO_BANANA_MODEL_ID = 'gemini-3.1-pro-preview'
 // 模型列表由服务端健康检查下发；画布快照必须保留提交时实际使用的模型 ID。
 export type GenerationModelId = string
-export type GenerationResolution = '1K' | '2K'
+export type GenerationResolution = (typeof GENERATION_RESOLUTIONS)[number]
+export type GenerationThinkingLevel = 'minimal' | 'high'
 export type GenerationTaskStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
 /**
  * 画布在服务端任务号尚未确认时的本地恢复状态。
@@ -25,7 +30,7 @@ export type CanvasGenerationTaskStatus = GenerationTaskStatus | 'uploading' | 's
 export type GenerationModelOption = {
   id: GenerationModelId
   label: string
-  provider?: 'openai' | 'minimax'
+  provider?: 'openai' | 'minimax' | 'flock'
   mediaKind?: GenerationMediaKind
   aspectRatios?: GenerationAspectRatio[]
   resolutions?: GenerationResolution[]
@@ -35,6 +40,10 @@ export type GenerationModelOption = {
   supportsCustomSize?: boolean
   /** 支持局部重绘蒙版（images/edits 的 mask 语义）；缺省视为不支持。 */
   supportsMask?: boolean
+  /** 单次生成可连接的参考图上限；缺省 8。 */
+  maximumReferences?: number
+  supportsSearchGrounding?: boolean
+  thinkingLevels?: GenerationThinkingLevel[]
 }
 
 export const defaultGenerationModels: GenerationModelOption[] = [
@@ -60,6 +69,10 @@ export type GenerationSettings = {
   outputWidth?: number
   /** gpt-image-2 自定义输出高，须与 outputWidth 同时出现。 */
   outputHeight?: number
+  /** Nano Banana：Google Search + Image Search grounding。 */
+  searchGrounding?: boolean
+  /** Nano Banana：thinking_level；官方 Pro 档关不掉，只有档位。 */
+  thinkingLevel?: GenerationThinkingLevel
 }
 
 export type GenerationReference = {

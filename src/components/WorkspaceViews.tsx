@@ -23,10 +23,10 @@ export type WorkspaceMember = AccountWorkspaceMember
 const projectLibraryMessages = {
   'zh-CN': {
     pageAria: '创意项目', studio: '创意工作室', productHome: '产品首页', openAccount: '打开账户设置', localWorkspace: '本地工作区',
-    title: '创意项目', description: '从不同的商品与创作目标，进入各自独立的画布。', updating: '正在更新…',
+    title: '创意项目', eyebrow: '创意项目', description: '从不同的商品与创作目标，进入各自独立的画布。', updating: '正在更新…',
     loadTitle: '项目列表暂时无法加载', loadError: '请检查网络或稍后重试。', retry: '重试', loadingAria: '正在加载项目',
     newProject: '新建项目', newProjectDescription: '从空白画布开始', noCover: '尚未生成封面',
-    renameTitle: '重命名项目', projectName: '项目名称', cancel: '取消', save: '保存', deleteTitle: '删除项目',
+    renameTitle: '重命名项目', settingsEyebrow: '项目设置', projectName: '项目名称', cancel: '取消', save: '保存', deleteTitle: '删除项目', deleteEyebrow: '删除项目',
     deleteDescription: '项目画布、生成结果和项目私有素材会被永久删除，无法恢复。', confirmDelete: '确认删除',
     renameError: '项目名称未保存，请检查网络后重试。', deleteError: '删除未完成，请稍后重试。', createError: '新建项目失败，请检查网络后重试。',
     count: (count: number) => `${formatProductNumber(count, 'zh-CN')} 个项目`,
@@ -35,10 +35,10 @@ const projectLibraryMessages = {
   },
   en: {
     pageAria: 'Creative projects', studio: 'Creative studio', productHome: 'Product home', openAccount: 'Open account settings', localWorkspace: 'Local workspace',
-    title: 'Creative projects', description: 'Open a dedicated canvas for each product and creative goal.', updating: 'Updating…',
+    title: 'Creative projects', eyebrow: 'Projects', description: 'One canvas per product and brief.', updating: 'Updating…',
     loadTitle: 'Projects are temporarily unavailable', loadError: 'Check your connection and try again.', retry: 'Try again', loadingAria: 'Loading projects',
-    newProject: 'New project', newProjectDescription: 'Start with a blank canvas', noCover: 'No cover generated yet',
-    renameTitle: 'Rename project', projectName: 'Project name', cancel: 'Cancel', save: 'Save', deleteTitle: 'Delete project',
+    newProject: 'New project', newProjectDescription: 'Blank canvas', noCover: 'No cover yet',
+    renameTitle: 'Rename project', settingsEyebrow: 'Settings', projectName: 'Project name', cancel: 'Cancel', save: 'Save', deleteTitle: 'Delete project', deleteEyebrow: 'Delete',
     deleteDescription: 'The project canvas, generated outputs, and private project assets will be permanently deleted.', confirmDelete: 'Delete project',
     renameError: 'The project name was not saved. Check your connection and try again.', deleteError: 'The project could not be deleted. Try again shortly.', createError: 'The project could not be created. Check your connection and try again.',
     count: (count: number) => `${formatProductNumber(count, 'en')} ${count === 1 ? 'project' : 'projects'}`,
@@ -151,12 +151,14 @@ export function ProjectLibrary({
 
   const submitRename = async () => {
     if (!editingProject || !projectName.trim()) return
+    const target = editingProject
+    const nextName = projectName.trim()
     setSubmitting(true)
     setOperationError('')
+    // 与删除一致：先关对话框，卡片名由协调器乐观更新，不让 PATCH 阻塞项目页。
+    setEditingProject(null)
     try {
-      const renamed = await onRenameProject(editingProject.id, projectName)
-      if (renamed) setEditingProject(null)
-      else setOperationError(copy.renameError)
+      if (!await onRenameProject(target.id, nextName)) setOperationError(copy.renameError)
     } catch {
       setOperationError(copy.renameError)
     } finally {
@@ -226,7 +228,7 @@ export function ProjectLibrary({
       </header>
       <section className="project-library-page__content">
         <header>
-          <div><span className="workspace-eyebrow"><i />CREATIVE PROJECTS</span><h1>{copy.title}</h1><p>{copy.description}</p></div>
+          <div><span className="workspace-eyebrow"><i />{copy.eyebrow}</span><h1>{copy.title}</h1><p>{copy.description}</p></div>
           <strong><b>{formatProductNumber(projects.length, locale)}</b> {copy.count(projects.length).replace(/^\S+\s*/, '')}{loading && projects.length > 0 ? <em role="status">{copy.updating}</em> : null}</strong>
         </header>
         {loadError ? <section className="project-library-state project-library-state--error" role="alert">
@@ -261,7 +263,7 @@ export function ProjectLibrary({
       </section>
       {editingPresence.present && visibleEditingProject ? <div className={`project-dialog-backdrop motion-overlay is-${editingPresence.phase}`} role="presentation" aria-hidden={editingPresence.phase === 'exit' ? true : undefined} onMouseDown={() => !submitting && setEditingProject(null)}>
         <form ref={(element) => { projectDialogRef.current = element }} className="project-dialog" role="dialog" aria-modal="true" aria-labelledby="rename-project-title" onMouseDown={(event) => event.stopPropagation()} onSubmit={(event) => { event.preventDefault(); void submitRename() }}>
-          <span className="workspace-eyebrow">PROJECT SETTINGS</span><h2 id="rename-project-title">{copy.renameTitle}</h2>
+          <span className="workspace-eyebrow">{copy.settingsEyebrow}</span><h2 id="rename-project-title">{copy.renameTitle}</h2>
           <input autoFocus value={projectName} maxLength={60} onChange={(event) => setProjectName(event.target.value)} aria-label={copy.projectName} />
           {operationError ? <p className="project-dialog__error" role="alert">{operationError}</p> : null}
           <div><button type="button" onClick={() => setEditingProject(null)} disabled={submitting}>{copy.cancel}</button><button type="submit" className="is-primary" disabled={submitting || !projectName.trim()}>{copy.save}</button></div>
@@ -269,7 +271,7 @@ export function ProjectLibrary({
       </div> : null}
       {deletingPresence.present && visibleDeletingProject ? <div className={`project-dialog-backdrop motion-overlay is-${deletingPresence.phase}`} role="presentation" aria-hidden={deletingPresence.phase === 'exit' ? true : undefined} onMouseDown={() => !submitting && setDeletingProject(null)}>
         <section ref={projectDialogRef} className="project-dialog project-dialog--danger" role="alertdialog" aria-modal="true" aria-labelledby="delete-project-title" onMouseDown={(event) => event.stopPropagation()}>
-          <span className="workspace-eyebrow">DELETE PROJECT</span><h2 id="delete-project-title">{copy.deleteQuestion(visibleDeletingProject.name)}</h2>
+          <span className="workspace-eyebrow">{copy.deleteEyebrow}</span><h2 id="delete-project-title">{copy.deleteQuestion(visibleDeletingProject.name)}</h2>
           <p>{copy.deleteDescription}</p>
           {operationError ? <p className="project-dialog__error" role="alert">{operationError}</p> : null}
           <div><button type="button" onClick={() => setDeletingProject(null)} disabled={submitting}>{copy.cancel}</button><button type="button" className="is-danger" onClick={() => void confirmDelete()} disabled={submitting}>{copy.confirmDelete}</button></div>

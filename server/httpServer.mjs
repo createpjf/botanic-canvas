@@ -9,6 +9,8 @@ import { BotanicAgentChatError } from './botanicAgentChat.mjs'
 import { BotanicAgentSkillError } from './botanicAgentSkill.mjs'
 import { BotanicAgentRunError } from './botanicAgentRun.mjs'
 import { AgentToolRuntimeError } from './agentToolRuntime.mjs'
+import { AgentActionExecutionError } from './agentActionExecution.mjs'
+import { AgentActionReconciliationError } from './agentActionReconciliation.mjs'
 import { McpClientError } from './mcpClient.mjs'
 // 能力探测：`authAssurance` 与 `lifecycle` 两处都用它，此前漏了导入 ——
 // 结果是启用 MFA 的部署一请求就 500、且优雅关闭必抛 ReferenceError。
@@ -32,22 +34,62 @@ import { createLibraryRouteHandler } from './libraryRoutes.mjs'
 import { createRealtimeTicketRouteHandler } from './realtimeTicketRoutes.mjs'
 import { createPromptMediaRouteHandler } from './promptMediaRoutes.mjs'
 import { createAgentRouteHandler } from './agentRoutes.mjs'
+import { createBotanicAgentTurnRuntime } from './botanicAgentTurnRuntime.mjs'
+import { createAgentSubagentRunner } from './agentSubagentRunner.mjs'
+import { createAgentSubagentProjectRegistry } from './agentSubagentRegistry.mjs'
+import { createAgentSubagentProcessor } from './agentSubagentProcessor.mjs'
+import { createAgentSubagentCancellation } from './agentSubagentCancellation.mjs'
+import { createAgentSubagentRecovery } from './agentSubagentRecovery.mjs'
+import { AgentSubagentServiceError, createAgentSubagentService } from './agentSubagentService.mjs'
 import { createAgentRunGenerationService } from './agentRunGenerationService.mjs'
 import { writeAgentRunOperationalEvent } from './agentRunObservability.mjs'
+import { AgentDelegationFenceError } from './agentCancellationService.mjs'
+import { abortMatchingGenerationJobCancellation } from './generationCancellation.mjs'
+import { createGenerationRecoverySweep } from './generationRecoverySweep.mjs'
+import {
+  injectAgentTraceContext,
+  withExtractedAgentTraceContext,
+} from './agentTraceContext.mjs'
+import {
+  activeBotanicTraceFields,
+  setBotanicHttpSpanStatus,
+  withBotanicSpan,
+} from './executionTelemetry.mjs'
+import { agentContextRolloutHealth } from './agentContextRollout.mjs'
 
 export function createBotanicHttpServer({
   config,
   runtime,
   redisQueue,
+  agentSubagentQueue,
   agentRunEvents,
   securityControls,
   configuredMcpTools = {},
 }) {
 const { productStore, mediaService } = runtime
+const configuredMcpToolCount = typeof configuredMcpTools?.catalog === 'function'
+  ? configuredMcpTools.catalog().length
+  : Object.values(configuredMcpTools ?? {}).filter((value) => typeof value === 'function').length
 let realtimeHub
 let agentRunEventSubscriber
 let canvasRealtimeEventPublisher
 let canvasRealtimeEventSubscriber
+let localSubagentRecoveryTimer
+// API 本地原型与跨实例订阅共用句柄表；生产由 Redis 信号触发，local prototype
+// 则由同一 publish seam 直接触发，二者保持相同取消语义。
+const localJobCancelRegistry = createLocalCancelRegistry()
+const localTurnCancelRegistry = createLocalCancelRegistry()
+async function publishAgentCancellation(event) {
+  if (event?.scope === 'job') {
+    await abortMatchingGenerationJobCancellation({
+      productStore,
+      cancelRegistry: localJobCancelRegistry,
+      event,
+    })
+  }
+  if (event?.scope === 'turn') localTurnCancelRegistry.abort(event.id)
+  await agentRunEvents?.publishCancel?.(event)
+}
 async function publishAgentRunUpdated(event) {
   if (config.redisUrl) return agentRunEvents.publish(event)
   realtimeHub?.publishAgentRunUpdated(event)
@@ -61,7 +103,13 @@ async function publishGenerationProjectUpdated(event) {
   return realtimeHub?.publishProjectUpdated(event)
 }
 const localProcessor = !redisQueue && !config.production
-  ? createGenerationProcessor({ productStore, mediaService, config, publishAgentRunUpdated, publishProjectUpdated: publishGenerationProjectUpdated, observeAgentRun })
+  ? createGenerationProcessor({
+      productStore, mediaService, config,
+      cancelRegistry: localJobCancelRegistry,
+      publishAgentRunUpdated,
+      publishProjectUpdated: publishGenerationProjectUpdated,
+      observeAgentRun,
+    })
   : undefined
 if (config.production && !redisQueue) throw new Error('生产环境必须配置 REDIS_URL；内存任务队列只用于本地原型。')
 if (!config.realtimeTicketSecret) throw new Error('实时服务必须配置 REALTIME_TICKET_SECRET。')
@@ -89,7 +137,26 @@ function error(response, statusCode, code, message) {
 }
 
 function observeAgentRun(input) {
-  writeAgentRunOperationalEvent(input)
+  const traceFields = activeBotanicTraceFields()
+  writeAgentRunOperationalEvent({
+    ...input,
+    w3cTraceId: traceFields.traceId,
+    w3cSpanId: traceFields.spanId,
+    traceFlags: traceFields.traceFlags,
+  }, console, { semanticLogger: console })
+}
+
+async function consumeWebResearchQuota(userId) {
+  const result = await securityControls.consume({
+    scope: 'web-research',
+    subject: userId,
+    limit: config.security.webResearchPerMinute,
+    windowMs: 60_000,
+  })
+  if (!result.allowed) {
+    console.warn(JSON.stringify({ event: 'security.rate_limited', scope: 'web-research', retryAfterSeconds: result.retryAfterSeconds }))
+  }
+  return result
 }
 
 async function enforceRateLimit(response, input) {
@@ -165,6 +232,7 @@ function enumValue(value, allowed, name) {
 function agentEntityHttpError(caught) {
   if (caught?.code === 'INVALID_AGENT_ENTITY') return new HttpError(400, caught.code, caught.message)
   if (caught?.code === 'AGENT_SESSION_NOT_FOUND') return new HttpError(404, caught.code, caught.message)
+  if (caught?.code === 'AGENT_MESSAGE_NOT_FOUND') return new HttpError(409, caught.code, caught.message)
   if (caught?.code === 'AGENT_MEMORY_DELETED') return new HttpError(409, caught.code, caught.message)
   if (typeof caught?.code === 'string' && /^(AGENT_(SESSION|MESSAGE|MEMORY|RUN|ENTITY)_ID_CONFLICT)$/.test(caught.code)) {
     return new HttpError(409, caught.code, caught.message)
@@ -176,6 +244,16 @@ async function enqueue(jobId) {
   if (redisQueue) return redisQueue.enqueue(jobId)
   if (!localProcessor) throw new HttpError(503, 'QUEUE_NOT_CONFIGURED', '生成队列尚未配置：生产环境请设置 REDIS_URL。')
   queueMicrotask(() => void localProcessor(jobId))
+}
+
+let sweepRecoverableGenerationJobs
+function generationRecoverySweep() {
+  sweepRecoverableGenerationJobs ??= createGenerationRecoverySweep({
+    productStore,
+    enqueue,
+    observe: (event) => console.error(JSON.stringify(event)),
+  })
+  return sweepRecoverableGenerationJobs
 }
 
 async function streamMedia(response, media) {
@@ -252,7 +330,7 @@ const handleGenerationRoute = createGenerationRouteHandler({
   config,
   productStore,
   redisQueue,
-  publishCancel: (event) => agentRunEvents?.publishCancel?.(event),
+  publishCancel: publishAgentCancellation,
   json,
   error,
   readJson,
@@ -271,7 +349,7 @@ const handleProductionWorkflowRoute = createProductionWorkflowRouteHandler({
   submitGeneration,
   redisQueue,
   publishProjectUpdated,
-  publishCancel: (event) => agentRunEvents?.publishCancel?.(event),
+  publishCancel: publishAgentCancellation,
   mediaService,
   modelOptions: config.modelOptions ?? [],
 })
@@ -296,32 +374,94 @@ const agentRunGeneration = createAgentRunGenerationService({
   publishProjectUpdated,
   publishAgentRunUpdated,
 })
+const hasAgentSubagentStore = [
+  'enqueueAgentSubagentActivation',
+  'readAgentSubagent',
+  'listAgentSubagentActivations',
+  'claimAgentSubagentActivation',
+  'settleAgentSubagentActivation',
+  'requestAgentSubagentCancellation',
+  'finalizeAgentSubagentCancellation',
+  'listAgentSubagentActivationsForWorker',
+  'readAgentSubagentForWorker',
+  'listRunnableAgentSubagents',
+  'listAgentSubagentsForRootTurnPage',
+].every((method) => typeof productStore?.[method] === 'function')
+const subagentTurnRuntime = hasAgentSubagentStore
+  ? createBotanicAgentTurnRuntime({ productStore, localCancelRegistry: localTurnCancelRegistry })
+  : undefined
+const subagentRunner = hasAgentSubagentStore
+  ? createAgentSubagentRunner({ runtimeConfig: config })
+  : undefined
+const subagentCancellation = hasAgentSubagentStore
+  ? createAgentSubagentCancellation({
+      productStore,
+      turnRuntime: subagentTurnRuntime,
+      publishCancel: publishAgentCancellation,
+      observe: observeAgentRun,
+    })
+  : undefined
+let localSubagentProcessor
+async function createSubagentRegistry({ userId, projectId }) {
+  return createAgentSubagentProjectRegistry({
+    productStore,
+    config,
+    userId,
+    projectId,
+    consumeWebResearchQuota,
+  })
+}
+async function dispatchSubagentActivation(identity) {
+  if (agentSubagentQueue) return agentSubagentQueue.enqueue(identity)
+  if (!localSubagentProcessor) {
+    throw new AgentSubagentServiceError('AGENT_SUBAGENT_QUEUE_UNAVAILABLE', 'Subagent 执行队列尚未配置。', 503)
+  }
+  queueMicrotask(() => void localSubagentProcessor(identity).catch((caught) => {
+    console.error(`[agent-subagent] local activation deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
+  }))
+  return true
+}
+if (hasAgentSubagentStore && subagentRunner && !agentSubagentQueue && !config.production) {
+  localSubagentProcessor = createAgentSubagentProcessor({
+    productStore,
+    turnRuntime: subagentTurnRuntime,
+    runSubagent: subagentRunner,
+    buildRegistry: ({ descriptor }) => createSubagentRegistry({
+      userId: descriptor.ownerId,
+      projectId: descriptor.projectId,
+    }),
+    enqueue: dispatchSubagentActivation,
+    convergeCancellation: (descriptor) => subagentCancellation.converge(descriptor),
+    observe: observeAgentRun,
+  })
+}
+if (config.production && config.agentSubagentModel && !agentSubagentQueue) {
+  throw new Error('生产环境启用 Subagent 时必须配置独立 Redis 队列。')
+}
+const agentSubagentService = hasAgentSubagentStore
+  ? createAgentSubagentService({
+      productStore,
+      config,
+      createRegistry: createSubagentRegistry,
+      dispatchActivation: dispatchSubagentActivation,
+      cancellation: subagentCancellation,
+    })
+  : undefined
 // 路由与跨实例取消订阅方共用同一张执行句柄表；两者拿不到同一个表，落在非执行
 // 实例的取消就只能事后丢弃结果而不是真正中止（ADR 0004）。
-const localCancelRegistry = createLocalCancelRegistry()
 const handleAgentRoute = createAgentRouteHandler({
   config, productStore, redisQueue, configuredMcpTools, json, error, readJson, text,
   requireUser, enforceRateLimit, agentRunGeneration, publishAgentRunUpdated,
   enqueue, publishProjectUpdated, publishCollaborationActivity, observeAgentRun,
   // 分支重试服务需要不写 HTTP 响应的限流原语：工具调用方没有 response 可写。
   securityControls,
-  mediaService, localCancelRegistry,
-  publishCancel: (event) => agentRunEvents?.publishCancel?.(event),
-  consumeWebResearchQuota: async (userId) => {
-    const result = await securityControls.consume({
-      scope: 'web-research',
-      subject: userId,
-      limit: config.security.webResearchPerMinute,
-      windowMs: 60_000,
-    })
-    if (!result.allowed) {
-      console.warn(JSON.stringify({ event: 'security.rate_limited', scope: 'web-research', retryAfterSeconds: result.retryAfterSeconds }))
-    }
-    return result
-  },
+  mediaService, localCancelRegistry: localTurnCancelRegistry,
+  publishCancel: publishAgentCancellation,
+  consumeWebResearchQuota,
+  agentSubagentService,
 })
 
-const handleRequest = async (request, response) => {
+const handleRequestCore = async (request, response) => {
   const requestId = randomUUID()
   response.setHeader('X-Request-ID', requestId)
   const forwardedProtocol = request.headers['x-forwarded-proto']?.split(',')[0]?.trim()
@@ -355,12 +495,27 @@ const handleRequest = async (request, response) => {
           models: config.flockAgentModels,
         },
         agentFeatures: config.agentFeatureFlags,
+        agentContext: {
+          ...agentContextRolloutHealth(config.agentFeatureFlags, config.rolloutFlags),
+          configuredModelPolicies: Object.keys(config.agentModelContextPolicies?.models ?? {}).length,
+          defaultPolicyConfigured: Boolean(config.agentModelContextPolicies?.default),
+        },
+        telemetry: {
+          enabled: Boolean(config.telemetry?.enabled),
+          traces: config.telemetry?.enabled ? 'otlp' : 'disabled',
+          genAiSemconv: config.telemetry?.genAiDevelopmentSemconv ? 'development' : 'disabled',
+        },
         // 只回显全局开启的灰度闸门名。按项目/用户放量的白名单内容不出现在这里，
         // 否则健康检查会泄漏参与灰度的项目与用户标识。
         rolloutFlags: config.rolloutFlags?.enabledFor() ?? [],
         agentMcp: {
-          configured: Object.keys(configuredMcpTools).length > 0,
-          toolCount: Object.keys(configuredMcpTools).length,
+          configured: configuredMcpToolCount > 0,
+          toolCount: configuredMcpToolCount,
+        },
+        agentSubagent: {
+          configured: Boolean(subagentRunner),
+          model: config.agentSubagentModel || undefined,
+          queue: agentSubagentQueue ? 'redis' : localSubagentProcessor ? 'local-prototype' : 'disabled',
         },
       })
     }
@@ -380,7 +535,7 @@ const handleRequest = async (request, response) => {
     return error(response, 404, 'NOT_FOUND', '接口不存在。')
   } catch (caught) {
     const agentEntityFailure = agentEntityHttpError(caught)
-    const failure = caught instanceof HttpError || caught instanceof ProjectAuthorizationError || caught instanceof GenerationError || caught instanceof PromptRefinementError || caught instanceof BotanicAgentPlannerError || caught instanceof BotanicAgentChatError || caught instanceof BotanicAgentRunError || caught instanceof BotanicAgentSkillError || caught instanceof AgentToolRuntimeError || caught instanceof McpClientError
+    const failure = caught instanceof HttpError || caught instanceof ProjectAuthorizationError || caught instanceof GenerationError || caught instanceof PromptRefinementError || caught instanceof BotanicAgentPlannerError || caught instanceof BotanicAgentChatError || caught instanceof BotanicAgentRunError || caught instanceof BotanicAgentSkillError || caught instanceof AgentToolRuntimeError || caught instanceof AgentActionExecutionError || caught instanceof AgentActionReconciliationError || caught instanceof McpClientError || caught instanceof AgentDelegationFenceError || caught instanceof AgentSubagentServiceError
       ? caught
       : agentEntityFailure
         ? agentEntityFailure
@@ -389,24 +544,59 @@ const handleRequest = async (request, response) => {
       : new HttpError(500, 'INTERNAL_ERROR', '服务发生未预期错误。')
     if (failure.statusCode >= 500) {
       console.error(JSON.stringify({
-        event: 'api.failure', requestId, method: request.method, path: request.url,
-        code: failure.code, detail: caught instanceof Error ? caught.message : String(caught),
+        event: 'api.failure', requestId, method: request.method,
+        code: failure.code,
       }))
     }
     return error(response, failure.statusCode, failure.code, failure.message)
   }
 }
 
+const handleRequest = (request, response) => withExtractedAgentTraceContext(
+  request.headers,
+  () => withBotanicSpan(`HTTP ${request.method ?? 'UNKNOWN'}`, {
+    kind: 'server',
+    automaticSuccessStatus: false,
+    attributes: {
+      'http.request.method': request.method ?? 'UNKNOWN',
+      'url.scheme': request.socket?.encrypted ? 'https' : 'http',
+      'botanic.component': 'api',
+      'botanic.phase': 'api',
+    },
+  }, async (span) => {
+    const carrier = injectAgentTraceContext()
+    if (carrier.traceparent && !response.headersSent) response.setHeader('traceparent', carrier.traceparent)
+    const result = await handleRequestCore(request, response)
+    try {
+      span?.setAttribute('http.response.status_code', response.statusCode)
+      setBotanicHttpSpanStatus(span, response.statusCode)
+    } catch { /* telemetry isolation */ }
+    return result
+  }),
+)
+
 const server = createServer(handleRequest)
 
 async function start() {
   try {
-    for (const queued of await productStore.recoverGenerationJobs()) {
-      await enqueue(queued.id)
-    }
+    await generationRecoverySweep()()
   } catch (caught) {
     // 队列恢复不是 API 启动前置条件；数据库短暂波动不能让登录、项目与媒体服务整体不可用。
     console.error(`[generation] queue recovery deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
+  }
+
+  if (localSubagentProcessor) {
+    const recoverSubagents = createAgentSubagentRecovery({
+      productStore,
+      enqueue: dispatchSubagentActivation,
+      observe: (event) => console.error(JSON.stringify(event)),
+    })
+    const recover = () => void recoverSubagents().catch((caught) => {
+      console.error(`[agent-subagent] local recovery deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
+    })
+    recover()
+    localSubagentRecoveryTimer = setInterval(recover, 30_000)
+    localSubagentRecoveryTimer.unref()
   }
 
   canvasRealtimeEventPublisher = createCanvasRealtimeEventPublisher(config.redisUrl, { eventSecret: config.realtimeEventSecret })
@@ -433,7 +623,7 @@ async function start() {
       // 则忽略（另一个实例会处理，或由孤儿清扫收敛）。
       onCancel: (event) => {
         if (event.scope !== 'turn') return
-        localCancelRegistry.abort(event.id)
+        localTurnCancelRegistry.abort(event.id)
       },
     },
   )
@@ -450,6 +640,7 @@ async function start() {
 }
 
 async function close() {
+  if (localSubagentRecoveryTimer) clearInterval(localSubagentRecoveryTimer)
   if (server.listening) await new Promise((resolveClose, rejectClose) => server.close((caught) => caught ? rejectClose(caught) : resolveClose()))
   await realtimeHub?.close()
   await canvasRealtimeEventSubscriber?.close()
@@ -457,6 +648,7 @@ async function close() {
   await agentRunEventSubscriber?.close()
   await agentRunEvents.close()
   await redisQueue?.close()
+  await agentSubagentQueue?.close()
   await securityControls.close()
   await mediaService.close()
   if (productStoreSupports(productStore, 'lifecycle')) await productStore.close()

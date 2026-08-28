@@ -1,6 +1,11 @@
 import { createEmptyCanvasDocument, seedGlobalAssets } from '../data/seed'
 import type { CanvasDocument, ResultNodeData } from '../domain/canvas'
+import {
+  canvasDocumentLifecycleAssistantMessage,
+  canvasDocumentReadyAssistantMessage,
+} from '../domain/canvasDocumentLifecycleCopy'
 import { createLatestOperation } from '../domain/latestOperation'
+import { readProductLocale } from '../i18n/core'
 import { resolveRemoteCanvasRefresh } from '../domain/remoteDocumentSync'
 import {
   ensureGlobalAssetLibrary,
@@ -61,7 +66,8 @@ export function createCanvasDocumentLifecycleActions({
     const selectedNode = [...document.nodes].reverse().find(
       (node) => node.selected || (node.type === 'result' && Boolean((node.data as ResultNodeData).selected)),
     )
-    const recoveredGeneration = restoreGenerationLifecycleState(document, '已同步其他设备的更新。')
+    const syncedMessage = canvasDocumentLifecycleAssistantMessage({ kind: 'synced', locale: readProductLocale() })
+    const recoveredGeneration = restoreGenerationLifecycleState(document, syncedMessage)
     set({
       document,
       persistenceStatus: 'saved',
@@ -69,7 +75,7 @@ export function createCanvasDocumentLifecycleActions({
       ...recoveredGeneration.state,
       assistantMessage: recoveredGeneration.state.generationStatus === 'recovering'
         ? recoveredGeneration.state.assistantMessage
-        : '已同步其他设备的更新。',
+        : syncedMessage,
       undoAction: null,
       undoSnapshot: null,
     })
@@ -88,7 +94,7 @@ export function createCanvasDocumentLifecycleActions({
       )
       const recoveredGeneration = restoreGenerationLifecycleState(
         document,
-        document.nodes.length ? `已打开「${document.name}」。` : `「${document.name}」已创建，可以从素材或一句话开始。`,
+        canvasDocumentReadyAssistantMessage(document, readProductLocale()),
       )
       set({
         document,
@@ -122,7 +128,7 @@ export function createCanvasDocumentLifecycleActions({
       )
       const recoveredGeneration = restoreGenerationLifecycleState(
         document,
-        document.nodes.length ? `已打开「${document.name}」。` : `「${document.name}」已创建，可以从素材或一句话开始。`,
+        canvasDocumentReadyAssistantMessage(document, readProductLocale()),
       )
       set({
         document,
@@ -185,7 +191,7 @@ export function createCanvasDocumentLifecycleActions({
       )
       const recoveredGeneration = restoreGenerationLifecycleState(
         document,
-        document.nodes.length ? `已打开「${document.name}」。` : `「${document.name}」已创建，可以从素材或一句话开始。`,
+        canvasDocumentReadyAssistantMessage(document, readProductLocale()),
       )
       set({
         document,
@@ -215,7 +221,7 @@ export function createCanvasDocumentLifecycleActions({
       set({
         document: { ...current, name: nextName },
         persistenceStatus: 'saving',
-        assistantMessage: `正在重命名为「${nextName}」。`,
+        assistantMessage: canvasDocumentLifecycleAssistantMessage({ kind: 'renaming', name: nextName, locale: readProductLocale() }),
       })
       return renameCanvasProject(current.id, nextName).then((saved) => {
         if (get().document.id !== current.id) return
@@ -223,7 +229,7 @@ export function createCanvasDocumentLifecycleActions({
         set({
           document: { ...active, name: saved.name, updatedAt: Math.max(active.updatedAt, saved.updatedAt) },
           persistenceStatus: 'saved',
-          assistantMessage: `项目已重命名为「${nextName}」。`,
+          assistantMessage: canvasDocumentLifecycleAssistantMessage({ kind: 'renamed', name: nextName, locale: readProductLocale() }),
         })
       }).catch((error) => {
         if (get().document.id === current.id) {
@@ -231,7 +237,7 @@ export function createCanvasDocumentLifecycleActions({
           set({
             document: active.name === nextName ? { ...active, name: current.name } : active,
             persistenceStatus: 'error',
-            assistantMessage: '项目重命名失败，请检查网络后重试。',
+            assistantMessage: canvasDocumentLifecycleAssistantMessage({ kind: 'renameFailed', locale: readProductLocale() }),
           })
         }
         throw error

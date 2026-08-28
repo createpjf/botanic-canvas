@@ -162,7 +162,7 @@ export function restoreGenerationLifecycleState(
         lastGenerationRequest: request,
         generationStatus: latestJob.status,
         expectedCandidateCount: latestJob.batchCount,
-        assistantMessage: '已恢复真实生成任务，正在同步生成服务状态。',
+        assistantMessage: '已恢复生成任务，正在同步生成服务状态。',
       },
       pollJobId: latestJob.id,
     }
@@ -177,7 +177,7 @@ export function restoreGenerationLifecycleState(
     }
   }
   if (latestJob.status === 'failed') {
-    const message = latestJob.error ?? '真实生成任务失败，请重试。'
+    const message = latestJob.error ?? '生成任务失败，请重试。'
     return {
       state: {
         ...idleState,
@@ -190,7 +190,7 @@ export function restoreGenerationLifecycleState(
     }
   }
   if (latestJob.status === 'cancelled') {
-    return { state: { ...idleState, assistantMessage: '上一次真实生成任务已取消；提示词、参考组和节点记录仍可继续使用。' } }
+    return { state: { ...idleState, assistantMessage: '上一次生成任务已取消；提示词、参考组和节点记录仍可继续使用。' } }
   }
   return { state: idleState }
 }

@@ -127,7 +127,7 @@ export function resolveBranchBaseRecipe(run, document, parentNode, branch, resol
   if (run.plan.intent === 'redo_from_root') {
     const rootRecipe = parentNode.data?.rootRecipe ?? parentNode.data?.generationRecipe
     if (!rootRecipe || !Array.isArray(rootRecipe.references)) {
-      throw resolveError('AGENT_RECIPE_MISSING', '父结果缺少可追溯的生成配方。')
+      throw resolveError('AGENT_RECIPE_MISSING', '父结果缺少可追溯的生成参数。')
     }
     return withBranchAsset(clone(rootRecipe.references), run, document, branch)
   }

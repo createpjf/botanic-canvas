@@ -1,4 +1,5 @@
 // @ts-check
+import { outboundAgentTraceHeaders } from './agentTraceContext.mjs'
 
 /**
  * 评审第 2 层：视觉模型语义判定（ADR 0006 / Epic 5）。
@@ -97,7 +98,7 @@ export function reviewVisionInstructions(requiredCriteria = [], brandCriteria = 
  *   callModel?: (input: { model: string, messages: any[], signal: AbortSignal }) => Promise<any>,
  *   fetchImpl?: typeof fetch,
  * }} input
- * @returns {undefined | ((input: { candidate: any, task: any }) => Promise<{ criteria: any[], revisionProposal?: any }>)}
+ * @returns {undefined | ((input: { candidate: any, task: any, signal?: AbortSignal }) => Promise<{ criteria: any[], revisionProposal?: any }>)}
  *   视觉模型未配置时返回 `undefined` —— 调用方据此把语义判据记为「无法验证」，
  *   而不是拿一个永远失败的评审器去跑。
  */
@@ -112,6 +113,7 @@ export function createAgentReviewVisionJudge({ runtimeConfig, resolveMedia, call
       const response = await fetchImpl(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
+          ...outboundAgentTraceHeaders(),
           Authorization: `Bearer ${apiKey}`,
           'x-litellm-api-key': apiKey,
           'Content-Type': 'application/json',
@@ -127,7 +129,8 @@ export function createAgentReviewVisionJudge({ runtimeConfig, resolveMedia, call
     : undefined)
   if (!invoke) return undefined
 
-  return async function reviewCandidate({ candidate, task }) {
+  return async function reviewCandidate({ candidate, task, signal }) {
+    if (signal?.aborted) throw signal.reason
     const requiredCriteria = task?.qualityPolicy?.requiredCriteria ?? []
     const brandCriteria = task?.qualityPolicy?.brandCriteria ?? []
     if (!requiredCriteria.length) {
@@ -138,6 +141,7 @@ export function createAgentReviewVisionJudge({ runtimeConfig, resolveMedia, call
     // 而且两次判定可能互相矛盾，无从裁决。
     const answerable = [...requiredCriteria, ...brandCriteria.map((item) => item.id)]
     const dataUrl = typeof resolveMedia === 'function' ? await resolveMedia(candidate?.output?.image) : undefined
+    if (signal?.aborted) throw signal.reason
     if (!dataUrl) {
       // 取不到画面就无法做视觉判定；照实说，不拿一张空图去问模型。
       return { criteria: answerable.map((id) => ({ id, layer: 'model', verdict: 'unverifiable', evidence: '无法读取该候选的画面。' })) }
@@ -150,9 +154,12 @@ export function createAgentReviewVisionJudge({ runtimeConfig, resolveMedia, call
           { role: 'system', content: reviewVisionInstructions(requiredCriteria, brandCriteria) },
           { role: 'user', content: [{ type: 'image_url', image_url: { url: dataUrl } }] },
         ],
-        signal: AbortSignal.timeout(REVIEW_TIMEOUT_MS),
+        signal: signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(REVIEW_TIMEOUT_MS)])
+          : AbortSignal.timeout(REVIEW_TIMEOUT_MS),
       })
     } catch (caught) {
+      if (signal?.aborted) throw signal.reason
       if (caught instanceof AgentReviewVisionError) throw caught
       throw new AgentReviewVisionError('REVIEW_MODEL_UNAVAILABLE', caught instanceof Error ? caught.message : String(caught))
     }

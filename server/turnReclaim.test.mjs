@@ -22,11 +22,13 @@ test('终态 Turn 与租约内的 Turn 都不回收', () => {
   assert.deepEqual(turnReclaimDecision({}), { action: 'skip', reason: 'missing_turn' })
 })
 
-test('四个非终态都参与回收，包括一出生就是 running 的孤儿', () => {
-  for (const status of ['queued', 'running', 'waiting_user', 'cancelling']) {
+test('queued/running 可恢复，waiting_user 等用户，cancelling 只走取消收敛', () => {
+  for (const status of ['queued', 'running']) {
     const decision = turnReclaimDecision({ turn: { id: 'turn-1', status, updatedAt: 0 }, now: 10_000_000, toolRisk })
     assert.equal(decision.action, 'resume', `${status} 应参与回收`)
   }
+  assert.deepEqual(turnReclaimDecision({ turn: { id: 'turn-1', status: 'waiting_user', updatedAt: 0 }, now: 10_000_000, toolRisk }), { action: 'skip', reason: 'waiting_user' })
+  assert.deepEqual(turnReclaimDecision({ turn: { id: 'turn-1', status: 'cancelling', updatedAt: 0 }, now: 10_000_000, toolRisk }), { action: 'cancel' })
 })
 
 test('只执行过只读工具的 Turn 可以恢复，read 工具重放不计费', () => {
@@ -35,6 +37,60 @@ test('只执行过只读工具的 Turn 可以恢复，read 工具重放不计费
     events: [toolEvent('context_read'), toolEvent('web_search')],
   })
   assert.deepEqual(decision, { action: 'resume', replayedToolCount: 2 })
+})
+
+test('有 checkpoint 时按 recovery 而非 risk：costly 规划工具声明 reexecute 仍可恢复', () => {
+  const checkpoint = {
+    version: 1,
+    attempt: { id: 'text', model: 'model-a', snapshotHash: 'snapshot-a' },
+    completedSteps: [{
+      step: 0,
+      calls: [{
+        id: 'call-generate', name: 'generate_images', risk: 'costly', recovery: 'reexecute', terminal: true,
+        arguments: { prompt: '海边品牌首图', count: 2 },
+      }],
+    }],
+  }
+  const decision = turnReclaimDecision({
+    turn: { ...stale, checkpoint },
+    now: 10_000_000,
+    // 即使遗留事件按 costly 记录，也必须以 checkpoint recovery 为准。
+    events: [toolEvent('generate_images')],
+    toolRisk,
+  })
+  assert.deepEqual(decision, { action: 'resume', replayedToolCount: 1 })
+})
+
+test('checkpoint 中 receipt 交给持久化回执恢复，web never 仍阻止恢复，损坏 checkpoint 明确失败', () => {
+  const base = {
+    version: 1,
+    attempt: { id: 'text', model: 'model-a', snapshotHash: 'snapshot-a' },
+    completedSteps: [],
+  }
+  const decisionFor = (call) => turnReclaimDecision({
+    turn: { ...stale, checkpoint: { ...base, pendingStep: { step: 0, calls: [call] } } },
+    now: 10_000_000,
+  })
+  const web = decisionFor({
+    id: 'call-web', name: 'web_search', risk: 'read', recovery: 'never', terminal: false,
+  })
+  assert.equal(web.action, 'fail')
+  assert.equal(web.code, 'AGENT_TURN_NOT_REPLAYABLE')
+  assert.match(web.message, /web_search/u)
+
+  const receipt = decisionFor({
+    id: 'call-submit', name: 'generation_submit', risk: 'costly', recovery: 'receipt', terminal: true,
+    receiptId: 'receipt-1', intentHash: 'intent-1',
+  })
+  assert.deepEqual(receipt, { action: 'resume', replayedToolCount: 0 })
+
+  const damaged = turnReclaimDecision({
+    turn: { ...stale, checkpoint: { version: 999, secret: '不得回显' } },
+    now: 10_000_000,
+  })
+  assert.equal(damaged.action, 'fail')
+  assert.equal(damaged.code, 'AGENT_TURN_CHECKPOINT_INVALID')
+  assert.doesNotMatch(JSON.stringify(damaged), /不得回显/u)
 })
 
 test('执行过 costly / write / external 的 Turn 不可恢复，避免重复计费与重复副作用', () => {
@@ -56,13 +112,13 @@ test('能力查不到的工具按最高风险处理，不乐观当成只读', ()
   assert.equal(withoutLookup.action, 'fail')
 })
 
-test('未完成的工具不构成重放障碍', () => {
-  // running 没有副作用保证，failed 没有成功副作用；两者都不该阻止恢复。
+test('running 的非读工具按结果未知阻止重放，明确 failed 才不构成成功副作用', () => {
   const decision = turnReclaimDecision({
     turn: stale, now: 10_000_000, toolRisk,
     events: [toolEvent('image_generate', 'running'), toolEvent('workflow_publish', 'failed'), toolEvent('context_read')],
   })
-  assert.deepEqual(decision, { action: 'resume', replayedToolCount: 1 })
+  assert.equal(decision.action, 'fail')
+  assert.equal(decision.code, 'AGENT_TURN_NOT_REPLAYABLE')
 })
 
 test('失败原因只含工具名，不泄漏参数或输出', () => {

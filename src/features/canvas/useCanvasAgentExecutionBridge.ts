@@ -12,9 +12,10 @@ import {
   type BotanicAgentActionResult,
   type BotanicAgentArtifact,
   type BotanicAgentCanvasWriteback,
+  type BotanicAgentManualRetryAuthorization,
   type BotanicAgentPlan,
 } from '../../domain/agent'
-import { collectAgentMediaSources, prepareAgentMediaSources } from '../../domain/agentMedia'
+import { collectAgentMediaSources, collectAgentVisionMediaSources, prepareAgentMediaSources } from '../../domain/agentMedia'
 import {
   type AssetNodeData,
   type CanvasDocument,
@@ -32,13 +33,19 @@ import {
   listProjectAgentArtifacts,
   persistAgentReferenceMedia,
   submitPersistentBotanicAgentReadingAnchor,
+  type ProjectAgentActionContext,
 } from '../../lib/agentApi'
 import { flushPendingCanvasDocumentWrites } from '../../lib/db'
 import { serverPersistenceEnabled } from '../../lib/productSession'
 import { localizeProductError } from '../../i18n/core'
 import { useProductI18n } from '../../i18n/react'
 import { useCanvasStore } from '../../store/canvasStore'
+import { useAgentSessionMessages } from '../agent/useAgentSessionMessages'
 import type { AgentArtifactIndexState, AgentContextItem, AgentDockTarget } from '../agent/agentWorkspace.types'
+import {
+  projectAcceptedAgentRunBestEffort,
+  preserveCanvasAgentActionError,
+} from './canvasAgentActionExecution'
 import { canvasSystemLabel } from './canvasI18n'
 
 const canvasAgentExecutionCopy = {
@@ -96,6 +103,20 @@ function canvasAssetName(document: CanvasDocument, assetId: string) {
     })[0]
 }
 
+function canvasAgentDockTarget(
+  document: CanvasDocument,
+  nodeId: string,
+  fallbackLabel: string,
+  locale: 'zh-CN' | 'en',
+): AgentDockTarget | undefined {
+  const node = document.nodes.find((candidate) => candidate.id === nodeId && candidate.type === 'result')
+  const data = node?.type === 'result' ? node.data as ResultNodeData : undefined
+  const rootRecipe = data?.rootRecipe ?? data?.generationRecipe
+  return node?.type === 'result' && data?.image && rootRecipe
+    ? { id: node.id, label: canvasSystemLabel(data.label ?? fallbackLabel, locale), image: data.image, rootRecipe }
+    : undefined
+}
+
 export function useCanvasAgentExecutionBridge({
   document,
   agentOpen,
@@ -139,7 +160,16 @@ export function useCanvasAgentExecutionBridge({
   const [focusRequest, setFocusRequest] = useState<{ nodeIds: string[]; requestId: number } | null>(null)
   const readingAnchorWritesRef = useRef(new Map<string, Promise<void>>())
 
-  const activeSession = document.agentSessions.find((session) => session.id === document.activeAgentSessionId)
+  const sessionMeta = document.agentSessions.find((session) => session.id === document.activeAgentSessionId)
+  const sessionMessages = useAgentSessionMessages(
+    document.id,
+    document.activeAgentSessionId,
+    sessionMeta?.messages ?? [],
+    agentOpen && Boolean(document.activeAgentSessionId),
+  )
+  const activeSession = sessionMeta
+    ? { ...sessionMeta, messages: sessionMessages.messages }
+    : undefined
   const activeContextNodeIds = activeSession?.contextNodeIds ?? selectedFocusNodeIds
   const contextualResultId = activeContextNodeIds.find((nodeId) => {
     const node = document.nodes.find((item) => item.id === nodeId && item.type === 'result')
@@ -147,14 +177,14 @@ export function useCanvasAgentExecutionBridge({
     return Boolean(result?.image) && canUseForImageDelivery(result?.mediaKind)
   })
   const effectiveTargetResultId = targetResultId ?? contextualResultId
-  const targetNode = effectiveTargetResultId
-    ? document.nodes.find((node) => node.id === effectiveTargetResultId && node.type === 'result')
+  const target = effectiveTargetResultId
+    ? canvasAgentDockTarget(document, effectiveTargetResultId, copy.selectedResult, locale)
     : undefined
-  const targetData = targetNode?.type === 'result' ? targetNode.data as ResultNodeData : undefined
-  const rootRecipe = targetData?.rootRecipe ?? targetData?.generationRecipe
-  const target: AgentDockTarget | undefined = targetNode?.type === 'result' && targetData?.image && rootRecipe
-    ? { id: targetNode.id, label: canvasSystemLabel(targetData.label ?? copy.selectedResult, locale), image: targetData.image, rootRecipe }
-    : undefined
+  const resolveTarget = useCallback((nodeId: string) => {
+    const currentDocument = useCanvasStore.getState().document
+    if (currentDocument.id !== document.id) return undefined
+    return canvasAgentDockTarget(currentDocument, nodeId, copy.selectedResult, locale)
+  }, [copy.selectedResult, document.id, locale])
   const latestRun = useMemo(() => {
     const candidates = new Map<string, typeof document.agentRuns[number]>()
     for (const message of activeSession?.messages ?? []) {
@@ -363,6 +393,25 @@ export function useCanvasAgentExecutionBridge({
     setFocusRequest({ nodeIds: validNodeIds, requestId: Date.now() })
   }, [document.nodes, onPrepareCanvasFocus, selectNode])
 
+  /**
+   * 对话/回合看图读的是服务端文档。聊天框刚放下的参考图还只在本机 data URL 里，
+   * 不先入库并冲刷，视觉模型只能拿到节点名，只能猜画面。
+   */
+  const prepareConversationVisionContext = useCallback(async (sessionId: string) => {
+    const activeDocument = useCanvasStore.getState().document
+    const contextNodeIds = activeDocument.agentSessions.find((item) => item.id === sessionId)?.contextNodeIds ?? []
+    if (!serverPersistenceEnabled || !contextNodeIds.length) return contextNodeIds
+    const sources = collectAgentVisionMediaSources(activeDocument, contextNodeIds)
+    try {
+      const replacements = await prepareAgentMediaSources(sources, (source) => persistAgentReferenceMedia(activeDocument.id, source))
+      if (Object.keys(replacements).length) await replaceMediaSources(replacements)
+    } catch { /* 入库失败仍尝试冲刷已排队的画布写入。 */ }
+    try {
+      await flushPendingCanvasDocumentWrites()
+    } catch { /* 冲刷失败不挡住本轮对话；服务端会按当前文档决定能否看图。 */ }
+    return contextNodeIds
+  }, [replaceMediaSources])
+
   const addUploadedImages = useCallback((uploads: UploadedAssetInput[]) => {
     if (!uploads.length) return
     const projectId = document.id
@@ -387,18 +436,34 @@ export function useCanvasAgentExecutionBridge({
     setSessionContext(sessionId, addedNodeIds)
   }, [addUploadedAssetsToCanvas, document.id, ensureAgentSession, setSessionContext])
 
-  const confirmAction = useCallback(async (action: BotanicAgentActionProposal): Promise<BotanicAgentActionResult> => {
+  const confirmAction = useCallback(async (
+    action: BotanicAgentActionProposal,
+    context: ProjectAgentActionContext,
+    options?: {
+      manualRetryAuthorization?: BotanicAgentManualRetryAuthorization
+      resumeManualRetry?: { retryIdempotencyKey: string }
+      observedResult?: BotanicAgentActionResult
+    },
+  ): Promise<BotanicAgentActionResult> => {
     const projectId = document.id
-    let response
-    try {
-      response = await executeProjectAgentAction({ projectId, action })
-    } catch (caught) {
-      throw new Error(localizeProductError(caught, locale, {
-        'zh-CN': canvasAgentExecutionCopy['zh-CN'].actionFailed,
-        en: canvasAgentExecutionCopy.en.actionFailed,
-      }))
+    let output = options?.observedResult
+    if (!output) {
+      try {
+        const response = await executeProjectAgentAction({
+          projectId,
+          action,
+          ...context,
+          manualRetryAuthorization: options?.manualRetryAuthorization,
+          resumeManualRetry: options?.resumeManualRetry,
+        })
+        output = response.output
+      } catch (caught) {
+        throw preserveCanvasAgentActionError(caught, localizeProductError(caught, locale, {
+          'zh-CN': canvasAgentExecutionCopy['zh-CN'].actionFailed,
+          en: canvasAgentExecutionCopy.en.actionFailed,
+        }))
+      }
     }
-    const output = response.output
     if (useCanvasStore.getState().document.id !== projectId) {
       return { ...output, message: `${output.message} ${copy.projectChangedResult}` }
     }
@@ -497,8 +562,10 @@ export function useCanvasAgentExecutionBridge({
         // 重建同 ID 的 awaiting_confirmation Run，否则会用更新的本地时间戳压住
         // 服务端 queued 状态，断线后任务也无法恢复执行。
         runId = snapshot.id
-        applyAgentRunSnapshot(snapshot)
-        await flushPendingCanvasDocumentWrites()
+        await projectAcceptedAgentRunBestEffort({
+          apply: () => { applyAgentRunSnapshot(snapshot) },
+          flush: flushPendingCanvasDocumentWrites,
+        })
         // 导演模式：服务端在创建时已自主建工作流并提交。快照带着 Job 绑定或终态时，
         // 浏览器不再补打三跳，只刷新画布把服务端建好的占位拉下来并聚焦。
         const serverSubmitted = snapshot.status === 'failed'
@@ -542,12 +609,14 @@ export function useCanvasAgentExecutionBridge({
           },
         })
         if (useCanvasStore.getState().document.id !== projectId) return { started: execution.jobIds.length > 0, runId }
-        applyAgentRunSnapshot(execution.run)
+        await projectAcceptedAgentRunBestEffort({
+          apply: () => { applyAgentRunSnapshot(execution.run) },
+        })
         await refreshDocumentFromRemote().catch(() => false)
         return { started: execution.jobIds.length > 0, runId }
       } catch (caught) {
         const projectChanged = caught instanceof Error && caught.message === copy.projectChanged
-        throw new Error(localizeProductError(caught, locale, projectChanged ? {
+        throw preserveCanvasAgentActionError(caught, localizeProductError(caught, locale, projectChanged ? {
           'zh-CN': canvasAgentExecutionCopy['zh-CN'].projectChanged,
           en: canvasAgentExecutionCopy.en.projectChanged,
         } : {
@@ -655,7 +724,7 @@ export function useCanvasAgentExecutionBridge({
     const currentDocument = useCanvasStore.getState().document
     if (currentDocument.id !== document.id) return
     const session = currentDocument.agentSessions.find((candidate) => candidate.id === sessionId)
-    if (!session?.messages.some((message) => message.id === messageId)) return
+    if (!session) return
     if (session.readingAnchorMessageId === messageId) return
     setAgentSessionReadingAnchor(sessionId, messageId)
     if (!serverPersistenceEnabled) return
@@ -721,18 +790,25 @@ export function useCanvasAgentExecutionBridge({
   return {
     activeSession,
     target,
+    resolveTarget,
     latestRun,
     artifacts,
     contextOptions,
     resolveRunNodes,
     artifactIndexStatus: artifactIndex.projectId === document.id ? artifactIndex.status : 'idle' as const,
     artifactIndexHasMore: artifactIndex.projectId === document.id && artifactIndex.nextBefore !== undefined,
+    loadOlderAgentMessages: sessionMessages.loadOlderMessages,
+    hasOlderAgentMessages: sessionMessages.hasOlderMessages,
+    loadingOlderAgentMessages: sessionMessages.loadingOlder,
+    refreshAgentSessionMessages: sessionMessages.refresh,
+    agentMessagesLoading: sessionMessages.loading,
     focusRequest,
     open,
     openForResult,
     attachNodeContext,
     focusNodes,
     addUploadedImages,
+    prepareConversationVisionContext,
     confirmAction,
     confirmPlan,
     newSession,

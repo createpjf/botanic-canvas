@@ -5,6 +5,26 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { loadLocalEnv, runtimeConfig } from './runtime.mjs'
 
+test('Model Context 策略按显式 JSON 解析，未配置时保持 legacy 目录', () => {
+  const previous = process.env.AGENT_MODEL_CONTEXT_POLICIES_JSON
+  try {
+    delete process.env.AGENT_MODEL_CONTEXT_POLICIES_JSON
+    assert.deepEqual(runtimeConfig('/tmp/botanic-runtime-test').agentModelContextPolicies, {
+      version: 1,
+      models: {},
+    })
+    process.env.AGENT_MODEL_CONTEXT_POLICIES_JSON = JSON.stringify({
+      models: { 'planner-a': { contextWindowTokens: 32_000 } },
+    })
+    const configured = runtimeConfig('/tmp/botanic-runtime-test').agentModelContextPolicies
+    assert.equal(configured.models['planner-a'].contextWindowTokens, 32_000)
+    assert.equal(Object.isFrozen(configured), true)
+  } finally {
+    if (previous === undefined) delete process.env.AGENT_MODEL_CONTEXT_POLICIES_JSON
+    else process.env.AGENT_MODEL_CONTEXT_POLICIES_JSON = previous
+  }
+})
+
 test('实时票据只使用独立签名密钥，不复用数据库或工作区凭据', () => {
   const keys = [
     'REALTIME_TICKET_SECRET',
@@ -99,22 +119,42 @@ test('生产 Web 回跳地址会让 Railway API 进入生产邀请保护', () =>
   }
 })
 
-test('Agent Planner 默认暴露五种已确认的 Flock 模型', () => {
+test('Agent Planner 默认暴露含看图型号的 Flock 模型', () => {
   const keys = ['FLOCK_TEXT_MODEL', 'FLOCK_AGENT_MODELS', 'AGENT_VISION_MODEL']
   const original = new Map(keys.map((key) => [key, process.env[key]]))
   try {
-    delete process.env.FLOCK_TEXT_MODEL
+    process.env.FLOCK_TEXT_MODEL = ''
     delete process.env.FLOCK_AGENT_MODELS
     delete process.env.AGENT_VISION_MODEL
     const config = runtimeConfig('/tmp/botanic-runtime-test')
-    assert.equal(config.flockTextModel, 'deepseek-v4-pro')
-    assert.deepEqual(config.flockAgentModels, ['deepseek-v4-pro', 'deepseek-v4-flash', 'kimi-k3', 'gemini-3.6-flash', 'glm-5'])
-    assert.equal(config.agentVisionModel, 'gemini-3.6-flash')
+    assert.equal(config.flockTextModel, 'deepseek-v4-flash-vision-exp')
+    assert.deepEqual(config.flockAgentModels, [
+      'deepseek-v4-flash-vision-exp',
+      'kimi-k3',
+      'gemini-3.7-flash',
+      'glm-5',
+    ])
+    assert.equal(config.agentVisionModel, 'gemini-3.7-flash')
+    assert.ok(!config.flockAgentModels.includes('gemini-3.6-flash'))
   } finally {
     for (const [key, value] of original) {
       if (value === undefined) delete process.env[key]
       else process.env[key] = value
     }
+  }
+})
+
+test('Subagent 使用独立且有界的 Worker 并发', () => {
+  const key = 'AGENT_SUBAGENT_CONCURRENCY'
+  const original = process.env[key]
+  try {
+    delete process.env[key]
+    assert.equal(runtimeConfig('/tmp/botanic-runtime-test').agentSubagentConcurrency, 2)
+    process.env[key] = '99'
+    assert.equal(runtimeConfig('/tmp/botanic-runtime-test').agentSubagentConcurrency, 8)
+  } finally {
+    if (original === undefined) delete process.env[key]
+    else process.env[key] = original
   }
 })
 

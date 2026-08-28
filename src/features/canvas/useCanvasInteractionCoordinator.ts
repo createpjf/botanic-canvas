@@ -23,6 +23,7 @@ import type {
 import { readUploadedAssetInput, validateUploadFiles } from '../../lib/uploadedAssets'
 import { useProductI18n } from '../../i18n/react'
 import { useCanvasStore } from '../../store/canvasStore'
+import { maximumReferencesForModel } from '../../domain/generationRecipe'
 
 export type ScreenToFlowPosition = (position: { x: number; y: number }) => { x: number; y: number }
 
@@ -293,11 +294,13 @@ export function useCanvasInteractionCoordinator({
     if (existingEdges.some((edge) => edge.source === sourceId && edge.target === targetId
       && (edge.sourceHandle ?? null) === (connection.sourceHandle ?? null)
       && (edge.targetHandle ?? null) === (connection.targetHandle ?? null))) return false
-    if (source.type === 'asset') {
-      const connectedImages = existingEdges.filter((edge) => edge.target === targetId)
+    if (source.type === 'asset' || source.type === 'result') {
+      const connectedReferences = existingEdges.filter((edge) => edge.target === targetId)
         .map((edge) => document.nodes.find((node) => node.id === edge.source))
-        .filter((node) => node?.type === 'asset')
-      if (connectedImages.length >= 8) return false
+        .filter((node) => node?.type === 'asset' || node?.type === 'result')
+      const targetModelId = (target.data as GenerateNodeData).settings?.model
+      const targetModel = useCanvasStore.getState().availableModels.find((model) => model.id === targetModelId)
+      if (connectedReferences.length >= maximumReferencesForModel(targetModel)) return false
     }
     if (source.type === 'result') {
       const connectedResults = existingEdges.filter((edge) => edge.target === targetId)

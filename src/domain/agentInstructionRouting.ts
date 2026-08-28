@@ -16,6 +16,7 @@ import {
 import type { BotanicAgentComposition } from './agentCreativeComposition.ts'
 import type { GenerationModelOption, GenerationSettings } from './canvas.ts'
 import type { GenerationSizeOverride } from './generationOutputSize.ts'
+import { settingsForGenerationModel } from './generationRecipe.ts'
 
 /**
  * 一次 Agent 指令的路由与生成前置决策。此前这套状态机隐式散落在 AgentWorkspace 的
@@ -34,6 +35,11 @@ export type BotanicAgentInstructionOptions = {
   region?: BotanicAgentRegionSelection
   /** 方案卡点击或重放时指定的成套方案；缺省则取会话里最近一条 composition 消息。 */
   composition?: BotanicAgentComposition
+  /**
+   * 服务端 Turn 固定的父结果；null 表示这轮原本就没有选中结果。
+   * 字段存在时禁止回退到当前 UI 选中。
+   */
+  targetNodeId?: string | null
 }
 
 export type BotanicAgentGenerationDecision = Extract<BotanicAgentRequestDecision, { kind: 'generation' }>
@@ -269,9 +275,18 @@ export function prepareBotanicAgentGenerationDraft(input: BotanicAgentGeneration
       ...input.contextItems,
     ]
     : input.contextItems
-  const selectedVideoModel = isVideo
-    ? candidateModels.find((model) => model.id === generationOverrides.model)
-    : undefined
+  const selectedGenerationModel = candidateModels.find((model) => model.id === generationOverrides.model)
+  const requestedPlanSettings = {
+    ...generationOverrides,
+    ...(isVideo
+      ? { duration: input.synthesizedDuration ?? selectedGenerationModel?.defaultDuration ?? selectedGenerationModel?.durations?.[0] ?? 5 }
+      : {}),
+  } as GenerationSettings
+  // 计划一旦可执行，就把目录声明的模型固定参数写进去。Nano Banana 的联网参考与
+  // thinking level 不能只依赖 Provider 临时补默认，否则重试 / 恢复时会失去原始语义。
+  const planSettings = selectedGenerationModel
+    ? settingsForGenerationModel(requestedPlanSettings, selectedGenerationModel)
+    : requestedPlanSettings
   return {
     kind: 'ready',
     isVideo,
@@ -280,12 +295,7 @@ export function prepareBotanicAgentGenerationDraft(input: BotanicAgentGeneration
     prompt: briefTurn.prompt,
     brief: briefTurn.brief,
     generationOverrides,
-    planSettings: {
-      ...generationOverrides,
-      ...(isVideo
-        ? { duration: input.synthesizedDuration ?? selectedVideoModel?.defaultDuration ?? selectedVideoModel?.durations?.[0] ?? 5 }
-        : {}),
-    } as GenerationSettings,
+    planSettings,
     planContextItems,
     ...(!isVideo && input.synthesizedCount ? { outputCount: input.synthesizedCount } : {}),
     ...(structuredVariants ? { structuredVariants } : {}),

@@ -12,6 +12,7 @@ import {
   shouldRestoreBotanicAgentRuntimeSteps,
   type AgentToolCallTrace,
   type BotanicAgentActionProposal,
+  type BotanicAgentActionUserIntent,
   type BotanicAgentArtifact,
   type BotanicAgentContextSnapshot,
   type BotanicAgentExecutionMode,
@@ -28,7 +29,13 @@ import {
   modelSupportsCustomSize,
   withoutCustomGenerationSize,
 } from '../../domain/generationOutputSize'
-import { settingsForGenerationModel } from '../../domain/generationRecipe'
+import {
+  applyClarityBoost,
+  clarityBoostModel,
+  clearClarityBoost,
+  everydayResolutions,
+  settingsForGenerationModel,
+} from '../../domain/generationRecipe'
 import { BobCharacter } from '../../components/bob/BobCharacter'
 import { bobMessageAllowsSays, bobMessageIsLargeReply, bobReplyPresentation } from '../../domain/bobPresentation'
 import { useBobSaysPlays } from './useBobSaysPlays'
@@ -62,7 +69,6 @@ import type { BotanicAgentRunReview } from '../../domain/agentReviewContract'
 import {
   agentTimelineOrbState,
   agentTimelineStepToolName,
-  displayWebSourceHostname,
   timelineRawDisplayItems,
   timelineStepShowsWebSources,
   timelineWebSourceHref,
@@ -178,7 +184,7 @@ function AgentReviewDecision({
 }: {
   review: BotanicAgentRunReview
   pending: boolean
-  onDecision?: (decision: 'accepted' | 'rejected' | 'retry_requested') => void
+  onDecision?: (decision: 'accepted' | 'rejected') => void
 }) {
   const { locale } = useProductI18n()
   if (!review.id || !onDecision) return null
@@ -189,7 +195,6 @@ function AgentReviewDecision({
   return <div className="agent-review-decision" aria-label={locale === 'en' ? 'Review decision' : '评审决策'}>
     <span>{locale === 'en' ? 'Human quality gate' : '人工质量门'}</span>
     <button type="button" disabled={pending} onClick={() => onDecision('accepted')}>{locale === 'en' ? 'Accept' : '接受'}</button>
-    <button type="button" disabled={pending} onClick={() => onDecision('retry_requested')}>{locale === 'en' ? 'Request retry' : '请求重试'}</button>
     <button type="button" disabled={pending} onClick={() => onDecision('rejected')}>{locale === 'en' ? 'Reject' : '退回'}</button>
   </div>
 }
@@ -234,7 +239,7 @@ function timelineSearchPills(sources: TimelineWebSource[]) {
   return sources.map((source) => {
     const href = timelineWebSourceHref(source)
     return {
-      hostname: displayWebSourceHostname(source.hostname),
+      hostname: source.hostname,
       ...(href ? { href } : {}),
       ...(source.title ? { title: source.title } : {}),
     }
@@ -293,7 +298,12 @@ function AgentTimelineSearchStep({
       <small>{statusLabel}</small>
       <ChevronDownIcon />
     </button>
-    <div ref={panelRef} className="agent-timeline__search-panel">
+    <div
+      ref={panelRef}
+      className="agent-timeline__search-panel"
+      aria-hidden={!open}
+      inert={!open ? true : undefined}
+    >
       <AgentWebSourcePills sources={timelineSearchPills(block.sources ?? [])} />
     </div>
     {error}
@@ -351,7 +361,7 @@ function AgentMessageTimeline({ timeline }: { timeline: AgentTimelineState }) {
         const stepError = block.status === 'failed' && block.error
           ? <p className="agent-timeline__step-error">{block.error}</p>
           : null
-        if (block.kind === 'search' && timelineStepShowsWebSources(block, toolItems)) {
+        if (timelineStepShowsWebSources(block, toolItems)) {
           return <AgentTimelineSearchStep
             key={block.id}
             block={block}
@@ -482,7 +492,8 @@ function AgentPlanSettingsEditor({
     gsap.fromTo(node, { autoAlpha: 0, y: 6 }, { autoAlpha: 1, y: 0, duration: botanicMotion.duration.chip, ease: botanicMotion.ease })
   }, { dependencies: [allowCustom, customMode] })
   const aspectRatios = selectedModel.aspectRatios ?? ['1:1', '16:9', '4:3', '3:4', '4:5', '9:16']
-  const resolutions = selectedModel.resolutions ?? ['1K', '2K']
+  const resolutions = everydayResolutions(selectedModel)
+  const boostModel = clarityBoostModel(models)
   const commitCustomSize = () => {
     if (!allowCustom || !customMode) return
     if (!widthDraft.trim() && !heightDraft.trim()) {
@@ -549,7 +560,8 @@ function AgentPlanSettingsEditor({
     <label>
       <small>{locale === 'en' ? 'Resolution' : '清晰度'}</small>
       <BotanicSelect
-        value={settings.resolution}
+        value={resolutions.includes(settings.resolution) ? settings.resolution : ''}
+        placeholder={settings.resolution === '4K' ? '4K' : undefined}
         ariaLabel={locale === 'en' ? 'Select output resolution' : '选择输出清晰度'}
         disabled={disabled}
         options={resolutions.map((resolution) => ({ value: resolution, label: resolution }))}
@@ -560,6 +572,40 @@ function AgentPlanSettingsEditor({
       <small>{locale === 'en' ? 'Output' : '输出'}</small>
       <span className="agent-plan-settings__readonly" title={locale === 'en' ? 'Output count is set by the plan' : '张数由计划展开决定'}>{countLabel}</span>
     </span>
+    {boostModel ? (
+      <button
+        type="button"
+        className={`agent-plan-settings__boost${settings.resolution === '4K' ? ' is-selected' : ''}`}
+        disabled={disabled}
+        onClick={() => onChange(settings.resolution === '4K' ? clearClarityBoost(settings, models) : applyClarityBoost(settings, models))}
+      >4K</button>
+    ) : null}
+    {selectedModel.supportsSearchGrounding ? (
+      <label>
+        <small>{locale === 'en' ? 'Web reference' : '参考网页'}</small>
+        <button
+          type="button"
+          className={`agent-plan-settings__toggle${settings.searchGrounding !== false ? ' is-selected' : ''}`}
+          disabled={disabled}
+          onClick={() => onChange({ ...settings, searchGrounding: settings.searchGrounding === false })}
+        >{settings.searchGrounding === false ? (locale === 'en' ? 'Off' : '关闭') : (locale === 'en' ? 'On' : '开启')}</button>
+      </label>
+    ) : null}
+    {selectedModel.thinkingLevels?.length ? (
+      <label>
+        <small>{locale === 'en' ? 'Thinking' : '思考'}</small>
+        <BotanicSelect
+          value={settings.thinkingLevel ?? 'high'}
+          ariaLabel={locale === 'en' ? 'Select thinking level' : '选择思考强度'}
+          disabled={disabled}
+          options={[
+            ...(selectedModel.thinkingLevels.includes('high') ? [{ value: 'high', label: locale === 'en' ? 'High' : '充分' }] : []),
+            ...(selectedModel.thinkingLevels.includes('minimal') ? [{ value: 'minimal', label: locale === 'en' ? 'Minimal' : '精简' }] : []),
+          ]}
+          onChange={(value) => onChange({ ...settings, thinkingLevel: value as GenerationSettings['thinkingLevel'] })}
+        />
+      </label>
+    ) : null}
     {allowCustom ? <div ref={customSizeRef} className={`agent-plan-settings__custom${customMode ? ' is-open' : ''}`} inert={!customMode || undefined}>
       <label className="agent-plan-settings__custom-field">
         <small>{locale === 'en' ? 'Width' : '宽'}</small>
@@ -728,7 +774,8 @@ type AgentConversationMessageProps = {
   onFocusNodes: (nodeIds: string[]) => void
   onAnswerClarification: (message: BotanicAgentMessage, answers: Record<string, string>) => void
   onLocateNode: (nodeId: string) => void
-  onConfirmAction: (message: BotanicAgentMessage, action: BotanicAgentActionProposal) => void
+  canManualRetryAction: (action: BotanicAgentActionProposal) => boolean
+  onActionIntent: (message: BotanicAgentMessage, action: BotanicAgentActionProposal, intent: BotanicAgentActionUserIntent) => void
   onDismissAction: (message: BotanicAgentMessage, action: BotanicAgentActionProposal) => void
   onPromptDraftChange: (messageId: string, prompt: string) => void
   onCommitPlanPrompt: (message: BotanicAgentMessage, prompt: string) => void
@@ -741,7 +788,7 @@ type AgentConversationMessageProps = {
   onRetryDelivery: (messageId: string) => void
   onFeedback: (message: BotanicAgentMessage, feedback: BotanicAgentMessage['feedback']) => void
   onSaveAsMemory?: (message: BotanicAgentMessage, kind: BotanicAgentMemoryKind, content: string) => string | null
-  onReviewDecision?: (message: BotanicAgentMessage, decision: 'accepted' | 'rejected' | 'retry_requested') => void
+  onReviewDecision?: (message: BotanicAgentMessage, decision: 'accepted' | 'rejected') => void
   reviewDecisionPending?: boolean
 }
 
@@ -771,7 +818,8 @@ export function AgentConversationMessage({
   onFocusNodes,
   onAnswerClarification,
   onLocateNode,
-  onConfirmAction,
+  canManualRetryAction,
+  onActionIntent,
   onDismissAction,
   onPromptDraftChange,
   onCommitPlanPrompt,
@@ -960,15 +1008,17 @@ export function AgentConversationMessage({
                 <div className="agent-action-card__impact"><span>{t('输入', 'Input')}</span><b>{action.toolName === 'mcp_call' ? `${String(action.arguments.server)}.${String(action.arguments.tool)}` : t('新项目 Skill', 'New project Skill')}</b><span>{t('输出', 'Output')}</span><b>{action.toolName === 'mcp_call' ? t('文件 / 结果面板', 'Files / results panel') : t('可复用 Skill', 'Reusable Skill')}</b></div>
                 <details className="agent-action-card__details"><summary>{t('查看执行内容', 'View execution details')}</summary><pre>{JSON.stringify(action.arguments, null, 2)}</pre></details>
                 {action.error ? <small className="agent-action-card__error">{action.error}</small> : null}
-                {action.status === 'succeeded' ? <div className="agent-action-card__result"><span>{t('已执行', 'Executed')}</span>{action.result?.canvasNodeIds?.length ? <small>{t(`已创建 ${action.result.canvasNodeIds.length} 个画布节点`, `${action.result.canvasNodeIds.length} canvas nodes created`)}</small> : action.result?.artifacts?.length ? <small>{t(`已产出 ${action.result.artifacts.length} 项`, `${action.result.artifacts.length} outputs created`)}</small> : null}{action.result?.canvasNodeId ? <button type="button" className="agent-icon-button" aria-label={t('在画布定位结果', 'Locate result on canvas')} title={t('在画布定位', 'Locate on canvas')} onClick={() => onLocateNode(action.result!.canvasNodeId!)}><FocusIcon /></button> : null}</div> : null}
-                {action.status === 'running' ? <div className="agent-action-card__running"><span>{t('执行状态待确认', 'Execution status needs confirmation')}</span><button type="button" disabled={executingActionId === action.id} onClick={() => onConfirmAction(message, action)}>{executingActionId === action.id ? t('确认中…', 'Checking…') : t('确认状态', 'Check status')}</button></div> : null}
-                {action.status === 'awaiting_confirmation' || action.status === 'failed' ? <div className="agent-action-card__buttons">
-                  {action.status === 'awaiting_confirmation' ? <button type="button" className="is-secondary" onClick={() => onDismissAction(message, action)}>{t('跳过', 'Skip')}</button> : null}
-                  <button type="button" disabled={executingActionId === action.id} onClick={() => onConfirmAction(message, action)}>{executingActionId === action.id ? t('执行中…', 'Executing…') : action.status === 'failed' ? t('重试', 'Retry') : t('确认执行', 'Approve and run')}</button>
+                {action.status === 'succeeded' ? <div className="agent-action-card__result"><span>{action.result ? t('已执行', 'Executed') : t('已确认生效', 'Confirmed applied')}</span>{action.result?.canvasNodeIds?.length ? <small>{t(`已创建 ${action.result.canvasNodeIds.length} 个画布节点`, `${action.result.canvasNodeIds.length} canvas nodes created`)}</small> : action.result?.artifacts?.length ? <small>{t(`已产出 ${action.result.artifacts.length} 项`, `${action.result.artifacts.length} outputs created`)}</small> : !action.result ? <small>{t('未重放工具，也未生成虚构输出', 'No tool replay or fabricated output')}</small> : null}{action.result?.canvasNodeId ? <button type="button" className="agent-icon-button" aria-label={t('在画布定位结果', 'Locate result on canvas')} title={t('在画布定位', 'Locate on canvas')} onClick={() => onLocateNode(action.result!.canvasNodeId!)}><FocusIcon /></button> : null}</div> : null}
+                {action.status === 'running' ? <div className="agent-action-card__running"><span>{t('执行状态待确认', 'Execution status needs confirmation')}</span><button type="button" disabled={executingActionId === action.id} onClick={() => onActionIntent(message, action, 'check_status')}>{executingActionId === action.id ? t('确认中…', 'Checking…') : t('确认状态', 'Check status')}</button></div> : null}
+                {action.status === 'uncertain' ? <div className="agent-action-card__running"><span>{t('结果未知，为避免重复操作已停止自动重试。请先到目标系统核对。', 'Outcome unknown. Automatic retry is blocked to avoid duplication; verify the target system first.')}</span><div className="agent-action-card__buttons"><button type="button" className="is-secondary" disabled={executingActionId === action.id} onClick={() => onActionIntent(message, action, 'confirmed_not_applied')}>{t('确认未生效，可重试', 'Not applied; allow retry')}</button><button type="button" disabled={executingActionId === action.id} onClick={() => onActionIntent(message, action, 'confirmed_applied')}>{t('已在目标系统生效', 'Applied in target system')}</button></div></div> : null}
+                {action.status === 'awaiting_confirmation' ? <div className="agent-action-card__buttons">
+                  <button type="button" className="is-secondary" onClick={() => onDismissAction(message, action)}>{t('跳过', 'Skip')}</button>
+                  <button type="button" disabled={executingActionId === action.id} onClick={() => onActionIntent(message, action, 'execute')}>{executingActionId === action.id ? t('执行中…', 'Executing…') : t('确认执行', 'Approve and run')}</button>
                 </div> : null}
+                {action.status === 'failed' ? canManualRetryAction(action) ? <div className="agent-action-card__buttons"><button type="button" disabled={executingActionId === action.id} onClick={() => onActionIntent(message, action, 'manual_retry')}>{executingActionId === action.id ? t('执行中…', 'Executing…') : action.manualRetryResumeAvailable ? t('继续执行', 'Continue') : t('重新执行', 'Run again')}</button></div> : <small>{t('本次失败不会原地换新标识重试，请重新发起行动。', 'This failed action will not be retried under a new identity. Start a new action.')}</small> : null}
               </>
               if (settled) return <details key={action.id} className={`agent-action-card is-settled is-${action.status}`}>
-                <summary><span>{action.kind === 'skill' ? 'SKILL' : 'MCP'}</span><strong>{action.label}</strong><small>{action.status === 'succeeded' ? t('已执行', 'Executed') : t('已跳过', 'Skipped')}</small></summary>
+                <summary><span>{action.kind === 'skill' ? 'SKILL' : 'MCP'}</span><strong>{action.label}</strong><small>{action.status === 'succeeded' ? action.result ? t('已执行', 'Executed') : t('已确认生效', 'Confirmed applied') : t('已跳过', 'Skipped')}</small></summary>
                 <p>{action.summary}</p>
                 {body}
               </details>
@@ -1041,7 +1091,7 @@ export function AgentConversationMessage({
           <details className="agent-plan__recipe">
             <summary className="agent-plan__recipe-toggle">
               <ChevronDownIcon />
-              <span>{t('配方', 'Recipe')}</span>
+              <span>{t('参数', 'Settings')}</span>
             </summary>
             <div className="agent-plan__recipe-body">{recipe}</div>
           </details>
