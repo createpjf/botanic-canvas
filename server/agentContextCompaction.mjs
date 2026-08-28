@@ -5,9 +5,11 @@ import {
   agentModelContextProviderMessages,
   compactAgentModelContextSurface,
   createAgentModelContextSurface,
+  sanitizeAgentModelContextCheckpoint,
 } from './agentModelContextSurface.mjs'
 import { measureAgentModelContextSurface } from './agentTokenMeter.mjs'
 import { buildThreadSummaryCheckpoint, renderThreadSummary } from './agentThreadSummary.mjs'
+import { agentMentionOnlyInstruction, agentMentionReferenceLine } from './agentMentionModelText.mjs'
 
 const triggers = new Set(['pre_step', 'overflow', 'manual'])
 const MESSAGE_TEXT_LIMIT = 4_000
@@ -45,20 +47,6 @@ export function agentContextMessageRevision(message) {
   return canonicalHash(stableMessagePayload(message))
 }
 
-function mentionOnlyInstruction(mentions, locale) {
-  if (!Array.isArray(mentions) || !mentions.length) return ''
-  const hasSkill = mentions.some((mention) => mention?.kind === 'skill')
-  const hasReference = mentions.some((mention) => mention?.kind === 'reference')
-  if (locale === 'en') {
-    if (hasSkill && hasReference) return 'Follow the mounted Skills and referenced assets.'
-    if (hasSkill) return 'Follow the mounted Skills.'
-    return 'Use the referenced assets.'
-  }
-  if (hasSkill && hasReference) return '按已挂载 Skill 与已引用素材处理。'
-  if (hasSkill) return '按已挂载 Skill 执行。'
-  return '按已引用素材处理。'
-}
-
 export function agentContextMessageEntries(messages, options) {
   const { locale = 'zh-CN', currentMessageId } = options ?? {}
   const seen = new Set()
@@ -67,13 +55,8 @@ export function agentContextMessageEntries(messages, options) {
     const id = payload.id.trim()
     if (seen.has(id)) invalid('AGENT_CONTEXT_MESSAGE_DUPLICATE', 'Agent Context Message 标识重复。', 409)
     seen.add(id)
-    const rawContent = payload.content.trim() || mentionOnlyInstruction(payload.mentions, locale)
-    const referenceLabels = (payload.mentions ?? [])
-      .filter((mention) => mention?.kind === 'reference' && typeof mention.label === 'string' && mention.label.trim())
-      .map((mention) => mention.label.trim())
-    const extra = payload.content.trim() && referenceLabels.length
-      ? (locale === 'en' ? `Referenced: ${referenceLabels.join(', ')}.` : `已引用：${referenceLabels.join('、')}。`)
-      : ''
+    const rawContent = payload.content.trim() || agentMentionOnlyInstruction(payload.mentions, locale)
+    const extra = payload.content.trim() ? agentMentionReferenceLine(payload.mentions, locale) : ''
     const combined = extra ? `${rawContent}\n${extra}` : rawContent
     return {
       id,
@@ -97,6 +80,8 @@ function checkpointFromCompaction(compaction) {
   const checkpoint = compaction?.checkpoint
   if (checkpoint?.role !== 'user' || typeof checkpoint.content !== 'string' || !checkpoint.content.trim()) return undefined
   if (canonicalHash(checkpoint.content) !== checkpoint.contentHash) return undefined
+  // 旧版或外部写入的 checkpoint 即使自带一致 hash，也不得绕过当前脱敏策略复用。
+  if (sanitizeAgentModelContextCheckpoint(checkpoint.content) !== checkpoint.content) return undefined
   return {
     role: 'user',
     content: checkpoint.content,
@@ -241,10 +226,13 @@ export function resolveAgentContextCompaction(input) {
   const replacedCount = probe.operation.replacedMessageRevisions.length
   const replacedMessages = messages.slice(0, replacedCount)
   const derived = checkpointText(replacedMessages, locale)
+  // Surface 会在送往 Provider 前脱敏；持久化 checkpoint 必须使用同一份实际内容，
+  // 否则首轮安全、恢复轮又会把原始 secret/URL 重新注入模型。
+  const checkpointContent = sanitizeAgentModelContextCheckpoint(derived.content)
   const threadSummaryHash = threadSummary ? canonicalHash(threadSummary) : undefined
   const compacted = compactAgentModelContextSurface(baseSurface, {
     checkpoint: {
-      content: derived.content,
+      content: checkpointContent,
       ...(threadSummaryHash ? { threadSummaryHash } : {}),
     },
     policy,
@@ -273,8 +261,8 @@ export function resolveAgentContextCompaction(input) {
   }))
   const checkpoint = {
     role: 'user',
-    content: derived.content,
-    contentHash: canonicalHash(derived.content),
+    content: checkpointContent,
+    contentHash: canonicalHash(checkpointContent),
     ...(threadSummaryHash ? { threadSummaryHash } : {}),
   }
   const identity = {

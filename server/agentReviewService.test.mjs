@@ -9,7 +9,7 @@ import {
 } from './agentReviewExecution.mjs'
 import { agentReviewOutcomeReconciliationDecision } from './agentReviewReconciliation.mjs'
 import { buildReviewTaskForRun } from './agentReviewRunner.mjs'
-import { createAgentReviewService } from './agentReviewService.mjs'
+import { createAgentReviewService, safeAgentReviewWorkerFailure } from './agentReviewService.mjs'
 
 const qualityPolicy = {
   version: 1,
@@ -184,6 +184,41 @@ test('Review Service：durable cancel 先进入 cancelling，匹配 generation �
   assert.equal(cancelled.status, 'cancelled')
   assert.equal(cancelled.cancel.releaseBasis, 'worker_exit')
   assert.equal(cancelled.cancel.workerReleased, true)
+})
+
+test('Review Service：取消广播失败的观测事件只保留固定错误码', async () => {
+  const { run, jobs, built } = fixture()
+  const running = agentReviewExecutionClaimDecision(built.task, {
+    id: built.task.id,
+    projectId: built.task.projectId,
+    leaseToken: 'active-worker',
+    leaseDurationMs: 30_000,
+    observedAt: 2_000,
+  }).task
+  const events = []
+  const service = createAgentReviewService({
+    productStore: fakeStore({ run, jobs, task: running, clock: () => 2_100 }),
+    publishCancel: async () => {
+      throw new Error('Bearer private-token https://private.example Prompt: confidential instructions')
+    },
+    observe: (event) => events.push(event),
+  })
+
+  const decision = await service.requestReviewCancellation({
+    userId: 'user-1',
+    taskId: built.task.id,
+    projectId: built.task.projectId,
+    idempotencyKey: 'cancel-publish-failure',
+  })
+
+  assert.equal(decision.task.status, 'cancelling')
+  assert.deepEqual(events, [{
+    event: 'agent.review.cancel.publish_deferred',
+    taskId: built.task.id,
+    projectId: built.task.projectId,
+    code: 'AGENT_REVIEW_CANCEL_PUBLISH_FAILED',
+  }])
+  assert.doesNotMatch(JSON.stringify(events), /Bearer|private-token|private\.example|confidential instructions/)
 })
 
 test('Review Service：旧 generation 的跨实例取消信号不会中止新执行', async () => {
@@ -395,6 +430,78 @@ test('Review Service：heartbeat 失去 fence 会 abort 当前执行并阻止后
   assert.equal(intervals.cleared, true)
 })
 
+test('Review Service：heartbeat 底层异常只以固定 code 与安全文案到达 BullMQ seam', async () => {
+  const secret = 'Bearer heartbeat-token https://provider.example Prompt: private rubric'
+  const { run, jobs, built } = fixture()
+  const base = fakeStore({ run, jobs, task: built.task })
+  const intervals = intervalHarness()
+  let modelStarted
+  const started = new Promise((resolve) => { modelStarted = resolve })
+  const store = {
+    ...base,
+    async commitAgentReviewExecution(userId, command) {
+      if (command.status === 'running' && command.checkpoint === undefined) {
+        throw Object.assign(new Error(secret), { code: 'ECONNRESET' })
+      }
+      return base.commitAgentReviewExecution(userId, command)
+    },
+  }
+  const service = createAgentReviewService({
+    productStore: store,
+    reviewCandidate: async ({ signal }) => {
+      modelStarted()
+      return new Promise((resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+      })
+    },
+    setIntervalFn: intervals.setIntervalFn,
+    clearIntervalFn: intervals.clearIntervalFn,
+    now: () => 2_000,
+  })
+
+  const executing = service.executeReviewTask('user-1', built.task.id)
+  await started
+  await intervals.tick()
+  await assert.rejects(executing, (caught) => {
+    assert.equal(caught?.code, 'AGENT_REVIEW_EXECUTION_STALE')
+    assert.equal(caught?.message, 'Agent Review 执行权已失效。')
+    assert.doesNotMatch(JSON.stringify({ code: caught?.code, message: caught?.message }), /Bearer|heartbeat-token|provider\.example|private rubric/)
+    return true
+  })
+})
+
+test('Review Service：任意执行异常在 Worker/BullMQ seam 只保留白名单 code 与固定文案', async () => {
+  const secret = 'Bearer worker-token https://provider.example Prompt: confidential review'
+  const service = createAgentReviewService({
+    productStore: {
+      async readAgentReviewTaskForWorker() {
+        throw Object.assign(new Error(secret), { code: 'PROVIDER_PRIVATE_FAILURE' })
+      },
+      async claimAgentReviewExecution() { throw new Error('不应 claim') },
+      async commitAgentReviewExecution() { throw new Error('不应 commit') },
+    },
+  })
+
+  await assert.rejects(service.executeReviewTask('user-1', 'task-secret'), (caught) => {
+    assert.deepEqual(
+      { code: caught?.code, message: caught?.message, statusCode: caught?.statusCode },
+      { code: 'AGENT_REVIEW_EXECUTION_FAILED', message: 'Agent Review 执行失败。', statusCode: 500 },
+    )
+    assert.doesNotMatch(JSON.stringify(caught), /Bearer|worker-token|provider\.example|confidential review/)
+    return true
+  })
+
+  assert.deepEqual(safeAgentReviewWorkerFailure(Object.assign(new Error(secret), {
+    code: 'AGENT_REVIEW_EXECUTION_CONFLICT',
+  })), {
+    code: 'AGENT_REVIEW_EXECUTION_CONFLICT',
+    statusCode: 409,
+    message: 'Agent Review 执行冲突。',
+  })
+  assert.equal(safeAgentReviewWorkerFailure({ code: 'PROVIDER_PRIVATE_FAILURE' }).code, 'AGENT_REVIEW_EXECUTION_FAILED')
+  assert.equal(safeAgentReviewWorkerFailure({ code: 'toString' }).code, 'AGENT_REVIEW_EXECUTION_FAILED')
+})
+
 test('Review Service：terminal commit 前先停止并排空 heartbeat', async () => {
   const { run, jobs, built } = fixture()
   const base = fakeStore({ run, jobs, task: built.task })
@@ -478,6 +585,37 @@ test('Review sweep 跨轮越过 poison 前缀访问后页，并在尾页后 wrap
     null,
   ])
   assert.deepEqual(store.visited.slice(0, 5), ['task-1', 'task-2', 'task-3', 'task-4', 'task-5'])
+})
+
+test('Review sweep：执行失败的观测事件不携带异常正文', async () => {
+  const task = {
+    id: 'task-secret-failure',
+    ownerId: 'user-1',
+    projectId: 'project-1',
+    runId: 'run-secret-failure',
+    status: 'queued',
+    updatedAt: 10,
+  }
+  const events = []
+  const service = createAgentReviewService({
+    productStore: {
+      async listPendingAgentReviewTasks() { return [task] },
+      async readAgentReviewTaskForWorker() {
+        throw new Error('Bearer provider-token https://provider.example Prompt: private review rubric')
+      },
+      async claimAgentReviewExecution() { throw new Error('不应 claim') },
+      async commitAgentReviewExecution() { throw new Error('不应 commit') },
+    },
+    observe: (event) => events.push(event),
+  })
+
+  assert.deepEqual(await service.sweepPendingReviewTasks({ limit: 1 }), { scanned: 1, settled: 0 })
+  assert.deepEqual(events, [{
+    event: 'agent.review.sweep.failed',
+    taskId: task.id,
+    code: 'AGENT_REVIEW_EXECUTION_FAILED',
+  }])
+  assert.doesNotMatch(JSON.stringify(events), /Bearer|provider-token|provider\.example|private review rubric/)
 })
 
 test('Review sweep 遇到重复满页游标停滞时，下轮会 wrap', async () => {

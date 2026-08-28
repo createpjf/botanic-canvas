@@ -36,6 +36,26 @@ test('Snapshot V2 只投影 checkpoint 与消息正文，并校验冻结策略',
   assert.doesNotMatch(JSON.stringify(projected.messages), /m-1|r-1/u)
 })
 
+test('Snapshot V2 恢复遇到旧版未脱敏 checkpoint 时 fail closed', () => {
+  const unsafeCheckpoint = 'api_key=legacy-secret https://private.example/internal'
+  assert.throws(
+    () => projectAgentThreadContextSnapshotV2({
+      version: 2,
+      modelPolicy: policy,
+      checkpoint: {
+        role: 'user',
+        content: unsafeCheckpoint,
+        contentHash: canonicalHash(unsafeCheckpoint),
+      },
+      messages: [{ id: 'm-current', revision: 'r-current', role: 'user', content: '当前问题' }],
+    }, 'model-a'),
+    (error) => error instanceof AgentModelContextBindingError
+      && error.code === 'AGENT_CONTEXT_SNAPSHOT_UNSAFE'
+      && !error.message.includes('legacy-secret')
+      && !error.message.includes('private.example'),
+  )
+})
+
 test('Model Context factory 按实际模型与 runtime identity 解析并绑定策略', () => {
   const calls = []
   const identity = { turnId: 'turn-1' }

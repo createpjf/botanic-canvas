@@ -19,6 +19,7 @@ import {
 import { createAgentContextCoordinator } from './agentContextCoordinator.mjs'
 import { resolveAgentModelContextPolicy } from './agentModelContextPolicy.mjs'
 import { evaluateAgentContextShadow } from './agentContextShadowEvaluator.mjs'
+import { agentMentionOnlyInstruction, agentMentionReferenceLine } from './agentMentionModelText.mjs'
 
 const MODEL_MESSAGE_LIMIT = 16
 const MODEL_MESSAGE_TEXT_LIMIT = 4000
@@ -137,31 +138,9 @@ function authoritativeMessages(session, inputMessage) {
   }
 }
 
-function mentionOnlyInstruction(mentions, locale) {
-  if (!Array.isArray(mentions) || !mentions.length) return ''
-  const hasSkill = mentions.some((mention) => mention?.kind === 'skill')
-  const hasReference = mentions.some((mention) => mention?.kind === 'reference')
-  if (locale === 'en') {
-    if (hasSkill && hasReference) return 'Follow the mounted Skills and referenced assets.'
-    if (hasSkill) return 'Follow the mounted Skills.'
-    return 'Use the referenced assets.'
-  }
-  if (hasSkill && hasReference) return '按已挂载 Skill 与已引用素材处理。'
-  if (hasSkill) return '按已挂载 Skill 执行。'
-  return '按已引用素材处理。'
-}
-
-function mentionReferenceLine(mentions, locale) {
-  const labels = (Array.isArray(mentions) ? mentions : [])
-    .filter((mention) => mention?.kind === 'reference' && typeof mention.label === 'string' && mention.label.trim())
-    .map((mention) => mention.label.trim())
-  if (!labels.length) return ''
-  return locale === 'en' ? `Referenced: ${labels.join(', ')}.` : `已引用：${labels.join('、')}。`
-}
-
 function projectedMessageContent(message, locale, currentMessageId) {
-  const content = message.content.trim() || mentionOnlyInstruction(message.mentions, locale)
-  const extra = message.content.trim() ? mentionReferenceLine(message.mentions, locale) : ''
+  const content = message.content.trim() || agentMentionOnlyInstruction(message.mentions, locale)
+  const extra = message.content.trim() ? agentMentionReferenceLine(message.mentions, locale) : ''
   const combined = extra ? `${content}\n${extra}` : content
   return message.id === currentMessageId
     ? combined

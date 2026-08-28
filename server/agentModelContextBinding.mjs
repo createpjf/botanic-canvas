@@ -6,6 +6,7 @@ import {
   validateAgentModelContextPolicySnapshot,
 } from './agentModelContextPolicy.mjs'
 import { createAgentModelContextRuntime } from './agentModelContextRuntime.mjs'
+import { sanitizeAgentModelContextCheckpoint } from './agentModelContextSurface.mjs'
 
 export class AgentModelContextBindingError extends Error {
   constructor(code, message) {
@@ -72,6 +73,11 @@ export function projectAgentThreadContextSnapshotV2(snapshot, model) {
       || (typeof checkpoint.contentHash === 'string'
         && canonicalHash(checkpoint.content) !== checkpoint.contentHash)) {
       failure('AGENT_CONTEXT_SNAPSHOT_INVALID', 'Agent Context Snapshot V2 的 checkpoint 无效。')
+    }
+    // Durable Snapshot 是已接受 Turn 的不可变请求身份。旧版 checkpoint
+    // 如果不符合当前脱敏策略，必须拒绝恢复，不能在这里修改正文和 hash。
+    if (sanitizeAgentModelContextCheckpoint(checkpoint.content) !== checkpoint.content) {
+      failure('AGENT_CONTEXT_SNAPSHOT_UNSAFE', 'Agent Context Snapshot V2 的 checkpoint 不符合当前安全策略。')
     }
     messages.unshift({ role: 'user', content: checkpoint.content })
   }

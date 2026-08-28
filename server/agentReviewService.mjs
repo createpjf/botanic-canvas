@@ -12,6 +12,25 @@ import { boundedSweepPageSize, nextUpdatedAtIdSweepCursor } from './updatedAtIdS
  */
 
 const terminalRunStatuses = new Set(['completed', 'partial'])
+const agentReviewWorkerFailureByCode = Object.freeze({
+  AGENT_REVIEW_EXECUTION_STALE: { statusCode: 409, message: 'Agent Review 执行权已失效。' },
+  AGENT_REVIEW_EXECUTION_CONFLICT: { statusCode: 409, message: 'Agent Review 执行冲突。' },
+  AGENT_REVIEW_CLAIM_FAILED: { statusCode: 409, message: 'Agent Review 无法取得执行权。' },
+  AGENT_REVIEW_CANCELLED: { statusCode: 499, message: 'Agent Review 已取消。' },
+  AGENT_REVIEW_EXECUTION_FAILED: { statusCode: 500, message: 'Agent Review 执行失败。' },
+})
+const observableErrorCodes = new Set([
+  ...Object.keys(agentReviewWorkerFailureByCode),
+  'AGENT_REVIEW_CANCEL_PUBLISH_FAILED',
+  'AGENT_REVIEW_SWEEP_FAILED',
+])
+
+function safeObservedErrorCode(caught, fallback) {
+  const code = caught && typeof caught === 'object' && 'code' in caught
+    ? caught.code
+    : undefined
+  return typeof code === 'string' && observableErrorCodes.has(code) ? code : fallback
+}
 
 class AgentReviewExecutionError extends Error {
   constructor(code, message, statusCode = 409) {
@@ -20,6 +39,25 @@ class AgentReviewExecutionError extends Error {
     this.code = code
     this.statusCode = statusCode
   }
+}
+
+/**
+ * Review Worker/BullMQ 的失败面只允许稳定 code 与固定文案。Provider 异常可能含
+ * Authorization、请求 URL 或完整 Prompt，不能把 caught.message 当作 failureReason。
+ */
+export function safeAgentReviewWorkerFailure(caught) {
+  const requestedCode = caught && typeof caught === 'object' && 'code' in caught
+    ? caught.code
+    : undefined
+  const code = typeof requestedCode === 'string' && Object.hasOwn(agentReviewWorkerFailureByCode, requestedCode)
+    ? requestedCode
+    : 'AGENT_REVIEW_EXECUTION_FAILED'
+  return { code, ...agentReviewWorkerFailureByCode[code] }
+}
+
+function safeAgentReviewExecutionError(caught) {
+  const failure = safeAgentReviewWorkerFailure(caught)
+  return new AgentReviewExecutionError(failure.code, failure.message, failure.statusCode)
 }
 
 /**
@@ -178,7 +216,7 @@ export function createAgentReviewService({
           event: 'agent.review.cancel.publish_deferred',
           taskId: task.id,
           projectId: task.projectId,
-          message: caught instanceof Error ? caught.message : String(caught),
+          code: safeObservedErrorCode(caught, 'AGENT_REVIEW_CANCEL_PUBLISH_FAILED'),
         })
       }
     }
@@ -234,7 +272,7 @@ export function createAgentReviewService({
   }
 
   /** 执行一个评审任务并逐候选落库。所有写入都绑定原子 claim 返回的 generation fence。 */
-  async function executeReviewTask(userId, taskId) {
+  async function executeReviewTaskInternal(userId, taskId) {
     assertExecutionStore()
     // Worker 读取必须保留 ownerId / execution fence；公共读取会清理这些私有字段。
     const observed = await readTaskForWorker(taskId)
@@ -303,7 +341,7 @@ export function createAgentReviewService({
       if (caught instanceof AgentReviewExecutionError && caught.code === 'AGENT_REVIEW_EXECUTION_STALE') return caught
       return new AgentReviewExecutionError(
         'AGENT_REVIEW_EXECUTION_STALE',
-        `Agent Review heartbeat 已失去执行权：${caught instanceof Error ? caught.message : String(caught)}`,
+        agentReviewWorkerFailureByCode.AGENT_REVIEW_EXECUTION_STALE.message,
       )
     }
 
@@ -435,11 +473,21 @@ export function createAgentReviewService({
     }
   }
 
+  // 这是 Review 到 Worker/BullMQ 的失败边界。无论异常发生在初始读取、claim、
+  // heartbeat、Provider 还是取消收口，都不能让底层异常正文成为 failureReason。
+  async function executeReviewTask(userId, taskId) {
+    try {
+      return await executeReviewTaskInternal(userId, taskId)
+    } catch (caught) {
+      throw safeAgentReviewExecutionError(caught)
+    }
+  }
+
   /**
    * 清扫未收口的评审任务。浏览器关掉后评审仍要推进，靠的就是这条路径。
    */
   /** @param {{ olderThan?: number, limit?: number }} [input] */
-  async function sweepPendingReviewTasks({ olderThan, limit = 25 } = {}) {
+  async function sweepPendingReviewTasksInternal({ olderThan, limit = 25 } = {}) {
     const pageLimit = boundedSweepPageSize(limit)
     const requestedAfter = pendingReviewAfter
     const pending = (await productStore.listPendingAgentReviewTasks({
@@ -461,11 +509,19 @@ export function createAgentReviewService({
         observe({
           event: 'agent.review.sweep.failed',
           taskId: task.id,
-          message: caught instanceof Error ? caught.message : String(caught),
+          code: safeObservedErrorCode(caught, 'AGENT_REVIEW_SWEEP_FAILED'),
         })
       }
     }
     return { scanned: pending.length, settled: settled.filter(Boolean).length }
+  }
+
+  async function sweepPendingReviewTasks(input) {
+    try {
+      return await sweepPendingReviewTasksInternal(input)
+    } catch (caught) {
+      throw safeAgentReviewExecutionError(caught)
+    }
   }
 
   return {

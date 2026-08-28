@@ -33,8 +33,9 @@
 ## 持久化与迁移
 
 Local、PostgreSQL、Supabase Adapter 实现相同 11 项契约。数据库实现使用数据库时钟、
-行锁和事务；Supabase 的 SECURITY DEFINER RPC 仅授权 `service_role`，表启用 RLS 并显式
-声明 Data API grants。迁移见 `20260828200000_agent_subagent_runtime.sql`。
+行锁和事务；Supabase 的 SECURITY DEFINER RPC 仅授权 `service_role`，原始表撤销 Data API
+全部权限，成员只经服务端鉴权 HTTP 资源读取公共 DTO。迁移见
+`20260828200000_agent_subagent_runtime.sql`。
 
 ## 后果
 

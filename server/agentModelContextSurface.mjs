@@ -421,12 +421,12 @@ export function pruneAgentModelContextSurface(surface, policy) {
   })
 }
 
-function sanitizeCheckpoint(value) {
+export function sanitizeAgentModelContextCheckpoint(value) {
   let text = typeof value === 'string' ? value : String(value ?? '')
   text = text
     .replace(/\bBearer\s+[A-Za-z0-9._~+\/-]+=*/gi, 'Bearer [REDACTED]')
     .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, '[REDACTED_SECRET]')
-    .replace(/\b(?:api[_-]?key|access[_-]?token|secret)\s*[:=]\s*[^\s,;]+/gi, '$1=[REDACTED]')
+    .replace(/\b(api[_-]?key|access[_-]?token|secret)\s*[:=]\s*[^\s,;]+/gi, '$1=[REDACTED]')
     .replace(/data:(?:image|audio|video|application)\/[^\s)'"<>]+/gi, '[已省略内联媒体]')
     .replace(/\/api\/media\/[^\s)'"<>]+/gi, '[已省略媒体引用]')
     .replace(/https?:\/\/[^\s)'"<>]+/gi, '[已省略外部链接]')
@@ -440,10 +440,10 @@ function sanitizeCheckpoint(value) {
 }
 
 function checkpointInput(value) {
-  if (typeof value === 'string') return { content: sanitizeCheckpoint(value), threadSummaryHash: null }
+  if (typeof value === 'string') return { content: sanitizeAgentModelContextCheckpoint(value), threadSummaryHash: null }
   const raw = plainObject(value, 'Agent compaction checkpoint')
   return {
-    content: sanitizeCheckpoint(raw.content),
+    content: sanitizeAgentModelContextCheckpoint(raw.content),
     threadSummaryHash: raw.threadSummaryHash === undefined
       ? null
       : boundedText(raw.threadSummaryHash, 'Agent compaction checkpoint.threadSummaryHash', 256),

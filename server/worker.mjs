@@ -6,7 +6,7 @@ import { writeAgentRunOperationalEvent } from './agentRunObservability.mjs'
 import { createProviderHealthMonitor } from './providerHealthMonitor.mjs'
 import { createDerivedTaskQueue, createDerivedTaskWorker } from './derivedTaskQueue.mjs'
 import { createAgentTurnSweep } from './agentTurnSweep.mjs'
-import { createAgentReviewService } from './agentReviewService.mjs'
+import { createAgentReviewService, safeAgentReviewWorkerFailure } from './agentReviewService.mjs'
 import { installDatabaseResilience } from './databaseResilience.mjs'
 import { createEvaluatorSkillRunner } from './agentReviewSkillEvaluator.mjs'
 import { createAgentReviewVisionJudge } from './agentReviewVision.mjs'
@@ -330,7 +330,18 @@ const derivedWorker = createDerivedTaskWorker({
     'run.submit': () => sweepQueuedAgentRuns(),
   },
 })
-derivedWorker.on('failed', (job, caught) => console.error(`[derived] ${job?.name ?? 'unknown'} failed: ${caught.message}`))
+derivedWorker.on('failed', (job, caught) => {
+  if (job?.name === 'review.run') {
+    const failure = safeAgentReviewWorkerFailure(caught)
+    console.error(JSON.stringify({
+      event: 'agent.review.worker.failed',
+      code: failure.code,
+      message: failure.message,
+    }))
+    return
+  }
+  console.error(`[derived] ${job?.name ?? 'unknown'} failed: ${caught.message}`)
+})
 derivedWorker.on('error', (caught) => console.error(`[derived] worker error: ${caught.message}`))
 // 注册幂等：BullMQ 按 repeat key 去重，多实例重复注册不会产生多份定时任务。
 for (const [kind, everyMs] of [['turn.reclaim', 60_000], ['review.run', 120_000], ['workflow.advance', 45_000], ['branch.retry', 90_000], ['run.submit', 30_000]]) {

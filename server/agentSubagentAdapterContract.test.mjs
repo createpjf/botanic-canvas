@@ -1,3 +1,5 @@
+// @ts-check
+
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
@@ -56,22 +58,14 @@ test('迁移建立 descriptor/activation 权威列、gapless FIFO 与恢复索�
   assert.match(migration, /execution_generation bigint[\s\S]*execution_lease_token text/u)
 })
 
-test('RLS 只允许成员读取，写入与租约仅 service_role 可见', () => {
+test('Subagent 原始表对 Data API fail closed，仅 service_role 可见', () => {
   assert.match(migration, /alter table public\.agent_subagents enable row level security/u)
-  assert.match(migration, /project members can read agent subagents/u)
-  assert.match(migration, /project members can read agent subagent activations/u)
-  assert.match(migration, /revoke insert, update, delete on table public\.agent_subagents from public, anon, authenticated/u)
-  const memberGrant = migration.slice(
-    migration.indexOf('grant select ('),
-    migration.indexOf(') on table public.agent_subagents to authenticated'),
-  )
-  assert.doesNotMatch(memberGrant, /dispatch_lease_token/u)
-  const activationGrant = migration.slice(
-    migration.indexOf('grant select (', migration.indexOf('agent_subagent_activations')),
-    migration.indexOf(') on table public.agent_subagent_activations to authenticated'),
-  )
-  assert.doesNotMatch(activationGrant, /execution_lease_token/u)
+  assert.match(migration, /revoke all on table public\.agent_subagents from public, anon, authenticated/u)
+  assert.match(migration, /revoke all on table public\.agent_subagent_activations from public, anon, authenticated/u)
+  assert.doesNotMatch(migration, /on table public\.agent_subagents to authenticated/u)
+  assert.doesNotMatch(migration, /on table public\.agent_subagent_activations to authenticated/u)
   assert.match(migration, /grant select, insert, update, delete on table public\.agent_subagents to service_role/u)
+  assert.match(migration, /grant select, insert, update, delete on table public\.agent_subagent_activations to service_role/u)
 })
 
 test('Supabase 六个 RPC 全部 fail-closed 为 service_role，写路径不拼 REST upsert', () => {

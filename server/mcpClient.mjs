@@ -358,6 +358,8 @@ export function createConfiguredMcpRuntime(configurations, options) {
       try {
         response = await fetchImpl(configuration.url, {
           method: 'POST',
+          // MCP 地址来自受控配置；禁止 Provider 重定向到内网、metadata 或不同信任域。
+          redirect: 'error',
           headers: {
             ...outboundAgentTraceHeaders(),
             Accept: 'application/json',

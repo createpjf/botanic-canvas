@@ -13,6 +13,10 @@ const secretPatterns = [
 ]
 
 const allowedEnvironmentFiles = new Set(['.env.example'])
+const forbiddenSourceDebugPatterns = [
+  { name: 'Agent 调试注入区块', pattern: /#region agent log|X-Debug-Session-Id/ },
+  { name: '本地调试回传端点', pattern: /https?:\/\/(?:127\.0\.0\.1|localhost):\d+\/ingest\// },
+]
 
 export function securityGateFindings(files, readText) {
   const findings = []
@@ -30,6 +34,11 @@ export function securityGateFindings(files, readText) {
     try { content = readText(file) } catch { continue }
     for (const secret of secretPatterns) {
       if (secret.pattern.test(content)) findings.push(`${file}: 发现疑似 ${secret.name}`)
+    }
+    if (/^(?:server|src)\//u.test(file)) {
+      for (const debug of forbiddenSourceDebugPatterns) {
+        if (debug.pattern.test(content)) findings.push(`${file}: 发现${debug.name}`)
+      }
     }
   }
   return findings

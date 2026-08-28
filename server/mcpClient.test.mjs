@@ -68,6 +68,7 @@ test('MCP Runtime V2 发布无密钥 catalog，并按输入输出契约投影 to
     expectedCapabilityHash: catalog[0].capabilityHash,
   }), { matches: 2 })
   assert.equal(requests[0].url, 'https://mcp.example/rpc')
+  assert.equal(requests[0].init.redirect, 'error')
   assert.equal(requests[0].init.headers.Authorization, 'Bearer secret-token')
   assert.deepEqual(JSON.parse(requests[0].init.body), {
     jsonrpc: '2.0', id: 'request-1', method: 'tools/call',
@@ -212,6 +213,23 @@ test('MCP 配置拒绝重复工具、不安全地址与损坏响应', async () =
     { server: 'catalog', tool: 'search', url: 'https://mcp.example/rpc' },
   ])), { fetchImpl: async () => new Response('{bad', { status: 200 }) })
   await assert.rejects(tools['catalog.search']({}), /响应无效/u)
+})
+
+test('MCP 外呼禁止跟随 Provider 重定向，失败保持 outcome_unknown', async () => {
+  let observedRedirect
+  const runtime = createConfiguredMcpRuntime(configured(), {
+    fetchImpl: async (_url, init) => {
+      observedRedirect = init.redirect
+      throw new TypeError('redirect mode is set to error')
+    },
+  })
+
+  await assert.rejects(runtime.invoke('asset-catalog.search', { query: '海边' }), (error) => (
+    error.code === 'MCP_UNAVAILABLE'
+      && error.outcomeKnown === false
+      && error.outcome === 'outcome_unknown'
+  ))
+  assert.equal(observedRedirect, 'error')
 })
 
 test('MCP 工具把行动外层取消信号传给真实 HTTP 请求', async () => {

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { canonicalHash } from './canonicalHash.mjs'
 import { resolveAgentModelContextPolicy } from './agentModelContextPolicy.mjs'
 import {
   agentContextMessageCursorHash,
@@ -107,4 +108,37 @@ test('当前消息有正文时仍把引用芯片写进 Context 条目', () => {
     mentions: [{ kind: 'reference', id: 'asset-1', label: 'Mia 肖像' }],
   }], { currentMessageId: 'm-current' })
   assert.equal(entry.content, '让这个模特身上的光线更像室外\n已引用：Mia 肖像。')
+})
+
+test('Compaction 持久化与恢复复用同一份已脱敏 checkpoint', () => {
+  const messages = Array.from({ length: 8 }, (_, index) => message(
+    `secret-${index}`,
+    index % 2 ? 'assistant' : 'user',
+    index === 0 ? `api_key=supersecret ${'旧'.repeat(500)}` : `历史 ${index} ${'旧'.repeat(500)}`,
+    index + 1,
+  ))
+  const first = resolveAgentContextCompaction({
+    sessionId: 'session-secret', messages, currentMessageId: 'secret-7', policy, force: true,
+  })
+  assert.equal(first.kind, 'candidate')
+  assert.match(first.compaction.checkpoint.content, /api_key=\[REDACTED\]/u)
+  assert.doesNotMatch(first.compaction.checkpoint.content, /supersecret/u)
+  assert.equal(first.checkpoint.contentHash, first.compaction.checkpoint.contentHash)
+
+  const reused = resolveAgentContextCompaction({
+    sessionId: 'session-secret', messages, currentMessageId: 'secret-7', policy,
+    existingCompaction: first.compaction,
+  })
+  assert.equal(reused.kind, 'reused')
+  assert.doesNotMatch(reused.checkpoint.content, /supersecret/u)
+
+  const legacyUnsafe = structuredClone(first.compaction)
+  legacyUnsafe.checkpoint.content = 'api_key=legacy-secret'
+  legacyUnsafe.checkpoint.contentHash = canonicalHash(legacyUnsafe.checkpoint.content)
+  const replaced = resolveAgentContextCompaction({
+    sessionId: 'session-secret', messages, currentMessageId: 'secret-7', policy,
+    existingCompaction: legacyUnsafe, force: true,
+  })
+  assert.equal(replaced.kind, 'candidate')
+  assert.doesNotMatch(replaced.checkpoint.content, /legacy-secret|supersecret/u)
 })
