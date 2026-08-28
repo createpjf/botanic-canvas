@@ -68,6 +68,7 @@ function contextV2StoreWithSession(session) {
 }
 
 test('Context V2 生成带策略、ledger head、Message revision 与 meter 的不可变快照', async () => {
+  const observations = []
   const history = Array.from({ length: 12 }, (_, index) => message(
     `m-${index + 1}`, index % 2 ? 'assistant' : 'user', `消息 ${index + 1} ${'中'.repeat(300)}`, index + 1,
   ))
@@ -87,6 +88,7 @@ test('Context V2 生成带策略、ledger head、Message revision 与 meter 的�
           },
         },
       },
+      observe: (event) => observations.push(event),
     },
   })
   const resolved = await context.resolve({
@@ -102,6 +104,9 @@ test('Context V2 生成带策略、ledger head、Message revision 与 meter 的�
   assert.ok(resolved.threadContextSnapshot.contextMeter.inputTokens > 0)
   assert.equal(resolved.messages[0].content, resolved.threadContextSnapshot.checkpoint.content)
   assert.equal(resolved.messages.at(-1).content, '继续处理')
+  assert.ok(observations.some((event) => (
+    event.name === 'agent.context.compaction' && event.outcome === 'compacted'
+  )))
 })
 
 test('Context V2 rollout 未开启时不要求新增 Store 接口且继续产出 v1', async () => {

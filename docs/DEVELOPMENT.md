@@ -128,6 +128,14 @@ AGENT_QUALITY_V2=true
 AGENT_MEMORY_V2=true
 AGENT_SKILL_GOVERNANCE_V2=true
 AGENT_FORK_COMPARE_V2=true
+AGENT_CONTEXT_COMPACTION_V2_ENABLED=true
+AGENT_CONTEXT_COMPACTION_V2=false
+AGENT_CONTEXT_COMPACTION_V2_SHADOW=false
+AGENT_TELEMETRY_ENABLED=false
+AGENT_GENAI_TELEMETRY_ENABLED=false
+OTEL_SERVICE_NAME=botanic-agent
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=
+OTEL_TRACES_SAMPLER_ARG=0.1
 BOTANIC_MCP_TOOLS_JSON=[]
 BOTANIC_WEB_SEARCH_API_KEY=
 BOTANIC_WEB_SEARCH_URL=https://api.tavily.com/search
@@ -139,6 +147,10 @@ BOTANIC_WEB_SEARCH_URL=https://api.tavily.com/search
 
 Agent 对话支持日常问答、Prompt 生成和项目内受控检索。项目本体、画布关系、素材组、项目记忆与已启用 Skill 由服务端按当前项目权限读取；配置了 Tavily 后才允许关键词联网检索。
 Agent V2 旗标默认开启，用于统一记录部署与灰度状态；生产切换前应先完成迁移与健康检查。
+Context V2 先开 `SHADOW` 对比计数与预算，再按项目开启 active；事故回滚使用
+`AGENT_CONTEXT_COMPACTION_V2_ENABLED=false`，配置变更需重启。OTel 只发送 traces；首版不传播 baggage，
+也不采集 Prompt、消息、工具参数/结果、Provider body、媒体地址或原始推理。OTLP 建议先发 Collector，
+不要把 exporter header 放进 `VITE_*`。GenAI semantic conventions 仍是 development，因此独立默认关闭。
 API 与 Worker 必须使用相同的图像 / 视频 Provider 配置。H3 当前目录固定为 2K，画幅支持 `16:9`、`4:3`、`1:1`、`3:4` 与 `9:16`。
 
 ### 兼容 Supabase 的部署

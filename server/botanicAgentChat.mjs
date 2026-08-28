@@ -15,6 +15,7 @@ import { botanicAgentMountedSkillBriefing, botanicAgentSearchableSkills, resolve
 import { canonicalHash } from './canonicalHash.mjs'
 import { throwIfAgentProviderContextOverflow } from './agentProviderContextOverflow.mjs'
 import { resolveAgentModelContextBinding } from './agentModelContextBinding.mjs'
+import { outboundAgentTraceHeaders } from './agentTraceContext.mjs'
 
 const CHAT_MODES = new Set(['conversation', 'prompt', 'research'])
 const MESSAGE_ROLES = new Set(['user', 'assistant'])
@@ -174,6 +175,7 @@ async function executeChatAttempt({ input, config, model, system, messages, regi
       registry,
       snapshot,
       attempt,
+      genAiTelemetry: config.genAiDevelopmentSemconv,
       messages: [
         { role: 'system', content: system },
         ...messages,
@@ -191,6 +193,7 @@ async function executeChatAttempt({ input, config, model, system, messages, regi
         const response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
           method: 'POST',
           headers: {
+            ...outboundAgentTraceHeaders(),
             Authorization: `Bearer ${config.apiKey}`,
             'x-litellm-api-key': config.apiKey,
             Accept: streaming ? 'text/event-stream' : 'application/json',

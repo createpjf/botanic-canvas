@@ -9,6 +9,7 @@ import { canonicalHash } from './canonicalHash.mjs'
 import { estimateAgentContextTokens, truncateAgentContextText } from './agentContextBudget.mjs'
 import { extractAgentEntityReferences, mergeAgentEntityReferences } from './agentEntityReferences.mjs'
 import { normalizeProviderUsage } from './botanicAgentStream.mjs'
+import { withBotanicSpan } from './executionTelemetry.mjs'
 
 const TOOL_NAME = /^[a-z][a-z0-9_]{1,63}$/
 const TOOL_RECOVERY_MODES = new Set(['reexecute', 'receipt', 'never'])
@@ -424,6 +425,7 @@ export async function runAgentToolLoop({
   modelContext = undefined,
   maxOutputTokens = undefined,
   trigger = 'pre_step',
+  genAiTelemetry = false,
 }) {
   if (!Number.isInteger(maximumToolCalls) || maximumToolCalls < 1 || maximumToolCalls > MODEL_TOOL_CALL_TOTAL_LIMIT) {
     throw new TypeError(`Agent 工具调用上限必须是 1 到 ${MODEL_TOOL_CALL_TOTAL_LIMIT} 之间的整数。`)
@@ -439,6 +441,32 @@ export async function runAgentToolLoop({
   // 工具定义在循环开始前定格一次，之后每一步都用同一份。
   const frozenTools = registry.openAITools()
   const frozenSnapshot = snapshot ?? freezeAgentStepSnapshot({ registry })
+  const invokeModel = (request) => withBotanicSpan(
+    genAiTelemetry ? `chat ${frozenSnapshot.model ?? 'unknown-model'}` : 'botanic.provider.request',
+    {
+      kind: 'client',
+      attributes: {
+        ...(genAiTelemetry ? {
+          'gen_ai.operation.name': 'chat',
+          'gen_ai.provider.name': 'flock',
+          'gen_ai.request.model': frozenSnapshot.model,
+        } : {}),
+        'botanic.component': 'worker',
+        'botanic.phase': 'provider',
+      },
+    },
+    async (span) => {
+      const response = await callModel(request)
+      if (genAiTelemetry && span) {
+        try {
+          const usage = normalizeProviderUsage(response?.usage)
+          if (Number.isSafeInteger(usage?.inputTokens)) span.setAttribute('gen_ai.usage.input_tokens', usage.inputTokens)
+          if (Number.isSafeInteger(usage?.outputTokens)) span.setAttribute('gen_ai.usage.output_tokens', usage.outputTokens)
+        } catch { /* usage telemetry 不得改变 Provider 结果 */ }
+      }
+      return response
+    },
+  )
   const steps = []
   const toolCalls = []
   let reasoning = []
@@ -546,8 +574,9 @@ export async function runAgentToolLoop({
 
   const traceFor = (tool, call, step, index, rawArguments) => {
     const summary = rawArguments ? agentToolCallSummary(rawArguments) : undefined
+    const resolvedId = typeof call?.id === 'string' && call.id ? call.id : `tool-call-${step + 1}-${index + 1}`
     return {
-      id: typeof call?.id === 'string' && call.id ? call.id : `tool-call-${step + 1}-${index + 1}`,
+      id: resolvedId,
       name: tool.name,
       label: tool.label,
       risk: tool.risk,
@@ -699,15 +728,27 @@ export async function runAgentToolLoop({
       }
       let output
       try {
-        if (entry.recovering && entry.descriptor.recovery === 'receipt') {
-          output = await recoverToolCall({
-            step,
-            toolCall: structuredClone(entry.descriptor),
-            context,
-          })
-        } else {
-          output = await tool.execute(entry.validatedInput, { ...context, toolCallId: trace.id })
-        }
+        output = await withBotanicSpan(`execute_tool ${trace.name}`, {
+          kind: 'internal',
+          attributes: {
+            ...(genAiTelemetry ? {
+              'gen_ai.operation.name': 'execute_tool',
+              'gen_ai.tool.name': trace.name,
+            } : {}),
+            'botanic.component': 'worker',
+            'botanic.phase': 'tool',
+            'botanic.tool_call.id': trace.id,
+          },
+        }, async () => {
+          if (entry.recovering && entry.descriptor.recovery === 'receipt') {
+            return recoverToolCall({
+              step,
+              toolCall: structuredClone(entry.descriptor),
+              context,
+            })
+          }
+          return tool.execute(entry.validatedInput, { ...context, toolCallId: trace.id })
+        })
       } catch (caught) {
         const error = caught instanceof Error ? caught.message : '工具执行失败。'
         const failed = { ...trace, status: 'failed', error }
@@ -837,7 +878,7 @@ export async function runAgentToolLoop({
     let response
     if (modelContext === undefined) {
       // legacy 路径保持调用参数与对象引用不变。
-      response = await callModel({
+      response = await invokeModel({
         messages: conversation,
         tools: frozenTools,
         tool_choice: toolChoice,
@@ -846,14 +887,35 @@ export async function runAgentToolLoop({
     } else {
       let preparedCall = await prepareModelCall(step, trigger)
       try {
-        response = await callModel(preparedCall.request)
+        response = await invokeModel(preparedCall.request)
       } catch (caught) {
         if (caught?.code !== 'AGENT_CONTEXT_OVERFLOW') throw caught
         const retryCall = await prepareModelCall(step, 'overflow', true)
-        if (retryCall.preparation?.changed !== true) throw caught
+        if (retryCall.preparation?.changed !== true) {
+          try {
+            modelContext.observeOverflow?.({
+              outcome: 'not_retried', retryCount: 0,
+              error: { code: 'AGENT_CONTEXT_OVERFLOW', retryable: false },
+            })
+          } catch { /* 可观测性不得改变原始 overflow */ }
+          throw caught
+        }
         preparedCall = retryCall
         // 同一步最多只重试一次；第二次失败直接冒泡，不再压缩或调用模型。
-        response = await callModel(preparedCall.request)
+        try {
+          response = await invokeModel(preparedCall.request)
+          try { modelContext.observeOverflow?.({ outcome: 'recovered', retryCount: 1 }) } catch { /* noop */ }
+        } catch (retryCaught) {
+          if (retryCaught?.code === 'AGENT_CONTEXT_OVERFLOW') {
+            try {
+              modelContext.observeOverflow?.({
+                outcome: 'failed', retryCount: 1,
+                error: { code: 'AGENT_CONTEXT_OVERFLOW', retryable: false },
+              })
+            } catch { /* 可观测性不得改变原始 overflow */ }
+          }
+          throw retryCaught
+        }
       }
       await modelContext.observe({
         attempt,

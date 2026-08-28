@@ -46,6 +46,16 @@ import { writeAgentRunOperationalEvent } from './agentRunObservability.mjs'
 import { AgentDelegationFenceError } from './agentCancellationService.mjs'
 import { abortMatchingGenerationJobCancellation } from './generationCancellation.mjs'
 import { createGenerationRecoverySweep } from './generationRecoverySweep.mjs'
+import {
+  injectAgentTraceContext,
+  withExtractedAgentTraceContext,
+} from './agentTraceContext.mjs'
+import {
+  activeBotanicTraceFields,
+  setBotanicHttpSpanStatus,
+  withBotanicSpan,
+} from './executionTelemetry.mjs'
+import { agentContextRolloutHealth } from './agentContextRollout.mjs'
 
 export function createBotanicHttpServer({
   config,
@@ -124,7 +134,13 @@ function error(response, statusCode, code, message) {
 }
 
 function observeAgentRun(input) {
-  writeAgentRunOperationalEvent(input)
+  const traceFields = activeBotanicTraceFields()
+  writeAgentRunOperationalEvent({
+    ...input,
+    w3cTraceId: traceFields.traceId,
+    w3cSpanId: traceFields.spanId,
+    traceFlags: traceFields.traceFlags,
+  }, console, { semanticLogger: console })
 }
 
 async function consumeWebResearchQuota(userId) {
@@ -442,7 +458,7 @@ const handleAgentRoute = createAgentRouteHandler({
   agentSubagentService,
 })
 
-const handleRequest = async (request, response) => {
+const handleRequestCore = async (request, response) => {
   const requestId = randomUUID()
   response.setHeader('X-Request-ID', requestId)
   const forwardedProtocol = request.headers['x-forwarded-proto']?.split(',')[0]?.trim()
@@ -477,9 +493,14 @@ const handleRequest = async (request, response) => {
         },
         agentFeatures: config.agentFeatureFlags,
         agentContext: {
-          compactionV2: config.rolloutFlags?.isEnabled('AGENT_CONTEXT_COMPACTION_V2') ?? false,
+          ...agentContextRolloutHealth(config.agentFeatureFlags, config.rolloutFlags),
           configuredModelPolicies: Object.keys(config.agentModelContextPolicies?.models ?? {}).length,
           defaultPolicyConfigured: Boolean(config.agentModelContextPolicies?.default),
+        },
+        telemetry: {
+          enabled: Boolean(config.telemetry?.enabled),
+          traces: config.telemetry?.enabled ? 'otlp' : 'disabled',
+          genAiSemconv: config.telemetry?.genAiDevelopmentSemconv ? 'development' : 'disabled',
         },
         // 只回显全局开启的灰度闸门名。按项目/用户放量的白名单内容不出现在这里，
         // 否则健康检查会泄漏参与灰度的项目与用户标识。
@@ -520,13 +541,36 @@ const handleRequest = async (request, response) => {
       : new HttpError(500, 'INTERNAL_ERROR', '服务发生未预期错误。')
     if (failure.statusCode >= 500) {
       console.error(JSON.stringify({
-        event: 'api.failure', requestId, method: request.method, path: request.url,
-        code: failure.code, detail: caught instanceof Error ? caught.message : String(caught),
+        event: 'api.failure', requestId, method: request.method,
+        code: failure.code,
       }))
     }
     return error(response, failure.statusCode, failure.code, failure.message)
   }
 }
+
+const handleRequest = (request, response) => withExtractedAgentTraceContext(
+  request.headers,
+  () => withBotanicSpan(`HTTP ${request.method ?? 'UNKNOWN'}`, {
+    kind: 'server',
+    automaticSuccessStatus: false,
+    attributes: {
+      'http.request.method': request.method ?? 'UNKNOWN',
+      'url.scheme': request.socket?.encrypted ? 'https' : 'http',
+      'botanic.component': 'api',
+      'botanic.phase': 'api',
+    },
+  }, async (span) => {
+    const carrier = injectAgentTraceContext()
+    if (carrier.traceparent && !response.headersSent) response.setHeader('traceparent', carrier.traceparent)
+    const result = await handleRequestCore(request, response)
+    try {
+      span?.setAttribute('http.response.status_code', response.statusCode)
+      setBotanicHttpSpanStatus(span, response.statusCode)
+    } catch { /* telemetry isolation */ }
+    return result
+  }),
+)
 
 const server = createServer(handleRequest)
 

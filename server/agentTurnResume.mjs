@@ -127,6 +127,7 @@ export class AgentTurnResumeError extends Error {
  *   mediaService?: any,
  *   turnRuntime: { execute: (input: any) => Promise<any> },
  *   observe?: (event: any) => void,
+ *   observeAgentContext?: (event: any) => void,
  *   consumeWebResearchQuota?: (userId: string) => Promise<any>,
  *   subagentRunner?: ((input: any) => Promise<any>),
  * }} deps
@@ -137,6 +138,7 @@ export function createAgentTurnResumer({
   mediaService,
   turnRuntime,
   observe,
+  observeAgentContext,
   consumeWebResearchQuota,
   subagentRunner,
 }) {
@@ -147,6 +149,7 @@ export function createAgentTurnResumer({
     contextCoordinator ??= createAgentContextCoordinator({
       productStore,
       policies: config?.agentModelContextPolicies,
+      observe: observeAgentContext,
     })
     return contextCoordinator
   }
@@ -160,6 +163,21 @@ export function createAgentTurnResumer({
       // 早于请求快照落地的 Turn 无从重建输入。明确报错而不是静默跳过，
       // 否则调用方会以为恢复成功了。
       throw new AgentTurnResumeError('AGENT_TURN_REQUEST_MISSING', '该回合没有可重放的请求快照，无法恢复。')
+    }
+
+    const threadContextSnapshot = turn.request.runtimeOperation
+      ? turn.request.input?.threadContextSnapshot
+      : turn.request.threadContextSnapshot
+    const contextV2Killed = config?.agentFeatureFlags?.runtimeV2 === false
+      || config?.agentFeatureFlags?.contextCompactionV2 === false
+    if (threadContextSnapshot?.version === 2 && contextV2Killed) {
+      // 总闸门关闭时不能让 Sweep 自动重放已冻结的 V2 surface。保持 Turn 非终态，
+      // 待恢复开关后仍按同一快照继续；绝不能静默漂移到 legacy 上下文。
+      throw new AgentTurnResumeError(
+        'AGENT_CONTEXT_KILL_SWITCH_BLOCKED',
+        '该回合已冻结 Context V2 快照；请恢复 Context V2 后继续重放。',
+        503,
+      )
     }
 
     const receiptCalls = receiptCallsFromCheckpoint(turn.checkpoint)
@@ -240,9 +258,6 @@ export function createAgentTurnResumer({
 
     // 恢复自带独立的取消控制器：它与原请求的 HTTP 连接无关，那条连接早已断开。
     const controller = new AbortController()
-    const threadContextSnapshot = turn.request.runtimeOperation
-      ? turn.request.input?.threadContextSnapshot
-      : turn.request.threadContextSnapshot
     const immutableThreadSummary = [1, 2].includes(threadContextSnapshot?.version)
       && threadContextSnapshot.threadSummary
       && typeof threadContextSnapshot.threadSummary === 'object'
@@ -265,6 +280,7 @@ export function createAgentTurnResumer({
         // Worker 恢复与 API 正常执行必须命中同一 Durable Subagent seam。显式传入
         // undefined 也有意义：配置不完整时 Planner 不得退回进程内旧执行器。
         subagentRunner,
+        observeAgentContext,
         document: project.document,
         projectSkills,
         ...(threadContextSnapshot?.version === 2 && turn.sessionId ? {

@@ -6,6 +6,7 @@ import {
   validateSubtaskOutputShape,
 } from './agentSubtask.mjs'
 import { canonicalHash } from './canonicalHash.mjs'
+import { outboundAgentTraceHeaders } from './agentTraceContext.mjs'
 import {
   freezeAgentStepSnapshot,
   runAgentToolLoop as executeAgentToolLoop,
@@ -232,6 +233,7 @@ export function createAgentSubagentRunner(input) {
       const response = await fetchImpl(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
+          ...outboundAgentTraceHeaders(),
           Authorization: `Bearer ${apiKey}`,
           'x-litellm-api-key': apiKey,
           'Content-Type': 'application/json',
@@ -331,6 +333,7 @@ export function createAgentSubagentRunner(input) {
         maximumSteps: budget.maximumSteps,
         maximumToolCalls: budget.maximumToolCalls,
         allowRawReasoning: false,
+        genAiTelemetry: runtimeConfig?.telemetry?.genAiDevelopmentSemconv === true,
         onEvent,
         context: {
           ...context,

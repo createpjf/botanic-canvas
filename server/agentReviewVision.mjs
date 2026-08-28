@@ -1,4 +1,5 @@
 // @ts-check
+import { outboundAgentTraceHeaders } from './agentTraceContext.mjs'
 
 /**
  * 评审第 2 层：视觉模型语义判定（ADR 0006 / Epic 5）。
@@ -112,6 +113,7 @@ export function createAgentReviewVisionJudge({ runtimeConfig, resolveMedia, call
       const response = await fetchImpl(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
+          ...outboundAgentTraceHeaders(),
           Authorization: `Bearer ${apiKey}`,
           'x-litellm-api-key': apiKey,
           'Content-Type': 'application/json',

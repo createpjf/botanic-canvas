@@ -17,6 +17,7 @@ test('Agent V2 flags 默认启用，便于完整升级后直接生效', () => {
     memoryV2: true,
     skillGovernanceV2: true,
     forkCompareV2: true,
+    contextCompactionV2: true,
   })
 })
 
@@ -33,6 +34,7 @@ test('Agent V2 flags accept common truthy values and expose stable lookups', () 
   assert.equal(agentFeatureEnabled(flags, 'memoryV2'), true)
   assert.equal(agentFeatureEnabled(flags, 'skillGovernanceV2'), true)
   assert.equal(agentFeatureEnabled(flags, 'forkCompareV2'), false)
+  assert.equal(agentFeatureEnabled(flags, 'contextCompactionV2'), true)
 })
 
 // ── 升级期灰度闸门：默认 false ───────────────────────────────────────────
@@ -109,6 +111,15 @@ test('选择器笔误被忽略并汇总，不让配置错误拖垮启动', () =>
   assert.equal(flags.isEnabled('PRODUCTION_WORKFLOW_V2', { projectId: 'project-b' }), true)
   assert.equal(flags.isEnabled('PRODUCTION_WORKFLOW_V2', { projectId: 'project-a' }), false)
   assert.deepEqual(flags.invalidSelectors(), [{ name: 'PRODUCTION_WORKFLOW_V2', entry: 'projekt:project-a' }])
+  assert.deepEqual(flags.describe('PRODUCTION_WORKFLOW_V2'), { mode: 'scoped', invalidSelectorCount: 1 })
+})
+
+test('describe 区分 scoped 与 off 且不返回 selector', () => {
+  const flags = createRolloutFlags({ AGENT_CONTEXT_COMPACTION_V2_SHADOW: 'user:private-user' })
+  const description = flags.describe('AGENT_CONTEXT_COMPACTION_V2_SHADOW')
+  assert.deepEqual(description, { mode: 'scoped', invalidSelectorCount: 0 })
+  assert.doesNotMatch(JSON.stringify(description), /private-user/u)
+  assert.throws(() => flags.describe('UNKNOWN_FLAG'), /未声明/u)
 })
 
 test('全部选择器都无效时收敛为关闭，不误开成全局生效', () => {

@@ -18,6 +18,7 @@ import { renderThreadSummary } from './agentThreadSummary.mjs'
 import { canonicalHash } from './canonicalHash.mjs'
 import { estimateAgentContextTokens, truncateAgentContextText } from './agentContextBudget.mjs'
 import { throwIfAgentProviderContextOverflow } from './agentProviderContextOverflow.mjs'
+import { outboundAgentTraceHeaders } from './agentTraceContext.mjs'
 import {
   projectAgentThreadContextSnapshotV2,
   resolveAgentModelContextBinding,
@@ -783,6 +784,7 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
     const result = await runAgentToolLoop({
       registry,
       snapshot,
+      genAiTelemetry: config.genAiDevelopmentSemconv,
       messages: [
         { role: 'system', content: system },
         ...messages,
@@ -802,6 +804,7 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
         const requestProvider = (requestMessages) => fetchImpl(`${config.baseUrl}/chat/completions`, {
             method: 'POST',
             headers: {
+              ...outboundAgentTraceHeaders(),
               Authorization: `Bearer ${config.apiKey}`,
               'x-litellm-api-key': config.apiKey,
               Accept: streaming ? 'text/event-stream' : 'application/json',

@@ -14,6 +14,7 @@ import { resolveInviteRedirectTo } from './inviteRedirect.mjs'
 import { assertProductStoreContract } from './productStoreContract.mjs'
 import { createRolloutFlags, resolveAgentFeatureFlags } from './featureFlags.mjs'
 import { parseAgentModelContextPolicies } from './agentModelContextPolicy.mjs'
+import { resolveBotanicTelemetryConfig } from './botanicTelemetry.mjs'
 
 function boundedInteger(value, fallback, minimum, maximum) {
   const parsed = Number(value)
@@ -125,6 +126,7 @@ export function runtimeConfig(rootDir = process.cwd()) {
       process.env.AGENT_MODEL_CONTEXT_POLICIES_JSON,
     ),
     agentRawReasoning,
+    telemetry: resolveBotanicTelemetryConfig(process.env),
     agentFeatureFlags: resolveAgentFeatureFlags(process.env),
     // 升级期灰度闸门。与上一行的 kill switch 语义相反：默认全关，支持按项目/用户放量。
     rolloutFlags: createRolloutFlags(process.env),

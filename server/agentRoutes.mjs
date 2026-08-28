@@ -38,6 +38,8 @@ import { selectBotanicAgentMemory } from './botanicAgentMemory.mjs'
 import { buildThreadSummaryCheckpoint, shouldCompactThread } from './agentThreadSummary.mjs'
 import { compareAndSetDerivedAgentThreadSummary, createAgentThreadContext } from './agentThreadContext.mjs'
 import { createAgentContextCoordinator } from './agentContextCoordinator.mjs'
+import { resolveAgentContextRollout } from './agentContextRollout.mjs'
+import { createAgentContextObserver } from './agentContextObservability.mjs'
 import {
   AgentManualContextCompactionServiceError,
   createAgentManualContextCompactionService,
@@ -442,6 +444,7 @@ export function createAgentRouteHandler({
       resolveOptions: {
         ...resolveOptions,
         subagentRunner: durableSubagentRunner,
+        observeAgentContext,
         ...(sessionId ? {
           persistAgentContextUsageAnchor: persistAgentContextUsageAnchor({
             userId: user.id,
@@ -611,10 +614,12 @@ export function createAgentRouteHandler({
   let agentThreadContext
   let agentContextCoordinator
   let manualAgentContextCompaction = agentManualContextCompactionService
+  const observeAgentContext = createAgentContextObserver()
   const durableAgentContextCoordinator = () => {
     agentContextCoordinator ??= createAgentContextCoordinator({
       productStore,
       policies: config.agentModelContextPolicies,
+      observe: observeAgentContext,
     })
     return agentContextCoordinator
   }
@@ -631,6 +636,7 @@ export function createAgentRouteHandler({
       productStore,
       policies: config.agentModelContextPolicies,
       defaultModel: config.flockTextModel,
+      observe: observeAgentContext,
     })
     return manualAgentContextCompaction
   }
@@ -638,10 +644,14 @@ export function createAgentRouteHandler({
     agentThreadContext ??= createAgentThreadContext({
       productStore,
       contextV2: {
-        isEnabled: ({ userId, projectId }) => (
-          config.rolloutFlags?.isEnabled('AGENT_CONTEXT_COMPACTION_V2', { userId, projectId }) ?? false
-        ),
+        resolveRollout: ({ userId, projectId }) => resolveAgentContextRollout({
+          featureFlags: config.agentFeatureFlags,
+          rolloutFlags: config.rolloutFlags,
+          userId,
+          projectId,
+        }),
         policies: config.agentModelContextPolicies,
+        observe: observeAgentContext,
       },
     })
     return agentThreadContext
@@ -1233,6 +1243,7 @@ export function createAgentRouteHandler({
           resolve: (resolveOptions) => resolveBotanicAgentRuntimeRequest(input, config, resolveOptions),
           resolveOptions: {
             subagentRunner: durableSubagentRunner,
+            observeAgentContext,
             document: project.document,
             projectSkills,
             ...((validatedInput.sessionId ?? legacySessionId) ? {
@@ -1453,6 +1464,7 @@ export function createAgentRouteHandler({
           resolveOptions: {
             document: project?.document,
             projectSkills,
+            observeAgentContext,
             consumeWebResearchQuota: consumeWebResearchQuota
               ? () => consumeWebResearchQuota(user.id)
               : undefined,
@@ -1511,6 +1523,7 @@ export function createAgentRouteHandler({
           resolveOptions: {
             document: project.document,
             projectSkills,
+            observeAgentContext,
             resolveVisionMedia: visionMediaResolver(user.id, validatedInput.projectId),
             consumeWebResearchQuota: consumeWebResearchQuota
               ? () => consumeWebResearchQuota(user.id)
@@ -1609,6 +1622,7 @@ export function createAgentRouteHandler({
           resolveOptions: {
             document: project.document,
             projectSkills,
+            observeAgentContext,
             ...(threadSummary ? { threadSummary } : {}),
             operations: createAgentOperationalReaders({
               productStore,
@@ -1729,7 +1743,13 @@ export function createAgentRouteHandler({
       const user = await requireUser(request)
       const projectId = decodeURIComponent(agentSessionContextCompactionsMatch[1])
       const sessionId = decodeURIComponent(agentSessionContextCompactionsMatch[2])
-      if (!(config.rolloutFlags?.isEnabled('AGENT_CONTEXT_COMPACTION_V2', { userId: user.id, projectId }) ?? false)) {
+      const contextRollout = resolveAgentContextRollout({
+        featureFlags: config.agentFeatureFlags,
+        rolloutFlags: config.rolloutFlags,
+        userId: user.id,
+        projectId,
+      })
+      if (contextRollout.mode !== 'active') {
         return error(response, 404, 'AGENT_CONTEXT_COMPACTION_DISABLED', 'Agent Context Compaction V2 尚未对该项目开放。')
       }
       const body = await readJson(request, 4 * 1024, 'Agent Context 压缩请求过大。')

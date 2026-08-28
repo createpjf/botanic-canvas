@@ -163,6 +163,28 @@ test('Snapshot V2 恢复注入同一 Session 的 usage anchor 持久化 seam', a
   assert.equal(writes[0].command.usageAnchor.surfaceHash, 'surface-1')
 })
 
+test('Context V2 总闸门关闭时孤儿 Turn 保持待恢复且不进入执行器', async () => {
+  const request = {
+    ...turn().request,
+    threadContextSnapshot: {
+      version: 2,
+      modelPolicy: { model: 'model-a', hash: 'policy-hash' },
+      messages: [{ id: 'm-1', revision: 'r-1', role: 'user', content: '继续' }],
+    },
+  }
+  const d = deps({
+    config: {
+      agentFeatureFlags: { runtimeV2: true, contextCompactionV2: false },
+    },
+  })
+
+  await assert.rejects(
+    () => createAgentTurnResumer(d)(turn({ request })),
+    (caught) => caught.code === 'AGENT_CONTEXT_KILL_SWITCH_BLOCKED' && caught.statusCode === 503,
+  )
+  assert.equal(d.executions.length, 0)
+})
+
 test('旧 Turn 没有 thread context snapshot 时按 legacy 无摘要恢复，不借用当前 Session', async () => {
   const d = deps()
 

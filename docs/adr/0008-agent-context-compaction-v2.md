@@ -123,17 +123,20 @@ Provider body 只在进程内解析为标准 usage；可持久化的是经过验
 
 ## 发布与 staging migration gate
 
-`AGENT_CONTEXT_COMPACTION_V2` 是 rollout flag，默认 `false`，可按 project/user 灰度。发布顺序固定为：
+`AGENT_CONTEXT_COMPACTION_V2` 是 active rollout flag，默认 `false`，可按 project/user 灰度；
+`AGENT_CONTEXT_COMPACTION_V2_SHADOW` 同样默认关闭，只运行纯投影并继续提供 V1；
+`AGENT_CONTEXT_COMPACTION_V2_ENABLED` 是默认开启、需重启生效的事故总闸门。发布顺序固定为：
 
 1. 保持 Flag 关闭，先在 staging 执行
    `supabase/migrations/20260828210000_agent_context_compaction_v2.sql`；
 2. 验证两表、RLS、service-role-only CAS RPC、成员读/Editor 写和缺权限 fail-closed；
 3. 用至少两个 API 实例验证 CAS 冲突、历史幂等 replay、usage-only sequence 间隔与 DB clock；
 4. 对迁移前后 `agent_messages` 数量、revision 与内容哈希做对账，确认压缩没有删除或改写消息；
-5. 仅对 staging 测试项目开启 Flag，验证 V1/V2 Snapshot、自动/overflow/manual 三条触发路径与恢复；
+5. 先对 staging 测试项目开启 Shadow，确认 0 Store write、0 Provider call、无敏感字段，再开启 active，
+   验证 V1/V2 Snapshot、自动/overflow/manual 三条触发路径与恢复；
 6. 门禁通过后才允许生产按项目灰度，再逐步扩大。
 
-Migration 未执行时，Supabase Adapter 必须返回 `AGENT_CONTEXT_PERSISTENCE_REQUIRED`；不得开启 Flag，也不得
+Migration 未执行时，Supabase Adapter 必须返回 `AGENT_CONTEXT_PERSISTENCE_REQUIRED`；不得开启 active Flag，也不得
 让单实例内存路径冒充多实例安全。回滚只关闭 Flag 并停止产生新的 V2 Snapshot，保留 state、ledger 与
 原始 Message 供审计，不删除迁移数据。
 

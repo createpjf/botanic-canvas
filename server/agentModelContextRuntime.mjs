@@ -62,6 +62,21 @@ export function createAgentModelContextRuntime(input) {
     : 'unknown-provider'
   const runtimeIdentity = input?.runtimeIdentity
   const persistUsageAnchor = input?.persistUsageAnchor
+  const observeContext = typeof input?.observe === 'function' ? input.observe : undefined
+  const emit = (event) => {
+    if (!observeContext) return
+    try {
+      observeContext({
+        ...event,
+        identity: {
+          projectId: runtimeIdentity?.projectId,
+          sessionId: runtimeIdentity?.sessionId,
+          turnId: runtimeIdentity?.turnId,
+          ...(event?.identity ?? {}),
+        },
+      })
+    } catch { /* 可观测性不得改变 Context Runtime */ }
+  }
 
   return Object.freeze({
     policy,
@@ -82,6 +97,7 @@ export function createAgentModelContextRuntime(input) {
       })
       let surface = source
       let meter = measureAgentModelContextSurface(surface, { policy, usageAnchor })
+      const meterBefore = meter
       const operations = []
 
       const pruned = pruneAgentModelContextSurface(surface, policy)
@@ -105,6 +121,20 @@ export function createAgentModelContextRuntime(input) {
           meter = measureAgentModelContextSurface(surface, { policy })
         }
       }
+
+      const compactionOperation = operations.find((operation) => operation.type === 'checkpoint_replace')
+      emit({
+        name: 'agent.context.compaction',
+        outcome: compactionOperation ? 'compacted' : 'no_change',
+        trigger: command?.trigger === 'overflow' || command?.trigger === 'manual'
+          ? command.trigger
+          : 'pre_step',
+        inputTokensBefore: meterBefore.inputTokens,
+        inputTokensAfter: meter.inputTokens,
+        ...(compactionOperation
+          ? { replacedMessageCount: compactionOperation.replacedMessageRevisions?.length ?? 0 }
+          : {}),
+      })
 
       return {
         messages: agentModelContextProviderMessages(surface),
@@ -139,9 +169,43 @@ export function createAgentModelContextRuntime(input) {
       if (typeof persistUsageAnchor === 'function') {
         // Usage 只是压力计锚点，不是执行正确性的边界。持久化失败不应把一个已经完成
         // 的 Provider 调用改写为 Turn 失败；下一步会安全回退 heuristic。
-        try { await persistUsageAnchor(structuredClone(anchor)) } catch { /* best effort */ }
+        try {
+          const outcome = await persistUsageAnchor(structuredClone(anchor))
+          emit({
+            name: 'agent.context.usage_anchor',
+            outcome: outcome?.kind === 'updated'
+              ? 'persisted'
+              : ['replay', 'unchanged'].includes(outcome?.kind) ? 'reused'
+                : outcome?.kind === 'conflict' ? 'cas_conflict'
+                  : outcome?.kind === 'not_found' ? 'not_found' : 'failed',
+            inputTokens: anchor.inputTokens,
+            outputTokens: anchor.outputTokens,
+            totalTokens: anchor.totalTokens,
+            heuristicInputTokens: anchor.heuristicInputTokens,
+          })
+        } catch (caught) {
+          const code = caught && typeof caught === 'object' && 'code' in caught
+            && typeof caught.code === 'string' ? caught.code : 'AGENT_CONTEXT_USAGE_PERSIST_FAILED'
+          emit({
+            name: 'agent.context.usage_anchor', outcome: 'failed',
+            inputTokens: anchor.inputTokens,
+            outputTokens: anchor.outputTokens,
+            totalTokens: anchor.totalTokens,
+            heuristicInputTokens: anchor.heuristicInputTokens,
+            error: { code, retryable: true },
+          })
+        }
       }
       return structuredClone(anchor)
+    },
+
+    observeOverflow(command = {}) {
+      emit({
+        name: 'agent.context.overflow',
+        outcome: command.outcome,
+        retryCount: command.retryCount,
+        ...(command.error ? { error: command.error } : {}),
+      })
     },
   })
 }

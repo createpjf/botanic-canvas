@@ -1,6 +1,10 @@
 // @ts-check
 import { Queue, Worker } from 'bullmq'
 import { canonicalHash } from './canonicalHash.mjs'
+import {
+  attachAgentTraceContext,
+  withExtractedAgentTraceContext,
+} from './agentTraceContext.mjs'
 
 const queueName = 'botanic-subagent'
 const defaultJobOptions = {
@@ -39,7 +43,7 @@ export function createAgentSubagentQueue(redisUrl, { QueueImpl = Queue } = {}) {
         if (state === 'failed' || state === 'completed') await existing.remove()
         else return false
       }
-      await queue.add('activate', identity, { jobId })
+      await queue.add('activate', attachAgentTraceContext(identity), { jobId })
       return true
     },
 
@@ -52,7 +56,7 @@ export function createAgentSubagentQueue(redisUrl, { QueueImpl = Queue } = {}) {
       const jobId = agentSubagentQueueJobId(identity)
       const existing = await queue.getJob(jobId)
       if (!existing) {
-        await queue.add('activate', identity, { jobId })
+        await queue.add('activate', attachAgentTraceContext(identity), { jobId })
         return true
       }
       const state = await existing.getState()
@@ -62,7 +66,7 @@ export function createAgentSubagentQueue(redisUrl, { QueueImpl = Queue } = {}) {
       } catch {
         return false
       }
-      await queue.add('activate', identity, { jobId })
+      await queue.add('activate', attachAgentTraceContext(identity), { jobId })
       return true
     },
 
@@ -80,7 +84,10 @@ export function createAgentSubagentWorker({
 }) {
   if (!redisUrl) throw new Error('REDIS_URL 未配置，无法启动 Subagent Worker。')
   if (typeof processActivation !== 'function') throw new TypeError('Subagent Worker 缺少处理器。')
-  return new WorkerImpl(queueName, async (job) => processActivation(activationIdentity(job.data)), {
+  return new WorkerImpl(queueName, async (job) => withExtractedAgentTraceContext(
+    job.data,
+    (data) => processActivation(activationIdentity(data)),
+  ), {
     connection: { url: redisUrl, maxRetriesPerRequest: null },
     concurrency: Math.max(1, Number(concurrency) || 1),
     maxStalledCount: 1,

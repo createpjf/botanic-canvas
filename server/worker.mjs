@@ -31,11 +31,25 @@ import { createAgentSubagentCancellation } from './agentSubagentCancellation.mjs
 import { createAgentSubagentRecovery } from './agentSubagentRecovery.mjs'
 import { createAgentSubagentService } from './agentSubagentService.mjs'
 import { createDurableAgentSubagentRunner } from './agentSubagentBroker.mjs'
+import { initializeBotanicTelemetry } from './botanicTelemetry.mjs'
+import { createAgentContextObserver } from './agentContextObservability.mjs'
+import { activeBotanicTraceFields } from './executionTelemetry.mjs'
 
 loadLocalEnv()
 // 与 API 同一处理：Worker 崩掉的后果更隐蔽 —— 队列还在，任务永远停在 running。
 installDatabaseResilience()
 const config = runtimeConfig()
+const telemetry = initializeBotanicTelemetry(config.telemetry, { logger: console })
+const observeAgentContext = createAgentContextObserver()
+const observeAgentRun = (event) => {
+  const traceFields = activeBotanicTraceFields()
+  writeAgentRunOperationalEvent({
+    ...event,
+    w3cTraceId: traceFields.traceId,
+    w3cSpanId: traceFields.spanId,
+    traceFlags: traceFields.traceFlags,
+  }, console, { semanticLogger: console })
+}
 if (!config.production) console.warn('Botanic Worker 正在以本地配置运行；生产环境必须使用 PostgreSQL、Redis 与对象存储。')
 const runtime = await createProductRuntime(config)
 if (!config.redisUrl) throw new Error('REDIS_URL 未配置，Worker 拒绝启动。')
@@ -142,7 +156,7 @@ const worker = createGenerationWorker({
     cancelRegistry: jobCancelRegistry,
     publishAgentRunUpdated: agentRunEvents.publish,
     publishProjectUpdated: agentRunEvents.publishProjectUpdated,
-    observeAgentRun: writeAgentRunOperationalEvent,
+    observeAgentRun,
     providerCircuitBreaker: providerHealth,
     ensureReviewTask: (ownerId, runId) => reviewService.ensureReviewTaskForRun(ownerId, runId),
     enqueueDerivedTask: (kind, dedupeId, payload) => derivedQueue?.enqueue(kind, dedupeId, payload),
@@ -184,6 +198,7 @@ const sweepStaleAgentTurns = createAgentTurnSweep({
     turnRuntime: durableTurnRuntime,
     consumeWebResearchQuota,
     subagentRunner: resumeSubagentRunner,
+    observeAgentContext,
     observe: (event) => console.log(JSON.stringify(event)),
   }),
   settleTurn: (turn, error) => durableTurnRuntime.fail({ turn, error }),
@@ -298,7 +313,7 @@ const sweepFailedBranches = createAgentBranchRetrySweep({
     publishProjectUpdated: agentRunEvents.publishProjectUpdated,
     publishAgentRunUpdated: agentRunEvents.publish,
     agentRunGeneration,
-    observeRun: writeAgentRunOperationalEvent,
+    observeRun: observeAgentRun,
   }),
   observe: (event) => console.log(JSON.stringify(event)),
 })
@@ -399,6 +414,7 @@ async function shutdown() {
   await providerHealth.close()
   await runtime.mediaService.close()
   await runtime.productStore.close?.()
+  await telemetry.shutdown().catch(() => undefined)
 }
 process.once('SIGTERM', () => void shutdown().then(() => process.exit(0)))
 process.once('SIGINT', () => void shutdown().then(() => process.exit(0)))

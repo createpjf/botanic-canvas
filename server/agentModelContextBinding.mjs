@@ -161,6 +161,9 @@ export function bindAgentModelContextOptions(input, runtimeConfig, options = {})
       ...(options.persistAgentContextUsageAnchor
         ? { persistUsageAnchor: options.persistAgentContextUsageAnchor }
         : {}),
+      ...(typeof options.observeAgentContext === 'function'
+        ? { observe: options.observeAgentContext }
+        : {}),
     })
     runtimes.set(requestedModel, runtime)
     return runtime

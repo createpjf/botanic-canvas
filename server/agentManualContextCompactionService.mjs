@@ -264,7 +264,7 @@ function mappedError(caught) {
  * 服务只读取权威 Session/Message，并调用本地确定性 Coordinator + Store CAS；
  * 不接收 prompt/checkpoint/model，不注入也不调用任何 Provider。
  *
- * @param {{productStore:any,policies?:any,defaultModel?:string,contextCoordinator?:any}} dependencies
+ * @param {{productStore:any,policies?:any,defaultModel?:string,contextCoordinator?:any,observe?:(event:any)=>void}} dependencies
  */
 export function createAgentManualContextCompactionService(dependencies) {
   const { productStore, policies, defaultModel } = dependencies ?? {}
@@ -273,7 +273,11 @@ export function createAgentManualContextCompactionService(dependencies) {
     || typeof productStore?.listAgentSessionMessages !== 'function') {
     throw new TypeError('Agent Manual Context Compaction Service 缺少项目、会话或消息读取 Interface。')
   }
-  const coordinator = dependencies?.contextCoordinator ?? createAgentContextCoordinator({ productStore, policies })
+  const coordinator = dependencies?.contextCoordinator ?? createAgentContextCoordinator({
+    productStore,
+    policies,
+    observe: dependencies?.observe,
+  })
   if (typeof coordinator?.resolve !== 'function') {
     throw new TypeError('Agent Manual Context Compaction Service 缺少 Context Coordinator。')
   }

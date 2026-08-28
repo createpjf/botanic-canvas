@@ -1,4 +1,8 @@
 import { Queue, Worker } from 'bullmq'
+import {
+  attachAgentTraceContext,
+  withExtractedAgentTraceContext,
+} from './agentTraceContext.mjs'
 
 const queueName = 'botanic-generation'
 const defaultJobOptions = {
@@ -19,7 +23,7 @@ export function createGenerationQueue(redisUrl, { QueueImpl = Queue } = {}) {
         if (state === 'failed' || state === 'completed') await existing.remove()
         else return
       }
-      await queue.add('generate', { jobId }, { jobId })
+      await queue.add('generate', attachAgentTraceContext({ jobId }), { jobId })
     },
     async cancel(jobId) {
       const job = await queue.getJob(jobId)
@@ -29,7 +33,7 @@ export function createGenerationQueue(redisUrl, { QueueImpl = Queue } = {}) {
     async reclaimStaleActive(jobId) {
       const job = await queue.getJob(jobId)
       if (!job) {
-        await queue.add('generate', { jobId }, { jobId })
+        await queue.add('generate', attachAgentTraceContext({ jobId }), { jobId })
         return true
       }
       const state = await job.getState()
@@ -43,7 +47,7 @@ export function createGenerationQueue(redisUrl, { QueueImpl = Queue } = {}) {
       } catch {
         return false
       }
-      await queue.add('generate', { jobId }, { jobId })
+      await queue.add('generate', attachAgentTraceContext({ jobId }), { jobId })
       return true
     },
     async close() {
@@ -52,9 +56,12 @@ export function createGenerationQueue(redisUrl, { QueueImpl = Queue } = {}) {
   }
 }
 
-export function createGenerationWorker({ redisUrl, concurrency, processJob }) {
+export function createGenerationWorker({ redisUrl, concurrency, processJob, WorkerImpl = Worker }) {
   if (!redisUrl) throw new Error('REDIS_URL 未配置，无法启动生成 Worker。')
-  return new Worker(queueName, async (job) => processJob(job.data.jobId), {
+  return new WorkerImpl(queueName, async (job) => withExtractedAgentTraceContext(
+    job.data,
+    (data) => processJob(data.jobId),
+  ), {
     connection: { url: redisUrl, maxRetriesPerRequest: null },
     concurrency: Math.max(1, concurrency || 1),
     maxStalledCount: 1,

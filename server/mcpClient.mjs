@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { outboundAgentTraceHeaders } from './agentTraceContext.mjs'
 
 const NAME = /^[a-z][a-z0-9_-]{1,79}$/
 const ACTION_INTENT = /^[A-Za-z0-9_-]{16,128}$/
@@ -63,6 +64,7 @@ export function createConfiguredMcpTools(configurations, {
       response = await fetchImpl(configuration.url, {
         method: 'POST',
         headers: {
+          ...outboundAgentTraceHeaders(),
           Accept: 'application/json',
           'Content-Type': 'application/json',
           ...(configuration.authToken ? { Authorization: `Bearer ${configuration.authToken}` } : {}),

@@ -113,8 +113,36 @@ export function createAgentContextCoordinator(dependencies) {
   const { productStore } = dependencies ?? {}
   assertStore(productStore)
   const policies = dependencies?.policies
+  const observe = typeof dependencies?.observe === 'function' ? dependencies.observe : undefined
+
+  const emitCompaction = (input, outcome, projection, startedAt) => {
+    if (!observe) return
+    const compaction = projection?.compaction
+    const before = compaction?.meterBefore?.inputTokens ?? projection?.meter?.inputTokens
+    const after = compaction?.meterAfter?.inputTokens ?? projection?.meter?.inputTokens
+    try {
+      observe({
+        name: 'agent.context.compaction',
+        outcome,
+        trigger: input?.trigger ?? 'pre_step',
+        identity: {
+          projectId: input?.projectId,
+          sessionId: input?.sessionId,
+          turnId: input?.turnId,
+          compactionId: compaction?.id,
+        },
+        ...(Number.isSafeInteger(before) ? { inputTokensBefore: before } : {}),
+        ...(Number.isSafeInteger(after) ? { inputTokensAfter: after } : {}),
+        ...(Array.isArray(compaction?.replacedMessageRevisions)
+          ? { replacedMessageCount: compaction.replacedMessageRevisions.length }
+          : {}),
+        durationMs: Math.max(0, Date.now() - startedAt),
+      })
+    } catch { /* 可观测性不得改变 CAS */ }
+  }
 
   async function resolve(input) {
+    const startedAt = Date.now()
     const {
       userId, projectId, sessionId, model, messages, currentMessageId,
       locale = 'zh-CN', threadSummary, force = false, trigger = 'pre_step',
@@ -138,6 +166,7 @@ export function createAgentContextCoordinator(dependencies) {
         trigger,
       })
       if (projection.kind !== 'candidate') {
+        emitCompaction(input, projection.kind === 'reused' ? 'reused' : 'no_change', projection, startedAt)
         return {
           kind: projection.kind,
           state: structuredClone(state),
@@ -172,8 +201,13 @@ export function createAgentContextCoordinator(dependencies) {
         if (!['reused', 'no_change'].includes(committedProjection.kind)) {
           failure('AGENT_CONTEXT_COMMIT_UNREADABLE', '已提交的 Agent Context Checkpoint 无法重放。', 409)
         }
+        const resolvedKind = outcome.kind === 'replay' ? 'replay' : 'compacted'
+        emitCompaction(input, outcome.kind === 'replay' ? 'reused' : 'compacted', {
+          ...committedProjection,
+          compaction: nextHead,
+        }, startedAt)
         return {
-          kind: outcome.kind === 'replay' ? 'replay' : 'compacted',
+          kind: resolvedKind,
           state: structuredClone(outcome.state),
           compaction: nextHead,
           snapshot: snapshotFromProjection(committedProjection, outcome.state, nextHead),
@@ -191,6 +225,7 @@ export function createAgentContextCoordinator(dependencies) {
       state = outcome.state ?? await productStore.readAgentContextState(userId, projectId, sessionId)
       if (!state) failure('AGENT_SESSION_NOT_FOUND', 'Agent Context 会话已不存在。', 404)
     }
+    emitCompaction(input, 'cas_conflict', undefined, startedAt)
     failure('AGENT_CONTEXT_CAS_CONFLICT', 'Agent Context 同时被其它执行者推进，请重试。', 409)
   }
 

@@ -8,6 +8,7 @@ import {
 import { readStreamedChatCompletion } from './botanicAgentStream.mjs'
 import { createAgentSubagentRunner } from './agentSubagentRunner.mjs'
 import { normalizeBotanicAgentLocale, readBotanicAgentInstructions } from './agentInstructions.mjs'
+import { outboundAgentTraceHeaders } from './agentTraceContext.mjs'
 import {
   botanicCreativeBriefFieldIds,
   BotanicCreativeBriefValidationError,
@@ -423,6 +424,7 @@ export function botanicAgentProviderConfig(runtimeConfig, requestedModel) {
     baseUrl,
     apiKey,
     model,
+    genAiDevelopmentSemconv: runtimeConfig?.telemetry?.genAiDevelopmentSemconv === true,
     timeoutMs: Number.isFinite(Number(runtimeConfig?.agentPlannerTimeoutMs))
       ? Math.min(60_000, Math.max(1_000, Number(runtimeConfig.agentPlannerTimeoutMs)))
       : 30_000,
@@ -779,6 +781,7 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
       toolChoice: 'auto',
       maximumSteps: hasWebTools ? 8 : 4,
       context: runtimeContext,
+      genAiTelemetry: config.genAiDevelopmentSemconv,
       allowRawReasoning,
       onEvent: emitEvent,
       resumeCheckpoint: options.resumeCheckpoint,
@@ -790,6 +793,7 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
         const response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
           method: 'POST',
           headers: {
+            ...outboundAgentTraceHeaders(),
             Authorization: `Bearer ${config.apiKey}`,
             'x-litellm-api-key': config.apiKey,
             Accept: streaming ? 'text/event-stream' : 'application/json',

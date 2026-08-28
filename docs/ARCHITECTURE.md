@@ -219,6 +219,17 @@ Redis 发布成功都不是退出证明。当前 Worker 真正退出时用匹配
 已存在的 Job 在配额扣减前即被复用，因此重放不会重复创建任务或重复扣费。`server/agentQualityEvaluation.mjs`
 只消费固定离线夹具，计算成功率、等待时间、恢复率、重复提交率和结果回填完整性，普通验证不得调用真实 Provider。
 
+分布式执行使用另一套真实 W3C 身份：`agentTraceContext.mjs` 只提取/注入 `traceparent` 与受限
+`tracestate`，并通过 Generation、Derived、Subagent 三类 BullMQ payload 跨实例传播；Worker 在进入业务
+Handler 前剥离 carrier。`baggage` 首版不注册、不传播，外部 Provider/MCP 只允许 `traceparent`。
+`executionTelemetry.mjs` 是 Span 的唯一入口；属性先经过固定 allowlist，错误只记录类型码，不记录异常正文。
+OTLP exporter 故障必须 fail-open，不能改变 Turn、Tool、Queue 或 Provider 的状态。
+
+`agentSemanticEvent.mjs` 定义版本化安全 schema，Context rollout/shadow/compaction/overflow/usage anchor
+与 Run lifecycle 只记录受控身份、计数、耗时、cohort 和错误码。Legacy `agent.run.*` 在迁移期双写，旧消费者
+不变；新指标由 `agentSemanticMetrics.mjs` 独立聚合，零样本继续为 `null`。OTel trace ID 与既有
+`agent-trace:*` 不互换：前者描述一次分布式执行，后者仍是 Run/Job/Artifact 产品聚合视图。
+
 ## 项目权限与 Agent 行动审批
 
 项目权限由服务端区分读取、编辑、生成、内容删除、工作流修改、成员管理、外部工具、项目删除、审计与运行详情。

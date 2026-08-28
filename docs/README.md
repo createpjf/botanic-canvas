@@ -18,6 +18,7 @@
 - [ADR 0006：Agent 质量、记忆与 Skill 治理](adr/0006-agent-quality-memory-governance.md)
 - [ADR 0007：Durable Subagent Runtime](adr/0007-durable-subagent-runtime.md)
 - [ADR 0008：Agent Context Compaction V2](adr/0008-agent-context-compaction-v2.md)
+- [ADR 0009：Agent 分布式追踪与安全语义事件](adr/0009-agent-distributed-tracing.md)
 
 ## 功能规格
 
