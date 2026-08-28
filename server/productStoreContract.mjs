@@ -1,4 +1,11 @@
+import { isDeepStrictEqual } from 'node:util'
 import { agentTurnRequestHash, agentTurnRequestHashVersion, storedAgentTurnRequestBinding } from './agentTurnRequestIdentity.mjs'
+import {
+  BotanicAgentSkillError,
+  agentSkillExecutionContentHash,
+  agentSkillVersion,
+  validateAgentSkillVersionSnapshot,
+} from './botanicAgentSkill.mjs'
 
 /**
  * ProductStore 是项目、Agent、生成任务和审计持久化的服务端 seam。
@@ -13,6 +20,108 @@ export const nonTerminalAgentTurnStatuses = Object.freeze(['queued', 'running', 
 
 /** 只有这些状态代表执行实例可能失联；waiting_user 由用户输入恢复，不参与孤儿回收。 */
 export const reclaimableAgentTurnStatuses = Object.freeze(['queued', 'running', 'cancelling'])
+
+function completeAgentSkillVersionSnapshot(snapshot) {
+  return typeof snapshot?.name === 'string'
+    && typeof snapshot?.instructions === 'string'
+    && Array.isArray(snapshot?.capabilities)
+    && typeof snapshot?.contentHash === 'string'
+}
+
+function agentSkillPersistenceError(code, message) {
+  throw new BotanicAgentSkillError(409, code, message)
+}
+
+function immutableAgentSkillVersionMatches(stored, incoming) {
+  if (isDeepStrictEqual(stored, incoming)) return true
+  // draft 首次发布不伪造内容相同的新版本；只允许给原本未发布的
+  // 完整执行快照一次性补齐批准身份，其他字段仍必须逐字一致。
+  if (stored?.publishedBy !== undefined || stored?.publishedAt !== undefined
+    || incoming?.publishedBy === undefined || incoming?.publishedAt === undefined) return false
+  const withoutPublication = structuredClone(incoming)
+  delete withoutPublication.publishedBy
+  delete withoutPublication.publishedAt
+  return isDeepStrictEqual(stored, withoutPublication)
+}
+
+/**
+ * 读取历史版本时保留上线前的不完整快照，新完整快照则必须通过 V2 hash 验证。
+ */
+export function persistedAgentSkillVersion(skill, version) {
+  const snapshot = agentSkillVersion(skill, version)
+  if (!snapshot) return undefined
+  return validateAgentSkillVersionSnapshot(snapshot, {
+    allowLegacy: !completeAgentSkillVersionSnapshot(snapshot),
+  })
+}
+
+/**
+ * 三个 Adapter 共用的 Skill 写入决策。
+ *
+ * 版本与 hash 已由 `botanicAgentSkill` 领域层生成；Store 只验证当前快照、
+ * 确认旧 history 是 incoming history 的不可变前缀，然后原样持久化。
+ */
+export function agentSkillPersistenceDecision(existing, incoming, { ownerId } = {}) {
+  if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) {
+    return agentSkillPersistenceError('INVALID_AGENT_SKILL_VERSION', 'Skill 持久化快照无效。')
+  }
+  const version = Number(incoming.version)
+  const versions = Array.isArray(incoming.versions) ? incoming.versions : []
+  if (!Number.isInteger(version) || version < 1 || !versions.length) {
+    return agentSkillPersistenceError('INVALID_AGENT_SKILL_VERSION', 'Skill 持久化快照缺少版本历史。')
+  }
+  let previousVersion = 0
+  for (const snapshot of versions) {
+    const snapshotVersion = Number(snapshot?.version)
+    if (!Number.isInteger(snapshotVersion) || snapshotVersion <= previousVersion) {
+      return agentSkillPersistenceError('AGENT_SKILL_HISTORY_CONFLICT', 'Skill 历史版本必须严格递增且不重复。')
+    }
+    if (completeAgentSkillVersionSnapshot(snapshot)) validateAgentSkillVersionSnapshot(snapshot)
+    previousVersion = snapshotVersion
+  }
+  if (previousVersion !== version) {
+    return agentSkillPersistenceError('AGENT_SKILL_HISTORY_CONFLICT', 'Skill 当前版本与历史尾部不一致。')
+  }
+  const current = persistedAgentSkillVersion(incoming, version)
+  if (!current || !completeAgentSkillVersionSnapshot(current)) {
+    return agentSkillPersistenceError('INVALID_AGENT_SKILL_VERSION', 'Skill 当前版本必须是完整快照。')
+  }
+  if (incoming.contentHash !== current.contentHash
+    || agentSkillExecutionContentHash(incoming) !== current.contentHash) {
+    return agentSkillPersistenceError('AGENT_SKILL_VERSION_HASH_MISMATCH', 'Skill 当前内容与版本快照不一致。')
+  }
+
+  const existingVersions = Array.isArray(existing?.versions) ? existing.versions : []
+  if (existing) {
+    const storedVersion = Number(existing.version)
+    if (!Number.isInteger(storedVersion) || version < storedVersion) {
+      return agentSkillPersistenceError('AGENT_SKILL_VERSION_STALE', 'Skill 写入版本已过期。')
+    }
+    if (versions.length < existingVersions.length
+      || existingVersions.some((snapshot, index) => !immutableAgentSkillVersionMatches(snapshot, versions[index]))) {
+      return agentSkillPersistenceError('AGENT_SKILL_HISTORY_CONFLICT', 'Skill 历史版本不得覆盖或截断。')
+    }
+    if (version === storedVersion) {
+      if (incoming.contentHash !== existing.contentHash || versions.length !== existingVersions.length) {
+        return agentSkillPersistenceError('AGENT_SKILL_VERSION_CONFLICT', 'Skill 同一版本不得改写执行内容。')
+      }
+    } else if (version !== storedVersion + 1 || versions.length !== existingVersions.length + 1) {
+      return agentSkillPersistenceError('AGENT_SKILL_HISTORY_CONFLICT', 'Skill 新版本必须在完整历史后追加。')
+    }
+  } else if (version !== 1 || versions.length !== 1) {
+    return agentSkillPersistenceError('AGENT_SKILL_HISTORY_CONFLICT', 'Skill 首次写入必须从版本 1 开始。')
+  }
+
+  const payload = {
+    ...structuredClone(incoming),
+    ownerId: existing?.ownerId ?? ownerId ?? incoming.ownerId,
+    createdAt: existing?.createdAt ?? incoming.createdAt,
+  }
+  return {
+    kind: existing && isDeepStrictEqual(existing, payload) ? 'replay' : 'write',
+    payload,
+  }
+}
 
 /** Run/Job 全量扫描统一使用 id ASC keyset pagination。 */
 export function normalizeAgentEntityIdPage(options = {}) {
@@ -826,6 +935,7 @@ export const productStoreCoreMethods = Object.freeze([
   'listAgentArtifacts',
   'putAgentSkill',
   'listAgentSkills',
+  'readAgentSkillVersion',
   'putAgentActionReceipt',
   'readAgentActionReceipt',
   'claimAgentActionReceipt',

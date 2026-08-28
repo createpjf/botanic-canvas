@@ -247,8 +247,13 @@ Owner 可管理成员、读取治理信息并审批外部工具；Editor 可编�
 Adapter 只保证单进程开发语义。Supabase 通过单个事务 RPC 同步 settle Receipt、Artifact Index 与 Audit，不能退回
 read-then-upsert 或提交后尽力补写。
 
-`server/mcpClient.mjs` 将 Action Runtime 的取消信号传播到外部 MCP 请求，并只以受控 Header 传递 `intentHash`；取消不等于
-已确认未执行，最终仍以 Receipt 为准。旧 `putAgentActionReceipt` 仅允许插入兼容回执，不得覆盖 running 或终态记录。
+`server/mcpClient.mjs` 只公开安全 `catalog()` 与受控 `invoke()`：目录固定 `server.tool`、版本、输入/输出 Schema、
+capability hash 与 `never` replay，不暴露 URL、token 或传输参数。Action Proposal 固定这份身份；执行前先验证
+版本/hash 并投影输入，漂移或非法输入在出网前拒绝。请求严格使用 JSON-RPC 2.0 `tools/call`，响应按字节上限读取、
+校验 request id 并投影输出。Runtime 将取消信号传播到外部请求，且只以受控 Header 传递 `intentHash`；派发后取消、
+远端错误、协议错误或输出契约失败都不能证明未产生副作用，统一由 Receipt 收敛为未知结果。外部响应中的 URL
+不是媒体授权，不能直接提升为 Artifact 或写入画布。旧 `putAgentActionReceipt` 仅允许插入兼容回执，不得覆盖 running
+或终态记录。完整决策见 ADR 0010。
 
 `server/agentActionReconciliation.mjs` 与 `/api/agent-actions/status|resolve` 只接受绑定独立 Session、Message 与 Action 的
 服务端权威 Proposal；客户端不能选择 Receipt ID、intent hash 或参数。状态查询只回读已持久化的成功结果，绝不执行工具；

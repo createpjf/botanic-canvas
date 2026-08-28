@@ -1,17 +1,22 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  agentSkillExecutionContentHash,
   agentSkillManifestRisk,
   agentSkillVersion,
+  buildAgentSkillVersionSnapshot,
   botanicAgentSkillLifecycle,
   botanicAgentSkillManifestVersion,
   createAgentSkill,
   deprecateAgentSkill,
+  freezeAgentSkillDependencies,
   isUsableAgentSkill,
   normalizeAgentSkillManifest,
+  prepareAgentSkillVersionSnapshot,
   publicAgentSkill,
   resolveAgentSkillDependencies,
   updateAgentSkill,
+  validateAgentSkillVersionSnapshot,
   validateAgentSkillCreation,
 } from './botanicAgentSkill.mjs'
 
@@ -20,7 +25,7 @@ const creation = () => validateAgentSkillCreation({
   name: ' 夏日换景 ',
   instructions: ' 锁定人物与服装，只改变场景和环境光。 ',
 })
-const contentHash = 'd7-pXlsFnTupsJzEX2zITaj7L0yRqm67FQZomHWNeMw'
+const contentHash = 'TgT49SfnaYvrTgMkNd3mG5z77CFQBxdniomMJ555YmI'
 
 test('项目 Skill 只接受精简文本规则并生成独立持久化记录', () => {
   const skill = createAgentSkill(creation(), { id: 'skill-a', ownerId: 'user-a', approvedBy: 'user-a', now: 100 })
@@ -31,7 +36,10 @@ test('项目 Skill 只接受精简文本规则并生成独立持久化记录', (
     lifecycle: 'published', status: 'active', createdAt: 100, updatedAt: 100,
     version: 1, contentHash, capabilities: ['read'],
     governance: 'project-approved', publishedBy: 'user-a', publishedAt: 100,
-    versions: [{ version: 1, contentHash, instructions: '锁定人物与服装，只改变场景和环境光。', updatedAt: 100, publishedBy: 'user-a', publishedAt: 100 }],
+    versions: [{
+      version: 1, name: '夏日换景', instructions: '锁定人物与服装，只改变场景和环境光。',
+      capabilities: ['read'], contentHash, updatedAt: 100, publishedBy: 'user-a', publishedAt: 100,
+    }],
   })
 })
 
@@ -62,6 +70,85 @@ test('修改已发布 Skill 追加新版本，历史版本仍可取回原内容'
   assert.equal(agentSkillVersion(updated, 1).contentHash, contentHash)
   assert.equal(agentSkillVersion(updated, 2).instructions, '锁定人物，允许更换背景与光线。')
   assert.equal(agentSkillVersion(updated, 3), undefined)
+})
+
+test('版本快照固定完整执行语义，新 hash 不再只看 instructions', () => {
+  const original = createAgentSkill({
+    ...creation(),
+    capabilities: ['read'],
+    manifest: { toolAllowlist: ['canvas_read'] },
+  }, {
+    id: 'skill-snapshot', ownerId: 'user-a', approvedBy: 'user-a', now: 100,
+    riskOf: (name) => ({ canvas_read: 'read' })[name],
+  })
+  const snapshot = agentSkillVersion(original, 1)
+
+  assert.deepEqual(snapshot, {
+    version: 1,
+    name: '夏日换景',
+    instructions: '锁定人物与服装，只改变场景和环境光。',
+    capabilities: ['read'],
+    manifest: {
+      version: botanicAgentSkillManifestVersion,
+      kind: 'guidance',
+      toolAllowlist: ['canvas_read'],
+      dependencies: [],
+    },
+    contentHash: original.contentHash,
+    updatedAt: 100,
+    publishedBy: 'user-a',
+    publishedAt: 100,
+  })
+  assert.notEqual(
+    original.contentHash,
+    agentSkillExecutionContentHash({ ...snapshot, name: '夏日换景（新）' }),
+  )
+  assert.notEqual(
+    original.contentHash,
+    agentSkillExecutionContentHash({ ...snapshot, capabilities: ['write'] }),
+  )
+  assert.notEqual(
+    original.contentHash,
+    agentSkillExecutionContentHash({ ...snapshot, manifest: { toolAllowlist: ['canvas_write'] } }),
+  )
+})
+
+test('相同执行语义的创建准备与更新重试幂等', () => {
+  const existing = createAgentSkill(creation(), {
+    id: 'skill-idempotent', ownerId: 'user-a', approvedBy: 'user-a', now: 100,
+  })
+  const prepared = prepareAgentSkillVersionSnapshot(existing, creation(), { now: 200 })
+  assert.equal(prepared.changed, false)
+  assert.equal(prepared.version, 1)
+  assert.equal(prepared.contentHash, existing.contentHash)
+
+  const retried = updateAgentSkill(existing, creation(), { actorId: 'user-a', now: 200 })
+  assert.equal(retried, existing)
+  assert.equal(retried.updatedAt, 100)
+  assert.equal(retried.versions.length, 1)
+
+  const draft = createAgentSkill(creation(), { id: 'skill-draft-publish', ownerId: 'user-a', now: 100 })
+  const published = updateAgentSkill(draft, creation(), {
+    actorId: 'user-a', approvedBy: 'reviewer-a', now: 200,
+  })
+  // 发布只冻结当前内容的批准元数据，不伪造一个内容相同的新版本。
+  assert.equal(published.version, 1)
+  assert.equal(published.versions.length, 1)
+  assert.equal(published.versions[0].publishedBy, 'reviewer-a')
+  assert.equal(published.versions[0].publishedAt, 200)
+})
+
+test('Adapter 共用的快照 helper 能验证完整性与 hash', () => {
+  const snapshot = buildAgentSkillVersionSnapshot(creation(), {
+    version: 1, updatedAt: 100, publishedBy: 'user-a', publishedAt: 100,
+  })
+  assert.deepEqual(validateAgentSkillVersionSnapshot(snapshot), snapshot)
+  assert.throws(
+    () => validateAgentSkillVersionSnapshot({ ...snapshot, name: '被篡改' }),
+    (error) => error.code === 'AGENT_SKILL_VERSION_HASH_MISMATCH',
+  )
+  const legacy = { version: 1, instructions: '旧规则', contentHash: 'legacy', updatedAt: 1 }
+  assert.deepEqual(validateAgentSkillVersionSnapshot(legacy, { allowLegacy: true }), legacy)
 })
 
 test('未经批准的修改回落 draft，不保留上一版的已批准标记', () => {
@@ -193,6 +280,49 @@ test('自依赖与环被挡住，不进无限递归', () => {
   assert.deepEqual(
     resolveAgentSkillDependencies({ id: 'self', manifest: { dependencies: [{ skillId: 'self' }] } }, []).cyclic,
     ['self'],
+  )
+})
+
+test('依赖解析只用 recursion stack 判环，合法 diamond 不误报', () => {
+  const shared = { id: 'shared', lifecycle: 'published', version: 1, versions: [{ version: 1 }] }
+  const left = {
+    id: 'left', lifecycle: 'published', version: 1, versions: [{ version: 1 }],
+    manifest: { dependencies: [{ skillId: 'shared' }] },
+  }
+  const right = {
+    id: 'right', lifecycle: 'published', version: 1, versions: [{ version: 1 }],
+    manifest: { dependencies: [{ skillId: 'shared' }] },
+  }
+  const top = { id: 'top', manifest: { dependencies: [{ skillId: 'left' }, { skillId: 'right' }] } }
+  assert.deepEqual(
+    resolveAgentSkillDependencies(top, [left, right, shared]),
+    { ok: true, missing: [], unusable: [], cyclic: [] },
+  )
+})
+
+test('发布可将依赖冻结到 version + contentHash，存量无 hash 声明仍可读', () => {
+  const base = createAgentSkill({
+    projectId: 'p-1', name: '基础规则', instructions: '保持品牌色。', capabilities: ['read'],
+  }, { id: 'base', ownerId: 'u-1', approvedBy: 'u-1', now: 100 })
+  const frozen = freezeAgentSkillDependencies({
+    dependencies: [{ skillId: 'base' }, { skillId: 'legacy', version: 3 }],
+  }, [base, { id: 'legacy', lifecycle: 'published', version: 3, versions: [{ version: 3 }] }])
+
+  assert.deepEqual(frozen.dependencies, [
+    { skillId: 'base', version: 1, contentHash: base.contentHash },
+    { skillId: 'legacy', version: 3 },
+  ])
+  const published = createAgentSkill({
+    projectId: 'p-1', name: '组合规则', instructions: '应用基础规则。', capabilities: ['read'],
+    manifest: { dependencies: [{ skillId: 'base' }] },
+  }, { id: 'top', ownerId: 'u-1', approvedBy: 'u-1', skillCatalog: [base], now: 200 })
+  assert.deepEqual(published.manifest.dependencies, [
+    { skillId: 'base', version: 1, contentHash: base.contentHash },
+  ])
+  assert.deepEqual(published.versions[0].manifest.dependencies, published.manifest.dependencies)
+  assert.deepEqual(
+    resolveAgentSkillDependencies(published, [base]),
+    { ok: true, missing: [], unusable: [], cyclic: [] },
   )
 })
 

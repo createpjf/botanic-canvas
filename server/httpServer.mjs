@@ -67,6 +67,9 @@ export function createBotanicHttpServer({
   configuredMcpTools = {},
 }) {
 const { productStore, mediaService } = runtime
+const configuredMcpToolCount = typeof configuredMcpTools?.catalog === 'function'
+  ? configuredMcpTools.catalog().length
+  : Object.values(configuredMcpTools ?? {}).filter((value) => typeof value === 'function').length
 let realtimeHub
 let agentRunEventSubscriber
 let canvasRealtimeEventPublisher
@@ -506,8 +509,8 @@ const handleRequestCore = async (request, response) => {
         // 否则健康检查会泄漏参与灰度的项目与用户标识。
         rolloutFlags: config.rolloutFlags?.enabledFor() ?? [],
         agentMcp: {
-          configured: Object.keys(configuredMcpTools).length > 0,
-          toolCount: Object.keys(configuredMcpTools).length,
+          configured: configuredMcpToolCount > 0,
+          toolCount: configuredMcpToolCount,
         },
         agentSubagent: {
           configured: Boolean(subagentRunner),

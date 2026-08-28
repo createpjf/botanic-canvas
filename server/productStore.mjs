@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { agentActionManualRetryConsumptionDecision, agentActionReceiptClaimDecision, agentActionReceiptResolutionDecision, agentThreadSummaryCompareAndSetDecision, agentTurnExecutionClaimDecision, authoritativeAgentActionManualRetryAuthorization, committedAgentTurnExecution, finalizedAgentTurnCancellation, normalizeAgentEntityIdPage, normalizePendingAgentReviewRecoveryPage, normalizeStaleTurnQuery, normalizeTurnEventPage, normalizeUpdatedAtIdRecoveryPage, reclaimableAgentTurnStatuses, requestedAgentTurnCancellation, settledAgentActionReceipt } from './productStoreContract.mjs'
+import { agentActionManualRetryConsumptionDecision, agentActionReceiptClaimDecision, agentActionReceiptResolutionDecision, agentSkillPersistenceDecision, agentThreadSummaryCompareAndSetDecision, agentTurnExecutionClaimDecision, authoritativeAgentActionManualRetryAuthorization, committedAgentTurnExecution, finalizedAgentTurnCancellation, normalizeAgentEntityIdPage, normalizePendingAgentReviewRecoveryPage, normalizeStaleTurnQuery, normalizeTurnEventPage, normalizeUpdatedAtIdRecoveryPage, persistedAgentSkillVersion, reclaimableAgentTurnStatuses, requestedAgentTurnCancellation, settledAgentActionReceipt } from './productStoreContract.mjs'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from './authorization.mjs'
@@ -1056,26 +1056,11 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       const project = state.projects.find((item) => item.id === skill.projectId)
       if (!project) throw productError('未找到项目。', 'PROJECT_NOT_FOUND')
       assertProjectPermission(project.members.find((item) => item.userId === userId)?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
-      const timestamp = now()
       const existing = state.agentSkills.find((item) => item.id === skill.id)
       if (existing && existing.projectId !== skill.projectId) throw productError('Skill 标识已被其他项目使用。', 'AGENT_SKILL_ID_CONFLICT')
-      const version = Math.max(1, Number(existing?.version ?? skill.version ?? 1) + (existing ? 1 : 0))
-      const contentHash = createHash('sha256').update(String(skill.instructions ?? '')).digest('base64url')
-      const versions = [
-        ...(Array.isArray(existing?.versions) ? existing.versions : []),
-        { version, contentHash, instructions: String(skill.instructions ?? ''), updatedAt: timestamp },
-      ].slice(-20)
-      const payload = {
-        ...clone(skill),
-        ownerId: userId,
-        createdAt: Number(existing?.createdAt ?? skill.createdAt) || timestamp,
-        updatedAt: timestamp,
-        version,
-        contentHash,
-        capabilities: Array.isArray(skill.capabilities) && skill.capabilities.length ? [...new Set(skill.capabilities)].slice(0, 12) : ['read'],
-        governance: skill.governance ?? 'project-approved',
-        versions,
-      }
+      const decision = agentSkillPersistenceDecision(existing, skill, { ownerId: userId })
+      if (decision.kind === 'replay') return clone(existing)
+      const payload = decision.payload
       if (existing) Object.assign(existing, payload)
       else state.agentSkills.push(payload)
       audit({ actorId: userId, action: existing ? 'agent-skill.updated' : 'agent-skill.created', projectId: skill.projectId, targetId: skill.id })
@@ -1090,6 +1075,14 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
         .filter((skill) => skill.projectId === projectId && skill.status !== 'archived')
         .sort((left, right) => right.updatedAt - left.updatedAt)
         .map(clone)
+    },
+
+    readAgentSkillVersion(userId, projectId, skillId, version) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project || !canAccess(project, userId)) return undefined
+      const skill = state.agentSkills.find((item) => item.id === skillId && item.projectId === projectId)
+      const snapshot = persistedAgentSkillVersion(skill, version)
+      return snapshot ? clone({ projectId, skillId, ...snapshot }) : undefined
     },
 
     putAgentActionReceipt(userId, receipt) {

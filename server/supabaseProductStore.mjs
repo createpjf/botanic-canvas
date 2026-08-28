@@ -1,5 +1,5 @@
-import { createHash, randomUUID } from 'node:crypto'
-import { agentThreadSummaryCompareAndSetDecision, normalizeAgentEntityIdPage, normalizePendingAgentReviewRecoveryPage, normalizeStaleTurnQuery, normalizeTurnEventPage, normalizeUpdatedAtIdRecoveryPage } from './productStoreContract.mjs'
+import { randomUUID } from 'node:crypto'
+import { agentSkillPersistenceDecision, agentThreadSummaryCompareAndSetDecision, normalizeAgentEntityIdPage, normalizePendingAgentReviewRecoveryPage, normalizeStaleTurnQuery, normalizeTurnEventPage, normalizeUpdatedAtIdRecoveryPage, persistedAgentSkillVersion } from './productStoreContract.mjs'
 import { createClient } from '@supabase/supabase-js'
 import { isRetryableSupabaseError, retrySupabaseOperation } from './supabaseRetry.mjs'
 import { decodeAuthAssurance } from './authAssurance.mjs'
@@ -1273,21 +1273,11 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       const { data: existing, error: readError } = await supabaseRequest(() => supabase.from('agent_skills').select('project_id,payload').eq('id', skill.id).maybeSingle())
       fail(readError)
       if (existing && existing.project_id !== skill.projectId) throw productError('Skill 标识已被其他项目使用。', 'AGENT_SKILL_ID_CONFLICT')
-      const timestamp = now()
-      const version = Math.max(1, Number(existing?.payload?.version ?? skill.version ?? 1) + (existing ? 1 : 0))
-      const contentHash = createHash('sha256').update(String(skill.instructions ?? '')).digest('base64url')
-      const versions = [
-        ...(Array.isArray(existing?.payload?.versions) ? existing.payload.versions : []),
-        { version, contentHash, instructions: String(skill.instructions ?? ''), updatedAt: timestamp },
-      ].slice(-20)
-      const payload = {
-        ...clone(skill), ownerId: userId,
-        createdAt: Number(existing?.payload?.createdAt ?? skill.createdAt) || timestamp,
-        updatedAt: timestamp,
-        version, contentHash,
-        capabilities: Array.isArray(skill.capabilities) && skill.capabilities.length ? [...new Set(skill.capabilities)].slice(0, 12) : ['read'],
-        governance: skill.governance ?? 'project-approved', versions,
-      }
+      const previous = clone(existing?.payload)
+      const decision = agentSkillPersistenceDecision(previous, skill, { ownerId: userId })
+      if (decision.kind === 'replay') return previous
+      const payload = decision.payload
+      const timestamp = Number.isFinite(Number(payload.updatedAt)) ? Number(payload.updatedAt) : now()
       const { error } = await supabaseRequest(() => supabase.from('agent_skills').upsert({
         id: skill.id, owner_id: userId, project_id: skill.projectId, status: payload.status,
         updated_at: new Date(timestamp).toISOString(), payload,
@@ -1303,6 +1293,15 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
         .eq('project_id', projectId).eq('status', 'active').order('updated_at', { ascending: false }))
       fail(error)
       return (data ?? []).map((row) => clone(row.payload))
+    },
+
+    async readAgentSkillVersion(userId, projectId, skillId, version) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const { data, error } = await supabaseRequest(() => supabase.from('agent_skills').select('payload')
+        .eq('project_id', projectId).eq('id', skillId).maybeSingle())
+      fail(error)
+      const snapshot = persistedAgentSkillVersion(data?.payload, version)
+      return snapshot ? clone({ projectId, skillId, ...snapshot }) : undefined
     },
 
     async putAgentActionReceipt(userId, receipt) {

@@ -6,6 +6,7 @@ import test from 'node:test'
 import { createAgentThreadContext } from './agentThreadContext.mjs'
 import { canonicalHash } from './canonicalHash.mjs'
 import { agentTurnRequestHash } from './agentTurnRequestIdentity.mjs'
+import { createAgentSkill, deprecateAgentSkill, updateAgentSkill } from './botanicAgentSkill.mjs'
 import { createAgentTurnRecord } from './botanicAgentTurnRuntime.mjs'
 import { createProductStore } from './productStore.mjs'
 
@@ -62,37 +63,55 @@ test('项目、成员授权和审计会持久化到服务端数据文件', () =>
   assert.ok(reloaded.listAuditEvents(owner.id, 'project-a').some((event) => event.action === 'project.updated'))
 })
 
-test('项目 Skill 创建后可跨重启恢复且不会泄露到其他项目', () => {
+test('项目 Skill 版本由领域快照权威生成，幂等重放不造新版本且弃用后仍可读历史', () => {
   const { path, store } = createStore()
   const owner = store.authenticate('owner-token')
   store.writeProject(owner.id, document('project-skill-a'), undefined)
   store.writeProject(owner.id, document('project-skill-b'), undefined)
 
-  const created = store.putAgentSkill(owner.id, {
-    id: 'skill-scene-campaign',
+  const domainSkill = createAgentSkill({
     projectId: 'project-skill-a',
     name: '夏日场景系列',
     instructions: '锁定人物和服装，只替换场景与环境光线。',
-    status: 'active',
     capabilities: ['read'],
     manifest: { version: 1, toolAllowlist: ['canvas_read'], dependencies: [{ skillId: 'controlled_edit' }] },
-    createdAt: 100,
-    updatedAt: 100,
+  }, {
+    id: 'skill-scene-campaign', ownerId: owner.id, approvedBy: owner.id, now: 100,
+    riskOf: (name) => (name === 'canvas_read' ? 'read' : undefined),
   })
+  const created = store.putAgentSkill(owner.id, domainSkill)
+  const replayed = store.putAgentSkill(owner.id, domainSkill)
 
   assert.equal(created.name, '夏日场景系列')
+  assert.equal(replayed.version, 1)
+  assert.equal(replayed.versions.length, 1, '同一领域快照重放不得追加版本')
   // Manifest 必须真的落库：它决定 skill_run 要不要弹用户确认。字段在持久化边界上被
   // 悄悄丢掉的话，单元测试仍然全绿，而线上会退回「只按自称算风险」。
   assert.deepEqual(created.manifest.toolAllowlist, ['canvas_read'])
   assert.deepEqual(store.listAgentSkills(owner.id, 'project-skill-a').map((skill) => skill.id), ['skill-scene-campaign'])
   assert.deepEqual(store.listAgentSkills(owner.id, 'project-skill-b'), [])
 
+  const revised = updateAgentSkill(created, {
+    instructions: '锁定人物、服装与商品，只替换场景。',
+  }, {
+    actorId: owner.id, approvedBy: owner.id, now: 200,
+    riskOf: (name) => (name === 'canvas_read' ? 'read' : undefined),
+  })
+  const storedRevision = store.putAgentSkill(owner.id, revised)
+  store.putAgentSkill(owner.id, deprecateAgentSkill(storedRevision, { actorId: owner.id, now: 300 }))
+
+  assert.deepEqual(store.listAgentSkills(owner.id, 'project-skill-a'), [], '弃用 Skill 不再进入活动目录')
+  assert.equal(store.readAgentSkillVersion(owner.id, 'project-skill-a', created.id, 1)?.instructions, created.instructions)
+  assert.equal(store.readAgentSkillVersion(owner.id, 'project-skill-a', created.id, 2)?.instructions, revised.instructions)
+  assert.equal(store.readAgentSkillVersion(owner.id, 'project-skill-a', created.id, 3), undefined)
+  assert.equal(store.readAgentSkillVersion(owner.id, 'project-skill-b', created.id, 1), undefined)
+
   const reloaded = createProductStore({ dataPath: path, bootstrapAccessToken: 'owner-token' })
-  assert.equal(reloaded.listAgentSkills(owner.id, 'project-skill-a')[0]?.instructions, '锁定人物和服装，只替换场景与环境光线。')
+  assert.equal(reloaded.readAgentSkillVersion(owner.id, 'project-skill-a', created.id, 1)?.instructions, created.instructions)
   assert.deepEqual(
-    reloaded.listAgentSkills(owner.id, 'project-skill-a')[0]?.manifest?.dependencies,
-    [{ skillId: 'controlled_edit' }],
-    'Manifest 跨重启仍在',
+    reloaded.readAgentSkillVersion(owner.id, 'project-skill-a', created.id, 2),
+    { projectId: 'project-skill-a', skillId: created.id, ...revised.versions[1] },
+    '完整历史版本跨重启仍在',
   )
   assert.ok(reloaded.listAuditEvents(owner.id, 'project-skill-a').some((event) => event.action === 'agent-skill.created'))
 })

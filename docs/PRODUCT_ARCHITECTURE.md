@@ -37,12 +37,12 @@ Botanic 是面向品牌视觉生产的无限画布工作台。用户把素材、
 - **Agent Session**：连续创作对话的容器，拥有标题、执行模式和上下文节点。
 - **Agent Message**：独立追加或更新的交流记录。用户 Message 先保存不可变 `turnRequestSnapshot`，再用 `turnId` 关联 durable Turn；accepted 前 Stop 以 sticky `turnCancellationRequestedAt` 保留。助手结果用 Turn 派生的稳定 Message ID 投影，业务引用只接受受信工具的白名单路径；`CanvasDocument` 迁移兼容写入口会剥离 `entityReferences`，只有权威 Message 写路径可首次绑定 sticky 引用。结构化创意方案是 `kind: composition` 的消息，不是独立实体。
 - **Memory**：成员确认后长期保留的项目创作规则；删除使用墓碑。
-- **Skill**：项目内已审核、可复用的受控操作说明。
+- **Skill**：项目内已审核、可复用的版本化执行契约；完整版本快照固定 instructions、capabilities、Manifest、依赖版本与内容摘要，历史版本不可覆盖。
 - **Plan**：把用户意图、锁定约束、可变维度和分支组织成可确认的执行方案。
 - **Agent Turn / Turn Event**：一次对话控制权循环及其追加式安全事件。Turn 通过租约与 fencing token 保证单执行者，事件序号是断线续读游标；它只引用而不复制 Message、Run、Job 或 Artifact 的业务事实。
 - **Agent Run**：计划确认后的可恢复执行记录，拥有分支、任务和最终状态。
 - **Review Task / Result / Human Decision**：对 Run 产物的可恢复评审及人工终局。评审执行由租约与 generation fence 保护；重试决定与稳定新 Run 必须原子提交。
-- **Action Proposal / Receipt**：调用 Skill 或 MCP 前的确认提议及执行回执。未知结果只能人工核对；确认未生效后最多预留一次、绑定新回执身份的手动重试，默认不向浏览器下发 raw token。
+- **Action Proposal / Receipt**：调用 Skill 或 MCP 前的确认提议及执行回执。MCP 提案同时固定工具版本与 capability hash，执行时配置漂移会在出网前拒绝。派发后的未知结果只能人工核对；确认未生效后最多预留一次、绑定新回执身份的手动重试，默认不向浏览器下发 raw token。
 - **Artifact**：Agent 行动或生成任务产出的媒体、文本、工作流、素材组或文件。
 
 ### 3.2 意图与创作维度

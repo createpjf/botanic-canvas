@@ -12,6 +12,10 @@ test('动态 HTTP 路由目录区分项目、Agent、任务与用户资源', () 
   assert.deepEqual(matchBotanicHttpRoutes('/api/users/user-1/resend-invite').userInviteResend?.slice(1), ['user-1'])
   assert.deepEqual(matchBotanicHttpRoutes('/api/projects/project-1/collaboration-activities').projectCollaborationActivities?.slice(1), ['project-1'])
   assert.deepEqual(matchBotanicHttpRoutes('/api/projects/project-1/collaboration-activity-receipt').projectCollaborationReceipt?.slice(1), ['project-1'])
+  assert.deepEqual(
+    matchBotanicHttpRoutes('/api/projects/project-1/agent-skills/skill-1/versions/2').projectAgentSkillVersion?.slice(1),
+    ['project-1', 'skill-1', '2'],
+  )
 })
 
 test('路由匹配严格限制层级，不把未知子路径误交给动态处理器', () => {

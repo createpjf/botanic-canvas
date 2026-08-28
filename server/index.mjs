@@ -1,6 +1,6 @@
 import { createGenerationQueue } from './generationQueue.mjs'
 import { createAgentSubagentQueue } from './agentSubagentQueue.mjs'
-import { createConfiguredMcpTools } from './mcpClient.mjs'
+import { createConfiguredMcpRuntime } from './mcpClient.mjs'
 import { createAgentRunEventPublisher } from './agentRunEventBus.mjs'
 import { createProductRuntime, loadLocalEnv, runtimeConfig } from './runtime.mjs'
 import { installDatabaseResilience } from './databaseResilience.mjs'
@@ -35,7 +35,7 @@ const application = createBotanicHttpServer({
   agentSubagentQueue,
   agentRunEvents,
   securityControls,
-  configuredMcpTools: createConfiguredMcpTools(config.agentMcpTools ?? []),
+  configuredMcpTools: createConfiguredMcpRuntime(config.agentMcpTools ?? []),
 })
 
 await application.start()

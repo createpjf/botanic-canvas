@@ -1,10 +1,19 @@
 import { createHash } from 'node:crypto'
+import { projectAgentStructuredObject } from './agentStructuredContract.mjs'
 import { AgentToolRuntimeError, createAgentToolRegistry } from './agentToolRuntime.mjs'
 import { createBotanicAgentOperationalActionDefinitions } from './botanicAgentOperationalTools.mjs'
 import { botanicCreativeBriefFieldIds } from './botanicCreativeBrief.mjs'
 import { botanicAgentVariationClarificationFieldIds } from './botanicAgentVariations.mjs'
 import { createBotanicAgentWebResearchTools } from './botanicAgentWebTools.mjs'
-import { agentSkillManifestRisk, resolveAgentSkillDependencies, skillRiskOrder } from './botanicAgentSkill.mjs'
+import {
+  agentSkillExecutionContentHash,
+  agentSkillManifestRisk,
+  botanicAgentSkillCapabilities,
+  normalizeAgentSkillManifest,
+  normalizeBotanicAgentSkillCapabilities,
+  resolveAgentSkillDependencies,
+  skillRiskOrder,
+} from './botanicAgentSkill.mjs'
 import { createAgentSubtask } from './agentSubtask.mjs'
 import { runAgentSubtaskFanout, subtaskFanoutSummary } from './agentSubtaskScheduler.mjs'
 import { readFileSync } from 'node:fs'
@@ -79,10 +88,6 @@ export function botanicAgentSkillRisk(skill, riskOf) {
  */
 const builtInSkillVersion = 1
 
-function builtInSkillContentHash(instructions) {
-  return createHash('sha256').update(instructions).digest('base64url')
-}
-
 export function botanicAgentBuiltInSkill(skillId) {
   const skill = skillCatalog[skillId]
   return skill ? {
@@ -90,17 +95,20 @@ export function botanicAgentBuiltInSkill(skillId) {
     name: skill.label,
     instructions: skill.instructions,
     version: builtInSkillVersion,
-    contentHash: builtInSkillContentHash(skill.instructions),
+    contentHash: agentSkillExecutionContentHash({
+      name: skill.label,
+      instructions: skill.instructions,
+      capabilities: ['read'],
+    }),
+    capabilities: ['read'],
+    lifecycle: 'published',
+    status: 'active',
+    source: 'system',
   } : undefined
 }
 
 export function botanicAgentSystemSkills() {
-  return Object.entries(skillCatalog).map(([id, skill]) => ({
-    id,
-    name: skill.label,
-    instructions: skill.instructions,
-    source: 'system',
-  }))
+  return Object.keys(skillCatalog).map(botanicAgentBuiltInSkill)
 }
 
 function projectSkillEntries(projectSkills = []) {
@@ -115,6 +123,7 @@ function projectSkillEntries(projectSkills = []) {
       ...(Number.isInteger(skill.version) ? { version: skill.version } : {}),
       ...(typeof skill.contentHash === 'string' ? { contentHash: skill.contentHash } : {}),
       capabilities: Array.isArray(skill.capabilities) ? skill.capabilities.slice(0, 12) : ['read'],
+      ...(Array.isArray(skill.versions) ? { versions: structuredClone(skill.versions) } : {}),
       // Manifest 要跟着进目录：`skill_run` 算风险时读它，不带过来就等于没有 Manifest。
       ...(skill.manifest ? { manifest: skill.manifest } : {}),
     }])
@@ -122,7 +131,25 @@ function projectSkillEntries(projectSkills = []) {
 
 /** 系统目录 + 当前项目已启用 Skill。同名 id 以系统目录为准，避免项目覆盖内置规则。 */
 export function resolveBotanicAgentAvailableSkills(projectSkills = []) {
-  return { ...skillCatalog, ...Object.fromEntries(projectSkillEntries(projectSkills)) }
+  const systemEntries = Object.keys(skillCatalog).map((id) => {
+    const skill = botanicAgentBuiltInSkill(id)
+    return [id, {
+      label: skill.name,
+      instructions: skill.instructions,
+      source: 'system',
+      version: skill.version,
+      contentHash: skill.contentHash,
+      capabilities: skill.capabilities,
+      versions: [{
+        version: skill.version,
+        name: skill.name,
+        instructions: skill.instructions,
+        capabilities: skill.capabilities,
+        contentHash: skill.contentHash,
+      }],
+    }]
+  })
+  return { ...Object.fromEntries(systemEntries), ...Object.fromEntries(projectSkillEntries(projectSkills)) }
 }
 
 /**
@@ -138,8 +165,13 @@ export function resolveBotanicAgentMountedSkills(mountedSkillIds = [], projectSk
   // `resolveAgentSkillDependencies` 按 id 查目录，因此这里摊成带 id 的数组。
   // 内置 Skill 没有 lifecycle，按已发布处理 —— 它们随代码发布，不存在「未批准」。
   const catalog = Object.entries(available).map(([id, skill]) => ({
-    id, lifecycle: skill.source === 'project' ? undefined : 'published',
-    status: 'active', manifest: skill.manifest, versions: skill.version ? [{ version: skill.version }] : [],
+    id,
+    lifecycle: skill.source === 'project' ? undefined : 'published',
+    status: 'active',
+    version: skill.version,
+    contentHash: skill.contentHash,
+    manifest: skill.manifest,
+    versions: skill.versions ?? [],
   }))
   return [...new Set(Array.isArray(mountedSkillIds) ? mountedSkillIds : [])]
     .map((skillId) => {
@@ -167,6 +199,10 @@ export function botanicAgentSearchableSkills(projectSkills = []) {
     name: skill.label,
     instructions: typeof skill.instructions === 'string' ? skill.instructions.trim().slice(0, 4000) : '',
     status: 'active',
+    ...(Number.isInteger(skill.version) ? { version: skill.version } : {}),
+    ...(typeof skill.contentHash === 'string' ? { contentHash: skill.contentHash } : {}),
+    ...(Array.isArray(skill.capabilities) ? { capabilities: [...skill.capabilities] } : {}),
+    ...(skill.manifest ? { manifest: structuredClone(skill.manifest) } : {}),
   }))
 }
 
@@ -245,11 +281,12 @@ function safeResultText(value, maximumLength = 4000) {
 }
 
 function safeArtifactUrl(value) {
-  if (typeof value !== 'string' || value.length > 2048) return undefined
-  if (value.startsWith('/api/media/')) return value
+  if (typeof value !== 'string' || !value.startsWith('/api/media/') || value.length > 2048) return undefined
   try {
-    const url = new URL(value)
-    return url.protocol === 'https:' ? url.toString() : undefined
+    const parsed = new URL(value, 'http://botanic.internal')
+    return parsed.origin === 'http://botanic.internal' && parsed.pathname.startsWith('/api/media/')
+      ? value
+      : undefined
   } catch {
     return undefined
   }
@@ -294,6 +331,63 @@ function mcpArtifacts(result, { actionId, externalTool }) {
     ...artifact,
     provenance: { actionId, toolName: 'mcp_call', externalTool },
   }))
+}
+
+function legacyMcpRuntime(tools) {
+  const descriptors = Object.entries(tools ?? {})
+    .filter(([, invoke]) => typeof invoke === 'function')
+    .map(([key]) => {
+      const [server, tool, ...rest] = key.split('.')
+      if (!server || !tool || rest.length) return undefined
+      const capabilityHash = createHash('sha256').update(`legacy-mcp:${key}`).digest('base64url')
+      return Object.freeze({
+        key,
+        server,
+        tool,
+        version: 'legacy-1',
+        capabilityHash,
+        inputSchema: Object.freeze({
+          type: 'object',
+          properties: Object.freeze({}),
+          required: Object.freeze([]),
+          additionalProperties: true,
+          minProperties: 0,
+          maxProperties: 64,
+        }),
+        outputSchema: Object.freeze({
+          type: 'object',
+          properties: Object.freeze({}),
+          required: Object.freeze([]),
+          additionalProperties: true,
+          minProperties: 0,
+          maxProperties: 64,
+        }),
+        replayPolicy: 'never',
+      })
+    })
+    .filter(Boolean)
+  const byKey = new Map(descriptors.map((descriptor) => [descriptor.key, descriptor]))
+  return Object.freeze({
+    catalog: () => descriptors.slice(),
+    invoke: async (key, argumentsValue, context = {}) => {
+      const descriptor = byKey.get(key)
+      const invoke = tools?.[key]
+      if (!descriptor || typeof invoke !== 'function') {
+        throw new AgentToolRuntimeError('MCP_TOOL_NOT_ALLOWED', `MCP 工具不在允许列表：${key}。`, 403)
+      }
+      if (context.expectedVersion !== descriptor.version
+        || context.expectedCapabilityHash !== descriptor.capabilityHash) {
+        throw new AgentToolRuntimeError('MCP_CAPABILITY_STALE', `MCP 工具能力已变化：${key}。`, 409)
+      }
+      return invoke(argumentsValue, context)
+    },
+  })
+}
+
+function resolvedMcpRuntime(runtime, legacyTools) {
+  if (runtime && typeof runtime.catalog === 'function' && typeof runtime.invoke === 'function') return runtime
+  if (legacyTools && typeof legacyTools.catalog === 'function' && typeof legacyTools.invoke === 'function') return legacyTools
+  return legacyMcpRuntime(legacyTools)
 }
 
 function artifactPlacement(artifact) {
@@ -356,6 +450,95 @@ function clarificationParameters() {
   }
 }
 
+function skillManifestParameters() {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      kind: { type: 'string', enum: ['guidance', 'evaluator'] },
+      toolAllowlist: {
+        type: 'array', maxItems: 12,
+        items: { type: 'string', pattern: '^[a-z][a-z0-9_]{1,63}$' },
+      },
+      dependencies: {
+        type: 'array', maxItems: 8,
+        items: {
+          type: 'object', additionalProperties: false,
+          properties: {
+            skillId: { type: 'string', maxLength: 160 },
+            version: { type: 'integer', minimum: 1 },
+            contentHash: { type: 'string', maxLength: 200 },
+          },
+          required: ['skillId'],
+        },
+      },
+      outputSchema: { type: 'object' },
+    },
+  }
+}
+
+function skillCreationParameters({ includeReason = false } = {}) {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      name: { type: 'string', maxLength: 80 },
+      instructions: { type: 'string', maxLength: 4000 },
+      capabilities: {
+        type: 'array', minItems: 1, maxItems: botanicAgentSkillCapabilities.length,
+        items: { type: 'string', enum: [...botanicAgentSkillCapabilities] },
+      },
+      manifest: skillManifestParameters(),
+      ...(includeReason ? { reason: { type: 'string', maxLength: 240 } } : {}),
+    },
+    required: ['name', 'instructions', ...(includeReason ? ['reason'] : [])],
+  }
+}
+
+function validateSkillCreationArguments(raw, label) {
+  const value = object(raw, label)
+  const manifest = normalizeAgentSkillManifest(value.manifest)
+  return {
+    name: requiredText(value.name, 'Skill 名称', 80),
+    instructions: requiredText(value.instructions, 'Skill 规则', 4000),
+    capabilities: normalizeBotanicAgentSkillCapabilities(value.capabilities),
+    ...(manifest ? { manifest } : {}),
+  }
+}
+
+// Skill 发布时的能力核对统一走这张风险目录；实际 Action Registry 优先，目录只补齐
+// 规划/回合里的只读与外呼工具，避免路由为每种 Skill 再维护一份判断。
+const skillToolRiskCatalog = Object.freeze({
+  canvas_read: 'read',
+  asset_search: 'read',
+  ontology_read: 'read',
+  project_memory_search: 'read',
+  asset_group_search: 'read',
+  skill_search: 'read',
+  skill_run: 'read',
+  skill_create_propose: 'read',
+  mcp_propose: 'read',
+  subagent_research: 'read',
+  generation_ask_clarification: 'read',
+  generation_create_plan: 'read',
+  ask_clarification: 'read',
+  decompose_creative_brief: 'read',
+  agent_run_read: 'read',
+  generation_job_read: 'read',
+  artifact_search: 'read',
+  review_read: 'read',
+  workflow_run_read: 'read',
+  delivery_read: 'read',
+  web_search: 'external',
+  web_fetch: 'external',
+  generate_images: 'costly',
+  generate_videos: 'costly',
+})
+
+export function botanicAgentSkillToolRisk(name, registry) {
+  return registry?.get?.(name)?.risk ?? skillToolRiskCatalog[name]
+}
+
 /**
  * 子任务的输出 Schema（Epic 11）。
  *
@@ -388,9 +571,15 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
   const mountedSkillLabels = resolveBotanicAgentMountedSkills(input.mountedSkillIds, input.projectSkills)
     .map((skill) => skill.name)
   const availableMcpTools = (input.availableMcpTools ?? [])
-    .filter((item) => item && typeof item.server === 'string' && typeof item.tool === 'string')
+    .filter((item) => item
+      && typeof item.server === 'string'
+      && typeof item.tool === 'string'
+      && typeof item.version === 'string'
+      && typeof item.capabilityHash === 'string'
+      && item.inputSchema?.type === 'object')
     .slice(0, 30)
-  const mcpToolKeys = new Set(availableMcpTools.map((item) => `${item.server}.${item.tool}`))
+  const mcpToolCatalog = new Map(availableMcpTools.map((item) => [`${item.server}.${item.tool}`, item]))
+  const mcpToolKeys = new Set(mcpToolCatalog.keys())
   const propose = typeof onProposeAction === 'function' ? onProposeAction : () => {}
   const planningRegistryRef = { current: undefined }
   const tools = [
@@ -489,28 +678,19 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
       label: '提议创建项目 Skill',
       description: '当一组创作约束具有明确复用价值时，提议创建项目 Skill；只生成待确认行动，不直接写入项目。',
       risk: 'read',
-      parameters: {
-        type: 'object', additionalProperties: false,
-        properties: {
-          name: { type: 'string', maxLength: 80 },
-          instructions: { type: 'string', maxLength: 4000 },
-          reason: { type: 'string', maxLength: 240 },
-        },
-        required: ['name', 'instructions', 'reason'],
-      },
+      parameters: skillCreationParameters({ includeReason: true }),
       validate: (raw) => {
         const value = object(raw, 'Skill 创建提议')
         return {
-          name: requiredText(value.name, 'Skill 名称', 80),
-          instructions: requiredText(value.instructions, 'Skill 规则', 4000),
+          ...validateSkillCreationArguments(value, 'Skill 创建提议'),
           reason: requiredText(value.reason, '创建原因', 240),
         }
       },
-      execute: async ({ name, instructions, reason }, context) => {
+      execute: async ({ reason, ...skillInput }, context) => {
         const proposal = {
-          id: context?.toolCallId ?? `skill-create-${name}`,
-          kind: 'skill', toolName: 'skill_create', label: `创建 Skill：${name}`,
-          summary: reason, risk: 'write', arguments: { name, instructions },
+          id: context?.toolCallId ?? `skill-create-${skillInput.name}`,
+          kind: 'skill', toolName: 'skill_create', label: `创建 Skill：${skillInput.name}`,
+          summary: reason, risk: 'write', arguments: skillInput,
           status: 'awaiting_confirmation',
         }
         propose(proposal)
@@ -536,17 +716,32 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
         const tool = requiredText(value.tool, 'MCP 工具', 80)
         const argumentsValue = boundedArguments(value.arguments, 'MCP 工具')
         const reason = requiredText(value.reason, 'MCP 调用原因', 240)
-        if (!mcpToolKeys.has(`${server}.${tool}`)) {
+        const descriptor = mcpToolCatalog.get(`${server}.${tool}`)
+        if (!descriptor) {
           throw new AgentToolRuntimeError('MCP_TOOL_NOT_ALLOWED', `MCP 工具不在允许列表：${server}.${tool}。`, 403)
         }
-        return { server, tool, arguments: argumentsValue, reason }
+        return {
+          server,
+          tool,
+          arguments: projectAgentStructuredObject(descriptor.inputSchema, argumentsValue, { label: `${server}.${tool} 输入` }),
+          reason,
+          descriptor,
+        }
       },
-      execute: async ({ server, tool, arguments: argumentsValue, reason }, context) => {
+      execute: async ({ server, tool, arguments: argumentsValue, reason, descriptor }, context) => {
         const proposal = {
           id: context?.toolCallId ?? `mcp-${server}-${tool}`,
           kind: 'mcp', toolName: 'mcp_call', label: `调用 MCP：${server}.${tool}`,
           summary: reason, risk: 'external',
-          arguments: { server, tool, arguments: argumentsValue },
+          // version + capabilityHash 由服务端目录注入，模型无权自报。Proposal、批准
+          // Token、Action Receipt 的既有参数摘要会自动把这份能力身份一并冻结。
+          arguments: {
+            server,
+            tool,
+            arguments: argumentsValue,
+            version: descriptor.version,
+            capabilityHash: descriptor.capabilityHash,
+          },
           status: 'awaiting_confirmation',
         }
         propose(proposal)
@@ -688,6 +883,7 @@ export function createBotanicAgentActionToolRegistry({
   submitGeneration,
   applySkill,
   createSkill,
+  mcpRuntime,
   mcpTools = {},
   // 运维写工具（Epic 4）：按项目角色暴露，全部需要确认。缺执行器或权限不足时
   // 不进注册表 —— 模型看不到的工具不会被它拿去向用户承诺。
@@ -698,6 +894,8 @@ export function createBotanicAgentActionToolRegistry({
   const generationHandler = actionHandler(submitGeneration, '生成提交工具')
   const applySkillHandler = actionHandler(applySkill, 'Skill 应用工具')
   const skillHandler = actionHandler(createSkill, 'Skill 创建工具')
+  const externalMcpRuntime = resolvedMcpRuntime(mcpRuntime, mcpTools)
+  const externalMcpCatalog = new Map(externalMcpRuntime.catalog().map((entry) => [entry.key, entry]))
   const operationalActions = createBotanicAgentOperationalActionDefinitions({ role, ...operationalExecutors })
   return createAgentToolRegistry([
     ...operationalActions,
@@ -750,15 +948,8 @@ export function createBotanicAgentActionToolRegistry({
       name: 'skill_create', label: '创建项目 Skill',
       description: '创建项目级创作规则草稿；启用前必须由用户确认。',
       risk: 'write', requiresConfirmation: true, terminal: true,
-      parameters: {
-        type: 'object', additionalProperties: false,
-        properties: { name: { type: 'string' }, instructions: { type: 'string' } },
-        required: ['name', 'instructions'],
-      },
-      validate: (raw) => {
-        const value = object(raw, 'Skill 创建')
-        return { name: requiredText(value.name, 'Skill 名称', 80), instructions: requiredText(value.instructions, 'Skill 规则', 4000) }
-      },
+      parameters: skillCreationParameters(),
+      validate: (raw) => validateSkillCreationArguments(raw, 'Skill 创建'),
       execute: async (argumentsValue, context) => {
         const result = await skillHandler(argumentsValue, context)
         const skill = object(result?.skill, 'Skill 创建结果')
@@ -782,20 +973,40 @@ export function createBotanicAgentActionToolRegistry({
       risk: 'external', requiresConfirmation: true, terminal: true,
       parameters: {
         type: 'object', additionalProperties: false,
-        properties: { server: { type: 'string' }, tool: { type: 'string' }, arguments: { type: 'object' } },
-        required: ['server', 'tool', 'arguments'],
+        properties: {
+          server: { type: 'string' },
+          tool: { type: 'string' },
+          arguments: { type: 'object' },
+          version: { type: 'string', maxLength: 64 },
+          capabilityHash: { type: 'string', maxLength: 128 },
+        },
+        required: ['server', 'tool', 'arguments', 'version', 'capabilityHash'],
       },
       validate: (raw) => {
         const value = object(raw, 'MCP 调用')
         const server = requiredText(value.server, 'MCP 服务', 80)
         const tool = requiredText(value.tool, 'MCP 工具', 80)
-        const argumentsValue = boundedArguments(value.arguments, 'MCP 工具')
         const key = `${server}.${tool}`
-        if (typeof mcpTools[key] !== 'function') throw new AgentToolRuntimeError('MCP_TOOL_NOT_ALLOWED', `MCP 工具不在允许列表：${key}。`, 403)
-        return { key, arguments: argumentsValue }
+        const descriptor = externalMcpCatalog.get(key)
+        if (!descriptor) throw new AgentToolRuntimeError('MCP_TOOL_NOT_ALLOWED', `MCP 工具不在允许列表：${key}。`, 403)
+        const version = requiredText(value.version, 'MCP 能力版本', 64)
+        const capabilityHash = requiredText(value.capabilityHash, 'MCP 能力摘要', 128)
+        if (version !== descriptor.version || capabilityHash !== descriptor.capabilityHash) {
+          throw new AgentToolRuntimeError('MCP_CAPABILITY_STALE', `MCP 工具能力已变化：${key}。`, 409)
+        }
+        const argumentsValue = projectAgentStructuredObject(
+          descriptor.inputSchema,
+          boundedArguments(value.arguments, 'MCP 工具'),
+          { label: `${key} 输入` },
+        )
+        return { key, arguments: argumentsValue, version, capabilityHash }
       },
-      execute: async ({ key, arguments: argumentsValue }, context) => {
-        const result = await mcpTools[key](argumentsValue, context)
+      execute: async ({ key, arguments: argumentsValue, version, capabilityHash }, context) => {
+        const result = await externalMcpRuntime.invoke(key, argumentsValue, {
+          ...context,
+          expectedVersion: version,
+          expectedCapabilityHash: capabilityHash,
+        })
         const actionId = context?.toolCallId ?? `mcp-${key}`
         const artifacts = mcpArtifacts(result, { actionId, externalTool: key })
         const textArtifact = artifacts.find((artifact) => artifact.kind === 'text')

@@ -6,7 +6,12 @@ import { validateBotanicAgentTurnInput } from './botanicAgentTurn.mjs'
 import { createAgentSkill, isUsableAgentSkill, publicAgentSkill, validateAgentSkillCreation } from './botanicAgentSkill.mjs'
 import { agentRunSubmissionBinding, createPersistentAgentRun, prepareAgentBranchRetry, publicAgentRun, storedAgentRunSubmissionBinding, validateAgentRunCreation } from './botanicAgentRun.mjs'
 import { AgentToolRuntimeError, executeConfirmedAgentAction } from './agentToolRuntime.mjs'
-import { botanicAgentBuiltInSkill, botanicAgentSystemSkills, createBotanicAgentActionToolRegistry } from './botanicAgentTools.mjs'
+import {
+  botanicAgentBuiltInSkill,
+  botanicAgentSkillToolRisk,
+  botanicAgentSystemSkills,
+  createBotanicAgentActionToolRegistry,
+} from './botanicAgentTools.mjs'
 import { decodeAgentMessageCursor } from './agentMessagePersistence.mjs'
 import { decodeArtifactCursor, encodeArtifactCursor } from './botanicArtifactIndex.mjs'
 import { retryFailedWorkflowItems } from './productionWorkflow.mjs'
@@ -127,6 +132,16 @@ function publicAgentSubagentMessage(message) {
     ...(Array.isArray(message.entityReferences)
       ? { entityReferences: structuredClone(message.entityReferences) }
       : {}),
+  }
+}
+
+function isAuthorizedAgentMediaUrl(value) {
+  if (typeof value !== 'string' || !value.startsWith('/api/media/') || value.length > 2048) return false
+  try {
+    const parsed = new URL(value, 'http://botanic.internal')
+    return parsed.origin === 'http://botanic.internal' && parsed.pathname.startsWith('/api/media/')
+  } catch {
+    return false
   }
 }
 
@@ -378,7 +393,13 @@ export function createAgentRouteHandler({
     ...(Number.isInteger(skill.version) ? { version: skill.version } : {}),
     ...(typeof skill.contentHash === 'string' ? { contentHash: skill.contentHash } : {}),
     ...(Array.isArray(skill.capabilities) ? { capabilities: skill.capabilities } : {}),
+    ...(typeof skill.lifecycle === 'string' ? { lifecycle: skill.lifecycle } : {}),
+    ...(skill.manifest ? { manifest: structuredClone(skill.manifest) } : {}),
+    ...(Array.isArray(skill.versions) ? { versions: structuredClone(skill.versions) } : {}),
   })
+  const configuredMcpCatalog = () => (
+    typeof configuredMcpTools?.catalog === 'function' ? configuredMcpTools.catalog() : []
+  )
   // HTTP 连接只是观察者；Runtime 与跨实例取消订阅方共用这张执行句柄表。
   const cancelRegistry = localCancelRegistry ?? createLocalCancelRegistry()
   const agentTurnRuntime = createBotanicAgentTurnRuntime({ productStore, localCancelRegistry: cancelRegistry })
@@ -952,6 +973,7 @@ export function createAgentRouteHandler({
     const {
       projectAgentRuns: projectAgentRunsMatch,
       projectAgentSkills: projectAgentSkillsMatch,
+      projectAgentSkillVersion: projectAgentSkillVersionMatch,
       agentSkillCatalog: agentSkillCatalogMatch,
       projectAgentState: projectAgentStateMatch,
       projectAgentSessions: projectAgentSessionsMatch,
@@ -1447,7 +1469,7 @@ export function createAgentRouteHandler({
           // 因此限定渠道的规则在这里会落进 filtered 并说明原因，而不是「碰巧适用」。
           context: { brandId: project?.document?.brandId, userId: user.id },
         }).items.map((memory) => ({ id: memory.id, kind: memory.kind, content: memory.content })),
-        availableMcpTools: (config.agentMcpTools ?? []).map(({ server, tool }) => ({ server, tool })),
+        availableMcpTools: configuredMcpCatalog(),
       }
       const sse = streaming ? createServerSentEventWriter(response) : undefined
       sse?.start()
@@ -1717,6 +1739,33 @@ export function createAgentRouteHandler({
       }
     }
 
+    if (projectAgentSkillVersionMatch) {
+      if (request.method !== 'GET') return methodNotAllowed(response, 'Skill 历史版本只支持读取。', 'GET')
+      const user = await requireUser(request)
+      const projectId = decodeURIComponent(projectAgentSkillVersionMatch[1])
+      const skillId = decodeURIComponent(projectAgentSkillVersionMatch[2])
+      const rawVersion = decodeURIComponent(projectAgentSkillVersionMatch[3])
+      if (!/^\d+$/.test(rawVersion) || !Number.isSafeInteger(Number(rawVersion)) || Number(rawVersion) < 1) {
+        return error(response, 400, 'INVALID_AGENT_SKILL_VERSION', 'Skill 历史版本无效。')
+      }
+      await requireProjectPermission(productStore, user.id, projectId, 'read')
+      const version = await productStore.readAgentSkillVersion(user.id, projectId, skillId, Number(rawVersion))
+      if (!version) return error(response, 404, 'AGENT_SKILL_VERSION_NOT_FOUND', '未找到该 Skill 历史版本。')
+      return json(response, 200, {
+        version: {
+          skillId,
+          version: version.version,
+          contentHash: version.contentHash,
+          instructions: version.instructions,
+          updatedAt: version.updatedAt,
+          ...(version.name ? { name: version.name } : {}),
+          ...(version.capabilities ? { capabilities: version.capabilities } : {}),
+          ...(version.manifest ? { manifest: version.manifest } : {}),
+          ...(version.publishedBy ? { publishedBy: version.publishedBy } : {}),
+          ...(version.publishedAt ? { publishedAt: version.publishedAt } : {}),
+        },
+      })
+    }
     if (projectAgentSkillsMatch) {
       if (request.method !== 'GET') return methodNotAllowed(response, '项目 Skill 资源只支持读取。', 'GET')
       const user = await requireUser(request)
@@ -2222,6 +2271,11 @@ export function createAgentRouteHandler({
             const artifacts = await productStore.listAgentArtifacts(user.id, projectId, { limit: 200 }) ?? []
             const artifact = artifacts.find((item) => item.id === artifactId)
             if (!artifact?.url) throw new AgentToolRuntimeError('AGENT_ARTIFACT_NOT_FOUND', '未找到该结果，或它没有可入库的媒体。', 404)
+            // 历史 Artifact 允许保留外链用于只读追溯，但入库会把 URL 变成项目可用媒体，
+            // 因此这里只接受已经过本项目媒体授权边界的同源资源。
+            if (!isAuthorizedAgentMediaUrl(artifact.url)) {
+              throw new AgentToolRuntimeError('AGENT_ARTIFACT_MEDIA_NOT_AUTHORIZED', '该结果不是已授权的项目媒体，不能入库。', 403)
+            }
             const project = await productStore.readProject(user.id, projectId)
             if (!project) throw new AgentToolRuntimeError('PROJECT_NOT_FOUND', '未找到当前项目。', 404)
             const assetId = `asset-${generationJobIdForIdempotency(user.id, `${projectId}:${artifactId}`).slice(4, 28)}`
@@ -2315,14 +2369,19 @@ export function createAgentRouteHandler({
             // published，「已批准」不能凭创建这个动作本身成立（ADR 0006）。
             // riskOf 取自**当前行动注册表**：Skill 少报能力（声明只读却把写工具放进
             // Manifest 白名单）在这里就被拒绝，不留到运行时靠取最大值兜底。
+            const projectSkillCatalog = [
+              ...botanicAgentSystemSkills(),
+              ...(await productStore.listAgentSkills(user.id, projectId) ?? []),
+            ]
             const skill = createAgentSkill(input, {
               ownerId: user.id,
               approvedBy: user.id,
-              riskOf: (name) => registry.get?.(name)?.risk,
+              riskOf: (name) => botanicAgentSkillToolRisk(name, registry),
+              skillCatalog: projectSkillCatalog,
             })
             return { skill: publicAgentSkill(await productStore.putAgentSkill(user.id, skill)) }
           },
-          mcpTools: configuredMcpTools,
+          mcpRuntime: configuredMcpTools,
         })
         const result = await executeConfirmedAgentAction({
           registry,

@@ -37,6 +37,46 @@ const runInput = {
   branches: [{ id: 'branch-1', label: '海边人像' }],
 }
 
+test('Skill 历史版本资源可读取完整冻结快照，且拒绝无效版本', async () => {
+  const calls = []
+  const responses = []
+  const handler = createAgentRouteHandler({
+    config: {},
+    productStore: {
+      projectAccess: async () => ({ exists: true, role: 'viewer' }),
+      readAgentSkillVersion: async (userId, projectId, skillId, version) => {
+        calls.push({ userId, projectId, skillId, version })
+        return {
+          version: 2,
+          contentHash: 'skill-content-v2',
+          name: '品牌规则',
+          instructions: '保持植物线稿与品牌绿。',
+          capabilities: ['read'],
+          manifest: { version: 1, kind: 'guidance', toolAllowlist: [], dependencies: [] },
+          updatedAt: 200,
+          publishedBy: 'user-1',
+          publishedAt: 200,
+        }
+      },
+    },
+    json: (_response, status, body) => { responses.push({ status, body }); return true },
+    error: (_response, status, code, message) => { responses.push({ status, body: { error: { code, message } } }); return true },
+    requireUser: async () => ({ id: 'user-1' }),
+  })
+
+  const validUrl = new URL('http://botanic.test/api/projects/project-1/agent-skills/skill-1/versions/2')
+  await handler({ method: 'GET', headers: {} }, {}, validUrl, matchBotanicHttpRoutes(validUrl.pathname), 'request-skill-v2')
+  assert.equal(responses.at(-1).status, 200)
+  assert.deepEqual(calls, [{ userId: 'user-1', projectId: 'project-1', skillId: 'skill-1', version: 2 }])
+  assert.equal(responses.at(-1).body.version.instructions, '保持植物线稿与品牌绿。')
+  assert.equal(responses.at(-1).body.version.manifest.kind, 'guidance')
+
+  const invalidUrl = new URL('http://botanic.test/api/projects/project-1/agent-skills/skill-1/versions/current')
+  await handler({ method: 'GET', headers: {} }, {}, invalidUrl, matchBotanicHttpRoutes(invalidUrl.pathname), 'request-skill-invalid')
+  assert.equal(responses.at(-1).body.error.code, 'INVALID_AGENT_SKILL_VERSION')
+  assert.equal(calls.length, 1)
+})
+
 function fakeActionReceiptStore() {
   const receipts = new Map()
   return {

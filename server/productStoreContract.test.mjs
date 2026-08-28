@@ -4,11 +4,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { canonicalHash } from './canonicalHash.mjs'
+import { createAgentSkill, deprecateAgentSkill, updateAgentSkill } from './botanicAgentSkill.mjs'
 import { createProductStore } from './productStore.mjs'
 import {
   agentActionManualRetryConsumptionDecision,
   agentActionReceiptClaimDecision,
   agentActionReceiptResolutionDecision,
+  agentSkillPersistenceDecision,
   agentThreadSummaryCompareAndSetDecision,
   agentTurnExecutionClaimDecision,
   committedAgentTurnExecution,
@@ -24,6 +26,7 @@ import {
   normalizeUpdatedAtIdRecoveryPage,
   normalizeStaleTurnQuery,
   normalizeTurnEventPage,
+  persistedAgentSkillVersion,
 } from './productStoreContract.mjs'
 
 function coreStore() {
@@ -47,6 +50,48 @@ test('ProductStore 可选能力必须完整实现后才会暴露', () => {
 
   store.readMediaObject = () => undefined
   assert.equal(productStoreSupports(store, 'mediaObjects'), true)
+})
+
+test('Skill 持久化决策仅接受领域版本，幂等重放不追加且历史前缀不可改写', () => {
+  const first = createAgentSkill({
+    projectId: 'project-skill-contract', name: '换景', instructions: '保持商品不变。', capabilities: ['read'],
+  }, { id: 'skill-contract', ownerId: 'user-1', approvedBy: 'user-1', now: 100 })
+  assert.equal(agentSkillPersistenceDecision(undefined, first, { ownerId: 'user-1' }).kind, 'write')
+  assert.equal(agentSkillPersistenceDecision(first, first, { ownerId: 'user-1' }).kind, 'replay')
+
+  const second = updateAgentSkill(first, { instructions: '保持商品不变，只替换场景。' }, {
+    actorId: 'user-1', approvedBy: 'user-1', now: 200,
+  })
+  assert.equal(agentSkillPersistenceDecision(first, second, { ownerId: 'user-1' }).kind, 'write')
+
+  const deprecated = deprecateAgentSkill(second, { actorId: 'user-1', now: 300 })
+  assert.equal(agentSkillPersistenceDecision(second, deprecated, { ownerId: 'user-1' }).kind, 'write')
+  assert.equal(persistedAgentSkillVersion(deprecated, 1)?.instructions, first.instructions)
+
+  const draft = createAgentSkill({
+    projectId: 'project-skill-contract', name: '待审换景', instructions: '只替换背景。', capabilities: ['read'],
+  }, { id: 'skill-draft-contract', ownerId: 'user-1', now: 100 })
+  const published = updateAgentSkill(draft, {}, {
+    actorId: 'user-1', approvedBy: 'reviewer-1', now: 200,
+  })
+  assert.equal(published.version, 1)
+  assert.equal(agentSkillPersistenceDecision(draft, published, { ownerId: 'user-1' }).kind, 'write')
+
+  const truncated = { ...second, versions: [second.versions[1]] }
+  assert.throws(
+    () => agentSkillPersistenceDecision(first, truncated, { ownerId: 'user-1' }),
+    (error) => error.code === 'AGENT_SKILL_HISTORY_CONFLICT',
+  )
+  const overwritten = structuredClone(second)
+  overwritten.versions[0].publishedAt = 999
+  assert.throws(
+    () => agentSkillPersistenceDecision(first, overwritten, { ownerId: 'user-1' }),
+    (error) => error.code === 'AGENT_SKILL_HISTORY_CONFLICT',
+  )
+  assert.throws(
+    () => agentSkillPersistenceDecision(first, { ...first, instructions: '篡改执行内容' }, { ownerId: 'user-1' }),
+    (error) => error.code === 'AGENT_SKILL_VERSION_HASH_MISMATCH',
+  )
 })
 
 test('本地 ProductStore 满足核心契约和成员管理能力', () => {
