@@ -10,6 +10,7 @@ import { estimateAgentContextTokens, truncateAgentContextText } from './agentCon
 import { extractAgentEntityReferences, mergeAgentEntityReferences } from './agentEntityReferences.mjs'
 import { normalizeProviderUsage } from './botanicAgentStream.mjs'
 import { withBotanicSpan } from './executionTelemetry.mjs'
+import { normalizeAgentToolCallId } from './agentToolCallIdentity.mjs'
 
 const TOOL_NAME = /^[a-z][a-z0-9_]{1,63}$/
 const TOOL_RECOVERY_MODES = new Set(['reexecute', 'receipt', 'never'])
@@ -574,7 +575,8 @@ export async function runAgentToolLoop({
 
   const traceFor = (tool, call, step, index, rawArguments) => {
     const summary = rawArguments ? agentToolCallSummary(rawArguments) : undefined
-    const resolvedId = typeof call?.id === 'string' && call.id ? call.id : `tool-call-${step + 1}-${index + 1}`
+    const rawId = typeof call?.id === 'string' && call.id ? call.id : `tool-call-${step + 1}-${index + 1}`
+    const resolvedId = normalizeAgentToolCallId(rawId)
     return {
       id: resolvedId,
       name: tool.name,

@@ -511,6 +511,25 @@ test('仅带引用芯片的消息在模型投影时得到安全指令，权威 M
   assert.equal(inputMessage.content, '')
 })
 
+test('有正文的引用消息仍把芯片写进模型可见内容，避免 Agent 以为没选图', async () => {
+  const session = {
+    id: 'session-1', title: '会话', executionMode: 'manual', contextNodeIds: [],
+    createdAt: 1, updatedAt: 1, messages: [],
+  }
+  const context = createAgentThreadContext({ productStore: storeWithSession(session) })
+  const resolved = await context.resolve({
+    userId: 'user-1', projectId: 'project-1', sessionId: 'session-1', locale: 'zh-CN',
+    inputMessage: {
+      ...message('m-ref', 'user', '让这个模特身上的光线更像室外', 1),
+      mentions: [{ kind: 'reference', id: 'asset-1', label: 'Mia 肖像' }],
+    },
+  })
+  assert.deepEqual(resolved.messages, [{
+    role: 'user',
+    content: '让这个模特身上的光线更像室外\n已引用：Mia 肖像。',
+  }])
+})
+
 test('长会话确定性派生摘要并以专用 CAS 写回', async () => {
   const session = {
     id: 'session-1', title: '保留标题', executionMode: 'auto', plannerModel: 'model-1',

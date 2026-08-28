@@ -151,11 +151,21 @@ function mentionOnlyInstruction(mentions, locale) {
   return '按已引用素材处理。'
 }
 
+function mentionReferenceLine(mentions, locale) {
+  const labels = (Array.isArray(mentions) ? mentions : [])
+    .filter((mention) => mention?.kind === 'reference' && typeof mention.label === 'string' && mention.label.trim())
+    .map((mention) => mention.label.trim())
+  if (!labels.length) return ''
+  return locale === 'en' ? `Referenced: ${labels.join(', ')}.` : `已引用：${labels.join('、')}。`
+}
+
 function projectedMessageContent(message, locale, currentMessageId) {
   const content = message.content.trim() || mentionOnlyInstruction(message.mentions, locale)
+  const extra = message.content.trim() ? mentionReferenceLine(message.mentions, locale) : ''
+  const combined = extra ? `${content}\n${extra}` : content
   return message.id === currentMessageId
-    ? content
-    : content.slice(0, MODEL_MESSAGE_TEXT_LIMIT)
+    ? combined
+    : combined.slice(0, MODEL_MESSAGE_TEXT_LIMIT)
 }
 
 function modelProjection(messages, locale, summaryBudget, currentMessageId) {

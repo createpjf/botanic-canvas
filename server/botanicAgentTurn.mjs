@@ -111,6 +111,20 @@ function boundedNodeIds(value) {
   return [...new Set(value.map((id, index) => requiredText(id, `第 ${index + 1} 个上下文节点`, 160)))]
 }
 
+function mentionReferenceIds(mentions) {
+  if (!Array.isArray(mentions)) return []
+  return mentions.flatMap((mention) => (
+    mention?.kind === 'reference' && typeof mention.id === 'string' && mention.id.trim()
+      ? [mention.id.trim()]
+      : []
+  ))
+}
+
+function mergeTurnContextNodeIds(contextNodeIds, mentions) {
+  // 本轮显式 @ 引用优先于 Session 的旧上下文；达到上限时不能把用户刚选的对象截掉。
+  return [...new Set([...mentionReferenceIds(mentions), ...(contextNodeIds ?? [])])].slice(0, 32)
+}
+
 function boundedGenerationModels(value) {
   if (value === undefined) return undefined
   if (!Array.isArray(value) || value.length > 30) invalidRequest('可用生成模型无效。')
@@ -142,7 +156,10 @@ export function validateBotanicAgentTurnInput(raw) {
   const messages = input.messages === undefined
     ? (sessionId ? undefined : boundedMessages(input.messages))
     : boundedMessages(input.messages)
-  const contextNodeIds = boundedNodeIds(input.contextNodeIds)
+  const contextNodeIds = mergeTurnContextNodeIds(
+    boundedNodeIds(input.contextNodeIds),
+    inputMessage?.mentions,
+  )
   const selectedResultNodeId = optionalText(input.selectedResultNodeId, '选中结果节点', 160)
   const selectedResultLabel = optionalText(input.selectedResultLabel, '选中结果名称', 160)
   const executionMode = input.executionMode === undefined ? undefined : requiredText(input.executionMode, '执行模式', 16)
@@ -968,7 +985,8 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
     ...(immutableThreadContext?.messages ?? input.messages ?? []),
   ]
   if (options.signal?.aborted) throw new BotanicAgentChatError(499, 'REQUEST_CANCELLED', 'Agent 请求已取消。')
-  const ontology = buildBotanicAgentOntology(options.document, input.contextNodeIds)
+  const contextNodeIds = mergeTurnContextNodeIds(input.contextNodeIds, input.inputMessage?.mentions)
+  const ontology = buildBotanicAgentOntology(options.document, contextNodeIds)
   const memory = safeBotanicAgentMemory(options.document)
   const skills = botanicAgentSearchableSkills(options.projectSkills)
   // 与对话/规划链路同一套 Tavily 配置；没 Key 时 createBotanicAgentWebResearchTools 不会暴露 web_search。
@@ -1003,7 +1021,7 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
   const visionParts = visionModel
     ? await resolveBotanicAgentVisionParts({
       document: options.document,
-      contextNodeIds: input.contextNodeIds,
+      contextNodeIds,
       resolveMedia: options.resolveVisionMedia,
     }).catch(() => [])
     : []
@@ -1047,7 +1065,11 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
           baseSystem,
           situation,
           mountedBriefing,
-          botanicAgentContextBriefing(ontology, { visionAttached: true }),
+          botanicAgentContextBriefing(ontology, {
+            visionAttached: true,
+            mentions: input.inputMessage?.mentions,
+            requestedContextNodeIds: contextNodeIds,
+          }),
           searchGuidance,
         ].filter(Boolean).join('\n\n'),
         messages: botanicAgentMultimodalMessages(turnMessages, visionParts),
@@ -1071,7 +1093,7 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
   // 降级路径：看图失败不弄坏整轮回合；识别结果只进当轮系统提示，不进任何持久化实体。
   const visionDescriptions = await describeBotanicAgentContextImages({
     document: options.document,
-    contextNodeIds: input.contextNodeIds,
+    contextNodeIds,
     runtimeConfig,
     resolveMedia: options.resolveVisionMedia,
     fetchImpl: options.visionFetchImpl ?? fetch,
@@ -1082,7 +1104,11 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
     baseSystem,
     situation,
     mountedBriefing,
-    botanicAgentContextBriefing(ontology, { visionDescribed: visionDescriptions.length > 0 }),
+    botanicAgentContextBriefing(ontology, {
+      visionDescribed: visionDescriptions.length > 0,
+      mentions: input.inputMessage?.mentions,
+      requestedContextNodeIds: contextNodeIds,
+    }),
     botanicAgentVisionBriefing(visionDescriptions),
     searchGuidance,
   ].filter(Boolean).join('\n\n')

@@ -68,11 +68,18 @@ export function agentContextMessageEntries(messages, options) {
     if (seen.has(id)) invalid('AGENT_CONTEXT_MESSAGE_DUPLICATE', 'Agent Context Message 标识重复。', 409)
     seen.add(id)
     const rawContent = payload.content.trim() || mentionOnlyInstruction(payload.mentions, locale)
+    const referenceLabels = (payload.mentions ?? [])
+      .filter((mention) => mention?.kind === 'reference' && typeof mention.label === 'string' && mention.label.trim())
+      .map((mention) => mention.label.trim())
+    const extra = payload.content.trim() && referenceLabels.length
+      ? (locale === 'en' ? `Referenced: ${referenceLabels.join(', ')}.` : `已引用：${referenceLabels.join('、')}。`)
+      : ''
+    const combined = extra ? `${rawContent}\n${extra}` : rawContent
     return {
       id,
       revision: agentContextMessageRevision(payload),
       role: payload.role,
-      content: id === currentMessageId ? rawContent : rawContent.slice(0, MESSAGE_TEXT_LIMIT),
+      content: id === currentMessageId ? combined : combined.slice(0, MESSAGE_TEXT_LIMIT),
     }
   }).filter((entry) => entry.content)
 }

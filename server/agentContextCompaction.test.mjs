@@ -100,3 +100,11 @@ test('Message cursor hash 绑定 id 与内容 revision，不受对象引用影�
   const revised = agentContextMessageEntries([{ ...source[0], content: '新目标' }, source[1]])
   assert.notEqual(agentContextMessageCursorHash(revised), agentContextMessageCursorHash(entries))
 })
+
+test('当前消息有正文时仍把引用芯片写进 Context 条目', () => {
+  const [entry] = agentContextMessageEntries([{
+    ...message('m-current', 'user', '让这个模特身上的光线更像室外', 1),
+    mentions: [{ kind: 'reference', id: 'asset-1', label: 'Mia 肖像' }],
+  }], { currentMessageId: 'm-current' })
+  assert.equal(entry.content, '让这个模特身上的光线更像室外\n已引用：Mia 肖像。')
+})

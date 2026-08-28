@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { BotanicAgentChatError } from './botanicAgentChat.mjs'
 import { resolveBotanicAgentTurn, validateBotanicAgentTurnInput } from './botanicAgentTurn.mjs'
+import { botanicAgentContextBriefing, buildBotanicAgentOntology } from './botanicAgentOntology.mjs'
 import { resolveAgentModelContextPolicy } from './agentModelContextPolicy.mjs'
 import { canonicalHash } from './canonicalHash.mjs'
 
@@ -74,6 +75,10 @@ test('回合请求只接收受控字段，拒绝非法消息与数量', () => {
     () => validateBotanicAgentTurnInput({ ...input, executionMode: 'turbo' }),
     (error) => error instanceof BotanicAgentChatError && error.code === 'INVALID_REQUEST',
   )
+  assert.throws(
+    () => validateBotanicAgentTurnInput({ ...input, contextNodeIds: 'asset-mia-portrait' }),
+    /上下文节点/,
+  )
   const mounted = validateBotanicAgentTurnInput({ ...input, mountedSkillIds: ['ecommerce_listing', 'ecommerce_listing'] })
   assert.deepEqual(mounted.mountedSkillIds, ['ecommerce_listing'])
   assert.throws(
@@ -100,6 +105,52 @@ test('权威回合请求只接收 Session 与本轮稳定 Message，历史可省
     content: '',
     mentions: [{ kind: 'reference', id: 'asset-mia-portrait', label: 'Mia 肖像' }],
   })
+  assert.deepEqual(
+    validateBotanicAgentTurnInput({
+      projectId: 'project-turn',
+      sessionId: 'session-1',
+      inputMessage: {
+        id: 'message-mention-only-context',
+        content: '让这个模特身上的光线更像室外',
+        mentions: [{ kind: 'reference', id: 'asset-mia-portrait', label: 'Mia 肖像' }],
+      },
+      contextNodeIds: [],
+    }).contextNodeIds,
+    ['asset-mia-portrait'],
+    '@ 引用必须并进 contextNodeIds，不能只躺在 mentions 里',
+  )
+  const saturatedContext = Array.from({ length: 32 }, (_, index) => `old-${index}`)
+  assert.deepEqual(
+    validateBotanicAgentTurnInput({
+      projectId: 'project-turn',
+      sessionId: 'session-1',
+      inputMessage: {
+        id: 'message-priority-context',
+        content: '使用新引用',
+        mentions: [{ kind: 'reference', id: 'asset-new', label: '新引用' }],
+      },
+      contextNodeIds: saturatedContext,
+    }).contextNodeIds,
+    ['asset-new', ...saturatedContext.slice(0, 31)],
+    '达到上限时，本轮显式引用必须优先于 Session 旧上下文',
+  )
+  const emptyOntology = buildBotanicAgentOntology({ nodes: [], edges: [], assetGroups: [] }, [])
+  assert.match(
+    botanicAgentContextBriefing(emptyOntology, {
+      mentions: [{ kind: 'reference', id: 'asset-mia-portrait', label: 'Mia 肖像' }],
+    }),
+    /当前权威画布快照无法解析对应节点/,
+  )
+  assert.match(
+    botanicAgentContextBriefing(emptyOntology, {
+      mentions: [{ kind: 'reference', id: 'asset-mia-portrait', label: 'Mia 肖像' }],
+    }),
+    /不要假装看过这些素材/,
+  )
+  assert.match(
+    botanicAgentContextBriefing(emptyOntology, { requestedContextNodeIds: ['asset-mia-portrait'] }),
+    /asset-mia-portrait/,
+  )
   assert.equal(validated.messages, undefined)
   const longCurrent = '问'.repeat(5_000)
   assert.equal(validateBotanicAgentTurnInput({

@@ -20,6 +20,7 @@ import {
   botanicAgentRequestMessageContent,
   consumeBotanicAgentMention,
   prepareBotanicAgentComposerSubmission,
+  snapshotBotanicAgentComposerMentions,
   readBotanicAgentMentionQuery,
   resolveBotanicAgentExecutionDecision,
   botanicAgentPendingConfirmationCount,
@@ -2070,6 +2071,10 @@ export default function AgentWorkspace({
     options: AgentRunInstructionOptions = {},
   ) => {
     if (!session || planning || !isCurrentAgentProject()) return
+    const mentions = options.mentions?.length
+      ? options.mentions
+      : snapshotBotanicAgentComposerMentions({ references: contextItems })
+    if (mentions.length) options = { ...options, mentions }
     // continuation 显式携带 targetNodeId（包括 null）时，一律按 Turn 快照解析。
     // 这样刷新后上下文第一张图变了，也不会把旧意图落到新目标。
     let instructionTarget = Object.prototype.hasOwnProperty.call(options, 'targetNodeId')
@@ -2297,9 +2302,14 @@ export default function AgentWorkspace({
         createdAt: Date.now(),
       }
       try {
-        const contextNodeIds = onPrepareVisionContext
+        const preparedContextIds = onPrepareVisionContext
           ? await onPrepareVisionContext(session.id)
-          : session.contextNodeIds
+          : []
+        const contextNodeIds = [...new Set([
+          ...(turnInputMessage.mentions ?? []).filter((item) => item.kind === 'reference').map((item) => item.id),
+          ...session.contextNodeIds,
+          ...preparedContextIds,
+        ])].slice(0, 32)
         const turnRequest = {
           projectId,
           sessionId: session.id,
@@ -2669,9 +2679,13 @@ export default function AgentWorkspace({
         // 实时通道只改变“回答什么时候到”：思考与工具进入时间线，回答增量写入气泡正文。
         // 完整回答仍等 done 一次性落成消息，避免半截内容进入对话记录。
         // 工具步进只来自服务端 execute 前后的真实 emit，不做 rAF 假进度。
-        const contextNodeIds = onPrepareVisionContext
+        const preparedContextIds = onPrepareVisionContext
           ? await onPrepareVisionContext(session.id)
-          : session.contextNodeIds
+          : []
+        const contextNodeIds = [...new Set([
+          ...session.contextNodeIds,
+          ...preparedContextIds,
+        ])].slice(0, 32)
         const response = await streamBotanicAgentChat({
           projectId,
           locale,
