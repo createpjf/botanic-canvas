@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createAgentThreadContext } from './agentThreadContext.mjs'
 import { encodeAgentMessageCursor } from './agentMessagePersistence.mjs'
+import { agentContextStateCompareAndSetDecision } from './agentContextPersistence.mjs'
 
 const message = (id, role, content, createdAt) => ({
   id,
@@ -33,6 +34,96 @@ function storeWithSession(session, overrides = {}) {
     ...overrides,
   }
 }
+
+function contextV2StoreWithSession(session) {
+  const store = storeWithSession(session)
+  let contextState = {
+    version: 2, sessionId: session.id, projectId: 'project-1', revision: 0, updatedAt: 0,
+  }
+  const ledger = []
+  return {
+    ...store,
+    async readAgentContextState() { return structuredClone(contextState) },
+    async listAgentContextCompactions(_userId, _projectId, _sessionId, options) {
+      return {
+        compactions: ledger
+          .filter((entry) => entry.compaction && entry.sequence > options.afterSequence)
+          .slice(0, options.limit)
+          .map((entry) => ({ ...structuredClone(entry.compaction), sequence: entry.sequence, createdAt: entry.createdAt })),
+      }
+    },
+    async compareAndSetAgentContextState(_userId, command) {
+      const replayEntry = ledger.find((entry) => entry.idempotencyKey === command.idempotencyKey)
+      const decision = agentContextStateCompareAndSetDecision({
+        state: contextState, replayEntry, command, ownerId: 'user-1', observedAt: 100 + contextState.revision,
+      })
+      if (decision.changed) {
+        contextState = structuredClone(decision.state)
+        ledger.push(structuredClone(decision.ledgerEntry))
+      }
+      const { ledgerEntry: _ledgerEntry, ...publicDecision } = decision
+      return structuredClone(publicDecision)
+    },
+  }
+}
+
+test('Context V2 生成带策略、ledger head、Message revision 与 meter 的不可变快照', async () => {
+  const observations = []
+  const history = Array.from({ length: 12 }, (_, index) => message(
+    `m-${index + 1}`, index % 2 ? 'assistant' : 'user', `消息 ${index + 1} ${'中'.repeat(300)}`, index + 1,
+  ))
+  const session = {
+    id: 'session-context-v2', title: 'Context V2', executionMode: 'manual', contextNodeIds: [],
+    createdAt: 1, updatedAt: 12, messages: history,
+  }
+  const context = createAgentThreadContext({
+    productStore: contextV2StoreWithSession(session),
+    contextV2: {
+      enabled: true,
+      policies: {
+        models: {
+          'test-model': {
+            contextWindowTokens: 4_096, outputReserveTokens: 512, safetyMarginTokens: 128,
+            autoCompactRatio: 0.5, retainRecentRatio: 0.1,
+          },
+        },
+      },
+      observe: (event) => observations.push(event),
+    },
+  })
+  const resolved = await context.resolve({
+    userId: 'user-1', projectId: 'project-1', sessionId: session.id, model: 'test-model',
+    inputMessage: message('m-current', 'user', '继续处理', 13),
+  })
+  assert.equal(resolved.threadContextSnapshot.version, 2)
+  assert.equal(resolved.threadContextSnapshot.modelPolicy.model, 'test-model')
+  assert.ok(resolved.threadContextSnapshot.compactionHead.id)
+  assert.ok(resolved.threadContextSnapshot.checkpoint.content)
+  assert.equal(resolved.threadContextSnapshot.messages.at(-1).id, 'm-current')
+  assert.equal(typeof resolved.threadContextSnapshot.messages.at(-1).revision, 'string')
+  assert.ok(resolved.threadContextSnapshot.contextMeter.inputTokens > 0)
+  assert.equal(resolved.messages[0].content, resolved.threadContextSnapshot.checkpoint.content)
+  assert.equal(resolved.messages.at(-1).content, '继续处理')
+  assert.ok(observations.some((event) => (
+    event.name === 'agent.context.compaction' && event.outcome === 'compacted'
+  )))
+})
+
+test('Context V2 rollout 未开启时不要求新增 Store 接口且继续产出 v1', async () => {
+  const session = {
+    id: 'session-context-off', title: 'Legacy', executionMode: 'manual', contextNodeIds: [],
+    createdAt: 1, updatedAt: 1, messages: [message('m-1', 'assistant', '旧回答', 1)],
+  }
+  const context = createAgentThreadContext({
+    productStore: storeWithSession(session),
+    contextV2: { isEnabled: () => false, policies: {} },
+  })
+  const resolved = await context.resolve({
+    userId: 'user-1', projectId: 'project-1', sessionId: session.id, model: 'test-model',
+    inputMessage: message('m-2', 'user', '继续', 2),
+  })
+  assert.equal(resolved.threadContextSnapshot.version, 1)
+})
 
 test('线程投影只读当前 Session 与其消息页，不拉整个项目的 Memory/Run/其它会话', async () => {
   const calls = []
@@ -418,6 +509,25 @@ test('仅带引用芯片的消息在模型投影时得到安全指令，权威 M
 
   assert.deepEqual(resolved.messages, [{ role: 'user', content: '按已引用素材处理。' }])
   assert.equal(inputMessage.content, '')
+})
+
+test('有正文的引用消息仍把芯片写进模型可见内容，避免 Agent 以为没选图', async () => {
+  const session = {
+    id: 'session-1', title: '会话', executionMode: 'manual', contextNodeIds: [],
+    createdAt: 1, updatedAt: 1, messages: [],
+  }
+  const context = createAgentThreadContext({ productStore: storeWithSession(session) })
+  const resolved = await context.resolve({
+    userId: 'user-1', projectId: 'project-1', sessionId: 'session-1', locale: 'zh-CN',
+    inputMessage: {
+      ...message('m-ref', 'user', '让这个模特身上的光线更像室外', 1),
+      mentions: [{ kind: 'reference', id: 'asset-1', label: 'Mia 肖像' }],
+    },
+  })
+  assert.deepEqual(resolved.messages, [{
+    role: 'user',
+    content: '让这个模特身上的光线更像室外\n已引用：Mia 肖像。',
+  }])
 })
 
 test('长会话确定性派生摘要并以专用 CAS 写回', async () => {

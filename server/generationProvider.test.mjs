@@ -90,6 +90,86 @@ test('已入库的私有参考图只保存 mediaId，Worker 执行时才读取�
   assert.equal(resolved.references[0].buffer.toString(), 'media_example-1')
 })
 
+test('Worker 顺序解析输入媒体，避免同时物化全部参考图', async () => {
+  let active = 0
+  let maximumActive = 0
+  const resolved = await resolveGenerationInputMedia({
+    references: Array.from({ length: 3 }, (_, index) => ({
+      mediaId: `media_sequential-${index + 1}`,
+      mediaKind: 'image',
+    })),
+  }, async () => {
+    active += 1
+    maximumActive = Math.max(maximumActive, active)
+    await new Promise((resolve) => setImmediate(resolve))
+    active -= 1
+    return { mimeType: 'image/png', buffer: Buffer.from('image') }
+  })
+
+  assert.equal(resolved.references.length, 3)
+  assert.equal(maximumActive, 1)
+})
+
+test('Worker 允许 Botanic 自己的 32MB 生成结果重新作为输入，并仍拒绝超限对象', async () => {
+  const generated = await resolveGenerationInputMedia({
+    references: [{ mediaId: 'media_generated-4k', mediaKind: 'image' }],
+  }, async () => ({
+    mimeType: 'image/png',
+    buffer: Buffer.alloc(8 * 1024 * 1024 + 1),
+  }))
+  assert.equal(generated.references[0].buffer.length, 8 * 1024 * 1024 + 1)
+
+  await assert.rejects(() => resolveGenerationInputMedia({
+    references: [{ mediaId: 'media_too-large', mediaKind: 'image' }],
+  }, async () => ({
+    mimeType: 'image/png',
+    buffer: Buffer.alloc(32 * 1024 * 1024 + 1),
+  })), (error) => (
+    error instanceof GenerationError
+    && error.statusCode === 413
+    && error.code === 'REFERENCE_TOO_LARGE'
+    && /32MB/u.test(error.message)
+  ))
+})
+
+test('Worker 对内联 dataUrl Buffer 仍沿用 8MB 上传上限', async () => {
+  await assert.rejects(() => resolveGenerationInputMedia({
+    references: [{ mimeType: 'image/png', mediaKind: 'image', buffer: Buffer.alloc(8 * 1024 * 1024 + 1) }],
+  }, async () => { throw new Error('不应读取 mediaId') }), (error) => (
+    error instanceof GenerationError
+    && error.code === 'REFERENCE_TOO_LARGE'
+    && /8MB/u.test(error.message)
+  ))
+})
+
+test('Worker 将 references、parent 与 mask 保守计入 48MB 总输入上限', async () => {
+  const eightMb = Buffer.alloc(8 * 1024 * 1024)
+  const input = (referenceCount) => ({
+    references: Array.from({ length: referenceCount }, (_, index) => ({
+      mediaId: `media_reference-${index + 1}`,
+      mediaKind: 'image',
+    })),
+    parent: { mediaId: 'media_parent', mediaKind: 'image' },
+    mask: { mediaId: 'media_mask', mediaKind: 'image' },
+  })
+  const resolveMedia = async () => ({ mimeType: 'image/png', buffer: eightMb })
+
+  const atLimit = await resolveGenerationInputMedia(input(4), resolveMedia)
+  assert.equal(atLimit.references.length, 4)
+  assert.ok(atLimit.parent)
+  assert.ok(atLimit.mask)
+
+  await assert.rejects(
+    () => resolveGenerationInputMedia(input(5), resolveMedia),
+    (error) => (
+      error instanceof GenerationError
+      && error.statusCode === 413
+      && error.code === 'GENERATION_INPUT_TOO_LARGE'
+      && /48MB/u.test(error.message)
+    ),
+  )
+})
+
 test('模型能力约束会阻止 H3 使用错误分辨率或时长', () => {
   const modelOptions = [{
     id: 'MiniMax-H3',
@@ -844,7 +924,7 @@ test('蒙版尺寸必须与提交给供应商的第一张图相匹配', async ()
   assert.deepEqual(maskSize, { width: 20, height: 10 }, '应该按人像（20×10）而非 Logo（64×64）定尺寸')
 })
 
-test('参考上限按模型：gpt-image-2 第 9 张拒，Nano Banana 允许 14', () => {
+test('参考上限按模型并计入父图：gpt-image-2 第 9 张拒，Nano Banana 总计允许 14', () => {
   const references = Array.from({ length: 9 }, (_, index) => ({
     name: `参考 ${index + 1}`, role: '场景', dataUrl: image,
   }))
@@ -884,6 +964,38 @@ test('参考上限按模型：gpt-image-2 第 9 张拒，Nano Banana 允许 14',
   assert.equal(input.settings.resolution, '4K')
   assert.equal(input.settings.searchGrounding, true)
   assert.equal(input.settings.thinkingLevel, 'high')
+
+  assert.throws(() => validateGenerationInput({
+    projectId: 'project-a', kind: 'refinement', prompt: '香氛局部精修', batchCount: 1,
+    settings: { model: 'gemini-3.1-pro-preview', aspectRatio: '3:4', resolution: '2K' },
+    recipe: { references: fourteen },
+    parent: { name: '父图', dataUrl: image },
+  }, {
+    models: [{
+      id: 'gemini-3.1-pro-preview', provider: 'flock', mediaKind: 'image',
+      aspectRatios: ['3:4'], resolutions: ['2K'], maximumReferences: 14,
+    }],
+    maximumBatchCount: 8,
+    maximumReferenceBytes: 1024,
+  }), (error) => (
+    error instanceof GenerationError && error.code === 'INVALID_REFERENCE' && /含父图/u.test(error.message)
+  ))
+
+  const withParent = validateGenerationInput({
+    projectId: 'project-a', kind: 'refinement', prompt: '香氛局部精修', batchCount: 1,
+    settings: { model: 'gemini-3.1-pro-preview', aspectRatio: '3:4', resolution: '2K' },
+    recipe: { references: fourteen.slice(0, 13) },
+    parent: { name: '父图', dataUrl: image },
+  }, {
+    models: [{
+      id: 'gemini-3.1-pro-preview', provider: 'flock', mediaKind: 'image',
+      aspectRatios: ['3:4'], resolutions: ['2K'], maximumReferences: 14,
+    }],
+    maximumBatchCount: 8,
+    maximumReferenceBytes: 1024,
+  })
+  assert.equal(withParent.references.length, 13)
+  assert.ok(withParent.parent)
 })
 
 test('Nano Banana 明确不支持蒙版', () => {

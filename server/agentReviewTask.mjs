@@ -11,7 +11,9 @@ import { isBrandConcession } from './brandKit.mjs'
  */
 
 /** 评审任务状态。`failed` 必须是可诊断、可重试的失败，不是静默空结果。 */
-export const REVIEW_TASK_STATUSES = Object.freeze(['queued', 'running', 'completed', 'failed'])
+export const REVIEW_TASK_STATUSES = Object.freeze([
+  'queued', 'running', 'cancelling', 'completed', 'failed', 'cancelled',
+])
 
 /** 候选状态。与执行状态、评审任务状态互不替代。 */
 export const CANDIDATE_STATUSES = Object.freeze([
@@ -312,10 +314,38 @@ export function memoryProposalFromRejection(decision, { kind = 'avoid' } = {}) {
  */
 export function publicAgentReviewTask(task) {
   if (!task) return undefined
-  const { ownerId: _ownerId, ...rest } = task
+  // execution 是 Worker 私有的 fence 快照，其中 leaseToken 等同短期执行凭证。
+  // 用户读模型既不需要它，也不能把它下发给浏览器；Worker 走专用读取入口。
+  const {
+    ownerId: _ownerId,
+    execution: _execution,
+    cancel: _cancel,
+    reconciliation: _reconciliation,
+    ...rest
+  } = task
+  const safeCancel = task.cancel ? {
+    status: task.status,
+    requestedAt: task.cancel.requestedAt,
+    ...(task.cancel.releaseBasis ? { releaseBasis: task.cancel.releaseBasis } : {}),
+  } : undefined
+  const safeReconciliation = task.reconciliation ? {
+    version: task.reconciliation.version,
+    retryCount: Number(task.reconciliation.retryCount) || 0,
+    resolutions: (task.reconciliation.resolutions ?? []).map((resolution) => ({
+      action: resolution.action,
+      resolvedAt: resolution.resolvedAt,
+      ...(resolution.risk?.code ? { risk: { code: resolution.risk.code } } : {}),
+    })),
+  } : undefined
   return {
     ...structuredClone(rest),
-    results: (task.results ?? []).map((result) => structuredClone(result)),
+    ...(safeCancel ? { cancel: safeCancel } : {}),
+    ...(safeReconciliation ? { reconciliation: safeReconciliation } : {}),
+    results: (task.results ?? []).map((result) => {
+      const safe = structuredClone(result)
+      if (safe?.resolution) delete safe.resolution.resolvedBy
+      return safe
+    }),
     decisions: (task.decisions ?? []).map((decision) => structuredClone(decision)),
   }
 }

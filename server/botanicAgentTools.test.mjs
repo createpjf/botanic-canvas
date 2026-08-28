@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { executeConfirmedAgentAction, runAgentToolLoop } from './agentToolRuntime.mjs'
+import { createConfiguredMcpRuntime, parseMcpToolConfigurations } from './mcpClient.mjs'
 import {
   botanicAgentMountedSkillBriefing,
   botanicAgentSearchableSkills,
@@ -22,12 +23,38 @@ const input = {
   assetGroup: { id: 'group-scenes', name: '夏日海边', role: '场景', assetCount: 10 },
 }
 
+function mcpRuntime(handler = async () => ({ matches: 2 })) {
+  return createConfiguredMcpRuntime(parseMcpToolConfigurations([{
+    server: 'asset-catalog',
+    tool: 'search',
+    version: '2026-08-28',
+    url: 'https://mcp.example/rpc',
+    inputSchema: {
+      type: 'object', additionalProperties: false,
+      properties: { query: { type: 'string', maxLength: 120 } },
+      required: ['query'],
+    },
+  }]), {
+    idFactory: () => 'request-1',
+    fetchImpl: async (_url, init) => {
+      const request = JSON.parse(init.body)
+      const result = await handler(request.params.arguments)
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 'request-1', result }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    },
+  })
+}
+
 test('系统 Skill 目录包含交付配方，Composer 挂载后能解析到正文', () => {
-  const ids = botanicAgentSystemSkills().map((skill) => skill.id)
+  const systemSkills = botanicAgentSystemSkills()
+  const ids = systemSkills.map((skill) => skill.id)
   assert.deepEqual(ids.includes('ecommerce_listing'), true)
   assert.deepEqual(ids.includes('platform_pack'), true)
   assert.deepEqual(ids.includes('video_storyboard'), true)
   assert.deepEqual(ids.includes('conversation_distill'), true)
+  assert.ok(systemSkills.every((skill) => skill.version === 1 && typeof skill.contentHash === 'string'))
   const mounted = resolveBotanicAgentMountedSkills(
     ['ecommerce_listing', 'missing_skill', 'conversation_distill'],
     [{ id: 'skill-scene-campaign', name: '夏日场景系列', instructions: '只换场景。', status: 'active' }],
@@ -43,6 +70,11 @@ test('系统 Skill 目录包含交付配方，Composer 挂载后能解析到正�
   }])
   assert.ok(searchable.some((skill) => skill.id === 'platform_pack'))
   assert.ok(searchable.some((skill) => skill.id === 'skill-scene-campaign'))
+  const systemSearch = searchable.find((skill) => skill.id === 'platform_pack')
+  const systemCatalog = systemSkills.find((skill) => skill.id === 'platform_pack')
+  assert.equal(systemSearch.version, systemCatalog.version)
+  assert.equal(systemSearch.contentHash, systemCatalog.contentHash)
+  assert.equal(resolveBotanicAgentMountedSkills(['platform_pack'])[0].contentHash, systemCatalog.contentHash)
 })
 
 test('Agent 规划工具可以读取画布上下文、搜索素材并调用白名单 Skill', async () => {
@@ -106,6 +138,8 @@ test('Agent 规划工具可调用当前项目已审核 Skill，但不能跨项�
 
 test('Planner 调用 Skill 后立即生效，MCP 仍转为待确认行动', async () => {
   const proposals = []
+  const runtime = mcpRuntime()
+  const descriptor = runtime.catalog()[0]
   const registry = createBotanicAgentPlanningToolRegistry({
     input: {
       ...input,
@@ -113,7 +147,7 @@ test('Planner 调用 Skill 后立即生效，MCP 仍转为待确认行动', asyn
         id: 'skill-scene-campaign', name: '夏日场景系列',
         instructions: '锁定人物与服装，只替换场景。', status: 'active',
       }],
-      availableMcpTools: [{ server: 'asset-catalog', tool: 'search' }],
+      availableMcpTools: runtime.catalog(),
     },
     finalizePlan: (raw) => raw,
     finalizeClarification: (raw) => raw,
@@ -135,7 +169,10 @@ test('Planner 调用 Skill 后立即生效，MCP 仍转为待确认行动', asyn
     {
       id: 'call-mcp-1', kind: 'mcp', toolName: 'mcp_call', label: '调用 MCP：asset-catalog.search',
       summary: '查找品牌已审核的海边场景。', risk: 'external',
-      arguments: { server: 'asset-catalog', tool: 'search', arguments: { query: '海边场景' } },
+      arguments: {
+        server: 'asset-catalog', tool: 'search', arguments: { query: '海边场景' },
+        version: descriptor.version, capabilityHash: descriptor.capabilityHash,
+      },
       status: 'awaiting_confirmation',
     },
   ])
@@ -181,6 +218,12 @@ test('Planner 可以提议创建可复用项目 Skill，但不会在规划阶段
   const result = await registry.execute('skill_create_propose', {
     name: '商品锁定换景',
     instructions: '锁定人物、服装与商品，只允许场景和环境光线变化。',
+    capabilities: ['read', 'write'],
+    manifest: {
+      kind: 'guidance',
+      toolAllowlist: ['canvas_read', 'workflow_create'],
+      dependencies: [{ skillId: 'controlled_edit', version: 1 }],
+    },
     reason: '这套规则会在同一项目中重复使用。',
   }, { toolCallId: 'call-skill-create-1' })
 
@@ -188,20 +231,30 @@ test('Planner 可以提议创建可复用项目 Skill，但不会在规划阶段
   assert.deepEqual(proposals, [{
     id: 'call-skill-create-1', kind: 'skill', toolName: 'skill_create',
     label: '创建 Skill：商品锁定换景', summary: '这套规则会在同一项目中重复使用。', risk: 'write',
-    arguments: { name: '商品锁定换景', instructions: '锁定人物、服装与商品，只允许场景和环境光线变化。' },
+    arguments: {
+      name: '商品锁定换景',
+      instructions: '锁定人物、服装与商品，只允许场景和环境光线变化。',
+      capabilities: ['read', 'write'],
+      manifest: {
+        version: 1,
+        kind: 'guidance',
+        toolAllowlist: ['canvas_read', 'workflow_create'],
+        dependencies: [{ skillId: 'controlled_edit', version: 1 }],
+      },
+    },
     status: 'awaiting_confirmation',
   }])
 })
 
 test('Agent 行动工具默认要求确认，并且 MCP 只能调用服务端白名单', async () => {
   const calls = []
+  const runtime = mcpRuntime(async (value) => { calls.push(['mcp', value]); return { matches: 2 } })
+  const descriptor = runtime.catalog()[0]
   const registry = createBotanicAgentActionToolRegistry({
     createWorkflow: async (value) => { calls.push(['workflow', value]); return { workflowId: 'workflow-1' } },
     submitGeneration: async (value) => { calls.push(['generation', value]); return { runId: 'run-1' } },
     createSkill: async (value) => { calls.push(['skill', value]); return { skillId: 'skill-1' } },
-    mcpTools: {
-      'asset-catalog.search': async (value) => { calls.push(['mcp', value]); return { matches: 2 } },
-    },
+    mcpRuntime: runtime,
   })
   const modelResponse = {
     choices: [{ message: { content: null, tool_calls: [{
@@ -228,24 +281,40 @@ test('Agent 行动工具默认要求确认，并且 MCP 只能调用服务端白
     risk: 'costly', status: 'succeeded', requiresConfirmation: true,
   })
   await assert.rejects(
-    registry.execute('mcp_call', { server: 'unknown', tool: 'delete', arguments: {} }, {}),
+    registry.execute('mcp_call', {
+      server: 'unknown', tool: 'delete', arguments: {}, version: '1', capabilityHash: 'x'.repeat(43),
+    }, {}),
     /不在允许列表/,
+  )
+  await assert.rejects(
+    registry.execute('mcp_call', {
+      server: descriptor.server, tool: descriptor.tool, arguments: { query: '海边' },
+    }, {}),
+    /能力版本/u,
+  )
+  await assert.rejects(
+    registry.execute('mcp_call', {
+      server: descriptor.server, tool: descriptor.tool, arguments: { query: '海边' },
+      version: descriptor.version, capabilityHash: 'x'.repeat(43),
+    }, {}),
+    (error) => error.code === 'MCP_CAPABILITY_STALE' && error.outcomeKnown === true,
   )
 })
 
 test('已确认的 Skill/MCP 行动返回统一 Artifact 与画布命令', async () => {
+  const runtime = mcpRuntime(async () => ({
+    content: [
+      { type: 'text', text: '找到 3 个已审核海边场景。' },
+      { type: 'resource_link', name: '海边场景 01', uri: '/api/media/scene-01', mimeType: 'image/webp' },
+      { type: 'resource_link', name: '外部未授权场景', uri: 'https://assets.example.com/external.webp', mimeType: 'image/webp' },
+    ],
+  }))
+  const descriptor = runtime.catalog()[0]
   const registry = createBotanicAgentActionToolRegistry({
     applySkill: async ({ skillId }) => ({
       skill: { id: skillId, name: '夏日场景系列', instructions: '锁定人物与服装，只替换场景。' },
     }),
-    mcpTools: {
-      'asset-catalog.search': async () => ({
-        content: [
-          { type: 'text', text: '找到 3 个已审核海边场景。' },
-          { type: 'resource_link', name: '海边场景 01', uri: 'https://assets.example.com/scene-01.webp', mimeType: 'image/webp' },
-        ],
-      }),
-    },
+    mcpRuntime: runtime,
   })
 
   const skill = await executeConfirmedAgentAction({
@@ -267,7 +336,10 @@ test('已确认的 Skill/MCP 行动返回统一 Artifact 与画布命令', async
 
   const mcp = await executeConfirmedAgentAction({
     registry, name: 'mcp_call',
-    arguments: { server: 'asset-catalog', tool: 'search', arguments: { query: '海边' } },
+    arguments: {
+      server: 'asset-catalog', tool: 'search', arguments: { query: '海边' },
+      version: descriptor.version, capabilityHash: descriptor.capabilityHash,
+    },
     toolCallId: 'call-mcp-apply-1', confirmed: true,
   })
   assert.deepEqual(mcp.output, {
@@ -281,7 +353,7 @@ test('已确认的 Skill/MCP 行动返回统一 Artifact 与画布命令', async
       },
       {
         id: 'artifact-call-mcp-apply-1-2', kind: 'image', label: '海边场景 01', placement: 'canvas',
-        url: 'https://assets.example.com/scene-01.webp', mimeType: 'image/webp',
+        url: '/api/media/scene-01', mimeType: 'image/webp',
         provenance: { actionId: 'call-mcp-apply-1', toolName: 'mcp_call', externalTool: 'asset-catalog.search' },
       },
     ],

@@ -96,6 +96,89 @@ test('Agent Planner 只允许服务端目录中的 Flock 模型，并按请求�
   )
 })
 
+test('Agent Planner 归一明确 context overflow，且无 Model Context 时不自行重试', async () => {
+  let providerCalls = 0
+  await assert.rejects(planBotanicGeneration({ ...validInput, plannerModel: 'deepseek-v4-flash' }, {
+    flockApiKey: 'flock-secret',
+    flockTextModel: 'deepseek-v4-flash',
+    flockAgentModels: ['deepseek-v4-flash'],
+  }, {
+    fetchImpl: async () => {
+      providerCalls += 1
+      return new Response(JSON.stringify({
+        error: { code: 'context_length_exceeded', message: 'maximum context length exceeded' },
+      }), { status: 413 })
+    },
+  }), (error) => error instanceof BotanicAgentPlannerError
+    && error.statusCode === 422
+    && error.code === 'AGENT_CONTEXT_OVERFLOW')
+  assert.equal(providerCalls, 1)
+})
+
+test('Agent Planner 优先使用注入的 Durable Subagent Runner，并绑定权威根 Turn 身份', async () => {
+  const dispatched = []
+  const runnerContexts = []
+  let providerCalls = 0
+  const result = await planBotanicGeneration({ ...validInput, plannerModel: 'deepseek-v4-flash' }, {
+    flockApiKey: 'flock-secret',
+    flockTextModel: 'deepseek-v4-flash',
+    flockAgentModels: ['deepseek-v4-flash'],
+    // 没有 agentSubagentModel，证明派发工具来自显式注入，而不是 legacy fallback。
+  }, {
+    runtimeIdentity: {
+      userId: 'user-root-1', projectId: 'project-agent', turnId: 'turn-root-1',
+      executionGeneration: 4, leaseToken: 'root-lease-4',
+    },
+    subagentRunner: async ({ subtask, context }) => {
+      dispatched.push(subtask)
+      runnerContexts.push(context)
+      return { summary: '坚持低饱和植物学线稿。', findings: ['减少背景装饰'], confidence: 'high' }
+    },
+    fetchImpl: async (_url, init) => {
+      const request = JSON.parse(init.body)
+      providerCalls += 1
+      assert.equal(request.tools.some((tool) => tool.function.name === 'subagent_research'), true)
+      if (providerCalls === 1) {
+        return new Response(JSON.stringify({ choices: [{ message: {
+          content: null,
+          tool_calls: [{ id: 'call-subagent-durable', type: 'function', function: {
+            name: 'subagent_research',
+            arguments: JSON.stringify({
+              tasks: [{ role: 'brand_research', question: '品牌视觉机会是什么？' }],
+            }),
+          } }],
+        } }] }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ choices: [{ message: {
+        content: null,
+        tool_calls: [{ id: 'call-plan-after-subagent', type: 'function', function: {
+          name: 'generation_create_plan',
+          arguments: JSON.stringify({
+            intent: 'replace_scene',
+            prompt: '保持人物与商品，替换为低饱和海边柔光场景。',
+            summary: '依据调研方向替换场景。',
+            constraints: [
+              { dimension: 'person', mode: 'preserve' },
+              { dimension: 'product', mode: 'preserve' },
+              { dimension: 'scene', mode: 'vary' },
+            ],
+          }),
+        } }],
+      } }] }), { status: 200 })
+    },
+  })
+
+  assert.equal(providerCalls, 2)
+  assert.equal(dispatched.length, 1)
+  assert.equal(dispatched[0].parentTurnId, 'turn-root-1')
+  assert.equal(dispatched[0].ownerId, 'user-root-1')
+  assert.equal(dispatched[0].projectId, 'project-agent')
+  assert.deepEqual(runnerContexts[0].rootExecution, {
+    executionGeneration: 4, leaseToken: 'root-lease-4',
+  })
+  assert.equal(result.prompt, '保持人物与商品，替换为低饱和海边柔光场景。')
+})
+
 test('Agent 在规格缺失时返回受控追问卡，并从可信模型目录回填选项', async () => {
   const generationModels = [
     { id: 'gpt-image-2', label: 'GPT Image 2', provider: 'openai', mediaKind: 'image', aspectRatios: ['1:1', '3:4'], resolutions: ['1K', '2K'] },
@@ -790,4 +873,69 @@ test('规划旁白加编号清单时共享底回退到 parentPrompt', async () =
   assert.equal(result.prompt, '保持人物身份、白裙与商品，棚拍柔光。')
   assert.equal(result.output.mode, 'batch_by_variation')
   assert.equal(result.output.count, 3)
+})
+
+test('Agent Planner 持久化 plan attempt Checkpoint，并可从同一 attempt 恢复', async () => {
+  const runtime = {
+    flockApiKey: 'flock-secret',
+    flockTextModel: 'deepseek-v4-pro',
+    flockAgentModels: ['deepseek-v4-pro', 'deepseek-v4-flash'],
+  }
+  const checkpointStore = {
+    writes: [],
+    async save(checkpoint) {
+      this.writes.push(structuredClone(checkpoint))
+    },
+  }
+  const providerPlan = {
+    intent: 'replace_scene',
+    prompt: '保持人物身份与球衣不变，替换为海边柔光场景。',
+    summary: '锁定人物与商品，只替换场景。',
+    constraints: [
+      { dimension: 'person', mode: 'preserve' },
+      { dimension: 'product', mode: 'preserve' },
+      { dimension: 'scene', mode: 'vary' },
+    ],
+  }
+  let providerCalls = 0
+
+  const first = await planBotanicGeneration({ ...validInput, plannerModel: 'deepseek-v4-flash' }, runtime, {
+    saveCheckpoint: (checkpoint) => checkpointStore.save(checkpoint),
+    fetchImpl: async () => {
+      providerCalls += 1
+      return new Response(JSON.stringify({ choices: [{ message: {
+        content: null,
+        tool_calls: [{ id: 'call-plan-checkpoint', type: 'function', function: {
+          name: 'generation_create_plan', arguments: JSON.stringify(providerPlan),
+        } }],
+      } }] }), { status: 200 })
+    },
+  })
+
+  assert.equal(first.prompt, providerPlan.prompt)
+  assert.equal(checkpointStore.writes.length, 2)
+  const prepared = checkpointStore.writes[0]
+  const completed = checkpointStore.writes[1]
+  assert.equal(prepared.attempt.id, 'plan')
+  assert.equal(prepared.attempt.model, 'deepseek-v4-flash')
+  assert.match(prepared.attempt.snapshotHash, /^[A-Za-z0-9_-]{43}$/u)
+  assert.deepEqual(prepared.pendingStep.calls[0], {
+    id: 'call-plan-checkpoint',
+    name: 'generation_create_plan',
+    risk: 'read',
+    recovery: 'reexecute',
+    terminal: true,
+    arguments: providerPlan,
+  })
+  assert.equal(completed.pendingStep, undefined)
+  assert.deepEqual(completed.completedSteps[0].calls, prepared.pendingStep.calls)
+
+  const resumed = await planBotanicGeneration({ ...validInput, plannerModel: 'deepseek-v4-flash' }, runtime, {
+    resumeCheckpoint: completed,
+    saveCheckpoint: async () => { throw new Error('已完成 terminal 工具恢复不应再次保存 Checkpoint') },
+    fetchImpl: async () => { throw new Error('同 attempt 恢复不应再次请求 Provider') },
+  })
+
+  assert.equal(resumed.prompt, providerPlan.prompt)
+  assert.equal(providerCalls, 1)
 })

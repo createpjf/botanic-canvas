@@ -18,7 +18,17 @@ import { botanicAgentOperationalSourceLabels, createBotanicAgentOperationalToolD
 import { renderThreadSummary } from './agentThreadSummary.mjs'
 import { canonicalHash } from './canonicalHash.mjs'
 import { estimateAgentContextTokens, truncateAgentContextText } from './agentContextBudget.mjs'
-import { GENERATION_ASPECT_RATIOS, GENERATION_RESOLUTIONS } from './generationVocabulary.mjs'
+import {
+  GENERATION_ASPECT_RATIOS,
+  GENERATION_RESOLUTIONS,
+  NANO_BANANA_MODEL_ID,
+} from './generationVocabulary.mjs'
+import { throwIfAgentProviderContextOverflow } from './agentProviderContextOverflow.mjs'
+import { outboundAgentTraceHeaders } from './agentTraceContext.mjs'
+import {
+  projectAgentThreadContextSnapshotV2,
+  resolveAgentModelContextBinding,
+} from './agentModelContextBinding.mjs'
 
 // Botanic Agent 回合解析器：把“这一句到底是聊天/建议/检索，还是要生成图片，以及要用什么
 // Prompt、生成几张”整体交给服务端模型判断。它读整段对话（包含 Agent 自己刚给出的建议）与
@@ -36,7 +46,6 @@ const GENERATE_VIDEO_TOOL_NAME = 'generate_videos'
 const OVERFLOW_RETRY_TOKEN_BUDGET = 6_000
 const OVERFLOW_TOOL_CONTENT_TOKEN_BUDGET = 128
 const OVERFLOW_HISTORY_MESSAGE_TOKEN_BUDGET = 512
-const EXPLICIT_CONTEXT_OVERFLOW = /(?:context[_ -]?length[_ -]?exceeded|maximum context length|context window[^\n]{0,40}(?:too (?:large|long)|exceed)|too many (?:input )?tokens|prompt (?:is )?too long|input (?:is )?too long)/iu
 
 function invalidRequest(message) {
   throw new BotanicAgentChatError(400, 'INVALID_REQUEST', message)
@@ -108,6 +117,20 @@ function boundedNodeIds(value) {
   return [...new Set(value.map((id, index) => requiredText(id, `第 ${index + 1} 个上下文节点`, 160)))]
 }
 
+function mentionReferenceIds(mentions) {
+  if (!Array.isArray(mentions)) return []
+  return mentions.flatMap((mention) => (
+    mention?.kind === 'reference' && typeof mention.id === 'string' && mention.id.trim()
+      ? [mention.id.trim()]
+      : []
+  ))
+}
+
+function mergeTurnContextNodeIds(contextNodeIds, mentions) {
+  // 本轮显式 @ 引用优先于 Session 的旧上下文；达到上限时不能把用户刚选的对象截掉。
+  return [...new Set([...mentionReferenceIds(mentions), ...(contextNodeIds ?? [])])].slice(0, 32)
+}
+
 function boundedGenerationModels(value) {
   if (value === undefined) return undefined
   if (!Array.isArray(value) || value.length > 30) invalidRequest('可用生成模型无效。')
@@ -139,7 +162,10 @@ export function validateBotanicAgentTurnInput(raw) {
   const messages = input.messages === undefined
     ? (sessionId ? undefined : boundedMessages(input.messages))
     : boundedMessages(input.messages)
-  const contextNodeIds = boundedNodeIds(input.contextNodeIds)
+  const contextNodeIds = mergeTurnContextNodeIds(
+    boundedNodeIds(input.contextNodeIds),
+    inputMessage?.mentions,
+  )
   const selectedResultNodeId = optionalText(input.selectedResultNodeId, '选中结果节点', 160)
   const selectedResultLabel = optionalText(input.selectedResultLabel, '选中结果名称', 160)
   const executionMode = input.executionMode === undefined ? undefined : requiredText(input.executionMode, '执行模式', 16)
@@ -184,7 +210,16 @@ function normalizeSettingsHint(raw, generationModels) {
   const models = imageModels(generationModels)
   const hint = {}
   const requestedModel = typeof raw?.model === 'string' ? raw.model.trim() : ''
-  if (requestedModel && models.some((model) => model.id === requestedModel)) hint.model = requestedModel
+  const requestedResolution = typeof raw?.resolution === 'string' ? raw.resolution.trim().toUpperCase() : ''
+  if (requestedResolution === '4K') {
+    const fourKModels = models.filter((model) => model.resolutions?.includes('4K'))
+    const fourKModel = fourKModels.find((model) => model.id === NANO_BANANA_MODEL_ID) ?? fourKModels[0]
+    // 4K 是模型能力约束，不允许模型同时返回「GPT + 4K」后被归一成一个
+    // 实际无法执行的计划；目录没有 4K 能力时两者都省略，由下游默认设置接管。
+    if (fourKModel) hint.model = fourKModel.id
+  } else if (requestedModel && models.some((model) => model.id === requestedModel)) {
+    hint.model = requestedModel
+  }
   const selectedModel = models.find((model) => model.id === (hint.model ?? ''))
   const supportedRatios = selectedModel?.aspectRatios?.length
     ? selectedModel.aspectRatios
@@ -196,7 +231,6 @@ function normalizeSettingsHint(raw, generationModels) {
   if (requestedRatio && ASPECT_RATIOS.has(requestedRatio) && (!supportedRatios.length || supportedRatios.includes(requestedRatio))) {
     hint.aspectRatio = requestedRatio
   }
-  const requestedResolution = typeof raw?.resolution === 'string' ? raw.resolution.trim().toUpperCase() : ''
   if (requestedResolution && RESOLUTIONS.has(requestedResolution) && (!supportedResolutions.length || supportedResolutions.includes(requestedResolution))) {
     hint.resolution = requestedResolution
   }
@@ -591,11 +625,6 @@ function providerError(status) {
   return new BotanicAgentChatError(422, 'PROVIDER_REJECTED', 'Agent 无法处理本次请求。')
 }
 
-function explicitContextOverflow(status, body) {
-  return [400, 413, 422].includes(Number(status))
-    && EXPLICIT_CONTEXT_OVERFLOW.test(String(body ?? '').slice(0, 16_000))
-}
-
 function conversationEntryTokens(entry) {
   return estimateAgentContextTokens(JSON.stringify(entry)) + 4
 }
@@ -750,6 +779,28 @@ function turnAttempt(id, model, snapshot) {
   return Object.freeze({ id, model, snapshotHash: canonicalHash(snapshot) })
 }
 
+function turnModelContextBinding(options, model, expectedPolicy) {
+  try {
+    return resolveAgentModelContextBinding(options, model, expectedPolicy)
+  } catch (caught) {
+    if (typeof caught?.code === 'string' && caught.code.startsWith('AGENT_CONTEXT_')) {
+      throw new BotanicAgentChatError(caught.statusCode ?? 409, caught.code, caught.message, { cause: caught })
+    }
+    throw caught
+  }
+}
+
+function turnThreadContextV2(snapshot, model) {
+  try {
+    return projectAgentThreadContextSnapshotV2(snapshot, model)
+  } catch (caught) {
+    if (typeof caught?.code === 'string' && caught.code.startsWith('AGENT_CONTEXT_')) {
+      throw new BotanicAgentChatError(caught.statusCode ?? 409, caught.code, caught.message, { cause: caught })
+    }
+    throw caught
+  }
+}
+
 async function executeTurnAttempt({ config, model, system, messages, registry, options, allowRawReasoning, snapshot, attempt }) {
   const timeoutSignal = AbortSignal.timeout(config.timeoutMs)
   const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal
@@ -764,6 +815,7 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
     const result = await runAgentToolLoop({
       registry,
       snapshot,
+      genAiTelemetry: config.genAiDevelopmentSemconv,
       messages: [
         { role: 'system', content: system },
         ...messages,
@@ -777,10 +829,13 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
       resumeCheckpoint: options.resumeCheckpoint,
       saveCheckpoint: options.saveCheckpoint,
       recoverToolCall: options.recoverToolCall,
+      modelContext: options.modelContext,
+      maxOutputTokens: 3000,
       callModel: async ({ messages: turnMessages, tools, tool_choice, step }) => {
         const requestProvider = (requestMessages) => fetchImpl(`${config.baseUrl}/chat/completions`, {
             method: 'POST',
             headers: {
+              ...outboundAgentTraceHeaders(),
               Authorization: `Bearer ${config.apiKey}`,
               'x-litellm-api-key': config.apiKey,
               Accept: streaming ? 'text/event-stream' : 'application/json',
@@ -800,14 +855,20 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
         let response = await requestProvider(turnMessages)
         if (!response.ok) {
           const failureBody = await response.text().catch(() => '')
-          if (!explicitContextOverflow(response.status, failureBody)) throw providerError(response.status)
-          // 唯一一次重试就在 callModel 内。runAgentToolLoop 尚未拿到模型
-          // 结果，因此这一步的 preflight/checkpoint/tool.execute 都还没发生。
-          response = await requestProvider(strictOverflowRetryConversation(turnMessages))
-          if (!response.ok) {
-            await response.text().catch(() => '')
-            throw providerError(response.status)
+          try {
+            throwIfAgentProviderContextOverflow(response.status, failureBody)
+          } catch (caught) {
+            // V2 统一由 ToolLoop 触发强制 compaction；legacy 才保留这里的
+            // 唯一一次严格裁剪，避免一轮出现私有重试 + 统一重试共 3 次请求。
+            if (options.modelContext !== undefined) throw caught
+            response = await requestProvider(strictOverflowRetryConversation(turnMessages))
+            if (!response.ok) {
+              const retryFailureBody = await response.text().catch(() => '')
+              throwIfAgentProviderContextOverflow(response.status, retryFailureBody)
+              throw providerError(response.status)
+            }
           }
+          if (!response.ok) throw providerError(response.status)
         }
         if (!streaming) return await response.json().catch(() => null)
         return await readStreamedChatCompletion(response.body, {
@@ -877,8 +938,13 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
     }, result.reasoning)
   } catch (caught) {
     if (caught instanceof BotanicAgentChatError) throw caught
+    if (caught?.code === 'AGENT_CONTEXT_OVERFLOW') {
+      throw new BotanicAgentChatError(caught.statusCode ?? 422, caught.code, caught.message, { cause: caught })
+    }
     if (typeof caught?.code === 'string'
-      && (caught.code.startsWith('AGENT_TURN_CHECKPOINT_') || caught.code === 'AGENT_TURN_NOT_REPLAYABLE')) {
+      && (caught.code.startsWith('AGENT_TURN_CHECKPOINT_')
+        || caught.code === 'AGENT_TURN_NOT_REPLAYABLE'
+        || caught.code.startsWith('AGENT_ACTION_'))) {
       // Checkpoint 漂移/不可重放是恢复契约冲突，不是 Provider 返回异常；保留业务码，
       // 禁止被归一成「服务不可用」后静默切换 attempt。
       throw new BotanicAgentChatError(caught.statusCode ?? 409, caught.code, caught.message, { cause: caught })
@@ -906,10 +972,18 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
   const situation = turnSituationBriefing(input, input.locale)
   const mountedSkills = resolveBotanicAgentMountedSkills(input.mountedSkillIds, options.projectSkills)
   const mountedBriefing = botanicAgentMountedSkillBriefing(mountedSkills, input.locale)
+  const contextV2 = turnThreadContextV2(input.threadContextSnapshot, config.model)
   const immutableThreadContext = input.threadContextSnapshot?.version === 1
     && Array.isArray(input.threadContextSnapshot.messages)
     ? input.threadContextSnapshot
-    : undefined
+    : contextV2
+      ? { ...input.threadContextSnapshot, messages: contextV2.messages }
+      : undefined
+  const primaryContextBinding = turnModelContextBinding(
+    options,
+    config.model,
+    contextV2?.modelPolicy,
+  )
   // 线程摘要来自用户历史，可信级别与用户消息相同，不能提升进 system。
   // 它放在最近消息窗口之前，既补回早期事实，又不会覆盖本轮系统边界。
   // 新 Turn 的窗口与摘要同属 immutable request；恢复不得借用当前 Session 的新摘要。
@@ -925,7 +999,8 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
     ...(immutableThreadContext?.messages ?? input.messages ?? []),
   ]
   if (options.signal?.aborted) throw new BotanicAgentChatError(499, 'REQUEST_CANCELLED', 'Agent 请求已取消。')
-  const ontology = buildBotanicAgentOntology(options.document, input.contextNodeIds)
+  const contextNodeIds = mergeTurnContextNodeIds(input.contextNodeIds, input.inputMessage?.mentions)
+  const ontology = buildBotanicAgentOntology(options.document, contextNodeIds)
   const memory = safeBotanicAgentMemory(options.document)
   const skills = botanicAgentSearchableSkills(options.projectSkills)
   // 与对话/规划链路同一套 Tavily 配置；没 Key 时 createBotanicAgentWebResearchTools 不会暴露 web_search。
@@ -941,13 +1016,19 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
   const searchGuidance = turnSearchGuidance(registry)
   // 这一次执行的能力快照：模型、工具集、Skill/Memory 绑定与角色在进入循环前定格
   // （Epic 8）。中途改配置不该改变已经开始的这一次。
-  const stepSnapshotFor = (model) => freezeAgentStepSnapshot({
+  const stepSnapshotFor = (model, contextBinding) => freezeAgentStepSnapshot({
     registry,
     model,
     skillBindings: mountedSkills.map((skill) => ({ id: skill.id, version: skill.version, contentHash: skill.contentHash })),
     memoryBindings: (memory ?? []).map((item) => ({ id: item.id, version: item.version, contentHash: item.contentHash })),
+    contextPolicyHash: contextBinding.contextPolicyHash,
     role: options.role,
   })
+  const optionsForContext = (contextBinding) => (
+    contextBinding.modelContext === options.modelContext
+      ? options
+      : { ...options, modelContext: contextBinding.modelContext }
+  )
 
   // 原生多模态只跟 Composer 所选走；不能看图的规划模型走 caption，不劫持整轮。
   const nativeVisionModel = nativeAgentVisionModel(config.model)
@@ -955,7 +1036,7 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
   const visionParts = nativeVisionModel || captionVisionModel
     ? await resolveBotanicAgentVisionParts({
       document: options.document,
-      contextNodeIds: input.contextNodeIds,
+      contextNodeIds,
       resolveMedia: options.resolveVisionMedia,
     }).catch(() => [])
     : []
@@ -970,20 +1051,25 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
       '视觉执行所需的模型或媒体上下文已经变化，不能静默切换到文本执行。',
     )
   }
-  if (visionParts.length && nativeVisionModel && resumeAttemptId !== 'text') {
-    const visionSnapshot = stepSnapshotFor(nativeVisionModel)
+  // 原生看图模型就是 Composer 所选的主模型，因此复用同一份冻结 Context V2
+  // binding。不能为同一 attempt 重新解析一份可能漂移的 runtime。
+  const visionContextBinding = nativeVisionModel ? primaryContextBinding : undefined
+  const canAttemptVision = visionParts.length > 0 && Boolean(nativeVisionModel)
+  if (canAttemptVision && resumeAttemptId !== 'text') {
+    const visionSnapshot = stepSnapshotFor(nativeVisionModel, visionContextBinding)
+    const boundVisionOptions = optionsForContext(visionContextBinding)
     let visionCheckpointBoundaryReached = Boolean(options.resumeCheckpoint)
-    const visionOptions = typeof options.saveCheckpoint === 'function'
+    const visionOptions = typeof boundVisionOptions.saveCheckpoint === 'function'
       ? {
-          ...options,
+          ...boundVisionOptions,
           saveCheckpoint: async (checkpoint) => {
             // prepared checkpoint 的持久化发生在工具执行前；一旦尝试跨过该边界，
             // 后续错误都不能回退到另一模型重新执行整轮。
             visionCheckpointBoundaryReached = true
-            return options.saveCheckpoint(checkpoint)
+            return boundVisionOptions.saveCheckpoint(checkpoint)
           },
         }
-      : options
+      : boundVisionOptions
     try {
       return withTurnSelectedResult(await executeTurnAttempt({
         config,
@@ -992,7 +1078,11 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
           baseSystem,
           situation,
           mountedBriefing,
-          botanicAgentContextBriefing(ontology, { visionAttached: true }),
+          botanicAgentContextBriefing(ontology, {
+            visionAttached: true,
+            mentions: input.inputMessage?.mentions,
+            requestedContextNodeIds: contextNodeIds,
+          }),
           searchGuidance,
         ].filter(Boolean).join('\n\n'),
         messages: botanicAgentMultimodalMessages(turnMessages, visionParts),
@@ -1016,7 +1106,7 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
   // 降级路径：看图失败不弄坏整轮回合；识别结果只进当轮系统提示，不进任何持久化实体。
   const visionDescriptions = await describeBotanicAgentContextImages({
     document: options.document,
-    contextNodeIds: input.contextNodeIds,
+    contextNodeIds,
     runtimeConfig,
     resolveMedia: options.resolveVisionMedia,
     fetchImpl: options.visionFetchImpl ?? fetch,
@@ -1027,11 +1117,15 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
     baseSystem,
     situation,
     mountedBriefing,
-    botanicAgentContextBriefing(ontology, { visionDescribed: visionDescriptions.length > 0 }),
+    botanicAgentContextBriefing(ontology, {
+      visionDescribed: visionDescriptions.length > 0,
+      mentions: input.inputMessage?.mentions,
+      requestedContextNodeIds: contextNodeIds,
+    }),
     botanicAgentVisionBriefing(visionDescriptions),
     searchGuidance,
   ].filter(Boolean).join('\n\n')
-  const textSnapshot = stepSnapshotFor(config.model)
+  const textSnapshot = stepSnapshotFor(config.model, primaryContextBinding)
   return withTurnSelectedResult(await executeTurnAttempt({
     config,
     model: config.model,
@@ -1039,7 +1133,7 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
     system,
     messages: turnMessages,
     registry,
-    options,
+    options: optionsForContext(primaryContextBinding),
     attempt: turnAttempt('text', config.model, textSnapshot),
     allowRawReasoning,
   }), input)

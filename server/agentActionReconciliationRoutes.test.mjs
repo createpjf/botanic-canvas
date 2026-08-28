@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createAgentRouteHandler } from './agentRoutes.mjs'
+import { createConfiguredMcpRuntime, parseMcpToolConfigurations } from './mcpClient.mjs'
 import { agentActionReconciliationIdentity } from './agentActionReconciliation.mjs'
 import {
   agentActionManualRetryConsumptionDecision,
@@ -94,6 +95,7 @@ function createStore(action, initialReceipts = [], options = {}) {
     calls,
     state,
     async projectAccess() { return { exists: true, role: options.role ?? 'owner' } },
+    async listAgentSkills() { return [] },
     async readAgentState() { return structuredClone(state) },
     async readAgentActionReceipt(ownerId, receiptId) {
       const receipt = receipts.get(receiptId)
@@ -201,6 +203,40 @@ test('Action approval 携带 context 时也必须精确绑定权威 proposal', a
   assert.match(harness.responses[0].body.approval.token, /\./u)
 })
 
+test('MCP Proposal 绑定旧 capability 后配置漂移，审批也不能把它执行到新能力', async () => {
+  const oldRuntime = createConfiguredMcpRuntime(parseMcpToolConfigurations([{
+    server: 'assets', tool: 'search', version: '1', url: 'https://old-mcp.example/rpc',
+  }]))
+  let externalCalls = 0
+  const currentRuntime = createConfiguredMcpRuntime(parseMcpToolConfigurations([{
+    server: 'assets', tool: 'search', version: '2', url: 'https://new-mcp.example/rpc',
+  }]), {
+    fetchImpl: async () => { externalCalls += 1; throw new Error('不应外呼') },
+  })
+  const oldDescriptor = oldRuntime.catalog()[0]
+  const action = proposal({
+    kind: 'mcp', toolName: 'mcp_call', risk: 'external', status: 'running',
+    arguments: {
+      server: 'assets', tool: 'search', arguments: { query: 'botanic' },
+      version: oldDescriptor.version, capabilityHash: oldDescriptor.capabilityHash,
+    },
+  })
+  const idempotencyKey = `agent-action-${action.id}-${action.toolName}`
+  const store = createStore(action)
+  const harness = createHarness(action, store, { agentActionApprovalSecret: 'mcp-stale-secret' }, {
+    configuredMcpTools: currentRuntime,
+  })
+
+  await harness.call('/api/agent-action-approvals', idempotencyKey)
+  const approval = harness.responses.at(-1).body.approval
+  await assert.rejects(
+    harness.call('/api/agent-actions', idempotencyKey, requestBody(action, { confirmed: true, approval })),
+    (error) => error.code === 'MCP_CAPABILITY_STALE' && error.statusCode === 409,
+  )
+  assert.equal(externalCalls, 0)
+  assert.equal([...store.receipts.values()].at(-1).status, 'failed')
+})
+
 test('Action status 只回读 succeeded Receipt.result，忽略客户端伪造身份且不重放工具', async () => {
   const action = proposal({ status: 'succeeded' })
   const execution = {
@@ -287,12 +323,32 @@ test('一次性手动重试先原子 consume 再执行：同回执传输重放�
 })
 
 test('v2 预留不下发 token：fresh approval 后消费，consume→claim 失败可用同 key 无 token 恢复', async () => {
+  let externalCalls = 0
+  const mcpRuntime = createConfiguredMcpRuntime(parseMcpToolConfigurations([{
+    server: 'assets', tool: 'search', version: '2', url: 'https://mcp.example/rpc',
+    inputSchema: {
+      type: 'object', additionalProperties: false,
+      properties: { query: { type: 'string', maxLength: 80 } }, required: ['query'],
+    },
+  }]), {
+    idFactory: () => 'request-route-mcp',
+    fetchImpl: async () => {
+      externalCalls += 1
+      return new Response(JSON.stringify({
+        jsonrpc: '2.0', id: 'request-route-mcp', result: { content: [{ type: 'text', text: 'found' }] },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    },
+  })
+  const descriptor = mcpRuntime.catalog()[0]
   const action = proposal({
     status: 'uncertain',
     kind: 'mcp',
     toolName: 'mcp_call',
     risk: 'external',
-    arguments: { server: 'assets', tool: 'search', arguments: { query: 'botanic' } },
+    arguments: {
+      server: 'assets', tool: 'search', arguments: { query: 'botanic' },
+      version: descriptor.version, capabilityHash: descriptor.capabilityHash,
+    },
   })
   const mcpOriginalKey = `agent-action-${action.id}-${action.toolName}`
   const store = createStore(action, [receiptFor(action, mcpOriginalKey, 'uncertain')])
@@ -306,15 +362,9 @@ test('v2 预留不下发 token：fresh approval 后消费，consume→claim 失�
     }
     return baseClaim(ownerId, claim)
   }
-  let externalCalls = 0
   const secret = 'v2-route-approval-secret'
   const harness = createHarness(action, store, { agentActionApprovalSecret: secret }, {
-    configuredMcpTools: {
-      'assets.search': async () => {
-        externalCalls += 1
-        return { content: [{ type: 'text', text: 'found' }] }
-      },
-    },
+    configuredMcpTools: mcpRuntime,
   })
   const resolveBody = requestBody(action, {
     decision: 'confirmed_not_applied',
@@ -551,7 +601,11 @@ test('省略 context 的另一新 key 不能绕过已消费授权指向', async 
 test('省略 context 的合法 Proposal 仍使用权威 attempt，明确 standalone skill_create 保持兼容', async () => {
   const action = proposal({ status: 'running' })
   const store = createStore(action)
-  store.putAgentSkill = async (_userId, skill) => structuredClone(skill)
+  let createdSkill
+  store.putAgentSkill = async (_userId, skill) => {
+    createdSkill = structuredClone(skill)
+    return structuredClone(skill)
+  }
   const harness = createHarness(action, store)
 
   await harness.call(
@@ -567,10 +621,19 @@ test('省略 context 的合法 Proposal 仍使用权威 attempt，明确 standal
     name: 'skill_create',
     toolCallId: 'call-skill-create-direct',
     confirmed: true,
-    arguments: { name: '夏日品牌规则', instructions: '保持自然光与品牌绿。' },
+    arguments: {
+      name: '夏日品牌规则',
+      instructions: '保持自然光与品牌绿。',
+      capabilities: ['write'],
+      manifest: { kind: 'guidance', toolAllowlist: ['workflow_create'], dependencies: [] },
+    },
   })
   assert.equal(harness.responses[1].status, 200)
   assert.equal(harness.responses[1].body.output.skill.name, '夏日品牌规则')
+  assert.deepEqual(createdSkill.capabilities, ['write'])
+  assert.deepEqual(createdSkill.manifest, {
+    version: 1, kind: 'guidance', toolAllowlist: ['workflow_create'], dependencies: [],
+  })
 })
 
 test('跨 Session/Message 的同 action id 不得共用 Receipt，省略 context 时也不猜测', async () => {

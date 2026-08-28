@@ -72,24 +72,51 @@ export function buildBotanicAgentOntology(document, contextNodeIds = []) {
  * 模型必须自己想到去读本体才能发现。这里把引用直接写进系统提示：拿不到画面是安全边界，
  * 拿不到名字则是缺陷——模型会转而去搜素材组，搜空后猜「素材在别的项目」。
  */
-export function botanicAgentContextBriefing(ontology, { visionDescribed = false, visionAttached = false } = {}) {
+export function botanicAgentContextBriefing(ontology, {
+  visionDescribed = false,
+  visionAttached = false,
+  mentions = [],
+  requestedContextNodeIds = [],
+} = {}) {
   const referenced = (ontology?.contextNodeIds ?? [])
     .map((id) => ontology.nodes.find((node) => node.id === id))
     .filter(Boolean)
-  if (!referenced.length) return ''
+  const mentionRefs = (Array.isArray(mentions) ? mentions : []).filter((mention) => (
+    mention?.kind === 'reference' && typeof mention.id === 'string' && mention.id.trim()
+  ))
+  const requestedIds = [...new Set([
+    ...mentionRefs.map((mention) => mention.id.trim()),
+    ...(Array.isArray(requestedContextNodeIds) ? requestedContextNodeIds : [])
+      .filter((id) => typeof id === 'string' && id.trim())
+      .map((id) => id.trim()),
+  ])]
+  const missing = requestedIds
+    .filter((id) => !referenced.some((node) => node.id === id))
+    .map((id) => ({
+      id,
+      label: mentionRefs.find((mention) => mention.id.trim() === id)?.label || '已引用素材',
+    }))
+  if (!referenced.length && !missing.length) return ''
   return [
-    '用户本轮引用了这些画布节点，它们就是这次任务的直接对象：',
-    ...referenced.map((node) => {
-      const details = [node.type, node.role, node.mediaKind].filter(Boolean).join(' · ')
-      return `- ${node.label}（${details}；节点 ID ${node.id}）`
-    }),
-    '它们确定存在于当前项目，不要再用素材组检索去找，也不要推测它们在别的项目里。',
+    ...(referenced.length ? [
+      '用户本轮引用了这些可从当前项目解析的画布节点，它们就是这次任务的直接对象：',
+      ...referenced.map((node) => {
+        const details = [node.type, node.role, node.mediaKind].filter(Boolean).join(' · ')
+        return `- ${node.label}（${details}；节点 ID ${node.id}）`
+      }),
+      '以上节点确定存在于当前项目，不要再用素材组检索去找，也不要推测它们在别的项目里。',
+    ] : []),
+    ...(missing.length ? [
+      '用户消息还携带了以下引用，但当前权威画布快照无法解析对应节点：',
+      ...missing.map((mention) => `- ${mention.label || '已引用素材'}（节点 ID ${mention.id.trim()}）`),
+      '不要声称用户没有提供引用，也不要假装看过这些素材；应明确说明引用当前无法读取。',
+    ] : []),
     // 原生附图 > 视觉识别描述 > 只有元数据；没有画面信息时必须明说，不要假装看过图。
     visionAttached
-      ? '这些图片已随用户消息直接附上，你可以直接查看画面内容。'
+      ? '可解析的引用图片已随用户消息直接附上，你可以直接查看其画面内容。'
       : visionDescribed
-        ? '画面内容见下方的视觉识别描述。'
-        : '你只能拿到这些元数据，看不到画面本身。需要画面细节时如实说明看不到，不要假装看过图。',
+        ? '可解析图片的画面内容见下方视觉识别描述；不要声称直接看到了原图。'
+        : '当前没有可用的引用画面内容；涉及视觉细节时先说明无法直接判断。',
   ].join('\n')
 }
 

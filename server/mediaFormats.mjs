@@ -56,6 +56,10 @@ export const MEDIA_LIMITS = Object.freeze({
   // 输出的精修全部失败。不要在 assertImagePixelBudget 里再次引用这个字段。
   maxCanonicalLongEdge: 4096,
   maxUploadBytes: 8 * 1024 * 1024,
+  // Provider 生成的 4K PNG 可能明显大于用户上传上限；只要 Botanic 接受并保存了
+  // 输出，就必须能把它作为下一轮 parent/reference 重新接收。
+  maxGeneratedImageBytes: 32 * 1024 * 1024,
+  maxGenerationInputBytes: 48 * 1024 * 1024,
   // 生产存储里存在 96 MP（8488×11317）JPEG，解成 RGBA 约 384 MB。解压炸弹防线。
   maxDecodePixels: 80_000_000,
   maxDocumentPages: 200,

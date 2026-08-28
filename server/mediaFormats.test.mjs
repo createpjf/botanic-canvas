@@ -96,6 +96,8 @@ test('上限是具名常量', () => {
   assert.equal(gptImage2CustomSizeLimits.maxPixels, 8_294_400)
   assert.ok(MEDIA_LIMITS.maxCanonicalPixels > gptImage2CustomSizeLimits.maxPixels)
   assert.equal(MEDIA_LIMITS.maxUploadBytes, 8 * 1024 * 1024)
+  assert.equal(MEDIA_LIMITS.maxGeneratedImageBytes, 32 * 1024 * 1024)
+  assert.equal(MEDIA_LIMITS.maxGenerationInputBytes, 48 * 1024 * 1024)
   assert.equal(MEDIA_LIMITS.maxDecodePixels, 80_000_000)
   assert.equal(MEDIA_LIMITS.maxDocumentPages, 200)
   assert.equal(MEDIA_LIMITS.maxExtractedChars, 200_000)

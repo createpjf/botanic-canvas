@@ -14,6 +14,10 @@ const reviewExecutionMethods = [
   'claimAgentReviewExecution',
   'commitAgentReviewExecution',
   'commitAgentReviewHumanDecisions',
+  'requestAgentReviewCancellation',
+  'finalizeAgentReviewCancellation',
+  'resolveAgentReviewOutcomeUnknown',
+  'readAgentReviewTaskForWorker',
 ]
 
 function harness({ artifactIds = ['generation:job-1:output-1'] } = {}) {
@@ -191,6 +195,232 @@ function postgresMethodSource(source, methodName, nextMethodName) {
 test('ProductStore 核心契约显式要求 Review execution 与 human decision 原子方法', () => {
   for (const method of reviewExecutionMethods) {
     assert.equal(productStoreCoreMethods.includes(method), true, method)
+  }
+})
+
+test('Local Review Adapter：queued 取消直接终态且 signal/idempotency 绑定不可漂移', () => {
+  const { directory, store, owner, task } = harness()
+  try {
+    const command = {
+      id: task.id,
+      projectId: task.projectId,
+      idempotencyKey: 'review-cancel-command-1',
+      signalId: 'review-cancel-signal-1',
+      requestedBy: 'forged-user',
+      reason: '用户主动停止',
+    }
+    const cancelled = store.requestAgentReviewCancellation(owner.id, command)
+    assert.equal(cancelled.kind, 'cancelled')
+    assert.equal(cancelled.task.status, 'cancelled')
+    assert.equal(cancelled.task.cancel.signalRequired, false)
+    assert.equal(cancelled.task.cancel.releaseBasis, 'not_started')
+    assert.equal(cancelled.task.cancel.requestedBy, owner.id, 'Adapter 必须覆盖调用方自述 actor')
+
+    const replay = store.requestAgentReviewCancellation(owner.id, command)
+    assert.equal(replay.kind, 'replay')
+    assert.equal(replay.changed, false)
+    const conflict = store.requestAgentReviewCancellation(owner.id, {
+      ...command,
+      signalId: 'review-cancel-signal-other',
+    })
+    assert.equal(conflict.kind, 'conflict')
+    assert.equal(store.readAgentReviewTaskForWorker(task.id).cancel.signalId, command.signalId)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('Local Review Adapter：running 取消等待真实退出证明，旧 Worker 被 terminal fence 拦截', (t) => {
+  let clock = 1_000
+  t.mock.method(Date, 'now', () => clock)
+  const { directory, store, owner, task } = harness()
+  try {
+    const claim = store.claimAgentReviewExecution(owner.id, {
+      id: task.id,
+      projectId: task.projectId,
+      leaseToken: 'review-cancel-lease-1',
+      leaseDurationMs: 30_000,
+    })
+    clock += 1
+    const cancelling = store.requestAgentReviewCancellation(owner.id, {
+      id: task.id,
+      projectId: task.projectId,
+      idempotencyKey: 'review-cancel-running-1',
+      signalId: 'review-cancel-running-signal-1',
+    })
+    assert.equal(cancelling.kind, 'cancelling')
+    assert.equal(cancelling.task.cancel.executionGeneration, claim.task.execution.generation)
+
+    const forgedFuture = store.finalizeAgentReviewCancellation(owner.id, {
+      id: task.id,
+      projectId: task.projectId,
+      signalId: cancelling.task.cancel.signalId,
+      executionGeneration: claim.task.execution.generation,
+      proof: { kind: 'lease_expired', observedAt: Number.MAX_SAFE_INTEGER },
+    })
+    assert.equal(forgedFuture.kind, 'pending', 'Adapter 必须使用自己的时钟而不是 proof observedAt')
+    const wrongLease = store.finalizeAgentReviewCancellation(owner.id, {
+      id: task.id,
+      projectId: task.projectId,
+      signalId: cancelling.task.cancel.signalId,
+      executionGeneration: claim.task.execution.generation,
+      proof: { kind: 'worker_exit', leaseToken: 'wrong-lease' },
+    })
+    assert.equal(wrongLease.kind, 'stale')
+
+    const cancelled = store.finalizeAgentReviewCancellation(owner.id, {
+      id: task.id,
+      projectId: task.projectId,
+      signalId: cancelling.task.cancel.signalId,
+      executionGeneration: claim.task.execution.generation,
+      proof: { kind: 'worker_exit', leaseToken: 'review-cancel-lease-1' },
+    })
+    assert.equal(cancelled.kind, 'cancelled')
+    assert.equal(cancelled.task.cancel.releaseBasis, 'worker_exit')
+    assert.equal(store.readAgentReviewTaskForWorker(task.id).execution.leaseToken, 'review-cancel-lease-1')
+
+    const lateCommit = store.commitAgentReviewExecution(owner.id, {
+      id: task.id,
+      projectId: task.projectId,
+      leaseToken: 'review-cancel-lease-1',
+      executionGeneration: claim.task.execution.generation,
+      status: 'running',
+    })
+    assert.equal(lateCommit.kind, 'stale')
+    assert.equal(store.readAgentReviewTaskForWorker(task.id).status, 'cancelled')
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('Local Review Adapter：outcome_unknown 可人工保留 unverifiable，且同键只能绑定同一决议', (t) => {
+  let clock = 10_000
+  t.mock.method(Date, 'now', () => clock)
+  const { directory, store, owner, task } = harness()
+  try {
+    const claim = store.claimAgentReviewExecution(owner.id, {
+      id: task.id,
+      projectId: task.projectId,
+      leaseToken: 'review-unknown-lease-1',
+      leaseDurationMs: 30_000,
+    })
+    store.commitAgentReviewExecution(owner.id, {
+      id: task.id,
+      projectId: task.projectId,
+      leaseToken: 'review-unknown-lease-1',
+      executionGeneration: claim.task.execution.generation,
+      status: 'running',
+      checkpoint: agentReviewPreparedCheckpoint({
+        artifactId: task.coverage.artifactIds[0],
+        preparedAt: clock,
+      }),
+    })
+    clock += 30_001
+    const uncertain = store.claimAgentReviewExecution(owner.id, {
+      id: task.id,
+      projectId: task.projectId,
+      leaseToken: 'review-unknown-takeover',
+      leaseDurationMs: 30_000,
+      allowTakeover: true,
+    })
+    assert.equal(uncertain.kind, 'outcome_unknown')
+
+    const viewer = createProjectMember(store, owner, task, 'viewer', 'reconcile-retry-denied')
+    assert.throws(() => store.resolveAgentReviewOutcomeUnknown(viewer.id, {
+      id: task.id,
+      projectId: task.projectId,
+      idempotencyKey: 'review-reconcile-viewer-retry',
+      action: 'retry_once',
+    }), (caught) => caught?.code === 'PROJECT_WRITE_FORBIDDEN')
+    assert.equal(store.readAgentReviewTaskForWorker(task.id).status, 'failed')
+
+    const command = {
+      id: task.id,
+      projectId: task.projectId,
+      idempotencyKey: 'review-reconcile-continue-1',
+      action: 'continue_unverifiable',
+      actorId: 'forged-actor',
+    }
+    const resolved = store.resolveAgentReviewOutcomeUnknown(owner.id, command)
+    assert.equal(resolved.kind, 'resolved')
+    assert.equal(resolved.task.status, 'completed')
+    assert.equal(resolved.task.results[0].source, 'human_resolution')
+    assert.equal(resolved.task.results[0].verdict, 'unverifiable')
+    assert.equal(resolved.task.reconciliation.resolutions[0].actorId, owner.id)
+    assert.equal(resolved.task.execution.checkpoint, undefined)
+
+    assert.equal(store.resolveAgentReviewOutcomeUnknown(owner.id, command).kind, 'replay')
+    assert.equal(store.resolveAgentReviewOutcomeUnknown(owner.id, {
+      ...command,
+      action: 'retry_once',
+    }).kind, 'conflict')
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('Local Review Adapter：retry_once 跨重启最多一次，第二次 outcome_unknown 仍拒绝重试', (t) => {
+  let clock = 20_000
+  t.mock.method(Date, 'now', () => clock)
+  const { directory, store, owner, task } = harness()
+  const driveOutcomeUnknown = (activeStore, leaseToken) => {
+    const claim = activeStore.claimAgentReviewExecution(owner.id, {
+      id: task.id,
+      projectId: task.projectId,
+      leaseToken,
+      leaseDurationMs: 30_000,
+      allowTakeover: true,
+    })
+    assert.equal(claim.kind, 'claimed')
+    activeStore.commitAgentReviewExecution(owner.id, {
+      id: task.id,
+      projectId: task.projectId,
+      leaseToken,
+      executionGeneration: claim.task.execution.generation,
+      status: 'running',
+      checkpoint: agentReviewPreparedCheckpoint({
+        artifactId: task.coverage.artifactIds[0],
+        preparedAt: clock,
+      }),
+    })
+    clock += 30_001
+    return activeStore.claimAgentReviewExecution(owner.id, {
+      id: task.id,
+      projectId: task.projectId,
+      leaseToken: `${leaseToken}-takeover`,
+      leaseDurationMs: 30_000,
+      allowTakeover: true,
+    })
+  }
+  try {
+    assert.equal(driveOutcomeUnknown(store, 'review-retry-risk-lease-1').kind, 'outcome_unknown')
+    const first = store.resolveAgentReviewOutcomeUnknown(owner.id, {
+      id: task.id,
+      projectId: task.projectId,
+      idempotencyKey: 'review-reconcile-retry-1',
+      action: 'retry_once',
+    })
+    assert.equal(first.kind, 'resolved')
+    assert.equal(first.task.status, 'queued')
+    assert.equal(first.task.reconciliation.retryCount, 1)
+    assert.equal(first.task.reconciliation.resolutions[0].risk.acknowledged, true)
+
+    assert.equal(driveOutcomeUnknown(store, 'review-retry-risk-lease-2').kind, 'outcome_unknown')
+    const reloaded = createProductStore({
+      dataPath: join(directory, 'product.json'),
+      bootstrapAccessToken: 'review-execution-owner',
+    })
+    const second = reloaded.resolveAgentReviewOutcomeUnknown(owner.id, {
+      id: task.id,
+      projectId: task.projectId,
+      idempotencyKey: 'review-reconcile-retry-2',
+      action: 'retry_once',
+    })
+    assert.equal(second.kind, 'retry_limit')
+    assert.equal(second.changed, false)
+    assert.equal(reloaded.readAgentReviewTaskForWorker(task.id).reconciliation.retryCount, 1)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
   }
 })
 
@@ -720,4 +950,71 @@ test('PostgreSQL/Supabase Adapter 与迁移暴露同一 Review fence，SQL 使�
   assert.match(humanRpc, /existing_decision - 'decidedAt'/u)
   assert.match(humanRpc, /results_payload := stored_payload->'results'/u)
   assert.doesNotMatch(humanRpc, /p_command->'results'/u)
+})
+
+test('Review 取消/对账三 Adapter 契约：DB clock、行锁、退出证明与 retry_once 上限同源', () => {
+  const local = readFileSync(new URL('./productStore.mjs', import.meta.url), 'utf8')
+  const postgres = readFileSync(new URL('./postgresProductStore.mjs', import.meta.url), 'utf8')
+  const supabase = readFileSync(new URL('./supabaseProductStore.mjs', import.meta.url), 'utf8')
+  const migration = readFileSync(new URL(
+    '../supabase/migrations/20260828190000_agent_review_cancellation_reconciliation.sql',
+    import.meta.url,
+  ), 'utf8')
+
+  for (const method of reviewExecutionMethods) {
+    assert.match(postgres, new RegExp(`async ${method}\\(`), method)
+    assert.match(supabase, new RegExp(`async ${method}\\(`), method)
+  }
+  for (const rpc of [
+    'botanic_request_agent_review_cancellation',
+    'botanic_finalize_agent_review_cancellation',
+    'botanic_resolve_agent_review_outcome_unknown',
+  ]) {
+    assert.match(migration, new RegExp(`create or replace function public\\.${rpc}\\(`), rpc)
+    assert.match(supabase, new RegExp(`'${rpc}'`), rpc)
+  }
+
+  const requestMethod = postgresMethodSource(
+    postgres,
+    'requestAgentReviewCancellation',
+    'finalizeAgentReviewCancellation',
+  )
+  const finalizeMethod = postgresMethodSource(
+    postgres,
+    'finalizeAgentReviewCancellation',
+    'resolveAgentReviewOutcomeUnknown',
+  )
+  const reconcileMethod = postgresMethodSource(
+    postgres,
+    'resolveAgentReviewOutcomeUnknown',
+    'commitAgentReviewHumanDecisions',
+  )
+  for (const method of [requestMethod, finalizeMethod, reconcileMethod]) {
+    assert.match(method, /pg_advisory_xact_lock\(hashtextextended/u)
+    assert.match(method, /agent_review_tasks[\s\S]*for update/u)
+    assert.match(method, /clock_timestamp\(\)/u)
+    assert.match(method, /persistAgentReviewExecutionDecision/u)
+  }
+  assert.match(finalizeMethod, /proof: \{ \.\.\.clone\(command\?\.proof\), observedAt \}/u)
+  assert.match(reconcileMethod, /'edit'/u)
+  assert.match(reconcileMethod, /command\?\.action === 'retry_once'[\s\S]*'create-generation'/u)
+  assert.match(reconcileMethod, /actorId: userId/u)
+  const localReconcile = local.slice(
+    local.indexOf('resolveAgentReviewOutcomeUnknown(userId, command)'),
+    local.indexOf('commitAgentReviewHumanDecisions(userId, command)'),
+  )
+  assert.match(localReconcile, /command\?\.action === 'retry_once'[\s\S]*'create-generation'/u)
+
+  assert.match(migration, /status in \('queued', 'running', 'cancelling', 'completed', 'failed', 'cancelled'\)/u)
+  assert.match(migration, /agent_review_tasks_cancel_signal_unique/u)
+  assert.match(migration, /agent_review_tasks_pending_idx[\s\S]*recovery_updated_at_ms asc, id collate "C" asc/u)
+  assert.match(migration, /agent_review_tasks_reconciliation_valid/u)
+  assert.match(migration, /retry_count <= 1/u)
+  assert.match(migration, /worker_exit[\s\S]*leaseToken/u)
+  assert.match(migration, /lease_expired[\s\S]*lease_expires_at > observed_at/u)
+  assert.match(migration, /action = 'retry_once'[\s\S]*retry generation forbidden/u)
+  assert.match(migration, /status in \('queued', 'running', 'cancelling'\)/u)
+  assert.match(migration, /AGENT_REVIEW_RETRY_MAY_DUPLICATE_PROVIDER_CALL/u)
+  assert.match(migration, /source', 'human_resolution'/u)
+  assert.doesNotMatch(migration, /p_command->'observedAt'/u, '数据库 RPC 不信任调用方时钟')
 })

@@ -11,6 +11,7 @@ import {
   connectedGenerateInputs,
   defaultImageGenerationModel,
   defaultSettingsForModel,
+  maximumReferencesForModel,
   normalizeGenerateNodeInputs,
 } from '../domain/generationRecipe'
 import type { CanvasGenerationReference } from '../domain/generationRecipe'
@@ -322,10 +323,15 @@ export function createCanvasAssetGraphActions({
         },
       }
       const target = connectToGenerateId ? document.nodes.find((item) => item.id === connectToGenerateId && item.type === 'generate') : undefined
-      const connectedAssetCount = target
-        ? document.edges.filter((edge) => edge.target === target.id && document.nodes.some((item) => item.id === edge.source && item.type === 'asset')).length
+      const targetData = target?.type === 'generate' ? target.data as GenerateNodeData : undefined
+      const targetModel = targetData
+        ? get().availableModels.find((model) => model.id === targetData.settings.model)
+        : undefined
+      const maximumReferences = maximumReferencesForModel(targetModel)
+      const connectedReferenceCount = target
+        ? connectedGenerateInputs(document, target.id).filter((item) => item.type === 'asset' || item.type === 'result').length
         : 0
-      const canConnect = Boolean(target && connectedAssetCount < 8)
+      const canConnect = Boolean(target && connectedReferenceCount < maximumReferences)
       const edges = canConnect && target
         ? [...document.edges, {
             id: `graph-edge-${nodeId}-${target.id}-${Date.now()}`,
@@ -342,7 +348,7 @@ export function createCanvasAssetGraphActions({
         assistantMessage: canConnect
           ? `已将「${asset.name}」加入画布，并连接到「${(target!.data as GenerateNodeData).label}」。`
           : target
-            ? `已将「${asset.name}」加入画布；「${(target.data as GenerateNodeData).label}」最多可连接 8 张图片。`
+            ? `已将「${asset.name}」加入画布；「${(target.data as GenerateNodeData).label}」最多可连接 ${maximumReferences} 个参考素材。`
             : `已将「${asset.name}」加入画布，可拖拽调整位置。`,
       })
     },

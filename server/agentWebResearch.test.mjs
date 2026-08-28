@@ -33,6 +33,10 @@ test('只接受公开 HTTPS，拒绝内网、metadata 和带用户信息的地�
   assert.equal(classifyPublicHttpUrl('https://[fd00::5]/').ok, false)
   assert.equal(classifyPublicHttpUrl('https://[fe80::1]/').ok, false)
   assert.equal(classifyPublicHttpUrl('https://[::ffff:127.0.0.1]/').ok, false)
+  for (const reserved of ['1::1', '4000::1', '6000::1', '8000::1', 'a000::1']) {
+    assert.equal(classifyPublicHttpUrl(`https://[${reserved}]/`).ok, false)
+  }
+  assert.equal(classifyPublicHttpUrl('https://[2606:4700:4700::1111]/').ok, true)
   assert.equal(classifyPublicHttpUrl('http://127.0.0.1:8787/mock', { allowLocal: true }).ok, true)
   assert.equal(classifyPublicHttpUrl('http://[::1]:8787/mock', { allowLocal: true }).ok, true)
 })

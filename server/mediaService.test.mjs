@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { Readable } from 'node:stream'
 import test from 'node:test'
 import { createMediaService } from './mediaService.mjs'
 
@@ -104,6 +105,101 @@ test('参考图片读取超时时重试，不会让生成任务无限等待', as
     buffer: Buffer.from('image'),
   })
   assert.equal(reads, 2)
+})
+
+test('生成任务取消会中止当前媒体读取且不继续重试', async () => {
+  let reads = 0
+  const controller = new AbortController()
+  const media = createMediaService({
+    productStore: {
+      async readMediaObject() {
+        return { projectId: 'project-a', storageKey: 'project-a/cancelled', contentType: 'image/png' }
+      },
+    },
+    objectStore: {
+      async get(_storageKey, { signal } = {}) {
+        reads += 1
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+        })
+      },
+    },
+  })
+
+  const reading = media.readGenerationInput('owner', 'media_source', 'project-a', {
+    signal: controller.signal,
+  })
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(reads, 1)
+  controller.abort(new Error('cancelled by user'))
+  await assert.rejects(reading, /cancelled by user/u)
+  assert.equal(reads, 1)
+})
+
+test('Provider 图片使用 32MB 输出上限，不受 8MB 用户上传上限误伤', async () => {
+  let persistedBytes = 0
+  const pngHeader = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+  const providerImage = Buffer.concat([pngHeader, Buffer.alloc(9 * 1024 * 1024)])
+  const media = createMediaService({
+    productStore: {
+      async createMediaObject() {},
+      async readMediaObject() { return { id: 'media_4k' } },
+    },
+    objectStore: {
+      async putMedia({ bytes }) {
+        persistedBytes = bytes.length
+        return { id: 'media_4k', storageKey: 'project-a/media_4k.png', contentType: 'image/png', byteSize: bytes.length }
+      },
+    },
+  })
+
+  const url = await media.persistProviderImage({
+    ownerId: 'owner', projectId: 'project-a',
+    image: { dataUrl: `data:image/png;base64,${providerImage.toString('base64')}` },
+  })
+  assert.equal(url, '/api/media/media_4k')
+  assert.equal(persistedBytes, providerImage.length)
+})
+
+test('已存生成输入按元数据与读取流双重限流，不会先完整缓冲超大对象', async () => {
+  let objectReads = 0
+  const metadataBlocked = createMediaService({
+    productStore: {
+      async readMediaObject() {
+        return {
+          projectId: 'project-a', storageKey: 'too-large', contentType: 'image/png',
+          byteSize: 9,
+        }
+      },
+    },
+    objectStore: { async get() { objectReads += 1; return { body: Buffer.alloc(0) } } },
+    maximumGeneratedImageBytes: 8,
+  })
+  await assert.rejects(
+    metadataBlocked.readGenerationInput('owner', 'media_large', 'project-a'),
+    /超过可重新接收/u,
+  )
+  assert.equal(objectReads, 0)
+
+  const streamBlocked = createMediaService({
+    productStore: {
+      async readMediaObject() {
+        return { projectId: 'project-a', storageKey: 'legacy-large', contentType: 'image/png' }
+      },
+    },
+    objectStore: {
+      async get() {
+        objectReads += 1
+        return { body: Readable.from([Buffer.alloc(5), Buffer.alloc(4)]) }
+      },
+    },
+    maximumGeneratedImageBytes: 8,
+  })
+  await assert.rejects(
+    streamBlocked.readGenerationInput('owner', 'media_legacy_large', 'project-a'),
+    /超过可重新接收/u,
+  )
+  assert.equal(objectReads, 1)
 })
 
 test('H3 的 MP4 输出通过同一媒体授权契约持久化', async () => {

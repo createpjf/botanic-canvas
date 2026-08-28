@@ -300,6 +300,8 @@ export function validateAgentSessionEntity(value, { now = Date.now() } = {}) {
   const session = object(value, 'Agent 会话')
   const executionMode = session.executionMode ?? 'manual'
   if (!sessionModes.has(executionMode)) invalid('Agent 会话执行模式无效。')
+  const kind = session.kind ?? 'primary'
+  if (!['primary', 'subagent'].includes(kind)) invalid('Agent 会话类型无效。')
   const createdAt = timestamp(session.createdAt, now)
   const updatedAt = Math.max(createdAt, timestamp(session.updatedAt, now))
   const result = {
@@ -309,6 +311,15 @@ export function validateAgentSessionEntity(value, { now = Date.now() } = {}) {
     contextNodeIds: uniqueTextList(session.contextNodeIds, 'Agent 上下文节点', 32),
     createdAt,
     updatedAt,
+  }
+  if (kind === 'subagent') {
+    result.kind = 'subagent'
+    result.subagentId = text(session.subagentId, 'Subagent 标识', 160)
+    if (session.parentSessionId !== undefined) {
+      result.parentSessionId = text(session.parentSessionId, 'Subagent 父会话标识', 160)
+    }
+  } else if (session.subagentId !== undefined || session.parentSessionId !== undefined) {
+    invalid('普通 Agent 会话不能绑定 Subagent 字段。')
   }
   if (session.plannerModel !== undefined) result.plannerModel = text(session.plannerModel, 'Agent 模型', 160)
   if (session.mountedSkillIds !== undefined) result.mountedSkillIds = uniqueTextList(session.mountedSkillIds, 'Agent 已挂载 Skill', 16)

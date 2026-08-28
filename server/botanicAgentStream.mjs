@@ -8,6 +8,40 @@
 
 const DONE = '[DONE]'
 
+function usageToken(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : undefined
+}
+
+function firstUsageToken(usage, names) {
+  for (const name of names) {
+    const value = usageToken(usage?.[name])
+    if (value !== undefined) return value
+  }
+  return undefined
+}
+
+/**
+ * 把 Chat Completions / Responses 风格的 usage 收敛成内部统一计量单位。
+ * 不保留 Provider 原始对象，避免后续计量模块绑定某一家字段命名。
+ */
+export function normalizeProviderUsage(usage) {
+  if (!usage || typeof usage !== 'object' || Array.isArray(usage)) return undefined
+  const inputTokens = firstUsageToken(usage, ['prompt_tokens', 'input_tokens'])
+  const outputTokens = firstUsageToken(usage, ['completion_tokens', 'output_tokens'])
+  const reportedTotal = usageToken(usage.total_tokens)
+  const totalTokens = reportedTotal ?? (
+    inputTokens !== undefined && outputTokens !== undefined
+      ? inputTokens + outputTokens
+      : undefined
+  )
+  if (inputTokens === undefined && outputTokens === undefined && totalTokens === undefined) return undefined
+  return {
+    ...(inputTokens === undefined ? {} : { inputTokens }),
+    ...(outputTokens === undefined ? {} : { outputTokens }),
+    ...(totalTokens === undefined ? {} : { totalTokens }),
+  }
+}
+
 function normalizeToolCallDelta(state, delta) {
   const index = Number.isInteger(delta?.index) ? delta.index : 0
   const current = state.get(index) ?? { index, id: '', type: 'function', function: { name: '', arguments: '' } }
@@ -27,6 +61,7 @@ export function createChatCompletionAccumulator({ onEvent } = {}) {
   let content = ''
   let reasoning = ''
   let finishReason
+  let usage
   const toolCalls = new Map()
   const namedToolCalls = new Set()
   const emit = (event) => {
@@ -36,6 +71,8 @@ export function createChatCompletionAccumulator({ onEvent } = {}) {
 
   return {
     push(chunk) {
+      // include_usage 的最后一块通常没有 choices；必须在 choice 之前保留。
+      if (chunk && Object.prototype.hasOwnProperty.call(chunk, 'usage')) usage = chunk.usage
       const choice = chunk?.choices?.[0]
       if (!choice) return
       const delta = choice.delta ?? {}
@@ -83,6 +120,7 @@ export function createChatCompletionAccumulator({ onEvent } = {}) {
           },
           ...(finishReason ? { finish_reason: finishReason } : {}),
         }],
+        ...(usage === undefined ? {} : { usage }),
       }
     },
   }

@@ -1,4 +1,5 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
+import { canonicalHash } from './canonicalHash.mjs'
 
 /**
  * 能力词表，**顺序即风险高低**。风险语义归 Skill 模块所有，`botanicAgentTools`
@@ -99,6 +100,35 @@ export const BOTANIC_AGENT_SKILL_KINDS = Object.freeze(['guidance', 'evaluator']
 const EVALUATOR_VERDICTS = Object.freeze(['pass', 'fail', 'unverifiable'])
 
 const TOOL_NAME = /^[a-z][a-z0-9_]{1,63}$/
+// 与 agentStructuredContract 的字段词表一致。outputSchema 会进入跨 Adapter
+// canonical hash；把对象键限制为 ASCII 后，Node UTF-16 与 PostgreSQL C collation
+// 不再可能因为 Unicode 键排序不同而得到两个 contentHash。
+const EVALUATOR_SCHEMA_KEY = /^[A-Za-z_][A-Za-z0-9_.-]{0,79}$/
+const FORBIDDEN_EVALUATOR_SCHEMA_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
+
+function assertEvaluatorSchemaKeys(raw) {
+  const pending = [raw]
+  const visited = new Set()
+  while (pending.length) {
+    const current = pending.pop()
+    if (!current || typeof current !== 'object' || visited.has(current)) continue
+    visited.add(current)
+    if (Array.isArray(current)) {
+      pending.push(...current)
+      continue
+    }
+    for (const key of Object.keys(current)) {
+      if (!EVALUATOR_SCHEMA_KEY.test(key) || FORBIDDEN_EVALUATOR_SCHEMA_KEYS.has(key)) {
+        throw new BotanicAgentSkillError(
+          400,
+          'INVALID_AGENT_SKILL_MANIFEST',
+          `evaluator Skill 的输出 Schema 字段键「${key}」无效。`,
+        )
+      }
+      pending.push(current[key])
+    }
+  }
+}
 
 /**
  * 校验 evaluator 的输出 Schema。
@@ -126,6 +156,7 @@ function normalizeEvaluatorOutputSchema(raw, kind) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw) || raw.type !== 'object') {
     throw new BotanicAgentSkillError(400, 'INVALID_AGENT_SKILL_MANIFEST', 'evaluator Skill 必须声明对象形状的输出 Schema。')
   }
+  assertEvaluatorSchemaKeys(raw)
   const properties = raw.properties && typeof raw.properties === 'object' ? raw.properties : {}
   const required = Array.isArray(raw.required) ? raw.required : []
   if (!required.includes('verdict')) {
@@ -188,10 +219,243 @@ export function normalizeAgentSkillManifest(raw) {
     dependencies: dependencies.map((dependency) => {
       const skillId = text(dependency?.skillId, 'Skill 依赖标识', 160)
       const version = dependency?.version === undefined ? undefined : Number(dependency.version)
-      if (version !== undefined && (!Number.isInteger(version) || version < 1)) {
+      if (version !== undefined && (!Number.isSafeInteger(version) || version < 1)) {
         throw new BotanicAgentSkillError(400, 'INVALID_AGENT_SKILL_MANIFEST', `Skill 依赖「${skillId}」的版本无效。`)
       }
-      return { skillId, ...(version === undefined ? {} : { version }) }
+      const contentHash = dependency?.contentHash === undefined
+        ? undefined
+        : text(dependency.contentHash, `Skill 依赖「${skillId}」的内容摘要`, 200)
+      return {
+        skillId,
+        ...(version === undefined ? {} : { version }),
+        ...(contentHash === undefined ? {} : { contentHash }),
+      }
+    }),
+  }
+}
+
+/**
+ * Skill 内容摘要的结构版本。旧记录只对 instructions 做 SHA-256；
+ * V2 把所有会影响执行的字段一起纳入，避免「Manifest 已换、hash 没换」。
+ */
+export const BOTANIC_AGENT_SKILL_CONTENT_HASH_VERSION = 2
+
+function normalizedSkillExecution(input) {
+  const name = text(input?.name, 'Skill 名称', 80)
+  const instructions = text(input?.instructions, 'Skill 规则', 4000)
+  const capabilities = normalizeBotanicAgentSkillCapabilities(input?.capabilities)
+  const manifest = normalizeAgentSkillManifest(input?.manifest)
+  return { name, instructions, capabilities, ...(manifest ? { manifest } : {}) }
+}
+
+function manifestHashSemantics(manifest) {
+  if (!manifest) return null
+  // PostgreSQL `COLLATE "C"` 对 UTF-8 按代码点顺序比较。这里不用受 ICU/
+  // 运行环境影响的 localeCompare，确保 Node 与 Supabase RPC 重算同一个 hash。
+  const compareStableText = (left, right) => {
+    const leftPoints = [...String(left)]
+    const rightPoints = [...String(right)]
+    const length = Math.min(leftPoints.length, rightPoints.length)
+    for (let index = 0; index < length; index += 1) {
+      const difference = leftPoints[index].codePointAt(0) - rightPoints[index].codePointAt(0)
+      if (difference) return difference
+    }
+    return leftPoints.length - rightPoints.length
+  }
+  return {
+    version: manifest.version,
+    kind: manifest.kind,
+    ...(manifest.outputSchema ? { outputSchema: manifest.outputSchema } : {}),
+    // 这三者的声明顺序不影响执行；为重试使用稳定的语义顺序。
+    toolAllowlist: [...manifest.toolAllowlist].sort(compareStableText),
+    dependencies: [...manifest.dependencies]
+      .map((dependency) => ({ ...dependency }))
+      .sort((left, right) => (
+        compareStableText(left.skillId, right.skillId)
+        || Number(left.version ?? 0) - Number(right.version ?? 0)
+        || compareStableText(left.contentHash ?? '', right.contentHash ?? '')
+      )),
+  }
+}
+
+/** Adapter 与领域层共用的 Skill 执行语义摘要入口。 */
+export function agentSkillExecutionContentHash(input) {
+  const normalized = normalizedSkillExecution(input)
+  return canonicalHash({
+    schemaVersion: BOTANIC_AGENT_SKILL_CONTENT_HASH_VERSION,
+    name: normalized.name,
+    instructions: normalized.instructions,
+    capabilities: [...normalized.capabilities]
+      .sort((left, right) => skillRiskOrder.indexOf(left) - skillRiskOrder.indexOf(right)),
+    manifest: manifestHashSemantics(normalized.manifest),
+  })
+}
+
+function positiveInteger(value) {
+  const number = Number(value)
+  return Number.isSafeInteger(number) && number >= 1 ? number : undefined
+}
+
+function timestamp(value, name) {
+  const number = Number(value)
+  if (!Number.isFinite(number) || number < 0) {
+    throw new BotanicAgentSkillError(400, 'INVALID_AGENT_SKILL_VERSION', `${name}无效。`)
+  }
+  return number
+}
+
+/**
+ * 构造不可变版本的完整快照。这是三个 ProductStore Adapter 应共用的入口：
+ * Adapter 不再自己只 hash instructions，也不再用「写一次就 +1」判定版本。
+ */
+export function buildAgentSkillVersionSnapshot(input, options) {
+  const { version, updatedAt, publishedBy, publishedAt } = options ?? {}
+  const normalizedVersion = positiveInteger(version)
+  if (!normalizedVersion) {
+    throw new BotanicAgentSkillError(400, 'INVALID_AGENT_SKILL_VERSION', 'Skill 版本无效。')
+  }
+  const normalized = normalizedSkillExecution(input)
+  const normalizedUpdatedAt = timestamp(updatedAt, 'Skill 版本更新时间')
+  if ((publishedBy === undefined) !== (publishedAt === undefined)) {
+    throw new BotanicAgentSkillError(400, 'INVALID_AGENT_SKILL_VERSION', 'Skill 版本的发布人与发布时间必须同时存在。')
+  }
+  const publication = publishedBy === undefined
+    ? {}
+    : {
+        publishedBy: text(publishedBy, 'Skill 版本发布人', 160),
+        publishedAt: timestamp(publishedAt, 'Skill 版本发布时间'),
+      }
+  return {
+    version: normalizedVersion,
+    name: normalized.name,
+    instructions: normalized.instructions,
+    capabilities: [...normalized.capabilities],
+    ...(normalized.manifest ? { manifest: structuredClone(normalized.manifest) } : {}),
+    contentHash: agentSkillExecutionContentHash(normalized),
+    updatedAt: normalizedUpdatedAt,
+    ...publication,
+  }
+}
+
+/**
+ * 验证新版本快照的完整性和摘要。`allowLegacy` 只用于读取历史记录，
+ * 不会伪造旧版本当时未保存的 name / capabilities / manifest。
+ */
+export function validateAgentSkillVersionSnapshot(raw, options) {
+  const allowLegacy = options?.allowLegacy === true
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new BotanicAgentSkillError(400, 'INVALID_AGENT_SKILL_VERSION', 'Skill 版本快照无效。')
+  }
+  const complete = typeof raw.name === 'string'
+    && Array.isArray(raw.capabilities)
+    && typeof raw.instructions === 'string'
+    && typeof raw.contentHash === 'string'
+  if (!complete && allowLegacy) return structuredClone(raw)
+  if (!complete) {
+    throw new BotanicAgentSkillError(400, 'INVALID_AGENT_SKILL_VERSION', 'Skill 版本快照不完整。')
+  }
+  const snapshot = buildAgentSkillVersionSnapshot(raw, {
+    version: raw.version,
+    updatedAt: raw.updatedAt,
+    ...(raw.publishedBy === undefined && raw.publishedAt === undefined
+      ? {}
+      : { publishedBy: raw.publishedBy, publishedAt: raw.publishedAt }),
+  })
+  if (snapshot.contentHash !== raw.contentHash) {
+    if (allowLegacy) return structuredClone(raw)
+    throw new BotanicAgentSkillError(409, 'AGENT_SKILL_VERSION_HASH_MISMATCH', 'Skill 版本快照与内容摘要不一致。')
+  }
+  return snapshot
+}
+
+function currentAgentSkillVersion(existing) {
+  return Math.max(
+    positiveInteger(existing?.version) ?? 0,
+    ...(Array.isArray(existing?.versions)
+      ? existing.versions.map((entry) => positiveInteger(entry?.version) ?? 0)
+      : [0]),
+  ) || 1
+}
+
+function legacyAgentSkillVersionPrefix(existing, version, now) {
+  // 最早的 Skill 行可能只在顶层保存当前版本，没有 versions 数组。
+  // 首次 V2 写入时先把这份旧身份冻结成「明确不完整」的 legacy 前缀：
+  // 保留旧 hash，不伪造当时没有的 name/capabilities/manifest，后续版本才用 V2 hash。
+  return {
+    version,
+    instructions: text(existing?.instructions, 'Skill legacy 规则', 4000),
+    contentHash: text(existing?.contentHash, 'Skill legacy 内容摘要', 200),
+    updatedAt: timestamp(existing?.updatedAt ?? existing?.createdAt ?? now, 'Skill legacy 版本更新时间'),
+  }
+}
+
+/**
+ * 单一版本判定：相同执行语义的重试不追加版本；执行语义或 hash
+ * 算法变化才追加。返回的 snapshot / versions 可由所有 Adapter 直接持久化。
+ */
+export function prepareAgentSkillVersionSnapshot(existing, input, options) {
+  const { now = Date.now(), publishedBy, publishedAt = now } = options ?? {}
+  const normalized = normalizedSkillExecution(input)
+  const contentHash = agentSkillExecutionContentHash(normalized)
+  const previousVersion = existing ? currentAgentSkillVersion(existing) : 0
+  const previousSnapshot = existing ? agentSkillVersion(existing, previousVersion) : undefined
+  const previousHash = previousSnapshot?.contentHash
+    ?? (Number(existing?.version) === previousVersion ? existing?.contentHash : undefined)
+  const changed = !existing || previousHash !== contentHash
+  const version = existing ? previousVersion + (changed ? 1 : 0) : 1
+  const inheritedPublication = !changed && publishedBy === undefined
+    ? (previousSnapshot?.publishedBy
+        ? { publishedBy: previousSnapshot.publishedBy, publishedAt: previousSnapshot.publishedAt }
+        : (Number(existing?.version) === previousVersion && existing?.publishedBy
+            ? { publishedBy: existing.publishedBy, publishedAt: existing.publishedAt }
+            : {}))
+    : {}
+  const publication = publishedBy === undefined
+    ? inheritedPublication
+    : { publishedBy, publishedAt }
+  const snapshot = buildAgentSkillVersionSnapshot(normalized, {
+    version,
+    updatedAt: changed ? now : Number(previousSnapshot?.updatedAt ?? existing?.updatedAt ?? now),
+    ...publication,
+  })
+  const previousVersions = Array.isArray(existing?.versions) && existing.versions.length
+    ? existing.versions.map((entry) => structuredClone(entry))
+    : (existing ? [legacyAgentSkillVersionPrefix(existing, previousVersion, now)] : [])
+  const versions = changed
+    ? [...previousVersions, snapshot]
+    : (previousVersions.some((entry) => Number(entry?.version) === version)
+        ? previousVersions.map((entry) => (Number(entry?.version) === version ? snapshot : entry))
+        : [...previousVersions, snapshot])
+  return { changed, version, contentHash, snapshot, versions }
+}
+
+/**
+ * 发布时将可解析的依赖固定到 version + contentHash。未传目录、依赖缺失，
+ * 或存量版本没有 hash 时保留旧声明，由既有运行时 dependencyIssues 路径告警。
+ */
+export function freezeAgentSkillDependencies(manifest, catalog = []) {
+  const normalized = normalizeAgentSkillManifest(manifest)
+  if (!normalized) return undefined
+  const byId = new Map((catalog ?? []).filter((entry) => entry?.id).map((entry) => [entry.id, entry]))
+  return {
+    ...normalized,
+    dependencies: normalized.dependencies.map((dependency) => {
+      const target = byId.get(dependency.skillId)
+      if (!target) return dependency
+      const version = dependency.version ?? positiveInteger(target.version)
+      if (!version) return dependency
+      const snapshot = agentSkillVersion(target, version)
+      const currentHash = Number(target.version) === version ? target.contentHash : undefined
+      const contentHash = snapshot?.contentHash ?? currentHash
+      if (!contentHash) return dependency
+      if (dependency.contentHash && dependency.contentHash !== contentHash) {
+        throw new BotanicAgentSkillError(
+          409,
+          'AGENT_SKILL_DEPENDENCY_STALE',
+          `Skill 依赖「${dependency.skillId}@${version}」的内容摘要已变化。`,
+        )
+      }
+      return { skillId: dependency.skillId, version, contentHash }
     }),
   }
 }
@@ -259,23 +523,51 @@ export function resolveAgentSkillDependencies(skill, catalog = []) {
   const missing = []
   const unusable = []
   const cyclic = []
-  const seen = new Set([skill?.id])
-  const queue = [...(skill?.manifest?.dependencies ?? [])]
-  while (queue.length) {
-    const dependency = queue.shift()
-    if (dependency.skillId === skill?.id) { cyclic.push(dependency.skillId); continue }
-    if (seen.has(dependency.skillId)) { cyclic.push(dependency.skillId); continue }
-    seen.add(dependency.skillId)
-    const target = byId.get(dependency.skillId)
-    if (!target) { missing.push(dependency.skillId); continue }
-    if (!isUsableAgentSkill(target)) { unusable.push(dependency.skillId); continue }
-    // 声明了版本却取不到那个版本，等同依赖缺失：按「当前版本」顶替会让规则悄悄变了。
-    if (dependency.version !== undefined && !agentSkillVersion(target, dependency.version)) {
-      missing.push(`${dependency.skillId}@${dependency.version}`)
-      continue
+  const completed = new Set()
+  const pushUnique = (list, value) => { if (!list.includes(value)) list.push(value) }
+
+  const visit = (dependency, stack) => {
+    const dependencyId = dependency?.skillId
+    if (!dependencyId) return
+    // `stack` 只表示当前 DFS 路径。不能用全局 seen 当环判定：
+    // top -> left -> shared 和 top -> right -> shared 是合法 diamond，不是环。
+    if (stack.has(dependencyId)) {
+      pushUnique(cyclic, dependencyId)
+      return
     }
-    queue.push(...(target.manifest?.dependencies ?? []))
+    const target = byId.get(dependencyId)
+    if (!target) { pushUnique(missing, dependencyId); return }
+    if (!isUsableAgentSkill(target)) { pushUnique(unusable, dependencyId); return }
+
+    const pinnedSnapshot = dependency.version === undefined
+      ? undefined
+      : agentSkillVersion(target, dependency.version)
+    if (dependency.version !== undefined && !pinnedSnapshot) {
+      pushUnique(missing, `${dependencyId}@${dependency.version}`)
+      return
+    }
+    const resolvedVersion = dependency.version ?? positiveInteger(target.version)
+    const resolvedHash = pinnedSnapshot?.contentHash
+      ?? (resolvedVersion === undefined || Number(target.version) === resolvedVersion ? target.contentHash : undefined)
+    if (dependency.contentHash && resolvedHash && dependency.contentHash !== resolvedHash) {
+      pushUnique(missing, resolvedVersion ? `${dependencyId}@${resolvedVersion}` : dependencyId)
+      return
+    }
+    const nodeKey = `${dependencyId}@${resolvedVersion ?? 'current'}`
+    if (completed.has(nodeKey)) return
+
+    stack.add(dependencyId)
+    // 新版本快照有自己的 Manifest；存量快照没有时才回退当前 Manifest。
+    const completePinnedSnapshot = typeof pinnedSnapshot?.name === 'string'
+      && Array.isArray(pinnedSnapshot?.capabilities)
+    const nestedManifest = completePinnedSnapshot ? pinnedSnapshot.manifest : target.manifest
+    for (const nested of nestedManifest?.dependencies ?? []) visit(nested, stack)
+    stack.delete(dependencyId)
+    completed.add(nodeKey)
   }
+
+  const stack = new Set(skill?.id ? [skill.id] : [])
+  for (const dependency of skill?.manifest?.dependencies ?? []) visit(dependency, stack)
   return { ok: !missing.length && !unusable.length && !cyclic.length, missing, unusable, cyclic }
 }
 
@@ -309,33 +601,37 @@ export function createAgentSkill(input, {
   ownerId,
   approvedBy,
   riskOf,
+  skillCatalog,
   now = Date.now(),
 } = {}) {
   if (!ownerId) throw new TypeError('项目 Skill 缺少所有者。')
-  const manifest = normalizeAgentSkillManifest(input.manifest)
+  const manifest = approvedBy && skillCatalog !== undefined
+    ? freezeAgentSkillDependencies(input.manifest, skillCatalog)
+    : normalizeAgentSkillManifest(input.manifest)
+  const normalized = normalizedSkillExecution({ ...input, ...(manifest ? { manifest } : { manifest: undefined }) })
   // 少报能力在**发布时**就指出来，不留到运行时靠取最大值兜底。
-  assertAgentSkillManifestConsistent({ capabilities: input.capabilities, manifest }, riskOf)
-  const contentHash = createHash('sha256').update(input.instructions).digest('base64url')
+  assertAgentSkillManifestConsistent({ capabilities: normalized.capabilities, manifest }, riskOf)
   const lifecycle = approvedBy ? 'published' : 'draft'
+  const prepared = prepareAgentSkillVersionSnapshot(undefined, normalized, {
+    now,
+    ...(approvedBy ? { publishedBy: approvedBy, publishedAt: now } : {}),
+  })
   return {
     id,
     projectId: input.projectId,
     ownerId,
-    name: input.name,
-    instructions: input.instructions,
+    name: normalized.name,
+    instructions: normalized.instructions,
     lifecycle,
     status: statusForLifecycle(lifecycle),
     createdAt: now,
     updatedAt: now,
-    version: 1,
-    contentHash,
-    capabilities: normalizeBotanicAgentSkillCapabilities(input.capabilities),
+    version: prepared.version,
+    contentHash: prepared.contentHash,
+    capabilities: normalized.capabilities,
     ...(manifest ? { manifest } : {}),
     ...(approvedBy ? { governance: 'project-approved', publishedBy: approvedBy, publishedAt: now } : {}),
-    versions: [{
-      version: 1, contentHash, instructions: input.instructions, updatedAt: now,
-      ...(approvedBy ? { publishedBy: approvedBy, publishedAt: now } : {}),
-    }],
+    versions: prepared.versions,
   }
 }
 
@@ -345,42 +641,65 @@ export function createAgentSkill(input, {
  * 已发布版本原位可改的话，持有 `version: N` 的历史 Run 会突然按新内容执行，
  * 「历史 Run 仍引用旧版本」就是一句无法验证的声明（ADR 0006）。
  */
-export function updateAgentSkill(existing, input, { actorId, approvedBy, riskOf, now = Date.now() } = {}) {
+export function updateAgentSkill(existing, input, {
+  actorId,
+  approvedBy,
+  riskOf,
+  skillCatalog,
+  now = Date.now(),
+} = {}) {
   if (!existing?.id) throw new TypeError('Skill 更新缺少原始记录。')
   if (!actorId) throw new TypeError('Skill 更新缺少操作者。')
-  const manifest = input?.manifest === undefined
+  let manifest = input?.manifest === undefined
     ? normalizeAgentSkillManifest(existing.manifest)
     : normalizeAgentSkillManifest(input.manifest)
-  assertAgentSkillManifestConsistent({
+  if (approvedBy && skillCatalog !== undefined) {
+    manifest = freezeAgentSkillDependencies(manifest, skillCatalog)
+  }
+  const normalized = normalizedSkillExecution({
+    name: input?.name === undefined ? existing.name : input.name,
+    instructions: input?.instructions === undefined ? existing.instructions : input.instructions,
     capabilities: input?.capabilities === undefined ? existing.capabilities : input.capabilities,
+    ...(manifest ? { manifest } : {}),
+  })
+  assertAgentSkillManifestConsistent({
+    capabilities: normalized.capabilities,
     manifest,
   }, riskOf)
-  const instructions = text(input?.instructions ?? existing.instructions, 'Skill 规则', 4000)
-  const contentHash = createHash('sha256').update(instructions).digest('base64url')
-  const versions = Array.isArray(existing.versions) ? [...existing.versions] : []
-  const version = Number(existing.version ?? versions.length ?? 1) + 1
+  const prepared = prepareAgentSkillVersionSnapshot(existing, normalized, {
+    now,
+    ...(approvedBy ? { publishedBy: approvedBy, publishedAt: now } : {}),
+  })
+
+  // 顶层已是 V2 hash 但没有 versions 的存量行，需要一次同版完整快照
+  // backfill。这不是语义更新：保留原生命周期、批准人和 updatedAt。
+  const executionReplay = !approvedBy || existing.lifecycle === 'published'
+  if (!prepared.changed && (!Array.isArray(existing.versions) || !existing.versions.length)
+    && executionReplay) {
+    return { ...existing, versions: prepared.versions }
+  }
+  // 完全相同的执行语义是重试，不降级生命周期、不改 updatedAt，也不追加版本。
+  if (!prepared.changed && executionReplay) return existing
+
   const lifecycle = approvedBy ? 'published' : 'draft'
-  return {
+  const result = {
     ...existing,
-    name: input?.name ? text(input.name, 'Skill 名称', 80) : existing.name,
-    instructions,
-    capabilities: input?.capabilities === undefined
-      ? normalizeBotanicAgentSkillCapabilities(existing.capabilities)
-      : normalizeBotanicAgentSkillCapabilities(input.capabilities),
+    name: normalized.name,
+    instructions: normalized.instructions,
+    capabilities: normalized.capabilities,
     ...(manifest ? { manifest } : {}),
     lifecycle,
     status: statusForLifecycle(lifecycle),
-    version,
-    contentHash,
+    version: prepared.version,
+    contentHash: prepared.contentHash,
     updatedAt: now,
     ...(approvedBy
       ? { governance: 'project-approved', publishedBy: approvedBy, publishedAt: now }
       : { governance: undefined, publishedBy: undefined, publishedAt: undefined }),
-    versions: [...versions, {
-      version, contentHash, instructions, updatedAt: now,
-      ...(approvedBy ? { publishedBy: approvedBy, publishedAt: now } : {}),
-    }],
+    versions: prepared.versions,
   }
+  if (!manifest) delete result.manifest
+  return result
 }
 
 /** 弃用：不删除历史版本，只让它不再可挂载。 */
@@ -405,7 +724,7 @@ export function deprecateAgentSkill(existing, { actorId, now = Date.now() } = {}
  */
 export function agentSkillVersion(skill, version) {
   const target = Number(version)
-  if (!Number.isInteger(target) || target < 1) return undefined
+  if (!Number.isSafeInteger(target) || target < 1) return undefined
   return (Array.isArray(skill?.versions) ? skill.versions : []).find((entry) => Number(entry?.version) === target)
 }
 

@@ -1,3 +1,5 @@
+import { request as httpRequest } from 'node:http'
+import { request as httpsRequest } from 'node:https'
 import { AgentToolRuntimeError } from './agentToolRuntime.mjs'
 import {
   clampWebSearchQuery,
@@ -8,7 +10,9 @@ import {
   resolveTavilyExtractUrl,
   resolveTavilySearchUrl,
 } from './agentWebResearch.mjs'
-import { assertPublicHttpsUrl } from './webEgressGuard.mjs'
+import { assertPublicHttpsUrl, createPinnedLookup } from './webEgressGuard.mjs'
+
+const MAX_DIRECT_FETCH_BYTES = 1_000_000
 
 function searchHeaders(apiKey) {
   return {
@@ -26,6 +30,69 @@ async function readJson(response) {
   }
 }
 
+function responseHeader(headers, name) {
+  const value = headers?.[name]
+  return Array.isArray(value) ? value.join(', ') : String(value ?? '')
+}
+
+function readPinnedWebPage(classified, { signal, requestImpl }) {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const finish = (error, result) => {
+      if (settled) return
+      settled = true
+      if (error) reject(error)
+      else resolve(result)
+    }
+    let request
+    try {
+      request = requestImpl(classified.href, {
+        method: 'GET',
+        headers: { Accept: 'text/html,text/plain;q=0.9' },
+        lookup: createPinnedLookup(classified.addresses[0]),
+        signal,
+      }, (response) => {
+        const status = Number(response.statusCode ?? 0)
+        const contentType = responseHeader(response.headers, 'content-type')
+        if (status < 200 || status >= 300 || !/text\/(html|plain)|application\/xhtml/i.test(contentType)) {
+          response.destroy()
+          finish(undefined, { status, contentType, bytes: Buffer.alloc(0) })
+          return
+        }
+        const declaredLength = Number(responseHeader(response.headers, 'content-length'))
+        if (Number.isFinite(declaredLength) && declaredLength > MAX_DIRECT_FETCH_BYTES) {
+          response.destroy()
+          finish(undefined, { status, contentType, tooLarge: true, bytes: Buffer.alloc(0) })
+          return
+        }
+        const chunks = []
+        let total = 0
+        response.on('data', (chunk) => {
+          if (settled) return
+          const bytes = Buffer.from(chunk)
+          total += bytes.length
+          if (total > MAX_DIRECT_FETCH_BYTES) {
+            response.destroy()
+            finish(undefined, { status, contentType, tooLarge: true, bytes: Buffer.alloc(0) })
+            return
+          }
+          chunks.push(bytes)
+        })
+        response.on('end', () => finish(undefined, {
+          status,
+          contentType,
+          bytes: Buffer.concat(chunks, total),
+        }))
+        response.on('error', (error) => finish(error))
+      })
+      request.on('error', (error) => finish(error))
+      request.end()
+    } catch (error) {
+      finish(error)
+    }
+  })
+}
+
 export function createTavilyWebResearch({
   apiKey,
   searchUrl,
@@ -34,6 +101,7 @@ export function createTavilyWebResearch({
   lookup,
   allowLocal = false,
   timeoutMs = 12_000,
+  pageRequestImpl,
 } = {}) {
   const key = typeof apiKey === 'string' ? apiKey.trim() : ''
   const resolvedSearchUrl = resolveTavilySearchUrl(searchUrl)
@@ -93,11 +161,9 @@ export function createTavilyWebResearch({
       const signal = AbortSignal.timeout(timeoutMs)
       let response
       try {
-        response = await fetchImpl(classified.href, {
-          method: 'GET',
-          headers: { Accept: 'text/html,text/plain;q=0.9' },
-          redirect: 'manual',
+        response = await readPinnedWebPage(classified, {
           signal,
+          requestImpl: pageRequestImpl ?? (classified.href.startsWith('http:') ? httpRequest : httpsRequest),
         })
       } catch (caught) {
         if (signal.aborted) throw new AgentToolRuntimeError('WEB_FETCH_TIMEOUT', '网页获取超时，请稍后重试。', 504)
@@ -106,13 +172,14 @@ export function createTavilyWebResearch({
       if (response.status >= 300 && response.status < 400) {
         throw new AgentToolRuntimeError('WEB_FETCH_REDIRECT', '不跟随网页跳转。', 400)
       }
-      if (!response.ok) throw new AgentToolRuntimeError('WEB_FETCH_FAILED', '网页获取失败。', 502)
-      const contentType = String(response.headers.get('content-type') ?? '')
-      if (!/text\/(html|plain)|application\/xhtml/i.test(contentType)) {
+      if (response.status < 200 || response.status >= 300) {
+        throw new AgentToolRuntimeError('WEB_FETCH_FAILED', '网页获取失败。', 502)
+      }
+      if (!/text\/(html|plain)|application\/xhtml/i.test(response.contentType)) {
         throw new AgentToolRuntimeError('WEB_FETCH_UNSUPPORTED', '只读取公开 HTML 或纯文本网页。', 400)
       }
-      const html = await response.text()
-      if (html.length > 1_000_000) throw new AgentToolRuntimeError('WEB_FETCH_TOO_LARGE', '网页过大，已拒绝读取。', 400)
+      if (response.tooLarge) throw new AgentToolRuntimeError('WEB_FETCH_TOO_LARGE', '网页过大，已拒绝读取。', 400)
+      const html = response.bytes.toString('utf8')
       const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)
       const text = extractTextFromHtml(html)
       if (!text) throw new AgentToolRuntimeError('WEB_FETCH_EMPTY', '该网页没有可读取的正文。', 502)

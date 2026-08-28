@@ -27,6 +27,25 @@ test('通用 Agent 对话请求只发送有限消息与节点 ID', () => {
   assert.doesNotMatch(JSON.stringify(request), /image|data:image|base64|url/i)
 })
 
+test('4K 请求以模型能力为准，不形成 GPT Image 2 + 4K 的无效组合', () => {
+  const models: GenerationModelOption[] = [
+    {
+      id: 'gpt-image-2', label: 'GPT Image 2', provider: 'openai', mediaKind: 'image',
+      aspectRatios: ['1:1', '3:4'], resolutions: ['1K', '2K'], supportsCustomSize: true,
+    },
+    {
+      id: 'gemini-3.1-pro-preview', label: 'Nano Banana', provider: 'flock', mediaKind: 'image',
+      aspectRatios: ['1:1', '3:4'], resolutions: ['1K', '2K', '4K'],
+    },
+  ]
+  assert.deepEqual(inferBotanicAgentGenerationSettings('用 GPT Image 2 生成 4K，3:4', models), {
+    model: 'gemini-3.1-pro-preview',
+    aspectRatio: '3:4',
+    resolution: '4K',
+  })
+  assert.deepEqual(inferBotanicAgentGenerationSettings('用 GPT Image 2 生成 4K', models.slice(0, 1)), {})
+})
+
 test('图片咨询、运行状态和能力询问不会误触发生成', () => {
   const consultations = [
     '这张图片怎么写比较好？',

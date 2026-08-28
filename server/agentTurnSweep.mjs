@@ -121,6 +121,19 @@ export function createAgentTurnSweep({
           })
           continue
         }
+        // Subagent activation 的 FIFO、取消 generation 与 descriptor lease 由专用
+        // Runtime 拥有。通用 Turn 清扫若直接 resume/cancel，会绕过 head fence，让
+        // 后续 follow-up 抢跑；这里只让专用 runnable sweep 重新投递。
+        if (turn?.request?.runtimeOperation === 'subagent') {
+          summary.skipped += 1
+          report({
+            event: 'agent.turn.reclaim.deferred',
+            owner: 'subagent-runtime',
+            turnId: turn.id,
+            projectId: turn.projectId,
+          })
+          continue
+        }
         const events = await productStore.listAgentTurnEvents(turn.ownerId, turn.projectId, turn.id) ?? []
         const decision = turnReclaimDecision({ turn, events, toolRisk, now: now(), leaseMs })
 

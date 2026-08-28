@@ -171,7 +171,7 @@ export async function getGenerationServiceHealth(): Promise<GenerationServiceHea
 export async function assertGenerationServiceReady(): Promise<GenerationServiceHealth> {
   const health = await getGenerationServiceHealth()
   if (!health.configured) {
-    throw new Error('生成服务已启动，但尚未配置 OPENAI_API_KEY 或 MINIMAX_API_KEY。')
+    throw new Error('生成服务已启动，但尚未配置 OPENAI_API_KEY、MINIMAX_API_KEY 或 FLOCK_API_KEY。')
   }
   return health
 }

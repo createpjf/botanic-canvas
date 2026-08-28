@@ -21,7 +21,6 @@ import {
 import '@xyflow/react/dist/style.css'
 import { defaultGenerationModels } from '../../domain/canvas'
 import {
-  applyClarityBoost,
   clarityBoostModel,
   defaultImageGenerationModel,
   defaultSettingsForModel,
@@ -90,6 +89,7 @@ import { useWorkspaceProjectCoordinator } from './workspaceProjectCoordinator'
 import { useCanvasWorkspaceSynchronization } from './useCanvasWorkspaceSynchronization'
 import { useCanvasAgentExecutionBridge } from './useCanvasAgentExecutionBridge'
 import { readCachedCanvasViewport, useCanvasInteractionCoordinator, type ScreenToFlowPosition } from './useCanvasInteractionCoordinator'
+import { runCanvasClarityBoost } from './canvasGenerationInteraction'
 import { RegionMaskEditor } from './RegionMaskEditor'
 import type { BatchVariationRequest, GeneratedHistoryItem } from './CanvasWorkspacePanels'
 
@@ -2646,25 +2646,18 @@ export default function CanvasWorkspace({
             </button>
             {visibleNodePalette.parentResultId && clarityBoostModel(availableModels) && document.nodes.some((node) => node.id === visibleNodePalette.parentResultId && node.type === 'result' && (node.data as ResultNodeData).mediaKind !== 'video') ? <button onClick={() => {
               const parentResultId = visibleNodePalette.parentResultId
-              if (!parentResultId) return
-              const parentNode = document.nodes.find((node) => node.id === parentResultId && node.type === 'result')
-              const parentResult = parentNode?.type === 'result' ? parentNode.data as ResultNodeData : undefined
-              const currentSettings = parentResult?.generationSettings ?? parentResult?.generationRecipe?.settings ?? fallbackGenerationSettings(availableModels)
-              const branchId = createGenerateBranchFromResult(parentResultId, {
-                prompt: t.clarityBoostPrompt,
-                settings: applyClarityBoost(currentSettings, availableModels),
-                refinementMode: 'faithful',
-                batchCount: 1,
-              })
-              if (branchId) {
-                skipAutoComposerNodeIdRef.current = branchId
-                const submissionProjectId = document.id
-                void runGraphGeneration(branchId).then((started) => {
-                  if (useCanvasStore.getState().document.id !== submissionProjectId) return
-                  if (started) setCandidatesOpen(true)
-                })
-              }
               setNodePalette(null)
+              if (!parentResultId) return
+              void runCanvasClarityBoost({
+                parentResultId,
+                prompt: t.clarityBoostPrompt,
+                models: availableModels,
+                readDocument: () => useCanvasStore.getState().document,
+                createBranch: createGenerateBranchFromResult,
+                beforeRun: (branchId) => { skipAutoComposerNodeIdRef.current = branchId },
+                runGraphGeneration,
+                onStarted: () => setCandidatesOpen(true),
+              })
             }}>
               <b>4K</b><span><strong>{t.clarityBoost}</strong><small>{t.clarityBoostDetail}</small></span>
             </button> : null}
@@ -2801,6 +2794,7 @@ export default function CanvasWorkspace({
             references={canvasAssetReferences}
             connectedNodeIds={selectedGenerateReferenceNodeIds}
             maximumReferences={maximumReferencesForModel(selectedGenerateModel)}
+            reservedReferenceCount={selectedGenerateInputs.filter((node) => node.type === 'result').length}
             disabled={generationStatus === 'uploading' || generationStatus === 'queued' || generationStatus === 'running' || generationStatus === 'recovering'}
             onToggle={(assetNodeId, enabled) => toggleNodeReference(selectedGenerate.id, assetNodeId, enabled)}
             onSetPrimary={(assetNodeId) => setGenerateNodePrimaryInput(selectedGenerate.id, assetNodeId)}

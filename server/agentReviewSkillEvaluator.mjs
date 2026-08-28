@@ -2,6 +2,7 @@
 import { createAgentSubtask } from './agentSubtask.mjs'
 import { runAgentSubtask } from './agentSubtaskScheduler.mjs'
 import { isEvaluatorSkill } from './botanicAgentSkill.mjs'
+import { outboundAgentTraceHeaders } from './agentTraceContext.mjs'
 
 /**
  * 评审第 3 类判据：**项目自定义的 evaluator Skill**（Epic 6 × Epic 11）。
@@ -180,7 +181,7 @@ export function createEvaluatorSkillRunner({ runtimeConfig, resolveMedia, callMo
         : 'https://api.flock.io/v1'
       const response = await fetchImpl(`${baseUrl}/chat/completions`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${apiKey}`, 'x-litellm-api-key': apiKey, 'Content-Type': 'application/json' },
+        headers: { ...outboundAgentTraceHeaders(), Authorization: `Bearer ${apiKey}`, 'x-litellm-api-key': apiKey, 'Content-Type': 'application/json' },
         body: JSON.stringify({ model, messages, max_tokens: 500, temperature: 0.2 }),
         signal,
       })

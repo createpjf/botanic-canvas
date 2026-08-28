@@ -187,6 +187,29 @@ test('Agent 实体验证拒绝越界类型与超长消息', () => {
   assert.throws(() => validateAgentMessageEntity({ id: 'm', role: 'user', kind: 'text', content: 'x'.repeat(64_001), createdAt: 1 }))
 })
 
+test('Subagent 会话有独立类型与父会话绑定，普通会话不能伪造关联', () => {
+  const session = validateAgentSessionEntity({
+    id: 'agent-subagent-session-subagent-1',
+    title: '品牌调研',
+    executionMode: 'manual',
+    contextNodeIds: [],
+    kind: 'subagent',
+    subagentId: 'subagent-1',
+    parentSessionId: 'primary-session-1',
+    createdAt: 10,
+    updatedAt: 10,
+  }, { now: 10 })
+  assert.equal(session.kind, 'subagent')
+  assert.equal(session.subagentId, 'subagent-1')
+  assert.equal(session.parentSessionId, 'primary-session-1')
+  assert.throws(() => validateAgentSessionEntity({
+    id: 'primary-session', title: '主会话', subagentId: 'forged-subagent',
+  }), /普通 Agent 会话/u)
+  assert.throws(() => validateAgentSessionEntity({
+    id: 'subagent-session', title: '子会话', kind: 'subagent',
+  }), /Subagent 标识/u)
+})
+
 test('pending Message 持久化完整 Turn request snapshot，目标身份不能缺失', () => {
   const base = {
     id: 'message-turn-snapshot', role: 'user', kind: 'text', content: '换背景', createdAt: 10,

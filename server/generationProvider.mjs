@@ -1,6 +1,6 @@
 import { readMediaSpecFromDataUrl } from './mediaSpec.mjs'
-import { mapWithConcurrency } from './concurrency.mjs'
 import { buildImageProviderPrompt, gptImage2EditQuality, orderCompositionReferences, providerInputImages } from './generationComposition.mjs'
+import { runGenerationVariants } from './generationVariantRunner.mjs'
 import {
   catalogAspectRatiosForModel,
   inferAspectRatioFromPixels,
@@ -19,6 +19,10 @@ import {
   MEDIA_LIMITS,
 } from './mediaFormats.mjs'
 import { maximumReferencesForModel } from './generationVocabulary.mjs'
+
+const MAX_RESOLVED_INPUT_MEDIA_BYTES = MEDIA_LIMITS.maxUploadBytes
+const MAX_RESOLVED_STORED_MEDIA_BYTES = MEDIA_LIMITS.maxGeneratedImageBytes
+const MAX_RESOLVED_INPUT_TOTAL_BYTES = MEDIA_LIMITS.maxGenerationInputBytes
 
 export class GenerationError extends Error {
   constructor(statusCode, code, message) {
@@ -181,8 +185,9 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
     throw new GenerationError(400, 'INVALID_REQUEST', '请传入画布参考素材或父版本图片。')
   }
   const maximumReferences = maximumReferencesForModel(model)
-  if (recipe.references.length > maximumReferences) {
-    throw new GenerationError(400, 'INVALID_REFERENCE', `单次最多使用 ${maximumReferences} 张参考素材。`)
+  const inputImageCount = recipe.references.length + (body.parent ? 1 : 0)
+  if (inputImageCount > maximumReferences) {
+    throw new GenerationError(400, 'INVALID_REFERENCE', `单次最多使用 ${maximumReferences} 张参考素材（含父图）。`)
   }
 
   const references = recipe.references.map((reference, index) => {
@@ -313,6 +318,18 @@ function assertImagePixelBudget(buffer) {
  * 这样轮询与任务状态写入不会重复携带 Base64 原图。
  */
 export async function resolveGenerationInputMedia(input, resolveMedia) {
+  let totalResolvedBytes = 0
+  const accountResolvedBytes = (buffer, maximumBytes = MAX_RESOLVED_INPUT_MEDIA_BYTES) => {
+    if (!buffer?.length || buffer.length > maximumBytes) {
+      throw new GenerationError(413, 'REFERENCE_TOO_LARGE',
+        `单张参考素材不能超过 ${Math.ceil(maximumBytes / 1024 / 1024)}MB。`)
+    }
+    totalResolvedBytes += buffer.length
+    if (totalResolvedBytes > MAX_RESOLVED_INPUT_TOTAL_BYTES) {
+      throw new GenerationError(413, 'GENERATION_INPUT_TOO_LARGE',
+        `生成任务的参考素材、父图与蒙版合计不能超过 ${Math.ceil(MAX_RESOLVED_INPUT_TOTAL_BYTES / 1024 / 1024)}MB。`)
+    }
+  }
   const resolve = async (reference) => {
     let resolved
     if (reference.buffer) {
@@ -334,6 +351,13 @@ export async function resolveGenerationInputMedia(input, resolveMedia) {
       }
       resolved = fetched
     }
+    // 用户内联 dataUrl 仍受 8MB 上传边界；已授权媒体 ID 可能指向 Botanic 自己
+    // 保存的 4K Provider 输出，允许到输出契约的 32MB，且仍受 48MB 总预算。
+    accountResolvedBytes(resolved.buffer, reference.buffer
+      ? MAX_RESOLVED_INPUT_MEDIA_BYTES
+      : reference.mediaKind === 'video'
+        ? MAX_RESOLVED_INPUT_TOTAL_BYTES
+        : MAX_RESOLVED_STORED_MEDIA_BYTES)
     // 像素守卫。此前只卡字节（8MB），一张 2.8MB 的 12.2MP 手机原图轻松过关，
     // 然后被供应商以 "Invalid image file or mode for image 1" 拒掉 —— 而那句话
     // 会原样转述给用户，让他去 email 供应商。手机照片是最常见的参考素材来源，
@@ -351,7 +375,9 @@ export async function resolveGenerationInputMedia(input, resolveMedia) {
     }
     return resolved
   }
-  const references = await Promise.all(input.references.map(resolve))
+  // 顺序物化，避免最多 14 张参考图同时进入内存；累计预算也能在越界点立即停止。
+  const references = []
+  for (const reference of input.references) references.push(await resolve(reference))
   const parent = input.parent ? await resolve(input.parent) : undefined
   let mask = input.mask ? await resolveMask(input.mask) : undefined
   if (!mask && input.maskRegion) {
@@ -363,6 +389,7 @@ export async function resolveGenerationInputMedia(input, resolveMedia) {
     const size = base ? imagePixelSize(base.buffer) : null
     const png = size ? buildRegionMaskPng(size, input.maskRegion) : null
     if (!png) throw new GenerationError(400, 'INVALID_MASK', '无法按基准图生成局部重绘蒙版。')
+    accountResolvedBytes(png)
     mask = { mimeType: 'image/png', buffer: png }
   }
   return {
@@ -582,23 +609,18 @@ export async function generateImages(job, {
   }
 
   // 每张候选各占一个供应商请求。部分兼容 OpenAI Images 的网关会忽略 n>1，
-  // 因此保留 n=1，但由父任务以受控并发的方式调度子候选。
-  const priorOutputs = new Map(
-    completedVariants
-      .filter((variant) => variant?.status === 'succeeded' && variant.output)
-      .map((variant) => [Number(variant.index), variant.output]),
-  )
-  const indexes = Array.from({ length: job.batchCount }, (_, index) => index)
-  const settled = await mapWithConcurrency(indexes, variantConcurrency, async (index) => {
-    const previous = priorOutputs.get(index)
-    if (previous) return { status: 'fulfilled', value: previous }
-    await onVariant?.({ index, status: 'running' })
-    try {
+  // 因此保留 n=1；恢复跳过、受控并发与部分成功统一交给候选 runner。
+  return runGenerationVariants({
+    batchCount: job.batchCount,
+    completedVariants,
+    concurrency: variantConcurrency,
+    onVariant,
+    generateVariant: async (index) => {
       const providerItems = await submit(1, index)
       const item = providerItems[0]
       if (!item) throw new GenerationError(502, 'EMPTY_PROVIDER_RESPONSE', `第 ${index + 1} 张候选没有返回图片。`)
       const image = providerImage(item.b64_json)
-      const output = {
+      return {
         id: `${jobId}-output-${index + 1}`,
         image: await persistImage(image),
         mediaKind: 'image',
@@ -607,26 +629,10 @@ export async function generateImages(job, {
         spec: readMediaSpecFromDataUrl(image.dataUrl),
         revisedPrompt: typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined,
       }
-      await onVariant?.({ index, status: 'succeeded', output })
-      return { status: 'fulfilled', value: output }
-    } catch (error) {
-      await onVariant?.({ index, status: 'failed', error: error instanceof Error ? error.message : String(error) })
-      return { status: 'rejected', reason: error }
-    }
+    },
+    emptyError: () => new GenerationError(502, 'EMPTY_PROVIDER_RESPONSE', '图像服务没有返回候选图，请重试。'),
+    partialError: ({ outputCount, batchCount, missingOutputCount }) => (
+      `图像服务仅返回 ${outputCount}/${batchCount} 张候选，可补生成缺少的 ${missingOutputCount} 张。`
+    ),
   })
-  const outputs = settled.flatMap((result) => result.status === 'fulfilled' ? [result.value] : [])
-  const failedRequests = settled.filter((result) => result.status === 'rejected')
-  if (!outputs.length) {
-    const firstFailure = failedRequests[0]
-    if (firstFailure?.status === 'rejected') throw firstFailure.reason
-    throw new GenerationError(502, 'EMPTY_PROVIDER_RESPONSE', '图像服务没有返回候选图，请重试。')
-  }
-  const missingOutputCount = Math.max(0, job.batchCount - outputs.length)
-  return {
-    outputs,
-    missingOutputCount,
-    partialError: missingOutputCount
-      ? `图像服务仅返回 ${outputs.length}/${job.batchCount} 张候选，可补生成缺少的 ${missingOutputCount} 张。`
-      : undefined,
-  }
 }

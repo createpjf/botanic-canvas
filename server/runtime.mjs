@@ -13,6 +13,8 @@ import { resolveTavilyExtractUrl, resolveTavilySearchUrl } from './agentWebResea
 import { resolveInviteRedirectTo } from './inviteRedirect.mjs'
 import { assertProductStoreContract } from './productStoreContract.mjs'
 import { createRolloutFlags, resolveAgentFeatureFlags } from './featureFlags.mjs'
+import { parseAgentModelContextPolicies } from './agentModelContextPolicy.mjs'
+import { resolveBotanicTelemetryConfig } from './botanicTelemetry.mjs'
 
 function boundedInteger(value, fallback, minimum, maximum) {
   const parsed = Number(value)
@@ -69,7 +71,7 @@ export function runtimeConfig(rootDir = process.cwd()) {
     .split(',').map((model) => model.trim()).filter(Boolean))]
   const flockAgentModels = [...new Set((process.env.FLOCK_AGENT_MODELS ?? 'deepseek-v4-flash-vision-exp,kimi-k3,gemini-3.7-flash,glm-5')
     .split(',').map((model) => model.trim()).filter(Boolean))]
-  const flockTextModel = (process.env.FLOCK_TEXT_MODEL ?? flockAgentModels[0] ?? '').trim()
+  const flockTextModel = (process.env.FLOCK_TEXT_MODEL ?? '').trim() || flockAgentModels[0] || ''
   // 提供方回传的 reasoning_content 是完整思维链，不是摘要。默认关闭；打开后也只随
   // 当轮响应下发用于实时展示，不写入任何持久化记录。
   const agentRawReasoning = (process.env.AGENT_RAW_REASONING ?? '').trim().toLowerCase() === 'true'
@@ -121,7 +123,14 @@ export function runtimeConfig(rootDir = process.cwd()) {
     // 而这条路径不需要用户逐次确认。要开就得明确指定一个模型，不从主模型隐式继承 ——
     // 隐式继承意味着任何一次配置调整都可能在无人察觉时把它打开。
     agentSubagentModel: (process.env.AGENT_SUBAGENT_MODEL ?? '').trim(),
+    // Subagent 使用独立队列，避免长时调研占住生成或派生任务槽位。
+    agentSubagentConcurrency: boundedInteger(process.env.AGENT_SUBAGENT_CONCURRENCY, 2, 1, 8),
+    // 模型窗口不会按产品名猜测；未显式配置的模型回到 legacy 8k input 安全预算。
+    agentModelContextPolicies: parseAgentModelContextPolicies(
+      process.env.AGENT_MODEL_CONTEXT_POLICIES_JSON,
+    ),
     agentRawReasoning,
+    telemetry: resolveBotanicTelemetryConfig(process.env),
     agentFeatureFlags: resolveAgentFeatureFlags(process.env),
     // 升级期灰度闸门。与上一行的 kill switch 语义相反：默认全关，支持按项目/用户放量。
     rolloutFlags: createRolloutFlags(process.env),

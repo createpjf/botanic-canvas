@@ -260,6 +260,28 @@ test('仅在尚未建立生成 Job 时收口确定性提交失败', () => {
   assert.equal(failUnsubmittedPersistentAgentRun(withJob, '不应覆盖', { now: 300 }), withJob)
 })
 
+test('Gemini 超长工具调用标识压缩后仍可创建 Run，且共享前缀不碰撞', () => {
+  const longId = `call-${'g'.repeat(200)}-first`
+  const input = validateAgentRunCreation({
+    ...creation,
+    plan: {
+      ...creation.plan,
+      toolCalls: [{ ...creation.plan.toolCalls[0], id: longId }],
+    },
+  })
+  assert.equal(input.plan.toolCalls[0].id.length, 160)
+  assert.notEqual(input.plan.toolCalls[0].id, longId.slice(0, 160))
+
+  const sibling = validateAgentRunCreation({
+    ...creation,
+    plan: {
+      ...creation.plan,
+      toolCalls: [{ ...creation.plan.toolCalls[0], id: `${longId}-second` }],
+    },
+  })
+  assert.notEqual(input.plan.toolCalls[0].id, sibling.plan.toolCalls[0].id)
+})
+
 test('Agent Run 拒绝图片数据与重复分支标识', () => {
   assert.throws(() => validateAgentRunCreation({
     ...creation,

@@ -12,6 +12,11 @@ const imageModel: GenerationModelOption = {
   id: 'gpt-image-2', label: 'GPT Image 2', mediaKind: 'image',
   aspectRatios: ['1:1', '3:4', '16:9'], resolutions: ['1K', '2K'],
 }
+const nanoModel: GenerationModelOption = {
+  id: 'gemini-3.1-pro-preview', label: 'Nano Banana', provider: 'flock', mediaKind: 'image',
+  aspectRatios: ['3:4'], resolutions: ['1K', '2K', '4K'],
+  supportsSearchGrounding: true, thinkingLevels: ['minimal', 'high'],
+}
 const videoModel: GenerationModelOption = {
   id: 'MiniMax-H3', label: 'MiniMax H3', mediaKind: 'video',
   aspectRatios: ['16:9', '3:4', '9:16'], resolutions: ['2K'], durations: [5, 10, 15], defaultDuration: 5,
@@ -176,6 +181,27 @@ test('图片草案：有基准图走服务端规划器，张数随草案透传',
   assert.equal(draft.useInitialFlow, false)
   assert.equal(draft.outputCount, 3)
   assert.equal(draft.planSettings.duration, undefined)
+})
+
+test('图片草案把 Nano Banana 的固定执行参数写入计划', () => {
+  const draft = prepareBotanicAgentGenerationDraft({
+    ...draftBase,
+    instruction: '生成一张海边广告图',
+    decision: { kind: 'generation', mediaKind: 'image', promptSource: 'instruction' },
+    options: {},
+    generationModels: [imageModel, nanoModel],
+    executionMode: 'auto',
+    synthesizedPrompt: '海边自然光下的品牌广告图，主体清晰，留出标题空间。',
+  })
+  assert.equal(draft.kind, 'ready')
+  if (draft.kind !== 'ready') return
+  assert.deepEqual(draft.planSettings, {
+    model: 'gemini-3.1-pro-preview',
+    aspectRatio: '3:4',
+    resolution: '2K',
+    searchGrounding: true,
+    thinkingLevel: 'high',
+  })
 })
 
 const synthesizedProse = 'Mia 的氛围肖像照（海边版）：一位 20 多岁韩国女性，黑色长发自然垂落，清透裸妆，身穿燕麦色针织衫，站在海边浅滩上，背景是灰蓝色海面，柔和的自然光，视觉风格清新通透，画面比例 3:4。'

@@ -45,11 +45,11 @@ export type BotanicAgentTurnRuntimeStatus =
   | 'failed'
   | 'cancelled'
 
-export type BotanicAgentObservedTurn = {
+export type BotanicAgentObservedTurn<TResult = BotanicAgentTurnResult> = {
   id: string
   projectId: string
   status: BotanicAgentTurnRuntimeStatus
-  result?: BotanicAgentTurnResult
+  result?: TResult
   error?: { code?: string; message?: string }
   lastSequence?: number
 }
@@ -64,8 +64,8 @@ export type BotanicAgentTurnEventRecord = {
   payload?: Record<string, unknown>
 }
 
-export type BotanicAgentTurnObservationPage = {
-  turn: BotanicAgentObservedTurn
+export type BotanicAgentTurnObservationPage<TResult = BotanicAgentTurnResult> = {
+  turn: BotanicAgentObservedTurn<TResult>
   events: BotanicAgentTurnEventRecord[]
   cursor: { after: number; hasMore: boolean }
 }
@@ -396,13 +396,15 @@ export function agentTurnEventAsStreamEvent(event: BotanicAgentTurnEventRecord):
   }
 }
 
-export type AgentTurnObservationSettlement =
+export type AgentTurnObservationSettlement<TResult = BotanicAgentTurnResult> =
   | { kind: 'pending' }
-  | { kind: 'resolved'; result: BotanicAgentTurnResult }
+  | { kind: 'resolved'; result: TResult }
   | { kind: 'failed'; code: string; message: string }
 
 /** 必须先排空事件页，再按 Turn 权威状态结算，避免终态页遗漏尚未投影的工具事件。 */
-export function settleAgentTurnObservation(page: BotanicAgentTurnObservationPage): AgentTurnObservationSettlement {
+export function settleAgentTurnObservation<TResult = BotanicAgentTurnResult>(
+  page: BotanicAgentTurnObservationPage<TResult>,
+): AgentTurnObservationSettlement<TResult> {
   if (page.cursor.hasMore) return { kind: 'pending' }
   if (page.turn.status === 'completed' || page.turn.status === 'waiting_user') {
     if (page.turn.result) return { kind: 'resolved', result: page.turn.result }

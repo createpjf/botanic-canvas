@@ -733,6 +733,39 @@ test('Runtime 拥有 AbortController，durable cancel 会真正中止 Provider �
   assert.equal(store.events.get('turn-owned-abort').some((event) => event.type === 'turn.cancelled'), false)
 })
 
+test('Runtime 覆盖外部伪造的 root identity，并把当前 executor fence 只读注入 Resolver', async () => {
+  const store = fakeStore()
+  const runtime = createBotanicAgentTurnRuntime({ productStore: store })
+  let observed
+
+  await runtime.execute({
+    userId: 'user-authoritative',
+    projectId: 'project-authoritative',
+    sessionId: 'session-authoritative',
+    id: 'turn-authoritative',
+    idempotencyKey: 'identity-fence',
+    resolveOptions: {
+      runtimeIdentity: {
+        userId: 'attacker', projectId: 'attacker', turnId: 'attacker',
+        executionGeneration: 999, leaseToken: 'attacker-lease',
+      },
+    },
+    resolve: async ({ runtimeIdentity }) => {
+      observed = runtimeIdentity
+      assert.equal(Object.isFrozen(runtimeIdentity), true)
+      assert.throws(() => { runtimeIdentity.turnId = 'forged-after-injection' }, TypeError)
+      return { kind: 'chat', answer: '完成' }
+    },
+  })
+
+  assert.equal(observed.userId, 'user-authoritative')
+  assert.equal(observed.projectId, 'project-authoritative')
+  assert.equal(observed.turnId, 'turn-authoritative')
+  assert.equal(observed.sessionId, 'session-authoritative')
+  assert.equal(observed.executionGeneration, 1)
+  assert.match(observed.leaseToken, /^agent_turn_lease_/u)
+})
+
 test('Redis cancel 早于句柄登记到达时，Runtime 补读 durable fence 后仍会中止 Provider', async () => {
   const store = fakeStore()
   const registry = createLocalCancelRegistry()

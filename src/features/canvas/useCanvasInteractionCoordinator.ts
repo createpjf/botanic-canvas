@@ -294,13 +294,13 @@ export function useCanvasInteractionCoordinator({
     if (existingEdges.some((edge) => edge.source === sourceId && edge.target === targetId
       && (edge.sourceHandle ?? null) === (connection.sourceHandle ?? null)
       && (edge.targetHandle ?? null) === (connection.targetHandle ?? null))) return false
-    if (source.type === 'asset') {
-      const connectedImages = existingEdges.filter((edge) => edge.target === targetId)
+    if (source.type === 'asset' || source.type === 'result') {
+      const connectedReferences = existingEdges.filter((edge) => edge.target === targetId)
         .map((edge) => document.nodes.find((node) => node.id === edge.source))
-        .filter((node) => node?.type === 'asset')
+        .filter((node) => node?.type === 'asset' || node?.type === 'result')
       const targetModelId = (target.data as GenerateNodeData).settings?.model
       const targetModel = useCanvasStore.getState().availableModels.find((model) => model.id === targetModelId)
-      if (connectedImages.length >= maximumReferencesForModel(targetModel)) return false
+      if (connectedReferences.length >= maximumReferencesForModel(targetModel)) return false
     }
     if (source.type === 'result') {
       const connectedResults = existingEdges.filter((edge) => edge.target === targetId)

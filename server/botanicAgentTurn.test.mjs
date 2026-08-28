@@ -2,6 +2,9 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { BotanicAgentChatError } from './botanicAgentChat.mjs'
 import { resolveBotanicAgentTurn, validateBotanicAgentTurnInput } from './botanicAgentTurn.mjs'
+import { botanicAgentContextBriefing, buildBotanicAgentOntology } from './botanicAgentOntology.mjs'
+import { resolveAgentModelContextPolicy } from './agentModelContextPolicy.mjs'
+import { canonicalHash } from './canonicalHash.mjs'
 
 const runtime = {
   flockApiKey: 'flock-secret',
@@ -78,6 +81,10 @@ test('回合请求只接收受控字段，拒绝非法消息与数量', () => {
     () => validateBotanicAgentTurnInput({ ...input, executionMode: 'turbo' }),
     (error) => error instanceof BotanicAgentChatError && error.code === 'INVALID_REQUEST',
   )
+  assert.throws(
+    () => validateBotanicAgentTurnInput({ ...input, contextNodeIds: 'asset-mia-portrait' }),
+    /上下文节点/,
+  )
   const mounted = validateBotanicAgentTurnInput({ ...input, mountedSkillIds: ['ecommerce_listing', 'ecommerce_listing'] })
   assert.deepEqual(mounted.mountedSkillIds, ['ecommerce_listing'])
   assert.throws(
@@ -104,6 +111,52 @@ test('权威回合请求只接收 Session 与本轮稳定 Message，历史可省
     content: '',
     mentions: [{ kind: 'reference', id: 'asset-mia-portrait', label: 'Mia 肖像' }],
   })
+  assert.deepEqual(
+    validateBotanicAgentTurnInput({
+      projectId: 'project-turn',
+      sessionId: 'session-1',
+      inputMessage: {
+        id: 'message-mention-only-context',
+        content: '让这个模特身上的光线更像室外',
+        mentions: [{ kind: 'reference', id: 'asset-mia-portrait', label: 'Mia 肖像' }],
+      },
+      contextNodeIds: [],
+    }).contextNodeIds,
+    ['asset-mia-portrait'],
+    '@ 引用必须并进 contextNodeIds，不能只躺在 mentions 里',
+  )
+  const saturatedContext = Array.from({ length: 32 }, (_, index) => `old-${index}`)
+  assert.deepEqual(
+    validateBotanicAgentTurnInput({
+      projectId: 'project-turn',
+      sessionId: 'session-1',
+      inputMessage: {
+        id: 'message-priority-context',
+        content: '使用新引用',
+        mentions: [{ kind: 'reference', id: 'asset-new', label: '新引用' }],
+      },
+      contextNodeIds: saturatedContext,
+    }).contextNodeIds,
+    ['asset-new', ...saturatedContext.slice(0, 31)],
+    '达到上限时，本轮显式引用必须优先于 Session 旧上下文',
+  )
+  const emptyOntology = buildBotanicAgentOntology({ nodes: [], edges: [], assetGroups: [] }, [])
+  assert.match(
+    botanicAgentContextBriefing(emptyOntology, {
+      mentions: [{ kind: 'reference', id: 'asset-mia-portrait', label: 'Mia 肖像' }],
+    }),
+    /当前权威画布快照无法解析对应节点/,
+  )
+  assert.match(
+    botanicAgentContextBriefing(emptyOntology, {
+      mentions: [{ kind: 'reference', id: 'asset-mia-portrait', label: 'Mia 肖像' }],
+    }),
+    /不要假装看过这些素材/,
+  )
+  assert.match(
+    botanicAgentContextBriefing(emptyOntology, { requestedContextNodeIds: ['asset-mia-portrait'] }),
+    /asset-mia-portrait/,
+  )
   assert.equal(validated.messages, undefined)
   const longCurrent = '问'.repeat(5_000)
   assert.equal(validateBotanicAgentTurnInput({
@@ -253,6 +306,77 @@ test('Turn 存在 thread context snapshot 时，首跑与恢复都只使用该�
   assert.doesNotMatch(JSON.stringify(providerMessages), /结构化摘要|最新摘要|滑动窗口/u)
 })
 
+test('Turn/Resume 消费 Snapshot V2，并把实际 Context Policy 绑定进执行快照', async () => {
+  const policy = resolveAgentModelContextPolicy('deepseek-v4-pro')
+  const checkpointText = 'V2 已压缩的早期上下文'
+  const input = {
+    projectId: 'project-turn', sessionId: 'session-v2', plannerModel: 'deepseek-v4-pro',
+    messages: [{ role: 'user', content: '不应进入 Provider 的 legacy 窗口' }],
+    threadContextSnapshot: {
+      version: 2,
+      modelPolicy: policy,
+      checkpoint: {
+        role: 'user', content: checkpointText, contentHash: canonicalHash(checkpointText),
+      },
+      messages: [{
+        id: 'message-v2', revision: 'revision-v2', role: 'user', content: '继续 V2 当前任务',
+      }],
+    },
+    contextNodeIds: [], hasTarget: false, generationModels,
+  }
+  const factoryCalls = []
+  const modelContext = {
+    policy,
+    prepare: async ({ messages, tools }) => ({ messages, tools, prepared: 'v2-prepared' }),
+    observe: async () => undefined,
+  }
+  const modelContextForModel = (model, runtimeIdentity) => {
+    factoryCalls.push({ model, runtimeIdentity })
+    return model === policy.model ? modelContext : undefined
+  }
+  let checkpoint
+  const requests = []
+  const runtimeIdentity = { projectId: 'project-turn', sessionId: 'session-v2', turnId: 'turn-v2' }
+  const first = await resolveBotanicAgentTurn(input, runtime, {
+    document,
+    runtimeIdentity,
+    modelContextForModel,
+    saveCheckpoint: async (value) => { checkpoint = structuredClone(value) },
+    fetchImpl: async (_url, init) => {
+      requests.push(JSON.parse(init.body))
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'V2 完成。' } }] }), { status: 200 })
+    },
+  })
+  assert.equal(first.answer, 'V2 完成。')
+  assert.match(JSON.stringify(requests[0].messages), /V2 已压缩的早期上下文|继续 V2 当前任务/u)
+  assert.doesNotMatch(JSON.stringify(requests[0].messages), /legacy 窗口|message-v2|revision-v2/u)
+  assert.equal(checkpoint.attempt.model, 'deepseek-v4-pro')
+  assert.match(checkpoint.attempt.snapshotHash, /^[A-Za-z0-9_-]{43}$/u)
+  assert.deepEqual(factoryCalls[0], { model: 'deepseek-v4-pro', runtimeIdentity })
+
+  const resumed = await resolveBotanicAgentTurn(input, runtime, {
+    document,
+    runtimeIdentity,
+    modelContextForModel,
+    resumeCheckpoint: checkpoint,
+    saveCheckpoint: async () => { throw new Error('V2 terminal resume 不应再写 checkpoint') },
+    fetchImpl: async () => { throw new Error('V2 terminal resume 不应再请求 Provider') },
+  })
+  assert.equal(resumed.answer, 'V2 完成。')
+
+  await assert.rejects(resolveBotanicAgentTurn(input, runtime, {
+    document,
+    runtimeIdentity,
+    modelContextForModel: () => ({
+      ...modelContext,
+      policy: { ...policy, hash: 'drifted-policy-hash' },
+    }),
+    fetchImpl: async () => { throw new Error('策略漂移应在 Provider 前失败') },
+  }), (error) => error instanceof BotanicAgentChatError
+    && error.statusCode === 409
+    && error.code === 'AGENT_CONTEXT_POLICY_MISMATCH')
+})
+
 test('明确 context-length overflow 只在同一模型步、工具执行前严格裁剪重试一次', async () => {
   const requests = []
   let runReads = 0
@@ -331,8 +455,47 @@ test('非明确上下文溢出的 400 不重试；连续明确溢出也最多两
         error: { code: 'context_length_exceeded', message: 'maximum context length exceeded' },
       }), { status: 400 })
     },
-  }), (error) => error instanceof BotanicAgentChatError && error.code === 'PROVIDER_REJECTED')
+  }), (error) => error instanceof BotanicAgentChatError && error.code === 'AGENT_CONTEXT_OVERFLOW')
   assert.equal(overflowCalls, 2)
+})
+
+test('传入 Model Context 后禁用 Turn 私有 overflow 重试，统一重试总计最多两次请求', async () => {
+  const input = {
+    projectId: 'project-turn', plannerModel: 'deepseek-v4-pro',
+    messages: [{ role: 'user', content: '继续' }], contextNodeIds: [], hasTarget: false, generationModels,
+  }
+  const requests = []
+  const preparations = []
+  await assert.rejects(resolveBotanicAgentTurn(input, runtime, {
+    document,
+    modelContext: {
+      policy: { model: 'deepseek-v4-pro', hash: 'test-context-policy' },
+      prepare: async (context) => {
+        preparations.push(context)
+        return context.force
+          ? {
+              changed: true,
+              messages: [...context.messages, { role: 'user', content: 'MODEL_CONTEXT_OVERFLOW_RETRY' }],
+              prepared: 'overflow',
+            }
+          : { prepared: 'initial' }
+      },
+      observe: async () => { throw new Error('失败响应不应 observe') },
+    },
+    fetchImpl: async (_url, init) => {
+      requests.push(JSON.parse(init.body))
+      return new Response(JSON.stringify({
+        error: { code: 'context_length_exceeded', message: 'maximum context length exceeded' },
+      }), { status: 400 })
+    },
+  }), (error) => error instanceof BotanicAgentChatError && error.code === 'AGENT_CONTEXT_OVERFLOW')
+
+  assert.equal(requests.length, 2)
+  assert.equal(preparations.length, 2)
+  assert.equal(preparations[0].trigger, 'pre_step')
+  assert.equal(preparations[1].trigger, 'overflow')
+  assert.equal(preparations[1].force, true)
+  assert.match(JSON.stringify(requests[1].messages), /MODEL_CONTEXT_OVERFLOW_RETRY/u)
 })
 
 test('模型基于既有建议直接综合可执行 Prompt 并生成多张，而非要求用户重述', async () => {
@@ -417,6 +580,60 @@ test('原生多模态：引用图片直接随消息附给所选看图模型', as
   assert.match(lastUser.content[0].text, /图1＝Mia 肖像/)
   assert.equal(lastUser.content[1].image_url.url, 'data:image/png;base64,TUlB')
   assert.match(requests[0].messages[0].content, /已随用户消息直接附上/)
+})
+
+test('原生多模态复用所选主模型的 Context V2 binding 与冻结策略', async () => {
+  const model = 'gemini-3.7-flash'
+  const policy = resolveAgentModelContextPolicy(model)
+  const factoryCalls = []
+  const preparedMessages = []
+  const modelContext = {
+    policy,
+    prepare: async ({ messages, tools }) => {
+      preparedMessages.push(structuredClone(messages))
+      return { messages, tools, prepared: 'vision-v2' }
+    },
+    observe: async () => undefined,
+  }
+  let checkpoint
+  const runtimeIdentity = { projectId: 'project-turn', sessionId: 'session-vision-v2', turnId: 'turn-vision-v2' }
+  await resolveBotanicAgentTurn({
+    projectId: 'project-turn',
+    sessionId: 'session-vision-v2',
+    plannerModel: model,
+    threadContextSnapshot: {
+      version: 2,
+      modelPolicy: policy,
+      messages: [{
+        id: 'message-vision-v2', revision: 'revision-vision-v2', role: 'user', content: '看图继续',
+      }],
+    },
+    contextNodeIds: ['asset-mia-portrait'],
+    hasTarget: false,
+    generationModels,
+  }, { ...runtime, agentVisionModel: model }, {
+    document: {
+      ...document,
+      nodes: document.nodes.map((node) => node.id === 'asset-mia-portrait'
+        ? { ...node, data: { ...node.data, image: 'data:image/png;base64,TUlB' } }
+        : node),
+    },
+    runtimeIdentity,
+    modelContextForModel: (requestedModel, identity) => {
+      factoryCalls.push({ requestedModel, identity })
+      return requestedModel === model ? modelContext : undefined
+    },
+    saveCheckpoint: async (value) => { checkpoint = structuredClone(value) },
+    fetchImpl: async () => new Response(JSON.stringify({
+      choices: [{ message: { content: '已看图。' } }],
+    }), { status: 200 }),
+  })
+
+  assert.deepEqual(factoryCalls, [{ requestedModel: model, identity: runtimeIdentity }])
+  assert.equal(checkpoint.attempt.id, 'vision')
+  assert.equal(checkpoint.attempt.model, model)
+  assert.ok(Array.isArray(preparedMessages[0].at(-1).content))
+  assert.equal(preparedMessages[0].at(-1).content[1].image_url.url, 'data:image/png;base64,TUlB')
 })
 
 test('所选纯文本模型有引用图时不劫持规划模型，只走 caption', async () => {
@@ -556,6 +773,77 @@ test('生成数量与非法设置被裁剪到可用范围', async () => {
 
   assert.equal(result.kind, 'generation')
   assert.equal(result.count, 4)
+  assert.equal(result.settingsHint, undefined)
+})
+
+test('generate_images 的 4K 设置绑定支持模型并优先 Nano Banana', async () => {
+  const result = await resolveBotanicAgentTurn({
+    projectId: 'project-turn',
+    plannerModel: 'deepseek-v4-pro',
+    messages: [{ role: 'user', content: '生成一张 4K 主视觉' }],
+    contextNodeIds: [],
+    hasTarget: false,
+    generationModels: [
+      generationModels[0],
+      {
+        id: 'other-4k-model', label: 'Other 4K', mediaKind: 'image',
+        aspectRatios: ['1:1'], resolutions: ['2K', '4K'],
+      },
+      {
+        id: 'gemini-3.1-pro-preview', label: 'Nano Banana', mediaKind: 'image',
+        aspectRatios: ['1:1', '3:4'], resolutions: ['1K', '2K', '4K'],
+      },
+    ],
+    maxOutputCount: 8,
+  }, runtime, {
+    document,
+    fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: {
+      content: null,
+      tool_calls: [{ id: 'call-generate-4k', type: 'function', function: {
+        name: 'generate_images',
+        arguments: JSON.stringify({
+          prompt: '山茶花产品主视觉，棚拍柔光',
+          count: 1,
+          model: 'gpt-image-2',
+          aspectRatio: '3:4',
+          resolution: '4K',
+        }),
+      } }],
+    } }] }), { status: 200 }),
+  })
+
+  assert.deepEqual(result.settingsHint, {
+    model: 'gemini-3.1-pro-preview',
+    aspectRatio: '3:4',
+    resolution: '4K',
+  })
+})
+
+test('generate_images 请求 4K 但目录无支持模型时不保留冲突设置', async () => {
+  const result = await resolveBotanicAgentTurn({
+    projectId: 'project-turn',
+    plannerModel: 'deepseek-v4-pro',
+    messages: [{ role: 'user', content: '生成一张 4K 主视觉' }],
+    contextNodeIds: [],
+    hasTarget: false,
+    generationModels: [generationModels[0]],
+    maxOutputCount: 8,
+  }, runtime, {
+    document,
+    fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: {
+      content: null,
+      tool_calls: [{ id: 'call-generate-unsupported-4k', type: 'function', function: {
+        name: 'generate_images',
+        arguments: JSON.stringify({
+          prompt: '山茶花产品主视觉，棚拍柔光',
+          count: 1,
+          model: 'gpt-image-2',
+          resolution: '4K',
+        }),
+      } }],
+    } }] }), { status: 200 }),
+  })
+
   assert.equal(result.settingsHint, undefined)
 })
 

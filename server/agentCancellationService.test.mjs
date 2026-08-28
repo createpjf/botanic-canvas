@@ -28,6 +28,7 @@ function harness(input = {}) {
     .map((turn) => [turn.id, structuredClone(turn)]))
   const runs = new Map((input.runs ?? []).map((run) => [run.id, structuredClone(run)]))
   const jobs = new Map((input.jobs ?? []).map((job) => [job.id, structuredClone(job)]))
+  const subagents = new Map((input.subagents ?? []).map((subagent) => [subagent.id, structuredClone(subagent)]))
   const cancelEvents = []
   const runUpdates = []
   const jobUpdates = []
@@ -53,6 +54,16 @@ function harness(input = {}) {
         .filter((run) => run.ownerId === userId && run.projectId === projectId && run.turnId === turnId)
       return pageAfterId(candidates, afterId, limit)
         .map((run) => structuredClone(run))
+    },
+    async listAgentSubagentsForRootTurnPage(userId, projectId, rootTurnId, { afterId, limit = 50 } = {}) {
+      order.push('list-subagents')
+      if (Object.hasOwn(input, 'failSubagentPageAfterId') && input.failSubagentPageAfterId === afterId) {
+        throw new Error('subagent page unavailable')
+      }
+      const candidates = [...subagents.values()]
+        .filter((subagent) => subagent.projectId === projectId && subagent.rootTurnId === rootTurnId)
+      return pageAfterId(candidates, afterId, limit)
+        .map((subagent) => structuredClone(subagent))
     },
     async listGenerationJobsForAgentRunPage(userId, projectId, runId, { afterId, limit = 50 } = {}) {
       if (input.failJobPageRunIds?.includes(runId)) throw new Error('job page unavailable')
@@ -130,6 +141,27 @@ function harness(input = {}) {
     productStore,
     cancelTurn,
     finalizeTurn,
+    cancelSubagent: input.cancelSubagent ?? (async (command) => {
+      order.push(`cancel-subagent:${command.subagentId}`)
+      if (input.failedSubagentCancellations?.includes(command.subagentId)) {
+        throw new Error(`sensitive subagent failure for ${command.subagentId}`)
+      }
+      const current = subagents.get(command.subagentId)
+      if (!current || current.projectId !== command.projectId) {
+        return { kind: 'missing', changed: false }
+      }
+      if (input.pendingSubagentCancellations?.includes(command.subagentId)) {
+        Object.assign(current, { status: 'cancelling', updatedAt: 30 })
+        return { kind: 'not_ready', changed: true, subagent: structuredClone(current) }
+      }
+      const changed = current.status !== 'cancelled'
+      Object.assign(current, { status: 'cancelled', updatedAt: 30 })
+      return {
+        kind: changed ? 'finalized' : 'replay',
+        changed,
+        subagent: structuredClone(current),
+      }
+    }),
     redisQueue: { cancel: async (id) => order.push(`dequeue:${id}`) },
     publishCancel: async (event) => {
       if (input.publishFailures?.has(`${event.scope}:${event.id}`)) throw new Error('取消信号暂时无法发布')
@@ -155,8 +187,19 @@ function harness(input = {}) {
   })
 
   return {
-    service, productStore, turns, runs, jobs, order, cancelEvents, runUpdates, jobUpdates,
+    service, productStore, turns, runs, jobs, subagents, order, cancelEvents, runUpdates, jobUpdates,
     setStoreNow(value) { storeNow = Number(value) },
+  }
+}
+
+function subagent(id, rootTurnId, status = 'active') {
+  return {
+    id,
+    projectId: 'project-1',
+    rootTurnId,
+    status,
+    createdAt: 1,
+    updatedAt: 10,
   }
 }
 
@@ -293,8 +336,10 @@ test('Turn 先持久化 cancelling，再反查并取消多个关联 Run 与活�
     turnId: 'turn-1',
     status: 'cancelled',
     linkedRunCount: 2,
+    linkedSubagentCount: 0,
     cancelledRunCount: 2,
     cancelledJobCount: 3,
+    cancelledSubagentCount: 0,
     failures: [],
   })
   assert.deepEqual(state.runUpdates.map((event) => event.runId).sort(), ['run-1', 'run-2'])
@@ -315,8 +360,10 @@ test('Turn 无关联 Run 时取消仍成功且不伪造下游结果', async () =
     turnId: 'turn-1',
     status: 'cancelling',
     linkedRunCount: 0,
+    linkedSubagentCount: 0,
     cancelledRunCount: 0,
     cancelledJobCount: 0,
+    cancelledSubagentCount: 0,
     failures: [],
   })
   assert.equal(state.runUpdates.length, 0)
@@ -439,6 +486,108 @@ test('Turn 取消分页遍历超过旧 60 条上限的全部关联 Run', async (
   assert.equal([...state.runs.values()].every((item) => item.status === 'cancelled'), true)
   assert.equal(state.turns.get('turn-1').status, 'cancelled')
   assert.equal(state.order.filter((item) => item === 'list-runs').length, 2)
+})
+
+test('根 Turn 取消按稳定分页收口全部关联 Subagent，并返回安全计数', async () => {
+  const subagents = Array.from({ length: 65 }, (_, index) => subagent(
+    `subagent-${String(index).padStart(3, '0')}`,
+    'turn-1',
+  ))
+  const state = harness({ subagents, finalizeTurn: true })
+
+  const result = await state.service.cancelAgentTurn({
+    userId: 'user-1', projectId: 'project-1', turnId: 'turn-1',
+  })
+
+  assert.equal(result.linkedSubagentCount, 65)
+  assert.equal(result.cancelledSubagentCount, 65)
+  assert.equal([...state.subagents.values()].every((item) => item.status === 'cancelled'), true)
+  assert.equal(state.turns.get('turn-1').status, 'cancelled')
+  assert.equal(state.order.filter((item) => item === 'list-subagents').length, 2)
+  assert.ok(state.order.indexOf('list-subagents') > state.order.indexOf('cancel-turn'))
+  assert.equal(state.order.at(-1), 'finalize-turn')
+})
+
+test('根 Turn 通过稳定幂等命令调用注入的 cancelSubagent', async () => {
+  const commands = []
+  const state = harness({
+    subagents: [subagent('subagent-1', 'turn-1')],
+    finalizeTurn: true,
+    cancelSubagent: async (command) => {
+      commands.push(structuredClone(command))
+      return { kind: 'finalized', subagent: subagent(command.subagentId, 'turn-1', 'cancelled') }
+    },
+  })
+
+  await state.service.cancelAgentTurn({
+    userId: 'user-1',
+    projectId: 'project-1',
+    turnId: 'turn-1',
+    reason: '停止根任务',
+  })
+
+  assert.deepEqual(commands, [{
+    userId: 'user-1',
+    projectId: 'project-1',
+    subagentId: 'subagent-1',
+    idempotencyKey: 'agent-turn-cancel:turn-1:subagent:subagent-1',
+    reason: '停止根任务',
+  }])
+})
+
+test('Subagent 取消 pending 或失败时隔离其余项并阻止根 Turn finalize', async () => {
+  let finalizeCalls = 0
+  const state = harness({
+    subagents: [
+      subagent('subagent-failed', 'turn-1'),
+      subagent('subagent-ok', 'turn-1'),
+      subagent('subagent-pending', 'turn-1'),
+    ],
+    failedSubagentCancellations: ['subagent-failed'],
+    pendingSubagentCancellations: ['subagent-pending'],
+    finalizeTurn: async () => { finalizeCalls += 1 },
+  })
+
+  const result = await state.service.cancelAgentTurn({
+    userId: 'user-1', projectId: 'project-1', turnId: 'turn-1',
+  })
+
+  assert.equal(result.kind, 'cancelling')
+  assert.equal(result.linkedSubagentCount, 3)
+  assert.equal(result.cancelledSubagentCount, 1)
+  assert.deepEqual(result.failures, [
+    { scope: 'subagent', id: 'subagent-failed', code: 'AGENT_SUBAGENT_CANCEL_FAILED' },
+    { scope: 'subagent', id: 'subagent-pending', code: 'AGENT_SUBAGENT_CANCEL_PENDING' },
+  ])
+  assert.equal(state.subagents.get('subagent-ok').status, 'cancelled')
+  assert.equal(finalizeCalls, 0)
+  assert.equal(state.turns.get('turn-1').status, 'cancelling')
+  assert.doesNotMatch(JSON.stringify(result), /sensitive subagent failure/u)
+})
+
+test('Subagent 分页读取失败时保留根 Turn cancelling，不能基于不完整集合 finalize', async () => {
+  let finalizeCalls = 0
+  const subagents = Array.from({ length: 51 }, (_, index) => subagent(
+    `subagent-${String(index).padStart(3, '0')}`,
+    'turn-1',
+  ))
+  const state = harness({
+    subagents,
+    failSubagentPageAfterId: 'subagent-049',
+    finalizeTurn: async () => { finalizeCalls += 1 },
+  })
+
+  await assert.rejects(
+    () => state.service.cancelAgentTurn({
+      userId: 'user-1', projectId: 'project-1', turnId: 'turn-1',
+    }),
+    (caught) => caught instanceof AgentDelegationFenceError
+      && caught.code === 'AGENT_TURN_LINKED_SUBAGENTS_READ_FAILED'
+      && caught.statusCode === 503,
+  )
+  assert.equal(finalizeCalls, 0)
+  assert.equal(state.turns.get('turn-1').status, 'cancelling')
+  assert.equal(state.order.some((item) => item.startsWith('cancel-subagent:')), false)
 })
 
 test('每个 Run 反查分页补齐未写入 branch 的孤儿 Job', async () => {
@@ -592,12 +741,13 @@ test('delegation 只接受 completed Turn，其余生命周期均拒绝', async 
   }
 })
 
-test('Cancellation Service 构造时 fail-fast 要求原子 Job cancel，不再依赖旧 putGenerationJob', () => {
+test('Cancellation Service 构造时 fail-fast 要求原子 Job cancel 与根 Turn Subagent 级联', () => {
   const state = harness()
   const { putGenerationJob: _unusedPut, ...withoutLegacyPut } = state.productStore
   assert.doesNotThrow(() => createAgentCancellationService({
     productStore: withoutLegacyPut,
     cancelTurn: async () => undefined,
+    cancelSubagent: async () => undefined,
   }))
 
   const { cancelGenerationJobExecution: _atomicCancel, ...withoutAtomicCancel } = state.productStore
@@ -605,7 +755,25 @@ test('Cancellation Service 构造时 fail-fast 要求原子 Job cancel，不再�
     () => createAgentCancellationService({
       productStore: withoutAtomicCancel,
       cancelTurn: async () => undefined,
+      cancelSubagent: async () => undefined,
     }),
     /缺少 ProductStore 能力/u,
+  )
+
+  const { listAgentSubagentsForRootTurnPage: _listSubagents, ...withoutSubagentLookup } = state.productStore
+  assert.throws(
+    () => createAgentCancellationService({
+      productStore: withoutSubagentLookup,
+      cancelTurn: async () => undefined,
+      cancelSubagent: async () => undefined,
+    }),
+    /缺少 ProductStore 能力/u,
+  )
+  assert.throws(
+    () => createAgentCancellationService({
+      productStore: state.productStore,
+      cancelTurn: async () => undefined,
+    }),
+    /缺少 cancelSubagent/u,
   )
 })

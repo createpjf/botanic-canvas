@@ -72,6 +72,14 @@ test('有 Flock key 才出现 Nano Banana，并声明十档比例、4K 与 14 �
   assert.equal(catalog[0].id, 'gpt-image-2')
 })
 
+test('未知 Flock 型号不会冒充 Nano Banana 能力进入目录', () => {
+  const catalog = createGenerationModelCatalog({
+    flockApiKey: 'flock-key',
+    flockImageModels: ['unknown-image-model', 'gemini-3.1-pro-preview'],
+  })
+  assert.deepEqual(catalog.map((model) => model.id), ['gemini-3.1-pro-preview'])
+})
+
 test('读时超时收口写 errorCode，重试策略才分类得了', () => {
   // 端到端冒烟实测到的缺陷：任务 300 秒后收口为 failed，errorCode 却是 undefined。
   // agentBranchRetryPolicy 于是返回 error_code_unknown 停在待人工，永远不自动重试 ——

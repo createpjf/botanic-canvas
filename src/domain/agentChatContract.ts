@@ -144,13 +144,16 @@ export function inferBotanicAgentGenerationSettings(
   const boostModel = wantsClarityBoost || resolution === '4K'
     ? models.find((model) => model.id === NANO_BANANA_MODEL_ID || model.resolutions?.includes('4K'))
     : undefined
-  const supportedRatios = selectedModel?.aspectRatios?.length
-    ? selectedModel.aspectRatios
+  // 4K 是能力选择，不是对任意显式模型的强制参数。用户同时写 GPT Image 2 与
+  // 4K 时必须落到真正声明 4K 的模型，不能形成 GPT + 4K 的不可执行组合。
+  const effectiveModel = resolution === '4K' ? boostModel : selectedModel
+  const supportedRatios = effectiveModel?.aspectRatios?.length
+    ? effectiveModel.aspectRatios
     : [...new Set(models.flatMap((model) => model.aspectRatios ?? []))]
-  const supportedResolutions = selectedModel?.resolutions?.length
-    ? selectedModel.resolutions
+  const supportedResolutions = effectiveModel?.resolutions?.length
+    ? effectiveModel.resolutions
     : [...new Set(models.flatMap((model) => model.resolutions ?? []))]
-  const customModel = selectedModel ?? models.find((model) => modelSupportsCustomSize(model))
+  const customModel = boostModel ? undefined : selectedModel ?? models.find((model) => modelSupportsCustomSize(model))
   const parsedCustomSize = parseCustomGenerationSize(value)
   const customSize = parsedCustomSize && modelSupportsCustomSize(customModel)
     ? normalizeCustomGenerationSize(parsedCustomSize.width, parsedCustomSize.height)
@@ -161,10 +164,13 @@ export function inferBotanicAgentGenerationSettings(
     : ratio && (!supportedRatios.length || supportedRatios.includes(ratio))
       ? ratio
       : undefined
+  const supportedResolution = resolution === '4K'
+    ? Boolean(boostModel)
+    : Boolean(resolution && (!supportedResolutions.length || supportedResolutions.includes(resolution)))
   return {
-    ...(selectedModel ? { model: selectedModel.id } : boostModel ? { model: boostModel.id } : {}),
+    ...(effectiveModel ? { model: effectiveModel.id } : {}),
     ...(aspectRatio ? { aspectRatio } : {}),
-    ...(resolution && (!supportedResolutions.length || supportedResolutions.includes(resolution) || resolution === '4K')
+    ...(resolution && supportedResolution
       ? { resolution }
       : {}),
     ...(customSize?.ok ? { outputWidth: customSize.width, outputHeight: customSize.height } : {}),

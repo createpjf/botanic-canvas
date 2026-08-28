@@ -41,6 +41,22 @@ export function defaultImageGenerationModel<T extends Pick<GenerationModelOption
   return matching[0]
 }
 
+/**
+ * 局部重绘必须落到明确支持蒙版的图片模型。
+ *
+ * 历史结果可能没有保存 settings；普通生图默认值此时会指向 Nano Banana，但它不接收
+ * mask。这里按当前目录重新选一个可执行模型，并把旧比例 / 分辨率收敛到该模型能力内。
+ */
+export function settingsForRegionEdit(
+  settings: GenerationSettings,
+  catalog: readonly GenerationModelOption[] | undefined,
+): GenerationSettings | undefined {
+  const models = (catalog ?? []).filter((model) => (model.mediaKind ?? 'image') === 'image')
+  const selected = models.find((model) => model.id === settings.model && model.supportsMask === true)
+  const model = selected ?? models.find((item) => item.supportsMask === true)
+  return model ? settingsForGenerationModel(settings, model) : undefined
+}
+
 export function clarityBoostModel(catalog: readonly GenerationModelOption[] | undefined) {
   return (catalog ?? []).find((model) => (
     (model.mediaKind ?? 'image') === 'image' && model.resolutions?.includes('4K')

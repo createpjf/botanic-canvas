@@ -1,4 +1,4 @@
-import { AgentToolRuntimeError, runAgentToolLoop } from './agentToolRuntime.mjs'
+import { AgentToolRuntimeError, freezeAgentStepSnapshot, runAgentToolLoop } from './agentToolRuntime.mjs'
 import {
   botanicAgentMountedSkillBriefing,
   botanicAgentSearchableSkills,
@@ -8,6 +8,7 @@ import {
 import { readStreamedChatCompletion } from './botanicAgentStream.mjs'
 import { createAgentSubagentRunner } from './agentSubagentRunner.mjs'
 import { normalizeBotanicAgentLocale, readBotanicAgentInstructions } from './agentInstructions.mjs'
+import { outboundAgentTraceHeaders } from './agentTraceContext.mjs'
 import {
   botanicCreativeBriefFieldIds,
   BotanicCreativeBriefValidationError,
@@ -25,6 +26,9 @@ import {
   modelSupportsCustomSize,
   normalizeCustomGenerationSize,
 } from './generationOutputSize.mjs'
+import { canonicalHash } from './canonicalHash.mjs'
+import { throwIfAgentProviderContextOverflow } from './agentProviderContextOverflow.mjs'
+import { resolveAgentModelContextBinding } from './agentModelContextBinding.mjs'
 
 const INTENTS = new Set([
   'continue_generation', 'replace_scene', 'replace_person', 'replace_product',
@@ -421,6 +425,7 @@ export function botanicAgentProviderConfig(runtimeConfig, requestedModel) {
     baseUrl,
     apiKey,
     model,
+    genAiDevelopmentSemconv: runtimeConfig?.telemetry?.genAiDevelopmentSemconv === true,
     timeoutMs: Number.isFinite(Number(runtimeConfig?.agentPlannerTimeoutMs))
       ? Math.min(60_000, Math.max(1_000, Number(runtimeConfig.agentPlannerTimeoutMs)))
       : 30_000,
@@ -436,6 +441,17 @@ export function botanicAgentProviderResponseError(status) {
 
 export function botanicAgentProviderTemperature(model) {
   return model === 'kimi-k3' ? 1 : 0.1
+}
+
+function plannerModelContextBinding(options, model) {
+  try {
+    return resolveAgentModelContextBinding(options, model)
+  } catch (caught) {
+    if (typeof caught?.code === 'string' && caught.code.startsWith('AGENT_CONTEXT_')) {
+      throw new BotanicAgentPlannerError(caught.statusCode ?? 409, caught.code, caught.message)
+    }
+    throw caught
+  }
 }
 
 function parseProviderJson(content) {
@@ -695,6 +711,29 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
     allowLocal: Boolean(runtimeConfig?.webSearch?.allowLocal),
     consumeQuota: options.consumeWebResearchQuota,
   }
+  // Durable Runtime 由组合根显式注入；只有普通单元调用/旧组合根没有注入该 seam 时，
+  // 才使用进程内执行器。这样主 Planner 的恢复会重放同一持久化 Activation。
+  const subagentRunner = Object.hasOwn(options, 'subagentRunner')
+    ? options.subagentRunner
+    : createAgentSubagentRunner({
+        runtimeConfig,
+        fetchImpl: options.fetchImpl ?? fetch,
+      })
+  if (subagentRunner !== undefined && typeof subagentRunner !== 'function') {
+    throw new TypeError('Agent Planner 的 Subagent Runner 无效。')
+  }
+  const runtimeIdentity = options.runtimeIdentity
+  const runtimeContext = runtimeIdentity
+    ? {
+        userId: runtimeIdentity.userId,
+        projectId: runtimeIdentity.projectId,
+        traceId: runtimeIdentity.turnId,
+        rootExecution: Object.freeze({
+          executionGeneration: runtimeIdentity.executionGeneration,
+          leaseToken: runtimeIdentity.leaseToken,
+        }),
+      }
+    : undefined
   const registry = createBotanicAgentPlanningToolRegistry({
     input,
     finalizePlan: (raw) => normalizeProviderPlan(raw, input),
@@ -706,16 +745,27 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
       if (!proposedActions.some((item) => item.id === proposal.id)) proposedActions.push(proposal)
     },
     webResearch,
-    // 未配置 AGENT_SUBAGENT_MODEL 时这里是 undefined，派发工具整个不注册 ——
-    // 模型看不到的工具不会被它拿去向用户承诺（Epic 11）。
-    subagentRunner: createAgentSubagentRunner({
-      runtimeConfig,
-      fetchImpl: options.fetchImpl ?? fetch,
-    }),
+    // 未注入 Durable Runner 且未配置 AGENT_SUBAGENT_MODEL 时为 undefined，派发工具
+    // 整个不注册；模型看不到的工具不会被它拿去向用户承诺（Epic 11）。
+    subagentRunner,
   })
   const hasWebTools = Boolean(registry.get('web_search') || registry.get('web_fetch'))
   const streaming = typeof options.onEvent === 'function'
   const allowRawReasoning = Boolean(runtimeConfig?.agentRawReasoning)
+  const contextBinding = plannerModelContextBinding(options, config.model)
+  const snapshot = freezeAgentStepSnapshot({
+    registry,
+    model: config.model,
+    skillBindings: mountedSkills,
+    memoryBindings: input.projectMemory,
+    contextPolicyHash: contextBinding.contextPolicyHash,
+    role: 'generation_planner',
+  })
+  const attempt = {
+    id: 'plan',
+    model: config.model,
+    snapshotHash: canonicalHash(snapshot),
+  }
   const emitEvent = (event) => {
     if (!streaming) return
     try { options.onEvent(event) } catch { /* 展示层异常不得中断本轮规划。 */ }
@@ -723,18 +773,28 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
   try {
     const result = await runAgentToolLoop({
       registry,
+      snapshot,
+      attempt,
       messages: [
         { role: 'system', content: system },
         { role: 'user', content: JSON.stringify(plannerModelInput(input)) },
       ],
       toolChoice: 'auto',
       maximumSteps: hasWebTools ? 8 : 4,
+      context: runtimeContext,
+      genAiTelemetry: config.genAiDevelopmentSemconv,
       allowRawReasoning,
       onEvent: emitEvent,
+      resumeCheckpoint: options.resumeCheckpoint,
+      saveCheckpoint: options.saveCheckpoint,
+      recoverToolCall: options.recoverToolCall,
+      modelContext: contextBinding.modelContext,
+      maxOutputTokens: 3000,
       callModel: async ({ messages, tools, tool_choice, step }) => {
         const response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
           method: 'POST',
           headers: {
+            ...outboundAgentTraceHeaders(),
             Authorization: `Bearer ${config.apiKey}`,
             'x-litellm-api-key': config.apiKey,
             Accept: streaming ? 'text/event-stream' : 'application/json',
@@ -751,7 +811,11 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
           }),
           signal,
         })
-        if (!response.ok) throw botanicAgentProviderResponseError(response.status)
+        if (!response.ok) {
+          const failureBody = await response.text().catch(() => '')
+          throwIfAgentProviderContextOverflow(response.status, failureBody)
+          throw botanicAgentProviderResponseError(response.status)
+        }
         if (!streaming) return await response.json().catch(() => null)
         return await readStreamedChatCompletion(response.body, {
           onEvent: (event) => {
@@ -798,6 +862,15 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
     }
   } catch (caught) {
     if (caught instanceof BotanicAgentPlannerError) throw caught
+    if (caught?.code === 'AGENT_CONTEXT_OVERFLOW') {
+      throw new BotanicAgentPlannerError(caught.statusCode ?? 422, caught.code, caught.message)
+    }
+    if (typeof caught?.code === 'string'
+      && (caught.code.startsWith('AGENT_TURN_CHECKPOINT_')
+        || caught.code === 'AGENT_TURN_NOT_REPLAYABLE'
+        || caught.code.startsWith('AGENT_ACTION_'))) {
+      throw new BotanicAgentPlannerError(caught.statusCode ?? 409, caught.code, caught.message)
+    }
     if (timeoutSignal.aborted) throw new BotanicAgentPlannerError(504, 'PROVIDER_TIMEOUT', '生图 Agent 规划超时，请重试。')
     if (options.signal?.aborted) throw new BotanicAgentPlannerError(499, 'REQUEST_CANCELLED', '生图 Agent 请求已取消。')
     if (caught instanceof AgentToolRuntimeError) {

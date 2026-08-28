@@ -30,6 +30,9 @@ export function resolveAgentFeatureFlags(env = process.env) {
     memoryV2: flag(env.AGENT_MEMORY_V2, true),
     skillGovernanceV2: flag(env.AGENT_SKILL_GOVERNANCE_V2, true),
     forkCompareV2: flag(env.AGENT_FORK_COMPARE_V2, true),
+    // Context V2 已具备 durable snapshot；这是事故回滚用的总闸门，不承担灰度。
+    // 已经冻结为 V2 的 Turn 仍由恢复路径按原快照重放，不能借此漂移回 legacy。
+    contextCompactionV2: flag(env.AGENT_CONTEXT_COMPACTION_V2_ENABLED, true),
   })
 }
 
@@ -50,6 +53,8 @@ export const ROLLOUT_FLAGS = Object.freeze([
   'AGENT_COMPILED_PLAN_V2',
   'AGENT_REVIEW_WORKER_V3',
   'AGENT_OPERATIONAL_TOOLS_V2',
+  'AGENT_CONTEXT_COMPACTION_V2',
+  'AGENT_CONTEXT_COMPACTION_V2_SHADOW',
   'PRODUCTION_WORKFLOW_V2',
 ])
 
@@ -130,5 +135,19 @@ export function createRolloutFlags(env = process.env) {
     return ROLLOUT_FLAGS.flatMap((name) => (rules.get(name)?.invalid ?? []).map((entry) => ({ name, entry })))
   }
 
-  return { isEnabled, enabledFor, invalidSelectors }
+  /**
+   * 健康检查只需要知道规则形态，不应拿到项目/用户白名单。scoped 也不能被无上下文
+   * 的 `isEnabled` 误报成 off，否则值班者会以为灰度没有配置。
+   * @param {string} name
+   */
+  function describe(name) {
+    if (!flagSet.has(name)) throw new TypeError(`未声明的 Feature Flag：${name}`)
+    const rule = rules.get(name)
+    return Object.freeze({
+      mode: rule?.mode ?? 'off',
+      invalidSelectorCount: rule?.invalid?.length ?? 0,
+    })
+  }
+
+  return { isEnabled, enabledFor, invalidSelectors, describe }
 }

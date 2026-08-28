@@ -129,17 +129,38 @@ AGENT_QUALITY_V2=true
 AGENT_MEMORY_V2=true
 AGENT_SKILL_GOVERNANCE_V2=true
 AGENT_FORK_COMPARE_V2=true
+AGENT_CONTEXT_COMPACTION_V2_ENABLED=true
+AGENT_CONTEXT_COMPACTION_V2=false
+AGENT_CONTEXT_COMPACTION_V2_SHADOW=false
+AGENT_TELEMETRY_ENABLED=false
+AGENT_GENAI_TELEMETRY_ENABLED=false
+OTEL_SERVICE_NAME=botanic-agent
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=
+OTEL_TRACES_SAMPLER_ARG=0.1
 BOTANIC_MCP_TOOLS_JSON=[]
 BOTANIC_WEB_SEARCH_API_KEY=
 BOTANIC_WEB_SEARCH_URL=https://api.tavily.com/search
 ```
 
-`BOTANIC_MCP_TOOLS_JSON` 是服务端精确白名单。每项必须包含 `server`、`tool` 与 HTTPS `url`，可选 `authToken` 和 `timeoutMs`；浏览器不会收到 MCP 地址或凭据。外部工具调用仍需用户确认。
+`BOTANIC_MCP_TOOLS_JSON` 是服务端版本化能力白名单。每项必须包含 `server`、`tool` 与 HTTPS `url`；建议显式提供
+`version`、`inputSchema`、`outputSchema`，另可提供 `authToken`、`timeoutMs` 和 `maxResponseBytes`。省略 Schema
+只为存量开放对象配置兼容，新配置应使用 `additionalProperties: false`。运行时从公开身份和 Schema 计算
+`capabilityHash`，确认提案固定 `version + capabilityHash`；配置变化后旧提案会在出网前拒绝，必须重新确认。
+浏览器目录不包含 URL、token 或传输参数。外部调用统一按 `never` replay，只有请求发出前的校验失败能判定为
+已知失败；一旦开始派发，取消、超时、远端 error、协议错误或输出 Schema 错误都进入待人工核对的未知结果。
+
+```json
+[{"server":"asset_ops","tool":"publish","version":"1","url":"https://mcp.example.com/rpc","inputSchema":{"type":"object","additionalProperties":false,"properties":{"assetId":{"type":"string"}},"required":["assetId"]},"outputSchema":{"type":"object","additionalProperties":false,"properties":{"publicationId":{"type":"string"}},"required":["publicationId"]},"timeoutMs":12000,"maxResponseBytes":262144}]
+```
 
 `BOTANIC_WEB_SEARCH_API_KEY` 是默认联网搜索（Tavily Search API）。只保存在 API 进程；浏览器不出网。不要把 `https://mcp.tavily.com/mcp/?tavilyApiKey=...` 配进 MCP 或 `BOTANIC_WEB_SEARCH_URL`，服务端会忽略这类地址并回退到 `https://api.tavily.com/search`。未配置密钥时没有 `web_search`，但仍可 `web_fetch` 用户给出的公开 HTTPS 页。`web_search` / `web_fetch` 共用每用户每分钟配额（`SECURITY_WEB_RESEARCH_PER_MINUTE`，默认 20），失败也计次。
 
 Agent 对话支持日常问答、Prompt 生成和项目内受控检索。项目本体、画布关系、素材组、项目记忆与已启用 Skill 由服务端按当前项目权限读取；配置了 Tavily 后才允许关键词联网检索。
 Agent V2 旗标默认开启，用于统一记录部署与灰度状态；生产切换前应先完成迁移与健康检查。
+Context V2 先开 `SHADOW` 对比计数与预算，再按项目开启 active；事故回滚使用
+`AGENT_CONTEXT_COMPACTION_V2_ENABLED=false`，配置变更需重启。OTel 只发送 traces；首版不传播 baggage，
+也不采集 Prompt、消息、工具参数/结果、Provider body、媒体地址或原始推理。OTLP 建议先发 Collector，
+不要把 exporter header 放进 `VITE_*`。GenAI semantic conventions 仍是 development，因此独立默认关闭。
 API 与 Worker 必须使用相同的图像 / 视频 Provider 配置。H3 当前目录固定为 2K，画幅支持 `16:9`、`4:3`、`1:1`、`3:4` 与 `9:16`。
 
 ### 兼容 Supabase 的部署

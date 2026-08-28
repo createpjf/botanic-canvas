@@ -2,8 +2,18 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import test from 'node:test'
 import { createAgentRouteHandler, createServerSentEventWriter } from './agentRoutes.mjs'
+import { matchBotanicHttpRoutes } from './httpRouteTable.mjs'
+import { AgentSubagentServiceError } from './agentSubagentService.mjs'
+import { AgentSubagentPersistenceError } from './agentSubagentPersistence.mjs'
 import { agentTurnIdForIdempotency, createAgentTurnRecord } from './botanicAgentTurnRuntime.mjs'
 import { agentReviewRetryMaterializationDecision } from './agentReviewRetryMaterialization.mjs'
+import {
+  agentReviewCancellationRequestDecision,
+  agentReviewExecutionClaimDecision,
+  agentReviewPreparedCheckpoint,
+  committedAgentReviewExecution,
+} from './agentReviewExecution.mjs'
+import { agentReviewOutcomeReconciliationDecision } from './agentReviewReconciliation.mjs'
 import { agentReviewResultId } from './agentReviewTask.mjs'
 import {
   agentTurnExecutionClaimDecision,
@@ -27,6 +37,46 @@ const runInput = {
   branches: [{ id: 'branch-1', label: '海边人像' }],
 }
 
+test('Skill 历史版本资源可读取完整冻结快照，且拒绝无效版本', async () => {
+  const calls = []
+  const responses = []
+  const handler = createAgentRouteHandler({
+    config: {},
+    productStore: {
+      projectAccess: async () => ({ exists: true, role: 'viewer' }),
+      readAgentSkillVersion: async (userId, projectId, skillId, version) => {
+        calls.push({ userId, projectId, skillId, version })
+        return {
+          version: 2,
+          contentHash: 'skill-content-v2',
+          name: '品牌规则',
+          instructions: '保持植物线稿与品牌绿。',
+          capabilities: ['read'],
+          manifest: { version: 1, kind: 'guidance', toolAllowlist: [], dependencies: [] },
+          updatedAt: 200,
+          publishedBy: 'user-1',
+          publishedAt: 200,
+        }
+      },
+    },
+    json: (_response, status, body) => { responses.push({ status, body }); return true },
+    error: (_response, status, code, message) => { responses.push({ status, body: { error: { code, message } } }); return true },
+    requireUser: async () => ({ id: 'user-1' }),
+  })
+
+  const validUrl = new URL('http://botanic.test/api/projects/project-1/agent-skills/skill-1/versions/2')
+  await handler({ method: 'GET', headers: {} }, {}, validUrl, matchBotanicHttpRoutes(validUrl.pathname), 'request-skill-v2')
+  assert.equal(responses.at(-1).status, 200)
+  assert.deepEqual(calls, [{ userId: 'user-1', projectId: 'project-1', skillId: 'skill-1', version: 2 }])
+  assert.equal(responses.at(-1).body.version.instructions, '保持植物线稿与品牌绿。')
+  assert.equal(responses.at(-1).body.version.manifest.kind, 'guidance')
+
+  const invalidUrl = new URL('http://botanic.test/api/projects/project-1/agent-skills/skill-1/versions/current')
+  await handler({ method: 'GET', headers: {} }, {}, invalidUrl, matchBotanicHttpRoutes(invalidUrl.pathname), 'request-skill-invalid')
+  assert.equal(responses.at(-1).body.error.code, 'INVALID_AGENT_SKILL_VERSION')
+  assert.equal(calls.length, 1)
+})
+
 function fakeActionReceiptStore() {
   const receipts = new Map()
   return {
@@ -49,6 +99,53 @@ function fakeActionReceiptStore() {
     },
   }
 }
+
+test('Manual Context Compaction Route 受 rollout 保护并只向服务传权威身份与幂等键', async () => {
+  const calls = []
+  const responses = []
+  let enabled = true
+  let body = { locale: 'en' }
+  const handler = createAgentRouteHandler({
+    config: {
+      rolloutFlags: { isEnabled: (_name, context) => enabled && context.projectId === 'project-1' },
+    },
+    productStore: {},
+    agentManualContextCompactionService: async (command) => {
+      calls.push(command)
+      return { version: 1, kind: 'no_change', changed: false, state: { revision: 0 } }
+    },
+    json: (_response, status, responseBody) => {
+      responses.push({ status, body: responseBody })
+      return true
+    },
+    error: (_response, status, code, message) => {
+      responses.push({ status, body: { error: { code, message } } })
+      return true
+    },
+    readJson: async () => body,
+    requireUser: async () => ({ id: 'user-1' }),
+  })
+  const url = new URL('http://botanic.test/api/projects/project-1/agent-sessions/session-1/context-compactions')
+  const request = { method: 'POST', headers: { 'idempotency-key': 'manual-key-1' } }
+
+  await handler(request, {}, url, matchBotanicHttpRoutes(url.pathname), 'request-context-manual')
+  assert.equal(responses.at(-1).status, 200)
+  assert.deepEqual(calls, [{
+    userId: 'user-1', projectId: 'project-1', sessionId: 'session-1',
+    idempotencyKey: 'manual-key-1', locale: 'en',
+  }])
+
+  body = { model: 'client-forged' }
+  await handler(request, {}, url, matchBotanicHttpRoutes(url.pathname), 'request-context-invalid')
+  assert.equal(responses.at(-1).body.error.code, 'AGENT_CONTEXT_MANUAL_REQUEST_INVALID')
+  assert.equal(calls.length, 1)
+
+  enabled = false
+  body = {}
+  await handler(request, {}, url, matchBotanicHttpRoutes(url.pathname), 'request-context-disabled')
+  assert.equal(responses.at(-1).body.error.code, 'AGENT_CONTEXT_COMPACTION_DISABLED')
+  assert.equal(calls.length, 1)
+})
 
 test('Agent Run 首次创建返回并广播锁内持久化后的权威记录', async () => {
   const published = []
@@ -284,6 +381,7 @@ test('pre-put fence 通过后 Turn 才取消时，post-put 补偿立即收口新
     },
     listAgentRunsForTurn: async () => [],
     listAgentRunsForTurnPage: async () => [],
+    listAgentSubagentsForRootTurnPage: async () => [],
     listGenerationJobsForAgentRunPage: async () => [],
     readGenerationJob: async () => undefined,
     putGenerationJob: async (_userId, job) => job,
@@ -990,6 +1088,7 @@ test('取消 Agent Run 会广播到 Worker，正在执行的生成才会真的�
       projectAccess: async () => ({ exists: true, role: 'owner' }),
       listAgentRunsForTurn: async () => [],
       listAgentRunsForTurnPage: async () => [],
+      listAgentSubagentsForRootTurnPage: async () => [],
       listGenerationJobsForAgentRunPage: async (_userId, _projectId, runId) => Object.values(jobs)
         .filter((job) => job.agentRun?.runId === runId || runId === 'run-cancel'),
       readAgentRun: async () => structuredClone(run),
@@ -1091,6 +1190,7 @@ test('取消 Turn 先落 durable fence，再深取消并原子 finalize 为 canc
       },
       listAgentRunsForTurn: async () => { order.push('list-runs'); return [] },
       listAgentRunsForTurnPage: async () => { order.push('list-runs'); return [] },
+      listAgentSubagentsForRootTurnPage: async () => [],
       listGenerationJobsForAgentRunPage: async () => [],
       readAgentRun: async () => undefined,
       putAgentRun: async (_userId, run) => run,
@@ -1332,6 +1432,7 @@ test('SSE fallback 先 durable cancelling；Provider 退出 ack 后重试 Stop �
         return structuredClone(decision)
       },
       listAgentRunsForTurnPage: async () => [],
+      listAgentSubagentsForRootTurnPage: async () => [],
       listAgentRunsForTurn: async () => [],
       listGenerationJobsForAgentRunPage: async () => [],
       readAgentRun: async () => undefined,
@@ -2079,6 +2180,23 @@ function reviewHandler({ tasks = [reviewTaskFixture()], runs = {}, jobs = {}, st
         readAgentReviewTask: async (_userId, id) => tasks.find((task) => task.id === id),
         listAgentReviewTasksForRun: async () => tasks,
         putAgentReviewTask: async (_userId, task) => { stored.push(task); return task },
+        requestAgentReviewCancellation: async (userId, command) => {
+          const current = tasks.find((task) => task.id === command.id)
+          const decision = agentReviewCancellationRequestDecision(current, {
+            ...command, requestedBy: userId, observedAt: 100,
+          })
+          if (decision.changed) Object.assign(current, structuredClone(decision.task))
+          return decision
+        },
+        finalizeAgentReviewCancellation: async () => { throw new Error('HTTP 请求不得直接 finalize cancellation') },
+        resolveAgentReviewOutcomeUnknown: async (userId, command) => {
+          const current = tasks.find((task) => task.id === command.id)
+          const decision = agentReviewOutcomeReconciliationDecision(current, {
+            ...command, actorId: userId, observedAt: 101,
+          })
+          if (decision.changed) Object.assign(current, structuredClone(decision.task))
+          return decision
+        },
         commitAgentReviewHumanDecisions: async (userId, command) => {
           const current = tasks.find((task) => task.id === command.id)
           const existingRuns = new Map((command.retryRunCandidates ?? []).flatMap((candidate) => (
@@ -2106,6 +2224,7 @@ function reviewHandler({ tasks = [reviewTaskFixture()], runs = {}, jobs = {}, st
       readJson: async () => reviewHandler.body,
       requireUser: async () => ({ id: 'user-1' }),
       publishAgentRunUpdated: async (event) => { published.push(event) },
+      publishCancel: async (event) => { published.push(event) },
     }),
   }
 }
@@ -2124,6 +2243,132 @@ test('评审任务读模型暴露覆盖策略与被跳过的候选数', async ()
   assert.equal(task.results.length, 2)
   // ownerId 不外发。
   assert.equal(task.ownerId, undefined)
+})
+
+test('评审取消路由先持久化 cancelling 再广播 generation-fenced signal，不把 HTTP 返回当退出证明', async () => {
+  const queued = { ...reviewTaskFixture(), status: 'queued', attempt: 0, results: [] }
+  delete queued.execution
+  const running = agentReviewExecutionClaimDecision(queued, {
+    id: queued.id, projectId: queued.projectId, leaseToken: 'review-worker-1',
+    leaseDurationMs: 30_000, observedAt: 10,
+  }).task
+  const published = []
+  const { handler, responses } = reviewHandler({ tasks: [running], published })
+  reviewHandler.body = { reason: '停止视觉评审' }
+
+  await handler(
+    { method: 'POST', headers: { 'idempotency-key': 'review-cancel-route-1' } }, {},
+    new URL('http://botanic.test/api/agent-review-tasks/review_task_1/cancel'),
+    { agentReviewTaskCancel: ['path', 'review_task_1'] }, 'request-review-cancel',
+  )
+
+  assert.equal(responses.at(-1)?.status, 202)
+  assert.equal(running.status, 'cancelling')
+  assert.equal(responses.at(-1)?.body.task.status, 'cancelling')
+  assert.equal(responses.at(-1)?.body.task.execution, undefined)
+  assert.deepEqual(responses.at(-1)?.body.task.cancel, { status: 'cancelling', requestedAt: 100 })
+  assert.equal(published.length, 1)
+  assert.equal(published[0].scope, 'review')
+  assert.equal(published[0].executionGeneration, 1)
+  assert.ok(published[0].signalId)
+  // HTTP 成功与广播都不是 Worker 退出证明，终态仍是 cancelling。
+  assert.equal(running.cancel.workerReleased, false)
+})
+
+test('评审取消路由强制 Idempotency-Key 并拒绝未知字段', async () => {
+  const queued = { ...reviewTaskFixture(), status: 'queued', attempt: 0, results: [] }
+  const { handler, responses } = reviewHandler({ tasks: [queued] })
+  reviewHandler.body = {}
+  await handler(
+    { method: 'POST', headers: {} }, {},
+    new URL('http://botanic.test/api/agent-review-tasks/review_task_1/cancel'),
+    { agentReviewTaskCancel: ['path', 'review_task_1'] }, 'request-review-cancel-no-key',
+  )
+  assert.equal(responses.at(-1)?.status, 400)
+  assert.equal(responses.at(-1)?.body.error.code, 'INVALID_IDEMPOTENCY_KEY')
+
+  reviewHandler.body = { reason: '停止', signalId: '客户端不得提供 fence' }
+  await handler(
+    { method: 'POST', headers: { 'idempotency-key': 'review-cancel-invalid-body' } }, {},
+    new URL('http://botanic.test/api/agent-review-tasks/review_task_1/cancel'),
+    { agentReviewTaskCancel: ['path', 'review_task_1'] }, 'request-review-cancel-invalid',
+  )
+  assert.equal(responses.at(-1)?.status, 400)
+  assert.equal(responses.at(-1)?.body.error.code, 'INVALID_AGENT_REVIEW_CANCELLATION')
+  assert.equal(queued.status, 'queued')
+})
+
+test('评审 outcome_unknown 核对路由：continue_unverifiable 不重跑 Provider 且只返回安全摘要', async () => {
+  const queued = { ...reviewTaskFixture(), status: 'queued', attempt: 0, results: [] }
+  delete queued.execution
+  const claimed = agentReviewExecutionClaimDecision(queued, {
+    id: queued.id, projectId: queued.projectId, leaseToken: 'lost-review-worker',
+    leaseDurationMs: 30_000, observedAt: 10,
+  }).task
+  const prepared = committedAgentReviewExecution(claimed, {
+    id: claimed.id, projectId: claimed.projectId, leaseToken: 'lost-review-worker',
+    executionGeneration: 1, status: 'running',
+    checkpoint: agentReviewPreparedCheckpoint({ artifactId: queued.coverage.artifactIds[0], preparedAt: 20 }),
+    observedAt: 20,
+  }).task
+  const unknown = agentReviewExecutionClaimDecision(prepared, {
+    id: prepared.id, projectId: prepared.projectId, leaseToken: 'recovery-worker',
+    leaseDurationMs: 30_000, observedAt: 30_021, allowTakeover: true,
+  }).task
+  const { handler, responses } = reviewHandler({ tasks: [unknown] })
+  reviewHandler.body = { action: 'continue_unverifiable' }
+
+  await handler(
+    { method: 'POST', headers: { 'idempotency-key': 'review-reconcile-route-1' } }, {},
+    new URL('http://botanic.test/api/agent-review-tasks/review_task_1/reconciliation'),
+    { agentReviewTaskReconciliation: ['path', 'review_task_1'] }, 'request-review-reconcile',
+  )
+
+  assert.equal(responses.at(-1)?.status, 200)
+  const task = responses.at(-1)?.body.task
+  assert.equal(task.status, 'queued')
+  assert.equal(task.results[0].source, 'human_resolution')
+  assert.equal(task.results[0].resolution.resolvedBy, undefined)
+  assert.deepEqual(task.reconciliation, {
+    version: 1, retryCount: 0,
+    resolutions: [{ action: 'continue_unverifiable', resolvedAt: 101 }],
+  })
+  assert.equal(task.execution, undefined)
+})
+
+test('评审 outcome_unknown 核对路由：retry_once 显式排队且同一 identity 改动作返回 409', async () => {
+  const queued = { ...reviewTaskFixture(), status: 'queued', attempt: 0, results: [] }
+  delete queued.execution
+  const claimed = agentReviewExecutionClaimDecision(queued, {
+    id: queued.id, projectId: queued.projectId, leaseToken: 'lost-review-worker',
+    leaseDurationMs: 30_000, observedAt: 10,
+  }).task
+  const prepared = committedAgentReviewExecution(claimed, {
+    id: claimed.id, projectId: claimed.projectId, leaseToken: 'lost-review-worker',
+    executionGeneration: 1, status: 'running',
+    checkpoint: agentReviewPreparedCheckpoint({ artifactId: queued.coverage.artifactIds[0], preparedAt: 20 }),
+    observedAt: 20,
+  }).task
+  const unknown = agentReviewExecutionClaimDecision(prepared, {
+    id: prepared.id, projectId: prepared.projectId, leaseToken: 'recovery-worker',
+    leaseDurationMs: 30_000, observedAt: 30_021, allowTakeover: true,
+  }).task
+  const { handler, responses } = reviewHandler({ tasks: [unknown] })
+  const request = { method: 'POST', headers: { 'idempotency-key': 'review-reconcile-route-retry' } }
+  const matches = { agentReviewTaskReconciliation: ['path', 'review_task_1'] }
+  reviewHandler.body = { action: 'retry_once' }
+  await handler(request, {}, new URL('http://botanic.test/api/agent-review-tasks/review_task_1/reconciliation'), matches, 'request-review-retry')
+  assert.equal(responses.at(-1)?.status, 202)
+  assert.equal(responses.at(-1)?.body.task.status, 'queued')
+  assert.deepEqual(responses.at(-1)?.body.task.reconciliation.resolutions[0].risk, {
+    code: 'AGENT_REVIEW_RETRY_MAY_DUPLICATE_PROVIDER_CALL',
+  })
+
+  // 同一 key 不能从 retry_once 偷换为 continue_unverifiable。
+  reviewHandler.body = { action: 'continue_unverifiable' }
+  await handler(request, {}, new URL('http://botanic.test/api/agent-review-tasks/review_task_1/reconciliation'), matches, 'request-review-conflict')
+  assert.equal(responses.at(-1)?.status, 409)
+  assert.equal(responses.at(-1)?.body.error.code, 'AGENT_REVIEW_RECONCILIATION_CONFLICT')
 })
 
 test('批量人工决定逐候选落库，重复提交幂等', async () => {
@@ -2324,4 +2569,269 @@ test('七个运维写工具现在全部有执行器，Editor 能拿到完整一�
   for (const name of OPERATIONAL_ACTION_TOOLS) {
     assert.ok(registry.get(name), `${name} 应当可用`)
   }
+})
+
+function subagentRouteFixture({ role = 'editor', serviceOverrides = {} } = {}) {
+  const responses = []
+  const calls = { start: [], followup: [], read: [], cancel: [], permissions: [] }
+  let status = 'active'
+  const rawSubagent = () => ({
+    id: 'subagent-1', projectId: 'project-1', status,
+    ownerId: 'user-1', idempotencyKey: 'hidden-key', requestHash: 'hidden-hash',
+    role: 'brand_research', model: 'subagent-model', allowedTools: ['canvas_read'],
+    outputSchema: { type: 'object' }, budget: { maxActivations: 8 },
+    dispatch: {
+      activationId: 'activation-3', activationSequence: 3, generation: 2,
+      cancelGeneration: 1, leaseExpiresAt: 999, leaseToken: 'hidden-lease',
+    },
+    cancellation: {
+      generation: 1, signalId: 'hidden-signal', reason: '停止', requestedAt: 100,
+    },
+  })
+  const rawActivation = () => ({
+    id: 'activation-3', projectId: 'project-1', subagentId: 'subagent-1', sequence: 3,
+    turnId: 'turn-subagent-3', status: 'queued', ownerId: 'user-1',
+    idempotencyKey: 'hidden-activation-key', requestHash: 'hidden-activation-hash',
+    execution: {
+      generation: 2, cancelGeneration: 1, leaseExpiresAt: 999,
+      claimedAt: 100, lastHeartbeatAt: 101, leaseToken: 'hidden-activation-lease',
+    },
+  })
+  const rawMessage = () => ({
+    id: 'agent-turn-result-turn-subagent-3', role: 'assistant', kind: 'text',
+    content: '品牌应保持植物学线稿与低饱和绿色。', turnId: 'turn-subagent-3',
+    status: 'submitted', createdAt: 100, updatedAt: 101,
+    ownerId: 'user-1', idempotencyKey: 'hidden-message-key', reasoning_content: 'hidden-reasoning',
+  })
+  const mutation = () => ({
+    kind: 'enqueued', changed: true, subagent: rawSubagent(), activation: rawActivation(),
+    turn: { id: 'turn-subagent-3', idempotencyKey: 'hidden-turn-key', request: { content: 'hidden' } },
+    session: { id: 'hidden-session', plannerModel: 'hidden' },
+    inputMessage: { id: 'hidden-input', content: 'hidden' },
+  })
+  const agentSubagentService = {
+    async start(input) { calls.start.push(input); return mutation() },
+    async followup(input) { calls.followup.push(input); return mutation() },
+    async read(userId, subagentId, options) {
+      calls.read.push({ userId, subagentId, options })
+      return { subagent: rawSubagent(), activations: [rawActivation()], messages: [rawMessage()] }
+    },
+    async cancel(input) {
+      calls.cancel.push(input)
+      status = 'cancelling'
+      return { kind: 'not_ready', changed: true, subagent: rawSubagent(), activation: rawActivation() }
+    },
+    ...serviceOverrides,
+  }
+  const productStore = {
+    async projectAccess(userId, projectId) {
+      calls.permissions.push({ userId, projectId, role })
+      return { exists: true, role }
+    },
+    async readAgentSubagent(_userId, subagentId) {
+      return subagentId === 'subagent-1' ? rawSubagent() : undefined
+    },
+  }
+  const handler = createAgentRouteHandler({
+    config: {}, productStore, agentSubagentService,
+    json: (_response, responseStatus, body, headers) => {
+      responses.push({ status: responseStatus, body, headers })
+      return true
+    },
+    error: (_response, responseStatus, code, message) => {
+      responses.push({ status: responseStatus, body: { error: { code, message } } })
+      return true
+    },
+    readJson: async (request) => request.body,
+    requireUser: async () => ({ id: 'user-1' }),
+  })
+  return { handler, responses, calls }
+}
+
+test('Subagent HTTP 目录匹配 start、followup、cancel 与 read 四类资源', () => {
+  assert.deepEqual(
+    matchBotanicHttpRoutes('/api/projects/project-1/agent-subagents').projectAgentSubagents?.slice(1),
+    ['project-1'],
+  )
+  assert.deepEqual(
+    matchBotanicHttpRoutes('/api/agent-subagents/subagent-1/followups').agentSubagentFollowups?.slice(1),
+    ['subagent-1'],
+  )
+  assert.deepEqual(
+    matchBotanicHttpRoutes('/api/agent-subagents/subagent-1/cancel').agentSubagentCancel?.slice(1),
+    ['subagent-1'],
+  )
+  assert.deepEqual(
+    matchBotanicHttpRoutes('/api/agent-subagents/subagent-1').agentSubagent?.slice(1),
+    ['subagent-1'],
+  )
+})
+
+test('Subagent start 与 followup 只注入服务端身份，并把 Adapter 结果收敛为 public DTO', async () => {
+  const { handler, responses, calls } = subagentRouteFixture()
+  const startUrl = new URL('http://botanic.test/api/projects/project-1/agent-subagents')
+  await handler(
+    {
+      method: 'POST', headers: { 'idempotency-key': 'subagent-start-key-0001' },
+      body: { rootTurnId: 'turn-root', role: 'brand_research', content: '研究品牌视觉' },
+    },
+    {}, startUrl, matchBotanicHttpRoutes(startUrl.pathname), 'request-subagent-start',
+  )
+
+  assert.deepEqual(calls.start, [{
+    userId: 'user-1', projectId: 'project-1', rootTurnId: 'turn-root',
+    role: 'brand_research', content: '研究品牌视觉',
+    idempotencyKey: 'subagent-start-key-0001', requestId: 'request-subagent-start',
+  }])
+  assert.equal(responses.at(-1)?.status, 202)
+  assert.deepEqual(Object.keys(responses.at(-1)?.body).sort(), ['activation', 'changed', 'kind', 'subagent'])
+  assert.equal(responses.at(-1)?.body.subagent.ownerId, undefined)
+  assert.equal(responses.at(-1)?.body.subagent.idempotencyKey, undefined)
+  assert.equal(responses.at(-1)?.body.subagent.dispatch.leaseToken, undefined)
+  assert.equal(responses.at(-1)?.body.activation.execution.leaseToken, undefined)
+
+  const followupUrl = new URL('http://botanic.test/api/agent-subagents/subagent-1/followups')
+  await handler(
+    {
+      method: 'POST', headers: { 'idempotency-key': 'subagent-followup-0001' },
+      body: { sourceTurnId: 'turn-root', content: '继续核对竞品' },
+    },
+    {}, followupUrl, matchBotanicHttpRoutes(followupUrl.pathname), 'request-subagent-followup',
+  )
+  assert.deepEqual(calls.followup, [{
+    userId: 'user-1', subagentId: 'subagent-1', sourceTurnId: 'turn-root',
+    content: '继续核对竞品', idempotencyKey: 'subagent-followup-0001',
+    requestId: 'request-subagent-followup',
+  }])
+  assert.equal(responses.at(-1)?.status, 202)
+  assert.equal(calls.permissions.every((entry) => entry.role === 'editor'), true)
+})
+
+test('Subagent 路由强制 Idempotency-Key，拒绝客户端模型权限字段，并映射服务与持久化错误', async () => {
+  const fixture = subagentRouteFixture()
+  const url = new URL('http://botanic.test/api/projects/project-1/agent-subagents')
+  const routeMatches = matchBotanicHttpRoutes(url.pathname)
+  await fixture.handler(
+    { method: 'POST', headers: {}, body: { rootTurnId: 'turn-root', role: 'brand_research', content: '研究' } },
+    {}, url, routeMatches, 'request-no-key',
+  )
+  assert.equal(fixture.responses.at(-1)?.status, 400)
+  assert.equal(fixture.responses.at(-1)?.body.error.code, 'INVALID_IDEMPOTENCY_KEY')
+
+  await fixture.handler(
+    {
+      method: 'POST', headers: { 'idempotency-key': 'subagent-authority-0001' },
+      body: {
+        rootTurnId: 'turn-root', role: 'brand_research', content: '研究',
+        model: 'client-selected-model',
+      },
+    },
+    {}, url, routeMatches, 'request-authority',
+  )
+  assert.equal(fixture.responses.at(-1)?.status, 403)
+  assert.equal(fixture.responses.at(-1)?.body.error.code, 'AGENT_SUBAGENT_AUTHORITY_FORBIDDEN')
+  assert.equal(fixture.calls.start.length, 0)
+
+  const unavailable = subagentRouteFixture({
+    serviceOverrides: {
+      async start() {
+        throw new AgentSubagentServiceError(
+          'AGENT_SUBAGENT_NOT_CONFIGURED', 'Subagent 模型服务尚未配置。', 503,
+        )
+      },
+    },
+  })
+  await unavailable.handler(
+    {
+      method: 'POST', headers: { 'idempotency-key': 'subagent-service-error-1' },
+      body: { rootTurnId: 'turn-root', role: 'brand_research', content: '研究' },
+    },
+    {}, url, routeMatches, 'request-service-error',
+  )
+  assert.equal(unavailable.responses.at(-1)?.status, 503)
+  assert.equal(unavailable.responses.at(-1)?.body.error.code, 'AGENT_SUBAGENT_NOT_CONFIGURED')
+
+  const activationLimit = subagentRouteFixture({
+    serviceOverrides: {
+      async start() {
+        throw new AgentSubagentPersistenceError(
+          'AGENT_SUBAGENT_ACTIVATION_LIMIT', 'Subagent 已达到 Activation 预算上限。', 409,
+        )
+      },
+    },
+  })
+  await activationLimit.handler(
+    {
+      method: 'POST', headers: { 'idempotency-key': 'subagent-persist-error-1' },
+      body: { rootTurnId: 'turn-root', role: 'brand_research', content: '研究' },
+    },
+    {}, url, routeMatches, 'request-persistence-error',
+  )
+  assert.equal(activationLimit.responses.at(-1)?.status, 409)
+  assert.equal(activationLimit.responses.at(-1)?.body.error.code, 'AGENT_SUBAGENT_ACTIVATION_LIMIT')
+})
+
+test('Subagent GET 允许项目成员续读，写操作仍要求 Editor', async () => {
+  const { handler, responses, calls } = subagentRouteFixture({ role: 'viewer' })
+  const readUrl = new URL('http://botanic.test/api/agent-subagents/subagent-1?afterSequence=2&limit=20')
+  await handler(
+    { method: 'GET', headers: {} }, {}, readUrl,
+    matchBotanicHttpRoutes(readUrl.pathname), 'request-subagent-read',
+  )
+  assert.equal(responses.at(-1)?.status, 200)
+  assert.deepEqual(calls.read, [{
+    userId: 'user-1', subagentId: 'subagent-1', options: { afterSequence: 2, limit: 20 },
+  }])
+  assert.equal(responses.at(-1)?.body.subagent.ownerId, undefined)
+  assert.equal(responses.at(-1)?.body.activations[0].idempotencyKey, undefined)
+  assert.equal(responses.at(-1)?.body.messages[0].content, '品牌应保持植物学线稿与低饱和绿色。')
+  assert.equal(responses.at(-1)?.body.messages[0].ownerId, undefined)
+  assert.equal(responses.at(-1)?.body.messages[0].reasoning_content, undefined)
+  assert.deepEqual(responses.at(-1)?.body.cursor, { afterSequence: 3, hasMore: false })
+
+  const followupUrl = new URL('http://botanic.test/api/agent-subagents/subagent-1/followups')
+  await assert.rejects(
+    handler(
+      {
+        method: 'POST', headers: { 'idempotency-key': 'subagent-viewer-write-1' },
+        body: { sourceTurnId: 'turn-root', content: '继续研究' },
+      },
+      {}, followupUrl, matchBotanicHttpRoutes(followupUrl.pathname), 'request-viewer-followup',
+    ),
+    (caught) => caught?.code === 'PROJECT_ACCESS_FORBIDDEN' && caught?.statusCode === 403,
+  )
+  assert.equal(calls.followup.length, 0)
+})
+
+test('Subagent cancel 只回读 public descriptor，cancelling 返回 202', async () => {
+  const { handler, responses, calls } = subagentRouteFixture()
+  const url = new URL('http://botanic.test/api/agent-subagents/subagent-1/cancel')
+  await handler(
+    {
+      method: 'POST', headers: { 'idempotency-key': 'subagent-cancel-key-01' },
+      body: { reason: '  停止调研  ' },
+    },
+    {}, url, matchBotanicHttpRoutes(url.pathname), 'request-subagent-cancel',
+  )
+  assert.deepEqual(calls.cancel, [{
+    userId: 'user-1', projectId: 'project-1', subagentId: 'subagent-1',
+    idempotencyKey: 'subagent-cancel-key-01', reason: '停止调研',
+  }])
+  assert.equal(responses.at(-1)?.status, 202)
+  assert.equal(responses.at(-1)?.body.subagent.status, 'cancelling')
+  assert.equal(responses.at(-1)?.body.subagent.ownerId, undefined)
+  assert.equal(responses.at(-1)?.body.subagent.cancellation.signalId, undefined)
+  assert.equal(responses.at(-1)?.body.subagent.dispatch.leaseToken, undefined)
+})
+
+test('Subagent GET 拒绝越界 afterSequence 与 limit', async () => {
+  const { handler, responses, calls } = subagentRouteFixture()
+  const url = new URL('http://botanic.test/api/agent-subagents/subagent-1?afterSequence=0&limit=201')
+  await handler(
+    { method: 'GET', headers: {} }, {}, url,
+    matchBotanicHttpRoutes(url.pathname), 'request-subagent-invalid-cursor',
+  )
+  assert.equal(responses.at(-1)?.status, 400)
+  assert.equal(responses.at(-1)?.body.error.code, 'INVALID_AGENT_SUBAGENT_CURSOR')
+  assert.equal(calls.read.length, 0)
 })

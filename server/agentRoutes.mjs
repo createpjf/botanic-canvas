@@ -1,12 +1,17 @@
-import { BotanicAgentPlannerError, planBotanicGeneration, validateBotanicAgentPlanInput } from './botanicAgentPlanner.mjs'
-import { BotanicAgentChatError, chatWithBotanicAgent, validateBotanicAgentChatInput } from './botanicAgentChat.mjs'
+import { BotanicAgentPlannerError, validateBotanicAgentPlanInput } from './botanicAgentPlanner.mjs'
+import { BotanicAgentChatError, validateBotanicAgentChatInput } from './botanicAgentChat.mjs'
 import { reviewBotanicAgentRunResults } from './botanicAgentReview.mjs'
 import { normalizeBotanicAgentLocale } from './agentInstructions.mjs'
-import { resolveBotanicAgentTurn, validateBotanicAgentTurnInput } from './botanicAgentTurn.mjs'
+import { validateBotanicAgentTurnInput } from './botanicAgentTurn.mjs'
 import { createAgentSkill, isUsableAgentSkill, publicAgentSkill, validateAgentSkillCreation } from './botanicAgentSkill.mjs'
 import { agentRunSubmissionBinding, createPersistentAgentRun, prepareAgentBranchRetry, publicAgentRun, storedAgentRunSubmissionBinding, validateAgentRunCreation } from './botanicAgentRun.mjs'
 import { AgentToolRuntimeError, executeConfirmedAgentAction } from './agentToolRuntime.mjs'
-import { botanicAgentBuiltInSkill, botanicAgentSystemSkills, createBotanicAgentActionToolRegistry } from './botanicAgentTools.mjs'
+import {
+  botanicAgentBuiltInSkill,
+  botanicAgentSkillToolRisk,
+  botanicAgentSystemSkills,
+  createBotanicAgentActionToolRegistry,
+} from './botanicAgentTools.mjs'
 import { decodeAgentMessageCursor } from './agentMessagePersistence.mjs'
 import { decodeArtifactCursor, encodeArtifactCursor } from './botanicArtifactIndex.mjs'
 import { retryFailedWorkflowItems } from './productionWorkflow.mjs'
@@ -31,11 +36,19 @@ import {
 import { createLocalCancelRegistry } from './localCancelRegistry.mjs'
 import { publicAgentReviewTask } from './agentReviewTask.mjs'
 import { AgentReviewDecisionServiceError, createAgentReviewDecisionService } from './agentReviewDecisionService.mjs'
+import { createAgentReviewService } from './agentReviewService.mjs'
 import { createAgentBranchRetryService } from './agentBranchRetryService.mjs'
 import { createProductionWorkflowPublishService } from './productionWorkflowPublishService.mjs'
 import { selectBotanicAgentMemory } from './botanicAgentMemory.mjs'
 import { buildThreadSummaryCheckpoint, shouldCompactThread } from './agentThreadSummary.mjs'
 import { compareAndSetDerivedAgentThreadSummary, createAgentThreadContext } from './agentThreadContext.mjs'
+import { createAgentContextCoordinator } from './agentContextCoordinator.mjs'
+import { resolveAgentContextRollout } from './agentContextRollout.mjs'
+import { createAgentContextObserver } from './agentContextObservability.mjs'
+import {
+  AgentManualContextCompactionServiceError,
+  createAgentManualContextCompactionService,
+} from './agentManualContextCompactionService.mjs'
 import { compareBotanicAgentRunBranches } from './botanicAgentCompare.mjs'
 import { createForkedAgentRunInput, forkedAgentRunIdForIdempotency } from './botanicAgentFork.mjs'
 import { createAgentActionExecution } from './agentActionExecution.mjs'
@@ -47,12 +60,90 @@ import {
 import { AgentDelegationFenceError, assertTurnAllowsDelegation, createAgentCancellationService } from './agentCancellationService.mjs'
 import { matchingIdempotencyRequestBinding } from './idempotencyRequestBinding.mjs'
 import { validateAgentEntityReferences } from './agentEntityReferences.mjs'
+import {
+  agentCompatibilityIdempotencyKey,
+  agentCompatibilityResult,
+  createAgentCompatibilityRuntimeRequest,
+  resolveBotanicAgentRuntimeRequest,
+} from './agentRuntimeRequest.mjs'
+import { createAgentOperationalReaders } from './agentOperationalReaders.mjs'
+import { AgentSubagentServiceError } from './agentSubagentService.mjs'
+import { createDurableAgentSubagentRunner } from './agentSubagentBroker.mjs'
+import {
+  AgentSubagentPersistenceError,
+  publicAgentSubagent,
+  publicAgentSubagentActivation,
+} from './agentSubagentPersistence.mjs'
 
 export { BotanicAgentPlannerError, BotanicAgentChatError }
 
 const editableAgentSessionFields = new Set([
   'id', 'title', 'executionMode', 'plannerModel', 'mountedSkillIds', 'contextNodeIds', 'createdAt', 'updatedAt',
 ])
+
+const agentSubagentStartBodyFields = new Set(['rootTurnId', 'role', 'content'])
+const agentSubagentFollowupBodyFields = new Set(['sourceTurnId', 'content'])
+const agentSubagentCancelBodyFields = new Set(['reason'])
+const agentSubagentAuthorityFieldPattern = /prompt|instruction|capabilit|tool|model|schema|budget/iu
+
+function agentSubagentBodyFailure(body, allowedFields, label) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return { statusCode: 400, code: 'AGENT_SUBAGENT_REQUEST_INVALID', message: `${label}格式无效。` }
+  }
+  const unsupported = Object.keys(body).find((key) => !allowedFields.has(key))
+  if (!unsupported) return undefined
+  if (agentSubagentAuthorityFieldPattern.test(unsupported)) {
+    return {
+      statusCode: 403,
+      code: 'AGENT_SUBAGENT_AUTHORITY_FORBIDDEN',
+      message: '客户端不能提交 Subagent 系统指令、模型或能力定义。',
+    }
+  }
+  return {
+    statusCode: 400,
+    code: 'AGENT_SUBAGENT_REQUEST_INVALID',
+    message: `${label}包含未声明字段：${unsupported}。`,
+  }
+}
+
+function publicAgentSubagentMutation(outcome) {
+  const subagent = publicAgentSubagent(outcome?.subagent)
+  const activation = publicAgentSubagentActivation(outcome?.activation)
+  return {
+    kind: outcome?.kind,
+    changed: outcome?.changed === true,
+    ...(subagent ? { subagent } : {}),
+    ...(activation ? { activation } : {}),
+  }
+}
+
+function publicAgentSubagentMessage(message) {
+  if (!message || typeof message !== 'object' || Array.isArray(message)
+    || typeof message.id !== 'string' || typeof message.content !== 'string') return undefined
+  return {
+    id: message.id,
+    role: message.role,
+    kind: message.kind,
+    content: message.content,
+    createdAt: message.createdAt,
+    updatedAt: message.updatedAt,
+    ...(typeof message.turnId === 'string' ? { turnId: message.turnId } : {}),
+    ...(typeof message.status === 'string' ? { status: message.status } : {}),
+    ...(Array.isArray(message.entityReferences)
+      ? { entityReferences: structuredClone(message.entityReferences) }
+      : {}),
+  }
+}
+
+function isAuthorizedAgentMediaUrl(value) {
+  if (typeof value !== 'string' || !value.startsWith('/api/media/') || value.length > 2048) return false
+  try {
+    const parsed = new URL(value, 'http://botanic.internal')
+    return parsed.origin === 'http://botanic.internal' && parsed.pathname.startsWith('/api/media/')
+  } catch {
+    return false
+  }
+}
 
 /**
  * SSE 写出器。通道必须在模型吐出第一事件之前打开：Vercel 反代会在首字节过晚
@@ -287,6 +378,8 @@ export function createAgentRouteHandler({
   localCancelRegistry,
   publishCancel,
   securityControls,
+  agentSubagentService,
+  agentManualContextCompactionService,
 }) {
   // 看图只读当前项目内的媒体：readGenerationInput 校验归属，图片字节不离开服务端与模型网关。
   const visionMediaResolver = (userId, projectId) => (mediaService?.enabled
@@ -300,16 +393,201 @@ export function createAgentRouteHandler({
     ...(Number.isInteger(skill.version) ? { version: skill.version } : {}),
     ...(typeof skill.contentHash === 'string' ? { contentHash: skill.contentHash } : {}),
     ...(Array.isArray(skill.capabilities) ? { capabilities: skill.capabilities } : {}),
+    ...(typeof skill.lifecycle === 'string' ? { lifecycle: skill.lifecycle } : {}),
+    ...(skill.manifest ? { manifest: structuredClone(skill.manifest) } : {}),
+    ...(Array.isArray(skill.versions) ? { versions: structuredClone(skill.versions) } : {}),
   })
+  const configuredMcpCatalog = () => (
+    typeof configuredMcpTools?.catalog === 'function' ? configuredMcpTools.catalog() : []
+  )
   // HTTP 连接只是观察者；Runtime 与跨实例取消订阅方共用这张执行句柄表。
   const cancelRegistry = localCancelRegistry ?? createLocalCancelRegistry()
   const agentTurnRuntime = createBotanicAgentTurnRuntime({ productStore, localCancelRegistry: cancelRegistry })
+  // 正式 HTTP 入口绝不回退到进程内 Subagent：未完整配置时显式注入 undefined，
+  // Planner 会直接隐藏派发工具；配置完整时则统一走 descriptor/queue/Turn Runtime。
+  const durableSubagentRunner = agentSubagentService
+    && config?.agentSubagentModel
+    && config?.flockApiKey
+    ? createDurableAgentSubagentRunner({ service: agentSubagentService })
+    : undefined
+
+  /**
+   * plan/chat/intent 的旧 URL 只负责兼容响应形状。它们与主 `/api/agent-turns`
+   * 一样先取得 durable Turn，再执行解析器；HTTP close 不拥有 Runtime 的 AbortSignal。
+   */
+  const executeCompatibilityTurn = async ({
+    operation,
+    request,
+    response,
+    user,
+    projectId,
+    sessionId,
+    requestId,
+    input,
+    resolveOptions,
+    sse,
+  }) => {
+    let detach
+    let observerDetached = false
+    const detached = new Promise((resolve) => {
+      detach = () => {
+        if (observerDetached) return
+        observerDetached = true
+        resolve({ kind: 'detached' })
+      }
+    })
+    const detachOnAbortedRequest = () => detach()
+    const detachOnClosedResponse = () => {
+      if (!response.writableEnded) detach()
+    }
+    request.once('aborted', detachOnAbortedRequest)
+    response.once('close', detachOnClosedResponse)
+    if (request.aborted || response.destroyed) detach()
+    const idempotencyKey = agentCompatibilityIdempotencyKey(
+      operation,
+      input,
+      request.headers['idempotency-key'],
+      requestId,
+    )
+    const runtimeRequest = createAgentCompatibilityRuntimeRequest(operation, input)
+    const turnId = agentTurnIdForIdempotency(user.id, projectId, idempotencyKey)
+    const pendingTurnEvents = []
+    let acceptedSent = false
+    const executionPromise = agentTurnRuntime.execute({
+      userId: user.id,
+      projectId,
+      ...(sessionId ? { sessionId } : {}),
+      requestId,
+      id: turnId,
+      idempotencyKey,
+      request: runtimeRequest,
+      resolve: (runtimeOptions) => resolveBotanicAgentRuntimeRequest(runtimeRequest, config, runtimeOptions),
+      resolveOptions: {
+        ...resolveOptions,
+        subagentRunner: durableSubagentRunner,
+        observeAgentContext,
+        ...(sessionId ? {
+          persistAgentContextUsageAnchor: persistAgentContextUsageAnchor({
+            userId: user.id,
+            projectId,
+            sessionId,
+          }),
+        } : {}),
+      },
+      onEvent: (event) => {
+        if (!sse || observerDetached) return
+        if (!acceptedSent) pendingTurnEvents.push(event)
+        else sse.send(event)
+      },
+    })
+    // Runtime 已脱离传输层；响应断开时仍需消费 rejection，避免后台 Promise 变成
+    // unhandled rejection。原 Promise 仍由下方 await 收敛正常请求。
+    void executionPromise.catch(() => undefined)
+    const candidate = createAgentTurnRecord({
+      id: turnId,
+      ownerId: user.id,
+      projectId,
+      ...(sessionId ? { sessionId } : {}),
+      requestId,
+      idempotencyKey,
+      request: runtimeRequest,
+    })
+    try {
+      const durableOutcome = await Promise.race([
+        awaitDurableAgentTurnBeforeAccepted({
+          productStore,
+          userId: user.id,
+          candidate,
+          executionPromise,
+        }).then((turn) => ({ kind: 'durable', turn })),
+        detached,
+      ])
+      if (durableOutcome.kind === 'detached') return { detached: true }
+      const durableTurn = durableOutcome.turn
+      if (sse && !response.destroyed) {
+        sse.send({
+          type: 'accepted',
+          turnId,
+          runtimeTurn: { id: turnId, projectId },
+          observer: { url: `/api/agent-turns/${encodeURIComponent(turnId)}?after=0` },
+        })
+        acceptedSent = true
+        for (const event of pendingTurnEvents.splice(0)) sse.send(event)
+      }
+      const durableResult = durableTurn.result
+      if (durableResult) {
+        return {
+          body: agentCompatibilityResult(operation, durableResult),
+          runtimeTurn: publicAgentTurn(durableTurn),
+        }
+      }
+      const prefer = String(request.headers.prefer ?? '').toLowerCase()
+      if (!sse && prefer.split(',').some((item) => item.trim() === 'respond-async')) {
+        return {
+          pending: true,
+          runtimeTurn: publicAgentTurn(durableTurn),
+          observer: { url: `/api/agent-turns/${encodeURIComponent(turnId)}?after=0` },
+        }
+      }
+      const executionOutcome = await Promise.race([
+        executionPromise.then((execution) => ({ kind: 'execution', execution })),
+        detached,
+      ])
+      if (executionOutcome.kind === 'detached') return { detached: true }
+      let execution = executionOutcome.execution
+      let result = execution.result ?? execution.turn?.result
+      // 同 key 落到另一 API 实例时 claim 会返回 in_progress。兼容入口继续按 durable
+      // Turn 观察，不把旧 200/done 契约降级为需要调用方理解的 425。
+      const observationDeadline = Date.now() + 65_000
+      while (!result && Date.now() < observationDeadline) {
+        const wait = await Promise.race([
+          new Promise((resolve) => setTimeout(() => resolve({ kind: 'tick' }), 250)),
+          detached,
+        ])
+        if (wait.kind === 'detached') return { detached: true }
+        const observed = await productStore.readAgentTurn(user.id, turnId)
+        if (!observed) continue
+        execution = { ...execution, turn: publicAgentTurn(observed) }
+        result = observed.result
+        if (observed.status === 'failed' || observed.status === 'cancelled') {
+          throw Object.assign(new Error(observed.error?.message ?? 'Agent Runtime 未完成。'), {
+            code: observed.error?.code ?? (observed.status === 'cancelled' ? 'AGENT_TURN_CANCELLED' : 'AGENT_TURN_FAILED'),
+            statusCode: observed.status === 'cancelled' ? 499 : 502,
+          })
+        }
+      }
+      if (!result) {
+        throw Object.assign(new Error('Agent Runtime 仍在执行，请使用同一提交键继续观察。'), {
+          code: 'AGENT_RUNTIME_IN_PROGRESS',
+          statusCode: 425,
+          runtimeTurn: execution.turn ?? publicAgentTurn(durableTurn),
+        })
+      }
+      return {
+        body: agentCompatibilityResult(operation, result),
+        runtimeTurn: execution.turn ?? publicAgentTurn(durableTurn),
+      }
+    } finally {
+      request.off('aborted', detachOnAbortedRequest)
+      response.off('close', detachOnClosedResponse)
+    }
+  }
   let agentCancellation
   const cancellationService = () => {
     agentCancellation ??= createAgentCancellationService({
       productStore,
       cancelTurn: (command) => agentTurnRuntime.cancel(command),
       finalizeTurn: (command) => agentTurnRuntime.finalizeCancellation(command),
+      cancelSubagent: (command) => {
+        if (typeof agentSubagentService?.cancel !== 'function') {
+          throw new AgentSubagentServiceError(
+            'AGENT_SUBAGENT_CANCELLATION_UNAVAILABLE',
+            'Subagent 取消服务尚未配置。',
+            503,
+          )
+        }
+        return agentSubagentService.cancel(command)
+      },
       redisQueue,
       publishCancel,
       modelOptions: config?.modelOptions ?? [],
@@ -355,11 +633,77 @@ export function createAgentRouteHandler({
     return agentActionReconciliation
   }
   let agentThreadContext
+  let agentContextCoordinator
+  let manualAgentContextCompaction = agentManualContextCompactionService
+  const observeAgentContext = createAgentContextObserver()
+  const durableAgentContextCoordinator = () => {
+    agentContextCoordinator ??= createAgentContextCoordinator({
+      productStore,
+      policies: config.agentModelContextPolicies,
+      observe: observeAgentContext,
+    })
+    return agentContextCoordinator
+  }
+  const persistAgentContextUsageAnchor = ({ userId, projectId, sessionId }) => async (usageAnchor) => (
+    durableAgentContextCoordinator().persistUsageAnchor({
+      userId,
+      projectId,
+      sessionId,
+      usageAnchor,
+    })
+  )
+  const compactAgentContextManually = () => {
+    manualAgentContextCompaction ??= createAgentManualContextCompactionService({
+      productStore,
+      policies: config.agentModelContextPolicies,
+      defaultModel: config.flockTextModel,
+      observe: observeAgentContext,
+    })
+    return manualAgentContextCompaction
+  }
   const authoritativeThreadContext = () => {
-    agentThreadContext ??= createAgentThreadContext({ productStore })
+    agentThreadContext ??= createAgentThreadContext({
+      productStore,
+      contextV2: {
+        resolveRollout: ({ userId, projectId }) => resolveAgentContextRollout({
+          featureFlags: config.agentFeatureFlags,
+          rolloutFlags: config.rolloutFlags,
+          userId,
+          projectId,
+        }),
+        policies: config.agentModelContextPolicies,
+        observe: observeAgentContext,
+      },
+    })
     return agentThreadContext
   }
   const methodNotAllowed = (response, message, allow) => json(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message } }, { Allow: allow })
+  const hasAgentSubagentService = () => ['start', 'followup', 'read', 'cancel']
+    .every((name) => typeof agentSubagentService?.[name] === 'function')
+  const callAgentSubagentService = async (response, operation) => {
+    try {
+      return { outcome: await operation() }
+    } catch (caught) {
+      if (!(caught instanceof AgentSubagentServiceError)
+        && !(caught instanceof AgentSubagentPersistenceError)) throw caught
+      return { handled: error(response, caught.statusCode, caught.code, caught.message) }
+    }
+  }
+  const agentSubagentEnqueueResponse = (response, outcome) => {
+    if (outcome?.kind === 'missing') {
+      return error(response, 404, 'AGENT_SUBAGENT_NOT_FOUND', '未找到该 Subagent。')
+    }
+    if (outcome?.kind === 'inactive') {
+      return error(response, 409, 'AGENT_SUBAGENT_INACTIVE', 'Subagent 已停止，不能继续追加消息。')
+    }
+    if (outcome?.kind === 'conflict') {
+      return error(response, 409, 'AGENT_SUBAGENT_IDEMPOTENCY_CONFLICT', '同一提交标识已绑定到不同请求。')
+    }
+    if (!['enqueued', 'replay'].includes(outcome?.kind) || !outcome?.subagent || !outcome?.activation) {
+      return error(response, 503, 'AGENT_SUBAGENT_ENQUEUE_FAILED', 'Subagent 请求暂未可靠入队，请稍后重试。')
+    }
+    return json(response, outcome.kind === 'enqueued' ? 202 : 200, publicAgentSubagentMutation(outcome))
+  }
   const observeRun = (event) => {
     try { observeAgentRun(event) } catch { /* 运行日志不得阻断用户请求。 */ }
   }
@@ -510,6 +854,15 @@ export function createAgentRouteHandler({
     agentReviewDecision ??= createAgentReviewDecisionService({ productStore })
     return agentReviewDecision
   }
+  let agentReviewOperations
+  const reviewOperationsService = () => {
+    agentReviewOperations ??= createAgentReviewService({
+      productStore,
+      publishCancel,
+      observe: (event) => observeRun(event),
+    })
+    return agentReviewOperations
+  }
   const commitAgentReviewAction = async (command) => {
     try {
       return await reviewDecisionService()(command)
@@ -559,37 +912,6 @@ export function createAgentRouteHandler({
     }
     return summary
   }
-
-  /**
-   * 运维只读工具的数据源。全部按项目权限读取，且不返回受控媒体地址 ——
-   * 工具结果会进模型上下文（Epic 4）。
-   */
-  const operationalReaders = (userId, projectId, document) => ({
-    readRun: async (runId) => {
-      const run = await productStore.readAgentRun(userId, runId)
-      // 跨项目的 Run 不能通过工具泄漏。
-      return run && run.projectId === projectId ? publicAgentRun(run) : undefined
-    },
-    readJob: async (jobId) => {
-      const job = await productStore.readGenerationJob(userId, jobId)
-      return job && job.projectId === projectId ? job : undefined
-    },
-    searchArtifacts: async ({ query, kind, limit }) => {
-      const artifacts = await productStore.listAgentArtifacts(userId, projectId, { limit: Math.min(limit * 4, 200) }) ?? []
-      const needle = String(query ?? '').trim().toLocaleLowerCase('zh-CN')
-      return artifacts
-        .filter((artifact) => (!kind || artifact.kind === kind)
-          && (!needle || `${artifact.label ?? ''} ${artifact.id ?? ''}`.toLocaleLowerCase('zh-CN').includes(needle)))
-        .slice(0, limit)
-    },
-    readReviews: async (runId) => {
-      const run = await productStore.readAgentRun(userId, runId)
-      if (!run || run.projectId !== projectId) return []
-      return (await productStore.listAgentReviewTasksForRun(userId, projectId, runId)) ?? []
-    },
-    readWorkflowRun: async (runId) => (document?.productionWorkflowRuns ?? []).find((entry) => entry?.id === runId),
-    readDeliveries: async () => document?.deliveries ?? [],
-  })
 
   const bindAuthoritativeKnowledge = async (userId, input) => {
     const [projectState, projectSkills] = await Promise.all([
@@ -651,9 +973,11 @@ export function createAgentRouteHandler({
     const {
       projectAgentRuns: projectAgentRunsMatch,
       projectAgentSkills: projectAgentSkillsMatch,
+      projectAgentSkillVersion: projectAgentSkillVersionMatch,
       agentSkillCatalog: agentSkillCatalogMatch,
       projectAgentState: projectAgentStateMatch,
       projectAgentSessions: projectAgentSessionsMatch,
+      agentSessionContextCompactions: agentSessionContextCompactionsMatch,
       agentSessionMessages: agentSessionMessagesMatch,
       projectAgentArtifacts: projectAgentArtifactsMatch,
       agentSession: agentSessionMatch,
@@ -666,14 +990,165 @@ export function createAgentRouteHandler({
       agentRunTrace: agentRunTraceMatch,
       agentRunReviewTasks: agentRunReviewTasksMatch,
       agentReviewTaskDecisions: agentReviewTaskDecisionsMatch,
+      agentReviewTaskCancel: agentReviewTaskCancelMatch,
+      agentReviewTaskReconciliation: agentReviewTaskReconciliationMatch,
       agentRunCancel: agentRunCancelMatch,
       agentBranchRetry: agentBranchRetryMatch,
       agentTurns: agentTurnsMatch,
       agentTurnStream: agentTurnStreamMatch,
       agentTurn: agentTurnMatch,
       agentTurnCancel: agentTurnCancelMatch,
+      projectAgentSubagents: projectAgentSubagentsMatch,
+      agentSubagent: agentSubagentMatch,
+      agentSubagentFollowups: agentSubagentFollowupsMatch,
+      agentSubagentCancel: agentSubagentCancelMatch,
       agentReviewDecision: agentReviewDecisionMatch,
     } = routeMatches
+
+    if (projectAgentSubagentsMatch) {
+      if (request.method !== 'POST') return methodNotAllowed(response, '项目 Subagent 资源只接受提交请求。', 'POST')
+      const user = await requireUser(request)
+      if (!hasAgentSubagentService()) {
+        return error(response, 503, 'AGENT_SUBAGENT_SERVICE_UNAVAILABLE', 'Subagent 服务暂不可用。')
+      }
+      const idempotencyKey = generationIdempotencyKey(request.headers['idempotency-key'])
+      if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', 'Subagent 提交标识无效，请重试。')
+      const body = await readJson(request, 256 * 1024, 'Subagent 请求过大，请精简后重试。')
+      const bodyFailure = agentSubagentBodyFailure(body, agentSubagentStartBodyFields, 'Subagent start 请求')
+      if (bodyFailure) return error(response, bodyFailure.statusCode, bodyFailure.code, bodyFailure.message)
+      const projectId = decodeURIComponent(projectAgentSubagentsMatch[1])
+      await requireProjectPermission(productStore, user.id, projectId, 'edit')
+      const serviceCall = await callAgentSubagentService(response, () => agentSubagentService.start({
+        userId: user.id,
+        projectId,
+        rootTurnId: body.rootTurnId,
+        role: body.role,
+        content: body.content,
+        idempotencyKey,
+        requestId,
+      }))
+      if ('handled' in serviceCall) return serviceCall.handled
+      return agentSubagentEnqueueResponse(response, serviceCall.outcome)
+    }
+
+    if (agentSubagentFollowupsMatch) {
+      if (request.method !== 'POST') return methodNotAllowed(response, 'Subagent Followup 资源只接受提交请求。', 'POST')
+      const user = await requireUser(request)
+      if (!hasAgentSubagentService()) {
+        return error(response, 503, 'AGENT_SUBAGENT_SERVICE_UNAVAILABLE', 'Subagent 服务暂不可用。')
+      }
+      const idempotencyKey = generationIdempotencyKey(request.headers['idempotency-key'])
+      if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', 'Subagent Followup 提交标识无效，请重试。')
+      const body = await readJson(request, 256 * 1024, 'Subagent Followup 请求过大，请精简后重试。')
+      const bodyFailure = agentSubagentBodyFailure(body, agentSubagentFollowupBodyFields, 'Subagent followup 请求')
+      if (bodyFailure) return error(response, bodyFailure.statusCode, bodyFailure.code, bodyFailure.message)
+      const subagentId = decodeURIComponent(agentSubagentFollowupsMatch[1])
+      const current = await productStore.readAgentSubagent(user.id, subagentId)
+      if (!current) return error(response, 404, 'AGENT_SUBAGENT_NOT_FOUND', '未找到该 Subagent。')
+      await requireProjectPermission(productStore, user.id, current.projectId, 'edit')
+      const serviceCall = await callAgentSubagentService(response, () => agentSubagentService.followup({
+        userId: user.id,
+        subagentId,
+        sourceTurnId: body.sourceTurnId,
+        content: body.content,
+        idempotencyKey,
+        requestId,
+      }))
+      if ('handled' in serviceCall) return serviceCall.handled
+      return agentSubagentEnqueueResponse(response, serviceCall.outcome)
+    }
+
+    if (agentSubagentCancelMatch) {
+      if (request.method !== 'POST') return methodNotAllowed(response, 'Subagent 取消资源只接受提交请求。', 'POST')
+      const user = await requireUser(request)
+      if (!hasAgentSubagentService()) {
+        return error(response, 503, 'AGENT_SUBAGENT_SERVICE_UNAVAILABLE', 'Subagent 服务暂不可用。')
+      }
+      const idempotencyKey = generationIdempotencyKey(request.headers['idempotency-key'])
+      if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', 'Subagent 取消标识无效，请重试。')
+      const body = await readJson(request, 8 * 1024, 'Subagent 取消请求过大。')
+      const bodyFailure = agentSubagentBodyFailure(body, agentSubagentCancelBodyFields, 'Subagent cancel 请求')
+      if (bodyFailure) return error(response, bodyFailure.statusCode, bodyFailure.code, bodyFailure.message)
+      if (body.reason !== undefined && (typeof body.reason !== 'string' || body.reason.length > 500)) {
+        return error(response, 400, 'AGENT_SUBAGENT_REQUEST_INVALID', 'Subagent 取消原因格式无效。')
+      }
+      const subagentId = decodeURIComponent(agentSubagentCancelMatch[1])
+      const current = await productStore.readAgentSubagent(user.id, subagentId)
+      if (!current) return error(response, 404, 'AGENT_SUBAGENT_NOT_FOUND', '未找到该 Subagent。')
+      await requireProjectPermission(productStore, user.id, current.projectId, 'edit')
+      const serviceCall = await callAgentSubagentService(response, () => agentSubagentService.cancel({
+        userId: user.id,
+        projectId: current.projectId,
+        subagentId,
+        idempotencyKey,
+        ...(body.reason?.trim() ? { reason: body.reason.trim() } : {}),
+      }))
+      if ('handled' in serviceCall) return serviceCall.handled
+      const outcome = serviceCall.outcome
+      if (outcome?.kind === 'missing') return error(response, 404, 'AGENT_SUBAGENT_NOT_FOUND', '未找到该 Subagent。')
+      if (['conflict', 'stale', 'not_cancelling'].includes(outcome?.kind)) {
+        return error(response, 409, 'AGENT_SUBAGENT_CANCELLATION_CONFLICT', 'Subagent 取消请求与当前状态冲突。')
+      }
+      const stored = await productStore.readAgentSubagent(user.id, subagentId)
+      if (!stored) return error(response, 404, 'AGENT_SUBAGENT_NOT_FOUND', '未找到该 Subagent。')
+      if (!['cancelling', 'cancelled'].includes(stored.status)) {
+        return error(response, 409, 'AGENT_SUBAGENT_NOT_CANCELLABLE', '该 Subagent 当前不可取消。')
+      }
+      return json(response, stored.status === 'cancelling' ? 202 : 200, {
+        kind: outcome?.kind,
+        changed: outcome?.changed === true,
+        subagent: publicAgentSubagent(stored),
+      })
+    }
+
+    if (agentSubagentMatch) {
+      if (request.method !== 'GET') return methodNotAllowed(response, 'Subagent 资源只支持读取。', 'GET')
+      const user = await requireUser(request)
+      if (!hasAgentSubagentService()) {
+        return error(response, 503, 'AGENT_SUBAGENT_SERVICE_UNAVAILABLE', 'Subagent 服务暂不可用。')
+      }
+      const subagentId = decodeURIComponent(agentSubagentMatch[1])
+      const current = await productStore.readAgentSubagent(user.id, subagentId)
+      if (!current) return error(response, 404, 'AGENT_SUBAGENT_NOT_FOUND', '未找到该 Subagent。')
+      await requireProjectPermission(productStore, user.id, current.projectId, 'read')
+      const rawAfterSequence = url.searchParams.get('afterSequence')
+      const rawLimit = url.searchParams.get('limit')
+      if (rawAfterSequence !== null && !/^\d+$/.test(rawAfterSequence)) {
+        return error(response, 400, 'INVALID_AGENT_SUBAGENT_CURSOR', 'Subagent Activation 游标无效。')
+      }
+      if (rawLimit !== null && !/^\d+$/.test(rawLimit)) {
+        return error(response, 400, 'INVALID_AGENT_SUBAGENT_LIMIT', 'Subagent Activation 数量无效。')
+      }
+      const afterSequence = rawAfterSequence === null ? 0 : Number(rawAfterSequence)
+      const limit = rawLimit === null ? 50 : Number(rawLimit)
+      if (!Number.isSafeInteger(afterSequence) || afterSequence < 0
+        || !Number.isSafeInteger(limit) || limit < 1 || limit > 200) {
+        return error(response, 400, 'INVALID_AGENT_SUBAGENT_CURSOR', 'Subagent Activation 续读参数无效。')
+      }
+      const serviceCall = await callAgentSubagentService(response, () => agentSubagentService.read(
+        user.id,
+        subagentId,
+        { afterSequence, limit },
+      ))
+      if ('handled' in serviceCall) return serviceCall.handled
+      const snapshot = serviceCall.outcome
+      if (!snapshot?.subagent) return error(response, 404, 'AGENT_SUBAGENT_NOT_FOUND', '未找到该 Subagent。')
+      const activations = (Array.isArray(snapshot.activations) ? snapshot.activations : [])
+        .map(publicAgentSubagentActivation)
+        .filter(Boolean)
+      const messages = (Array.isArray(snapshot.messages) ? snapshot.messages : [])
+        .map(publicAgentSubagentMessage)
+        .filter(Boolean)
+      return json(response, 200, {
+        subagent: publicAgentSubagent(snapshot.subagent),
+        activations,
+        messages,
+        cursor: {
+          afterSequence: activations.at(-1)?.sequence ?? afterSequence,
+          hasMore: activations.length === limit,
+        },
+      })
+    }
 
     if (agentTurnsMatch || agentTurnStreamMatch) {
       const streaming = Boolean(agentTurnStreamMatch)
@@ -700,6 +1175,7 @@ export function createAgentRouteHandler({
           projectId: validatedInput.projectId,
           sessionId: validatedInput.sessionId,
           locale: validatedInput.locale,
+          model: validatedInput.plannerModel || config.flockTextModel,
           // 角色是服务端事实；客户端 DTO 无权声明 assistant/system。
           inputMessage: { ...validatedInput.inputMessage, role: 'user' },
         })
@@ -786,12 +1262,26 @@ export function createAgentRouteHandler({
           // 快照保存服务端投影后的有界消息，而不是浏览器自报历史；projectSkills 与
           // 项目文档仍在恢复时重新读取，避免重放过期的派生上下文。
           request: canonicalInput,
-          resolve: (resolveOptions) => resolveBotanicAgentTurn(input, config, resolveOptions),
+          resolve: (resolveOptions) => resolveBotanicAgentRuntimeRequest(input, config, resolveOptions),
           resolveOptions: {
+            subagentRunner: durableSubagentRunner,
+            observeAgentContext,
             document: project.document,
             projectSkills,
+            ...((validatedInput.sessionId ?? legacySessionId) ? {
+              persistAgentContextUsageAnchor: persistAgentContextUsageAnchor({
+                userId: user.id,
+                projectId: validatedInput.projectId,
+                sessionId: validatedInput.sessionId ?? legacySessionId,
+              }),
+            } : {}),
             ...(threadSummary ? { threadSummary } : {}),
-            operations: operationalReaders(user.id, validatedInput.projectId, project.document),
+            operations: createAgentOperationalReaders({
+              productStore,
+              userId: user.id,
+              projectId: validatedInput.projectId,
+              document: project.document,
+            }),
             resolveVisionMedia: visionMediaResolver(user.id, validatedInput.projectId),
             consumeWebResearchQuota: consumeWebResearchQuota
               ? () => consumeWebResearchQuota(user.id)
@@ -979,43 +1469,39 @@ export function createAgentRouteHandler({
           // 因此限定渠道的规则在这里会落进 filtered 并说明原因，而不是「碰巧适用」。
           context: { brandId: project?.document?.brandId, userId: user.id },
         }).items.map((memory) => ({ id: memory.id, kind: memory.kind, content: memory.content })),
-        availableMcpTools: (config.agentMcpTools ?? []).map(({ server, tool }) => ({ server, tool })),
-        projectSkills: projectSkills.map(plannerSkillInput),
+        availableMcpTools: configuredMcpCatalog(),
       }
-      const controller = new AbortController()
-      const cancel = () => controller.abort()
-      const cancelOnClosedResponse = () => { if (!response.writableEnded) cancel() }
-      request.once('aborted', cancel)
-      response.once('close', cancelOnClosedResponse)
-      if (request.aborted || response.destroyed) cancel()
       const sse = streaming ? createServerSentEventWriter(response) : undefined
       sse?.start()
       try {
-        const result = await planBotanicGeneration(input, config, {
-          signal: controller.signal,
-          consumeWebResearchQuota: consumeWebResearchQuota
-            ? () => consumeWebResearchQuota(user.id)
-            : undefined,
-          ...(sse ? { onEvent: (event) => sse.send(event) } : {}),
+        const execution = await executeCompatibilityTurn({
+          operation: 'plan',
+          request,
+          response,
+          user,
+          projectId: validatedInput.projectId,
+          requestId,
+          input,
+          sse,
+          resolveOptions: {
+            document: project?.document,
+            projectSkills,
+            observeAgentContext,
+            consumeWebResearchQuota: consumeWebResearchQuota
+              ? () => consumeWebResearchQuota(user.id)
+              : undefined,
+          },
         })
-        if (controller.signal.aborted || response.destroyed) return true
-        // reasoning 必须留在 plan 之外：计划会被原样持久化到会话消息里，
-        // 而原始推理只允许随当轮响应下发。
-        const { reasoning, ...plan } = result ?? {}
-        const liveReasoning = reasoning?.length ? { reasoning } : {}
-        if (!sse) {
-          return result?.kind === 'clarification'
-            ? json(response, 200, { clarification: result.clarification, ...liveReasoning })
-            : json(response, 200, { plan, ...liveReasoning })
-        }
-        if (result?.kind === 'clarification') {
-          sse.send({ type: 'done', clarification: result.clarification, ...liveReasoning })
-        } else {
-          sse.send({ type: 'done', plan, ...liveReasoning })
-        }
+        if (execution.detached) return true
+        if (execution.pending) return json(response, 202, {
+          runtimeTurn: execution.runtimeTurn,
+          observer: execution.observer,
+        })
+        if (!sse) return json(response, 200, { ...execution.body, runtimeTurn: execution.runtimeTurn })
+        sse.send({ type: 'done', ...execution.body, runtimeTurn: execution.runtimeTurn })
         return sse.end()
       } catch (caught) {
-        if (controller.signal.aborted || response.destroyed) return true
+        if (response.destroyed) return true
         if (sse?.started) {
           sse.send({
             type: 'error',
@@ -1027,8 +1513,6 @@ export function createAgentRouteHandler({
         throw caught
       } finally {
         sse?.end()
-        request.off('aborted', cancel)
-        response.off('close', cancelOnClosedResponse)
       }
     }
 
@@ -1044,34 +1528,41 @@ export function createAgentRouteHandler({
       const project = await productStore.readProject(user.id, validatedInput.projectId)
       if (!project?.document) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
       const projectSkills = await productStore.listAgentSkills(user.id, validatedInput.projectId) ?? []
-      const input = { ...validatedInput, projectSkills: projectSkills.map(plannerSkillInput) }
-      const controller = new AbortController()
-      const cancel = () => controller.abort()
-      const cancelOnClosedResponse = () => { if (!response.writableEnded) cancel() }
-      request.once('aborted', cancel)
-      response.once('close', cancelOnClosedResponse)
-      if (request.aborted || response.destroyed) cancel()
+      const input = validatedInput
       const sse = streaming ? createServerSentEventWriter(response) : undefined
       // 先打开通道再等模型：搜索前后的静默期靠注释心跳维持反代连接。
       sse?.start()
       try {
-        const result = await chatWithBotanicAgent(input, config, {
-          document: project.document,
-          projectSkills,
-          signal: controller.signal,
-          resolveVisionMedia: visionMediaResolver(user.id, validatedInput.projectId),
-          consumeWebResearchQuota: consumeWebResearchQuota
-            ? () => consumeWebResearchQuota(user.id)
-            : undefined,
-          ...(sse ? { onEvent: (event) => sse.send(event) } : {}),
+        const execution = await executeCompatibilityTurn({
+          operation: 'chat',
+          request,
+          response,
+          user,
+          projectId: validatedInput.projectId,
+          requestId,
+          input,
+          sse,
+          resolveOptions: {
+            document: project.document,
+            projectSkills,
+            observeAgentContext,
+            resolveVisionMedia: visionMediaResolver(user.id, validatedInput.projectId),
+            consumeWebResearchQuota: consumeWebResearchQuota
+              ? () => consumeWebResearchQuota(user.id)
+              : undefined,
+          },
         })
-        if (controller.signal.aborted || response.destroyed) return true
-        if (!sse) return json(response, 200, { response: result })
+        if (execution.detached) return true
+        if (execution.pending) return json(response, 202, {
+          runtimeTurn: execution.runtimeTurn,
+          observer: execution.observer,
+        })
+        if (!sse) return json(response, 200, { ...execution.body, runtimeTurn: execution.runtimeTurn })
         // done 事件携带与非流式完全一致的响应体，客户端据此收敛这一轮。
-        sse.send({ type: 'done', response: result })
+        sse.send({ type: 'done', ...execution.body, runtimeTurn: execution.runtimeTurn })
         return sse.end()
       } catch (caught) {
-        if (controller.signal.aborted || response.destroyed) return true
+        if (response.destroyed) return true
         // 已经开始推送就不能再改状态码，只能把失败作为事件送达。
         if (sse?.started) {
           sse.send({
@@ -1084,8 +1575,6 @@ export function createAgentRouteHandler({
         throw caught
       } finally {
         sse?.end()
-        request.off('aborted', cancel)
-        response.off('close', cancelOnClosedResponse)
       }
     }
 
@@ -1114,9 +1603,14 @@ export function createAgentRouteHandler({
           projectId: validatedInput.projectId,
           sessionId: validatedInput.sessionId,
           locale: validatedInput.locale,
+          model: validatedInput.plannerModel || config.flockTextModel,
           inputMessage: { ...validatedInput.inputMessage, role: 'user' },
         })
-        canonicalInput = { ...validatedInput, messages: threadContext.messages }
+        canonicalInput = {
+          ...validatedInput,
+          messages: threadContext.messages,
+          threadContextSnapshot: structuredClone(threadContext.threadContextSnapshot),
+        }
         threadSummary = threadContext.threadSummary
       } else {
         threadSummary = await threadSummaryForSession(
@@ -1124,35 +1618,56 @@ export function createAgentRouteHandler({
           validatedInput.projectId,
           typeof request.headers['x-agent-session-id'] === 'string' ? request.headers['x-agent-session-id'] : undefined,
         )
+        canonicalInput = {
+          ...canonicalInput,
+          threadContextSnapshot: {
+            version: 1,
+            messages: structuredClone(canonicalInput.messages ?? []),
+            ...(threadSummary ? { threadSummary: structuredClone(threadSummary) } : {}),
+          },
+        }
       }
-      const input = { ...canonicalInput, projectSkills: projectSkills.map(plannerSkillInput) }
-      const controller = new AbortController()
-      const cancel = () => controller.abort()
-      const cancelOnClosedResponse = () => { if (!response.writableEnded) cancel() }
-      request.once('aborted', cancel)
-      response.once('close', cancelOnClosedResponse)
-      if (request.aborted || response.destroyed) cancel()
+      const input = canonicalInput
       const sse = streaming ? createServerSentEventWriter(response) : undefined
       sse?.start()
       try {
-        const turn = await resolveBotanicAgentTurn(input, config, {
-          document: project.document,
-          projectSkills,
-          ...(threadSummary ? { threadSummary } : {}),
-          operations: operationalReaders(user.id, validatedInput.projectId, project.document),
-          signal: controller.signal,
-          resolveVisionMedia: visionMediaResolver(user.id, validatedInput.projectId),
-          consumeWebResearchQuota: consumeWebResearchQuota
-            ? () => consumeWebResearchQuota(user.id)
-            : undefined,
-          ...(sse ? { onEvent: (event) => sse.send(event) } : {}),
+        const execution = await executeCompatibilityTurn({
+          operation: 'intent',
+          request,
+          response,
+          user,
+          projectId: validatedInput.projectId,
+          sessionId: validatedInput.sessionId,
+          requestId,
+          input,
+          sse,
+          resolveOptions: {
+            document: project.document,
+            projectSkills,
+            observeAgentContext,
+            ...(threadSummary ? { threadSummary } : {}),
+            operations: createAgentOperationalReaders({
+              productStore,
+              userId: user.id,
+              projectId: validatedInput.projectId,
+              document: project.document,
+            }),
+            resolveVisionMedia: visionMediaResolver(user.id, validatedInput.projectId),
+            consumeWebResearchQuota: consumeWebResearchQuota
+              ? () => consumeWebResearchQuota(user.id)
+              : undefined,
+          },
         })
-        if (controller.signal.aborted || response.destroyed) return true
-        if (!sse) return json(response, 200, { turn })
-        sse.send({ type: 'done', turn })
+        if (execution.detached) return true
+        if (execution.pending) return json(response, 202, {
+          runtimeTurn: execution.runtimeTurn,
+          observer: execution.observer,
+        })
+        if (!sse) return json(response, 200, { ...execution.body, runtimeTurn: execution.runtimeTurn })
+        sse.send({ type: 'done', ...execution.body, runtimeTurn: execution.runtimeTurn })
         return sse.end()
       } catch (caught) {
-        if (controller.signal.aborted || response.destroyed) return true
+        if (response.destroyed) return true
         if (sse?.started) {
           sse.send({
             type: 'error',
@@ -1164,8 +1679,6 @@ export function createAgentRouteHandler({
         throw caught
       } finally {
         sse?.end()
-        request.off('aborted', cancel)
-        response.off('close', cancelOnClosedResponse)
       }
     }
 
@@ -1226,6 +1739,33 @@ export function createAgentRouteHandler({
       }
     }
 
+    if (projectAgentSkillVersionMatch) {
+      if (request.method !== 'GET') return methodNotAllowed(response, 'Skill 历史版本只支持读取。', 'GET')
+      const user = await requireUser(request)
+      const projectId = decodeURIComponent(projectAgentSkillVersionMatch[1])
+      const skillId = decodeURIComponent(projectAgentSkillVersionMatch[2])
+      const rawVersion = decodeURIComponent(projectAgentSkillVersionMatch[3])
+      if (!/^\d+$/.test(rawVersion) || !Number.isSafeInteger(Number(rawVersion)) || Number(rawVersion) < 1) {
+        return error(response, 400, 'INVALID_AGENT_SKILL_VERSION', 'Skill 历史版本无效。')
+      }
+      await requireProjectPermission(productStore, user.id, projectId, 'read')
+      const version = await productStore.readAgentSkillVersion(user.id, projectId, skillId, Number(rawVersion))
+      if (!version) return error(response, 404, 'AGENT_SKILL_VERSION_NOT_FOUND', '未找到该 Skill 历史版本。')
+      return json(response, 200, {
+        version: {
+          skillId,
+          version: version.version,
+          contentHash: version.contentHash,
+          instructions: version.instructions,
+          updatedAt: version.updatedAt,
+          ...(version.name ? { name: version.name } : {}),
+          ...(version.capabilities ? { capabilities: version.capabilities } : {}),
+          ...(version.manifest ? { manifest: version.manifest } : {}),
+          ...(version.publishedBy ? { publishedBy: version.publishedBy } : {}),
+          ...(version.publishedAt ? { publishedAt: version.publishedAt } : {}),
+        },
+      })
+    }
     if (projectAgentSkillsMatch) {
       if (request.method !== 'GET') return methodNotAllowed(response, '项目 Skill 资源只支持读取。', 'GET')
       const user = await requireUser(request)
@@ -1244,6 +1784,41 @@ export function createAgentRouteHandler({
       })
       if (!sessions) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
       return json(response, 200, { sessions })
+    }
+    if (agentSessionContextCompactionsMatch) {
+      if (request.method !== 'POST') {
+        return methodNotAllowed(response, 'Agent Context 压缩资源只接受提交请求。', 'POST')
+      }
+      const user = await requireUser(request)
+      const projectId = decodeURIComponent(agentSessionContextCompactionsMatch[1])
+      const sessionId = decodeURIComponent(agentSessionContextCompactionsMatch[2])
+      const contextRollout = resolveAgentContextRollout({
+        featureFlags: config.agentFeatureFlags,
+        rolloutFlags: config.rolloutFlags,
+        userId: user.id,
+        projectId,
+      })
+      if (contextRollout.mode !== 'active') {
+        return error(response, 404, 'AGENT_CONTEXT_COMPACTION_DISABLED', 'Agent Context Compaction V2 尚未对该项目开放。')
+      }
+      const body = await readJson(request, 4 * 1024, 'Agent Context 压缩请求过大。')
+      if (!body || typeof body !== 'object' || Array.isArray(body)
+        || Object.keys(body).some((field) => field !== 'locale')) {
+        return error(response, 400, 'AGENT_CONTEXT_MANUAL_REQUEST_INVALID', 'Agent Context 压缩请求包含未声明字段。')
+      }
+      try {
+        const outcome = await compactAgentContextManually()({
+          userId: user.id,
+          projectId,
+          sessionId,
+          idempotencyKey: request.headers['idempotency-key'],
+          ...(body.locale === undefined ? {} : { locale: body.locale }),
+        })
+        return json(response, 200, { contextCompaction: outcome })
+      } catch (caught) {
+        if (!(caught instanceof AgentManualContextCompactionServiceError)) throw caught
+        return error(response, caught.statusCode, caught.code, caught.message)
+      }
     }
     if (agentSessionMessagesMatch) {
       if (request.method !== 'GET') return methodNotAllowed(response, 'Agent 消息资源只支持读取。', 'GET')
@@ -1696,6 +2271,11 @@ export function createAgentRouteHandler({
             const artifacts = await productStore.listAgentArtifacts(user.id, projectId, { limit: 200 }) ?? []
             const artifact = artifacts.find((item) => item.id === artifactId)
             if (!artifact?.url) throw new AgentToolRuntimeError('AGENT_ARTIFACT_NOT_FOUND', '未找到该结果，或它没有可入库的媒体。', 404)
+            // 历史 Artifact 允许保留外链用于只读追溯，但入库会把 URL 变成项目可用媒体，
+            // 因此这里只接受已经过本项目媒体授权边界的同源资源。
+            if (!isAuthorizedAgentMediaUrl(artifact.url)) {
+              throw new AgentToolRuntimeError('AGENT_ARTIFACT_MEDIA_NOT_AUTHORIZED', '该结果不是已授权的项目媒体，不能入库。', 403)
+            }
             const project = await productStore.readProject(user.id, projectId)
             if (!project) throw new AgentToolRuntimeError('PROJECT_NOT_FOUND', '未找到当前项目。', 404)
             const assetId = `asset-${generationJobIdForIdempotency(user.id, `${projectId}:${artifactId}`).slice(4, 28)}`
@@ -1789,14 +2369,19 @@ export function createAgentRouteHandler({
             // published，「已批准」不能凭创建这个动作本身成立（ADR 0006）。
             // riskOf 取自**当前行动注册表**：Skill 少报能力（声明只读却把写工具放进
             // Manifest 白名单）在这里就被拒绝，不留到运行时靠取最大值兜底。
+            const projectSkillCatalog = [
+              ...botanicAgentSystemSkills(),
+              ...(await productStore.listAgentSkills(user.id, projectId) ?? []),
+            ]
             const skill = createAgentSkill(input, {
               ownerId: user.id,
               approvedBy: user.id,
-              riskOf: (name) => registry.get?.(name)?.risk,
+              riskOf: (name) => botanicAgentSkillToolRisk(name, registry),
+              skillCatalog: projectSkillCatalog,
             })
             return { skill: publicAgentSkill(await productStore.putAgentSkill(user.id, skill)) }
           },
-          mcpTools: configuredMcpTools,
+          mcpRuntime: configuredMcpTools,
         })
         const result = await executeConfirmedAgentAction({
           registry,
@@ -1982,6 +2567,81 @@ export function createAgentRouteHandler({
       await requireProjectPermission(productStore, user.id, run.projectId, 'read-operational')
       const tasks = (await productStore.listAgentReviewTasksForRun(user.id, run.projectId, run.id)) ?? []
       return json(response, 200, { tasks: tasks.map(publicAgentReviewTask) })
+    }
+    if (agentReviewTaskCancelMatch) {
+      if (request.method !== 'POST') return methodNotAllowed(response, '评审取消资源只接受提交请求。', 'POST')
+      const user = await requireUser(request)
+      const taskId = decodeURIComponent(agentReviewTaskCancelMatch[1])
+      const task = await productStore.readAgentReviewTask(user.id, taskId)
+      if (!task) return error(response, 404, 'AGENT_REVIEW_TASK_NOT_FOUND', '未找到该评审任务。')
+      await requireProjectPermission(productStore, user.id, task.projectId, 'edit')
+      const idempotencyKey = generationIdempotencyKey(request.headers['idempotency-key'])
+      if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', '评审取消标识无效，请重试。')
+      const body = await readJson(request, 8 * 1024, '评审取消请求过大。')
+      if (!body || typeof body !== 'object' || Array.isArray(body)
+        || Object.keys(body).some((key) => key !== 'reason')
+        || (body.reason !== undefined && (typeof body.reason !== 'string' || body.reason.length > 500))) {
+        return error(response, 400, 'INVALID_AGENT_REVIEW_CANCELLATION', '评审取消请求字段无效。')
+      }
+      const decision = await reviewOperationsService().requestReviewCancellation({
+        userId: user.id,
+        taskId: task.id,
+        projectId: task.projectId,
+        idempotencyKey,
+        requestedBy: user.id,
+        ...(body.reason?.trim() ? { reason: body.reason.trim() } : {}),
+      })
+      if (!decision?.task) return error(response, 404, 'AGENT_REVIEW_TASK_NOT_FOUND', '未找到该评审任务。')
+      if (decision.kind === 'conflict') {
+        return error(response, 409, 'AGENT_REVIEW_CANCELLATION_CONFLICT', '同一评审取消标识已绑定到不同请求。')
+      }
+      if (!['cancelling', 'cancelled'].includes(decision.task.status)) {
+        return error(response, 409, 'AGENT_REVIEW_NOT_CANCELLABLE', '该评审任务当前不可取消。')
+      }
+      return json(response, decision.task.status === 'cancelling' ? 202 : 200, {
+        task: publicAgentReviewTask(decision.task),
+      })
+    }
+    if (agentReviewTaskReconciliationMatch) {
+      if (request.method !== 'POST') return methodNotAllowed(response, '评审结果核对资源只接受提交请求。', 'POST')
+      const user = await requireUser(request)
+      const taskId = decodeURIComponent(agentReviewTaskReconciliationMatch[1])
+      const task = await productStore.readAgentReviewTask(user.id, taskId)
+      if (!task) return error(response, 404, 'AGENT_REVIEW_TASK_NOT_FOUND', '未找到该评审任务。')
+      await requireProjectPermission(productStore, user.id, task.projectId, 'edit')
+      const idempotencyKey = generationIdempotencyKey(request.headers['idempotency-key'])
+      if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', '评审结果核对标识无效，请重试。')
+      const body = await readJson(request, 8 * 1024, '评审结果核对请求过大。')
+      const action = body?.action
+      if (!body || typeof body !== 'object' || Array.isArray(body)
+        || Object.keys(body).length !== 1
+        || !['continue_unverifiable', 'retry_once'].includes(action)) {
+        return error(response, 400, 'INVALID_AGENT_REVIEW_RECONCILIATION', '评审结果核对动作无效。')
+      }
+      // retry_once 会再次调用 Provider；只有明确具备生成权限的人才能选择这条有成本路径。
+      if (action === 'retry_once') {
+        await requireProjectPermission(productStore, user.id, task.projectId, 'create-generation')
+      }
+      const decision = await reviewOperationsService().reconcileReviewOutcome({
+        userId: user.id,
+        taskId: task.id,
+        projectId: task.projectId,
+        idempotencyKey,
+        action,
+      })
+      if (!decision?.task) return error(response, 404, 'AGENT_REVIEW_TASK_NOT_FOUND', '未找到该评审任务。')
+      if (decision.kind === 'conflict') {
+        return error(response, 409, 'AGENT_REVIEW_RECONCILIATION_CONFLICT', '同一核对标识已绑定到不同动作。')
+      }
+      if (decision.kind === 'retry_limit') {
+        return error(response, 409, 'AGENT_REVIEW_RETRY_LIMIT', '该未知结果已使用过唯一一次显式重试。')
+      }
+      if (decision.kind === 'not_reconcilable') {
+        return error(response, 409, 'AGENT_REVIEW_NOT_RECONCILABLE', '该评审任务当前不需要结果核对。')
+      }
+      return json(response, action === 'retry_once' && decision.task.status === 'queued' ? 202 : 200, {
+        task: publicAgentReviewTask(decision.task),
+      })
     }
     if (agentReviewTaskDecisionsMatch) {
       if (request.method !== 'POST') return methodNotAllowed(response, '评审决定资源只接受提交请求。', 'POST')

@@ -8,6 +8,9 @@ import {
 import { canonicalHash } from './canonicalHash.mjs'
 import { estimateAgentContextTokens, truncateAgentContextText } from './agentContextBudget.mjs'
 import { extractAgentEntityReferences, mergeAgentEntityReferences } from './agentEntityReferences.mjs'
+import { normalizeProviderUsage } from './botanicAgentStream.mjs'
+import { withBotanicSpan } from './executionTelemetry.mjs'
+import { normalizeAgentToolCallId } from './agentToolCallIdentity.mjs'
 
 const TOOL_NAME = /^[a-z][a-z0-9_]{1,63}$/
 const TOOL_RECOVERY_MODES = new Set(['reexecute', 'receipt', 'never'])
@@ -389,7 +392,7 @@ export async function executeConfirmedAgentAction({
  *
  * 快照本身深拷贝并冻结：调用方之后修改自己的对象也影响不到它。
  */
-export function freezeAgentStepSnapshot({ registry, model, skillBindings, memoryBindings, role } = {}) {
+export function freezeAgentStepSnapshot({ registry, model, skillBindings, memoryBindings, contextPolicyHash, role } = {}) {
   return Object.freeze({
     model: model ?? undefined,
     toolNames: Object.freeze((registry?.names?.() ?? []).slice()),
@@ -400,6 +403,7 @@ export function freezeAgentStepSnapshot({ registry, model, skillBindings, memory
     memoryBindings: Object.freeze((memoryBindings ?? []).map((binding) => Object.freeze({
       id: binding?.id, version: binding?.version, contentHash: binding?.contentHash,
     }))),
+    ...(contextPolicyHash === undefined ? {} : { contextPolicyHash }),
     role: role ?? undefined,
   })
 }
@@ -410,6 +414,7 @@ export async function runAgentToolLoop({
   callModel,
   toolChoice = 'auto',
   maximumSteps = 4,
+  maximumToolCalls = MODEL_TOOL_CALL_TOTAL_LIMIT,
   context,
   allowRawReasoning = false,
   onEvent,
@@ -418,11 +423,51 @@ export async function runAgentToolLoop({
   resumeCheckpoint,
   saveCheckpoint,
   recoverToolCall,
+  modelContext = undefined,
+  maxOutputTokens = undefined,
+  trigger = 'pre_step',
+  genAiTelemetry = false,
 }) {
+  if (!Number.isInteger(maximumToolCalls) || maximumToolCalls < 1 || maximumToolCalls > MODEL_TOOL_CALL_TOTAL_LIMIT) {
+    throw new TypeError(`Agent 工具调用上限必须是 1 到 ${MODEL_TOOL_CALL_TOTAL_LIMIT} 之间的整数。`)
+  }
+  if (modelContext !== undefined && (
+    !modelContext
+    || typeof modelContext.prepare !== 'function'
+    || typeof modelContext.observe !== 'function'
+  )) {
+    throw new TypeError('Agent Model Context 必须实现 prepare 与 observe。')
+  }
   const conversation = [...messages]
   // 工具定义在循环开始前定格一次，之后每一步都用同一份。
   const frozenTools = registry.openAITools()
   const frozenSnapshot = snapshot ?? freezeAgentStepSnapshot({ registry })
+  const invokeModel = (request) => withBotanicSpan(
+    genAiTelemetry ? `chat ${frozenSnapshot.model ?? 'unknown-model'}` : 'botanic.provider.request',
+    {
+      kind: 'client',
+      attributes: {
+        ...(genAiTelemetry ? {
+          'gen_ai.operation.name': 'chat',
+          'gen_ai.provider.name': 'flock',
+          'gen_ai.request.model': frozenSnapshot.model,
+        } : {}),
+        'botanic.component': 'worker',
+        'botanic.phase': 'provider',
+      },
+    },
+    async (span) => {
+      const response = await callModel(request)
+      if (genAiTelemetry && span) {
+        try {
+          const usage = normalizeProviderUsage(response?.usage)
+          if (Number.isSafeInteger(usage?.inputTokens)) span.setAttribute('gen_ai.usage.input_tokens', usage.inputTokens)
+          if (Number.isSafeInteger(usage?.outputTokens)) span.setAttribute('gen_ai.usage.output_tokens', usage.outputTokens)
+        } catch { /* usage telemetry 不得改变 Provider 结果 */ }
+      }
+      return response
+    },
+  )
   const steps = []
   const toolCalls = []
   let reasoning = []
@@ -446,6 +491,17 @@ export async function runAgentToolLoop({
       'Agent Turn Checkpoint 的执行尝试或能力快照已变更。',
       409,
     )
+  }
+  // Checkpoint 里的调用同样已经消费预算。恢复时如果只从本进程新产生的
+  // `toolCalls` 开始计数，重启一次就能把同一轮的额度清零。
+  let plannedToolCallCount = (checkpoint?.completedSteps ?? [])
+    .reduce((sum, completedStep) => sum + completedStep.calls.length, 0)
+    + (checkpoint?.pendingStep?.calls.length ?? 0)
+  if (plannedToolCallCount > maximumToolCalls) {
+    throw knownPreEffectFailure(new AgentToolRuntimeError(
+      'TOOL_CALL_LIMIT_REACHED',
+      'Agent 工具调用已超过本轮预算，已在恢复执行前停止。',
+    ))
   }
   let entityReferences = mergeAgentEntityReferences(
     ...(checkpoint?.completedSteps ?? []).flatMap((completedStep) => (
@@ -519,8 +575,10 @@ export async function runAgentToolLoop({
 
   const traceFor = (tool, call, step, index, rawArguments) => {
     const summary = rawArguments ? agentToolCallSummary(rawArguments) : undefined
+    const rawId = typeof call?.id === 'string' && call.id ? call.id : `tool-call-${step + 1}-${index + 1}`
+    const resolvedId = normalizeAgentToolCallId(rawId)
     return {
-      id: typeof call?.id === 'string' && call.id ? call.id : `tool-call-${step + 1}-${index + 1}`,
+      id: resolvedId,
       name: tool.name,
       label: tool.label,
       risk: tool.risk,
@@ -672,15 +730,27 @@ export async function runAgentToolLoop({
       }
       let output
       try {
-        if (entry.recovering && entry.descriptor.recovery === 'receipt') {
-          output = await recoverToolCall({
-            step,
-            toolCall: structuredClone(entry.descriptor),
-            context,
-          })
-        } else {
-          output = await tool.execute(entry.validatedInput, { ...context, toolCallId: trace.id })
-        }
+        output = await withBotanicSpan(`execute_tool ${trace.name}`, {
+          kind: 'internal',
+          attributes: {
+            ...(genAiTelemetry ? {
+              'gen_ai.operation.name': 'execute_tool',
+              'gen_ai.tool.name': trace.name,
+            } : {}),
+            'botanic.component': 'worker',
+            'botanic.phase': 'tool',
+            'botanic.tool_call.id': trace.id,
+          },
+        }, async () => {
+          if (entry.recovering && entry.descriptor.recovery === 'receipt') {
+            return recoverToolCall({
+              step,
+              toolCall: structuredClone(entry.descriptor),
+              context,
+            })
+          }
+          return tool.execute(entry.validatedInput, { ...context, toolCallId: trace.id })
+        })
       } catch (caught) {
         const error = caught instanceof Error ? caught.message : '工具执行失败。'
         const failed = { ...trace, status: 'failed', error }
@@ -770,15 +840,92 @@ export async function runAgentToolLoop({
     }
   }
 
+  const prepareModelCall = async (step, prepareTrigger, force = false) => {
+    const preparation = await modelContext.prepare({
+      attempt,
+      step,
+      messages: conversation,
+      tools: frozenTools,
+      maxOutputTokens,
+      trigger: prepareTrigger,
+      ...(force ? { force: true } : {}),
+    })
+    if (preparation !== undefined && (
+      !preparation
+      || typeof preparation !== 'object'
+      || Array.isArray(preparation)
+    )) {
+      throw new TypeError('Agent Model Context prepare 返回值无效。')
+    }
+    if (
+      (preparation?.messages !== undefined && !Array.isArray(preparation.messages))
+      || (preparation?.tools !== undefined && !Array.isArray(preparation.tools))
+    ) {
+      throw new TypeError('Agent Model Context prepare 必须返回消息与工具数组。')
+    }
+    return {
+      preparation,
+      request: {
+        messages: preparation?.messages === undefined ? conversation : preparation.messages,
+        tools: preparation?.tools === undefined ? frozenTools : preparation.tools,
+        tool_choice: toolChoice,
+        step,
+      },
+    }
+  }
+
   const startStep = checkpoint?.completedSteps.length ?? 0
   for (let step = startStep; step < maximumSteps; step += 1) {
     steps.push({ step, snapshot: frozenSnapshot })
-    const response = await callModel({
-      messages: conversation,
-      tools: frozenTools,
-      tool_choice: toolChoice,
-      step,
-    })
+    let response
+    if (modelContext === undefined) {
+      // legacy 路径保持调用参数与对象引用不变。
+      response = await invokeModel({
+        messages: conversation,
+        tools: frozenTools,
+        tool_choice: toolChoice,
+        step,
+      })
+    } else {
+      let preparedCall = await prepareModelCall(step, trigger)
+      try {
+        response = await invokeModel(preparedCall.request)
+      } catch (caught) {
+        if (caught?.code !== 'AGENT_CONTEXT_OVERFLOW') throw caught
+        const retryCall = await prepareModelCall(step, 'overflow', true)
+        if (retryCall.preparation?.changed !== true) {
+          try {
+            modelContext.observeOverflow?.({
+              outcome: 'not_retried', retryCount: 0,
+              error: { code: 'AGENT_CONTEXT_OVERFLOW', retryable: false },
+            })
+          } catch { /* 可观测性不得改变原始 overflow */ }
+          throw caught
+        }
+        preparedCall = retryCall
+        // 同一步最多只重试一次；第二次失败直接冒泡，不再压缩或调用模型。
+        try {
+          response = await invokeModel(preparedCall.request)
+          try { modelContext.observeOverflow?.({ outcome: 'recovered', retryCount: 1 }) } catch { /* noop */ }
+        } catch (retryCaught) {
+          if (retryCaught?.code === 'AGENT_CONTEXT_OVERFLOW') {
+            try {
+              modelContext.observeOverflow?.({
+                outcome: 'failed', retryCount: 1,
+                error: { code: 'AGENT_CONTEXT_OVERFLOW', retryable: false },
+              })
+            } catch { /* 可观测性不得改变原始 overflow */ }
+          }
+          throw retryCaught
+        }
+      }
+      await modelContext.observe({
+        attempt,
+        step,
+        prepared: preparedCall.preparation?.prepared,
+        responseUsage: normalizeProviderUsage(response?.usage),
+      })
+    }
     const message = response?.choices?.[0]?.message
     reasoning = appendAgentReasoning(reasoning, {
       step,
@@ -801,12 +948,13 @@ export async function runAgentToolLoop({
       }
     }
 
-    if (calls.length > MODEL_TOOL_CALL_LIMIT || toolCalls.length + calls.length > MODEL_TOOL_CALL_TOTAL_LIMIT) {
+    if (calls.length > MODEL_TOOL_CALL_LIMIT || plannedToolCallCount + calls.length > maximumToolCalls) {
       throw knownPreEffectFailure(new AgentToolRuntimeError(
         'TOOL_CALL_LIMIT_REACHED',
         'Agent 单步或单轮返回的工具调用过多，已在执行前停止。',
       ))
     }
+    plannedToolCallCount += calls.length
 
     // 必须先完成这一步全部 call 的存在性、参数、确认与回执身份校验。
     // 不能执行完第一个工具后，才发现第二个 call 是坏的。

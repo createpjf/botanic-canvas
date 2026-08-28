@@ -1,3 +1,5 @@
+import { maximumReferencesForModel } from './generationVocabulary.mjs'
+
 const TRANSIENT_PROVIDER_CODES = new Set([
   'PROVIDER_TIMEOUT',
   'PROVIDER_UNAVAILABLE',
@@ -99,9 +101,13 @@ function declaredInputRoles(model) {
 export function compatibleFallbackModel({ catalog = [], input, candidateIds = [] }) {
   const source = catalog.find((model) => model.id === input?.settings?.model)
   if (!source) return undefined
-  const requiredRoles = new Set((input?.recipe?.references ?? input?.references ?? [])
+  const references = input?.recipe?.references ?? input?.references ?? []
+  const requiredRoles = new Set(references
     .map((reference) => reference.inputRole)
     .filter(Boolean))
+  const referenceCount = references.length + (input?.parent ? 1 : 0)
+  const usesMask = Boolean(input?.mask || input?.maskRegion || input?.recipe?.mask || input?.recipe?.maskImage || input?.recipe?.maskRegion)
+  const usesCustomSize = input?.settings?.outputWidth !== undefined || input?.settings?.outputHeight !== undefined
   for (const candidateId of candidateIds) {
     const candidate = catalog.find((model) => model.id === candidateId)
     if (!candidate || candidate.provider === source.provider || candidate.mediaKind !== source.mediaKind) continue
@@ -109,6 +115,12 @@ export function compatibleFallbackModel({ catalog = [], input, candidateIds = []
     if (!(candidate.resolutions ?? []).includes(input.settings.resolution)) continue
     const roles = declaredInputRoles(candidate)
     if ([...requiredRoles].some((role) => !roles.has(role))) continue
+    if (referenceCount > maximumReferencesForModel(candidate)) continue
+    if (usesMask && candidate.supportsMask !== true) continue
+    if (usesCustomSize && candidate.supportsCustomSize !== true) continue
+    if (typeof input.settings.searchGrounding === 'boolean' && candidate.supportsSearchGrounding !== true) continue
+    if (typeof input.settings.thinkingLevel === 'string'
+      && !(candidate.thinkingLevels ?? []).includes(input.settings.thinkingLevel)) continue
     if (source.mediaKind === 'video' && !(candidate.durations ?? []).includes(Number(input.settings.duration))) continue
     return candidate
   }

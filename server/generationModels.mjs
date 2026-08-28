@@ -71,7 +71,9 @@ export function createGenerationModelCatalog({
     })))
   }
   if (flockApiKey) {
-    catalog.push(...unique(flockImageModels).map((id) => ({
+    // 环境变量只负责启用已实现的 Adapter 型号，不能让一个陌生 ID 继承 Nano
+    // Banana 的 4K / 14 参考 / Search / Thinking 能力后进入可执行目录。
+    catalog.push(...unique(flockImageModels).filter((id) => id === NANO_BANANA_MODEL_ID).map((id) => ({
       id,
       label: labelForModel(id),
       provider: 'flock',

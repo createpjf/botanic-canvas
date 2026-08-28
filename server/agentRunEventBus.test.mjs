@@ -148,3 +148,24 @@ test('job 范围的取消信号投递，供 Worker 进程就地中止 Provider �
   await publisher.close()
   await subscriber.close()
 })
+
+test('review 取消信号携带 signalId 与 executionGeneration，旧代消息可被本地 fence 丢弃', async () => {
+  const cancels = []
+  const subscriber = await createAgentRunEventSubscriber('redis://test', () => {}, {
+    RedisClass: FakeRedis, onCancel: (event) => cancels.push(event),
+  })
+  const publisher = createAgentRunEventPublisher('redis://test', { RedisClass: FakeRedis })
+  const event = {
+    scope: 'review', id: 'review-task-1', projectId: 'project-1',
+    signalId: 'review-signal-1', executionGeneration: 3, requestedAt: 100,
+  }
+  await publisher.publishCancel(event)
+  await publisher.publishCancel({ ...event, signalId: '' })
+  await publisher.publishCancel({ ...event, executionGeneration: 0 })
+  await publisher.publishCancel({ ...event, executionGeneration: '3' })
+  await publisher.publishCancel({ ...event, executionGeneration: 'not-a-generation' })
+
+  assert.deepEqual(cancels, [event])
+  await publisher.close()
+  await subscriber.close()
+})

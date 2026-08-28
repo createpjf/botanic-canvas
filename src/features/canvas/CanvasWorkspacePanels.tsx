@@ -117,7 +117,7 @@ export type BatchVariationRequest = {
 }
 
 function visibleAssetTags(tags: string[], fallback?: string) {
-  const values = tags.filter((tag) => !/mock/i.test(tag))
+  const values = tags.filter((tag) => !/mock/i.test(tag) && !/^(生成|真实生成|已入库|生成入库)$/i.test(tag))
   return values.length ? values : fallback ? [fallback] : []
 }
 
@@ -749,7 +749,7 @@ export function AssetLibrary({
             </div>
             <button type="button" className="asset-card__copy" onClick={() => setPreviewAssetId(item.id)} aria-label={t.preview(displayAssetName(item))}>
               <strong>{displayAssetName(item)}</strong>
-              <span>{visibleAssetTags(item.tags).filter((tag) => item.source !== 'generated' || !/^(生成|真实生成|已入库|生成入库)$/i.test(tag)).slice(0, 2).join(' · ')}</span>
+              <span>{visibleAssetTags(item.tags).slice(0, 2).join(' · ')}</span>
             </button>
           </article>
         )) : <p className="asset-empty">{t.empty}</p>}
@@ -1424,6 +1424,7 @@ export function NodeReferencePanel({
   references,
   connectedNodeIds,
   maximumReferences,
+  reservedReferenceCount = 0,
   disabled,
   onToggle,
   onSetPrimary,
@@ -1433,6 +1434,8 @@ export function NodeReferencePanel({
   references: CanvasReferenceControl[]
   connectedNodeIds: Set<string>
   maximumReferences?: number
+  /** 已由父结果等非素材输入占用的模型参考位。 */
+  reservedReferenceCount?: number
   disabled: boolean
   onToggle: (assetNodeId: string, enabled: boolean) => void
   onSetPrimary: (assetNodeId: string) => void
@@ -1449,11 +1452,12 @@ export function NodeReferencePanel({
     })
   const primary = connectedReferences.find((reference) => reference.nodeId === node.data.primaryInputId)
   const referenceLimit = maximumReferencesForModel({ maximumReferences })
-  const atLimit = connectedReferences.length >= referenceLimit
+  const totalReferenceCount = connectedReferences.length + Math.max(0, reservedReferenceCount)
+  const atLimit = totalReferenceCount >= referenceLimit
   const nodeLabel = canvasSystemLabel(node.data.label, locale)
   return (
     <aside className="workbench-panel reference-panel node-reference-panel" aria-label={t.referenceInput(nodeLabel)}>
-      <PanelHeader eyebrow={t.nodeInputsEyebrow} title={t.referenceTitle(nodeLabel, connectedReferences.length)} onClose={onClose} />
+      <PanelHeader eyebrow={t.nodeInputsEyebrow} title={t.referenceTitle(nodeLabel, totalReferenceCount)} onClose={onClose} />
       <p className="panel-note">{t.referenceHint}</p>
 
       <div className="reference-list" aria-label={t.availableAssets}>
@@ -1585,7 +1589,7 @@ export function GenerationPanel({
 
 const deliveryCopy = {
   'zh-CN': {
-    title: '投放交付', eyebrow: '投放交付', removeAssetEyebrow: '移除素材', currentKeyVisual: '当前首图', savedVersion: '已保存的画布版本', currentCanvas: '来自当前画布', change: '更换', videoBlocked: '视频暂不支持图片投放交付', videoBlockedHint: '请选择一张生成图片，视频交付将在独立流程中处理。', chooseImage: '选择图片', emptyHint: '请选择一张生成图片开始投放交付。', chooseAsset: '选择交付素材', recentImages: '最近生成图片', imageCount: (count: number) => `${count} 张`, noImages: '暂无可用于交付的生成图片。', specs: '投放规格', livePreview: '实时预览', previewHint: '边调边看', previewChannels: '预览渠道', safeZone: '安全区', selectSpec: '至少选择一个投放规格。', copyLayout: '文案与版式', optional: '可选', mainTitle: '主标题', mainTitlePlaceholder: '输入投放主标题', subtitle: '副标题', subtitlePlaceholder: '输入补充卖点', showSafeZone: '显示安全区辅助线', safeZoneHint: '仅用于预览定位，导出文件不包含辅助线', packaging: '正在打包…', export: (count: number) => `导出 ${count || ''} 个规格`, localOnly: '本地裁切并打包，不会直接发布到平台。', downloaded: (count: number) => `已下载 ZIP：${count} 个文件（含 manifest）`, exportError: '导出失败，请重试。', closePanel: (title: string) => `关闭${title}`, deleteTitle: (name: string) => `删除「${name}」？`, deleteShared: '这会从共享品牌素材库下架，并同步移除所有项目画布、模板与历史配方中的引用。', deleteProject: '这会同步移除当前画布及模板中的引用；历史画布仍会保留为版本记录。', cancel: '取消', confirmDelete: '确认删除', undo: '撤销', channels: { taobao: '淘宝', xiaohongshu: '小红书', douyin: '抖音' },
+    title: '投放交付', eyebrow: '投放交付', removeAssetEyebrow: '移除素材', currentKeyVisual: '当前首图', savedVersion: '已保存的画布版本', currentCanvas: '来自当前画布', change: '更换', videoBlocked: '视频暂不支持图片投放交付', videoBlockedHint: '请选择一张生成图片，视频交付将在独立流程中处理。', chooseImage: '选择图片', emptyHint: '请选择一张生成图片开始投放交付。', chooseAsset: '选择交付素材', recentImages: '最近生成图片', imageCount: (count: number) => `${count} 张`, noImages: '暂无可用于交付的生成图片。', specs: '投放规格', livePreview: '实时预览', previewHint: '边调边看', previewChannels: '预览渠道', safeZone: '安全区', selectSpec: '至少选择一个投放规格。', copyLayout: '文案与版式', optional: '可选', mainTitle: '主标题', mainTitlePlaceholder: '输入投放主标题', subtitle: '副标题', subtitlePlaceholder: '输入补充卖点', showSafeZone: '显示安全区辅助线', safeZoneHint: '仅用于预览定位，导出文件不包含辅助线', packaging: '正在打包…', export: (count: number) => `导出 ${count || ''} 个规格`, localOnly: '本地裁切并打包，不会直接发布到平台。', downloaded: (count: number) => `已下载 ZIP：${count} 个文件（含 manifest）`, exportError: '导出失败，请重试。', closePanel: (title: string) => `关闭${title}`, deleteTitle: (name: string) => `删除「${name}」？`, deleteShared: '这会从共享品牌素材库下架，并同步移除所有项目画布、模板与历史生成记录中的引用。', deleteProject: '这会同步移除当前画布及模板中的引用；历史画布仍会保留为版本记录。', cancel: '取消', confirmDelete: '确认删除', undo: '撤销', channels: { taobao: '淘宝', xiaohongshu: '小红书', douyin: '抖音' },
   },
   en: {
     title: 'Delivery kit', eyebrow: 'Delivery', removeAssetEyebrow: 'Remove asset', currentKeyVisual: 'Current key visual', savedVersion: 'Saved canvas version', currentCanvas: 'From current canvas', change: 'Change', videoBlocked: 'Image delivery is not available for video', videoBlockedHint: 'Choose a generated image. Video delivery is handled in a separate workflow.', chooseImage: 'Choose image', emptyHint: 'Choose a generated image to start delivery.', chooseAsset: 'Choose delivery asset', recentImages: 'Recent generated images', imageCount: (count: number) => `${count} ${count === 1 ? 'image' : 'images'}`, noImages: 'No generated images are available for delivery.', specs: 'Delivery specs', livePreview: 'Live preview', previewHint: 'Updates as you edit', previewChannels: 'Preview channels', safeZone: 'Safe zone', selectSpec: 'Select at least one delivery spec.', copyLayout: 'Copy and layout', optional: 'Optional', mainTitle: 'Headline', mainTitlePlaceholder: 'Enter the campaign headline', subtitle: 'Subheadline', subtitlePlaceholder: 'Add a supporting benefit', showSafeZone: 'Show safe-zone guides', safeZoneHint: 'Guides are for preview only and are not included in exported files', packaging: 'Packaging…', export: (count: number) => `Export ${count || ''} ${count === 1 ? 'spec' : 'specs'}`, localOnly: 'Cropped and packaged locally. Nothing is published directly.', downloaded: (count: number) => `ZIP downloaded: ${count} ${count === 1 ? 'file' : 'files'} including manifest`, exportError: 'Export failed. Try again.', closePanel: (title: string) => `Close ${title}`, deleteTitle: (name: string) => `Delete “${name}”?`, deleteShared: 'This removes the asset from the shared brand library and all references in project canvases, templates, and historical recipes.', deleteProject: 'This removes references from the current canvas and templates. Historical canvas versions remain available.', cancel: 'Cancel', confirmDelete: 'Delete asset', undo: 'Undo', channels: { taobao: 'Taobao', xiaohongshu: 'Xiaohongshu', douyin: 'Douyin' },

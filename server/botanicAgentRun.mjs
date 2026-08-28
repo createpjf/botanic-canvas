@@ -3,6 +3,7 @@ import { createIdempotencyRequestBinding } from './idempotencyRequestBinding.mjs
 import { agentRunCompiledPlanProvenance } from './creativePlanResolver.mjs'
 import { inferAspectRatioFromPixels, normalizeCustomGenerationSize } from './generationOutputSize.mjs'
 import { normalizeRegionRect } from './regionMaskPng.mjs'
+import { normalizeAgentToolCallId } from './agentToolCallIdentity.mjs'
 
 const intents = new Set([
   'initial_generation',
@@ -66,7 +67,7 @@ function validateToolCalls(rawToolCalls) {
       throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', 'Agent 工具确认状态无效。')
     }
     return {
-      id: text(call.id, `第 ${index + 1} 个工具调用标识`, 160),
+      id: text(normalizeAgentToolCallId(call?.id), `第 ${index + 1} 个工具调用标识`, 160),
       name,
       label: text(call.label, `第 ${index + 1} 个工具名称`, 160),
       risk: call.risk,

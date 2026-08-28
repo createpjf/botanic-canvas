@@ -61,3 +61,37 @@ test('只有媒体、输入角色、比例和清晰度语义兼容时才允许 P
   assert.equal(compatibleFallbackModel({ catalog, input: imageInput, candidateIds: ['image-incompatible', 'image-compatible'] })?.id, 'image-compatible')
   assert.equal(compatibleFallbackModel({ catalog, input: imageInput, candidateIds: ['image-incompatible', 'video-a'] }), undefined)
 })
+
+test('Provider 降级不得丢失蒙版、参考上限或模型专属设置', () => {
+  const catalog = [
+    {
+      id: 'gpt-image-2', provider: 'openai', mediaKind: 'image', aspectRatios: ['1:1'], resolutions: ['2K'],
+      supportsMask: true, supportsCustomSize: true, maximumReferences: 8,
+    },
+    {
+      id: 'nano', provider: 'flock', mediaKind: 'image', aspectRatios: ['1:1'], resolutions: ['2K'],
+      supportsMask: false, supportsCustomSize: false, supportsSearchGrounding: true,
+      thinkingLevels: ['minimal', 'high'], maximumReferences: 14,
+    },
+  ]
+  const maskInput = {
+    ...imageInput,
+    settings: { ...imageInput.settings, model: 'gpt-image-2' },
+    maskRegion: { x: 0, y: 0, width: 0.5, height: 0.5 },
+  }
+  assert.equal(compatibleFallbackModel({ catalog, input: maskInput, candidateIds: ['nano'] }), undefined)
+  assert.equal(compatibleFallbackModel({
+    catalog,
+    input: { ...maskInput, maskRegion: undefined, settings: { ...maskInput.settings, outputWidth: 1024, outputHeight: 1024 } },
+    candidateIds: ['nano'],
+  }), undefined)
+  assert.equal(compatibleFallbackModel({
+    catalog,
+    input: {
+      ...imageInput,
+      settings: { ...imageInput.settings, model: 'nano', searchGrounding: true, thinkingLevel: 'high' },
+      references: Array.from({ length: 9 }, () => ({})),
+    },
+    candidateIds: ['gpt-image-2'],
+  }), undefined)
+})

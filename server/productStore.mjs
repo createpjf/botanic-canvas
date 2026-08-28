@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { agentActionManualRetryConsumptionDecision, agentActionReceiptClaimDecision, agentActionReceiptResolutionDecision, agentThreadSummaryCompareAndSetDecision, agentTurnExecutionClaimDecision, authoritativeAgentActionManualRetryAuthorization, committedAgentTurnExecution, finalizedAgentTurnCancellation, normalizeAgentEntityIdPage, normalizePendingAgentReviewRecoveryPage, normalizeStaleTurnQuery, normalizeTurnEventPage, normalizeUpdatedAtIdRecoveryPage, reclaimableAgentTurnStatuses, requestedAgentTurnCancellation, settledAgentActionReceipt } from './productStoreContract.mjs'
+import { agentActionManualRetryConsumptionDecision, agentActionReceiptClaimDecision, agentActionReceiptResolutionDecision, agentSkillPersistenceDecision, agentThreadSummaryCompareAndSetDecision, agentTurnExecutionClaimDecision, authoritativeAgentActionManualRetryAuthorization, committedAgentTurnExecution, finalizedAgentTurnCancellation, normalizeAgentEntityIdPage, normalizePendingAgentReviewRecoveryPage, normalizeStaleTurnQuery, normalizeTurnEventPage, normalizeUpdatedAtIdRecoveryPage, persistedAgentSkillVersion, reclaimableAgentTurnStatuses, requestedAgentTurnCancellation, settledAgentActionReceipt } from './productStoreContract.mjs'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from './authorization.mjs'
@@ -13,8 +13,28 @@ import { collaborationActivitiesForMember, nextCollaborationReceipt, validateCol
 import { acknowledgedGenerationJobCancellation, committedGenerationJobExecution, comparedAndSetGenerationJob, generationJobExecutionClaimDecision, generationJobPutDecision, requestedGenerationJobCancellation } from './generationJobExecution.mjs'
 import { idempotencyRequestBindingWriteDecision } from './idempotencyRequestBinding.mjs'
 import { agentBranchRetryClaimDecision, agentBranchRetryJobDecision } from './agentBranchRetryClaim.mjs'
-import { agentReviewExecutionClaimDecision, agentReviewTaskPutDecision, committedAgentReviewExecution } from './agentReviewExecution.mjs'
+import { agentReviewCancellationFinalizeDecision, agentReviewCancellationRequestDecision, agentReviewExecutionClaimDecision, agentReviewTaskPutDecision, committedAgentReviewExecution } from './agentReviewExecution.mjs'
 import { agentReviewRetryMaterializationDecision } from './agentReviewRetryMaterialization.mjs'
+import { agentReviewOutcomeReconciliationDecision } from './agentReviewReconciliation.mjs'
+import {
+  agentSubagentActivationClaimDecision,
+  agentSubagentActivationSettleDecision,
+  assertAgentSubagentRootTurnFence,
+  agentSubagentCancellationFinalizeDecision,
+  agentSubagentCancellationRequestDecision,
+  agentSubagentEnqueueDecision,
+  materializeAgentSubagentEnqueueCommand,
+  normalizeAgentSubagentActivationPage,
+  normalizeRunnableAgentSubagentPage,
+  publicAgentSubagent,
+  publicAgentSubagentActivation,
+} from './agentSubagentPersistence.mjs'
+import {
+  agentContextStateCompareAndSetDecision,
+  materializeAgentContextCommand,
+  normalizeAgentContextCompactionPage,
+  publicAgentContextCompaction,
+} from './agentContextPersistence.mjs'
 
 const schemaVersion = 1
 
@@ -83,10 +103,14 @@ function initialState() {
     agentRuns: [],
     agentTurns: [],
     agentTurnEvents: [],
+    agentSubagents: [],
+    agentSubagentActivations: [],
     agentReviews: [],
     agentReviewTasks: [],
     agentSessions: [],
     agentSessionReadReceipts: [],
+    agentContextStates: [],
+    agentContextCompactions: [],
     collaborationActivities: [],
     collaborationActivityReceipts: [],
     agentMessages: [],
@@ -149,14 +173,20 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
 
   function agentStateForProject(projectId, userId, options = {}) {
     const includeMessages = options.includeMessages !== false
-    const sessions = state.agentSessions.filter((item) => item.projectId === projectId).map((item) => clone(item.payload))
+    const includeSubagents = options.includeSubagents === true
+    const visibleSessionIds = new Set(state.agentSessions
+      .filter((item) => item.projectId === projectId && (includeSubagents || item.payload?.kind !== 'subagent'))
+      .map((item) => item.id))
+    const sessions = state.agentSessions
+      .filter((item) => visibleSessionIds.has(item.id))
+      .map((item) => clone(item.payload))
     const receipts = userId
       ? state.agentSessionReadReceipts.filter((item) => item.projectId === projectId && item.userId === userId).map((item) => clone(item.payload))
       : []
     return {
       sessions: userId ? applyAgentSessionReadReceipts(sessions, receipts) : sessions,
       messages: includeMessages
-        ? state.agentMessages.filter((item) => item.projectId === projectId).map((item) => ({
+        ? state.agentMessages.filter((item) => item.projectId === projectId && visibleSessionIds.has(item.sessionId)).map((item) => ({
           sessionId: item.sessionId, updatedAt: item.updatedAt, message: clone(item.payload),
         }))
         : [],
@@ -361,6 +391,60 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
     return clone(payload)
   }
 
+  function publicSubagentTurn(turn) {
+    if (!turn) return undefined
+    return {
+      id: turn.id,
+      version: turn.version,
+      projectId: turn.projectId,
+      sessionId: turn.sessionId,
+      status: turn.status,
+      createdAt: turn.createdAt,
+      updatedAt: turn.updatedAt,
+      ...(turn.result ? { result: clone(turn.result) } : {}),
+      ...(turn.error ? { error: clone(turn.error) } : {}),
+    }
+  }
+
+  function publicSubagentDecision(value) {
+    return {
+      kind: value.kind,
+      subagent: publicAgentSubagent(value.subagent),
+      activation: publicAgentSubagentActivation(value.activation),
+      ...(value.turn ? { turn: publicSubagentTurn(value.turn) } : {}),
+      changed: value.changed,
+    }
+  }
+
+  function putSubagentResultMessage(subagent, message) {
+    const existing = state.agentMessages.find((item) => item.id === message.id)
+    if (existing && (existing.projectId !== subagent.projectId || existing.sessionId !== subagent.sessionId
+      || existing.payload?.turnId !== message.turnId)) {
+      throw productError('Subagent 结果消息标识已被其他会话使用。', 'AGENT_MESSAGE_ID_CONFLICT')
+    }
+    const storedUpdatedAt = Math.max(Number(existing?.updatedAt) || 0, Number(message.updatedAt) || 0)
+    const authoritativeMessage = { ...clone(message), updatedAt: storedUpdatedAt }
+    const record = {
+      id: message.id,
+      projectId: subagent.projectId,
+      sessionId: subagent.sessionId,
+      ownerId: existing?.ownerId ?? subagent.ownerId,
+      updatedAt: storedUpdatedAt,
+      payload: authoritativeMessage,
+    }
+    if (existing) Object.assign(existing, record)
+    else state.agentMessages.push(record)
+    upsertArtifactRecords(subagent.projectId, subagent.ownerId, artifactsFromAgentMessage(authoritativeMessage, {
+      sessionId: subagent.sessionId,
+      updatedAt: storedUpdatedAt,
+    }))
+    const session = state.agentSessions.find((item) => item.id === subagent.sessionId)
+    if (session) {
+      session.updatedAt = Math.max(Number(session.updatedAt) || 0, storedUpdatedAt)
+      session.payload.updatedAt = session.updatedAt
+    }
+  }
+
   return {
     authenticate(accessToken) {
       const user = authenticatedUser(accessToken)
@@ -544,8 +628,12 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       state.canvasGraphs = state.canvasGraphs.filter((item) => item.projectId !== projectId)
       state.generationJobs = state.generationJobs.filter((item) => item.projectId !== projectId)
       state.agentRuns = state.agentRuns.filter((item) => item.projectId !== projectId)
+      state.agentSubagents = state.agentSubagents.filter((item) => item.projectId !== projectId)
+      state.agentSubagentActivations = state.agentSubagentActivations.filter((item) => item.projectId !== projectId)
       state.agentSessions = state.agentSessions.filter((item) => item.projectId !== projectId)
       state.agentSessionReadReceipts = state.agentSessionReadReceipts.filter((item) => item.projectId !== projectId)
+      state.agentContextStates = state.agentContextStates.filter((item) => item.projectId !== projectId)
+      state.agentContextCompactions = state.agentContextCompactions.filter((item) => item.projectId !== projectId)
       state.collaborationActivities = state.collaborationActivities.filter((item) => item.projectId !== projectId)
       state.collaborationActivityReceipts = state.collaborationActivityReceipts.filter((item) => item.projectId !== projectId)
       state.agentMessages = state.agentMessages.filter((item) => item.projectId !== projectId)
@@ -671,14 +759,18 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       const project = state.projects.find((item) => item.id === projectId)
       if (!project || !canAccess(project, userId)) return undefined
       const limit = normalizeAgentSessionListLimit(options.limit)
-      const stateSlice = agentStateForProject(projectId, userId, { includeMessages: false })
+      const stateSlice = agentStateForProject(projectId, userId, {
+        includeMessages: false,
+        includeSubagents: options.includeSubagents === true,
+      })
       return stateSlice.sessions.slice(0, limit).map((session) => ({ ...session, messages: [] }))
     },
 
     listAgentSessionMessages(userId, projectId, sessionId, options = {}) {
       const project = state.projects.find((item) => item.id === projectId)
       if (!project || !canAccess(project, userId)) return undefined
-      if (!state.agentSessions.some((item) => item.projectId === projectId && item.id === sessionId)) return undefined
+      if (!state.agentSessions.some((item) => item.projectId === projectId && item.id === sessionId
+        && (options.includeSubagents === true || item.payload?.kind !== 'subagent'))) return undefined
       const page = agentMessageListOptions(options)
       const filtered = state.agentMessages
         .filter((item) => item.projectId === projectId && item.sessionId === sessionId)
@@ -795,6 +887,89 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       return clone({ ...decision, session: existing.payload })
     },
 
+    readAgentContextState(userId, projectId, sessionId) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project || !canAccess(project, userId)) return undefined
+      const session = state.agentSessions.find((item) => item.id === sessionId && item.projectId === projectId)
+      if (!session) return undefined
+      const record = state.agentContextStates.find((item) => item.sessionId === sessionId && item.projectId === projectId)
+      return record ? clone(record.payload) : {
+        version: 2, sessionId, projectId, revision: 0, updatedAt: 0,
+      }
+    },
+
+    listAgentContextCompactions(userId, projectId, sessionId, options = {}) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project || !canAccess(project, userId)) return undefined
+      const session = state.agentSessions.find((item) => item.id === sessionId && item.projectId === projectId)
+      if (!session) return undefined
+      const page = normalizeAgentContextCompactionPage(options)
+      const compactions = state.agentContextCompactions
+        .filter((item) => item.projectId === projectId && item.sessionId === sessionId
+          && item.sequence > page.afterSequence && item.payload?.compaction)
+        .sort((left, right) => left.sequence - right.sequence)
+        .slice(0, page.limit)
+        .map((item) => publicAgentContextCompaction(item.payload))
+        .filter(Boolean)
+      return {
+        compactions,
+        ...(compactions.length === page.limit
+          ? { nextAfterSequence: compactions.at(-1)?.sequence }
+          : {}),
+      }
+    },
+
+    compareAndSetAgentContextState(userId, rawCommand) {
+      let command
+      try {
+        command = materializeAgentContextCommand(rawCommand)
+      } catch {
+        return { kind: 'invalid', changed: false }
+      }
+      const project = state.projects.find((item) => item.id === command.projectId)
+      const session = state.agentSessions.find((item) => item.id === command.sessionId
+        && item.projectId === command.projectId)
+      if (!project || !session) return { kind: 'not_found', changed: false }
+      assertProjectPermission(project.members.find((item) => item.userId === userId)?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      const stateRecord = state.agentContextStates.find((item) => item.projectId === command.projectId
+        && item.sessionId === command.sessionId)
+      const replayRecord = state.agentContextCompactions.find((item) => item.projectId === command.projectId
+        && item.sessionId === command.sessionId && item.idempotencyKey === command.idempotencyKey)
+      const decision = agentContextStateCompareAndSetDecision({
+        state: stateRecord?.payload,
+        replayEntry: replayRecord?.payload,
+        command,
+        ownerId: stateRecord?.ownerId ?? session.ownerId,
+        observedAt: now(),
+      })
+      if (!decision.changed) return clone(decision)
+      const ledger = decision.ledgerEntry
+      state.agentContextCompactions.push({
+        id: ledger.id,
+        ownerId: ledger.ownerId,
+        projectId: ledger.projectId,
+        sessionId: ledger.sessionId,
+        sequence: ledger.sequence,
+        idempotencyKey: ledger.idempotencyKey,
+        requestHash: ledger.requestHash,
+        createdAt: ledger.createdAt,
+        payload: clone(ledger),
+      })
+      const nextStateRecord = {
+        ownerId: stateRecord?.ownerId ?? session.ownerId,
+        projectId: command.projectId,
+        sessionId: command.sessionId,
+        revision: decision.state.revision,
+        updatedAt: decision.state.updatedAt,
+        payload: clone(decision.state),
+      }
+      if (stateRecord) Object.assign(stateRecord, nextStateRecord)
+      else state.agentContextStates.push(nextStateRecord)
+      save()
+      const { ledgerEntry: _ledgerEntry, ...publicDecision } = decision
+      return clone(publicDecision)
+    },
+
     putAgentMessage(userId, projectId, sessionId, input) {
       const project = state.projects.find((item) => item.id === projectId)
       if (!project) throw productError('未找到项目。', 'PROJECT_NOT_FOUND')
@@ -881,26 +1056,11 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       const project = state.projects.find((item) => item.id === skill.projectId)
       if (!project) throw productError('未找到项目。', 'PROJECT_NOT_FOUND')
       assertProjectPermission(project.members.find((item) => item.userId === userId)?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
-      const timestamp = now()
       const existing = state.agentSkills.find((item) => item.id === skill.id)
       if (existing && existing.projectId !== skill.projectId) throw productError('Skill 标识已被其他项目使用。', 'AGENT_SKILL_ID_CONFLICT')
-      const version = Math.max(1, Number(existing?.version ?? skill.version ?? 1) + (existing ? 1 : 0))
-      const contentHash = createHash('sha256').update(String(skill.instructions ?? '')).digest('base64url')
-      const versions = [
-        ...(Array.isArray(existing?.versions) ? existing.versions : []),
-        { version, contentHash, instructions: String(skill.instructions ?? ''), updatedAt: timestamp },
-      ].slice(-20)
-      const payload = {
-        ...clone(skill),
-        ownerId: userId,
-        createdAt: Number(existing?.createdAt ?? skill.createdAt) || timestamp,
-        updatedAt: timestamp,
-        version,
-        contentHash,
-        capabilities: Array.isArray(skill.capabilities) && skill.capabilities.length ? [...new Set(skill.capabilities)].slice(0, 12) : ['read'],
-        governance: skill.governance ?? 'project-approved',
-        versions,
-      }
+      const decision = agentSkillPersistenceDecision(existing, skill, { ownerId: userId })
+      if (decision.kind === 'replay') return clone(existing)
+      const payload = decision.payload
       if (existing) Object.assign(existing, payload)
       else state.agentSkills.push(payload)
       audit({ actorId: userId, action: existing ? 'agent-skill.updated' : 'agent-skill.created', projectId: skill.projectId, targetId: skill.id })
@@ -915,6 +1075,14 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
         .filter((skill) => skill.projectId === projectId && skill.status !== 'archived')
         .sort((left, right) => right.updatedAt - left.updatedAt)
         .map(clone)
+    },
+
+    readAgentSkillVersion(userId, projectId, skillId, version) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project || !canAccess(project, userId)) return undefined
+      const skill = state.agentSkills.find((item) => item.id === skillId && item.projectId === projectId)
+      const snapshot = persistedAgentSkillVersion(skill, version)
+      return snapshot ? clone({ projectId, skillId, ...snapshot }) : undefined
     },
 
     putAgentActionReceipt(userId, receipt) {
@@ -1477,6 +1645,288 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
         .map(clone)
     },
 
+    enqueueAgentSubagentActivation(userId, command) {
+      const project = state.projects.find((item) => item.id === command?.projectId)
+      if (!project) throw productError('未找到项目。', 'PROJECT_NOT_FOUND')
+      assertProjectPermission(project.members.find((item) => item.userId === userId)?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+
+      let existingSubagent = command?.kind === 'followup'
+        ? state.agentSubagents.find((item) => item.id === command?.subagentId)
+        : undefined
+      if (command?.kind === 'followup' && (!existingSubagent || existingSubagent.projectId !== command.projectId)) {
+        return publicSubagentDecision({ kind: 'missing', subagent: undefined, activation: undefined, changed: false })
+      }
+      // 与 Turn 取消共用同一 Local Store 临界区。先读 durable fence 再入队，避免
+      // 「取消已开始但新 activation 仍穿透」；取消随后按 rootTurnId 反查已先落库者。
+      const rootTurnId = command?.kind === 'start' ? command?.rootTurnId : existingSubagent?.rootTurnId
+      const rootOwnerId = existingSubagent?.ownerId ?? userId
+      const rootTurn = state.agentTurns.find((item) => item.id === rootTurnId
+        && item.projectId === command?.projectId && item.ownerId === rootOwnerId)
+      if (!rootTurn) throw productError('Subagent 根 Turn 不存在。', 'AGENT_SUBAGENT_ROOT_TURN_NOT_FOUND')
+      assertAgentSubagentRootTurnFence(rootTurn, command?.rootExecution)
+      const preexistingActivation = existingSubagent
+        ? state.agentSubagentActivations.find((item) => item.subagentId === existingSubagent.id
+          && item.idempotencyKey === command?.idempotencyKey)
+        : undefined
+      const sequence = command?.kind === 'start'
+        ? 1
+        : preexistingActivation?.sequence ?? (Number(existingSubagent?.lastEnqueuedSequence) + 1)
+      const materialized = materializeAgentSubagentEnqueueCommand(existingSubagent?.ownerId ?? userId, {
+        ...clone(command),
+        sequence,
+        cancelGeneration: Number(existingSubagent?.cancelGeneration) || 0,
+        observedAt: now(),
+      })
+      if (command?.kind === 'start') {
+        existingSubagent = state.agentSubagents.find((item) => item.id === materialized.subagentId)
+      }
+      const existingActivation = state.agentSubagentActivations.find((item) => item.subagentId === materialized.subagentId
+        && item.idempotencyKey === materialized.idempotencyKey)
+      const existingTurn = existingActivation
+        ? state.agentTurns.find((item) => item.id === existingActivation.turnId)
+        : undefined
+      const result = agentSubagentEnqueueDecision(existingSubagent, existingActivation, {
+        ...materialized,
+        existingTurn,
+      })
+      if (!result.changed) return publicSubagentDecision(result)
+
+      if (state.agentSubagentActivations.some((item) => item.id === result.activation.id)) {
+        throw productError('Subagent Activation 标识冲突。', 'AGENT_SUBAGENT_ACTIVATION_CONFLICT')
+      }
+      if (state.agentTurns.some((item) => item.id === result.turn.id)) {
+        throw productError('Subagent Turn 标识冲突。', 'AGENT_TURN_ID_CONFLICT')
+      }
+      if (state.agentMessages.some((item) => item.id === result.inputMessage.id)) {
+        throw productError('Subagent 输入消息标识冲突。', 'AGENT_MESSAGE_ID_CONFLICT')
+      }
+      if (result.session && state.agentSessions.some((item) => item.id === result.session.id)) {
+        throw productError('Subagent 会话标识冲突。', 'AGENT_SESSION_ID_CONFLICT')
+      }
+
+      if (existingSubagent) Object.assign(existingSubagent, result.subagent)
+      else state.agentSubagents.push(result.subagent)
+      state.agentSubagentActivations.push(result.activation)
+      state.agentTurns.push(result.turn)
+      if (result.session) {
+        state.agentSessions.push({
+          id: result.session.id,
+          projectId: result.subagent.projectId,
+          ownerId: result.subagent.ownerId,
+          updatedAt: result.session.updatedAt,
+          payload: result.session,
+        })
+      }
+      state.agentMessages.push({
+        id: result.inputMessage.id,
+        projectId: result.subagent.projectId,
+        sessionId: result.subagent.sessionId,
+        ownerId: result.subagent.ownerId,
+        updatedAt: result.inputMessage.updatedAt,
+        payload: result.inputMessage,
+      })
+      const session = state.agentSessions.find((item) => item.id === result.subagent.sessionId)
+      if (session) {
+        session.updatedAt = Math.max(Number(session.updatedAt) || 0, Number(result.inputMessage.updatedAt) || 0)
+        session.payload.updatedAt = session.updatedAt
+      }
+      audit({
+        actorId: userId,
+        action: `agent-subagent.activation-${result.activation.kind}`,
+        projectId: result.subagent.projectId,
+        targetId: result.activation.id,
+        detail: { subagentId: result.subagent.id, sequence: result.activation.sequence, turnId: result.turn.id },
+      })
+      save()
+      return publicSubagentDecision(result)
+    },
+
+    claimAgentSubagentActivation(command) {
+      const subagent = state.agentSubagents.find((item) => item.id === command?.subagentId)
+      const headSequence = Number(subagent?.settledThroughSequence) + 1
+      const activation = command?.activationId
+        ? state.agentSubagentActivations.find((item) => item.id === command.activationId)
+        : state.agentSubagentActivations.find((item) => item.subagentId === subagent?.id && item.sequence === headSequence)
+      const result = agentSubagentActivationClaimDecision(subagent, activation, { ...clone(command), observedAt: now() })
+      if (result.changed) {
+        Object.assign(subagent, result.subagent)
+        Object.assign(activation, result.activation)
+        save()
+      }
+      const turn = activation ? state.agentTurns.find((item) => item.id === activation.turnId) : undefined
+      return clone({ ...result, ...(turn ? { turn } : {}) })
+    },
+
+    settleAgentSubagentActivation(command) {
+      const subagent = state.agentSubagents.find((item) => item.id === command?.subagentId)
+      const activation = state.agentSubagentActivations.find((item) => item.id === command?.activationId)
+      const turn = activation ? state.agentTurns.find((item) => item.id === activation.turnId) : undefined
+      const result = agentSubagentActivationSettleDecision(subagent, activation, turn, {
+        ...clone(command),
+        observedAt: now(),
+      })
+      if (result.changed) {
+        Object.assign(subagent, result.subagent)
+        Object.assign(activation, result.activation)
+        putSubagentResultMessage(subagent, result.resultMessage)
+        audit({
+          actorId: subagent.ownerId,
+          action: `agent-subagent.activation-${activation.status}`,
+          projectId: subagent.projectId,
+          targetId: activation.id,
+          detail: { subagentId: subagent.id, sequence: activation.sequence, turnId: turn.id },
+        })
+        save()
+      }
+      const currentSubagent = result.subagent ?? subagent
+      const nextSequence = Number(currentSubagent?.settledThroughSequence) + 1
+      const next = currentSubagent?.status === 'active'
+        ? state.agentSubagentActivations.find((item) => item.subagentId === currentSubagent.id
+          && item.sequence === nextSequence && item.status === 'queued')
+        : undefined
+      const nextTurn = next ? state.agentTurns.find((item) => item.id === next.turnId) : undefined
+      return clone({
+        ...result,
+        ...(next && nextTurn ? { nextActivation: { activation: next, turn: nextTurn } } : {}),
+      })
+    },
+
+    readAgentSubagent(userId, id) {
+      const subagent = state.agentSubagents.find((item) => item.id === id)
+      if (!subagent) return undefined
+      const project = state.projects.find((item) => item.id === subagent.projectId)
+      return project && canAccess(project, userId) ? publicAgentSubagent(subagent) : undefined
+    },
+
+    readAgentSubagentForWorker(id) {
+      const subagent = state.agentSubagents.find((item) => item.id === id)
+      return subagent ? clone(subagent) : undefined
+    },
+
+    listAgentSubagentsForRootTurnPage(userId, projectId, rootTurnId, options = {}) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project || !canAccess(project, userId)) return undefined
+      const { afterId, limit } = normalizeAgentEntityIdPage(options)
+      return state.agentSubagents
+        .filter((item) => item.projectId === projectId && item.rootTurnId === rootTurnId)
+        .filter((item) => afterId === null || item.id.localeCompare(afterId) > 0)
+        .sort((left, right) => left.id.localeCompare(right.id))
+        .slice(0, limit)
+        .map(publicAgentSubagent)
+    },
+
+    listAgentSubagentActivations(userId, id, options = {}) {
+      const subagent = state.agentSubagents.find((item) => item.id === id)
+      const project = subagent ? state.projects.find((item) => item.id === subagent.projectId) : undefined
+      if (!subagent || !project || !canAccess(project, userId)) return undefined
+      const { afterSequence, limit } = normalizeAgentSubagentActivationPage(options)
+      return state.agentSubagentActivations
+        .filter((item) => item.subagentId === id && item.sequence > afterSequence)
+        .sort((left, right) => left.sequence - right.sequence)
+        .slice(0, limit)
+        .map(publicAgentSubagentActivation)
+    },
+
+    listAgentSubagentActivationsForWorker(id, options = {}) {
+      if (!state.agentSubagents.some((item) => item.id === id)) return undefined
+      const { afterSequence, limit } = normalizeAgentSubagentActivationPage(options)
+      return state.agentSubagentActivations
+        .filter((item) => item.subagentId === id && item.sequence > afterSequence)
+        .sort((left, right) => left.sequence - right.sequence)
+        .slice(0, limit)
+        .map((activation) => ({
+          activation: clone(activation),
+          turn: clone(state.agentTurns.find((item) => item.id === activation.turnId)),
+        }))
+        .filter((entry) => entry.turn)
+    },
+
+    listRunnableAgentSubagents(options = {}) {
+      const page = normalizeRunnableAgentSubagentPage(options)
+      return state.agentSubagents
+        .filter((subagent) => ['active', 'cancelling'].includes(subagent.status))
+        .map((subagent) => {
+          const sequence = Number(subagent.settledThroughSequence) + 1
+          const activation = state.agentSubagentActivations.find((item) => item.subagentId === subagent.id
+            && item.sequence === sequence)
+          const runnable = subagent.status === 'cancelling'
+            ? Boolean(activation)
+            : activation?.status === 'queued'
+              || (activation?.status === 'running' && Number(activation.execution?.leaseExpiresAt) <= page.now)
+          const turn = runnable ? state.agentTurns.find((item) => item.id === activation.turnId) : undefined
+          return runnable && turn ? { subagent, activation, turn } : undefined
+        })
+        .filter(Boolean)
+        .filter((entry) => page.after === null
+          || Number(entry.subagent.updatedAt) > page.after.updatedAt
+          || (Number(entry.subagent.updatedAt) === page.after.updatedAt
+            && entry.subagent.id.localeCompare(page.after.id) > 0))
+        .sort((left, right) => Number(left.subagent.updatedAt) - Number(right.subagent.updatedAt)
+          || left.subagent.id.localeCompare(right.subagent.id))
+        .slice(0, page.limit)
+        .map(clone)
+    },
+
+    requestAgentSubagentCancellation(userId, command) {
+      const subagent = state.agentSubagents.find((item) => item.id === command?.subagentId
+        && item.projectId === command?.projectId)
+      const project = subagent ? state.projects.find((item) => item.id === subagent.projectId) : undefined
+      if (project) {
+        assertProjectPermission(project.members.find((item) => item.userId === userId)?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      }
+      const headSequence = Number(subagent?.settledThroughSequence) + 1
+      const activation = state.agentSubagentActivations.find((item) => item.subagentId === subagent?.id
+        && item.sequence === headSequence)
+      const result = agentSubagentCancellationRequestDecision(subagent, activation, {
+        ...clone(command),
+        observedAt: now(),
+      })
+      if (result.changed) {
+        Object.assign(subagent, result.subagent)
+        if (activation && result.activation) Object.assign(activation, result.activation)
+        audit({
+          actorId: userId,
+          action: `agent-subagent.${subagent.status}`,
+          projectId: subagent.projectId,
+          targetId: subagent.id,
+        })
+        save()
+      }
+      return publicSubagentDecision(result)
+    },
+
+    finalizeAgentSubagentCancellation(userId, command) {
+      const subagent = state.agentSubagents.find((item) => item.id === command?.subagentId
+        && item.projectId === command?.projectId)
+      const project = subagent ? state.projects.find((item) => item.id === subagent.projectId) : undefined
+      if (project) {
+        assertProjectPermission(project.members.find((item) => item.userId === userId)?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      }
+      const activations = subagent
+        ? state.agentSubagentActivations
+          .filter((item) => item.subagentId === subagent.id
+            && item.sequence > Number(subagent.settledThroughSequence))
+        : []
+      const turns = activations
+        .map((activation) => state.agentTurns.find((item) => item.id === activation.turnId))
+        .filter(Boolean)
+      const result = agentSubagentCancellationFinalizeDecision(subagent, activations, turns, {
+        ...clone(command),
+        observedAt: now(),
+      })
+      if (result.changed) {
+        Object.assign(subagent, result.subagent)
+        for (const updated of result.activations) {
+          const stored = state.agentSubagentActivations.find((item) => item.id === updated.id)
+          if (stored) Object.assign(stored, updated)
+        }
+        for (const message of result.resultMessages) putSubagentResultMessage(subagent, message)
+        audit({ actorId: userId, action: 'agent-subagent.cancelled', projectId: subagent.projectId, targetId: subagent.id })
+        save()
+      }
+      return publicSubagentDecision(result)
+    },
+
     listRunsWithFailedBranches(options = {}) {
       const { after, limit } = normalizeUpdatedAtIdRecoveryPage(options)
       const updatedAt = (run) => Number(run.updatedAt) || 0
@@ -1553,6 +2003,96 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       return clone(decision)
     },
 
+    requestAgentReviewCancellation(userId, command) {
+      const existing = state.agentReviewTasks.find((item) => item.id === command?.id)
+      if (!existing) return { kind: 'missing', changed: false }
+      const project = state.projects.find((item) => item.id === existing.projectId)
+      if (!project || existing.projectId !== command?.projectId) {
+        return { kind: 'missing', changed: false }
+      }
+      assertProjectPermission(
+        project.members.find((item) => item.userId === userId)?.role,
+        'edit',
+        'PROJECT_WRITE_FORBIDDEN',
+      )
+      const decision = agentReviewCancellationRequestDecision(existing, {
+        ...clone(command), requestedBy: userId, observedAt: now(),
+      })
+      if (decision.changed) {
+        Object.assign(existing, decision.task)
+        audit({
+          actorId: userId,
+          action: decision.task.status === 'cancelled'
+            ? 'agent-review.cancelled'
+            : 'agent-review.cancelling',
+          projectId: existing.projectId,
+          targetId: existing.id,
+        })
+        save()
+      }
+      return clone(decision)
+    },
+
+    finalizeAgentReviewCancellation(userId, command) {
+      const existing = state.agentReviewTasks.find((item) => item.id === command?.id)
+      if (!existing || existing.ownerId !== userId || existing.projectId !== command?.projectId) {
+        return { kind: 'missing', changed: false }
+      }
+      const observedAt = now()
+      const decision = agentReviewCancellationFinalizeDecision(existing, {
+        ...clone(command),
+        observedAt,
+        proof: { ...clone(command?.proof), observedAt },
+      })
+      if (decision.changed) {
+        Object.assign(existing, decision.task)
+        audit({
+          actorId: userId,
+          action: 'agent-review.cancelled',
+          projectId: existing.projectId,
+          targetId: existing.id,
+        })
+        save()
+      }
+      return clone(decision)
+    },
+
+    resolveAgentReviewOutcomeUnknown(userId, command) {
+      const existing = state.agentReviewTasks.find((item) => item.id === command?.id)
+      if (!existing) return { kind: 'missing', changed: false }
+      const project = state.projects.find((item) => item.id === existing.projectId)
+      if (!project || existing.projectId !== command?.projectId) {
+        return { kind: 'missing', changed: false }
+      }
+      assertProjectPermission(
+        project.members.find((item) => item.userId === userId)?.role,
+        'edit',
+        'PROJECT_WRITE_FORBIDDEN',
+      )
+      if (command?.action === 'retry_once') {
+        assertProjectPermission(
+          project.members.find((item) => item.userId === userId)?.role,
+          'create-generation',
+          'PROJECT_WRITE_FORBIDDEN',
+        )
+      }
+      const decision = agentReviewOutcomeReconciliationDecision(existing, {
+        ...clone(command), actorId: userId, observedAt: now(),
+      })
+      if (decision.changed) {
+        Object.assign(existing, decision.task)
+        audit({
+          actorId: userId,
+          action: 'agent-review.reconciled',
+          projectId: existing.projectId,
+          targetId: existing.id,
+          detail: { action: command.action, status: existing.status },
+        })
+        save()
+      }
+      return clone(decision)
+    },
+
     commitAgentReviewHumanDecisions(userId, command) {
       const existing = state.agentReviewTasks.find((item) => item.id === command?.id)
       if (!existing) return { kind: 'missing', changed: false }
@@ -1602,6 +2142,11 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       return project && canAccess(project, userId) ? clone(task) : undefined
     },
 
+    readAgentReviewTaskForWorker(taskId) {
+      const task = state.agentReviewTasks.find((item) => item.id === taskId)
+      return task ? clone(task) : undefined
+    },
+
     listAgentReviewTasksForRun(userId, projectId, runId) {
       const project = state.projects.find((item) => item.id === projectId)
       if (!project || !canAccess(project, userId)) return undefined
@@ -1616,7 +2161,8 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       const { olderThan, after, limit } = normalizePendingAgentReviewRecoveryPage(options)
       const updatedAt = (task) => Number(task.updatedAt) || 0
       return state.agentReviewTasks
-        .filter((item) => (item.status === 'queued' || item.status === 'running') && updatedAt(item) <= olderThan)
+        .filter((item) => ['queued', 'running', 'cancelling'].includes(item.status)
+          && updatedAt(item) <= olderThan)
         .filter((item) => after === null
           || updatedAt(item) > after.updatedAt
           || (updatedAt(item) === after.updatedAt && item.id.localeCompare(after.id) > 0))

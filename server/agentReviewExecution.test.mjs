@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   AGENT_REVIEW_OUTCOME_UNKNOWN,
+  agentReviewCancellationFinalizeDecision,
+  agentReviewCancellationRequestDecision,
   agentReviewExecutionClaimDecision,
   agentReviewHumanDecisionCommitDecision,
   agentReviewPreparedCheckpoint,
@@ -397,4 +399,171 @@ test('人工决定顺序以锁内权威 revision 为准，不信任锁前 decide
   assert.deepEqual(second.decisions.map((item) => item.decidedAt), [5_000, 5_001])
   assert.equal(second.results[0].candidateStatus, 'accepted')
   assert.equal(second.results[0].humanDecisionId, 'decision-earlier-client-clock')
+})
+
+test('queued Review 取消可直接证明未执行，且幂等键不能改绑', () => {
+  const command = {
+    id: queuedTask.id,
+    projectId: queuedTask.projectId,
+    idempotencyKey: 'cancel-review-1',
+    signalId: 'review-cancel:task-1:0',
+    requestedBy: 'user-1',
+    reason: '不再需要评审',
+    observedAt: 2_000,
+  }
+  const cancelled = agentReviewCancellationRequestDecision(queuedTask, command)
+  assert.equal(cancelled.kind, 'cancelled')
+  assert.equal(cancelled.task.status, 'cancelled')
+  assert.equal(cancelled.task.cancel.signalRequired, false)
+  assert.equal(cancelled.task.cancel.workerReleased, true)
+  assert.equal(cancelled.task.cancel.releaseBasis, 'not_started')
+
+  const replay = agentReviewCancellationRequestDecision(cancelled.task, {
+    ...command,
+    observedAt: 9_000,
+  })
+  assert.equal(replay.kind, 'replay')
+  assert.equal(replay.changed, false)
+  assert.equal(replay.task.cancel.requestedAt, 2_000)
+
+  const rebound = agentReviewCancellationRequestDecision(cancelled.task, {
+    ...command,
+    idempotencyKey: 'cancel-review-other',
+  })
+  assert.equal(rebound.kind, 'conflict')
+  assert.equal(agentReviewExecutionClaimDecision(cancelled.task, {
+    id: queuedTask.id,
+    projectId: queuedTask.projectId,
+    leaseToken: 'lease-after-cancel',
+  }).kind, 'cancelled')
+})
+
+test('running Review 先进入 cancelling，旧 Worker 不能用 heartbeat 或结果穿透 fence', () => {
+  const running = agentReviewExecutionClaimDecision(queuedTask, {
+    id: queuedTask.id,
+    projectId: queuedTask.projectId,
+    leaseToken: 'lease-running',
+    leaseDurationMs: 30_000,
+    observedAt: 2_000,
+  }).task
+  const cancelling = agentReviewCancellationRequestDecision(running, {
+    id: running.id,
+    projectId: running.projectId,
+    idempotencyKey: 'cancel-running',
+    signalId: 'review-cancel:task-1:1',
+    requestedBy: 'user-1',
+    observedAt: 3_000,
+  })
+  assert.equal(cancelling.kind, 'cancelling')
+  assert.equal(cancelling.task.status, 'cancelling')
+  assert.equal(cancelling.task.cancel.executionGeneration, 1)
+  assert.equal(cancelling.task.cancel.workerReleased, false)
+  assert.equal(agentReviewExecutionClaimDecision(cancelling.task, {
+    id: running.id,
+    projectId: running.projectId,
+    leaseToken: 'lease-takeover',
+    observedAt: 40_000,
+    allowTakeover: true,
+  }).kind, 'cancelling')
+
+  const heartbeat = committedAgentReviewExecution(cancelling.task, {
+    id: running.id,
+    projectId: running.projectId,
+    leaseToken: 'lease-running',
+    executionGeneration: 1,
+    status: 'running',
+    observedAt: 3_100,
+  })
+  assert.equal(heartbeat.kind, 'stale')
+  assert.equal(heartbeat.task.status, 'cancelling')
+})
+
+test('running Review 只有匹配 lease 的 worker_exit 能完成取消', () => {
+  const running = agentReviewExecutionClaimDecision(queuedTask, {
+    id: queuedTask.id,
+    projectId: queuedTask.projectId,
+    leaseToken: 'lease-running',
+    leaseDurationMs: 30_000,
+    observedAt: 2_000,
+  }).task
+  const cancelling = agentReviewCancellationRequestDecision(running, {
+    id: running.id,
+    projectId: running.projectId,
+    idempotencyKey: 'cancel-running',
+    signalId: 'review-cancel:task-1:1',
+    requestedBy: 'user-1',
+    observedAt: 3_000,
+  }).task
+  const base = {
+    id: running.id,
+    projectId: running.projectId,
+    signalId: 'review-cancel:task-1:1',
+    executionGeneration: 1,
+    observedAt: 3_100,
+  }
+  assert.equal(agentReviewCancellationFinalizeDecision(cancelling, {
+    ...base,
+    proof: { kind: 'worker_exit', leaseToken: 'wrong-lease' },
+  }).kind, 'stale')
+  assert.equal(agentReviewCancellationFinalizeDecision(cancelling, {
+    ...base,
+    executionGeneration: 2,
+    proof: { kind: 'worker_exit', leaseToken: 'lease-running' },
+  }).kind, 'stale')
+
+  const finalized = agentReviewCancellationFinalizeDecision(cancelling, {
+    ...base,
+    proof: { kind: 'worker_exit', leaseToken: 'lease-running', observedAt: 3_200 },
+  })
+  assert.equal(finalized.kind, 'cancelled')
+  assert.equal(finalized.task.status, 'cancelled')
+  assert.equal(finalized.task.cancel.workerReleased, true)
+  assert.equal(finalized.task.cancel.releaseBasis, 'worker_exit')
+  assert.equal(finalized.task.cancel.signalAcknowledgedAt, 3_200)
+  assert.equal(finalized.task.execution.settledAt, 3_200)
+
+  const replay = agentReviewCancellationFinalizeDecision(finalized.task, {
+    ...base,
+    proof: { kind: 'worker_exit', leaseToken: 'lease-running' },
+  })
+  assert.equal(replay.kind, 'replay')
+  assert.equal(replay.changed, false)
+})
+
+test('Worker 崩溃只能在原 generation 租约过期后替代证明取消', () => {
+  const running = agentReviewExecutionClaimDecision(queuedTask, {
+    id: queuedTask.id,
+    projectId: queuedTask.projectId,
+    leaseToken: 'lease-crashed',
+    leaseDurationMs: 30_000,
+    observedAt: 2_000,
+  }).task
+  const cancelling = agentReviewCancellationRequestDecision(running, {
+    id: running.id,
+    projectId: running.projectId,
+    idempotencyKey: 'cancel-crashed',
+    signalId: 'review-cancel:task-1:1',
+    requestedBy: 'user-1',
+    observedAt: 3_000,
+  }).task
+  const command = {
+    id: running.id,
+    projectId: running.projectId,
+    signalId: 'review-cancel:task-1:1',
+    executionGeneration: 1,
+    proof: { kind: 'lease_expired' },
+  }
+  const early = agentReviewCancellationFinalizeDecision(cancelling, {
+    ...command,
+    observedAt: 31_999,
+  })
+  assert.equal(early.kind, 'pending')
+  assert.equal(early.task.status, 'cancelling')
+
+  const expired = agentReviewCancellationFinalizeDecision(cancelling, {
+    ...command,
+    observedAt: 32_000,
+  })
+  assert.equal(expired.kind, 'cancelled')
+  assert.equal(expired.task.cancel.releaseBasis, 'lease_expired')
 })

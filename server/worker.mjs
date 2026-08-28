@@ -6,7 +6,7 @@ import { writeAgentRunOperationalEvent } from './agentRunObservability.mjs'
 import { createProviderHealthMonitor } from './providerHealthMonitor.mjs'
 import { createDerivedTaskQueue, createDerivedTaskWorker } from './derivedTaskQueue.mjs'
 import { createAgentTurnSweep } from './agentTurnSweep.mjs'
-import { createAgentReviewService } from './agentReviewService.mjs'
+import { createAgentReviewService, safeAgentReviewWorkerFailure } from './agentReviewService.mjs'
 import { installDatabaseResilience } from './databaseResilience.mjs'
 import { createEvaluatorSkillRunner } from './agentReviewSkillEvaluator.mjs'
 import { createAgentReviewVisionJudge } from './agentReviewVision.mjs'
@@ -23,15 +23,38 @@ import { createAgentCancellationService } from './agentCancellationService.mjs'
 import { createAgentRunSubmissionSweep } from './agentRunSubmissionSweep.mjs'
 import { abortMatchingGenerationJobCancellation } from './generationCancellation.mjs'
 import { createGenerationRecoverySweep } from './generationRecoverySweep.mjs'
+import { createAgentSubagentQueue, createAgentSubagentWorker } from './agentSubagentQueue.mjs'
+import { createAgentSubagentRunner } from './agentSubagentRunner.mjs'
+import { createAgentSubagentProjectRegistry } from './agentSubagentRegistry.mjs'
+import { createAgentSubagentProcessor } from './agentSubagentProcessor.mjs'
+import { createAgentSubagentCancellation } from './agentSubagentCancellation.mjs'
+import { createAgentSubagentRecovery } from './agentSubagentRecovery.mjs'
+import { createAgentSubagentService } from './agentSubagentService.mjs'
+import { createDurableAgentSubagentRunner } from './agentSubagentBroker.mjs'
+import { initializeBotanicTelemetry } from './botanicTelemetry.mjs'
+import { createAgentContextObserver } from './agentContextObservability.mjs'
+import { activeBotanicTraceFields } from './executionTelemetry.mjs'
 
 loadLocalEnv()
 // 与 API 同一处理：Worker 崩掉的后果更隐蔽 —— 队列还在，任务永远停在 running。
 installDatabaseResilience()
 const config = runtimeConfig()
+const telemetry = initializeBotanicTelemetry(config.telemetry, { logger: console })
+const observeAgentContext = createAgentContextObserver()
+const observeAgentRun = (event) => {
+  const traceFields = activeBotanicTraceFields()
+  writeAgentRunOperationalEvent({
+    ...event,
+    w3cTraceId: traceFields.traceId,
+    w3cSpanId: traceFields.spanId,
+    traceFlags: traceFields.traceFlags,
+  }, console, { semanticLogger: console })
+}
 if (!config.production) console.warn('Botanic Worker 正在以本地配置运行；生产环境必须使用 PostgreSQL、Redis 与对象存储。')
 const runtime = await createProductRuntime(config)
 if (!config.redisUrl) throw new Error('REDIS_URL 未配置，Worker 拒绝启动。')
 const queue = createGenerationQueue(config.redisUrl)
+const subagentQueue = createAgentSubagentQueue(config.redisUrl)
 const agentRunEvents = createAgentRunEventPublisher(config.redisUrl)
 const providerHealth = createProviderHealthMonitor({
   redisUrl: config.redisUrl,
@@ -43,6 +66,7 @@ const providerHealth = createProviderHealthMonitor({
 // 跑完再丢弃结果。订阅取消频道后就地 abort，Provider 调用真正停下、槽位立刻释放。
 const jobCancelRegistry = createLocalCancelRegistry()
 const turnCancelRegistry = createLocalCancelRegistry()
+let reviewService
 const cancelSubscriber = await createAgentRunEventSubscriber(config.redisUrl, () => {}, {
   onCancel: (event) => {
     const logAbort = () => {
@@ -50,13 +74,21 @@ const cancelSubscriber = await createAgentRunEventSubscriber(config.redisUrl, ()
       // 跨进程时间差包含机器间时钟偏移，只用于看分位数趋势，不用于精确归因。
       const latencyMs = typeof event.requestedAt === 'number' ? Date.now() - event.requestedAt : undefined
       console.log(JSON.stringify({
-        event: event.scope === 'turn' ? 'agent.turn.cancel.aborted' : 'generation.cancel.aborted',
-        ...(event.scope === 'turn' ? { turnId: event.id } : { jobId: event.id }),
+        event: event.scope === 'turn'
+          ? 'agent.turn.cancel.aborted'
+          : event.scope === 'review' ? 'agent.review.cancel.aborted' : 'generation.cancel.aborted',
+        ...(event.scope === 'turn'
+          ? { turnId: event.id }
+          : event.scope === 'review' ? { reviewTaskId: event.id } : { jobId: event.id }),
         latencyMs,
       }))
     }
     if (event.scope === 'turn') {
       if (turnCancelRegistry.abort(event.id)) logAbort()
+      return
+    }
+    if (event.scope === 'review') {
+      if (reviewService?.handleCancellationSignal(event)) logAbort()
       return
     }
     if (event.scope !== 'job') return
@@ -73,6 +105,26 @@ const cancelSubscriber = await createAgentRunEventSubscriber(config.redisUrl, ()
 })
 // 派生任务与生成任务分队列：一类任务堆积不应拖垮另一类。
 const derivedQueue = createDerivedTaskQueue(config.redisUrl)
+const securityControls = createSecurityControls({
+  redisUrl: config.redisUrl,
+  onFallback: (caught) => console.error(`[security] Redis unavailable: ${caught instanceof Error ? caught.message : String(caught)}`),
+})
+const consumeWebResearchQuota = async (userId) => {
+  const result = await securityControls.consume({
+    scope: 'web-research',
+    subject: userId,
+    limit: config.security.webResearchPerMinute,
+    windowMs: 60_000,
+  })
+  if (!result.allowed) {
+    console.warn(JSON.stringify({
+      event: 'security.rate_limited',
+      scope: 'web-research',
+      retryAfterSeconds: result.retryAfterSeconds,
+    }))
+  }
+  return result
+}
 // 评审在 Worker 侧执行，不依赖浏览器打开。视觉层的判据全部来自计划快照的质量策略；
 // 没配置视觉模型时 judge 为 undefined，语义判据照实记为无法验证而不是默认通过。
 const reviewVisionJudge = createAgentReviewVisionJudge({
@@ -89,7 +141,7 @@ const evaluatorSkillJudge = createEvaluatorSkillRunner({
     runtime.mediaService?.enabled ? runtime.mediaService.read(mediaId) : undefined
   )),
 })
-const reviewService = createAgentReviewService({
+reviewService = createAgentReviewService({
   productStore: runtime.productStore,
   reviewCandidate: reviewVisionJudge,
   judgeWith: evaluatorSkillJudge,
@@ -104,7 +156,7 @@ const worker = createGenerationWorker({
     cancelRegistry: jobCancelRegistry,
     publishAgentRunUpdated: agentRunEvents.publish,
     publishProjectUpdated: agentRunEvents.publishProjectUpdated,
-    observeAgentRun: writeAgentRunOperationalEvent,
+    observeAgentRun,
     providerCircuitBreaker: providerHealth,
     ensureReviewTask: (ownerId, runId) => reviewService.ensureReviewTaskForRun(ownerId, runId),
     enqueueDerivedTask: (kind, dedupeId, payload) => derivedQueue?.enqueue(kind, dedupeId, payload),
@@ -121,6 +173,18 @@ const durableTurnRuntime = createBotanicAgentTurnRuntime({
   localCancelRegistry: turnCancelRegistry,
 })
 let cancelStaleAgentTurn
+let durablePlannerSubagentRunner
+const resumeSubagentRunner = config.agentSubagentModel && config.flockApiKey
+  ? (input) => {
+      if (typeof durablePlannerSubagentRunner !== 'function') {
+        throw Object.assign(new Error('Durable Subagent 组合尚未就绪。'), {
+          code: 'AGENT_SUBAGENT_RUNTIME_UNAVAILABLE',
+          statusCode: 503,
+        })
+      }
+      return durablePlannerSubagentRunner(input)
+    }
+  : undefined
 const sweepStaleAgentTurns = createAgentTurnSweep({
   productStore: runtime.productStore,
   observe: (event) => console.log(JSON.stringify(event)),
@@ -132,6 +196,9 @@ const sweepStaleAgentTurns = createAgentTurnSweep({
     config,
     mediaService: runtime.mediaService,
     turnRuntime: durableTurnRuntime,
+    consumeWebResearchQuota,
+    subagentRunner: resumeSubagentRunner,
+    observeAgentContext,
     observe: (event) => console.log(JSON.stringify(event)),
   }),
   settleTurn: (turn, error) => durableTurnRuntime.fail({ turn, error }),
@@ -145,10 +212,6 @@ const sweepProductionWorkflows = createProductionWorkflowSweep({
 })
 // 失败分支自动重试：策略在服务端，因此关掉浏览器后仍会按策略重试一次；
 // 不可重试错误、高成本重试与预算不足都会停下等用户，并把原因记进日志。
-const securityControls = createSecurityControls({
-  redisUrl: config.redisUrl,
-  onFallback: (caught) => console.error(`[security] Redis unavailable: ${caught instanceof Error ? caught.message : String(caught)}`),
-})
 const agentRunGeneration = createAgentRunGenerationService({
   config,
   productStore: runtime.productStore,
@@ -157,10 +220,17 @@ const agentRunGeneration = createAgentRunGenerationService({
   publishProjectUpdated: agentRunEvents.publishProjectUpdated,
   publishAgentRunUpdated: agentRunEvents.publish,
 })
+const subagentCancellation = createAgentSubagentCancellation({
+  productStore: runtime.productStore,
+  turnRuntime: durableTurnRuntime,
+  publishCancel: agentRunEvents.publishCancel,
+  observe: (event) => console.log(JSON.stringify(event)),
+})
 const agentCancellation = createAgentCancellationService({
   productStore: runtime.productStore,
   cancelTurn: (command) => durableTurnRuntime.cancel(command),
   finalizeTurn: (command) => durableTurnRuntime.finalizeCancellation(command),
+  cancelSubagent: (command) => subagentCancellation.request(command),
   redisQueue: queue,
   publishCancel: agentRunEvents.publishCancel,
   modelOptions: config.modelOptions ?? [],
@@ -168,6 +238,54 @@ const agentCancellation = createAgentCancellationService({
     agentRunGeneration.persistJobState(userId, projectId, job)
   ),
 })
+const subagentRunner = createAgentSubagentRunner({ runtimeConfig: config })
+const createWorkerSubagentRegistry = ({ userId, projectId }) => createAgentSubagentProjectRegistry({
+  productStore: runtime.productStore,
+  config,
+  userId,
+  projectId,
+  consumeWebResearchQuota,
+})
+const subagentProcessor = subagentRunner
+  ? createAgentSubagentProcessor({
+      productStore: runtime.productStore,
+      turnRuntime: durableTurnRuntime,
+      runSubagent: subagentRunner,
+      buildRegistry: ({ descriptor }) => createWorkerSubagentRegistry({
+        userId: descriptor.ownerId,
+        projectId: descriptor.projectId,
+      }),
+      enqueue: (identity) => subagentQueue.enqueue(identity),
+      convergeCancellation: (descriptor) => subagentCancellation.converge(descriptor),
+      observe: (event) => console.log(JSON.stringify(event)),
+    })
+  : undefined
+const subagentWorker = subagentProcessor
+  ? createAgentSubagentWorker({
+      redisUrl: config.redisUrl,
+      concurrency: config.agentSubagentConcurrency,
+      processActivation: subagentProcessor,
+    })
+  : undefined
+subagentWorker?.on('failed', (job, caught) => console.error(`[agent-subagent] BullMQ activation ${job?.id ?? 'unknown'} failed: ${caught.message}`))
+subagentWorker?.on('error', (caught) => console.error(`[agent-subagent] BullMQ worker error: ${caught.message}`))
+if (subagentWorker) {
+  console.log(`Botanic subagent worker started (concurrency ${config.agentSubagentConcurrency})`)
+} else {
+  console.log('Botanic subagent worker disabled (AGENT_SUBAGENT_MODEL/FLOCK_API_KEY not configured)')
+}
+const subagentService = subagentRunner
+  ? createAgentSubagentService({
+      productStore: runtime.productStore,
+      config,
+      createRegistry: createWorkerSubagentRegistry,
+      dispatchActivation: (identity) => subagentQueue.enqueue(identity),
+      cancellation: subagentCancellation,
+    })
+  : undefined
+durablePlannerSubagentRunner = subagentService
+  ? createDurableAgentSubagentRunner({ service: subagentService })
+  : undefined
 // Run 已持久化后、首个 Job 落库前仍有进程崩溃窗口。周期恢复只调用既有幂等提交
 // 与深取消服务，不在 Worker 组合根复制 Job 创建或取消规则。
 const sweepQueuedAgentRuns = createAgentRunSubmissionSweep({
@@ -195,7 +313,7 @@ const sweepFailedBranches = createAgentBranchRetrySweep({
     publishProjectUpdated: agentRunEvents.publishProjectUpdated,
     publishAgentRunUpdated: agentRunEvents.publish,
     agentRunGeneration,
-    observeRun: writeAgentRunOperationalEvent,
+    observeRun: observeAgentRun,
   }),
   observe: (event) => console.log(JSON.stringify(event)),
 })
@@ -212,7 +330,18 @@ const derivedWorker = createDerivedTaskWorker({
     'run.submit': () => sweepQueuedAgentRuns(),
   },
 })
-derivedWorker.on('failed', (job, caught) => console.error(`[derived] ${job?.name ?? 'unknown'} failed: ${caught.message}`))
+derivedWorker.on('failed', (job, caught) => {
+  if (job?.name === 'review.run') {
+    const failure = safeAgentReviewWorkerFailure(caught)
+    console.error(JSON.stringify({
+      event: 'agent.review.worker.failed',
+      code: failure.code,
+      message: failure.message,
+    }))
+    return
+  }
+  console.error(`[derived] ${job?.name ?? 'unknown'} failed: ${caught.message}`)
+})
 derivedWorker.on('error', (caught) => console.error(`[derived] worker error: ${caught.message}`))
 // 注册幂等：BullMQ 按 repeat key 去重，多实例重复注册不会产生多份定时任务。
 for (const [kind, everyMs] of [['turn.reclaim', 60_000], ['review.run', 120_000], ['workflow.advance', 45_000], ['branch.retry', 90_000], ['run.submit', 30_000]]) {
@@ -257,9 +386,31 @@ void reclaimInterruptedJobs()
 const interruptedRecoveryTimer = setInterval(() => void reclaimInterruptedJobs(), 60_000)
 interruptedRecoveryTimer.unref()
 
+const recoverAgentSubagents = subagentProcessor
+  ? createAgentSubagentRecovery({
+      productStore: runtime.productStore,
+      enqueue: (identity) => subagentQueue.enqueue(identity),
+      observe: (event) => console.error(JSON.stringify(event)),
+    })
+  : undefined
+async function recoverQueuedAgentSubagents() {
+  if (!recoverAgentSubagents) return
+  try {
+    await recoverAgentSubagents()
+  } catch (caught) {
+    console.error(`[agent-subagent] worker recovery deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
+  }
+}
+void recoverQueuedAgentSubagents()
+const subagentRecoveryTimer = recoverAgentSubagents
+  ? setInterval(() => void recoverQueuedAgentSubagents(), 30_000)
+  : undefined
+subagentRecoveryTimer?.unref()
+
 async function shutdown() {
   clearInterval(recoveryTimer)
   clearInterval(interruptedRecoveryTimer)
+  if (subagentRecoveryTimer) clearInterval(subagentRecoveryTimer)
   await cancelSubscriber?.close()
   await derivedWorker.close(true)
   await derivedQueue?.close()
@@ -267,11 +418,14 @@ async function shutdown() {
   // 仍持有 Redis lock、新 Worker 无法接手。强制关闭后 BullMQ 会将该 job 作为
   // stalled 回收，配合 90 秒 stale-running 恢复逻辑重新执行。
   await worker.close(true)
+  await subagentWorker?.close(true)
   await queue.close()
+  await subagentQueue.close()
   await agentRunEvents.close()
   await providerHealth.close()
   await runtime.mediaService.close()
   await runtime.productStore.close?.()
+  await telemetry.shutdown().catch(() => undefined)
 }
 process.once('SIGTERM', () => void shutdown().then(() => process.exit(0)))
 process.once('SIGINT', () => void shutdown().then(() => process.exit(0)))

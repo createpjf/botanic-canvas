@@ -24,11 +24,17 @@ import {
   agentReviewCandidateRows,
   agentReviewCoverageSummary,
   agentReviewEvaluatorCostNote,
+  agentReviewRequiresReconciliation,
   agentReviewTaskStatusNote,
   type AgentReviewDecision,
   type AgentReviewTaskSnapshot,
 } from '../../domain/agentReviewPresentation'
-import { fetchAgentReviewTasks, submitAgentReviewDecisions } from '../../lib/agentApi'
+import {
+  cancelAgentReviewTask,
+  fetchAgentReviewTasks,
+  reconcileAgentReviewOutcome,
+  submitAgentReviewDecisions,
+} from '../../lib/agentApi'
 import {
   brandKitSummary,
   brandProposalRows,
@@ -74,10 +80,13 @@ const agentUtilityMessages = {
     brandConfirm: '确认启用', brandSourceRef: (ref: string) => `出处：${ref}`,
     reviewAria: '结果评审', reviewEyebrow: '评审', reviewTitle: '结果评审', reviewDescription: '逐条判据说明结果是否符合这次确认的计划；自动评审不代表品牌批准，仍需你来决定。',
     reviewLoading: '正在读取评审…', reviewUnavailable: '评审暂不可用，请稍后重试。', noReviewTasks: '这次任务还没有评审记录。',
-    reviewCandidate: (id: string) => `候选 ${id}`, reviewUnverified: (count: number) => `${count} 项未验证`,
+    reviewCandidate: (id: string) => `结果 ${id}`, reviewUnverified: (count: number) => `${count} 项未验证`,
     reviewRevision: '修订建议', reviewCustomCriteria: '项目自定义判据', reviewSkillSource: (version: number) => `来自项目 Skill · 版本 ${version}`, reviewAccept: '接受', reviewReject: '拒绝', reviewRetry: '请求重试',
     reviewAwaiting: '待你决定', reviewReadOnly: '你没有决定权限', reviewSubmitting: '提交中…', reviewDecisionFailed: '决定提交失败，请重试。',
     reviewRetryCreated: (count: number) => `已创建 ${count} 个重试任务；原结果保留。`,
+    reviewCancel: '停止评审', reviewCancelling: '正在停止…', reviewCancelFailed: '停止请求未能提交，请重试。',
+    reviewContinueUnverifiable: '按未验证继续', reviewRetryOnce: '承担风险并重试一次',
+    reviewReconciliationFailed: '对账决定未能提交，请重试。', reviewReconciliationAccepted: '对账决定已记录，后台将继续收口评审。',
     memoryConflicts: (count: number) => `有 ${count} 组规则互相矛盾，每组只有一条会生效。停用其中一条，规则才不会互相打架。`,
   },
   en: {
@@ -100,10 +109,13 @@ const agentUtilityMessages = {
     brandConfirm: 'Confirm and activate', brandSourceRef: (ref: string) => `Source: ${ref}`,
     reviewAria: 'Result review', reviewEyebrow: 'Review', reviewTitle: 'Result review', reviewDescription: 'Per-criterion findings on whether results match the plan you confirmed. An automatic pass is not brand approval — the call is still yours.',
     reviewLoading: 'Loading review…', reviewUnavailable: 'Review is unavailable right now. Try again shortly.', noReviewTasks: 'No review has been recorded for this task yet.',
-    reviewCandidate: (id: string) => `Candidate ${id}`, reviewUnverified: (count: number) => `${count} not verified`,
+    reviewCandidate: (id: string) => `Result ${id}`, reviewUnverified: (count: number) => `${count} not verified`,
     reviewRevision: 'Suggested revision', reviewCustomCriteria: 'Project-defined criterion', reviewSkillSource: (version: number) => `From a project Skill · version ${version}`, reviewAccept: 'Accept', reviewReject: 'Reject', reviewRetry: 'Request retry',
     reviewAwaiting: 'Awaiting your decision', reviewReadOnly: 'You cannot decide on this project', reviewSubmitting: 'Submitting…', reviewDecisionFailed: 'The decision could not be submitted. Try again.',
     reviewRetryCreated: (count: number) => `Created ${count} retry task(s); the original results are kept.`,
+    reviewCancel: 'Stop review', reviewCancelling: 'Stopping…', reviewCancelFailed: 'The stop request could not be submitted. Try again.',
+    reviewContinueUnverifiable: 'Continue as not verified', reviewRetryOnce: 'Accept risk and retry once',
+    reviewReconciliationFailed: 'The reconciliation choice could not be submitted. Try again.', reviewReconciliationAccepted: 'The choice was recorded; review will finish in the background.',
     memoryConflicts: (count: number) => `${count} pair(s) of rules contradict each other; only one of each takes effect. Retire one so the intent is unambiguous.`,
     system: 'System', project: 'Project', invoke: '@mention', mount: 'Mount in chat', mounted: 'Mounted', unmount: 'Unmount',
   },
@@ -627,11 +639,20 @@ export function AgentReviewPanel({ runId, projectId, onBackToConversation }: {
 
   useEffect(() => {
     let active = true
+    let timer: ReturnType<typeof setTimeout> | undefined
     setStatus('loading')
-    fetchAgentReviewTasks(runId)
-      .then((loaded) => { if (active) { setTasks(loaded); setStatus('ready') } })
+    const load = () => fetchAgentReviewTasks(runId)
+      .then((loaded) => {
+        if (!active) return
+        setTasks(loaded)
+        setStatus('ready')
+        if (loaded.some((task) => ['queued', 'running', 'cancelling'].includes(task.status))) {
+          timer = setTimeout(load, 2_500)
+        }
+      })
       .catch(() => { if (active) setStatus('error') })
-    return () => { active = false }
+    void load()
+    return () => { active = false; if (timer) clearTimeout(timer) }
   }, [runId])
 
   const decide = async (taskId: string, artifactId: string, decision: AgentReviewDecision) => {
@@ -649,6 +670,33 @@ export function AgentReviewPanel({ runId, projectId, onBackToConversation }: {
     }
   }
 
+  const cancelReview = async (taskId: string) => {
+    setPending(`${taskId}:cancel`)
+    setNotice('')
+    try {
+      const result = await cancelAgentReviewTask(taskId)
+      setTasks((current) => current.map((task) => (task.id === taskId ? result.task : task)))
+    } catch {
+      setNotice(copy.reviewCancelFailed)
+    } finally {
+      setPending('')
+    }
+  }
+
+  const reconcile = async (taskId: string, action: 'continue_unverifiable' | 'retry_once') => {
+    setPending(`${taskId}:${action}`)
+    setNotice('')
+    try {
+      const result = await reconcileAgentReviewOutcome(taskId, action)
+      setTasks((current) => current.map((task) => (task.id === taskId ? result.task : task)))
+      setNotice(copy.reviewReconciliationAccepted)
+    } catch {
+      setNotice(copy.reviewReconciliationFailed)
+    } finally {
+      setPending('')
+    }
+  }
+
   return <section className="agent-review-panel" aria-label={copy.reviewAria}>
     <header><AgentPanelBackButton onClick={onBackToConversation} /><div><small>{copy.reviewEyebrow}</small><h2>{copy.reviewTitle}</h2></div></header>
     <p>{copy.reviewDescription}</p>
@@ -661,6 +709,26 @@ export function AgentReviewPanel({ runId, projectId, onBackToConversation }: {
       return <article key={task.id} className="agent-review-panel__task">
         <p className="agent-review-panel__coverage">{agentReviewCoverageSummary(task, locale)}</p>
         {statusNote ? <p className="agent-review-panel__status">{statusNote}</p> : null}
+        {canDecide && ['queued', 'running'].includes(task.status) ? <button
+          type="button"
+          disabled={pending === `${task.id}:cancel`}
+          onClick={() => void cancelReview(task.id)}
+        >
+          {pending === `${task.id}:cancel` ? copy.reviewCancelling : copy.reviewCancel}
+        </button> : null}
+        {agentReviewRequiresReconciliation(task) ? <div className="agent-review-panel__reconciliation">
+          {canDecide ? <button
+            type="button"
+            disabled={Boolean(pending)}
+            onClick={() => void reconcile(task.id, 'continue_unverifiable')}
+          >{copy.reviewContinueUnverifiable}</button> : null}
+          {canRetry ? <button
+            type="button"
+            disabled={Boolean(pending)}
+            onClick={() => void reconcile(task.id, 'retry_once')}
+          >{copy.reviewRetryOnce}</button> : null}
+          {!canDecide && !canRetry ? <small className="agent-review-panel__readonly">{copy.reviewReadOnly}</small> : null}
+        </div> : null}
         {/* 自定义判据的成本必须在这里就说清楚：评审完再说已经晚了，钱已经花掉。 */}
         {agentReviewEvaluatorCostNote(task, locale)
           ? <p className="agent-review-panel__cost">{agentReviewEvaluatorCostNote(task, locale)}</p>

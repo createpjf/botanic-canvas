@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { agentActionManualRetryConsumptionDecision, agentActionReceiptClaimDecision, agentActionReceiptResolutionDecision, agentThreadSummaryCompareAndSetDecision, agentTurnExecutionClaimDecision, authoritativeAgentActionManualRetryAuthorization, committedAgentTurnExecution, finalizedAgentTurnCancellation, normalizeAgentEntityIdPage, normalizePendingAgentReviewRecoveryPage, normalizeStaleTurnQuery, normalizeTurnEventPage, normalizeUpdatedAtIdRecoveryPage, reclaimableAgentTurnStatuses, requestedAgentTurnCancellation, settledAgentActionReceipt } from './productStoreContract.mjs'
+import { agentActionManualRetryConsumptionDecision, agentActionReceiptClaimDecision, agentActionReceiptResolutionDecision, agentSkillPersistenceDecision, agentThreadSummaryCompareAndSetDecision, agentTurnExecutionClaimDecision, authoritativeAgentActionManualRetryAuthorization, committedAgentTurnExecution, finalizedAgentTurnCancellation, normalizeAgentEntityIdPage, normalizePendingAgentReviewRecoveryPage, normalizeStaleTurnQuery, normalizeTurnEventPage, normalizeUpdatedAtIdRecoveryPage, persistedAgentSkillVersion, reclaimableAgentTurnStatuses, requestedAgentTurnCancellation, settledAgentActionReceipt } from './productStoreContract.mjs'
 import postgres from 'postgres'
 import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from './authorization.mjs'
 import { artifactIndexLimits, artifactsFromActionReceipt, artifactsFromAgentMessage, artifactsFromDocument, artifactsFromGenerationJob } from './botanicArtifactIndex.mjs'
@@ -11,8 +11,28 @@ import { observeProductStoreRead, timedProductStoreRead } from './productStoreMe
 import { acknowledgedGenerationJobCancellation, committedGenerationJobExecution, comparedAndSetGenerationJob, generationJobExecutionClaimDecision, generationJobPutDecision, requestedGenerationJobCancellation } from './generationJobExecution.mjs'
 import { idempotencyRequestBindingWriteDecision } from './idempotencyRequestBinding.mjs'
 import { agentBranchRetryClaimDecision, agentBranchRetryJobDecision } from './agentBranchRetryClaim.mjs'
-import { agentReviewExecutionClaimDecision, agentReviewTaskPutDecision, committedAgentReviewExecution } from './agentReviewExecution.mjs'
+import { agentReviewCancellationFinalizeDecision, agentReviewCancellationRequestDecision, agentReviewExecutionClaimDecision, agentReviewTaskPutDecision, committedAgentReviewExecution } from './agentReviewExecution.mjs'
 import { agentReviewRetryMaterializationDecision } from './agentReviewRetryMaterialization.mjs'
+import { agentReviewOutcomeReconciliationDecision } from './agentReviewReconciliation.mjs'
+import {
+  agentSubagentActivationClaimDecision,
+  agentSubagentActivationSettleDecision,
+  assertAgentSubagentRootTurnFence,
+  agentSubagentCancellationFinalizeDecision,
+  agentSubagentCancellationRequestDecision,
+  agentSubagentEnqueueDecision,
+  materializeAgentSubagentEnqueueCommand,
+  normalizeAgentSubagentActivationPage,
+  normalizeRunnableAgentSubagentPage,
+  publicAgentSubagent,
+  publicAgentSubagentActivation,
+} from './agentSubagentPersistence.mjs'
+import {
+  agentContextStateCompareAndSetDecision,
+  materializeAgentContextCommand,
+  normalizeAgentContextCompactionPage,
+  publicAgentContextCompaction,
+} from './agentContextPersistence.mjs'
 
 const now = () => Date.now()
 const hashAccessToken = (token) => createHash('sha256').update(token).digest('hex')
@@ -53,6 +73,94 @@ function asJson(value) {
 
 function asPayload(row) {
   return row ? asJson(row.payload) : undefined
+}
+
+function agentSubagentFromRow(row, { includeLease = true } = {}) {
+  if (!row) return undefined
+  const base = asPayload(row) ?? {}
+  const dispatch = row.dispatchActivationSequence === null || row.dispatchActivationSequence === undefined
+    ? undefined
+    : {
+        ...(base.dispatch ?? {}),
+        generation: Number(row.dispatchGeneration),
+        activationSequence: Number(row.dispatchActivationSequence),
+        ...(includeLease ? { leaseToken: row.dispatchLeaseToken } : {}),
+        leaseExpiresAt: Number(row.dispatchLeaseExpiresAt),
+      }
+  return {
+    ...base,
+    id: row.id,
+    ownerId: row.ownerId,
+    projectId: row.projectId,
+    rootTurnId: row.rootTurnId,
+    ...(row.parentSessionId ? { parentSessionId: row.parentSessionId } : {}),
+    sessionId: row.sessionId,
+    status: row.status,
+    cancelGeneration: Number(row.cancelGeneration),
+    lastEnqueuedSequence: Number(row.lastEnqueuedSequence),
+    settledThroughSequence: Number(row.settledThroughSequence),
+    ...(dispatch ? { dispatch } : {}),
+    createdAt: Number(row.createdAt),
+    updatedAt: Number(row.updatedAt),
+  }
+}
+
+function agentSubagentActivationFromRow(row, { includeLease = true } = {}) {
+  if (!row) return undefined
+  const stored = asPayload(row) ?? {}
+  const { execution: storedExecution, ...payload } = stored
+  const execution = row.executionLeaseToken
+    ? {
+        ...(storedExecution ?? {}),
+        generation: Number(row.executionGeneration),
+        cancelGeneration: Number(row.executionCancelGeneration),
+        ...(includeLease ? { leaseToken: row.executionLeaseToken } : {}),
+        leaseExpiresAt: Number(row.executionLeaseExpiresAt),
+      }
+    : undefined
+  return {
+    ...payload,
+    subagentId: row.subagentId,
+    sequence: Number(row.sequence),
+    turnId: row.turnId,
+    inputMessageId: row.inputMessageId,
+    resultMessageId: row.resultMessageId,
+    sourceTurnId: row.sourceTurnId,
+    idempotencyKey: row.idempotencyKey,
+    requestHash: row.requestHash,
+    cancelGeneration: Number(row.subagentGeneration),
+    ...(execution ? { execution } : {}),
+    createdAt: Number(row.createdAt),
+    updatedAt: Number(row.updatedAt),
+    ...(row.settledAt === null || row.settledAt === undefined
+      ? {}
+      : { settledAt: Number(row.settledAt) }),
+  }
+}
+
+function publicAgentSubagentTurn(turn) {
+  if (!turn) return undefined
+  return {
+    id: turn.id,
+    version: turn.version,
+    projectId: turn.projectId,
+    ...(turn.sessionId ? { sessionId: turn.sessionId } : {}),
+    status: turn.status,
+    createdAt: turn.createdAt,
+    updatedAt: turn.updatedAt,
+    ...(turn.result ? { result: clone(turn.result) } : {}),
+    ...(turn.error ? { error: clone(turn.error) } : {}),
+  }
+}
+
+function publicAgentSubagentDecision(value) {
+  return {
+    kind: value?.kind,
+    subagent: publicAgentSubagent(value?.subagent),
+    activation: publicAgentSubagentActivation(value?.activation),
+    ...(value?.turn ? { turn: publicAgentSubagentTurn(value.turn) } : {}),
+    changed: value?.changed === true,
+  }
 }
 
 function canvasGraph(document) {
@@ -266,6 +374,107 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       updated_at bigint not null,
       payload jsonb not null
     );
+    create table if not exists agent_context_states (
+      session_id text primary key references agent_sessions(id) on delete cascade,
+      owner_id text not null references app_users(id) on delete cascade,
+      project_id text not null references projects(id) on delete cascade,
+      revision bigint not null default 0 check (revision >= 0),
+      head_compaction_id text,
+      head_compaction_sequence bigint,
+      updated_at bigint not null,
+      payload jsonb not null,
+      constraint agent_context_states_head_shape check (
+        (head_compaction_id is null and head_compaction_sequence is null)
+        or (nullif(head_compaction_id, '') is not null
+          and head_compaction_sequence > 0 and head_compaction_sequence <= revision)
+      )
+    );
+    alter table agent_context_states add column if not exists head_compaction_sequence bigint;
+    alter table agent_context_states drop constraint if exists agent_context_states_head_shape;
+    alter table agent_context_states add constraint agent_context_states_head_shape check (
+      (head_compaction_id is null and head_compaction_sequence is null)
+      or (nullif(head_compaction_id, '') is not null
+        and head_compaction_sequence > 0 and head_compaction_sequence <= revision)
+    );
+    create table if not exists agent_context_compactions (
+      session_id text not null references agent_sessions(id) on delete cascade,
+      sequence bigint not null check (sequence > 0),
+      id text not null unique,
+      owner_id text not null references app_users(id) on delete cascade,
+      project_id text not null references projects(id) on delete cascade,
+      idempotency_key text not null,
+      request_hash text not null,
+      compaction_id text,
+      created_at bigint not null,
+      payload jsonb not null,
+      primary key (session_id, sequence),
+      unique (session_id, idempotency_key)
+    );
+    create table if not exists agent_subagents (
+      id text primary key,
+      owner_id text not null references app_users(id) on delete cascade,
+      project_id text not null references projects(id) on delete cascade,
+      root_turn_id text not null,
+      parent_session_id text,
+      session_id text not null unique references agent_sessions(id) on delete restrict,
+      status text not null check (status in ('active', 'cancelling', 'cancelled')),
+      cancel_generation bigint not null default 0,
+      last_enqueued_sequence integer not null default 0,
+      settled_through_sequence integer not null default 0,
+      dispatch_generation bigint not null default 0,
+      dispatch_activation_sequence integer,
+      dispatch_lease_token text,
+      dispatch_lease_expires_at bigint,
+      idempotency_key text not null,
+      request_hash text not null,
+      payload jsonb not null,
+      created_at bigint not null,
+      updated_at bigint not null,
+      unique (owner_id, project_id, idempotency_key),
+      check (cancel_generation >= 0),
+      check (settled_through_sequence >= 0 and settled_through_sequence <= last_enqueued_sequence),
+      check (
+        (dispatch_activation_sequence is null and dispatch_lease_token is null and dispatch_lease_expires_at is null)
+        or (dispatch_activation_sequence = settled_through_sequence + 1
+          and dispatch_activation_sequence <= last_enqueued_sequence
+          and nullif(dispatch_lease_token, '') is not null
+          and dispatch_lease_expires_at is not null)
+      )
+    );
+    create table if not exists agent_subagent_activations (
+      subagent_id text not null references agent_subagents(id) on delete cascade,
+      sequence integer not null check (sequence > 0),
+      turn_id text not null unique references agent_turns(id) on delete restrict,
+      input_message_id text not null references agent_messages(id) on delete restrict,
+      result_message_id text not null,
+      source_turn_id text not null,
+      idempotency_key text not null,
+      request_hash text not null,
+      subagent_generation bigint not null check (subagent_generation >= 0),
+      execution_generation bigint not null default 0 check (execution_generation >= 0),
+      execution_cancel_generation bigint,
+      execution_lease_token text,
+      execution_lease_expires_at bigint,
+      payload jsonb not null,
+      created_at bigint not null,
+      updated_at bigint not null,
+      settled_at bigint,
+      primary key (subagent_id, sequence),
+      unique (subagent_id, idempotency_key),
+      unique (subagent_id, result_message_id),
+      check (
+        (execution_lease_token is null and execution_cancel_generation is null
+          and execution_lease_expires_at is null)
+        or (execution_generation > 0 and execution_cancel_generation is not null
+          and nullif(execution_lease_token, '') is not null
+          and execution_lease_expires_at is not null)
+      )
+    );
+    alter table agent_subagent_activations
+      add column if not exists execution_generation bigint not null default 0,
+      add column if not exists execution_cancel_generation bigint,
+      add column if not exists execution_lease_token text,
+      add column if not exists execution_lease_expires_at bigint;
     create table if not exists agent_session_read_receipts (
       user_id text not null references app_users(id) on delete cascade,
       project_id text not null references projects(id) on delete cascade,
@@ -381,6 +590,18 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     create index if not exists agent_sessions_project_updated_idx on agent_sessions (project_id, updated_at desc);
     create index if not exists agent_messages_session_updated_idx on agent_messages (session_id, updated_at asc);
     create index if not exists agent_messages_project_updated_idx on agent_messages (project_id, updated_at asc);
+    create index if not exists agent_context_compactions_session_sequence_idx
+      on agent_context_compactions (session_id, sequence asc) where compaction_id is not null;
+    create index if not exists agent_subagents_project_updated_idx on agent_subagents (project_id, updated_at desc);
+    create index if not exists agent_subagents_root_turn_idx
+      on agent_subagents (project_id, root_turn_id, id collate "C" asc);
+    create index if not exists agent_subagents_runnable_v2_idx
+      on agent_subagents (updated_at asc, id collate "C" asc)
+      where status <> 'cancelled' and settled_through_sequence < last_enqueued_sequence;
+    create index if not exists agent_subagent_activations_sequence_idx
+      on agent_subagent_activations (subagent_id, sequence asc);
+    create index if not exists agent_subagent_activations_unsettled_idx
+      on agent_subagent_activations (subagent_id, sequence asc) where settled_at is null;
     create index if not exists agent_memory_project_updated_idx on agent_memory_items (project_id, updated_at desc);
     create index if not exists agent_artifacts_project_created_idx on agent_artifacts (project_id, created_at desc, id);
     create index if not exists agent_artifacts_run_idx on agent_artifacts (project_id, run_id) where run_id is not null;
@@ -723,15 +944,26 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
   async function readAgentStateRows(query, projectId, userId, options = {}) {
     const startedAt = Date.now()
     const includeMessages = options.includeMessages !== false
+    const includeSubagents = options.includeSubagents === true
     try {
     const [sessionRows, messageRows, memoryRows, runRows, receiptRows] = await Promise.all([
-      query`select payload from agent_sessions where project_id = ${projectId} order by updated_at desc limit 80`,
+      query`
+        select payload from agent_sessions
+        where project_id = ${projectId}
+          and (${includeSubagents} or coalesce(payload->>'kind', 'primary') <> 'subagent')
+        order by updated_at desc limit 80
+      `,
       includeMessages
         ? query`
             select session_id as "sessionId", updated_at as "updatedAt", payload from (
               select session_id, updated_at, payload,
                 row_number() over (partition by session_id order by updated_at desc) as recency
               from agent_messages where project_id = ${projectId}
+                and (${includeSubagents} or session_id in (
+                  select id from agent_sessions
+                  where project_id = ${projectId}
+                    and coalesce(payload->>'kind', 'primary') <> 'subagent'
+                ))
             ) ranked
             where recency <= ${agentEntityLimits.messagesPerSession}
             order by updated_at asc
@@ -920,6 +1152,155 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       select floor(extract(epoch from clock_timestamp()) * 1000)::bigint as "observedAt"
     `
     return Number(clock.observedAt)
+  }
+
+  async function lockedAgentSubagent(tx, subagentId) {
+    const [row] = await tx`
+      select id, owner_id as "ownerId", project_id as "projectId",
+        root_turn_id as "rootTurnId", parent_session_id as "parentSessionId",
+        session_id as "sessionId", status, cancel_generation as "cancelGeneration",
+        last_enqueued_sequence as "lastEnqueuedSequence",
+        settled_through_sequence as "settledThroughSequence",
+        dispatch_generation as "dispatchGeneration",
+        dispatch_activation_sequence as "dispatchActivationSequence",
+        dispatch_lease_token as "dispatchLeaseToken",
+        dispatch_lease_expires_at as "dispatchLeaseExpiresAt",
+        idempotency_key as "idempotencyKey", request_hash as "requestHash",
+        created_at as "createdAt", updated_at as "updatedAt", payload
+      from agent_subagents where id = ${subagentId} for update
+    `
+    return row ? { row, subagent: agentSubagentFromRow(row) } : undefined
+  }
+
+  async function lockedAgentSubagentActivation(tx, subagentId, predicate) {
+    const rows = predicate?.idempotencyKey
+      ? await tx`
+          select subagent_id as "subagentId", sequence, turn_id as "turnId",
+            input_message_id as "inputMessageId", result_message_id as "resultMessageId",
+            source_turn_id as "sourceTurnId", idempotency_key as "idempotencyKey",
+            request_hash as "requestHash", subagent_generation as "subagentGeneration",
+            execution_generation as "executionGeneration",
+            execution_cancel_generation as "executionCancelGeneration",
+            execution_lease_token as "executionLeaseToken",
+            execution_lease_expires_at as "executionLeaseExpiresAt",
+            created_at as "createdAt", updated_at as "updatedAt", settled_at as "settledAt", payload
+          from agent_subagent_activations
+          where subagent_id = ${subagentId} and idempotency_key = ${predicate.idempotencyKey}
+          for update
+        `
+      : await tx`
+          select subagent_id as "subagentId", sequence, turn_id as "turnId",
+            input_message_id as "inputMessageId", result_message_id as "resultMessageId",
+            source_turn_id as "sourceTurnId", idempotency_key as "idempotencyKey",
+            request_hash as "requestHash", subagent_generation as "subagentGeneration",
+            execution_generation as "executionGeneration",
+            execution_cancel_generation as "executionCancelGeneration",
+            execution_lease_token as "executionLeaseToken",
+            execution_lease_expires_at as "executionLeaseExpiresAt",
+            created_at as "createdAt", updated_at as "updatedAt", settled_at as "settledAt", payload
+          from agent_subagent_activations
+          where subagent_id = ${subagentId} and sequence = ${Number(predicate?.sequence) || 0}
+          for update
+        `
+    const row = rows[0]
+    return row ? { row, activation: agentSubagentActivationFromRow(row) } : undefined
+  }
+
+  async function persistAgentSubagent(tx, subagent) {
+    const { dispatch, ...descriptorPayload } = clone(subagent)
+    const publicPayload = {
+      ...descriptorPayload,
+      ...(dispatch ? {
+        dispatch: {
+          activationId: dispatch.activationId,
+          activationSequence: dispatch.activationSequence,
+          generation: dispatch.generation,
+          cancelGeneration: dispatch.cancelGeneration,
+          leaseExpiresAt: dispatch.leaseExpiresAt,
+        },
+      } : {}),
+    }
+    await tx`
+      insert into agent_subagents (
+        id, owner_id, project_id, root_turn_id, parent_session_id, session_id,
+        status, cancel_generation, last_enqueued_sequence, settled_through_sequence,
+        dispatch_generation, dispatch_activation_sequence, dispatch_lease_token,
+        dispatch_lease_expires_at, idempotency_key, request_hash, payload, created_at, updated_at
+      ) values (
+        ${subagent.id}, ${subagent.ownerId}, ${subagent.projectId}, ${subagent.rootTurnId},
+        ${subagent.parentSessionId ?? null}, ${subagent.sessionId}, ${subagent.status},
+        ${subagent.cancelGeneration}, ${subagent.lastEnqueuedSequence},
+        ${subagent.settledThroughSequence}, ${Number(dispatch?.generation) || 0},
+        ${dispatch?.activationSequence ?? null}, ${dispatch?.leaseToken ?? null},
+        ${Number(dispatch?.leaseExpiresAt) || null}, ${subagent.idempotencyKey},
+        ${subagent.requestHash}, ${tx.json(publicPayload)}::jsonb,
+        ${subagent.createdAt}, ${subagent.updatedAt}
+      )
+      on conflict (id) do update set
+        status = excluded.status,
+        cancel_generation = excluded.cancel_generation,
+        last_enqueued_sequence = excluded.last_enqueued_sequence,
+        settled_through_sequence = excluded.settled_through_sequence,
+        dispatch_generation = excluded.dispatch_generation,
+        dispatch_activation_sequence = excluded.dispatch_activation_sequence,
+        dispatch_lease_token = excluded.dispatch_lease_token,
+        dispatch_lease_expires_at = excluded.dispatch_lease_expires_at,
+        payload = excluded.payload,
+        updated_at = excluded.updated_at
+      where agent_subagents.owner_id = excluded.owner_id
+        and agent_subagents.project_id = excluded.project_id
+        and agent_subagents.root_turn_id = excluded.root_turn_id
+        and agent_subagents.session_id = excluded.session_id
+        and agent_subagents.idempotency_key = excluded.idempotency_key
+        and agent_subagents.request_hash = excluded.request_hash
+    `
+  }
+
+  async function persistAgentSubagentActivation(tx, activation) {
+    const { execution, ...activationPayload } = clone(activation)
+    const publicPayload = {
+      ...activationPayload,
+      ...(execution ? {
+        execution: {
+          generation: execution.generation,
+          cancelGeneration: execution.cancelGeneration,
+          leaseDurationMs: execution.leaseDurationMs,
+          leaseExpiresAt: execution.leaseExpiresAt,
+          claimedAt: execution.claimedAt,
+          lastHeartbeatAt: execution.lastHeartbeatAt,
+        },
+      } : {}),
+    }
+    await tx`
+      insert into agent_subagent_activations (
+        subagent_id, sequence, turn_id, input_message_id, result_message_id,
+        source_turn_id, idempotency_key, request_hash, subagent_generation,
+        execution_generation, execution_cancel_generation, execution_lease_token,
+        execution_lease_expires_at, payload, created_at, updated_at, settled_at
+      ) values (
+        ${activation.subagentId}, ${activation.sequence}, ${activation.turnId},
+        ${activation.inputMessageId}, ${activation.resultMessageId}, ${activation.sourceTurnId},
+        ${activation.idempotencyKey}, ${activation.requestHash},
+        ${activation.cancelGeneration}, ${Number(execution?.generation) || 0},
+        ${execution?.cancelGeneration ?? null}, ${execution?.leaseToken ?? null},
+        ${Number(execution?.leaseExpiresAt) || null}, ${tx.json(publicPayload)}::jsonb,
+        ${activation.createdAt}, ${activation.updatedAt}, ${activation.settledAt ?? null}
+      )
+      on conflict (subagent_id, sequence) do update set
+        payload = excluded.payload,
+        execution_generation = excluded.execution_generation,
+        execution_cancel_generation = excluded.execution_cancel_generation,
+        execution_lease_token = excluded.execution_lease_token,
+        execution_lease_expires_at = excluded.execution_lease_expires_at,
+        updated_at = excluded.updated_at,
+        settled_at = excluded.settled_at
+      where agent_subagent_activations.turn_id = excluded.turn_id
+        and agent_subagent_activations.input_message_id = excluded.input_message_id
+        and agent_subagent_activations.result_message_id = excluded.result_message_id
+        and agent_subagent_activations.idempotency_key = excluded.idempotency_key
+        and agent_subagent_activations.request_hash = excluded.request_hash
+        and agent_subagent_activations.subagent_generation = excluded.subagent_generation
+    `
   }
 
   async function lockedGenerationJob(tx, jobId) {
@@ -1439,7 +1820,10 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     async listAgentSessions(userId, projectId, options = {}) {
       if (!await memberRole(projectId, userId)) return undefined
       const limit = normalizeAgentSessionListLimit(options.limit)
-      const state = await readAgentStateRows(sql, projectId, userId, { includeMessages: false })
+      const state = await readAgentStateRows(sql, projectId, userId, {
+        includeMessages: false,
+        includeSubagents: options.includeSubagents === true,
+      })
       return state.sessions.slice(0, limit).map((session) => ({ ...session, messages: [] }))
     },
 
@@ -1602,6 +1986,123 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       })
     },
 
+    async readAgentContextState(userId, projectId, sessionId) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const [session] = await sql`
+        select 1 from agent_sessions where id = ${sessionId} and project_id = ${projectId}
+      `
+      if (!session) return undefined
+      const [row] = await sql`
+        select payload from agent_context_states
+        where session_id = ${sessionId} and project_id = ${projectId}
+      `
+      return row ? asPayload(row) : {
+        version: 2, sessionId, projectId, revision: 0, updatedAt: 0,
+      }
+    },
+
+    async listAgentContextCompactions(userId, projectId, sessionId, options = {}) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const [session] = await sql`
+        select 1 from agent_sessions where id = ${sessionId} and project_id = ${projectId}
+      `
+      if (!session) return undefined
+      const page = normalizeAgentContextCompactionPage(options)
+      const rows = await sql`
+        select sequence, created_at as "createdAt", payload
+        from agent_context_compactions
+        where project_id = ${projectId} and session_id = ${sessionId}
+          and compaction_id is not null and sequence > ${page.afterSequence}
+        order by sequence asc
+        limit ${page.limit}
+      `
+      const compactions = rows
+        .map((row) => publicAgentContextCompaction({
+          ...asPayload(row), sequence: Number(row.sequence), createdAt: Number(row.createdAt),
+        }))
+        .filter(Boolean)
+      return {
+        compactions,
+        ...(compactions.length === page.limit
+          ? { nextAfterSequence: compactions.at(-1)?.sequence }
+          : {}),
+      }
+    },
+
+    async compareAndSetAgentContextState(userId, rawCommand) {
+      let command
+      try {
+        command = materializeAgentContextCommand(rawCommand)
+      } catch {
+        return { kind: 'invalid', changed: false }
+      }
+      return sql.begin(async (tx) => {
+        const [session] = await tx`
+          select owner_id as "ownerId", project_id as "projectId"
+          from agent_sessions
+          where id = ${command.sessionId} and project_id = ${command.projectId}
+          for update
+        `
+        if (!session) return { kind: 'not_found', changed: false }
+        const [member] = await tx`
+          select role from project_members
+          where project_id = ${command.projectId} and user_id = ${userId}
+          for share
+        `
+        assertProjectPermission(member?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+        const [clock] = await tx`
+          select floor(extract(epoch from clock_timestamp()) * 1000)::bigint as "observedAt"
+        `
+        const [stateRow] = await tx`
+          select owner_id as "ownerId", payload from agent_context_states
+          where session_id = ${command.sessionId} for update
+        `
+        const [replayRow] = await tx`
+          select request_hash as "requestHash", payload from agent_context_compactions
+          where session_id = ${command.sessionId} and idempotency_key = ${command.idempotencyKey}
+        `
+        const decision = agentContextStateCompareAndSetDecision({
+          state: asPayload(stateRow),
+          replayEntry: replayRow ? {
+            ...asPayload(replayRow), requestHash: replayRow.requestHash,
+          } : undefined,
+          command,
+          ownerId: stateRow?.ownerId ?? session.ownerId,
+          observedAt: Number(clock.observedAt),
+        })
+        if (!decision.changed) return clone(decision)
+        const ledger = decision.ledgerEntry
+        await tx`
+          insert into agent_context_compactions (
+            session_id, sequence, id, owner_id, project_id, idempotency_key,
+            request_hash, compaction_id, created_at, payload
+          ) values (
+            ${ledger.sessionId}, ${ledger.sequence}, ${ledger.id}, ${ledger.ownerId},
+            ${ledger.projectId}, ${ledger.idempotencyKey}, ${ledger.requestHash},
+            ${ledger.compaction?.id ?? null}, ${ledger.createdAt}, ${tx.json(ledger)}::jsonb
+          )
+        `
+        await tx`
+          insert into agent_context_states (
+            session_id, owner_id, project_id, revision, head_compaction_id,
+            head_compaction_sequence, updated_at, payload
+          ) values (
+            ${command.sessionId}, ${ledger.ownerId}, ${command.projectId}, ${decision.state.revision},
+            ${decision.state.headCompactionId ?? null}, ${decision.state.headCompactionSequence ?? null},
+            ${decision.state.updatedAt}, ${tx.json(decision.state)}::jsonb
+          )
+          on conflict (session_id) do update set
+            revision = excluded.revision,
+            head_compaction_id = excluded.head_compaction_id,
+            head_compaction_sequence = excluded.head_compaction_sequence,
+            updated_at = excluded.updated_at,
+            payload = excluded.payload
+        `
+        const { ledgerEntry: _ledgerEntry, ...publicDecision } = decision
+        return clone(publicDecision)
+      })
+    },
+
     async putAgentMessage(userId, projectId, sessionId, input) {
       const role = await memberRole(projectId, userId)
       assertProjectPermission(role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
@@ -1717,33 +2218,45 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     },
 
     async putAgentSkill(userId, skill) {
-      const role = await memberRole(skill.projectId, userId)
-      assertProjectPermission(role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
-      const timestamp = now()
-      const [existing] = await sql`select project_id as "projectId", payload from agent_skills where id = ${skill.id}`
-      if (existing && existing.projectId !== skill.projectId) throw productError('Skill 标识已被其他项目使用。', 'AGENT_SKILL_ID_CONFLICT')
-      const previous = asPayload(existing)
-      const version = Math.max(1, Number(previous?.version ?? skill.version ?? 1) + (existing ? 1 : 0))
-      const contentHash = createHash('sha256').update(String(skill.instructions ?? '')).digest('base64url')
-      const versions = [
-        ...(Array.isArray(previous?.versions) ? previous.versions : []),
-        { version, contentHash, instructions: String(skill.instructions ?? ''), updatedAt: timestamp },
-      ].slice(-20)
-      const payload = {
-        ...clone(skill), ownerId: userId,
-        createdAt: Number(previous?.createdAt ?? skill.createdAt) || timestamp,
-        updatedAt: timestamp,
-        version, contentHash,
-        capabilities: Array.isArray(skill.capabilities) && skill.capabilities.length ? [...new Set(skill.capabilities)].slice(0, 12) : ['read'],
-        governance: skill.governance ?? 'project-approved', versions,
-      }
-      await sql`
-        insert into agent_skills (id, owner_id, project_id, status, updated_at, payload)
-        values (${skill.id}, ${userId}, ${skill.projectId}, ${payload.status}, ${timestamp}, ${sql.json(payload)}::jsonb)
-        on conflict (id) do update set status = excluded.status, updated_at = excluded.updated_at, payload = excluded.payload
-      `
-      await insertAudit(sql, { actorId: userId, action: existing ? 'agent-skill.updated' : 'agent-skill.created', projectId: skill.projectId, targetId: skill.id })
-      return clone(payload)
+      return sql.begin(async (tx) => {
+        // Skill ID 是全局唯一身份。咨询锁同时保护「行还不存在」的首版竞争；
+        // 已存在行再用 for update 把读取、历史前缀校验与写入固定在同一事务。
+        await tx`select pg_advisory_xact_lock(hashtextextended(${skill.id}, 11))`
+        const [membership] = await tx`
+          select role from project_members
+          where project_id = ${skill.projectId} and user_id = ${userId}
+          for share
+        `
+        assertProjectPermission(membership?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+        const [existing] = await tx`
+          select project_id as "projectId", payload
+          from agent_skills where id = ${skill.id}
+          for update
+        `
+        if (existing && existing.projectId !== skill.projectId) {
+          throw productError('Skill 标识已被其他项目使用。', 'AGENT_SKILL_ID_CONFLICT')
+        }
+        const previous = asPayload(existing)
+        const decision = agentSkillPersistenceDecision(previous, skill, { ownerId: userId })
+        if (decision.kind === 'replay') return clone(previous)
+        const payload = decision.payload
+        const timestamp = Number.isFinite(Number(payload.updatedAt)) ? Number(payload.updatedAt) : now()
+        await tx`
+          insert into agent_skills (id, owner_id, project_id, status, updated_at, payload)
+          values (${skill.id}, ${userId}, ${skill.projectId}, ${payload.status}, ${timestamp}, ${tx.json(payload)}::jsonb)
+          on conflict (id) do update set
+            status = excluded.status,
+            updated_at = excluded.updated_at,
+            payload = excluded.payload
+        `
+        await insertAudit(tx, {
+          actorId: userId,
+          action: existing ? 'agent-skill.updated' : 'agent-skill.created',
+          projectId: skill.projectId,
+          targetId: skill.id,
+        })
+        return clone(payload)
+      })
     },
 
     async listAgentSkills(userId, projectId) {
@@ -1754,6 +2267,16 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
         order by s.updated_at desc
       `
       return rows.map(asPayload)
+    },
+
+    async readAgentSkillVersion(userId, projectId, skillId, version) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const [row] = await sql`
+        select payload from agent_skills
+        where project_id = ${projectId} and id = ${skillId}
+      `
+      const snapshot = persistedAgentSkillVersion(asPayload(row), version)
+      return snapshot ? clone({ projectId, skillId, ...snapshot }) : undefined
     },
 
     async putAgentActionReceipt(userId, receipt) {
@@ -2745,6 +3268,513 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       return rows.map((row) => ({ ...asPayload(row), updatedAt: Number(row.updatedAt) }))
     },
 
+    async enqueueAgentSubagentActivation(userId, rawCommand) {
+      const startCandidate = rawCommand?.kind === 'start'
+        ? materializeAgentSubagentEnqueueCommand(userId, rawCommand)
+        : undefined
+      const subagentId = startCandidate?.subagentId ?? rawCommand?.subagentId ?? ''
+      return sql.begin(async (tx) => {
+        await tx`select pg_advisory_xact_lock(hashtextextended(${subagentId}, 6))`
+        const locked = await lockedAgentSubagent(tx, subagentId)
+        const projectId = locked?.subagent?.projectId ?? startCandidate?.projectId ?? rawCommand?.projectId
+        const [membership] = await tx`
+          select role from project_members where project_id = ${projectId ?? ''} and user_id = ${userId} for share
+        `
+        assertProjectPermission(membership?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+        const observedAt = await generationObservedAt(tx)
+        const preexistingActivation = locked
+          ? await lockedAgentSubagentActivation(tx, subagentId, {
+              idempotencyKey: rawCommand?.idempotencyKey ?? '',
+            })
+          : undefined
+        const materialized = materializeAgentSubagentEnqueueCommand(
+          locked?.subagent?.ownerId ?? userId,
+          {
+          ...clone(rawCommand),
+          ...(rawCommand?.kind === 'followup' ? {
+            sequence: preexistingActivation?.activation.sequence
+              ?? (Number(locked?.subagent?.lastEnqueuedSequence) + 1 || 1),
+            cancelGeneration: Number(locked?.subagent?.cancelGeneration) || 0,
+          } : {}),
+          observedAt,
+          },
+        )
+        const existingActivation = preexistingActivation
+          ?? await lockedAgentSubagentActivation(tx, subagentId, {
+            idempotencyKey: materialized.idempotencyKey,
+          })
+        const [turnRow] = existingActivation
+          ? await tx`select payload from agent_turns where id = ${existingActivation.activation.turnId} for update`
+          : []
+        const rootTurnId = locked?.subagent?.rootTurnId ?? materialized.rootTurnId
+        const [rootTurn] = await tx`
+          select owner_id as "ownerId", project_id as "projectId", status, payload
+          from agent_turns where id = ${rootTurnId ?? ''} for update
+        `
+        if (!rootTurn || rootTurn.ownerId !== (locked?.subagent?.ownerId ?? userId)
+          || rootTurn.projectId !== projectId) {
+          throw productError('Subagent 根 Turn 不存在。', 'AGENT_SUBAGENT_ROOT_TURN_NOT_FOUND')
+        }
+        assertAgentSubagentRootTurnFence(
+          { ...asPayload(rootTurn), status: rootTurn.status },
+          materialized.rootExecution,
+        )
+        const decision = agentSubagentEnqueueDecision(
+          locked?.subagent,
+          existingActivation?.activation,
+          { ...materialized, observedAt, existingTurn: asPayload(turnRow) },
+        )
+        if (decision.changed) {
+          if (decision.session) {
+            await tx`
+              insert into agent_sessions (id, owner_id, project_id, updated_at, payload)
+              values (${decision.session.id}, ${decision.subagent.ownerId}, ${projectId}, ${decision.session.updatedAt}, ${tx.json(decision.session)}::jsonb)
+            `
+          }
+          if (decision.inputMessage) {
+            await tx`
+              insert into agent_messages (id, owner_id, project_id, session_id, updated_at, payload)
+              values (
+                ${decision.inputMessage.id}, ${decision.subagent.ownerId}, ${projectId}, ${decision.subagent.sessionId},
+                ${decision.inputMessage.updatedAt}, ${tx.json(decision.inputMessage)}::jsonb
+              )
+            `
+            await tx`
+              update agent_sessions set
+                updated_at = greatest(updated_at, ${decision.inputMessage.updatedAt}),
+                payload = jsonb_set(
+                  payload, '{updatedAt}',
+                  to_jsonb(greatest(updated_at, ${decision.inputMessage.updatedAt})), true
+                )
+              where id = ${decision.subagent.sessionId} and project_id = ${projectId}
+            `
+          }
+          await tx`
+            insert into agent_turns (
+              id, owner_id, project_id, session_id, idempotency_key, status, updated_at, payload,
+              request_hash, request_hash_version, execution_version, lease_token, lease_expires_at, last_sequence
+            ) values (
+              ${decision.turn.id}, ${decision.subagent.ownerId}, ${projectId}, ${decision.turn.sessionId},
+              ${decision.turn.idempotencyKey}, ${decision.turn.status}, ${decision.turn.updatedAt},
+              ${tx.json(decision.turn)}::jsonb, ${decision.turn.requestHash},
+              ${decision.turn.requestHashVersion}, 0, null, null, 0
+            )
+          `
+          await persistAgentSubagent(tx, decision.subagent)
+          await persistAgentSubagentActivation(tx, decision.activation)
+          await insertAudit(tx, {
+            actorId: userId,
+            action: `agent-subagent.${materialized.kind}`,
+            projectId,
+            targetId: decision.subagent.id,
+            createdAt: observedAt,
+            detail: { activationId: decision.activation.id, sequence: decision.activation.sequence },
+          })
+        }
+        return clone(publicAgentSubagentDecision(decision))
+      })
+    },
+
+    async readAgentSubagent(userId, subagentId) {
+      const [row] = await sql`
+        select s.id, s.owner_id as "ownerId", s.project_id as "projectId",
+          s.root_turn_id as "rootTurnId", s.parent_session_id as "parentSessionId",
+          s.session_id as "sessionId", s.status, s.cancel_generation as "cancelGeneration",
+          s.last_enqueued_sequence as "lastEnqueuedSequence",
+          s.settled_through_sequence as "settledThroughSequence",
+          s.dispatch_generation as "dispatchGeneration",
+          s.dispatch_activation_sequence as "dispatchActivationSequence",
+          s.dispatch_lease_expires_at as "dispatchLeaseExpiresAt",
+          s.idempotency_key as "idempotencyKey", s.request_hash as "requestHash",
+          s.created_at as "createdAt", s.updated_at as "updatedAt", s.payload
+        from agent_subagents s join project_members m on m.project_id = s.project_id
+        where s.id = ${subagentId} and m.user_id = ${userId}
+      `
+      return publicAgentSubagent(agentSubagentFromRow(row, { includeLease: false }))
+    },
+
+    async readAgentSubagentForWorker(subagentId) {
+      const [row] = await sql`
+        select id, owner_id as "ownerId", project_id as "projectId",
+          root_turn_id as "rootTurnId", parent_session_id as "parentSessionId",
+          session_id as "sessionId", status, cancel_generation as "cancelGeneration",
+          last_enqueued_sequence as "lastEnqueuedSequence",
+          settled_through_sequence as "settledThroughSequence",
+          dispatch_generation as "dispatchGeneration",
+          dispatch_activation_sequence as "dispatchActivationSequence",
+          dispatch_lease_token as "dispatchLeaseToken",
+          dispatch_lease_expires_at as "dispatchLeaseExpiresAt",
+          idempotency_key as "idempotencyKey", request_hash as "requestHash",
+          created_at as "createdAt", updated_at as "updatedAt", payload
+        from agent_subagents where id = ${subagentId}
+      `
+      return agentSubagentFromRow(row)
+    },
+
+    async listAgentSubagentsForRootTurnPage(userId, projectId, rootTurnId, options = {}) {
+      const [membership] = await sql`
+        select 1 from project_members where project_id = ${projectId} and user_id = ${userId}
+      `
+      if (!membership) return undefined
+      const { afterId, limit } = normalizeAgentEntityIdPage(options)
+      const cursor = afterId === null ? sql`` : sql`and id collate "C" > ${afterId} collate "C"`
+      const rows = await sql`
+        select id, owner_id as "ownerId", project_id as "projectId",
+          root_turn_id as "rootTurnId", parent_session_id as "parentSessionId",
+          session_id as "sessionId", status, cancel_generation as "cancelGeneration",
+          last_enqueued_sequence as "lastEnqueuedSequence",
+          settled_through_sequence as "settledThroughSequence",
+          dispatch_generation as "dispatchGeneration",
+          dispatch_activation_sequence as "dispatchActivationSequence",
+          dispatch_lease_expires_at as "dispatchLeaseExpiresAt",
+          idempotency_key as "idempotencyKey", request_hash as "requestHash",
+          created_at as "createdAt", updated_at as "updatedAt", payload
+        from agent_subagents
+        where project_id = ${projectId} and root_turn_id = ${rootTurnId} ${cursor}
+        order by id collate "C" asc limit ${limit}
+      `
+      return rows.map((row) => publicAgentSubagent(agentSubagentFromRow(row, { includeLease: false })))
+    },
+
+    async listAgentSubagentActivations(userId, subagentId, options = {}) {
+      const [subagent] = await sql`
+        select s.project_id from agent_subagents s join project_members m on m.project_id = s.project_id
+        where s.id = ${subagentId} and m.user_id = ${userId}
+      `
+      if (!subagent) return undefined
+      const { afterSequence, limit } = normalizeAgentSubagentActivationPage(options)
+      const rows = await sql`
+        select subagent_id as "subagentId", sequence, turn_id as "turnId",
+          input_message_id as "inputMessageId", result_message_id as "resultMessageId",
+          source_turn_id as "sourceTurnId", idempotency_key as "idempotencyKey",
+          request_hash as "requestHash", subagent_generation as "subagentGeneration",
+          execution_generation as "executionGeneration",
+          execution_cancel_generation as "executionCancelGeneration",
+          execution_lease_token as "executionLeaseToken",
+          execution_lease_expires_at as "executionLeaseExpiresAt",
+          created_at as "createdAt", updated_at as "updatedAt", settled_at as "settledAt", payload
+        from agent_subagent_activations
+        where subagent_id = ${subagentId} and sequence > ${afterSequence}
+        order by sequence asc limit ${limit}
+      `
+      return rows.map((row) => publicAgentSubagentActivation(agentSubagentActivationFromRow(row)))
+    },
+
+    async listAgentSubagentActivationsForWorker(subagentId, options = {}) {
+      const [subagent] = await sql`select 1 from agent_subagents where id = ${subagentId}`
+      if (!subagent) return undefined
+      const { afterSequence, limit } = normalizeAgentSubagentActivationPage(options)
+      const rows = await sql`
+        select activation.subagent_id as "subagentId", activation.sequence,
+          activation.turn_id as "turnId", activation.input_message_id as "inputMessageId",
+          activation.result_message_id as "resultMessageId", activation.source_turn_id as "sourceTurnId",
+          activation.idempotency_key as "idempotencyKey", activation.request_hash as "requestHash",
+          activation.subagent_generation as "subagentGeneration",
+          activation.execution_generation as "executionGeneration",
+          activation.execution_cancel_generation as "executionCancelGeneration",
+          activation.execution_lease_token as "executionLeaseToken",
+          activation.execution_lease_expires_at as "executionLeaseExpiresAt",
+          activation.created_at as "createdAt", activation.updated_at as "updatedAt",
+          activation.settled_at as "settledAt", activation.payload, turn.payload as "turnPayload"
+        from agent_subagent_activations activation
+        join agent_turns turn on turn.id = activation.turn_id
+        where activation.subagent_id = ${subagentId} and activation.sequence > ${afterSequence}
+        order by activation.sequence asc limit ${limit}
+      `
+      return rows.map((row) => ({
+        activation: agentSubagentActivationFromRow(row),
+        turn: asJson(row.turnPayload),
+      }))
+    },
+
+    async listRunnableAgentSubagents(options = {}) {
+      const [clock] = await sql`select floor(extract(epoch from clock_timestamp()) * 1000)::bigint as "observedAt"`
+      const { now: observedAt, after, limit } = normalizeRunnableAgentSubagentPage({
+        ...options,
+        now: Number(clock.observedAt),
+      })
+      const cursor = after === null ? sql`` : sql`
+        and (subagent.updated_at > ${after.updatedAt}
+          or (subagent.updated_at = ${after.updatedAt}
+            and subagent.id collate "C" > ${after.id} collate "C"))
+      `
+      const rows = await sql`
+        select subagent.id, subagent.owner_id as "ownerId", subagent.project_id as "projectId",
+          subagent.root_turn_id as "rootTurnId", subagent.parent_session_id as "parentSessionId",
+          subagent.session_id as "sessionId", subagent.status,
+          subagent.cancel_generation as "cancelGeneration",
+          subagent.last_enqueued_sequence as "lastEnqueuedSequence",
+          subagent.settled_through_sequence as "settledThroughSequence",
+          subagent.dispatch_generation as "dispatchGeneration",
+          subagent.dispatch_activation_sequence as "dispatchActivationSequence",
+          subagent.dispatch_lease_token as "dispatchLeaseToken",
+          subagent.dispatch_lease_expires_at as "dispatchLeaseExpiresAt",
+          subagent.idempotency_key as "idempotencyKey", subagent.request_hash as "requestHash",
+          subagent.created_at as "createdAt", subagent.updated_at as "updatedAt", subagent.payload,
+          activation.payload as "activationPayload", turn.payload as "turnPayload"
+        from agent_subagents subagent
+        join agent_subagent_activations activation
+          on activation.subagent_id = subagent.id
+          and activation.sequence = subagent.settled_through_sequence + 1
+        join agent_turns turn on turn.id = activation.turn_id
+        where subagent.status in ('active', 'cancelling')
+          and subagent.settled_through_sequence < subagent.last_enqueued_sequence
+          and (
+            subagent.status = 'cancelling'
+            or activation.payload->>'status' = 'queued'
+            or (
+              activation.payload->>'status' = 'running'
+              and activation.payload->'execution'->>'leaseExpiresAt' ~ '^[0-9]+$'
+              and (activation.payload->'execution'->>'leaseExpiresAt')::bigint <= ${observedAt}
+            )
+          )
+          ${cursor}
+        order by subagent.updated_at asc, subagent.id collate "C" asc limit ${limit}
+      `
+      return rows.map((row) => ({
+        subagent: agentSubagentFromRow(row),
+        activation: asJson(row.activationPayload),
+        turn: asJson(row.turnPayload),
+      }))
+    },
+
+    async claimAgentSubagentActivation(command) {
+      return sql.begin(async (tx) => {
+        await tx`select pg_advisory_xact_lock(hashtextextended(${command?.subagentId ?? ''}, 6))`
+        const locked = await lockedAgentSubagent(tx, command?.subagentId ?? '')
+        if (!locked) return { kind: 'missing', changed: false }
+        const headSequence = Number(locked.subagent.settledThroughSequence) + 1
+        const lockedActivation = await lockedAgentSubagentActivation(tx, locked.subagent.id, {
+          sequence: headSequence,
+        })
+        const observedAt = await generationObservedAt(tx)
+        const decision = agentSubagentActivationClaimDecision(
+          locked.subagent,
+          lockedActivation?.activation,
+          { ...clone(command), observedAt },
+        )
+        if (decision.changed) {
+          await persistAgentSubagent(tx, decision.subagent)
+          await persistAgentSubagentActivation(tx, decision.activation)
+        }
+        const [turnRow] = decision.activation
+          ? await tx`select payload from agent_turns where id = ${decision.activation.turnId}`
+          : []
+        return clone({ ...decision, turn: asPayload(turnRow) })
+      })
+    },
+
+    async settleAgentSubagentActivation(command) {
+      return sql.begin(async (tx) => {
+        await tx`select pg_advisory_xact_lock(hashtextextended(${command?.subagentId ?? ''}, 6))`
+        const locked = await lockedAgentSubagent(tx, command?.subagentId ?? '')
+        if (!locked) return { kind: 'missing', changed: false }
+        const [activationRow] = await tx`
+          select subagent_id as "subagentId", sequence, turn_id as "turnId",
+            input_message_id as "inputMessageId", result_message_id as "resultMessageId",
+            source_turn_id as "sourceTurnId", idempotency_key as "idempotencyKey",
+            request_hash as "requestHash", subagent_generation as "subagentGeneration",
+            execution_generation as "executionGeneration",
+            execution_cancel_generation as "executionCancelGeneration",
+            execution_lease_token as "executionLeaseToken",
+            execution_lease_expires_at as "executionLeaseExpiresAt",
+            created_at as "createdAt", updated_at as "updatedAt", settled_at as "settledAt", payload
+          from agent_subagent_activations
+          where subagent_id = ${locked.subagent.id} and payload->>'id' = ${command?.activationId ?? ''}
+          for update
+        `
+        const activation = agentSubagentActivationFromRow(activationRow)
+        const [turnRow] = activation
+          ? await tx`select payload from agent_turns where id = ${activation.turnId} for update`
+          : []
+        const turn = asPayload(turnRow)
+        const observedAt = await generationObservedAt(tx)
+        const decision = agentSubagentActivationSettleDecision(
+          locked.subagent,
+          activation,
+          turn,
+          { ...clone(command), observedAt },
+        )
+        if (decision.changed) {
+          const [existingMessage] = await tx`
+            select project_id as "projectId", session_id as "sessionId", payload
+            from agent_messages where id = ${decision.resultMessage.id} for update
+          `
+          if (existingMessage && (
+            existingMessage.projectId !== decision.subagent.projectId
+            || existingMessage.sessionId !== decision.subagent.sessionId
+            || asPayload(existingMessage)?.turnId !== decision.turn.id
+          )) throw productError('Subagent 结果消息标识冲突。', 'AGENT_SUBAGENT_RESULT_MESSAGE_CONFLICT')
+          if (!existingMessage) {
+            await tx`
+              insert into agent_messages (id, owner_id, project_id, session_id, updated_at, payload)
+              values (
+                ${decision.resultMessage.id}, ${decision.subagent.ownerId},
+                ${decision.subagent.projectId}, ${decision.subagent.sessionId},
+                ${decision.resultMessage.updatedAt}, ${tx.json(decision.resultMessage)}::jsonb
+              )
+            `
+          }
+          await tx`
+            update agent_sessions set
+              updated_at = greatest(updated_at, ${decision.resultMessage.updatedAt}),
+              payload = jsonb_set(
+                payload, '{updatedAt}',
+                to_jsonb(greatest(updated_at, ${decision.resultMessage.updatedAt})), true
+              )
+            where id = ${decision.subagent.sessionId} and project_id = ${decision.subagent.projectId}
+          `
+          decision.subagent = { ...decision.subagent, dispatch: undefined, updatedAt: observedAt }
+          await persistAgentSubagentActivation(tx, decision.activation)
+          await persistAgentSubagent(tx, decision.subagent)
+        }
+        const nextSequence = Number(decision.subagent?.settledThroughSequence) + 1
+        const next = decision.subagent?.status === 'active'
+          && nextSequence <= Number(decision.subagent.lastEnqueuedSequence)
+          ? await lockedAgentSubagentActivation(tx, decision.subagent.id, { sequence: nextSequence })
+          : undefined
+        const queuedNext = next?.activation?.status === 'queued' ? next : undefined
+        const [nextTurnRow] = queuedNext
+          ? await tx`select payload from agent_turns where id = ${next.activation.turnId}`
+          : []
+        const nextTurn = asPayload(nextTurnRow)
+        return clone({
+          ...decision,
+          ...(queuedNext && nextTurn
+            ? { nextActivation: { activation: queuedNext.activation, turn: nextTurn } }
+            : {}),
+        })
+      })
+    },
+
+    async requestAgentSubagentCancellation(userId, command) {
+      return sql.begin(async (tx) => {
+        await tx`select pg_advisory_xact_lock(hashtextextended(${command?.subagentId ?? ''}, 6))`
+        const locked = await lockedAgentSubagent(tx, command?.subagentId ?? '')
+        if (!locked || locked.subagent.projectId !== command?.projectId) {
+          return { kind: 'missing', changed: false }
+        }
+        const [membership] = await tx`
+          select role from project_members
+          where project_id = ${locked.subagent.projectId} and user_id = ${userId} for share
+        `
+        assertProjectPermission(membership?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+        const head = Number(locked.subagent.settledThroughSequence) < Number(locked.subagent.lastEnqueuedSequence)
+          ? await lockedAgentSubagentActivation(tx, locked.subagent.id, {
+              sequence: Number(locked.subagent.settledThroughSequence) + 1,
+            })
+          : undefined
+        const observedAt = await generationObservedAt(tx)
+        const decision = agentSubagentCancellationRequestDecision(
+          locked.subagent,
+          head?.activation,
+          { ...clone(command), observedAt },
+        )
+        if (decision.changed) {
+          decision.subagent = { ...decision.subagent, dispatch: undefined }
+          await persistAgentSubagent(tx, decision.subagent)
+          if (decision.activation) await persistAgentSubagentActivation(tx, decision.activation)
+          await insertAudit(tx, {
+            actorId: userId,
+            action: decision.subagent.status === 'cancelled'
+              ? 'agent-subagent.cancelled'
+              : 'agent-subagent.cancelling',
+            projectId: decision.subagent.projectId,
+            targetId: decision.subagent.id,
+            createdAt: observedAt,
+            detail: { cancelGeneration: decision.subagent.cancelGeneration },
+          })
+        }
+        return clone(publicAgentSubagentDecision(decision))
+      })
+    },
+
+    async finalizeAgentSubagentCancellation(userId, command) {
+      return sql.begin(async (tx) => {
+        await tx`select pg_advisory_xact_lock(hashtextextended(${command?.subagentId ?? ''}, 6))`
+        const locked = await lockedAgentSubagent(tx, command?.subagentId ?? '')
+        if (!locked || locked.subagent.projectId !== command?.projectId) {
+          return { kind: 'missing', changed: false }
+        }
+        const [membership] = await tx`
+          select role from project_members
+          where project_id = ${locked.subagent.projectId} and user_id = ${userId} for share
+        `
+        assertProjectPermission(membership?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+        const activationRows = await tx`
+          select activation.subagent_id as "subagentId", activation.sequence,
+            activation.turn_id as "turnId", activation.input_message_id as "inputMessageId",
+            activation.result_message_id as "resultMessageId", activation.source_turn_id as "sourceTurnId",
+            activation.idempotency_key as "idempotencyKey", activation.request_hash as "requestHash",
+            activation.subagent_generation as "subagentGeneration",
+            activation.execution_generation as "executionGeneration",
+            activation.execution_cancel_generation as "executionCancelGeneration",
+            activation.execution_lease_token as "executionLeaseToken",
+            activation.execution_lease_expires_at as "executionLeaseExpiresAt",
+            activation.created_at as "createdAt", activation.updated_at as "updatedAt",
+            activation.settled_at as "settledAt", activation.payload, turn.payload as "turnPayload"
+          from agent_subagent_activations activation
+          join agent_turns turn on turn.id = activation.turn_id
+          where activation.subagent_id = ${locked.subagent.id}
+            and activation.sequence > ${locked.subagent.settledThroughSequence}
+          order by activation.sequence asc for update of activation, turn
+        `
+        const activations = activationRows.map(agentSubagentActivationFromRow)
+        const turns = activationRows.map((row) => asJson(row.turnPayload))
+        const observedAt = await generationObservedAt(tx)
+        const decision = agentSubagentCancellationFinalizeDecision(
+          locked.subagent,
+          activations,
+          turns,
+          { ...clone(command), observedAt },
+        )
+        if (decision.changed) {
+          for (const [index, resultMessage] of decision.resultMessages.entries()) {
+            const activation = decision.activations[index]
+            const [existingMessage] = await tx`
+              select project_id as "projectId", session_id as "sessionId", payload
+              from agent_messages where id = ${resultMessage.id} for update
+            `
+            if (existingMessage && (
+              existingMessage.projectId !== decision.subagent.projectId
+              || existingMessage.sessionId !== decision.subagent.sessionId
+              || asPayload(existingMessage)?.turnId !== activation.turnId
+            )) throw productError('Subagent 取消结果消息标识冲突。', 'AGENT_SUBAGENT_RESULT_MESSAGE_CONFLICT')
+            if (!existingMessage) {
+              await tx`
+                insert into agent_messages (id, owner_id, project_id, session_id, updated_at, payload)
+                values (
+                  ${resultMessage.id}, ${decision.subagent.ownerId}, ${decision.subagent.projectId},
+                  ${decision.subagent.sessionId}, ${resultMessage.updatedAt}, ${tx.json(resultMessage)}::jsonb
+                )
+              `
+            }
+            await tx`
+              update agent_sessions set
+                updated_at = greatest(updated_at, ${resultMessage.updatedAt}),
+                payload = jsonb_set(
+                  payload, '{updatedAt}',
+                  to_jsonb(greatest(updated_at, ${resultMessage.updatedAt})), true
+                )
+              where id = ${decision.subagent.sessionId} and project_id = ${decision.subagent.projectId}
+            `
+            await persistAgentSubagentActivation(tx, activation)
+          }
+          decision.subagent = { ...decision.subagent, dispatch: undefined }
+          await persistAgentSubagent(tx, decision.subagent)
+          await insertAudit(tx, {
+            actorId: userId,
+            action: 'agent-subagent.cancelled',
+            projectId: decision.subagent.projectId,
+            targetId: decision.subagent.id,
+            createdAt: observedAt,
+            detail: { cancelGeneration: decision.subagent.cancelGeneration },
+          })
+        }
+        return clone(publicAgentSubagentDecision(decision))
+      })
+    },
+
     // Worker 侧：找出含失败分支的 Run。用 jsonb 存在性过滤，不把全部 Run 拉回内存筛。
     async listRunsWithFailedBranches(options = {}) {
       const { after, limit } = normalizeUpdatedAtIdRecoveryPage(options)
@@ -2860,6 +3890,122 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       })
     },
 
+    async requestAgentReviewCancellation(userId, command) {
+      return sql.begin(async (tx) => {
+        await tx`select pg_advisory_xact_lock(hashtextextended(${command?.id ?? ''}, 5))`
+        const [row] = await tx`
+          select owner_id as "ownerId", project_id as "projectId", run_id as "runId", payload
+          from agent_review_tasks where id = ${command?.id ?? ''} for update
+        `
+        if (!row || row.projectId !== command?.projectId) return { kind: 'missing', changed: false }
+        const [membership] = await tx`
+          select role from project_members
+          where project_id = ${row.projectId} and user_id = ${userId}
+          for share
+        `
+        assertProjectPermission(membership?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+        const [clock] = await tx`
+          select floor(extract(epoch from clock_timestamp()) * 1000)::bigint as "observedAt"
+        `
+        const existing = {
+          ...asPayload(row), id: command.id, ownerId: row.ownerId,
+          projectId: row.projectId, runId: row.runId,
+        }
+        const decision = agentReviewCancellationRequestDecision(existing, {
+          ...clone(command), requestedBy: userId, observedAt: Number(clock.observedAt),
+        })
+        if (decision.changed) {
+          await persistAgentReviewExecutionDecision(tx, decision.task)
+          await insertAudit(tx, {
+            actorId: userId,
+            action: decision.task.status === 'cancelled'
+              ? 'agent-review.cancelled'
+              : 'agent-review.cancelling',
+            projectId: row.projectId,
+            targetId: command.id,
+          })
+        }
+        return clone(decision)
+      })
+    },
+
+    async finalizeAgentReviewCancellation(userId, command) {
+      return sql.begin(async (tx) => {
+        await tx`select pg_advisory_xact_lock(hashtextextended(${command?.id ?? ''}, 5))`
+        const [row] = await tx`
+          select owner_id as "ownerId", project_id as "projectId", run_id as "runId", payload
+          from agent_review_tasks where id = ${command?.id ?? ''} for update
+        `
+        if (!row || row.ownerId !== userId || row.projectId !== command?.projectId) {
+          return { kind: 'missing', changed: false }
+        }
+        const [clock] = await tx`
+          select floor(extract(epoch from clock_timestamp()) * 1000)::bigint as "observedAt"
+        `
+        const observedAt = Number(clock.observedAt)
+        const existing = {
+          ...asPayload(row), id: command.id, ownerId: row.ownerId,
+          projectId: row.projectId, runId: row.runId,
+        }
+        const decision = agentReviewCancellationFinalizeDecision(existing, {
+          ...clone(command),
+          observedAt,
+          proof: { ...clone(command?.proof), observedAt },
+        })
+        if (decision.changed) {
+          await persistAgentReviewExecutionDecision(tx, decision.task)
+          await insertAudit(tx, {
+            actorId: userId,
+            action: 'agent-review.cancelled',
+            projectId: row.projectId,
+            targetId: command.id,
+          })
+        }
+        return clone(decision)
+      })
+    },
+
+    async resolveAgentReviewOutcomeUnknown(userId, command) {
+      return sql.begin(async (tx) => {
+        await tx`select pg_advisory_xact_lock(hashtextextended(${command?.id ?? ''}, 5))`
+        const [row] = await tx`
+          select owner_id as "ownerId", project_id as "projectId", run_id as "runId", payload
+          from agent_review_tasks where id = ${command?.id ?? ''} for update
+        `
+        if (!row || row.projectId !== command?.projectId) return { kind: 'missing', changed: false }
+        const [membership] = await tx`
+          select role from project_members
+          where project_id = ${row.projectId} and user_id = ${userId}
+          for share
+        `
+        assertProjectPermission(membership?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+        if (command?.action === 'retry_once') {
+          assertProjectPermission(membership?.role, 'create-generation', 'PROJECT_WRITE_FORBIDDEN')
+        }
+        const [clock] = await tx`
+          select floor(extract(epoch from clock_timestamp()) * 1000)::bigint as "observedAt"
+        `
+        const existing = {
+          ...asPayload(row), id: command.id, ownerId: row.ownerId,
+          projectId: row.projectId, runId: row.runId,
+        }
+        const decision = agentReviewOutcomeReconciliationDecision(existing, {
+          ...clone(command), actorId: userId, observedAt: Number(clock.observedAt),
+        })
+        if (decision.changed) {
+          await persistAgentReviewExecutionDecision(tx, decision.task)
+          await insertAudit(tx, {
+            actorId: userId,
+            action: 'agent-review.reconciled',
+            projectId: row.projectId,
+            targetId: command.id,
+            detail: { action: command.action, status: decision.task.status },
+          })
+        }
+        return clone(decision)
+      })
+    },
+
     async commitAgentReviewHumanDecisions(userId, command) {
       return sql.begin(async (tx) => {
         await tx`select pg_advisory_xact_lock(hashtextextended(${command?.id ?? ''}, 5))`
@@ -2944,6 +4090,13 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       return row ? asPayload(row) : undefined
     },
 
+    async readAgentReviewTaskForWorker(taskId) {
+      const [row] = await sql`
+        select payload from agent_review_tasks where id = ${taskId}
+      `
+      return row ? asPayload(row) : undefined
+    },
+
     async listAgentReviewTasksForRun(userId, projectId, runId) {
       if (!await memberRole(projectId, userId)) return undefined
       const rows = await sql`
@@ -2963,7 +4116,7 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       `
       const rows = await sql`
         select t.id, t.updated_at as "updatedAt", t.payload from agent_review_tasks t
-        where t.status in ('queued', 'running') and t.updated_at <= ${olderThan}
+        where t.status in ('queued', 'running', 'cancelling') and t.updated_at <= ${olderThan}
           ${cursor}
         order by t.updated_at asc, t.id asc limit ${limit}
       `

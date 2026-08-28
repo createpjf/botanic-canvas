@@ -60,8 +60,47 @@ test('派生上下文重新读取，只有用户请求来自快照', async () =>
   // 项目文档来自当前读取，不来自快照。
   assert.deepEqual(call.resolveOptions.document, { id: 'project-a', nodes: [], edges: [] })
   assert.equal(call.resolveOptions.projectSkills.length, 1)
+  assert.equal(typeof call.resolveOptions.operations.readRun, 'function')
+  assert.equal(typeof call.resolveOptions.operations.searchArtifacts, 'function')
   // 请求快照原样传回，供 execute 再次持久化。
   assert.deepEqual(call.request, turn().request)
+})
+
+test('Worker 恢复兼容 operation 时保留 envelope，并从嵌套快照读取线程摘要', async () => {
+  const threadSummary = {
+    version: 1, goals: ['继续规划'], decisions: [], constraints: [], openQuestions: [],
+    entityIds: [], coveredMessageIds: ['m-1'], coveredThrough: 1, updatedAt: 10,
+  }
+  const request = {
+    runtimeOperation: 'intent',
+    input: {
+      projectId: 'project-a', locale: 'zh-CN', messages: [{ role: 'user', content: '继续' }],
+      threadContextSnapshot: { version: 1, messages: [], threadSummary },
+    },
+  }
+  const d = deps()
+
+  await createAgentTurnResumer(d)(turn({ request }))
+
+  assert.deepEqual(d.executions[0].request, request)
+  assert.deepEqual(d.executions[0].resolveOptions.threadSummary, threadSummary)
+})
+
+test('Worker 恢复联网工具复用共享配额；缺依赖时显式 fail closed', async () => {
+  const consumed = []
+  const configured = deps({
+    consumeWebResearchQuota: async (userId) => {
+      consumed.push(userId)
+      return { allowed: true }
+    },
+  })
+  await createAgentTurnResumer(configured)(turn())
+  assert.deepEqual(await configured.executions[0].resolveOptions.consumeWebResearchQuota(), { allowed: true })
+  assert.deepEqual(consumed, ['user-a'])
+
+  const missing = deps()
+  await createAgentTurnResumer(missing)(turn())
+  assert.deepEqual(await missing.executions[0].resolveOptions.consumeWebResearchQuota(), { allowed: false })
 })
 
 test('恢复只注入 Turn 中不可变的 thread context snapshot，不读取最新线程摘要', async () => {
@@ -85,6 +124,65 @@ test('恢复只注入 Turn 中不可变的 thread context snapshot，不读取�
   const call = d.executions[0]
   assert.deepEqual(call.request.threadContextSnapshot.threadSummary, threadSummary)
   assert.deepEqual(call.resolveOptions.threadSummary, threadSummary)
+  assert.equal(call.resolveOptions.persistAgentContextUsageAnchor, undefined)
+})
+
+test('Snapshot V2 恢复注入同一 Session 的 usage anchor 持久化 seam', async () => {
+  const writes = []
+  const request = {
+    ...turn().request,
+    plannerModel: 'model-a',
+    threadContextSnapshot: {
+      version: 2,
+      modelPolicy: { model: 'model-a', hash: 'policy-hash' },
+      messages: [{ id: 'm-1', revision: 'r-1', role: 'user', content: '继续' }],
+    },
+  }
+  const state = {
+    version: 2, sessionId: 'session-a', projectId: 'project-a', revision: 0, updatedAt: 0,
+  }
+  const d = deps({
+    productStore: {
+      async readAgentContextState() { return structuredClone(state) },
+      async listAgentContextCompactions() { return { compactions: [] } },
+      async compareAndSetAgentContextState(userId, command) {
+        writes.push({ userId, command })
+        return { kind: 'updated', changed: true, state }
+      },
+    },
+  })
+
+  await createAgentTurnResumer(d)(turn({ request }))
+  const persist = d.executions[0].resolveOptions.persistAgentContextUsageAnchor
+  assert.equal(typeof persist, 'function')
+  await persist({ version: 1, surfaceHash: 'surface-1', inputTokens: 10 })
+  assert.equal(writes.length, 1)
+  assert.equal(writes[0].userId, 'user-a')
+  assert.equal(writes[0].command.projectId, 'project-a')
+  assert.equal(writes[0].command.sessionId, 'session-a')
+  assert.equal(writes[0].command.usageAnchor.surfaceHash, 'surface-1')
+})
+
+test('Context V2 总闸门关闭时孤儿 Turn 保持待恢复且不进入执行器', async () => {
+  const request = {
+    ...turn().request,
+    threadContextSnapshot: {
+      version: 2,
+      modelPolicy: { model: 'model-a', hash: 'policy-hash' },
+      messages: [{ id: 'm-1', revision: 'r-1', role: 'user', content: '继续' }],
+    },
+  }
+  const d = deps({
+    config: {
+      agentFeatureFlags: { runtimeV2: true, contextCompactionV2: false },
+    },
+  })
+
+  await assert.rejects(
+    () => createAgentTurnResumer(d)(turn({ request })),
+    (caught) => caught.code === 'AGENT_CONTEXT_KILL_SWITCH_BLOCKED' && caught.statusCode === 503,
+  )
+  assert.equal(d.executions.length, 0)
 })
 
 test('旧 Turn 没有 thread context snapshot 时按 legacy 无摘要恢复，不借用当前 Session', async () => {

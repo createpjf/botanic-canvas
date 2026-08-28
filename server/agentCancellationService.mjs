@@ -21,6 +21,8 @@ const blockingCancellationFailureCodes = new Set([
   'GENERATION_JOBS_FOR_RUN_PAGE_INVALID',
   'AGENT_RUN_REFRESH_FAILED',
   'AGENT_RUN_CANCEL_FAILED',
+  'AGENT_SUBAGENT_CANCEL_FAILED',
+  'AGENT_SUBAGENT_CANCEL_PENDING',
 ])
 
 /**
@@ -105,6 +107,7 @@ export function createAgentCancellationService(input) {
     productStore,
     cancelTurn,
     finalizeTurn,
+    cancelSubagent,
     redisQueue,
     publishCancel,
     publishGenerationJobUpdated,
@@ -115,6 +118,7 @@ export function createAgentCancellationService(input) {
   } = input ?? {}
 
   if (!productStore?.listAgentRunsForTurnPage
+    || !productStore?.listAgentSubagentsForRootTurnPage
     || !productStore?.listGenerationJobsForAgentRunPage
     || !productStore?.readAgentRun
     || !productStore?.putAgentRun
@@ -124,6 +128,7 @@ export function createAgentCancellationService(input) {
     throw new TypeError('Agent Cancellation Service 缺少 ProductStore 能力。')
   }
   if (typeof cancelTurn !== 'function') throw new TypeError('Agent Cancellation Service 缺少 cancelTurn。')
+  if (typeof cancelSubagent !== 'function') throw new TypeError('Agent Cancellation Service 缺少 cancelSubagent。')
 
   async function publishCancellation(event, failures) {
     if (typeof publishCancel !== 'function') return
@@ -410,13 +415,15 @@ export function createAgentCancellationService(input) {
     if (!turn || turn.projectId !== projectId) {
       return {
         kind: 'not_found', turnId, status: 'missing', linkedRunCount: 0,
-        cancelledRunCount: 0, cancelledJobCount: 0, failures: [],
+        linkedSubagentCount: 0, cancelledRunCount: 0, cancelledJobCount: 0,
+        cancelledSubagentCount: 0, failures: [],
       }
     }
     if (terminalTurnStatuses.has(turn.status)) {
       return {
         kind: 'already_settled', turnId, status: turn.status, linkedRunCount: 0,
-        cancelledRunCount: 0, cancelledJobCount: 0, failures: [],
+        linkedSubagentCount: 0, cancelledRunCount: 0, cancelledJobCount: 0,
+        cancelledSubagentCount: 0, failures: [],
       }
     }
     if (!cancellationFenceStatuses.has(turn.status)) {
@@ -489,12 +496,94 @@ export function createAgentCancellationService(input) {
       if (page.length < cancellationPageSize) break
     }
 
+    const linkedSubagents = []
+    const seenSubagentIds = new Set()
+    afterId = undefined
+    while (true) {
+      let page
+      try {
+        // Subagent descriptor 的 rootTurnId 是权威反向边。与 Run 相同，必须在根 Turn
+        // cancellation fence 落库后稳定遍历完整集合，才能封住并发 start/followup。
+        page = await productStore.listAgentSubagentsForRootTurnPage(
+          userId,
+          projectId,
+          turnId,
+          { afterId, limit: cancellationPageSize },
+        )
+      } catch {
+        throw new AgentDelegationFenceError(
+          'AGENT_TURN_LINKED_SUBAGENTS_READ_FAILED',
+          'Agent Turn 已进入取消流程，但关联 Subagent 读取失败，请重试取消。',
+          503,
+        )
+      }
+      if (!Array.isArray(page)) {
+        throw new AgentDelegationFenceError(
+          'AGENT_TURN_LINKED_SUBAGENTS_READ_FAILED',
+          'Agent Turn 已进入取消流程，但关联 Subagent 分页结果无效，请重试取消。',
+          503,
+        )
+      }
+      if (page.length === 0) break
+
+      const priorCursor = afterId
+      let lastId
+      for (const subagent of page) {
+        const subagentId = typeof subagent?.id === 'string' ? subagent.id : ''
+        if (!subagentId.trim() || seenSubagentIds.has(subagentId)
+          || subagent.projectId !== projectId || subagent.rootTurnId !== turnId) {
+          throw new AgentDelegationFenceError(
+            'AGENT_TURN_LINKED_SUBAGENTS_READ_FAILED',
+            'Agent Turn 已进入取消流程，但关联 Subagent 分页结果不完整，请重试取消。',
+            503,
+          )
+        }
+        seenSubagentIds.add(subagentId)
+        linkedSubagents.push(subagent)
+        lastId = subagentId
+      }
+      if (!lastId || lastId === priorCursor) {
+        throw new AgentDelegationFenceError(
+          'AGENT_TURN_LINKED_SUBAGENTS_READ_FAILED',
+          'Agent Turn 已进入取消流程，但关联 Subagent 分页游标未推进，请重试取消。',
+          503,
+        )
+      }
+      afterId = lastId
+      if (page.length < cancellationPageSize) break
+    }
+
     let cancelledRunCount = 0
     let cancelledJobCount = 0
     for (const run of linkedRuns) {
       const outcome = await cancelLinkedRun({ userId, projectId, run, requestedBy, requestedAt, failures })
       cancelledRunCount += outcome.cancelledRunCount
       cancelledJobCount += outcome.cancelledJobCount
+    }
+    let cancelledSubagentCount = 0
+    for (const subagent of linkedSubagents) {
+      try {
+        const outcome = await cancelSubagent({
+          userId,
+          projectId,
+          subagentId: subagent.id,
+          idempotencyKey: `agent-turn-cancel:${turnId}:subagent:${subagent.id}`,
+          reason,
+        })
+        if (outcome?.subagent?.status === 'cancelled') {
+          cancelledSubagentCount += 1
+        } else {
+          failures.push(safeFailure(
+            'subagent',
+            subagent.id,
+            outcome?.subagent?.status === 'cancelling'
+              ? 'AGENT_SUBAGENT_CANCEL_PENDING'
+              : 'AGENT_SUBAGENT_CANCEL_FAILED',
+          ))
+        }
+      } catch {
+        failures.push(safeFailure('subagent', subagent.id, 'AGENT_SUBAGENT_CANCEL_FAILED'))
+      }
     }
     let finalizedTurn = turn
     const hasBlockingFailure = failures.some((failure) => blockingCancellationFailureCodes.has(failure.code))
@@ -510,8 +599,10 @@ export function createAgentCancellationService(input) {
       turnId,
       status: finalizedTurn.status,
       linkedRunCount: linkedRuns.length,
+      linkedSubagentCount: linkedSubagents.length,
       cancelledRunCount,
       cancelledJobCount,
+      cancelledSubagentCount,
       failures,
     }
   }

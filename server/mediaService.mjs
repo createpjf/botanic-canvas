@@ -1,4 +1,4 @@
-import { CANONICAL_IMAGE_FORMATS, canonicalImageDataUrlPattern, canonicalImageFormatSentenceList, detectImageFormat, imageFormatLabel } from './mediaFormats.mjs'
+import { CANONICAL_IMAGE_FORMATS, canonicalImageDataUrlPattern, canonicalImageFormatSentenceList, detectImageFormat, imageFormatLabel, MEDIA_LIMITS } from './mediaFormats.mjs'
 
 function mediaValidationError(message) {
   const error = new Error(message)
@@ -36,13 +36,15 @@ function isRetryableMediaError(error) {
   return ['ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN', 'UND_ERR_CONNECT_TIMEOUT', '57P01', '57P03', '53300'].includes(error.code)
 }
 
-async function retryMediaOperation(operation, attempts = 3) {
+async function retryMediaOperation(operation, attempts = 3, signal) {
   let lastError
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
+      if (signal?.aborted) throw signal.reason ?? mediaTimeoutError()
       return await operation()
     } catch (caught) {
       lastError = caught
+      if (signal?.aborted) throw signal.reason ?? caught
       if (!isRetryableMediaError(caught) || attempt === attempts) throw caught
       await new Promise((resolve) => setTimeout(resolve, 250 * (2 ** (attempt - 1))))
     }
@@ -57,40 +59,57 @@ function mediaTimeoutError() {
   return error
 }
 
-async function withMediaTimeout(operation, timeoutMs = 30_000) {
+async function withMediaTimeout(operation, timeoutMs = 30_000, externalSignal) {
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(mediaTimeoutError()), timeoutMs)
+  const signal = externalSignal ? AbortSignal.any([externalSignal, controller.signal]) : controller.signal
   try {
-    return await operation(controller.signal)
+    return await operation(signal)
   } finally {
     clearTimeout(timeoutId)
   }
 }
 
-async function readObjectBuffer(objectStore, storageKey) {
+async function readObjectBuffer(objectStore, storageKey, signal, maximumBytes) {
   return withMediaTimeout(async (signal) => {
     const media = await objectStore.get(storageKey, { signal })
-    if (Buffer.isBuffer(media.body) || media.body instanceof Uint8Array) return Buffer.from(media.body)
+    if (signal.aborted) throw signal.reason ?? mediaTimeoutError()
+    if (Buffer.isBuffer(media.body) || media.body instanceof Uint8Array) {
+      const buffer = Buffer.from(media.body)
+      if (buffer.length > maximumBytes) throw mediaValidationError('已存生成素材超过可重新接收的字节上限。')
+      return buffer
+    }
     if (!media.body || !(Symbol.asyncIterator in Object(media.body))) return undefined
     const chunks = []
+    let total = 0
     try {
       for await (const chunk of media.body) {
         if (signal.aborted) throw signal.reason ?? mediaTimeoutError()
-        chunks.push(Buffer.from(chunk))
+        const bytes = Buffer.from(chunk)
+        total += bytes.length
+        if (total > maximumBytes) {
+          throw mediaValidationError('已存生成素材超过可重新接收的字节上限。')
+        }
+        chunks.push(bytes)
       }
     } catch (caught) {
       media.body.destroy?.(caught)
       throw caught
     }
-    return Buffer.concat(chunks)
-  })
+    return Buffer.concat(chunks, total)
+  }, 30_000, signal)
 }
 
 /**
  * 媒体服务将二进制存 S3、元数据及授权关系存 ProductStore；文档只保存同源媒体 URL。
  * 无对象存储时明确退回 data URL，供本地原型运行，不作为 production 路径。
  */
-export function createMediaService({ productStore, objectStore, maximumUploadBytes = 8 * 1024 * 1024 }) {
+export function createMediaService({
+  productStore,
+  objectStore,
+  maximumUploadBytes = MEDIA_LIMITS.maxUploadBytes,
+  maximumGeneratedImageBytes = MEDIA_LIMITS.maxGeneratedImageBytes,
+}) {
   const enabled = Boolean(objectStore)
 
   async function persistBytes({ ownerId, projectId, bytes, contentType }) {
@@ -118,12 +137,17 @@ export function createMediaService({ productStore, objectStore, maximumUploadByt
   }
 
   async function persistProviderImage({ ownerId, projectId, image }) {
-    return persistDataUrl({ ownerId, projectId, dataUrl: image.dataUrl })
+    const parsed = parseImageDataUrl(image.dataUrl, maximumGeneratedImageBytes)
+    if (!parsed) throw mediaValidationError(`仅支持 ${canonicalImageFormatSentenceList()} 图片存入对象存储。`)
+    return persistBytes({ ownerId, projectId, bytes: parsed.bytes, contentType: parsed.contentType })
   }
 
   async function persistProviderMedia({ ownerId, projectId, media }) {
     if (!Buffer.isBuffer(media?.buffer) || !media.buffer.length || ![...CANONICAL_IMAGE_FORMATS, 'video/mp4'].includes(media.mimeType)) {
       throw new Error('供应商返回了不支持的媒体文件。')
+    }
+    if (media.mimeType !== 'video/mp4' && media.buffer.length > maximumGeneratedImageBytes) {
+      throw mediaValidationError(`单个生成图片不能超过 ${Math.ceil(maximumGeneratedImageBytes / 1024 / 1024)}MB。`)
     }
     return persistBytes({ ownerId, projectId, bytes: media.buffer, contentType: media.mimeType })
   }
@@ -153,11 +177,21 @@ export function createMediaService({ productStore, objectStore, maximumUploadByt
     return { ...object, contentType: media.contentType }
   }
 
-  async function readGenerationInput(userId, mediaId, projectId) {
+  async function readGenerationInput(userId, mediaId, projectId, { signal } = {}) {
     if (!enabled) return undefined
     const record = await productStore.readMediaObject(userId, mediaId)
     if (!record || record.projectId !== projectId) return undefined
-    const buffer = await retryMediaOperation(() => readObjectBuffer(objectStore, record.storageKey))
+    const maximumBytes = record.contentType === 'video/mp4'
+      ? MEDIA_LIMITS.maxGenerationInputBytes
+      : maximumGeneratedImageBytes
+    if (Number(record.byteSize) > maximumBytes) {
+      throw mediaValidationError('已存生成素材超过可重新接收的字节上限。')
+    }
+    const buffer = await retryMediaOperation(
+      () => readObjectBuffer(objectStore, record.storageKey, signal, maximumBytes),
+      3,
+      signal,
+    )
     return buffer?.length ? { mimeType: record.contentType, buffer } : undefined
   }
 

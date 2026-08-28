@@ -8,6 +8,7 @@ import { reconcileAgentGenerationJobToProject } from './botanicAgentExecution.mj
 import { compatibleFallbackModel, ProviderCircuitBreaker } from './generationGovernance.mjs'
 import { cancelGenerationJob } from './generationCancellation.mjs'
 import { matchingIdempotencyRequestBinding } from './idempotencyRequestBinding.mjs'
+import { acquireGenerationProviderAdmission } from './generationProviderAdmission.mjs'
 
 export function createGenerationProcessor({
   productStore,
@@ -30,6 +31,7 @@ export function createGenerationProcessor({
   setIntervalFn = setInterval,
   clearIntervalFn = clearInterval,
   leaseTokenFactory = randomUUID,
+  acquireProviderAdmission = acquireGenerationProviderAdmission,
 }) {
   class GenerationJobExecutionLost extends Error {
     constructor(job) {
@@ -505,6 +507,10 @@ export function createGenerationProcessor({
     ))
     const heartbeatId = setIntervalFn(() => { void maintainLease() }, heartbeatMs)
     let variantWrite = Promise.resolve()
+    let releaseProviderAdmission = () => undefined
+    let admittedProvider
+    let timeoutId
+    let timedOut = false
     try {
       const maximumTaskDurationMs = generationTimeoutForModel(config.modelOptions ?? [], running.settings?.model, {
         imageTimeoutMs: config.generationTimeoutMs ?? 5 * 60_000,
@@ -514,24 +520,60 @@ export function createGenerationProcessor({
       if (remainingTaskDurationMs <= 0) {
         throw new GenerationError(504, 'PROVIDER_TIMEOUT', '生成任务超过模型等待时限，已停止，请稍后重试。')
       }
-      const validatedInput = validateGenerationInput(running.rawInput, {
-        models: config.modelOptions?.length ? config.modelOptions : config.models,
-        maximumBatchCount: config.maximumBatchCount,
-        maximumReferenceBytes: config.maximumReferenceBytes,
-      })
-      const input = await resolveGenerationInputMedia(validatedInput, (mediaId) => mediaService.readGenerationInput(running.ownerId, mediaId, running.projectId))
+      timeoutId = setTimeout(() => { timedOut = true; controller.abort() }, remainingTaskDurationMs)
+      const catalog = config.modelOptions ?? []
+      const primaryProvider = providerForModel(catalog, running.settings?.model)?.provider ?? running.provider ?? 'unknown'
+      const switchProviderAdmission = async (provider) => {
+        // 一旦物化阶段取得 Flock 高内存许可，本任务就持有到最外层 finally。
+        // Flock 失败后切到其他 Provider 时 input Buffer 仍存活，提前释放会让随后
+        // 多个 Flock 任务再次物化，重新放大到 workerConcurrency × 48MB。
+        if (admittedProvider === 'flock' || provider !== 'flock') return
+        releaseProviderAdmission = await acquireProviderAdmission({
+          providers: [provider],
+          signal: controller.signal,
+        })
+        admittedProvider = provider
+      }
+      const materializeInput = async () => {
+        const validatedInput = validateGenerationInput(running.rawInput, {
+          models: config.modelOptions?.length ? config.modelOptions : config.models,
+          maximumBatchCount: config.maximumBatchCount,
+          maximumReferenceBytes: config.maximumReferenceBytes,
+        })
+        return resolveGenerationInputMedia(validatedInput, async (mediaId) => {
+          if (controller.signal.aborted) throw controller.signal.reason ?? new Error('Generation input aborted')
+          try {
+            return await mediaService.readGenerationInput(running.ownerId, mediaId, running.projectId, {
+              signal: controller.signal,
+            })
+          } catch (caught) {
+            if (caught?.code === 'MEDIA_VALIDATION_FAILED') {
+              throw new GenerationError(413, 'REFERENCE_TOO_LARGE', caught.message)
+            }
+            throw caught
+          }
+        })
+      }
+      // Flock 许可先于 validate：内联 dataUrl 会在校验阶段解码成 Buffer，mediaId
+      // 则在 resolve 阶段读取。只为本次实际 Provider 取锁，不能因全局 fallback 配置
+      // 把无关 OpenAI / MiniMax 任务也串行化。
+      try {
+        await switchProviderAdmission(primaryProvider)
+      } catch (caught) {
+        if (timedOut) throw new GenerationError(504, 'PROVIDER_TIMEOUT', '生成任务超过模型等待时限，已停止，请稍后重试。')
+        if (controller.signal.aborted) return
+        throw caught
+      }
+      let input = await materializeInput()
       console.info(`[generation] ${jobId} references ready`)
       const remainingGenerationMs = maximumTaskDurationMs - (Date.now() - running.createdAt)
       if (remainingGenerationMs <= 0) {
         throw new GenerationError(504, 'PROVIDER_TIMEOUT', '生成任务超过模型等待时限，已停止，请稍后重试。')
       }
       // 从任务创建开始计时，而非从 Worker 取到任务后重新计时，排队不会无限延长用户等待。
-      const timeoutMs = Math.max(1, remainingGenerationMs)
       // 记下是哪一种 abort。取消与超时都会 abort 同一个控制器，但结果完全不同：
       // 超时是失败，取消不是 —— 把取消报成超时会让用户看到错误的原因，而且会用
       // 失败状态覆盖取消入口已经写下的 cancelled。
-      let timedOut = false
-      let timeoutId
       // Provider 回调可能由多个子任务同时触发，串行化状态写入避免最后完成的
       // 子任务覆盖其他子任务的进度。图片请求本身仍保持受控并发。
       const onVariant = (update) => {
@@ -585,7 +627,6 @@ export function createGenerationProcessor({
         if (await stopFencedDelegation(running)) return
         await maintainLease()
         if (leaseLost) return
-        timeoutId = setTimeout(() => { timedOut = true; controller.abort() }, timeoutMs)
         console.info(`[generation] ${jobId} requesting provider`)
         const model = providerForModel(config.modelOptions ?? [], input.settings.model)
         const provider = model?.provider ?? running.provider ?? 'unknown'
@@ -634,11 +675,25 @@ export function createGenerationProcessor({
           input,
           candidateIds: config.providerFallbackModelIds ?? [],
         })
+        const prepareFallbackInput = async (alternate) => {
+          if (alternate.provider === 'flock' && admittedProvider !== 'flock') {
+            // 主 Provider 失败后才决定切到 Flock。先放掉旧 Buffer 引用，再排队取得
+            // 许可并重新物化，避免多个 fallback 任务各持 48MB 输入等待同一把锁。
+            input = undefined
+            await switchProviderAdmission('flock')
+            if (controller.signal.aborted) throw new GenerationJobExecutionLost(running)
+            input = await materializeInput()
+            console.info(`[generation] ${jobId} references ready for flock fallback`)
+          } else {
+            await switchProviderAdmission(alternate.provider)
+          }
+          return { ...input, settings: { ...input.settings, model: alternate.id } }
+        }
         const providerDecision = await providerCircuitBreaker.canRequest(provider)
         if (!providerDecision.allowed) {
           const alternate = fallback()
           if (!alternate) throw new GenerationError(503, 'PROVIDER_CIRCUIT_OPEN', '当前生成服务暂不可用，且没有语义兼容的备用模型，请稍后重试。')
-          const fallbackInput = { ...input, settings: { ...input.settings, model: alternate.id } }
+          const fallbackInput = await prepareFallbackInput(alternate)
           result = await runProvider(fallbackInput, alternate.id, alternate.provider)
         } else {
           try {
@@ -654,7 +709,7 @@ export function createGenerationProcessor({
               // 超时/限流/上游错误误报成“规格不兼容”，用户无法选择正确恢复动作。
               throw caught
             }
-            const fallbackInput = { ...input, settings: { ...input.settings, model: alternate.id } }
+            const fallbackInput = await prepareFallbackInput(alternate)
             result = await runProvider(fallbackInput, alternate.id, alternate.provider)
           }
         }
@@ -768,9 +823,11 @@ export function createGenerationProcessor({
       if (leaseLost) return
       const latest = await productStore.readGenerationJobForWorker(jobId)
       if (!latest || latest.status === 'cancelled') return
-      const failure = caught instanceof GenerationError
-        ? caught
-        : new GenerationError(502, 'GENERATION_FAILED', '生成任务失败，请稍后重试。')
+      const failure = timedOut
+        ? new GenerationError(504, 'PROVIDER_TIMEOUT', '生成服务响应超时，任务已停止，请稍后重试。')
+        : caught instanceof GenerationError
+          ? caught
+          : new GenerationError(502, 'GENERATION_FAILED', '生成任务失败，请稍后重试。')
       const detail = caught instanceof Error ? `${caught.name}: ${caught.message}` : String(caught)
       const upstream = failure.upstreamMessage ? ` 上游原文：${failure.upstreamMessage}` : ''
       console.error(`[generation] ${jobId} failed (${failure.code}): ${detail}${upstream}`)
@@ -806,7 +863,9 @@ export function createGenerationProcessor({
       })
     } finally {
       clearIntervalFn(heartbeatId)
+      if (timeoutId) clearTimeout(timeoutId)
       await heartbeatWrite
+      releaseProviderAdmission()
       cancelRegistry?.release(jobId, controller)
       await acknowledgeWorkerExit(jobId, executionFence)
     }

@@ -8,6 +8,7 @@ import {
   cloneGenerationSettings,
   maximumReferencesForModel,
   primaryGenerationReference,
+  settingsForRegionEdit,
 } from '../domain/generationRecipe'
 import { matchUnresolvedGenerationTaskJobs } from '../domain/generationRecovery'
 import { assignVideoInputRoles } from '../domain/videoGeneration'
@@ -361,8 +362,9 @@ export function createCanvasGenerationActions({
       if (!graphRecipe.recipe.references.length && !graphRecipe.parent) return setGenerationError('请至少连接一张商品图片、参考素材或已选首图。')
       const selectedModel = get().availableModels.find((model) => model.id === graphRecipe.recipe.settings.model)
       const maximumReferences = maximumReferencesForModel(selectedModel)
-      if (graphRecipe.recipe.references.length > maximumReferences) {
-        return setGenerationError(`单个生成节点最多连接 ${maximumReferences} 个参考素材。`)
+      const inputImageCount = graphRecipe.recipe.references.length + (graphRecipe.parent ? 1 : 0)
+      if (inputImageCount > maximumReferences) {
+        return setGenerationError(`单个生成节点最多使用 ${maximumReferences} 个参考素材（含父图）。`)
       }
       const isVideoModel = selectedModel?.mediaKind === 'video'
       let preparedRecipe: GenerationRecipe = graphRecipe.recipe
@@ -518,11 +520,19 @@ export function createCanvasGenerationActions({
       const parentLabel = result.label ?? '已选首图'
       const parentImage = result.image
       const normalizedBatchCount = clampBatchCount(batchCount)
+      const regionEditRequested = Boolean(inputRecipe?.maskImage || inputRecipe?.maskRegion)
+      const persistedSettings = result.generationSettings
+        ?? result.generationRecipe?.settings
+        ?? result.rootRecipe?.settings
+      const effectiveSettings = regionEditRequested
+        ? settingsForRegionEdit(persistedSettings ?? settings, get().availableModels)
+        : cloneGenerationSettings(settings)
+      if (!effectiveSettings) return setGenerationError('当前没有支持局部重绘的图片模型，请先配置可用模型。')
       const builtRecipe = inputRecipe
-        ? cloneGenerationRecipe({ ...inputRecipe, prompt: cleanPrompt, batchCount: normalizedBatchCount, settings: cloneGenerationSettings(settings) })
+        ? cloneGenerationRecipe({ ...inputRecipe, prompt: cleanPrompt, batchCount: normalizedBatchCount, settings: effectiveSettings })
         : result.generationRecipe
-          ? cloneGenerationRecipe({ ...result.generationRecipe, prompt: cleanPrompt, batchCount: normalizedBatchCount, settings: cloneGenerationSettings(settings) })
-          : buildGenerationRecipe(document, cleanPrompt, normalizedBatchCount, settings)
+          ? cloneGenerationRecipe({ ...result.generationRecipe, prompt: cleanPrompt, batchCount: normalizedBatchCount, settings: effectiveSettings })
+          : buildGenerationRecipe(document, cleanPrompt, normalizedBatchCount, effectiveSettings)
       const recipe = withRegionEditOverlayReferences(builtRecipe, result.generationRecipe ?? result.rootRecipe)
       const rootRecipe = cloneGenerationRecipe(inputRootRecipe ?? result.rootRecipe ?? result.generationRecipe ?? recipe)
       try {
@@ -534,7 +544,7 @@ export function createCanvasGenerationActions({
       if (get().document.id !== document.id) return false
       const request: GenerationRequest = {
         kind: 'refinement', prompt: cleanPrompt, batchCount: normalizedBatchCount,
-        settings: cloneGenerationSettings(settings), recipe: cloneGenerationRecipe(recipe), rootRecipe,
+        settings: cloneGenerationSettings(effectiveSettings), recipe: cloneGenerationRecipe(recipe), rootRecipe,
         targetNodeId, parentVersionId, parentImage, parentLabel, taskLayout, sourceGraphNodeId, title,
         refinementMode, agentRun, idempotencyKey: createGenerationSubmissionKey(),
       }

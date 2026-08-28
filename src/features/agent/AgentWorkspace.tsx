@@ -20,6 +20,7 @@ import {
   botanicAgentRequestMessageContent,
   consumeBotanicAgentMention,
   prepareBotanicAgentComposerSubmission,
+  snapshotBotanicAgentComposerMentions,
   readBotanicAgentMentionQuery,
   resolveBotanicAgentExecutionDecision,
   botanicAgentPendingConfirmationCount,
@@ -1447,6 +1448,7 @@ export default function AgentWorkspace({
     sourceInstruction?: string,
     structuredVariants?: Array<{ label: string; promptDelta: string }>,
     variationAxisLabel?: string,
+    runtimeRequestKey?: string,
   ): Promise<BotanicAgentPlan | BotanicAgentClarificationResponse | null> => {
     if (!session || !target || !isCurrentAgentProject()) return null
     const assetGroup = compatibleGroups.find((group) => group.id === groupId)
@@ -1483,6 +1485,7 @@ export default function AgentWorkspace({
     setRuntimePhase('planning')
     const liveMessageId = `agent-message-${crypto.randomUUID()}`
     const liveStartedAt = Date.now()
+    let runtimeTurnId = ''
     setLiveConversation({
       sessionId: session.id,
       message: {
@@ -1495,10 +1498,26 @@ export default function AgentWorkspace({
       timeline: createAgentTimeline(liveStartedAt),
       streaming: true,
     })
+    if (serverPersistenceEnabled) awaitingTurnIdentityRef.current = true
     try {
       const nextPlan = serverPersistenceEnabled
         ? await streamBotanicAgentPlan(input, {
             signal: controller.signal,
+            ...(runtimeRequestKey ? { requestKey: runtimeRequestKey } : {}),
+            onAccepted: (turnId) => {
+              runtimeTurnId = turnId
+              awaitingTurnIdentityRef.current = false
+              activeTurnIdRef.current = turnId
+              if (cancelWhenAcceptedRef.current) {
+                cancelWhenAcceptedRef.current = false
+                void ensureDeepTurnCancellation(turnId, controller.signal).catch((caught) => {
+                  if (!controller.signal.aborted) setError(localizeProductError(caught, locale, {
+                    'zh-CN': '暂时无法取消本轮 Agent 规划，请重试。',
+                    en: 'Unable to cancel this Agent planning turn. Try again.',
+                  }))
+                })
+              }
+            },
             onReasoning: attachRuntimeReasoning,
             onEvent: (event) => {
               if (controller.signal.aborted) return
@@ -1611,6 +1630,8 @@ export default function AgentWorkspace({
       failRuntimeTrace(localizeProductError(planError, locale, { 'zh-CN': flowCopy.planningUnavailable, en: flowCopy.planningUnavailable }))
       return null
     } finally {
+      awaitingTurnIdentityRef.current = false
+      if (runtimeTurnId && activeTurnIdRef.current === runtimeTurnId) activeTurnIdRef.current = ''
       if (plannerControllerRef.current === controller) plannerControllerRef.current = null
       setPlanning(false)
     }
@@ -2050,6 +2071,10 @@ export default function AgentWorkspace({
     options: AgentRunInstructionOptions = {},
   ) => {
     if (!session || planning || !isCurrentAgentProject()) return
+    const mentions = options.mentions?.length
+      ? options.mentions
+      : snapshotBotanicAgentComposerMentions({ references: contextItems })
+    if (mentions.length) options = { ...options, mentions }
     // continuation 显式携带 targetNodeId（包括 null）时，一律按 Turn 快照解析。
     // 这样刷新后上下文第一张图变了，也不会把旧意图落到新目标。
     let instructionTarget = Object.prototype.hasOwnProperty.call(options, 'targetNodeId')
@@ -2277,9 +2302,14 @@ export default function AgentWorkspace({
         createdAt: Date.now(),
       }
       try {
-        const contextNodeIds = onPrepareVisionContext
+        const preparedContextIds = onPrepareVisionContext
           ? await onPrepareVisionContext(session.id)
-          : session.contextNodeIds
+          : []
+        const contextNodeIds = [...new Set([
+          ...(turnInputMessage.mentions ?? []).filter((item) => item.kind === 'reference').map((item) => item.id),
+          ...session.contextNodeIds,
+          ...preparedContextIds,
+        ])].slice(0, 32)
         const turnRequest = {
           projectId,
           sessionId: session.id,
@@ -2631,6 +2661,7 @@ export default function AgentWorkspace({
       ].slice(-16)
       const liveMessageId = `agent-message-${crypto.randomUUID()}`
       const liveStartedAt = Date.now()
+      let runtimeTurnId = ''
       setLiveConversation({
         sessionId: session.id,
         message: {
@@ -2643,13 +2674,18 @@ export default function AgentWorkspace({
         timeline: createAgentTimeline(liveStartedAt),
         streaming: true,
       })
+      awaitingTurnIdentityRef.current = true
       try {
         // 实时通道只改变“回答什么时候到”：思考与工具进入时间线，回答增量写入气泡正文。
         // 完整回答仍等 done 一次性落成消息，避免半截内容进入对话记录。
         // 工具步进只来自服务端 execute 前后的真实 emit，不做 rAF 假进度。
-        const contextNodeIds = onPrepareVisionContext
+        const preparedContextIds = onPrepareVisionContext
           ? await onPrepareVisionContext(session.id)
-          : session.contextNodeIds
+          : []
+        const contextNodeIds = [...new Set([
+          ...session.contextNodeIds,
+          ...preparedContextIds,
+        ])].slice(0, 32)
         const response = await streamBotanicAgentChat({
           projectId,
           locale,
@@ -2660,6 +2696,21 @@ export default function AgentWorkspace({
           contextNodeIds,
         }, {
           signal: controller.signal,
+          requestKey: `agent-chat:${sourceTurnId ?? appendedUserMessageId ?? liveMessageId}`,
+          onAccepted: (turnId) => {
+            runtimeTurnId = turnId
+            awaitingTurnIdentityRef.current = false
+            activeTurnIdRef.current = turnId
+            if (cancelWhenAcceptedRef.current) {
+              cancelWhenAcceptedRef.current = false
+              void ensureDeepTurnCancellation(turnId, controller.signal).catch((caught) => {
+                if (!controller.signal.aborted) setError(localizeProductError(caught, locale, {
+                  'zh-CN': '暂时无法取消本轮 Agent 对话，请重试。',
+                  en: 'Unable to cancel this Agent chat turn. Try again.',
+                }))
+              })
+            }
+          },
           onEvent: (event) => {
             if (controller.signal.aborted) return
             const receivedAt = Date.now()
@@ -2725,6 +2776,8 @@ export default function AgentWorkspace({
         setLastFailedPlanMessageId('')
         rememberFailedInstruction(routedFailedCommand)
       } finally {
+        awaitingTurnIdentityRef.current = false
+        if (runtimeTurnId && activeTurnIdRef.current === runtimeTurnId) activeTurnIdRef.current = ''
         if (plannerControllerRef.current === controller) plannerControllerRef.current = null
         setPlanning(false)
       }
@@ -2905,6 +2958,7 @@ export default function AgentWorkspace({
       draft.instruction,
       draft.structuredVariants,
       draft.variationAxisLabel,
+      sourceTurnId ? `agent-plan:${sourceTurnId}` : undefined,
     )
     if (!nextPlan || !session || !isCurrentAgentProject()) return
     if ('kind' in nextPlan && nextPlan.kind === 'clarification') {

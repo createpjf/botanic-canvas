@@ -16,6 +16,10 @@ import {
   estimateAgentContextTokens,
   truncateAgentContextText,
 } from './agentContextBudget.mjs'
+import { createAgentContextCoordinator } from './agentContextCoordinator.mjs'
+import { resolveAgentModelContextPolicy } from './agentModelContextPolicy.mjs'
+import { evaluateAgentContextShadow } from './agentContextShadowEvaluator.mjs'
+import { agentMentionOnlyInstruction, agentMentionReferenceLine } from './agentMentionModelText.mjs'
 
 const MODEL_MESSAGE_LIMIT = 16
 const MODEL_MESSAGE_TEXT_LIMIT = 4000
@@ -134,25 +138,13 @@ function authoritativeMessages(session, inputMessage) {
   }
 }
 
-function mentionOnlyInstruction(mentions, locale) {
-  if (!Array.isArray(mentions) || !mentions.length) return ''
-  const hasSkill = mentions.some((mention) => mention?.kind === 'skill')
-  const hasReference = mentions.some((mention) => mention?.kind === 'reference')
-  if (locale === 'en') {
-    if (hasSkill && hasReference) return 'Follow the mounted Skills and referenced assets.'
-    if (hasSkill) return 'Follow the mounted Skills.'
-    return 'Use the referenced assets.'
-  }
-  if (hasSkill && hasReference) return '按已挂载 Skill 与已引用素材处理。'
-  if (hasSkill) return '按已挂载 Skill 执行。'
-  return '按已引用素材处理。'
-}
-
 function projectedMessageContent(message, locale, currentMessageId) {
-  const content = message.content.trim() || mentionOnlyInstruction(message.mentions, locale)
+  const content = message.content.trim() || agentMentionOnlyInstruction(message.mentions, locale)
+  const extra = message.content.trim() ? agentMentionReferenceLine(message.mentions, locale) : ''
+  const combined = extra ? `${content}\n${extra}` : content
   return message.id === currentMessageId
-    ? content
-    : content.slice(0, MODEL_MESSAGE_TEXT_LIMIT)
+    ? combined
+    : combined.slice(0, MODEL_MESSAGE_TEXT_LIMIT)
 }
 
 function modelProjection(messages, locale, summaryBudget, currentMessageId) {
@@ -249,6 +241,8 @@ async function backfillInitialSummaryHistory({ productStore, userId, projectId, 
 export function createAgentThreadContext(dependencies) {
   const { productStore } = dependencies ?? {}
   const now = typeof dependencies?.now === 'function' ? dependencies.now : () => Date.now()
+  const contextV2 = dependencies?.contextV2
+  let contextCoordinator = dependencies?.contextCoordinator
   if (
     typeof productStore?.listAgentSessions !== 'function'
     || typeof productStore?.listAgentSessionMessages !== 'function'
@@ -257,9 +251,33 @@ export function createAgentThreadContext(dependencies) {
     throw new TypeError('Agent Thread Context 缺少 ProductStore 会话、消息分页或 Summary CAS Interface。')
   }
 
+  const contextRollout = (input) => {
+    if (!contextV2) return { mode: 'control', servedVariant: 'legacy' }
+    if (typeof contextV2.resolveRollout === 'function') return contextV2.resolveRollout(input)
+    const enabled = typeof contextV2.isEnabled === 'function'
+      ? Boolean(contextV2.isEnabled(input))
+      : contextV2.enabled === true
+    return enabled
+      ? { mode: 'active', servedVariant: 'v2' }
+      : { mode: 'control', servedVariant: 'legacy' }
+  }
+
+  const observeContext = (event) => {
+    try { contextV2?.observe?.(event) } catch { /* 可观测性不得改变模型上下文 */ }
+  }
+
+  const durableContextCoordinator = () => {
+    contextCoordinator ??= createAgentContextCoordinator({
+      productStore,
+      policies: contextV2?.policies,
+      observe: contextV2?.observe,
+    })
+    return contextCoordinator
+  }
+
   return Object.freeze({
     async resolve(input) {
-      const { userId, projectId, sessionId, inputMessage, locale } = input ?? {}
+      const { userId, projectId, sessionId, inputMessage, locale, model } = input ?? {}
       assertInputMessage(inputMessage)
       const sessions = await productStore.listAgentSessions(userId, projectId, { limit: 80 })
       const storedSession = (sessions ?? []).find((candidate) => candidate?.id === sessionId)
@@ -359,6 +377,92 @@ export function createAgentThreadContext(dependencies) {
         contextLocale,
         authoritativeInputMessage.id,
       )
+      const rollout = contextRollout({ userId, projectId, sessionId })
+      observeContext({
+        name: 'agent.context.rollout', status: 'succeeded', phase: 'rollout',
+        ids: { projectId, sessionId, messageId: authoritativeInputMessage.id },
+        rollout: {
+          feature: 'AGENT_CONTEXT_COMPACTION_V2',
+          mode: rollout.mode,
+          servedVariant: rollout.servedVariant,
+          rolloutMode: rollout.rolloutMode,
+          ...(rollout.evaluatedVariant ? { evaluatedVariant: rollout.evaluatedVariant } : {}),
+        },
+      })
+      const durableV2Snapshot = authoritativeInputMessage.turnRequestSnapshot?.threadContextSnapshot?.version === 2
+      if (rollout.mode === 'killed' && durableV2Snapshot) {
+        throw new AgentThreadContextError(
+          'AGENT_CONTEXT_KILL_SWITCH_BLOCKED',
+          '该回合已冻结 Context V2 快照；请恢复 Context V2 后继续重放。',
+          503,
+        )
+      }
+      if (rollout.mode === 'active') {
+        if (typeof model !== 'string' || !model.trim()) {
+          throw new AgentThreadContextError(
+            'AGENT_CONTEXT_MODEL_REQUIRED',
+            'Context V2 缺少本轮冻结模型。',
+            409,
+          )
+        }
+        const policy = resolveAgentModelContextPolicy(model, contextV2?.policies)
+        const currentInputTokens = estimateAgentContextTokens(currentProjectedContent)
+          + AGENT_CONTEXT_MESSAGE_OVERHEAD_TOKENS
+        if (currentInputTokens > policy.maxInputTokens) {
+          throw new AgentThreadContextError(
+            'AGENT_THREAD_INPUT_TOO_LARGE',
+            'Agent 当前输入超过可支持的模型上下文预算，请精简后重试。',
+            413,
+          )
+        }
+        const coordinated = await durableContextCoordinator().resolve({
+          userId,
+          projectId,
+          sessionId,
+          model: model.trim(),
+          messages,
+          currentMessageId: authoritativeInputMessage.id,
+          locale: contextLocale,
+          threadSummary,
+          trigger: 'pre_step',
+        })
+        const baseSnapshot = coordinated.snapshot
+        const contextMessages = [
+          ...(baseSnapshot.checkpoint
+            ? [{ role: 'user', content: baseSnapshot.checkpoint.content }]
+            : []),
+          ...baseSnapshot.messages.map((message) => ({ role: message.role, content: message.content })),
+        ]
+        const summaryTokens = estimateAgentContextTokens(renderedThreadSummary)
+        const contextBudget = {
+          limit: policy.maxInputTokens,
+          estimatedTokens: Number(baseSnapshot.contextMeter?.inputTokens ?? 0) + summaryTokens,
+          messageTokens: Number(baseSnapshot.contextMeter?.inputTokens ?? 0),
+          summaryTokens,
+          summaryLimit: AGENT_THREAD_SUMMARY_TOKEN_BUDGET,
+          summaryTruncated: false,
+          summaryOmittedCharacters: 0,
+          omittedMessages: Math.max(0, messages.length - baseSnapshot.messages.length),
+        }
+        const threadContextSnapshot = {
+          ...structuredClone(baseSnapshot),
+          ...(threadSummary ? {
+            threadSummary: structuredClone(threadSummary),
+            threadSummaryText: renderedThreadSummary,
+          } : {}),
+        }
+        return {
+          messages: contextMessages,
+          inputMessage: authoritativeInputMessage,
+          ...(threadSummary ? {
+            threadSummary: structuredClone(threadSummary),
+            threadSummaryText: renderedThreadSummary,
+          } : {}),
+          contextBudget,
+          threadContextSnapshot,
+          contextState: coordinated.state,
+        }
+      }
       const currentInputTokens = estimateAgentContextTokens(currentProjectedContent)
         + AGENT_CONTEXT_MESSAGE_OVERHEAD_TOKENS
       if (currentInputTokens > AGENT_THREAD_CONTEXT_TOKEN_BUDGET) {
@@ -393,7 +497,7 @@ export function createAgentThreadContext(dependencies) {
         } : {}),
         contextBudget: structuredClone(projection.contextBudget),
       }
-      return {
+      const legacyResult = {
         // Message 先于 Turn durable 时，快照 locale 才是该请求的不可变语言身份；
         // 当前页面的 locale 可能已经变化，不能影响 mention-only 模型投影。
         messages: projectedMessages,
@@ -405,6 +509,53 @@ export function createAgentThreadContext(dependencies) {
         contextBudget: projection.contextBudget,
         threadContextSnapshot,
       }
+      if (rollout.mode === 'shadow' && typeof model === 'string' && model.trim()) {
+        try {
+          const evaluation = evaluateAgentContextShadow({
+            sessionId,
+            messages,
+            currentMessageId: authoritativeInputMessage.id,
+            locale: contextLocale,
+            model: model.trim(),
+            policies: contextV2?.policies,
+            threadSummary,
+            controlInputTokenCount: projection.contextBudget.estimatedTokens,
+          })
+          observeContext({
+            name: 'agent.context.projection', status: 'succeeded', phase: 'context',
+            ids: { projectId, sessionId, messageId: authoritativeInputMessage.id, policyHash: evaluation.policyHash },
+            counts: {
+              messageCount: evaluation.messageCount,
+              retainedMessageCount: evaluation.retainedMessageCount,
+              replacedMessageCount: evaluation.replacedMessageCount,
+              operationCount: evaluation.operationCount,
+              controlInputTokenCount: evaluation.controlInputTokenCount,
+              candidateInputTokenCount: evaluation.candidateInputTokenCount,
+              beforeInputTokenCount: evaluation.beforeInputTokenCount,
+              afterInputTokenCount: evaluation.afterInputTokenCount,
+            },
+            rollout: {
+              feature: 'AGENT_CONTEXT_COMPACTION_V2', mode: 'shadow',
+              servedVariant: 'legacy', evaluatedVariant: 'v2',
+            },
+          })
+        } catch (caught) {
+          const errorCode = caught && typeof caught === 'object' && 'code' in caught
+            && typeof caught.code === 'string'
+            ? caught.code
+            : 'AGENT_CONTEXT_SHADOW_FAILED'
+          observeContext({
+            name: 'agent.context.projection', status: 'failed', phase: 'context',
+            ids: { projectId, sessionId, messageId: authoritativeInputMessage.id },
+            error: { code: errorCode, retryable: false },
+            rollout: {
+              feature: 'AGENT_CONTEXT_COMPACTION_V2', mode: 'shadow',
+              servedVariant: 'legacy', evaluatedVariant: 'v2',
+            },
+          })
+        }
+      }
+      return legacyResult
     },
   })
 }

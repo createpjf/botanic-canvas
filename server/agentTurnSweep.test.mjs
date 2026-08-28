@@ -72,6 +72,40 @@ test('注入恢复能力后，可恢复的孤儿交给它而不落失败', async
   assert.equal(store.written.length, 0, '交给恢复能力后不应再写失败')
 })
 
+test('Subagent activation Turn 只交给专用 FIFO Runtime，不被通用清扫恢复', async () => {
+  const source = staleTurn('turn-subagent', {
+    request: {
+      runtimeOperation: 'subagent',
+      input: { subagentId: 'subagent-1', activationId: 'activation-1' },
+    },
+  })
+  const store = fakeStore([source], { [source.id]: [toolEvent('context_read')] })
+  const resumed = []
+  const observed = []
+  const originalListEvents = store.listAgentTurnEvents
+  let eventReads = 0
+  store.listAgentTurnEvents = async (...args) => {
+    eventReads += 1
+    return originalListEvents(...args)
+  }
+
+  const summary = await createAgentTurnSweep({
+    productStore: store,
+    toolRisk,
+    now: () => 1_000_000,
+    resumeTurn: async (turn) => { resumed.push(turn.id) },
+    observe: (event) => observed.push(event),
+  })()
+
+  assert.deepEqual(summary, { scanned: 1, resumed: 0, failed: 0, cancelled: 0, skipped: 1 })
+  assert.deepEqual(resumed, [])
+  assert.equal(eventReads, 0, '专用 Runtime 接管前不得读取并套用通用 replay 判定')
+  assert.deepEqual(observed, [{
+    event: 'agent.turn.reclaim.deferred', owner: 'subagent-runtime',
+    turnId: 'turn-subagent', projectId: 'project-a',
+  }])
+})
+
 test('没有工具风险查找时一律按最高风险处理，不乐观恢复', async () => {
   const store = fakeStore([staleTurn('turn-4')], { 'turn-4': [toolEvent('context_read')] })
   const resumed = []

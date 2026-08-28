@@ -42,7 +42,7 @@ H3 的 MP4 与历史图片共用授权 URL，但历史缺少 `mediaKind` 时始�
 
 `canvasDocumentMigration.ts` 与 `canvasDocumentAssets.ts` 分别拥有版本迁移、引用清理及模板快照，不发起 I/O；`canvasGenerationProjection.ts` 只把任务与批量分支投影为画布文档；`canvasGenerationActions.ts` 自持普通生成的幂等提交、轮询、取消与恢复；`canvasDocumentLifecycleActions.ts` 统一项目打开、远端刷新、新建与重命名；`canvasAssetGraphActions.ts` 统一画布图谱、参考素材、素材组和可编辑节点命令；模板/历史、Agent、批量变体分别由对应 Actions 模块拥有。本地持久化模式不发起服务端生成结果对账。
 
-`src/features/canvas/workspaceProjectCoordinator.ts` 统一拥有项目摘要读取、过期请求失效、模板建项、重命名与乐观删除；`useCanvasWorkspaceSynchronization.ts` 统一拥有本地草稿同步、页面恢复、Realtime/Yjs 协作和 Agent Run 追踪；`useCanvasAgentExecutionBridge.ts` 统一 Agent 上下文、Run、Artifact 与画布写回；`useCanvasInteractionCoordinator.ts` 统一 React Flow 变更、视口、连线、边操作和文件拖放。`CanvasWorkspace.tsx` 只组合导航、面板与上述协调器。
+`src/features/canvas/workspaceProjectCoordinator.ts` 统一拥有项目摘要读取、过期请求失效、模板建项、重命名与乐观删除；`useCanvasWorkspaceSynchronization.ts` 统一拥有本地草稿同步、页面恢复、Realtime/Yjs 协作和 Agent Run 追踪；`useCanvasAgentExecutionBridge.ts` 统一 Agent 上下文、Run、Artifact 与画布写回；`useCanvasInteractionCoordinator.ts` 统一 React Flow 变更、视口、连线、边操作和文件拖放；`canvasGenerationInteraction.ts` 统一 4K 分支配方、提交竞态与结果导航。`CanvasWorkspace.tsx` 只组合导航、面板与上述协调器。
 
 ## 受保护的稳定接口
 
@@ -113,6 +113,12 @@ API 重启后用快照与增量重建房间；累计 64 条后压缩，避免日
 `commitAgentTurnExecution` 提交。旧实例租约过期后即使继续返回，也不能覆盖新实例的 Checkpoint 或终态。本地、PostgreSQL、
 Supabase 三个 Adapter 实现同一契约，数据库 Adapter 使用数据库时钟和事务锁裁决多实例竞争。
 
+`server/agentRuntimeRequest.mjs` 是 Runtime operation 的单一 dispatcher。主 `/api/agent-turns` 与兼容期的
+`/api/agent-plans|chat|intent` 都先建立同一种 durable Turn；旧 URL 只还原原响应形状，不再拥有 Provider 调用或
+AbortController。显式提交键按 operation 隔离；无键旧请求按 transport requestId 保持“一次 POST 一次请求”。Planner/Chat
+同样冻结模型、工具、Skill/Memory 快照并写步骤 Checkpoint，Worker 按存储的 operation 恢复；恢复时运维只读工具复用
+`agentOperationalReaders.mjs`，联网工具必须重新消费共享配额，缺少配额服务时 fail closed。
+
 `server/agentTurnCheckpoint.mjs` 在模型返回工具调用、任何副作用发生前持久化 prepared 步骤，完成后再推进步骤游标。
 Checkpoint 只保存固定模型/工具快照和安全恢复意图：只读调用保存可重放参数；写入、计费和外部调用只保存 Receipt 引用；
 不保存工具输出、媒体字节、Provider 原始回包或完整推理。`turnReclaim.mjs` 先读 Checkpoint 再决定继续、等待回执或明确失败，
@@ -126,6 +132,10 @@ ID 相同，只要 request binding 不同就明确冲突；Message 已绑定但 
 Message 的 `turnId` 重挂 GET observer，以 `after` 游标与单调去重补齐丢帧，排空事件页后才按 Turn 终态用稳定结果
 Message ID 投影。accepted 前断网时，持久化的 pending Message 只用同一稳定键退避重提；原始 reasoning/answer 只属于
 当次实时连接，无序号且不持久化。
+
+兼容 Plan/Chat 客户端收到 SSE `accepted` 后也切换到同一 GET observer；流断开不会再发起第二次模型调用。非流客户端可用
+`Prefer: respond-async` 获得 `202 + runtimeTurn + observer`。Planner 子 Turn 的稳定键由来源根 Turn 派生，刷新后重新进入生成
+continuation 时只观察同一计划；Stop 在身份返回前保留取消意图，返回后走 durable cancel。
 
 `server/agentContextBudget.mjs` 和 `agentThreadContext.mjs` 共同把 Summary 与最近 Message 限在 8k token；Summary 最多 2k，最近窗口
 最多 16 条，当前输入本身超过总预算返回 413，不通过丢弃当前输入来“成功”。`agentToolRuntime.mjs` 把单个工具结果限在 2k、单轮
@@ -156,6 +166,19 @@ Run 落库到首个 Generation Job 落库之间另有独立崩溃窗口。Worker
 响应丢失时保留 pending 并退避重提同一身份，明确业务失败才写 failed。`status/runId` 每次转移都经同一 Message
 离线队列落库，与后端 `run.submit` sweep 共同封闭 Plan → Run → Job 的两个崩溃窗口。
 
+## Durable Subagent Runtime
+
+主 Planner 的 `subagent_research` 经 `agentSubagentBroker.mjs` 进入独立持久化运行时，不再
+直接在根进程内扇出 Provider 调用。Descriptor 冻结服务端模型、指令、只读工具、输出
+Schema 与预算；每次 Activation 原子创建输入 Message 和独立 Durable Turn，并按 sequence
+严格 FIFO。Planner Checkpoint 重放同一稳定 Subtask ID 时只观察原 Activation 与结果 Message。
+
+running 根 Turn 派发必须携带 Runtime 注入的 `execution generation + leaseToken`，三个 Store
+Adapter 都在锁住根 Turn 后验证该 fence；takeover 后旧执行者不能新增 Activation。Subagent
+使用独立 BullMQ 队列、并发和恢复扫描；根 Turn 深取消再按 `rootTurnId` 反查并级联全部
+Descriptor，任一子项状态不确定时根 Turn 保持 `cancelling`。普通 Session 列表默认隐藏子会话，
+专用 HTTP 资源只返回安全提案与公共状态。完整决策见 ADR 0007。
+
 `server/generationRecoverySweep.mjs` 拥有 Generation Job 恢复扫描：三个 Adapter 按毫秒时间与 ID 提供稳定 keyset 页，清扫器限制
 单轮页数、在尾部回绕、检测游标停滞，并逐 Job 隔离入队失败。Supabase 对 Turn、失败 Run 分支、待执行 ReviewTask 与可恢复
 GenerationJob 四类恢复记录持久化 `recovery_updated_at_ms`，由全量写 trigger 从 `updated_at` 回填重算；对应 RPC 的过滤、排序与
@@ -166,6 +189,12 @@ GenerationJob 四类恢复记录持久化 `recovery_updated_at_ms`，由全量�
 `server/agentReviewService.mjs` 通过 ReviewTask execution generation、lease token 与 prepared checkpoint 执行评审；heartbeat、逐候选
 Result 和终态都必须由当前 fence 条件提交。prepared 后租约失效而无法证明 Provider 是否已执行时收敛为 `outcome_unknown`，不静默
 重跑视觉评审或 evaluator Skill。Provider 调用始终在数据库事务外，事务只提交已完成结果。
+
+显式停止评审先持久化 `cancelling` 与 `signalId + executionGeneration`，再通过跨实例 cancel channel 中止匹配的 Worker；HTTP 返回、
+Redis 发布成功都不是退出证明。当前 Worker 真正退出时用匹配 lease 写 `worker_exit`，Worker 崩溃时只能由数据库时钟确认旧租约过期；
+两者之一成立后才收口 `cancelled`。未知 Provider 结果只允许人工选择 `continue_unverifiable` 或 `retry_once`：前者写入来源为
+`human_resolution` 的 truthful `unverifiable` Result，后者明确记录重复调用/计费风险且整个任务最多一次。对账本身不调用 Provider，
+`retry_once` 在 Route 与三个 Adapter 内都重新校验生成权限。
 
 人工接受/拒绝由 `review_decide` 承载，只要求编辑权限；重新生成由独立 costly 工具 `review_retry` 承载，同时要求生成权限和用户确认。
 `server/agentReviewDecisionService.mjs` 与 `agentReviewRetryMaterialization.mjs` 让 Human Decision、每个结果上的
@@ -190,6 +219,17 @@ Result 和终态都必须由当前 fence 条件提交。prepared 后租约失效
 已存在的 Job 在配额扣减前即被复用，因此重放不会重复创建任务或重复扣费。`server/agentQualityEvaluation.mjs`
 只消费固定离线夹具，计算成功率、等待时间、恢复率、重复提交率和结果回填完整性，普通验证不得调用真实 Provider。
 
+分布式执行使用另一套真实 W3C 身份：`agentTraceContext.mjs` 只提取/注入 `traceparent` 与受限
+`tracestate`，并通过 Generation、Derived、Subagent 三类 BullMQ payload 跨实例传播；Worker 在进入业务
+Handler 前剥离 carrier。`baggage` 首版不注册、不传播，外部 Provider/MCP 只允许 `traceparent`。
+`executionTelemetry.mjs` 是 Span 的唯一入口；属性先经过固定 allowlist，错误只记录类型码，不记录异常正文。
+OTLP exporter 故障必须 fail-open，不能改变 Turn、Tool、Queue 或 Provider 的状态。
+
+`agentSemanticEvent.mjs` 定义版本化安全 schema，Context rollout/shadow/compaction/overflow/usage anchor
+与 Run lifecycle 只记录受控身份、计数、耗时、cohort 和错误码。Legacy `agent.run.*` 在迁移期双写，旧消费者
+不变；新指标由 `agentSemanticMetrics.mjs` 独立聚合，零样本继续为 `null`。OTel trace ID 与既有
+`agent-trace:*` 不互换：前者描述一次分布式执行，后者仍是 Run/Job/Artifact 产品聚合视图。
+
 ## 项目权限与 Agent 行动审批
 
 项目权限由服务端区分读取、编辑、生成、内容删除、工作流修改、成员管理、外部工具、项目删除、审计与运行详情。
@@ -207,8 +247,13 @@ Owner 可管理成员、读取治理信息并审批外部工具；Editor 可编�
 Adapter 只保证单进程开发语义。Supabase 通过单个事务 RPC 同步 settle Receipt、Artifact Index 与 Audit，不能退回
 read-then-upsert 或提交后尽力补写。
 
-`server/mcpClient.mjs` 将 Action Runtime 的取消信号传播到外部 MCP 请求，并只以受控 Header 传递 `intentHash`；取消不等于
-已确认未执行，最终仍以 Receipt 为准。旧 `putAgentActionReceipt` 仅允许插入兼容回执，不得覆盖 running 或终态记录。
+`server/mcpClient.mjs` 只公开安全 `catalog()` 与受控 `invoke()`：目录固定 `server.tool`、版本、输入/输出 Schema、
+capability hash 与 `never` replay，不暴露 URL、token 或传输参数。Action Proposal 固定这份身份；执行前先验证
+版本/hash 并投影输入，漂移或非法输入在出网前拒绝。请求严格使用 JSON-RPC 2.0 `tools/call`，响应按字节上限读取、
+校验 request id 并投影输出。Runtime 将取消信号传播到外部请求，且只以受控 Header 传递 `intentHash`；派发后取消、
+远端错误、协议错误或输出契约失败都不能证明未产生副作用，统一由 Receipt 收敛为未知结果。外部响应中的 URL
+不是媒体授权，不能直接提升为 Artifact 或写入画布。旧 `putAgentActionReceipt` 仅允许插入兼容回执，不得覆盖 running
+或终态记录。完整决策见 ADR 0010。
 
 `server/agentActionReconciliation.mjs` 与 `/api/agent-actions/status|resolve` 只接受绑定独立 Session、Message 与 Action 的
 服务端权威 Proposal；客户端不能选择 Receipt ID、intent hash 或参数。状态查询只回读已持久化的成功结果，绝不执行工具；
@@ -250,6 +295,11 @@ Store 行锁内按 branch attempt、`activeJobId`、分支时间和终态优先�
 语义完全兼容时才切换备用模型；否则返回明确的不可安全切换提示。重试和备用模型继续使用原任务 ID 与幂等键，不能创建
 第二个任务或第二次预算预留。备用 Provider 真正接管后，任务的 `effectiveModel`、尝试记录与消耗归因同时更新为实际执行方，
 不会把备用模型消耗误记到原模型。
+
+Flock 图生图在 `generationProviderAdmission.mjs` 取得进程级高内存许可后才解码 data URL 或读取媒体 ID；等待许可受同一任务
+deadline 与取消信号约束，跨 Provider fallback 只有真正进入 Flock 时才重新物化输入。许可覆盖 Provider、输出持久化与仍持有
+输入 Buffer 的 fallback 区间，避免 Worker 并发把 48MB 单任务预算放大为进程 OOM。用户上传仍限制 8MB；Provider 图片统一按
+32MB 输出契约保存，并可作为下一轮受控媒体 ID 输入，单任务全部参考、父图与蒙版仍共用 48MB 总预算。
 
 ## 版本化生产工作流
 

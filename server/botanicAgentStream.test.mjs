@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   createChatCompletionAccumulator,
+  normalizeProviderUsage,
   readServerSentEvents,
   readStreamedChatCompletion,
 } from './botanicAgentStream.mjs'
@@ -109,6 +110,33 @@ test('纯文本回答累积出与非流式一致的 content，并逐段播报', 
   assert.equal(result.choices[0].message.tool_calls, undefined)
   assert.equal(result.choices[0].message.reasoning_content, undefined)
   assert.deepEqual(events.map((event) => event.delta), ['当前项目', '有 3 个结果。'])
+})
+
+test('usage-only 流式尾块保留为非流式响应的顶层 usage', async () => {
+  const usage = { prompt_tokens: 12, completion_tokens: 3, total_tokens: 15 }
+  const result = await readStreamedChatCompletion(byteStream([
+    sse({ choices: [{ delta: { content: '完成' } }] }),
+    sse({ choices: [], usage }),
+    'data: [DONE]\n\n',
+  ]))
+
+  assert.equal(result.choices[0].message.content, '完成')
+  assert.deepEqual(result.usage, usage)
+})
+
+test('Provider usage 兼容 Chat Completions 与 Responses 两套字段', () => {
+  assert.deepEqual(normalizeProviderUsage({
+    prompt_tokens: 12,
+    completion_tokens: 3,
+    total_tokens: 15,
+  }), { inputTokens: 12, outputTokens: 3, totalTokens: 15 })
+  assert.deepEqual(normalizeProviderUsage({
+    input_tokens: 20,
+    output_tokens: 4,
+  }), { inputTokens: 20, outputTokens: 4, totalTokens: 24 })
+  assert.deepEqual(normalizeProviderUsage({ total_tokens: 9 }), { totalTokens: 9 })
+  assert.equal(normalizeProviderUsage({ prompt_tokens: -1 }), undefined)
+  assert.equal(normalizeProviderUsage(undefined), undefined)
 })
 
 test('累积器补齐缺失的工具调用标识，并丢弃没有名字的残块', () => {

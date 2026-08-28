@@ -14,6 +14,7 @@ import {
   defaultSettingsForModel,
   everydayResolutions,
   maximumReferencesForModel,
+  settingsForRegionEdit,
   settingsForGenerationModel,
 } from './generationRecipe.ts'
 
@@ -177,6 +178,18 @@ test('有 Nano Banana 时默认生图模型指向它，没 key 时仍是 gpt-ima
   assert.equal(defaults.resolution, '2K')
   assert.equal(defaults.searchGrounding, true)
   assert.equal(defaults.thinkingLevel, 'high')
+})
+
+test('历史结果缺 settings 时，局部重绘不会沿用不支持蒙版的 Nano Banana 默认值', () => {
+  const fallback = defaultSettingsForModel(nanoBanana)
+  const resolved = settingsForRegionEdit(fallback, [nanoBanana, gptImage2])
+
+  assert.equal(resolved?.model, 'gpt-image-2')
+  assert.equal(resolved?.aspectRatio, '3:4')
+  assert.equal(resolved?.resolution, '2K')
+  assert.equal('searchGrounding' in (resolved ?? {}), false)
+  assert.equal('thinkingLevel' in (resolved ?? {}), false)
+  assert.equal(settingsForRegionEdit(fallback, [nanoBanana]), undefined)
 })
 
 test('4K 按钮写入 Nano Banana + 4K，再按回到日常 2K', () => {

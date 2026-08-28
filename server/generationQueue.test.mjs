@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createGenerationQueue } from './generationQueue.mjs'
+import { trace } from '@opentelemetry/api'
+import {
+  currentAgentTraceContext,
+  extractAgentTraceContext,
+  withAgentTraceContext,
+} from './agentTraceContext.mjs'
+import { createGenerationQueue, createGenerationWorker } from './generationQueue.mjs'
+
+const TRACE_PARENT = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01'
 
 test('stalled recovery 只移除指定且已解锁的 active Job，不调用全局 clean', async () => {
   const calls = []
@@ -58,4 +66,50 @@ test('stale-running 的 BullMQ 项已丢失或 failed 时按 jobId 精确重建'
     assert.equal(await queue.reclaimStaleActive('job-target'), true, state)
     assert.deepEqual(calls.at(-1), ['add', 'generate', { jobId: 'job-target' }, { jobId: 'job-target' }])
   }
+})
+
+test('Generation 队列跨 Worker 传播 W3C trace，业务处理器仍只收到 jobId', async () => {
+  let queuedData
+  class FakeQueue {
+    async getJob() { return undefined }
+    async add(_name, data) { queuedData = data }
+  }
+  const queue = createGenerationQueue('redis://test', { QueueImpl: FakeQueue })
+  await withAgentTraceContext(extractAgentTraceContext({ traceparent: TRACE_PARENT }), () => queue.enqueue('job-1'))
+  assert.deepEqual(queuedData, { jobId: 'job-1', traceparent: TRACE_PARENT })
+  assert.equal('baggage' in queuedData, false)
+
+  let workerHandler
+  class FakeWorker {
+    constructor(_name, handler) { workerHandler = handler }
+  }
+  let processed
+  createGenerationWorker({
+    redisUrl: 'redis://test',
+    WorkerImpl: FakeWorker,
+    processJob: async (jobId) => {
+      processed = {
+        jobId,
+        spanContext: trace.getSpanContext(currentAgentTraceContext()),
+      }
+    },
+  })
+  await workerHandler({ data: queuedData })
+  assert.equal(processed.jobId, 'job-1')
+  assert.equal(processed.spanContext?.traceId, '4bf92f3577b34da6a3ce929d0e0e4736')
+})
+
+test('Generation Worker 可执行无 carrier 的历史任务', async () => {
+  let workerHandler
+  class FakeWorker {
+    constructor(_name, handler) { workerHandler = handler }
+  }
+  let processed
+  createGenerationWorker({
+    redisUrl: 'redis://test',
+    WorkerImpl: FakeWorker,
+    processJob: async (jobId) => { processed = jobId },
+  })
+  await workerHandler({ data: { jobId: 'legacy-job' } })
+  assert.equal(processed, 'legacy-job')
 })
