@@ -1,4 +1,5 @@
 import { createGenerationQueue } from './generationQueue.mjs'
+import { createAgentSubagentQueue } from './agentSubagentQueue.mjs'
 import { createConfiguredMcpTools } from './mcpClient.mjs'
 import { createAgentRunEventPublisher } from './agentRunEventBus.mjs'
 import { createProductRuntime, loadLocalEnv, runtimeConfig } from './runtime.mjs'
@@ -18,6 +19,7 @@ for (const { name, entry } of config.rolloutFlags?.invalidSelectors() ?? []) {
 }
 const runtime = await createProductRuntime(config)
 const redisQueue = createGenerationQueue(config.redisUrl)
+const agentSubagentQueue = createAgentSubagentQueue(config.redisUrl)
 const agentRunEvents = createAgentRunEventPublisher(config.redisUrl)
 const securityControls = createSecurityControls({
   redisUrl: config.redisUrl,
@@ -28,6 +30,7 @@ const application = createBotanicHttpServer({
   config,
   runtime,
   redisQueue,
+  agentSubagentQueue,
   agentRunEvents,
   securityControls,
   configuredMcpTools: createConfiguredMcpTools(config.agentMcpTools ?? []),

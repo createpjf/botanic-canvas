@@ -55,12 +55,73 @@ import {
   resolveBotanicAgentRuntimeRequest,
 } from './agentRuntimeRequest.mjs'
 import { createAgentOperationalReaders } from './agentOperationalReaders.mjs'
+import { AgentSubagentServiceError } from './agentSubagentService.mjs'
+import { createDurableAgentSubagentRunner } from './agentSubagentBroker.mjs'
+import {
+  AgentSubagentPersistenceError,
+  publicAgentSubagent,
+  publicAgentSubagentActivation,
+} from './agentSubagentPersistence.mjs'
 
 export { BotanicAgentPlannerError, BotanicAgentChatError }
 
 const editableAgentSessionFields = new Set([
   'id', 'title', 'executionMode', 'plannerModel', 'mountedSkillIds', 'contextNodeIds', 'createdAt', 'updatedAt',
 ])
+
+const agentSubagentStartBodyFields = new Set(['rootTurnId', 'role', 'content'])
+const agentSubagentFollowupBodyFields = new Set(['sourceTurnId', 'content'])
+const agentSubagentCancelBodyFields = new Set(['reason'])
+const agentSubagentAuthorityFieldPattern = /prompt|instruction|capabilit|tool|model|schema|budget/iu
+
+function agentSubagentBodyFailure(body, allowedFields, label) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return { statusCode: 400, code: 'AGENT_SUBAGENT_REQUEST_INVALID', message: `${label}格式无效。` }
+  }
+  const unsupported = Object.keys(body).find((key) => !allowedFields.has(key))
+  if (!unsupported) return undefined
+  if (agentSubagentAuthorityFieldPattern.test(unsupported)) {
+    return {
+      statusCode: 403,
+      code: 'AGENT_SUBAGENT_AUTHORITY_FORBIDDEN',
+      message: '客户端不能提交 Subagent 系统指令、模型或能力定义。',
+    }
+  }
+  return {
+    statusCode: 400,
+    code: 'AGENT_SUBAGENT_REQUEST_INVALID',
+    message: `${label}包含未声明字段：${unsupported}。`,
+  }
+}
+
+function publicAgentSubagentMutation(outcome) {
+  const subagent = publicAgentSubagent(outcome?.subagent)
+  const activation = publicAgentSubagentActivation(outcome?.activation)
+  return {
+    kind: outcome?.kind,
+    changed: outcome?.changed === true,
+    ...(subagent ? { subagent } : {}),
+    ...(activation ? { activation } : {}),
+  }
+}
+
+function publicAgentSubagentMessage(message) {
+  if (!message || typeof message !== 'object' || Array.isArray(message)
+    || typeof message.id !== 'string' || typeof message.content !== 'string') return undefined
+  return {
+    id: message.id,
+    role: message.role,
+    kind: message.kind,
+    content: message.content,
+    createdAt: message.createdAt,
+    updatedAt: message.updatedAt,
+    ...(typeof message.turnId === 'string' ? { turnId: message.turnId } : {}),
+    ...(typeof message.status === 'string' ? { status: message.status } : {}),
+    ...(Array.isArray(message.entityReferences)
+      ? { entityReferences: structuredClone(message.entityReferences) }
+      : {}),
+  }
+}
 
 /**
  * SSE 写出器。通道必须在模型吐出第一事件之前打开：Vercel 反代会在首字节过晚
@@ -295,6 +356,7 @@ export function createAgentRouteHandler({
   localCancelRegistry,
   publishCancel,
   securityControls,
+  agentSubagentService,
 }) {
   // 看图只读当前项目内的媒体：readGenerationInput 校验归属，图片字节不离开服务端与模型网关。
   const visionMediaResolver = (userId, projectId) => (mediaService?.enabled
@@ -312,6 +374,13 @@ export function createAgentRouteHandler({
   // HTTP 连接只是观察者；Runtime 与跨实例取消订阅方共用这张执行句柄表。
   const cancelRegistry = localCancelRegistry ?? createLocalCancelRegistry()
   const agentTurnRuntime = createBotanicAgentTurnRuntime({ productStore, localCancelRegistry: cancelRegistry })
+  // 正式 HTTP 入口绝不回退到进程内 Subagent：未完整配置时显式注入 undefined，
+  // Planner 会直接隐藏派发工具；配置完整时则统一走 descriptor/queue/Turn Runtime。
+  const durableSubagentRunner = agentSubagentService
+    && config?.agentSubagentModel
+    && config?.flockApiKey
+    ? createDurableAgentSubagentRunner({ service: agentSubagentService })
+    : undefined
 
   /**
    * plan/chat/intent 的旧 URL 只负责兼容响应形状。它们与主 `/api/agent-turns`
@@ -364,7 +433,7 @@ export function createAgentRouteHandler({
       idempotencyKey,
       request: runtimeRequest,
       resolve: (runtimeOptions) => resolveBotanicAgentRuntimeRequest(runtimeRequest, config, runtimeOptions),
-      resolveOptions,
+      resolveOptions: { ...resolveOptions, subagentRunner: durableSubagentRunner },
       onEvent: (event) => {
         if (!sse || observerDetached) return
         if (!acceptedSent) pendingTurnEvents.push(event)
@@ -469,6 +538,16 @@ export function createAgentRouteHandler({
       productStore,
       cancelTurn: (command) => agentTurnRuntime.cancel(command),
       finalizeTurn: (command) => agentTurnRuntime.finalizeCancellation(command),
+      cancelSubagent: (command) => {
+        if (typeof agentSubagentService?.cancel !== 'function') {
+          throw new AgentSubagentServiceError(
+            'AGENT_SUBAGENT_CANCELLATION_UNAVAILABLE',
+            'Subagent 取消服务尚未配置。',
+            503,
+          )
+        }
+        return agentSubagentService.cancel(command)
+      },
       redisQueue,
       publishCancel,
       modelOptions: config?.modelOptions ?? [],
@@ -519,6 +598,32 @@ export function createAgentRouteHandler({
     return agentThreadContext
   }
   const methodNotAllowed = (response, message, allow) => json(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message } }, { Allow: allow })
+  const hasAgentSubagentService = () => ['start', 'followup', 'read', 'cancel']
+    .every((name) => typeof agentSubagentService?.[name] === 'function')
+  const callAgentSubagentService = async (response, operation) => {
+    try {
+      return { outcome: await operation() }
+    } catch (caught) {
+      if (!(caught instanceof AgentSubagentServiceError)
+        && !(caught instanceof AgentSubagentPersistenceError)) throw caught
+      return { handled: error(response, caught.statusCode, caught.code, caught.message) }
+    }
+  }
+  const agentSubagentEnqueueResponse = (response, outcome) => {
+    if (outcome?.kind === 'missing') {
+      return error(response, 404, 'AGENT_SUBAGENT_NOT_FOUND', '未找到该 Subagent。')
+    }
+    if (outcome?.kind === 'inactive') {
+      return error(response, 409, 'AGENT_SUBAGENT_INACTIVE', 'Subagent 已停止，不能继续追加消息。')
+    }
+    if (outcome?.kind === 'conflict') {
+      return error(response, 409, 'AGENT_SUBAGENT_IDEMPOTENCY_CONFLICT', '同一提交标识已绑定到不同请求。')
+    }
+    if (!['enqueued', 'replay'].includes(outcome?.kind) || !outcome?.subagent || !outcome?.activation) {
+      return error(response, 503, 'AGENT_SUBAGENT_ENQUEUE_FAILED', 'Subagent 请求暂未可靠入队，请稍后重试。')
+    }
+    return json(response, outcome.kind === 'enqueued' ? 202 : 200, publicAgentSubagentMutation(outcome))
+  }
   const observeRun = (event) => {
     try { observeAgentRun(event) } catch { /* 运行日志不得阻断用户请求。 */ }
   }
@@ -811,8 +916,157 @@ export function createAgentRouteHandler({
       agentTurnStream: agentTurnStreamMatch,
       agentTurn: agentTurnMatch,
       agentTurnCancel: agentTurnCancelMatch,
+      projectAgentSubagents: projectAgentSubagentsMatch,
+      agentSubagent: agentSubagentMatch,
+      agentSubagentFollowups: agentSubagentFollowupsMatch,
+      agentSubagentCancel: agentSubagentCancelMatch,
       agentReviewDecision: agentReviewDecisionMatch,
     } = routeMatches
+
+    if (projectAgentSubagentsMatch) {
+      if (request.method !== 'POST') return methodNotAllowed(response, '项目 Subagent 资源只接受提交请求。', 'POST')
+      const user = await requireUser(request)
+      if (!hasAgentSubagentService()) {
+        return error(response, 503, 'AGENT_SUBAGENT_SERVICE_UNAVAILABLE', 'Subagent 服务暂不可用。')
+      }
+      const idempotencyKey = generationIdempotencyKey(request.headers['idempotency-key'])
+      if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', 'Subagent 提交标识无效，请重试。')
+      const body = await readJson(request, 256 * 1024, 'Subagent 请求过大，请精简后重试。')
+      const bodyFailure = agentSubagentBodyFailure(body, agentSubagentStartBodyFields, 'Subagent start 请求')
+      if (bodyFailure) return error(response, bodyFailure.statusCode, bodyFailure.code, bodyFailure.message)
+      const projectId = decodeURIComponent(projectAgentSubagentsMatch[1])
+      await requireProjectPermission(productStore, user.id, projectId, 'edit')
+      const serviceCall = await callAgentSubagentService(response, () => agentSubagentService.start({
+        userId: user.id,
+        projectId,
+        rootTurnId: body.rootTurnId,
+        role: body.role,
+        content: body.content,
+        idempotencyKey,
+        requestId,
+      }))
+      if ('handled' in serviceCall) return serviceCall.handled
+      return agentSubagentEnqueueResponse(response, serviceCall.outcome)
+    }
+
+    if (agentSubagentFollowupsMatch) {
+      if (request.method !== 'POST') return methodNotAllowed(response, 'Subagent Followup 资源只接受提交请求。', 'POST')
+      const user = await requireUser(request)
+      if (!hasAgentSubagentService()) {
+        return error(response, 503, 'AGENT_SUBAGENT_SERVICE_UNAVAILABLE', 'Subagent 服务暂不可用。')
+      }
+      const idempotencyKey = generationIdempotencyKey(request.headers['idempotency-key'])
+      if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', 'Subagent Followup 提交标识无效，请重试。')
+      const body = await readJson(request, 256 * 1024, 'Subagent Followup 请求过大，请精简后重试。')
+      const bodyFailure = agentSubagentBodyFailure(body, agentSubagentFollowupBodyFields, 'Subagent followup 请求')
+      if (bodyFailure) return error(response, bodyFailure.statusCode, bodyFailure.code, bodyFailure.message)
+      const subagentId = decodeURIComponent(agentSubagentFollowupsMatch[1])
+      const current = await productStore.readAgentSubagent(user.id, subagentId)
+      if (!current) return error(response, 404, 'AGENT_SUBAGENT_NOT_FOUND', '未找到该 Subagent。')
+      await requireProjectPermission(productStore, user.id, current.projectId, 'edit')
+      const serviceCall = await callAgentSubagentService(response, () => agentSubagentService.followup({
+        userId: user.id,
+        subagentId,
+        sourceTurnId: body.sourceTurnId,
+        content: body.content,
+        idempotencyKey,
+        requestId,
+      }))
+      if ('handled' in serviceCall) return serviceCall.handled
+      return agentSubagentEnqueueResponse(response, serviceCall.outcome)
+    }
+
+    if (agentSubagentCancelMatch) {
+      if (request.method !== 'POST') return methodNotAllowed(response, 'Subagent 取消资源只接受提交请求。', 'POST')
+      const user = await requireUser(request)
+      if (!hasAgentSubagentService()) {
+        return error(response, 503, 'AGENT_SUBAGENT_SERVICE_UNAVAILABLE', 'Subagent 服务暂不可用。')
+      }
+      const idempotencyKey = generationIdempotencyKey(request.headers['idempotency-key'])
+      if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', 'Subagent 取消标识无效，请重试。')
+      const body = await readJson(request, 8 * 1024, 'Subagent 取消请求过大。')
+      const bodyFailure = agentSubagentBodyFailure(body, agentSubagentCancelBodyFields, 'Subagent cancel 请求')
+      if (bodyFailure) return error(response, bodyFailure.statusCode, bodyFailure.code, bodyFailure.message)
+      if (body.reason !== undefined && (typeof body.reason !== 'string' || body.reason.length > 500)) {
+        return error(response, 400, 'AGENT_SUBAGENT_REQUEST_INVALID', 'Subagent 取消原因格式无效。')
+      }
+      const subagentId = decodeURIComponent(agentSubagentCancelMatch[1])
+      const current = await productStore.readAgentSubagent(user.id, subagentId)
+      if (!current) return error(response, 404, 'AGENT_SUBAGENT_NOT_FOUND', '未找到该 Subagent。')
+      await requireProjectPermission(productStore, user.id, current.projectId, 'edit')
+      const serviceCall = await callAgentSubagentService(response, () => agentSubagentService.cancel({
+        userId: user.id,
+        projectId: current.projectId,
+        subagentId,
+        idempotencyKey,
+        ...(body.reason?.trim() ? { reason: body.reason.trim() } : {}),
+      }))
+      if ('handled' in serviceCall) return serviceCall.handled
+      const outcome = serviceCall.outcome
+      if (outcome?.kind === 'missing') return error(response, 404, 'AGENT_SUBAGENT_NOT_FOUND', '未找到该 Subagent。')
+      if (['conflict', 'stale', 'not_cancelling'].includes(outcome?.kind)) {
+        return error(response, 409, 'AGENT_SUBAGENT_CANCELLATION_CONFLICT', 'Subagent 取消请求与当前状态冲突。')
+      }
+      const stored = await productStore.readAgentSubagent(user.id, subagentId)
+      if (!stored) return error(response, 404, 'AGENT_SUBAGENT_NOT_FOUND', '未找到该 Subagent。')
+      if (!['cancelling', 'cancelled'].includes(stored.status)) {
+        return error(response, 409, 'AGENT_SUBAGENT_NOT_CANCELLABLE', '该 Subagent 当前不可取消。')
+      }
+      return json(response, stored.status === 'cancelling' ? 202 : 200, {
+        kind: outcome?.kind,
+        changed: outcome?.changed === true,
+        subagent: publicAgentSubagent(stored),
+      })
+    }
+
+    if (agentSubagentMatch) {
+      if (request.method !== 'GET') return methodNotAllowed(response, 'Subagent 资源只支持读取。', 'GET')
+      const user = await requireUser(request)
+      if (!hasAgentSubagentService()) {
+        return error(response, 503, 'AGENT_SUBAGENT_SERVICE_UNAVAILABLE', 'Subagent 服务暂不可用。')
+      }
+      const subagentId = decodeURIComponent(agentSubagentMatch[1])
+      const current = await productStore.readAgentSubagent(user.id, subagentId)
+      if (!current) return error(response, 404, 'AGENT_SUBAGENT_NOT_FOUND', '未找到该 Subagent。')
+      await requireProjectPermission(productStore, user.id, current.projectId, 'read')
+      const rawAfterSequence = url.searchParams.get('afterSequence')
+      const rawLimit = url.searchParams.get('limit')
+      if (rawAfterSequence !== null && !/^\d+$/.test(rawAfterSequence)) {
+        return error(response, 400, 'INVALID_AGENT_SUBAGENT_CURSOR', 'Subagent Activation 游标无效。')
+      }
+      if (rawLimit !== null && !/^\d+$/.test(rawLimit)) {
+        return error(response, 400, 'INVALID_AGENT_SUBAGENT_LIMIT', 'Subagent Activation 数量无效。')
+      }
+      const afterSequence = rawAfterSequence === null ? 0 : Number(rawAfterSequence)
+      const limit = rawLimit === null ? 50 : Number(rawLimit)
+      if (!Number.isSafeInteger(afterSequence) || afterSequence < 0
+        || !Number.isSafeInteger(limit) || limit < 1 || limit > 200) {
+        return error(response, 400, 'INVALID_AGENT_SUBAGENT_CURSOR', 'Subagent Activation 续读参数无效。')
+      }
+      const serviceCall = await callAgentSubagentService(response, () => agentSubagentService.read(
+        user.id,
+        subagentId,
+        { afterSequence, limit },
+      ))
+      if ('handled' in serviceCall) return serviceCall.handled
+      const snapshot = serviceCall.outcome
+      if (!snapshot?.subagent) return error(response, 404, 'AGENT_SUBAGENT_NOT_FOUND', '未找到该 Subagent。')
+      const activations = (Array.isArray(snapshot.activations) ? snapshot.activations : [])
+        .map(publicAgentSubagentActivation)
+        .filter(Boolean)
+      const messages = (Array.isArray(snapshot.messages) ? snapshot.messages : [])
+        .map(publicAgentSubagentMessage)
+        .filter(Boolean)
+      return json(response, 200, {
+        subagent: publicAgentSubagent(snapshot.subagent),
+        activations,
+        messages,
+        cursor: {
+          afterSequence: activations.at(-1)?.sequence ?? afterSequence,
+          hasMore: activations.length === limit,
+        },
+      })
+    }
 
     if (agentTurnsMatch || agentTurnStreamMatch) {
       const streaming = Boolean(agentTurnStreamMatch)
@@ -927,6 +1181,7 @@ export function createAgentRouteHandler({
           request: canonicalInput,
           resolve: (resolveOptions) => resolveBotanicAgentRuntimeRequest(input, config, resolveOptions),
           resolveOptions: {
+            subagentRunner: durableSubagentRunner,
             document: project.document,
             projectSkills,
             ...(threadSummary ? { threadSummary } : {}),

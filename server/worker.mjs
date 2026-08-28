@@ -23,6 +23,14 @@ import { createAgentCancellationService } from './agentCancellationService.mjs'
 import { createAgentRunSubmissionSweep } from './agentRunSubmissionSweep.mjs'
 import { abortMatchingGenerationJobCancellation } from './generationCancellation.mjs'
 import { createGenerationRecoverySweep } from './generationRecoverySweep.mjs'
+import { createAgentSubagentQueue, createAgentSubagentWorker } from './agentSubagentQueue.mjs'
+import { createAgentSubagentRunner } from './agentSubagentRunner.mjs'
+import { createAgentSubagentProjectRegistry } from './agentSubagentRegistry.mjs'
+import { createAgentSubagentProcessor } from './agentSubagentProcessor.mjs'
+import { createAgentSubagentCancellation } from './agentSubagentCancellation.mjs'
+import { createAgentSubagentRecovery } from './agentSubagentRecovery.mjs'
+import { createAgentSubagentService } from './agentSubagentService.mjs'
+import { createDurableAgentSubagentRunner } from './agentSubagentBroker.mjs'
 
 loadLocalEnv()
 // 与 API 同一处理：Worker 崩掉的后果更隐蔽 —— 队列还在，任务永远停在 running。
@@ -32,6 +40,7 @@ if (!config.production) console.warn('Botanic Worker 正在以本地配置运行
 const runtime = await createProductRuntime(config)
 if (!config.redisUrl) throw new Error('REDIS_URL 未配置，Worker 拒绝启动。')
 const queue = createGenerationQueue(config.redisUrl)
+const subagentQueue = createAgentSubagentQueue(config.redisUrl)
 const agentRunEvents = createAgentRunEventPublisher(config.redisUrl)
 const providerHealth = createProviderHealthMonitor({
   redisUrl: config.redisUrl,
@@ -150,6 +159,18 @@ const durableTurnRuntime = createBotanicAgentTurnRuntime({
   localCancelRegistry: turnCancelRegistry,
 })
 let cancelStaleAgentTurn
+let durablePlannerSubagentRunner
+const resumeSubagentRunner = config.agentSubagentModel && config.flockApiKey
+  ? (input) => {
+      if (typeof durablePlannerSubagentRunner !== 'function') {
+        throw Object.assign(new Error('Durable Subagent 组合尚未就绪。'), {
+          code: 'AGENT_SUBAGENT_RUNTIME_UNAVAILABLE',
+          statusCode: 503,
+        })
+      }
+      return durablePlannerSubagentRunner(input)
+    }
+  : undefined
 const sweepStaleAgentTurns = createAgentTurnSweep({
   productStore: runtime.productStore,
   observe: (event) => console.log(JSON.stringify(event)),
@@ -162,6 +183,7 @@ const sweepStaleAgentTurns = createAgentTurnSweep({
     mediaService: runtime.mediaService,
     turnRuntime: durableTurnRuntime,
     consumeWebResearchQuota,
+    subagentRunner: resumeSubagentRunner,
     observe: (event) => console.log(JSON.stringify(event)),
   }),
   settleTurn: (turn, error) => durableTurnRuntime.fail({ turn, error }),
@@ -183,10 +205,17 @@ const agentRunGeneration = createAgentRunGenerationService({
   publishProjectUpdated: agentRunEvents.publishProjectUpdated,
   publishAgentRunUpdated: agentRunEvents.publish,
 })
+const subagentCancellation = createAgentSubagentCancellation({
+  productStore: runtime.productStore,
+  turnRuntime: durableTurnRuntime,
+  publishCancel: agentRunEvents.publishCancel,
+  observe: (event) => console.log(JSON.stringify(event)),
+})
 const agentCancellation = createAgentCancellationService({
   productStore: runtime.productStore,
   cancelTurn: (command) => durableTurnRuntime.cancel(command),
   finalizeTurn: (command) => durableTurnRuntime.finalizeCancellation(command),
+  cancelSubagent: (command) => subagentCancellation.request(command),
   redisQueue: queue,
   publishCancel: agentRunEvents.publishCancel,
   modelOptions: config.modelOptions ?? [],
@@ -194,6 +223,54 @@ const agentCancellation = createAgentCancellationService({
     agentRunGeneration.persistJobState(userId, projectId, job)
   ),
 })
+const subagentRunner = createAgentSubagentRunner({ runtimeConfig: config })
+const createWorkerSubagentRegistry = ({ userId, projectId }) => createAgentSubagentProjectRegistry({
+  productStore: runtime.productStore,
+  config,
+  userId,
+  projectId,
+  consumeWebResearchQuota,
+})
+const subagentProcessor = subagentRunner
+  ? createAgentSubagentProcessor({
+      productStore: runtime.productStore,
+      turnRuntime: durableTurnRuntime,
+      runSubagent: subagentRunner,
+      buildRegistry: ({ descriptor }) => createWorkerSubagentRegistry({
+        userId: descriptor.ownerId,
+        projectId: descriptor.projectId,
+      }),
+      enqueue: (identity) => subagentQueue.enqueue(identity),
+      convergeCancellation: (descriptor) => subagentCancellation.converge(descriptor),
+      observe: (event) => console.log(JSON.stringify(event)),
+    })
+  : undefined
+const subagentWorker = subagentProcessor
+  ? createAgentSubagentWorker({
+      redisUrl: config.redisUrl,
+      concurrency: config.agentSubagentConcurrency,
+      processActivation: subagentProcessor,
+    })
+  : undefined
+subagentWorker?.on('failed', (job, caught) => console.error(`[agent-subagent] BullMQ activation ${job?.id ?? 'unknown'} failed: ${caught.message}`))
+subagentWorker?.on('error', (caught) => console.error(`[agent-subagent] BullMQ worker error: ${caught.message}`))
+if (subagentWorker) {
+  console.log(`Botanic subagent worker started (concurrency ${config.agentSubagentConcurrency})`)
+} else {
+  console.log('Botanic subagent worker disabled (AGENT_SUBAGENT_MODEL/FLOCK_API_KEY not configured)')
+}
+const subagentService = subagentRunner
+  ? createAgentSubagentService({
+      productStore: runtime.productStore,
+      config,
+      createRegistry: createWorkerSubagentRegistry,
+      dispatchActivation: (identity) => subagentQueue.enqueue(identity),
+      cancellation: subagentCancellation,
+    })
+  : undefined
+durablePlannerSubagentRunner = subagentService
+  ? createDurableAgentSubagentRunner({ service: subagentService })
+  : undefined
 // Run 已持久化后、首个 Job 落库前仍有进程崩溃窗口。周期恢复只调用既有幂等提交
 // 与深取消服务，不在 Worker 组合根复制 Job 创建或取消规则。
 const sweepQueuedAgentRuns = createAgentRunSubmissionSweep({
@@ -283,9 +360,31 @@ void reclaimInterruptedJobs()
 const interruptedRecoveryTimer = setInterval(() => void reclaimInterruptedJobs(), 60_000)
 interruptedRecoveryTimer.unref()
 
+const recoverAgentSubagents = subagentProcessor
+  ? createAgentSubagentRecovery({
+      productStore: runtime.productStore,
+      enqueue: (identity) => subagentQueue.enqueue(identity),
+      observe: (event) => console.error(JSON.stringify(event)),
+    })
+  : undefined
+async function recoverQueuedAgentSubagents() {
+  if (!recoverAgentSubagents) return
+  try {
+    await recoverAgentSubagents()
+  } catch (caught) {
+    console.error(`[agent-subagent] worker recovery deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
+  }
+}
+void recoverQueuedAgentSubagents()
+const subagentRecoveryTimer = recoverAgentSubagents
+  ? setInterval(() => void recoverQueuedAgentSubagents(), 30_000)
+  : undefined
+subagentRecoveryTimer?.unref()
+
 async function shutdown() {
   clearInterval(recoveryTimer)
   clearInterval(interruptedRecoveryTimer)
+  if (subagentRecoveryTimer) clearInterval(subagentRecoveryTimer)
   await cancelSubscriber?.close()
   await derivedWorker.close(true)
   await derivedQueue?.close()
@@ -293,7 +392,9 @@ async function shutdown() {
   // 仍持有 Redis lock、新 Worker 无法接手。强制关闭后 BullMQ 会将该 job 作为
   // stalled 回收，配合 90 秒 stale-running 恢复逻辑重新执行。
   await worker.close(true)
+  await subagentWorker?.close(true)
   await queue.close()
+  await subagentQueue.close()
   await agentRunEvents.close()
   await providerHealth.close()
   await runtime.mediaService.close()

@@ -166,6 +166,19 @@ Run 落库到首个 Generation Job 落库之间另有独立崩溃窗口。Worker
 响应丢失时保留 pending 并退避重提同一身份，明确业务失败才写 failed。`status/runId` 每次转移都经同一 Message
 离线队列落库，与后端 `run.submit` sweep 共同封闭 Plan → Run → Job 的两个崩溃窗口。
 
+## Durable Subagent Runtime
+
+主 Planner 的 `subagent_research` 经 `agentSubagentBroker.mjs` 进入独立持久化运行时，不再
+直接在根进程内扇出 Provider 调用。Descriptor 冻结服务端模型、指令、只读工具、输出
+Schema 与预算；每次 Activation 原子创建输入 Message 和独立 Durable Turn，并按 sequence
+严格 FIFO。Planner Checkpoint 重放同一稳定 Subtask ID 时只观察原 Activation 与结果 Message。
+
+running 根 Turn 派发必须携带 Runtime 注入的 `execution generation + leaseToken`，三个 Store
+Adapter 都在锁住根 Turn 后验证该 fence；takeover 后旧执行者不能新增 Activation。Subagent
+使用独立 BullMQ 队列、并发和恢复扫描；根 Turn 深取消再按 `rootTurnId` 反查并级联全部
+Descriptor，任一子项状态不确定时根 Turn 保持 `cancelling`。普通 Session 列表默认隐藏子会话，
+专用 HTTP 资源只返回安全提案与公共状态。完整决策见 ADR 0007。
+
 `server/generationRecoverySweep.mjs` 拥有 Generation Job 恢复扫描：三个 Adapter 按毫秒时间与 ID 提供稳定 keyset 页，清扫器限制
 单轮页数、在尾部回绕、检测游标停滞，并逐 Job 隔离入队失败。Supabase 对 Turn、失败 Run 分支、待执行 ReviewTask 与可恢复
 GenerationJob 四类恢复记录持久化 `recovery_updated_at_ms`，由全量写 trigger 从 `updated_at` 回填重算；对应 RPC 的过滤、排序与

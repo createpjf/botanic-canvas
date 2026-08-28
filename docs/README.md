@@ -16,6 +16,7 @@
 - [ADR 0004：可恢复 Agent Turn Runtime](adr/0004-agent-turn-runtime.md)
 - [ADR 0005：可执行 Creative Plan 与不可变配方](adr/0005-executable-creative-plan.md)
 - [ADR 0006：Agent 质量、记忆与 Skill 治理](adr/0006-agent-quality-memory-governance.md)
+- [ADR 0007：Durable Subagent Runtime](adr/0007-durable-subagent-runtime.md)
 
 ## 功能规格
 

@@ -118,6 +118,20 @@ test('Agent Planner 默认暴露五种已确认的 Flock 模型', () => {
   }
 })
 
+test('Subagent 使用独立且有界的 Worker 并发', () => {
+  const key = 'AGENT_SUBAGENT_CONCURRENCY'
+  const original = process.env[key]
+  try {
+    delete process.env[key]
+    assert.equal(runtimeConfig('/tmp/botanic-runtime-test').agentSubagentConcurrency, 2)
+    process.env[key] = '99'
+    assert.equal(runtimeConfig('/tmp/botanic-runtime-test').agentSubagentConcurrency, 8)
+  } finally {
+    if (original === undefined) delete process.env[key]
+    else process.env[key] = original
+  }
+})
+
 test('联网搜索默认走 Tavily REST，MCP 地址会被忽略', () => {
   const keys = ['BOTANIC_WEB_SEARCH_API_KEY', 'BOTANIC_WEB_SEARCH_URL']
   const original = new Map(keys.map((key) => [key, process.env[key]]))

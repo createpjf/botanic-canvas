@@ -34,6 +34,13 @@ import { createLibraryRouteHandler } from './libraryRoutes.mjs'
 import { createRealtimeTicketRouteHandler } from './realtimeTicketRoutes.mjs'
 import { createPromptMediaRouteHandler } from './promptMediaRoutes.mjs'
 import { createAgentRouteHandler } from './agentRoutes.mjs'
+import { createBotanicAgentTurnRuntime } from './botanicAgentTurnRuntime.mjs'
+import { createAgentSubagentRunner } from './agentSubagentRunner.mjs'
+import { createAgentSubagentProjectRegistry } from './agentSubagentRegistry.mjs'
+import { createAgentSubagentProcessor } from './agentSubagentProcessor.mjs'
+import { createAgentSubagentCancellation } from './agentSubagentCancellation.mjs'
+import { createAgentSubagentRecovery } from './agentSubagentRecovery.mjs'
+import { AgentSubagentServiceError, createAgentSubagentService } from './agentSubagentService.mjs'
 import { createAgentRunGenerationService } from './agentRunGenerationService.mjs'
 import { writeAgentRunOperationalEvent } from './agentRunObservability.mjs'
 import { AgentDelegationFenceError } from './agentCancellationService.mjs'
@@ -44,6 +51,7 @@ export function createBotanicHttpServer({
   config,
   runtime,
   redisQueue,
+  agentSubagentQueue,
   agentRunEvents,
   securityControls,
   configuredMcpTools = {},
@@ -53,6 +61,7 @@ let realtimeHub
 let agentRunEventSubscriber
 let canvasRealtimeEventPublisher
 let canvasRealtimeEventSubscriber
+let localSubagentRecoveryTimer
 // API 本地原型与跨实例订阅共用句柄表；生产由 Redis 信号触发，local prototype
 // 则由同一 publish seam 直接触发，二者保持相同取消语义。
 const localJobCancelRegistry = createLocalCancelRegistry()
@@ -116,6 +125,19 @@ function error(response, statusCode, code, message) {
 
 function observeAgentRun(input) {
   writeAgentRunOperationalEvent(input)
+}
+
+async function consumeWebResearchQuota(userId) {
+  const result = await securityControls.consume({
+    scope: 'web-research',
+    subject: userId,
+    limit: config.security.webResearchPerMinute,
+    windowMs: 60_000,
+  })
+  if (!result.allowed) {
+    console.warn(JSON.stringify({ event: 'security.rate_limited', scope: 'web-research', retryAfterSeconds: result.retryAfterSeconds }))
+  }
+  return result
 }
 
 async function enforceRateLimit(response, input) {
@@ -333,6 +355,79 @@ const agentRunGeneration = createAgentRunGenerationService({
   publishProjectUpdated,
   publishAgentRunUpdated,
 })
+const hasAgentSubagentStore = [
+  'enqueueAgentSubagentActivation',
+  'readAgentSubagent',
+  'listAgentSubagentActivations',
+  'claimAgentSubagentActivation',
+  'settleAgentSubagentActivation',
+  'requestAgentSubagentCancellation',
+  'finalizeAgentSubagentCancellation',
+  'listAgentSubagentActivationsForWorker',
+  'readAgentSubagentForWorker',
+  'listRunnableAgentSubagents',
+  'listAgentSubagentsForRootTurnPage',
+].every((method) => typeof productStore?.[method] === 'function')
+const subagentTurnRuntime = hasAgentSubagentStore
+  ? createBotanicAgentTurnRuntime({ productStore, localCancelRegistry: localTurnCancelRegistry })
+  : undefined
+const subagentRunner = hasAgentSubagentStore
+  ? createAgentSubagentRunner({ runtimeConfig: config })
+  : undefined
+const subagentCancellation = hasAgentSubagentStore
+  ? createAgentSubagentCancellation({
+      productStore,
+      turnRuntime: subagentTurnRuntime,
+      publishCancel: publishAgentCancellation,
+      observe: observeAgentRun,
+    })
+  : undefined
+let localSubagentProcessor
+async function createSubagentRegistry({ userId, projectId }) {
+  return createAgentSubagentProjectRegistry({
+    productStore,
+    config,
+    userId,
+    projectId,
+    consumeWebResearchQuota,
+  })
+}
+async function dispatchSubagentActivation(identity) {
+  if (agentSubagentQueue) return agentSubagentQueue.enqueue(identity)
+  if (!localSubagentProcessor) {
+    throw new AgentSubagentServiceError('AGENT_SUBAGENT_QUEUE_UNAVAILABLE', 'Subagent 执行队列尚未配置。', 503)
+  }
+  queueMicrotask(() => void localSubagentProcessor(identity).catch((caught) => {
+    console.error(`[agent-subagent] local activation deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
+  }))
+  return true
+}
+if (hasAgentSubagentStore && subagentRunner && !agentSubagentQueue && !config.production) {
+  localSubagentProcessor = createAgentSubagentProcessor({
+    productStore,
+    turnRuntime: subagentTurnRuntime,
+    runSubagent: subagentRunner,
+    buildRegistry: ({ descriptor }) => createSubagentRegistry({
+      userId: descriptor.ownerId,
+      projectId: descriptor.projectId,
+    }),
+    enqueue: dispatchSubagentActivation,
+    convergeCancellation: (descriptor) => subagentCancellation.converge(descriptor),
+    observe: observeAgentRun,
+  })
+}
+if (config.production && config.agentSubagentModel && !agentSubagentQueue) {
+  throw new Error('生产环境启用 Subagent 时必须配置独立 Redis 队列。')
+}
+const agentSubagentService = hasAgentSubagentStore
+  ? createAgentSubagentService({
+      productStore,
+      config,
+      createRegistry: createSubagentRegistry,
+      dispatchActivation: dispatchSubagentActivation,
+      cancellation: subagentCancellation,
+    })
+  : undefined
 // 路由与跨实例取消订阅方共用同一张执行句柄表；两者拿不到同一个表，落在非执行
 // 实例的取消就只能事后丢弃结果而不是真正中止（ADR 0004）。
 const handleAgentRoute = createAgentRouteHandler({
@@ -343,18 +438,8 @@ const handleAgentRoute = createAgentRouteHandler({
   securityControls,
   mediaService, localCancelRegistry: localTurnCancelRegistry,
   publishCancel: publishAgentCancellation,
-  consumeWebResearchQuota: async (userId) => {
-    const result = await securityControls.consume({
-      scope: 'web-research',
-      subject: userId,
-      limit: config.security.webResearchPerMinute,
-      windowMs: 60_000,
-    })
-    if (!result.allowed) {
-      console.warn(JSON.stringify({ event: 'security.rate_limited', scope: 'web-research', retryAfterSeconds: result.retryAfterSeconds }))
-    }
-    return result
-  },
+  consumeWebResearchQuota,
+  agentSubagentService,
 })
 
 const handleRequest = async (request, response) => {
@@ -398,6 +483,11 @@ const handleRequest = async (request, response) => {
           configured: Object.keys(configuredMcpTools).length > 0,
           toolCount: Object.keys(configuredMcpTools).length,
         },
+        agentSubagent: {
+          configured: Boolean(subagentRunner),
+          model: config.agentSubagentModel || undefined,
+          queue: agentSubagentQueue ? 'redis' : localSubagentProcessor ? 'local-prototype' : 'disabled',
+        },
       })
     }
 
@@ -416,7 +506,7 @@ const handleRequest = async (request, response) => {
     return error(response, 404, 'NOT_FOUND', '接口不存在。')
   } catch (caught) {
     const agentEntityFailure = agentEntityHttpError(caught)
-    const failure = caught instanceof HttpError || caught instanceof ProjectAuthorizationError || caught instanceof GenerationError || caught instanceof PromptRefinementError || caught instanceof BotanicAgentPlannerError || caught instanceof BotanicAgentChatError || caught instanceof BotanicAgentRunError || caught instanceof BotanicAgentSkillError || caught instanceof AgentToolRuntimeError || caught instanceof AgentActionExecutionError || caught instanceof AgentActionReconciliationError || caught instanceof McpClientError || caught instanceof AgentDelegationFenceError
+    const failure = caught instanceof HttpError || caught instanceof ProjectAuthorizationError || caught instanceof GenerationError || caught instanceof PromptRefinementError || caught instanceof BotanicAgentPlannerError || caught instanceof BotanicAgentChatError || caught instanceof BotanicAgentRunError || caught instanceof BotanicAgentSkillError || caught instanceof AgentToolRuntimeError || caught instanceof AgentActionExecutionError || caught instanceof AgentActionReconciliationError || caught instanceof McpClientError || caught instanceof AgentDelegationFenceError || caught instanceof AgentSubagentServiceError
       ? caught
       : agentEntityFailure
         ? agentEntityFailure
@@ -441,6 +531,20 @@ async function start() {
   } catch (caught) {
     // 队列恢复不是 API 启动前置条件；数据库短暂波动不能让登录、项目与媒体服务整体不可用。
     console.error(`[generation] queue recovery deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
+  }
+
+  if (localSubagentProcessor) {
+    const recoverSubagents = createAgentSubagentRecovery({
+      productStore,
+      enqueue: dispatchSubagentActivation,
+      observe: (event) => console.error(JSON.stringify(event)),
+    })
+    const recover = () => void recoverSubagents().catch((caught) => {
+      console.error(`[agent-subagent] local recovery deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
+    })
+    recover()
+    localSubagentRecoveryTimer = setInterval(recover, 30_000)
+    localSubagentRecoveryTimer.unref()
   }
 
   canvasRealtimeEventPublisher = createCanvasRealtimeEventPublisher(config.redisUrl, { eventSecret: config.realtimeEventSecret })
@@ -484,6 +588,7 @@ async function start() {
 }
 
 async function close() {
+  if (localSubagentRecoveryTimer) clearInterval(localSubagentRecoveryTimer)
   if (server.listening) await new Promise((resolveClose, rejectClose) => server.close((caught) => caught ? rejectClose(caught) : resolveClose()))
   await realtimeHub?.close()
   await canvasRealtimeEventSubscriber?.close()
@@ -491,6 +596,7 @@ async function close() {
   await agentRunEventSubscriber?.close()
   await agentRunEvents.close()
   await redisQueue?.close()
+  await agentSubagentQueue?.close()
   await securityControls.close()
   await mediaService.close()
   if (productStoreSupports(productStore, 'lifecycle')) await productStore.close()

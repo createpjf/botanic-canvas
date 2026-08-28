@@ -2,6 +2,9 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import test from 'node:test'
 import { createAgentRouteHandler, createServerSentEventWriter } from './agentRoutes.mjs'
+import { matchBotanicHttpRoutes } from './httpRouteTable.mjs'
+import { AgentSubagentServiceError } from './agentSubagentService.mjs'
+import { AgentSubagentPersistenceError } from './agentSubagentPersistence.mjs'
 import { agentTurnIdForIdempotency, createAgentTurnRecord } from './botanicAgentTurnRuntime.mjs'
 import { agentReviewRetryMaterializationDecision } from './agentReviewRetryMaterialization.mjs'
 import {
@@ -291,6 +294,7 @@ test('pre-put fence 通过后 Turn 才取消时，post-put 补偿立即收口新
     },
     listAgentRunsForTurn: async () => [],
     listAgentRunsForTurnPage: async () => [],
+    listAgentSubagentsForRootTurnPage: async () => [],
     listGenerationJobsForAgentRunPage: async () => [],
     readGenerationJob: async () => undefined,
     putGenerationJob: async (_userId, job) => job,
@@ -997,6 +1001,7 @@ test('取消 Agent Run 会广播到 Worker，正在执行的生成才会真的�
       projectAccess: async () => ({ exists: true, role: 'owner' }),
       listAgentRunsForTurn: async () => [],
       listAgentRunsForTurnPage: async () => [],
+      listAgentSubagentsForRootTurnPage: async () => [],
       listGenerationJobsForAgentRunPage: async (_userId, _projectId, runId) => Object.values(jobs)
         .filter((job) => job.agentRun?.runId === runId || runId === 'run-cancel'),
       readAgentRun: async () => structuredClone(run),
@@ -1098,6 +1103,7 @@ test('取消 Turn 先落 durable fence，再深取消并原子 finalize 为 canc
       },
       listAgentRunsForTurn: async () => { order.push('list-runs'); return [] },
       listAgentRunsForTurnPage: async () => { order.push('list-runs'); return [] },
+      listAgentSubagentsForRootTurnPage: async () => [],
       listGenerationJobsForAgentRunPage: async () => [],
       readAgentRun: async () => undefined,
       putAgentRun: async (_userId, run) => run,
@@ -1339,6 +1345,7 @@ test('SSE fallback 先 durable cancelling；Provider 退出 ack 后重试 Stop �
         return structuredClone(decision)
       },
       listAgentRunsForTurnPage: async () => [],
+      listAgentSubagentsForRootTurnPage: async () => [],
       listAgentRunsForTurn: async () => [],
       listGenerationJobsForAgentRunPage: async () => [],
       readAgentRun: async () => undefined,
@@ -2475,4 +2482,269 @@ test('七个运维写工具现在全部有执行器，Editor 能拿到完整一�
   for (const name of OPERATIONAL_ACTION_TOOLS) {
     assert.ok(registry.get(name), `${name} 应当可用`)
   }
+})
+
+function subagentRouteFixture({ role = 'editor', serviceOverrides = {} } = {}) {
+  const responses = []
+  const calls = { start: [], followup: [], read: [], cancel: [], permissions: [] }
+  let status = 'active'
+  const rawSubagent = () => ({
+    id: 'subagent-1', projectId: 'project-1', status,
+    ownerId: 'user-1', idempotencyKey: 'hidden-key', requestHash: 'hidden-hash',
+    role: 'brand_research', model: 'subagent-model', allowedTools: ['canvas_read'],
+    outputSchema: { type: 'object' }, budget: { maxActivations: 8 },
+    dispatch: {
+      activationId: 'activation-3', activationSequence: 3, generation: 2,
+      cancelGeneration: 1, leaseExpiresAt: 999, leaseToken: 'hidden-lease',
+    },
+    cancellation: {
+      generation: 1, signalId: 'hidden-signal', reason: '停止', requestedAt: 100,
+    },
+  })
+  const rawActivation = () => ({
+    id: 'activation-3', projectId: 'project-1', subagentId: 'subagent-1', sequence: 3,
+    turnId: 'turn-subagent-3', status: 'queued', ownerId: 'user-1',
+    idempotencyKey: 'hidden-activation-key', requestHash: 'hidden-activation-hash',
+    execution: {
+      generation: 2, cancelGeneration: 1, leaseExpiresAt: 999,
+      claimedAt: 100, lastHeartbeatAt: 101, leaseToken: 'hidden-activation-lease',
+    },
+  })
+  const rawMessage = () => ({
+    id: 'agent-turn-result-turn-subagent-3', role: 'assistant', kind: 'text',
+    content: '品牌应保持植物学线稿与低饱和绿色。', turnId: 'turn-subagent-3',
+    status: 'submitted', createdAt: 100, updatedAt: 101,
+    ownerId: 'user-1', idempotencyKey: 'hidden-message-key', reasoning_content: 'hidden-reasoning',
+  })
+  const mutation = () => ({
+    kind: 'enqueued', changed: true, subagent: rawSubagent(), activation: rawActivation(),
+    turn: { id: 'turn-subagent-3', idempotencyKey: 'hidden-turn-key', request: { content: 'hidden' } },
+    session: { id: 'hidden-session', plannerModel: 'hidden' },
+    inputMessage: { id: 'hidden-input', content: 'hidden' },
+  })
+  const agentSubagentService = {
+    async start(input) { calls.start.push(input); return mutation() },
+    async followup(input) { calls.followup.push(input); return mutation() },
+    async read(userId, subagentId, options) {
+      calls.read.push({ userId, subagentId, options })
+      return { subagent: rawSubagent(), activations: [rawActivation()], messages: [rawMessage()] }
+    },
+    async cancel(input) {
+      calls.cancel.push(input)
+      status = 'cancelling'
+      return { kind: 'not_ready', changed: true, subagent: rawSubagent(), activation: rawActivation() }
+    },
+    ...serviceOverrides,
+  }
+  const productStore = {
+    async projectAccess(userId, projectId) {
+      calls.permissions.push({ userId, projectId, role })
+      return { exists: true, role }
+    },
+    async readAgentSubagent(_userId, subagentId) {
+      return subagentId === 'subagent-1' ? rawSubagent() : undefined
+    },
+  }
+  const handler = createAgentRouteHandler({
+    config: {}, productStore, agentSubagentService,
+    json: (_response, responseStatus, body, headers) => {
+      responses.push({ status: responseStatus, body, headers })
+      return true
+    },
+    error: (_response, responseStatus, code, message) => {
+      responses.push({ status: responseStatus, body: { error: { code, message } } })
+      return true
+    },
+    readJson: async (request) => request.body,
+    requireUser: async () => ({ id: 'user-1' }),
+  })
+  return { handler, responses, calls }
+}
+
+test('Subagent HTTP 目录匹配 start、followup、cancel 与 read 四类资源', () => {
+  assert.deepEqual(
+    matchBotanicHttpRoutes('/api/projects/project-1/agent-subagents').projectAgentSubagents?.slice(1),
+    ['project-1'],
+  )
+  assert.deepEqual(
+    matchBotanicHttpRoutes('/api/agent-subagents/subagent-1/followups').agentSubagentFollowups?.slice(1),
+    ['subagent-1'],
+  )
+  assert.deepEqual(
+    matchBotanicHttpRoutes('/api/agent-subagents/subagent-1/cancel').agentSubagentCancel?.slice(1),
+    ['subagent-1'],
+  )
+  assert.deepEqual(
+    matchBotanicHttpRoutes('/api/agent-subagents/subagent-1').agentSubagent?.slice(1),
+    ['subagent-1'],
+  )
+})
+
+test('Subagent start 与 followup 只注入服务端身份，并把 Adapter 结果收敛为 public DTO', async () => {
+  const { handler, responses, calls } = subagentRouteFixture()
+  const startUrl = new URL('http://botanic.test/api/projects/project-1/agent-subagents')
+  await handler(
+    {
+      method: 'POST', headers: { 'idempotency-key': 'subagent-start-key-0001' },
+      body: { rootTurnId: 'turn-root', role: 'brand_research', content: '研究品牌视觉' },
+    },
+    {}, startUrl, matchBotanicHttpRoutes(startUrl.pathname), 'request-subagent-start',
+  )
+
+  assert.deepEqual(calls.start, [{
+    userId: 'user-1', projectId: 'project-1', rootTurnId: 'turn-root',
+    role: 'brand_research', content: '研究品牌视觉',
+    idempotencyKey: 'subagent-start-key-0001', requestId: 'request-subagent-start',
+  }])
+  assert.equal(responses.at(-1)?.status, 202)
+  assert.deepEqual(Object.keys(responses.at(-1)?.body).sort(), ['activation', 'changed', 'kind', 'subagent'])
+  assert.equal(responses.at(-1)?.body.subagent.ownerId, undefined)
+  assert.equal(responses.at(-1)?.body.subagent.idempotencyKey, undefined)
+  assert.equal(responses.at(-1)?.body.subagent.dispatch.leaseToken, undefined)
+  assert.equal(responses.at(-1)?.body.activation.execution.leaseToken, undefined)
+
+  const followupUrl = new URL('http://botanic.test/api/agent-subagents/subagent-1/followups')
+  await handler(
+    {
+      method: 'POST', headers: { 'idempotency-key': 'subagent-followup-0001' },
+      body: { sourceTurnId: 'turn-root', content: '继续核对竞品' },
+    },
+    {}, followupUrl, matchBotanicHttpRoutes(followupUrl.pathname), 'request-subagent-followup',
+  )
+  assert.deepEqual(calls.followup, [{
+    userId: 'user-1', subagentId: 'subagent-1', sourceTurnId: 'turn-root',
+    content: '继续核对竞品', idempotencyKey: 'subagent-followup-0001',
+    requestId: 'request-subagent-followup',
+  }])
+  assert.equal(responses.at(-1)?.status, 202)
+  assert.equal(calls.permissions.every((entry) => entry.role === 'editor'), true)
+})
+
+test('Subagent 路由强制 Idempotency-Key，拒绝客户端模型权限字段，并映射服务与持久化错误', async () => {
+  const fixture = subagentRouteFixture()
+  const url = new URL('http://botanic.test/api/projects/project-1/agent-subagents')
+  const routeMatches = matchBotanicHttpRoutes(url.pathname)
+  await fixture.handler(
+    { method: 'POST', headers: {}, body: { rootTurnId: 'turn-root', role: 'brand_research', content: '研究' } },
+    {}, url, routeMatches, 'request-no-key',
+  )
+  assert.equal(fixture.responses.at(-1)?.status, 400)
+  assert.equal(fixture.responses.at(-1)?.body.error.code, 'INVALID_IDEMPOTENCY_KEY')
+
+  await fixture.handler(
+    {
+      method: 'POST', headers: { 'idempotency-key': 'subagent-authority-0001' },
+      body: {
+        rootTurnId: 'turn-root', role: 'brand_research', content: '研究',
+        model: 'client-selected-model',
+      },
+    },
+    {}, url, routeMatches, 'request-authority',
+  )
+  assert.equal(fixture.responses.at(-1)?.status, 403)
+  assert.equal(fixture.responses.at(-1)?.body.error.code, 'AGENT_SUBAGENT_AUTHORITY_FORBIDDEN')
+  assert.equal(fixture.calls.start.length, 0)
+
+  const unavailable = subagentRouteFixture({
+    serviceOverrides: {
+      async start() {
+        throw new AgentSubagentServiceError(
+          'AGENT_SUBAGENT_NOT_CONFIGURED', 'Subagent 模型服务尚未配置。', 503,
+        )
+      },
+    },
+  })
+  await unavailable.handler(
+    {
+      method: 'POST', headers: { 'idempotency-key': 'subagent-service-error-1' },
+      body: { rootTurnId: 'turn-root', role: 'brand_research', content: '研究' },
+    },
+    {}, url, routeMatches, 'request-service-error',
+  )
+  assert.equal(unavailable.responses.at(-1)?.status, 503)
+  assert.equal(unavailable.responses.at(-1)?.body.error.code, 'AGENT_SUBAGENT_NOT_CONFIGURED')
+
+  const activationLimit = subagentRouteFixture({
+    serviceOverrides: {
+      async start() {
+        throw new AgentSubagentPersistenceError(
+          'AGENT_SUBAGENT_ACTIVATION_LIMIT', 'Subagent 已达到 Activation 预算上限。', 409,
+        )
+      },
+    },
+  })
+  await activationLimit.handler(
+    {
+      method: 'POST', headers: { 'idempotency-key': 'subagent-persist-error-1' },
+      body: { rootTurnId: 'turn-root', role: 'brand_research', content: '研究' },
+    },
+    {}, url, routeMatches, 'request-persistence-error',
+  )
+  assert.equal(activationLimit.responses.at(-1)?.status, 409)
+  assert.equal(activationLimit.responses.at(-1)?.body.error.code, 'AGENT_SUBAGENT_ACTIVATION_LIMIT')
+})
+
+test('Subagent GET 允许项目成员续读，写操作仍要求 Editor', async () => {
+  const { handler, responses, calls } = subagentRouteFixture({ role: 'viewer' })
+  const readUrl = new URL('http://botanic.test/api/agent-subagents/subagent-1?afterSequence=2&limit=20')
+  await handler(
+    { method: 'GET', headers: {} }, {}, readUrl,
+    matchBotanicHttpRoutes(readUrl.pathname), 'request-subagent-read',
+  )
+  assert.equal(responses.at(-1)?.status, 200)
+  assert.deepEqual(calls.read, [{
+    userId: 'user-1', subagentId: 'subagent-1', options: { afterSequence: 2, limit: 20 },
+  }])
+  assert.equal(responses.at(-1)?.body.subagent.ownerId, undefined)
+  assert.equal(responses.at(-1)?.body.activations[0].idempotencyKey, undefined)
+  assert.equal(responses.at(-1)?.body.messages[0].content, '品牌应保持植物学线稿与低饱和绿色。')
+  assert.equal(responses.at(-1)?.body.messages[0].ownerId, undefined)
+  assert.equal(responses.at(-1)?.body.messages[0].reasoning_content, undefined)
+  assert.deepEqual(responses.at(-1)?.body.cursor, { afterSequence: 3, hasMore: false })
+
+  const followupUrl = new URL('http://botanic.test/api/agent-subagents/subagent-1/followups')
+  await assert.rejects(
+    handler(
+      {
+        method: 'POST', headers: { 'idempotency-key': 'subagent-viewer-write-1' },
+        body: { sourceTurnId: 'turn-root', content: '继续研究' },
+      },
+      {}, followupUrl, matchBotanicHttpRoutes(followupUrl.pathname), 'request-viewer-followup',
+    ),
+    (caught) => caught?.code === 'PROJECT_ACCESS_FORBIDDEN' && caught?.statusCode === 403,
+  )
+  assert.equal(calls.followup.length, 0)
+})
+
+test('Subagent cancel 只回读 public descriptor，cancelling 返回 202', async () => {
+  const { handler, responses, calls } = subagentRouteFixture()
+  const url = new URL('http://botanic.test/api/agent-subagents/subagent-1/cancel')
+  await handler(
+    {
+      method: 'POST', headers: { 'idempotency-key': 'subagent-cancel-key-01' },
+      body: { reason: '  停止调研  ' },
+    },
+    {}, url, matchBotanicHttpRoutes(url.pathname), 'request-subagent-cancel',
+  )
+  assert.deepEqual(calls.cancel, [{
+    userId: 'user-1', projectId: 'project-1', subagentId: 'subagent-1',
+    idempotencyKey: 'subagent-cancel-key-01', reason: '停止调研',
+  }])
+  assert.equal(responses.at(-1)?.status, 202)
+  assert.equal(responses.at(-1)?.body.subagent.status, 'cancelling')
+  assert.equal(responses.at(-1)?.body.subagent.ownerId, undefined)
+  assert.equal(responses.at(-1)?.body.subagent.cancellation.signalId, undefined)
+  assert.equal(responses.at(-1)?.body.subagent.dispatch.leaseToken, undefined)
+})
+
+test('Subagent GET 拒绝越界 afterSequence 与 limit', async () => {
+  const { handler, responses, calls } = subagentRouteFixture()
+  const url = new URL('http://botanic.test/api/agent-subagents/subagent-1?afterSequence=0&limit=201')
+  await handler(
+    { method: 'GET', headers: {} }, {}, url,
+    matchBotanicHttpRoutes(url.pathname), 'request-subagent-invalid-cursor',
+  )
+  assert.equal(responses.at(-1)?.status, 400)
+  assert.equal(responses.at(-1)?.body.error.code, 'INVALID_AGENT_SUBAGENT_CURSOR')
+  assert.equal(calls.read.length, 0)
 })

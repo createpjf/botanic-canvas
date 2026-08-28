@@ -15,6 +15,7 @@ export const botanicHttpRoutePatterns = Object.freeze({
   projectProductionWorkflowRuns: /^\/api\/projects\/([^/]+)\/production-workflows\/([^/]+)\/runs$/,
   projectProductionWorkflowRun: /^\/api\/projects\/([^/]+)\/production-workflow-runs\/([^/]+)$/,
   projectAgentRuns: /^\/api\/projects\/([^/]+)\/agent-runs$/,
+  projectAgentSubagents: /^\/api\/projects\/([^/]+)\/agent-subagents$/,
   projectAgentSkills: /^\/api\/projects\/([^/]+)\/agent-skills$/,
   agentSkillCatalog: /^\/api\/agent-skill-catalog$/,
   projectAgentState: /^\/api\/projects\/([^/]+)\/agent-state$/,
@@ -36,6 +37,9 @@ export const botanicHttpRoutePatterns = Object.freeze({
   agentTurnStream: /^\/api\/agent-turns\/stream$/,
   agentTurn: /^\/api\/agent-turns\/([^/]+)$/,
   agentTurnCancel: /^\/api\/agent-turns\/([^/]+)\/cancel$/,
+  agentSubagent: /^\/api\/agent-subagents\/([^/]+)$/,
+  agentSubagentFollowups: /^\/api\/agent-subagents\/([^/]+)\/followups$/,
+  agentSubagentCancel: /^\/api\/agent-subagents\/([^/]+)\/cancel$/,
   agentReviewDecision: /^\/api\/agent-reviews\/([^/]+)\/decision$/,
   // 评审任务（ADR 0006）。与上面按 Run+locale 的展示型 review 不同：任务是可恢复的
   // 派生实体，逐候选给出结论与人工决定。

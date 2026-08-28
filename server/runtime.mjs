@@ -117,6 +117,8 @@ export function runtimeConfig(rootDir = process.cwd()) {
     // 而这条路径不需要用户逐次确认。要开就得明确指定一个模型，不从主模型隐式继承 ——
     // 隐式继承意味着任何一次配置调整都可能在无人察觉时把它打开。
     agentSubagentModel: (process.env.AGENT_SUBAGENT_MODEL ?? '').trim(),
+    // Subagent 使用独立队列，避免长时调研占住生成或派生任务槽位。
+    agentSubagentConcurrency: boundedInteger(process.env.AGENT_SUBAGENT_CONCURRENCY, 2, 1, 8),
     agentRawReasoning,
     agentFeatureFlags: resolveAgentFeatureFlags(process.env),
     // 升级期灰度闸门。与上一行的 kill switch 语义相反：默认全关，支持按项目/用户放量。
