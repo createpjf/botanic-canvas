@@ -74,7 +74,7 @@ test('产品首页支持中英文切换并展示真实工作台截图', async ({
   expect(await productScreenshot.evaluate((image: HTMLImageElement) => image.naturalWidth > 0 && image.naturalHeight > 0)).toBe(true)
 
   await page.getByRole('button', { name: '切换为英文' }).click()
-  await expect(page.getByRole('heading', { name: 'Turn brand visual production into a creative system that keeps growing.' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Turn brand visual production into a system that keeps growing.' })).toBeVisible()
   await expect(page.locator('html')).toHaveAttribute('lang', 'en')
   await expect(page).toHaveTitle('Botanic · Creative workspace')
   await expect(page.getByRole('img', { name: 'Botanic workspace with visual nodes on the canvas and the Botanic Agent panel open' })).toBeVisible()
@@ -99,7 +99,7 @@ test('产品首页支持中英文切换并展示真实工作台截图', async ({
   await page.getByRole('button', { name: 'Product home' }).click()
 
   await page.reload()
-  await expect(page.getByRole('heading', { name: 'Turn brand visual production into a creative system that keeps growing.' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Turn brand visual production into a system that keeps growing.' })).toBeVisible()
   await page.getByRole('button', { name: 'Switch to Chinese' }).click()
   await expect(page.getByRole('heading', { name: '让品牌视觉生产，成为持续生长的创作系统。' })).toBeVisible()
 })
