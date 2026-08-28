@@ -858,6 +858,20 @@ export const productStoreCoreMethods = Object.freeze([
   'listStaleAgentTurns',
   'appendAgentTurnEvent',
   'listAgentTurnEvents',
+  // Durable Subagent 是独立描述符 + FIFO Activation。每次 Activation 仍复用 AgentTurn
+  // 的执行权，Store 只负责在同一事务里绑定独立 Session/Message 与 gapless sequence。
+  'enqueueAgentSubagentActivation',
+  'claimAgentSubagentActivation',
+  'settleAgentSubagentActivation',
+  'readAgentSubagent',
+  'readAgentSubagentForWorker',
+  // Turn 取消落下 durable fence 后通过这条权威反向边分页收口全部子 Agent。
+  'listAgentSubagentsForRootTurnPage',
+  'listAgentSubagentActivations',
+  'listAgentSubagentActivationsForWorker',
+  'listRunnableAgentSubagents',
+  'requestAgentSubagentCancellation',
+  'finalizeAgentSubagentCancellation',
   // 评审任务（ADR 0006）。ReviewResult 与 HumanDecision 存在任务 payload 内：
   // 「每个候选都有结论才算完成」是原子判定，拆成三张表会让完成判定跨表且可能读到半态。
   // 跨项目扫描仍有未收口工作流运行的项目（Epic 7）。与 listStaleAgentTurns 同为

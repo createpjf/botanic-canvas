@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { createAgentThreadContext } from './agentThreadContext.mjs'
 import { agentTurnRequestHash } from './agentTurnRequestIdentity.mjs'
+import { createAgentTurnRecord } from './botanicAgentTurnRuntime.mjs'
 import { createProductStore } from './productStore.mjs'
 
 function document(id, name = '测试项目') {
@@ -114,6 +115,346 @@ test('Agent Turn 与事件按幂等边界持久化，跨重启可恢复', () => 
   assert.equal(reloaded.readAgentTurn(owner.id, turn.id)?.status, 'completed')
   assert.deepEqual(reloaded.listAgentTurnEvents(owner.id, 'project-turn', turn.id).map((event) => event.type), ['turn.started'])
   assert.equal(reloaded.listAgentTurnsForProject(owner.id, 'project-turn')[0]?.id, turn.id)
+})
+
+function durableSubagentDescriptor(overrides = {}) {
+  return {
+    role: 'brand_research',
+    model: 'subagent-model',
+    instructionsVersion: 'botanic-subagent-v2',
+    outputKind: 'proposal',
+    outputSchema: {
+      type: 'object',
+      required: ['summary'],
+      properties: { summary: { type: 'string', maxLength: 2_000 } },
+    },
+    allowedTools: ['web_search'],
+    budget: { maxSteps: 4, maxToolCalls: 8, timeoutMs: 60_000, maxActivations: 3 },
+    capabilityHash: 'B'.repeat(43),
+    ...overrides,
+  }
+}
+
+function durableSubagentStartCommand(projectId, suffix = '1', overrides = {}) {
+  const content = overrides.input?.content ?? '研究品牌在年轻市场的视觉机会。'
+  return {
+    kind: 'start',
+    projectId,
+    rootTurnId: `root-turn-${suffix}`,
+    sourceTurnId: `root-turn-${suffix}`,
+    parentSessionId: `primary-session-${suffix}`,
+    idempotencyKey: `subagent-start-${suffix}`,
+    input: { content },
+    descriptor: durableSubagentDescriptor(),
+    turn: {
+      idempotencyKey: `subagent-turn-start-${suffix}`,
+      request: { runtimeOperation: 'subagent', input: {} },
+    },
+    ...overrides,
+  }
+}
+
+function putDurableSubagentRootTurn(store, ownerId, projectId, suffix = '1') {
+  const turn = {
+    id: `root-turn-${suffix}`,
+    version: 2,
+    ownerId,
+    projectId,
+    idempotencyKey: `root-turn-request-${suffix}`,
+    status: 'completed',
+    request: { runtimeOperation: 'plan', input: {} },
+    createdAt: 90,
+    updatedAt: 100,
+  }
+  store.putAgentTurn(ownerId, turn)
+  return turn
+}
+
+function completeStoredTurn(store, ownerId, turn, suffix = '1') {
+  const claimed = store.claimAgentTurnExecution(ownerId, {
+    turn,
+    leaseToken: `turn-lease-${suffix}`,
+    leaseDurationMs: 30_000,
+  })
+  assert.equal(claimed.kind, 'claimed')
+  const completed = store.commitAgentTurnExecution(ownerId, {
+    id: turn.id,
+    projectId: turn.projectId,
+    leaseToken: `turn-lease-${suffix}`,
+    executionGeneration: claimed.turn.execution.generation,
+    status: 'completed',
+    result: { answer: `Subagent 结果 ${suffix}` },
+  })
+  assert.equal(completed.kind, 'committed')
+  return completed.turn
+}
+
+test('Durable Subagent start 原子创建 descriptor/FIFO/Session/Message/Turn，public 与 worker 读面隔离', () => {
+  const { path, store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, document('project-subagent-a'), undefined)
+  store.writeProject(owner.id, document('project-subagent-b'), undefined)
+  putDurableSubagentRootTurn(store, owner.id, 'project-subagent-a')
+
+  const started = store.enqueueAgentSubagentActivation(
+    owner.id,
+    durableSubagentStartCommand('project-subagent-a'),
+  )
+  assert.equal(started.kind, 'enqueued')
+  assert.equal(started.activation.sequence, 1)
+  assert.equal(started.subagent.ownerId, undefined)
+  assert.equal(started.subagent.requestHash, undefined)
+  assert.equal(started.activation.requestHash, undefined)
+
+  const raw = store.readAgentSubagentForWorker(started.subagent.id)
+  assert.equal(raw.ownerId, owner.id)
+  assert.equal(typeof raw.requestHash, 'string')
+  assert.equal(store.readAgentSubagent(owner.id, raw.id).requestHash, undefined)
+  assert.deepEqual(store.listAgentSessions(owner.id, 'project-subagent-a'), [])
+  assert.equal(store.listAgentSessions(owner.id, 'project-subagent-a', { includeSubagents: true })[0].kind, 'subagent')
+  assert.equal(store.readAgentState(owner.id, 'project-subagent-a').sessions.length, 0)
+  assert.equal(store.readAgentState(owner.id, 'project-subagent-a', { includeSubagents: true }).sessions.length, 1)
+
+  const workerItems = store.listAgentSubagentActivationsForWorker(raw.id)
+  assert.equal(workerItems.length, 1)
+  assert.equal(workerItems[0].activation.sequence, 1)
+  assert.equal(workerItems[0].turn.request.input.activationSequence, 1)
+  assert.equal(workerItems[0].turn.request.input.cancelGeneration, 0)
+  assert.equal(workerItems[0].turn.request.input.sessionId, raw.sessionId)
+  assert.equal(workerItems[0].turn.request.input.inputMessage.id, workerItems[0].activation.inputMessageId)
+  assert.equal(workerItems[0].turn.request.input.inputMessage.content, '研究品牌在年轻市场的视觉机会。')
+  assert.equal(store.listAgentSubagentActivations(owner.id, raw.id)[0].execution, undefined)
+
+  const member = store.createUser(owner.id, {
+    email: 'subagent-member@example.com', name: 'Subagent Member', accessToken: 'subagent-member-token',
+  })
+  store.addProjectMember(owner.id, 'project-subagent-a', member.id, 'editor')
+  assert.equal(store.readAgentSubagent(member.id, raw.id).id, raw.id, '项目成员可读取 public descriptor')
+  const memberFollowup = store.enqueueAgentSubagentActivation(member.id, {
+    kind: 'followup', projectId: 'project-subagent-a', subagentId: raw.id,
+    sourceTurnId: 'root-turn-member-followup', idempotencyKey: 'member-followup',
+    input: { content: '由项目 Editor 继续补充调研。' },
+    turn: { idempotencyKey: 'member-followup-turn', request: { runtimeOperation: 'subagent', input: {} } },
+  })
+  assert.equal(memberFollowup.kind, 'enqueued')
+  assert.equal(memberFollowup.activation.sequence, 2)
+  assert.equal(store.listAgentSubagentActivations(member.id, raw.id).length, 2)
+  assert.equal(store.readAgentSubagentForWorker(raw.id).ownerId, owner.id, 'Editor 操作不转移 descriptor owner')
+  assert.deepEqual(
+    store.listAgentSubagentsForRootTurnPage(owner.id, 'project-subagent-a', 'root-turn-1').map((item) => item.id),
+    [raw.id],
+  )
+  assert.equal(store.enqueueAgentSubagentActivation(owner.id, {
+    kind: 'followup', projectId: 'project-subagent-b', subagentId: raw.id,
+    sourceTurnId: 'root-turn-other', idempotencyKey: 'cross-project-followup',
+    input: { content: '跨项目继续。' },
+    turn: { idempotencyKey: 'cross-project-turn', request: { runtimeOperation: 'subagent', input: {} } },
+  }).kind, 'missing')
+
+  const reloaded = createProductStore({ dataPath: path, bootstrapAccessToken: 'owner-token' })
+  assert.equal(reloaded.readAgentSubagentForWorker(raw.id).lastEnqueuedSequence, 2)
+  assert.equal(reloaded.listAgentSubagentActivationsForWorker(raw.id)[0].turn.id, workerItems[0].turn.id)
+})
+
+test('Durable Subagent root execution fence 拒绝旧 executor，takeover 后新 executor 可幂等重放', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  const projectId = 'project-subagent-root-fence'
+  store.writeProject(owner.id, document(projectId), undefined)
+  const source = createAgentTurnRecord({
+    id: 'root-turn-fence',
+    ownerId: owner.id,
+    projectId,
+    idempotencyKey: 'root-turn-fence-request',
+    request: { runtimeOperation: 'plan', input: {} },
+    now: 100,
+  })
+  store.putAgentTurn(owner.id, {
+    ...source,
+    status: 'running',
+    execution: {
+      generation: 3,
+      leaseToken: 'root-lease-old',
+      leaseDurationMs: 30_000,
+      leaseExpiresAt: 0,
+      claimedAt: 100,
+      lastHeartbeatAt: 100,
+    },
+  })
+  const command = durableSubagentStartCommand(projectId, 'fence', {
+    rootExecution: { generation: 3, leaseToken: 'root-lease-old' },
+  })
+  const started = store.enqueueAgentSubagentActivation(owner.id, command)
+  assert.equal(started.kind, 'enqueued')
+
+  const takeover = store.claimAgentTurnExecution(owner.id, {
+    turn: source,
+    leaseToken: 'root-lease-new',
+    allowTakeover: true,
+  })
+  assert.equal(takeover.kind, 'claimed')
+  assert.equal(takeover.turn.execution.generation, 4)
+  assert.throws(
+    () => store.enqueueAgentSubagentActivation(owner.id, command),
+    (caught) => caught?.code === 'AGENT_SUBAGENT_ROOT_EXECUTION_STALE',
+  )
+  assert.equal(store.enqueueAgentSubagentActivation(owner.id, {
+    ...command,
+    rootExecution: { generation: 4, leaseToken: 'root-lease-new' },
+  }).kind, 'replay')
+
+  store.writeProject(owner.id, document('project-subagent-root-completed'), undefined)
+  putDurableSubagentRootTurn(store, owner.id, 'project-subagent-root-completed', 'completed-external')
+  assert.equal(store.enqueueAgentSubagentActivation(owner.id, durableSubagentStartCommand(
+    'project-subagent-root-completed',
+    'completed-external',
+  )).kind, 'enqueued')
+  assert.throws(
+    () => store.enqueueAgentSubagentActivation(owner.id, durableSubagentStartCommand(
+      'project-subagent-root-completed',
+      'completed-external',
+      { rootExecution: { generation: 4, leaseToken: 'root-lease-new' } },
+    )),
+    (caught) => caught?.code === 'AGENT_SUBAGENT_ROOT_EXECUTION_STALE',
+  )
+
+  store.writeProject(owner.id, document('project-subagent-root-queued'), undefined)
+  const queuedRoot = createAgentTurnRecord({
+    id: 'root-turn-queued', ownerId: owner.id, projectId: 'project-subagent-root-queued',
+    idempotencyKey: 'root-turn-queued-request', request: { runtimeOperation: 'plan', input: {} }, now: 100,
+  })
+  store.putAgentTurn(owner.id, queuedRoot)
+  assert.throws(
+    () => store.enqueueAgentSubagentActivation(owner.id, durableSubagentStartCommand(
+      'project-subagent-root-queued',
+      'queued',
+    )),
+    (caught) => caught?.code === 'AGENT_SUBAGENT_ROOT_TURN_NOT_READY',
+  )
+})
+
+test('Durable Subagent followup 重放/冲突保持 gapless，settle 原子写 assistant Message 并 handoff 下一项', () => {
+  const { path, store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, document('project-subagent-followup'), undefined)
+  putDurableSubagentRootTurn(store, owner.id, 'project-subagent-followup', 'followup')
+  const started = store.enqueueAgentSubagentActivation(
+    owner.id,
+    durableSubagentStartCommand('project-subagent-followup', 'followup'),
+  )
+  const followupCommand = {
+    kind: 'followup',
+    projectId: 'project-subagent-followup',
+    subagentId: started.subagent.id,
+    sourceTurnId: 'root-turn-followup-2',
+    idempotencyKey: 'subagent-followup-2',
+    input: { content: '继续比较竞品 B。' },
+    turn: {
+      idempotencyKey: 'subagent-turn-followup-2',
+      request: { runtimeOperation: 'subagent', input: {} },
+    },
+  }
+  const followup = store.enqueueAgentSubagentActivation(owner.id, followupCommand)
+  assert.equal(followup.kind, 'enqueued')
+  assert.equal(followup.activation.sequence, 2)
+  assert.equal(store.enqueueAgentSubagentActivation(owner.id, followupCommand).kind, 'replay')
+  assert.equal(store.enqueueAgentSubagentActivation(owner.id, {
+    ...followupCommand,
+    input: { content: '同一个 key 改成不同输入。' },
+  }).kind, 'conflict')
+  assert.deepEqual(
+    store.listAgentSubagentActivationsForWorker(started.subagent.id).map((item) => item.activation.sequence),
+    [1, 2],
+  )
+
+  const claimed = store.claimAgentSubagentActivation({
+    subagentId: started.subagent.id,
+    activationId: started.activation.id,
+    leaseToken: 'activation-lease-1',
+    leaseDurationMs: 30_000,
+  })
+  assert.equal(claimed.kind, 'claimed')
+  completeStoredTurn(store, owner.id, claimed.turn, 'followup-1')
+  const settled = store.settleAgentSubagentActivation({
+    subagentId: started.subagent.id,
+    activationId: started.activation.id,
+    leaseToken: 'activation-lease-1',
+    executionGeneration: claimed.activation.execution.generation,
+    cancelGeneration: claimed.subagent.cancelGeneration,
+  })
+  assert.equal(settled.kind, 'settled')
+  assert.equal(settled.subagent.settledThroughSequence, 1)
+  assert.equal(settled.nextActivation.activation.sequence, 2)
+  assert.equal(settled.nextActivation.turn.id, followup.turn.id)
+
+  const messages = store.listAgentSessionMessages(
+    owner.id,
+    'project-subagent-followup',
+    store.readAgentSubagentForWorker(started.subagent.id).sessionId,
+    { includeSubagents: true },
+  ).messages
+  assert.deepEqual(messages.map((message) => message.role), ['user', 'user', 'assistant'])
+  assert.equal(messages.at(-1).id, `agent-turn-result-${claimed.turn.id}`)
+
+  const reloaded = createProductStore({ dataPath: path, bootstrapAccessToken: 'owner-token' })
+  assert.equal(reloaded.readAgentSubagentForWorker(started.subagent.id).settledThroughSequence, 1)
+  assert.equal(reloaded.listAgentSessionMessages(
+    owner.id,
+    'project-subagent-followup',
+    reloaded.readAgentSubagentForWorker(started.subagent.id).sessionId,
+    { includeSubagents: true },
+  ).messages.at(-1).content, 'Subagent 结果 followup-1')
+})
+
+test('Durable Subagent 取消 generation fence 可恢复，finalize 原子收口 terminal Turn 投影', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, document('project-subagent-cancel'), undefined)
+  putDurableSubagentRootTurn(store, owner.id, 'project-subagent-cancel', 'cancel')
+  const started = store.enqueueAgentSubagentActivation(
+    owner.id,
+    durableSubagentStartCommand('project-subagent-cancel', 'cancel'),
+  )
+  const claimed = store.claimAgentSubagentActivation({
+    subagentId: started.subagent.id,
+    activationId: started.activation.id,
+    leaseToken: 'activation-cancel-lease',
+  })
+  completeStoredTurn(store, owner.id, claimed.turn, 'cancel-race')
+
+  const requested = store.requestAgentSubagentCancellation(owner.id, {
+    subagentId: started.subagent.id,
+    projectId: 'project-subagent-cancel',
+    signalId: 'cancel-signal-local',
+    expectedCancelGeneration: 0,
+  })
+  assert.equal(requested.kind, 'requested')
+  const rawCancelling = store.readAgentSubagentForWorker(started.subagent.id)
+  assert.equal(rawCancelling.cancelGeneration, 1)
+  assert.equal(rawCancelling.dispatch, undefined)
+  assert.equal(store.listRunnableAgentSubagents().some((entry) => entry.subagent.id === started.subagent.id), true,
+    '崩溃后 cancelling descriptor 仍可被恢复队列捞起')
+  assert.equal(store.settleAgentSubagentActivation({
+    subagentId: started.subagent.id,
+    activationId: started.activation.id,
+    leaseToken: 'activation-cancel-lease',
+    executionGeneration: claimed.activation.execution.generation,
+    cancelGeneration: 0,
+  }).kind, 'cancelling')
+
+  const finalized = store.finalizeAgentSubagentCancellation(owner.id, {
+    subagentId: started.subagent.id,
+    projectId: 'project-subagent-cancel',
+    signalId: 'cancel-signal-local',
+    cancelGeneration: 1,
+  })
+  assert.equal(finalized.kind, 'finalized')
+  assert.equal(finalized.subagent.status, 'cancelled')
+  assert.equal(finalized.subagent.settledThroughSequence, 1)
+  assert.equal(store.listRunnableAgentSubagents().some((entry) => entry.subagent.id === started.subagent.id), false)
+  const workerItem = store.listAgentSubagentActivationsForWorker(started.subagent.id)[0]
+  assert.equal(workerItem.activation.status, 'completed')
+  assert.equal(workerItem.activation.cancelGeneration, 1)
 })
 
 test('Agent 评审结论与人工决策跨重启保留，且按项目隔离', () => {
