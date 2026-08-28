@@ -9,7 +9,7 @@ import {
 const validInput = {
   projectId: 'project-agent',
   locale: 'en',
-  plannerModel: 'deepseek-v4-flash',
+  plannerModel: 'deepseek-v4-flash-vision-exp',
   instruction: '保持人物和服装不变，把场景换成海边，并让环境光更柔和。',
   requestedIntent: 'replace_scene',
   selectedResult: { nodeId: 'result-v03', label: '首图候选 01' },
@@ -65,7 +65,7 @@ test('Agent 计划只保留安全的上下文快照元数据，并拒绝重复�
 
 test('Agent Planner 只允许服务端目录中的 Flock 模型，并按请求选择模型', async () => {
   const requests = []
-  await planBotanicGeneration(validInput, {
+  await planBotanicGeneration({ ...validInput, plannerModel: 'deepseek-v4-flash' }, {
     flockApiKey: 'flock-secret',
     flockTextModel: 'deepseek-v4-pro',
     flockAgentModels: ['deepseek-v4-pro', 'deepseek-v4-flash', 'kimi-k3'],
@@ -333,7 +333,7 @@ test('服务端 Agent 只让模型解释意图与约束，节点、参数和批�
     'call-canvas-1', 'call-assets-1', 'call-skill-1',
   ])
   assert.deepEqual(result, {
-    plannerModel: 'deepseek-v4-flash',
+    plannerModel: 'deepseek-v4-flash-vision-exp',
     intent: 'replace_scene',
     instruction: validInput.instruction,
     summary: '锁定人物与服装，批量替换 10 个场景。',
