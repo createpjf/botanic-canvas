@@ -438,8 +438,19 @@ export function createBotanicAgentTurnRuntime({
       }
 
       try {
+        // Resolver 只能观察当前已 claim 的权威身份。放在 resolveOptions 之后覆盖，且冻结
+        // 对象，避免传输层伪造 root Turn 后把 Durable Subagent 挂到错误的取消树上。
+        const runtimeIdentity = Object.freeze({
+          userId,
+          projectId,
+          turnId: id,
+          ...(turn.sessionId ? { sessionId: turn.sessionId } : {}),
+          executionGeneration,
+          leaseToken,
+        })
         const result = await resolve({
           ...resolveOptions,
+          runtimeIdentity,
           // 明确覆盖调用方可能携带的 request.signal；传输层无权拥有 Turn 生命周期。
           signal: controller.signal,
           onEvent: emit,

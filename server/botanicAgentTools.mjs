@@ -612,8 +612,12 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
           budget: { maxSteps: 1, maxToolCalls: 2 },
           timeoutMs: 45_000,
         }))
+        // Scheduler 的 legacy seam 只传 subtask/signal/callTool；Durable Broker 还必须拿到
+        // 当前 root executor fence。由拥有 Tool Loop context 的这一层显式闭包注入，
+        // 不能让模型参数或 Subtask payload 自报 executionGeneration / leaseToken。
+        const runWithRootExecution = (runInput) => subagentRunner({ ...runInput, context })
         const outcome = await runAgentSubtaskFanout({
-          subtasks, registry, context, runSubagent: subagentRunner, maxConcurrent: 3,
+          subtasks, registry, context, runSubagent: runWithRootExecution, maxConcurrent: 3,
         })
         return {
           // 终止数与完成数并列：只报「拿到 3 份提案」会让主 Agent 在残缺输入上下结论。

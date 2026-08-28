@@ -127,9 +127,18 @@ export class AgentTurnResumeError extends Error {
  *   turnRuntime: { execute: (input: any) => Promise<any> },
  *   observe?: (event: any) => void,
  *   consumeWebResearchQuota?: (userId: string) => Promise<any>,
+ *   subagentRunner?: ((input: any) => Promise<any>),
  * }} deps
  */
-export function createAgentTurnResumer({ productStore, config, mediaService, turnRuntime, observe, consumeWebResearchQuota }) {
+export function createAgentTurnResumer({
+  productStore,
+  config,
+  mediaService,
+  turnRuntime,
+  observe,
+  consumeWebResearchQuota,
+  subagentRunner,
+}) {
   if (!productStore) throw new TypeError('Turn 恢复缺少 ProductStore。')
   if (!turnRuntime?.execute) throw new TypeError('Turn 恢复缺少 Turn Runtime。')
 
@@ -244,6 +253,9 @@ export function createAgentTurnResumer({ productStore, config, mediaService, tur
       allowTakeover: true,
       resolve: (resolveOptions) => resolveBotanicAgentRuntimeRequest(turn.request, config, resolveOptions),
       resolveOptions: {
+        // Worker 恢复与 API 正常执行必须命中同一 Durable Subagent seam。显式传入
+        // undefined 也有意义：配置不完整时 Planner 不得退回进程内旧执行器。
+        subagentRunner,
         document: project.document,
         projectSkills,
         operations: createAgentOperationalReaders({

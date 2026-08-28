@@ -695,6 +695,29 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
     allowLocal: Boolean(runtimeConfig?.webSearch?.allowLocal),
     consumeQuota: options.consumeWebResearchQuota,
   }
+  // Durable Runtime 由组合根显式注入；只有普通单元调用/旧组合根没有注入该 seam 时，
+  // 才使用进程内执行器。这样主 Planner 的恢复会重放同一持久化 Activation。
+  const subagentRunner = Object.hasOwn(options, 'subagentRunner')
+    ? options.subagentRunner
+    : createAgentSubagentRunner({
+        runtimeConfig,
+        fetchImpl: options.fetchImpl ?? fetch,
+      })
+  if (subagentRunner !== undefined && typeof subagentRunner !== 'function') {
+    throw new TypeError('Agent Planner 的 Subagent Runner 无效。')
+  }
+  const runtimeIdentity = options.runtimeIdentity
+  const runtimeContext = runtimeIdentity
+    ? {
+        userId: runtimeIdentity.userId,
+        projectId: runtimeIdentity.projectId,
+        traceId: runtimeIdentity.turnId,
+        rootExecution: Object.freeze({
+          executionGeneration: runtimeIdentity.executionGeneration,
+          leaseToken: runtimeIdentity.leaseToken,
+        }),
+      }
+    : undefined
   const registry = createBotanicAgentPlanningToolRegistry({
     input,
     finalizePlan: (raw) => normalizeProviderPlan(raw, input),
@@ -706,12 +729,9 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
       if (!proposedActions.some((item) => item.id === proposal.id)) proposedActions.push(proposal)
     },
     webResearch,
-    // 未配置 AGENT_SUBAGENT_MODEL 时这里是 undefined，派发工具整个不注册 ——
-    // 模型看不到的工具不会被它拿去向用户承诺（Epic 11）。
-    subagentRunner: createAgentSubagentRunner({
-      runtimeConfig,
-      fetchImpl: options.fetchImpl ?? fetch,
-    }),
+    // 未注入 Durable Runner 且未配置 AGENT_SUBAGENT_MODEL 时为 undefined，派发工具
+    // 整个不注册；模型看不到的工具不会被它拿去向用户承诺（Epic 11）。
+    subagentRunner,
   })
   const hasWebTools = Boolean(registry.get('web_search') || registry.get('web_fetch'))
   const streaming = typeof options.onEvent === 'function'
@@ -743,6 +763,7 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
       ],
       toolChoice: 'auto',
       maximumSteps: hasWebTools ? 8 : 4,
+      context: runtimeContext,
       allowRawReasoning,
       onEvent: emitEvent,
       resumeCheckpoint: options.resumeCheckpoint,

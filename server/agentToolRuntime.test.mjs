@@ -773,6 +773,47 @@ test('completed Checkpoint 恢复时不重复调用已完成步骤的模型', as
   assert.equal(persisted.terminalContent, '恢复完成。')
 })
 
+test('工具调用预算包含 completed Checkpoint 已消费的调用', async () => {
+  let executions = 0
+  let modelCalls = 0
+  const registry = createAgentToolRegistry([{
+    name: 'budgeted_resume_read', label: '预算内恢复读取', description: '读取', risk: 'read',
+    parameters: { type: 'object', properties: {} }, validate: (value) => value,
+    execute: async () => { executions += 1; return { ok: true } },
+  }])
+  const checkpoint = {
+    version: 1,
+    attempt: checkpointAttempt,
+    completedSteps: [{
+      step: 0,
+      calls: [{
+        id: 'call-already-spent', name: 'budgeted_resume_read', risk: 'read',
+        recovery: 'reexecute', terminal: false, arguments: {},
+      }],
+    }],
+  }
+
+  await assert.rejects(runAgentToolLoop({
+    registry,
+    messages: [],
+    maximumSteps: 3,
+    maximumToolCalls: 1,
+    attempt: checkpointAttempt,
+    resumeCheckpoint: checkpoint,
+    saveCheckpoint: async () => {},
+    callModel: async () => {
+      modelCalls += 1
+      return { choices: [{ message: { tool_calls: [{
+        id: 'call-over-budget', type: 'function',
+        function: { name: 'budgeted_resume_read', arguments: '{}' },
+      }] } }] }
+    },
+  }), (error) => error?.code === 'TOOL_CALL_LIMIT_REACHED' && error?.outcomeKnown === true)
+
+  assert.equal(executions, 1, '已完成只读步骤只为上下文重建执行一次')
+  assert.equal(modelCalls, 1)
+})
+
 test('terminal Checkpoint 恢复时直接返回最终回答，不再调用模型', async () => {
   let persisted
   let modelCalls = 0

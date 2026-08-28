@@ -410,6 +410,7 @@ export async function runAgentToolLoop({
   callModel,
   toolChoice = 'auto',
   maximumSteps = 4,
+  maximumToolCalls = MODEL_TOOL_CALL_TOTAL_LIMIT,
   context,
   allowRawReasoning = false,
   onEvent,
@@ -419,6 +420,9 @@ export async function runAgentToolLoop({
   saveCheckpoint,
   recoverToolCall,
 }) {
+  if (!Number.isInteger(maximumToolCalls) || maximumToolCalls < 1 || maximumToolCalls > MODEL_TOOL_CALL_TOTAL_LIMIT) {
+    throw new TypeError(`Agent 工具调用上限必须是 1 到 ${MODEL_TOOL_CALL_TOTAL_LIMIT} 之间的整数。`)
+  }
   const conversation = [...messages]
   // 工具定义在循环开始前定格一次，之后每一步都用同一份。
   const frozenTools = registry.openAITools()
@@ -446,6 +450,17 @@ export async function runAgentToolLoop({
       'Agent Turn Checkpoint 的执行尝试或能力快照已变更。',
       409,
     )
+  }
+  // Checkpoint 里的调用同样已经消费预算。恢复时如果只从本进程新产生的
+  // `toolCalls` 开始计数，重启一次就能把同一轮的额度清零。
+  let plannedToolCallCount = (checkpoint?.completedSteps ?? [])
+    .reduce((sum, completedStep) => sum + completedStep.calls.length, 0)
+    + (checkpoint?.pendingStep?.calls.length ?? 0)
+  if (plannedToolCallCount > maximumToolCalls) {
+    throw knownPreEffectFailure(new AgentToolRuntimeError(
+      'TOOL_CALL_LIMIT_REACHED',
+      'Agent 工具调用已超过本轮预算，已在恢复执行前停止。',
+    ))
   }
   let entityReferences = mergeAgentEntityReferences(
     ...(checkpoint?.completedSteps ?? []).flatMap((completedStep) => (
@@ -801,12 +816,13 @@ export async function runAgentToolLoop({
       }
     }
 
-    if (calls.length > MODEL_TOOL_CALL_LIMIT || toolCalls.length + calls.length > MODEL_TOOL_CALL_TOTAL_LIMIT) {
+    if (calls.length > MODEL_TOOL_CALL_LIMIT || plannedToolCallCount + calls.length > maximumToolCalls) {
       throw knownPreEffectFailure(new AgentToolRuntimeError(
         'TOOL_CALL_LIMIT_REACHED',
         'Agent 单步或单轮返回的工具调用过多，已在执行前停止。',
       ))
     }
+    plannedToolCallCount += calls.length
 
     // 必须先完成这一步全部 call 的存在性、参数、确认与回执身份校验。
     // 不能执行完第一个工具后，才发现第二个 call 是坏的。
