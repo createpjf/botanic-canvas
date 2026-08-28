@@ -12,6 +12,10 @@ const migration = readFileSync(new URL(
   '../supabase/migrations/20260828200000_agent_subagent_runtime.sql',
   import.meta.url,
 ), 'utf8')
+const lockdownMigration = readFileSync(new URL(
+  '../supabase/migrations/20260828230000_agent_subagent_raw_table_lockdown.sql',
+  import.meta.url,
+), 'utf8')
 
 const methods = [
   'enqueueAgentSubagentActivation',
@@ -60,12 +64,13 @@ test('迁移建立 descriptor/activation 权威列、gapless FIFO 与恢复索�
 
 test('Subagent 原始表对 Data API fail closed，仅 service_role 可见', () => {
   assert.match(migration, /alter table public\.agent_subagents enable row level security/u)
-  assert.match(migration, /revoke all on table public\.agent_subagents from public, anon, authenticated/u)
-  assert.match(migration, /revoke all on table public\.agent_subagent_activations from public, anon, authenticated/u)
-  assert.doesNotMatch(migration, /on table public\.agent_subagents to authenticated/u)
-  assert.doesNotMatch(migration, /on table public\.agent_subagent_activations to authenticated/u)
-  assert.match(migration, /grant select, insert, update, delete on table public\.agent_subagents to service_role/u)
-  assert.match(migration, /grant select, insert, update, delete on table public\.agent_subagent_activations to service_role/u)
+  assert.match(lockdownMigration, /drop policy if exists "project members can read agent subagents"/u)
+  assert.match(lockdownMigration, /drop policy if exists "project members can read agent subagent activations"/u)
+  assert.match(lockdownMigration, /revoke all on table public\.agent_subagents[\s\S]*from public, anon, authenticated/u)
+  assert.match(lockdownMigration, /revoke all on table public\.agent_subagent_activations[\s\S]*from public, anon, authenticated/u)
+  assert.doesNotMatch(lockdownMigration, /to authenticated/u)
+  assert.match(lockdownMigration, /grant select, insert, update, delete[\s\S]*on table public\.agent_subagents to service_role/u)
+  assert.match(lockdownMigration, /grant select, insert, update, delete[\s\S]*on table public\.agent_subagent_activations to service_role/u)
 })
 
 test('Supabase 六个 RPC 全部 fail-closed 为 service_role，写路径不拼 REST upsert', () => {

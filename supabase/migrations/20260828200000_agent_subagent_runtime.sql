@@ -81,14 +81,44 @@ alter table public.agent_subagents enable row level security;
 alter table public.agent_subagent_activations enable row level security;
 
 drop policy if exists "project members can read agent subagents" on public.agent_subagents;
-drop policy if exists "project members can read agent subagent activations" on public.agent_subagent_activations;
+create policy "project members can read agent subagents"
+on public.agent_subagents for select to authenticated
+using (public.botanic_has_project_role(
+  project_id,
+  array['owner', 'editor', 'viewer']::public.botanic_project_role[]
+));
 
--- 客户端没有 descriptor/activation 直读或写权；公共 DTO 只能经服务端鉴权 HTTP 资源读取，
--- 服务端持久化与 Worker 只能经 service_role/RPC 访问原始 payload 与 fencing 字段。
+drop policy if exists "project members can read agent subagent activations" on public.agent_subagent_activations;
+create policy "project members can read agent subagent activations"
+on public.agent_subagent_activations for select to authenticated
+using (exists (
+  select 1 from public.agent_subagents subagent
+  where subagent.id = agent_subagent_activations.subagent_id
+    and public.botanic_has_project_role(
+      subagent.project_id,
+      array['owner', 'editor', 'viewer']::public.botanic_project_role[]
+    )
+));
+
+-- 客户端没有 descriptor/activation 写权；服务端只能经原子 RPC 改变状态。
 drop policy if exists "project editors can write agent subagents" on public.agent_subagents;
 drop policy if exists "project editors can write agent subagent activations" on public.agent_subagent_activations;
-revoke all on table public.agent_subagents from public, anon, authenticated;
-revoke all on table public.agent_subagent_activations from public, anon, authenticated;
+revoke insert, update, delete on table public.agent_subagents from public, anon, authenticated;
+revoke insert, update, delete on table public.agent_subagent_activations from public, anon, authenticated;
+-- 即使 Supabase 默认表授权开启，成员也读不到 fencing token。
+revoke select on table public.agent_subagents from public, anon, authenticated;
+grant select (
+  id, owner_id, project_id, root_turn_id, parent_session_id, session_id, status,
+  cancel_generation, last_enqueued_sequence, settled_through_sequence,
+  dispatch_generation, dispatch_activation_sequence, dispatch_lease_expires_at,
+  idempotency_key, request_hash, payload, created_at, updated_at
+) on table public.agent_subagents to authenticated;
+revoke select on table public.agent_subagent_activations from public, anon, authenticated;
+grant select (
+  subagent_id, sequence, turn_id, input_message_id, result_message_id, source_turn_id,
+  subagent_generation, execution_generation, execution_cancel_generation,
+  execution_lease_expires_at, payload, created_at, updated_at, settled_at
+) on table public.agent_subagent_activations to authenticated;
 
 -- 公共投影永不包含租约；Worker RPC/secret-key read 会从权威列恢复它。
 create or replace function public.botanic_public_agent_subagent_payload(
