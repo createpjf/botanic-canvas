@@ -37,6 +37,11 @@ import { createProductionWorkflowPublishService } from './productionWorkflowPubl
 import { selectBotanicAgentMemory } from './botanicAgentMemory.mjs'
 import { buildThreadSummaryCheckpoint, shouldCompactThread } from './agentThreadSummary.mjs'
 import { compareAndSetDerivedAgentThreadSummary, createAgentThreadContext } from './agentThreadContext.mjs'
+import { createAgentContextCoordinator } from './agentContextCoordinator.mjs'
+import {
+  AgentManualContextCompactionServiceError,
+  createAgentManualContextCompactionService,
+} from './agentManualContextCompactionService.mjs'
 import { compareBotanicAgentRunBranches } from './botanicAgentCompare.mjs'
 import { createForkedAgentRunInput, forkedAgentRunIdForIdempotency } from './botanicAgentFork.mjs'
 import { createAgentActionExecution } from './agentActionExecution.mjs'
@@ -357,6 +362,7 @@ export function createAgentRouteHandler({
   publishCancel,
   securityControls,
   agentSubagentService,
+  agentManualContextCompactionService,
 }) {
   // 看图只读当前项目内的媒体：readGenerationInput 校验归属，图片字节不离开服务端与模型网关。
   const visionMediaResolver = (userId, projectId) => (mediaService?.enabled
@@ -433,7 +439,17 @@ export function createAgentRouteHandler({
       idempotencyKey,
       request: runtimeRequest,
       resolve: (runtimeOptions) => resolveBotanicAgentRuntimeRequest(runtimeRequest, config, runtimeOptions),
-      resolveOptions: { ...resolveOptions, subagentRunner: durableSubagentRunner },
+      resolveOptions: {
+        ...resolveOptions,
+        subagentRunner: durableSubagentRunner,
+        ...(sessionId ? {
+          persistAgentContextUsageAnchor: persistAgentContextUsageAnchor({
+            userId: user.id,
+            projectId,
+            sessionId,
+          }),
+        } : {}),
+      },
       onEvent: (event) => {
         if (!sse || observerDetached) return
         if (!acceptedSent) pendingTurnEvents.push(event)
@@ -593,8 +609,41 @@ export function createAgentRouteHandler({
     return agentActionReconciliation
   }
   let agentThreadContext
+  let agentContextCoordinator
+  let manualAgentContextCompaction = agentManualContextCompactionService
+  const durableAgentContextCoordinator = () => {
+    agentContextCoordinator ??= createAgentContextCoordinator({
+      productStore,
+      policies: config.agentModelContextPolicies,
+    })
+    return agentContextCoordinator
+  }
+  const persistAgentContextUsageAnchor = ({ userId, projectId, sessionId }) => async (usageAnchor) => (
+    durableAgentContextCoordinator().persistUsageAnchor({
+      userId,
+      projectId,
+      sessionId,
+      usageAnchor,
+    })
+  )
+  const compactAgentContextManually = () => {
+    manualAgentContextCompaction ??= createAgentManualContextCompactionService({
+      productStore,
+      policies: config.agentModelContextPolicies,
+      defaultModel: config.flockTextModel,
+    })
+    return manualAgentContextCompaction
+  }
   const authoritativeThreadContext = () => {
-    agentThreadContext ??= createAgentThreadContext({ productStore })
+    agentThreadContext ??= createAgentThreadContext({
+      productStore,
+      contextV2: {
+        isEnabled: ({ userId, projectId }) => (
+          config.rolloutFlags?.isEnabled('AGENT_CONTEXT_COMPACTION_V2', { userId, projectId }) ?? false
+        ),
+        policies: config.agentModelContextPolicies,
+      },
+    })
     return agentThreadContext
   }
   const methodNotAllowed = (response, message, allow) => json(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message } }, { Allow: allow })
@@ -896,6 +945,7 @@ export function createAgentRouteHandler({
       agentSkillCatalog: agentSkillCatalogMatch,
       projectAgentState: projectAgentStateMatch,
       projectAgentSessions: projectAgentSessionsMatch,
+      agentSessionContextCompactions: agentSessionContextCompactionsMatch,
       agentSessionMessages: agentSessionMessagesMatch,
       projectAgentArtifacts: projectAgentArtifactsMatch,
       agentSession: agentSessionMatch,
@@ -1093,6 +1143,7 @@ export function createAgentRouteHandler({
           projectId: validatedInput.projectId,
           sessionId: validatedInput.sessionId,
           locale: validatedInput.locale,
+          model: validatedInput.plannerModel || config.flockTextModel,
           // 角色是服务端事实；客户端 DTO 无权声明 assistant/system。
           inputMessage: { ...validatedInput.inputMessage, role: 'user' },
         })
@@ -1184,6 +1235,13 @@ export function createAgentRouteHandler({
             subagentRunner: durableSubagentRunner,
             document: project.document,
             projectSkills,
+            ...((validatedInput.sessionId ?? legacySessionId) ? {
+              persistAgentContextUsageAnchor: persistAgentContextUsageAnchor({
+                userId: user.id,
+                projectId: validatedInput.projectId,
+                sessionId: validatedInput.sessionId ?? legacySessionId,
+              }),
+            } : {}),
             ...(threadSummary ? { threadSummary } : {}),
             operations: createAgentOperationalReaders({
               productStore,
@@ -1510,6 +1568,7 @@ export function createAgentRouteHandler({
           projectId: validatedInput.projectId,
           sessionId: validatedInput.sessionId,
           locale: validatedInput.locale,
+          model: validatedInput.plannerModel || config.flockTextModel,
           inputMessage: { ...validatedInput.inputMessage, role: 'user' },
         })
         canonicalInput = {
@@ -1662,6 +1721,35 @@ export function createAgentRouteHandler({
       })
       if (!sessions) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
       return json(response, 200, { sessions })
+    }
+    if (agentSessionContextCompactionsMatch) {
+      if (request.method !== 'POST') {
+        return methodNotAllowed(response, 'Agent Context 压缩资源只接受提交请求。', 'POST')
+      }
+      const user = await requireUser(request)
+      const projectId = decodeURIComponent(agentSessionContextCompactionsMatch[1])
+      const sessionId = decodeURIComponent(agentSessionContextCompactionsMatch[2])
+      if (!(config.rolloutFlags?.isEnabled('AGENT_CONTEXT_COMPACTION_V2', { userId: user.id, projectId }) ?? false)) {
+        return error(response, 404, 'AGENT_CONTEXT_COMPACTION_DISABLED', 'Agent Context Compaction V2 尚未对该项目开放。')
+      }
+      const body = await readJson(request, 4 * 1024, 'Agent Context 压缩请求过大。')
+      if (!body || typeof body !== 'object' || Array.isArray(body)
+        || Object.keys(body).some((field) => field !== 'locale')) {
+        return error(response, 400, 'AGENT_CONTEXT_MANUAL_REQUEST_INVALID', 'Agent Context 压缩请求包含未声明字段。')
+      }
+      try {
+        const outcome = await compactAgentContextManually()({
+          userId: user.id,
+          projectId,
+          sessionId,
+          idempotencyKey: request.headers['idempotency-key'],
+          ...(body.locale === undefined ? {} : { locale: body.locale }),
+        })
+        return json(response, 200, { contextCompaction: outcome })
+      } catch (caught) {
+        if (!(caught instanceof AgentManualContextCompactionServiceError)) throw caught
+        return error(response, caught.statusCode, caught.code, caught.message)
+      }
     }
     if (agentSessionMessagesMatch) {
       if (request.method !== 'GET') return methodNotAllowed(response, 'Agent 消息资源只支持读取。', 'GET')

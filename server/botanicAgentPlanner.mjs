@@ -25,6 +25,8 @@ import {
   normalizeCustomGenerationSize,
 } from './generationOutputSize.mjs'
 import { canonicalHash } from './canonicalHash.mjs'
+import { throwIfAgentProviderContextOverflow } from './agentProviderContextOverflow.mjs'
+import { resolveAgentModelContextBinding } from './agentModelContextBinding.mjs'
 
 const INTENTS = new Set([
   'continue_generation', 'replace_scene', 'replace_person', 'replace_product',
@@ -438,6 +440,17 @@ export function botanicAgentProviderTemperature(model) {
   return model === 'kimi-k3' ? 1 : 0.1
 }
 
+function plannerModelContextBinding(options, model) {
+  try {
+    return resolveAgentModelContextBinding(options, model)
+  } catch (caught) {
+    if (typeof caught?.code === 'string' && caught.code.startsWith('AGENT_CONTEXT_')) {
+      throw new BotanicAgentPlannerError(caught.statusCode ?? 409, caught.code, caught.message)
+    }
+    throw caught
+  }
+}
+
 function parseProviderJson(content) {
   if (typeof content !== 'string' || !content.trim()) return undefined
   const text = content.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
@@ -736,11 +749,13 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
   const hasWebTools = Boolean(registry.get('web_search') || registry.get('web_fetch'))
   const streaming = typeof options.onEvent === 'function'
   const allowRawReasoning = Boolean(runtimeConfig?.agentRawReasoning)
+  const contextBinding = plannerModelContextBinding(options, config.model)
   const snapshot = freezeAgentStepSnapshot({
     registry,
     model: config.model,
     skillBindings: mountedSkills,
     memoryBindings: input.projectMemory,
+    contextPolicyHash: contextBinding.contextPolicyHash,
     role: 'generation_planner',
   })
   const attempt = {
@@ -769,6 +784,8 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
       resumeCheckpoint: options.resumeCheckpoint,
       saveCheckpoint: options.saveCheckpoint,
       recoverToolCall: options.recoverToolCall,
+      modelContext: contextBinding.modelContext,
+      maxOutputTokens: 3000,
       callModel: async ({ messages, tools, tool_choice, step }) => {
         const response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
           method: 'POST',
@@ -789,7 +806,11 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
           }),
           signal,
         })
-        if (!response.ok) throw botanicAgentProviderResponseError(response.status)
+        if (!response.ok) {
+          const failureBody = await response.text().catch(() => '')
+          throwIfAgentProviderContextOverflow(response.status, failureBody)
+          throw botanicAgentProviderResponseError(response.status)
+        }
         if (!streaming) return await response.json().catch(() => null)
         return await readStreamedChatCompletion(response.body, {
           onEvent: (event) => {
@@ -836,6 +857,9 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
     }
   } catch (caught) {
     if (caught instanceof BotanicAgentPlannerError) throw caught
+    if (caught?.code === 'AGENT_CONTEXT_OVERFLOW') {
+      throw new BotanicAgentPlannerError(caught.statusCode ?? 422, caught.code, caught.message)
+    }
     if (typeof caught?.code === 'string'
       && (caught.code.startsWith('AGENT_TURN_CHECKPOINT_')
         || caught.code === 'AGENT_TURN_NOT_REPLAYABLE'

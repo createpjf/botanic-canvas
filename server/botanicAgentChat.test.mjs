@@ -41,6 +41,26 @@ test('通用 Agent 对话请求只接收受控模式、消息和节点 ID', () =
   )
 })
 
+test('Agent Chat 归一明确 context overflow，且无 Model Context 时不自行重试', async () => {
+  let providerCalls = 0
+  await assert.rejects(chatWithBotanicAgent(input, {
+    flockApiKey: 'flock-secret',
+    flockTextModel: 'deepseek-v4-flash',
+    flockAgentModels: ['deepseek-v4-flash'],
+  }, {
+    document,
+    fetchImpl: async () => {
+      providerCalls += 1
+      return new Response(JSON.stringify({
+        error: { code: 'context_length_exceeded', message: 'maximum context length exceeded' },
+      }), { status: 422 })
+    },
+  }), (error) => error instanceof BotanicAgentChatError
+    && error.statusCode === 422
+    && error.code === 'AGENT_CONTEXT_OVERFLOW')
+  assert.equal(providerCalls, 1)
+})
+
 test('Agent 对话真正调用选定 Flock 模型，并通过本体工具检索素材组', async () => {
   const requests = []
   const result = await chatWithBotanicAgent(input, {

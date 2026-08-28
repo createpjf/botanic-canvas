@@ -13,6 +13,8 @@ import { readStreamedChatCompletion } from './botanicAgentStream.mjs'
 import { botanicAgentContextToolSourceLabels, createBotanicAgentReadToolDefinitions } from './botanicAgentContextTools.mjs'
 import { botanicAgentMountedSkillBriefing, botanicAgentSearchableSkills, resolveBotanicAgentMountedSkills } from './botanicAgentTools.mjs'
 import { canonicalHash } from './canonicalHash.mjs'
+import { throwIfAgentProviderContextOverflow } from './agentProviderContextOverflow.mjs'
+import { resolveAgentModelContextBinding } from './agentModelContextBinding.mjs'
 
 const CHAT_MODES = new Set(['conversation', 'prompt', 'research'])
 const MESSAGE_ROLES = new Set(['user', 'assistant'])
@@ -137,16 +139,29 @@ function sourceLabels(toolCalls) {
   ])]
 }
 
+function chatModelContextBinding(options, model) {
+  try {
+    return resolveAgentModelContextBinding(options, model)
+  } catch (caught) {
+    if (typeof caught?.code === 'string' && caught.code.startsWith('AGENT_CONTEXT_')) {
+      throw new BotanicAgentChatError(caught.statusCode ?? 409, caught.code, caught.message)
+    }
+    throw caught
+  }
+}
+
 async function executeChatAttempt({ input, config, model, system, messages, registry, mountedSkills, attemptId, options, allowRawReasoning, emitEvent, streaming }) {
   const hasWebSearch = Boolean(registry.get('web_search'))
   const hasWebFetch = Boolean(registry.get('web_fetch'))
   const timeoutSignal = AbortSignal.timeout(config.timeoutMs)
   const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal
   const fetchImpl = options.fetchImpl ?? fetch
+  const contextBinding = chatModelContextBinding(options, model)
   const snapshot = freezeAgentStepSnapshot({
     registry,
     model,
     skillBindings: mountedSkills,
+    contextPolicyHash: contextBinding.contextPolicyHash,
     role: 'compatibility_chat',
   })
   const attempt = {
@@ -170,6 +185,8 @@ async function executeChatAttempt({ input, config, model, system, messages, regi
       resumeCheckpoint: options.resumeCheckpoint,
       saveCheckpoint: options.saveCheckpoint,
       recoverToolCall: options.recoverToolCall,
+      modelContext: contextBinding.modelContext,
+      maxOutputTokens: input.mode === 'prompt' ? 2200 : 3000,
       callModel: async ({ messages: turnMessages, tools, tool_choice, step }) => {
         const response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
           method: 'POST',
@@ -190,7 +207,11 @@ async function executeChatAttempt({ input, config, model, system, messages, regi
           }),
           signal,
         })
-        if (!response.ok) throw providerError(response.status)
+        if (!response.ok) {
+          const failureBody = await response.text().catch(() => '')
+          throwIfAgentProviderContextOverflow(response.status, failureBody)
+          throw providerError(response.status)
+        }
         if (!streaming) return await response.json().catch(() => null)
         // 传输层把增量还原成非流式形状，工具循环下游完全不感知流式。
         return await readStreamedChatCompletion(response.body, {
@@ -221,6 +242,9 @@ async function executeChatAttempt({ input, config, model, system, messages, regi
     }
   } catch (caught) {
     if (caught instanceof BotanicAgentChatError) throw caught
+    if (caught?.code === 'AGENT_CONTEXT_OVERFLOW') {
+      throw new BotanicAgentChatError(caught.statusCode ?? 422, caught.code, caught.message)
+    }
     if (typeof caught?.code === 'string'
       && (caught.code.startsWith('AGENT_TURN_CHECKPOINT_')
         || caught.code === 'AGENT_TURN_NOT_REPLAYABLE'

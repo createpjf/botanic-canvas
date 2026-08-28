@@ -6,6 +6,8 @@ import {
   createAgentCompatibilityRuntimeRequest,
   resolveBotanicAgentRuntimeRequest,
 } from './agentRuntimeRequest.mjs'
+import { resolveAgentModelContextPolicy } from './agentModelContextPolicy.mjs'
+import { canonicalHash } from './canonicalHash.mjs'
 
 const runtime = {
   flockApiKey: 'flock-test-key',
@@ -146,6 +148,45 @@ test('intent dispatcher 进入统一 Turn 解析器并保留 Turn 结果形状',
   assert.equal(result.kind, 'chat')
   assert.equal(result.answer, '项目尚未生成任何结果。')
   assert.deepEqual(agentCompatibilityResult('intent', result), { turn: result })
+})
+
+test('Runtime Request 用 Snapshot V2 创建主模型 Context Runtime 并持久化 usage anchor', async () => {
+  const policy = resolveAgentModelContextPolicy('deepseek-v4-pro')
+  const anchors = []
+  const requests = []
+  const checkpoint = '早期对话摘要'
+  const v2Input = {
+    ...intentInput,
+    sessionId: 'session-runtime-v2',
+    messages: [{ role: 'user', content: '不应使用的 legacy 窗口' }],
+    threadContextSnapshot: {
+      version: 2,
+      modelPolicy: policy,
+      checkpoint: { role: 'user', content: checkpoint, contentHash: canonicalHash(checkpoint) },
+      messages: [{ id: 'm-current', revision: 'r-current', role: 'user', content: '继续当前任务' }],
+    },
+  }
+  const result = await resolveBotanicAgentRuntimeRequest(v2Input, runtime, {
+    runtimeIdentity: {
+      userId: 'user-1', projectId: 'project-runtime', sessionId: 'session-runtime-v2', turnId: 'turn-v2',
+    },
+    document,
+    persistAgentContextUsageAnchor: async (anchor) => { anchors.push(anchor) },
+    fetchImpl: async (_url, init) => {
+      requests.push(JSON.parse(init.body))
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: '已继续。' } }],
+        usage: { prompt_tokens: 20, completion_tokens: 3, total_tokens: 23 },
+      }), { status: 200 })
+    },
+  })
+
+  assert.equal(result.answer, '已继续。')
+  assert.match(JSON.stringify(requests[0].messages), /早期对话摘要|继续当前任务/u)
+  assert.doesNotMatch(JSON.stringify(requests[0].messages), /不应使用的 legacy 窗口/u)
+  assert.equal(anchors.length, 1)
+  assert.equal(anchors[0].turnId, 'turn-v2')
+  assert.equal(anchors[0].inputTokens, 20)
 })
 
 test('chat dispatcher 把 reasoning 提升到 Runtime 顶层，再恢复旧 chat 响应形状', async () => {

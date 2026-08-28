@@ -4,6 +4,7 @@ import { generationIdempotencyKey } from './generationIdempotency.mjs'
 import { planBotanicGeneration } from './botanicAgentPlanner.mjs'
 import { chatWithBotanicAgent } from './botanicAgentChat.mjs'
 import { resolveBotanicAgentTurn } from './botanicAgentTurn.mjs'
+import { bindAgentModelContextOptions } from './agentModelContextBinding.mjs'
 
 const COMPATIBILITY_OPERATIONS = new Set(['plan', 'chat', 'intent'])
 
@@ -75,10 +76,11 @@ export function agentCompatibilityIdempotencyKey(operation, input, provided, fal
 export async function resolveBotanicAgentRuntimeRequest(request, runtimeConfig, options = {}) {
   const operation = request?.runtimeOperation
   const input = runtimeInput(request, options)
-  if (!operation) return resolveBotanicAgentTurn(input, runtimeConfig, options)
+  const runtimeOptions = bindAgentModelContextOptions(input, runtimeConfig, options)
+  if (!operation) return resolveBotanicAgentTurn(input, runtimeConfig, runtimeOptions)
 
   if (operation === 'plan') {
-    const result = await planBotanicGeneration(input, runtimeConfig, options)
+    const result = await planBotanicGeneration(input, runtimeConfig, runtimeOptions)
     const { reasoning, ...safe } = result ?? {}
     return result?.kind === 'clarification'
       ? {
@@ -96,7 +98,7 @@ export async function resolveBotanicAgentRuntimeRequest(request, runtimeConfig, 
   }
 
   if (operation === 'chat') {
-    const result = await chatWithBotanicAgent(input, runtimeConfig, options)
+    const result = await chatWithBotanicAgent(input, runtimeConfig, runtimeOptions)
     const { reasoning, ...response } = result ?? {}
     return {
       kind: 'chat',
@@ -106,7 +108,7 @@ export async function resolveBotanicAgentRuntimeRequest(request, runtimeConfig, 
     }
   }
 
-  if (operation === 'intent') return resolveBotanicAgentTurn(input, runtimeConfig, options)
+  if (operation === 'intent') return resolveBotanicAgentTurn(input, runtimeConfig, runtimeOptions)
 
   throw Object.assign(new TypeError('Agent Runtime operation 无效。'), {
     code: 'AGENT_RUNTIME_OPERATION_INVALID',

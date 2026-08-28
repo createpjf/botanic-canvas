@@ -93,6 +93,17 @@ test('按项目与按用户灰度只对命中的上下文开启', () => {
   )
 })
 
+test('Context Compaction V2 默认关闭并支持按项目灰度', () => {
+  const disabled = createRolloutFlags({})
+  assert.equal(disabled.isEnabled('AGENT_CONTEXT_COMPACTION_V2', { projectId: 'project-a' }), false)
+
+  const scoped = createRolloutFlags({
+    AGENT_CONTEXT_COMPACTION_V2: 'project:project-a',
+  })
+  assert.equal(scoped.isEnabled('AGENT_CONTEXT_COMPACTION_V2', { projectId: 'project-a' }), true)
+  assert.equal(scoped.isEnabled('AGENT_CONTEXT_COMPACTION_V2', { projectId: 'project-b' }), false)
+})
+
 test('选择器笔误被忽略并汇总，不让配置错误拖垮启动', () => {
   const flags = createRolloutFlags({ PRODUCTION_WORKFLOW_V2: 'projekt:project-a,project:project-b' })
   assert.equal(flags.isEnabled('PRODUCTION_WORKFLOW_V2', { projectId: 'project-b' }), true)

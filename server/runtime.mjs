@@ -13,6 +13,7 @@ import { resolveTavilyExtractUrl, resolveTavilySearchUrl } from './agentWebResea
 import { resolveInviteRedirectTo } from './inviteRedirect.mjs'
 import { assertProductStoreContract } from './productStoreContract.mjs'
 import { createRolloutFlags, resolveAgentFeatureFlags } from './featureFlags.mjs'
+import { parseAgentModelContextPolicies } from './agentModelContextPolicy.mjs'
 
 function boundedInteger(value, fallback, minimum, maximum) {
   const parsed = Number(value)
@@ -119,6 +120,10 @@ export function runtimeConfig(rootDir = process.cwd()) {
     agentSubagentModel: (process.env.AGENT_SUBAGENT_MODEL ?? '').trim(),
     // Subagent 使用独立队列，避免长时调研占住生成或派生任务槽位。
     agentSubagentConcurrency: boundedInteger(process.env.AGENT_SUBAGENT_CONCURRENCY, 2, 1, 8),
+    // 模型窗口不会按产品名猜测；未显式配置的模型回到 legacy 8k input 安全预算。
+    agentModelContextPolicies: parseAgentModelContextPolicies(
+      process.env.AGENT_MODEL_CONTEXT_POLICIES_JSON,
+    ),
     agentRawReasoning,
     agentFeatureFlags: resolveAgentFeatureFlags(process.env),
     // 升级期灰度闸门。与上一行的 kill switch 语义相反：默认全关，支持按项目/用户放量。

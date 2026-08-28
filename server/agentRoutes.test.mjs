@@ -60,6 +60,53 @@ function fakeActionReceiptStore() {
   }
 }
 
+test('Manual Context Compaction Route 受 rollout 保护并只向服务传权威身份与幂等键', async () => {
+  const calls = []
+  const responses = []
+  let enabled = true
+  let body = { locale: 'en' }
+  const handler = createAgentRouteHandler({
+    config: {
+      rolloutFlags: { isEnabled: (_name, context) => enabled && context.projectId === 'project-1' },
+    },
+    productStore: {},
+    agentManualContextCompactionService: async (command) => {
+      calls.push(command)
+      return { version: 1, kind: 'no_change', changed: false, state: { revision: 0 } }
+    },
+    json: (_response, status, responseBody) => {
+      responses.push({ status, body: responseBody })
+      return true
+    },
+    error: (_response, status, code, message) => {
+      responses.push({ status, body: { error: { code, message } } })
+      return true
+    },
+    readJson: async () => body,
+    requireUser: async () => ({ id: 'user-1' }),
+  })
+  const url = new URL('http://botanic.test/api/projects/project-1/agent-sessions/session-1/context-compactions')
+  const request = { method: 'POST', headers: { 'idempotency-key': 'manual-key-1' } }
+
+  await handler(request, {}, url, matchBotanicHttpRoutes(url.pathname), 'request-context-manual')
+  assert.equal(responses.at(-1).status, 200)
+  assert.deepEqual(calls, [{
+    userId: 'user-1', projectId: 'project-1', sessionId: 'session-1',
+    idempotencyKey: 'manual-key-1', locale: 'en',
+  }])
+
+  body = { model: 'client-forged' }
+  await handler(request, {}, url, matchBotanicHttpRoutes(url.pathname), 'request-context-invalid')
+  assert.equal(responses.at(-1).body.error.code, 'AGENT_CONTEXT_MANUAL_REQUEST_INVALID')
+  assert.equal(calls.length, 1)
+
+  enabled = false
+  body = {}
+  await handler(request, {}, url, matchBotanicHttpRoutes(url.pathname), 'request-context-disabled')
+  assert.equal(responses.at(-1).body.error.code, 'AGENT_CONTEXT_COMPACTION_DISABLED')
+  assert.equal(calls.length, 1)
+})
+
 test('Agent Run 首次创建返回并广播锁内持久化后的权威记录', async () => {
   const published = []
   const responses = []

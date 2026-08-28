@@ -8,6 +8,7 @@ import {
 import { canonicalHash } from './canonicalHash.mjs'
 import { estimateAgentContextTokens, truncateAgentContextText } from './agentContextBudget.mjs'
 import { extractAgentEntityReferences, mergeAgentEntityReferences } from './agentEntityReferences.mjs'
+import { normalizeProviderUsage } from './botanicAgentStream.mjs'
 
 const TOOL_NAME = /^[a-z][a-z0-9_]{1,63}$/
 const TOOL_RECOVERY_MODES = new Set(['reexecute', 'receipt', 'never'])
@@ -389,7 +390,7 @@ export async function executeConfirmedAgentAction({
  *
  * 快照本身深拷贝并冻结：调用方之后修改自己的对象也影响不到它。
  */
-export function freezeAgentStepSnapshot({ registry, model, skillBindings, memoryBindings, role } = {}) {
+export function freezeAgentStepSnapshot({ registry, model, skillBindings, memoryBindings, contextPolicyHash, role } = {}) {
   return Object.freeze({
     model: model ?? undefined,
     toolNames: Object.freeze((registry?.names?.() ?? []).slice()),
@@ -400,6 +401,7 @@ export function freezeAgentStepSnapshot({ registry, model, skillBindings, memory
     memoryBindings: Object.freeze((memoryBindings ?? []).map((binding) => Object.freeze({
       id: binding?.id, version: binding?.version, contentHash: binding?.contentHash,
     }))),
+    ...(contextPolicyHash === undefined ? {} : { contextPolicyHash }),
     role: role ?? undefined,
   })
 }
@@ -419,9 +421,19 @@ export async function runAgentToolLoop({
   resumeCheckpoint,
   saveCheckpoint,
   recoverToolCall,
+  modelContext = undefined,
+  maxOutputTokens = undefined,
+  trigger = 'pre_step',
 }) {
   if (!Number.isInteger(maximumToolCalls) || maximumToolCalls < 1 || maximumToolCalls > MODEL_TOOL_CALL_TOTAL_LIMIT) {
     throw new TypeError(`Agent 工具调用上限必须是 1 到 ${MODEL_TOOL_CALL_TOTAL_LIMIT} 之间的整数。`)
+  }
+  if (modelContext !== undefined && (
+    !modelContext
+    || typeof modelContext.prepare !== 'function'
+    || typeof modelContext.observe !== 'function'
+  )) {
+    throw new TypeError('Agent Model Context 必须实现 prepare 与 observe。')
   }
   const conversation = [...messages]
   // 工具定义在循环开始前定格一次，之后每一步都用同一份。
@@ -785,15 +797,71 @@ export async function runAgentToolLoop({
     }
   }
 
+  const prepareModelCall = async (step, prepareTrigger, force = false) => {
+    const preparation = await modelContext.prepare({
+      attempt,
+      step,
+      messages: conversation,
+      tools: frozenTools,
+      maxOutputTokens,
+      trigger: prepareTrigger,
+      ...(force ? { force: true } : {}),
+    })
+    if (preparation !== undefined && (
+      !preparation
+      || typeof preparation !== 'object'
+      || Array.isArray(preparation)
+    )) {
+      throw new TypeError('Agent Model Context prepare 返回值无效。')
+    }
+    if (
+      (preparation?.messages !== undefined && !Array.isArray(preparation.messages))
+      || (preparation?.tools !== undefined && !Array.isArray(preparation.tools))
+    ) {
+      throw new TypeError('Agent Model Context prepare 必须返回消息与工具数组。')
+    }
+    return {
+      preparation,
+      request: {
+        messages: preparation?.messages === undefined ? conversation : preparation.messages,
+        tools: preparation?.tools === undefined ? frozenTools : preparation.tools,
+        tool_choice: toolChoice,
+        step,
+      },
+    }
+  }
+
   const startStep = checkpoint?.completedSteps.length ?? 0
   for (let step = startStep; step < maximumSteps; step += 1) {
     steps.push({ step, snapshot: frozenSnapshot })
-    const response = await callModel({
-      messages: conversation,
-      tools: frozenTools,
-      tool_choice: toolChoice,
-      step,
-    })
+    let response
+    if (modelContext === undefined) {
+      // legacy 路径保持调用参数与对象引用不变。
+      response = await callModel({
+        messages: conversation,
+        tools: frozenTools,
+        tool_choice: toolChoice,
+        step,
+      })
+    } else {
+      let preparedCall = await prepareModelCall(step, trigger)
+      try {
+        response = await callModel(preparedCall.request)
+      } catch (caught) {
+        if (caught?.code !== 'AGENT_CONTEXT_OVERFLOW') throw caught
+        const retryCall = await prepareModelCall(step, 'overflow', true)
+        if (retryCall.preparation?.changed !== true) throw caught
+        preparedCall = retryCall
+        // 同一步最多只重试一次；第二次失败直接冒泡，不再压缩或调用模型。
+        response = await callModel(preparedCall.request)
+      }
+      await modelContext.observe({
+        attempt,
+        step,
+        prepared: preparedCall.preparation?.prepared,
+        responseUsage: normalizeProviderUsage(response?.usage),
+      })
+    }
     const message = response?.choices?.[0]?.message
     reasoning = appendAgentReasoning(reasoning, {
       step,

@@ -124,6 +124,43 @@ test('恢复只注入 Turn 中不可变的 thread context snapshot，不读取�
   const call = d.executions[0]
   assert.deepEqual(call.request.threadContextSnapshot.threadSummary, threadSummary)
   assert.deepEqual(call.resolveOptions.threadSummary, threadSummary)
+  assert.equal(call.resolveOptions.persistAgentContextUsageAnchor, undefined)
+})
+
+test('Snapshot V2 恢复注入同一 Session 的 usage anchor 持久化 seam', async () => {
+  const writes = []
+  const request = {
+    ...turn().request,
+    plannerModel: 'model-a',
+    threadContextSnapshot: {
+      version: 2,
+      modelPolicy: { model: 'model-a', hash: 'policy-hash' },
+      messages: [{ id: 'm-1', revision: 'r-1', role: 'user', content: '继续' }],
+    },
+  }
+  const state = {
+    version: 2, sessionId: 'session-a', projectId: 'project-a', revision: 0, updatedAt: 0,
+  }
+  const d = deps({
+    productStore: {
+      async readAgentContextState() { return structuredClone(state) },
+      async listAgentContextCompactions() { return { compactions: [] } },
+      async compareAndSetAgentContextState(userId, command) {
+        writes.push({ userId, command })
+        return { kind: 'updated', changed: true, state }
+      },
+    },
+  })
+
+  await createAgentTurnResumer(d)(turn({ request }))
+  const persist = d.executions[0].resolveOptions.persistAgentContextUsageAnchor
+  assert.equal(typeof persist, 'function')
+  await persist({ version: 1, surfaceHash: 'surface-1', inputTokens: 10 })
+  assert.equal(writes.length, 1)
+  assert.equal(writes[0].userId, 'user-a')
+  assert.equal(writes[0].command.projectId, 'project-a')
+  assert.equal(writes[0].command.sessionId, 'session-a')
+  assert.equal(writes[0].command.usageAnchor.surfaceHash, 'surface-1')
 })
 
 test('旧 Turn 没有 thread context snapshot 时按 legacy 无摘要恢复，不借用当前 Session', async () => {

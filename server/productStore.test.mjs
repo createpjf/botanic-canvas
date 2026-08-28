@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { createAgentThreadContext } from './agentThreadContext.mjs'
+import { canonicalHash } from './canonicalHash.mjs'
 import { agentTurnRequestHash } from './agentTurnRequestIdentity.mjs'
 import { createAgentTurnRecord } from './botanicAgentTurnRuntime.mjs'
 import { createProductStore } from './productStore.mjs'
@@ -2304,4 +2305,92 @@ test('Recovery Adapter 按 (updatedAt,id) ASC 稳定分页且返回权威游标�
     after: { updatedAt: 600, id: 'job-a' },
     limit: 2,
   }).map((job) => job.id), ['job-b', 'job-c'])
+})
+
+test('Agent Context V2 持久化 usage anchor、CAS head 与 append-only compaction ledger', () => {
+  const { path, store } = createStore()
+  const owner = store.authenticate('owner-token')
+  const projectId = 'project-context-v2'
+  const sessionId = 'session-context-v2'
+  store.writeProject(owner.id, { ...document(projectId), agentSessions: [], agentMemory: [], agentRuns: [] }, undefined)
+  store.putAgentSession(owner.id, projectId, {
+    id: sessionId, title: 'Context V2', executionMode: 'manual', contextNodeIds: [], createdAt: 10, updatedAt: 10,
+  })
+  store.putAgentMessage(owner.id, projectId, sessionId, {
+    id: 'context-message-1', role: 'user', kind: 'text', content: '原始消息不得删除', createdAt: 11, updatedAt: 11,
+  })
+  const editor = store.createUser(owner.id, {
+    email: 'context-editor@example.com', name: 'Context Editor', accessToken: 'context-editor-token',
+  })
+  const viewer = store.createUser(owner.id, {
+    email: 'context-viewer@example.com', name: 'Context Viewer', accessToken: 'context-viewer-token',
+  })
+  store.addProjectMember(owner.id, projectId, editor.id, 'editor')
+  store.addProjectMember(owner.id, projectId, viewer.id, 'viewer')
+
+  assert.deepEqual(store.readAgentContextState(viewer.id, projectId, sessionId), {
+    version: 2, sessionId, projectId, revision: 0, updatedAt: 0,
+  })
+  assert.throws(() => store.compareAndSetAgentContextState(viewer.id, {
+    projectId, sessionId, expectedRevision: 0, idempotencyKey: 'viewer-write',
+    usageAnchor: {
+      version: 1, provider: 'openai', model: 'gpt-5', surfaceHash: 'surface-1', staticHash: 'static-1',
+      inputTokens: 100, outputTokens: 10, heuristicInputTokens: 90, observedAt: 100,
+    },
+  }), (error) => error?.code === 'PROJECT_WRITE_FORBIDDEN')
+
+  const anchorCommand = {
+    projectId, sessionId, expectedRevision: 0, idempotencyKey: 'anchor-1',
+    usageAnchor: {
+      version: 1, provider: 'openai', model: 'gpt-5', surfaceHash: 'surface-1', staticHash: 'static-1',
+      inputTokens: 100, outputTokens: 10, heuristicInputTokens: 90, observedAt: 100, turnId: 'turn-1', step: 1,
+    },
+  }
+  const anchored = store.compareAndSetAgentContextState(owner.id, anchorCommand)
+  assert.equal(anchored.kind, 'updated')
+  assert.equal(anchored.state.revision, 1)
+  assert.deepEqual(store.listAgentContextCompactions(owner.id, projectId, sessionId).compactions, [],
+    'usage-only ledger 不应被读成 compaction')
+
+  const compaction = {
+    id: 'compaction-1', version: 2, trigger: 'pre_step',
+    sourceSurfaceHash: 'surface-1', resultSurfaceHash: 'surface-2',
+    replacedMessageRevisions: [{ messageId: 'context-message-1', revision: 'revision-1' }],
+    checkpoint: {
+      role: 'user', content: '已压缩上下文', contentHash: canonicalHash('已压缩上下文'),
+    },
+    policy: { id: 'context-policy-1', hash: 'policy-hash-1', model: 'gpt-5' },
+    meterBefore: { totalTokens: 7_000 }, meterAfter: { totalTokens: 1_000 },
+  }
+  const compacted = store.compareAndSetAgentContextState(editor.id, {
+    projectId, sessionId, expectedRevision: 1, idempotencyKey: 'compact-1', compaction,
+  })
+  assert.equal(compacted.kind, 'updated')
+  assert.equal(compacted.state.revision, 2)
+  assert.equal(compacted.state.headCompactionId, compaction.id)
+  assert.equal(compacted.state.headCompactionSequence, 2)
+  assert.deepEqual(compacted.state.usageAnchor, anchorCommand.usageAnchor)
+  assert.deepEqual(store.listAgentContextCompactions(viewer.id, projectId, sessionId, {
+    afterSequence: 0, limit: 10,
+  }).compactions, [{ ...compaction, sequence: 2, createdAt: compacted.state.updatedAt }])
+
+  const replay = store.compareAndSetAgentContextState(owner.id, { ...anchorCommand, expectedRevision: 2 })
+  assert.equal(replay.kind, 'replay')
+  assert.equal(replay.state.revision, 1, '历史键返回原始响应快照')
+  assert.equal(store.compareAndSetAgentContextState(owner.id, {
+    ...anchorCommand,
+    usageAnchor: { ...anchorCommand.usageAnchor, inputTokens: 101 },
+  }).kind, 'conflict')
+  assert.equal(store.compareAndSetAgentContextState(owner.id, {
+    ...anchorCommand, idempotencyKey: 'stale-new-key',
+  }).kind, 'conflict')
+  assert.equal(store.listAgentSessionMessages(owner.id, projectId, sessionId).messages[0].content,
+    '原始消息不得删除')
+
+  const persisted = JSON.parse(readFileSync(path, 'utf8'))
+  assert.equal(persisted.agentContextStates[0].ownerId, owner.id, 'Editor 推进 head 不得改绑 owner')
+  assert.equal(persisted.agentContextCompactions.length, 2, '失败/replay CAS 不追加 ledger')
+  const reloaded = createProductStore({ dataPath: path, bootstrapAccessToken: 'owner-token' })
+  assert.equal(reloaded.readAgentContextState(owner.id, projectId, sessionId).revision, 2)
+  assert.equal(reloaded.listAgentContextCompactions(owner.id, projectId, sessionId).compactions.length, 1)
 })

@@ -96,6 +96,187 @@ test('Agent Tool Loop 执行模型函数调用并保留可展示的工具轨迹'
   }])
 })
 
+test('未提供 Model Context 时保持 legacy callModel 请求形状', async () => {
+  const registry = createAgentToolRegistry([])
+  let request
+  const result = await runAgentToolLoop({
+    registry,
+    messages: [{ role: 'user', content: '你好' }],
+    callModel: async (input) => {
+      request = input
+      return { choices: [{ message: { role: 'assistant', content: '你好' } }] }
+    },
+  })
+
+  assert.equal(result.output, '你好')
+  assert.deepEqual(Object.keys(request), ['messages', 'tools', 'tool_choice', 'step'])
+  assert.deepEqual(request, {
+    messages: [{ role: 'user', content: '你好' }],
+    tools: [],
+    tool_choice: 'auto',
+    step: 0,
+  })
+})
+
+test('Model Context 每步 prepare，模型响应后 observe 归一化 usage', async () => {
+  const registry = createAgentToolRegistry([{
+    name: 'probe', label: '探针', description: '读取探针。', risk: 'read',
+    parameters: { type: 'object', properties: {} },
+    validate: (value) => value,
+    execute: async () => ({ ok: true }),
+  }])
+  const attempt = { id: 'attempt-context-1' }
+  const order = []
+  const prepareInputs = []
+  const modelRequests = []
+  const observations = []
+  const preparedValues = [{ key: 'prepared-0' }, { key: 'prepared-1' }]
+  const modelContext = {
+    prepare: async (input) => {
+      order.push(`prepare:${input.step}`)
+      prepareInputs.push(input)
+      if (input.step === 0) {
+        return {
+          messages: [...input.messages, { role: 'system', content: 'prepared-step-0' }],
+          tools: input.tools.map((tool) => ({ ...tool, preparedForStep: 0 })),
+          prepared: preparedValues[0],
+        }
+      }
+      return { prepared: preparedValues[1] }
+    },
+    observe: async (input) => {
+      order.push(`observe:${input.step}`)
+      observations.push(input)
+    },
+  }
+  let modelCall = 0
+  const result = await runAgentToolLoop({
+    registry,
+    messages: [{ role: 'user', content: '检查' }],
+    attempt,
+    maxOutputTokens: 512,
+    modelContext,
+    callModel: async (request) => {
+      order.push(`model:${request.step}`)
+      modelRequests.push(request)
+      modelCall += 1
+      return modelCall === 1
+        ? {
+            choices: [{ message: { tool_calls: [{
+              id: 'call-context-probe', type: 'function', function: { name: 'probe', arguments: '{}' },
+            }] } }],
+            usage: { prompt_tokens: 12, completion_tokens: 3, total_tokens: 15, raw: '不透传' },
+          }
+        : {
+            choices: [{ message: { content: '完成' } }],
+            usage: { input_tokens: 20, output_tokens: 4 },
+          }
+    },
+  })
+
+  assert.equal(result.output, '完成')
+  assert.deepEqual(order, [
+    'prepare:0', 'model:0', 'observe:0',
+    'prepare:1', 'model:1', 'observe:1',
+  ])
+  assert.equal(prepareInputs[0].attempt, attempt)
+  assert.equal(prepareInputs[0].maxOutputTokens, 512)
+  assert.equal(prepareInputs[0].trigger, 'pre_step')
+  assert.equal(modelRequests[0].messages.at(-1).content, 'prepared-step-0')
+  assert.equal(modelRequests[0].tools[0].preparedForStep, 0)
+  assert.equal(modelRequests[1].messages, prepareInputs[1].messages)
+  assert.equal(modelRequests[1].tools, prepareInputs[1].tools)
+  assert.equal(observations[0].prepared, preparedValues[0])
+  assert.equal(observations[1].prepared, preparedValues[1])
+  assert.deepEqual(observations.map((entry) => entry.responseUsage), [
+    { inputTokens: 12, outputTokens: 3, totalTokens: 15 },
+    { inputTokens: 20, outputTokens: 4, totalTokens: 24 },
+  ])
+  assert.equal('response' in observations[0], false)
+})
+
+test('Model Context 在明确 overflow 后强制 prepare，并只重试同一步一次', async () => {
+  const registry = createAgentToolRegistry([])
+  const preparations = []
+  const requests = []
+  const observations = []
+  const overflow = new Error('context overflow')
+  overflow.code = 'AGENT_CONTEXT_OVERFLOW'
+  const result = await runAgentToolLoop({
+    registry,
+    messages: [{ role: 'user', content: '很长的请求' }],
+    maxOutputTokens: 3000,
+    modelContext: {
+      prepare: async (input) => {
+        preparations.push(input)
+        if (input.force === true) {
+          return {
+            changed: true,
+            messages: [{ role: 'user', content: '强制压缩后的请求' }],
+            prepared: 'overflow-prepared',
+          }
+        }
+        return { prepared: 'initial-prepared' }
+      },
+      observe: async (input) => { observations.push(input) },
+    },
+    callModel: async (request) => {
+      requests.push(request)
+      if (requests.length === 1) throw overflow
+      return {
+        choices: [{ message: { content: '完成' } }],
+        usage: { prompt_tokens: 8, completion_tokens: 2 },
+      }
+    },
+  })
+
+  assert.equal(result.output, '完成')
+  assert.equal(requests.length, 2)
+  assert.deepEqual(requests.map((request) => request.step), [0, 0])
+  assert.equal(requests[1].messages[0].content, '强制压缩后的请求')
+  assert.equal(preparations[0].trigger, 'pre_step')
+  assert.equal(Object.hasOwn(preparations[0], 'force'), false)
+  assert.equal(preparations[1].trigger, 'overflow')
+  assert.equal(preparations[1].force, true)
+  assert.equal(preparations[1].maxOutputTokens, 3000)
+  assert.deepEqual(observations, [{
+    attempt: undefined,
+    step: 0,
+    prepared: 'overflow-prepared',
+    responseUsage: { inputTokens: 8, outputTokens: 2, totalTokens: 10 },
+  }])
+})
+
+test('Model Context overflow 未产生变化或重试仍失败时不继续请求', async () => {
+  const overflow = () => Object.assign(new Error('context overflow'), { code: 'AGENT_CONTEXT_OVERFLOW' })
+  for (const scenario of ['unchanged', 'retry_failed']) {
+    let modelCalls = 0
+    let observes = 0
+    const forcedPreparations = []
+    await assert.rejects(runAgentToolLoop({
+      registry: createAgentToolRegistry([]),
+      messages: [{ role: 'user', content: scenario }],
+      modelContext: {
+        prepare: async (input) => {
+          if (input.force) forcedPreparations.push(input)
+          return input.force
+            ? { changed: scenario === 'retry_failed', prepared: 'forced' }
+            : { prepared: 'initial' }
+        },
+        observe: async () => { observes += 1 },
+      },
+      callModel: async () => {
+        modelCalls += 1
+        throw overflow()
+      },
+    }), (error) => error?.code === 'AGENT_CONTEXT_OVERFLOW')
+
+    assert.equal(modelCalls, scenario === 'unchanged' ? 1 : 2, scenario)
+    assert.equal(forcedPreparations.length, 1, scenario)
+    assert.equal(observes, 0, scenario)
+  }
+})
+
 test('Agent Tool Loop 拒绝未知工具、损坏参数与无休止调用', async () => {
   const registry = createAgentToolRegistry([])
   await assert.rejects(
@@ -409,7 +590,7 @@ test('工具集在进入循环前定格，中途改配置不影响已开始的�
   assert.ok(result.steps.every((entry) => entry.snapshot === snapshot))
 })
 
-test('执行快照被深冻结，调用方之后改自己的对象也影响不到它', () => {
+test('执行快照被深冻结，并绑定 Model Context Policy 哈希', () => {
   const bindings = [{ id: 'skill-1', version: 1, contentHash: 'h1' }]
   const parameters = { type: 'object', additionalProperties: false, properties: { query: { type: 'string' } } }
   const registry = createAgentToolRegistry([{
@@ -417,7 +598,13 @@ test('执行快照被深冻结，调用方之后改自己的对象也影响不�
     parameters,
     validate: () => ({}), execute: async () => ({}),
   }])
-  const snapshot = freezeAgentStepSnapshot({ registry, model: 'model-a', skillBindings: bindings, role: 'owner' })
+  const snapshot = freezeAgentStepSnapshot({
+    registry,
+    model: 'model-a',
+    skillBindings: bindings,
+    contextPolicyHash: 'policy-hash-1',
+    role: 'owner',
+  })
   bindings[0].version = 99
   bindings.push({ id: 'skill-2' })
   parameters.properties.query.type = 'number'
@@ -431,9 +618,11 @@ test('执行快照被深冻结，调用方之后改自己的对象也影响不�
   assert.equal(registry.openAITools()[0].function.parameters.properties.query.type, 'string')
   assert.equal(snapshot.skillBindings.length, 1)
   assert.equal(snapshot.skillBindings[0].version, 1)
+  assert.equal(snapshot.contextPolicyHash, 'policy-hash-1')
   assert.equal(snapshot.role, 'owner')
   assert.equal(Object.isFrozen(snapshot), true)
   assert.throws(() => { snapshot.model = 'model-b' }, TypeError)
+  assert.equal(Object.hasOwn(freezeAgentStepSnapshot({ registry }), 'contextPolicyHash'), false)
 })
 
 test('能力快照绑定工具 schema 与治理声明，而不只记录工具名', () => {

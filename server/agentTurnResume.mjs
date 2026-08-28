@@ -2,6 +2,7 @@
 import { validateAgentTurnCheckpoint } from './agentTurnCheckpoint.mjs'
 import { resolveBotanicAgentRuntimeRequest } from './agentRuntimeRequest.mjs'
 import { createAgentOperationalReaders } from './agentOperationalReaders.mjs'
+import { createAgentContextCoordinator } from './agentContextCoordinator.mjs'
 
 const RECEIPT_TEXT_KEYS = new Set(['message', 'status', 'kind', 'type', 'label', 'name'])
 const RECEIPT_BOOLEAN_KEYS = new Set(['ok', 'reused', 'created', 'updated', 'deleted', 'cancelled'])
@@ -141,6 +142,14 @@ export function createAgentTurnResumer({
 }) {
   if (!productStore) throw new TypeError('Turn 恢复缺少 ProductStore。')
   if (!turnRuntime?.execute) throw new TypeError('Turn 恢复缺少 Turn Runtime。')
+  let contextCoordinator
+  const durableContextCoordinator = () => {
+    contextCoordinator ??= createAgentContextCoordinator({
+      productStore,
+      policies: config?.agentModelContextPolicies,
+    })
+    return contextCoordinator
+  }
 
   const report = (event) => {
     try { observe?.(event) } catch { /* 可观测性不得改变恢复结果。 */ }
@@ -234,7 +243,7 @@ export function createAgentTurnResumer({
     const threadContextSnapshot = turn.request.runtimeOperation
       ? turn.request.input?.threadContextSnapshot
       : turn.request.threadContextSnapshot
-    const immutableThreadSummary = threadContextSnapshot?.version === 1
+    const immutableThreadSummary = [1, 2].includes(threadContextSnapshot?.version)
       && threadContextSnapshot.threadSummary
       && typeof threadContextSnapshot.threadSummary === 'object'
       && !Array.isArray(threadContextSnapshot.threadSummary)
@@ -258,6 +267,16 @@ export function createAgentTurnResumer({
         subagentRunner,
         document: project.document,
         projectSkills,
+        ...(threadContextSnapshot?.version === 2 && turn.sessionId ? {
+          persistAgentContextUsageAnchor: async (usageAnchor) => (
+            durableContextCoordinator().persistUsageAnchor({
+              userId: turn.ownerId,
+              projectId: turn.projectId,
+              sessionId: turn.sessionId,
+              usageAnchor,
+            })
+          ),
+        } : {}),
         operations: createAgentOperationalReaders({
           productStore,
           userId: turn.ownerId,

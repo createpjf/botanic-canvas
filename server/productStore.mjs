@@ -29,6 +29,12 @@ import {
   publicAgentSubagent,
   publicAgentSubagentActivation,
 } from './agentSubagentPersistence.mjs'
+import {
+  agentContextStateCompareAndSetDecision,
+  materializeAgentContextCommand,
+  normalizeAgentContextCompactionPage,
+  publicAgentContextCompaction,
+} from './agentContextPersistence.mjs'
 
 const schemaVersion = 1
 
@@ -103,6 +109,8 @@ function initialState() {
     agentReviewTasks: [],
     agentSessions: [],
     agentSessionReadReceipts: [],
+    agentContextStates: [],
+    agentContextCompactions: [],
     collaborationActivities: [],
     collaborationActivityReceipts: [],
     agentMessages: [],
@@ -624,6 +632,8 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       state.agentSubagentActivations = state.agentSubagentActivations.filter((item) => item.projectId !== projectId)
       state.agentSessions = state.agentSessions.filter((item) => item.projectId !== projectId)
       state.agentSessionReadReceipts = state.agentSessionReadReceipts.filter((item) => item.projectId !== projectId)
+      state.agentContextStates = state.agentContextStates.filter((item) => item.projectId !== projectId)
+      state.agentContextCompactions = state.agentContextCompactions.filter((item) => item.projectId !== projectId)
       state.collaborationActivities = state.collaborationActivities.filter((item) => item.projectId !== projectId)
       state.collaborationActivityReceipts = state.collaborationActivityReceipts.filter((item) => item.projectId !== projectId)
       state.agentMessages = state.agentMessages.filter((item) => item.projectId !== projectId)
@@ -875,6 +885,89 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       existing.payload = { ...existing.payload, threadSummary: clone(decision.session.threadSummary) }
       save()
       return clone({ ...decision, session: existing.payload })
+    },
+
+    readAgentContextState(userId, projectId, sessionId) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project || !canAccess(project, userId)) return undefined
+      const session = state.agentSessions.find((item) => item.id === sessionId && item.projectId === projectId)
+      if (!session) return undefined
+      const record = state.agentContextStates.find((item) => item.sessionId === sessionId && item.projectId === projectId)
+      return record ? clone(record.payload) : {
+        version: 2, sessionId, projectId, revision: 0, updatedAt: 0,
+      }
+    },
+
+    listAgentContextCompactions(userId, projectId, sessionId, options = {}) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project || !canAccess(project, userId)) return undefined
+      const session = state.agentSessions.find((item) => item.id === sessionId && item.projectId === projectId)
+      if (!session) return undefined
+      const page = normalizeAgentContextCompactionPage(options)
+      const compactions = state.agentContextCompactions
+        .filter((item) => item.projectId === projectId && item.sessionId === sessionId
+          && item.sequence > page.afterSequence && item.payload?.compaction)
+        .sort((left, right) => left.sequence - right.sequence)
+        .slice(0, page.limit)
+        .map((item) => publicAgentContextCompaction(item.payload))
+        .filter(Boolean)
+      return {
+        compactions,
+        ...(compactions.length === page.limit
+          ? { nextAfterSequence: compactions.at(-1)?.sequence }
+          : {}),
+      }
+    },
+
+    compareAndSetAgentContextState(userId, rawCommand) {
+      let command
+      try {
+        command = materializeAgentContextCommand(rawCommand)
+      } catch {
+        return { kind: 'invalid', changed: false }
+      }
+      const project = state.projects.find((item) => item.id === command.projectId)
+      const session = state.agentSessions.find((item) => item.id === command.sessionId
+        && item.projectId === command.projectId)
+      if (!project || !session) return { kind: 'not_found', changed: false }
+      assertProjectPermission(project.members.find((item) => item.userId === userId)?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      const stateRecord = state.agentContextStates.find((item) => item.projectId === command.projectId
+        && item.sessionId === command.sessionId)
+      const replayRecord = state.agentContextCompactions.find((item) => item.projectId === command.projectId
+        && item.sessionId === command.sessionId && item.idempotencyKey === command.idempotencyKey)
+      const decision = agentContextStateCompareAndSetDecision({
+        state: stateRecord?.payload,
+        replayEntry: replayRecord?.payload,
+        command,
+        ownerId: stateRecord?.ownerId ?? session.ownerId,
+        observedAt: now(),
+      })
+      if (!decision.changed) return clone(decision)
+      const ledger = decision.ledgerEntry
+      state.agentContextCompactions.push({
+        id: ledger.id,
+        ownerId: ledger.ownerId,
+        projectId: ledger.projectId,
+        sessionId: ledger.sessionId,
+        sequence: ledger.sequence,
+        idempotencyKey: ledger.idempotencyKey,
+        requestHash: ledger.requestHash,
+        createdAt: ledger.createdAt,
+        payload: clone(ledger),
+      })
+      const nextStateRecord = {
+        ownerId: stateRecord?.ownerId ?? session.ownerId,
+        projectId: command.projectId,
+        sessionId: command.sessionId,
+        revision: decision.state.revision,
+        updatedAt: decision.state.updatedAt,
+        payload: clone(decision.state),
+      }
+      if (stateRecord) Object.assign(stateRecord, nextStateRecord)
+      else state.agentContextStates.push(nextStateRecord)
+      save()
+      const { ledgerEntry: _ledgerEntry, ...publicDecision } = decision
+      return clone(publicDecision)
     },
 
     putAgentMessage(userId, projectId, sessionId, input) {

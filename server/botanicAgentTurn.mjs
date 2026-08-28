@@ -17,6 +17,11 @@ import { botanicAgentOperationalSourceLabels, createBotanicAgentOperationalToolD
 import { renderThreadSummary } from './agentThreadSummary.mjs'
 import { canonicalHash } from './canonicalHash.mjs'
 import { estimateAgentContextTokens, truncateAgentContextText } from './agentContextBudget.mjs'
+import { throwIfAgentProviderContextOverflow } from './agentProviderContextOverflow.mjs'
+import {
+  projectAgentThreadContextSnapshotV2,
+  resolveAgentModelContextBinding,
+} from './agentModelContextBinding.mjs'
 
 // Botanic Agent 回合解析器：把“这一句到底是聊天/建议/检索，还是要生成图片，以及要用什么
 // Prompt、生成几张”整体交给服务端模型判断。它读整段对话（包含 Agent 自己刚给出的建议）与
@@ -34,7 +39,6 @@ const GENERATE_VIDEO_TOOL_NAME = 'generate_videos'
 const OVERFLOW_RETRY_TOKEN_BUDGET = 6_000
 const OVERFLOW_TOOL_CONTENT_TOKEN_BUDGET = 128
 const OVERFLOW_HISTORY_MESSAGE_TOKEN_BUDGET = 512
-const EXPLICIT_CONTEXT_OVERFLOW = /(?:context[_ -]?length[_ -]?exceeded|maximum context length|context window[^\n]{0,40}(?:too (?:large|long)|exceed)|too many (?:input )?tokens|prompt (?:is )?too long|input (?:is )?too long)/iu
 
 function invalidRequest(message) {
   throw new BotanicAgentChatError(400, 'INVALID_REQUEST', message)
@@ -589,11 +593,6 @@ function providerError(status) {
   return new BotanicAgentChatError(422, 'PROVIDER_REJECTED', 'Agent 无法处理本次请求。')
 }
 
-function explicitContextOverflow(status, body) {
-  return [400, 413, 422].includes(Number(status))
-    && EXPLICIT_CONTEXT_OVERFLOW.test(String(body ?? '').slice(0, 16_000))
-}
-
 function conversationEntryTokens(entry) {
   return estimateAgentContextTokens(JSON.stringify(entry)) + 4
 }
@@ -748,6 +747,28 @@ function turnAttempt(id, model, snapshot) {
   return Object.freeze({ id, model, snapshotHash: canonicalHash(snapshot) })
 }
 
+function turnModelContextBinding(options, model, expectedPolicy) {
+  try {
+    return resolveAgentModelContextBinding(options, model, expectedPolicy)
+  } catch (caught) {
+    if (typeof caught?.code === 'string' && caught.code.startsWith('AGENT_CONTEXT_')) {
+      throw new BotanicAgentChatError(caught.statusCode ?? 409, caught.code, caught.message, { cause: caught })
+    }
+    throw caught
+  }
+}
+
+function turnThreadContextV2(snapshot, model) {
+  try {
+    return projectAgentThreadContextSnapshotV2(snapshot, model)
+  } catch (caught) {
+    if (typeof caught?.code === 'string' && caught.code.startsWith('AGENT_CONTEXT_')) {
+      throw new BotanicAgentChatError(caught.statusCode ?? 409, caught.code, caught.message, { cause: caught })
+    }
+    throw caught
+  }
+}
+
 async function executeTurnAttempt({ config, model, system, messages, registry, options, allowRawReasoning, snapshot, attempt }) {
   const timeoutSignal = AbortSignal.timeout(config.timeoutMs)
   const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal
@@ -775,6 +796,8 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
       resumeCheckpoint: options.resumeCheckpoint,
       saveCheckpoint: options.saveCheckpoint,
       recoverToolCall: options.recoverToolCall,
+      modelContext: options.modelContext,
+      maxOutputTokens: 3000,
       callModel: async ({ messages: turnMessages, tools, tool_choice, step }) => {
         const requestProvider = (requestMessages) => fetchImpl(`${config.baseUrl}/chat/completions`, {
             method: 'POST',
@@ -798,14 +821,20 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
         let response = await requestProvider(turnMessages)
         if (!response.ok) {
           const failureBody = await response.text().catch(() => '')
-          if (!explicitContextOverflow(response.status, failureBody)) throw providerError(response.status)
-          // 唯一一次重试就在 callModel 内。runAgentToolLoop 尚未拿到模型
-          // 结果，因此这一步的 preflight/checkpoint/tool.execute 都还没发生。
-          response = await requestProvider(strictOverflowRetryConversation(turnMessages))
-          if (!response.ok) {
-            await response.text().catch(() => '')
-            throw providerError(response.status)
+          try {
+            throwIfAgentProviderContextOverflow(response.status, failureBody)
+          } catch (caught) {
+            // V2 统一由 ToolLoop 触发强制 compaction；legacy 才保留这里的
+            // 唯一一次严格裁剪，避免一轮出现私有重试 + 统一重试共 3 次请求。
+            if (options.modelContext !== undefined) throw caught
+            response = await requestProvider(strictOverflowRetryConversation(turnMessages))
+            if (!response.ok) {
+              const retryFailureBody = await response.text().catch(() => '')
+              throwIfAgentProviderContextOverflow(response.status, retryFailureBody)
+              throw providerError(response.status)
+            }
           }
+          if (!response.ok) throw providerError(response.status)
         }
         if (!streaming) return await response.json().catch(() => null)
         return await readStreamedChatCompletion(response.body, {
@@ -875,6 +904,9 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
     }, result.reasoning)
   } catch (caught) {
     if (caught instanceof BotanicAgentChatError) throw caught
+    if (caught?.code === 'AGENT_CONTEXT_OVERFLOW') {
+      throw new BotanicAgentChatError(caught.statusCode ?? 422, caught.code, caught.message, { cause: caught })
+    }
     if (typeof caught?.code === 'string'
       && (caught.code.startsWith('AGENT_TURN_CHECKPOINT_')
         || caught.code === 'AGENT_TURN_NOT_REPLAYABLE'
@@ -906,10 +938,18 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
   const situation = turnSituationBriefing(input, input.locale)
   const mountedSkills = resolveBotanicAgentMountedSkills(input.mountedSkillIds, options.projectSkills)
   const mountedBriefing = botanicAgentMountedSkillBriefing(mountedSkills, input.locale)
+  const contextV2 = turnThreadContextV2(input.threadContextSnapshot, config.model)
   const immutableThreadContext = input.threadContextSnapshot?.version === 1
     && Array.isArray(input.threadContextSnapshot.messages)
     ? input.threadContextSnapshot
-    : undefined
+    : contextV2
+      ? { ...input.threadContextSnapshot, messages: contextV2.messages }
+      : undefined
+  const primaryContextBinding = turnModelContextBinding(
+    options,
+    config.model,
+    contextV2?.modelPolicy,
+  )
   // 线程摘要来自用户历史，可信级别与用户消息相同，不能提升进 system。
   // 它放在最近消息窗口之前，既补回早期事实，又不会覆盖本轮系统边界。
   // 新 Turn 的窗口与摘要同属 immutable request；恢复不得借用当前 Session 的新摘要。
@@ -941,13 +981,19 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
   const searchGuidance = turnSearchGuidance(registry)
   // 这一次执行的能力快照：模型、工具集、Skill/Memory 绑定与角色在进入循环前定格
   // （Epic 8）。中途改配置不该改变已经开始的这一次。
-  const stepSnapshotFor = (model) => freezeAgentStepSnapshot({
+  const stepSnapshotFor = (model, contextBinding) => freezeAgentStepSnapshot({
     registry,
     model,
     skillBindings: mountedSkills.map((skill) => ({ id: skill.id, version: skill.version, contentHash: skill.contentHash })),
     memoryBindings: (memory ?? []).map((item) => ({ id: item.id, version: item.version, contentHash: item.contentHash })),
+    contextPolicyHash: contextBinding.contextPolicyHash,
     role: options.role,
   })
+  const optionsForContext = (contextBinding) => (
+    contextBinding.modelContext === options.modelContext
+      ? options
+      : { ...options, modelContext: contextBinding.modelContext }
+  )
 
   // 原生多模态优先：引用图片直接随消息附给视觉模型，让它看着画面判断意图、综合 Prompt。
   const visionModel = typeof runtimeConfig?.agentVisionModel === 'string' ? runtimeConfig.agentVisionModel.trim() : ''
@@ -969,20 +1015,27 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
       '视觉执行所需的模型或媒体上下文已经变化，不能静默切换到文本执行。',
     )
   }
-  if (visionParts.length && resumeAttemptId !== 'text') {
-    const visionSnapshot = stepSnapshotFor(visionModel)
+  const visionContextBinding = visionParts.length
+    ? turnModelContextBinding(options, visionModel)
+    : undefined
+  // V2 必须让每个实际 Provider model 经过自己的 Context Runtime；factory 没有
+  // 对应视觉模型时直接走已冻结的 primary text attempt，不能把它静默当 legacy。
+  const canAttemptVision = visionParts.length && (!contextV2 || visionContextBinding?.modelContext)
+  if (canAttemptVision && resumeAttemptId !== 'text') {
+    const visionSnapshot = stepSnapshotFor(visionModel, visionContextBinding)
+    const boundVisionOptions = optionsForContext(visionContextBinding)
     let visionCheckpointBoundaryReached = Boolean(options.resumeCheckpoint)
-    const visionOptions = typeof options.saveCheckpoint === 'function'
+    const visionOptions = typeof boundVisionOptions.saveCheckpoint === 'function'
       ? {
-          ...options,
+          ...boundVisionOptions,
           saveCheckpoint: async (checkpoint) => {
             // prepared checkpoint 的持久化发生在工具执行前；一旦尝试跨过该边界，
             // 后续错误都不能回退到另一模型重新执行整轮。
             visionCheckpointBoundaryReached = true
-            return options.saveCheckpoint(checkpoint)
+            return boundVisionOptions.saveCheckpoint(checkpoint)
           },
         }
-      : options
+      : boundVisionOptions
     try {
       return withTurnSelectedResult(await executeTurnAttempt({
         config,
@@ -1030,7 +1083,7 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
     botanicAgentVisionBriefing(visionDescriptions),
     searchGuidance,
   ].filter(Boolean).join('\n\n')
-  const textSnapshot = stepSnapshotFor(config.model)
+  const textSnapshot = stepSnapshotFor(config.model, primaryContextBinding)
   return withTurnSelectedResult(await executeTurnAttempt({
     config,
     model: config.model,
@@ -1038,7 +1091,7 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
     system,
     messages: turnMessages,
     registry,
-    options,
+    options: optionsForContext(primaryContextBinding),
     attempt: turnAttempt('text', config.model, textSnapshot),
     allowRawReasoning,
   }), input)

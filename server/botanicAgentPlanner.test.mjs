@@ -96,6 +96,25 @@ test('Agent Planner 只允许服务端目录中的 Flock 模型，并按请求�
   )
 })
 
+test('Agent Planner 归一明确 context overflow，且无 Model Context 时不自行重试', async () => {
+  let providerCalls = 0
+  await assert.rejects(planBotanicGeneration(validInput, {
+    flockApiKey: 'flock-secret',
+    flockTextModel: 'deepseek-v4-flash',
+    flockAgentModels: ['deepseek-v4-flash'],
+  }, {
+    fetchImpl: async () => {
+      providerCalls += 1
+      return new Response(JSON.stringify({
+        error: { code: 'context_length_exceeded', message: 'maximum context length exceeded' },
+      }), { status: 413 })
+    },
+  }), (error) => error instanceof BotanicAgentPlannerError
+    && error.statusCode === 422
+    && error.code === 'AGENT_CONTEXT_OVERFLOW')
+  assert.equal(providerCalls, 1)
+})
+
 test('Agent Planner 优先使用注入的 Durable Subagent Runner，并绑定权威根 Turn 身份', async () => {
   const dispatched = []
   const runnerContexts = []

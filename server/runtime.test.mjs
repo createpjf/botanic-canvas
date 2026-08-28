@@ -5,6 +5,26 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { loadLocalEnv, runtimeConfig } from './runtime.mjs'
 
+test('Model Context 策略按显式 JSON 解析，未配置时保持 legacy 目录', () => {
+  const previous = process.env.AGENT_MODEL_CONTEXT_POLICIES_JSON
+  try {
+    delete process.env.AGENT_MODEL_CONTEXT_POLICIES_JSON
+    assert.deepEqual(runtimeConfig('/tmp/botanic-runtime-test').agentModelContextPolicies, {
+      version: 1,
+      models: {},
+    })
+    process.env.AGENT_MODEL_CONTEXT_POLICIES_JSON = JSON.stringify({
+      models: { 'planner-a': { contextWindowTokens: 32_000 } },
+    })
+    const configured = runtimeConfig('/tmp/botanic-runtime-test').agentModelContextPolicies
+    assert.equal(configured.models['planner-a'].contextWindowTokens, 32_000)
+    assert.equal(Object.isFrozen(configured), true)
+  } finally {
+    if (previous === undefined) delete process.env.AGENT_MODEL_CONTEXT_POLICIES_JSON
+    else process.env.AGENT_MODEL_CONTEXT_POLICIES_JSON = previous
+  }
+})
+
 test('实时票据只使用独立签名密钥，不复用数据库或工作区凭据', () => {
   const keys = [
     'REALTIME_TICKET_SECRET',

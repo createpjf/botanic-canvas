@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { BotanicAgentChatError } from './botanicAgentChat.mjs'
 import { resolveBotanicAgentTurn, validateBotanicAgentTurnInput } from './botanicAgentTurn.mjs'
+import { resolveAgentModelContextPolicy } from './agentModelContextPolicy.mjs'
+import { canonicalHash } from './canonicalHash.mjs'
 
 const runtime = {
   flockApiKey: 'flock-secret',
@@ -247,6 +249,77 @@ test('Turn 存在 thread context snapshot 时，首跑与恢复都只使用该�
   assert.doesNotMatch(JSON.stringify(providerMessages), /结构化摘要|最新摘要|滑动窗口/u)
 })
 
+test('Turn/Resume 消费 Snapshot V2，并把实际 Context Policy 绑定进执行快照', async () => {
+  const policy = resolveAgentModelContextPolicy('deepseek-v4-pro')
+  const checkpointText = 'V2 已压缩的早期上下文'
+  const input = {
+    projectId: 'project-turn', sessionId: 'session-v2', plannerModel: 'deepseek-v4-pro',
+    messages: [{ role: 'user', content: '不应进入 Provider 的 legacy 窗口' }],
+    threadContextSnapshot: {
+      version: 2,
+      modelPolicy: policy,
+      checkpoint: {
+        role: 'user', content: checkpointText, contentHash: canonicalHash(checkpointText),
+      },
+      messages: [{
+        id: 'message-v2', revision: 'revision-v2', role: 'user', content: '继续 V2 当前任务',
+      }],
+    },
+    contextNodeIds: [], hasTarget: false, generationModels,
+  }
+  const factoryCalls = []
+  const modelContext = {
+    policy,
+    prepare: async ({ messages, tools }) => ({ messages, tools, prepared: 'v2-prepared' }),
+    observe: async () => undefined,
+  }
+  const modelContextForModel = (model, runtimeIdentity) => {
+    factoryCalls.push({ model, runtimeIdentity })
+    return model === policy.model ? modelContext : undefined
+  }
+  let checkpoint
+  const requests = []
+  const runtimeIdentity = { projectId: 'project-turn', sessionId: 'session-v2', turnId: 'turn-v2' }
+  const first = await resolveBotanicAgentTurn(input, runtime, {
+    document,
+    runtimeIdentity,
+    modelContextForModel,
+    saveCheckpoint: async (value) => { checkpoint = structuredClone(value) },
+    fetchImpl: async (_url, init) => {
+      requests.push(JSON.parse(init.body))
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'V2 完成。' } }] }), { status: 200 })
+    },
+  })
+  assert.equal(first.answer, 'V2 完成。')
+  assert.match(JSON.stringify(requests[0].messages), /V2 已压缩的早期上下文|继续 V2 当前任务/u)
+  assert.doesNotMatch(JSON.stringify(requests[0].messages), /legacy 窗口|message-v2|revision-v2/u)
+  assert.equal(checkpoint.attempt.model, 'deepseek-v4-pro')
+  assert.match(checkpoint.attempt.snapshotHash, /^[A-Za-z0-9_-]{43}$/u)
+  assert.deepEqual(factoryCalls[0], { model: 'deepseek-v4-pro', runtimeIdentity })
+
+  const resumed = await resolveBotanicAgentTurn(input, runtime, {
+    document,
+    runtimeIdentity,
+    modelContextForModel,
+    resumeCheckpoint: checkpoint,
+    saveCheckpoint: async () => { throw new Error('V2 terminal resume 不应再写 checkpoint') },
+    fetchImpl: async () => { throw new Error('V2 terminal resume 不应再请求 Provider') },
+  })
+  assert.equal(resumed.answer, 'V2 完成。')
+
+  await assert.rejects(resolveBotanicAgentTurn(input, runtime, {
+    document,
+    runtimeIdentity,
+    modelContextForModel: () => ({
+      ...modelContext,
+      policy: { ...policy, hash: 'drifted-policy-hash' },
+    }),
+    fetchImpl: async () => { throw new Error('策略漂移应在 Provider 前失败') },
+  }), (error) => error instanceof BotanicAgentChatError
+    && error.statusCode === 409
+    && error.code === 'AGENT_CONTEXT_POLICY_MISMATCH')
+})
+
 test('明确 context-length overflow 只在同一模型步、工具执行前严格裁剪重试一次', async () => {
   const requests = []
   let runReads = 0
@@ -325,8 +398,47 @@ test('非明确上下文溢出的 400 不重试；连续明确溢出也最多两
         error: { code: 'context_length_exceeded', message: 'maximum context length exceeded' },
       }), { status: 400 })
     },
-  }), (error) => error instanceof BotanicAgentChatError && error.code === 'PROVIDER_REJECTED')
+  }), (error) => error instanceof BotanicAgentChatError && error.code === 'AGENT_CONTEXT_OVERFLOW')
   assert.equal(overflowCalls, 2)
+})
+
+test('传入 Model Context 后禁用 Turn 私有 overflow 重试，统一重试总计最多两次请求', async () => {
+  const input = {
+    projectId: 'project-turn', plannerModel: 'deepseek-v4-pro',
+    messages: [{ role: 'user', content: '继续' }], contextNodeIds: [], hasTarget: false, generationModels,
+  }
+  const requests = []
+  const preparations = []
+  await assert.rejects(resolveBotanicAgentTurn(input, runtime, {
+    document,
+    modelContext: {
+      policy: { model: 'deepseek-v4-pro', hash: 'test-context-policy' },
+      prepare: async (context) => {
+        preparations.push(context)
+        return context.force
+          ? {
+              changed: true,
+              messages: [...context.messages, { role: 'user', content: 'MODEL_CONTEXT_OVERFLOW_RETRY' }],
+              prepared: 'overflow',
+            }
+          : { prepared: 'initial' }
+      },
+      observe: async () => { throw new Error('失败响应不应 observe') },
+    },
+    fetchImpl: async (_url, init) => {
+      requests.push(JSON.parse(init.body))
+      return new Response(JSON.stringify({
+        error: { code: 'context_length_exceeded', message: 'maximum context length exceeded' },
+      }), { status: 400 })
+    },
+  }), (error) => error instanceof BotanicAgentChatError && error.code === 'AGENT_CONTEXT_OVERFLOW')
+
+  assert.equal(requests.length, 2)
+  assert.equal(preparations.length, 2)
+  assert.equal(preparations[0].trigger, 'pre_step')
+  assert.equal(preparations[1].trigger, 'overflow')
+  assert.equal(preparations[1].force, true)
+  assert.match(JSON.stringify(requests[1].messages), /MODEL_CONTEXT_OVERFLOW_RETRY/u)
 })
 
 test('模型基于既有建议直接综合可执行 Prompt 并生成多张，而非要求用户重述', async () => {

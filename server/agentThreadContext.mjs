@@ -16,6 +16,8 @@ import {
   estimateAgentContextTokens,
   truncateAgentContextText,
 } from './agentContextBudget.mjs'
+import { createAgentContextCoordinator } from './agentContextCoordinator.mjs'
+import { resolveAgentModelContextPolicy } from './agentModelContextPolicy.mjs'
 
 const MODEL_MESSAGE_LIMIT = 16
 const MODEL_MESSAGE_TEXT_LIMIT = 4000
@@ -249,6 +251,8 @@ async function backfillInitialSummaryHistory({ productStore, userId, projectId, 
 export function createAgentThreadContext(dependencies) {
   const { productStore } = dependencies ?? {}
   const now = typeof dependencies?.now === 'function' ? dependencies.now : () => Date.now()
+  const contextV2 = dependencies?.contextV2
+  let contextCoordinator = dependencies?.contextCoordinator
   if (
     typeof productStore?.listAgentSessions !== 'function'
     || typeof productStore?.listAgentSessionMessages !== 'function'
@@ -257,9 +261,23 @@ export function createAgentThreadContext(dependencies) {
     throw new TypeError('Agent Thread Context 缺少 ProductStore 会话、消息分页或 Summary CAS Interface。')
   }
 
+  const contextV2Enabled = (input) => {
+    if (!contextV2) return false
+    if (typeof contextV2.isEnabled === 'function') return Boolean(contextV2.isEnabled(input))
+    return contextV2.enabled === true
+  }
+
+  const durableContextCoordinator = () => {
+    contextCoordinator ??= createAgentContextCoordinator({
+      productStore,
+      policies: contextV2?.policies,
+    })
+    return contextCoordinator
+  }
+
   return Object.freeze({
     async resolve(input) {
-      const { userId, projectId, sessionId, inputMessage, locale } = input ?? {}
+      const { userId, projectId, sessionId, inputMessage, locale, model } = input ?? {}
       assertInputMessage(inputMessage)
       const sessions = await productStore.listAgentSessions(userId, projectId, { limit: 80 })
       const storedSession = (sessions ?? []).find((candidate) => candidate?.id === sessionId)
@@ -359,6 +377,72 @@ export function createAgentThreadContext(dependencies) {
         contextLocale,
         authoritativeInputMessage.id,
       )
+      if (contextV2Enabled({ userId, projectId, sessionId })) {
+        if (typeof model !== 'string' || !model.trim()) {
+          throw new AgentThreadContextError(
+            'AGENT_CONTEXT_MODEL_REQUIRED',
+            'Context V2 缺少本轮冻结模型。',
+            409,
+          )
+        }
+        const policy = resolveAgentModelContextPolicy(model, contextV2?.policies)
+        const currentInputTokens = estimateAgentContextTokens(currentProjectedContent)
+          + AGENT_CONTEXT_MESSAGE_OVERHEAD_TOKENS
+        if (currentInputTokens > policy.maxInputTokens) {
+          throw new AgentThreadContextError(
+            'AGENT_THREAD_INPUT_TOO_LARGE',
+            'Agent 当前输入超过可支持的模型上下文预算，请精简后重试。',
+            413,
+          )
+        }
+        const coordinated = await durableContextCoordinator().resolve({
+          userId,
+          projectId,
+          sessionId,
+          model: model.trim(),
+          messages,
+          currentMessageId: authoritativeInputMessage.id,
+          locale: contextLocale,
+          threadSummary,
+          trigger: 'pre_step',
+        })
+        const baseSnapshot = coordinated.snapshot
+        const contextMessages = [
+          ...(baseSnapshot.checkpoint
+            ? [{ role: 'user', content: baseSnapshot.checkpoint.content }]
+            : []),
+          ...baseSnapshot.messages.map((message) => ({ role: message.role, content: message.content })),
+        ]
+        const summaryTokens = estimateAgentContextTokens(renderedThreadSummary)
+        const contextBudget = {
+          limit: policy.maxInputTokens,
+          estimatedTokens: Number(baseSnapshot.contextMeter?.inputTokens ?? 0) + summaryTokens,
+          messageTokens: Number(baseSnapshot.contextMeter?.inputTokens ?? 0),
+          summaryTokens,
+          summaryLimit: AGENT_THREAD_SUMMARY_TOKEN_BUDGET,
+          summaryTruncated: false,
+          summaryOmittedCharacters: 0,
+          omittedMessages: Math.max(0, messages.length - baseSnapshot.messages.length),
+        }
+        const threadContextSnapshot = {
+          ...structuredClone(baseSnapshot),
+          ...(threadSummary ? {
+            threadSummary: structuredClone(threadSummary),
+            threadSummaryText: renderedThreadSummary,
+          } : {}),
+        }
+        return {
+          messages: contextMessages,
+          inputMessage: authoritativeInputMessage,
+          ...(threadSummary ? {
+            threadSummary: structuredClone(threadSummary),
+            threadSummaryText: renderedThreadSummary,
+          } : {}),
+          contextBudget,
+          threadContextSnapshot,
+          contextState: coordinated.state,
+        }
+      }
       const currentInputTokens = estimateAgentContextTokens(currentProjectedContent)
         + AGENT_CONTEXT_MESSAGE_OVERHEAD_TOKENS
       if (currentInputTokens > AGENT_THREAD_CONTEXT_TOKEN_BUDGET) {

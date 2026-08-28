@@ -31,8 +31,8 @@ test('Thread Summary CAS 是三个 ProductStore Adapter 的核心能力', () => 
       adapter,
       'compareAndSetAgentThreadSummary(userId, command)',
       adapter === local
-        ? 'putAgentMessage(userId, projectId, sessionId, input)'
-        : 'async putAgentMessage(userId, projectId, sessionId, input)',
+        ? 'readAgentContextState(userId, projectId, sessionId)'
+        : 'async readAgentContextState(userId, projectId, sessionId)',
     )
     assert.match(method, /agentThreadSummaryCompareAndSetDecision\(undefined, command\)/u)
   }
@@ -42,7 +42,7 @@ test('PostgreSQL CAS 在行锁事务中只 patch threadSummary，不改变 Sessi
   const method = methodSlice(
     postgres,
     'async compareAndSetAgentThreadSummary(userId, command)',
-    'async putAgentMessage(userId, projectId, sessionId, input)',
+    'async readAgentContextState(userId, projectId, sessionId)',
   )
   assert.match(method, /sql\.begin/u)
   assert.match(method, /from agent_sessions[\s\S]*for update/u)
@@ -55,7 +55,7 @@ test('Supabase Adapter 只走独立 CAS RPC，缺迁移时 fail-fast', () => {
   const method = methodSlice(
     supabase,
     'async compareAndSetAgentThreadSummary(userId, command)',
-    'async putAgentMessage(userId, projectId, sessionId, input)',
+    'async readAgentContextState(userId, projectId, sessionId)',
   )
   assert.match(method, /botanic_compare_and_set_agent_thread_summary/u)
   assert.match(method, /AGENT_THREAD_SUMMARY_CAS_REQUIRED/u)

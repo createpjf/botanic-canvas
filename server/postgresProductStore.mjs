@@ -27,6 +27,12 @@ import {
   publicAgentSubagent,
   publicAgentSubagentActivation,
 } from './agentSubagentPersistence.mjs'
+import {
+  agentContextStateCompareAndSetDecision,
+  materializeAgentContextCommand,
+  normalizeAgentContextCompactionPage,
+  publicAgentContextCompaction,
+} from './agentContextPersistence.mjs'
 
 const now = () => Date.now()
 const hashAccessToken = (token) => createHash('sha256').update(token).digest('hex')
@@ -368,6 +374,42 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       updated_at bigint not null,
       payload jsonb not null
     );
+    create table if not exists agent_context_states (
+      session_id text primary key references agent_sessions(id) on delete cascade,
+      owner_id text not null references app_users(id) on delete cascade,
+      project_id text not null references projects(id) on delete cascade,
+      revision bigint not null default 0 check (revision >= 0),
+      head_compaction_id text,
+      head_compaction_sequence bigint,
+      updated_at bigint not null,
+      payload jsonb not null,
+      constraint agent_context_states_head_shape check (
+        (head_compaction_id is null and head_compaction_sequence is null)
+        or (nullif(head_compaction_id, '') is not null
+          and head_compaction_sequence > 0 and head_compaction_sequence <= revision)
+      )
+    );
+    alter table agent_context_states add column if not exists head_compaction_sequence bigint;
+    alter table agent_context_states drop constraint if exists agent_context_states_head_shape;
+    alter table agent_context_states add constraint agent_context_states_head_shape check (
+      (head_compaction_id is null and head_compaction_sequence is null)
+      or (nullif(head_compaction_id, '') is not null
+        and head_compaction_sequence > 0 and head_compaction_sequence <= revision)
+    );
+    create table if not exists agent_context_compactions (
+      session_id text not null references agent_sessions(id) on delete cascade,
+      sequence bigint not null check (sequence > 0),
+      id text not null unique,
+      owner_id text not null references app_users(id) on delete cascade,
+      project_id text not null references projects(id) on delete cascade,
+      idempotency_key text not null,
+      request_hash text not null,
+      compaction_id text,
+      created_at bigint not null,
+      payload jsonb not null,
+      primary key (session_id, sequence),
+      unique (session_id, idempotency_key)
+    );
     create table if not exists agent_subagents (
       id text primary key,
       owner_id text not null references app_users(id) on delete cascade,
@@ -548,6 +590,8 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     create index if not exists agent_sessions_project_updated_idx on agent_sessions (project_id, updated_at desc);
     create index if not exists agent_messages_session_updated_idx on agent_messages (session_id, updated_at asc);
     create index if not exists agent_messages_project_updated_idx on agent_messages (project_id, updated_at asc);
+    create index if not exists agent_context_compactions_session_sequence_idx
+      on agent_context_compactions (session_id, sequence asc) where compaction_id is not null;
     create index if not exists agent_subagents_project_updated_idx on agent_subagents (project_id, updated_at desc);
     create index if not exists agent_subagents_root_turn_idx
       on agent_subagents (project_id, root_turn_id, id collate "C" asc);
@@ -1939,6 +1983,123 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
           where id = ${command.sessionId}
         `
         return clone(decision)
+      })
+    },
+
+    async readAgentContextState(userId, projectId, sessionId) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const [session] = await sql`
+        select 1 from agent_sessions where id = ${sessionId} and project_id = ${projectId}
+      `
+      if (!session) return undefined
+      const [row] = await sql`
+        select payload from agent_context_states
+        where session_id = ${sessionId} and project_id = ${projectId}
+      `
+      return row ? asPayload(row) : {
+        version: 2, sessionId, projectId, revision: 0, updatedAt: 0,
+      }
+    },
+
+    async listAgentContextCompactions(userId, projectId, sessionId, options = {}) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const [session] = await sql`
+        select 1 from agent_sessions where id = ${sessionId} and project_id = ${projectId}
+      `
+      if (!session) return undefined
+      const page = normalizeAgentContextCompactionPage(options)
+      const rows = await sql`
+        select sequence, created_at as "createdAt", payload
+        from agent_context_compactions
+        where project_id = ${projectId} and session_id = ${sessionId}
+          and compaction_id is not null and sequence > ${page.afterSequence}
+        order by sequence asc
+        limit ${page.limit}
+      `
+      const compactions = rows
+        .map((row) => publicAgentContextCompaction({
+          ...asPayload(row), sequence: Number(row.sequence), createdAt: Number(row.createdAt),
+        }))
+        .filter(Boolean)
+      return {
+        compactions,
+        ...(compactions.length === page.limit
+          ? { nextAfterSequence: compactions.at(-1)?.sequence }
+          : {}),
+      }
+    },
+
+    async compareAndSetAgentContextState(userId, rawCommand) {
+      let command
+      try {
+        command = materializeAgentContextCommand(rawCommand)
+      } catch {
+        return { kind: 'invalid', changed: false }
+      }
+      return sql.begin(async (tx) => {
+        const [session] = await tx`
+          select owner_id as "ownerId", project_id as "projectId"
+          from agent_sessions
+          where id = ${command.sessionId} and project_id = ${command.projectId}
+          for update
+        `
+        if (!session) return { kind: 'not_found', changed: false }
+        const [member] = await tx`
+          select role from project_members
+          where project_id = ${command.projectId} and user_id = ${userId}
+          for share
+        `
+        assertProjectPermission(member?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+        const [clock] = await tx`
+          select floor(extract(epoch from clock_timestamp()) * 1000)::bigint as "observedAt"
+        `
+        const [stateRow] = await tx`
+          select owner_id as "ownerId", payload from agent_context_states
+          where session_id = ${command.sessionId} for update
+        `
+        const [replayRow] = await tx`
+          select request_hash as "requestHash", payload from agent_context_compactions
+          where session_id = ${command.sessionId} and idempotency_key = ${command.idempotencyKey}
+        `
+        const decision = agentContextStateCompareAndSetDecision({
+          state: asPayload(stateRow),
+          replayEntry: replayRow ? {
+            ...asPayload(replayRow), requestHash: replayRow.requestHash,
+          } : undefined,
+          command,
+          ownerId: stateRow?.ownerId ?? session.ownerId,
+          observedAt: Number(clock.observedAt),
+        })
+        if (!decision.changed) return clone(decision)
+        const ledger = decision.ledgerEntry
+        await tx`
+          insert into agent_context_compactions (
+            session_id, sequence, id, owner_id, project_id, idempotency_key,
+            request_hash, compaction_id, created_at, payload
+          ) values (
+            ${ledger.sessionId}, ${ledger.sequence}, ${ledger.id}, ${ledger.ownerId},
+            ${ledger.projectId}, ${ledger.idempotencyKey}, ${ledger.requestHash},
+            ${ledger.compaction?.id ?? null}, ${ledger.createdAt}, ${tx.json(ledger)}::jsonb
+          )
+        `
+        await tx`
+          insert into agent_context_states (
+            session_id, owner_id, project_id, revision, head_compaction_id,
+            head_compaction_sequence, updated_at, payload
+          ) values (
+            ${command.sessionId}, ${ledger.ownerId}, ${command.projectId}, ${decision.state.revision},
+            ${decision.state.headCompactionId ?? null}, ${decision.state.headCompactionSequence ?? null},
+            ${decision.state.updatedAt}, ${tx.json(decision.state)}::jsonb
+          )
+          on conflict (session_id) do update set
+            revision = excluded.revision,
+            head_compaction_id = excluded.head_compaction_id,
+            head_compaction_sequence = excluded.head_compaction_sequence,
+            updated_at = excluded.updated_at,
+            payload = excluded.payload
+        `
+        const { ledgerEntry: _ledgerEntry, ...publicDecision } = decision
+        return clone(publicDecision)
       })
     },
 

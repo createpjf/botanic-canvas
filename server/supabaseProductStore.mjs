@@ -17,6 +17,11 @@ import {
   publicAgentSubagent,
   publicAgentSubagentActivation,
 } from './agentSubagentPersistence.mjs'
+import {
+  materializeAgentContextCommand,
+  normalizeAgentContextCompactionPage,
+  publicAgentContextCompaction,
+} from './agentContextPersistence.mjs'
 
 const now = () => Date.now()
 const clone = (value) => structuredClone(value)
@@ -1067,6 +1072,82 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
         }
         if (error.code === '42501') throw productError('你没有更新该 Agent 会话摘要的权限。', 'PROJECT_WRITE_FORBIDDEN')
         if (error.code === '22023') return { kind: 'invalid', changed: false }
+        fail(error)
+      }
+      return clone(data)
+    },
+
+    async readAgentContextState(userId, projectId, sessionId) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const { data: session, error: sessionError } = await supabaseRequest(() => supabase
+        .from('agent_sessions').select('id').eq('id', sessionId).eq('project_id', projectId).maybeSingle())
+      fail(sessionError)
+      if (!session) return undefined
+      const { data, error } = await supabaseRequest(() => supabase
+        .from('agent_context_states').select('payload')
+        .eq('session_id', sessionId).eq('project_id', projectId).maybeSingle())
+      if (error && missingAgentEntityTable(error)) {
+        throw productError('Agent Context V2 迁移尚未部署。', 'AGENT_CONTEXT_PERSISTENCE_REQUIRED')
+      }
+      fail(error)
+      return data?.payload ? clone(data.payload) : {
+        version: 2, sessionId, projectId, revision: 0, updatedAt: 0,
+      }
+    },
+
+    async listAgentContextCompactions(userId, projectId, sessionId, options = {}) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const { data: session, error: sessionError } = await supabaseRequest(() => supabase
+        .from('agent_sessions').select('id').eq('id', sessionId).eq('project_id', projectId).maybeSingle())
+      fail(sessionError)
+      if (!session) return undefined
+      const page = normalizeAgentContextCompactionPage(options)
+      const { data, error } = await supabaseRequest(() => supabase
+        .from('agent_context_compactions')
+        .select('sequence,created_at,payload')
+        .eq('project_id', projectId)
+        .eq('session_id', sessionId)
+        .not('compaction_id', 'is', null)
+        .gt('sequence', page.afterSequence)
+        .order('sequence', { ascending: true })
+        .limit(page.limit))
+      if (error && missingAgentEntityTable(error)) {
+        throw productError('Agent Context V2 迁移尚未部署。', 'AGENT_CONTEXT_PERSISTENCE_REQUIRED')
+      }
+      fail(error)
+      const compactions = (data ?? [])
+        .map((row) => publicAgentContextCompaction({
+          ...clone(row.payload),
+          sequence: Number(row.sequence),
+          createdAt: new Date(row.created_at).getTime(),
+        }))
+        .filter(Boolean)
+      return {
+        compactions,
+        ...(compactions.length === page.limit
+          ? { nextAfterSequence: compactions.at(-1)?.sequence }
+          : {}),
+      }
+    },
+
+    async compareAndSetAgentContextState(userId, rawCommand) {
+      let command
+      try {
+        command = materializeAgentContextCommand(rawCommand)
+      } catch {
+        return { kind: 'invalid', changed: false }
+      }
+      const { data, error } = await supabaseRequest(() => supabase.rpc(
+        'botanic_compare_and_set_agent_context_state',
+        { p_actor_id: userId, p_command: command },
+      ))
+      if (error) {
+        if (missingAgentEntityRpc(error)) {
+          throw productError('Agent Context V2 原子 CAS 迁移尚未部署。', 'AGENT_CONTEXT_PERSISTENCE_REQUIRED')
+        }
+        if (error.code === '42501') {
+          throw productError('你没有更新该 Agent Context 的权限。', 'PROJECT_WRITE_FORBIDDEN')
+        }
         fail(error)
       }
       return clone(data)
