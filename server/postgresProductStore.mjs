@@ -2218,22 +2218,45 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     },
 
     async putAgentSkill(userId, skill) {
-      const role = await memberRole(skill.projectId, userId)
-      assertProjectPermission(role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
-      const [existing] = await sql`select project_id as "projectId", payload from agent_skills where id = ${skill.id}`
-      if (existing && existing.projectId !== skill.projectId) throw productError('Skill 标识已被其他项目使用。', 'AGENT_SKILL_ID_CONFLICT')
-      const previous = asPayload(existing)
-      const decision = agentSkillPersistenceDecision(previous, skill, { ownerId: userId })
-      if (decision.kind === 'replay') return clone(previous)
-      const payload = decision.payload
-      const timestamp = Number.isFinite(Number(payload.updatedAt)) ? Number(payload.updatedAt) : now()
-      await sql`
-        insert into agent_skills (id, owner_id, project_id, status, updated_at, payload)
-        values (${skill.id}, ${userId}, ${skill.projectId}, ${payload.status}, ${timestamp}, ${sql.json(payload)}::jsonb)
-        on conflict (id) do update set status = excluded.status, updated_at = excluded.updated_at, payload = excluded.payload
-      `
-      await insertAudit(sql, { actorId: userId, action: existing ? 'agent-skill.updated' : 'agent-skill.created', projectId: skill.projectId, targetId: skill.id })
-      return clone(payload)
+      return sql.begin(async (tx) => {
+        // Skill ID 是全局唯一身份。咨询锁同时保护「行还不存在」的首版竞争；
+        // 已存在行再用 for update 把读取、历史前缀校验与写入固定在同一事务。
+        await tx`select pg_advisory_xact_lock(hashtextextended(${skill.id}, 11))`
+        const [membership] = await tx`
+          select role from project_members
+          where project_id = ${skill.projectId} and user_id = ${userId}
+          for share
+        `
+        assertProjectPermission(membership?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+        const [existing] = await tx`
+          select project_id as "projectId", payload
+          from agent_skills where id = ${skill.id}
+          for update
+        `
+        if (existing && existing.projectId !== skill.projectId) {
+          throw productError('Skill 标识已被其他项目使用。', 'AGENT_SKILL_ID_CONFLICT')
+        }
+        const previous = asPayload(existing)
+        const decision = agentSkillPersistenceDecision(previous, skill, { ownerId: userId })
+        if (decision.kind === 'replay') return clone(previous)
+        const payload = decision.payload
+        const timestamp = Number.isFinite(Number(payload.updatedAt)) ? Number(payload.updatedAt) : now()
+        await tx`
+          insert into agent_skills (id, owner_id, project_id, status, updated_at, payload)
+          values (${skill.id}, ${userId}, ${skill.projectId}, ${payload.status}, ${timestamp}, ${tx.json(payload)}::jsonb)
+          on conflict (id) do update set
+            status = excluded.status,
+            updated_at = excluded.updated_at,
+            payload = excluded.payload
+        `
+        await insertAudit(tx, {
+          actorId: userId,
+          action: existing ? 'agent-skill.updated' : 'agent-skill.created',
+          projectId: skill.projectId,
+          targetId: skill.id,
+        })
+        return clone(payload)
+      })
     },
 
     async listAgentSkills(userId, projectId) {

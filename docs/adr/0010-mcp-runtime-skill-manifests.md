@@ -36,14 +36,17 @@
 - Manifest 依赖在创建版本时解析并固定 `id + version + contentHash`。DFS 只把当前递归栈识别为环，公共依赖形成的
   菱形图合法；缺失、弃用或身份不匹配显式进入 dependency issues，不静默替换。
 - `guidance` Skill 不得声明无人消费的 outputSchema；`evaluator` 的结构化输出由评审执行器验证。工具风险取 capabilities
-  自称和 Manifest allowlist 中注册表真实风险的较高者，未知工具按最高风险。
+  自称和 Manifest allowlist 中注册表真实风险的较高者，未知工具按最高风险。`evaluator.outputSchema` 任意嵌套对象键
+  统一使用结构化契约的 ASCII 字段词表（含必填 `verdict`），避免 Node UTF-16 与 PostgreSQL C collation 对 Unicode 键
+  排序不同而产生跨 Adapter content hash 分叉。
 
 ### 4. 历史与存储契约
 
 - `GET /api/projects/:projectId/agent-skills/:skillId/versions/:version` 经项目权限读取安全历史版本，不返回存储私有字段。
 - Local、PostgreSQL、Supabase Adapter 共用同一持久化决策与契约测试，读取指定版本的行为一致。
-- 版本历史继续保存在既有 Skill JSON payload 中，本次不新增表或列，因此不需要数据库迁移；部署仍必须先运行现有
-  migration gate，确认目标环境 schema 没有落后。
+- 版本历史继续保存在既有 Skill JSON payload 中，不新增表或列。PostgreSQL 在事务行锁内重做前缀校验；
+  Supabase 必须先执行 `20260828220000_agent_skill_atomic_persistence.sql`，由单个 RPC 在同一事务内持锁、重算
+  canonical hash、验证无间隙历史并写入审计。缺少 RPC 时 Adapter fail closed，不回退 read-then-upsert。
 
 ## 兼容与迁移
 

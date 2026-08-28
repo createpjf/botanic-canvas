@@ -1,3 +1,5 @@
+// @ts-check
+
 import { isDeepStrictEqual } from 'node:util'
 import { agentTurnRequestHash, agentTurnRequestHashVersion, storedAgentTurnRequestBinding } from './agentTurnRequestIdentity.mjs'
 import {
@@ -44,6 +46,20 @@ function immutableAgentSkillVersionMatches(stored, incoming) {
   return isDeepStrictEqual(stored, withoutPublication)
 }
 
+function legacyAgentSkillVersionPrefix(existing, storedVersion) {
+  const updatedAt = Number(existing?.updatedAt ?? existing?.createdAt)
+  if (!Number.isInteger(storedVersion) || storedVersion < 1
+    || typeof existing?.instructions !== 'string'
+    || typeof existing?.contentHash !== 'string'
+    || !Number.isFinite(updatedAt) || updatedAt < 0) return undefined
+  return {
+    version: storedVersion,
+    instructions: existing.instructions,
+    contentHash: existing.contentHash,
+    updatedAt,
+  }
+}
+
 /**
  * 读取历史版本时保留上线前的不完整快照，新完整快照则必须通过 V2 hash 验证。
  */
@@ -61,7 +77,8 @@ export function persistedAgentSkillVersion(skill, version) {
  * 版本与 hash 已由 `botanicAgentSkill` 领域层生成；Store 只验证当前快照、
  * 确认旧 history 是 incoming history 的不可变前缀，然后原样持久化。
  */
-export function agentSkillPersistenceDecision(existing, incoming, { ownerId } = {}) {
+export function agentSkillPersistenceDecision(existing, incoming, options) {
+  const { ownerId } = options ?? {}
   if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) {
     return agentSkillPersistenceError('INVALID_AGENT_SKILL_VERSION', 'Skill 持久化快照无效。')
   }
@@ -92,21 +109,45 @@ export function agentSkillPersistenceDecision(existing, incoming, { ownerId } = 
   }
 
   const existingVersions = Array.isArray(existing?.versions) ? existing.versions : []
+  let sameVersionHistoryBackfill = false
   if (existing) {
     const storedVersion = Number(existing.version)
     if (!Number.isInteger(storedVersion) || version < storedVersion) {
       return agentSkillPersistenceError('AGENT_SKILL_VERSION_STALE', 'Skill 写入版本已过期。')
     }
-    if (versions.length < existingVersions.length
-      || existingVersions.some((snapshot, index) => !immutableAgentSkillVersionMatches(snapshot, versions[index]))) {
-      return agentSkillPersistenceError('AGENT_SKILL_HISTORY_CONFLICT', 'Skill 历史版本不得覆盖或截断。')
-    }
-    if (version === storedVersion) {
-      if (incoming.contentHash !== existing.contentHash || versions.length !== existingVersions.length) {
-        return agentSkillPersistenceError('AGENT_SKILL_VERSION_CONFLICT', 'Skill 同一版本不得改写执行内容。')
+    if (!existingVersions.length) {
+      // 上线前的行只有顶层当前版本。首次 V2 写入只允许两种收敛：
+      // 1) 顶层本来已是 V2 hash，同版补一份完整快照；
+      // 2) 精确冻结旧顶层为 incomplete legacy 前缀，再追加唯一的新版本。
+      const legacyPrefix = legacyAgentSkillVersionPrefix(existing, storedVersion)
+      if (version === storedVersion) {
+        let existingHash
+        try { existingHash = agentSkillExecutionContentHash(existing) } catch { existingHash = undefined }
+        if (versions.length !== 1
+          || incoming.contentHash !== existing.contentHash
+          || existingHash !== existing.contentHash) {
+          return agentSkillPersistenceError('AGENT_SKILL_VERSION_CONFLICT', 'Skill 同一版本不得改写执行内容。')
+        }
+        sameVersionHistoryBackfill = true
+      } else if (version === storedVersion + 1) {
+        if (versions.length !== 2 || !legacyPrefix || !isDeepStrictEqual(versions[0], legacyPrefix)) {
+          return agentSkillPersistenceError('AGENT_SKILL_HISTORY_CONFLICT', 'Skill legacy 版本必须先按原始身份冻结。')
+        }
+      } else {
+        return agentSkillPersistenceError('AGENT_SKILL_HISTORY_CONFLICT', 'Skill 新版本必须在完整历史后追加。')
       }
-    } else if (version !== storedVersion + 1 || versions.length !== existingVersions.length + 1) {
-      return agentSkillPersistenceError('AGENT_SKILL_HISTORY_CONFLICT', 'Skill 新版本必须在完整历史后追加。')
+    } else {
+      if (versions.length < existingVersions.length
+        || existingVersions.some((snapshot, index) => !immutableAgentSkillVersionMatches(snapshot, versions[index]))) {
+        return agentSkillPersistenceError('AGENT_SKILL_HISTORY_CONFLICT', 'Skill 历史版本不得覆盖或截断。')
+      }
+      if (version === storedVersion) {
+        if (incoming.contentHash !== existing.contentHash || versions.length !== existingVersions.length) {
+          return agentSkillPersistenceError('AGENT_SKILL_VERSION_CONFLICT', 'Skill 同一版本不得改写执行内容。')
+        }
+      } else if (version !== storedVersion + 1 || versions.length !== existingVersions.length + 1) {
+        return agentSkillPersistenceError('AGENT_SKILL_HISTORY_CONFLICT', 'Skill 新版本必须在完整历史后追加。')
+      }
     }
   } else if (version !== 1 || versions.length !== 1) {
     return agentSkillPersistenceError('AGENT_SKILL_HISTORY_CONFLICT', 'Skill 首次写入必须从版本 1 开始。')
@@ -117,8 +158,25 @@ export function agentSkillPersistenceDecision(existing, incoming, { ownerId } = 
     ownerId: existing?.ownerId ?? ownerId ?? incoming.ownerId,
     createdAt: existing?.createdAt ?? incoming.createdAt,
   }
+  if (existing && isDeepStrictEqual(existing, payload)) return { kind: 'replay', payload }
+  if (existing && version === Number(existing.version)) {
+    const storedWithoutHistory = structuredClone(existing)
+    const incomingWithoutHistory = structuredClone(payload)
+    delete storedWithoutHistory.versions
+    delete incomingWithoutHistory.versions
+    const historyOnlyBackfill = sameVersionHistoryBackfill
+      && isDeepStrictEqual(storedWithoutHistory, incomingWithoutHistory)
+    if (!historyOnlyBackfill) {
+      const storedUpdatedAt = Number(existing.updatedAt)
+      const incomingUpdatedAt = Number(payload.updatedAt)
+      if (!Number.isFinite(storedUpdatedAt) || storedUpdatedAt < 0
+        || !Number.isFinite(incomingUpdatedAt) || incomingUpdatedAt <= storedUpdatedAt) {
+        return agentSkillPersistenceError('AGENT_SKILL_VERSION_STALE', 'Skill 同版本写入已落后于权威状态。')
+      }
+    }
+  }
   return {
-    kind: existing && isDeepStrictEqual(existing, payload) ? 'replay' : 'write',
+    kind: 'write',
     payload,
   }
 }

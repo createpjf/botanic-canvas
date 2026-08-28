@@ -100,6 +100,35 @@ export const BOTANIC_AGENT_SKILL_KINDS = Object.freeze(['guidance', 'evaluator']
 const EVALUATOR_VERDICTS = Object.freeze(['pass', 'fail', 'unverifiable'])
 
 const TOOL_NAME = /^[a-z][a-z0-9_]{1,63}$/
+// 与 agentStructuredContract 的字段词表一致。outputSchema 会进入跨 Adapter
+// canonical hash；把对象键限制为 ASCII 后，Node UTF-16 与 PostgreSQL C collation
+// 不再可能因为 Unicode 键排序不同而得到两个 contentHash。
+const EVALUATOR_SCHEMA_KEY = /^[A-Za-z_][A-Za-z0-9_.-]{0,79}$/
+const FORBIDDEN_EVALUATOR_SCHEMA_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
+
+function assertEvaluatorSchemaKeys(raw) {
+  const pending = [raw]
+  const visited = new Set()
+  while (pending.length) {
+    const current = pending.pop()
+    if (!current || typeof current !== 'object' || visited.has(current)) continue
+    visited.add(current)
+    if (Array.isArray(current)) {
+      pending.push(...current)
+      continue
+    }
+    for (const key of Object.keys(current)) {
+      if (!EVALUATOR_SCHEMA_KEY.test(key) || FORBIDDEN_EVALUATOR_SCHEMA_KEYS.has(key)) {
+        throw new BotanicAgentSkillError(
+          400,
+          'INVALID_AGENT_SKILL_MANIFEST',
+          `evaluator Skill 的输出 Schema 字段键「${key}」无效。`,
+        )
+      }
+      pending.push(current[key])
+    }
+  }
+}
 
 /**
  * 校验 evaluator 的输出 Schema。
@@ -127,6 +156,7 @@ function normalizeEvaluatorOutputSchema(raw, kind) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw) || raw.type !== 'object') {
     throw new BotanicAgentSkillError(400, 'INVALID_AGENT_SKILL_MANIFEST', 'evaluator Skill 必须声明对象形状的输出 Schema。')
   }
+  assertEvaluatorSchemaKeys(raw)
   const properties = raw.properties && typeof raw.properties === 'object' ? raw.properties : {}
   const required = Array.isArray(raw.required) ? raw.required : []
   if (!required.includes('verdict')) {
@@ -220,18 +250,30 @@ function normalizedSkillExecution(input) {
 
 function manifestHashSemantics(manifest) {
   if (!manifest) return null
+  // PostgreSQL `COLLATE "C"` 对 UTF-8 按代码点顺序比较。这里不用受 ICU/
+  // 运行环境影响的 localeCompare，确保 Node 与 Supabase RPC 重算同一个 hash。
+  const compareStableText = (left, right) => {
+    const leftPoints = [...String(left)]
+    const rightPoints = [...String(right)]
+    const length = Math.min(leftPoints.length, rightPoints.length)
+    for (let index = 0; index < length; index += 1) {
+      const difference = leftPoints[index].codePointAt(0) - rightPoints[index].codePointAt(0)
+      if (difference) return difference
+    }
+    return leftPoints.length - rightPoints.length
+  }
   return {
     version: manifest.version,
     kind: manifest.kind,
     ...(manifest.outputSchema ? { outputSchema: manifest.outputSchema } : {}),
     // 这三者的声明顺序不影响执行；为重试使用稳定的语义顺序。
-    toolAllowlist: [...manifest.toolAllowlist].sort(),
+    toolAllowlist: [...manifest.toolAllowlist].sort(compareStableText),
     dependencies: [...manifest.dependencies]
       .map((dependency) => ({ ...dependency }))
       .sort((left, right) => (
-        left.skillId.localeCompare(right.skillId)
+        compareStableText(left.skillId, right.skillId)
         || Number(left.version ?? 0) - Number(right.version ?? 0)
-        || String(left.contentHash ?? '').localeCompare(String(right.contentHash ?? ''))
+        || compareStableText(left.contentHash ?? '', right.contentHash ?? '')
       )),
   }
 }
@@ -335,6 +377,18 @@ function currentAgentSkillVersion(existing) {
   ) || 1
 }
 
+function legacyAgentSkillVersionPrefix(existing, version, now) {
+  // 最早的 Skill 行可能只在顶层保存当前版本，没有 versions 数组。
+  // 首次 V2 写入时先把这份旧身份冻结成「明确不完整」的 legacy 前缀：
+  // 保留旧 hash，不伪造当时没有的 name/capabilities/manifest，后续版本才用 V2 hash。
+  return {
+    version,
+    instructions: text(existing?.instructions, 'Skill legacy 规则', 4000),
+    contentHash: text(existing?.contentHash, 'Skill legacy 内容摘要', 200),
+    updatedAt: timestamp(existing?.updatedAt ?? existing?.createdAt ?? now, 'Skill legacy 版本更新时间'),
+  }
+}
+
 /**
  * 单一版本判定：相同执行语义的重试不追加版本；执行语义或 hash
  * 算法变化才追加。返回的 snapshot / versions 可由所有 Adapter 直接持久化。
@@ -364,9 +418,9 @@ export function prepareAgentSkillVersionSnapshot(existing, input, options) {
     updatedAt: changed ? now : Number(previousSnapshot?.updatedAt ?? existing?.updatedAt ?? now),
     ...publication,
   })
-  const previousVersions = Array.isArray(existing?.versions)
+  const previousVersions = Array.isArray(existing?.versions) && existing.versions.length
     ? existing.versions.map((entry) => structuredClone(entry))
-    : []
+    : (existing ? [legacyAgentSkillVersionPrefix(existing, previousVersion, now)] : [])
   const versions = changed
     ? [...previousVersions, snapshot]
     : (previousVersions.some((entry) => Number(entry?.version) === version)
@@ -617,8 +671,15 @@ export function updateAgentSkill(existing, input, {
     ...(approvedBy ? { publishedBy: approvedBy, publishedAt: now } : {}),
   })
 
+  // 顶层已是 V2 hash 但没有 versions 的存量行，需要一次同版完整快照
+  // backfill。这不是语义更新：保留原生命周期、批准人和 updatedAt。
+  const executionReplay = !approvedBy || existing.lifecycle === 'published'
+  if (!prepared.changed && (!Array.isArray(existing.versions) || !existing.versions.length)
+    && executionReplay) {
+    return { ...existing, versions: prepared.versions }
+  }
   // 完全相同的执行语义是重试，不降级生命周期、不改 updatedAt，也不追加版本。
-  if (!prepared.changed && (!approvedBy || existing.lifecycle === 'published')) return existing
+  if (!prepared.changed && executionReplay) return existing
 
   const lifecycle = approvedBy ? 'published' : 'draft'
   const result = {

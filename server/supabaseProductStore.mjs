@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { agentSkillPersistenceDecision, agentThreadSummaryCompareAndSetDecision, normalizeAgentEntityIdPage, normalizePendingAgentReviewRecoveryPage, normalizeStaleTurnQuery, normalizeTurnEventPage, normalizeUpdatedAtIdRecoveryPage, persistedAgentSkillVersion } from './productStoreContract.mjs'
+import { agentThreadSummaryCompareAndSetDecision, normalizeAgentEntityIdPage, normalizePendingAgentReviewRecoveryPage, normalizeStaleTurnQuery, normalizeTurnEventPage, normalizeUpdatedAtIdRecoveryPage, persistedAgentSkillVersion } from './productStoreContract.mjs'
 import { createClient } from '@supabase/supabase-js'
 import { isRetryableSupabaseError, retrySupabaseOperation } from './supabaseRetry.mjs'
 import { decodeAuthAssurance } from './authAssurance.mjs'
@@ -22,6 +22,7 @@ import {
   normalizeAgentContextCompactionPage,
   publicAgentContextCompaction,
 } from './agentContextPersistence.mjs'
+import { BotanicAgentSkillError } from './botanicAgentSkill.mjs'
 
 const now = () => Date.now()
 const clone = (value) => structuredClone(value)
@@ -1268,23 +1269,40 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
     },
 
     async putAgentSkill(userId, skill) {
-      const role = await memberRole(skill.projectId, userId)
-      assertProjectPermission(role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
-      const { data: existing, error: readError } = await supabaseRequest(() => supabase.from('agent_skills').select('project_id,payload').eq('id', skill.id).maybeSingle())
-      fail(readError)
-      if (existing && existing.project_id !== skill.projectId) throw productError('Skill 标识已被其他项目使用。', 'AGENT_SKILL_ID_CONFLICT')
-      const previous = clone(existing?.payload)
-      const decision = agentSkillPersistenceDecision(previous, skill, { ownerId: userId })
-      if (decision.kind === 'replay') return previous
-      const payload = decision.payload
-      const timestamp = Number.isFinite(Number(payload.updatedAt)) ? Number(payload.updatedAt) : now()
-      const { error } = await supabaseRequest(() => supabase.from('agent_skills').upsert({
-        id: skill.id, owner_id: userId, project_id: skill.projectId, status: payload.status,
-        updated_at: new Date(timestamp).toISOString(), payload,
-      }, { onConflict: 'id' }))
-      fail(error)
-      await insertAudit({ actorId: userId, action: existing ? 'agent-skill.updated' : 'agent-skill.created', projectId: skill.projectId, targetId: skill.id })
-      return clone(payload)
+      const { data, error } = await supabaseRequest(() => supabase.rpc('botanic_put_agent_skill', {
+        p_actor_id: userId,
+        p_skill: skill,
+      }))
+      if (error) {
+        if (missingAgentEntityRpc(error)) {
+          throw new BotanicAgentSkillError(
+            503,
+            'AGENT_SKILL_ATOMIC_PERSISTENCE_REQUIRED',
+            'Agent Skill 原子版本写入迁移尚未部署。',
+          )
+        }
+        if (error.code === '42501') {
+          throw new BotanicAgentSkillError(403, 'PROJECT_WRITE_FORBIDDEN', '你没有编辑该项目 Skill 的权限。')
+        }
+        fail(error)
+      }
+      if (data?.kind === 'conflict' || data?.kind === 'invalid') {
+        const messages = {
+          AGENT_SKILL_ID_CONFLICT: 'Skill 标识已被其他项目使用。',
+          AGENT_SKILL_VERSION_STALE: 'Skill 写入版本已过期。',
+          AGENT_SKILL_VERSION_CONFLICT: 'Skill 同一版本不得改写执行内容。',
+          AGENT_SKILL_HISTORY_CONFLICT: 'Skill 历史版本不得覆盖、截断或跳号。',
+          AGENT_SKILL_VERSION_HASH_MISMATCH: 'Skill 版本快照与内容摘要不一致。',
+          INVALID_AGENT_SKILL_VERSION: 'Skill 持久化快照无效。',
+        }
+        const code = typeof data.code === 'string' ? data.code : 'INVALID_AGENT_SKILL_VERSION'
+        const statusCode = code === 'INVALID_AGENT_SKILL_VERSION' ? 400 : 409
+        throw new BotanicAgentSkillError(statusCode, code, messages[code] ?? messages.INVALID_AGENT_SKILL_VERSION)
+      }
+      if (!data?.payload || !['write', 'replay'].includes(data.kind)) {
+        throw productError('Agent Skill 原子写入未返回权威快照。', 'AGENT_SKILL_ATOMIC_WRITE_INVALID')
+      }
+      return clone(data.payload)
     },
 
     async listAgentSkills(userId, projectId) {

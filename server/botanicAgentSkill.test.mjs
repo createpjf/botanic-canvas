@@ -151,6 +151,124 @@ test('Adapter 共用的快照 helper 能验证完整性与 hash', () => {
   assert.deepEqual(validateAgentSkillVersionSnapshot(legacy, { allowLegacy: true }), legacy)
 })
 
+test('Skill hash 对 Unicode 依赖使用与 PostgreSQL C collation 一致的稳定代码点顺序', () => {
+  assert.equal(agentSkillExecutionContentHash({
+    name: 'Unicode',
+    instructions: 'Stable ordering.',
+    capabilities: ['read'],
+    manifest: {
+      kind: 'guidance',
+      toolAllowlist: [],
+      dependencies: [
+        { skillId: '😀', version: 1, contentHash: '😀' },
+        { skillId: '', version: 1, contentHash: '' },
+      ],
+    },
+  }), 'wN5FAvyktMi6n5aB9hL1l-KSLTorNJXjp4z-IhadQCY')
+})
+
+test('evaluator outputSchema 递归拒绝 Unicode 字段键，避免 Node 与 SQL hash 分叉', () => {
+  const evaluatorManifest = {
+    kind: 'evaluator',
+    outputSchema: {
+      type: 'object',
+      properties: {
+        verdict: { type: 'string', enum: ['pass', 'fail', 'unverifiable'] },
+        details: {
+          type: 'object',
+          properties: { '说明': { type: 'string' } },
+        },
+      },
+      required: ['verdict'],
+    },
+  }
+
+  assert.throws(
+    () => normalizeAgentSkillManifest(evaluatorManifest),
+    (error) => error.code === 'INVALID_AGENT_SKILL_MANIFEST' && /字段键/u.test(error.message),
+  )
+})
+
+test('evaluator outputSchema 的 ASCII 嵌套字段有固定语义 hash', () => {
+  assert.equal(agentSkillExecutionContentHash({
+    name: 'Visual Judge',
+    instructions: 'Evaluate the visual.',
+    capabilities: ['read'],
+    manifest: {
+      kind: 'evaluator',
+      outputSchema: {
+        type: 'object',
+        properties: {
+          verdict: { type: 'string', enum: ['pass', 'fail', 'unverifiable'] },
+          details: {
+            type: 'object',
+            properties: { summary_text: { type: 'string' } },
+            required: ['summary_text'],
+          },
+        },
+        required: ['verdict'],
+      },
+      toolAllowlist: [],
+      dependencies: [],
+    },
+  }), 'NiNG1eDcG9QAKjDUCnrmhBoTqCwaBBWllOhXqqO2Lqc')
+})
+
+test('没有 versions 的存量 Skill 首次 V2 写入保留 legacy 身份后再无间隙追加', () => {
+  const prepared = prepareAgentSkillVersionSnapshot({
+    version: 1,
+    name: '旧 Skill',
+    instructions: '保留旧规则。',
+    contentHash: 'legacy-instructions-hash',
+    capabilities: ['read'],
+    createdAt: 50,
+    updatedAt: 60,
+  }, {
+    name: '旧 Skill',
+    instructions: '保留旧规则。',
+    capabilities: ['read'],
+  }, { now: 100 })
+  assert.equal(prepared.version, 2)
+  assert.deepEqual(prepared.versions[0], {
+    version: 1,
+    instructions: '保留旧规则。',
+    contentHash: 'legacy-instructions-hash',
+    updatedAt: 60,
+  })
+  assert.equal(prepared.versions[1].version, 2)
+  assert.equal(prepared.versions[1].contentHash, prepared.contentHash)
+})
+
+test('顶层已是 V2 hash 的存量 Skill 能同版 backfill 完整快照且不改治理状态', () => {
+  const created = createAgentSkill(creation(), {
+    id: 'skill-v2-without-history', ownerId: 'user-a', approvedBy: 'user-a', now: 100,
+  })
+  const legacyStorageRow = structuredClone(created)
+  delete legacyStorageRow.versions
+  const backfilled = updateAgentSkill(legacyStorageRow, {}, { actorId: 'user-b', now: 200 })
+  assert.equal(backfilled.version, created.version)
+  assert.equal(backfilled.lifecycle, 'published')
+  assert.equal(backfilled.publishedBy, 'user-a')
+  assert.equal(backfilled.updatedAt, 100)
+  assert.deepEqual(backfilled.versions, created.versions)
+})
+
+test('存量 V2 draft 首次批准时同时 backfill history 与治理状态', () => {
+  const draft = createAgentSkill(creation(), { id: 'skill-v2-draft', ownerId: 'user-a', now: 100 })
+  const legacyDraft = structuredClone(draft)
+  delete legacyDraft.versions
+
+  const published = updateAgentSkill(legacyDraft, {}, {
+    actorId: 'user-a', approvedBy: 'reviewer-a', now: 200,
+  })
+  assert.equal(published.version, 1)
+  assert.equal(published.lifecycle, 'published')
+  assert.equal(published.status, 'active')
+  assert.equal(published.updatedAt, 200)
+  assert.equal(published.versions.length, 1)
+  assert.equal(published.versions[0].publishedBy, 'reviewer-a')
+})
+
 test('未经批准的修改回落 draft，不保留上一版的已批准标记', () => {
   const published = createAgentSkill(creation(), { id: 'skill-a', ownerId: 'user-a', approvedBy: 'user-a', now: 100 })
   const revised = updateAgentSkill(published, { instructions: '偷偷改成别的规则。' }, { actorId: 'user-b', now: 200 })
