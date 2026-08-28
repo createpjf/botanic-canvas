@@ -237,12 +237,12 @@ function agentTimelineTimestamp(timestamp: number, locale: ProductLocale) {
 
 function agentQuickActions(locale: ProductLocale): Array<{ intent: BotanicAgentIntent; label: string; instruction: string }> {
   return locale === 'en' ? [
-    { intent: 'replace_scene', label: 'Change scene', instruction: 'Keep the person, clothing, and product unchanged; replace only the scene and ambient lighting.' },
-    { intent: 'change_pose', label: 'Change pose', instruction: 'Keep the person, clothing, product, and scene unchanged; adjust the pose and composition.' },
-    { intent: 'change_style', label: 'Change style', instruction: 'Keep the person, clothing, product, scene, and pose unchanged; adjust the visual style and lighting.' },
-    { intent: 'replace_person', label: 'Change model', instruction: 'Keep the clothing, product, scene, and style unchanged; replace the model.' },
-    { intent: 'replace_product', label: 'Change product', instruction: 'Keep the person, scene, and style unchanged; replace the clothing or product.' },
-    { intent: 'redo_from_root', label: 'Redo with original settings', instruction: 'Reuse the original references, prompt, and settings to generate a new independent key visual.' },
+    { intent: 'replace_scene', label: 'Change scene', instruction: 'Keep the person, clothes, and product. Replace the scene and light.' },
+    { intent: 'change_pose', label: 'Change pose', instruction: 'Keep person, clothes, product, and scene. Adjust pose and framing.' },
+    { intent: 'change_style', label: 'Change style', instruction: 'Keep the subject and scene. Adjust style and light.' },
+    { intent: 'replace_person', label: 'Change model', instruction: 'Keep clothes, product, scene, and style. Replace the model.' },
+    { intent: 'replace_product', label: 'Change product', instruction: 'Keep person, scene, and style. Replace the clothes or product.' },
+    { intent: 'redo_from_root', label: 'Redo with original settings', instruction: 'Reuse the original refs, prompt, and settings.' },
   ] : [
     { intent: 'replace_scene', label: '换场景', instruction: '保持人物、服装和商品不变，只替换场景与环境光线。' },
     { intent: 'change_pose', label: '换动作', instruction: '保持人物、服装、商品和场景不变，调整动作姿势与构图。' },
@@ -423,7 +423,7 @@ export default function AgentWorkspace({
     },
     en: {
       tools: 'Agent tools', back: 'Back to conversation', results: 'Results & files', tasks: 'Agent tasks', review: 'Result review', brand: 'Brand rules', memory: 'Project memory', skills: 'Creative skills', collaboration: 'Collaboration', close: 'Close Agent',
-      welcome: 'What shall we create today?', welcomeTarget: (name: string) => `Continue refining “${name}”`, welcomeBody: 'Chat, create prompts, search this project, or describe the image you want to make.', welcomeTargetBody: 'Keep the current visual and original settings, and change only what you just requested.',
+      welcome: 'What are we making?', welcomeTarget: (name: string) => `Refine “${name}”`, welcomeBody: 'Chat, write prompts, search the project, or describe an image.', welcomeTargetBody: 'Keep the current visual and original settings. Change only what you asked.',
       sources: 'Sources', unavailable: 'Agent is temporarily unavailable. Try again shortly.', unsupportedVideo: 'Video execution is not available in Agent chat yet. Add a Video Generation node on the canvas; no node or task was created.', clarifyAction: 'Please clarify whether you only want advice or want me to generate it. The canvas was not changed.',
     },
   })

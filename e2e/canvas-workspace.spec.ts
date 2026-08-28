@@ -83,7 +83,7 @@ test('产品首页支持中英文切换并展示真实工作台截图', async ({
   await expect(page.getByRole('heading', { name: 'Creative projects', exact: true })).toBeVisible()
   await expect(page).toHaveURL(/#\/projects$/)
   await page.getByRole('button', { name: 'New project' }).click()
-  await expect(page.getByRole('heading', { name: 'Start with a creative direction' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Start from a goal' })).toBeVisible()
   await page.getByRole('button', { name: 'Image generation', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Remove Image generation 01 from canvas' })).toBeVisible()
   await page.getByRole('button', { name: 'Close generator' }).click()
