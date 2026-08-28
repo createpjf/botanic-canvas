@@ -67,6 +67,8 @@ test('Supabase Skill RPC 串行化同一 ID，并在数据库重算 hash 与完�
   assert.match(skillMigration, /wN5FAvyktMi6n5aB9hL1l-KSLTorNJXjp4z-IhadQCY/u)
   assert.match(skillMigration, /botanic_agent_skill_schema_keys_are_ascii\(output_schema\)/u)
   assert.ok(skillMigration.includes("'^[A-Za-z_][A-Za-z0-9_.-]{0,79}$'"))
+  assert.match(skillMigration, /\(dependency->>'version'\)::numeric > 9007199254740991/u)
+  assert.match(skillMigration, /\(p_skill->>'version'\)::numeric > 9007199254740991/u)
   assert.match(skillMigration, /NiNG1eDcG9QAKjDUCnrmhBoTqCwaBBWllOhXqqO2Lqc/u)
   assert.match(skillMigration, /"properties":\{"说明":\{"type":"string"\}\}/u)
   assert.match(skillMigration, /evaluator schema accepted a Unicode object key/u)

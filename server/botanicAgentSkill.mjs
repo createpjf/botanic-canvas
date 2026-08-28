@@ -219,7 +219,7 @@ export function normalizeAgentSkillManifest(raw) {
     dependencies: dependencies.map((dependency) => {
       const skillId = text(dependency?.skillId, 'Skill 依赖标识', 160)
       const version = dependency?.version === undefined ? undefined : Number(dependency.version)
-      if (version !== undefined && (!Number.isInteger(version) || version < 1)) {
+      if (version !== undefined && (!Number.isSafeInteger(version) || version < 1)) {
         throw new BotanicAgentSkillError(400, 'INVALID_AGENT_SKILL_MANIFEST', `Skill 依赖「${skillId}」的版本无效。`)
       }
       const contentHash = dependency?.contentHash === undefined
@@ -293,7 +293,7 @@ export function agentSkillExecutionContentHash(input) {
 
 function positiveInteger(value) {
   const number = Number(value)
-  return Number.isInteger(number) && number >= 1 ? number : undefined
+  return Number.isSafeInteger(number) && number >= 1 ? number : undefined
 }
 
 function timestamp(value, name) {
@@ -724,7 +724,7 @@ export function deprecateAgentSkill(existing, { actorId, now = Date.now() } = {}
  */
 export function agentSkillVersion(skill, version) {
   const target = Number(version)
-  if (!Number.isInteger(target) || target < 1) return undefined
+  if (!Number.isSafeInteger(target) || target < 1) return undefined
   return (Array.isArray(skill?.versions) ? skill.versions : []).find((entry) => Number(entry?.version) === target)
 }
 

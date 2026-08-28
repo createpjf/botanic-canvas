@@ -92,6 +92,13 @@ test('Skill 持久化决策仅接受领域版本，幂等重放不追加且历�
     () => agentSkillPersistenceDecision(first, { ...first, instructions: '篡改执行内容' }, { ownerId: 'user-1' }),
     (error) => error.code === 'AGENT_SKILL_VERSION_HASH_MISMATCH',
   )
+  const unsafeVersion = structuredClone(first)
+  unsafeVersion.version = Number.MAX_SAFE_INTEGER + 1
+  unsafeVersion.versions[0].version = Number.MAX_SAFE_INTEGER + 1
+  assert.throws(
+    () => agentSkillPersistenceDecision(undefined, unsafeVersion, { ownerId: 'user-1' }),
+    (error) => error.code === 'INVALID_AGENT_SKILL_VERSION',
+  )
 })
 
 test('Skill 持久化决策兼容存量无 history 行，且只接受精确 legacy 前缀', () => {

@@ -48,7 +48,7 @@ function immutableAgentSkillVersionMatches(stored, incoming) {
 
 function legacyAgentSkillVersionPrefix(existing, storedVersion) {
   const updatedAt = Number(existing?.updatedAt ?? existing?.createdAt)
-  if (!Number.isInteger(storedVersion) || storedVersion < 1
+  if (!Number.isSafeInteger(storedVersion) || storedVersion < 1
     || typeof existing?.instructions !== 'string'
     || typeof existing?.contentHash !== 'string'
     || !Number.isFinite(updatedAt) || updatedAt < 0) return undefined
@@ -84,13 +84,13 @@ export function agentSkillPersistenceDecision(existing, incoming, options) {
   }
   const version = Number(incoming.version)
   const versions = Array.isArray(incoming.versions) ? incoming.versions : []
-  if (!Number.isInteger(version) || version < 1 || !versions.length) {
+  if (!Number.isSafeInteger(version) || version < 1 || !versions.length) {
     return agentSkillPersistenceError('INVALID_AGENT_SKILL_VERSION', 'Skill 持久化快照缺少版本历史。')
   }
   let previousVersion = 0
   for (const snapshot of versions) {
     const snapshotVersion = Number(snapshot?.version)
-    if (!Number.isInteger(snapshotVersion) || snapshotVersion <= previousVersion) {
+    if (!Number.isSafeInteger(snapshotVersion) || snapshotVersion <= previousVersion) {
       return agentSkillPersistenceError('AGENT_SKILL_HISTORY_CONFLICT', 'Skill 历史版本必须严格递增且不重复。')
     }
     if (completeAgentSkillVersionSnapshot(snapshot)) validateAgentSkillVersionSnapshot(snapshot)
@@ -112,7 +112,7 @@ export function agentSkillPersistenceDecision(existing, incoming, options) {
   let sameVersionHistoryBackfill = false
   if (existing) {
     const storedVersion = Number(existing.version)
-    if (!Number.isInteger(storedVersion) || version < storedVersion) {
+    if (!Number.isSafeInteger(storedVersion) || version < storedVersion) {
       return agentSkillPersistenceError('AGENT_SKILL_VERSION_STALE', 'Skill 写入版本已过期。')
     }
     if (!existingVersions.length) {

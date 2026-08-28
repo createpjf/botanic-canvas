@@ -317,6 +317,16 @@ test('Manifest 归一：工具名与依赖版本都校验，重复工具去重',
     (error) => error.code === 'INVALID_AGENT_SKILL_MANIFEST')
   assert.throws(() => normalizeAgentSkillManifest({ dependencies: [{ skillId: 'x', version: 0 }] }),
     (error) => error.code === 'INVALID_AGENT_SKILL_MANIFEST')
+  assert.equal(normalizeAgentSkillManifest({
+    dependencies: [{ skillId: 'max-safe', version: Number.MAX_SAFE_INTEGER }],
+  }).dependencies[0].version, Number.MAX_SAFE_INTEGER)
+  assert.throws(() => normalizeAgentSkillManifest({
+    dependencies: [{ skillId: 'unsafe', version: Number.MAX_SAFE_INTEGER + 1 }],
+  }), (error) => error.code === 'INVALID_AGENT_SKILL_MANIFEST')
+  assert.throws(() => buildAgentSkillVersionSnapshot(creation(), {
+    version: Number.MAX_SAFE_INTEGER + 1,
+    updatedAt: 100,
+  }), (error) => error.code === 'INVALID_AGENT_SKILL_VERSION')
 })
 
 test('白名单里查不到的工具按最高风险算', () => {
