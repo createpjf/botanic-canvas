@@ -4,6 +4,13 @@ import test from 'node:test'
 import { createAgentRouteHandler, createServerSentEventWriter } from './agentRoutes.mjs'
 import { agentTurnIdForIdempotency, createAgentTurnRecord } from './botanicAgentTurnRuntime.mjs'
 import { agentReviewRetryMaterializationDecision } from './agentReviewRetryMaterialization.mjs'
+import {
+  agentReviewCancellationRequestDecision,
+  agentReviewExecutionClaimDecision,
+  agentReviewPreparedCheckpoint,
+  committedAgentReviewExecution,
+} from './agentReviewExecution.mjs'
+import { agentReviewOutcomeReconciliationDecision } from './agentReviewReconciliation.mjs'
 import { agentReviewResultId } from './agentReviewTask.mjs'
 import {
   agentTurnExecutionClaimDecision,
@@ -2079,6 +2086,23 @@ function reviewHandler({ tasks = [reviewTaskFixture()], runs = {}, jobs = {}, st
         readAgentReviewTask: async (_userId, id) => tasks.find((task) => task.id === id),
         listAgentReviewTasksForRun: async () => tasks,
         putAgentReviewTask: async (_userId, task) => { stored.push(task); return task },
+        requestAgentReviewCancellation: async (userId, command) => {
+          const current = tasks.find((task) => task.id === command.id)
+          const decision = agentReviewCancellationRequestDecision(current, {
+            ...command, requestedBy: userId, observedAt: 100,
+          })
+          if (decision.changed) Object.assign(current, structuredClone(decision.task))
+          return decision
+        },
+        finalizeAgentReviewCancellation: async () => { throw new Error('HTTP 请求不得直接 finalize cancellation') },
+        resolveAgentReviewOutcomeUnknown: async (userId, command) => {
+          const current = tasks.find((task) => task.id === command.id)
+          const decision = agentReviewOutcomeReconciliationDecision(current, {
+            ...command, actorId: userId, observedAt: 101,
+          })
+          if (decision.changed) Object.assign(current, structuredClone(decision.task))
+          return decision
+        },
         commitAgentReviewHumanDecisions: async (userId, command) => {
           const current = tasks.find((task) => task.id === command.id)
           const existingRuns = new Map((command.retryRunCandidates ?? []).flatMap((candidate) => (
@@ -2106,6 +2130,7 @@ function reviewHandler({ tasks = [reviewTaskFixture()], runs = {}, jobs = {}, st
       readJson: async () => reviewHandler.body,
       requireUser: async () => ({ id: 'user-1' }),
       publishAgentRunUpdated: async (event) => { published.push(event) },
+      publishCancel: async (event) => { published.push(event) },
     }),
   }
 }
@@ -2124,6 +2149,132 @@ test('评审任务读模型暴露覆盖策略与被跳过的候选数', async ()
   assert.equal(task.results.length, 2)
   // ownerId 不外发。
   assert.equal(task.ownerId, undefined)
+})
+
+test('评审取消路由先持久化 cancelling 再广播 generation-fenced signal，不把 HTTP 返回当退出证明', async () => {
+  const queued = { ...reviewTaskFixture(), status: 'queued', attempt: 0, results: [] }
+  delete queued.execution
+  const running = agentReviewExecutionClaimDecision(queued, {
+    id: queued.id, projectId: queued.projectId, leaseToken: 'review-worker-1',
+    leaseDurationMs: 30_000, observedAt: 10,
+  }).task
+  const published = []
+  const { handler, responses } = reviewHandler({ tasks: [running], published })
+  reviewHandler.body = { reason: '停止视觉评审' }
+
+  await handler(
+    { method: 'POST', headers: { 'idempotency-key': 'review-cancel-route-1' } }, {},
+    new URL('http://botanic.test/api/agent-review-tasks/review_task_1/cancel'),
+    { agentReviewTaskCancel: ['path', 'review_task_1'] }, 'request-review-cancel',
+  )
+
+  assert.equal(responses.at(-1)?.status, 202)
+  assert.equal(running.status, 'cancelling')
+  assert.equal(responses.at(-1)?.body.task.status, 'cancelling')
+  assert.equal(responses.at(-1)?.body.task.execution, undefined)
+  assert.deepEqual(responses.at(-1)?.body.task.cancel, { status: 'cancelling', requestedAt: 100 })
+  assert.equal(published.length, 1)
+  assert.equal(published[0].scope, 'review')
+  assert.equal(published[0].executionGeneration, 1)
+  assert.ok(published[0].signalId)
+  // HTTP 成功与广播都不是 Worker 退出证明，终态仍是 cancelling。
+  assert.equal(running.cancel.workerReleased, false)
+})
+
+test('评审取消路由强制 Idempotency-Key 并拒绝未知字段', async () => {
+  const queued = { ...reviewTaskFixture(), status: 'queued', attempt: 0, results: [] }
+  const { handler, responses } = reviewHandler({ tasks: [queued] })
+  reviewHandler.body = {}
+  await handler(
+    { method: 'POST', headers: {} }, {},
+    new URL('http://botanic.test/api/agent-review-tasks/review_task_1/cancel'),
+    { agentReviewTaskCancel: ['path', 'review_task_1'] }, 'request-review-cancel-no-key',
+  )
+  assert.equal(responses.at(-1)?.status, 400)
+  assert.equal(responses.at(-1)?.body.error.code, 'INVALID_IDEMPOTENCY_KEY')
+
+  reviewHandler.body = { reason: '停止', signalId: '客户端不得提供 fence' }
+  await handler(
+    { method: 'POST', headers: { 'idempotency-key': 'review-cancel-invalid-body' } }, {},
+    new URL('http://botanic.test/api/agent-review-tasks/review_task_1/cancel'),
+    { agentReviewTaskCancel: ['path', 'review_task_1'] }, 'request-review-cancel-invalid',
+  )
+  assert.equal(responses.at(-1)?.status, 400)
+  assert.equal(responses.at(-1)?.body.error.code, 'INVALID_AGENT_REVIEW_CANCELLATION')
+  assert.equal(queued.status, 'queued')
+})
+
+test('评审 outcome_unknown 核对路由：continue_unverifiable 不重跑 Provider 且只返回安全摘要', async () => {
+  const queued = { ...reviewTaskFixture(), status: 'queued', attempt: 0, results: [] }
+  delete queued.execution
+  const claimed = agentReviewExecutionClaimDecision(queued, {
+    id: queued.id, projectId: queued.projectId, leaseToken: 'lost-review-worker',
+    leaseDurationMs: 30_000, observedAt: 10,
+  }).task
+  const prepared = committedAgentReviewExecution(claimed, {
+    id: claimed.id, projectId: claimed.projectId, leaseToken: 'lost-review-worker',
+    executionGeneration: 1, status: 'running',
+    checkpoint: agentReviewPreparedCheckpoint({ artifactId: queued.coverage.artifactIds[0], preparedAt: 20 }),
+    observedAt: 20,
+  }).task
+  const unknown = agentReviewExecutionClaimDecision(prepared, {
+    id: prepared.id, projectId: prepared.projectId, leaseToken: 'recovery-worker',
+    leaseDurationMs: 30_000, observedAt: 30_021, allowTakeover: true,
+  }).task
+  const { handler, responses } = reviewHandler({ tasks: [unknown] })
+  reviewHandler.body = { action: 'continue_unverifiable' }
+
+  await handler(
+    { method: 'POST', headers: { 'idempotency-key': 'review-reconcile-route-1' } }, {},
+    new URL('http://botanic.test/api/agent-review-tasks/review_task_1/reconciliation'),
+    { agentReviewTaskReconciliation: ['path', 'review_task_1'] }, 'request-review-reconcile',
+  )
+
+  assert.equal(responses.at(-1)?.status, 200)
+  const task = responses.at(-1)?.body.task
+  assert.equal(task.status, 'queued')
+  assert.equal(task.results[0].source, 'human_resolution')
+  assert.equal(task.results[0].resolution.resolvedBy, undefined)
+  assert.deepEqual(task.reconciliation, {
+    version: 1, retryCount: 0,
+    resolutions: [{ action: 'continue_unverifiable', resolvedAt: 101 }],
+  })
+  assert.equal(task.execution, undefined)
+})
+
+test('评审 outcome_unknown 核对路由：retry_once 显式排队且同一 identity 改动作返回 409', async () => {
+  const queued = { ...reviewTaskFixture(), status: 'queued', attempt: 0, results: [] }
+  delete queued.execution
+  const claimed = agentReviewExecutionClaimDecision(queued, {
+    id: queued.id, projectId: queued.projectId, leaseToken: 'lost-review-worker',
+    leaseDurationMs: 30_000, observedAt: 10,
+  }).task
+  const prepared = committedAgentReviewExecution(claimed, {
+    id: claimed.id, projectId: claimed.projectId, leaseToken: 'lost-review-worker',
+    executionGeneration: 1, status: 'running',
+    checkpoint: agentReviewPreparedCheckpoint({ artifactId: queued.coverage.artifactIds[0], preparedAt: 20 }),
+    observedAt: 20,
+  }).task
+  const unknown = agentReviewExecutionClaimDecision(prepared, {
+    id: prepared.id, projectId: prepared.projectId, leaseToken: 'recovery-worker',
+    leaseDurationMs: 30_000, observedAt: 30_021, allowTakeover: true,
+  }).task
+  const { handler, responses } = reviewHandler({ tasks: [unknown] })
+  const request = { method: 'POST', headers: { 'idempotency-key': 'review-reconcile-route-retry' } }
+  const matches = { agentReviewTaskReconciliation: ['path', 'review_task_1'] }
+  reviewHandler.body = { action: 'retry_once' }
+  await handler(request, {}, new URL('http://botanic.test/api/agent-review-tasks/review_task_1/reconciliation'), matches, 'request-review-retry')
+  assert.equal(responses.at(-1)?.status, 202)
+  assert.equal(responses.at(-1)?.body.task.status, 'queued')
+  assert.deepEqual(responses.at(-1)?.body.task.reconciliation.resolutions[0].risk, {
+    code: 'AGENT_REVIEW_RETRY_MAY_DUPLICATE_PROVIDER_CALL',
+  })
+
+  // 同一 key 不能从 retry_once 偷换为 continue_unverifiable。
+  reviewHandler.body = { action: 'continue_unverifiable' }
+  await handler(request, {}, new URL('http://botanic.test/api/agent-review-tasks/review_task_1/reconciliation'), matches, 'request-review-conflict')
+  assert.equal(responses.at(-1)?.status, 409)
+  assert.equal(responses.at(-1)?.body.error.code, 'AGENT_REVIEW_RECONCILIATION_CONFLICT')
 })
 
 test('批量人工决定逐候选落库，重复提交幂等', async () => {

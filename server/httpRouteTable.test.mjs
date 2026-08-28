@@ -29,3 +29,9 @@ test('Agent Run V2 路由提供分叉与比较资源', () => {
   assert.deepEqual(matchBotanicHttpRoutes('/api/agent-runs/run-1/fork').agentRunFork?.slice(1), ['run-1'])
   assert.deepEqual(matchBotanicHttpRoutes('/api/agent-runs/run-1/compare').agentRunCompare?.slice(1), ['run-1'])
 })
+
+test('Agent Review 路由区分人工决定、durable 取消与未知结果核对', () => {
+  assert.deepEqual(matchBotanicHttpRoutes('/api/agent-review-tasks/review-1/decisions').agentReviewTaskDecisions?.slice(1), ['review-1'])
+  assert.deepEqual(matchBotanicHttpRoutes('/api/agent-review-tasks/review-1/cancel').agentReviewTaskCancel?.slice(1), ['review-1'])
+  assert.deepEqual(matchBotanicHttpRoutes('/api/agent-review-tasks/review-1/reconciliation').agentReviewTaskReconciliation?.slice(1), ['review-1'])
+})

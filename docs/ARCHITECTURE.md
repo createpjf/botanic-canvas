@@ -177,6 +177,12 @@ GenerationJob 四类恢复记录持久化 `recovery_updated_at_ms`，由全量�
 Result 和终态都必须由当前 fence 条件提交。prepared 后租约失效而无法证明 Provider 是否已执行时收敛为 `outcome_unknown`，不静默
 重跑视觉评审或 evaluator Skill。Provider 调用始终在数据库事务外，事务只提交已完成结果。
 
+显式停止评审先持久化 `cancelling` 与 `signalId + executionGeneration`，再通过跨实例 cancel channel 中止匹配的 Worker；HTTP 返回、
+Redis 发布成功都不是退出证明。当前 Worker 真正退出时用匹配 lease 写 `worker_exit`，Worker 崩溃时只能由数据库时钟确认旧租约过期；
+两者之一成立后才收口 `cancelled`。未知 Provider 结果只允许人工选择 `continue_unverifiable` 或 `retry_once`：前者写入来源为
+`human_resolution` 的 truthful `unverifiable` Result，后者明确记录重复调用/计费风险且整个任务最多一次。对账本身不调用 Provider，
+`retry_once` 在 Route 与三个 Adapter 内都重新校验生成权限。
+
 人工接受/拒绝由 `review_decide` 承载，只要求编辑权限；重新生成由独立 costly 工具 `review_retry` 承载，同时要求生成权限和用户确认。
 `server/agentReviewDecisionService.mjs` 与 `agentReviewRetryMaterialization.mjs` 让 Human Decision、每个结果上的
 `retryMaterialization` 绑定和稳定 queued Agent Run 在 ProductStore 同一原子操作内提交。重复请求返回同一 Run；批量中任一冲突整体零写；

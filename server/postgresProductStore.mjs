@@ -11,8 +11,9 @@ import { observeProductStoreRead, timedProductStoreRead } from './productStoreMe
 import { acknowledgedGenerationJobCancellation, committedGenerationJobExecution, comparedAndSetGenerationJob, generationJobExecutionClaimDecision, generationJobPutDecision, requestedGenerationJobCancellation } from './generationJobExecution.mjs'
 import { idempotencyRequestBindingWriteDecision } from './idempotencyRequestBinding.mjs'
 import { agentBranchRetryClaimDecision, agentBranchRetryJobDecision } from './agentBranchRetryClaim.mjs'
-import { agentReviewExecutionClaimDecision, agentReviewTaskPutDecision, committedAgentReviewExecution } from './agentReviewExecution.mjs'
+import { agentReviewCancellationFinalizeDecision, agentReviewCancellationRequestDecision, agentReviewExecutionClaimDecision, agentReviewTaskPutDecision, committedAgentReviewExecution } from './agentReviewExecution.mjs'
 import { agentReviewRetryMaterializationDecision } from './agentReviewRetryMaterialization.mjs'
+import { agentReviewOutcomeReconciliationDecision } from './agentReviewReconciliation.mjs'
 
 const now = () => Date.now()
 const hashAccessToken = (token) => createHash('sha256').update(token).digest('hex')
@@ -2860,6 +2861,122 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       })
     },
 
+    async requestAgentReviewCancellation(userId, command) {
+      return sql.begin(async (tx) => {
+        await tx`select pg_advisory_xact_lock(hashtextextended(${command?.id ?? ''}, 5))`
+        const [row] = await tx`
+          select owner_id as "ownerId", project_id as "projectId", run_id as "runId", payload
+          from agent_review_tasks where id = ${command?.id ?? ''} for update
+        `
+        if (!row || row.projectId !== command?.projectId) return { kind: 'missing', changed: false }
+        const [membership] = await tx`
+          select role from project_members
+          where project_id = ${row.projectId} and user_id = ${userId}
+          for share
+        `
+        assertProjectPermission(membership?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+        const [clock] = await tx`
+          select floor(extract(epoch from clock_timestamp()) * 1000)::bigint as "observedAt"
+        `
+        const existing = {
+          ...asPayload(row), id: command.id, ownerId: row.ownerId,
+          projectId: row.projectId, runId: row.runId,
+        }
+        const decision = agentReviewCancellationRequestDecision(existing, {
+          ...clone(command), requestedBy: userId, observedAt: Number(clock.observedAt),
+        })
+        if (decision.changed) {
+          await persistAgentReviewExecutionDecision(tx, decision.task)
+          await insertAudit(tx, {
+            actorId: userId,
+            action: decision.task.status === 'cancelled'
+              ? 'agent-review.cancelled'
+              : 'agent-review.cancelling',
+            projectId: row.projectId,
+            targetId: command.id,
+          })
+        }
+        return clone(decision)
+      })
+    },
+
+    async finalizeAgentReviewCancellation(userId, command) {
+      return sql.begin(async (tx) => {
+        await tx`select pg_advisory_xact_lock(hashtextextended(${command?.id ?? ''}, 5))`
+        const [row] = await tx`
+          select owner_id as "ownerId", project_id as "projectId", run_id as "runId", payload
+          from agent_review_tasks where id = ${command?.id ?? ''} for update
+        `
+        if (!row || row.ownerId !== userId || row.projectId !== command?.projectId) {
+          return { kind: 'missing', changed: false }
+        }
+        const [clock] = await tx`
+          select floor(extract(epoch from clock_timestamp()) * 1000)::bigint as "observedAt"
+        `
+        const observedAt = Number(clock.observedAt)
+        const existing = {
+          ...asPayload(row), id: command.id, ownerId: row.ownerId,
+          projectId: row.projectId, runId: row.runId,
+        }
+        const decision = agentReviewCancellationFinalizeDecision(existing, {
+          ...clone(command),
+          observedAt,
+          proof: { ...clone(command?.proof), observedAt },
+        })
+        if (decision.changed) {
+          await persistAgentReviewExecutionDecision(tx, decision.task)
+          await insertAudit(tx, {
+            actorId: userId,
+            action: 'agent-review.cancelled',
+            projectId: row.projectId,
+            targetId: command.id,
+          })
+        }
+        return clone(decision)
+      })
+    },
+
+    async resolveAgentReviewOutcomeUnknown(userId, command) {
+      return sql.begin(async (tx) => {
+        await tx`select pg_advisory_xact_lock(hashtextextended(${command?.id ?? ''}, 5))`
+        const [row] = await tx`
+          select owner_id as "ownerId", project_id as "projectId", run_id as "runId", payload
+          from agent_review_tasks where id = ${command?.id ?? ''} for update
+        `
+        if (!row || row.projectId !== command?.projectId) return { kind: 'missing', changed: false }
+        const [membership] = await tx`
+          select role from project_members
+          where project_id = ${row.projectId} and user_id = ${userId}
+          for share
+        `
+        assertProjectPermission(membership?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+        if (command?.action === 'retry_once') {
+          assertProjectPermission(membership?.role, 'create-generation', 'PROJECT_WRITE_FORBIDDEN')
+        }
+        const [clock] = await tx`
+          select floor(extract(epoch from clock_timestamp()) * 1000)::bigint as "observedAt"
+        `
+        const existing = {
+          ...asPayload(row), id: command.id, ownerId: row.ownerId,
+          projectId: row.projectId, runId: row.runId,
+        }
+        const decision = agentReviewOutcomeReconciliationDecision(existing, {
+          ...clone(command), actorId: userId, observedAt: Number(clock.observedAt),
+        })
+        if (decision.changed) {
+          await persistAgentReviewExecutionDecision(tx, decision.task)
+          await insertAudit(tx, {
+            actorId: userId,
+            action: 'agent-review.reconciled',
+            projectId: row.projectId,
+            targetId: command.id,
+            detail: { action: command.action, status: decision.task.status },
+          })
+        }
+        return clone(decision)
+      })
+    },
+
     async commitAgentReviewHumanDecisions(userId, command) {
       return sql.begin(async (tx) => {
         await tx`select pg_advisory_xact_lock(hashtextextended(${command?.id ?? ''}, 5))`
@@ -2944,6 +3061,13 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       return row ? asPayload(row) : undefined
     },
 
+    async readAgentReviewTaskForWorker(taskId) {
+      const [row] = await sql`
+        select payload from agent_review_tasks where id = ${taskId}
+      `
+      return row ? asPayload(row) : undefined
+    },
+
     async listAgentReviewTasksForRun(userId, projectId, runId) {
       if (!await memberRole(projectId, userId)) return undefined
       const rows = await sql`
@@ -2963,7 +3087,7 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       `
       const rows = await sql`
         select t.id, t.updated_at as "updatedAt", t.payload from agent_review_tasks t
-        where t.status in ('queued', 'running') and t.updated_at <= ${olderThan}
+        where t.status in ('queued', 'running', 'cancelling') and t.updated_at <= ${olderThan}
           ${cursor}
         order by t.updated_at asc, t.id asc limit ${limit}
       `

@@ -31,6 +31,7 @@ import {
 import { createLocalCancelRegistry } from './localCancelRegistry.mjs'
 import { publicAgentReviewTask } from './agentReviewTask.mjs'
 import { AgentReviewDecisionServiceError, createAgentReviewDecisionService } from './agentReviewDecisionService.mjs'
+import { createAgentReviewService } from './agentReviewService.mjs'
 import { createAgentBranchRetryService } from './agentBranchRetryService.mjs'
 import { createProductionWorkflowPublishService } from './productionWorkflowPublishService.mjs'
 import { selectBotanicAgentMemory } from './botanicAgentMemory.mjs'
@@ -668,6 +669,15 @@ export function createAgentRouteHandler({
     agentReviewDecision ??= createAgentReviewDecisionService({ productStore })
     return agentReviewDecision
   }
+  let agentReviewOperations
+  const reviewOperationsService = () => {
+    agentReviewOperations ??= createAgentReviewService({
+      productStore,
+      publishCancel,
+      observe: (event) => observeRun(event),
+    })
+    return agentReviewOperations
+  }
   const commitAgentReviewAction = async (command) => {
     try {
       return await reviewDecisionService()(command)
@@ -793,6 +803,8 @@ export function createAgentRouteHandler({
       agentRunTrace: agentRunTraceMatch,
       agentRunReviewTasks: agentRunReviewTasksMatch,
       agentReviewTaskDecisions: agentReviewTaskDecisionsMatch,
+      agentReviewTaskCancel: agentReviewTaskCancelMatch,
+      agentReviewTaskReconciliation: agentReviewTaskReconciliationMatch,
       agentRunCancel: agentRunCancelMatch,
       agentBranchRetry: agentBranchRetryMatch,
       agentTurns: agentTurnsMatch,
@@ -2133,6 +2145,81 @@ export function createAgentRouteHandler({
       await requireProjectPermission(productStore, user.id, run.projectId, 'read-operational')
       const tasks = (await productStore.listAgentReviewTasksForRun(user.id, run.projectId, run.id)) ?? []
       return json(response, 200, { tasks: tasks.map(publicAgentReviewTask) })
+    }
+    if (agentReviewTaskCancelMatch) {
+      if (request.method !== 'POST') return methodNotAllowed(response, '评审取消资源只接受提交请求。', 'POST')
+      const user = await requireUser(request)
+      const taskId = decodeURIComponent(agentReviewTaskCancelMatch[1])
+      const task = await productStore.readAgentReviewTask(user.id, taskId)
+      if (!task) return error(response, 404, 'AGENT_REVIEW_TASK_NOT_FOUND', '未找到该评审任务。')
+      await requireProjectPermission(productStore, user.id, task.projectId, 'edit')
+      const idempotencyKey = generationIdempotencyKey(request.headers['idempotency-key'])
+      if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', '评审取消标识无效，请重试。')
+      const body = await readJson(request, 8 * 1024, '评审取消请求过大。')
+      if (!body || typeof body !== 'object' || Array.isArray(body)
+        || Object.keys(body).some((key) => key !== 'reason')
+        || (body.reason !== undefined && (typeof body.reason !== 'string' || body.reason.length > 500))) {
+        return error(response, 400, 'INVALID_AGENT_REVIEW_CANCELLATION', '评审取消请求字段无效。')
+      }
+      const decision = await reviewOperationsService().requestReviewCancellation({
+        userId: user.id,
+        taskId: task.id,
+        projectId: task.projectId,
+        idempotencyKey,
+        requestedBy: user.id,
+        ...(body.reason?.trim() ? { reason: body.reason.trim() } : {}),
+      })
+      if (!decision?.task) return error(response, 404, 'AGENT_REVIEW_TASK_NOT_FOUND', '未找到该评审任务。')
+      if (decision.kind === 'conflict') {
+        return error(response, 409, 'AGENT_REVIEW_CANCELLATION_CONFLICT', '同一评审取消标识已绑定到不同请求。')
+      }
+      if (!['cancelling', 'cancelled'].includes(decision.task.status)) {
+        return error(response, 409, 'AGENT_REVIEW_NOT_CANCELLABLE', '该评审任务当前不可取消。')
+      }
+      return json(response, decision.task.status === 'cancelling' ? 202 : 200, {
+        task: publicAgentReviewTask(decision.task),
+      })
+    }
+    if (agentReviewTaskReconciliationMatch) {
+      if (request.method !== 'POST') return methodNotAllowed(response, '评审结果核对资源只接受提交请求。', 'POST')
+      const user = await requireUser(request)
+      const taskId = decodeURIComponent(agentReviewTaskReconciliationMatch[1])
+      const task = await productStore.readAgentReviewTask(user.id, taskId)
+      if (!task) return error(response, 404, 'AGENT_REVIEW_TASK_NOT_FOUND', '未找到该评审任务。')
+      await requireProjectPermission(productStore, user.id, task.projectId, 'edit')
+      const idempotencyKey = generationIdempotencyKey(request.headers['idempotency-key'])
+      if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', '评审结果核对标识无效，请重试。')
+      const body = await readJson(request, 8 * 1024, '评审结果核对请求过大。')
+      const action = body?.action
+      if (!body || typeof body !== 'object' || Array.isArray(body)
+        || Object.keys(body).length !== 1
+        || !['continue_unverifiable', 'retry_once'].includes(action)) {
+        return error(response, 400, 'INVALID_AGENT_REVIEW_RECONCILIATION', '评审结果核对动作无效。')
+      }
+      // retry_once 会再次调用 Provider；只有明确具备生成权限的人才能选择这条有成本路径。
+      if (action === 'retry_once') {
+        await requireProjectPermission(productStore, user.id, task.projectId, 'create-generation')
+      }
+      const decision = await reviewOperationsService().reconcileReviewOutcome({
+        userId: user.id,
+        taskId: task.id,
+        projectId: task.projectId,
+        idempotencyKey,
+        action,
+      })
+      if (!decision?.task) return error(response, 404, 'AGENT_REVIEW_TASK_NOT_FOUND', '未找到该评审任务。')
+      if (decision.kind === 'conflict') {
+        return error(response, 409, 'AGENT_REVIEW_RECONCILIATION_CONFLICT', '同一核对标识已绑定到不同动作。')
+      }
+      if (decision.kind === 'retry_limit') {
+        return error(response, 409, 'AGENT_REVIEW_RETRY_LIMIT', '该未知结果已使用过唯一一次显式重试。')
+      }
+      if (decision.kind === 'not_reconcilable') {
+        return error(response, 409, 'AGENT_REVIEW_NOT_RECONCILABLE', '该评审任务当前不需要结果核对。')
+      }
+      return json(response, action === 'retry_once' && decision.task.status === 'queued' ? 202 : 200, {
+        task: publicAgentReviewTask(decision.task),
+      })
     }
     if (agentReviewTaskDecisionsMatch) {
       if (request.method !== 'POST') return methodNotAllowed(response, '评审决定资源只接受提交请求。', 'POST')

@@ -41,6 +41,8 @@ export const botanicHttpRoutePatterns = Object.freeze({
   // 派生实体，逐候选给出结论与人工决定。
   agentRunReviewTasks: /^\/api\/agent-runs\/([^/]+)\/review-tasks$/,
   agentReviewTaskDecisions: /^\/api\/agent-review-tasks\/([^/]+)\/decisions$/,
+  agentReviewTaskCancel: /^\/api\/agent-review-tasks\/([^/]+)\/cancel$/,
+  agentReviewTaskReconciliation: /^\/api\/agent-review-tasks\/([^/]+)\/reconciliation$/,
   projectProductionWorkflowRunManifest: /^\/api\/projects\/([^/]+)\/production-workflow-runs\/([^/]+)\/manifest$/,
   // 交付包下载（Epic 7）。装哪些文件完全由清单决定，这条路由不再判断一次。
   projectProductionWorkflowRunPackage: /^\/api\/projects\/([^/]+)\/production-workflow-runs\/([^/]+)\/package$/,

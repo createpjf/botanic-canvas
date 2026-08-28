@@ -13,8 +13,9 @@ import { collaborationActivitiesForMember, nextCollaborationReceipt, validateCol
 import { acknowledgedGenerationJobCancellation, committedGenerationJobExecution, comparedAndSetGenerationJob, generationJobExecutionClaimDecision, generationJobPutDecision, requestedGenerationJobCancellation } from './generationJobExecution.mjs'
 import { idempotencyRequestBindingWriteDecision } from './idempotencyRequestBinding.mjs'
 import { agentBranchRetryClaimDecision, agentBranchRetryJobDecision } from './agentBranchRetryClaim.mjs'
-import { agentReviewExecutionClaimDecision, agentReviewTaskPutDecision, committedAgentReviewExecution } from './agentReviewExecution.mjs'
+import { agentReviewCancellationFinalizeDecision, agentReviewCancellationRequestDecision, agentReviewExecutionClaimDecision, agentReviewTaskPutDecision, committedAgentReviewExecution } from './agentReviewExecution.mjs'
 import { agentReviewRetryMaterializationDecision } from './agentReviewRetryMaterialization.mjs'
+import { agentReviewOutcomeReconciliationDecision } from './agentReviewReconciliation.mjs'
 
 const schemaVersion = 1
 
@@ -1553,6 +1554,96 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       return clone(decision)
     },
 
+    requestAgentReviewCancellation(userId, command) {
+      const existing = state.agentReviewTasks.find((item) => item.id === command?.id)
+      if (!existing) return { kind: 'missing', changed: false }
+      const project = state.projects.find((item) => item.id === existing.projectId)
+      if (!project || existing.projectId !== command?.projectId) {
+        return { kind: 'missing', changed: false }
+      }
+      assertProjectPermission(
+        project.members.find((item) => item.userId === userId)?.role,
+        'edit',
+        'PROJECT_WRITE_FORBIDDEN',
+      )
+      const decision = agentReviewCancellationRequestDecision(existing, {
+        ...clone(command), requestedBy: userId, observedAt: now(),
+      })
+      if (decision.changed) {
+        Object.assign(existing, decision.task)
+        audit({
+          actorId: userId,
+          action: decision.task.status === 'cancelled'
+            ? 'agent-review.cancelled'
+            : 'agent-review.cancelling',
+          projectId: existing.projectId,
+          targetId: existing.id,
+        })
+        save()
+      }
+      return clone(decision)
+    },
+
+    finalizeAgentReviewCancellation(userId, command) {
+      const existing = state.agentReviewTasks.find((item) => item.id === command?.id)
+      if (!existing || existing.ownerId !== userId || existing.projectId !== command?.projectId) {
+        return { kind: 'missing', changed: false }
+      }
+      const observedAt = now()
+      const decision = agentReviewCancellationFinalizeDecision(existing, {
+        ...clone(command),
+        observedAt,
+        proof: { ...clone(command?.proof), observedAt },
+      })
+      if (decision.changed) {
+        Object.assign(existing, decision.task)
+        audit({
+          actorId: userId,
+          action: 'agent-review.cancelled',
+          projectId: existing.projectId,
+          targetId: existing.id,
+        })
+        save()
+      }
+      return clone(decision)
+    },
+
+    resolveAgentReviewOutcomeUnknown(userId, command) {
+      const existing = state.agentReviewTasks.find((item) => item.id === command?.id)
+      if (!existing) return { kind: 'missing', changed: false }
+      const project = state.projects.find((item) => item.id === existing.projectId)
+      if (!project || existing.projectId !== command?.projectId) {
+        return { kind: 'missing', changed: false }
+      }
+      assertProjectPermission(
+        project.members.find((item) => item.userId === userId)?.role,
+        'edit',
+        'PROJECT_WRITE_FORBIDDEN',
+      )
+      if (command?.action === 'retry_once') {
+        assertProjectPermission(
+          project.members.find((item) => item.userId === userId)?.role,
+          'create-generation',
+          'PROJECT_WRITE_FORBIDDEN',
+        )
+      }
+      const decision = agentReviewOutcomeReconciliationDecision(existing, {
+        ...clone(command), actorId: userId, observedAt: now(),
+      })
+      if (decision.changed) {
+        Object.assign(existing, decision.task)
+        audit({
+          actorId: userId,
+          action: 'agent-review.reconciled',
+          projectId: existing.projectId,
+          targetId: existing.id,
+          detail: { action: command.action, status: existing.status },
+        })
+        save()
+      }
+      return clone(decision)
+    },
+
     commitAgentReviewHumanDecisions(userId, command) {
       const existing = state.agentReviewTasks.find((item) => item.id === command?.id)
       if (!existing) return { kind: 'missing', changed: false }
@@ -1602,6 +1693,11 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       return project && canAccess(project, userId) ? clone(task) : undefined
     },
 
+    readAgentReviewTaskForWorker(taskId) {
+      const task = state.agentReviewTasks.find((item) => item.id === taskId)
+      return task ? clone(task) : undefined
+    },
+
     listAgentReviewTasksForRun(userId, projectId, runId) {
       const project = state.projects.find((item) => item.id === projectId)
       if (!project || !canAccess(project, userId)) return undefined
@@ -1616,7 +1712,8 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       const { olderThan, after, limit } = normalizePendingAgentReviewRecoveryPage(options)
       const updatedAt = (task) => Number(task.updatedAt) || 0
       return state.agentReviewTasks
-        .filter((item) => (item.status === 'queued' || item.status === 'running') && updatedAt(item) <= olderThan)
+        .filter((item) => ['queued', 'running', 'cancelling'].includes(item.status)
+          && updatedAt(item) <= olderThan)
         .filter((item) => after === null
           || updatedAt(item) > after.updatedAt
           || (updatedAt(item) === after.updatedAt && item.id.localeCompare(after.id) > 0))

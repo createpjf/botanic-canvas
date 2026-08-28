@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from 'node:util'
 
 export const AGENT_REVIEW_OUTCOME_UNKNOWN = 'AGENT_REVIEW_OUTCOME_UNKNOWN'
 
-const terminalStatuses = new Set(['completed', 'failed'])
+const terminalStatuses = new Set(['completed', 'failed', 'cancelled'])
 
 function clone(value) {
   return value === undefined ? undefined : structuredClone(value)
@@ -34,6 +34,18 @@ function hasResult(task, artifactId) {
 
 function sameValue(left, right) {
   return isDeepStrictEqual(left, right)
+}
+
+function boundedText(value, maxLength) {
+  const normalized = typeof value === 'string' ? value.trim() : ''
+  return normalized && normalized.length <= maxLength ? normalized : undefined
+}
+
+function cancellationIdentityMatches(cancel, command) {
+  return cancel?.idempotencyKey === command?.idempotencyKey
+    && cancel?.signalId === command?.signalId
+    && cancel?.requestedBy === command?.requestedBy
+    && (cancel?.reason ?? '') === (command?.reason ?? '')
 }
 
 function humanDecisionIdentity(value) {
@@ -243,6 +255,8 @@ export function agentReviewExecutionClaimDecision(existing, command) {
   const leaseToken = typeof command?.leaseToken === 'string' ? command.leaseToken.trim() : ''
   if (!leaseToken) return { kind: 'conflict', task: stored, changed: false }
   if (stored.status === 'completed') return { kind: 'replay', task: stored, changed: false }
+  if (stored.status === 'cancelled') return { kind: 'cancelled', task: stored, changed: false }
+  if (stored.status === 'cancelling') return { kind: 'cancelling', task: stored, changed: false }
   if (stored.status === 'failed') {
     return {
       kind: stored.error?.code === AGENT_REVIEW_OUTCOME_UNKNOWN ? 'outcome_unknown' : 'terminal',
@@ -421,4 +435,165 @@ export function committedAgentReviewExecution(existing, command) {
   }
   if (status !== 'failed') delete task.error
   return { kind: 'committed', task, changed: true }
+}
+
+/**
+ * 显式取消先写 durable fence；HTTP 断开不调用本函数，也不能被解释为取消成功。
+ * 尚未执行的 queued 任务没有 Worker，可由同一原子判定直接收为 cancelled；running
+ * 任务只进入 cancelling，必须等待实际 Worker 退出或数据库租约过期证明。
+ */
+export function agentReviewCancellationRequestDecision(existing, command) {
+  if (!existing) return { kind: 'missing', task: undefined, changed: false }
+  const stored = clone(existing)
+  if (!identityMatches(stored, command?.id, command?.projectId)) {
+    return { kind: 'conflict', task: stored, changed: false }
+  }
+
+  const idempotencyKey = boundedText(command?.idempotencyKey, 200)
+  const signalId = boundedText(command?.signalId, 240)
+  const requestedBy = boundedText(command?.requestedBy, 160)
+  const reason = command?.reason === undefined ? undefined : boundedText(command.reason, 500)
+  if (!idempotencyKey || !signalId || !requestedBy
+    || (command?.reason !== undefined && !reason)) {
+    return { kind: 'conflict', task: stored, changed: false }
+  }
+  const normalizedCommand = { idempotencyKey, signalId, requestedBy, ...(reason ? { reason } : {}) }
+
+  if (stored.status === 'cancelling' || stored.status === 'cancelled') {
+    if (!cancellationIdentityMatches(stored.cancel, normalizedCommand)) {
+      return { kind: 'conflict', task: stored, changed: false }
+    }
+    return {
+      kind: stored.status === 'cancelled' ? 'replay' : 'cancelling',
+      task: stored,
+      changed: false,
+    }
+  }
+  if (terminalStatuses.has(stored.status)) {
+    return { kind: 'terminal', task: stored, changed: false }
+  }
+  if (!['queued', 'running'].includes(stored.status)) {
+    return { kind: 'conflict', task: stored, changed: false }
+  }
+
+  const at = observedAt(command)
+  const generation = executionGeneration(stored)
+  const signalRequired = stored.status === 'running'
+  if (signalRequired && (!generation || !stored.execution?.leaseToken)) {
+    return { kind: 'conflict', task: stored, changed: false }
+  }
+  const cancel = {
+    version: 1,
+    idempotencyKey,
+    signalId,
+    requestedAt: at,
+    requestedBy,
+    ...(reason ? { reason } : {}),
+    executionGeneration: generation,
+    signalRequired,
+    workerReleased: !signalRequired,
+    ...(!signalRequired ? {
+      signalAcknowledgedAt: at,
+      releaseBasis: 'not_started',
+    } : {}),
+  }
+  const status = signalRequired ? 'cancelling' : 'cancelled'
+  const task = {
+    ...stored,
+    status,
+    cancel,
+    updatedAt: Math.max(Number(stored.updatedAt) || 0, at),
+    ...(stored.execution ? {
+      execution: signalRequired
+        ? { ...stored.execution }
+        : {
+            ...stored.execution,
+            settledAt: Number(stored.execution.settledAt) || at,
+          },
+    } : {}),
+  }
+  delete task.error
+  return { kind: status, task, changed: true }
+}
+
+/**
+ * 只有 generation-fenced 的实际退出证明才能把 running Review 从 cancelling 收口。
+ * `worker_exit` 绑定旧 lease capability；Worker 崩溃时只能由数据库时间确认旧租约
+ * 已过期后使用 `lease_expired`，发布 cancel signal 或 HTTP 断开都不是退出证明。
+ */
+export function agentReviewCancellationFinalizeDecision(existing, command) {
+  if (!existing) return { kind: 'missing', task: undefined, changed: false }
+  const stored = clone(existing)
+  if (!identityMatches(stored, command?.id, command?.projectId)) {
+    return { kind: 'conflict', task: stored, changed: false }
+  }
+  const signalId = boundedText(command?.signalId, 240)
+  const generation = Number(command?.executionGeneration)
+  if (!signalId || !Number.isInteger(generation) || generation < 1) {
+    return { kind: 'conflict', task: stored, changed: false }
+  }
+  if (stored.status === 'cancelled') {
+    const sameCancellation = stored.cancel?.signalId === signalId
+      && Number(stored.cancel?.executionGeneration) === generation
+    return {
+      kind: sameCancellation ? 'replay' : 'stale',
+      task: stored,
+      changed: false,
+    }
+  }
+  if (stored.status !== 'cancelling') {
+    return {
+      kind: terminalStatuses.has(stored.status) ? 'terminal' : 'stale',
+      task: stored,
+      changed: false,
+    }
+  }
+  if (stored.cancel?.signalRequired !== true
+    || stored.cancel.signalId !== signalId
+    || Number(stored.cancel.executionGeneration) !== generation
+    || executionGeneration(stored) !== generation) {
+    return { kind: 'stale', task: stored, changed: false }
+  }
+
+  const proofKind = command?.proof?.kind
+  if (!['worker_exit', 'lease_expired'].includes(proofKind)) {
+    return { kind: 'conflict', task: stored, changed: false }
+  }
+  const at = observedAt({ observedAt: command?.proof?.observedAt ?? command?.observedAt })
+  if (at < Number(stored.cancel.requestedAt)) {
+    return { kind: 'conflict', task: stored, changed: false }
+  }
+  if (proofKind === 'worker_exit') {
+    const leaseToken = boundedText(command?.proof?.leaseToken, 240)
+    if (!leaseToken || leaseToken !== stored.execution?.leaseToken) {
+      return { kind: 'stale', task: stored, changed: false }
+    }
+  }
+  if (proofKind === 'lease_expired') {
+    const leaseExpiresAt = Number(stored.execution?.leaseExpiresAt)
+    if (!Number.isFinite(leaseExpiresAt) || leaseExpiresAt <= 0) {
+      return { kind: 'conflict', task: stored, changed: false }
+    }
+    if (leaseExpiresAt > at) {
+      return { kind: 'pending', task: stored, changed: false }
+    }
+  }
+
+  const task = {
+    ...stored,
+    status: 'cancelled',
+    updatedAt: Math.max(Number(stored.updatedAt) || 0, at),
+    cancel: {
+      ...stored.cancel,
+      workerReleased: true,
+      signalAcknowledgedAt: at,
+      releaseBasis: proofKind,
+    },
+    execution: {
+      ...stored.execution,
+      settledAt: Number(stored.execution?.settledAt) || at,
+    },
+  }
+  delete task.error
+  return { kind: 'cancelled', task, changed: true }
 }

@@ -43,6 +43,7 @@ const providerHealth = createProviderHealthMonitor({
 // 跑完再丢弃结果。订阅取消频道后就地 abort，Provider 调用真正停下、槽位立刻释放。
 const jobCancelRegistry = createLocalCancelRegistry()
 const turnCancelRegistry = createLocalCancelRegistry()
+let reviewService
 const cancelSubscriber = await createAgentRunEventSubscriber(config.redisUrl, () => {}, {
   onCancel: (event) => {
     const logAbort = () => {
@@ -50,13 +51,21 @@ const cancelSubscriber = await createAgentRunEventSubscriber(config.redisUrl, ()
       // 跨进程时间差包含机器间时钟偏移，只用于看分位数趋势，不用于精确归因。
       const latencyMs = typeof event.requestedAt === 'number' ? Date.now() - event.requestedAt : undefined
       console.log(JSON.stringify({
-        event: event.scope === 'turn' ? 'agent.turn.cancel.aborted' : 'generation.cancel.aborted',
-        ...(event.scope === 'turn' ? { turnId: event.id } : { jobId: event.id }),
+        event: event.scope === 'turn'
+          ? 'agent.turn.cancel.aborted'
+          : event.scope === 'review' ? 'agent.review.cancel.aborted' : 'generation.cancel.aborted',
+        ...(event.scope === 'turn'
+          ? { turnId: event.id }
+          : event.scope === 'review' ? { reviewTaskId: event.id } : { jobId: event.id }),
         latencyMs,
       }))
     }
     if (event.scope === 'turn') {
       if (turnCancelRegistry.abort(event.id)) logAbort()
+      return
+    }
+    if (event.scope === 'review') {
+      if (reviewService?.handleCancellationSignal(event)) logAbort()
       return
     }
     if (event.scope !== 'job') return
@@ -109,7 +118,7 @@ const evaluatorSkillJudge = createEvaluatorSkillRunner({
     runtime.mediaService?.enabled ? runtime.mediaService.read(mediaId) : undefined
   )),
 })
-const reviewService = createAgentReviewService({
+reviewService = createAgentReviewService({
   productStore: runtime.productStore,
   reviewCandidate: reviewVisionJudge,
   judgeWith: evaluatorSkillJudge,

@@ -14,6 +14,7 @@ import type { ProductLocale } from '../i18n/core'
 
 export type AgentReviewVerdict = 'pass' | 'fail' | 'unverifiable'
 export type AgentReviewDecision = 'accepted' | 'rejected' | 'retry_requested'
+export type AgentReviewReconciliationAction = 'continue_unverifiable' | 'retry_once'
 
 export type AgentReviewCriterion = {
   id: string
@@ -39,7 +40,7 @@ export type AgentReviewCandidate = {
 export type AgentReviewTaskSnapshot = {
   id: string
   runId: string
-  status: 'queued' | 'running' | 'completed' | 'failed'
+  status: 'queued' | 'running' | 'cancelling' | 'cancelled' | 'completed' | 'failed'
   qualityPolicyFingerprint?: string
   planFingerprint?: string
   qualityPolicy?: {
@@ -62,6 +63,24 @@ export type AgentReviewTaskSnapshot = {
     decidedAt?: number
     decisionRevision?: number
   }>
+  cancel?: {
+    status?: 'cancelling' | 'cancelled'
+    requestedAt?: number
+    releaseBasis?: 'not_started' | 'worker_exit' | 'lease_expired'
+  }
+  reconciliation?: {
+    version?: number
+    retryCount?: number
+    resolutions?: Array<{
+      action: AgentReviewReconciliationAction
+      resolvedAt?: number
+      risk?: { code?: string }
+    }>
+  }
+}
+
+export function agentReviewRequiresReconciliation(task: AgentReviewTaskSnapshot | undefined) {
+  return task?.status === 'failed' && task.error?.code === 'AGENT_REVIEW_OUTCOME_UNKNOWN'
 }
 
 const verdictLabels: Record<AgentReviewVerdict, Record<ProductLocale, string>> = {
@@ -139,11 +158,24 @@ export function agentReviewCoverageSummary(task: AgentReviewTaskSnapshot | undef
 /** 任务本身的失败要能被诊断，不能只显示「评审失败」。 */
 export function agentReviewTaskStatusNote(task: AgentReviewTaskSnapshot | undefined, locale: ProductLocale = 'zh-CN') {
   if (!task) return ''
+  if (agentReviewRequiresReconciliation(task)) {
+    return locale === 'en'
+      ? 'The model-call outcome cannot be proven. It was not retried automatically; choose whether to continue as not verified or authorize one risk-aware retry.'
+      : '模型调用结果无法确认，系统未自动重试；请选择按「未验证」继续，或明确授权一次有重复调用风险的重试。'
+  }
   if (task.status === 'failed') {
     const code = task.error?.code ?? 'REVIEW_FAILED'
     return locale === 'en'
       ? `Review did not finish (${code}). It can be retried; generated results are unaffected.`
       : `评审未完成（${code}），可以重试；已生成的结果不受影响。`
+  }
+  if (task.status === 'cancelling') {
+    return locale === 'en'
+      ? 'Stopping the active review. It remains in progress until the worker exits or its lease expires.'
+      : '正在停止评审；只有执行 Worker 退出或租约过期后，任务才会确认取消。'
+  }
+  if (task.status === 'cancelled') {
+    return locale === 'en' ? 'Review was cancelled; generated results are unaffected.' : '评审已取消；已生成的结果不受影响。'
   }
   if (task.status === 'queued' || task.status === 'running') {
     return locale === 'en' ? 'Review is still running in the background.' : '评审仍在后台进行。'

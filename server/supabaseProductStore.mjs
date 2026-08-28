@@ -1648,6 +1648,33 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       })
     },
 
+    async requestAgentReviewCancellation(userId, command) {
+      return agentReviewFenceRpc('botanic_request_agent_review_cancellation', {
+        p_actor_id: userId,
+        p_task_id: command?.id,
+        p_project_id: command?.projectId,
+        p_command: { ...clone(command), requestedBy: userId },
+      })
+    },
+
+    async finalizeAgentReviewCancellation(userId, command) {
+      return agentReviewFenceRpc('botanic_finalize_agent_review_cancellation', {
+        p_owner_id: userId,
+        p_task_id: command?.id,
+        p_project_id: command?.projectId,
+        p_command: clone(command),
+      })
+    },
+
+    async resolveAgentReviewOutcomeUnknown(userId, command) {
+      return agentReviewFenceRpc('botanic_resolve_agent_review_outcome_unknown', {
+        p_actor_id: userId,
+        p_task_id: command?.id,
+        p_project_id: command?.projectId,
+        p_command: { ...clone(command), actorId: userId },
+      })
+    },
+
     async commitAgentReviewHumanDecisions(userId, command) {
       return agentReviewHumanDecisionRpc('botanic_commit_agent_review_human_decisions', {
         p_actor_id: userId,
@@ -1664,6 +1691,13 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       fail(error)
       if (!data) return undefined
       return await memberRole(data.project_id, userId) ? clone(data.payload) : undefined
+    },
+
+    async readAgentReviewTaskForWorker(taskId) {
+      const { data, error } = await supabaseRequest(() => supabase.from('agent_review_tasks')
+        .select('payload').eq('id', taskId).maybeSingle())
+      fail(error)
+      return data ? clone(data.payload) : undefined
     },
 
     async listAgentReviewTasksForRun(userId, projectId, runId) {

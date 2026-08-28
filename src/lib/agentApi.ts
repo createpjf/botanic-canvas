@@ -3,6 +3,7 @@ import { buildBotanicAgentChatRequest, type BotanicAgentChatRequestInput, type B
 import { botanicAgentChatTransportErrorMessage, createBotanicAgentChatStreamReader, type BotanicAgentChatStreamEvent, type BotanicAgentStreamEvent } from '../domain/agentChatStream'
 import type { BotanicAgentRunReview } from '../domain/agentReviewContract'
 import type { AgentReviewDecision, AgentReviewTaskSnapshot } from '../domain/agentReviewPresentation'
+import type { AgentReviewReconciliationAction } from '../domain/agentReviewPresentation'
 import { buildBotanicAgentTurnRequest, type BotanicAgentTurnRequestInput, type BotanicAgentTurnResult } from '../domain/agentTurnContract'
 import {
   agentTurnStreamFailureMustReject,
@@ -1293,4 +1294,47 @@ export async function submitAgentReviewDecisions(
     body: JSON.stringify({ decisions }),
   })
   return response
+}
+
+/**
+ * 请求停止评审。服务端先写 durable cancelling fence；收到响应不等于 Worker 已退出，
+ * 因此界面只展示服务端返回的权威状态，不在本地伪造 cancelled。
+ */
+export async function cancelAgentReviewTask(
+  taskId: string,
+  options: { idempotencyKey?: string; reason?: string } = {},
+) {
+  return productRequest<{ task: AgentReviewTaskSnapshot }>(
+    `/api/agent-review-tasks/${encodeURIComponent(taskId)}/cancel`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': options.idempotencyKey ?? idempotencyKey('agent-review-cancel'),
+      },
+      body: JSON.stringify(options.reason ? { reason: options.reason } : {}),
+    },
+  )
+}
+
+/**
+ * 人工收口 outcome_unknown。`continue_unverifiable` 不重放 Provider；`retry_once`
+ * 明确承担一次重复调用风险，且服务端会拒绝第二次授权。
+ */
+export async function reconcileAgentReviewOutcome(
+  taskId: string,
+  action: AgentReviewReconciliationAction,
+  options: { idempotencyKey?: string } = {},
+) {
+  return productRequest<{ task: AgentReviewTaskSnapshot }>(
+    `/api/agent-review-tasks/${encodeURIComponent(taskId)}/reconciliation`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': options.idempotencyKey ?? idempotencyKey('agent-review-reconciliation'),
+      },
+      body: JSON.stringify({ action }),
+    },
+  )
 }

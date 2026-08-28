@@ -91,7 +91,7 @@ Action `uncertain` 通过服务端权威 Proposal 定位。状态查询不执行
 fresh approval。授权消费原子绑定 `consumedByReceiptId`；若消费后、retry claim 前进程退出，客户端只能在用户再次明确点击后恢复
 同一个 retry key。该 retry 再次未知时只允许人工收口并标记机会耗尽；v1 raw token 仅保留兼容且不得持久化。
 
-ReviewTask 同样使用 execution generation、lease token、heartbeat、prepared checkpoint 与 result/terminal fenced commit。prepared 后失去租约且无法证明 Provider 是否执行时进入 `outcome_unknown`，不得自动重跑。人工接受/拒绝使用 `review_decide`；重新生成是独立、需确认且要求生成权限的 costly `review_retry`。Human Decision、结果上的 `retryMaterialization` 和稳定 queued Run 在一个 ProductStore 原子操作内提交；批量任一冲突整体零写，事务内不调用 Provider。提交后由 `run.submit` sweep 创建 Job；历史 retry 决定缺少可证明物化身份时 fail closed，避免重复计费。
+ReviewTask 同样使用 execution generation、lease token、heartbeat、prepared checkpoint 与 result/terminal fenced commit。prepared 后失去租约且无法证明 Provider 是否执行时进入 `outcome_unknown`，不得自动重跑。显式取消先写 `cancelling`，跨实例 signal 绑定 execution generation；只有匹配 lease 的 Worker 退出或数据库证明旧租约过期后才写 `cancelled`。人工对账只能选择不调用 Provider 的 `continue_unverifiable`，或显式承担重复调用/计费风险且最多一次的 `retry_once`。人工接受/拒绝使用 `review_decide`；重新生成是独立、需确认且要求生成权限的 costly `review_retry`。Human Decision、结果上的 `retryMaterialization` 和稳定 queued Run 在一个 ProductStore 原子操作内提交；批量任一冲突整体零写，事务内不调用 Provider。提交后由 `run.submit` sweep 创建 Job；历史 retry 决定缺少可证明物化身份时 fail closed，避免重复计费。
 
 稳定助手 Message 的 `entityReferences` 只允许权威 Message 写路径首次绑定；`CanvasDocument` 迁移兼容写入口在同步独立实体前剥离该字段，不能伪造引用或占用 sticky first-writer。
 
@@ -115,6 +115,7 @@ Worker 的恢复任务不使用 offset 或固定首页。Supabase 为 Turn、失
 12. `20260828160000_agent_review_retry_atomic.sql`
 13. `20260828170000_agent_cancellation_exit_ack.sql`
 14. `20260828180000_agent_message_entity_references.sql`
+15. `20260828190000_agent_review_cancellation_reconciliation.sql`
 
 仓库中的 Local/PG/Supabase 契约与 SQL 静态测试不等于生产数据库已迁移；发布前仍需在真实 PostgreSQL/Supabase 做并发 claim、
 旧实例排空与回滚演练。
@@ -143,7 +144,8 @@ Worker 的恢复任务不使用 offset 或固定首页。Supabase 为 Turn、失
 - Supabase 四类恢复扫描改用全量写 trigger 维护的 `recovery_updated_at_ms`；RPC 以首屏/续页双静态分支和复合行 cursor 与 `(recovery_updated_at_ms,id COLLATE "C")` partial index 同键，generic plan 深页从索引位置起跳，并保留有界页、回绕、停滞保护与毒任务隔离。
 - Generation lease 接管遇本机旧执行 handle 时先 abort 并 fail-safe 退出，不触发第二次 Provider 调用，留待 lease 恢复。
 - Turn/Run/GenerationJob 取消增加不可变 signal/generation exit ack；Worker 真正退出或数据库证明旧 lease 过期前不宣称 cancelled。
-- Local、PostgreSQL、Supabase 契约与迁移链同步到 `20260828180000_agent_message_entity_references.sql`；生产数据库尚需独立迁移与并发门禁。
+- Review 取消增加 `cancelling → cancelled` durable fence；未知结果增加 truthful continue 与至多一次 risk-aware retry 对账，公共 DTO 不下发 lease、signal、幂等键或内部 prior。
+- Local、PostgreSQL、Supabase 契约与迁移链同步到 `20260828190000_agent_review_cancellation_reconciliation.sql`；生产数据库尚需独立迁移与并发门禁。
 
 ### 2026-08-27
 

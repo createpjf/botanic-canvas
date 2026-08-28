@@ -4,6 +4,7 @@ import {
   agentReviewCandidateRows,
   agentReviewCoverageSummary,
   agentReviewEvaluatorCostNote,
+  agentReviewRequiresReconciliation,
   agentReviewTaskStatusNote,
   agentReviewVerdictLabel,
   isEvaluatorCriterion,
@@ -92,6 +93,17 @@ test('任务失败要能被诊断，不只显示「评审失败」', () => {
   // 评审失败不改变已生成的结果，这一点必须说清楚。
   assert.match(failed, /已生成的结果不受影响/u)
   assert.match(agentReviewTaskStatusNote({ ...task, status: 'running' }), /仍在后台进行/u)
+  assert.match(agentReviewTaskStatusNote({ ...task, status: 'cancelling' }), /Worker 退出或租约过期/u)
+  assert.match(agentReviewTaskStatusNote({ ...task, status: 'cancelled' }), /已取消/u)
+  const outcomeUnknown = {
+    ...task,
+    status: 'failed' as const,
+    error: { code: 'AGENT_REVIEW_OUTCOME_UNKNOWN' },
+  }
+  assert.equal(agentReviewRequiresReconciliation(outcomeUnknown), true)
+  assert.match(agentReviewTaskStatusNote(outcomeUnknown), /未自动重试/u)
+  assert.match(agentReviewTaskStatusNote(outcomeUnknown, 'en'), /not retried automatically/u)
+  assert.equal(agentReviewRequiresReconciliation(task), false)
   assert.equal(agentReviewTaskStatusNote({ ...task, status: 'completed' }), '')
   assert.equal(agentReviewTaskStatusNote(undefined), '')
 })
