@@ -1956,7 +1956,7 @@ export default function CanvasWorkspace({
     return [{
       id: node.id,
       image: result.image,
-      name: result.label ?? canvasSystemLabel('上游输出', locale),
+      name: result.label ? canvasSystemLabel(result.label, locale) : canvasSystemLabel('上游输出', locale),
       role: (result.mediaKind === 'video' ? '调性' : '首图') as AssetRole,
       source: 'generated' as const,
       primary: result.mediaKind !== 'video',
@@ -2224,7 +2224,7 @@ export default function CanvasWorkspace({
             setImagePreview({
               image: imageNode.image,
               name: isResult
-                ? (imageNode as ResultNodeData).label ?? canvasSystemLabel('生成结果', locale)
+                ? canvasSystemLabel((imageNode as ResultNodeData).label ?? '生成结果', locale)
                 : (imageNode as AssetNodeData).name,
               mediaKind: imageNode.mediaKind ?? 'image',
             })

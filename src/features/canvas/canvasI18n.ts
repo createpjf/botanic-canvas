@@ -1,4 +1,5 @@
 import type { AssetRole, AssetSource } from '../../domain/canvas'
+import { displayGenerationResultLabel } from '../../domain/canvasPresentation.ts'
 import type { ProductLocale } from '../../i18n/core'
 
 const roleLabels: Record<AssetRole, Record<ProductLocale, string>> = {
@@ -40,7 +41,8 @@ const systemLabels: Record<string, string> = {
 const systemLabelPatterns: Array<[RegExp, (...matches: string[]) => string]> = [
   [/^(图像生成|视频生成) (\d+)$/, (kind, sequence) => `${kind === '视频生成' ? 'Video generation' : 'Image generation'} ${sequence}`],
   [/^(.+) · (图像|视频) (\d+)$/, (source, kind, sequence) => `${source} · ${kind === '视频' ? 'Video' : 'Image'} ${sequence}`],
-  [/^(首图|精修)候选(?: · (.+))?$/, (kind, status = '') => {
+  [/^(首图|精修)$/, (kind) => kind === '精修' ? 'Refinement' : 'Key visual'],
+  [/^(首图|精修) · (等待选择|等待确认|登录已失效|提交超时)$/, (kind, status) => {
     const prefix = kind === '精修' ? 'Refinement' : 'Key visual'
     const statuses: Record<string, string> = {
       '等待选择': 'Awaiting selection',
@@ -48,21 +50,22 @@ const systemLabelPatterns: Array<[RegExp, (...matches: string[]) => string]> = [
       '登录已失效': 'Session expired',
       '提交超时': 'Submission timed out',
     }
-    return status ? `${prefix} · ${statuses[status] ?? status}` : prefix
+    return `${prefix} · ${statuses[status]}`
   }],
   [/^(首图|精修)分支 (\d+)$/, (kind, sequence) => `${kind === '精修' ? 'Refinement' : 'Key visual'} branch ${sequence}`],
 ]
 
 /** Translate only Botanic-owned stable labels. User-authored names remain untouched. */
 export function canvasSystemLabel(value: string, locale: ProductLocale) {
-  if (locale !== 'en') return value === '视觉目标' ? '描述' : value
-  const direct = systemLabels[value]
+  const normalized = displayGenerationResultLabel(value === '视觉目标' ? '描述' : value)
+  if (locale !== 'en') return normalized
+  const direct = systemLabels[normalized]
   if (direct) return direct
   for (const [pattern, format] of systemLabelPatterns) {
-    const match = value.match(pattern)
+    const match = normalized.match(pattern)
     if (match) return format(...match.slice(1))
   }
-  return value
+  return normalized
 }
 
 export function canvasAssetRoleLabel(role: AssetRole, locale: ProductLocale) {

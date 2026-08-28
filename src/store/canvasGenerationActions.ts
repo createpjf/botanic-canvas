@@ -164,14 +164,14 @@ export function createCanvasGenerationActions({
       void commitDocument(document, {
         generationStatus: 'idle',
         generationProgress: 0,
-        generationError: candidates.length ? null : '生成未返回候选结果，请重试。',
+        generationError: candidates.length ? null : '生成未返回结果，请重试。',
         expectedCandidateCount: job.missingOutputCount ? job.batchCount : 0,
         generationCandidates: job.missingOutputCount ? candidates : [],
         assistantMessage: candidates.length
           ? job.missingOutputCount
             ? `生成已完成 ${candidates.length}/${job.batchCount} 个；缺少的 ${job.missingOutputCount} 个可单独补生成。`
             : `生成已完成：${candidates.length} 个结果已作为独立节点写入画布；不需要的可直接删除。`
-          : '生成没有返回候选结果，请重试。',
+          : '生成没有返回结果，请重试。',
       }, { immediate: true })
       return
     }
@@ -357,7 +357,7 @@ export function createCanvasGenerationActions({
       const graphRecipe = buildGraphGenerationRecipe(get().document, nodeId)
       if (!graphRecipe) return setGenerationError('未找到要执行的生成节点。')
       if (!graphRecipe.prompt.trim()) return setGenerationError('请填写生成描述。')
-      if (graphRecipe.hasUnselectedResultInput) return setGenerationError('上游结果尚未选图；请先在候选中选中一张首图，再继续生成。')
+      if (graphRecipe.hasUnselectedResultInput) return setGenerationError('上游结果尚未选图；请先在结果中选中一张首图，再继续生成。')
       if (!graphRecipe.recipe.references.length && !graphRecipe.parent) return setGenerationError('请至少连接一张商品图片、参考素材或已选首图。')
       const selectedModel = get().availableModels.find((model) => model.id === graphRecipe.recipe.settings.model)
       const maximumReferences = maximumReferencesForModel(selectedModel)
@@ -612,7 +612,7 @@ export function createCanvasGenerationActions({
     retryMissingGeneration: async (jobId) => {
       const document = get().document
       const job = document.generationJobs.find((item) => item.id === jobId)
-      if (!job?.missingOutputCount) return setGenerationError('本任务没有待补生成的候选。')
+      if (!job?.missingOutputCount) return setGenerationError('本任务没有待补生成的图。')
       const request = requestFromPersistedGenerationJob(document, job)
       if (!request?.recipe) return setGenerationError('无法恢复本次生成参数，请基于任一结果继续生成。')
       if (request.kind === 'refinement' && request.targetNodeId) {

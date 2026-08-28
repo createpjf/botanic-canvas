@@ -23,6 +23,7 @@ import type {
   ResultNodeData,
   TextNodeData,
 } from '../domain/canvas.ts'
+import { displayGenerationResultLabel } from '../domain/canvasPresentation.ts'
 import {
   cloneEdges,
   cloneNodes,
@@ -130,7 +131,9 @@ function normalizeLegacyCopyNodes(nodes: CanvasNode[]): CanvasNode[] {
       ...node,
       data: {
         ...data,
-        label: data.label ? cleanDisplayName(data.label, data.generationKind === 'refinement' ? '定向精修结果' : '首图结果') : data.label,
+        label: data.label
+          ? displayGenerationResultLabel(cleanDisplayName(data.label, data.generationKind === 'refinement' ? '定向精修结果' : '首图结果'))
+          : data.label,
         generationRecipe,
         rootRecipe,
       },

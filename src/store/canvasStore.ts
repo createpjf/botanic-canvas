@@ -541,8 +541,8 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
       selectedNodeId: resultNodeId,
       generationCandidates: get().generationCandidates.map((item) => ({ ...item, selected: item.id === candidateId })),
       assistantMessage: candidate.kind === 'refinement'
-        ? `已选中「${candidate.name}」，并从「${candidate.parentLabel ?? '父版本'}」创建 ${historyEntry.name}。其他候选仍可保留为分支。`
-        : `已选中「${candidate.name}」，并从当前画布创建 ${historyEntry.name}。其他候选仍可保留为分支。`,
+        ? `已选中「${candidate.name}」，并从「${candidate.parentLabel ?? '父版本'}」创建 ${historyEntry.name}。其他结果仍可保留为分支。`
+        : `已选中「${candidate.name}」，并从当前画布创建 ${historyEntry.name}。其他结果仍可保留为分支。`,
     })
   },
 

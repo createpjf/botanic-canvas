@@ -107,3 +107,28 @@ test('旧提示词节点名「视觉目标」迁移为「描述」', () => {
   const normalized = normalizeCanvasDocumentBase(stored, stored)
   assert.equal((normalized.nodes[0].data as { label?: string }).label, '描述')
 })
+
+test('旧结果节点名「首图候选 · 状态」迁移为「首图 · 状态」', () => {
+  const stored: CanvasDocument = {
+    id: 'result-rename',
+    name: '结果名',
+    schemaVersion: 25,
+    nodes: [
+      {
+        id: 'result-a', type: 'result', position: { x: 0, y: 0 },
+        data: { kind: 'result', label: '首图候选 · 等待确认', status: 'ready', image: '/result.webp' },
+      },
+      {
+        id: 'result-b', type: 'result', position: { x: 400, y: 0 },
+        data: { kind: 'result', label: '首图候选 01', status: 'ready', image: '/result-2.webp' },
+      },
+    ],
+    edges: [], viewport: { x: 0, y: 0, zoom: 1 }, assets: [], assetGroups: [],
+    templates: [], history: [], deliveries: [], generationJobs: [], batchVariationRuns: [],
+    agentSessions: [], agentMemory: [], agentRuns: [], updatedAt: 1,
+  }
+
+  const normalized = normalizeCanvasDocumentBase(stored, stored)
+  assert.equal((normalized.nodes[0].data as { label?: string }).label, '首图 · 等待确认')
+  assert.equal((normalized.nodes[1].data as { label?: string }).label, '首图候选 01')
+})

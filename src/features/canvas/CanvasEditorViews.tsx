@@ -472,7 +472,7 @@ function GenerateNode({ data, id, selected }: NodeProps) {
     }
     if (node.type === 'result') {
       const result = node.data as ResultNodeData
-      return result.image ? [{ id: node.id, image: result.image, name: result.label ?? t.upstreamOutput, mediaKind: result.mediaKind ?? 'image' }] : []
+      return result.image ? [{ id: node.id, image: result.image, name: result.label ? canvasSystemLabel(result.label, locale) : t.upstreamOutput, mediaKind: result.mediaKind ?? 'image' }] : []
     }
     return []
   })
