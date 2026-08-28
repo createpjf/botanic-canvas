@@ -6,6 +6,7 @@ import {
   botanicAgentTurnProjectionMessageId,
   botanicAgentTurnRecoveryKey,
   botanicAgentTurnRequestKey,
+  botanicAgentTurnTimelineHydrationTargets,
   continueBotanicAgentTurnSubmission,
   botanicAgentTurnGenerationContinuation,
   hasBotanicAgentTurnCancellationIntent,
@@ -94,7 +95,10 @@ test('Turn 续读只把安全的工具投影恢复成时间线事件', () => {
       summary: '核对品牌事实',
       risk: 'external',
       status: 'succeeded',
-      presentation: { kind: 'search', title: '已搜索 3 个网站', count: 3 },
+      presentation: {
+        kind: 'search', title: '已搜索 3 个网站', count: 3,
+        sources: [{ hostname: 'www.andlight.cn', url: 'https://www.andlight.cn/', title: '和光' }],
+      },
       arguments: { query: '不应下发' },
       output: { secret: true },
     },
@@ -111,9 +115,53 @@ test('Turn 续读只把安全的工具投影恢复成时间线事件', () => {
       status: 'succeeded',
       requiresConfirmation: false,
     },
-    presentation: { kind: 'search', title: '已搜索 3 个网站', count: 3 },
+    presentation: {
+      kind: 'search', title: '已搜索 3 个网站', count: 3,
+      sources: [{ hostname: 'www.andlight.cn', url: 'https://www.andlight.cn/', title: '和光' }],
+    },
   })
   assert.equal(agentTurnEventAsStreamEvent({ type: 'turn.started', sequence: 1 }), undefined)
+})
+
+test('Turn 来源恢复只接受有界 HTTPS 展示形状，丢弃畸形与超大字段', () => {
+  const recovered = agentTurnEventAsStreamEvent({
+    type: 'turn.tool',
+    sequence: 9,
+    payload: {
+      toolName: 'web_fetch',
+      toolCallId: 'fetch-1',
+      status: 'succeeded',
+      presentation: {
+        kind: 'fetch',
+        title: '网页获取 www.andlight.cn',
+        sources: [
+          { hostname: 'www.andlight.cn', url: 'https://www.andlight.cn/', title: '和光' },
+          { hostname: 'bad-http', url: 'http://example.com/' },
+          { hostname: 'bad-credentials', url: 'https://user:pass@example.com/' },
+          { hostname: 'oversized-url', url: `https://example.com/${'a'.repeat(2048)}` },
+          { hostname: 'x'.repeat(254), url: 'https://example.com/' },
+          { hostname: 'fcbarcelona.com', url: 'https://fcbarcelona.com/', title: 't'.repeat(161) },
+          ...Array.from({ length: 50 }, (_, index) => ({
+            hostname: `source-${index}.example.com`,
+            url: `https://source-${index}.example.com/`,
+          })),
+        ],
+      },
+    },
+  })
+  assert.deepEqual(recovered?.type === 'tool' ? recovered.presentation?.sources : undefined, [
+    { hostname: 'www.andlight.cn', url: 'https://www.andlight.cn/', title: '和光' },
+    { hostname: 'fcbarcelona.com', url: 'https://fcbarcelona.com/' },
+    { hostname: 'source-0.example.com', url: 'https://source-0.example.com/' },
+    { hostname: 'source-1.example.com', url: 'https://source-1.example.com/' },
+    { hostname: 'source-2.example.com', url: 'https://source-2.example.com/' },
+  ])
+
+  assert.equal(agentTurnEventAsStreamEvent({
+    type: 'turn.tool',
+    payload: { toolName: 'x'.repeat(121), presentation: { kind: 'fetch', title: 't'.repeat(121) } },
+  })?.type === 'tool', true)
+  assert.equal(agentTurnEventAsStreamEvent({ type: 'turn.tool', payload: [] as unknown as Record<string, unknown> }), undefined)
 })
 
 test('Turn 续读以权威终态结算，非终态继续观察', () => {
@@ -168,6 +216,58 @@ test('刷新恢复只挑出尚无同 Turn 助手投影的用户消息，并使�
     ...messages,
     { id: botanicAgentTurnProjectionMessageId('turn-b'), role: 'assistant', turnId: 'turn-b', status: 'answered', createdAt: 5 },
   ]), undefined)
+})
+
+test('已有稳定助手投影只进入有界时间线 hydration，不再进入 pending execute path', () => {
+  const user = { id: 'user-complete', role: 'user' as const, turnId: 'turn-complete', createdAt: 1 }
+  const assistant = {
+    id: botanicAgentTurnProjectionMessageId('turn-complete'),
+    role: 'assistant' as const,
+    turnId: 'turn-complete',
+    status: 'answered' as const,
+    createdAt: 2,
+  }
+  const olderAssistant = {
+    id: botanicAgentTurnProjectionMessageId('turn-older'),
+    role: 'assistant' as const,
+    turnId: 'turn-older',
+    status: 'submitted' as const,
+    createdAt: 0,
+  }
+  const messages = [olderAssistant, user, assistant]
+  assert.equal(pendingBotanicAgentTurnProjection(messages), undefined)
+  assert.deepEqual(botanicAgentTurnTimelineHydrationTargets(messages, new Set(), 1), [{
+    messageId: assistant.id,
+    turnId: 'turn-complete',
+  }])
+  assert.deepEqual(botanicAgentTurnTimelineHydrationTargets(
+    messages,
+    new Set(['turn-older']),
+    4,
+  ), [{ messageId: assistant.id, turnId: 'turn-complete' }])
+  assert.deepEqual(botanicAgentTurnTimelineHydrationTargets(messages, new Set(), 0), [])
+
+  const many = Array.from({ length: 5 }, (_, index) => ({
+    id: botanicAgentTurnProjectionMessageId(`turn-${index}`),
+    role: 'assistant' as const,
+    turnId: `turn-${index}`,
+    status: 'answered' as const,
+    createdAt: index,
+  }))
+  const firstBatch = botanicAgentTurnTimelineHydrationTargets(many, new Set(), 2)
+  const secondBatch = botanicAgentTurnTimelineHydrationTargets(
+    many,
+    new Set(firstBatch.map((target) => target.turnId)),
+    2,
+  )
+  const thirdBatch = botanicAgentTurnTimelineHydrationTargets(
+    many,
+    new Set([...firstBatch, ...secondBatch].map((target) => target.turnId)),
+    2,
+  )
+  assert.deepEqual([...firstBatch, ...secondBatch, ...thirdBatch].map((target) => target.turnId), [
+    'turn-4', 'turn-3', 'turn-2', 'turn-1', 'turn-0',
+  ])
 })
 
 test('旧稳定投影可用同 ID 修复，完成后继续下一 pending Turn 而不饿死', () => {

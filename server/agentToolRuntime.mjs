@@ -1,4 +1,5 @@
 import { agentToolCallSummary, appendAgentReasoning, extractProviderReasoning } from './botanicAgentReasoning.mjs'
+import { presentationWebSources } from './agentWebResearch.mjs'
 import {
   completeAgentTurnCheckpoint,
   prepareAgentTurnCheckpoint,
@@ -197,6 +198,11 @@ function presentationCount(output) {
   return collection?.length
 }
 
+function withWebSources(presentation, output) {
+  const sources = presentationWebSources(output)
+  return sources.length > 0 ? { ...presentation, sources } : presentation
+}
+
 /**
  * 工具展示元数据只从工具名和安全结果摘要中提取，不复制参数或完整返回值。
  * 标题像真实日志（「检索项目记忆」「起草生成计划」），不是装饰文案。
@@ -229,15 +235,15 @@ export function toolEventPresentation(name, output) {
   const normalizedName = typeof name === 'string' ? name.toLowerCase() : ''
   if (normalizedName === 'web_search' || normalizedName.startsWith('search_')) {
     const count = presentationCount(output)
-    return count !== undefined
+    return withWebSources(count !== undefined
       ? { kind: 'search', title: `已搜索 ${count} 个网站`, count }
-      : { kind: 'search', title: '正在搜索网站' }
+      : { kind: 'search', title: '正在搜索网站' }, output)
   }
   if (normalizedName === 'web_fetch') {
     const hostname = safePresentationLabel(output?.hostname)
-    return hostname
+    return withWebSources(hostname
       ? { kind: 'fetch', title: `网页获取 ${hostname}` }
-      : { kind: 'fetch', title: '正在获取网页' }
+      : { kind: 'fetch', title: '正在获取网页' }, output)
   }
   if (/^(?:skill_read|read_skill)$/u.test(normalizedName)) {
     const skillName = safePresentationLabel(output?.skillName ?? output?.skill?.name)

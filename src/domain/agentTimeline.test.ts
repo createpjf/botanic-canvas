@@ -6,9 +6,14 @@ import {
   agentTimelineToolPresentation,
   applyAgentConversationStreamEvent,
   createAgentTimeline,
+  displayWebSourceHostname,
   persistAgentLiveTimeline,
   projectBotanicAgentRunOntoTimeline,
   reduceAgentTimeline,
+  safeTimelineWebSources,
+  timelineRawDisplayItems,
+  timelineStepShowsWebSources,
+  timelineWebSourceHref,
 } from './agentTimeline.ts'
 
 const toolCall = (
@@ -195,18 +200,24 @@ test('搜索结果数为 0 时不用调用次数冒充站点数', () => {
   assert.equal(rawGroup?.type === 'raw_group' ? rawGroup.summary : '', '已搜索 0 个网站')
 })
 
-test('web_fetch 展示网页获取主机名，不与搜索步骤合并', () => {
+test('web_fetch 展示网页获取主机名和来源 pill，不与搜索步骤合并', () => {
   let timeline = createAgentTimeline(1_000)
   timeline = reduceAgentTimeline(timeline, {
     type: 'tool',
     step: 0,
     toolCall: toolCall('fetch-1', 'web_fetch', '网页获取', 'succeeded'),
-    presentation: { kind: 'fetch', title: '网页获取 www.andlight.cn' },
+    presentation: {
+      kind: 'fetch',
+      title: '网页获取 www.andlight.cn',
+      sources: [{ hostname: 'www.andlight.cn', url: 'https://www.andlight.cn/' }],
+    },
     receivedAt: 1_100,
   })
   const step = timeline.blocks.find((block) => block.type === 'step')
   assert.equal(step?.type === 'step' ? step.kind : '', 'fetch')
   assert.equal(step?.type === 'step' ? step.title : '', '网页获取 www.andlight.cn')
+  const rawItems = timeline.blocks.find((block) => block.type === 'raw_group')?.items ?? []
+  assert.equal(step?.type === 'step' && timelineStepShowsWebSources(step, rawItems), true)
 })
 
 test('已知规划工具标题与服务端对齐；Run 投影只反映已持久化状态', () => {
@@ -321,6 +332,100 @@ test('失败的步骤必须带上原因，恢复成功后清掉', () => {
   const healed = recovered.blocks.find((block) => block.type === 'step')
   assert.equal(healed?.status, 'succeeded')
   assert.equal(healed?.error, undefined)
+})
+
+test('连续搜索按 hostname 去重累加站点；项目检索即使带 hits 也不出 pill', () => {
+  let timeline = createAgentTimeline(1_000)
+  timeline = reduceAgentTimeline(timeline, {
+    type: 'tool',
+    step: 0,
+    toolCall: toolCall('search-a', 'web_search', '网页搜索', 'succeeded'),
+    presentation: {
+      kind: 'search',
+      title: '已搜索 2 个网站',
+      count: 2,
+      sources: [
+        { hostname: 'www.andlight.cn', url: 'https://www.andlight.cn/', title: '和光' },
+        { hostname: 'fcbarcelona.com', url: 'https://fcbarcelona.com/' },
+      ],
+    },
+    receivedAt: 1_100,
+  })
+  timeline = reduceAgentTimeline(timeline, {
+    type: 'tool',
+    step: 0,
+    toolCall: toolCall('search-b', 'web_search', '网页搜索', 'succeeded'),
+    presentation: {
+      kind: 'search',
+      title: '已搜索 2 个网站',
+      count: 2,
+      sources: [
+        { hostname: 'andlight.cn', url: 'https://andlight.cn/about' },
+        { hostname: 'nytimes.com', url: 'https://www.nytimes.com/' },
+      ],
+    },
+    receivedAt: 1_200,
+  })
+
+  const search = timeline.blocks.find((block) => block.type === 'step' && block.kind === 'search')
+  const rawGroup = timeline.blocks.find((block) => block.type === 'raw_group')
+  assert.deepEqual(search?.type === 'step' ? search.sources : undefined, [
+    { hostname: 'www.andlight.cn', url: 'https://www.andlight.cn/', title: '和光' },
+    { hostname: 'fcbarcelona.com', url: 'https://fcbarcelona.com/' },
+    { hostname: 'nytimes.com', url: 'https://www.nytimes.com/' },
+  ])
+  assert.equal(search?.type === 'step' ? search.count : 0, 4)
+  assert.equal(
+    timelineStepShowsWebSources(search as Extract<typeof search, { type: 'step' }>, rawGroup?.items ?? []),
+    true,
+  )
+  assert.deepEqual(timelineRawDisplayItems(rawGroup?.items ?? []).map((item) => item.name), [])
+
+  let memory = createAgentTimeline(2_000)
+  memory = reduceAgentTimeline(memory, {
+    type: 'tool',
+    step: 0,
+    toolCall: toolCall('mem-1', 'project_memory_search', '检索项目记忆', 'succeeded'),
+    presentation: {
+      kind: 'search',
+      title: '检索项目记忆 · 2 条',
+      count: 2,
+      sources: [{ hostname: 'www.andlight.cn', url: 'https://www.andlight.cn/' }],
+    },
+    receivedAt: 2_100,
+  })
+  const memoryStep = memory.blocks.find((block) => block.type === 'step')
+  const memoryItems = memory.blocks.find((block) => block.type === 'raw_group')?.items ?? []
+  assert.equal(memoryStep?.type === 'step' ? memoryStep.sources : [], undefined)
+  assert.equal(
+    memoryStep?.type === 'step' && timelineStepShowsWebSources(memoryStep, memoryItems),
+    false,
+  )
+})
+
+test('raw 只收起网页搜索行，保留 web_fetch；客户端只解析有界 HTTPS 来源形状', () => {
+  assert.deepEqual(timelineRawDisplayItems([
+    { ...toolCall('s1', 'web_search', '网页搜索', 'succeeded') },
+    { ...toolCall('s2', 'search_related', '关联搜索', 'succeeded') },
+    { ...toolCall('f1', 'web_fetch', '网页获取', 'succeeded') },
+    { ...toolCall('m1', 'project_memory_search', '检索项目记忆', 'succeeded') },
+  ]).map((item) => item.name), ['web_fetch', 'project_memory_search'])
+
+  assert.equal(displayWebSourceHostname('www.andlight.cn'), 'andlight.cn')
+  assert.equal(timelineWebSourceHref({ hostname: 'andlight.cn', url: 'https://www.andlight.cn/about' }), 'https://www.andlight.cn/about')
+  assert.equal(timelineWebSourceHref({ hostname: 'example.com', url: 'http://example.com' }), null)
+  assert.equal(timelineWebSourceHref({ hostname: 'example.com', url: 'https://user:pass@example.com/' }), null)
+  assert.equal(timelineWebSourceHref({ hostname: 'local', url: 'https://127.0.0.1/' }), 'https://127.0.0.1/')
+  assert.equal(timelineWebSourceHref({ hostname: 'oversized', url: `https://example.com/${'a'.repeat(2048)}` }), null)
+  assert.deepEqual(safeTimelineWebSources([
+    { hostname: 'www.andlight.cn', url: 'https://www.andlight.cn/', title: '和光' },
+    { hostname: 'bad-http', url: 'http://example.com/' },
+    { hostname: 'oversized', url: `https://example.com/${'a'.repeat(2048)}` },
+    { hostname: 'fcbarcelona.com', url: 'https://fcbarcelona.com/', title: 'x'.repeat(161) },
+  ]), [
+    { hostname: 'www.andlight.cn', url: 'https://www.andlight.cn/', title: '和光' },
+    { hostname: 'fcbarcelona.com', url: 'https://fcbarcelona.com/' },
+  ])
 })
 
 test('没有错误文案时不编造一个', () => {

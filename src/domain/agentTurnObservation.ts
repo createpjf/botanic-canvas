@@ -2,6 +2,7 @@ import type { AgentToolCallTrace } from './agent.ts'
 import type { BotanicAgentStreamEvent } from './agentChatStream.ts'
 import type { BotanicAgentTurnResult } from './agentTurnContract.ts'
 import type { TimelineStepKind, TimelineToolPresentation } from './agentTimeline.ts'
+import { safeTimelineWebSources } from './agentTimelineWebSources.ts'
 
 /**
  * 浏览器断线/刷新后必须用同一条用户 Message 找回同一 Turn；随机请求键会静默重跑模型。
@@ -123,6 +124,36 @@ export function pendingBotanicAgentTurnProjection<T extends BotanicAgentTurnLink
       && (!message.turnId?.trim() || !projectedTurnIds.has(message.turnId.trim()))
     ))
     .sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id))[0]
+}
+
+export type BotanicAgentTurnTimelineHydrationTarget = {
+  messageId: string
+  turnId: string
+}
+
+/**
+ * 已有稳定助手投影说明 Turn 业务结果已经落盘，不应再进入 pending execute。
+ * 时间线只按需回读当前消息页中尚未 hydrate 的最新几轮；调用方限制并发，并分批覆盖当前消息集合。
+ */
+export function botanicAgentTurnTimelineHydrationTargets(
+  messages: readonly BotanicAgentTurnLinkedMessage[],
+  attemptedTurnIds: ReadonlySet<string>,
+  limit = 2,
+): BotanicAgentTurnTimelineHydrationTarget[] {
+  const cap = Number.isInteger(limit) ? Math.min(4, Math.max(0, limit)) : 2
+  if (!cap) return []
+  const targets: BotanicAgentTurnTimelineHydrationTarget[] = []
+  const selectedTurnIds = new Set<string>()
+  for (let index = messages.length - 1; index >= 0 && targets.length < cap; index -= 1) {
+    const message = messages[index]
+    const turnId = message?.turnId?.trim() ?? ''
+    if (message?.role !== 'assistant' || !turnId) continue
+    if (message.id !== botanicAgentTurnProjectionMessageId(turnId)) continue
+    if (attemptedTurnIds.has(turnId) || selectedTurnIds.has(turnId)) continue
+    selectedTurnIds.add(turnId)
+    targets.push({ messageId: message.id, turnId })
+  }
+  return targets
 }
 
 /** Stop 可能在 observer 已启动后才落入 Message/ref；终态投影前必须重新读取一次。 */
@@ -359,32 +390,45 @@ function stringValue(value: unknown, fallback = '') {
   return typeof value === 'string' && value.trim() ? value.trim() : fallback
 }
 
+function boundedStringValue(value: unknown, maximumLength: number, fallback = '') {
+  const normalized = stringValue(value)
+  return normalized && normalized.length <= maximumLength ? normalized : fallback
+}
+
 function safePresentation(value: unknown): TimelineToolPresentation | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
   const raw = value as Record<string, unknown>
   const kind = presentationKinds.has(raw.kind as TimelineStepKind) ? raw.kind as TimelineStepKind : undefined
-  const title = stringValue(raw.title)
+  const title = boundedStringValue(raw.title, 120)
   if (!kind || !title) return undefined
-  const count = Number.isInteger(raw.count) && Number(raw.count) >= 0 ? Number(raw.count) : undefined
-  return { kind, title, ...(count !== undefined ? { count } : {}) }
+  const count = Number.isInteger(raw.count) && Number(raw.count) >= 0 && Number(raw.count) <= 10_000
+    ? Number(raw.count)
+    : undefined
+  const sources = safeTimelineWebSources(raw.sources)
+  return {
+    kind,
+    title,
+    ...(count !== undefined ? { count } : {}),
+    ...(sources?.length ? { sources } : {}),
+  }
 }
 
 /** 把持久化事件恢复成 UI 已认识的安全事件；生命周期事件不进入工具时间线。 */
 export function agentTurnEventAsStreamEvent(event: BotanicAgentTurnEventRecord): BotanicAgentStreamEvent | undefined {
-  if (event.type !== 'turn.tool' || !event.payload) return undefined
+  if (event.type !== 'turn.tool' || !event.payload || typeof event.payload !== 'object' || Array.isArray(event.payload)) return undefined
   const payload = event.payload
-  const name = stringValue(payload.toolName, 'agent_tool')
-  const label = stringValue(payload.label, name)
+  const name = boundedStringValue(payload.toolName, 120, 'agent_tool')
+  const label = boundedStringValue(payload.label, 120, name)
   const risk = toolRisks.has(payload.risk as AgentToolCallTrace['risk']) ? payload.risk as AgentToolCallTrace['risk'] : 'read'
   const status = toolStatuses.has(payload.status as AgentToolCallTrace['status']) ? payload.status as AgentToolCallTrace['status'] : 'running'
-  const summary = stringValue(payload.summary)
+  const summary = boundedStringValue(payload.summary, 120)
   const presentation = safePresentation(payload.presentation)
   return {
     type: 'tool',
-    step: Number.isInteger(payload.step) ? Number(payload.step) : 0,
+    step: Number.isInteger(payload.step) && Number(payload.step) >= 0 && Number(payload.step) <= 64 ? Number(payload.step) : 0,
     ...(Number.isInteger(event.sequence) ? { sequence: Number(event.sequence) } : {}),
     toolCall: {
-      id: stringValue(payload.toolCallId, `turn-tool-${Number(event.sequence) || 0}`),
+      id: boundedStringValue(payload.toolCallId, 160, `turn-tool-${Number(event.sequence) || 0}`),
       name,
       label,
       risk,

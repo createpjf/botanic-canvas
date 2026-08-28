@@ -6,6 +6,7 @@ import {
   storedAgentTurnRequestBinding,
 } from './agentTurnRequestIdentity.mjs'
 import { validateAgentEntityReferences, validateAgentToolEntityReferences } from './agentEntityReferences.mjs'
+import { presentationWebSources } from './agentWebResearch.mjs'
 import { withBotanicSpan } from './executionTelemetry.mjs'
 
 // completed Turn 仍可能拥有后续创建的 linked Run / Job；显式深取消必须能从
@@ -62,7 +63,13 @@ function safeToolPresentation(value) {
     ? value.count
     : undefined
   if (!kind || !title) return undefined
-  return { kind, title, ...(count !== undefined ? { count } : {}) }
+  const sources = presentationWebSources({ hits: value.sources }, 5)
+  return {
+    kind,
+    title,
+    ...(count !== undefined ? { count } : {}),
+    ...(sources.length ? { sources } : {}),
+  }
 }
 
 function eventPayload(event) {

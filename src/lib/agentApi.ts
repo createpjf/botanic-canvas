@@ -23,6 +23,7 @@ import type { BotanicAgentCompositionItem } from '../domain/agentCreativeComposi
 import { readProductLocale, type ProductLocale } from '../i18n/core'
 import { canonicalImageFormatSentenceList, isCanonicalImageFormat } from '../domain/mediaFormats'
 import { persistentBotanicAgentMessageBody } from '../domain/agentMessagePersistence'
+import { readAgentTurnTimelineEvents } from './agentTurnTimelineEventReader'
 
 const agentActionsRequiringApproval = new Set([
   'generation_submit', 'mcp_call', 'agent_branch_retry', 'review_retry', 'workflow_run_retry_failed',
@@ -268,6 +269,23 @@ async function observeBotanicAgentTurn(input: {
   const observed = await observeAgentRuntimeResult<BotanicAgentTurnResult>(input)
   input.onEvent?.({ type: 'done', result: observed.result })
   return withRuntimeTurnId(observed.result, observed.turn)
+}
+
+/**
+ * 已完成消息的时间线补水只读 GET Turn Events。它不等待终态、不 POST、不调用
+ * observer execute path；页数与事件数均有硬上限，游标停滞立即失败。
+ */
+export async function readPersistentBotanicAgentTurnEvents(
+  turnId: string,
+  projectId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<BotanicAgentStreamEvent[]> {
+  return readAgentTurnTimelineEvents({
+    turnId,
+    projectId,
+    signal: options.signal,
+    readPage: (path, signal) => productRequest(path, { signal }),
+  })
 }
 
 function planFromPersistentRuntimeResult(

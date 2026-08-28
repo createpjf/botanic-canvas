@@ -5,6 +5,8 @@ const DEFAULT_TAVILY_EXTRACT_URL = 'https://api.tavily.com/extract'
 const MAX_SEARCH_HITS = 5
 const MAX_SNIPPET = 400
 const MAX_TITLE = 160
+const MAX_PRESENTATION_URL = 2048
+const MAX_PRESENTATION_HOSTNAME = 253
 const MAX_FETCH_TEXT = 4000
 const MAX_QUERY = 200
 
@@ -150,6 +152,52 @@ export function classifyPublicHttpUrl(raw, { allowLocal = false } = {}) {
     hostname: url.hostname,
     ...(ipv4 || hostname.includes(':') ? { ipLiteral: hostname } : {}),
   }
+}
+
+/**
+ * 时间线可展示的站点摘要：公开 hostname，可选 url/title。
+ * 不传 snippet、query；字符串 sources 只用于计数，不能当成网站。
+ */
+export function presentationWebSources(output, limit = MAX_SEARCH_HITS) {
+  if (!output || typeof output !== 'object' || Array.isArray(output)) return []
+  const cap = Number.isInteger(limit) && limit >= 0 ? Math.min(limit, MAX_SEARCH_HITS) : MAX_SEARCH_HITS
+  if (cap === 0) return []
+  const collected = []
+  const seen = new Set()
+
+  const pushHit = (item) => {
+    if (collected.length >= cap) return
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return
+    const rawUrl = typeof item.url === 'string' ? item.url.trim() : ''
+    if (!rawUrl || rawUrl.length > MAX_PRESENTATION_URL) return
+    const classified = classifyPublicHttpUrl(rawUrl)
+    if (!classified.ok) return
+    const hostname = String(classified.hostname || '').trim()
+    if (!hostname || hostname.length > MAX_PRESENTATION_HOSTNAME) return
+    const key = hostname.replace(/^www\./iu, '').toLocaleLowerCase()
+    if (!key || seen.has(key)) return
+    seen.add(key)
+    const title = typeof item.title === 'string'
+      ? item.title.replace(/[\u0000-\u001f\u007f]/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, MAX_TITLE)
+      : ''
+    collected.push({
+      hostname,
+      url: classified.href,
+      ...(title ? { title } : {}),
+    })
+  }
+
+  const candidateLimit = MAX_SEARCH_HITS * 4
+  if (Array.isArray(output.hits)) output.hits.slice(0, candidateLimit).forEach(pushHit)
+  if (Array.isArray(output.results)) output.results.slice(0, candidateLimit).forEach(pushHit)
+  if (collected.length === 0) {
+    pushHit({
+      url: output.url,
+      hostname: output.hostname,
+      title: output.title,
+    })
+  }
+  return collected
 }
 
 export function normalizeWebSearchHits(results, limit = MAX_SEARCH_HITS) {

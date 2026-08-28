@@ -224,6 +224,11 @@ test('持久化工具事件只保留可 reattach 的人话展示字段，不带�
         },
         presentation: {
           kind: 'search', title: '已搜索 3 个网站', count: 3,
+          sources: [
+            { hostname: 'www.andlight.cn', url: 'https://www.andlight.cn/', title: '和光' },
+            { hostname: 'private', url: 'https://127.0.0.1/secret', title: '不得持久化' },
+            { hostname: 'oversized', url: `https://example.com/${'a'.repeat(2048)}` },
+          ],
           url: 'https://private.example/presentation', output: '不得持久化',
         },
       })
@@ -234,7 +239,12 @@ test('持久化工具事件只保留可 reattach 的人话展示字段，不带�
   const payload = store.events.get(id).find((entry) => entry.type === 'turn.tool').payload
   assert.equal(payload.label, '搜索品牌参考')
   assert.equal(payload.summary.length, 120)
-  assert.deepEqual(payload.presentation, { kind: 'search', title: '已搜索 3 个网站', count: 3 })
+  assert.deepEqual(payload.presentation, {
+    kind: 'search',
+    title: '已搜索 3 个网站',
+    count: 3,
+    sources: [{ hostname: 'www.andlight.cn', url: 'https://www.andlight.cn/', title: '和光' }],
+  })
   assert.doesNotMatch(JSON.stringify(payload), /机密检索词|private\.example|完整隐藏推理|不得持久化/u)
   assert.equal('arguments' in payload, false)
   assert.equal('output' in payload, false)

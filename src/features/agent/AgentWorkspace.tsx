@@ -100,6 +100,7 @@ import {
   ProjectAgentActionClientError,
   projectAgentActionIdempotencyKey,
   readProjectAgentActionStatus,
+  readPersistentBotanicAgentTurnEvents,
   requestBotanicAgentPlan,
   requestBotanicAgentRunReview,
   resolveProjectAgentAction,
@@ -108,6 +109,14 @@ import {
   streamBotanicAgentPlan,
   streamBotanicAgentTurn,
 } from '../../lib/agentApi'
+import {
+  agentTurnTimelineHydrationFailureDisposition,
+  agentTurnTimelineFromHydrationEvents,
+  beginAgentTurnTimelineHydrationBatch,
+  mergeHydratedAgentTurnTimeline,
+  releaseAbortedAgentTurnTimelineHydrations,
+  type AgentTurnTimelineHydrationAttemptState,
+} from './agentTurnTimelineHydration'
 import { botanicAgentRegionSelectNotice, instructionRequestsMarkOverlay } from '../../domain/generationComposition'
 import { describeRegionRect } from '../../domain/regionMask'
 import { RegionMaskEditor } from '../canvas/RegionMaskEditor'
@@ -206,6 +215,8 @@ type AgentLiveConversation = {
   timeline: AgentTimelineState
   streaming: boolean
 }
+
+const maximumConcurrentTurnTimelineHydrations = 2
 
 function agentTimelineEvent(event: BotanicAgentChatStreamEvent, receivedAt: number): AgentTimelineEvent {
   if (event.type === 'reasoning') return { type: event.type, step: event.step, delta: event.delta, receivedAt }
@@ -500,6 +511,8 @@ export default function AgentWorkspace({
   const [liveConversation, setLiveConversation] = useState<AgentLiveConversation>()
   /** 气泡旁路时间线：回合结束后的工具步骤，以及确认后的 Run 进度投影。 */
   const [executionTimelines, setExecutionTimelines] = useState<Record<string, AgentTimelineState>>({})
+  const [timelineHydrationEpoch, setTimelineHydrationEpoch] = useState(0)
+  const timelineHydrationAttemptsRef = useRef(new Map<string, AgentTurnTimelineHydrationAttemptState>())
   const [submittingMessageId, setSubmittingMessageId] = useState('')
   const [autoSubmissionRetryEpoch, setAutoSubmissionRetryEpoch] = useState(0)
   const autoSubmissionRetryAttemptsRef = useRef(new Map<string, number>())
@@ -871,7 +884,27 @@ export default function AgentWorkspace({
     resetRuntimeTrace()
     setLiveConversation(undefined)
     setExecutionTimelines({})
+    timelineHydrationAttemptsRef.current.clear()
+    setTimelineHydrationEpoch((current) => current + 1)
   }, [resetRuntimeTrace, sessionId])
+
+  useEffect(() => {
+    const retryTransientHydrations = () => {
+      let changed = false
+      for (const [turnId, status] of timelineHydrationAttemptsRef.current) {
+        if (status !== 'transient') continue
+        timelineHydrationAttemptsRef.current.delete(turnId)
+        changed = true
+      }
+      if (changed) setTimelineHydrationEpoch((current) => current + 1)
+    }
+    window.addEventListener('online', retryTransientHydrations)
+    window.addEventListener('focus', retryTransientHydrations)
+    return () => {
+      window.removeEventListener('online', retryTransientHydrations)
+      window.removeEventListener('focus', retryTransientHydrations)
+    }
+  }, [sessionId])
 
   // 确认后把已持久化的 Run/分支状态投影进同款对话时间线；不发明未发生的步骤。
   useEffect(() => {
@@ -903,6 +936,63 @@ export default function AgentWorkspace({
       return changed ? next : current
     })
   }, [runs, session?.messages])
+
+  // 已有稳定助手投影不再 observer/execute，只从 durable Turn Events 有界补回气泡时间线。
+  useEffect(() => {
+    if (!serverPersistenceEnabled || !session?.id || !session.messages.length) return
+    const attempts = timelineHydrationAttemptsRef.current
+    const targets = beginAgentTurnTimelineHydrationBatch(
+      session.messages,
+      attempts,
+      maximumConcurrentTurnTimelineHydrations,
+    )
+    if (!targets.length) return
+    const controller = new AbortController()
+    let settled = false
+    void Promise.all(targets.map(async (target) => {
+      try {
+        const events = await readPersistentBotanicAgentTurnEvents(target.turnId, projectId, {
+          signal: controller.signal,
+        })
+        return { target, timeline: agentTurnTimelineFromHydrationEvents(events), caught: undefined }
+      } catch (caught) {
+        return { target, timeline: undefined, caught }
+      }
+    })).then((hydrated) => {
+      if (controller.signal.aborted || !isCurrentAgentProject()) return
+      settled = true
+      for (const item of hydrated) {
+        if (!item.caught || item.timeline) {
+          attempts.set(item.target.turnId, 'terminal')
+          continue
+        }
+        const disposition = agentTurnTimelineHydrationFailureDisposition(item.caught)
+        if (disposition === 'cancelled') attempts.delete(item.target.turnId)
+        else attempts.set(item.target.turnId, disposition === 'terminal' ? 'terminal' : 'transient')
+      }
+      setExecutionTimelines((current) => {
+        let changed = false
+        const next = { ...current }
+        for (const item of hydrated) {
+          if (!item.timeline) continue
+          next[item.target.messageId] = mergeHydratedAgentTurnTimeline(
+            current[item.target.messageId],
+            item.timeline,
+          )
+          changed = true
+        }
+        return changed ? next : current
+      })
+      // 每批最多两个；本批落定后选择当前消息集合中的下一批，直到渐进覆盖完。
+      setTimelineHydrationEpoch((current) => current + 1)
+    })
+    return () => {
+      controller.abort()
+      if (!settled) {
+        releaseAbortedAgentTurnTimelineHydrations(targets, attempts)
+      }
+    }
+  }, [executionTimelines, isCurrentAgentProject, projectId, session?.id, session?.messages, timelineHydrationEpoch])
 
   const registerMessageNode = useCallback((messageId: string, node: HTMLDivElement | null) => {
     if (node) messageNodesRef.current.set(messageId, node)
