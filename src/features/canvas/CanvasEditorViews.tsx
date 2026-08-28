@@ -969,20 +969,22 @@ export function CanvasComposer({ projectId, mode, nodeLabel, prompt, batchCount,
                         updateSettings({ resolution: resolution as GenerationSettings['resolution'] })
                         close()
                       }}>{resolution}</button>)}
+                      {clarityBoostModel(models) ? (
+                        <button
+                          type="button"
+                          role="radio"
+                          aria-checked={settings.resolution === '4K'}
+                          className={settings.resolution === '4K' ? 'is-selected' : ''}
+                          disabled={interactionLocked}
+                          onClick={() => {
+                            onSettingsChange(settings.resolution === '4K'
+                              ? clearClarityBoost(settings, models)
+                              : applyClarityBoost(settings, models))
+                            close()
+                          }}
+                        >{t.clarityBoost}</button>
+                      ) : null}
                     </div>
-                    {clarityBoostModel(models) ? (
-                      <button
-                        type="button"
-                        className={`composer-clarity-boost${settings.resolution === '4K' ? ' is-selected' : ''}`}
-                        disabled={interactionLocked}
-                        onClick={() => {
-                          onSettingsChange(settings.resolution === '4K'
-                            ? clearClarityBoost(settings, models)
-                            : applyClarityBoost(settings, models))
-                          close()
-                        }}
-                      >{t.clarityBoost}</button>
-                    ) : null}
                   </section>
                   {selectedModel?.supportsSearchGrounding || selectedModel?.thinkingLevels?.length ? (
                     <section>

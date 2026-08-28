@@ -3018,12 +3018,9 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .composer-output-adaptive { display: flex; height: 38px; align-items: center; gap: 8px; padding: 0 11px; border-radius: 8px; background: #eef4ed; color: #55725c; font-size: 9px; font-weight: 750; }
 .composer-resolution-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
 .composer-resolution-grid > button { height: 32px; border: 1px solid transparent; border-radius: 7px; background: #f3f6f2; color: #748077; font-size: 9px; font-weight: 800; }
-.composer-resolution-grid > button:hover { border-color: #c4d7c6; color: #3e6848; }
+.composer-resolution-grid > button:hover:not(:disabled) { border-color: #c4d7c6; color: #3e6848; }
 .composer-resolution-grid > button.is-selected { border-color: #77a080; background: #e6f1e7; color: #285f37; }
-.composer-clarity-boost { width: 100%; min-height: 32px; margin-top: 6px; padding: 0 8px; border: 1px solid transparent; border-radius: 7px; background: #f3f6f2; color: #748077; font-size: 9px; font-weight: 800; }
-.composer-clarity-boost:hover:not(:disabled) { border-color: #c4d7c6; color: #3e6848; }
-.composer-clarity-boost.is-selected { border-color: #77a080; background: #e6f1e7; color: #285f37; }
-.composer-clarity-boost:disabled { opacity: .62; }
+.composer-resolution-grid > button:disabled { opacity: .62; }
 .canvas-composer__settings label { display: grid; min-width: 0; gap: 4px; color: #718073; font-size: 8px; font-weight: 700; letter-spacing: 0.4px; }
 .canvas-composer__settings input { width: 100%; height: 32px; min-width: 58px; padding: 0 8px; border: 1px solid #d5e2d6; border-radius: var(--radius-control); background: #fff; color: #3e5544; font: inherit; font-size: 10px; font-weight: 700; }
 .canvas-composer__settings .botanic-select__trigger { height: 32px; }
