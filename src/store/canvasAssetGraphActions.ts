@@ -367,7 +367,7 @@ export function createCanvasAssetGraphActions({
         ...document,
         assets: [...assets, ...document.assets],
         assetGroups: upsertCollectionGroups(document.assetGroups, assets, timestamp),
-      }, { assistantMessage: `已将 ${assets.length} 张本地素材存入当前项目素材库。拖入画布后，可将它们作为真实生成参考。` })
+      }, { assistantMessage: `已将 ${assets.length} 张本地素材存入当前项目素材库。拖入画布后，可将它们作为生成参考。` })
     },
 
     addUploadedAssetsToCanvas: (uploads, dropPosition) => {
@@ -739,7 +739,7 @@ export function createCanvasAssetGraphActions({
         selectedNodeId: nodeId,
         assistantMessage: missingReferenceCount
           ? `已从「${result.label ?? '已选输出'}」新建独立首图节点，恢复 ${restoredInputs.length} 个原始参考；${missingReferenceCount} 个素材已不在画布中。`
-          : `已从「${result.label ?? '已选输出'}」新建独立首图节点，并恢复原始配方与 ${restoredInputs.length} 个参考。`,
+          : `已从「${result.label ?? '已选输出'}」新建独立首图节点，并恢复原始参数与 ${restoredInputs.length} 个参考。`,
       })
       return nodeId
     },

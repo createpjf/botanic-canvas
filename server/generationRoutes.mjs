@@ -88,7 +88,7 @@ export function createGenerationRouteHandler({
     if (jobMatch && request.method === 'GET' && !jobMatch[2]) {
       const user = await requireUser(request)
       const job = await productStore.readGenerationJob(user.id, decodeURIComponent(jobMatch[1]))
-      if (!job) return error(response, 404, 'JOB_NOT_FOUND', '未找到该真实生成任务。')
+      if (!job) return error(response, 404, 'JOB_NOT_FOUND', '未找到该生成任务。')
       const maximumTaskDurationMs = generationTimeoutForModel(config.modelOptions ?? [], job.settings?.model, {
         imageTimeoutMs: config.generationTimeoutMs ?? 5 * 60_000,
         videoTimeoutMs: config.videoGenerationTimeoutMs ?? 20 * 60_000,
@@ -111,7 +111,7 @@ export function createGenerationRouteHandler({
       const user = await requireUser(request)
       const jobId = decodeURIComponent(jobMatch[1])
       const job = await productStore.readGenerationJob(user.id, jobId)
-      if (!job) return error(response, 404, 'JOB_NOT_FOUND', '未找到该真实生成任务。')
+      if (!job) return error(response, 404, 'JOB_NOT_FOUND', '未找到该生成任务。')
       // 取消的四个动作（判定、落库、出队、广播）都在这个共享实现里，
       // 重复取消也会拿到与第一次相同的判定。
       const result = await cancelGenerationJob({

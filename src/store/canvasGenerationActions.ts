@@ -116,8 +116,8 @@ export function createCanvasGenerationActions({
   ) => {
     const disposition = generationSubmissionFailureDisposition(error)
     const fallbackMessage = request.kind === 'refinement'
-      ? '真实精修任务提交失败，请重试。'
-      : '真实生图任务提交失败，请重试。'
+      ? '精修任务提交失败，请重试。'
+      : '生成任务提交失败，请重试。'
     const message = disposition.message ?? fallbackMessage
     const nextDocument = updateTaskNodes(get().document, request.taskNodeIds, disposition.taskStatus, undefined, message)
     if (disposition.kind === 'recovering') {
@@ -164,23 +164,23 @@ export function createCanvasGenerationActions({
       void commitDocument(document, {
         generationStatus: 'idle',
         generationProgress: 0,
-        generationError: candidates.length ? null : '真实生成未返回候选结果，请重试。',
+        generationError: candidates.length ? null : '生成未返回候选结果，请重试。',
         expectedCandidateCount: job.missingOutputCount ? job.batchCount : 0,
         generationCandidates: job.missingOutputCount ? candidates : [],
         assistantMessage: candidates.length
           ? job.missingOutputCount
-            ? `真实生成已完成 ${candidates.length}/${job.batchCount} 个；缺少的 ${job.missingOutputCount} 个可单独补生成。`
-            : `真实生成已完成：${candidates.length} 个结果已作为独立节点写入画布；不需要的可直接删除。`
-          : '真实生成没有返回候选结果，请重试。',
+            ? `生成已完成 ${candidates.length}/${job.batchCount} 个；缺少的 ${job.missingOutputCount} 个可单独补生成。`
+            : `生成已完成：${candidates.length} 个结果已作为独立节点写入画布；不需要的可直接删除。`
+          : '生成没有返回候选结果，请重试。',
       }, { immediate: true })
       return
     }
     if (job.status === 'failed') {
       void commitDocument(recordedDocument, {
         generationStatus: 'error', generationProgress: 0,
-        generationError: job.error ?? '真实生成任务失败，请重试。',
+        generationError: job.error ?? '生成任务失败，请重试。',
         expectedCandidateCount: 0, generationCandidates: [],
-        assistantMessage: job.error ?? '真实生成任务失败，请重试。',
+        assistantMessage: job.error ?? '生成任务失败，请重试。',
       }, { immediate: true })
       return
     }
@@ -201,7 +201,7 @@ export function createCanvasGenerationActions({
       generationProgress: 0,
       generationError: null,
       expectedCandidateCount: job.batchCount,
-      assistantMessage: job.status === 'queued' ? '真实生成任务已入队，等待生成服务处理。' : '生成服务正在处理，请保留此页面或稍后返回查看结果。',
+      assistantMessage: job.status === 'queued' ? '生成任务已入队，等待生成服务处理。' : '生成服务正在处理，请保留此页面或稍后返回查看结果。',
     }
     if (!existingJob || existingJob.status !== job.status) {
       void commitDocument(recordedDocument, transientState, { immediate: true })
@@ -464,7 +464,7 @@ export function createCanvasGenerationActions({
         await assertGenerationServiceReady()
       } catch (error) {
         if (get().document.id !== document.id) return false
-        return setGenerationError(error instanceof Error ? error.message : '真实生图服务暂不可用，请稍后重新检查。')
+        return setGenerationError(error instanceof Error ? error.message : '生成服务暂不可用，请稍后重新检查。')
       }
       if (get().document.id !== document.id) return false
       const request: GenerationRequest = {
@@ -480,8 +480,8 @@ export function createCanvasGenerationActions({
         generationStatus: 'uploading', generationProgress: 0, generationError: null,
         expectedCandidateCount: normalizedBatchCount, generationCandidates: [], lastGenerationRequest: preparedRequest,
         assistantMessage: primaryProduct
-          ? `正在提交真实任务：主商品「${primaryProduct.name}」与 ${recipe.references.length} 个画布参考。`
-          : '正在提交真实任务：根据文字描述直接生成。',
+          ? `正在提交生成任务：主商品「${primaryProduct.name}」与 ${recipe.references.length} 个画布参考。`
+          : '正在提交生成任务：根据文字描述直接生成。',
       }, { immediate: true })
       if (get().document.id !== document.id) return false
       try {
@@ -513,7 +513,7 @@ export function createCanvasGenerationActions({
       const target = document.nodes.find((node) => node.id === targetNodeId)
       if (!target || target.type !== 'result') return setGenerationError('未找到要精修的首图，请重新选择。')
       const result = target.data as ResultNodeData
-      if (!result.image) return setGenerationError('请先从真实任务候选中选中一张首图，再进行定向精修。')
+      if (!result.image) return setGenerationError('请先从这次生成的结果中选中一张首图，再进行定向精修。')
       const parentVersionId = result.versionId ?? document.activeVersionId
       const parentLabel = result.label ?? '已选首图'
       const parentImage = result.image
@@ -529,7 +529,7 @@ export function createCanvasGenerationActions({
         await assertGenerationServiceReady()
       } catch (error) {
         if (get().document.id !== document.id) return false
-        return setGenerationError(error instanceof Error ? error.message : '真实生图服务暂不可用，请稍后重新检查。')
+        return setGenerationError(error instanceof Error ? error.message : '生成服务暂不可用，请稍后重新检查。')
       }
       if (get().document.id !== document.id) return false
       const request: GenerationRequest = {
@@ -544,7 +544,7 @@ export function createCanvasGenerationActions({
       await commitDocument(flow.document, {
         generationStatus: 'uploading', generationProgress: 0, generationError: null,
         expectedCandidateCount: normalizedBatchCount, generationCandidates: [], lastGenerationRequest: preparedRequest,
-        assistantMessage: `正在提交「${parentLabel}」的真实精修任务。`,
+        assistantMessage: `正在提交「${parentLabel}」的精修任务。`,
       }, { immediate: true })
       if (get().document.id !== document.id) return false
       try {
@@ -579,7 +579,7 @@ export function createCanvasGenerationActions({
       void commitDocument(cancelledDocument, {
         generationStatus: 'idle', generationProgress: 0, generationError: null,
         expectedCandidateCount: 0, generationCandidates: [],
-        assistantMessage: request.jobId ? '正在取消真实生成任务…' : '已取消本地素材提交。',
+        assistantMessage: request.jobId ? '正在取消生成任务…' : '已取消本地素材提交。',
       })
       if (!request.jobId) return
       void cancelGenerationJob(request.jobId).then((job) => {
@@ -591,7 +591,7 @@ export function createCanvasGenerationActions({
 
     retryGeneration: async () => {
       const request = get().lastGenerationRequest
-      if (!request) return setGenerationError('没有可重试的真实生成任务。')
+      if (!request) return setGenerationError('没有可重试的生成任务。')
       const job = request.jobId ? get().document.generationJobs.find((item) => item.id === request.jobId) : undefined
       const retryBatchCount = job?.missingOutputCount || request.batchCount
       if (request.kind === 'refinement' && request.targetNodeId) {
@@ -614,7 +614,7 @@ export function createCanvasGenerationActions({
       const job = document.generationJobs.find((item) => item.id === jobId)
       if (!job?.missingOutputCount) return setGenerationError('本任务没有待补生成的候选。')
       const request = requestFromPersistedGenerationJob(document, job)
-      if (!request?.recipe) return setGenerationError('无法恢复本次生成配方，请基于任一候选继续生成。')
+      if (!request?.recipe) return setGenerationError('无法恢复本次生成参数，请基于任一结果继续生成。')
       if (request.kind === 'refinement' && request.targetNodeId) {
         return get().runRefinement({
           targetNodeId: request.targetNodeId, prompt: request.prompt, batchCount: job.missingOutputCount,

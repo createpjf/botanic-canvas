@@ -192,7 +192,7 @@ export function createCanvasBatchVariationActions({
         if (get().document.id !== projectId) return
       }
 
-      if (!jobId || !request) throw new Error('无法恢复批量子任务配方。')
+      if (!jobId || !request) throw new Error('无法恢复批量子任务参数。')
       const finalJob = await waitForBatchGenerationJob(jobId, 300_000, () => get().document.id === projectId)
       if (!finalJob || get().document.id !== projectId) return
       const nextDocument = applyGenerationJobToDocument(get().document, finalJob, request)

@@ -106,7 +106,7 @@ function localizeRuntimeSteps({
     if (step.id === 'finalize-plan' || step.id === 'create-workflow') {
       if (step.detail === '任务已恢复，正在等待生成结果') detail = 'Task restored. Waiting for generation results.'
       else if (step.detail === '任务已结束，可查看失败原因或重试') detail = 'Task ended. Review the failure or retry.'
-      else if (step.detail === '任务已完成，结果已回填画布') detail = 'Task completed. Results were added to the canvas.'
+      else if (step.detail === '任务已完成，结果已回填画布' || step.detail === '任务已完成，结果已放到画布') detail = 'Task completed. Results were added to the canvas.'
     } else if (restored) {
       detail = `${detail} · Restored from the server`
     }

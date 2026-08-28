@@ -996,7 +996,7 @@ export function AgentConversationMessage({
           <details className="agent-plan__recipe">
             <summary className="agent-plan__recipe-toggle">
               <ChevronDownIcon />
-              <span>{t('配方', 'Recipe')}</span>
+              <span>{t('参数', 'Settings')}</span>
             </summary>
             <div className="agent-plan__recipe-body">{recipe}</div>
           </details>

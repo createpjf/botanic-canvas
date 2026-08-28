@@ -242,14 +242,14 @@ function agentQuickActions(locale: ProductLocale): Array<{ intent: BotanicAgentI
     { intent: 'change_style', label: 'Change style', instruction: 'Keep the person, clothing, product, scene, and pose unchanged; adjust the visual style and lighting.' },
     { intent: 'replace_person', label: 'Change model', instruction: 'Keep the clothing, product, scene, and style unchanged; replace the model.' },
     { intent: 'replace_product', label: 'Change product', instruction: 'Keep the person, scene, and style unchanged; replace the clothing or product.' },
-    { intent: 'redo_from_root', label: 'Redo original recipe', instruction: 'Reuse the original references, prompt, and settings to generate a new independent key visual.' },
+    { intent: 'redo_from_root', label: 'Redo with original settings', instruction: 'Reuse the original references, prompt, and settings to generate a new independent key visual.' },
   ] : [
     { intent: 'replace_scene', label: '换场景', instruction: '保持人物、服装和商品不变，只替换场景与环境光线。' },
     { intent: 'change_pose', label: '换动作', instruction: '保持人物、服装、商品和场景不变，调整动作姿势与构图。' },
     { intent: 'change_style', label: '换风格', instruction: '保持人物、服装、商品、场景和动作不变，调整视觉风格与光线。' },
     { intent: 'replace_person', label: '换模特', instruction: '保持服装、商品、场景和风格不变，替换模特。' },
     { intent: 'replace_product', label: '换商品', instruction: '保持人物、场景和风格不变，替换服装或商品。' },
-    { intent: 'redo_from_root', label: '原配方重做', instruction: '复用原始参考素材、提示词和参数，重新生成独立首图。' },
+    { intent: 'redo_from_root', label: '按原参数重做', instruction: '复用原始参考素材、提示词和参数，重新生成独立首图。' },
   ]
 }
 
@@ -418,12 +418,12 @@ export default function AgentWorkspace({
   const copy = useProductMessages({
     'zh-CN': {
       tools: 'Agent 工具', back: '返回对话', results: '结果与文件', tasks: 'Agent 任务', review: '结果评审', brand: '品牌规则', memory: '项目记忆', skills: '创作技能', collaboration: '协作动态', close: '关闭 Agent',
-      welcome: '今天一起创作什么？', welcomeTarget: (name: string) => `继续优化「${name}」`, welcomeBody: '可以日常对话、生成 Prompt、检索项目，也可以直接描述生图目标。', welcomeTargetBody: '保留当前画面与原始配方，仅调整你刚提出的内容。',
+      welcome: '今天一起创作什么？', welcomeTarget: (name: string) => `继续优化「${name}」`, welcomeBody: '可以日常对话、生成 Prompt、检索项目，也可以直接描述生图目标。', welcomeTargetBody: '保留当前画面与原始参数，仅调整你刚提出的内容。',
       sources: '来源', unavailable: 'Agent 暂时无法回答，请稍后重试。', unsupportedVideo: 'Agent 对话暂未接入视频执行链。请先在画布添加「视频生成」节点；本次没有创建节点或任务。', clarifyAction: '请明确是只需要建议，还是要我直接生成；本次没有改动画布。',
     },
     en: {
       tools: 'Agent tools', back: 'Back to conversation', results: 'Results & files', tasks: 'Agent tasks', review: 'Result review', brand: 'Brand rules', memory: 'Project memory', skills: 'Creative skills', collaboration: 'Collaboration', close: 'Close Agent',
-      welcome: 'What shall we create today?', welcomeTarget: (name: string) => `Continue refining “${name}”`, welcomeBody: 'Chat, create prompts, search this project, or describe the image you want to make.', welcomeTargetBody: 'Keep the current visual and original recipe, and change only what you just requested.',
+      welcome: 'What shall we create today?', welcomeTarget: (name: string) => `Continue refining “${name}”`, welcomeBody: 'Chat, create prompts, search this project, or describe the image you want to make.', welcomeTargetBody: 'Keep the current visual and original settings, and change only what you just requested.',
       sources: 'Sources', unavailable: 'Agent is temporarily unavailable. Try again shortly.', unsupportedVideo: 'Video execution is not available in Agent chat yet. Add a Video Generation node on the canvas; no node or task was created.', clarifyAction: 'Please clarify whether you only want advice or want me to generate it. The canvas was not changed.',
     },
   })

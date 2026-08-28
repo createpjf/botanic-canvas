@@ -770,7 +770,7 @@ export function createGenerationProcessor({
       if (!latest || latest.status === 'cancelled') return
       const failure = caught instanceof GenerationError
         ? caught
-        : new GenerationError(502, 'GENERATION_FAILED', '真实生图任务失败，请稍后重试。')
+        : new GenerationError(502, 'GENERATION_FAILED', '生成任务失败，请稍后重试。')
       const detail = caught instanceof Error ? `${caught.name}: ${caught.message}` : String(caught)
       const upstream = failure.upstreamMessage ? ` 上游原文：${failure.upstreamMessage}` : ''
       console.error(`[generation] ${jobId} failed (${failure.code}): ${detail}${upstream}`)

@@ -100,7 +100,7 @@ export function createAgentBranchRetryService({
         sourceAttempt = Number(branch.attempt) || 0
         sourceJobId = branch.activeJobId
         if (typeof sourceJobId !== 'string' || !sourceJobId) {
-          return { kind: 'error', status: 409, code: 'AGENT_BRANCH_RETRY_SOURCE_MISSING', message: '该分支缺少可重试的原始生成配方。' }
+          return { kind: 'error', status: 409, code: 'AGENT_BRANCH_RETRY_SOURCE_MISSING', message: '该分支缺少可重试的原始生成参数。' }
         }
         idempotencyBinding = createIdempotencyRequestBinding({
           scope: 'agent-branch.retry',
@@ -114,7 +114,7 @@ export function createAgentBranchRetryService({
           || previousJob.agentRun.branchId !== branchId
           || (Number.isInteger(previousJob.agentRun.attempt)
             && previousJob.agentRun.attempt !== sourceAttempt)))) {
-        return { kind: 'error', status: 409, code: 'AGENT_BRANCH_RETRY_SOURCE_MISSING', message: '该分支缺少可重试的原始生成配方。' }
+        return { kind: 'error', status: 409, code: 'AGENT_BRANCH_RETRY_SOURCE_MISSING', message: '该分支缺少可重试的原始生成参数。' }
       }
       const rate = await securityControls.reserveMany({
         reservationId: `agent-branch-retry-output:${userId}:${run.projectId}:${runId}:${branchId}:${sourceAttempt}:${sourceJobId}`,

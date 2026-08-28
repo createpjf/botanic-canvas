@@ -23,7 +23,7 @@ const skillCatalog = Object.freeze({
     instructions: readBuiltInSkill('./skills/batch-variation/SKILL.md'),
   },
   root_recipe_redo: {
-    label: '原配方重做',
+    label: '按原参数重做',
     instructions: readBuiltInSkill('./skills/root-recipe-redo/SKILL.md'),
   },
   ecommerce_listing: {
@@ -707,7 +707,7 @@ export function createBotanicAgentActionToolRegistry({
     },
     {
       name: 'generation_submit', label: '提交生成任务',
-      description: '提交一个已确认计划对应的真实生成任务，会产生模型费用。',
+      description: '提交一个已确认计划对应的生成任务，会产生模型费用。',
       risk: 'costly', requiresConfirmation: true, terminal: true,
       parameters: { type: 'object', additionalProperties: false, properties: { planId: { type: 'string' } }, required: ['planId'] },
       validate: (raw) => ({ planId: requiredText(object(raw, '生成提交').planId, '计划') }),

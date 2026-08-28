@@ -185,7 +185,7 @@ export function compileCreativePlan({
   planFingerprint: providedPlanFingerprint,
 } = {}) {
   if (!plan || typeof plan !== 'object') throw new CreativePlanCompileError('PLAN_MISSING', 'Agent 计划不能为空。', 400)
-  if (!baseRecipe || typeof baseRecipe !== 'object') throw new CreativePlanCompileError('RECIPE_MISSING', '生成配方不能为空。', 409)
+  if (!baseRecipe || typeof baseRecipe !== 'object') throw new CreativePlanCompileError('RECIPE_MISSING', '生成参数不能为空。', 409)
   const prompt = text(plan.prompt ?? baseRecipe.prompt, 'Agent 生图提示词')
   const constraints = normalizeConstraints(plan.constraints)
   const settings = { ...baseRecipe.settings, ...plan.settings }

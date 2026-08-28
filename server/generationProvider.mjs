@@ -77,11 +77,11 @@ function validateRecipeMetadata(recipe) {
   const dimensions = new Set(['person', 'garment', 'product', 'scene', 'style', 'pose', 'composition', 'lighting', 'aspect_ratio', 'copy_space'])
   const modes = new Set(['preserve', 'vary'])
   const constraints = recipe.constraints === undefined ? undefined : (() => {
-    if (!Array.isArray(recipe.constraints) || recipe.constraints.length > 10) throw new GenerationError(400, 'INVALID_REQUEST', '生成配方创作约束无效。')
+    if (!Array.isArray(recipe.constraints) || recipe.constraints.length > 10) throw new GenerationError(400, 'INVALID_REQUEST', '生成参数创作约束无效。')
     const seen = new Set()
     return recipe.constraints.map((item) => {
       if (!dimensions.has(item?.dimension) || !modes.has(item?.mode) || seen.has(item.dimension)) {
-        throw new GenerationError(400, 'INVALID_REQUEST', '生成配方创作约束无效或重复。')
+        throw new GenerationError(400, 'INVALID_REQUEST', '生成参数创作约束无效或重复。')
       }
       seen.add(item.dimension)
       return {
@@ -93,7 +93,7 @@ function validateRecipeMetadata(recipe) {
   })()
   const qualityPolicy = recipe.qualityPolicy === undefined ? undefined : (() => {
     if (!recipe.qualityPolicy || typeof recipe.qualityPolicy !== 'object' || !Array.isArray(recipe.qualityPolicy.requiredCriteria)) {
-      throw new GenerationError(400, 'INVALID_REQUEST', '生成配方质量策略无效。')
+      throw new GenerationError(400, 'INVALID_REQUEST', '生成参数质量策略无效。')
     }
     return {
       version: Number.isInteger(recipe.qualityPolicy.version) ? recipe.qualityPolicy.version : 1,
@@ -523,7 +523,7 @@ export async function generateImages(job, {
   onVariant,
   completedVariants = [],
 }) {
-  if (!apiKey) throw new GenerationError(503, 'PROVIDER_NOT_CONFIGURED', '真实生图尚未配置：请设置 OPENAI_API_KEY。')
+  if (!apiKey) throw new GenerationError(503, 'PROVIDER_NOT_CONFIGURED', '生成尚未配置：请设置 OPENAI_API_KEY。')
   if (typeof jobId !== 'string' || !jobId) throw new GenerationError(500, 'INVALID_JOB_ID', '生成任务缺少唯一标识。')
   const inputImages = providerInputImages(job)
   const submit = async (count, variationIndex) => {

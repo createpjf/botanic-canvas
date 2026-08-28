@@ -140,7 +140,7 @@ async function requestJson<T>(path: string, init?: RequestInit, timeoutMs = gene
     if (timedOut) {
       throw new GenerationApiError(generationCopy('任务等待超过 5 分钟，已停止等待。请重试。', 'The task timed out after 5 minutes. Try again.'), { code: 'REQUEST_TIMEOUT', status: 0 })
     }
-    throw new GenerationApiError(generationCopy('真实生图服务不可用，请稍后重试。', 'The generation service is unavailable. Try again shortly.'), { status: 0 })
+    throw new GenerationApiError(generationCopy('生成服务不可用，请稍后重试。', 'The generation service is unavailable. Try again shortly.'), { status: 0 })
   } finally {
     window.clearTimeout(timeoutId)
     init?.signal?.removeEventListener('abort', onCallerAbort)
@@ -150,7 +150,7 @@ async function requestJson<T>(path: string, init?: RequestInit, timeoutMs = gene
   if (!response.ok) {
     const error = payload as ApiErrorPayload | null
     invalidateProductSessionIfRequired({ status: response.status, code: error?.error?.code })
-    throw new GenerationApiError(readableApiError(error, generationCopy('真实生图服务返回异常，请稍后重试。', 'The generation service returned an error. Try again shortly.')), {
+    throw new GenerationApiError(readableApiError(error, generationCopy('生成服务返回异常，请稍后重试。', 'The generation service returned an error. Try again shortly.')), {
       code: error?.error?.code,
       status: response.status,
     })
@@ -164,14 +164,14 @@ async function requestJson<T>(path: string, init?: RequestInit, timeoutMs = gene
  */
 export async function getGenerationServiceHealth(): Promise<GenerationServiceHealth> {
   const health = await requestJson<GenerationServiceHealth>('/api/health')
-  if (health.status !== 'ok') throw new Error('真实生图服务状态异常，请稍后重新检查。')
+  if (health.status !== 'ok') throw new Error('生成服务状态异常，请稍后重新检查。')
   return health
 }
 
 export async function assertGenerationServiceReady(): Promise<GenerationServiceHealth> {
   const health = await getGenerationServiceHealth()
   if (!health.configured) {
-    throw new Error('真实生成服务已启动，但尚未配置 OPENAI_API_KEY 或 MINIMAX_API_KEY。')
+    throw new Error('生成服务已启动，但尚未配置 OPENAI_API_KEY 或 MINIMAX_API_KEY。')
   }
   return health
 }
@@ -201,7 +201,7 @@ async function mediaToDataUrl(source: string, mediaKind: 'image' | 'video') {
     if (!response.ok) throw new Error('无法读取画布参考素材，请重新加入后再生成。')
     const blob = await response.blob()
     if (mediaKind === 'video' ? blob.type !== 'video/mp4' : !blob.type.startsWith('image/')) {
-      throw new Error(mediaKind === 'video' ? '视频参考仅支持 MP4。' : '仅支持图片作为真实生成参考。')
+      throw new Error(mediaKind === 'video' ? '视频参考仅支持 MP4。' : '仅支持图片作为生成参考。')
     }
     return readBlobAsDataUrl(blob)
   } catch (error) {
@@ -297,7 +297,7 @@ export async function submitGenerationJob(input: SubmitGenerationInput) {
       await new Promise((resolve) => window.setTimeout(resolve, 500))
     }
   }
-  throw new GenerationApiError(generationCopy('真实生图任务提交失败，请重试。', 'The generation task could not be submitted. Try again.'), { status: 0 })
+  throw new GenerationApiError(generationCopy('生成任务提交失败，请重试。', 'The generation task could not be submitted. Try again.'), { status: 0 })
 }
 
 export function getGenerationJob(jobId: string) {

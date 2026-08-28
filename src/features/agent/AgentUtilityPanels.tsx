@@ -61,7 +61,7 @@ const agentUtilityMessages = {
     markAllRead: '全部已读', clearHistory: '清空记录', noActivities: '还没有协作变更。', loadingActivities: '正在读取协作动态…', loading: '加载中…', loadEarlierActivities: '加载更早动态',
     activityCount: (count: number) => `${count} 条`, occurrenceCount: (count: number) => `${count} 次`,
     comparePrompt: '对照 Prompt', copied: '已复制', copyPrompt: '复制 Prompt', generatedResult: '生成结果', toolArtifacts: '工具产物', generationBatch: '生成批次',
-    detailAria: (label: string) => `${label} 详情`, backToResults: '返回结果', backfilled: '已回填画布', locateCanvas: '定位画布', continueEditing: '继续改', saved: '已入库', save: '入库', download: '下载', open: '打开',
+    detailAria: (label: string) => `${label} 详情`, backToResults: '返回结果', backfilled: '已放到画布', locateCanvas: '定位画布', continueEditing: '继续改', saved: '已入库', save: '入库', download: '下载', open: '打开',
     resultsAria: 'Agent 结果与文件', resultsTitle: '结果与文件', readingIndex: '正在读取历史 Artifact Index…', indexUnavailable: '历史索引暂不可用，已显示当前画布结果。', resultsSections: '结果分区', mediaResults: '生成结果', resultFilter: '结果筛选',
     all: '全部', images: '图片', videos: '视频', libraryFilter: '按入库状态筛选', anyLibraryStatus: '不限入库', unsaved: '未入库', modelFilter: '按生成模型筛选', allModels: '全部模型',
     batchActions: '批量操作', selectedCount: (count: number) => `已选 ${count} 项`, startNextRound: '创建下一轮', cancel: '取消', itemCount: (count: number) => `${count} 项`, notBackfilled: '未入画布', sourceConversation: '来源对话', selectAll: '全选', clearSelection: '取消全选', select: '选择', deselect: '取消选择', view: '查看',
