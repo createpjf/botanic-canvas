@@ -1,28 +1,36 @@
-import { runStatusCollect } from '../src/lib/statusPageRuntime.ts'
-import { readStatusSamples, writeStatusSamples } from './statusBlob.ts'
+import { runStatusCollect } from '../src/lib/statusPageRuntime'
+import { readStatusSamples, writeStatusSamples } from './statusBlob'
 
-function headerValue(value: string | string[] | undefined) {
-  return Array.isArray(value) ? value[0] : value
+function json(status: number, body: unknown) {
+  return Response.json(body, {
+    status,
+    headers: { 'Cache-Control': 'no-store' },
+  })
 }
 
-export default async function handler(
-  req: { method?: string; headers: Record<string, string | string[] | undefined> },
-  res: {
-    setHeader(name: string, value: string): void
-    status(code: number): { json(body: unknown): void }
-  },
-) {
-  res.setHeader('Cache-Control', 'no-store')
-  if (req.method !== 'GET' && req.method !== 'POST') {
-    res.status(405).json({ error: 'method_not_allowed' })
-    return
+async function collect(request: Request) {
+  if (request.method !== 'GET' && request.method !== 'POST') {
+    return json(405, { error: 'method_not_allowed' })
   }
-  const result = await runStatusCollect({
-    authorization: headerValue(req.headers.authorization),
-    cronSecret: process.env.CRON_SECRET,
-    env: process.env,
-    readSamples: readStatusSamples,
-    writeSamples: writeStatusSamples,
-  })
-  res.status(result.status).json(result.body)
+  try {
+    const result = await runStatusCollect({
+      authorization: request.headers.get('authorization'),
+      cronSecret: process.env.CRON_SECRET,
+      env: process.env,
+      readSamples: readStatusSamples,
+      writeSamples: writeStatusSamples,
+    })
+    return json(result.status, result.body)
+  } catch (error) {
+    console.error(error)
+    return json(500, { error: 'unavailable' })
+  }
+}
+
+export function GET(request: Request) {
+  return collect(request)
+}
+
+export function POST(request: Request) {
+  return collect(request)
 }
