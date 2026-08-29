@@ -102,9 +102,13 @@ function hourCellLabel(cell: StatusHourCell, locale: string, copy: StatusCopy) {
   return parts.join(', ')
 }
 
-function dayCellLabel(cell: StatusDayCell, copy: StatusCopy) {
+function downtimePhrase(seconds: number, locale: string) {
+  return locale === 'zh-CN' ? `宕机 ${seconds} 秒` : `${seconds} seconds downtime`
+}
+
+function dayCellLabel(cell: StatusDayCell, locale: string, copy: StatusCopy) {
   const parts = [cell.day, copy.levels[cell.level]]
-  if (cell.downtimeSeconds > 0) parts.push(String(cell.downtimeSeconds))
+  if (cell.downtimeSeconds > 0) parts.push(downtimePhrase(cell.downtimeSeconds, locale))
   return parts.join(', ')
 }
 
@@ -125,13 +129,14 @@ function StatusCells({
         const key = kind === 'hour' ? (cell as StatusHourCell).start : (cell as StatusDayCell).day
         const label = kind === 'hour'
           ? hourCellLabel(cell as StatusHourCell, locale, copy)
-          : dayCellLabel(cell as StatusDayCell, copy)
+          : dayCellLabel(cell as StatusDayCell, locale, copy)
         return (
           <li
             key={key}
             tabIndex={0}
             className={`product-status__cell product-status__cell--${cell.level}`}
             aria-label={label}
+            title={label}
           />
         )
       })}
