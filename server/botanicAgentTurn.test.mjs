@@ -72,6 +72,7 @@ test('回合请求只接收受控字段，拒绝非法消息与数量', () => {
   assert.equal(selected.selectedResultNodeId, 'result-01')
   assert.equal(selected.selectedResultLabel, '首图 01')
   assert.equal(selected.executionMode, 'auto')
+  assert.deepEqual(selected.contextNodeIds, ['result-01', 'asset-mia-portrait'])
   assert.equal(validateBotanicAgentTurnInput({ ...input, selectedResultLabel: '首图 01' }).selectedResultLabel, undefined)
   assert.throws(
     () => validateBotanicAgentTurnInput({ ...input, hasTarget: true, selectedResultLabel: '首图 01' }),
@@ -140,6 +141,22 @@ test('权威回合请求只接收 Session 与本轮稳定 Message，历史可省
     ['asset-new', ...saturatedContext.slice(0, 31)],
     '达到上限时，本轮显式引用必须优先于 Session 旧上下文',
   )
+  assert.deepEqual(
+    validateBotanicAgentTurnInput({
+      projectId: 'project-turn',
+      sessionId: 'session-1',
+      inputMessage: {
+        id: 'message-target-priority',
+        content: '把狗换成猫',
+        mentions: [{ kind: 'reference', id: 'asset-new', label: '猫参考' }],
+      },
+      contextNodeIds: saturatedContext,
+      hasTarget: true,
+      selectedResultNodeId: 'result-target',
+    }).contextNodeIds,
+    ['result-target', 'asset-new', ...saturatedContext.slice(0, 30)],
+    '编辑目标必须排在显式引用和旧上下文之前，确保看图上限不会漏掉源图',
+  )
   const emptyOntology = buildBotanicAgentOntology({ nodes: [], edges: [], assetGroups: [] }, [])
   assert.match(
     botanicAgentContextBriefing(emptyOntology, {
@@ -172,6 +189,13 @@ test('权威回合请求只接收 Session 与本轮稳定 Message，历史可省
   assert.throws(
     () => validateBotanicAgentTurnInput({
       projectId: 'project-turn', inputMessage: { id: 'message-1', content: '继续' }, contextNodeIds: [],
+    }),
+    (error) => error instanceof BotanicAgentChatError && error.code === 'INVALID_REQUEST',
+  )
+  assert.throws(
+    () => validateBotanicAgentTurnInput({
+      projectId: 'project-turn', messages: [{ role: 'user', content: '继续' }],
+      contextNodeIds: [], showRawReasoning: 'true',
     }),
     (error) => error instanceof BotanicAgentChatError && error.code === 'INVALID_REQUEST',
   )
@@ -545,6 +569,7 @@ test('模型基于既有建议直接综合可执行 Prompt 并生成多张，而
           name: 'generate_images',
           arguments: JSON.stringify({
             prompt: 'Mia 肖像置于海边礁石场景，黄金时刻逆光，浅景深，电影感氛围',
+            intent: 'replace_scene',
             count: 3,
             aspectRatio: '16:9',
             resolution: '2K',
@@ -558,6 +583,7 @@ test('模型基于既有建议直接综合可执行 Prompt 并生成多张，而
   assert.equal(result.kind, 'generation')
   assert.equal(result.mediaKind, 'image')
   assert.equal(result.count, 3)
+  assert.equal(result.intent, 'replace_scene')
   assert.equal(result.selectedResultNodeId, 'result-original')
   assert.match(result.prompt, /海边礁石/)
   assert.deepEqual(result.settingsHint, { model: 'gpt-image-2', aspectRatio: '16:9', resolution: '2K' })
@@ -752,25 +778,66 @@ test('回合解析同样先把引用节点写进系统提示', async () => {
   assert.doesNotMatch(JSON.stringify(requests), /api\/media\/private/)
 })
 
-test('模型判定为咨询时返回文字回答而不触发生成', async () => {
+test('带图咨询即使拥有生成工具也只返回文字，不触发生成', async () => {
+  const requests = []
   const result = await resolveBotanicAgentTurn({
     projectId: 'project-turn',
     plannerModel: 'deepseek-v4-flash',
-    messages: [{ role: 'user', content: '海边人像一般怎么打光比较好？' }],
-    contextNodeIds: [],
+    messages: [{ role: 'user', content: '这张图里有什么，分析一下' }],
+    contextNodeIds: ['asset-mia-portrait'],
     hasTarget: false,
     generationModels,
     maxOutputCount: 8,
   }, runtime, {
     document,
-    fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: {
-      content: '海边人像常用黄金时刻逆光或侧逆光，配合浅景深突出主体。',
-    } }] }), { status: 200 }),
+    fetchImpl: async (_url, init) => {
+      requests.push(JSON.parse(init.body))
+      return new Response(JSON.stringify({ choices: [{ message: {
+        content: '图中是一位自然光环境下的人像主体。',
+      } }] }), { status: 200 })
+    },
   })
 
   assert.equal(result.kind, 'chat')
-  assert.match(result.answer, /黄金时刻/)
+  assert.match(result.answer, /人像主体/)
   assert.deepEqual(result.sources, [])
+  assert.ok(requests[0].tools.some((tool) => tool.function.name === 'generate_images'))
+  assert.match(requests[0].messages[0].content, /先判断用户是在问图还是要求生成或修改/)
+  assert.doesNotMatch(requests[0].messages[0].content, /这一步是新建画面/)
+})
+
+test('带图任意对象替换由模型调用生成工具，不依赖浏览器对象词表', async () => {
+  const requests = []
+  const result = await resolveBotanicAgentTurn({
+    projectId: 'project-turn',
+    plannerModel: 'deepseek-v4-pro',
+    messages: [{ role: 'user', content: '把狗狗换成猫' }],
+    contextNodeIds: ['result-original'],
+    hasTarget: true,
+    selectedResultNodeId: 'result-original',
+    generationModels,
+  }, runtime, {
+    document,
+    fetchImpl: async (_url, init) => {
+      requests.push(JSON.parse(init.body))
+      return new Response(JSON.stringify({ choices: [{ message: {
+        content: null,
+        tool_calls: [{ id: 'call-replace-object', type: 'function', function: {
+          name: 'generate_images',
+          arguments: JSON.stringify({
+            prompt: '将源图中的狗替换为猫，保持背景、构图和光线不变。',
+            intent: 'continue_generation',
+          }),
+        } }],
+      } }] }), { status: 200 })
+    },
+  })
+
+  assert.equal(result.kind, 'generation')
+  assert.equal(result.selectedResultNodeId, 'result-original')
+  assert.equal(result.intent, 'continue_generation')
+  assert.match(result.prompt, /狗替换为猫/)
+  assert.ok(requests[0].tools.some((tool) => tool.function.name === 'generate_images'))
 })
 
 test('生成数量与非法设置被裁剪到可用范围', async () => {
@@ -1182,12 +1249,13 @@ function streamResponse(chunks) {
   ].join(''), { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
 }
 
-test('回合流式通道发出工具步，打开原始推理开关才下发 reasoning', async () => {
+test('回合流式通道发出工具步，服务端和用户开关同时打开才下发 reasoning', async () => {
   const events = []
   let requestIndex = 0
   const result = await resolveBotanicAgentTurn({
     projectId: 'project-turn',
     plannerModel: 'deepseek-v4-pro',
+    showRawReasoning: true,
     messages: [{ role: 'user', content: '你帮我互联网调研一下和光品牌' }],
     contextNodeIds: [],
     hasTarget: false,
@@ -1231,7 +1299,7 @@ test('回合流式通道发出工具步，打开原始推理开关才下发 reas
   assert.ok(result.reasoning?.some((entry) => entry.source === 'raw' && entry.text.includes('先搜官网')))
 })
 
-test('未打开原始推理开关时回合不转发 reasoning 事件，结果也不带原始推理', async () => {
+test('用户未打开原始推理开关时，即使服务端允许也不下发 reasoning', async () => {
   const events = []
   const result = await resolveBotanicAgentTurn({
     projectId: 'project-turn',
@@ -1240,7 +1308,7 @@ test('未打开原始推理开关时回合不转发 reasoning 事件，结果也
     contextNodeIds: [],
     hasTarget: false,
     generationModels,
-  }, runtime, {
+  }, { ...runtime, agentRawReasoning: true }, {
     document,
     onEvent: (event) => events.push(event),
     fetchImpl: async () => streamResponse([

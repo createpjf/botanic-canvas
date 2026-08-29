@@ -298,7 +298,7 @@ export function classifyBotanicAgentRequest(value: string, hasGenerationTarget =
   return decision.kind === 'generation' ? 'generation' : decision.kind === 'chat' ? decision.mode : 'conversation'
 }
 
-/** 只有明确出图才走带生成目录的 Turn；识图/问答走对话，不携带生图工具面。 */
+/** 无图时只有明确出图才走带生成目录的 Turn；视觉上下文由入口统一交给多模态回合判断。 */
 export function botanicAgentRequestUsesGenerationTurn(decision?: BotanicAgentRequestDecision) {
   return decision?.kind === 'generation'
 }
@@ -323,7 +323,7 @@ export function botanicAgentComposerIntentHint(
   if (decision.mode === 'research') return english ? 'This send will search the project' : '这一步将检索项目'
   if (decision.mode === 'prompt') return english ? 'This send will work on the prompt' : '这一步将处理提示词'
   if (input.hasVisualContext) {
-    return english ? 'This send will analyze the referenced image, not generate' : '这一步将分析引用图，不会出图'
+    return english ? 'The Agent will use the referenced image to decide the next step' : 'Agent 将结合引用图判断下一步'
   }
   return english ? 'This send is a conversation, not generation' : '这一步是问答，不会出图'
 }

@@ -72,8 +72,8 @@ export function runtimeConfig(rootDir = process.cwd()) {
   const flockAgentModels = [...new Set((process.env.FLOCK_AGENT_MODELS ?? 'deepseek-v4-flash-vision-exp,kimi-k3,gemini-3.7-flash,glm-5')
     .split(',').map((model) => model.trim()).filter(Boolean))]
   const flockTextModel = (process.env.FLOCK_TEXT_MODEL ?? '').trim() || flockAgentModels[0] || ''
-  // 提供方回传的 reasoning_content 是完整思维链，不是摘要。默认关闭；打开后也只随
-  // 当轮响应下发用于实时展示，不写入任何持久化记录。
+  // 服务端总闸门：客户端还必须逐会话明确请求。打开后原文也只随当轮响应下发，
+  // 不写入 Message、Plan、Run、Turn Event 或 Artifact。
   const agentRawReasoning = (process.env.AGENT_RAW_REASONING ?? '').trim().toLowerCase() === 'true'
   const publicAppUrl = process.env.BOTANIC_WEB_URL ?? process.env.PUBLIC_APP_URL
   // Railway 不一定自动注入 NODE_ENV；正式 Web 回跳地址也应将 API 视为生产环境。

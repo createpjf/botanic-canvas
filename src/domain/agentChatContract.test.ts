@@ -74,7 +74,7 @@ test('图片咨询、运行状态和能力询问不会误触发生成', () => {
   assert.equal(decideBotanicAgentRequest('分析一下然后生成3张海边人像', true).kind, 'generation')
   assert.equal(
     botanicAgentComposerIntentHint(decideBotanicAgentRequest('这张图里有什么，分析一下', true), { hasVisualContext: true }, 'zh-CN'),
-    '这一步将分析引用图，不会出图',
+    'Agent 将结合引用图判断下一步',
   )
   assert.equal(
     botanicAgentComposerIntentHint(decideBotanicAgentRequest('做一张海边人像', true), { hasVisualContext: true }, 'zh-CN'),

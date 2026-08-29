@@ -116,6 +116,10 @@ function persistedAgentTurnRequestSnapshot(value) {
     invalid('无选中结果的 Turn 快照不得携带节点身份。')
   }
   if (snapshot.plannerModel !== undefined) result.plannerModel = text(snapshot.plannerModel, 'Agent 模型', 160)
+  if (snapshot.showRawReasoning !== undefined) {
+    if (typeof snapshot.showRawReasoning !== 'boolean') invalid('Agent Turn 请求快照推理原文设置无效。')
+    if (snapshot.showRawReasoning) result.showRawReasoning = true
+  }
   if (snapshot.mountedSkillIds !== undefined) {
     if (!Array.isArray(snapshot.mountedSkillIds) || snapshot.mountedSkillIds.length > TURN_SKILL_LIMIT) {
       invalid('Agent Turn 请求快照 Skill 无效。')

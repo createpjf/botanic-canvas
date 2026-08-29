@@ -38,6 +38,7 @@ type AgentComposerProps = {
   modeMenuId: string
   plannerModel: string
   plannerModels: string[]
+  showRawReasoning: boolean
   groupId: string
   compatibleGroups: AssetGroup[]
   imageContextOptions: AgentContextItem[]
@@ -59,6 +60,7 @@ type AgentComposerProps = {
   onCloseContextMenu: () => void
   onToggleModeMenu: () => void
   onPlannerModelChange: (model: string) => void
+  onShowRawReasoningChange: (show: boolean) => void
   onGroupChange: (groupId: string) => void
   onSend: () => void
   onCancelPlanning: () => void
@@ -85,6 +87,7 @@ export function AgentComposer({
   modeMenuId,
   plannerModel,
   plannerModels,
+  showRawReasoning,
   groupId,
   compatibleGroups,
   imageContextOptions,
@@ -106,6 +109,7 @@ export function AgentComposer({
   onCloseContextMenu,
   onToggleModeMenu,
   onPlannerModelChange,
+  onShowRawReasoningChange,
   onGroupChange,
   onSend,
   onCancelPlanning,
@@ -115,10 +119,10 @@ export function AgentComposer({
   const { locale } = useProductI18n()
   const copy = useProductMessages({
     'zh-CN': {
-      input: 'Agent 输入', referenced: '已引用', remove: '移除', mounted: '已挂载', callSkill: '挂载 Skill', systemSkill: '系统 Skill', projectSkill: '项目 Skill', createSkill: '创建项目 Skill', saveRules: '保存一组可复用规则', referenceCanvas: '引用画布节点或图片视频', description: '补充描述', asset: '素材', result: '结果', video: '视频', noMatch: '没有匹配项，按 Esc 关闭', noSkillMatch: '没有匹配的 Skill，按 Esc 关闭', placeholder: '/ 挂载 Skill，@ 引用画布节点或图片视频；它们会显示为标签，不写入提示词', message: 'Agent 消息', promptField: '提示词', retry: '重试', addImages: '添加图像素材', executionMode: '执行模式', manual: '计划模式', auto: '自动模式', manualTitle: '计划模式：出图先给计划，确认后再提交；问答和识图直接回答', autoTitle: '自动模式：出图补齐设置后直接提交；问答和识图仍只回答', model: 'Agent 模型', assetGroup: '素材组', single: '单张', group: '组', send: '发送给 Agent', stop: '停止', closeImages: '关闭添加图像素材', chooseImages: '从电脑选择图片', dragHint: '也可以直接拖入 Agent 面板', noImages: '暂无图像素材，可从电脑选择或直接拖入。', manualHelp: '出图需确认；识图直接回答', autoHelp: '出图可直接提交；识图仍只回答', modeNote: '只影响之后的出图计划，不影响问答和识图', textKind: '文字',
+      input: 'Agent 输入', referenced: '已引用', remove: '移除', mounted: '已挂载', callSkill: '挂载 Skill', systemSkill: '系统 Skill', projectSkill: '项目 Skill', createSkill: '创建项目 Skill', saveRules: '保存一组可复用规则', referenceCanvas: '引用画布节点或图片视频', description: '补充描述', asset: '素材', result: '结果', video: '视频', noMatch: '没有匹配项，按 Esc 关闭', noSkillMatch: '没有匹配的 Skill，按 Esc 关闭', placeholder: '/ 挂载 Skill，@ 引用画布节点或图片视频；它们会显示为标签，不写入提示词', message: 'Agent 消息', promptField: '提示词', retry: '重试', addImages: '添加图像素材', executionMode: '执行模式', manual: '计划模式', auto: '自动模式', manualTitle: '计划模式：出图先给计划，确认后再提交；问答和识图直接回答', autoTitle: '自动模式：出图补齐设置后直接提交；问答和识图仍只回答', model: 'Agent 模型', assetGroup: '素材组', single: '单张', group: '组', send: '发送给 Agent', stop: '停止', closeImages: '关闭添加图像素材', chooseImages: '从电脑选择图片', dragHint: '也可以直接拖入 Agent 面板', noImages: '暂无图像素材，可从电脑选择或直接拖入。', manualHelp: '出图需确认；识图直接回答', autoHelp: '出图可直接提交；识图仍只回答', rawReasoning: '模型推理原文（实验）', rawReasoningHelp: '当前会话 · 不保存 · 取决于模型支持', modeNote: '只影响之后的出图计划，不影响问答和识图', textKind: '文字',
     },
     en: {
-      input: 'Agent input', referenced: 'Referenced', remove: 'Remove', mounted: 'Mounted', callSkill: 'Mount Skill', systemSkill: 'System Skill', projectSkill: 'Project Skill', createSkill: 'Create project Skill', saveRules: 'Save a reusable set of rules', referenceCanvas: 'Reference canvas nodes or media', description: 'Description', asset: 'Asset', result: 'Result', video: 'Video', noMatch: 'No matches. Press Esc to close.', noSkillMatch: 'No matching Skill. Press Esc to close.', placeholder: '/ Skill, @ canvas ref — they become chips, not prompt text.', message: 'Agent message', promptField: 'Prompt', retry: 'Retry', addImages: 'Add images', executionMode: 'Execution mode', manual: 'Plan mode', auto: 'Auto mode', manualTitle: 'Plan mode: review image plans before generating; questions and image analysis answer directly', autoTitle: 'Auto mode: submit image jobs after settings are complete; questions and image analysis still only answer', model: 'Agent model', assetGroup: 'Asset group', single: 'Single', group: 'Group', send: 'Send to Agent', stop: 'Stop', closeImages: 'Close image picker', chooseImages: 'Choose images', dragHint: 'Or drop images into the Agent panel', noImages: 'No images yet. Choose files or drop them here.', manualHelp: 'Images need confirmation; analysis answers directly', autoHelp: 'Images can submit directly; analysis still only answers', modeNote: 'Applies to future image plans only, not questions or analysis', textKind: 'Text',
+      input: 'Agent input', referenced: 'Referenced', remove: 'Remove', mounted: 'Mounted', callSkill: 'Mount Skill', systemSkill: 'System Skill', projectSkill: 'Project Skill', createSkill: 'Create project Skill', saveRules: 'Save a reusable set of rules', referenceCanvas: 'Reference canvas nodes or media', description: 'Description', asset: 'Asset', result: 'Result', video: 'Video', noMatch: 'No matches. Press Esc to close.', noSkillMatch: 'No matching Skill. Press Esc to close.', placeholder: '/ Skill, @ canvas ref — they become chips, not prompt text.', message: 'Agent message', promptField: 'Prompt', retry: 'Retry', addImages: 'Add images', executionMode: 'Execution mode', manual: 'Plan mode', auto: 'Auto mode', manualTitle: 'Plan mode: review image plans before generating; questions and image analysis answer directly', autoTitle: 'Auto mode: submit image jobs after settings are complete; questions and image analysis still only answer', model: 'Agent model', assetGroup: 'Asset group', single: 'Single', group: 'Group', send: 'Send to Agent', stop: 'Stop', closeImages: 'Close image picker', chooseImages: 'Choose images', dragHint: 'Or drop images into the Agent panel', noImages: 'No images yet. Choose files or drop them here.', manualHelp: 'Images need confirmation; analysis answers directly', autoHelp: 'Images can submit directly; analysis still only answers', rawReasoning: 'Model reasoning text (experimental)', rawReasoningHelp: 'Current session · not saved · model dependent', modeNote: 'Applies to future image plans only, not questions or analysis', textKind: 'Text',
     },
   })
   const composerErrorId = useId()
@@ -288,6 +292,10 @@ export function AgentComposer({
     {modeMenuOpen ? <div id={modeMenuId} className="agent-composer__mode-menu" role="group" aria-label={copy.executionMode}>
       <button type="button" aria-label={copy.manual} aria-pressed={session?.executionMode === 'manual'} className={session?.executionMode === 'manual' ? 'is-selected' : ''} title={copy.manualTitle} onClick={() => onExecutionModeChange('manual')}><ChecklistIcon /><span><strong>{copy.manual}</strong><small>{copy.manualHelp}</small></span></button>
       <button type="button" aria-label={copy.auto} aria-pressed={session?.executionMode === 'auto'} className={session?.executionMode === 'auto' ? 'is-selected' : ''} title={copy.autoTitle} onClick={() => onExecutionModeChange('auto')}><AutoRunIcon /><span><strong>{copy.auto}</strong><small>{copy.autoHelp}</small></span></button>
+      <label className="agent-composer__reasoning-toggle">
+        <input type="checkbox" checked={showRawReasoning} disabled={planning} onChange={(event) => onShowRawReasoningChange(event.target.checked)} />
+        <span><strong>{copy.rawReasoning}</strong><small>{copy.rawReasoningHelp}</small></span>
+      </label>
       <p className="agent-composer__mode-note">{copy.modeNote}</p>
     </div> : null}
   </div>

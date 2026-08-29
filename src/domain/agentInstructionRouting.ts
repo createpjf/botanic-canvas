@@ -57,8 +57,11 @@ export type BotanicAgentInstructionEntry =
       /** 已确定的生成决策（追问回程或执行语沿用历史 Prompt）；空则由调用方继续路由。 */
       decision?: BotanicAgentGenerationDecision
       useServerTurn: boolean
+      /** 本地没有识别到明确生成语、仅由多模态回合判定生成时，自动模式也必须先确认。 */
+      requiresGenerationConfirmation: boolean
       options: BotanicAgentInstructionOptions
       synthesizedPrompt?: string
+      synthesizedIntent?: BotanicAgentIntent
       synthesizedCount?: number
       synthesizedDuration?: number
       synthesizedVariants?: Array<{ label: string; promptDelta: string }>
@@ -101,13 +104,13 @@ export function resolveBotanicAgentInstructionEntry(input: {
     if (!promptMessage) return { kind: 'notice', notice: 'nothing_to_confirm' }
     executionPromptMessageId = promptMessage.id
   }
-  // 服务端回合只承接已判定的出图。识图/问答走对话链路，不把生图目录写进 Turn 快照。
+  // 新消息统一进入 durable Turn；本地判断只保留自动提交资格，不再拥有另一套对话历史与恢复链路。
   const useServerTurn = !options.clarificationAnswers && !options.sourcePromptMessageId
     && !restored && !executionPromptMessageId && !options.region
-    && botanicAgentRequestUsesGenerationTurn(pendingDecision)
   return {
     kind: 'route',
     useServerTurn,
+    requiresGenerationConfirmation: useServerTurn && !botanicAgentRequestUsesGenerationTurn(pendingDecision),
     decision: restored
       ? { kind: 'generation', mediaKind: restored.mediaKind, promptSource: 'instruction' }
       : options.region
@@ -119,6 +122,7 @@ export function resolveBotanicAgentInstructionEntry(input: {
       ? { ...options, sourcePromptMessageId: executionPromptMessageId }
       : options,
     synthesizedPrompt: restored?.prompt,
+    synthesizedIntent: restored?.intent,
     synthesizedCount: restored?.count,
     synthesizedDuration: restored?.duration,
     synthesizedVariants: restored?.variants,
@@ -202,6 +206,7 @@ export function prepareBotanicAgentGenerationDraft(input: BotanicAgentGeneration
     ? {
       mediaKind: decision.mediaKind,
       prompt: input.synthesizedPrompt,
+      ...(input.requestedIntent ? { intent: input.requestedIntent } : {}),
       ...(input.synthesizedCount ? { count: input.synthesizedCount } : {}),
       ...(input.synthesizedDuration ? { duration: input.synthesizedDuration } : {}),
       ...(input.synthesizedVariants?.length ? { variants: input.synthesizedVariants } : {}),

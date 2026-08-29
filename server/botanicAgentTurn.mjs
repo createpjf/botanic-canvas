@@ -43,6 +43,11 @@ const ASPECT_RATIOS = new Set(GENERATION_ASPECT_RATIOS)
 const RESOLUTIONS = new Set(GENERATION_RESOLUTIONS)
 const GENERATE_TOOL_NAME = 'generate_images'
 const GENERATE_VIDEO_TOOL_NAME = 'generate_videos'
+const GENERATION_INTENTS = Object.freeze([
+  'initial_generation', 'continue_generation', 'replace_scene', 'replace_person', 'replace_product',
+  'change_pose', 'change_style', 'batch_variation', 'redo_from_root',
+])
+const TARGETED_GENERATION_INTENTS = new Set(GENERATION_INTENTS.filter((intent) => intent !== 'initial_generation'))
 const OVERFLOW_RETRY_TOKEN_BUDGET = 6_000
 const OVERFLOW_TOOL_CONTENT_TOKEN_BUDGET = 128
 const OVERFLOW_HISTORY_MESSAGE_TOKEN_BUDGET = 512
@@ -126,9 +131,13 @@ function mentionReferenceIds(mentions) {
   ))
 }
 
-function mergeTurnContextNodeIds(contextNodeIds, mentions) {
-  // 本轮显式 @ 引用优先于 Session 的旧上下文；达到上限时不能把用户刚选的对象截掉。
-  return [...new Set([...mentionReferenceIds(mentions), ...(contextNodeIds ?? [])])].slice(0, 32)
+function mergeTurnContextNodeIds(contextNodeIds, mentions, selectedResultNodeId) {
+  // 编辑源图必须进入看图上限；本轮显式 @ 引用其次，Session 旧上下文最后。
+  return [...new Set([
+    ...(selectedResultNodeId ? [selectedResultNodeId] : []),
+    ...mentionReferenceIds(mentions),
+    ...(contextNodeIds ?? []),
+  ])].slice(0, 32)
 }
 
 function boundedGenerationModels(value) {
@@ -156,17 +165,22 @@ export function validateBotanicAgentTurnInput(raw) {
   if (input.locale !== undefined && input.locale !== 'zh-CN' && input.locale !== 'en') invalidRequest('Agent locale 不支持。')
   const projectId = requiredText(input.projectId, '项目', 160)
   const plannerModel = optionalText(input.plannerModel, 'Agent 模型', 160)
+  if (input.showRawReasoning !== undefined && typeof input.showRawReasoning !== 'boolean') {
+    invalidRequest('Agent 推理原文设置无效。')
+  }
+  const showRawReasoning = input.showRawReasoning === true
   const sessionId = input.sessionId === undefined ? undefined : requiredText(input.sessionId, 'Agent 会话', 160)
   const inputMessage = input.inputMessage === undefined ? undefined : boundedInputMessage(input.inputMessage)
   if (Boolean(sessionId) !== Boolean(inputMessage)) invalidRequest('Agent 会话与当前消息必须同时提供。')
   const messages = input.messages === undefined
     ? (sessionId ? undefined : boundedMessages(input.messages))
     : boundedMessages(input.messages)
+  const selectedResultNodeId = optionalText(input.selectedResultNodeId, '选中结果节点', 160)
   const contextNodeIds = mergeTurnContextNodeIds(
     boundedNodeIds(input.contextNodeIds),
     inputMessage?.mentions,
+    selectedResultNodeId,
   )
-  const selectedResultNodeId = optionalText(input.selectedResultNodeId, '选中结果节点', 160)
   const selectedResultLabel = optionalText(input.selectedResultLabel, '选中结果名称', 160)
   const executionMode = input.executionMode === undefined ? undefined : requiredText(input.executionMode, '执行模式', 16)
   if (executionMode && executionMode !== 'auto' && executionMode !== 'manual') invalidRequest('执行模式不支持。')
@@ -190,6 +204,7 @@ export function validateBotanicAgentTurnInput(raw) {
     ...(sessionId ? { sessionId, inputMessage } : {}),
     locale: normalizeBotanicAgentLocale(input.locale),
     ...(plannerModel ? { plannerModel } : {}),
+    ...(showRawReasoning ? { showRawReasoning: true } : {}),
     ...(messages ? { messages } : {}),
     contextNodeIds,
     hasTarget,
@@ -274,6 +289,7 @@ function generateImagesTool(input) {
       + 'promptDelta 是该变体相对共享画面的完整差异描述（如“人物肤色为白人，保持五官与身份不变”）；'
       + '此时 prompt 只写各变体共享的画面底稿，不要把变体差异或枚举写进 prompt。'
       + 'axisLabel 是变化维度短名（如“肤色”“场景”）。'
+      + 'intent 必须概括这次生成操作；任意对象增删改且没有更精确枚举时使用 continue_generation。'
       + '用户提到画面比例（如 16:9）或清晰度（1K/2K）时填写 aspectRatio / resolution。',
     risk: 'costly',
     // 本工具只产出结构化生成计划，不触发 Provider、扣费或任务创建。risk 保持 costly
@@ -286,6 +302,7 @@ function generateImagesTool(input) {
       required: ['prompt'],
       properties: {
         prompt: { type: 'string', minLength: 4, maxLength: 6000 },
+        intent: { type: 'string', enum: GENERATION_INTENTS },
         count: { type: 'integer', minimum: 1, maximum: maxCount },
         aspectRatio: { type: 'string', enum: [...ASPECT_RATIOS] },
         resolution: { type: 'string', enum: [...RESOLUTIONS] },
@@ -311,6 +328,9 @@ function generateImagesTool(input) {
       // 这些参数来自模型而不是用户，写坏了要按 Provider 非法工具参数处理。
       const value = agentToolObject(raw, '生成参数')
       const prompt = agentToolText(value.prompt, '生成 Prompt', 6000)
+      const intent = input.hasTarget && TARGETED_GENERATION_INTENTS.has(value.intent)
+        ? value.intent
+        : input.hasTarget ? 'continue_generation' : 'initial_generation'
       const variants = normalizeTurnVariants(value.variants, maxCount)
       let count = 1
       if (value.count !== undefined) {
@@ -324,16 +344,18 @@ function generateImagesTool(input) {
         : undefined
       return {
         prompt,
+        intent,
         count,
         settingsHint: normalizeSettingsHint(value, input.generationModels),
         ...(variants ? { variants } : {}),
         ...(variants && axisLabel ? { axisLabel } : {}),
       }
     },
-    execute: async ({ prompt, count, settingsHint, variants, axisLabel }) => ({
+    execute: async ({ prompt, intent, count, settingsHint, variants, axisLabel }) => ({
       __turnKind: 'generation',
       mediaKind: 'image',
       prompt,
+      intent,
       count,
       settingsHint,
       ...(variants ? { variants } : {}),
@@ -380,6 +402,7 @@ function generateVideosTool(input) {
       __turnKind: 'generation',
       mediaKind: 'video',
       prompt,
+      intent: input.hasTarget ? 'continue_generation' : 'initial_generation',
       count: 1,
       duration,
     }),
@@ -593,8 +616,8 @@ async function turnInstructions(locale = 'zh-CN', { canGenerate = true } = {}) {
 }
 
 /**
- * 当前处境简报：选中态决定这一步是改图还是新建，执行模式决定生成后是自动提交还是停在确认卡。
- * 两者都是系统事实，模型只能据此陈述，不能自己猜或替系统承诺。
+ * 当前处境简报：选中态只绑定明确修改请求的源图，执行模式决定生成后是自动提交还是停在确认卡。
+ * 两者都是系统事实，模型只能据此陈述，不能把“有图”自行解释成“要出图”。
  */
 function turnSituationBriefing(input, locale = 'zh-CN') {
   const english = locale === 'en'
@@ -614,12 +637,16 @@ function turnSituationBriefing(input, locale = 'zh-CN') {
   if (input.hasTarget) {
     const label = input.selectedResultLabel
     lines.push(english
-      ? `The user has a result image selected${label ? ` ("${label}")` : ''}. Treat this step as editing that image unless the user clearly asks for a new, unrelated one.`
-      : `用户当前选中了结果图${label ? `「${label}」` : ''}。默认这一步是在它的基础上继续修改，除非用户明确要新建一张与它无关的图。`)
+      ? `The user has a result image selected${label ? ` ("${label}")` : ''}. Use it as the edit source only when the user requests a change; questions or evaluations about it require a text answer without generation.`
+      : `用户当前选中了结果图${label ? `「${label}」` : ''}。只有用户要求修改时才把它作为编辑源图；询问或评价这张图时直接文字回答，不要生成。`)
+  } else if (input.contextNodeIds?.length) {
+    lines.push(english
+      ? 'The user referenced images but selected no result image. First decide whether they are asking about the images or requesting generation/editing: answer questions in text, and call a generation tool only for an explicit creation or change request. Generated output becomes a new result and does not overwrite a referenced asset.'
+      : '用户引用了图片但没有选中结果图。先判断用户是在问图还是要求生成或修改：问图直接文字回答，只有明确要求创建或修改时才调用生成工具；生成内容会成为新结果，不覆盖引用素材。')
   } else {
     lines.push(english
-      ? 'No result image is selected, so this step creates a new image (referenced assets may still serve as references). If the user asks to edit "this one" without selecting or referencing any image, ask which image first instead of inventing a new one.'
-      : '当前没有选中结果图，这一步是新建画面（被引用的素材仍可作参考）。用户说「改这张」却既没有选中、也没有引用任何图片时，先问清是哪一张，不要凭空新建。')
+      ? 'No result image or referenced image is selected. Create a new image only when the user explicitly requests generation. If the user asks to edit "this one", ask which image first instead of inventing a new one.'
+      : '当前没有选中结果图或引用图片。只有用户明确要求生成时才新建画面；用户说「改这张」时先问清是哪一张，不要凭空新建。')
   }
   if (input.executionMode === 'auto') {
     lines.push(english
@@ -902,6 +929,7 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
         kind: 'generation',
         mediaKind: result.output.mediaKind,
         prompt: result.output.prompt,
+        intent: result.output.intent,
         count: result.output.count,
         ...(result.output.duration ? { duration: result.output.duration } : {}),
         ...(Object.keys(result.output.settingsHint ?? {}).length ? { settingsHint: result.output.settingsHint } : {}),
@@ -982,7 +1010,7 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
     )
   }
   const config = turnConfig(runtimeConfig, input?.plannerModel)
-  const allowRawReasoning = Boolean(runtimeConfig?.agentRawReasoning)
+  const allowRawReasoning = Boolean(runtimeConfig?.agentRawReasoning && input?.showRawReasoning)
   const canGenerate = imageModels(input.generationModels).length > 0
     || videoModels(input.generationModels).length > 0
   const baseSystem = await turnInstructions(input.locale, { canGenerate })
@@ -1016,7 +1044,11 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
     ...(immutableThreadContext?.messages ?? input.messages ?? []),
   ]
   if (options.signal?.aborted) throw new BotanicAgentChatError(499, 'REQUEST_CANCELLED', 'Agent 请求已取消。')
-  const contextNodeIds = mergeTurnContextNodeIds(input.contextNodeIds, input.inputMessage?.mentions)
+  const contextNodeIds = mergeTurnContextNodeIds(
+    input.contextNodeIds,
+    input.inputMessage?.mentions,
+    input.selectedResultNodeId,
+  )
   const ontology = buildBotanicAgentOntology(options.document, contextNodeIds)
   const memory = safeBotanicAgentMemory(options.document)
   const skills = botanicAgentSearchableSkills(options.projectSkills)

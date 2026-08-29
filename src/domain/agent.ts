@@ -641,10 +641,7 @@ export type BotanicIndexedArtifact = BotanicAgentArtifact & {
   updatedAt: number
 }
 
-export type BotanicAgentCanvasCommand =
-  | { id: string; type: 'create_text_node' | 'create_media_node'; artifactId: string }
-  | { id: string; type: 'connect_nodes'; sourceNodeId: string; targetNodeId: string }
-  | { id: string; type: 'focus_node'; nodeId: string }
+export type BotanicAgentCanvasCommand = { id: string; type: 'create_text_node' | 'create_media_node'; artifactId: string }
 
 export type BotanicAgentActionResult = {
   message: string
@@ -894,6 +891,8 @@ export function recordBotanicAgentCanvasWritebacks(
 
 export type BotanicAgentPlan = {
   plannerModel?: string
+  /** 仅由回合模型推断出生成意图时为 true；刷新恢复也必须停在人工确认。 */
+  requiresGenerationConfirmation?: boolean
   /**
    * 提出这条计划的服务端回合。确认后随 Run 一起持久化，Turn 侧据此反查产出的 Run。
    * 本地回退路径没有回合，因此是可选的 —— 缺失表示「没有回合确认过它」，不是丢了。
@@ -1228,7 +1227,7 @@ export type BotanicAgentExecutionDecision =
   /** 输出设置仍然缺项，两种模式都必须先问清楚，不猜测会产生费用的参数。 */
   | { action: 'ask_settings' }
   /** 计划里还有需要人工确认的外部行动，或自动模式遇到多张输出，降级为手动确认。 */
-  | { action: 'confirm'; reason: 'manual' | 'pending_actions' | 'batch_count' }
+  | { action: 'confirm'; reason: 'manual' | 'pending_actions' | 'batch_count' | 'intent' }
   | { action: 'auto_submit' }
 
 /**
@@ -1249,12 +1248,15 @@ export function resolveBotanicAgentExecutionDecision(input: {
   settingsComplete: boolean
   pendingActionCount: number
   outputCount?: number
+  /** 仅模型判定为生成时为 false；意图误判不得直接产生付费任务。 */
+  allowAutoSubmit?: boolean
   /** 用户在计划卡上勾过「这类以后直接执行」的理由。 */
   waivers?: readonly BotanicAgentConfirmationWaiver[]
 }): BotanicAgentExecutionDecision {
   if (!input.settingsComplete) return { action: 'ask_settings' }
   // 外部行动永不可豁免：它写外部系统、花钱、不可逆，跳过确认等于替用户做了撤不回的决定。
   if (input.pendingActionCount > 0) return { action: 'confirm', reason: 'pending_actions' }
+  if (input.allowAutoSubmit === false) return { action: 'confirm', reason: 'intent' }
   const waived = (reason: BotanicAgentConfirmationWaiver) => input.waivers?.includes(reason) ?? false
   if (input.mode !== 'auto' && !waived('manual')) return { action: 'confirm', reason: 'manual' }
   // 走到这里说明用户已允许「不因模式而停」，剩下唯一的刹车是张数——它直接决定这次花多少。
@@ -1285,6 +1287,11 @@ export function botanicAgentExecutionPauseHint(
     return locale === 'en'
       ? `Paused because this run makes ${input.outputCount} images. Confirm the count before submitting.`
       : `已暂停：本次将生成 ${input.outputCount} 张，请确认张数后再提交。`
+  }
+  if (decision.reason === 'intent') {
+    return locale === 'en'
+      ? 'Paused because the Agent inferred a generation request from visual context. Confirm the plan before submitting.'
+      : '已暂停：Agent 根据视觉上下文推断出生成意图，请确认计划后再提交。'
   }
   return null
 }
@@ -1439,6 +1446,8 @@ export type BotanicAgentMessage = {
 export type BotanicAgentTurnRequestSnapshot = {
   locale: 'zh-CN' | 'en'
   plannerModel?: string
+  /** 用户明确选择查看当前回合的 Provider 推理原文；服务端总开关仍拥有最终授权。 */
+  showRawReasoning?: boolean
   mountedSkillIds?: string[]
   contextNodeIds: string[]
   hasTarget: boolean
@@ -1477,6 +1486,7 @@ export function pendingBotanicAgentAutoSubmission(
         ),
         pendingActionCount: botanicAgentPendingConfirmationCount(message.plan.actions),
         outputCount: message.plan.output.count,
+        allowAutoSubmit: message.plan.requiresGenerationConfirmation !== true,
         waivers,
       }).action === 'auto_submit'
     })
