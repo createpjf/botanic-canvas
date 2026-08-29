@@ -512,6 +512,7 @@ export default function AgentWorkspace({
     lastFailedCommand: command,
   }), [])
   const [planning, setPlanning] = useState(false)
+  const [cancellingSessionId, setCancellingSessionId] = useState('')
   const [turnRecoveryEpoch, setTurnRecoveryEpoch] = useState(0)
   /** 局部重绘语等待框选：选区回来后带 region 重放该指令。 */
   const [pendingRegionInstruction, setPendingRegionInstruction] = useState<{
@@ -654,17 +655,22 @@ export default function AgentWorkspace({
     if (cancellationAcceptedTurnIdsRef.current.has(turnId)) return Promise.resolve()
     const existing = cancellationPromisesRef.current.get(turnId)
     if (existing) return existing
+    const cancellationSessionId = session?.id ?? ''
+    setCancellingSessionId(cancellationSessionId)
     cancellingTurnIdsRef.current.add(turnId)
     const cancellation = retryBotanicAgentTurnCancellation({
       turnId,
       signal,
-      cancelTurn: async (targetTurnId) => { await cancelPersistentBotanicAgentTurn(targetTurnId) },
+      cancelTurn: cancelPersistentBotanicAgentTurn,
     }).then((result) => {
       cancellationAcceptedTurnIdsRef.current.add(turnId)
       return result
     }).finally(() => {
       cancellationPromisesRef.current.delete(turnId)
       cancellingTurnIdsRef.current.delete(turnId)
+      if (!cancellationPromisesRef.current.size) {
+        setCancellingSessionId((current) => current === cancellationSessionId ? '' : current)
+      }
     })
     cancellationPromisesRef.current.set(turnId, cancellation)
     return cancellation
@@ -3420,6 +3426,8 @@ export default function AgentWorkspace({
       persistMessageUpdate(inputMessage, { turnCancellationRequestedAt: requestedAt })
     }
     if (turnId && cancellationPromisesRef.current.has(turnId)) return
+    const cancellationSessionId = session?.id ?? ''
+    setCancellingSessionId(cancellationSessionId)
     void stopBotanicAgentPlanning({
       turnId,
       turnIdentityPending: awaitingTurnIdentityRef.current,
@@ -3428,7 +3436,12 @@ export default function AgentWorkspace({
       },
       cancelWhenAccepted: () => { cancelWhenAcceptedRef.current = true },
       abortLocalRequest: () => plannerControllerRef.current?.abort(),
+    }).then((result) => {
+      if (result.kind === 'aborted_local') {
+        setCancellingSessionId((current) => current === cancellationSessionId ? '' : current)
+      }
     }).catch((caught) => {
+      setCancellingSessionId((current) => current === cancellationSessionId ? '' : current)
       setError(localizeProductError(caught, locale, {
         'zh-CN': '暂时无法取消本轮 Agent 任务，取消意图已保存，请稍后重试。',
         en: 'Unable to cancel this Agent turn yet. The stop request is saved for retry.',
@@ -4020,6 +4033,7 @@ export default function AgentWorkspace({
         canRetry={Boolean(lastFailedPlanMessageId || lastFailedInstruction)}
         retrying={planning || submittingMessageId === lastFailedPlanMessageId}
         planning={planning}
+        cancelling={planning && cancellingSessionId === session?.id}
         contextMenuOpen={contextMenuOpen}
         modeMenuOpen={modeMenuOpen}
         contextMenuId={contextMenuId}

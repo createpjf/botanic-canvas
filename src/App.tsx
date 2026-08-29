@@ -58,7 +58,6 @@ const productAccessCopy = {
     signOutFailed: '退出失败，请稍后重试。',
     passwordSaveFailed: '密码未保存，请稍后重试。',
     releaseTitle: '发现新版本',
-    releaseDetail: (current: string, latest: string) => `当前 ${current}，最新 ${latest}。请刷新后再使用工作台。`,
     releaseAction: '立即刷新',
   },
   en: {
@@ -99,7 +98,6 @@ const productAccessCopy = {
     signOutFailed: 'Sign-out failed. Please try again.',
     passwordSaveFailed: 'Your password was not saved. Please try again.',
     releaseTitle: 'A new version is available',
-    releaseDetail: (current: string, latest: string) => `${current} is out of date. Refresh to ${latest} before continuing.`,
     releaseAction: 'Refresh now',
   },
 } as const
@@ -131,7 +129,7 @@ function ProductAppFrame({ children }: { children: ReactNode }) {
           <section ref={gateRef} role="alertdialog" aria-modal="true" aria-labelledby="release-gate-title">
             <span>BOTANIC</span>
             <h1 id="release-gate-title">{accessCopy.releaseTitle}</h1>
-            <p>{accessCopy.releaseDetail(formatReleaseLabel(localRelease), formatReleaseLabel(publishedRelease))}</p>
+            <p>v{publishedRelease.version}</p>
             <form onSubmit={(event) => { event.preventDefault(); window.location.reload() }}>
               <button type="submit">{accessCopy.releaseAction}</button>
             </form>
