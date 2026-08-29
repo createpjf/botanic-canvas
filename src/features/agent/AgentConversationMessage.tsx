@@ -351,7 +351,7 @@ function AgentMessageTimeline({ timeline }: { timeline: AgentTimelineState }) {
         const marker = block.status === 'running'
           ? <AgentThinkingOrb label={label} />
           : <ClockIcon />
-        const summary = <>{marker}<span>{label}</span>{block.text ? <small>{locale === 'en' ? 'Model reasoning · experimental' : '模型推理原文 · 实验'}</small> : null}</>
+        const summary = <>{marker}<span>{label}</span>{block.text ? <><small>{locale === 'en' ? 'Thinking' : '思考过程'}</small><ChevronDownIcon /></> : null}</>
         return block.text ? <details key={block.id} className={`agent-timeline__thinking is-${block.status}`}>
           <summary>{summary}</summary>
           <p>{block.text}</p>
@@ -1163,7 +1163,6 @@ export function AgentConversationMessage({
     {message.role === 'user' && message.deliveryStatus === 'waiting_network' ? <small className="agent-message__delivery-status" role="status">{t('等待联网', 'Waiting for network')}</small> : null}
     {message.role === 'user' && message.deliveryStatus === 'queued' ? <small className="agent-message__delivery-status" role="status">{t('等待同步', 'Waiting to sync')}</small> : null}
     {message.role === 'user' && message.deliveryStatus === 'syncing' ? <small className="agent-message__delivery-status" role="status">{t('正在同步', 'Syncing')}</small> : null}
-    {message.role === 'user' && message.deliveryStatus === 'synced' ? <small className="agent-message__delivery-status is-synced" role="status">{t('已同步', 'Synced')}</small> : null}
     {message.role === 'user' && message.deliveryStatus === 'failed' ? <small className="agent-message__delivery-status is-failed" role="alert">{t('同步失败', 'Sync failed')} <button type="button" onClick={() => onRetryDelivery(message.id)}>{t('重试', 'Retry')}</button></small> : null}
     {showUtilities ? <AgentMessageUtilities
       message={message}

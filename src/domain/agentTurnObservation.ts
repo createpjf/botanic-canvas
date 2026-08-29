@@ -324,10 +324,10 @@ function retryableCancellationError(caught: unknown) {
     || status === 429 || status >= 500
 }
 
-async function waitForCancellationRetry(signal?: AbortSignal) {
+async function waitForCancellationRetry(signal?: AbortSignal, attempt = 1) {
   if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError')
   await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(resolve, 600)
+    const timeout = setTimeout(resolve, Math.min(600 * (2 ** Math.max(0, attempt - 1)), 5_000))
     signal?.addEventListener('abort', () => {
       clearTimeout(timeout)
       reject(new DOMException('The operation was aborted.', 'AbortError'))
@@ -343,18 +343,25 @@ export async function retryBotanicAgentTurnCancellation(input: {
   turnId: string
   cancelTurn: (turnId: string) => Promise<unknown>
   signal?: AbortSignal
-  wait?: (signal?: AbortSignal) => Promise<void>
+  wait?: (signal?: AbortSignal, attempt?: number) => Promise<void>
 }) {
   const turnId = input.turnId.trim()
   if (!turnId) throw new TypeError('Agent Turn 取消缺少身份。')
+  let attempt = 0
   for (;;) {
     if (input.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError')
     try {
-      await input.cancelTurn(turnId)
+      const result = await input.cancelTurn(turnId)
+      if ((result as { turn?: { status?: string } } | undefined)?.turn?.status === 'cancelling') {
+        attempt += 1
+        await (input.wait ?? waitForCancellationRetry)(input.signal, attempt)
+        continue
+      }
       return { kind: 'cancelling' as const, turnId }
     } catch (caught) {
       if (!retryableCancellationError(caught)) throw caught
-      await (input.wait ?? waitForCancellationRetry)(input.signal)
+      attempt += 1
+      await (input.wait ?? waitForCancellationRetry)(input.signal, attempt)
     }
   }
 }

@@ -497,3 +497,16 @@ test('Stop 的 404/断网只保留取消意图并重试，不伪造 cancelled �
   }), /missing/u)
   assert.deepEqual(calls, [])
 })
+
+test('Stop 收到 cancelling 后继续请求，直到服务端确认 cancelled', async () => {
+  const statuses = ['cancelling', 'cancelled'] as const
+  let attempts = 0
+  let waits = 0
+  await retryBotanicAgentTurnCancellation({
+    turnId: 'turn-pending',
+    cancelTurn: async () => ({ turn: { status: statuses[attempts++] } }),
+    wait: async () => { waits += 1 },
+  })
+  assert.equal(attempts, 2)
+  assert.equal(waits, 1)
+})

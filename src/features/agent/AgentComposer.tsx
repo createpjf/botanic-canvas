@@ -32,6 +32,7 @@ type AgentComposerProps = {
   canRetry: boolean
   retrying: boolean
   planning: boolean
+  cancelling: boolean
   contextMenuOpen: boolean
   modeMenuOpen: boolean
   contextMenuId: string
@@ -81,6 +82,7 @@ export function AgentComposer({
   canRetry,
   retrying,
   planning,
+  cancelling,
   contextMenuOpen,
   modeMenuOpen,
   contextMenuId,
@@ -272,6 +274,7 @@ export function AgentComposer({
       </div>
       <ComposerSendButton
         planning={planning}
+        cancelling={cancelling}
         disabled={!canSend || !session}
         sendLabel={copy.send}
         stopLabel={copy.stop}
@@ -303,6 +306,7 @@ export function AgentComposer({
 
 function ComposerSendButton({
   planning,
+  cancelling,
   disabled,
   sendLabel,
   stopLabel,
@@ -310,6 +314,7 @@ function ComposerSendButton({
   onCancel,
 }: {
   planning: boolean
+  cancelling: boolean
   disabled: boolean
   sendLabel: string
   stopLabel: string
@@ -340,14 +345,14 @@ function ComposerSendButton({
   return <button
     ref={buttonRef}
     type="button"
-    className={planning ? 'agent-composer__send is-stop' : 'agent-composer__send'}
-    disabled={planning ? false : disabled}
+    className={planning ? `agent-composer__send is-stop${cancelling ? ' is-cancelling' : ''}` : 'agent-composer__send'}
+    disabled={planning ? cancelling : disabled}
     onClick={planning ? onCancel : onSend}
-    aria-label={planning ? stopLabel : sendLabel}
-    title={planning ? stopLabel : sendLabel}
+    aria-label={planning ? `${stopLabel}${cancelling ? '…' : ''}` : sendLabel}
+    title={planning ? `${stopLabel}${cancelling ? '…' : ''}` : sendLabel}
   >
-    <svg width="1em" height="1em" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+    {cancelling ? <span className="agent-composer__spinner" aria-hidden="true" /> : <svg width="1em" height="1em" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
       <path ref={pathRef} d={planning ? sendStopPath : sendArrowPath} />
-    </svg>
+    </svg>}
   </button>
 }
