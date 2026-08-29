@@ -82,6 +82,7 @@ import {
   revalidateMissingBotanicAgentTurn,
   retryBotanicAgentTurnCancellation,
   retryBotanicAgentTurnRecovery,
+  settleBotanicAgentCancellationSession,
   stopBotanicAgentPlanning,
 } from '../../domain/agentTurnObservation'
 import { applyAgentConversationStreamEvent, createAgentTimeline, persistAgentLiveTimeline, projectBotanicAgentRunOntoTimeline, type AgentTimelineEvent, type AgentTimelineState } from '../../domain/agentTimeline'
@@ -574,7 +575,7 @@ export default function AgentWorkspace({
   const activeTurnInputMessageIdRef = useRef('')
   const activeTurnInputMessageRef = useRef<BotanicAgentMessage | null>(null)
   const awaitingTurnIdentityRef = useRef(false)
-  const cancelWhenAcceptedRef = useRef(false)
+  const cancelWhenAcceptedSessionIdRef = useRef('')
   const reattachingTurnIdsRef = useRef(new Set<string>())
   const cancellingTurnIdsRef = useRef(new Set<string>())
   const cancellationPromisesRef = useRef(new Map<string, Promise<unknown>>())
@@ -674,6 +675,22 @@ export default function AgentWorkspace({
     })
     cancellationPromisesRef.current.set(turnId, cancellation)
     return cancellation
+  }
+  const settlePreIdentityCancellation = (
+    operationSessionId: string,
+    turnIdentityKnown: boolean,
+    recoveryPending = false,
+  ) => {
+    if (!turnIdentityKnown && !recoveryPending
+      && cancelWhenAcceptedSessionIdRef.current === operationSessionId) {
+      cancelWhenAcceptedSessionIdRef.current = ''
+    }
+    setCancellingSessionId((currentSessionId) => settleBotanicAgentCancellationSession({
+      currentSessionId,
+      operationSessionId,
+      turnIdentityKnown,
+      recoveryPending,
+    }))
   }
   const sendingInstructionRef = useRef(false)
   const submittingMessageIdRef = useRef('')
@@ -1323,7 +1340,7 @@ export default function AgentWorkspace({
     activeTurnInputMessageIdRef.current = ''
     activeTurnInputMessageRef.current = null
     awaitingTurnIdentityRef.current = false
-    cancelWhenAcceptedRef.current = false
+    cancelWhenAcceptedSessionIdRef.current = ''
   }, [projectId, session?.id])
 
   useEffect(() => {
@@ -1625,8 +1642,8 @@ export default function AgentWorkspace({
               runtimeTurnId = turnId
               awaitingTurnIdentityRef.current = false
               activeTurnIdRef.current = turnId
-              if (cancelWhenAcceptedRef.current) {
-                cancelWhenAcceptedRef.current = false
+              if (cancelWhenAcceptedSessionIdRef.current === session.id) {
+                cancelWhenAcceptedSessionIdRef.current = ''
                 void ensureDeepTurnCancellation(turnId, controller.signal).catch((caught) => {
                   if (!controller.signal.aborted) setError(localizeProductError(caught, locale, {
                     'zh-CN': '暂时无法取消本轮 Agent 规划，请重试。',
@@ -1748,6 +1765,7 @@ export default function AgentWorkspace({
       return null
     } finally {
       awaitingTurnIdentityRef.current = false
+      settlePreIdentityCancellation(session.id, Boolean(runtimeTurnId))
       if (runtimeTurnId && activeTurnIdRef.current === runtimeTurnId) activeTurnIdRef.current = ''
       if (plannerControllerRef.current === controller) plannerControllerRef.current = null
       setPlanning(false)
@@ -2473,8 +2491,8 @@ export default function AgentWorkspace({
               ...(cancellationRequestedAt ? { turnCancellationRequestedAt: cancellationRequestedAt } : {}),
             })
             activeTurnInputMessageRef.current = persistedInputMessage
-            if (cancelWhenAcceptedRef.current || cancellationRequestedAt) {
-              cancelWhenAcceptedRef.current = false
+            if (cancelWhenAcceptedSessionIdRef.current === session.id || cancellationRequestedAt) {
+              cancelWhenAcceptedSessionIdRef.current = ''
               void ensureDeepTurnCancellation(turnId, controller.signal).catch((caught) => {
                 if (controller.signal.aborted) return
                 setError(localizeProductError(caught, locale, {
@@ -2626,7 +2644,7 @@ export default function AgentWorkspace({
         if (!runtimeTurnId && isRetryableBotanicAgentTurnRecoveryError(caught)) {
           // accepted 前的传输失败不能等价成“服务端没收到”，也不能回退本地生成。
           // pending/Stop 意图已随用户 Message 入队；effect 会用同一稳定 key 续提交。
-          const cancellationPending = cancelWhenAcceptedRef.current
+          const cancellationPending = cancelWhenAcceptedSessionIdRef.current === session.id
             || turnCancellationIntentRef.current.has(turnInputMessage.id)
           setLiveConversation((current) => current?.message.id === liveMessageId ? undefined : current)
           setError(cancellationPending
@@ -2697,6 +2715,11 @@ export default function AgentWorkspace({
         setLiveConversation((current) => current?.message.id === liveMessageId ? undefined : current)
       } finally {
         awaitingTurnIdentityRef.current = false
+        settlePreIdentityCancellation(
+          session.id,
+          Boolean(runtimeTurnId),
+          persistedInputMessage.status === 'pending',
+        )
         if (runtimeTurnId) cancellingTurnIdsRef.current.delete(runtimeTurnId)
         if (plannerControllerRef.current === controller) plannerControllerRef.current = null
         if (runtimeTurnId && activeTurnIdRef.current === runtimeTurnId) activeTurnIdRef.current = ''
@@ -2824,8 +2847,8 @@ export default function AgentWorkspace({
             runtimeTurnId = turnId
             awaitingTurnIdentityRef.current = false
             activeTurnIdRef.current = turnId
-            if (cancelWhenAcceptedRef.current) {
-              cancelWhenAcceptedRef.current = false
+            if (cancelWhenAcceptedSessionIdRef.current === session.id) {
+              cancelWhenAcceptedSessionIdRef.current = ''
               void ensureDeepTurnCancellation(turnId, controller.signal).catch((caught) => {
                 if (!controller.signal.aborted) setError(localizeProductError(caught, locale, {
                   'zh-CN': '暂时无法取消本轮 Agent 对话，请重试。',
@@ -2900,6 +2923,7 @@ export default function AgentWorkspace({
         rememberFailedInstruction(routedFailedCommand)
       } finally {
         awaitingTurnIdentityRef.current = false
+        settlePreIdentityCancellation(session.id, Boolean(runtimeTurnId))
         if (runtimeTurnId && activeTurnIdRef.current === runtimeTurnId) activeTurnIdRef.current = ''
         if (plannerControllerRef.current === controller) plannerControllerRef.current = null
         setPlanning(false)
@@ -3240,9 +3264,9 @@ export default function AgentWorkspace({
           ? { turnCancellationRequestedAt: Number(recoveredCancellationRequestedAt) }
           : {}),
       })
-      if (cancelWhenAcceptedRef.current
+      if (cancelWhenAcceptedSessionIdRef.current === session.id
         || hasBotanicAgentTurnCancellationIntent(pendingTurnMessage, recoveredCancellationRequestedAt)) {
-        cancelWhenAcceptedRef.current = false
+        cancelWhenAcceptedSessionIdRef.current = ''
         void ensureDeepTurnCancellation(turnId, controller.signal).catch((caught) => {
           if (controller.signal.aborted) return
           setError(localizeProductError(caught, locale, {
@@ -3385,6 +3409,7 @@ export default function AgentWorkspace({
         if (!(caught instanceof ProductApiError && caught.code === 'AGENT_TURN_CANCELLED')) setError(message)
       } finally {
         awaitingTurnIdentityRef.current = false
+        settlePreIdentityCancellation(session.id, Boolean(observedTurnId))
         if (observedTurnId) cancellingTurnIdsRef.current.delete(observedTurnId)
         if (plannerControllerRef.current === controller) plannerControllerRef.current = null
         if (observedTurnId && activeTurnIdRef.current === observedTurnId) activeTurnIdRef.current = ''
@@ -3434,7 +3459,7 @@ export default function AgentWorkspace({
       cancelTurn: async (targetTurnId) => {
         await ensureDeepTurnCancellation(targetTurnId, plannerControllerRef.current?.signal)
       },
-      cancelWhenAccepted: () => { cancelWhenAcceptedRef.current = true },
+      cancelWhenAccepted: () => { cancelWhenAcceptedSessionIdRef.current = cancellationSessionId },
       abortLocalRequest: () => plannerControllerRef.current?.abort(),
     }).then((result) => {
       if (result.kind === 'aborted_local') {
