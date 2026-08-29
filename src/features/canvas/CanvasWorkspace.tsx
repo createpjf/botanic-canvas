@@ -38,6 +38,7 @@ import { clipboardMediaFiles, pasteTarget } from '../../domain/clipboardMedia'
 import { nextExclusiveSurface, type ExclusiveSurfaceAction } from '../../domain/exclusiveSurface'
 import { topOverlayLayer } from '../../domain/overlayPriority'
 import { summarizeWorkflowTemplate, type WorkflowTemplateSummary } from '../../domain/workflowTemplates'
+import { eligibleProductionWorkflowSources } from '../../domain/productionWorkflows'
 import { useMotionPresence, useRestoreFocus, useRetainedValue, type MotionPhase } from '../../components/motionPresence'
 import { AccountDetailsDialog, AccountMenu, WorkspaceAuditDialog, WorkspaceMembersDialog, type AccountMenuAnchor } from '../../components/AccountCenter'
 import { useDialogFocusTrap } from '../../components/useDialogFocusTrap'
@@ -840,6 +841,7 @@ export default function CanvasWorkspace({
   const [regionEditTargetId, setRegionEditTargetId] = useState<string | null>(null)
   const [imagePreview, setImagePreview] = useState<{ image: string; name: string; mediaKind: GenerationMediaKind } | null>(null)
   const [historyFocusRequest, setHistoryFocusRequest] = useState<{ nodeId: string; requestId: number } | null>(null)
+  const [productionSourceRequest, setProductionSourceRequest] = useState<{ nodeId: string; requestId: number } | null>(null)
   const [renamingProjectTabId, setRenamingProjectTabId] = useState<string | null>(null)
   const [projectTabNameDraft, setProjectTabNameDraft] = useState('')
   const [assetToDelete, setAssetToDelete] = useState<AssetRecord | null>(null)
@@ -1664,6 +1666,20 @@ export default function CanvasWorkspace({
     setBatchComposerTargetId(null)
   }, [])
 
+  /**
+   * Agent 出完图后就地把这次运行提升成生产工作流：只负责把来源带进已有的自动化面板，
+   * 发布本身仍走面板里那条路（权限、来源校验、命名都在那里）。
+   * 一次运行有多个分支时解析不出唯一来源，此时只切页不预选——不替用户挑一支。
+   */
+  const promoteAgentRunToWorkflow = useCallback((runId: string) => {
+    const matching = eligibleProductionWorkflowSources(document).filter((option) => option.runId === runId)
+    setProductionSourceRequest({
+      nodeId: matching.length === 1 ? matching[0].nodeId : '',
+      requestId: Date.now(),
+    })
+    setTemplatesOpen(true)
+  }, [document, setTemplatesOpen])
+
   const openDockSurface = useCallback((surface: Extract<CanvasPrimarySurface, 'assets' | 'templates' | 'history' | 'delivery'>) => {
     setComposerOpen(false)
     setResultComposerDraft(null)
@@ -2395,6 +2411,7 @@ export default function CanvasWorkspace({
           onCancelRun={(runId) => cancelAgentRun(runId)}
           onLocateNode={selectNode}
           onFocusNodes={agentBridge.focusNodes}
+          onPromoteRunToWorkflow={promoteAgentRunToWorkflow}
           onResolveRunNodes={agentBridge.resolveRunNodes}
           onSaveArtifact={agentBridge.saveArtifact}
           onContinueArtifact={agentBridge.continueArtifact}
@@ -2764,6 +2781,7 @@ export default function CanvasWorkspace({
               setHistoryFocusRequest({ nodeId, requestId: Date.now() })
               setTemplatesOpen(false)
             }}
+            productionSourceRequest={productionSourceRequest ?? undefined}
             onClose={() => setTemplatesOpen(false)}
           /></Suspense>
         </CanvasPanelPresence>

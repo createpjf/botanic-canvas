@@ -869,6 +869,7 @@ export function TemplatePanel({
   onRefresh,
   onOpenHistory,
   onLocateWorkflowNode,
+  productionSourceRequest,
   onClose,
 }: {
   projectId: string
@@ -884,6 +885,11 @@ export function TemplatePanel({
   onRefresh: () => Promise<void>
   onOpenHistory: () => void
   onLocateWorkflowNode: (nodeId: string) => void
+  /**
+   * 从别处（Agent 计划回执）请求把某个来源带进自动化页。`nodeId` 为空表示解析不出
+   * 唯一来源，只切页不预选，让用户自己在下拉里选，不代为挑一个。
+   */
+  productionSourceRequest?: { nodeId: string; requestId: number }
   onClose: () => void
 }) {
   const { locale } = useProductI18n()
@@ -976,6 +982,13 @@ export function TemplatePanel({
     const timer = window.setInterval(() => void refreshProductionWorkflows().catch(() => undefined), 3_000)
     return () => window.clearInterval(timer)
   }, [activeTab, productionRuns])
+
+  // 面板可能已经开着，所以按请求号响应而不是只读一次初值。
+  useEffect(() => {
+    if (!productionSourceRequest) return
+    setActiveTab('automation')
+    setProductionSourceNodeId(productionSourceRequest.nodeId)
+  }, [productionSourceRequest?.requestId])
 
   useEffect(() => {
     if (!saveOpen) return
