@@ -254,7 +254,13 @@ export function useAgentRuntimeTrace({
     const active = latestRun.status === 'queued' || latestRun.status === 'running' || latestRun.status === 'executing'
     const failed = latestRun.status === 'failed' || latestRun.status === 'cancelled'
     setPhase(active ? 'executing' : failed ? 'failed' : 'completed')
-    if (steps.length) return
+    if (steps.length) {
+      if (phase === 'executing' && !shouldRestoreBotanicAgentRuntimeSteps(latestRun.status)) {
+        setSteps([])
+        setDetailsOpen(false)
+      }
+      return
+    }
     // 已结束的 Run 由对话内的状态消息承载，不再在面板底部重放一份历史步骤。
     if (!shouldRestoreBotanicAgentRuntimeSteps(latestRun.status)) return
     setMode('generation')

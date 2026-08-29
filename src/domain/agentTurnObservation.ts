@@ -318,6 +318,16 @@ export async function stopBotanicAgentPlanning(input: {
   return { kind: 'aborted_local' }
 }
 
+export function settleBotanicAgentCancellationSession(input: {
+  currentSessionId: string
+  operationSessionId: string
+  turnIdentityKnown: boolean
+  recoveryPending: boolean
+}) {
+  if (input.turnIdentityKnown || input.recoveryPending) return input.currentSessionId
+  return input.currentSessionId === input.operationSessionId ? '' : input.currentSessionId
+}
+
 function retryableCancellationError(caught: unknown) {
   const status = Number((caught as { status?: unknown } | undefined)?.status)
   return status === 0 || status === 404 || status === 408 || status === 425
