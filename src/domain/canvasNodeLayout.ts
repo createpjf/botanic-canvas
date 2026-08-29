@@ -87,14 +87,18 @@ export function findOpenCanvasPosition(
   if (fits(preferred)) return preferred
   const stepX = size.width + gap
   const stepY = size.height + gap
-  for (let row = 0; row < 16; row += 1) {
-    for (let col = 0; col < 10; col += 1) {
+  // ponytail: 先有界网格就近找空位；搜完落到全体占用底边之下，保证 fits()。更密装箱另做。
+  const maxRows = 24
+  const maxCols = 16
+  for (let row = 0; row < maxRows; row += 1) {
+    for (let col = 0; col < maxCols; col += 1) {
       if (row === 0 && col === 0) continue
       const candidate = { x: preferred.x + col * stepX, y: preferred.y + row * stepY }
       if (fits(candidate)) return candidate
     }
   }
-  return { x: preferred.x + 10 * stepX, y: preferred.y }
+  const floorY = occupied.reduce((max, rect) => Math.max(max, rect.y + rect.height), preferred.y) + gap
+  return { x: preferred.x, y: floorY }
 }
 
 function isVisibleNode(node: CanvasNode, hiddenIds: ReadonlySet<string>) {

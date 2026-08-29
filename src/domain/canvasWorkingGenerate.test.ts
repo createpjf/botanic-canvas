@@ -26,8 +26,24 @@ const edges = [
   { id: 'e3', source: 'generate-1', target: 'result-1' },
 ] as Edge[]
 
-test('listGeneratesFromInput 按 id 新到旧', () => {
+test('listGeneratesFromInput 按连入边后到先，不按 id 字母序', () => {
   assert.deepEqual(listGeneratesFromInput('asset-1', nodes, edges), ['generate-2', 'generate-1'])
+  const mixedNodes = [
+    nodes[0],
+    { ...nodes[1], id: 'generate-branch-1' },
+    { ...nodes[4], id: 'generate-recipe-9', data: { ...nodes[4].data, primaryInputId: 'asset-1' } },
+    { ...nodes[1], id: 'generate-1730000000000' },
+  ] as CanvasNode[]
+  const mixedEdges = [
+    { id: 'old-branch', source: 'asset-1', target: 'generate-branch-1' },
+    { id: 'old-recipe', source: 'asset-1', target: 'generate-recipe-9' },
+    { id: 'newest', source: 'asset-1', target: 'generate-1730000000000' },
+  ] as Edge[]
+  assert.deepEqual(
+    listGeneratesFromInput('asset-1', mixedNodes, mixedEdges),
+    ['generate-1730000000000', 'generate-recipe-9', 'generate-branch-1'],
+  )
+  assert.equal(pickWorkingGenerateId('asset-1', mixedNodes, mixedEdges), 'generate-1730000000000')
 })
 
 test('pickWorkingGenerateId 优先尚无成功输出的 generate', () => {

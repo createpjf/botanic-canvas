@@ -1,13 +1,18 @@
 import type { Edge } from '@xyflow/react'
 import type { CanvasNode, GenerateNodeData, ResultNodeData } from './canvas.ts'
 
-/** 从某素材/结果连出的全部 generate id（按 id 新→旧）。 */
+/** 从某素材/结果连出的全部 generate id（后连上的在前）。id 前缀混用，不能按字母序当新旧。 */
 export function listGeneratesFromInput(mediaId: string, nodes: CanvasNode[], edges: Edge[]) {
   const generateIds = new Set(nodes.filter((node) => node.type === 'generate').map((node) => node.id))
-  return edges
-    .filter((edge) => edge.source === mediaId && generateIds.has(edge.target))
-    .map((edge) => edge.target)
-    .sort((left, right) => right.localeCompare(left))
+  const seen = new Set<string>()
+  const ordered: string[] = []
+  for (let index = edges.length - 1; index >= 0; index -= 1) {
+    const edge = edges[index]
+    if (edge.source !== mediaId || !generateIds.has(edge.target) || seen.has(edge.target)) continue
+    seen.add(edge.target)
+    ordered.push(edge.target)
+  }
+  return ordered
 }
 
 /** generate 是否连着可展示的 asset / 已有图的 result。 */

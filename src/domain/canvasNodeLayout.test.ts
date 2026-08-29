@@ -135,6 +135,27 @@ test('未连接的两张图并排且不重叠', () => {
   assertVisibleNodesDoNotOverlap(laidOut, edges)
 })
 
+test('findOpenCanvasPosition 网格搜完也不和已有节点重叠', () => {
+  const size = { width: 40, height: 40 }
+  const step = 40 + 48
+  const preferred = { x: 0, y: 0 }
+  const packed: CanvasNode[] = []
+  for (let row = 0; row < 24; row += 1) {
+    for (let col = 0; col < 16; col += 1) {
+      packed.push(asset(`pack-${row}-${col}`, preferred.x + col * step, preferred.y + row * step))
+    }
+  }
+  packed.push(asset('pack-old-fallback', preferred.x + 10 * step, preferred.y))
+  const opened = findOpenCanvasPosition(packed, preferred, size)
+  for (const node of packed) {
+    assert.equal(
+      nodeRectsOverlap({ ...asset('new'), position: opened }, node, undefined, 8),
+      false,
+      `${node.id} 与新空位重叠`,
+    )
+  }
+})
+
 test('findOpenCanvasPosition 从首选点让开已有节点', () => {
   const existing = [asset('asset-a', 120, 120)]
   const size = { width: 255, height: 368 }
