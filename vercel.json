@@ -21,6 +21,14 @@
       ]
     }
   ],
+  "functions": {
+    "api/status-collect.ts": {
+      "includeFiles": "src/**"
+    },
+    "api/status-snapshot.ts": {
+      "includeFiles": "{src/**,src/data/statusIncidents.json}"
+    }
+  },
   "rewrites": [
     {
       "source": "/status-collect",

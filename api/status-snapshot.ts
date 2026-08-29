@@ -1,23 +1,24 @@
 import incidents from '../src/data/statusIncidents.json'
-import { runStatusSnapshot } from '../src/lib/statusPageRuntime.ts'
-import { readStatusSamples } from './statusBlob.ts'
+import { runStatusSnapshot } from '../src/lib/statusPageRuntime'
+import { readStatusSamples } from './statusBlob'
 
-export default async function handler(
-  req: { method?: string },
-  res: {
-    setHeader(name: string, value: string): void
-    status(code: number): { json(body: unknown): void }
-  },
-) {
-  res.setHeader('Cache-Control', 'no-store')
-  if (req.method !== 'GET') {
-    res.status(405).json({ error: 'method_not_allowed' })
-    return
-  }
-  const snapshot = await runStatusSnapshot({
-    env: process.env,
-    incidents,
-    readSamples: readStatusSamples,
+function json(status: number, body: unknown) {
+  return Response.json(body, {
+    status,
+    headers: { 'Cache-Control': 'no-store' },
   })
-  res.status(snapshot.loadState === 'unavailable' ? 503 : 200).json(snapshot)
+}
+
+export async function GET() {
+  try {
+    const snapshot = await runStatusSnapshot({
+      env: process.env,
+      incidents,
+      readSamples: readStatusSamples,
+    })
+    return json(snapshot.loadState === 'unavailable' ? 503 : 200, snapshot)
+  } catch (error) {
+    console.error(error)
+    return json(503, { error: 'unavailable' })
+  }
 }

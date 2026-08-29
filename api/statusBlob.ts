@@ -1,6 +1,6 @@
 import { get, put } from '@vercel/blob'
-import type { StatusSampleFile } from '../src/domain/statusPage.ts'
-import type { StatusBlobRead } from '../src/lib/statusPageRuntime.ts'
+import type { StatusSampleFile } from '../src/domain/statusPage'
+import type { StatusBlobRead } from '../src/lib/statusPageRuntime'
 
 export const STATUS_SAMPLES_BLOB = 'status-samples.json'
 
