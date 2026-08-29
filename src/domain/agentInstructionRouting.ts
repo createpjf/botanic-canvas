@@ -1,6 +1,7 @@
 import type { BotanicAgentContextSnapshotInput, BotanicAgentIntent, BotanicAgentMessage, BotanicAgentPlan, BotanicAgentRegionSelection } from './agent.ts'
 import { buildBotanicAgentPlan, createBotanicAgentContextSnapshot, inferBotanicAgentIntent } from './agent.ts'
 import {
+  botanicAgentRequestUsesGenerationTurn,
   decideBotanicAgentRequest,
   inferBotanicAgentGenerationSettings,
   resolveBotanicAgentGenerationPromptDecision,
@@ -100,9 +101,10 @@ export function resolveBotanicAgentInstructionEntry(input: {
     if (!promptMessage) return { kind: 'notice', notice: 'nothing_to_confirm' }
     executionPromptMessageId = promptMessage.id
   }
-  // 服务端回合解析器仅用于全新用户发送；澄清答复、“使用这段 Prompt”、执行语与带选区指令已有明确意图/来源。
+  // 服务端回合只承接已判定的出图。识图/问答走对话链路，不把生图目录写进 Turn 快照。
   const useServerTurn = !options.clarificationAnswers && !options.sourcePromptMessageId
     && !restored && !executionPromptMessageId && !options.region
+    && botanicAgentRequestUsesGenerationTurn(pendingDecision)
   return {
     kind: 'route',
     useServerTurn,

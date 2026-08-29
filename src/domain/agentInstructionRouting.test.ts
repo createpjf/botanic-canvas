@@ -73,6 +73,11 @@ test('只有全新用户发送才走服务端回合；澄清答复与显式来�
   })
   assert.equal(fresh.kind === 'route' && fresh.useServerTurn, true)
 
+  const analyze = resolveBotanicAgentInstructionEntry({
+    instruction: '这张图里有什么，分析一下', options: {}, hasVisualContext: true, messages: [],
+  })
+  assert.equal(analyze.kind === 'route' && analyze.useServerTurn, false)
+
   const answering = resolveBotanicAgentInstructionEntry({
     instruction: '帮我生成一张海边人像',
     options: { clarificationAnswers: { resolution: '2K' } },

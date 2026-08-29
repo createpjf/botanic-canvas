@@ -234,6 +234,45 @@ test('pending Message 持久化完整 Turn request snapshot，目标身份不能
   }, { now: 20 }), /用户消息/)
 })
 
+test('识图回合快照也带生成目录，词表内的 Nano Banana 比例与 4K 必须能落盘', () => {
+  const snapshot = {
+    locale: 'zh-CN',
+    contextNodeIds: [],
+    hasTarget: false,
+    selectedResultNodeId: null,
+    plannerModel: 'gemini-3.7-flash',
+    generationModels: [{
+      id: 'gemini-3.1-pro-preview',
+      label: 'Nano Banana',
+      mediaKind: 'image',
+      aspectRatios: ['1:1', '16:9', '4:3', '3:4', '4:5', '9:16', '3:2', '2:3', '5:4', '21:9'],
+      resolutions: ['1K', '2K', '4K'],
+    }],
+    maxOutputCount: 8,
+  }
+  const persisted = validateAgentMessageEntity({
+    id: 'message-vision-snapshot',
+    role: 'user',
+    kind: 'text',
+    content: '这张图里有什么，分析一下',
+    createdAt: 10,
+    status: 'pending',
+    turnRequestSnapshot: snapshot,
+  }, { now: 20 })
+  assert.deepEqual(persisted.turnRequestSnapshot.generationModels, snapshot.generationModels)
+  assert.throws(() => validateAgentMessageEntity({
+    id: 'message-vision-bad-ratio',
+    role: 'user',
+    kind: 'text',
+    content: '分析',
+    createdAt: 10,
+    turnRequestSnapshot: {
+      ...snapshot,
+      generationModels: [{ ...snapshot.generationModels[0], aspectRatios: ['7:5'] }],
+    },
+  }, { now: 20 }), /生成模型比例无效/)
+})
+
 test('线程摘要只持久化 Artifact 目录和消息版本，不带结果内容或地址', () => {
   const result = validateAgentSessionEntity({
     id: 'session-summary', title: '摘要会话', executionMode: 'manual', contextNodeIds: [], createdAt: 1, updatedAt: 20,

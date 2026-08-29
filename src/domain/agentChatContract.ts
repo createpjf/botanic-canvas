@@ -261,7 +261,17 @@ export function decideBotanicAgentRequest(value: string, hasGenerationTarget = f
     return { kind: 'generation', mediaKind: 'image', promptSource: 'previous_prompt' }
   }
   if (asksForPromptWork.test(text)) return { kind: 'chat', mode: 'prompt' }
-  if (asksForAdviceOrExplanation.test(text)) return { kind: 'chat', mode: 'conversation' }
+  const wantsVisualExecution = hasContextualVisualCommand
+    || instructionRequestsBatchVariation(text)
+    || explicitVisualGeneration.test(text)
+    || explicitVisualChange.test(text)
+    || (hasGenerationTarget && instructionRequestsMarkOverlay(text))
+  const asksThenGenerates = /(?:生成|生图|出图|做一张|来一张).{0,16}(?:\d+\s*张|一张|一版|图片|画面|海报)/iu.test(text)
+    && !/[?？]/u.test(text)
+  // 「哪次生成的 / 换场景的建议」仍是问答；「分析一下然后生成 3 张」才出图。
+  if (asksForAdviceOrExplanation.test(text) && !asksThenGenerates && !hasContextualVisualCommand) {
+    return { kind: 'chat', mode: 'conversation' }
+  }
   if (/(?:prompt|提示词|提示语|提示词生成|写一段.*(?:提示|prompt)|润色提示)/iu.test(text)) return { kind: 'chat', mode: 'prompt' }
   if (/(?:检索|搜索|查找|查一下|研究|资料|联网|外部来源|项目里|画布中|有哪些素材|哪些节点|多少个节点)/iu.test(text)) return { kind: 'chat', mode: 'research' }
   if (/(?:你是谁|你能做什么|如何使用|怎么使用|怎么用|请解释|解释一下|日常聊天|闲聊|你可以|你能)/iu.test(text)) return { kind: 'chat', mode: 'conversation' }
@@ -271,13 +281,7 @@ export function decideBotanicAgentRequest(value: string, hasGenerationTarget = f
   if (mediaKind === 'video' && explicitVisualGeneration.test(text) && !hasGenerationTarget) {
     return { kind: 'clarification', reason: 'video_requires_reference' }
   }
-  if (
-    hasContextualVisualCommand
-    || instructionRequestsBatchVariation(text)
-    || explicitVisualGeneration.test(text)
-    || explicitVisualChange.test(text)
-    || (hasGenerationTarget && instructionRequestsMarkOverlay(text))
-  ) {
+  if (wantsVisualExecution) {
     return { kind: 'generation', mediaKind, promptSource: 'instruction' }
   }
   if (hasGenerationTarget && /^(?:保持|继续|再来|重试|重新|换|替换|调整)(?!.*[?？])/iu.test(text)) {
@@ -292,6 +296,36 @@ export function decideBotanicAgentRequest(value: string, hasGenerationTarget = f
 export function classifyBotanicAgentRequest(value: string, hasGenerationTarget = false): BotanicAgentRequestRoute {
   const decision = decideBotanicAgentRequest(value, hasGenerationTarget)
   return decision.kind === 'generation' ? 'generation' : decision.kind === 'chat' ? decision.mode : 'conversation'
+}
+
+/** 只有明确出图才走带生成目录的 Turn；识图/问答走对话，不携带生图工具面。 */
+export function botanicAgentRequestUsesGenerationTurn(decision?: BotanicAgentRequestDecision) {
+  return decision?.kind === 'generation'
+}
+
+export function botanicAgentComposerIntentHint(
+  decision: BotanicAgentRequestDecision,
+  input: { hasVisualContext?: boolean },
+  locale: ProductLocale,
+) {
+  const english = locale === 'en'
+  if (decision.kind === 'generation') {
+    return english
+      ? (decision.mediaKind === 'video' ? 'This send will plan a video' : 'This send will plan an image')
+      : (decision.mediaKind === 'video' ? '这一步将规划视频' : '这一步将规划出图')
+  }
+  if (decision.kind === 'clarification') {
+    return english ? 'A first-frame image is needed first' : '需要先指定首帧图片'
+  }
+  if (decision.kind === 'confirm_pending') {
+    return english ? 'This will confirm the pending plan' : '将确认当前待执行计划'
+  }
+  if (decision.mode === 'research') return english ? 'This send will search the project' : '这一步将检索项目'
+  if (decision.mode === 'prompt') return english ? 'This send will work on the prompt' : '这一步将处理提示词'
+  if (input.hasVisualContext) {
+    return english ? 'This send will analyze the referenced image, not generate' : '这一步将分析引用图，不会出图'
+  }
+  return english ? 'This send is a conversation, not generation' : '这一步是问答，不会出图'
 }
 
 export function buildBotanicAgentChatRequest(input: BotanicAgentChatRequestInput) {

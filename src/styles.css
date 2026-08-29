@@ -4246,6 +4246,7 @@ details.agent-timeline__thinking { display: block; padding: 0; }
 .agent-composer__model-select .botanic-select__trigger { min-width: 0; }
 .agent-composer__model-select .agent-model-trigger { min-width: 0; }
 .agent-model-trigger__label { overflow: hidden; padding-block: 3px; line-height: var(--line-single); text-overflow: ellipsis; white-space: nowrap; }
+.agent-composer__intent { margin: 0; padding: 2px 2px 0; color: #6f8b75; font-size: 10px; font-weight: 620; line-height: 1.45; }
 .agent-composer__error { min-height: 28px; padding: 4px 8px; border-radius: var(--radius-control); background: #fff8f6; }
 .agent-composer__error > span { line-height: 1.45; }
 .agent-conversation-anchor { border-radius: 10px; outline: none; scroll-margin-block: 76px 140px; }
