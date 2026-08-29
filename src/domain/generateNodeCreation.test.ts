@@ -53,6 +53,7 @@ test('从已选素材创建视频节点时原子建立输入连线并按来源�
   assert.equal(result.node.data.label, 'Santal 01 香薰 · 视频 01')
   assert.deepEqual(result.node.data.inputOrder, ['asset-santal'])
   assert.equal(result.node.data.primaryInputId, 'asset-santal')
+  assert.equal(result.node.data.standalone, undefined)
   assert.deepEqual(result.edges.map((edge) => ({
     source: edge.source,
     sourceHandle: edge.sourceHandle,
@@ -115,6 +116,31 @@ test('新生成节点持有独立 settings 快照，不与调用方共享引用'
   assert.equal(result.node.data.settings.aspectRatio, '3:4')
 })
 
+test('空白画布钉上的生成节点标 standalone', () => {
+  const result = planGenerateNodeCreation({
+    nodes: [],
+    nodeId: 'generate-pin-1',
+    position: { x: 0, y: 0 },
+    mediaKind: 'image',
+    settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
+    standalone: true,
+  })
+  assert.equal(result.node.data.standalone, true)
+})
+
+test('自动挂上的 working composer 不标 standalone', () => {
+  const result = planGenerateNodeCreation({
+    nodes: [assetNode],
+    nodeId: 'generate-dock-1',
+    position: { x: 0, y: 0 },
+    mediaKind: 'image',
+    settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
+    inputNodeIds: [assetNode.id],
+    standalone: false,
+  })
+  assert.equal(result.node.data.standalone, undefined)
+})
+
 test('局部布局只为新分支寻找空位，不移动已有节点', () => {
   const existing = [
     generateNode('generate-1', '已有分支 · 图像 01'),
@@ -122,6 +148,14 @@ test('局部布局只为新分支寻找空位，不移动已有节点', () => {
   ]
   const originalPositions = existing.map((node) => ({ ...node.position }))
 
-  assert.deepEqual(findOpenGeneratePosition(existing, { x: 500, y: 100 }), { x: 500, y: 576 })
+  const opened = findOpenGeneratePosition(existing, { x: 500, y: 100 })
+  assert.ok(opened.x !== 500 || opened.y !== 100)
+  for (const node of existing) {
+    const overlaps = opened.x < node.position.x + 176 + 48
+      && opened.x + 176 + 48 > node.position.x
+      && opened.y < node.position.y + 148 + 48
+      && opened.y + 148 + 48 > node.position.y
+    assert.equal(overlaps, false)
+  }
   assert.deepEqual(existing.map((node) => node.position), originalPositions)
 })

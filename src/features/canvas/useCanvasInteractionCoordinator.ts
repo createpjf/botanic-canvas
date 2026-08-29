@@ -24,6 +24,7 @@ import { readUploadedAssetInput, validateUploadFiles } from '../../lib/uploadedA
 import { useProductI18n } from '../../i18n/react'
 import { useCanvasStore } from '../../store/canvasStore'
 import { maximumReferencesForModel } from '../../domain/generationRecipe'
+import { displayEdgeEnds, pickWorkingGenerateId } from '../../domain/canvasWorkingGenerate'
 
 export type ScreenToFlowPosition = (position: { x: number; y: number }) => { x: number; y: number }
 
@@ -54,6 +55,7 @@ type UseCanvasInteractionCoordinatorOptions = {
   hydrated: boolean
   restoredViewportZoom: number
   hiddenResultNodeIds: Set<string>
+  hiddenGenerateIds?: Set<string>
   focusedLineageEdgeIds: Set<string>
   hasLineageFocus: boolean
   assetLibraryAssets: AssetRecord[]
@@ -70,6 +72,7 @@ export function useCanvasInteractionCoordinator({
   hydrated,
   restoredViewportZoom,
   hiddenResultNodeIds,
+  hiddenGenerateIds = new Set(),
   focusedLineageEdgeIds,
   hasLineageFocus,
   assetLibraryAssets,
@@ -86,6 +89,7 @@ export function useCanvasInteractionCoordinator({
   const setViewport = useCanvasStore((state) => state.setViewport)
   const addAssetToCanvas = useCanvasStore((state) => state.addAssetToCanvas)
   const addUploadedAssetsToCanvas = useCanvasStore((state) => state.addUploadedAssetsToCanvas)
+  const addGenerateNode = useCanvasStore((state) => state.addGenerateNode)
 
   const pendingNodePositionSaveRef = useRef(false)
   const canvasFileDragDepthRef = useRef(0)
@@ -286,37 +290,49 @@ export function useCanvasInteractionCoordinator({
     const sourceId = connection.source
     const targetId = connection.target
     if (!sourceId || !targetId || sourceId === targetId) return false
-    const source = document.nodes.find((node) => node.id === sourceId)
-    const target = document.nodes.find((node) => node.id === targetId)
+    const { document: current } = useCanvasStore.getState()
+    const source = current.nodes.find((node) => node.id === sourceId)
+    const target = current.nodes.find((node) => node.id === targetId)
     if (!source || !target) return false
-    const existingEdges = document.edges.filter((edge) => edge.id !== ignoredEdgeId)
-    if (!(target.type === 'generate' && (source.type === 'asset' || source.type === 'text' || source.type === 'result'))) return false
-    if (existingEdges.some((edge) => edge.source === sourceId && edge.target === targetId
-      && (edge.sourceHandle ?? null) === (connection.sourceHandle ?? null)
-      && (edge.targetHandle ?? null) === (connection.targetHandle ?? null))) return false
+    const existingEdges = current.edges.filter((edge) => edge.id !== ignoredEdgeId)
+    const sourceIsInput = source.type === 'asset' || source.type === 'text' || source.type === 'result'
+    const targetIsGenerate = target.type === 'generate'
+    const targetIsMedia = target.type === 'asset' || target.type === 'result'
+    if (!sourceIsInput || !(targetIsGenerate || targetIsMedia)) return false
+    const generateId = targetIsGenerate
+      ? targetId
+      : pickWorkingGenerateId(targetId, current.nodes, existingEdges)
+    if (targetIsMedia && !generateId) return true
+    if (!generateId) return false
+    if (existingEdges.some((edge) => edge.source === sourceId && edge.target === generateId)) return false
+    const generate = current.nodes.find((node) => node.id === generateId && node.type === 'generate')
     if (source.type === 'asset' || source.type === 'result') {
-      const connectedReferences = existingEdges.filter((edge) => edge.target === targetId)
-        .map((edge) => document.nodes.find((node) => node.id === edge.source))
+      const connectedReferences = existingEdges.filter((edge) => edge.target === generateId)
+        .map((edge) => current.nodes.find((node) => node.id === edge.source))
         .filter((node) => node?.type === 'asset' || node?.type === 'result')
-      const targetModelId = (target.data as GenerateNodeData).settings?.model
+      const targetModelId = (generate?.data as GenerateNodeData | undefined)?.settings?.model
       const targetModel = useCanvasStore.getState().availableModels.find((model) => model.id === targetModelId)
       if (connectedReferences.length >= maximumReferencesForModel(targetModel)) return false
     }
     if (source.type === 'result') {
-      const connectedResults = existingEdges.filter((edge) => edge.target === targetId)
-        .map((edge) => document.nodes.find((node) => node.id === edge.source))
+      const connectedResults = existingEdges.filter((edge) => edge.target === generateId)
+        .map((edge) => current.nodes.find((node) => node.id === edge.source))
         .filter((node) => node?.type === 'result')
       if (connectedResults.length >= 1) return false
     }
     return true
-  }, [document.edges, document.nodes])
+  }, [])
 
   const isVideoConnection = useCallback((connection: Connection | Edge) => {
     const source = document.nodes.find((node) => node.id === connection.source)
     const target = document.nodes.find((node) => node.id === connection.target)
-    const isVideoNode = (node?: CanvasNode) => node?.type === 'generate'
-      ? (node.data as GenerateNodeData).settings.duration !== undefined
-      : node?.type === 'result' && ((node.data as ResultNodeData).mediaKind ?? 'image') === 'video'
+    const isVideoNode = (node?: CanvasNode) => {
+      if (!node) return false
+      if (node.type === 'generate') return (node.data as GenerateNodeData).settings.duration !== undefined
+      if (node.type === 'result') return ((node.data as ResultNodeData).mediaKind ?? 'image') === 'video'
+      if (node.type === 'asset') return ((node.data as AssetNodeData).mediaKind ?? 'image') === 'video'
+      return false
+    }
     return isVideoNode(source) || isVideoNode(target)
   }, [document.nodes])
 
@@ -331,35 +347,71 @@ export function useCanvasInteractionCoordinator({
     return { stroke: '#4f805b', strokeWidth: 1.6 }
   }, [document.nodes, isVideoConnection])
 
-  const renderedEdges = useMemo(() => document.edges.map((edge) => ({
-    ...edge,
-    hidden: Boolean(edge.hidden || hiddenResultNodeIds.has(edge.source) || hiddenResultNodeIds.has(edge.target)),
-    className: [
-      edge.className ?? '',
-      isVideoConnection(edge) ? 'media-edge--video' : '',
-      hasLineageFocus ? focusedLineageEdgeIds.has(edge.id) ? 'is-lineage' : 'is-lineage-muted' : '',
-    ].filter(Boolean).join(' '),
-    style: { ...edge.style, ...graphEdgeStyle(edge) },
-  })), [document.edges, focusedLineageEdgeIds, graphEdgeStyle, hasLineageFocus, hiddenResultNodeIds, isVideoConnection])
+  const renderedEdges = useMemo(() => document.edges.map((edge) => {
+    const ends = displayEdgeEnds(edge, document.nodes, document.edges, hiddenGenerateIds)
+    const remappedTarget = ends.target !== edge.target
+    const targetNode = remappedTarget ? document.nodes.find((node) => node.id === ends.target) : undefined
+    return {
+      ...edge,
+      source: ends.source,
+      target: ends.target,
+      targetHandle: remappedTarget && (targetNode?.type === 'asset' || targetNode?.type === 'result')
+        ? 'context'
+        : edge.targetHandle,
+      hidden: Boolean(edge.hidden || ends.hidden || hiddenResultNodeIds.has(ends.source) || hiddenResultNodeIds.has(ends.target)),
+      className: [
+        edge.className ?? '',
+        isVideoConnection(edge) ? 'media-edge--video' : '',
+        hasLineageFocus ? focusedLineageEdgeIds.has(edge.id) ? 'is-lineage' : 'is-lineage-muted' : '',
+      ].filter(Boolean).join(' '),
+      style: { ...edge.style, ...graphEdgeStyle(edge) },
+    }
+  }), [document.edges, document.nodes, focusedLineageEdgeIds, graphEdgeStyle, hasLineageFocus, hiddenGenerateIds, hiddenResultNodeIds, isVideoConnection])
+
+  const resolveConnectionToGenerate = useCallback((connection: Connection) => {
+    const targetId = connection.target
+    if (!targetId) return null
+    const current = useCanvasStore.getState().document
+    const target = current.nodes.find((node) => node.id === targetId)
+    if (!target) return null
+    if (target.type === 'generate') return { ...connection, target: targetId, targetHandle: connection.targetHandle ?? 'input' }
+    if (target.type !== 'asset' && target.type !== 'result') return null
+    const existing = pickWorkingGenerateId(targetId, current.nodes, current.edges)
+    const mediaKind = ((target.type === 'result'
+      ? (target.data as ResultNodeData).mediaKind
+      : (target.data as AssetNodeData).mediaKind) ?? 'image') === 'video' ? 'video' : 'image'
+    const generateId = existing ?? addGenerateNode(
+      { x: target.position.x + 220, y: target.position.y + 8 },
+      mediaKind,
+      [targetId],
+      { select: false, standalone: false },
+    )
+    if (!generateId) return null
+    return { ...connection, target: generateId, targetHandle: 'input' }
+  }, [addGenerateNode])
 
   const onConnect = useCallback((connection: Connection) => {
     if (!isGraphConnectionValid(connection)) return
+    const graphConnection = resolveConnectionToGenerate(connection)
+    if (!graphConnection || !isGraphConnectionValid(graphConnection)) return
     setEdges(addEdge({
-      ...connection,
-      id: `graph-edge-${connection.source}-${connection.target}-${Date.now()}`,
+      ...graphConnection,
+      id: `graph-edge-${graphConnection.source}-${graphConnection.target}-${Date.now()}`,
       type: 'default',
-      style: graphEdgeStyle(connection),
+      style: graphEdgeStyle(graphConnection),
       reconnectable: true,
-    }, document.edges))
+    }, useCanvasStore.getState().document.edges))
     setIsConnecting(false)
-  }, [document.edges, graphEdgeStyle, isGraphConnectionValid, setEdges])
+  }, [graphEdgeStyle, isGraphConnectionValid, resolveConnectionToGenerate, setEdges])
 
   const onReconnect = useCallback((oldEdge: Edge, connection: Connection) => {
     if (oldEdge.data?.system || !isGraphConnectionValid(connection, oldEdge.id)) return
-    const nextEdge: Edge = { ...oldEdge, ...connection, id: oldEdge.id, type: 'default', style: graphEdgeStyle(connection), reconnectable: true, selected: true }
-    setEdges(document.edges.map((edge) => edge.id === oldEdge.id ? nextEdge : { ...edge, selected: false }))
+    const graphConnection = resolveConnectionToGenerate(connection)
+    if (!graphConnection || !isGraphConnectionValid(graphConnection, oldEdge.id)) return
+    const nextEdge: Edge = { ...oldEdge, ...graphConnection, id: oldEdge.id, type: 'default', style: graphEdgeStyle(graphConnection), reconnectable: true, selected: true }
+    setEdges(useCanvasStore.getState().document.edges.map((edge) => edge.id === oldEdge.id ? nextEdge : { ...edge, selected: false }))
     setSelectedEdgeId(oldEdge.id)
-  }, [document.edges, graphEdgeStyle, isGraphConnectionValid, setEdges])
+  }, [graphEdgeStyle, isGraphConnectionValid, resolveConnectionToGenerate, setEdges])
 
   const selectEdgeActions = useCallback((event: MouseEvent, edge: Edge) => {
     event.stopPropagation()

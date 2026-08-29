@@ -1,4 +1,5 @@
 import type { Edge, XYPosition } from '@xyflow/react'
+import { canvasNodeBounds, findOpenCanvasPosition } from './canvasNodeLayout.ts'
 import { cloneGenerationSettings } from './generationRecipe.ts'
 import type {
   AssetNodeData,
@@ -18,32 +19,18 @@ type PlanGenerateNodeCreationInput = {
   mediaKind: GenerateMediaKind
   settings: GenerationSettings
   inputNodeIds?: string[]
-}
-
-function estimatedNodeBounds(node: CanvasNode) {
-  if (node.type === 'result') return { width: 320, height: 440 }
-  if (node.type === 'asset') return { width: 280, height: 390 }
-  if (node.type === 'text') return { width: 330, height: 190 }
-  return { width: 350, height: 210 }
+  /** 用户从工具栏/空白画布钉上的节点传 true；选中媒体时自动挂上的 working composer 不要传。 */
+  standalone?: boolean
 }
 
 export function findOpenGeneratePosition(nodes: CanvasNode[], preferred: XYPosition): XYPosition {
-  const width = 350
-  const height = 210
-  const gap = 28
-  const step = height + gap
-  for (let attempt = 0; attempt < 80; attempt += 1) {
-    const candidate = { x: preferred.x, y: preferred.y + attempt * step }
-    const overlaps = nodes.some((node) => {
-      const bounds = estimatedNodeBounds(node)
-      return candidate.x < node.position.x + bounds.width + gap
-        && candidate.x + width + gap > node.position.x
-        && candidate.y < node.position.y + bounds.height + gap
-        && candidate.y + height + gap > node.position.y
-    })
-    if (!overlaps) return candidate
-  }
-  return { x: preferred.x, y: preferred.y + 80 * step }
+  const size = canvasNodeBounds({
+    id: 'placement-generate',
+    type: 'generate',
+    position: preferred,
+    data: { kind: 'generate', label: '', prompt: '', batchCount: 1, settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' } },
+  } as CanvasNode)
+  return findOpenCanvasPosition(nodes, preferred, size)
 }
 
 function isGenerateInput(node: CanvasNode | undefined): node is CanvasNode {
@@ -105,6 +92,7 @@ export function planGenerateNodeCreation(input: PlanGenerateNodeCreationInput): 
       settings: cloneGenerationSettings(input.settings),
       ...(inputOrder.length ? { inputOrder } : {}),
       ...(primaryAsset ? { primaryInputId: primaryAsset.id } : {}),
+      ...(input.standalone === true ? { standalone: true } : {}),
     },
   }
   const edges = inputs.map((source, index): Edge => ({

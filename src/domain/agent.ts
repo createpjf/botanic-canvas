@@ -1,4 +1,4 @@
-import type { AssetGroup, AssetNodeData, AssetRecord, CanvasDocument, CanvasNode, GenerationJob, GenerationModelOption, GenerationRecipe, GenerationSettings, ResultNodeData } from './canvas.ts'
+import type { AssetGroup, AssetNodeData, AssetRecord, CanvasDocument, CanvasNode, GenerateNodeData, GenerationJob, GenerationModelOption, GenerationRecipe, GenerationSettings, ResultNodeData } from './canvas.ts'
 import type { BotanicAgentClarification, BotanicCreativeBrief } from './agentCreativeBrief.ts'
 import type { BotanicAgentBranchVariation, BotanicAgentVariationSpec } from './agentVariations.ts'
 import type { BotanicAgentComposition } from './agentCreativeComposition.ts'
@@ -466,6 +466,41 @@ export function shouldShowBotanicAgentRuntimeFeed(input: {
  * Agent 的图片首图既支持纯文字生图，也支持带参考图的受控生成；视频仍必须有首帧。
  * 文字、视频或空结果不会被误当成图片参考写入执行配方。
  */
+/**
+ * 画布上的生成节点不是参考物：交给 Agent 时展开成它连着的素材、结果和文字。
+ * 没有入线的 orphan 生成节点不进上下文，避免只留下一块没有图的「节点」芯片。
+ */
+export function expandBotanicAgentContextNodeIds(
+  nodes: CanvasNode[],
+  edges: { source: string; target: string }[],
+  nodeIds: string[],
+) {
+  const byId = new Map(nodes.map((node) => [node.id, node]))
+  const seen = new Set<string>()
+  const expanded: string[] = []
+  const add = (id: string) => {
+    if (seen.has(id) || !byId.has(id)) return
+    seen.add(id)
+    expanded.push(id)
+  }
+  for (const id of nodeIds) {
+    const node = byId.get(id)
+    if (!node) continue
+    if (node.type === 'generate') {
+      const data = node.data as GenerateNodeData
+      const connected = edges.filter((edge) => edge.target === id).map((edge) => edge.source)
+      const ordered = [
+        ...(data.inputOrder ?? []).filter((inputId) => connected.includes(inputId)),
+        ...connected.filter((inputId) => !(data.inputOrder ?? []).includes(inputId)),
+      ]
+      for (const inputId of ordered) add(inputId)
+      continue
+    }
+    add(id)
+  }
+  return expanded
+}
+
 export function resolveBotanicAgentWorkflowReferenceNodeIds(
   nodes: CanvasNode[],
   contextNodeIds: string[],

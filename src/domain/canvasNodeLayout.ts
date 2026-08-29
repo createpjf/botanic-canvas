@@ -1,7 +1,9 @@
 import type { Edge, XYPosition } from '@xyflow/react'
-import type { AssetNodeData, CanvasNode, GenerateNodeData, ResultNodeData } from './canvas.ts'
+import type { AssetNodeData, CanvasNode, ResultNodeData } from './canvas.ts'
+import { displayEdgeEnds, displayGenerateOwnerId, hiddenGenerateIds } from './canvasWorkingGenerate.ts'
 
-export function canvasNodeBounds(node: CanvasNode) {
+export function canvasNodeBounds(node: CanvasNode, hiddenIds?: ReadonlySet<string>) {
+  if (node.type === 'generate' && hiddenIds?.has(node.id)) return { width: 1, height: 1 }
   const measuredWidth = node.measured?.width
   const measuredHeight = node.measured?.height
   if (measuredWidth && measuredHeight) return { width: measuredWidth, height: measuredHeight }
@@ -15,7 +17,7 @@ export function canvasNodeBounds(node: CanvasNode) {
   if (node.type === 'prompt') return { width: 252, height: 126 }
   if (node.type === 'reference') return { width: 252, height: 148 }
   if (node.type === 'text') return { width: 236, height: 158 }
-  if (node.type === 'generate') return { width: 360, height: 276 }
+  if (node.type === 'generate') return { width: 176, height: node.selected ? 316 : 148 }
   const settings = (node.data as ResultNodeData).generationSettings
   const height = settings?.aspectRatio === '16:9' ? 169 : settings?.aspectRatio === '4:3' ? 225 : settings?.aspectRatio === '1:1' ? 300 : settings?.aspectRatio === '4:5' ? 375 : settings?.aspectRatio === '9:16' ? 533 : 400
   return { width: 300, height: height + 36 }
@@ -51,9 +53,120 @@ function canvasNodeSort(left: CanvasNode, right: CanvasNode) {
   return left.id.localeCompare(right.id)
 }
 
+function nodeRect(node: CanvasNode, hiddenIds?: ReadonlySet<string>) {
+  const bounds = canvasNodeBounds(node, hiddenIds)
+  return { x: node.position.x, y: node.position.y, width: bounds.width, height: bounds.height }
+}
+
+export function nodeRectsOverlap(left: CanvasNode, right: CanvasNode, hiddenIds?: ReadonlySet<string>, gap = 0) {
+  const a = nodeRect(left, hiddenIds)
+  const b = nodeRect(right, hiddenIds)
+  return a.x < b.x + b.width + gap
+    && a.x + a.width + gap > b.x
+    && a.y < b.y + b.height + gap
+    && a.y + a.height + gap > b.y
+}
+
+/** 从首选点向右再向下找空位。hidden generate 不占位。 */
+export function findOpenCanvasPosition(
+  nodes: CanvasNode[],
+  preferred: XYPosition,
+  size: { width: number; height: number },
+  hiddenIds?: ReadonlySet<string>,
+): XYPosition {
+  const gap = 48
+  const occupied = nodes
+    .filter((node) => !(node.type === 'generate' && hiddenIds?.has(node.id)))
+    .map((node) => nodeRect(node, hiddenIds))
+  const fits = (position: XYPosition) => !occupied.some((rect) => (
+    position.x < rect.x + rect.width + gap
+    && position.x + size.width + gap > rect.x
+    && position.y < rect.y + rect.height + gap
+    && position.y + size.height + gap > rect.y
+  ))
+  if (fits(preferred)) return preferred
+  const stepX = size.width + gap
+  const stepY = size.height + gap
+  for (let row = 0; row < 16; row += 1) {
+    for (let col = 0; col < 10; col += 1) {
+      if (row === 0 && col === 0) continue
+      const candidate = { x: preferred.x + col * stepX, y: preferred.y + row * stepY }
+      if (fits(candidate)) return candidate
+    }
+  }
+  return { x: preferred.x + 10 * stepX, y: preferred.y }
+}
+
+function isVisibleNode(node: CanvasNode, hiddenIds: ReadonlySet<string>) {
+  return node.type !== 'generate' || !hiddenIds.has(node.id)
+}
+
+function layoutLinks(nodes: CanvasNode[], edges: Edge[], hiddenIds: ReadonlySet<string>) {
+  const byId = new Map(nodes.map((node) => [node.id, node]))
+  const links: Array<{ source: string; target: string }> = []
+  const seen = new Set<string>()
+  const add = (source?: string | null, target?: string | null) => {
+    if (!source || !target || source === target) return
+    const from = byId.get(source)
+    const to = byId.get(target)
+    if (!from || !to || !isVisibleNode(from, hiddenIds) || !isVisibleNode(to, hiddenIds)) return
+    const key = `${source}>${target}`
+    if (seen.has(key)) return
+    seen.add(key)
+    links.push({ source, target })
+  }
+  for (const edge of edges) {
+    const ends = displayEdgeEnds(edge, nodes, edges, hiddenIds)
+    if (!ends.hidden) add(ends.source, ends.target)
+    if (hiddenIds.has(edge.source) && byId.get(edge.target)?.type === 'result') {
+      add(displayGenerateOwnerId(edge.source, nodes, edges), edge.target)
+    }
+  }
+  return links
+}
+
+function connectedComponents(ids: string[], links: Array<{ source: string; target: string }>) {
+  const parent = new Map(ids.map((id) => [id, id]))
+  const find = (id: string): string => {
+    const current = parent.get(id) ?? id
+    if (current === id) return id
+    const root = find(current)
+    parent.set(id, root)
+    return root
+  }
+  for (const link of links) {
+    if (!parent.has(link.source) || !parent.has(link.target)) continue
+    parent.set(find(link.source), find(link.target))
+  }
+  const groups = new Map<string, string[]>()
+  for (const id of ids) {
+    const root = find(id)
+    groups.set(root, [...(groups.get(root) ?? []), id])
+  }
+  return [...groups.values()]
+}
+
+function rankNodes(ids: string[], links: Array<{ source: string; target: string }>) {
+  const member = new Set(ids)
+  const rank = new Map(ids.map((id) => [id, 0]))
+  for (let step = 0; step < ids.length; step += 1) {
+    let changed = false
+    for (const link of links) {
+      if (!member.has(link.source) || !member.has(link.target)) continue
+      const next = (rank.get(link.source) ?? 0) + 1
+      if (next > (rank.get(link.target) ?? 0)) {
+        rank.set(link.target, next)
+        changed = true
+      }
+    }
+    if (!changed) break
+  }
+  return rank
+}
+
 /**
- * 按生成血缘整理画布：一个首图任务和从任意候选图延展出的精修分支共享同一条泳道。
- * 未连接节点统一放到任务泳道之后，避免被误读为生成输入。
+ * 按可见图画整理：上下文在左，被引用节点在右。hidden generate 不占泳道。
+ * 未连接节点并排收在已连接簇下方，避免叠成一条竖带。
  */
 export function layoutCanvasNodes(nodes: CanvasNode[], edges: Edge[]): CanvasNode[] {
   const cloned = nodes.map((node) => ({
@@ -61,156 +174,77 @@ export function layoutCanvasNodes(nodes: CanvasNode[], edges: Edge[]): CanvasNod
     position: { ...node.position },
     data: { ...node.data },
   })) as CanvasNode[]
-  const nodeById = new Map(cloned.map((node) => [node.id, node]))
-  const generateNodes = cloned.filter((node) => node.type === 'generate').sort(canvasNodeSort)
+  const hiddenIds = hiddenGenerateIds(cloned, edges)
+  const byId = new Map(cloned.map((node) => [node.id, node]))
+  const boundsOf = (nodeId: string) => canvasNodeBounds(byId.get(nodeId)!, hiddenIds)
+  const links = layoutLinks(cloned, edges, hiddenIds)
+  const visibleIds = cloned.filter((node) => isVisibleNode(node, hiddenIds)).map((node) => node.id)
+  const linkedIds = new Set(links.flatMap((link) => [link.source, link.target]))
+  const clusters = connectedComponents(visibleIds.filter((id) => linkedIds.has(id)), links)
+    .map((ids) => ids.slice().sort((left, right) => canvasNodeSort(byId.get(left)!, byId.get(right)!)))
+    .sort((left, right) => canvasNodeSort(byId.get(left[0])!, byId.get(right[0])!))
+  const isolated = visibleIds
+    .filter((id) => !linkedIds.has(id))
+    .sort((left, right) => canvasNodeSort(byId.get(left)!, byId.get(right)!))
+
+  const originX = 96
+  const originY = 96
+  const rankGap = 96
+  const stackGap = 56
+  const clusterGap = 112
   const positions = new Map<string, XYPosition>()
-  const inputGap = 68
-  const laneGap = 240
-  const columnGap = 172
 
-  const uniqueIds = (ids: string[]) => [...new Set(ids)].filter((id) => nodeById.has(id))
-  const sortIds = (ids: string[]) => uniqueIds(ids)
-    .map((id) => nodeById.get(id)!)
-    .sort(canvasNodeSort)
-    .map((node) => node.id)
-
-  const resultOutputOf = new Map<string, string>()
-  for (const result of cloned.filter((node) => node.type === 'result')) {
-    const outputOf = (result.data as ResultNodeData).outputOf
-    if (outputOf && nodeById.get(outputOf)?.type === 'generate') resultOutputOf.set(result.id, outputOf)
-  }
-  for (const edge of edges) {
-    if (nodeById.get(edge.source)?.type === 'generate' && nodeById.get(edge.target)?.type === 'result') {
-      resultOutputOf.set(edge.target, edge.source)
+  let cursorY = originY
+  for (const cluster of clusters) {
+    const ranks = rankNodes(cluster, links)
+    const idsByRank = new Map<number, string[]>()
+    for (const id of cluster) {
+      const rank = ranks.get(id) ?? 0
+      idsByRank.set(rank, [...(idsByRank.get(rank) ?? []), id])
     }
+    const orderedRanks = [...idsByRank.keys()].sort((left, right) => left - right)
+    const columnWidth = new Map<number, number>()
+    const columnHeight = new Map<number, number>()
+    for (const rank of orderedRanks) {
+      const ids = (idsByRank.get(rank) ?? []).sort((left, right) => canvasNodeSort(byId.get(left)!, byId.get(right)!))
+      idsByRank.set(rank, ids)
+      columnWidth.set(rank, Math.max(0, ...ids.map((id) => boundsOf(id).width)))
+      columnHeight.set(rank, ids.reduce((total, id) => total + boundsOf(id).height, 0) + Math.max(0, ids.length - 1) * stackGap)
+    }
+    const clusterHeight = Math.max(0, ...columnHeight.values())
+    let columnX = originX
+    for (const rank of orderedRanks) {
+      let y = cursorY + (clusterHeight - (columnHeight.get(rank) ?? 0)) / 2
+      for (const id of idsByRank.get(rank) ?? []) {
+        positions.set(id, { x: columnX, y })
+        y += boundsOf(id).height + stackGap
+      }
+      columnX += (columnWidth.get(rank) ?? 0) + rankGap
+    }
+    cursorY += clusterHeight + clusterGap
   }
 
-  const inputIdsByGenerate = new Map<string, string[]>()
-  for (const generate of generateNodes) {
-    const ordered = (generate.data as GenerateNodeData).inputOrder ?? []
-    const connected = edges.filter((edge) => edge.target === generate.id).map((edge) => edge.source)
-    inputIdsByGenerate.set(generate.id, uniqueIds([...ordered, ...connected]))
+  let packX = originX
+  let packY = clusters.length ? cursorY : originY
+  let rowHeight = 0
+  const rowLimit = originX + 980
+  for (const id of isolated) {
+    const bounds = boundsOf(id)
+    if (packX > originX && packX + bounds.width > rowLimit) {
+      packX = originX
+      packY += rowHeight + stackGap
+      rowHeight = 0
+    }
+    positions.set(id, { x: packX, y: packY })
+    packX += bounds.width + rankGap
+    rowHeight = Math.max(rowHeight, bounds.height)
   }
 
-  const parentResultByGenerate = new Map<string, string>()
-  for (const generate of generateNodes) {
-    const resultInput = inputIdsByGenerate.get(generate.id)?.find((id) => nodeById.get(id)?.type === 'result')
-    if (resultInput) parentResultByGenerate.set(generate.id, resultInput)
-  }
-
-  const rootByGenerate = new Map<string, string>()
-  const resolvingRoots = new Set<string>()
-  const rootOfGenerate = (generateId: string): string => {
-    const cached = rootByGenerate.get(generateId)
-    if (cached) return cached
-    if (resolvingRoots.has(generateId)) return generateId
-    resolvingRoots.add(generateId)
-    const parentResultId = parentResultByGenerate.get(generateId)
-    const parentGenerateId = parentResultId ? resultOutputOf.get(parentResultId) : undefined
-    const root = parentGenerateId && parentGenerateId !== generateId ? rootOfGenerate(parentGenerateId) : generateId
-    resolvingRoots.delete(generateId)
-    rootByGenerate.set(generateId, root)
-    return root
-  }
-  generateNodes.forEach((node) => rootOfGenerate(node.id))
-
-  const rankByGenerate = new Map<string, number>()
-  const resolvingRanks = new Set<string>()
-  const rankOfGenerate = (generateId: string): number => {
-    const cached = rankByGenerate.get(generateId)
-    if (typeof cached === 'number') return cached
-    if (resolvingRanks.has(generateId)) return 1
-    resolvingRanks.add(generateId)
-    const parentResultId = parentResultByGenerate.get(generateId)
-    const parentGenerateId = parentResultId ? resultOutputOf.get(parentResultId) : undefined
-    const rank = parentGenerateId && parentGenerateId !== generateId ? rankOfGenerate(parentGenerateId) + 2 : 1
-    resolvingRanks.delete(generateId)
-    rankByGenerate.set(generateId, rank)
-    return rank
-  }
-  generateNodes.forEach((node) => rankOfGenerate(node.id))
-
-  const targetGeneratesByInput = new Map<string, string[]>()
-  inputIdsByGenerate.forEach((inputIds, generateId) => {
-    inputIds.forEach((inputId) => {
-      targetGeneratesByInput.set(inputId, [...(targetGeneratesByInput.get(inputId) ?? []), generateId])
-    })
-  })
-
-  const rootNodes = new Map<string, string[]>()
-  const ranks = new Map<string, number>()
-  const assignToRoot = (nodeId: string, rootId: string, rank: number) => {
-    rootNodes.set(rootId, [...(rootNodes.get(rootId) ?? []), nodeId])
-    ranks.set(nodeId, rank)
-  }
-
-  for (const generate of generateNodes) assignToRoot(generate.id, rootOfGenerate(generate.id), rankOfGenerate(generate.id))
-  for (const [resultId, generateId] of resultOutputOf) assignToRoot(resultId, rootOfGenerate(generateId), rankOfGenerate(generateId) + 1)
-
-  const leftovers: string[] = []
   for (const node of cloned) {
-    if (ranks.has(node.id)) continue
-    const targets = (targetGeneratesByInput.get(node.id) ?? []).slice().sort((left, right) => {
-      const rankDifference = rankOfGenerate(left) - rankOfGenerate(right)
-      if (rankDifference) return rankDifference
-      return canvasNodeSort(nodeById.get(left)!, nodeById.get(right)!)
-    })
-    if (!targets.length) {
-      leftovers.push(node.id)
-      continue
-    }
-    const owner = targets[0]
-    assignToRoot(node.id, rootOfGenerate(owner), Math.max(0, rankOfGenerate(owner) - 1))
+    if (positions.has(node.id)) continue
+    const ownerId = node.type === 'generate' ? displayGenerateOwnerId(node.id, cloned, edges) : null
+    positions.set(node.id, ownerId ? positions.get(ownerId) ?? { x: 0, y: 0 } : { x: 0, y: 0 })
   }
-
-  const rootIds = [...rootNodes.keys()].sort((left, right) => canvasNodeSort(nodeById.get(left)!, nodeById.get(right)!))
-  const columnWidths = new Map<number, number>()
-  ranks.forEach((rank, nodeId) => {
-    const width = canvasNodeBounds(nodeById.get(nodeId)!).width
-    columnWidths.set(rank, Math.max(columnWidths.get(rank) ?? 0, width))
-  })
-  const maxRank = Math.max(0, ...columnWidths.keys())
-  const columnX = new Map<number, number>()
-  let nextColumnX = 96
-  for (let rank = 0; rank <= maxRank; rank += 1) {
-    columnX.set(rank, nextColumnX)
-    nextColumnX += (columnWidths.get(rank) ?? 0) + columnGap
-  }
-
-  let laneTop = 96
-  for (const rootId of rootIds) {
-    const nodeIds = uniqueIds(rootNodes.get(rootId) ?? [])
-    const nodeIdsByRank = new Map<number, string[]>()
-    nodeIds.forEach((nodeId) => {
-      const rank = ranks.get(nodeId) ?? 0
-      nodeIdsByRank.set(rank, [...(nodeIdsByRank.get(rank) ?? []), nodeId])
-    })
-
-    const columnHeights = new Map<number, number>()
-    nodeIdsByRank.forEach((ids, rank) => {
-      const sorted = sortIds(ids)
-      nodeIdsByRank.set(rank, sorted)
-      const height = sorted.reduce((total, nodeId) => total + canvasNodeBounds(nodeById.get(nodeId)!).height, 0)
-        + Math.max(0, sorted.length - 1) * inputGap
-      columnHeights.set(rank, height)
-    })
-    const laneHeight = Math.max(260, ...columnHeights.values())
-
-    nodeIdsByRank.forEach((ids, rank) => {
-      let y = laneTop + (laneHeight - (columnHeights.get(rank) ?? 0)) / 2
-      ids.forEach((nodeId) => {
-        positions.set(nodeId, { x: columnX.get(rank) ?? 96, y })
-        y += canvasNodeBounds(nodeById.get(nodeId)!).height + inputGap
-      })
-    })
-    laneTop += laneHeight + laneGap
-  }
-
-  let leftoverY = laneTop + 36
-  sortIds(leftovers).forEach((nodeId) => {
-    positions.set(nodeId, { x: 96, y: leftoverY })
-    leftoverY += canvasNodeBounds(nodeById.get(nodeId)!).height + inputGap
-  })
 
   return cloned.map((node) => ({ ...node, position: positions.get(node.id) ?? { ...node.position } })) as CanvasNode[]
 }

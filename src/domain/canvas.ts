@@ -240,6 +240,8 @@ export type GenerateNodeData = {
   inputOrder?: string[]
   /** 当前生成节点中被锁定为主体的商品素材节点。 */
   primaryInputId?: string
+  /** 用户钉在画布上的生成节点；有参考也不藏，composer 留在节点上。 */
+  standalone?: boolean
   jobId?: string
   status?: CanvasGenerationTaskStatus
   generationKind?: GenerationKind

@@ -10,7 +10,7 @@ export function FigmaIcon({ src, alt = '' }: { src: string; alt?: string }) {
 
 /** Agent 面板 · 结果画廊 */
 export function GalleryIcon({ className }: BotanicIconProps) {
-  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  return <svg className={opticalClass('ne', className)} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
     <rect x="3" y="4" width="18" height="16" rx="2" stroke="currentColor" strokeWidth="1.5" />
     <circle cx="8" cy="9" r="1.25" stroke="currentColor" strokeWidth="1.5" />
     <path d="m4.5 17 4.25-4.25 3.25 3 2.25-2.25L19.5 17" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -19,7 +19,7 @@ export function GalleryIcon({ className }: BotanicIconProps) {
 
 /** Agent 面板 · 生成任务清单 */
 export function ChecklistIcon({ className }: BotanicIconProps) {
-  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  return <svg className={opticalClass('check', className)} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
     <path d="M8.5 5.5h11M8.5 12h11M8.5 18.5h11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
     <path d="m3.5 5.5 1.25 1.25L7 4.5M3.5 12l1.25 1.25L7 11M3.5 18.5l1.25 1.25L7 17.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
@@ -27,7 +27,7 @@ export function ChecklistIcon({ className }: BotanicIconProps) {
 
 /** Agent 面板 · 项目记忆 */
 export function BookmarkIcon({ className }: BotanicIconProps) {
-  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  return <svg className={opticalClass('down', className)} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
     <path d="M6 4.25A1.75 1.75 0 0 1 7.75 2.5h8.5A1.75 1.75 0 0 1 18 4.25v17.1l-6-3.8-6 3.8V4.25Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
   </svg>
 }
@@ -125,12 +125,16 @@ export function SlidersIcon({ className }: BotanicIconProps) {
   </svg>
 }
 
-/** 植物学 Figma · Iconly/Sharp/Close Square（1228:231093） */
+/** 关闭动作 · 只画叉，不带圆圈 */
 export function CloseIcon({ className }: BotanicIconProps) {
   return <svg className={opticalClass('close', className)} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-    <path d="m14.398 9.595-4.792 4.792M14.394 14.39 9.598 9.593" stroke="currentColor" strokeWidth="1.5" strokeLinecap="square" />
-    <path d="M12 21.25A9.25 9.25 0 1 0 12 2.75a9.25 9.25 0 0 0 0 18.5Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    <path d="m6.5 6.5 11 11M17.5 6.5l-11 11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
   </svg>
+}
+
+/** 面板关闭 · 与 CloseIcon 同一把叉 */
+export function DismissIcon({ className }: BotanicIconProps) {
+  return <CloseIcon className={className} />
 }
 
 /** 植物学 Figma · Ikonate/ellypsis（1228:230194） */

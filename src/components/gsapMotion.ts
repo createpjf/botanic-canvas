@@ -83,6 +83,25 @@ export function playSurfaceFlip(
   })
 }
 
+/** 空画布引导舞台 → 右侧 Agent：同一 data-flip-id 跨节点 Flip。 */
+export function playEmptyGuideOpenFlip(
+  previous: ReturnType<typeof Flip.getState> | null,
+  target: Element | null,
+) {
+  if (!target) return
+  if (!previous || prefersReducedMotion()) {
+    gsap.set(target, { clearProps: 'transform' })
+    return
+  }
+  return Flip.from(previous, {
+    targets: target,
+    absolute: true,
+    scale: true,
+    duration: botanicMotion.duration.landing,
+    ease: botanicMotion.ease,
+  })
+}
+
 export function remainingScroll(viewport: { scrollHeight: number; scrollTop: number; clientHeight: number }) {
   return viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight
 }
