@@ -54,6 +54,14 @@ test('Landing 状态导航进入 /status 并展示夹具组件', async ({ page }
   expect(health.hits).toBe(0)
 })
 
+test('状态页产品首页回到落地页', async ({ page }) => {
+  await stubStatus(page)
+  await page.goto('/status')
+  await page.getByRole('link', { name: '产品首页', exact: true }).click()
+  await expect(page).toHaveURL(/\/$/)
+  await expect(page.getByRole('heading', { name: '让品牌视觉生产，成为持续生长的创作系统。' })).toBeVisible()
+})
+
 test('/status#/projects 仍是状态页，不打开项目库', async ({ page }) => {
   const health = await stubStatus(page)
   await page.goto('/status#/projects')

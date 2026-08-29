@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react'
 import type { WorkspaceAuditEvent } from '../domain/auditEvents'
 import { formatProductNumber, formatProductRelativeTime, type LocalizedText, type ProductLocale } from '../i18n/core'
-import { LanguageSwitcher, useProductI18n, useProductMessages } from '../i18n/react'
+import { useProductI18n, useProductMessages } from '../i18n/react'
 import { AccountDetailsDialog, AccountMenu, WorkspaceAuditDialog, WorkspaceMembersDialog, type AccountMenuAnchor, type AccountMfaEnrollment, type AccountMfaStatus, type AccountUser, type WorkspaceMember as AccountWorkspaceMember } from './AccountCenter'
-import { DeleteIcon, HomeIcon, MoreIcon } from './BotanicIcons'
+import { DeleteIcon, MoreIcon } from './BotanicIcons'
 import { useMotionPresence, useRestoreFocus, useRetainedValue } from './motionPresence'
 import { useDialogFocusTrap } from './useDialogFocusTrap'
 
@@ -22,7 +22,7 @@ export type WorkspaceMember = AccountWorkspaceMember
 
 const projectLibraryMessages = {
   'zh-CN': {
-    pageAria: '创意项目', studio: '创意工作室', productHome: '产品首页', openAccount: '打开账户设置', localWorkspace: '本地工作区',
+    pageAria: '创意项目', studio: '创意工作室', productHome: '产品首页', productNav: '产品页面', statusNav: '状态', openAccount: '打开账户设置', localWorkspace: '本地工作区',
     title: '创意项目', eyebrow: '创意项目', description: '从不同的商品与创作目标，进入各自独立的画布。', updating: '正在更新…',
     loadTitle: '项目列表暂时无法加载', loadError: '请检查网络或稍后重试。', retry: '重试', loadingAria: '正在加载项目',
     newProject: '新建项目', newProjectDescription: '从空白画布开始', noCover: '尚未生成封面',
@@ -34,7 +34,7 @@ const projectLibraryMessages = {
     deleteQuestion: (name: string) => `删除「${name}」？`, lastEdited: (relative: string) => `最近编辑 · ${relative}`, justNow: '刚刚',
   },
   en: {
-    pageAria: 'Creative projects', studio: 'Creative studio', productHome: 'Product home', openAccount: 'Open account settings', localWorkspace: 'Local workspace',
+    pageAria: 'Creative projects', studio: 'Creative studio', productHome: 'Product home', productNav: 'Product pages', statusNav: 'Status', openAccount: 'Open account settings', localWorkspace: 'Local workspace',
     title: 'Creative projects', eyebrow: 'Projects', description: 'One canvas per product and brief.', updating: 'Updating…',
     loadTitle: 'Projects are temporarily unavailable', loadError: 'Check your connection and try again.', retry: 'Try again', loadingAria: 'Loading projects',
     newProject: 'New project', newProjectDescription: 'Blank canvas', noCover: 'No cover yet',
@@ -46,6 +46,12 @@ const projectLibraryMessages = {
     deleteQuestion: (name: string) => `Delete “${name}”?`, lastEdited: (relative: string) => `Last edited · ${relative}`, justNow: 'just now',
   },
 } as const
+
+function goProductHome(event: MouseEvent<HTMLAnchorElement>, goHome: () => void) {
+  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return
+  event.preventDefault()
+  goHome()
+}
 
 function projectUpdatedLabel(updatedAt: number, locale: ProductLocale, copy: (typeof projectLibraryMessages)[ProductLocale]) {
   const elapsed = Math.max(0, Date.now() - updatedAt)
@@ -198,13 +204,15 @@ export function ProjectLibrary({
   return (
     <main className="project-library-page" aria-label={copy.pageAria} lang={locale}>
       <header className="project-library-page__header">
-        <div className="project-library-page__brand"><strong>Botanic</strong><span>{copy.studio}</span></div>
+        <a className="project-library-page__brand" href="/" aria-label={`Botanic ${homeLabel}`} onClick={(event) => goProductHome(event, onReturnToLanding)}>
+          <strong>Botanic</strong>
+          <span>{copy.studio}</span>
+        </a>
+        <nav className="project-library-page__nav" aria-label={copy.productNav}>
+          <a href="/" onClick={(event) => goProductHome(event, onReturnToLanding)}>{homeLabel}</a>
+          <a href="/status">{copy.statusNav}</a>
+        </nav>
         <div className="project-library-page__account-actions">
-          <LanguageSwitcher className="project-library-page__language" />
-          <button type="button" className="project-library-page__home" onClick={onReturnToLanding} aria-label={homeLabel}>
-            <HomeIcon />
-            <span>{homeLabel}</span>
-          </button>
           <button
             ref={accountTriggerRef}
             type="button"
@@ -222,7 +230,6 @@ export function ProjectLibrary({
             }}
           >
             <span>{currentUser?.name?.slice(0, 1).toUpperCase() || 'B'}</span>
-            <strong>{currentUser?.name || copy.localWorkspace}</strong>
           </button>
         </div>
       </header>

@@ -83,7 +83,8 @@ test('产品首页支持中英文切换并展示真实工作台截图', async ({
   await expect(page.getByRole('heading', { name: 'Creative projects', exact: true })).toBeVisible()
   await expect(page).toHaveURL(/#\/projects$/)
   await page.getByRole('button', { name: 'New project' }).click()
-  await expect(page.getByRole('heading', { name: 'Start from a goal' })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Empty canvas guide' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Describe the goal' })).toBeVisible()
   await page.getByRole('button', { name: 'Image generation', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Remove Image generation 01 from canvas' })).toBeVisible()
   await page.getByRole('button', { name: 'Close generator' }).click()
@@ -91,12 +92,16 @@ test('产品首页支持中英文切换并展示真实工作台截图', async ({
   await expect(page.getByRole('complementary', { name: 'Asset library' })).toBeVisible()
   await page.getByRole('button', { name: 'Open Bob' }).click()
   await expect(page.getByRole('complementary', { name: 'Botanic Agent' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'New conversation' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'New chat' })).toBeVisible()
   await expect(page.getByRole('complementary', { name: 'Asset library' })).toBeHidden()
   await page.getByRole('button', { name: 'Open account settings' }).click()
   await expect(page.getByRole('menu')).toContainText('Account & workspace')
+  await expect(page.getByRole('menuitem', { name: /Language/ })).toBeVisible()
   await page.keyboard.press('Escape')
-  await page.getByRole('button', { name: 'Product home' }).click()
+  await expect(page.getByRole('link', { name: 'Product home', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('link', { name: 'Status', exact: true })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Back to projects' }).click()
+  await page.getByRole('link', { name: 'Product home', exact: true }).click()
 
   await page.reload()
   await expect(page.getByRole('heading', { name: 'Turn brand visual production into a system that keeps growing.' })).toBeVisible()
@@ -104,19 +109,18 @@ test('产品首页支持中英文切换并展示真实工作台截图', async ({
   await expect(page.getByRole('heading', { name: '让品牌视觉生产，成为持续生长的创作系统。' })).toBeVisible()
 })
 
-test('项目库和画布都可返回产品首页', async ({ page }) => {
+test('项目库可返回产品首页，画布不出现产品首页和状态', async ({ page }) => {
   await stubReadOnlyRuntime(page)
   await page.goto('/#/projects')
 
   await page.getByRole('button', { name: '新建项目' }).click()
   await expect(page).toHaveURL(/#\/canvas\/project-\d+$/)
-  await page.getByRole('button', { name: '产品首页', exact: true }).click()
-  await expect(page).toHaveURL(/\/$/)
-  await expect(page.getByRole('heading', { name: '让品牌视觉生产，成为持续生长的创作系统。' })).toBeVisible()
+  await expect(page.getByRole('link', { name: '产品首页', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('link', { name: '状态', exact: true })).toHaveCount(0)
 
-  await page.goto('/#/projects')
-  await page.reload()
-  await page.getByRole('button', { name: '产品首页', exact: true }).click()
+  await page.getByRole('button', { name: '返回项目' }).click()
+  await expect(page).toHaveURL(/#\/projects$/)
+  await page.getByRole('link', { name: '产品首页', exact: true }).click()
   await expect(page).toHaveURL(/\/$/)
   await expect(page.getByRole('heading', { name: '让品牌视觉生产，成为持续生长的创作系统。' })).toBeVisible()
 })
@@ -153,13 +157,21 @@ test('project to canvas and Agent surfaces stay ordered across reload', async ({
   await expect(page.getByRole('heading', { name: '创意项目', exact: true })).toBeVisible()
 
   await page.getByRole('button', { name: '新建项目' }).click()
-  await expect(page.getByRole('heading', { name: '从一个创意目标开始' })).toBeVisible()
+  await expect(page.getByRole('region', { name: '空画布引导' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '描述目标', exact: true })).toBeVisible()
   const canvasHash = await page.evaluate(() => window.location.hash)
   expect(canvasHash).toMatch(/^#\/canvas\/project-\d+$/)
 
   await page.getByRole('button', { name: '图片生成', exact: true }).click()
-  await expect(page.getByRole('region', { name: '生成器：图像生成' })).toBeVisible()
-  await page.getByRole('button', { name: '关闭生成器' }).click()
+  await expect(page.getByRole('region', { name: '生成器：图像生成' })).toHaveCount(0)
+  const generateNode = page.locator('.generate-node.is-editing')
+  await expect(generateNode).toBeVisible()
+  await expect(generateNode.getByRole('textbox', { name: /描述$/ })).toBeVisible()
+  await expect(generateNode.getByRole('button', { name: '生成', exact: true })).toBeVisible()
+  await expect(generateNode.locator('.generate-node__dock')).toBeVisible()
+  await expect(generateNode.locator('.generate-node__placeholder')).toBeVisible()
+  await expect(generateNode.locator('.generate-node__preview')).toHaveCount(0)
+  await expect(generateNode.getByRole('button', { name: '添加参考后即可生成' })).toBeVisible()
 
   await page.getByRole('button', { name: '打开素材库' }).click()
   await expect(page.getByRole('complementary', { name: '素材库' })).toBeVisible()
@@ -175,7 +187,7 @@ test('project to canvas and Agent surfaces stay ordered across reload', async ({
 
   await page.getByRole('button', { name: '换场景' }).click()
   const composer = page.getByRole('textbox', { name: '提示词' })
-  await expect(composer).toHaveValue('保持人物、服装和商品不变，只替换场景与环境光线。')
+  await expect(composer).toHaveValue('替换场景和光线。人物、服装、商品保持。')
 
   await page.getByRole('button', { name: '执行模式：计划模式' }).click()
   const modeMenu = page.getByRole('group', { name: '执行模式' })
@@ -363,11 +375,17 @@ test('空画布优先提供目标入口，本地能力边界可见且不请求�
   await page.goto('/#/projects')
   await page.getByRole('button', { name: '新建项目' }).click()
 
-  await expect(page.getByRole('button', { name: '先描述目标' })).toBeVisible()
-  await page.getByRole('button', { name: '先描述目标' }).click()
+  const guide = page.getByRole('region', { name: '空画布引导' })
+  await expect(guide.getByRole('button', { name: '描述目标', exact: true })).toBeVisible()
+  await expect(guide.getByRole('button', { name: '添加素材' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '打开 Bob' })).toBeHidden()
+
+  await guide.getByRole('button', { name: '描述目标', exact: true }).click()
   await expect(page.getByRole('complementary', { name: 'Botanic Agent' })).toBeVisible()
   await expect(page.getByRole('button', { name: '关闭 Agent' })).toBeVisible()
-  await expect(page.getByRole('button', { name: '新建对话' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '新对话' })).toBeVisible()
+  await expect(guide.getByRole('button', { name: '描述目标', exact: true })).toBeHidden()
+  await expect(guide.getByRole('button', { name: '图片生成' })).toBeVisible()
 
   const composer = page.getByRole('textbox', { name: '提示词' })
   await composer.fill('你好')
@@ -378,6 +396,8 @@ test('空画布优先提供目标入口，本地能力边界可见且不请求�
 
   await page.getByRole('button', { name: '关闭 Agent' }).click()
   await expect(page.getByRole('button', { name: '打开 Bob' })).toBeVisible()
+  await expect(guide.getByRole('button', { name: '描述目标', exact: true })).toBeHidden()
+  await expect(guide.getByRole('button', { name: '视频生成' })).toBeVisible()
   await page.getByRole('button', { name: '视频生成', exact: true }).click()
   await expect(page.getByRole('status').filter({ hasText: '视频模型尚未配置' })).toBeVisible()
 })
@@ -386,6 +406,10 @@ test('折叠 Bob 可拖可点，欢迎页是大号问号 Bob', async ({ page }) 
   await stubReadOnlyRuntime(page)
   await page.goto('/#/projects')
   await page.getByRole('button', { name: '新建项目' }).click()
+
+  // 开屏英雄 Bob 在场时隐藏浮动 launcher；先走引导打开再关闭，再测拖拽。
+  await page.getByRole('button', { name: '描述目标', exact: true }).click()
+  await page.getByRole('button', { name: '关闭 Agent' }).click()
 
   const launcher = page.getByRole('button', { name: '打开 Bob' })
   await expect(launcher).toBeVisible()
@@ -437,7 +461,7 @@ test('最新短消息只 mood，大回复限次 wow 且 28px 不出字', async (
   await stubReadOnlyRuntime(page)
   await page.goto('/#/projects')
   await page.getByRole('button', { name: '新建项目' }).click()
-  await page.getByRole('button', { name: '打开 Bob' }).click()
+  await page.getByRole('button', { name: '描述目标', exact: true }).click()
 
   const agent = page.getByRole('complementary', { name: 'Botanic Agent' })
   await expect(agent.getByRole('heading', { name: '今天一起创作什么？' })).toBeVisible()
@@ -467,4 +491,190 @@ test('最新短消息只 mood，大回复限次 wow 且 28px 不出字', async (
 
   await expect(largeRole).toHaveAttribute('data-bob-says', 'none', { timeout: 12_000 })
   await expect(largeRole).toHaveAttribute('data-bob-mood', 'listening')
+})
+
+/** 真 PNG：假字节会导致上传静默失败（见 e2e/paste-media.spec.ts）。 */
+const PNG_40x30 =
+  'iVBORw0KGgoAAAANSUhEUgAAACgAAAAeCAYAAABe3VzdAAAAPUlEQVR4nO3OIQEAIBAAMYJ9/xR0'
+  + 'gQjIQ0zMb+2Z87NVBwQF64CgYB0QFKwDgoJ1QFCwDggK1gFBwTrwcgEEquWnGxqq2wAAAABJRU5E'
+  + 'rkJggg=='
+
+test('素材边 + 打开引用菜单并连上生成节点', async ({ page }) => {
+  await stubReadOnlyRuntime(page)
+  await page.goto('/#/projects')
+  await expect(page.getByRole('heading', { name: '创意项目', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '新建项目' }).click()
+  await expect(page.locator('.react-flow.botanic-flow')).toBeVisible()
+
+  await page.evaluate((base64) => {
+    const transfer = new DataTransfer()
+    const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0))
+    transfer.items.add(new File([bytes], 'ref.png', { type: 'image/png' }))
+    const target = document.querySelector('.react-flow')
+    if (!target) throw new Error('画布未就绪')
+    target.dispatchEvent(new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true, composed: true }))
+  }, PNG_40x30)
+
+  const asset = page.locator('.react-flow__node-asset').first()
+  await expect(asset).toBeVisible()
+  await asset.click()
+  await expect(asset.locator('.generate-node__dock')).toBeVisible()
+  await expect(page.locator('.react-flow__node-generate:visible')).toHaveCount(0)
+  await asset.getByLabel('引用该节点生成').click()
+
+  const palette = page.getByRole('dialog', { name: '添加画布节点' })
+  await expect(palette).toBeVisible()
+  await expect(palette.getByText('引用该节点生成', { exact: true })).toBeVisible()
+  await palette.getByRole('button', { name: /图片生成/ }).click()
+
+  await expect(asset.locator('.generate-node__dock')).toBeVisible()
+  await expect(page.locator('.react-flow__node-generate:visible')).toHaveCount(0)
+})
+
+test('空白画布新建的生成节点连上旧图后仍留在画布上', async ({ page }) => {
+  await stubReadOnlyRuntime(page)
+  await page.goto('/#/projects')
+  await expect(page.getByRole('heading', { name: '创意项目', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '新建项目' }).click()
+  await expect(page.locator('.react-flow.botanic-flow')).toBeVisible()
+
+  await page.getByRole('button', { name: '图片生成', exact: true }).click()
+  const generateNode = page.locator('.react-flow__node-generate:visible')
+  await expect(generateNode).toBeVisible()
+
+  await page.evaluate((base64) => {
+    const transfer = new DataTransfer()
+    const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0))
+    transfer.items.add(new File([bytes], 'old.png', { type: 'image/png' }))
+    const target = document.querySelector('.react-flow')
+    if (!target) throw new Error('画布未就绪')
+    target.dispatchEvent(new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true, composed: true }))
+  }, PNG_40x30)
+
+  const asset = page.locator('.react-flow__node-asset').first()
+  await expect(asset).toBeVisible()
+  await asset.getByLabel('引用该节点生成').dragTo(generateNode.getByLabel(/输入端$/), { force: true })
+
+  await expect(page.locator('.react-flow__node-generate:visible')).toHaveCount(1)
+  await generateNode.click()
+  await expect(generateNode.locator('.generate-node__references img')).toHaveCount(1)
+  await expect(page.locator('.react-flow__edge:visible')).not.toHaveCount(0)
+})
+
+test('素材连上新的生成节点后，点回素材仍有 composer', async ({ page }) => {
+  await stubReadOnlyRuntime(page)
+  await page.goto('/#/projects')
+  await expect(page.getByRole('heading', { name: '创意项目', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '新建项目' }).click()
+  await expect(page.locator('.react-flow.botanic-flow')).toBeVisible()
+
+  await page.evaluate((base64) => {
+    const transfer = new DataTransfer()
+    const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0))
+    transfer.items.add(new File([bytes], 'summer.png', { type: 'image/png' }))
+    const target = document.querySelector('.react-flow')
+    if (!target) throw new Error('画布未就绪')
+    target.dispatchEvent(new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true, composed: true }))
+  }, PNG_40x30)
+
+  const asset = page.locator('.react-flow__node-asset').first()
+  await expect(asset).toBeVisible()
+  await asset.click()
+  await expect(asset.locator('.generate-node__dock')).toBeVisible()
+
+  await page.locator('.react-flow__pane').click({ position: { x: 16, y: 16 } })
+  await page.getByRole('button', { name: '新增节点' }).click()
+  const palette = page.getByRole('dialog', { name: '添加画布节点' })
+  await expect(palette).toBeVisible()
+  await expect(palette.getByText('添加节点', { exact: true })).toBeVisible()
+  await palette.getByRole('button', { name: /图片生成/ }).click()
+
+  const generateNode = page.locator('.react-flow__node-generate:visible')
+  await expect(generateNode).toBeVisible()
+  await asset.getByLabel('引用该节点生成').dragTo(generateNode.getByLabel(/输入端$/), { force: true })
+  await expect(page.locator('.react-flow__node-generate:visible')).toHaveCount(1)
+
+  await generateNode.click()
+  await expect(generateNode.locator('.generate-node__dock')).toBeVisible()
+  await expect(asset.locator('.generate-node__dock')).toHaveCount(0)
+
+  await asset.click()
+  await expect(asset.locator('.generate-node__dock')).toBeVisible()
+  await expect(page.locator('.react-flow__node-generate:visible')).toHaveCount(1)
+})
+
+test('两张图可从右侧引用拖到左侧上下文', async ({ page }) => {
+  await stubReadOnlyRuntime(page)
+  await page.goto('/#/projects')
+  await expect(page.getByRole('heading', { name: '创意项目', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '新建项目' }).click()
+  await expect(page.locator('.react-flow.botanic-flow')).toBeVisible()
+
+  const pastePng = async (name: string) => {
+    await page.evaluate(({ base64, name: fileName }) => {
+      const transfer = new DataTransfer()
+      const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0))
+      transfer.items.add(new File([bytes], fileName, { type: 'image/png' }))
+      const target = document.querySelector('.react-flow')
+      if (!target) throw new Error('画布未就绪')
+      target.dispatchEvent(new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true, composed: true }))
+    }, { base64: PNG_40x30, name })
+  }
+  await pastePng('left.png')
+  const sourceNode = page.locator('.react-flow__node-asset').filter({ has: page.getByRole('img', { name: 'left' }) })
+  await expect(sourceNode).toBeVisible()
+  await pastePng('right.png')
+  const targetNode = page.locator('.react-flow__node-asset').filter({ has: page.getByRole('img', { name: 'right' }) })
+  await expect(targetNode).toBeVisible()
+
+  const rightImage = targetNode.locator('.asset-node__image')
+  const rightBox = await rightImage.boundingBox()
+  if (!rightBox) throw new Error('右图不可见')
+  await page.mouse.move(rightBox.x + rightBox.width / 2, rightBox.y + rightBox.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(rightBox.x + 420, rightBox.y + rightBox.height / 2, { steps: 12 })
+  await page.mouse.up()
+
+  await sourceNode.getByLabel('引用该节点生成').dragTo(targetNode.getByLabel('添加上下文'), { force: true })
+  await expect(page.locator('.react-flow__edge:visible')).not.toHaveCount(0)
+})
+
+test('入画布不重叠，自动整理把两张图并排', async ({ page }) => {
+  await stubReadOnlyRuntime(page)
+  await page.goto('/#/projects')
+  await expect(page.getByRole('heading', { name: '创意项目', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '新建项目' }).click()
+  await expect(page.locator('.react-flow.botanic-flow')).toBeVisible()
+
+  const pastePng = async (name: string) => {
+    await page.evaluate(({ base64, name: fileName }) => {
+      const transfer = new DataTransfer()
+      const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0))
+      transfer.items.add(new File([bytes], fileName, { type: 'image/png' }))
+      const target = document.querySelector('.react-flow')
+      if (!target) throw new Error('画布未就绪')
+      target.dispatchEvent(new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true, composed: true }))
+    }, { base64: PNG_40x30, name })
+  }
+  await pastePng('left.png')
+  await pastePng('right.png')
+  const left = page.locator('.react-flow__node-asset').filter({ has: page.getByRole('img', { name: 'left' }) })
+  const right = page.locator('.react-flow__node-asset').filter({ has: page.getByRole('img', { name: 'right' }) })
+  await expect(left).toBeVisible()
+  await expect(right).toBeVisible()
+
+  const beforeLeft = await left.boundingBox()
+  const beforeRight = await right.boundingBox()
+  expect(beforeLeft && beforeRight).toBeTruthy()
+  expect(beforeLeft!.x + beforeLeft!.width <= beforeRight!.x + 1 || beforeRight!.x + beforeRight!.width <= beforeLeft!.x + 1
+    || beforeLeft!.y + beforeLeft!.height <= beforeRight!.y + 1 || beforeRight!.y + beforeRight!.height <= beforeLeft!.y + 1).toBeTruthy()
+
+  await page.getByLabel('更多画布工具').click()
+  await page.getByRole('menuitem', { name: '自动整理' }).click()
+
+  const afterLeft = await left.boundingBox()
+  const afterRight = await right.boundingBox()
+  expect(afterLeft && afterRight).toBeTruthy()
+  expect(Math.abs(afterLeft!.y - afterRight!.y)).toBeLessThan(80)
+  expect(afterLeft!.x + afterLeft!.width <= afterRight!.x + 1 || afterRight!.x + afterRight!.width <= afterLeft!.x + 1).toBeTruthy()
 })

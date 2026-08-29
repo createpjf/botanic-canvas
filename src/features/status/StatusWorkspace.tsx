@@ -20,6 +20,7 @@ const statusPageCopy = {
   'zh-CN': {
     brandAria: 'Botanic 产品首页',
     navAria: '状态页导航',
+    homeNav: '产品首页',
     statusNav: '状态',
     signIn: '登录工作台',
     enterWorkspace: '进入工作台',
@@ -48,6 +49,7 @@ const statusPageCopy = {
   en: {
     brandAria: 'Botanic product home',
     navAria: 'Status page',
+    homeNav: 'Product home',
     statusNav: 'Status',
     signIn: 'Sign in',
     enterWorkspace: 'Open workspace',
@@ -192,10 +194,11 @@ export default function StatusWorkspace({
           <span>AI VISUAL PRODUCTION</span>
         </a>
         <nav aria-label={copy.navAria}>
+          <a href="/">{copy.homeNav}</a>
           <a href="/status" aria-current="page">{copy.statusNav}</a>
+          <LanguageSwitcher className="product-landing__language" />
         </nav>
         <div className="product-landing__nav-actions">
-          <LanguageSwitcher className="product-landing__language" />
           <button type="button" className="product-landing__login" onClick={onEnterWorkspace}>
             {enterLabel} <ArrowUpRightIcon />
           </button>

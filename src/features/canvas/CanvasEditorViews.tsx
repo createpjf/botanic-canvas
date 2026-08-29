@@ -1,6 +1,6 @@
 import { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Handle, Position, type NodeProps } from '@xyflow/react'
+import { Handle, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react'
 import { generationJobErrorCopy, generationTaskErrorMessage, generationTaskFeedback, type ResultGroupPresentation } from '../../domain/canvasPresentation'
 import { reducedAspectRatio } from '../../domain/mediaPresentation'
 import { mediaRetryUrl } from '../../domain/mediaRecovery'
@@ -23,7 +23,7 @@ import { downloadMedia } from '../../lib/mediaDownload'
 import { refinePrompt } from '../../lib/promptRefinementApi'
 import { refreshProductMediaSession } from '../../lib/productSession'
 import { useCanvasStore } from '../../store/canvasStore'
-import { ArrowUpRightIcon, ChevronDownIcon, CloseIcon, DeleteIcon, DownloadIcon, PlusSquareIcon, SparkleIcon } from '../../components/BotanicIcons'
+import { ArrowUpIcon, ArrowUpRightIcon, ChevronDownIcon, CloseIcon, DeleteIcon, DownloadIcon, PlusIcon, PlusSquareIcon, SparkleIcon } from '../../components/BotanicIcons'
 import { localizeProductError } from '../../i18n/core'
 import { useProductI18n, useProductMessages } from '../../i18n/react'
 import { canvasAssetRoleLabel, canvasDurationLabel, canvasSystemLabel } from './canvasI18n'
@@ -42,12 +42,12 @@ const editorMessages = {
     promptLabel: (name: string) => `${name}描述`, imagePrompt: '描述商品、场景、构图、光线与留白要求', videoPrompt: '描述主体动作、镜头运动、节奏与场景变化', refined: 'Botanic 结构润色已应用', refinePrompt: (video: boolean) => `润色${video ? '视频' : '图像'}生成描述`, refineTitle: '润色描述', refining: '正在按 Botanic 结构润色…', refineFallback: '润色失败，原文未修改。',
     videoInputMode: '视频输入模式', videoInput: '视频输入', chooseVideoInput: '选择视频输入方式', firstFrame: '首帧', firstLast: '首尾帧', referenceAsset: '参考素材', continuationMode: '继续生成方式', faithful: '忠实精修', explore: '探索变体', faithfulDetail: '保留构图与主体，仅执行描述中的改动。', exploreDetail: '保留主体，主动探索构图、机位与光影。',
     commonSettings: '常用生成参数', model: '模型', chooseModel: '选择生成模型', duration: '时长', chooseDuration: '选择视频时长', candidates: '张数', chooseCandidateCount: '选择张数', resultSet: (index: number, total: number) => `${index}/${total} 张`, output: '输出', followAsset: '跟随素材', frame: '画幅', decidedByInput: '由输入素材决定', chooseRatio: '选择画面比例', resolution: '清晰度', chooseResolution: '选择输出清晰度', clarityBoost: '4K', searchGrounding: '参考网页', thinking: '思考', thinkingHigh: '充分', thinkingMinimal: '精简', customPixels: '自定义像素', multiple16: '须为 16 的倍数', width: '宽', height: '高', customWidth: '自定义输出宽度', customHeight: '自定义输出高度', invalidSize: '自定义宽高无效。', snapped: (width: number, height: number) => `已对齐为 ${width}×${height}`, apply: '应用',
-    recovering: '正在确认任务，请勿重复提交…', uploading: '正在上传参考素材…', queued: '任务已入队…', serviceGenerating: (video: boolean) => `${video ? '视频' : '图像'}服务正在生成…`, primaryReference: (name: string) => `主参考 · ${name}`, ready: '参数已准备好，提交后会在画布中创建新的结果节点。', modeNeeds: (title: string, requirement: string) => `${title}模式需要${requirement}`, twoImages: '按顺序连接 2 张图片', oneImage: '连接 1 张图片', oneReference: '连接至少 1 个图片或视频参考', setPrimary: '连接并设置主商品后即可生成。', generating: '生成中…', generate: '生成',
+    recovering: '正在确认任务，请勿重复提交…', uploading: '正在上传参考素材…', queued: '任务已入队…', serviceGenerating: (video: boolean) => `${video ? '视频' : '图像'}服务正在生成…`, primaryReference: (name: string) => `主参考 · ${name}`, ready: '参数已准备好，提交后会在画布中创建新的结果节点。', modeNeeds: (title: string, requirement: string) => `${title}模式需要${requirement}`, twoImages: '按顺序连接 2 张图片', oneImage: '连接 1 张图片', oneReference: '连接至少 1 个图片或视频参考', setPrimary: '连接并设置主商品后即可生成。', generating: '生成中…', generate: '生成', mediaTagImage: '图片', mediaTagVideo: '视频', previewEmpty: '等待生成预览', addReferenceHint: '添加参考后即可生成',
     taskStatuses: { uploading: '提交素材', submission_unknown: '等待确认', queued: '任务排队', running: '生成中', succeeded: '待挑选', failed: '任务失败', cancelled: '已取消' }, waitedSeconds: (seconds: number) => `已等待 ${seconds} 秒`, waitedMinutes: (minutes: number, seconds: number) => seconds ? `已等待 ${minutes} 分 ${seconds} 秒` : `已等待 ${minutes} 分`,
     promptInput: '描述输入端', promptOutput: '从描述连线', refinementBrief: '定向精修指令', creativeDirection: '描述', taskAttention: '任务需要处理', referenceInput: '参考组输入端', referenceOutput: '从参考组连线', primaryProduct: (name: string) => `主商品 · ${name}`, noPrimary: '未锁定主商品',
     refinedVersion: '精修版本', generatedVersion: '生成版本', automaticOutput: '自动输出端', writtenAutomatically: '由生成节点在任务完成后自动写入', connectResult: '从结果连线', connectVideoResult: '连接到 H3 节点作为参考视频', connectImageResult: '将这张生成结果连到下一生成节点', connectPendingResult: '任务完成后可将生成结果连到下一节点',
     deleteResult: (name: string) => `删除 ${name}`, deleteResultTitle: '删除这个结果节点', download: (name: string) => `下载 ${name}`, downloadOriginal: '下载原图', savedLabel: (name: string) => `${name} 已入库`, saveLabel: (name: string) => `将 ${name} 入库`, saved: '已入库', save: '入库', saveTitle: '存入素材库',
-    mediaUnavailable: '媒体无法显示', taskIncomplete: '任务未完成', taskCancelled: '任务已取消', waitingResult: '等待生成结果', mediaError: '媒体读取失败，可能是登录状态或网络中断。', waitingService: '等待生成服务返回结果。', realStatus: '生成服务的真实状态会在此同步。', reload: '重新加载', confirmNow: '立即确认', cancel: '取消', retryRecipe: '用原参数重试', deleteTask: '删除任务', fillMissing: (count: number) => `补 ${count} 张`, collapseCandidates: '收起结果', viewCandidates: (count: number) => `查看 ${count} 张`, candidateCount: (count: number) => `${count} 张`, candidatesThisRun: '本次结果', chooseCandidateHint: '点一张在当前节点查看', waiting: '等待结果', branched: '已形成分支', current: '当前', view: '查看', agentEdit: 'Agent 修改', addNode: '添加节点',
+    mediaUnavailable: '媒体无法显示', taskIncomplete: '任务未完成', taskCancelled: '任务已取消', waitingResult: '等待生成结果', mediaError: '媒体读取失败，可能是登录状态或网络中断。', waitingService: '等待生成服务返回结果。', realStatus: '生成服务的真实状态会在此同步。', reload: '重新加载', confirmNow: '立即确认', cancel: '取消', retryRecipe: '用原参数重试', deleteTask: '删除任务', fillMissing: (count: number) => `补 ${count} 张`, collapseCandidates: '收起结果', viewCandidates: (count: number) => `查看 ${count} 张`, candidateCount: (count: number) => `${count} 张`, candidatesThisRun: '本次结果', chooseCandidateHint: '点一张在当前节点查看', waiting: '等待结果', branched: '已形成分支', current: '当前', view: '查看', agentEdit: 'Agent 修改', addNode: '继续生成', continueFromAsset: '引用该节点生成', addContext: '添加上下文',
     restoringTask: '正在恢复任务', noResubmit: '请勿重复提交，联网后自动确认', preparing: '准备生成', lockingReferences: '正在锁定参考', generatingTask: '正在生成', enteredQueue: '已进入队列', keepEditing: '可继续编辑画布', generationConnectionError: '生成服务连接中断，请重试。',
   },
   en: {
@@ -63,12 +63,12 @@ const editorMessages = {
     promptLabel: (name: string) => `${name} description`, imagePrompt: 'Product, scene, composition, light, and negative space', videoPrompt: 'Subject motion, camera, pacing, and scene change', refined: 'Botanic structure applied', refinePrompt: (video: boolean) => `Refine ${video ? 'video' : 'image'} prompt`, refineTitle: 'Refine prompt', refining: 'Refining with Botanic structure…', refineFallback: 'Refinement failed. Original text kept.',
     videoInputMode: 'Video input mode', videoInput: 'Video input', chooseVideoInput: 'Choose video input', firstFrame: 'First frame', firstLast: 'First + last', referenceAsset: 'Reference asset', continuationMode: 'Continuation mode', faithful: 'Faithful edit', explore: 'Explore variations', faithfulDetail: 'Keep composition and subject. Apply only the requested edits.', exploreDetail: 'Keep the subject. Explore framing, camera, and light.',
     commonSettings: 'Generation settings', model: 'Model', chooseModel: 'Choose generation model', duration: 'Duration', chooseDuration: 'Choose video duration', candidates: 'Images', chooseCandidateCount: 'Choose image count', resultSet: (index: number, total: number) => `${index}/${total}`, output: 'Output', followAsset: 'Follow source', frame: 'Aspect ratio', decidedByInput: 'Determined by input assets', chooseRatio: 'Choose aspect ratio', resolution: 'Resolution', chooseResolution: 'Choose output resolution', clarityBoost: '4K', searchGrounding: 'Web reference', thinking: 'Thinking', thinkingHigh: 'High', thinkingMinimal: 'Minimal', customPixels: 'Custom pixels', multiple16: 'Must be a multiple of 16', width: 'W', height: 'H', customWidth: 'Custom output width', customHeight: 'Custom output height', invalidSize: 'Invalid custom dimensions.', snapped: (width: number, height: number) => `Adjusted to ${width}×${height}`, apply: 'Apply',
-    recovering: 'Confirming task. Do not submit again…', uploading: 'Uploading refs…', queued: 'Task queued…', serviceGenerating: (video: boolean) => `${video ? 'Video' : 'Image'} service is generating…`, primaryReference: (name: string) => `Primary reference · ${name}`, ready: 'Ready. Submit to create a result node.', modeNeeds: (title: string, requirement: string) => `${title} mode needs ${requirement}`, twoImages: '2 images in order', oneImage: '1 connected image', oneReference: 'at least 1 image or video ref', setPrimary: 'Set a primary product to generate.', generating: 'Generating…', generate: 'Generate',
+    recovering: 'Confirming task. Do not submit again…', uploading: 'Uploading refs…', queued: 'Task queued…', serviceGenerating: (video: boolean) => `${video ? 'Video' : 'Image'} service is generating…`, primaryReference: (name: string) => `Primary reference · ${name}`, ready: 'Ready. Submit to create a result node.', modeNeeds: (title: string, requirement: string) => `${title} mode needs ${requirement}`, twoImages: '2 images in order', oneImage: '1 connected image', oneReference: 'at least 1 image or video ref', setPrimary: 'Set a primary product to generate.', generating: 'Generating…', generate: 'Generate', mediaTagImage: 'Image', mediaTagVideo: 'Video', previewEmpty: 'Preview pending', addReferenceHint: 'Add a reference to generate',
     taskStatuses: { uploading: 'Uploading assets', submission_unknown: 'Awaiting confirmation', queued: 'Queued', running: 'Generating', succeeded: 'Ready to pick', failed: 'Failed', cancelled: 'Cancelled' }, waitedSeconds: (seconds: number) => `Waiting ${seconds}s`, waitedMinutes: (minutes: number, seconds: number) => seconds ? `Waiting ${minutes}m ${seconds}s` : `Waiting ${minutes}m`,
     promptInput: 'Prompt input', promptOutput: 'Connect from prompt', refinementBrief: 'Directed refinement brief', creativeDirection: 'Prompt', taskAttention: 'Task needs attention', referenceInput: 'Reference group input', referenceOutput: 'Connect from reference group', primaryProduct: (name: string) => `Primary product · ${name}`, noPrimary: 'No primary product',
     refinedVersion: 'Refined version', generatedVersion: 'Generated version', automaticOutput: 'Automatic output', writtenAutomatically: 'Written automatically when the generation task finishes', connectResult: 'Connect from result', connectVideoResult: 'Connect to an H3 node as a video reference', connectImageResult: 'Connect this result to the next generation node', connectPendingResult: 'Connect this result to the next node when the task finishes',
     deleteResult: (name: string) => `Delete ${name}`, deleteResultTitle: 'Delete this result node', download: (name: string) => `Download ${name}`, downloadOriginal: 'Download original', savedLabel: (name: string) => `${name} saved`, saveLabel: (name: string) => `Save ${name} to library`, saved: 'Saved', save: 'Save', saveTitle: 'Save to asset library',
-    mediaUnavailable: 'Media unavailable', taskIncomplete: 'Task incomplete', taskCancelled: 'Task cancelled', waitingResult: 'Waiting for result', mediaError: 'The media could not be loaded. Your session or network may have been interrupted.', waitingService: 'Waiting for the generation service to return a result.', realStatus: 'The confirmed generation status will appear here.', reload: 'Reload', confirmNow: 'Confirm now', cancel: 'Cancel', retryRecipe: 'Retry with original settings', deleteTask: 'Delete task', fillMissing: (count: number) => `Generate ${count} missing`, collapseCandidates: 'Collapse results', viewCandidates: (count: number) => `View ${count} ${count === 1 ? 'image' : 'images'}`, candidateCount: (count: number) => `${count} ${count === 1 ? 'image' : 'images'}`, candidatesThisRun: 'This run', chooseCandidateHint: 'Select one to view it on this node', waiting: 'Waiting', branched: 'Branched', current: 'Current', view: 'View', agentEdit: 'Edit with Agent', addNode: 'Add node',
+    mediaUnavailable: 'Media unavailable', taskIncomplete: 'Task incomplete', taskCancelled: 'Task cancelled', waitingResult: 'Waiting for result', mediaError: 'The media could not be loaded. Your session or network may have been interrupted.', waitingService: 'Waiting for the generation service to return a result.', realStatus: 'The confirmed generation status will appear here.', reload: 'Reload', confirmNow: 'Confirm now', cancel: 'Cancel', retryRecipe: 'Retry with original settings', deleteTask: 'Delete task', fillMissing: (count: number) => `Generate ${count} missing`, collapseCandidates: 'Collapse results', viewCandidates: (count: number) => `View ${count} ${count === 1 ? 'image' : 'images'}`, candidateCount: (count: number) => `${count} ${count === 1 ? 'image' : 'images'}`, candidatesThisRun: 'This run', chooseCandidateHint: 'Select one to view it on this node', waiting: 'Waiting', branched: 'Branched', current: 'Current', view: 'View', agentEdit: 'Edit with Agent', addNode: 'Continue', continueFromAsset: 'Generate from this node', addContext: 'Add context',
     restoringTask: 'Restoring task', noResubmit: 'Do not submit again. It will be confirmed when you reconnect.', preparing: 'Preparing generation', lockingReferences: 'Locking references', generatingTask: 'Generating', enteredQueue: 'Entered queue', keepEditing: 'You can keep editing the canvas', generationConnectionError: 'The generation service connection was interrupted. Try again.',
   },
 } as const
@@ -269,9 +269,68 @@ function ImageNodeTitle({ nodeId, name }: { nodeId: string; name: string }) {
   )
 }
 
+export type AssetNodeUiData = AssetNodeData & {
+  __ui?: {
+    workingGenerateId?: string
+    onOpenAddMenu?: (assetNodeId: string, screen: { x: number; y: number }) => void
+    onOpenAddContext?: (mediaNodeId: string) => void
+    onOpenAssets?: (generateNodeId: string) => void
+    maximumBatchCount?: number
+    onRemoveGenerate?: (generateNodeId: string) => void
+  }
+}
+
+function MediaPortHandle({
+  handleId,
+  type,
+  ariaLabel,
+  title,
+  onClick,
+}: {
+  handleId: string
+  type: 'source' | 'target'
+  ariaLabel: string
+  title: string
+  onClick?: (screen: { x: number; y: number }) => void
+}) {
+  const origin = useRef<{ x: number; y: number } | null>(null)
+  const dragged = useRef(false)
+  return (
+    <Handle
+      className={`flow-handle flow-handle--add ${type === 'source' ? 'flow-handle--source flow-handle--add-source' : 'flow-handle--target flow-handle--add-target'}`}
+      id={handleId}
+      type={type}
+      position={type === 'source' ? Position.Right : Position.Left}
+      aria-label={ariaLabel}
+      title={title}
+      onPointerDown={(event) => {
+        origin.current = { x: event.clientX, y: event.clientY }
+        dragged.current = false
+      }}
+      onPointerMove={(event) => {
+        if (!origin.current) return
+        const dx = event.clientX - origin.current.x
+        const dy = event.clientY - origin.current.y
+        if (dx * dx + dy * dy > 25) dragged.current = true
+      }}
+      onPointerUp={(event) => {
+        const wasDrag = dragged.current
+        origin.current = null
+        dragged.current = false
+        if (wasDrag || !onClick) return
+        event.stopPropagation()
+        onClick({ x: event.clientX, y: event.clientY })
+      }}
+      onClick={(event) => event.stopPropagation()}
+    >
+      <PlusIcon />
+    </Handle>
+  )
+}
+
 function AssetNode({ data, id, selected }: NodeProps) {
   const t = useProductMessages(editorMessages)
-  const asset = data as AssetNodeData
+  const asset = data as AssetNodeUiData
   const removeNodeFromCanvas = useCanvasStore((state) => state.removeNodeFromCanvas)
   const [loadedImageSize, setLoadedImageSize] = useState<{ width: number; height: number } | null>(null)
   const imageWidth = asset.imageWidth ?? loadedImageSize?.width
@@ -286,6 +345,8 @@ function AssetNode({ data, id, selected }: NodeProps) {
       } as CSSProperties
     : undefined
   const mediaKind = asset.mediaKind ?? 'image'
+  const onOpenAddMenu = asset.__ui?.onOpenAddMenu
+  const onOpenAddContext = asset.__ui?.onOpenAddContext
   return (
     <div className={['asset-node', mediaKind === 'video' ? 'asset-node--video' : '', asset.deleted ? 'is-deleted' : '', selected ? 'is-selected' : ''].filter(Boolean).join(' ')} style={nodeStyle}>
       <ImageNodeTitle nodeId={id} name={asset.name} />
@@ -334,14 +395,34 @@ function AssetNode({ data, id, selected }: NodeProps) {
           />
         )}
       </div>
-      <Handle
-        className="flow-handle flow-handle--source flow-handle--image"
-        id="asset-output"
-        type="source"
-        position={Position.Right}
-        aria-label={t.connectFrom(asset.name)}
-        title={t.dragToGenerator}
-      />
+      {selected && asset.__ui?.workingGenerateId ? (
+        <div className="media-compose-dock generate-node is-editing is-dock-only nodrag nowheel">
+          <GenerateDock
+            generateId={asset.__ui.workingGenerateId}
+            onOpenAssets={asset.__ui.onOpenAssets}
+            maximumBatchCount={asset.__ui.maximumBatchCount}
+            onRemove={asset.__ui.onRemoveGenerate}
+          />
+        </div>
+      ) : null}
+      {!asset.deleted ? (
+        <>
+          <MediaPortHandle
+            handleId="context"
+            type="target"
+            ariaLabel={t.addContext}
+            title={t.addContext}
+            onClick={onOpenAddContext ? () => onOpenAddContext(id) : undefined}
+          />
+          <MediaPortHandle
+            handleId="asset-output"
+            type="source"
+            ariaLabel={t.continueFromAsset}
+            title={t.continueFromAsset}
+            onClick={onOpenAddMenu ? (screen) => onOpenAddMenu(id, screen) : undefined}
+          />
+        </>
+      ) : null}
     </div>
   )
 }
@@ -446,54 +527,318 @@ function TextNode({ data, id, selected }: NodeProps) {
   )
 }
 
-function GenerateNode({ data, id, selected }: NodeProps) {
+export type GenerateNodeUiData = GenerateNodeData & {
+  __ui?: {
+    onOpenAssets?: (generateNodeId: string) => void
+    maximumBatchCount?: number
+    onRemoveGenerate?: (generateNodeId: string) => void
+  }
+}
+
+export function GenerateDock({
+  generateId,
+  onOpenAssets,
+  maximumBatchCount: maximumBatchCountOverride,
+  onRemove,
+}: {
+  generateId: string
+  onOpenAssets?: (generateNodeId: string) => void
+  maximumBatchCount?: number
+  onRemove?: (generateNodeId: string) => void
+}) {
   const { locale } = useProductI18n()
   const t = useProductMessages(editorMessages)
-  const generate = data as GenerateNodeData
-  const rawGenerateLabel = generate.settings.duration !== undefined && generate.label === '图像生成' ? '视频生成' : generate.label
-  const generateLabel = canvasSystemLabel(rawGenerateLabel, locale)
+  const generateNode = useCanvasStore((state) => state.document.nodes.find((node) => node.id === generateId))
+  const generate = generateNode?.type === 'generate' ? generateNode.data as GenerateNodeData : undefined
   const document = useCanvasStore((state) => state.document)
   const availableModels = useCanvasStore((state) => state.availableModels)
+  const maximumBatchCount = useCanvasStore((state) => maximumBatchCountOverride ?? state.maximumBatchCount)
+  const generationStatus = useCanvasStore((state) => state.generationStatus)
+  const generationError = useCanvasStore((state) => state.generationError)
   const removeNodeFromCanvas = useCanvasStore((state) => state.removeNodeFromCanvas)
-  const connectedInputs = useMemo(() => document.edges
-      .filter((edge) => edge.target === id)
-      .map((edge) => document.nodes.find((node) => node.id === edge.source))
-      .filter((node): node is CanvasNode => Boolean(node)), [document.edges, document.nodes, id])
+  const updateGenerateNode = useCanvasStore((state) => state.updateGenerateNode)
+  const updateTextNode = useCanvasStore((state) => state.updateTextNode)
+  const runGraphGeneration = useCanvasStore((state) => state.runGraphGeneration)
+  const clearGenerationError = useCanvasStore((state) => state.clearGenerationError)
+  const id = generateId
+  const rawGenerateLabel = generate && generate.settings.duration !== undefined && generate.label === '图像生成' ? '视频生成' : generate?.label
+  const generateLabel = canvasSystemLabel(rawGenerateLabel ?? '', locale)
+
+  const connectedInputs = useMemo(() => {
+    const inputIds = document.edges.filter((edge) => edge.target === id).map((edge) => edge.source)
+    const ordered = [
+      ...(generate?.inputOrder ?? []).filter((nodeId) => inputIds.includes(nodeId)),
+      ...inputIds.filter((nodeId) => !(generate?.inputOrder ?? []).includes(nodeId)),
+    ]
+    return ordered
+      .map((nodeId) => document.nodes.find((node) => node.id === nodeId))
+      .filter((node): node is CanvasNode => Boolean(node))
+  }, [document.edges, document.nodes, generate?.inputOrder, id])
+
   const inputSummary = useMemo(() => ({
     images: connectedInputs.filter((node) => node.type === 'asset').length,
     texts: connectedInputs.filter((node) => node.type === 'text').length,
     results: connectedInputs.filter((node) => node.type === 'result').length,
     readyResults: connectedInputs.filter((node) => node.type === 'result' && Boolean((node.data as ResultNodeData).image)).length,
   }), [connectedInputs])
+
+  const promptTextNode = connectedInputs.filter((node) => node.type === 'text').length === 1
+    ? connectedInputs.find((node) => node.type === 'text')
+    : undefined
+  const promptValue = promptTextNode
+    ? (promptTextNode.data as TextNodeData).content
+    : generate?.prompt ?? ''
+
   const references = connectedInputs.flatMap((node) => {
     if (node.type === 'asset') {
       const asset = node.data as AssetNodeData
-      return [{ id: node.id, image: asset.image, name: asset.name, mediaKind: asset.mediaKind ?? 'image' }]
+      return [{
+        id: node.id,
+        image: asset.image,
+        name: asset.name,
+        role: asset.role,
+        primary: node.id === generate?.primaryInputId,
+        mediaKind: asset.mediaKind ?? 'image' as GenerationMediaKind,
+      }]
     }
     if (node.type === 'result') {
       const result = node.data as ResultNodeData
-      return result.image ? [{ id: node.id, image: result.image, name: result.label ? canvasSystemLabel(result.label, locale) : t.upstreamOutput, mediaKind: result.mediaKind ?? 'image' }] : []
+      if (!result.image) return []
+      return [{
+        id: node.id,
+        image: result.image,
+        name: result.label ? canvasSystemLabel(result.label, locale) : t.upstreamOutput,
+        role: (result.mediaKind === 'video' ? '调性' : '首图') as AssetRole,
+        primary: result.mediaKind !== 'video',
+        mediaKind: result.mediaKind ?? 'image' as GenerationMediaKind,
+      }]
     }
     return []
   })
-  const hasPrimaryInput = document.edges
-    .some((edge) => edge.source === generate.primaryInputId && edge.target === id)
-  const hasVisualInput = Boolean(inputSummary.images || inputSummary.readyResults)
-  const modelOptions = availableModels.some((model) => model.id === generate.settings.model)
-    ? availableModels
-    : [{ id: generate.settings.model, label: generate.settings.model }, ...availableModels]
-  const modelLabel = modelOptions.find((model) => model.id === generate.settings.model)?.label ?? generate.settings.model
-  const mediaKind = modelOptions.find((model) => model.id === generate.settings.model)?.mediaKind
-    ?? (generate.settings.duration === undefined ? 'image' : 'video')
-  const inferredVideoInputMode: VideoInputMode = generate.videoInputMode
+
+  const hasPrimaryInput = Boolean(generate && document.edges.some((edge) => edge.source === generate.primaryInputId && edge.target === id))
+
+  const activeMediaKind = availableModels.find((model) => model.id === generate?.settings.model)?.mediaKind
+    ?? (generate?.settings.duration === undefined ? 'image' : 'video')
+  const compatibleModels = availableModels.filter((model) => (model.mediaKind ?? 'image') === activeMediaKind)
+  const modelOptions = generate && compatibleModels.some((model) => model.id === generate.settings.model)
+    ? compatibleModels
+    : generate
+      ? [{ id: generate.settings.model, label: generate.settings.model, mediaKind: activeMediaKind }, ...compatibleModels]
+      : compatibleModels
+  const selectedModel = generate ? modelOptions.find((model) => model.id === generate.settings.model) : undefined
+  const mediaKind = selectedModel?.mediaKind ?? activeMediaKind
+  const isVideoModel = mediaKind === 'video'
+  const videoInputMode: VideoInputMode = generate?.videoInputMode
     ?? (references.some((reference) => reference.mediaKind === 'video') ? 'reference' : references.length === 2 ? 'first_last' : 'first_frame')
-  const videoRatioPolicy = videoAspectRatioPolicy(inferredVideoInputMode, generate.settings.aspectRatio)
-  const displayedAspectRatio = mediaKind === 'video'
-    ? `${videoRatioPolicy.ratioSelectable ? videoRatioPolicy.controlLabel : t.followAsset} · ${generate.settings.resolution}`
+  const videoRatioPolicy = videoAspectRatioPolicy(videoInputMode, generate?.settings.aspectRatio ?? '1:1')
+  const modelLabel = modelDisplayLabel(selectedModel) || generate?.settings.model || ''
+  const batchLimit = maximumBatchCount
+  const isGenerating = generationStatus === 'uploading' || generationStatus === 'queued' || generationStatus === 'running' || generationStatus === 'recovering'
+  const videoInputsValid = videoInputMode === 'reference'
+    ? references.length > 0
+    : videoInputMode === 'first_frame'
+      ? references.length === 1 && references[0]?.mediaKind !== 'video'
+      : references.length === 2 && references.every((reference) => reference.mediaKind !== 'video')
+  const canGenerate = isVideoModel ? videoInputsValid : Boolean(hasPrimaryInput || inputSummary.readyResults || references.some((item) => item.primary) || references[0])
+  if (!generate) return null
+  const updateSettings = (patch: Partial<GenerationSettings>) => {
+    updateGenerateNode(id, { settings: { ...generate.settings, ...patch } })
+    clearGenerationError()
+  }
+
+  const videoModeLabel = videoInputMode === 'first_last' ? t.firstLast : videoInputMode === 'reference' ? t.referenceAsset : t.firstFrame
+  const outputChipValue = (isVideoModel
+    ? `${videoModeLabel} · ${videoRatioPolicy.ratioSelectable ? videoRatioPolicy.controlLabel : t.followAsset} · ${generate.settings.resolution}`
     : generationSettingsSizeLabel(generate.settings)
+  ).replaceAll(' · ', '  ·  ')
 
   return (
-    <div className={`graph-node generate-node generate-node--${mediaKind}${selected ? ' is-selected' : ''}${hasVisualInput ? '' : ' is-missing-input'}`}>
+    <div className="generate-node__editor nodrag nowheel">
+      <div className="generate-node__dock">
+        <div className="generate-node__dock-top">
+          <div className="generate-node__references">
+            {references.length ? references.slice(0, 5).map((reference) => (
+              reference.mediaKind === 'video'
+                ? <video key={reference.id} src={reference.image} aria-label={reference.name} className={reference.primary ? 'is-primary' : ''} muted playsInline preload="metadata" />
+                : <img key={reference.id} src={reference.image} alt="" title={reference.name} className={reference.primary ? 'is-primary' : ''} />
+            )) : (
+              onOpenAssets ? (
+                <button
+                  type="button"
+                  className="generate-node__add-ref is-cta"
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onOpenAssets(id)
+                  }}
+                ><PlusSquareIcon /><span>{t.addReferenceHint}</span></button>
+              ) : <span className="generate-node__empty-input">{t.addReferenceHint}</span>
+            )}
+            {references.length && onOpenAssets ? (
+              <button
+                type="button"
+                className="generate-node__add-ref"
+                aria-label={t.addReferenceAsset}
+                title={t.addReferenceAsset}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  onOpenAssets(id)
+                }}
+              ><PlusSquareIcon /></button>
+            ) : null}
+          </div>
+          <button
+            className="generate-node__dock-remove nodrag"
+            type="button"
+            aria-label={t.removeFromCanvas(generateLabel)}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation()
+              if (onRemove) onRemove(id)
+              else removeNodeFromCanvas(id)
+            }}
+          ><DeleteIcon /></button>
+        </div>
+
+            <textarea
+              className="nodrag nowheel"
+              value={promptValue}
+              aria-label={t.promptLabel(generateLabel)}
+              placeholder={isVideoModel ? t.videoPrompt : t.imagePrompt}
+              disabled={isGenerating}
+              onPointerDown={(event) => event.stopPropagation()}
+              onChange={(event) => {
+                if (promptTextNode) updateTextNode(promptTextNode.id, event.target.value)
+                else updateGenerateNode(id, { prompt: event.target.value })
+                clearGenerationError()
+              }}
+            />
+
+            <div className="generate-node__toolbar" aria-label={t.commonSettings}>
+              <div className="generate-node__chips">
+                <ComposerOptionPopover label={t.model} value={modelLabel} valueIcon={modelProviderLogo(selectedModel)} disabled={isGenerating} width={240} className="is-model is-chip">
+                  {(close) => <div className="composer-model-menu" role="listbox" aria-label={t.chooseModel}>
+                    {modelOptions.map((model) => {
+                      const active = model.id === generate.settings.model
+                      return <button key={model.id} type="button" role="option" aria-selected={active} className={active ? 'is-selected' : ''} onClick={() => {
+                        updateGenerateNode(id, { settings: settingsForGenerationModel(generate.settings, model) })
+                        clearGenerationError()
+                        close()
+                      }}>
+                        <img src={modelProviderLogo(model)} alt="" />
+                        <strong>{modelDisplayLabel(model)}</strong>
+                        {active ? <b>✓</b> : null}
+                      </button>
+                    })}
+                  </div>}
+                </ComposerOptionPopover>
+                <ComposerOptionPopover label={t.output} value={outputChipValue} disabled={isGenerating} width={300} className="is-output is-chip">
+                  {(close) => <div className="composer-output-menu">
+                    {isVideoModel ? (
+                      <section>
+                        <header><strong>{t.videoInput}</strong></header>
+                        <div className="composer-resolution-grid" role="radiogroup" aria-label={t.chooseVideoInput}>
+                          {([
+                            ['first_frame', t.firstFrame],
+                            ['first_last', t.firstLast],
+                            ['reference', t.referenceAsset],
+                          ] as const).map(([value, label]) => (
+                            <button
+                              key={value}
+                              type="button"
+                              role="radio"
+                              aria-checked={videoInputMode === value}
+                              className={videoInputMode === value ? 'is-selected' : ''}
+                              onClick={() => {
+                                updateGenerateNode(id, { videoInputMode: value })
+                                clearGenerationError()
+                              }}
+                            >{label}</button>
+                          ))}
+                        </div>
+                      </section>
+                    ) : null}
+                    <section>
+                      <header><strong>{t.frame}</strong></header>
+                      {isVideoModel && !videoRatioPolicy.ratioSelectable ? (
+                        <div className="composer-output-adaptive"><AspectRatioGlyph ratio="1:1" /><span>{t.followAsset}</span></div>
+                      ) : (
+                        <div className="composer-aspect-grid" role="radiogroup" aria-label={t.chooseRatio}>
+                          {(selectedModel?.aspectRatios ?? ['1:1', '16:9', '4:3', '3:4', '4:5', '9:16']).map((ratio) => (
+                            <button key={ratio} type="button" role="radio" aria-checked={!generate.settings.outputWidth && generate.settings.aspectRatio === ratio} className={!generate.settings.outputWidth && generate.settings.aspectRatio === ratio ? 'is-selected' : ''} onClick={() => {
+                              updateGenerateNode(id, { settings: withoutCustomGenerationSize({ ...generate.settings, aspectRatio: ratio as GenerationSettings['aspectRatio'] }) })
+                              clearGenerationError()
+                            }}>
+                              <AspectRatioGlyph ratio={ratio} /><span>{ratio}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </section>
+                    <section>
+                      <header><strong>{t.resolution}</strong></header>
+                      <div className="composer-resolution-grid" role="radiogroup" aria-label={t.chooseResolution}>
+                        {everydayResolutions(selectedModel).map((resolution) => (
+                          <button key={resolution} type="button" role="radio" aria-checked={generate.settings.resolution === resolution} className={generate.settings.resolution === resolution ? 'is-selected' : ''} onClick={() => {
+                            updateSettings({ resolution: resolution as GenerationSettings['resolution'] })
+                            close()
+                          }}>{resolution}</button>
+                        ))}
+                      </div>
+                    </section>
+                  </div>}
+                </ComposerOptionPopover>
+                <ComposerOptionPopover label={t.candidates} value={`${generate.batchCount}×`} disabled={isGenerating} width={120} className="is-count is-chip is-compact">
+                  {(close) => <div className="composer-compact-menu" role="listbox" aria-label={t.chooseCandidateCount}>
+                    {Array.from({ length: batchLimit }, (_, index) => index + 1).map((count) => (
+                      <button key={count} type="button" role="option" aria-selected={generate.batchCount === count} className={generate.batchCount === count ? 'is-selected' : ''} onClick={() => {
+                        updateGenerateNode(id, { batchCount: count })
+                        clearGenerationError()
+                        close()
+                      }}>{count}</button>
+                    ))}
+                  </div>}
+                </ComposerOptionPopover>
+              </div>
+              <button
+                type="button"
+                className="generate-node__send"
+                aria-label={isGenerating ? t.generating : t.generate}
+                disabled={isGenerating || !canGenerate || !promptValue.trim()}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  void runGraphGeneration(id)
+                }}
+              ><ArrowUpIcon /></button>
+            </div>
+
+        {generationError ? <p className="generate-node__error" role="alert">{localizeProductError(new Error(generationError), locale, { 'zh-CN': generationError, en: 'Generation could not be completed. Try again.' })}</p> : null}
+      </div>
+    </div>
+  )
+}
+
+function GenerateNode({ data, id, selected }: NodeProps) {
+  const { locale } = useProductI18n()
+  const t = useProductMessages(editorMessages)
+  const generate = data as GenerateNodeUiData
+  const ui = generate.__ui
+  const rawGenerateLabel = generate.settings.duration !== undefined && generate.label === '图像生成' ? '视频生成' : generate.label
+  const generateLabel = canvasSystemLabel(rawGenerateLabel, locale)
+  const availableModels = useCanvasStore((state) => state.availableModels)
+  const updateNodeInternals = useUpdateNodeInternals()
+  const activeMediaKind = availableModels.find((model) => model.id === generate.settings.model)?.mediaKind
+    ?? (generate.settings.duration === undefined ? 'image' : 'video')
+  const mediaKind = activeMediaKind
+  useLayoutEffect(() => {
+    updateNodeInternals(id)
+  }, [id, selected, updateNodeInternals])
+
+  return (
+    <div className={`graph-node generate-node generate-node--orphan generate-node--${mediaKind}${selected ? ' is-selected is-editing is-dock-only' : ''}`}>
       <Handle
         className="flow-handle flow-handle--graph flow-handle--target"
         id="input"
@@ -511,34 +856,21 @@ function GenerateNode({ data, id, selected }: NodeProps) {
         aria-label={t.autoOutput(generateLabel)}
         title={t.autoOutputHint}
       />
-      <header className="graph-node__header">
-        <strong>{generateLabel}</strong>
-        <small>{t.references(references.length)} · {modelLabel} · {displayedAspectRatio}{generate.settings.duration ? ` · ${canvasDurationLabel(generate.settings.duration, locale)}` : ''}</small>
-        <button
-          className="graph-node__remove nodrag"
-          type="button"
-          aria-label={t.removeFromCanvas(generateLabel)}
-          onPointerDown={(event) => event.stopPropagation()}
-          onClick={(event) => {
-            event.stopPropagation()
-            removeNodeFromCanvas(id)
-          }}
-        ><DeleteIcon /></button>
-      </header>
-      <div className="generate-node__summary">
-        {references.length ? (
-          <div className="generate-node__reference-stack" aria-label={t.connectedReferences(references.length)}>
-            {references.slice(0, 4).map((reference) => reference.mediaKind === 'video'
-              ? <video key={reference.id} src={reference.image} aria-label={reference.name} title={reference.name} muted playsInline preload="metadata" />
-              : <img key={reference.id} src={reference.image} alt={reference.name} title={reference.name} />)}
-            {references.length > 4 ? <span>+{references.length - 4}</span> : null}
-          </div>
-        ) : <span className="generate-node__empty-input">{t.connectReferences}</span>}
-        {inputSummary.texts
-          ? <p>{t.textConnected}</p>
-          : <p>{generate.prompt.trim() || t.editGeneration}</p>}
-        <footer>{hasPrimaryInput || inputSummary.readyResults ? t.editThis : t.connectPrimary}</footer>
+      <div className="generate-node__placeholder">
+        <svg viewBox="0 0 24 24" width="36" height="36" fill="none" aria-hidden="true">
+          <rect x="3.5" y="5" width="17" height="14" rx="3" stroke="currentColor" strokeWidth="1.4" />
+          <path d="M10 9.2v5.6l5-2.8-5-2.8Z" fill="currentColor" />
+        </svg>
+        <span>{generateLabel}</span>
       </div>
+      {selected ? (
+        <GenerateDock
+          generateId={id}
+          onOpenAssets={ui?.onOpenAssets}
+          maximumBatchCount={ui?.maximumBatchCount}
+          onRemove={ui?.onRemoveGenerate}
+        />
+      ) : null}
     </div>
   )
 }
@@ -1116,11 +1448,16 @@ export type ResultNodeUiData = ResultNodeData & {
     group?: ResultGroupPresentation
     targetNodeId?: string
     groupCandidates?: ResultGroupCandidateUi[]
+    workingGenerateId?: string
     onToggleGroup?: (groupId: string) => void
     onChooseCandidate?: (groupId: string, candidateId: string, promoted: boolean) => void
     onOpenAddMenu?: (resultNodeId: string, screen: { x: number; y: number }) => void
+    onOpenAddContext?: (mediaNodeId: string) => void
     onOpenAgent?: (resultNodeId: string) => void
     onOpenRegionEdit?: (resultNodeId: string) => void
+    onOpenAssets?: (generateNodeId: string) => void
+    maximumBatchCount?: number
+    onRemoveGenerate?: (generateNodeId: string) => void
   }
 }
 
@@ -1223,14 +1560,21 @@ function ResultNode({ data, id, selected }: NodeProps) {
         aria-label={t.automaticOutput}
         title={t.writtenAutomatically}
       />
-      <Handle
-        className="flow-handle flow-handle--source flow-handle--image"
-        id="output"
+      {hasDisplayableImage ? (
+        <MediaPortHandle
+          handleId="context"
+          type="target"
+          ariaLabel={t.addContext}
+          title={t.addContext}
+          onClick={presentation?.onOpenAddContext ? () => presentation.onOpenAddContext?.(targetNodeId) : undefined}
+        />
+      ) : null}
+      <MediaPortHandle
+        handleId="output"
         type="source"
-        position={Position.Right}
-        isConnectable
-        aria-label={t.connectResult}
-        title={mediaKind === 'video' ? t.connectVideoResult : hasDisplayableImage ? t.connectImageResult : t.connectPendingResult}
+        ariaLabel={t.continueFromAsset}
+        title={t.continueFromAsset}
+        onClick={presentation?.onOpenAddMenu ? (screen) => presentation.onOpenAddMenu?.(targetNodeId, screen) : undefined}
       />
       <header className="result-node__header">
         <ImageNodeTitle nodeId={targetNodeId} name={resultName} />
@@ -1372,6 +1716,16 @@ function ResultNode({ data, id, selected }: NodeProps) {
           }}
         >{t.addNode} <ArrowUpRightIcon /></button>
       </div> : null}
+      {isSelected && presentation?.workingGenerateId ? (
+        <div className="media-compose-dock generate-node is-editing is-dock-only nodrag nowheel">
+          <GenerateDock
+            generateId={presentation.workingGenerateId}
+            onOpenAssets={presentation.onOpenAssets}
+            maximumBatchCount={presentation.maximumBatchCount}
+            onRemove={presentation.onRemoveGenerate}
+          />
+        </div>
+      ) : null}
     </div>
   )
 }

@@ -73,6 +73,7 @@ import {
   shouldShowBotanicAgentRuntimeFeed,
   buildBotanicAgentPromptDiff,
   mergeBotanicAgentArtifactIndex,
+  expandBotanicAgentContextNodeIds,
   resolveBotanicAgentWorkflowReferenceNodeIds,
   buildBotanicAgentRunTimeline,
   buildBotanicAgentSessionTimeline,
@@ -461,6 +462,27 @@ test('Agent 只为有效图片参考创建生成工作流，忽略文字、生�
     ['asset-image', 'asset-video', 'result-image', 'result-empty', 'text', 'generate', 'asset-image'],
   ), ['asset-image', 'result-image'])
   assert.deepEqual(resolveBotanicAgentWorkflowReferenceNodeIds(nodes, ['text', 'generate']), [])
+})
+
+test('选中生成节点时，Agent 上下文展开成它连着的参考图和文字', () => {
+  const nodes = [
+    { id: 'asset-image', type: 'asset', position: { x: 0, y: 0 }, data: { kind: 'asset', assetId: 'a', name: '商品图', image: '/a.png', role: '商品', source: 'upload', mediaKind: 'image' } },
+    { id: 'text', type: 'text', position: { x: 0, y: 0 }, data: { kind: 'text', label: '说明', content: '海边' } },
+    { id: 'generate', type: 'generate', position: { x: 0, y: 0 }, data: { kind: 'generate', label: '图像生成 07', prompt: '', batchCount: 1, settings: { model: 'm', aspectRatio: '1:1', resolution: '1K' }, inputOrder: ['asset-image', 'text'] } },
+    { id: 'orphan', type: 'generate', position: { x: 0, y: 0 }, data: { kind: 'generate', label: '图像生成 08', prompt: '', batchCount: 1, settings: { model: 'm', aspectRatio: '1:1', resolution: '1K' } } },
+  ] as CanvasNode[]
+  const edges = [
+    { id: 'e1', source: 'asset-image', target: 'generate' },
+    { id: 'e2', source: 'text', target: 'generate' },
+  ]
+
+  assert.deepEqual(expandBotanicAgentContextNodeIds(nodes, edges, ['generate']), ['asset-image', 'text'])
+  assert.deepEqual(expandBotanicAgentContextNodeIds(nodes, edges, ['asset-image', 'generate']), ['asset-image', 'text'])
+  assert.deepEqual(expandBotanicAgentContextNodeIds(nodes, edges, ['orphan']), [])
+  assert.deepEqual(
+    resolveBotanicAgentWorkflowReferenceNodeIds(nodes, expandBotanicAgentContextNodeIds(nodes, edges, ['generate'])),
+    ['asset-image'],
+  )
 })
 
 test('Run 状态统一提供下一步反馈，并兼容超时错误', () => {

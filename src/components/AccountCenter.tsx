@@ -28,7 +28,8 @@ const accountMessages = {
   'zh-CN': {
     accountWorkspace: '账号与工作区', localWorkspace: '本地工作区', localPreview: '本地预览模式',
     roles: { owner: '所有者', member: '成员' },
-    personal: '个人', profile: '个人资料', profileDescription: '姓名、邮箱与工作区角色',
+    personal: '个人', language: '语言', switchLanguage: '切换为英文',
+    profile: '个人资料', profileDescription: '姓名、邮箱与工作区角色',
     security: '登录与安全', securityDescription: '密码、二步验证与登录设备', workspace: '工作区',
     members: '成员与权限', membersDescription: '邀请成员并管理访问', activity: '活动记录', activityDescription: '查看账户、项目与生成操作', signOut: '退出登录',
     auditCategories: { all: '全部', account: '账户', member: '成员', project: '项目', generation: '生成' },
@@ -65,7 +66,8 @@ const accountMessages = {
   en: {
     accountWorkspace: 'Account & workspace', localWorkspace: 'Local workspace', localPreview: 'Local preview mode',
     roles: { owner: 'Owner', member: 'Member' },
-    personal: 'Personal', profile: 'Profile', profileDescription: 'Name, email, and workspace role',
+    personal: 'Personal', language: 'Language', switchLanguage: 'Switch to Chinese',
+    profile: 'Profile', profileDescription: 'Name, email, and workspace role',
     security: 'Sign-in & security', securityDescription: 'Password, two-step verification, and devices', workspace: 'Workspace',
     members: 'Members & permissions', membersDescription: 'Invite members and manage access', activity: 'Activity log', activityDescription: 'Review account, project, and generation activity', signOut: 'Sign out',
     auditCategories: { all: 'All', account: 'Account', member: 'Members', project: 'Projects', generation: 'Generation' },
@@ -101,8 +103,9 @@ const accountMessages = {
   },
 } as const
 
-function AccountGlyph({ kind }: { kind: 'profile' | 'security' | 'members' | 'audit' | 'sign-out' }) {
+function AccountGlyph({ kind }: { kind: 'language' | 'profile' | 'security' | 'members' | 'audit' | 'sign-out' }) {
   const paths: Record<typeof kind, ReactNode> = {
+    language: <><circle cx="12" cy="12" r="8.25" /><path d="M3.75 12h16.5M12 3.75c2.6 2.4 3.9 5.3 3.9 8.25S14.6 17.85 12 20.25C9.4 17.85 8.1 14.95 8.1 12S9.4 6.15 12 3.75" /></>,
     profile: <><circle cx="12" cy="8" r="3.25" /><path d="M5.5 20c.65-4.05 2.82-6.08 6.5-6.08S17.85 15.95 18.5 20" /></>,
     security: <><path d="M5.5 10.25V8.5a6.5 6.5 0 0 1 13 0v1.75" /><rect x="4" y="10.25" width="16" height="10.25" rx="2.5" /><path d="M12 14.25v2.5" /></>,
     members: <><circle cx="8.25" cy="9" r="3" /><circle cx="16.75" cy="10.25" r="2.25" /><path d="M2.75 19c.5-3.45 2.33-5.18 5.5-5.18s5 1.73 5.5 5.18M14 14.25c3.7-.42 5.78 1.17 6.25 4.75" /></>,
@@ -135,6 +138,7 @@ export function AccountMenu({
   onClose: () => void
   phase?: MotionPhase
 }) {
+  const { toggleLocale } = useProductI18n()
   const copy = useProductMessages(accountMessages)
   const menuRef = useRef<HTMLDivElement>(null)
   useRestoreFocus(phase !== 'exit')
@@ -191,6 +195,7 @@ export function AccountMenu({
       </header>
       <div className="account-menu__actions">
         <span className="account-menu__section-label">{copy.personal}</span>
+        <button type="button" role="menuitem" onClick={toggleLocale}><em><AccountGlyph kind="language" /></em><span>{copy.language}</span><small>{copy.switchLanguage}</small></button>
         <button type="button" role="menuitem" onClick={onOpenProfile} disabled={!user}><em><AccountGlyph kind="profile" /></em><span>{copy.profile}</span><small>{copy.profileDescription}</small><b>›</b></button>
         <button type="button" role="menuitem" onClick={onOpenSecurity} disabled={!user}><em><AccountGlyph kind="security" /></em><span>{copy.security}</span><small>{copy.securityDescription}</small><b>›</b></button>
         {user?.role === 'owner' ? <span className="account-menu__section-label">{copy.workspace}</span> : null}

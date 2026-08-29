@@ -68,12 +68,12 @@ const agentUtilityMessages = {
     activityCount: (count: number) => `${count} 条`, occurrenceCount: (count: number) => `${count} 次`,
     comparePrompt: '对照 Prompt', copied: '已复制', copyPrompt: '复制 Prompt', generatedResult: '生成结果', toolArtifacts: '工具产物', generationBatch: '生成批次',
     detailAria: (label: string) => `${label} 详情`, backToResults: '返回结果', backfilled: '已放到画布', locateCanvas: '定位画布', continueEditing: '继续改', saved: '已入库', save: '入库', download: '下载', open: '打开',
-    artifactEyebrow: '产物', resultsAria: 'Agent 结果与文件', resultsEyebrow: '结果与文件', resultsTitle: '结果与文件', readingIndex: '正在读取历史结果…', indexUnavailable: '历史结果暂不可用，已显示当前画布结果。', resultsSections: '结果分区', mediaResults: '生成结果', resultFilter: '结果筛选',
+    artifactEyebrow: '产物', resultsAria: 'Agent 结果与文件', resultsEyebrow: '结果', resultsTitle: '结果与文件', readingIndex: '正在读取历史结果…', indexUnavailable: '历史结果暂不可用，已显示当前画布结果。', resultsSections: '结果分区', mediaResults: '生成结果', resultFilter: '结果筛选',
     all: '全部', images: '图片', videos: '视频', libraryFilter: '按入库状态筛选', anyLibraryStatus: '不限入库', unsaved: '未入库', modelFilter: '按生成模型筛选', allModels: '全部模型',
     batchActions: '批量操作', selectedCount: (count: number) => `已选 ${count} 项`, startNextRound: '创建下一轮', cancel: '取消', itemCount: (count: number) => `${count} 项`, notBackfilled: '未入画布', sourceConversation: '来源对话', selectAll: '全选', clearSelection: '取消全选', select: '选择', deselect: '取消选择', view: '查看',
     noToolArtifacts: '还没有 Skill / MCP 产物。', noGeneratedResults: '还没有该条件下的生成结果。', loadEarlierResults: '加载更早结果',
     memoryAria: '项目创作记忆', memoryEyebrow: '记忆', memoryTitle: '项目记忆', memoryDescription: '仅用于当前项目的后续规划；保存品牌规则、认可方向与禁区。', memoryType: '记忆类型', longTermRule: '长期规则', approvedDirection: '已确认方向', avoid: '避免事项', memoryPlaceholder: '例如：商品包装与品牌色不可改变', memoryScope: '适用范围', memoryScopeValue: '适用取值', memoryScopeValuePlaceholder: '例如 tmall', memoryContent: '项目记忆内容', saveMemory: '保存记忆', locateMemory: (content: string) => `在画布定位记忆 ${content}`, locate: '在画布定位', deleteMemory: (content: string) => `删除记忆 ${content}`, deleteMemoryTitle: '删除记忆', noMemory: '还没有项目记忆。', memoryCount: (count: number) => `${count} 条`,
-    system: '系统', project: '项目', invoke: '@调用', mount: '挂载到对话', mounted: '已挂载', unmount: '取消挂载',
+    system: '系统', project: '项目', invoke: '可挂载', mount: '挂载到对话', mounted: '已挂载', unmount: '取消挂载',
     brandAria: '品牌规则', brandEyebrow: '品牌', brandTitle: '品牌规则', brandDescription: '生成前会把这些规则编译进执行提示词，生成后逐条复核。规则分全局品牌、项目 Creative Spec、本次运行覆盖三层，同一槽位由更靠近本次运行的那一层生效。',
     brandLoading: '正在读取品牌规则…', brandUnavailable: '品牌规则暂不可用，请稍后重试。',
     brandUnbound: '当前项目未绑定品牌，没有任何品牌规则参与生成。', brandEffective: '生效中', brandPending: '待确认建议', brandOverridden: '被覆盖的规则',
@@ -117,7 +117,7 @@ const agentUtilityMessages = {
     reviewContinueUnverifiable: 'Continue as not verified', reviewRetryOnce: 'Accept risk and retry once',
     reviewReconciliationFailed: 'The reconciliation choice could not be submitted. Try again.', reviewReconciliationAccepted: 'The choice was recorded; review will finish in the background.',
     memoryConflicts: (count: number) => `${count} pair(s) of rules contradict each other; only one of each takes effect. Retire one so the intent is unambiguous.`,
-    system: 'System', project: 'Project', invoke: '@mention', mount: 'Mount in chat', mounted: 'Mounted', unmount: 'Unmount',
+    system: 'System', project: 'Project', invoke: 'Available', mount: 'Mount in chat', mounted: 'Mounted', unmount: 'Unmount',
   },
 } as const
 
@@ -139,7 +139,6 @@ export function AgentCollaborationPanel({
   historyErrorAction,
   onLoadMore,
   onReload,
-  onBackToConversation,
 }: {
   activities: CollaborationActivity[]
   conflictChanges: CollaborationDocumentChange[]
@@ -154,12 +153,10 @@ export function AgentCollaborationPanel({
   historyErrorAction?: 'load' | 'load-more' | 'read' | 'clear'
   onLoadMore: () => Promise<void>
   onReload: () => Promise<void>
-  onBackToConversation: () => void
 }) {
   const { locale } = useProductI18n()
   const copy = useProductMessages(agentUtilityMessages)
   return <section className="agent-collaboration-panel" aria-label={copy.collaborationAria}>
-    <header><AgentPanelBackButton onClick={onBackToConversation} /><div><small>{copy.collaborationEyebrow}</small><h2>{copy.collaborationTitle}</h2></div><span>{copy.activityCount(activities.length)}</span></header>
     <p>{copy.collaborationDescription}</p>
     {persistenceStatus === 'conflict' ? <div className="agent-collaboration-panel__conflict" role="alert">
       <span><strong>{copy.remoteCanvasTitle}</strong><small>{copy.remoteCanvasDetail}</small></span>
@@ -226,7 +223,6 @@ export function AgentResultPanel({
   onStartNextRound,
   onLoadMoreArtifacts,
   onLocateConversation,
-  onBackToConversation,
 }: {
   artifacts: BotanicAgentArtifact[]
   runs: BotanicAgentRun[]
@@ -242,7 +238,6 @@ export function AgentResultPanel({
   onStartNextRound: (sourceNodeIds: string[], artifactCount: number) => void
   onLoadMoreArtifacts: () => Promise<void>
   onLocateConversation: (runId: string) => void
-  onBackToConversation: () => void
 }) {
   const { locale } = useProductI18n()
   const copy = useProductMessages(agentUtilityMessages)
@@ -332,6 +327,9 @@ export function AgentResultPanel({
     setTab(next)
     setPreviewId(null)
   }
+  const showKindFilter = mediaArtifacts.some((artifact) => artifact.kind === 'image') && mediaArtifacts.some((artifact) => artifact.kind === 'video')
+  const showLibraryFilter = mediaArtifacts.some((artifact) => artifact.metadata?.savedToLibrary === true) && mediaArtifacts.some((artifact) => artifact.metadata?.savedToLibrary !== true)
+  const showMediaFilters = tab === 'media' && mediaArtifacts.length > 0 && (showKindFilter || showLibraryFilter || modelOptions.length > 1)
 
   if (preview) {
     const locatableNodeId = preview.provenance.sourceNodeIds?.find((nodeId) => availableNodeIds.has(nodeId))
@@ -346,7 +344,7 @@ export function AgentResultPanel({
     return <section className="agent-result-panel is-detail" aria-label={copy.detailAria(shortLabel)}>
       <header>
         <AgentPanelBackButton label={copy.backToResults} onClick={() => setPreviewId(null)} />
-        <div><small>{copy.artifactEyebrow}</small><h2>{shortLabel}</h2></div>
+        <h2>{shortLabel}</h2>
       </header>
       <div className="agent-result-panel__detail">
         {media ? <div className="agent-result-panel__hero">
@@ -369,38 +367,45 @@ export function AgentResultPanel({
   }
 
   return <section className="agent-result-panel" aria-label={copy.resultsAria}>
-    <header><AgentPanelBackButton onClick={onBackToConversation} /><div><small>{copy.resultsEyebrow}</small><h2>{copy.resultsTitle}</h2></div><span>{copy.itemCount(mediaArtifacts.length)}</span></header>
     {artifactIndexStatus === 'loading' ? <div className="agent-result-panel__index-status" role="status">{copy.readingIndex}</div> : null}
     {artifactIndexStatus === 'error' ? <div className="agent-result-panel__index-status is-warning" role="status">{copy.indexUnavailable}</div> : null}
     {latestFeedback ? <div className={`agent-result-panel__run-status is-${latestFeedback.tone}`} role="status"><strong>{latestFeedback.label}</strong><span>{latestFeedback.detail}</span></div> : null}
-    <div className="agent-result-panel__tabs" role="group" aria-label={copy.resultsSections}>
-      <button type="button" aria-pressed={tab === 'media'} className={tab === 'media' ? 'is-active' : ''} onClick={() => openTab('media')}>{copy.mediaResults}<b>{mediaArtifacts.length}</b></button>
-      <button type="button" aria-pressed={tab === 'tool'} className={tab === 'tool' ? 'is-active' : ''} onClick={() => openTab('tool')}>{copy.toolArtifacts}<b>{toolArtifacts.length}</b></button>
+    <div className="agent-result-panel__toolbar">
+      <div className="agent-result-panel__tabs" role="group" aria-label={copy.resultsSections}>
+        <button type="button" aria-pressed={tab === 'media'} className={tab === 'media' ? 'is-active' : ''} onClick={() => openTab('media')}>{copy.mediaResults}<b>{mediaArtifacts.length}</b></button>
+        <button type="button" aria-pressed={tab === 'tool'} className={tab === 'tool' ? 'is-active' : ''} onClick={() => openTab('tool')}>{copy.toolArtifacts}<b>{toolArtifacts.length}</b></button>
+      </div>
+      {showMediaFilters ? <div className="agent-result-panel__filters" role="group" aria-label={copy.resultFilter}>
+        {showKindFilter ? <BotanicSelect
+          className="agent-result-panel__kind-select"
+          value={kindFilter}
+          ariaLabel={copy.resultFilter}
+          options={[{ value: 'all', label: copy.all }, { value: 'image', label: copy.images }, { value: 'video', label: copy.videos }]}
+          onChange={(value) => setKindFilter(value as 'all' | 'image' | 'video')}
+        /> : null}
+        {showLibraryFilter ? <BotanicSelect
+          className="agent-result-panel__library-select"
+          value={libraryFilter}
+          ariaLabel={copy.libraryFilter}
+          options={[
+            { value: 'all', label: copy.anyLibraryStatus },
+            { value: 'unsaved', label: copy.unsaved },
+            { value: 'saved', label: copy.saved },
+          ]}
+          onChange={(value) => setLibraryFilter(value as 'all' | 'saved' | 'unsaved')}
+        /> : null}
+        {modelOptions.length > 1 ? <BotanicSelect
+          className="agent-result-panel__model-select"
+          value={modelFilter}
+          ariaLabel={copy.modelFilter}
+          options={[{ value: '', label: copy.allModels }, ...modelOptions.map((model) => ({
+            value: model,
+            label: modelDisplayLabel(generationModels.find((option) => option.id === model)) || model,
+          }))]}
+          onChange={setModelFilter}
+        /> : null}
+      </div> : null}
     </div>
-    {tab === 'media' ? <div className="agent-result-panel__filters" role="group" aria-label={copy.resultFilter}>
-      {([['all', copy.all], ['image', copy.images], ['video', copy.videos]] as const).map(([value, label]) => <button key={value} type="button" aria-pressed={kindFilter === value} className={kindFilter === value ? 'is-active' : ''} onClick={() => setKindFilter(value)}>{label}</button>)}
-      <BotanicSelect
-        className="agent-result-panel__library-select"
-        value={libraryFilter}
-        ariaLabel={copy.libraryFilter}
-        options={[
-          { value: 'all', label: copy.anyLibraryStatus },
-          { value: 'unsaved', label: copy.unsaved },
-          { value: 'saved', label: copy.saved },
-        ]}
-        onChange={(value) => setLibraryFilter(value as 'all' | 'saved' | 'unsaved')}
-      />
-      {modelOptions.length > 1 ? <BotanicSelect
-        className="agent-result-panel__model-select"
-        value={modelFilter}
-        ariaLabel={copy.modelFilter}
-        options={[{ value: '', label: copy.allModels }, ...modelOptions.map((model) => ({
-          value: model,
-          label: modelDisplayLabel(generationModels.find((option) => option.id === model)) || model,
-        }))]}
-        onChange={setModelFilter}
-      /> : null}
-    </div> : null}
     {selectedBatch.artifacts.length ? <div className="agent-result-panel__selection" aria-label={copy.batchActions}>
       <strong>{copy.selectedCount(selectedBatch.artifacts.length)}</strong>
       <div>
@@ -447,7 +452,7 @@ export function AgentResultPanel({
   </section>
 }
 
-export function AgentMemoryPanel({ memory, sourceNodeIds, onAddMemory, onRemoveMemory, onLocateNode, onBackToConversation }: {
+export function AgentMemoryPanel({ memory, sourceNodeIds, onAddMemory, onRemoveMemory, onLocateNode }: {
   memory: BotanicAgentMemoryItem[]
   sourceNodeIds: string[]
   onAddMemory: (
@@ -458,7 +463,6 @@ export function AgentMemoryPanel({ memory, sourceNodeIds, onAddMemory, onRemoveM
   ) => string | null
   onRemoveMemory: (memoryId: string) => void
   onLocateNode: (nodeId: string) => void
-  onBackToConversation: () => void
 }) {
   const { locale } = useProductI18n()
   const copy = useProductMessages(agentUtilityMessages)
@@ -480,18 +484,16 @@ export function AgentMemoryPanel({ memory, sourceNodeIds, onAddMemory, onRemoveM
   }
 
   return <section className="agent-memory-panel" aria-label={copy.memoryAria}>
-    <header><AgentPanelBackButton onClick={onBackToConversation} /><div><small>{copy.memoryEyebrow}</small><h2>{copy.memoryTitle}</h2></div><span>{copy.memoryCount(memory.length)}</span></header>
     <p>{copy.memoryDescription}</p>
     {conflictCount ? <p className="agent-memory-panel__conflicts">{copy.memoryConflicts(conflictCount)}</p> : null}
     <div className="agent-memory-panel__form">
-      <BotanicSelect value={kind} ariaLabel={copy.memoryType} options={[
-        { value: 'rule', label: copy.longTermRule },
-        { value: 'approved', label: copy.approvedDirection },
-        { value: 'avoid', label: copy.avoid },
-      ]} onChange={(value) => setKind(value as BotanicAgentMemoryKind)} />
       <textarea value={draft} maxLength={500} onChange={(event) => setDraft(event.target.value)} placeholder={copy.memoryPlaceholder} aria-label={copy.memoryContent} />
-      {/* 适用范围：限定后这条规则只在匹配的生成里生效，其余不带上它。 */}
-      <div className="agent-memory-panel__subject">
+      <div className="agent-memory-panel__meta">
+        <BotanicSelect value={kind} ariaLabel={copy.memoryType} options={[
+          { value: 'rule', label: copy.longTermRule },
+          { value: 'approved', label: copy.approvedDirection },
+          { value: 'avoid', label: copy.avoid },
+        ]} onChange={(value) => setKind(value as BotanicAgentMemoryKind)} />
         <BotanicSelect
           value={subject ?? 'project'}
           ariaLabel={copy.memoryScope}
@@ -505,8 +507,8 @@ export function AgentMemoryPanel({ memory, sourceNodeIds, onAddMemory, onRemoveM
           placeholder={copy.memoryScopeValuePlaceholder}
           onChange={(event) => setSubjectValue(event.target.value)}
         /> : null}
+        <button type="button" disabled={!draft.trim() || (subject !== 'project' && !subjectValue.trim())} onClick={save}>{copy.saveMemory}</button>
       </div>
-      <button type="button" disabled={!draft.trim() || (subject !== 'project' && !subjectValue.trim())} onClick={save}>{copy.saveMemory}</button>
     </div>
     <div className="agent-memory-panel__list">
       {comparisonRows.map((row) => {
@@ -549,9 +551,8 @@ export function AgentMemoryPanel({ memory, sourceNodeIds, onAddMemory, onRemoveM
  * 解析由服务端完成，与生成时同一实现 —— 界面显示生效的那条，就是生成时会用的那条。
  * 这里只负责把三段分开摆出来：生效中、待确认（**不生效**）、被覆盖（不隐藏）。
  */
-export function BrandKitPanel({ projectId, onBackToConversation }: {
+export function BrandKitPanel({ projectId }: {
   projectId: string
-  onBackToConversation: () => void
 }) {
   const { locale } = useProductI18n()
   const copy = useProductMessages(agentUtilityMessages)
@@ -572,7 +573,6 @@ export function BrandKitPanel({ projectId, onBackToConversation }: {
   const proposals = useMemo(() => brandProposalRows(kit?.pending, locale), [kit, locale])
 
   return <section className="agent-brand-panel" aria-label={copy.brandAria}>
-    <header><AgentPanelBackButton onClick={onBackToConversation} /><div><small>{copy.brandEyebrow}</small><h2>{copy.brandTitle}</h2></div></header>
     <p>{copy.brandDescription}</p>
     {status === 'loading' ? <div className="agent-panel__empty">{copy.brandLoading}</div> : null}
     {status === 'error' ? <div className="agent-panel__empty">{copy.brandUnavailable}</div> : null}
@@ -614,10 +614,9 @@ export function BrandKitPanel({ projectId, onBackToConversation }: {
   </section>
 }
 
-export function AgentReviewPanel({ runId, projectId, onBackToConversation }: {
+export function AgentReviewPanel({ runId, projectId }: {
   runId: string
   projectId?: string
-  onBackToConversation: () => void
 }) {
   const { locale } = useProductI18n()
   const copy = useProductMessages(agentUtilityMessages)
@@ -698,7 +697,6 @@ export function AgentReviewPanel({ runId, projectId, onBackToConversation }: {
   }
 
   return <section className="agent-review-panel" aria-label={copy.reviewAria}>
-    <header><AgentPanelBackButton onClick={onBackToConversation} /><div><small>{copy.reviewEyebrow}</small><h2>{copy.reviewTitle}</h2></div></header>
     <p>{copy.reviewDescription}</p>
     {status === 'loading' ? <div className="agent-panel__empty">{copy.reviewLoading}</div> : null}
     {status === 'error' ? <div className="agent-panel__empty">{copy.reviewUnavailable}</div> : null}

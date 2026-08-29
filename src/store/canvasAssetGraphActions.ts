@@ -3,6 +3,8 @@ import type { Edge } from '@xyflow/react'
 import { normalizeAssetCollection } from '../domain/assets'
 import { normalizeAssetGroupName, upsertCollectionGroups } from '../domain/assetGroups'
 import { mergeCollaborativeCanvasGraph } from '../domain/collaborativeGraph'
+import { canvasNodeBounds, findOpenCanvasPosition } from '../domain/canvasNodeLayout'
+import { hiddenGenerateIds, markStandaloneGeneratesOnManualConnect } from '../domain/canvasWorkingGenerate'
 import { findOpenGeneratePosition, planGenerateNodeCreation } from '../domain/generateNodeCreation'
 import {
   canvasGenerationReferences,
@@ -33,6 +35,27 @@ import { writeGlobalAssetLibrary } from '../lib/db'
 import { availableAssets, findAvailableAsset, normalizeSystemOutputEdges } from './canvasDocumentAssets'
 import { cleanDisplayName, migrationId, nextTaskFlowStartX, normalizeAssetReferenceNodes } from './canvasDocumentMigration'
 import type { CanvasStore } from './canvasStore.types'
+
+function placeOnCanvas(
+  document: CanvasDocument,
+  preferred: { x: number; y: number } | undefined,
+  draft: Pick<CanvasNode, 'type' | 'data'>,
+  alreadyPlaced: CanvasNode[] = [],
+) {
+  const hiddenIds = hiddenGenerateIds(document.nodes, document.edges)
+  const size = canvasNodeBounds({
+    id: 'placement',
+    type: draft.type,
+    position: { x: 0, y: 0 },
+    data: draft.data,
+  } as CanvasNode, hiddenIds)
+  return findOpenCanvasPosition(
+    [...document.nodes, ...alreadyPlaced],
+    preferred ?? { x: 120, y: 120 },
+    size,
+    hiddenIds,
+  )
+}
 
 type AssetGraphActions = Pick<CanvasStore,
   | 'setNodes'
@@ -114,11 +137,13 @@ export function createCanvasAssetGraphActions({
     },
 
     setEdges: (edges) => {
-      const normalizedEdges = normalizeSystemOutputEdges(get().document.nodes, edges)
+      const document = get().document
+      const normalizedEdges = normalizeSystemOutputEdges(document.nodes, edges)
+      const nodes = markStandaloneGeneratesOnManualConnect(document.nodes, document.edges, normalizedEdges)
       void commitDocument({
-        ...get().document,
+        ...document,
         edges: normalizedEdges,
-        nodes: normalizeGenerateNodeInputs(get().document.nodes, normalizedEdges),
+        nodes: normalizeGenerateNodeInputs(nodes, normalizedEdges),
       })
     },
 
@@ -269,25 +294,26 @@ export function createCanvasAssetGraphActions({
         } }
       }) as CanvasNode[]
       const remainingReferences = recipe.references.filter((reference) => !usedReferences.has(reference))
-      const existingAssetNodeCount = nodes.filter((node) => node.type === 'asset').length
-      const restored = remainingReferences.flatMap((reference, index) => {
+      const restored: CanvasNode[] = []
+      remainingReferences.forEach((reference, index) => {
         const asset = findAvailableAsset(document, get().globalAssets, reference.assetId)
-        if (!asset) return []
+        if (!asset) return
         const nodeId = `asset-${asset.id}-restored-${Date.now()}-${index}`
         resolvedNodeIds.add(nodeId)
-        return [{
+        const data = {
+          kind: 'asset' as const, assetId: asset.id, role: asset.role, name: asset.name,
+          image: asset.image, imageWidth: asset.imageWidth, imageHeight: asset.imageHeight,
+          source: asset.source, mediaKind: asset.mediaKind ?? 'image', referenceEnabled: true,
+          primary: Boolean(reference.primary || reference.nodeId === recipe.primaryReferenceNodeId),
+          referencePriority: reference.priority,
+        }
+        restored.push({
           id: nodeId,
-          type: 'asset' as const,
-          position: { x: 110 + ((existingAssetNodeCount + index) % 3) * 205, y: 150 + Math.floor((existingAssetNodeCount + index) / 3) * 250 },
+          type: 'asset',
+          position: placeOnCanvas(document, undefined, { type: 'asset', data }, restored),
           draggable: true,
-          data: {
-            kind: 'asset' as const, assetId: asset.id, role: asset.role, name: asset.name,
-            image: asset.image, imageWidth: asset.imageWidth, imageHeight: asset.imageHeight,
-            source: asset.source, mediaKind: asset.mediaKind ?? 'image', referenceEnabled: true,
-            primary: Boolean(reference.primary || reference.nodeId === recipe.primaryReferenceNodeId),
-            referencePriority: reference.priority,
-          },
-        }]
+          data,
+        })
       })
       nodes = normalizeAssetReferenceNodes([...nodes, ...restored] as CanvasNode[])
       const unavailable = remainingReferences.length - restored.length
@@ -309,18 +335,19 @@ export function createCanvasAssetGraphActions({
         && (item.data as AssetNodeData).role === '商品'
         && (item.data as AssetNodeData).referenceEnabled !== false
         && Boolean((item.data as AssetNodeData).primary))
+      const data = {
+        kind: 'asset' as const, assetId: asset.id, role: asset.role, name: asset.name, image: asset.image,
+        imageWidth: asset.imageWidth, imageHeight: asset.imageHeight, source: asset.source,
+        mediaKind: asset.mediaKind ?? 'image', referenceEnabled: true,
+        primary: asset.role === '商品' && !hasPrimaryProduct, referencePriority: assetNodes.length + 1,
+      }
       const node: CanvasNode = {
         id: nodeId,
         type: 'asset',
-        position: dropPosition ?? { x: 110 + (assetNodes.length % 3) * 205, y: 150 + Math.floor(assetNodes.length / 3) * 250 },
+        position: placeOnCanvas(document, dropPosition, { type: 'asset', data }),
         draggable: true,
         selected: true,
-        data: {
-          kind: 'asset', assetId: asset.id, role: asset.role, name: asset.name, image: asset.image,
-          imageWidth: asset.imageWidth, imageHeight: asset.imageHeight, source: asset.source,
-          mediaKind: asset.mediaKind ?? 'image', referenceEnabled: true,
-          primary: asset.role === '商品' && !hasPrimaryProduct, referencePriority: assetNodes.length + 1,
-        },
+        data,
       }
       const target = connectToGenerateId ? document.nodes.find((item) => item.id === connectToGenerateId && item.type === 'generate') : undefined
       const targetData = target?.type === 'generate' ? target.data as GenerateNodeData : undefined
@@ -397,27 +424,27 @@ export function createCanvasAssetGraphActions({
         && (node.data as AssetNodeData).role === '商品'
         && (node.data as AssetNodeData).referenceEnabled !== false
         && Boolean((node.data as AssetNodeData).primary))
-      const basePosition = dropPosition ?? {
-        x: 110 + (existingAssetNodes.length % 3) * 205,
-        y: 150 + Math.floor(existingAssetNodes.length / 3) * 250,
-      }
+      const placed: CanvasNode[] = []
       const nodes = assets.map((asset, index) => {
         const shouldBePrimary = asset.role === '商品' && !hasPrimaryProduct
         if (shouldBePrimary) hasPrimaryProduct = true
-        return {
+        const data = {
+          kind: 'asset' as const, assetId: asset.id, role: asset.role, name: asset.name, image: asset.image,
+          imageWidth: asset.imageWidth, imageHeight: asset.imageHeight, source: 'upload' as const,
+          mediaKind: asset.mediaKind ?? 'image', referenceEnabled: true, primary: shouldBePrimary,
+          referencePriority: existingAssetNodes.length + index + 1,
+        }
+        const node = {
           id: `asset-${asset.id}`,
           type: 'asset' as const,
-          position: { x: Math.max(16, basePosition.x + (index % 3) * 198), y: Math.max(16, basePosition.y + Math.floor(index / 3) * 246) },
+          position: placeOnCanvas(document, dropPosition, { type: 'asset', data }, placed),
           draggable: true,
           selected: index === 0,
-          data: {
-            kind: 'asset' as const, assetId: asset.id, role: asset.role, name: asset.name, image: asset.image,
-            imageWidth: asset.imageWidth, imageHeight: asset.imageHeight, source: 'upload' as const,
-            mediaKind: asset.mediaKind ?? 'image', referenceEnabled: true, primary: shouldBePrimary,
-            referencePriority: existingAssetNodes.length + index + 1,
-          },
-        }
-      }) as CanvasNode[]
+          data,
+        } as CanvasNode
+        placed.push(node)
+        return node
+      })
       void commitDocument({
         ...document,
         assets: [...assets, ...document.assets],
@@ -560,13 +587,14 @@ export function createCanvasAssetGraphActions({
       const document = get().document
       const select = options?.select ?? true
       const nodeId = `text-${Date.now()}`
+      const data = { kind: 'text' as const, label: '视觉描述', content: '描述商品、场景、构图与留白要求' }
       const node: CanvasNode = {
         id: nodeId,
         type: 'text',
-        position: position ?? { x: 190, y: 140 },
+        position: placeOnCanvas(document, position, { type: 'text', data }),
         draggable: true,
         selected: select,
-        data: { kind: 'text', label: '视觉描述', content: '描述商品、场景、构图与留白要求' },
+        data,
       }
       void commitDocument({
         ...document,
@@ -579,8 +607,9 @@ export function createCanvasAssetGraphActions({
       return nodeId
     },
 
-    addGenerateNode: (position, mediaKind = 'image', inputNodeIds) => {
+    addGenerateNode: (position, mediaKind = 'image', inputNodeIds, options) => {
       const document = get().document
+      const select = options?.select ?? true
       const nodeId = `generate-${Date.now()}`
       const matchingModel = defaultImageGenerationModel(get().availableModels, mediaKind)
       if (!matchingModel && mediaKind === 'video') {
@@ -590,23 +619,32 @@ export function createCanvasAssetGraphActions({
       const planned = planGenerateNodeCreation({
         nodes: document.nodes,
         nodeId,
-        position: position ?? { x: 470, y: 240 },
+        position: position ?? placeOnCanvas(document, { x: 470, y: 240 }, {
+          type: 'generate',
+          data: { kind: 'generate', label: '', prompt: '', batchCount: 1, settings: defaultSettingsForModel(matchingModel ?? defaultImageGenerationModel(get().availableModels, mediaKind)) },
+        }),
         mediaKind,
         settings: defaultSettingsForModel(matchingModel ?? defaultImageGenerationModel(get().availableModels, mediaKind)),
         inputNodeIds,
+        standalone: options?.standalone,
       })
+      const node = { ...planned.node, selected: select }
       void commitDocument({
         ...document,
-        nodes: [...document.nodes.map((item) => ({ ...item, selected: false })), planned.node] as CanvasNode[],
+        nodes: select
+          ? [...document.nodes.map((item) => ({ ...item, selected: false })), node] as CanvasNode[]
+          : [...document.nodes, node] as CanvasNode[],
         edges: [...document.edges, ...planned.edges],
-      }, {
-        selectedNodeId: nodeId,
-        assistantMessage: planned.edges.length
-          ? `已创建「${planned.node.data.label}」并连接所选输入。`
-          : mediaKind === 'video'
-            ? '已创建视频生成节点；连接首帧、首尾帧或参考素材后即可生成。'
-            : '已创建图像生成节点；连接商品图片后，可直接填写描述并生成。',
-      })
+      }, select
+        ? {
+          selectedNodeId: nodeId,
+          assistantMessage: planned.edges.length
+            ? `已创建「${planned.node.data.label}」并连接所选输入。`
+            : mediaKind === 'video'
+              ? '已创建视频生成节点；连接首帧、首尾帧或参考素材后即可生成。'
+              : '已创建图像生成节点；连接商品图片后，可直接填写描述并生成。',
+        }
+        : {})
       return nodeId
     },
 
@@ -675,7 +713,6 @@ export function createCanvasAssetGraphActions({
         .sort((left, right) => (left.reference.priority ?? left.index + 1) - (right.reference.priority ?? right.index + 1) || left.index - right.index)
       const usedAssetNodeIds = new Set<string>()
       const restoredAssetNodes: CanvasNode[] = []
-      const existingAssetNodeCount = document.nodes.filter((node) => node.type === 'asset').length
       const restoredInputs = orderedReferences.flatMap(({ reference }) => {
         const direct = document.nodes.find((node) => node.id === reference.nodeId && node.type === 'asset' && !usedAssetNodeIds.has(node.id))
         const fallback = direct ?? document.nodes.find((node) => node.type === 'asset'
@@ -688,21 +725,19 @@ export function createCanvasAssetGraphActions({
         const asset = findAvailableAsset(document, get().globalAssets, reference.assetId)
         if (!asset) return []
         const restoredNodeId = migrationId(`asset-${asset.id}-recipe-${timestamp}`, usedNodeIds)
+        const data = {
+          kind: 'asset' as const, assetId: asset.id, role: asset.role, name: asset.name, image: asset.image,
+          imageWidth: asset.imageWidth, imageHeight: asset.imageHeight, source: asset.source,
+          referenceEnabled: true,
+          primary: Boolean(reference.primary || reference.nodeId === recipe.primaryReferenceNodeId),
+          referencePriority: reference.priority,
+        }
         restoredAssetNodes.push({
           id: restoredNodeId,
           type: 'asset',
-          position: {
-            x: 110 + ((existingAssetNodeCount + restoredAssetNodes.length) % 3) * 205,
-            y: 150 + Math.floor((existingAssetNodeCount + restoredAssetNodes.length) / 3) * 250,
-          },
+          position: placeOnCanvas(document, undefined, { type: 'asset', data }, restoredAssetNodes),
           draggable: true,
-          data: {
-            kind: 'asset', assetId: asset.id, role: asset.role, name: asset.name, image: asset.image,
-            imageWidth: asset.imageWidth, imageHeight: asset.imageHeight, source: asset.source,
-            referenceEnabled: true,
-            primary: Boolean(reference.primary || reference.nodeId === recipe.primaryReferenceNodeId),
-            referencePriority: reference.priority,
-          },
+          data,
         })
         usedAssetNodeIds.add(restoredNodeId)
         return [{ reference, nodeId: restoredNodeId }]
@@ -722,6 +757,7 @@ export function createCanvasAssetGraphActions({
           settings: cloneGenerationSettings(recipe.settings),
           inputOrder: restoredInputs.map((input) => input.nodeId),
           primaryInputId,
+          standalone: true,
         },
       }
       const usedEdgeIds = new Set(document.edges.map((edge) => edge.id))
