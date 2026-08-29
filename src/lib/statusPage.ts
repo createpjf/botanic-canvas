@@ -1,15 +1,16 @@
 import {
+  asClientStatusSnapshot,
   emptyStatusSnapshot,
-  mapStatusSnapshot,
-  subscribeUrlFromJsonUrl,
   type StatusSnapshot,
 } from '../domain/statusPage.ts'
 
+const DEFAULT_STATUS_JSON_URL = '/status.json'
+
 export function readStatusPageConfig(env: Record<string, string | undefined> = import.meta.env ?? {}) {
-  const jsonUrl = env.VITE_STATUS_PAGE_JSON_URL?.trim() || null
+  const raw = env.VITE_STATUS_PAGE_JSON_URL
   return {
-    jsonUrl,
-    subscribeUrl: subscribeUrlFromJsonUrl(jsonUrl ?? '', env.VITE_STATUS_PAGE_SUBSCRIBE_URL),
+    jsonUrl: raw === undefined ? DEFAULT_STATUS_JSON_URL : (raw.trim() || null),
+    subscribeUrl: null as string | null,
   }
 }
 
@@ -18,13 +19,10 @@ export async function loadStatusSnapshot(input: {
   now?: () => number
   timeoutMs?: number
   jsonUrl?: string | null
-  subscribeUrl?: string | null
 } = {}): Promise<StatusSnapshot> {
   const fetchedAt = new Date((input.now ?? Date.now)()).toISOString()
-  const configured = readStatusPageConfig()
-  const jsonUrl = input.jsonUrl !== undefined ? input.jsonUrl : configured.jsonUrl
-  const subscribeUrl = input.subscribeUrl !== undefined ? input.subscribeUrl : configured.subscribeUrl
-  if (!jsonUrl) return emptyStatusSnapshot('unconfigured', fetchedAt, subscribeUrl)
+  const jsonUrl = input.jsonUrl !== undefined ? input.jsonUrl : readStatusPageConfig().jsonUrl
+  if (!jsonUrl) return emptyStatusSnapshot('unconfigured', fetchedAt)
 
   const fetchImpl = input.fetchImpl ?? fetch
   const controller = new AbortController()
@@ -38,10 +36,10 @@ export async function loadStatusSnapshot(input: {
         else controller.signal.addEventListener('abort', rejectAbort, { once: true })
       }),
     ])
-    if (!response.ok) return emptyStatusSnapshot('unavailable', fetchedAt, subscribeUrl)
-    return mapStatusSnapshot(await response.json(), fetchedAt, subscribeUrl)
+    if (!response.ok) return emptyStatusSnapshot('unavailable', fetchedAt)
+    return asClientStatusSnapshot(await response.json(), fetchedAt)
   } catch {
-    return emptyStatusSnapshot('unavailable', fetchedAt, subscribeUrl)
+    return emptyStatusSnapshot('unavailable', fetchedAt)
   } finally {
     clearTimeout(timer)
   }

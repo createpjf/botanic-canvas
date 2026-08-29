@@ -2,7 +2,6 @@
 
 interface ImportMetaEnv {
   readonly VITE_STATUS_PAGE_JSON_URL?: string
-  readonly VITE_STATUS_PAGE_SUBSCRIBE_URL?: string
 }
 
 declare const __BOTANIC_RELEASE__: { version: string; revision: string }

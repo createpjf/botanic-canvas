@@ -40,6 +40,12 @@ function dependencyRule(file, dependency, rootDir) {
   if (source.startsWith('src/') && (target === 'server' || target.startsWith('server/'))) {
     return 'frontend-cannot-import-server'
   }
+  if (source.startsWith('src/') && target.startsWith('api/')) {
+    return 'frontend-cannot-import-status-functions'
+  }
+  if (source.startsWith('api/') && target.startsWith('server/')) {
+    return 'status-functions-cannot-import-railway'
+  }
   if (source.startsWith('src/components/')
     && (target.startsWith('src/lib/') || target.startsWith('src/store/'))) {
     return 'ui-cannot-import-infrastructure'
@@ -49,6 +55,7 @@ function dependencyRule(file, dependency, rootDir) {
       || target.startsWith('src/store/')
       || target.startsWith('src/components/')
       || target.startsWith('src/data/')
+      || target.startsWith('api/')
       || target === 'src/App'
       || target.startsWith('src/App.'))) {
     return 'domain-cannot-import-application-or-infrastructure'
@@ -136,6 +143,7 @@ export function checkArchitectureBoundaries({ rootDir }) {
   const files = [
     ...sourceFiles(resolve(rootDir, 'src')),
     ...sourceFiles(resolve(rootDir, 'server')),
+    ...sourceFiles(resolve(rootDir, 'api')),
   ]
   const fileSet = new Set(files)
   const graph = new Map(files.map((file) => [file, []]))

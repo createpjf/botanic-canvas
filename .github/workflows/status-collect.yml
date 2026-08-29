@@ -1,0 +1,26 @@
+name: Status collect
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe production and store samples
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          STATUS_COLLECT_URL: ${{ secrets.STATUS_COLLECT_URL }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "CRON_SECRET is not set"
+            exit 1
+          fi
+          url="${STATUS_COLLECT_URL:-https://botanic-canvas.vercel.app/status-collect}"
+          curl -fsS -X POST -H "Authorization: Bearer $CRON_SECRET" "$url"
