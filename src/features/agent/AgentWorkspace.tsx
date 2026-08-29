@@ -491,8 +491,6 @@ export default function AgentWorkspace({
     : preview
   const [intent, setIntent] = useState<BotanicAgentIntent | undefined>(undefined)
   const [groupId, setGroupId] = useState('')
-  const [rawReasoningSessions, setRawReasoningSessions] = useState<Record<string, boolean>>({})
-  const showRawReasoning = session ? rawReasoningSessions[session.id] === true : false
   const plannerModel = plannerModels.includes(session?.plannerModel ?? '')
     ? session!.plannerModel!
     : plannerModels[0] ?? defaultAgentPlannerModels[0]
@@ -1559,7 +1557,6 @@ export default function AgentWorkspace({
     structuredVariants?: Array<{ label: string; promptDelta: string }>,
     variationAxisLabel?: string,
     runtimeRequestKey?: string,
-    resolvedIntent?: BotanicAgentIntent,
   ): Promise<BotanicAgentPlan | BotanicAgentClarificationResponse | null> => {
     if (!session || !target || !isCurrentAgentProject()) return null
     const assetGroup = compatibleGroups.find((group) => group.id === groupId)
@@ -1574,7 +1571,7 @@ export default function AgentWorkspace({
       // 回合模型结构化声明的变体：规划器直接展开，不再从自然语言里挖轴。
       ...(structuredVariants?.length ? { structuredVariants } : {}),
       ...(structuredVariants?.length && variationAxisLabel ? { variationAxisLabel } : {}),
-      requestedIntent: resolvedIntent ?? intent,
+      requestedIntent: intent,
       selectedResultNodeId: target.id,
       selectedResultLabel: target.label,
       rootRecipe: target.rootRecipe,
@@ -1710,7 +1707,7 @@ export default function AgentWorkspace({
             // 变体轴只从用户原话解析：cleanInstruction 在综合 Prompt 链路里是模型 prose。
             instruction: sourceInstruction ?? failedCommand?.instruction ?? cleanInstruction,
             locale,
-            requestedIntent: resolvedIntent ?? intent,
+            requestedIntent: intent,
             clarificationAnswers,
             brief: creativeBrief,
             fallbackPrompt: target.rootRecipe?.prompt,
@@ -2347,7 +2344,6 @@ export default function AgentWorkspace({
     // 服务端未配置或离线时回退到本地正则决策，保证本地开发、e2e 与无 Provider 部署不受影响。
     let serverDecision: ReturnType<typeof decideBotanicAgentRequest> | undefined = entry.decision
     let synthesizedPrompt: string | undefined = entry.synthesizedPrompt
-    let requestedIntent: BotanicAgentIntent | undefined = intent ?? entry.synthesizedIntent
     let synthesizedCount: number | undefined = entry.synthesizedCount
     let synthesizedDuration: number | undefined = entry.synthesizedDuration
     let synthesizedVariants: Array<{ label: string; promptDelta: string }> | undefined = entry.synthesizedVariants
@@ -2431,7 +2427,6 @@ export default function AgentWorkspace({
           inputMessage: turnInputMessage,
           locale,
           plannerModel,
-          ...(showRawReasoning ? { showRawReasoning: true } : {}),
           mountedSkillIds: session.mountedSkillIds,
           contextNodeIds,
           hasTarget: Boolean(instructionTarget),
@@ -2599,7 +2594,6 @@ export default function AgentWorkspace({
         const continuation = botanicAgentTurnGenerationContinuation(turn, projectedTurnId ?? '')
         instructionTarget = resolveBotanicAgentContinuationTarget(continuation.targetNodeId, onResolveTarget)
         synthesizedPrompt = continuation.resolvedGeneration.prompt
-        requestedIntent ??= continuation.resolvedGeneration.intent
         synthesizedCount = continuation.resolvedGeneration.count
         synthesizedDuration = continuation.resolvedGeneration.duration
         synthesizedVariants = continuation.resolvedGeneration.variants
@@ -2910,7 +2904,7 @@ export default function AgentWorkspace({
       messages: session.messages,
       generationModels,
       executionMode: session.executionMode,
-      requestedIntent,
+      requestedIntent: intent,
       target: instructionTarget
         ? { id: instructionTarget.id, label: instructionTarget.label, image: instructionTarget.image, inheritedSettings: instructionTarget.rootRecipe.settings }
         : undefined,
@@ -2972,7 +2966,6 @@ export default function AgentWorkspace({
         mode: session.executionMode,
         settingsComplete: true,
         pendingActionCount: 0,
-        allowAutoSubmit: !entry.requiresGenerationConfirmation,
         waivers: session.confirmationWaivers,
       })
       try {
@@ -2990,7 +2983,6 @@ export default function AgentWorkspace({
           plannerModel,
           settings: { ...instructionTarget.rootRecipe.settings, ...draft.generationOverrides },
           ...(sourceTurnId ? { turnId: sourceTurnId } : {}),
-          ...(entry.requiresGenerationConfirmation ? { requiresGenerationConfirmation: true } : {}),
         }
         if (!isCurrentAgentProject()) return
         setRuntimePhase('waiting_confirmation')
@@ -3035,7 +3027,6 @@ export default function AgentWorkspace({
           ...appliedInitial.plan,
           plannerModel,
           ...(sourceTurnId ? { turnId: sourceTurnId } : {}),
-          ...(entry.requiresGenerationConfirmation ? { requiresGenerationConfirmation: true } : {}),
         }
         attachPlannerToolTrace(resolvedInitialPlan)
         if (!isCurrentAgentProject()) return
@@ -3046,7 +3037,6 @@ export default function AgentWorkspace({
           settingsComplete: true,
           pendingActionCount: 0,
           outputCount: resolvedInitialPlan.output.count,
-          allowAutoSubmit: !entry.requiresGenerationConfirmation,
           waivers: session.confirmationWaivers,
         })
         const planMessageId = appendMessage({
@@ -3082,7 +3072,6 @@ export default function AgentWorkspace({
       draft.structuredVariants,
       draft.variationAxisLabel,
       sourceTurnId ? `agent-plan:${sourceTurnId}` : undefined,
-      requestedIntent,
     )
     if (!nextPlan || !session || !isCurrentAgentProject()) return
     if ('kind' in nextPlan && nextPlan.kind === 'clarification') {
@@ -3098,11 +3087,7 @@ export default function AgentWorkspace({
       return
     }
     const planned = nextPlan as BotanicAgentPlan
-    const resolvedPlan = {
-      ...planned,
-      ...(sourceTurnId ? { turnId: sourceTurnId } : {}),
-      ...(entry.requiresGenerationConfirmation ? { requiresGenerationConfirmation: true } : {}),
-    }
+    const resolvedPlan = sourceTurnId ? { ...planned, turnId: sourceTurnId } : planned
     const planMessageId = appendMessage({
       ...sourceTurnMessageIdentity(),
       role: 'assistant', kind: 'plan', plan: resolvedPlan, status: 'pending',
@@ -3114,7 +3099,6 @@ export default function AgentWorkspace({
       settingsComplete: true,
       pendingActionCount: botanicAgentPendingConfirmationCount(resolvedPlan.actions),
       outputCount: resolvedPlan.output.count,
-      allowAutoSubmit: !entry.requiresGenerationConfirmation,
       waivers: session.confirmationWaivers,
     })
     if (planMessageId && planExecutionDecision.action === 'auto_submit') {
@@ -4026,7 +4010,6 @@ export default function AgentWorkspace({
         modeMenuId={modeMenuId}
         plannerModel={plannerModel}
         plannerModels={plannerModels}
-        showRawReasoning={showRawReasoning}
         groupId={groupId}
         compatibleGroups={compatibleGroups}
         imageContextOptions={imageContextOptions}
@@ -4040,7 +4023,7 @@ export default function AgentWorkspace({
         onSelectSkill={selectSkill}
         onCreateSkill={openSkillCreation}
         onDismissMention={() => setMentionQuery(undefined)}
-        onInstructionChange={(value, caret) => { setInstruction(value); setIntent(undefined); setMentionQuery(readBotanicAgentMentionQuery(value, caret)); setError(''); setLastFailedInstruction(''); setLastFailedPlanMessageId('') }}
+        onInstructionChange={(value, caret) => { setInstruction(value); setMentionQuery(readBotanicAgentMentionQuery(value, caret)); setError(''); setLastFailedInstruction(''); setLastFailedPlanMessageId('') }}
         onInstructionClick={(caret) => setMentionQuery(readBotanicAgentMentionQuery(instruction, caret))}
         onRetry={lastFailedPlanMessageId ? retryLastFailedPlan : retryLastInstruction}
         onImportFiles={(files) => void importImageFiles(files)}
@@ -4048,10 +4031,6 @@ export default function AgentWorkspace({
         onCloseContextMenu={() => { setContextMenuOpen(false); requestAnimationFrame(() => contextMenuButtonRef.current?.focus()) }}
         onToggleModeMenu={() => setModeMenuOpen((open) => !open)}
         onPlannerModelChange={(model) => { if (session) onPlannerModelChange(session.id, model) }}
-        onShowRawReasoningChange={(show) => {
-          if (!session) return
-          setRawReasoningSessions((current) => ({ ...current, [session.id]: show }))
-        }}
         onGroupChange={setGroupId}
         onSend={() => void sendInstruction()}
         onCancelPlanning={cancelPlanning}

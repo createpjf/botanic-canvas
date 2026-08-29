@@ -178,7 +178,6 @@ export function botanicAgentTurnGenerationContinuation(
     resolvedGeneration: {
       mediaKind: turn.mediaKind,
       prompt: turn.prompt,
-      ...(turn.intent ? { intent: turn.intent } : {}),
       ...(turn.count ? { count: turn.count } : {}),
       ...(turn.duration ? { duration: turn.duration } : {}),
       ...(turn.variants?.length ? { variants: turn.variants } : {}),

@@ -266,7 +266,6 @@ function AgentTimelineSearchStep({
   const readyRef = useRef(false)
   const [open, setOpen] = useState(false)
   const sourceCount = block.sources?.length ?? 0
-  const accessibleLabel = `${title}${block.summary ? `, ${block.summary}` : ''}, ${statusLabel}`
 
   useGSAP(() => {
     const panel = panelRef.current
@@ -293,11 +292,11 @@ function AgentTimelineSearchStep({
       type="button"
       className={`agent-timeline__step agent-timeline__search-toggle is-${block.status}`}
       aria-expanded={open}
-      aria-label={accessibleLabel}
+      aria-label={`${title}, ${statusLabel}`}
       onClick={() => setOpen((value) => !value)}
     >
       <span className="agent-timeline__step-icon" aria-hidden="true"><TimelineStepMarker block={block} toolItems={toolItems} /></span>
-      <span className="agent-timeline__step-copy"><strong>{title}</strong>{block.summary ? <span>{block.summary}</span> : null}</span>
+      <strong>{title}</strong>
       <small>{statusLabel}</small>
       <ChevronDownIcon />
     </button>
@@ -351,7 +350,7 @@ function AgentMessageTimeline({ timeline }: { timeline: AgentTimelineState }) {
         const marker = block.status === 'running'
           ? <AgentThinkingOrb label={label} />
           : <ClockIcon />
-        const summary = <>{marker}<span>{label}</span>{block.text ? <small>{locale === 'en' ? 'Model reasoning · experimental' : '模型推理原文 · 实验'}</small> : null}</>
+        const summary = <>{marker}<span>{label}</span></>
         return block.text ? <details key={block.id} className={`agent-timeline__thinking is-${block.status}`}>
           <summary>{summary}</summary>
           <p>{block.text}</p>
@@ -374,9 +373,9 @@ function AgentMessageTimeline({ timeline }: { timeline: AgentTimelineState }) {
             error={stepError}
           />
         }
-        return <div key={block.id} className={`agent-timeline__step is-${block.status}`} aria-label={`${title}${block.summary ? `, ${block.summary}` : ''}, ${statusLabel}`}>
+        return <div key={block.id} className={`agent-timeline__step is-${block.status}`} aria-label={`${title}, ${statusLabel}`}>
           <span className="agent-timeline__step-icon" aria-hidden="true"><TimelineStepMarker block={block} toolItems={toolItems} /></span>
-          <span className="agent-timeline__step-copy"><strong>{title}</strong>{block.summary ? <span>{block.summary}</span> : null}</span>
+          <strong>{title}</strong>
           <small>{statusLabel}</small>
           {/* 失败必须说清原因。只显示「失败」的话，看的人不知道该改什么 —— 线上就撞上过：
               两个写类工具调用连续失败，界面上只有两个红叉。 */}
@@ -982,7 +981,6 @@ export function AgentConversationMessage({
           settingsComplete: true,
           pendingActionCount,
           outputCount: plan.output.count,
-          allowAutoSubmit: plan.requiresGenerationConfirmation !== true,
           waivers: confirmationWaivers,
         })
         // 有豁免后计划模式也会因张数停下，所以暂停说明不再限定自动模式。
@@ -990,9 +988,9 @@ export function AgentConversationMessage({
           pendingActionCount,
           outputCount: plan.output.count,
         }, locale)
-        // 只允许用户豁免模式和批量张数；外部行动、模型推断意图永远需要当次确认。
+        // 这次停下来的理由是否可以一次性交出去。外部行动不在此列。
         const waivableReason = executionDecision.action === 'confirm'
-          && (executionDecision.reason === 'manual' || executionDecision.reason === 'batch_count')
+          && executionDecision.reason !== 'pending_actions'
           && !confirmationWaivers?.includes(executionDecision.reason)
           ? executionDecision.reason
           : null
@@ -1117,7 +1115,7 @@ export function AgentConversationMessage({
           {planSubmitted ? null : <div className="agent-plan__footer">
             {/* 停在这里一定有原因，必须说清楚，否则用户只会觉得“自动模式没生效”。 */}
             {autoPauseHint ? <small className="agent-plan__auto-paused">{autoPauseHint}</small> : null}
-            {/* 信任按理由逐条交出：勾一次，这一类以后不再拦。外部行动和模型推断意图不在这里。 */}
+            {/* 信任按理由逐条交出：勾一次，这一类以后不再拦。外部行动永远不出现在这里。 */}
             {waivableReason ? <label className="agent-plan__waiver">
               <input
                 type="checkbox"

@@ -99,7 +99,7 @@ test('实时事件按到达顺序形成思考和语义步骤，同一工具调�
     'step:search:已搜索 29 个网站',
   ])
   assert.deepEqual(semanticBlocks[0], {
-    id: 'thinking', type: 'thinking', status: 'done', startedAt: 1_000, endedAt: 1_200, text: '先核地址',
+    id: 'thinking', type: 'thinking', status: 'done', startedAt: 1_000, endedAt: 2_000, text: '先核地址',
   })
   assert.equal(semanticBlocks.filter((block) => block.type === 'step' && block.sourceToolIds.includes('search-1')).length, 1)
   const rawGroup = timeline.blocks.find((block) => block.type === 'raw_group')
@@ -163,24 +163,6 @@ test('回答增量写入正文，不进入时间线旁白', () => {
   assert.equal(thinking?.type === 'thinking' ? thinking.status : '', 'done')
 })
 
-test('工具后新的 reasoning 独立成段，工具 why 直接成为安全步骤摘要', () => {
-  let timeline = createAgentTimeline(1_000)
-  timeline = reduceAgentTimeline(timeline, { type: 'reasoning', step: 0, delta: '先读取画布。', receivedAt: 1_050 })
-  timeline = reduceAgentTimeline(timeline, {
-    type: 'tool', step: 0,
-    toolCall: { ...toolCall('canvas-1', 'canvas_read', '读取画布', 'running'), summary: '确认当前选中节点与参考素材' },
-    receivedAt: 1_100,
-  })
-  timeline = reduceAgentTimeline(timeline, { type: 'reasoning', step: 1, delta: '再整理可执行方案。', receivedAt: 1_200 })
-  timeline = reduceAgentTimeline(timeline, { type: 'done', receivedAt: 1_300 })
-
-  const blocks = timeline.blocks.filter((block) => block.type !== 'raw_group')
-  assert.deepEqual(blocks.map((block) => block.type), ['thinking', 'step', 'thinking'])
-  assert.equal(blocks[0].type === 'thinking' ? blocks[0].text : '', '先读取画布。')
-  assert.equal(blocks[1].type === 'step' ? blocks[1].summary : '', '确认当前选中节点与参考素材')
-  assert.equal(blocks[2].type === 'thinking' ? blocks[2].text : '', '再整理可执行方案。')
-})
-
 test('错误事件收束思考并把当前运行步骤标记为失败', () => {
   let timeline = createAgentTimeline(1_000)
   timeline = reduceAgentTimeline(timeline, {
@@ -192,7 +174,7 @@ test('错误事件收束思考并把当前运行步骤标记为失败', () => {
   const step = timeline.blocks.find((block) => block.type === 'step')
   const rawGroup = timeline.blocks.find((block) => block.type === 'raw_group')
   assert.deepEqual(thinking, {
-    id: 'thinking', type: 'thinking', status: 'done', startedAt: 1_000, endedAt: 1_100, text: '',
+    id: 'thinking', type: 'thinking', status: 'done', startedAt: 1_000, endedAt: 1_200, text: '',
   })
   assert.equal(step?.type === 'step' ? step.status : '', 'failed')
   assert.deepEqual(rawGroup?.type === 'raw_group' ? rawGroup.items[0] : undefined, {

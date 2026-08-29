@@ -321,7 +321,6 @@ test('Turn 请求 accepted 前断线后，pending 用户 Message 仍进入同 ke
 test('刷新恢复 generation 时合并 settingsHint，和首轮执行使用同一生成参数', () => {
   assert.deepEqual(botanicAgentTurnGenerationContinuation({
     kind: 'generation', mediaKind: 'image', prompt: '海边广告图', count: 2,
-    intent: 'replace_scene',
     selectedResultNodeId: 'result-original',
     axisLabel: '光线', variants: [{ label: '晨光', promptDelta: '清晨' }],
     settingsHint: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
@@ -329,7 +328,6 @@ test('刷新恢复 generation 时合并 settingsHint，和首轮执行使用同�
     targetNodeId: 'result-original',
     resolvedGeneration: {
       mediaKind: 'image', prompt: '海边广告图', count: 2,
-      intent: 'replace_scene',
       variationAxisLabel: '光线', variants: [{ label: '晨光', promptDelta: '清晨' }],
       turnId: 'turn-generation',
     },

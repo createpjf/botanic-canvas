@@ -43,7 +43,7 @@ export type TimelineBlock =
   | { id: string; type: 'narration'; text: string }
   | {
     id: string; type: 'step'; status: 'running' | 'succeeded' | 'failed'; kind: TimelineStepKind
-    title: string; summary?: string; count?: number; sources?: TimelineWebSource[]; sourceToolIds: string[]
+    title: string; count?: number; sources?: TimelineWebSource[]; sourceToolIds: string[]
     /**
      * 失败原因。**没有它，界面只能显示一个「失败」**，看的人无从判断该改什么。
      * 实测线上就撞上了：两个写类工具调用连续失败，界面上只有两个红叉与
@@ -311,11 +311,7 @@ function reduceToolEvent(state: AgentTimelineState, event: Extract<AgentTimeline
   const previousTrace = rawGroup?.items.find((item) => item.id === event.toolCall.id)
   const items = upsertRawItem(rawGroup?.items ?? [], event.toolCall)
   const presentation = event.presentation ?? agentTimelineToolPresentation(event.toolCall)
-  const blocks = semanticBlocks(state.blocks).map((block): TimelineBlock => (
-    block.type === 'thinking' && block.status === 'running'
-      ? { ...block, status: 'done', endedAt: event.receivedAt }
-      : block
-  ))
+  const blocks = semanticBlocks(state.blocks)
   const existingIndex = blocks.findIndex((block) => block.type === 'step' && block.sourceToolIds.includes(event.toolCall.id))
   const incomingStatus = stepStatus(event.toolCall.status)
   const incomingCount = knownCount(presentation.count) ?? 1
@@ -334,9 +330,6 @@ function reduceToolEvent(state: AgentTimelineState, event: Extract<AgentTimeline
       status,
       kind: presentation.kind,
       title: presentation.kind === 'search' ? searchTitle(status, nextCount) : presentation.title,
-      ...(event.toolCall.summary?.trim()
-        ? { summary: event.toolCall.summary.trim() }
-        : existing.summary ? { summary: existing.summary } : {}),
       ...(nextCount === undefined ? {} : { count: nextCount }),
       // 恢复成功时清掉上一次的失败原因，否则一条已经跑通的步骤会一直挂着旧错误。
       ...(stepFailureReason(items, existing.sourceToolIds) ? { error: stepFailureReason(items, existing.sourceToolIds) } : { error: undefined }),
@@ -355,9 +348,6 @@ function reduceToolEvent(state: AgentTimelineState, event: Extract<AgentTimeline
       sourceToolIds,
       status,
       title: searchTitle(status, nextCount),
-      ...(event.toolCall.summary?.trim()
-        ? { summary: event.toolCall.summary.trim() }
-        : last.summary ? { summary: last.summary } : {}),
       ...(nextCount === undefined ? {} : { count: nextCount }),
       ...(stepFailureReason(items, sourceToolIds) ? { error: stepFailureReason(items, sourceToolIds) } : { error: undefined }),
     }, event.toolCall, presentation)
@@ -371,7 +361,6 @@ function reduceToolEvent(state: AgentTimelineState, event: Extract<AgentTimeline
       status: incomingStatus,
       kind: presentation.kind,
       title: presentation.kind === 'search' ? searchTitle(incomingStatus, count) : presentation.title,
-      ...(event.toolCall.summary?.trim() ? { summary: event.toolCall.summary.trim() } : {}),
       ...(count === undefined ? {} : { count }),
       sourceToolIds: [event.toolCall.id],
       ...(event.toolCall.error?.trim() ? { error: event.toolCall.error.trim() } : {}),
@@ -417,22 +406,15 @@ export function applyAgentConversationStreamEvent(
 
 export function reduceAgentTimeline(prev: AgentTimelineState, event: AgentTimelineEvent): AgentTimelineState {
   if (event.type === 'reasoning') {
-    const rawGroup = timelineRawGroup(prev.blocks)
-    const blocks = semanticBlocks(prev.blocks)
-    const activeIndex = blocks.map((block) => block.type === 'thinking' && block.status === 'running').lastIndexOf(true)
-    if (activeIndex < 0) {
-      blocks.push({
-        id: `thinking:${event.step}:${blocks.filter((block) => block.type === 'thinking').length}`,
-        type: 'thinking',
-        status: 'running',
-        startedAt: event.receivedAt,
-        text: event.delta,
-      })
-      return { blocks: rawGroup ? withRawGroup(blocks, rawGroup.items, rawGroup.open) : blocks }
+    const existing = prev.blocks.find((block) => block.type === 'thinking')
+    if (!existing) {
+      return { blocks: [{ id: 'thinking', type: 'thinking', status: 'running', startedAt: event.receivedAt, text: event.delta }, ...prev.blocks] }
     }
-    const active = blocks[activeIndex]
-    if (active.type === 'thinking') blocks[activeIndex] = { ...active, text: `${active.text}${event.delta}` }
-    return { blocks: rawGroup ? withRawGroup(blocks, rawGroup.items, rawGroup.open) : blocks }
+    return {
+      blocks: prev.blocks.map((block) => block.type === 'thinking'
+        ? { ...block, text: `${block.text}${event.delta}` }
+        : block),
+    }
   }
   // 回答属于气泡正文，不进入时间线；连续工具步骤因此不会被旁白打断。
   if (event.type === 'answer') return prev

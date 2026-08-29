@@ -67,30 +67,16 @@ test('追问回程带回的生成结论直接进入生成，不再对画面描�
   assert.equal(entry.synthesizedDuration, 10)
 })
 
-test('全新视觉请求由服务端回合判断意图；无图聊天、澄清答复与显式来源保持确定性路径', () => {
+test('只有全新用户发送才走服务端回合；澄清答复与显式来源保持确定性路径', () => {
   const fresh = resolveBotanicAgentInstructionEntry({
     instruction: '帮我生成一张海边人像', options: {}, hasVisualContext: true, messages: [],
   })
   assert.equal(fresh.kind === 'route' && fresh.useServerTurn, true)
-  assert.equal(fresh.kind === 'route' && fresh.requiresGenerationConfirmation, false)
 
   const analyze = resolveBotanicAgentInstructionEntry({
     instruction: '这张图里有什么，分析一下', options: {}, hasVisualContext: true, messages: [],
   })
-  assert.equal(analyze.kind === 'route' && analyze.useServerTurn, true)
-  assert.equal(analyze.kind === 'route' && analyze.requiresGenerationConfirmation, true)
-
-  const replaceObject = resolveBotanicAgentInstructionEntry({
-    instruction: '把狗狗换成猫', options: {}, hasVisualContext: true, messages: [],
-  })
-  assert.equal(replaceObject.kind === 'route' && replaceObject.useServerTurn, true)
-  assert.equal(replaceObject.kind === 'route' && replaceObject.requiresGenerationConfirmation, true)
-
-  const noVisualChat = resolveBotanicAgentInstructionEntry({
-    instruction: '帮我分析一下', options: {}, hasVisualContext: false, messages: [],
-  })
-  assert.equal(noVisualChat.kind === 'route' && noVisualChat.useServerTurn, true)
-  assert.equal(noVisualChat.kind === 'route' && noVisualChat.requiresGenerationConfirmation, true)
+  assert.equal(analyze.kind === 'route' && analyze.useServerTurn, false)
 
   const answering = resolveBotanicAgentInstructionEntry({
     instruction: '帮我生成一张海边人像',
@@ -142,13 +128,12 @@ test('生成草案的追问卡带回 Prompt 来源与本轮生成结论', () => 
     generationModels: [imageModel],
     executionMode: 'manual',
     synthesizedPrompt: '海边礁石人像，黄金时刻逆光',
-    requestedIntent: 'replace_scene',
     synthesizedCount: 3,
   })
   assert.equal(draft.kind, 'ask')
   if (draft.kind !== 'ask') return
   assert.deepEqual(draft.clarification.resolvedGeneration, {
-    mediaKind: 'image', prompt: '海边礁石人像，黄金时刻逆光', intent: 'replace_scene', count: 3,
+    mediaKind: 'image', prompt: '海边礁石人像，黄金时刻逆光', count: 3,
   })
 })
 

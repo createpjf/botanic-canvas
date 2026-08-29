@@ -402,11 +402,13 @@ export function useCanvasAgentExecutionBridge({
     const contextNodeIds = activeDocument.agentSessions.find((item) => item.id === sessionId)?.contextNodeIds ?? []
     if (!serverPersistenceEnabled || !contextNodeIds.length) return contextNodeIds
     const sources = collectAgentVisionMediaSources(activeDocument, contextNodeIds)
-    if (!sources.length) return contextNodeIds
-    const replacements = await prepareAgentMediaSources(sources, (source) => persistAgentReferenceMedia(activeDocument.id, source))
-    if (Object.keys(replacements).length) await replaceMediaSources(replacements)
-    // 有视觉输入时必须确保服务端能读到同一份图片；失败由调用方展示并中止 Turn。
-    await flushPendingCanvasDocumentWrites()
+    try {
+      const replacements = await prepareAgentMediaSources(sources, (source) => persistAgentReferenceMedia(activeDocument.id, source))
+      if (Object.keys(replacements).length) await replaceMediaSources(replacements)
+    } catch { /* 入库失败仍尝试冲刷已排队的画布写入。 */ }
+    try {
+      await flushPendingCanvasDocumentWrites()
+    } catch { /* 冲刷失败不挡住本轮对话；服务端会按当前文档决定能否看图。 */ }
     return contextNodeIds
   }, [replaceMediaSources])
 

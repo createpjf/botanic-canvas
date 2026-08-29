@@ -77,8 +77,6 @@ export type BotanicCreativeBrief = {
 export type BotanicAgentResolvedGeneration = {
   mediaKind: 'image' | 'video'
   prompt: string
-  /** Turn 已固定的生成意图；Planner 不得二次改判。旧结果可能缺失。 */
-  intent?: import('./agent.ts').BotanicAgentIntent
   count?: number
   /** 仅视频：时长（秒）。 */
   duration?: number

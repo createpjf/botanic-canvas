@@ -78,13 +78,6 @@ test('只把未受控图片存入媒体库并返回替换表', async () => {
   assert.deepEqual(replacements, { '/assets/result.webp': '/api/media/media_result' })
 })
 
-test('视觉素材入库失败时向上抛错，不能让 Agent 在缺图时继续', async () => {
-  await assert.rejects(
-    prepareAgentMediaSources(['/assets/result.webp'], async () => { throw new Error('上传失败') }),
-    /上传失败/,
-  )
-})
-
 test('媒体替换会同步更新节点、配方和素材记录', () => {
   const next = replaceMediaSources(documentFixture(), {
     '/assets/result.webp': '/api/media/media_result',

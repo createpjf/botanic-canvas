@@ -516,10 +516,6 @@ test('自动模式刷新后按顺序续提交带 turnId 的 pending 单张计划
   }
 
   assert.equal(pendingBotanicAgentAutoSubmission([first, second], 'auto')?.id, first.id)
-  assert.equal(pendingBotanicAgentAutoSubmission([{
-    ...first,
-    plan: { ...firstPlan, requiresGenerationConfirmation: true },
-  }], 'auto', ['manual', 'batch_count']), undefined)
   assert.equal(pendingBotanicAgentAutoSubmission([{ ...first, status: 'submitted' }, second], 'auto')?.id, second.id)
   assert.equal(pendingBotanicAgentAutoSubmission([first], 'manual'), undefined)
   assert.equal(pendingBotanicAgentAutoSubmission([{ ...first, turnId: undefined }], 'auto'), undefined)
@@ -1548,10 +1544,6 @@ test('执行模式是可解释的领域决策，自动模式遇到外部行动�
     resolveBotanicAgentExecutionDecision({ ...auto, pendingActionCount: 2 }),
     { action: 'confirm', reason: 'pending_actions' },
   )
-  assert.deepEqual(
-    resolveBotanicAgentExecutionDecision({ ...auto, allowAutoSubmit: false, waivers: ['manual', 'batch_count'] }),
-    { action: 'confirm', reason: 'intent' },
-  )
   // 会产生费用的参数缺失时，两种模式都必须先问，不猜。
   assert.deepEqual(
     resolveBotanicAgentExecutionDecision({ ...auto, settingsComplete: false }),
@@ -1610,10 +1602,6 @@ test('执行模式是可解释的领域决策，自动模式遇到外部行动�
   assert.match(
     botanicAgentExecutionPauseHint({ action: 'confirm', reason: 'pending_actions' }, { pendingActionCount: 2, outputCount: 1 }) ?? '',
     /2 个需要你确认的外部行动/,
-  )
-  assert.match(
-    botanicAgentExecutionPauseHint({ action: 'confirm', reason: 'intent' }, { pendingActionCount: 0, outputCount: 1 }) ?? '',
-    /推断出生成意图/,
   )
   assert.equal(botanicAgentExecutionPauseHint({ action: 'auto_submit' }, { pendingActionCount: 0, outputCount: 1 }), null)
 })

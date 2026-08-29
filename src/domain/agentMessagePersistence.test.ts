@@ -17,7 +17,7 @@ test('pending Message PUT 携带 pre-server Turn request snapshot', () => {
     id: 'message-pending', role: 'user', kind: 'text', content: '换背景', createdAt: 2,
     status: 'pending',
     turnRequestSnapshot: {
-      locale: 'zh-CN', plannerModel: 'planner-a', showRawReasoning: true, mountedSkillIds: ['skill-a'],
+      locale: 'zh-CN', plannerModel: 'planner-a', mountedSkillIds: ['skill-a'],
       contextNodeIds: ['result-b'], hasTarget: true,
       selectedResultNodeId: 'result-b', selectedResultLabel: '结果 B', executionMode: 'auto',
       generationModels: [{ id: 'image-a', label: '图像 A', mediaKind: 'image' }],
@@ -26,7 +26,6 @@ test('pending Message PUT 携带 pre-server Turn request snapshot', () => {
   })
   assert.equal(body.turnRequestSnapshot?.selectedResultNodeId, 'result-b')
   assert.equal(body.turnRequestSnapshot?.plannerModel, 'planner-a')
-  assert.equal(body.turnRequestSnapshot?.showRawReasoning, true)
 })
 
 test('稳定助手消息的 entityReferences 不由客户端 PUT 回传，服务端从 Turn 覆盖', () => {
