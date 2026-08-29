@@ -34,6 +34,7 @@ type AgentStoreActions = Pick<CanvasStore,
   | 'updateAgentAction'
   | 'setAgentSessionContext'
   | 'setAgentSessionExecutionMode'
+  | 'waiveAgentSessionConfirmation'
   | 'setAgentSessionPlannerModel'
   | 'setAgentSessionSkills'
   | 'renameAgentSession'
@@ -248,8 +249,30 @@ export function createCanvasAgentActions({
       commitAgentSessionDocument({
         ...document,
         agentSessions: document.agentSessions.map((session) => session.id === sessionId
-          ? { ...session, executionMode: mode, updatedAt: Date.now() }
+          ? {
+            ...session,
+            executionMode: mode,
+            // 切回计划模式是「以后先给我看计划」的明确表态；留着 manual 豁免会让这个开关失效。
+            ...(mode === 'manual' && session.confirmationWaivers?.length
+              ? { confirmationWaivers: session.confirmationWaivers.filter((waiver) => waiver !== 'manual') }
+              : {}),
+            updatedAt: Date.now(),
+          }
           : session),
+        activeAgentSessionId: sessionId,
+      }, { persistSession: true })
+    },
+
+    /** 用户在计划卡上交出某一类确认。只增不减，撤销走执行模式开关。 */
+    waiveAgentSessionConfirmation: (sessionId, waiver) => {
+      const document = get().document
+      const session = document.agentSessions.find((item) => item.id === sessionId)
+      if (!session || session.confirmationWaivers?.includes(waiver)) return
+      commitAgentSessionDocument({
+        ...document,
+        agentSessions: document.agentSessions.map((item) => item.id === sessionId
+          ? { ...item, confirmationWaivers: [...(item.confirmationWaivers ?? []), waiver], updatedAt: Date.now() }
+          : item),
         activeAgentSessionId: sessionId,
       }, { persistSession: true })
     },

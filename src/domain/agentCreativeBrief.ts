@@ -4,7 +4,7 @@ import type {
   GenerationResolution,
   GenerationSettings,
 } from './canvas.ts'
-import { defaultImageGenerationModel } from './generationRecipe.ts'
+import { defaultAspectRatioForModel, defaultImageGenerationModel } from './generationRecipe.ts'
 import { customGenerationSizeFields } from './generationOutputSize.ts'
 
 export type BotanicCreativeBriefMode = 'generation' | 'prompt'
@@ -418,7 +418,7 @@ function compileBriefPrompt(brief: BotanicCreativeBrief, locale: 'zh-CN' | 'en' 
 
 function completeAutomaticBrief(brief: BotanicCreativeBrief, model: BriefGenerationModel | undefined) {
   if (!brief.output.aspectRatio && brief.output.deliveryPreset !== 'custom') {
-    const ratio = model?.aspectRatios?.[0]
+    const ratio = defaultAspectRatioForModel(model)
     if (ratio) {
       brief.output.aspectRatio = ratio
       brief.provenance.aspect_ratio = 'default'

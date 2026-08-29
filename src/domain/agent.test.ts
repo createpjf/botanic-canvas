@@ -1557,11 +1557,47 @@ test('执行模式是可解释的领域决策，自动模式遇到外部行动�
     resolveBotanicAgentExecutionDecision({ mode: 'manual', settingsComplete: false, pendingActionCount: 0 }),
     { action: 'ask_settings' },
   )
+  // 豁免只交出「因模式而停」和「因张数而停」，且逐条生效。
+  const manual = { mode: 'manual' as const, settingsComplete: true, pendingActionCount: 0 }
+  assert.deepEqual(
+    resolveBotanicAgentExecutionDecision({ ...manual, waivers: ['manual'] }),
+    { action: 'auto_submit' },
+  )
+  assert.deepEqual(
+    resolveBotanicAgentExecutionDecision({ ...manual, outputCount: 3, waivers: ['manual'] }),
+    { action: 'confirm', reason: 'batch_count' },
+  )
+  assert.deepEqual(
+    resolveBotanicAgentExecutionDecision({ ...manual, outputCount: 3, waivers: ['manual', 'batch_count'] }),
+    { action: 'auto_submit' },
+  )
+  // 外部行动不可豁免：写外部系统、花钱、不可逆，任何豁免组合都必须仍然停下。
+  for (const waivers of [['manual'], ['batch_count'], ['manual', 'batch_count']] as const) {
+    assert.deepEqual(
+      resolveBotanicAgentExecutionDecision({ ...manual, pendingActionCount: 1, outputCount: 4, waivers: [...waivers] }),
+      { action: 'confirm', reason: 'pending_actions' },
+      waivers.join('+'),
+    )
+  }
+  // 设置缺项仍然先于任何豁免：不猜会产生费用的参数。
+  assert.deepEqual(
+    resolveBotanicAgentExecutionDecision({ ...manual, settingsComplete: false, waivers: ['manual', 'batch_count'] }),
+    { action: 'ask_settings' },
+  )
   assert.equal(botanicAgentExecutionModeLabel('auto'), '自动模式')
   assert.equal(botanicAgentExecutionModeLabel('manual'), '计划模式')
   assert.equal(
     botanicAgentExecutionPauseHint({ action: 'confirm', reason: 'batch_count' }, { pendingActionCount: 0, outputCount: 2 }),
-    '自动模式已暂停：本次将生成 2 张，请确认张数后再提交。',
+    '已暂停：本次将生成 2 张，请确认张数后再提交。',
+  )
+  // 豁免让计划模式也可能因张数停下，文案不能再自称自动模式。
+  assert.doesNotMatch(
+    botanicAgentExecutionPauseHint({ action: 'confirm', reason: 'batch_count' }, { pendingActionCount: 0, outputCount: 2 }) ?? '',
+    /自动模式/,
+  )
+  assert.match(
+    botanicAgentExecutionPauseHint({ action: 'confirm', reason: 'batch_count' }, { pendingActionCount: 0, outputCount: 3 }, 'en') ?? '',
+    /3 images/,
   )
   assert.match(
     botanicAgentExecutionPauseHint({ action: 'confirm', reason: 'pending_actions' }, { pendingActionCount: 2, outputCount: 1 }) ?? '',

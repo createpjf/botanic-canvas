@@ -251,9 +251,11 @@ test('自动模式只从可信模型目录补齐默认值且不发起追问', ()
   })
 
   assert.equal(turn.kind, 'ready')
+  // 默认画幅与 completeBotanicAgentGenerationSettings 同源：优先目录里的 3:4，
+  // 不再取目录第一项，否则同一句指令按走哪条补全路径得到不同画幅。
   assert.deepEqual(turn.settings, {
     model: 'gpt-image-2',
-    aspectRatio: '1:1',
+    aspectRatio: '3:4',
     resolution: '2K',
   })
   assert.equal(turn.brief.creative.promptDirection, 'faithful')

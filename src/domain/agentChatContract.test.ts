@@ -11,6 +11,8 @@ import {
   isBotanicAgentPromptGenerationPending,
   resolveBotanicAgentGenerationPromptDecision,
 } from './agentChatContract.ts'
+import { defaultAspectRatioForModel } from './generationRecipe.ts'
+import { advanceBotanicCreativeBrief } from './agentCreativeBrief.ts'
 
 test('通用 Agent 对话请求只发送有限消息与节点 ID', () => {
   const request = buildBotanicAgentChatRequest({
@@ -313,6 +315,18 @@ test('自动模式只用模型目录内的取值补齐输出设置', () => {
   })
   // 没有可信目录就补不出取值，调用方仍会退回追问。
   assert.deepEqual(completeBotanicAgentGenerationSettings({ aspectRatio: '1:1' }, []), { aspectRatio: '1:1' })
+  // 自动补全的两条路径必须给同一个画幅，否则同一句指令按走哪条路得到不同结果。
+  const vertical: GenerationModelOption[] = [
+    { id: 'nano', label: 'Nano', aspectRatios: ['1:1', '3:4', '16:9'], resolutions: ['1K', '2K'] },
+  ]
+  assert.equal(completeBotanicAgentGenerationSettings({}, vertical).aspectRatio, '3:4')
+  assert.equal(defaultAspectRatioForModel(vertical[0]), '3:4')
+  assert.equal(
+    advanceBotanicCreativeBrief({
+      mode: 'generation', executionMode: 'auto', instruction: '海边人像', generationModels: vertical,
+    }).brief.output.aspectRatio,
+    '3:4',
+  )
 })
 
 test('用户说提高清晰度或 4K 时推断 Nano Banana + 4K，普通补齐仍用日常 2K', () => {

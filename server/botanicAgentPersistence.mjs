@@ -9,6 +9,8 @@ const MESSAGE_LIMIT = 500
 const MEMORY_LIMIT = 30
 
 const sessionModes = new Set(['manual', 'auto'])
+/** 镜像 src/domain/agent.ts 的 BOTANIC_AGENT_CONFIRMATION_WAIVERS；pending_actions 永不入列。 */
+const confirmationWaivers = new Set(['manual', 'batch_count'])
 
 /**
  * 计划是被原样持久化的，因此这里是原始推理进入项目记录的最后一道闸。
@@ -321,6 +323,14 @@ export function validateAgentSessionEntity(value, { now = Date.now() } = {}) {
     }
   } else if (session.subagentId !== undefined || session.parentSessionId !== undefined) {
     invalid('普通 Agent 会话不能绑定 Subagent 字段。')
+  }
+  // 豁免是「以后别再问我」的授权，只接受词表内的理由。外部行动不可豁免，因此
+  // pending_actions 不在词表里——客户端提交它必须被拒，不能靠界面不显示来保证。
+  if (session.confirmationWaivers !== undefined) {
+    if (!Array.isArray(session.confirmationWaivers)) invalid('Agent 会话确认豁免无效。')
+    const waivers = [...new Set(session.confirmationWaivers)]
+    if (waivers.some((waiver) => !confirmationWaivers.has(waiver))) invalid('Agent 会话确认豁免无效。')
+    if (waivers.length) result.confirmationWaivers = waivers
   }
   if (session.plannerModel !== undefined) result.plannerModel = text(session.plannerModel, 'Agent 模型', 160)
   if (session.mountedSkillIds !== undefined) result.mountedSkillIds = uniqueTextList(session.mountedSkillIds, 'Agent 已挂载 Skill', 16)

@@ -1232,6 +1232,14 @@ export type BotanicAgentExecutionDecision =
   | { action: 'auto_submit' }
 
 /**
+ * 用户可以主动放弃的确认。信任是按理由逐条积累的，不是切一次开关就全交出去。
+ * `pending_actions` 不在其中且永远不会进来：外部行动写外部系统、花钱、不可逆。
+ */
+export type BotanicAgentConfirmationWaiver = 'manual' | 'batch_count'
+
+export const BOTANIC_AGENT_CONFIRMATION_WAIVERS: readonly BotanicAgentConfirmationWaiver[] = ['manual', 'batch_count']
+
+/**
  * 执行模式的唯一判定处。计划模式与自动模式的差别在这里成为可解释的结论，
  * 而不是散落在界面里的若干 if：自动模式会自己补全可推断的输出设置并直接提交单张，
  * 但遇到外部行动或多张输出仍然停下来，且降级原因可以被界面读出来告诉用户。
@@ -1241,27 +1249,42 @@ export function resolveBotanicAgentExecutionDecision(input: {
   settingsComplete: boolean
   pendingActionCount: number
   outputCount?: number
+  /** 用户在计划卡上勾过「这类以后直接执行」的理由。 */
+  waivers?: readonly BotanicAgentConfirmationWaiver[]
 }): BotanicAgentExecutionDecision {
   if (!input.settingsComplete) return { action: 'ask_settings' }
+  // 外部行动永不可豁免：它写外部系统、花钱、不可逆，跳过确认等于替用户做了撤不回的决定。
   if (input.pendingActionCount > 0) return { action: 'confirm', reason: 'pending_actions' }
-  if (input.mode === 'auto' && (input.outputCount ?? 1) > 1) return { action: 'confirm', reason: 'batch_count' }
-  return input.mode === 'auto' ? { action: 'auto_submit' } : { action: 'confirm', reason: 'manual' }
+  const waived = (reason: BotanicAgentConfirmationWaiver) => input.waivers?.includes(reason) ?? false
+  if (input.mode !== 'auto' && !waived('manual')) return { action: 'confirm', reason: 'manual' }
+  // 走到这里说明用户已允许「不因模式而停」，剩下唯一的刹车是张数——它直接决定这次花多少。
+  if ((input.outputCount ?? 1) > 1 && !waived('batch_count')) return { action: 'confirm', reason: 'batch_count' }
+  return { action: 'auto_submit' }
 }
 
 export function botanicAgentExecutionModeLabel(mode: BotanicAgentExecutionMode) {
   return mode === 'auto' ? '自动模式' : '计划模式'
 }
 
+/**
+ * 停下来一定要说清为什么，否则用户只会觉得「自动没生效」。豁免存在后计划模式也会
+ * 因张数停，所以文案不能再自称「自动模式」。
+ */
 export function botanicAgentExecutionPauseHint(
   decision: BotanicAgentExecutionDecision,
   input: { pendingActionCount: number; outputCount: number },
+  locale: 'zh-CN' | 'en' = 'zh-CN',
 ): string | null {
   if (decision.action !== 'confirm') return null
   if (decision.reason === 'pending_actions') {
-    return `自动模式已暂停：本次包含 ${input.pendingActionCount} 个需要你确认的外部行动，处理完才会开始生成。`
+    return locale === 'en'
+      ? `Paused for ${input.pendingActionCount} external action${input.pendingActionCount === 1 ? '' : 's'} that need your approval. Generation starts once they are handled.`
+      : `已暂停：本次包含 ${input.pendingActionCount} 个需要你确认的外部行动，处理完才会开始生成。`
   }
   if (decision.reason === 'batch_count') {
-    return `自动模式已暂停：本次将生成 ${input.outputCount} 张，请确认张数后再提交。`
+    return locale === 'en'
+      ? `Paused because this run makes ${input.outputCount} images. Confirm the count before submitting.`
+      : `已暂停：本次将生成 ${input.outputCount} 张，请确认张数后再提交。`
   }
   return null
 }
@@ -1434,8 +1457,9 @@ export type BotanicAgentTurnRequestSnapshot = {
 export function pendingBotanicAgentAutoSubmission(
   messages: readonly BotanicAgentMessage[],
   mode: BotanicAgentExecutionMode,
+  waivers?: readonly BotanicAgentConfirmationWaiver[],
 ) {
-  if (mode !== 'auto') return undefined
+  if (mode !== 'auto' && !waivers?.includes('manual')) return undefined
   return messages
     .filter((message) => {
       if (message.role !== 'assistant'
@@ -1453,6 +1477,7 @@ export function pendingBotanicAgentAutoSubmission(
         ),
         pendingActionCount: botanicAgentPendingConfirmationCount(message.plan.actions),
         outputCount: message.plan.output.count,
+        waivers,
       }).action === 'auto_submit'
     })
     .sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id))[0]
@@ -1466,8 +1491,9 @@ export function shouldRetryBotanicAgentAutoSubmission(
   message: BotanicAgentMessage,
   mode: BotanicAgentExecutionMode,
   caught: unknown,
+  waivers?: readonly BotanicAgentConfirmationWaiver[],
 ) {
-  if (pendingBotanicAgentAutoSubmission([message], mode)?.id !== message.id) return false
+  if (pendingBotanicAgentAutoSubmission([message], mode, waivers)?.id !== message.id) return false
   const source = caught as { status?: unknown; code?: unknown } | undefined
   const status = Number(source?.status)
   const code = typeof source?.code === 'string' ? source.code : ''
@@ -1479,6 +1505,11 @@ export type BotanicAgentSession = {
   id: string
   title: string
   executionMode: BotanicAgentExecutionMode
+  /**
+   * 用户已放弃的确认理由。执行模式只决定初始状态，之后由用户在计划卡上逐条交出，
+   * 外部行动不在可交出之列。
+   */
+  confirmationWaivers?: BotanicAgentConfirmationWaiver[]
   /** 会话级 Agent 规划模型；旧会话缺省时由客户端使用默认模型。 */
   plannerModel?: string
   /** 会话级已挂载 Skill；只保存 ID，规则仍由服务端按项目权限解析。 */

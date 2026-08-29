@@ -2,6 +2,7 @@ import type { Edge, Viewport, XYPosition } from '@xyflow/react'
 import type {
   BotanicAgentActionProposal,
   BotanicAgentActionResult,
+  BotanicAgentConfirmationWaiver,
   BotanicAgentExecutionMode,
   BotanicAgentMemoryItem,
   BotanicAgentMemoryKind,
@@ -162,6 +163,7 @@ export type CanvasStore = {
   updateAgentAction: (sessionId: string, messageId: string, actionId: string, patch: Partial<Pick<BotanicAgentActionProposal, 'status' | 'receiptIdempotencyKey' | 'preparedRetryIdempotencyKey' | 'manualRetryResumeAvailable' | 'error' | 'result'>>) => void
   setAgentSessionContext: (sessionId: string, contextNodeIds: string[]) => void
   setAgentSessionExecutionMode: (sessionId: string, mode: BotanicAgentExecutionMode) => void
+  waiveAgentSessionConfirmation: (sessionId: string, waiver: BotanicAgentConfirmationWaiver) => void
   setAgentSessionPlannerModel: (sessionId: string, plannerModel: string) => void
   setAgentSessionSkills: (sessionId: string, mountedSkillIds: string[]) => void
   renameAgentSession: (sessionId: string, title: string) => void
