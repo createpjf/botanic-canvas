@@ -32,7 +32,7 @@
 
 - [批量变体：共享提示词、按支回填、尺寸与自定义像素](superpowers/specs/2026-08-19-variation-prompt-writeback-size-design.md)
 - [Agent 深度思考时间线与联网检索](superpowers/specs/2026-08-19-agent-thinking-web-search-design.md)
-- [Botanic 系统状态页](superpowers/specs/2026-08-29-status-page-design.md)
+- [Botanic 系统状态页（自建数据源）](superpowers/specs/2026-08-29-status-page-self-host-design.md)
 
 ## 评审与历史记录
 

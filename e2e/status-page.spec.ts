@@ -1,47 +1,37 @@
 import { expect, test, type Page } from '@playwright/test'
 
 const fixture = {
-  data: {
-    type: 'status_page',
-    attributes: {
-      aggregate_state: 'operational',
-      updated_at: '2026-08-29T11:00:00.000Z',
-    },
-    relationships: { sections: { data: [{ id: '1', type: 'status_page_section' }] } },
-  },
-  included: [
+  loadState: 'ready',
+  fetchedAt: '2026-08-29T12:00:00.000Z',
+  updatedAt: '2026-08-29T11:00:00.000Z',
+  overall: 'operational',
+  subscribeUrl: null,
+  components: [
     {
       id: 'web',
-      type: 'status_page_resource',
-      attributes: {
-        status_page_section_id: 1,
-        public_name: '工作台',
-        position: 0,
-        status: 'operational',
-        status_history: [
-          { day: '2026-08-29', status: 'operational', downtime_duration: 0, maintenance_duration: 0 },
-        ],
-      },
+      name: 'web',
+      level: 'operational',
+      hours24: [],
+      days30: [],
+      uptime24h: 100,
+      uptime30d: 100,
     },
+  ],
+  incidents: [
     {
       id: 'inc-1',
-      type: 'status_report',
-      attributes: {
-        title: 'API 短暂中断',
-        report_type: 'manual',
-        starts_at: '2026-08-28T10:00:00.000Z',
-        ends_at: '2026-08-28T10:10:00.000Z',
-        aggregate_state: 'downtime',
-        affected_resources: [],
-      },
-      relationships: { status_updates: { data: [] } },
+      title: 'API 短暂中断',
+      level: 'outage',
+      startedAt: '2026-08-28T10:00:00.000Z',
+      resolvedAt: '2026-08-28T10:10:00.000Z',
+      updates: [],
     },
   ],
 }
 
 async function stubStatus(page: Page) {
   const health = { hits: 0 }
-  await page.route('https://status.example.test/index.json', async (route) => {
+  await page.route('**/status.json', async (route) => {
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(fixture) })
   })
   await page.route('**/api/health', async (route) => {
@@ -60,7 +50,7 @@ test('Landing 状态导航进入 /status 并展示夹具组件', async ({ page }
   await expect(page.getByRole('status')).toContainText('全部正常')
   await expect(page.getByText('工作台', { exact: true })).toBeVisible()
   await expect(page.getByText('API 短暂中断')).toBeVisible()
-  await expect(page.getByRole('link', { name: '订阅通知' })).toHaveAttribute('href', 'https://status.example.test')
+  await expect(page.getByRole('link', { name: '订阅通知' })).toHaveCount(0)
   expect(health.hits).toBe(0)
 })
 

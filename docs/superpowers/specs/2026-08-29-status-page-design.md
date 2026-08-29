@@ -1,5 +1,7 @@
 # Botanic 系统状态页
 
+> 数据源已被 [自建规格](2026-08-29-status-page-self-host-design.md) 替换。本文件只保留当时的页面结构与词表，不要再按 Better Stack 实现。
+
 > 设计规格。本轮只定方案，不改运行时代码。
 
 **Goal:** 产品内公开路由 `/status` 展示 Botanic 系统状态，信息结构对齐 [Railway Status](https://status.railway.com/)，时间窗只做 **24 小时** 与 **30 天**。Landing 顶栏给出入口。数据来自 Better Stack 公开 JSON，不经过 Railway。
@@ -213,7 +215,7 @@ type StatusSnapshot = {
    窗口内有记录：用官方 `status` / `downtime_duration` / `maintenance_duration`。  
    窗口内无记录：`level = unknown`，秒数为 0。  
    `uptime30d`：只把**有记录**的日子计入。  
-   `uptime = 1 - sum(downtime_duration) / (有记录天数 * 86400)`，夹在 0–100。`maintenance_duration` 不计入宕机。有记录天数为 0 则 `null`。
+   `uptime = (1 - sum(downtime_duration) / (有记录天数 * 86400)) * 100`，再夹到 0–100。`maintenance_duration` 不计入宕机。有记录天数为 0 则 `null`。
 
 4. **事故**  
    `included` 里 `type === 'status_report'`。  
@@ -232,7 +234,7 @@ type StatusSnapshot = {
 
 6. **24 小时 uptime**  
    在 `[fetchedAt - 24h, fetchedAt)` 上，对该组件所有 `outage` / `degraded` 事故区间做并集（分钟，向下取整到分钟）。维护不扣。  
-   `uptime24h = 1 - downMinutes / 1440`，夹在 0–100。无此类事故则为 100，不是 `null`。
+   `uptime24h = (1 - downMinutes / 1440) * 100`，再夹到 0–100。无此类事故则为 100，不是 `null`。
 
 7. **订阅 URL**  
    配置的 subscribe URL；否则 JSON URL 去掉末尾 `/index.json`。两者都空则为 `null`，页脚不渲染订阅链接。

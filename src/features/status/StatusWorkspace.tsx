@@ -27,8 +27,12 @@ const statusPageCopy = {
     checking: '正在检查系统状态',
     disclaimer: '这里只列出有广泛影响的事故。个别项目或单次生成问题不会出现。',
     noIncidents: '近期没有公开事故',
-    subscribe: '订阅通知',
     updated: '更新于',
+    components: {
+      web: '工作台',
+      api: 'API',
+      auth: '登录',
+    },
     ongoing: '进行中',
     hours: '过去 24 小时',
     days: '过去 30 天',
@@ -51,8 +55,12 @@ const statusPageCopy = {
     checking: 'Checking system status',
     disclaimer: 'This page lists incidents with widespread impact. Isolated project or generation issues do not appear here.',
     noIncidents: 'No public incidents recently',
-    subscribe: 'Subscribe to updates',
     updated: 'Updated',
+    components: {
+      web: 'Workspace',
+      api: 'API',
+      auth: 'Sign-in',
+    },
     ongoing: 'Ongoing',
     hours: 'Last 24 hours',
     days: 'Last 30 days',
@@ -210,7 +218,7 @@ export default function StatusWorkspace({
                 {snapshot.components.map((component) => (
                   <li key={component.id}>
                     <div className="product-status__component-head">
-                      <strong>{component.name}</strong>
+                      <strong>{copy.components[component.id as keyof typeof copy.components] ?? component.name}</strong>
                       <span className={`product-status__level product-status__level--${component.level}`}>
                         {copy.levels[component.level]}
                       </span>
@@ -277,9 +285,6 @@ export default function StatusWorkspace({
 
             <footer className="product-status__footer">
               <span>{copy.updated} {formatLocalStamp(snapshot.updatedAt ?? snapshot.fetchedAt, locale)}</span>
-              {snapshot.subscribeUrl ? (
-                <a href={snapshot.subscribeUrl} target="_blank" rel="noreferrer">{copy.subscribe}</a>
-              ) : null}
             </footer>
           </>
         ) : null}

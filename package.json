@@ -27,6 +27,7 @@
     "@opentelemetry/sdk-trace-node": "2.10.0",
     "@supabase/supabase-js": "^2.111.0",
     "@vercel/analytics": "^2.0.1",
+    "@vercel/blob": "^2.8.0",
     "@xyflow/react": "^12.8.4",
     "bullmq": "^5.81.2",
     "dexie": "^4.0.11",
