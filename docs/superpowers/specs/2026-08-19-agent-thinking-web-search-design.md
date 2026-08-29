@@ -4,7 +4,7 @@
 
 **Goal:** 对话气泡里按真实执行顺序展示「深度思考 → 工具步骤 → 再思考 → 回答」，并让 Agent 在受控条件下检索公开网页；原始思维链仍不得写入消息、计划、Run 或 Artifact Index。
 
-**Architecture:** 时间线权威在 `src/domain/agentTimeline.ts`；流式事件仍走现有 SSE。联网是对话/规划工具白名单里的只读工具，由服务端执行，不走浏览器、不走 MCP 确认卡。提供方 `reasoning_content` 继续只在 `AGENT_RAW_REASONING=true` 时随当轮下发。
+**Architecture:** 时间线权威在 `src/domain/agentTimeline.ts`；流式事件仍走现有 SSE。联网是对话/规划工具白名单里的只读工具，由服务端执行，不走浏览器、不走 MCP 确认卡。提供方 `reasoning_content` 仅在服务端 `AGENT_RAW_REASONING=true` 且当前会话显式开启时随当轮下发。
 
 **Tech Stack:** 现有 Agent 工具循环 `server/agentToolRuntime.mjs`、对话 `server/botanicAgentChat.mjs`、规划 `server/botanicAgentPlanner.mjs`、时间线 UI `src/features/agent/AgentConversationMessage.tsx`。检索走服务端 HTTPS 搜索 API + 受 SSRF 约束的页面抓取。
 
@@ -12,7 +12,7 @@
 
 - 不改变幂等键、任务恢复、项目版本冲突、媒体授权、Artifact 级联删除。
 - Agent Session / Message / Memory / Run 仍是权威实体。
-- 提供方原始推理（`reasoning_content` / `reasoning`）默认不下发；打开后也不得写入消息、计划、Run 或 Artifact Index。
+- 提供方原始推理（`reasoning_content` / `reasoning`）默认不下发；需服务端总开关与当前会话开关同时开启，且不得写入消息、计划、Run 或 Artifact Index。
 - 工具 `why` 是摘要级说明，可展示，可随当轮响应和计划工具轨迹出现。
 - `src/components/` 不直接访问 Store、网络或服务端。
 - 领域规则留在 `src/domain/` 与 `server/`，UI 只展示。
@@ -75,7 +75,7 @@ Botanic 已经有同一骨架，缺的是：**交错的多段思考、工具行�
 
 | 方案 | 做法 | 取舍 |
 | --- | --- | --- |
-| **A. 双通道时间线（推荐）** | 默认用 `why` 和短步骤说明填思考块；`AGENT_RAW_REASONING=true` 时同一 UI 改流原始推理。工具后新开思考块 | 默认安全、截图可复现；运营可按环境打开长思考 |
+| **A. 双通道时间线（推荐）** | 默认用 `why` 和短步骤说明填思考块；服务端允许且用户在当前会话开启时，同一 UI 流原始推理。工具后新开思考块 | 默认安全、截图可复现；运营可控制环境，用户可控制会话 |
 | B. 生产默认打开原始推理 | 只改 `AGENT_RAW_REASONING=true` | 最快，但完整思维链进浏览器，刷新即丢，且和现规范的默认关闭冲突 |
 | C. 把思维链写入 Message | 结束后把 thinking 存进消息 | **禁止**。规范已写明 raw 不得入库 |
 
@@ -85,7 +85,7 @@ Botanic 已经有同一骨架，缺的是：**交错的多段思考、工具行�
 
 1. **两级内容，一块 UI**
    - `source: 'summary'`：来自工具 `why`，默认就有，可出现在当轮响应的 `reasoning` 数组里（现有行为）。
-   - `source: 'raw'`：来自提供方 `reasoning_content`，仅 `AGENT_RAW_REASONING=true` 时随 SSE 下发，轮次结束丢弃。
+   - `source: 'raw'`：来自提供方 `reasoning_content`，仅服务端 `AGENT_RAW_REASONING=true` 且当前会话开启时随 SSE 下发，轮次结束丢弃。
    - 同一思考块优先展示 raw（若有），否则展示该步已收集的 summary。空思考块只显示「深度思考」+ 耗时，不编造正文。
 2. **交错**
    - `createAgentTimeline` 仍先放一段 running thinking。

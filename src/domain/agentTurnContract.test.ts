@@ -171,6 +171,7 @@ test('POST 未到服务端时，刷新恢复只用 Message 里的完整 request 
     inputMessage: { id: 'message-stable', content: '给这张换背景' },
     locale: 'zh-CN' as const,
     plannerModel: 'planner-original',
+    showRawReasoning: true,
     mountedSkillIds: ['skill-original'],
     contextNodeIds: ['result-original', 'asset-reference'],
     hasTarget: true,
@@ -189,6 +190,7 @@ test('POST 未到服务端时，刷新恢复只用 Message 里的完整 request 
 
   assert.equal(restored.selectedResultNodeId, 'result-original')
   assert.equal(restored.plannerModel, 'planner-original')
+  assert.equal(restored.showRawReasoning, true)
   assert.equal(restored.executionMode, 'manual')
   assert.deepEqual(restored.contextNodeIds, ['result-original', 'asset-reference'])
   assert.deepEqual(restored.generationModels?.map((model) => model.id), ['image-original'])

@@ -241,7 +241,7 @@ test('pending Message 持久化完整 Turn request snapshot，目标身份不能
     id: 'message-turn-snapshot', role: 'user', kind: 'text', content: '换背景', createdAt: 10,
     status: 'pending',
     turnRequestSnapshot: {
-      locale: 'zh-CN', plannerModel: 'planner-a', mountedSkillIds: ['skill-a'],
+      locale: 'zh-CN', plannerModel: 'planner-a', showRawReasoning: true, mountedSkillIds: ['skill-a'],
       contextNodeIds: ['result-b'], hasTarget: true,
       selectedResultNodeId: 'result-b', selectedResultLabel: '结果 B', executionMode: 'auto',
       generationModels: [{ id: 'image-a', label: '图像 A', mediaKind: 'image', aspectRatios: ['3:4'], resolutions: ['2K'] }],
@@ -254,6 +254,10 @@ test('pending Message 持久化完整 Turn request snapshot，目标身份不能
     ...base,
     turnRequestSnapshot: { ...base.turnRequestSnapshot, selectedResultNodeId: undefined },
   }, { now: 20 }))
+  assert.throws(() => validateAgentMessageEntity({
+    ...base,
+    turnRequestSnapshot: { ...base.turnRequestSnapshot, showRawReasoning: 'yes' },
+  }, { now: 20 }), /推理原文设置无效/)
   assert.throws(() => validateAgentMessageEntity({
     ...base,
     role: 'assistant',

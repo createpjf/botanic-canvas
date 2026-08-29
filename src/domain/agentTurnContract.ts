@@ -9,6 +9,8 @@ type BotanicAgentTurnRequestBase = {
   projectId: string
   locale: ProductLocale
   plannerModel?: string
+  /** 请求展示当前回合的 Provider 推理原文；服务端必须再经总开关授权。 */
+  showRawReasoning?: boolean
   mountedSkillIds?: string[]
   contextNodeIds: string[]
   hasTarget?: boolean
@@ -49,6 +51,7 @@ export type BotanicAgentTurnRequest = {
   inputMessage?: BotanicAgentTurnInputMessage
   locale: ProductLocale
   plannerModel?: string
+  showRawReasoning?: boolean
   mountedSkillIds?: string[]
   /** 旧客户端兼容历史；服务端权威会话路径不依赖它。 */
   messages?: Array<{ role: BotanicAgentMessage['role']; content: string }>
@@ -72,6 +75,8 @@ export type BotanicAgentTurnResult = (
       kind: 'generation'
       mediaKind: 'image' | 'video'
       prompt: string
+      /** Turn 对本次生成操作的结构化判定；旧持久化结果可能缺失。 */
+      intent?: import('./agent').BotanicAgentIntent
       count: number
       /**
        * 这轮生成固定的父结果；null 表示明确的初始生成。
@@ -150,6 +155,7 @@ export function buildBotanicAgentTurnRequest(input: BotanicAgentTurnRequestInput
       : {}),
     locale: input.locale,
     ...(input.plannerModel ? { plannerModel: input.plannerModel } : {}),
+    ...(input.showRawReasoning === true ? { showRawReasoning: true } : {}),
     ...(input.mountedSkillIds?.length ? { mountedSkillIds: [...new Set(input.mountedSkillIds)].slice(0, 16) } : {}),
     ...(input.messages?.length
       ? {
@@ -197,6 +203,7 @@ export function botanicAgentTurnRequestSnapshot(
   return {
     locale: request.locale,
     ...(request.plannerModel ? { plannerModel: request.plannerModel } : {}),
+    ...(request.showRawReasoning ? { showRawReasoning: true } : {}),
     ...(request.mountedSkillIds?.length ? { mountedSkillIds: [...request.mountedSkillIds] } : {}),
     contextNodeIds: [...request.contextNodeIds],
     hasTarget: request.hasTarget,
