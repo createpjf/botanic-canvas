@@ -3,6 +3,7 @@ import type {
   AssetNodeData,
   CanvasDocument,
   CanvasNode,
+  GenerationAspectRatio,
   GenerationModelOption,
   GenerationRecipe,
   GenerationReference,
@@ -27,6 +28,17 @@ export function maximumReferencesForModel(model: Pick<GenerationModelOption, 'ma
 export function everydayResolutions(model: Pick<GenerationModelOption, 'resolutions'> | undefined): GenerationResolution[] {
   const resolutions = model?.resolutions?.length ? model.resolutions : ['1K', '2K'] as const
   return resolutions.filter((resolution) => resolution !== '4K')
+}
+
+/**
+ * 自动补全时的默认比例。目录顺序不代表偏好——电商与人像是竖版主场景，所以优先 3:4，
+ * 模型不支持时才退回目录第一项。自动模式的两条补全路径必须给同一个答案，
+ * 否则同一句指令按走哪条路得到不同画幅。
+ */
+export function defaultAspectRatioForModel(
+  model: { aspectRatios?: readonly GenerationAspectRatio[] } | undefined,
+): GenerationAspectRatio | undefined {
+  return model?.aspectRatios?.includes('3:4') ? '3:4' : model?.aspectRatios?.[0]
 }
 
 export function defaultImageGenerationModel<T extends Pick<GenerationModelOption, 'id' | 'provider' | 'mediaKind'>>(

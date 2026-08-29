@@ -78,7 +78,7 @@ import {
 export { BotanicAgentPlannerError, BotanicAgentChatError }
 
 const editableAgentSessionFields = new Set([
-  'id', 'title', 'executionMode', 'plannerModel', 'mountedSkillIds', 'contextNodeIds', 'createdAt', 'updatedAt',
+  'id', 'title', 'executionMode', 'confirmationWaivers', 'plannerModel', 'mountedSkillIds', 'contextNodeIds', 'createdAt', 'updatedAt',
 ])
 
 const agentSubagentStartBodyFields = new Set(['rootTurnId', 'role', 'content'])
@@ -1895,6 +1895,7 @@ export function createAgentRouteHandler({
       const settingsChanged = !previous
         || previous.title !== session.title
         || previous.executionMode !== session.executionMode
+        || JSON.stringify(previous.confirmationWaivers ?? []) !== JSON.stringify(session.confirmationWaivers ?? [])
         || previous.plannerModel !== session.plannerModel
         || JSON.stringify(previous.mountedSkillIds ?? []) !== JSON.stringify(session.mountedSkillIds ?? [])
         || JSON.stringify(previous.contextNodeIds ?? []) !== JSON.stringify(session.contextNodeIds ?? [])

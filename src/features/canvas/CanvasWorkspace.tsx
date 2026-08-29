@@ -797,6 +797,7 @@ export default function CanvasWorkspace({
   const updateAgentAction = useCanvasStore((state) => state.updateAgentAction)
   const setAgentSessionContext = useCanvasStore((state) => state.setAgentSessionContext)
   const setAgentSessionExecutionMode = useCanvasStore((state) => state.setAgentSessionExecutionMode)
+  const waiveAgentSessionConfirmation = useCanvasStore((state) => state.waiveAgentSessionConfirmation)
   const setAgentSessionPlannerModel = useCanvasStore((state) => state.setAgentSessionPlannerModel)
   const setAgentSessionSkills = useCanvasStore((state) => state.setAgentSessionSkills)
   const renameAgentSession = useCanvasStore((state) => state.renameAgentSession)
@@ -2381,6 +2382,7 @@ export default function CanvasWorkspace({
           onUpdateAction={updateAgentAction}
           onContextChange={setAgentSessionContext}
           onExecutionModeChange={setAgentSessionExecutionMode}
+          onWaiveConfirmation={waiveAgentSessionConfirmation}
           onPlannerModelChange={setAgentSessionPlannerModel}
           onSkillsChange={setAgentSessionSkills}
           onRenameSession={renameAgentSession}

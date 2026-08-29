@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { botanicMotion, gsap, prefersReducedMotion, useGSAP } from '../../components/gsapMotion'
 import {
+  BOTANIC_AGENT_MAX_SINGLE_OUTPUT,
   botanicAgentAppliedSkillName,
   botanicAgentContextSnapshotNodeIds,
   botanicAgentExecutionPauseHint,
@@ -14,6 +15,7 @@ import {
   type BotanicAgentActionProposal,
   type BotanicAgentActionUserIntent,
   type BotanicAgentArtifact,
+  type BotanicAgentConfirmationWaiver,
   type BotanicAgentContextSnapshot,
   type BotanicAgentExecutionMode,
   type BotanicAgentMemoryKind,
@@ -443,14 +445,19 @@ function AgentPlanSettingsEditor({
   settings,
   models,
   countLabel,
+  outputCount,
   disabled,
   onChange,
+  onCountChange,
 }: {
   settings: GenerationSettings
   models: GenerationModelOption[]
   countLabel: string
+  /** 仅 single 输出可改张数；批量按素材/分支展开，改它会和来源脱节。 */
+  outputCount?: number
   disabled: boolean
   onChange: (settings: GenerationSettings) => void
+  onCountChange?: (count: number) => void
 }) {
   const { locale } = useProductI18n()
   const selectedModel = models.find((model) => model.id === settings.model)
@@ -568,10 +575,22 @@ function AgentPlanSettingsEditor({
         onChange={(value) => onChange({ ...settings, resolution: value as GenerationSettings['resolution'] })}
       />
     </label>
-    <span>
+    {onCountChange && outputCount ? <label>
+      <small>{locale === 'en' ? 'Output' : '输出'}</small>
+      <BotanicSelect
+        value={String(outputCount)}
+        ariaLabel={locale === 'en' ? 'Select output count' : '选择出图张数'}
+        disabled={disabled}
+        options={Array.from({ length: BOTANIC_AGENT_MAX_SINGLE_OUTPUT }, (_, index) => {
+          const count = index + 1
+          return { value: String(count), label: locale === 'en' ? `${count}` : `${count} 张` }
+        })}
+        onChange={(value) => onCountChange(Number(value))}
+      />
+    </label> : <span>
       <small>{locale === 'en' ? 'Output' : '输出'}</small>
       <span className="agent-plan-settings__readonly" title={locale === 'en' ? 'Output count is set by the plan' : '张数由计划展开决定'}>{countLabel}</span>
-    </span>
+    </span>}
     {boostModel ? (
       <button
         type="button"
@@ -780,6 +799,10 @@ type AgentConversationMessageProps = {
   onPromptDraftChange: (messageId: string, prompt: string) => void
   onCommitPlanPrompt: (message: BotanicAgentMessage, prompt: string) => void
   onCommitPlanSettings: (message: BotanicAgentMessage, settings: GenerationSettings) => void
+  onCommitPlanOutputCount: (message: BotanicAgentMessage, count: number) => void
+  /** 会话已交出的确认理由；外部行动不在其中。 */
+  confirmationWaivers?: readonly BotanicAgentConfirmationWaiver[]
+  onWaiveConfirmation: (waiver: BotanicAgentConfirmationWaiver) => void
   onConfirmPlan: (message: BotanicAgentMessage) => void
   onGenerateCompositionItem?: (message: BotanicAgentMessage, item: BotanicAgentCompositionItem) => void
   onRunComposition?: (message: BotanicAgentMessage) => void
@@ -824,6 +847,9 @@ export function AgentConversationMessage({
   onPromptDraftChange,
   onCommitPlanPrompt,
   onCommitPlanSettings,
+  onCommitPlanOutputCount,
+  confirmationWaivers,
+  onWaiveConfirmation,
   onConfirmPlan,
   onGenerateCompositionItem,
   onRunComposition,
@@ -952,12 +978,18 @@ export function AgentConversationMessage({
           settingsComplete: true,
           pendingActionCount,
           outputCount: plan.output.count,
+          waivers: confirmationWaivers,
         })
-        const autoPauseHint = executionMode === 'auto'
-          ? botanicAgentExecutionPauseHint(executionDecision, {
-            pendingActionCount,
-            outputCount: plan.output.count,
-          })
+        // 有豁免后计划模式也会因张数停下，所以暂停说明不再限定自动模式。
+        const autoPauseHint = botanicAgentExecutionPauseHint(executionDecision, {
+          pendingActionCount,
+          outputCount: plan.output.count,
+        }, locale)
+        // 这次停下来的理由是否可以一次性交出去。外部行动不在此列。
+        const waivableReason = executionDecision.action === 'confirm'
+          && executionDecision.reason !== 'pending_actions'
+          && !confirmationWaivers?.includes(executionDecision.reason)
+          ? executionDecision.reason
           : null
         const appliedSkills = plan.actions?.filter((action) => action.toolName === 'skill_apply') ?? []
         const confirmableActions = plan.actions?.filter((action) => action.toolName !== 'skill_apply') ?? []
@@ -1048,6 +1080,13 @@ export function AgentConversationMessage({
                 // 换模型不能顺便换媒体类型：视频计划带着 duration，切到图片模型会在提交时被拒。
                 models={generationModels.filter((model) => (model.mediaKind === 'video') === (botanicAgentPlanMediaKind(plan) === 'video'))}
                 countLabel={locale === 'en' ? planCountLabel(plan) : botanicAgentPlanSheetCountLabel(plan)}
+                // 批量按素材组 / 变体分支展开，张数由来源决定；只有 single 才交给用户改。
+                {...(plan.output.mode === 'single'
+                  ? {
+                    outputCount: plan.output.count,
+                    onCountChange: (count: number) => onCommitPlanOutputCount(message, count),
+                  }
+                  : {})}
                 disabled={submittingMessageId === message.id}
                 onChange={(settings) => onCommitPlanSettings(message, settings)}
               />
@@ -1071,8 +1110,20 @@ export function AgentConversationMessage({
           </section> : null}
           {pendingActionCount ? <details className="agent-message__route"><summary>{t('执行路由', 'Execution route')}</summary><div><span>{t('规划', 'Planning')}</span><b>{agentPlannerModelLabel(plan.plannerModel ?? plannerModel)}</b><span>{t('生成', 'Generation')}</span><b>{plan.settings.model}</b><span>{t('外部行动', 'External actions')}</span><b>{t(`${pendingActionCount} 项，确认后执行`, `${pendingActionCount} to run after approval`)}</b></div></details> : null}
           {planSubmitted ? null : <div className="agent-plan__footer">
-            {/* 自动模式下停在这里一定有原因，必须说清楚，否则用户只会觉得“自动模式没生效”。 */}
-            {autoPauseHint ? <small className="agent-plan__auto-paused">{locale === 'en' ? `Auto mode is paused for ${pendingActionCount} external action${pendingActionCount === 1 ? '' : 's'}. Generation starts after they are handled.` : autoPauseHint}</small> : null}
+            {/* 停在这里一定有原因，必须说清楚，否则用户只会觉得“自动模式没生效”。 */}
+            {autoPauseHint ? <small className="agent-plan__auto-paused">{autoPauseHint}</small> : null}
+            {/* 信任按理由逐条交出：勾一次，这一类以后不再拦。外部行动永远不出现在这里。 */}
+            {waivableReason ? <label className="agent-plan__waiver">
+              <input
+                type="checkbox"
+                checked={false}
+                disabled={submittingMessageId === message.id}
+                onChange={() => onWaiveConfirmation(waivableReason)}
+              />
+              <span>{waivableReason === 'batch_count'
+                ? t('多张出图以后直接执行', 'Run multi-image plans without asking')
+                : t('这类出图以后直接执行', 'Run image plans without asking')}</span>
+            </label> : null}
             <button type="button" className="agent-plan__confirm" disabled={submittingMessageId === message.id || blockedByActions} onClick={() => onConfirmPlan(message)}>{locale === 'en' ? (submittingMessageId === message.id ? 'Submitting…' : blockedByActions ? 'Approve actions first' : message.status === 'failed' ? 'Retry generation' : `Generate ${plan.output.count} image${plan.output.count === 1 ? '' : 's'}`) : botanicAgentPlanConfirmActionLabel(plan, submittingMessageId === message.id ? 'submitting' : blockedByActions ? 'blocked' : message.status === 'failed' ? 'failed' : 'ready')}</button>
           </div>}
         </>

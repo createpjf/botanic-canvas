@@ -824,6 +824,9 @@ export async function submitPersistentBotanicAgentSession(
       id: session.id,
       title: session.title,
       executionMode: session.executionMode,
+      // 服务端按 { ...previous, ...body } 合并，字段缺席等于保留旧值；
+      // 空数组必须显式发出去，否则撤销豁免永远不生效。
+      confirmationWaivers: session.confirmationWaivers ?? [],
       ...(session.plannerModel ? { plannerModel: session.plannerModel } : {}),
       ...(session.mountedSkillIds?.length ? { mountedSkillIds: session.mountedSkillIds } : {}),
       contextNodeIds: session.contextNodeIds,

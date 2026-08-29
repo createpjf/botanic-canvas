@@ -3,7 +3,7 @@ import { instructionRequestsBatchVariation } from './agent.ts'
 import { instructionRequestsMarkOverlay } from './generationComposition.ts'
 import type { GenerationAspectRatio, GenerationModelOption, GenerationResolution } from './canvas.ts'
 import { GENERATION_ASPECT_RATIOS, NANO_BANANA_MODEL_ID } from './canvas.ts'
-import { defaultImageGenerationModel } from './generationRecipe.ts'
+import { defaultAspectRatioForModel, defaultImageGenerationModel } from './generationRecipe.ts'
 import type { ProductLocale } from '../i18n/core'
 import {
   customGenerationSizeFields,
@@ -192,7 +192,7 @@ export function completeBotanicAgentGenerationSettings(
   const customSize = modelSupportsCustomSize(model) ? customGenerationSizeFields(hint) : undefined
   const aspectRatio = customSize
     ? inferAspectRatioFromPixels(customSize.outputWidth, customSize.outputHeight)
-    : hint.aspectRatio ?? (model.aspectRatios?.includes('3:4') ? '3:4' : model.aspectRatios?.[0])
+    : hint.aspectRatio ?? defaultAspectRatioForModel(model)
   const everyday = (model.resolutions ?? []).filter((item) => item !== '4K')
   const resolution = hint.resolution ?? (everyday.includes('2K') ? '2K' : everyday[0] ?? model.resolutions?.[0])
   return {

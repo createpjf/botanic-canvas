@@ -187,6 +187,32 @@ test('Agent 实体验证拒绝越界类型与超长消息', () => {
   assert.throws(() => validateAgentMessageEntity({ id: 'm', role: 'user', kind: 'text', content: 'x'.repeat(64_001), createdAt: 1 }))
 })
 
+test('确认豁免只收词表内的理由，外部行动豁免必须被拒', () => {
+  const base = {
+    id: 'session-waiver', title: '豁免会话', executionMode: 'manual',
+    contextNodeIds: [], createdAt: 10, updatedAt: 10,
+  }
+  assert.deepEqual(
+    validateAgentSessionEntity({ ...base, confirmationWaivers: ['manual', 'batch_count', 'manual'] }, { now: 10 })
+      .confirmationWaivers,
+    ['manual', 'batch_count'],
+  )
+  // 空数组不落盘，避免「有豁免字段但没内容」的中间态。
+  assert.equal(
+    'confirmationWaivers' in validateAgentSessionEntity({ ...base, confirmationWaivers: [] }, { now: 10 }),
+    false,
+  )
+  // 外部行动写外部系统、花钱、不可逆；界面不给这个选项，服务端也必须自己拒绝。
+  assert.throws(
+    () => validateAgentSessionEntity({ ...base, confirmationWaivers: ['pending_actions'] }, { now: 10 }),
+    /确认豁免无效/u,
+  )
+  assert.throws(
+    () => validateAgentSessionEntity({ ...base, confirmationWaivers: 'manual' }, { now: 10 }),
+    /确认豁免无效/u,
+  )
+})
+
 test('Subagent 会话有独立类型与父会话绑定，普通会话不能伪造关联', () => {
   const session = validateAgentSessionEntity({
     id: 'agent-subagent-session-subagent-1',

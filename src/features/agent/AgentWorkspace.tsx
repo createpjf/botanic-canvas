@@ -23,6 +23,7 @@ import {
   snapshotBotanicAgentComposerMentions,
   readBotanicAgentMentionQuery,
   resolveBotanicAgentExecutionDecision,
+  BOTANIC_AGENT_MAX_SINGLE_OUTPUT,
   botanicAgentPendingConfirmationCount,
   pendingBotanicAgentAutoSubmission,
   shouldRetryBotanicAgentAutoSubmission,
@@ -34,6 +35,7 @@ import {
   type BotanicAgentActionResult,
   type BotanicAgentArtifact,
   type BotanicAgentClarificationResponse,
+  type BotanicAgentConfirmationWaiver,
   type BotanicAgentExecutionMode,
   type BotanicAgentIntent,
   type BotanicAgentMemoryItem,
@@ -318,6 +320,7 @@ export default function AgentWorkspace({
   onUpdateAction,
   onContextChange,
   onExecutionModeChange,
+  onWaiveConfirmation,
   onPlannerModelChange,
   onSkillsChange,
   onRenameSession,
@@ -398,6 +401,7 @@ export default function AgentWorkspace({
   ) => void
   onContextChange: (sessionId: string, contextNodeIds: string[]) => void
   onExecutionModeChange: (sessionId: string, mode: BotanicAgentExecutionMode) => void
+  onWaiveConfirmation: (sessionId: string, waiver: BotanicAgentConfirmationWaiver) => void
   onPlannerModelChange: (sessionId: string, model: string) => void
   onSkillsChange: (sessionId: string, skillIds: string[]) => void
   onRenameSession: (sessionId: string, title: string) => void
@@ -1798,6 +1802,7 @@ export default function AgentWorkspace({
         persistedPlanMessage,
         session.executionMode,
         caught,
+        session.confirmationWaivers,
       )) {
         const attempt = (autoSubmissionRetryAttemptsRef.current.get(message.id) ?? 0) + 1
         autoSubmissionRetryAttemptsRef.current.set(message.id, attempt)
@@ -1841,6 +1846,7 @@ export default function AgentWorkspace({
   const pendingAutoSubmission = pendingBotanicAgentAutoSubmission(
     session?.messages ?? [],
     session?.executionMode ?? 'manual',
+    session?.confirmationWaivers,
   )
   useEffect(() => {
     if (!pendingAutoSubmission || planning || submittingMessageIdRef.current) return
@@ -2245,6 +2251,7 @@ export default function AgentWorkspace({
         mode: session.executionMode,
         settingsComplete: true,
         pendingActionCount: 0,
+        waivers: session.confirmationWaivers,
       })
       const imageModel = generationModels.find((model) => (model.mediaKind ?? 'image') === 'image')
       if (!imageModel) {
@@ -2956,6 +2963,7 @@ export default function AgentWorkspace({
         mode: session.executionMode,
         settingsComplete: true,
         pendingActionCount: 0,
+        waivers: session.confirmationWaivers,
       })
       try {
         const regionPlan = {
@@ -3026,6 +3034,7 @@ export default function AgentWorkspace({
           settingsComplete: true,
           pendingActionCount: 0,
           outputCount: resolvedInitialPlan.output.count,
+          waivers: session.confirmationWaivers,
         })
         const planMessageId = appendMessage({
           ...sourceTurnMessageIdentity(),
@@ -3087,6 +3096,7 @@ export default function AgentWorkspace({
       settingsComplete: true,
       pendingActionCount: botanicAgentPendingConfirmationCount(resolvedPlan.actions),
       outputCount: resolvedPlan.output.count,
+      waivers: session.confirmationWaivers,
     })
     if (planMessageId && planExecutionDecision.action === 'auto_submit') {
       await confirmMessagePlan({
@@ -3537,6 +3547,19 @@ export default function AgentWorkspace({
     onUpdateMessage(session.id, message.id, { plan: { ...message.plan, settings } })
   }
 
+  // 张数是这张卡上唯一直接决定费用的量。批量输出由素材组/变体分支展开，改它会和来源脱节，
+  // 所以只有 single 可改，且钳在领域上限内。
+  const commitPlanOutputCount = (message: BotanicAgentMessage, count: number) => {
+    if (!session || !message.plan) return
+    if (message.status === 'submitted') return
+    if (message.plan.output.mode !== 'single') return
+    const next = Math.min(BOTANIC_AGENT_MAX_SINGLE_OUTPUT, Math.max(1, Math.floor(count)))
+    if (!Number.isFinite(next) || next === message.plan.output.count) return
+    onUpdateMessage(session.id, message.id, {
+      plan: { ...message.plan, output: { ...message.plan.output, count: next } },
+    })
+  }
+
   const createNextRoundFromResults = (sourceNodeIds: string[], artifactCount: number) => {
     if (!sourceNodeIds.length) return
     onUseResultContext(sourceNodeIds)
@@ -3882,6 +3905,9 @@ export default function AgentWorkspace({
           onPromptDraftChange={(messageId, prompt) => setPromptDrafts((current) => ({ ...current, [messageId]: prompt }))}
           onCommitPlanPrompt={commitPlanPrompt}
           onCommitPlanSettings={commitPlanSettings}
+          onCommitPlanOutputCount={commitPlanOutputCount}
+          confirmationWaivers={session.confirmationWaivers}
+          onWaiveConfirmation={(waiver) => onWaiveConfirmation(session.id, waiver)}
           onConfirmPlan={(targetMessage) => void confirmMessagePlan(targetMessage)}
           onGenerateCompositionItem={(targetMessage, item) => {
             const composition = botanicAgentMessageComposition(targetMessage)
