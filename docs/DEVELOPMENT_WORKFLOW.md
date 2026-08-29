@@ -29,9 +29,10 @@
 
 1. Railway API 必须配置 `/api/health` 健康检查；发布成功以健康检查通过和实例保持运行共同判定，不能只看构建完成。
 2. API、Worker 与前端分别记录 deployment ID 和源码 revision。服务端独立修复若未改变前端产物，可以保留上一成功 Vercel deployment，但必须重新验证同源代理 `/api/health`。
-3. 至少验证：Railway 直连健康接口 200、Vercel 同源健康接口 200、未登录受保护接口 401、API/Worker 启动日志无错误。
-4. 涉及生成或恢复语义时，使用一个最小真实任务验证浏览器 → API → Queue → Worker → Provider → Media → 项目恢复；验收后删除临时项目。
-5. HTTP 错误路径必须通过真实请求入口测试，防止路由已写响应后组合根再次写头；仅对处理函数做单元测试不足以覆盖该类生产崩溃。
+3. 前端可见版本号改 [`package.json`](../package.json) 的 `version`；构建 revision 取 `VERCEL_GIT_COMMIT_SHA` 前 7 位，并写入同次产物的 `/release.json`。已打开的工作台按 revision 发现更新后必须刷新才能继续，检查失败不拦截。不要把前端门闩挂到 Railway `/api/health`：API 与 Vercel 可独立发布。`index.html` 与 `release.json` 必须 `Cache-Control: no-store`，`/assets/*` 保持长缓存。
+4. 至少验证：Railway 直连健康接口 200、Vercel 同源健康接口 200、未登录受保护接口 401、API/Worker 启动日志无错误。
+5. 涉及生成或恢复语义时，使用一个最小真实任务验证浏览器 → API → Queue → Worker → Provider → Media → 项目恢复；验收后删除临时项目。
+6. HTTP 错误路径必须通过真实请求入口测试，防止路由已写响应后组合根再次写头；仅对处理函数做单元测试不足以覆盖该类生产崩溃。
 
 ## 需要 PR 的改动
 

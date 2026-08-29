@@ -1,6 +1,6 @@
 
 
-import { lazy, Suspense, type FormEvent, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { Analytics } from '@vercel/analytics/react'
 import { ProductLanding } from './components/ProductLanding'
 import { useDialogFocusTrap } from './components/useDialogFocusTrap'
@@ -11,6 +11,7 @@ import { clearProductSession, completeProductPasswordSetup, createProductSession
 import { subscribeProductSessionInvalidated } from './lib/productSessionInvalidation'
 import { localizeProductError, readProductLocale } from './i18n/core'
 import { LanguageSwitcher, useProductI18n } from './i18n/react'
+import { formatReleaseLabel, isStaleRelease, readLocalRelease, subscribePublishedRelease, type BotanicRelease } from './lib/releaseGate'
 
 const CanvasWorkspace = lazy(() => import('./features/canvas/CanvasWorkspace'))
 
@@ -54,6 +55,9 @@ const productAccessCopy = {
     signInFailed: '登录失败，请稍后重试。',
     signOutFailed: '退出失败，请稍后重试。',
     passwordSaveFailed: '密码未保存，请稍后重试。',
+    releaseTitle: '发现新版本',
+    releaseDetail: (current: string, latest: string) => `当前 ${current}，最新 ${latest}。请刷新后再使用工作台。`,
+    releaseAction: '立即刷新',
   },
   en: {
     loadingWorkspace: 'Loading workspace…',
@@ -92,11 +96,48 @@ const productAccessCopy = {
     signInFailed: 'Sign-in failed. Please try again.',
     signOutFailed: 'Sign-out failed. Please try again.',
     passwordSaveFailed: 'Your password was not saved. Please try again.',
+    releaseTitle: 'A new version is available',
+    releaseDetail: (current: string, latest: string) => `${current} is out of date. Refresh to ${latest} before continuing.`,
+    releaseAction: 'Refresh now',
   },
 } as const
 
 function currentProductAccessCopy() {
   return productAccessCopy[readProductLocale()]
+}
+
+function ProductAppFrame({ children }: { children: ReactNode }) {
+  const { locale } = useProductI18n()
+  const accessCopy = productAccessCopy[locale]
+  const localRelease = useMemo(() => readLocalRelease(), [])
+  const [publishedRelease, setPublishedRelease] = useState<BotanicRelease | null>(null)
+  const stale = isStaleRelease(localRelease, publishedRelease)
+  const gateRef = useDialogFocusTrap(stale)
+
+  useEffect(() => subscribePublishedRelease({
+    enabled: import.meta.env.PROD,
+    onRelease: setPublishedRelease,
+    addEventListener: (type, listener) => window.addEventListener(type, listener),
+    removeEventListener: (type, listener) => window.removeEventListener(type, listener),
+  }), [])
+
+  return (
+    <>
+      {children}
+      {stale && publishedRelease ? (
+        <main className="product-access product-access--overlay product-access--release-gate">
+          <section ref={gateRef} role="alertdialog" aria-modal="true" aria-labelledby="release-gate-title">
+            <span>BOTANIC</span>
+            <h1 id="release-gate-title">{accessCopy.releaseTitle}</h1>
+            <p>{accessCopy.releaseDetail(formatReleaseLabel(localRelease), formatReleaseLabel(publishedRelease))}</p>
+            <form onSubmit={(event) => { event.preventDefault(); window.location.reload() }}>
+              <button type="submit">{accessCopy.releaseAction}</button>
+            </form>
+          </section>
+        </main>
+      ) : null}
+    </>
+  )
 }
 
 function workspaceRouteRequested(hash: string) {
@@ -357,18 +398,21 @@ function App() {
     setState('landing')
   }
 
+  const releaseLabel = formatReleaseLabel(readLocalRelease())
+
   if (state === 'ready') return (
-    <>
+    <ProductAppFrame>
       <Suspense fallback={<main className="product-access" aria-live="polite"><section><span>BOTANIC</span><h1>{accessCopy.loadingWorkspace}</h1></section></main>}>
         <CanvasWorkspace
           currentUser={user ?? undefined}
           onSignOut={serverPersistenceEnabled ? signOut : undefined}
           onReturnToLanding={returnToLanding}
           productHomeLabel={locale === 'en' ? 'Product home' : '产品首页'}
+          releaseLabel={releaseLabel}
         />
       </Suspense>
       <Analytics />
-    </>
+    </ProductAppFrame>
   )
 
   const accessIsDialog = accessOverlayOpen && (state === 'sign-in' || state === 'password-reset' || state === 'checking' || state === 'error')
@@ -378,10 +422,10 @@ function App() {
     ariaHidden={accessIsDialog}
   />
 
-  if (state === 'landing') return <>{landing}<Analytics /></>
+  if (state === 'landing') return <ProductAppFrame>{landing}<Analytics /></ProductAppFrame>
 
   return (
-    <>
+    <ProductAppFrame>
       {accessIsDialog ? landing : null}
       <main className={`product-access${accessIsDialog ? ' product-access--overlay' : ''}`} aria-live="polite">
         <section
@@ -435,7 +479,7 @@ function App() {
         </section>
       </main>
       <Analytics />
-    </>
+    </ProductAppFrame>
   )
 }
 
