@@ -140,7 +140,7 @@ export function ProductLanding({ isAuthenticated, onEnterWorkspace, ariaHidden =
           .from('.product-hero .workspace-eyebrow', { autoAlpha: 0, y: 10 }, 0)
           .from('#product-hero-title', { y: 16 }, 0)
           .from('.product-hero__copy p', { autoAlpha: 0, y: 10 }, '>-0.22')
-          .from('.product-hero__actions > *', { autoAlpha: 0, y: 8, stagger: 0.05 }, '>-0.24')
+          .from('.product-hero__actions', { autoAlpha: 0, y: 8 }, '>-0.24')
           .from('.product-hero__copy ul li', { autoAlpha: 0, y: 6, stagger: 0.04 }, '>-0.2')
           .from('.product-hero__visual', { autoAlpha: 0, y: 14, duration: 0.5 }, 0.12)
 
@@ -245,9 +245,9 @@ export function ProductLanding({ isAuthenticated, onEnterWorkspace, ariaHidden =
           <a href="#product-capabilities" onClick={handleHashNav}>{copy.capabilitiesNav}</a>
           <a href="#product-workflow" onClick={handleHashNav}>{copy.workflowNav}</a>
           <a href="/status">{copy.statusNav}</a>
+          <LanguageSwitcher className="product-landing__language" />
         </nav>
         <div className="product-landing__nav-actions">
-          <LanguageSwitcher className="product-landing__language" />
           <button type="button" className="product-landing__login" onClick={onEnterWorkspace}>
             {enterLabel} <ArrowUpRightIcon />
           </button>

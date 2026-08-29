@@ -178,16 +178,19 @@ import { bobWelcomePresentation } from '../../domain/bobPresentation'
 import { useBobSaysPlays } from './useBobSaysPlays'
 import {
   AlertIcon,
+  BookIcon,
   BookmarkIcon,
   CheckIcon,
   ChecklistIcon,
-  ChevronLeftIcon,
   ClockIcon,
   CloseIcon,
-  FigmaIcon,
+  DismissIcon,
+  FocusIcon,
   GalleryIcon,
   EditIcon,
-  PlusSquareIcon,
+  GlobeIcon,
+  MoreIcon,
+  PlusIcon,
   SparkleIcon,
   UploadIcon,
 } from '../../components/BotanicIcons'
@@ -201,7 +204,6 @@ import {
   scrollElementIntoView,
   useGSAP,
 } from '../../components/gsapMotion'
-import historyIcon from '../../assets/figma/icon-history.svg'
 import { useProductI18n, useProductMessages } from '../../i18n/react'
 import { localizeProductError, productIntlLocale, type ProductLocale } from '../../i18n/core'
 
@@ -252,19 +254,13 @@ function agentTimelineTimestamp(timestamp: number, locale: ProductLocale) {
 
 function agentQuickActions(locale: ProductLocale): Array<{ intent: BotanicAgentIntent; label: string; instruction: string }> {
   return locale === 'en' ? [
-    { intent: 'replace_scene', label: 'Change scene', instruction: 'Keep the person, clothes, and product. Replace the scene and light.' },
-    { intent: 'change_pose', label: 'Change pose', instruction: 'Keep person, clothes, product, and scene. Adjust pose and framing.' },
-    { intent: 'change_style', label: 'Change style', instruction: 'Keep the subject and scene. Adjust style and light.' },
-    { intent: 'replace_person', label: 'Change model', instruction: 'Keep clothes, product, scene, and style. Replace the model.' },
-    { intent: 'replace_product', label: 'Change product', instruction: 'Keep person, scene, and style. Replace the clothes or product.' },
-    { intent: 'redo_from_root', label: 'Redo with original settings', instruction: 'Reuse the original refs, prompt, and settings.' },
+    { intent: 'replace_scene', label: 'Change scene', instruction: 'Replace the scene and light. Keep person, clothes, and product.' },
+    { intent: 'change_pose', label: 'Change pose', instruction: 'Adjust pose and framing. Keep person, clothes, product, and scene.' },
+    { intent: 'change_style', label: 'Change style', instruction: 'Adjust visual style. Keep person, clothes, product, and scene.' },
   ] : [
-    { intent: 'replace_scene', label: '换场景', instruction: '保持人物、服装和商品不变，只替换场景与环境光线。' },
-    { intent: 'change_pose', label: '换动作', instruction: '保持人物、服装、商品和场景不变，调整动作姿势与构图。' },
-    { intent: 'change_style', label: '换风格', instruction: '保持人物、服装、商品、场景和动作不变，调整视觉风格与光线。' },
-    { intent: 'replace_person', label: '换模特', instruction: '保持服装、商品、场景和风格不变，替换模特。' },
-    { intent: 'replace_product', label: '换商品', instruction: '保持人物、场景和风格不变，替换服装或商品。' },
-    { intent: 'redo_from_root', label: '按原参数重做', instruction: '复用原始参考素材、提示词和参数，重新生成独立首图。' },
+    { intent: 'replace_scene', label: '换场景', instruction: '替换场景和光线。人物、服装、商品保持。' },
+    { intent: 'change_pose', label: '换动作', instruction: '调整姿势和构图。人物、服装、商品、场景保持。' },
+    { intent: 'change_style', label: '换风格', instruction: '调整视觉风格。人物、服装、商品、场景保持。' },
   ]
 }
 
@@ -350,6 +346,7 @@ export default function AgentWorkspace({
   hasOlderMessages = false,
   loadingOlderMessages = false,
   persistenceStatus,
+  fromEmptyGuide = false,
   onClose,
 }: {
   projectId: string
@@ -432,18 +429,22 @@ export default function AgentWorkspace({
   onLoadOlderMessages?: () => void
   hasOlderMessages?: boolean
   loadingOlderMessages?: boolean
+  /** 从空画布引导 Flip 打开时关掉 CSS 侧滑，并挂上 data-flip-id。 */
+  fromEmptyGuide?: boolean
   onClose: () => void
 }) {
   const { locale } = useProductI18n()
   const copy = useProductMessages({
     'zh-CN': {
-      tools: 'Agent 工具', back: '返回对话', results: '结果与文件', tasks: 'Agent 任务', review: '结果评审', brand: '品牌规则', memory: '项目记忆', skills: '创作技能', collaboration: '协作动态', close: '关闭 Agent',
+      tools: 'Agent 工具', results: '结果与文件', tasks: 'Agent 任务', review: '结果评审', brand: '品牌规则', memory: '项目记忆', skills: '创作技能', collaboration: '协作动态', close: '关闭 Agent',
+      welcomeMark: 'Botanic Agent',
       welcome: '今天一起创作什么？', welcomeTarget: (name: string) => `继续优化「${name}」`, welcomeBody: '可以日常对话、生成 Prompt、检索项目，也可以直接描述生图目标。', welcomeTargetBody: '保留当前画面与原始参数，仅调整你刚提出的内容。',
       sources: '来源', unavailable: 'Agent 暂时无法回答，请稍后重试。', unsupportedVideo: 'Agent 对话暂未接入视频执行链。请先在画布添加「视频生成」节点；本次没有创建节点或任务。', clarifyAction: '请明确是只需要建议，还是要我直接生成；本次没有改动画布。',
     },
     en: {
-      tools: 'Agent tools', back: 'Back to conversation', results: 'Results & files', tasks: 'Agent tasks', review: 'Result review', brand: 'Brand rules', memory: 'Project memory', skills: 'Creative skills', collaboration: 'Collaboration', close: 'Close Agent',
-      welcome: 'What are we making?', welcomeTarget: (name: string) => `Refine “${name}”`, welcomeBody: 'Chat, write prompts, search the project, or describe an image.', welcomeTargetBody: 'Keep the current visual and original settings. Change only what you asked.',
+      tools: 'Agent tools', results: 'Results & files', tasks: 'Agent tasks', review: 'Result review', brand: 'Brand rules', memory: 'Project memory', skills: 'Creative skills', collaboration: 'Collaboration', close: 'Close Agent',
+      welcomeMark: 'BOTANIC AGENT',
+      welcome: 'What are we making?', welcomeTarget: (name: string) => `Refine “${name}”`, welcomeBody: 'Chat, write prompts, or search the project.', welcomeTargetBody: 'Keep the current visual and original settings. Change only what you asked.',
       sources: 'Sources', unavailable: 'Agent is temporarily unavailable. Try again shortly.', unsupportedVideo: 'Video execution is not available in Agent chat yet. Add a Video Generation node on the canvas; no node or task was created.', clarifyAction: 'Please clarify whether you only want advice or want me to generate it. The canvas was not changed.',
     },
   })
@@ -457,11 +458,11 @@ export default function AgentWorkspace({
     syncError: { title: 'Canvas sync is temporarily unavailable', detail: 'Your current edits remain saved locally and can sync later.', actionLabel: 'Retry sync' },
     dropImages: 'Drop to add image assets', uploadLimits: uploadLimitsLabel('en'), imageLimit: (count: number) => `You can add up to ${count} images at once. Extra images were skipped.`, imageReadFailed: 'Unable to read the images. Drop or select them again.',
     planningUnavailable: 'Unable to create the plan. Try again shortly.', localPreviewChat: 'The local preview is not connected to Agent services. You can still use the canvas and structured prompts; connect the workspace service for chat, research, and execution.', localPreviewPrompt: (prompt: string) => `Local preview prepared this structured Prompt:\n\n${prompt}\n\nConnect the workspace service to continue with research or execution.`, confirmActionsFirst: 'Approve or skip the pending action cards before starting generation.', taskNotStarted: 'The task did not start. Check the references and generation service, then retry.', taskStartFailed: 'Unable to start the task. Try again.', canvasWritten: ' Added to the canvas.', actionFailed: 'Unable to complete the action. Try again.', retryWithModel: (model: string, prompt: string) => `Regenerate with ${model}: ${prompt}`, retrySettings: (prompt: string) => `Adjust the output settings and regenerate: ${prompt}`, pendingQuestion: 'A confirmation card above still needs an answer. Select or enter a response in the card. No task was created.', noPendingPlan: 'There is no generation plan awaiting approval. Describe the image or batch values you want, and Agent will prepare a plan for review.',
-    history: 'Conversation history', historyUnread: (count: number) => `Conversation history, ${count} ${count === 1 ? 'conversation has' : 'conversations have'} updates`, conversationName: 'Conversation name', saveName: 'Save conversation name', save: 'Save', cancelName: 'Cancel editing conversation name', cancel: 'Cancel', newConversation: 'New conversation', editName: 'Edit conversation name', collaborators: (count: number) => `${count} other ${count === 1 ? 'collaborator' : 'collaborators'} online`, processing: 'Processing',
+    history: 'Conversation history', historyUnread: (count: number) => `Conversation history, ${count} ${count === 1 ? 'conversation has' : 'conversations have'} updates`, conversationName: 'Conversation name', saveName: 'Save conversation name', save: 'Save', cancelName: 'Cancel editing conversation name', cancel: 'Cancel', newConversation: 'New chat', editName: 'Rename', collaborators: (count: number) => `${count} other ${count === 1 ? 'collaborator' : 'collaborators'} online`, processing: 'Processing',
     searchConversations: 'Search conversations', searchPlaceholder: 'Search conversations, messages, or tasks', historyFilters: 'Filter collaboration history', all: 'All', unread: 'Unread', newResults: 'New results', attention: 'Needs attention', resultUpdates: (count: number) => `${count} new ${count === 1 ? 'result' : 'results'}`, updates: (count: number) => `${count} ${count === 1 ? 'update' : 'updates'}`, attentionCount: (count: number) => `${count} need${count === 1 ? 's' : ''} attention`, activeCount: (count: number) => `${count} active`, taskCount: (count: number) => `${count} ${count === 1 ? 'task' : 'tasks'}`, noConversations: 'No conversations match these filters.', noMessagesYet: 'No messages yet',
     localChangesKept: 'Local changes are preserved. Review the update.', locateChange: 'Locate this change.', latestSynced: 'Latest content synced.', closeCollaborationUpdate: 'Close collaboration update', gotIt: 'Got it', readingRestored: 'Returned to your previous reading position', jumpLatest: 'Jump to latest',
     tasksAria: 'Agent tasks and results', tasksEyebrow: 'Tasks', tasksTitle: 'Agent tasks', tasksDescription: 'Tasks started by Agent only. Failed tasks can be retried without replacing completed results.', taskFilters: 'Filter by task status', active: 'Active', completed: 'Completed', filterCount: (label: string, count: number) => `${label} · ${count} ${count === 1 ? 'item' : 'items'}`, sourceConversation: 'Source conversation', cancelling: 'Cancelling…', branchStatus: 'Branch status', branchIncomplete: 'This branch did not complete.', noFilteredTasks: 'No tasks match this filter.', noTasks: 'No Agent tasks yet.',
-    skillsAria: 'System and project Skills', skillsEyebrow: 'Skills', skillsTitle: 'Creative skills', skillsDescription: 'Type @ in the composer to use a Skill. New project Skills are added to the current conversation automatically.', skillsUnavailableLocal: 'Skill registry is available when the workspace service is connected.', systemSkills: 'System Skills', newSkill: '+ New Skill', skillNamePlaceholder: 'Skill name, for example: Summer scene swap', skillName: 'Skill name', skillRulesPlaceholder: 'Describe what must stay fixed, what may change, and the result rules.', skillRules: 'Skill rules', createProjectSkill: 'Create project Skill', createProjectSkillDetail: 'This Skill will be saved to the current project and available to Agent.', creating: 'Creating…', confirmCreate: 'Create Skill', createSkill: 'Create Skill', skillCreateFailed: 'Unable to create the Skill. Try again shortly.', noProjectSkills: 'No project Skills yet.', skillCount: (count: number) => `${count} ${count === 1 ? 'Skill' : 'Skills'}`,
+    skillsAria: 'System and project Skills', skillsEyebrow: 'Skills', skillsTitle: 'Creative skills', skillsDescription: 'Type / in the composer to mount a Skill. New project Skills are added to the current conversation automatically.', skillsUnavailableLocal: 'Skill registry is available when the workspace service is connected.', systemSkills: 'System Skills', newSkill: '+ New Skill', skillNamePlaceholder: 'Skill name, for example: Summer scene swap', skillName: 'Skill name', skillRulesPlaceholder: 'Describe what must stay fixed, what may change, and the result rules.', skillRules: 'Skill rules', createProjectSkill: 'Create project Skill', createProjectSkillDetail: 'This Skill will be saved to the current project and available to Agent.', creating: 'Creating…', confirmCreate: 'Create Skill', createSkill: 'Create Skill', skillCreateFailed: 'Unable to create the Skill. Try again shortly.', noProjectSkills: 'No project Skills yet.', skillCount: (count: number) => `${count} ${count === 1 ? 'Skill' : 'Skills'}`,
     refineOne: 'Continue refining this result:', refineMany: (count: number) => `Continue refining these ${count} results:`, continueContext: 'Continue creating from the current context:', runtimeAria: 'Agent run details', collapseSteps: 'Collapse run steps', viewSteps: 'View run steps', nextStep: 'Next:', runSteps: 'Run steps', runningStep: (label: string) => `Running ${label}`, runtimeStepFailed: 'This step did not complete.', runProgress: 'Agent Run progress', generationTask: 'Generation task', cancelTask: 'Cancel task', cancelFailed: 'Unable to cancel the task. Try again shortly.', retryFailed: (label: string) => `Unable to retry “${label}”. Try again shortly.`,
   } : {
     sources: '来源', noSources: '当前没有命中项目受控检索来源。', incomplete: '未完成', unavailable: 'Agent 暂时无法回答，请稍后重试。',
@@ -473,19 +474,19 @@ export default function AgentWorkspace({
     syncError: { title: '画布同步暂时失败', detail: '当前编辑仍在本地，稍后可以继续同步。', actionLabel: '重试同步' },
     dropImages: '松开即可添加图片素材', uploadLimits: uploadLimitsLabel('zh-CN'), imageLimit: (count: number) => `最多同时添加 ${count} 张图片，超出部分已跳过。`, imageReadFailed: '图片读取失败，请重新拖入或选择图片。',
     planningUnavailable: '暂时无法生成计划。', localPreviewChat: '本地预览模式未连接 Agent 服务；仍可使用画布和结构化 Prompt，连接云端后再使用对话、检索与执行。', localPreviewPrompt: (prompt: string) => `本地预览已整理出结构化 Prompt：\n\n${prompt}\n\n连接工作区服务后可继续检索或执行。`, confirmActionsFirst: '请先确认或跳过行动卡，再执行生成计划。', taskNotStarted: '任务没有启动，请检查参考素材与生成服务后重试。', taskStartFailed: '任务未能启动，请稍后重试。', canvasWritten: ' 已写入画布。', actionFailed: '行动执行失败，请重试。', retryWithModel: (model: string, prompt: string) => `换用${model}重新生成：${prompt}`, retrySettings: (prompt: string) => `调整输出设置后重新生成：${prompt}`, pendingQuestion: '上面还有一张待回答的确认卡，请直接在卡片里选择或填写；本次没有创建任务。', noPendingPlan: '当前没有待确认的生成计划。请直接描述要生成的画面或批量取值，Agent 会先给出待确认计划。',
-    history: '对话历史', historyUnread: (count: number) => `对话历史，${count} 个会话有更新`, conversationName: '对话名称', saveName: '保存对话名称', save: '保存', cancelName: '取消编辑对话名称', cancel: '取消', newConversation: '新建对话', editName: '编辑对话名称', collaborators: (count: number) => `另有 ${count} 位协作者在线`, processing: '处理中',
+    history: '对话历史', historyUnread: (count: number) => `对话历史，${count} 个会话有更新`, conversationName: '对话名称', saveName: '保存对话名称', save: '保存', cancelName: '取消编辑对话名称', cancel: '取消', newConversation: '新对话', editName: '重命名', collaborators: (count: number) => `另有 ${count} 位协作者在线`, processing: '处理中',
     searchConversations: '搜索对话', searchPlaceholder: '搜索对话、消息或任务', historyFilters: '筛选协作历史', all: '全部', unread: '未读', newResults: '新结果', attention: '需处理', resultUpdates: (count: number) => `${count} 个新结果`, updates: (count: number) => `${count} 条更新`, attentionCount: (count: number) => `${count} 项需处理`, activeCount: (count: number) => `${count} 进行中`, taskCount: (count: number) => `${count} 个任务`, noConversations: '当前筛选下没有对话。', noMessagesYet: '还没有消息',
     localChangesKept: '本地改动仍保留，点击查看变更。', locateChange: '点击定位变更。', latestSynced: '最新内容已同步。', closeCollaborationUpdate: '关闭协作更新提示', gotIt: '知道了', readingRestored: '已回到上次阅读位置', jumpLatest: '跳到最新',
     tasksAria: 'Agent 任务与结果', tasksEyebrow: '任务', tasksTitle: 'Agent 任务', tasksDescription: '仅 Agent 发起的任务。失败可重试，不覆盖已完成结果。', taskFilters: '按任务状态筛选', active: '进行中', completed: '已完成', filterCount: (label: string, count: number) => `${label} · ${count} 项`, sourceConversation: '来源对话', cancelling: '取消中…', branchStatus: '分支状态', branchIncomplete: '该分支未完成', noFilteredTasks: '当前筛选下没有任务。', noTasks: '还没有 Agent 任务。',
-    skillsAria: '系统与项目 Skill', skillsEyebrow: '创作技能', skillsTitle: '创作技能', skillsDescription: '在输入框键入 @ 即可调用 Skill。新建的项目 Skill 会自动挂载到当前对话。', skillsUnavailableLocal: '本地预览模式未连接工作区服务；连接云端后可管理 Skill。', systemSkills: '系统 Skills', newSkill: '＋ 新建技能', skillNamePlaceholder: '技能名称，例如：夏日换景', skillName: 'Skill 名称', skillRulesPlaceholder: '描述必须保持什么、允许改变什么，以及结果规则。', skillRules: 'Skill 规则', createProjectSkill: '创建项目 Skill', createProjectSkillDetail: '将写入当前项目，之后可被 Agent 调用。', creating: '创建中…', confirmCreate: '确认创建', createSkill: '创建 Skill', skillCreateFailed: 'Skill 创建失败。', noProjectSkills: '还没有项目 Skill。', skillCount: (count: number) => `${count} 个`,
+    skillsAria: '系统与项目 Skill', skillsEyebrow: '技能', skillsTitle: '创作技能', skillsDescription: '在输入框键入 / 即可挂载 Skill。新建的项目 Skill 会自动挂载到当前对话。', skillsUnavailableLocal: '本地预览模式未连接工作区服务；连接云端后可管理 Skill。', systemSkills: '系统 Skills', newSkill: '＋ 新建技能', skillNamePlaceholder: '技能名称，例如：夏日换景', skillName: 'Skill 名称', skillRulesPlaceholder: '描述必须保持什么、允许改变什么，以及结果规则。', skillRules: 'Skill 规则', createProjectSkill: '创建项目 Skill', createProjectSkillDetail: '将写入当前项目，之后可被 Agent 调用。', creating: '创建中…', confirmCreate: '确认创建', createSkill: '创建 Skill', skillCreateFailed: 'Skill 创建失败。', noProjectSkills: '还没有项目 Skill。', skillCount: (count: number) => `${count} 个`,
     refineOne: '继续优化这张结果：', refineMany: (count: number) => `继续优化这 ${count} 张结果：`, continueContext: '继续基于当前上下文创作：', runtimeAria: 'Agent 运行记录', collapseSteps: '收起运行步骤', viewSteps: '查看运行步骤', nextStep: '下一步：', runSteps: '运行步骤', runningStep: (label: string) => `正在${label}`, runtimeStepFailed: '该步骤未完成。', runProgress: 'Agent Run 实时进度', generationTask: '生成任务', cancelTask: '取消任务', cancelFailed: '任务取消失败，请稍后重试。', retryFailed: (label: string) => `「${label}」重试失败，请稍后再试。`,
   }
   const branchStatusLabel = (status: BotanicAgentRun['branches'][number]['status']) => locale === 'en'
     ? ({ succeeded: 'Completed', running: 'Generating', queued: 'Queued', cancelled: 'Cancelled', failed: 'Failed' }[status])
     : botanicAgentBranchStatusLabel(status)
-  const displaySessionTitle = (title?: string) => locale === 'en' && title === '新建对话'
+  const displaySessionTitle = (title?: string) => !title || title === '新建对话'
     ? flowCopy.newConversation
-    : title ?? flowCopy.newConversation
+    : title
   const displaySessionPreview = (preview: string) => locale === 'en' && preview === '还没有消息'
     ? flowCopy.noMessagesYet
     : preview
@@ -1372,6 +1373,8 @@ export default function AgentWorkspace({
   useGSAP(() => {
     if (utilityPanelOpen || hasMessages || prefersReducedMotion() || welcomePlayedRef.current) return
     welcomePlayedRef.current = true
+    // Flip 开栏时跳过欢迎 stagger，避免和侧栏展开叠成两次入场。
+    if (fromEmptyGuide) return
     const welcome = gsap.timeline({ defaults: { duration: botanicMotion.duration.panel, ease: botanicMotion.ease } })
     welcome
       .from('.agent-workspace__mark', { autoAlpha: 0, scale: 0.92 }, 0)
@@ -1379,7 +1382,7 @@ export default function AgentWorkspace({
       .from('.agent-workspace__welcome h2', { autoAlpha: 0, y: 8 }, '>-0.16')
       .from('.agent-workspace__welcome p', { autoAlpha: 0, y: 6 }, '>-0.18')
       .from('.agent-workspace__starters button', { autoAlpha: 0, y: 8, stagger: 0.05 }, '>-0.12')
-  }, { scope: workspaceRef, dependencies: [hasMessages, utilityPanelOpen, locale] })
+  }, { scope: workspaceRef, dependencies: [fromEmptyGuide, hasMessages, utilityPanelOpen, locale] })
 
   useGSAP(() => {
     if (!readingPositionRestoredRef.current || !latestRenderedMessageId) return
@@ -1402,6 +1405,8 @@ export default function AgentWorkspace({
   const toggleUtilityPanel = (panel: AgentUtilityPanel) => {
     utilityButtonRef.current = utilityMenuButtonRef.current
     setUtilityPanel((current) => current === panel ? null : panel)
+    setHistoryOpen(false)
+    setRenamingSession(false)
     setActiveTransientSurface(null)
     setMentionQuery(undefined)
   }
@@ -1416,6 +1421,8 @@ export default function AgentWorkspace({
 
   const openUtilityPanel = (panel: AgentUtilityPanel) => {
     setUtilityPanel(panel)
+    setHistoryOpen(false)
+    setRenamingSession(false)
     setActiveTransientSurface(null)
     setMentionQuery(undefined)
   }
@@ -3638,7 +3645,8 @@ export default function AgentWorkspace({
   return (
     <aside
       ref={workspaceRef}
-      className="agent-workspace nopan nowheel"
+      className={`agent-workspace nopan nowheel${fromEmptyGuide ? ' is-from-guide' : ''}`}
+      data-flip-id={fromEmptyGuide ? 'empty-agent-open' : undefined}
       aria-label="Botanic Agent"
       onDragOver={handleImageDragOver}
       onDragLeave={handleImageDragLeave}
@@ -3648,15 +3656,33 @@ export default function AgentWorkspace({
       {isImageDropActive ? <div className="agent-workspace__drop-hint" aria-hidden="true"><UploadIcon /><strong>{flowCopy.dropImages}</strong><small>{flowCopy.uploadLimits}</small></div> : null}
       <header className="agent-workspace__header">
         <div className="agent-workspace__title">
-          <button type="button" className="agent-workspace__history-button" onClick={(event) => { historyTriggerRef.current = event.currentTarget; setUtilityMenuOpen(false); setHistoryOpen((open) => !open) }} aria-controls={historyMenuId} aria-expanded={historyOpen} aria-label={unreadSessionCount ? flowCopy.historyUnread(unreadSessionCount) : flowCopy.history} title={flowCopy.history}><FigmaIcon src={historyIcon} />{unreadSessionCount ? <span className="agent-workspace__history-unread" aria-hidden="true">{Math.min(unreadSessionCount, 9)}</span> : null}</button>
           {renamingSession ? <form className="agent-workspace__title-editor" onSubmit={(event) => { event.preventDefault(); commitSessionTitle() }}>
             <input value={sessionTitleDraft} onChange={(event) => setSessionTitleDraft(event.target.value)} maxLength={160} autoFocus aria-label={flowCopy.conversationName} onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); setRenamingSession(false) } }} />
             <button type="submit" aria-label={flowCopy.saveName} title={flowCopy.save}><CheckIcon /></button>
             <button type="button" aria-label={flowCopy.cancelName} title={flowCopy.cancel} onClick={() => setRenamingSession(false)}><CloseIcon /></button>
-          </form> : <>
-            <button type="button" className="agent-workspace__title-button" onClick={(event) => { historyTriggerRef.current = event.currentTarget; setUtilityMenuOpen(false); setHistoryOpen((open) => !open) }} aria-controls={historyMenuId} aria-expanded={historyOpen}>{displaySessionTitle(session?.title)} <span aria-hidden="true">⌄</span></button>
-            {session ? <button type="button" className="agent-workspace__rename-button" aria-label={flowCopy.editName} title={flowCopy.editName} onClick={() => { setHistoryOpen(false); setSessionTitleDraft(displaySessionTitle(session.title)); setRenamingSession(true) }}><EditIcon /></button> : null}
-          </>}
+          </form> : utilityPanelOpen && activeUtilityPanel ? <div className="agent-workspace__panel-chrome">
+            <AgentPanelBackButton onClick={closeUtilityPanel} />
+            <h2>{({
+              result: copy.results,
+              task: copy.tasks,
+              review: copy.review,
+              brand: copy.brand,
+              memory: copy.memory,
+              skill: copy.skills,
+              collaboration: copy.collaboration,
+            })[activeUtilityPanel]}</h2>
+          </div> : <button
+            type="button"
+            className="agent-workspace__title-button"
+            onClick={(event) => { historyTriggerRef.current = event.currentTarget; setUtilityMenuOpen(false); setHistoryOpen((open) => !open) }}
+            aria-controls={historyMenuId}
+            aria-expanded={historyOpen}
+            title={unreadSessionCount ? flowCopy.historyUnread(unreadSessionCount) : flowCopy.history}
+          >
+            <span className="agent-workspace__title-label">{displaySessionTitle(session?.title)}</span>
+            {unreadSessionCount ? <span className="agent-workspace__history-unread" aria-hidden="true">{Math.min(unreadSessionCount, 9)}</span> : null}
+            <span aria-hidden="true">⌄</span>
+          </button>}
         </div>
         <div className="agent-workspace__header-actions">
           {collaborationAwareness.onlineCollaboratorCount ? <span
@@ -3672,43 +3698,53 @@ export default function AgentWorkspace({
             disabled={Boolean(persistenceAction)}
             onClick={inspectPersistenceIssue}
           ><span aria-hidden="true">{persistenceStatus === 'conflict' ? '!' : '·'}</span></button> : null}
-          <button type="button" className="agent-workspace__close-button" aria-label={copy.close} title={copy.close} onClick={onClose}><CloseIcon /></button>
           <div ref={utilityMenuRef} className="agent-workspace__utility-menu-wrap">
-            <button ref={utilityMenuButtonRef} type="button" className={`agent-workspace__utility-menu-button${utilityPanelOpen ? ' is-active' : ''}`} aria-haspopup="menu" aria-expanded={utilityMenuOpen} aria-controls={utilityMenuId} aria-label={copy.tools} title={copy.tools} onClick={() => { setUtilityMenuOpen((open) => !open); setHistoryOpen(false) }}><ChecklistIcon /></button>
+            <button ref={utilityMenuButtonRef} type="button" className={`agent-workspace__utility-menu-button${utilityPanelOpen ? ' is-active' : ''}`} aria-haspopup="menu" aria-expanded={utilityMenuOpen} aria-controls={utilityMenuId} aria-label={copy.tools} title={copy.tools} onClick={() => { setUtilityMenuOpen((open) => !open); setHistoryOpen(false) }}><MoreIcon /></button>
             {utilityMenuOpen ? <div id={utilityMenuId} className="agent-workspace__utility-menu" role="menu" aria-label={copy.tools}>
-              {utilityPanelOpen ? <button type="button" role="menuitem" onClick={closeUtilityPanel}><ChevronLeftIcon /><span>{copy.back}</span></button> : null}
               <button type="button" role="menuitem" className={resultPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('result')}><GalleryIcon /><span>{copy.results}</span></button>
               <button type="button" role="menuitem" className={taskPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('task')}><ChecklistIcon /><span>{copy.tasks}</span></button>
-              {latestRun?.id ? <button type="button" role="menuitem" className={reviewPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('review')}><ChecklistIcon /><span>{copy.review}</span></button> : null}
-              <button type="button" role="menuitem" className={brandPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('brand')}><SparkleIcon /><span>{copy.brand}</span></button>
+              {latestRun?.id ? <button type="button" role="menuitem" className={reviewPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('review')}><FocusIcon /><span>{copy.review}</span></button> : null}
+              <button type="button" role="menuitem" className={brandPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('brand')}><BookIcon /><span>{copy.brand}</span></button>
               <button type="button" role="menuitem" className={memoryPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('memory')}><BookmarkIcon /><span>{copy.memory}</span></button>
               <button type="button" role="menuitem" className={skillPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('skill')}><SparkleIcon /><span>{copy.skills}</span></button>
-              <button type="button" role="menuitem" className={collaborationPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('collaboration')}><ChecklistIcon /><span>{copy.collaboration}</span>{collaborationAwareness.unreadActivityCount ? <b>{Math.min(collaborationAwareness.unreadActivityCount, 99)}</b> : null}</button>
-              <button type="button" role="menuitem" className="is-danger" onClick={() => { setUtilityMenuOpen(false); onClose() }}><CloseIcon /><span>{copy.close}</span></button>
+              <button type="button" role="menuitem" className={collaborationPanelOpen ? 'is-active' : ''} onClick={() => toggleUtilityPanel('collaboration')}><GlobeIcon /><span>{copy.collaboration}</span>{collaborationAwareness.unreadActivityCount ? <b>{Math.min(collaborationAwareness.unreadActivityCount, 99)}</b> : null}</button>
             </div> : null}
           </div>
+          <button type="button" className="agent-workspace__close-button" aria-label={copy.close} title={copy.close} onClick={onClose}><DismissIcon /></button>
         </div>
-        {historyOpen ? <div id={historyMenuId} className="agent-workspace__history" aria-label={flowCopy.history}>
-          <button type="button" onClick={() => { onNewSession(); setHistoryOpen(false); setHistoryQuery(''); setHistoryFilter('all') }}><PlusSquareIcon /> {flowCopy.newConversation}</button>
-          <label className="agent-workspace__history-search"><input type="search" aria-label={flowCopy.searchConversations} value={historyQuery} onChange={(event) => setHistoryQuery(event.target.value)} placeholder={flowCopy.searchPlaceholder} autoFocus /></label>
-          <div className="agent-workspace__history-filters" aria-label={flowCopy.historyFilters}>
-            {([
-              ['all', flowCopy.all],
-              ['unread', flowCopy.unread],
-              ['results', flowCopy.newResults],
-              ['attention', flowCopy.attention],
-            ] as const).map(([value, label]) => <button
-              key={value}
-              type="button"
-              className={historyFilter === value ? 'is-active' : ''}
-              aria-pressed={historyFilter === value}
-              onClick={() => setHistoryFilter(value)}
-            >{label}<small>{historyFilterCounts[value]}</small></button>)}
+        {historyOpen && !utilityPanelOpen ? <div id={historyMenuId} className="agent-workspace__history" aria-label={flowCopy.history}>
+          <div className="agent-workspace__history-find">
+            <div className="agent-workspace__history-toolbar">
+              <label className="agent-workspace__history-search"><input type="search" aria-label={flowCopy.searchConversations} value={historyQuery} onChange={(event) => setHistoryQuery(event.target.value)} placeholder={flowCopy.searchPlaceholder} autoFocus /></label>
+              <button type="button" className="agent-workspace__history-new" onClick={() => { onNewSession(); setHistoryOpen(false); setHistoryQuery(''); setHistoryFilter('all') }}><PlusIcon /> {flowCopy.newConversation}</button>
+            </div>
+            <div className="agent-workspace__history-filters" aria-label={flowCopy.historyFilters}>
+              {([
+                ['all', flowCopy.all],
+                ['unread', flowCopy.unread],
+                ['results', flowCopy.newResults],
+                ['attention', flowCopy.attention],
+              ] as const).map(([value, label]) => <button
+                key={value}
+                type="button"
+                className={historyFilter === value ? 'is-active' : ''}
+                aria-pressed={historyFilter === value}
+                onClick={() => setHistoryFilter(value)}
+              >{label}<small>{historyFilterCounts[value]}</small></button>)}
+            </div>
           </div>
-          {filteredSessionTimeline.map((item) => <button key={item.session.id} type="button" className={item.session.id === session?.id ? 'is-active' : ''} onClick={() => { onSelectSession(item.session.id); setHistoryOpen(false); setHistoryQuery('') }}>
-            <span><strong>{displaySessionTitle(item.session.title)}</strong><small>{displaySessionPreview(item.preview)}</small></span>
-            <span className="agent-workspace__history-meta"><time dateTime={new Date(item.updatedAt).toISOString()}>{agentTimelineTimestamp(item.updatedAt, locale)}</time>{item.unreadResultCount ? <b className="is-unread">{flowCopy.resultUpdates(item.unreadResultCount)}</b> : item.unreadRunCount ? <b className="is-unread">{flowCopy.updates(item.unreadRunCount)}</b> : item.attentionRunCount ? <b className="is-attention">{flowCopy.attentionCount(item.attentionRunCount)}</b> : item.activeRunCount ? <b>{flowCopy.activeCount(item.activeRunCount)}</b> : item.runCount ? <small>{flowCopy.taskCount(item.runCount)}</small> : null}</span>
-          </button>)}
+          <div className="agent-workspace__history-list">
+          {filteredSessionTimeline.map((item) => {
+            const active = item.session.id === session?.id
+            return <div key={item.session.id} className={`agent-workspace__history-item${active ? ' is-active' : ''}`}>
+              <button type="button" className="agent-workspace__history-select" onClick={() => { onSelectSession(item.session.id); setHistoryOpen(false); setHistoryQuery('') }}>
+                <span><strong>{displaySessionTitle(item.session.title)}</strong><small>{displaySessionPreview(item.preview)}</small></span>
+                <span className="agent-workspace__history-meta"><time dateTime={new Date(item.updatedAt).toISOString()}>{agentTimelineTimestamp(item.updatedAt, locale)}</time>{item.unreadResultCount ? <b className="is-unread">{flowCopy.resultUpdates(item.unreadResultCount)}</b> : item.unreadRunCount ? <b className="is-unread">{flowCopy.updates(item.unreadRunCount)}</b> : item.attentionRunCount ? <b className="is-attention">{flowCopy.attentionCount(item.attentionRunCount)}</b> : item.activeRunCount ? <b>{flowCopy.activeCount(item.activeRunCount)}</b> : item.runCount ? <small>{flowCopy.taskCount(item.runCount)}</small> : null}</span>
+              </button>
+              {active ? <button type="button" className="agent-workspace__history-rename" aria-label={flowCopy.editName} title={flowCopy.editName} onClick={() => { setHistoryOpen(false); setSessionTitleDraft(displaySessionTitle(item.session.title)); setRenamingSession(true) }}><EditIcon /></button> : null}
+            </div>
+          })}
+          </div>
           {!filteredSessionTimeline.length ? <p className="agent-workspace__history-empty">{flowCopy.noConversations}</p> : null}
         </div> : null}
       </header>
@@ -3746,7 +3782,6 @@ export default function AgentWorkspace({
           onStartNextRound={createNextRoundFromResults}
           onLoadMoreArtifacts={onLoadMoreArtifacts}
           onLocateConversation={locateRunSourceMessage}
-          onBackToConversation={closeUtilityPanel}
         /></div> : null}
         {collaborationPanelOpen ? <div data-agent-flip className="agent-workspace__flip-surface"><AgentCollaborationPanel
           activities={collaborationAwareness.activities}
@@ -3762,16 +3797,13 @@ export default function AgentWorkspace({
           historyErrorAction={collaborationAwareness.historyErrorAction}
           onLoadMore={onLoadMoreCollaborationActivities}
           onReload={onReloadCollaborationActivities}
-          onBackToConversation={closeUtilityPanel}
         /></div> : null}
         {reviewPanelOpen && latestRun?.id ? <div data-agent-flip className="agent-workspace__flip-surface"><AgentReviewPanel
           runId={latestRun.id}
           projectId={projectId}
-          onBackToConversation={closeUtilityPanel}
         /></div> : null}
         {brandPanelOpen ? <div data-agent-flip className="agent-workspace__flip-surface"><BrandKitPanel
           projectId={projectId}
-          onBackToConversation={closeUtilityPanel}
         /></div> : null}
         {memoryPanelOpen ? <div data-agent-flip className="agent-workspace__flip-surface"><AgentMemoryPanel
           memory={memory}
@@ -3779,10 +3811,8 @@ export default function AgentWorkspace({
           onAddMemory={onAddMemory}
           onRemoveMemory={onRemoveMemory}
           onLocateNode={onLocateNode}
-          onBackToConversation={closeUtilityPanel}
         /></div> : null}
         {taskPanelOpen ? <div data-agent-flip className="agent-workspace__flip-surface"><section className="agent-task-panel" aria-label={flowCopy.tasksAria}>
-          <header><AgentPanelBackButton onClick={closeUtilityPanel} /><div><small>{flowCopy.tasksEyebrow}</small><h2>{flowCopy.tasksTitle}</h2></div><span>{flowCopy.taskCount(runs.length)}</span></header>
           <p>{flowCopy.tasksDescription}</p>
           <div className="agent-task-panel__filters" aria-label={flowCopy.taskFilters}>
             {([
@@ -3837,7 +3867,6 @@ export default function AgentWorkspace({
           </div>
         </section></div> : null}
         {skillPanelOpen ? <div data-agent-flip className="agent-workspace__flip-surface"><section className="agent-skill-panel" aria-label={flowCopy.skillsAria}>
-          <header><AgentPanelBackButton onClick={closeUtilityPanel} /><div><small>{flowCopy.skillsEyebrow}</small><h2>{flowCopy.skillsTitle}</h2></div><span>{flowCopy.skillCount(systemSkills.length + skills.length)}</span></header>
           <p>{flowCopy.skillsDescription}</p>
           {!serverPersistenceEnabled ? <p className="agent-panel__empty agent-skill-panel__local-notice" role="status">{flowCopy.skillsUnavailableLocal}</p> : null}
           {systemSkills.length ? <div className="agent-skill-panel__catalog"><strong>{flowCopy.systemSkills}</strong>{systemSkills.map((skill) => <AgentSkillCard
@@ -3878,11 +3907,11 @@ export default function AgentWorkspace({
         {!utilityPanelOpen ? <div data-agent-flip className="agent-workspace__conversation">
         {!hasMessages ? <section className="agent-workspace__welcome">
           <span className="agent-workspace__mark" data-bob-mood={welcomeBob.mood} data-bob-says={welcomeBob.says}><BobCharacter mood={welcomeBob.mood} says={welcomeBob.says} saysCycles={welcomeBob.cycles} onSaysComplete={() => welcomeSays.markPlayed(welcomeBob.says)} /></span>
-          <small>BOTANIC AGENT</small>
+          <small>{copy.welcomeMark}</small>
           <h2>{target ? copy.welcomeTarget(agentTargetDisplayLabel(target)) : copy.welcome}</h2>
           <p>{target ? copy.welcomeTargetBody : copy.welcomeBody}</p>
           <div className="agent-workspace__starters">
-            {agentQuickActions(locale).slice(0, 3).map((action) => <button key={action.intent} type="button" onClick={() => { setIntent(action.intent); setInstruction(action.instruction) }}><strong>{action.label}</strong><span>{action.instruction}</span></button>)}
+            {agentQuickActions(locale).map((action) => <button key={action.intent} type="button" onClick={() => { setIntent(action.intent); setInstruction(action.instruction) }}><strong>{action.label}</strong><span>{action.instruction}</span></button>)}
           </div>
         </section> : null}
         {session ? renderedConversationMessages.map((message) => {

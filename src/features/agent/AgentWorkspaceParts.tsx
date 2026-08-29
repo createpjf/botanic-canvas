@@ -47,9 +47,9 @@ export function agentRuntimeStepMarker(step: BotanicAgentRuntimeStep) {
 
 export function AgentPanelBackButton({ onClick, label }: { onClick: () => void; label?: string }) {
   const { locale } = useProductI18n()
-  return <button type="button" className="agent-panel-back" onClick={onClick}>
+  const text = label ?? (locale === 'en' ? 'Back to conversation' : '返回对话')
+  return <button type="button" className="agent-panel-back" onClick={onClick} aria-label={text} title={text}>
     <ChevronLeftIcon />
-    <span>{label ?? (locale === 'en' ? 'Back to conversation' : '返回对话')}</span>
   </button>
 }
 
