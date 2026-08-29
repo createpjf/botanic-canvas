@@ -26,6 +26,7 @@ const productLandingCopy = {
     navAria: '产品介绍导航',
     capabilitiesNav: '产品能力',
     workflowNav: '工作方式',
+    statusNav: '状态',
     signIn: '登录工作台',
     enterWorkspace: '进入工作台',
     heroEyebrow: 'AI VISUAL PRODUCTION',
@@ -70,6 +71,7 @@ const productLandingCopy = {
     navAria: 'Product introduction',
     capabilitiesNav: 'Capabilities',
     workflowNav: 'Workflow',
+    statusNav: 'Status',
     signIn: 'Sign in',
     enterWorkspace: 'Open workspace',
     heroEyebrow: 'AI VISUAL PRODUCTION',
@@ -242,6 +244,7 @@ export function ProductLanding({ isAuthenticated, onEnterWorkspace, ariaHidden =
         <nav aria-label={copy.navAria}>
           <a href="#product-capabilities" onClick={handleHashNav}>{copy.capabilitiesNav}</a>
           <a href="#product-workflow" onClick={handleHashNav}>{copy.workflowNav}</a>
+          <a href="/status">{copy.statusNav}</a>
         </nav>
         <div className="product-landing__nav-actions">
           <LanguageSwitcher className="product-landing__language" />
