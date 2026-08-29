@@ -5,12 +5,7 @@ import {
   type StatusSnapshot,
 } from '../domain/statusPage.ts'
 
-type StatusPageEnv = {
-  VITE_STATUS_PAGE_JSON_URL?: string
-  VITE_STATUS_PAGE_SUBSCRIBE_URL?: string
-}
-
-export function readStatusPageConfig(env: StatusPageEnv = import.meta.env ?? {}) {
+export function readStatusPageConfig(env: Record<string, string | undefined> = import.meta.env ?? {}) {
   const jsonUrl = env.VITE_STATUS_PAGE_JSON_URL?.trim() || null
   return {
     jsonUrl,

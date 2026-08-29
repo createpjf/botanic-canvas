@@ -43,6 +43,7 @@ test('配置读取：override 优先，空字符串当未配置', () => {
   assert.deepEqual(readStatusPageConfig({
     VITE_STATUS_PAGE_JSON_URL: ' https://botanic.betteruptime.com/index.json ',
     VITE_STATUS_PAGE_SUBSCRIBE_URL: ' https://status.botanic.example ',
+    VITE_UNRELATED: 'ignored',
   }), {
     jsonUrl: 'https://botanic.betteruptime.com/index.json',
     subscribeUrl: 'https://status.botanic.example',
