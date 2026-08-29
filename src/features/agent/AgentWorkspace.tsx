@@ -952,11 +952,20 @@ export default function AgentWorkspace({
   // 确认后把已持久化的 Run/分支状态投影进同款对话时间线；不发明未发生的步骤。
   useEffect(() => {
     if (!session?.messages.length || !runs.length) return
+    const timelineMessageIdByRun = new Map<string, string>()
+    for (const message of session.messages) {
+      if (message.runId && message.status === 'submitted') timelineMessageIdByRun.set(message.runId, message.id)
+    }
+    for (const message of session.messages) {
+      if (message.runId && message.kind === 'run' && !timelineMessageIdByRun.has(message.runId)) {
+        timelineMessageIdByRun.set(message.runId, message.id)
+      }
+    }
     setExecutionTimelines((current) => {
       let changed = false
       const next = { ...current }
       for (const message of session.messages) {
-        if (!message.runId || (message.status !== 'submitted' && message.kind !== 'run')) continue
+        if (!message.runId || timelineMessageIdByRun.get(message.runId) !== message.id) continue
         const run = runs.find((item) => item.id === message.runId)
         if (!run) continue
         const projected = projectBotanicAgentRunOntoTimeline(run, current[message.id], run.updatedAt)
