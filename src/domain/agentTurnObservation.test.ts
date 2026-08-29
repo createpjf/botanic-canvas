@@ -18,6 +18,7 @@ import {
   retryBotanicAgentTurnRecovery,
   retryBotanicAgentTurnCancellation,
   shouldRevalidateMissingBotanicAgentTurn,
+  settleBotanicAgentCancellationSession,
   settleAgentTurnObservation,
   stopBotanicAgentPlanning,
   type BotanicAgentTurnObservationPage,
@@ -473,6 +474,32 @@ test('Stop 对 durable Turn 只请求深取消并继续观察；非 Turn 工作�
   })
   assert.deepEqual(local, { kind: 'aborted_local' })
   assert.deepEqual(calls, ['cancel:turn-active', 'cancel-when-accepted', 'abort'])
+})
+
+test('Stop 在身份到达前被明确拒绝后，不禁用同 Session 下一轮 Stop', () => {
+  const stoppedSessionId = 'session-active'
+  assert.equal(settleBotanicAgentCancellationSession({
+    currentSessionId: stoppedSessionId,
+    operationSessionId: stoppedSessionId,
+    turnIdentityKnown: false,
+    recoveryPending: true,
+  }), stoppedSessionId)
+
+  const settledSessionId = settleBotanicAgentCancellationSession({
+    currentSessionId: stoppedSessionId,
+    operationSessionId: stoppedSessionId,
+    turnIdentityKnown: false,
+    recoveryPending: false,
+  })
+  assert.equal(settledSessionId, '')
+  assert.equal(settledSessionId === stoppedSessionId, false)
+
+  assert.equal(settleBotanicAgentCancellationSession({
+    currentSessionId: 'session-new',
+    operationSessionId: stoppedSessionId,
+    turnIdentityKnown: false,
+    recoveryPending: false,
+  }), 'session-new')
 })
 
 test('Stop 的 404/断网只保留取消意图并重试，不伪造 cancelled 或 abort observer', async () => {

@@ -1160,9 +1160,6 @@ export function AgentConversationMessage({
         return <div className="agent-message__plan">{recipe}</div>
       })() : null}
     </div>
-    {message.role === 'user' && message.deliveryStatus === 'waiting_network' ? <small className="agent-message__delivery-status" role="status">{t('等待联网', 'Waiting for network')}</small> : null}
-    {message.role === 'user' && message.deliveryStatus === 'queued' ? <small className="agent-message__delivery-status" role="status">{t('等待同步', 'Waiting to sync')}</small> : null}
-    {message.role === 'user' && message.deliveryStatus === 'syncing' ? <small className="agent-message__delivery-status" role="status">{t('正在同步', 'Syncing')}</small> : null}
     {message.role === 'user' && message.deliveryStatus === 'failed' ? <small className="agent-message__delivery-status is-failed" role="alert">{t('同步失败', 'Sync failed')} <button type="button" onClick={() => onRetryDelivery(message.id)}>{t('重试', 'Retry')}</button></small> : null}
     {showUtilities ? <AgentMessageUtilities
       message={message}
