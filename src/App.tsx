@@ -12,8 +12,10 @@ import { subscribeProductSessionInvalidated } from './lib/productSessionInvalida
 import { localizeProductError, readProductLocale } from './i18n/core'
 import { LanguageSwitcher, useProductI18n } from './i18n/react'
 import { formatReleaseLabel, isStaleRelease, readLocalRelease, subscribePublishedRelease, type BotanicRelease } from './lib/releaseGate'
+import { isProductStatusPath } from './domain/statusPage'
 
 const CanvasWorkspace = lazy(() => import('./features/canvas/CanvasWorkspace'))
+const StatusWorkspace = lazy(() => import('./features/status/StatusWorkspace'))
 
 type ProductAppState = 'checking' | 'landing' | 'sign-in' | 'password-reset' | 'password-setup' | 'ready' | 'error'
 
@@ -141,6 +143,7 @@ function ProductAppFrame({ children }: { children: ReactNode }) {
 }
 
 function workspaceRouteRequested(hash: string) {
+  if (typeof window !== 'undefined' && isProductStatusPath(window.location.pathname)) return false
   return workspaceLocationFromHash(hash) !== null
 }
 
@@ -292,6 +295,10 @@ function App() {
       ? workspaceHash(currentLocation)
       : intendedWorkspaceHashRef.current ?? '#/projects'
     intendedWorkspaceHashRef.current = null
+    if (isProductStatusPath(window.location.pathname)) {
+      window.history.replaceState(window.history.state, '', `/${window.location.search}${targetHash}`)
+      return
+    }
     replaceBrowserHash(targetHash)
   }
 
@@ -394,11 +401,85 @@ function App() {
     setPasswordResetSent(false)
     setMessage('')
     intendedWorkspaceHashRef.current = null
+    if (typeof window !== 'undefined' && isProductStatusPath(window.location.pathname)) {
+      window.history.replaceState(window.history.state, '', '/')
+    }
     clearWorkspaceLocation()
     setState('landing')
   }
 
   const releaseLabel = formatReleaseLabel(readLocalRelease())
+  const accessIsDialog = accessOverlayOpen && (state === 'sign-in' || state === 'password-reset' || state === 'checking' || state === 'error')
+  const statusPage = typeof window !== 'undefined' && isProductStatusPath(window.location.pathname)
+  const accessOverlay = (
+    <main className={`product-access${accessIsDialog ? ' product-access--overlay' : ''}`} aria-live="polite">
+      <section
+        ref={accessIsDialog ? accessDialogRef : undefined}
+        role={accessIsDialog ? 'dialog' : undefined}
+        aria-modal={accessIsDialog ? true : undefined}
+        aria-labelledby="product-access-title"
+      >
+        <span>BOTANIC</span>
+        <LanguageSwitcher className="product-access__language" />
+        <h1 id="product-access-title">{state === 'checking' ? accessCopy.checkingTitle : state === 'password-setup' ? accessCopy.passwordSetupTitle : state === 'password-reset' ? accessCopy.passwordResetTitle : accessCopy.signInTitle}</h1>
+        {state === 'checking' ? <p>{accessCopy.syncing}</p> : (
+          state === 'password-setup' ? <form onSubmit={completePasswordSetup}>
+            <p>{accessCopy.inviteConfirmed}</p>
+            <label><span>{accessCopy.newPassword}</span><input autoComplete="new-password" type="password" minLength={8} value={password} onChange={(event) => setPassword(event.target.value)} placeholder={accessCopy.passwordMinimum} /></label>
+            <label><span>{accessCopy.confirmPassword}</span><input autoComplete="new-password" type="password" minLength={8} value={passwordConfirmation} onChange={(event) => setPasswordConfirmation(event.target.value)} placeholder={accessCopy.passwordAgain} /></label>
+            {passwordConfirmation && password !== passwordConfirmation ? <small role="alert">{accessCopy.passwordMismatch}</small> : message ? <small role="alert">{message}</small> : null}
+            <button type="submit" disabled={password.length < 8 || password !== passwordConfirmation}>{accessCopy.saveAndEnter}</button>
+          </form> : state === 'password-reset' ? <form onSubmit={requestPasswordReset}>
+            <p>{passwordResetSent ? message : accessCopy.passwordResetDescription}</p>
+            <label>
+              <span>{accessCopy.email}</span>
+              <input autoComplete="email" type="email" value={accessToken} onChange={(event) => { setAccessToken(event.target.value); setPasswordResetSent(false); setMessage('') }} placeholder="name@company.com" />
+            </label>
+            {message && !passwordResetSent ? <small role="alert">{message}</small> : null}
+            <button type="submit" disabled={passwordResetBusy || !accessToken.trim()}>{passwordResetBusy ? accessCopy.checkingTitle : accessCopy.sendResetLink}</button>
+            <button className="product-access__alternate" type="button" onClick={() => { setState('sign-in'); setMessage(''); setPasswordResetSent(false) }}>{accessCopy.backToSignIn}</button>
+          </form> : <form onSubmit={signIn}>
+            <p>{useLegacyToken ? accessCopy.legacyDescription : supabaseAuthEnabled ? accessCopy.accountDescription : accessCopy.tokenDescription}</p>
+            <label>
+              <span>{useLegacyToken ? accessCopy.token : supabaseAuthEnabled ? accessCopy.email : accessCopy.token}</span>
+              <input autoComplete={useLegacyToken || !supabaseAuthEnabled ? 'current-password' : 'email'} type={useLegacyToken || !supabaseAuthEnabled ? 'password' : 'email'} value={accessToken} onChange={(event) => setAccessToken(event.target.value)} placeholder={useLegacyToken || !supabaseAuthEnabled ? accessCopy.tokenPlaceholder : 'name@company.com'} />
+            </label>
+            {supabaseAuthEnabled && !useLegacyToken ? <label>
+              <span>{accessCopy.password}</span>
+              <input autoComplete="current-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder={accessCopy.passwordPlaceholder} />
+            </label> : null}
+            {message ? <small role="alert">{message}</small> : null}
+            <button type="submit">{accessCopy.enterWorkspace}</button>
+            {supabaseAuthEnabled && !useLegacyToken ? <button className="product-access__alternate" type="button" onClick={() => { setState('password-reset'); setMessage(''); setPasswordResetSent(false) }}>{accessCopy.forgotPassword}</button> : null}
+            {hybridAuthEnabled ? <button className="product-access__alternate" type="button" onClick={() => {
+              setAuthMethod(useLegacyToken ? 'account' : 'legacy')
+              setAccessToken('')
+              setPassword('')
+              setMessage('')
+            }}>{useLegacyToken ? accessCopy.backToEmail : accessCopy.useLegacyToken}</button> : null}
+            {accessIsDialog ? <button className="product-access__alternate" type="button" onClick={returnToLanding}>{accessCopy.backToProduct}</button> : null}
+          </form>
+        )}
+        {user ? <small>{user.name}</small> : null}
+      </section>
+    </main>
+  )
+
+  if (statusPage && state !== 'password-setup') {
+    return (
+      <ProductAppFrame>
+        <Suspense fallback={<main className="product-status" aria-busy="true" />}>
+          <StatusWorkspace
+            isAuthenticated={Boolean(user)}
+            onEnterWorkspace={enterWorkspace}
+            ariaHidden={accessIsDialog}
+          />
+        </Suspense>
+        {accessIsDialog ? accessOverlay : null}
+        <Analytics />
+      </ProductAppFrame>
+    )
+  }
 
   if (state === 'ready') return (
     <ProductAppFrame>
@@ -415,7 +496,6 @@ function App() {
     </ProductAppFrame>
   )
 
-  const accessIsDialog = accessOverlayOpen && (state === 'sign-in' || state === 'password-reset' || state === 'checking' || state === 'error')
   const landing = <ProductLanding
     isAuthenticated={Boolean(user)}
     onEnterWorkspace={enterWorkspace}
@@ -427,57 +507,7 @@ function App() {
   return (
     <ProductAppFrame>
       {accessIsDialog ? landing : null}
-      <main className={`product-access${accessIsDialog ? ' product-access--overlay' : ''}`} aria-live="polite">
-        <section
-          ref={accessIsDialog ? accessDialogRef : undefined}
-          role={accessIsDialog ? 'dialog' : undefined}
-          aria-modal={accessIsDialog ? true : undefined}
-          aria-labelledby="product-access-title"
-        >
-          <span>BOTANIC</span>
-          <LanguageSwitcher className="product-access__language" />
-          <h1 id="product-access-title">{state === 'checking' ? accessCopy.checkingTitle : state === 'password-setup' ? accessCopy.passwordSetupTitle : state === 'password-reset' ? accessCopy.passwordResetTitle : accessCopy.signInTitle}</h1>
-          {state === 'checking' ? <p>{accessCopy.syncing}</p> : (
-            state === 'password-setup' ? <form onSubmit={completePasswordSetup}>
-              <p>{accessCopy.inviteConfirmed}</p>
-              <label><span>{accessCopy.newPassword}</span><input autoComplete="new-password" type="password" minLength={8} value={password} onChange={(event) => setPassword(event.target.value)} placeholder={accessCopy.passwordMinimum} /></label>
-              <label><span>{accessCopy.confirmPassword}</span><input autoComplete="new-password" type="password" minLength={8} value={passwordConfirmation} onChange={(event) => setPasswordConfirmation(event.target.value)} placeholder={accessCopy.passwordAgain} /></label>
-              {passwordConfirmation && password !== passwordConfirmation ? <small role="alert">{accessCopy.passwordMismatch}</small> : message ? <small role="alert">{message}</small> : null}
-              <button type="submit" disabled={password.length < 8 || password !== passwordConfirmation}>{accessCopy.saveAndEnter}</button>
-            </form> : state === 'password-reset' ? <form onSubmit={requestPasswordReset}>
-              <p>{passwordResetSent ? message : accessCopy.passwordResetDescription}</p>
-              <label>
-                <span>{accessCopy.email}</span>
-                <input autoComplete="email" type="email" value={accessToken} onChange={(event) => { setAccessToken(event.target.value); setPasswordResetSent(false); setMessage('') }} placeholder="name@company.com" />
-              </label>
-              {message && !passwordResetSent ? <small role="alert">{message}</small> : null}
-              <button type="submit" disabled={passwordResetBusy || !accessToken.trim()}>{passwordResetBusy ? accessCopy.checkingTitle : accessCopy.sendResetLink}</button>
-              <button className="product-access__alternate" type="button" onClick={() => { setState('sign-in'); setMessage(''); setPasswordResetSent(false) }}>{accessCopy.backToSignIn}</button>
-            </form> : <form onSubmit={signIn}>
-              <p>{useLegacyToken ? accessCopy.legacyDescription : supabaseAuthEnabled ? accessCopy.accountDescription : accessCopy.tokenDescription}</p>
-              <label>
-                <span>{useLegacyToken ? accessCopy.token : supabaseAuthEnabled ? accessCopy.email : accessCopy.token}</span>
-                <input autoComplete={useLegacyToken || !supabaseAuthEnabled ? 'current-password' : 'email'} type={useLegacyToken || !supabaseAuthEnabled ? 'password' : 'email'} value={accessToken} onChange={(event) => setAccessToken(event.target.value)} placeholder={useLegacyToken || !supabaseAuthEnabled ? accessCopy.tokenPlaceholder : 'name@company.com'} />
-              </label>
-              {supabaseAuthEnabled && !useLegacyToken ? <label>
-                <span>{accessCopy.password}</span>
-                <input autoComplete="current-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder={accessCopy.passwordPlaceholder} />
-              </label> : null}
-              {message ? <small role="alert">{message}</small> : null}
-              <button type="submit">{accessCopy.enterWorkspace}</button>
-              {supabaseAuthEnabled && !useLegacyToken ? <button className="product-access__alternate" type="button" onClick={() => { setState('password-reset'); setMessage(''); setPasswordResetSent(false) }}>{accessCopy.forgotPassword}</button> : null}
-              {hybridAuthEnabled ? <button className="product-access__alternate" type="button" onClick={() => {
-                setAuthMethod(useLegacyToken ? 'account' : 'legacy')
-                setAccessToken('')
-                setPassword('')
-                setMessage('')
-              }}>{useLegacyToken ? accessCopy.backToEmail : accessCopy.useLegacyToken}</button> : null}
-              {accessIsDialog ? <button className="product-access__alternate" type="button" onClick={returnToLanding}>{accessCopy.backToProduct}</button> : null}
-            </form>
-          )}
-          {user ? <small>{user.name}</small> : null}
-        </section>
-      </main>
+      {accessOverlay}
       <Analytics />
     </ProductAppFrame>
   )

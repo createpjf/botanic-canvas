@@ -17,7 +17,7 @@ export default defineConfig({
     video: 'retain-on-failure',
   },
   webServer: {
-    command: 'VITE_PERSISTENCE_MODE=local npm run dev -- --host 127.0.0.1',
+    command: 'VITE_PERSISTENCE_MODE=local VITE_STATUS_PAGE_JSON_URL=https://status.example.test/index.json npm run dev -- --host 127.0.0.1',
     url: 'http://127.0.0.1:4173/#/projects',
     reuseExistingServer: false,
     timeout: 120_000,

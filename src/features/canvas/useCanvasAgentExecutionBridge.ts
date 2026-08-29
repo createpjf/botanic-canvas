@@ -161,6 +161,10 @@ export function useCanvasAgentExecutionBridge({
   const readingAnchorWritesRef = useRef(new Map<string, Promise<void>>())
 
   const sessionMeta = document.agentSessions.find((session) => session.id === document.activeAgentSessionId)
+  useEffect(() => {
+    if (!agentOpen || sessionMeta) return
+    ensureAgentSession(selectedFocusNodeIds)
+  }, [agentOpen, ensureAgentSession, selectedFocusNodeIds, sessionMeta])
   const sessionMessages = useAgentSessionMessages(
     document.id,
     document.activeAgentSessionId,
