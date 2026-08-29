@@ -55,7 +55,10 @@ test('两张图的参考边画在媒体之间，不指向隐藏 generate', () =>
   assert.deepEqual(shown, { source: 'asset-2', target: 'asset-1', hidden: false })
   const self = displayEdgeEnds(linked[1], extra, linked, hidden)
   assert.equal(self.hidden, true)
-  assert.equal(displayEdgeEnds(edges[2], extra, linked, hidden).hidden, true)
+  assert.deepEqual(
+    displayEdgeEnds(edges[2], extra, linked, hidden),
+    { source: 'asset-1', target: 'result-1', hidden: false },
+  )
 })
 
 test('用户钉在画布上的 generate 连上旧图后仍可见，参考边仍指向该节点', () => {

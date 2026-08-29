@@ -84,10 +84,13 @@ export function displayGenerateOwnerId(generateId: string, nodes: CanvasNode[], 
   ))?.id ?? null
 }
 
-/** 参考边画到归属媒体；generate 自己的输出边仍隐藏。 */
+/** 参考边和输出边都画到归属媒体，不从隐藏 generate 进出。 */
 export function displayEdgeEnds(edge: Edge, nodes: CanvasNode[], edges: Edge[], hiddenIds: ReadonlySet<string>) {
-  if (hiddenIds.has(edge.source)) return { source: edge.source, target: edge.target, hidden: true }
-  if (!hiddenIds.has(edge.target)) return { source: edge.source, target: edge.target, hidden: false }
-  const target = displayGenerateOwnerId(edge.target, nodes, edges) ?? edge.target
-  return { source: edge.source, target, hidden: edge.source === target }
+  const source = hiddenIds.has(edge.source)
+    ? (displayGenerateOwnerId(edge.source, nodes, edges) ?? edge.source)
+    : edge.source
+  const target = hiddenIds.has(edge.target)
+    ? (displayGenerateOwnerId(edge.target, nodes, edges) ?? edge.target)
+    : edge.target
+  return { source, target, hidden: source === target || hiddenIds.has(source) || hiddenIds.has(target) }
 }

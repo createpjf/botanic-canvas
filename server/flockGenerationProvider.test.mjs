@@ -92,6 +92,8 @@ test('有参考或父图流式写 chat/completions，最多带 14 张 image_url'
   const body = await requestPayload(request)
   assert.equal(request.path, '/chat/completions')
   assert.equal(request.duplex, 'half')
+  assert.deepEqual(body.modalities, ['image', 'text'])
+  assert.equal(body.stream, false)
   assert.equal(body.thinking_level, 'minimal')
   assert.equal('tools' in body, false)
   const parts = body.messages[0].content
@@ -136,6 +138,24 @@ test('文生图从 data[].b64_json 收图', async () => {
   assert.equal(result.outputs[0].image, '/api/media/flock-1')
   assert.equal(result.missingOutputCount, 0)
   assert.equal(persisted[0].mimeType, 'image/png')
+})
+
+test('图生图也能从 chat message.image 单张字段收图', async () => {
+  const result = await generateFlockImages({
+    prompt: '把狗换成猫',
+    batchCount: 1,
+    settings: nanoSettings,
+    parent: reference('父图'),
+  }, {
+    apiBaseUrl: 'https://api.flock.io/v1',
+    apiKey: 'flock-key',
+    jobId: 'job-flock-chat-image',
+    fetchImpl: async () => new Response(JSON.stringify({
+      choices: [{ message: { image: { image_url: { url: `data:image/png;base64,${pngBase64}` } } } }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }),
+    persistMedia: async () => '/api/media/flock-chat-image',
+  })
+  assert.equal(result.outputs[0].image, '/api/media/flock-chat-image')
 })
 
 test('图生图从 chat message 的 image_url 收图', async () => {

@@ -349,12 +349,19 @@ export function useCanvasInteractionCoordinator({
 
   const renderedEdges = useMemo(() => document.edges.map((edge) => {
     const ends = displayEdgeEnds(edge, document.nodes, document.edges, hiddenGenerateIds)
+    const remappedSource = ends.source !== edge.source
     const remappedTarget = ends.target !== edge.target
+    const sourceNode = remappedSource ? document.nodes.find((node) => node.id === ends.source) : undefined
     const targetNode = remappedTarget ? document.nodes.find((node) => node.id === ends.target) : undefined
     return {
       ...edge,
       source: ends.source,
       target: ends.target,
+      sourceHandle: remappedSource && sourceNode?.type === 'asset'
+        ? 'asset-output'
+        : remappedSource && sourceNode?.type === 'result'
+          ? 'output'
+          : edge.sourceHandle,
       targetHandle: remappedTarget && (targetNode?.type === 'asset' || targetNode?.type === 'result')
         ? 'context'
         : edge.targetHandle,

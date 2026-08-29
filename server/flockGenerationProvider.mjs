@@ -93,7 +93,11 @@ function collectImageCandidates(payload) {
       if (typeof part?.inlineData?.data === 'string') values.push({ kind: 'b64', value: part.inlineData.data })
     }
   }
-  for (const image of Array.isArray(message?.images) ? message.images : []) {
+  const images = [
+    ...(message?.image ? [message.image] : []),
+    ...(Array.isArray(message?.images) ? message.images : []),
+  ]
+  for (const image of images) {
     if (typeof image?.image_url?.url === 'string') {
       values.push(image.image_url.url.startsWith('data:')
         ? { kind: 'b64', value: image.image_url.url }
@@ -262,7 +266,7 @@ function *streamedBase64(buffer) {
 
 function streamedFlockChatBody(job, references, fields) {
   const chunks = (function *serialize() {
-    yield `{"model":${JSON.stringify(job.settings.model)},"messages":[{"role":"user","content":[${JSON.stringify({ type: 'text', text: flockImagePrompt(job) })}`
+    yield `{"model":${JSON.stringify(job.settings.model)},"modalities":["image","text"],"stream":false,"messages":[{"role":"user","content":[${JSON.stringify({ type: 'text', text: flockImagePrompt(job) })}`
     for (const reference of references) {
       yield ',{"type":"image_url","image_url":{"url":'
       const dataUrlPrefix = JSON.stringify(`data:${reference.mimeType};base64,`)
