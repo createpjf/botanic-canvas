@@ -67,7 +67,7 @@ const statusPageCopy = {
   },
 } as const
 
-type StatusCopy = (typeof statusPageCopy)['zh-CN']
+type StatusCopy = (typeof statusPageCopy)[keyof typeof statusPageCopy]
 
 function formatUptime(value: number | null) {
   return value == null ? '—' : `${value.toFixed(2)}%`
