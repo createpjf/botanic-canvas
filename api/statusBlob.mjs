@@ -1,16 +1,13 @@
 import { get, put } from '@vercel/blob'
-import type { StatusSampleFile } from '../src/domain/statusPage'
-import type { StatusBlobRead } from '../src/lib/statusPageRuntime'
 
 export const STATUS_SAMPLES_BLOB = 'status-samples.json'
 
-function isMissingBlob(error: unknown) {
+function isMissingBlob(error) {
   if (!error || typeof error !== 'object') return false
-  return ('name' in error && error.name === 'BlobNotFoundError')
-    || ('status' in error && error.status === 404)
+  return error.name === 'BlobNotFoundError' || error.status === 404
 }
 
-export async function readStatusSamples(): Promise<StatusBlobRead> {
+export async function readStatusSamples() {
   try {
     const result = await get(STATUS_SAMPLES_BLOB, { access: 'private', useCache: false })
     if (!result?.stream) return { ok: false, missing: true }
@@ -20,7 +17,7 @@ export async function readStatusSamples(): Promise<StatusBlobRead> {
   }
 }
 
-export async function writeStatusSamples(file: StatusSampleFile) {
+export async function writeStatusSamples(file) {
   await put(STATUS_SAMPLES_BLOB, JSON.stringify(file), {
     access: 'private',
     addRandomSuffix: false,

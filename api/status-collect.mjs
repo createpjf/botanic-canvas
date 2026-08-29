@@ -1,14 +1,14 @@
-import { runStatusCollect } from '../src/lib/statusPageRuntime'
-import { readStatusSamples, writeStatusSamples } from './statusBlob'
+import { runStatusCollect } from './statusCore.mjs'
+import { readStatusSamples, writeStatusSamples } from './statusBlob.mjs'
 
-function json(status: number, body: unknown) {
+function json(status, body) {
   return Response.json(body, {
     status,
     headers: { 'Cache-Control': 'no-store' },
   })
 }
 
-async function collect(request: Request) {
+async function collect(request) {
   if (request.method !== 'GET' && request.method !== 'POST') {
     return json(405, { error: 'method_not_allowed' })
   }
@@ -27,10 +27,10 @@ async function collect(request: Request) {
   }
 }
 
-export function GET(request: Request) {
+export function GET(request) {
   return collect(request)
 }
 
-export function POST(request: Request) {
+export function POST(request) {
   return collect(request)
 }
