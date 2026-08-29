@@ -1,8 +1,29 @@
-import { defineConfig } from 'vite'
+import { readFileSync } from 'node:fs'
 import { networkInterfaces } from 'node:os'
+import { fileURLToPath } from 'node:url'
+import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 
 const localGenerationOrigin = 'http://127.0.0.1:8787'
+
+function botanicReleaseManifest() {
+  const version = JSON.parse(readFileSync(fileURLToPath(new URL('./package.json', import.meta.url)), 'utf8')).version
+  const revision = (process.env.VERCEL_GIT_COMMIT_SHA || '').slice(0, 7) || 'dev'
+  return { version, revision }
+}
+
+function botanicReleasePlugin(): Plugin {
+  const release = botanicReleaseManifest()
+  return {
+    name: 'botanic-release',
+    config() {
+      return { define: { __BOTANIC_RELEASE__: JSON.stringify(release) } }
+    },
+    generateBundle() {
+      this.emitFile({ type: 'asset', fileName: 'release.json', source: `${JSON.stringify(release)}\n` })
+    },
+  }
+}
 
 function generationApiOrigin() {
   const configuredOrigin = process.env.VITE_GENERATION_API_ORIGIN
@@ -19,7 +40,7 @@ function generationApiOrigin() {
 }
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), botanicReleasePlugin()],
   build: {
     rollupOptions: {
       output: {

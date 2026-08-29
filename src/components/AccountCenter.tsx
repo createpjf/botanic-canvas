@@ -115,6 +115,7 @@ function AccountGlyph({ kind }: { kind: 'profile' | 'security' | 'members' | 'au
 export function AccountMenu({
   user,
   anchor,
+  releaseLabel,
   onOpenProfile,
   onOpenSecurity,
   onOpenMembers,
@@ -125,6 +126,7 @@ export function AccountMenu({
 }: {
   user?: AccountUser
   anchor: AccountMenuAnchor
+  releaseLabel?: string
   onOpenProfile: () => void
   onOpenSecurity: () => void
   onOpenMembers: () => void
@@ -196,6 +198,7 @@ export function AccountMenu({
         {user?.role === 'owner' ? <button type="button" role="menuitem" onClick={onOpenAudit}><em><AccountGlyph kind="audit" /></em><span>{copy.activity}</span><small>{copy.activityDescription}</small><b>›</b></button> : null}
       </div>
       {onSignOut ? <button className="account-menu__sign-out" type="button" role="menuitem" onClick={() => void onSignOut()}><AccountGlyph kind="sign-out" /><span>{copy.signOut}</span></button> : null}
+      {releaseLabel ? <p className="account-menu__release">{releaseLabel}</p> : null}
     </div>,
     document.body,
   )

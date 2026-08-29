@@ -418,6 +418,7 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .account-menu__sign-out:focus-visible { border-radius: 10px; outline: 0; background: rgba(250, 237, 233, .66); }
 .account-menu__sign-out:active { transform: scale(.985); }
 .account-menu__sign-out svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.45; }
+.account-menu__release { margin: 0 8px 10px; padding: 0 8px; color: #829087; font-size: 9px; font-weight: 700; letter-spacing: .02em; }
 
 .account-overlay { opacity: 1; transition: opacity 150ms linear, backdrop-filter 200ms ease; }
 .account-overlay.is-enter,
@@ -3091,6 +3092,7 @@ button.project-tab__main { border: 0; cursor: pointer; }
 /* 受保护工作区：生产环境不再把本地 IndexedDB 作为身份与项目边界。 */
 .product-access { display: grid; min-height: 100vh; place-items: center; padding: 24px; background: #f2f5f0; color: #26372a; }
 .product-access--overlay { position: fixed; z-index: 100; inset: 0; background: rgba(28, 38, 30, .34); backdrop-filter: blur(10px); animation: product-access-backdrop-in 160ms ease both; }
+.product-access--release-gate { z-index: 240; }
 .product-access > section { position: relative; width: min(100%, 380px); padding: 28px; border: 1px solid #d9e3d8; border-radius: var(--radius-surface); background: #fff; box-shadow: 0 16px 36px rgba(42, 70, 47, 0.1); }
 .product-access--overlay > section { box-shadow: 0 24px 70px rgba(25, 42, 29, .24); animation: product-access-dialog-in 190ms cubic-bezier(.2, .8, .2, 1) both; }
 .product-access > section > span { color: #5d8066; font-size: 10px; font-weight: 800; letter-spacing: 1.6px; }

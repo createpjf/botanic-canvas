@@ -731,11 +731,13 @@ export default function CanvasWorkspace({
   onSignOut,
   onReturnToLanding,
   productHomeLabel,
+  releaseLabel,
 }: {
   currentUser?: ProductUser
   onSignOut?: () => Promise<void>
   onReturnToLanding: () => void
   productHomeLabel: string
+  releaseLabel?: string
 }) {
   const { locale } = useProductI18n()
   const t = useProductMessages(workspaceMessages)
@@ -2891,6 +2893,7 @@ export default function CanvasWorkspace({
       {accountMenuPresence.present && visibleAccountMenuAnchor ? <AccountMenu
         user={currentUser}
         anchor={visibleAccountMenuAnchor}
+        releaseLabel={releaseLabel}
         phase={accountMenuPresence.phase}
         onOpenProfile={() => { setAccountMenuAnchor(null); if (currentUser) setAccountDialog('profile') }}
         onOpenSecurity={() => { setAccountMenuAnchor(null); if (currentUser) setAccountDialog('security') }}

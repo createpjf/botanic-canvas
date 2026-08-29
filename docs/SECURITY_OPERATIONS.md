@@ -44,3 +44,7 @@ Owner 可从账户菜单的“安全日志”读取最近记录。服务端 `GET
 ## 5. 发布门禁
 
 Pull Request 自动执行测试、架构边界、凭据扫描、生产构建和生产依赖审计。发布前还需人工确认 Railway/Vercel 环境变量、CORS/Origin、MFA 开关、健康检查及一次历史项目恢复。
+
+## 6. 测试账号
+
+隔离验收可以用两个 workspace `member`（不要 Owner）。身份必须同时写入 Supabase Auth 与 Railway `app_users` / `auth_identities`；只建 Auth 用户无法进入工作台。Auth `user_metadata.test_account` 标成测试号。口令只放密码管理器，不写仓库、不写文档、不进工单正文。验收结束后停用成员并 ban 对应 Auth 用户。需要测 Viewer 时，把测试号加进项目并设项目角色，不另开一套账号。
