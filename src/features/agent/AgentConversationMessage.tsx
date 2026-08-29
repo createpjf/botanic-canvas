@@ -791,6 +791,8 @@ type AgentConversationMessageProps = {
   onShowResults: () => void
   onShowTask: (runId: string) => void
   onFocusNodes: (nodeIds: string[]) => void
+  /** 把这次运行带进画布的自动化面板；发布本身仍在那里完成。 */
+  onPromoteRunToWorkflow: (runId: string) => void
   onAnswerClarification: (message: BotanicAgentMessage, answers: Record<string, string>) => void
   onLocateNode: (nodeId: string) => void
   canManualRetryAction: (action: BotanicAgentActionProposal) => boolean
@@ -839,6 +841,7 @@ export function AgentConversationMessage({
   onShowResults,
   onShowTask,
   onFocusNodes,
+  onPromoteRunToWorkflow,
   onAnswerClarification,
   onLocateNode,
   canManualRetryAction,
@@ -1138,6 +1141,11 @@ export function AgentConversationMessage({
               ? <button type="button" className="agent-plan__receipt-primary" onClick={onShowResults}>{t('查看结果', 'View results')}</button>
               : <button type="button" className="agent-plan__receipt-primary" onClick={() => onShowTask(message.runId!)}>{t('查看任务', 'View task')}</button>}
             {outputNodeIds.length ? <button type="button" className="agent-plan__receipt-secondary" onClick={() => onFocusNodes(outputNodeIds)}>{t('定位画布', 'Locate on canvas')}</button> : null}
+            {/*
+              跑通的这一次就是「已验证流程」，提升入口留在结果旁边，不必回画布找生成节点。
+              没有画布产出时不给这个入口：那一步还没有可提升的来源，按了只会开一个空面板。
+            */}
+            {outputNodeIds.length ? <button type="button" className="agent-plan__receipt-secondary" onClick={() => onPromoteRunToWorkflow(message.runId!)}>{t('存为工作流', 'Save as workflow')}</button> : null}
           </div> : null}
           <details className="agent-plan__recipe">
             <summary className="agent-plan__recipe-toggle">

@@ -333,6 +333,7 @@ export default function AgentWorkspace({
   onCancelRun,
   onLocateNode,
   onFocusNodes,
+  onPromoteRunToWorkflow,
   onResolveRunNodes,
   onSaveArtifact,
   onContinueArtifact,
@@ -414,6 +415,8 @@ export default function AgentWorkspace({
   onCancelRun: (runId: string) => Promise<boolean>
   onLocateNode: (nodeId: string) => void
   onFocusNodes: (nodeIds: string[]) => void
+  /** 把这次运行带进画布的自动化面板；发布本身仍在那里完成。 */
+  onPromoteRunToWorkflow: (runId: string) => void
   /** 解析某个 Run 当前在画布上的占位/结果节点；Agent 面板本身读不到画布图谱。 */
   onResolveRunNodes: (runId: string) => string[]
   onSaveArtifact: (artifact: BotanicAgentArtifact) => void
@@ -3893,6 +3896,7 @@ export default function AgentWorkspace({
           onShowResults={() => setUtilityPanel('result')}
           onShowTask={showTaskForRun}
           onFocusNodes={onFocusNodes}
+          onPromoteRunToWorkflow={onPromoteRunToWorkflow}
           onAnswerClarification={(targetMessage, answers) => void answerClarification(targetMessage, answers)}
           onLocateNode={onLocateNode}
           canManualRetryAction={(action) => botanicAgentCanResumeManualRetry(action)
