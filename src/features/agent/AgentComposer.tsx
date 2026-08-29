@@ -27,6 +27,7 @@ type AgentComposerProps = {
   skillOptions: AgentSkillOption[]
   mountedSkills: AgentSkillOption[]
   instruction: string
+  intentHint?: string
   error: string
   canRetry: boolean
   retrying: boolean
@@ -73,6 +74,7 @@ export function AgentComposer({
   skillOptions,
   mountedSkills,
   instruction,
+  intentHint,
   error,
   canRetry,
   retrying,
@@ -113,10 +115,10 @@ export function AgentComposer({
   const { locale } = useProductI18n()
   const copy = useProductMessages({
     'zh-CN': {
-      input: 'Agent 输入', referenced: '已引用', remove: '移除', mounted: '已挂载', callSkill: '挂载 Skill', systemSkill: '系统 Skill', projectSkill: '项目 Skill', createSkill: '创建项目 Skill', saveRules: '保存一组可复用规则', referenceCanvas: '引用画布节点或图片视频', description: '补充描述', asset: '素材', result: '结果', video: '视频', noMatch: '没有匹配项，按 Esc 关闭', noSkillMatch: '没有匹配的 Skill，按 Esc 关闭', placeholder: '/ 挂载 Skill，@ 引用画布节点或图片视频；它们会显示为标签，不写入提示词', message: 'Agent 消息', promptField: '提示词', retry: '重试', addImages: '添加图像素材', executionMode: '执行模式', manual: '计划模式', auto: '自动模式', manualTitle: '计划模式：先给出计划，你确认后再提交', autoTitle: '自动模式：补齐设置后直接提交生成任务', model: 'Agent 模型', assetGroup: '素材组', single: '单张', group: '组', send: '发送给 Agent', stop: '停止', closeImages: '关闭添加图像素材', chooseImages: '从电脑选择图片', dragHint: '也可以直接拖入 Agent 面板', noImages: '暂无图像素材，可从电脑选择或直接拖入。', manualHelp: '确认计划后再生成', autoHelp: '直接生成，行动需确认', modeNote: '只影响之后的新计划', textKind: '文字',
+      input: 'Agent 输入', referenced: '已引用', remove: '移除', mounted: '已挂载', callSkill: '挂载 Skill', systemSkill: '系统 Skill', projectSkill: '项目 Skill', createSkill: '创建项目 Skill', saveRules: '保存一组可复用规则', referenceCanvas: '引用画布节点或图片视频', description: '补充描述', asset: '素材', result: '结果', video: '视频', noMatch: '没有匹配项，按 Esc 关闭', noSkillMatch: '没有匹配的 Skill，按 Esc 关闭', placeholder: '/ 挂载 Skill，@ 引用画布节点或图片视频；它们会显示为标签，不写入提示词', message: 'Agent 消息', promptField: '提示词', retry: '重试', addImages: '添加图像素材', executionMode: '执行模式', manual: '计划模式', auto: '自动模式', manualTitle: '计划模式：出图先给计划，确认后再提交；问答和识图直接回答', autoTitle: '自动模式：出图补齐设置后直接提交；问答和识图仍只回答', model: 'Agent 模型', assetGroup: '素材组', single: '单张', group: '组', send: '发送给 Agent', stop: '停止', closeImages: '关闭添加图像素材', chooseImages: '从电脑选择图片', dragHint: '也可以直接拖入 Agent 面板', noImages: '暂无图像素材，可从电脑选择或直接拖入。', manualHelp: '出图需确认；识图直接回答', autoHelp: '出图可直接提交；识图仍只回答', modeNote: '只影响之后的出图计划，不影响问答和识图', textKind: '文字',
     },
     en: {
-      input: 'Agent input', referenced: 'Referenced', remove: 'Remove', mounted: 'Mounted', callSkill: 'Mount Skill', systemSkill: 'System Skill', projectSkill: 'Project Skill', createSkill: 'Create project Skill', saveRules: 'Save a reusable set of rules', referenceCanvas: 'Reference canvas nodes or media', description: 'Description', asset: 'Asset', result: 'Result', video: 'Video', noMatch: 'No matches. Press Esc to close.', noSkillMatch: 'No matching Skill. Press Esc to close.', placeholder: '/ Skill, @ canvas ref — they become chips, not prompt text.', message: 'Agent message', promptField: 'Prompt', retry: 'Retry', addImages: 'Add images', executionMode: 'Execution mode', manual: 'Plan mode', auto: 'Auto mode', manualTitle: 'Plan mode: review the plan before generating', autoTitle: 'Auto mode: fill settings and generate', model: 'Agent model', assetGroup: 'Asset group', single: 'Single', group: 'Group', send: 'Send to Agent', stop: 'Stop', closeImages: 'Close image picker', chooseImages: 'Choose images', dragHint: 'Or drop images into the Agent panel', noImages: 'No images yet. Choose files or drop them here.', manualHelp: 'Generate after plan confirmation', autoHelp: 'Generate directly; actions still need approval', modeNote: 'Applies to future plans only', textKind: 'Text',
+      input: 'Agent input', referenced: 'Referenced', remove: 'Remove', mounted: 'Mounted', callSkill: 'Mount Skill', systemSkill: 'System Skill', projectSkill: 'Project Skill', createSkill: 'Create project Skill', saveRules: 'Save a reusable set of rules', referenceCanvas: 'Reference canvas nodes or media', description: 'Description', asset: 'Asset', result: 'Result', video: 'Video', noMatch: 'No matches. Press Esc to close.', noSkillMatch: 'No matching Skill. Press Esc to close.', placeholder: '/ Skill, @ canvas ref — they become chips, not prompt text.', message: 'Agent message', promptField: 'Prompt', retry: 'Retry', addImages: 'Add images', executionMode: 'Execution mode', manual: 'Plan mode', auto: 'Auto mode', manualTitle: 'Plan mode: review image plans before generating; questions and image analysis answer directly', autoTitle: 'Auto mode: submit image jobs after settings are complete; questions and image analysis still only answer', model: 'Agent model', assetGroup: 'Asset group', single: 'Single', group: 'Group', send: 'Send to Agent', stop: 'Stop', closeImages: 'Close image picker', chooseImages: 'Choose images', dragHint: 'Or drop images into the Agent panel', noImages: 'No images yet. Choose files or drop them here.', manualHelp: 'Images need confirmation; analysis answers directly', autoHelp: 'Images can submit directly; analysis still only answers', modeNote: 'Applies to future image plans only, not questions or analysis', textKind: 'Text',
     },
   })
   const composerErrorId = useId()
@@ -244,7 +246,7 @@ export function AgentComposer({
       aria-invalid={Boolean(error)}
       aria-describedby={error ? composerErrorId : undefined}
     />
-    {error ? <div id={composerErrorId} className="agent-composer__error" role="alert"><span>{error}</span>{canRetry ? <button type="button" onClick={onRetry} disabled={retrying}>{copy.retry}</button> : null}</div> : null}
+    {error ? <div id={composerErrorId} className="agent-composer__error" role="alert"><span>{error}</span>{canRetry ? <button type="button" onClick={onRetry} disabled={retrying}>{copy.retry}</button> : null}</div> : intentHint ? <p className="agent-composer__intent" role="status">{intentHint}</p> : null}
     <input ref={fileInputRef} className="asset-file-input" type="file" accept={imageUploadAccept()} multiple aria-label={copy.addImages} onChange={handleFiles} />
     <div className="agent-composer__toolbar">
       <div>

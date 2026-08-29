@@ -2,6 +2,7 @@ import { MEMORY_SUBJECTS } from './botanicAgentMemory.mjs'
 import { createHash } from 'node:crypto'
 import { redactSummaryText } from './agentThreadSummary.mjs'
 import { validateAgentEntityReferences } from './agentEntityReferences.mjs'
+import { GENERATION_ASPECT_RATIOS, GENERATION_RESOLUTIONS } from './generationVocabulary.mjs'
 
 const SESSION_LIMIT = 80
 const MESSAGE_LIMIT = 500
@@ -67,8 +68,8 @@ const MENTION_LIMIT = 24
 const TURN_CONTEXT_LIMIT = 32
 const TURN_SKILL_LIMIT = 16
 const TURN_MODEL_LIMIT = 30
-const turnAspectRatios = new Set(['1:1', '16:9', '4:3', '3:4', '4:5', '9:16'])
-const turnResolutions = new Set(['1K', '2K'])
+const turnAspectRatios = new Set(GENERATION_ASPECT_RATIOS)
+const turnResolutions = new Set(GENERATION_RESOLUTIONS)
 
 /**
  * 消息引用只落 id + 展示名；图片字节/URL 由画布现况回填，不进消息实体。

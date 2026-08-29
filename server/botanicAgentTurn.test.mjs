@@ -243,6 +243,28 @@ test('选中态与执行模式写进系统提示：模型知道在改哪张图�
   assert.doesNotMatch(withoutSelection, /首图 01/)
 })
 
+test('没有生图目录时不暴露出图工具，处境简报按识图而不是新建画面', async () => {
+  const requests = []
+  await resolveBotanicAgentTurn({
+    projectId: 'project-turn',
+    plannerModel: 'gemini-3.7-flash',
+    messages: [{ role: 'user', content: '这张图里有什么，分析一下' }],
+    contextNodeIds: ['asset-mia-portrait'],
+    hasTarget: false,
+  }, runtime, {
+    document,
+    fetchImpl: async (_url, init) => {
+      requests.push(JSON.parse(init.body))
+      return new Response(JSON.stringify({ choices: [{ message: { content: '图里是海边肖像。' } }] }), { status: 200 })
+    },
+  })
+  const names = (requests[0].tools ?? []).map((tool) => tool.function.name)
+  assert.equal(names.includes('generate_images'), false)
+  assert.equal(names.includes('decompose_creative_brief'), false)
+  assert.match(requests[0].messages[0].content, /不是出图/)
+  assert.doesNotMatch(requests[0].messages[0].content, /新建画面/)
+})
+
 test('线程摘要以低权限用户上下文注入，不进入系统提示', async () => {
   const requests = []
   await resolveBotanicAgentTurn({

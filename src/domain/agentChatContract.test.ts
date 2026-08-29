@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { GenerationModelOption } from './canvas.ts'
 import {
+  botanicAgentComposerIntentHint,
+  botanicAgentRequestUsesGenerationTurn,
   buildBotanicAgentChatRequest,
   completeBotanicAgentGenerationSettings,
   decideBotanicAgentRequest,
@@ -63,8 +65,19 @@ test('图片咨询、运行状态和能力询问不会误触发生成', () => {
   ]
 
   consultations.forEach((instruction) => {
-    assert.notEqual(decideBotanicAgentRequest(instruction, true).kind, 'generation', instruction)
+    const decision = decideBotanicAgentRequest(instruction, true)
+    assert.notEqual(decision.kind, 'generation', instruction)
+    assert.equal(botanicAgentRequestUsesGenerationTurn(decision), false, instruction)
   })
+  assert.equal(decideBotanicAgentRequest('分析一下然后生成3张海边人像', true).kind, 'generation')
+  assert.equal(
+    botanicAgentComposerIntentHint(decideBotanicAgentRequest('这张图里有什么，分析一下', true), { hasVisualContext: true }, 'zh-CN'),
+    '这一步将分析引用图，不会出图',
+  )
+  assert.equal(
+    botanicAgentComposerIntentHint(decideBotanicAgentRequest('做一张海边人像', true), { hasVisualContext: true }, 'zh-CN'),
+    '这一步将规划出图',
+  )
 })
 
 test('明确的视觉执行请求才进入生成链路', () => {

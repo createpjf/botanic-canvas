@@ -51,6 +51,7 @@ import {
   type BotanicCreativeBrief,
 } from '../../domain/agent'
 import {
+  botanicAgentComposerIntentHint,
   decideBotanicAgentRequest,
   isBotanicAgentPromptGenerationPending,
 } from '../../domain/agentChatContract'
@@ -698,6 +699,16 @@ export default function AgentWorkspace({
   const runtimeStepsId = useId()
   const compatibleGroups = groups.filter((group) => group.role === botanicAgentComposerGroupRole(intent) && group.assetIds.length)
   const contextItems = contextOptions.filter((item) => session?.contextNodeIds.includes(item.id))
+  const composerHasVisual = Boolean(target?.image) || contextItems.some((item) => (
+    Boolean(item.image) && (item.mediaKind ?? 'image') === 'image'
+  ))
+  const composerIntentHint = instruction.trim() || composerHasVisual
+    ? botanicAgentComposerIntentHint(
+      decideBotanicAgentRequest(instruction, composerHasVisual),
+      { hasVisualContext: composerHasVisual },
+      locale,
+    )
+    : ''
   const imageContextOptions = contextOptions.filter((item) => (
     (item.kind === '素材' || item.kind === '结果')
     && Boolean(item.image)
@@ -3958,6 +3969,7 @@ export default function AgentWorkspace({
         skillOptions={skillOptions}
         mountedSkills={mountedSkillOptions}
         instruction={instruction}
+        intentHint={composerIntentHint}
         error={error}
         canRetry={Boolean(lastFailedPlanMessageId || lastFailedInstruction)}
         retrying={planning || submittingMessageId === lastFailedPlanMessageId}
