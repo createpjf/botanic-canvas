@@ -209,6 +209,36 @@ test('project to canvas and Agent surfaces stay ordered across reload', async ({
   expect(consoleErrors).toEqual([])
 })
 
+test('Agent Session 被刷新清掉后，模式切换与发送会自动恢复', async ({ page }) => {
+  await stubReadOnlyRuntime(page)
+  await page.goto('/#/projects')
+  await page.getByRole('button', { name: '新建项目' }).click()
+  await page.getByRole('button', { name: '打开 Bob' }).click()
+  await expect(page.getByRole('complementary', { name: 'Botanic Agent' })).toBeVisible()
+
+  await page.evaluate(async () => {
+    const loadStore = new Function('return import("/src/store/canvasStore.ts")') as () => Promise<{
+      useCanvasStore: {
+        getState: () => { document: Record<string, unknown> }
+        setState: (state: { document: Record<string, unknown> }) => void
+      }
+    }>
+    const { useCanvasStore } = await loadStore()
+    const document = useCanvasStore.getState().document
+    useCanvasStore.setState({
+      document: { ...document, agentSessions: [], activeAgentSessionId: undefined },
+    })
+  })
+
+  const composer = page.getByRole('textbox', { name: '提示词' })
+  await composer.fill('你好')
+  await page.getByRole('button', { name: '执行模式：计划模式' }).click()
+  await page.getByRole('group', { name: '执行模式' }).getByRole('button', { name: '自动模式' }).click()
+
+  await expect.soft(page.getByRole('button', { name: '执行模式：自动模式' })).toBeVisible()
+  await expect.soft(page.getByRole('button', { name: '发送给 Agent' })).toBeEnabled()
+})
+
 test('Agent 离线消息跨页面实例恢复，联网后只按原幂等键提交一次', async ({ page, context }) => {
   await stubReadOnlyRuntime(page)
   await page.goto('/#/projects')
