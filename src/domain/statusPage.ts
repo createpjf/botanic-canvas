@@ -174,7 +174,7 @@ export function mapStatusSnapshot(payload: unknown, fetchedAt: string, subscribe
       .map((item, index) => [String(item.id), index]),
   )
 
-  const incidents: Array<StatusIncident & { affectedIds: string[] }> = reports.flatMap((report) => {
+  const allIncidents: Array<StatusIncident & { affectedIds: string[] }> = reports.flatMap((report) => {
     const attributes = isRecord(report.attributes) ? report.attributes : {}
     const startedAt = typeof attributes.starts_at === 'string' ? attributes.starts_at : ''
     if (!startedAt) return []
@@ -203,7 +203,7 @@ export function mapStatusSnapshot(payload: unknown, fetchedAt: string, subscribe
     const rightOpen = right.resolvedAt ? 1 : 0
     if (leftOpen !== rightOpen) return leftOpen - rightOpen
     return Date.parse(right.startedAt) - Date.parse(left.startedAt)
-  }).slice(0, STATUS_INCIDENT_LIMIT)
+  })
 
   const days = dayWindow30(fetchedAt)
   const hours = hourWindow(fetchedAt)
@@ -246,7 +246,7 @@ export function mapStatusSnapshot(payload: unknown, fetchedAt: string, subscribe
       ? clampPercent((1 - recorded.reduce((sum, cell) => sum + cell.downtimeSeconds, 0) / (recorded.length * 86400)) * 100)
       : null
 
-    const relevantIncidents = incidents
+    const relevantIncidents = allIncidents
       .filter((incident) => incident.affectedIds.length === 0 || incident.affectedIds.includes(id))
       .sort((left, right) => Date.parse(left.startedAt) - Date.parse(right.startedAt))
     const hours24 = hours.map((bucket) => {
@@ -299,7 +299,7 @@ export function mapStatusSnapshot(payload: unknown, fetchedAt: string, subscribe
     updatedAt: typeof attributes.updated_at === 'string' ? attributes.updated_at : null,
     overall: mappedOverall ?? 'unknown',
     components,
-    incidents: incidents.map(({ affectedIds: _affectedIds, ...incident }) => incident),
+    incidents: allIncidents.slice(0, STATUS_INCIDENT_LIMIT).map(({ affectedIds: _affectedIds, ...incident }) => incident),
     subscribeUrl,
   }
 }

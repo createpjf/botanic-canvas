@@ -206,3 +206,36 @@ test('进行中事故用 fetchedAt 收口，列表进行中置顶并截 20 条',
   assert.equal(openHour?.level, 'degraded')
   assert.equal(snapshot.subscribeUrl, 'https://status.example')
 })
+
+test('超过 20 条 24h 窗口内事故仍计入 cells/uptime，列表仍截 20', () => {
+  const oldestStarts = '2026-08-28T12:00:00.000Z'
+  const oldestEnds = '2026-08-28T12:30:00.000Z'
+  const reports = [
+    report('oldest', {
+      title: '最早窗口内中断',
+      starts_at: oldestStarts,
+      ends_at: oldestEnds,
+      aggregate_state: 'downtime',
+      affected_resources: [{ status_page_resource_id: 'api', status: 'downtime' }],
+    }),
+    ...Array.from({ length: 20 }, (_, index) => report(`newer-${index}`, {
+      title: `较新 ${index}`,
+      starts_at: `2026-08-29T${String((index % 10) + 2).padStart(2, '0')}:00:00.000Z`,
+      ends_at: `2026-08-29T${String((index % 10) + 2).padStart(2, '0')}:15:00.000Z`,
+      affected_resources: [{ status_page_resource_id: 'api', status: 'downtime' }],
+    })),
+  ]
+  const snapshot = mapStatusSnapshot({
+    data: { type: 'status_page', attributes: { aggregate_state: 'downtime' }, relationships: { sections: { data: [] } } },
+    included: [resource('api', 'API'), ...reports],
+  }, fetchedAt, null)
+
+  assert.equal(snapshot.incidents.length, 20)
+  assert.ok(!snapshot.incidents.some((incident) => incident.id === 'oldest'))
+
+  const api = snapshot.components.find((item) => item.id === 'api')
+  const oldestHour = api?.hours24.find((cell) => cell.start === oldestStarts)
+  assert.equal(oldestHour?.level, 'outage')
+  assert.equal(oldestHour?.incidentTitle, '最早窗口内中断')
+  assert.ok((api?.uptime24h ?? 100) < (1 - 30 / 1440) * 100)
+})
