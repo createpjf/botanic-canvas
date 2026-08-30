@@ -104,13 +104,13 @@ export function useAgentMessageDelivery({
     }
   }, [flush])
 
-  const appendMessage = useCallback((message: Omit<BotanicAgentMessage, 'id' | 'createdAt'> & { id?: string }) => {
+  const appendMessage = useCallback((message: Omit<BotanicAgentMessage, 'id' | 'createdAt'> & { id?: string; createdAt?: number }) => {
     if (!session || !isCurrentProject()) return ''
     const messageId = message.id?.trim() || `agent-message-${crypto.randomUUID()}`
     const queuedMessage: BotanicAgentMessage = {
       ...message,
       id: messageId,
-      createdAt: Date.now(),
+      createdAt: message.createdAt ?? Date.now(),
       deliveryStatus: serverPersistenceEnabled ? online ? 'queued' : 'waiting_network' : 'synced',
     }
     const queuedSession = appendBotanicAgentMessage(session, queuedMessage)

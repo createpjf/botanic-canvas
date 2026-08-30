@@ -612,7 +612,7 @@ export default function AgentWorkspace({
   // Turn 结果使用稳定 Message ID。若上一轮刷新已留下旧投影，必须原位更新并把
   // 完整新版送进离线队列；简单 append 会因重复 ID 被本地 Store 丢弃。
   const appendMessage = (
-    message: Omit<BotanicAgentMessage, 'id' | 'createdAt'> & { id?: string },
+    message: Omit<BotanicAgentMessage, 'id' | 'createdAt'> & { id?: string; createdAt?: number },
   ) => {
     const messageId = message.id?.trim()
     const existing = messageId ? session?.messages.find((item) => item.id === messageId) : undefined
@@ -1946,17 +1946,17 @@ export default function AgentWorkspace({
       : target
     // 快捷操作选的意图只作用于紧随其后的这一条指令；用完即清，
     // 避免一次点击后的残留意图长期覆盖回合模型的判断。
-    if (intent) setIntent(undefined)
+    if (intent) setIntent(undefined); const appendedUserMessageCreatedAt = options.appendUser !== undefined ? Date.now() : undefined
     const appendedUserMessageId = options.appendUser !== undefined
       ? appendMessage({
           role: 'user',
           kind: 'text',
           content: options.appendUser,
           ...(options.mentions?.length ? { mentions: options.mentions } : {}),
+          createdAt: appendedUserMessageCreatedAt,
         })
       : ''
-    setLiveConversation(undefined)
-    setError('')
+    setLiveConversation(undefined); setError('')
     setLastFailedInstruction('')
     setLastFailedPlanMessageId('')
     const failedCommand: AgentFailedInstruction = {
@@ -2165,7 +2165,7 @@ export default function AgentWorkspace({
         kind: 'text',
         content: turnInputMessage.content,
         ...(turnInputMessage.mentions?.length ? { mentions: turnInputMessage.mentions } : {}),
-        createdAt: Date.now(),
+        createdAt: appendedUserMessageCreatedAt ?? Date.now(),
       }
       try {
         const preparedContextIds = onPrepareVisionContext
@@ -2567,7 +2567,7 @@ export default function AgentWorkspace({
           kind: 'text',
           content: options.appendUser ?? cleanInstruction,
           ...(options.mentions?.length ? { mentions: options.mentions } : {}),
-          createdAt: Date.now(),
+          createdAt: appendedUserMessageCreatedAt ?? Date.now(),
         }
         await ensureMessageDurable(durableInputMessage)
         const response = await streamBotanicAgentChat({

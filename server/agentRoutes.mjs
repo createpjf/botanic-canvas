@@ -1441,8 +1441,8 @@ export function createAgentRouteHandler({
       // 不能把 durable reattach 身份清掉；显式改绑同样 fail closed。
       // 业务引用只接受 durable Turn result；无论客户端提交什么都先剥离，再由服务端覆盖。
       const { entityReferences: _clientEntityReferences, ...clientBody } = body
-      const messageInput = {
-        ...clientBody,
+      const messageInput = { ...clientBody,
+        ...(existingMessage?.createdAt === undefined ? {} : { createdAt: existingMessage.createdAt }),
         ...(existingMessage?.turnId && body.turnId === undefined ? { turnId: existingMessage.turnId } : {}),
         ...(existingMessage?.turnCancellationRequestedAt !== undefined
           && body.turnCancellationRequestedAt === undefined

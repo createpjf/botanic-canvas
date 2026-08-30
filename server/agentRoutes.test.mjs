@@ -686,6 +686,50 @@ test('迟到的离线消息写入不会清掉服务端已绑定的 turnId', asyn
   assert.equal(submitted.turnCancellationRequestedAt, 29)
 })
 
+test('迟到消息沿用服务端 createdAt，避免 Turn 请求快照因客户端时钟漂移被拒绝', async () => {
+  const existing = {
+    id: 'message-sticky-created-at', role: 'user', kind: 'text', content: '继续优化',
+    createdAt: 100, updatedAt: 110,
+  }
+  const snapshot = {
+    locale: 'en', contextNodeIds: [], hasTarget: false, executionMode: 'manual',
+  }
+  let submitted
+  const handler = createAgentRouteHandler({
+    config: {},
+    productStore: {
+      projectAccess: async () => ({ exists: true, role: 'owner' }),
+      listAgentSessionMessages: async () => ({ messages: [existing] }),
+      putAgentMessage: async (_userId, _projectId, _sessionId, message) => {
+        submitted = structuredClone(message)
+        return message
+      },
+      readAgentState: async () => ({ sessions: [{ id: 'session-1', title: '会话' }] }),
+      putCollaborationActivity: async (_userId, _projectId, input) => input,
+    },
+    json: () => true,
+    error: () => true,
+    readJson: async () => ({
+      ...existing,
+      createdAt: 200,
+      updatedAt: 220,
+      turnRequestSnapshot: snapshot,
+    }),
+    requireUser: async () => ({ id: 'user-1' }),
+  })
+
+  await handler(
+    { method: 'PUT', headers: {} },
+    {},
+    new URL('http://botanic.test/api/projects/project-1/agent-sessions/session-1/messages/message-sticky-created-at'),
+    { agentMessage: ['agent-message', 'project-1', 'session-1', 'message-sticky-created-at'] },
+    'request-sticky-created-at',
+  )
+
+  assert.equal(submitted.createdAt, existing.createdAt)
+  assert.deepEqual(submitted.turnRequestSnapshot, snapshot)
+})
+
 test('稳定助手投影的 entityReferences 只取权威 Turn，客户端值与普通消息注入均被覆盖', async () => {
   const submitted = []
   let runningTurn = {

@@ -68,6 +68,24 @@ test('PostgreSQL Message writer 在锁内共用单调生命周期与 sticky 请�
   }
 })
 
+test('PostgreSQL 协作活动 Adapter 导入所有活动持久化辅助函数', () => {
+  const header = postgres.slice(0, postgres.indexOf('const now ='))
+  const activityMethods = postgres.slice(
+    postgres.indexOf('async listCollaborationActivities'),
+    postgres.indexOf('async putAgentSessionReadReceipt'),
+  )
+  assert.match(header, /from '\.\/collaborationActivityPersistence\.mjs'/u)
+  for (const helper of [
+    'collaborationActivitiesForMember',
+    'collaborationActivityListOptions',
+    'nextCollaborationReceipt',
+    'validateCollaborationActivity',
+  ]) {
+    assert.match(header, new RegExp(`\\b${helper}\\b`, 'u'), helper)
+    assert.match(activityMethods, new RegExp(`\\b${helper}\\b`, 'u'), helper)
+  }
+})
+
 test('Supabase Session Message 与 Canvas 同步只走新原子 RPC，缺迁移 fail-closed', () => {
   const sync = slice(supabase, 'async function syncAgentStateFromDocument(', 'async function generationFenceRpc(')
   const putSession = slice(
