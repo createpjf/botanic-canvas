@@ -186,7 +186,7 @@ test('project to canvas and Agent surfaces stay ordered across reload', async ({
   await expect(page.getByRole('button', { name: '返回项目' })).toBeEnabled()
 
   await page.getByRole('button', { name: '换场景' }).click()
-  const composer = page.getByRole('textbox', { name: '提示词' })
+  const composer = page.getByRole('combobox', { name: '提示词' })
   await expect(composer).toHaveValue('替换场景和光线。人物、服装、商品保持。')
 
   await page.getByRole('button', { name: '执行模式：计划模式' }).click()
@@ -209,7 +209,7 @@ test('project to canvas and Agent surfaces stay ordered across reload', async ({
   await expect(page.getByRole('button', { name: '执行模式：自动模式' })).toBeVisible()
 
   await composer.fill('@')
-  await expect(page.getByRole('group', { name: '引用画布节点或图片视频' })).toBeVisible()
+  await expect(page.getByRole('listbox', { name: '引用画布节点或图片视频' })).toBeVisible()
   await expect(page.getByText('没有匹配项，按 Esc 关闭')).toBeVisible()
 
   await page.reload()
@@ -242,7 +242,7 @@ test('Agent Session 被刷新清掉后，模式切换与发送会自动恢复', 
     })
   })
 
-  const composer = page.getByRole('textbox', { name: '提示词' })
+  const composer = page.getByRole('combobox', { name: '提示词' })
   await composer.fill('你好')
   await page.getByRole('button', { name: '执行模式：计划模式' }).click()
   await page.getByRole('group', { name: '执行模式' }).getByRole('button', { name: '自动模式' }).click()
@@ -278,7 +278,7 @@ test('Agent 离线消息跨页面实例恢复，联网后只按原幂等键提�
     })
     queue.enqueue({
       projectId: 'project-e2e',
-      session: { id: 'session-e2e', title: '离线恢复', executionMode: 'manual', contextNodeIds: [], messages: [], createdAt: 1, updatedAt: 1 },
+      sessionId: 'session-e2e',
       message: { id: 'message-e2e', role: 'user', kind: 'text', content: '离线消息', createdAt: 2 },
       idempotencyKey: 'agent-message-message-e2e',
     })
@@ -387,7 +387,7 @@ test('空画布优先提供目标入口，本地能力边界可见且不请求�
   await expect(guide.getByRole('button', { name: '描述目标', exact: true })).toBeHidden()
   await expect(guide.getByRole('button', { name: '图片生成' })).toBeVisible()
 
-  const composer = page.getByRole('textbox', { name: '提示词' })
+  const composer = page.getByRole('combobox', { name: '提示词' })
   await composer.fill('你好')
   await page.getByRole('button', { name: '发送给 Agent' }).click()
   await expect(page.getByText('本地预览模式未连接 Agent 服务')).toBeVisible()
