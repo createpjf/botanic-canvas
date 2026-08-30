@@ -751,7 +751,7 @@ export function createGenerationProcessor({
             const latestJob = await productStore.readGenerationJobForWorker(jobId)
             const hasOutput = latestJob?.variants?.some((variant) => variant.status === 'succeeded')
             const alternate = hasOutput ? undefined : fallback()
-            const transientFailure = ['PROVIDER_TIMEOUT', 'PROVIDER_UNAVAILABLE', 'GENERATION_FAILED', 'REQUEST_TIMEOUT'].includes(caught?.code)
+            const transientFailure = ['PROVIDER_TIMEOUT', 'PROVIDER_UNAVAILABLE', 'GENERATION_FAILED', 'REQUEST_TIMEOUT', 'EMPTY_PROVIDER_RESPONSE'].includes(caught?.code)
             if (!transientFailure || hasOutput) throw caught
             if (!alternate) {
               // 没有语义兼容的备用模型时保留 Provider 原始错误；否则会把

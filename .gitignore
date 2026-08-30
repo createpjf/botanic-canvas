@@ -11,3 +11,4 @@ server/.data
 .vercel
 .DS_Store
 .playwright-mcp/
+.cursor/*.log

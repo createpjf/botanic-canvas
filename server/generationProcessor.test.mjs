@@ -160,7 +160,7 @@ test('Flock 高内存许可在输入媒体物化前取得，并在任务结束�
 })
 
 test('跨 Provider fallback 只在真正进入 Flock 前重新物化，并持有许可到任务结束', async () => {
-  const runScenario = async ({ primary, fallback }) => {
+  const runScenario = async ({ primary, fallback, failureCode = 'PROVIDER_UNAVAILABLE' }) => {
     const events = []
     let storedJob = {
       id: `job-${primary}-to-${fallback}`, ownerId: 'user-a', projectId: 'project-a', status: 'queued', kind: 'generation',
@@ -201,7 +201,7 @@ test('跨 Provider fallback 只在真正进入 Flock 前重新物化，并持有
       generate: async (input) => {
         events.push(`generate:${input.settings.model}`)
         if (input.settings.model === primary) {
-          throw new GenerationError(502, 'PROVIDER_UNAVAILABLE', '主 Provider 暂不可用。')
+          throw new GenerationError(502, failureCode, '主 Provider 暂不可用。')
         }
         return { outputs: [{ id: 'output-a', image: '/api/media/output-a' }], missingOutputCount: 0 }
       },
@@ -214,7 +214,7 @@ test('跨 Provider fallback 只在真正进入 Flock 前重新物化，并持有
   assert.deepEqual(await runScenario({ primary: 'openai', fallback: 'flock' }), [
     'read:1', 'generate:openai', 'admission:flock', 'read:2', 'generate:flock', 'release',
   ])
-  assert.deepEqual(await runScenario({ primary: 'flock', fallback: 'openai' }), [
+  assert.deepEqual(await runScenario({ primary: 'flock', fallback: 'openai', failureCode: 'EMPTY_PROVIDER_RESPONSE' }), [
     'admission:flock', 'read:1', 'generate:flock', 'generate:openai', 'release',
   ])
 })

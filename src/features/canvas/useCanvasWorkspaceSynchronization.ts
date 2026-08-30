@@ -129,6 +129,7 @@ export function useCanvasWorkspaceSynchronization({
   const [canvasHydrationFailed, setCanvasHydrationFailed] = useState(false)
   const [collaborationAwareness, setCollaborationAwareness] = useState<CollaborationAwareness>(emptyCollaborationAwareness)
   const collaborationRef = useRef<CanvasCollaboration | null>(null)
+  const collaborationActivityLoadRef = useRef<{ projectId: string; promise: Promise<void> } | null>(null)
   const agentRunRecoveryRef = useRef<Promise<boolean> | null>(null)
   const pendingRemoteGraphChangeRef = useRef<CollaborationDocumentChange | undefined>(undefined)
   const collaboratorNamesRef = useRef(new Map<string, string>())
@@ -163,28 +164,37 @@ export function useCanvasWorkspaceSynchronization({
   const loadCollaborationActivities = useCallback(async () => {
     const projectId = useCanvasStore.getState().document.id
     if (!serverPersistenceEnabled || projectId === 'workspace-placeholder') return
-    setCollaborationAwareness((current) => ({ ...current, historyStatus: 'loading', historyErrorAction: undefined }))
-    try {
-      const { activities: rawActivities, nextBefore } = await listProjectCollaborationActivities(projectId, { limit: 30 })
-      if (useCanvasStore.getState().document.id !== projectId) return
-      const activities = rawActivities.map((activity) => localizeCollaborationChange(activity, locale))
-      setCollaborationAwareness((current) => ({
-        ...current,
-        activities,
-        unreadActivityCount: activities.filter((activity) => activity.unread).length,
-        historyStatus: 'idle',
-        historyHasMore: Boolean(nextBefore),
-        historyNextBefore: nextBefore,
-        historyErrorAction: undefined,
-      }))
-    } catch (caught) {
-      if (useCanvasStore.getState().document.id === projectId) {
-        setCollaborationAwareness((current) => ({ ...current, historyStatus: 'error', historyErrorAction: 'load' }))
+    if (collaborationActivityLoadRef.current?.projectId === projectId) return collaborationActivityLoadRef.current.promise
+    const promise = (async () => {
+      setCollaborationAwareness((current) => ({ ...current, historyStatus: 'loading', historyErrorAction: undefined }))
+      try {
+        const { activities: rawActivities, nextBefore } = await listProjectCollaborationActivities(projectId, { limit: 30 })
+        if (useCanvasStore.getState().document.id !== projectId) return
+        const activities = rawActivities.map((activity) => localizeCollaborationChange(activity, locale))
+        setCollaborationAwareness((current) => ({
+          ...current,
+          activities,
+          unreadActivityCount: activities.filter((activity) => activity.unread).length,
+          historyStatus: 'idle',
+          historyHasMore: Boolean(nextBefore),
+          historyNextBefore: nextBefore,
+          historyErrorAction: undefined,
+        }))
+      } catch (caught) {
+        if (useCanvasStore.getState().document.id === projectId) {
+          setCollaborationAwareness((current) => ({ ...current, historyStatus: 'error', historyErrorAction: 'load' }))
+        }
+        throw new Error(localizeProductError(caught, locale, {
+          'zh-CN': canvasSynchronizationCopy['zh-CN'].historyLoadFailed,
+          en: canvasSynchronizationCopy.en.historyLoadFailed,
+        }))
       }
-      throw new Error(localizeProductError(caught, locale, {
-        'zh-CN': canvasSynchronizationCopy['zh-CN'].historyLoadFailed,
-        en: canvasSynchronizationCopy.en.historyLoadFailed,
-      }))
+    })()
+    collaborationActivityLoadRef.current = { projectId, promise }
+    try {
+      await promise
+    } finally {
+      if (collaborationActivityLoadRef.current?.promise === promise) collaborationActivityLoadRef.current = null
     }
   }, [locale])
 

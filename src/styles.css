@@ -744,8 +744,8 @@ button.project-tab__main { border: 0; cursor: pointer; }
   opacity: 0;
   pointer-events: none;
 }
-.flow-handle.flow-handle--add-source { right: -28px !important; left: auto !important; }
-.flow-handle.flow-handle--add-target { left: -28px !important; right: auto !important; }
+.flow-handle.flow-handle--add-source { right: -8px !important; left: auto !important; }
+.flow-handle.flow-handle--add-target { left: -8px !important; right: auto !important; }
 .flow-handle.flow-handle--add::before,
 .flow-handle.flow-handle--add::after { display: none !important; content: none !important; }
 .asset-node:hover .flow-handle--add,
