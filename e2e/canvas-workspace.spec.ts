@@ -87,7 +87,6 @@ test('产品首页支持中英文切换并展示真实工作台截图', async ({
   await expect(page.getByRole('button', { name: 'Describe the goal' })).toBeVisible()
   await page.getByRole('button', { name: 'Image generation', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Remove Image generation 01 from canvas' })).toBeVisible()
-  await page.getByRole('button', { name: 'Close generator' }).click()
   await page.getByRole('button', { name: 'Open asset library' }).click()
   await expect(page.getByRole('complementary', { name: 'Asset library' })).toBeVisible()
   await page.getByRole('button', { name: 'Open Bob' }).click()
@@ -175,7 +174,7 @@ test('project to canvas and Agent surfaces stay ordered across reload', async ({
 
   await page.getByRole('button', { name: '打开素材库' }).click()
   await expect(page.getByRole('complementary', { name: '素材库' })).toBeVisible()
-  await page.getByRole('button', { name: '打开 Bob' }).click()
+  await page.getByRole('button', { name: '描述目标', exact: true }).click()
   await expect(page.getByRole('complementary', { name: 'Botanic Agent' })).toBeVisible()
   await expect(page.getByRole('complementary', { name: '素材库' })).toBeHidden()
   const tabBarBox = await page.locator('.tab-bar').boundingBox()
@@ -225,7 +224,7 @@ test('Agent Session 被刷新清掉后，模式切换与发送会自动恢复', 
   await stubReadOnlyRuntime(page)
   await page.goto('/#/projects')
   await page.getByRole('button', { name: '新建项目' }).click()
-  await page.getByRole('button', { name: '打开 Bob' }).click()
+  await page.getByRole('button', { name: '描述目标', exact: true }).click()
   await expect(page.getByRole('complementary', { name: 'Botanic Agent' })).toBeVisible()
 
   await page.evaluate(async () => {

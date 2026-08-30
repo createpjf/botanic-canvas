@@ -25,8 +25,9 @@ test('Agent 面板开着时点选画布节点会挂载到对话上下文', () =>
 
 test('自动挂载复用领域里的图片参考规则，面板关着时不写入会话', () => {
   const attach = between(bridge, 'const attachNodeContext = useCallback', '}, [')
-  // 文字、生成节点和视频不能因为被点到就进 composer；这条规则只能有一份实现。
-  assert.match(attach, /resolveBotanicAgentWorkflowReferenceNodeIds\(document\.nodes, \[nodeId\]\)/)
+  // 生成节点先展开到相连的描述和素材，再由唯一的图片参考规则过滤。
+  assert.match(attach, /expandBotanicAgentContextNodeIds\(document\.nodes, document\.edges, \[nodeId\]\)/)
+  assert.match(attach, /resolveBotanicAgentWorkflowReferenceNodeIds\(document\.nodes, expanded\)/)
   // 合并而不是替换：逐张点选才能攒出一组参考。
   assert.doesNotMatch(attach, /replace:\s*true/)
 

@@ -80,7 +80,7 @@ test('截图粘进画布，落在视口中心并成为素材节点', async ({ pa
 
 test('截图粘进对话框，成为上下文 chip 且名称不是空的', async ({ page }) => {
   await openBlankCanvas(page)
-  await page.getByRole('button', { name: '打开 Bob' }).click()
+  await page.getByRole('button', { name: '描述目标', exact: true }).click()
   await expect(page.getByRole('complementary', { name: 'Botanic Agent' })).toBeVisible()
 
   // 必须派发到 textarea，不能派发到 aside.agent-workspace。

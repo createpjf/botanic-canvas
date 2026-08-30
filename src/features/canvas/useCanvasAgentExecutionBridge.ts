@@ -369,14 +369,15 @@ export function useCanvasAgentExecutionBridge({
    * 会把无关节点堆进 composer。并入而非替换，逐张点选才能攒出一组参考。
    */
   const attachNodeContext = useCallback((nodeId: string) => {
-    // 可否作为图片参考是领域规则，与工作流参考共用同一份实现。
-    if (!resolveBotanicAgentWorkflowReferenceNodeIds(document.nodes, [nodeId]).length) return
-    const sessionId = useCanvasStore.getState().document.activeAgentSessionId ?? ensureAgentSession([nodeId])
-    setSessionContext(sessionId, [nodeId])
+    const expanded = expandBotanicAgentContextNodeIds(document.nodes, document.edges, [nodeId])
+    const visual = resolveBotanicAgentWorkflowReferenceNodeIds(document.nodes, expanded)
+    if (!visual.length) return
+    const sessionId = useCanvasStore.getState().document.activeAgentSessionId ?? ensureAgentSession(visual)
+    setSessionContext(sessionId, visual)
     // 点选结果图同时把它设为下一轮基准：用户显式指认的对象优先于自动跟随。
     const node = document.nodes.find((item) => item.id === nodeId)
     if (node?.type === 'result') setTargetResultId(nodeId)
-  }, [document.nodes, ensureAgentSession, setSessionContext])
+  }, [document.edges, document.nodes, ensureAgentSession, setSessionContext])
 
   /**
    * Agent Run 在画布上的节点。任务刚提交时结果还是占位节点（没有图片），

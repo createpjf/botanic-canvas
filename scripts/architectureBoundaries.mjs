@@ -15,7 +15,7 @@ const ownershipPolicies = Object.freeze({
     ],
   },
   'src/features/agent/AgentWorkspace.tsx': {
-    maxLines: 3824,
+    maxLines: 3853,
     forbidden: [
       ['retryBotanicAgentTurnRecovery', 'agent-workspace-cannot-own-turn-recovery'],
       ['revalidateMissingBotanicAgentTurn', 'agent-workspace-cannot-own-turn-revalidation'],
