@@ -2914,7 +2914,10 @@ button.project-tab__main { border: 0; cursor: pointer; }
 @media (max-width: 700px) {
   .product-landing { scroll-padding-top: 80px; }
   .product-landing__nav { min-height: 74px; grid-template-columns: 1fr auto auto; gap: 14px; padding: 0 20px; }
+  .product-landing__nav nav { gap: 8px; }
   .product-landing__nav nav a { display: none; }
+  .product-landing:not(.product-status) .product-landing__nav nav a[href="/status"],
+  .product-status .product-landing__nav nav a[href="/"] { display: inline-flex; padding-inline: 4px; }
   .product-landing__brand strong { font-size: 25px; line-height: 27px; }
   .product-landing__brand span { display: none; }
   .product-landing__language {

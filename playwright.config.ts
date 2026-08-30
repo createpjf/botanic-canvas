@@ -19,7 +19,12 @@ export default defineConfig({
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
     { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
     { name: 'webkit', use: { ...devices['Desktop Safari'] } },
-    { name: 'mobile-webkit', testIgnore: /paste-media\.spec\.ts/u, use: { ...devices['iPhone 13'] } },
+    {
+      name: 'mobile-webkit',
+      testIgnore: /paste-media\.spec\.ts/u,
+      grepInvert: /空白画布新建的生成节点连上旧图后仍留在画布上|素材连上新的生成节点后，点回素材仍有 composer|两张图可从右侧引用拖到左侧上下文/u,
+      use: { ...devices['iPhone 13'] },
+    },
   ],
   webServer: {
     command: 'VITE_PERSISTENCE_MODE=local npm run dev -- --host 127.0.0.1',

@@ -93,6 +93,7 @@ test('产品首页支持中英文切换并展示真实工作台截图', async ({
   await expect(page.getByRole('complementary', { name: 'Botanic Agent' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'New chat' })).toBeVisible()
   await expect(page.getByRole('complementary', { name: 'Asset library' })).toBeHidden()
+  await page.getByRole('button', { name: 'Close Agent' }).click()
   await page.getByRole('button', { name: 'Open account settings' }).click()
   await expect(page.getByRole('menu')).toContainText('Account & workspace')
   await expect(page.getByRole('menuitem', { name: /Language/ })).toBeVisible()
@@ -100,7 +101,7 @@ test('产品首页支持中英文切换并展示真实工作台截图', async ({
   await expect(page.getByRole('link', { name: 'Product home', exact: true })).toHaveCount(0)
   await expect(page.getByRole('link', { name: 'Status', exact: true })).toHaveCount(0)
   await page.getByRole('button', { name: 'Back to projects' }).click()
-  await page.getByRole('link', { name: 'Product home', exact: true }).click()
+  await page.getByRole('link', { name: 'Botanic Product home', exact: true }).click()
 
   await page.reload()
   await expect(page.getByRole('heading', { name: 'Turn brand visual production into a system that keeps growing.' })).toBeVisible()
@@ -119,7 +120,7 @@ test('项目库可返回产品首页，画布不出现产品首页和状态', as
 
   await page.getByRole('button', { name: '返回项目' }).click()
   await expect(page).toHaveURL(/#\/projects$/)
-  await page.getByRole('link', { name: '产品首页', exact: true }).click()
+  await page.getByRole('link', { name: 'Botanic 产品首页', exact: true }).click()
   await expect(page).toHaveURL(/\/$/)
   await expect(page.getByRole('heading', { name: '让品牌视觉生产，成为持续生长的创作系统。' })).toBeVisible()
 })
