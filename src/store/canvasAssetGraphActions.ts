@@ -1,5 +1,5 @@
 import type { Edge } from '@xyflow/react'
-import { normalizeAssetCollection } from '../domain/assets'
+import { createUploadedAssetId, normalizeAssetCollection } from '../domain/assets'
 import { normalizeAssetGroupName, upsertCollectionGroups } from '../domain/assetGroups'
 import { mergeCollaborativeCanvasGraph } from '../domain/collaborativeGraph'
 import { canvasNodeBounds, findOpenCanvasPosition } from '../domain/canvasNodeLayout'
@@ -386,7 +386,7 @@ export function createCanvasAssetGraphActions({
       const document = get().document
       const timestamp = Date.now()
       const assets: AssetRecord[] = uploads.map((upload, index) => ({
-        id: `upload-${timestamp}-${index}`,
+        id: createUploadedAssetId(timestamp, index),
         role: upload.role,
         name: upload.name.trim() || `上传素材 ${String(index + 1).padStart(2, '0')}`,
         image: upload.image,
@@ -409,7 +409,7 @@ export function createCanvasAssetGraphActions({
       const document = get().document
       const timestamp = Date.now()
       const assets: AssetRecord[] = uploads.map((upload, index) => ({
-        id: `upload-${timestamp}-${index}`,
+        id: createUploadedAssetId(timestamp, index),
         role: upload.role,
         name: upload.name.trim() || `上传素材 ${String(index + 1).padStart(2, '0')}`,
         image: upload.image,

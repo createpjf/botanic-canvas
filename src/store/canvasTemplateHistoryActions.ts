@@ -196,7 +196,6 @@ export function createCanvasTemplateHistoryActions({
       try {
         if (editingBlocked() || get().document.id !== document.id) return false
         await writeGlobalWorkflowTemplateLibrary(library)
-        if (editingBlocked() || get().document.id !== document.id) return false
         set({
           sharedTemplates: nextTemplates,
           ...(get().document.id === document.id ? {

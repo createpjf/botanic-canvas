@@ -859,6 +859,19 @@ export type BotanicAgentCanvasWriteback = {
   nodeId: string
 }
 
+export function readBotanicAgentCanvasWritebacks(result?: BotanicAgentActionResult): BotanicAgentCanvasWriteback[] {
+  const canvasNodeIds = new Set([
+    ...(result?.canvasNodeIds ?? []),
+    ...(result?.canvasNodeId ? [result.canvasNodeId] : []),
+  ])
+  if (!canvasNodeIds.size) return []
+  return result?.artifacts?.flatMap((artifact) => (
+    (artifact.provenance.sourceNodeIds ?? [])
+      .filter((nodeId) => canvasNodeIds.has(nodeId))
+      .map((nodeId) => ({ artifactId: artifact.id, nodeId }))
+  )) ?? []
+}
+
 function safeAgentArtifactUrl(value?: string) {
   if (!value || value.length > 2048) return false
   if (value.startsWith('/api/media/')) return true

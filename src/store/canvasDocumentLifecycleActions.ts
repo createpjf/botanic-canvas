@@ -169,15 +169,11 @@ export function createCanvasDocumentLifecycleActions({
 
     refreshDocumentFromRemote: async () => {
       const baseline = get().document
-      try {
-        const latest = await readLatestCanvasDocument(baseline.id)
-        if (!latest.document) return false
-        const applied = applyRemoteDocumentRefresh(latest.document, baseline.updatedAt, latest.hasPendingDraft)
-        if (applied) await persistAcceptedRemoteCanvasDocument(latest.document)
-        return applied
-      } catch {
-        return false
-      }
+      const latest = await readLatestCanvasDocument(baseline.id)
+      if (!latest.document) return false
+      const applied = applyRemoteDocumentRefresh(latest.document, baseline.updatedAt, latest.hasPendingDraft)
+      if (applied) await persistAcceptedRemoteCanvasDocument(latest.document)
+      return applied
     },
 
     openNewDocument: (inputDocument) => {

@@ -25,6 +25,7 @@ import {
   mergeBotanicAgentRunSnapshot,
   upsertBotanicAgentRunSnapshot,
   readBotanicAgentMentionQuery,
+  readBotanicAgentCanvasWritebacks,
   recordBotanicAgentCanvasWritebacks,
   replaceBotanicAgentSessionContext,
   resolveBotanicAgentResultSelection,
@@ -1275,6 +1276,21 @@ test('Agent 行动产物回写画布后记录真实节点血缘', () => {
   assert.equal(result.canvasWritebackPending, undefined)
   assert.deepEqual(result.artifacts?.[0].provenance.sourceNodeIds, ['text-agent-1'])
   assert.deepEqual(result.artifacts?.[1].provenance.sourceNodeIds, ['source-original', 'asset-agent-1'])
+})
+
+test('Agent 恢复未完成回写时复用已持久化的 Artifact 节点映射', () => {
+  const partial = recordBotanicAgentCanvasWritebacks({
+    message: '完成',
+    canvasWritebackPending: true,
+    artifacts: [
+      { id: 'artifact-a', kind: 'image', label: '场景 A', url: '/a.webp', provenance: { actionId: 'action-1', toolName: 'mcp_call' } },
+      { id: 'artifact-b', kind: 'image', label: '场景 B', url: '/b.webp', provenance: { actionId: 'action-1', toolName: 'mcp_call' } },
+    ],
+  }, [{ artifactId: 'artifact-a', nodeId: 'asset-agent-a' }])
+
+  assert.deepEqual(readBotanicAgentCanvasWritebacks(partial), [
+    { artifactId: 'artifact-a', nodeId: 'asset-agent-a' },
+  ])
 })
 
 test('项目创作记忆保存类型、来源节点并去重', () => {
