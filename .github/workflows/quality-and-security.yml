@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          fetch-depth: 1
+          fetch-depth: 0
       - uses: actions/setup-node@v5
         with:
           node-version: 22
@@ -32,7 +32,28 @@ jobs:
       # 因此可以和单元测试一起跑。真实 Provider Smoke 是另一条需要独立测试项目、
       # 明确额度与人工授权的路径，不在 CI 里。
       - run: npm run check:evals
-      - run: npm run build
+      - name: Validate Sentry release configuration
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_DSN: ${{ vars.SENTRY_DSN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
+        run: |
+          test -n "$SENTRY_AUTH_TOKEN"
+          test -n "$SENTRY_DSN"
+          test -n "$SENTRY_ORG"
+          test -n "$SENTRY_PROJECT"
+      - name: Build and upload Sentry source maps
+        env:
+          SENTRY_AUTH_TOKEN: ${{ github.event_name == 'push' && secrets.SENTRY_AUTH_TOKEN || '' }}
+          SENTRY_ORG: ${{ github.event_name == 'push' && vars.SENTRY_ORG || '' }}
+          SENTRY_PROJECT: ${{ github.event_name == 'push' && vars.SENTRY_PROJECT || '' }}
+          SENTRY_RELEASE: ${{ github.sha }}
+          VITE_SENTRY_DSN: ${{ github.event_name == 'push' && vars.SENTRY_DSN || '' }}
+          VITE_SENTRY_ENVIRONMENT: production
+          VITE_SENTRY_RELEASE: ${{ github.sha }}
+        run: npm run build
       - run: npm audit --omit=dev --audit-level=high
 
   ui-e2e:

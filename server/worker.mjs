@@ -34,6 +34,7 @@ import { createDurableAgentSubagentRunner } from './agentSubagentBroker.mjs'
 import { initializeBotanicTelemetry } from './botanicTelemetry.mjs'
 import { createAgentContextObserver } from './agentContextObservability.mjs'
 import { activeBotanicTraceFields } from './executionTelemetry.mjs'
+import { captureException, flushSentry } from './sentry.mjs'
 
 loadLocalEnv()
 // 与 API 同一处理：Worker 崩掉的后果更隐蔽 —— 队列还在，任务永远停在 running。
@@ -163,8 +164,14 @@ const worker = createGenerationWorker({
   }),
 })
 
-worker.on('failed', (job, caught) => console.error(`[generation] BullMQ job ${job?.id ?? 'unknown'} failed: ${caught.message}`))
-worker.on('error', (caught) => console.error(`[generation] BullMQ worker error: ${caught.message}`))
+worker.on('failed', (job, caught) => {
+  captureException(caught, { tags: { component: 'generation-worker', job_id: job?.id ?? 'unknown' } })
+  console.error(`[generation] BullMQ job ${job?.id ?? 'unknown'} failed: ${caught.message}`)
+})
+worker.on('error', (caught) => {
+  captureException(caught, { tags: { component: 'generation-worker' } })
+  console.error(`[generation] BullMQ worker error: ${caught.message}`)
+})
 console.log(`Botanic generation worker started (concurrency ${config.workerConcurrency})`)
 
 // 新种类要和它的消费者一起加（见 derivedTaskQueue 的种类词表）。
@@ -267,8 +274,14 @@ const subagentWorker = subagentProcessor
       processActivation: subagentProcessor,
     })
   : undefined
-subagentWorker?.on('failed', (job, caught) => console.error(`[agent-subagent] BullMQ activation ${job?.id ?? 'unknown'} failed: ${caught.message}`))
-subagentWorker?.on('error', (caught) => console.error(`[agent-subagent] BullMQ worker error: ${caught.message}`))
+subagentWorker?.on('failed', (job, caught) => {
+  captureException(caught, { tags: { component: 'subagent-worker', job_id: job?.id ?? 'unknown' } })
+  console.error(`[agent-subagent] BullMQ activation ${job?.id ?? 'unknown'} failed: ${caught.message}`)
+})
+subagentWorker?.on('error', (caught) => {
+  captureException(caught, { tags: { component: 'subagent-worker' } })
+  console.error(`[agent-subagent] BullMQ worker error: ${caught.message}`)
+})
 if (subagentWorker) {
   console.log(`Botanic subagent worker started (concurrency ${config.agentSubagentConcurrency})`)
 } else {
@@ -331,6 +344,7 @@ const derivedWorker = createDerivedTaskWorker({
   },
 })
 derivedWorker.on('failed', (job, caught) => {
+  captureException(caught, { tags: { component: 'derived-worker', job_name: job?.name ?? 'unknown' } })
   if (job?.name === 'review.run') {
     const failure = safeAgentReviewWorkerFailure(caught)
     console.error(JSON.stringify({
@@ -342,7 +356,10 @@ derivedWorker.on('failed', (job, caught) => {
   }
   console.error(`[derived] ${job?.name ?? 'unknown'} failed: ${caught.message}`)
 })
-derivedWorker.on('error', (caught) => console.error(`[derived] worker error: ${caught.message}`))
+derivedWorker.on('error', (caught) => {
+  captureException(caught, { tags: { component: 'derived-worker' } })
+  console.error(`[derived] worker error: ${caught.message}`)
+})
 // 注册幂等：BullMQ 按 repeat key 去重，多实例重复注册不会产生多份定时任务。
 for (const [kind, everyMs] of [['turn.reclaim', 60_000], ['review.run', 120_000], ['workflow.advance', 45_000], ['branch.retry', 90_000], ['run.submit', 30_000]]) {
   await derivedQueue?.scheduleSweep(kind, everyMs).catch((caught) => {
@@ -426,6 +443,7 @@ async function shutdown() {
   await runtime.mediaService.close()
   await runtime.productStore.close?.()
   await telemetry.shutdown().catch(() => undefined)
+  await flushSentry(2_000).catch(() => undefined)
 }
 process.once('SIGTERM', () => void shutdown().then(() => process.exit(0)))
 process.once('SIGINT', () => void shutdown().then(() => process.exit(0)))

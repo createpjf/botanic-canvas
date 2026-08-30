@@ -1,5 +1,6 @@
 import { runStatusCollect } from './statusCore.mjs'
 import { readStatusSamples, writeStatusSamples } from './statusBlob.mjs'
+import { captureException, flushSentry } from './sentry.mjs'
 
 function json(status, body) {
   return Response.json(body, {
@@ -22,6 +23,8 @@ async function collect(request) {
     })
     return json(result.status, result.body)
   } catch (error) {
+    captureException(error, { tags: { component: 'status-collect' } })
+    await flushSentry(2_000).catch(() => undefined)
     console.error(error)
     return json(500, { error: 'unavailable' })
   }

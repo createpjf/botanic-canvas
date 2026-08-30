@@ -56,6 +56,7 @@ import {
   withBotanicSpan,
 } from './executionTelemetry.mjs'
 import { agentContextRolloutHealth } from './agentContextRollout.mjs'
+import { captureException as captureSentryException } from './sentry.mjs'
 
 export function createBotanicHttpServer({
   config,
@@ -65,6 +66,7 @@ export function createBotanicHttpServer({
   agentRunEvents,
   securityControls,
   configuredMcpTools = {},
+  reportError = captureSentryException,
 }) {
 const { productStore, mediaService } = runtime
 const configuredMcpToolCount = typeof configuredMcpTools?.catalog === 'function'
@@ -545,6 +547,14 @@ const handleRequestCore = async (request, response) => {
         ? new HttpError(503, 'WORKSPACE_STORE_TIMEOUT', caught.message)
       : new HttpError(500, 'INTERNAL_ERROR', '服务发生未预期错误。')
     if (failure.statusCode >= 500) {
+      reportError(caught, {
+        tags: {
+          component: 'api',
+          error_code: failure.code,
+          method: request.method ?? 'UNKNOWN',
+        },
+        contexts: { request: { id: requestId } },
+      })
       console.error(JSON.stringify({
         event: 'api.failure', requestId, method: request.method,
         code: failure.code,

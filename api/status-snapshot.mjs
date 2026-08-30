@@ -1,5 +1,6 @@
 import { runStatusSnapshot } from './statusCore.mjs'
 import { readStatusSamples } from './statusBlob.mjs'
+import { captureException, flushSentry } from './sentry.mjs'
 
 const incidents = [
   {
@@ -32,6 +33,8 @@ export async function GET() {
     })
     return json(snapshot.loadState === 'unavailable' ? 503 : 200, snapshot)
   } catch (error) {
+    captureException(error, { tags: { component: 'status-snapshot' } })
+    await flushSentry(2_000).catch(() => undefined)
     console.error(error)
     return json(503, { error: 'unavailable' })
   }

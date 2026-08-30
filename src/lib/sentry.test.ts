@@ -1,0 +1,29 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { scrubSentryBreadcrumb, scrubSentryEvent } from './sentry.ts'
+
+test('浏览器 Sentry 事件不携带身份、请求参数、额外数据或 console 面包屑', () => {
+  const event = scrubSentryEvent({
+    user: { id: 'user-1', email: 'owner@example.com' },
+    extra: { prompt: 'private prompt' },
+    request: {
+      method: 'GET',
+      url: 'https://botanic.example/auth/callback?code=secret#workspace',
+      headers: { authorization: 'Bearer secret' },
+      data: 'private body',
+    },
+    breadcrumbs: [
+      { category: 'console', message: 'private prompt' },
+      { category: 'fetch', data: { url: '/api/projects?access_token=secret', method: 'GET' } },
+    ],
+  })
+
+  assert.equal(event.user, undefined)
+  assert.equal(event.extra, undefined)
+  assert.deepEqual(event.request, { method: 'GET', url: 'https://botanic.example/auth/callback' })
+  assert.deepEqual(event.breadcrumbs, [{
+    category: 'fetch',
+    data: { url: '/api/projects', method: 'GET' },
+  }])
+  assert.equal(scrubSentryBreadcrumb({ category: 'console' }), null)
+})

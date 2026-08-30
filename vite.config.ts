@@ -3,8 +3,18 @@ import { networkInterfaces } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
+import { sentryVitePlugin } from '@sentry/vite-plugin'
 
 const localGenerationOrigin = 'http://127.0.0.1:8787'
+const sentryRelease = process.env.SENTRY_RELEASE
+  || process.env.VERCEL_GIT_COMMIT_SHA
+  || process.env.RAILWAY_GIT_COMMIT_SHA
+const sentryUploadEnabled = Boolean(
+  process.env.SENTRY_AUTH_TOKEN
+  && process.env.SENTRY_ORG
+  && process.env.SENTRY_PROJECT
+  && sentryRelease,
+)
 
 function botanicReleaseManifest() {
   const version = JSON.parse(readFileSync(fileURLToPath(new URL('./package.json', import.meta.url)), 'utf8')).version
@@ -17,7 +27,12 @@ function botanicReleasePlugin(): Plugin {
   return {
     name: 'botanic-release',
     config() {
-      return { define: { __BOTANIC_RELEASE__: JSON.stringify(release) } }
+      return {
+        define: {
+          __BOTANIC_RELEASE__: JSON.stringify(release),
+          __BOTANIC_SENTRY_RELEASE__: JSON.stringify(sentryRelease ?? null),
+        },
+      }
     },
     generateBundle() {
       this.emitFile({ type: 'asset', fileName: 'release.json', source: `${JSON.stringify(release)}\n` })
@@ -40,8 +55,23 @@ function generationApiOrigin() {
 }
 
 export default defineConfig({
-  plugins: [react(), botanicReleasePlugin()],
+  plugins: [
+    react(),
+    botanicReleasePlugin(),
+    ...(sentryUploadEnabled ? [sentryVitePlugin({
+      authToken: process.env.SENTRY_AUTH_TOKEN,
+      org: process.env.SENTRY_ORG,
+      project: process.env.SENTRY_PROJECT,
+      telemetry: false,
+      release: {
+        name: sentryRelease,
+        setCommits: false,
+      },
+      sourcemaps: { filesToDeleteAfterUpload: ['dist/**/*.map'] },
+    })] : []),
+  ],
   build: {
+    sourcemap: sentryUploadEnabled ? 'hidden' : false,
     rollupOptions: {
       output: {
         // 稳定的基础依赖单独缓存；画布依赖升级或业务代码更新时，不必让浏览器重下全部首屏脚本。

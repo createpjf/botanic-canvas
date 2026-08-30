@@ -7,6 +7,7 @@ import { installDatabaseResilience } from './databaseResilience.mjs'
 import { createSecurityControls } from './securityControls.mjs'
 import { createBotanicHttpServer } from './httpServer.mjs'
 import { initializeBotanicTelemetry } from './botanicTelemetry.mjs'
+import { flushSentry } from './sentry.mjs'
 
 loadLocalEnv()
 // 数据库连接层的抖动不属于任何一次请求，因此没有 5xx 可返回，只会变成未捕获异常并
@@ -50,6 +51,7 @@ function shutdown() {
       process.exitCode = 1
     } finally {
       await telemetry.shutdown().catch(() => undefined)
+      await flushSentry(2_000).catch(() => undefined)
     }
   })()
   return shutdownPromise
