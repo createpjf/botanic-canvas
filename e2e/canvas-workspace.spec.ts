@@ -528,7 +528,7 @@ test('素材边 + 打开引用菜单并连上生成节点', async ({ page }) => 
   const asset = page.locator('.react-flow__node-asset').first()
   await expect(asset).toBeVisible()
   await asset.click()
-  await expect(asset.locator('.generate-node__dock')).toBeVisible()
+  await expect(asset.locator('.generate-node__dock')).toHaveCount(0)
   await expect(page.locator('.react-flow__node-generate:visible')).toHaveCount(0)
   await asset.getByLabel('引用该节点生成').click()
 
@@ -564,7 +564,7 @@ test('空白画布新建的生成节点连上旧图后仍留在画布上', async
   await expect(page.locator('.react-flow__edge:visible')).not.toHaveCount(0)
 })
 
-test('素材连上新的生成节点后，点回素材仍有 composer', async ({ page }) => {
+test('素材连上显式生成节点后，不在素材上重复挂 composer', async ({ page }) => {
   await stubReadOnlyRuntime(page)
   await page.goto('/#/projects')
   await expect(page.getByRole('heading', { name: '创意项目', exact: true })).toBeVisible()
@@ -576,7 +576,7 @@ test('素材连上新的生成节点后，点回素材仍有 composer', async ({
   const asset = page.locator('.react-flow__node-asset').first()
   await expect(asset).toBeVisible()
   await asset.click()
-  await expect(asset.locator('.generate-node__dock')).toBeVisible()
+  await expect(asset.locator('.generate-node__dock')).toHaveCount(0)
 
   await page.locator('.react-flow__pane').click({ position: { x: 16, y: 16 } })
   await page.getByRole('button', { name: '新增节点' }).click()
@@ -595,7 +595,7 @@ test('素材连上新的生成节点后，点回素材仍有 composer', async ({
   await expect(asset.locator('.generate-node__dock')).toHaveCount(0)
 
   await asset.click()
-  await expect(asset.locator('.generate-node__dock')).toBeVisible()
+  await expect(asset.locator('.generate-node__dock')).toHaveCount(0)
   await expect(page.locator('.react-flow__node-generate:visible')).toHaveCount(1)
 })
 

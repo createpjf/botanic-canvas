@@ -95,7 +95,7 @@ type CommitDocument = (
   document: CanvasDocument,
   extra?: Partial<CanvasStore>,
   options?: { immediate?: boolean; rejectOnFailure?: boolean },
-) => Promise<void>
+) => Promise<void | boolean>
 
 /** Owns canvas graph mutations, references, project assets and editable node commands. */
 export function createCanvasAssetGraphActions({

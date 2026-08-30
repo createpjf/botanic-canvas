@@ -89,13 +89,14 @@ function updateRecords<T extends { id: string }>(
   next: T[],
 ) {
   const currentById = new Map(current.map((item) => [item.id, item]))
+  const currentOrderById = new Map(current.map((item, order) => [item.id, order]))
   const nextById = new Map(next.map((item) => [item.id, item]))
   for (const item of current) {
     if (!nextById.has(item.id)) records.set(item.id, { deleted: true, order: -1 })
   }
   next.forEach((item, order) => {
     const previous = currentById.get(item.id)
-    if (!previous || !equal(previous, item) || current.indexOf(previous) !== order) {
+    if (!previous || !equal(previous, item) || currentOrderById.get(item.id) !== order) {
       records.set(item.id, { order, value: clone(item) })
     }
   })

@@ -55,7 +55,7 @@ type UseCanvasInteractionCoordinatorOptions = {
   hydrated: boolean
   restoredViewportZoom: number
   hiddenResultNodeIds: Set<string>
-  hiddenGenerateIds?: Set<string>
+  hiddenNodeIds?: ReadonlySet<string>
   focusedLineageEdgeIds: Set<string>
   hasLineageFocus: boolean
   assetLibraryAssets: AssetRecord[]
@@ -64,6 +64,7 @@ type UseCanvasInteractionCoordinatorOptions = {
   canvasPaneRef: RefObject<HTMLElement | null>
   viewportReadyRef: RefObject<boolean>
   onSelectionReset: () => void
+  editingBlocked?: boolean
 }
 
 /** Coordinates React Flow mutations, viewport persistence, connections and file drops. */
@@ -72,7 +73,7 @@ export function useCanvasInteractionCoordinator({
   hydrated,
   restoredViewportZoom,
   hiddenResultNodeIds,
-  hiddenGenerateIds = new Set(),
+  hiddenNodeIds = new Set(),
   focusedLineageEdgeIds,
   hasLineageFocus,
   assetLibraryAssets,
@@ -81,6 +82,7 @@ export function useCanvasInteractionCoordinator({
   canvasPaneRef,
   viewportReadyRef,
   onSelectionReset,
+  editingBlocked = false,
 }: UseCanvasInteractionCoordinatorOptions) {
   const { locale } = useProductI18n()
   const setNodes = useCanvasStore((state) => state.setNodes)
@@ -118,6 +120,7 @@ export function useCanvasInteractionCoordinator({
       setNodesTransient(nextNodes)
       return
     }
+    if (editingBlocked) return
     const positionOnly = changes.length > 0 && changes.every((change) => change.type === 'position')
     const dragging = positionOnly && changes.some((change) => change.type === 'position' && change.dragging === true)
     if (dragging) {
@@ -127,21 +130,22 @@ export function useCanvasInteractionCoordinator({
     }
     if (positionOnly) pendingNodePositionSaveRef.current = false
     setNodes(nextNodes)
-  }, [hydrated, setNodes, setNodesTransient])
+  }, [editingBlocked, hydrated, setNodes, setNodesTransient])
 
   const persistDraggedNodes = useCallback(() => {
     if (!hydrated || !pendingNodePositionSaveRef.current) return
     pendingNodePositionSaveRef.current = false
+    if (editingBlocked) return
     setNodes(useCanvasStore.getState().document.nodes)
-  }, [hydrated, setNodes])
+  }, [editingBlocked, hydrated, setNodes])
 
   const onEdgesChange: OnEdgesChange = useCallback((changes) => {
-    if (!hydrated) return
+    if (!hydrated || editingBlocked) return
     const currentEdges = useCanvasStore.getState().document.edges
     const protectedEdgeIds = new Set(currentEdges.filter((edge) => Boolean(edge.data?.system)).map((edge) => edge.id))
     const safeChanges = changes.filter((change) => change.type !== 'remove' || !protectedEdgeIds.has(change.id))
     setEdges(applyEdgeChanges(safeChanges, currentEdges))
-  }, [hydrated, setEdges])
+  }, [editingBlocked, hydrated, setEdges])
 
   const persistViewport = useCallback((viewport: CanvasDocument['viewport']) => {
     if (!hydrated) return
@@ -348,7 +352,7 @@ export function useCanvasInteractionCoordinator({
   }, [document.nodes, isVideoConnection])
 
   const renderedEdges = useMemo(() => document.edges.map((edge) => {
-    const ends = displayEdgeEnds(edge, document.nodes, document.edges, hiddenGenerateIds)
+    const ends = displayEdgeEnds(edge, document.nodes, document.edges, hiddenNodeIds)
     const remappedTarget = ends.target !== edge.target
     const targetNode = remappedTarget ? document.nodes.find((node) => node.id === ends.target) : undefined
     return {
@@ -366,7 +370,7 @@ export function useCanvasInteractionCoordinator({
       ].filter(Boolean).join(' '),
       style: { ...edge.style, ...graphEdgeStyle(edge) },
     }
-  }), [document.edges, document.nodes, focusedLineageEdgeIds, graphEdgeStyle, hasLineageFocus, hiddenGenerateIds, hiddenResultNodeIds, isVideoConnection])
+  }), [document.edges, document.nodes, focusedLineageEdgeIds, graphEdgeStyle, hasLineageFocus, hiddenNodeIds, hiddenResultNodeIds, isVideoConnection])
 
   const resolveConnectionToGenerate = useCallback((connection: Connection) => {
     const targetId = connection.target
@@ -391,6 +395,7 @@ export function useCanvasInteractionCoordinator({
   }, [addGenerateNode])
 
   const onConnect = useCallback((connection: Connection) => {
+    if (editingBlocked) return
     if (!isGraphConnectionValid(connection)) return
     const graphConnection = resolveConnectionToGenerate(connection)
     if (!graphConnection || !isGraphConnectionValid(graphConnection)) return
@@ -402,16 +407,17 @@ export function useCanvasInteractionCoordinator({
       reconnectable: true,
     }, useCanvasStore.getState().document.edges))
     setIsConnecting(false)
-  }, [graphEdgeStyle, isGraphConnectionValid, resolveConnectionToGenerate, setEdges])
+  }, [editingBlocked, graphEdgeStyle, isGraphConnectionValid, resolveConnectionToGenerate, setEdges])
 
   const onReconnect = useCallback((oldEdge: Edge, connection: Connection) => {
+    if (editingBlocked) return
     if (oldEdge.data?.system || !isGraphConnectionValid(connection, oldEdge.id)) return
     const graphConnection = resolveConnectionToGenerate(connection)
     if (!graphConnection || !isGraphConnectionValid(graphConnection, oldEdge.id)) return
     const nextEdge: Edge = { ...oldEdge, ...graphConnection, id: oldEdge.id, type: 'default', style: graphEdgeStyle(graphConnection), reconnectable: true, selected: true }
     setEdges(useCanvasStore.getState().document.edges.map((edge) => edge.id === oldEdge.id ? nextEdge : { ...edge, selected: false }))
     setSelectedEdgeId(oldEdge.id)
-  }, [graphEdgeStyle, isGraphConnectionValid, resolveConnectionToGenerate, setEdges])
+  }, [editingBlocked, graphEdgeStyle, isGraphConnectionValid, resolveConnectionToGenerate, setEdges])
 
   const selectEdgeActions = useCallback((event: MouseEvent, edge: Edge) => {
     event.stopPropagation()

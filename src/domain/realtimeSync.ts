@@ -1,6 +1,8 @@
 import type { BotanicAgentRunSnapshot } from './agent'
 import type { CollaborationActivity } from './collaborationActivity'
 
+export type ProjectRealtimeConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'closed'
+
 export type ProjectUpdatedRealtimeEvent = {
   type: 'project.updated'
   projectId: string
