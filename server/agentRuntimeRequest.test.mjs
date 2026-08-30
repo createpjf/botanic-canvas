@@ -108,7 +108,7 @@ test('兼容 operation envelope 固化输入快照且拒绝未知 operation', ()
   )
 })
 
-test('显式幂等键按 operation 命名空间稳定复用；无 header 时按传输请求身份隔离', () => {
+test('显式幂等键按 operation 命名空间稳定复用；缺失时拒绝执行', () => {
   const explicit = 'client-submit-key-0001'
   const explicitPlan = agentCompatibilityIdempotencyKey('plan', planInput, explicit, 'request-ignored')
   const explicitReplay = agentCompatibilityIdempotencyKey('plan', planInput, explicit, 'another-request')
@@ -118,16 +118,10 @@ test('显式幂等键按 operation 命名空间稳定复用；无 header 时按�
   assert.notEqual(explicitPlan, explicitChat)
   assert.match(explicitPlan, /^agent-plan-[A-Za-z0-9_-]{43}$/)
 
-  const first = agentCompatibilityIdempotencyKey('chat', chatInput, undefined, 'request-1')
-  const replay = agentCompatibilityIdempotencyKey('chat', chatInput, undefined, 'request-1')
-  const nextRequest = agentCompatibilityIdempotencyKey('chat', chatInput, undefined, 'request-2')
-  const otherOperation = agentCompatibilityIdempotencyKey('plan', chatInput, undefined, 'request-1')
-
-  assert.equal(first, replay)
-  assert.notEqual(first, nextRequest)
-  assert.notEqual(first, otherOperation)
-  assert.match(first, /^agent-chat-[A-Za-z0-9_-]{43}$/)
-  assert.match(otherOperation, /^agent-plan-/)
+  assert.throws(
+    () => agentCompatibilityIdempotencyKey('chat', chatInput, undefined, 'request-1'),
+    (error) => error?.code === 'INVALID_IDEMPOTENCY_KEY' && error?.statusCode === 400,
+  )
 })
 
 test('intent dispatcher 进入统一 Turn 解析器并保留 Turn 结果形状', async () => {

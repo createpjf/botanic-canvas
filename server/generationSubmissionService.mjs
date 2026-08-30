@@ -2,10 +2,12 @@ import { generationIdempotencyKey, generationJobIdForIdempotency } from './gener
 import { providerForModel } from './generationModels.mjs'
 import { GenerationError, persistedGenerationJob, validateGenerationInput } from './generationProvider.mjs'
 import { requireProjectPermission } from './projectAuthorization.mjs'
-import { buildGenerationUsage, reserveGenerationBudget } from './generationGovernance.mjs'
+import { buildGenerationUsage, releaseGenerationBudget, reserveGenerationBudget } from './generationGovernance.mjs'
 import { compileSubmissionCreativePlan } from './creativePlanResolver.mjs'
 import { compareAndSetGenerationJob } from './generationJobCas.mjs'
 import { createIdempotencyRequestBinding, matchingIdempotencyRequestBinding } from './idempotencyRequestBinding.mjs'
+import { assertGenerationTargetBinding } from './agentTargetBinding.mjs'
+import { generationInputProvenance } from './generationInputProvenance.mjs'
 
 const generationSubmissionScope = 'generation.submit'
 
@@ -25,7 +27,7 @@ function generationIdempotencyConflict() {
  * 真实生成任务的单一提交入口。HTTP、Agent 与生产工作流都必须经过这里，避免
  * 三条入口分别实现幂等、额度预留和队列失败语义。
  */
-export function createGenerationSubmissionService({ config, productStore, securityControls, enqueue }) {
+export function createGenerationSubmissionService({ config, productStore, securityControls, enqueue, mediaService }) {
   return async function submitGeneration({ user, rawInput, idempotencyKey: rawIdempotencyKey, retryExisting = false }) {
     const idempotencyKey = generationIdempotencyKey(rawIdempotencyKey)
     if (!idempotencyKey) throw new GenerationError(400, 'INVALID_IDEMPOTENCY_KEY', '任务提交标识无效，请刷新页面后重试。')
@@ -39,6 +41,7 @@ export function createGenerationSubmissionService({ config, productStore, securi
     await requireProjectPermission(productStore, user.id, input.projectId, 'create-generation')
 
     let agentRun
+    let targetBinding
     if (rawInput.agentRun !== undefined) {
       const runId = typeof rawInput.agentRun?.runId === 'string' ? rawInput.agentRun.runId.trim() : ''
       const branchId = typeof rawInput.agentRun?.branchId === 'string' ? rawInput.agentRun.branchId.trim() : ''
@@ -50,10 +53,73 @@ export function createGenerationSubmissionService({ config, productStore, securi
       const branch = run.branches.find((candidate) => candidate.id === branchId)
       if (!branch) throw new GenerationError(404, 'AGENT_BRANCH_NOT_FOUND', '未找到 Agent 分支。')
       agentRun = { runId, branchId, attempt: Number(branch.attempt) || 0 }
+      targetBinding = run.plan?.targetBinding
+      if (targetBinding) {
+        try {
+          await assertGenerationTargetBinding(targetBinding, input.parent, {
+            resolveMedia: mediaService?.enabled
+              ? (mediaId) => mediaService.readGenerationInput(user.id, mediaId, input.projectId)
+              : undefined,
+          })
+        } catch (caught) {
+          throw new GenerationError(caught?.statusCode ?? 409, caught?.code ?? 'AGENT_TARGET_STALE', caught?.message ?? '已确认目标已经变化。')
+        }
+      }
     }
 
     const binding = generationSubmissionBinding(rawInput, input, agentRun)
     const id = generationJobIdForIdempotency(user.id, idempotencyKey)
+    const outputReservation = {
+      reservationId: `generation-output:${user.id}:${input.projectId}:${id}`,
+      windowMs: 24 * 60 * 60_000,
+      entries: [{
+        scope: 'generation-output', subject: user.id,
+        limit: config.security.generationOutputsPerDay,
+        cost: input.batchCount,
+      }],
+    }
+    const compiled = compileSubmissionCreativePlan({
+      input,
+      models: config.modelOptions ?? [],
+      productionWorkflow: rawInput?.productionWorkflow,
+    })
+    const usage = buildGenerationUsage(input, {
+      jobId: id,
+      memberId: user.id,
+      mediaKind: selectedModel.mediaKind,
+      provider: selectedModel.provider,
+    })
+    async function releaseReservations(reservations) {
+      if (reservations?.budget?.allowed && !reservations.budget.reused) {
+        await releaseGenerationBudget({
+          securityControls, usage, limits: config.generationBudgets,
+          reservedAt: reservations.budget.reservedAt,
+        })
+      }
+      if (reservations?.output?.allowed && !reservations.output.reused) {
+        await securityControls.releaseMany({ ...outputReservation, reservedAt: reservations.output.reservedAt })
+      }
+    }
+    async function reserveReservations() {
+      const output = await securityControls.reserveMany(outputReservation)
+      if (!output.allowed) {
+        const failure = new GenerationError(429, 'RATE_LIMITED', '操作过于频繁，请稍后重试。')
+        failure.retryAfterSeconds = output.retryAfterSeconds
+        throw failure
+      }
+      let budget
+      try {
+        budget = await reserveGenerationBudget({ securityControls, usage, limits: config.generationBudgets })
+      } catch (caught) {
+        await releaseReservations({ output })
+        throw caught
+      }
+      if (!budget.allowed) {
+        await releaseReservations({ output, budget })
+        throw new GenerationError(402, 'GENERATION_BUDGET_EXCEEDED', '生成额度不足，请调整候选数、规格或联系工作区所有者。')
+      }
+      return { output, budget }
+    }
     const existing = await productStore.readGenerationJob(user.id, id)
     if (existing) {
       // Legacy Job 没有 endpoint scope。仅无 Agent Run 关联的旧通用提交可从其 immutable
@@ -65,6 +131,7 @@ export function createGenerationSubmissionService({ config, productStore, securi
     }
     if (existing && (!retryExisting || !['failed', 'cancelled'].includes(existing.status))) return { job: existing, existing: true }
     if (existing && retryExisting) {
+      const reservations = await reserveReservations()
       const retried = {
         ...existing,
         status: 'queued',
@@ -90,43 +157,13 @@ export function createGenerationSubmissionService({ config, productStore, securi
         const failed = { ...queued, status: 'failed', error: '生成任务无法进入队列，请检查 Redis Worker 后重试。', updatedAt: Date.now() }
         const failure = await compareAndSetGenerationJob(productStore, user.id, queued, failed)
         if (!failure?.changed) return { job: failure?.job ?? queued, existing: true, retried: true }
+        await releaseReservations(reservations)
         throw new GenerationError(503, 'QUEUE_UNAVAILABLE', failed.error)
       }
       return { job: queued, existing: true, retried: true }
     }
-
-    const rate = await securityControls.reserveMany({
-      reservationId: `generation-output:${user.id}:${input.projectId}:${id}`,
-      windowMs: 24 * 60 * 60_000,
-      entries: [{
-        scope: 'generation-output', subject: user.id,
-        limit: config.security.generationOutputsPerDay,
-        cost: input.batchCount,
-      }],
-    })
-    if (!rate.allowed) {
-      const failure = new GenerationError(429, 'RATE_LIMITED', '操作过于频繁，请稍后重试。')
-      failure.retryAfterSeconds = rate.retryAfterSeconds
-      throw failure
-    }
-
-    // 三个提交入口共用同一对 Resolve / Compile：这里补上 HTTP 与工作流的编译，
-    // 让每个 Job 都带指纹，Artifact 才能一律反查到所属计划。
-    const compiled = compileSubmissionCreativePlan({
-      input,
-      models: config.modelOptions ?? [],
-      // 工作流提交沿用版本发布时固定的计划指纹，不按本次提交内容重算。
-      productionWorkflow: rawInput?.productionWorkflow,
-    })
+    const reservations = await reserveReservations()
     const timestamp = Date.now()
-    const usage = buildGenerationUsage(input, {
-      jobId: id,
-      memberId: user.id,
-      mediaKind: selectedModel.mediaKind,
-      provider: selectedModel.provider,
-    })
-    const budget = await reserveGenerationBudget({ securityControls, usage, limits: config.generationBudgets })
-    if (!budget.allowed) throw new GenerationError(402, 'GENERATION_BUDGET_EXCEEDED', '生成额度不足，请调整候选数、规格或联系工作区所有者。')
     const job = {
       id, ownerId: user.id, projectId: input.projectId, status: 'queued', kind: input.kind,
       createdAt: timestamp, updatedAt: timestamp, batchCount: input.batchCount, settings: input.settings,
@@ -137,12 +174,24 @@ export function createGenerationSubmissionService({ config, productStore, securi
           : 'openai-images',
       refinementMode: input.refinementMode,
       idempotencyKey,
-      outputs: [], error: undefined, rawInput, agentRun, usage, idempotencyBinding: binding,
+      outputs: [], error: undefined, rawInput, agentRun, targetBinding, usage, idempotencyBinding: binding,
+      inputProvenance: generationInputProvenance(input, targetBinding),
+      parentNodeId: input.parent?.nodeId,
       planFingerprint: compiled.planFingerprint,
       branchFingerprint: compiled.branchFingerprint,
-      budgetWarning: budget.warning ? '生成额度接近上限。' : undefined,
+      budgetWarning: reservations.budget.warning ? '生成额度接近上限。' : undefined,
     }
-    const queued = await productStore.putGenerationJob(user.id, persistedGenerationJob(job)) ?? persistedGenerationJob(job)
+    let queued
+    try {
+      queued = await productStore.putGenerationJob(user.id, persistedGenerationJob(job)) ?? persistedGenerationJob(job)
+    } catch (caught) {
+      const recovered = await productStore.readGenerationJob(user.id, id).catch(() => undefined)
+      if (!recovered || !matchingIdempotencyRequestBinding(recovered.idempotencyBinding, binding)) {
+        await releaseReservations(reservations)
+        throw caught
+      }
+      queued = recovered
+    }
     if (!matchingIdempotencyRequestBinding(queued.idempotencyBinding, binding)) throw generationIdempotencyConflict()
     // guarded put 可能返回并发请求已 claim/settle 的权威 Job。此时重复 enqueue
     // 没有价值；更不能把网络失败解释成 running→failed，终结真实 Worker。
@@ -153,6 +202,7 @@ export function createGenerationSubmissionService({ config, productStore, securi
       const failed = { ...queued, status: 'failed', error: '生成任务无法进入队列，请检查 Redis Worker 后重试。', updatedAt: Date.now() }
       const failure = await compareAndSetGenerationJob(productStore, user.id, queued, failed)
       if (!failure?.changed) return { job: failure?.job ?? queued, existing: true }
+      await releaseReservations(reservations)
       throw new GenerationError(503, 'QUEUE_UNAVAILABLE', failed.error)
     }
     return { job: queued, existing: false }

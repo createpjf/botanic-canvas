@@ -130,6 +130,7 @@ export function runtimeConfig(rootDir = process.cwd()) {
       process.env.AGENT_MODEL_CONTEXT_POLICIES_JSON,
     ),
     agentRawReasoning,
+    agentLegacyClientHistory: process.env.AGENT_LEGACY_CLIENT_HISTORY === 'true',
     telemetry: resolveBotanicTelemetryConfig(process.env),
     agentFeatureFlags: resolveAgentFeatureFlags(process.env),
     // 升级期灰度闸门。与上一行的 kill switch 语义相反：默认全关，支持按项目/用户放量。

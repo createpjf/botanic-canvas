@@ -51,6 +51,21 @@ test('多维预算预留保持原子且同一任务只记一次', async () => {
   })).allowed, true)
 })
 
+test('多维预算可幂等释放并恢复全部 counter', async () => {
+  const security = createSecurityControls({ now: () => 20_000 })
+  const input = {
+    reservationId: 'job-release', windowMs: 86_400_000,
+    entries: [
+      { scope: 'workspace-budget', subject: 'workspace', limit: 4, cost: 4 },
+      { scope: 'member-budget', subject: 'member-a', limit: 4, cost: 4 },
+    ],
+  }
+  const reservation = await security.reserveMany(input)
+  assert.equal((await security.releaseMany({ ...input, reservedAt: reservation.reservedAt })).released, true)
+  assert.equal((await security.releaseMany({ ...input, reservedAt: reservation.reservedAt })).released, false)
+  assert.equal((await security.reserveMany({ ...input, reservationId: 'job-after-release' })).allowed, true)
+})
+
 test('安全响应头限制嗅探、嵌入、权限与跨站来源泄露', () => {
   assert.deepEqual(securityResponseHeaders({ secure: true }), {
     'Cross-Origin-Opener-Policy': 'same-origin',

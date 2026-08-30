@@ -6,6 +6,24 @@ const sourceExtensions = new Set(['.js', '.mjs', '.ts', '.tsx'])
 const staticImportPattern = /\b(?:import|export)\s+(?:type\s+)?(?:[^'"]*?\sfrom\s*)?['"]([^'"]+)['"]/g
 const dynamicImportPattern = /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g
 const commonJsRequirePattern = /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g
+const ownershipPolicies = Object.freeze({
+  'server/agentRoutes.mjs': {
+    maxLines: 2263,
+    forbidden: [
+      ['agentTurnRuntime.execute', 'agent-routes-cannot-execute-turn-runtime'],
+      ['createAgentTurnRecord', 'agent-routes-cannot-create-turn-record'],
+    ],
+  },
+  'src/features/agent/AgentWorkspace.tsx': {
+    maxLines: 3824,
+    forbidden: [
+      ['retryBotanicAgentTurnRecovery', 'agent-workspace-cannot-own-turn-recovery'],
+      ['revalidateMissingBotanicAgentTurn', 'agent-workspace-cannot-own-turn-revalidation'],
+      ['readProjectAgentActionStatus', 'agent-workspace-cannot-own-action-reconciliation'],
+      ['resolveProjectAgentAction', 'agent-workspace-cannot-own-action-reconciliation'],
+    ],
+  },
+})
 
 function extension(path) {
   const match = path.match(/\.[^.]+$/)
@@ -149,6 +167,19 @@ export function checkArchitectureBoundaries({ rootDir }) {
   const graph = new Map(files.map((file) => [file, []]))
   for (const file of files) {
     const source = readFileSync(file, 'utf8')
+    const relativeFile = normalizedRelative(rootDir, file)
+    const ownership = ownershipPolicies[relativeFile]
+    if (ownership) {
+      const lineCount = source.split('\n').length - (source.endsWith('\n') ? 1 : 0)
+      if (lineCount > ownership.maxLines) violations.push({
+        file: relativeFile,
+        importPath: `${lineCount} > ${ownership.maxLines}`,
+        rule: 'core-orchestration-complexity-budget',
+      })
+      for (const [pattern, rule] of ownership.forbidden) {
+        if (source.includes(pattern)) violations.push({ file: relativeFile, importPath: pattern, rule })
+      }
+    }
     for (const importPath of projectImports(source)) {
       const dependency = resolvedProjectImport(file, importPath)
       if (!dependency) continue

@@ -207,6 +207,8 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
     // 这是预期的不对称，不是遗漏。
     if (mediaKind !== 'video' && media.buffer) assertImagePixelBudget(media.buffer)
     return {
+      ...(reference.nodeId ? { nodeId: assertText(reference.nodeId, `第 ${index + 1} 张参考素材节点`, 160) } : {}),
+      ...(reference.assetId ? { assetId: assertText(reference.assetId, `第 ${index + 1} 张参考素材标识`, 160) } : {}),
       name: assertText(reference.name ?? `参考素材 ${index + 1}`, '参考素材名称', 160),
       role: typeof reference.role === 'string' ? reference.role : '参考',
       primary: Boolean(reference.primary),
@@ -220,7 +222,11 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
     ? (() => {
         const media = inputMedia(body.parent, maximumReferenceBytes, 'image')
         if (media.buffer) assertImagePixelBudget(media.buffer)
-        return { name: assertText(body.parent.name ?? '父版本', '父版本名称', 160), ...media }
+        return {
+          ...(body.parent.nodeId ? { nodeId: assertText(body.parent.nodeId, '父版本节点', 160) } : {}),
+          name: assertText(body.parent.name ?? '父版本', '父版本名称', 160),
+          ...media,
+        }
       })()
     : undefined
 
@@ -417,6 +423,7 @@ export function publicGenerationJob(job, { includeIdempotencyKey = false } = {})
     missingOutputCount: job.missingOutputCount ?? 0,
     partialError: job.partialError,
     outputs: job.outputs ?? [],
+    lateOutputCount: job.lateOutputs?.length ?? 0,
     variants: job.variants ?? [],
     // 仅向任务提交者返回，用于网络状态未知时确认同一次逻辑提交。
     ...(includeIdempotencyKey ? { idempotencyKey: job.idempotencyKey } : {}),
@@ -450,6 +457,7 @@ export function persistedGenerationJob(job) {
     updatedAt: job.updatedAt,
     batchCount: job.batchCount,
     outputs: job.outputs ?? [],
+    lateOutputs: job.lateOutputs ?? [],
     variants: job.variants ?? [],
     error: job.error,
     // 失败的错误码：服务端重试策略按码分类，只存消息就永远判不出可否重试。
@@ -469,6 +477,8 @@ export function persistedGenerationJob(job) {
     projectWritebackError: job.projectWritebackError,
     projectWritebackUpdatedAt: job.projectWritebackUpdatedAt,
     agentRun: job.agentRun,
+    targetBinding: job.targetBinding,
+    inputProvenance: job.inputProvenance,
     planFingerprint: job.planFingerprint,
     branchFingerprint: job.branchFingerprint,
     usage: job.usage,

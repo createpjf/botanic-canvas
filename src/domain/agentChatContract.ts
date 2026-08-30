@@ -37,11 +37,12 @@ export type BotanicAgentGenerationSettingsHint = {
 
 export type BotanicAgentChatRequestInput = {
   projectId: string
+  sessionId: string
+  inputMessage: Pick<BotanicAgentMessage, 'id' | 'content'>
   locale: ProductLocale
   plannerModel?: string
   mountedSkillIds?: string[]
   mode: BotanicAgentChatMode
-  messages: Pick<BotanicAgentMessage, 'role' | 'content'>[]
   contextNodeIds: string[]
 }
 
@@ -331,11 +332,15 @@ export function botanicAgentComposerIntentHint(
 export function buildBotanicAgentChatRequest(input: BotanicAgentChatRequestInput) {
   return {
     projectId: input.projectId,
+    sessionId: input.sessionId,
+    inputMessage: {
+      id: input.inputMessage.id,
+      content: input.inputMessage.content.slice(0, 4000),
+    },
     locale: input.locale,
     ...(input.plannerModel ? { plannerModel: input.plannerModel } : {}),
     ...(input.mountedSkillIds?.length ? { mountedSkillIds: [...new Set(input.mountedSkillIds)].slice(0, 16) } : {}),
     mode: input.mode,
-    messages: input.messages.slice(-16).map((message) => ({ role: message.role, content: message.content })),
     contextNodeIds: [...new Set(input.contextNodeIds)].slice(0, 32),
   }
 }

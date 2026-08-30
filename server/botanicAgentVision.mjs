@@ -10,10 +10,11 @@ import { createHash } from 'node:crypto'
  *   不进入消息记录、计划或任何持久化实体；主轮文本模型的请求里也没有它。
  * - 只读当前项目内的媒体（readGenerationInput 校验归属）；data URL 直接使用；
  *   blob:、外链等一律跳过。
- * - 每轮最多看 4 张；识别失败逐张跳过，绝不让看图失败弄坏整轮对话。
+ * - 每轮最多看 4 张；普通对话可跳过失败项，定向编辑由 Turn Runtime fail closed。
  */
 
 const VISION_IMAGE_LIMIT = 4
+const VISION_TOTAL_BYTES_LIMIT = 16 * 1024 * 1024
 const VISION_TIMEOUT_MS = 20_000
 const VISION_CACHE_LIMIT = 256
 const VISION_DESCRIPTION_LIMIT = 600
@@ -69,17 +70,71 @@ export function botanicAgentVisionCandidates(document, contextNodeIds = []) {
 }
 
 /** 把画布节点的图片引用解析为可发给视觉模型的 data URL；解析不了返回空。 */
-export async function resolveBotanicAgentImageDataUrl(image, resolveMedia) {
+export async function resolveBotanicAgentImageDataUrl(image, resolveMedia, signal) {
+  signal?.throwIfAborted()
   if (typeof image !== 'string' || !image) return undefined
   if (image.startsWith('data:image/')) return image
   const mediaId = decodeURIComponent(MEDIA_PATH_PATTERN.exec(image)?.[1] ?? '')
   if (!mediaId || typeof resolveMedia !== 'function') return undefined
-  const resolved = await resolveMedia(mediaId)
+  const resolved = await resolveMedia(mediaId, { signal })
+  signal?.throwIfAborted()
   if (!resolved?.buffer?.length) return undefined
   const mimeType = typeof resolved.mimeType === 'string' && resolved.mimeType.startsWith('image/')
     ? resolved.mimeType
     : 'image/png'
   return `data:${mimeType};base64,${Buffer.from(resolved.buffer).toString('base64')}`
+}
+
+function visionImageBytes(dataUrl) {
+  const comma = typeof dataUrl === 'string' ? dataUrl.indexOf(',') : -1
+  if (comma < 0) return 0
+  const metadata = dataUrl.slice(0, comma)
+  const payload = dataUrl.slice(comma + 1)
+  return metadata.endsWith(';base64')
+    ? Buffer.byteLength(payload, 'base64')
+    : Buffer.byteLength(decodeURIComponent(payload), 'utf8')
+}
+
+async function resolveVisionCandidateDataUrls(candidates, resolveMedia, signal) {
+  const resolved = new Array(candidates.length)
+  let totalBytes = 0
+  let nextIndex = 1
+  let overflow
+  const resolveAt = async (index) => {
+    const candidate = candidates[index]
+    const dataUrl = await resolveBotanicAgentImageDataUrl(candidate.image, resolveMedia, signal)
+      .catch((caught) => {
+        if (signal?.aborted) throw caught
+        return undefined
+      })
+    if (!dataUrl) return
+    totalBytes += visionImageBytes(dataUrl)
+    if (totalBytes > VISION_TOTAL_BYTES_LIMIT) {
+      overflow = Object.assign(new Error('本轮引用图片总大小超过视觉上下文上限。'), {
+        code: 'AGENT_VISION_BYTES_EXCEEDED',
+        statusCode: 413,
+      })
+      return
+    }
+    resolved[index] = { candidate, dataUrl }
+  }
+  const resolveNext = async () => {
+    while (nextIndex < candidates.length && !overflow) {
+      const index = nextIndex
+      nextIndex += 1
+      await resolveAt(index)
+    }
+  }
+  // 先解析主目标，再以最多 2 路处理辅助图，既保序也避免 4 张大图同时驻留。
+  if (candidates.length) await resolveAt(0)
+  await Promise.all(Array.from({ length: Math.min(2, Math.max(0, candidates.length - 1)) }, resolveNext))
+  if (overflow) throw overflow
+  return resolved.flatMap((entry) => {
+    if (!entry) return []
+    const { candidate, dataUrl } = entry
+    if (!dataUrl) return []
+    return [{ candidate, dataUrl }]
+  })
 }
 
 function providerText(payload) {
@@ -112,13 +167,12 @@ export async function describeBotanicAgentContextImages({
     : 'https://api.flock.io/v1'
   const candidates = botanicAgentVisionCandidates(document, contextNodeIds)
   if (!candidates.length) return []
+  const resolvedCandidates = await resolveVisionCandidateDataUrls(candidates, resolveMedia, signal)
 
-  const describeOne = async (candidate) => {
+  const describeOne = async ({ candidate, dataUrl }) => {
     const key = cacheKey(model, candidate.image)
     const cached = cache.get(key)
     if (cached) return { ...candidate, description: cached }
-    const dataUrl = await resolveBotanicAgentImageDataUrl(candidate.image, resolveMedia)
-    if (!dataUrl) return undefined
     const timeoutSignal = AbortSignal.timeout(VISION_TIMEOUT_MS)
     const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal
     const response = await fetchImpl(`${baseUrl}/chat/completions`, {
@@ -152,7 +206,7 @@ export async function describeBotanicAgentContextImages({
     return { ...candidate, description }
   }
 
-  const settled = await Promise.allSettled(candidates.map(describeOne))
+  const settled = await Promise.allSettled(resolvedCandidates.map(describeOne))
   return settled.flatMap((entry) => (entry.status === 'fulfilled' && entry.value
     ? [{
       nodeId: entry.value.nodeId,
@@ -167,20 +221,14 @@ export async function describeBotanicAgentContextImages({
  * 原生多模态：把引用图片解析成可直接放进消息的 image_url parts。
  * 与 caption 通道二选一——parts 可用时模型直接看图推理，caption 只作降级。
  */
-export async function resolveBotanicAgentVisionParts({ document, contextNodeIds, resolveMedia } = {}) {
+export async function resolveBotanicAgentVisionParts({ document, contextNodeIds, resolveMedia, signal } = {}) {
   const candidates = botanicAgentVisionCandidates(document, contextNodeIds)
-  const parts = []
-  for (const candidate of candidates) {
-    const dataUrl = await resolveBotanicAgentImageDataUrl(candidate.image, resolveMedia).catch(() => undefined)
-    if (!dataUrl) continue
-    parts.push({
+  return (await resolveVisionCandidateDataUrls(candidates, resolveMedia, signal)).map(({ candidate, dataUrl }) => ({
       nodeId: candidate.nodeId,
       label: candidate.label,
       ...(candidate.role ? { role: candidate.role } : {}),
       part: { type: 'image_url', image_url: { url: dataUrl } },
-    })
-  }
-  return parts
+    }))
 }
 
 /** 把最后一条用户消息升级为多模态：正文 + 图片名对照 + 图片 parts。 */

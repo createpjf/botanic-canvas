@@ -46,7 +46,7 @@ function canvasReadDefinition(document) {
  *   config?: any,
  *   userId?: string,
  *   projectId?: string,
- *   consumeWebResearchQuota?: (userId: string) => Promise<any>,
+ *   consumeWebResearchQuota?: (userId: string, projectId: string, capability?: string) => Promise<any>,
  * }} [input]
  */
 export async function createAgentSubagentProjectRegistry({
@@ -74,7 +74,7 @@ export async function createAgentSubagentProjectRegistry({
     ? {
         ...config.webSearch,
         consumeQuota: typeof consumeWebResearchQuota === 'function'
-          ? () => consumeWebResearchQuota(userId)
+          ? () => consumeWebResearchQuota(userId, projectId, 'execute-external-tool')
           : undefined,
       }
     : undefined

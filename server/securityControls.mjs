@@ -35,8 +35,18 @@ function memoryCounter(now) {
         if (!current || current.expiresAt <= timestamp) counters.set(entry.key, { value: entry.cost, expiresAt: timestamp + ttlMs })
         else current.value += entry.cost
       }
-      reservations.set(reservationKey, { expiresAt: timestamp + ttlMs })
+      reservations.set(reservationKey, { entries, expiresAt: timestamp + ttlMs })
       return { allowed: true, reused: false }
+    },
+    async releaseMany(reservationKey) {
+      const reservation = reservations.get(reservationKey)
+      if (!reservation || reservation.expiresAt <= now()) return { released: false }
+      for (const entry of reservation.entries) {
+        const current = counters.get(entry.key)
+        if (current) current.value = Math.max(0, current.value - entry.cost)
+      }
+      reservations.delete(reservationKey)
+      return { released: true }
     },
     close() {},
   }
@@ -104,9 +114,35 @@ function redisCounter(redisUrl, fallback, onFallback) {
     }
   }
 
+  async function releaseMany(reservationKey, entries) {
+    try {
+      if (!connected) {
+        await redis.connect()
+        connected = true
+      }
+      const keys = [reservationKey, ...entries.map((entry) => entry.key)]
+      const result = await redis.eval(
+        "if redis.call('EXISTS',KEYS[1])==0 then return 0; end; "
+        + "for i=2,#KEYS do local value=tonumber(redis.call('GET',KEYS[i]) or '0'); local cost=tonumber(ARGV[i-1]); if value<=cost then redis.call('DEL',KEYS[i]); else redis.call('DECRBY',KEYS[i],cost); end; end; redis.call('DEL',KEYS[1]); return 1",
+        keys.length,
+        ...keys,
+        ...entries.map((entry) => entry.cost),
+      )
+      return { released: Number(result) === 1 }
+    } catch (error) {
+      connected = false
+      if (!warned) {
+        warned = true
+        onFallback?.(error)
+      }
+      return fallback.releaseMany(reservationKey, entries)
+    }
+  }
+
   return {
     increment,
     reserveMany,
+    releaseMany,
     async close() {
       if (redis.status === 'ready') await redis.quit().catch(() => redis.disconnect())
       else redis.disconnect()
@@ -148,10 +184,24 @@ export function createSecurityControls({ redisUrl, now = () => Date.now(), onFal
       return {
         allowed: result.allowed,
         reused: Boolean(result.reused),
+        reservedAt: timestamp,
         failedScope: result.allowed ? undefined : entries[result.failedIndex]?.scope,
         remaining: result.remaining,
         retryAfterSeconds: result.allowed ? 0 : Math.max(1, Math.ceil(ttlMs / 1_000)),
       }
+    },
+    async releaseMany({ reservationId, entries, windowMs, reservedAt }) {
+      if (!reservationId || !Array.isArray(entries) || !entries.length) throw new Error('预算释放参数无效。')
+      const timestamp = Number.isFinite(Number(reservedAt)) ? Number(reservedAt) : now()
+      const windowId = Math.floor(timestamp / windowMs)
+      const normalized = entries.map((entry) => ({
+        key: `botanic:security:${entry.scope}:${subjectDigest(entry.subject)}:${windowId}`,
+        cost: Math.max(1, Math.floor(entry.cost)),
+      }))
+      return counter.releaseMany(
+        `botanic:security:reservation:${subjectDigest(reservationId)}:${windowId}`,
+        normalized,
+      )
     },
     close: () => counter.close(),
   }

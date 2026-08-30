@@ -163,9 +163,16 @@ export function artifactsFromActionReceipt(receipt, { now = Date.now() } = {}) {
 }
 
 export function artifactsFromGenerationJob(job, { document, now = Date.now() } = {}) {
-  const outputs = Array.isArray(job?.outputs)
+  const committedOutputs = Array.isArray(job?.outputs)
     ? job.outputs.filter((output) => typeof output?.id === 'string' && output.id.trim() && typeof output?.image === 'string' && output.image.trim())
     : []
+  const lateOutputs = Array.isArray(job?.lateOutputs)
+    ? job.lateOutputs.filter((output) => typeof output?.id === 'string' && output.id.trim() && typeof output?.image === 'string' && output.image.trim())
+    : []
+  const outputs = [
+    ...committedOutputs.map((output) => ({ ...output, late: false })),
+    ...lateOutputs.map((output) => ({ ...output, late: true })),
+  ]
   const nodes = Array.isArray(document?.nodes) ? document.nodes : []
   const assets = Array.isArray(document?.assets) ? document.assets : []
   // 精修血缘（Epic 9.2「任一精修可回到父版本」）。
@@ -179,42 +186,56 @@ export function artifactsFromGenerationJob(job, { document, now = Date.now() } =
   const parentNode = job?.parentNodeId
     ? nodes.find((node) => node?.id === job.parentNodeId && node?.type === 'result')
     : undefined
-  const parentArtifactId = parentNode?.data?.jobId && parentNode?.data?.candidateId
+  const parentArtifactId = job?.inputProvenance?.parent?.artifactId
+    ?? (parentNode?.data?.jobId && parentNode?.data?.candidateId
     ? `generation:${parentNode.data.jobId}:${parentNode.data.candidateId}`
     // 早期单输出结果节点没有 candidateId，此时构造不出唯一的 Artifact 标识。
     // 宁可只留 parentNodeId，也不猜一个 —— 猜错会把血缘指到同一次任务的另一张图上。
-    : undefined
+    : undefined)
   return collectSafely(outputs, (output) => {
-    const resultNode = nodes.find((node) => node?.type === 'result'
+    const resultNode = !output.late && nodes.find((node) => node?.type === 'result'
       && node?.data?.jobId === job.id
-      && (node?.data?.candidateId === output.id || (!node?.data?.candidateId && outputs.length === 1)))
+      && (node?.data?.candidateId === output.id || (!node?.data?.candidateId && committedOutputs.length === 1)))
     const variant = Array.isArray(job.variants)
       ? job.variants.find((item) => item?.output?.id === output.id)
       : undefined
     const mediaKind = output.mediaKind === 'video' ? 'video' : 'image'
+    const immutableSourceNodeIds = [
+      ...(job.inputProvenance?.references ?? []).map((reference) => reference.nodeId),
+      job.inputProvenance?.parent?.nodeId,
+    ].filter(Boolean)
     const sourceNodeIds = [...new Set([
-      ...(Array.isArray(resultNode?.data?.sourceNodeIds) ? resultNode.data.sourceNodeIds : []),
+      ...(immutableSourceNodeIds.length
+        ? immutableSourceNodeIds
+        : Array.isArray(resultNode?.data?.sourceNodeIds) ? resultNode.data.sourceNodeIds : []),
       ...(resultNode?.id ? [resultNode.id] : []),
     ])]
     const completedAt = timestamp(variant?.completedAt, timestamp(job.updatedAt, timestamp(job.createdAt, now)))
     // 结果面板要展示“图 + 生成它的 prompt”；配方优先，回落到本次任务的原始请求。
-    const prompt = [job.generationRecipe?.prompt, job.rawInput?.prompt, resultNode?.data?.generationRecipe?.prompt]
+    const prompt = [job.generationRecipe?.prompt, job.rawInput?.prompt]
       .find((value) => typeof value === 'string' && value.trim())
     return validateIndexedArtifact({
-      id: `generation:${job.id}:${output.id}`,
+      id: `${output.late ? 'generation-late' : 'generation'}:${job.id}:${output.id}`,
       kind: mediaKind,
-      label: resultNode?.data?.label?.trim() || (mediaKind === 'video' ? '生成视频' : '生成图片'),
+      label: output.late
+        ? (mediaKind === 'video' ? '迟到视频（已隔离）' : '迟到图片（已隔离）')
+        : resultNode?.data?.label?.trim() || (mediaKind === 'video' ? '生成视频' : '生成图片'),
       url: output.image,
-      placement: 'canvas',
+      placement: output.late ? 'panel' : 'canvas',
       metadata: {
         source: 'generation',
         ...(prompt ? { prompt: prompt.trim().slice(0, 6_000) } : {}),
-        status: job.status,
+        status: output.late ? 'late_discarded' : job.status,
         jobId: job.id,
         branchId: job.agentRun?.branchId,
         groupId: job.agentRun?.runId,
         outputId: output.id,
-        dismissed: Array.isArray(job.dismissedOutputIds) && job.dismissedOutputIds.includes(output.id),
+        dismissed: output.late || (Array.isArray(job.dismissedOutputIds) && job.dismissedOutputIds.includes(output.id)),
+        ...(output.late ? {
+          quarantined: true,
+          lateReason: output.reason,
+          executionGeneration: output.executionGeneration,
+        } : {}),
         savedToLibrary: assets.some((asset) => asset?.source === 'generated' && asset?.image === output.image),
         settings: clone(job.settings),
         // 编译计划指纹随 Artifact 一起落库：这是「任一 Artifact 可反查 Plan」的落点。
@@ -231,6 +252,8 @@ export function artifactsFromGenerationJob(job, { document, now = Date.now() } =
         // 父版本身份随 Artifact 落库，节点删除后仍能回到原件。
         ...(job.parentNodeId ? { parentNodeId: job.parentNodeId } : {}),
         ...(parentArtifactId ? { parentArtifactId } : {}),
+        ...(job.targetBinding ? { targetBinding: clone(job.targetBinding) } : {}),
+        ...(job.inputProvenance ? { inputProvenance: clone(job.inputProvenance) } : {}),
       },
       provenance: {
         actionId: `generation:${job.id}`,
@@ -239,7 +262,7 @@ export function artifactsFromGenerationJob(job, { document, now = Date.now() } =
         sourceNodeIds,
       },
       origin: { type: 'generation_output', jobId: job.id, outputId: output.id },
-      createdAt: completedAt,
+      createdAt: output.late ? timestamp(output.recordedAt, completedAt) : completedAt,
       updatedAt: timestamp(job.updatedAt, completedAt),
     }, { now })
   })

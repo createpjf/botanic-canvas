@@ -68,6 +68,25 @@ function createGenerationProcessor(input) {
         return { kind: 'committed', changed: true, job: structuredClone(stored) }
       })
     },
+    compareAndSetGenerationJob(ownerId, command) {
+      return serialized(async () => {
+        const current = await source.readGenerationJobForWorker(command.id)
+        const currentGeneration = current?.execution ? Number(current.execution.generation) : null
+        if (!current || current.status !== command.expectedStatus
+          || currentGeneration !== command.expectedExecutionGeneration) {
+          return { kind: 'stale', changed: false, job: structuredClone(current) }
+        }
+        const job = {
+          ...structuredClone(command.job),
+          ...(current.execution ? { execution: structuredClone(current.execution) } : {}),
+        }
+        await source.putGenerationJob(ownerId, job, {
+          updateAgentRun: command.updateAgentRun,
+          recordAudit: command.recordAudit,
+        })
+        return { kind: 'updated', changed: true, job: structuredClone(job) }
+      })
+    },
     cancelGenerationJobExecution(ownerId, command) {
       return serialized(async () => {
         const current = await source.readGenerationJobForWorker(command.id)
@@ -1097,6 +1116,7 @@ test('Provider 返回后才发现已取消：结果丢弃，不覆盖成成功',
 
   assert.equal(job().status, 'cancelled')
   assert.deepEqual(job().outputs, [])
+  assert.deepEqual(job().lateOutputs?.map((output) => output.id), ['output-late'])
   assert.ok(!writes.includes('succeeded'))
 })
 
@@ -1138,6 +1158,7 @@ test('超时判失败后 Provider 才成功：不改写终态，但留下可观�
     // 终态不翻案：超时是对用户做过的承诺，事后改写会让「它到底成没成」变得不确定。
     assert.equal(job().status, 'failed')
     assert.deepEqual(job().outputs, [])
+    assert.deepEqual(job().lateOutputs?.map((output) => output.id), ['output-late'])
     assert.ok(!writes.includes('succeeded'))
     // 但必须留下记录。
     assert.ok(

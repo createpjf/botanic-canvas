@@ -9,6 +9,7 @@ import { findBrandKit, globalBrandKitLibraryId } from './brandKit.mjs'
 import { AgentDelegationFenceError, assertTurnAllowsDelegation } from './agentCancellationService.mjs'
 import { cancelGenerationJob } from './generationCancellation.mjs'
 import { compareAndSetGenerationJob } from './generationJobCas.mjs'
+import { assertAgentTargetBinding } from './agentTargetBinding.mjs'
 
 /**
  * Agent Run 确认后的唯一生成提交模块。路由只调用这个小接口；配额、幂等、
@@ -21,6 +22,7 @@ export function createAgentRunGenerationService({
   enqueue,
   publishProjectUpdated,
   publishAgentRunUpdated,
+  mediaService,
 }) {
   const sameAgentRunBranch = (left, right) => left?.runId === right?.runId && left?.branchId === right?.branchId
 
@@ -66,6 +68,18 @@ export function createAgentRunGenerationService({
     }
     const project = await productStore.readProject(userId, projectId)
     if (!project) throw new AgentToolRuntimeError('PROJECT_NOT_FOUND', '未找到当前项目。', 404)
+    if (run.plan?.targetBinding) {
+      await assertAgentTargetBinding(project.document, {
+        hasTarget: true,
+        selectedResultNodeId: run.plan.selectedResultNodeId,
+        targetBinding: run.plan.targetBinding,
+      }, {
+        resolveMedia: mediaService?.enabled
+          ? (mediaId, options) => mediaService.readGenerationInput(userId, mediaId, projectId, options)
+          : undefined,
+        projectRevision: project.revision,
+      })
+    }
     const models = config.modelOptions?.length ? config.modelOptions : config.models
     // 首次执行时把编译快照落到 Run 上（ADR 0005 不变量一）。
     //

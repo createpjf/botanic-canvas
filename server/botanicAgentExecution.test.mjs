@@ -97,6 +97,7 @@ test('服务端从持久化 Agent Run 创建独立工作流占位与可执行 Ge
     { runId: 'agent-run-1', branchId: 'branch-b', attempt: 0 },
   ])
   assert.equal(result.jobs[0].rawInput.parent.mediaId, 'media_parent')
+  assert.equal(result.jobs[0].rawInput.parent.nodeId, 'result-parent')
   assert.equal(result.jobs[0].rawInput.recipe.references.at(-1).mediaId, 'media_scene_a')
   assert.equal(result.jobs[1].rawInput.recipe.references.at(-1).mediaId, 'media_scene_b')
   assert.equal(result.document.nodes.filter((node) => node.type === 'generate').length, 2)
@@ -178,12 +179,35 @@ test('首次生成从权威画布解析图片上下文并复用普通 Generation
   assert.equal(result.jobs[0].batchCount, 2)
   assert.equal(result.jobs[0].rawInput.parent, undefined)
   assert.deepEqual(result.jobs[0].rawInput.recipe.references, [{
+    nodeId: 'asset-product-node', assetId: 'asset-product',
     name: '球衣', role: '商品', primary: true, priority: 1, mediaId: 'media_product',
   }])
   const workflow = result.workflows[0]
   assert.equal(workflow.resultNode.data.rootRecipe.references[0].nodeId, 'asset-product-node')
   assert.equal(result.document.edges.some((edge) => edge.source === 'asset-product-node' && edge.target === workflow.generateNodeId), true)
   assert.equal(result.document.edges.some((edge) => edge.data?.role === 'parent'), false)
+  assert.equal(result.jobs[0].inputProvenance.references[0].nodeId, 'asset-product-node')
+  assert.equal(result.jobs[0].inputProvenance.references[0].assetId, 'asset-product')
+})
+
+test('Run 冻结的 TargetBinding 原样进入 GenerationJob 与父图 provenance', () => {
+  const run = persistentRun()
+  run.branches = [run.branches[0]]
+  run.plan.targetBinding = {
+    version: 1, nodeId: 'result-parent', nodeRevision: 'node-revision',
+    artifactId: 'generation:job-parent:out-parent', generationJobId: 'job-parent',
+    candidateId: 'out-parent', versionId: null, mediaId: 'media_parent',
+    mediaSha256: 'sha-parent', projectRevision: 3, boundAt: 10,
+  }
+  const result = prepareAgentRunExecution({
+    run, document: projectDocument(), now: 100,
+    jobIdForBranch: (branch) => `job-${branch.id}`,
+    models, maximumBatchCount: 8, maximumReferenceBytes: 8 * 1024 * 1024,
+  })
+
+  assert.deepEqual(result.jobs[0].targetBinding, run.plan.targetBinding)
+  assert.equal(result.jobs[0].inputProvenance.parent.nodeId, 'result-parent')
+  assert.equal(result.jobs[0].inputProvenance.parent.artifactId, 'generation:job-parent:out-parent')
 })
 
 test('首次图片生成没有参考图时仍创建纯文字 Generation Job', () => {

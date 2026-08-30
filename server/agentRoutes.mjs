@@ -19,20 +19,13 @@ import { generationIdempotencyKey, generationJobIdForIdempotency } from './gener
 import { persistedGenerationJob, publicGenerationJob } from './generationProvider.mjs'
 import { retargetGenerationJobForRetry } from './generationResultReconciliation.mjs'
 import { requireProjectPermission } from './projectAuthorization.mjs'
+import { projectPermissionDecision } from './authorization.mjs'
 import { buildAgentExecutionTrace } from './agentExecutionTrace.mjs'
 import { actionArgumentsHash, agentToolPermission, assertFreshActionApproval, createActionApprovalToken } from './agentActionGovernance.mjs'
-import {
-  agentTurnIdForIdempotency,
-  agentTurnLastSequence,
-  createAgentTurnRecord,
-  createBotanicAgentTurnRuntime,
-  publicAgentTurn,
-} from './botanicAgentTurnRuntime.mjs'
-import {
-  agentTurnRequestHash,
-  agentTurnRequestHashVersion,
-  storedAgentTurnRequestBinding,
-} from './agentTurnRequestIdentity.mjs'
+import { createBotanicAgentTurnRuntime } from './botanicAgentTurnRuntime.mjs'
+import { configuredAgentGenerationModels, createAgentTurnSubmission } from './agentTurnSubmission.mjs'
+import { createAgentTurnHttpAdapter } from './agentTurnRoutes.mjs'
+import { createAgentCompatibilityTurn } from './agentCompatibilityTurn.mjs'
 import { createLocalCancelRegistry } from './localCancelRegistry.mjs'
 import { publicAgentReviewTask } from './agentReviewTask.mjs'
 import { AgentReviewDecisionServiceError, createAgentReviewDecisionService } from './agentReviewDecisionService.mjs'
@@ -60,15 +53,11 @@ import {
 import { AgentDelegationFenceError, assertTurnAllowsDelegation, createAgentCancellationService } from './agentCancellationService.mjs'
 import { matchingIdempotencyRequestBinding } from './idempotencyRequestBinding.mjs'
 import { validateAgentEntityReferences } from './agentEntityReferences.mjs'
-import {
-  agentCompatibilityIdempotencyKey,
-  agentCompatibilityResult,
-  createAgentCompatibilityRuntimeRequest,
-  resolveBotanicAgentRuntimeRequest,
-} from './agentRuntimeRequest.mjs'
+import { agentCompatibilityIdempotencyKey } from './agentRuntimeRequest.mjs'
 import { createAgentOperationalReaders } from './agentOperationalReaders.mjs'
 import { AgentSubagentServiceError } from './agentSubagentService.mjs'
 import { createDurableAgentSubagentRunner } from './agentSubagentBroker.mjs'
+import { assertAgentTargetBinding } from './agentTargetBinding.mjs'
 import {
   AgentSubagentPersistenceError,
   publicAgentSubagent,
@@ -152,143 +141,6 @@ function isAuthorizedAgentMediaUrl(value) {
  * 普通错误响应。
  */
 const agentChatStreamHeartbeatMs = 3_000
-
-function matchingAgentTurnRequestBinding(stored, candidate) {
-  if (!stored || !candidate
-    || stored.id !== candidate.id
-    || stored.ownerId !== candidate.ownerId
-    || stored.projectId !== candidate.projectId
-    || stored.idempotencyKey !== candidate.idempotencyKey) return false
-  if (typeof stored.requestHash === 'string' && stored.requestHash.trim()) {
-    return Boolean(agentTurnRequestHashVersion(stored)) && stored.requestHash === candidate.requestHash
-  }
-  const storedBinding = storedAgentTurnRequestBinding(stored)
-  const candidateBinding = storedAgentTurnRequestBinding(candidate)
-  return Boolean(storedBinding && candidateBinding
-    && candidateBinding.requestHash === candidate.requestHash
-    && agentTurnRequestHash(candidate.request, storedBinding.requestHashVersion) === storedBinding.requestHash)
-}
-
-function agentTurnIntentConflict() {
-  return Object.assign(new Error('同一回合提交标识已绑定到不同请求。'), {
-    code: 'AGENT_TURN_INTENT_CONFLICT',
-    statusCode: 409,
-  })
-}
-
-/**
- * claim 已 durable、Message link 尚未写入时进程可能退出。相同稳定 key 的补提交
- * 只能恢复 Turn 内不可变的 v2 request；当前页面的选中态、模型与执行模式都可能
- * 已经变化，拿它们重建 candidate 会把一次恢复误变成新意图。
- */
-function recoverableStoredAgentTurnRequest(stored, identity) {
-  if (!stored
-    || stored.id !== identity.id
-    || stored.ownerId !== identity.ownerId
-    || stored.projectId !== identity.projectId
-    || stored.sessionId !== identity.sessionId
-    || stored.idempotencyKey !== identity.idempotencyKey
-    || agentTurnRequestHashVersion(stored) !== 2
-    || !stored.request
-    || typeof stored.request !== 'object'
-    || Array.isArray(stored.request)) return undefined
-  const binding = storedAgentTurnRequestBinding(stored)
-  if (!binding
-    || binding.requestHashVersion !== 2
-    || typeof stored.requestHash !== 'string'
-    || stored.requestHash !== binding.requestHash) return undefined
-  const request = stored.request
-  if (request.projectId !== identity.projectId
-    || request.sessionId !== identity.sessionId
-    || !request.inputMessage
-    || typeof request.inputMessage !== 'object'
-    || Array.isArray(request.inputMessage)
-    || request.inputMessage.id !== identity.inputMessageId) return undefined
-  return structuredClone(request)
-}
-
-function assertAgentTurnSelectedResult(document, input) {
-  if (!input?.hasTarget) return
-  const targetId = typeof input.selectedResultNodeId === 'string'
-    ? input.selectedResultNodeId.trim()
-    : ''
-  const target = targetId
-    ? (document?.nodes ?? []).find((node) => node?.id === targetId)
-    : undefined
-  if (target?.type === 'result') return
-  throw Object.assign(new Error('原 Agent 回合选择的结果已不存在，不能安全续跑。'), {
-    code: 'AGENT_TURN_TARGET_NOT_FOUND',
-    statusCode: 409,
-  })
-}
-
-/**
- * Message PUT 是新 Turn 的第一条 durable 边界。只要权威用户消息已经携带
- * request snapshot，POST 当前页面的 target/context/model/mode 就不再有写权限；
- * Route 从 snapshot + 权威 Message 身份重建同一个规范请求。
- */
-function canonicalAgentTurnInputFromMessageSnapshot(validatedInput, authoritativeInputMessage, messages) {
-  const snapshot = authoritativeInputMessage?.turnRequestSnapshot
-  if (!snapshot || !validatedInput.sessionId) return { ...validatedInput, messages }
-  const { selectedResultNodeId, ...stableFields } = snapshot
-  return validateBotanicAgentTurnInput({
-    projectId: validatedInput.projectId,
-    sessionId: validatedInput.sessionId,
-    inputMessage: {
-      id: authoritativeInputMessage.id,
-      content: authoritativeInputMessage.content,
-      ...(authoritativeInputMessage.mentions?.length
-        ? { mentions: structuredClone(authoritativeInputMessage.mentions) }
-        : {}),
-    },
-    ...structuredClone(stableFields),
-    ...(stableFields.hasTarget ? { selectedResultNodeId } : {}),
-    messages,
-  })
-}
-
-/**
- * SSE accepted 是客户端可恢复承诺：发送前必须确认同一请求绑定的 Turn 已 durable 可读。
- * execute 与读取并行，既不让慢 Provider 阻塞 accepted，也不把只存在于进程内的身份交给浏览器。
- */
-async function awaitDurableAgentTurnBeforeAccepted({ productStore, userId, candidate, executionPromise }) {
-  let polling = true
-  const executionOutcome = executionPromise.then(
-    (execution) => ({ kind: 'resolved', execution }),
-    (caught) => ({ kind: 'rejected', caught }),
-  )
-  const durableObservation = (async () => {
-    while (polling) {
-      const stored = await productStore.readAgentTurn(userId, candidate.id)
-      if (stored) {
-        return matchingAgentTurnRequestBinding(stored, candidate)
-          ? { kind: 'durable', turn: stored }
-          : { kind: 'conflict' }
-      }
-      await new Promise((resolve) => setTimeout(resolve, 5))
-    }
-    return { kind: 'stopped' }
-  })()
-  const ready = await Promise.race([durableObservation, executionOutcome])
-  polling = false
-  if (ready.kind === 'durable') return ready.turn
-  if (ready.kind === 'conflict') throw agentTurnIntentConflict()
-  if (ready.kind === 'resolved') {
-    const stored = await productStore.readAgentTurn(userId, candidate.id)
-    if (matchingAgentTurnRequestBinding(stored, candidate)) return stored
-    throw agentTurnIntentConflict()
-  }
-  if (ready.kind === 'rejected') {
-    // Resolver 可能在 claim 后立刻失败；只要相同绑定已 durable，仍先交付 accepted，
-    // 随后的 error 便能由刷新 observer 重放。claim 前失败则绝不作恢复承诺。
-    const stored = await productStore.readAgentTurn(userId, candidate.id)
-    if (matchingAgentTurnRequestBinding(stored, candidate)) return stored
-    throw ready.caught
-  }
-  throw Object.assign(new Error('Agent Turn 尚未持久化。'), {
-    code: 'AGENT_TURN_DURABILITY_UNAVAILABLE', statusCode: 503,
-  })
-}
 
 export function createServerSentEventWriter(response, options = {}) {
   let started = false
@@ -383,26 +235,34 @@ export function createAgentRouteHandler({
 }) {
   // 看图只读当前项目内的媒体：readGenerationInput 校验归属，图片字节不离开服务端与模型网关。
   const visionMediaResolver = (userId, projectId) => (mediaService?.enabled
-    ? (mediaId) => mediaService.readGenerationInput(userId, mediaId, projectId)
+    ? (mediaId, options) => mediaService.readGenerationInput(userId, mediaId, projectId, options)
     : undefined)
-  const plannerSkillInput = (skill) => ({
-    id: skill.id,
-    name: skill.name,
-    instructions: skill.instructions,
-    status: skill.status,
-    ...(Number.isInteger(skill.version) ? { version: skill.version } : {}),
-    ...(typeof skill.contentHash === 'string' ? { contentHash: skill.contentHash } : {}),
-    ...(Array.isArray(skill.capabilities) ? { capabilities: skill.capabilities } : {}),
-    ...(typeof skill.lifecycle === 'string' ? { lifecycle: skill.lifecycle } : {}),
-    ...(skill.manifest ? { manifest: structuredClone(skill.manifest) } : {}),
-    ...(Array.isArray(skill.versions) ? { versions: structuredClone(skill.versions) } : {}),
-  })
+  const authorizedWebResearchQuota = (userId, projectId) => async () => {
+    await requireProjectPermission(productStore, userId, projectId, 'execute-external-tool')
+    return consumeWebResearchQuota?.(userId, projectId, 'execute-external-tool')
+  }
   const configuredMcpCatalog = () => (
     typeof configuredMcpTools?.catalog === 'function' ? configuredMcpTools.catalog() : []
   )
   // HTTP 连接只是观察者；Runtime 与跨实例取消订阅方共用这张执行句柄表。
   const cancelRegistry = localCancelRegistry ?? createLocalCancelRegistry()
   const agentTurnRuntime = createBotanicAgentTurnRuntime({ productStore, localCancelRegistry: cancelRegistry })
+  let agentTurnSubmissionModule
+  const turnSubmission = () => {
+    agentTurnSubmissionModule ??= createAgentTurnSubmission({
+      productStore,
+      runtime: agentTurnRuntime,
+      config,
+      resolveThreadContext: (input) => authoritativeThreadContext().resolve(input),
+      resolveLegacyThreadSummary: (...args) => threadSummaryForSession(...args),
+      resolveVisionMedia: visionMediaResolver,
+      durableSubagentRunner,
+      observeAgentContext,
+      persistUsageAnchor: persistAgentContextUsageAnchor,
+      consumeWebResearchQuota,
+    })
+    return agentTurnSubmissionModule
+  }
   // 正式 HTTP 入口绝不回退到进程内 Subagent：未完整配置时显式注入 undefined，
   // Planner 会直接隐藏派发工具；配置完整时则统一走 descriptor/queue/Turn Runtime。
   const durableSubagentRunner = agentSubagentService
@@ -411,166 +271,17 @@ export function createAgentRouteHandler({
     ? createDurableAgentSubagentRunner({ service: agentSubagentService })
     : undefined
 
-  /**
-   * plan/chat/intent 的旧 URL 只负责兼容响应形状。它们与主 `/api/agent-turns`
-   * 一样先取得 durable Turn，再执行解析器；HTTP close 不拥有 Runtime 的 AbortSignal。
-   */
-  const executeCompatibilityTurn = async ({
-    operation,
-    request,
-    response,
-    user,
-    projectId,
-    sessionId,
-    requestId,
-    input,
-    resolveOptions,
-    sse,
-  }) => {
-    let detach
-    let observerDetached = false
-    const detached = new Promise((resolve) => {
-      detach = () => {
-        if (observerDetached) return
-        observerDetached = true
-        resolve({ kind: 'detached' })
-      }
+  let compatibilityTurnModule
+  const executeCompatibilityTurn = (command) => {
+    compatibilityTurnModule ??= createAgentCompatibilityTurn({
+      config,
+      productStore,
+      turnSubmission,
+      durableSubagentRunner,
+      observeAgentContext,
+      persistUsageAnchor: persistAgentContextUsageAnchor,
     })
-    const detachOnAbortedRequest = () => detach()
-    const detachOnClosedResponse = () => {
-      if (!response.writableEnded) detach()
-    }
-    request.once('aborted', detachOnAbortedRequest)
-    response.once('close', detachOnClosedResponse)
-    if (request.aborted || response.destroyed) detach()
-    const idempotencyKey = agentCompatibilityIdempotencyKey(
-      operation,
-      input,
-      request.headers['idempotency-key'],
-      requestId,
-    )
-    const runtimeRequest = createAgentCompatibilityRuntimeRequest(operation, input)
-    const turnId = agentTurnIdForIdempotency(user.id, projectId, idempotencyKey)
-    const pendingTurnEvents = []
-    let acceptedSent = false
-    const executionPromise = agentTurnRuntime.execute({
-      userId: user.id,
-      projectId,
-      ...(sessionId ? { sessionId } : {}),
-      requestId,
-      id: turnId,
-      idempotencyKey,
-      request: runtimeRequest,
-      resolve: (runtimeOptions) => resolveBotanicAgentRuntimeRequest(runtimeRequest, config, runtimeOptions),
-      resolveOptions: {
-        ...resolveOptions,
-        subagentRunner: durableSubagentRunner,
-        observeAgentContext,
-        ...(sessionId ? {
-          persistAgentContextUsageAnchor: persistAgentContextUsageAnchor({
-            userId: user.id,
-            projectId,
-            sessionId,
-          }),
-        } : {}),
-      },
-      onEvent: (event) => {
-        if (!sse || observerDetached) return
-        if (!acceptedSent) pendingTurnEvents.push(event)
-        else sse.send(event)
-      },
-    })
-    // Runtime 已脱离传输层；响应断开时仍需消费 rejection，避免后台 Promise 变成
-    // unhandled rejection。原 Promise 仍由下方 await 收敛正常请求。
-    void executionPromise.catch(() => undefined)
-    const candidate = createAgentTurnRecord({
-      id: turnId,
-      ownerId: user.id,
-      projectId,
-      ...(sessionId ? { sessionId } : {}),
-      requestId,
-      idempotencyKey,
-      request: runtimeRequest,
-    })
-    try {
-      const durableOutcome = await Promise.race([
-        awaitDurableAgentTurnBeforeAccepted({
-          productStore,
-          userId: user.id,
-          candidate,
-          executionPromise,
-        }).then((turn) => ({ kind: 'durable', turn })),
-        detached,
-      ])
-      if (durableOutcome.kind === 'detached') return { detached: true }
-      const durableTurn = durableOutcome.turn
-      if (sse && !response.destroyed) {
-        sse.send({
-          type: 'accepted',
-          turnId,
-          runtimeTurn: { id: turnId, projectId },
-          observer: { url: `/api/agent-turns/${encodeURIComponent(turnId)}?after=0` },
-        })
-        acceptedSent = true
-        for (const event of pendingTurnEvents.splice(0)) sse.send(event)
-      }
-      const durableResult = durableTurn.result
-      if (durableResult) {
-        return {
-          body: agentCompatibilityResult(operation, durableResult),
-          runtimeTurn: publicAgentTurn(durableTurn),
-        }
-      }
-      const prefer = String(request.headers.prefer ?? '').toLowerCase()
-      if (!sse && prefer.split(',').some((item) => item.trim() === 'respond-async')) {
-        return {
-          pending: true,
-          runtimeTurn: publicAgentTurn(durableTurn),
-          observer: { url: `/api/agent-turns/${encodeURIComponent(turnId)}?after=0` },
-        }
-      }
-      const executionOutcome = await Promise.race([
-        executionPromise.then((execution) => ({ kind: 'execution', execution })),
-        detached,
-      ])
-      if (executionOutcome.kind === 'detached') return { detached: true }
-      let execution = executionOutcome.execution
-      let result = execution.result ?? execution.turn?.result
-      // 同 key 落到另一 API 实例时 claim 会返回 in_progress。兼容入口继续按 durable
-      // Turn 观察，不把旧 200/done 契约降级为需要调用方理解的 425。
-      const observationDeadline = Date.now() + 65_000
-      while (!result && Date.now() < observationDeadline) {
-        const wait = await Promise.race([
-          new Promise((resolve) => setTimeout(() => resolve({ kind: 'tick' }), 250)),
-          detached,
-        ])
-        if (wait.kind === 'detached') return { detached: true }
-        const observed = await productStore.readAgentTurn(user.id, turnId)
-        if (!observed) continue
-        execution = { ...execution, turn: publicAgentTurn(observed) }
-        result = observed.result
-        if (observed.status === 'failed' || observed.status === 'cancelled') {
-          throw Object.assign(new Error(observed.error?.message ?? 'Agent Runtime 未完成。'), {
-            code: observed.error?.code ?? (observed.status === 'cancelled' ? 'AGENT_TURN_CANCELLED' : 'AGENT_TURN_FAILED'),
-            statusCode: observed.status === 'cancelled' ? 499 : 502,
-          })
-        }
-      }
-      if (!result) {
-        throw Object.assign(new Error('Agent Runtime 仍在执行，请使用同一提交键继续观察。'), {
-          code: 'AGENT_RUNTIME_IN_PROGRESS',
-          statusCode: 425,
-          runtimeTurn: execution.turn ?? publicAgentTurn(durableTurn),
-        })
-      }
-      return {
-        body: agentCompatibilityResult(operation, result),
-        runtimeTurn: execution.turn ?? publicAgentTurn(durableTurn),
-      }
-    } finally {
-      request.off('aborted', detachOnAbortedRequest)
-      response.off('close', detachOnClosedResponse)
-    }
+    return compatibilityTurnModule(command)
   }
   let agentCancellation
   const cancellationService = () => {
@@ -969,7 +680,26 @@ export function createAgentRouteHandler({
       },
     }
   }
+  let agentTurnHttpAdapter
+  const turnHttpAdapter = () => {
+    agentTurnHttpAdapter ??= createAgentTurnHttpAdapter({
+      config,
+      productStore,
+      json,
+      error,
+      readJson,
+      requireUser,
+      enforceRateLimit,
+      createSse: createServerSentEventWriter,
+      turnSubmission,
+      cancellationService,
+      publishAgentRunUpdated,
+    })
+    return agentTurnHttpAdapter
+  }
   return async function handleAgentRoute(request, response, url, routeMatches, requestId) {
+    const turnHandled = await turnHttpAdapter()({ request, response, url, routeMatches, requestId })
+    if (turnHandled !== false) return turnHandled
     const {
       projectAgentRuns: projectAgentRunsMatch,
       projectAgentSkills: projectAgentSkillsMatch,
@@ -994,10 +724,6 @@ export function createAgentRouteHandler({
       agentReviewTaskReconciliation: agentReviewTaskReconciliationMatch,
       agentRunCancel: agentRunCancelMatch,
       agentBranchRetry: agentBranchRetryMatch,
-      agentTurns: agentTurnsMatch,
-      agentTurnStream: agentTurnStreamMatch,
-      agentTurn: agentTurnMatch,
-      agentTurnCancel: agentTurnCancelMatch,
       projectAgentSubagents: projectAgentSubagentsMatch,
       agentSubagent: agentSubagentMatch,
       agentSubagentFollowups: agentSubagentFollowupsMatch,
@@ -1150,279 +876,6 @@ export function createAgentRouteHandler({
       })
     }
 
-    if (agentTurnsMatch || agentTurnStreamMatch) {
-      const streaming = Boolean(agentTurnStreamMatch)
-      if (request.method !== 'POST') return methodNotAllowed(response, 'Agent Turn 资源只接受提交请求。', 'POST')
-      const user = await requireUser(request)
-      if (!await enforceRateLimit(response, { scope: 'agent-chat', subject: user.id, limit: config.security.agentChatsPerFiveMinutes, windowMs: 5 * 60_000 })) return true
-      if (!config.flockApiBaseUrl || !config.flockApiKey || !config.flockTextModel) return error(response, 503, 'PROVIDER_NOT_CONFIGURED', 'Agent 服务尚未配置。')
-      const idempotencyKey = generationIdempotencyKey(request.headers['idempotency-key'])
-      if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', 'Agent Turn 提交标识无效，请重试。')
-      const validatedInput = validateBotanicAgentTurnInput(await readJson(request, config.maximumPromptRefinementRequestBytes, 'Agent Turn 请求过大，请精简后重试。'))
-      await requireProjectPermission(productStore, user.id, validatedInput.projectId, 'read')
-      const project = await productStore.readProject(user.id, validatedInput.projectId)
-      if (!project?.document) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
-      const projectSkills = await productStore.listAgentSkills(user.id, validatedInput.projectId) ?? []
-      const legacySessionId = typeof request.headers['x-agent-session-id'] === 'string'
-        ? request.headers['x-agent-session-id']
-        : undefined
-      let canonicalInput = validatedInput
-      let threadSummary
-      let authoritativeInputMessage
-      if (validatedInput.sessionId && validatedInput.inputMessage) {
-        const threadContext = await authoritativeThreadContext().resolve({
-          userId: user.id,
-          projectId: validatedInput.projectId,
-          sessionId: validatedInput.sessionId,
-          locale: validatedInput.locale,
-          model: validatedInput.plannerModel || config.flockTextModel,
-          // 角色是服务端事实；客户端 DTO 无权声明 assistant/system。
-          inputMessage: { ...validatedInput.inputMessage, role: 'user' },
-        })
-        // 即使迁移期客户端仍附带 messages，也只用服务端投影覆盖它。
-        canonicalInput = canonicalAgentTurnInputFromMessageSnapshot(
-          validatedInput,
-          threadContext.inputMessage,
-          threadContext.messages,
-        )
-        canonicalInput = {
-          ...canonicalInput,
-          threadContextSnapshot: structuredClone(threadContext.threadContextSnapshot),
-        }
-        threadSummary = threadContext.threadSummary
-        authoritativeInputMessage = threadContext.inputMessage
-      } else {
-        threadSummary = await threadSummaryForSession(
-          user.id,
-          validatedInput.projectId,
-          legacySessionId,
-        )
-        canonicalInput = {
-          ...canonicalInput,
-          threadContextSnapshot: {
-            version: 1,
-            messages: structuredClone(canonicalInput.messages ?? []),
-            ...(threadSummary ? { threadSummary: structuredClone(threadSummary) } : {}),
-          },
-        }
-      }
-      const turnId = agentTurnIdForIdempotency(user.id, validatedInput.projectId, idempotencyKey)
-      if (validatedInput.sessionId && authoritativeInputMessage) {
-        if (authoritativeInputMessage.turnId && authoritativeInputMessage.turnId !== turnId) {
-          return error(response, 409, 'AGENT_MESSAGE_TURN_CONFLICT', '当前消息已绑定另一 Agent Turn，不能重新执行。')
-        }
-        const existingTurn = await productStore.readAgentTurn(user.id, turnId)
-        if (authoritativeInputMessage.turnId && !existingTurn) {
-          // 旧版 link→claim 顺序可能留下指向不存在 Turn 的 Message。这里没有 immutable
-          // request snapshot 可恢复；用当前 target/context/model 重建会把旧请求漂移成新意图。
-          return error(response, 409, 'AGENT_MESSAGE_TURN_ORPHANED', '当前消息关联的 Agent Turn 不存在，不能安全重建。')
-        }
-        if (existingTurn) {
-          const storedRequest = recoverableStoredAgentTurnRequest(existingTurn, {
-            id: turnId,
-            ownerId: user.id,
-            projectId: validatedInput.projectId,
-            sessionId: validatedInput.sessionId,
-            inputMessageId: authoritativeInputMessage.id,
-            idempotencyKey,
-          })
-          if (!storedRequest) {
-            return error(response, 409, 'AGENT_TURN_INTENT_CONFLICT', '同一回合提交标识已绑定到不同请求。')
-          }
-          canonicalInput = storedRequest
-        }
-      }
-      // 恢复时必须校验 immutable request 里的原目标，而不是当前 UI 重提交的选中态。
-      try {
-        assertAgentTurnSelectedResult(project.document, canonicalInput)
-      } catch (caught) {
-        return error(
-          response,
-          Number.isInteger(caught?.statusCode) ? caught.statusCode : 409,
-          caught?.code ?? 'AGENT_TURN_TARGET_NOT_FOUND',
-          typeof caught?.message === 'string' ? caught.message : '原 Agent 回合的目标不可用。',
-        )
-      }
-      const input = {
-        ...canonicalInput,
-        projectSkills: projectSkills.map(plannerSkillInput),
-      }
-      const sse = streaming ? createServerSentEventWriter(response) : undefined
-      sse?.start()
-      const pendingTurnEvents = []
-      let acceptedSent = false
-      try {
-        const executionPromise = agentTurnRuntime.execute({
-          userId: user.id,
-          projectId: validatedInput.projectId,
-          sessionId: validatedInput.sessionId ?? legacySessionId,
-          requestId,
-          id: turnId,
-          idempotencyKey,
-          // 快照保存服务端投影后的有界消息，而不是浏览器自报历史；projectSkills 与
-          // 项目文档仍在恢复时重新读取，避免重放过期的派生上下文。
-          request: canonicalInput,
-          resolve: (resolveOptions) => resolveBotanicAgentRuntimeRequest(input, config, resolveOptions),
-          resolveOptions: {
-            subagentRunner: durableSubagentRunner,
-            observeAgentContext,
-            document: project.document,
-            projectSkills,
-            ...((validatedInput.sessionId ?? legacySessionId) ? {
-              persistAgentContextUsageAnchor: persistAgentContextUsageAnchor({
-                userId: user.id,
-                projectId: validatedInput.projectId,
-                sessionId: validatedInput.sessionId ?? legacySessionId,
-              }),
-            } : {}),
-            ...(threadSummary ? { threadSummary } : {}),
-            operations: createAgentOperationalReaders({
-              productStore,
-              userId: user.id,
-              projectId: validatedInput.projectId,
-              document: project.document,
-            }),
-            resolveVisionMedia: visionMediaResolver(user.id, validatedInput.projectId),
-            consumeWebResearchQuota: consumeWebResearchQuota
-              ? () => consumeWebResearchQuota(user.id)
-              : undefined,
-          },
-          // claim durable 与 accepted 之间若 Resolver 已产生事件，先保存在本请求内；
-          // accepted 永远是第一条数据事件，随后才按原顺序交付 durable 工具轨迹。
-          onEvent: (event) => {
-            if (!sse) return
-            if (!acceptedSent) pendingTurnEvents.push(event)
-            else sse.send(event)
-          },
-        })
-        // 路由可能在 link 或响应写出时失败；Runtime 已与 HTTP 生命周期分离，提前
-        // 挂拒绝处理器避免后台终态变成 unhandled rejection，原 Promise 仍可正常 await。
-        void executionPromise.catch(() => undefined)
-        const candidate = createAgentTurnRecord({
-          id: turnId,
-          ownerId: user.id,
-          projectId: validatedInput.projectId,
-          sessionId: validatedInput.sessionId ?? legacySessionId,
-          requestId,
-          idempotencyKey,
-          request: canonicalInput,
-        })
-        const durableTurn = await awaitDurableAgentTurnBeforeAccepted({
-          productStore, userId: user.id, candidate, executionPromise,
-        })
-        if (validatedInput.sessionId && authoritativeInputMessage && !authoritativeInputMessage.turnId) {
-          const linkedAt = Date.now()
-          // durable request binding 在前，Message link 在后；冲突或 claim 失败绝不留下
-          // 指向不存在/错误 Turn 的恢复身份。link 完成后才允许向客户端交接 observer。
-          await productStore.putAgentMessage(user.id, validatedInput.projectId, validatedInput.sessionId, {
-            ...authoritativeInputMessage,
-            role: 'user',
-            kind: 'text',
-            createdAt: Number(authoritativeInputMessage.createdAt) || linkedAt,
-            updatedAt: Math.max(Number(authoritativeInputMessage.updatedAt) || 0, linkedAt),
-            turnId,
-          })
-        }
-        if (!sse) {
-          return json(response, 202, {
-            runtimeTurn: publicAgentTurn(durableTurn),
-            observer: { url: `/api/agent-turns/${encodeURIComponent(turnId)}?after=0` },
-          })
-        }
-        if (sse) {
-          sse.send({
-            type: 'accepted',
-            turnId,
-            runtimeTurn: { id: turnId, projectId: validatedInput.projectId },
-            observer: { url: `/api/agent-turns/${encodeURIComponent(turnId)}?after=0` },
-          })
-          acceptedSent = true
-          for (const event of pendingTurnEvents.splice(0)) sse.send(event)
-        }
-        const execution = await executionPromise
-        // HTTP 中断只代表观察者 detach。Runtime 已继续执行并持久化；此时不再写响应。
-        if (response.destroyed) return true
-        // 保持旧客户端的 `turn` 业务结果形状；V2 生命周期记录单独放在 runtimeTurn，
-        // 这样迁移期间既不会把状态记录误当成生成意图，也不会破坏现有时间线渲染。
-        const turnResult = execution.result ?? execution.turn?.result
-        const observing = execution.inProgress || execution.recoveryRequired || execution.waitingUser || execution.cancelling
-        const observer = {
-          url: `/api/agent-turns/${encodeURIComponent(turnId)}?after=${execution.turn?.lastSequence ?? 0}`,
-        }
-        sse.send({ type: 'done', turn: turnResult, runtimeTurn: execution.turn })
-        return sse.end()
-      } catch (caught) {
-        if (response.destroyed) return true
-        const statusCode = Number.isInteger(caught?.statusCode) ? caught.statusCode : 502
-        if (sse?.started) {
-          sse.send({ type: 'error', code: caught?.code ?? 'AGENT_TURN_FAILED', message: typeof caught?.message === 'string' ? caught.message : 'Agent 回合未完成，请重试。' })
-          return sse.end()
-        }
-        return error(response, statusCode, caught?.code ?? 'AGENT_TURN_FAILED', typeof caught?.message === 'string' ? caught.message : 'Agent 回合未完成，请重试。')
-      } finally {
-        sse?.end()
-      }
-    }
-
-    if (agentTurnCancelMatch) {
-      if (request.method !== 'POST') return methodNotAllowed(response, 'Agent Turn 取消资源只接受提交请求。', 'POST')
-      const user = await requireUser(request)
-      const turnId = decodeURIComponent(agentTurnCancelMatch[1])
-      const turn = await productStore.readAgentTurn(user.id, turnId)
-      if (!turn) return error(response, 404, 'AGENT_TURN_NOT_FOUND', '未找到该 Agent Turn。')
-      await requireProjectPermission(productStore, user.id, turn.projectId, 'read')
-      const cancellation = await cancellationService().cancelAgentTurn({
-        userId: user.id, projectId: turn.projectId, turnId, requestedBy: user.id,
-      })
-      const cancelled = await productStore.readAgentTurn(user.id, turnId) ?? turn
-      // 深取消可能收口多个 linked Run；逐个发布权威快照，实时层不接收局部状态猜测。
-      const linkedRuns = await productStore.listAgentRunsForTurn(user.id, turn.projectId, turnId) ?? []
-      await Promise.allSettled(linkedRuns.map((run) => publishAgentRunUpdated?.({
-        projectId: turn.projectId,
-        run: publicAgentRun(run),
-      })))
-      return json(response, 200, { turn: publicAgentTurn(cancelled), cancellation })
-    }
-
-    if (agentTurnMatch) {
-      if (request.method !== 'GET') return methodNotAllowed(response, 'Agent Turn 资源只支持读取。', 'GET')
-      const user = await requireUser(request)
-      const turn = await productStore.readAgentTurn(user.id, decodeURIComponent(agentTurnMatch[1]))
-      if (!turn) return error(response, 404, 'AGENT_TURN_NOT_FOUND', '未找到该 Agent Turn。')
-      await requireProjectPermission(productStore, user.id, turn.projectId, 'read')
-      const rawAfter = url.searchParams.get('after')
-      const rawLimit = url.searchParams.get('limit')
-      if (rawAfter !== null && !/^\d+$/.test(rawAfter)) {
-        return error(response, 400, 'INVALID_AGENT_TURN_CURSOR', 'Agent Turn 事件游标无效。')
-      }
-      if (rawLimit !== null && !/^\d+$/.test(rawLimit)) {
-        return error(response, 400, 'INVALID_AGENT_TURN_LIMIT', 'Agent Turn 事件数量无效。')
-      }
-      const after = rawAfter === null ? undefined : Number(rawAfter)
-      const limit = rawLimit === null ? 100 : Number(rawLimit)
-      if (!Number.isSafeInteger(after ?? 0) || !Number.isSafeInteger(limit) || limit < 1 || limit > 200) {
-        return error(response, 400, 'INVALID_AGENT_TURN_CURSOR', 'Agent Turn 续读参数无效。')
-      }
-      const turnEvents = await productStore.listAgentTurnEvents(user.id, turn.projectId, turn.id, {
-        ...(after !== undefined ? { after } : {}),
-        limit,
-      }) ?? []
-      // 这次回合确认出的 Run 按权威边 `run.turnId` 反查，不写在 Turn 记录上（见 publicTurn）。
-      const linkedRuns = await productStore.listAgentRunsForTurn(user.id, turn.projectId, turn.id) ?? []
-      return json(response, 200, {
-        turn: publicAgentTurn(turn, {
-          lastSequence: agentTurnLastSequence(turnEvents),
-          linkedRunIds: linkedRuns.map((run) => run.id),
-        }),
-        events: turnEvents,
-        cursor: {
-          after: turnEvents.length ? agentTurnLastSequence(turnEvents) : (after ?? 0),
-          hasMore: turnEvents.length === limit
-            && agentTurnLastSequence(turnEvents) < Number(turn.lastSequence ?? Number.MAX_SAFE_INTEGER),
-        },
-      })
-    }
-
     if (agentReviewDecisionMatch) {
       if (request.method !== 'POST') return methodNotAllowed(response, 'Agent 评审决策只接受提交请求。', 'POST')
       const user = await requireUser(request)
@@ -1471,6 +924,9 @@ export function createAgentRouteHandler({
         }).items.map((memory) => ({ id: memory.id, kind: memory.kind, content: memory.content })),
         availableMcpTools: configuredMcpCatalog(),
       }
+      const idempotencyKey = agentCompatibilityIdempotencyKey(
+        'plan', input, request.headers['idempotency-key'], requestId,
+      )
       const sse = streaming ? createServerSentEventWriter(response) : undefined
       sse?.start()
       try {
@@ -1481,6 +937,7 @@ export function createAgentRouteHandler({
           user,
           projectId: validatedInput.projectId,
           requestId,
+          idempotencyKey,
           input,
           sse,
           resolveOptions: {
@@ -1488,7 +945,7 @@ export function createAgentRouteHandler({
             projectSkills,
             observeAgentContext,
             consumeWebResearchQuota: consumeWebResearchQuota
-              ? () => consumeWebResearchQuota(user.id)
+              ? () => consumeWebResearchQuota(user.id, validatedInput.projectId, 'execute-external-tool')
               : undefined,
           },
         })
@@ -1524,11 +981,34 @@ export function createAgentRouteHandler({
       if (!await enforceRateLimit(response, { scope: 'agent-chat', subject: user.id, limit: config.security.agentChatsPerFiveMinutes, windowMs: 5 * 60_000 })) return true
       if (!config.flockApiBaseUrl || !config.flockApiKey || !config.flockTextModel) return error(response, 503, 'PROVIDER_NOT_CONFIGURED', 'Agent 对话服务尚未配置。')
       const validatedInput = validateBotanicAgentChatInput(await readJson(request, config.maximumPromptRefinementRequestBytes, 'Agent 对话请求过大，请精简后重试。'))
-      await requireProjectPermission(productStore, user.id, validatedInput.projectId, 'read')
+      if (!validatedInput.sessionId || !validatedInput.inputMessage) {
+        return error(response, 400, 'AGENT_THREAD_CONTEXT_REQUIRED', 'Agent 对话必须使用会话与当前消息的稳定身份。')
+      }
+      const access = await requireProjectPermission(productStore, user.id, validatedInput.projectId, 'read')
       const project = await productStore.readProject(user.id, validatedInput.projectId)
       if (!project?.document) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
       const projectSkills = await productStore.listAgentSkills(user.id, validatedInput.projectId) ?? []
-      const input = validatedInput
+      const threadContext = await authoritativeThreadContext().resolve({
+        userId: user.id,
+        projectId: validatedInput.projectId,
+        sessionId: validatedInput.sessionId,
+        locale: validatedInput.locale,
+        model: validatedInput.plannerModel || config.flockTextModel,
+        inputMessage: { ...validatedInput.inputMessage, role: 'user' },
+      })
+      const input = {
+        ...validatedInput,
+        messages: [
+          ...(threadContext.threadSummaryText
+            ? [{ role: 'user', content: threadContext.threadSummaryText }]
+            : []),
+          ...threadContext.messages,
+        ],
+        threadContextSnapshot: structuredClone(threadContext.threadContextSnapshot),
+      }
+      const idempotencyKey = agentCompatibilityIdempotencyKey(
+        'chat', input, request.headers['idempotency-key'], requestId,
+      )
       const sse = streaming ? createServerSentEventWriter(response) : undefined
       // 先打开通道再等模型：搜索前后的静默期靠注释心跳维持反代连接。
       sse?.start()
@@ -1539,17 +1019,20 @@ export function createAgentRouteHandler({
           response,
           user,
           projectId: validatedInput.projectId,
+          sessionId: validatedInput.sessionId,
           requestId,
+          idempotencyKey,
           input,
           sse,
           resolveOptions: {
             document: project.document,
             projectSkills,
             observeAgentContext,
+            role: access.role,
+            requireTargetVision: true,
+            allowWebResearch: projectPermissionDecision(access.role, 'execute-external-tool') === 'allow',
             resolveVisionMedia: visionMediaResolver(user.id, validatedInput.projectId),
-            consumeWebResearchQuota: consumeWebResearchQuota
-              ? () => consumeWebResearchQuota(user.id)
-              : undefined,
+            consumeWebResearchQuota: authorizedWebResearchQuota(user.id, validatedInput.projectId),
           },
         })
         if (execution.detached) return true
@@ -1591,7 +1074,10 @@ export function createAgentRouteHandler({
       if (!await enforceRateLimit(response, { scope: 'agent-chat', subject: user.id, limit: config.security.agentChatsPerFiveMinutes, windowMs: 5 * 60_000 })) return true
       if (!config.flockApiBaseUrl || !config.flockApiKey || !config.flockTextModel) return error(response, 503, 'PROVIDER_NOT_CONFIGURED', 'Agent 服务尚未配置。')
       const validatedInput = validateBotanicAgentTurnInput(await readJson(request, config.maximumPromptRefinementRequestBytes, 'Agent 请求过大，请精简后重试。'))
-      await requireProjectPermission(productStore, user.id, validatedInput.projectId, 'read')
+      if (!validatedInput.sessionId && config.agentLegacyClientHistory !== true) {
+        return error(response, 426, 'AGENT_THREAD_CONTEXT_REQUIRED', 'Agent 意图请求必须使用会话与当前消息的稳定身份。')
+      }
+      const access = await requireProjectPermission(productStore, user.id, validatedInput.projectId, 'read')
       const project = await productStore.readProject(user.id, validatedInput.projectId)
       if (!project?.document) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
       const projectSkills = await productStore.listAgentSkills(user.id, validatedInput.projectId) ?? []
@@ -1627,7 +1113,10 @@ export function createAgentRouteHandler({
           },
         }
       }
-      const input = canonicalInput
+      const input = { ...canonicalInput, generationModels: configuredAgentGenerationModels(config) }
+      const idempotencyKey = agentCompatibilityIdempotencyKey(
+        'intent', input, request.headers['idempotency-key'], requestId,
+      )
       const sse = streaming ? createServerSentEventWriter(response) : undefined
       sse?.start()
       try {
@@ -1639,12 +1128,16 @@ export function createAgentRouteHandler({
           projectId: validatedInput.projectId,
           sessionId: validatedInput.sessionId,
           requestId,
+          idempotencyKey,
           input,
           sse,
           resolveOptions: {
             document: project.document,
             projectSkills,
             observeAgentContext,
+            role: access.role,
+            requireTargetVision: true,
+            allowWebResearch: projectPermissionDecision(access.role, 'execute-external-tool') === 'allow',
             ...(threadSummary ? { threadSummary } : {}),
             operations: createAgentOperationalReaders({
               productStore,
@@ -1653,9 +1146,7 @@ export function createAgentRouteHandler({
               document: project.document,
             }),
             resolveVisionMedia: visionMediaResolver(user.id, validatedInput.projectId),
-            consumeWebResearchQuota: consumeWebResearchQuota
-              ? () => consumeWebResearchQuota(user.id)
-              : undefined,
+            consumeWebResearchQuota: authorizedWebResearchQuota(user.id, validatedInput.projectId),
           },
         })
         if (execution.detached) return true
@@ -2416,7 +1907,28 @@ export function createAgentRouteHandler({
       if (!idempotencyKey) return error(response, 400, 'INVALID_IDEMPOTENCY_KEY', 'Agent Run 提交标识无效，请重试。')
       const input = validateAgentRunCreation(await readJson(request, 64 * 1024, 'Agent Run 请求过大。'))
       await requireProjectPermission(productStore, user.id, input.projectId, 'create-generation')
-      const authoritativeInput = await bindAuthoritativeKnowledge(user.id, input)
+      let authoritativeInput = await bindAuthoritativeKnowledge(user.id, input)
+      if (authoritativeInput.turnId && authoritativeInput.plan.intent !== 'initial_generation') {
+        const sourceTurn = await productStore.readAgentTurn(user.id, authoritativeInput.turnId)
+        const sourceRequest = sourceTurn?.request?.runtimeOperation
+          ? sourceTurn.request.input
+          : sourceTurn?.request
+        const targetBinding = sourceRequest?.targetBinding
+        if (!targetBinding || targetBinding.nodeId !== authoritativeInput.plan.selectedResultNodeId) {
+          throw Object.assign(new Error('Agent Run 的父图与来源 Turn 目标不一致，请重新确认。'), {
+            code: 'AGENT_TARGET_STALE', statusCode: 409,
+          })
+        }
+        const project = await productStore.readProject(user.id, authoritativeInput.projectId)
+        await assertAgentTargetBinding(project?.document, sourceRequest, {
+          resolveMedia: visionMediaResolver(user.id, authoritativeInput.projectId),
+          projectRevision: project?.revision,
+        })
+        authoritativeInput = {
+          ...authoritativeInput,
+          plan: { ...authoritativeInput.plan, targetBinding: structuredClone(targetBinding) },
+        }
+      }
       const idempotencyBinding = agentRunSubmissionBinding(authoritativeInput)
       if (authoritativeInput.turnId) {
         await assertTurnAllowsDelegation({

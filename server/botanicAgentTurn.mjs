@@ -273,7 +273,15 @@ function normalizeTurnVariants(raw, maxCount) {
   return variants.length >= 2 ? variants : undefined
 }
 
-function generateImagesTool(input) {
+function unavailableTargetVision() {
+  throw new BotanicAgentChatError(
+    503,
+    'AGENT_TARGET_VISION_UNAVAILABLE',
+    '无法安全读取原目标图片，本轮不会生成；请重新选择图片后再试。',
+  )
+}
+
+function generateImagesTool(input, targetVision) {
   const maxCount = input.maxOutputCount ?? DEFAULT_MAX_OUTPUT_COUNT
   return {
     name: GENERATE_TOOL_NAME,
@@ -328,9 +336,11 @@ function generateImagesTool(input) {
       // 这些参数来自模型而不是用户，写坏了要按 Provider 非法工具参数处理。
       const value = agentToolObject(raw, '生成参数')
       const prompt = agentToolText(value.prompt, '生成 Prompt', 6000)
-      const intent = input.hasTarget && TARGETED_GENERATION_INTENTS.has(value.intent)
+      const intent = value.intent === 'initial_generation'
         ? value.intent
-        : input.hasTarget ? 'continue_generation' : 'initial_generation'
+        : input.hasTarget && TARGETED_GENERATION_INTENTS.has(value.intent)
+          ? value.intent
+          : input.hasTarget ? 'continue_generation' : 'initial_generation'
       const variants = normalizeTurnVariants(value.variants, maxCount)
       let count = 1
       if (value.count !== undefined) {
@@ -351,16 +361,19 @@ function generateImagesTool(input) {
         ...(variants && axisLabel ? { axisLabel } : {}),
       }
     },
-    execute: async ({ prompt, intent, count, settingsHint, variants, axisLabel }) => ({
-      __turnKind: 'generation',
-      mediaKind: 'image',
-      prompt,
-      intent,
-      count,
-      settingsHint,
-      ...(variants ? { variants } : {}),
-      ...(axisLabel ? { axisLabel } : {}),
-    }),
+    execute: async ({ prompt, intent, count, settingsHint, variants, axisLabel }) => {
+      if (TARGETED_GENERATION_INTENTS.has(intent) && !targetVision.ready) unavailableTargetVision()
+      return {
+        __turnKind: 'generation',
+        mediaKind: 'image',
+        prompt,
+        intent,
+        count,
+        settingsHint,
+        ...(variants ? { variants } : {}),
+        ...(axisLabel ? { axisLabel } : {}),
+      }
+    },
   }
 }
 
@@ -368,7 +381,7 @@ function videoModels(generationModels) {
   return (generationModels ?? []).filter((model) => model.mediaKind === 'video')
 }
 
-function generateVideosTool(input) {
+function generateVideosTool(input, targetVision) {
   const catalog = videoModels(input.generationModels)
   const durations = catalog[0]?.durations?.length ? catalog[0].durations : [5, 10, 15]
   return {
@@ -398,14 +411,17 @@ function generateVideosTool(input) {
       const duration = durations.includes(parsed) ? parsed : (catalog[0]?.defaultDuration ?? durations[0])
       return { prompt, duration }
     },
-    execute: async ({ prompt, duration }) => ({
-      __turnKind: 'generation',
-      mediaKind: 'video',
-      prompt,
-      intent: input.hasTarget ? 'continue_generation' : 'initial_generation',
-      count: 1,
-      duration,
-    }),
+    execute: async ({ prompt, duration }) => {
+      if (input.hasTarget && !targetVision.ready) unavailableTargetVision()
+      return {
+        __turnKind: 'generation',
+        mediaKind: 'video',
+        prompt,
+        intent: input.hasTarget ? 'continue_generation' : 'initial_generation',
+        count: 1,
+        duration,
+      }
+    },
   }
 }
 
@@ -532,7 +548,7 @@ function askClarificationTool() {
   }
 }
 
-function turnToolRegistry(input, { ontology, memory, skills, webResearch, operations }) {
+function turnToolRegistry(input, { ontology, memory, skills, webResearch, operations, targetVision }) {
   const mounted = new Set(input.mountedSkillIds ?? [])
   const readTools = createBotanicAgentReadToolDefinitions({ ontology, memory, skills }).map((tool) => {
     if (tool.name !== 'skill_search') return tool
@@ -557,9 +573,9 @@ function turnToolRegistry(input, { ontology, memory, skills, webResearch, operat
     // 是否完成，因此不能自动重做。保留 external 风险并显式声明 never。
     ...createBotanicAgentWebResearchTools(webResearch).map((tool) => ({ ...tool, recovery: 'never' })),
     // 没有生图目录就不暴露出图工具：识图/问答回合不得带着 generate_images。
-    ...(imageModels(input.generationModels).length ? [generateImagesTool(input), decomposeCreativeBriefTool(input)] : []),
+    ...(imageModels(input.generationModels).length ? [generateImagesTool(input, targetVision), decomposeCreativeBriefTool(input)] : []),
     // 目录里没有视频模型时不暴露视频工具，模型也就不会声称能做视频。
-    ...(videoModels(input.generationModels).length ? [generateVideosTool(input)] : []),
+    ...(videoModels(input.generationModels).length ? [generateVideosTool(input, targetVision)] : []),
     askClarificationTool(),
   ])
 }
@@ -814,7 +830,15 @@ function withTurnReasoning(result, reasoning) {
 
 function withTurnSelectedResult(result, input) {
   if (result?.kind !== 'generation') return result
-  return { ...result, selectedResultNodeId: input.selectedResultNodeId ?? null }
+  return {
+    ...result,
+    selectedResultNodeId: result.intent === 'initial_generation'
+      ? null
+      : input.selectedResultNodeId ?? null,
+    ...(result.intent !== 'initial_generation' && input.targetBinding
+      ? { targetBinding: structuredClone(input.targetBinding) }
+      : {}),
+  }
 }
 
 function turnAttempt(id, model, snapshot) {
@@ -1053,7 +1077,7 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
   const memory = safeBotanicAgentMemory(options.document)
   const skills = botanicAgentSearchableSkills(options.projectSkills)
   // 与对话/规划链路同一套 Tavily 配置；没 Key 时 createBotanicAgentWebResearchTools 不会暴露 web_search。
-  const webResearch = {
+  const webResearch = options.allowWebResearch === false ? undefined : {
     apiKey: runtimeConfig?.webSearch?.apiKey,
     searchUrl: runtimeConfig?.webSearch?.searchUrl,
     extractUrl: runtimeConfig?.webSearch?.extractUrl,
@@ -1061,7 +1085,10 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
     allowLocal: Boolean(runtimeConfig?.webSearch?.allowLocal),
     consumeQuota: options.consumeWebResearchQuota,
   }
-  const registry = turnToolRegistry(input, { ontology, memory, skills, webResearch, operations: options.operations })
+  const targetVision = { ready: !input.hasTarget || options.requireTargetVision !== true }
+  const registry = turnToolRegistry(input, {
+    ontology, memory, skills, webResearch, operations: options.operations, targetVision,
+  })
   const searchGuidance = turnSearchGuidance(registry)
   // 这一次执行的能力快照：模型、工具集、Skill/Memory 绑定与角色在进入循环前定格
   // （Epic 8）。中途改配置不该改变已经开始的这一次。
@@ -1082,13 +1109,24 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
   // 原生多模态只跟 Composer 所选走；不能看图的规划模型走 caption，不劫持整轮。
   const nativeVisionModel = nativeAgentVisionModel(config.model)
   const captionVisionModel = captionAgentVisionModel(runtimeConfig)
-  const visionParts = nativeVisionModel || captionVisionModel
-    ? await resolveBotanicAgentVisionParts({
+  let visionParts = []
+  if (nativeVisionModel || captionVisionModel) {
+    try {
+      visionParts = await resolveBotanicAgentVisionParts({
       document: options.document,
       contextNodeIds,
       resolveMedia: options.resolveVisionMedia,
-    }).catch(() => [])
-    : []
+      signal: options.signal,
+      })
+    } catch (caught) {
+      if (options.signal?.aborted) {
+        throw new BotanicAgentChatError(499, 'REQUEST_CANCELLED', 'Agent 请求已取消。', { cause: caught })
+      }
+      if (caught?.code === 'AGENT_VISION_BYTES_EXCEEDED') {
+        throw new BotanicAgentChatError(caught.statusCode, caught.code, caught.message, { cause: caught })
+      }
+    }
+  }
   const resumeAttemptId = options.resumeCheckpoint?.attempt?.id
   if (options.resumeCheckpoint && !['vision', 'text'].includes(resumeAttemptId)) {
     throw new BotanicAgentChatError(409, 'AGENT_TURN_CHECKPOINT_INVALID', 'Agent Turn Checkpoint 的执行 attempt 无效。')
@@ -1105,6 +1143,9 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
   const visionContextBinding = nativeVisionModel ? primaryContextBinding : undefined
   const canAttemptVision = visionParts.length > 0 && Boolean(nativeVisionModel)
   if (canAttemptVision && resumeAttemptId !== 'text') {
+    targetVision.ready = !input.hasTarget
+      || options.requireTargetVision !== true
+      || visionParts.some((part) => part.nodeId === input.selectedResultNodeId)
     const visionSnapshot = stepSnapshotFor(nativeVisionModel, visionContextBinding)
     const boundVisionOptions = optionsForContext(visionContextBinding)
     let visionCheckpointBoundaryReached = Boolean(options.resumeCheckpoint)
@@ -1153,15 +1194,36 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
   }
 
   // 降级路径：看图失败不弄坏整轮回合；识别结果只进当轮系统提示，不进任何持久化实体。
-  const visionDescriptions = await describeBotanicAgentContextImages({
-    document: options.document,
-    contextNodeIds,
-    runtimeConfig,
-    resolveMedia: options.resolveVisionMedia,
-    fetchImpl: options.visionFetchImpl ?? fetch,
-    signal: options.signal,
-    ...(options.visionCache ? { cache: options.visionCache } : {}),
-  }).catch(() => [])
+  targetVision.ready = !input.hasTarget || options.requireTargetVision !== true
+  let visionDescriptions = []
+  try {
+    visionDescriptions = await describeBotanicAgentContextImages({
+      document: options.document,
+      contextNodeIds,
+      runtimeConfig,
+      resolveMedia: options.resolveVisionMedia,
+      fetchImpl: options.visionFetchImpl ?? fetch,
+      signal: options.signal,
+      ...(options.visionCache ? { cache: options.visionCache } : {}),
+    })
+  } catch (caught) {
+    if (options.signal?.aborted) {
+      throw new BotanicAgentChatError(499, 'REQUEST_CANCELLED', 'Agent 请求已取消。', { cause: caught })
+    }
+    if (caught?.code === 'AGENT_VISION_BYTES_EXCEEDED') {
+      throw new BotanicAgentChatError(caught.statusCode, caught.code, caught.message, { cause: caught })
+    }
+  }
+  targetVision.ready = !input.hasTarget
+    || options.requireTargetVision !== true
+    || visionDescriptions.some((description) => description.nodeId === input.selectedResultNodeId)
+  if (!targetVision.ready) {
+    throw new BotanicAgentChatError(
+      503,
+      'AGENT_TARGET_VISION_UNAVAILABLE',
+      '未能读取当前目标图片，不能安全生成编辑计划。',
+    )
+  }
   const system = [
     baseSystem,
     situation,

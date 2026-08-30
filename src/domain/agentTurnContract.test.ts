@@ -144,7 +144,7 @@ test('超长历史消息被截断到服务端上限，不让整轮请求被判�
   assert.equal(authoritative.inputMessage?.content.length, botanicAgentTurnMessageLimit)
 })
 
-test('生成模型目录只携带安全字段，缺省字段不产出噪声键', () => {
+test('生成模型目录不由客户端上报，缺省字段不产出噪声键', () => {
   const request = buildBotanicAgentTurnRequest({
     projectId: 'project-1',
     locale: 'zh-CN',
@@ -159,10 +159,7 @@ test('生成模型目录只携带安全字段，缺省字段不产出噪声键',
   assert.equal(request.plannerModel, undefined)
   assert.equal(request.maxOutputCount, undefined)
   assert.equal(request.executionMode, undefined)
-  assert.deepEqual(request.generationModels, [
-    { id: 'gpt-image-2', label: 'GPT Image 2', mediaKind: 'image', aspectRatios: ['1:1'], resolutions: ['2K'] },
-    { id: 'video-1', label: '视频', mediaKind: 'video' },
-  ])
+  assert.equal(request.generationModels, undefined)
 })
 
 test('POST 未到服务端时，刷新恢复只用 Message 里的完整 request snapshot', () => {
@@ -193,7 +190,7 @@ test('POST 未到服务端时，刷新恢复只用 Message 里的完整 request 
   assert.equal(restored.showRawReasoning, true)
   assert.equal(restored.executionMode, 'manual')
   assert.deepEqual(restored.contextNodeIds, ['result-original', 'asset-reference'])
-  assert.deepEqual(restored.generationModels?.map((model) => model.id), ['image-original'])
+  assert.equal(restored.generationModels, undefined)
   assert.throws(
     () => botanicAgentTurnRequestSnapshot({ ...original, selectedResultNodeId: undefined }),
     (error: unknown) => (error as { code?: string }).code === 'AGENT_TURN_TARGET_IDENTITY_MISSING',

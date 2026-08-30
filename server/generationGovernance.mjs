@@ -94,6 +94,17 @@ export async function reserveGenerationBudget({ securityControls, usage, limits 
   }
 }
 
+export async function releaseGenerationBudget({ securityControls, usage, limits = {}, reservedAt, windowMs = 24 * 60 * 60_000 }) {
+  const entries = [
+    ['workspace-budget', usage.workspaceId, limits.workspace],
+    ['project-budget', usage.projectId, limits.project],
+    ['member-budget', usage.memberId, limits.member],
+  ].filter(([, subject, limit]) => subject && Number.isFinite(Number(limit)))
+    .map(([scope, subject, limit]) => ({ scope, subject, limit: Number(limit), cost: usage.costUnits }))
+  if (!entries.length) return { released: false }
+  return securityControls.releaseMany({ reservationId: usage.jobId, entries, windowMs, reservedAt })
+}
+
 function declaredInputRoles(model) {
   return new Set(model.inputRoles ?? ['reference_image', 'first_frame', 'last_frame', 'reference_video'])
 }

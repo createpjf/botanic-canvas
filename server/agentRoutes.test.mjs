@@ -21,6 +21,9 @@ import {
   finalizedAgentTurnCancellation,
   requestedAgentTurnCancellation,
 } from './productStoreContract.mjs'
+import { createAgentTargetBinding } from './agentTargetBinding.mjs'
+
+const targetImage = 'data:image/png;base64,AQ=='
 
 const runInput = {
   projectId: 'project-concurrent',
@@ -1273,6 +1276,11 @@ test('同幂等 Turn 已在执行时返回 202 与 observer，不伪造空业务
   const handler = createAgentRouteHandler({
     config: {
       flockApiBaseUrl: 'https://provider.test/v1', flockApiKey: 'key', flockTextModel: 'model-a',
+      modelOptions: [{
+        id: 'server-image', label: '服务端图像', mediaKind: 'image',
+        aspectRatios: ['1:1'], resolutions: ['1K'],
+      }],
+      agentLegacyClientHistory: true,
       maximumPromptRefinementRequestBytes: 64 * 1024,
       security: { agentChatsPerFiveMinutes: 100 },
     },
@@ -1296,6 +1304,7 @@ test('同幂等 Turn 已在执行时返回 202 与 observer，不伪造空业务
     readJson: async () => ({
       projectId: 'project-1', locale: 'zh-CN', contextNodeIds: [], hasTarget: false,
       messages: [{ role: 'user', content: '继续' }],
+      generationModels: [{ id: 'forged-client-model', label: '伪造模型', mediaKind: 'image' }],
     }),
     requireUser: async () => ({ id: 'user-1' }),
     enforceRateLimit: async () => true,
@@ -1313,6 +1322,7 @@ test('同幂等 Turn 已在执行时返回 202 与 observer，不伪造空业务
   assert.equal('turn' in responses.at(-1).body, false)
   assert.equal(responses.at(-1).body.runtimeTurn.status, 'running')
   assert.match(responses.at(-1).body.observer.url, /after=0$/)
+  assert.deepEqual(authoritativeTurn.request.generationModels.map((model) => model.id), ['server-image'])
 })
 
 test('旧客户端 Turn 路径的摘要 CAS 存储错误 fail closed，不 claim Turn 或调用 Provider', async () => {
@@ -1324,6 +1334,7 @@ test('旧客户端 Turn 路径的摘要 CAS 存储错误 fail closed，不 claim
   const handler = createAgentRouteHandler({
     config: {
       flockApiBaseUrl: 'https://provider.test/v1', flockApiKey: 'key', flockTextModel: 'model-a',
+      agentLegacyClientHistory: true,
       maximumPromptRefinementRequestBytes: 64 * 1024,
       security: { agentChatsPerFiveMinutes: 100 },
     },
@@ -1444,6 +1455,7 @@ test('SSE fallback 先 durable cancelling；Provider 退出 ack 后重试 Stop �
     const handler = createAgentRouteHandler({
       config: {
         flockApiBaseUrl: 'https://provider.test/v1', flockApiKey: 'key', flockTextModel: 'model-a',
+        agentLegacyClientHistory: true,
         maximumPromptRefinementRequestBytes: 64 * 1024,
         security: { agentChatsPerFiveMinutes: 100 },
       },
@@ -1527,7 +1539,11 @@ test('提交 Turn 时由服务端会话重建历史，并以正文 Session 绑�
   const streamOrdering = []
   const originalFetch = globalThis.fetch
   globalThis.fetch = async (_url, init) => {
-    providerRequests.push(JSON.parse(init.body))
+    const body = JSON.parse(init.body)
+    if (body.model === 'gemini-3.7-flash') {
+      return new Response(JSON.stringify({ choices: [{ message: { content: '一张待编辑的品牌图片。' } }] }), { status: 200 })
+    }
+    providerRequests.push(body)
     return new Response([
       `data: ${JSON.stringify({ choices: [{ delta: { content: '按权威历史继续。' } }] })}\n\n`,
       `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\n`,
@@ -1540,8 +1556,8 @@ test('提交 Turn 时由服务端会话重建历史，并以正文 Session 绑�
       readProject: async () => ({ document: {
         id: 'project-1', name: '项目', edges: [], agentMemory: [],
         nodes: [
-          { id: 'result-snapshot', type: 'result', data: {} },
-          { id: 'result-current', type: 'result', data: {} },
+          { id: 'result-snapshot', type: 'result', data: { image: targetImage } },
+          { id: 'result-current', type: 'result', data: { image: targetImage } },
         ],
       } }),
       listAgentSkills: async () => [],
@@ -1605,7 +1621,8 @@ test('提交 Turn 时由服务端会话重建历史，并以正文 Session 绑�
     const handler = createAgentRouteHandler({
       config: {
         flockApiBaseUrl: 'https://provider.test/v1', flockApiKey: 'key', flockTextModel: 'deepseek-v4-pro',
-        flockAgentModels: ['deepseek-v4-pro', 'current-model'], maximumPromptRefinementRequestBytes: 64 * 1024,
+        flockAgentModels: ['deepseek-v4-pro', 'current-model'], agentVisionModel: 'gemini-3.7-flash',
+        maximumPromptRefinementRequestBytes: 64 * 1024,
         security: { agentChatsPerFiveMinutes: 100 },
       },
       productStore,
@@ -1800,6 +1817,7 @@ test('既存同 turnId 的请求绑定冲突时不发送 accepted，也不误绑
   const handler = createAgentRouteHandler({
     config: {
       flockApiBaseUrl: 'https://provider.test/v1', flockApiKey: 'key', flockTextModel: 'model-a',
+      agentLegacyClientHistory: true,
       maximumPromptRefinementRequestBytes: 64 * 1024,
       security: { agentChatsPerFiveMinutes: 100 },
     },
@@ -1974,6 +1992,12 @@ test('历史 link 指向不存在的 Turn 时 fail closed，不用当前 UI 上�
 test('claim 后 link 前崩溃的同 key 重试复用 immutable v2 request，再补 Message link', async () => {
   const idempotencyKey = 'turn-link-crash-recovery'
   const turnId = agentTurnIdForIdempotency('user-1', 'project-1', idempotencyKey)
+  const recoveryDocument = {
+    id: 'project-1', edges: [], nodes: [
+      { id: 'result-original', type: 'result', data: { image: targetImage } },
+      { id: 'result-current', type: 'result', data: { image: targetImage } },
+    ],
+  }
   const originalRequest = {
     projectId: 'project-1', sessionId: 'session-recovery',
     inputMessage: { id: 'message-recovery', content: '继续优化' },
@@ -1983,6 +2007,7 @@ test('claim 后 link 前崩溃的同 key 重试复用 immutable v2 request，再
     executionMode: 'manual', generationModels: [],
     messages: [{ role: 'user', content: '继续优化' }],
   }
+  originalRequest.targetBinding = await createAgentTargetBinding(recoveryDocument, originalRequest)
   const existing = {
     ...createAgentTurnRecord({
       id: turnId, ownerId: 'user-1', projectId: 'project-1',
@@ -2002,12 +2027,7 @@ test('claim 后 link 前崩溃的同 key 重试复用 immutable v2 request，再
     },
     productStore: {
       projectAccess: async () => ({ exists: true, role: 'owner' }),
-      readProject: async () => ({ document: {
-        id: 'project-1', edges: [], nodes: [
-          { id: 'result-original', type: 'result', data: {} },
-          { id: 'result-current', type: 'result', data: {} },
-        ],
-      } }),
+      readProject: async () => ({ document: structuredClone(recoveryDocument) }),
       listAgentSkills: async () => [],
       listAgentSessions: async () => ([{
         id: 'session-recovery', title: '恢复测试', executionMode: 'auto', contextNodeIds: ['node-current'],

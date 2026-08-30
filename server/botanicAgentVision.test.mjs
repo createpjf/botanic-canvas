@@ -4,6 +4,7 @@ import {
   botanicAgentVisionBriefing,
   botanicAgentVisionCandidates,
   describeBotanicAgentContextImages,
+  resolveBotanicAgentVisionParts,
 } from './botanicAgentVision.mjs'
 
 const runtimeConfig = {
@@ -115,4 +116,55 @@ test('视觉描述段落列出每张图，并禁止模型虚构描述之外的�
   assert.match(briefing, /Mia 肖像：自然光半身人像。/)
   assert.match(briefing, /不要声称看到了描述之外的细节/)
   assert.equal(botanicAgentVisionBriefing([]), '')
+})
+
+test('视觉引用超过请求总字节预算时稳定拒绝且不调用 Provider', async () => {
+  const largeDocument = {
+    id: 'project-large-vision', edges: [],
+    nodes: Array.from({ length: 4 }, (_, index) => ({
+      id: `asset-${index}`, type: 'asset',
+      data: { image: `/api/media/media-${index}`, mediaKind: 'image' },
+    })),
+  }
+  let providerCalls = 0
+  await assert.rejects(
+    describeBotanicAgentContextImages({
+      document: largeDocument,
+      contextNodeIds: largeDocument.nodes.map((node) => node.id),
+      runtimeConfig,
+      resolveMedia: async () => ({ mimeType: 'image/png', buffer: Buffer.alloc(5 * 1024 * 1024) }),
+      fetchImpl: async () => { providerCalls += 1; return visionResponse('不应调用') },
+      cache: new Map(),
+    }),
+    (caught) => caught?.code === 'AGENT_VISION_BYTES_EXCEEDED' && caught?.statusCode === 413,
+  )
+  assert.equal(providerCalls, 0)
+  await assert.rejects(
+    resolveBotanicAgentVisionParts({
+      document: largeDocument,
+      contextNodeIds: largeDocument.nodes.map((node) => node.id),
+      resolveMedia: async () => ({ mimeType: 'image/png', buffer: Buffer.alloc(5 * 1024 * 1024) }),
+    }),
+    (caught) => caught?.code === 'AGENT_VISION_BYTES_EXCEEDED',
+  )
+})
+
+test('取消请求会中止媒体读取且不继续解析辅助图', async () => {
+  const controller = new AbortController()
+  let reads = 0
+  const reading = resolveBotanicAgentVisionParts({
+    document,
+    contextNodeIds: ['asset-mia', 'result-1'],
+    signal: controller.signal,
+    resolveMedia: async (_mediaId, { signal } = {}) => {
+      reads += 1
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+      })
+    },
+  })
+  await new Promise((resolve) => setImmediate(resolve))
+  controller.abort(new Error('cancelled'))
+  await assert.rejects(reading, /cancelled/u)
+  assert.equal(reads, 1)
 })

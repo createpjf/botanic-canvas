@@ -64,6 +64,23 @@ test('运行时模块循环会被架构检查拒绝', () => {
   }
 })
 
+test('核心编排不能重新拥有 Turn 执行与恢复，也不能突破复杂度预算', () => {
+  const rootDir = fixture({
+    'server/agentRoutes.mjs': 'agentTurnRuntime.execute(command)\n',
+    'src/features/agent/AgentWorkspace.tsx': 'retryBotanicAgentTurnRecovery(command)\n',
+  })
+
+  try {
+    const violations = checkArchitectureBoundaries({ rootDir })
+    assert.deepEqual(violations.map((item) => item.rule), [
+      'agent-routes-cannot-execute-turn-runtime',
+      'agent-workspace-cannot-own-turn-recovery',
+    ])
+  } finally {
+    rmSync(rootDir, { recursive: true, force: true })
+  }
+})
+
 test('Botanic 当前源码遵守模块依赖方向', () => {
   const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), '..')
   assert.deepEqual(checkArchitectureBoundaries({ rootDir }), [])

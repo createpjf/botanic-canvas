@@ -4,6 +4,7 @@ import { generationJobProjectionComplete, reconcileGenerationResults } from './g
 import { compileAgentBranchRecipe } from './botanicCreativePlanCompiler.mjs'
 import { compiledBranchFromRun, normalizeResolverModels, resolveCreativePlan } from './creativePlanResolver.mjs'
 import { canonicalImageDataUrlPattern } from './mediaFormats.mjs'
+import { generationInputProvenance } from './generationInputProvenance.mjs'
 
 function clone(value) {
   return structuredClone(value)
@@ -72,6 +73,8 @@ function rawGenerationInput(run, parentNode, recipe, { videoModel = false } = {}
       ...(recipe.memoryBindings?.length ? { memoryBindings: clone(recipe.memoryBindings) } : {}),
       ...(recipe.skillBindings?.length ? { skillBindings: clone(recipe.skillBindings) } : {}),
       references: recipe.references.map((reference, index) => ({
+        ...(reference.nodeId ? { nodeId: reference.nodeId } : {}),
+        ...(reference.assetId ? { assetId: reference.assetId } : {}),
         name: reference.name,
         role: reference.role,
         primary: Boolean(reference.primary),
@@ -84,7 +87,7 @@ function rawGenerationInput(run, parentNode, recipe, { videoModel = false } = {}
       ...(!videoModel && run.plan.region?.rect ? { maskRegion: clone(run.plan.region.rect) } : {}),
     },
     ...(kind === 'refinement'
-      ? { parent: { name: parentNode.data?.label ?? '父版本', ...mediaInput(parentNode.data?.image) } }
+      ? { parent: { nodeId: parentNode.id, name: parentNode.data?.label ?? '父版本', ...mediaInput(parentNode.data?.image) } }
       : {}),
   }
 }
@@ -263,6 +266,7 @@ export function prepareAgentRunExecution({
     const rawInput = rawGenerationInput(run, parentNode, recipe, { videoModel: branchModelIsVideo })
     const validated = validateGenerationInput(rawInput, { models, maximumBatchCount, maximumReferenceBytes })
     const selectedModel = normalizedModels.find((model) => model.id === validated.settings.model)
+    const targetBinding = run.plan.targetBinding
     const job = {
       id: jobId, ownerId: run.ownerId, projectId: run.projectId,
       status: 'queued', kind: validated.kind, refinementMode: validated.refinementMode,
@@ -271,6 +275,8 @@ export function prepareAgentRunExecution({
       idempotencyKey: `${run.id}:${branch.id}:attempt-${branch.attempt ?? 0}`,
       outputs: [], error: undefined, rawInput,
       agentRun: { runId: run.id, branchId: branch.id, attempt: branch.attempt ?? 0 },
+      ...(targetBinding ? { targetBinding: clone(targetBinding) } : {}),
+      inputProvenance: generationInputProvenance(validated, targetBinding),
       // 指纹提到任务顶层：Artifact 要能反查「这张图属于哪一次确认的哪一支」，
       // 埋在 generationRecipe 里则每个读取方都得自己往下挖一层。
       ...(recipe.planFingerprint ? { planFingerprint: recipe.planFingerprint } : {}),

@@ -175,17 +175,6 @@ export function buildBotanicAgentTurnRequest(input: BotanicAgentTurnRequestInput
       ? { selectedResultLabel: input.selectedResultLabel.trim().slice(0, 160) }
       : {}),
     ...(input.executionMode ? { executionMode: input.executionMode } : {}),
-    ...(input.generationModels?.length
-      ? {
-          generationModels: input.generationModels.slice(0, 30).map((model) => ({
-            id: model.id,
-            label: model.label,
-            ...(model.mediaKind ? { mediaKind: model.mediaKind } : {}),
-            ...(model.aspectRatios ? { aspectRatios: model.aspectRatios } : {}),
-            ...(model.resolutions ? { resolutions: model.resolutions } : {}),
-          })),
-        }
-      : {}),
     ...(input.maxOutputCount ? { maxOutputCount: input.maxOutputCount } : {}),
   }
 }
@@ -210,9 +199,6 @@ export function botanicAgentTurnRequestSnapshot(
     selectedResultNodeId: request.hasTarget ? request.selectedResultNodeId ?? null : null,
     ...(request.hasTarget && request.selectedResultLabel ? { selectedResultLabel: request.selectedResultLabel } : {}),
     ...(request.executionMode ? { executionMode: request.executionMode } : {}),
-    ...(request.generationModels?.length
-      ? { generationModels: request.generationModels.map((model) => ({ ...model })) }
-      : {}),
     // 服务端 Turn validator 的固定默认值也是请求身份的一部分；显式落入快照，
     // 避免未来默认值变化或异常 POST 参与恢复。
     maxOutputCount: request.maxOutputCount ?? 8,

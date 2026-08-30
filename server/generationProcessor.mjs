@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { GenerationError, persistedGenerationJob, resolveGenerationInputMedia, validateGenerationInput } from './generationProvider.mjs'
 import { generationTimeoutForModel } from './generationModels.mjs'
 import { providerForModel } from './generationModels.mjs'
@@ -9,6 +9,7 @@ import { compatibleFallbackModel, ProviderCircuitBreaker } from './generationGov
 import { cancelGenerationJob } from './generationCancellation.mjs'
 import { matchingIdempotencyRequestBinding } from './idempotencyRequestBinding.mjs'
 import { acquireGenerationProviderAdmission } from './generationProviderAdmission.mjs'
+import { compareAndSetGenerationJob } from './generationJobCas.mjs'
 
 export function createGenerationProcessor({
   productStore,
@@ -33,6 +34,46 @@ export function createGenerationProcessor({
   leaseTokenFactory = randomUUID,
   acquireProviderAdmission = acquireGenerationProviderAdmission,
 }) {
+  function resolvedInputProvenance(provenance, input) {
+    if (!provenance) return provenance
+    const withHash = (entry, resolved) => ({
+      ...entry,
+      ...(resolved?.buffer?.length
+        ? { mediaSha256: createHash('sha256').update(resolved.buffer).digest('hex') }
+        : {}),
+    })
+    return {
+      references: (provenance.references ?? []).map((entry, index) => withHash(entry, input.references[index])),
+      ...(provenance.parent ? { parent: withHash(provenance.parent, input.parent) } : {}),
+    }
+  }
+
+  async function recordLateOutputs(job, outputs, reason, executionFence) {
+    if (!Array.isArray(outputs) || !outputs.length) return job
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const latest = await productStore.readGenerationJobForWorker(job.id)
+      if (!latest || !['cancelled', 'failed'].includes(latest.status)
+        || Number(latest.execution?.generation) !== Number(executionFence?.generation)) return latest
+      const byId = new Map((latest.lateOutputs ?? []).map((output) => [output.id, output]))
+      for (const output of outputs) {
+        if (!output?.id || !output?.image) continue
+        byId.set(output.id, {
+          ...output,
+          reason,
+          executionGeneration: Number(executionFence.generation),
+          recordedAt: Date.now(),
+        })
+      }
+      const decision = await compareAndSetGenerationJob(productStore, latest.ownerId, latest, {
+        ...latest,
+        lateOutputs: [...byId.values()],
+        updatedAt: Date.now(),
+      }, { updateAgentRun: false })
+      if (decision?.changed) return decision.job
+    }
+    return productStore.readGenerationJobForWorker(job.id)
+  }
+
   class GenerationJobExecutionLost extends Error {
     constructor(job) {
       super(`Generation Job ${job?.id ?? ''} 的执行租约已失效。`)
@@ -565,6 +606,14 @@ export function createGenerationProcessor({
         throw caught
       }
       let input = await materializeInput()
+      const materializedProvenance = resolvedInputProvenance(running.inputProvenance, input)
+      if (materializedProvenance) {
+        running = await commitExecutionJob({
+          ...running,
+          inputProvenance: materializedProvenance,
+          updatedAt: Date.now(),
+        }, { updateAgentRun: false, recordAudit: false }, executionFence)
+      }
       console.info(`[generation] ${jobId} references ready`)
       const remainingGenerationMs = maximumTaskDurationMs - (Date.now() - running.createdAt)
       if (remainingGenerationMs <= 0) {
@@ -731,6 +780,9 @@ export function createGenerationProcessor({
       if (leaseLost) {
         const latest = await productStore.readGenerationJobForWorker(jobId)
         if (latest && ['cancelled', 'failed', 'succeeded'].includes(latest.status)) {
+          if (['cancelled', 'failed'].includes(latest.status)) {
+            await recordLateOutputs(latest, result?.outputs, 'execution_lease_lost', executionFence)
+          }
           observeRun(latest, {
             type: 'worker_discarded_late_result', status: latest.status,
             outputCount: result?.outputs?.length ?? 0,
@@ -748,6 +800,8 @@ export function createGenerationProcessor({
       // 恰好在跨库窗口中断时，Provider 可能没有及时 abort；结果落库前必须再读
       // durable Turn / Run fence，否则迟到成功会把已 cancelled Run 反向复活。
       if (await stopFencedDelegation(running)) {
+        const fenced = await productStore.readGenerationJobForWorker(jobId)
+        await recordLateOutputs(fenced ?? running, result.outputs, 'delegation_fenced', executionFence)
         observeRun(running, {
           type: 'worker_discarded_fenced_result', status: 'cancelled', outputCount: result.outputs.length,
           durationMs: Math.max(0, Date.now() - running.createdAt),
@@ -765,7 +819,10 @@ export function createGenerationProcessor({
         // 仍然不改写终态 —— 取消与超时都是对用户做过的承诺，事后翻案会让「我点了取消」
         // 变成一件不确定的事。但**必须留下记录**：这里丢掉的是一张已经付过费的图，
         // 静默 return 之后没有任何地方能看出它存在过，运维也无从判断超时阈值是不是设短了。
-        observeRun(latest ?? running, {
+        const quarantined = latest
+          ? await recordLateOutputs(latest, result.outputs, 'terminal_state_prevailed', executionFence)
+          : latest
+        observeRun(quarantined ?? latest ?? running, {
           type: 'worker_discarded_late_result',
           status: latest?.status ?? 'missing',
           outputCount: result.outputs.length,

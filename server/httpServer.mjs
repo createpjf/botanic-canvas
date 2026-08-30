@@ -146,10 +146,10 @@ function observeAgentRun(input) {
   }, console, { semanticLogger: console })
 }
 
-async function consumeWebResearchQuota(userId) {
+async function consumeWebResearchQuota(userId, projectId, capability = 'execute-external-tool') {
   const result = await securityControls.consume({
     scope: 'web-research',
-    subject: userId,
+    subject: `workspace-default:${projectId ?? 'unknown'}:${userId}:${capability}`,
     limit: config.security.webResearchPerMinute,
     windowMs: 60_000,
   })
@@ -324,6 +324,7 @@ const submitGeneration = createGenerationSubmissionService({
   productStore,
   securityControls,
   enqueue,
+  mediaService,
 })
 
 const handleGenerationRoute = createGenerationRouteHandler({
@@ -373,6 +374,7 @@ const agentRunGeneration = createAgentRunGenerationService({
   enqueue,
   publishProjectUpdated,
   publishAgentRunUpdated,
+  mediaService,
 })
 const hasAgentSubagentStore = [
   'enqueueAgentSubagentActivation',

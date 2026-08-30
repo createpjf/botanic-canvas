@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createAgentRunGenerationService } from './agentRunGenerationService.mjs'
+import { createAgentTargetBinding } from './agentTargetBinding.mjs'
 
 const settings = { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' }
 const models = [{ id: 'gpt-image-2', provider: 'openai', mediaKind: 'image', aspectRatios: ['3:4'], resolutions: ['2K'] }]
@@ -160,6 +161,24 @@ test('Agent Run 提交按新输出计费并让同一任务重试复用既有 Job
   assert.deepEqual(queued, [first.jobs[0].id])
   assert.deepEqual(quotaCosts, [])
   assert.deepEqual(quotaReservations.map((reservation) => reservation.entries[0].cost), [1])
+})
+
+test('Run 提交前重新校验 TargetBinding，目标变化时不写 Job 或入队', async () => {
+  const document = projectDocument()
+  document.nodes[0].data.image = 'data:image/png;base64,AQ=='
+  const run = persistentRun()
+  run.plan.targetBinding = await createAgentTargetBinding(document, {
+    hasTarget: true, selectedResultNodeId: 'result-parent',
+  }, { projectRevision: 1 })
+  document.nodes[0].data.image = 'data:image/png;base64,Ag=='
+  const { service, jobs, queued } = harness({ run, document })
+
+  await assert.rejects(
+    () => service.submitGeneration('user-1', 'project-1', run.id),
+    (caught) => caught?.code === 'AGENT_TARGET_STALE',
+  )
+  assert.equal(jobs.size, 0)
+  assert.deepEqual(queued, [])
 })
 
 test('首次生成通过原有提交服务幂等入队并按 N 输出计费', async () => {

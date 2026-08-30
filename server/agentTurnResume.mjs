@@ -3,6 +3,8 @@ import { validateAgentTurnCheckpoint } from './agentTurnCheckpoint.mjs'
 import { resolveBotanicAgentRuntimeRequest } from './agentRuntimeRequest.mjs'
 import { createAgentOperationalReaders } from './agentOperationalReaders.mjs'
 import { createAgentContextCoordinator } from './agentContextCoordinator.mjs'
+import { projectPermissionDecision } from './authorization.mjs'
+import { assertAgentTargetBinding } from './agentTargetBinding.mjs'
 
 const RECEIPT_TEXT_KEYS = new Set(['message', 'status', 'kind', 'type', 'label', 'name'])
 const RECEIPT_BOOLEAN_KEYS = new Set(['ok', 'reused', 'created', 'updated', 'deleted', 'cancelled'])
@@ -128,7 +130,7 @@ export class AgentTurnResumeError extends Error {
  *   turnRuntime: { execute: (input: any) => Promise<any> },
  *   observe?: (event: any) => void,
  *   observeAgentContext?: (event: any) => void,
- *   consumeWebResearchQuota?: (userId: string) => Promise<any>,
+ *   consumeWebResearchQuota?: (userId: string, projectId: string, capability?: string) => Promise<any>,
  *   subagentRunner?: ((input: any) => Promise<any>),
  * }} deps
  */
@@ -250,11 +252,19 @@ export function createAgentTurnResumer({
       throw new AgentTurnResumeError('AGENT_ACTION_RECEIPT_STATE_INVALID', '行动回执状态无效，Turn 无法安全恢复。')
     }
 
+    const access = await productStore.projectAccess(turn.ownerId, turn.projectId)
     const project = await productStore.readProject(turn.ownerId, turn.projectId)
     if (!project?.document) {
       throw new AgentTurnResumeError('AGENT_TURN_PROJECT_MISSING', '来源项目已不存在，无法恢复该回合。')
     }
     const projectSkills = await productStore.listAgentSkills(turn.ownerId, turn.projectId) ?? []
+    const immutableInput = turn.request.runtimeOperation ? turn.request.input : turn.request
+    await assertAgentTargetBinding(project.document, immutableInput, {
+      resolveMedia: mediaService?.enabled
+        ? (mediaId) => mediaService.readGenerationInput(turn.ownerId, mediaId, turn.projectId)
+        : undefined,
+      projectRevision: project.revision,
+    })
 
     // 恢复自带独立的取消控制器：它与原请求的 HTTP 连接无关，那条连接早已断开。
     const controller = new AbortController()
@@ -283,6 +293,9 @@ export function createAgentTurnResumer({
         observeAgentContext,
         document: project.document,
         projectSkills,
+        role: access?.role,
+        requireTargetVision: true,
+        allowWebResearch: projectPermissionDecision(access?.role, 'execute-external-tool') === 'allow',
         ...(threadContextSnapshot?.version === 2 && turn.sessionId ? {
           persistAgentContextUsageAnchor: async (usageAnchor) => (
             durableContextCoordinator().persistUsageAnchor({
@@ -304,12 +317,18 @@ export function createAgentTurnResumer({
         recoverToolCall,
         // Worker 恢复不能绕过 API 的联网配额。缺少共享配额服务时 fail closed，
         // 让模型改走非联网路径或明确失败，绝不无计量重放外部检索。
-        consumeWebResearchQuota: typeof consumeWebResearchQuota === 'function'
-          ? () => consumeWebResearchQuota(turn.ownerId)
-          : async () => ({ allowed: false }),
+        consumeWebResearchQuota: async () => {
+          const currentAccess = await productStore.projectAccess(turn.ownerId, turn.projectId)
+          if (projectPermissionDecision(currentAccess?.role, 'execute-external-tool') !== 'allow') {
+            throw new AgentTurnResumeError('PROJECT_ACCESS_FORBIDDEN', '你没有执行该项目操作的权限。', 403)
+          }
+          return typeof consumeWebResearchQuota === 'function'
+            ? consumeWebResearchQuota(turn.ownerId, turn.projectId, 'execute-external-tool')
+            : { allowed: false }
+        },
         // 看图只读当前项目内的媒体；图片字节不离开服务端与模型网关。
         resolveVisionMedia: mediaService?.enabled
-          ? (mediaId) => mediaService.readGenerationInput(turn.ownerId, mediaId, turn.projectId)
+          ? (mediaId, options) => mediaService.readGenerationInput(turn.ownerId, mediaId, turn.projectId, options)
           : undefined,
       },
     })

@@ -2,11 +2,12 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createGenerationSubmissionService } from './generationSubmissionService.mjs'
 
-function harness({ enqueueImpl, putGenerationJobImpl } = {}) {
+function harness({ enqueueImpl, putGenerationJobImpl, reserveManyImpl } = {}) {
   const jobs = new Map()
   const enqueued = []
   const reservations = []
   const chargedReservations = []
+  const releasedReservations = []
   const reservationIds = new Set()
   const consumes = []
   const service = createGenerationSubmissionService({
@@ -48,15 +49,21 @@ function harness({ enqueueImpl, putGenerationJobImpl } = {}) {
       consume: async (input) => { consumes.push(input); return { allowed: true } },
       reserveMany: async (input) => {
         reservations.push(input)
+        const overridden = await reserveManyImpl?.(input)
+        if (overridden) return overridden
         if (reservationIds.has(input.reservationId)) return { allowed: true, reused: true, remaining: 99 }
         reservationIds.add(input.reservationId)
         chargedReservations.push(input)
-        return { allowed: true, reused: false, remaining: 99 }
+        return { allowed: true, reused: false, remaining: 99, reservedAt: 20_000 }
+      },
+      releaseMany: async (input) => {
+        releasedReservations.push(input)
+        return { released: reservationIds.delete(input.reservationId) }
       },
     },
     enqueue: async (id) => { enqueued.push(id); await enqueueImpl?.(id, jobs) },
   })
-  return { service, jobs, enqueued, reservations, chargedReservations, consumes }
+  return { service, jobs, enqueued, reservations, chargedReservations, releasedReservations, consumes }
 }
 
 const rawInput = {
@@ -93,7 +100,7 @@ test('同一幂等键已绑定另一份生成请求时返回冲突，不复用�
 })
 
 test('失败项原配方重试复用任务与幂等键且不重复扣费', async () => {
-  const { service, jobs, enqueued, reservations, consumes } = harness()
+  const { service, jobs, enqueued, reservations, chargedReservations, consumes } = harness()
   const first = await service({ user: { id: 'user-a' }, rawInput, idempotencyKey: 'workflow_run-a_item-a' })
   jobs.set(first.job.id, {
     ...jobs.get(first.job.id), status: 'failed', error: 'provider timeout',
@@ -109,7 +116,8 @@ test('失败项原配方重试复用任务与幂等键且不重复扣费', async
   assert.equal(retried.job.status, 'queued')
   assert.equal(retried.retried, true)
   assert.equal(enqueued.length, 2)
-  assert.equal(reservations.length, 2)
+  assert.equal(reservations.length, 4, '重试会确认两种预留仍存在')
+  assert.equal(chargedReservations.length, 2, '稳定 reservationId 不重复扣费')
   assert.equal(consumes.length, 0)
 })
 
@@ -128,6 +136,42 @@ test('同一幂等键并发首次提交只实际预留一次日输出额度与�
     chargedReservations.map((item) => item.entries.map((entry) => entry.scope).join(',')).sort(),
     ['generation-output', 'workspace-budget,project-budget,member-budget'].sort(),
   )
+})
+
+test('预算拒绝会补偿已预留的每日输出额度', async () => {
+  const { service, releasedReservations } = harness({
+    reserveManyImpl: async (input) => input.entries.some((entry) => entry.scope === 'workspace-budget')
+      ? { allowed: false, reused: false, remaining: 0, reservedAt: 20_000 }
+      : undefined,
+  })
+  await assert.rejects(
+    service({ user: { id: 'user-a' }, rawInput, idempotencyKey: 'submission-budget-rejected' }),
+    (caught) => caught?.code === 'GENERATION_BUDGET_EXCEEDED',
+  )
+  assert.deepEqual(releasedReservations.map((item) => item.entries[0].scope), ['generation-output'])
+})
+
+test('Job 写入失败会补偿输出额度与预算', async () => {
+  const { service, releasedReservations } = harness({
+    putGenerationJobImpl: async () => { throw new Error('database unavailable') },
+  })
+  await assert.rejects(
+    service({ user: { id: 'user-a' }, rawInput, idempotencyKey: 'submission-put-failed' }),
+    /database unavailable/u,
+  )
+  assert.equal(releasedReservations.length, 2)
+})
+
+test('入队失败且 Job 未被 Worker claim 时补偿输出额度与预算', async () => {
+  const { service, releasedReservations, jobs } = harness({
+    enqueueImpl: async () => { throw new Error('queue unavailable') },
+  })
+  await assert.rejects(
+    service({ user: { id: 'user-a' }, rawInput, idempotencyKey: 'submission-enqueue-failed' }),
+    (caught) => caught?.code === 'QUEUE_UNAVAILABLE',
+  )
+  assert.equal(releasedReservations.length, 2)
+  assert.equal([...jobs.values()][0].status, 'failed')
 })
 
 test('HTTP 提交也经过 Compiler：每个 Job 都带指纹，画布结果不断链', async () => {

@@ -2,15 +2,11 @@ import { type ClipboardEvent, type DragEvent, useCallback, useEffect, useId, use
 import {
   botanicAgentComposerGroupRole,
   botanicAgentBranchStatusLabel,
-  botanicAgentActionReceiptMessageId,
-  botanicAgentActionFailureStatus,
-  botanicAgentActionReconciliationPatch,
   botanicAgentCanResumeManualRetry,
   botanicAgentCanUseManualRetryAuthorization,
   botanicAgentContextSnapshotNodeIds,
   botanicAgentAutoRetryTargets,
   botanicAgentSubmissionKey,
-  botanicAgentPreparedRetryIdempotencyKey,
   buildBotanicAgentRunTimeline,
   buildBotanicAgentSessionTimeline,
   filterBotanicAgentSessionTimeline,
@@ -31,7 +27,6 @@ import {
   shouldRestoreBotanicAgentRuntimeSteps,
   shouldShowBotanicAgentRuntimeFeed,
   type BotanicAgentActionProposal,
-  type BotanicAgentActionUserIntent,
   type BotanicAgentActionResult,
   type BotanicAgentArtifact,
   type BotanicAgentClarificationResponse,
@@ -79,9 +74,7 @@ import {
   isRetryableBotanicAgentTurnRecoveryError,
   pendingBotanicAgentTurnProjection,
   resolveBotanicAgentContinuationTarget,
-  revalidateMissingBotanicAgentTurn,
   retryBotanicAgentTurnCancellation,
-  retryBotanicAgentTurnRecovery,
   settleBotanicAgentCancellationSession,
   stopBotanicAgentPlanning,
 } from '../../domain/agentTurnObservation'
@@ -101,13 +94,9 @@ import type { GenerationSizeOverride } from '../../domain/generationOutputSize'
 import {
   cancelPersistentBotanicAgentTurn,
   observePersistentBotanicAgentTurn,
-  ProjectAgentActionClientError,
-  projectAgentActionIdempotencyKey,
-  readProjectAgentActionStatus,
   readPersistentBotanicAgentTurnEvents,
   requestBotanicAgentPlan,
   requestBotanicAgentRunReview,
-  resolveProjectAgentAction,
   submitBotanicAgentReviewDecision,
   streamBotanicAgentChat,
   streamBotanicAgentPlan,
@@ -168,6 +157,8 @@ import {
   type AgentMessagePatch,
 } from './agentActionMessagePersistence'
 import { useAgentRuntimeTrace } from './useAgentRuntimeTrace'
+import { recoverPendingAgentTurn } from './agentTurnRecovery'
+import { useAgentActionLifecycle } from './useAgentActionLifecycle'
 import type { AgentArtifactIndexState, AgentContextItem, AgentDockTarget, AgentSkillOption } from './agentWorkspace.types'
 import { AgentCollaborationPanel, AgentMemoryPanel, AgentResultPanel, AgentReviewPanel, AgentSkillCard, BrandKitPanel } from './AgentUtilityPanels'
 import { useAgentSkillRegistry } from './useAgentSkillRegistry'
@@ -284,11 +275,6 @@ function agentTaskBranchSummary(run: BotanicAgentRun, locale: ProductLocale) {
     failed ? `${failed} ${locale === 'en' ? 'failed' : '失败'}` : '',
   ].filter(Boolean).join(' · ') || `${run.branches.length} ${locale === 'en' ? 'branches' : '个分支'}`
 }
-
-function transientActionAuthorizationKey(sessionId: string, messageId: string, actionId: string) {
-  return `${sessionId}\u0000${messageId}\u0000${actionId}`
-}
-
 
 export default function AgentWorkspace({
   projectId,
@@ -530,13 +516,6 @@ export default function AgentWorkspace({
   const [autoSubmissionRetryEpoch, setAutoSubmissionRetryEpoch] = useState(0)
   const autoSubmissionRetryAttemptsRef = useRef(new Map<string, number>())
   const autoSubmissionRetryTimerRef = useRef<{ messageId: string; timer: number } | null>(null)
-  const [executingActionId, setExecutingActionId] = useState('')
-  const executingActionIdRef = useRef('')
-  // raw token 只活在当前组件内存；不进入 Message、Plan、Store 或浏览器持久化层。
-  const [manualRetryAuthorizations, setManualRetryAuthorizations] = useState<Record<string, BotanicAgentManualRetryAuthorization>>({})
-  useEffect(() => {
-    setManualRetryAuthorizations({})
-  }, [projectId, session?.id])
   const [retryingBranchId, setRetryingBranchId] = useState('')
   const [cancellingRunId, setCancellingRunId] = useState('')
   const [activeTransientSurface, setActiveTransientSurface] = useState<AgentTransientSurface | null>(null)
@@ -857,6 +836,23 @@ export default function AgentWorkspace({
     memoryCount: memory.length,
     assetGroupCount: compatibleGroups.length,
     plannerLabel: agentPlannerModelLabel(plannerModel),
+  })
+  const {
+    executingActionId,
+    confirmAction,
+    manualRetryAuthorization,
+  } = useAgentActionLifecycle({
+    projectId,
+    session,
+    locale,
+    copy: flowCopy,
+    isCurrentProject: isCurrentAgentProject,
+    persistActionUpdate,
+    appendMessage,
+    onConfirmAction,
+    setRuntimePhase,
+    setError,
+    clearFailedPlan: () => setLastFailedPlanMessageId(''),
   })
   const runtimeSummary = useMemo(
     () => summarizeBotanicAgentRuntime({ steps: runtimeSteps, phase: runtimePhase, mode: runtimeMode }),
@@ -1903,291 +1899,6 @@ export default function AgentWorkspace({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoSubmissionRetryEpoch, pendingAutoSubmission?.id, pendingAutoSubmission?.updatedAt, planning, projectId, session?.id])
 
-  const confirmAction = async (
-    message: BotanicAgentMessage,
-    action: BotanicAgentActionProposal,
-    intent: BotanicAgentActionUserIntent,
-  ) => {
-    if (!session || executingActionId || executingActionIdRef.current || action.status === 'succeeded' || action.status === 'dismissed') return
-    const authorizationKey = transientActionAuthorizationKey(session.id, message.id, action.id)
-    const manualRetryAuthorization = manualRetryAuthorizations[authorizationKey]
-    if (intent === 'execute' && action.status !== 'awaiting_confirmation') return
-    if (intent === 'check_status' && action.status !== 'running') return
-    if ((intent === 'confirmed_applied' || intent === 'confirmed_not_applied') && action.status !== 'uncertain') return
-    const canResumeManualRetry = botanicAgentCanResumeManualRetry(action)
-    if (intent === 'manual_retry'
-      && !canResumeManualRetry
-      && !botanicAgentCanUseManualRetryAuthorization(action, manualRetryAuthorization)) {
-      setError(locale === 'en' ? 'The one-time retry authorization expired. Start a new action.' : '一次性重试授权已过期，请重新发起行动。')
-      return
-    }
-    // setState 在同一事件循环内不是同步锁；ref 防止双击在重渲染前发出两次请求。
-    executingActionIdRef.current = action.id
-    setExecutingActionId(action.id)
-    setRuntimePhase('executing')
-    setError('')
-    setLastFailedPlanMessageId('')
-    const context = { sessionId: session.id, messageId: message.id }
-    let actionMessage = message
-    const currentReceiptIdempotencyKey = action.receiptIdempotencyKey
-      ?? manualRetryAuthorization?.retryIdempotencyKey
-    try {
-      if (intent === 'check_status') {
-        const observation = await readProjectAgentActionStatus({
-          projectId,
-          action,
-          ...context,
-          receiptIdempotencyKey: currentReceiptIdempotencyKey,
-        })
-        if (!isCurrentAgentProject()) return
-        let result = observation.execution?.output
-        let writebackError = ''
-        if (result) {
-          try {
-            result = await onConfirmAction(action, context, { observedResult: result })
-          } catch (caught) {
-            writebackError = localizeProductError(caught, locale, { 'zh-CN': flowCopy.actionFailed, en: flowCopy.actionFailed })
-          }
-        }
-        persistActionUpdate(message, action.id, {
-          ...botanicAgentActionReconciliationPatch(observation.status),
-          ...(result ? { result } : {}),
-        })
-        if (observation.status.status === 'succeeded' || observation.status.status === 'failed') {
-          setManualRetryAuthorizations((current) => {
-            if (!current[authorizationKey]) return current
-            const next = { ...current }
-            delete next[authorizationKey]
-            return next
-          })
-        }
-        if (observation.status.status === 'succeeded') {
-          appendMessage({
-            id: botanicAgentActionReceiptMessageId(action.id),
-            role: 'assistant', kind: 'notice',
-            content: result?.message ?? (locale === 'en'
-              ? 'The action is confirmed as applied. The status check did not replay the tool or fabricate an output.'
-              : '已确认行动生效；本次状态查询没有重放工具，也没有伪造输出。'),
-          })
-        }
-        setRuntimePhase(observation.status.status === 'running' ? 'executing' : observation.status.status === 'succeeded' ? 'completed' : 'failed')
-        if (writebackError) setError(writebackError)
-        return
-      }
-
-      if (intent === 'confirmed_applied' || intent === 'confirmed_not_applied') {
-        // v2 必须在 resolve 前就把 retry key 写进权威 Message。若服务端已提交
-        // confirmed_not_applied 而 HTTP 响应丢失，刷新后仍能用同一 key 重放
-        // 决议并取回 durable reservation，而不是丢掉一次性 raw token。
-        const resolvingOriginalAsNotApplied = intent === 'confirmed_not_applied'
-          && !action.receiptIdempotencyKey
-        const deterministicRetryIdempotencyKey = botanicAgentPreparedRetryIdempotencyKey({
-          projectId,
-          sessionId: session.id,
-          messageId: message.id,
-          actionId: action.id,
-          originalIdempotencyKey: projectAgentActionIdempotencyKey(action),
-        })
-        const preparedRetryIdempotencyKey = resolvingOriginalAsNotApplied
-          ? action.preparedRetryIdempotencyKey
-            ?? deterministicRetryIdempotencyKey
-          : undefined
-        if (preparedRetryIdempotencyKey && action.preparedRetryIdempotencyKey !== preparedRetryIdempotencyKey) {
-          actionMessage = persistActionUpdate(actionMessage, action.id, { preparedRetryIdempotencyKey })
-        }
-        const resolution = await resolveProjectAgentAction({
-          projectId,
-          action,
-          ...context,
-          decision: intent,
-          receiptIdempotencyKey: currentReceiptIdempotencyKey,
-          preparedRetryIdempotencyKey,
-        })
-        if (!isCurrentAgentProject()) return
-        actionMessage = persistActionUpdate(actionMessage, action.id, {
-          ...botanicAgentActionReconciliationPatch(resolution.status),
-          preparedRetryIdempotencyKey: undefined,
-          ...(resolution.manualRetryReservation ? {
-            receiptIdempotencyKey: resolution.manualRetryReservation.retryIdempotencyKey,
-            manualRetryResumeAvailable: true,
-          } : {}),
-        })
-        if (resolution.manualRetryReservation) {
-          // v2 reservation 是服务端权威；清掉可能残留的 v1 内存 token，避免
-          // 后续点击错误地走兼容路径。
-          setManualRetryAuthorizations((current) => {
-            if (!current[authorizationKey]) return current
-            const next = { ...current }
-            delete next[authorizationKey]
-            return next
-          })
-        } else if (intent === 'confirmed_not_applied' && resolution.manualRetryAuthorization && !manualRetryAuthorization) {
-          setManualRetryAuthorizations((current) => ({
-            ...current,
-            [authorizationKey]: {
-              ...resolution.manualRetryAuthorization!,
-              // v1 兼容路径也复用已在 resolve 前持久化的 key；旧服务端
-              // 忽略 prepared 字段时，仍不会在响应后再换一份身份。
-              retryIdempotencyKey: preparedRetryIdempotencyKey
-                ?? deterministicRetryIdempotencyKey,
-            },
-          }))
-        } else {
-          // manual retry 自身再次结果未知时只允许人工收口，不签发第二次浏览器重试。
-          setManualRetryAuthorizations((current) => {
-            if (!current[authorizationKey]) return current
-            const next = { ...current }
-            delete next[authorizationKey]
-            return next
-          })
-        }
-        if (intent === 'confirmed_applied') appendMessage({
-          id: botanicAgentActionReceiptMessageId(action.id),
-          role: 'assistant', kind: 'notice',
-          content: locale === 'en'
-            ? 'Marked as applied after your verification. No tool output or artifact was fabricated.'
-            : '已按你的核对标记为生效；系统未伪造工具输出或 Artifact。',
-        })
-        setRuntimePhase('completed')
-        return
-      }
-
-      // Action POST 之前先把 attempt 身份写回权威 Message。浏览器若在响应前刷新，
-      // 新页面会查询同一 Receipt，而不是把结果未知的行动换标识重做。
-      actionMessage = persistActionUpdate(actionMessage, action.id, {
-        status: 'running',
-        // v2 durable reservation 在 retry Receipt claim 前仍是恢复依据。保留公开
-        // 标记，万一 Action POST 根本未到服务端，状态查询可安全回到同 key 继续。
-        manualRetryResumeAvailable: intent === 'manual_retry' && canResumeManualRetry ? true : undefined,
-        error: undefined,
-        ...(intent === 'manual_retry' && manualRetryAuthorization
-          ? { receiptIdempotencyKey: manualRetryAuthorization.retryIdempotencyKey }
-          : {}),
-      })
-      const result = await onConfirmAction(
-        action,
-        context,
-        intent === 'manual_retry'
-          ? manualRetryAuthorization
-            ? { manualRetryAuthorization }
-            : { resumeManualRetry: { retryIdempotencyKey: currentReceiptIdempotencyKey! } }
-          : undefined,
-      )
-      if (!isCurrentAgentProject()) return
-      actionMessage = persistActionUpdate(actionMessage, action.id, {
-        status: 'succeeded', result, error: undefined,
-        preparedRetryIdempotencyKey: undefined,
-        manualRetryResumeAvailable: undefined,
-      })
-      if (intent === 'manual_retry') setManualRetryAuthorizations((current) => {
-        const next = { ...current }
-        delete next[authorizationKey]
-        return next
-      })
-      setRuntimePhase('completed')
-      appendMessage({
-        id: botanicAgentActionReceiptMessageId(action.id),
-        role: 'assistant', kind: 'notice',
-        content: `${result.message}${result.canvasNodeId ? flowCopy.canvasWritten : ''}`,
-      })
-    } catch (caught) {
-      if (!isCurrentAgentProject()) return
-      const actionError = localizeProductError(caught, locale, { 'zh-CN': flowCopy.actionFailed, en: flowCopy.actionFailed })
-      const actionStatus = botanicAgentActionFailureStatus(caught instanceof ProductApiError ? caught.code : undefined)
-      const approvalFailed = caught instanceof ProjectAgentActionClientError && caught.stage === 'approval'
-      const manualRetryRejected = intent === 'manual_retry'
-        && caught instanceof ProductApiError
-        && [
-          'AGENT_ACTION_MANUAL_RETRY_EXPIRED',
-          'AGENT_ACTION_MANUAL_RETRY_ALREADY_CONSUMED',
-          'AGENT_ACTION_MANUAL_RETRY_INVALID',
-          'AGENT_ACTION_MANUAL_RETRY_IDEMPOTENCY_INVALID',
-          'AGENT_ACTION_MANUAL_RETRY_IDEMPOTENCY_REUSED',
-          'AGENT_ACTION_MANUAL_RETRY_UNAVAILABLE',
-          'AGENT_ACTION_MANUAL_RETRY_REQUIRED',
-          'AGENT_ACTION_MANUAL_RETRY_EXHAUSTED',
-          'AGENT_ACTION_MANUAL_RETRY_SCOPE_MISMATCH',
-          'AGENT_ACTION_RECONCILIATION_SCOPE_MISMATCH',
-        ].includes(caught.code ?? '')
-      const retryReceiptPending = intent === 'check_status'
-        && caught instanceof ProductApiError
-        && (
-          caught.code === 'AGENT_ACTION_MANUAL_RETRY_RECEIPT_PENDING'
-          // v2 请求若在 consume 前根本未到服务端，尚无 retry Receipt。
-          // 只有之前已持久化 resume 标记的行动才能 tokenless 回退到同 key。
-          || (action.manualRetryResumeAvailable === true
-            && ['AGENT_ACTION_MANUAL_RETRY_REQUIRED', 'AGENT_ACTION_MANUAL_RETRY_UNAVAILABLE'].includes(caught.code ?? ''))
-        )
-        && Boolean(currentReceiptIdempotencyKey)
-      if (retryReceiptPending) {
-        // 状态查询绝不执行工具。先把服务端的 consumedByReceiptId 恢复信号
-        // 持久化，再由用户明确点击一次「继续执行」发起 fresh approval。
-        persistActionUpdate(actionMessage, action.id, {
-          status: 'failed',
-          receiptIdempotencyKey: currentReceiptIdempotencyKey,
-          manualRetryResumeAvailable: true,
-          error: locale === 'en'
-            ? 'The one-time retry was authorized but did not start. Continue with the same attempt.'
-            : '一次性重试已授权但尚未开始，请用同一次尝试继续执行。',
-        })
-        setRuntimePhase('failed')
-        setError('')
-        return
-      }
-      const originalReceiptNotStarted = intent === 'check_status'
-        && caught instanceof ProductApiError
-        && caught.code === 'AGENT_ACTION_RECONCILIATION_NOT_FOUND'
-        && !action.receiptIdempotencyKey
-      if (originalReceiptNotStarted) {
-        // 原始回执根本不存在，证明 Action POST 没有 claim，因而可以安全
-        // 回到待确认；不能把「审批前刷新」留成永久 running。
-        persistActionUpdate(actionMessage, action.id, {
-          status: 'awaiting_confirmation',
-          manualRetryResumeAvailable: undefined,
-          error: locale === 'en'
-            ? 'The previous attempt did not start. Approve it again to continue.'
-            : '上次尝试尚未开始，请重新确认执行。',
-        })
-        setRuntimePhase('failed')
-        setError('')
-        return
-      }
-      // 读状态/人工决议失败不能改写原回执投影；真正执行失败才更新行动卡。
-      if (approvalFailed && (intent === 'execute' || intent === 'manual_retry')) {
-        // 审批失败发生在 Action POST 之前，没有新 Receipt；恢复用户点击前的状态。
-        persistActionUpdate(actionMessage, action.id, {
-          status: action.status,
-          error: undefined,
-          ...(action.receiptIdempotencyKey
-            ? { receiptIdempotencyKey: action.receiptIdempotencyKey }
-            : {}),
-          ...(action.manualRetryResumeAvailable
-            ? { manualRetryResumeAvailable: true }
-            : {}),
-        })
-      } else if (intent === 'execute' || intent === 'manual_retry') {
-        persistActionUpdate(actionMessage, action.id, {
-          status: actionStatus,
-          error: actionError,
-          ...(manualRetryRejected ? { manualRetryResumeAvailable: undefined } : {}),
-        })
-      }
-      // manual token 在 Action POST 发出后无论响应如何都视为已消费；只保留非敏感的
-      // receiptIdempotencyKey 供刷新后 status / resolve，绝不拿旧 token 再执行一次。
-      if (intent === 'manual_retry' && !approvalFailed) setManualRetryAuthorizations((current) => {
-        if (!current[authorizationKey]) return current
-        const next = { ...current }
-        delete next[authorizationKey]
-        return next
-      })
-      setRuntimePhase(!approvalFailed && actionStatus === 'running' ? 'executing' : 'failed')
-      setError(actionError)
-    } finally {
-      if (executingActionIdRef.current === action.id) executingActionIdRef.current = ''
-      setExecutingActionId('')
-    }
-  }
-
   const prepareFailedRunRecovery = (
     run: BotanicAgentRun,
     mode: 'settings' | 'model',
@@ -2817,10 +2528,6 @@ export default function AgentWorkspace({
       plannerControllerRef.current = controller
       setPlanning(true)
       setRuntimePhase('planning')
-      const chatMessages = [
-        ...session.messages.map((message) => ({ role: message.role, content: botanicAgentRequestMessageContent(message, locale) })),
-        { role: 'user' as const, content: routedInstruction },
-      ].slice(-16)
       const liveMessageId = `agent-message-${crypto.randomUUID()}`
       const liveStartedAt = Date.now()
       let runtimeTurnId = ''
@@ -2848,13 +2555,29 @@ export default function AgentWorkspace({
           ...session.contextNodeIds,
           ...preparedContextIds,
         ])].slice(0, 32)
+        const existingInputMessage = appendedUserMessageId
+          ? undefined
+          : [...session.messages].reverse().find((message) => (
+              message.role === 'user'
+              && botanicAgentRequestMessageContent(message, locale) === cleanInstruction
+            ))
+        const durableInputMessage: BotanicAgentMessage = existingInputMessage ?? {
+          id: appendedUserMessageId || `agent-message-${crypto.randomUUID()}`,
+          role: 'user',
+          kind: 'text',
+          content: options.appendUser ?? cleanInstruction,
+          ...(options.mentions?.length ? { mentions: options.mentions } : {}),
+          createdAt: Date.now(),
+        }
+        await ensureMessageDurable(durableInputMessage)
         const response = await streamBotanicAgentChat({
           projectId,
+          sessionId: session.id,
+          inputMessage: { id: durableInputMessage.id, content: durableInputMessage.content },
           locale,
           plannerModel,
           mountedSkillIds: session.mountedSkillIds,
           mode: route,
-          messages: chatMessages,
           contextNodeIds,
         }, {
           signal: controller.signal,
@@ -3190,7 +2913,6 @@ export default function AgentWorkspace({
     let latestTimeline = createAgentTimeline(startedAt)
     let latestLiveContent = ''
     let handedOffToGeneration = false
-    let revalidateByStableSubmission = false
     const cancellationRequested = hasBotanicAgentTurnCancellationIntent(pendingTurnMessage)
     if (cancellationRequested) {
       turnCancellationIntentRef.current.set(
@@ -3305,54 +3027,27 @@ export default function AgentWorkspace({
 
     void (async () => {
       try {
-        if (!observedTurnId && !pendingTurnMessage.turnRequestSnapshot) {
-          throw new ProductApiError(
-            '旧版待提交消息缺少 Agent Turn 请求快照，已停止恢复以避免改错图。',
-            409,
-            'AGENT_TURN_REQUEST_SNAPSHOT_MISSING',
-          )
-        }
-        const turn = await retryBotanicAgentTurnRecovery({
+        const recovered = await recoverPendingAgentTurn({
+          projectId,
+          message: pendingTurnMessage,
+          request: turnRequest,
+          initialTurnId: pendingTurnId,
           signal: controller.signal,
-          attempt: () => {
-            const submitStableRequest = async () => {
-              if (pendingTurnMessage.turnRequestSnapshot) {
-                // Message PUT 是 Turn POST 的 durable 先行条件。未送达时由外层
-                // recovery retry 等待，禁止让服务端先看到一个没有 snapshot 的输入。
-                await ensureMessageDurable(pendingTurnMessage)
-              }
-              return streamBotanicAgentTurn(turnRequest, {
-                signal: controller.signal,
-                onEvent: onTurnEvent,
-                onAccepted: acceptRecoveredTurn,
-              })
-            }
-            if (!observedTurnId || revalidateByStableSubmission) return submitStableRequest()
-            return revalidateMissingBotanicAgentTurn({
-              observe: () => observePersistentBotanicAgentTurn(observedTurnId, projectId, {
-                signal: controller.signal,
-                onEvent: onTurnEvent,
-                missingTurnTimeoutMs: 2_000,
-              }),
-              markRevalidation: () => { revalidateByStableSubmission = true },
-              submit: submitStableRequest,
-            })
-          },
+          onEvent: onTurnEvent,
+          onAccepted: acceptRecoveredTurn,
+          ensureMessageDurable,
+          cancellationRequested: () => hasBotanicAgentTurnCancellationIntent(
+            pendingTurnMessage,
+            turnCancellationIntentRef.current.get(pendingTurnMessage.id),
+          ),
+          ensureCancellation: ensureDeepTurnCancellation,
+          submitTurn: streamBotanicAgentTurn,
+          observeTurn: observePersistentBotanicAgentTurn,
+          createError: (message, status, code) => new ProductApiError(message, status, code),
         })
-        const finalTurnId = turn.runtimeTurnId ?? observedTurnId
-        if (!finalTurnId || (pendingTurnId && finalTurnId !== pendingTurnId)) {
-          throw new ProductApiError('Agent 回合身份校验失败。', 409, 'AGENT_TURN_IDENTITY_MISMATCH')
-        }
+        const { turn, turnId: finalTurnId } = recovered
         observedTurnId = finalTurnId
         resultMessageId = botanicAgentTurnProjectionMessageId(finalTurnId)
-        const liveCancellationRequestedAt = turnCancellationIntentRef.current.get(pendingTurnMessage.id)
-        if (hasBotanicAgentTurnCancellationIntent(pendingTurnMessage, liveCancellationRequestedAt)) {
-          await ensureDeepTurnCancellation(finalTurnId, controller.signal)
-          // cancel POST 的成功只表示服务端已完成深取消流程；再读一次权威终态，
-          // 不能把先到达的 completed 结果继续交给生成链路。
-          await observePersistentBotanicAgentTurn(finalTurnId, projectId, { signal: controller.signal })
-          throw new ProductApiError('Agent 回合已取消。', 0, 'AGENT_TURN_CANCELLED')
-        }
         if (controller.signal.aborted || !isCurrentAgentProject()) return
         attachPlannerToolTrace({ toolCalls: turn.toolCalls } as BotanicAgentPlan)
         attachRuntimeReasoning(turn.reasoning)
@@ -3994,7 +3689,7 @@ export default function AgentWorkspace({
           canManualRetryAction={(action) => botanicAgentCanResumeManualRetry(action)
             || botanicAgentCanUseManualRetryAuthorization(
               action,
-              manualRetryAuthorizations[transientActionAuthorizationKey(session.id, message.id, action.id)],
+              manualRetryAuthorization(message, action),
             )}
           onActionIntent={(targetMessage, action, intent) => void confirmAction(targetMessage, action, intent)}
           onDismissAction={(targetMessage, action) => { persistActionUpdate(targetMessage, action.id, { status: 'dismissed' }) }}

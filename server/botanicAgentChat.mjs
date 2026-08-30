@@ -20,6 +20,7 @@ import { outboundAgentTraceHeaders } from './agentTraceContext.mjs'
 
 const CHAT_MODES = new Set(['conversation', 'prompt', 'research'])
 const MESSAGE_ROLES = new Set(['user', 'assistant'])
+const CURRENT_INPUT_TEXT_LIMIT = 64 * 1024
 
 export class BotanicAgentChatError extends Error {
   /**
@@ -66,6 +67,15 @@ function boundedMessages(value) {
   })
 }
 
+function boundedInputMessage(value) {
+  const message = object(value, '当前用户消息')
+  const id = requiredText(message.id, '当前用户消息标识', 160)
+  if (typeof message.content !== 'string' || !message.content.trim() || message.content.length > CURRENT_INPUT_TEXT_LIMIT) {
+    invalidRequest('当前用户消息内容无效或过长。')
+  }
+  return { id, content: message.content }
+}
+
 function boundedNodeIds(value) {
   if (value === undefined) return []
   if (!Array.isArray(value) || value.length > 32) invalidRequest('Agent 上下文节点无效。')
@@ -79,6 +89,9 @@ export function validateBotanicAgentChatInput(raw) {
   if (!CHAT_MODES.has(mode)) invalidRequest('Agent 对话模式不支持。')
   const projectId = requiredText(input.projectId, '项目', 160)
   const plannerModel = optionalText(input.plannerModel, 'Agent 模型', 160)
+  const sessionId = input.sessionId === undefined ? undefined : requiredText(input.sessionId, 'Agent 会话', 160)
+  const inputMessage = input.inputMessage === undefined ? undefined : boundedInputMessage(input.inputMessage)
+  if (Boolean(sessionId) !== Boolean(inputMessage)) invalidRequest('Agent 会话与当前消息必须同时提供。')
   const mountedSkillIds = input.mountedSkillIds === undefined
     ? undefined
     : (() => {
@@ -87,11 +100,12 @@ export function validateBotanicAgentChatInput(raw) {
     })()
   return {
     projectId,
+    ...(sessionId ? { sessionId, inputMessage } : {}),
     locale: normalizeBotanicAgentLocale(input.locale),
     mode,
     ...(plannerModel ? { plannerModel } : {}),
     ...(mountedSkillIds?.length ? { mountedSkillIds } : {}),
-    messages: boundedMessages(input.messages),
+    ...(input.messages === undefined ? {} : { messages: boundedMessages(input.messages) }),
     contextNodeIds: boundedNodeIds(input.contextNodeIds),
   }
 }
@@ -300,7 +314,7 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
   const memory = safeBotanicAgentMemory(options.document)
   const skills = botanicAgentSearchableSkills(options.projectSkills)
   const mountedSkills = resolveBotanicAgentMountedSkills(input.mountedSkillIds, options.projectSkills)
-  const webResearch = {
+  const webResearch = options.allowWebResearch === false ? undefined : {
     apiKey: runtimeConfig?.webSearch?.apiKey,
     searchUrl: runtimeConfig?.webSearch?.searchUrl,
     extractUrl: runtimeConfig?.webSearch?.extractUrl,

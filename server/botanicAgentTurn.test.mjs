@@ -840,6 +840,31 @@ test('带图任意对象替换由模型调用生成工具，不依赖浏览器�
   assert.ok(requests[0].tools.some((tool) => tool.function.name === 'generate_images'))
 })
 
+test('有 sticky target 时模型显式从零生成，不继承旧结果', async () => {
+  const result = await resolveBotanicAgentTurn({
+    projectId: 'project-turn',
+    plannerModel: 'deepseek-v4-pro',
+    messages: [{ role: 'user', content: '另外从零做一张完全不同的海报' }],
+    contextNodeIds: [],
+    hasTarget: true,
+    selectedResultNodeId: 'result-original',
+    generationModels,
+  }, runtime, {
+    document,
+    fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: {
+      content: null,
+      tool_calls: [{ id: 'call-initial', type: 'function', function: {
+        name: 'generate_images',
+        arguments: JSON.stringify({ prompt: '全新的植物主题海报', intent: 'initial_generation' }),
+      } }],
+    } }] }), { status: 200 }),
+  })
+
+  assert.equal(result.kind, 'generation')
+  assert.equal(result.intent, 'initial_generation')
+  assert.equal(result.selectedResultNodeId, null)
+})
+
 test('生成数量与非法设置被裁剪到可用范围', async () => {
   const result = await resolveBotanicAgentTurn({
     projectId: 'project-turn',
@@ -1586,4 +1611,31 @@ test('视觉与文本 attempt 各自冻结实际模型；视觉跨过 Checkpoint
   assert.equal(textCheckpoint.attempt.id, 'text')
   assert.equal(textCheckpoint.attempt.model, 'deepseek-v4-pro')
   assert.notEqual(checkpoints[0].attempt.snapshotHash, textCheckpoint.attempt.snapshotHash)
+})
+
+test('目标图片无法读取时 fail closed，不调用文本模型生成编辑计划', async () => {
+  let providerCalls = 0
+  await assert.rejects(resolveBotanicAgentTurn({
+    projectId: 'project-turn', plannerModel: 'deepseek-v4-pro',
+    messages: [{ role: 'user', content: '保持人物不变，只替换背景' }],
+    contextNodeIds: ['result-target'], hasTarget: true,
+    selectedResultNodeId: 'result-target', selectedResultLabel: '目标图', generationModels,
+  }, { ...runtime, agentVisionModel: 'gemini-3.7-flash' }, {
+    document: {
+      ...document,
+      nodes: [...document.nodes, {
+        id: 'result-target', type: 'result',
+        data: { image: '/api/media/missing-target', mediaKind: 'image' },
+      }],
+    },
+    requireTargetVision: true,
+    resolveVisionMedia: async () => { throw new Error('media not found') },
+    fetchImpl: async () => {
+      providerCalls += 1
+      return new Response(JSON.stringify({ choices: [{ message: { content: '不应调用' } }] }), { status: 200 })
+    },
+  }), (caught) => caught instanceof BotanicAgentChatError
+    && caught.code === 'AGENT_TARGET_VISION_UNAVAILABLE'
+    && caught.statusCode === 503)
+  assert.equal(providerCalls, 0)
 })

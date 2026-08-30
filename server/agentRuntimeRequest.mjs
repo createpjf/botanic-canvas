@@ -51,21 +51,19 @@ export function createAgentCompatibilityRuntimeRequest(operation, input) {
 }
 
 /**
- * 新客户端显式提供提交键；operation 必须进入命名空间，避免调用方误把相同 key
- * 用在 plan/chat 时绑定到同一 Turn。旧客户端没有 key 时使用传输 requestId，保持
- * “每次 POST 都是新请求”的历史语义；只有显式 key 才承诺断线重放。
+ * 客户端必须显式提供提交键；operation 进入命名空间，避免调用方误把相同 key
+ * 用在 plan/chat 时绑定到同一 Turn。没有稳定 key 就不能安全重试 Provider 调用。
  */
-export function agentCompatibilityIdempotencyKey(operation, input, provided, fallbackKey) {
+export function agentCompatibilityIdempotencyKey(operation, _input, provided, _fallbackKey) {
   const explicit = generationIdempotencyKey(provided)
   if (!COMPATIBILITY_OPERATIONS.has(operation)) {
     throw new TypeError(`不支持的 Agent Runtime operation：${String(operation)}`)
   }
   if (explicit) return `agent-${operation}-${canonicalHash(explicit)}`
-  if (fallbackKey !== undefined && fallbackKey !== null && String(fallbackKey)) {
-    return `agent-${operation}-${canonicalHash(String(fallbackKey))}`
-  }
-  // 只用于没有传输请求身份的测试/嵌入调用；正式 HTTP 路径总会传 requestId。
-  return `agent-${operation}-${canonicalHash([Date.now(), input])}`
+  throw Object.assign(new Error('Agent 请求缺少稳定提交标识。'), {
+    code: 'INVALID_IDEMPOTENCY_KEY',
+    statusCode: 400,
+  })
 }
 
 /**

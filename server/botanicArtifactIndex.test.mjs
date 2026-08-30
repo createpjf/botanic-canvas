@@ -200,3 +200,42 @@ test('首次生成没有父版本，不写空血缘字段', () => {
   assert.equal('parentNodeId' in artifact.metadata, false)
   assert.equal('parentArtifactId' in artifact.metadata, false)
 })
+
+test('输入节点删除后仍从 Job immutable provenance 重建角色、哈希与父 Artifact', () => {
+  const inputProvenance = {
+    references: [{
+      order: 0, nodeId: 'asset-deleted', assetId: 'asset-record-1', name: '商品正面',
+      role: '商品', primary: true, priority: 0, mediaKind: 'image',
+      inputRole: 'reference_image', mediaId: 'media-product', mediaSha256: 'sha-product',
+    }],
+    parent: {
+      order: 0, nodeId: 'result-deleted', name: '父版本', role: '父版本', primary: true,
+      priority: 0, mediaKind: 'image', mediaId: 'media-parent', mediaSha256: 'sha-parent',
+      artifactId: 'generation:job-parent:out-parent',
+    },
+  }
+  const [artifact] = artifactsFromGenerationJob({
+    id: 'job-child', status: 'succeeded', parentNodeId: 'result-deleted', inputProvenance,
+    outputs: [{ id: 'out-child', image: 'https://example.com/child.png' }],
+  }, { document: { nodes: [], assets: [] }, now: 5 })
+
+  assert.deepEqual(artifact.provenance.sourceNodeIds, ['asset-deleted', 'result-deleted'])
+  assert.equal(artifact.metadata.parentArtifactId, 'generation:job-parent:out-parent')
+  assert.deepEqual(artifact.metadata.inputProvenance, inputProvenance)
+})
+
+test('取消或 fence 后晚到的 Provider 媒体进入隔离 Artifact，不伪装成正常画布结果', () => {
+  const [artifact] = artifactsFromGenerationJob({
+    id: 'job-late', status: 'cancelled',
+    lateOutputs: [{
+      id: 'out-late', image: '/api/media/media-late', mediaKind: 'image',
+      reason: 'cancelled_after_provider', executionGeneration: 2,
+    }],
+  }, { document: { nodes: [], assets: [] }, now: 5 })
+
+  assert.equal(artifact.id, 'generation-late:job-late:out-late')
+  assert.equal(artifact.placement, 'panel')
+  assert.equal(artifact.metadata.quarantined, true)
+  assert.equal(artifact.metadata.dismissed, true)
+  assert.equal(artifact.metadata.status, 'late_discarded')
+})

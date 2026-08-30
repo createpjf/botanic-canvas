@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createAgentTurnResumer } from './agentTurnResume.mjs'
+import { createAgentTargetBinding } from './agentTargetBinding.mjs'
 
 const turn = (extra = {}) => ({
   id: 'turn-1', ownerId: 'user-a', projectId: 'project-a', sessionId: 'session-a',
@@ -28,6 +29,7 @@ function deps(overrides = {}) {
   return {
     executions,
     productStore: {
+      async projectAccess() { return { exists: true, role: 'owner' } },
       async readProject() { return { document: { id: 'project-a', nodes: [], edges: [] } } },
       async listAgentSkills() {
         return [{ id: 'skill-1', name: '换景', instructions: '保持商品', status: 'active', version: 2, contentHash: 'h', capabilities: ['read'], ownerId: 'secret-owner' }]
@@ -51,6 +53,34 @@ test('恢复复用原 Turn 身份与幂等键，不产生第二次逻辑提交',
   assert.equal(call.projectId, 'project-a')
   assert.equal(call.sessionId, 'session-a')
   assert.equal(call.allowTakeover, true, '只有清扫恢复路径可以接管过期租约')
+})
+
+test('恢复前目标媒体已变化时返回 stale，Provider 执行次数为 0', async () => {
+  const originalDocument = {
+    id: 'project-a', edges: [],
+    nodes: [{ id: 'result-1', type: 'result', data: { image: 'data:image/png;base64,AQ==' } }],
+  }
+  const request = {
+    projectId: 'project-a', locale: 'zh-CN', messages: [{ role: 'user', content: '换背景' }],
+    contextNodeIds: ['result-1'], hasTarget: true, selectedResultNodeId: 'result-1',
+  }
+  request.targetBinding = await createAgentTargetBinding(originalDocument, request)
+  const d = deps({
+    productStore: {
+      async readProject() {
+        return { document: {
+          ...originalDocument,
+          nodes: [{ id: 'result-1', type: 'result', data: { image: 'data:image/png;base64,Ag==' } }],
+        } }
+      },
+    },
+  })
+
+  await assert.rejects(
+    () => createAgentTurnResumer(d)(turn({ request })),
+    (caught) => caught?.code === 'AGENT_TARGET_STALE' && caught?.statusCode === 409,
+  )
+  assert.equal(d.executions.length, 0)
 })
 
 test('派生上下文重新读取，只有用户请求来自快照', async () => {
@@ -101,6 +131,17 @@ test('Worker 恢复联网工具复用共享配额；缺依赖时显式 fail clos
   const missing = deps()
   await createAgentTurnResumer(missing)(turn())
   assert.deepEqual(await missing.executions[0].resolveOptions.consumeWebResearchQuota(), { allowed: false })
+
+  const viewer = deps({
+    productStore: { async projectAccess() { return { exists: true, role: 'viewer' } } },
+    consumeWebResearchQuota: async () => { throw new Error('viewer 不应消耗联网额度') },
+  })
+  await createAgentTurnResumer(viewer)(turn())
+  assert.equal(viewer.executions[0].resolveOptions.allowWebResearch, false)
+  await assert.rejects(
+    () => viewer.executions[0].resolveOptions.consumeWebResearchQuota(),
+    (error) => error?.code === 'PROJECT_ACCESS_FORBIDDEN' && error?.statusCode === 403,
+  )
 })
 
 test('恢复只注入 Turn 中不可变的 thread context snapshot，不读取最新线程摘要', async () => {
