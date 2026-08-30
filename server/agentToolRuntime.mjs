@@ -574,7 +574,7 @@ export async function runAgentToolLoop({
       }
     }
     const conversationIndex = conversation.length
-    conversation.push({ role: 'tool', tool_call_id: entry.trace.id, content: bounded.content })
+    conversation.push({ role: 'tool', tool_call_id: entry.trace.id, name: entry.trace.name, content: bounded.content })
     toolOutputTokens += bounded.tokens
     toolOutputRecords.push({ ...bounded, entry, conversationIndex })
   }
@@ -719,7 +719,7 @@ export async function runAgentToolLoop({
   }))
 
   const executeStep = async (entries, step, { emitEvents = true } = {}) => {
-    conversation.push({ role: 'assistant', content: null, tool_calls: assistantCalls(entries) })
+    conversation.push({ role: 'assistant', tool_calls: assistantCalls(entries) })
     let terminalOutput
     let terminalSucceeded = false
     for (const entry of entries) {

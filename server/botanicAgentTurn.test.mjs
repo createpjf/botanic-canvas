@@ -1274,6 +1274,51 @@ function streamResponse(chunks) {
   ].join(''), { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
 }
 
+test('Gemini 流式联网工具结果使用兼容的二次请求形状', async () => {
+  const requests = []
+  const result = await resolveBotanicAgentTurn({
+    projectId: 'project-turn',
+    plannerModel: 'gemini-3.7-flash',
+    messages: [{ role: 'user', content: '2026 特朗普中期选举多久' }],
+    contextNodeIds: [],
+    hasTarget: false,
+    generationModels,
+  }, {
+    ...runtime,
+    webSearch: { apiKey: 'test-search-key' },
+  }, {
+    document,
+    onEvent: () => {},
+    fetchImpl: async (_url, init) => {
+      const request = JSON.parse(init.body)
+      requests.push(request)
+      if (requests.length === 1) return streamResponse([
+        { choices: [{ delta: { tool_calls: [{ index: 0, id: 'call-web', type: 'function', function: {
+          name: 'web_search', arguments: JSON.stringify({ query: '2026 美国中期选举日期', why: '查询选举日期' }),
+        } }] }, finish_reason: 'tool_calls' }] },
+      ])
+      const assistant = request.messages.at(-2)
+      const tool = request.messages.at(-1)
+      if (assistant?.content === null || tool?.name !== 'web_search') {
+        return new Response(JSON.stringify({ error: { message: 'invalid function response' } }), { status: 400 })
+      }
+      return streamResponse([
+        { choices: [{ delta: { content: '2026 年美国中期选举将在 11 月举行。' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ])
+    },
+    webFetchImpl: async () => new Response(JSON.stringify({
+      results: [{ title: 'Election date', url: 'https://example.com/election', content: 'November 2026' }],
+    }), { status: 200 }),
+  })
+
+  const assistant = requests[1].messages.at(-2)
+  const tool = requests[1].messages.at(-1)
+  assert.equal(Object.hasOwn(assistant, 'content'), false)
+  assert.equal(tool.name, 'web_search')
+  assert.equal(result.kind, 'chat')
+})
+
 test('回合流式通道发出工具步，服务端和用户开关同时打开才下发 reasoning', async () => {
   const events = []
   let requestIndex = 0
