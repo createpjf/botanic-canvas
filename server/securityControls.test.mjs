@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import Redis from 'ioredis'
 import { createSecurityControls, sensitiveActionDecision, securityResponseHeaders } from './securityControls.mjs'
 
 test('固定窗口限流在额度耗尽后返回重试时间，窗口结束后恢复', async () => {
@@ -28,6 +29,27 @@ test('生成输出配额按候选数量计费，且不同用户相互隔离', as
   assert.equal((await security.consume({ scope: 'generation-output', subject: 'user-1', limit: 4, windowMs: 86_400_000, cost: 3 })).allowed, true)
   assert.equal((await security.consume({ scope: 'generation-output', subject: 'user-1', limit: 4, windowMs: 86_400_000, cost: 2 })).allowed, false)
   assert.equal((await security.consume({ scope: 'generation-output', subject: 'user-2', limit: 4, windowMs: 86_400_000, cost: 4 })).allowed, true)
+})
+
+test('Redis 首次并发限流请求共享同一次连接', async (context) => {
+  let connectCalls = 0
+  let fallbackCalls = 0
+  context.mock.method(Redis.prototype, 'connect', async function () {
+    if (++connectCalls > 1) throw new Error('Redis is already connecting/connected')
+    this.status = 'ready'
+  })
+  context.mock.method(Redis.prototype, 'eval', async () => 1)
+  context.mock.method(Redis.prototype, 'pttl', async () => 1_000)
+  context.mock.method(Redis.prototype, 'quit', async function () { this.status = 'end' })
+  const security = createSecurityControls({ redisUrl: 'redis://test', onFallback: () => { fallbackCalls += 1 } })
+
+  await Promise.all([
+    security.consume({ scope: 'prompt', subject: 'user-1', limit: 2, windowMs: 1_000 }),
+    security.consume({ scope: 'prompt', subject: 'user-2', limit: 2, windowMs: 1_000 }),
+  ])
+  assert.equal(connectCalls, 1)
+  assert.equal(fallbackCalls, 0)
+  await security.close()
 })
 
 test('多维预算预留保持原子且同一任务只记一次', async () => {

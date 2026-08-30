@@ -59,15 +59,21 @@ function redisCounter(redisUrl, fallback, onFallback) {
     maxRetriesPerRequest: 1,
   })
   let connected = false
+  let connectionPromise
   let warned = false
   redis.on('error', () => undefined)
 
+  async function ensureConnected() {
+    if (connected) return
+    connectionPromise ??= redis.connect()
+      .then(() => { connected = true })
+      .finally(() => { connectionPromise = undefined })
+    await connectionPromise
+  }
+
   async function increment(key, windowMs, cost) {
     try {
-      if (!connected) {
-        await redis.connect()
-        connected = true
-      }
+      await ensureConnected()
       const value = Number(await redis.eval(
         "local value = redis.call('INCRBY', KEYS[1], ARGV[1]); if redis.call('PTTL', KEYS[1]) < 0 then redis.call('PEXPIRE', KEYS[1], ARGV[2]); end; return value",
         1,
@@ -89,10 +95,7 @@ function redisCounter(redisUrl, fallback, onFallback) {
 
   async function reserveMany(reservationKey, entries, ttlMs) {
     try {
-      if (!connected) {
-        await redis.connect()
-        connected = true
-      }
+      await ensureConnected()
       const keys = [reservationKey, ...entries.map((entry) => entry.key)]
       const args = [ttlMs, ...entries.flatMap((entry) => [entry.cost, entry.limit])]
       const result = await redis.eval(
@@ -116,10 +119,7 @@ function redisCounter(redisUrl, fallback, onFallback) {
 
   async function releaseMany(reservationKey, entries) {
     try {
-      if (!connected) {
-        await redis.connect()
-        connected = true
-      }
+      await ensureConnected()
       const keys = [reservationKey, ...entries.map((entry) => entry.key)]
       const result = await redis.eval(
         "if redis.call('EXISTS',KEYS[1])==0 then return 0; end; "
