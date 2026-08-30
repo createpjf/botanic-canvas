@@ -472,6 +472,7 @@ export function useCanvasAgentExecutionBridge({
     if (useCanvasStore.getState().document.id !== projectId) {
       return { ...output, message: `${output.message} ${copy.projectChangedResult}` }
     }
+    if (useCanvasStore.getState().collaborationStatus === 'reconnecting') return output
     const nodes = useCanvasStore.getState().document.nodes
     const origin = nodes.length
       ? { x: Math.max(...nodes.map((node) => node.position.x)) + 220, y: Math.min(...nodes.map((node) => node.position.y)) + 120 }
@@ -481,9 +482,11 @@ export function useCanvasAgentExecutionBridge({
       const position = { x: origin.x + (index % 2) * 240, y: origin.y + Math.floor(index / 2) * 260 }
       if (resolved.command.type === 'create_text_node' && resolved.artifact.content) {
         const nodeId = addTextNode(position, { select: false })
-        updateTextNode(nodeId, resolved.artifact.content)
-        renameCanvasNode(nodeId, resolved.artifact.label)
-        writebacks.push({ artifactId: resolved.artifact.id, nodeId })
+        if (nodeId) {
+          updateTextNode(nodeId, resolved.artifact.content)
+          renameCanvasNode(nodeId, resolved.artifact.label)
+          writebacks.push({ artifactId: resolved.artifact.id, nodeId })
+        }
       }
       if (resolved.command.type === 'create_media_node' && resolved.artifact.url) {
         addUploadedAssetsToCanvas([{

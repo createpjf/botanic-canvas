@@ -36,6 +36,7 @@ type CanvasTemplateHistoryDependencies = {
   set: SetCanvasStore
   get: () => CanvasStore
   commit: CommitCanvasDocument
+  editingBlocked: () => boolean
   now?: () => number
 }
 
@@ -79,6 +80,7 @@ export function createCanvasTemplateHistoryActions({
   set,
   get,
   commit,
+  editingBlocked,
   now = Date.now,
 }: CanvasTemplateHistoryDependencies): Pick<CanvasStore,
   | 'saveCurrentAsTemplate'
@@ -157,6 +159,7 @@ export function createCanvasTemplateHistoryActions({
     },
 
     saveCurrentAsSharedTemplate: async (name) => {
+      if (editingBlocked()) return false
       const document = get().document
       if (!summarizeWorkflowTemplate(document.nodes, document.edges, true).canSave) {
         set({ assistantMessage: '请先添加素材、描述或生成节点，再保存为共享模板。' })

@@ -1,5 +1,5 @@
 import { buildGraphGenerationRecipe, cloneGenerationRecipe, cloneGenerationSettings } from '../domain/generationRecipe.ts'
-import { findUnknownSubmissionAnchor } from '../domain/generationRecovery.ts'
+import { findUnknownSubmissionAnchor, type UnknownSubmissionAnchor } from '../domain/generationRecovery.ts'
 import type { CanvasDocument, CanvasNode, GenerationJob, GenerateNodeData, ResultNodeData } from '../domain/canvas.ts'
 import type { GenerationRequest, PersistedGenerationState } from './canvasStore.types.ts'
 
@@ -83,9 +83,7 @@ export function requestFromGenerationTaskNode(document: CanvasDocument, taskResu
   }
 }
 
-export function requestFromUnknownGenerationSubmission(document: CanvasDocument): GenerationRequest | null {
-  const anchor = findUnknownSubmissionAnchor(document.nodes)
-  if (!anchor) return null
+function requestFromUnknownSubmissionAnchor(document: CanvasDocument, anchor: UnknownSubmissionAnchor): GenerationRequest | null {
   const { generateNode, resultNode: taskResultNode, resultNodeIds, submissionKey: idempotencyKey } = anchor
   const generate = generateNode.data as GenerateNodeData
   const result = taskResultNode.data as ResultNodeData
@@ -114,6 +112,7 @@ export function requestFromUnknownGenerationSubmission(document: CanvasDocument)
     parentVersionId: parent?.versionId,
     parentImage: parent?.image,
     parentLabel: parent?.label,
+    sourceGraphNodeId: generateNode.id,
     idempotencyKey,
     taskNodeIds: {
       generateNodeId: generateNode.id,
@@ -123,6 +122,35 @@ export function requestFromUnknownGenerationSubmission(document: CanvasDocument)
     refinementMode: result.refinementMode ?? generate.refinementMode,
     agentRun: result.agentRun ?? generate.agentRun,
   }
+}
+
+export function requestFromUnknownGenerationSubmission(document: CanvasDocument): GenerationRequest | null {
+  const anchor = findUnknownSubmissionAnchor(document.nodes)
+  return anchor ? requestFromUnknownSubmissionAnchor(document, anchor) : null
+}
+
+/** 批量子任务在 Provider 提交前断线时，用画布已持久化的原键续提交。 */
+export function requestFromPendingGenerationSource(document: CanvasDocument, sourceGraphNodeId: string): GenerationRequest | null {
+  const generateNode = document.nodes.find((node) => node.id === sourceGraphNodeId && node.type === 'generate')
+  if (!generateNode) return null
+  const resultNode = [...document.nodes]
+    .filter((node) => node.type === 'result' && (node.data as ResultNodeData).outputOf === sourceGraphNodeId)
+    .filter((node) => {
+      const result = node.data as ResultNodeData
+      return !result.jobId
+        && (result.taskStatus === 'uploading' || result.taskStatus === 'submission_unknown')
+        && (!result.taskGroupId || result.taskGroupId === node.id)
+    })
+    .sort((left, right) => Number((right.data as ResultNodeData).submittedAt ?? 0) - Number((left.data as ResultNodeData).submittedAt ?? 0))[0]
+  if (!resultNode) return null
+  const result = resultNode.data as ResultNodeData
+  const submissionKey = result.submissionKey ?? (generateNode.data as GenerateNodeData).submissionKey
+  if (!submissionKey) return null
+  const resultNodeId = result.taskGroupId ?? resultNode.id
+  const resultNodeIds = document.nodes
+    .filter((node) => node.type === 'result' && ((node.data as ResultNodeData).taskGroupId ?? node.id) === resultNodeId)
+    .map((node) => node.id)
+  return requestFromUnknownSubmissionAnchor(document, { generateNode, resultNode, resultNodeIds, submissionKey })
 }
 
 /** 从持久化任务恢复 UI 状态；任务记录而非本地 loading 是权威。 */

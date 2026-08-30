@@ -130,8 +130,8 @@ export type CanvasStore = {
   deleteAssetGroup: (groupId: string) => void
   addAssetsToGroup: (groupId: string, assetIds: string[]) => void
   removeAssetFromGroup: (groupId: string, assetId: string) => void
-  /** 返回新建节点 ID；`select: false` 让 Agent 等后台写入不抢走用户当前的画布选中态。 */
-  addTextNode: (position?: XYPosition, options?: { select?: boolean }) => string
+  /** 返回已创建节点 ID；重连只读期间返回 null，`select: false` 不抢走用户当前选中态。 */
+  addTextNode: (position?: XYPosition, options?: { select?: boolean }) => string | null
   addGenerateNode: (position?: XYPosition, mediaKind?: 'image' | 'video', inputNodeIds?: string[], options?: { select?: boolean; standalone?: boolean }) => string | null
   createGenerateBranchFromResult: (resultNodeId: string, draft?: GenerateBranchDraft) => string | null
   createGenerateFromResultRecipe: (resultNodeId: string) => string | null

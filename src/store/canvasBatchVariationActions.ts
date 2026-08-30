@@ -1,9 +1,9 @@
 import { createBatchVariationRun, mapBatchVariationWithConcurrency, nextResumableBatchVariationRun, summarizeBatchVariationRun } from '../domain/batchVariations'
-import type { BatchVariationRun, CanvasDocument, ResultNodeData } from '../domain/canvas'
+import type { AssetNodeData, BatchVariationRun, CanvasDocument, ResultNodeData } from '../domain/canvas'
 import { buildGraphGenerationRecipe, cloneGenerationRecipe, cloneGenerationSettings } from '../domain/generationRecipe'
 import { getGenerationJob, submitGenerationJob } from '../lib/generationApi'
 import { availableAssets, findAvailableAsset } from './canvasDocumentAssets'
-import { requestFromPersistedGenerationJob } from './canvasGenerationLifecycle'
+import { requestFromPendingGenerationSource, requestFromPersistedGenerationJob } from './canvasGenerationLifecycle'
 import {
   applyGenerationJobToDocument,
   createTaskFlow,
@@ -31,11 +31,11 @@ type CanvasBatchVariationDependencies = {
   commitDocument: CommitCanvasDocument
   stopGenerationPolling: () => void
   createGenerationSubmissionKey: () => string
+  editingBlocked: () => boolean
 }
 
 const activeBatchVariationRuns = new Set<string>()
 const batchVariationConcurrency = 3
-const canvasReconnectMessage = '实时连接中断，画布暂时只读；连接恢复后再继续编辑。'
 
 /**
  * 批量变体父任务、独立子任务、恢复与重试的单一协调器。
@@ -47,6 +47,7 @@ export function createCanvasBatchVariationActions({
   commitDocument,
   stopGenerationPolling,
   createGenerationSubmissionKey,
+  editingBlocked,
 }: CanvasBatchVariationDependencies): BatchVariationActions {
   const setGenerationError = (message: string) => {
     set({
@@ -106,15 +107,22 @@ export function createCanvasBatchVariationActions({
 
     try {
       let item = initialItem
-      let run = initialRun
+      const run = initialRun
 
       // 刷新后已有 jobId 的子任务直接恢复，不再创建重复分支。
       if (item.status === 'running' && jobId) {
         const recordedJob = get().document.generationJobs.find((job) => job.id === jobId)
         request = recordedJob ? requestFromPersistedGenerationJob(get().document, recordedJob) ?? undefined : undefined
       }
+      if (jobId && !request) throw new Error('无法恢复批量子任务参数。')
+
+      // Provider 提交前断线时，任务流已持久化；恢复原键而不重建任务。
+      if (!request && item.generateNodeId) {
+        request = requestFromPendingGenerationSource(get().document, item.generateNodeId) ?? undefined
+      }
 
       if (!request) {
+        if (editingBlocked()) return
         const asset = findAvailableAsset(get().document, get().globalAssets, item.assetId)
         if (!asset) throw new Error('素材已不存在。')
         let branchId = item.generateNodeId
@@ -126,11 +134,20 @@ export function createCanvasBatchVariationActions({
             refinementMode: 'faithful',
           }) ?? undefined
           if (!branchId) throw new Error('无法创建批量变体节点。')
-          const branch = get().document.nodes.find((node) => node.id === branchId)
+        }
+        if (editingBlocked()) return
+        const branchDocument = get().document
+        const branch = branchDocument.nodes.find((node) => node.id === branchId && node.type === 'generate')
+        if (!branch) return
+        const hasAssetInput = branchDocument.edges.some((edge) => edge.target === branchId && branchDocument.nodes.some((node) => (
+          node.id === edge.source && node.type === 'asset' && (node.data as AssetNodeData).assetId === asset.id
+        )))
+        if (!hasAssetInput) {
           get().addAssetToCanvas(asset.id, branch
             ? { x: Math.max(20, branch.position.x - 236), y: branch.position.y + 16 }
             : undefined, branchId)
         }
+        if (editingBlocked()) return
         const graphRecipe = buildGraphGenerationRecipe(get().document, branchId)
         if (!graphRecipe || !graphRecipe.prompt.trim()) throw new Error('批量变体缺少生成描述。')
         if (!graphRecipe.recipe.references.length && !graphRecipe.parent) throw new Error('批量变体缺少参考素材。')
@@ -155,27 +172,30 @@ export function createCanvasBatchVariationActions({
             : undefined,
           idempotencyKey: createGenerationSubmissionKey(),
         }
+        if (editingBlocked()) return
         const flow = createTaskFlow(get().document, request, sourceResult)
         request = { ...request, taskNodeIds: flow.taskNodeIds }
-        await commitDocument(flow.document, {}, { immediate: true })
-        if (get().document.id !== projectId) return
-        item = { ...item, generateNodeId: branchId }
-        run = get().document.batchVariationRuns.find((candidate) => candidate.id === runId) ?? run
-        await commitDocument(updateBatchVariationItemDocument(get().document, runId, itemId, {
-          status: 'running',
+        await commitDocument(updateBatchVariationItemDocument(flow.document, runId, itemId, {
+          status: 'queued',
           generateNodeId: branchId,
           error: undefined,
-        }), { assistantMessage: `批量变体：已提交「${item.assetName}」子任务。` }, { immediate: true })
+        }), {}, { immediate: true })
         if (get().document.id !== projectId) return
+        item = { ...item, generateNodeId: branchId }
+      }
+
+      if (!jobId) {
+        if (!request?.recipe || !request.taskNodeIds) throw new Error('无法恢复批量子任务参数。')
+        if (editingBlocked()) return
         const job = await submitGenerationJob({
           projectId,
           kind: request.kind,
           prompt: request.prompt,
           batchCount: request.batchCount,
           settings: request.settings,
-          recipe: request.recipe!,
-          parent: graphRecipe.parent
-            ? { nodeId: graphRecipe.parent.nodeId, name: graphRecipe.parent.label, image: graphRecipe.parent.image }
+          recipe: request.recipe,
+          parent: request.targetNodeId && request.parentImage
+            ? { nodeId: request.targetNodeId, name: request.parentLabel ?? '已选首图', image: request.parentImage }
             : undefined,
           refinementMode: request.refinementMode,
           agentRun: request.agentRun,
@@ -183,13 +203,12 @@ export function createCanvasBatchVariationActions({
         })
         if (get().document.id !== projectId) return
         jobId = job.id
-        // 新建子任务时 taskNodeIds 已由 createTaskFlow 生成；非空断言避免把不完整的旧任务形状写入权威记录。
-        const persisted = recordGenerationJob(get().document, job, request.taskNodeIds!)
+        const persisted = recordGenerationJob(get().document, job, request.taskNodeIds)
         await commitDocument(updateBatchVariationItemDocument(persisted, runId, itemId, {
           status: job.status === 'succeeded' ? 'succeeded' : 'running',
           jobId,
-          generateNodeId: item.generateNodeId,
-        }), {}, { immediate: true })
+          generateNodeId: request.sourceGraphNodeId ?? item.generateNodeId,
+        }), { assistantMessage: `批量变体：已提交「${item.assetName}」子任务。` }, { immediate: true })
         if (get().document.id !== projectId) return
       }
 
@@ -205,6 +224,7 @@ export function createCanvasBatchVariationActions({
       }), {}, { immediate: true })
     } catch (error) {
       if (get().document.id !== projectId) return
+      if (editingBlocked()) return
       const message = error instanceof Error ? error.message : '批量子任务执行失败。'
       // 子任务失败也要收敛画布节点与 GenerationJob，否则刷新后会被误判为可恢复任务。
       try {
@@ -239,7 +259,7 @@ export function createCanvasBatchVariationActions({
   }
 
   const executeBatchVariationRun = async (projectId: string, runId: string) => {
-    if (get().document.id !== projectId) return
+    if (get().document.id !== projectId || editingBlocked()) return
     const scopedRunId = `${projectId}:${runId}`
     if (activeBatchVariationRuns.has(scopedRunId)) return
     activeBatchVariationRuns.add(scopedRunId)
@@ -252,7 +272,7 @@ export function createCanvasBatchVariationActions({
       // 父任务只负责编排；每个素材对应一个可恢复子任务，最多同时运行 3 个。
       await mapBatchVariationWithConcurrency(pendingItems, batchVariationConcurrency, (item) => executeBatchVariationItem(projectId, runId, item.id))
 
-      if (get().document.id !== projectId) return
+      if (get().document.id !== projectId || editingBlocked()) return
       const completed = get().document.batchVariationRuns.find((item) => item.id === runId)
       if (!completed) return
       const { status, succeeded, failed } = summarizeBatchVariationRun(completed.items)
@@ -266,10 +286,7 @@ export function createCanvasBatchVariationActions({
 
   return {
     runBatchVariation: async ({ sourceResultNodeId, groupId, prompt, candidatesPerAsset, settings, agentRunId, agentBranches }) => {
-      if (get().collaborationStatus === 'reconnecting') {
-        if (get().assistantMessage !== canvasReconnectMessage) set({ assistantMessage: canvasReconnectMessage })
-        return false
-      }
+      if (editingBlocked()) return false
       const cleanPrompt = prompt.trim()
       if (!cleanPrompt) return setGenerationError('请先描述这批图片要如何变化。')
       if (get().generationStatus !== 'idle' && get().generationStatus !== 'error') {
@@ -315,6 +332,7 @@ export function createCanvasBatchVariationActions({
     },
 
     retryBatchVariationItem: async (runId, itemId) => {
+      if (editingBlocked()) return false
       const projectId = get().document.id
       if (activeBatchVariationRuns.has(`${projectId}:${runId}`)) {
         set({ assistantMessage: '这组批量变体仍在执行，请等待其他子任务完成。' })
@@ -344,6 +362,7 @@ export function createCanvasBatchVariationActions({
     },
 
     resumeBatchVariations: () => {
+      if (editingBlocked()) return
       const projectId = get().document.id
       if ([...activeBatchVariationRuns].some((key) => key.startsWith(`${projectId}:`))) return
       const pendingRun = nextResumableBatchVariationRun(get().document.batchVariationRuns)
