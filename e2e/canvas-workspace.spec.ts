@@ -174,7 +174,7 @@ test('project to canvas and Agent surfaces stay ordered across reload', async ({
 
   await page.getByRole('button', { name: '打开素材库' }).click()
   await expect(page.getByRole('complementary', { name: '素材库' })).toBeVisible()
-  await page.getByRole('button', { name: '描述目标', exact: true }).click()
+  await page.getByRole('button', { name: '打开 Bob' }).click()
   await expect(page.getByRole('complementary', { name: 'Botanic Agent' })).toBeVisible()
   await expect(page.getByRole('complementary', { name: '素材库' })).toBeHidden()
   const tabBarBox = await page.locator('.tab-bar').boundingBox()
@@ -325,7 +325,7 @@ test('Agent 生成卡片默认收起已完成步骤与提示词差异，主内�
   await stubReadOnlyRuntime(page)
   await page.goto('/#/projects')
   await page.getByRole('button', { name: '新建项目' }).click()
-  await page.getByRole('button', { name: '打开 Bob' }).click()
+  await page.getByRole('button', { name: '描述目标', exact: true }).click()
 
   await page.evaluate(async () => {
     const loadStore = new Function('return import("/src/store/canvasStore.ts")') as () => Promise<{
@@ -498,6 +498,23 @@ const PNG_40x30 =
   + 'gQjIQ0zMb+2Z87NVBwQF64CgYB0QFKwDgoJ1QFCwDggK1gFBwTrwcgEEquWnGxqq2wAAAABJRU5E'
   + 'rkJggg=='
 
+async function addPngAsset(page: Page, name: string) {
+  await page.evaluate(async ({ image, fileName }) => {
+    const loadStore = new Function('return import("/src/store/canvasStore.ts")') as () => Promise<{
+      useCanvasStore: { getState: () => { addUploadedAssetsToCanvas: (assets: unknown[]) => void } }
+    }>
+    const { useCanvasStore } = await loadStore()
+    useCanvasStore.getState().addUploadedAssetsToCanvas([{
+      name: fileName,
+      image,
+      imageWidth: 40,
+      imageHeight: 30,
+      role: '商品',
+      tags: ['e2e'],
+    }])
+  }, { image: `data:image/png;base64,${PNG_40x30}`, fileName: name })
+}
+
 test('素材边 + 打开引用菜单并连上生成节点', async ({ page }) => {
   await stubReadOnlyRuntime(page)
   await page.goto('/#/projects')
@@ -505,14 +522,7 @@ test('素材边 + 打开引用菜单并连上生成节点', async ({ page }) => 
   await page.getByRole('button', { name: '新建项目' }).click()
   await expect(page.locator('.react-flow.botanic-flow')).toBeVisible()
 
-  await page.evaluate((base64) => {
-    const transfer = new DataTransfer()
-    const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0))
-    transfer.items.add(new File([bytes], 'ref.png', { type: 'image/png' }))
-    const target = document.querySelector('.react-flow')
-    if (!target) throw new Error('画布未就绪')
-    target.dispatchEvent(new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true, composed: true }))
-  }, PNG_40x30)
+  await addPngAsset(page, 'ref.png')
 
   const asset = page.locator('.react-flow__node-asset').first()
   await expect(asset).toBeVisible()
@@ -541,14 +551,7 @@ test('空白画布新建的生成节点连上旧图后仍留在画布上', async
   const generateNode = page.locator('.react-flow__node-generate:visible')
   await expect(generateNode).toBeVisible()
 
-  await page.evaluate((base64) => {
-    const transfer = new DataTransfer()
-    const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0))
-    transfer.items.add(new File([bytes], 'old.png', { type: 'image/png' }))
-    const target = document.querySelector('.react-flow')
-    if (!target) throw new Error('画布未就绪')
-    target.dispatchEvent(new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true, composed: true }))
-  }, PNG_40x30)
+  await addPngAsset(page, 'old.png')
 
   const asset = page.locator('.react-flow__node-asset').first()
   await expect(asset).toBeVisible()
@@ -567,14 +570,7 @@ test('素材连上新的生成节点后，点回素材仍有 composer', async ({
   await page.getByRole('button', { name: '新建项目' }).click()
   await expect(page.locator('.react-flow.botanic-flow')).toBeVisible()
 
-  await page.evaluate((base64) => {
-    const transfer = new DataTransfer()
-    const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0))
-    transfer.items.add(new File([bytes], 'summer.png', { type: 'image/png' }))
-    const target = document.querySelector('.react-flow')
-    if (!target) throw new Error('画布未就绪')
-    target.dispatchEvent(new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true, composed: true }))
-  }, PNG_40x30)
+  await addPngAsset(page, 'summer.png')
 
   const asset = page.locator('.react-flow__node-asset').first()
   await expect(asset).toBeVisible()
@@ -609,32 +605,45 @@ test('两张图可从右侧引用拖到左侧上下文', async ({ page }) => {
   await page.getByRole('button', { name: '新建项目' }).click()
   await expect(page.locator('.react-flow.botanic-flow')).toBeVisible()
 
-  const pastePng = async (name: string) => {
-    await page.evaluate(({ base64, name: fileName }) => {
-      const transfer = new DataTransfer()
-      const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0))
-      transfer.items.add(new File([bytes], fileName, { type: 'image/png' }))
-      const target = document.querySelector('.react-flow')
-      if (!target) throw new Error('画布未就绪')
-      target.dispatchEvent(new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true, composed: true }))
-    }, { base64: PNG_40x30, name })
-  }
-  await pastePng('left.png')
+  await addPngAsset(page, 'left.png')
   const sourceNode = page.locator('.react-flow__node-asset').filter({ has: page.getByRole('img', { name: 'left' }) })
   await expect(sourceNode).toBeVisible()
-  await pastePng('right.png')
+  await addPngAsset(page, 'right.png')
   const targetNode = page.locator('.react-flow__node-asset').filter({ has: page.getByRole('img', { name: 'right' }) })
   await expect(targetNode).toBeVisible()
 
-  const rightImage = targetNode.locator('.asset-node__image')
-  const rightBox = await rightImage.boundingBox()
-  if (!rightBox) throw new Error('右图不可见')
-  await page.mouse.move(rightBox.x + rightBox.width / 2, rightBox.y + rightBox.height / 2)
-  await page.mouse.down()
-  await page.mouse.move(rightBox.x + 420, rightBox.y + rightBox.height / 2, { steps: 12 })
-  await page.mouse.up()
+  const targetId = await targetNode.getByLabel('添加上下文').getAttribute('data-nodeid')
+  if (!targetId) throw new Error('右图节点不存在')
+  await page.evaluate(async (nodeId) => {
+    const loadStore = new Function('return import("/src/store/canvasStore.ts")') as () => Promise<{
+      useCanvasStore: { getState: () => { document: { nodes: { id: string; position: { x: number; y: number } }[] }; setNodes: (nodes: unknown[]) => void } }
+    }>
+    const { useCanvasStore } = await loadStore()
+    const store = useCanvasStore.getState()
+    store.setNodes(store.document.nodes.map((node) => node.id === nodeId
+      ? { ...node, position: { ...node.position, x: node.position.x + 320 } }
+      : node))
+  }, targetId)
 
-  await sourceNode.getByLabel('引用该节点生成').dragTo(targetNode.getByLabel('添加上下文'), { force: true })
+  const sourcePort = sourceNode.getByLabel('引用该节点生成')
+  const targetPort = targetNode.getByLabel('添加上下文')
+  const sourceHandle = await sourcePort.boundingBox()
+  const targetHandle = await targetPort.boundingBox()
+  if (!sourceHandle || !targetHandle) throw new Error('连接端点不可见')
+  await sourcePort.dispatchEvent('mousedown', {
+    button: 0,
+    buttons: 1,
+    clientX: sourceHandle.x + sourceHandle.width / 2,
+    clientY: sourceHandle.y + sourceHandle.height / 2,
+  })
+  await page.mouse.move(targetHandle.x + targetHandle.width / 2, targetHandle.y + targetHandle.height / 2, { steps: 12 })
+  await expect(targetPort).toHaveClass(/valid/)
+  await targetPort.dispatchEvent('mouseup', {
+    button: 0,
+    buttons: 0,
+    clientX: targetHandle.x + targetHandle.width / 2,
+    clientY: targetHandle.y + targetHandle.height / 2,
+  })
   await expect(page.locator('.react-flow__edge:visible')).not.toHaveCount(0)
 })
 
@@ -645,18 +654,8 @@ test('入画布不重叠，自动整理把两张图并排', async ({ page }) => 
   await page.getByRole('button', { name: '新建项目' }).click()
   await expect(page.locator('.react-flow.botanic-flow')).toBeVisible()
 
-  const pastePng = async (name: string) => {
-    await page.evaluate(({ base64, name: fileName }) => {
-      const transfer = new DataTransfer()
-      const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0))
-      transfer.items.add(new File([bytes], fileName, { type: 'image/png' }))
-      const target = document.querySelector('.react-flow')
-      if (!target) throw new Error('画布未就绪')
-      target.dispatchEvent(new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true, composed: true }))
-    }, { base64: PNG_40x30, name })
-  }
-  await pastePng('left.png')
-  await pastePng('right.png')
+  await addPngAsset(page, 'left.png')
+  await addPngAsset(page, 'right.png')
   const left = page.locator('.react-flow__node-asset').filter({ has: page.getByRole('img', { name: 'left' }) })
   const right = page.locator('.react-flow__node-asset').filter({ has: page.getByRole('img', { name: 'right' }) })
   await expect(left).toBeVisible()

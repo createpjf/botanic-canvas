@@ -50,9 +50,10 @@ async function pasteInto(page: Page, selector: string, spec: PasteSpec) {
     if (spec.text !== undefined) transfer.items.add(spec.text, 'text/plain')
     const target = document.querySelector(selector)
     if (!target) throw new Error(`粘贴目标不存在：${selector}`)
-    const notPrevented = target.dispatchEvent(
-      new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true, composed: true }),
-    )
+    const event = new Event('paste', { bubbles: true, cancelable: true, composed: true })
+    // Firefox/WebKit 不采用 synthetic ClipboardEvent 构造参数里的 clipboardData。
+    Object.defineProperty(event, 'clipboardData', { value: transfer })
+    const notPrevented = target.dispatchEvent(event)
     return { defaultPrevented: !notPrevented }
   }, { selector, spec })
 }
