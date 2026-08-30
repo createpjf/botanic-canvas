@@ -4840,7 +4840,7 @@ details.agent-timeline__thinking { display: block; width: 100%; }
 .agent-composer__context-upload b { font-size: 10px; }
 .agent-composer__context-upload small { color: #849087; font-size: 9px; }
 .agent-composer__context-menu > p { padding: 16px; color: #7b887f; font-size: 10px; text-align: center; }
-.agent-composer__mode-menu { right: auto; bottom: 50px; left: 42px; width: min(320px, calc(100% - 24px)); }
+.agent-composer__mode-menu { right: auto; bottom: 50px; left: 42px; width: min(320px, calc(100% - 48px)); }
 .agent-composer__mode-menu button { display: grid; grid-template-columns: 20px minmax(0, 1fr); align-items: start; gap: 8px; padding: 10px; align-content: start; border: 0; border-radius: 7px; background: transparent; color: #37513d; cursor: pointer; text-align: start; white-space: normal; }
 .agent-composer__mode-menu button:hover, .agent-composer__mode-menu button.is-selected { background: #edf4ed; }
 .agent-composer__mode-menu button > svg { width: 18px; height: 18px; margin-top: 1px; }
