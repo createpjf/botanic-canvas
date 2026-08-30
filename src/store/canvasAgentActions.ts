@@ -67,6 +67,7 @@ export function createCanvasAgentActions({
   commitDocument,
   persistentAgentRunApi,
   persistAcknowledgedRemotePatch,
+  invalidateDocumentPersistence = () => undefined,
   persistAgentSession = async () => undefined,
 }: {
   set: (next: Partial<CanvasStore>) => void
@@ -74,6 +75,7 @@ export function createCanvasAgentActions({
   commitDocument: CommitDocument
   persistentAgentRunApi: PersistentAgentRunApi
   persistAcknowledgedRemotePatch: (document: CanvasDocument, revision: number, graphRevision: number) => Promise<void>
+  invalidateDocumentPersistence?: () => void
   persistAgentSession?: PersistAgentSession
 }): AgentStoreActions {
   const commitAgentSessionDocument = (document: CanvasDocument, options: { persistSession?: boolean } = {}) => {
@@ -118,6 +120,7 @@ export function createCanvasAgentActions({
     applyAgentWorkflowPatch: async (patch) => {
       const document = get().document
       const nextDocument = mergeBotanicAgentCanvasPatch(document, patch)
+      invalidateDocumentPersistence()
       set({ document: nextDocument })
       void persistAcknowledgedRemotePatch(nextDocument, patch.revision, patch.graphRevision).catch(() => {
         // 服务端工作流已经落盘；本机缓存失败不能阻断真实生成任务。

@@ -29,7 +29,7 @@ export function openProjectRealtimeChannel(
   onEvent: (event: ProjectRealtimeEvent) => void,
   onConnectionOpened?: (event: ProjectRealtimeConnectionOpened) => void,
 ): ProjectRealtimeChannel {
-  if (!serverPersistenceEnabled || !projectId || projectId === 'workspace-placeholder') {
+  if (!serverPersistenceEnabled || !projectId) {
     return { publish: () => false, close: () => undefined }
   }
 

@@ -169,7 +169,6 @@ export function createCanvasDocumentLifecycleActions({
 
     refreshDocumentFromRemote: async () => {
       const baseline = get().document
-      if (baseline.id === 'workspace-placeholder') return false
       try {
         const latest = await readLatestCanvasDocument(baseline.id)
         if (!latest.document) return false

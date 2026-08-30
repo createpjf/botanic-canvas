@@ -29,6 +29,7 @@ function createDelayedPersistenceHarness() {
   let state = { document: emptyDocument(), persistenceStatus: 'saving' } as CanvasStore
   const pendingDocuments: CanvasDocument[] = []
   const persistedSessions: Array<{ projectId: string; title: string }> = []
+  let invalidatedPersistence = 0
   const actions = createCanvasAgentActions({
     set: (patch) => { state = { ...state, ...patch } },
     get: () => state,
@@ -38,12 +39,13 @@ function createDelayedPersistenceHarness() {
       cancelRun: async () => { throw new Error('测试未调用远程任务取消') },
     },
     persistAcknowledgedRemotePatch: async () => {},
+    invalidateDocumentPersistence: () => { invalidatedPersistence += 1 },
     persistAgentSession: async (projectId, session) => {
       persistedSessions.push({ projectId, title: session.title })
     },
   })
   state = { ...state, ...actions }
-  return { actions, pendingDocuments, persistedSessions, getState: () => state }
+  return { actions, pendingDocuments, persistedSessions, getState: () => state, invalidatedPersistence: () => invalidatedPersistence }
 }
 
 test('首次打开 Agent 时连续确保会话、添加上下文和消息仍落入同一会话', () => {
@@ -131,7 +133,7 @@ test('full Message upsert 替换同 ID 旧副本，API 更新时间不再压住�
 })
 
 test('Agent 工作流回执立即补入 prompt、生成节点与连线，且不重复写回服务端', async () => {
-  const { actions, pendingDocuments, getState } = createDelayedPersistenceHarness()
+  const { actions, pendingDocuments, getState, invalidatedPersistence } = createDelayedPersistenceHarness()
 
   const applied = await actions.applyAgentWorkflowPatch({
     nodes: [
@@ -174,4 +176,5 @@ test('Agent 工作流回执立即补入 prompt、生成节点与连线，且不�
   assert.deepEqual(getState().document.edges.map((edge) => edge.id), ['edge-prompt-generate', 'edge-generate-result'])
   assert.equal(getState().persistenceStatus, 'saving')
   assert.equal(pendingDocuments.length, 0)
+  assert.equal(invalidatedPersistence(), 1)
 })

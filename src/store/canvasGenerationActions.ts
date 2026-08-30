@@ -13,7 +13,6 @@ import {
 import { matchUnresolvedGenerationTaskJobs } from '../domain/generationRecovery'
 import { assignVideoInputRoles } from '../domain/videoGeneration'
 import type { CanvasDocument, CanvasNode, GenerateNodeData, GenerationJob, GenerationRecipe, ResultNodeData } from '../domain/canvas'
-import { writeCanvasDocument } from '../lib/db'
 import {
   assertGenerationServiceReady,
   cancelGenerationJob,
@@ -343,9 +342,8 @@ export function createCanvasGenerationActions({
         (node) => node.selected || (node.type === 'result' && Boolean((node.data as ResultNodeData).selected)),
       )
       const state = restoreGenerationLifecycleState(reconciledDocument, '已从服务端补回生成结果。')
-      set({ document: reconciledDocument, persistenceStatus: 'saved', selectedNodeId: selected?.id ?? null, ...state.state })
-      // 等待这次即时写入完成，终态事件触发的远端刷新不能读到旧画布。
-      await writeCanvasDocument(reconciledDocument, { immediate: true }).catch(() => undefined)
+      // 复用统一提交门禁，使这份权威恢复结果同时压住更早的整画布保存响应。
+      await commitDocument(reconciledDocument, { selectedNodeId: selected?.id ?? null, ...state.state }, { immediate: true })
       return true
     } catch {
       recoverTaskNodeJobs(documentId)
@@ -412,7 +410,6 @@ export function createCanvasGenerationActions({
 
     recoverGenerationResultsFromRemote: async () => {
       const documentId = get().document.id
-      if (documentId === 'workspace-placeholder') return false
       return recoverResults(documentId)
     },
 

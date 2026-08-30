@@ -280,6 +280,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
       cancelRun: cancelPersistentBotanicAgentRun,
     },
     persistAcknowledgedRemotePatch: persistAcknowledgedRemoteCanvasPatch,
+    invalidateDocumentPersistence: persistenceOperations.invalidate,
     persistAgentSession,
   }),
 
