@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { CanvasDocument, GenerationJob } from '../domain/canvas.ts'
-import { restoreGenerationLifecycleState } from './canvasGenerationLifecycle.ts'
+import { createTaskFlow } from './canvasGenerationProjection.ts'
+import { requestFromPendingGenerationSource, restoreGenerationLifecycleState } from './canvasGenerationLifecycle.ts'
 
 const settings = { model: 'gpt-image-2', aspectRatio: '3:4' as const, resolution: '2K' as const }
 
@@ -45,4 +46,24 @@ test('失败任务恢复为可重试错误而非本地 loading', () => {
   assert.equal(restored.state.generationError, '供应商失败')
   assert.equal(restored.state.lastGenerationRequest?.jobId, 'job-failed')
   assert.equal(restored.pollJobId, undefined)
+})
+
+test('批量子任务断线后从原生成节点恢复同一幂等键', () => {
+  const job: GenerationJob = {
+    id: 'job-history', projectId: 'project-lifecycle', ownerId: 'user-a', kind: 'generation', status: 'succeeded',
+    batchCount: 2, settings, provider: 'openai-images', outputs: [], createdAt: 10, updatedAt: 20,
+    generateNodeId: 'generate-task', resultNodeId: 'result-task',
+  }
+  const document = persistedDocument(job)
+  const recipe = { prompt: '海边商品图', batchCount: 2, settings, references: [{ nodeId: 'asset-a', assetId: 'a', name: '商品', image: '/a', role: '商品' as const, source: 'upload' as const, primary: true, priority: 1 }] }
+  const flow = createTaskFlow(document, {
+    kind: 'generation', prompt: recipe.prompt, batchCount: 2, settings, recipe,
+    sourceGraphNodeId: 'generate-task', idempotencyKey: 'batch-stable-key',
+  })
+
+  const recovered = requestFromPendingGenerationSource(flow.document, 'generate-task')
+
+  assert.equal(recovered?.idempotencyKey, 'batch-stable-key')
+  assert.equal(recovered?.taskNodeIds?.resultNodeId, flow.taskNodeIds.resultNodeId)
+  assert.deepEqual(recovered?.taskNodeIds?.resultNodeIds, flow.taskNodeIds.resultNodeIds)
 })

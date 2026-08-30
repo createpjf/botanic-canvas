@@ -36,6 +36,7 @@ type CanvasTemplateHistoryDependencies = {
   set: SetCanvasStore
   get: () => CanvasStore
   commit: CommitCanvasDocument
+  editingBlocked: () => boolean
   now?: () => number
 }
 
@@ -79,6 +80,7 @@ export function createCanvasTemplateHistoryActions({
   set,
   get,
   commit,
+  editingBlocked,
   now = Date.now,
 }: CanvasTemplateHistoryDependencies): Pick<CanvasStore,
   | 'saveCurrentAsTemplate'
@@ -157,6 +159,7 @@ export function createCanvasTemplateHistoryActions({
     },
 
     saveCurrentAsSharedTemplate: async (name) => {
+      if (editingBlocked()) return false
       const document = get().document
       if (!summarizeWorkflowTemplate(document.nodes, document.edges, true).canSave) {
         set({ assistantMessage: '请先添加素材、描述或生成节点，再保存为共享模板。' })
@@ -171,6 +174,7 @@ export function createCanvasTemplateHistoryActions({
         if (get().document.id === document.id) set({ assistantMessage: '共享模板库暂时不可用，请检查网络后重试。' })
         return false
       }
+      if (editingBlocked() || get().document.id !== document.id) return false
       const { snapshot, omittedPrivateAssetCount } = sharedWorkflowTemplateSnapshot(document, cleanedName)
       const image = snapshot.nodes.find((node) => node.type === 'asset' && (node.data as AssetNodeData).source === 'brand')
       const timestamp = now()
@@ -190,7 +194,9 @@ export function createCanvasTemplateHistoryActions({
         updatedAt: timestamp,
       }
       try {
+        if (editingBlocked() || get().document.id !== document.id) return false
         await writeGlobalWorkflowTemplateLibrary(library)
+        if (editingBlocked() || get().document.id !== document.id) return false
         set({
           sharedTemplates: nextTemplates,
           ...(get().document.id === document.id ? {

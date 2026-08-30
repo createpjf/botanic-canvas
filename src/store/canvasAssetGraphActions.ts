@@ -102,10 +102,12 @@ export function createCanvasAssetGraphActions({
   set,
   get,
   commitDocument,
+  editingBlocked,
 }: {
   set: (next: Partial<CanvasStore>) => void
   get: () => CanvasStore
   commitDocument: CommitDocument
+  editingBlocked: () => boolean
 }): AssetGraphActions {
   return {
     setNodes: (nodes) => {
@@ -475,6 +477,7 @@ export function createCanvasAssetGraphActions({
     },
 
     moveAssetToRole: (assetId, role) => {
+      if (editingBlocked()) return
       const document = get().document
       const globalAsset = get().globalAssets.find((asset) => asset.id === assetId)
       const localAsset = document.assets.find((asset) => asset.id === assetId)
@@ -515,6 +518,7 @@ export function createCanvasAssetGraphActions({
     },
 
     createAssetGroup: (name, role, assetIds = []) => {
+      if (editingBlocked()) return null
       const cleanName = normalizeAssetGroupName(name)
       if (!cleanName) return null
       const document = get().document
@@ -583,6 +587,7 @@ export function createCanvasAssetGraphActions({
     },
 
     addTextNode: (position, options) => {
+      if (editingBlocked()) return null
       const document = get().document
       const select = options?.select ?? true
       const nodeId = `text-${Date.now()}`
@@ -607,6 +612,7 @@ export function createCanvasAssetGraphActions({
     },
 
     addGenerateNode: (position, mediaKind = 'image', inputNodeIds, options) => {
+      if (editingBlocked()) return null
       const document = get().document
       const select = options?.select ?? true
       const nodeId = `generate-${Date.now()}`
@@ -648,6 +654,7 @@ export function createCanvasAssetGraphActions({
     },
 
     createGenerateBranchFromResult: (resultNodeId, draft) => {
+      if (editingBlocked()) return null
       const document = get().document
       const parent = document.nodes.find((node) => node.id === resultNodeId && node.type === 'result')
       if (!parent || parent.type !== 'result') return null
@@ -698,6 +705,7 @@ export function createCanvasAssetGraphActions({
     },
 
     createGenerateFromResultRecipe: (resultNodeId) => {
+      if (editingBlocked()) return null
       const document = get().document
       const resultNode = document.nodes.find((node) => node.id === resultNodeId && node.type === 'result')
       if (!resultNode || resultNode.type !== 'result') return null

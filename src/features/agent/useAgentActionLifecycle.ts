@@ -114,18 +114,22 @@ export function useAgentActionLifecycle({
         if (!isCurrentProject()) return
         let result = observation.execution?.output
         let writebackError = ''
+        let writebackPending = false
         if (result) {
           try {
             result = await onConfirmAction(action, context, { observedResult: result })
           } catch (caught) {
+            writebackPending = true
             writebackError = localizeProductError(caught, locale, { 'zh-CN': copy.actionFailed, en: copy.actionFailed })
           }
         }
+        writebackPending ||= result?.canvasWritebackPending === true
         persistActionUpdate(message, action.id, {
           ...botanicAgentActionReconciliationPatch(observation.status),
+          ...(writebackPending ? { status: 'running' as const } : {}),
           ...(result ? { result } : {}),
         })
-        if (observation.status.status === 'succeeded' || observation.status.status === 'failed') {
+        if (!writebackPending && (observation.status.status === 'succeeded' || observation.status.status === 'failed')) {
           setManualRetryAuthorizations((current) => {
             if (!current[key]) return current
             const next = { ...current }
@@ -133,7 +137,7 @@ export function useAgentActionLifecycle({
             return next
           })
         }
-        if (observation.status.status === 'succeeded') appendMessage({
+        if (!writebackPending && observation.status.status === 'succeeded') appendMessage({
           id: botanicAgentActionReceiptMessageId(action.id),
           role: 'assistant',
           kind: 'notice',
@@ -141,7 +145,7 @@ export function useAgentActionLifecycle({
             ? 'The action is confirmed as applied. The status check did not replay the tool or fabricate an output.'
             : '已确认行动生效；本次状态查询没有重放工具，也没有伪造输出。'),
         })
-        setRuntimePhase(observation.status.status === 'running'
+        setRuntimePhase(writebackPending || observation.status.status === 'running'
           ? 'executing'
           : observation.status.status === 'succeeded' ? 'completed' : 'failed')
         if (writebackError) setError(writebackError)
@@ -235,18 +239,23 @@ export function useAgentActionLifecycle({
           : undefined,
       )
       if (!isCurrentProject()) return
+      const writebackPending = result.canvasWritebackPending === true
       actionMessage = persistActionUpdate(actionMessage, action.id, {
-        status: 'succeeded',
+        status: writebackPending ? 'running' : 'succeeded',
         result,
         error: undefined,
         preparedRetryIdempotencyKey: undefined,
         manualRetryResumeAvailable: undefined,
       })
-      if (intent === 'manual_retry') setManualRetryAuthorizations((current) => {
+      if (!writebackPending && intent === 'manual_retry') setManualRetryAuthorizations((current) => {
         const next = { ...current }
         delete next[key]
         return next
       })
+      if (writebackPending) {
+        setRuntimePhase('executing')
+        return
+      }
       setRuntimePhase('completed')
       appendMessage({
         id: botanicAgentActionReceiptMessageId(action.id),

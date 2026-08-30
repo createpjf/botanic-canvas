@@ -226,12 +226,23 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
     }).catch(() => undefined)
     return operation
   }
+  const editingBlocked = () => {
+    if (get().collaborationStatus !== 'reconnecting') return false
+    if (get().assistantMessage !== canvasReconnectMessage) set({ assistantMessage: canvasReconnectMessage })
+    return true
+  }
+  const commitCanvasEdit = (
+    document: CanvasDocument,
+    extra?: Partial<CanvasStore>,
+    options?: { immediate?: boolean; rejectOnFailure?: boolean },
+  ) => editingBlocked() ? Promise.resolve() : commit(set, document, extra, options)
   const generation = createCanvasGenerationActions({
     set,
     get,
     commitDocument: (document, extra, options) => commit(set, document, extra, options),
     normalizeDocument,
     scrubGenerationRequest: scrubRevokedGenerationRequest,
+    editingBlocked,
   })
   const documentLifecycle = createCanvasDocumentLifecycleActions({
     set,
@@ -245,13 +256,8 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
   const assetGraphActions = createCanvasAssetGraphActions({
     set,
     get,
-    commitDocument: (document, extra, options) => {
-      if (get().collaborationStatus === 'reconnecting') {
-        if (get().assistantMessage !== canvasReconnectMessage) set({ assistantMessage: canvasReconnectMessage })
-        return Promise.resolve(false)
-      }
-      return commit(set, document, extra, options)
-    },
+    commitDocument: commitCanvasEdit,
+    editingBlocked,
   })
   return ({
   document: seedDocument,
@@ -298,9 +304,11 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
     commitDocument: (document, extra, options) => commit(set, document, extra, options),
     stopGenerationPolling: generation.stopPolling,
     createGenerationSubmissionKey: generation.createSubmissionKey,
+    editingBlocked,
   }),
 
   removeNodeFromCanvas: (nodeId) => {
+    if (editingBlocked()) return
     const document = get().document
     const removed = document.nodes.find((node) => node.id === nodeId)
     if (!removed) return
@@ -333,6 +341,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
   },
 
   deleteAsset: (assetId) => {
+    if (editingBlocked()) return
     const document = get().document
     const globalAsset = get().globalAssets.find((item) => item.id === assetId)
     if (globalAsset) {
@@ -439,6 +448,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
   },
 
   undoLastAction: () => {
+    if (editingBlocked()) return
     const snapshotValue = get().undoSnapshot
     const action = get().undoAction
     if (!snapshotValue || !action) return
@@ -453,7 +463,12 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
     })
   },
 
-  ...createCanvasTemplateHistoryActions({ set, get, commit }),
+  ...createCanvasTemplateHistoryActions({
+    set,
+    get,
+    commit: async (_set, document, extra) => { await commitCanvasEdit(document, extra) },
+    editingBlocked,
+  }),
 
   clearAssistantMessage: () => set({ assistantMessage: '' }),
 
@@ -471,6 +486,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
       })
       return
     }
+    if (editingBlocked()) return
 
     const versionId = `history-generation-${Date.now()}`
     const resultCount = document.nodes.filter((node) => node.type === 'result').length
@@ -593,6 +609,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
   ...generation.actions,
 
   createLocalDeliveries: ({ targetNodeId, presets, title, subtitle, safeZone }) => {
+    if (editingBlocked()) return
     const document = get().document
     const target = document.nodes.find((node) => node.id === targetNodeId)
     if (!target || target.type !== 'result' || !presets.length) return

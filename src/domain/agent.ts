@@ -680,6 +680,8 @@ export type BotanicAgentCanvasCommand = { id: string; type: 'create_text_node' |
 
 export type BotanicAgentActionResult = {
   message: string
+  /** 服务端行动已成功，但画布回写因重连待用原回执继续。 */
+  canvasWritebackPending?: boolean
   writeback?: { kind: 'text'; label: string; content: string }
   canvasNodeId?: string
   canvasNodeIds?: string[]
@@ -908,6 +910,7 @@ export function recordBotanicAgentCanvasWritebacks(
 
   return {
     ...result,
+    canvasWritebackPending: undefined,
     canvasNodeId: canvasNodeIds[0],
     canvasNodeIds,
     artifacts: result.artifacts?.map((artifact) => {

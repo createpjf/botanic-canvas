@@ -127,6 +127,7 @@ export function useCanvasWorkspaceSynchronization({
   const refreshDocumentFromRemote = useCanvasStore((state) => state.refreshDocumentFromRemote)
   const recoverGenerationResultsFromRemote = useCanvasStore((state) => state.recoverGenerationResultsFromRemote)
   const recoverUnknownGenerationSubmission = useCanvasStore((state) => state.recoverUnknownGenerationSubmission)
+  const resumeBatchVariations = useCanvasStore((state) => state.resumeBatchVariations)
   const applyCollaborativeGraph = useCanvasStore((state) => state.applyCollaborativeGraph)
   const applyAgentRunSnapshot = useCanvasStore((state) => state.applyAgentRunSnapshot)
   const applyAgentWorkflowPatch = useCanvasStore((state) => state.applyAgentWorkflowPatch)
@@ -555,6 +556,7 @@ export function useCanvasWorkspaceSynchronization({
           .then(() => recoverPersistentAgentRuns())
           .then(() => refreshAgentEntitiesFromRemote())
           .then(() => refreshDocumentFromRemoteOnce())
+          .then(() => resumeBatchVariations())
           .then(() => loadCollaborationActivities())
           .catch(() => undefined)
       },
@@ -566,7 +568,7 @@ export function useCanvasWorkspaceSynchronization({
       collaboration.close()
       if (useCanvasStore.getState().document.id === current.id) useCanvasStore.setState({ collaborationStatus: 'disabled' })
     }
-  }, [applyAgentRunSnapshot, applyCollaborativeGraph, copy.canvasUpdated, currentUserId, documentId, hydrated, loadCollaborationActivities, locale, recordRemoteChange, recoverAgentRunResults, recoverPersistentAgentRuns, recoverUnknownGenerationSubmission, refreshAgentEntitiesFromRemote, refreshDocumentFromRemoteOnce, synchronizeLocalDrafts, workspaceActive])
+  }, [applyAgentRunSnapshot, applyCollaborativeGraph, copy.canvasUpdated, currentUserId, documentId, hydrated, loadCollaborationActivities, locale, recordRemoteChange, recoverAgentRunResults, recoverPersistentAgentRuns, recoverUnknownGenerationSubmission, refreshAgentEntitiesFromRemote, refreshDocumentFromRemoteOnce, resumeBatchVariations, synchronizeLocalDrafts, workspaceActive])
 
   useEffect(() => {
     collaboratorNamesRef.current.clear()

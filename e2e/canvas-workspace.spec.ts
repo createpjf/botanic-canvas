@@ -564,6 +564,84 @@ test('空白画布新建的生成节点连上旧图后仍留在画布上', async
   await expect(page.locator('.react-flow__edge:visible')).not.toHaveCount(0)
 })
 
+test('重连期间画布写入与批量恢复保持暂停且不返回 phantom ID', async ({ page }) => {
+  await stubReadOnlyRuntime(page)
+  await page.goto('/#/projects')
+  await expect(page.getByRole('heading', { name: '创意项目', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '新建项目' }).click()
+  await page.getByRole('button', { name: '图片生成', exact: true }).click()
+  await expect(page.locator('.react-flow__node-generate:visible')).toHaveCount(1)
+
+  const result = await page.evaluate(async () => {
+    const loadStore = new Function('return import("/src/store/canvasStore.ts")') as () => Promise<{
+      useCanvasStore: {
+        getState: () => {
+          document: { nodes: { id: string }[]; batchVariationRuns: unknown[] }
+          sharedTemplates: unknown[]
+          addTextNode: () => string | null
+          addGenerateNode: () => string | null
+          createAssetGroup: (name: string, role: '商品') => string | null
+          removeNodeFromCanvas: (nodeId: string) => void
+          resumeBatchVariations: () => void
+          saveCurrentAsSharedTemplate: (name: string) => Promise<boolean>
+        }
+        setState: (patch: unknown) => void
+      }
+    }>
+    const { useCanvasStore } = await loadStore()
+    const before = useCanvasStore.getState().document
+    const nodeIds = before.nodes.map((node) => node.id)
+    useCanvasStore.setState({
+      collaborationStatus: 'connected',
+      document: {
+        ...before,
+        batchVariationRuns: [{
+          id: 'batch-reconnect', sourceResultNodeId: 'missing-result', groupId: 'missing-group', groupName: '商品组', variableRole: '商品',
+          prompt: '保持主体，替换商品。', candidatesPerAsset: 1,
+          settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' },
+          status: 'queued', items: [{ id: 'item-a', assetId: 'missing-asset', assetName: '商品 A', status: 'queued' }],
+          createdAt: 1, updatedAt: 1,
+        }],
+      },
+    })
+    const store = useCanvasStore.getState()
+    const sharedTemplateCount = store.sharedTemplates.length
+    const sharedSave = store.saveCurrentAsSharedTemplate('重连中的模板')
+    useCanvasStore.setState({ collaborationStatus: 'reconnecting' })
+    const sharedSaved = await sharedSave
+    const textId = store.addTextNode()
+    const generateId = store.addGenerateNode()
+    const groupId = store.createAssetGroup('重连中的素材组', '商品')
+    store.removeNodeFromCanvas(nodeIds[0])
+    store.resumeBatchVariations()
+    await new Promise((resolve) => window.setTimeout(resolve, 50))
+    const after = useCanvasStore.getState().document
+    const run = after.batchVariationRuns[0] as { status?: string; items?: Array<{ status?: string }> }
+    return {
+      textId,
+      generateId,
+      groupId,
+      sharedSaved,
+      sharedTemplateCount: useCanvasStore.getState().sharedTemplates.length - sharedTemplateCount,
+      nodeIds: after.nodes.map((node) => node.id),
+      runStatus: run?.status,
+      itemStatus: run?.items?.[0]?.status,
+    }
+  })
+
+  expect(result).toEqual({
+    textId: null,
+    generateId: null,
+    groupId: null,
+    sharedSaved: false,
+    sharedTemplateCount: 0,
+    nodeIds: expect.any(Array),
+    runStatus: 'queued',
+    itemStatus: 'queued',
+  })
+  expect(result.nodeIds).toHaveLength(1)
+})
+
 test('素材连上显式生成节点后，不在素材上重复挂 composer', async ({ page }) => {
   await stubReadOnlyRuntime(page)
   await page.goto('/#/projects')
