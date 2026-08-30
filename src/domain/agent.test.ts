@@ -1259,6 +1259,7 @@ test('只有仍在进行的 Run 才在面板底部恢复运行轨迹', () => {
 test('Agent 行动产物回写画布后记录真实节点血缘', () => {
   const result = recordBotanicAgentCanvasWritebacks({
     message: '完成',
+    canvasWritebackPending: true,
     artifacts: [
       { id: 'artifact-text', kind: 'text', label: '策略', content: '保持商品不变。', provenance: { actionId: 'action-1', toolName: 'skill_apply' } },
       { id: 'artifact-image', kind: 'image', label: '场景图', url: '/scene.webp', provenance: { actionId: 'action-1', toolName: 'mcp_call', sourceNodeIds: ['source-original'] } },
@@ -1271,6 +1272,7 @@ test('Agent 行动产物回写画布后记录真实节点血缘', () => {
 
   assert.deepEqual(result.canvasNodeIds, ['text-agent-1', 'asset-agent-1'])
   assert.equal(result.canvasNodeId, 'text-agent-1')
+  assert.equal(result.canvasWritebackPending, undefined)
   assert.deepEqual(result.artifacts?.[0].provenance.sourceNodeIds, ['text-agent-1'])
   assert.deepEqual(result.artifacts?.[1].provenance.sourceNodeIds, ['source-original', 'asset-agent-1'])
 })

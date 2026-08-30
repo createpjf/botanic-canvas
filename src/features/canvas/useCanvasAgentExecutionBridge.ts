@@ -472,13 +472,19 @@ export function useCanvasAgentExecutionBridge({
     if (useCanvasStore.getState().document.id !== projectId) {
       return { ...output, message: `${output.message} ${copy.projectChangedResult}` }
     }
-    if (useCanvasStore.getState().collaborationStatus === 'reconnecting') return output
+    const canvasCommands = resolveBotanicAgentCanvasCommands(output)
+    if (useCanvasStore.getState().collaborationStatus === 'reconnecting' && canvasCommands.length) {
+      useCanvasStore.setState({ assistantMessage: locale === 'en'
+        ? 'Realtime is reconnecting. The completed Agent result is saved and can be written back after reconnection.'
+        : '实时连接正在恢复；Agent 结果已保留，连接恢复后可继续回写画布。' })
+      return { ...output, canvasWritebackPending: true }
+    }
     const nodes = useCanvasStore.getState().document.nodes
     const origin = nodes.length
       ? { x: Math.max(...nodes.map((node) => node.position.x)) + 220, y: Math.min(...nodes.map((node) => node.position.y)) + 120 }
       : { x: 180, y: 160 }
     const writebacks: BotanicAgentCanvasWriteback[] = []
-    for (const [index, resolved] of resolveBotanicAgentCanvasCommands(output).entries()) {
+    for (const [index, resolved] of canvasCommands.entries()) {
       const position = { x: origin.x + (index % 2) * 240, y: origin.y + Math.floor(index / 2) * 260 }
       if (resolved.command.type === 'create_text_node' && resolved.artifact.content) {
         const nodeId = addTextNode(position, { select: false })
@@ -489,6 +495,7 @@ export function useCanvasAgentExecutionBridge({
         }
       }
       if (resolved.command.type === 'create_media_node' && resolved.artifact.url) {
+        const existingNodeIds = new Set(useCanvasStore.getState().document.nodes.map((node) => node.id))
         addUploadedAssetsToCanvas([{
           name: resolved.artifact.label,
           image: resolved.artifact.url,
@@ -497,11 +504,12 @@ export function useCanvasAgentExecutionBridge({
           collection: 'Agent 产物',
           tags: ['Agent', resolved.artifact.provenance.externalTool ?? resolved.artifact.provenance.toolName],
         }], position)
-        const nodeId = useCanvasStore.getState().selectedNodeId
+        const nodeId = useCanvasStore.getState().document.nodes.find((node) => !existingNodeIds.has(node.id))?.id
         if (nodeId) writebacks.push({ artifactId: resolved.artifact.id, nodeId })
       }
     }
-    return recordBotanicAgentCanvasWritebacks(output, writebacks)
+    const result = recordBotanicAgentCanvasWritebacks(output, writebacks)
+    return writebacks.length === canvasCommands.length ? result : { ...result, canvasWritebackPending: true }
   }, [addTextNode, addUploadedAssetsToCanvas, copy.projectChangedResult, document.id, locale, renameCanvasNode, updateTextNode])
 
   const confirmPlan = useCallback(async (plan: BotanicAgentPlan, submissionKey?: string) => {

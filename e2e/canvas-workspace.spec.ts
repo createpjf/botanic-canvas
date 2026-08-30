@@ -592,7 +592,7 @@ test('重连期间画布写入与批量恢复保持暂停且不返回 phantom ID
     const before = useCanvasStore.getState().document
     const nodeIds = before.nodes.map((node) => node.id)
     useCanvasStore.setState({
-      collaborationStatus: 'reconnecting',
+      collaborationStatus: 'connected',
       document: {
         ...before,
         batchVariationRuns: [{
@@ -605,11 +605,13 @@ test('重连期间画布写入与批量恢复保持暂停且不返回 phantom ID
       },
     })
     const store = useCanvasStore.getState()
+    const sharedTemplateCount = store.sharedTemplates.length
+    const sharedSave = store.saveCurrentAsSharedTemplate('重连中的模板')
+    useCanvasStore.setState({ collaborationStatus: 'reconnecting' })
+    const sharedSaved = await sharedSave
     const textId = store.addTextNode()
     const generateId = store.addGenerateNode()
     const groupId = store.createAssetGroup('重连中的素材组', '商品')
-    const sharedTemplateCount = store.sharedTemplates.length
-    const sharedSaved = await store.saveCurrentAsSharedTemplate('重连中的模板')
     store.removeNodeFromCanvas(nodeIds[0])
     store.resumeBatchVariations()
     await new Promise((resolve) => window.setTimeout(resolve, 50))

@@ -174,6 +174,7 @@ export function createCanvasTemplateHistoryActions({
         if (get().document.id === document.id) set({ assistantMessage: '共享模板库暂时不可用，请检查网络后重试。' })
         return false
       }
+      if (editingBlocked() || get().document.id !== document.id) return false
       const { snapshot, omittedPrivateAssetCount } = sharedWorkflowTemplateSnapshot(document, cleanedName)
       const image = snapshot.nodes.find((node) => node.type === 'asset' && (node.data as AssetNodeData).source === 'brand')
       const timestamp = now()
@@ -193,7 +194,9 @@ export function createCanvasTemplateHistoryActions({
         updatedAt: timestamp,
       }
       try {
+        if (editingBlocked() || get().document.id !== document.id) return false
         await writeGlobalWorkflowTemplateLibrary(library)
+        if (editingBlocked() || get().document.id !== document.id) return false
         set({
           sharedTemplates: nextTemplates,
           ...(get().document.id === document.id ? {
