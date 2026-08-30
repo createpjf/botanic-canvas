@@ -104,6 +104,44 @@ test('Owner 邀请成员时在 Auth 发送邮件，并以待接受状态写入 P
   assert.deepEqual(ensured, [{ id: 'user-2', email: 'member@botanic.test', name: 'Member', roleHint: 'member', statusHint: 'invited' }])
 })
 
+test('配置 Resend 后用 Supabase generateLink 生成验证链接，并发送欢迎与验证邮件', async () => {
+  const calls = []
+  const generated = []
+  const target = { id: 'user-2', email: 'member@botanic.test', name: 'Member', role: 'member', status: 'invited' }
+  const store = createSupabaseAuthPostgresStore({
+    productStore: {
+      async readUser(userId) {
+        return userId === 'owner-1' ? { id: 'owner-1', role: 'owner', status: 'active' } : target
+      },
+      async ensureAuthenticatedUser(input) { return { ...target, ...input, status: input.statusHint } },
+    },
+    inviteRedirectTo: 'https://botanic.test/auth/callback',
+    emailService: {
+      async sendVerificationEmail(input) { calls.push(['verification', input]) },
+      async sendWelcomeEmail(input) { calls.push(['welcome', input]) },
+    },
+    client: { auth: { admin: { async generateLink(input) {
+      generated.push(input)
+      return { data: { user: { id: 'user-2' }, properties: { action_link: 'https://botanic.test/auth/callback?code=generated' } }, error: null }
+    } } } },
+  })
+
+  const invited = await store.createUser('owner-1', { email: target.email, name: target.name })
+  assert.equal(invited.status, 'invited')
+  assert.deepEqual(generated, [{
+    type: 'invite', email: target.email,
+    options: { data: { display_name: target.name }, redirectTo: 'https://botanic.test/auth/callback' },
+  }])
+  assert.deepEqual(calls, [
+    ['verification', { userId: 'user-2', to: target.email, actionLink: 'https://botanic.test/auth/callback?code=generated' }],
+    ['welcome', { userId: 'user-2', to: target.email, name: target.name }],
+  ])
+
+  await store.resendUserInvite('owner-1', target.id)
+  assert.equal(calls.filter(([type]) => type === 'welcome').length, 1)
+  assert.equal(calls.filter(([type]) => type === 'verification').length, 2)
+})
+
 test('Owner 可为待接受成员重新发送邀请且保留原用户身份', async () => {
   const invites = []
   const target = { id: 'user-2', email: 'member@botanic.test', name: 'Member', role: 'member', status: 'invited' }

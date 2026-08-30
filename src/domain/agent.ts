@@ -956,6 +956,9 @@ export type BotanicAgentPlan = {
     mode: 'single' | 'batch_by_asset' | 'batch_by_variation'
     count: number
     candidatesPerItem: number
+    /** 仅成套方案：结构化条目数与实际候选总数分开记录。 */
+    itemCount?: number
+    totalCandidateCount?: number
   }
   /** 无素材组时按确认过的变体轴展开；张数以展开结果为准。 */
   variation?: BotanicAgentVariationSpec
@@ -1463,6 +1466,14 @@ export type BotanicAgentMessage = {
   turnId?: string
   /** 稳定 Turn 助手投影的服务端派生业务引用；客户端 PUT 不拥有该字段。 */
   entityReferences?: AgentEntityReference[]
+  /** 产生该稳定助手投影的用户 Message；保存 Memory 时不得回读当前 UI 上下文。 */
+  sourceMessageId?: string
+  /** 产生该稳定助手投影时冻结的画布上下文。 */
+  sourceNodeIds?: string[]
+  /** 产生该稳定助手投影时绑定的目标 Artifact 版本。 */
+  targetArtifactVersionId?: string
+  /** 若该投影已经关联编译计划，则记录服务端计划指纹。 */
+  planFingerprint?: string
   /** 用户已要求停止该 Turn；独立 Message 持久化后可跨刷新继续深取消。 */
   turnCancellationRequestedAt?: number
   /**
@@ -1478,6 +1489,20 @@ export type BotanicAgentMessage = {
   deliveryStatus?: 'waiting_network' | 'queued' | 'syncing' | 'synced' | 'failed'
 }
 
+export type BotanicAgentTargetBinding = {
+  version: 1
+  nodeId: string
+  nodeRevision: string
+  artifactId: string | null
+  generationJobId: string | null
+  candidateId: string | null
+  versionId: string | null
+  mediaId?: string | null
+  mediaSha256: string
+  projectRevision?: number
+  boundAt: number
+}
+
 export type BotanicAgentTurnRequestSnapshot = {
   locale: 'zh-CN' | 'en'
   plannerModel?: string
@@ -1488,10 +1513,27 @@ export type BotanicAgentTurnRequestSnapshot = {
   hasTarget: boolean
   /** null 是明确无目标；hasTarget=true 时必须是稳定 result node ID。 */
   selectedResultNodeId: string | null
+  /** 服务端在 Message 首次 durable 时冻结；客户端不创建或修改。 */
+  targetBinding?: BotanicAgentTargetBinding
   selectedResultLabel?: string
   executionMode?: BotanicAgentExecutionMode
   generationModels?: Pick<GenerationModelOption, 'id' | 'label' | 'mediaKind' | 'aspectRatios' | 'resolutions'>[]
   maxOutputCount?: number
+}
+
+export function botanicAgentAssistantMessageProvenance(
+  sourceMessage: BotanicAgentMessage | undefined,
+  turnId: string | undefined,
+): Pick<BotanicAgentMessage, 'sourceMessageId' | 'sourceNodeIds' | 'targetArtifactVersionId'> {
+  if (!sourceMessage || sourceMessage.role !== 'user' || !turnId || sourceMessage.turnId !== turnId) return {}
+  const snapshot = sourceMessage.turnRequestSnapshot
+  if (!snapshot) return {}
+  const versionId = snapshot.targetBinding?.versionId
+  return {
+    sourceMessageId: sourceMessage.id,
+    sourceNodeIds: uniqueIds(snapshot.contextNodeIds),
+    ...(versionId ? { targetArtifactVersionId: versionId } : {}),
+  }
 }
 
 /**
@@ -1548,6 +1590,8 @@ export function shouldRetryBotanicAgentAutoSubmission(
 
 export type BotanicAgentSession = {
   id: string
+  /** 会话设置的服务端 CAS 版本；旧会话缺省为 0。 */
+  revision?: number
   title: string
   executionMode: BotanicAgentExecutionMode
   /**
@@ -1703,6 +1747,18 @@ export type BotanicAgentMentionQuery = {
 
 function uniqueIds(ids: string[]) {
   return [...new Set(ids.filter(Boolean))]
+}
+
+export const BOTANIC_AGENT_MAX_CONTEXT_NODES = 32
+
+export function normalizeBotanicAgentContextNodeIds(ids: string[]) {
+  const normalized = uniqueIds(ids)
+  if (normalized.length > BOTANIC_AGENT_MAX_CONTEXT_NODES) {
+    throw Object.assign(new Error(`Agent 上下文最多选择 ${BOTANIC_AGENT_MAX_CONTEXT_NODES} 项。`), {
+      code: 'AGENT_SESSION_CONTEXT_LIMIT',
+    })
+  }
+  return normalized
 }
 
 export function createBotanicAgentMemoryItem(input: {
@@ -1946,11 +2002,12 @@ export function createBotanicAgentSession(input: {
   const now = input.now ?? Date.now()
   return {
     id: input.id ?? `agent-session-${now}`,
+    revision: 0,
     title: input.title?.trim() || '新建对话',
     executionMode: input.executionMode ?? 'manual',
     ...(input.plannerModel?.trim() ? { plannerModel: input.plannerModel.trim() } : {}),
     ...(input.mountedSkillIds?.length ? { mountedSkillIds: uniqueIds(input.mountedSkillIds) } : {}),
-    contextNodeIds: uniqueIds(input.contextNodeIds ?? []),
+    contextNodeIds: normalizeBotanicAgentContextNodeIds(input.contextNodeIds ?? []),
     messages: [],
     createdAt: now,
     updatedAt: now,
@@ -2025,7 +2082,7 @@ export function replaceBotanicAgentSessionContext(
   contextNodeIds: string[],
   now = Date.now(),
 ): BotanicAgentSession {
-  return { ...session, contextNodeIds: uniqueIds(contextNodeIds), updatedAt: now }
+  return { ...session, contextNodeIds: normalizeBotanicAgentContextNodeIds(contextNodeIds), updatedAt: now }
 }
 
 export function updateBotanicAgentSessionReadingAnchor(

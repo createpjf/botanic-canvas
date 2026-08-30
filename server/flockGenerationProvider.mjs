@@ -104,6 +104,25 @@ function collectImageCandidates(payload) {
   return values
 }
 
+function flockProviderResponseSummary(payload, candidateCount) {
+  const summary = /** @type {Record<string, unknown>} */ ({
+    type: payload === null ? 'null' : Array.isArray(payload) ? 'array' : typeof payload,
+    candidateCount,
+  })
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return summary
+  summary.keys = Object.keys(payload).slice(0, 20)
+  if (Array.isArray(payload.data)) summary.dataCount = payload.data.length
+  if (Array.isArray(payload.choices)) {
+    summary.choiceCount = payload.choices.length
+    const finishReasons = payload.choices
+      .map((choice) => typeof choice?.finish_reason === 'string' ? choice.finish_reason : undefined)
+      .filter(Boolean)
+      .slice(0, 8)
+    if (finishReasons.length) summary.finishReasons = finishReasons
+  }
+  return summary
+}
+
 async function readBoundedResponseBytes(response, maximumBytes) {
   const declaredHeader = response.headers.get('content-length')
   const declaredLength = declaredHeader === null ? undefined : Number(declaredHeader)
@@ -347,7 +366,9 @@ async function generateOneFlockImage(job, {
     const media = await resolveImageCandidate(candidate, { signal, lookup, imageRequestImpl }).catch(() => undefined)
     if (media) return media
   }
-  throw new GenerationError(502, 'EMPTY_PROVIDER_RESPONSE', 'Flock 图像服务没有返回可用的图片。')
+  const error = new GenerationError(502, 'EMPTY_PROVIDER_RESPONSE', 'Flock 图像服务没有返回可用的图片。')
+  error.providerResponseSummary = flockProviderResponseSummary(body, candidates.length)
+  throw error
 }
 
 /** Flock / Nano Banana 生图 Adapter。文生图走 images/generations，有参考走 chat/completions。 */

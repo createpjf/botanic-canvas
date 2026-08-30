@@ -51,8 +51,21 @@ export function mergeAgentMessageForWrite(current, incoming, input = {}) {
 
   const currentSnapshot = current?.turnRequestSnapshot
   const incomingSnapshot = incoming.turnRequestSnapshot
-  if (currentSnapshot !== undefined && incomingSnapshot !== undefined && !isDeepStrictEqual(currentSnapshot, incomingSnapshot)) {
+  const currentTargetBinding = currentSnapshot?.targetBinding
+  const incomingTargetBinding = incomingSnapshot?.targetBinding
+  const withoutTargetBinding = (snapshot) => {
+    if (snapshot === undefined) return undefined
+    const copy = structuredClone(snapshot)
+    delete copy.targetBinding
+    return copy
+  }
+  if (currentSnapshot !== undefined && incomingSnapshot !== undefined
+    && !isDeepStrictEqual(withoutTargetBinding(currentSnapshot), withoutTargetBinding(incomingSnapshot))) {
     throw messageMergeError('Agent 消息已绑定其他 Turn 请求快照。', 'AGENT_MESSAGE_TURN_REQUEST_CONFLICT')
+  }
+  if (currentTargetBinding !== undefined && incomingTargetBinding !== undefined
+    && !isDeepStrictEqual(currentTargetBinding, incomingTargetBinding)) {
+    throw messageMergeError('Agent 消息已绑定其他目标版本。', 'AGENT_MESSAGE_TURN_REQUEST_CONFLICT')
   }
   if (current && (currentSnapshot !== undefined || incomingSnapshot !== undefined) && (
     current.kind !== incoming.kind
@@ -92,7 +105,11 @@ export function mergeAgentMessageForWrite(current, incoming, input = {}) {
 
   delete message.turnRequestSnapshot
   const turnRequestSnapshot = currentSnapshot ?? incomingSnapshot
-  if (turnRequestSnapshot !== undefined) message.turnRequestSnapshot = structuredClone(turnRequestSnapshot)
+  if (turnRequestSnapshot !== undefined) {
+    message.turnRequestSnapshot = structuredClone(turnRequestSnapshot)
+    const targetBinding = currentTargetBinding ?? incomingTargetBinding
+    if (targetBinding !== undefined) message.turnRequestSnapshot.targetBinding = structuredClone(targetBinding)
+  }
 
   delete message.turnCancellationRequestedAt
   const currentCancellation = validCancellation(current?.turnCancellationRequestedAt)
@@ -120,6 +137,18 @@ export function mergeAgentMessageForWrite(current, incoming, input = {}) {
     const references = currentReferences ?? incomingReferences
     delete message.entityReferences
     if (references !== undefined) message.entityReferences = structuredClone(references)
+
+    for (const field of ['sourceMessageId', 'sourceNodeIds', 'targetArtifactVersionId', 'planFingerprint']) {
+      const currentValue = current?.[field]
+      const incomingValue = incoming[field]
+      if (currentValue !== undefined && incomingValue !== undefined
+        && !isDeepStrictEqual(currentValue, incomingValue)) {
+        throw messageMergeError('Agent Turn 结果来源发生冲突。', 'AGENT_MESSAGE_PROVENANCE_CONFLICT')
+      }
+      delete message[field]
+      const value = currentValue ?? incomingValue
+      if (value !== undefined) message[field] = structuredClone(value)
+    }
   }
 
   message.updatedAt = storedUpdatedAt

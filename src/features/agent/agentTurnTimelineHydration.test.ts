@@ -47,6 +47,14 @@ test('没有工具事件时不制造历史时间线', () => {
   assert.equal(agentTurnTimelineFromHydrationEvents([{ type: 'done' }], 100), undefined)
 })
 
+test('截断的历史时间线保留已加载数量与续读游标', () => {
+  const timeline = agentTurnTimelineFromHydrationEvents([], 100, {
+    loadedCount: 1000,
+    nextAfter: 1000,
+  })
+  assert.deepEqual(timeline?.truncation, { loadedCount: 1000, nextAfter: 1000 })
+})
+
 test('404 终止热循环，网络错误留待 online/focus 重试，切会话 abort 可立即释放', () => {
   assert.equal(agentTurnTimelineHydrationFailureDisposition({ status: 404 }), 'terminal')
   assert.equal(agentTurnTimelineHydrationFailureDisposition({ status: 0 }), 'retry_later')

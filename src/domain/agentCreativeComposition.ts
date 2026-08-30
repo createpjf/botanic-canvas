@@ -1,6 +1,6 @@
 import type { BotanicAgentContextSnapshot, BotanicAgentMessage, BotanicAgentPlan } from './agent.ts'
 import { botanicAgentImageContext } from './agent.ts'
-import type { GenerationSettings } from './canvas.ts'
+import type { GenerationModelOption, GenerationSettings } from './canvas.ts'
 import type { ProductLocale } from '../i18n/core'
 
 /**
@@ -29,6 +29,21 @@ export type BotanicAgentComposition = {
 
 export const botanicAgentCompositionItemLimit = 8
 export const botanicAgentCompositionItemCountLimit = 4
+
+export function botanicAgentCompositionTotalCandidateCount(composition: BotanicAgentComposition) {
+  return composition.items.reduce((total, item) => total + item.count, 0)
+}
+
+export function resolveBotanicAgentCompositionImageModel(
+  models: readonly GenerationModelOption[],
+  preferredModelIds: readonly (string | undefined)[] = [],
+) {
+  for (const id of preferredModelIds) {
+    const preferred = models.find((model) => model.id === id && (model.mediaKind ?? 'image') === 'image')
+    if (preferred) return preferred
+  }
+  return models.find((model) => (model.mediaKind ?? 'image') === 'image')
+}
 
 type RawCompositionItem = {
   title?: unknown
@@ -187,12 +202,14 @@ export function buildBotanicAgentCompositionPlan(input: {
       : '整套生成需要至少一项图片素材或图片结果作为基准，请先引用素材。')
   }
   const videoCount = input.composition.items.filter((item) => item.mediaKind === 'video').length
+  const itemCount = input.composition.items.length
+  const totalCandidateCount = botanicAgentCompositionTotalCandidateCount(input.composition)
   return {
     intent: 'initial_generation',
     instruction: input.instruction,
     summary: locale === 'en'
-      ? `Run the full “${input.composition.theme}” composition: ${input.composition.items.length} items${videoCount ? `, including ${videoCount} video${videoCount === 1 ? '' : 's'}` : ''}.`
-      : `成套生成「${input.composition.theme}」，共 ${input.composition.items.length} 项${videoCount ? `（含 ${videoCount} 条视频）` : ''}。`,
+      ? `Run the full “${input.composition.theme}” composition: ${itemCount} items, ${totalCandidateCount} candidates${videoCount ? `, including ${videoCount} video${videoCount === 1 ? '' : 's'}` : ''}.`
+      : `成套生成「${input.composition.theme}」，共 ${itemCount} 项、${totalCandidateCount} 个候选${videoCount ? `（含 ${videoCount} 条视频）` : ''}。`,
     contextSnapshot: input.contextSnapshot,
     references: imageContext.map((item) => ({
       source: 'context_node' as const,
@@ -204,7 +221,7 @@ export function buildBotanicAgentCompositionPlan(input: {
     // plan.prompt 是分支缺省兜底；每个分支实际使用条目自己的定稿 Prompt。
     prompt: input.composition.items[0].prompt,
     settings: input.settings,
-    output: { mode: 'single', count: input.composition.items.length, candidatesPerItem: 1 },
+    output: { mode: 'single', count: totalCandidateCount, candidatesPerItem: 1, itemCount, totalCandidateCount },
     composition: structuredClone(input.composition),
   }
 }

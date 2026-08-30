@@ -8,7 +8,9 @@ const postgres = readFileSync(new URL('./postgresProductStore.mjs', import.meta.
 const supabase = readFileSync(new URL('./supabaseProductStore.mjs', import.meta.url), 'utf8')
 const local = readFileSync(new URL('./productStore.mjs', import.meta.url), 'utf8')
 const persistence = readFileSync(new URL('./botanicAgentPersistence.mjs', import.meta.url), 'utf8')
+const productStoreContract = readFileSync(new URL('./productStoreContract.mjs', import.meta.url), 'utf8')
 const migration = readFileSync(new URL('../supabase/migrations/20260827180000_agent_thread_summary_cas.sql', import.meta.url), 'utf8')
+const sessionSettingsMigration = readFileSync(new URL('../supabase/migrations/20260830090000_agent_session_settings_cas.sql', import.meta.url), 'utf8')
 
 function slice(source, startText, endText) {
   const start = source.indexOf(startText)
@@ -33,8 +35,9 @@ test('三个 Adapter 的 CanvasDocument 同步共用不信任 entityReferences �
   for (const sync of syncs) assert.match(sync, /agentStateFromDocument\(document\)/u)
 })
 
-test('PostgreSQL 非 CAS Session writer 在行锁或 conflict update 内保留当前 Thread Summary', () => {
+test('PostgreSQL Canvas 兼容 Session 只插入，显式非 CAS writer 仍保留当前 Thread Summary', () => {
   const sync = slice(postgres, 'async function syncAgentState(', 'async function generationObservedAt(')
+  const sessionSync = slice(sync, 'for (const session of changedSessions)', 'for (const entry of changedMessages)')
   const putSession = slice(
     postgres,
     'async putAgentSession(userId, projectId, input)',
@@ -45,7 +48,10 @@ test('PostgreSQL 非 CAS Session writer 在行锁或 conflict update 内保留�
     'async putAgentMessage(userId, projectId, sessionId, input)',
     'async putAgentMemoryItem(userId, projectId, input)',
   )
-  assert.match(sync, /agent_sessions\.payload \? 'threadSummary'[\s\S]*agent_sessions\.payload->'threadSummary'/u)
+  assert.match(sessionSync, /pg_advisory_xact_lock\(hashtextextended\([\s\S]*agent-session:/u)
+  assert.match(sessionSync, /from agent_sessions where id = \$\{session\.id\} for update/u)
+  assert.match(sessionSync, /insert into agent_sessions[\s\S]*on conflict \(id\) do nothing/u)
+  assert.doesNotMatch(sessionSync, /on conflict \(id\) do update/u)
   assert.match(putSession, /for update/u)
   assert.match(putSession, /preserveAgentThreadSummary\(previous, session\)/u)
   assert.match(putMessage, /from agent_sessions[\s\S]*for update/u)
@@ -100,6 +106,7 @@ test('Supabase Session Message 与 Canvas 同步只走新原子 RPC，缺迁移 
   )
   assert.match(sync, /botanic_sync_agent_entities/u)
   assert.match(sync, /p_preserve_thread_summary:\s*true/u)
+  assert.match(sync, /p_insert_sessions_only:\s*true/u)
   assert.match(sync, /AGENT_DERIVED_FIELDS_ATOMIC_WRITE_REQUIRED/u)
   assert.doesNotMatch(sync, /from\(table\)|\.upsert\(safeRows/u)
   assert.match(putSession, /botanic_put_agent_session/u)
@@ -122,6 +129,48 @@ test('Supabase Session Message 与 Canvas 同步只走新原子 RPC，缺迁移 
     projectWrite.indexOf('assertAgentDerivedFieldWriterAvailable') < projectWrite.indexOf('botanic_write_project_document'),
     '缺迁移必须在项目文档落库前 fail-closed',
   )
+})
+
+test('三个 Adapter 共用 revision CAS，Canvas 兼容同步不能覆盖既有 Session', () => {
+  const helper = slice(
+    persistence,
+    'export function compareAndSetAgentSessionSettings(',
+    'export function validateAgentSessionReadReceipt(',
+  )
+  const localCas = slice(
+    local,
+    'compareAndSetAgentSessionSettings(userId, projectId, command)',
+    'putAgentSession(userId, projectId, input)',
+  )
+  const postgresCas = slice(
+    postgres,
+    'async compareAndSetAgentSessionSettings(userId, projectId, command)',
+    'async putAgentSession(userId, projectId, input)',
+  )
+  const supabaseCas = slice(
+    supabase,
+    'async compareAndSetAgentSessionSettings(userId, projectId, command)',
+    'async putAgentSession(userId, projectId, input)',
+  )
+
+  assert.match(helper, /expectedRevision[\s\S]*currentRevision[\s\S]*kind: 'conflict'/u)
+  assert.match(helper, /revision: currentRevision \+ 1/u)
+  assert.match(productStoreContract, /'compareAndSetAgentSessionSettings'/u)
+  assert.match(localCas, /compareAndSetAgentSessionSettings\(conflict\?\.payload, command/u)
+  assert.match(postgresCas, /pg_advisory_xact_lock[\s\S]*for update[\s\S]*compareAndSetAgentSessionSettings\(asPayload\(existing\), command/u)
+  assert.match(supabaseCas, /rpc\('botanic_compare_and_set_agent_session_settings'/u)
+  assert.match(supabaseCas, /normalizeAgentSessionSettingsCommand\(command[\s\S]*p_changes: normalized\.changes/u)
+  assert.match(supabaseCas, /AGENT_SESSION_SETTINGS_CAS_REQUIRED/u)
+
+  assert.match(sessionSettingsMigration, /create or replace function public\.botanic_compare_and_set_agent_session_settings/u)
+  assert.match(sessionSettingsMigration, /pg_advisory_xact_lock[\s\S]*from public\.agent_sessions where id = p_session_id for update/u)
+  assert.match(sessionSettingsMigration, /p_expected_revision <> current_revision[\s\S]*'kind', 'conflict'/u)
+  assert.match(sessionSettingsMigration, /jsonb_set\(stored_payload, '\{revision\}', to_jsonb\(next_revision\)/u)
+  assert.match(sessionSettingsMigration, /p_insert_sessions_only is distinct from true/u)
+  assert.match(sessionSettingsMigration, /insert into public\.agent_sessions[\s\S]*on conflict \(id\) do nothing/u)
+  assert.match(sessionSettingsMigration, /turnRequestSnapshot,targetBinding[\s\S]*existing\.payload[\s\S]*- 'targetBinding'/u)
+  assert.match(sessionSettingsMigration, /sourceMessageId[\s\S]*sourceNodeIds[\s\S]*existing\.payload->'sourceMessageId'/u)
+  assert.match(sessionSettingsMigration, /grant execute on function public\.botanic_compare_and_set_agent_session_settings[\s\S]*to service_role/u)
 })
 
 test('Supabase 迁移在单事务锁内保留 Summary、终态与 sticky 请求绑定', () => {

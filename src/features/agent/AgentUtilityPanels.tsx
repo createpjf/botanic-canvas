@@ -61,8 +61,8 @@ import { formatProductDateTime, type ProductLocale } from '../../i18n/core'
 const agentUtilityMessages = {
   'zh-CN': {
     collaborationAria: '协作动态', collaborationEyebrow: '协作', collaborationTitle: '协作动态', collaborationDescription: '查看成员最近修改，并直接定位到相关节点、对话或任务。',
-    remoteCanvasTitle: '画布有新的云端版本', remoteCanvasDetail: '本地草稿仍保留。先查看变更，再决定使用哪一版。', remoteVersion: '云端版本',
-    viewChanges: (count: number) => `查看 ${count} 项变更`, readingRemoteChanges: '正在读取云端变更…', keepLocal: '暂留本地', useRemote: '使用云端版本',
+    remoteCanvasTitle: '画布有新的云端版本', remoteCanvasDetail: '本地草稿仍保留；选择云端时也会先留一份本地备份。', remoteVersion: '云端版本', revisionCompare: (local?: number, remote?: number) => `本地基于 revision ${local ?? '未知'} · 云端 revision ${remote ?? '未知'}`,
+    viewChanges: (count: number) => `查看 ${count} 项变更`, readingRemoteChanges: '正在读取云端变更…', keepLocal: '保留本地并重试', useRemote: '放弃本地，使用云端',
     readSyncFailed: '已读状态同步失败，点击重试', clearSyncFailed: '清空状态同步失败，点击重试', activitySyncFailed: '协作动态同步失败，点击重试',
     markAllRead: '全部已读', clearHistory: '清空记录', noActivities: '还没有协作变更。', loadingActivities: '正在读取协作动态…', loading: '加载中…', loadEarlierActivities: '加载更早动态',
     activityCount: (count: number) => `${count} 条`, occurrenceCount: (count: number) => `${count} 次`,
@@ -91,8 +91,8 @@ const agentUtilityMessages = {
   },
   en: {
     collaborationAria: 'Collaboration activity', collaborationEyebrow: 'Collaboration', collaborationTitle: 'Collaboration', collaborationDescription: 'Review recent changes from workspace members and jump to the related node, conversation, or task.',
-    remoteCanvasTitle: 'A newer canvas version is available', remoteCanvasDetail: 'Your local draft is preserved. Review the changes before choosing a version.', remoteVersion: 'Remote version',
-    viewChanges: (count: number) => `View ${count} ${count === 1 ? 'change' : 'changes'}`, readingRemoteChanges: 'Reading remote changes…', keepLocal: 'Keep local version', useRemote: 'Use remote version',
+    remoteCanvasTitle: 'A newer canvas version is available', remoteCanvasDetail: 'Your local draft is preserved; choosing remote also keeps a local backup.', remoteVersion: 'Remote version', revisionCompare: (local?: number, remote?: number) => `Local base revision ${local ?? 'unknown'} · remote revision ${remote ?? 'unknown'}`,
+    viewChanges: (count: number) => `View ${count} ${count === 1 ? 'change' : 'changes'}`, readingRemoteChanges: 'Reading remote changes…', keepLocal: 'Keep local and retry', useRemote: 'Discard local and use remote',
     readSyncFailed: 'Read status could not sync. Click to retry.', clearSyncFailed: 'Activity could not be cleared. Click to retry.', activitySyncFailed: 'Collaboration activity could not sync. Click to retry.',
     markAllRead: 'Mark all as read', clearHistory: 'Clear activity', noActivities: 'No collaboration activity yet.', loadingActivities: 'Loading collaboration activity…', loading: 'Loading…', loadEarlierActivities: 'Load earlier activity',
     activityCount: (count: number) => `${count} ${count === 1 ? 'update' : 'updates'}`, occurrenceCount: (count: number) => `${count} times`,
@@ -128,6 +128,7 @@ function collaborationTime(timestamp: number, locale: ProductLocale) {
 export function AgentCollaborationPanel({
   activities,
   conflictChanges,
+  conflictRevision,
   persistenceStatus,
   onLocate,
   onMarkRead,
@@ -142,6 +143,7 @@ export function AgentCollaborationPanel({
 }: {
   activities: CollaborationActivity[]
   conflictChanges: CollaborationDocumentChange[]
+  conflictRevision?: { localRevision?: number; remoteRevision: number }
   persistenceStatus: 'saved' | 'saving' | 'offline' | 'conflict' | 'error'
   onLocate: (activity: CollaborationActivity) => void
   onMarkRead: () => Promise<void>
@@ -160,6 +162,7 @@ export function AgentCollaborationPanel({
     <p>{copy.collaborationDescription}</p>
     {persistenceStatus === 'conflict' ? <div className="agent-collaboration-panel__conflict" role="alert">
       <span><strong>{copy.remoteCanvasTitle}</strong><small>{copy.remoteCanvasDetail}</small></span>
+      {conflictRevision ? <small>{copy.revisionCompare(conflictRevision.localRevision, conflictRevision.remoteRevision)}</small> : null}
       {conflictChanges.length ? <details className="agent-collaboration-panel__conflict-details">
         <summary>{copy.viewChanges(conflictChanges.length)}</summary>
         <ul>{conflictChanges.map((change, index) => <li key={`${change.summary}-${index}`}>
@@ -622,6 +625,7 @@ export function AgentReviewPanel({ runId, projectId }: {
   const copy = useProductMessages(agentUtilityMessages)
   const [tasks, setTasks] = useState<AgentReviewTaskSnapshot[]>([])
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [reloadEpoch, setReloadEpoch] = useState(0)
   const [pending, setPending] = useState('')
   const [notice, setNotice] = useState('')
   // 接受/拒绝只改评审状态；请求重试会创建生成 Run，分别对齐服务端两个能力。
@@ -652,7 +656,7 @@ export function AgentReviewPanel({ runId, projectId }: {
       .catch(() => { if (active) setStatus('error') })
     void load()
     return () => { active = false; if (timer) clearTimeout(timer) }
-  }, [runId])
+  }, [reloadEpoch, runId])
 
   const decide = async (taskId: string, artifactId: string, decision: AgentReviewDecision) => {
     setPending(`${taskId}:${artifactId}`)
@@ -699,7 +703,7 @@ export function AgentReviewPanel({ runId, projectId }: {
   return <section className="agent-review-panel" aria-label={copy.reviewAria}>
     <p>{copy.reviewDescription}</p>
     {status === 'loading' ? <div className="agent-panel__empty">{copy.reviewLoading}</div> : null}
-    {status === 'error' ? <div className="agent-panel__empty">{copy.reviewUnavailable}</div> : null}
+    {status === 'error' ? <div className="agent-panel__empty">{copy.reviewUnavailable} <button type="button" onClick={() => setReloadEpoch((value) => value + 1)}>{locale === 'en' ? 'Retry' : '重试'}</button></div> : null}
     {status === 'ready' && !tasks.length ? <div className="agent-panel__empty">{copy.noReviewTasks}</div> : null}
     {notice ? <p className="agent-review-panel__notice">{notice}</p> : null}
     {tasks.map((task) => {

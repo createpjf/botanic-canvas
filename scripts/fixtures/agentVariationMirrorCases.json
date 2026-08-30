@@ -138,6 +138,15 @@
       "expected": {
         "kind": "none"
       }
+    },
+    {
+      "name": "单图场景修改后的保留条款不能拆成场景分支",
+      "input": {
+        "instruction": "把背景改成清晨的浅色海边，保留香薰瓶、标签文字和三分之一留白。"
+      },
+      "expected": {
+        "kind": "none"
+      }
     }
   ],
   "promptCases": [

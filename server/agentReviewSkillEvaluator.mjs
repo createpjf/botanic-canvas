@@ -83,7 +83,7 @@ export function evaluatorCallEstimate(qualityPolicy, candidateCount) {
  *
  * @param {{
  *   criterion: any, candidate: any, task: any,
- *   judgeWith: (input: { criterion: any, candidate: any }) => any,
+ *   judgeWith: (input: { criterion: any, candidate: any, task: any }) => any,
  *   registry?: any, context?: any, timeoutMs?: number, signal?: AbortSignal, now?: () => number,
  * }} input
  */
@@ -121,7 +121,7 @@ export async function runEvaluatorSkillCriterion({
       skillVersion: criterion.version,
     }
   }
-  const runSubagent = judgeWith({ criterion, candidate })
+  const runSubagent = judgeWith({ criterion, candidate, task })
   const settled = await runAgentSubtask({
     subtask,
     registry,
@@ -169,7 +169,7 @@ export async function runEvaluatorSkillCriterion({
  * 未配置视觉模型时返回 `undefined` —— 调用方据此把自定义判据记为「无法验证」，
  * 而不是拿一个永远失败的执行器去跑。
  *
- * @param {{ runtimeConfig?: any, resolveMedia?: (image: string) => Promise<string | undefined>, callModel?: any, fetchImpl?: typeof fetch }} input
+ * @param {{ runtimeConfig?: any, resolveMedia?: (image: string, context: { ownerId?: string, projectId?: string, signal?: AbortSignal }) => Promise<string | undefined>, callModel?: any, fetchImpl?: typeof fetch }} input
  */
 export function createEvaluatorSkillRunner({ runtimeConfig, resolveMedia, callModel, fetchImpl = fetch } = {}) {
   const model = typeof runtimeConfig?.agentVisionModel === 'string' ? runtimeConfig.agentVisionModel.trim() : ''
@@ -197,9 +197,11 @@ export function createEvaluatorSkillRunner({ runtimeConfig, resolveMedia, callMo
    * 而不是把它们塞进 `subtask.input` —— input 参与指纹，塞进去会让同一判据因图片
    * 不同而反复重跑，重放复用就失效了。
    */
-  return function judgeWith({ criterion, candidate }) {
+  return function judgeWith({ criterion, candidate, task }) {
     return async function runSubagent({ signal }) {
-      const dataUrl = typeof resolveMedia === 'function' ? await resolveMedia(candidate?.output?.image) : undefined
+      const dataUrl = typeof resolveMedia === 'function'
+        ? await resolveMedia(candidate?.output?.image, { ownerId: task?.ownerId, projectId: task?.projectId, signal })
+        : undefined
       if (!dataUrl) {
         // 取不到画面就无法判定；照实说，不拿一张空图去问模型。
         return { verdict: 'unverifiable', evidence: '无法读取该候选的画面。' }

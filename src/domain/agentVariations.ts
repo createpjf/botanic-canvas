@@ -262,7 +262,8 @@ function extractEnumeration(text: string, item: VariationAxisCatalogItem) {
     if (otherIndex >= 0) before = before.slice(otherIndex + other.length)
   }
   before = before.replace(/^[，,、。；:\s]+/u, '')
-  const after = text.slice(index + label.length).split(/[。；\n]/u)[0]
+  const after = text.slice(index + label.length)
+    .split(/[。；\n]|[，,]\s*(?=(?:保持|保留|锁定|不要|不改|不可|不得))/u)[0]
     .replace(/^[为是用：:\s]+/u, '')
   const countableAfter = after.replace(/(?:生成|出|做|来)?\s*(?:\d+|两|二|三|四|五|六|七|八|九|十)\s*张(?:图|照片|画面)?/gu, ' ')
   const countableBefore = before.replace(/(?:生成|出|做|来)?\s*(?:\d+|两|二|三|四|五|六|七|八|九|十)\s*张(?:图|照片|画面)?/gu, ' ')

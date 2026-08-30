@@ -90,16 +90,28 @@ export function validateIndexedArtifact(value, { now = Date.now() } = {}) {
   return result
 }
 
-function collectSafely(items, create) {
+function collectWithRejections(items, create) {
   const artifacts = []
-  for (const item of items) {
+  const rejected = []
+  for (const [index, item] of items.entries()) {
     try {
       artifacts.push(create(item))
-    } catch {
-      // 历史快照可能包含旧版或损坏产物；单条无效记录不能阻断整个项目回填。
+    } catch (caught) {
+      rejected.push({
+        index,
+        ...(item?.late ? { source: 'lateOutputs' } : { source: 'outputs' }),
+        ...(typeof item?.id === 'string' && item.id.trim() ? { outputId: item.id.trim().slice(0, 240) } : {}),
+        code: typeof caught?.code === 'string' ? caught.code : 'INVALID_AGENT_ARTIFACT',
+        message: caught instanceof Error ? caught.message : 'Artifact 转换失败。',
+      })
     }
   }
-  return artifacts
+  return { artifacts, rejected }
+}
+
+function collectSafely(items, create) {
+  // 历史回填兼容入口：坏记录被隔离；需要完整性判断的当前 Job 使用带 report 的入口。
+  return collectWithRejections(items, create).artifacts
 }
 
 export function artifactsFromAgentMessage(message, {
@@ -162,12 +174,12 @@ export function artifactsFromActionReceipt(receipt, { now = Date.now() } = {}) {
   })
 }
 
-export function artifactsFromGenerationJob(job, { document, now = Date.now() } = {}) {
+export function generationArtifactsFromJobReport(job, { document, now = Date.now() } = {}) {
   const committedOutputs = Array.isArray(job?.outputs)
-    ? job.outputs.filter((output) => typeof output?.id === 'string' && output.id.trim() && typeof output?.image === 'string' && output.image.trim())
+    ? job.outputs
     : []
   const lateOutputs = Array.isArray(job?.lateOutputs)
-    ? job.lateOutputs.filter((output) => typeof output?.id === 'string' && output.id.trim() && typeof output?.image === 'string' && output.image.trim())
+    ? job.lateOutputs
     : []
   const outputs = [
     ...committedOutputs.map((output) => ({ ...output, late: false })),
@@ -192,12 +204,14 @@ export function artifactsFromGenerationJob(job, { document, now = Date.now() } =
     // 早期单输出结果节点没有 candidateId，此时构造不出唯一的 Artifact 标识。
     // 宁可只留 parentNodeId，也不猜一个 —— 猜错会把血缘指到同一次任务的另一张图上。
     : undefined)
-  return collectSafely(outputs, (output) => {
+  const conversion = collectWithRejections(outputs, (output) => {
+    const outputId = text(output?.id, '生成输出标识', 240)
+    const outputImage = text(output?.image, '生成输出地址', 2_048)
     const resultNode = !output.late && nodes.find((node) => node?.type === 'result'
       && node?.data?.jobId === job.id
-      && (node?.data?.candidateId === output.id || (!node?.data?.candidateId && committedOutputs.length === 1)))
+      && (node?.data?.candidateId === outputId || (!node?.data?.candidateId && committedOutputs.length === 1)))
     const variant = Array.isArray(job.variants)
-      ? job.variants.find((item) => item?.output?.id === output.id)
+      ? job.variants.find((item) => item?.output?.id === outputId)
       : undefined
     const mediaKind = output.mediaKind === 'video' ? 'video' : 'image'
     const immutableSourceNodeIds = [
@@ -215,12 +229,12 @@ export function artifactsFromGenerationJob(job, { document, now = Date.now() } =
     const prompt = [job.generationRecipe?.prompt, job.rawInput?.prompt]
       .find((value) => typeof value === 'string' && value.trim())
     return validateIndexedArtifact({
-      id: `${output.late ? 'generation-late' : 'generation'}:${job.id}:${output.id}`,
+      id: `${output.late ? 'generation-late' : 'generation'}:${job.id}:${outputId}`,
       kind: mediaKind,
       label: output.late
         ? (mediaKind === 'video' ? '迟到视频（已隔离）' : '迟到图片（已隔离）')
         : resultNode?.data?.label?.trim() || (mediaKind === 'video' ? '生成视频' : '生成图片'),
-      url: output.image,
+      url: outputImage,
       placement: output.late ? 'panel' : 'canvas',
       metadata: {
         source: 'generation',
@@ -229,14 +243,14 @@ export function artifactsFromGenerationJob(job, { document, now = Date.now() } =
         jobId: job.id,
         branchId: job.agentRun?.branchId,
         groupId: job.agentRun?.runId,
-        outputId: output.id,
+        outputId,
         dismissed: output.late || (Array.isArray(job.dismissedOutputIds) && job.dismissedOutputIds.includes(output.id)),
         ...(output.late ? {
           quarantined: true,
           lateReason: output.reason,
           executionGeneration: output.executionGeneration,
         } : {}),
-        savedToLibrary: assets.some((asset) => asset?.source === 'generated' && asset?.image === output.image),
+        savedToLibrary: assets.some((asset) => asset?.source === 'generated' && asset?.image === outputImage),
         settings: clone(job.settings),
         // 编译计划指纹随 Artifact 一起落库：这是「任一 Artifact 可反查 Plan」的落点。
         // 顶层字段优先，回落到配方 —— 指纹上线前的历史任务只有配方里那一份。
@@ -261,11 +275,16 @@ export function artifactsFromGenerationJob(job, { document, now = Date.now() } =
         runId: job.agentRun?.runId,
         sourceNodeIds,
       },
-      origin: { type: 'generation_output', jobId: job.id, outputId: output.id },
+      origin: { type: 'generation_output', jobId: job.id, outputId },
       createdAt: output.late ? timestamp(output.recordedAt, completedAt) : completedAt,
       updatedAt: timestamp(job.updatedAt, completedAt),
     }, { now })
   })
+  return { ...conversion, expectedOutputCount: outputs.length }
+}
+
+export function artifactsFromGenerationJob(job, options) {
+  return generationArtifactsFromJobReport(job, options).artifacts
 }
 
 export function artifactsFromDocument(document, { generationJobs = [], now = Date.now() } = {}) {
@@ -336,6 +355,25 @@ export function reconcileArtifactIndex({ expectedArtifacts = [], indexedArtifact
     duplicateExpectedCount: expectedIds.length - expected.size,
     missingIds,
     retainedHistoryIds,
+  }
+}
+
+export function generationArtifactRefreshReport(conversion, indexedArtifacts = []) {
+  const reconciliation = reconcileArtifactIndex({
+    expectedArtifacts: conversion?.artifacts ?? [],
+    indexedArtifacts,
+  })
+  const rejected = Array.isArray(conversion?.rejected) ? conversion.rejected : []
+  const expectedOutputCount = Number(conversion?.expectedOutputCount) || 0
+  return {
+    ...reconciliation,
+    status: rejected.length || reconciliation.missingCount || reconciliation.duplicateExpectedCount
+      ? 'failed'
+      : 'passed',
+    expectedOutputCount,
+    convertedCount: conversion?.artifacts?.length ?? 0,
+    rejectedCount: rejected.length,
+    rejected: clone(rejected),
   }
 }
 

@@ -3,6 +3,7 @@ import { botanicAgentBranchGenerationPrompt } from './botanicAgentVariations.mjs
 import { compositionOverlayReferences, orderCompositionReferences } from './generationComposition.mjs'
 import { compileCreativePlan, creativePlanHash } from './botanicCreativePlanCompiler.mjs'
 import { resolveBrandKit } from './brandKit.mjs'
+import { createAgentReferenceBindings } from './agentTargetBinding.mjs'
 
 /**
  * Resolve 阶段（ADR 0005）。这是唯一读取权威状态的一侧：它按项目权威文档与运行时
@@ -52,6 +53,7 @@ function initialGenerationReferences(run, document) {
     return {
       nodeId: node.id,
       ...(node.data.assetId ? { assetId: node.data.assetId } : {}),
+      ...(node.data.versionId ? { artifactVersionId: node.data.versionId } : {}),
       name: node.data.name ?? node.data.label ?? `参考图 ${index + 1}`,
       image,
       role: node.data.role ?? '参考',
@@ -74,6 +76,7 @@ function withBranchAsset(references, run, document, branch) {
   const kept = references.filter((reference) => reference.role !== asset.role)
   kept.push({
     assetId: asset.id,
+    ...(asset.versionId ? { artifactVersionId: asset.versionId } : {}),
     name: asset.name,
     image: asset.image,
     role: asset.role ?? '参考',
@@ -104,6 +107,7 @@ function refinementReferences(run, document) {
     return [{
       nodeId: node.id,
       ...(node.data.assetId ? { assetId: node.data.assetId } : {}),
+      ...(node.data.versionId ? { artifactVersionId: node.data.versionId } : {}),
       name: node.data.name ?? node.data.label ?? `参考图 ${index + 1}`,
       image,
       role: node.data.role ?? '参考',
@@ -258,13 +262,37 @@ export function resolveCreativePlan({ run, document, models }) {
   return { parentNode, branches, models: normalizedModels }
 }
 
+export async function createCreativePlanReferenceBindings({ run, document, models, resolveMedia }) {
+  const resolved = resolveCreativePlan({ run, document, models })
+  return Object.fromEntries(await Promise.all(resolved.branches.map(async ({ branch, recipe }) => [
+    branch.id,
+    await createAgentReferenceBindings(recipe.references ?? [], { resolveMedia }),
+  ])))
+}
+
+export async function assertCreativePlanReferenceBindings({ run, document, models, resolveMedia }) {
+  const expectedByBranch = new Map((run?.compiledPlan?.branches ?? []).map((branch) => [branch.branchId, branch.referenceBindings]))
+  const currentByBranch = await createCreativePlanReferenceBindings({ run, document, models, resolveMedia })
+  for (const branch of run?.branches ?? []) {
+    const current = currentByBranch[branch.id] ?? []
+    const expected = expectedByBranch.get(branch.id)
+    if ((current.length && !Array.isArray(expected))
+      || creativePlanHash(current) !== creativePlanHash(expected ?? [])) {
+      throw resolveError('AGENT_PLAN_REFERENCE_DRIFT', '确认时使用的参考素材内容已发生变化，请重新确认这次生成。')
+    }
+  }
+}
+
 /**
  * 确认后立刻编译出的 plan 级不可变快照（ADR 0005 不变量一）。
  *
  * 保存它的意义是重试与恢复不再重新 Resolve：模型目录、Memory、Skill 之后改了，
  * 历史 Run 重试仍按当时确认的语义执行。
  */
-export function compileRunCreativePlan({ run, document, models, globalBrandKit, projectSkills, locale = 'zh-CN', now = Date.now() }) {
+export function compileRunCreativePlan({
+  run, document, models, globalBrandKit, projectSkills, referenceBindingsByBranch,
+  locale = 'zh-CN', now = Date.now(),
+}) {
   const resolved = resolveCreativePlan({ run, document, models })
   if (!resolved.branches.length) throw resolveError('AGENT_PLAN_NOT_COMPILABLE', 'Agent 计划没有可编译的分支。')
   const brandKit = resolveRunBrandKit({ run, document, globalBrandKit })
@@ -305,6 +333,7 @@ export function compileRunCreativePlan({ run, document, models, globalBrandKit, 
         primary: Boolean(reference.primary),
         priority: reference.priority,
       })),
+      referenceBindings: clone(referenceBindingsByBranch?.[branch.id] ?? []),
     })),
     memoryBindings: run.plan?.memoryBindings,
     skillBindings: run.plan?.skillBindings,
@@ -312,6 +341,10 @@ export function compileRunCreativePlan({ run, document, models, globalBrandKit, 
     brandKit: brandKit?.fingerprint,
   })
   const branches = resolved.branches.map(({ branch, recipe, isVideo }) => {
+    const referenceBindings = clone(referenceBindingsByBranch?.[branch.id] ?? [])
+    if (referenceBindingsByBranch && referenceBindings.length !== (recipe.references ?? []).length) {
+      throw resolveError('AGENT_PLAN_REFERENCE_BINDING_INVALID', 'Agent 参考图绑定与编译分支不一致。')
+    }
     const { compiled } = compileCreativePlan({
       // Resolve 已完成旁白清理与分支增量拼接；编译层只把这份可信画面描述包装成
       // 执行契约，不能再次回读规划器的叙述性 plan.prompt。
@@ -327,7 +360,7 @@ export function compileRunCreativePlan({ run, document, models, globalBrandKit, 
       locale,
       planFingerprint,
     })
-    return { ...compiled, branchId: branch.id, isVideo, batchCount: recipe.batchCount }
+    return { ...compiled, branchId: branch.id, isVideo, batchCount: recipe.batchCount, referenceBindings }
   })
   if (new Set(branches.map((entry) => entry.branchFingerprint)).size !== branches.length) {
     throw resolveError('AGENT_PLAN_BRANCH_FINGERPRINT_COLLISION', 'Agent 分支指纹重复，无法区分执行结果。', 500)

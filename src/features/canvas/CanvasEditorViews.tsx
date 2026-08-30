@@ -41,7 +41,7 @@ const editorMessages = {
     dragComposer: '拖动移动生成器', manageReferences: (count: number) => `管理本次 ${count} 个参考`, manageReferenceTitle: '管理参考', addReferenceAsset: '添加参考素材', addReferenceShort: '添加参考', collapseComposer: '折叠生成器', expandComposer: '展开生成器', closeComposer: '关闭生成器', close: '关闭',
     promptLabel: (name: string) => `${name}描述`, imagePrompt: '描述商品、场景、构图、光线与留白要求', videoPrompt: '描述主体动作、镜头运动、节奏与场景变化', refined: 'Botanic 结构润色已应用', refinePrompt: (video: boolean) => `润色${video ? '视频' : '图像'}生成描述`, refineTitle: '润色描述', refining: '正在按 Botanic 结构润色…', refineFallback: '润色失败，原文未修改。',
     videoInputMode: '视频输入模式', videoInput: '视频输入', chooseVideoInput: '选择视频输入方式', firstFrame: '首帧', firstLast: '首尾帧', referenceAsset: '参考素材', continuationMode: '继续生成方式', faithful: '忠实精修', explore: '探索变体', faithfulDetail: '保留构图与主体，仅执行描述中的改动。', exploreDetail: '保留主体，主动探索构图、机位与光影。',
-    commonSettings: '常用生成参数', model: '模型', chooseModel: '选择生成模型', duration: '时长', chooseDuration: '选择视频时长', candidates: '张数', chooseCandidateCount: '选择张数', resultSet: (index: number, total: number) => `${index}/${total} 张`, output: '输出', followAsset: '跟随素材', frame: '画幅', decidedByInput: '由输入素材决定', chooseRatio: '选择画面比例', resolution: '清晰度', chooseResolution: '选择输出清晰度', clarityBoost: '4K', searchGrounding: '参考网页', thinking: '思考', thinkingHigh: '充分', thinkingMinimal: '精简', customPixels: '自定义像素', multiple16: '须为 16 的倍数', width: '宽', height: '高', customWidth: '自定义输出宽度', customHeight: '自定义输出高度', invalidSize: '自定义宽高无效。', snapped: (width: number, height: number) => `已对齐为 ${width}×${height}`, apply: '应用',
+    commonSettings: '常用生成参数', model: '模型', chooseModel: '选择生成模型', unavailable: '不可用', modelUnavailable: '当前部署未配置此模型', duration: '时长', chooseDuration: '选择视频时长', candidates: '张数', chooseCandidateCount: '选择张数', resultSet: (index: number, total: number) => `${index}/${total} 张`, output: '输出', followAsset: '跟随素材', frame: '画幅', decidedByInput: '由输入素材决定', chooseRatio: '选择画面比例', resolution: '清晰度', chooseResolution: '选择输出清晰度', clarityBoost: '4K', searchGrounding: '参考网页', thinking: '思考', thinkingHigh: '充分', thinkingMinimal: '精简', customPixels: '自定义像素', multiple16: '须为 16 的倍数', width: '宽', height: '高', customWidth: '自定义输出宽度', customHeight: '自定义输出高度', invalidSize: '自定义宽高无效。', snapped: (width: number, height: number) => `已对齐为 ${width}×${height}`, apply: '应用',
     recovering: '正在确认任务，请勿重复提交…', uploading: '正在上传参考素材…', queued: '任务已入队…', serviceGenerating: (video: boolean) => `${video ? '视频' : '图像'}服务正在生成…`, primaryReference: (name: string) => `主参考 · ${name}`, ready: '参数已准备好，提交后会在画布中创建新的结果节点。', modeNeeds: (title: string, requirement: string) => `${title}模式需要${requirement}`, twoImages: '按顺序连接 2 张图片', oneImage: '连接 1 张图片', oneReference: '连接至少 1 个图片或视频参考', setPrimary: '连接并设置主商品后即可生成。', generating: '生成中…', generate: '生成', mediaTagImage: '图片', mediaTagVideo: '视频', previewEmpty: '等待生成预览', addReferenceHint: '添加参考后即可生成',
     taskStatuses: { uploading: '提交素材', submission_unknown: '等待确认', queued: '任务排队', running: '生成中', succeeded: '待挑选', failed: '任务失败', cancelled: '已取消' }, waitedSeconds: (seconds: number) => `已等待 ${seconds} 秒`, waitedMinutes: (minutes: number, seconds: number) => seconds ? `已等待 ${minutes} 分 ${seconds} 秒` : `已等待 ${minutes} 分`,
     promptInput: '描述输入端', promptOutput: '从描述连线', refinementBrief: '定向精修指令', creativeDirection: '描述', taskAttention: '任务需要处理', referenceInput: '参考组输入端', referenceOutput: '从参考组连线', primaryProduct: (name: string) => `主商品 · ${name}`, noPrimary: '未锁定主商品',
@@ -62,7 +62,7 @@ const editorMessages = {
     dragComposer: 'Drag to move generator', manageReferences: (count: number) => `Manage ${count} ${count === 1 ? 'reference' : 'references'}`, manageReferenceTitle: 'Manage references', addReferenceAsset: 'Add reference asset', addReferenceShort: 'Add reference', collapseComposer: 'Collapse generator', expandComposer: 'Expand generator', closeComposer: 'Close generator', close: 'Close',
     promptLabel: (name: string) => `${name} description`, imagePrompt: 'Product, scene, composition, light, and negative space', videoPrompt: 'Subject motion, camera, pacing, and scene change', refined: 'Botanic structure applied', refinePrompt: (video: boolean) => `Refine ${video ? 'video' : 'image'} prompt`, refineTitle: 'Refine prompt', refining: 'Refining with Botanic structure…', refineFallback: 'Refinement failed. Original text kept.',
     videoInputMode: 'Video input mode', videoInput: 'Video input', chooseVideoInput: 'Choose video input', firstFrame: 'First frame', firstLast: 'First + last', referenceAsset: 'Reference asset', continuationMode: 'Continuation mode', faithful: 'Faithful edit', explore: 'Explore variations', faithfulDetail: 'Keep composition and subject. Apply only the requested edits.', exploreDetail: 'Keep the subject. Explore framing, camera, and light.',
-    commonSettings: 'Generation settings', model: 'Model', chooseModel: 'Choose generation model', duration: 'Duration', chooseDuration: 'Choose video duration', candidates: 'Images', chooseCandidateCount: 'Choose image count', resultSet: (index: number, total: number) => `${index}/${total}`, output: 'Output', followAsset: 'Follow source', frame: 'Aspect ratio', decidedByInput: 'Determined by input assets', chooseRatio: 'Choose aspect ratio', resolution: 'Resolution', chooseResolution: 'Choose output resolution', clarityBoost: '4K', searchGrounding: 'Web reference', thinking: 'Thinking', thinkingHigh: 'High', thinkingMinimal: 'Minimal', customPixels: 'Custom pixels', multiple16: 'Must be a multiple of 16', width: 'W', height: 'H', customWidth: 'Custom output width', customHeight: 'Custom output height', invalidSize: 'Invalid custom dimensions.', snapped: (width: number, height: number) => `Adjusted to ${width}×${height}`, apply: 'Apply',
+    commonSettings: 'Generation settings', model: 'Model', chooseModel: 'Choose generation model', unavailable: 'Unavailable', modelUnavailable: 'This model is not configured for the current deployment', duration: 'Duration', chooseDuration: 'Choose video duration', candidates: 'Images', chooseCandidateCount: 'Choose image count', resultSet: (index: number, total: number) => `${index}/${total}`, output: 'Output', followAsset: 'Follow source', frame: 'Aspect ratio', decidedByInput: 'Determined by input assets', chooseRatio: 'Choose aspect ratio', resolution: 'Resolution', chooseResolution: 'Choose output resolution', clarityBoost: '4K', searchGrounding: 'Web reference', thinking: 'Thinking', thinkingHigh: 'High', thinkingMinimal: 'Minimal', customPixels: 'Custom pixels', multiple16: 'Must be a multiple of 16', width: 'W', height: 'H', customWidth: 'Custom output width', customHeight: 'Custom output height', invalidSize: 'Invalid custom dimensions.', snapped: (width: number, height: number) => `Adjusted to ${width}×${height}`, apply: 'Apply',
     recovering: 'Confirming task. Do not submit again…', uploading: 'Uploading refs…', queued: 'Task queued…', serviceGenerating: (video: boolean) => `${video ? 'Video' : 'Image'} service is generating…`, primaryReference: (name: string) => `Primary reference · ${name}`, ready: 'Ready. Submit to create a result node.', modeNeeds: (title: string, requirement: string) => `${title} mode needs ${requirement}`, twoImages: '2 images in order', oneImage: '1 connected image', oneReference: 'at least 1 image or video ref', setPrimary: 'Set a primary product to generate.', generating: 'Generating…', generate: 'Generate', mediaTagImage: 'Image', mediaTagVideo: 'Video', previewEmpty: 'Preview pending', addReferenceHint: 'Add a reference to generate',
     taskStatuses: { uploading: 'Uploading assets', submission_unknown: 'Awaiting confirmation', queued: 'Queued', running: 'Generating', succeeded: 'Ready to pick', failed: 'Failed', cancelled: 'Cancelled' }, waitedSeconds: (seconds: number) => `Waiting ${seconds}s`, waitedMinutes: (minutes: number, seconds: number) => seconds ? `Waiting ${minutes}m ${seconds}s` : `Waiting ${minutes}m`,
     promptInput: 'Prompt input', promptOutput: 'Connect from prompt', refinementBrief: 'Directed refinement brief', creativeDirection: 'Prompt', taskAttention: 'Task needs attention', referenceInput: 'Reference group input', referenceOutput: 'Connect from reference group', primaryProduct: (name: string) => `Primary product · ${name}`, noPrimary: 'No primary product',
@@ -552,6 +552,7 @@ export function GenerateDock({
   const generate = generateNode?.type === 'generate' ? generateNode.data as GenerateNodeData : undefined
   const document = useCanvasStore((state) => state.document)
   const availableModels = useCanvasStore((state) => state.availableModels)
+  const unavailableModels = useCanvasStore((state) => state.unavailableModels)
   const maximumBatchCount = useCanvasStore((state) => maximumBatchCountOverride ?? state.maximumBatchCount)
   const generationStatus = useCanvasStore((state) => state.generationStatus)
   const generationError = useCanvasStore((state) => state.generationError)
@@ -618,13 +619,14 @@ export function GenerateDock({
 
   const hasPrimaryInput = Boolean(generate && document.edges.some((edge) => edge.source === generate.primaryInputId && edge.target === id))
 
-  const activeMediaKind = availableModels.find((model) => model.id === generate?.settings.model)?.mediaKind
+  const catalogModels = [...availableModels, ...unavailableModels]
+  const activeMediaKind = catalogModels.find((model) => model.id === generate?.settings.model)?.mediaKind
     ?? (generate?.settings.duration === undefined ? 'image' : 'video')
-  const compatibleModels = availableModels.filter((model) => (model.mediaKind ?? 'image') === activeMediaKind)
+  const compatibleModels = catalogModels.filter((model) => (model.mediaKind ?? 'image') === activeMediaKind)
   const modelOptions = generate && compatibleModels.some((model) => model.id === generate.settings.model)
     ? compatibleModels
     : generate
-      ? [{ id: generate.settings.model, label: generate.settings.model, mediaKind: activeMediaKind }, ...compatibleModels]
+      ? [{ id: generate.settings.model, label: generate.settings.model, mediaKind: activeMediaKind, available: false, unavailableReason: t.modelUnavailable }, ...compatibleModels]
       : compatibleModels
   const selectedModel = generate ? modelOptions.find((model) => model.id === generate.settings.model) : undefined
   const mediaKind = selectedModel?.mediaKind ?? activeMediaKind
@@ -632,7 +634,7 @@ export function GenerateDock({
   const videoInputMode: VideoInputMode = generate?.videoInputMode
     ?? (references.some((reference) => reference.mediaKind === 'video') ? 'reference' : references.length === 2 ? 'first_last' : 'first_frame')
   const videoRatioPolicy = videoAspectRatioPolicy(videoInputMode, generate?.settings.aspectRatio ?? '1:1')
-  const modelLabel = modelDisplayLabel(selectedModel) || generate?.settings.model || ''
+  const modelLabel = `${modelDisplayLabel(selectedModel) || generate?.settings.model || ''}${selectedModel?.available === false ? ` · ${t.unavailable}` : ''}`
   const batchLimit = maximumBatchCount
   const isGenerating = generationStatus === 'uploading' || generationStatus === 'queued' || generationStatus === 'running' || generationStatus === 'recovering'
   const videoInputsValid = videoInputMode === 'reference'
@@ -640,7 +642,7 @@ export function GenerateDock({
     : videoInputMode === 'first_frame'
       ? references.length === 1 && references[0]?.mediaKind !== 'video'
       : references.length === 2 && references.every((reference) => reference.mediaKind !== 'video')
-  const canGenerate = isVideoModel ? videoInputsValid : Boolean(hasPrimaryInput || inputSummary.readyResults || references.some((item) => item.primary) || references[0])
+  const canGenerate = selectedModel?.available !== false && (isVideoModel ? videoInputsValid : Boolean(hasPrimaryInput || inputSummary.readyResults || references.some((item) => item.primary) || references[0]))
   if (!generate) return null
   const updateSettings = (patch: Partial<GenerationSettings>) => {
     updateGenerateNode(id, { settings: { ...generate.settings, ...patch } })
@@ -722,14 +724,14 @@ export function GenerateDock({
                   {(close) => <div className="composer-model-menu" role="listbox" aria-label={t.chooseModel}>
                     {modelOptions.map((model) => {
                       const active = model.id === generate.settings.model
-                      return <button key={model.id} type="button" role="option" aria-selected={active} className={active ? 'is-selected' : ''} onClick={() => {
+                      return <button key={model.id} type="button" role="option" aria-selected={active} className={active ? 'is-selected' : ''} disabled={model.available === false} title={model.unavailableReason} onClick={() => {
                         updateGenerateNode(id, { settings: settingsForGenerationModel(generate.settings, model) })
                         clearGenerationError()
                         close()
                       }}>
                         <img src={modelProviderLogo(model)} alt="" />
                         <strong>{modelDisplayLabel(model)}</strong>
-                        {active ? <b>✓</b> : null}
+                        {model.available === false ? <b>{t.unavailable}</b> : active ? <b>✓</b> : null}
                       </button>
                     })}
                   </div>}

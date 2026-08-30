@@ -5,7 +5,7 @@ export const GENERATION_ASPECT_RATIOS = Object.freeze([
   '1:1', '16:9', '4:3', '3:4', '4:5', '9:16', '3:2', '2:3', '5:4', '21:9',
 ])
 export const GENERATION_RESOLUTIONS = Object.freeze(['1K', '2K', '4K'])
-export const NANO_BANANA_MODEL_ID = 'gemini-3.1-pro-preview'
+export const NANO_BANANA_MODEL_ID = 'gemini-3.1-flash-image-preview'
 export const DEFAULT_FLOCK_IMAGE_MODELS = Object.freeze([NANO_BANANA_MODEL_ID])
 export const NANO_BANANA_ASPECT_RATIOS = GENERATION_ASPECT_RATIOS
 export const NANO_BANANA_RESOLUTIONS = GENERATION_RESOLUTIONS

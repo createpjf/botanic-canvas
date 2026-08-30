@@ -94,7 +94,7 @@ export function reviewVisionInstructions(requiredCriteria = [], brandCriteria = 
  *
  * @param {{
  *   runtimeConfig?: any,
- *   resolveMedia?: (image: string) => Promise<string | undefined>,
+ *   resolveMedia?: (image: string, context: { ownerId?: string, projectId?: string, signal?: AbortSignal }) => Promise<string | undefined>,
  *   callModel?: (input: { model: string, messages: any[], signal: AbortSignal }) => Promise<any>,
  *   fetchImpl?: typeof fetch,
  * }} input
@@ -140,7 +140,9 @@ export function createAgentReviewVisionJudge({ runtimeConfig, resolveMedia, call
     // 品牌判据与通用判据一起问同一次，不额外发一轮请求：一张图问两遍是两份钱，
     // 而且两次判定可能互相矛盾，无从裁决。
     const answerable = [...requiredCriteria, ...brandCriteria.map((item) => item.id)]
-    const dataUrl = typeof resolveMedia === 'function' ? await resolveMedia(candidate?.output?.image) : undefined
+    const dataUrl = typeof resolveMedia === 'function'
+      ? await resolveMedia(candidate?.output?.image, { ownerId: task?.ownerId, projectId: task?.projectId, signal })
+      : undefined
     if (signal?.aborted) throw signal.reason
     if (!dataUrl) {
       // 取不到画面就无法做视觉判定；照实说，不拿一张空图去问模型。

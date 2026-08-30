@@ -1,4 +1,4 @@
-import { useId, useRef } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import type { ChangeEvent, KeyboardEvent, RefObject } from 'react'
 import { botanicAgentExecutionModeLabel, type BotanicAgentMentionQuery, type BotanicAgentSession } from '../../domain/agent'
 import type { AssetGroup } from '../../domain/canvas'
@@ -17,6 +17,7 @@ import {
 } from '../../components/gsapMotion'
 import { agentPlannerModelLabel, agentPlannerModelShortLabel } from '../../components/generationModelPresentation'
 import type { AgentContextItem, AgentSkillOption } from './agentWorkspace.types'
+import { nextAgentSuggestionIndex } from './agentComposerState'
 import { useProductI18n, useProductMessages } from '../../i18n/react'
 
 type AgentComposerProps = {
@@ -121,13 +122,15 @@ export function AgentComposer({
   const { locale } = useProductI18n()
   const copy = useProductMessages({
     'zh-CN': {
-      input: 'Agent 输入', referenced: '已引用', remove: '移除', mounted: '已挂载', callSkill: '挂载 Skill', systemSkill: '系统 Skill', projectSkill: '项目 Skill', createSkill: '创建项目 Skill', saveRules: '保存一组可复用规则', referenceCanvas: '引用画布节点或图片视频', description: '补充描述', asset: '素材', result: '结果', video: '视频', noMatch: '没有匹配项，按 Esc 关闭', noSkillMatch: '没有匹配的 Skill，按 Esc 关闭', placeholder: '例如：更冷的晨光，服装和商品保持', message: 'Agent 消息', promptField: '提示词', retry: '重试', addImages: '添加图像素材', executionMode: '执行模式', manual: '计划模式', auto: '自动模式', manualTitle: '计划模式：出图先给计划，确认后再提交', autoTitle: '自动模式：出图补齐设置后直接提交', model: 'Agent 模型', assetGroup: '素材组', single: '单张', group: '组', send: '发送给 Agent', stop: '停止', closeImages: '关闭添加图像素材', chooseImages: '从电脑选择图片', dragHint: '也可以直接拖入 Agent 面板', noImages: '暂无图像素材，可从电脑选择或直接拖入。', manualHelp: '出图需确认后再提交', autoHelp: '出图可直接提交', rawReasoning: '模型推理原文（实验）', rawReasoningHelp: '当前会话 · 不保存 · 取决于模型支持', textKind: '文字',
+      input: 'Agent 输入', referenced: '已引用', remove: '移除', mounted: '已挂载', callSkill: '挂载 Skill', systemSkill: '系统 Skill', projectSkill: '项目 Skill', createSkill: '创建项目 Skill', saveRules: '保存一组可复用规则', referenceCanvas: '引用画布节点或图片视频', description: '补充描述', asset: '素材', result: '结果', video: '视频', noMatch: '没有匹配项，按 Esc 关闭', noSkillMatch: '没有匹配的 Skill，按 Esc 关闭', placeholder: '例如：更冷的晨光，服装和商品保持', message: 'Agent 消息', promptField: '提示词', retry: '重试', addImages: '添加图像素材', executionMode: '执行模式', manual: '计划模式', auto: '自动模式', manualTitle: '计划模式：出图先给计划，确认后再提交', autoTitle: '自动模式：单张设置完整后直接提交，多张或外部行动仍需确认', model: 'Agent 模型', assetGroup: '素材组', single: '单张', group: '组', send: '发送给 Agent', stop: '停止', closeImages: '关闭添加图像素材', chooseImages: '从电脑选择图片', dragHint: '也可以直接拖入 Agent 面板', noImages: '暂无图像素材，可从电脑选择或直接拖入。', manualHelp: '出图需确认后再提交', autoHelp: '单张可直接提交；多张仍需确认', rawReasoning: '模型推理原文（实验）', rawReasoningHelp: '当前会话 · 不保存 · 取决于模型支持', textKind: '文字',
     },
     en: {
-      input: 'Agent input', referenced: 'Referenced', remove: 'Remove', mounted: 'Mounted', callSkill: 'Mount Skill', systemSkill: 'System Skill', projectSkill: 'Project Skill', createSkill: 'Create project Skill', saveRules: 'Save a reusable set of rules', referenceCanvas: 'Reference canvas nodes or media', description: 'Description', asset: 'Asset', result: 'Result', video: 'Video', noMatch: 'No matches. Press Esc to close.', noSkillMatch: 'No matching Skill. Press Esc to close.', placeholder: 'e.g. Cooler morning light — keep clothes and product', message: 'Agent message', promptField: 'Prompt', retry: 'Retry', addImages: 'Add images', executionMode: 'Execution mode', manual: 'Plan mode', auto: 'Auto mode', manualTitle: 'Plan mode: review image plans before generating', autoTitle: 'Auto mode: submit image jobs after settings are complete', model: 'Agent model', assetGroup: 'Asset group', single: 'Single', group: 'Group', send: 'Send to Agent', stop: 'Stop', closeImages: 'Close image picker', chooseImages: 'Choose images', dragHint: 'Or drop images into the Agent panel', noImages: 'No images yet. Choose files or drop them here.', manualHelp: 'Confirm image plans before submit', autoHelp: 'Image jobs can submit directly', rawReasoning: 'Model reasoning text (experimental)', rawReasoningHelp: 'Current session · not saved · model dependent', textKind: 'Text',
+      input: 'Agent input', referenced: 'Referenced', remove: 'Remove', mounted: 'Mounted', callSkill: 'Mount Skill', systemSkill: 'System Skill', projectSkill: 'Project Skill', createSkill: 'Create project Skill', saveRules: 'Save a reusable set of rules', referenceCanvas: 'Reference canvas nodes or media', description: 'Description', asset: 'Asset', result: 'Result', video: 'Video', noMatch: 'No matches. Press Esc to close.', noSkillMatch: 'No matching Skill. Press Esc to close.', placeholder: 'e.g. Cooler morning light — keep clothes and product', message: 'Agent message', promptField: 'Prompt', retry: 'Retry', addImages: 'Add images', executionMode: 'Execution mode', manual: 'Plan mode', auto: 'Auto mode', manualTitle: 'Plan mode: review image plans before generating', autoTitle: 'Auto mode: submit one complete image job directly; batches and external actions still need confirmation', model: 'Agent model', assetGroup: 'Asset group', single: 'Single', group: 'Group', send: 'Send to Agent', stop: 'Stop', closeImages: 'Close image picker', chooseImages: 'Choose images', dragHint: 'Or drop images into the Agent panel', noImages: 'No images yet. Choose files or drop them here.', manualHelp: 'Confirm image plans before submit', autoHelp: 'Single images submit directly; batches still need confirmation', rawReasoning: 'Model reasoning text (experimental)', rawReasoningHelp: 'Current session · not saved · model dependent', textKind: 'Text',
     },
   })
   const composerErrorId = useId()
+  const suggestionListId = useId()
+  const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0)
   const executionModeLabel = locale === 'en'
     ? (session?.executionMode === 'auto' ? copy.auto : copy.manual)
     : botanicAgentExecutionModeLabel(session?.executionMode ?? 'manual')
@@ -148,21 +151,35 @@ export function AgentComposer({
   }
   const skillMenuOpen = mentionQuery?.trigger === '/'
   const canvasMenuOpen = mentionQuery?.trigger === '@'
+  const suggestionCount = skillMenuOpen ? skillOptions.length + 1 : canvasMenuOpen ? mentionOptions.length : 0
+  const selectedSuggestionIndex = Math.min(activeSuggestionIndex, Math.max(0, suggestionCount - 1))
+  const activeSuggestionId = suggestionCount ? `${suggestionListId}-option-${selectedSuggestionIndex}` : undefined
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Escape' && mentionQuery) {
       event.preventDefault()
       onDismissMention()
       return
     }
+    if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && mentionQuery && suggestionCount) {
+      event.preventDefault()
+      const direction = event.key === 'ArrowDown' ? 'ArrowDown' : 'ArrowUp'
+      setActiveSuggestionIndex((current) => nextAgentSuggestionIndex(current, suggestionCount, direction))
+      return
+    }
     if (event.key === 'Enter' && mentionQuery) {
-      if (skillMenuOpen && skillOptions[0]) {
+      if (skillMenuOpen && skillOptions[selectedSuggestionIndex]) {
         event.preventDefault()
-        onSelectSkill(skillOptions[0])
+        onSelectSkill(skillOptions[selectedSuggestionIndex])
         return
       }
-      if (canvasMenuOpen && mentionOptions[0]) {
+      if (skillMenuOpen && selectedSuggestionIndex === skillOptions.length) {
         event.preventDefault()
-        onSelectMention(mentionOptions[0])
+        onCreateSkill()
+        return
+      }
+      if (canvasMenuOpen && mentionOptions[selectedSuggestionIndex]) {
+        event.preventDefault()
+        onSelectMention(mentionOptions[selectedSuggestionIndex])
         return
       }
     }
@@ -183,6 +200,13 @@ export function AgentComposer({
   const chipFlipState = useRef<Flip.FlipState | undefined>(undefined)
   const chipSignature = [...contextItems.map((item) => item.id), ...mountedSkills.map((skill) => skill.id)].join('|')
   const mentionMenuKey = mentionQuery?.trigger ?? ''
+
+  useEffect(() => setActiveSuggestionIndex(0), [mentionQuery?.query, mentionQuery?.trigger])
+
+  useEffect(() => {
+    if (!activeSuggestionId) return
+    document.getElementById(activeSuggestionId)?.scrollIntoView({ block: 'nearest' })
+  }, [activeSuggestionId])
 
   useGSAP(() => {
     const chips = gsap.utils.toArray<HTMLElement>('[data-flip-id]', composerRef.current)
@@ -233,13 +257,13 @@ export function AgentComposer({
         </div>
       </div> : null}
     </div> : null}
-    {skillMenuOpen ? <div className="agent-composer__mention-menu" role="group" aria-label={copy.callSkill} onPointerDown={(event) => event.stopPropagation()}>
-      {skillOptions.length ? <div className="agent-composer__mention-section"><strong>{copy.callSkill}</strong>{skillOptions.map((skill) => <button key={`skill-${skill.id}`} type="button" role="option" aria-label={`${copy.callSkill} ${skill.name}`} onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onSelectSkill(skill) }}><SparkleIcon /><b>{skill.name}</b><small>{skill.source === 'system' ? copy.systemSkill : copy.projectSkill}</small></button>)}</div> : null}
-      <button type="button" role="option" className="agent-composer__create-skill" aria-label={copy.createSkill} onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onCreateSkill() }}><PlusIcon /><b>{copy.createSkill}</b><small>{copy.saveRules}</small></button>
+    {skillMenuOpen ? <div id={suggestionListId} className="agent-composer__mention-menu" role="listbox" aria-label={copy.callSkill} onPointerDown={(event) => event.stopPropagation()}>
+      {skillOptions.length ? <div className="agent-composer__mention-section" role="group" aria-label={copy.callSkill}><strong>{copy.callSkill}</strong>{skillOptions.map((skill, index) => <button id={`${suggestionListId}-option-${index}`} key={`skill-${skill.id}`} type="button" role="option" tabIndex={-1} aria-selected={selectedSuggestionIndex === index} aria-label={`${copy.callSkill} ${skill.name}`} onMouseEnter={() => setActiveSuggestionIndex(index)} onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onSelectSkill(skill) }}><SparkleIcon /><b>{skill.name}</b><small>{skill.source === 'system' ? copy.systemSkill : copy.projectSkill}</small></button>)}</div> : null}
+      <button id={`${suggestionListId}-option-${skillOptions.length}`} type="button" role="option" tabIndex={-1} aria-selected={selectedSuggestionIndex === skillOptions.length} className="agent-composer__create-skill" aria-label={copy.createSkill} onMouseEnter={() => setActiveSuggestionIndex(skillOptions.length)} onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onCreateSkill() }}><PlusIcon /><b>{copy.createSkill}</b><small>{copy.saveRules}</small></button>
       {!skillOptions.length ? <p>{copy.noSkillMatch}</p> : null}
     </div> : null}
-    {canvasMenuOpen ? <div className="agent-composer__mention-menu" role="group" aria-label={copy.referenceCanvas} onPointerDown={(event) => event.stopPropagation()}>
-      {mentionOptions.length ? <div className="agent-composer__mention-section"><strong>{copy.referenceCanvas}</strong>{mentionOptions.map((item) => <button key={item.id} type="button" role="option" aria-label={`${copy.referenceCanvas} ${item.label}`} title={item.content ?? item.label} onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onSelectMention(item) }}>{mentionBadge(item)}<b>{item.label}</b><small>{mentionMeta(item)}</small></button>)}</div> : <p>{copy.noMatch}</p>}
+    {canvasMenuOpen ? <div id={suggestionListId} className="agent-composer__mention-menu" role="listbox" aria-label={copy.referenceCanvas} onPointerDown={(event) => event.stopPropagation()}>
+      {mentionOptions.length ? <div className="agent-composer__mention-section" role="group" aria-label={copy.referenceCanvas}><strong>{copy.referenceCanvas}</strong>{mentionOptions.map((item, index) => <button id={`${suggestionListId}-option-${index}`} key={item.id} type="button" role="option" tabIndex={-1} aria-selected={selectedSuggestionIndex === index} aria-label={`${copy.referenceCanvas} ${item.label}`} title={item.content ?? item.label} onMouseEnter={() => setActiveSuggestionIndex(index)} onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onSelectMention(item) }}>{mentionBadge(item)}<b>{item.label}</b><small>{mentionMeta(item)}</small></button>)}</div> : <p>{copy.noMatch}</p>}
     </div> : null}
     <textarea
       ref={textareaRef}
@@ -248,6 +272,12 @@ export function AgentComposer({
       onClick={(event) => onInstructionClick(event.currentTarget.selectionStart ?? instruction.length)}
       onKeyDown={handleKeyDown}
       placeholder={copy.placeholder}
+      role="combobox"
+      aria-autocomplete="list"
+      aria-haspopup="listbox"
+      aria-expanded={Boolean(mentionQuery)}
+      aria-controls={mentionQuery ? suggestionListId : undefined}
+      aria-activedescendant={mentionQuery ? activeSuggestionId : undefined}
       aria-label={copy.promptField}
       aria-invalid={Boolean(error)}
       aria-describedby={error ? composerErrorId : undefined}

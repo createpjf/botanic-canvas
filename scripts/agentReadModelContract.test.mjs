@@ -17,12 +17,15 @@ test('阅读锚点路由不再先读全量 Agent 状态', () => {
   assert.doesNotMatch(handler, /readAgentState/)
 })
 
-test('会话与消息写入的协作摘要不再全量读消息', () => {
+test('会话 CAS 不预读 Agent 状态，消息协作摘要只读无消息视图', () => {
   const source = readFileSync(new URL('../server/agentRoutes.mjs', import.meta.url), 'utf8')
+  const messageRoute = readFileSync(new URL('../server/agentMessageRoutes.mjs', import.meta.url), 'utf8')
   const sessionHandler = source.slice(source.indexOf('if (agentSessionMatch)'), source.indexOf('if (agentMessageMatch)'))
   const messageHandler = source.slice(source.indexOf('if (agentMessageMatch)'), source.indexOf('if (agentMemoryMatch)'))
-  assert.match(sessionHandler, /includeMessages:\s*false/)
-  assert.match(messageHandler, /includeMessages:\s*false/)
+  assert.match(sessionHandler, /compareAndSetAgentSessionSettings/)
+  assert.doesNotMatch(sessionHandler, /readAgentState/)
+  assert.match(messageHandler, /handleAgentMessageRoute/)
+  assert.match(messageRoute, /includeMessages:\s*false/)
 })
 
 test('规划与知识绑定只读记忆，不拉会话消息', () => {
@@ -52,9 +55,18 @@ test('独立 Message 写入保留 mentions 与 updatedAt，供权威线程按原
     apiSource.indexOf('export async function submitPersistentBotanicAgentSession'),
   )
   const bodySource = readFileSync(new URL('../src/domain/agentMessagePersistence.ts', import.meta.url), 'utf8')
+  assert.match(submitMessage, /input\.sessionId/u)
+  assert.doesNotMatch(submitMessage, /submitPersistentBotanicAgentSession/u)
   assert.match(submitMessage, /persistentBotanicAgentMessageBody\(input\.message\)/u)
   assert.match(bodySource, /message\.mentions/u)
   assert.match(bodySource, /message\.updatedAt/u)
   assert.match(bodySource, /message\.turnId/u)
   assert.match(bodySource, /message\.turnCancellationRequestedAt/u)
+})
+
+test('Session 写入显式发送空 Skill 数组，可卸载最后一个 Skill', () => {
+  const apiSource = readFileSync(new URL('../src/lib/agentApi.ts', import.meta.url), 'utf8')
+  const submitSession = apiSource.slice(apiSource.indexOf('export async function submitPersistentBotanicAgentSession'))
+
+  assert.match(submitSession, /mountedSkillIds:\s*session\.mountedSkillIds\s*\?\?\s*\[\]/u)
 })

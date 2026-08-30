@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { CanvasDocument, GenerationRecipe } from '../domain/canvas.ts'
-import { scrubAssetFromDocument, sharedWorkflowTemplateSnapshot } from './canvasDocumentAssets.ts'
+import { scrubAssetFromDocument, sharedWorkflowTemplateSnapshot, workflowTemplateSnapshot } from './canvasDocumentAssets.ts'
 
 const recipe: GenerationRecipe = {
   prompt: '测试',
@@ -45,4 +45,15 @@ test('共享工作流模板排除项目私有素材及其连线', () => {
   assert.equal(result.omittedPrivateAssetCount, 1)
   assert.equal(result.snapshot.nodes.some((node) => node.id === 'asset-node'), false)
   assert.equal(result.snapshot.edges.some((edge) => edge.source === 'asset-node'), false)
+})
+
+test('工作流模板只保留稳定输入和生成模型元数据', () => {
+  const template = workflowTemplateSnapshot(document(), '模板 01')
+  const generate = template.nodes.find((node) => node.type === 'generate')
+
+  assert.deepEqual(template.nodes.map((node) => node.type), ['asset', 'generate'])
+  assert.equal(generate?.data.kind, 'generate')
+  assert.equal(generate?.data.settings.model, 'gpt-image-2')
+  assert.equal(generate?.data.status, undefined)
+  assert.equal(generate?.data.jobId, undefined)
 })

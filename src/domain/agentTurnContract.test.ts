@@ -67,6 +67,14 @@ test('回合请求只发送最近 16 条消息与去重后的上下文节点', (
   assert.deepEqual(request.contextNodeIds, ['a', 'b'])
   assert.equal(request.hasTarget, true)
   assert.equal(request.maxOutputCount, 6)
+
+  assert.throws(
+    () => buildBotanicAgentTurnRequest({
+      projectId: 'project-1', locale: 'zh-CN', messages: [{ role: 'user', content: '继续' }],
+      contextNodeIds: Array.from({ length: 33 }, (_, index) => `node-${index}`),
+    }),
+    (error: unknown) => (error as { code?: string }).code === 'AGENT_SESSION_CONTEXT_LIMIT',
+  )
 })
 
 test('Composer 挂载的 Skill 随回合下发，空列表不占键', () => {

@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { seedDocument } from '../data/seed'
 import { defaultGenerationModels } from '../domain/canvas'
+import type { BotanicAgentSession } from '../domain/agent'
 import {
   cloneGenerationRecipe,
   cloneGenerationSettings,
@@ -188,6 +189,42 @@ function historyName(count: number, kind: GenerationCandidate['kind'] = 'generat
 
 
 export const useCanvasStore = create<CanvasStore>((set, get) => {
+  const agentSessionPersistence = new Map<string, Promise<BotanicAgentSession | undefined>>()
+  const agentSessionRevisions = new Map<string, number>()
+  const persistAgentSession = (projectId: string, snapshot: BotanicAgentSession) => {
+    if (!serverPersistenceEnabled || projectId === 'workspace-placeholder') return Promise.resolve(undefined)
+    const key = `${projectId}\u0000${snapshot.id}`
+    const previous = agentSessionPersistence.get(key) ?? Promise.resolve(undefined)
+    const operation = previous.then(async () => {
+      const current = get().document.id === projectId
+        ? get().document.agentSessions.find((session) => session.id === snapshot.id)
+        : undefined
+      const revision = Math.max(
+        agentSessionRevisions.get(key) ?? 0,
+        snapshot.revision ?? 0,
+        current?.revision ?? 0,
+      )
+      const saved = await submitPersistentBotanicAgentSession(projectId, { ...snapshot, revision })
+      agentSessionRevisions.set(key, saved.revision ?? revision)
+      if (get().document.id === projectId) {
+        const document = get().document
+        set({
+          document: {
+            ...document,
+            agentSessions: document.agentSessions.map((session) => session.id === saved.id
+              ? { ...session, revision: Math.max(session.revision ?? 0, saved.revision ?? revision) }
+              : session),
+          },
+        })
+      }
+      return saved
+    })
+    agentSessionPersistence.set(key, operation)
+    void operation.finally(() => {
+      if (agentSessionPersistence.get(key) === operation) agentSessionPersistence.delete(key)
+    }).catch(() => undefined)
+    return operation
+  }
   const generation = createCanvasGenerationActions({
     set,
     get,
@@ -224,6 +261,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
   generationCandidates: [],
   lastGenerationRequest: null,
   availableModels: defaultGenerationModels.map((model) => ({ ...model })),
+  unavailableModels: [],
   maximumBatchCount: 8,
   undoAction: null,
   undoSnapshot: null,
@@ -242,10 +280,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
       cancelRun: cancelPersistentBotanicAgentRun,
     },
     persistAcknowledgedRemotePatch: persistAcknowledgedRemoteCanvasPatch,
-    persistAgentSession: async (projectId, session) => {
-      if (!serverPersistenceEnabled || projectId === 'workspace-placeholder') return
-      await submitPersistentBotanicAgentSession(projectId, session)
-    },
+    persistAgentSession,
   }),
 
   ...createCanvasBatchVariationActions({

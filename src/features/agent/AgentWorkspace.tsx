@@ -13,8 +13,8 @@ import {
   filterBotanicAgentRunTimeline,
   buildBotanicAgentPlan,
   createBotanicAgentContextSnapshot,
-  botanicAgentRequestMessageContent,
   consumeBotanicAgentMention,
+  normalizeBotanicAgentContextNodeIds,
   prepareBotanicAgentComposerSubmission,
   snapshotBotanicAgentComposerMentions,
   readBotanicAgentMentionQuery,
@@ -58,7 +58,7 @@ import {
   prepareBotanicAgentGenerationDraft,
   resolveBotanicAgentInstructionEntry,
 } from '../../domain/agentInstructionRouting'
-import { botanicAgentRunReviewMessageId, formatBotanicAgentRunReviewMessage } from '../../domain/agentReviewContract'
+import { formatBotanicAgentRunReviewMessage } from '../../domain/agentReviewContract'
 import type { BotanicAgentRunReview } from '../../domain/agentReviewContract'
 import { resolveAgentChatPrompt } from '../../domain/agentMarkdown'
 import type { BotanicAgentChatStreamEvent } from '../../domain/agentChatStream'
@@ -67,6 +67,7 @@ import {
   botanicAgentTurnRequestSnapshot,
 } from '../../domain/agentTurnContract'
 import {
+  botanicAgentTurnRequestKey,
   botanicAgentTurnGenerationContinuation,
   botanicAgentTurnProjectionMessageId,
   botanicAgentTurnRecoveryKey,
@@ -96,7 +97,6 @@ import {
   observePersistentBotanicAgentTurn,
   readPersistentBotanicAgentTurnEvents,
   requestBotanicAgentPlan,
-  requestBotanicAgentRunReview,
   submitBotanicAgentReviewDecision,
   streamBotanicAgentChat,
   streamBotanicAgentPlan,
@@ -104,7 +104,7 @@ import {
 } from '../../lib/agentApi'
 import {
   agentTurnTimelineHydrationFailureDisposition,
-  agentTurnTimelineFromHydrationEvents,
+  agentTurnTimelineFromHydrationRead,
   beginAgentTurnTimelineHydrationBatch,
   mergeHydratedAgentTurnTimeline,
   releaseAbortedAgentTurnTimelineHydrations,
@@ -115,11 +115,13 @@ import { describeRegionRect } from '../../domain/regionMask'
 import { RegionMaskEditor } from '../canvas/RegionMaskEditor'
 import {
   botanicAgentMessageComposition,
+  botanicAgentCompositionTotalCandidateCount,
   buildBotanicAgentCompositionPlan,
   formatBotanicAgentCompositionSummary,
   instructionRequestsCompositionRun,
   latestBotanicAgentComposition,
   normalizeBotanicAgentComposition,
+  resolveBotanicAgentCompositionImageModel,
   resolveBotanicAgentCompositionItem,
 } from '../../domain/agentCreativeComposition'
 import {
@@ -146,7 +148,9 @@ import {
 } from './AgentWorkspaceParts'
 import {
   agentComposerStateReducer,
+  applyAgentSessionContextChange,
   initialAgentComposerState,
+  resolveAgentRetrySourceMessage,
   type AgentFailedInstruction,
   type AgentInstructionRetryOptions,
 } from './agentComposerState'
@@ -154,8 +158,10 @@ import { useAgentMessageDelivery } from './useAgentMessageDelivery'
 import {
   persistBotanicAgentActionMessageUpdate,
   persistBotanicAgentMessageUpdate,
+  upsertBotanicAgentMessageProjection,
   type AgentMessagePatch,
 } from './agentActionMessagePersistence'
+import { useAgentReviewProjection } from './useAgentReviewProjection'
 import { useAgentRuntimeTrace } from './useAgentRuntimeTrace'
 import { recoverPendingAgentTurn } from './agentTurnRecovery'
 import { useAgentActionLifecycle } from './useAgentActionLifecycle'
@@ -205,6 +211,9 @@ type AgentRunInstructionOptions = AgentInstructionRetryOptions & {
   appendUser?: string
   mentions?: BotanicAgentMessageMention[]
   turnProjection?: { turnId: string; messageId: string }
+  sourceMessageId?: string
+  requestId?: string
+  sourceTurnId?: string
 }
 type AgentLiveConversation = {
   sessionId: string
@@ -216,6 +225,7 @@ type AgentLiveConversation = {
 const maximumConcurrentTurnTimelineHydrations = 2
 
 function agentTimelineEvent(event: BotanicAgentChatStreamEvent, receivedAt: number): AgentTimelineEvent {
+  if (event.type === 'handoff') return { type: 'handoff', receivedAt }
   if (event.type === 'reasoning') return { type: event.type, step: event.step, delta: event.delta, receivedAt }
   if (event.type === 'answer') return { type: event.type, step: event.step, delta: event.delta, receivedAt }
   if (event.type === 'tool') return {
@@ -344,6 +354,7 @@ export default function AgentWorkspace({
     activities: CollaborationActivity[]
     unreadActivityCount: number
     conflictChanges: CollaborationDocumentChange[]
+    conflictRevision?: { localRevision?: number; remoteRevision: number }
     historyStatus: 'idle' | 'loading' | 'loading-more' | 'saving' | 'error'
     historyHasMore: boolean
     historyErrorAction?: 'load' | 'load-more' | 'read' | 'clear'
@@ -609,29 +620,12 @@ export default function AgentWorkspace({
         persistMessage,
       })
     : message
-  // Turn 结果使用稳定 Message ID。若上一轮刷新已留下旧投影，必须原位更新并把
-  // 完整新版送进离线队列；简单 append 会因重复 ID 被本地 Store 丢弃。
   const appendMessage = (
     message: Omit<BotanicAgentMessage, 'id' | 'createdAt'> & { id?: string; createdAt?: number },
-  ) => {
-    const messageId = message.id?.trim()
-    const existing = messageId ? session?.messages.find((item) => item.id === messageId) : undefined
-    if (!existing) return appendNewMessage(message)
-    persistMessageUpdate(existing, {
-      kind: message.kind,
-      content: message.content,
-      runId: message.runId,
-      turnId: message.turnId,
-      turnCancellationRequestedAt: message.turnCancellationRequestedAt,
-      status: message.status,
-      feedback: message.feedback,
-      plan: message.plan,
-      question: message.question,
-      composition: message.composition,
-      review: message.review,
-    })
-    return existing.id
-  }
+  ) => upsertBotanicAgentMessageProjection({
+    message, session, activeTurnInputMessage: activeTurnInputMessageRef.current,
+    append: appendNewMessage, update: persistMessageUpdate,
+  })
   const ensureDeepTurnCancellation = (turnId: string, signal?: AbortSignal) => {
     if (cancellationAcceptedTurnIdsRef.current.has(turnId)) return Promise.resolve()
     const existing = cancellationPromisesRef.current.get(turnId)
@@ -678,7 +672,6 @@ export default function AgentWorkspace({
   // 这样结果回填后会更新同一条消息，而不会重复刷屏。
   const runNoticeStatusRef = useRef(new Map<string, string>())
   const focusedRunIdsRef = useRef(new Set<string>())
-  const requestedRunReviewsRef = useRef(new Set<string>())
   const workspaceRef = useRef<HTMLElement | null>(null)
   const messageEndRef = useRef<HTMLDivElement | null>(null)
   const messagesViewportRef = useRef<HTMLDivElement | null>(null)
@@ -1000,10 +993,14 @@ export default function AgentWorkspace({
     let settled = false
     void Promise.all(targets.map(async (target) => {
       try {
-        const events = await readPersistentBotanicAgentTurnEvents(target.turnId, projectId, {
+        const result = await readPersistentBotanicAgentTurnEvents(target.turnId, projectId, {
           signal: controller.signal,
         })
-        return { target, timeline: agentTurnTimelineFromHydrationEvents(events), caught: undefined }
+        return {
+          target,
+          timeline: agentTurnTimelineFromHydrationRead(result),
+          caught: undefined,
+        }
       } catch (caught) {
         return { target, timeline: undefined, caught }
       }
@@ -1510,34 +1507,8 @@ export default function AgentWorkspace({
       void onRetryBranch(target.runId, target.branchId).catch(() => { /* 重试失败交还用户手动处理。 */ })
     }
   }, [onRetryBranch, runs, session?.executionMode, session?.messages])
-
-  // 结果自评：Run 终态且结果回填后请求一次视觉评审，以固定消息 id 追加为会话消息。
-  // 评审是派生数据：未配置、失败或结果未回填都静默跳过，绝不影响 Run 与结果本身；
-  // 结果晚于终态回填时，Run 对账会更新 updatedAt，下一次请求键随之重试。
-  useEffect(() => {
-    if (!serverPersistenceEnabled || !session || !latestRun) return
-    if (latestRun.status !== 'completed' && latestRun.status !== 'partial') return
-    // 只评当前会话里的任务，不把其他会话的历史 Run 拉进来点评。
-    if (!session.messages.some((message) => message.runId === latestRun.id)) return
-    const reviewMessageId = botanicAgentRunReviewMessageId(latestRun.id)
-    if (session.messages.some((message) => message.id === reviewMessageId)) return
-    const requestKey = `${latestRun.id}:${latestRun.status}:${latestRun.updatedAt}`
-    if (requestedRunReviewsRef.current.has(requestKey)) return
-    requestedRunReviewsRef.current.add(requestKey)
-    void requestBotanicAgentRunReview(projectId, latestRun.id, undefined, locale).then((review) => {
-      if (!review || !isCurrentAgentProject()) return
-      appendMessage({
-        id: reviewMessageId,
-        role: 'assistant',
-        kind: 'text',
-        content: formatBotanicAgentRunReviewMessage(review, locale),
-        review,
-      })
-      // 挑选循环闭合：评审选出的最佳结果直接成为下一轮迭代目标，替代「第一个结果」的默认跟随。
-      if (review.bestNodeId) onUseResultContext([review.bestNodeId])
-    }).catch(() => { /* 评审失败静默：结果本身不受影响。 */ })
-  }, [appendMessage, isCurrentAgentProject, latestRun, locale, onUseResultContext, projectId, session])
-
+  // 结果自评由 durable Review Task 投影。
+  const reviewProjection = useAgentReviewProjection({ session, latestRun, locale, isCurrentProject: isCurrentAgentProject, appendMessage })
   // 任务开始时把视角带到正在生成的节点，且每个 Run 只带一次；之后画布归用户，
   // 结果完成不再抢视角——需要回看结果时用消息里的「定位画布」。
   useEffect(() => {
@@ -1550,19 +1521,20 @@ export default function AgentWorkspace({
       onFocusNodes(pendingNodeIds)
     }
   }, [onFocusNodes, onResolveRunNodes, runs])
-
+  const changeSessionContext = (nodeIds: string[]) => applyAgentSessionContextChange({
+    session, nodeIds, locale, onChange: onContextChange, onError: setError })
   const selectMention = (item: AgentContextItem) => {
     if (!session || !mentionQuery) return
+    if (!session.contextNodeIds.includes(item.id)
+      && !changeSessionContext([...session.contextNodeIds, item.id])) return
     const consumed = consumeBotanicAgentMention(instruction, mentionQuery)
     setInstruction(consumed.value)
-    if (!session.contextNodeIds.includes(item.id)) onContextChange(session.id, [...session.contextNodeIds, item.id])
     setMentionQuery(undefined)
     requestAnimationFrame(() => {
       composerTextareaRef.current?.focus()
       composerTextareaRef.current?.setSelectionRange(consumed.caret, consumed.caret)
     })
   }
-
   const selectSkill = (skill: AgentSkillOption) => {
     if (!session || !mentionQuery) return
     const consumed = consumeBotanicAgentMention(instruction, mentionQuery)
@@ -1961,6 +1933,11 @@ export default function AgentWorkspace({
     setLastFailedPlanMessageId('')
     const failedCommand: AgentFailedInstruction = {
       instruction: cleanInstruction,
+      ...(appendedUserMessageId || options.sourceMessageId
+        ? { sourceMessageId: appendedUserMessageId || options.sourceMessageId }
+        : {}),
+      ...(options.requestId ? { requestId: options.requestId } : {}),
+      ...(options.sourceTurnId ? { turnId: options.sourceTurnId } : {}),
       options: {
         ...(options.generationOverrides ? { generationOverrides: options.generationOverrides } : {}),
         ...(options.clarificationAnswers ? { clarificationAnswers: options.clarificationAnswers } : {}),
@@ -1974,7 +1951,6 @@ export default function AgentWorkspace({
           : {}),
       },
     }
-
     // 结构化方案活在会话消息上：方案卡点选带上该卡的 composition，输入「生成第 N 项」取最近一条。
     const composition = options.composition ?? latestBotanicAgentComposition(session.messages) ?? undefined
     if (composition && !failedCommand.options.composition) {
@@ -2000,17 +1976,24 @@ export default function AgentWorkspace({
         resolvedGeneration: options.resolvedGeneration,
       }
     }
-
     // 「执行方案 / 整套生成」：分支按方案条目展开成一个异构 Run，一次确认整套推进。
     if (composition && !options.resolvedGeneration && !compositionItem
       && instructionRequestsCompositionRun(cleanInstruction)) {
+      const totalCandidateCount = botanicAgentCompositionTotalCandidateCount(composition)
       const executionDecision = resolveBotanicAgentExecutionDecision({
         mode: session.executionMode,
         settingsComplete: true,
         pendingActionCount: 0,
+        outputCount: totalCandidateCount,
         waivers: session.confirmationWaivers,
       })
-      const imageModel = generationModels.find((model) => (model.mediaKind ?? 'image') === 'image')
+      const sessionModel = [...session.messages].reverse().find((message) => message.plan)?.plan?.settings.model
+      const { model: requestedModel, ...compositionOverrides } = pendingGenerationOverrides
+      const imageModel = resolveBotanicAgentCompositionImageModel(generationModels, [
+        requestedModel,
+        sessionModel,
+        target?.rootRecipe.settings.model,
+      ])
       if (!imageModel) {
         setError('当前没有可用的图片生成模型，无法整套执行。')
         return
@@ -2026,7 +2009,7 @@ export default function AgentWorkspace({
               model: imageModel.id,
               aspectRatio: imageModel.aspectRatios?.[0] ?? '3:4',
               resolution: imageModel.resolutions?.[0] ?? '1K',
-              ...pendingGenerationOverrides,
+              ...compositionOverrides,
             } as GenerationSettings,
           }),
           plannerModel,
@@ -2105,7 +2088,7 @@ export default function AgentWorkspace({
     let synthesizedAxisLabel: string | undefined = entry.synthesizedAxisLabel
     // 提出这条计划的回合。确认后随 Run 持久化，Turn 侧据此反查产出的 Run；
     // 追问回程不再发起新回合，所以要从 entry 带回来而不是重新取。
-    let sourceTurnId: string | undefined = entry.synthesizedTurnId
+    let sourceTurnId: string | undefined = options.sourceTurnId ?? entry.synthesizedTurnId
     const sourceTurnMessageIdentity = () => {
       if (!sourceTurnId) return {}
       const messageId = options.turnProjection?.turnId === sourceTurnId
@@ -2115,14 +2098,10 @@ export default function AgentWorkspace({
     }
     let resolvedOptions = entry.options
     if (entry.useServerTurn) {
-      // 正常发送直接复用 appendMessage 返回的身份；失败重试则找回上一条同内容用户消息，
-      // 避免浏览器气泡、离线队列与服务端 Turn 各自生成不同 ID。
+      // 正常发送直接复用 appendMessage 返回的身份；失败重试只按保存的 Message 身份恢复。
       const existingInputMessage = appendedUserMessageId
         ? undefined
-        : [...session.messages].reverse().find((message) => (
-            message.role === 'user'
-            && botanicAgentRequestMessageContent(message, locale) === cleanInstruction
-          ))
+        : resolveAgentRetrySourceMessage(session.messages, options.sourceMessageId)
       const turnInputMessage = appendedUserMessageId
         ? {
             id: appendedUserMessageId,
@@ -2171,11 +2150,11 @@ export default function AgentWorkspace({
         const preparedContextIds = onPrepareVisionContext
           ? await onPrepareVisionContext(session.id)
           : []
-        const contextNodeIds = [...new Set([
+        const contextNodeIds = normalizeBotanicAgentContextNodeIds([
           ...(turnInputMessage.mentions ?? []).filter((item) => item.kind === 'reference').map((item) => item.id),
           ...session.contextNodeIds,
           ...preparedContextIds,
-        ])].slice(0, 32)
+        ])
         const turnRequest = {
           projectId,
           sessionId: session.id,
@@ -2193,6 +2172,8 @@ export default function AgentWorkspace({
           executionMode: session.executionMode,
           generationModels,
         }
+        failedCommand.sourceMessageId = turnInputMessage.id
+        failedCommand.requestId = options.requestId ?? await botanicAgentTurnRequestKey(turnRequest)
         // accepted 前也先留下 durable「已提交」意图；若响应在身份到达前断线，刷新/重渲染
         // 会用同一 Message 派生的稳定 key 续提交，而不是把请求永久停在一条错误提示上。
         persistedInputMessage = persistMessageUpdate(persistedInputMessage, {
@@ -2209,6 +2190,7 @@ export default function AgentWorkspace({
           signal: controller.signal,
           onAccepted: (turnId) => {
             runtimeTurnId = turnId
+            failedCommand.turnId = turnId
             awaitingTurnIdentityRef.current = false
             activeTurnIdRef.current = turnId
             const cancellationRequestedAt = turnCancellationIntentRef.current.get(turnInputMessage.id)
@@ -2508,6 +2490,7 @@ export default function AgentWorkspace({
         }
         routedInstruction = briefTurn.prompt
         routedFailedCommand = {
+          ...failedCommand,
           instruction: cleanInstruction,
           options: { ...failedCommand.options, creativeBrief: briefTurn.brief },
         }
@@ -2551,16 +2534,13 @@ export default function AgentWorkspace({
         const preparedContextIds = onPrepareVisionContext
           ? await onPrepareVisionContext(session.id)
           : []
-        const contextNodeIds = [...new Set([
+        const contextNodeIds = normalizeBotanicAgentContextNodeIds([
           ...session.contextNodeIds,
           ...preparedContextIds,
-        ])].slice(0, 32)
+        ])
         const existingInputMessage = appendedUserMessageId
           ? undefined
-          : [...session.messages].reverse().find((message) => (
-              message.role === 'user'
-              && botanicAgentRequestMessageContent(message, locale) === cleanInstruction
-            ))
+          : resolveAgentRetrySourceMessage(session.messages, options.sourceMessageId)
         const durableInputMessage: BotanicAgentMessage = existingInputMessage ?? {
           id: appendedUserMessageId || `agent-message-${crypto.randomUUID()}`,
           role: 'user',
@@ -2569,6 +2549,9 @@ export default function AgentWorkspace({
           ...(options.mentions?.length ? { mentions: options.mentions } : {}),
           createdAt: appendedUserMessageCreatedAt ?? Date.now(),
         }
+        routedFailedCommand.sourceMessageId = durableInputMessage.id
+        routedFailedCommand.requestId = options.requestId
+          ?? `agent-chat:${sourceTurnId ?? durableInputMessage.id}`
         await ensureMessageDurable(durableInputMessage)
         const response = await streamBotanicAgentChat({
           projectId,
@@ -2581,9 +2564,10 @@ export default function AgentWorkspace({
           contextNodeIds,
         }, {
           signal: controller.signal,
-          requestKey: `agent-chat:${sourceTurnId ?? appendedUserMessageId ?? liveMessageId}`,
+          requestKey: routedFailedCommand.requestId,
           onAccepted: (turnId) => {
             runtimeTurnId = turnId
+            routedFailedCommand.turnId = turnId
             awaitingTurnIdentityRef.current = false
             activeTurnIdRef.current = turnId
             if (cancelWhenAcceptedSessionIdRef.current === session.id) {
@@ -2726,6 +2710,7 @@ export default function AgentWorkspace({
       return
     }
     const resolvedFailedCommand: AgentFailedInstruction = {
+      ...failedCommand,
       instruction: cleanInstruction,
       options: {
         ...failedCommand.options,
@@ -3100,6 +3085,8 @@ export default function AgentWorkspace({
         await runInstruction(pendingTurnMessage.content, {
           ...botanicAgentTurnGenerationContinuation(turn, finalTurnId),
           turnProjection: { turnId: finalTurnId, messageId: resultMessageId },
+          sourceMessageId: pendingTurnMessage.id,
+          sourceTurnId: finalTurnId,
         })
       } catch (caught) {
         if (controller.signal.aborted) return
@@ -3198,7 +3185,14 @@ export default function AgentWorkspace({
     setInstruction('')
     setMentionQuery(undefined)
     setPendingGenerationOverrides({})
-    void runInstruction(retryInstruction, command?.options).finally(() => {
+    void runInstruction(retryInstruction, {
+      ...command?.options,
+      ...(command?.sourceMessageId
+        ? { sourceMessageId: command.sourceMessageId }
+        : { appendUser: retryInstruction }),
+      ...(command?.requestId ? { requestId: command.requestId } : {}),
+      ...(command?.turnId ? { sourceTurnId: command.turnId } : {}),
+    }).finally(() => {
       sendingInstructionRef.current = false
     })
   }
@@ -3357,6 +3351,10 @@ export default function AgentWorkspace({
     const task = persistenceCopy.action === 'refresh' ? onRefreshRemote() : onRetryPersistence()
     void task.catch(() => undefined).finally(() => setPersistenceAction(''))
   }
+  const keepLocalDraft = () => {
+    setPersistenceAction('retry')
+    void onRetryPersistence().catch(() => undefined).finally(() => setPersistenceAction(''))
+  }
   const inspectPersistenceIssue = () => {
     if (persistenceStatus === 'conflict') {
       openUtilityPanel('collaboration')
@@ -3478,7 +3476,7 @@ export default function AgentWorkspace({
         </div> : null}
       </header>
       <div className="agent-workspace__body">
-      {latestCollaborationActivity?.unread || (!utilityPanelOpen && readingRestoreNotice) ? <div className="agent-workspace__chrome">
+      {latestCollaborationActivity?.unread || (!utilityPanelOpen && (readingRestoreNotice || reviewProjection.failed)) ? <div className="agent-workspace__chrome">
       {latestCollaborationActivity?.unread ? <div className="agent-workspace__collaboration-notice" role="status">
         <button type="button" className="agent-workspace__collaboration-summary" onClick={() => locateCollaborationActivity(latestCollaborationActivity)}>
           <i aria-hidden="true" /><span><strong>{latestCollaborationActivity.actorName} · {latestCollaborationActivity.summary}</strong><small>{persistenceStatus === 'conflict' ? flowCopy.localChangesKept : latestCollaborationActivity.target && latestCollaborationActivity.target.kind !== 'project' ? flowCopy.locateChange : flowCopy.latestSynced}</small></span>
@@ -3486,6 +3484,7 @@ export default function AgentWorkspace({
         <button type="button" aria-label={flowCopy.closeCollaborationUpdate} title={flowCopy.gotIt} onClick={() => void onDismissRemoteChange().catch(() => undefined)}><CloseIcon /></button>
       </div> : null}
       {!utilityPanelOpen && readingRestoreNotice ? <div className="agent-reading-restore" role="status"><span>{flowCopy.readingRestored}</span><button type="button" onClick={jumpToLatestConversation}>{flowCopy.jumpLatest}</button></div> : null}
+      {!utilityPanelOpen && reviewProjection.failed ? <div className="agent-reading-restore" role="alert"><span>{locale === 'en' ? 'Review results could not be loaded.' : '评审结果暂时无法读取。'}</span><button type="button" onClick={reviewProjection.retry}>{locale === 'en' ? 'Retry' : '重试'}</button></div> : null}
       </div> : null}
       <div
         ref={messagesViewportRef}
@@ -3515,11 +3514,12 @@ export default function AgentWorkspace({
         {collaborationPanelOpen ? <div data-agent-flip className="agent-workspace__flip-surface"><AgentCollaborationPanel
           activities={collaborationAwareness.activities}
           conflictChanges={collaborationAwareness.conflictChanges}
+          conflictRevision={collaborationAwareness.conflictRevision}
           persistenceStatus={persistenceStatus}
           onLocate={locateCollaborationActivity}
           onMarkRead={onDismissRemoteChange}
           onClear={onClearCollaborationActivities}
-          onKeepLocal={onDismissRemoteChange}
+          onKeepLocal={keepLocalDraft}
           onUseRemote={resolvePersistenceIssue}
           historyStatus={collaborationAwareness.historyStatus}
           historyHasMore={collaborationAwareness.historyHasMore}
@@ -3725,7 +3725,7 @@ export default function AgentWorkspace({
           onEdit={(content) => { setInstruction(content); requestAnimationFrame(() => composerTextareaRef.current?.focus()) }}
           onRetryDelivery={retryMessage}
           onFeedback={(targetMessage, feedback) => onUpdateMessage(session.id, targetMessage.id, { feedback })}
-          onSaveAsMemory={(_targetMessage, kind, content) => onAddMemory(kind, content, session.contextNodeIds)}
+          onSaveAsMemory={(targetMessage, kind, content) => onAddMemory(kind, content, targetMessage.sourceNodeIds ?? [])}
           onReviewDecision={(targetMessage, decision) => void decideReview(targetMessage, decision)}
           reviewDecisionPending={Boolean(reviewDecisionPendingId && reviewDecisionPendingId === message.review?.id)}
         /></div>
@@ -3827,7 +3827,7 @@ export default function AgentWorkspace({
         onGroupChange={setGroupId}
         onSend={() => void sendInstruction()}
         onCancelPlanning={cancelPlanning}
-        onToggleImageContext={(itemId, selected) => { if (!session) return; onContextChange(session.id, selected ? session.contextNodeIds.filter((id) => id !== itemId) : [...session.contextNodeIds, itemId]) }}
+        onToggleImageContext={(itemId, selected) => { if (!session) return; changeSessionContext(selected ? session.contextNodeIds.filter((id) => id !== itemId) : [...session.contextNodeIds, itemId]) }}
         onExecutionModeChange={(mode) => { if (session) onExecutionModeChange(session.id, mode); setModeMenuOpen(false); requestAnimationFrame(() => modeMenuButtonRef.current?.focus()) }}
       /> : null}
       {pendingRegionInstruction && target?.image ? <RegionMaskEditor

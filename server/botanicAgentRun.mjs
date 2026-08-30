@@ -381,6 +381,17 @@ export function validateAgentRunCreation(body) {
     throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', '局部重绘计划必须携带有效选区。')
   }
   const composition = validateComposition(rawPlan.composition)
+  const compositionItemCount = composition?.items.length
+  const compositionCandidateCount = composition?.items.reduce((total, item) => total + item.count, 0)
+  if (composition && (
+    count !== compositionCandidateCount
+    || branches.length !== compositionItemCount
+    || branches.some((branch, index) => !branch.item
+      || branch.item.mediaKind !== composition.items[index].mediaKind
+      || branch.item.count !== composition.items[index].count)
+  )) {
+    throw new BotanicAgentRunError(400, 'INVALID_AGENT_RUN', '成套方案条目与候选总数不一致。')
+  }
   const memoryBindings = validateBindings(rawPlan.memoryBindings, '项目记忆')
   const skillBindings = validateBindings(rawPlan.skillBindings, 'Skill')
   const lineage = validateLineage(body.lineage)
@@ -401,7 +412,12 @@ export function validateAgentRunCreation(body) {
       prompt: text(rawPlan.prompt, 'Agent 生图提示词'),
       settings,
       constraints: validateConstraints(rawPlan.constraints, { allowEmpty: isInitialGeneration }),
-      output: { mode: output.mode, count, candidatesPerItem },
+      output: {
+        mode: output.mode,
+        count,
+        candidatesPerItem,
+        ...(composition ? { itemCount: compositionItemCount, totalCandidateCount: compositionCandidateCount } : {}),
+      },
       ...(variation ? { variation } : {}),
       ...(region ? { region } : {}),
       ...(composition ? { composition } : {}),

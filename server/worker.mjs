@@ -10,7 +10,7 @@ import { createAgentReviewService, safeAgentReviewWorkerFailure } from './agentR
 import { installDatabaseResilience } from './databaseResilience.mjs'
 import { createEvaluatorSkillRunner } from './agentReviewSkillEvaluator.mjs'
 import { createAgentReviewVisionJudge } from './agentReviewVision.mjs'
-import { resolveBotanicAgentImageDataUrl } from './botanicAgentVision.mjs'
+import { createAgentReviewMediaResolver } from './agentReviewMediaResolver.mjs'
 import { createProductionWorkflowSweep } from './productionWorkflowAdvance.mjs'
 import { createAgentBranchRetrySweep } from './agentBranchRetrySweep.mjs'
 import { createAgentBranchRetryService } from './agentBranchRetryService.mjs'
@@ -128,19 +128,16 @@ const consumeWebResearchQuota = async (userId) => {
 }
 // 评审在 Worker 侧执行，不依赖浏览器打开。视觉层的判据全部来自计划快照的质量策略；
 // 没配置视觉模型时 judge 为 undefined，语义判据照实记为无法验证而不是默认通过。
+const reviewMediaResolver = createAgentReviewMediaResolver(runtime.mediaService)
 const reviewVisionJudge = createAgentReviewVisionJudge({
   runtimeConfig: config,
-  resolveMedia: (image) => resolveBotanicAgentImageDataUrl(image, (mediaId) => (
-    runtime.mediaService?.enabled ? runtime.mediaService.read(mediaId) : undefined
-  )),
+  resolveMedia: reviewMediaResolver,
 })
 // 项目自定义判据（evaluator Skill）。与内置判据共用同一个视觉模型与取图口径，
 // 但 Prompt 与输出形状来自 Skill 自己 —— 复用内置那份会让两类判据互相牵连。
 const evaluatorSkillJudge = createEvaluatorSkillRunner({
   runtimeConfig: config,
-  resolveMedia: (image) => resolveBotanicAgentImageDataUrl(image, (mediaId) => (
-    runtime.mediaService?.enabled ? runtime.mediaService.read(mediaId) : undefined
-  )),
+  resolveMedia: reviewMediaResolver,
 })
 reviewService = createAgentReviewService({
   productStore: runtime.productStore,

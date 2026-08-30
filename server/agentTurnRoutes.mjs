@@ -11,6 +11,27 @@ function routeFailure(caught) {
   )
 }
 
+const terminalTurnStatuses = new Set(['completed', 'failed', 'cancelled'])
+
+/** `done` 是业务终态；仍需 GET 观察的 Turn 用 handoff 结束当前传输连接。 */
+export function agentTurnStreamSettlementEvent({ turnId, projectId, execution }) {
+  const runtimeTurn = execution?.turn
+  if (terminalTurnStatuses.has(runtimeTurn?.status)) {
+    return {
+      type: 'done',
+      turn: execution.result ?? runtimeTurn?.result,
+      runtimeTurn,
+    }
+  }
+  return {
+    type: 'handoff',
+    turnId,
+    runtimeTurn,
+    observer: { url: `/api/agent-turns/${encodeURIComponent(turnId)}?after=0` },
+    projectId,
+  }
+}
+
 /** HTTP Adapter：只处理 Turn 的传输协议，提交权威归 agentTurnSubmission。 */
 export function createAgentTurnHttpAdapter({
   config,
@@ -116,11 +137,11 @@ export function createAgentTurnHttpAdapter({
         for (const event of pendingTurnEvents.splice(0)) sse.send(event)
         const execution = await submission.execution
         if (response.destroyed) return true
-        sse.send({
-          type: 'done',
-          turn: execution.result ?? execution.turn?.result,
-          runtimeTurn: execution.turn,
-        })
+        sse.send(agentTurnStreamSettlementEvent({
+          turnId,
+          projectId: validatedInput.projectId,
+          execution,
+        }))
         return sse.end()
       } catch (caught) {
         if (response.destroyed) return true

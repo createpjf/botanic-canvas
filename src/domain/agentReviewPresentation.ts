@@ -40,6 +40,8 @@ export type AgentReviewCandidate = {
 export type AgentReviewTaskSnapshot = {
   id: string
   runId: string
+  createdAt?: number
+  updatedAt?: number
   status: 'queued' | 'running' | 'cancelling' | 'cancelled' | 'completed' | 'failed'
   qualityPolicyFingerprint?: string
   planFingerprint?: string
@@ -181,6 +183,33 @@ export function agentReviewTaskStatusNote(task: AgentReviewTaskSnapshot | undefi
     return locale === 'en' ? 'Review is still running in the background.' : '评审仍在后台进行。'
   }
   return ''
+}
+
+/** 会话只投影 durable Review Task；详细判据与人工操作留在评审面板。 */
+export function formatAgentReviewTaskProjectionMessage(
+  task: AgentReviewTaskSnapshot,
+  locale: ProductLocale = 'zh-CN',
+) {
+  const coverage = agentReviewCoverageSummary(task, locale)
+  const status = agentReviewTaskStatusNote(task, locale)
+  if (task.status !== 'completed') return [coverage, status].filter(Boolean).join('\n')
+  const rows = agentReviewCandidateRows(task, locale)
+  const passed = rows.filter((row) => row.verdict === 'pass').length
+  const failed = rows.filter((row) => row.verdict === 'fail').length
+  const unverifiable = rows.filter((row) => row.verdict === 'unverifiable').length
+  return locale === 'en'
+    ? [
+        'Quality review completed.',
+        coverage,
+        `${passed} met, ${failed} failed, and ${unverifiable} were not verified.`,
+        'Open the Review panel to accept, reject, or request a retry.',
+      ].join('\n')
+    : [
+        '质量评审已完成。',
+        coverage,
+        `${passed} 张符合、${failed} 张不符合、${unverifiable} 张未验证。`,
+        '请在评审面板中接受、拒绝或请求重试。',
+      ].join('\n')
 }
 
 export type AgentReviewCandidateRow = {

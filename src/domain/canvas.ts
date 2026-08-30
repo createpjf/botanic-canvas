@@ -15,7 +15,7 @@ export const GENERATION_ASPECT_RATIOS = ['1:1', '16:9', '4:3', '3:4', '4:5', '9:
 export type GenerationAspectRatio = (typeof GENERATION_ASPECT_RATIOS)[number]
 export const EVERYDAY_GENERATION_RESOLUTIONS = ['1K', '2K'] as const
 export const GENERATION_RESOLUTIONS = ['1K', '2K', '4K'] as const
-export const NANO_BANANA_MODEL_ID = 'gemini-3.1-pro-preview'
+export const NANO_BANANA_MODEL_ID = 'gemini-3.1-flash-image-preview'
 // 模型列表由服务端健康检查下发；画布快照必须保留提交时实际使用的模型 ID。
 export type GenerationModelId = string
 export type GenerationResolution = (typeof GENERATION_RESOLUTIONS)[number]
@@ -30,6 +30,9 @@ export type CanvasGenerationTaskStatus = GenerationTaskStatus | 'uploading' | 's
 export type GenerationModelOption = {
   id: GenerationModelId
   label: string
+  /** false 表示仅用于 UI 说明，不能提交任务。 */
+  available?: boolean
+  unavailableReason?: string
   provider?: 'openai' | 'minimax' | 'flock'
   mediaKind?: GenerationMediaKind
   aspectRatios?: GenerationAspectRatio[]
@@ -71,7 +74,7 @@ export type GenerationSettings = {
   outputHeight?: number
   /** Nano Banana：Google Search + Image Search grounding。 */
   searchGrounding?: boolean
-  /** Nano Banana：thinking_level；官方 Pro 档关不掉，只有档位。 */
+  /** Nano Banana：thinking_level。 */
   thinkingLevel?: GenerationThinkingLevel
 }
 

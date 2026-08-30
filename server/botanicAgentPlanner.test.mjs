@@ -826,9 +826,9 @@ test('validateBotanicAgentPlanInput 保留 parentPrompt 并对齐自定义像素
 test('规划器接受含 21:9 与 4K 的 Nano Banana 目录', () => {
   const input = validateBotanicAgentPlanInput({
     ...validInput,
-    settings: { model: 'gemini-3.1-pro-preview', aspectRatio: '21:9', resolution: '4K' },
+    settings: { model: 'gemini-3.1-flash-image-preview', aspectRatio: '21:9', resolution: '4K' },
     generationModels: [{
-      id: 'gemini-3.1-pro-preview',
+      id: 'gemini-3.1-flash-image-preview',
       label: 'Nano Banana',
       provider: 'flock',
       mediaKind: 'image',
@@ -840,7 +840,7 @@ test('规划器接受含 21:9 与 4K 的 Nano Banana 目录', () => {
       maximumReferences: 14,
     }],
   })
-  assert.equal(input.settings.model, 'gemini-3.1-pro-preview')
+  assert.equal(input.settings.model, 'gemini-3.1-flash-image-preview')
   assert.equal(input.settings.aspectRatio, '21:9')
   assert.equal(input.settings.resolution, '4K')
   assert.deepEqual(input.generationModels[0].resolutions, ['1K', '2K', '4K'])

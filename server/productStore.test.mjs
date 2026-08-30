@@ -1131,7 +1131,7 @@ test('Agent Run 独立于画布文档持久化并由生成 Job 推进', () => {
   store.putGenerationJob(owner.id, {
     id: 'job-agent', projectId: 'project-agent', status: 'succeeded', kind: 'refinement', batchCount: 1,
     settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' }, rawInput: { projectId: 'project-agent' },
-    agentRun: { runId: 'run-agent', branchId: 'branch-1' }, outputs: [{ id: 'output-1' }], createdAt: 20, updatedAt: 30,
+    agentRun: { runId: 'run-agent', branchId: 'branch-1' }, outputs: [{ id: 'output-1', image: '/api/media/output-1' }], createdAt: 20, updatedAt: 30,
   })
 
   assert.equal(store.readAgentRun(owner.id, 'run-agent')?.status, 'completed')
@@ -1421,6 +1421,66 @@ test('Agent 会话按 updatedAt 幂等合并，迟到的旧设备标题不回退
   assert.equal(session.updatedAt, 300)
 })
 
+test('Agent Session 设置用 revision CAS 拒绝旧设备，兼容文档也不能绕过', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  const projectId = 'project-agent-session-cas'
+  const sessionId = 'session-cas'
+  store.writeProject(owner.id, { ...document(projectId), agentSessions: [], agentMemory: [], agentRuns: [] }, undefined)
+
+  const created = store.compareAndSetAgentSessionSettings(owner.id, projectId, {
+    sessionId,
+    expectedRevision: 0,
+    createdAt: 10,
+    changes: {
+      title: '初始对话', executionMode: 'auto', confirmationWaivers: ['manual'],
+      plannerModel: 'kimi-k3', mountedSkillIds: ['skill-a'], contextNodeIds: ['node-a'],
+    },
+  })
+  assert.equal(created.kind, 'created')
+  assert.equal(created.session.revision, 1)
+
+  const deviceB = store.compareAndSetAgentSessionSettings(owner.id, projectId, {
+    sessionId,
+    expectedRevision: 1,
+    changes: {
+      executionMode: 'manual', confirmationWaivers: [], mountedSkillIds: [], contextNodeIds: ['node-b'],
+    },
+  })
+  assert.equal(deviceB.kind, 'updated')
+  assert.equal(deviceB.session.revision, 2)
+  assert.equal('confirmationWaivers' in deviceB.session, false)
+  assert.deepEqual(deviceB.session.mountedSkillIds, [])
+
+  const staleDeviceA = store.compareAndSetAgentSessionSettings(owner.id, projectId, {
+    sessionId,
+    expectedRevision: 1,
+    changes: { executionMode: 'auto', confirmationWaivers: ['manual'], mountedSkillIds: ['skill-a'] },
+  })
+  assert.equal(staleDeviceA.kind, 'conflict')
+  assert.equal(staleDeviceA.session.revision, 2)
+
+  const project = store.readProject(owner.id, projectId)
+  const staleDocument = {
+    ...project.document,
+    updatedAt: project.document.updatedAt + 1,
+    agentSessions: project.document.agentSessions.map((session) => session.id === sessionId
+      ? {
+          ...session,
+          executionMode: 'auto', confirmationWaivers: ['manual'], mountedSkillIds: ['skill-a'],
+          revision: 1, updatedAt: session.updatedAt + 10_000,
+        }
+      : session),
+  }
+  store.writeProject(owner.id, staleDocument, project.revision)
+
+  const [stored] = store.readAgentState(owner.id, projectId).sessions
+  assert.equal(stored.executionMode, 'manual')
+  assert.equal('confirmationWaivers' in stored, false)
+  assert.deepEqual(stored.mountedSkillIds, [])
+  assert.equal(stored.revision, 2)
+})
+
 test('Agent 会话设置更新不会删除服务端线程摘要', () => {
   const { store } = createStore()
   const owner = store.authenticate('owner-token')
@@ -1487,7 +1547,7 @@ test('Thread Summary CAS 在并发设置更新后只 patch 摘要，并阻止第
   assert.deepEqual(session.threadSummary, summary)
 })
 
-test('非 CAS Session 与 CanvasDocument 迟到写始终保留已提交 Thread Summary', () => {
+test('非 CAS Session 保留摘要且 CanvasDocument 兼容写不能覆盖 Session 设置', () => {
   const { store } = createStore()
   const owner = store.authenticate('owner-token')
   const projectId = 'project-agent-summary-writer-race'
@@ -1520,7 +1580,7 @@ test('非 CAS Session 与 CanvasDocument 迟到写始终保留已提交 Thread S
   }, 1)
 
   const [stored] = store.listAgentSessions(owner.id, projectId)
-  assert.equal(stored.title, '画布兼容写')
+  assert.equal(stored.title, '设置写')
   assert.deepEqual(stored.threadSummary, currentSummary)
 })
 
@@ -1652,7 +1712,7 @@ test('稳定 Turn 结果投影跨 PUT 与 Canvas sync 保持 failed 终态且时
   assert.equal(stored.content, '权威取消')
   assert.equal(stored.updatedAt, 10_500)
   assert.equal(stored.createdAt, 20)
-  assert.equal(store.listAgentSessions(owner.id, projectId)[0].updatedAt, 10_500)
+  assert.equal(store.listAgentSessions(owner.id, projectId)[0].updatedAt, 10_000)
 })
 
 test('Local CanvasDocument 写入不能首次绑定或替换 entityReferences，权威 Message 回填仍 sticky', () => {

@@ -33,10 +33,10 @@ test('Flock 模型走 flock Adapter，未配置密钥时失败可见', async () 
   await assert.rejects(() => generateMedia({
     prompt: '海边主视觉',
     batchCount: 1,
-    settings: { model: 'gemini-3.1-pro-preview', aspectRatio: '3:4', resolution: '2K' },
+    settings: { model: 'gemini-3.1-flash-image-preview', aspectRatio: '3:4', resolution: '2K' },
   }, {
     config: {
-      modelOptions: [{ id: 'gemini-3.1-pro-preview', provider: 'flock', mediaKind: 'image' }],
+      modelOptions: [{ id: 'gemini-3.1-flash-image-preview', provider: 'flock', mediaKind: 'image' }],
       flockApiBaseUrl: 'https://api.flock.io/v1',
     },
     jobId: 'job-flock-route',

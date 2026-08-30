@@ -2,6 +2,7 @@ import { MEMORY_SUBJECTS } from './botanicAgentMemory.mjs'
 import { createHash } from 'node:crypto'
 import { redactSummaryText } from './agentThreadSummary.mjs'
 import { validateAgentEntityReferences } from './agentEntityReferences.mjs'
+import { validateAgentTargetBinding } from './agentTargetBinding.mjs'
 import { GENERATION_ASPECT_RATIOS, GENERATION_RESOLUTIONS } from './generationVocabulary.mjs'
 
 const SESSION_LIMIT = 80
@@ -129,6 +130,12 @@ function persistedAgentTurnRequestSnapshot(value) {
   if (snapshot.hasTarget && snapshot.selectedResultLabel !== undefined) {
     result.selectedResultLabel = text(snapshot.selectedResultLabel, '选中结果名称', 160)
   }
+  if (snapshot.targetBinding !== undefined) {
+    if (!snapshot.hasTarget) invalid('无选中结果的 Turn 快照不得携带目标版本绑定。')
+    result.targetBinding = validateAgentTargetBinding(snapshot.targetBinding, {
+      expectedNodeId: result.selectedResultNodeId,
+    })
+  }
   if (snapshot.executionMode !== undefined) {
     if (!sessionModes.has(snapshot.executionMode)) invalid('Agent Turn 请求快照执行模式无效。')
     result.executionMode = snapshot.executionMode
@@ -241,6 +248,12 @@ function timestamp(value, fallback) {
   return Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : fallback
 }
 
+function nonNegativeInteger(value, name) {
+  const parsed = Number(value)
+  if (!Number.isSafeInteger(parsed) || parsed < 0) invalid(`${name}无效。`)
+  return parsed
+}
+
 export function validateAgentEntityWriteTimestamp(value, { now = Date.now(), maximumFutureSkewMs = 5 * 60_000 } = {}) {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > now + maximumFutureSkewMs) {
     invalid('Agent 实体时间戳无效。')
@@ -316,6 +329,7 @@ export function validateAgentSessionEntity(value, { now = Date.now() } = {}) {
     title: text(session.title || '新建对话', 'Agent 会话标题', 160),
     executionMode,
     contextNodeIds: uniqueTextList(session.contextNodeIds, 'Agent 上下文节点', 32),
+    revision: nonNegativeInteger(session.revision ?? 0, 'Agent 会话版本'),
     createdAt,
     updatedAt,
   }
@@ -462,6 +476,90 @@ export function validateAgentSessionEntity(value, { now = Date.now() } = {}) {
   return result
 }
 
+const agentSessionSettingFields = new Set([
+  'title', 'executionMode', 'confirmationWaivers', 'plannerModel', 'mountedSkillIds', 'contextNodeIds',
+])
+
+function agentSessionSettings(session) {
+  return {
+    title: session.title,
+    executionMode: session.executionMode,
+    confirmationWaivers: session.confirmationWaivers ?? [],
+    plannerModel: session.plannerModel ?? null,
+    mountedSkillIds: session.mountedSkillIds ?? [],
+    contextNodeIds: session.contextNodeIds ?? [],
+  }
+}
+
+/** Session 设置的唯一并发写入决策；Canvas 兼容投影不得调用。 */
+export function normalizeAgentSessionSettingsCommand(rawCommand, { now = Date.now() } = {}) {
+  const command = object(rawCommand, 'Agent Session 设置命令')
+  const sessionId = text(command.sessionId, 'Agent 会话标识', 160)
+  const expectedRevision = nonNegativeInteger(command.expectedRevision, 'Agent 会话预期版本')
+  const rawChanges = object(command.changes ?? {}, 'Agent Session 设置变更')
+  if (Object.keys(rawChanges).some((field) => !agentSessionSettingFields.has(field))) {
+    invalid('Agent Session 设置变更包含未知字段。')
+  }
+  const createdAt = timestamp(command.createdAt, now)
+  const merged = {
+    id: sessionId,
+    title: '新建对话',
+    executionMode: 'manual',
+    contextNodeIds: [],
+    revision: 0,
+    createdAt,
+    updatedAt: Math.max(createdAt, now),
+    ...rawChanges,
+  }
+  if (rawChanges.plannerModel === null) delete merged.plannerModel
+  const candidate = validateAgentSessionEntity(merged, { now: Math.max(createdAt, now) })
+  const changes = Object.fromEntries(Object.keys(rawChanges).map((field) => [
+    field,
+    field === 'plannerModel' && rawChanges.plannerModel === null
+      ? null
+      : field === 'confirmationWaivers'
+        ? candidate.confirmationWaivers ?? []
+        : candidate[field],
+  ]))
+  return { sessionId, expectedRevision, changes, createdAt }
+}
+
+export function compareAndSetAgentSessionSettings(currentValue, rawCommand, { now = Date.now() } = {}) {
+  const command = normalizeAgentSessionSettingsCommand(rawCommand, { now })
+  const { sessionId, expectedRevision, changes } = command
+
+  const current = currentValue ? validateAgentSessionEntity(currentValue, { now }) : undefined
+  const currentRevision = current?.revision ?? 0
+  const createdAt = current?.createdAt ?? command.createdAt
+  const merged = {
+    ...(current ?? {
+      id: sessionId,
+      title: '新建对话',
+      executionMode: 'manual',
+      contextNodeIds: [],
+      createdAt,
+      updatedAt: createdAt,
+      revision: 0,
+    }),
+    ...changes,
+    id: sessionId,
+    createdAt,
+    updatedAt: Math.max(createdAt, now),
+    revision: currentRevision,
+  }
+  if (changes.plannerModel === null) delete merged.plannerModel
+  const candidate = validateAgentSessionEntity(merged, { now: Math.max(createdAt, now) })
+
+  if (current && JSON.stringify(agentSessionSettings(candidate)) === JSON.stringify(agentSessionSettings(current))) {
+    return { kind: 'replayed', changed: false, session: current }
+  }
+  if (expectedRevision !== currentRevision) {
+    return { kind: 'conflict', changed: false, session: current }
+  }
+  const session = { ...candidate, revision: currentRevision + 1 }
+  return { kind: current ? 'updated' : 'created', changed: true, session }
+}
+
 /**
  * 阅读回执属于“成员 × 项目 × 会话”，不是共享 Session 的内容。
  * Adapter 只持久化这个最小实体，读取时再投影成 UI 兼容的 readingAnchor 字段。
@@ -526,6 +624,23 @@ export function validateAgentMessageEntity(value, { now = Date.now() } = {}) {
       invalid('只有稳定 Agent Turn 助手投影可以携带业务引用。')
     }
     result.entityReferences = validateAgentEntityReferences(message.entityReferences)
+  }
+  const provenancePresent = ['sourceMessageId', 'sourceNodeIds', 'targetArtifactVersionId', 'planFingerprint']
+    .some((field) => message[field] !== undefined)
+  if (provenancePresent) {
+    if (
+      result.role !== 'assistant'
+      || !result.turnId
+      || result.id !== `agent-turn-result-${result.turnId}`
+    ) invalid('只有稳定 Agent Turn 助手投影可以携带来源信息。')
+    result.sourceMessageId = text(message.sourceMessageId, 'Agent 来源消息标识', 160)
+    result.sourceNodeIds = uniqueTextList(message.sourceNodeIds, 'Agent 来源节点', 32)
+    if (message.targetArtifactVersionId !== undefined) {
+      result.targetArtifactVersionId = text(message.targetArtifactVersionId, 'Agent 目标 Artifact 版本', 160)
+    }
+    if (message.planFingerprint !== undefined) {
+      result.planFingerprint = text(message.planFingerprint, 'Agent 计划指纹', 200)
+    }
   }
   if (message.turnCancellationRequestedAt !== undefined) {
     result.turnCancellationRequestedAt = validateAgentEntityWriteTimestamp(
@@ -632,6 +747,13 @@ export function agentStateFromDocument(document, { now = Date.now() } = {}) {
     for (const rawMessage of Array.isArray(rawSession?.messages) ? rawSession.messages.slice(-MESSAGE_LIMIT) : []) {
       const compatibilityMessage = clone(object(rawMessage, 'Agent 消息'))
       delete compatibilityMessage.entityReferences
+      delete compatibilityMessage.sourceMessageId
+      delete compatibilityMessage.sourceNodeIds
+      delete compatibilityMessage.targetArtifactVersionId
+      delete compatibilityMessage.planFingerprint
+      if (compatibilityMessage.turnRequestSnapshot && typeof compatibilityMessage.turnRequestSnapshot === 'object') {
+        delete compatibilityMessage.turnRequestSnapshot.targetBinding
+      }
       const message = validateAgentMessageEntity(compatibilityMessage, { now })
       messages.push({
         sessionId: session.id,

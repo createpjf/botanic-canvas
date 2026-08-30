@@ -21,7 +21,7 @@ const png = encodeRgbaPng({
 const pngBase64 = png.toString('base64')
 
 const nanoSettings = {
-  model: 'gemini-3.1-pro-preview',
+  model: 'gemini-3.1-flash-image-preview',
   aspectRatio: '21:9',
   resolution: '4K',
   thinkingLevel: 'high',
@@ -72,7 +72,7 @@ test('无参考走 images/generations，并写入比例、清晰度、thinking �
   })
   const body = await requestPayload(request)
   assert.equal(request.path, '/images/generations')
-  assert.equal(body.model, 'gemini-3.1-pro-preview')
+  assert.equal(body.model, 'gemini-3.1-flash-image-preview')
   assert.equal(body.n, 1)
   assert.equal(body.aspect_ratio, '21:9')
   assert.equal(body.image_size, '4K')
@@ -289,7 +289,12 @@ test('回包没有图片时失败可见', async () => {
       headers: { 'content-type': 'application/json' },
     }),
     persistMedia: async () => '/api/media/unused',
-  }), (error) => error instanceof GenerationError && error.code === 'EMPTY_PROVIDER_RESPONSE')
+  }), (error) => {
+    assert.deepEqual(error.providerResponseSummary, {
+      type: 'object', candidateCount: 0, keys: ['data'], dataCount: 0,
+    })
+    return error instanceof GenerationError && error.code === 'EMPTY_PROVIDER_RESPONSE'
+  })
 })
 
 test('网络或跳转失败归一化为批次级故障，不继续请求剩余候选', async () => {

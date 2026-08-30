@@ -1,4 +1,5 @@
 import type { AgentEntityReference, AgentToolCallTrace, BotanicAgentExecutionMode, BotanicAgentMessage, BotanicAgentReasoningEntry, BotanicAgentTurnRequestSnapshot } from './agent'
+import { normalizeBotanicAgentContextNodeIds } from './agent.ts'
 import type { GenerationAspectRatio, GenerationModelOption, GenerationResolution } from './canvas'
 import type { ProductLocale } from '../i18n/core'
 
@@ -165,7 +166,7 @@ export function buildBotanicAgentTurnRequest(input: BotanicAgentTurnRequestInput
           })),
         }
       : {}),
-    contextNodeIds: [...new Set(input.contextNodeIds)].slice(0, 32),
+    contextNodeIds: normalizeBotanicAgentContextNodeIds(input.contextNodeIds),
     hasTarget: Boolean(input.hasTarget),
     ...(input.hasTarget && input.selectedResultNodeId?.trim()
       ? { selectedResultNodeId: input.selectedResultNodeId.trim().slice(0, 160) }

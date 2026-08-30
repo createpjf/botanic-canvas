@@ -397,6 +397,11 @@ function AgentMessageTimeline({ timeline }: { timeline: AgentTimelineState }) {
         </div>
       </details>
     })}
+    {timeline.truncation ? <p className="agent-timeline__step-error" role="status">
+      {locale === 'en'
+        ? `Only the first ${timeline.truncation.loadedCount} runtime events are loaded. More events remain after cursor ${timeline.truncation.nextAfter}.`
+        : `仅加载前 ${timeline.truncation.loadedCount} 条运行事件；游标 ${timeline.truncation.nextAfter} 之后仍有记录。`}
+    </p> : null}
   </div>
 }
 

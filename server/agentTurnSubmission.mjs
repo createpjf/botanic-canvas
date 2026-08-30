@@ -71,8 +71,8 @@ function recoverableStoredRequest(stored, identity) {
 function canonicalInputFromMessage(validatedInput, message, messages) {
   const snapshot = message?.turnRequestSnapshot
   if (!snapshot || !validatedInput.sessionId) return { ...validatedInput, messages }
-  const { selectedResultNodeId, ...stableFields } = snapshot
-  return validateBotanicAgentTurnInput({
+  const { selectedResultNodeId, targetBinding, ...stableFields } = snapshot
+  const canonical = validateBotanicAgentTurnInput({
     projectId: validatedInput.projectId,
     sessionId: validatedInput.sessionId,
     inputMessage: {
@@ -84,6 +84,7 @@ function canonicalInputFromMessage(validatedInput, message, messages) {
     ...(stableFields.hasTarget ? { selectedResultNodeId } : {}),
     messages,
   })
+  return targetBinding ? { ...canonical, targetBinding: structuredClone(targetBinding) } : canonical
 }
 
 function matchingRequest(stored, candidate) {

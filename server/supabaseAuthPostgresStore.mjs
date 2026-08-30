@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js'
 import { decodeAuthAssurance } from './authAssurance.mjs'
 import { assertWorkspacePermission } from './authorization.mjs'
+import { sendResendInviteEmails } from './resendEmailService.mjs'
 
 function productError(message, code = 'PRODUCT_STORE_ERROR') {
   const error = new Error(message)
@@ -26,10 +27,42 @@ function authClient({ url, secretKey, client }) {
  * 迁移桥接：身份仍由可用的 Supabase Auth 验证，项目、任务与媒体元数据改写入
  * Railway PostgreSQL。这里绝不调用 Supabase 的 PostgREST 数据接口。
  */
-export function createSupabaseAuthPostgresStore({ productStore, url, secretKey, bootstrapEmail, inviteRedirectTo, allowLegacyTokens = false, client }) {
+export function createSupabaseAuthPostgresStore({ productStore, url, secretKey, bootstrapEmail, inviteRedirectTo, allowLegacyTokens = false, emailService, client }) {
   if (!productStore?.ensureAuthenticatedUser) throw new Error('PostgreSQL 存储缺少登录用户同步能力。')
   const supabase = authClient({ url, secretKey, client })
   const isBootstrapOwner = (email) => Boolean(bootstrapEmail && email && email.toLowerCase() === bootstrapEmail.toLowerCase())
+
+  async function inviteUser(email, name, welcome = true) {
+    const options = {
+      data: { display_name: name || email },
+      ...(inviteRedirectTo ? { redirectTo: inviteRedirectTo } : {}),
+    }
+    if (!emailService) {
+      const { data, error } = await supabase.auth.admin.inviteUserByEmail(email, options)
+      if (error || !data?.user) throw error ?? new Error('邀请成员失败。')
+      return data.user
+    }
+
+    const { data, error } = await supabase.auth.admin.generateLink({ type: 'invite', email, options })
+    if (error || !data?.user?.id || typeof data.properties?.action_link !== 'string') {
+      throw error ?? productError('验证链接生成失败。', 'USER_INVITE_LINK_FAILED')
+    }
+    try {
+      await sendResendInviteEmails({
+        emailService,
+        userId: data.user.id,
+        email,
+        name,
+        actionLink: data.properties.action_link,
+        welcome,
+      })
+    } catch (caught) {
+      const failure = productError('邀请邮件发送失败，请稍后重试。', 'USER_INVITE_EMAIL_FAILED')
+      failure.cause = caught
+      throw failure
+    }
+    return data.user
+  }
 
   return {
     ...productStore,
@@ -63,13 +96,9 @@ export function createSupabaseAuthPostgresStore({ productStore, url, secretKey, 
     async createUser(actorId, { email, name, role = 'member' }) {
       const actor = await productStore.readUser(actorId)
       assertWorkspacePermission(actor, 'manage-members', 'USER_CREATE_FORBIDDEN')
-      const { data, error } = await supabase.auth.admin.inviteUserByEmail(email, {
-        data: { display_name: name || email },
-        ...(inviteRedirectTo ? { redirectTo: inviteRedirectTo } : {}),
-      })
-      if (error || !data?.user) throw error ?? new Error('邀请成员失败。')
+      const authUser = await inviteUser(email, name)
       return productStore.ensureAuthenticatedUser({
-        id: data.user.id,
+        id: authUser.id,
         email,
         name: name || email,
         roleHint: role,
@@ -84,11 +113,7 @@ export function createSupabaseAuthPostgresStore({ productStore, url, secretKey, 
       if (!target) throw productError('未找到该工作区成员。', 'USER_NOT_FOUND')
       if (target.status !== 'invited') throw productError('只有待接受成员可以重新发送邀请。', 'USER_INVITE_NOT_PENDING')
 
-      const { data, error } = await supabase.auth.admin.inviteUserByEmail(target.email, {
-        data: { display_name: target.name || target.email },
-        ...(inviteRedirectTo ? { redirectTo: inviteRedirectTo } : {}),
-      })
-      if (error || !data?.user) throw error ?? productError('重新发送邀请失败。', 'USER_INVITE_RESEND_FAILED')
+      await inviteUser(target.email, target.name, false)
       return target
     },
 

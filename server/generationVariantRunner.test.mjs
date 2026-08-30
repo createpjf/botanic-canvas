@@ -19,7 +19,7 @@ function imageJob(provider, batchCount) {
     batchCount,
     settings: provider === 'flock'
       ? {
-          model: 'gemini-3.1-pro-preview',
+          model: 'gemini-3.1-flash-image-preview',
           aspectRatio: '3:4',
           resolution: '2K',
           thinkingLevel: 'high',

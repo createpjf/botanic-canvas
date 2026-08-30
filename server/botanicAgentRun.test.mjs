@@ -480,7 +480,7 @@ test('成套方案随计划持久化，分支条目归一化（视频单条、�
       contextSnapshot: [
         { nodeId: 'asset-product', label: '商品图', kind: '素材', mediaKind: 'image', role: '商品' },
       ],
-      output: { mode: 'single', count: 3, candidatesPerItem: 1 },
+      output: { mode: 'single', count: 7, candidatesPerItem: 1, itemCount: 3, totalCandidateCount: 7 },
       assetGroupId: undefined,
       composition: {
         theme: '春季山茶花系列',
@@ -500,6 +500,9 @@ test('成套方案随计划持久化，分支条目归一化（视频单条、�
   const input = validateAgentRunCreation(compositionCreation)
   assert.equal(input.plan.composition.items.length, 3)
   assert.equal(input.plan.composition.items[0].count, 4)
+  assert.deepEqual(input.plan.output, {
+    mode: 'single', count: 7, candidatesPerItem: 1, itemCount: 3, totalCandidateCount: 7,
+  })
   assert.deepEqual(input.branches.map((branch) => [branch.item.mediaKind, branch.item.count]), [
     ['image', 4],
     ['image', 2],

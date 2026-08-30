@@ -60,3 +60,18 @@ test('协作占位节点缺少媒体引用时保留服务端已有图片', () =>
   assert.equal(next.nodes[0].position.x, 80)
   assert.equal(next.nodes[0].data.image, '/api/media/media-1')
 })
+
+test('普通画布补丁不能覆盖生产工作流权威状态', () => {
+  const current = {
+    ...document,
+    productionWorkflows: [{ id: 'workflow-1' }],
+    productionWorkflowRuns: [{ id: 'run-1' }],
+  }
+  const next = applyCanvasDocumentPatch(current, {
+    fields: { productionWorkflows: [], productionWorkflowRuns: [], updatedAt: 200 },
+  })
+
+  assert.deepEqual(next.productionWorkflows, current.productionWorkflows)
+  assert.deepEqual(next.productionWorkflowRuns, current.productionWorkflowRuns)
+  assert.equal(next.updatedAt, 200)
+})

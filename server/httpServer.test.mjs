@@ -97,6 +97,27 @@ test('可注入 HTTP Server 无需启动生产运行时即可响应健康检查'
   assert.equal(headers['Cache-Control'], 'no-store')
 })
 
+test('未预期的 API 5xx 会把原始异常和安全请求上下文交给错误上报', async () => {
+  const dependencies = testDependencies()
+  const original = new Error('database exploded')
+  const reported = []
+  dependencies.runtime.productStore = {
+    async authenticate() { throw original },
+  }
+  dependencies.reportError = (...input) => reported.push(input)
+  const application = createBotanicHttpServer(dependencies)
+  const { response } = testResponse()
+
+  await application.handleRequest(testRequest({ method: 'GET', url: '/api/projects' }), response)
+
+  assert.equal(response.statusCode, 500)
+  assert.equal(reported.length, 1)
+  assert.equal(reported[0][0], original)
+  assert.equal(reported[0][1].tags.component, 'api')
+  assert.equal(reported[0][1].tags.error_code, 'INTERNAL_ERROR')
+  assert.equal(typeof reported[0][1].contexts.request.id, 'string')
+})
+
 test('HTTP 启动恢复使用有界 Generation keyset sweep，单个 poison Job 不阻塞同页任务', async () => {
   const dependencies = testDependencies()
   const listed = []
@@ -185,6 +206,101 @@ test('项目路由返回业务错误后不会继续写第二次响应', async ()
 
   assert.equal(response.statusCode, 400)
   assert.equal(JSON.parse(response.body).error.code, 'INVALID_DOCUMENT')
+})
+
+test('Project 文档写入区分 5xx、权限、校验与冲突', async (context) => {
+  const run = async ({ method = 'PUT', failure, body = { id: 'project-1', name: 'Demo' } }) => {
+    const dependencies = testDependencies()
+    const reported = []
+    dependencies.reportError = (...input) => reported.push(input)
+    dependencies.runtime.mediaService = {
+      async normalizeDocument(document) { return document },
+    }
+    dependencies.runtime.productStore = {
+      async authenticate() { return { id: 'user-1' } },
+      async projectAccess() { return { exists: true, role: 'owner' } },
+      async readProject() { return { revision: 1, graphRevision: 1, document: { id: 'project-1', name: 'Demo', nodes: [], edges: [] } } },
+      async writeProject() { throw failure },
+    }
+    const application = createBotanicHttpServer(dependencies)
+    const { response } = testResponse()
+    await application.handleRequest(testRequest({
+      method,
+      url: '/api/projects/project-1/document',
+      body,
+    }), response)
+    return { response, reported }
+  }
+
+  await context.test('通用 Store Error 是 500 并上报安全错误码', async () => {
+    const original = new Error('database exploded')
+    const { response, reported } = await run({ failure: original })
+    assert.equal(response.statusCode, 500)
+    assert.equal(JSON.parse(response.body).error.code, 'INTERNAL_ERROR')
+    assert.equal(reported[0]?.[0], original)
+    assert.equal(reported[0]?.[1]?.tags?.error_code, 'INTERNAL_ERROR')
+  })
+
+  await context.test('明确权限错误是 403', async () => {
+    const failure = Object.assign(new Error('forbidden'), { code: 'PROJECT_WRITE_FORBIDDEN' })
+    const { response } = await run({ failure })
+    assert.equal(response.statusCode, 403)
+    assert.equal(JSON.parse(response.body).error.code, 'PROJECT_WRITE_FORBIDDEN')
+  })
+
+  await context.test('补丁 TypeError 是 400', async () => {
+    const { response } = await run({ method: 'PATCH', failure: new Error('unused'), body: { fields: { id: 'forbidden' } } })
+    assert.equal(response.statusCode, 400)
+    assert.equal(JSON.parse(response.body).error.code, 'INVALID_DOCUMENT_PATCH')
+  })
+
+  await context.test('版本冲突是 409', async () => {
+    const failure = Object.assign(new Error('conflict'), { code: 'PROJECT_CONFLICT' })
+    const { response } = await run({ failure })
+    assert.equal(response.statusCode, 409)
+    assert.equal(JSON.parse(response.body).error.code, 'PROJECT_CONFLICT')
+  })
+})
+
+test('旧版整文档 PUT 不能覆盖生产工作流权威状态', async () => {
+  const dependencies = testDependencies()
+  let written
+  dependencies.runtime.mediaService = {
+    async normalizeDocument(document) { return document },
+  }
+  dependencies.runtime.productStore = {
+    async authenticate() { return { id: 'user-1' } },
+    async projectAccess() { return { exists: true, role: 'owner' } },
+    async readProject() {
+      return {
+        revision: 3,
+        graphRevision: 2,
+        document: {
+          id: 'project-1', name: 'Demo', nodes: [], edges: [],
+          productionWorkflows: [{ id: 'workflow-1' }],
+          productionWorkflowRuns: [{ id: 'run-1' }],
+        },
+      }
+    },
+    async writeProject(_userId, document) {
+      written = document
+      return { created: false, revision: 4, graphRevision: 2, document }
+    },
+  }
+  const application = createBotanicHttpServer(dependencies)
+  const { response } = testResponse()
+  await application.handleRequest(testRequest({
+    method: 'PUT',
+    url: '/api/projects/project-1/document',
+    body: {
+      id: 'project-1', name: 'Demo', nodes: [], edges: [],
+      productionWorkflows: [], productionWorkflowRuns: [],
+    },
+  }), response)
+
+  assert.equal(response.statusCode, 200)
+  assert.deepEqual(written.productionWorkflows, [{ id: 'workflow-1' }])
+  assert.deepEqual(written.productionWorkflowRuns, [{ id: 'run-1' }])
 })
 
 test('Agent 行动执行中冲突经过统一 HTTP 层保留 409 与业务码', async () => {

@@ -5,20 +5,19 @@ import {
   type BobPresentationSays,
   type BobSaysPlayCounts,
 } from '../../domain/bobPresentation'
-
-const playsByKey = new Map<string, BobSaysPlayCounts>()
+import { cacheBobSaysPlays, readCachedBobSaysPlays } from './bobSaysPlayCache'
 
 export function useBobSaysPlays(key: string) {
-  const [plays, setPlays] = useState<BobSaysPlayCounts>(() => playsByKey.get(key) ?? emptyBobSaysPlayCounts())
+  const [plays, setPlays] = useState<BobSaysPlayCounts>(() => readCachedBobSaysPlays(key) ?? emptyBobSaysPlayCounts())
 
   useEffect(() => {
-    setPlays(playsByKey.get(key) ?? emptyBobSaysPlayCounts())
+    setPlays(readCachedBobSaysPlays(key) ?? emptyBobSaysPlayCounts())
   }, [key])
 
   const markPlayed = (says: BobPresentationSays) => {
     setPlays((current) => {
       const next = markBobSaysPlayed(current, says)
-      playsByKey.set(key, next)
+      cacheBobSaysPlays(key, next)
       return next
     })
   }

@@ -4,7 +4,7 @@ import type { CanvasDocument, GenerationModelOption } from '../../domain/canvas.
 import { runCanvasClarityBoost } from './canvasGenerationInteraction.ts'
 
 const models: GenerationModelOption[] = [{
-  id: 'gemini-3.1-pro-preview', label: 'Nano Banana', provider: 'flock', mediaKind: 'image',
+  id: 'gemini-3.1-flash-image-preview', label: 'Nano Banana', provider: 'flock', mediaKind: 'image',
   aspectRatios: ['3:4'], resolutions: ['1K', '2K', '4K'],
 }]
 
@@ -29,7 +29,7 @@ test('4K action creates a faithful Nano branch before submitting it', async () =
     parentResultId: 'result-1', prompt: 'Keep the subject.', models,
     readDocument: () => current,
     createBranch: (_id, draft) => {
-      assert.equal(draft.settings.model, 'gemini-3.1-pro-preview')
+      assert.equal(draft.settings.model, 'gemini-3.1-flash-image-preview')
       assert.equal(draft.settings.resolution, '4K')
       assert.equal(draft.refinementMode, 'faithful')
       events.push('created')
@@ -61,7 +61,7 @@ test('historical result without settings still receives an executable 4K recipe'
     runGraphGeneration: async () => true,
     onStarted: () => undefined,
   })
-  assert.equal(model, 'gemini-3.1-pro-preview')
+  assert.equal(model, 'gemini-3.1-flash-image-preview')
   assert.equal(resolution, '4K')
 })
 

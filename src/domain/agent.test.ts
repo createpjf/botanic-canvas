@@ -8,6 +8,7 @@ import {
   createBotanicAgentMemoryItem,
   buildBotanicAgentPlan,
   botanicAgentAutoRetryTargets,
+  botanicAgentAssistantMessageProvenance,
   botanicAgentContextSnapshotNodeIds,
   botanicAgentImageContext,
   botanicAgentLocalInitialGenerationDecision,
@@ -1071,6 +1072,31 @@ test('Agent 会话保存执行模式、画布上下文与可恢复的消息时�
   const rated = updateBotanicAgentMessage(submitted, 'message-1', { feedback: 'positive' }, 140)
   assert.equal(rated.messages[0].feedback, 'positive')
   assert.equal(rated.updatedAt, 140)
+
+  assert.throws(
+    () => replaceBotanicAgentSessionContext(withUserMessage, Array.from({ length: 33 }, (_, index) => `node-${index}`)),
+    (error: unknown) => (error as { code?: string }).code === 'AGENT_SESSION_CONTEXT_LIMIT',
+  )
+})
+
+test('Assistant Message provenance 冻结产生回答时的来源节点', () => {
+  const provenance = botanicAgentAssistantMessageProvenance({
+    id: 'message-a', role: 'user', kind: 'text', content: '分析图片 A',
+    turnId: 'turn-a', createdAt: 100,
+    turnRequestSnapshot: {
+      locale: 'zh-CN', contextNodeIds: ['node-a'], hasTarget: true,
+      selectedResultNodeId: 'node-a', executionMode: 'manual', maxOutputCount: 8,
+      targetBinding: {
+        version: 1, nodeId: 'node-a', nodeRevision: 'revision-a', artifactId: 'artifact-a',
+        generationJobId: 'job-a', candidateId: 'candidate-a', versionId: 'version-a',
+        mediaSha256: 'a'.repeat(64), boundAt: 100,
+      },
+    },
+  }, 'turn-a')
+
+  assert.deepEqual(provenance, {
+    sourceMessageId: 'message-a', sourceNodeIds: ['node-a'], targetArtifactVersionId: 'version-a',
+  })
 })
 
 test('成套方案作为 composition 消息进入会话时间线，更新可回填同一条', () => {

@@ -361,6 +361,7 @@ export function createCanvasGenerationActions({
       if (graphRecipe.hasUnselectedResultInput) return setGenerationError('上游结果尚未选图；请先在结果中选中一张首图，再继续生成。')
       if (!graphRecipe.recipe.references.length && !graphRecipe.parent) return setGenerationError('请至少连接一张商品图片、参考素材或已选首图。')
       const selectedModel = get().availableModels.find((model) => model.id === graphRecipe.recipe.settings.model)
+      if (!selectedModel) return setGenerationError('当前生成模型未配置或不可用，请重新选择。')
       const maximumReferences = maximumReferencesForModel(selectedModel)
       const inputImageCount = graphRecipe.recipe.references.length + (graphRecipe.parent ? 1 : 0)
       if (inputImageCount > maximumReferences) {

@@ -1,5 +1,4 @@
 import {
-  DEFAULT_FLOCK_IMAGE_MODELS,
   NANO_BANANA_ASPECT_RATIOS,
   NANO_BANANA_MODEL_ID,
   NANO_BANANA_RESOLUTIONS,
@@ -16,8 +15,25 @@ function labelForModel(model) {
   if (model === 'image-01') return 'MiniMax Image 01'
   if (model === 'image-01-live') return 'MiniMax Image 01 Live'
   if (model === 'MiniMax-H3') return 'MiniMax H3'
-  if (model === NANO_BANANA_MODEL_ID) return 'Nano Banana'
+  if (model === NANO_BANANA_MODEL_ID) return 'Nano Banana 2'
   return model
+}
+
+function nanoBananaModelOption(extra = {}) {
+  return {
+    id: NANO_BANANA_MODEL_ID,
+    label: labelForModel(NANO_BANANA_MODEL_ID),
+    provider: 'flock',
+    mediaKind: 'image',
+    aspectRatios: [...NANO_BANANA_ASPECT_RATIOS],
+    resolutions: [...NANO_BANANA_RESOLUTIONS],
+    supportsMask: false,
+    supportsCustomSize: false,
+    supportsSearchGrounding: true,
+    thinkingLevels: ['minimal', 'high'],
+    maximumReferences: 14,
+    ...extra,
+  }
 }
 
 /** 服务端模型目录是 Provider、校验和 UI 的共同权威来源。 */
@@ -28,7 +44,8 @@ export function createGenerationModelCatalog({
   miniMaxImageModels = [],
   miniMaxVideoModels = [],
   flockApiKey,
-  flockImageModels = DEFAULT_FLOCK_IMAGE_MODELS,
+  flockImageModels = [],
+  includeUnavailable = false,
 }) {
   const catalog = []
   if (openAIApiKey) {
@@ -70,28 +87,25 @@ export function createGenerationModelCatalog({
       defaultDuration: 5,
     })))
   }
+  const configuredFlockModels = unique(flockImageModels).filter((id) => id === NANO_BANANA_MODEL_ID)
   if (flockApiKey) {
     // 环境变量只负责启用已实现的 Adapter 型号，不能让一个陌生 ID 继承 Nano
     // Banana 的 4K / 14 参考 / Search / Thinking 能力后进入可执行目录。
-    catalog.push(...unique(flockImageModels).filter((id) => id === NANO_BANANA_MODEL_ID).map((id) => ({
-      id,
-      label: labelForModel(id),
-      provider: 'flock',
-      mediaKind: 'image',
-      aspectRatios: [...NANO_BANANA_ASPECT_RATIOS],
-      resolutions: [...NANO_BANANA_RESOLUTIONS],
-      supportsMask: false,
-      supportsCustomSize: false,
-      supportsSearchGrounding: true,
-      thinkingLevels: ['minimal', 'high'],
-      maximumReferences: 14,
-    })))
+    catalog.push(...configuredFlockModels.map(() => nanoBananaModelOption()))
+  }
+  if (includeUnavailable && !catalog.some((model) => model.id === NANO_BANANA_MODEL_ID) && (flockApiKey || configuredFlockModels.length)) {
+    catalog.push(nanoBananaModelOption({
+      available: false,
+      unavailableReason: flockApiKey
+        ? '未在 FLOCK_IMAGE_MODELS 中显式启用。'
+        : 'Flock 图像服务尚未配置 API Key。',
+    }))
   }
   return catalog
 }
 
 export function providerForModel(catalog, modelId) {
-  return catalog.find((model) => model.id === modelId)
+  return catalog.find((model) => model.id === modelId && model.available !== false)
 }
 
 export function generationTimeoutForModel(catalog, modelId, { imageTimeoutMs, videoTimeoutMs }) {

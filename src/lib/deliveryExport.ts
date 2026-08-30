@@ -1,4 +1,5 @@
 import type { DeliveryArtifact, DeliveryPresetId } from '../domain/canvas'
+import { fetchMediaBlob } from './mediaFetch'
 
 export type DeliveryPreset = {
   id: DeliveryPresetId
@@ -136,7 +137,8 @@ function drawCopy(context: CanvasRenderingContext2D, artifact: DeliveryArtifact,
 
 async function renderArtifact(artifact: DeliveryArtifact) {
   const preset = getDeliveryPreset(artifact.presetId)
-  const image = await loadImage(artifact.image)
+  const source = URL.createObjectURL(await fetchMediaBlob(artifact.image))
+  const image = await loadImage(source).finally(() => URL.revokeObjectURL(source))
   const canvas = document.createElement('canvas')
   canvas.width = preset.width
   canvas.height = preset.height

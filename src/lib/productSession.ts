@@ -114,7 +114,7 @@ function sessionUserFallback(user: { id: string; email?: string; user_metadata?:
   return { id: user.id, email, name: displayName, role: 'member' }
 }
 
-async function authorizationHeader() {
+async function authorizationHeader(): Promise<Record<string, string>> {
   if (!supabase) return {}
   const { data } = await withAuthTimeout(
     supabase.auth.getSession(),

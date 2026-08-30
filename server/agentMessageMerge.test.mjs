@@ -114,6 +114,39 @@ test('turnRequestSnapshot 可首次补写、旧 writer 遗漏时保留、改绑�
   ))
 })
 
+test('服务端目标版本绑定在旧 writer 遗漏时保留，其他请求身份仍不可改绑', () => {
+  const targetBinding = {
+    version: 1,
+    nodeId: 'result-a',
+    nodeRevision: 'node-revision-a',
+    artifactId: 'generation:job-a:candidate-a',
+    generationJobId: 'job-a',
+    candidateId: 'candidate-a',
+    versionId: 'version-a',
+    mediaSha256: 'a'.repeat(64),
+    boundAt: 100,
+  }
+  const current = {
+    id: 'message-target-bound', role: 'user', kind: 'text', content: '继续',
+    createdAt: 10, updatedAt: 20,
+    turnRequestSnapshot: { ...requestSnapshot, targetBinding },
+  }
+  const merged = mergeAgentMessageForWrite(current, {
+    ...current,
+    updatedAt: 30,
+    turnRequestSnapshot: requestSnapshot,
+  }, { currentUpdatedAt: 20, incomingUpdatedAt: 30 })
+
+  assert.deepEqual(merged.message.turnRequestSnapshot, current.turnRequestSnapshot)
+  assert.throws(() => mergeAgentMessageForWrite(current, {
+    ...current,
+    updatedAt: 30,
+    turnRequestSnapshot: { ...requestSnapshot, contextNodeIds: ['result-b'] },
+  }, { currentUpdatedAt: 20, incomingUpdatedAt: 30 }), (error) => (
+    /** @type {any} */ (error)?.code === 'AGENT_MESSAGE_TURN_REQUEST_CONFLICT'
+  ))
+})
+
 test('Message role 不可改绑，createdAt 首次绑定保留；无 snapshot 投影的 kind 仍可演进', () => {
   const current = {
     id: 'agent-turn-result-turn-role', role: 'assistant', kind: 'notice', content: '执行中',
@@ -160,5 +193,26 @@ test('稳定 Turn 投影的服务端 entityReferences 不被旧 writer 遗漏清
     entityReferences: [{ type: 'agent_run', id: 'run-forged' }],
   }, { currentUpdatedAt: 100, incomingUpdatedAt: 200 }), (caught) => (
     /** @type {any} */ (caught)?.code === 'AGENT_MESSAGE_ENTITY_REFERENCES_CONFLICT'
+  ))
+})
+
+test('稳定 Turn 投影的服务端 provenance 不被旧 writer 清空或改绑', () => {
+  const provenance = {
+    sourceMessageId: 'message-a',
+    sourceNodeIds: ['node-a'],
+    targetArtifactVersionId: 'version-a',
+    planFingerprint: 'plan-a',
+  }
+  const current = { ...projection('answered', 100, '回答 A'), ...provenance }
+  const omitted = mergeAgentMessageForWrite(current, projection('answered', 200, '旧客户端正文'), {
+    currentUpdatedAt: 100,
+    incomingUpdatedAt: 200,
+  })
+  assert.deepEqual(Object.fromEntries(Object.keys(provenance).map((key) => [key, omitted.message[key]])), provenance)
+
+  assert.throws(() => mergeAgentMessageForWrite(current, {
+    ...projection('answered', 300, '伪造来源'), sourceNodeIds: ['node-b'],
+  }, { currentUpdatedAt: 100, incomingUpdatedAt: 300 }), (caught) => (
+    /** @type {any} */ (caught)?.code === 'AGENT_MESSAGE_PROVENANCE_CONFLICT'
   ))
 })

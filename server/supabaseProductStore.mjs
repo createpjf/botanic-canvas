@@ -4,8 +4,9 @@ import { createClient } from '@supabase/supabase-js'
 import { isRetryableSupabaseError, retrySupabaseOperation } from './supabaseRetry.mjs'
 import { decodeAuthAssurance } from './authAssurance.mjs'
 import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from './authorization.mjs'
-import { artifactIndexLimits, artifactsFromActionReceipt, artifactsFromAgentMessage, artifactsFromDocument, artifactsFromGenerationJob } from './botanicArtifactIndex.mjs'
-import { agentStateFromDocument, applyAgentSessionReadReceipts, mergeAgentStateIntoDocument, shouldApplyAgentEntityWrite, stripAgentMessagesFromDocument, validateAgentEntityWriteTimestamp, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity, validateAgentSessionReadReceipt } from './botanicAgentPersistence.mjs'
+import { sendResendInviteEmails } from './resendEmailService.mjs'
+import { artifactIndexLimits, artifactsFromActionReceipt, artifactsFromAgentMessage, artifactsFromDocument, artifactsFromGenerationJob, generationArtifactRefreshReport, generationArtifactsFromJobReport } from './botanicArtifactIndex.mjs'
+import { agentStateFromDocument, applyAgentSessionReadReceipts, compareAndSetAgentSessionSettings, mergeAgentStateIntoDocument, normalizeAgentSessionSettingsCommand, shouldApplyAgentEntityWrite, stripAgentMessagesFromDocument, validateAgentEntityWriteTimestamp, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity, validateAgentSessionReadReceipt } from './botanicAgentPersistence.mjs'
 import { agentMessageListOptions, encodeAgentMessageCursor, normalizeAgentSessionListLimit } from './agentMessagePersistence.mjs'
 import { observeProductStoreRead, timedProductStoreRead } from './productStoreMetrics.mjs'
 import { collaborationActivitiesForMember, collaborationActivityListOptions, validateCollaborationActivity } from './collaborationActivityPersistence.mjs'
@@ -151,7 +152,7 @@ function canvasGraph(document) {
  * Supabase ProductStore。Auth 由 Supabase 管理；所有服务端数据写入使用 secret
  * key，浏览器凭 JWT 访问时仍受数据库与 Storage RLS 保护。
  */
-export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inviteRedirectTo }) {
+export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inviteRedirectTo, emailService }) {
   if (!url || !secretKey) throw new Error('SUPABASE_URL 与 SUPABASE_SECRET_KEY 未配置。')
   const storageTimeoutMs = 8_000
   const timedFetch = async (input, init = {}) => {
@@ -234,6 +235,40 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       target_id: targetId ?? null, detail,
     }))
     fail(error)
+  }
+
+  async function inviteAuthUser(email, name, welcome = true) {
+    const options = {
+      data: { display_name: name || email },
+      ...(inviteRedirectTo ? { redirectTo: inviteRedirectTo } : {}),
+    }
+    if (!emailService) {
+      const { data, error } = await supabase.auth.admin.inviteUserByEmail(email, options)
+      fail(error, '邀请成员失败。')
+      if (!data?.user) throw productError('邀请成员失败。', 'USER_CREATE_FAILED')
+      return data.user
+    }
+
+    const { data, error } = await supabase.auth.admin.generateLink({ type: 'invite', email, options })
+    fail(error, '验证链接生成失败。')
+    if (!data?.user?.id || typeof data.properties?.action_link !== 'string') {
+      throw productError('验证链接生成失败。', 'USER_INVITE_LINK_FAILED')
+    }
+    try {
+      await sendResendInviteEmails({
+        emailService,
+        userId: data.user.id,
+        email,
+        name,
+        actionLink: data.properties.action_link,
+        welcome,
+      })
+    } catch (caught) {
+      const failure = productError('邀请邮件发送失败，请稍后重试。', 'USER_INVITE_EMAIL_FAILED')
+      failure.cause = caught
+      throw failure
+    }
+    return data.user
   }
 
   const missingAgentEntityTable = (error) => error?.code === '42P01' || error?.code === 'PGRST205'
@@ -339,40 +374,35 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
   async function upsertArtifactRecords(userId, projectId, artifacts) {
     for (let offset = 0; offset < artifacts.length; offset += 500) {
       const batch = artifacts.slice(offset, offset + 500)
-      const ids = batch.map((artifact) => artifact.id)
-      const { data: existingRows, error: readError } = await supabaseRequest(() => supabase.from('agent_artifacts')
-        .select('id,owner_id,created_at,updated_at').eq('project_id', projectId).in('id', ids))
-      if (missingAgentEntityTable(readError)) return false
-      fail(readError)
-      const existingById = new Map((existingRows ?? []).map((row) => [row.id, row]))
-      const rows = batch.filter((artifact) => {
-        const existing = existingById.get(artifact.id)
-        return !existing || artifact.updatedAt >= new Date(existing.updated_at).getTime()
-      }).map((artifact) => {
-        const existing = existingById.get(artifact.id)
-        const indexedCreatedAt = Math.min(
-          artifact.createdAt,
-          existing?.created_at ? new Date(existing.created_at).getTime() : artifact.createdAt,
-        )
-        return {
-          project_id: projectId,
-          id: artifact.id,
-          owner_id: existing?.owner_id ?? userId,
-          kind: artifact.kind,
-          source_kind: artifact.origin.type,
-          run_id: artifact.provenance.runId ?? null,
-          job_id: artifact.origin.jobId ?? null,
-          created_at: new Date(indexedCreatedAt).toISOString(),
-          updated_at: new Date(artifact.updatedAt).toISOString(),
-          payload: { ...artifact, createdAt: indexedCreatedAt },
-        }
-      })
-      if (!rows.length) continue
-      const { error } = await supabaseRequest(() => supabase.from('agent_artifacts').upsert(rows, { onConflict: 'project_id,id' }))
-      if (missingAgentEntityTable(error)) return false
+      const rows = batch.map((artifact) => ({
+        id: artifact.id,
+        kind: artifact.kind,
+        source_kind: artifact.origin.type,
+        run_id: artifact.provenance.runId ?? null,
+        job_id: artifact.origin.jobId ?? null,
+        created_at: new Date(artifact.createdAt).toISOString(),
+        updated_at: new Date(artifact.updatedAt).toISOString(),
+        payload: artifact,
+      }))
+      const { error } = await supabaseRequest(() => supabase.rpc('botanic_upsert_agent_artifacts_monotonic', {
+        p_actor_id: userId,
+        p_project_id: projectId,
+        p_artifacts: rows,
+      }))
+      if (missingAgentEntityRpc(error) || missingAgentEntityTable(error)) return false
       fail(error)
     }
     return true
+  }
+
+  async function refreshGenerationArtifactRecords(userId, job, document) {
+    const conversion = generationArtifactsFromJobReport(job, { document })
+    const written = await upsertArtifactRecords(userId, job.projectId, conversion.artifacts)
+    if (!written) return generationArtifactRefreshReport(conversion, [])
+    const { data, error } = await supabaseRequest(() => supabase.from('agent_artifacts')
+      .select('id').eq('project_id', job.projectId).eq('job_id', job.id))
+    fail(error)
+    return generationArtifactRefreshReport(conversion, data ?? [])
   }
 
   async function syncAgentStateFromDocument(userId, document, previousDocument) {
@@ -400,7 +430,7 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
     const deletedMemoryRows = removedIds.map((id) => ({ id, deleted_at: deletedAt }))
 
     // 派生字段必须由数据库在同一事务中保留；两个能力标记使旧的同名
-    // 7/8 参数 RPC 不会被 PostgREST 误匹配，缺迁移时拒绝非原子降级。
+    // 7/8/9 参数 RPC 不会被 PostgREST 误匹配，缺迁移时拒绝非原子降级。
     const { error: rpcError } = await supabaseRequest(() => supabase.rpc('botanic_sync_agent_entities', {
       p_owner_id: userId,
       p_project_id: document.id,
@@ -411,6 +441,7 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       p_deleted_memory: deletedMemoryRows,
       p_preserve_thread_summary: true,
       p_preserve_entity_references: true,
+      p_insert_sessions_only: true,
     }))
     if (rpcError) {
       if (missingAgentEntityRpc(rpcError)) {
@@ -445,6 +476,7 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       p_deleted_memory: [],
       p_preserve_thread_summary: true,
       p_preserve_entity_references: true,
+      p_insert_sessions_only: true,
     }))
     if (missingAgentEntityRpc(error)) {
       throw productError('Agent 派生字段原子写入迁移尚未部署。', 'AGENT_DERIVED_FIELDS_ATOMIC_WRITE_REQUIRED')
@@ -597,7 +629,7 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
         const document = project?.document
           ? { ...clone(project.document), ...clone(graph?.graph ?? {}) }
           : undefined
-        await upsertArtifactRecords(userId, job.projectId, artifactsFromGenerationJob(job, { document }))
+        artifactReady = (await refreshGenerationArtifactRecords(userId, job, document)).status === 'passed'
       } catch (caught) {
         artifactReady = false
         console.warn(`[artifact-index] generation sync deferred for ${job.id}: ${caught instanceof Error ? caught.message : String(caught)}`)
@@ -658,15 +690,10 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       const { data: actor, error: actorError } = await supabase.from('profiles').select('workspace_role').eq('id', actorId).maybeSingle()
       fail(actorError)
       assertWorkspacePermission({ role: actor?.workspace_role, status: 'active' }, 'manage-members', 'USER_CREATE_FORBIDDEN')
-      const { data, error } = await supabase.auth.admin.inviteUserByEmail(email, {
-        data: { display_name: name || email },
-        ...(inviteRedirectTo ? { redirectTo: inviteRedirectTo } : {}),
-      })
-      fail(error, '邀请成员失败。')
-      if (!data.user) throw productError('邀请成员失败。', 'USER_CREATE_FAILED')
+      const authUser = await inviteAuthUser(email, name)
       const { data: profile, error: profileError } = await supabase
         .from('profiles')
-        .upsert({ id: data.user.id, email, display_name: name || email, workspace_role: role }, { onConflict: 'id' })
+        .upsert({ id: authUser.id, email, display_name: name || email, workspace_role: role }, { onConflict: 'id' })
         .select('*')
         .single()
       fail(profileError)
@@ -1033,6 +1060,38 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
         messageId: stored.message_id,
         updatedAt: new Date(stored.updated_at).getTime(),
       } : clone(receipt)
+    },
+
+    async compareAndSetAgentSessionSettings(userId, projectId, command) {
+      assertProjectPermission(await memberRole(projectId, userId), 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      const normalized = normalizeAgentSessionSettingsCommand(command, { now: now() })
+      const { data, error } = await supabaseRequest(() => supabase.rpc('botanic_compare_and_set_agent_session_settings', {
+        p_actor_id: userId,
+        p_project_id: projectId,
+        p_session_id: normalized.sessionId,
+        p_expected_revision: normalized.expectedRevision,
+        p_changes: normalized.changes,
+        p_created_at: normalized.createdAt,
+      }))
+      if (error) {
+        if (missingAgentEntityRpc(error)) {
+          throw productError('Agent Session CAS 迁移尚未部署。', 'AGENT_SESSION_SETTINGS_CAS_REQUIRED')
+        }
+        if (error.code === '23505') throw productError('Agent 会话标识已被其他项目使用。', 'AGENT_SESSION_ID_CONFLICT')
+        if (error.code === '42501') throw productError('你没有编辑该项目的权限。', 'PROJECT_WRITE_FORBIDDEN')
+        if (error.code === '22023') throw productError('Agent Session 设置变更无效。', 'INVALID_AGENT_SESSION_SETTINGS')
+        fail(error)
+      }
+      const decision = Array.isArray(data) ? data[0] : data
+      if (decision?.changed) {
+        await insertAudit({
+          actorId: userId,
+          action: decision.kind === 'created' ? 'agent-session.created' : 'agent-session.updated',
+          projectId,
+          targetId: normalized.sessionId,
+        })
+      }
+      return clone(decision)
     },
 
     async putAgentSession(userId, projectId, input) {
@@ -1531,9 +1590,9 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       fail(projectError)
       fail(graphError)
       if (!project) return false
-      return upsertArtifactRecords(userId, job.projectId, artifactsFromGenerationJob(job, {
-        document: { ...clone(project.document), ...clone(graph?.graph ?? {}) },
-      }))
+      return refreshGenerationArtifactRecords(userId, job, {
+        ...clone(project.document), ...clone(graph?.graph ?? {}),
+      })
     },
 
     async putAgentRun(userId, run) {

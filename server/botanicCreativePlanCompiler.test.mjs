@@ -79,14 +79,14 @@ test('compiler rejects conflicting constraints and unsupported settings before a
 
 test('compiler keeps Nano Banana search and thinking settings in the immutable recipe', () => {
   const nanoSettings = {
-    model: 'gemini-3.1-pro-preview', aspectRatio: '3:4', resolution: '2K',
+    model: 'gemini-3.1-flash-image-preview', aspectRatio: '3:4', resolution: '2K',
     searchGrounding: true, thinkingLevel: 'high',
   }
   const result = compileCreativePlan({
     plan: { ...plan, settings: nanoSettings },
     baseRecipe: { ...baseRecipe, settings: nanoSettings },
     models: [{
-      id: 'gemini-3.1-pro-preview', aspectRatios: ['3:4'], resolutions: ['2K'],
+      id: 'gemini-3.1-flash-image-preview', aspectRatios: ['3:4'], resolutions: ['2K'],
       supportsSearchGrounding: true, thinkingLevels: ['minimal', 'high'],
     }],
   })

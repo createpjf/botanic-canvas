@@ -103,3 +103,14 @@ test('同一成员的连续同类变更合并并累计，阅读后清除未读',
   assert.equal(merged[0]?.occurredAt, 5_000)
   assert.equal(markCollaborationActivitiesRead(merged)[0]?.unread, false)
 })
+
+test('同一协作事件经多个实时通道到达时按事件 ID 去重', () => {
+  const activity = {
+    id: 'activity-same', actorId: 'member-1', actorName: 'Mia', kind: 'canvas' as const, summary: '更新了画布',
+    occurredAt: 1_000, unread: true, count: 1,
+  }
+  const duplicated = appendCollaborationActivity(appendCollaborationActivity([], activity), activity)
+
+  assert.equal(duplicated.length, 1)
+  assert.equal(duplicated[0]?.count, 1)
+})

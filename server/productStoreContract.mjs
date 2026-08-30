@@ -981,6 +981,7 @@ export const productStoreCoreMethods = Object.freeze([
   'putCollaborationActivity',
   'putCollaborationActivityReceipt',
   'putAgentSession',
+  'compareAndSetAgentSessionSettings',
   'compareAndSetAgentThreadSummary',
   // Model Context Surface 的 head 与 append-only ledger。State CAS 同时承载
   // provider usage anchor；原始 Message 仍是权威记录，compaction 只影响模型投影。

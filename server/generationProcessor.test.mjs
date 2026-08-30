@@ -8,6 +8,7 @@ import { createGenerationProcessor as createRuntimeGenerationProcessor } from '.
 import { GenerationError } from './generationProvider.mjs'
 import { createLocalCancelRegistry } from './localCancelRegistry.mjs'
 import { createProductStore } from './productStore.mjs'
+import { createAgentReferenceBindings } from './agentTargetBinding.mjs'
 
 /** 旧测试夹具只实现 read/put；在测试边界补齐与真实 Adapter 同形的原子 seam。 */
 function createGenerationProcessor(input) {
@@ -159,6 +160,60 @@ test('Flock 高内存许可在输入媒体物化前取得，并在任务结束�
   assert.deepEqual(events, ['admission', 'read-media', 'generate', 'release'])
 })
 
+test('Agent 二级参考图同 ID 换字节后在 Provider 前 fail closed', async () => {
+  let providerCalls = 0
+  const reference = { name: '商品', role: '商品', primary: true, mediaId: 'media_ref' }
+  const referenceBindings = await createAgentReferenceBindings([
+    { ...reference, buffer: Buffer.from('confirmed-v1') },
+  ])
+  let storedJob = {
+    id: 'job-reference-drift', ownerId: 'user-a', projectId: 'project-a', status: 'queued', kind: 'generation',
+    createdAt: Date.now(), updatedAt: Date.now(), batchCount: 1,
+    settings: { model: 'openai', aspectRatio: '1:1', resolution: '1K' }, outputs: [],
+    agentRun: { runId: 'run-a', branchId: 'branch-a', attempt: 0 },
+    referenceBindings,
+    rawInput: {
+      projectId: 'project-a', kind: 'generation', prompt: '生成商品图', batchCount: 1,
+      settings: { model: 'openai', aspectRatio: '1:1', resolution: '1K' },
+      recipe: { references: [reference], referenceBindings },
+    },
+  }
+  const processJob = createGenerationProcessor({
+    productStore: {
+      async readGenerationJobForWorker() { return structuredClone(storedJob) },
+      async readAgentRunForWorker() {
+        return {
+          id: 'run-a', ownerId: 'user-a', projectId: 'project-a', status: 'queued',
+          branches: [{ id: 'branch-a', activeJobId: storedJob.id, attempt: 0 }],
+        }
+      },
+      async putGenerationJob(_ownerId, job) { storedJob = structuredClone(job) },
+      async readProject() { return undefined },
+      async refreshGenerationArtifacts() { return true },
+    },
+    mediaService: {
+      async readGenerationInput() {
+        return { mimeType: 'image/png', buffer: Buffer.from('changed-v2') }
+      },
+    },
+    config: {
+      modelOptions: [{
+        id: 'openai', provider: 'openai', mediaKind: 'image',
+        aspectRatios: ['1:1'], resolutions: ['1K'], maximumReferences: 8,
+      }],
+      maximumBatchCount: 4,
+      maximumReferenceBytes: 1024,
+    },
+    generate: async () => { providerCalls += 1; return { outputs: [] } },
+  })
+
+  await processJob(storedJob.id)
+
+  assert.equal(providerCalls, 0)
+  assert.equal(storedJob.status, 'failed')
+  assert.equal(storedJob.errorCode, 'AGENT_PLAN_REFERENCE_DRIFT')
+})
+
 test('跨 Provider fallback 只在真正进入 Flock 前重新物化，并持有许可到任务结束', async () => {
   const runScenario = async ({ primary, fallback, failureCode = 'PROVIDER_UNAVAILABLE' }) => {
     const events = []
@@ -305,13 +360,18 @@ test('没有兼容备用模型时保留 Provider 原始错误码对应的用户�
       modelOptions: [{ id: 'primary-image', provider: 'primary', mediaKind: 'image', aspectRatios: ['1:1'], resolutions: ['1K'], inputRoles: [] }],
       providerFallbackModelIds: [], maximumBatchCount: 4, maximumReferenceBytes: 1024,
     },
-    generate: async () => { throw new GenerationError(504, 'REQUEST_TIMEOUT', '上游请求超时，请稍后重试。') },
+    generate: async () => {
+      const error = new GenerationError(504, 'REQUEST_TIMEOUT', '上游请求超时，请稍后重试。')
+      error.providerResponseSummary = { type: 'object', candidateCount: 0 }
+      throw error
+    },
   })
 
   await processJob(storedJob.id)
 
   assert.equal(storedJob.status, 'failed')
   assert.equal(storedJob.error, '上游请求超时，请稍后重试。')
+  assert.deepEqual(storedJob.providerResponseSummary, { type: 'object', candidateCount: 0 })
   assert.doesNotMatch(storedJob.error, /备用模型|规格不兼容/)
 })
 
@@ -483,10 +543,12 @@ test('已成功任务延迟回写恢复后重建 Artifact 血缘', async () => {
     id: 'job-recover-artifact', ownerId: 'user-a', projectId: 'project-a', status: 'succeeded',
     createdAt: 100, updatedAt: 200, settings: { model: 'gpt-image-2' },
     outputs: [{ id: 'output-a', image: '/api/media/output-a' }],
+    agentRun: { runId: 'run-recover-artifact', branchId: 'branch-a', attempt: 0 },
     projectWritebackPending: true,
   }
   let storedJob = structuredClone(job)
   let refreshedJobId = ''
+  let artifactReady = false
   const document = {
     id: 'project-a',
     nodes: [{ id: 'result-a', type: 'result', data: { jobId: job.id, taskStatus: 'queued', status: 'generating' } }],
@@ -497,7 +559,10 @@ test('已成功任务延迟回写恢复后重建 Artifact 血缘', async () => {
     async putGenerationJob(_ownerId, nextJob) { storedJob = structuredClone(nextJob) },
     async readProject() { return { document, revision: 1, graphRevision: 1 } },
     async writeProject(_ownerId, nextDocument) { return { document: nextDocument, revision: 2, graphRevision: 2 } },
-    async refreshGenerationArtifacts(_ownerId, jobId) { refreshedJobId = jobId; return true },
+    async refreshGenerationArtifacts(_ownerId, jobId) {
+      refreshedJobId = jobId
+      return { status: artifactReady ? 'passed' : 'failed', rejectedCount: artifactReady ? 0 : 1 }
+    },
   }
   const processJob = createGenerationProcessor({
     productStore,
@@ -507,8 +572,12 @@ test('已成功任务延迟回写恢复后重建 Artifact 血缘', async () => {
 
   await processJob(job.id)
 
-  assert.equal(storedJob.projectWritebackPending, undefined)
+  assert.equal(storedJob.projectWritebackPending, true)
   assert.equal(refreshedJobId, job.id)
+
+  artifactReady = true
+  await processJob(job.id)
+  assert.equal(storedJob.projectWritebackPending, undefined)
 })
 
 test('Worker 先持久化 N 输出再回写画布后，Artifact Index 补齐每个结果节点血缘', async (t) => {

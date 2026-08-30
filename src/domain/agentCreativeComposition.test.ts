@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   botanicAgentCompositionItemSpecLabel,
+  botanicAgentCompositionTotalCandidateCount,
   botanicAgentMessageComposition,
   buildBotanicAgentCompositionPlan,
   formatBotanicAgentCompositionMessage,
@@ -9,6 +10,7 @@ import {
   instructionRequestsCompositionRun,
   latestBotanicAgentComposition,
   normalizeBotanicAgentComposition,
+  resolveBotanicAgentCompositionImageModel,
   resolveBotanicAgentCompositionItem,
 } from './agentCreativeComposition.ts'
 import type { BotanicAgentMessage } from './agent.ts'
@@ -68,11 +70,12 @@ test('一键整套执行语识别：「执行方案」「整套生成」是，�
   assert.equal(instructionRequestsCompositionRun('帮我生成一张海报'), false)
 })
 
-test('成套方案转计划：分支兜底 Prompt、条目总数进 output、无图片上下文时拒绝', () => {
+test('成套方案转计划：条目数与候选总数分开，确认数量使用候选总数', () => {
   const composition = normalizeBotanicAgentComposition({
     theme: '春季系列',
     items: [
-      { title: '主视觉', mediaKind: 'image', prompt: '主画面' },
+      { title: '主视觉', mediaKind: 'image', prompt: '主画面', count: 4 },
+      { title: '细节', mediaKind: 'image', prompt: '细节画面', count: 2 },
       { title: '氛围视频', mediaKind: 'video', prompt: '镜头缓推', duration: 10 },
     ],
   }, { videoDurations: [5, 10] })!
@@ -85,10 +88,17 @@ test('成套方案转计划：分支兜底 Prompt、条目总数进 output、无
     settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
   })
   assert.equal(plan.intent, 'initial_generation')
-  assert.match(plan.summary, /成套生成「春季系列」，共 2 项（含 1 条视频）/)
-  assert.equal(plan.output.count, 2)
+  assert.match(plan.summary, /成套生成「春季系列」，共 3 项、7 个候选（含 1 条视频）/)
+  assert.equal(botanicAgentCompositionTotalCandidateCount(composition), 7)
+  assert.deepEqual(plan.output, {
+    mode: 'single',
+    count: 7,
+    candidatesPerItem: 1,
+    itemCount: 3,
+    totalCandidateCount: 7,
+  })
   assert.equal(plan.prompt, '主画面')
-  assert.equal(plan.composition?.items.length, 2)
+  assert.equal(plan.composition?.items.length, 3)
 
   assert.throws(() => buildBotanicAgentCompositionPlan({
     instruction: '执行方案',
@@ -96,6 +106,26 @@ test('成套方案转计划：分支兜底 Prompt、条目总数进 output、无
     contextSnapshot: [],
     settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
   }), /至少一项图片素材/)
+})
+
+test('成套方案模型选择遵循当次 override、会话偏好、项目默认、系统默认', () => {
+  const models = [
+    { id: 'system-image', label: '系统图片', mediaKind: 'image' as const },
+    { id: 'project-image', label: '项目图片', mediaKind: 'image' as const },
+    { id: 'session-image', label: '会话图片', mediaKind: 'image' as const },
+    { id: 'override-image', label: '当次图片', mediaKind: 'image' as const },
+    { id: 'video', label: '视频', mediaKind: 'video' as const },
+  ]
+  assert.equal(resolveBotanicAgentCompositionImageModel(models, [
+    'override-image', 'session-image', 'project-image',
+  ])?.id, 'override-image')
+  assert.equal(resolveBotanicAgentCompositionImageModel(models, [
+    undefined, 'session-image', 'project-image',
+  ])?.id, 'session-image')
+  assert.equal(resolveBotanicAgentCompositionImageModel(models, [
+    undefined, undefined, 'project-image',
+  ])?.id, 'project-image')
+  assert.equal(resolveBotanicAgentCompositionImageModel(models, ['video'])?.id, 'system-image')
 })
 
 function compositionMessage(

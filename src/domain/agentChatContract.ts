@@ -1,5 +1,5 @@
 import type { BotanicAgentMessage, BotanicAgentReasoningEntry } from './agent.ts'
-import { instructionRequestsBatchVariation } from './agent.ts'
+import { instructionRequestsBatchVariation, normalizeBotanicAgentContextNodeIds } from './agent.ts'
 import { instructionRequestsMarkOverlay } from './generationComposition.ts'
 import type { GenerationAspectRatio, GenerationModelOption, GenerationResolution } from './canvas.ts'
 import { GENERATION_ASPECT_RATIOS, NANO_BANANA_MODEL_ID } from './canvas.ts'
@@ -341,6 +341,6 @@ export function buildBotanicAgentChatRequest(input: BotanicAgentChatRequestInput
     ...(input.plannerModel ? { plannerModel: input.plannerModel } : {}),
     ...(input.mountedSkillIds?.length ? { mountedSkillIds: [...new Set(input.mountedSkillIds)].slice(0, 16) } : {}),
     mode: input.mode,
-    contextNodeIds: [...new Set(input.contextNodeIds)].slice(0, 32),
+    contextNodeIds: normalizeBotanicAgentContextNodeIds(input.contextNodeIds),
   }
 }

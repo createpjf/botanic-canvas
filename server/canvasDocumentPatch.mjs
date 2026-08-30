@@ -2,6 +2,8 @@ function isRecord(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
+const serverOwnedFields = new Set(['productionWorkflows', 'productionWorkflowRuns'])
+
 function mergeCollection(current, change, label) {
   if (!isRecord(change)) throw new TypeError(`${label} 补丁格式无效。`)
   const upsert = change.upsert ?? []
@@ -45,7 +47,10 @@ export function applyCanvasDocumentPatch(document, patch) {
     throw new TypeError('画布补丁字段无效。')
   }
 
-  const next = { ...document, ...fields }
+  // 生产工作流由专用发布/运行端点写入。旧画布快照若能在冲突重试时覆盖这两个字段，
+  // 刚发布的工作流会被无声删掉；兼容旧客户端时直接忽略，而不是让整次画布保存失败。
+  const mutableFields = Object.fromEntries(Object.entries(fields).filter(([key]) => !serverOwnedFields.has(key)))
+  const next = { ...document, ...mutableFields }
   if (patch.nodes !== undefined) next.nodes = mergeCollection(document.nodes ?? [], patch.nodes, '节点')
   if (patch.edges !== undefined) next.edges = mergeCollection(document.edges ?? [], patch.edges, '连线')
   return next

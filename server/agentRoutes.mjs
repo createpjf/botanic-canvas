@@ -52,7 +52,7 @@ import {
 } from './agentActionReconciliation.mjs'
 import { AgentDelegationFenceError, assertTurnAllowsDelegation, createAgentCancellationService } from './agentCancellationService.mjs'
 import { matchingIdempotencyRequestBinding } from './idempotencyRequestBinding.mjs'
-import { validateAgentEntityReferences } from './agentEntityReferences.mjs'
+import { createAgentMessageRouteHandler } from './agentMessageRoutes.mjs'
 import { agentCompatibilityIdempotencyKey } from './agentRuntimeRequest.mjs'
 import { createAgentOperationalReaders } from './agentOperationalReaders.mjs'
 import { AgentSubagentServiceError } from './agentSubagentService.mjs'
@@ -67,7 +67,7 @@ import {
 export { BotanicAgentPlannerError, BotanicAgentChatError }
 
 const editableAgentSessionFields = new Set([
-  'id', 'title', 'executionMode', 'confirmationWaivers', 'plannerModel', 'mountedSkillIds', 'contextNodeIds', 'createdAt', 'updatedAt',
+  'title', 'executionMode', 'confirmationWaivers', 'plannerModel', 'mountedSkillIds', 'contextNodeIds',
 ])
 
 const agentSubagentStartBodyFields = new Set(['rootTurnId', 'role', 'content'])
@@ -520,6 +520,10 @@ export function createAgentRouteHandler({
       // 协作历史是派生读模型；写入或广播失败不能回滚权威 Agent 实体。
     }
   }
+  const handleAgentMessageRoute = createAgentMessageRouteHandler({
+    productStore, json, error, readJson, requireUser, methodNotAllowed,
+    resolveMedia: visionMediaResolver, recordCollaborationActivity,
+  })
   const configuredActionTimeout = Number(config?.agentActionTimeoutMs)
   const agentActionTimeoutMs = Number.isFinite(configuredActionTimeout)
     ? Math.max(1, Math.min(120_000, configuredActionTimeout))
@@ -1362,109 +1366,44 @@ export function createAgentRouteHandler({
       }) })
     }
     if (agentSessionMatch) {
-      if (request.method !== 'PUT') return methodNotAllowed(response, 'Agent 会话资源只接受写入。', 'PUT')
+      if (request.method !== 'PATCH') return methodNotAllowed(response, 'Agent 会话设置只接受增量更新。', 'PATCH')
       const user = await requireUser(request)
       const projectId = decodeURIComponent(agentSessionMatch[1])
       const sessionId = decodeURIComponent(agentSessionMatch[2])
       await requireProjectPermission(productStore, user.id, projectId, 'edit')
       const body = await readJson(request, 64 * 1024, 'Agent 会话请求过大。')
-      if (body?.id !== sessionId) return error(response, 400, 'INVALID_AGENT_ENTITY', 'Agent 会话标识不一致。')
-      const unsupportedFields = Object.keys(body ?? {}).filter((field) => !editableAgentSessionFields.has(field))
-      if (unsupportedFields.length) {
+      const unsupportedBodyFields = Object.keys(body ?? {}).filter((field) => !['expectedRevision', 'changes', 'createdAt'].includes(field))
+      const changes = body?.changes
+      const unsupportedFields = changes && typeof changes === 'object' && !Array.isArray(changes)
+        ? Object.keys(changes).filter((field) => !editableAgentSessionFields.has(field))
+        : []
+      if (unsupportedBodyFields.length || unsupportedFields.length) {
         return error(response, 400, 'INVALID_AGENT_SESSION_FIELDS', 'Agent 会话请求包含不可由客户端写入的字段。')
       }
-      let previous
-      try {
-        const before = await productStore.readAgentState(user.id, projectId, { includeMessages: false })
-        previous = before?.sessions?.find((candidate) => candidate.id === sessionId)
-      } catch { /* 差异判断失败时仍应完成权威 Session 写入。 */ }
-      // ThreadSummary 是服务端从权威消息派生的上下文检查点。设置 Route 只提交普通
-      // Session 字段；Adapter 会保留当前摘要，避免 read 后并发压缩出的新版被旧快照覆盖。
-      const mergedSession = previous ? { ...previous, ...body } : body
-      const { threadSummary: _threadSummary, messages: _messages, ...sessionInput } = mergedSession
-      const session = await productStore.putAgentSession(user.id, projectId, sessionInput)
-      const settingsChanged = !previous
-        || previous.title !== session.title
-        || previous.executionMode !== session.executionMode
-        || JSON.stringify(previous.confirmationWaivers ?? []) !== JSON.stringify(session.confirmationWaivers ?? [])
-        || previous.plannerModel !== session.plannerModel
-        || JSON.stringify(previous.mountedSkillIds ?? []) !== JSON.stringify(session.mountedSkillIds ?? [])
-        || JSON.stringify(previous.contextNodeIds ?? []) !== JSON.stringify(session.contextNodeIds ?? [])
-      if (settingsChanged) await recordCollaborationActivity(user, projectId, {
+      if (!Number.isSafeInteger(body?.expectedRevision) || body.expectedRevision < 0 || !changes || typeof changes !== 'object' || Array.isArray(changes)) {
+        return error(response, 400, 'INVALID_AGENT_SESSION_SETTINGS', 'Agent Session 设置变更无效。')
+      }
+      const decision = await productStore.compareAndSetAgentSessionSettings(user.id, projectId, {
+        sessionId,
+        expectedRevision: body.expectedRevision,
+        changes,
+        ...(Number.isSafeInteger(body.createdAt) && body.createdAt >= 0 ? { createdAt: body.createdAt } : {}),
+      })
+      if (decision.kind === 'conflict') {
+        return error(response, 409, 'AGENT_SESSION_REVISION_CONFLICT', 'Agent 会话设置已在其他设备更新，请刷新后重试。')
+      }
+      const session = decision.session
+      if (decision.changed) await recordCollaborationActivity(user, projectId, {
         id: `agent-session-${session.id}-${session.updatedAt}`,
         kind: 'conversation',
-        summary: previous ? `更新了对话设置「${session.title || '新建对话'}」` : `创建了对话「${session.title || '新建对话'}」`,
+        summary: decision.kind === 'created'
+          ? `创建了对话「${session.title || '新建对话'}」`
+          : `更新了对话设置「${session.title || '新建对话'}」`,
       })
       return json(response, 200, { session })
     }
     if (agentMessageMatch) {
-      if (request.method !== 'PUT') return methodNotAllowed(response, 'Agent 消息资源只接受写入。', 'PUT')
-      const user = await requireUser(request)
-      const projectId = decodeURIComponent(agentMessageMatch[1])
-      const sessionId = decodeURIComponent(agentMessageMatch[2])
-      const messageId = decodeURIComponent(agentMessageMatch[3])
-      await requireProjectPermission(productStore, user.id, projectId, 'edit')
-      const body = await readJson(request, 96 * 1024, 'Agent 消息请求过大。')
-      if (body?.id !== messageId) return error(response, 400, 'INVALID_AGENT_ENTITY', 'Agent 消息标识不一致。')
-      const messagePage = typeof productStore.listAgentSessionMessages === 'function'
-        ? await productStore.listAgentSessionMessages(user.id, projectId, sessionId, { limit: 200 })
-        : undefined
-      const existingMessage = (messagePage?.messages ?? (Array.isArray(messagePage) ? messagePage : []))
-        .find((candidate) => candidate.id === messageId)
-      if (existingMessage?.turnId && body.turnId && existingMessage.turnId !== body.turnId) {
-        return error(response, 409, 'AGENT_MESSAGE_TURN_CONFLICT', '当前消息已绑定另一 Agent Turn。')
-      }
-      let linkedTurn
-      if (body.turnId && !existingMessage?.turnId) {
-        linkedTurn = await productStore.readAgentTurn(user.id, body.turnId)
-        if (!linkedTurn || linkedTurn.projectId !== projectId || linkedTurn.sessionId !== sessionId) {
-          return error(response, 409, 'AGENT_MESSAGE_TURN_INVALID', '消息关联的 Agent Turn 不属于当前会话。')
-        }
-      }
-      const linkedTurnId = existingMessage?.turnId ?? body.turnId
-      const stableTurnProjection = Boolean(
-        linkedTurnId
-        && body.role === 'assistant'
-        && messageId === `agent-turn-result-${linkedTurnId}`
-      )
-      if (stableTurnProjection && !linkedTurn) {
-        linkedTurn = await productStore.readAgentTurn(user.id, linkedTurnId)
-        if (!linkedTurn || linkedTurn.projectId !== projectId || linkedTurn.sessionId !== sessionId) {
-          return error(response, 409, 'AGENT_MESSAGE_TURN_INVALID', '消息关联的 Agent Turn 不属于当前会话。')
-        }
-      }
-      const authoritativeEntityReferences = stableTurnProjection
-        && linkedTurn?.result?.entityReferences !== undefined
-        ? validateAgentEntityReferences(linkedTurn.result.entityReferences)
-        : undefined
-      // Turn Route 可能先于初始消息的离线队列重放完成绑定。迟到 PUT 只能更新正文/投影，
-      // 不能把 durable reattach 身份清掉；显式改绑同样 fail closed。
-      // 业务引用只接受 durable Turn result；无论客户端提交什么都先剥离，再由服务端覆盖。
-      const { entityReferences: _clientEntityReferences, ...clientBody } = body
-      const messageInput = { ...clientBody,
-        ...(existingMessage?.createdAt === undefined ? {} : { createdAt: existingMessage.createdAt }),
-        ...(existingMessage?.turnId && body.turnId === undefined ? { turnId: existingMessage.turnId } : {}),
-        ...(existingMessage?.turnCancellationRequestedAt !== undefined
-          && body.turnCancellationRequestedAt === undefined
-          ? { turnCancellationRequestedAt: existingMessage.turnCancellationRequestedAt }
-          : {}),
-        ...(authoritativeEntityReferences === undefined
-          ? {}
-          : { entityReferences: authoritativeEntityReferences }),
-      }
-      const message = await productStore.putAgentMessage(user.id, projectId, sessionId, messageInput)
-      let sessionTitle = '新建对话'
-      try {
-        const state = await productStore.readAgentState(user.id, projectId, { includeMessages: false })
-        sessionTitle = state?.sessions?.find((candidate) => candidate.id === sessionId)?.title || sessionTitle
-      } catch { /* 标题只用于协作历史，不得阻断消息权威写入。 */ }
-      await recordCollaborationActivity(user, projectId, {
-        id: `agent-message-${message.id}`,
-        kind: 'conversation',
-        summary: `更新了对话「${sessionTitle}」`,
-        target: { kind: 'message', sessionId, messageId: message.id },
-      })
-      return json(response, 200, { message })
+      return handleAgentMessageRoute(request, response, agentMessageMatch)
     }
     if (agentMemoryMatch) {
       const user = await requireUser(request)

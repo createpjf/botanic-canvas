@@ -54,12 +54,16 @@ export type TimelineBlock =
   }
   | { id: string; type: 'raw_group'; summary: string; open: boolean; items: AgentToolCallTrace[] }
 
-export type AgentTimelineState = { blocks: TimelineBlock[] }
+export type AgentTimelineState = {
+  blocks: TimelineBlock[]
+  truncation?: { loadedCount: number; nextAfter: number }
+}
 
 export type AgentTimelineEvent =
   | { type: 'reasoning'; step: number; delta: string; receivedAt: number }
   | { type: 'answer'; step: number; delta: string; receivedAt: number }
   | { type: 'tool'; step: number; toolCall: AgentToolCallTrace; presentation?: TimelineToolPresentation; receivedAt: number }
+  | { type: 'handoff'; receivedAt: number }
   | { type: 'done'; receivedAt: number }
   | { type: 'error'; message?: string; receivedAt: number }
 
@@ -416,6 +420,7 @@ export function applyAgentConversationStreamEvent(
 }
 
 export function reduceAgentTimeline(prev: AgentTimelineState, event: AgentTimelineEvent): AgentTimelineState {
+  if (event.type === 'handoff') return prev
   if (event.type === 'reasoning') {
     const rawGroup = timelineRawGroup(prev.blocks)
     const blocks = semanticBlocks(prev.blocks)

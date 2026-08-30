@@ -22,12 +22,12 @@ test('未点名图片模型时，Agent Brief 与画布统一默认 Nano Banana',
     generationModels: [
       ...imageModels,
       {
-        id: 'gemini-3.1-pro-preview', label: 'Nano Banana', mediaKind: 'image' as const,
+        id: 'gemini-3.1-flash-image-preview', label: 'Nano Banana', mediaKind: 'image' as const,
         aspectRatios: ['3:4'] as const, resolutions: ['1K', '2K', '4K'] as const,
       },
     ],
   })
-  assert.equal(turn.brief.output.model, 'gemini-3.1-pro-preview')
+  assert.equal(turn.brief.output.model, 'gemini-3.1-flash-image-preview')
   assert.equal(turn.brief.provenance.model, 'default')
 })
 

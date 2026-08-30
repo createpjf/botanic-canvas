@@ -15,15 +15,15 @@ function createMemoryStorage(seed = '[]'): AgentMessageQueueStorage & { value: s
   }
 }
 
-function fixture(messageId: string, createdAt: number) {
+function fixture(messageId: string, createdAt: number, sessionId = 'session-a') {
   const session: BotanicAgentSession = {
-    id: 'session-a', title: '新建对话', executionMode: 'manual', contextNodeIds: [], messages: [], createdAt: 1, updatedAt: createdAt,
+    id: sessionId, title: '新建对话', executionMode: 'manual', contextNodeIds: [], messages: [], createdAt: 1, updatedAt: createdAt,
   }
   const message: BotanicAgentMessage = {
     id: messageId, role: 'user', kind: 'text', content: `message ${messageId}`, createdAt,
   }
   return {
-    projectId: 'project-a', session, message,
+    projectId: 'project-a', sessionId: session.id, session, message,
     idempotencyKey: `agent-message-${messageId}`,
   }
 }
@@ -37,6 +37,34 @@ test('断网消息持久化后，新队列实例可恢复同一条待发消息',
   assert.deepEqual(restored.list().map((item) => ({ messageId: item.message.id, status: item.status })), [
     { messageId: 'm-1', status: 'queued' },
   ])
+})
+
+test('离线队列只持久化 Message 操作，不保存完整 Session 快照', () => {
+  const storage = createMemoryStorage()
+  const queue = createAgentMessageQueue({ storage, deliver: async () => undefined })
+
+  queue.enqueue(fixture('m-incremental', 10))
+
+  const [persisted] = JSON.parse(storage.value) as Array<Record<string, unknown>>
+  assert.equal(persisted.sessionId, 'session-a')
+  assert.equal('session' in persisted, false)
+  assert.doesNotMatch(storage.value, /confirmationWaivers|messages/)
+})
+
+test('旧版完整 Session 队列可迁移为增量操作', () => {
+  const legacy = fixture('m-legacy', 10)
+  const storage = createMemoryStorage(JSON.stringify([{
+    ...legacy,
+    key: 'legacy-key',
+    status: 'queued',
+    attempts: 0,
+    queuedAt: 10,
+  }]))
+
+  const [restored] = createAgentMessageQueue({ storage, deliver: async () => undefined }).list()
+
+  assert.equal(restored.sessionId, 'session-a')
+  assert.equal('session' in restored, false)
 })
 
 test('按创建时间顺序重放，成功后从本地队列移除', async () => {
@@ -255,6 +283,54 @@ test('网络错误保留队首并停止本轮重放，online 后可继续', asyn
 
   assert.deepEqual(delivered, ['m-1', 'm-2'])
   assert.deepEqual(queue.list(), [])
+})
+
+test('一个 Session 的可重试错误不阻塞其他 Session', async () => {
+  const delivered: string[] = []
+  const queue = createAgentMessageQueue({
+    storage: createMemoryStorage(),
+    deliver: async (item) => {
+      if (item.sessionId === 'session-a') throw Object.assign(new Error('busy'), { status: 503 })
+      delivered.push(item.message.id)
+    },
+  })
+  queue.enqueue(fixture('m-a', 10, 'session-a'))
+  queue.enqueue(fixture('m-b', 20, 'session-b'))
+
+  const result = await queue.flush()
+
+  assert.deepEqual(delivered, ['m-b'])
+  assert.deepEqual(result, { delivered: ['m-b'], failed: [], pending: ['m-a'] })
+})
+
+test('本地存储写入失败时 fail closed，不允许继续提交', () => {
+  const storage: AgentMessageQueueStorage = {
+    read: () => '[]',
+    write: () => { throw new DOMException('quota', 'QuotaExceededError') },
+  }
+  const queue = createAgentMessageQueue({ storage, deliver: async () => undefined })
+
+  assert.throws(() => queue.enqueue(fixture('m-quota', 10)), (error: unknown) => (
+    (error as { code?: string }).code === 'AGENT_MESSAGE_QUEUE_STORAGE_FAILED'
+  ))
+  assert.throws(() => assertAgentMessageQueueItemDelivered(queue, 'm-quota'), (error: unknown) => (
+    (error as { code?: string }).code === 'AGENT_MESSAGE_QUEUE_STORAGE_FAILED'
+  ))
+})
+
+test('损坏的单条队列记录进入 quarantine，其余记录仍可恢复', () => {
+  const quarantined: string[] = []
+  const valid = fixture('m-valid', 10)
+  const storage = {
+    ...createMemoryStorage(JSON.stringify([valid, { broken: true }])),
+    quarantine(value: string) { quarantined.push(value) },
+  }
+
+  const queue = createAgentMessageQueue({ storage, deliver: async () => undefined })
+
+  assert.deepEqual(queue.list().map((item) => item.message.id), ['m-valid'])
+  assert.equal(quarantined.length, 1)
+  assert.match(quarantined[0], /broken/)
 })
 
 test('snapshot PUT 未 durable 时 Turn POST 为 0，重连 PUT 成功后同 key 只 POST 一次', async () => {

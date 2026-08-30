@@ -100,7 +100,15 @@ let persistenceTail: Promise<void> = Promise.resolve()
 const remoteRevisions = new Map<string, number>()
 const remoteGraphRevisions = new Map<string, number>()
 const remoteDocuments = new Map<string, CanvasDocument>()
+const remoteConflictRevisions = new Map<string, CanvasConflictRevision>()
 const remoteWriteDebounceMs = 500
+
+export type CanvasConflictRevision = {
+  localRevision?: number
+  remoteRevision: number
+  localGraphRevision?: number
+  remoteGraphRevision?: number
+}
 
 function rememberRemoteRevisions(id: string, response: { revision: number; graphRevision?: number }) {
   const currentRevision = remoteRevisions.get(id)
@@ -411,11 +419,13 @@ export async function discardPendingCanvasDraft(id: string) {
  * 流畅，因而会让“刷新远端”看起来没有任何变化。此处明确以远端为准并覆盖缓存。
  */
 export async function refreshCanvasDocumentFromRemote(id: string) {
-  return discardLocalDraftAndRefreshRemote(
+  const remote = await discardLocalDraftAndRefreshRemote(
     () => discardPendingCanvasDraft(id),
     () => readRemoteCanvasDocument(id),
     persistLocalDocument,
   )
+  if (remote) remoteConflictRevisions.delete(id)
+  return remote
 }
 
 async function readPendingSyncDocuments() {
@@ -487,11 +497,20 @@ async function readRemoteCanvasDocument(id: string) {
 export async function previewRemoteCanvasDocument(id: string) {
   if (!serverPersistenceEnabled) return undefined
   try {
-    const response = await productRequest<{ document: CanvasDocument }>(`/api/projects/${encodeURIComponent(id)}/document`, {
+    const response = await productRequest<{ document: CanvasDocument; revision: number; graphRevision?: number }>(`/api/projects/${encodeURIComponent(id)}/document`, {
       timeoutMs: remoteDocumentReadTimeoutMs,
       timeoutMessage: '项目文档较大，读取超时。请稍后重试。',
     })
-    return response.document
+    const conflict = remoteConflictRevisions.get(id)
+    return {
+      document: response.document,
+      conflictRevision: {
+        localRevision: conflict?.localRevision ?? remoteRevisions.get(id),
+        remoteRevision: response.revision,
+        localGraphRevision: conflict?.localGraphRevision,
+        remoteGraphRevision: response.graphRevision,
+      } satisfies CanvasConflictRevision,
+    }
   } catch (error) {
     if (error instanceof ProductApiError && error.status === 404) return undefined
     throw error
@@ -532,7 +551,8 @@ function collectionPatch<T extends { id: string }>(previous: T[], next: T[]): Co
 
 function createCanvasDocumentPatch(previous: CanvasDocument, next: CanvasDocument): CanvasDocumentPatch {
   const fields: Record<string, unknown> = {}
-  const ignored = new Set(['id', 'nodes', 'edges'])
+  // 这两个集合只允许专用工作流 API 修改；旧本地快照不能在画布冲突重试时把它们删掉。
+  const ignored = new Set(['id', 'nodes', 'edges', 'productionWorkflows', 'productionWorkflowRuns'])
   for (const key of new Set([...Object.keys(previous), ...Object.keys(next)])) {
     if (ignored.has(key)) continue
     const previousValue = previous[key as keyof CanvasDocument]
@@ -556,6 +576,7 @@ async function writeRemoteCanvasDocument(document: CanvasDocument) {
     await readRemoteCanvasDocument(document.id)
   }
   const revision = remoteRevisions.get(document.id)
+  const graphRevision = remoteGraphRevisions.get(document.id)
   const previous = remoteDocuments.get(document.id)
   const patch = previous ? createCanvasDocumentPatch(previous, persistable) : undefined
   const send = async (payload: CanvasDocumentPatch | CanvasDocument, method: 'PATCH' | 'PUT', expectedRevision?: number) => {
@@ -578,13 +599,22 @@ async function writeRemoteCanvasDocument(document: CanvasDocument) {
       response = await send(patch ?? persistable, patch ? 'PATCH' : 'PUT', conflictAttempts ? remoteRevisions.get(document.id) : revision)
       break
     } catch (error) {
-      if (!isRemoteDocumentConflict(error) || !patch || conflictAttempts >= 3) throw error
+      if (!isRemoteDocumentConflict(error) || !patch || conflictAttempts >= 3) {
+        if (isRemoteDocumentConflict(error)) remoteConflictRevisions.set(document.id, {
+          localRevision: revision,
+          remoteRevision: remoteRevisions.get(document.id) ?? revision ?? 0,
+          localGraphRevision: graphRevision,
+          remoteGraphRevision: remoteGraphRevisions.get(document.id),
+        })
+        throw error
+      }
       conflictAttempts += 1
       // 同一用户的即时保存与离线草稿刚好交错时，仅重放“相对旧快照的增量”。
       // 不重发整份文档，避免把 Worker 已写入的输出节点从远端删掉。
       await readRemoteCanvasDocument(document.id)
     }
   }
+  remoteConflictRevisions.delete(document.id)
   rememberRemoteDocument(document.id, {
     ...response,
     document: stripAgentSessionMessages(response.document),
@@ -748,6 +778,7 @@ export async function deleteCanvasDocument(id: string) {
     remoteRevisions.delete(id)
     remoteGraphRevisions.delete(id)
     remoteDocuments.delete(id)
+    remoteConflictRevisions.delete(id)
   } catch (error) {
     if (!(error instanceof ProductApiError && error.status === 404)) throw error
   }

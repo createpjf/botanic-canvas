@@ -91,6 +91,16 @@ test('Turn accepted 事件暴露稳定身份与续读地址，但不伪装成 do
   }])
 })
 
+test('Turn handoff 是非终态观察事件，不会被解析成 done', () => {
+  const reader = createBotanicAgentChatStreamReader()
+  const [event] = reader.push(sse({
+    type: 'handoff', turnId: 'turn-1',
+    runtimeTurn: { id: 'turn-1', projectId: 'project-1', status: 'running' },
+    observer: { url: '/api/agent-turns/turn-1?after=4' },
+  }))
+  assert.equal(event?.type, 'handoff')
+})
+
 test('SSE id 行推进续读游标，事件体同时携带 sequence', () => {
   const reader = createBotanicAgentChatStreamReader()
   assert.equal(reader.lastEventId, '', '尚未收到可解析事件时游标为空')

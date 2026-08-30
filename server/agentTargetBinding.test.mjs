@@ -33,12 +33,11 @@ test('TargetBinding 只允许 Turn 创建时冻结的媒体与结果版本', asy
     ),
     (caught) => caught?.code === 'AGENT_TARGET_STALE',
   )
-  await assert.rejects(
+  await assert.doesNotReject(
     assertAgentTargetBinding(
       document('data:image/png;base64,AQ=='),
       { ...input, targetBinding: binding },
       { projectRevision: 8 },
     ),
-    (caught) => caught?.code === 'AGENT_TARGET_STALE',
   )
 })

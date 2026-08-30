@@ -13,7 +13,7 @@ const imageModel: GenerationModelOption = {
   aspectRatios: ['1:1', '3:4', '16:9'], resolutions: ['1K', '2K'],
 }
 const nanoModel: GenerationModelOption = {
-  id: 'gemini-3.1-pro-preview', label: 'Nano Banana', provider: 'flock', mediaKind: 'image',
+  id: 'gemini-3.1-flash-image-preview', label: 'Nano Banana', provider: 'flock', mediaKind: 'image',
   aspectRatios: ['3:4'], resolutions: ['1K', '2K', '4K'],
   supportsSearchGrounding: true, thinkingLevels: ['minimal', 'high'],
 }
@@ -216,7 +216,7 @@ test('图片草案把 Nano Banana 的固定执行参数写入计划', () => {
   assert.equal(draft.kind, 'ready')
   if (draft.kind !== 'ready') return
   assert.deepEqual(draft.planSettings, {
-    model: 'gemini-3.1-pro-preview',
+    model: 'gemini-3.1-flash-image-preview',
     aspectRatio: '3:4',
     resolution: '2K',
     searchGrounding: true,

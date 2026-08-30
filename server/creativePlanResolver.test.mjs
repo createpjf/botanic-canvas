@@ -2,8 +2,10 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   agentRunCompiledPlanProvenance,
+  assertCreativePlanReferenceBindings,
   compileRunCreativePlan,
   compiledBranchFromRun,
+  createCreativePlanReferenceBindings,
   resolveCreativePlan,
 } from './creativePlanResolver.mjs'
 
@@ -105,6 +107,32 @@ test('快照不含图片字节，只留引用标识', () => {
   assert.equal(serialized.includes('/api/media/'), false)
   // 引用身份仍在，Resolve 时才据此重新取图。
   assert.deepEqual(compiled.branches[0].references.map((reference) => reference.assetId), ['asset-scene-a'])
+})
+
+test('二级参考图按内容绑定；同 ID 换字节后拒绝执行', async () => {
+  const bytes = new Map([
+    ['media_scene_a', Buffer.from('scene-a-v1')],
+    ['media_scene_b', Buffer.from('scene-b-v1')],
+  ])
+  const resolveMedia = async (mediaId) => ({ buffer: bytes.get(mediaId) })
+  const run = persistentRun()
+  const referenceBindingsByBranch = await createCreativePlanReferenceBindings({
+    run, document: projectDocument(), models, resolveMedia,
+  })
+  run.compiledPlan = compileRunCreativePlan({
+    run, document: projectDocument(), models, referenceBindingsByBranch,
+  })
+
+  assert.equal(run.compiledPlan.branches[0].referenceBindings[0].assetId, 'asset-scene-a')
+  assert.equal(run.compiledPlan.branches[0].referenceBindings[0].mediaSha256.length, 64)
+  await assert.doesNotReject(assertCreativePlanReferenceBindings({
+    run, document: projectDocument(), models, resolveMedia,
+  }))
+
+  bytes.set('media_scene_b', Buffer.from('scene-b-v2'))
+  await assert.rejects(assertCreativePlanReferenceBindings({
+    run, document: projectDocument(), models, resolveMedia,
+  }), (error) => error?.code === 'AGENT_PLAN_REFERENCE_DRIFT')
 })
 
 test('同一次确认重复编译得到同一指纹；换了计划就不是同一次确认', () => {

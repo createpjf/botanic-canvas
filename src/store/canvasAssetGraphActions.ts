@@ -1,4 +1,3 @@
-import { defaultGenerationModels } from '../domain/canvas'
 import type { Edge } from '@xyflow/react'
 import { normalizeAssetCollection } from '../domain/assets'
 import { normalizeAssetGroupName, upsertCollectionGroups } from '../domain/assetGroups'
@@ -463,7 +462,7 @@ export function createCanvasAssetGraphActions({
         return
       }
       const asset: AssetRecord = {
-        id: `generated-library-${Date.now()}`,
+        id: `generated-library-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`,
         role: '首图',
         name: name.trim() || (mediaKind === 'video' ? '生成视频' : '生成图片'),
         image,
@@ -472,7 +471,7 @@ export function createCanvasAssetGraphActions({
         collection: '生成结果',
         tags: [mediaKind === 'video' ? '视频' : '首图', '画布入库'],
       }
-      void commitDocument({ ...document, assets: [asset, ...document.assets] }, { assistantMessage: `已将「${asset.name}」存入当前项目素材库。` })
+      void commitDocument({ ...document, assets: [asset, ...document.assets] }, { assistantMessage: `已将「${asset.name}」存入素材库（来源：生成入库），不会新增画布节点。` })
     },
 
     moveAssetToRole: (assetId, role) => {
@@ -858,7 +857,7 @@ export function createCanvasAssetGraphActions({
 
     setAvailableModels: (models) => {
       const seen = new Set<string>()
-      const availableModels = models
+      const catalog = models
         .filter((model) => typeof model?.id === 'string' && model.id.trim())
         .filter((model) => {
           if (seen.has(model.id)) return false
@@ -866,7 +865,10 @@ export function createCanvasAssetGraphActions({
           return true
         })
         .map((model) => ({ ...model, id: model.id, label: model.label?.trim() || model.id }))
-      set({ availableModels: availableModels.length ? availableModels : defaultGenerationModels.map((model) => ({ ...model })) })
+      set({
+        availableModels: catalog.filter((model) => model.available !== false),
+        unavailableModels: catalog.filter((model) => model.available === false),
+      })
     },
 
     setMaximumBatchCount: (count) => {

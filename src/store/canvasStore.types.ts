@@ -99,6 +99,7 @@ export type CanvasStore = {
   generationCandidates: GenerationCandidate[]
   lastGenerationRequest: GenerationRequest | null
   availableModels: GenerationModelOption[]
+  unavailableModels: GenerationModelOption[]
   maximumBatchCount: number
   undoAction: UndoAction | null
   undoSnapshot: CanvasDocument | null
@@ -159,7 +160,7 @@ export type CanvasStore = {
   startNewAgentSession: (contextNodeIds?: string[]) => string
   appendAgentMessage: (sessionId: string, message: BotanicAgentMessage) => void
   upsertAgentMessage: (sessionId: string, message: BotanicAgentMessage) => void
-  updateAgentMessage: (sessionId: string, messageId: string, patch: Partial<Pick<BotanicAgentMessage, 'kind' | 'content' | 'runId' | 'turnId' | 'turnCancellationRequestedAt' | 'turnRequestSnapshot' | 'status' | 'feedback' | 'plan' | 'question' | 'composition' | 'deliveryStatus' | 'review'>>) => void
+  updateAgentMessage: (sessionId: string, messageId: string, patch: Partial<Pick<BotanicAgentMessage, 'kind' | 'content' | 'runId' | 'turnId' | 'turnCancellationRequestedAt' | 'turnRequestSnapshot' | 'status' | 'feedback' | 'plan' | 'question' | 'composition' | 'deliveryStatus' | 'review' | 'sourceMessageId' | 'sourceNodeIds' | 'targetArtifactVersionId' | 'planFingerprint'>>) => void
   updateAgentAction: (sessionId: string, messageId: string, actionId: string, patch: Partial<Pick<BotanicAgentActionProposal, 'status' | 'receiptIdempotencyKey' | 'preparedRetryIdempotencyKey' | 'manualRetryResumeAvailable' | 'error' | 'result'>>) => void
   setAgentSessionContext: (sessionId: string, contextNodeIds: string[]) => void
   setAgentSessionExecutionMode: (sessionId: string, mode: BotanicAgentExecutionMode) => void

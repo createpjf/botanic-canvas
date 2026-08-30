@@ -13,7 +13,13 @@ function readerError(message: string, code: string) {
   return Object.assign(new Error(message), { status: 409, code })
 }
 
-/** 只读、分页且有硬上限的 Turn Event reader；调用方提供同源 GET transport。 */
+export type AgentTurnTimelineReadResult = {
+  events: BotanicAgentStreamEvent[]
+  truncated: boolean
+  nextAfter?: number
+}
+
+/** 只读、分页且有硬上限的 Turn Event reader；超过上限必须显式返回续读游标。 */
 export async function readAgentTurnTimelineEvents(input: {
   turnId: string
   projectId: string
@@ -22,9 +28,9 @@ export async function readAgentTurnTimelineEvents(input: {
     path: string,
     signal?: AbortSignal,
   ) => Promise<BotanicAgentTurnObservationPage<BotanicAgentTurnResult>>
-}): Promise<BotanicAgentStreamEvent[]> {
+}): Promise<AgentTurnTimelineReadResult> {
   const turnId = input.turnId.trim()
-  if (!turnId) return []
+  if (!turnId) return { events: [], truncated: false }
   let after = 0
   const events: BotanicAgentStreamEvent[] = []
   for (let pageIndex = 0; pageIndex < maximumPages; pageIndex += 1) {
@@ -45,11 +51,11 @@ export async function readAgentTurnTimelineEvents(input: {
       if (projected) events.push(projected)
     }
     const nextAfter = Math.max(deliveredSequence, Number(page.cursor.after) || 0)
-    if (!page.cursor.hasMore) return events
+    if (!page.cursor.hasMore) return { events, truncated: false }
     if (nextAfter <= after) {
       throw readerError('Agent 回合事件游标未推进。', 'AGENT_TURN_EVENT_CURSOR_STALLED')
     }
     after = nextAfter
   }
-  return events
+  return { events, truncated: true, nextAfter: after }
 }

@@ -24,6 +24,7 @@ test('生成任务持久化保留幂等键，公开状态只按需返回提交�
     rawInput: { projectId: 'project-a' }, agentRun: { runId: 'run-a', branchId: 'branch-a' },
     promptNodeId: 'prompt-a', generateNodeId: 'generate-a', resultNodeId: 'result-a', parentNodeId: 'parent-a',
     idempotencyKey: 'gen_test_key_123456', projectWritebackPending: true,
+    providerResponseSummary: { type: 'object', keys: ['data'], dataCount: 0, candidateCount: 0 },
     executionVersion: 2,
     execution: { generation: 2, leaseToken: 'private-lease', leaseExpiresAt: 99 },
   }
@@ -38,6 +39,8 @@ test('生成任务持久化保留幂等键，公开状态只按需返回提交�
   assert.equal(publicGenerationJob(job).idempotencyKey, undefined)
   assert.equal(publicGenerationJob(job, { includeIdempotencyKey: true }).idempotencyKey, job.idempotencyKey)
   assert.equal(publicGenerationJob(job).projectWritebackPending, true)
+  assert.deepEqual(persistedGenerationJob(job).providerResponseSummary, job.providerResponseSummary)
+  assert.equal(publicGenerationJob(job).providerResponseSummary, undefined)
   assert.deepEqual(persistedGenerationJob(job).execution, job.execution)
   assert.equal(persistedGenerationJob(job).executionVersion, 2)
   assert.equal(publicGenerationJob(job).execution, undefined)
@@ -49,9 +52,10 @@ test('生成配方在进入 Redis 队列前完成模型、尺寸和图片约束�
   const input = validateGenerationInput({
     projectId: 'project-a', kind: 'generation', prompt: '香氛商品主图', batchCount: 1,
     settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
-    recipe: { references: [{ name: '主商品', role: '商品', primary: true, dataUrl: image }] },
+    recipe: { references: [{ name: '主商品', role: '商品', primary: true, artifactVersionId: 'asset-version-1', dataUrl: image }] },
   }, { models: ['gpt-image-2'], maximumBatchCount: 8, maximumReferenceBytes: 1024 })
   assert.equal(input.references[0].mimeType, 'image/png')
+  assert.equal(input.references[0].artifactVersionId, 'asset-version-1')
   assert.equal(input.settings.aspectRatio, '3:4')
   assert.throws(() => validateGenerationInput({
     projectId: 'project-a', kind: 'generation', prompt: 'x', batchCount: 1,
@@ -942,13 +946,13 @@ test('参考上限按模型并计入父图：gpt-image-2 第 9 张拒，Nano Ban
   const input = validateGenerationInput({
     projectId: 'project-a', kind: 'generation', prompt: '香氛主图', batchCount: 1,
     settings: {
-      model: 'gemini-3.1-pro-preview', aspectRatio: '21:9', resolution: '4K',
+      model: 'gemini-3.1-flash-image-preview', aspectRatio: '21:9', resolution: '4K',
       searchGrounding: true, thinkingLevel: 'high',
     },
     recipe: { references: fourteen },
   }, {
     models: [{
-      id: 'gemini-3.1-pro-preview', provider: 'flock', mediaKind: 'image',
+      id: 'gemini-3.1-flash-image-preview', provider: 'flock', mediaKind: 'image',
       aspectRatios: ['1:1', '16:9', '4:3', '3:4', '4:5', '9:16', '3:2', '2:3', '5:4', '21:9'],
       resolutions: ['1K', '2K', '4K'],
       supportsMask: false,
@@ -967,12 +971,12 @@ test('参考上限按模型并计入父图：gpt-image-2 第 9 张拒，Nano Ban
 
   assert.throws(() => validateGenerationInput({
     projectId: 'project-a', kind: 'refinement', prompt: '香氛局部精修', batchCount: 1,
-    settings: { model: 'gemini-3.1-pro-preview', aspectRatio: '3:4', resolution: '2K' },
+    settings: { model: 'gemini-3.1-flash-image-preview', aspectRatio: '3:4', resolution: '2K' },
     recipe: { references: fourteen },
     parent: { name: '父图', dataUrl: image },
   }, {
     models: [{
-      id: 'gemini-3.1-pro-preview', provider: 'flock', mediaKind: 'image',
+      id: 'gemini-3.1-flash-image-preview', provider: 'flock', mediaKind: 'image',
       aspectRatios: ['3:4'], resolutions: ['2K'], maximumReferences: 14,
     }],
     maximumBatchCount: 8,
@@ -983,12 +987,12 @@ test('参考上限按模型并计入父图：gpt-image-2 第 9 张拒，Nano Ban
 
   const withParent = validateGenerationInput({
     projectId: 'project-a', kind: 'refinement', prompt: '香氛局部精修', batchCount: 1,
-    settings: { model: 'gemini-3.1-pro-preview', aspectRatio: '3:4', resolution: '2K' },
+    settings: { model: 'gemini-3.1-flash-image-preview', aspectRatio: '3:4', resolution: '2K' },
     recipe: { references: fourteen.slice(0, 13) },
     parent: { name: '父图', dataUrl: image },
   }, {
     models: [{
-      id: 'gemini-3.1-pro-preview', provider: 'flock', mediaKind: 'image',
+      id: 'gemini-3.1-flash-image-preview', provider: 'flock', mediaKind: 'image',
       aspectRatios: ['3:4'], resolutions: ['2K'], maximumReferences: 14,
     }],
     maximumBatchCount: 8,
@@ -1001,11 +1005,11 @@ test('参考上限按模型并计入父图：gpt-image-2 第 9 张拒，Nano Ban
 test('Nano Banana 明确不支持蒙版', () => {
   assert.throws(() => validateGenerationInput({
     projectId: 'project-a', kind: 'generation', prompt: '局部重绘', batchCount: 1,
-    settings: { model: 'gemini-3.1-pro-preview', aspectRatio: '3:4', resolution: '2K' },
+    settings: { model: 'gemini-3.1-flash-image-preview', aspectRatio: '3:4', resolution: '2K' },
     recipe: { references: [{ name: '主商品', role: '商品', dataUrl: image }], mask: { dataUrl: image } },
   }, {
     models: [{
-      id: 'gemini-3.1-pro-preview', provider: 'flock', mediaKind: 'image',
+      id: 'gemini-3.1-flash-image-preview', provider: 'flock', mediaKind: 'image',
       aspectRatios: ['1:1', '3:4'], resolutions: ['1K', '2K', '4K'], supportsMask: false,
     }],
     maximumBatchCount: 8,

@@ -133,6 +133,7 @@ export function appendCollaborationActivity(
   incoming: CollaborationActivity,
   { maximum = 30, mergeWindowMs = 15_000 } = {},
 ) {
+  if (activities.some((activity) => activity.id === incoming.id)) return activities
   const latest = activities[0]
   const merge = latest
     && latest.actorId === incoming.actorId

@@ -3,8 +3,13 @@ import { failUnsubmittedPersistentAgentRun, publicAgentRun } from './botanicAgen
 import { prepareAgentRunExecution, reconcileAgentGenerationJobToProject } from './botanicAgentExecution.mjs'
 import { AgentToolRuntimeError } from './agentToolRuntime.mjs'
 import { generationJobIdForIdempotency } from './generationIdempotency.mjs'
-import { buildGenerationUsage, reserveGenerationBudget } from './generationGovernance.mjs'
-import { agentRunCompiledPlanProvenance, compileRunCreativePlan } from './creativePlanResolver.mjs'
+import { buildGenerationUsage, releaseGenerationBudget, reserveGenerationBudget } from './generationGovernance.mjs'
+import {
+  agentRunCompiledPlanProvenance,
+  assertCreativePlanReferenceBindings,
+  compileRunCreativePlan,
+  createCreativePlanReferenceBindings,
+} from './creativePlanResolver.mjs'
 import { findBrandKit, globalBrandKitLibraryId } from './brandKit.mjs'
 import { AgentDelegationFenceError, assertTurnAllowsDelegation } from './agentCancellationService.mjs'
 import { cancelGenerationJob } from './generationCancellation.mjs'
@@ -87,14 +92,23 @@ export function createAgentRunGenerationService({
     // 创建那一刻服务端文档里可能还没有计划引用的节点，编译会因「引用不存在」失败。
     // 首次执行是文档已经权威、且尚未调用 Provider 的最早时点 —— 阻断仍在花钱之前，
     // 而重试与恢复从此只读快照，不会因模型目录或绑定变动而漂移。
-    const executableRun = agentRunCompiledPlanProvenance(run) === 'compiled_v2'
-      ? run
-      : {
+    const resolveMedia = mediaService?.enabled
+      ? (mediaId, options) => mediaService.readGenerationInput(userId, mediaId, projectId, options)
+      : undefined
+    let executableRun = run
+    if (agentRunCompiledPlanProvenance(run) === 'compiled_v2') {
+      await assertCreativePlanReferenceBindings({ run, document: project.document, models, resolveMedia })
+    } else {
+      const referenceBindingsByBranch = await createCreativePlanReferenceBindings({
+        run, document: project.document, models, resolveMedia,
+      })
+      executableRun = {
         ...run,
         compiledPlan: compileRunCreativePlan({
           run,
           document: project.document,
           models,
+          referenceBindingsByBranch,
           // 只在项目确实绑定了品牌时才去读全局套件：未绑定的项目不该为品牌库多付一次
           // 存储往返，更不该被套上一份它没选过的「默认品牌」。
           globalBrandKit: await readGlobalBrandKit(userId, project.document?.brandId),
@@ -104,6 +118,7 @@ export function createAgentRunGenerationService({
           projectSkills: await productStore.listAgentSkills?.(userId, projectId) ?? [],
         }),
       }
+    }
     // 预览不落库：它反映的文档状态可能还会变，锁死快照会把预览当成确认。
     const storedRun = executableRun === run || !submission
       ? executableRun
@@ -198,7 +213,7 @@ export function createAgentRunGenerationService({
     }
   }
 
-  async function submitGenerationOnce(userId, projectId, runId) {
+  async function submitGenerationOnce(userId, projectId, runId, reservationContext) {
     const { run, project, prepared } = await prepareProjectExecution(userId, projectId, runId, { submission: true })
     if (run.turnId) {
       await assertTurnAllowsDelegation({ productStore, userId, projectId, turnId: run.turnId })
@@ -206,9 +221,10 @@ export function createAgentRunGenerationService({
     const existingJobs = new Map()
     for (const job of prepared.jobs) existingJobs.set(job.id, await productStore.readGenerationJob(userId, job.id))
     const pendingJobs = prepared.jobs.filter((job) => !existingJobs.get(job.id))
+    reservationContext.pendingJobIds = pendingJobs.map((job) => job.id)
     const outputCost = pendingJobs.reduce((total, job) => total + job.batchCount, 0)
     if (outputCost) {
-      const quota = await securityControls.reserveMany({
+      reservationContext.outputRequest = {
         reservationId: `agent-run-generation-output:${userId}:${projectId}:${run.id}`,
         windowMs: 24 * 60 * 60_000,
         entries: [{
@@ -217,8 +233,10 @@ export function createAgentRunGenerationService({
           limit: config.security.generationOutputsPerDay,
           cost: outputCost,
         }],
-      })
+      }
+      const quota = await securityControls.reserveMany(reservationContext.outputRequest)
       if (!quota.allowed) throw new AgentToolRuntimeError('RATE_LIMITED', '今日生成额度已用完，请稍后重试。', 429)
+      if (!quota.reused) reservationContext.output = quota
     }
     for (const job of pendingJobs) {
       const model = (config.modelOptions ?? []).find((candidate) => candidate.id === job.settings?.model)
@@ -230,6 +248,7 @@ export function createAgentRunGenerationService({
       })
       const budget = await reserveGenerationBudget({ securityControls, usage, limits: config.generationBudgets })
       if (!budget.allowed) throw new AgentToolRuntimeError('GENERATION_BUDGET_EXCEEDED', '生成额度不足，请降低输出规格或联系工作区所有者。', 402)
+      if (!budget.reused) reservationContext.budgets.push({ usage, reservation: budget })
       job.usage = usage
       if (budget.warning) job.budgetWarning = '生成额度接近上限。'
     }
@@ -241,6 +260,7 @@ export function createAgentRunGenerationService({
       if (run.turnId) {
         await assertTurnAllowsDelegation({ productStore, userId, projectId, turnId: run.turnId })
       }
+      reservationContext.jobPersistenceStarted = true
       const storedJob = await productStore.putGenerationJob(userId, persistedGenerationJob(job))
         ?? persistedGenerationJob(job)
       Object.assign(job, storedJob)
@@ -250,6 +270,7 @@ export function createAgentRunGenerationService({
       // 误解释成 running→failed。
       if (storedJob.status !== 'queued' || storedJob.execution) continue
       try {
+        reservationContext.enqueueAttempted = true
         await enqueue(storedJob.id)
       } catch {
         const failed = { ...storedJob, status: 'failed', error: '生成任务无法进入队列，请检查 Redis Worker 后重试。', updatedAt: Date.now() }
@@ -268,13 +289,47 @@ export function createAgentRunGenerationService({
   }
 
   async function submitGeneration(userId, projectId, runId) {
+    const reservationContext = {
+      budgets: [],
+      pendingJobIds: [],
+      jobPersistenceStarted: false,
+      enqueueAttempted: false,
+    }
     try {
-      return await submitGenerationOnce(userId, projectId, runId)
+      const result = await submitGenerationOnce(userId, projectId, runId, reservationContext)
+      return result
     } catch (caught) {
       // 4xx 代表这次请求在当前画布/配额/权限下已确定无法提交。
       // 收口为 failed 后 UI 可给出明确调整/重试入口，避免每 4 秒无限重打。
       // 5xx/网络等未知错误仍保留 queued，交给幂等恢复器再确认。
       if (caught instanceof AgentToolRuntimeError && caught.statusCode >= 400 && caught.statusCode < 500) {
+        let canRelease = !reservationContext.enqueueAttempted && !reservationContext.jobPersistenceStarted
+        if (!reservationContext.enqueueAttempted && reservationContext.jobPersistenceStarted) {
+          try {
+            const jobs = await Promise.all(reservationContext.pendingJobIds.map((jobId) => (
+              productStore.readGenerationJob(userId, jobId)
+            )))
+            canRelease = jobs.every((job) => !job || (['failed', 'cancelled'].includes(job.status) && !job.execution))
+          } catch {
+            canRelease = false
+          }
+        }
+        if (canRelease) {
+          for (const entry of reservationContext.budgets) {
+            await releaseGenerationBudget({
+              securityControls,
+              usage: entry.usage,
+              limits: config.generationBudgets,
+              reservedAt: entry.reservation.reservedAt,
+            }).catch(() => undefined)
+          }
+          if (reservationContext.output && reservationContext.outputRequest) {
+            await securityControls.releaseMany({
+              ...reservationContext.outputRequest,
+              reservedAt: reservationContext.output.reservedAt,
+            }).catch(() => undefined)
+          }
+        }
         const run = await productStore.readAgentRun(userId, runId)
         const failed = failUnsubmittedPersistentAgentRun(run, caught.message)
         if (failed && failed !== run) {

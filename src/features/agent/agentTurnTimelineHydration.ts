@@ -40,6 +40,7 @@ export function releaseAbortedAgentTurnTimelineHydrations(
 export function agentTurnTimelineFromHydrationEvents(
   events: readonly BotanicAgentStreamEvent[],
   receivedAt = Date.now(),
+  truncation?: AgentTimelineState['truncation'],
 ): AgentTimelineState | undefined {
   let timeline = createAgentTimeline(receivedAt)
   for (const event of events) {
@@ -52,8 +53,24 @@ export function agentTurnTimelineFromHydrationEvents(
       receivedAt,
     })
   }
-  if (!timeline.blocks.some((block) => block.type === 'step')) return undefined
-  return reduceAgentTimeline(timeline, { type: 'done', receivedAt })
+  if (!timeline.blocks.some((block) => block.type === 'step')) {
+    return truncation ? { blocks: [], truncation } : undefined
+  }
+  return { ...reduceAgentTimeline(timeline, { type: 'done', receivedAt }), ...(truncation ? { truncation } : {}) }
+}
+
+export function agentTurnTimelineFromHydrationRead(result: {
+  events: readonly BotanicAgentStreamEvent[]
+  truncated: boolean
+  nextAfter?: number
+}, receivedAt = Date.now()) {
+  return agentTurnTimelineFromHydrationEvents(
+    result.events,
+    receivedAt,
+    result.truncated && result.nextAfter !== undefined
+      ? { loadedCount: result.events.length, nextAfter: result.nextAfter }
+      : undefined,
+  )
 }
 
 /** 并发期间 Run 投影可能先到；合并时保留它的执行步骤，不覆盖权威运行状态。 */
@@ -70,7 +87,10 @@ export function mergeHydratedAgentTurnTimeline(
     && block.type !== 'raw_group'
     && !hydratedIds.has(block.id)
   ))
-  return { blocks: [...hydratedBody, ...preserved, ...(raw ? [raw] : [])] }
+  return {
+    blocks: [...hydratedBody, ...preserved, ...(raw ? [raw] : [])],
+    ...(hydrated.truncation ? { truncation: hydrated.truncation } : {}),
+  }
 }
 
 export function agentTurnTimelineHydrationFailureDisposition(

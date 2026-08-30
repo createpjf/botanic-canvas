@@ -85,6 +85,10 @@ npm run worker
 
 以 [.env.example](../.env.example) 为准，不要提交真实密钥。
 
+### Sentry
+
+`SENTRY_DSN` 给 Railway API / Worker 与 Vercel Function 使用；`VITE_SENTRY_DSN` 在构建时给浏览器使用，二者都是公开 DSN。`SENTRY_ORG=sixau` 与 `SENTRY_PROJECT=botanic-canvas` 用于 CI 上传前端 Source Map；`SENTRY_AUTH_TOKEN` 只放 GitHub Actions Secret，必须使用可撤销的最小权限令牌，不能写入 `VITE_*` 或仓库。
+
 ### Railway 数据、队列与媒体
 
 ```dotenv
@@ -121,7 +125,7 @@ FLOCK_API_BASE_URL=https://api.flock.io/v1
 FLOCK_API_KEY=...
 FLOCK_TEXT_MODEL=deepseek-v4-flash-vision-exp
 FLOCK_AGENT_MODELS=deepseek-v4-flash-vision-exp,kimi-k3,gemini-3.7-flash,glm-5
-FLOCK_IMAGE_MODELS=gemini-3.1-pro-preview
+FLOCK_IMAGE_MODELS=gemini-3.1-flash-image-preview
 AGENT_VISION_MODEL=gemini-3.7-flash
 AGENT_PLANNER_TIMEOUT_MS=55000
 AGENT_RUNTIME_V2=true
@@ -180,7 +184,7 @@ API 与 Worker 必须使用相同的图像 / 视频 Provider 配置。H3 当前�
 - 成员、项目、共享素材与账户安全变更写入持久化审计日志；工作区完整审计仅 Owner 可通过 `GET /api/audit` 读取。
 - Owner 可从账户菜单打开“安全日志”，按账户、成员、项目和生成类型查看只读记录。
 
-具体阈值见 [.env.example](../.env.example)。安全拒绝、限流与服务端异常会输出结构化事件和 `X-Request-ID`，可由 Railway 日志或后续 Sentry 接收。
+具体阈值见 [.env.example](../.env.example)。安全拒绝、限流与服务端异常会输出结构化事件和 `X-Request-ID`，可由 Railway 日志或 Sentry 接收。
 
 上线验收、告警阈值、备份恢复和发布门禁见 [安全运营与恢复](SECURITY_OPERATIONS.md)。
 

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { GenerationError, persistedGenerationJob, resolveGenerationInputMedia, validateGenerationInput } from './generationProvider.mjs'
+import { assertAgentReferenceBindings } from './agentTargetBinding.mjs'
 import { generationTimeoutForModel } from './generationModels.mjs'
 import { providerForModel } from './generationModels.mjs'
 import { generateMedia } from './generationService.mjs'
@@ -346,7 +347,10 @@ export function createGenerationProcessor({
     if (typeof productStore.refreshGenerationArtifacts !== 'function') return false
     try {
       const refreshed = await productStore.refreshGenerationArtifacts(job.ownerId, job.id)
-      return refreshed !== false
+      if (refreshed === false) return false
+      return typeof refreshed === 'object' && refreshed?.status
+        ? refreshed.status === 'passed'
+        : true
     } catch (caught) {
       // Artifact Index 是可重建的历史目录；索引补偿失败时保留恢复标记，
       // 不能让 Agent Run 在历史目录尚未可读时提前进入 completed。
@@ -606,6 +610,18 @@ export function createGenerationProcessor({
         throw caught
       }
       let input = await materializeInput()
+      const expectedReferenceBindings = running.referenceBindings ?? running.rawInput?.recipe?.referenceBindings
+      if (running.agentRun && Array.isArray(expectedReferenceBindings)) {
+        try {
+          await assertAgentReferenceBindings(expectedReferenceBindings, input.references)
+        } catch (caught) {
+          throw new GenerationError(
+            caught?.statusCode ?? 409,
+            caught?.code ?? 'AGENT_PLAN_REFERENCE_DRIFT',
+            caught?.message ?? '确认时使用的参考素材内容已发生变化，请重新确认这次生成。',
+          )
+        }
+      }
       const materializedProvenance = resolvedInputProvenance(running.inputProvenance, input)
       if (materializedProvenance) {
         running = await commitExecutionJob({
@@ -842,6 +858,8 @@ export function createGenerationProcessor({
         missingOutputCount: result.missingOutputCount,
         partialError: result.partialError,
         error: undefined,
+        errorCode: undefined,
+        providerResponseSummary: undefined,
         // 终态先带补偿标记落库：进程若在 Canvas / Artifact 写回之间崩溃，
         // 恢复任务只做 writeback，不会再次调用 Provider。
         projectWritebackPending: true,
@@ -895,6 +913,7 @@ export function createGenerationProcessor({
         status: 'failed',
         error: failure.message,
         errorCode: failure.code,
+        providerResponseSummary: failure.providerResponseSummary,
         variants: latest.variants ?? running.variants,
         projectWritebackPending: true,
         updatedAt: Date.now(),

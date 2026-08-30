@@ -485,7 +485,8 @@ const handleRequestCore = async (request, response) => {
     if (request.method === 'GET' && url.pathname === '/api/health') {
       return json(response, 200, {
         status: 'ok', provider: 'multi-provider', configured: Boolean(config.modelOptions?.length),
-        maxBatchCount: config.maximumBatchCount, models: config.models, modelOptions: config.modelOptions,
+        maxBatchCount: config.maximumBatchCount, models: config.models,
+        modelOptions: [...(config.modelOptions ?? []), ...(config.unavailableModelOptions ?? [])],
         persistence: runtime.persistence, auth: runtime.authProvider, queue: redisQueue ? 'redis' : 'local-prototype', media: mediaService.enabled ? 'storage' : 'inline-prototype',
         promptRefinement: {
           provider: 'flock-api',

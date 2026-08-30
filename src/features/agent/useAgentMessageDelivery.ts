@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { appendBotanicAgentMessage, type BotanicAgentMessage, type BotanicAgentSession } from '../../domain/agent'
+import type { BotanicAgentMessage, BotanicAgentSession } from '../../domain/agent'
 import { submitPersistentBotanicAgentMessage } from '../../lib/agentApi'
 import { assertAgentMessageQueueItemDelivered, createAgentMessageQueue, createLocalStorageAgentMessageQueueStorage } from '../../lib/agentMessageQueue'
 import { serverPersistenceEnabled } from '../../lib/productSession'
 import { localizeProductError, type ProductLocale } from '../../i18n/core'
 import { useProductI18n } from '../../i18n/react'
 
-type AgentMessagePatch = Partial<Pick<BotanicAgentMessage, 'kind' | 'content' | 'runId' | 'status' | 'feedback' | 'plan' | 'question' | 'composition' | 'deliveryStatus' | 'turnId' | 'turnCancellationRequestedAt' | 'turnRequestSnapshot'>>
+type AgentMessagePatch = Partial<Pick<BotanicAgentMessage, 'kind' | 'content' | 'runId' | 'status' | 'feedback' | 'plan' | 'question' | 'composition' | 'deliveryStatus' | 'turnId' | 'turnCancellationRequestedAt' | 'turnRequestSnapshot' | 'sourceMessageId' | 'sourceNodeIds' | 'targetArtifactVersionId' | 'planFingerprint'>>
 type AgentDeliveryError = Error & { status?: number; code?: string }
 
 function localizedAgentDeliveryError(error: unknown, locale: ProductLocale): AgentDeliveryError {
@@ -53,7 +53,7 @@ export function useAgentMessageDelivery({
   }), [projectId])
 
   const flush = useCallback(async () => {
-    const queued = new Map(queue.list().map((item) => [item.message.id, item.session.id]))
+    const queued = new Map(queue.list().map((item) => [item.message.id, item.sessionId]))
     const result = await queue.flush()
     if (!isCurrentProject()) return
     for (const messageId of result.delivered) {
@@ -71,7 +71,7 @@ export function useAgentMessageDelivery({
     if (!serverPersistenceEnabled) return
     return queue.subscribe((items) => {
       for (const item of items) {
-        onUpdateMessage(item.session.id, item.message.id, {
+        onUpdateMessage(item.sessionId, item.message.id, {
           deliveryStatus: item.status === 'failed'
             ? 'failed'
             : item.status === 'sending'
@@ -113,12 +113,11 @@ export function useAgentMessageDelivery({
       createdAt: message.createdAt ?? Date.now(),
       deliveryStatus: serverPersistenceEnabled ? online ? 'queued' : 'waiting_network' : 'synced',
     }
-    const queuedSession = appendBotanicAgentMessage(session, queuedMessage)
     onAppendMessage(session.id, queuedMessage)
     if (!serverPersistenceEnabled) return messageId
     queue.enqueue({
       projectId,
-      session: queuedSession,
+      sessionId: session.id,
       message: queuedMessage,
       idempotencyKey: `agent-message-${messageId}`,
     })
@@ -132,15 +131,9 @@ export function useAgentMessageDelivery({
       ...message,
       deliveryStatus: online ? 'queued' : 'waiting_network',
     }
-    const queuedSession = {
-      ...session,
-      messages: session.messages.some((item) => item.id === queuedMessage.id)
-        ? session.messages.map((item) => item.id === queuedMessage.id ? queuedMessage : item)
-        : [...session.messages, queuedMessage],
-    }
     queue.enqueue({
       projectId,
-      session: queuedSession,
+      sessionId: session.id,
       message: queuedMessage,
       idempotencyKey: `agent-message-${queuedMessage.id}`,
     })
@@ -150,12 +143,12 @@ export function useAgentMessageDelivery({
   const retryMessage = useCallback((messageId: string) => {
     const item = queue.retry(messageId)
     if (!item || !isCurrentProject()) return
-    onUpdateMessage(item.session.id, messageId, { deliveryStatus: online ? 'queued' : 'waiting_network' })
+    onUpdateMessage(item.sessionId, messageId, { deliveryStatus: online ? 'queued' : 'waiting_network' })
     if (online) void flush()
   }, [flush, isCurrentProject, onUpdateMessage, online, queue])
 
   const ensureMessageDurable = useCallback(async (message: BotanicAgentMessage) => {
-    // 恢复路径也重新 enqueue 完整 snapshot，不依赖上次本地队列恰好还在。
+    // 恢复路径重新 enqueue 同一 Message 操作，不依赖上次本地队列恰好还在。
     persistMessage(message)
     await flush()
     assertAgentMessageQueueItemDelivered(queue, message.id)

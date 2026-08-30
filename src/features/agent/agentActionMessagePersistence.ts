@@ -1,4 +1,5 @@
 import {
+  botanicAgentAssistantMessageProvenance,
   updateBotanicAgentAction,
   type BotanicAgentActionProposal,
   type BotanicAgentMessage,
@@ -13,8 +14,42 @@ type AgentActionPatch = Partial<Pick<
 export type AgentMessagePatch = Partial<Pick<
   BotanicAgentMessage,
   'kind' | 'content' | 'runId' | 'turnId' | 'turnCancellationRequestedAt' | 'turnRequestSnapshot' | 'status' | 'feedback'
-  | 'plan' | 'question' | 'composition' | 'deliveryStatus' | 'review'
+  | 'plan' | 'question' | 'composition' | 'deliveryStatus' | 'review' | 'sourceMessageId' | 'sourceNodeIds'
+  | 'targetArtifactVersionId' | 'planFingerprint'
 >>
+
+type AppendMessageInput = Omit<BotanicAgentMessage, 'id' | 'createdAt'> & { id?: string; createdAt?: number }
+
+export function upsertBotanicAgentMessageProjection(input: {
+  message: AppendMessageInput
+  session?: BotanicAgentSession
+  activeTurnInputMessage?: BotanicAgentMessage | null
+  append: (message: AppendMessageInput) => string
+  update: (message: BotanicAgentMessage, patch: AgentMessagePatch) => BotanicAgentMessage
+}) {
+  const source = input.message.role === 'assistant' && input.message.turnId
+    ? (input.activeTurnInputMessage?.turnId === input.message.turnId
+        ? input.activeTurnInputMessage
+        : input.session?.messages.find((message) => message.role === 'user' && message.turnId === input.message.turnId))
+    : undefined
+  const message = {
+    ...input.message,
+    ...botanicAgentAssistantMessageProvenance(source, input.message.turnId),
+  }
+  const existing = message.id?.trim()
+    ? input.session?.messages.find((candidate) => candidate.id === message.id?.trim())
+    : undefined
+  if (!existing) return input.append(message)
+  input.update(existing, {
+    kind: message.kind, content: message.content, runId: message.runId, turnId: message.turnId,
+    turnCancellationRequestedAt: message.turnCancellationRequestedAt, status: message.status,
+    feedback: message.feedback, plan: message.plan, question: message.question,
+    composition: message.composition, review: message.review, sourceMessageId: message.sourceMessageId,
+    sourceNodeIds: message.sourceNodeIds, targetArtifactVersionId: message.targetArtifactVersionId,
+    planFingerprint: message.planFingerprint,
+  })
+  return existing.id
+}
 
 /**
  * 计划提交与 Turn 投影的状态变化不能只改本地兼容视图：每次变更都把完整 Message

@@ -7,6 +7,7 @@ import {
   agentReviewRequiresReconciliation,
   agentReviewTaskStatusNote,
   agentReviewVerdictLabel,
+  formatAgentReviewTaskProjectionMessage,
   isEvaluatorCriterion,
   type AgentReviewTaskSnapshot,
 } from './agentReviewPresentation.ts'
@@ -42,6 +43,14 @@ test('「未验证」与「不符合」必须是两个词', () => {
   assert.equal(agentReviewVerdictLabel('unverifiable'), '未验证')
   assert.equal(agentReviewVerdictLabel(undefined), '未验证')
   assert.equal(agentReviewVerdictLabel('unverifiable', 'en'), 'Not verified')
+})
+
+test('会话评审消息只从 durable task 投影', () => {
+  const message = formatAgentReviewTaskProjectionMessage(task)
+  assert.match(message, /质量评审已完成/u)
+  assert.match(message, /5 张图中已评审 2 张/u)
+  assert.match(message, /1 张符合、1 张不符合/u)
+  assert.match(message, /评审面板/u)
 })
 
 test('覆盖摘要必须说出被跳过的结果数', () => {

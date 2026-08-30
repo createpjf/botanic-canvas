@@ -55,7 +55,7 @@ type PersistentAgentRunApi = {
   cancelRun: (runId: string) => Promise<BotanicAgentRunSnapshot>
 }
 
-type PersistAgentSession = (projectId: string, session: BotanicAgentSession) => Promise<unknown>
+type PersistAgentSession = (projectId: string, session: BotanicAgentSession) => Promise<BotanicAgentSession | undefined>
 
 /**
  * CanvasStore 内的 Agent 实体命令模块。
@@ -67,7 +67,7 @@ export function createCanvasAgentActions({
   commitDocument,
   persistentAgentRunApi,
   persistAcknowledgedRemotePatch,
-  persistAgentSession = async () => {},
+  persistAgentSession = async () => undefined,
 }: {
   set: (next: Partial<CanvasStore>) => void
   get: () => CanvasStore
@@ -83,7 +83,14 @@ export function createCanvasAgentActions({
     void commitDocument(document)
     if (!options.persistSession) return
     const session = document.agentSessions.find((item) => item.id === document.activeAgentSessionId)
-    if (session) void persistAgentSession(document.id, session).catch(() => undefined)
+    if (session) void persistAgentSession(document.id, session).catch((caught) => {
+      if (get().document.id !== document.id) return
+      const source = caught as { code?: string; message?: string } | undefined
+      set({ assistantMessage: source?.message || 'Agent 会话设置同步失败，请刷新后重试。' })
+      if (source?.code === 'AGENT_SESSION_REVISION_CONFLICT') {
+        void get().refreshDocumentFromRemote().catch(() => false)
+      }
+    })
   }
 
   return {

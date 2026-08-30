@@ -39,6 +39,40 @@ async function targetMediaIdentity(image, resolveMedia) {
   }
 }
 
+async function referenceMediaIdentity(reference, resolveMedia) {
+  if (reference?.buffer?.length) {
+    return {
+      ...(reference.mediaId ? { mediaId: reference.mediaId } : {}),
+      mediaSha256: createHash('sha256').update(reference.buffer).digest('hex'),
+    }
+  }
+  return targetMediaIdentity(reference?.image ?? reference?.dataUrl, resolveMedia)
+}
+
+export async function createAgentReferenceBindings(references, { resolveMedia } = {}) {
+  if (!Array.isArray(references)) throw targetError('AGENT_PLAN_REFERENCE_BINDING_INVALID', 'Agent 参考图绑定无效。', 400)
+  return Promise.all(references.map(async (reference) => {
+    const media = await referenceMediaIdentity(reference, resolveMedia)
+    const artifactVersionId = reference?.artifactVersionId
+      ?? reference?.versionId
+      ?? (reference?.jobId && reference?.candidateId ? `generation:${reference.jobId}:${reference.candidateId}` : undefined)
+    return {
+      ...(reference?.nodeId ? { nodeId: reference.nodeId } : {}),
+      ...(reference?.assetId ? { assetId: reference.assetId } : {}),
+      ...(artifactVersionId ? { artifactVersionId } : {}),
+      role: reference?.role ?? '参考',
+      ...media,
+    }
+  }))
+}
+
+export async function assertAgentReferenceBindings(expected, references, { resolveMedia } = {}) {
+  const current = await createAgentReferenceBindings(references, { resolveMedia })
+  if (!Array.isArray(expected) || canonicalHash(current) !== canonicalHash(expected)) {
+    throw targetError('AGENT_PLAN_REFERENCE_DRIFT', '确认时使用的参考素材内容已发生变化，请重新确认这次生成。')
+  }
+}
+
 function stableNodeIdentity(node, media) {
   const data = node.data ?? {}
   const jobId = typeof data.jobId === 'string' && data.jobId.trim() ? data.jobId.trim() : null
@@ -64,21 +98,49 @@ export async function createAgentTargetBinding(document, input, options) {
     version: 1,
     ...stableNodeIdentity(node, media),
     ...(Number.isInteger(projectRevision) ? { projectRevision } : {}),
-    boundAt: now,
+    boundAt: typeof now === 'function' ? now() : now,
   }
 }
 
-export async function assertAgentTargetBinding(document, input, { resolveMedia, projectRevision } = {}) {
+export function validateAgentTargetBinding(raw, { expectedNodeId } = {}) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)
+    || raw.version !== 1
+    || typeof raw.nodeId !== 'string' || !raw.nodeId.trim()
+    || (expectedNodeId && raw.nodeId !== expectedNodeId)
+    || typeof raw.nodeRevision !== 'string' || !raw.nodeRevision.trim()
+    || typeof raw.mediaSha256 !== 'string' || !/^[a-f0-9]{64}$/u.test(raw.mediaSha256)
+    || !Number.isFinite(Number(raw.boundAt)) || Number(raw.boundAt) < 0) {
+    throw targetError('AGENT_TARGET_BINDING_INVALID', 'Agent 目标版本绑定无效。', 400)
+  }
+  const optionalIdentity = (value, name) => {
+    if (value === null || value === undefined) return null
+    if (typeof value !== 'string' || !value.trim() || value.length > 240) {
+      throw targetError('AGENT_TARGET_BINDING_INVALID', `Agent 目标${name}无效。`, 400)
+    }
+    return value.trim()
+  }
+  return {
+    version: 1,
+    nodeId: raw.nodeId.trim(),
+    nodeRevision: raw.nodeRevision.trim(),
+    artifactId: optionalIdentity(raw.artifactId, ' Artifact'),
+    generationJobId: optionalIdentity(raw.generationJobId, '任务'),
+    candidateId: optionalIdentity(raw.candidateId, '候选'),
+    versionId: optionalIdentity(raw.versionId, '版本'),
+    ...(raw.mediaId === undefined ? {} : { mediaId: optionalIdentity(raw.mediaId, '媒体') }),
+    mediaSha256: raw.mediaSha256,
+    ...(Number.isInteger(raw.projectRevision) ? { projectRevision: raw.projectRevision } : {}),
+    boundAt: Number(raw.boundAt),
+  }
+}
+
+export async function assertAgentTargetBinding(document, input, { resolveMedia } = {}) {
   if (!input?.hasTarget) return
   const binding = input.targetBinding
   if (!binding || binding.version !== 1 || binding.nodeId !== input.selectedResultNodeId) {
     throw targetError('AGENT_TARGET_BINDING_MISSING', '原 Agent 回合没有可验证的目标版本，请重新选择图片。')
   }
-  if (Number.isInteger(binding.projectRevision)
-    && Number.isInteger(projectRevision)
-    && binding.projectRevision !== projectRevision) {
-    throw targetError('AGENT_TARGET_STALE', '原目标所在项目版本已经变化，请重新选择后再执行。')
-  }
+  validateAgentTargetBinding(binding, { expectedNodeId: input.selectedResultNodeId })
   const node = targetNode(document, binding.nodeId)
   const current = stableNodeIdentity(node, await targetMediaIdentity(node.data.image, resolveMedia))
   const fields = ['nodeId', 'nodeRevision', 'artifactId', 'generationJobId', 'candidateId', 'versionId', 'mediaId', 'mediaSha256']

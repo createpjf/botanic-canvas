@@ -12,7 +12,7 @@ import {
 import { shouldRefreshFromRealtimeEvent } from '../../domain/realtimeSync'
 import { executePersistentBotanicAgentRun, listPersistentBotanicAgentRuns, listPersistentBotanicAgentSessions, readPersistentBotanicAgentState } from '../../lib/agentApi'
 import { listProjectCollaborationActivities, updateProjectCollaborationActivityReceipt } from '../../lib/collaborationApi'
-import { flushPendingCanvasDocumentWrites, previewRemoteCanvasDocument, refreshCanvasDocumentFromRemote, syncPendingCanvasDrafts } from '../../lib/db'
+import { flushPendingCanvasDocumentWrites, previewRemoteCanvasDocument, refreshCanvasDocumentFromRemote, syncPendingCanvasDrafts, type CanvasConflictRevision } from '../../lib/db'
 import { connectCanvasCollaboration, type CanvasCollaboration } from '../../lib/projectCollaboration'
 import { serverPersistenceEnabled } from '../../lib/productSession'
 import { localizeProductError, type ProductLocale } from '../../i18n/core'
@@ -86,6 +86,7 @@ export type CollaborationAwareness = {
   activities: CollaborationActivity[]
   unreadActivityCount: number
   conflictChanges: CollaborationDocumentChange[]
+  conflictRevision?: CanvasConflictRevision
   historyStatus: 'idle' | 'loading' | 'loading-more' | 'saving' | 'error'
   historyHasMore: boolean
   historyNextBefore?: string
@@ -553,14 +554,20 @@ export function useCanvasWorkspaceSynchronization({
 
   useEffect(() => {
     if (persistenceStatus !== 'conflict' || !serverPersistenceEnabled) {
-      setCollaborationAwareness((current) => current.conflictChanges.length ? { ...current, conflictChanges: [] } : current)
+      setCollaborationAwareness((current) => current.conflictChanges.length || current.conflictRevision
+        ? { ...current, conflictChanges: [], conflictRevision: undefined }
+        : current)
       return
     }
     const local = useCanvasStore.getState().document
     void previewRemoteCanvasDocument(local.id)
-      .then((remote) => {
-        if (!remote || useCanvasStore.getState().document.id !== local.id) return
-        setCollaborationAwareness((current) => ({ ...current, conflictChanges: collaborationDocumentChanges(local, remote).map((change) => localizeCollaborationChange(change, locale)) }))
+      .then((preview) => {
+        if (!preview || useCanvasStore.getState().document.id !== local.id) return
+        setCollaborationAwareness((current) => ({
+          ...current,
+          conflictRevision: preview.conflictRevision,
+          conflictChanges: collaborationDocumentChanges(local, preview.document).map((change) => localizeCollaborationChange(change, locale)),
+        }))
       })
       .catch(() => undefined)
   }, [documentId, locale, persistenceStatus])

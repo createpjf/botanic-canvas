@@ -70,6 +70,7 @@ function rawGenerationInput(run, parentNode, recipe, { videoModel = false } = {}
       ...(recipe.constraints?.length ? { constraints: clone(recipe.constraints) } : {}),
       ...(recipe.qualityPolicy ? { qualityPolicy: clone(recipe.qualityPolicy) } : {}),
       ...(recipe.sourcePlanFingerprint ? { sourcePlanFingerprint: recipe.sourcePlanFingerprint } : {}),
+      ...(recipe.referenceBindings?.length ? { referenceBindings: clone(recipe.referenceBindings) } : {}),
       ...(recipe.memoryBindings?.length ? { memoryBindings: clone(recipe.memoryBindings) } : {}),
       ...(recipe.skillBindings?.length ? { skillBindings: clone(recipe.skillBindings) } : {}),
       references: recipe.references.map((reference, index) => ({
@@ -225,6 +226,7 @@ function recipeFromCompiledBranch(baseRecipe, compiledBranch) {
     sourcePlanFingerprint: compiledBranch.branchFingerprint,
     planFingerprint: compiledBranch.planFingerprint,
     branchFingerprint: compiledBranch.branchFingerprint,
+    referenceBindings: clone(compiledBranch.referenceBindings ?? []),
     ...(compiledBranch.memoryBindings?.length ? { memoryBindings: clone(compiledBranch.memoryBindings) } : {}),
     ...(compiledBranch.skillBindings?.length ? { skillBindings: clone(compiledBranch.skillBindings) } : {}),
   }
@@ -276,6 +278,7 @@ export function prepareAgentRunExecution({
       outputs: [], error: undefined, rawInput,
       agentRun: { runId: run.id, branchId: branch.id, attempt: branch.attempt ?? 0 },
       ...(targetBinding ? { targetBinding: clone(targetBinding) } : {}),
+      referenceBindings: clone(recipe.referenceBindings ?? []),
       inputProvenance: generationInputProvenance(validated, targetBinding),
       // 指纹提到任务顶层：Artifact 要能反查「这张图属于哪一次确认的哪一支」，
       // 埋在 generationRecipe 里则每个读取方都得自己往下挖一层。

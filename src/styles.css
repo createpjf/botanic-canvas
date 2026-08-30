@@ -3409,9 +3409,11 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .composer-model-menu > button { display: grid; grid-template-columns: 30px minmax(0, 1fr) 18px; min-height: 46px; align-items: center; gap: 8px; padding: 7px 9px; border: 1px solid transparent; border-radius: var(--radius-control); background: transparent; color: #526057; text-align: start; }
 .composer-model-menu > button:hover { background: #f1f6f0; }
 .composer-model-menu > button.is-selected { border-color: #c9dccd; background: #eaf3ea; color: #284f32; }
+.composer-model-menu > button:disabled { cursor: not-allowed; opacity: .52; }
 .composer-model-menu > button > img { width: 28px; height: 28px; border-radius: 8px; object-fit: cover; }
 .composer-model-menu > button strong { min-width: 0; overflow: hidden; font-size: 11px; line-height: 15px; text-overflow: ellipsis; white-space: nowrap; }
 .composer-model-menu > button > b { color: #2f6d3e; font-size: 13px; text-align: center; }
+.composer-model-menu > button:disabled > b { font-size: 10px; }
 .composer-compact-menu { display: grid; gap: 3px; }
 .composer-compact-menu > button { height: 34px; padding: 0 9px; border: 0; border-radius: var(--radius-control); background: transparent; color: #66756a; font-size: 10px; font-weight: 750; }
 .composer-compact-menu > button:hover { background: #f0f6ef; color: #315f3c; }
@@ -4748,7 +4750,7 @@ details.agent-timeline__thinking { display: block; width: 100%; }
 .agent-composer textarea::placeholder { color: #94a097; }
 .agent-composer__mention-menu { position: absolute; z-index: 5; right: 10px; bottom: 112px; left: 10px; display: grid; max-height: 260px; gap: 3px; overflow-y: auto; padding: 7px; border: 1px solid #cdddcf; border-radius: 9px; background: #fff; box-shadow: 0 16px 38px rgba(28, 58, 35, .2); }
 .agent-composer__mention-menu button { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; min-height: 40px; align-items: center; gap: 8px; padding: 4px 7px; border: 0; border-radius: 6px; background: transparent; color: #344f3b; cursor: pointer; text-align: start; }
-.agent-composer__mention-menu button:hover, .agent-composer__mention-menu button:first-child { background: #edf4ed; }
+.agent-composer__mention-menu button:hover, .agent-composer__mention-menu button[aria-selected="true"] { background: #edf4ed; }
 .agent-composer__mention-menu img, .agent-composer__mention-menu button > span { width: 32px; height: 32px; border-radius: 5px; object-fit: cover; }
 .agent-composer__mention-menu button > span { display: grid; place-items: center; background: #e4eee5; font-size: 9px; }
 .agent-composer__mention-menu b { overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
@@ -5155,6 +5157,14 @@ details.agent-timeline__thinking { display: block; width: 100%; }
 /* 重复标识会让「只重试失败那 2 项」打到别的行上，因此这一行要一眼看得出来。 */
 .production-batch__table tr.is-invalid input { background: #fdf6f6; border-color: #e6c9c9; }
 .production-batch__issue { margin: 0; color: #8a3a3a; font-size: 10px; line-height: 1.5; }
+.production-run-failures { border-color: #ecd3ce; background: #fff8f6; }
+.production-run-failures article { display: grid; gap: 2px; padding: 7px; border-radius: 7px; background: #fff; }
+.production-run-failures article strong { color: #8a3a3a; font-size: 9px; }
+.production-run-failures article p { display: block; color: #70544f; -webkit-line-clamp: unset; }
+
+@media (max-width: 700px) {
+  .agent-workspace { top: auto; right: 8px; bottom: 8px; left: 8px; width: auto; height: min(72dvh, 680px); }
+}
 
 /* 记忆的适用范围（Epic 6）。限定范围的规则**不会**进入每一次生成，
    因此这条说明必须和内容一样显眼 —— 用户以为它总是生效的话，

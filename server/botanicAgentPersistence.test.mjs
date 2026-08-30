@@ -3,6 +3,7 @@ import test from 'node:test'
 import {
   agentEntityLimits,
   agentStateFromDocument,
+  compareAndSetAgentSessionSettings,
   mergeAgentStateIntoDocument,
   shouldApplyAgentEntityWrite,
   shouldApplyAgentRunWrite,
@@ -28,7 +29,7 @@ test('Agent 文档状态被拆成独立 Session、Message、Memory 与 Run 实�
   })
 
   assert.deepEqual(state.sessions[0], {
-    id: 'session-a', title: 'session-a', executionMode: 'manual', contextNodeIds: [], createdAt: 10, updatedAt: 20,
+    id: 'session-a', title: 'session-a', executionMode: 'manual', contextNodeIds: [], revision: 0, createdAt: 10, updatedAt: 20,
   })
   assert.equal(state.messages[0].sessionId, 'session-a')
   assert.equal(state.messages[0].message.content, '第一条')
@@ -213,6 +214,23 @@ test('确认豁免只收词表内的理由，外部行动豁免必须被拒', ()
   )
 })
 
+test('Session CAS 在所有 Adapter 前统一 trim 与去重设置', () => {
+  const result = compareAndSetAgentSessionSettings(undefined, {
+    sessionId: 'session-normalized', expectedRevision: 0, createdAt: 10,
+    changes: {
+      title: '  品牌首图  ', confirmationWaivers: ['manual', 'manual'],
+      plannerModel: '  kimi-k3  ', mountedSkillIds: ['skill-a', 'skill-a'],
+      contextNodeIds: ['node-a', 'node-a'],
+    },
+  }, { now: 10 })
+
+  assert.equal(result.session.title, '品牌首图')
+  assert.deepEqual(result.session.confirmationWaivers, ['manual'])
+  assert.equal(result.session.plannerModel, 'kimi-k3')
+  assert.deepEqual(result.session.mountedSkillIds, ['skill-a'])
+  assert.deepEqual(result.session.contextNodeIds, ['node-a'])
+})
+
 test('Subagent 会话有独立类型与父会话绑定，普通会话不能伪造关联', () => {
   const session = validateAgentSessionEntity({
     id: 'agent-subagent-session-subagent-1',
@@ -272,7 +290,7 @@ test('识图回合快照也带生成目录，词表内的 Nano Banana 比例与 
     selectedResultNodeId: null,
     plannerModel: 'gemini-3.7-flash',
     generationModels: [{
-      id: 'gemini-3.1-pro-preview',
+      id: 'gemini-3.1-flash-image-preview',
       label: 'Nano Banana',
       mediaKind: 'image',
       aspectRatios: ['1:1', '16:9', '4:3', '3:4', '4:5', '9:16', '3:2', '2:3', '5:4', '21:9'],

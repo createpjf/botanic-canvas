@@ -4,6 +4,8 @@ import { projectCapabilities } from './authorization.mjs'
 import { collaborationChangeFromDocuments, decodeCollaborationActivityCursor, encodeCollaborationActivityCursor } from './collaborationActivityPersistence.mjs'
 import { filterAuditEvents } from './agentActionGovernance.mjs'
 
+const projectWritePermissionCodes = new Set(['PROJECT_ACCESS_FORBIDDEN', 'PROJECT_WRITE_FORBIDDEN'])
+
 /**
  * 项目、项目文档、成员与项目审计的 HTTP 模块。
  * 项目版本与图谱版本在这里共同校验，避免组合根重复实现冲突语义。
@@ -137,7 +139,13 @@ export function createProjectRouteHandler({
       const graphRevision = expectedGraphRevision(request, undefined)
       try {
         const current = await productStore.readProject(user.id, projectId)
-        const normalized = await mediaService.normalizeDocument(document, { ownerId: user.id, projectId })
+        // 已存在项目的生产工作流由专用 API 拥有；兼容 PUT 客户端也不能用旧整文档覆盖。
+        const protectedDocument = current ? {
+          ...document,
+          productionWorkflows: current.document.productionWorkflows ?? [],
+          productionWorkflowRuns: current.document.productionWorkflowRuns ?? [],
+        } : document
+        const normalized = await mediaService.normalizeDocument(protectedDocument, { ownerId: user.id, projectId })
         const saved = await productStore.writeProject(user.id, normalized, expectedRevision, graphRevision)
         const change = current ? collaborationChangeFromDocuments(current.document, saved.document) : undefined
         if (change) {
@@ -152,7 +160,10 @@ export function createProjectRouteHandler({
       } catch (caught) {
         if (caught?.code === 'MEDIA_VALIDATION_FAILED') return error(response, 400, caught.code, caught.message)
         if (caught?.code === 'PROJECT_CONFLICT' || caught?.code === 'CANVAS_GRAPH_CONFLICT') return error(response, 409, caught.code, caught.message)
-        return error(response, 403, 'PROJECT_WRITE_FORBIDDEN', caught instanceof Error ? caught.message : '没有编辑项目的权限。')
+        if (projectWritePermissionCodes.has(caught?.code)) {
+          return error(response, 403, 'PROJECT_WRITE_FORBIDDEN', caught instanceof Error ? caught.message : '没有编辑项目的权限。')
+        }
+        throw caught
       }
     }
 
@@ -184,7 +195,10 @@ export function createProjectRouteHandler({
         if (caught?.code === 'MEDIA_VALIDATION_FAILED') return error(response, 400, caught.code, caught.message)
         if (caught?.code === 'PROJECT_CONFLICT' || caught?.code === 'CANVAS_GRAPH_CONFLICT') return error(response, 409, caught.code, caught.message)
         if (caught instanceof TypeError) return error(response, 400, 'INVALID_DOCUMENT_PATCH', caught.message)
-        return error(response, 403, 'PROJECT_WRITE_FORBIDDEN', caught instanceof Error ? caught.message : '没有编辑项目的权限。')
+        if (projectWritePermissionCodes.has(caught?.code)) {
+          return error(response, 403, 'PROJECT_WRITE_FORBIDDEN', caught instanceof Error ? caught.message : '没有编辑项目的权限。')
+        }
+        throw caught
       }
     }
 

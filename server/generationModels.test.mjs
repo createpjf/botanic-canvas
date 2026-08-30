@@ -47,18 +47,18 @@ test('有 Flock key 才出现 Nano Banana，并声明十档比例、4K 与 14 �
     openAIApiKey: 'openai-key',
     openAIModels: ['gpt-image-2'],
     flockApiKey: '',
-    flockImageModels: ['gemini-3.1-pro-preview'],
+    flockImageModels: ['gemini-3.1-flash-image-preview'],
   })
-  assert.equal(withoutKey.some((model) => model.id === 'gemini-3.1-pro-preview'), false)
+  assert.equal(withoutKey.some((model) => model.id === 'gemini-3.1-flash-image-preview'), false)
 
   const catalog = createGenerationModelCatalog({
     openAIApiKey: 'openai-key',
     openAIModels: ['gpt-image-2'],
     flockApiKey: 'flock-key',
-    flockImageModels: ['gemini-3.1-pro-preview'],
+    flockImageModels: ['gemini-3.1-flash-image-preview'],
   })
-  const nanoBanana = catalog.find((model) => model.id === 'gemini-3.1-pro-preview')
-  assert.equal(nanoBanana?.label, 'Nano Banana')
+  const nanoBanana = catalog.find((model) => model.id === 'gemini-3.1-flash-image-preview')
+  assert.equal(nanoBanana?.label, 'Nano Banana 2')
   assert.equal(nanoBanana?.provider, 'flock')
   assert.equal(nanoBanana?.supportsMask, false)
   assert.equal(nanoBanana?.supportsCustomSize, false)
@@ -75,9 +75,30 @@ test('有 Flock key 才出现 Nano Banana，并声明十档比例、4K 与 14 �
 test('未知 Flock 型号不会冒充 Nano Banana 能力进入目录', () => {
   const catalog = createGenerationModelCatalog({
     flockApiKey: 'flock-key',
-    flockImageModels: ['unknown-image-model', 'gemini-3.1-pro-preview'],
+    flockImageModels: ['unknown-image-model', 'gemini-3.1-flash-image-preview'],
   })
-  assert.deepEqual(catalog.map((model) => model.id), ['gemini-3.1-pro-preview'])
+  assert.deepEqual(catalog.map((model) => model.id), ['gemini-3.1-flash-image-preview'])
+})
+
+test('Nano Banana 只接受 Flock 目录中的 image-preview 型号，旧 Pro 型号不进入可执行目录', () => {
+  const catalog = createGenerationModelCatalog({
+    flockApiKey: 'flock-key',
+    flockImageModels: ['gemini-3.1-pro-preview', 'gemini-3.1-flash-image-preview'],
+  })
+  assert.deepEqual(catalog.map((model) => model.id), ['gemini-3.1-flash-image-preview'])
+})
+
+test('Flock key 不能单独启用图片模型，健康目录会把未显式声明的 Nano Banana 标为不可用', () => {
+  const catalog = createGenerationModelCatalog({
+    flockApiKey: 'flock-key',
+    flockImageModels: [],
+    includeUnavailable: true,
+  })
+  assert.equal(catalog.length, 1)
+  assert.equal(catalog[0].id, 'gemini-3.1-flash-image-preview')
+  assert.equal(catalog[0].available, false)
+  assert.match(catalog[0].unavailableReason, /FLOCK_IMAGE_MODELS/u)
+  assert.equal(providerForModel(catalog, catalog[0].id), undefined)
 })
 
 test('读时超时收口写 errorCode，重试策略才分类得了', () => {

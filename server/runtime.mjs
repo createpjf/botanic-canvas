@@ -11,6 +11,7 @@ import { createGenerationModelCatalog } from './generationModels.mjs'
 import { parseMcpToolConfigurations } from './mcpClient.mjs'
 import { resolveTavilyExtractUrl, resolveTavilySearchUrl } from './agentWebResearch.mjs'
 import { resolveInviteRedirectTo } from './inviteRedirect.mjs'
+import { createResendEmailService } from './resendEmailService.mjs'
 import { assertProductStoreContract } from './productStoreContract.mjs'
 import { createRolloutFlags, resolveAgentFeatureFlags } from './featureFlags.mjs'
 import { parseAgentModelContextPolicies } from './agentModelContextPolicy.mjs'
@@ -67,7 +68,7 @@ export function runtimeConfig(rootDir = process.cwd()) {
     .split(',').map((model) => model.trim()).filter(Boolean))]
   const miniMaxVideoModels = [...new Set((process.env.MINIMAX_VIDEO_MODELS ?? 'MiniMax-H3')
     .split(',').map((model) => model.trim()).filter(Boolean))]
-  const flockImageModels = [...new Set((process.env.FLOCK_IMAGE_MODELS ?? 'gemini-3.1-pro-preview')
+  const flockImageModels = [...new Set((process.env.FLOCK_IMAGE_MODELS ?? '')
     .split(',').map((model) => model.trim()).filter(Boolean))]
   const flockAgentModels = [...new Set((process.env.FLOCK_AGENT_MODELS ?? 'deepseek-v4-flash-vision-exp,kimi-k3,gemini-3.7-flash,glm-5')
     .split(',').map((model) => model.trim()).filter(Boolean))]
@@ -80,7 +81,7 @@ export function runtimeConfig(rootDir = process.cwd()) {
   const production = process.env.NODE_ENV === 'production'
     || Boolean(process.env.RAILWAY_ENVIRONMENT_NAME || process.env.RAILWAY_PROJECT_ID)
     || /^https:\/\//i.test(publicAppUrl ?? '')
-  const modelOptions = createGenerationModelCatalog({
+  const declaredModelOptions = createGenerationModelCatalog({
     openAIApiKey: process.env.OPENAI_API_KEY,
     openAIModels,
     miniMaxApiKey: process.env.MINIMAX_API_KEY,
@@ -88,7 +89,10 @@ export function runtimeConfig(rootDir = process.cwd()) {
     miniMaxVideoModels,
     flockApiKey: process.env.FLOCK_API_KEY,
     flockImageModels,
+    includeUnavailable: true,
   })
+  const modelOptions = declaredModelOptions.filter((model) => model.available !== false)
+  const unavailableModelOptions = declaredModelOptions.filter((model) => model.available === false)
   return {
     rootDir,
     port: Number(process.env.PORT ?? 8787),
@@ -107,11 +111,17 @@ export function runtimeConfig(rootDir = process.cwd()) {
         production,
       }),
     },
+    resend: {
+      apiKey: process.env.RESEND_API_KEY,
+      from: process.env.RESEND_FROM_EMAIL,
+      replyTo: process.env.RESEND_REPLY_TO,
+    },
     apiBaseUrl: (process.env.IMAGE_API_BASE_URL ?? 'https://api.openai.com').replace(/\/$/, ''),
     apiKey: process.env.OPENAI_API_KEY,
     miniMaxApiBaseUrl: (process.env.MINIMAX_API_BASE_URL ?? 'https://api.minimax.io').replace(/\/$/, ''),
     miniMaxApiKey: process.env.MINIMAX_API_KEY,
     modelOptions,
+    unavailableModelOptions,
     models: modelOptions.length ? modelOptions.map((model) => model.id) : openAIModels,
     flockApiBaseUrl: (process.env.FLOCK_API_BASE_URL ?? 'https://api.flock.io/v1').replace(/\/$/, ''),
     flockApiKey: process.env.FLOCK_API_KEY,
@@ -206,6 +216,7 @@ export async function createProductRuntime(config = runtimeConfig()) {
   const useSupabaseAuth = config.authProvider === 'supabase' || useHybridAuth
   const useS3Storage = config.storageProvider === 's3'
   const usePostgres = Boolean(config.databaseUrl)
+  const emailService = createResendEmailService(config.resend)
   if (config.production && !usePostgres) throw new Error('生产环境必须配置 DATABASE_URL。')
   if (config.production && useSupabaseAuth && !useSupabase) throw new Error('Supabase 登录模式必须配置 SUPABASE_URL 与 SUPABASE_SECRET_KEY。')
   const selectedProductStore = usePostgres
@@ -220,6 +231,7 @@ export async function createProductRuntime(config = runtimeConfig()) {
         secretKey: config.supabase.secretKey,
         bootstrapEmail: config.bootstrapEmail,
         inviteRedirectTo: config.supabase.inviteRedirectTo,
+        emailService,
       })
       : createProductStore({ dataPath: config.localDataPath, bootstrapAccessToken: config.bootstrapAccessToken, bootstrapEmail: config.bootstrapEmail })
   const productStore = assertProductStoreContract(selectedProductStore, {
@@ -234,6 +246,7 @@ export async function createProductRuntime(config = runtimeConfig()) {
         bootstrapEmail: config.bootstrapEmail,
         inviteRedirectTo: config.supabase.inviteRedirectTo,
         allowLegacyTokens: useHybridAuth,
+        emailService,
       })
     : productStore
   assertProductStoreContract(authenticatedStore, { adapter: 'AuthenticatedProductStore' })

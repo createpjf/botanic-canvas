@@ -39,12 +39,12 @@ test('4K 请求以模型能力为准，不形成 GPT Image 2 + 4K 的无效组�
       aspectRatios: ['1:1', '3:4'], resolutions: ['1K', '2K'], supportsCustomSize: true,
     },
     {
-      id: 'gemini-3.1-pro-preview', label: 'Nano Banana', provider: 'flock', mediaKind: 'image',
+      id: 'gemini-3.1-flash-image-preview', label: 'Nano Banana', provider: 'flock', mediaKind: 'image',
       aspectRatios: ['1:1', '3:4'], resolutions: ['1K', '2K', '4K'],
     },
   ]
   assert.deepEqual(inferBotanicAgentGenerationSettings('用 GPT Image 2 生成 4K，3:4', models), {
-    model: 'gemini-3.1-pro-preview',
+    model: 'gemini-3.1-flash-image-preview',
     aspectRatio: '3:4',
     resolution: '4K',
   })
@@ -334,20 +334,20 @@ test('用户说提高清晰度或 4K 时推断 Nano Banana + 4K，普通补齐�
   const models: GenerationModelOption[] = [
     { id: 'gpt-image-2', label: 'GPT Image 2', provider: 'openai', mediaKind: 'image', aspectRatios: ['1:1', '16:9'], resolutions: ['1K', '2K'] },
     {
-      id: 'gemini-3.1-pro-preview', label: 'Nano Banana', provider: 'flock', mediaKind: 'image',
+      id: 'gemini-3.1-flash-image-preview', label: 'Nano Banana', provider: 'flock', mediaKind: 'image',
       aspectRatios: ['1:1', '16:9', '3:4', '21:9'], resolutions: ['1K', '2K', '4K'],
     },
   ]
   assert.deepEqual(inferBotanicAgentGenerationSettings('提高清晰度', models), {
-    model: 'gemini-3.1-pro-preview', resolution: '4K',
+    model: 'gemini-3.1-flash-image-preview', resolution: '4K',
   })
   assert.deepEqual(inferBotanicAgentGenerationSettings('make it sharper', models), {
-    model: 'gemini-3.1-pro-preview', resolution: '4K',
+    model: 'gemini-3.1-flash-image-preview', resolution: '4K',
   })
   assert.deepEqual(inferBotanicAgentGenerationSettings('生成 21:9、4K 图片', models), {
-    model: 'gemini-3.1-pro-preview', aspectRatio: '21:9', resolution: '4K',
+    model: 'gemini-3.1-flash-image-preview', aspectRatio: '21:9', resolution: '4K',
   })
   assert.deepEqual(completeBotanicAgentGenerationSettings({}, models), {
-    model: 'gemini-3.1-pro-preview', aspectRatio: '3:4', resolution: '2K',
+    model: 'gemini-3.1-flash-image-preview', aspectRatio: '3:4', resolution: '2K',
   })
 })

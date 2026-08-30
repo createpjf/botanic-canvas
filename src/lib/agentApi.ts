@@ -279,7 +279,7 @@ export async function readPersistentBotanicAgentTurnEvents(
   turnId: string,
   projectId: string,
   options: { signal?: AbortSignal } = {},
-): Promise<BotanicAgentStreamEvent[]> {
+) {
   return readAgentTurnTimelineEvents({
     turnId,
     projectId,
@@ -790,14 +790,13 @@ async function* readAgentChatStream(
  */
 export async function submitPersistentBotanicAgentMessage(input: {
   projectId: string
-  session: BotanicAgentSession
+  sessionId: string
   message: BotanicAgentMessage
   idempotencyKey: string
 }) {
   const projectId = encodeURIComponent(input.projectId)
-  const sessionId = encodeURIComponent(input.session.id)
+  const sessionId = encodeURIComponent(input.sessionId)
   const messageId = encodeURIComponent(input.message.id)
-  await submitPersistentBotanicAgentSession(input.projectId, input.session, `${input.idempotencyKey}-session`)
   const response = await productRequest<{ message: BotanicAgentMessage }>(
     `/api/projects/${projectId}/agent-sessions/${sessionId}/messages/${messageId}`,
     {
@@ -818,20 +817,19 @@ export async function submitPersistentBotanicAgentSession(
   const projectId = encodeURIComponent(projectIdValue)
   const sessionId = encodeURIComponent(session.id)
   const response = await productRequest<{ session: BotanicAgentSession }>(`/api/projects/${projectId}/agent-sessions/${sessionId}`, {
-    method: 'PUT',
+    method: 'PATCH',
     headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
     body: JSON.stringify({
-      id: session.id,
-      title: session.title,
-      executionMode: session.executionMode,
-      // 服务端按 { ...previous, ...body } 合并，字段缺席等于保留旧值；
-      // 空数组必须显式发出去，否则撤销豁免永远不生效。
-      confirmationWaivers: session.confirmationWaivers ?? [],
-      ...(session.plannerModel ? { plannerModel: session.plannerModel } : {}),
-      ...(session.mountedSkillIds?.length ? { mountedSkillIds: session.mountedSkillIds } : {}),
-      contextNodeIds: session.contextNodeIds,
+      expectedRevision: session.revision ?? 0,
       createdAt: session.createdAt,
-      updatedAt: session.updatedAt,
+      changes: {
+        title: session.title,
+        executionMode: session.executionMode,
+        confirmationWaivers: session.confirmationWaivers ?? [],
+        plannerModel: session.plannerModel ?? null,
+        mountedSkillIds: session.mountedSkillIds ?? [],
+        contextNodeIds: session.contextNodeIds,
+      },
     }),
   })
   return response.session

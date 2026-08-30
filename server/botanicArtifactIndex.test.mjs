@@ -6,6 +6,8 @@ import {
   artifactsFromActionReceipt,
   artifactsFromDocument,
   artifactsFromGenerationJob,
+  generationArtifactsFromJobReport,
+  generationArtifactRefreshReport,
   decodeArtifactCursor,
   encodeArtifactCursor,
   mergeArtifactRecords,
@@ -115,6 +117,33 @@ test('回填跳过单条损坏历史产物，并按项目内 Artifact ID 幂等�
   const artifacts = artifactsFromDocument(document)
   assert.deepEqual(artifacts.map((item) => item.id), ['same'])
   assert.equal(mergeArtifactRecords([{ ...artifacts[0], updatedAt: 200 }, artifacts[0]])[0].updatedAt, 300)
+})
+
+test('当前 Generation Job 对每个输出返回 Artifact 或明确 rejected，对账缺一项即失败', () => {
+  const conversion = generationArtifactsFromJobReport({
+    id: 'job-current', status: 'succeeded', updatedAt: 300,
+    outputs: [
+      { id: 'valid', image: '/api/media/valid' },
+      { id: 'invalid', image: 'data:image/png;base64,AAAA' },
+    ],
+  }, { document: { nodes: [], assets: [] }, now: 300 })
+
+  assert.equal(conversion.expectedOutputCount, 2)
+  assert.deepEqual(conversion.artifacts.map((item) => item.id), ['generation:job-current:valid'])
+  assert.deepEqual(conversion.rejected.map((item) => item.outputId), ['invalid'])
+  assert.equal(generationArtifactRefreshReport(conversion, conversion.artifacts).status, 'failed')
+
+  const repaired = generationArtifactsFromJobReport({
+    id: 'job-current', status: 'succeeded', updatedAt: 400,
+    outputs: [
+      { id: 'valid', image: '/api/media/valid' },
+      { id: 'invalid', image: '/api/media/repaired' },
+    ],
+  }, { document: { nodes: [], assets: [] }, now: 400 })
+  const report = generationArtifactRefreshReport(repaired, repaired.artifacts)
+  assert.equal(report.status, 'passed')
+  assert.equal(report.expectedOutputCount, 2)
+  assert.equal(report.indexedCount, 2)
 })
 
 test('Artifact 校验拒绝图片字节地址和超大元数据', () => {

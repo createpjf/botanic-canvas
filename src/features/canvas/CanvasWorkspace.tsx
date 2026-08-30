@@ -207,6 +207,7 @@ function fallbackGenerationSettings(models: GenerationModelOption[] = defaultGen
 }
 
 const canvasMinZoom = 0.1
+const canvasReadableMinZoom = 0.72
 const canvasMaxZoom = 1.6
 const workspaceLocationStorageKey = 'botanic:workspace-location:v1'
 const workspaceTabsStorageKey = 'botanic:workspace-tabs:v1'
@@ -278,7 +279,7 @@ function focusTaskFlow(setCenter: SetCenter, nodes: CanvasNode[]) {
   const right = Math.max(...nodes.map((node) => node.position.x + canvasNodeBounds(node).width))
   const bottom = Math.max(...nodes.map((node) => node.position.y + canvasNodeBounds(node).height))
   const composerSafeOffset = Math.max(72, Math.min(148, (bottom - top) * 0.2))
-  return setCenter((left + right) / 2, (top + bottom) / 2 + composerSafeOffset, { zoom: canvasMinZoom, duration: viewportMotionDuration(220) })
+  return setCenter((left + right) / 2, (top + bottom) / 2 + composerSafeOffset, { zoom: canvasReadableMinZoom, duration: viewportMotionDuration(220) })
 }
 
 function miniMapNodeColor(node: CanvasNode) {
@@ -343,14 +344,14 @@ function CanvasNavigation({
       : t.fitAll
   const focusCanvas = () => {
     if (selectedNodes.length) {
-      commitViewport(fitView({ nodes: selectedNodes, duration: viewportMotionDuration(180), padding: 0.32, minZoom: canvasMinZoom, maxZoom: 1.2 }))
+      commitViewport(fitView({ nodes: selectedNodes, duration: viewportMotionDuration(180), padding: 0.32, minZoom: canvasReadableMinZoom, maxZoom: 1.2 }))
       return
     }
     if (taskNodes.length) {
       commitViewport(focusTaskFlow(setCenter, taskNodes))
       return
     }
-    commitViewport(fitView({ duration: viewportMotionDuration(180), padding: 0.16, minZoom: canvasMinZoom, maxZoom: 1 }))
+    commitViewport(fitView({ duration: viewportMotionDuration(180), padding: 0.16, minZoom: canvasReadableMinZoom, maxZoom: 1 }))
   }
   const closeMoreMenu = (event: ReactMouseEvent<HTMLButtonElement>) => {
     event.currentTarget.closest('details')?.removeAttribute('open')
@@ -394,11 +395,11 @@ function CanvasNavigation({
             >{marqueeMode ? t.exitMarquee : t.marquee}<span>{touchInput ? t.drag : 'Shift'}</span></button>
             <button type="button" role="menuitem" onClick={(event) => {
               onAutoLayout()
-              window.requestAnimationFrame(() => commitViewport(fitView({ duration: viewportMotionDuration(220), padding: 0.16, minZoom: canvasMinZoom, maxZoom: 1 })))
+              window.requestAnimationFrame(() => commitViewport(fitView({ duration: viewportMotionDuration(220), padding: 0.16, minZoom: canvasReadableMinZoom, maxZoom: 1 })))
               closeMoreMenu(event)
             }}>{t.autoLayout}</button>
             <button type="button" role="menuitem" onClick={(event) => {
-              commitViewport(fitView({ duration: viewportMotionDuration(180), padding: 0.16, minZoom: canvasMinZoom, maxZoom: 1 }))
+              commitViewport(fitView({ duration: viewportMotionDuration(180), padding: 0.16, minZoom: canvasReadableMinZoom, maxZoom: 1 }))
               closeMoreMenu(event)
             }}>{t.showAll}</button>
           </div>
@@ -477,13 +478,13 @@ function RestoreCanvasViewport({
       const hasDefaultViewport = viewport.x === 0 && viewport.y === 0 && viewport.zoom === 1
       if (hasDefaultViewport) {
         // 旧快照被默认视角覆盖时，仅此一次按真实节点边界恢复，避免图片在 100% 下堆叠。
-        void fitView({ duration: 0, padding: 0.16, minZoom: canvasMinZoom, maxZoom: 1, includeHiddenNodes: true })
+        void fitView({ duration: 0, padding: 0.16, minZoom: canvasReadableMinZoom, maxZoom: 1, includeHiddenNodes: true })
           .then((fitted) => {
             if (cancelled) return
             // 节点刚挂载时偶尔尚未完成尺寸计算；下一帧重试一次再开放保存。
             if (!fitted) {
               retryFrame = window.requestAnimationFrame(() => {
-                void fitView({ duration: 0, padding: 0.16, minZoom: canvasMinZoom, maxZoom: 1, includeHiddenNodes: true })
+                void fitView({ duration: 0, padding: 0.16, minZoom: canvasReadableMinZoom, maxZoom: 1, includeHiddenNodes: true })
                   .then(() => {
                     finishRestore()
                   })
@@ -601,7 +602,7 @@ function FocusCanvasNode({ node, requestId }: { node?: CanvasNode; requestId: nu
   const { fitView } = useReactFlow()
   useFocusOnRequest(requestId, () => {
     if (!node) return
-    void fitView({ nodes: [node], duration: viewportMotionDuration(220), padding: 0.48, minZoom: canvasMinZoom, maxZoom: 1.05 })
+    void fitView({ nodes: [node], duration: viewportMotionDuration(220), padding: 0.48, minZoom: canvasReadableMinZoom, maxZoom: 1.05 })
   })
   return null
 }
@@ -610,7 +611,7 @@ function FocusCanvasNodes({ nodes, requestId }: { nodes: CanvasNode[]; requestId
   const { fitView } = useReactFlow()
   useFocusOnRequest(requestId, () => {
     if (!nodes.length) return
-    void fitView({ nodes, duration: viewportMotionDuration(220), padding: 0.34, minZoom: canvasMinZoom, maxZoom: 1.05 })
+    void fitView({ nodes, duration: viewportMotionDuration(220), padding: 0.34, minZoom: canvasReadableMinZoom, maxZoom: 1.05 })
   })
   return null
 }
@@ -1818,13 +1819,13 @@ export default function CanvasWorkspace({
         setMaximumBatchCount(maximum)
         setStoreMaximumBatchCount(maximum)
       }
-      const models = Array.isArray(health.modelOptions) && health.modelOptions.length
+      const models = Array.isArray(health.modelOptions)
         ? health.modelOptions
         : Array.isArray(health.models)
           ? health.models
             .filter((model): model is string => typeof model === 'string' && Boolean(model.trim()))
             .map((model) => ({ id: model, label: model === 'gpt-image-2' ? 'GPT Image 2' : model }))
-        : defaultGenerationModels
+        : []
       setAvailableModels(models)
       setAgentPlannerModels(Array.isArray(health.agentPlanner?.models) && health.agentPlanner.models.length
         ? health.agentPlanner.models
@@ -2748,6 +2749,7 @@ export default function CanvasWorkspace({
             key={document.id}
             projectId={document.id}
             canvasDocument={document}
+            generationModels={availableModels}
             templates={document.templates}
             sharedTemplates={sharedTemplates}
             currentName={document.name}

@@ -904,7 +904,7 @@ test('generate_images 的 4K 设置绑定支持模型并优先 Nano Banana', asy
         aspectRatios: ['1:1'], resolutions: ['2K', '4K'],
       },
       {
-        id: 'gemini-3.1-pro-preview', label: 'Nano Banana', mediaKind: 'image',
+        id: 'gemini-3.1-flash-image-preview', label: 'Nano Banana', mediaKind: 'image',
         aspectRatios: ['1:1', '3:4'], resolutions: ['1K', '2K', '4K'],
       },
     ],
@@ -927,7 +927,7 @@ test('generate_images 的 4K 设置绑定支持模型并优先 Nano Banana', asy
   })
 
   assert.deepEqual(result.settingsHint, {
-    model: 'gemini-3.1-pro-preview',
+    model: 'gemini-3.1-flash-image-preview',
     aspectRatio: '3:4',
     resolution: '4K',
   })

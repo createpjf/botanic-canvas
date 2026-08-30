@@ -2,9 +2,9 @@ import { createHash, randomUUID } from 'node:crypto'
 import { agentActionManualRetryConsumptionDecision, agentActionReceiptClaimDecision, agentActionReceiptResolutionDecision, agentSkillPersistenceDecision, agentThreadSummaryCompareAndSetDecision, agentTurnExecutionClaimDecision, authoritativeAgentActionManualRetryAuthorization, committedAgentTurnExecution, finalizedAgentTurnCancellation, normalizeAgentEntityIdPage, normalizePendingAgentReviewRecoveryPage, normalizeStaleTurnQuery, normalizeTurnEventPage, normalizeUpdatedAtIdRecoveryPage, persistedAgentSkillVersion, reclaimableAgentTurnStatuses, requestedAgentTurnCancellation, settledAgentActionReceipt } from './productStoreContract.mjs'
 import postgres from 'postgres'
 import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from './authorization.mjs'
-import { artifactIndexLimits, artifactsFromActionReceipt, artifactsFromAgentMessage, artifactsFromDocument, artifactsFromGenerationJob } from './botanicArtifactIndex.mjs'
+import { artifactIndexLimits, artifactsFromActionReceipt, artifactsFromAgentMessage, artifactsFromDocument, artifactsFromGenerationJob, generationArtifactRefreshReport, generationArtifactsFromJobReport } from './botanicArtifactIndex.mjs'
 import { applyGenerationJobToAgentRun, mergeAgentRunForWrite } from './botanicAgentRun.mjs'
-import { agentEntityLimits, agentStateFromDocument, applyAgentSessionReadReceipts, mergeAgentStateIntoDocument, shouldApplyAgentEntityWrite, shouldApplyAgentRunWrite, stripAgentMessagesFromDocument, validateAgentEntityWriteTimestamp, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity, validateAgentSessionReadReceipt } from './botanicAgentPersistence.mjs'
+import { agentEntityLimits, agentStateFromDocument, applyAgentSessionReadReceipts, compareAndSetAgentSessionSettings, mergeAgentStateIntoDocument, shouldApplyAgentEntityWrite, shouldApplyAgentRunWrite, stripAgentMessagesFromDocument, validateAgentEntityWriteTimestamp, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity, validateAgentSessionReadReceipt } from './botanicAgentPersistence.mjs'
 import { agentMessageListOptions, encodeAgentMessageCursor, normalizeAgentSessionListLimit } from './agentMessagePersistence.mjs'
 import { collaborationActivitiesForMember, collaborationActivityListOptions, nextCollaborationReceipt, validateCollaborationActivity } from './collaborationActivityPersistence.mjs'
 import { mergeAgentMessageForWrite } from './agentMessageMerge.mjs'
@@ -1063,19 +1063,13 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     const changedRuns = changed(extracted.runs, previous?.runs ?? [])
 
     for (const session of changedSessions) {
-      const [conflict] = await tx`select project_id as "projectId" from agent_sessions where id = ${session.id}`
+      await tx`select pg_advisory_xact_lock(hashtextextended(${'agent-session:' + session.id}, 0))`
+      const [conflict] = await tx`select project_id as "projectId" from agent_sessions where id = ${session.id} for update`
       if (conflict && conflict.projectId !== document.id) throw productError('Agent 会话标识已被其他项目使用。', 'AGENT_SESSION_ID_CONFLICT')
       await tx`
         insert into agent_sessions (id, owner_id, project_id, updated_at, payload)
         values (${session.id}, ${userId}, ${document.id}, ${session.updatedAt}, ${tx.json(session)}::jsonb)
-        on conflict (id) do update set
-          updated_at = excluded.updated_at,
-          payload = case
-            when agent_sessions.payload ? 'threadSummary'
-              then jsonb_set(excluded.payload, '{threadSummary}', agent_sessions.payload->'threadSummary', true)
-            else excluded.payload
-          end
-        where agent_sessions.project_id = excluded.project_id and agent_sessions.updated_at <= excluded.updated_at
+        on conflict (id) do nothing
       `
     }
     for (const entry of changedMessages) {
@@ -1380,10 +1374,15 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       `
       if (!row) return false
       const job = asPayload(row)
-      await upsertArtifactRecords(tx, userId, job.projectId, artifactsFromGenerationJob(job, {
+      const conversion = generationArtifactsFromJobReport(job, {
         document: { ...asJson(row.document), ...asJson(row.graph ?? {}) },
-      }))
-      return true
+      })
+      await upsertArtifactRecords(tx, userId, job.projectId, conversion.artifacts)
+      const indexed = await tx`
+        select id from agent_artifacts
+        where project_id = ${job.projectId} and job_id = ${job.id}
+      `
+      return generationArtifactRefreshReport(conversion, indexed)
     })
   }
 
@@ -1392,7 +1391,8 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     let artifactReady = true
     if (syncArtifacts) {
       try {
-        artifactReady = await refreshGenerationArtifactRecords(job.ownerId, job.id)
+        const report = await refreshGenerationArtifactRecords(job.ownerId, job.id)
+        artifactReady = report !== false && report.status === 'passed'
       } catch (caught) {
         artifactReady = false
         console.warn(`[artifact-index] generation sync deferred for ${job.id}: ${caught instanceof Error ? caught.message : String(caught)}`)
@@ -1934,6 +1934,39 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
           where agent_session_read_receipts.updated_at < excluded.updated_at
         `
         return clone(receipt)
+      })
+    },
+
+    async compareAndSetAgentSessionSettings(userId, projectId, command) {
+      return sql.begin(async (tx) => {
+        await tx`select pg_advisory_xact_lock(hashtextextended(${'agent-session:' + String(command?.sessionId ?? '')}, 0))`
+        const [existing] = await tx`
+          select project_id as "projectId", owner_id as "ownerId", payload
+          from agent_sessions where id = ${command?.sessionId ?? ''} for update
+        `
+        if (existing && existing.projectId !== projectId) {
+          throw productError('Agent 会话标识已被其他项目使用。', 'AGENT_SESSION_ID_CONFLICT')
+        }
+        const [member] = await tx`
+          select role from project_members
+          where project_id = ${projectId} and user_id = ${userId} for share
+        `
+        assertProjectPermission(member?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+        const decision = compareAndSetAgentSessionSettings(asPayload(existing), command, { now: now() })
+        if (!decision.changed) return clone(decision)
+        const session = decision.session
+        await tx`
+          insert into agent_sessions (id, owner_id, project_id, updated_at, payload)
+          values (${session.id}, ${existing?.ownerId ?? userId}, ${projectId}, ${session.updatedAt}, ${tx.json(session)}::jsonb)
+          on conflict (id) do update set updated_at = excluded.updated_at, payload = excluded.payload
+        `
+        await insertAudit(tx, {
+          actorId: userId,
+          action: decision.kind === 'created' ? 'agent-session.created' : 'agent-session.updated',
+          projectId,
+          targetId: session.id,
+        })
+        return clone(decision)
       })
     },
 

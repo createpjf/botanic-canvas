@@ -46,7 +46,7 @@ function instantiateWorkflowTemplateDocument(
   timestamp: number,
 ) {
   const cloned = cloneTemplateSnapshot(template.snapshot, shared ? 'shared-template' : 'template', timestamp)
-  const name = `${template.name} · 项目`
+  const name = template.name.trim() || '新项目'
   const project = createEmptyCanvasDocument(`project-${timestamp}`, name)
   const historyEntry: CanvasHistoryEntry = {
     id: `history-template-${timestamp}`,

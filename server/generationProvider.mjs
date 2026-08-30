@@ -29,6 +29,8 @@ export class GenerationError extends Error {
     super(message)
     this.statusCode = statusCode
     this.code = code
+    this.upstreamMessage = undefined
+    this.providerResponseSummary = undefined
   }
 }
 
@@ -146,7 +148,7 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
   const settings = body.settings
   if (!settings || typeof settings !== 'object') throw new GenerationError(400, 'INVALID_REQUEST', '生成参数无效。')
   const modelOptions = models.map((model) => typeof model === 'string' ? { id: model } : model)
-  const model = modelOptions.find((option) => option?.id === settings.model)
+  const model = modelOptions.find((option) => option?.id === settings.model && option.available !== false)
   if (!model) throw new GenerationError(400, 'INVALID_REQUEST', '生成模型不支持。')
   if (model.maximumPromptLength && prompt.length > model.maximumPromptLength) {
     throw new GenerationError(400, 'INVALID_REQUEST', `该模型的创意描述不能超过 ${model.maximumPromptLength} 字符。`)
@@ -209,6 +211,7 @@ export function validateGenerationInput(body, { models, maximumBatchCount, maxim
     return {
       ...(reference.nodeId ? { nodeId: assertText(reference.nodeId, `第 ${index + 1} 张参考素材节点`, 160) } : {}),
       ...(reference.assetId ? { assetId: assertText(reference.assetId, `第 ${index + 1} 张参考素材标识`, 160) } : {}),
+      ...(reference.artifactVersionId ? { artifactVersionId: assertText(reference.artifactVersionId, `第 ${index + 1} 张参考素材版本`, 200) } : {}),
       name: assertText(reference.name ?? `参考素材 ${index + 1}`, '参考素材名称', 160),
       role: typeof reference.role === 'string' ? reference.role : '参考',
       primary: Boolean(reference.primary),
@@ -462,6 +465,8 @@ export function persistedGenerationJob(job) {
     error: job.error,
     // 失败的错误码：服务端重试策略按码分类，只存消息就永远判不出可否重试。
     errorCode: job.errorCode,
+    // 只保存经过 Provider Adapter 脱敏、限长后的结构摘要，不下发原始回包。
+    providerResponseSummary: job.providerResponseSummary,
     // 取消回执是计费归因唯一的持久记录，必须随任务落库。
     cancel: job.cancel,
     missingOutputCount: job.missingOutputCount ?? 0,
@@ -478,6 +483,7 @@ export function persistedGenerationJob(job) {
     projectWritebackUpdatedAt: job.projectWritebackUpdatedAt,
     agentRun: job.agentRun,
     targetBinding: job.targetBinding,
+    referenceBindings: job.referenceBindings,
     inputProvenance: job.inputProvenance,
     planFingerprint: job.planFingerprint,
     branchFingerprint: job.branchFingerprint,
