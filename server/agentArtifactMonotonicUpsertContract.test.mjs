@@ -5,7 +5,7 @@ import test from 'node:test'
 const supabase = readFileSync(new URL('./supabaseProductStore.mjs', import.meta.url), 'utf8')
 const postgres = readFileSync(new URL('./postgresProductStore.mjs', import.meta.url), 'utf8')
 const local = readFileSync(new URL('./productStore.mjs', import.meta.url), 'utf8')
-const migration = readFileSync(new URL('../supabase/migrations/20260830100000_agent_artifact_monotonic_upsert.sql', import.meta.url), 'utf8')
+const migration = readFileSync(new URL('../supabase/migrations/20260830052440_agent_artifact_monotonic_upsert.sql', import.meta.url), 'utf8')
 
 test('三套 Artifact Adapter 都以 updatedAt 单调写，并保留最早 createdAt', () => {
   assert.match(local, /existing && Number\(existing\.updatedAt \?\? 0\) > Number\(artifact\.updatedAt \?\? 0\)[\s\S]*Math\.min\(existing\.createdAt, artifact\.createdAt\)/u)

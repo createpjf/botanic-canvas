@@ -10,7 +10,7 @@ const local = readFileSync(new URL('./productStore.mjs', import.meta.url), 'utf8
 const persistence = readFileSync(new URL('./botanicAgentPersistence.mjs', import.meta.url), 'utf8')
 const productStoreContract = readFileSync(new URL('./productStoreContract.mjs', import.meta.url), 'utf8')
 const migration = readFileSync(new URL('../supabase/migrations/20260827180000_agent_thread_summary_cas.sql', import.meta.url), 'utf8')
-const sessionSettingsMigration = readFileSync(new URL('../supabase/migrations/20260830090000_agent_session_settings_cas.sql', import.meta.url), 'utf8')
+const sessionSettingsMigration = readFileSync(new URL('../supabase/migrations/20260830052434_agent_session_settings_cas.sql', import.meta.url), 'utf8')
 
 function slice(source, startText, endText) {
   const start = source.indexOf(startText)
