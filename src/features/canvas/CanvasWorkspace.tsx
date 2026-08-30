@@ -28,7 +28,7 @@ import {
   settingsForGenerationModel,
 } from '../../domain/generationRecipe'
 import { generationTaskErrorMessage, generationTaskFeedback, planResultGroupPresentation, traceCanvasLineage, type ResultGroupPresentation } from '../../domain/canvasPresentation'
-import { hiddenGenerateIds, pickWorkingGenerateId } from '../../domain/canvasWorkingGenerate'
+import { hiddenAgentExecutionNodeIds, hiddenGenerateIds, pickWorkingGenerateId } from '../../domain/canvasWorkingGenerate'
 import { buildDeliveryPreviewArtifacts, canUseForImageDelivery, resolveDeliveryDraft, type DeliveryPanelTarget } from '../../domain/deliveryPresentation'
 import { imageUploadAccept, uploadLimitsLabel } from '../../domain/mediaFormats'
 import { reducedAspectRatio } from '../../domain/mediaPresentation'
@@ -123,7 +123,7 @@ const workspaceMessages = {
     edgeActions: '已选连线操作', systemEdge: '系统输出连线', selectedEdge: '连线已选中', systemEdgeHint: '生成关系，不能删', reconnectHint: '拖动端点可重连', delete: '删除', closeEdgeActions: '关闭连线操作', emptyGuide: '空画布引导', emptyTitle: '从目标开始', agentPromptHint: '描述商品、场景和要出的画面', addAssets: '添加素材', imageGeneration: '图片生成', videoGeneration: '视频生成', agentStart: '描述目标', emptyDropHint: '也可以把图片拖进画布', dismissNotice: '关闭操作提示',
     initFailed: '画布初始化失败', initFailedDetail: '请重试；若仍失败，请退出后重新登录。', retry: '重试', loadingCanvas: '正在加载画布', canvasLabel: (name: string) => name.endsWith('画布') ? name : `${name}画布`, backProjects: '返回项目', projects: '项目', productNav: '产品页面', statusNav: '状态', openProjects: '已打开项目', projectName: '项目名称', openProject: (name: string) => `打开${name}`, renameProject: '双击重命名', closeProject: (name: string) => `关闭${name}`, closeTab: '关闭标签', newProject: '新建创意项目',
     minimapLabel: '画布导航地图', videoModelMissing: '视频模型尚未配置，请先检查 MiniMax H3。', canvasTools: '画布工具', addNode: '新增节点', openAssets: '打开素材库', templates: '模板', history: '画布历史', delivery: '投放交付', account: '打开账户设置', openAgent: '打开 Bob', loadingAgent: '正在载入 Agent…',
-    imageAsset: '图片素材', selectedResult: '已选结果', candidate: (index: number) => `图 ${index}`, builtNodes: (count: number) => `已搭建 ${count} 个节点`, blankCanvasSummary: '空白画布 · 等待开始', refinedVersion: '精修版本', generatedImage: '生成图片', keyVisualVersion: '首图版本', dropToAdd: '松开即可加入画布', uploadLimits: uploadLimitsLabel('zh-CN'), addCanvasNode: '添加画布节点', addFromImage: '引用该节点生成', connectSelected: '连接所选并生成', addNodeTitle: '添加节点', closeAddNode: '关闭添加节点', continueImage: '基于当前图片继续创作', connectToGenerate: '新建图像生成节点', connectSelectedDetail: '用当前选中的素材或描述创建生成', clarityBoost: '4K', clarityBoostDetail: '用 Nano Banana 出 4K，保持构图与主体', clarityBoostPrompt: '提高清晰度，保持构图、主体与识别特征不变。', batchVariations: '批量变体', batchDetail: '用一个素材组逐项生成', continueVideo: '以当前画面或视频继续生成', videoReferenceDetail: '连接首帧、首尾帧或参考素材', assets: '素材', assetsDetail: '添加商品、场景或调性图', localImages: '本地图片', uploadImages: '上传图片', uploadToCanvas: '上传图片并加入画布', preview: (name: string) => `${name}预览`, downloadMedia: '下载原媒体', closePreview: '关闭媒体预览',
+    imageAsset: '图片素材', selectedResult: '已选结果', candidate: (index: number) => `图 ${index}`, builtNodes: (count: number) => `已搭建 ${count} 个节点`, blankCanvasSummary: '空白画布 · 等待开始', refinedVersion: '精修版本', generatedImage: '生成图片', keyVisualVersion: '首图版本', dropToAdd: '松开即可加入画布', uploadLimits: uploadLimitsLabel('zh-CN'), addCanvasNode: '添加画布节点', addFromImage: '引用该节点生成', connectSelected: '连接所选并生成', addNodeTitle: '添加节点', closeAddNode: '关闭添加节点', continueImage: '基于当前图片继续创作', connectToGenerate: '新建图像生成节点', connectSelectedDetail: '用当前选中的素材或描述创建生成', clarityBoost: '4K', clarityBoostDetail: '用 Nano Banana 出 4K，保持构图与主体', clarityBoostPrompt: '提高清晰度，保持构图、主体与识别特征不变。', batchVariations: '批量变体', batchDetail: '用一个素材组逐项生成', continueVideo: '以当前画面或视频继续生成', videoReferenceDetail: '连接首帧、首尾帧或参考素材', assets: '素材', assetsDetail: '添加商品、场景或调性图', localImages: '本地图片', uploadImages: '上传图片', uploadToCanvas: '上传图片并加入画布', preview: (name: string) => `${name}预览`, downloadMedia: '下载原媒体', closePreview: '关闭媒体预览', realtimeReconnecting: '正在重新连接…', realtimeReconnectDetail: '画布编辑暂时暂停，连接恢复后继续。',
   },
   en: {
     loadingProject: 'Loading project', loadingProjectShort: 'Loading project', focusSelected: 'Focus selected nodes', focusTask: 'Focus current task', fitAll: 'Fit all nodes', canvasNavigation: 'Canvas navigation', closeMinimap: 'Close minimap', openMinimap: 'Open minimap', minimapNotNeeded: 'Not needed on a small canvas', zoomLevel: 'Canvas zoom level', moreTools: 'More canvas tools', exitMarquee: 'Exit marquee select', marquee: 'Select nodes', drag: 'Drag', autoLayout: 'Auto arrange', showAll: 'Show all',
@@ -131,7 +131,7 @@ const workspaceMessages = {
     edgeActions: 'Selected connection actions', systemEdge: 'System output connection', selectedEdge: 'Connection selected', systemEdgeHint: 'Keeps the generation relationship. Cannot be deleted.', reconnectHint: 'Drag an endpoint to reconnect', delete: 'Delete', closeEdgeActions: 'Close connection actions', emptyGuide: 'Empty canvas guide', emptyTitle: 'Start from a goal', agentPromptHint: 'Describe the product, scene, and shot', addAssets: 'Add assets', imageGeneration: 'Image generation', videoGeneration: 'Video generation', agentStart: 'Describe the goal', emptyDropHint: 'Or drop images onto the canvas', dismissNotice: 'Dismiss notice',
     initFailed: 'Canvas could not start', initFailedDetail: 'Try again. If it still fails, sign out and sign in again.', retry: 'Retry', loadingCanvas: 'Loading canvas', canvasLabel: (name: string) => `${name} canvas`, backProjects: 'Back to projects', projects: 'Projects', productNav: 'Product pages', statusNav: 'Status', openProjects: 'Open projects', projectName: 'Project name', openProject: (name: string) => `Open ${name}`, renameProject: 'Double-click to rename', closeProject: (name: string) => `Close ${name}`, closeTab: 'Close tab', newProject: 'New project',
     minimapLabel: 'Canvas navigation map', videoModelMissing: 'No video model configured. Check MiniMax H3.', canvasTools: 'Canvas tools', addNode: 'Add node', openAssets: 'Open asset library', templates: 'Templates', history: 'Canvas history', delivery: 'Delivery', account: 'Open account settings', openAgent: 'Open Bob', loadingAgent: 'Loading Agent…',
-    imageAsset: 'Image asset', selectedResult: 'Selected result', candidate: (index: number) => `Image ${index}`, builtNodes: (count: number) => `${count} ${count === 1 ? 'node' : 'nodes'} built`, blankCanvasSummary: 'Blank canvas · Ready to start', refinedVersion: 'Refined version', generatedImage: 'Generated image', keyVisualVersion: 'Key visual version', dropToAdd: 'Drop to add to canvas', uploadLimits: uploadLimitsLabel('en'), addCanvasNode: 'Add canvas node', addFromImage: 'Generate from this node', connectSelected: 'Connect selection & generate', addNodeTitle: 'Add node', closeAddNode: 'Close add-node menu', continueImage: 'Continue from this image', connectToGenerate: 'New image generation node', connectSelectedDetail: 'Create a generation node from the selection', clarityBoost: '4K', clarityBoostDetail: 'Faithful 4K refine with Nano Banana', clarityBoostPrompt: 'Increase sharpness and clarity. Keep composition, subject, and identifying details unchanged.', batchVariations: 'Batch variations', batchDetail: 'One output per asset in the group', continueVideo: 'Continue from this frame or clip', videoReferenceDetail: 'Connect first/last frames or refs', assets: 'Assets', assetsDetail: 'Add product, scene, or style refs', localImages: 'Local images', uploadImages: 'Upload', uploadToCanvas: 'Upload images to the canvas', preview: (name: string) => `${name} preview`, downloadMedia: 'Download original', closePreview: 'Close preview',
+    imageAsset: 'Image asset', selectedResult: 'Selected result', candidate: (index: number) => `Image ${index}`, builtNodes: (count: number) => `${count} ${count === 1 ? 'node' : 'nodes'} built`, blankCanvasSummary: 'Blank canvas · Ready to start', refinedVersion: 'Refined version', generatedImage: 'Generated image', keyVisualVersion: 'Key visual version', dropToAdd: 'Drop to add to canvas', uploadLimits: uploadLimitsLabel('en'), addCanvasNode: 'Add canvas node', addFromImage: 'Generate from this node', connectSelected: 'Connect selection & generate', addNodeTitle: 'Add node', closeAddNode: 'Close add-node menu', continueImage: 'Continue from this image', connectToGenerate: 'New image generation node', connectSelectedDetail: 'Create a generation node from the selection', clarityBoost: '4K', clarityBoostDetail: 'Faithful 4K refine with Nano Banana', clarityBoostPrompt: 'Increase sharpness and clarity. Keep composition, subject, and identifying details unchanged.', batchVariations: 'Batch variations', batchDetail: 'One output per asset in the group', continueVideo: 'Continue from this frame or clip', videoReferenceDetail: 'Connect first/last frames or refs', assets: 'Assets', assetsDetail: 'Add product, scene, or style refs', localImages: 'Local images', uploadImages: 'Upload', uploadToCanvas: 'Upload images to the canvas', preview: (name: string) => `${name} preview`, downloadMedia: 'Download original', closePreview: 'Close preview', realtimeReconnecting: 'Reconnecting…', realtimeReconnectDetail: 'Canvas editing is paused until the connection is restored.',
   },
 } as const
 
@@ -1095,7 +1095,6 @@ export default function CanvasWorkspace({
   const canvasPaneRef = useRef<HTMLElement | null>(null)
   const nodeFileInputRef = useRef<HTMLInputElement>(null)
   const selectedNodeIdsRef = useRef<Set<string>>(new Set())
-  const suppressEnsureForRef = useRef(new Set<string>())
   const renderedResultNodeStateRef = useRef<Map<string, { candidateId?: string; hasImage: boolean }> | null>(null)
   const resultRevealTimersRef = useRef<Map<string, number>>(new Map())
   const viewportReadyRef = useRef(false)
@@ -1515,6 +1514,18 @@ export default function CanvasWorkspace({
     if (generateId) openGenerateAssetsRef.current(generateId)
   }, [addGenerateNode])
 
+  const openContinueGenerationFromResult = useCallback((resultNodeId: string) => {
+    const current = useCanvasStore.getState().document
+    const result = current.nodes.find((node) => node.id === resultNodeId && node.type === 'result')
+    if (!result || result.type !== 'result' || !(result.data as ResultNodeData).image) return
+    const generateId = pickWorkingGenerateId(resultNodeId, current.nodes, current.edges)
+      ?? createGenerateBranchFromResult(resultNodeId)
+    if (!generateId) return
+    setNodePalette(null)
+    setBatchComposerTargetId(null)
+    selectNode(resultNodeId)
+  }, [createGenerateBranchFromResult, selectNode])
+
   const openAddMenuFromAsset = useCallback((assetNodeId: string, screen: { x: number; y: number }) => {
     const mapper = screenToFlowPositionRef.current
     const paneRect = canvasPaneRef.current?.getBoundingClientRect()
@@ -1613,6 +1624,15 @@ export default function CanvasWorkspace({
     () => hiddenGenerateIds(document.nodes, document.edges),
     [document.edges, document.nodes],
   )
+  const hiddenAgentNodes = useMemo(
+    () => hiddenAgentExecutionNodeIds(document.nodes, document.edges),
+    [document.edges, document.nodes],
+  )
+  const hiddenCanvasNodes = useMemo(
+    () => new Set([...hiddenGenerates, ...hiddenAgentNodes]),
+    [hiddenAgentNodes, hiddenGenerates],
+  )
+  const realtimeReadOnly = collaborationAwareness.realtimeStatus === 'reconnecting'
   const resetCanvasSelectionSurfaces = useCallback(() => {
     setNodeInspectorOpen(false)
     setNodePalette(null)
@@ -1622,7 +1642,7 @@ export default function CanvasWorkspace({
     hydrated,
     restoredViewportZoom: restoredViewport.zoom,
     hiddenResultNodeIds,
-    hiddenGenerateIds: hiddenGenerates,
+    hiddenNodeIds: hiddenCanvasNodes,
     focusedLineageEdgeIds: focusedLineage.edgeIds,
     hasLineageFocus,
     assetLibraryAssets,
@@ -1631,6 +1651,7 @@ export default function CanvasWorkspace({
     canvasPaneRef,
     viewportReadyRef,
     onSelectionReset: resetCanvasSelectionSurfaces,
+    editingBlocked: realtimeReadOnly,
   })
   const {
     zoomMode,
@@ -1718,14 +1739,15 @@ export default function CanvasWorkspace({
     const isResult = node.type === 'result'
     const isGenerate = node.type === 'generate'
     const isAsset = node.type === 'asset'
+    const isAgentExecution = hiddenAgentNodes.has(node.id)
     const activeResultNode = isResult && group?.representative ? resultNodesById.get(group.activeId) : undefined
     const displayedData = activeResultNode?.data ?? node.data
-    if (!focusClass && !revealClass && !isResult && !isGenerate && !isAsset) return node
+    if (!focusClass && !revealClass && !isResult && !isGenerate && !isAsset && !isAgentExecution) return node
     return {
       ...node,
       className: `${node.className ?? ''} ${focusClass} ${revealClass}`.trim(),
       selected: Boolean(node.selected || (group?.representative && group.activeId === selectedNodeId)),
-      hidden: Boolean(node.hidden || group?.hidden || (isGenerate && hiddenGenerates.has(node.id))),
+      hidden: Boolean(node.hidden || group?.hidden || hiddenCanvasNodes.has(node.id)),
       ...(isResult ? {
         data: {
           ...displayedData,
@@ -1739,15 +1761,13 @@ export default function CanvasWorkspace({
             onToggleGroup: toggleResultGroup,
             onChooseCandidate: chooseResultCandidate,
             onOpenAddMenu: openAddMenuFromResult,
+            onOpenContinueGeneration: openContinueGenerationFromResult,
             onOpenAddContext: openAddContextFromMedia,
             onOpenAgent: openAgentForResult,
             onOpenRegionEdit: setRegionEditTargetId,
             onOpenAssets: (generateNodeId: string) => openGenerateAssetsRef.current(generateNodeId),
             maximumBatchCount,
-            onRemoveGenerate: (generateNodeId: string) => {
-              suppressEnsureForRef.current.add(group?.representative ? group.activeId : node.id)
-              useCanvasStore.getState().removeNodeFromCanvas(generateNodeId)
-            },
+            onRemoveGenerate: (generateNodeId: string) => useCanvasStore.getState().removeNodeFromCanvas(generateNodeId),
           },
         } as ResultNodeUiData,
       } : isGenerate ? {
@@ -1769,10 +1789,7 @@ export default function CanvasWorkspace({
             onOpenAddContext: openAddContextFromMedia,
             onOpenAssets: (generateNodeId: string) => openGenerateAssetsRef.current(generateNodeId),
             maximumBatchCount,
-            onRemoveGenerate: (generateNodeId: string) => {
-              suppressEnsureForRef.current.add(node.id)
-              useCanvasStore.getState().removeNodeFromCanvas(generateNodeId)
-            },
+            onRemoveGenerate: (generateNodeId: string) => useCanvasStore.getState().removeNodeFromCanvas(generateNodeId),
           },
         } as AssetNodeUiData,
       } : {}),
@@ -1784,32 +1801,7 @@ export default function CanvasWorkspace({
       }),
     }
     })
-  }, [chooseResultCandidate, document.edges, document.nodes, focusedLineage.nodeIds, hasLineageFocus, hiddenGenerates, maximumBatchCount, openAddContextFromMedia, openAddMenuFromAsset, openAddMenuFromResult, openAgentForResult, resultGroupCandidates, resultGroupPresentation, resultNodesById, revealingResultNodeIds, selectedNodeId, toggleResultGroup])
-
-  useEffect(() => {
-    if (!selectedNodeId) return
-    const node = document.nodes.find((item) => item.id === selectedNodeId)
-    if (node?.type !== 'asset' && node?.type !== 'result') return
-    if (node.type === 'asset' && (node.data as AssetNodeData).deleted) return
-    if (node.type === 'result' && !(node.data as ResultNodeData).image) return
-    if (suppressEnsureForRef.current.has(selectedNodeId)) return
-    if (pickWorkingGenerateId(selectedNodeId, document.nodes, document.edges)) return
-    const mediaKind = node.type === 'result'
-      ? ((node.data as ResultNodeData).mediaKind ?? 'image')
-      : ((node.data as AssetNodeData).mediaKind ?? 'image')
-    addGenerateNode(
-      { x: node.position.x + 220, y: node.position.y + 8 },
-      mediaKind === 'video' ? 'video' : 'image',
-      [selectedNodeId],
-      { select: false, standalone: false },
-    )
-  }, [addGenerateNode, document.edges, document.nodes, selectedNodeId])
-
-  useEffect(() => {
-    for (const id of suppressEnsureForRef.current) {
-      if (id !== selectedNodeId) suppressEnsureForRef.current.delete(id)
-    }
-  }, [selectedNodeId])
+  }, [chooseResultCandidate, document.edges, document.nodes, focusedLineage.nodeIds, hasLineageFocus, hiddenAgentNodes, hiddenCanvasNodes, hiddenGenerates, maximumBatchCount, openAddContextFromMedia, openAddMenuFromAsset, openAddMenuFromResult, openAgentForResult, openContinueGenerationFromResult, resultGroupCandidates, resultGroupPresentation, resultNodesById, revealingResultNodeIds, selectedNodeId, toggleResultGroup])
 
   const refreshGenerationService = useCallback(async () => {
     try {
@@ -2272,13 +2264,13 @@ export default function CanvasWorkspace({
           defaultViewport={document.viewport}
           minZoom={canvasMinZoom}
           maxZoom={canvasMaxZoom}
-          nodesDraggable
-          nodesConnectable
+          nodesDraggable={!realtimeReadOnly}
+          nodesConnectable={!realtimeReadOnly}
           connectOnClick
           connectionLineType={ConnectionLineType.Bezier}
           connectionLineStyle={{ stroke: '#4f805b', strokeWidth: 1.7 }}
           defaultEdgeOptions={{ type: 'default', style: { stroke: '#4f805b', strokeWidth: 1.6 }, reconnectable: true }}
-          edgesReconnectable
+          edgesReconnectable={!realtimeReadOnly}
           elementsSelectable
           selectionKeyCode="Shift"
           multiSelectionKeyCode={['Meta', 'Control']}
@@ -2407,6 +2399,9 @@ export default function CanvasWorkspace({
             </Panel>
           ) : null}
           <CanvasDropBridge onReady={setScreenToFlowPosition} />
+          {realtimeReadOnly ? <Panel position="top-center" className="canvas-realtime-status">
+            <div role="status" aria-live="polite"><i aria-hidden="true" /><span>{t.realtimeReconnecting}</span><small>{t.realtimeReconnectDetail}</small></div>
+          </Panel> : null}
           <Panel position="top-left" className="task-flow-focus-panel"><TaskFlowFocus taskKey={latestTaskKey} nodes={latestTaskNodes} /></Panel>
           {historyFocusRequest ? <FocusCanvasNode
             node={renderedNodes.find((node) => node.id === historyFocusRequest.nodeId)}

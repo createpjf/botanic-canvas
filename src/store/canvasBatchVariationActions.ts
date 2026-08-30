@@ -35,6 +35,7 @@ type CanvasBatchVariationDependencies = {
 
 const activeBatchVariationRuns = new Set<string>()
 const batchVariationConcurrency = 3
+const canvasReconnectMessage = '实时连接中断，画布暂时只读；连接恢复后再继续编辑。'
 
 /**
  * 批量变体父任务、独立子任务、恢复与重试的单一协调器。
@@ -265,6 +266,10 @@ export function createCanvasBatchVariationActions({
 
   return {
     runBatchVariation: async ({ sourceResultNodeId, groupId, prompt, candidatesPerAsset, settings, agentRunId, agentBranches }) => {
+      if (get().collaborationStatus === 'reconnecting') {
+        if (get().assistantMessage !== canvasReconnectMessage) set({ assistantMessage: canvasReconnectMessage })
+        return false
+      }
       const cleanPrompt = prompt.trim()
       if (!cleanPrompt) return setGenerationError('请先描述这批图片要如何变化。')
       if (get().generationStatus !== 'idle' && get().generationStatus !== 'error') {

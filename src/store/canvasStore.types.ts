@@ -29,9 +29,11 @@ import type {
   RefinementMode,
   UploadedAssetInput,
 } from '../domain/canvas'
+import type { ProjectRealtimeConnectionState } from '../domain/realtimeSync'
 
 export type GenerationStatus = 'idle' | 'uploading' | 'queued' | 'running' | 'recovering' | 'error'
 export type PersistenceStatus = 'saved' | 'saving' | 'offline' | 'conflict' | 'error'
+export type CollaborationStatus = 'disabled' | Exclude<ProjectRealtimeConnectionState, 'closed'>
 
 export type TaskNodeIds = {
   generateNodeId: string
@@ -90,6 +92,7 @@ export type CanvasStore = {
   sharedTemplates: CanvasTemplate[]
   hydrated: boolean
   persistenceStatus: PersistenceStatus
+  collaborationStatus: CollaborationStatus
   selectedNodeId: string | null
   assistantMessage: string
   generationStatus: GenerationStatus

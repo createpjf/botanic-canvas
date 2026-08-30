@@ -80,6 +80,9 @@ function createGenerationSubmissionKey() {
   return `gen_${(uuid ?? `${Date.now()}_${Math.random().toString(36).slice(2)}`).replaceAll('-', '')}`
 }
 
+const canvasReconnectMessage = '实时连接中断，画布暂时只读；连接恢复后再继续编辑。'
+const generationReconnectMessage = '实时连接中断，已保留生成请求；连接恢复后会继续提交。'
+
 /** Owns the regular generation submission, polling, retry and recovery lifecycle. */
 export function createCanvasGenerationActions({
   set,
@@ -91,6 +94,22 @@ export function createCanvasGenerationActions({
   let pollTimerId: number | null = null
   let pollRunId = 0
   let submissionRunId = 0
+
+  const blockCanvasGeneration = () => {
+    if (get().collaborationStatus !== 'reconnecting') return false
+    if (get().assistantMessage !== canvasReconnectMessage) set({ assistantMessage: canvasReconnectMessage })
+    return true
+  }
+
+  const pauseGenerationSubmission = () => {
+    set({
+      generationStatus: 'recovering',
+      generationProgress: 0,
+      generationError: null,
+      assistantMessage: generationReconnectMessage,
+    })
+    return false
+  }
 
   const stopPolling = () => {
     if (pollTimerId !== null) window.clearTimeout(pollTimerId)
@@ -353,6 +372,7 @@ export function createCanvasGenerationActions({
 
   const actions: GenerationActions = {
     runGraphGeneration: async (nodeId, agentRun) => {
+      if (blockCanvasGeneration()) return false
       const graphRecipe = buildGraphGenerationRecipe(get().document, nodeId)
       if (!graphRecipe) return setGenerationError('未找到要执行的生成节点。')
       if (!graphRecipe.prompt.trim()) return setGenerationError('请填写生成描述。')
@@ -450,6 +470,7 @@ export function createCanvasGenerationActions({
     },
 
     runGeneration: async ({ prompt, batchCount, settings, recipe: inputRecipe, rootRecipe: inputRootRecipe, taskLayout, sourceGraphNodeId, title, agentRun }) => {
+      if (blockCanvasGeneration()) return false
       if (get().generationStatus !== 'idle' && get().generationStatus !== 'error') return false
       const cleanPrompt = prompt.trim()
       if (!cleanPrompt) return setGenerationError('请先描述你想生成的首图。')
@@ -484,6 +505,7 @@ export function createCanvasGenerationActions({
           : '正在提交生成任务：根据文字描述直接生成。',
       }, { immediate: true })
       if (get().document.id !== document.id) return false
+      if (get().collaborationStatus === 'reconnecting') return pauseGenerationSubmission()
       try {
         const job = await submitGenerationJob({
           projectId: document.id, kind: request.kind, prompt: request.prompt,
@@ -506,6 +528,7 @@ export function createCanvasGenerationActions({
     },
 
     runRefinement: async ({ targetNodeId, prompt, batchCount, settings, recipe: inputRecipe, rootRecipe: inputRootRecipe, taskLayout, sourceGraphNodeId, title, refinementMode = 'faithful', agentRun }) => {
+      if (blockCanvasGeneration()) return false
       if (get().generationStatus !== 'idle' && get().generationStatus !== 'error') return false
       const cleanPrompt = prompt.trim()
       if (!cleanPrompt) return setGenerationError('请先描述要如何精修这张首图。')
@@ -555,6 +578,7 @@ export function createCanvasGenerationActions({
         assistantMessage: `正在提交「${parentLabel}」的精修任务。`,
       }, { immediate: true })
       if (get().document.id !== document.id) return false
+      if (get().collaborationStatus === 'reconnecting') return pauseGenerationSubmission()
       try {
         const job = await submitGenerationJob({
           projectId: document.id, kind: request.kind, prompt: request.prompt,

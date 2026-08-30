@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import {
   botanicAgentArtifactModel,
   botanicAgentArtifactPrompt,
@@ -16,7 +16,7 @@ import {
 import { BotanicSelect } from '../../components/BotanicSelect'
 import { modelDisplayLabel } from '../../components/generationModelPresentation'
 import type { GenerationModelOption } from '../../domain/canvas'
-import { CopyIcon, DeleteIcon, FocusIcon, SparkleIcon } from '../../components/BotanicIcons'
+import { CheckIcon, CopyIcon, DeleteIcon, FocusIcon, PlusIcon, SparkleIcon } from '../../components/BotanicIcons'
 import type { CollaborationActivity, CollaborationDocumentChange } from '../../domain/collaborationActivity'
 import { downloadMedia } from '../../lib/mediaDownload'
 import { agentArtifactKindLabel, agentMemoryKindLabel, agentRunFeedback, AgentPanelBackButton } from './AgentWorkspaceParts'
@@ -65,23 +65,23 @@ const agentUtilityMessages = {
     viewChanges: (count: number) => `查看 ${count} 项变更`, readingRemoteChanges: '正在读取云端变更…', keepLocal: '保留本地并重试', useRemote: '放弃本地，使用云端',
     readSyncFailed: '已读状态同步失败，点击重试', clearSyncFailed: '清空状态同步失败，点击重试', activitySyncFailed: '协作动态同步失败，点击重试',
     markAllRead: '全部已读', clearHistory: '清空记录', noActivities: '还没有协作变更。', loadingActivities: '正在读取协作动态…', loading: '加载中…', loadEarlierActivities: '加载更早动态',
-    activityCount: (count: number) => `${count} 条`, occurrenceCount: (count: number) => `${count} 次`,
+    activityCount: (count: number) => `${count} 条`, occurrenceCount: (count: number) => `${count} 次`, today: '今天', earlier: '更早', unreadActivities: (count: number) => `${count} 条未读动态`,
     comparePrompt: '对照 Prompt', copied: '已复制', copyPrompt: '复制 Prompt', generatedResult: '生成结果', toolArtifacts: '工具产物', generationBatch: '生成批次',
     detailAria: (label: string) => `${label} 详情`, backToResults: '返回结果', backfilled: '已放到画布', locateCanvas: '定位画布', continueEditing: '继续改', saved: '已入库', save: '入库', download: '下载', open: '打开',
     artifactEyebrow: '产物', resultsAria: 'Agent 结果与文件', resultsEyebrow: '结果', resultsTitle: '结果与文件', readingIndex: '正在读取历史结果…', indexUnavailable: '历史结果暂不可用，已显示当前画布结果。', resultsSections: '结果分区', mediaResults: '生成结果', resultFilter: '结果筛选',
     all: '全部', images: '图片', videos: '视频', libraryFilter: '按入库状态筛选', anyLibraryStatus: '不限入库', unsaved: '未入库', modelFilter: '按生成模型筛选', allModels: '全部模型',
     batchActions: '批量操作', selectedCount: (count: number) => `已选 ${count} 项`, startNextRound: '创建下一轮', cancel: '取消', itemCount: (count: number) => `${count} 项`, notBackfilled: '未入画布', sourceConversation: '来源对话', selectAll: '全选', clearSelection: '取消全选', select: '选择', deselect: '取消选择', view: '查看',
     noToolArtifacts: '还没有 Skill / MCP 产物。', noGeneratedResults: '还没有该条件下的生成结果。', loadEarlierResults: '加载更早结果',
-    memoryAria: '项目创作记忆', memoryEyebrow: '记忆', memoryTitle: '项目记忆', memoryDescription: '仅用于当前项目的后续规划；保存品牌规则、认可方向与禁区。', memoryType: '记忆类型', longTermRule: '长期规则', approvedDirection: '已确认方向', avoid: '避免事项', memoryPlaceholder: '例如：商品包装与品牌色不可改变', memoryScope: '适用范围', memoryScopeValue: '适用取值', memoryScopeValuePlaceholder: '例如 tmall', memoryContent: '项目记忆内容', saveMemory: '保存记忆', locateMemory: (content: string) => `在画布定位记忆 ${content}`, locate: '在画布定位', deleteMemory: (content: string) => `删除记忆 ${content}`, deleteMemoryTitle: '删除记忆', noMemory: '还没有项目记忆。', memoryCount: (count: number) => `${count} 条`,
-    system: '系统', project: '项目', invoke: '可挂载', mount: '挂载到对话', mounted: '已挂载', unmount: '取消挂载',
-    brandAria: '品牌规则', brandEyebrow: '品牌', brandTitle: '品牌规则', brandDescription: '生成前会把这些规则编译进执行提示词，生成后逐条复核。规则分全局品牌、项目 Creative Spec、本次运行覆盖三层，同一槽位由更靠近本次运行的那一层生效。',
+    memoryAria: '项目创作记忆', memoryEyebrow: '记忆', memoryTitle: '项目记忆', memoryDescription: '仅用于当前项目的后续规划；保存品牌规则、认可方向与禁区。', memoryType: '记忆类型', longTermRule: '长期规则', approvedDirection: '已确认方向', avoid: '避免事项', memoryPlaceholder: '例如：商品包装与品牌色不可改变', memoryScope: '适用范围', memoryScopeValue: '适用取值', memoryScopeValuePlaceholder: '例如 tmall', memoryContent: '项目记忆内容', saveMemory: '保存记忆', addMemory: '添加记忆', cancelMemory: '取消', memoryFilters: '筛选项目记忆', noMemoryMatches: '当前筛选下没有记忆。', memorySaved: '记忆已保存。', locateMemory: (content: string) => `在画布定位记忆 ${content}`, locate: '在画布定位', deleteMemory: (content: string) => `删除记忆 ${content}`, deleteMemoryTitle: '删除记忆', noMemory: '还没有项目记忆。', memoryCount: (count: number) => `${count} 条`,
+    system: '系统', project: '项目', invoke: '可用', mount: '添加', mounted: '已挂载', unmount: '移除',
+    brandAria: '品牌规则', brandEyebrow: '品牌', brandTitle: '品牌规则', brandDescription: '生成前会把这些规则编译进执行提示词，生成后逐条复核。规则分全局品牌、项目 Creative Spec、本次运行覆盖三层，同一槽位由更靠近本次运行的那一层生效。', brandAbout: '规则如何生效', brandSections: '品牌规则分区', brandEmptySection: '该分区暂无规则。',
     brandLoading: '正在读取品牌规则…', brandUnavailable: '品牌规则暂不可用，请稍后重试。',
     brandUnbound: '当前项目未绑定品牌，没有任何品牌规则参与生成。', brandEffective: '生效中', brandPending: '待确认建议', brandOverridden: '被覆盖的规则',
     brandConfirm: '确认启用', brandSourceRef: (ref: string) => `出处：${ref}`,
     reviewAria: '结果评审', reviewEyebrow: '评审', reviewTitle: '结果评审', reviewDescription: '逐条判据说明结果是否符合这次确认的计划；自动评审不代表品牌批准，仍需你来决定。',
     reviewLoading: '正在读取评审…', reviewUnavailable: '评审暂不可用，请稍后重试。', noReviewTasks: '这次任务还没有评审记录。',
     reviewCandidate: (id: string) => `结果 ${id}`, reviewUnverified: (count: number) => `${count} 项未验证`,
-    reviewRevision: '修订建议', reviewCustomCriteria: '项目自定义判据', reviewSkillSource: (version: number) => `来自项目 Skill · 版本 ${version}`, reviewAccept: '接受', reviewReject: '拒绝', reviewRetry: '请求重试',
+    reviewRevision: '修订建议', reviewCustomCriteria: '项目自定义判据', reviewSkillSource: (version: number) => `来自项目 Skill · 版本 ${version}`, reviewAccept: '接受', reviewReject: '拒绝', reviewRetry: '请求重试', reviewDetails: (count: number) => `${count} 条判据与修订建议`,
     reviewAwaiting: '待你决定', reviewReadOnly: '你没有决定权限', reviewSubmitting: '提交中…', reviewDecisionFailed: '决定提交失败，请重试。',
     reviewRetryCreated: (count: number) => `已创建 ${count} 个重试任务；原结果保留。`,
     reviewCancel: '停止评审', reviewCancelling: '正在停止…', reviewCancelFailed: '停止请求未能提交，请重试。',
@@ -95,29 +95,29 @@ const agentUtilityMessages = {
     viewChanges: (count: number) => `View ${count} ${count === 1 ? 'change' : 'changes'}`, readingRemoteChanges: 'Reading remote changes…', keepLocal: 'Keep local and retry', useRemote: 'Discard local and use remote',
     readSyncFailed: 'Read status could not sync. Click to retry.', clearSyncFailed: 'Activity could not be cleared. Click to retry.', activitySyncFailed: 'Collaboration activity could not sync. Click to retry.',
     markAllRead: 'Mark all as read', clearHistory: 'Clear activity', noActivities: 'No collaboration activity yet.', loadingActivities: 'Loading collaboration activity…', loading: 'Loading…', loadEarlierActivities: 'Load earlier activity',
-    activityCount: (count: number) => `${count} ${count === 1 ? 'update' : 'updates'}`, occurrenceCount: (count: number) => `${count} times`,
+    activityCount: (count: number) => `${count} ${count === 1 ? 'update' : 'updates'}`, occurrenceCount: (count: number) => `${count} times`, today: 'Today', earlier: 'Earlier', unreadActivities: (count: number) => `${count} unread ${count === 1 ? 'update' : 'updates'}`,
     comparePrompt: 'Compare prompt', copied: 'Copied', copyPrompt: 'Copy prompt', generatedResult: 'Generated result', toolArtifacts: 'Tool outputs', generationBatch: 'Generation batch',
     detailAria: (label: string) => `${label} details`, backToResults: 'Back to results', backfilled: 'Added to canvas', locateCanvas: 'Locate on canvas', continueEditing: 'Continue editing', saved: 'Saved', save: 'Save', download: 'Download', open: 'Open',
     artifactEyebrow: 'Output', resultsAria: 'Agent results and files', resultsEyebrow: 'Results', resultsTitle: 'Results & files', readingIndex: 'Loading historical results…', indexUnavailable: 'Historical results are unavailable. Showing results from the current canvas.', resultsSections: 'Result sections', mediaResults: 'Generated results', resultFilter: 'Filter results',
     all: 'All', images: 'Images', videos: 'Videos', libraryFilter: 'Filter by library status', anyLibraryStatus: 'Any library status', unsaved: 'Not saved', modelFilter: 'Filter by generation model', allModels: 'All models',
     batchActions: 'Batch actions', selectedCount: (count: number) => `${count} selected`, startNextRound: 'Start next round', cancel: 'Cancel', itemCount: (count: number) => `${count} ${count === 1 ? 'item' : 'items'}`, notBackfilled: 'Not on canvas', sourceConversation: 'Source conversation', selectAll: 'Select all', clearSelection: 'Clear selection', select: 'Select', deselect: 'Deselect', view: 'View',
     noToolArtifacts: 'No Skill or MCP outputs yet.', noGeneratedResults: 'No generated results match these filters.', loadEarlierResults: 'Load earlier results',
-    memoryAria: 'Project creative memory', memoryEyebrow: 'Memory', memoryTitle: 'Project memory', memoryDescription: 'Use project memory in future planning to preserve brand rules, approved directions, and boundaries.', memoryType: 'Memory type', longTermRule: 'Long-term rule', approvedDirection: 'Approved direction', avoid: 'Avoid', memoryPlaceholder: 'For example: Keep the product packaging and brand colors unchanged', memoryScope: 'Applies to', memoryScopeValue: 'Value', memoryScopeValuePlaceholder: 'e.g. tmall', memoryContent: 'Project memory content', saveMemory: 'Save memory', locateMemory: (content: string) => `Locate memory on canvas: ${content}`, locate: 'Locate on canvas', deleteMemory: (content: string) => `Delete memory: ${content}`, deleteMemoryTitle: 'Delete memory', noMemory: 'No project memory yet.', memoryCount: (count: number) => `${count} ${count === 1 ? 'entry' : 'entries'}`,
-    brandAria: 'Brand rules', brandEyebrow: 'Brand', brandTitle: 'Brand rules', brandDescription: 'These rules are compiled into the execution prompt before generation and checked one by one afterwards. They come from three layers — global brand, project creative spec, and this run’s override — and for any one slot the layer closest to this run wins.',
+    memoryAria: 'Project creative memory', memoryEyebrow: 'Memory', memoryTitle: 'Project memory', memoryDescription: 'Use project memory in future planning to preserve brand rules, approved directions, and boundaries.', memoryType: 'Memory type', longTermRule: 'Long-term rule', approvedDirection: 'Approved direction', avoid: 'Avoid', memoryPlaceholder: 'For example: Keep the product packaging and brand colors unchanged', memoryScope: 'Applies to', memoryScopeValue: 'Value', memoryScopeValuePlaceholder: 'e.g. tmall', memoryContent: 'Project memory content', saveMemory: 'Save memory', addMemory: 'Add memory', cancelMemory: 'Cancel', memoryFilters: 'Filter project memory', noMemoryMatches: 'No memory matches these filters.', memorySaved: 'Memory saved.', locateMemory: (content: string) => `Locate memory on canvas: ${content}`, locate: 'Locate on canvas', deleteMemory: (content: string) => `Delete memory: ${content}`, deleteMemoryTitle: 'Delete memory', noMemory: 'No project memory yet.', memoryCount: (count: number) => `${count} ${count === 1 ? 'entry' : 'entries'}`,
+    brandAria: 'Brand rules', brandEyebrow: 'Brand', brandTitle: 'Brand rules', brandDescription: 'These rules are compiled into the execution prompt before generation and checked one by one afterwards. They come from three layers — global brand, project creative spec, and this run’s override — and for any one slot the layer closest to this run wins.', brandAbout: 'How rules take effect', brandSections: 'Brand rule sections', brandEmptySection: 'No rules in this section.',
     brandLoading: 'Loading brand rules…', brandUnavailable: 'Brand rules are unavailable right now. Try again shortly.',
     brandUnbound: 'This project is not bound to a brand, so no brand rules take part in generation.', brandEffective: 'In effect', brandPending: 'Awaiting confirmation', brandOverridden: 'Overridden rules',
     brandConfirm: 'Confirm and activate', brandSourceRef: (ref: string) => `Source: ${ref}`,
     reviewAria: 'Result review', reviewEyebrow: 'Review', reviewTitle: 'Result review', reviewDescription: 'Per-criterion findings on whether results match the plan you confirmed. An automatic pass is not brand approval — the call is still yours.',
     reviewLoading: 'Loading review…', reviewUnavailable: 'Review is unavailable right now. Try again shortly.', noReviewTasks: 'No review has been recorded for this task yet.',
     reviewCandidate: (id: string) => `Result ${id}`, reviewUnverified: (count: number) => `${count} not verified`,
-    reviewRevision: 'Suggested revision', reviewCustomCriteria: 'Project-defined criterion', reviewSkillSource: (version: number) => `From a project Skill · version ${version}`, reviewAccept: 'Accept', reviewReject: 'Reject', reviewRetry: 'Request retry',
+    reviewRevision: 'Suggested revision', reviewCustomCriteria: 'Project-defined criterion', reviewSkillSource: (version: number) => `From a project Skill · version ${version}`, reviewAccept: 'Accept', reviewReject: 'Reject', reviewRetry: 'Request retry', reviewDetails: (count: number) => `${count} criteria and revision details`,
     reviewAwaiting: 'Awaiting your decision', reviewReadOnly: 'You cannot decide on this project', reviewSubmitting: 'Submitting…', reviewDecisionFailed: 'The decision could not be submitted. Try again.',
     reviewRetryCreated: (count: number) => `Created ${count} retry task(s); the original results are kept.`,
     reviewCancel: 'Stop review', reviewCancelling: 'Stopping…', reviewCancelFailed: 'The stop request could not be submitted. Try again.',
     reviewContinueUnverifiable: 'Continue as not verified', reviewRetryOnce: 'Accept risk and retry once',
     reviewReconciliationFailed: 'The reconciliation choice could not be submitted. Try again.', reviewReconciliationAccepted: 'The choice was recorded; review will finish in the background.',
     memoryConflicts: (count: number) => `${count} pair(s) of rules contradict each other; only one of each takes effect. Retire one so the intent is unambiguous.`,
-    system: 'System', project: 'Project', invoke: 'Available', mount: 'Mount in chat', mounted: 'Mounted', unmount: 'Unmount',
+    system: 'System', project: 'Project', invoke: 'Available', mount: 'Add', mounted: 'Mounted', unmount: 'Remove',
   },
 } as const
 
@@ -158,10 +158,17 @@ export function AgentCollaborationPanel({
 }) {
   const { locale } = useProductI18n()
   const copy = useProductMessages(agentUtilityMessages)
+  const today = new Date().toDateString()
+  const activityGroups = [
+    { label: copy.today, items: activities.filter((activity) => new Date(activity.occurredAt).toDateString() === today) },
+    { label: copy.earlier, items: activities.filter((activity) => new Date(activity.occurredAt).toDateString() !== today) },
+  ].filter((group) => group.items.length)
+  const unreadCount = activities.filter((activity) => activity.unread).length
   return <section className="agent-collaboration-panel" aria-label={copy.collaborationAria}>
     <p>{copy.collaborationDescription}</p>
-    {persistenceStatus === 'conflict' ? <div className="agent-collaboration-panel__conflict" role="alert">
-      <span><strong>{copy.remoteCanvasTitle}</strong><small>{copy.remoteCanvasDetail}</small></span>
+    <div className="agent-collaboration-panel__summary"><strong>{copy.activityCount(activities.length)}</strong>{unreadCount ? <span>{copy.unreadActivities(unreadCount)}</span> : null}</div>
+    {persistenceStatus === 'conflict' ? <div className="agent-collaboration-panel__conflict">
+      <span role="alert"><strong>{copy.remoteCanvasTitle}</strong><small>{copy.remoteCanvasDetail}</small></span>
       {conflictRevision ? <small>{copy.revisionCompare(conflictRevision.localRevision, conflictRevision.remoteRevision)}</small> : null}
       {conflictChanges.length ? <details className="agent-collaboration-panel__conflict-details">
         <summary>{copy.viewChanges(conflictChanges.length)}</summary>
@@ -176,13 +183,17 @@ export function AgentCollaborationPanel({
       <button type="button" disabled={historyStatus === 'saving' || !activities.some((activity) => activity.unread)} onClick={() => void onMarkRead().catch(() => undefined)}>{copy.markAllRead}</button>
       <button type="button" disabled={historyStatus === 'saving' || !activities.length} onClick={() => void onClear().catch(() => undefined)}>{copy.clearHistory}</button>
     </div>
-    <div className="agent-collaboration-panel__list">
-      {activities.map((activity) => <button key={activity.id} type="button" className={activity.unread ? 'is-unread' : ''} onClick={() => onLocate(activity)}>
-        <i aria-hidden="true" />
-        <span><strong>{activity.actorName}</strong><small>{activity.summary}{activity.count > 1 ? ` · ${copy.occurrenceCount(activity.count)}` : ''}</small></span>
-        <time dateTime={new Date(activity.occurredAt).toISOString()}>{collaborationTime(activity.occurredAt, locale)}</time>
-        {activity.target && activity.target.kind !== 'project' ? <FocusIcon /> : null}
-      </button>)}
+    <p className="visually-hidden" role="status">{historyStatus === 'loading' || historyStatus === 'loading-more' ? copy.loadingActivities : unreadCount ? copy.unreadActivities(unreadCount) : copy.activityCount(activities.length)}</p>
+    <div className="agent-collaboration-panel__list" aria-busy={historyStatus === 'loading' || historyStatus === 'loading-more'}>
+      {activityGroups.map((group) => <section key={group.label} className="agent-collaboration-panel__group">
+        <h3>{group.label}</h3>
+        {group.items.map((activity) => <button key={activity.id} type="button" className={activity.unread ? 'is-unread' : ''} onClick={() => onLocate(activity)}>
+          <i aria-hidden="true" />
+          <span><strong>{activity.actorName}</strong><small>{activity.summary}{activity.count > 1 ? ` · ${copy.occurrenceCount(activity.count)}` : ''}</small></span>
+          <time dateTime={new Date(activity.occurredAt).toISOString()}>{collaborationTime(activity.occurredAt, locale)}</time>
+          {activity.target && activity.target.kind !== 'project' ? <FocusIcon /> : null}
+        </button>)}
+      </section>)}
       {!activities.length && historyStatus !== 'loading' ? <div className="agent-panel__empty">{copy.noActivities}</div> : null}
       {historyStatus === 'loading' ? <div className="agent-panel__empty" role="status">{copy.loadingActivities}</div> : null}
       {historyHasMore ? <button type="button" className="agent-collaboration-panel__load-more" disabled={historyStatus === 'loading-more'} onClick={() => void onLoadMore().catch(() => undefined)}>{historyStatus === 'loading-more' ? copy.loading : copy.loadEarlierActivities}</button> : null}
@@ -360,7 +371,7 @@ export function AgentResultPanel({
         </p>
         <div className="agent-result-panel__detail-actions">
           {locatableNodeId ? <button type="button" onClick={() => onLocateNode(locatableNodeId)}>{copy.locateCanvas}</button> : null}
-          {canContinue ? <button type="button" onClick={() => onContinue(preview)}>{copy.continueEditing}</button> : null}
+          {canContinue ? <button type="button" className="is-primary" onClick={() => onContinue(preview)}>{copy.continueEditing}</button> : null}
           {media ? <button type="button" disabled={preview.metadata?.savedToLibrary === true} onClick={() => onSaveArtifact(preview)}>{preview.metadata?.savedToLibrary === true ? copy.saved : copy.save}</button> : null}
           {media ? <button type="button" onClick={() => void downloadMedia(preview.url!, preview.label, preview.kind === 'video' ? 'video' : 'image')}>{copy.download}</button> : preview.url ? <a href={preview.url} target="_blank" rel="noreferrer">{copy.open}</a> : null}
         </div>
@@ -370,6 +381,7 @@ export function AgentResultPanel({
   }
 
   return <section className="agent-result-panel" aria-label={copy.resultsAria}>
+    <p className="visually-hidden" role="status">{selectedBatch.artifacts.length ? copy.selectedCount(selectedBatch.artifacts.length) : copy.itemCount(filteredArtifacts.length)}</p>
     {artifactIndexStatus === 'loading' ? <div className="agent-result-panel__index-status" role="status">{copy.readingIndex}</div> : null}
     {artifactIndexStatus === 'error' ? <div className="agent-result-panel__index-status is-warning" role="status">{copy.indexUnavailable}</div> : null}
     {latestFeedback ? <div className={`agent-result-panel__run-status is-${latestFeedback.tone}`} role="status"><strong>{latestFeedback.label}</strong><span>{latestFeedback.detail}</span></div> : null}
@@ -422,12 +434,12 @@ export function AgentResultPanel({
         <button type="button" onClick={() => setSelectedIds([])}>{copy.cancel}</button>
       </div>
     </div> : null}
-    <div className="agent-result-panel__groups">
+    <div className="agent-result-panel__groups" aria-busy={artifactIndexStatus === 'loading' || artifactIndexStatus === 'loading-more'}>
       {groups.map((group) => {
         const backfilled = group.artifacts.some((artifact) => artifact.provenance.sourceNodeIds?.some((nodeId) => availableNodeIds.has(nodeId)))
         return <section key={group.id} className="agent-result-group">
           <header>
-            <span><strong>{group.label}</strong><small>{copy.itemCount(group.artifacts.length)}</small></span>
+            <span><h3>{group.label}</h3><small>{copy.itemCount(group.artifacts.length)}</small></span>
             <em>{backfilled ? copy.backfilled : copy.notBackfilled}</em>
             {conversationRunIds.includes(group.id) ? <button type="button" onClick={() => onLocateConversation(group.id)}>{copy.sourceConversation}</button> : null}
             <button type="button" onClick={() => toggleGroup(group.artifacts)}>{group.artifacts.every((artifact) => selectedIds.includes(artifact.id)) ? copy.clearSelection : copy.selectAll}</button>
@@ -473,8 +485,28 @@ export function AgentMemoryPanel({ memory, sourceNodeIds, onAddMemory, onRemoveM
   const [draft, setDraft] = useState('')
   const [subject, setSubject] = useState<BotanicAgentMemoryItem['subject']>('project')
   const [subjectValue, setSubjectValue] = useState('')
+  const [kindFilter, setKindFilter] = useState<'all' | BotanicAgentMemoryKind>('all')
+  const [subjectFilter, setSubjectFilter] = useState<'all' | NonNullable<BotanicAgentMemoryItem['subject']>>('all')
+  const [formOpen, setFormOpen] = useState(false)
+  const [notice, setNotice] = useState('')
+  const contentId = useId()
+  const subjectValueId = useId()
+  const contentRef = useRef<HTMLTextAreaElement | null>(null)
   const comparisonRows = useMemo(() => memoryComparisonRows(memory), [memory])
   const conflictCount = useMemo(() => memoryConflictPairs(memory).length, [memory])
+  const filteredRows = useMemo(() => comparisonRows.filter((row) => {
+    const item = memory.find((entry) => entry.id === row.id)
+    if (!item) return false
+    if (kindFilter !== 'all' && item.kind !== kindFilter) return false
+    return subjectFilter === 'all' || (item.subject ?? 'project') === subjectFilter
+  }), [comparisonRows, kindFilter, memory, subjectFilter])
+
+  useEffect(() => {
+    if (!formOpen) return
+    const frame = requestAnimationFrame(() => contentRef.current?.focus())
+    return () => cancelAnimationFrame(frame)
+  }, [formOpen])
+
   const save = () => {
     if (!draft.trim()) return
     // 限定了范围却没填取值时不提交：那条规则永远匹配不上任何一次执行。
@@ -483,38 +515,37 @@ export function AgentMemoryPanel({ memory, sourceNodeIds, onAddMemory, onRemoveM
       setDraft('')
       setSubjectValue('')
       setSubject('project')
+      setFormOpen(false)
+      setNotice(copy.memorySaved)
     }
   }
 
   return <section className="agent-memory-panel" aria-label={copy.memoryAria}>
     <p>{copy.memoryDescription}</p>
-    {conflictCount ? <p className="agent-memory-panel__conflicts">{copy.memoryConflicts(conflictCount)}</p> : null}
-    <div className="agent-memory-panel__form">
-      <textarea value={draft} maxLength={500} onChange={(event) => setDraft(event.target.value)} placeholder={copy.memoryPlaceholder} aria-label={copy.memoryContent} />
-      <div className="agent-memory-panel__meta">
-        <BotanicSelect value={kind} ariaLabel={copy.memoryType} options={[
-          { value: 'rule', label: copy.longTermRule },
-          { value: 'approved', label: copy.approvedDirection },
-          { value: 'avoid', label: copy.avoid },
-        ]} onChange={(value) => setKind(value as BotanicAgentMemoryKind)} />
-        <BotanicSelect
-          value={subject ?? 'project'}
-          ariaLabel={copy.memoryScope}
-          options={MEMORY_SUBJECT_OPTIONS.map((option) => ({ value: option, label: memorySubjectLabel(option, locale) }))}
-          onChange={(value) => { setSubject(value as BotanicAgentMemoryItem['subject']); if (value === 'project') setSubjectValue('') }}
-        />
-        {subject !== 'project' ? <input
-          value={subjectValue}
-          maxLength={80}
-          aria-label={copy.memoryScopeValue}
-          placeholder={copy.memoryScopeValuePlaceholder}
-          onChange={(event) => setSubjectValue(event.target.value)}
-        /> : null}
-        <button type="button" disabled={!draft.trim() || (subject !== 'project' && !subjectValue.trim())} onClick={save}>{copy.saveMemory}</button>
-      </div>
+    {conflictCount ? <p className="agent-memory-panel__conflicts" role="alert">{copy.memoryConflicts(conflictCount)}</p> : null}
+    <p className="visually-hidden" role="status">{notice}</p>
+    <div className="agent-memory-panel__toolbar" aria-label={copy.memoryFilters}>
+      <BotanicSelect value={kindFilter} ariaLabel={copy.memoryType} options={[
+        { value: 'all', label: copy.all }, { value: 'rule', label: copy.longTermRule }, { value: 'approved', label: copy.approvedDirection }, { value: 'avoid', label: copy.avoid },
+      ]} onChange={(value) => setKindFilter(value as 'all' | BotanicAgentMemoryKind)} />
+      <BotanicSelect value={subjectFilter} ariaLabel={copy.memoryScope} options={[
+        { value: 'all', label: copy.all }, ...MEMORY_SUBJECT_OPTIONS.map((option) => ({ value: option, label: memorySubjectLabel(option, locale) })),
+      ]} onChange={(value) => setSubjectFilter(value as 'all' | NonNullable<BotanicAgentMemoryItem['subject']>)} />
+      <button type="button" className="is-primary" aria-expanded={formOpen} onClick={() => setFormOpen((open) => !open)}><PlusIcon />{copy.addMemory}</button>
     </div>
+    {formOpen ? <form className="agent-memory-panel__form" onSubmit={(event) => { event.preventDefault(); save() }}>
+      <label htmlFor={contentId}><span>{copy.memoryContent}</span><textarea ref={contentRef} id={contentId} required value={draft} maxLength={500} onChange={(event) => setDraft(event.target.value)} placeholder={copy.memoryPlaceholder} /></label>
+      <div className="agent-memory-panel__meta">
+        <div className="agent-memory-panel__field"><span>{copy.memoryType}</span><BotanicSelect value={kind} ariaLabel={copy.memoryType} options={[
+          { value: 'rule', label: copy.longTermRule }, { value: 'approved', label: copy.approvedDirection }, { value: 'avoid', label: copy.avoid },
+        ]} onChange={(value) => setKind(value as BotanicAgentMemoryKind)} /></div>
+        <div className="agent-memory-panel__field"><span>{copy.memoryScope}</span><BotanicSelect value={subject ?? 'project'} ariaLabel={copy.memoryScope} options={MEMORY_SUBJECT_OPTIONS.map((option) => ({ value: option, label: memorySubjectLabel(option, locale) }))} onChange={(value) => { setSubject(value as BotanicAgentMemoryItem['subject']); if (value === 'project') setSubjectValue('') }} /></div>
+        {subject !== 'project' ? <label htmlFor={subjectValueId}><span>{copy.memoryScopeValue}</span><input id={subjectValueId} required value={subjectValue} maxLength={80} placeholder={copy.memoryScopeValuePlaceholder} onChange={(event) => setSubjectValue(event.target.value)} /></label> : null}
+      </div>
+      <div className="agent-memory-panel__form-actions"><button type="button" onClick={() => setFormOpen(false)}>{copy.cancelMemory}</button><button type="submit" className="is-primary">{copy.saveMemory}</button></div>
+    </form> : null}
     <div className="agent-memory-panel__list">
-      {comparisonRows.map((row) => {
+      {filteredRows.map((row) => {
         const item = memory.find((entry) => entry.id === row.id)
         if (!item) return null
         // 不生效的原因要说出来：用户看不到冲突就永远不知道该停用哪一条。
@@ -536,7 +567,7 @@ export function AgentMemoryPanel({ memory, sourceNodeIds, onAddMemory, onRemoveM
           </div>
         </article>
       })}
-      {!memory.length ? <div className="agent-panel__empty">{copy.noMemory}</div> : null}
+      {!filteredRows.length ? <div className="agent-panel__empty">{memory.length ? copy.noMemoryMatches : copy.noMemory}</div> : null}
     </div>
   </section>
 }
@@ -561,6 +592,7 @@ export function BrandKitPanel({ projectId }: {
   const copy = useProductMessages(agentUtilityMessages)
   const [kit, setKit] = useState<ResolvedBrandKit | null>(null)
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [section, setSection] = useState<'effective' | 'pending' | 'overridden'>('effective')
 
   useEffect(() => {
     let active = true
@@ -575,25 +607,28 @@ export function BrandKitPanel({ projectId }: {
   const overridden = useMemo(() => overriddenBrandRuleRows(kit ?? undefined, locale), [kit, locale])
   const proposals = useMemo(() => brandProposalRows(kit?.pending, locale), [kit, locale])
 
-  return <section className="agent-brand-panel" aria-label={copy.brandAria}>
-    <p>{copy.brandDescription}</p>
-    {status === 'loading' ? <div className="agent-panel__empty">{copy.brandLoading}</div> : null}
-    {status === 'error' ? <div className="agent-panel__empty">{copy.brandUnavailable}</div> : null}
+  return <section className="agent-brand-panel" aria-label={copy.brandAria} aria-busy={status === 'loading'}>
+    <details className="agent-panel__about"><summary>{copy.brandAbout}</summary><p>{copy.brandDescription}</p></details>
+    {status === 'loading' ? <div className="agent-panel__empty" role="status">{copy.brandLoading}</div> : null}
+    {status === 'error' ? <div className="agent-panel__empty" role="alert">{copy.brandUnavailable}</div> : null}
     {/* 未绑定品牌与「绑定了但没有规则」是两回事；后者说得出「0 条生效」，前者要说没绑定。 */}
     {status === 'ready' && !kit ? <div className="agent-panel__empty">{copy.brandUnbound}</div> : null}
     {status === 'ready' && kit ? <>
       <p className="agent-brand-panel__summary">{brandKitSummary(kit, locale)}</p>
-      <h3>{copy.brandEffective}</h3>
-      <ul className="agent-brand-panel__rules">
+      <div className="agent-brand-panel__tabs" aria-label={copy.brandSections}>
+        {([
+          ['effective', copy.brandEffective, effective.length], ['pending', copy.brandPending, proposals.length], ['overridden', copy.brandOverridden, overridden.length],
+        ] as const).map(([value, label, count]) => <button key={value} type="button" aria-pressed={section === value} onClick={() => setSection(value)}><span>{label}</span><b>{count}</b></button>)}
+      </div>
+      {section === 'effective' ? <ul className="agent-brand-panel__rules">
         {effective.map((row) => <li key={row.slot} className={`is-${row.enforcement}`}>
           <header><small>{row.facetLabel}</small><b>{row.enforcementLabel}</b></header>
           <p>{row.statement}</p>
           <small className="agent-brand-panel__provenance">{row.provenance}</small>
         </li>)}
-      </ul>
-      {proposals.length ? <>
-        <h3>{copy.brandPending}</h3>
-        <ul className="agent-brand-panel__proposals">
+        {!effective.length ? <li className="agent-panel__empty">{copy.brandEmptySection}</li> : null}
+      </ul> : null}
+      {section === 'pending' ? <ul className="agent-brand-panel__proposals">
           {proposals.map((proposal) => <li key={proposal.id} className={proposal.needsFacet ? 'needs-facet' : ''}>
             <header><small>{proposal.facetLabel}</small></header>
             <p>{proposal.statement}</p>
@@ -601,18 +636,16 @@ export function BrandKitPanel({ projectId }: {
             <small className="agent-brand-panel__hint">{proposal.hint}</small>
             {proposal.sourceRef ? <small>{copy.brandSourceRef(proposal.sourceRef)}</small> : null}
           </li>)}
-        </ul>
-      </> : null}
-      {overridden.length ? <>
-        <h3>{copy.brandOverridden}</h3>
-        <ul className="agent-brand-panel__rules is-overridden">
+          {!proposals.length ? <li className="agent-panel__empty">{copy.brandEmptySection}</li> : null}
+      </ul> : null}
+      {section === 'overridden' ? <ul className="agent-brand-panel__rules is-overridden">
           {overridden.map((row) => <li key={row.id}>
             <header><small>{row.facetLabel}</small></header>
             <p>{row.statement}</p>
             <small className="agent-brand-panel__provenance">{row.provenance}</small>
           </li>)}
-        </ul>
-      </> : null}
+          {!overridden.length ? <li className="agent-panel__empty">{copy.brandEmptySection}</li> : null}
+      </ul> : null}
     </> : null}
   </section>
 }
@@ -628,6 +661,7 @@ export function AgentReviewPanel({ runId, projectId }: {
   const [reloadEpoch, setReloadEpoch] = useState(0)
   const [pending, setPending] = useState('')
   const [notice, setNotice] = useState('')
+  const [noticeTone, setNoticeTone] = useState<'status' | 'error'>('status')
   // 接受/拒绝只改评审状态；请求重试会创建生成 Run，分别对齐服务端两个能力。
   const canDecide = canUseProjectEntry(
     projectId ? cachedProjectCapabilities(projectId) : undefined,
@@ -661,12 +695,14 @@ export function AgentReviewPanel({ runId, projectId }: {
   const decide = async (taskId: string, artifactId: string, decision: AgentReviewDecision) => {
     setPending(`${taskId}:${artifactId}`)
     setNotice('')
+    setNoticeTone('status')
     try {
       const result = await submitAgentReviewDecisions(taskId, [{ artifactId, decision }])
       setTasks((current) => current.map((task) => (task.id === taskId ? result.task : task)))
       // 请求重试会产生新的 Run；照实说明原结果没有被覆盖。
       if (result.retryRuns?.length) setNotice(copy.reviewRetryCreated(result.retryRuns.length))
     } catch {
+      setNoticeTone('error')
       setNotice(copy.reviewDecisionFailed)
     } finally {
       setPending('')
@@ -676,10 +712,12 @@ export function AgentReviewPanel({ runId, projectId }: {
   const cancelReview = async (taskId: string) => {
     setPending(`${taskId}:cancel`)
     setNotice('')
+    setNoticeTone('status')
     try {
       const result = await cancelAgentReviewTask(taskId)
       setTasks((current) => current.map((task) => (task.id === taskId ? result.task : task)))
     } catch {
+      setNoticeTone('error')
       setNotice(copy.reviewCancelFailed)
     } finally {
       setPending('')
@@ -689,25 +727,28 @@ export function AgentReviewPanel({ runId, projectId }: {
   const reconcile = async (taskId: string, action: 'continue_unverifiable' | 'retry_once') => {
     setPending(`${taskId}:${action}`)
     setNotice('')
+    setNoticeTone('status')
     try {
       const result = await reconcileAgentReviewOutcome(taskId, action)
       setTasks((current) => current.map((task) => (task.id === taskId ? result.task : task)))
       setNotice(copy.reviewReconciliationAccepted)
     } catch {
+      setNoticeTone('error')
       setNotice(copy.reviewReconciliationFailed)
     } finally {
       setPending('')
     }
   }
 
-  return <section className="agent-review-panel" aria-label={copy.reviewAria}>
+  return <section className="agent-review-panel" aria-label={copy.reviewAria} aria-busy={status === 'loading'}>
     <p>{copy.reviewDescription}</p>
-    {status === 'loading' ? <div className="agent-panel__empty">{copy.reviewLoading}</div> : null}
-    {status === 'error' ? <div className="agent-panel__empty">{copy.reviewUnavailable} <button type="button" onClick={() => setReloadEpoch((value) => value + 1)}>{locale === 'en' ? 'Retry' : '重试'}</button></div> : null}
+    {status === 'loading' ? <div className="agent-panel__empty" role="status">{copy.reviewLoading}</div> : null}
+    {status === 'error' ? <div className="agent-panel__empty" role="alert">{copy.reviewUnavailable} <button type="button" onClick={() => setReloadEpoch((value) => value + 1)}>{locale === 'en' ? 'Retry' : '重试'}</button></div> : null}
     {status === 'ready' && !tasks.length ? <div className="agent-panel__empty">{copy.noReviewTasks}</div> : null}
-    {notice ? <p className="agent-review-panel__notice">{notice}</p> : null}
+    <p className={`agent-review-panel__notice is-${noticeTone}${notice ? '' : ' visually-hidden'}`} role={noticeTone === 'error' ? 'alert' : 'status'}>{notice}</p>
     {tasks.map((task) => {
       const statusNote = agentReviewTaskStatusNote(task, locale)
+      const rows = agentReviewCandidateRows(task, locale)
       return <article key={task.id} className="agent-review-panel__task">
         <p className="agent-review-panel__coverage">{agentReviewCoverageSummary(task, locale)}</p>
         {statusNote ? <p className="agent-review-panel__status">{statusNote}</p> : null}
@@ -735,25 +776,26 @@ export function AgentReviewPanel({ runId, projectId }: {
         {agentReviewEvaluatorCostNote(task, locale)
           ? <p className="agent-review-panel__cost">{agentReviewEvaluatorCostNote(task, locale)}</p>
           : null}
-        {agentReviewCandidateRows(task, locale).map((row) => <div key={row.artifactId} className={`agent-review-panel__candidate is-${row.verdict}`}>
+        {rows.map((row) => <div key={row.artifactId} className={`agent-review-panel__candidate is-${row.verdict}`}>
           <header>
             <strong>{copy.reviewCandidate(row.artifactId.split(':').at(-1) ?? row.artifactId)}</strong>
             <span className={`agent-review-panel__verdict is-${row.verdict}`}>{row.verdictLabel}</span>
             {row.unverifiedCount ? <small>{copy.reviewUnverified(row.unverifiedCount)}</small> : null}
           </header>
-          <ul className="agent-review-panel__criteria">
-            {row.criteria.map((criterion) => <li key={criterion.id} className={`is-${criterion.verdict}${criterion.skillId ? ' is-custom' : ''}`}>
-              <small>{criterion.skillId ? copy.reviewCustomCriteria : criterion.layerLabel}</small>
-              <span>{criterion.id}</span>
-              <em>{criterion.verdictLabel}</em>
-              {criterion.evidence ? <p>{criterion.evidence}</p> : null}
-              {/* Skill 版本不可变：历史评审要说得清当时按哪一版判的。 */}
-              {criterion.skillId ? <p className="agent-review-panel__skill-source">{copy.reviewSkillSource(criterion.skillVersion ?? 1)}</p> : null}
-            </li>)}
-          </ul>
-          {row.revisionSuggestion
-            ? <p className="agent-review-panel__revision"><small>{copy.reviewRevision}</small>{row.revisionSuggestion}</p>
-            : null}
+          <details className="agent-review-panel__details" open={row.awaitingHuman || undefined}>
+            <summary>{copy.reviewDetails(row.criteria.length)}</summary>
+            <ul className="agent-review-panel__criteria">
+              {row.criteria.map((criterion) => <li key={criterion.id} className={`is-${criterion.verdict}${criterion.skillId ? ' is-custom' : ''}`}>
+                <small>{criterion.skillId ? copy.reviewCustomCriteria : criterion.layerLabel}</small>
+                <span>{criterion.id}</span>
+                <em>{criterion.verdictLabel}</em>
+                {criterion.evidence ? <p>{criterion.evidence}</p> : null}
+                {/* Skill 版本不可变：历史评审要说得清当时按哪一版判的。 */}
+                {criterion.skillId ? <p className="agent-review-panel__skill-source">{copy.reviewSkillSource(criterion.skillVersion ?? 1)}</p> : null}
+              </li>)}
+            </ul>
+            {row.revisionSuggestion ? <p className="agent-review-panel__revision"><small>{copy.reviewRevision}</small>{row.revisionSuggestion}</p> : null}
+          </details>
           <footer>
             {row.awaitingHuman ? <small>{copy.reviewAwaiting}</small> : <small>{row.decisionLabel}</small>}
             <div>
@@ -806,15 +848,23 @@ export function AgentSkillCard({
   const summary = botanicAgentSkillSummary(instructions)
   const body = botanicAgentSkillBody(instructions)
   return <article className={`agent-skill-card${expanded ? ' is-expanded' : ''}${mounted ? ' is-mounted' : ''}`}>
-    <button type="button" aria-expanded={expanded} aria-controls={`skill-body-${id}`} onClick={() => onToggle(id)}>
-      <span>
-        {source === 'system' ? <SparkleIcon /> : null}
-        <b>{name}</b>
+    <button type="button" className="agent-skill-card__toggle" aria-expanded={expanded} aria-controls={`skill-body-${id}`} onClick={() => onToggle(id)}>
+      <span className="agent-skill-card__content">
+        <span className="agent-skill-card__title">
+          {source === 'system' ? <SparkleIcon /> : null}
+          <b>{name}</b>
+        </span>
+        <span className="agent-skill-card__meta">
+          <small>{source === 'system' ? copy.system : copy.project}</small>
+          <small className={mounted ? 'is-mounted' : undefined}>{mounted ? copy.mounted : copy.invoke}</small>
+        </span>
+        {!expanded && summary ? <p>{summary}</p> : null}
       </span>
-      <small>{source === 'system' ? copy.system : copy.project} · {mounted ? copy.mounted : copy.invoke}</small>
-      {!expanded && summary ? <p>{summary}</p> : null}
+      <span className="agent-skill-card__disclosure" aria-hidden="true">{expanded ? '−' : '＋'}</span>
     </button>
-    {onToggleMount ? <button type="button" className="agent-skill-card__mount" aria-pressed={mounted} aria-label={mounted ? `${copy.unmount} ${name}` : `${copy.mount} ${name}`} onClick={() => onToggleMount(id, !mounted)}>{mounted ? copy.unmount : copy.mount}</button> : null}
+    {onToggleMount ? <button type="button" className="agent-skill-card__mount" aria-pressed={mounted} aria-label={mounted ? `${copy.unmount} ${name}` : `${copy.mount} ${name}`} onClick={() => onToggleMount(id, !mounted)}>
+      {mounted ? <CheckIcon /> : <PlusIcon />}<span>{mounted ? copy.unmount : copy.mount}</span>
+    </button> : null}
     {expanded ? <pre id={`skill-body-${id}`} className="agent-skill-card__body">{body}</pre> : null}
   </article>
 }

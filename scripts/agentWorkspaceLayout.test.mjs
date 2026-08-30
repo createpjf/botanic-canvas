@@ -59,3 +59,17 @@ test('阅读位置条在消息滚动区外占位，不盖住正文', () => {
   assert.ok(bodyAt < restoreAt, '阅读位置条应落在消息主体内')
   assert.ok(restoreAt < messagesAt, '阅读位置条必须在滚动消息区之前，避免 sticky 盖住 Prompt')
 })
+
+test('Agent 二级入口使用原生按钮披露，并提供可见焦点与足够点击区', () => {
+  const menuStart = workspace.indexOf('className="agent-workspace__utility-menu"')
+  const menuEnd = workspace.indexOf('</div> : null}', menuStart)
+  const menu = workspace.slice(menuStart, menuEnd)
+  const menuButtons = firstRuleBody(styles, '.agent-workspace__utility-menu button')
+
+  assert.ok(menuStart !== -1 && menuEnd !== -1)
+  assert.doesNotMatch(menu, /role="menu(?:item)?"|aria-haspopup="menu"/)
+  assert.match(menu, /aria-pressed=/)
+  assert.match(workspace, /querySelector<HTMLButtonElement>\('button'\)\?\.focus\(\)/)
+  assert.equal(declaration(menuButtons, 'min-height'), '40px')
+  assert.match(styles, /\.agent-workspace :is\(button, a, input, textarea, select, summary\):focus-visible\s*{[^}]*outline:\s*2px/)
+})

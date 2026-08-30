@@ -1454,6 +1454,7 @@ export type ResultNodeUiData = ResultNodeData & {
     onToggleGroup?: (groupId: string) => void
     onChooseCandidate?: (groupId: string, candidateId: string, promoted: boolean) => void
     onOpenAddMenu?: (resultNodeId: string, screen: { x: number; y: number }) => void
+    onOpenContinueGeneration?: (resultNodeId: string) => void
     onOpenAddContext?: (mediaNodeId: string) => void
     onOpenAgent?: (resultNodeId: string) => void
     onOpenRegionEdit?: (resultNodeId: string) => void
@@ -1701,7 +1702,7 @@ function ResultNode({ data, id, selected }: NodeProps) {
           </button>)}
         </div>
       </section> : null}
-      {isSelected && hasDisplayableImage && presentation?.onOpenAddMenu ? <div className="result-node__actions nodrag nowheel" onPointerDown={(event) => event.stopPropagation()}>
+      {isSelected && hasDisplayableImage && (presentation?.onOpenAddMenu || presentation?.onOpenContinueGeneration) ? <div className="result-node__actions nodrag nowheel" onPointerDown={(event) => event.stopPropagation()}>
         {presentation.onOpenAgent ? <button type="button" className="is-agent" onClick={(event) => {
           event.stopPropagation()
           presentation.onOpenAgent?.(targetNodeId)
@@ -1714,7 +1715,8 @@ function ResultNode({ data, id, selected }: NodeProps) {
           type="button"
           onClick={(event) => {
             event.stopPropagation()
-            presentation.onOpenAddMenu?.(targetNodeId, { x: event.clientX, y: event.clientY })
+            if (presentation.onOpenContinueGeneration) presentation.onOpenContinueGeneration(targetNodeId)
+            else presentation.onOpenAddMenu?.(targetNodeId, { x: event.clientX, y: event.clientY })
           }}
         >{t.addNode} <ArrowUpRightIcon /></button>
       </div> : null}

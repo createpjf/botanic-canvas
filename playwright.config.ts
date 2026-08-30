@@ -22,7 +22,7 @@ export default defineConfig({
     {
       name: 'mobile-webkit',
       testIgnore: /paste-media\.spec\.ts/u,
-      grepInvert: /空白画布新建的生成节点连上旧图后仍留在画布上|素材连上新的生成节点后，点回素材仍有 composer|两张图可从右侧引用拖到左侧上下文/u,
+      grepInvert: /空白画布新建的生成节点连上旧图后仍留在画布上|素材连上显式生成节点后，不在素材上重复挂 composer|两张图可从右侧引用拖到左侧上下文/u,
       use: { ...devices['iPhone 13'] },
     },
   ],

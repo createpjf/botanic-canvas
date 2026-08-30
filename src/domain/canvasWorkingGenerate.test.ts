@@ -6,6 +6,7 @@ import {
   displayEdgeEnds,
   displayGenerateOwnerId,
   generateHasVisualInput,
+  hiddenAgentExecutionNodeIds,
   hiddenGenerateIds,
   listGeneratesFromInput,
   markStandaloneGeneratesOnManualConnect,
@@ -41,6 +42,20 @@ test('generateHasVisualInput / hiddenGenerateIds 只藏有参考的 generate', (
   assert.equal(hidden.has('generate-1'), true)
   assert.equal(hidden.has('generate-2'), true)
   assert.equal(hidden.has('generate-orphan'), false)
+})
+
+test('Agent 的 prompt / generate 只保留在持久化血缘，不占普通画布节点', () => {
+  const agentNodes = [
+    { id: 'agent-prompt-1', type: 'text', position: { x: 0, y: 0 }, data: { kind: 'text', label: '生成描述', content: '一张海报' } },
+    { id: 'agent-generate-1', type: 'generate', position: { x: 0, y: 0 }, data: { kind: 'generate', label: 'Agent 生成', prompt: '', batchCount: 1, settings: { model: 'm', aspectRatio: '1:1', resolution: '1K' }, agentRun: { runId: 'run-1', branchId: 'branch-1' } } },
+    { id: 'agent-result-1', type: 'result', position: { x: 0, y: 0 }, data: { kind: 'result', image: 'result.png', status: 'ready', outputOf: 'agent-generate-1' } },
+  ] as CanvasNode[]
+  const agentEdges = [
+    { id: 'agent-prompt-edge', source: 'agent-prompt-1', target: 'agent-generate-1' },
+    { id: 'agent-output-edge', source: 'agent-generate-1', target: 'agent-result-1' },
+  ] as Edge[]
+  assert.equal(hiddenGenerateIds(agentNodes, agentEdges).has('agent-generate-1'), true)
+  assert.deepEqual([...hiddenAgentExecutionNodeIds(agentNodes, agentEdges)].sort(), ['agent-generate-1', 'agent-prompt-1'])
 })
 
 test('两张图的参考边画在媒体之间，不指向隐藏 generate', () => {

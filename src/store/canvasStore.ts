@@ -58,6 +58,7 @@ let undoTimerId: number | null = null
 const persistenceOperations = createLatestOperation()
 /** 当前会话中正在删除或已删除的全局品牌素材，阻止异步任务用旧快照回写引用。 */
 const revokedGlobalAssetIds = new Set<string>()
+const canvasReconnectMessage = '实时连接中断，画布暂时只读；连接恢复后再继续编辑。'
 
 function scrubRevokedRecipe(recipe: GenerationRecipe | undefined) {
   if (!recipe) return undefined
@@ -244,7 +245,13 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
   const assetGraphActions = createCanvasAssetGraphActions({
     set,
     get,
-    commitDocument: (document, extra, options) => commit(set, document, extra, options),
+    commitDocument: (document, extra, options) => {
+      if (get().collaborationStatus === 'reconnecting') {
+        if (get().assistantMessage !== canvasReconnectMessage) set({ assistantMessage: canvasReconnectMessage })
+        return Promise.resolve(false)
+      }
+      return commit(set, document, extra, options)
+    },
   })
   return ({
   document: seedDocument,
@@ -252,6 +259,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
   sharedTemplates: [],
   hydrated: false,
   persistenceStatus: 'saved',
+  collaborationStatus: 'disabled',
   selectedNodeId: 'result-hero',
   assistantMessage: '',
   generationStatus: 'idle',

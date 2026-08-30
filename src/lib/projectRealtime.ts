@@ -1,4 +1,4 @@
-import { parseProjectRealtimeEvent, projectRealtimeConnectionOpened, type ProjectRealtimeEvent } from '../domain/realtimeSync'
+import { parseProjectRealtimeEvent, projectRealtimeConnectionOpened, type ProjectRealtimeConnectionState, type ProjectRealtimeEvent } from '../domain/realtimeSync'
 import { productRequest, serverPersistenceEnabled } from './productSession'
 
 type RealtimeTicket = {
@@ -28,6 +28,7 @@ export function openProjectRealtimeChannel(
   projectId: string,
   onEvent: (event: ProjectRealtimeEvent) => void,
   onConnectionOpened?: (event: ProjectRealtimeConnectionOpened) => void,
+  onConnectionStateChanged?: (state: ProjectRealtimeConnectionState) => void,
 ): ProjectRealtimeChannel {
   if (!serverPersistenceEnabled || !projectId) {
     return { publish: () => false, close: () => undefined }
@@ -39,9 +40,18 @@ export function openProjectRealtimeChannel(
   let connectionRun = 0
   let retryCount = 0
   let openedBefore = false
+  let connectionState: ProjectRealtimeConnectionState = 'closed'
+
+  const notifyConnectionState = (state: ProjectRealtimeConnectionState) => {
+    if (closed && state !== 'closed') return
+    if (connectionState === state) return
+    connectionState = state
+    onConnectionStateChanged?.(state)
+  }
 
   const scheduleReconnect = () => {
     if (closed || reconnectTimer !== undefined) return
+    notifyConnectionState(openedBefore ? 'reconnecting' : 'connecting')
     const delay = Math.min(15_000, 1_000 * (2 ** Math.min(retryCount, 4)))
     retryCount += 1
     reconnectTimer = window.setTimeout(() => {
@@ -60,15 +70,18 @@ export function openProjectRealtimeChannel(
         body: JSON.stringify({ projectId }),
       })
       if (closed || run !== connectionRun) return
-      socket = new WebSocket(websocketUrl(endpoint, projectId, ticket))
-      socket.addEventListener('open', () => {
+      const nextSocket = new WebSocket(websocketUrl(endpoint, projectId, ticket))
+      socket = nextSocket
+      nextSocket.addEventListener('open', () => {
+        if (closed || run !== connectionRun) return
         retryCount = 0
         const connection = projectRealtimeConnectionOpened(openedBefore)
         openedBefore = connection.openedBefore
+        notifyConnectionState('connected')
         onConnectionOpened?.(connection.event)
-        socket?.send(JSON.stringify({ type: 'collaboration.presence.subscribe', projectId }))
+        nextSocket.send(JSON.stringify({ type: 'collaboration.presence.subscribe', projectId }))
       })
-      socket.addEventListener('message', (message) => {
+      nextSocket.addEventListener('message', (message) => {
         try {
           const event = parseProjectRealtimeEvent(JSON.parse(String(message.data)), projectId)
           if (event) onEvent(event)
@@ -76,8 +89,12 @@ export function openProjectRealtimeChannel(
           // 忽略未知或损坏的推送；权威文档仍会在聚焦与重连时重新读取。
         }
       })
-      socket.addEventListener('close', scheduleReconnect)
-      socket.addEventListener('error', () => socket?.close())
+      nextSocket.addEventListener('close', () => {
+        if (run !== connectionRun) return
+        socket = undefined
+        scheduleReconnect()
+      })
+      nextSocket.addEventListener('error', () => nextSocket.close())
     } catch {
       scheduleReconnect()
     }
@@ -85,9 +102,15 @@ export function openProjectRealtimeChannel(
 
   const reconnectWhenOnline = () => {
     retryCount = 0
+    if (reconnectTimer !== undefined) {
+      window.clearTimeout(reconnectTimer)
+      reconnectTimer = undefined
+    }
+    notifyConnectionState(openedBefore ? 'reconnecting' : 'connecting')
     void connect()
   }
   window.addEventListener('online', reconnectWhenOnline)
+  notifyConnectionState('connecting')
   void connect()
 
   return {
@@ -97,8 +120,10 @@ export function openProjectRealtimeChannel(
       return true
     },
     close() {
+      if (closed) return
       closed = true
       connectionRun += 1
+      notifyConnectionState('closed')
       window.removeEventListener('online', reconnectWhenOnline)
       if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer)
       socket?.close(1000, 'project changed')

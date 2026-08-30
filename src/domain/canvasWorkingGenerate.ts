@@ -32,6 +32,27 @@ function isOwnedWorkingGenerate(mediaId: string, generateId: string, nodes: Canv
   return !data.primaryInputId || data.primaryInputId === mediaId
 }
 
+function agentGenerateIds(nodes: CanvasNode[]) {
+  return new Set(nodes
+    .filter((node) => node.type === 'generate'
+      && (node.data as GenerateNodeData).standalone !== true
+      && Boolean((node.data as GenerateNodeData).agentRun))
+    .map((node) => node.id))
+}
+
+/** Agent 的 prompt / generate 是持久化血缘，不应在普通画布中占据一个用户节点。 */
+export function hiddenAgentExecutionNodeIds(nodes: CanvasNode[], edges: Edge[]) {
+  const generateIds = agentGenerateIds(nodes)
+  const promptIds = nodes
+    .filter((node) => node.type === 'text')
+    .filter((node) => {
+      const outgoing = edges.filter((edge) => edge.source === node.id)
+      return outgoing.length === 1 && generateIds.has(outgoing[0].target)
+    })
+    .map((node) => node.id)
+  return new Set([...generateIds, ...promptIds])
+}
+
 /** 优先「尚无成功输出」的最新 generate，否则最新 generate。 */
 export function pickWorkingGenerateId(mediaId: string, nodes: CanvasNode[], edges: Edge[]) {
   const generates = listGeneratesFromInput(mediaId, nodes, edges).filter((id) => isOwnedWorkingGenerate(mediaId, id, nodes))
@@ -46,14 +67,15 @@ export function pickWorkingGenerateId(mediaId: string, nodes: CanvasNode[], edge
   return generates.find((id) => !hasSucceededOutput(id)) ?? generates[0]
 }
 
-/** 画布上应隐藏的 generate（有视觉参考且不是用户钉在画布上的节点，composer 挂在媒体下）。 */
+/** 画布上应隐藏的 generate（视觉参考或 Agent 执行节点，composer 挂在媒体下）。 */
 export function hiddenGenerateIds(nodes: CanvasNode[], edges: Edge[]) {
+  const agentIds = agentGenerateIds(nodes)
   return new Set(
     nodes
       .filter((node) => (
         node.type === 'generate'
         && (node.data as GenerateNodeData).standalone !== true
-        && generateHasVisualInput(node.id, nodes, edges)
+        && (generateHasVisualInput(node.id, nodes, edges) || agentIds.has(node.id))
       ))
       .map((node) => node.id),
   )
