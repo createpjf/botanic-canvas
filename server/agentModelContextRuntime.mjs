@@ -6,6 +6,7 @@ import {
   compactAgentModelContextSurface,
   createAgentModelContextSurface,
   pruneAgentModelContextSurface,
+  sanitizeAgentModelContextCheckpoint,
 } from './agentModelContextSurface.mjs'
 import { createAgentTokenUsageAnchor, measureAgentModelContextSurface } from './agentTokenMeter.mjs'
 import { buildThreadSummaryCheckpoint, renderThreadSummary } from './agentThreadSummary.mjs'
@@ -34,6 +35,17 @@ function checkpointFromMessages(messages, locale) {
     : '更早的模型上下文已压缩；需要依赖项目事实、产出或外部结果时，请先用可用的只读工具回读权威记录。')
 }
 
+/** Coordinator 已渲染的 threadSummary 优先；surface 正文重抽只作无摘要时的回退。 */
+function resolveCompactionCheckpoint(threadSummaryText, messages, locale) {
+  const rendered = typeof threadSummaryText === 'string' ? threadSummaryText.trim() : ''
+  if (rendered) {
+    try {
+      return sanitizeAgentModelContextCheckpoint(rendered)
+    } catch { /* 空/无效摘要回退到 surface 抽取 */ }
+  }
+  return checkpointFromMessages(messages, locale)
+}
+
 function preparedRecord(surface, meter, policy, trigger, operations) {
   return Object.freeze({
     version: 1,
@@ -57,6 +69,12 @@ export function createAgentModelContextRuntime(input) {
   }
   let usageAnchor = input?.usageAnchor ? structuredClone(input.usageAnchor) : undefined
   const locale = input?.locale === 'en' ? 'en' : 'zh-CN'
+  const threadSummaryText = typeof input?.threadSummary === 'string' && input.threadSummary.trim()
+    ? input.threadSummary.trim()
+    : undefined
+  const enrichCheckpoint = typeof input?.enrichCheckpoint === 'function'
+    ? input.enrichCheckpoint
+    : undefined
   const provider = typeof input?.provider === 'string' && input.provider.trim()
     ? input.provider.trim()
     : 'unknown-provider'
@@ -108,12 +126,33 @@ export function createAgentModelContextRuntime(input) {
       }
 
       if (command?.force === true || meter.shouldCompact) {
+        const overflow = command?.trigger === 'overflow'
+        const deterministicCheckpoint = resolveCompactionCheckpoint(
+          threadSummaryText,
+          agentModelContextProviderMessages(surface),
+          locale,
+        )
+        let checkpoint = deterministicCheckpoint
+        if (enrichCheckpoint) {
+          try {
+            const enriched = await enrichCheckpoint({
+              deterministicContent: deterministicCheckpoint,
+              locale,
+              trigger: command?.trigger ?? 'pre_step',
+            })
+            if (typeof enriched?.content === 'string' && enriched.content.trim()) {
+              checkpoint = enriched.content
+            }
+          } catch { /* enrich 失败不得阻断确定性压缩 */ }
+        }
         const compacted = compactAgentModelContextSurface(surface, {
-          checkpoint: checkpointFromMessages(agentModelContextProviderMessages(surface), locale),
+          checkpoint,
           policy,
-          trigger: command?.trigger === 'overflow' || command?.trigger === 'manual'
+          trigger: overflow || command?.trigger === 'manual'
             ? command.trigger
             : 'auto',
+          // Provider 已证明放不下：绕过日常 16% 尾巴，只保住当前用户 unit 及之后。
+          ...(overflow ? { retainRecentTokens: 0 } : {}),
         })
         if (compacted.kind === 'compacted') {
           surface = compacted.surface

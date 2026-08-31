@@ -7,6 +7,7 @@ import {
 } from './agentModelContextPolicy.mjs'
 import { createAgentModelContextRuntime } from './agentModelContextRuntime.mjs'
 import { sanitizeAgentModelContextCheckpoint } from './agentModelContextSurface.mjs'
+import { renderThreadSummary } from './agentThreadSummary.mjs'
 
 export class AgentModelContextBindingError extends Error {
   constructor(code, message) {
@@ -147,6 +148,14 @@ export function bindAgentModelContextOptions(input, runtimeConfig, options = {})
   if (existingFactory !== undefined && typeof existingFactory !== 'function') {
     failure('AGENT_CONTEXT_RUNTIME_INVALID', 'Agent Model Context factory 无效。')
   }
+  if (options.enrichAgentContextCheckpoint !== undefined
+    && typeof options.enrichAgentContextCheckpoint !== 'function') {
+    failure('AGENT_CONTEXT_RUNTIME_INVALID', 'Agent Context checkpoint enricher 无效。')
+  }
+  const locale = input?.locale === 'en' ? 'en' : 'zh-CN'
+  const threadSummary = text(snapshot.threadSummaryText)
+    || renderThreadSummary(snapshot.threadSummary, { locale })
+    || undefined
   const runtimes = new Map()
   const modelContextForModel = (requestedModel, runtimeIdentity) => {
     assertRuntimeIdentity(input, runtimeIdentity)
@@ -161,6 +170,10 @@ export function bindAgentModelContextOptions(input, runtimeConfig, options = {})
       locale: input?.locale,
       provider: 'flock-chat-completions',
       runtimeIdentity,
+      ...(threadSummary ? { threadSummary } : {}),
+      ...(typeof options.enrichAgentContextCheckpoint === 'function'
+        ? { enrichCheckpoint: options.enrichAgentContextCheckpoint }
+        : {}),
       ...(requestedModel === model && snapshot.usageAnchor
         ? { usageAnchor: snapshot.usageAnchor }
         : {}),

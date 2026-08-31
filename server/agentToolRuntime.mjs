@@ -17,6 +17,9 @@ const TOOL_NAME = /^[a-z][a-z0-9_]{1,63}$/
 const TOOL_RECOVERY_MODES = new Set(['reexecute', 'receipt', 'never'])
 const MODEL_TOOL_CALL_LIMIT = 16
 const MODEL_TOOL_CALL_TOTAL_LIMIT = 64
+/** 连续相同工具签名达到此次数时发时间线警告；再打到终止阈值则停手。 */
+export const AGENT_TOOL_NO_PROGRESS_WARNING = 3
+export const AGENT_TOOL_NO_PROGRESS_TERMINATE = 5
 export const AGENT_TOOL_OUTPUT_TOKEN_BUDGET = 2_000
 export const AGENT_TOOL_OUTPUT_TOTAL_TOKEN_BUDGET = 6_000
 
@@ -128,6 +131,48 @@ function withoutReason(rawArguments) {
   const { why, ...rest } = rawArguments
   void why
   return rest
+}
+
+/**
+ * 检测连续相同工具调用（去掉 why）与稳定输出，避免主 Turn 在空转路径上烧完步数。
+ * 诊断只暴露哈希，不把参数或结果写入事件。
+ */
+export function createAgentToolNoProgressDetector({
+  warningThreshold = AGENT_TOOL_NO_PROGRESS_WARNING,
+  terminationThreshold = AGENT_TOOL_NO_PROGRESS_TERMINATE,
+} = {}) {
+  if (!Number.isInteger(warningThreshold) || warningThreshold < 2) {
+    throw new TypeError('无进展警告阈值必须是至少为 2 的整数。')
+  }
+  if (!Number.isInteger(terminationThreshold) || terminationThreshold <= warningThreshold) {
+    throw new TypeError('无进展终止阈值必须大于警告阈值。')
+  }
+  let lastSignature
+  let repeatCount = 0
+  return {
+    record(observation) {
+      const signature = canonicalHash({
+        name: observation?.name ?? '',
+        arguments: withoutReason(observation?.arguments) ?? null,
+        output: observation?.output ?? null,
+        isError: Boolean(observation?.isError),
+      })
+      if (signature === lastSignature) repeatCount += 1
+      else {
+        lastSignature = signature
+        repeatCount = 1
+      }
+      return {
+        signature,
+        repeatCount,
+        status: repeatCount >= terminationThreshold
+          ? 'terminate'
+          : repeatCount === warningThreshold
+            ? 'warning'
+            : 'progress',
+      }
+    },
+  }
 }
 
 export class AgentToolRuntimeError extends Error {
@@ -518,6 +563,8 @@ export async function runAgentToolLoop({
     if (typeof onEvent !== 'function') return
     try { onEvent(event) } catch { /* 展示层异常不得中断工具循环。 */ }
   }
+  // 无进展检测只覆盖本 attempt 新执行的工具；恢复历史步骤不计入。
+  const noProgress = createAgentToolNoProgressDetector()
 
   const persistCheckpoint = async (next) => {
     if (!checkpointing) return
@@ -718,6 +765,38 @@ export async function runAgentToolLoop({
     },
   }))
 
+  const noteToolProgress = (entry, output, { isError, emitEvents }) => {
+    if (!emitEvents) return
+    const progress = noProgress.record({
+      name: entry.trace.name,
+      arguments: entry.rawArguments,
+      output,
+      isError,
+    })
+    if (progress.status === 'warning') {
+      emit({
+        type: 'tool',
+        step: entry.progressStep,
+        toolCall: {
+          id: entry.trace.id,
+          name: entry.trace.name,
+          label: entry.trace.label,
+          risk: entry.trace.risk,
+          status: isError ? 'failed' : 'succeeded',
+          requiresConfirmation: entry.trace.requiresConfirmation,
+          summary: `连续 ${progress.repeatCount} 次相同结果，疑似原地打转`,
+        },
+        presentation: { kind: 'no_progress', title: '工具在原地打转' },
+      })
+    }
+    if (progress.status === 'terminate') {
+      throw new AgentToolRuntimeError(
+        'TOOL_NO_PROGRESS',
+        `工具 ${entry.trace.label} 连续 ${progress.repeatCount} 次返回相同结果，已停止执行。`,
+      )
+    }
+  }
+
   const executeStep = async (entries, step, { emitEvents = true } = {}) => {
     conversation.push({ role: 'assistant', tool_calls: assistantCalls(entries) })
     let terminalOutput
@@ -725,6 +804,7 @@ export async function runAgentToolLoop({
     for (const entry of entries) {
       const { tool, trace } = entry
       entry.completedDescriptor = entry.descriptor
+      entry.progressStep = step
       const summary = entry.rawArguments ? agentToolCallSummary(entry.rawArguments) : undefined
       reasoning = appendAgentReasoning(reasoning, { step, source: 'summary', text: summary })
       const runningPresentation = toolEventPresentation(trace.name)
@@ -767,8 +847,10 @@ export async function runAgentToolLoop({
           })
         }
         if (!isRecoverableToolFailure(caught)) throw caught
+        const failedOutput = { ok: false, error, code: caught.code }
         toolCalls.push(failed)
-        appendToolOutput(entry, { ok: false, error, code: caught.code })
+        appendToolOutput(entry, failedOutput)
+        noteToolProgress(entry, failedOutput, { isError: true, emitEvents })
         continue
       }
       const succeededPresentation = toolEventPresentation(trace.name, output)
@@ -789,6 +871,7 @@ export async function runAgentToolLoop({
         })
       }
       toolCalls.push(succeededTrace)
+      noteToolProgress(entry, output, { isError: false, emitEvents })
       if (tool.terminal) {
         terminalOutput = output
         terminalSucceeded = true

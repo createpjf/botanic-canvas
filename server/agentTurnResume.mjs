@@ -3,6 +3,10 @@ import { validateAgentTurnCheckpoint } from './agentTurnCheckpoint.mjs'
 import { resolveBotanicAgentRuntimeRequest } from './agentRuntimeRequest.mjs'
 import { createAgentOperationalReaders } from './agentOperationalReaders.mjs'
 import { createAgentContextCoordinator } from './agentContextCoordinator.mjs'
+import {
+  createAgentContextCheckpointEnricher,
+  createFlockContextSummaryInvoker,
+} from './agentContextSummarizer.mjs'
 import { projectPermissionDecision } from './authorization.mjs'
 import { assertAgentTargetBinding } from './agentTargetBinding.mjs'
 
@@ -155,6 +159,13 @@ export function createAgentTurnResumer({
     })
     return contextCoordinator
   }
+  const enrichAgentContextCheckpoint = config?.agentContextLlmSummary
+    ? createAgentContextCheckpointEnricher({
+      enabled: true,
+      invokeChat: createFlockContextSummaryInvoker(config),
+      observe: observeAgentContext,
+    })
+    : undefined
 
   const report = (event) => {
     try { observe?.(event) } catch { /* 可观测性不得改变恢复结果。 */ }
@@ -291,6 +302,9 @@ export function createAgentTurnResumer({
         // undefined 也有意义：配置不完整时 Planner 不得退回进程内旧执行器。
         subagentRunner,
         observeAgentContext,
+        ...(typeof enrichAgentContextCheckpoint === 'function'
+          ? { enrichAgentContextCheckpoint }
+          : {}),
         document: project.document,
         projectSkills,
         role: access?.role,
