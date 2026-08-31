@@ -511,16 +511,16 @@ export function createCanvasGenerationActions({
       const flow = createTaskFlow(document, request)
       const preparedRequest = { ...request, taskNodeIds: flow.taskNodeIds }
       const runId = ++submissionRunId
-      await commitDocument(flow.document, {
-        generationStatus: 'uploading', generationProgress: 0, generationError: null,
-        expectedCandidateCount: normalizedBatchCount, generationCandidates: [], lastGenerationRequest: preparedRequest,
-        assistantMessage: primaryProduct
-          ? `正在提交生成任务：主商品「${primaryProduct.name}」与 ${recipe.references.length} 个画布参考。`
-          : '正在提交生成任务：根据文字描述直接生成。',
-      }, { immediate: true })
-      if (get().document.id !== document.id) return false
-      if (editingBlocked()) return pauseGenerationSubmission(preparedRequest)
       try {
+        await commitDocument(flow.document, {
+          generationStatus: 'uploading', generationProgress: 0, generationError: null,
+          expectedCandidateCount: normalizedBatchCount, generationCandidates: [], lastGenerationRequest: preparedRequest,
+          assistantMessage: primaryProduct
+            ? `正在提交生成任务：主商品「${primaryProduct.name}」与 ${recipe.references.length} 个画布参考。`
+            : '正在提交生成任务：根据文字描述直接生成。',
+        }, { immediate: true, rejectOnFailure: true })
+        if (get().document.id !== document.id) return false
+        if (editingBlocked()) return pauseGenerationSubmission(preparedRequest)
         const job = await submitGenerationJob({
           projectId: document.id, kind: request.kind, prompt: request.prompt,
           batchCount: request.batchCount, settings: request.settings, recipe, agentRun,
@@ -586,14 +586,14 @@ export function createCanvasGenerationActions({
       const flow = createTaskFlow(document, request, target)
       const preparedRequest = { ...request, taskNodeIds: flow.taskNodeIds }
       const runId = ++submissionRunId
-      await commitDocument(flow.document, {
-        generationStatus: 'uploading', generationProgress: 0, generationError: null,
-        expectedCandidateCount: normalizedBatchCount, generationCandidates: [], lastGenerationRequest: preparedRequest,
-        assistantMessage: `正在提交「${parentLabel}」的精修任务。`,
-      }, { immediate: true })
-      if (get().document.id !== document.id) return false
-      if (editingBlocked()) return pauseGenerationSubmission(preparedRequest)
       try {
+        await commitDocument(flow.document, {
+          generationStatus: 'uploading', generationProgress: 0, generationError: null,
+          expectedCandidateCount: normalizedBatchCount, generationCandidates: [], lastGenerationRequest: preparedRequest,
+          assistantMessage: `正在提交「${parentLabel}」的精修任务。`,
+        }, { immediate: true, rejectOnFailure: true })
+        if (get().document.id !== document.id) return false
+        if (editingBlocked()) return pauseGenerationSubmission(preparedRequest)
         const job = await submitGenerationJob({
           projectId: document.id, kind: request.kind, prompt: request.prompt,
           batchCount: request.batchCount, settings: request.settings, recipe,

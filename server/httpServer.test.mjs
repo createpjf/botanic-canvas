@@ -97,7 +97,7 @@ test('可注入 HTTP Server 无需启动生产运行时即可响应健康检查'
   assert.equal(headers['Cache-Control'], 'no-store')
 })
 
-test('未预期的 API 5xx 会把原始异常和安全请求上下文交给错误上报', async () => {
+test('HTTP 仅上报真实 5xx，客户端中断保持 499', async () => {
   const dependencies = testDependencies()
   const original = new Error('database exploded')
   const reported = []
@@ -116,6 +116,23 @@ test('未预期的 API 5xx 会把原始异常和安全请求上下文交给错�
   assert.equal(reported[0][1].tags.component, 'api')
   assert.equal(reported[0][1].tags.error_code, 'INTERNAL_ERROR')
   assert.equal(typeof reported[0][1].contexts.request.id, 'string')
+
+  const abortedDependencies = testDependencies()
+  const abortedReports = []
+  abortedDependencies.runtime.productStore = {
+    async authenticate() { throw Object.assign(new Error('aborted'), { code: 'ECONNRESET' }) },
+  }
+  abortedDependencies.reportError = (...input) => abortedReports.push(input)
+  const abortedApplication = createBotanicHttpServer(abortedDependencies)
+  const abortedRequest = testRequest({ method: 'GET', url: '/api/projects' })
+  Object.defineProperty(abortedRequest, 'aborted', { value: true })
+  const { response: abortedResponse } = testResponse()
+
+  await abortedApplication.handleRequest(abortedRequest, abortedResponse)
+
+  assert.equal(abortedResponse.statusCode, 499)
+  assert.equal(JSON.parse(abortedResponse.body).error.code, 'CLIENT_ABORTED')
+  assert.equal(abortedReports.length, 0)
 })
 
 test('HTTP 启动恢复使用有界 Generation keyset sweep，单个 poison Job 不阻塞同页任务', async () => {

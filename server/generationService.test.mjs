@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import jpeg from 'jpeg-js'
 import { generateMedia } from './generationService.mjs'
+import { gptImage2CustomSizeLimits } from './generationOutputSize.mjs'
 import { encodeRgbaPng } from './imageOverlay.mjs'
+import { imagePixelSize } from './mediaFormats.mjs'
 
 function solidPng(width, height, rgba) {
   const pixels = Buffer.alloc(width * height * 4)
@@ -42,4 +45,42 @@ test('Flock 模型走 flock Adapter，未配置密钥时失败可见', async () 
     jobId: 'job-flock-route',
     persistImage: async () => '/x',
   }), (error) => error.code === 'PROVIDER_NOT_CONFIGURED')
+})
+
+test('GPT 提交前把手机原图归一到供应商像素窗', async () => {
+  const source = jpeg.encode({
+    width: 4032,
+    height: 3024,
+    data: Buffer.alloc(4032 * 3024 * 4, 160),
+  }, 80).data
+  const output = solidPng(2, 2, [12, 34, 56, 255])
+  const originalFetch = globalThis.fetch
+  let submittedImage
+  globalThis.fetch = async (_url, init) => {
+    submittedImage = init.body.get('image[]')
+    return new Response(JSON.stringify({ data: [{ b64_json: output.toString('base64') }] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
+  try {
+    await generateMedia({
+      prompt: '保留商品，换成海边背景',
+      batchCount: 1,
+      settings: { model: 'gpt-image-2', aspectRatio: '16:9', resolution: '1K' },
+      references: [{ name: '手机照片', mimeType: 'image/jpeg', buffer: source }],
+    }, {
+      config: { models: ['gpt-image-2'], apiBaseUrl: 'https://images.test', apiKey: 'test-key' },
+      jobId: 'job-phone-photo',
+      persistImage: async (image) => image.dataUrl,
+    })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+
+  assert.ok(submittedImage instanceof Blob)
+  const size = imagePixelSize(Buffer.from(await submittedImage.arrayBuffer()))
+  assert.ok(size)
+  assert.ok(size.width * size.height <= gptImage2CustomSizeLimits.maxPixels)
 })

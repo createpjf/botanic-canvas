@@ -549,7 +549,9 @@ const handleRequestCore = async (request, response) => {
     return error(response, 404, 'NOT_FOUND', '接口不存在。')
   } catch (caught) {
     const agentEntityFailure = agentEntityHttpError(caught)
-    const failure = caught instanceof HttpError || caught instanceof ProjectAuthorizationError || caught instanceof GenerationError || caught instanceof PromptRefinementError || caught instanceof BotanicAgentPlannerError || caught instanceof BotanicAgentChatError || caught instanceof BotanicAgentRunError || caught instanceof BotanicAgentSkillError || caught instanceof AgentToolRuntimeError || caught instanceof AgentActionExecutionError || caught instanceof AgentActionReconciliationError || caught instanceof McpClientError || caught instanceof AgentDelegationFenceError || caught instanceof AgentSubagentServiceError
+    const failure = request.aborted === true
+      ? new HttpError(499, 'CLIENT_ABORTED', '请求已中断。')
+      : caught instanceof HttpError || caught instanceof ProjectAuthorizationError || caught instanceof GenerationError || caught instanceof PromptRefinementError || caught instanceof BotanicAgentPlannerError || caught instanceof BotanicAgentChatError || caught instanceof BotanicAgentRunError || caught instanceof BotanicAgentSkillError || caught instanceof AgentToolRuntimeError || caught instanceof AgentActionExecutionError || caught instanceof AgentActionReconciliationError || caught instanceof McpClientError || caught instanceof AgentDelegationFenceError || caught instanceof AgentSubagentServiceError
       ? caught
       : agentEntityFailure
         ? agentEntityFailure

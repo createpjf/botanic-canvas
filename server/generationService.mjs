@@ -1,8 +1,66 @@
+import jpeg from 'jpeg-js'
 import { GenerationError, generateImages } from './generationProvider.mjs'
+import { providerInputImages } from './generationComposition.mjs'
 import { providerForModel } from './generationModels.mjs'
-import { composeOverlayImages, jobRequestsPixelOverlay } from './imageOverlay.mjs'
+import { gptImage2CustomSizeLimits } from './generationOutputSize.mjs'
+import { composeOverlayImages, decodeRgbaImage, encodeRgbaPng, jobRequestsPixelOverlay, resizeRgbaImage } from './imageOverlay.mjs'
+import { imagePixelSize } from './mediaFormats.mjs'
 import { generateMiniMaxImages, generateMiniMaxVideos } from './minimaxGenerationProvider.mjs'
 import { generateFlockImages } from './flockGenerationProvider.mjs'
+
+const jpegIccProfileMarker = Buffer.from('ICC_PROFILE')
+
+function normalizeGptInputImage(image) {
+  const size = imagePixelSize(image?.buffer)
+  if (!size) return image
+  const pixels = size.width * size.height
+  const hasJpegIccProfile = image.mimeType === 'image/jpeg' && image.buffer.includes(jpegIccProfileMarker)
+  if (pixels <= gptImage2CustomSizeLimits.maxPixels
+    && Math.max(size.width, size.height) <= gptImage2CustomSizeLimits.maxEdge
+    && !hasJpegIccProfile) return image
+  if (image.mimeType !== 'image/jpeg' && image.mimeType !== 'image/png') {
+    throw new GenerationError(422, 'INVALID_REFERENCE', 'GPT 参考图无法自动压缩，请转换为标准 JPEG 或 PNG 后重试。')
+  }
+  const scale = Math.min(
+    1,
+    gptImage2CustomSizeLimits.maxEdge / Math.max(size.width, size.height),
+    Math.sqrt(gptImage2CustomSizeLimits.maxPixels / pixels),
+  )
+  const width = Math.max(1, Math.floor(size.width * scale))
+  const height = Math.max(1, Math.floor(size.height * scale))
+  try {
+    const resized = resizeRgbaImage(decodeRgbaImage(image.buffer, image.mimeType), width, height)
+    return {
+      ...image,
+      buffer: image.mimeType === 'image/jpeg'
+        ? jpeg.encode({ width, height, data: resized.rgba }, 90).data
+        : encodeRgbaPng(resized),
+    }
+  } catch {
+    throw new GenerationError(422, 'INVALID_REFERENCE', 'GPT 参考图无法自动压缩，请转换为标准 JPEG 或 PNG 后重试。')
+  }
+}
+
+function normalizeGptInputJob(job) {
+  if (!String(job.settings?.model ?? '').startsWith('gpt-image-2')) return job
+  const originalBase = providerInputImages(job)[0]
+  const normalized = {
+    ...job,
+    ...(job.parent ? { parent: normalizeGptInputImage(job.parent) } : {}),
+    ...(Array.isArray(job.references) ? { references: job.references.map(normalizeGptInputImage) } : {}),
+  }
+  const normalizedBase = providerInputImages(normalized)[0]
+  const originalSize = imagePixelSize(originalBase?.buffer)
+  const normalizedSize = imagePixelSize(normalizedBase?.buffer)
+  if (!job.mask?.buffer || !originalSize || !normalizedSize
+    || (originalSize.width === normalizedSize.width && originalSize.height === normalizedSize.height)) return normalized
+  try {
+    const mask = resizeRgbaImage(decodeRgbaImage(job.mask.buffer, job.mask.mimeType), normalizedSize.width, normalizedSize.height)
+    return { ...normalized, mask: { ...job.mask, mimeType: 'image/png', buffer: encodeRgbaPng(mask) } }
+  } catch {
+    throw new GenerationError(422, 'INVALID_MASK', '局部重绘蒙版无法匹配压缩后的参考图，请重新框选后重试。')
+  }
+}
 
 function configuredModel(config, modelId) {
   const declared = providerForModel(config.modelOptions ?? [], modelId)
@@ -30,7 +88,7 @@ export async function generateMedia(job, {
   const model = configuredModel(config, job.settings.model)
   if (!model) throw new GenerationError(400, 'INVALID_REQUEST', '生成模型未配置或不可用。')
   if (model.provider === 'openai') {
-    return generateImages(job, {
+    return generateImages(normalizeGptInputJob(job), {
       apiBaseUrl: config.apiBaseUrl,
       apiKey: config.apiKey,
       signal,

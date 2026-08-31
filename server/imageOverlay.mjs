@@ -197,6 +197,25 @@ function sampleNearest(rgba, width, height, x, y) {
   return [rgba[offset], rgba[offset + 1], rgba[offset + 2], rgba[offset + 3]]
 }
 
+export function resizeRgbaImage({ width, height, rgba }, nextWidth, nextHeight) {
+  if (width === nextWidth && height === nextHeight) return { width, height, rgba: Buffer.from(rgba) }
+  const output = Buffer.allocUnsafe(nextWidth * nextHeight * 4)
+  // ponytail: 最近邻足够用于 Provider 参考图归一化；若实测影响细节，再引入带色彩管理的图像库。
+  for (let row = 0; row < nextHeight; row += 1) {
+    const sourceRow = Math.min(height - 1, Math.floor((row + 0.5) * height / nextHeight))
+    for (let column = 0; column < nextWidth; column += 1) {
+      const sourceColumn = Math.min(width - 1, Math.floor((column + 0.5) * width / nextWidth))
+      const source = (sourceRow * width + sourceColumn) * 4
+      const target = (row * nextWidth + column) * 4
+      output[target] = rgba[source]
+      output[target + 1] = rgba[source + 1]
+      output[target + 2] = rgba[source + 2]
+      output[target + 3] = rgba[source + 3]
+    }
+  }
+  return { width: nextWidth, height: nextHeight, rgba: output }
+}
+
 export function overlayMarkOnBase({ base, mark, rect, inset = 0.08 }) {
   const dest = normalizeRegionRect(rect)
   if (!dest) throw new GenerationError(400, 'INVALID_MASK', '贴标识请先框选要放上去的位置。')

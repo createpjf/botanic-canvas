@@ -179,7 +179,7 @@ export function createCanvasBatchVariationActions({
           status: 'queued',
           generateNodeId: branchId,
           error: undefined,
-        }), {}, { immediate: true })
+        }), {}, { immediate: true, rejectOnFailure: true })
         if (get().document.id !== projectId) return
         item = { ...item, generateNodeId: branchId }
       }
