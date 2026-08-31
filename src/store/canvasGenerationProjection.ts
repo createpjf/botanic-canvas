@@ -285,6 +285,11 @@ export function settleExpiredGenerationSubmissions(
       || result.jobId
       || !result.outputOf
     ) continue
+    const generateNode = nextDocument.nodes.find((node) => node.id === result.outputOf && node.type === 'generate')
+    const generate = generateNode?.type === 'generate' ? generateNode.data as GenerateNodeData : undefined
+    const submissionKey = result.submissionKey ?? generate?.submissionKey
+    // 有幂等键的 uploading 占位应走 recovering 确认，不能刷新即标 failed 诱发重复提交。
+    if (options?.immediate && submissionKey) continue
     if (!options?.immediate) {
       if (!result.submittedAt || now - result.submittedAt < generationSubmissionTimeoutMs) continue
     }
