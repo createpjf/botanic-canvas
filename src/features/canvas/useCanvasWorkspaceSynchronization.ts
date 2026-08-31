@@ -120,7 +120,10 @@ export function useCanvasWorkspaceSynchronization({
   const { locale } = useProductI18n()
   const copy = canvasSynchronizationCopy[locale]
   const documentId = useCanvasStore((state) => state.document.id)
-  const agentRuns = useCanvasStore((state) => state.document.agentRuns)
+  // 只在「是否存在活动 Run」翻转时变化：轮询 interval 不随每次 Run 快照重建。
+  const hasActiveAgentRuns = useCanvasStore((state) => state.document.agentRuns.some((run) => (
+    run.status === 'queued' || run.status === 'running' || run.status === 'executing'
+  )))
   const persistenceStatus = useCanvasStore((state) => state.persistenceStatus)
   const hydrated = useCanvasStore((state) => state.hydrated)
   const hydrate = useCanvasStore((state) => state.hydrate)
@@ -630,7 +633,7 @@ export function useCanvasWorkspaceSynchronization({
 
   useEffect(() => {
     if (!hydrated || !workspaceActive || !serverPersistenceEnabled) return
-    if (!agentRuns.some((run) => run.status === 'queued' || run.status === 'running' || run.status === 'executing')) return
+    if (!hasActiveAgentRuns) return
     let active = true
     let requesting = false
     const recoverProgress = async () => {
@@ -650,7 +653,7 @@ export function useCanvasWorkspaceSynchronization({
       active = false
       window.clearInterval(timer)
     }
-  }, [agentRuns, documentId, hydrated, recoverPersistentAgentRuns, workspaceActive])
+  }, [documentId, hasActiveAgentRuns, hydrated, recoverPersistentAgentRuns, workspaceActive])
 
   return {
     canvasHydrationFailed,

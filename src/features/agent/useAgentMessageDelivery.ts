@@ -104,6 +104,26 @@ export function useAgentMessageDelivery({
     }
   }, [flush])
 
+  /**
+   * enqueue 的唯一入口：本地持久化失败返回错误而不是抛出。
+   * 消息此前已进 UI，这里把它标记为 failed，让用户走现有重试入口；
+   * 抛出会变成事件处理器里的未捕获异常，消息则永远停在「排队中」。
+   */
+  const enqueueSafely = useCallback((sessionId: string, message: BotanicAgentMessage): Error | undefined => {
+    try {
+      queue.enqueue({
+        projectId,
+        sessionId,
+        message,
+        idempotencyKey: `agent-message-${message.id}`,
+      })
+      return undefined
+    } catch (caught) {
+      if (isCurrentProject()) onUpdateMessage(sessionId, message.id, { deliveryStatus: 'failed' })
+      return caught instanceof Error ? caught : new Error('消息本地持久化失败，请重试。')
+    }
+  }, [isCurrentProject, onUpdateMessage, projectId, queue])
+
   const appendMessage = useCallback((message: Omit<BotanicAgentMessage, 'id' | 'createdAt'> & { id?: string; createdAt?: number }) => {
     if (!session || !isCurrentProject()) return ''
     const messageId = message.id?.trim() || `agent-message-${crypto.randomUUID()}`
@@ -115,15 +135,10 @@ export function useAgentMessageDelivery({
     }
     onAppendMessage(session.id, queuedMessage)
     if (!serverPersistenceEnabled) return messageId
-    queue.enqueue({
-      projectId,
-      sessionId: session.id,
-      message: queuedMessage,
-      idempotencyKey: `agent-message-${messageId}`,
-    })
-    if (navigator.onLine) void flush()
+    // 入队失败时消息已标记 failed 且可重试；仍返回 messageId，调用方语义不变。
+    if (!enqueueSafely(session.id, queuedMessage) && navigator.onLine) void flush()
     return messageId
-  }, [flush, isCurrentProject, onAppendMessage, online, projectId, queue, session])
+  }, [enqueueSafely, flush, isCurrentProject, onAppendMessage, online, session])
 
   const persistMessage = useCallback((message: BotanicAgentMessage) => {
     if (!session || !isCurrentProject() || !serverPersistenceEnabled) return
@@ -131,14 +146,8 @@ export function useAgentMessageDelivery({
       ...message,
       deliveryStatus: online ? 'queued' : 'waiting_network',
     }
-    queue.enqueue({
-      projectId,
-      sessionId: session.id,
-      message: queuedMessage,
-      idempotencyKey: `agent-message-${queuedMessage.id}`,
-    })
-    if (navigator.onLine) void flush()
-  }, [flush, isCurrentProject, online, projectId, queue, session])
+    if (!enqueueSafely(session.id, queuedMessage) && navigator.onLine) void flush()
+  }, [enqueueSafely, flush, isCurrentProject, online, session])
 
   const retryMessage = useCallback((messageId: string) => {
     const item = queue.retry(messageId)
@@ -149,10 +158,19 @@ export function useAgentMessageDelivery({
 
   const ensureMessageDurable = useCallback(async (message: BotanicAgentMessage) => {
     // 恢复路径重新 enqueue 同一 Message 操作，不依赖上次本地队列恰好还在。
-    persistMessage(message)
+    // enqueue 失败必须在此冒泡：消息不在队列里时，下面的送达断言会因
+    // 「找不到 pending 项」误判为已送达，放行一个输入并未持久化的 Turn。
+    if (!session) throw new Error('会话不存在，无法持久化消息。')
+    if (isCurrentProject() && serverPersistenceEnabled) {
+      const failure = enqueueSafely(session.id, {
+        ...message,
+        deliveryStatus: online ? 'queued' : 'waiting_network',
+      })
+      if (failure) throw failure
+    }
     await flush()
     assertAgentMessageQueueItemDelivered(queue, message.id)
-  }, [flush, persistMessage, queue])
+  }, [enqueueSafely, flush, isCurrentProject, online, queue, session])
 
   return { appendMessage, persistMessage, retryMessage, ensureMessageDurable }
 }

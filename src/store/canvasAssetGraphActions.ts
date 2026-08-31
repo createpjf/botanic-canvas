@@ -61,6 +61,7 @@ type AssetGraphActions = Pick<CanvasStore,
   | 'replaceMediaSources'
   | 'setNodesTransient'
   | 'setEdges'
+  | 'setEdgesTransient'
   | 'setViewport'
   | 'applyCollaborativeGraph'
   | 'selectNode'
@@ -146,6 +147,11 @@ export function createCanvasAssetGraphActions({
         edges: normalizedEdges,
         nodes: normalizeGenerateNodeInputs(nodes, normalizedEdges),
       })
+    },
+
+    setEdgesTransient: (edges) => {
+      // select-only 变化不改结构，规范化留给下一次真实 commit（与 setNodesTransient 同一口径）。
+      set({ document: { ...get().document, edges } })
     },
 
     setViewport: (viewport) => {

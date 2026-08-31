@@ -60,6 +60,27 @@ test('选择态属于本机 UI，不进入协作更新', () => {
   collaboration.destroy()
 })
 
+test('连线选中态同样不进入协作更新，远端合并后本机选中保留', () => {
+  const edge: Edge = { id: 'edge-a-b', source: 'node-a', target: 'node-b' }
+  const initial = { nodes: [node('node-a', 10), node('node-b', 320)], edges: [edge] }
+  const updates: Uint8Array[] = []
+  const collaboration = createCollaborativeGraph({
+    initialGraph: initial,
+    onUpdate: (update) => updates.push(update),
+    onRemoteGraph: () => undefined,
+  })
+
+  collaboration.replaceLocalGraph({ ...initial, edges: [{ ...edge, selected: true }] })
+  assert.equal(updates.length, 0)
+  collaboration.destroy()
+
+  const merged = mergeCollaborativeCanvasGraph(
+    { ...initial, edges: [{ ...edge, selected: true }] },
+    { ...initial, edges: [edge] },
+  )
+  assert.equal(merged.edges[0].selected, true)
+})
+
 test('协作增量不携带图片字节', () => {
   const assetNode = {
     id: 'asset-a',

@@ -118,6 +118,8 @@ export type CanvasStore = {
   replaceMediaSources: (replacements: Record<string, string>) => Promise<void>
   setNodesTransient: (nodes: CanvasNode[]) => void
   setEdges: (edges: Edge[]) => void
+  /** 仅同步连线选中态等瞬时视图状态，不触发持久化（与 setNodesTransient 对称）。 */
+  setEdgesTransient: (edges: Edge[]) => void
   setViewport: (viewport: Viewport) => void
   applyCollaborativeGraph: (graph: { nodes: CanvasNode[]; edges: Edge[] }) => void
   selectNode: (nodeId: string | null) => void

@@ -172,6 +172,12 @@ export function createAgentTurnHttpAdapter({
       const turnId = decodeURIComponent(agentTurnCancelMatch[1])
       const turn = await productStore.readAgentTurn(user.id, turnId)
       if (!turn) return error(response, 404, 'AGENT_TURN_NOT_FOUND', '未找到该 Agent Turn。')
+      // 取消是有副作用的深取消（级联 linked Run / Subagent）。readAgentTurn 目前按
+      // owner 作用域读，这里再显式断言一次：将来 Turn 若开放项目级可见，这条边界
+      // 不能跟着放开——项目成员也不能打断别人正在执行的回合。
+      if (turn.ownerId !== user.id) {
+        return error(response, 403, 'AGENT_TURN_CANCEL_FORBIDDEN', '只有发起者能取消该 Agent 回合。')
+      }
       await requireProjectPermission(productStore, user.id, turn.projectId, 'read')
       const cancellation = await cancellationService().cancelAgentTurn({
         userId: user.id,

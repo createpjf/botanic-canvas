@@ -131,7 +131,13 @@ function commit(
   options: { immediate?: boolean; rejectOnFailure?: boolean } = {},
 ) {
   const activeProjectId = useCanvasStore.getState().document.id
-  if (activeProjectId !== document.id) return Promise.resolve()
+  if (activeProjectId !== document.id) {
+    // 项目已切换：旧文档写入按设计丢弃。要求确认写入结果的调用方必须感知，
+    // 否则「显示已保存、实际没保存」；普通 fire-and-forget 调用方语义不变。
+    return options.rejectOnFailure
+      ? Promise.reject(new Error('项目已切换，这次画布写入已放弃；请回到原项目重试。'))
+      : Promise.resolve()
+  }
   const sanitizedDocument = [...revokedGlobalAssetIds].reduce(
     (current, assetId) => scrubAssetFromDocument(current, assetId),
     document,

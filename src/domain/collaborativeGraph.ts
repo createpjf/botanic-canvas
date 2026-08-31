@@ -72,7 +72,11 @@ function collaborativeNode(node: CanvasNode): CanvasNode {
 }
 
 function collaborativeEdge(edge: Edge): Edge {
-  return sanitizeCollaborativeValue(edge, undefined, false, true) as Edge
+  const normalized = sanitizeCollaborativeValue(edge, undefined, false, true) as Edge
+  // 选中是本机私有视图状态，与节点侧同一边界：不进 CRDT 广播，
+  // 否则协作者会看到「被别人选中」的连线，且纯选中也会产生增量。
+  delete normalized.selected
+  return normalized
 }
 
 function normalizedGraph(graph: CollaborativeGraph): CollaborativeGraph {
@@ -92,6 +96,7 @@ export function mergeCollaborativeCanvasGraph(
   remote: CollaborativeGraph,
 ): CollaborativeGraph {
   const currentById = new Map(current.nodes.map((node) => [node.id, node]))
+  const currentEdgeById = new Map(current.edges.map((edge) => [edge.id, edge]))
   return {
     nodes: remote.nodes.map((node) => {
       const local = currentById.get(node.id)
@@ -111,7 +116,11 @@ export function mergeCollaborativeCanvasGraph(
             : clone(node.data),
       } as CanvasNode
     }),
-    edges: remote.edges.map((edge) => clone(edge)),
+    edges: remote.edges.map((edge) => ({
+      ...clone(edge),
+      // 广播已剥离 selected，本机选中态只能从本地图谱恢复，与节点侧对称。
+      ...(currentEdgeById.get(edge.id)?.selected ? { selected: true } : {}),
+    })),
   }
 }
 

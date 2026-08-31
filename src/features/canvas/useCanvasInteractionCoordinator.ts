@@ -88,6 +88,7 @@ export function useCanvasInteractionCoordinator({
   const setNodes = useCanvasStore((state) => state.setNodes)
   const setNodesTransient = useCanvasStore((state) => state.setNodesTransient)
   const setEdges = useCanvasStore((state) => state.setEdges)
+  const setEdgesTransient = useCanvasStore((state) => state.setEdgesTransient)
   const setViewport = useCanvasStore((state) => state.setViewport)
   const addAssetToCanvas = useCanvasStore((state) => state.addAssetToCanvas)
   const addUploadedAssetsToCanvas = useCanvasStore((state) => state.addUploadedAssetsToCanvas)
@@ -140,12 +141,19 @@ export function useCanvasInteractionCoordinator({
   }, [editingBlocked, hydrated, setNodes])
 
   const onEdgesChange: OnEdgesChange = useCallback((changes) => {
-    if (!hydrated || editingBlocked) return
+    if (!hydrated) return
     const currentEdges = useCanvasStore.getState().document.edges
+    // select-only 变化走 transient：不落盘、不产生 revision，与节点侧同一口径；
+    // 只读同步期间（editingBlocked）也允许选中，与 onNodesChange 一致。
+    if (changes.length > 0 && changes.every((change) => change.type === 'select')) {
+      setEdgesTransient(applyEdgeChanges(changes, currentEdges))
+      return
+    }
+    if (editingBlocked) return
     const protectedEdgeIds = new Set(currentEdges.filter((edge) => Boolean(edge.data?.system)).map((edge) => edge.id))
     const safeChanges = changes.filter((change) => change.type !== 'remove' || !protectedEdgeIds.has(change.id))
     setEdges(applyEdgeChanges(safeChanges, currentEdges))
-  }, [editingBlocked, hydrated, setEdges])
+  }, [editingBlocked, hydrated, setEdges, setEdgesTransient])
 
   const persistViewport = useCallback((viewport: CanvasDocument['viewport']) => {
     if (!hydrated) return
@@ -221,13 +229,15 @@ export function useCanvasInteractionCoordinator({
    */
   const pasteFilesToCanvasCenter = useCallback((files: File[]) => {
     const mapper = screenToFlowPositionRef.current
-    const surface = window.document.querySelector('.react-flow')
+    // 限定在本工作区 pane 内查找：全局 querySelector 会命中页面上任何一个
+    // React Flow 实例（如区域蒙版编辑器），把落点算进错误的坐标系。
+    const surface = canvasPaneRef.current?.querySelector('.react-flow')
     if (!mapper || !surface) return false
     const rect = surface.getBoundingClientRect()
     const position = mapper({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 })
     void addDroppedFilesToCanvas(files, position, 'paste')
     return true
-  }, [addDroppedFilesToCanvas, screenToFlowPositionRef])
+  }, [addDroppedFilesToCanvas, canvasPaneRef, screenToFlowPositionRef])
 
   const onCanvasDragOver = useCallback((event: DragEvent<HTMLElement>) => {
     event.preventDefault()
@@ -423,26 +433,29 @@ export function useCanvasInteractionCoordinator({
     event.stopPropagation()
     const paneRect = canvasPaneRef.current?.getBoundingClientRect()
     if (!paneRect) return
-    setEdges(document.edges.map((item) => ({ ...item, selected: item.id === edge.id })))
+    // 选中是瞬时视图状态：不落盘、不产生 revision，也不进 CRDT 广播。
+    setEdgesTransient(useCanvasStore.getState().document.edges.map((item) => ({ ...item, selected: item.id === edge.id })))
     setSelectedEdgeId(edge.id)
     setEdgeActionPosition({
       x: Math.max(12, Math.min(paneRect.width - 178, event.clientX - paneRect.left + 10)),
       y: Math.max(78, Math.min(paneRect.height - 48, event.clientY - paneRect.top + 10)),
     })
-  }, [canvasPaneRef, document.edges, setEdges])
+  }, [canvasPaneRef, setEdgesTransient])
 
   const removeSelectedEdge = useCallback(() => {
     if (!selectedEdgeId) return
-    const edge = document.edges.find((item) => item.id === selectedEdgeId)
-    if (!edge?.data?.system) setEdges(document.edges.filter((item) => item.id !== selectedEdgeId))
+    const currentEdges = useCanvasStore.getState().document.edges
+    const edge = currentEdges.find((item) => item.id === selectedEdgeId)
+    if (!edge?.data?.system) setEdges(currentEdges.filter((item) => item.id !== selectedEdgeId))
     setSelectedEdgeId(null)
     setEdgeActionPosition(null)
-  }, [document.edges, selectedEdgeId, setEdges])
+  }, [selectedEdgeId, setEdges])
 
   const toggleNodeReference = useCallback((generateNodeId: string, assetNodeId: string, enabled: boolean) => {
     const connection: Connection = { source: assetNodeId, sourceHandle: 'asset-output', target: generateNodeId, targetHandle: 'input' }
+    const currentEdges = useCanvasStore.getState().document.edges
     if (!enabled) {
-      setEdges(document.edges.filter((edge) => !(edge.source === assetNodeId && edge.target === generateNodeId)))
+      setEdges(currentEdges.filter((edge) => !(edge.source === assetNodeId && edge.target === generateNodeId)))
       return
     }
     if (!isGraphConnectionValid(connection)) return
@@ -452,8 +465,8 @@ export function useCanvasInteractionCoordinator({
       type: 'default',
       style: graphEdgeStyle(connection),
       reconnectable: true,
-    }, document.edges))
-  }, [document.edges, graphEdgeStyle, isGraphConnectionValid, setEdges])
+    }, currentEdges))
+  }, [graphEdgeStyle, isGraphConnectionValid, setEdges])
 
   const addAssetFromLibrary = useCallback((assetId: string) => {
     const target = assetLibraryTargetGenerateId
