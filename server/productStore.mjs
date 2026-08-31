@@ -634,6 +634,22 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       return { document: clone(project.document), revision: project.revision, graphRevision: 1, created: true }
     },
 
+    /**
+     * 在 Store 锁内原子地「读最新文档 → mutate → 写回」。Worker 回写走这里就不再和
+     * 用户保存比谁先拿到 revision；mutate 返回 undefined 表示无需写入。
+     * 进程内 Store 天然串行；mutate 必须是同步函数。
+     */
+    updateProjectDocument(userId, projectId, mutate) {
+      const existing = state.projects.find((item) => item.id === projectId)
+      if (!existing) return undefined
+      const member = existing.members.find((item) => item.userId === userId)
+      assertProjectPermission(member?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+      const graph = ensureCanvasGraph(existing)
+      const next = mutate({ ...clone(existing.document), ...clone(graph.graph) })
+      if (!next) return undefined
+      return this.writeProject(userId, next, existing.revision, graph.graphRevision)
+    },
+
     deleteProject(userId, projectId) {
       const project = state.projects.find((item) => item.id === projectId)
       if (!project) return false

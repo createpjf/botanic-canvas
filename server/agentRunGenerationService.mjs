@@ -159,8 +159,21 @@ export function createAgentRunGenerationService({
   }
 
   async function persistJobState(userId, projectId, job) {
-    // 与 generationProcessor.writeJobToProject 同款：5 次指数退避。用户高频保存画布时
-    // 每次 bump revision，无退避的 3 连快速重试基本必输。
+    // 优先走 Store 的原子文档更新：锁内读改写，不与用户保存竞速。
+    if (typeof productStore.updateProjectDocument === 'function') {
+      try {
+        const saved = await productStore.updateProjectDocument(userId, projectId, (document) => {
+          const reconciled = reconcileAgentGenerationJobToProject(document, job)
+          return reconciled.changed ? reconciled.document : undefined
+        })
+        if (saved) await publishProjectUpdated(saved, userId)
+        return
+      } catch (caught) {
+        if (caught?.code !== 'PROJECT_CONFLICT' && caught?.code !== 'CANVAS_GRAPH_CONFLICT') throw caught
+        throw new AgentToolRuntimeError('AGENT_WRITEBACK_CONFLICT', '任务状态回写连续冲突，请刷新画布后重试。', 409)
+      }
+    }
+    // 旧路径（Store 未提供原子更新）：读-改-CAS 写，5 次指数退避。
     const maxAttempts = 5
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       const project = await productStore.readProject(userId, projectId)

@@ -188,6 +188,19 @@ export function createGenerationProcessor({
     } catch { /* 可观测性不得改变任务状态。 */ }
   }
   async function writeJobToProject(job) {
+    // 优先走 Store 的原子文档更新（锁内读改写）；mutate 内抛出的投影未完成错误
+    // 会中止事务并原样上抛，交给 markPending 补偿，与旧路径语义一致。
+    if (typeof productStore.updateProjectDocument === 'function') {
+      const saved = await productStore.updateProjectDocument(job.ownerId, job.projectId, (document) => {
+        const reconciled = reconcileAgentGenerationJobToProject(document, job)
+        if (job.agentRun && job.status === 'succeeded' && job.outputs?.length && reconciled.complete === false) {
+          throw new Error('Agent 结果尚未完成画布投影。')
+        }
+        return reconciled.changed ? reconciled.document : undefined
+      })
+      if (saved) await publishProjectUpdate(job, saved)
+      return true
+    }
     const maxAttempts = 5
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       const project = await productStore.readProject(job.ownerId, job.projectId)

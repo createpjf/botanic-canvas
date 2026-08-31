@@ -775,6 +775,26 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       return projectPermissionDecision(role, 'edit') === 'allow'
     },
 
+    /**
+     * ponytail: PostgREST 无事务，这里用 CAS 重试 ×5（指数退避）近似原子更新，
+     * 热点冲突持续时的升级路径是新增 SQL 内行锁合并的 patch RPC。
+     * 与 PG/本地 Adapter 同一契约：mutate 拿到最新合并文档，返回 undefined 表示无需写入。
+     */
+    async updateProjectDocument(userId, projectId, mutate) {
+      for (let attempt = 0; ; attempt += 1) {
+        const project = await this.readProject(userId, projectId)
+        if (!project) return undefined
+        const next = mutate(clone(project.document))
+        if (!next) return undefined
+        try {
+          return await this.writeProject(userId, next, project.revision, project.graphRevision)
+        } catch (caught) {
+          if ((caught?.code !== 'PROJECT_CONFLICT' && caught?.code !== 'CANVAS_GRAPH_CONFLICT') || attempt >= 4) throw caught
+          await new Promise((resolve) => setTimeout(resolve, Math.min(2_000, 100 * (2 ** attempt))))
+        }
+      }
+    },
+
     async writeProject(userId, document, expectedRevision, expectedGraphRevision) {
       // 项目 RPC 一旦成功就不能回滚；先证明派生字段安全同步能力已部署，
       // 避免缺迁移时先把带旧 Summary 的兼容文档写成功再报错。

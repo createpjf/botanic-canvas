@@ -35,6 +35,29 @@ function createStore() {
   }
 }
 
+test('updateProjectDocument 在锁内读最新文档并原子写回，无变更不 bump revision', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, document('project-atomic'), undefined)
+
+  const saved = store.updateProjectDocument(owner.id, 'project-atomic', (current) => ({
+    ...current,
+    generationJobs: [{ id: 'job-atomic-1', status: 'succeeded', outputs: [] }],
+    nodes: [...current.nodes, { id: 'agent-result-atomic', type: 'result', position: { x: 0, y: 0 }, data: { kind: 'result', jobId: 'job-atomic-1' } }],
+  }))
+  assert.equal(saved.revision, 2)
+  assert.equal(saved.document.generationJobs[0].id, 'job-atomic-1')
+  assert.ok(saved.document.nodes.some((node) => node.id === 'agent-result-atomic'))
+  const reread = store.readProject(owner.id, 'project-atomic')
+  assert.equal(reread.revision, 2)
+  assert.ok(reread.document.nodes.some((node) => node.id === 'agent-result-atomic'))
+
+  // mutate 返回 undefined 表示无需写入：revision 不动，也不返回写结果。
+  assert.equal(store.updateProjectDocument(owner.id, 'project-atomic', () => undefined), undefined)
+  assert.equal(store.readProject(owner.id, 'project-atomic').revision, 2)
+  assert.equal(store.updateProjectDocument(owner.id, 'missing-project', () => undefined), undefined)
+})
+
 test('项目、成员授权和审计会持久化到服务端数据文件', () => {
   const { path, store } = createStore()
   const owner = store.authenticate('owner-token')
