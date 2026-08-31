@@ -67,3 +67,22 @@ test('批量子任务断线后从原生成节点恢复同一幂等键', () => {
   assert.equal(recovered?.taskNodeIds?.resultNodeId, flow.taskNodeIds.resultNodeId)
   assert.deepEqual(recovered?.taskNodeIds?.resultNodeIds, flow.taskNodeIds.resultNodeIds)
 })
+
+test('刷新后无 jobId 的 uploading 占位在恢复时立即收口为可重试失败', () => {
+  const document: CanvasDocument = {
+    id: 'project-zombie', name: '僵尸占位',
+    nodes: [
+      { id: 'generate-zombie', type: 'generate', position: { x: 0, y: 0 }, data: { kind: 'generate', label: '生成', prompt: '测试', batchCount: 1, settings, status: 'uploading' } },
+      { id: 'result-zombie', type: 'result', position: { x: 300, y: 0 }, data: { kind: 'result', outputOf: 'generate-zombie', taskGroupId: 'result-zombie', taskStatus: 'uploading', submittedAt: Date.now(), generationKind: 'generation', generationRecipe: { prompt: '测试', batchCount: 1, settings, references: [] } } },
+    ],
+    edges: [], viewport: { x: 0, y: 0, zoom: 1 }, assets: [], assetGroups: [], templates: [], history: [], deliveries: [],
+    generationJobs: [], batchVariationRuns: [], agentSessions: [], agentMemory: [], agentRuns: [], updatedAt: 1,
+  }
+
+  const restored = restoreGenerationLifecycleState(document, '已打开项目。')
+  const result = restored.document.nodes.find((node) => node.id === 'result-zombie')
+
+  assert.equal((result?.data as { taskStatus?: string }).taskStatus, 'failed')
+  assert.match(String((result?.data as { error?: string }).error), /任务提交已中断/)
+  assert.equal(restored.state.generationStatus, 'idle')
+})

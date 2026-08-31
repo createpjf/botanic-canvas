@@ -76,7 +76,7 @@ export function createCanvasDocumentLifecycleActions({
     const syncedMessage = canvasDocumentLifecycleAssistantMessage({ kind: 'synced', locale: readProductLocale() })
     const recoveredGeneration = restoreGenerationLifecycleState(document, syncedMessage)
     set({
-      document,
+      document: recoveredGeneration.document,
       persistenceStatus: 'saved',
       selectedNodeId: selectedNode?.id ?? null,
       ...recoveredGeneration.state,
@@ -104,7 +104,7 @@ export function createCanvasDocumentLifecycleActions({
         canvasDocumentReadyAssistantMessage(document, readProductLocale()),
       )
       set({
-        document,
+        document: recoveredGeneration.document,
         globalAssets: [],
         sharedTemplates: [],
         hydrated: true,
@@ -137,8 +137,9 @@ export function createCanvasDocumentLifecycleActions({
         document,
         canvasDocumentReadyAssistantMessage(document, readProductLocale()),
       )
+      const persistedDocument = recoveredGeneration.document
       set({
-        document,
+        document: persistedDocument,
         globalAssets: get().globalAssets,
         hydrated: true,
         persistenceStatus: 'saved',
@@ -147,9 +148,9 @@ export function createCanvasDocumentLifecycleActions({
         undoAction: null,
         undoSnapshot: null,
       })
-      if (settledSubmission.changed || document.schemaVersion !== stored.schemaVersion || hasCrampedStarterV03Layout(stored.nodes)) {
+      if (settledSubmission.changed || persistedDocument !== document || document.schemaVersion !== stored.schemaVersion || hasCrampedStarterV03Layout(stored.nodes)) {
         try {
-          await writeCanvasDocument(document)
+          await writeCanvasDocument(persistedDocument)
           if (openDocumentOperations.isCurrent(operationToken) && get().document.id === documentId) set({ persistenceStatus: 'saved' })
         } catch {
           if (openDocumentOperations.isCurrent(operationToken) && get().document.id === documentId) {
@@ -196,7 +197,7 @@ export function createCanvasDocumentLifecycleActions({
         canvasDocumentReadyAssistantMessage(document, readProductLocale()),
       )
       set({
-        document,
+        document: recoveredGeneration.document,
         hydrated: true,
         persistenceStatus: 'saved',
         selectedNodeId: selectedNode?.id ?? null,

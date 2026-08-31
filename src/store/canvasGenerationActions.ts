@@ -92,8 +92,8 @@ export function createCanvasGenerationActions({
   scrubGenerationRequest,
   editingBlocked,
 }: CanvasGenerationDependencies): CanvasGenerationController {
-  let pollTimerId: number | null = null
-  let pollRunId = 0
+  const pollTimers = new Map<string, number>()
+  let pollEpoch = 0
   let submissionRunId = 0
 
   const pauseGenerationSubmission = async (request: GenerationRequest & { taskNodeIds: TaskNodeIds }) => {
@@ -110,9 +110,15 @@ export function createCanvasGenerationActions({
   }
 
   const stopPolling = () => {
-    if (pollTimerId !== null) window.clearTimeout(pollTimerId)
-    pollTimerId = null
-    pollRunId += 1
+    for (const timer of pollTimers.values()) window.clearTimeout(timer)
+    pollTimers.clear()
+    pollEpoch += 1
+  }
+
+  const clearPollTimer = (jobId: string) => {
+    const timer = pollTimers.get(jobId)
+    if (timer !== undefined) window.clearTimeout(timer)
+    pollTimers.delete(jobId)
   }
 
   const setGenerationError = (message: string, preserveLastRequest = false) => {
@@ -228,28 +234,33 @@ export function createCanvasGenerationActions({
   }
 
   const pollJob = (jobId: string) => {
-    stopPolling()
-    const runId = pollRunId
+    clearPollTimer(jobId)
+    const runEpoch = pollEpoch
     let retryDelay = 1_500
+    const schedulePoll = (delay: number) => {
+      pollTimers.set(jobId, window.setTimeout(() => void poll(), delay))
+    }
     const poll = async () => {
-      if (runId !== pollRunId) return
+      if (runEpoch !== pollEpoch) return
       try {
         const job = await getGenerationJob(jobId)
-        if (runId !== pollRunId) return
+        if (runEpoch !== pollEpoch) return
         syncJob(job)
         if (job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled') {
-          pollTimerId = null
+          clearPollTimer(jobId)
           return
         }
         const nextDelay = window.document.hidden ? 10_000 : retryDelay
         retryDelay = Math.min(5_000, Math.round(retryDelay * 1.5))
-        pollTimerId = window.setTimeout(() => void poll(), nextDelay)
+        schedulePoll(nextDelay)
       } catch (error) {
-        if (runId !== pollRunId) return
+        if (runEpoch !== pollEpoch) return
         if (error instanceof GenerationApiError && error.code === 'JOB_NOT_FOUND') {
+          clearPollTimer(jobId)
           const request = get().lastGenerationRequest
+          if (request?.jobId !== jobId) return
           const message = '生成服务已重启，无法恢复本次任务。请重试。'
-          const failedDocument = request?.taskNodeIds
+          const failedDocument = request.taskNodeIds
             ? updateTaskNodes(get().document, request.taskNodeIds, 'failed', request.jobId, message)
             : get().document
           void commitDocument({
@@ -261,12 +272,11 @@ export function createCanvasGenerationActions({
             generationStatus: 'error', generationProgress: 0,
             generationError: message, generationCandidates: [], assistantMessage: message,
           })
-          pollTimerId = null
           return
         }
         set({ assistantMessage: error instanceof Error ? `${error.message} 任务仍可能在服务端执行。` : '任务状态同步失败，任务仍可能在服务端执行。' })
         retryDelay = Math.min(10_000, Math.max(2_000, Math.round(retryDelay * 2)))
-        pollTimerId = window.setTimeout(() => void poll(), window.document.hidden ? 15_000 : retryDelay)
+        schedulePoll(window.document.hidden ? 15_000 : retryDelay)
       }
     }
     void poll()
@@ -360,7 +370,7 @@ export function createCanvasGenerationActions({
       )
       const state = restoreGenerationLifecycleState(reconciledDocument, '已从服务端补回生成结果。')
       // 复用统一提交门禁，使这份权威恢复结果同时压住更早的整画布保存响应。
-      await commitDocument(reconciledDocument, { selectedNodeId: selected?.id ?? null, ...state.state }, { immediate: true })
+      await commitDocument(state.document, { selectedNodeId: selected?.id ?? null, ...state.state }, { immediate: true })
       return true
     } catch {
       recoverTaskNodeJobs(documentId)
