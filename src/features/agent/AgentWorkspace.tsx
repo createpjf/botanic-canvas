@@ -476,7 +476,7 @@ export default function AgentWorkspace({
     ? session!.plannerModel!
     : plannerModels[0] ?? defaultAgentPlannerModels[0]
   const [composerState, updateComposerState] = useReducer(agentComposerStateReducer, initialAgentComposerState)
-  const { instruction, error, lastFailedInstruction, lastFailedCommand, lastFailedPlanMessageId, mentionQuery, pendingGenerationOverrides } = composerState
+  const { instruction, error, lastFailedInstruction, lastFailedCommand, lastFailedPlanMessageId, mentionQuery, pendingGenerationOverrides, pendingRecoveryContextSnapshot } = composerState
   const setInstruction = useCallback((value: string) => updateComposerState({ instruction: value }), [])
   const setError = useCallback((value: string) => updateComposerState({ error: value }), [])
   const setLastFailedInstruction = useCallback((value: string) => updateComposerState({
@@ -1532,6 +1532,9 @@ export default function AgentWorkspace({
   ): Promise<BotanicAgentPlan | BotanicAgentClarificationResponse | null> => {
     if (!session || !target || !isCurrentAgentProject()) return null
     const assetGroup = compatibleGroups.find((group) => group.id === groupId)
+    // 失败 Run 恢复的权威引用优先进入快照（构建时按 nodeId 去重，先到先得）。
+    const recoveryContextItems = failedCommand?.options.recoveryContextSnapshot ?? []
+    const planContextSnapshot = () => createBotanicAgentContextSnapshot([...recoveryContextItems, ...contextItems])
     const input = {
       projectId,
       locale,
@@ -1554,7 +1557,7 @@ export default function AgentWorkspace({
       generationOverrides,
       clarificationAnswers,
       creativeBrief,
-      contextSnapshot: createBotanicAgentContextSnapshot(contextItems),
+      contextSnapshot: planContextSnapshot(),
       ...(outputCount ? { outputCount } : {}),
     }
     plannerControllerRef.current?.abort()
@@ -1631,7 +1634,7 @@ export default function AgentWorkspace({
             selectedResultLabel: target.label,
             rootRecipe: target.rootRecipe,
             assetGroup,
-            contextSnapshot: createBotanicAgentContextSnapshot(contextItems),
+            contextSnapshot: planContextSnapshot(),
             ...(outputCount ? { outputCount } : {}),
             settings: { ...target.rootRecipe.settings, ...generationOverrides },
           })
@@ -1672,7 +1675,7 @@ export default function AgentWorkspace({
             rootRecipe: target.rootRecipe,
             assetGroup,
             creativeBrief,
-            contextSnapshot: createBotanicAgentContextSnapshot(contextItems),
+            contextSnapshot: planContextSnapshot(),
             ...(outputCount ? { outputCount } : {}),
           }), plannerModel, settings: { ...target.rootRecipe.settings, ...generationOverrides } }
           const applied = applyBotanicAgentVariationToPlan(fallbackPlan, {
@@ -1845,6 +1848,8 @@ export default function AgentWorkspace({
       ...lockedContextIds,
     ])]
     if (recoveryContextIds.length) onUseResultContext(recoveryContextIds)
+    // 权威引用直接随下一次指令结构化下发；UI 上下文只是可见回显，不再是唯一来源。
+    updateComposerState({ pendingRecoveryContextSnapshot: run.plan.contextSnapshot?.length ? run.plan.contextSnapshot : undefined })
     setIntent(run.plan.intent)
     setGroupId('')
     setRecoveryModelMenuKey('')
@@ -1902,6 +1907,7 @@ export default function AgentWorkspace({
       ...(options.sourceTurnId ? { turnId: options.sourceTurnId } : {}),
       options: {
         ...(options.generationOverrides ? { generationOverrides: options.generationOverrides } : {}),
+        ...(options.recoveryContextSnapshot?.length ? { recoveryContextSnapshot: options.recoveryContextSnapshot } : {}),
         ...(options.clarificationAnswers ? { clarificationAnswers: options.clarificationAnswers } : {}),
         ...(options.creativeBrief ? { creativeBrief: options.creativeBrief } : {}),
         ...(options.sourcePromptMessageId ? { sourcePromptMessageId: options.sourcePromptMessageId } : {}),
@@ -2629,7 +2635,11 @@ export default function AgentWorkspace({
       target: instructionTarget
         ? { id: instructionTarget.id, label: instructionTarget.label, image: instructionTarget.image, inheritedSettings: instructionTarget.rootRecipe.settings }
         : undefined,
-      contextItems,
+      // 失败 Run 恢复的权威引用排在最前：身份、顺序与角色以原计划快照为准，
+      // 快照构建会按 nodeId 去重，UI 里新增的引用仍可追加在后。
+      contextItems: resolvedOptions.recoveryContextSnapshot?.length
+        ? [...resolvedOptions.recoveryContextSnapshot, ...contextItems]
+        : contextItems,
       variationAssetGroup: variationGroup
         ? { id: variationGroup.id, role: variationGroup.role, assetCount: variationGroup.assetIds.length }
         : undefined,
@@ -3146,7 +3156,7 @@ export default function AgentWorkspace({
     setLastFailedPlanMessageId('')
     setInstruction('')
     setMentionQuery(undefined)
-    setPendingGenerationOverrides({})
+    updateComposerState({ pendingGenerationOverrides: {}, pendingRecoveryContextSnapshot: undefined })
     void runInstruction(retryInstruction, {
       ...command?.options,
       ...(command?.sourceMessageId
@@ -3184,12 +3194,14 @@ export default function AgentWorkspace({
     setMentionQuery(undefined)
     setLastFailedPlanMessageId('')
     const generationOverrides = pendingGenerationOverrides
-    setPendingGenerationOverrides({})
+    const recoveryContextSnapshot = pendingRecoveryContextSnapshot
+    updateComposerState({ pendingGenerationOverrides: {}, pendingRecoveryContextSnapshot: undefined })
     try {
       await runInstruction(prepared.instruction, {
         appendUser: prepared.content,
         mentions: prepared.mentions,
         generationOverrides,
+        ...(recoveryContextSnapshot?.length ? { recoveryContextSnapshot } : {}),
       })
     } finally {
       sendingInstructionRef.current = false
