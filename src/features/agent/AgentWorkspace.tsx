@@ -1768,10 +1768,7 @@ export default function AgentWorkspace({
     // 冻结后再 POST：toolCalls 进服务端绑定哈希、不进提交键。共享数组被时间线改掉
     // 后再打同一 key，会变成 BOTANIC-CANVAS-8 那种假冲突。
     const plan = structuredClone(editedPrompt ? { ...message.plan, prompt: editedPrompt } : message.plan)
-    let persistedPlanMessage = message
-    if (editedPrompt && editedPrompt !== message.plan.prompt) {
-      persistedPlanMessage = persistMessageUpdate(persistedPlanMessage, { plan })
-    }
+    let persistedPlanMessage = persistMessageUpdate(message, { plan })
     try {
       const submission = await onConfirm(plan, botanicAgentSubmissionKey(message.id, plan))
       if (!isCurrentAgentProject()) return

@@ -371,6 +371,40 @@ test('Agent Run 幂等冲突经过统一 HTTP 层保留 409，不降成可重试
   assert.equal(JSON.parse(response.body).error.code, 'AGENT_RUN_IDEMPOTENCY_CONFLICT')
 })
 
+test('Agent 消息 Turn 请求冲突经过统一 HTTP 层保留 409，不上报 5xx', async () => {
+  const dependencies = testDependencies()
+  const reported = []
+  dependencies.reportError = (...input) => reported.push(input)
+  dependencies.runtime.productStore = {
+    async authenticate() {
+      throw Object.assign(new Error('Agent 消息的 Turn 请求身份不可变更。'), {
+        code: 'AGENT_MESSAGE_TURN_REQUEST_CONFLICT',
+      })
+    },
+  }
+  const application = createBotanicHttpServer(dependencies)
+  const { response } = testResponse()
+  await application.handleRequest(testRequest({ method: 'GET', url: '/api/projects' }), response)
+  assert.equal(response.statusCode, 409)
+  assert.equal(JSON.parse(response.body).error.code, 'AGENT_MESSAGE_TURN_REQUEST_CONFLICT')
+  assert.equal(reported.length, 0)
+})
+
+test('客户端中断请求返回 499，不上报 5xx', async () => {
+  const dependencies = testDependencies()
+  const reported = []
+  dependencies.reportError = (...input) => reported.push(input)
+  dependencies.runtime.productStore = {
+    async authenticate() { throw Object.assign(new Error('aborted'), { code: 'ECONNRESET' }) },
+  }
+  const application = createBotanicHttpServer(dependencies)
+  const { response } = testResponse()
+  await application.handleRequest(testRequest({ method: 'GET', url: '/api/projects' }), response)
+  assert.equal(response.statusCode, 499)
+  assert.equal(JSON.parse(response.body).error.code, 'CLIENT_CLOSED_REQUEST')
+  assert.equal(reported.length, 0)
+})
+
 test('Agent Run 目标漂移经过统一 HTTP 层保留 409，不降成可重试的 INTERNAL_ERROR', async () => {
   const dependencies = testDependencies()
   dependencies.runtime.productStore = {

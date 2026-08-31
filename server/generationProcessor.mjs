@@ -12,6 +12,17 @@ import { matchingIdempotencyRequestBinding } from './idempotencyRequestBinding.m
 import { acquireGenerationProviderAdmission } from './generationProviderAdmission.mjs'
 import { compareAndSetGenerationJob } from './generationJobCas.mjs'
 
+const expectedProviderOutcomeCodes = new Set([
+  'PROVIDER_REJECTED',
+  'PROVIDER_MODEL_UNAVAILABLE',
+  'PROVIDER_RATE_LIMITED',
+])
+
+/** 用户侧拒单/模型下线/限流已落任务 failed，不是基础设施事故，不上报 Sentry。 */
+export function shouldReportGenerationWorkerFailure(failure) {
+  return !expectedProviderOutcomeCodes.has(failure?.code)
+}
+
 export function createGenerationProcessor({
   productStore,
   mediaService,
@@ -922,16 +933,18 @@ export function createGenerationProcessor({
       const upstream = failure.upstreamMessage ? ` 上游原文：${failure.upstreamMessage}` : ''
       console.error(`[generation] ${jobId} failed (${failure.code}): ${detail}${upstream}`)
       try {
-        // 模型级 Provider 故障此前只在 Railway 日志可见；按码+模型稳定聚合，不逐 Job 开 Issue。
-        reportWorkerFailure(failure, {
-          tags: {
-            component: 'worker',
-            error_code: failure.code,
-            provider: latest.provider ?? 'unknown',
-            model: latest.settings?.model ?? 'unknown',
-          },
-          fingerprint: ['generation-worker-terminal-failure', failure.code, latest.settings?.model ?? 'unknown'],
-        })
+        if (shouldReportGenerationWorkerFailure(failure)) {
+          // 模型级 Provider 故障此前只在 Railway 日志可见；按码+模型稳定聚合，不逐 Job 开 Issue。
+          reportWorkerFailure(failure, {
+            tags: {
+              component: 'worker',
+              error_code: failure.code,
+              provider: latest.provider ?? 'unknown',
+              model: latest.settings?.model ?? 'unknown',
+            },
+            fingerprint: ['generation-worker-terminal-failure', failure.code, latest.settings?.model ?? 'unknown'],
+          })
+        }
       } catch { /* 可观测性不得改变任务状态。 */ }
       // 错误码随任务落库：失败消息是给人看的，服务端的重试策略要按码分类
       // （瞬时故障可自动重试，其余停下等用户）。只存消息的话策略永远判不出来。

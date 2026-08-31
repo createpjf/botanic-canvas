@@ -3,7 +3,10 @@
 import { isDeepStrictEqual } from 'node:util'
 
 function messageMergeError(message, code) {
-  return Object.assign(new Error(message), { code })
+  return Object.assign(new Error(message), {
+    code,
+    statusCode: code === 'AGENT_MESSAGE_INVALID' ? 400 : 409,
+  })
 }
 
 function finiteTimestamp(value, fallback = 0) {

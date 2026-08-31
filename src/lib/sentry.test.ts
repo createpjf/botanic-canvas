@@ -27,3 +27,12 @@ test('浏览器 Sentry 事件不携带身份、请求参数、额外数据或 co
   }])
   assert.equal(scrubSentryBreadcrumb({ category: 'console' }), null)
 })
+
+test('浏览器中断与断网不上报 Sentry', () => {
+  assert.equal(scrubSentryEvent({
+    exception: { values: [{ type: 'AbortError', value: 'signal is aborted without reason' }] },
+  }), null)
+  assert.equal(scrubSentryEvent({
+    exception: { values: [{ type: 'TypeError', value: 'Failed to fetch' }] },
+  }), null)
+})

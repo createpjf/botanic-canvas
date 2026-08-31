@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { applyGenerationJobToAgentRun, createPersistentAgentRun } from './botanicAgentRun.mjs'
-import { createGenerationProcessor as createRuntimeGenerationProcessor } from './generationProcessor.mjs'
+import { createGenerationProcessor as createRuntimeGenerationProcessor, shouldReportGenerationWorkerFailure } from './generationProcessor.mjs'
 import { GenerationError } from './generationProvider.mjs'
 import { createLocalCancelRegistry } from './localCancelRegistry.mjs'
 import { createProductStore } from './productStore.mjs'
@@ -381,6 +381,14 @@ test('没有兼容备用模型时保留 Provider 原始错误码对应的用户�
   assert.equal(reportedFailures[0].context.tags.error_code, 'REQUEST_TIMEOUT')
   assert.deepEqual(reportedFailures[0].context.fingerprint, ['generation-worker-terminal-failure', 'REQUEST_TIMEOUT', 'primary-image'])
   assert.doesNotMatch(JSON.stringify(reportedFailures), /生成一张品牌首图/)
+})
+
+test('用户侧拒单与模型下线不上报 Worker Sentry', () => {
+  assert.equal(shouldReportGenerationWorkerFailure({ code: 'PROVIDER_REJECTED' }), false)
+  assert.equal(shouldReportGenerationWorkerFailure({ code: 'PROVIDER_MODEL_UNAVAILABLE' }), false)
+  assert.equal(shouldReportGenerationWorkerFailure({ code: 'PROVIDER_RATE_LIMITED' }), false)
+  assert.equal(shouldReportGenerationWorkerFailure({ code: 'REQUEST_TIMEOUT' }), true)
+  assert.equal(shouldReportGenerationWorkerFailure({ code: 'PROVIDER_AUTH_FAILED' }), true)
 })
 
 test('普通生成任务也由服务端把生命周期状态权威回写到项目画布', async () => {
