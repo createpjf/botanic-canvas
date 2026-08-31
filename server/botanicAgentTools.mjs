@@ -573,6 +573,7 @@ const skillToolRiskCatalog = Object.freeze({
   skill_run: 'read',
   skill_create_propose: 'read',
   mcp_propose: 'read',
+  canvas_edit_propose: 'read',
   subagent_research: 'read',
   generation_ask_clarification: 'read',
   generation_create_plan: 'read',
@@ -803,6 +804,51 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
         return { proposed: true, actionId: proposal.id, tool: `${server}.${tool}` }
       },
     }] : []),
+    {
+      name: 'canvas_edit_propose',
+      label: '提议画布修改',
+      description: '提议一次需要用户确认的画布修改（update_text 改文字/重命名；update_generate_settings 调生成参数；delete_nodes 删节点），不在规划阶段执行。结果图片、任务绑定与系统连线永不可改。',
+      risk: 'read',
+      parameters: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          operation: { type: 'string', enum: ['update_text', 'update_generate_settings', 'delete_nodes'] },
+          arguments: { type: 'object' },
+          reason: { type: 'string', maxLength: 240 },
+        },
+        required: ['operation', 'arguments', 'reason'],
+      },
+      validate: (raw) => {
+        const value = object(raw, '画布修改提议')
+        const toolName = {
+          update_text: 'canvas_update_text',
+          update_generate_settings: 'canvas_update_generate_settings',
+          delete_nodes: 'canvas_delete_nodes',
+        }[value.operation]
+        if (!toolName) throw new AgentToolRuntimeError('CANVAS_EDIT_NOT_ALLOWED', `不支持的画布修改类型：${value.operation}。`, 422)
+        return {
+          toolName,
+          arguments: boundedArguments(value.arguments, '画布修改'),
+          reason: requiredText(value.reason, '修改原因', 240),
+        }
+      },
+      execute: async ({ toolName, arguments: argumentsValue, reason }, context) => {
+        const labels = {
+          canvas_update_text: '修改画布文字',
+          canvas_update_generate_settings: '调整生成参数',
+          canvas_delete_nodes: '删除画布节点',
+        }
+        const proposal = {
+          id: context?.toolCallId ?? `canvas-${toolName}`,
+          kind: 'canvas', toolName, label: labels[toolName],
+          summary: reason, risk: 'write',
+          arguments: argumentsValue,
+          status: 'awaiting_confirmation',
+        }
+        propose(proposal)
+        return { proposed: true, actionId: proposal.id }
+      },
+    },
     ...(typeof subagentRunner === 'function' ? [{
       name: 'subagent_research',
       label: '并行调研',
@@ -942,6 +988,10 @@ export function createBotanicAgentActionToolRegistry({
   mcpTools = {},
   /** 把 MCP 内联图片落成同源媒体（dataUrl → /api/media/...）；缺省时保留 data: URL 仅面板展示。 */
   persistMcpMedia,
+  // 画布编辑三件套（提案-确认制）：改文字 / 调生成参数 / 删节点。
+  updateCanvasText,
+  updateGenerateSettings,
+  deleteCanvasNodes,
   // 运维写工具（Epic 4）：按项目角色暴露，全部需要确认。缺执行器或权限不足时
   // 不进注册表 —— 模型看不到的工具不会被它拿去向用户承诺。
   role,
@@ -951,6 +1001,9 @@ export function createBotanicAgentActionToolRegistry({
   const generationHandler = actionHandler(submitGeneration, '生成提交工具')
   const applySkillHandler = actionHandler(applySkill, 'Skill 应用工具')
   const skillHandler = actionHandler(createSkill, 'Skill 创建工具')
+  const canvasTextHandler = actionHandler(updateCanvasText, '画布文字修改工具')
+  const canvasSettingsHandler = actionHandler(updateGenerateSettings, '生成参数调整工具')
+  const canvasDeleteHandler = actionHandler(deleteCanvasNodes, '画布节点删除工具')
   const externalMcpRuntime = resolvedMcpRuntime(mcpRuntime, mcpTools)
   const externalMcpCatalog = new Map(externalMcpRuntime.catalog().map((entry) => [entry.key, entry]))
   const operationalActions = createBotanicAgentOperationalActionDefinitions({ role, ...operationalExecutors })
@@ -1023,6 +1076,85 @@ export function createBotanicAgentActionToolRegistry({
           }],
         }
       },
+    },
+    {
+      name: 'canvas_update_text', label: '修改画布文字',
+      description: '改写文字节点正文或重命名节点；不改结果图片、任务绑定与系统连线。',
+      risk: 'write', requiresConfirmation: true, terminal: true,
+      parameters: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          nodeId: { type: 'string' },
+          content: { type: 'string', maxLength: 4000 },
+          label: { type: 'string', maxLength: 60 },
+        },
+        required: ['nodeId'],
+      },
+      validate: (raw) => {
+        const value = object(raw, '画布文字修改')
+        const nodeId = requiredText(value.nodeId, '画布节点', 160)
+        const content = value.content === undefined ? undefined : requiredText(value.content, '文字内容', 4000)
+        const label = value.label === undefined ? undefined : requiredText(value.label, '节点名称', 60)
+        if (content === undefined && label === undefined) {
+          throw new AgentToolRuntimeError('CANVAS_EDIT_EMPTY', '至少提供新的正文或名称。', 422)
+        }
+        return { nodeId, ...(content === undefined ? {} : { content }), ...(label === undefined ? {} : { label }) }
+      },
+      execute: canvasTextHandler,
+    },
+    {
+      name: 'canvas_update_generate_settings', label: '调整生成参数',
+      description: '调整空闲生成节点的模型、比例、清晰度或张数；排队或生成中的节点不可改。',
+      risk: 'write', requiresConfirmation: true, terminal: true,
+      parameters: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          nodeId: { type: 'string' },
+          model: { type: 'string', maxLength: 80 },
+          aspectRatio: { type: 'string', maxLength: 16 },
+          resolution: { type: 'string', maxLength: 16 },
+          batchCount: { type: 'integer', minimum: 1, maximum: 8 },
+        },
+        required: ['nodeId'],
+      },
+      validate: (raw) => {
+        const value = object(raw, '生成参数调整')
+        const nodeId = requiredText(value.nodeId, '画布节点', 160)
+        const settings = {
+          ...(value.model === undefined ? {} : { model: requiredText(value.model, '模型', 80) }),
+          ...(value.aspectRatio === undefined ? {} : { aspectRatio: requiredText(value.aspectRatio, '画面比例', 16) }),
+          ...(value.resolution === undefined ? {} : { resolution: requiredText(value.resolution, '清晰度', 16) }),
+        }
+        const batchCount = value.batchCount === undefined ? undefined : Number(value.batchCount)
+        if (batchCount !== undefined && (!Number.isInteger(batchCount) || batchCount < 1 || batchCount > 8)) {
+          throw new AgentToolRuntimeError('CANVAS_EDIT_INVALID', '张数必须是 1-8 的整数。', 422)
+        }
+        if (!Object.keys(settings).length && batchCount === undefined) {
+          throw new AgentToolRuntimeError('CANVAS_EDIT_EMPTY', '至少提供一项要调整的参数。', 422)
+        }
+        return { nodeId, settings, ...(batchCount === undefined ? {} : { batchCount }) }
+      },
+      execute: canvasSettingsHandler,
+    },
+    {
+      name: 'canvas_delete_nodes', label: '删除画布节点',
+      description: '删除指定画布节点及其连线；活跃任务的节点不可删，历史结果保留在 Artifact 面板。',
+      risk: 'write', requiresConfirmation: true, terminal: true,
+      parameters: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          nodeIds: { type: 'array', minItems: 1, maxItems: 12, items: { type: 'string' } },
+        },
+        required: ['nodeIds'],
+      },
+      validate: (raw) => {
+        const value = object(raw, '画布节点删除')
+        if (!Array.isArray(value.nodeIds) || !value.nodeIds.length || value.nodeIds.length > 12) {
+          throw new AgentToolRuntimeError('CANVAS_EDIT_INVALID', '一次最多删除 12 个节点。', 422)
+        }
+        return { nodeIds: value.nodeIds.map((nodeId, index) => requiredText(nodeId, `画布节点 ${index + 1}`, 160)) }
+      },
+      execute: canvasDeleteHandler,
     },
     {
       name: 'mcp_call', label: '调用外部工具',

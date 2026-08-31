@@ -474,6 +474,9 @@ export function useCanvasAgentExecutionBridge({
     if (useCanvasStore.getState().document.id !== projectId) {
       return { ...output, message: `${output.message} ${copy.projectChangedResult}` }
     }
+    // 画布编辑类动作：更新走增量 patch 秒上屏；删除无法用 upsert 表达，整份刷新兜底。
+    if (output.canvasPatch) await applyAgentWorkflowPatch(output.canvasPatch)
+    if (output.canvasRemovedNodeIds?.length) await refreshDocumentFromRemote().catch(() => false)
     const canvasCommands = resolveBotanicAgentCanvasCommands(output)
     const writebacks = readBotanicAgentCanvasWritebacks(action.result)
     const completedArtifactIds = new Set(writebacks.map((writeback) => writeback.artifactId))
@@ -521,7 +524,7 @@ export function useCanvasAgentExecutionBridge({
     return canvasCommands.every(({ artifact }) => completedArtifactIds.has(artifact.id))
       ? result
       : { ...result, canvasWritebackPending: true }
-  }, [addTextNode, addUploadedAssetsToCanvas, copy.projectChangedResult, document.id, locale, renameCanvasNode, updateTextNode])
+  }, [addTextNode, addUploadedAssetsToCanvas, applyAgentWorkflowPatch, copy.projectChangedResult, document.id, locale, refreshDocumentFromRemote, renameCanvasNode, updateTextNode])
 
   const confirmPlan = useCallback(async (plan: BotanicAgentPlan, submissionKey?: string) => {
     const projectId = document.id

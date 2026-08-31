@@ -409,7 +409,7 @@ test('服务端 Agent 只让模型解释意图与约束，节点、参数和批�
   assert.ok(availableSkills.some((skill) => skill.id === 'ecommerce_listing'))
   assert.ok(availableSkills.some((skill) => skill.id === 'conversation_distill'))
   assert.deepEqual(firstRequest.tools.map((item) => item.function.name), [
-    'canvas_read', 'asset_search', 'web_fetch', 'skill_run', 'skill_create_propose', 'generation_ask_clarification', 'generation_create_plan',
+    'canvas_read', 'asset_search', 'web_fetch', 'skill_run', 'skill_create_propose', 'canvas_edit_propose', 'generation_ask_clarification', 'generation_create_plan',
   ])
   assert.equal(firstRequest.tool_choice, 'auto')
   assert.deepEqual(finalRequest.messages.filter((message) => message.role === 'tool').map((message) => message.tool_call_id), [

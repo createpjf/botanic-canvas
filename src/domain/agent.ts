@@ -713,6 +713,8 @@ export type BotanicAgentActionResult = {
   writeback?: { kind: 'text'; label: string; content: string }
   canvasNodeId?: string
   canvasNodeIds?: string[]
+  /** 画布删除动作移除的节点；客户端据此整份刷新，增量 patch 无法表达删除。 */
+  canvasRemovedNodeIds?: string[]
   /** 服务端已持久化的工作流增量；客户端先落本地视图，再提交真实生成任务。 */
   canvasPatch?: {
     nodes: CanvasNode[]
@@ -776,8 +778,9 @@ export function mergeBotanicAgentCanvasPatch(
 
 export type BotanicAgentActionProposal = {
   id: string
-  kind: 'skill' | 'mcp'
+  kind: 'skill' | 'mcp' | 'canvas'
   toolName: 'skill_apply' | 'skill_create' | 'mcp_call'
+    | 'canvas_update_text' | 'canvas_update_generate_settings' | 'canvas_delete_nodes'
   label: string
   summary: string
   risk: 'write' | 'external'
