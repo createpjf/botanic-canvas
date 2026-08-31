@@ -156,6 +156,11 @@ export function useCanvasWorkspaceSynchronization({
     return promise
   }, [refreshDocumentFromRemote])
 
+  const retryBlockedCanvasSync = useCallback(
+    () => collaborationRef.current?.retryBlocked() ?? Promise.resolve(),
+    [],
+  )
+
   const recordRemoteChange = useCallback(({
     actorId,
     actorName,
@@ -660,6 +665,7 @@ export function useCanvasWorkspaceSynchronization({
     hydrateCanvas,
     refreshAgentCanvasFromRemote,
     retryAgentCanvasPersistence,
+    retryBlockedCanvasSync,
     collaborationAwareness,
     dismissRemoteChange,
     clearCollaborationActivities,

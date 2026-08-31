@@ -1037,6 +1037,7 @@ export default function CanvasWorkspace({
     hydrateCanvas,
     refreshAgentCanvasFromRemote,
     retryAgentCanvasPersistence,
+    retryBlockedCanvasSync,
     collaborationAwareness,
     dismissRemoteChange,
     clearCollaborationActivities,
@@ -2407,7 +2408,7 @@ export default function CanvasWorkspace({
           ) : null}
           <CanvasDropBridge onReady={setScreenToFlowPosition} />
           {realtimeReadOnly ? <Panel position="top-center" className={`canvas-realtime-status is-${realtimeStatus}`}>
-            <div role={realtimeStatus === 'blocked' ? 'alert' : 'status'} aria-live="polite"><i aria-hidden="true" /><span>{realtimeBlockingCopy.title}</span><small>{realtimeBlockingCopy.detail}</small></div>
+            <div role={realtimeStatus === 'blocked' ? 'alert' : 'status'} aria-live="polite"><i aria-hidden="true" /><span>{realtimeBlockingCopy.title}</span><small>{realtimeBlockingCopy.detail}</small>{realtimeStatus === 'blocked' ? <button type="button" onClick={() => void retryBlockedCanvasSync()}>{t.retry}</button> : null}</div>
           </Panel> : null}
           <Panel position="top-left" className="task-flow-focus-panel"><TaskFlowFocus taskKey={latestTaskKey} nodes={latestTaskNodes} /></Panel>
           {historyFocusRequest ? <FocusCanvasNode

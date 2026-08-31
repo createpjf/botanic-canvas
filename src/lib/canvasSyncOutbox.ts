@@ -4,7 +4,11 @@ export type CanvasSyncMutation = {
   mutationId: string
   update: string
   createdAt: number
+  blocked?: CanvasSyncBlockedState
 }
+
+export type CanvasSyncFailure = { code: string; status?: number }
+export type CanvasSyncBlockedState = CanvasSyncFailure & { at: number }
 
 export type CanvasSyncOutboxStorage = {
   put: (mutation: CanvasSyncMutation) => Promise<void>
@@ -24,9 +28,10 @@ export function createCanvasSyncOutbox(options: {
   storage: CanvasSyncOutboxStorage
   publish: (event: CanvasSyncUpdateEvent) => boolean
   fallback?: (event: CanvasSyncUpdateEvent) => Promise<{ mutationId: string }>
+  classifyPermanentFailure?: (error: unknown) => CanvasSyncFailure | undefined
   createMutationId?: () => string
   now?: () => number
-  onPendingChanged?: (count: number) => void
+  onPendingChanged?: (count: number, blocked?: CanvasSyncBlockedState) => void
 }) {
   const { projectId, storage, publish, fallback } = options
   if (!projectId) throw new TypeError('Canvas Sync Outbox 缺少项目标识。')
@@ -56,8 +61,14 @@ export function createCanvasSyncOutbox(options: {
     const pending = (await storage.list(projectId))
       .filter((mutation) => mutation.projectId === projectId)
       .sort((left, right) => left.createdAt - right.createdAt || left.mutationId.localeCompare(right.mutationId))
-    options.onPendingChanged?.(pending.filter(validMutation).length)
+    const valid = pending.filter(validMutation)
+    options.onPendingChanged?.(valid.length, valid.find((mutation) => mutation.blocked)?.blocked)
     return pending
+  }
+
+  const blockMutation = async (mutation: CanvasSyncMutation, failure: CanvasSyncFailure) => {
+    await storage.put({ ...mutation, blocked: { ...failure, at: now() } })
+    await listPending()
   }
 
   const flush = async () => {
@@ -65,6 +76,7 @@ export function createCanvasSyncOutbox(options: {
     let sent = 0
     for (const mutation of pending) {
       if (!validMutation(mutation)) continue
+      if (mutation.blocked) break
       const event = {
         type: 'canvas.crdt.update' as const,
         projectId,
@@ -86,7 +98,11 @@ export function createCanvasSyncOutbox(options: {
         await storage.delete(mutation.id)
         await listPending()
         sent += 1
-      } catch { break }
+      } catch (error) {
+        const failure = options.classifyPermanentFailure?.(error)
+        if (failure) await blockMutation(mutation, failure)
+        break
+      }
     }
     return { sent, pending: pending.length }
   }
@@ -118,6 +134,23 @@ export function createCanvasSyncOutbox(options: {
         await storage.delete(`${projectId}:${mutationId}`)
         await listPending()
       })
+    },
+    block(mutationId: string, failure: CanvasSyncFailure) {
+      if (!/^[A-Za-z0-9._:-]{1,200}$/.test(mutationId)) return Promise.resolve()
+      return serializePersistence(async () => {
+        const mutation = (await storage.list(projectId)).find((candidate) => candidate.mutationId === mutationId)
+        if (mutation) await blockMutation(mutation, failure)
+      })
+    },
+    retryBlocked() {
+      return serializePersistence(async () => {
+        const mutation = (await listPending()).find((candidate) => validMutation(candidate) && candidate.blocked)
+        if (!mutation) return
+        const retry = { ...mutation }
+        delete retry.blocked
+        await storage.put(retry)
+        await listPending()
+      }).then(() => serializeFlush(flush))
     },
   }
 }

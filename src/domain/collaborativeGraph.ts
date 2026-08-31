@@ -13,6 +13,8 @@ type GraphRecord<T> = {
   value?: T
 }
 
+type NodeSegment = Record<string, unknown>
+
 type CollaborativeGraphOptions = {
   initialGraph: CollaborativeGraph
   onUpdate: (update: Uint8Array) => void
@@ -22,7 +24,11 @@ type CollaborativeGraphOptions = {
 const localOrigin = Symbol('canvas-local')
 const remoteOrigin = Symbol('canvas-remote')
 const mediaReferenceKeys = new Set(['image', 'maskImage', 'externalImage', 'mediaUrl', 'thumbnailUrl', 'previewUrl'])
-const mediaPayloadKeys = new Set(['blob', 'dataUrl', 'base64', 'bytes', 'buffer'])
+const mediaPayloadKeys = new Set(['blob', 'dataUrl', 'base64', 'bytes', 'buffer', 'payload'])
+const nodeGeometryKeys = new Set([
+  'position', 'positionAbsolute', 'width', 'height', 'initialWidth', 'initialHeight',
+  'measured', 'origin', 'extent', 'parentId', 'expandParent', 'zIndex',
+])
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
@@ -36,7 +42,8 @@ function stableMediaReference(value: unknown) {
 function sanitizeCollaborativeValue(value: unknown, key?: string, mediaContext = false, stripExternalReferences = false): unknown {
   if (typeof value === 'string') {
     const normalized = value.trim()
-    if (/^(?:data:|blob:)/i.test(normalized) || (stripExternalReferences && /^(?:\/\/|[a-z][a-z\d+.-]*:)/i.test(normalized))) return undefined
+    if ((mediaContext && /^(?:data:|blob:)/i.test(normalized))
+      || (stripExternalReferences && /^(?:\/\/|[a-z][a-z\d+.-]*:)/i.test(normalized))) return undefined
   }
   if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return undefined
   if (mediaReferenceKeys.has(key ?? '') || (mediaContext && key === 'url')) return stableMediaReference(value)
@@ -128,6 +135,94 @@ function equal(left: unknown, right: unknown) {
   return JSON.stringify(left) === JSON.stringify(right)
 }
 
+function splitNode(node: CanvasNode) {
+  const geometry: NodeSegment = {}
+  const config: NodeSegment = {}
+  for (const [key, value] of Object.entries(node)) {
+    if (key === 'id' || key === 'type' || key === 'selected') continue
+    ;(nodeGeometryKeys.has(key) ? geometry : config)[key] = clone(value)
+  }
+  return { geometry, config }
+}
+
+function updateNodeRecords(
+  records: Y.Map<GraphRecord<CanvasNode>>,
+  geometries: Y.Map<GraphRecord<NodeSegment>>,
+  configs: Y.Map<GraphRecord<NodeSegment>>,
+  current: CanvasNode[],
+  next: CanvasNode[],
+) {
+  const currentById = new Map(current.map((item) => [item.id, item]))
+  const currentOrderById = new Map(current.map((item, order) => [item.id, order]))
+  const nextById = new Map(next.map((item) => [item.id, item]))
+  for (const item of current) {
+    if (!nextById.has(item.id)) records.set(item.id, { deleted: true, order: -1 })
+  }
+  next.forEach((item, order) => {
+    const previous = currentById.get(item.id)
+    const previousParts = previous ? splitNode(previous) : undefined
+    const nextParts = splitNode(item)
+    if (!previous || previous.type !== item.type || currentOrderById.get(item.id) !== order) {
+      records.set(item.id, { order, value: clone(item) })
+    }
+    if (!previousParts || !equal(previousParts.geometry, nextParts.geometry)) {
+      geometries.set(item.id, { order, value: nextParts.geometry })
+    }
+    if (!previousParts || !equal(previousParts.config, nextParts.config)) {
+      configs.set(item.id, { order, value: nextParts.config })
+    }
+  })
+}
+
+function applyNodeRecords(
+  current: CanvasNode[],
+  records: Y.Map<GraphRecord<CanvasNode>>,
+  geometries: Y.Map<GraphRecord<NodeSegment>>,
+  configs: Y.Map<GraphRecord<NodeSegment>>,
+  changedRecordIds: Set<string>,
+  changedGeometryIds: Set<string>,
+  changedConfigIds: Set<string>,
+) {
+  const byId = new Map(current.map((item) => [item.id, item]))
+  const orderById = new Map(current.map((item, order) => [item.id, order]))
+  const changedIds = new Set([...changedRecordIds, ...changedGeometryIds, ...changedConfigIds])
+  for (const id of changedIds) {
+    const record = records.get(id)
+    if (record?.deleted) {
+      byId.delete(id)
+      orderById.delete(id)
+      continue
+    }
+    const existing = byId.get(id)
+    const recordChanged = changedRecordIds.has(id)
+    const baseline = recordChanged ? record?.value : existing ?? record?.value
+    if (!baseline) continue
+    const baselineParts = splitNode(baseline)
+    const geometryRecord = geometries.get(id)
+    const configRecord = configs.get(id)
+    const geometry = changedGeometryIds.has(id)
+      ? geometryRecord?.value ?? {}
+      : recordChanged ? baselineParts.geometry : geometryRecord?.value ?? baselineParts.geometry
+    const config = changedConfigIds.has(id)
+      ? configRecord?.value ?? {}
+      : recordChanged ? baselineParts.config : configRecord?.value ?? baselineParts.config
+    byId.set(id, {
+      id,
+      ...(baseline.type ? { type: baseline.type } : {}),
+      ...clone(geometry),
+      ...clone(config),
+    } as CanvasNode)
+    orderById.set(id, typeof record?.order === 'number' && Number.isInteger(record.order)
+      ? record.order
+      : orderById.get(id) ?? Number.MAX_SAFE_INTEGER)
+  }
+  return [...byId.values()].sort((left, right) => (
+    (orderById.get(left.id) ?? Number.MAX_SAFE_INTEGER)
+    - (orderById.get(right.id) ?? Number.MAX_SAFE_INTEGER)
+    || left.id.localeCompare(right.id)
+  ))
+}
+
 function updateRecords<T extends { id: string }>(
   records: Y.Map<GraphRecord<T>>,
   current: T[],
@@ -184,13 +279,23 @@ export function createCollaborativeGraph({
 }: CollaborativeGraphOptions) {
   const document = new Y.Doc()
   const nodes = document.getMap<GraphRecord<CanvasNode>>('nodes')
+  const nodeGeometries = document.getMap<GraphRecord<NodeSegment>>('node-geometries')
+  const nodeConfigs = document.getMap<GraphRecord<NodeSegment>>('node-configs')
   const edges = document.getMap<GraphRecord<Edge>>('edges')
   let graph = normalizedGraph(initialGraph)
-  const changedNodeIds = new Set<string>()
+  const changedNodeRecordIds = new Set<string>()
+  const changedNodeGeometryIds = new Set<string>()
+  const changedNodeConfigIds = new Set<string>()
   const changedEdgeIds = new Set<string>()
 
   nodes.observe((event) => {
-    for (const id of event.keysChanged) changedNodeIds.add(id)
+    for (const id of event.keysChanged) changedNodeRecordIds.add(id)
+  })
+  nodeGeometries.observe((event) => {
+    for (const id of event.keysChanged) changedNodeGeometryIds.add(id)
+  })
+  nodeConfigs.observe((event) => {
+    for (const id of event.keysChanged) changedNodeConfigIds.add(id)
   })
   edges.observe((event) => {
     for (const id of event.keysChanged) changedEdgeIds.add(id)
@@ -200,15 +305,27 @@ export function createCollaborativeGraph({
   })
   document.on('afterTransaction', (transaction) => {
     if (transaction.origin !== remoteOrigin) {
-      changedNodeIds.clear()
+      changedNodeRecordIds.clear()
+      changedNodeGeometryIds.clear()
+      changedNodeConfigIds.clear()
       changedEdgeIds.clear()
       return
     }
     graph = {
-      nodes: applyRecords(graph.nodes, nodes, changedNodeIds),
+      nodes: applyNodeRecords(
+        graph.nodes,
+        nodes,
+        nodeGeometries,
+        nodeConfigs,
+        changedNodeRecordIds,
+        changedNodeGeometryIds,
+        changedNodeConfigIds,
+      ),
       edges: applyRecords(graph.edges, edges, changedEdgeIds),
     }
-    changedNodeIds.clear()
+    changedNodeRecordIds.clear()
+    changedNodeGeometryIds.clear()
+    changedNodeConfigIds.clear()
     changedEdgeIds.clear()
     onRemoteGraph(clone(graph))
   })
@@ -217,7 +334,7 @@ export function createCollaborativeGraph({
     replaceLocalGraph(nextGraph: CollaborativeGraph) {
       const next = normalizedGraph(nextGraph)
       document.transact(() => {
-        updateRecords(nodes, graph.nodes, next.nodes)
+        updateNodeRecords(nodes, nodeGeometries, nodeConfigs, graph.nodes, next.nodes)
         updateRecords(edges, graph.edges, next.edges)
       }, localOrigin)
       graph = next

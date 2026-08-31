@@ -3,7 +3,11 @@ import { canvasGraphConflictCode } from './productStoreContract.mjs'
 
 const clone = (value) => structuredClone(value)
 const mediaReferenceKeys = new Set(['image', 'maskImage', 'externalImage', 'mediaUrl', 'thumbnailUrl', 'previewUrl'])
-const mediaPayloadKeys = new Set(['blob', 'dataUrl', 'base64', 'bytes', 'buffer'])
+const mediaPayloadKeys = new Set(['blob', 'dataUrl', 'base64', 'bytes', 'buffer', 'payload'])
+const nodeGeometryKeys = new Set([
+  'position', 'positionAbsolute', 'width', 'height', 'initialWidth', 'initialHeight',
+  'measured', 'origin', 'extent', 'parentId', 'expandParent', 'zIndex',
+])
 
 function updateFromBase64(encoded) {
   return new Uint8Array(Buffer.from(encoded, 'base64'))
@@ -21,7 +25,8 @@ function stableMediaReference(value) {
 function sanitizeCollaborativeValue(value, key, mediaContext = false, stripExternalReferences = false) {
   if (typeof value === 'string') {
     const normalized = value.trim()
-    if (/^(?:data:|blob:)/i.test(normalized) || (stripExternalReferences && /^(?:\/\/|[a-z][a-z\d+.-]*:)/i.test(normalized))) return undefined
+    if ((mediaContext && /^(?:data:|blob:)/i.test(normalized))
+      || (stripExternalReferences && /^(?:\/\/|[a-z][a-z\d+.-]*:)/i.test(normalized))) return undefined
   }
   if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return undefined
   if (mediaReferenceKeys.has(key) || (mediaContext && key === 'url')) return stableMediaReference(value)
@@ -78,6 +83,58 @@ function persistableGraph(graph) {
   }
 }
 
+function splitNode(node) {
+  const geometry = {}
+  const config = {}
+  for (const [key, value] of Object.entries(node)) {
+    if (key === 'id' || key === 'type' || key === 'selected') continue
+    ;(nodeGeometryKeys.has(key) ? geometry : config)[key] = clone(value)
+  }
+  return { geometry, config }
+}
+
+function replaceNodeRecords(document, values) {
+  const records = document.getMap('nodes')
+  const geometries = document.getMap('node-geometries')
+  const configs = document.getMap('node-configs')
+  const nextIds = new Set(values.map((item) => item.id))
+  for (const id of records.keys()) {
+    if (!nextIds.has(id)) records.set(id, { deleted: true, order: -1 })
+  }
+  values.forEach((value, order) => {
+    const parts = splitNode(value)
+    records.set(value.id, { order, value: clone(value) })
+    geometries.set(value.id, { order, value: parts.geometry })
+    configs.set(value.id, { order, value: parts.config })
+  })
+}
+
+function updateNodeRecords(document, current, next) {
+  const records = document.getMap('nodes')
+  const geometries = document.getMap('node-geometries')
+  const configs = document.getMap('node-configs')
+  const currentById = new Map(current.map((item) => [item.id, item]))
+  const currentOrderById = new Map(current.map((item, order) => [item.id, order]))
+  const nextById = new Map(next.map((item) => [item.id, item]))
+  for (const item of current) {
+    if (!nextById.has(item.id)) records.set(item.id, { deleted: true, order: -1 })
+  }
+  next.forEach((item, order) => {
+    const previous = currentById.get(item.id)
+    const previousParts = previous ? splitNode(previous) : undefined
+    const nextParts = splitNode(item)
+    if (!previous || previous.type !== item.type || currentOrderById.get(item.id) !== order) {
+      records.set(item.id, { order, value: clone(item) })
+    }
+    if (!previousParts || !sameGraph(previousParts.geometry, nextParts.geometry)) {
+      geometries.set(item.id, { order, value: nextParts.geometry })
+    }
+    if (!previousParts || !sameGraph(previousParts.config, nextParts.config)) {
+      configs.set(item.id, { order, value: nextParts.config })
+    }
+  })
+}
+
 function replaceRecords(records, values) {
   const nextIds = new Set(values.map((item) => item.id))
   for (const id of records.keys()) {
@@ -111,6 +168,100 @@ function valuesFromRecords(records) {
     .map((record) => clone(record.value))
 }
 
+function materializeNodes(document, current, changedRecordIds, changedGeometryIds, changedConfigIds) {
+  const records = document.getMap('nodes')
+  const geometries = document.getMap('node-geometries')
+  const configs = document.getMap('node-configs')
+  const byId = new Map(current.map((item) => [item.id, clone(item)]))
+  const orderById = new Map(current.map((item, order) => [item.id, order]))
+  const changedIds = new Set([...changedRecordIds, ...changedGeometryIds, ...changedConfigIds])
+  for (const id of changedIds) {
+    const record = records.get(id)
+    if (!record || record.deleted) {
+      byId.delete(id)
+      orderById.delete(id)
+      continue
+    }
+    const existing = byId.get(id)
+    const recordChanged = changedRecordIds.has(id)
+    const baseline = recordChanged ? record.value : existing ?? record.value
+    if (!baseline) continue
+    const baselineParts = splitNode(baseline)
+    const geometryRecord = geometries.get(id)
+    const configRecord = configs.get(id)
+    const geometry = changedGeometryIds.has(id)
+      ? geometryRecord?.value ?? {}
+      : recordChanged ? baselineParts.geometry : geometryRecord?.value ?? baselineParts.geometry
+    const config = changedConfigIds.has(id)
+      ? configRecord?.value ?? {}
+      : recordChanged ? baselineParts.config : configRecord?.value ?? baselineParts.config
+    const value = {
+      id,
+      ...(baseline.type ? { type: baseline.type } : {}),
+      ...clone(geometry),
+      ...clone(config),
+    }
+    if ((value.type === 'asset' || value.type === 'result') && !value.data?.image && existing?.data?.image) {
+      value.data = { ...value.data, image: existing.data.image }
+    }
+    byId.set(id, value)
+    orderById.set(id, Number.isInteger(record.order) ? record.order : orderById.get(id) ?? Number.MAX_SAFE_INTEGER)
+  }
+  return [...byId.values()].sort((left, right) => (
+    (orderById.get(left.id) ?? Number.MAX_SAFE_INTEGER)
+    - (orderById.get(right.id) ?? Number.MAX_SAFE_INTEGER)
+    || left.id.localeCompare(right.id)
+  ))
+}
+
+function valuesFromNodeRecords(document) {
+  const recordIds = new Set(document.getMap('nodes').keys())
+  return materializeNodes(
+    document,
+    [],
+    recordIds,
+    new Set(document.getMap('node-geometries').keys()),
+    new Set(document.getMap('node-configs').keys()),
+  )
+}
+
+function sanitizeNodeRecords(document, current, recordIds, geometryIds, configIds) {
+  let sanitized = false
+  const records = document.getMap('nodes')
+  const geometries = document.getMap('node-geometries')
+  const configs = document.getMap('node-configs')
+  const currentById = new Map(current.map((node) => [node.id, node]))
+  for (const id of recordIds) {
+    const record = records.get(id)
+    if (!record?.value) continue
+    const value = collaborativeNode(record.value)
+    if (!sameGraph(value, record.value)) {
+      records.set(id, { ...record, value })
+      sanitized = true
+    }
+  }
+  for (const id of geometryIds) {
+    const record = geometries.get(id)
+    if (!record?.value) continue
+    const value = sanitizeCollaborativeValue(record.value)
+    if (!sameGraph(value, record.value)) {
+      geometries.set(id, { ...record, value })
+      sanitized = true
+    }
+  }
+  for (const id of configIds) {
+    const record = configs.get(id)
+    if (!record?.value) continue
+    const type = records.get(id)?.value?.type ?? currentById.get(id)?.type
+    const value = splitNode(collaborativeNode({ id, ...(type ? { type } : {}), ...record.value })).config
+    if (!sameGraph(value, record.value)) {
+      configs.set(id, { ...record, value })
+      sanitized = true
+    }
+  }
+  return sanitized
+}
+
 function sameGraph(left, right) {
   return JSON.stringify(left) === JSON.stringify(right)
 }
@@ -140,9 +291,9 @@ function materializeRecords(current, records, changedIds, { preserveMedia = fals
   ))
 }
 
-function materializeGraph(document, current, changedNodeIds, changedEdgeIds) {
+function materializeGraph(document, current, changedNodeRecordIds, changedNodeGeometryIds, changedNodeConfigIds, changedEdgeIds) {
   return {
-    nodes: materializeRecords(current.nodes, document.getMap('nodes'), changedNodeIds, { preserveMedia: true }),
+    nodes: materializeNodes(document, current.nodes, changedNodeRecordIds, changedNodeGeometryIds, changedNodeConfigIds),
     edges: materializeRecords(current.edges, document.getMap('edges'), changedEdgeIds),
   }
 }
@@ -162,27 +313,23 @@ function restoredRoomState(state) {
   if (!logAuthoritative) {
     const collaborative = collaborativeGraph(materialized)
     const restored = {
-      nodes: valuesFromRecords(document.getMap('nodes')),
+      nodes: valuesFromNodeRecords(document),
       edges: valuesFromRecords(document.getMap('edges')),
     }
     needsCompaction ||= hasYjsState && !sameGraph(restored, collaborative)
     if (!hasYjsState || needsCompaction) {
       document.transact(() => {
-        replaceRecords(document.getMap('nodes'), collaborative.nodes)
+        replaceNodeRecords(document, collaborative.nodes)
         replaceRecords(document.getMap('edges'), collaborative.edges)
       }, 'materialized-authoritative-graph')
     }
   } else {
     let sanitized = false
+    const nodeRecordIds = new Set(document.getMap('nodes').keys())
+    const nodeGeometryIds = new Set(document.getMap('node-geometries').keys())
+    const nodeConfigIds = new Set(document.getMap('node-configs').keys())
     document.transact(() => {
-      for (const [id, record] of document.getMap('nodes')) {
-        if (!record?.value) continue
-        const value = collaborativeNode(record.value)
-        if (!sameGraph(value, record.value)) {
-          document.getMap('nodes').set(id, { ...record, value })
-          sanitized = true
-        }
-      }
+      sanitized = sanitizeNodeRecords(document, materialized.nodes, nodeRecordIds, nodeGeometryIds, nodeConfigIds)
       for (const [id, record] of document.getMap('edges')) {
         if (!record?.value) continue
         const value = collaborativeEdge(record.value)
@@ -192,9 +339,9 @@ function restoredRoomState(state) {
         }
       }
     }, 'sanitize-restored-log')
-    const nodeIds = new Set([...materialized.nodes.map((node) => node.id), ...document.getMap('nodes').keys()])
+    for (const node of materialized.nodes) nodeRecordIds.add(node.id)
     const edgeIds = new Set([...materialized.edges.map((edge) => edge.id), ...document.getMap('edges').keys()])
-    graph = materializeGraph(document, materialized, nodeIds, edgeIds)
+    graph = materializeGraph(document, materialized, nodeRecordIds, nodeGeometryIds, nodeConfigIds, edgeIds)
     needsCompaction ||= sanitized || !sameGraph(materialized, graph)
   }
   return {
@@ -256,34 +403,51 @@ export function createCanvasCollaborationRoom({ state, append, compact, reload, 
     if (persist) await ensurePersistedState(actorId)
     else if (requiresReload) throw new Error('画布权威状态暂时无法恢复。')
     const update = updateFromBase64(encodedUpdate)
+    try {
+      Y.decodeUpdate(update)
+    } catch {
+      const failure = new TypeError('Canvas Sync 增量内容无效。')
+      failure.code = 'INVALID_CANVAS_SYNC_UPDATE'
+      throw failure
+    }
     const stateVector = Y.encodeStateVector(document)
     let applied = false
     let sanitized = false
-    const changedNodeIds = new Set()
+    const changedNodeRecordIds = new Set()
+    const changedNodeGeometryIds = new Set()
+    const changedNodeConfigIds = new Set()
     const changedEdgeIds = new Set()
     const observeUpdate = () => { applied = true }
-    const observeNodes = (event) => { for (const id of event.keysChanged) changedNodeIds.add(id) }
+    const observeNodes = (event) => { for (const id of event.keysChanged) changedNodeRecordIds.add(id) }
+    const observeNodeGeometries = (event) => { for (const id of event.keysChanged) changedNodeGeometryIds.add(id) }
+    const observeNodeConfigs = (event) => { for (const id of event.keysChanged) changedNodeConfigIds.add(id) }
     const observeEdges = (event) => { for (const id of event.keysChanged) changedEdgeIds.add(id) }
     document.on('update', observeUpdate)
     document.getMap('nodes').observe(observeNodes)
+    document.getMap('node-geometries').observe(observeNodeGeometries)
+    document.getMap('node-configs').observe(observeNodeConfigs)
     document.getMap('edges').observe(observeEdges)
     try {
       Y.applyUpdate(document, update)
+    } catch {
+      const failure = new TypeError('Canvas Sync 增量内容无效。')
+      failure.code = 'INVALID_CANVAS_SYNC_UPDATE'
+      throw failure
     } finally {
       document.off('update', observeUpdate)
       document.getMap('nodes').unobserve(observeNodes)
+      document.getMap('node-geometries').unobserve(observeNodeGeometries)
+      document.getMap('node-configs').unobserve(observeNodeConfigs)
       document.getMap('edges').unobserve(observeEdges)
     }
     if (applied) {
-      for (const id of changedNodeIds) {
-        const record = document.getMap('nodes').get(id)
-        if (!record?.value) continue
-        const value = collaborativeNode(record.value)
-        if (!sameGraph(value, record.value)) {
-          document.getMap('nodes').set(id, { ...record, value })
-          sanitized = true
-        }
-      }
+      sanitized = sanitizeNodeRecords(
+        document,
+        graph.nodes,
+        changedNodeRecordIds,
+        changedNodeGeometryIds,
+        changedNodeConfigIds,
+      ) || sanitized
       for (const id of changedEdgeIds) {
         const record = document.getMap('edges').get(id)
         if (!record?.value) continue
@@ -295,7 +459,16 @@ export function createCanvasCollaborationRoom({ state, append, compact, reload, 
       }
     }
     const previousGraph = clone(graph)
-    if (applied) graph = materializeGraph(document, graph, changedNodeIds, changedEdgeIds)
+    if (applied) {
+      graph = materializeGraph(
+        document,
+        graph,
+        changedNodeRecordIds,
+        changedNodeGeometryIds,
+        changedNodeConfigIds,
+        changedEdgeIds,
+      )
+    }
     if (!persist) {
       if (Number.isInteger(committedGraphRevision)) graphRevision = Math.max(graphRevision, committedGraphRevision)
       return { applied, previousGraph, graph: clone(graph), graphRevision }
@@ -369,7 +542,7 @@ export function createCanvasCollaborationRoom({ state, append, compact, reload, 
     const nextCollaborative = collaborativeGraph(nextMaterialized)
     const stateVector = Y.encodeStateVector(document)
     document.transact(() => {
-      updateRecords(document.getMap('nodes'), currentCollaborative.nodes, nextCollaborative.nodes)
+      updateNodeRecords(document, currentCollaborative.nodes, nextCollaborative.nodes)
       updateRecords(document.getMap('edges'), currentCollaborative.edges, nextCollaborative.edges)
     }, 'server-graph-mutation')
     graph = nextMaterialized
@@ -449,7 +622,7 @@ export function createCanvasCollaborationRoom({ state, append, compact, reload, 
         graph = materialized
         const synchronized = collaborativeGraph(materialized)
         document.transact(() => {
-          replaceRecords(document.getMap('nodes'), synchronized.nodes)
+          replaceNodeRecords(document, synchronized.nodes)
           replaceRecords(document.getMap('edges'), synchronized.edges)
         }, 'http-authoritative-graph')
         try {

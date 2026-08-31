@@ -133,11 +133,17 @@ export async function commitCanvasProjectMutation({
     nodes: clone(document.nodes ?? []),
     edges: clone(document.edges ?? []),
   }))
-  const metadataDocument = metadataSaved?.document ?? project.document
+  let metadataDocument = metadataSaved?.document ?? project.document
   let useInitialProposal = true
   const room = createCanvasCollaborationRoom({
     state,
-    reload: (actorId) => productStore.loadCanvasCollaboration(actorId, projectId),
+    reload: async (actorId) => {
+      const nextState = await productStore.loadCanvasCollaboration(actorId, projectId)
+      const nextProject = await productStore.readProject(actorId, projectId)
+      if (!nextState || !nextProject) throw new Error('未找到画布协作状态。')
+      metadataDocument = nextProject.document
+      return nextState
+    },
     append: (payload, actorId) => productStore.appendCanvasGraphUpdate(actorId, projectId, payload),
     compact: (payload, actorId) => productStore.compactCanvasGraphUpdates(actorId, projectId, payload),
   })

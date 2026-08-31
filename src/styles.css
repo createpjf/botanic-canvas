@@ -2990,8 +2990,10 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .canvas-realtime-status span { font-weight: 750; }
 .canvas-realtime-status small { grid-column: 2; color: #9a8057; font-size: 9px; }
 .canvas-realtime-status.is-blocked > div { border-color: #e5c3bd; background: rgba(255, 248, 246, .97); color: #965d54; }
+.canvas-realtime-status.is-blocked { pointer-events: auto; }
 .canvas-realtime-status.is-blocked i { background: #b86458; box-shadow: 0 0 0 3px rgba(184, 100, 88, .13); animation: none; }
 .canvas-realtime-status.is-blocked small { color: #9a6f68; }
+.canvas-realtime-status button { grid-column: 2; justify-self: start; margin-top: 3px; padding: 3px 8px; border: 1px solid #d9aaa2; border-radius: 6px; background: #fff; color: inherit; font: inherit; font-weight: 700; }
 .connection-guide { display: flex; min-height: 34px; align-items: center; gap: 8px; padding: 6px 11px; border: 1px solid #b7d3bc; border-radius: 10px; background: rgba(250, 254, 250, 0.95); box-shadow: 0 10px 24px rgba(29, 61, 37, 0.12); color: #41684b; font-size: 10px; line-height: var(--line-single); white-space: nowrap; backdrop-filter: blur(12px); }
 .connection-guide b { color: #28623a; }
 .connection-guide span { color: #59745f; }

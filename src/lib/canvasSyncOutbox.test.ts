@@ -98,4 +98,35 @@ test('WebSocket 不可用时走 HTTP fallback；网络失败保留原 mutation �
 
   assert.deepEqual(committed, ['mutation-fallback-1', 'mutation-fallback-2'])
   assert.equal(records.size, 0)
+
+  let permanentAttempts = 0
+  const permanentFailure = Object.assign(new Error('mutation conflict'), { code: 'CANVAS_MUTATION_CONFLICT' })
+  const permanentOptions = {
+    projectId: 'project-1',
+    storage,
+    publish: () => false,
+    fallback: async (event: { mutationId: string }) => {
+      permanentAttempts += 1
+      if (permanentAttempts === 1) throw permanentFailure
+      return { mutationId: event.mutationId }
+    },
+    classifyPermanentFailure: (error: unknown) => error === permanentFailure
+      ? { code: permanentFailure.code, status: 409 }
+      : undefined,
+  }
+  await createCanvasSyncOutbox({
+    ...permanentOptions,
+    createMutationId: () => 'mutation-permanent',
+    now: () => 200,
+  }).enqueue('BwgJ')
+  assert.deepEqual(records.get('project-1:mutation-permanent')?.blocked, {
+    code: 'CANVAS_MUTATION_CONFLICT', status: 409, at: 200,
+  })
+
+  const reloaded = createCanvasSyncOutbox(permanentOptions)
+  await reloaded.flush()
+  assert.equal(permanentAttempts, 1, '刷新后不得自动重发永久失败的增量')
+  await reloaded.retryBlocked()
+  assert.equal(permanentAttempts, 2, '只在用户显式重试后再次提交')
+  assert.equal(records.size, 0)
 })

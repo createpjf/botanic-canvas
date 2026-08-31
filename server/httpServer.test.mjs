@@ -207,6 +207,11 @@ test('WebSocket 不可用时 HTTP Canvas Sync 仍返回 durable ACK', async (con
       return { graph: { nodes: [], edges: [] }, graphRevision: 1, updates: [] }
     },
     async appendCanvasGraphUpdate(_userId, _projectId, payload) {
+      if (payload.mutationId === 'mutation-conflict') {
+        const failure = new Error('画布协作提交身份已绑定到其他更新。')
+        failure.code = 'CANVAS_MUTATION_CONFLICT'
+        throw failure
+      }
       appended = structuredClone(payload)
       return { graphRevision: 2, mutationRevision: 2, updatedAt: 200, updateCount: 1, duplicate: false }
     },
@@ -239,6 +244,24 @@ test('WebSocket 不可用时 HTTP Canvas Sync 仍返回 durable ACK', async (con
   })
   assert.equal(appended.mutationId, 'mutation-http')
   assert.equal(appended.syncProtocolEpoch, 2)
+
+  const { response: conflictResponse } = testResponse()
+  await application.handleRequest(testRequest({
+    method: 'POST',
+    url: '/api/projects/project-1/canvas-sync',
+    body: { type: 'canvas.crdt.update', projectId: 'project-1', mutationId: 'mutation-conflict', syncProtocolEpoch: 2, update },
+  }), conflictResponse)
+  assert.equal(conflictResponse.statusCode, 409)
+  assert.equal(JSON.parse(conflictResponse.body).error.code, 'CANVAS_MUTATION_CONFLICT')
+
+  const { response: invalidResponse } = testResponse()
+  await application.handleRequest(testRequest({
+    method: 'POST',
+    url: '/api/projects/project-1/canvas-sync',
+    body: { type: 'canvas.crdt.update', projectId: 'project-1', mutationId: 'mutation-invalid', syncProtocolEpoch: 2, update: 'AQID' },
+  }), invalidResponse)
+  assert.equal(invalidResponse.statusCode, 400)
+  assert.equal(JSON.parse(invalidResponse.body).error.code, 'INVALID_CANVAS_SYNC_UPDATE')
 })
 
 test('项目路由返回业务错误后不会继续写第二次响应', async () => {

@@ -2,7 +2,7 @@ import type { Edge } from '@xyflow/react'
 import type { CanvasNode } from '../domain/canvas'
 import { createCollaborativeGraph, type CollaborativeGraph } from '../domain/collaborativeGraph'
 import { deriveCanvasSyncStatus, type AgentRunUpdatedRealtimeEvent, type CanvasCrdtRealtimeEvent, type CanvasSyncStatus, type CollaborationActivityRealtimeEvent, type CollaborationPresenceRealtimeEvent, type ProjectRealtimeConnectionState, type ProjectUpdatedRealtimeEvent } from '../domain/realtimeSync'
-import { createCanvasSyncOutbox } from './canvasSyncOutbox'
+import { createCanvasSyncOutbox, type CanvasSyncFailure } from './canvasSyncOutbox'
 import { canvasSyncOutboxStorage, rememberAppliedCanvasGraphRevision, rememberRemoteSyncProtocolEpoch } from './db'
 import { commitCanvasRealtimeUpdate, openProjectRealtimeChannel } from './projectRealtime'
 import { ProductApiError } from './productSession'
@@ -20,6 +20,7 @@ function base64ToUpdate(encoded: string) {
 
 export type CanvasCollaboration = {
   replaceLocalGraph: (graph: { nodes: CanvasNode[]; edges: Edge[] }) => void
+  retryBlocked: () => Promise<void>
   close: () => void
 }
 
@@ -74,12 +75,11 @@ export function connectCanvasCollaboration({
     lastSyncStatus = status
     onSyncStatusChanged?.(status)
   }
-  const blockOnPermanentHttpFailure = (error: unknown) => {
+  const permanentHttpFailure = (error: unknown): CanvasSyncFailure | undefined => {
     if (!(error instanceof ProductApiError)) return
-    if (error.status === 404 || ['INVALID_CANVAS_SYNC_UPDATE', 'PROJECT_ACCESS_FORBIDDEN', 'PROJECT_WRITE_FORBIDDEN'].includes(error.code ?? '')) {
-      blocked = true
-      notifySyncStatus()
-    }
+    const code = error.code ?? (error.status === 404 ? 'PROJECT_NOT_FOUND' : '')
+    if (!['PROJECT_NOT_FOUND', 'INVALID_CANVAS_SYNC_UPDATE', 'CANVAS_MUTATION_CONFLICT', 'PROJECT_ACCESS_FORBIDDEN', 'PROJECT_WRITE_FORBIDDEN'].includes(code)) return
+    return { code, status: error.status }
   }
   const outbox = createCanvasSyncOutbox({
     projectId,
@@ -88,17 +88,14 @@ export function connectCanvasCollaboration({
       ? false
       : channel?.publish({ ...event, syncProtocolEpoch }) ?? false,
     fallback: async (event) => {
-      try {
-        const committed = await commitCanvasRealtimeUpdate({ ...event, syncProtocolEpoch })
-        rememberAppliedCanvasGraphRevision(projectId, committed.graphRevision)
-        return committed
-      } catch (error) {
-        blockOnPermanentHttpFailure(error)
-        throw error
-      }
+      const committed = await commitCanvasRealtimeUpdate({ ...event, syncProtocolEpoch })
+      rememberAppliedCanvasGraphRevision(projectId, committed.graphRevision)
+      return committed
     },
-    onPendingChanged: (count) => {
+    classifyPermanentFailure: permanentHttpFailure,
+    onPendingChanged: (count, blockedFailure) => {
       pendingCount = count
+      blocked = Boolean(blockedFailure)
       if (count === 0) {
         if (nackRetryTimer !== undefined) window.clearTimeout(nackRetryTimer)
         nackRetryTimer = undefined
@@ -190,6 +187,7 @@ export function connectCanvasCollaboration({
           blocked = true
           replaying = false
           notifySyncStatus()
+          void outbox.block(event.mutationId, { code: event.code }).catch(() => undefined)
         }
         return
       }
@@ -211,7 +209,6 @@ export function connectCanvasCollaboration({
       }
       if (event.type === 'canvas.crdt.committed') {
         rememberAppliedCanvasGraphRevision(projectId, event.graphRevision)
-        blocked = false
         void outbox.ack(event.mutationId).catch(() => undefined)
         return
       }
@@ -248,6 +245,7 @@ export function connectCanvasCollaboration({
 
   return {
     replaceLocalGraph: graph.replaceLocalGraph,
+    retryBlocked: () => outbox.retryBlocked().then(() => undefined),
     close() {
       closed = true
       if (nackRetryTimer !== undefined) window.clearTimeout(nackRetryTimer)

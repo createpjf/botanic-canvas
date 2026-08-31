@@ -3,7 +3,7 @@ import { requireProjectPermission } from './projectAuthorization.mjs'
 import { projectCapabilities } from './authorization.mjs'
 import { collaborationChangeFromDocuments, decodeCollaborationActivityCursor, encodeCollaborationActivityCursor } from './collaborationActivityPersistence.mjs'
 import { filterAuditEvents } from './agentActionGovernance.mjs'
-import { canvasSyncEpochStaleCode } from './productStoreContract.mjs'
+import { canvasMutationConflictCode, canvasSyncEpochStaleCode } from './productStoreContract.mjs'
 
 const projectWritePermissionCodes = new Set(['PROJECT_ACCESS_FORBIDDEN', 'PROJECT_WRITE_FORBIDDEN'])
 
@@ -100,6 +100,8 @@ export function createProjectRouteHandler({
         return json(response, 200, committed)
       } catch (caught) {
         if (caught?.code === canvasSyncEpochStaleCode) return error(response, 409, caught.code, caught.message)
+        if (caught?.code === canvasMutationConflictCode) return error(response, 409, caught.code, caught.message)
+        if (caught?.code === 'INVALID_CANVAS_SYNC_UPDATE') return error(response, 400, caught.code, caught.message)
         throw caught
       }
     }
