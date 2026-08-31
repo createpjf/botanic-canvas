@@ -8,7 +8,8 @@ export const defaultAgentPlannerModels = [
   'deepseek-v4-flash-vision-exp',
   'kimi-k3',
   'gemini-3.7-flash',
-  'glm-5',
+  'glm-5.3',
+  'glm-5.3-flash',
 ]
 
 export function modelProviderLogo(model?: GenerationModelOption) {
@@ -28,6 +29,8 @@ export function agentPlannerModelLabel(model: string) {
   if (model === 'deepseek-v4-flash-vision-exp') return 'DeepSeek V4 Flash Vision'
   if (model === 'kimi-k3') return 'Kimi K3'
   if (model === 'gemini-3.7-flash') return 'Gemini 3.7 Flash'
+  if (model === 'glm-5.3') return 'GLM 5.3'
+  if (model === 'glm-5.3-flash') return 'GLM 5.3 Flash'
   if (model === 'glm-5') return 'GLM 5'
   return model
 }
@@ -35,6 +38,8 @@ export function agentPlannerModelLabel(model: string) {
 export function agentPlannerModelShortLabel(model: string) {
   if (model === 'gemini-3.7-flash') return 'Gemini'
   if (model === 'deepseek-v4-flash-vision-exp') return 'Vision'
+  if (model === 'glm-5.3') return 'GLM-5.3'
+  if (model === 'glm-5.3-flash') return 'GLM-5.3 Flash'
   if (model === 'glm-5') return 'GLM-5'
   return agentPlannerModelLabel(model).replace(/^(DeepSeek|Kimi|MiniMax|Gemini|GLM)\s+/i, '')
 }

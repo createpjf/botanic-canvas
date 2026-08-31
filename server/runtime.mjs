@@ -70,9 +70,10 @@ export function runtimeConfig(rootDir = process.cwd()) {
     .split(',').map((model) => model.trim()).filter(Boolean))]
   const flockImageModels = [...new Set((process.env.FLOCK_IMAGE_MODELS ?? '')
     .split(',').map((model) => model.trim()).filter(Boolean))]
-  const flockAgentModels = [...new Set((process.env.FLOCK_AGENT_MODELS ?? 'deepseek-v4-flash-vision-exp,kimi-k3,gemini-3.7-flash,glm-5')
+  const configuredFlockAgentModels = [...new Set((process.env.FLOCK_AGENT_MODELS ?? 'deepseek-v4-flash-vision-exp,kimi-k3,gemini-3.7-flash,glm-5.3,glm-5.3-flash')
     .split(',').map((model) => model.trim()).filter(Boolean))]
-  const flockTextModel = (process.env.FLOCK_TEXT_MODEL ?? '').trim() || flockAgentModels[0] || ''
+  const flockTextModel = (process.env.FLOCK_TEXT_MODEL ?? '').trim() || configuredFlockAgentModels[0] || ''
+  const flockAgentModels = [...new Set([flockTextModel, ...configuredFlockAgentModels].filter(Boolean))]
   // 服务端总闸门：客户端还必须逐会话明确请求。打开后原文也只随当轮响应下发，
   // 不写入 Message、Plan、Run、Turn Event 或 Artifact。
   const agentRawReasoning = (process.env.AGENT_RAW_REASONING ?? '').trim().toLowerCase() === 'true'

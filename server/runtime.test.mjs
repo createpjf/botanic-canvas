@@ -119,7 +119,7 @@ test('生产 Web 回跳地址会让 Railway API 进入生产邀请保护', () =>
   }
 })
 
-test('Agent Planner 默认暴露含看图型号的 Flock 模型', () => {
+test('Agent Planner 默认暴露指定 Flock 模型，并接纳配置的默认模型', () => {
   const keys = ['FLOCK_TEXT_MODEL', 'FLOCK_AGENT_MODELS', 'AGENT_VISION_MODEL']
   const original = new Map(keys.map((key) => [key, process.env[key]]))
   try {
@@ -132,10 +132,14 @@ test('Agent Planner 默认暴露含看图型号的 Flock 模型', () => {
       'deepseek-v4-flash-vision-exp',
       'kimi-k3',
       'gemini-3.7-flash',
-      'glm-5',
+      'glm-5.3',
+      'glm-5.3-flash',
     ])
     assert.equal(config.agentVisionModel, 'gemini-3.7-flash')
     assert.ok(!config.flockAgentModels.includes('gemini-3.6-flash'))
+
+    process.env.FLOCK_TEXT_MODEL = 'deepseek-v4-pro'
+    assert.equal(runtimeConfig('/tmp/botanic-runtime-test').flockAgentModels[0], 'deepseek-v4-pro')
   } finally {
     for (const [key, value] of original) {
       if (value === undefined) delete process.env[key]
