@@ -612,6 +612,15 @@ export function botanicAgentSubmissionKey(messageId: string, plan: Pick<BotanicA
 }
 
 /**
+ * 分支身份进入服务端幂等请求绑定；submissionKey 存在时必须从它稳定派生，
+ * 同一 Message+Plan 的自动重试才能字节级复用同一 Run 请求。
+ * 无提交键的旧/本地路径保留随机 ID。
+ */
+export function botanicAgentBranchId(submissionKey: string | undefined, index: number) {
+  return submissionKey ? `branch-${submissionKey}-${index + 1}` : `branch-${crypto.randomUUID()}`
+}
+
+/**
  * v2 人工重试在 resolve 前就必须有新 Receipt 身份。该键只由服务端可复核的稳定
  * 上下文与原始提交键派生：本地 Message 写入失败或 resolve 响应丢失时，刷新后仍
  * 能重算同一键；它只是公开幂等身份，不是授权凭据。

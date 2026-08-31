@@ -68,6 +68,7 @@ import {
   botanicAgentArtifactPrompt,
   botanicAgentArtifactModel,
   botanicAgentArtifactTimestamp,
+  botanicAgentBranchId,
   botanicAgentSubmissionKey,
   botanicAgentRunFeedback,
   botanicAgentBranchStatusLabel,
@@ -521,6 +522,14 @@ test('同一确认消息与计划生成稳定提交键，修改提示词后才�
   assert.equal(first, botanicAgentSubmissionKey('message-1', plan))
   assert.notEqual(first, botanicAgentSubmissionKey('message-1', { ...plan, prompt: `${plan.prompt}，更自然。` }))
   assert.match(first, /^agent-plan-message-1-/)
+})
+
+test('提交键存在时分支身份稳定派生，重试请求字节级一致', () => {
+  const key = 'agent-plan-message-1-abc123'
+  assert.equal(botanicAgentBranchId(key, 0), botanicAgentBranchId(key, 0))
+  assert.equal(botanicAgentBranchId(key, 0), `branch-${key}-1`)
+  assert.notEqual(botanicAgentBranchId(key, 0), botanicAgentBranchId(key, 1))
+  assert.notEqual(botanicAgentBranchId(undefined, 0), botanicAgentBranchId(undefined, 0))
 })
 
 test('自动模式刷新后按顺序续提交带 turnId 的 pending 单张计划', () => {

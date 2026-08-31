@@ -9,6 +9,7 @@ import {
   resolveBotanicAgentWorkflowReferenceNodeIds,
   resolveBotanicAgentCanvasCommands,
   botanicAgentBatchBranchTitles,
+  botanicAgentBranchId,
   botanicAgentLocalInitialGenerationDecision,
   type BotanicAgentActionProposal,
   type BotanicAgentActionResult,
@@ -534,7 +535,7 @@ export function useCanvasAgentExecutionBridge({
       ? botanicAgentBatchBranchTitles(plan, drafts.map((draft) => draft.label))
       : drafts.map((draft) => draft.label)
     const branchInputs = drafts.map((draft, index) => ({
-      branchId: `branch-${crypto.randomUUID()}`,
+      branchId: botanicAgentBranchId(submissionKey, index),
       label: labels[index] ?? draft.label,
       ...(draft.assetId ? { assetId: draft.assetId } : {}),
       ...(draft.variation ? { variation: draft.variation } : {}),
