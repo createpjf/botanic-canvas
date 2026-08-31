@@ -347,6 +347,25 @@ test('媒体持久化失败后停止批次，避免继续产生不可保存的�
   assert.equal(requests, 1)
 })
 
+test('上游模型路由/权限 404 映射为 PROVIDER_MODEL_UNAVAILABLE，不误导用户改提示词', async () => {
+  let requests = 0
+  await assert.rejects(() => generateFlockImages({
+    prompt: '香氛主图', batchCount: 3, settings: nanoSettings, references: [],
+  }, {
+    apiBaseUrl: 'https://api.flock.io/v1', apiKey: 'flock-key', jobId: 'job-model-unavailable',
+    fetchImpl: async () => {
+      requests += 1
+      return new Response(JSON.stringify({ error: { message: 'Publisher Model not found' } }), {
+        status: 404, headers: { 'content-type': 'application/json' },
+      })
+    },
+    persistMedia: async () => '/unused',
+  }), (error) => error instanceof GenerationError
+    && error.code === 'PROVIDER_MODEL_UNAVAILABLE'
+    && error.upstreamMessage === 'Publisher Model not found')
+  assert.equal(requests, 1)
+})
+
 test('未配置 Flock 密钥时失败可见', async () => {
   await assert.rejects(() => generateFlockImages({
     prompt: '香氛主图',

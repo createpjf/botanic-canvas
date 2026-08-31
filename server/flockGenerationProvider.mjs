@@ -48,6 +48,13 @@ function flockError(response, body) {
     : typeof body?.message === 'string'
       ? body.message
       : undefined
+  if (response.status === 404) {
+    // 目录里出现的模型不等于上游 Vertex 路由/权限可用。这是模型能力不一致，
+    // 不是提示词问题，不能落进 PROVIDER_REJECTED 误导用户改 Prompt。
+    const error = new GenerationError(502, 'PROVIDER_MODEL_UNAVAILABLE', 'Flock 图像模型当前不可调用：上游模型路由或访问权限不可用，请更换模型或联系维护者。')
+    if (upstreamMessage) error.upstreamMessage = upstreamMessage
+    return error
+  }
   return providerRejectionError(upstreamMessage, response.headers.get('x-request-id'), 'Flock 图像')
 }
 
