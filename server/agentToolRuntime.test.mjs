@@ -1207,3 +1207,85 @@ test('never 步骤可以首次执行，但 prepared 恢复必须明确拒绝重�
   assert.equal(modelCalls, 1)
   assert.equal(executed, 0)
 })
+
+test('同一工具同参数同输出连续 5 次以 TOOL_NO_PROGRESS 终止，第 3 次发警告', async () => {
+  const registry = createAgentToolRegistry([{
+    name: 'ontology_read',
+    label: '读取本体',
+    description: '读取项目本体。',
+    risk: 'read',
+    parameters: { type: 'object', additionalProperties: false, properties: { query: { type: 'string' } }, required: ['query'] },
+    validate: (input) => ({ query: input.query }),
+    execute: async () => ({ nodes: ['result-1'] }),
+  }])
+  const events = []
+  let step = 0
+  await assert.rejects(runAgentToolLoop({
+    registry,
+    messages: [],
+    maximumSteps: 8,
+    onEvent: (event) => events.push(event),
+    callModel: async () => {
+      step += 1
+      return {
+        choices: [{ message: {
+          tool_calls: [{
+            id: `call-same-${step}`,
+            type: 'function',
+            function: {
+              name: 'ontology_read',
+              // why 每次不同，不得绕过无进展签名。
+              arguments: JSON.stringify({ query: '最近结果', why: `第 ${step} 次查看` }),
+            },
+          }],
+        } }],
+      }
+    },
+  }), (caught) => caught instanceof AgentToolRuntimeError && caught.code === 'TOOL_NO_PROGRESS')
+
+  const warnings = events.filter((event) => event.presentation?.kind === 'no_progress')
+  assert.equal(warnings.length, 1)
+  assert.match(warnings[0].toolCall.summary, /连续 3 次/)
+  assert.equal(events.filter((event) => (
+    event.toolCall?.status === 'succeeded' && event.presentation?.kind !== 'no_progress'
+  )).length, 5)
+})
+
+test('无进展计数在参数变化后重置', async () => {
+  const registry = createAgentToolRegistry([{
+    name: 'ontology_read',
+    label: '读取本体',
+    description: '读取项目本体。',
+    risk: 'read',
+    parameters: { type: 'object', additionalProperties: false, properties: { query: { type: 'string' } }, required: ['query'] },
+    validate: (input) => ({ query: input.query }),
+    execute: async (input) => ({ nodes: [input.query] }),
+  }])
+  const events = []
+  const queries = ['a', 'a', 'a', 'b', 'b', 'b']
+  let step = 0
+  const result = await runAgentToolLoop({
+    registry,
+    messages: [],
+    maximumSteps: 8,
+    onEvent: (event) => events.push(event),
+    callModel: async () => {
+      if (step >= queries.length) return { choices: [{ message: { content: '完成' } }] }
+      const query = queries[step]
+      step += 1
+      return {
+        choices: [{ message: {
+          tool_calls: [{
+            id: `call-${step}`,
+            type: 'function',
+            function: { name: 'ontology_read', arguments: JSON.stringify({ query }) },
+          }],
+        } }],
+      }
+    },
+  })
+
+  assert.equal(result.output, '完成')
+  assert.equal(events.filter((event) => event.presentation?.kind === 'no_progress').length, 2)
+  assert.equal(result.toolCalls.filter((call) => call.status === 'succeeded').length, 6)
+})

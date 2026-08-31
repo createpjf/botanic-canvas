@@ -159,6 +159,7 @@ export function createAgentTurnSubmission({
   resolveVisionMedia,
   durableSubagentRunner,
   observeAgentContext,
+  enrichAgentContextCheckpoint,
   persistUsageAnchor,
   consumeWebResearchQuota,
 }) {
@@ -320,6 +321,9 @@ export function createAgentTurnSubmission({
         resolveOptions: {
           subagentRunner: durableSubagentRunner,
           observeAgentContext,
+          ...(typeof enrichAgentContextCheckpoint === 'function'
+            ? { enrichAgentContextCheckpoint }
+            : {}),
           role: access.role,
           requireTargetVision: true,
           allowWebResearch: projectPermissionDecision(access.role, 'execute-external-tool') === 'allow',

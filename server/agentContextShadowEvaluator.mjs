@@ -5,7 +5,8 @@ import { resolveAgentModelContextPolicy } from './agentModelContextPolicy.mjs'
 
 /**
  * 只读影子评估器。它只运行 Context 的纯选择算法，不持久化 checkpoint、不调用
- * Provider，也不把消息内容带进结果；因此 control 请求的返回值和副作用保持不变。
+ * Provider（含 LLM summarizer），也不把消息内容带进结果；因此 control 请求的返回值
+ * 和副作用保持不变。`AGENT_CONTEXT_LLM_SUMMARY` 不得影响本评估器。
  */
 export function evaluateAgentContextShadow(input = {}) {
   const policy = resolveAgentModelContextPolicy(input.model, input.policies)

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { resolveAgentModelContextPolicy } from './agentModelContextPolicy.mjs'
 import { createAgentModelContextRuntime } from './agentModelContextRuntime.mjs'
+import { sanitizeAgentModelContextCheckpoint } from './agentModelContextSurface.mjs'
 
 const policy = resolveAgentModelContextPolicy('test-model', {
   models: {
@@ -58,6 +59,38 @@ test('overflow force 只有 surface 真变化时才允许 ToolLoop 重试', asyn
   assert.equal(long.changed, true)
 })
 
+test('overflow 比日常 pre_step 替换更多前缀，只保住当前用户 unit', async () => {
+  const runtime = createAgentModelContextRuntime({ policy })
+  const messages = [
+    { role: 'system', content: '系统边界' },
+    { role: 'user', content: `早期 ${'早'.repeat(800)}` },
+    { role: 'assistant', content: `中间 ${'中'.repeat(120)}` },
+    { role: 'user', content: '当前问题' },
+  ]
+  const tools = []
+  const daily = await runtime.prepare({
+    trigger: 'pre_step', force: true, maxOutputTokens: 500, messages, tools,
+  })
+  const overflow = await runtime.prepare({
+    trigger: 'overflow', force: true, maxOutputTokens: 500, messages, tools,
+  })
+  assert.equal(daily.changed, true)
+  assert.equal(overflow.changed, true)
+  const dailyReplace = daily.prepared.operations.find((operation) => operation.type === 'checkpoint_replace')
+  const overflowReplace = overflow.prepared.operations.find((operation) => operation.type === 'checkpoint_replace')
+  assert.ok(dailyReplace && overflowReplace)
+  assert.ok(
+    overflowReplace.replacedMessageRevisions.length > dailyReplace.replacedMessageRevisions.length,
+    'overflow 应比 pre_step 多砍可替换历史',
+  )
+  assert.equal(overflow.messages.at(-1).content, '当前问题')
+  assert.equal(
+    overflow.messages.filter((message) => message.role === 'assistant').length,
+    0,
+    'overflow 不得保留中间 assistant',
+  )
+})
+
 test('Provider usage 仅形成数值锚点并最佳努力持久化', async () => {
   const writes = []
   const runtime = createAgentModelContextRuntime({
@@ -98,4 +131,33 @@ test('Usage anchor 持久化失败不回滚已完成的模型响应', async () =
     prepared: preparation.prepared,
     responseUsage: { inputTokens: 10, outputTokens: 2 },
   }))
+})
+
+test('传入 threadSummary 时压缩以它为 checkpoint 基底，surface 抽取只作回退', async () => {
+  const threadSummary = [
+    '本线程早前已经定下的事实（不是用户这一轮的新输入）：',
+    '- 已确认决策：锁定人物与服装，替换场景。（run-coord-1）',
+    '- 已锁定约束：person:preserve',
+  ].join('\n')
+  const runtime = createAgentModelContextRuntime({ policy, threadSummary })
+  const result = await runtime.prepare({
+    trigger: 'overflow', force: true, maxOutputTokens: 500,
+    messages: [
+      { role: 'system', content: 'system' },
+      { role: 'user', content: `old ${'a'.repeat(2_000)}` },
+      { role: 'assistant', content: `answer ${'b'.repeat(2_000)}` },
+      { role: 'user', content: 'current' },
+    ],
+    tools: [],
+  })
+  assert.equal(result.changed, true)
+  const checkpointMessage = result.messages.find((message) => (
+    typeof message.content === 'string' && message.content.includes('run-coord-1')
+  ))
+  assert.ok(checkpointMessage, 'checkpoint 应含 Coordinator 已确认决策')
+  assert.match(checkpointMessage.content, /已锁定约束：person:preserve/u)
+  assert.equal(
+    sanitizeAgentModelContextCheckpoint(checkpointMessage.content),
+    checkpointMessage.content,
+  )
 })
