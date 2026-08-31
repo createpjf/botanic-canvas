@@ -57,7 +57,11 @@ function collaborativeNode(node) {
 }
 
 function collaborativeEdge(edge) {
-  return sanitizeCollaborativeValue(edge, undefined, false, true)
+  const normalized = sanitizeCollaborativeValue(edge, undefined, false, true)
+  // 选中是本机私有视图状态，与节点侧同一边界：既不进 mutation log 持久化，
+  // 也不经 room 重播给协作者。旧客户端广播的 selected 也在这里收口。
+  delete normalized.selected
+  return normalized
 }
 
 function collaborativeGraph(graph) {
