@@ -1,4 +1,4 @@
-import { parseProjectRealtimeEvent, projectRealtimeConnectionOpened, type ProjectRealtimeConnectionState, type ProjectRealtimeEvent } from '../domain/realtimeSync'
+import { parseProjectRealtimeEvent, projectRealtimeConnectionOpened, type CanvasCrdtCommittedRealtimeEvent, type ProjectRealtimeConnectionState, type ProjectRealtimeEvent } from '../domain/realtimeSync'
 import { productRequest, serverPersistenceEnabled } from './productSession'
 
 type RealtimeTicket = {
@@ -12,16 +12,45 @@ function websocketUrl(endpoint: string, projectId: string, ticket: string) {
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
   url.searchParams.set('projectId', projectId)
   url.searchParams.set('ticket', ticket)
+  url.searchParams.set('protocol', '2')
   return url.toString()
 }
 
+type CanvasSyncHelloEvent = {
+  type: 'canvas.sync.hello.v2'
+  protocol: 2
+  projectId: string
+  schemaVersion: 2
+  clientInstanceId: string
+  stateVectorBase64: string
+}
+
 export type ProjectRealtimeChannel = {
-  publish: (event: ProjectRealtimeEvent) => boolean
+  publish: (event: ProjectRealtimeEvent | CanvasSyncHelloEvent) => boolean
   close: () => void
 }
 
 export type ProjectRealtimeConnectionOpened = {
   reconnected: boolean
+}
+
+export async function commitCanvasRealtimeUpdate(event: {
+  type: 'canvas.crdt.update'
+  projectId: string
+  mutationId: string
+  update: string
+  syncProtocolEpoch?: number
+}): Promise<CanvasCrdtCommittedRealtimeEvent> {
+  const response = await productRequest<unknown>(`/api/projects/${encodeURIComponent(event.projectId)}/canvas-sync`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(event),
+  })
+  const committed = parseProjectRealtimeEvent(response, event.projectId)
+  if (committed?.type !== 'canvas.crdt.committed' || committed.mutationId !== event.mutationId) {
+    throw new TypeError('Canvas Sync HTTP 回执无效。')
+  }
+  return committed
 }
 
 export function openProjectRealtimeChannel(

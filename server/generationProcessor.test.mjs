@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { applyGenerationJobToAgentRun, createPersistentAgentRun } from './botanicAgentRun.mjs'
-import { createGenerationProcessor as createRuntimeGenerationProcessor } from './generationProcessor.mjs'
+import { createGenerationProcessor as createRuntimeGenerationProcessor, shouldReportGenerationWorkerFailure } from './generationProcessor.mjs'
 import { GenerationError } from './generationProvider.mjs'
 import { createLocalCancelRegistry } from './localCancelRegistry.mjs'
 import { createProductStore } from './productStore.mjs'
@@ -383,6 +383,14 @@ test('没有兼容备用模型时保留 Provider 原始错误码对应的用户�
   assert.doesNotMatch(JSON.stringify(reportedFailures), /生成一张品牌首图/)
 })
 
+test('用户侧拒单与模型下线不上报 Worker Sentry', () => {
+  assert.equal(shouldReportGenerationWorkerFailure({ code: 'PROVIDER_REJECTED' }), false)
+  assert.equal(shouldReportGenerationWorkerFailure({ code: 'PROVIDER_MODEL_UNAVAILABLE' }), false)
+  assert.equal(shouldReportGenerationWorkerFailure({ code: 'PROVIDER_RATE_LIMITED' }), false)
+  assert.equal(shouldReportGenerationWorkerFailure({ code: 'REQUEST_TIMEOUT' }), true)
+  assert.equal(shouldReportGenerationWorkerFailure({ code: 'PROVIDER_AUTH_FAILED' }), true)
+})
+
 test('普通生成任务也由服务端把生命周期状态权威回写到项目画布', async () => {
   const observed = []
   const publishedProjectUpdates = []
@@ -664,6 +672,8 @@ test('Worker 先持久化 N 输出再回写画布后，Artifact Index 补齐每�
   })
   t.after(() => { globalThis.fetch = originalFetch })
   let mediaIndex = 0
+  const canvasUpdates = []
+  const projectUpdates = []
   const processJob = createGenerationProcessor({
     productStore,
     mediaService: {
@@ -682,10 +692,17 @@ test('Worker 先持久化 N 输出再回写画布后，Artifact Index 补齐每�
       maximumBatchCount: 8,
       maximumReferenceBytes: 1024,
     },
+    publishCanvasUpdate: async (event) => canvasUpdates.push(event),
+    publishProjectUpdated: async (event) => projectUpdates.push(event),
   })
 
   await processJob(jobId)
 
+  const collaboration = productStore.loadCanvasCollaboration(owner.id, projectId)
+  assert.ok(collaboration.updates.length > 0)
+  assert.ok(canvasUpdates.length > 0)
+  assert.equal(projectUpdates.length, canvasUpdates.length)
+  assert.equal(projectUpdates.every((event) => !('graph' in event)), true)
   const artifacts = productStore.listAgentArtifacts(owner.id, projectId, { limit: 10 })
   const sourcesByOutput = Object.fromEntries(artifacts.map((artifact) => [
     artifact.metadata.outputId,

@@ -1616,7 +1616,7 @@ export function createAgentRouteHandler({
         const registry = createBotanicAgentActionToolRegistry({
           // MCP 内联图片落成项目同源媒体，Artifact Index 与历史追溯才收得进。
           persistMcpMedia: (dataUrl) => mediaService.persistDataUrl({ ownerId: user.id, projectId, dataUrl }),
-          ...createCanvasAgentEditExecutors({ productStore, publishProjectUpdated, models: config?.modelOptions ?? [], userId: user.id, projectId }),
+          ...createCanvasAgentEditExecutors({ productStore, publishProjectUpdated, models: config?.modelOptions ?? [], userId: user.id, projectId, mutationId: receiptId }),
           createWorkflow: async ({ planId }) => {
             const { project, prepared } = await agentRunGeneration.prepareProjectExecution(user.id, projectId, planId, { submission: false })
             const saved = await agentRunGeneration.persistWorkflow(user.id, project, prepared)

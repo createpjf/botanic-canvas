@@ -94,6 +94,26 @@ export function findAvailableAsset(document: CanvasDocument, globalAssets: Asset
   return availableAssets(document, globalAssets).find((asset) => asset.id === assetId)
 }
 
+export function hydrateAssetNodeImages(nodes: CanvasNode[], document: CanvasDocument, globalAssets: AssetRecord[]) {
+  const documentNodes = new Map(document.nodes.map((node) => [node.id, node]))
+  return nodes.map((node) => {
+    if (node.type === 'asset') {
+      const asset = findAvailableAsset(document, globalAssets, (node.data as AssetNodeData).assetId)
+      return asset && (node.data as AssetNodeData).image !== asset.image
+        ? { ...node, data: { ...node.data, image: asset.image } }
+        : node
+    }
+    if (node.type === 'result') {
+      const remote = documentNodes.get(node.id)
+      const image = remote?.type === 'result' ? (remote.data as ResultNodeData).image : undefined
+      return image && (node.data as ResultNodeData).image !== image
+        ? { ...node, data: { ...node.data, image } }
+        : node
+    }
+    return node
+  }) as CanvasNode[]
+}
+
 export function withoutReference(recipe: import('../domain/canvas.ts').GenerationRecipe, assetId: string) {
   const references = recipe.references.filter((reference) => reference.assetId !== assetId)
   const primary = references.find((reference) => reference.nodeId === recipe.primaryReferenceNodeId && reference.role === '商品')

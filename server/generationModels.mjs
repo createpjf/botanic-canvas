@@ -46,6 +46,8 @@ export function createGenerationModelCatalog({
   flockApiKey,
   flockImageModels = [],
   includeUnavailable = false,
+  // Vertex 路由未恢复前默认不可执行。目录仍可标成下线，避免用户再点出 502。
+  flockNanoBananaEnabled = false,
 }) {
   const catalog = []
   if (openAIApiKey) {
@@ -88,7 +90,7 @@ export function createGenerationModelCatalog({
     })))
   }
   const configuredFlockModels = unique(flockImageModels).filter((id) => id === NANO_BANANA_MODEL_ID)
-  if (flockApiKey) {
+  if (flockApiKey && flockNanoBananaEnabled) {
     // 环境变量只负责启用已实现的 Adapter 型号，不能让一个陌生 ID 继承 Nano
     // Banana 的 4K / 14 参考 / Search / Thinking 能力后进入可执行目录。
     catalog.push(...configuredFlockModels.map(() => nanoBananaModelOption()))

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Edge } from '@xyflow/react'
+import * as Y from 'yjs'
 import type { CanvasNode } from './canvas.ts'
 import { createCollaborativeGraph, mergeCollaborativeCanvasGraph } from './collaborativeGraph.ts'
 
@@ -44,6 +45,41 @@ test('协作图谱把节点与连线增量同步给另一位编辑者', () => {
   receiver.destroy()
 })
 
+test('同一节点的移动与 URI 前缀文案编辑并发时两者都保留', () => {
+  const initial = { nodes: [node('node-a', 10)], edges: [] as Edge[] }
+  const leftUpdates: Uint8Array[] = []
+  const rightUpdates: Uint8Array[] = []
+  let leftGraph = initial
+  let rightGraph = initial
+  const left = createCollaborativeGraph({
+    initialGraph: initial,
+    onUpdate: (update) => leftUpdates.push(update),
+    onRemoteGraph: (graph) => { leftGraph = graph },
+  })
+  const right = createCollaborativeGraph({
+    initialGraph: initial,
+    onUpdate: (update) => rightUpdates.push(update),
+    onRemoteGraph: (graph) => { rightGraph = graph },
+  })
+
+  left.replaceLocalGraph({ nodes: [node('node-a', 240)], edges: [] })
+  right.replaceLocalGraph({
+    nodes: [{ ...node('node-a', 10), data: { label: 'blob: 是文案', content: 'data: 并发后的文案' } }],
+    edges: [],
+  })
+  right.applyRemoteUpdate(leftUpdates[0])
+  left.applyRemoteUpdate(rightUpdates[0])
+
+  assert.equal(leftGraph.nodes[0].position.x, 240)
+  assert.equal(leftGraph.nodes[0].data.label, 'blob: 是文案')
+  assert.equal(leftGraph.nodes[0].data.content, 'data: 并发后的文案')
+  assert.equal(rightGraph.nodes[0].position.x, 240)
+  assert.equal(rightGraph.nodes[0].data.label, 'blob: 是文案')
+  assert.equal(rightGraph.nodes[0].data.content, 'data: 并发后的文案')
+  left.destroy()
+  right.destroy()
+})
+
 test('选择态属于本机 UI，不进入协作更新', () => {
   const initial = { nodes: [node('node-a', 10)], edges: [] as Edge[] }
   const updates: Uint8Array[] = []
@@ -59,6 +95,27 @@ test('选择态属于本机 UI，不进入协作更新', () => {
   collaboration.destroy()
 })
 
+test('连线选中态同样不进入协作更新，远端合并后本机选中保留', () => {
+  const edge: Edge = { id: 'edge-a-b', source: 'node-a', target: 'node-b' }
+  const initial = { nodes: [node('node-a', 10), node('node-b', 320)], edges: [edge] }
+  const updates: Uint8Array[] = []
+  const collaboration = createCollaborativeGraph({
+    initialGraph: initial,
+    onUpdate: (update) => updates.push(update),
+    onRemoteGraph: () => undefined,
+  })
+
+  collaboration.replaceLocalGraph({ ...initial, edges: [{ ...edge, selected: true }] })
+  assert.equal(updates.length, 0)
+  collaboration.destroy()
+
+  const merged = mergeCollaborativeCanvasGraph(
+    { ...initial, edges: [{ ...edge, selected: true }] },
+    { ...initial, edges: [edge] },
+  )
+  assert.equal(merged.edges[0].selected, true)
+})
+
 test('协作增量不携带图片字节', () => {
   const assetNode = {
     id: 'asset-a',
@@ -70,6 +127,14 @@ test('协作增量不携带图片字节', () => {
       role: '商品',
       name: '商品图',
       image: `data:image/png;base64,${'a'.repeat(20_000)}`,
+      generationRecipe: {
+        references: [
+          { image: 'data:image/png;base64,deep-secret' },
+          { image: '/api/media/stable-reference' },
+        ],
+        maskImage: 'blob:https://app.example/mask',
+        externalImage: 'https://cdn.example.com/external.webp',
+      },
     },
   } as CanvasNode
   const updates: Uint8Array[] = []
@@ -81,11 +146,35 @@ test('协作增量不携带图片字节', () => {
 
   collaboration.replaceLocalGraph({
     nodes: [{ ...assetNode, position: { x: 100, y: 20 } }],
-    edges: [],
+    edges: [{
+      id: 'edge-media',
+      source: 'asset-a',
+      target: 'asset-a',
+      data: {
+        payload: 'data:image/png;base64,edge-secret',
+        external: 'https://cdn.example.com/edge.png',
+        privateMedia: 'media://edge-secret',
+        binary: new Uint8Array([1, 2, 3]),
+      },
+    }],
   })
 
   assert.equal(updates.length, 1)
   assert.ok(updates[0].byteLength < 2_000)
+  const serialized = new TextDecoder().decode(updates[0])
+  assert.equal(serialized.includes('deep-secret'), false)
+  assert.equal(serialized.includes('blob:https://app.example/mask'), false)
+  assert.equal(serialized.includes('https://cdn.example.com/external.webp'), false)
+  assert.equal(serialized.includes('edge-secret'), false)
+  assert.equal(serialized.includes('https://cdn.example.com/edge.png'), false)
+  assert.equal(serialized.includes('/api/media/stable-reference'), false, '纯移动不重复发送未变化的配置')
+  const document = new Y.Doc()
+  Y.applyUpdate(document, updates[0])
+  const edgeData = document.getMap('edges').get('edge-media').value.data
+  assert.equal(edgeData.payload, undefined)
+  assert.equal(edgeData.external, undefined)
+  assert.equal(edgeData.privateMedia, undefined)
+  assert.equal(edgeData.binary, undefined)
   collaboration.destroy()
 })
 

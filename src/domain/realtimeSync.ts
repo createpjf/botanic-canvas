@@ -2,6 +2,14 @@ import type { BotanicAgentRunSnapshot } from './agent'
 import type { CollaborationActivity } from './collaborationActivity'
 
 export type ProjectRealtimeConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'closed'
+export type CanvasSyncStatus = 'synced' | 'saving' | 'offline_pending' | 'syncing' | 'blocked'
+export type CanvasGraphNackCode = 'PERMISSION_REVOKED' | 'PROJECT_DELETED' | 'SCHEMA_UNSUPPORTED' | 'INVALID_UPDATE' | 'TEMPORARY_UNAVAILABLE' | 'EPOCH_STALE'
+
+export type RealtimeReadyEvent = {
+  type: 'realtime.ready'
+  projectId: string
+  protocol?: 2
+}
 
 export type ProjectUpdatedRealtimeEvent = {
   type: 'project.updated'
@@ -17,9 +25,40 @@ export type CanvasCrdtRealtimeEvent = {
   type: 'canvas.crdt.update'
   projectId: string
   update: string
+  mutationId?: string
+  syncProtocolEpoch?: number
   actorId?: string
   actorName?: string
   activity?: CollaborationActivity
+}
+
+export type CanvasCrdtCommittedRealtimeEvent = {
+  type: 'canvas.crdt.committed'
+  projectId: string
+  mutationId: string
+  graphRevision: number
+  mutationRevision: number
+  updatedAt: number
+}
+
+export type CanvasSyncReadyRealtimeEvent = {
+  type: 'canvas.sync.ready.v2'
+  protocol: 2
+  projectId: string
+  schemaVersion: 2
+  syncProtocolEpoch?: number
+  graphRevision: number
+  updateBase64: string
+}
+
+export type CanvasGraphNackRealtimeEvent = {
+  type: 'canvas.graph.nack.v2'
+  protocol: 2
+  projectId: string
+  mutationId: string
+  code: CanvasGraphNackCode
+  retryable: boolean
+  syncProtocolEpoch?: number
 }
 
 export type AgentRunUpdatedRealtimeEvent = {
@@ -40,7 +79,7 @@ export type CollaborationActivityRealtimeEvent = {
   activity: CollaborationActivity
 }
 
-export type ProjectRealtimeEvent = ProjectUpdatedRealtimeEvent | CanvasCrdtRealtimeEvent | AgentRunUpdatedRealtimeEvent | CollaborationPresenceRealtimeEvent | CollaborationActivityRealtimeEvent
+export type ProjectRealtimeEvent = RealtimeReadyEvent | ProjectUpdatedRealtimeEvent | CanvasCrdtRealtimeEvent | CanvasCrdtCommittedRealtimeEvent | CanvasSyncReadyRealtimeEvent | CanvasGraphNackRealtimeEvent | AgentRunUpdatedRealtimeEvent | CollaborationPresenceRealtimeEvent | CollaborationActivityRealtimeEvent
 
 export function projectRealtimeConnectionOpened(openedBefore: boolean) {
   return {
@@ -60,11 +99,22 @@ export function parseProjectRealtimeEvent(event: unknown, currentProjectId: stri
     actorId?: unknown
     actorName?: unknown
     update?: unknown
+    mutationId?: unknown
+    mutationRevision?: unknown
     run?: unknown
     members?: unknown
     activity?: unknown
+    protocol?: unknown
+    schemaVersion?: unknown
+    updateBase64?: unknown
+    code?: unknown
+    retryable?: unknown
+    syncProtocolEpoch?: unknown
   }
   if (candidate.projectId !== currentProjectId) return undefined
+  if (candidate.type === 'realtime.ready' && (candidate.protocol === undefined || candidate.protocol === 2)) {
+    return candidate as RealtimeReadyEvent
+  }
   if (candidate.type === 'project.updated'
     && typeof candidate.revision === 'number'
     && (candidate.graphRevision === undefined || typeof candidate.graphRevision === 'number')
@@ -93,10 +143,46 @@ export function parseProjectRealtimeEvent(event: unknown, currentProjectId: stri
     && candidate.update.length > 0
     && candidate.update.length <= 700_000
     && /^[A-Za-z0-9+/]*={0,2}$/.test(candidate.update)
+    && (candidate.mutationId === undefined
+      || (typeof candidate.mutationId === 'string' && /^[A-Za-z0-9._:-]{1,200}$/.test(candidate.mutationId)))
+    && validOptionalSyncProtocolEpoch(candidate.syncProtocolEpoch)
     && (candidate.actorId === undefined || typeof candidate.actorId === 'string')
     && (candidate.actorName === undefined || (typeof candidate.actorName === 'string' && candidate.actorName.length <= 80))
     && (candidate.activity === undefined || validCollaborationActivity(candidate.activity))) {
     return candidate as CanvasCrdtRealtimeEvent
+  }
+  if (candidate.type === 'canvas.crdt.committed'
+    && typeof candidate.mutationId === 'string'
+    && /^[A-Za-z0-9._:-]{1,200}$/.test(candidate.mutationId)
+    && Number.isInteger(candidate.graphRevision)
+    && Number(candidate.graphRevision) > 0
+    && Number.isInteger(candidate.mutationRevision)
+    && Number(candidate.mutationRevision) > 0
+    && typeof candidate.updatedAt === 'number'
+    && Number.isFinite(candidate.updatedAt)) {
+    return candidate as CanvasCrdtCommittedRealtimeEvent
+  }
+  if (candidate.type === 'canvas.sync.ready.v2'
+    && candidate.protocol === 2
+    && candidate.schemaVersion === 2
+    && validOptionalSyncProtocolEpoch(candidate.syncProtocolEpoch)
+    && Number.isInteger(candidate.graphRevision)
+    && Number(candidate.graphRevision) > 0
+    && typeof candidate.updateBase64 === 'string'
+    && candidate.updateBase64.length > 0
+    && candidate.updateBase64.length <= 700_000
+    && /^[A-Za-z0-9+/]*={0,2}$/.test(candidate.updateBase64)) {
+    return candidate as CanvasSyncReadyRealtimeEvent
+  }
+  if (candidate.type === 'canvas.graph.nack.v2'
+    && candidate.protocol === 2
+    && typeof candidate.mutationId === 'string'
+    && /^[A-Za-z0-9._:-]{1,200}$/.test(candidate.mutationId)
+    && ['PERMISSION_REVOKED', 'PROJECT_DELETED', 'SCHEMA_UNSUPPORTED', 'INVALID_UPDATE', 'TEMPORARY_UNAVAILABLE', 'EPOCH_STALE'].includes(String(candidate.code))
+    && typeof candidate.retryable === 'boolean'
+    && validOptionalSyncProtocolEpoch(candidate.syncProtocolEpoch)
+    && (candidate.code !== 'EPOCH_STALE' || candidate.syncProtocolEpoch !== undefined)) {
+    return candidate as CanvasGraphNackRealtimeEvent
   }
   if (candidate.type === 'agent.run.updated' && candidate.run && typeof candidate.run === 'object') {
     const run = candidate.run as Partial<BotanicAgentRunSnapshot>
@@ -114,6 +200,30 @@ export function parseProjectRealtimeEvent(event: unknown, currentProjectId: stri
   if (candidate.type === 'collaboration.activity' && validCollaborationActivity(candidate.activity)) {
     return candidate as CollaborationActivityRealtimeEvent
   }
+  return undefined
+}
+
+function validOptionalSyncProtocolEpoch(value: unknown) {
+  return value === undefined || (Number.isInteger(value) && Number(value) > 0)
+}
+
+export function deriveCanvasSyncStatus({
+  connectionState,
+  handshakeReady,
+  pendingCount,
+  replaying = false,
+  blocked = false,
+}: {
+  connectionState: ProjectRealtimeConnectionState
+  handshakeReady: boolean
+  pendingCount: number
+  replaying?: boolean
+  blocked?: boolean
+}): CanvasSyncStatus | undefined {
+  if (blocked) return 'blocked'
+  if (connectionState === 'connected' && (!handshakeReady || replaying)) return 'syncing'
+  if (pendingCount > 0) return connectionState === 'connected' ? 'saving' : 'offline_pending'
+  if (connectionState === 'connected' && handshakeReady) return 'synced'
   return undefined
 }
 

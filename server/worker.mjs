@@ -1,7 +1,9 @@
+import { randomUUID } from 'node:crypto'
 import { createGenerationProcessor } from './generationProcessor.mjs'
 import { createGenerationQueue, createGenerationWorker } from './generationQueue.mjs'
 import { createProductRuntime, loadLocalEnv, runtimeConfig } from './runtime.mjs'
 import { createAgentRunEventPublisher, createAgentRunEventSubscriber } from './agentRunEventBus.mjs'
+import { createCanvasRealtimeEventPublisher } from './canvasRealtimeEventBus.mjs'
 import { writeAgentRunOperationalEvent } from './agentRunObservability.mjs'
 import { createProviderHealthMonitor } from './providerHealthMonitor.mjs'
 import { createDerivedTaskQueue, createDerivedTaskWorker } from './derivedTaskQueue.mjs'
@@ -57,6 +59,37 @@ if (!config.redisUrl) throw new Error('REDIS_URL 未配置，Worker 拒绝启动
 const queue = createGenerationQueue(config.redisUrl)
 const subagentQueue = createAgentSubagentQueue(config.redisUrl)
 const agentRunEvents = createAgentRunEventPublisher(config.redisUrl)
+const canvasRealtimeEvents = createCanvasRealtimeEventPublisher(config.redisUrl, { eventSecret: config.realtimeEventSecret })
+const canvasSourceInstanceId = randomUUID()
+async function publishSavedProjectUpdated(saved, actorId, graphCommit) {
+  if (graphCommit?.changed && graphCommit.update) {
+    try {
+      await canvasRealtimeEvents.publishCanvasUpdate({
+        eventId: randomUUID(), sourceInstanceId: canvasSourceInstanceId,
+        projectId: saved.document.id, update: graphCommit.update,
+        mutationId: graphCommit.mutationId, actorId,
+        graphRevision: graphCommit.graphRevision, updatedAt: graphCommit.updatedAt,
+        ...(graphCommit.duplicate ? { duplicate: true } : {}),
+      })
+    } catch (caught) {
+      console.error(`[realtime] worker canvas update deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
+    }
+  }
+  try {
+    await agentRunEvents.publishProjectUpdated({
+      projectId: saved.document.id,
+      actorId,
+      revision: saved.revision,
+      graphRevision: saved.graphRevision,
+      updatedAt: saved.document.updatedAt,
+      ...(!graphCommit && (saved.syncProtocolEpoch ?? 1) < 2
+        ? { graph: { nodes: saved.document.nodes ?? [], edges: saved.document.edges ?? [] } }
+        : {}),
+    })
+  } catch (caught) {
+    console.error(`[realtime] worker project update deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
+  }
+}
 const providerHealth = createProviderHealthMonitor({
   redisUrl: config.redisUrl,
   failureThreshold: config.providerFailureThreshold,
@@ -154,6 +187,7 @@ const worker = createGenerationWorker({
     cancelRegistry: jobCancelRegistry,
     publishAgentRunUpdated: agentRunEvents.publish,
     publishProjectUpdated: agentRunEvents.publishProjectUpdated,
+    publishCanvasUpdate: canvasRealtimeEvents.publishCanvasUpdate,
     observeAgentRun,
     providerCircuitBreaker: providerHealth,
     ensureReviewTask: (ownerId, runId) => reviewService.ensureReviewTaskForRun(ownerId, runId),
@@ -223,7 +257,7 @@ const agentRunGeneration = createAgentRunGenerationService({
   productStore: runtime.productStore,
   securityControls,
   enqueue: (jobId) => queue.enqueue(jobId),
-  publishProjectUpdated: agentRunEvents.publishProjectUpdated,
+  publishProjectUpdated: publishSavedProjectUpdated,
   publishAgentRunUpdated: agentRunEvents.publish,
 })
 const subagentCancellation = createAgentSubagentCancellation({
@@ -322,7 +356,7 @@ const sweepFailedBranches = createAgentBranchRetrySweep({
     config,
     enqueue: (jobId) => queue.enqueue(jobId),
     securityControls,
-    publishProjectUpdated: agentRunEvents.publishProjectUpdated,
+    publishProjectUpdated: publishSavedProjectUpdated,
     publishAgentRunUpdated: agentRunEvents.publish,
     agentRunGeneration,
     observeRun: observeAgentRun,
@@ -443,6 +477,7 @@ async function shutdown() {
   await queue.close()
   await subagentQueue.close()
   await agentRunEvents.close()
+  await canvasRealtimeEvents.close()
   await providerHealth.close()
   await runtime.mediaService.close()
   await runtime.productStore.close?.()

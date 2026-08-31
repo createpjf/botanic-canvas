@@ -15,6 +15,11 @@ import { AgentDelegationFenceError, assertTurnAllowsDelegation } from './agentCa
 import { cancelGenerationJob } from './generationCancellation.mjs'
 import { compareAndSetGenerationJob } from './generationJobCas.mjs'
 import { assertAgentTargetBinding } from './agentTargetBinding.mjs'
+import {
+  canvasProjectMutationId,
+  commitCanvasProjectMutation,
+  supportsDurableCanvasGraphMutation,
+} from './canvasGraphCommitService.mjs'
 
 /**
  * Agent Run 确认后的唯一生成提交模块。路由只调用这个小接口；配额、幂等、
@@ -53,6 +58,45 @@ export function createAgentRunGenerationService({
         && sameAgentRunBranch(resultNode?.data?.agentRun, job.agentRun)
         && Boolean(promptNode)
     })
+  }
+
+  function mergePreparedWorkflow(document, prepared) {
+    const nodes = structuredClone(document.nodes ?? [])
+    const edges = structuredClone(document.edges ?? [])
+    const generationJobs = structuredClone(document.generationJobs ?? [])
+    const submitted = prepared.jobs.some((job) => (
+      (prepared.document.generationJobs ?? []).some((record) => record.id === job.id)
+    ))
+    let changed = false
+    for (const target of prepared.workflows.flatMap((workflow) => [workflow.promptNode, workflow.generateNode, workflow.resultNode])) {
+      const index = nodes.findIndex((node) => node.id === target.id)
+      if (index < 0) {
+        nodes.push(structuredClone(target))
+        changed = true
+      } else if (submitted && (nodes[index].data?.taskStatus === 'draft' || nodes[index].data?.status === 'idle')) {
+        nodes[index] = { ...structuredClone(target), position: nodes[index].position, selected: nodes[index].selected ?? false }
+        changed = true
+      }
+    }
+    const edgeIds = new Set(edges.map((edge) => edge.id))
+    for (const target of prepared.workflows.flatMap((workflow) => workflow.edges)) {
+      if (edgeIds.has(target.id)) continue
+      edges.push(structuredClone(target))
+      edgeIds.add(target.id)
+      changed = true
+    }
+    if (submitted) {
+      const jobIds = new Set(generationJobs.map((job) => job.id))
+      for (const record of prepared.document.generationJobs ?? []) {
+        if (!prepared.jobs.some((job) => job.id === record.id) || jobIds.has(record.id)) continue
+        generationJobs.push(structuredClone(record))
+        jobIds.add(record.id)
+        changed = true
+      }
+    }
+    return changed
+      ? { ...structuredClone(document), nodes, edges, generationJobs, updatedAt: prepared.document.updatedAt }
+      : undefined
   }
 
   /**
@@ -140,13 +184,33 @@ export function createAgentRunGenerationService({
 
   async function persistWorkflow(userId, project, prepared) {
     try {
-      const saved = await productStore.writeProject(
-        userId,
-        prepared.document,
-        project.revision,
-        project.graphRevision,
-      )
-      await publishProjectUpdated(saved, userId)
+      let saved
+      let graphCommit
+      if (supportsDurableCanvasGraphMutation(productStore)) {
+        const committed = await commitCanvasProjectMutation({
+          productStore,
+          userId,
+          projectId: project.document.id,
+          mutationId: canvasProjectMutationId('agent-workflow', {
+            jobs: prepared.jobs.map((job) => job.id),
+            submitted: prepared.jobs.some((job) => (
+              (prepared.document.generationJobs ?? []).some((record) => record.id === job.id)
+            )),
+          }),
+          mutate: (document) => mergePreparedWorkflow(document, prepared),
+        })
+        saved = committed?.saved
+        graphCommit = committed?.graphCommit
+      } else {
+        saved = await productStore.writeProject(
+          userId,
+          prepared.document,
+          project.revision,
+          project.graphRevision,
+        )
+      }
+      if (!saved) throw new AgentToolRuntimeError('PROJECT_NOT_FOUND', '未找到当前项目。', 404)
+      await publishProjectUpdated(saved, userId, graphCommit)
       return saved
     } catch (caught) {
       if (caught?.code === 'PROJECT_CONFLICT' || caught?.code === 'CANVAS_GRAPH_CONFLICT') {
@@ -159,13 +223,38 @@ export function createAgentRunGenerationService({
   }
 
   async function persistJobState(userId, projectId, job) {
+    const reconcileJob = (document) => {
+      const reconciled = reconcileAgentGenerationJobToProject(document, job)
+      return reconciled.changed ? reconciled.document : undefined
+    }
+    if (supportsDurableCanvasGraphMutation(productStore)) {
+      try {
+        const committed = await commitCanvasProjectMutation({
+          productStore,
+          userId,
+          projectId,
+          mutationId: canvasProjectMutationId('agent-job', {
+            jobId: job.id,
+            status: job.status,
+            updatedAt: job.updatedAt,
+            outputs: (job.outputs ?? []).map(({ id, image }) => ({ id, image })),
+            error: job.error,
+          }),
+          mutate: reconcileJob,
+        })
+        if (committed?.changed && committed.saved) {
+          await publishProjectUpdated(committed.saved, userId, committed.graphCommit)
+        }
+        return
+      } catch (caught) {
+        if (caught?.code !== 'PROJECT_CONFLICT' && caught?.code !== 'CANVAS_GRAPH_CONFLICT') throw caught
+        throw new AgentToolRuntimeError('AGENT_WRITEBACK_CONFLICT', '任务状态回写连续冲突，请刷新画布后重试。', 409)
+      }
+    }
     // 优先走 Store 的原子文档更新：锁内读改写，不与用户保存竞速。
     if (typeof productStore.updateProjectDocument === 'function') {
       try {
-        const saved = await productStore.updateProjectDocument(userId, projectId, (document) => {
-          const reconciled = reconcileAgentGenerationJobToProject(document, job)
-          return reconciled.changed ? reconciled.document : undefined
-        })
+        const saved = await productStore.updateProjectDocument(userId, projectId, reconcileJob)
         if (saved) await publishProjectUpdated(saved, userId)
         return
       } catch (caught) {
@@ -178,12 +267,12 @@ export function createAgentRunGenerationService({
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       const project = await productStore.readProject(userId, projectId)
       if (!project) return
-      const reconciled = reconcileAgentGenerationJobToProject(project.document, job)
-      if (!reconciled.changed) return
+      const document = reconcileJob(project.document)
+      if (!document) return
       try {
         const saved = await productStore.writeProject(
           userId,
-          reconciled.document,
+          document,
           project.revision,
           project.graphRevision,
         )

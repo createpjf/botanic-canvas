@@ -13,7 +13,17 @@ export function scrubSentryBreadcrumb(breadcrumb: Breadcrumb) {
   return { ...breadcrumb, data: { ...breadcrumb.data, url: withoutQueryOrHash(String(breadcrumb.data.url)) } }
 }
 
+function isBrowserNoiseError(event: ErrorEvent) {
+  const value = event.exception?.values?.[0]
+  const type = value?.type ?? ''
+  const message = value?.value ?? ''
+  if (type === 'AbortError' || /signal is aborted/i.test(message) || message === 'aborted') return true
+  if (type === 'TypeError' && /Failed to fetch|NetworkError|Load failed|network error/i.test(message)) return true
+  return false
+}
+
 export function scrubSentryEvent(event: ErrorEvent) {
+  if (isBrowserNoiseError(event)) return null
   return {
     ...event,
     user: undefined,

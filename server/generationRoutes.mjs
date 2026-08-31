@@ -4,6 +4,12 @@ import { publicGenerationJob } from './generationProvider.mjs'
 import { reconcileGenerationResults } from './generationResultReconciliation.mjs'
 import { requireProjectPermission } from './projectAuthorization.mjs'
 import { compareAndSetGenerationJob } from './generationJobCas.mjs'
+import {
+  canvasProjectMutationId,
+  commitCanvasProjectMutation,
+  supportsDurableCanvasGraphMutation,
+} from './canvasGraphCommitService.mjs'
+import { canvasSyncEpochStaleCode } from './productStoreContract.mjs'
 
 /**
  * 生成任务的提交、查询、取消与项目级结果对账模块。
@@ -51,11 +57,34 @@ export function createGenerationRouteHandler({
       const reconciled = reconcileGenerationResults(project.document, jobs ?? [], { ensureAgentPlaceholders: true })
       if (!reconciled.changed) return json(response, 200, { ...project, changed: false }, projectResponseHeaders(project))
       try {
-        const saved = await productStore.writeProject(user.id, reconciled.document, project.revision, project.graphRevision)
-        await publishProjectUpdated(saved, user.id)
+        let saved
+        let graphCommit
+        if (supportsDurableCanvasGraphMutation(productStore)) {
+          const committed = await commitCanvasProjectMutation({
+            productStore,
+            userId: user.id,
+            projectId,
+            mutationId: canvasProjectMutationId('generation-reconcile', (jobs ?? []).map((job) => ({
+              id: job.id,
+              status: job.status,
+              updatedAt: job.updatedAt,
+              outputs: (job.outputs ?? []).map((output) => output.id),
+            }))),
+            mutate: (document) => {
+              const next = reconcileGenerationResults(document, jobs ?? [], { ensureAgentPlaceholders: true })
+              return next.changed ? next.document : undefined
+            },
+          })
+          saved = committed?.saved
+          graphCommit = committed?.graphCommit
+        } else {
+          saved = await productStore.writeProject(user.id, reconciled.document, project.revision, project.graphRevision)
+        }
+        if (!saved) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
+        await publishProjectUpdated(saved, user.id, graphCommit)
         return json(response, 200, { ...saved, changed: true }, projectResponseHeaders(saved))
       } catch (caught) {
-        if (caught?.code === 'PROJECT_CONFLICT' || caught?.code === 'CANVAS_GRAPH_CONFLICT') return error(response, 409, caught.code, caught.message)
+        if (caught?.code === 'PROJECT_CONFLICT' || caught?.code === 'CANVAS_GRAPH_CONFLICT' || caught?.code === canvasSyncEpochStaleCode) return error(response, 409, caught.code, caught.message)
         return error(response, 403, 'PROJECT_WRITE_FORBIDDEN', caught instanceof Error ? caught.message : '历史结果回填失败。')
       }
     }

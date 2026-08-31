@@ -11,6 +11,22 @@ import { cancelGenerationJob } from './generationCancellation.mjs'
 import { matchingIdempotencyRequestBinding } from './idempotencyRequestBinding.mjs'
 import { acquireGenerationProviderAdmission } from './generationProviderAdmission.mjs'
 import { compareAndSetGenerationJob } from './generationJobCas.mjs'
+import {
+  canvasProjectMutationId,
+  commitCanvasProjectMutation,
+  supportsDurableCanvasGraphMutation,
+} from './canvasGraphCommitService.mjs'
+
+const expectedProviderOutcomeCodes = new Set([
+  'PROVIDER_REJECTED',
+  'PROVIDER_MODEL_UNAVAILABLE',
+  'PROVIDER_RATE_LIMITED',
+])
+
+/** 用户侧拒单/模型下线/限流已落任务 failed，不是基础设施事故，不上报 Sentry。 */
+export function shouldReportGenerationWorkerFailure(failure) {
+  return !expectedProviderOutcomeCodes.has(failure?.code)
+}
 
 export function createGenerationProcessor({
   productStore,
@@ -18,6 +34,7 @@ export function createGenerationProcessor({
   config,
   publishAgentRunUpdated,
   publishProjectUpdated,
+  publishCanvasUpdate,
   observeAgentRun = () => {},
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   providerCircuitBreaker = new ProviderCircuitBreaker({
@@ -37,6 +54,7 @@ export function createGenerationProcessor({
   // 终态失败的可聚合上报（Sentry 等）。只传错误码/Provider/模型，不传 Prompt 与媒体。
   reportWorkerFailure = () => {},
 }) {
+  const canvasSourceInstanceId = randomUUID()
   function resolvedInputProvenance(provenance, input) {
     if (!provenance) return provenance
     const withHash = (entry, resolved) => ({
@@ -188,16 +206,36 @@ export function createGenerationProcessor({
     } catch { /* 可观测性不得改变任务状态。 */ }
   }
   async function writeJobToProject(job) {
+    const reconcileJob = (document) => {
+      const reconciled = reconcileAgentGenerationJobToProject(document, job)
+      if (job.agentRun && job.status === 'succeeded' && job.outputs?.length && reconciled.complete === false) {
+        throw new Error('Agent 结果尚未完成画布投影。')
+      }
+      return reconciled.changed ? reconciled.document : undefined
+    }
+    if (supportsDurableCanvasGraphMutation(productStore)) {
+      const committed = await commitCanvasProjectMutation({
+        productStore,
+        userId: job.ownerId,
+        projectId: job.projectId,
+        mutationId: canvasProjectMutationId('generation', {
+          jobId: job.id,
+          status: job.status,
+          updatedAt: job.updatedAt,
+          outputs: (job.outputs ?? []).map(({ id, image }) => ({ id, image })),
+          error: job.error,
+        }),
+        mutate: reconcileJob,
+      })
+      if (committed?.changed && committed.saved) {
+        await publishProjectUpdate(job, committed.saved, committed.graphCommit)
+      }
+      return true
+    }
     // 优先走 Store 的原子文档更新（锁内读改写）；mutate 内抛出的投影未完成错误
     // 会中止事务并原样上抛，交给 markPending 补偿，与旧路径语义一致。
     if (typeof productStore.updateProjectDocument === 'function') {
-      const saved = await productStore.updateProjectDocument(job.ownerId, job.projectId, (document) => {
-        const reconciled = reconcileAgentGenerationJobToProject(document, job)
-        if (job.agentRun && job.status === 'succeeded' && job.outputs?.length && reconciled.complete === false) {
-          throw new Error('Agent 结果尚未完成画布投影。')
-        }
-        return reconciled.changed ? reconciled.document : undefined
-      })
+      const saved = await productStore.updateProjectDocument(job.ownerId, job.projectId, reconcileJob)
       if (saved) await publishProjectUpdate(job, saved)
       return true
     }
@@ -205,15 +243,12 @@ export function createGenerationProcessor({
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       const project = await productStore.readProject(job.ownerId, job.projectId)
       if (!project) return true
-      const reconciled = reconcileAgentGenerationJobToProject(project.document, job)
-      if (job.agentRun && job.status === 'succeeded' && job.outputs?.length && reconciled.complete === false) {
-        throw new Error('Agent 结果尚未完成画布投影。')
-      }
-      if (!reconciled.changed) return true
+      const document = reconcileJob(project.document)
+      if (!document) return true
       try {
-        const saved = await productStore.writeProject(job.ownerId, reconciled.document, project.revision, project.graphRevision)
+        const saved = await productStore.writeProject(job.ownerId, document, project.revision, project.graphRevision)
         await publishProjectUpdate(job, saved ?? {
-          document: reconciled.document,
+          document,
           revision: project.revision,
           graphRevision: project.graphRevision,
         })
@@ -341,8 +376,26 @@ export function createGenerationProcessor({
     }
   }
 
-  async function publishProjectUpdate(job, saved) {
-    if (!publishProjectUpdated || !saved?.document?.id) return
+  async function publishProjectUpdate(job, saved, graphCommit) {
+    if (!saved?.document?.id) return
+    if (graphCommit?.changed && graphCommit.update && publishCanvasUpdate) {
+      try {
+        await publishCanvasUpdate({
+          eventId: randomUUID(),
+          sourceInstanceId: canvasSourceInstanceId,
+          projectId: saved.document.id,
+          update: graphCommit.update,
+          mutationId: graphCommit.mutationId,
+          actorId: job.ownerId,
+          graphRevision: graphCommit.graphRevision,
+          updatedAt: graphCommit.updatedAt,
+          ...(graphCommit.duplicate ? { duplicate: true } : {}),
+        })
+      } catch (caught) {
+        console.error(`[realtime] generation canvas update deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
+      }
+    }
+    if (!publishProjectUpdated) return
     try {
       await publishProjectUpdated({
         projectId: saved.document.id,
@@ -350,7 +403,9 @@ export function createGenerationProcessor({
         revision: saved.revision,
         graphRevision: saved.graphRevision,
         updatedAt: saved.document.updatedAt,
-        graph: { nodes: saved.document.nodes ?? [], edges: saved.document.edges ?? [] },
+        ...(!graphCommit && (saved.syncProtocolEpoch ?? 1) < 2
+          ? { graph: { nodes: saved.document.nodes ?? [], edges: saved.document.edges ?? [] } }
+          : {}),
       })
     } catch (caught) {
       // 项目已写入；实时通知只是可恢复旁路，客户端会在事件重连或聚焦时重新读取。
@@ -922,16 +977,18 @@ export function createGenerationProcessor({
       const upstream = failure.upstreamMessage ? ` 上游原文：${failure.upstreamMessage}` : ''
       console.error(`[generation] ${jobId} failed (${failure.code}): ${detail}${upstream}`)
       try {
-        // 模型级 Provider 故障此前只在 Railway 日志可见；按码+模型稳定聚合，不逐 Job 开 Issue。
-        reportWorkerFailure(failure, {
-          tags: {
-            component: 'worker',
-            error_code: failure.code,
-            provider: latest.provider ?? 'unknown',
-            model: latest.settings?.model ?? 'unknown',
-          },
-          fingerprint: ['generation-worker-terminal-failure', failure.code, latest.settings?.model ?? 'unknown'],
-        })
+        if (shouldReportGenerationWorkerFailure(failure)) {
+          // 模型级 Provider 故障此前只在 Railway 日志可见；按码+模型稳定聚合，不逐 Job 开 Issue。
+          reportWorkerFailure(failure, {
+            tags: {
+              component: 'worker',
+              error_code: failure.code,
+              provider: latest.provider ?? 'unknown',
+              model: latest.settings?.model ?? 'unknown',
+            },
+            fingerprint: ['generation-worker-terminal-failure', failure.code, latest.settings?.model ?? 'unknown'],
+          })
+        }
       } catch { /* 可观测性不得改变任务状态。 */ }
       // 错误码随任务落库：失败消息是给人看的，服务端的重试策略要按码分类
       // （瞬时故障可自动重试，其余停下等用户）。只存消息的话策略永远判不出来。

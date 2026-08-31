@@ -92,6 +92,7 @@ export function runtimeConfig(rootDir = process.cwd()) {
     flockApiKey: process.env.FLOCK_API_KEY,
     flockImageModels,
     includeUnavailable: true,
+    flockNanoBananaEnabled: (process.env.FLOCK_NANO_BANANA_ENABLED ?? '').trim().toLowerCase() === 'true',
   })
   const modelOptions = declaredModelOptions.filter((model) => model.available !== false)
   const unavailableModelOptions = declaredModelOptions.filter((model) => model.available === false)

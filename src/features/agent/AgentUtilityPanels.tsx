@@ -142,6 +142,7 @@ export function AgentCollaborationPanel({
   onClear,
   onKeepLocal,
   onUseRemote,
+  showConflict = true,
   historyStatus,
   historyHasMore,
   historyErrorAction,
@@ -157,6 +158,7 @@ export function AgentCollaborationPanel({
   onClear: () => Promise<void>
   onKeepLocal: () => void
   onUseRemote: () => void
+  showConflict?: boolean
   historyStatus: 'idle' | 'loading' | 'loading-more' | 'saving' | 'error'
   historyHasMore: boolean
   historyErrorAction?: 'load' | 'load-more' | 'read' | 'clear'
@@ -174,7 +176,7 @@ export function AgentCollaborationPanel({
   return <section className="agent-collaboration-panel" aria-label={copy.collaborationAria}>
     <p>{copy.collaborationDescription}</p>
     <div className="agent-collaboration-panel__summary"><strong>{copy.activityCount(activities.length)}</strong>{unreadCount ? <span>{copy.unreadActivities(unreadCount)}</span> : null}</div>
-    {persistenceStatus === 'conflict' ? <div className="agent-collaboration-panel__conflict">
+    {showConflict && persistenceStatus === 'conflict' ? <div className="agent-collaboration-panel__conflict">
       <span role="alert"><strong>{copy.remoteCanvasTitle}</strong><small>{copy.remoteCanvasDetail}</small></span>
       {conflictRevision ? <small>{copy.revisionCompare(conflictRevision.localRevision, conflictRevision.remoteRevision)}</small> : null}
       {conflictChanges.length ? <details className="agent-collaboration-panel__conflict-details">

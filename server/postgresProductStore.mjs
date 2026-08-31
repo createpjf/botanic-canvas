@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { agentActionManualRetryConsumptionDecision, agentActionReceiptClaimDecision, agentActionReceiptResolutionDecision, agentSkillPersistenceDecision, agentThreadSummaryCompareAndSetDecision, agentTurnExecutionClaimDecision, authoritativeAgentActionManualRetryAuthorization, committedAgentTurnExecution, finalizedAgentTurnCancellation, normalizeAgentEntityIdPage, normalizePendingAgentReviewRecoveryPage, normalizeStaleTurnQuery, normalizeTurnEventPage, normalizeUpdatedAtIdRecoveryPage, persistedAgentSkillVersion, reclaimableAgentTurnStatuses, requestedAgentTurnCancellation, settledAgentActionReceipt } from './productStoreContract.mjs'
+import { agentActionManualRetryConsumptionDecision, agentActionReceiptClaimDecision, agentActionReceiptResolutionDecision, agentSkillPersistenceDecision, agentThreadSummaryCompareAndSetDecision, agentTurnExecutionClaimDecision, authoritativeAgentActionManualRetryAuthorization, canvasGraphConflictCode, canvasMutationConflictCode, canvasSyncEpochStaleError, committedAgentTurnExecution, finalizedAgentTurnCancellation, normalizeAgentEntityIdPage, normalizeCanvasGraphMutation, normalizePendingAgentReviewRecoveryPage, normalizeStaleTurnQuery, normalizeTurnEventPage, normalizeUpdatedAtIdRecoveryPage, persistedAgentSkillVersion, reclaimableAgentTurnStatuses, requestedAgentTurnCancellation, settledAgentActionReceipt } from './productStoreContract.mjs'
 import postgres from 'postgres'
 import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from './authorization.mjs'
 import { artifactIndexLimits, artifactsFromActionReceipt, artifactsFromAgentMessage, artifactsFromDocument, artifactsFromGenerationJob, generationArtifactRefreshReport, generationArtifactsFromJobReport } from './botanicArtifactIndex.mjs'
@@ -263,13 +263,19 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       project_id text primary key references projects(id) on delete cascade,
       graph jsonb not null,
       revision integer not null default 1,
+      sync_protocol_epoch integer not null default 1,
       yjs_snapshot text,
       updated_at bigint not null
     );
+    alter table canvas_graphs add column if not exists sync_protocol_epoch integer not null default 1;
     create table if not exists canvas_graph_updates (
       id bigserial primary key,
       project_id text not null references canvas_graphs(project_id) on delete cascade,
-      update_base64 text not null,
+      update_base64 text,
+      mutation_id text,
+      graph_revision integer,
+      payload_sha256 text,
+      compacted_at bigint,
       created_at bigint not null
     );
     create table if not exists global_asset_libraries (
@@ -569,7 +575,37 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     alter table app_users add column if not exists status text not null default 'active';
     create index if not exists app_users_status_idx on app_users (status, created_at);
     create index if not exists auth_identities_user_idx on auth_identities (user_id);
+    alter table canvas_graph_updates alter column update_base64 drop not null;
+    alter table canvas_graph_updates add column if not exists mutation_id text;
+    alter table canvas_graph_updates add column if not exists graph_revision integer;
+    alter table canvas_graph_updates add column if not exists payload_sha256 text;
+    alter table canvas_graph_updates add column if not exists compacted_at bigint;
+    with hashed as (
+      select id, project_id,
+        rtrim(translate(encode(pg_catalog.sha256(pg_catalog.convert_to(update_base64, 'UTF8')), 'base64'), '+/', '-_'), '=') as payload_hash
+      from canvas_graph_updates
+      where mutation_id is null and update_base64 is not null
+    ), ranked as (
+      select id, payload_hash,
+        row_number() over (partition by project_id, payload_hash order by id) as duplicate_ordinal
+      from hashed
+    )
+    update canvas_graph_updates as updates
+    set mutation_id = case when ranked.duplicate_ordinal = 1
+        then 'legacy:' || payload_hash else 'legacy-row:' || updates.id end,
+      payload_sha256 = payload_hash
+    from ranked
+    where updates.id = ranked.id;
+    update canvas_graph_updates
+    set payload_sha256 = rtrim(translate(encode(pg_catalog.sha256(pg_catalog.convert_to(update_base64, 'UTF8')), 'base64'), '+/', '-_'), '=')
+    where payload_sha256 is null and update_base64 is not null;
+    update canvas_graph_updates set mutation_id = 'legacy-row:' || id where mutation_id is null;
+    update canvas_graph_updates set payload_sha256 = 'legacy-row:' || id where payload_sha256 is null;
+    alter table canvas_graph_updates alter column mutation_id set not null;
+    alter table canvas_graph_updates alter column payload_sha256 set not null;
     create index if not exists canvas_graph_updates_project_idx on canvas_graph_updates (project_id, id);
+    create unique index if not exists canvas_graph_updates_mutation_idx on canvas_graph_updates (project_id, mutation_id);
+    create unique index if not exists canvas_graph_updates_revision_idx on canvas_graph_updates (project_id, graph_revision) where graph_revision is not null;
     create index if not exists jobs_status_updated_at_idx on generation_jobs (status, updated_at);
     create index if not exists generation_jobs_running_lease_idx
       on generation_jobs (lease_expires_at asc, id asc) where status = 'running';
@@ -1583,7 +1619,8 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       return timedProductStoreRead('readProject', { projectId, userId }, async () => {
         const [row] = await sql`
           select p.document, p.revision, p.updated_at as "projectUpdatedAt", c.graph,
-            c.revision as "graphRevision", c.updated_at as "graphUpdatedAt"
+            c.revision as "graphRevision", c.sync_protocol_epoch as "syncProtocolEpoch",
+            c.updated_at as "graphUpdatedAt"
           from projects p join project_members m on m.project_id = p.id
           left join canvas_graphs c on c.project_id = p.id
           where p.id = ${projectId} and m.user_id = ${userId}
@@ -1601,6 +1638,7 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
           document: mergeAgentStateIntoDocument({ ...document, ...graph, updatedAt }, agentState, { includeMessages: false }),
           revision: Number(row.revision),
           graphRevision: Number(row.graphRevision ?? 1),
+          syncProtocolEpoch: Number(row.syncProtocolEpoch ?? 1),
           readMetrics: {
             messageRowCount: 0,
             sessionCount: agentState.sessions?.length ?? 0,
@@ -1623,6 +1661,16 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       return projectPermissionDecision(role, 'edit') === 'allow'
     },
 
+    async readCanvasSyncProtocolEpoch(userId, projectId) {
+      return sql.begin(async (tx) => {
+        const [member] = await tx`select 1 from project_members where project_id = ${projectId} and user_id = ${userId}`
+        if (!member) return undefined
+        await ensureCanvasGraph(tx, projectId)
+        const [entry] = await tx`select sync_protocol_epoch as "syncProtocolEpoch" from canvas_graphs where project_id = ${projectId}`
+        return entry ? Number(entry.syncProtocolEpoch ?? 1) : undefined
+      })
+    },
+
     /**
      * 行锁事务内原子地「读最新文档 → mutate → 写回」：Worker 的任务状态回写不再与
      * 用户保存做 CAS 竞速，全文档 5 连重试从根上消失。mutate 只碰生成投影
@@ -1640,7 +1688,8 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
         assertProjectPermission(existing.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
         await ensureCanvasGraph(tx, projectId)
         const [currentGraphEntry] = await tx`
-          select graph, revision from canvas_graphs where project_id = ${projectId} for update
+          select graph, revision, sync_protocol_epoch as "syncProtocolEpoch"
+          from canvas_graphs where project_id = ${projectId} for update
         `
         const currentGraph = asJson(currentGraphEntry.graph)
         const next = mutate({ ...asJson(existing.document), ...clone(currentGraph) })
@@ -1648,6 +1697,9 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
         const timestamp = now()
         const nextGraph = canvasGraph(next)
         const graphChanged = !sameGraph(currentGraph, nextGraph)
+        if (graphChanged && Number(currentGraphEntry.syncProtocolEpoch ?? 1) >= 2) {
+          throw canvasSyncEpochStaleError(Number(currentGraphEntry.syncProtocolEpoch ?? 1))
+        }
         const revision = Number(existing.revision) + 1
         const persistedDocument = stripAgentMessagesFromDocument(next)
         await tx`update projects set name = ${next.name}, document = ${tx.json(persistedDocument)}::jsonb, revision = ${revision}, updated_at = ${timestamp} where id = ${projectId}`
@@ -1662,7 +1714,13 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
           graphRevision = Number(savedGraph.revision)
         }
         await insertAudit(tx, { actorId: userId, action: 'project.updated', projectId, detail: { revision } })
-        return { document: { ...stripAgentMessagesFromDocument(clone(next)), ...(graphChanged ? nextGraph : currentGraph) }, revision, graphRevision, created: false }
+        return {
+          document: { ...stripAgentMessagesFromDocument(clone(next)), ...(graphChanged ? nextGraph : currentGraph) },
+          revision,
+          graphRevision,
+          syncProtocolEpoch: Number(currentGraphEntry.syncProtocolEpoch ?? 1),
+          created: false,
+        }
       })
     },
 
@@ -1682,11 +1740,15 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
           }
           await ensureCanvasGraph(tx, document.id)
           const [currentGraphEntry] = await tx`
-            select graph, revision from canvas_graphs where project_id = ${document.id} for update
+            select graph, revision, sync_protocol_epoch as "syncProtocolEpoch"
+            from canvas_graphs where project_id = ${document.id} for update
           `
           const currentGraph = asJson(currentGraphEntry.graph)
           const nextGraph = canvasGraph(document)
           const graphChanged = !sameGraph(currentGraph, nextGraph)
+          if (graphChanged && Number(currentGraphEntry.syncProtocolEpoch ?? 1) >= 2) {
+            throw canvasSyncEpochStaleError(Number(currentGraphEntry.syncProtocolEpoch ?? 1))
+          }
           if (graphChanged && Number.isInteger(expectedGraphRevision) && expectedGraphRevision !== Number(currentGraphEntry.revision)) {
             throw productError('画布已被其他成员更新，请刷新后再保存。', 'CANVAS_GRAPH_CONFLICT')
           }
@@ -1705,7 +1767,13 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
             graphRevision = Number(savedGraph.revision)
           }
           await insertAudit(tx, { actorId: userId, action: 'project.updated', projectId: document.id, detail: { revision } })
-          return { document: { ...stripAgentMessagesFromDocument(clone(document)), ...(graphChanged ? nextGraph : currentGraph) }, revision, graphRevision, created: false }
+          return {
+            document: { ...stripAgentMessagesFromDocument(clone(document)), ...(graphChanged ? nextGraph : currentGraph) },
+            revision,
+            graphRevision,
+            syncProtocolEpoch: Number(currentGraphEntry.syncProtocolEpoch ?? 1),
+            created: false,
+          }
         }
 
         await tx`insert into projects (id, name, document, revision, created_at, updated_at) values (${document.id}, ${document.name}, ${tx.json(stripAgentMessagesFromDocument(document))}::jsonb, 1, ${timestamp}, ${timestamp})`
@@ -1716,7 +1784,7 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
         `
         await syncAgentState(tx, userId, document)
         await insertAudit(tx, { actorId: userId, action: 'project.created', projectId: document.id })
-        return { document: stripAgentMessagesFromDocument(clone(document)), revision: 1, graphRevision: 1, created: true }
+        return { document: stripAgentMessagesFromDocument(clone(document)), revision: 1, graphRevision: 1, syncProtocolEpoch: 1, created: true }
       })
     },
 
@@ -1756,16 +1824,20 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
         if (!member) return undefined
         await ensureCanvasGraph(tx, projectId)
         const [entry] = await tx`
-          select graph, revision as "graphRevision", yjs_snapshot as snapshot, updated_at as "updatedAt"
-          from canvas_graphs where project_id = ${projectId}
+          select graph, revision as "graphRevision", sync_protocol_epoch as "syncProtocolEpoch",
+            yjs_snapshot as snapshot, updated_at as "updatedAt"
+          from canvas_graphs where project_id = ${projectId} for share
         `
         if (!entry) return undefined
         const updates = await tx`
-          select update_base64 as update from canvas_graph_updates where project_id = ${projectId} order by id asc
+          select update_base64 as update from canvas_graph_updates
+          where project_id = ${projectId} and update_base64 is not null
+          order by graph_revision asc nulls first, id asc
         `
         return {
           graph: asJson(entry.graph),
           graphRevision: Number(entry.graphRevision),
+          syncProtocolEpoch: Number(entry.syncProtocolEpoch ?? 1),
           snapshot: entry.snapshot ?? undefined,
           updates: updates.map((item) => item.update),
           updatedAt: Number(entry.updatedAt),
@@ -1773,46 +1845,99 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       })
     },
 
-    async appendCanvasGraphUpdate(userId, projectId, { update, graph }) {
-      if (typeof update !== 'string' || !update || !Array.isArray(graph?.nodes) || !Array.isArray(graph?.edges)) {
-        throw new TypeError('画布协作更新格式无效。')
-      }
+    async appendCanvasGraphUpdate(userId, projectId, input) {
+      const { update, graph, mutationId, payloadHash, expectedGraphRevision, syncProtocolEpoch } = normalizeCanvasGraphMutation(input)
       return sql.begin(async (tx) => {
         const [member] = await tx`select role from project_members where project_id = ${projectId} and user_id = ${userId}`
         assertProjectPermission(member?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
         await ensureCanvasGraph(tx, projectId)
+        const [current] = await tx`
+          select revision as "graphRevision", sync_protocol_epoch as "syncProtocolEpoch", updated_at as "updatedAt"
+          from canvas_graphs where project_id = ${projectId} for update
+        `
+        if (Number(current.syncProtocolEpoch ?? 1) >= 2 && syncProtocolEpoch !== Number(current.syncProtocolEpoch)) {
+          throw canvasSyncEpochStaleError(Number(current.syncProtocolEpoch))
+        }
+        const [committed] = await tx`
+          select graph_revision as "mutationRevision", payload_sha256 as "payloadHash", update_base64 as "update"
+          from canvas_graph_updates where project_id = ${projectId} and mutation_id = ${mutationId}
+        `
+        const [{ count: updateCount }] = await tx`
+          select count(*)::int as count from canvas_graph_updates
+          where project_id = ${projectId} and update_base64 is not null
+        `
+        if (committed) {
+          if (committed.payloadHash !== payloadHash) {
+            throw productError('画布协作提交身份已绑定到其他更新。', canvasMutationConflictCode)
+          }
+          return {
+            graphRevision: Number(current.graphRevision),
+            mutationRevision: Number(committed.mutationRevision ?? current.graphRevision),
+            updatedAt: Number(current.updatedAt),
+            updateCount: Number(updateCount),
+            duplicate: true,
+            ...(committed.update ? { update: committed.update } : {}),
+          }
+        }
+        if (Number.isInteger(expectedGraphRevision) && expectedGraphRevision !== Number(current.graphRevision)) {
+          throw productError('画布已被其他成员更新，请重新同步。', canvasGraphConflictCode)
+        }
         const timestamp = now()
         const [entry] = await tx`
           update canvas_graphs
           set graph = ${tx.json(graph)}::jsonb, revision = revision + 1, updated_at = ${timestamp}
-          where project_id = ${projectId}
+          where project_id = ${projectId} and revision = ${Number(current.graphRevision)}
           returning revision as "graphRevision"
         `
+        if (!entry) throw productError('画布已被其他成员更新，请重新同步。', canvasGraphConflictCode)
         await tx`
-          insert into canvas_graph_updates (project_id, update_base64, created_at)
-          values (${projectId}, ${update}, ${timestamp})
+          insert into canvas_graph_updates (
+            project_id, update_base64, mutation_id, graph_revision, payload_sha256, created_at
+          ) values (
+            ${projectId}, ${update}, ${mutationId}, ${Number(entry.graphRevision)}, ${payloadHash}, ${timestamp}
+          )
         `
-        const [{ count }] = await tx`select count(*)::int as count from canvas_graph_updates where project_id = ${projectId}`
-        return { graphRevision: Number(entry.graphRevision), updatedAt: timestamp, updateCount: Number(count) }
+        return {
+          graphRevision: Number(entry.graphRevision),
+          mutationRevision: Number(entry.graphRevision),
+          updatedAt: timestamp,
+          updateCount: Number(updateCount) + 1,
+          duplicate: false,
+        }
       })
     },
 
-    async compactCanvasGraphUpdates(userId, projectId, { snapshot, graph }) {
+    async compactCanvasGraphUpdates(userId, projectId, { snapshot, graph, expectedGraphRevision }) {
       if (typeof snapshot !== 'string' || !snapshot || !Array.isArray(graph?.nodes) || !Array.isArray(graph?.edges)) {
         throw new TypeError('画布协作快照格式无效。')
+      }
+      if (expectedGraphRevision !== undefined
+        && (!Number.isInteger(expectedGraphRevision) || expectedGraphRevision < 1)) {
+        throw new TypeError('画布协作 expectedGraphRevision 无效。')
       }
       return sql.begin(async (tx) => {
         const [member] = await tx`select role from project_members where project_id = ${projectId} and user_id = ${userId}`
         assertProjectPermission(member?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
         await ensureCanvasGraph(tx, projectId)
+        const [current] = await tx`
+          select revision as "graphRevision" from canvas_graphs where project_id = ${projectId} for update
+        `
+        if (Number.isInteger(expectedGraphRevision) && expectedGraphRevision !== Number(current.graphRevision)) {
+          throw productError('画布已被其他成员更新，请重新同步。', canvasGraphConflictCode)
+        }
         const timestamp = now()
         const [entry] = await tx`
           update canvas_graphs
           set graph = ${tx.json(graph)}::jsonb, yjs_snapshot = ${snapshot}, updated_at = ${timestamp}
-          where project_id = ${projectId}
+          where project_id = ${projectId} and revision = ${Number(current.graphRevision)}
           returning revision as "graphRevision"
         `
-        await tx`delete from canvas_graph_updates where project_id = ${projectId}`
+        if (!entry) throw productError('画布已被其他成员更新，请重新同步。', canvasGraphConflictCode)
+        await tx`
+          update canvas_graph_updates set update_base64 = null, compacted_at = ${timestamp}
+          where project_id = ${projectId} and update_base64 is not null
+            and (graph_revision is null or graph_revision <= ${Number(entry.graphRevision)})
+        `
         return { graphRevision: Number(entry.graphRevision), updatedAt: timestamp }
       })
     },

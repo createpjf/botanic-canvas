@@ -1631,6 +1631,9 @@ export function shouldRetryBotanicAgentAutoSubmission(
   const source = caught as { status?: unknown; code?: unknown } | undefined
   const status = Number(source?.status)
   const code = typeof source?.code === 'string' ? source.code : ''
+  // 同 key 绑了另一份请求体是业务冲突，不是传输丢失。生产曾把它包成 500
+  // INTERNAL_ERROR，自动重试会把冲突打成风暴（BOTANIC-CANVAS-8）。
+  if (code === 'AGENT_RUN_IDEMPOTENCY_CONFLICT') return false
   if (status === 0) return !code || code === 'REQUEST_TIMEOUT'
   return status === 408 || status === 425 || status === 429 || status >= 500
 }

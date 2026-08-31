@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -2168,6 +2168,108 @@ test('独立画布图谱与 Yjs 更新日志可跨服务重启恢复并压缩', 
   assert.equal(compacted.snapshot, 'BAUG')
   assert.deepEqual(compacted.updates, [])
   assert.equal(compacted.graph.nodes[0].position.x, 180)
+})
+
+test('画布增量按 mutationId 幂等提交，并拒绝旧 graphRevision 覆盖', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, document('project-canvas-cas'), undefined)
+  const graph = {
+    nodes: [{ id: 'node-a', type: 'text', position: { x: 180, y: 20 }, data: { kind: 'text', label: 'A', content: 'A' } }],
+    edges: [],
+  }
+
+  const committed = store.appendCanvasGraphUpdate(owner.id, 'project-canvas-cas', {
+    mutationId: 'mutation-1', expectedGraphRevision: 1, update: 'AQID', idempotencyUpdate: 'raw-update', graph,
+  })
+  const duplicate = store.appendCanvasGraphUpdate(owner.id, 'project-canvas-cas', {
+    mutationId: 'mutation-1', expectedGraphRevision: 1, update: 'BAUG', idempotencyUpdate: 'raw-update', graph,
+  })
+
+  assert.equal(committed.graphRevision, 2)
+  assert.equal(committed.duplicate, false)
+  assert.equal(duplicate.graphRevision, 2)
+  assert.equal(duplicate.duplicate, true)
+  assert.equal(duplicate.update, 'AQID')
+  assert.deepEqual(store.loadCanvasCollaboration(owner.id, 'project-canvas-cas').updates, ['AQID'])
+  assert.throws(() => store.appendCanvasGraphUpdate(owner.id, 'project-canvas-cas', {
+    mutationId: 'mutation-2', expectedGraphRevision: 1, update: 'BAUG',
+    graph: { nodes: [], edges: [] },
+  }), (error) => error?.code === 'CANVAS_GRAPH_CONFLICT')
+  assert.throws(() => store.compactCanvasGraphUpdates(owner.id, 'project-canvas-cas', {
+    expectedGraphRevision: 1, snapshot: 'BAUG', graph: { nodes: [], edges: [] },
+  }), (error) => error?.code === 'CANVAS_GRAPH_CONFLICT')
+  assert.deepEqual(store.loadCanvasCollaboration(owner.id, 'project-canvas-cas').graph, graph)
+  assert.deepEqual(store.loadCanvasCollaboration(owner.id, 'project-canvas-cas').updates, ['AQID'])
+})
+
+test('本地持久化失败会回滚内存状态，恢复后不会夹带失败图谱', () => {
+  const { path, store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, document('project-canvas-save-failure'), undefined)
+  const backupPath = `${path}.backup`
+  renameSync(path, backupPath)
+  mkdirSync(path)
+
+  assert.throws(() => store.appendCanvasGraphUpdate(owner.id, 'project-canvas-save-failure', {
+    mutationId: 'mutation-failed', update: 'AQID',
+    graph: {
+      nodes: [{ id: 'node-failed', type: 'text', position: { x: 80, y: 20 }, data: { kind: 'text', label: 'failed', content: 'failed' } }],
+      edges: [],
+    },
+  }))
+  rmSync(path, { recursive: true, force: true })
+  renameSync(backupPath, path)
+  assert.deepEqual(store.loadCanvasCollaboration(owner.id, 'project-canvas-save-failure').graph.nodes, [])
+
+  store.appendCanvasGraphUpdate(owner.id, 'project-canvas-save-failure', {
+    mutationId: 'mutation-recovered', update: 'BAUG',
+    graph: {
+      nodes: [{ id: 'node-recovered', type: 'text', position: { x: 160, y: 20 }, data: { kind: 'text', label: 'recovered', content: 'recovered' } }],
+      edges: [],
+    },
+  })
+  assert.deepEqual(
+    store.loadCanvasCollaboration(owner.id, 'project-canvas-save-failure').graph.nodes.map((node) => node.id),
+    ['node-recovered'],
+  )
+})
+
+test('V2 epoch 在持久化提交内拒绝旧会话，匹配 epoch 才写入图谱', () => {
+  const { path, store } = createStore()
+  const owner = store.authenticate('owner-token')
+  store.writeProject(owner.id, document('project-canvas-epoch'), undefined)
+  const persisted = JSON.parse(readFileSync(path, 'utf8'))
+  persisted.canvasGraphs.find((entry) => entry.projectId === 'project-canvas-epoch').syncProtocolEpoch = 2
+  writeFileSync(path, JSON.stringify(persisted))
+  const reloaded = createProductStore({ dataPath: path, bootstrapAccessToken: 'owner-token' })
+  const graph = {
+    nodes: [{ id: 'node-epoch', type: 'text', position: { x: 20, y: 20 }, data: { kind: 'text', label: 'epoch', content: 'epoch' } }],
+    edges: [],
+  }
+
+  assert.equal(reloaded.readCanvasSyncProtocolEpoch(owner.id, 'project-canvas-epoch'), 2)
+  const current = reloaded.readProject(owner.id, 'project-canvas-epoch')
+  assert.throws(() => reloaded.writeProject(owner.id, {
+    ...current.document,
+    nodes: graph.nodes,
+  }, current.revision, current.graphRevision), (error) => (
+    error?.code === 'CANVAS_SYNC_EPOCH_STALE' && error.syncProtocolEpoch === 2
+  ))
+  assert.throws(() => reloaded.appendCanvasGraphUpdate(owner.id, 'project-canvas-epoch', {
+    mutationId: 'mutation-old-epoch', syncProtocolEpoch: 1, update: 'AQID', graph,
+  }), (error) => error?.code === 'CANVAS_SYNC_EPOCH_STALE' && error.syncProtocolEpoch === 2)
+  assert.equal(reloaded.loadCanvasCollaboration(owner.id, 'project-canvas-epoch').graphRevision, 1)
+  assert.equal(reloaded.appendCanvasGraphUpdate(owner.id, 'project-canvas-epoch', {
+    mutationId: 'mutation-current-epoch', syncProtocolEpoch: 2, update: 'AQID', graph,
+  }).graphRevision, 2)
+  const metadata = reloaded.readProject(owner.id, 'project-canvas-epoch')
+  const metadataSaved = reloaded.writeProject(owner.id, {
+    ...metadata.document,
+    name: 'epoch metadata',
+  }, metadata.revision, metadata.graphRevision)
+  assert.equal(metadataSaved.syncProtocolEpoch, 2)
+  assert.deepEqual(metadataSaved.document.nodes, graph.nodes)
 })
 
 test('Turn 事件按游标续读，只返回序号之后的事件', () => {

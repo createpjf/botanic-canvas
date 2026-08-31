@@ -3,6 +3,7 @@ import { WebSocket, WebSocketServer } from 'ws'
 import { createCanvasCollaborationRoom } from './canvasCollaborationRoom.mjs'
 import { verifyRealtimeTicket } from './realtimeTicket.mjs'
 import { collaborationChangeFromDocuments } from './collaborationActivityPersistence.mjs'
+import { canvasMutationConflictCode, canvasSyncEpochStaleError } from './productStoreContract.mjs'
 
 export function createProjectRealtimeHub({
   server,
@@ -23,6 +24,27 @@ export function createProjectRealtimeHub({
   const remotePresenceByProject = new Map()
   const seenCrossInstanceEvents = new Map()
   let closing = false
+
+  const sendCanvasNack = (socket, context, mutationId, code, retryable, detail = {}) => {
+    if (context.canvasSyncProtocol !== 2
+      || socket.readyState !== WebSocket.OPEN
+      || typeof mutationId !== 'string'
+      || !/^[A-Za-z0-9._:-]{1,200}$/.test(mutationId)) return
+    socket.send(JSON.stringify({
+      type: 'canvas.graph.nack.v2',
+      protocol: 2,
+      projectId: context.projectId,
+      mutationId,
+      code,
+      retryable,
+      ...detail,
+    }))
+  }
+
+  const canvasSyncProtocolEpoch = async (userId, projectId) => {
+    const epoch = await productStore.readCanvasSyncProtocolEpoch?.(userId, projectId)
+    return Number.isInteger(epoch) && epoch > 0 ? epoch : 1
+  }
 
   const rememberEvent = (key) => {
     if (seenCrossInstanceEvents.has(key)) return false
@@ -137,9 +159,16 @@ export function createProjectRealtimeHub({
         }
         entry.room = createCanvasCollaborationRoom({
           state,
+          reload: async (actorId) => productStore.loadCanvasCollaboration?.(actorId, projectId) ?? state,
           append: async (payload, actorId) => {
             const saved = await productStore.appendCanvasGraphUpdate?.(actorId, projectId, payload)
-              ?? { graphRevision: state.graphRevision, updatedAt: Date.now(), updateCount: 0 }
+              ?? {
+                graphRevision: state.graphRevision,
+                mutationRevision: state.graphRevision,
+                updatedAt: Date.now(),
+                updateCount: 0,
+                duplicate: false,
+              }
             entry.hasState = true
             return saved
           },
@@ -156,6 +185,94 @@ export function createProjectRealtimeHub({
       })
     }
     return roomPromise
+  }
+
+  const publishCanvasRepair = async ({ projectId, update, mutationId, actorId, graphRevision, updatedAt, sourceSocket }) => {
+    const payload = JSON.stringify({ type: 'canvas.crdt.update', projectId, update, mutationId })
+    for (const socket of clientsByProject.get(projectId) ?? []) {
+      // mutationId 与该增量哈希绑定；发起端已经持有同一增量，只修复其他副本。
+      if (socket !== sourceSocket && socket.readyState === WebSocket.OPEN) socket.send(payload)
+    }
+    try {
+      await crossInstancePublisher.publishCanvasUpdate({
+        eventId: randomUUID(), sourceInstanceId: instanceId, projectId,
+        update, mutationId, actorId, graphRevision, updatedAt, duplicate: true,
+      })
+    } catch {
+      // 本实例已从权威存储恢复；其他实例仍可在下一次重试/握手时收敛。
+    }
+  }
+
+  const commitCanvasUpdate = async ({ projectId, userId, actorName, mutationId, update, syncProtocolEpoch, roomEntry, sourceSocket }) => {
+    const currentSyncProtocolEpoch = await canvasSyncProtocolEpoch(userId, projectId)
+    if (currentSyncProtocolEpoch >= 2 && syncProtocolEpoch !== currentSyncProtocolEpoch) {
+      const failure = new Error('画布同步协议版本已前进，请重新握手。')
+      failure.code = 'CANVAS_SYNC_EPOCH_STALE'
+      failure.syncProtocolEpoch = currentSyncProtocolEpoch
+      throw failure
+    }
+    let entry = roomEntry
+    if (!entry) {
+      const project = await productStore.readProject(userId, projectId)
+      if (!project) {
+        const failure = new Error('未找到项目或你没有访问权限。')
+        failure.code = 'PROJECT_NOT_FOUND'
+        throw failure
+      }
+      entry = await collaborationRoom(userId, projectId, project)
+    }
+    const result = await entry.room.applyUpdate(update, userId, { mutationId, syncProtocolEpoch })
+    const committed = {
+      type: 'canvas.crdt.committed',
+      projectId,
+      mutationId,
+      graphRevision: result.graphRevision,
+      mutationRevision: result.mutationRevision ?? result.graphRevision,
+      updatedAt: result.updatedAt,
+    }
+    scheduleRoomEviction(projectId)
+    if (result.duplicate) {
+      if (result.update) {
+        await publishCanvasRepair({
+          projectId, update: result.update, mutationId, actorId: userId,
+          graphRevision: result.graphRevision, updatedAt: result.updatedAt, sourceSocket,
+        })
+      }
+      return committed
+    }
+    if (!result.applied) return committed
+
+    const change = collaborationChangeFromDocuments(result.previousGraph, result.graph) ?? { kind: 'canvas', summary: '更新了画布内容' }
+    let activity
+    try {
+      activity = await productStore.putCollaborationActivity(userId, projectId, {
+        id: `canvas-${userId}-${result.graphRevision}`,
+        ...change,
+      })
+    } catch {
+      // 历史索引是派生读模型；失败不影响已提交的图谱增量。
+    }
+    const committedUpdate = result.update ?? update
+    const payload = JSON.stringify({
+      type: 'canvas.crdt.update', projectId, update: committedUpdate, mutationId, actorId: userId,
+      ...(actorName ? { actorName } : {}),
+      ...(activity ? { activity: { ...activity, unread: true } } : {}),
+    })
+    for (const peer of clientsByProject.get(projectId) ?? []) {
+      if (peer !== sourceSocket && peer.readyState === WebSocket.OPEN) peer.send(payload)
+    }
+    try {
+      await crossInstancePublisher.publishCanvasUpdate({
+        eventId: randomUUID(), sourceInstanceId: instanceId, projectId,
+        update: committedUpdate, mutationId, actorId: userId,
+        ...(actorName ? { actorName } : {}),
+        graphRevision: result.graphRevision, updatedAt: result.updatedAt,
+        ...(activity ? { activity } : {}),
+      })
+    } catch {
+      // 跨实例广播是加速器；数据库提交已完成，不能因此扣留 durable ACK。
+    }
+    return committed
   }
 
   webSocketServer.on('connection', (socket, _request, context) => {
@@ -185,49 +302,106 @@ export function createProjectRealtimeHub({
           presenceChanged(context.projectId)
           return
         }
+        if (context.canvasSyncProtocol === 2
+          && event?.type === 'canvas.sync.hello.v2'
+          && event.protocol === 2
+          && event.schemaVersion === 2
+          && event.projectId === context.projectId
+          && typeof event.clientInstanceId === 'string'
+          && /^[A-Za-z0-9._:-]{1,200}$/.test(event.clientInstanceId)
+          && typeof event.stateVectorBase64 === 'string'
+          && event.stateVectorBase64.length > 0
+          && event.stateVectorBase64.length <= 700_000
+          && /^[A-Za-z0-9+/]*={0,2}$/.test(event.stateVectorBase64)
+          && (event.lastAckedGraphRevision === undefined
+            || (Number.isInteger(event.lastAckedGraphRevision) && event.lastAckedGraphRevision > 0))) {
+          await context.roomEntry.room.reloadPersistedState(context.userId)
+          context.roomEntry.hasState = true
+          const syncProtocolEpoch = await canvasSyncProtocolEpoch(context.userId, context.projectId)
+          const synchronized = await context.roomEntry.room.syncState(event.stateVectorBase64)
+          if (socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({
+              type: 'canvas.sync.ready.v2',
+              protocol: 2,
+              projectId: context.projectId,
+              schemaVersion: 2,
+              syncProtocolEpoch,
+              graphRevision: synchronized.graphRevision,
+              updateBase64: synchronized.update,
+            }))
+          }
+          return
+        }
+        if (event?.type === 'canvas.crdt.update' && event.projectId === context.projectId) {
+          let canEdit = context.canEdit
+          try {
+            if (canEdit) canEdit = await productStore.canEditProject(context.userId, context.projectId)
+          } catch {
+            sendCanvasNack(socket, context, event.mutationId, 'TEMPORARY_UNAVAILABLE', true)
+            return
+          }
+          if (!canEdit) {
+            sendCanvasNack(socket, context, event.mutationId, 'PERMISSION_REVOKED', false)
+            return
+          }
+        }
         if (!context.canEdit) return
         if (event?.type !== 'canvas.crdt.update'
           || event.projectId !== context.projectId
           || typeof event.update !== 'string'
           || !event.update
           || event.update.length > 700_000
-          || !/^[A-Za-z0-9+/]*={0,2}$/.test(event.update)) return
-        const result = await context.roomEntry.room.applyUpdate(event.update, context.userId)
-        if (!result.applied) return
-        const change = collaborationChangeFromDocuments(result.previousGraph, result.graph) ?? { kind: 'canvas', summary: '更新了画布内容' }
-        let activity
+          || !/^[A-Za-z0-9+/]*={0,2}$/.test(event.update)
+          || (event.mutationId !== undefined
+            && (typeof event.mutationId !== 'string' || !/^[A-Za-z0-9._:-]{1,200}$/.test(event.mutationId)))
+          || (event.syncProtocolEpoch !== undefined
+            && (!Number.isInteger(event.syncProtocolEpoch) || event.syncProtocolEpoch < 1))) {
+          sendCanvasNack(socket, context, event?.mutationId, 'INVALID_UPDATE', false)
+          return
+        }
+        const mutationId = event.mutationId
+          ?? `legacy:${createHash('sha256').update(event.update).digest('base64url')}`
+        let committed
         try {
-          activity = await productStore.putCollaborationActivity(context.userId, context.projectId, {
-            id: `canvas-${context.userId}-${result.graphRevision}`,
-            ...change,
+          committed = await commitCanvasUpdate({
+            projectId: context.projectId,
+            userId: context.userId,
+            actorName: context.actorName,
+            mutationId,
+            update: event.update,
+            syncProtocolEpoch: event.syncProtocolEpoch,
+            roomEntry: context.roomEntry,
+            sourceSocket: socket,
           })
-        } catch {
-          // 历史索引暂不可写时仍广播已持久化的 CRDT 更新，客户端可用事件摘要降级展示。
+        } catch (error) {
+          const code = error?.code === 'CANVAS_SYNC_EPOCH_STALE'
+            ? 'EPOCH_STALE'
+            : error?.code === canvasMutationConflictCode
+              ? 'INVALID_UPDATE'
+              : error?.code === 'PROJECT_NOT_FOUND'
+                ? 'PROJECT_DELETED'
+                : error?.code === 'PROJECT_ACCESS_FORBIDDEN' || error?.code === 'PROJECT_WRITE_FORBIDDEN'
+                  ? 'PERMISSION_REVOKED'
+                  : error instanceof TypeError
+                    ? 'INVALID_UPDATE'
+                    : 'TEMPORARY_UNAVAILABLE'
+          sendCanvasNack(socket, context, mutationId, code, code === 'TEMPORARY_UNAVAILABLE' || code === 'EPOCH_STALE',
+            code === 'EPOCH_STALE' ? { syncProtocolEpoch: error.syncProtocolEpoch } : undefined)
+          return
         }
-        const payload = JSON.stringify({
-          type: 'canvas.crdt.update',
-          projectId: context.projectId,
-          update: event.update,
-          actorId: context.userId,
-          ...(context.actorName ? { actorName: context.actorName } : {}),
-          ...(activity ? { activity: { ...activity, unread: true } } : {}),
-        })
-        for (const peer of clients) {
-          if (peer !== socket && peer.readyState === WebSocket.OPEN) peer.send(payload)
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify(committed))
         }
-        await crossInstancePublisher.publishCanvasUpdate({
-          eventId: randomUUID(), sourceInstanceId: instanceId, projectId: context.projectId,
-          update: event.update, actorId: context.userId,
-          ...(context.actorName ? { actorName: context.actorName } : {}),
-          graphRevision: result.graphRevision, updatedAt: result.updatedAt,
-          ...(activity ? { activity } : {}),
-        })
       } catch {
         // 未知消息不影响项目失效通知；权威文档仍由 HTTP 接口负责。
       }
     })
-    socket.send(JSON.stringify({ type: 'realtime.ready', projectId: context.projectId }))
-    if (context.roomEntry.hasState) {
+    socket.send(JSON.stringify({
+      type: 'realtime.ready',
+      projectId: context.projectId,
+      ...(context.canvasSyncProtocol === 2 ? { protocol: 2 } : {}),
+    }))
+    if (context.canvasSyncProtocol !== 2 && context.roomEntry.hasState) {
       socket.send(JSON.stringify({
         type: 'canvas.crdt.update',
         projectId: context.projectId,
@@ -241,6 +415,7 @@ export function createProjectRealtimeHub({
       const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`)
       if (url.pathname !== '/api/realtime') return socket.destroy()
       const projectId = url.searchParams.get('projectId') ?? ''
+      const canvasSyncProtocol = url.searchParams.get('protocol') === '2' ? 2 : 1
       const authorized = verifyRealtimeTicket(url.searchParams.get('ticket') ?? '', {
         projectId,
         origin: request.headers.origin,
@@ -251,7 +426,7 @@ export function createProjectRealtimeHub({
       const canEdit = await productStore.canEditProject(authorized.userId, projectId)
       const roomEntry = await collaborationRoom(authorized.userId, projectId, project)
       webSocketServer.handleUpgrade(request, socket, head, (client) => {
-        webSocketServer.emit('connection', client, request, { ...authorized, canEdit, roomEntry })
+        webSocketServer.emit('connection', client, request, { ...authorized, canEdit, roomEntry, canvasSyncProtocol })
       })
     } catch {
       socket.destroy()
@@ -291,6 +466,7 @@ export function createProjectRealtimeHub({
   presenceHeartbeat.unref?.()
 
   return {
+    commitCanvasUpdate: (input) => commitCanvasUpdate(input),
     async receiveCanvasUpdate(event) {
       if (!event || typeof event !== 'object' || event.sourceInstanceId === instanceId) return
       if (typeof event.eventId !== 'string' || !event.eventId.trim()
@@ -299,6 +475,9 @@ export function createProjectRealtimeHub({
         || typeof event.update !== 'string' || !event.update
         || event.update.length > 700_000
         || !/^[A-Za-z0-9+/]*={0,2}$/.test(event.update)
+        || (event.mutationId !== undefined
+          && (typeof event.mutationId !== 'string' || !/^[A-Za-z0-9._:-]{1,200}$/.test(event.mutationId)))
+        || (event.duplicate !== undefined && typeof event.duplicate !== 'boolean')
         || typeof event.actorId !== 'string' || !event.actorId.trim()) return
       // Redis 是跨实例传输层，不是权限边界；只接受仍具备项目编辑权的操作者。
       // 这样即使旧实例/恶意消息伪造 actorId，也不会把增量写入当前房间。
@@ -308,24 +487,62 @@ export function createProjectRealtimeHub({
         return
       }
       const updateHash = createHash('sha256').update(event.update ?? '').digest('base64url')
-      if (!rememberEvent(`event:${event.eventId}`) || !rememberEvent(`update:${event.projectId}:${updateHash}`)) return
+      const updateIdentity = event.mutationId ? `mutation:${event.mutationId}` : `hash:${updateHash}`
+      const freshEvent = rememberEvent(`event:${event.eventId}`)
+      const freshUpdate = rememberEvent(`update:${event.projectId}:${updateIdentity}`)
+      if (!freshEvent || (!event.duplicate && !freshUpdate)) return
       const roomPromise = roomsByProject.get(event.projectId)
       if (!roomPromise) return
       try {
         const entry = await roomPromise
-        await entry.room.applyPersistedUpdate(event.update)
+        await entry.room.reloadPersistedState(event.actorId)
         entry.hasState = true
         const payload = JSON.stringify({
-          type: 'canvas.crdt.update', projectId: event.projectId, update: event.update,
-          actorId: event.actorId,
-          ...(event.actorName ? { actorName: event.actorName } : {}),
-          ...(event.activity ? { activity: { ...event.activity, unread: true } } : {}),
+          type: 'canvas.crdt.update', projectId: event.projectId,
+          update: event.update,
+          ...(event.mutationId ? { mutationId: event.mutationId } : {}),
+          ...(!event.duplicate ? { actorId: event.actorId } : {}),
+          ...(!event.duplicate && event.actorName ? { actorName: event.actorName } : {}),
+          ...(!event.duplicate && event.activity ? { activity: { ...event.activity, unread: true } } : {}),
         })
         for (const socket of clientsByProject.get(event.projectId) ?? []) {
           if (socket.readyState === WebSocket.OPEN) socket.send(payload)
         }
       } catch {
         // 乱序/损坏的远端增量只能丢弃，不能让 Redis listener 的 Promise 拒绝进程。
+      }
+    },
+    async publishCanvasGraphCommitted({ projectId, update, mutationId, actorId, graphRevision, updatedAt, duplicate }) {
+      const roomPromise = roomsByProject.get(projectId)
+      let roomEntry
+      if (roomPromise) {
+        roomEntry = await roomPromise
+        await roomEntry.room.reloadPersistedState(actorId)
+        roomEntry.hasState = true
+        scheduleRoomEviction(projectId)
+      }
+      if (duplicate) {
+        await publishCanvasRepair({ projectId, update, mutationId, actorId, graphRevision, updatedAt })
+        return
+      }
+      const actorName = [...(clientsByProject.get(projectId) ?? [])]
+        .find((client) => client.userId === actorId)?.actorName
+      const payload = JSON.stringify({
+        type: 'canvas.crdt.update', projectId, update, mutationId, actorId,
+        ...(actorName ? { actorName } : {}),
+      })
+      for (const socket of clientsByProject.get(projectId) ?? []) {
+        if (socket.readyState === WebSocket.OPEN) socket.send(payload)
+      }
+      try {
+        await crossInstancePublisher.publishCanvasUpdate({
+          eventId: randomUUID(), sourceInstanceId: instanceId, projectId,
+          update, mutationId, actorId,
+          ...(actorName ? { actorName } : {}),
+          graphRevision, updatedAt,
+        })
+      } catch {
+        // 本实例已从权威存储重载；跨实例将在下次握手/聚焦时恢复。
       }
     },
     async receivePresence(event) {
@@ -354,9 +571,15 @@ export function createProjectRealtimeHub({
         if (typeof actorId !== 'string' || !actorId.trim()) {
           throw new TypeError('画布项目更新缺少 actorId。')
         }
-        const { room } = await collaborationRoom(actorId, projectId, { document: graph })
-        await room.replaceBaseGraph(graph, actorId)
-        scheduleRoomEviction(projectId)
+        // Epoch 2 的 graph 只能来自 durable mutation；整图替换仅保留给尚未迁移的
+        // Epoch 1 浏览器，避免旧 project.updated 把新 Yjs 日志覆盖回去。
+        const syncProtocolEpoch = await canvasSyncProtocolEpoch(actorId, projectId)
+        if (syncProtocolEpoch >= 2) throw canvasSyncEpochStaleError(syncProtocolEpoch)
+        if (syncProtocolEpoch < 2) {
+          const { room } = await collaborationRoom(actorId, projectId, { document: graph })
+          await room.replaceBaseGraph(graph, actorId, graphRevision)
+          scheduleRoomEviction(projectId)
+        }
       }
       const actorName = [...(clientsByProject.get(projectId) ?? [])]
         .find((client) => client.userId === actorId)?.actorName

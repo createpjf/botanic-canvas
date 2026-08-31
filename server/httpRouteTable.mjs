@@ -3,6 +3,7 @@
  */
 export const botanicHttpRoutePatterns = Object.freeze({
   document: /^\/api\/projects\/([^/]+)\/document$/,
+  projectCanvasSync: /^\/api\/projects\/([^/]+)\/canvas-sync$/,
   project: /^\/api\/projects\/([^/]+)$/,
   projectMembers: /^\/api\/projects\/([^/]+)\/members$/,
   projectAudit: /^\/api\/projects\/([^/]+)\/audit$/,

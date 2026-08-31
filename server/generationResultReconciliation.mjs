@@ -2,6 +2,32 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value))
 }
 
+function generationJobProjectionRecord(existing, job) {
+  const dismissedOutputIds = [...new Set([
+    ...(existing?.dismissedOutputIds ?? []),
+    ...(job?.dismissedOutputIds ?? []),
+  ])]
+  const projectionDismissedAt = Math.max(
+    Number(existing?.projectionDismissedAt) || 0,
+    Number(job?.projectionDismissedAt) || 0,
+  ) || undefined
+  const outputs = projectionDismissedAt
+    ? []
+    : (job?.outputs ?? []).filter((output) => !dismissedOutputIds.includes(output.id))
+  return {
+    ...job,
+    outputs,
+    dismissedOutputIds: dismissedOutputIds.length ? dismissedOutputIds : undefined,
+    projectionDismissedAt,
+  }
+}
+
+/** 画布投影必须服从项目内已持久化的用户删除意图。 */
+export function generationJobForCanvasProjection(document, job) {
+  const existing = (document?.generationJobs ?? []).find((record) => record.id === job?.id)
+  return generationJobProjectionRecord(existing, job)
+}
+
 function candidateLabel(kind, index) {
   return `${kind === 'refinement' ? '精修候选' : '生成候选'} ${index + 1}`
 }
@@ -376,26 +402,29 @@ function matchingJob({ result, generate, jobs, usedJobIds }) {
 }
 
 function persistedJob(job, generateNodeId, resultNodeId, existing = {}) {
+  const projected = generationJobProjectionRecord(existing, job)
   return {
-    id: job.id,
-    status: job.status,
-    kind: job.kind,
-    refinementMode: job.refinementMode,
-    createdAt: job.createdAt,
-    updatedAt: job.updatedAt,
-    batchCount: job.batchCount,
-    outputCount: job.outputs?.length ?? 0,
-    provider: job.provider ?? 'openai-images',
-    model: job.settings?.model,
-    error: job.error,
-    missingOutputCount: job.missingOutputCount ?? 0,
-    partialError: job.partialError,
-    outputs: job.outputs ?? [],
-    generateNodeId: generateNodeId ?? job.generateNodeId ?? existing.generateNodeId,
-    promptNodeId: job.promptNodeId ?? existing.promptNodeId,
-    resultNodeId: resultNodeId ?? job.resultNodeId ?? existing.resultNodeId,
-    parentNodeId: job.parentNodeId ?? existing.parentNodeId,
-    agentRun: job.agentRun ?? existing.agentRun,
+    id: projected.id,
+    status: projected.status,
+    kind: projected.kind,
+    refinementMode: projected.refinementMode,
+    createdAt: projected.createdAt,
+    updatedAt: projected.updatedAt,
+    batchCount: projected.batchCount,
+    outputCount: projected.outputs?.length ?? 0,
+    provider: projected.provider ?? 'openai-images',
+    model: projected.settings?.model,
+    error: projected.error,
+    missingOutputCount: projected.missingOutputCount ?? 0,
+    partialError: projected.partialError,
+    outputs: projected.outputs ?? [],
+    dismissedOutputIds: projected.dismissedOutputIds,
+    projectionDismissedAt: projected.projectionDismissedAt,
+    generateNodeId: generateNodeId ?? projected.generateNodeId ?? existing.generateNodeId,
+    promptNodeId: projected.promptNodeId ?? existing.promptNodeId,
+    resultNodeId: resultNodeId ?? projected.resultNodeId ?? existing.resultNodeId,
+    parentNodeId: projected.parentNodeId ?? existing.parentNodeId,
+    agentRun: projected.agentRun ?? existing.agentRun,
   }
 }
 
@@ -423,6 +452,8 @@ export function retargetGenerationJobForRetry(document, previousJobId, nextJobId
     updatedAt: now,
     outputCount: 0,
     outputs: [],
+    dismissedOutputIds: undefined,
+    projectionDismissedAt: undefined,
     error: undefined,
   })
   return { document: changed ? { ...next, updatedAt: now } : document, changed }
@@ -435,13 +466,14 @@ export function reconcileGenerationResults(document, jobs, { ensureAgentPlacehol
   const edges = Array.isArray(next.edges) ? next.edges : []
   next.nodes = nodes
   next.edges = edges
+  const projectionJobs = (jobs ?? []).map((job) => generationJobForCanvasProjection(next, job))
   let changed = false
   if (ensureAgentPlaceholders) {
-    for (const job of jobs ?? []) changed = ensureAgentGenerationPlaceholder(next, job) || changed
+    for (const job of projectionJobs) changed = ensureAgentGenerationPlaceholder(next, job) || changed
   }
   // 先修复被错配恢复污染的节点，再做常规回填：被交还真实任务的占位节点
   // 可以在同一次对账里直接拿到自己的输出。
-  changed = repairMisattributedGenerationHistory(next, jobs) || changed
+  changed = repairMisattributedGenerationHistory(next, projectionJobs) || changed
   const nodeById = new Map(nodes.map((node) => [node.id, node]))
   const usedJobIds = new Set(nodes
     .filter((node) => node.type === 'result' && node.data?.image && node.data?.jobId)
@@ -457,7 +489,7 @@ export function reconcileGenerationResults(document, jobs, { ensureAgentPlacehol
   for (const root of groups) {
     const result = root.data
     const generate = nodeById.get(result.outputOf)
-    const job = matchingJob({ result, generate, jobs, usedJobIds })
+    const job = matchingJob({ result, generate, jobs: projectionJobs, usedJobIds })
     if (!job) continue
     usedJobIds.add(job.id)
     const groupNodes = nodes.filter((node) => node.type === 'result'
@@ -533,10 +565,11 @@ export function reconcileGenerationResults(document, jobs, { ensureAgentPlacehol
 
 export function generationJobProjectionComplete(document, job) {
   if (job?.status !== 'succeeded' || !Array.isArray(job.outputs) || !job.outputs.length) return true
+  const projected = generationJobForCanvasProjection(document, job)
   const nodes = Array.isArray(document?.nodes) ? document.nodes : []
-  return job.outputs.every((output) => nodes.some((node) => node.type === 'result'
+  return projected.outputs.every((output) => nodes.some((node) => node.type === 'result'
     && node.data?.jobId === job.id
     && typeof node.data?.image === 'string'
     && node.data.image
-    && (node.data.candidateId === output.id || (job.outputs.length === 1 && !node.data.candidateId))))
+    && (node.data.candidateId === output.id || (projected.outputs.length === 1 && !node.data.candidateId))))
 }

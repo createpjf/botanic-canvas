@@ -31,3 +31,10 @@ test('自动模式失败分支只自动重试一次，且判定归领域函数',
   assert.match(retry, /botanicAgentAutoRetryTargets\(/)
   assert.match(retry, /autoRetriedBranchesRef/)
 })
+
+test('兼容 plan/chat 提交键只用 Idempotency-Key 允许的字符，不能带冒号', () => {
+  assert.match(workspace, /`agent-plan-\$\{sourceTurnId\}`/)
+  assert.match(workspace, /`agent-chat-\$\{sourceTurnId \?\? durableInputMessage\.id\}`/)
+  assert.equal(workspace.includes('agent-plan:'), false)
+  assert.equal(workspace.includes('agent-chat:'), false)
+})

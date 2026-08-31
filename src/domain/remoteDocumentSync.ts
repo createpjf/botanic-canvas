@@ -14,6 +14,7 @@ export type RemoteDocumentConflict = {
 export function isRemoteDocumentConflict(error: unknown): error is RemoteDocumentConflict {
   if (!error || typeof error !== 'object') return false
   const candidate = error as RemoteDocumentConflict
+  if (candidate.code === 'CANVAS_SYNC_EPOCH_STALE') return false
   return candidate.status === 409
     || candidate.status === 412
     || candidate.code === 'PROJECT_CONFLICT'

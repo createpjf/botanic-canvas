@@ -104,12 +104,17 @@ async function publishGenerationProjectUpdated(event) {
   if (config.redisUrl) return agentRunEvents.publishProjectUpdated?.(event)
   return realtimeHub?.publishProjectUpdated(event)
 }
+async function publishGenerationCanvasUpdate(event) {
+  if (config.redisUrl) return canvasRealtimeEventPublisher?.publishCanvasUpdate(event)
+  return realtimeHub?.receiveCanvasUpdate(event)
+}
 const localProcessor = !redisQueue && !config.production
   ? createGenerationProcessor({
       productStore, mediaService, config,
       cancelRegistry: localJobCancelRegistry,
       publishAgentRunUpdated,
       publishProjectUpdated: publishGenerationProjectUpdated,
+      publishCanvasUpdate: publishGenerationCanvasUpdate,
       observeAgentRun,
     })
   : undefined
@@ -238,13 +243,28 @@ function shapedBusinessHttpError(caught) {
   return new HttpError(statusCode, caught.code, caught.message)
 }
 
+function clientDisconnectHttpError(request, response) {
+  if (request.aborted || response.destroyed) {
+    return new HttpError(499, 'CLIENT_CLOSED_REQUEST', '请求已中断。')
+  }
+  return undefined
+}
+
 function agentEntityHttpError(caught) {
   // 幂等冲突是业务 409，不能落进 INTERNAL_ERROR 触发客户端自动重试风暴。
   if (caught?.code === 'AGENT_RUN_IDEMPOTENCY_CONFLICT') return new HttpError(409, caught.code, caught.message)
-  if (caught?.code === 'INVALID_AGENT_ENTITY') return new HttpError(400, caught.code, caught.message)
+  if (caught?.code === 'INVALID_AGENT_ENTITY' || caught?.code === 'INVALID_IDEMPOTENCY_KEY' || caught?.code === 'AGENT_MESSAGE_INVALID') {
+    return new HttpError(400, caught.code, caught.message)
+  }
   if (caught?.code === 'AGENT_SESSION_NOT_FOUND') return new HttpError(404, caught.code, caught.message)
   if (caught?.code === 'AGENT_MESSAGE_NOT_FOUND') return new HttpError(409, caught.code, caught.message)
   if (caught?.code === 'AGENT_MEMORY_DELETED') return new HttpError(409, caught.code, caught.message)
+  if (caught?.code === 'AGENT_MESSAGE_TURN_REQUEST_CONFLICT' || caught?.code === 'AGENT_MESSAGE_TURN_ID_CONFLICT' || caught?.code === 'AGENT_MESSAGE_ROLE_CONFLICT') {
+    return new HttpError(409, caught.code, caught.message)
+  }
+  if (typeof caught?.code === 'string' && /^AGENT_TARGET_/.test(caught.code)) {
+    return new HttpError(Number.isInteger(caught.statusCode) ? caught.statusCode : 409, caught.code, caught.message)
+  }
   if (typeof caught?.code === 'string' && /^(AGENT_(SESSION|MESSAGE|MEMORY|RUN|ENTITY)_ID_CONFLICT)$/.test(caught.code)) {
     return new HttpError(409, caught.code, caught.message)
   }
@@ -284,8 +304,13 @@ async function streamMedia(response, media) {
   throw new Error('不支持的媒体流类型。')
 }
 
-async function publishProjectUpdated(saved, actorId) {
-  await publishProjectUpdatedSafely(realtimeHub, saved, actorId)
+async function publishProjectUpdated(saved, actorId, graphCommit) {
+  await publishProjectUpdatedSafely(realtimeHub, saved, actorId, console, graphCommit)
+}
+
+async function commitCanvasUpdate(input) {
+  if (!realtimeHub) throw new HttpError(503, 'CANVAS_SYNC_UNAVAILABLE', 'Canvas Sync 服务尚未就绪。')
+  return realtimeHub.commitCanvasUpdate(input)
 }
 
 function expectedGraphRevision(request, fallback) {
@@ -326,6 +351,7 @@ const handleProjectRoute = createProjectRouteHandler({
   enforceRateLimit,
   securityControls,
   publishProjectUpdated,
+  commitCanvasUpdate,
   expectedGraphRevision,
   projectResponseHeaders,
 })
@@ -548,15 +574,17 @@ const handleRequestCore = async (request, response) => {
     if (await handlePromptMediaRoute(request, response, url, routeMatches)) return
     return error(response, 404, 'NOT_FOUND', '接口不存在。')
   } catch (caught) {
+    const disconnectFailure = clientDisconnectHttpError(request, response)
     const agentEntityFailure = agentEntityHttpError(caught)
-    const failure = caught instanceof HttpError || caught instanceof ProjectAuthorizationError || caught instanceof GenerationError || caught instanceof PromptRefinementError || caught instanceof BotanicAgentPlannerError || caught instanceof BotanicAgentChatError || caught instanceof BotanicAgentRunError || caught instanceof BotanicAgentSkillError || caught instanceof AgentToolRuntimeError || caught instanceof AgentActionExecutionError || caught instanceof AgentActionReconciliationError || caught instanceof McpClientError || caught instanceof AgentDelegationFenceError || caught instanceof AgentSubagentServiceError
-      ? caught
-      : agentEntityFailure
-        ? agentEntityFailure
-      : caught?.code === 'WORKSPACE_STORE_TIMEOUT'
-        ? new HttpError(503, 'WORKSPACE_STORE_TIMEOUT', caught.message)
-      : shapedBusinessHttpError(caught)
-        ?? new HttpError(500, 'INTERNAL_ERROR', '服务发生未预期错误。')
+    const failure = disconnectFailure
+      || (caught instanceof HttpError || caught instanceof ProjectAuthorizationError || caught instanceof GenerationError || caught instanceof PromptRefinementError || caught instanceof BotanicAgentPlannerError || caught instanceof BotanicAgentChatError || caught instanceof BotanicAgentRunError || caught instanceof BotanicAgentSkillError || caught instanceof AgentToolRuntimeError || caught instanceof AgentActionExecutionError || caught instanceof AgentActionReconciliationError || caught instanceof McpClientError || caught instanceof AgentDelegationFenceError || caught instanceof AgentSubagentServiceError
+        ? caught
+        : agentEntityFailure
+          ? agentEntityFailure
+        : caught?.code === 'WORKSPACE_STORE_TIMEOUT'
+          ? new HttpError(503, 'WORKSPACE_STORE_TIMEOUT', caught.message)
+        : shapedBusinessHttpError(caught)
+          ?? new HttpError(500, 'INTERNAL_ERROR', '服务发生未预期错误。'))
     if (failure.statusCode >= 500) {
       reportError(caught, {
         tags: {

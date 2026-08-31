@@ -1,6 +1,6 @@
 import { AgentToolRuntimeError } from './agentToolRuntime.mjs'
 import { validateGenerationInput } from './generationProvider.mjs'
-import { generationJobProjectionComplete, reconcileGenerationResults } from './generationResultReconciliation.mjs'
+import { generationJobForCanvasProjection, generationJobProjectionComplete, reconcileGenerationResults } from './generationResultReconciliation.mjs'
 import { compileAgentBranchRecipe } from './botanicCreativePlanCompiler.mjs'
 import { compiledBranchFromRun, normalizeResolverModels, resolveCreativePlan } from './creativePlanResolver.mjs'
 import { canonicalImageDataUrlPattern } from './mediaFormats.mjs'
@@ -311,26 +311,29 @@ export function reconcileAgentGenerationJobToProject(document, job, now = Date.n
     const reconciled = reconcileGenerationResults(document, [job], { ensureAgentPlaceholders: true })
     const projectedDocument = reconciled.document ?? document
     const existingRecord = projectedDocument.generationJobs?.find((record) => record.id === job.id)
+    const projectedJob = generationJobForCanvasProjection(projectedDocument, job)
     const nextRecord = {
-      id: job.id,
-      status: job.status,
-      kind: job.kind,
-      refinementMode: job.refinementMode,
-      createdAt: job.createdAt,
-      updatedAt: job.updatedAt,
-      batchCount: job.batchCount,
-      outputCount: job.outputs?.length ?? 0,
-      provider: job.provider ?? 'openai-images',
-      model: job.settings?.model,
-      error: job.error,
-      missingOutputCount: job.missingOutputCount ?? 0,
-      partialError: job.partialError,
-      outputs: job.outputs ?? [],
-      generateNodeId: job.generateNodeId ?? existingRecord?.generateNodeId,
-      promptNodeId: job.promptNodeId ?? existingRecord?.promptNodeId,
-      resultNodeId: job.resultNodeId ?? existingRecord?.resultNodeId,
-      parentNodeId: job.parentNodeId ?? existingRecord?.parentNodeId,
-      agentRun: job.agentRun ?? existingRecord?.agentRun,
+      id: projectedJob.id,
+      status: projectedJob.status,
+      kind: projectedJob.kind,
+      refinementMode: projectedJob.refinementMode,
+      createdAt: projectedJob.createdAt,
+      updatedAt: projectedJob.updatedAt,
+      batchCount: projectedJob.batchCount,
+      outputCount: projectedJob.outputs?.length ?? 0,
+      provider: projectedJob.provider ?? 'openai-images',
+      model: projectedJob.settings?.model,
+      error: projectedJob.error,
+      missingOutputCount: projectedJob.missingOutputCount ?? 0,
+      partialError: projectedJob.partialError,
+      outputs: projectedJob.outputs ?? [],
+      dismissedOutputIds: projectedJob.dismissedOutputIds,
+      projectionDismissedAt: projectedJob.projectionDismissedAt,
+      generateNodeId: projectedJob.generateNodeId ?? existingRecord?.generateNodeId,
+      promptNodeId: projectedJob.promptNodeId ?? existingRecord?.promptNodeId,
+      resultNodeId: projectedJob.resultNodeId ?? existingRecord?.resultNodeId,
+      parentNodeId: projectedJob.parentNodeId ?? existingRecord?.parentNodeId,
+      agentRun: projectedJob.agentRun ?? existingRecord?.agentRun,
     }
     const recordChanged = JSON.stringify(existingRecord) !== JSON.stringify(nextRecord)
     const complete = generationJobProjectionComplete(projectedDocument, job)

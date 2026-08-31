@@ -2,6 +2,11 @@
 
 import { AgentToolRuntimeError } from './agentToolRuntime.mjs'
 import { catalogAspectRatiosForModel } from './generationOutputSize.mjs'
+import {
+  canvasProjectMutationId,
+  commitCanvasProjectMutation,
+  supportsDurableCanvasGraphMutation,
+} from './canvasGraphCommitService.mjs'
 
 /**
  * Agent 画布编辑的领域规则：提案-确认制的「改文字 / 调生成参数 / 删节点」。
@@ -63,6 +68,35 @@ function replacedNode(document, next, now) {
   }
 }
 
+function generationJobsAfterNodeDeletion(document, removedNodes, now) {
+  return (document.generationJobs ?? []).map((job) => {
+    const related = removedNodes.filter((node) => (
+      node.data?.jobId === job.id
+      || job.promptNodeId === node.id
+      || job.generateNodeId === node.id
+      || job.resultNodeId === node.id
+    ))
+    if (!related.length) return job
+    const dismissedOutputIds = new Set(job.dismissedOutputIds ?? [])
+    let projectionDismissedAt = Number(job.projectionDismissedAt) || undefined
+    for (const node of related) {
+      const candidateId = node.type === 'result'
+        ? node.data?.candidateId ?? ((job.outputs ?? []).length === 1 ? job.outputs[0]?.id : undefined)
+        : undefined
+      if (candidateId) dismissedOutputIds.add(candidateId)
+      else projectionDismissedAt = Math.max(projectionDismissedAt ?? 0, now)
+    }
+    const outputs = (job.outputs ?? []).filter((output) => !dismissedOutputIds.has(output.id))
+    return {
+      ...job,
+      outputs,
+      outputCount: outputs.length,
+      dismissedOutputIds: dismissedOutputIds.size ? [...dismissedOutputIds] : undefined,
+      projectionDismissedAt,
+    }
+  })
+}
+
 export function applyBotanicAgentCanvasTextUpdate(document, { nodeId, content, label }, now = Date.now()) {
   const node = findNode(document, nodeId)
   if (nodeIsBusy(document, node)) throw editError('CANVAS_NODE_BUSY', '该节点的任务正在进行，不能修改。', 409)
@@ -102,17 +136,20 @@ export function applyBotanicAgentGenerateSettingsUpdate(document, { nodeId, sett
 
 export function applyBotanicAgentCanvasNodeDeletion(document, { nodeIds }, now = Date.now()) {
   const ids = new Set(nodeIds)
+  const removedNodes = []
   for (const nodeId of ids) {
     const node = findNode(document, nodeId)
     if (nodeIsBusy(document, node)) {
       throw editError('CANVAS_NODE_BUSY', `节点「${node.data?.label ?? node.id}」的任务正在进行，不能删除。`, 409)
     }
+    removedNodes.push(node)
   }
   return {
     document: {
       ...document,
       nodes: document.nodes.filter((node) => !ids.has(node.id)),
       edges: (document.edges ?? []).filter((edge) => !ids.has(edge.source) && !ids.has(edge.target)),
+      generationJobs: generationJobsAfterNodeDeletion(document, removedNodes, now),
       updatedAt: now,
     },
     removedNodeIds: [...ids],
@@ -123,7 +160,7 @@ export function applyBotanicAgentCanvasNodeDeletion(document, { nodeIds }, now =
  * 三个编辑动作的执行器：经 Store 原子文档更新落库并广播；
  * 旧 Store 无原子通道时回退单次 CAS 写（确认动作有幂等收据，失败可安全重试）。
  */
-export function createCanvasAgentEditExecutors({ productStore, publishProjectUpdated, models, userId, projectId }) {
+export function createCanvasAgentEditExecutors({ productStore, publishProjectUpdated, models, userId, projectId, mutationId }) {
   const editDocument = async (mutate) => {
     /** @type {any} */
     let edited
@@ -132,8 +169,19 @@ export function createCanvasAgentEditExecutors({ productStore, publishProjectUpd
       return edited.document
     }
     let saved
+    let graphCommit
     try {
-      if (typeof productStore.updateProjectDocument === 'function') {
+      if (mutationId && supportsDurableCanvasGraphMutation(productStore)) {
+        const committed = await commitCanvasProjectMutation({
+          productStore,
+          userId,
+          projectId,
+          mutationId: canvasProjectMutationId('agent-action', mutationId),
+          mutate: mutateDocument,
+        })
+        saved = committed?.saved
+        graphCommit = committed?.graphCommit
+      } else if (typeof productStore.updateProjectDocument === 'function') {
         saved = await productStore.updateProjectDocument(userId, projectId, mutateDocument)
       } else {
         const project = await productStore.readProject(userId, projectId)
@@ -148,7 +196,7 @@ export function createCanvasAgentEditExecutors({ productStore, publishProjectUpd
       throw caught
     }
     if (!saved || !edited) throw editError('PROJECT_NOT_FOUND', '未找到当前项目。', 404)
-    await publishProjectUpdated(saved, userId)
+    await publishProjectUpdated(saved, userId, graphCommit)
     return { saved, edited }
   }
   const nodePatch = (saved, node) => ({

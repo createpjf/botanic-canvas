@@ -5,6 +5,11 @@ import { createIdempotencyRequestBinding, matchingIdempotencyRequestBinding } fr
 import { persistedGenerationJob, publicGenerationJob } from './generationProvider.mjs'
 import { retargetGenerationJobForRetry } from './generationResultReconciliation.mjs'
 import { compareAndSetGenerationJob } from './generationJobCas.mjs'
+import {
+  canvasProjectMutationId,
+  commitCanvasProjectMutation,
+  supportsDurableCanvasGraphMutation,
+} from './canvasGraphCommitService.mjs'
 
 /**
  * 分支重试的唯一实现。
@@ -187,11 +192,32 @@ export function createAgentBranchRetryService({
         || Number(retriedRun.updatedAt)
         || requestedAt
       const project = await productStore.readProject(userId, run.projectId)
-      const retargeted = project ? retargetGenerationJobForRetry(project.document, previousJob.id, jobId, timestamp) : { changed: false }
-      if (project && retargeted.changed) {
+      const retarget = (document) => {
+        const retargeted = retargetGenerationJobForRetry(document, previousJob.id, jobId, timestamp)
+        return retargeted.changed ? retargeted.document : undefined
+      }
+      if (project && retarget(project.document)) {
         try {
-          const saved = await productStore.writeProject(userId, retargeted.document, project.revision, project.graphRevision)
-          await publishProjectUpdated(saved, userId)
+          if (supportsDurableCanvasGraphMutation(productStore)) {
+            const committed = await commitCanvasProjectMutation({
+              productStore,
+              userId,
+              projectId: run.projectId,
+              mutationId: canvasProjectMutationId('agent-retry', {
+                sourceJobId: previousJob.id,
+                jobId,
+                attempt: storedJob.agentRun?.attempt,
+              }),
+              mutate: retarget,
+            })
+            if (committed?.changed && committed.saved) {
+              await publishProjectUpdated(committed.saved, userId, committed.graphCommit)
+            }
+          } else {
+            const document = retarget(project.document)
+            const saved = await productStore.writeProject(userId, document, project.revision, project.graphRevision)
+            await publishProjectUpdated(saved, userId)
+          }
         } catch (caught) {
           const conflict = /** @type {any} */ (caught)?.code
           if (conflict === 'PROJECT_CONFLICT' || conflict === 'CANVAS_GRAPH_CONFLICT') {

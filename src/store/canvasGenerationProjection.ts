@@ -307,7 +307,12 @@ export function settleExpiredGenerationSubmissions(
   return { document: nextDocument, changed }
 }
 
-function jobForDocument(job: GenerationJob, taskNodeIds: TaskNodeIds, dismissedOutputIds: string[] = []): GenerationJob {
+function jobForDocument(
+  job: GenerationJob,
+  taskNodeIds: TaskNodeIds,
+  dismissedOutputIds: string[] = [],
+  projectionDismissedAt?: number,
+): GenerationJob {
   // `cancelOutcome` 是取消接口对**那一次调用**的计费判定，不是任务的持久事实：
   // 落进文档后每次读取都会把它当成历史重放，轮询同一任务却又拿不到它。
   const {
@@ -316,7 +321,7 @@ function jobForDocument(job: GenerationJob, taskNodeIds: TaskNodeIds, dismissedO
     cancelOutcome: _cancelOutcome,
     ...persistedJob
   } = job as GenerationJob & { cancelOutcome?: unknown }
-  const outputs = job.status === 'succeeded'
+  const outputs = job.status === 'succeeded' && !projectionDismissedAt
     ? job.outputs?.filter((output) => !dismissedOutputIds.includes(output.id)).map((output) => ({ ...output }))
     : undefined
   return {
@@ -325,6 +330,7 @@ function jobForDocument(job: GenerationJob, taskNodeIds: TaskNodeIds, dismissedO
     outputs,
     outputCount: outputs?.length ?? job.outputCount,
     dismissedOutputIds: dismissedOutputIds.length ? [...dismissedOutputIds] : undefined,
+    projectionDismissedAt,
     generateNodeId: taskNodeIds.generateNodeId,
     resultNodeId: taskNodeIds.resultNodeId,
   }
@@ -334,7 +340,11 @@ export function recordGenerationJob(document: CanvasDocument, job: GenerationJob
   const taskDocument = updateTaskNodes(document, taskNodeIds, job.status, job.id, job.error, job.errorCode)
   const priorJob = document.generationJobs.find((item) => item.id === job.id)
   const dismissedOutputIds = [...new Set([...(priorJob?.dismissedOutputIds ?? []), ...(job.dismissedOutputIds ?? [])])]
-  const persistedJob = jobForDocument(job, taskNodeIds, dismissedOutputIds)
+  const projectionDismissedAt = Math.max(
+    priorJob?.projectionDismissedAt ?? 0,
+    job.projectionDismissedAt ?? 0,
+  ) || undefined
+  const persistedJob = jobForDocument(job, taskNodeIds, dismissedOutputIds, projectionDismissedAt)
   return {
     ...taskDocument,
     generationJobs: [
@@ -342,6 +352,35 @@ export function recordGenerationJob(document: CanvasDocument, job: GenerationJob
       ...taskDocument.generationJobs.filter((item) => item.id !== job.id),
     ].slice(0, 60),
   }
+}
+
+export function generationJobsAfterNodeRemoval(
+  document: CanvasDocument,
+  removed: CanvasNode,
+  now = Date.now(),
+): GenerationJob[] {
+  const data = removed.data as { jobId?: string; candidateId?: string }
+  return document.generationJobs.map((job) => {
+    if (data.jobId !== job.id
+      && job.promptNodeId !== removed.id
+      && job.generateNodeId !== removed.id
+      && job.resultNodeId !== removed.id) return job
+    const dismissedOutputIds = new Set(job.dismissedOutputIds ?? [])
+    const candidateId = removed.type === 'result'
+      ? data.candidateId ?? (job.outputs?.length === 1 ? job.outputs[0]?.id : undefined)
+      : undefined
+    if (candidateId) dismissedOutputIds.add(candidateId)
+    const outputs = job.outputs?.filter((output) => !dismissedOutputIds.has(output.id))
+    return {
+      ...job,
+      outputs,
+      outputCount: outputs?.length ?? job.outputCount,
+      dismissedOutputIds: dismissedOutputIds.size ? [...dismissedOutputIds] : undefined,
+      projectionDismissedAt: candidateId
+        ? job.projectionDismissedAt
+        : Math.max(job.projectionDismissedAt ?? 0, now),
+    }
+  })
 }
 
 
@@ -399,6 +438,7 @@ function resultGridPosition(origin: XYPosition, candidate: Pick<GenerationCandid
 
 /** 将一次任务的全部输出展开为同级结果节点；不再把候选藏在临时面板里。 */
 export function materializeGenerationOutputs(document: CanvasDocument, job: GenerationJob, request: GenerationRequest): CanvasDocument {
+  if (document.generationJobs.find((item) => item.id === job.id)?.projectionDismissedAt) return document
   const candidates = candidatesFromJob(job, request)
   if (!candidates.length) return document
 
@@ -516,6 +556,7 @@ export function applyGenerationJobToDocument(document: CanvasDocument, job: Gene
   const recordedDocument = recordGenerationJob(document, job, request.taskNodeIds)
   if (job.status === 'succeeded') {
     const recordedJob = recordedDocument.generationJobs.find((item) => item.id === job.id) ?? job
+    if (recordedJob.projectionDismissedAt) return recordedDocument
     const candidates = candidatesFromJob(recordedJob, request)
     return candidates.length
       ? materializeGenerationOutputs(recordedDocument, recordedJob, request)

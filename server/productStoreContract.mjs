@@ -1,5 +1,6 @@
 // @ts-check
 
+import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { agentTurnRequestHash, agentTurnRequestHashVersion, storedAgentTurnRequestBinding } from './agentTurnRequestIdentity.mjs'
 import {
@@ -22,6 +23,56 @@ export const nonTerminalAgentTurnStatuses = Object.freeze(['queued', 'running', 
 
 /** 只有这些状态代表执行实例可能失联；waiting_user 由用户输入恢复，不参与孤儿回收。 */
 export const reclaimableAgentTurnStatuses = Object.freeze(['queued', 'running', 'cancelling'])
+
+export const canvasGraphConflictCode = 'CANVAS_GRAPH_CONFLICT'
+export const canvasMutationConflictCode = 'CANVAS_MUTATION_CONFLICT'
+export const canvasSyncEpochStaleCode = 'CANVAS_SYNC_EPOCH_STALE'
+
+export function canvasSyncEpochStaleError(syncProtocolEpoch) {
+  const error = /** @type {Error & { code: string; statusCode: number; syncProtocolEpoch?: number }} */ (
+    new Error('画布同步协议版本已前进，请重新握手。')
+  )
+  error.code = canvasSyncEpochStaleCode
+  error.statusCode = 409
+  if (Number.isInteger(syncProtocolEpoch) && syncProtocolEpoch > 0) error.syncProtocolEpoch = syncProtocolEpoch
+  return error
+}
+
+/**
+ * @param {{ update?: unknown; idempotencyUpdate?: unknown; graph?: unknown; mutationId?: unknown; expectedGraphRevision?: unknown; syncProtocolEpoch?: unknown } | null | undefined} input
+ */
+export function normalizeCanvasGraphMutation(input) {
+  const { update, idempotencyUpdate, graph, mutationId, expectedGraphRevision, syncProtocolEpoch } = input ?? {}
+  if (typeof update !== 'string' || !update
+    || (idempotencyUpdate !== undefined && (typeof idempotencyUpdate !== 'string' || !idempotencyUpdate))
+    || !graph || typeof graph !== 'object'
+    || !('nodes' in graph) || !Array.isArray(graph.nodes)
+    || !('edges' in graph) || !Array.isArray(graph.edges)) {
+    throw new TypeError('画布协作更新格式无效。')
+  }
+  const payloadHash = createHash('sha256').update(idempotencyUpdate ?? update).digest('base64url')
+  const resolvedMutationId = mutationId ?? `legacy:${payloadHash}`
+  if (typeof resolvedMutationId !== 'string'
+    || !/^[A-Za-z0-9._:-]{1,200}$/.test(resolvedMutationId)) {
+    throw new TypeError('画布协作 mutationId 无效。')
+  }
+  if (expectedGraphRevision !== undefined
+    && (!Number.isInteger(expectedGraphRevision) || Number(expectedGraphRevision) < 1)) {
+    throw new TypeError('画布协作 expectedGraphRevision 无效。')
+  }
+  if (syncProtocolEpoch !== undefined
+    && (!Number.isInteger(syncProtocolEpoch) || Number(syncProtocolEpoch) < 1)) {
+    throw new TypeError('画布协作 syncProtocolEpoch 无效。')
+  }
+  return {
+    update,
+    graph,
+    mutationId: resolvedMutationId,
+    payloadHash,
+    expectedGraphRevision: expectedGraphRevision === undefined ? undefined : Number(expectedGraphRevision),
+    syncProtocolEpoch: syncProtocolEpoch === undefined ? undefined : Number(syncProtocolEpoch),
+  }
+}
 
 function completeAgentSkillVersionSnapshot(snapshot) {
   return typeof snapshot?.name === 'string'
@@ -964,6 +1015,7 @@ export const productStoreCoreMethods = Object.freeze([
   'readProject',
   'projectAccess',
   'canEditProject',
+  'readCanvasSyncProtocolEpoch',
   'writeProject',
   'deleteProject',
   'addProjectMember',

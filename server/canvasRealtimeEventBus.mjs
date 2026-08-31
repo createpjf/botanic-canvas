@@ -39,7 +39,7 @@ function validCanvasUpdateEvent(event) {
     event
     && exactKeys(event, new Set([
       'eventId', 'sourceInstanceId', 'projectId', 'update', 'actorId', 'actorName',
-      'graphRevision', 'updatedAt', 'activity', 'signature',
+      'mutationId', 'graphRevision', 'updatedAt', 'activity', 'duplicate', 'signature',
     ]))
     && nonEmptyText(event.eventId)
     && nonEmptyText(event.sourceInstanceId)
@@ -47,9 +47,11 @@ function validCanvasUpdateEvent(event) {
     && nonEmptyText(event.update)
     && event.update.length <= maximumUpdateLength
     && /^[A-Za-z0-9+/]*={0,2}$/.test(event.update)
+    && (event.mutationId === undefined || (nonEmptyText(event.mutationId) && /^[A-Za-z0-9._:-]{1,200}$/.test(event.mutationId)))
     && nonEmptyText(event.actorId)
     && (!event.actorName || nonEmptyText(event.actorName))
     && (!event.activity || nonEmptyText(event.activity.id))
+    && (event.duplicate === undefined || typeof event.duplicate === 'boolean')
   )
 }
 

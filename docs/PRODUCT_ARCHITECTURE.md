@@ -40,6 +40,8 @@ Botanic 是面向品牌视觉生产的无限画布工作台。用户把素材、
 - **Skill**：项目内已审核、可复用的版本化执行契约；完整版本快照固定 instructions、capabilities、Manifest、依赖版本与内容摘要，历史版本不可覆盖。
 - **Plan**：把用户意图、锁定约束、可变维度和分支组织成可确认的执行方案。
 - **Agent Turn / Turn Event**：一次对话控制权循环及其追加式安全事件。Turn 通过租约与 fencing token 保证单执行者，事件序号是断线续读游标；它只引用而不复制 Message、Run、Job 或 Artifact 的业务事实。
+- **Subagent / Subagent Activation**：主 Planner 派发的只读调研执行单元。Descriptor 固定模型、指令版本、只读工具、Schema 与预算；Activation 按 sequence 无间隙 FIFO 追加，重放同一 Subtask ID 复用结果。根 Turn 取消按 `rootTurnId` 级联全部 Subagent。
+- **Agent Context State / Context Compaction**：模型上下文的权威状态与追加式压缩账本（ADR 0008）。`agent_messages` 始终权威且不删除，公开 Surface 只含哈希与计数；压缩以 DB-clock CAS 推进，Provider body 与原始推理禁止持久化。
 - **Agent Run**：计划确认后的可恢复执行记录，拥有分支、任务和最终状态。
 - **Review Task / Result / Human Decision**：对 Run 产物的可恢复评审及人工终局。评审执行由租约与 generation fence 保护；重试决定与稳定新 Run 必须原子提交。
 - **Action Proposal / Receipt**：调用 Skill 或 MCP 前的确认提议及执行回执。MCP 提案同时固定工具版本与 capability hash，执行时配置漂移会在出网前拒绝。派发后的未知结果只能人工核对；确认未生效后最多预留一次、绑定新回执身份的手动重试，默认不向浏览器下发 raw token。
@@ -66,10 +68,12 @@ Agent 只接收必要的结构化元数据。图片字节、对象存储地址�
 | 生成进度与结果 | 持久化 GenerationJob | UI 占位、Toast、本地 loading |
 | Agent 执行 | 独立 Agent Run 与分支任务 | 对话卡片的临时进度 |
 | Agent 回合控制权与续读 | 持久化 Agent Turn、Checkpoint 与有序 Turn Event | HTTP 连接、进程内 Promise、客户端时间线 |
+| Subagent 派发与结果 | 持久化 Subagent Descriptor 与有序 Activation | 进程内执行器、Planner 对话上下文 |
+| 模型上下文压缩 | 权威 agent_messages + Context State/Compaction 账本 | Provider 请求体、进程内消息数组 |
 | Agent 行动执行权与结果 | 持久化 Action Receipt（intent hash、租约、终态） | HTTP 请求、进程内 Promise、Toast |
 | Agent 会话内容 | 独立 Session / Message / Memory 实体 | CanvasDocument 迁移兼容字段 |
 | 历史产物 | Artifact Index | 当前画布节点和素材引用 |
-| 节点与连线协作 | 独立画布图谱与 Yjs 增量 | 本机选择态和视角 |
+| 节点与连线协作 | 服务端 Collaboration Room 的 durable mutation log 与 graph CAS（Sync V2；`sync_protocol_epoch` fencing） | 本机选择态和视角、传输中的 Yjs 增量、浏览器 Outbox |
 | 媒体内容 | 授权 MediaObject | 浏览器临时 Object URL |
 
 ## 5. 关键执行流

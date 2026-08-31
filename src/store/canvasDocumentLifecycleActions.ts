@@ -12,6 +12,7 @@ import {
   ensureGlobalAssetLibrary,
   flushPendingCanvasDocumentWrites,
   lastKnownRemoteRevision,
+  lastKnownCanvasSyncProtocolEpoch,
   persistAcceptedRemoteCanvasDocument,
   readCanvasDocument,
   readGlobalWorkflowTemplateLibrary,
@@ -23,6 +24,7 @@ import {
 import { cleanDisplayName, hasCrampedStarterV03Layout } from './canvasDocumentMigration'
 import { restoreGenerationLifecycleState } from './canvasGenerationLifecycle'
 import { settleExpiredGenerationSubmissions } from './canvasGenerationProjection'
+import { hydrateAssetNodeImages } from './canvasDocumentAssets'
 import type { CanvasStore } from './canvasStore.types'
 
 type DocumentLifecycleActions = Pick<CanvasStore,
@@ -67,12 +69,16 @@ export function createCanvasDocumentLifecycleActions({
     baselineUpdatedAt: number,
     hasPendingDraft = false,
     remoteRevision?: number,
+    options: { preserveCanvasGraph?: boolean } = {},
   ) => {
     const current = get().document
     const normalizedRemote = settleExpiredGenerationSubmissions(normalizeDocument(remoteDocument)).document
+    const refreshRemote = options.preserveCanvasGraph
+      ? { ...normalizedRemote, nodes: hydrateAssetNodeImages(current.nodes, normalizedRemote, get().globalAssets), edges: current.edges }
+      : normalizedRemote
     const resolved = resolveRemoteCanvasRefresh({
       current,
-      remote: normalizedRemote,
+      remote: refreshRemote,
       baselineUpdatedAt,
       hasPendingDraft,
       remoteRevision,
@@ -133,7 +139,15 @@ export function createCanvasDocumentLifecycleActions({
       if (!openDocumentOperations.isCurrent(operationToken)) return false
       const stored = await readCanvasDocument(documentId, {
         onRemoteDocument: ({ cachedDocument, remoteDocument }) => (
-          applyRemoteDocumentRefresh(remoteDocument, cachedDocument.updatedAt, false, lastKnownRemoteRevision(documentId))
+          applyRemoteDocumentRefresh(
+            remoteDocument,
+            cachedDocument.updatedAt,
+            false,
+            lastKnownRemoteRevision(documentId),
+            { preserveCanvasGraph: (lastKnownCanvasSyncProtocolEpoch(documentId) ?? 1) >= 2 },
+          )
+            ? get().document
+            : false
         ),
       })
       if (!stored || !openDocumentOperations.isCurrent(operationToken)) return false
@@ -187,12 +201,16 @@ export function createCanvasDocumentLifecycleActions({
       return true
     },
 
-    refreshDocumentFromRemote: async () => {
+    refreshDocumentFromRemote: async (options = {}) => {
       const baseline = get().document
       const latest = await readLatestCanvasDocument(baseline.id)
       if (!latest.document) return false
-      const applied = applyRemoteDocumentRefresh(latest.document, baseline.updatedAt, latest.hasPendingDraft, latest.revision)
-      if (applied) await persistAcceptedRemoteCanvasDocument(latest.document)
+      const preserveCanvasGraph = options.preserveCanvasGraph
+        ?? ((lastKnownCanvasSyncProtocolEpoch(baseline.id) ?? 1) >= 2)
+      const applied = applyRemoteDocumentRefresh(latest.document, baseline.updatedAt, latest.hasPendingDraft, latest.revision, { preserveCanvasGraph })
+      if (applied) {
+        await persistAcceptedRemoteCanvasDocument(preserveCanvasGraph ? get().document : latest.document)
+      }
       return applied
     },
 

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { Readable } from 'node:stream'
 import test from 'node:test'
+import * as Y from 'yjs'
 import { createBotanicHttpServer } from './httpServer.mjs'
 import { agentActionReconciliationIdentity } from './agentActionReconciliation.mjs'
 
@@ -190,6 +191,79 @@ test('项目集合资源对不支持的方法返回 405 和允许的方法目录
   assert.equal(headers.Allow, 'GET, POST')
 })
 
+test('WebSocket 不可用时 HTTP Canvas Sync 仍返回 durable ACK', async (context) => {
+  const dependencies = testDependencies()
+  let appended
+  dependencies.runtime.mediaService.close = async () => {}
+  dependencies.runtime.productStore = {
+    async authenticate() { return { id: 'user-1' } },
+    async projectAccess() { return { exists: true, role: 'owner' } },
+    async readProject() {
+      return { revision: 1, graphRevision: 1, document: { id: 'project-1', name: 'Demo', nodes: [], edges: [] } }
+    },
+    async canEditProject() { return true },
+    async readCanvasSyncProtocolEpoch() { return 2 },
+    async loadCanvasCollaboration() {
+      return { graph: { nodes: [], edges: [] }, graphRevision: 1, updates: [] }
+    },
+    async appendCanvasGraphUpdate(_userId, _projectId, payload) {
+      if (payload.mutationId === 'mutation-conflict') {
+        const failure = new Error('画布协作提交身份已绑定到其他更新。')
+        failure.code = 'CANVAS_MUTATION_CONFLICT'
+        throw failure
+      }
+      appended = structuredClone(payload)
+      return { graphRevision: 2, mutationRevision: 2, updatedAt: 200, updateCount: 1, duplicate: false }
+    },
+  }
+  const application = createBotanicHttpServer(dependencies)
+  application.server.listen = (_port, _host, onListening) => {
+    onListening()
+    return application.server
+  }
+  context.after(() => application.close())
+  await application.start()
+
+  const document = new Y.Doc()
+  document.getMap('nodes').set('node-http', {
+    order: 0,
+    value: { id: 'node-http', type: 'text', position: { x: 40, y: 20 }, data: { label: 'HTTP', content: 'HTTP' } },
+  })
+  const update = Buffer.from(Y.encodeStateAsUpdate(document)).toString('base64')
+  const { response } = testResponse()
+  await application.handleRequest(testRequest({
+    method: 'POST',
+    url: '/api/projects/project-1/canvas-sync',
+    body: { type: 'canvas.crdt.update', projectId: 'project-1', mutationId: 'mutation-http', syncProtocolEpoch: 2, update },
+  }), response)
+
+  assert.equal(response.statusCode, 200)
+  assert.deepEqual(JSON.parse(response.body), {
+    type: 'canvas.crdt.committed', projectId: 'project-1', mutationId: 'mutation-http',
+    graphRevision: 2, mutationRevision: 2, updatedAt: 200,
+  })
+  assert.equal(appended.mutationId, 'mutation-http')
+  assert.equal(appended.syncProtocolEpoch, 2)
+
+  const { response: conflictResponse } = testResponse()
+  await application.handleRequest(testRequest({
+    method: 'POST',
+    url: '/api/projects/project-1/canvas-sync',
+    body: { type: 'canvas.crdt.update', projectId: 'project-1', mutationId: 'mutation-conflict', syncProtocolEpoch: 2, update },
+  }), conflictResponse)
+  assert.equal(conflictResponse.statusCode, 409)
+  assert.equal(JSON.parse(conflictResponse.body).error.code, 'CANVAS_MUTATION_CONFLICT')
+
+  const { response: invalidResponse } = testResponse()
+  await application.handleRequest(testRequest({
+    method: 'POST',
+    url: '/api/projects/project-1/canvas-sync',
+    body: { type: 'canvas.crdt.update', projectId: 'project-1', mutationId: 'mutation-invalid', syncProtocolEpoch: 2, update: 'AQID' },
+  }), invalidResponse)
+  assert.equal(invalidResponse.statusCode, 400)
+  assert.equal(JSON.parse(invalidResponse.body).error.code, 'INVALID_CANVAS_SYNC_UPDATE')
+})
+
 test('项目路由返回业务错误后不会继续写第二次响应', async () => {
   const dependencies = testDependencies()
   dependencies.runtime.productStore = {
@@ -369,6 +443,57 @@ test('Agent Run 幂等冲突经过统一 HTTP 层保留 409，不降成可重试
 
   assert.equal(response.statusCode, 409)
   assert.equal(JSON.parse(response.body).error.code, 'AGENT_RUN_IDEMPOTENCY_CONFLICT')
+})
+
+test('Agent 消息 Turn 请求冲突经过统一 HTTP 层保留 409，不上报 5xx', async () => {
+  const dependencies = testDependencies()
+  const reported = []
+  dependencies.reportError = (...input) => reported.push(input)
+  dependencies.runtime.productStore = {
+    async authenticate() {
+      throw Object.assign(new Error('Agent 消息的 Turn 请求身份不可变更。'), {
+        code: 'AGENT_MESSAGE_TURN_REQUEST_CONFLICT',
+      })
+    },
+  }
+  const application = createBotanicHttpServer(dependencies)
+  const { response } = testResponse()
+  await application.handleRequest(testRequest({ method: 'GET', url: '/api/projects' }), response)
+  assert.equal(response.statusCode, 409)
+  assert.equal(JSON.parse(response.body).error.code, 'AGENT_MESSAGE_TURN_REQUEST_CONFLICT')
+  assert.equal(reported.length, 0)
+})
+
+test('客户端中断请求返回 499，不上报 5xx', async () => {
+  const dependencies = testDependencies()
+  const reported = []
+  dependencies.reportError = (...input) => reported.push(input)
+  dependencies.runtime.productStore = {
+    async authenticate() { throw Object.assign(new Error('aborted'), { code: 'ECONNRESET' }) },
+  }
+  const application = createBotanicHttpServer(dependencies)
+  const { response } = testResponse()
+  const request = testRequest({ method: 'GET', url: '/api/projects' })
+  request.aborted = true
+  await application.handleRequest(request, response)
+  assert.equal(response.statusCode, 499)
+  assert.equal(JSON.parse(response.body).error.code, 'CLIENT_CLOSED_REQUEST')
+  assert.equal(reported.length, 0)
+})
+
+test('依赖连接重置仍返回 500 并上报，不伪装成客户端中断', async () => {
+  const dependencies = testDependencies()
+  const reported = []
+  dependencies.reportError = (...input) => reported.push(input)
+  dependencies.runtime.productStore = {
+    async authenticate() { throw Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }) },
+  }
+  const application = createBotanicHttpServer(dependencies)
+  const { response } = testResponse()
+  await application.handleRequest(testRequest({ method: 'GET', url: '/api/projects' }), response)
+  assert.equal(response.statusCode, 500)
+  assert.equal(JSON.parse(response.body).error.code, 'INTERNAL_ERROR')
+  assert.equal(reported.length, 1)
 })
 
 test('Agent Run 目标漂移经过统一 HTTP 层保留 409，不降成可重试的 INTERNAL_ERROR', async () => {

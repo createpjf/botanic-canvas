@@ -575,6 +575,8 @@ test('自动计划 Run POST 响应丢失时保持 pending 并复用同键恢复�
   assert.equal(shouldRetryBotanicAgentAutoSubmission(message, 'auto', { status: 0, code: 'REQUEST_TIMEOUT' }), true)
   assert.equal(shouldRetryBotanicAgentAutoSubmission(message, 'auto', { status: 503 }), true)
   assert.equal(shouldRetryBotanicAgentAutoSubmission(message, 'auto', { status: 409, code: 'AGENT_RUN_INTENT_CONFLICT' }), false)
+  assert.equal(shouldRetryBotanicAgentAutoSubmission(message, 'auto', { status: 500, code: 'AGENT_RUN_IDEMPOTENCY_CONFLICT' }), false)
+  assert.equal(shouldRetryBotanicAgentAutoSubmission(message, 'auto', { status: 409, code: 'AGENT_RUN_IDEMPOTENCY_CONFLICT' }), false)
   assert.equal(shouldRetryBotanicAgentAutoSubmission(message, 'manual', { status: 0 }), false)
   assert.equal(shouldRetryBotanicAgentAutoSubmission({ ...message, status: 'failed' }, 'auto', { status: 0 }), false)
 })

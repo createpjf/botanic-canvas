@@ -39,7 +39,7 @@ test('Redis 画布总线跨 API 实例转发 CRDT 增量与 Presence', async () 
   const publisher = createCanvasRealtimeEventPublisher('redis://test', { RedisClass: FakeRedis })
   const update = {
     eventId: 'event-1', sourceInstanceId: 'api-a', projectId: 'project-1',
-    update: 'AQ==', actorId: 'member-1', graphRevision: 2, updatedAt: 200,
+    update: 'AQ==', mutationId: 'mutation-1', actorId: 'member-1', graphRevision: 2, updatedAt: 200, duplicate: true,
   }
   const presence = {
     eventId: 'presence-1', sourceInstanceId: 'api-a', projectId: 'project-1',
@@ -88,7 +88,7 @@ test('配置共享密钥后只转发带有效签名的跨实例事件', async ()
   const publisher = createCanvasRealtimeEventPublisher('redis://test', { RedisClass: FakeRedis, eventSecret: 'shared-secret' })
   const update = {
     eventId: 'signed-event-1', sourceInstanceId: 'api-a', projectId: 'project-1',
-    update: 'AQ==', actorId: 'member-1', graphRevision: 2, updatedAt: 200,
+    update: 'AQ==', mutationId: 'mutation-signed-1', actorId: 'member-1', graphRevision: 2, updatedAt: 200,
   }
   const raw = new FakeRedis()
 
