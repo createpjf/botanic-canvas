@@ -1613,6 +1613,8 @@ export function createAgentRouteHandler({
       }
       const execute = async ({ signal, intentHash }) => {
         const registry = createBotanicAgentActionToolRegistry({
+          // MCP 内联图片落成项目同源媒体，Artifact Index 与历史追溯才收得进。
+          persistMcpMedia: (dataUrl) => mediaService.persistDataUrl({ ownerId: user.id, projectId, dataUrl }),
           createWorkflow: async ({ planId }) => {
             const { project, prepared } = await agentRunGeneration.prepareProjectExecution(user.id, projectId, planId, { submission: false })
             const saved = await agentRunGeneration.persistWorkflow(user.id, project, prepared)
@@ -1909,8 +1911,7 @@ export function createAgentRouteHandler({
           graphRevision: execution.saved.graphRevision,
         }
       }
-      // 幂等重放时分支多半已带 jobIds，不会再走 autoSubmit；从项目文档按 Job 记录
-      // 重建同一份增量，首个响应丢失后客户端重放仍能立即把工作流画上画布。
+      // 幂等重放时分支已带 jobIds 不再 autoSubmit；从项目文档按 Job 记录重建增量，重放响应仍能立即上画布。
       const agentRunCanvasPatchFromProject = async (run) => {
         try {
           const project = await productStore.readProject(user.id, run.projectId)
@@ -1918,9 +1919,7 @@ export function createAgentRouteHandler({
           const nodeIds = new Set()
           for (const record of project.document.generationJobs ?? []) {
             if (record.agentRun?.runId !== run.id) continue
-            for (const nodeId of [record.promptNodeId, record.generateNodeId, record.resultNodeId]) {
-              if (nodeId) nodeIds.add(nodeId)
-            }
+            for (const nodeId of [record.promptNodeId, record.generateNodeId, record.resultNodeId]) if (nodeId) nodeIds.add(nodeId)
           }
           const nodes = (project.document.nodes ?? []).filter((node) => nodeIds.has(node.id))
           if (!nodes.length) return undefined

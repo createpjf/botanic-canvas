@@ -322,7 +322,7 @@ function mcpStructuredContentText(value) {
   }
 }
 
-function mcpArtifacts(result, { actionId, externalTool }) {
+async function mcpArtifacts(result, { actionId, externalTool, persistMcpMedia }) {
   if (result?.isError) {
     throw new AgentToolRuntimeError('MCP_TOOL_FAILED', 'MCP 工具执行失败。', 502)
   }
@@ -350,11 +350,21 @@ function mcpArtifacts(result, { actionId, externalTool }) {
     if (item?.type === 'image') {
       const inline = mcpInlineImageDataUrl(item)
       if (!inline) continue
+      // 内联 data: URL 进不了 Artifact Index（同源守卫拒收），历史会丢图。
+      // 有媒体服务时先落成 /api/media/ 同源地址；落库失败（格式不支持等）回退内联，仅当轮面板可见。
+      let url = inline.url
+      if (typeof persistMcpMedia === 'function') {
+        try {
+          url = await persistMcpMedia(inline.url)
+        } catch {
+          url = inline.url
+        }
+      }
       artifacts.push({
         kind: 'image',
         placement: 'panel',
         label: safeResultText(item.name || item.title, 120) || 'MCP 图像',
-        url: inline.url,
+        url,
         mimeType: inline.mimeType,
       })
       continue
@@ -930,6 +940,8 @@ export function createBotanicAgentActionToolRegistry({
   createSkill,
   mcpRuntime,
   mcpTools = {},
+  /** 把 MCP 内联图片落成同源媒体（dataUrl → /api/media/...）；缺省时保留 data: URL 仅面板展示。 */
+  persistMcpMedia,
   // 运维写工具（Epic 4）：按项目角色暴露，全部需要确认。缺执行器或权限不足时
   // 不进注册表 —— 模型看不到的工具不会被它拿去向用户承诺。
   role,
@@ -1053,7 +1065,7 @@ export function createBotanicAgentActionToolRegistry({
           expectedCapabilityHash: capabilityHash,
         })
         const actionId = context?.toolCallId ?? `mcp-${key}`
-        const artifacts = mcpArtifacts(result, { actionId, externalTool: key })
+        const artifacts = await mcpArtifacts(result, { actionId, externalTool: key, persistMcpMedia })
         const textArtifact = artifacts.find((artifact) => artifact.kind === 'text')
         return {
           message: `MCP 工具 ${key} 已执行。`,

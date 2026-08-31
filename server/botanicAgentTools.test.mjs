@@ -391,6 +391,26 @@ test('MCP 内联 image 与 structuredContent 收成可展示 Artifact', async ()
   assert.equal(mcp.output.artifacts?.[2].kind, 'image')
   assert.match(mcp.output.artifacts?.[2].url ?? '', /^data:image\/png;base64,/)
   assert.equal(mcp.output.artifacts?.[2].placement, 'panel')
+
+  // 提供媒体落库 seam 时内联图变成同源地址，Artifact Index 才收得进历史。
+  const persisted = []
+  const persistedRegistry = createBotanicAgentActionToolRegistry({
+    mcpRuntime: runtime,
+    persistMcpMedia: async (dataUrl) => {
+      persisted.push(dataUrl)
+      return '/api/media/media_mcp_1'
+    },
+  })
+  const persistedCall = await executeConfirmedAgentAction({
+    registry: persistedRegistry, name: 'mcp_call',
+    arguments: {
+      server: descriptor.server, tool: descriptor.tool, arguments: { query: '海边' },
+      version: descriptor.version, capabilityHash: descriptor.capabilityHash,
+    },
+    toolCallId: 'call-mcp-rich-2', confirmed: true,
+  })
+  assert.equal(persistedCall.output.artifacts?.[2].url, '/api/media/media_mcp_1')
+  assert.match(persisted[0] ?? '', /^data:image\/png;base64,/)
 })
 
 test('依赖不可用的 Skill 仍挂载，但简报明说规则不完整', () => {

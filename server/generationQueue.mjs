@@ -6,6 +6,10 @@ import {
 
 const queueName = 'botanic-generation'
 const defaultJobOptions = {
+  // 业务失败在 processor 内落库、不向 BullMQ 抛出；这里的重试只覆盖基础设施异常
+  // （存储瞬断、进程崩溃）。jobId 幂等 + execution lease fence 保证重投不会重复扣费。
+  attempts: 3,
+  backoff: { type: 'exponential', delay: 5_000 },
   removeOnComplete: { age: 60 * 60 * 24, count: 1000 },
   removeOnFail: { age: 60 * 60 * 24 * 7, count: 5000 },
 }
