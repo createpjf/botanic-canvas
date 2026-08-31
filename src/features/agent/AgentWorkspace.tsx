@@ -314,6 +314,7 @@ export default function AgentWorkspace({
   onUseResultContext,
   onRetryPersistence,
   onRefreshRemote,
+  onBindBrand,
   collaborationAwareness,
   onDismissRemoteChange,
   onClearCollaborationActivities,
@@ -401,6 +402,7 @@ export default function AgentWorkspace({
   onUseResultContext: (sourceNodeIds: string[]) => void
   onRetryPersistence: () => Promise<boolean>
   onRefreshRemote: () => Promise<boolean>
+  onBindBrand: (brandId: string) => Promise<boolean>
   onDismissRemoteChange: () => Promise<void>
   onClearCollaborationActivities: () => Promise<void>
   onLoadMoreCollaborationActivities: () => Promise<void>
@@ -432,7 +434,7 @@ export default function AgentWorkspace({
     promptMissing: 'I could not find the prompt you referenced. Ask Agent to write one or paste the complete prompt. The canvas was not changed.',
     settingsMissing: 'No complete generation settings are available. Check the model catalog.', planFailed: 'Unable to create the generation plan. Try again shortly.', customDirection: 'Custom direction',
     usePrompt: 'Use this prompt to generate', nextRoundOne: 'Continue from this result:', nextRoundMany: (count: number) => `Continue from these ${count} results:`, continueArtifact: (label: string) => `Continue editing “${label}”:`,
-    conflict: { title: 'A newer canvas version is available', detail: 'Your local draft and generation results are preserved.', actionLabel: 'Review changes' },
+    conflict: { title: 'A newer canvas version is available', detail: 'Your local draft and generation results are preserved.', actionLabel: 'Review changes' }, useRemoteConfirm: 'Replace this local draft with the cloud version?',
     offline: { title: 'Using an offline draft', detail: 'This edit will sync when the connection is restored.', actionLabel: 'Retry sync' },
     syncError: { title: 'Canvas sync is temporarily unavailable', detail: 'Your current edits remain saved locally and can sync later.', actionLabel: 'Retry sync' },
     dropImages: 'Drop to add image assets', uploadLimits: uploadLimitsLabel('en'), imageLimit: (count: number) => `You can add up to ${count} images at once. Extra images were skipped.`, imageReadFailed: 'Unable to read the images. Drop or select them again.',
@@ -448,7 +450,7 @@ export default function AgentWorkspace({
     promptMissing: '没有找到你指的 Prompt。请先让 Agent 写一段 Prompt，或粘贴完整 Prompt；本次没有改动画布。',
     settingsMissing: '当前没有可用的完整生成设置，请检查模型目录。', planFailed: '暂时无法创建生成计划。', customDirection: '自定义优化方向',
     usePrompt: '使用这段 Prompt 生成', nextRoundOne: '基于这张结果继续生成：', nextRoundMany: (count: number) => `基于这 ${count} 张结果继续生成：`, continueArtifact: (label: string) => `基于「${label}」继续修改：`,
-    conflict: { title: '画布有新的云端版本', detail: '本地草稿仍保留，生成任务与结果不会丢失。', actionLabel: '查看变更' },
+    conflict: { title: '画布有新的云端版本', detail: '本地草稿仍保留，生成任务与结果不会丢失。', actionLabel: '查看变更' }, useRemoteConfirm: '确定用云端版本替换当前本地草稿吗？',
     offline: { title: '正在使用离线草稿', detail: '恢复网络后会继续同步当前编辑。', actionLabel: '重试同步' },
     syncError: { title: '画布同步暂时失败', detail: '当前编辑仍在本地，稍后可以继续同步。', actionLabel: '重试同步' },
     dropImages: '松开即可添加图片素材', uploadLimits: uploadLimitsLabel('zh-CN'), imageLimit: (count: number) => `最多同时添加 ${count} 张图片，超出部分已跳过。`, imageReadFailed: '图片读取失败，请重新拖入或选择图片。',
@@ -3321,6 +3323,10 @@ export default function AgentWorkspace({
     setPersistenceAction('retry')
     void onRetryPersistence().catch(() => undefined).finally(() => setPersistenceAction(''))
   }
+  const useRemoteCanvas = () => {
+    if (!window.confirm(flowCopy.useRemoteConfirm)) return
+    resolvePersistenceIssue()
+  }
   const inspectPersistenceIssue = () => {
     if (persistenceStatus === 'conflict') {
       openUtilityPanel('collaboration')
@@ -3491,7 +3497,7 @@ export default function AgentWorkspace({
           onMarkRead={onDismissRemoteChange}
           onClear={onClearCollaborationActivities}
           onKeepLocal={keepLocalDraft}
-          onUseRemote={resolvePersistenceIssue}
+          onUseRemote={useRemoteCanvas}
           historyStatus={collaborationAwareness.historyStatus}
           historyHasMore={collaborationAwareness.historyHasMore}
           historyErrorAction={collaborationAwareness.historyErrorAction}
@@ -3504,6 +3510,7 @@ export default function AgentWorkspace({
         /></div> : null}
         {brandPanelOpen ? <div data-agent-flip className="agent-workspace__flip-surface"><BrandKitPanel
           projectId={projectId}
+          onBindBrand={onBindBrand}
         /></div> : null}
         {memoryPanelOpen ? <div data-agent-flip className="agent-workspace__flip-surface"><AgentMemoryPanel
           memory={memory}

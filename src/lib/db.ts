@@ -248,7 +248,11 @@ export async function flushPendingCanvasDocumentWrites() {
  * 失败的草稿会原样保留，下一次 online 事件或打开画布时继续尝试。
  */
 export async function syncPendingCanvasDrafts() {
-  if (!serverPersistenceEnabled || !browserIsOnline()) return { synced: 0, pending: 0, conflicts: 0, conflictIds: [] as string[] }
+  if (!serverPersistenceEnabled) return { synced: 0, pending: 0, conflicts: 0, conflictIds: [] as string[] }
+  if (!browserIsOnline()) {
+    const drafts = await readPendingSyncDocuments()
+    return { synced: 0, pending: drafts.length, conflicts: 0, conflictIds: [] as string[] }
+  }
 
   try {
     await flushPendingCanvasDocumentWrites()

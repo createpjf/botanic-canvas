@@ -56,7 +56,13 @@ export function reconcileWorkspaceProjects(current: WorkspaceProject[], incoming
   })
 }
 
-export function nextWorkspaceProjectName(projects: Array<Pick<WorkspaceProject, 'id'>>, locale: ProductLocale = 'zh-CN') {
-  const ordinal = projects.filter((item) => item.id.startsWith('project-')).length + 1
+export function nextWorkspaceProjectName(projects: Array<Pick<WorkspaceProject, 'name'>>, locale: ProductLocale = 'zh-CN') {
+  const pattern = locale === 'en' ? /^Creative project (\d+)$/i : /^创意项目 (\d+)$/
+  const used = new Set(projects.flatMap((item) => {
+    const match = item.name.trim().match(pattern)
+    return match ? [Number(match[1])] : []
+  }))
+  let ordinal = 1
+  while (used.has(ordinal)) ordinal += 1
   return locale === 'en' ? `Creative project ${ordinal}` : `创意项目 ${ordinal}`
 }

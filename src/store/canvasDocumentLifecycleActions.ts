@@ -28,6 +28,7 @@ type DocumentLifecycleActions = Pick<CanvasStore,
   | 'refreshDocumentFromRemote'
   | 'openNewDocument'
   | 'renameDocument'
+  | 'bindProjectBrand'
 >
 
 type CanvasDocumentLifecycleDependencies = {
@@ -38,6 +39,11 @@ type CanvasDocumentLifecycleDependencies = {
   stopGenerationPolling: () => void
   pollGenerationJob: (jobId: string) => void
   recoverGenerationResults: (documentId: string) => Promise<boolean>
+  commitDocument: (
+    document: CanvasDocument,
+    extra?: Partial<CanvasStore>,
+    options?: { immediate?: boolean; rejectOnFailure?: boolean },
+  ) => Promise<void>
 }
 
 const openDocumentOperations = createLatestOperation()
@@ -51,6 +57,7 @@ export function createCanvasDocumentLifecycleActions({
   stopGenerationPolling,
   pollGenerationJob,
   recoverGenerationResults,
+  commitDocument,
 }: CanvasDocumentLifecycleDependencies): DocumentLifecycleActions {
   const applyRemoteDocumentRefresh = (
     remoteDocument: CanvasDocument,
@@ -237,6 +244,21 @@ export function createCanvasDocumentLifecycleActions({
         }
         throw error
       })
+    },
+
+    bindProjectBrand: async (brandId) => {
+      const nextBrandId = brandId.trim()
+      const document = get().document
+      if (!nextBrandId) return false
+      if (document.brandId === nextBrandId && get().persistenceStatus === 'saved') return true
+      await commitDocument({ ...document, brandId: nextBrandId }, {
+        assistantMessage: readProductLocale() === 'en'
+          ? `Bound brand “${nextBrandId}”.`
+          : `已绑定品牌「${nextBrandId}」。`,
+      }, { immediate: true, rejectOnFailure: true })
+      return get().document.id === document.id
+        && get().document.brandId === nextBrandId
+        && get().persistenceStatus === 'saved'
     },
   }
 }

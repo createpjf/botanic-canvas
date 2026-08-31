@@ -18,6 +18,7 @@ import { modelDisplayLabel } from '../../components/generationModelPresentation'
 import type { GenerationModelOption } from '../../domain/canvas'
 import { CheckIcon, CopyIcon, DeleteIcon, FocusIcon, PlusIcon, SparkleIcon } from '../../components/BotanicIcons'
 import type { CollaborationActivity, CollaborationDocumentChange } from '../../domain/collaborationActivity'
+import { createLatestOperation } from '../../domain/latestOperation'
 import { downloadMedia } from '../../lib/mediaDownload'
 import { agentArtifactKindLabel, agentMemoryKindLabel, agentRunFeedback, AgentPanelBackButton } from './AgentWorkspaceParts'
 import {
@@ -42,7 +43,7 @@ import {
   overriddenBrandRuleRows,
   type ResolvedBrandKit,
 } from '../../domain/brandKitPresentation'
-import { fetchProjectBrandKit } from '../../lib/brandKitApi'
+import { fetchBrandKitLibrary, fetchProjectBrandKit } from '../../lib/brandKitApi'
 import { cachedProjectCapabilities } from '../../lib/db'
 import { serverPersistenceEnabled } from '../../lib/productSession'
 import { canUseProjectEntry } from '../../domain/projectCapabilities'
@@ -61,7 +62,7 @@ import { formatProductDateTime, type ProductLocale } from '../../i18n/core'
 const agentUtilityMessages = {
   'zh-CN': {
     collaborationAria: '协作动态', collaborationEyebrow: '协作', collaborationTitle: '协作动态', collaborationDescription: '查看成员最近修改，并直接定位到相关节点、对话或任务。',
-    remoteCanvasTitle: '画布有新的云端版本', remoteCanvasDetail: '本地草稿仍保留；选择云端时也会先留一份本地备份。', remoteVersion: '云端版本', revisionCompare: (local?: number, remote?: number) => `本地基于 revision ${local ?? '未知'} · 云端 revision ${remote ?? '未知'}`,
+    remoteCanvasTitle: '画布有新的云端版本', remoteCanvasDetail: '本地草稿仍保留；选择云端将替换当前本地草稿。', remoteVersion: '云端版本', revisionCompare: (local?: number, remote?: number) => `本地基于 revision ${local ?? '未知'} · 云端 revision ${remote ?? '未知'}`,
     viewChanges: (count: number) => `查看 ${count} 项变更`, readingRemoteChanges: '正在读取云端变更…', keepLocal: '保留本地并重试', useRemote: '放弃本地，使用云端',
     readSyncFailed: '已读状态同步失败，点击重试', clearSyncFailed: '清空状态同步失败，点击重试', activitySyncFailed: '协作动态同步失败，点击重试',
     markAllRead: '全部已读', clearHistory: '清空记录', noActivities: '还没有协作变更。', loadingActivities: '正在读取协作动态…', loading: '加载中…', loadEarlierActivities: '加载更早动态',
@@ -77,6 +78,9 @@ const agentUtilityMessages = {
     brandAria: '品牌规则', brandEyebrow: '品牌', brandTitle: '品牌规则', brandDescription: '生成前会把这些规则编译进执行提示词，生成后逐条复核。规则分全局品牌、项目 Creative Spec、本次运行覆盖三层，同一槽位由更靠近本次运行的那一层生效。', brandAbout: '规则如何生效', brandSections: '品牌规则分区', brandEmptySection: '该分区暂无规则。',
     brandLoading: '正在读取品牌规则…', brandUnavailable: '品牌规则暂不可用，请稍后重试。',
     brandUnbound: '当前项目未绑定品牌，没有任何品牌规则参与生成。', brandEffective: '生效中', brandPending: '待确认建议', brandOverridden: '被覆盖的规则',
+    brandSelect: '选择项目品牌', brandBind: '绑定品牌', brandBinding: '正在绑定…',
+    brandLibraryLoading: '正在读取可用品牌…', brandLibraryEmpty: '工作区还没有可绑定的品牌套件。', brandLibraryUnavailable: '可用品牌暂时无法读取。',
+    brandBindingFailed: '品牌绑定未完成，请稍后重试。', brandReadOnly: '你对这个项目只有查看权限，不能更改品牌绑定。',
     brandConfirm: '确认启用', brandSourceRef: (ref: string) => `出处：${ref}`,
     reviewAria: '结果评审', reviewEyebrow: '评审', reviewTitle: '结果评审', reviewDescription: '逐条判据说明结果是否符合这次确认的计划；自动评审不代表品牌批准，仍需你来决定。',
     reviewLoading: '正在读取评审…', reviewUnavailable: '评审暂不可用，请稍后重试。', noReviewTasks: '这次任务还没有评审记录。',
@@ -91,7 +95,7 @@ const agentUtilityMessages = {
   },
   en: {
     collaborationAria: 'Collaboration activity', collaborationEyebrow: 'Collaboration', collaborationTitle: 'Collaboration', collaborationDescription: 'Review recent changes from workspace members and jump to the related node, conversation, or task.',
-    remoteCanvasTitle: 'A newer canvas version is available', remoteCanvasDetail: 'Your local draft is preserved; choosing remote also keeps a local backup.', remoteVersion: 'Remote version', revisionCompare: (local?: number, remote?: number) => `Local base revision ${local ?? 'unknown'} · remote revision ${remote ?? 'unknown'}`,
+    remoteCanvasTitle: 'A newer canvas version is available', remoteCanvasDetail: 'Your local draft is preserved; choosing remote replaces the current local draft.', remoteVersion: 'Remote version', revisionCompare: (local?: number, remote?: number) => `Local base revision ${local ?? 'unknown'} · remote revision ${remote ?? 'unknown'}`,
     viewChanges: (count: number) => `View ${count} ${count === 1 ? 'change' : 'changes'}`, readingRemoteChanges: 'Reading remote changes…', keepLocal: 'Keep local and retry', useRemote: 'Discard local and use remote',
     readSyncFailed: 'Read status could not sync. Click to retry.', clearSyncFailed: 'Activity could not be cleared. Click to retry.', activitySyncFailed: 'Collaboration activity could not sync. Click to retry.',
     markAllRead: 'Mark all as read', clearHistory: 'Clear activity', noActivities: 'No collaboration activity yet.', loadingActivities: 'Loading collaboration activity…', loading: 'Loading…', loadEarlierActivities: 'Load earlier activity',
@@ -106,6 +110,9 @@ const agentUtilityMessages = {
     brandAria: 'Brand rules', brandEyebrow: 'Brand', brandTitle: 'Brand rules', brandDescription: 'These rules are compiled into the execution prompt before generation and checked one by one afterwards. They come from three layers — global brand, project creative spec, and this run’s override — and for any one slot the layer closest to this run wins.', brandAbout: 'How rules take effect', brandSections: 'Brand rule sections', brandEmptySection: 'No rules in this section.',
     brandLoading: 'Loading brand rules…', brandUnavailable: 'Brand rules are unavailable right now. Try again shortly.',
     brandUnbound: 'This project is not bound to a brand, so no brand rules take part in generation.', brandEffective: 'In effect', brandPending: 'Awaiting confirmation', brandOverridden: 'Overridden rules',
+    brandSelect: 'Select project brand', brandBind: 'Bind brand', brandBinding: 'Binding…',
+    brandLibraryLoading: 'Loading available brands…', brandLibraryEmpty: 'No brand kits are available in this workspace.', brandLibraryUnavailable: 'Available brands could not be loaded.',
+    brandBindingFailed: 'The brand could not be bound. Try again shortly.', brandReadOnly: 'You have view-only access to this project and cannot change its brand binding.',
     brandConfirm: 'Confirm and activate', brandSourceRef: (ref: string) => `Source: ${ref}`,
     reviewAria: 'Result review', reviewEyebrow: 'Review', reviewTitle: 'Result review', reviewDescription: 'Per-criterion findings on whether results match the plan you confirmed. An automatic pass is not brand approval — the call is still yours.',
     reviewLoading: 'Loading review…', reviewUnavailable: 'Review is unavailable right now. Try again shortly.', noReviewTasks: 'No review has been recorded for this task yet.',
@@ -585,27 +592,86 @@ export function AgentMemoryPanel({ memory, sourceNodeIds, onAddMemory, onRemoveM
  * 解析由服务端完成，与生成时同一实现 —— 界面显示生效的那条，就是生成时会用的那条。
  * 这里只负责把三段分开摆出来：生效中、待确认（**不生效**）、被覆盖（不隐藏）。
  */
-export function BrandKitPanel({ projectId }: {
+export function BrandKitPanel({ projectId, onBindBrand }: {
   projectId: string
+  onBindBrand: (brandId: string) => Promise<boolean>
 }) {
   const { locale } = useProductI18n()
   const copy = useProductMessages(agentUtilityMessages)
   const [kit, setKit] = useState<ResolvedBrandKit | null>(null)
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [availableKits, setAvailableKits] = useState<Array<{ brandId: string; name?: string }>>([])
+  const [libraryStatus, setLibraryStatus] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [capabilities, setCapabilities] = useState<string[] | undefined>(() => cachedProjectCapabilities(projectId))
+  const [selectedBrandId, setSelectedBrandId] = useState('')
+  const [binding, setBinding] = useState(false)
+  const [bindingError, setBindingError] = useState('')
   const [section, setSection] = useState<'effective' | 'pending' | 'overridden'>('effective')
+  const bindingOperations = useMemo(() => createLatestOperation(), [])
 
   useEffect(() => {
     let active = true
+    bindingOperations.invalidate()
     setStatus('loading')
+    setCapabilities(cachedProjectCapabilities(projectId))
+    setBinding(false)
+    setBindingError('')
     fetchProjectBrandKit(projectId)
-      .then((loaded) => { if (active) { setKit(loaded); setStatus('ready') } })
+      .then((loaded) => {
+        if (!active) return
+        setKit(loaded.brandKit)
+        setCapabilities(loaded.capabilities ?? cachedProjectCapabilities(projectId))
+        setStatus('ready')
+      })
       .catch(() => { if (active) setStatus('error') })
     return () => { active = false }
-  }, [projectId])
+  }, [bindingOperations, projectId])
+
+  useEffect(() => {
+    if (status !== 'ready' || kit) return
+    let active = true
+    setLibraryStatus('loading')
+    fetchBrandKitLibrary()
+      .then((library) => {
+        if (!active) return
+        setAvailableKits(library?.kits ?? [])
+        setLibraryStatus('ready')
+      })
+      .catch(() => { if (active) setLibraryStatus('error') })
+    return () => { active = false }
+  }, [kit, status])
+
+  useEffect(() => {
+    if (!availableKits.length) return
+    setSelectedBrandId((current) => availableKits.some((candidate) => candidate.brandId === current)
+      ? current
+      : availableKits[0].brandId)
+  }, [availableKits])
 
   const effective = useMemo(() => effectiveBrandRuleRows(kit ?? undefined, locale), [kit, locale])
   const overridden = useMemo(() => overriddenBrandRuleRows(kit ?? undefined, locale), [kit, locale])
   const proposals = useMemo(() => brandProposalRows(kit?.pending, locale), [kit, locale])
+  const canBindBrand = canUseProjectEntry(capabilities, 'editCanvas', serverPersistenceEnabled)
+  const bindBrand = async () => {
+    if (!selectedBrandId || binding || kit) return
+    const targetProjectId = projectId
+    const operationToken = bindingOperations.begin()
+    setBinding(true)
+    setBindingError('')
+    try {
+      if (!await onBindBrand(selectedBrandId)) throw new Error('brand binding failed')
+      const loaded = await fetchProjectBrandKit(targetProjectId)
+      if (!bindingOperations.isCurrent(operationToken)) return
+      if (!loaded.brandKit) throw new Error('brand binding was not resolved')
+      setKit(loaded.brandKit)
+      setCapabilities(loaded.capabilities ?? capabilities)
+      setSection('effective')
+    } catch {
+      if (bindingOperations.isCurrent(operationToken)) setBindingError(copy.brandBindingFailed)
+    } finally {
+      if (bindingOperations.isCurrent(operationToken)) setBinding(false)
+    }
+  }
 
   return <section className="agent-brand-panel" aria-label={copy.brandAria} aria-busy={status === 'loading'}>
     <details className="agent-panel__about"><summary>{copy.brandAbout}</summary><p>{copy.brandDescription}</p></details>
@@ -613,6 +679,21 @@ export function BrandKitPanel({ projectId }: {
     {status === 'error' ? <div className="agent-panel__empty" role="alert">{copy.brandUnavailable}</div> : null}
     {/* 未绑定品牌与「绑定了但没有规则」是两回事；后者说得出「0 条生效」，前者要说没绑定。 */}
     {status === 'ready' && !kit ? <div className="agent-panel__empty">{copy.brandUnbound}</div> : null}
+    {status === 'ready' && !kit && libraryStatus === 'loading' ? <div className="agent-panel__empty" role="status">{copy.brandLibraryLoading}</div> : null}
+    {status === 'ready' && !kit && libraryStatus === 'error' ? <div className="agent-panel__empty" role="alert">{copy.brandLibraryUnavailable}</div> : null}
+    {status === 'ready' && !kit && libraryStatus === 'ready' && !availableKits.length ? <div className="agent-panel__empty">{copy.brandLibraryEmpty}</div> : null}
+    {status === 'ready' && !kit && availableKits.length && canBindBrand ? <div className="agent-brand-panel__binding">
+      <BotanicSelect
+        value={selectedBrandId}
+        ariaLabel={copy.brandSelect}
+        options={availableKits.map((candidate) => ({ value: candidate.brandId, label: candidate.name?.trim() || candidate.brandId }))}
+        onChange={setSelectedBrandId}
+        disabled={binding}
+      />
+      <button type="button" disabled={binding || !selectedBrandId} onClick={() => void bindBrand()}>{binding ? copy.brandBinding : copy.brandBind}</button>
+    </div> : null}
+    {status === 'ready' && !kit && availableKits.length && !canBindBrand ? <div className="agent-panel__empty">{copy.brandReadOnly}</div> : null}
+    {bindingError ? <p className="agent-brand-panel__binding-error" role="alert">{bindingError}</p> : null}
     {status === 'ready' && kit ? <>
       <p className="agent-brand-panel__summary">{brandKitSummary(kit, locale)}</p>
       <div className="agent-brand-panel__tabs" aria-label={copy.brandSections}>

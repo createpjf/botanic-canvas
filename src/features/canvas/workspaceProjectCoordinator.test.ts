@@ -30,11 +30,14 @@ test('列表刷新保留本机更新更晚的项目名', () => {
   assert.equal(reconciled[0].updatedAt, 80)
 })
 
-test('新项目名称只统计本地新建项目，不受示例和外部项目影响', () => {
+test('新项目名称使用当前语言下最小的空闲序号', () => {
   assert.equal(nextWorkspaceProjectName([
-    { id: 'project-a' },
-    { id: 'imported-b' },
-    { id: 'project-c' },
-  ]), '创意项目 3')
-  assert.equal(nextWorkspaceProjectName([{ id: 'project-a' }], 'en'), 'Creative project 2')
+    { name: '创意项目 1' },
+    { name: '创意项目 3' },
+    { name: '夏日香氛' },
+  ]), '创意项目 2')
+  assert.equal(nextWorkspaceProjectName([
+    { name: 'Creative project 1' },
+    { name: 'Creative project 2' },
+  ], 'en'), 'Creative project 3')
 })

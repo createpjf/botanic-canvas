@@ -20,6 +20,14 @@ export function isRemoteDocumentConflict(error: unknown): error is RemoteDocumen
     || candidate.code === 'CANVAS_GRAPH_CONFLICT'
 }
 
+export function pendingCanvasSyncOutcome(
+  result: { pending: number; conflictIds: readonly string[] },
+  projectId: string,
+): 'conflict' | 'synced' | 'pending' {
+  if (result.conflictIds.includes(projectId)) return 'conflict'
+  return result.pending === 0 ? 'synced' : 'pending'
+}
+
 export type RemoteCanvasRefreshInput = {
   current: CanvasDocument
   remote: CanvasDocument

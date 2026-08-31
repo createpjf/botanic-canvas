@@ -10,6 +10,7 @@ import {
   type CollaborationDocumentChange,
 } from '../../domain/collaborationActivity'
 import { shouldRefreshFromRealtimeEvent, type ProjectRealtimeConnectionState } from '../../domain/realtimeSync'
+import { pendingCanvasSyncOutcome } from '../../domain/remoteDocumentSync'
 import { executePersistentBotanicAgentRun, listPersistentBotanicAgentRuns, listPersistentBotanicAgentSessions, readPersistentBotanicAgentState } from '../../lib/agentApi'
 import { listProjectCollaborationActivities, updateProjectCollaborationActivityReceipt } from '../../lib/collaborationApi'
 import { flushPendingCanvasDocumentWrites, previewRemoteCanvasDocument, refreshCanvasDocumentFromRemote, syncPendingCanvasDrafts, type CanvasConflictRevision } from '../../lib/db'
@@ -24,8 +25,8 @@ import { canvasSystemLabel } from './canvasI18n'
 const canvasSynchronizationCopy = {
   'zh-CN': {
     collaborator: '协作者',
-    canvasSynced: '画布已同步。',
     localDraftSynced: '本地草稿已同步。',
+    canvasConflict: '云端仍有新修改，本地草稿尚未同步。',
     cloudVersionSelected: '已切换到云端版本。',
     canvasUpdated: '更新了画布内容',
     historyLoadFailed: '协作记录加载失败，请重试。',
@@ -36,8 +37,8 @@ const canvasSynchronizationCopy = {
   },
   en: {
     collaborator: 'Collaborator',
-    canvasSynced: 'Canvas synced.',
     localDraftSynced: 'Local draft synced.',
+    canvasConflict: 'The cloud canvas still has newer changes. Your local draft is not synced yet.',
     cloudVersionSelected: 'Switched to the cloud version.',
     canvasUpdated: 'Updated the canvas',
     historyLoadFailed: 'Unable to load collaboration activity. Try again.',
@@ -334,34 +335,36 @@ export function useCanvasWorkspaceSynchronization({
   const synchronizeLocalDrafts = useCallback(async () => {
     const result = await syncPendingCanvasDrafts()
     const current = useCanvasStore.getState()
-    if (result.conflictIds.includes(current.document.id)) {
-      const projectId = current.document.id
-      const opened = await openDocument(projectId)
-      if (opened && useCanvasStore.getState().document.id === projectId) {
-        useCanvasStore.setState({ persistenceStatus: 'saved', assistantMessage: copy.canvasSynced })
-      }
+    const outcome = pendingCanvasSyncOutcome(result, current.document.id)
+    if (outcome === 'conflict') {
+      useCanvasStore.setState({ persistenceStatus: 'conflict', assistantMessage: copy.canvasConflict })
       return result
     }
-    if (result.pending === 0 && (current.persistenceStatus === 'offline' || current.persistenceStatus === 'error')) {
+    if (outcome === 'synced' && ['offline', 'error', 'conflict'].includes(current.persistenceStatus)) {
       useCanvasStore.setState({ persistenceStatus: 'saved', assistantMessage: copy.localDraftSynced })
     }
     return result
-  }, [copy.canvasSynced, copy.localDraftSynced, openDocument])
+  }, [copy.canvasConflict, copy.localDraftSynced])
 
   const retryAgentCanvasPersistence = useCallback(async () => {
     const projectId = useCanvasStore.getState().document.id
     try {
       const result = await syncPendingCanvasDrafts()
       const current = useCanvasStore.getState()
-      if (current.document.id !== projectId || result.conflictIds.includes(projectId)) return false
-      if (result.pending === 0 && (current.persistenceStatus === 'offline' || current.persistenceStatus === 'error')) {
+      if (current.document.id !== projectId) return false
+      const outcome = pendingCanvasSyncOutcome(result, projectId)
+      if (outcome === 'conflict') {
+        useCanvasStore.setState({ persistenceStatus: 'conflict', assistantMessage: copy.canvasConflict })
+        return false
+      }
+      if (outcome === 'synced' && ['offline', 'error', 'conflict'].includes(current.persistenceStatus)) {
         useCanvasStore.setState({ persistenceStatus: 'saved', assistantMessage: copy.localDraftSynced })
       }
-      return result.pending === 0
+      return outcome === 'synced'
     } catch {
       return false
     }
-  }, [copy.localDraftSynced])
+  }, [copy.canvasConflict, copy.localDraftSynced])
 
   const refreshAgentCanvasFromRemote = useCallback(async () => {
     const projectId = useCanvasStore.getState().document.id

@@ -845,6 +845,7 @@ export default function CanvasWorkspace({
   const refreshDocumentFromRemote = useCanvasStore((state) => state.refreshDocumentFromRemote)
   const openNewDocument = useCanvasStore((state) => state.openNewDocument)
   const renameDocument = useCanvasStore((state) => state.renameDocument)
+  const bindProjectBrand = useCanvasStore((state) => state.bindProjectBrand)
   const setNodes = useCanvasStore((state) => state.setNodes)
   const setNodesTransient = useCanvasStore((state) => state.setNodesTransient)
   const setEdges = useCanvasStore((state) => state.setEdges)
@@ -2524,6 +2525,7 @@ export default function CanvasWorkspace({
           onUseResultContext={agentBridge.useResultContext}
           onRetryPersistence={retryAgentCanvasPersistence}
           onRefreshRemote={refreshAgentCanvasFromRemote}
+          onBindBrand={bindProjectBrand}
           onLoadOlderMessages={agentBridge.loadOlderAgentMessages}
           hasOlderMessages={agentBridge.hasOlderAgentMessages}
           loadingOlderMessages={agentBridge.loadingOlderAgentMessages}

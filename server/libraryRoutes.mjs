@@ -1,4 +1,5 @@
 import { BrandKitError, findBrandKit, globalBrandKitLibraryId, normalizeBrandKitLibrary, resolveBrandKit } from './brandKit.mjs'
+import { projectCapabilities } from './authorization.mjs'
 import { requireProjectPermission } from './projectAuthorization.mjs'
 
 export function createLibraryRouteHandler({ productStore, json, error, readJson, requireUser }) {
@@ -10,13 +11,14 @@ export function createLibraryRouteHandler({ productStore, json, error, readJson,
       }
       const user = await requireUser(request)
       const projectId = decodeURIComponent(projectBrandKitMatch[1])
-      await requireProjectPermission(productStore, user.id, projectId, 'read')
+      const access = await requireProjectPermission(productStore, user.id, projectId, 'read')
+      const capabilities = projectCapabilities(access?.role)
       const project = await productStore.readProject(user.id, projectId)
       if (!project) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
       const brandId = project.document?.brandId
       // 未绑定品牌就明说没有，不返回一份空套件充数 —— 空套件在界面上看起来像
       // 「品牌规则都通过了」，而实际是根本没有品牌规则参与。
-      if (typeof brandId !== 'string' || !brandId.trim()) return json(response, 200, { brandKit: null })
+      if (typeof brandId !== 'string' || !brandId.trim()) return json(response, 200, { brandKit: null, capabilities })
       const library = await productStore.readGlobalAssetLibrary(user.id, globalBrandKitLibraryId)
       try {
         // 解析口径与生成时**同一实现**：界面说生效的那条，就是生成时会用的那条。
@@ -26,6 +28,7 @@ export function createLibraryRouteHandler({ productStore, json, error, readJson,
             global: findBrandKit(library, brandId),
             project: project.document?.brandKit,
           }),
+          capabilities,
         })
       } catch (caught) {
         const code = caught instanceof BrandKitError ? caught.code : 'BRAND_KIT_UNRESOLVABLE'

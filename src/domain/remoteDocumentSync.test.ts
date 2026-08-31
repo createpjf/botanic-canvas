@@ -1,13 +1,19 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { CanvasDocument } from './canvas.ts'
-import { isRemoteDocumentConflict, resolveRemoteCanvasRefresh } from './remoteDocumentSync.ts'
+import { isRemoteDocumentConflict, pendingCanvasSyncOutcome, resolveRemoteCanvasRefresh } from './remoteDocumentSync.ts'
 
 test('旧版 412 与新版 409 的项目和画布版本冲突使用同一判定', () => {
   assert.equal(isRemoteDocumentConflict({ status: 412 }), true)
   assert.equal(isRemoteDocumentConflict({ status: 409, code: 'CANVAS_GRAPH_CONFLICT' }), true)
   assert.equal(isRemoteDocumentConflict({ status: 409, code: 'PROJECT_CONFLICT' }), true)
   assert.equal(isRemoteDocumentConflict({ status: 422, code: 'INVALID_DOCUMENT' }), false)
+})
+
+test('当前项目仍冲突时同步结果不能被当作已保存', () => {
+  assert.equal(pendingCanvasSyncOutcome({ pending: 1, conflictIds: ['project-1'] }, 'project-1'), 'conflict')
+  assert.equal(pendingCanvasSyncOutcome({ pending: 0, conflictIds: [] }, 'project-1'), 'synced')
+  assert.equal(pendingCanvasSyncOutcome({ pending: 2, conflictIds: ['project-2'] }, 'project-1'), 'pending')
 })
 
 function document(id: string, updatedAt: number, name: string): CanvasDocument {
